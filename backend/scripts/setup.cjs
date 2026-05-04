@@ -1,6 +1,6 @@
 /**
  * Local DB bootstrap: Docker Postgres (healthy), Prisma migrate deploy, generate.
- * Run from repo root: npm run setup (after npm install) or npm run bootstrap.
+ * Run from backend/ (package.json root): npm run setup (after npm install) or npm run bootstrap.
  */
 const { copyFileSync, existsSync } = require('fs');
 const { execSync } = require('child_process');
