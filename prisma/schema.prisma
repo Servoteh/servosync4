@@ -1,0 +1,1428 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model BBDefUser {
+  UserName      String         @id(map: "aaaaaBBDefUser_PK") @db.VarChar(20)
+  DefaultGodina Int?           @default(dbgenerated("(EXTRACT(year FROM CURRENT_DATE))::integer"))
+  DefaultOJ     Int?           @default(0)
+  DefaultOD     Int?           @default(0)
+  UnlockGodina  Boolean?       @default(false)
+  UnlockOJ      Boolean?       @default(false)
+  UnlockOD      Boolean?       @default(false)
+  Level         Int?           @default(0) @db.SmallInt
+  MaxLevel      Int?           @default(0) @db.SmallInt
+  BBOdeljenja   BBOdeljenja?   @relation(fields: [DefaultOD], references: [OD], onDelete: NoAction, onUpdate: NoAction, map: "FK_BBDefUser_BBOdeljenja")
+  BBOrgJedinice BBOrgJedinice? @relation(fields: [DefaultOJ], references: [OJ], onDelete: NoAction, onUpdate: NoAction, map: "FK_BBDefUser_BBOrgJedinice")
+}
+
+model BBOdeljenja {
+  OD        Int         @id(map: "aaaaaBBOdeljenja_PK") @default(autoincrement())
+  OznakaOD  String      @db.VarChar(10)
+  OpisOD    String      @db.VarChar(50)
+  BBDefUser BBDefUser[]
+}
+
+model BBOrgJedinice {
+  OJ        Int         @id(map: "aaaaaBBOrgJedinice_PK") @default(autoincrement())
+  OznakaOJ  String      @db.VarChar(10)
+  OpisOJ    String      @db.VarChar(50)
+  BBDefUser BBDefUser[]
+}
+
+model BBPravaPristupa {
+  ID           Int     @id(map: "aaaaaBBPravaPristupa_PK") @default(autoincrement())
+  ImeUsera     String  @db.VarChar(20)
+  ImeForme     String  @db.VarChar(50)
+  ImeKontrole  String  @db.VarChar(50)
+  Visible      Boolean @default(true)
+  Locked       Boolean @default(false)
+  Enabled      Boolean @default(true)
+  Vrednost     String? @db.VarChar(250)
+  RecordSource String?
+  Filter       String? @db.VarChar(250)
+}
+
+model CFG_Global {
+  IDFirma   Int     @default(0)
+  Parametar String  @db.VarChar(120)
+  Vrednost  String?
+  Tip       String? @db.VarChar(20)
+  Opis      String? @db.VarChar(100)
+
+  @@id([IDFirma, Parametar], map: "CFG_Global_PK")
+}
+
+model CFG_Sys {
+  Parametar String    @id(map: "PK_CFG_Sys") @db.VarChar(120)
+  Vrednost  String?   @db.VarChar(50)
+  Tip       String?   @db.VarChar(20)
+  Opis      String?   @db.VarChar(255)
+  DIVUnos   DateTime? @default(now()) @db.Timestamp(6)
+}
+
+model Cenovnik {
+  ID              Int       @id(map: "PK_Cenovnik") @default(autoincrement())
+  Sifra_artikla   Int       @default(0) @map("Sifra artikla")
+  Vrsta_dokumenta String    @map("Vrsta dokumenta") @db.VarChar(5)
+  Cena            Float?    @default(0)
+  Tarifa          String    @db.VarChar(5)
+  CenaBezPDV      Decimal?  @default(0) @db.Decimal(19, 4)
+  Taksa           Float?    @default(0)
+  Prn             Boolean?  @default(true)
+  CenaSaPDV       Decimal?  @default(0) @db.Decimal(19, 4)
+  CheckCenaSaPDV  Boolean?  @default(false)
+  ZakCen          Boolean?  @default(false)
+  R_Artikli       R_Artikli @relation(fields: [Sifra_artikla], references: [Sifra_artikla], onDelete: NoAction, onUpdate: NoAction, map: "Cenovnik_FK00")
+  R_Tarife        R_Tarife  @relation(fields: [Tarifa], references: [Tarifa], onDelete: NoAction, onUpdate: NoAction, map: "Cenovnik_FK01")
+}
+
+model Info {
+  ID                 Int       @id(map: "aaaaaInfo_PK") @default(0)
+  DatumIVremeSlanja  DateTime? @db.Timestamp(6)
+  KoJePoslao         String?   @db.VarChar(250)
+  Prijem             Boolean?  @default(false)
+  DatumIVremePrijema DateTime? @db.Timestamp(6)
+  KoJePrimio         String?   @db.VarChar(250)
+}
+
+model Komitenti {
+  Sifra                         Int           @id(map: "PK_Komitenti") @default(autoincrement())
+  Naziv                         String        @db.VarChar(50)
+  Poslovnica                    String?       @db.VarChar(50)
+  Mesto                         String?       @db.VarChar(30)
+  Adresa                        String?       @db.VarChar(50)
+  Postanski_broj                String?       @map("Postanski broj") @db.VarChar(20)
+  Ziro_racun_1                  String?       @map("Ziro racun_1") @db.VarChar(30)
+  Ziro_racun_2                  String?       @map("Ziro racun_2") @db.VarChar(30)
+  Ziro_racun_3                  String?       @map("Ziro racun_3") @db.VarChar(30)
+  Telefon                       String?       @db.VarChar(20)
+  Fax                           String?       @db.VarChar(20)
+  Kontakt                       String?       @db.VarChar(50)
+  Napomena                      String?
+  Drzava                        String?       @db.VarChar(30)
+  Region                        Int?          @default(0)
+  Vrsta_sifre                   String?       @default("KUPDOB") @map("Vrsta sifre") @db.VarChar(10)
+  Email                         String?       @db.VarChar(50)
+  Mobilni                       String?       @db.VarChar(20)
+  Datum_rodjenja                DateTime?     @map("Datum rodjenja") @db.Timestamp(6)
+  Web_adresa                    String?       @map("Web adresa") @db.VarChar(50)
+  Sifra_prodavca                Int?          @default(0) @map("Sifra prodavca")
+  RabatKomitenta                Float?        @default(0)
+  ZastKodKupca                  String?       @db.VarChar(50)
+  PIB                           String        @db.VarChar(20)
+  PDVStatus                     Int?          @default(0)
+  MSifra                        String?       @db.VarChar(10)
+  Odlozeno                      Int?          @default(0) @db.SmallInt
+  IDRuta                        Int?          @default(0)
+  IDVozac                       Int?          @default(0)
+  IDUplatniRacun                Int?          @default(0)
+  FakturisanjePoMestimaIsporuke Boolean?      @default(true)
+  Cenovnik                      String?       @db.VarChar(5)
+  PrviUnos                      DateTime?     @db.Timestamp(6)
+  PoslednjaIzmena               DateTime?     @db.Timestamp(6)
+  PrviUnosUser                  String?       @db.VarChar(20)
+  PoslednjaIzmenaUser           String?       @db.VarChar(20)
+  ProcenatProvizije             Float?        @default(0)
+  FiktRabatKomitenta            Float?        @default(0)
+  KomitentiNacinPlacanja        String?       @db.VarChar(50)
+  PotpisKom                     String?       @db.VarChar(50)
+  SkraceniNaziv                 String?       @db.VarChar(30)
+  DatumIVremeKom                DateTime?     @default(now()) @db.Timestamp(6)
+  ProveraDuga                   Boolean?      @default(false)
+  KreditLimit                   Decimal?      @default(0) @db.Decimal(19, 4)
+  NeProveravajPIB               Boolean?      @default(false)
+  IDPantheon                    String?       @db.VarChar(30)
+  NewsLetter                    Boolean?      @default(false)
+  PostaNaDruguAdresu            Boolean?      @default(false)
+  GLN                           String?       @db.VarChar(30)
+  KLRucProc                     Decimal?      @default(0) @db.Decimal(19, 4)
+  NapomenaZaSalda               String?
+  NePrikazatiUPregledu          Boolean?      @default(false)
+  JBKJS                         String?       @db.VarChar(10)
+  MaticniBroj                   String?       @db.VarChar(20)
+  ER_XMLSaPopustomPoArtiklu     Boolean?      @default(false)
+  CRF                           Boolean?      @default(false)
+  Prodavci                      Prodavci?     @relation(fields: [Sifra_prodavca], references: [Sifra_prodavca], onDelete: NoAction, onUpdate: NoAction, map: "FK_Komitenti_Prodavci")
+  Komitenti                     Komitenti?    @relation("KomitentiToKomitenti", fields: [IDVozac], references: [Sifra], onDelete: NoAction, onUpdate: NoAction, map: "Komitenti_FK01")
+  other_Komitenti               Komitenti[]   @relation("KomitentiToKomitenti")
+  Vrste_sifara                  Vrste_sifara? @relation(fields: [Vrsta_sifre], references: [Vrsta_sifre], onDelete: NoAction, onUpdate: NoAction, map: "Komitenti_FK02")
+}
+
+model KomponentePDMCrteza {
+  IDKomponenteCrteza                                    Int       @id(map: "PK_KomponentePDMCrteza") @default(autoincrement())
+  ZaIDCrtez                                             Int
+  TrebaIDCrtez                                          Int
+  PotrebnoKomada                                        Int       @default(1)
+  PDMCrtezi_KomponentePDMCrteza_TrebaIDCrtezToPDMCrtezi PDMCrtezi @relation("KomponentePDMCrteza_TrebaIDCrtezToPDMCrtezi", fields: [TrebaIDCrtez], references: [IDCrtez], onDelete: NoAction, onUpdate: NoAction, map: "FK_KomponentePDMCrteza_TrebaIDCrtez")
+  PDMCrtezi_KomponentePDMCrteza_ZaIDCrtezToPDMCrtezi    PDMCrtezi @relation("KomponentePDMCrteza_ZaIDCrtezToPDMCrtezi", fields: [ZaIDCrtez], references: [IDCrtez], onDelete: NoAction, onUpdate: NoAction, map: "FK_KomponentePDMCrteza_ZaIDCrtez")
+}
+
+model MRP_Potrebe {
+  IDPotreba         Int                 @id(map: "PK_MRP_Potrebe") @default(autoincrement())
+  IDPredmet         Int
+  IDCrtezRoot       Int?
+  SifraRadnika      Int?
+  Izvor             Int                 @db.SmallInt
+  TipEksplozije     Int?                @db.SmallInt
+  Status            Int                 @default(0) @db.SmallInt
+  DatumPotrebe      DateTime            @db.Date
+  Napomena          String?             @db.VarChar(500)
+  DIVUnosa          DateTime            @default(now()) @db.Timestamp(6)
+  DIVUnosaKorisnik  String?             @db.VarChar(20)
+  DIVIzmena         DateTime?           @db.Timestamp(6)
+  DIVIzmenaKorisnik String?             @db.VarChar(20)
+  PlaniranaKolicina Decimal             @default(0) @db.Decimal(19, 6)
+  IDPlan            Int?
+  MRP_PotrebeStavke MRP_PotrebeStavke[]
+}
+
+model MRP_PotrebeStavke {
+  IDPotrebaStavka     Int         @id(map: "PK_MRP_PotrebeStavke") @default(autoincrement())
+  IDPotreba           Int
+  IDCrtezIzvora       Int?
+  IDCrtezNabavke      Int?
+  SifraArtikla        Int?
+  KataloskiBrojStavka String      @db.VarChar(100)
+  NazivArtiklaStavka  String      @db.VarChar(200)
+  JedinicaMereStavka  String      @db.VarChar(10)
+  IzvorStavke         Int         @db.SmallInt
+  KolicinaPotrebna    Decimal     @db.Decimal(19, 6)
+  DatumPotrebe        DateTime    @db.Date
+  VremeIsporukeDana   Int?
+  DatumNabavke        DateTime?   @db.Date
+  Napomena            String?     @db.VarChar(500)
+  DIVUnosa            DateTime    @default(now()) @db.Timestamp(6)
+  DIVUnosaKorisnik    String?     @db.VarChar(20)
+  DIVIzmena           DateTime?   @db.Timestamp(6)
+  DIVIzmenaKorisnik   String?     @db.VarChar(20)
+  DobavljacID         Int?
+  StatusStavke        Int         @default(0) @db.SmallInt
+  KolicinaRezervisano Decimal     @default(0) @db.Decimal(19, 6)
+  KolicinaZaNabavku   Decimal     @default(0) @db.Decimal(19, 6)
+  MRP_Potrebe         MRP_Potrebe @relation(fields: [IDPotreba], references: [IDPotreba], onDelete: NoAction, onUpdate: NoAction, map: "FK_MRP_PotrebeStavke_MRP_Potrebe")
+}
+
+model MRP_StanjeArtikala {
+  SifraArtikla    Int       @id
+  Zalihe          Decimal   @default(0) @db.Decimal(19, 6)
+  Rezervisane     Decimal   @default(0) @db.Decimal(19, 6)
+  Naziv           String?   @db.VarChar(200)
+  KataloskiBroj   String?   @db.VarChar(100)
+  JedinicaMere    String?   @db.VarChar(20)
+  PoslednjaIzmena DateTime? @default(now()) @db.Timestamp(6)
+}
+
+model MRP_StanjeArtikala_TMP {
+  SifraArtikla  Int     @id
+  Zalihe        Decimal @default(0) @db.Decimal(19, 6)
+  Rezervisane   Decimal @default(0) @db.Decimal(19, 6)
+  Naziv         String? @db.VarChar(200)
+  KataloskiBroj String? @db.VarChar(100)
+  JedinicaMere  String? @db.VarChar(20)
+}
+
+model MRP_SyncStatus {
+  SyncKey               String    @id @db.VarChar(50)
+  PoslednjiSync         DateTime? @db.Timestamp(6)
+  PoslednjiSyncKorisnik String?   @db.VarChar(100)
+  Napomena              String?   @db.VarChar(255)
+}
+
+model Magacini {
+  IDFirma         Int?     @default(0)
+  IDMagacin       Int      @id(map: "PK_Magacini") @default(autoincrement())
+  Magacin         String   @db.VarChar(50)
+  UlicaIBroj      String?  @db.VarChar(50)
+  Mesto           String?  @db.VarChar(30)
+  ProsecneCene    Boolean? @default(false)
+  VrstaMag        String?  @db.VarChar(5)
+  KontoMag        String?  @db.VarChar(10)
+  ImeMagacionera  String?  @db.VarChar(30)
+  BrLkMagacionera String?  @db.VarChar(20)
+  PotpisSlika     String?  @db.VarChar(250)
+}
+
+model NacrtPrimopredaje {
+  IDNacrtPrim                Int                       @id @default(autoincrement())
+  IDProjektant               Int
+  DatumNacrta                DateTime                  @default(now()) @db.Timestamp(6)
+  IDPredmet                  Int
+  BrojKomada                 Int
+  IDStatusNacrtaPrimopredaje Int                       @default(0)
+  Napomena                   String?                   @db.VarChar(250)
+  Potpis                     String?                   @db.VarChar(30)
+  PrviUnos                   DateTime?                 @default(now()) @db.Timestamp(6)
+  PoslednjaIzmena            DateTime?                 @default(now()) @db.Timestamp(6)
+  BrojNacrta                 String                    @default("") @db.VarChar(30)
+  Zakljucano                 Boolean?                  @default(false)
+  TipNacrta                  Int                       @default(0) @db.SmallInt
+  IDGlavniCrtez              Int?
+  PDMCrtezi                  PDMCrtezi?                @relation(fields: [IDGlavniCrtez], references: [IDCrtez], onDelete: NoAction, onUpdate: NoAction, map: "FK_NP_IDGlavniCrtez_PDMCrtezi")
+  Predmeti                   Predmeti                  @relation(fields: [IDPredmet], references: [IDPredmet], onDelete: NoAction, onUpdate: NoAction, map: "FK_NacrtPrim_Predmeti")
+  tRadnici                   tRadnici                  @relation(fields: [IDProjektant], references: [SifraRadnika], onDelete: NoAction, onUpdate: NoAction, map: "FK_NacrtPrim_Projektant")
+  StatusiNacrtaPrimopredaje  StatusiNacrtaPrimopredaje @relation(fields: [IDStatusNacrtaPrimopredaje], references: [IDStatusNacrtaPrimopredaje], onDelete: NoAction, onUpdate: NoAction, map: "FK_NacrtPrimopredaje_StatusiNacrtaPrimopredaje")
+  NacrtPrimopredajeStavke    NacrtPrimopredajeStavke[]
+}
+
+model NacrtPrimopredajeStavke {
+  IDNacrtStavka             Int               @id @default(autoincrement())
+  IDNacrtPrim               Int
+  IDCrtez                   Int
+  Napomena                  String?           @db.VarChar(250)
+  Potpis                    String?           @db.VarChar(30)
+  PrviUnos                  DateTime?         @default(now()) @db.Timestamp(6)
+  PoslednjaIzmena           DateTime?         @default(now()) @db.Timestamp(6)
+  KolicinaZaIzradu          Int               @default(1)
+  IDGlavniCrtez             Int?
+  IsGlavni                  Boolean           @default(false)
+  PredProveraDuplikat       Boolean           @default(false)
+  PredProveraIDNacrtPrim    Int?
+  PredProveraIDRN           Int?
+  IskljuciPrimopredaju      Boolean           @default(false)
+  OdlukaAkcija              Int               @default(0) @db.SmallInt
+  DIVOdluke                 DateTime?         @db.Timestamp(0)
+  KolicinaDefinisanaUCrtezu Int?              @default(0)
+  PDMCrtezi                 PDMCrtezi?        @relation(fields: [IDGlavniCrtez], references: [IDCrtez], onDelete: NoAction, onUpdate: NoAction, map: "FK_NPS_RootCrtez")
+  NacrtPrimopredaje         NacrtPrimopredaje @relation(fields: [IDNacrtPrim], references: [IDNacrtPrim], onDelete: NoAction, onUpdate: NoAction, map: "FK_NacrtPrimStavke_NacrtPrim")
+}
+
+model Nalepnice {
+  ID             Int      @id(map: "PK_Nalepnice") @default(autoincrement())
+  IDRN           Int
+  IDPostupka     Int
+  IdentBroj      String   @db.VarChar(20)
+  BarKod         String   @db.VarChar(20)
+  NazivPredmeta  String   @db.VarChar(50)
+  Komitent       String   @db.VarChar(255)
+  NazivDela      String   @db.VarChar(250)
+  BrojCrteza     String   @db.VarChar(100)
+  Materijal      String   @db.VarChar(250)
+  DatumUnosa     DateTime @db.Timestamp(6)
+  Kolicina       Int      @db.SmallInt
+  UkupnaKolicina Int?     @db.SmallInt
+  PRN            Boolean? @default(true)
+}
+
+model PDMCrtezi {
+  IDCrtez                                                           Int                       @id(map: "PK_Crtez") @default(autoincrement())
+  pdmWeID                                                           String                    @db.VarChar(20)
+  TransactionDate                                                   DateTime?                 @db.Timestamp(6)
+  DesignDate                                                        DateTime?                 @db.Timestamp(6)
+  DesignBy                                                          String?                   @db.VarChar(50)
+  ApprovedDate                                                      DateTime?                 @db.Timestamp(6)
+  ApprovedBy                                                        String?                   @db.VarChar(50)
+  BrojCrteza                                                        String                    @db.VarChar(20)
+  Revizija                                                          String                    @default("A") @db.VarChar(3)
+  Kolicina                                                          Int                       @default(1)
+  KataloskiBroj                                                     String                    @db.VarChar(50)
+  Naziv                                                             String                    @db.VarChar(255)
+  Materijal                                                         String?                   @db.VarChar(255)
+  RN                                                                String?                   @db.VarChar(20)
+  Dimenzije                                                         String?                   @db.VarChar(255)
+  Oznaka                                                            String                    @db.VarChar(20)
+  Tezina                                                            Float?
+  Naziv_fajla                                                       String?                   @map("Naziv fajla") @db.VarChar(500)
+  PDMStatusCrteza                                                   String                    @db.VarChar(20)
+  Comment                                                           String?                   @db.VarChar(255)
+  WhereUsed                                                         String?                   @db.VarChar(255)
+  Naziv_projekta                                                    String?                   @db.VarChar(255)
+  DIVUnosa                                                          DateTime?                 @db.Timestamp(6)
+  Potpis                                                            String?                   @db.VarChar(50)
+  IDStatusCrteza                                                    Int                       @default(0)
+  Nabavka                                                           Boolean                   @default(false)
+  KomponentePDMCrteza_KomponentePDMCrteza_TrebaIDCrtezToPDMCrtezi   KomponentePDMCrteza[]     @relation("KomponentePDMCrteza_TrebaIDCrtezToPDMCrtezi")
+  KomponentePDMCrteza_KomponentePDMCrteza_ZaIDCrtezToPDMCrtezi      KomponentePDMCrteza[]     @relation("KomponentePDMCrteza_ZaIDCrtezToPDMCrtezi")
+  NacrtPrimopredaje                                                 NacrtPrimopredaje[]
+  NacrtPrimopredajeStavke                                           NacrtPrimopredajeStavke[]
+  StatusiCrteza                                                     StatusiCrteza             @relation(fields: [IDStatusCrteza], references: [IDStatusCrteza], onDelete: NoAction, onUpdate: NoAction, map: "FK_PDMCrtezi_StatusiCrteza")
+  PDM_Planiranje                                                    PDM_Planiranje[]
+  PDM_PlaniranjeStavke                                              PDM_PlaniranjeStavke[]
+  PrimopredajaCrteza                                                PrimopredajaCrteza[]
+  SklopoviPDMCrteza_SklopoviPDMCrteza_IDCrtezToPDMCrtezi            SklopoviPDMCrteza[]       @relation("SklopoviPDMCrteza_IDCrtezToPDMCrtezi")
+  SklopoviPDMCrteza_SklopoviPDMCrteza_KoristiSeUIDCrtezaToPDMCrtezi SklopoviPDMCrteza[]       @relation("SklopoviPDMCrteza_KoristiSeUIDCrtezaToPDMCrtezi")
+
+  @@unique([BrojCrteza, Revizija], map: "UQ_Crtez_BrojRev")
+}
+
+model PDMXMLImportLog {
+  IDLog           Int      @id @default(autoincrement())
+  NazivFajla      String   @db.VarChar(255)
+  PutanjaFajla    String   @db.VarChar(1024)
+  ImportTimestamp DateTime @default(now()) @db.Timestamp(6)
+  Uspesno         Boolean
+  StatusPoruka    String?  @db.VarChar(1000)
+  Kriticno        Boolean  @default(false)
+}
+
+model PDM_PDFCrtezi {
+  BrojCrteza    String   @db.VarChar(100)
+  Revizija      String   @db.VarChar(10)
+  NazivFajla    String?  @db.VarChar(255)
+  DatumUnosa    DateTime @default(now()) @db.Timestamp(6)
+  VelicinaKB    Int?
+  KorisnikUnosa String?  @default(dbgenerated("(SESSION_USER)::text")) @db.VarChar(50)
+  PDFBinary     Bytes?
+
+  @@id([BrojCrteza, Revizija], map: "PK_PDM_PDFCrtezi")
+}
+
+model PDM_Planiranje {
+  IDPlan                 Int                    @id(map: "PK_PDM_Planiranje") @default(autoincrement())
+  IDPredmet              Int
+  IDCrtezSklopa          Int?
+  KolicinaZaIzradu       Decimal                @db.Decimal(18, 4)
+  StatusPlaniranja       Int                    @default(0)
+  DatumPlaniranja        DateTime               @default(now()) @db.Timestamp(6)
+  SifraRadnikaPlaniranja Int
+  Napomena               String?                @db.VarChar(255)
+  Potpis                 String?                @db.VarChar(30)
+  PrviUnos               DateTime?              @default(now()) @db.Timestamp(6)
+  PoslednjaIzmena        DateTime?              @default(now()) @db.Timestamp(6)
+  Zakljucano             Boolean?
+  BrojPlana              String?                @db.VarChar(30)
+  BrojCrtezaPlana        String?                @db.VarChar(20)
+  RevizijaPlana          String?                @db.VarChar(3)
+  PDMCrtezi              PDMCrtezi?             @relation(fields: [IDCrtezSklopa], references: [IDCrtez], onDelete: NoAction, onUpdate: NoAction, map: "FK_PDM_Planiranje_CrtezSklopa")
+  PDM_PlaniranjeStavke   PDM_PlaniranjeStavke[]
+}
+
+model PDM_PlaniranjeStavke {
+  IDPlanStavka        Int            @id(map: "PK_PDM_PlaniranjeStavke") @default(autoincrement())
+  IDPlan              Int
+  IDCrtezNabavke      Int
+  SifraArtikla        Int?
+  KolicinaPoSklopu    Decimal        @db.Decimal(18, 4)
+  PotrebnoUkupno      Decimal?       @db.Decimal(18, 4)
+  PredProveraIDPlan   Int?
+  OdlukaAkcija        Int            @default(0) @db.SmallInt
+  RucnaKolicina       Decimal?       @db.Decimal(18, 4)
+  Rezervisano         Decimal        @default(0) @db.Decimal(18, 4)
+  ZaNabavku           Decimal        @default(0) @db.Decimal(18, 4)
+  Zalihe              Decimal?       @db.Decimal(18, 4)
+  NazivArtiklaStavke  String?        @db.VarChar(150)
+  KataloskiBrojStavke String?        @db.VarChar(20)
+  JMStavke            String?        @db.VarChar(5)
+  JeRucnaStavka       Boolean        @default(false)
+  IskljuciNabavku     Boolean        @default(false)
+  PDMCrtezi           PDMCrtezi      @relation(fields: [IDCrtezNabavke], references: [IDCrtez], onDelete: NoAction, onUpdate: NoAction, map: "FK_PDM_PlaniranjeStavke_CrtezNabavke")
+  PDM_Planiranje      PDM_Planiranje @relation(fields: [IDPlan], references: [IDPlan], onDelete: NoAction, onUpdate: NoAction, map: "FK_PDM_PlaniranjeStavke_Plan")
+}
+
+model Parametri_za_rad {
+  Korisnik                  String  @id(map: "aaaaaParametri za rad_PK") @db.VarChar(50)
+  VrstaDokumenta            String? @db.VarChar(10)
+  Telefon                   String? @db.VarChar(50)
+  Poslednji_broj_fakture    Int?    @default(0) @map("Poslednji broj fakture")
+  Poslednji_broj_profakture Int?    @default(0) @map("Poslednji broj profakture")
+  Faktura_kroz              String? @map("Faktura kroz") @db.VarChar(10)
+  Profaktura_kroz           String? @map("Profaktura kroz") @db.VarChar(10)
+  Faktura_prefix            String? @map("Faktura prefix") @db.VarChar(10)
+  Profaktura_prefix         String? @map("Profaktura prefix") @db.VarChar(10)
+
+  @@map("Parametri za rad")
+}
+
+model Predmeti {
+  IDPredmet         Int                 @id(map: "PK_Predmeti") @default(autoincrement())
+  BrojPredmeta      String              @db.VarChar(20)
+  Opis              String?             @db.VarChar(50)
+  DatumOtvaranja    DateTime?           @default(dbgenerated("(CURRENT_DATE)::timestamp without time zone")) @db.Timestamp(6)
+  IDProdavac        Int                 @default(0)
+  IDKomitent        Int
+  NextAction        String?             @db.VarChar(50)
+  DatumZakljucenja  DateTime?           @db.Timestamp(6)
+  Memo              String?
+  Status            String?             @db.VarChar(20)
+  NasaRef           String?             @db.VarChar(20)
+  NasKontakt1       String?             @db.VarChar(50)
+  NasKontakt2       String?             @db.VarChar(50)
+  NasTel1           String?             @db.VarChar(20)
+  NasTel2           String?             @db.VarChar(20)
+  VasaRef           String?             @db.VarChar(20)
+  VasKontakt1       String?             @db.VarChar(50)
+  VasKontakt2       String?             @db.VarChar(50)
+  VasTel1           String?             @db.VarChar(20)
+  VasTel2           String?             @db.VarChar(20)
+  NabavnaVrednost   Decimal?            @default(0) @db.Decimal(19, 4)
+  Carina            Decimal?            @default(0) @db.Decimal(19, 4)
+  Spedicija         Decimal?            @default(0) @db.Decimal(19, 4)
+  Prevoz            Decimal?            @default(0) @db.Decimal(19, 4)
+  Ostalo            Decimal?            @default(0) @db.Decimal(19, 4)
+  InoDobavljac      Int?                @default(0)
+  RJ                String?             @db.VarChar(4)
+  devvaluta         String?             @db.VarChar(3)
+  kurs              Decimal?            @default(0) @db.Decimal(19, 4)
+  IDVrstaPosla      Int?                @default(0)
+  NazivPredmeta     String?             @db.VarChar(250)
+  RokZavrsetka      DateTime?           @db.Timestamp(6)
+  Potpis            String?             @db.VarChar(50)
+  DatumIVreme       DateTime?           @default(now()) @db.Timestamp(6)
+  BrojUgovora       String?             @db.VarChar(100)
+  DatumUgovora      DateTime?           @db.Timestamp(6)
+  BrojNarudzbenice  String?             @db.VarChar(100)
+  DatumNarudzbenice DateTime?           @db.Timestamp(6)
+  NacrtPrimopredaje NacrtPrimopredaje[]
+  tLokacijeDelova   tLokacijeDelova[]
+}
+
+model PredmetiVrstaPosla {
+  IDVrstaPosla Int     @id(map: "PK_PredmetiVrstaPosla") @default(autoincrement())
+  VrstaPosla   String? @db.VarChar(20)
+  Opis         String? @db.VarChar(150)
+}
+
+model PrimopredajaCrteza {
+  IDPrimopredaje         Int                     @id @default(autoincrement())
+  IDCrtez                Int
+  DatumPredaje           DateTime                @db.Timestamp(6)
+  IDRadnikPredaje        Int
+  IDStatusPrimopredaje   Int                     @default(0)
+  DatumPromeneStatusa    DateTime?               @db.Timestamp(6)
+  IDRadnikPromeneStatusa Int?
+  KomentarPromeneStatusa String?                 @db.VarChar(250)
+  DatumLansiranja        DateTime?               @db.Timestamp(6)
+  IDRadnikLansiranja     Int?
+  Napomena               String?                 @db.VarChar(250)
+  Potpis                 String?                 @db.VarChar(30)
+  PrviUnos               DateTime?               @default(now()) @db.Timestamp(6)
+  PoslednjaIzmena        DateTime?               @default(now()) @db.Timestamp(6)
+  Zakljucano             Boolean?                @default(false)
+  PDMCrtezi              PDMCrtezi               @relation(fields: [IDCrtez], references: [IDCrtez], onDelete: NoAction, onUpdate: NoAction, map: "FK_PPcr_PDMCrtezi")
+  StatusiPrimopredaje    StatusiPrimopredaje     @relation(fields: [IDStatusPrimopredaje], references: [IDStatusPrimopredaje], onDelete: NoAction, onUpdate: NoAction, map: "FK_PPcr_Status")
+  PrimopredajaPDFCrteza  PrimopredajaPDFCrteza[]
+}
+
+model PrimopredajaPDFCrteza {
+  ID                 Int                @id @default(autoincrement())
+  IDPrimopredaje     Int
+  LinkFajla          String             @db.VarChar(1024)
+  NazivFajla         String             @db.VarChar(255)
+  PrimopredajaCrteza PrimopredajaCrteza @relation(fields: [IDPrimopredaje], references: [IDPrimopredaje], onDelete: NoAction, onUpdate: NoAction, map: "FK_PrimopredajaPDFCrteza_PrimopredajaCrtetza")
+
+  @@unique([IDPrimopredaje, LinkFajla], map: "UQ_PrimopredajaPDFCrteza_IDPrimopredaje_LinkFajla")
+}
+
+model Prodavci {
+  Sifra_prodavca    Int         @id(map: "PK_Prodavci") @default(autoincrement()) @map("Sifra prodavca")
+  Prodavac          String      @db.VarChar(50)
+  Region            Int?        @default(0)
+  ProcenatZaObracun Float?      @default(0)
+  DeljivoUGrupi     Boolean?    @default(false)
+  ImeProdavca       String?     @db.VarChar(30)
+  BrLkProdavca      String?     @db.VarChar(20)
+  LogAcc            String?     @db.VarChar(50)
+  Password          String?     @db.VarChar(20)
+  Aktivan           Boolean?    @default(true)
+  NefiskalniRN      Boolean?    @default(false)
+  Storniranje       Boolean?    @default(false)
+  PotpisSlika       String?     @db.VarChar(250)
+  OznakaTima        String?     @default("000") @db.VarChar(10)
+  Telefon           String?     @db.VarChar(20)
+  Email             String?     @db.VarChar(50)
+  Komitenti         Komitenti[]
+}
+
+model R_Artikli {
+  Sifra_artikla         Int               @id(map: "PK_R_Artikli") @default(autoincrement()) @map("Sifra artikla")
+  Kataloski_broj        String            @default("-") @map("Kataloski broj") @db.VarChar(20)
+  BarKod                String?           @db.VarChar(50)
+  PLU                   Int?              @default(0)
+  ExtSifra              String?           @db.VarChar(20)
+  Naziv                 String            @db.VarChar(50)
+  Jedinica_mere         String?           @map("Jedinica mere") @db.VarChar(5)
+  Pakovanje             String?           @db.VarChar(10)
+  InoJm                 String?           @db.VarChar(5)
+  Kutija                Float?            @default(0)
+  Transportno_pakovanje Float?            @default(0) @map("Transportno pakovanje")
+  Poreklo               String            @default("0") @db.VarChar(5)
+  Grupa                 String            @db.VarChar(10)
+  Podgrupa              String            @default("0") @db.VarChar(10)
+  Tarifa_robe           String            @default("3") @map("Tarifa robe") @db.VarChar(5)
+  Tarifa_usluga         String            @default("1") @map("Tarifa usluga") @db.VarChar(5)
+  Uvek_porez_na_robu    Boolean?          @default(true) @map("Uvek porez na robu")
+  Uvek_porez_na_usluge  Boolean?          @default(false) @map("Uvek porez na usluge")
+  VP_cena               Float?            @default(0) @map("VP cena")
+  MP_cena               Float?            @default(0) @map("MP cena")
+  NabDevCena            Float?            @default(0)
+  ProdDevCena           Float?            @default(0)
+  Minimalna_kolicina    Float?            @default(0) @map("Minimalna kolicina")
+  ArtTaksa              Float?            @default(0)
+  Odlozeno              Int?              @default(0) @db.SmallInt
+  Neoporezivi_deo       Float?            @default(0) @map("Neoporezivi deo")
+  MaxRabatProc          Float?            @default(100)
+  Memo                  String?
+  KngSifra              String?           @default("0") @db.VarChar(10)
+  ArtAkciza             Float?            @default(0)
+  KngSifra_2            String?           @default("0") @db.VarChar(10)
+  ZavTrosProiz          Float?            @default(0)
+  CarStopa              Float?            @default(0)
+  IDRaster              Int?              @default(0)
+  CarTarifa             String?           @db.VarChar(20)
+  ZemljaPorekla         String?           @db.VarChar(20)
+  Polica                String?           @db.VarChar(10)
+  INONaziv              String?           @db.VarChar(50)
+  SifDob                Int?              @default(1)
+  WebOpis               String?           @db.VarChar(255)
+  OpisArtikla           String?           @db.VarChar(50)
+  Tezina                Float?            @default(0)
+  PDFLink               String?           @db.VarChar(255)
+  ZaBrisanje            Boolean?          @default(false)
+  Aktivan               Boolean?          @default(true)
+  CenaZaUpisUCen        Float?            @default(0)
+  IDMestoIzdavanja      Int?              @default(0)
+  Proizvodjac           String?           @db.VarChar(50)
+  HPS                   String?           @default("O") @db.VarChar(50)
+  PotpisArt             String?           @db.VarChar(50)
+  DatumIVremeArt        DateTime?         @default(now()) @db.Timestamp(6)
+  KolUPak               Float?            @default(1)
+  KLRucProc             Decimal?          @default(0) @db.Decimal(19, 4)
+  OsnJM                 String?           @db.VarChar(5)
+  SlikaSimbolaLink      String?           @db.VarChar(250)
+  MPKaloProc            Float?            @default(0)
+  WordLokacija          String?           @db.VarChar(250)
+  VPKaloProc            Float?            @default(0)
+  NeVodiZalihe          Boolean?          @default(false)
+  TezinaKg              Float?            @default(0)
+  Zapremina             Float?            @default(0)
+  Povrsina              Float?            @default(0)
+  RSort                 Int?              @default(0)
+  AkcijskiRabat         Float?            @default(0)
+  Napomena2             String?           @db.VarChar(255)
+  IDKvalitetArtikla     Int?              @default(0)
+  Debljina              Float?            @default(0)
+  BBSifra_artikla       Int               @default(0) @map("BBSifra artikla")
+  Cenovnik              Cenovnik[]
+  tRNNDKomponente       tRNNDKomponente[]
+}
+
+model R_Grupa {
+  Grupa String @id(map: "PK_R_Grupa") @db.VarChar(10)
+  Opis  String @db.VarChar(50)
+}
+
+model R_Podgrupa {
+  Podgrupa  String  @id(map: "PK_R_Podgrupa") @db.VarChar(10)
+  Opis      String  @db.VarChar(50)
+  GrupaVeza String? @default("0") @db.VarChar(10)
+}
+
+model R_Poreklo {
+  Poreklo      String   @id(map: "PK_R_Poreklo") @db.VarChar(5)
+  Opis         String   @db.VarChar(50)
+  PodgrupaVeza String?  @default("0") @db.VarChar(10)
+  PopustProc   Decimal? @default(0) @db.Decimal(19, 4)
+}
+
+model R_Tarife {
+  ID              Int        @id(map: "PK_R_Tarife") @default(autoincrement())
+  Tarifa          String     @unique(map: "UQ_R_Tarife_Tarifa") @db.VarChar(5)
+  Osnovna_stopa   Float?     @default(0) @map("Osnovna stopa")
+  Zeleznica_stopa Float?     @default(0) @map("Zeleznica stopa")
+  Gradska_stopa   Float?     @default(0) @map("Gradska stopa")
+  Ratna_stopa     Float?     @default(0) @map("Ratna stopa")
+  Posebna_stopa   Float?     @default(0) @map("Posebna stopa")
+  Opis            String?
+  Vazi_od         DateTime?  @map("Vazi od") @db.Timestamp(6)
+  Vazi_do         DateTime?  @map("Vazi do") @db.Timestamp(6)
+  PDVGrupa        String?    @default("VISA") @db.VarChar(10)
+  Cenovnik        Cenovnik[]
+}
+
+model R_Vrste_dokumenata {
+  ID                     Int      @id(map: "PK_R_Vrste dokumenata") @default(autoincrement())
+  Vrsta_dokumenta        String   @map("Vrsta dokumenta") @db.VarChar(5)
+  Opis                   String   @db.VarChar(50)
+  Ulazni                 Boolean  @default(false)
+  Analiticki_konto       String?  @map("Analiticki konto") @db.VarChar(10)
+  Knjiziti_analitiku     Boolean? @default(false) @map("Knjiziti analitiku")
+  Sema_za_kontiranje     Int?     @default(0) @map("Sema za kontiranje")
+  Knjiziti_sintetiku     Boolean? @default(false) @map("Knjiziti sintetiku")
+  Prodaja_sa_PPP         Boolean? @default(false) @map("Prodaja sa PPP")
+  Prodaja_sa_PPU         Boolean? @default(true) @map("Prodaja sa PPU")
+  KnjizitiTKZad          Boolean? @default(false)
+  KnjizitiTKRazd         Boolean? @default(false)
+  TextZaReport           String?  @db.VarChar(50)
+  KnjizitiUPDVEvidenciju Boolean? @default(true)
+  KEPUDefZaduzenje       String?  @db.VarChar(30)
+  KEPUDefRazduzenje      String?  @db.VarChar(30)
+  InterniDokument        Boolean? @default(false)
+  NumeracijaOd           Int?     @default(0)
+  KOTP                   Boolean? @default(false)
+  PrefiksBrojaDok        String?  @db.VarChar(5)
+  IDMagacinZaVrstuDok    Int?     @default(0)
+  KODJ                   Boolean? @default(false)
+  FR                     Boolean? @default(false)
+  UticeNaZalihe          Boolean? @default(true)
+
+  @@map("R_Vrste dokumenata")
+}
+
+model Radni_fajlovi {
+  IDBaze                Int      @id(map: "aaaaaRadni fajlovi_PK")
+  Firma                 String   @db.VarChar(150)
+  Naziv_baze            String?  @map("Naziv baze") @db.VarChar(255)
+  Logo                  Bytes?
+  Mesto                 String?  @db.VarChar(50)
+  Adresa                String?  @db.VarChar(50)
+  Telefon               String?  @db.VarChar(50)
+  Fax                   String?  @db.VarChar(50)
+  Ziro_racun            String?  @map("Ziro racun") @db.VarChar(50)
+  Delatnost             String?  @db.VarChar(255)
+  Sifra_delatnosti      String?  @map("Sifra delatnosti") @db.VarChar(50)
+  Opstina               String?  @db.VarChar(50)
+  Napomena              String?
+  Specijal              String?  @default("DEFAULT") @db.VarChar(50)
+  e_mail                String?  @map("e-mail") @db.VarChar(30)
+  Maticni_broj          String?  @map("Maticni broj") @db.VarChar(50)
+  Registarski_broj      String?  @map("Registarski broj") @db.VarChar(50)
+  Podracuni             String?  @db.VarChar(100)
+  Kasa_ProdavnicaID     Int?     @default(0)
+  Kasa_KupacID          Int?     @default(0)
+  Kasa_VrstaDokumenta   String?  @default("MP1") @db.VarChar(5)
+  Kasa_RadniNalogID     Int?     @default(0)
+  BrDecUlKl             Int?     @default(2) @db.SmallInt
+  BrDecIzKl             Int?     @default(2) @db.SmallInt
+  KursDeli              Boolean? @default(false)
+  ProveraZalihaMag      Boolean? @default(true)
+  AutoPodelaPrihoda     Boolean? @default(false)
+  FakturnaJeVPZaUlKl    Boolean? @default(false)
+  KepuPoNabavnojCeni    Boolean? @default(false)
+  TrgovackaPoKursu      Boolean? @default(false)
+  KepuPoKursu           Boolean? @default(false)
+  GKPoKursu             Boolean? @default(false)
+  KontoKupac            String?  @default("2040") @db.VarChar(20)
+  KontoDobavljac        String?  @default("4350") @db.VarChar(20)
+  KnjiziRazlikeNaTK     Boolean? @default(true)
+  KnjiziRazlikeNaKEPU   Boolean? @default(true)
+  KnjiziRazlikeNaMPKEPU Boolean? @default(true)
+  GKPoKursuObrnuto      Boolean? @default(false)
+  AutoZakRoba           Boolean? @default(false)
+  AutoZakGK             Boolean? @default(false)
+  StarijeOdDanaRoba     Int?     @default(7)
+  StarijeOdDanaGk       Int?     @default(7)
+  ProveraPorukaInterval Int?     @default(0)
+  DekodirajBarKod       Boolean? @default(false)
+  PIB                   String?  @db.VarChar(20)
+  Garancija             String?
+  KEPUPoKNGCeni         Boolean? @default(false)
+  PEPDV                 String?  @db.VarChar(20)
+  Vlasnik               String?  @db.VarChar(50)
+  PoreskaSifra          String?  @db.VarChar(50)
+  Galeb                 Boolean? @default(false)
+  Raster                Boolean? @default(false)
+  PG_Naziv_baze         String?  @map("PG_Naziv baze") @db.VarChar(255)
+  ServerZaGaleb         Boolean? @default(false)
+  KlijentZaGaleb        Boolean? @default(false)
+  FP_ImeStampaca        String?  @default("GALEB01") @db.VarChar(50)
+  MestoIzdavanjaRacuna  String?  @default("Beograd") @db.VarChar(50)
+  Kasa_KasaID           Int?     @default(0)
+  WebAdresa             String?  @db.VarChar(50)
+  APRText               String?  @db.VarChar(250)
+  SaljiBosson           Boolean? @default(false)
+  Kasa_Cenovnik         String?  @default("MP1") @db.VarChar(5)
+  VPCenovnik            String?  @default("STDCN") @db.VarChar(5)
+  FooterText            String?  @db.VarChar(255)
+  Logo_Footer           Bytes?
+  RPT_Memorandum_Header String   @default("Memorandum_Header_STD") @db.VarChar(64)
+  RPT_Memorandum_Footer String   @default("Memorandum_Footer_STD") @db.VarChar(64)
+  LogoFontSize          Int      @default(24)
+  PDVStatus             Int      @default(0)
+  JBKJS                 String?  @db.VarChar(20)
+  ER_ApiKey             String?  @db.VarChar(50)
+  NazivFirmeNezvanicno  String?  @db.VarChar(150)
+
+  @@map("Radni fajlovi")
+}
+
+model RobnaDokumentaMirror {
+  IDDok             Int                 @id
+  VrstaDokumenta    String              @db.VarChar(5)
+  DatumDokumenta    DateTime            @db.Date
+  RobneStavkeMirror RobneStavkeMirror[]
+}
+
+model RobneStavkeMirror {
+  IDStavke             Int                  @id
+  IDDok                Int
+  SifraArtikla         Int
+  KataloskiBroj        String?              @db.VarChar(100)
+  IDMagacin            Int
+  KolicinaUlaz         Decimal              @default(0) @db.Decimal(18, 4)
+  KolicinaIzlaz        Decimal              @default(0) @db.Decimal(18, 4)
+  PoslednjaIzmena      DateTime             @default(now()) @db.Timestamp(6)
+  RobnaDokumentaMirror RobnaDokumentaMirror @relation(fields: [IDDok], references: [IDDok], onDelete: NoAction, onUpdate: NoAction, map: "FK_RSM_Dokument")
+}
+
+model SklopoviPDMCrteza {
+  IDSklopoviCrteza                                          Int       @id(map: "PK_SklopoviPDMCrteza") @default(autoincrement())
+  IDCrtez                                                   Int
+  KoristiSeUIDCrteza                                        Int
+  KoristiSeBrojKomada                                       Int       @default(1)
+  PDMCrtezi_SklopoviPDMCrteza_IDCrtezToPDMCrtezi            PDMCrtezi @relation("SklopoviPDMCrteza_IDCrtezToPDMCrtezi", fields: [IDCrtez], references: [IDCrtez], onDelete: NoAction, onUpdate: NoAction, map: "FK_SklopoviPDMCrteza_Crtez")
+  PDMCrtezi_SklopoviPDMCrteza_KoristiSeUIDCrtezaToPDMCrtezi PDMCrtezi @relation("SklopoviPDMCrteza_KoristiSeUIDCrtezaToPDMCrtezi", fields: [KoristiSeUIDCrteza], references: [IDCrtez], onDelete: NoAction, onUpdate: NoAction, map: "FK_SklopoviPDMCrteza_KoristiSeUIDCrteza")
+}
+
+model StatusiCrteza {
+  IDStatusCrteza Int         @id
+  NazivStatusa   String      @db.VarChar(50)
+  PDMCrtezi      PDMCrtezi[]
+}
+
+model StatusiNacrtaPrimopredaje {
+  IDStatusNacrtaPrimopredaje Int                 @id
+  StatusNacrtaPrimopredaje   String              @db.VarChar(100)
+  NacrtPrimopredaje          NacrtPrimopredaje[]
+}
+
+model StatusiPrimopredaje {
+  IDStatusPrimopredaje Int                  @id(map: "PK_StatusiPrimopredaje")
+  NazivStatusa         String               @unique @db.VarChar(50)
+  PrimopredajaCrteza   PrimopredajaCrteza[]
+  tRN                  tRN[]
+}
+
+model T_Planer {
+  ID                 Int       @id(map: "PK_T_Planer") @default(autoincrement())
+  IDFirma            Int       @default(0)
+  KadaDatum          DateTime  @db.Timestamp(6)
+  KadaVreme          DateTime  @db.Timestamp(6)
+  OdKoga             String    @db.VarChar(50)
+  ZaKoga             String    @db.VarChar(50)
+  Subject            String    @default("-") @db.VarChar(255)
+  Prioritet          Int       @default(0)
+  Poruka             String?
+  RepeatCode         String    @default("JEDNOM") @db.VarChar(10)
+  CheckUradjeno      Boolean   @default(false)
+  KadaJeUradjeno     DateTime? @db.Timestamp(6)
+  KoJeUradio         String?   @db.VarChar(50)
+  IDProgToExecute    String?   @db.VarChar(255)
+  AutoExec           Boolean   @default(false)
+  DIVPrviUnos        DateTime  @default(now()) @db.Timestamp(6)
+  DIVPoslednjaIzmena DateTime? @default(now()) @db.Timestamp(6)
+}
+
+model T_PlanerGrupeUsera {
+  ID         Int    @id @default(autoincrement())
+  NazivGrupe String @db.VarChar(50)
+  UserName   String @db.VarChar(50)
+}
+
+model T_Robna_dokumenta {
+  IDDok               Int       @id(map: "PK_T_Robna dokumenta") @default(autoincrement())
+  IDFirma             Int       @default(0)
+  Ulaz                Boolean   @default(false)
+  Broj_naloga         String    @map("Broj naloga") @db.VarChar(20)
+  Vrsta_naloga        String    @map("Vrsta naloga") @db.VarChar(5)
+  Broj_dokumenta      String    @map("Broj dokumenta") @db.VarChar(20)
+  Vrsta_dokumenta     String    @map("Vrsta dokumenta") @db.VarChar(5)
+  Sifra_komitenta     Int       @default(0) @map("Sifra komitenta")
+  Datum_dokumenta     DateTime  @map("Datum dokumenta") @db.Timestamp(6)
+  Datum_knjizenja     DateTime  @map("Datum knjizenja") @db.Timestamp(6)
+  Datum_valute        DateTime  @map("Datum valute") @db.Timestamp(6)
+  Opis                String?   @db.VarChar(30)
+  Nacin_otpreme       String?   @map("Nacin otpreme") @db.VarChar(30)
+  Fco                 String?   @db.VarChar(30)
+  Broj_izjave         String?   @map("Broj izjave") @db.VarChar(20)
+  Datum_izjave        DateTime? @map("Datum izjave") @db.Timestamp(6)
+  Sifra_prodavca      Int?      @default(0) @map("Sifra prodavca")
+  Nacin_placanja      String?   @map("Nacin placanja") @db.VarChar(50)
+  IDTrebZaProizvodnju Int?      @default(0)
+  IDMagacinDOK        Int       @default(1)
+  Memo                String?
+  Kurs                Float?    @default(1)
+  IDRadniNalog        Int?      @default(0)
+  ObrKurs             Float?    @default(1)
+  Carina              Float?    @default(0)
+  Spedicija           Float?    @default(0)
+  OstaliZavTros       Float?    @default(0)
+  DevVredFak          Float?    @default(0)
+  Level               Int?      @default(0) @db.SmallInt
+  IDPredmet           Int?      @default(0)
+  Zakljucano          Boolean?  @default(false)
+  IDDokUF             Int?      @default(0)
+  IDDokIF             Int?      @default(0)
+  Rezervisi           Boolean?  @default(false)
+  CarKurs             Float?    @default(1)
+  IDDokUSL            Int?      @default(0)
+  PovCarOsn           Float?    @default(0)
+  DevValuta           String?   @default("DIN") @db.VarChar(3)
+  IDMestoIsporuke     Int?      @default(0)
+  IDRuta              Int?      @default(0)
+  IDVozac             Int?      @default(0)
+  OJ                  Int?      @default(0)
+  Potpisano           Boolean?  @default(false)
+  OD                  Int?      @default(0)
+  Potpis              String?   @db.VarChar(50)
+  DatumIVreme         DateTime? @default(now()) @db.Timestamp(6)
+  Godina              Int?      @default(dbgenerated("(EXTRACT(year FROM CURRENT_DATE))::integer"))
+  DatIVreme           DateTime? @default(now()) @db.Timestamp(6)
+  IDKontaktOsobe      Int?      @default(0)
+  PrimljenNovac       Decimal?  @default(0) @db.Decimal(19, 4)
+  UsloviPlacanja      String?   @db.VarChar(50)
+  PrimljeniCekovi     Decimal?  @default(0) @db.Decimal(19, 4)
+  PrimljenaKartica    Decimal?  @default(0) @db.Decimal(19, 4)
+  IDKasa              Int?      @default(0)
+  StampanFiskalno     Boolean?  @default(false)
+  PrimljeniVirmani    Decimal?  @default(0) @db.Decimal(19, 4)
+  IDDokExtBaza        Int?      @default(0)
+  DokBarKod           String?   @db.VarChar(30)
+  DokBrojKutija       Int?      @default(1) @db.SmallInt
+
+  @@map("T_Robna dokumenta")
+}
+
+model T_Robne_stavke {
+  IDStavke                        Int      @id(map: "PK_T_Robne stavke") @default(autoincrement())
+  IDDok                           Int      @default(0)
+  Sifra_artikla                   Int      @default(0) @map("Sifra artikla")
+  Kolicina                        Float    @default(0)
+  KG_Kolicina                     Float?   @default(0)
+  Nabavna_cena___neto             Float    @default(0) @map("Nabavna cena - neto")
+  Zavisni_trosak___sopstveni      Float    @default(0) @map("Zavisni trosak - sopstveni")
+  Zavisni_trosak___dobavljac      Float    @default(0) @map("Zavisni trosak - dobavljac")
+  Kalkulativna_VP_cena            Float    @default(0) @map("Kalkulativna VP cena")
+  Kalkulativna_MP_cena            Float    @default(0) @map("Kalkulativna MP cena")
+  Stvarna_VP_cena                 Float    @default(0) @map("Stvarna VP cena")
+  Stvarna_MP_cena                 Float    @default(0) @map("Stvarna MP cena")
+  Taksa                           Float?   @default(0)
+  Obracunat_porez_na_ulazu___roba Boolean  @default(true) @map("Obracunat porez na ulazu - roba")
+  Tarifa___roba___ulaz            String   @default("3") @map("Tarifa - roba - ulaz") @db.VarChar(5)
+  Obracunat_porez_na_usluge       Boolean  @default(true) @map("Obracunat porez na usluge")
+  Tarifa___usluge___izlaz         String   @default("1") @map("Tarifa - usluge - izlaz") @db.VarChar(5)
+  Obracunat__porez_na_robu        Boolean  @default(true) @map("Obracunat  porez na robu")
+  Tarifa___roba___Izlaz           String   @default("3") @map("Tarifa - roba - Izlaz") @db.VarChar(5)
+  RabatProc                       Float    @default(0)
+  KasaProc                        Float    @default(0)
+  Odlozeno                        Int?     @default(0) @db.SmallInt
+  Neoporezivi_deo                 Float?   @default(0) @map("Neoporezivi deo")
+  Akciza                          Float?   @default(0)
+  FiksniPorez                     Float?   @default(0)
+  DevNabCena                      Float?   @default(0)
+  IDMagacin                       Int      @default(1)
+  KNGCena                         Float?   @default(0)
+  CarStopa                        Float?   @default(0)
+  IDPredmetStavka                 Int      @default(0)
+  OpisStavke                      String?  @db.VarChar(50)
+  ID_PO                           Int?     @default(0)
+  PakPoOsnJM                      Float?   @default(1)
+  IDPrepisaneStavke               Int?
+  ProknjizenoIzProfUIF            Boolean? @default(false)
+  IDStavkeTrebovanja              Int?     @default(0)
+
+  @@map("T_Robne stavke")
+}
+
+model UplatniRacuni {
+  IDFirma             Int            @default(0)
+  ID                  Int            @id(map: "aaaaaUplatniRacuni_PK") @default(autoincrement())
+  UplatniRacun        String         @db.VarChar(50)
+  NazivBanke          String?        @db.VarChar(50)
+  Default             Boolean        @default(false)
+  Rbr                 Int            @default(0) @db.SmallInt
+  KodZemlje           String?        @db.VarChar(20)
+  OznakaBanke         String?        @db.VarChar(20)
+  UplatniRacuni       UplatniRacuni  @relation("UplatniRacuniToUplatniRacuni", fields: [ID], references: [ID], onDelete: NoAction, onUpdate: NoAction, map: "FK_UplatniRacuni_UplatniRacuni")
+  other_UplatniRacuni UplatniRacuni? @relation("UplatniRacuniToUplatniRacuni")
+}
+
+model VrednostiZaKombo {
+  Kolona   String @db.VarChar(64)
+  Vrednost String @db.VarChar(255)
+
+  @@id([Kolona, Vrednost], map: "PK_TabelaVrednostiZaKombo")
+}
+
+model Vrsta_naloga {
+  Vrsta_naloga String  @id(map: "aaaaaVrsta naloga_PK") @map("Vrsta naloga") @db.VarChar(5)
+  Opis         String? @db.VarChar(50)
+
+  @@map("Vrsta naloga")
+}
+
+model Vrste_sifara {
+  Vrsta_sifre String      @id(map: "aaaaaVrste sifara_PK") @map("Vrsta sifre") @db.VarChar(10)
+  Opis        String?     @db.VarChar(50)
+  Komitenti   Komitenti[]
+
+  @@map("Vrste sifara")
+}
+
+model Dnevnik {
+  ID   Int      @id(map: "PK__Dnevnik") @default(autoincrement())
+  Opis String
+  DIV  DateTime @default(now()) @db.Timestamp(6)
+
+  @@map("_Dnevnik")
+}
+
+model RegAccess {
+  ID           Int       @id(map: "PK_RegAccess") @default(autoincrement())
+  HDSn         String?   @db.VarChar(100)
+  WinUser      String?   @db.VarChar(100)
+  ComputerName String?   @db.VarChar(100)
+  IPAdress     String?   @db.VarChar(100)
+  Program_Name String?   @db.VarChar(255)
+  CNNString    String?   @db.VarChar(255)
+  Login_Time   DateTime? @default(now()) @db.Timestamp(6)
+
+  @@map("_RegAccess")
+}
+
+model RegApps {
+  DBName          String?        @db.VarChar(100)
+  AppName         String         @id(map: "PK__RegApp") @db.VarChar(100)
+  Disabled        Boolean        @default(false)
+  AplFile         String         @db.VarChar(250)
+  MDWFile         String?        @db.VarChar(250)
+  ClientDir       String?        @db.VarChar(250)
+  DownloadDir     String?        @db.VarChar(1000)
+  PrviUnos        DateTime?      @default(now()) @db.Timestamp(6)
+  PoslednjaIzmena DateTime?      @default(now()) @db.Timestamp(6)
+  RegAppsFiles    RegAppsFiles[]
+  RegUsersApps    RegUsersApps[]
+
+  @@map("_RegApps")
+}
+
+model RegAppsFiles {
+  DBName          String?   @db.VarChar(100)
+  AppName         String    @db.VarChar(100)
+  AppFileName     String    @db.VarChar(255)
+  ClientDir       String    @db.VarChar(255)
+  Install         Boolean   @default(false)
+  Update          Boolean   @default(false)
+  PrviUnos        DateTime? @default(now()) @db.Timestamp(6)
+  PoslednjaIzmena DateTime? @default(now()) @db.Timestamp(6)
+  RegApps         RegApps   @relation(fields: [AppName], references: [AppName], onDelete: NoAction, onUpdate: NoAction, map: "FK__RegAppsFiles__RegApps")
+
+  @@id([AppName, AppFileName], map: "PK__RegAppFile")
+  @@map("_RegAppsFiles")
+}
+
+model RegUsers {
+  DBName          String?        @db.VarChar(100)
+  RegUserID       Int            @id(map: "PK__Users")
+  Disabled        Boolean        @default(false)
+  HDSn            String         @db.VarChar(100)
+  WinUser         String         @db.VarChar(100)
+  ComputerName    String         @db.VarChar(100)
+  IPAdress        String?        @db.VarChar(100)
+  Name            String?        @db.VarChar(100)
+  email           String?        @db.VarChar(100)
+  Telefon         String?        @db.VarChar(100)
+  Opis            String?        @db.VarChar(200)
+  VaziOdDatuma    DateTime?      @db.Date
+  VaziDoDatuma    DateTime?      @db.Date
+  PrviUnos        DateTime?      @default(now()) @db.Timestamp(6)
+  PoslednjaIzmena DateTime?      @default(now()) @db.Timestamp(6)
+  RegUsersApps    RegUsersApps[]
+
+  @@map("_RegUsers")
+}
+
+model RegUsersApps {
+  DBName          String?   @db.VarChar(100)
+  RegUserID       Int
+  AppName         String    @db.VarChar(100)
+  Disabled        Boolean   @default(false)
+  BBUserName      String?   @db.VarChar(50)
+  BBPassword      String?   @db.VarChar(50)
+  BBMacroName     String?   @db.VarChar(100)
+  EXCL            Boolean   @default(false)
+  RUNTIME         Boolean   @default(false)
+  BBExtraStartUp  String?   @db.VarChar(100)
+  BBCMD           String?   @db.VarChar(100)
+  PrviUnos        DateTime? @default(now()) @db.Timestamp(6)
+  PoslednjaIzmena DateTime? @default(now()) @db.Timestamp(6)
+  RegApps         RegApps   @relation(fields: [AppName], references: [AppName], onDelete: NoAction, onUpdate: NoAction, map: "FK__RegUsersApps__RegApps")
+  RegUsers        RegUsers  @relation(fields: [RegUserID], references: [RegUserID], onDelete: NoAction, onUpdate: NoAction, map: "FK__RegUsersApps__RegUsers")
+
+  @@id([RegUserID, AppName], map: "PK__RegUsersApps")
+  @@map("_RegUsersApps")
+}
+
+model Rev {
+  ID       Int      @id(map: "aaaaa_AppRev_PK") @default(autoincrement())
+  APP      String   @default("DB") @db.VarChar(20)
+  Ver      String   @default("-") @db.VarChar(50)
+  VerDatum DateTime @default(dbgenerated("(CURRENT_DATE)::timestamp without time zone")) @db.Timestamp(6)
+  Tema     String   @default("-") @db.VarChar(100)
+  Opis     String?
+  Uradjeno Boolean  @default(true)
+  Firma    String?  @default("-") @db.VarChar(30)
+  DIVUnos  DateTime @default(now()) @db.Timestamp(6)
+  SubRev   Int      @default(0)
+
+  @@map("_Rev")
+}
+
+model tLansiranRN {
+  IDLansiran           Int      @id(map: "PK_tLansiranRN") @default(autoincrement())
+  IDRN                 Int      @default(0)
+  Lansiran             Boolean? @default(false)
+  DatumUnosa           DateTime @db.Timestamp(6)
+  DIVUnos              DateTime @default(now()) @db.Timestamp(6)
+  SifraRadnikaUnos     Int      @default(0)
+  PotpisUnos           String?  @db.VarChar(50)
+  DIVIspravke          DateTime @default(now()) @db.Timestamp(6)
+  SifraRadnikaIspravka Int
+  PotpisIspravka       String?  @db.VarChar(50)
+  tRN                  tRN      @relation(fields: [IDRN], references: [IDRN], onDelete: NoAction, onUpdate: NoAction, map: "tLansiranRN_FK00")
+}
+
+model tLokacijeDelova {
+  IDLokacije       Int       @id(map: "PK_tLokacijeDelova") @default(autoincrement())
+  IDRN             Int       @default(0)
+  IDPredmet        Int       @default(0)
+  IDVrstaKvaliteta Int       @default(0)
+  IDPozicija       Int       @default(0)
+  SifraRadnika     Int       @default(0)
+  Datum            DateTime  @default(now()) @db.Timestamp(6)
+  Kolicina         Int       @default(0)
+  DatumIVremeUnosa DateTime? @default(now()) @db.Timestamp(6)
+  Predmeti         Predmeti  @relation(fields: [IDPredmet], references: [IDPredmet], onDelete: NoAction, onUpdate: NoAction, map: "FK_tLokacijeDelova_Predmeti")
+  tPozicije        tPozicije @relation(fields: [IDPozicija], references: [IDPozicije], onDelete: NoAction, onUpdate: NoAction, map: "FK_tLokacijeDelova_tPozicije")
+  tRadnici         tRadnici  @relation(fields: [SifraRadnika], references: [SifraRadnika], onDelete: NoAction, onUpdate: NoAction, map: "FK_tLokacijeDelova_tRadnici")
+}
+
+model tOperacije {
+  RJgrupaRC                  String           @unique(map: "UQ_tOperacije_RJgrupaRC") @db.VarChar(5)
+  NazivGrupeRC               String           @db.VarChar(50)
+  Napomena                   String?          @db.VarChar(255)
+  IDRadneJedinice            String           @db.VarChar(5)
+  BezPostupka                Boolean?         @default(false)
+  ZnacajneOperacijeZaZavrsen Boolean?         @default(false)
+  KoristiPrioritet           Boolean          @default(false)
+  IDOperacije                Int              @id(map: "PK_tOperacije") @default(autoincrement())
+  PreskocivaOperacija        Boolean          @default(false)
+  tPDM                       tPDM[]
+  tPLP                       tPLP[]
+  tPND                       tPND[]
+  tPristupMasini             tPristupMasini[]
+  tStavkeRN                  tStavkeRN[]
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model tOperacijeFix {
+  ID                         Int      @default(autoincrement())
+  RJgrupaRC                  String   @db.VarChar(5)
+  NazivGrupeRC               String   @db.VarChar(50)
+  Napomena                   String?  @db.VarChar(255)
+  IDRadneJedinice            String   @db.VarChar(5)
+  BezPostupka                Boolean?
+  ZnacajneOperacijeZaZavrsen Boolean?
+  KoristiPrioritet           Boolean
+
+  @@ignore
+}
+
+model tPDM {
+  IDStavkePDM  Int        @id(map: "PK_tPDM") @default(autoincrement())
+  IDRN         Int        @default(0)
+  PozicijaPDM  String     @db.VarChar(50)
+  OperacijaPDM Int?       @default(0)
+  RJgrupaRC    String     @db.VarChar(5)
+  NazivP       String?    @db.VarChar(60)
+  BrojCrtezaP  String?    @db.VarChar(50)
+  Komada       Int?       @default(0)
+  DIVUnosa     DateTime   @default(now()) @db.Timestamp(6)
+  DIVIspravke  DateTime   @default(now()) @db.Timestamp(6)
+  SifraRadnika Int        @default(0)
+  tRadnici     tRadnici   @relation(fields: [SifraRadnika], references: [SifraRadnika], onDelete: NoAction, onUpdate: NoAction, map: "tPDM_FK00")
+  tOperacije   tOperacije @relation(fields: [RJgrupaRC], references: [RJgrupaRC], onDelete: NoAction, onUpdate: NoAction, map: "tPDM_FK01")
+  tRN          tRN        @relation(fields: [IDRN], references: [IDRN], onDelete: NoAction, onUpdate: NoAction, map: "tPDM_FK02")
+}
+
+model tPLP {
+  IDStavkePLP         Int        @id(map: "PK_tPLP") @default(autoincrement())
+  IDRN                Int        @default(0)
+  PozicijaPLP         String     @db.VarChar(50)
+  RJgrupaRC           String     @db.VarChar(5)
+  Materijal           String?    @db.VarChar(50)
+  DimenzijaMaterijala String?    @db.VarChar(50)
+  JM                  String?    @db.VarChar(5)
+  TezinaJed           Float?     @default(0)
+  Komada              Int?       @default(0)
+  BrojPozicije        String?    @db.VarChar(50)
+  DIVUnosa            DateTime   @default(now()) @db.Timestamp(6)
+  DIVIspravke         DateTime   @default(now()) @db.Timestamp(6)
+  SifraRadnika        Int        @default(0)
+  tRadnici            tRadnici   @relation(fields: [SifraRadnika], references: [SifraRadnika], onDelete: NoAction, onUpdate: NoAction, map: "tPLP_FK00")
+  tOperacije          tOperacije @relation(fields: [RJgrupaRC], references: [RJgrupaRC], onDelete: NoAction, onUpdate: NoAction, map: "tPLP_FK01")
+  tRN                 tRN        @relation(fields: [IDRN], references: [IDRN], onDelete: NoAction, onUpdate: NoAction, map: "tPLP_FK02")
+}
+
+model tPND {
+  IDStavkePND  Int        @id(map: "PK_tPND") @default(autoincrement())
+  IDRN         Int        @default(0)
+  PozicijaPND  String     @db.VarChar(50)
+  OperacijaPND Int?       @default(0)
+  RJgrupaRC    String     @db.VarChar(5)
+  NazivDela    String     @db.VarChar(80)
+  Komada       Float?     @default(0)
+  Napomena     String?    @db.VarChar(50)
+  DIVUnosa     DateTime   @default(now()) @db.Timestamp(6)
+  DIVIspravke  DateTime   @default(now()) @db.Timestamp(6)
+  SifraRadnika Int        @default(0)
+  tRadnici     tRadnici   @relation(fields: [SifraRadnika], references: [SifraRadnika], onDelete: NoAction, onUpdate: NoAction, map: "tPND_FK00")
+  tOperacije   tOperacije @relation(fields: [RJgrupaRC], references: [RJgrupaRC], onDelete: NoAction, onUpdate: NoAction, map: "tPND_FK01")
+  tRN          tRN        @relation(fields: [IDRN], references: [IDRN], onDelete: NoAction, onUpdate: NoAction, map: "tPND_FK02")
+}
+
+model tPozicije {
+  IDPozicije      Int               @id(map: "PK_tPozicije")
+  Pozicija        String            @db.VarChar(20)
+  Opis            String?           @db.VarChar(250)
+  tLokacijeDelova tLokacijeDelova[]
+}
+
+model tPristupMasini {
+  IDPristupMasini Int        @id(map: "PK_tPristupMasini") @default(autoincrement())
+  SifraRadnika    Int
+  RJgrupaRC       String     @db.VarChar(5)
+  Napomena        String?    @db.VarChar(250)
+  tOperacije      tOperacije @relation(fields: [RJgrupaRC], references: [RJgrupaRC], onDelete: NoAction, onUpdate: NoAction, map: "tPristupMasini_FK00")
+  tRadnici        tRadnici   @relation(fields: [SifraRadnika], references: [SifraRadnika], onDelete: NoAction, onUpdate: NoAction, map: "tPristupMasini_FK01")
+}
+
+model tRN {
+  IDRN                                            Int                   @id(map: "aaaaatRN_PK") @default(autoincrement())
+  IDPredmet                                       Int                   @default(0)
+  IdentBroj                                       String                @db.VarChar(50)
+  Varijanta                                       Int                   @default(0)
+  BBIDKomitent                                    Int
+  BBNazivPredmeta                                 String?               @db.VarChar(250)
+  BBDatumOtvaranja                                DateTime              @default(dbgenerated("(CURRENT_DATE)::timestamp without time zone")) @db.Timestamp(6)
+  DatumUnosa                                      DateTime              @db.Timestamp(6)
+  Komada                                          Int                   @default(1)
+  BrojCrteza                                      String                @db.VarChar(100)
+  Proizvod                                        String?               @db.VarChar(150)
+  TezinaNeobrDela                                 Float?                @default(0)
+  NazivDela                                       String                @db.VarChar(250)
+  IdentMaterijala                                 Int?                  @default(0)
+  Materijal                                       String                @db.VarChar(250)
+  DimenzijaMaterijala                             String                @db.VarChar(150)
+  JM                                              String                @db.VarChar(50)
+  TezinaObrDela                                   Float?                @default(0)
+  Napomena                                        String?
+  StatusRN                                        Boolean?              @default(false)
+  RokIzrade                                       DateTime?             @db.Timestamp(6)
+  DIVUnosaRN                                      DateTime              @default(now()) @db.Timestamp(6)
+  DIVIspravkeRN                                   DateTime              @default(now()) @db.Timestamp(6)
+  SifraRadnika                                    Int                   @default(0)
+  Zakljucano                                      Boolean?              @default(false)
+  Potpis                                          String?               @db.VarChar(50)
+  PrnTimer                                        Int?                  @default(0)
+  VezaSaBrojemCrteza                              String?               @db.VarChar(100)
+  IDVrstaKvaliteta                                Int                   @default(0)
+  Revizija                                        String                @default("A") @db.VarChar(3)
+  IDPrimopredaje                                  Int                   @default(0)
+  IDCrtez                                         Int                   @default(0)
+  IDStatusPrimopredaje                            Int                   @default(3)
+  SifraRadnikaPrimopredaje                        Int                   @default(0)
+  tLansiranRN                                     tLansiranRN[]
+  tPDM                                            tPDM[]
+  tPLP                                            tPLP[]
+  tPND                                            tPND[]
+  tRadnici_tRN_SifraRadnikaPrimopredajeTotRadnici tRadnici              @relation("tRN_SifraRadnikaPrimopredajeTotRadnici", fields: [SifraRadnikaPrimopredaje], references: [SifraRadnika], onDelete: NoAction, onUpdate: NoAction, map: "FK_tRN_SifraRadnikaPrimopredaje_tRadnici")
+  StatusiPrimopredaje                             StatusiPrimopredaje   @relation(fields: [IDStatusPrimopredaje], references: [IDStatusPrimopredaje], onDelete: NoAction, onUpdate: NoAction, map: "FK_tRN_StatusiPrimopredaje")
+  tRadnici_tRN_SifraRadnikaTotRadnici             tRadnici              @relation("tRN_SifraRadnikaTotRadnici", fields: [SifraRadnika], references: [SifraRadnika], onDelete: NoAction, onUpdate: NoAction, map: "FK_tRN_tRadnici")
+  tVrsteKvalitetaDelova                           tVrsteKvalitetaDelova @relation(fields: [IDVrstaKvaliteta], references: [IDVrstaKvaliteta], onDelete: NoAction, onUpdate: NoAction, map: "FK_tRN_tVrsteKvalitetaDelova")
+  tRNKomponente                                   tRNKomponente[]
+  tRNNDKomponente                                 tRNNDKomponente[]
+  tSaglasanRN                                     tSaglasanRN[]
+  tStavkeRN                                       tStavkeRN[]
+}
+
+model tRNKomponente {
+  IDKomponente      Int     @id @default(autoincrement())
+  IDRN              Int
+  IDRNPodkomponenta Int
+  BrojKomada        Int     @default(1)
+  Napomena          String? @db.VarChar(255)
+  tRN               tRN     @relation(fields: [IDRN], references: [IDRN], onDelete: NoAction, onUpdate: NoAction, map: "FK_tRNKomponente_ParentRN")
+
+  @@unique([IDRN, IDRNPodkomponenta], map: "UQ_tRNKomponente_IDRN_IDPodkomponente")
+}
+
+model tRNNDKomponente {
+  IDNDKomponente Int       @id @default(autoincrement())
+  IDRN           Int
+  SifraArtikla   Int
+  BrojKomada     Int
+  Napomena       String?   @db.VarChar(255)
+  tRN            tRN       @relation(fields: [IDRN], references: [IDRN], onDelete: NoAction, onUpdate: NoAction, map: "FK_tRNNDKomponente_RN")
+  R_Artikli      R_Artikli @relation(fields: [SifraArtikla], references: [Sifra_artikla], onDelete: NoAction, onUpdate: NoAction, map: "FK_tRNNDKomponente_R_Artikli")
+}
+
+model tR_Grupa {
+  ID    Int     @id(map: "PK_tR_Grupa") @default(autoincrement())
+  Grupa String  @db.VarChar(10)
+  Opis  String? @db.VarChar(50)
+}
+
+model tRadneJedinice {
+  ID              Int    @id(map: "PK_tRadneJedinice") @default(autoincrement())
+  IDRadneJedinice String @db.VarChar(5)
+  RadnaJedinica   String @db.VarChar(50)
+}
+
+model tRadnici {
+  SifraRadnika                               Int                 @id(map: "aaaaatRadnici_PK") @default(autoincrement())
+  Radnik                                     String              @db.VarChar(50)
+  ProcenatZaObracun                          Float?              @default(0)
+  ImeIPrezime                                String?             @db.VarChar(50)
+  BrLkRadnika                                String?             @db.VarChar(20)
+  Password                                   String?             @db.VarChar(20)
+  Aktivan                                    Boolean?            @default(true)
+  IDRadneJedinice                            String              @default("0") @db.VarChar(5)
+  IDKartice                                  String              @db.VarChar(50)
+  LogAcc                                     String?             @db.VarChar(50)
+  IDVrsteRadnika                             Int                 @default(0)
+  PotpisSlika                                String?             @db.VarChar(150)
+  DefiniseSaglasan                           Boolean?            @default(false)
+  DefiniseLansiran                           Boolean?            @default(false)
+  MultiNalog                                 Boolean?            @default(false)
+  PasswordRadnika                            String              @db.VarChar(50)
+  NacrtPrimopredaje                          NacrtPrimopredaje[]
+  tLokacijeDelova                            tLokacijeDelova[]
+  tPDM                                       tPDM[]
+  tPLP                                       tPLP[]
+  tPND                                       tPND[]
+  tPristupMasini                             tPristupMasini[]
+  tRN_tRN_SifraRadnikaPrimopredajeTotRadnici tRN[]               @relation("tRN_SifraRadnikaPrimopredajeTotRadnici")
+  tRN_tRN_SifraRadnikaTotRadnici             tRN[]               @relation("tRN_SifraRadnikaTotRadnici")
+  tStavkeRN                                  tStavkeRN[]
+  tTehPostupak                               tTehPostupak[]
+}
+
+model tSaglasanRN {
+  IDSaglasan           Int      @id(map: "PK_tSaglasanRN") @default(autoincrement())
+  IDRN                 Int      @default(0)
+  Saglasan             Boolean? @default(false)
+  DatumUnosa           DateTime @db.Timestamp(6)
+  DIVUnos              DateTime @default(now()) @db.Timestamp(6)
+  SifraRadnikaUnos     Int      @default(0)
+  PotpisUnos           String?  @db.VarChar(50)
+  DIVIspravke          DateTime @default(now()) @db.Timestamp(6)
+  SifraRadnikaIspravka Int
+  PotpisIspravka       String?  @db.VarChar(50)
+  tRN                  tRN      @relation(fields: [IDRN], references: [IDRN], onDelete: NoAction, onUpdate: NoAction, map: "tSaglasanRN_FK00")
+}
+
+model tStavkeRN {
+  IDStavkeRN     Int              @id(map: "PK_tStavkeRN") @default(autoincrement())
+  IDRN           Int              @default(0)
+  Operacija      Int              @default(0)
+  RJgrupaRC      String           @db.VarChar(5)
+  OpisRada       String
+  AlatPribor     String?          @db.VarChar(50)
+  Tpz            Float?           @default(0)
+  Tk             Float?           @default(0)
+  TezinaTO       Float?           @default(0)
+  SifraRadnika   Int              @default(0)
+  DIVUnosa       DateTime         @default(now()) @db.Timestamp(6)
+  DIVIspravke    DateTime         @default(now()) @db.Timestamp(6)
+  Prioritet      Int              @default(100)
+  tRadnici       tRadnici         @relation(fields: [SifraRadnika], references: [SifraRadnika], onDelete: NoAction, onUpdate: NoAction, map: "tStavkeRN_FK00")
+  tOperacije     tOperacije       @relation(fields: [RJgrupaRC], references: [RJgrupaRC], onDelete: NoAction, onUpdate: NoAction, map: "tStavkeRN_FK01")
+  tRN            tRN              @relation(fields: [IDRN], references: [IDRN], onDelete: NoAction, onUpdate: NoAction, map: "tStavkeRN_FK02")
+  tStavkeRNSlike tStavkeRNSlike[]
+}
+
+model tStavkeRNSlike {
+  ID         Int       @id(map: "PK_tStavkeRNSlike") @default(autoincrement())
+  IDStavkeRN Int       @default(0)
+  LinkSlika  String    @db.VarChar(250)
+  ImeFajla   String    @db.VarChar(50)
+  tStavkeRN  tStavkeRN @relation(fields: [IDStavkeRN], references: [IDStavkeRN], onDelete: NoAction, onUpdate: NoAction, map: "FK_tStavkeRNSlike_tStavkeRN")
+}
+
+model tTehPostupak {
+  IDPostupka                Int                         @id(map: "PK_tTehPostupak") @default(autoincrement())
+  SifraRadnika              Int
+  IDPredmet                 Int                         @default(0)
+  IdentBroj                 String                      @db.VarChar(50)
+  Varijanta                 Int                         @default(0)
+  PrnTimer                  Int?                        @default(0)
+  DatumIVremeUnosa          DateTime                    @default(now()) @db.Timestamp(6)
+  Operacija                 Int
+  RJgrupaRC                 String                      @db.VarChar(5)
+  Toznaka                   String                      @db.VarChar(50)
+  Komada                    Int
+  Potpis                    String?                     @db.VarChar(50)
+  SimbolRadnik              Boolean?                    @default(false)
+  SimbolPostupak            Boolean?                    @default(false)
+  SimbolOperacija           Boolean?                    @default(false)
+  DatumIVremeZavrsetka      DateTime?                   @db.Timestamp(6)
+  ZavrsenPostupak           Boolean?                    @default(false)
+  Napomena                  String?
+  IDRN                      Int                         @default(0)
+  IDVrstaKvaliteta          Int                         @default(0)
+  DoradaOperacije           Int?                        @default(0)
+  tRadnici                  tRadnici                    @relation(fields: [SifraRadnika], references: [SifraRadnika], onDelete: NoAction, onUpdate: NoAction, map: "FK_tTehPostupak_tRadnici")
+  tTehPostupakDokumentacija tTehPostupakDokumentacija[]
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model tTehPostupakBackup {
+  IDPostupka           Int       @default(autoincrement())
+  SifraRadnika         Int
+  IDPredmet            Int
+  IdentBroj            String    @db.VarChar(50)
+  Varijanta            Int
+  PrnTimer             Int?
+  DatumIVremeUnosa     DateTime  @db.Timestamp(6)
+  Operacija            Int
+  RJgrupaRC            String    @db.VarChar(5)
+  Toznaka              String    @db.VarChar(50)
+  Komada               Int
+  Potpis               String?   @db.VarChar(50)
+  SimbolRadnik         Boolean?
+  SimbolPostupak       Boolean?
+  SimbolOperacija      Boolean?
+  DatumIVremeZavrsetka DateTime? @db.Timestamp(6)
+  ZavrsenPostupak      Boolean?
+  Napomena             String?
+  IDRN                 Int
+  IDVrstaKvaliteta     Int
+  DoradaOperacije      Int?
+  DatumIspravke        DateTime? @db.Timestamp(6)
+  NapomenaIspravke     String?   @db.VarChar(500)
+
+  @@ignore
+}
+
+model tTehPostupakDokumentacija {
+  ID           Int          @id(map: "PK_tTehPostupakDokumentacija") @default(autoincrement())
+  IDPostupka   Int
+  LinkFajla    String       @db.VarChar(250)
+  ImeFajla     String       @db.VarChar(50)
+  tTehPostupak tTehPostupak @relation(fields: [IDPostupka], references: [IDPostupka], onDelete: NoAction, onUpdate: NoAction, map: "FK_tTehPostupakDokumentacija_tTehPostupak")
+}
+
+model tVrsteKvalitetaDelova {
+  IDVrstaKvaliteta Int    @id(map: "PK_IDVrstaKvaliteta")
+  VrstaKvaliteta   String @db.VarChar(50)
+  tRN              tRN[]
+}
+
+model tVrsteRadnika {
+  IDVrsteRadnika    Int     @id(map: "PK_tVrsteRadnika") @default(autoincrement())
+  VrstaRadnika      String  @db.VarChar(50)
+  DodatnaOvlascenja Boolean @default(false)
+}
+
+model tmp_T_KontroleNaFormi {
+  ImeForme    String  @db.VarChar(50)
+  ImeKontrole String  @db.VarChar(50)
+  TipKontrole String? @db.VarChar(50)
+
+  @@id([ImeForme, ImeKontrole], map: "aaaaatmp_T_KontroleNaFormi_PK")
+}
