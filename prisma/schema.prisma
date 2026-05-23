@@ -1,0 +1,1874 @@
+// ServoSync target schema (PostgreSQL).
+//
+// Naming conventions (see docs/schema-rename-map.md for the full Serbian->English map):
+//   - Prisma models  : PascalCase, singular (Customer, Project, WorkOrder, ...)
+//   - Prisma fields  : camelCase                  (firstName, customerId, ...)
+//   - DB tables      : snake_case, plural        (customers, projects, work_orders, ...)
+//   - DB columns     : snake_case                (first_name, customer_id, ...)
+//   - Constraints    : pk_<table>, fk_<table>_<ref>, uq_<table>_<cols>, idx_<table>_<cols>
+//
+// Legacy Serbian names are not preserved at the database level. The mapping doc
+// (docs/schema-rename-map.md) is the single source of truth for "old -> new".
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// CORE / CONFIG
+// ============================================================================
+
+/// Per-user UI defaults (was: BBDefUser).
+model DefaultUser {
+  username            String              @id(map: "pk_default_users") @map("username") @db.VarChar(20)
+  defaultYear         Int?                @default(dbgenerated("(EXTRACT(year FROM CURRENT_DATE))::integer")) @map("default_year")
+  defaultOrgUnitId    Int?                @default(0) @map("default_org_unit_id")
+  defaultDepartmentId Int?                @default(0) @map("default_department_id")
+  unlockYear          Boolean?            @default(false) @map("unlock_year")
+  unlockOrgUnit       Boolean?            @default(false) @map("unlock_org_unit")
+  unlockDepartment    Boolean?            @default(false) @map("unlock_department")
+  level               Int?                @default(0) @map("level") @db.SmallInt
+  maxLevel            Int?                @default(0) @map("max_level") @db.SmallInt
+  department          Department?         @relation(fields: [defaultDepartmentId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_default_users_departments")
+  organizationalUnit  OrganizationalUnit? @relation(fields: [defaultOrgUnitId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_default_users_organizational_units")
+
+  @@map("default_users")
+}
+
+/// Was: BBOdeljenja
+model Department {
+  id           Int           @id(map: "pk_departments") @default(autoincrement()) @map("id")
+  code         String        @map("code") @db.VarChar(10)
+  description  String        @map("description") @db.VarChar(50)
+  defaultUsers DefaultUser[]
+
+  @@map("departments")
+}
+
+/// Was: BBOrgJedinice
+model OrganizationalUnit {
+  id           Int           @id(map: "pk_organizational_units") @default(autoincrement()) @map("id")
+  code         String        @map("code") @db.VarChar(10)
+  description  String        @map("description") @db.VarChar(50)
+  defaultUsers DefaultUser[]
+
+  @@map("organizational_units")
+}
+
+/// Was: BBPravaPristupa
+model AccessRight {
+  id           Int     @id(map: "pk_access_rights") @default(autoincrement()) @map("id")
+  username     String  @map("username") @db.VarChar(20)
+  formName     String  @map("form_name") @db.VarChar(50)
+  controlName  String  @map("control_name") @db.VarChar(50)
+  visible      Boolean @default(true) @map("visible")
+  locked       Boolean @default(false) @map("locked")
+  enabled      Boolean @default(true) @map("enabled")
+  value        String? @map("value") @db.VarChar(250)
+  recordSource String? @map("record_source")
+  filter       String? @map("filter") @db.VarChar(250)
+
+  @@map("access_rights")
+}
+
+/// Was: CFG_Global (per-company parameters)
+model GlobalConfig {
+  companyId   Int     @default(0) @map("company_id")
+  parameter   String  @map("parameter") @db.VarChar(120)
+  value       String? @map("value")
+  type        String? @map("type") @db.VarChar(20)
+  description String? @map("description") @db.VarChar(100)
+
+  @@id([companyId, parameter], map: "pk_global_config")
+  @@map("global_config")
+}
+
+/// Was: CFG_Sys (system-wide parameters)
+model SystemConfig {
+  parameter   String    @id(map: "pk_system_config") @map("parameter") @db.VarChar(120)
+  value       String?   @map("value") @db.VarChar(50)
+  type        String?   @map("type") @db.VarChar(20)
+  description String?   @map("description") @db.VarChar(255)
+  createdAt   DateTime? @default(now()) @map("created_at") @db.Timestamp(6)
+
+  @@map("system_config")
+}
+
+// ============================================================================
+// PRICING & TAX REFERENCE
+// ============================================================================
+
+/// Was: Cenovnik (price entries by article + document type)
+model PriceListEntry {
+  id                Int      @id(map: "pk_price_list_entries") @default(autoincrement()) @map("id")
+  itemId            Int      @default(0) @map("item_id")
+  documentTypeId    String   @map("document_type_code") @db.VarChar(5)
+  price             Float?   @default(0) @map("price")
+  taxRateCode       String   @map("tax_rate_code") @db.VarChar(5)
+  priceWithoutVat   Decimal? @default(0) @map("price_without_vat") @db.Decimal(19, 4)
+  fee               Float?   @default(0) @map("fee")
+  print             Boolean? @default(true) @map("print")
+  priceWithVat      Decimal? @default(0) @map("price_with_vat") @db.Decimal(19, 4)
+  checkPriceWithVat Boolean? @default(false) @map("check_price_with_vat")
+  isLocked          Boolean? @default(false) @map("is_locked")
+  item              Item     @relation(fields: [itemId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_price_list_entries_items")
+  taxRate           TaxRate  @relation(fields: [taxRateCode], references: [code], onDelete: NoAction, onUpdate: NoAction, map: "fk_price_list_entries_tax_rates")
+
+  @@map("price_list_entries")
+}
+
+/// Was: R_Tarife
+model TaxRate {
+  id               Int              @id(map: "pk_tax_rates") @default(autoincrement()) @map("id")
+  code             String           @unique(map: "uq_tax_rates_code") @map("code") @db.VarChar(5)
+  baseRate         Float?           @default(0) @map("base_rate")
+  railwayRate      Float?           @default(0) @map("railway_rate")
+  cityRate         Float?           @default(0) @map("city_rate")
+  warRate          Float?           @default(0) @map("war_rate")
+  specialRate      Float?           @default(0) @map("special_rate")
+  description      String?          @map("description")
+  validFrom        DateTime?        @map("valid_from") @db.Timestamp(6)
+  validTo          DateTime?        @map("valid_to") @db.Timestamp(6)
+  vatGroup         String?          @default("VISA") @map("vat_group") @db.VarChar(10)
+  priceListEntries PriceListEntry[]
+
+  @@map("tax_rates")
+}
+
+// ============================================================================
+// SYSTEM NOTIFICATIONS
+// ============================================================================
+
+/// Was: Info (message/notification audit)
+model Notification {
+  id         Int       @id(map: "pk_notifications") @default(0) @map("id")
+  sentAt     DateTime? @map("sent_at") @db.Timestamp(6)
+  sentBy     String?   @map("sent_by") @db.VarChar(250)
+  received   Boolean?  @default(false) @map("received")
+  receivedAt DateTime? @map("received_at") @db.Timestamp(6)
+  receivedBy String?   @map("received_by") @db.VarChar(250)
+
+  @@map("notifications")
+}
+
+// ============================================================================
+// CUSTOMERS
+// ============================================================================
+
+/// Was: Komitenti
+model Customer {
+  id                         Int          @id(map: "pk_customers") @default(autoincrement()) @map("id")
+  name                       String       @map("name") @db.VarChar(50)
+  branch                     String?      @map("branch") @db.VarChar(50)
+  city                       String?      @map("city") @db.VarChar(30)
+  address                    String?      @map("address") @db.VarChar(50)
+  postalCode                 String?      @map("postal_code") @db.VarChar(20)
+  bankAccount1               String?      @map("bank_account_1") @db.VarChar(30)
+  bankAccount2               String?      @map("bank_account_2") @db.VarChar(30)
+  bankAccount3               String?      @map("bank_account_3") @db.VarChar(30)
+  phone                      String?      @map("phone") @db.VarChar(20)
+  fax                        String?      @map("fax") @db.VarChar(20)
+  contact                    String?      @map("contact") @db.VarChar(50)
+  note                       String?      @map("note")
+  country                    String?      @map("country") @db.VarChar(30)
+  region                     Int?         @default(0) @map("region")
+  codeTypeCode               String?      @default("KUPDOB") @map("code_type_code") @db.VarChar(10)
+  email                      String?      @map("email") @db.VarChar(50)
+  mobile                     String?      @map("mobile") @db.VarChar(20)
+  birthDate                  DateTime?    @map("birth_date") @db.Timestamp(6)
+  webAddress                 String?      @map("web_address") @db.VarChar(50)
+  salespersonId              Int?         @default(0) @map("salesperson_id")
+  customerDiscount           Float?       @default(0) @map("customer_discount")
+  buyerProtectionCode        String?      @map("buyer_protection_code") @db.VarChar(50)
+  taxId                      String       @map("tax_id") @db.VarChar(20)
+  vatStatus                  Int?         @default(0) @map("vat_status")
+  externalCode               String?      @map("external_code") @db.VarChar(10)
+  paymentTermDays            Int?         @default(0) @map("payment_term_days") @db.SmallInt
+  routeId                    Int?         @default(0) @map("route_id")
+  driverId                   Int?         @default(0) @map("driver_id")
+  paymentAccountId           Int?         @default(0) @map("payment_account_id")
+  invoicePerDeliveryAddress  Boolean?     @default(true) @map("invoice_per_delivery_address")
+  priceListCode              String?      @map("price_list_code") @db.VarChar(5)
+  createdAt                  DateTime?    @map("created_at") @db.Timestamp(6)
+  updatedAt                  DateTime?    @map("updated_at") @db.Timestamp(6)
+  createdBy                  String?      @map("created_by") @db.VarChar(20)
+  updatedBy                  String?      @map("updated_by") @db.VarChar(20)
+  commissionPercent          Float?       @default(0) @map("commission_percent")
+  fictitiousDiscount         Float?       @default(0) @map("fictitious_discount")
+  paymentMethod              String?      @map("payment_method") @db.VarChar(50)
+  signature                  String?      @map("signature") @db.VarChar(50)
+  shortName                  String?      @map("short_name") @db.VarChar(30)
+  recordCreatedAt            DateTime?    @default(now()) @map("record_created_at") @db.Timestamp(6)
+  checkDebt                  Boolean?     @default(false) @map("check_debt")
+  creditLimit                Decimal?     @default(0) @map("credit_limit") @db.Decimal(19, 4)
+  skipTaxIdValidation        Boolean?     @default(false) @map("skip_tax_id_validation")
+  pantheonId                 String?      @map("pantheon_id") @db.VarChar(30)
+  newsletter                 Boolean?     @default(false) @map("newsletter")
+  mailToDifferentAddress     Boolean?     @default(false) @map("mail_to_different_address")
+  gln                        String?      @map("gln") @db.VarChar(30)
+  manualMarkupPercent        Decimal?     @default(0) @map("manual_markup_percent") @db.Decimal(19, 4)
+  balanceNote                String?      @map("balance_note")
+  hideInOverview             Boolean?     @default(false) @map("hide_in_overview")
+  publicSectorId             String?      @map("public_sector_id") @db.VarChar(10)
+  registrationNumber         String?      @map("registration_number") @db.VarChar(20)
+  einvoiceXmlPerItemDiscount Boolean?     @default(false) @map("einvoice_xml_per_item_discount")
+  centralInvoiceRegistry     Boolean?     @default(false) @map("central_invoice_registry")
+  salesperson                Salesperson? @relation(fields: [salespersonId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_customers_salespeople")
+  driver                     Customer?    @relation("CustomerDriver", fields: [driverId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_customers_driver")
+  customersWithThisDriver    Customer[]   @relation("CustomerDriver")
+  codeType                   CodeType?    @relation(fields: [codeTypeCode], references: [code], onDelete: NoAction, onUpdate: NoAction, map: "fk_customers_code_types")
+
+  @@map("customers")
+}
+
+// ============================================================================
+// DRAWINGS (was PDM*)
+// ============================================================================
+
+/// Was: KomponentePDMCrteza
+model DrawingComponent {
+  id               Int     @id(map: "pk_drawing_components") @default(autoincrement()) @map("id")
+  parentDrawingId  Int     @map("parent_drawing_id")
+  childDrawingId   Int     @map("child_drawing_id")
+  requiredQuantity Int     @default(1) @map("required_quantity")
+  childDrawing     Drawing @relation("DrawingComponentChild", fields: [childDrawingId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_drawing_components_child")
+  parentDrawing    Drawing @relation("DrawingComponentParent", fields: [parentDrawingId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_drawing_components_parent")
+
+  @@map("drawing_components")
+}
+
+/// Was: PDMCrtezi (central drawing master)
+model Drawing {
+  id                 Int                 @id(map: "pk_drawings") @default(autoincrement()) @map("id")
+  externalId         String              @map("external_id") @db.VarChar(20)
+  transactionDate    DateTime?           @map("transaction_date") @db.Timestamp(6)
+  designDate         DateTime?           @map("design_date") @db.Timestamp(6)
+  designedBy         String?             @map("designed_by") @db.VarChar(50)
+  approvedDate       DateTime?           @map("approved_date") @db.Timestamp(6)
+  approvedBy         String?             @map("approved_by") @db.VarChar(50)
+  drawingNumber      String              @map("drawing_number") @db.VarChar(20)
+  revision           String              @default("A") @map("revision") @db.VarChar(3)
+  quantity           Int                 @default(1) @map("quantity")
+  catalogNumber      String              @map("catalog_number") @db.VarChar(50)
+  name               String              @map("name") @db.VarChar(255)
+  material           String?             @map("material") @db.VarChar(255)
+  workOrderRef       String?             @map("work_order_ref") @db.VarChar(20)
+  dimensions         String?             @map("dimensions") @db.VarChar(255)
+  marking            String              @map("marking") @db.VarChar(20)
+  weight             Float?              @map("weight")
+  fileName           String?             @map("file_name") @db.VarChar(500)
+  pdmStatus          String              @map("pdm_status") @db.VarChar(20)
+  comment            String?             @map("comment") @db.VarChar(255)
+  whereUsed          String?             @map("where_used") @db.VarChar(255)
+  projectName        String?             @map("project_name") @db.VarChar(255)
+  createdAt          DateTime?           @map("created_at") @db.Timestamp(6)
+  signature          String?             @map("signature") @db.VarChar(50)
+  statusId           Int                 @default(0) @map("status_id")
+  isProcurement      Boolean             @default(false) @map("is_procurement")
+  status             DrawingStatus       @relation(fields: [statusId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_drawings_drawing_statuses")
+  childComponents    DrawingComponent[]  @relation("DrawingComponentChild")
+  parentComponents   DrawingComponent[]  @relation("DrawingComponentParent")
+  handoverDrafts     HandoverDraft[]
+  handoverDraftItems HandoverDraftItem[]
+  drawingPlans       DrawingPlan[]
+  drawingPlanItems   DrawingPlanItem[]
+  drawingHandovers   DrawingHandover[]
+  assembliesAsChild  DrawingAssembly[]   @relation("DrawingAssemblyChild")
+  assembliesAsParent DrawingAssembly[]   @relation("DrawingAssemblyParent")
+
+  @@unique([drawingNumber, revision], map: "uq_drawings_drawing_number_revision")
+  @@map("drawings")
+}
+
+/// Was: PDMXMLImportLog
+model DrawingImportLog {
+  id            Int      @id(map: "pk_drawing_import_log") @default(autoincrement()) @map("id")
+  fileName      String   @map("file_name") @db.VarChar(255)
+  filePath      String   @map("file_path") @db.VarChar(1024)
+  importedAt    DateTime @default(now()) @map("imported_at") @db.Timestamp(6)
+  success       Boolean  @map("success")
+  statusMessage String?  @map("status_message") @db.VarChar(1000)
+  isCritical    Boolean  @default(false) @map("is_critical")
+
+  @@map("drawing_import_log")
+}
+
+/// Was: PDM_PDFCrtezi
+model DrawingPdf {
+  drawingNumber String   @map("drawing_number") @db.VarChar(100)
+  revision      String   @map("revision") @db.VarChar(10)
+  fileName      String?  @map("file_name") @db.VarChar(255)
+  uploadedAt    DateTime @default(now()) @map("uploaded_at") @db.Timestamp(6)
+  sizeKb        Int?     @map("size_kb")
+  uploadedBy    String?  @default(dbgenerated("(SESSION_USER)::text")) @map("uploaded_by") @db.VarChar(50)
+  pdfBinary     Bytes?   @map("pdf_binary")
+
+  @@id([drawingNumber, revision], map: "pk_drawing_pdfs")
+  @@map("drawing_pdfs")
+}
+
+/// Was: PDM_Planiranje
+model DrawingPlan {
+  id                Int               @id(map: "pk_drawing_plans") @default(autoincrement()) @map("id")
+  projectId         Int               @map("project_id")
+  assemblyDrawingId Int?              @map("assembly_drawing_id")
+  quantityToProduce Decimal           @map("quantity_to_produce") @db.Decimal(18, 4)
+  planningStatus    Int               @default(0) @map("planning_status")
+  planningDate      DateTime          @default(now()) @map("planning_date") @db.Timestamp(6)
+  planningWorkerId  Int               @map("planning_worker_id")
+  note              String?           @map("note") @db.VarChar(255)
+  signature         String?           @map("signature") @db.VarChar(30)
+  createdAt         DateTime?         @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt         DateTime?         @default(now()) @map("updated_at") @db.Timestamp(6)
+  isLocked          Boolean?          @map("is_locked")
+  planNumber        String?           @map("plan_number") @db.VarChar(30)
+  planDrawingNumber String?           @map("plan_drawing_number") @db.VarChar(20)
+  planRevision      String?           @map("plan_revision") @db.VarChar(3)
+  assemblyDrawing   Drawing?          @relation(fields: [assemblyDrawingId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_drawing_plans_assembly")
+  items             DrawingPlanItem[]
+
+  @@map("drawing_plans")
+}
+
+/// Was: PDM_PlaniranjeStavke
+model DrawingPlanItem {
+  id                     Int         @id(map: "pk_drawing_plan_items") @default(autoincrement()) @map("id")
+  planId                 Int         @map("plan_id")
+  procurementDrawingId   Int         @map("procurement_drawing_id")
+  itemId                 Int?        @map("item_id")
+  quantityPerAssembly    Decimal     @map("quantity_per_assembly") @db.Decimal(18, 4)
+  totalRequired          Decimal?    @map("total_required") @db.Decimal(18, 4)
+  prevCheckPlanId        Int?        @map("prev_check_plan_id")
+  decisionAction         Int         @default(0) @map("decision_action") @db.SmallInt
+  manualQuantity         Decimal?    @map("manual_quantity") @db.Decimal(18, 4)
+  reserved               Decimal     @default(0) @map("reserved") @db.Decimal(18, 4)
+  toProcure              Decimal     @default(0) @map("to_procure") @db.Decimal(18, 4)
+  inStock                Decimal?    @map("in_stock") @db.Decimal(18, 4)
+  itemName               String?     @map("item_name") @db.VarChar(150)
+  itemCatalogNumber      String?     @map("item_catalog_number") @db.VarChar(20)
+  itemUnit               String?     @map("item_unit") @db.VarChar(5)
+  isManualItem           Boolean     @default(false) @map("is_manual_item")
+  excludeFromProcurement Boolean     @default(false) @map("exclude_from_procurement")
+  procurementDrawing     Drawing     @relation(fields: [procurementDrawingId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_drawing_plan_items_drawing")
+  plan                   DrawingPlan @relation(fields: [planId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_drawing_plan_items_plan")
+
+  @@map("drawing_plan_items")
+}
+
+/// Was: SklopoviPDMCrteza
+model DrawingAssembly {
+  id              Int     @id(map: "pk_drawing_assemblies") @default(autoincrement()) @map("id")
+  childDrawingId  Int     @map("child_drawing_id")
+  parentDrawingId Int     @map("parent_drawing_id")
+  quantity        Int     @default(1) @map("quantity")
+  childDrawing    Drawing @relation("DrawingAssemblyChild", fields: [childDrawingId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_drawing_assemblies_child")
+  parentDrawing   Drawing @relation("DrawingAssemblyParent", fields: [parentDrawingId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_drawing_assemblies_parent")
+
+  @@map("drawing_assemblies")
+}
+
+/// Was: StatusiCrteza
+model DrawingStatus {
+  id       Int       @id @map("id")
+  name     String    @map("name") @db.VarChar(50)
+  drawings Drawing[]
+
+  @@map("drawing_statuses")
+}
+
+// ============================================================================
+// MRP (Material Requirements Planning) — already English-ish, just normalise
+// ============================================================================
+
+/// Was: MRP_Potrebe
+model MrpDemand {
+  id              Int             @id(map: "pk_mrp_demands") @default(autoincrement()) @map("id")
+  projectId       Int             @map("project_id")
+  rootDrawingId   Int?            @map("root_drawing_id")
+  workerId        Int?            @map("worker_id")
+  source          Int             @map("source") @db.SmallInt
+  explosionType   Int?            @map("explosion_type") @db.SmallInt
+  status          Int             @default(0) @map("status") @db.SmallInt
+  demandDate      DateTime        @map("demand_date") @db.Date
+  note            String?         @map("note") @db.VarChar(500)
+  createdAt       DateTime        @default(now()) @map("created_at") @db.Timestamp(6)
+  createdBy       String?         @map("created_by") @db.VarChar(20)
+  updatedAt       DateTime?       @map("updated_at") @db.Timestamp(6)
+  updatedBy       String?         @map("updated_by") @db.VarChar(20)
+  plannedQuantity Decimal         @default(0) @map("planned_quantity") @db.Decimal(19, 6)
+  planId          Int?            @map("plan_id")
+  items           MrpDemandItem[]
+
+  @@map("mrp_demands")
+}
+
+/// Was: MRP_PotrebeStavke
+model MrpDemandItem {
+  id                   Int       @id(map: "pk_mrp_demand_items") @default(autoincrement()) @map("id")
+  demandId             Int       @map("demand_id")
+  sourceDrawingId      Int?      @map("source_drawing_id")
+  procurementDrawingId Int?      @map("procurement_drawing_id")
+  itemId               Int?      @map("item_id")
+  itemCatalogNumber    String    @map("item_catalog_number") @db.VarChar(100)
+  itemName             String    @map("item_name") @db.VarChar(200)
+  itemUnit             String    @map("item_unit") @db.VarChar(10)
+  itemSource           Int       @map("item_source") @db.SmallInt
+  requiredQuantity     Decimal   @map("required_quantity") @db.Decimal(19, 6)
+  demandDate           DateTime  @map("demand_date") @db.Date
+  leadTimeDays         Int?      @map("lead_time_days")
+  procurementDate      DateTime? @map("procurement_date") @db.Date
+  note                 String?   @map("note") @db.VarChar(500)
+  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamp(6)
+  createdBy            String?   @map("created_by") @db.VarChar(20)
+  updatedAt            DateTime? @map("updated_at") @db.Timestamp(6)
+  updatedBy            String?   @map("updated_by") @db.VarChar(20)
+  supplierId           Int?      @map("supplier_id")
+  itemStatus           Int       @default(0) @map("item_status") @db.SmallInt
+  reservedQuantity     Decimal   @default(0) @map("reserved_quantity") @db.Decimal(19, 6)
+  toProcureQuantity    Decimal   @default(0) @map("to_procure_quantity") @db.Decimal(19, 6)
+  demand               MrpDemand @relation(fields: [demandId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_mrp_demand_items_demand")
+
+  @@map("mrp_demand_items")
+}
+
+/// Was: MRP_StanjeArtikala
+model MrpItemStock {
+  itemId        Int       @id @map("item_id")
+  inStock       Decimal   @default(0) @map("in_stock") @db.Decimal(19, 6)
+  reserved      Decimal   @default(0) @map("reserved") @db.Decimal(19, 6)
+  name          String?   @map("name") @db.VarChar(200)
+  catalogNumber String?   @map("catalog_number") @db.VarChar(100)
+  unit          String?   @map("unit") @db.VarChar(20)
+  updatedAt     DateTime? @default(now()) @map("updated_at") @db.Timestamp(6)
+
+  @@map("mrp_item_stock")
+}
+
+/// Was: MRP_StanjeArtikala_TMP
+model MrpItemStockTmp {
+  itemId        Int     @id @map("item_id")
+  inStock       Decimal @default(0) @map("in_stock") @db.Decimal(19, 6)
+  reserved      Decimal @default(0) @map("reserved") @db.Decimal(19, 6)
+  name          String? @map("name") @db.VarChar(200)
+  catalogNumber String? @map("catalog_number") @db.VarChar(100)
+  unit          String? @map("unit") @db.VarChar(20)
+
+  @@map("mrp_item_stock_tmp")
+}
+
+/// Was: MRP_SyncStatus
+model MrpSyncStatus {
+  syncKey      String    @id @map("sync_key") @db.VarChar(50)
+  lastSyncedAt DateTime? @map("last_synced_at") @db.Timestamp(6)
+  lastSyncedBy String?   @map("last_synced_by") @db.VarChar(100)
+  note         String?   @map("note") @db.VarChar(255)
+
+  @@map("mrp_sync_status")
+}
+
+// ============================================================================
+// WAREHOUSES
+// ============================================================================
+
+/// Was: Magacini
+model Warehouse {
+  companyId          Int?     @default(0) @map("company_id")
+  id                 Int      @id(map: "pk_warehouses") @default(autoincrement()) @map("id")
+  name               String   @map("name") @db.VarChar(50)
+  street             String?  @map("street") @db.VarChar(50)
+  city               String?  @map("city") @db.VarChar(30)
+  averagePrices      Boolean? @default(false) @map("average_prices")
+  warehouseType      String?  @map("warehouse_type") @db.VarChar(5)
+  account            String?  @map("account") @db.VarChar(10)
+  managerName        String?  @map("manager_name") @db.VarChar(30)
+  managerIdNumber    String?  @map("manager_id_number") @db.VarChar(20)
+  signatureImagePath String?  @map("signature_image_path") @db.VarChar(250)
+
+  @@map("warehouses")
+}
+
+// ============================================================================
+// HANDOVER (Primopredaja)
+// ============================================================================
+
+/// Was: NacrtPrimopredaje
+model HandoverDraft {
+  id            Int                 @id @default(autoincrement()) @map("id")
+  designerId    Int                 @map("designer_id")
+  draftDate     DateTime            @default(now()) @map("draft_date") @db.Timestamp(6)
+  projectId     Int                 @map("project_id")
+  pieceCount    Int                 @map("piece_count")
+  statusId      Int                 @default(0) @map("status_id")
+  note          String?             @map("note") @db.VarChar(250)
+  signature     String?             @map("signature") @db.VarChar(30)
+  createdAt     DateTime?           @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt     DateTime?           @default(now()) @map("updated_at") @db.Timestamp(6)
+  draftNumber   String              @default("") @map("draft_number") @db.VarChar(30)
+  isLocked      Boolean?            @default(false) @map("is_locked")
+  draftType     Int                 @default(0) @map("draft_type") @db.SmallInt
+  mainDrawingId Int?                @map("main_drawing_id")
+  mainDrawing   Drawing?            @relation(fields: [mainDrawingId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_handover_drafts_main_drawing")
+  project       Project             @relation(fields: [projectId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_handover_drafts_projects")
+  designer      Worker              @relation(fields: [designerId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_handover_drafts_designer")
+  status        HandoverDraftStatus @relation(fields: [statusId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_handover_drafts_status")
+  items         HandoverDraftItem[]
+
+  @@map("handover_drafts")
+}
+
+/// Was: NacrtPrimopredajeStavke
+model HandoverDraftItem {
+  id                       Int           @id @default(autoincrement()) @map("id")
+  draftId                  Int           @map("draft_id")
+  drawingId                Int           @map("drawing_id")
+  note                     String?       @map("note") @db.VarChar(250)
+  signature                String?       @map("signature") @db.VarChar(30)
+  createdAt                DateTime?     @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt                DateTime?     @default(now()) @map("updated_at") @db.Timestamp(6)
+  quantityToProduce        Int           @default(1) @map("quantity_to_produce")
+  mainDrawingId            Int?          @map("main_drawing_id")
+  isMain                   Boolean       @default(false) @map("is_main")
+  preCheckDuplicate        Boolean       @default(false) @map("pre_check_duplicate")
+  preCheckDraftId          Int?          @map("pre_check_draft_id")
+  preCheckWorkOrderId      Int?          @map("pre_check_work_order_id")
+  excludeFromHandover      Boolean       @default(false) @map("exclude_from_handover")
+  decisionAction           Int           @default(0) @map("decision_action") @db.SmallInt
+  decisionDateTime         DateTime?     @map("decision_date_time") @db.Timestamp(0)
+  quantityDefinedInDrawing Int?          @default(0) @map("quantity_defined_in_drawing")
+  mainDrawing              Drawing?      @relation(fields: [mainDrawingId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_handover_draft_items_main_drawing")
+  draft                    HandoverDraft @relation(fields: [draftId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_handover_draft_items_draft")
+
+  @@map("handover_draft_items")
+}
+
+/// Was: StatusiNacrtaPrimopredaje
+model HandoverDraftStatus {
+  id     Int             @id @map("id")
+  name   String          @map("name") @db.VarChar(100)
+  drafts HandoverDraft[]
+
+  @@map("handover_draft_statuses")
+}
+
+/// Was: PrimopredajaCrteza
+model DrawingHandover {
+  id                  Int                  @id @default(autoincrement()) @map("id")
+  drawingId           Int                  @map("drawing_id")
+  handoverDate        DateTime             @map("handover_date") @db.Timestamp(6)
+  handoverWorkerId    Int                  @map("handover_worker_id")
+  statusId            Int                  @default(0) @map("status_id")
+  statusChangedAt     DateTime?            @map("status_changed_at") @db.Timestamp(6)
+  statusChangedById   Int?                 @map("status_changed_by_id")
+  statusChangeComment String?              @map("status_change_comment") @db.VarChar(250)
+  launchedAt          DateTime?            @map("launched_at") @db.Timestamp(6)
+  launchedById        Int?                 @map("launched_by_id")
+  note                String?              @map("note") @db.VarChar(250)
+  signature           String?              @map("signature") @db.VarChar(30)
+  createdAt           DateTime?            @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt           DateTime?            @default(now()) @map("updated_at") @db.Timestamp(6)
+  isLocked            Boolean?             @default(false) @map("is_locked")
+  drawing             Drawing              @relation(fields: [drawingId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_drawing_handovers_drawing")
+  status              HandoverStatus       @relation(fields: [statusId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_drawing_handovers_status")
+  handoverPdfs        DrawingHandoverPdf[]
+
+  @@map("drawing_handovers")
+}
+
+/// Was: PrimopredajaPDFCrteza
+model DrawingHandoverPdf {
+  id         Int             @id @default(autoincrement()) @map("id")
+  handoverId Int             @map("handover_id")
+  fileLink   String          @map("file_link") @db.VarChar(1024)
+  fileName   String          @map("file_name") @db.VarChar(255)
+  handover   DrawingHandover @relation(fields: [handoverId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_drawing_handover_pdfs_handover")
+
+  @@unique([handoverId, fileLink], map: "uq_drawing_handover_pdfs_handover_link")
+  @@map("drawing_handover_pdfs")
+}
+
+/// Was: StatusiPrimopredaje
+model HandoverStatus {
+  id               Int               @id(map: "pk_handover_statuses") @map("id")
+  name             String            @unique @map("name") @db.VarChar(50)
+  drawingHandovers DrawingHandover[]
+  workOrders       WorkOrder[]
+
+  @@map("handover_statuses")
+}
+
+// ============================================================================
+// LABELS
+// ============================================================================
+
+/// Was: Nalepnice
+model Label {
+  id            Int      @id(map: "pk_labels") @default(autoincrement()) @map("id")
+  workOrderId   Int      @map("work_order_id")
+  techProcessId Int      @map("tech_process_id")
+  identNumber   String   @map("ident_number") @db.VarChar(20)
+  barCode       String   @map("bar_code") @db.VarChar(20)
+  projectName   String   @map("project_name") @db.VarChar(50)
+  customer      String   @map("customer") @db.VarChar(255)
+  partName      String   @map("part_name") @db.VarChar(250)
+  drawingNumber String   @map("drawing_number") @db.VarChar(100)
+  material      String   @map("material") @db.VarChar(250)
+  enteredAt     DateTime @map("entered_at") @db.Timestamp(6)
+  quantity      Int      @map("quantity") @db.SmallInt
+  totalQuantity Int?     @map("total_quantity") @db.SmallInt
+  print         Boolean? @default(true) @map("print")
+
+  @@map("labels")
+}
+
+// ============================================================================
+// WORK PARAMETERS
+// ============================================================================
+
+/// Was: Parametri_za_rad
+model WorkParameter {
+  username           String  @id(map: "pk_work_parameters") @map("username") @db.VarChar(50)
+  documentType       String? @map("document_type") @db.VarChar(10)
+  phone              String? @map("phone") @db.VarChar(50)
+  lastInvoiceNumber  Int?    @default(0) @map("last_invoice_number")
+  lastProformaNumber Int?    @default(0) @map("last_proforma_number")
+  invoiceThrough     String? @map("invoice_through") @db.VarChar(10)
+  proformaThrough    String? @map("proforma_through") @db.VarChar(10)
+  invoicePrefix      String? @map("invoice_prefix") @db.VarChar(10)
+  proformaPrefix     String? @map("proforma_prefix") @db.VarChar(10)
+
+  @@map("work_parameters")
+}
+
+// ============================================================================
+// PROJECTS
+// ============================================================================
+
+/// Was: Predmeti
+model Project {
+  id                Int             @id(map: "pk_projects") @default(autoincrement()) @map("id")
+  projectNumber     String          @map("project_number") @db.VarChar(20)
+  description       String?         @map("description") @db.VarChar(50)
+  openedAt          DateTime?       @default(dbgenerated("(CURRENT_DATE)::timestamp without time zone")) @map("opened_at") @db.Timestamp(6)
+  salespersonId     Int             @default(0) @map("salesperson_id")
+  customerId        Int             @map("customer_id")
+  nextAction        String?         @map("next_action") @db.VarChar(50)
+  closedAt          DateTime?       @map("closed_at") @db.Timestamp(6)
+  memo              String?         @map("memo")
+  status            String?         @map("status") @db.VarChar(20)
+  ourRef            String?         @map("our_ref") @db.VarChar(20)
+  ourContact1       String?         @map("our_contact_1") @db.VarChar(50)
+  ourContact2       String?         @map("our_contact_2") @db.VarChar(50)
+  ourPhone1         String?         @map("our_phone_1") @db.VarChar(20)
+  ourPhone2         String?         @map("our_phone_2") @db.VarChar(20)
+  theirRef          String?         @map("their_ref") @db.VarChar(20)
+  theirContact1     String?         @map("their_contact_1") @db.VarChar(50)
+  theirContact2     String?         @map("their_contact_2") @db.VarChar(50)
+  theirPhone1       String?         @map("their_phone_1") @db.VarChar(20)
+  theirPhone2       String?         @map("their_phone_2") @db.VarChar(20)
+  procurementValue  Decimal?        @default(0) @map("procurement_value") @db.Decimal(19, 4)
+  customs           Decimal?        @default(0) @map("customs") @db.Decimal(19, 4)
+  forwarding        Decimal?        @default(0) @map("forwarding") @db.Decimal(19, 4)
+  transport         Decimal?        @default(0) @map("transport") @db.Decimal(19, 4)
+  other             Decimal?        @default(0) @map("other") @db.Decimal(19, 4)
+  foreignSupplierId Int?            @default(0) @map("foreign_supplier_id")
+  workUnitCode      String?         @map("work_unit_code") @db.VarChar(4)
+  currency          String?         @map("currency") @db.VarChar(3)
+  exchangeRate      Decimal?        @default(0) @map("exchange_rate") @db.Decimal(19, 4)
+  workTypeId        Int?            @default(0) @map("work_type_id")
+  projectName       String?         @map("project_name") @db.VarChar(250)
+  deadline          DateTime?       @map("deadline") @db.Timestamp(6)
+  signature         String?         @map("signature") @db.VarChar(50)
+  createdAt         DateTime?       @default(now()) @map("created_at") @db.Timestamp(6)
+  contractNumber    String?         @map("contract_number") @db.VarChar(100)
+  contractDate      DateTime?       @map("contract_date") @db.Timestamp(6)
+  orderNumber       String?         @map("order_number") @db.VarChar(100)
+  orderDate         DateTime?       @map("order_date") @db.Timestamp(6)
+  handoverDrafts    HandoverDraft[]
+  partLocations     PartLocation[]
+
+  @@map("projects")
+}
+
+/// Was: PredmetiVrstaPosla
+model ProjectWorkType {
+  id          Int     @id(map: "pk_project_work_types") @default(autoincrement()) @map("id")
+  code        String? @map("code") @db.VarChar(20)
+  description String? @map("description") @db.VarChar(150)
+
+  @@map("project_work_types")
+}
+
+// ============================================================================
+// SALESPEOPLE
+// ============================================================================
+
+/// Was: Prodavci
+model Salesperson {
+  id                 Int        @id(map: "pk_salespeople") @default(autoincrement()) @map("id")
+  name               String     @map("name") @db.VarChar(50)
+  region             Int?       @default(0) @map("region")
+  commissionPercent  Float?     @default(0) @map("commission_percent")
+  splitInTeam        Boolean?   @default(false) @map("split_in_team")
+  firstName          String?    @map("first_name") @db.VarChar(30)
+  idNumber           String?    @map("id_number") @db.VarChar(20)
+  loginAccount       String?    @map("login_account") @db.VarChar(50)
+  password           String?    @map("password") @db.VarChar(20)
+  active             Boolean?   @default(true) @map("active")
+  nonFiscalWorkOrder Boolean?   @default(false) @map("non_fiscal_work_order")
+  canCancel          Boolean?   @default(false) @map("can_cancel")
+  signatureImage     String?    @map("signature_image") @db.VarChar(250)
+  teamCode           String?    @default("000") @map("team_code") @db.VarChar(10)
+  phone              String?    @map("phone") @db.VarChar(20)
+  email              String?    @map("email") @db.VarChar(50)
+  customers          Customer[]
+
+  @@map("salespeople")
+}
+
+// ============================================================================
+// ITEMS / GROUPS / SUBGROUPS / ORIGINS / DOC TYPES
+// ============================================================================
+
+/// Was: R_Artikli
+model Item {
+  id                      Int                      @id(map: "pk_items") @default(autoincrement()) @map("id")
+  catalogNumber           String                   @default("-") @map("catalog_number") @db.VarChar(20)
+  barCode                 String?                  @map("bar_code") @db.VarChar(50)
+  plu                     Int?                     @default(0) @map("plu")
+  externalCode            String?                  @map("external_code") @db.VarChar(20)
+  name                    String                   @map("name") @db.VarChar(50)
+  unit                    String?                  @map("unit") @db.VarChar(5)
+  packaging               String?                  @map("packaging") @db.VarChar(10)
+  foreignUnit             String?                  @map("foreign_unit") @db.VarChar(5)
+  box                     Float?                   @default(0) @map("box")
+  transportPackaging      Float?                   @default(0) @map("transport_packaging")
+  originCode              String                   @default("0") @map("origin_code") @db.VarChar(5)
+  groupCode               String                   @map("group_code") @db.VarChar(10)
+  subgroupCode            String                   @default("0") @map("subgroup_code") @db.VarChar(10)
+  goodsTaxRateCode        String                   @default("3") @map("goods_tax_rate_code") @db.VarChar(5)
+  serviceTaxRateCode      String                   @default("1") @map("service_tax_rate_code") @db.VarChar(5)
+  alwaysTaxGoods          Boolean?                 @default(true) @map("always_tax_goods")
+  alwaysTaxServices       Boolean?                 @default(false) @map("always_tax_services")
+  wholesalePrice          Float?                   @default(0) @map("wholesale_price")
+  retailPrice             Float?                   @default(0) @map("retail_price")
+  fxPurchasePrice         Float?                   @default(0) @map("fx_purchase_price")
+  fxSalePrice             Float?                   @default(0) @map("fx_sale_price")
+  minQuantity             Float?                   @default(0) @map("min_quantity")
+  itemFee                 Float?                   @default(0) @map("item_fee")
+  paymentTermDays         Int?                     @default(0) @map("payment_term_days") @db.SmallInt
+  nonTaxablePart          Float?                   @default(0) @map("non_taxable_part")
+  maxDiscountPercent      Float?                   @default(100) @map("max_discount_percent")
+  memo                    String?                  @map("memo")
+  accountingCode          String?                  @default("0") @map("accounting_code") @db.VarChar(10)
+  itemExcise              Float?                   @default(0) @map("item_excise")
+  accountingCode2         String?                  @default("0") @map("accounting_code_2") @db.VarChar(10)
+  finalProcessingCost     Float?                   @default(0) @map("final_processing_cost")
+  customsRate             Float?                   @default(0) @map("customs_rate")
+  rasterId                Int?                     @default(0) @map("raster_id")
+  customsTariff           String?                  @map("customs_tariff") @db.VarChar(20)
+  originCountry           String?                  @map("origin_country") @db.VarChar(20)
+  shelf                   String?                  @map("shelf") @db.VarChar(10)
+  foreignName             String?                  @map("foreign_name") @db.VarChar(50)
+  supplierId              Int?                     @default(1) @map("supplier_id")
+  webDescription          String?                  @map("web_description") @db.VarChar(255)
+  itemDescription         String?                  @map("item_description") @db.VarChar(50)
+  weight                  Float?                   @default(0) @map("weight")
+  pdfLink                 String?                  @map("pdf_link") @db.VarChar(255)
+  toDelete                Boolean?                 @default(false) @map("to_delete")
+  active                  Boolean?                 @default(true) @map("active")
+  priceToWritePricelist   Float?                   @default(0) @map("price_to_write_pricelist")
+  issuePlaceId            Int?                     @default(0) @map("issue_place_id")
+  manufacturer            String?                  @map("manufacturer") @db.VarChar(50)
+  hps                     String?                  @default("O") @map("hps") @db.VarChar(50)
+  signature               String?                  @map("signature") @db.VarChar(50)
+  createdAt               DateTime?                @default(now()) @map("created_at") @db.Timestamp(6)
+  quantityInPackage       Float?                   @default(1) @map("quantity_in_package")
+  manualMarkupPercent     Decimal?                 @default(0) @map("manual_markup_percent") @db.Decimal(19, 4)
+  baseUnit                String?                  @map("base_unit") @db.VarChar(5)
+  symbolImageLink         String?                  @map("symbol_image_link") @db.VarChar(250)
+  retailLossPercent       Float?                   @default(0) @map("retail_loss_percent")
+  wordLocation            String?                  @map("word_location") @db.VarChar(250)
+  wholesaleLossPercent    Float?                   @default(0) @map("wholesale_loss_percent")
+  notStockTracked         Boolean?                 @default(false) @map("not_stock_tracked")
+  weightKg                Float?                   @default(0) @map("weight_kg")
+  volume                  Float?                   @default(0) @map("volume")
+  area                    Float?                   @default(0) @map("area")
+  sortOrder               Int?                     @default(0) @map("sort_order")
+  promotionDiscount       Float?                   @default(0) @map("promotion_discount")
+  note2                   String?                  @map("note_2") @db.VarChar(255)
+  qualityTypeId           Int?                     @default(0) @map("quality_type_id")
+  thickness               Float?                   @default(0) @map("thickness")
+  externalItemId          Int                      @default(0) @map("external_item_id")
+  priceListEntries        PriceListEntry[]
+  workOrderItemComponents WorkOrderItemComponent[]
+
+  @@map("items")
+}
+
+/// Was: R_Grupa
+model ItemGroup {
+  code        String @id(map: "pk_item_groups") @map("code") @db.VarChar(10)
+  description String @map("description") @db.VarChar(50)
+
+  @@map("item_groups")
+}
+
+/// Was: R_Podgrupa
+model ItemSubgroup {
+  code        String  @id(map: "pk_item_subgroups") @map("code") @db.VarChar(10)
+  description String  @map("description") @db.VarChar(50)
+  parentGroup String? @default("0") @map("parent_group") @db.VarChar(10)
+
+  @@map("item_subgroups")
+}
+
+/// Was: R_Poreklo
+model ItemOrigin {
+  code            String   @id(map: "pk_item_origins") @map("code") @db.VarChar(5)
+  description     String   @map("description") @db.VarChar(50)
+  subgroupCode    String?  @default("0") @map("subgroup_code") @db.VarChar(10)
+  discountPercent Decimal? @default(0) @map("discount_percent") @db.Decimal(19, 4)
+
+  @@map("item_origins")
+}
+
+/// Was: R_Vrste_dokumenata
+model DocumentType {
+  id                   Int      @id(map: "pk_document_types") @default(autoincrement()) @map("id")
+  code                 String   @map("code") @db.VarChar(5)
+  description          String   @map("description") @db.VarChar(50)
+  isInbound            Boolean  @default(false) @map("is_inbound")
+  analyticalAccount    String?  @map("analytical_account") @db.VarChar(10)
+  postAnalytical       Boolean? @default(false) @map("post_analytical")
+  postingTemplate      Int?     @default(0) @map("posting_template")
+  postSynthetic        Boolean? @default(false) @map("post_synthetic")
+  saleWithPpp          Boolean? @default(false) @map("sale_with_ppp")
+  saleWithPpu          Boolean? @default(true) @map("sale_with_ppu")
+  postRetailCharge     Boolean? @default(false) @map("post_retail_charge")
+  postRetailDischarge  Boolean? @default(false) @map("post_retail_discharge")
+  reportText           String?  @map("report_text") @db.VarChar(50)
+  postInVatLedger      Boolean? @default(true) @map("post_in_vat_ledger")
+  kepuDefaultCharge    String?  @map("kepu_default_charge") @db.VarChar(30)
+  kepuDefaultDischarge String?  @map("kepu_default_discharge") @db.VarChar(30)
+  isInternalDocument   Boolean? @default(false) @map("is_internal_document")
+  numberingStart       Int?     @default(0) @map("numbering_start")
+  isFiscal             Boolean? @default(false) @map("is_fiscal")
+  documentNumberPrefix String?  @map("document_number_prefix") @db.VarChar(5)
+  defaultWarehouseId   Int?     @default(0) @map("default_warehouse_id")
+  isDepartmental       Boolean? @default(false) @map("is_departmental")
+  isFr                 Boolean? @default(false) @map("is_fr")
+  affectsStock         Boolean? @default(true) @map("affects_stock")
+
+  @@map("document_types")
+}
+
+// ============================================================================
+// COMPANIES (was: Radni fajlovi)
+// ============================================================================
+
+/// Was: Radni_fajlovi (per-company configuration / company master)
+model Company {
+  id                        Int      @id(map: "pk_companies") @map("id")
+  companyName               String   @map("company_name") @db.VarChar(150)
+  databaseName              String?  @map("database_name") @db.VarChar(255)
+  logo                      Bytes?   @map("logo")
+  city                      String?  @map("city") @db.VarChar(50)
+  address                   String?  @map("address") @db.VarChar(50)
+  phone                     String?  @map("phone") @db.VarChar(50)
+  fax                       String?  @map("fax") @db.VarChar(50)
+  bankAccount               String?  @map("bank_account") @db.VarChar(50)
+  businessActivity          String?  @map("business_activity") @db.VarChar(255)
+  businessActivityCode      String?  @map("business_activity_code") @db.VarChar(50)
+  municipality              String?  @map("municipality") @db.VarChar(50)
+  note                      String?  @map("note")
+  variant                   String?  @default("DEFAULT") @map("variant") @db.VarChar(50)
+  email                     String?  @map("email") @db.VarChar(30)
+  registrationNumber        String?  @map("registration_number") @db.VarChar(50)
+  registryNumber            String?  @map("registry_number") @db.VarChar(50)
+  subAccounts               String?  @map("sub_accounts") @db.VarChar(100)
+  posStoreId                Int?     @default(0) @map("pos_store_id")
+  posBuyerId                Int?     @default(0) @map("pos_buyer_id")
+  posDocumentTypeCode       String?  @default("MP1") @map("pos_document_type_code") @db.VarChar(5)
+  posWorkOrderId            Int?     @default(0) @map("pos_work_order_id")
+  inboundDecimalPlaces      Int?     @default(2) @map("inbound_decimal_places") @db.SmallInt
+  outboundDecimalPlaces     Int?     @default(2) @map("outbound_decimal_places") @db.SmallInt
+  splitExchangeRate         Boolean? @default(false) @map("split_exchange_rate")
+  checkWarehouseStock       Boolean? @default(true) @map("check_warehouse_stock")
+  autoSplitRevenue          Boolean? @default(false) @map("auto_split_revenue")
+  inboundIsWholesale        Boolean? @default(false) @map("inbound_is_wholesale")
+  kepuAtPurchasePrice       Boolean? @default(false) @map("kepu_at_purchase_price")
+  retailByExchangeRate      Boolean? @default(false) @map("retail_by_exchange_rate")
+  kepuByExchangeRate        Boolean? @default(false) @map("kepu_by_exchange_rate")
+  gkByExchangeRate          Boolean? @default(false) @map("gk_by_exchange_rate")
+  customerAccount           String?  @default("2040") @map("customer_account") @db.VarChar(20)
+  supplierAccount           String?  @default("4350") @map("supplier_account") @db.VarChar(20)
+  postRetailDifferences     Boolean? @default(true) @map("post_retail_differences")
+  postKepuDifferences       Boolean? @default(true) @map("post_kepu_differences")
+  postRetailKepuDifferences Boolean? @default(true) @map("post_retail_kepu_differences")
+  gkByExchangeRateReverse   Boolean? @default(false) @map("gk_by_exchange_rate_reverse")
+  autoLockGoods             Boolean? @default(false) @map("auto_lock_goods")
+  autoLockGk                Boolean? @default(false) @map("auto_lock_gk")
+  olderThanDaysGoods        Int?     @default(7) @map("older_than_days_goods")
+  olderThanDaysGk           Int?     @default(7) @map("older_than_days_gk")
+  notificationCheckInterval Int?     @default(0) @map("notification_check_interval")
+  decodeBarcode             Boolean? @default(false) @map("decode_barcode")
+  taxId                     String?  @map("tax_id") @db.VarChar(20)
+  warranty                  String?  @map("warranty")
+  kepuAtCostAccountingPrice Boolean? @default(false) @map("kepu_at_cost_accounting_price")
+  pepdv                     String?  @map("pepdv") @db.VarChar(20)
+  owner                     String?  @map("owner") @db.VarChar(50)
+  taxCode                   String?  @map("tax_code") @db.VarChar(50)
+  galeb                     Boolean? @default(false) @map("galeb")
+  raster                    Boolean? @default(false) @map("raster")
+  pgDatabaseName            String?  @map("pg_database_name") @db.VarChar(255)
+  isGalebServer             Boolean? @default(false) @map("is_galeb_server")
+  isGalebClient             Boolean? @default(false) @map("is_galeb_client")
+  fiscalPrinterName         String?  @default("GALEB01") @map("fiscal_printer_name") @db.VarChar(50)
+  invoiceIssuingPlace       String?  @default("Beograd") @map("invoice_issuing_place") @db.VarChar(50)
+  posCashRegisterId         Int?     @default(0) @map("pos_cash_register_id")
+  webAddress                String?  @map("web_address") @db.VarChar(50)
+  aprText                   String?  @map("apr_text") @db.VarChar(250)
+  sendBosson                Boolean? @default(false) @map("send_bosson")
+  posPriceListCode          String?  @default("MP1") @map("pos_price_list_code") @db.VarChar(5)
+  wholesalePriceListCode    String?  @default("STDCN") @map("wholesale_price_list_code") @db.VarChar(5)
+  footerText                String?  @map("footer_text") @db.VarChar(255)
+  logoFooter                Bytes?   @map("logo_footer")
+  reportHeader              String   @default("Memorandum_Header_STD") @map("report_header") @db.VarChar(64)
+  reportFooter              String   @default("Memorandum_Footer_STD") @map("report_footer") @db.VarChar(64)
+  logoFontSize              Int      @default(24) @map("logo_font_size")
+  vatStatus                 Int      @default(0) @map("vat_status")
+  publicSectorId            String?  @map("public_sector_id") @db.VarChar(20)
+  einvoiceApiKey            String?  @map("einvoice_api_key") @db.VarChar(50)
+  unofficialCompanyName     String?  @map("unofficial_company_name") @db.VarChar(150)
+
+  @@map("companies")
+}
+
+// ============================================================================
+// GOODS MIRROR (for PDM/MRP sync)
+// ============================================================================
+
+/// Was: RobnaDokumentaMirror
+model GoodsDocumentMirror {
+  id           Int                       @id @map("id")
+  documentType String                    @map("document_type") @db.VarChar(5)
+  documentDate DateTime                  @map("document_date") @db.Date
+  items        GoodsDocumentItemMirror[]
+
+  @@map("goods_documents_mirror")
+}
+
+/// Was: RobneStavkeMirror
+model GoodsDocumentItemMirror {
+  id            Int                 @id @map("id")
+  documentId    Int                 @map("document_id")
+  itemId        Int                 @map("item_id")
+  catalogNumber String?             @map("catalog_number") @db.VarChar(100)
+  warehouseId   Int                 @map("warehouse_id")
+  quantityIn    Decimal             @default(0) @map("quantity_in") @db.Decimal(18, 4)
+  quantityOut   Decimal             @default(0) @map("quantity_out") @db.Decimal(18, 4)
+  updatedAt     DateTime            @default(now()) @map("updated_at") @db.Timestamp(6)
+  document      GoodsDocumentMirror @relation(fields: [documentId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_goods_document_items_mirror_document")
+
+  @@map("goods_document_items_mirror")
+}
+
+// ============================================================================
+// PLANNER
+// ============================================================================
+
+/// Was: T_Planer
+model PlannerEntry {
+  id               Int       @id(map: "pk_planner_entries") @default(autoincrement()) @map("id")
+  companyId        Int       @default(0) @map("company_id")
+  scheduledDate    DateTime  @map("scheduled_date") @db.Timestamp(6)
+  scheduledTime    DateTime  @map("scheduled_time") @db.Timestamp(6)
+  fromUser         String    @map("from_user") @db.VarChar(50)
+  toUser           String    @map("to_user") @db.VarChar(50)
+  subject          String    @default("-") @map("subject") @db.VarChar(255)
+  priority         Int       @default(0) @map("priority")
+  message          String?   @map("message")
+  repeatCode       String    @default("JEDNOM") @map("repeat_code") @db.VarChar(10)
+  isDone           Boolean   @default(false) @map("is_done")
+  doneAt           DateTime? @map("done_at") @db.Timestamp(6)
+  doneBy           String?   @map("done_by") @db.VarChar(50)
+  programToExecute String?   @map("program_to_execute") @db.VarChar(255)
+  autoExec         Boolean   @default(false) @map("auto_exec")
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt        DateTime? @default(now()) @map("updated_at") @db.Timestamp(6)
+
+  @@map("planner_entries")
+}
+
+/// Was: T_PlanerGrupeUsera
+model PlannerUserGroup {
+  id        Int    @id @default(autoincrement()) @map("id")
+  groupName String @map("group_name") @db.VarChar(50)
+  username  String @map("username") @db.VarChar(50)
+
+  @@map("planner_user_groups")
+}
+
+// ============================================================================
+// GOODS DOCUMENTS (production / accounting feed)
+// ============================================================================
+
+/// Was: T_Robna_dokumenta
+model GoodsDocument {
+  id                     Int       @id(map: "pk_goods_documents") @default(autoincrement()) @map("id")
+  companyId              Int       @default(0) @map("company_id")
+  isInbound              Boolean   @default(false) @map("is_inbound")
+  orderNumber            String    @map("order_number") @db.VarChar(20)
+  orderType              String    @map("order_type") @db.VarChar(5)
+  documentNumber         String    @map("document_number") @db.VarChar(20)
+  documentType           String    @map("document_type") @db.VarChar(5)
+  customerId             Int       @default(0) @map("customer_id")
+  documentDate           DateTime  @map("document_date") @db.Timestamp(6)
+  postingDate            DateTime  @map("posting_date") @db.Timestamp(6)
+  dueDate                DateTime  @map("due_date") @db.Timestamp(6)
+  description            String?   @map("description") @db.VarChar(30)
+  shipmentMethod         String?   @map("shipment_method") @db.VarChar(30)
+  fco                    String?   @map("fco") @db.VarChar(30)
+  statementNumber        String?   @map("statement_number") @db.VarChar(20)
+  statementDate          DateTime? @map("statement_date") @db.Timestamp(6)
+  salespersonId          Int?      @default(0) @map("salesperson_id")
+  paymentMethod          String?   @map("payment_method") @db.VarChar(50)
+  productionRequestId    Int?      @default(0) @map("production_request_id")
+  warehouseId            Int       @default(1) @map("warehouse_id")
+  memo                   String?   @map("memo")
+  exchangeRate           Float?    @default(1) @map("exchange_rate")
+  workOrderId            Int?      @default(0) @map("work_order_id")
+  accountingExchangeRate Float?    @default(1) @map("accounting_exchange_rate")
+  customs                Float?    @default(0) @map("customs")
+  forwarding             Float?    @default(0) @map("forwarding")
+  otherDependentCosts    Float?    @default(0) @map("other_dependent_costs")
+  fxInvoiceValue         Float?    @default(0) @map("fx_invoice_value")
+  level                  Int?      @default(0) @map("level") @db.SmallInt
+  projectId              Int?      @default(0) @map("project_id")
+  isLocked               Boolean?  @default(false) @map("is_locked")
+  linkedInboundDocId     Int?      @default(0) @map("linked_inbound_doc_id")
+  linkedInvoiceDocId     Int?      @default(0) @map("linked_invoice_doc_id")
+  reserveStock           Boolean?  @default(false) @map("reserve_stock")
+  customsExchangeRate    Float?    @default(1) @map("customs_exchange_rate")
+  linkedServiceDocId     Int?      @default(0) @map("linked_service_doc_id")
+  customsRefundBase      Float?    @default(0) @map("customs_refund_base")
+  currency               String?   @default("DIN") @map("currency") @db.VarChar(3)
+  deliveryPlaceId        Int?      @default(0) @map("delivery_place_id")
+  routeId                Int?      @default(0) @map("route_id")
+  driverId               Int?      @default(0) @map("driver_id")
+  orgUnitId              Int?      @default(0) @map("org_unit_id")
+  isSigned               Boolean?  @default(false) @map("is_signed")
+  departmentId           Int?      @default(0) @map("department_id")
+  signature              String?   @map("signature") @db.VarChar(50)
+  createdAt              DateTime? @default(now()) @map("created_at") @db.Timestamp(6)
+  year                   Int?      @default(dbgenerated("(EXTRACT(year FROM CURRENT_DATE))::integer")) @map("year")
+  registeredAt           DateTime? @default(now()) @map("registered_at") @db.Timestamp(6)
+  contactPersonId        Int?      @default(0) @map("contact_person_id")
+  cashReceived           Decimal?  @default(0) @map("cash_received") @db.Decimal(19, 4)
+  paymentTerms           String?   @map("payment_terms") @db.VarChar(50)
+  checksReceived         Decimal?  @default(0) @map("checks_received") @db.Decimal(19, 4)
+  cardReceived           Decimal?  @default(0) @map("card_received") @db.Decimal(19, 4)
+  cashRegisterId         Int?      @default(0) @map("cash_register_id")
+  fiscalPrinted          Boolean?  @default(false) @map("fiscal_printed")
+  bankTransferReceived   Decimal?  @default(0) @map("bank_transfer_received") @db.Decimal(19, 4)
+  externalDbDocId        Int?      @default(0) @map("external_db_doc_id")
+  documentBarCode        String?   @map("document_bar_code") @db.VarChar(30)
+  documentBoxCount       Int?      @default(1) @map("document_box_count") @db.SmallInt
+
+  @@map("goods_documents")
+}
+
+/// Was: T_Robne_stavke
+model GoodsDocumentItem {
+  id                          Int      @id(map: "pk_goods_document_items") @default(autoincrement()) @map("id")
+  documentId                  Int      @default(0) @map("document_id")
+  itemId                      Int      @default(0) @map("item_id")
+  quantity                    Float    @default(0) @map("quantity")
+  kgQuantity                  Float?   @default(0) @map("kg_quantity")
+  purchasePriceNet            Float    @default(0) @map("purchase_price_net")
+  dependentCostOwn            Float    @default(0) @map("dependent_cost_own")
+  dependentCostSupplier       Float    @default(0) @map("dependent_cost_supplier")
+  calculatedWholesalePrice    Float    @default(0) @map("calculated_wholesale_price")
+  calculatedRetailPrice       Float    @default(0) @map("calculated_retail_price")
+  actualWholesalePrice        Float    @default(0) @map("actual_wholesale_price")
+  actualRetailPrice           Float    @default(0) @map("actual_retail_price")
+  fee                         Float?   @default(0) @map("fee")
+  inboundTaxCalculated        Boolean  @default(true) @map("inbound_tax_calculated")
+  inboundGoodsTaxRate         String   @default("3") @map("inbound_goods_tax_rate") @db.VarChar(5)
+  servicesTaxCalculated       Boolean  @default(true) @map("services_tax_calculated")
+  outboundServicesTaxRate     String   @default("1") @map("outbound_services_tax_rate") @db.VarChar(5)
+  goodsTaxCalculated          Boolean  @default(true) @map("goods_tax_calculated")
+  outboundGoodsTaxRate        String   @default("3") @map("outbound_goods_tax_rate") @db.VarChar(5)
+  discountPercent             Float    @default(0) @map("discount_percent")
+  cashDiscountPercent         Float    @default(0) @map("cash_discount_percent")
+  paymentTermDays             Int?     @default(0) @map("payment_term_days") @db.SmallInt
+  nonTaxablePart              Float?   @default(0) @map("non_taxable_part")
+  excise                      Float?   @default(0) @map("excise")
+  fixedTax                    Float?   @default(0) @map("fixed_tax")
+  fxPurchasePrice             Float?   @default(0) @map("fx_purchase_price")
+  warehouseId                 Int      @default(1) @map("warehouse_id")
+  accountingPrice             Float?   @default(0) @map("accounting_price")
+  customsRate                 Float?   @default(0) @map("customs_rate")
+  projectItemId               Int      @default(0) @map("project_item_id")
+  itemDescription             String?  @map("item_description") @db.VarChar(50)
+  purchaseOrderId             Int?     @default(0) @map("purchase_order_id")
+  packagePerBaseUnit          Float?   @default(1) @map("package_per_base_unit")
+  copiedFromItemId            Int?     @map("copied_from_item_id")
+  postedFromProformaToInvoice Boolean? @default(false) @map("posted_from_proforma_to_invoice")
+  requisitionItemId           Int?     @default(0) @map("requisition_item_id")
+
+  @@map("goods_document_items")
+}
+
+// ============================================================================
+// PAYMENT ACCOUNTS
+// ============================================================================
+
+/// Was: UplatniRacuni
+model PaymentAccount {
+  companyId     Int             @default(0) @map("company_id")
+  id            Int             @id(map: "pk_payment_accounts") @default(autoincrement()) @map("id")
+  accountNumber String          @map("account_number") @db.VarChar(50)
+  bankName      String?         @map("bank_name") @db.VarChar(50)
+  isDefault     Boolean         @default(false) @map("is_default")
+  sortOrder     Int             @default(0) @map("sort_order") @db.SmallInt
+  countryCode   String?         @map("country_code") @db.VarChar(20)
+  bankCode      String?         @map("bank_code") @db.VarChar(20)
+  self          PaymentAccount  @relation("PaymentAccountSelf", fields: [id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_payment_accounts_self")
+  selfReverse   PaymentAccount? @relation("PaymentAccountSelf")
+
+  @@map("payment_accounts")
+}
+
+// ============================================================================
+// REFERENCE / LOOKUP TABLES
+// ============================================================================
+
+/// Was: VrednostiZaKombo
+model ComboValue {
+  column String @map("column_name") @db.VarChar(64)
+  value  String @map("value") @db.VarChar(255)
+
+  @@id([column, value], map: "pk_combo_values")
+  @@map("combo_values")
+}
+
+/// Was: Vrsta_naloga
+model OrderType {
+  code        String  @id(map: "pk_order_types") @map("code") @db.VarChar(5)
+  description String? @map("description") @db.VarChar(50)
+
+  @@map("order_types")
+}
+
+/// Was: Vrste_sifara
+model CodeType {
+  code        String     @id(map: "pk_code_types") @map("code") @db.VarChar(10)
+  description String?    @map("description") @db.VarChar(50)
+  customers   Customer[]
+
+  @@map("code_types")
+}
+
+/// Was: Dnevnik (system event journal)
+model Journal {
+  id        Int      @id(map: "pk_journal") @default(autoincrement()) @map("id")
+  message   String   @map("message")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+
+  @@map("journal")
+}
+
+// ============================================================================
+// APP REGISTRY (was: _RegApps / _RegUsers / ...)
+// ============================================================================
+
+/// Was: RegAccess (was DB table _RegAccess)
+model AppAccessLog {
+  id               Int       @id(map: "pk_app_access_log") @default(autoincrement()) @map("id")
+  hardwareId       String?   @map("hardware_id") @db.VarChar(100)
+  windowsUser      String?   @map("windows_user") @db.VarChar(100)
+  computerName     String?   @map("computer_name") @db.VarChar(100)
+  ipAddress        String?   @map("ip_address") @db.VarChar(100)
+  programName      String?   @map("program_name") @db.VarChar(255)
+  connectionString String?   @map("connection_string") @db.VarChar(255)
+  loginAt          DateTime? @default(now()) @map("login_at") @db.Timestamp(6)
+
+  @@map("app_access_log")
+}
+
+/// Was: RegApps (was DB table _RegApps)
+model RegisteredApp {
+  databaseName    String?             @map("database_name") @db.VarChar(100)
+  appName         String              @id(map: "pk_registered_apps") @map("app_name") @db.VarChar(100)
+  disabled        Boolean             @default(false) @map("disabled")
+  appFile         String              @map("app_file") @db.VarChar(250)
+  mdwFile         String?             @map("mdw_file") @db.VarChar(250)
+  clientDir       String?             @map("client_dir") @db.VarChar(250)
+  downloadDir     String?             @map("download_dir") @db.VarChar(1000)
+  createdAt       DateTime?           @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt       DateTime?           @default(now()) @map("updated_at") @db.Timestamp(6)
+  files           RegisteredAppFile[]
+  userAssignments RegisteredUserApp[]
+
+  @@map("registered_apps")
+}
+
+/// Was: RegAppsFiles (was DB table _RegAppsFiles)
+model RegisteredAppFile {
+  databaseName String?       @map("database_name") @db.VarChar(100)
+  appName      String        @map("app_name") @db.VarChar(100)
+  fileName     String        @map("file_name") @db.VarChar(255)
+  clientDir    String        @map("client_dir") @db.VarChar(255)
+  install      Boolean       @default(false) @map("install")
+  update       Boolean       @default(false) @map("update")
+  createdAt    DateTime?     @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt    DateTime?     @default(now()) @map("updated_at") @db.Timestamp(6)
+  app          RegisteredApp @relation(fields: [appName], references: [appName], onDelete: NoAction, onUpdate: NoAction, map: "fk_registered_app_files_app")
+
+  @@id([appName, fileName], map: "pk_registered_app_files")
+  @@map("registered_app_files")
+}
+
+/// Was: RegUsers (was DB table _RegUsers)
+model RegisteredUser {
+  databaseName   String?             @map("database_name") @db.VarChar(100)
+  id             Int                 @id(map: "pk_registered_users") @map("id")
+  disabled       Boolean             @default(false) @map("disabled")
+  hardwareId     String              @map("hardware_id") @db.VarChar(100)
+  windowsUser    String              @map("windows_user") @db.VarChar(100)
+  computerName   String              @map("computer_name") @db.VarChar(100)
+  ipAddress      String?             @map("ip_address") @db.VarChar(100)
+  fullName       String?             @map("full_name") @db.VarChar(100)
+  email          String?             @map("email") @db.VarChar(100)
+  phone          String?             @map("phone") @db.VarChar(100)
+  description    String?             @map("description") @db.VarChar(200)
+  validFrom      DateTime?           @map("valid_from") @db.Date
+  validTo        DateTime?           @map("valid_to") @db.Date
+  createdAt      DateTime?           @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt      DateTime?           @default(now()) @map("updated_at") @db.Timestamp(6)
+  appAssignments RegisteredUserApp[]
+
+  @@map("registered_users")
+}
+
+/// Was: RegUsersApps (was DB table _RegUsersApps)
+model RegisteredUserApp {
+  databaseName   String?        @map("database_name") @db.VarChar(100)
+  userId         Int            @map("user_id")
+  appName        String         @map("app_name") @db.VarChar(100)
+  disabled       Boolean        @default(false) @map("disabled")
+  bbUserName     String?        @map("bb_user_name") @db.VarChar(50)
+  bbPassword     String?        @map("bb_password") @db.VarChar(50)
+  bbMacroName    String?        @map("bb_macro_name") @db.VarChar(100)
+  excl           Boolean        @default(false) @map("excl")
+  runtime        Boolean        @default(false) @map("runtime")
+  bbExtraStartUp String?        @map("bb_extra_start_up") @db.VarChar(100)
+  bbCmd          String?        @map("bb_cmd") @db.VarChar(100)
+  createdAt      DateTime?      @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt      DateTime?      @default(now()) @map("updated_at") @db.Timestamp(6)
+  app            RegisteredApp  @relation(fields: [appName], references: [appName], onDelete: NoAction, onUpdate: NoAction, map: "fk_registered_user_apps_app")
+  user           RegisteredUser @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_registered_user_apps_user")
+
+  @@id([userId, appName], map: "pk_registered_user_apps")
+  @@map("registered_user_apps")
+}
+
+/// Was: Rev (app/db revisions log; was DB table _Rev)
+model AppRevision {
+  id          Int      @id(map: "pk_app_revisions") @default(autoincrement()) @map("id")
+  app         String   @default("DB") @map("app") @db.VarChar(20)
+  version     String   @default("-") @map("version") @db.VarChar(50)
+  versionDate DateTime @default(dbgenerated("(CURRENT_DATE)::timestamp without time zone")) @map("version_date") @db.Timestamp(6)
+  topic       String   @default("-") @map("topic") @db.VarChar(100)
+  description String?  @map("description")
+  isDone      Boolean  @default(true) @map("is_done")
+  company     String?  @default("-") @map("company") @db.VarChar(30)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+  subRevision Int      @default(0) @map("sub_revision")
+
+  @@map("app_revisions")
+}
+
+// ============================================================================
+// WORK ORDERS (was tRN and related "t" tables)
+// ============================================================================
+
+/// Was: tLansiranRN
+model WorkOrderLaunch {
+  id                 Int       @id(map: "pk_work_order_launches") @default(autoincrement()) @map("id")
+  workOrderId        Int       @default(0) @map("work_order_id")
+  isLaunched         Boolean?  @default(false) @map("is_launched")
+  enteredAt          DateTime  @map("entered_at") @db.Timestamp(6)
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamp(6)
+  createdByWorkerId  Int       @default(0) @map("created_by_worker_id")
+  createdBySignature String?   @map("created_by_signature") @db.VarChar(50)
+  updatedAt          DateTime  @default(now()) @map("updated_at") @db.Timestamp(6)
+  updatedByWorkerId  Int       @map("updated_by_worker_id")
+  updatedBySignature String?   @map("updated_by_signature") @db.VarChar(50)
+  workOrder          WorkOrder @relation(fields: [workOrderId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_order_launches_work_order")
+
+  @@map("work_order_launches")
+}
+
+/// Was: tLokacijeDelova
+model PartLocation {
+  id            Int       @id(map: "pk_part_locations") @default(autoincrement()) @map("id")
+  workOrderId   Int       @default(0) @map("work_order_id")
+  projectId     Int       @default(0) @map("project_id")
+  qualityTypeId Int       @default(0) @map("quality_type_id")
+  positionId    Int       @default(0) @map("position_id")
+  workerId      Int       @default(0) @map("worker_id")
+  recordDate    DateTime  @default(now()) @map("record_date") @db.Timestamp(6)
+  quantity      Int       @default(0) @map("quantity")
+  createdAt     DateTime? @default(now()) @map("created_at") @db.Timestamp(6)
+  project       Project   @relation(fields: [projectId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_part_locations_project")
+  position      Position  @relation(fields: [positionId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_part_locations_position")
+  worker        Worker    @relation(fields: [workerId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_part_locations_worker")
+
+  @@map("part_locations")
+}
+
+/// Was: tOperacije
+model Operation {
+  workCenterCode          String                     @unique(map: "uq_operations_work_center_code") @map("work_center_code") @db.VarChar(5)
+  workCenterName          String                     @map("work_center_name") @db.VarChar(50)
+  note                    String?                    @map("note") @db.VarChar(255)
+  workUnitCode            String                     @map("work_unit_code") @db.VarChar(5)
+  withoutProcess          Boolean?                   @default(false) @map("without_process")
+  significantForFinishing Boolean?                   @default(false) @map("significant_for_finishing")
+  usesPriority            Boolean                    @default(false) @map("uses_priority")
+  id                      Int                        @id(map: "pk_operations") @default(autoincrement()) @map("id")
+  isSkippable             Boolean                    @default(false) @map("is_skippable")
+  machinedParts           WorkOrderMachinedPart[]
+  blanks                  WorkOrderBlank[]
+  nonStandardParts        WorkOrderNonstandardPart[]
+  machineAccess           MachineAccess[]
+  workOrderOperations     WorkOrderOperation[]
+
+  @@map("operations")
+}
+
+/// Was: tOperacijeFix (no PK in original — kept @@ignore)
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model OperationFix {
+  id                      Int      @default(autoincrement()) @map("id")
+  workCenterCode          String   @map("work_center_code") @db.VarChar(5)
+  workCenterName          String   @map("work_center_name") @db.VarChar(50)
+  note                    String?  @map("note") @db.VarChar(255)
+  workUnitCode            String   @map("work_unit_code") @db.VarChar(5)
+  withoutProcess          Boolean? @map("without_process")
+  significantForFinishing Boolean? @map("significant_for_finishing")
+  usesPriority            Boolean  @map("uses_priority")
+
+  @@map("operations_fix")
+  @@ignore
+}
+
+/// Was: tPDM (machined parts in a work order)
+model WorkOrderMachinedPart {
+  id             Int       @id(map: "pk_work_order_machined_parts") @default(autoincrement()) @map("id")
+  workOrderId    Int       @default(0) @map("work_order_id")
+  position       String    @map("position") @db.VarChar(50)
+  operationId    Int?      @default(0) @map("operation_id")
+  workCenterCode String    @map("work_center_code") @db.VarChar(5)
+  partName       String?   @map("part_name") @db.VarChar(60)
+  drawingNumber  String?   @map("drawing_number") @db.VarChar(50)
+  quantity       Int?      @default(0) @map("quantity")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt      DateTime  @default(now()) @map("updated_at") @db.Timestamp(6)
+  workerId       Int       @default(0) @map("worker_id")
+  worker         Worker    @relation(fields: [workerId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_order_machined_parts_worker")
+  operation      Operation @relation(fields: [workCenterCode], references: [workCenterCode], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_order_machined_parts_operation")
+  workOrder      WorkOrder @relation(fields: [workOrderId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_order_machined_parts_work_order")
+
+  @@map("work_order_machined_parts")
+}
+
+/// Was: tPLP (blanks / semi-finished materials in a work order)
+model WorkOrderBlank {
+  id                Int       @id(map: "pk_work_order_blanks") @default(autoincrement()) @map("id")
+  workOrderId       Int       @default(0) @map("work_order_id")
+  position          String    @map("position") @db.VarChar(50)
+  workCenterCode    String    @map("work_center_code") @db.VarChar(5)
+  material          String?   @map("material") @db.VarChar(50)
+  materialDimension String?   @map("material_dimension") @db.VarChar(50)
+  unit              String?   @map("unit") @db.VarChar(5)
+  unitWeight        Float?    @default(0) @map("unit_weight")
+  quantity          Int?      @default(0) @map("quantity")
+  positionNumber    String?   @map("position_number") @db.VarChar(50)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt         DateTime  @default(now()) @map("updated_at") @db.Timestamp(6)
+  workerId          Int       @default(0) @map("worker_id")
+  worker            Worker    @relation(fields: [workerId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_order_blanks_worker")
+  operation         Operation @relation(fields: [workCenterCode], references: [workCenterCode], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_order_blanks_operation")
+  workOrder         WorkOrder @relation(fields: [workOrderId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_order_blanks_work_order")
+
+  @@map("work_order_blanks")
+}
+
+/// Was: tPND (non-standard parts in a work order)
+model WorkOrderNonstandardPart {
+  id             Int       @id(map: "pk_work_order_nonstandard_parts") @default(autoincrement()) @map("id")
+  workOrderId    Int       @default(0) @map("work_order_id")
+  position       String    @map("position") @db.VarChar(50)
+  operationId    Int?      @default(0) @map("operation_id")
+  workCenterCode String    @map("work_center_code") @db.VarChar(5)
+  partName       String    @map("part_name") @db.VarChar(80)
+  quantity       Float?    @default(0) @map("quantity")
+  note           String?   @map("note") @db.VarChar(50)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt      DateTime  @default(now()) @map("updated_at") @db.Timestamp(6)
+  workerId       Int       @default(0) @map("worker_id")
+  worker         Worker    @relation(fields: [workerId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_order_nonstandard_parts_worker")
+  operation      Operation @relation(fields: [workCenterCode], references: [workCenterCode], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_order_nonstandard_parts_operation")
+  workOrder      WorkOrder @relation(fields: [workOrderId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_order_nonstandard_parts_work_order")
+
+  @@map("work_order_nonstandard_parts")
+}
+
+/// Was: tPozicije
+model Position {
+  id            Int            @id(map: "pk_positions") @map("id")
+  positionCode  String         @map("position_code") @db.VarChar(20)
+  description   String?        @map("description") @db.VarChar(250)
+  partLocations PartLocation[]
+
+  @@map("positions")
+}
+
+/// Was: tPristupMasini
+model MachineAccess {
+  id             Int       @id(map: "pk_machine_access") @default(autoincrement()) @map("id")
+  workerId       Int       @map("worker_id")
+  workCenterCode String    @map("work_center_code") @db.VarChar(5)
+  note           String?   @map("note") @db.VarChar(250)
+  operation      Operation @relation(fields: [workCenterCode], references: [workCenterCode], onDelete: NoAction, onUpdate: NoAction, map: "fk_machine_access_operation")
+  worker         Worker    @relation(fields: [workerId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_machine_access_worker")
+
+  @@map("machine_access")
+}
+
+/// Was: tRN
+model WorkOrder {
+  id                    Int                        @id(map: "pk_work_orders") @default(autoincrement()) @map("id")
+  projectId             Int                        @default(0) @map("project_id")
+  identNumber           String                     @map("ident_number") @db.VarChar(50)
+  variant               Int                        @default(0) @map("variant")
+  externalCustomerId    Int                        @map("external_customer_id")
+  externalProjectName   String?                    @map("external_project_name") @db.VarChar(250)
+  externalOpenedAt      DateTime                   @default(dbgenerated("(CURRENT_DATE)::timestamp without time zone")) @map("external_opened_at") @db.Timestamp(6)
+  enteredAt             DateTime                   @map("entered_at") @db.Timestamp(6)
+  pieceCount            Int                        @default(1) @map("piece_count")
+  drawingNumber         String                     @map("drawing_number") @db.VarChar(100)
+  product               String?                    @map("product") @db.VarChar(150)
+  unprocessedPartWeight Float?                     @default(0) @map("unprocessed_part_weight")
+  partName              String                     @map("part_name") @db.VarChar(250)
+  materialId            Int?                       @default(0) @map("material_id")
+  material              String                     @map("material") @db.VarChar(250)
+  materialDimension     String                     @map("material_dimension") @db.VarChar(150)
+  unit                  String                     @map("unit") @db.VarChar(50)
+  processedPartWeight   Float?                     @default(0) @map("processed_part_weight")
+  note                  String?                    @map("note")
+  status                Boolean?                   @default(false) @map("status")
+  productionDeadline    DateTime?                  @map("production_deadline") @db.Timestamp(6)
+  createdAt             DateTime                   @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt             DateTime                   @default(now()) @map("updated_at") @db.Timestamp(6)
+  workerId              Int                        @default(0) @map("worker_id")
+  isLocked              Boolean?                   @default(false) @map("is_locked")
+  signature             String?                    @map("signature") @db.VarChar(50)
+  printTimer            Int?                       @default(0) @map("print_timer")
+  parentDrawingRef      String?                    @map("parent_drawing_ref") @db.VarChar(100)
+  qualityTypeId         Int                        @default(0) @map("quality_type_id")
+  revision              String                     @default("A") @map("revision") @db.VarChar(3)
+  drawingHandoverId     Int                        @default(0) @map("drawing_handover_id")
+  drawingId             Int                        @default(0) @map("drawing_id")
+  handoverStatusId      Int                        @default(3) @map("handover_status_id")
+  handoverWorkerId      Int                        @default(0) @map("handover_worker_id")
+  launches              WorkOrderLaunch[]
+  machinedParts         WorkOrderMachinedPart[]
+  blanks                WorkOrderBlank[]
+  nonStandardParts      WorkOrderNonstandardPart[]
+  handoverWorker        Worker                     @relation("WorkOrderHandoverWorker", fields: [handoverWorkerId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_orders_handover_worker")
+  handoverStatus        HandoverStatus             @relation(fields: [handoverStatusId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_orders_handover_status")
+  worker                Worker                     @relation("WorkOrderWorker", fields: [workerId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_orders_worker")
+  qualityType           PartQualityType            @relation(fields: [qualityTypeId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_orders_quality_type")
+  components            WorkOrderComponent[]
+  itemComponents        WorkOrderItemComponent[]
+  approvals             WorkOrderApproval[]
+  operations            WorkOrderOperation[]
+
+  @@map("work_orders")
+}
+
+/// Was: tRNKomponente (work-order to work-order links)
+model WorkOrderComponent {
+  id                   Int       @id @default(autoincrement()) @map("id")
+  workOrderId          Int       @map("work_order_id")
+  componentWorkOrderId Int       @map("component_work_order_id")
+  quantity             Int       @default(1) @map("quantity")
+  note                 String?   @map("note") @db.VarChar(255)
+  workOrder            WorkOrder @relation(fields: [workOrderId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_order_components_parent")
+
+  @@unique([workOrderId, componentWorkOrderId], map: "uq_work_order_components_parent_child")
+  @@map("work_order_components")
+}
+
+/// Was: tRNNDKomponente (work-order to item links — non-standard parts list)
+model WorkOrderItemComponent {
+  id          Int       @id @default(autoincrement()) @map("id")
+  workOrderId Int       @map("work_order_id")
+  itemId      Int       @map("item_id")
+  quantity    Int       @map("quantity")
+  note        String?   @map("note") @db.VarChar(255)
+  workOrder   WorkOrder @relation(fields: [workOrderId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_order_item_components_work_order")
+  item        Item      @relation(fields: [itemId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_order_item_components_item")
+
+  @@map("work_order_item_components")
+}
+
+/// Was: tR_Grupa (separate group table used in production context)
+model ProductionItemGroup {
+  id          Int     @id(map: "pk_production_item_groups") @default(autoincrement()) @map("id")
+  code        String  @map("code") @db.VarChar(10)
+  description String? @map("description") @db.VarChar(50)
+
+  @@map("production_item_groups")
+}
+
+/// Was: tRadneJedinice
+model WorkUnit {
+  id   Int    @id(map: "pk_work_units") @default(autoincrement()) @map("id")
+  code String @map("code") @db.VarChar(5)
+  name String @map("name") @db.VarChar(50)
+
+  @@map("work_units")
+}
+
+/// Was: tRadnici
+model Worker {
+  id                   Int                        @id(map: "pk_workers") @default(autoincrement()) @map("id")
+  username             String                     @map("username") @db.VarChar(50)
+  commissionPercent    Float?                     @default(0) @map("commission_percent")
+  fullName             String?                    @map("full_name") @db.VarChar(50)
+  idNumber             String?                    @map("id_number") @db.VarChar(20)
+  password             String?                    @map("password") @db.VarChar(20)
+  active               Boolean?                   @default(true) @map("active")
+  workUnitCode         String                     @default("0") @map("work_unit_code") @db.VarChar(5)
+  cardId               String                     @map("card_id") @db.VarChar(50)
+  loginAccount         String?                    @map("login_account") @db.VarChar(50)
+  workerTypeId         Int                        @default(0) @map("worker_type_id")
+  signatureImage       String?                    @map("signature_image") @db.VarChar(150)
+  definesApproval      Boolean?                   @default(false) @map("defines_approval")
+  definesLaunch        Boolean?                   @default(false) @map("defines_launch")
+  multiAccount         Boolean?                   @default(false) @map("multi_account")
+  workerPassword       String                     @map("worker_password") @db.VarChar(50)
+  handoverDrafts       HandoverDraft[]
+  partLocations        PartLocation[]
+  machinedParts        WorkOrderMachinedPart[]
+  blanks               WorkOrderBlank[]
+  nonStandardParts     WorkOrderNonstandardPart[]
+  machineAccess        MachineAccess[]
+  workOrdersAsHandover WorkOrder[]                @relation("WorkOrderHandoverWorker")
+  workOrders           WorkOrder[]                @relation("WorkOrderWorker")
+  workOrderOperations  WorkOrderOperation[]
+  techProcesses        TechProcess[]
+
+  @@map("workers")
+}
+
+/// Was: tSaglasanRN
+model WorkOrderApproval {
+  id                 Int       @id(map: "pk_work_order_approvals") @default(autoincrement()) @map("id")
+  workOrderId        Int       @default(0) @map("work_order_id")
+  isApproved         Boolean?  @default(false) @map("is_approved")
+  enteredAt          DateTime  @map("entered_at") @db.Timestamp(6)
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamp(6)
+  createdByWorkerId  Int       @default(0) @map("created_by_worker_id")
+  createdBySignature String?   @map("created_by_signature") @db.VarChar(50)
+  updatedAt          DateTime  @default(now()) @map("updated_at") @db.Timestamp(6)
+  updatedByWorkerId  Int       @map("updated_by_worker_id")
+  updatedBySignature String?   @map("updated_by_signature") @db.VarChar(50)
+  workOrder          WorkOrder @relation(fields: [workOrderId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_order_approvals_work_order")
+
+  @@map("work_order_approvals")
+}
+
+/// Was: tStavkeRN (work-order operation breakdown)
+model WorkOrderOperation {
+  id              Int                       @id(map: "pk_work_order_operations") @default(autoincrement()) @map("id")
+  workOrderId     Int                       @default(0) @map("work_order_id")
+  operationNumber Int                       @default(0) @map("operation_number")
+  workCenterCode  String                    @map("work_center_code") @db.VarChar(5)
+  workDescription String                    @map("work_description")
+  toolsFixtures   String?                   @map("tools_fixtures") @db.VarChar(50)
+  setupTime       Float?                    @default(0) @map("setup_time")
+  cycleTime       Float?                    @default(0) @map("cycle_time")
+  toolWeight      Float?                    @default(0) @map("tool_weight")
+  workerId        Int                       @default(0) @map("worker_id")
+  createdAt       DateTime                  @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt       DateTime                  @default(now()) @map("updated_at") @db.Timestamp(6)
+  priority        Int                       @default(100) @map("priority")
+  worker          Worker                    @relation(fields: [workerId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_order_operations_worker")
+  operation       Operation                 @relation(fields: [workCenterCode], references: [workCenterCode], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_order_operations_operation")
+  workOrder       WorkOrder                 @relation(fields: [workOrderId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_order_operations_work_order")
+  images          WorkOrderOperationImage[]
+
+  @@map("work_order_operations")
+}
+
+/// Was: tStavkeRNSlike
+model WorkOrderOperationImage {
+  id                   Int                @id(map: "pk_work_order_operation_images") @default(autoincrement()) @map("id")
+  workOrderOperationId Int                @default(0) @map("work_order_operation_id")
+  imageLink            String             @map("image_link") @db.VarChar(250)
+  fileName             String             @map("file_name") @db.VarChar(50)
+  workOrderOperation   WorkOrderOperation @relation(fields: [workOrderOperationId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_order_operation_images_operation")
+
+  @@map("work_order_operation_images")
+}
+
+/// Was: tTehPostupak (technological process / routing)
+model TechProcess {
+  id                Int                   @id(map: "pk_tech_processes") @default(autoincrement()) @map("id")
+  workerId          Int                   @map("worker_id")
+  projectId         Int                   @default(0) @map("project_id")
+  identNumber       String                @map("ident_number") @db.VarChar(50)
+  variant           Int                   @default(0) @map("variant")
+  printTimer        Int?                  @default(0) @map("print_timer")
+  enteredAt         DateTime              @default(now()) @map("entered_at") @db.Timestamp(6)
+  operationNumber   Int                   @map("operation_number")
+  workCenterCode    String                @map("work_center_code") @db.VarChar(5)
+  identMark         String                @map("ident_mark") @db.VarChar(50)
+  pieceCount        Int                   @map("piece_count")
+  signature         String?               @map("signature") @db.VarChar(50)
+  workerSymbol      Boolean?              @default(false) @map("worker_symbol")
+  processSymbol     Boolean?              @default(false) @map("process_symbol")
+  operationSymbol   Boolean?              @default(false) @map("operation_symbol")
+  finishedAt        DateTime?             @map("finished_at") @db.Timestamp(6)
+  isProcessFinished Boolean?              @default(false) @map("is_process_finished")
+  note              String?               @map("note")
+  workOrderId       Int                   @default(0) @map("work_order_id")
+  qualityTypeId     Int                   @default(0) @map("quality_type_id")
+  reworkOperationId Int?                  @default(0) @map("rework_operation_id")
+  worker            Worker                @relation(fields: [workerId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_tech_processes_worker")
+  documents         TechProcessDocument[]
+
+  @@map("tech_processes")
+}
+
+/// Was: tTehPostupakBackup (no PK in original — kept @@ignore)
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model TechProcessBackup {
+  id                Int       @default(autoincrement()) @map("id")
+  workerId          Int       @map("worker_id")
+  projectId         Int       @map("project_id")
+  identNumber       String    @map("ident_number") @db.VarChar(50)
+  variant           Int       @map("variant")
+  printTimer        Int?      @map("print_timer")
+  enteredAt         DateTime  @map("entered_at") @db.Timestamp(6)
+  operationNumber   Int       @map("operation_number")
+  workCenterCode    String    @map("work_center_code") @db.VarChar(5)
+  identMark         String    @map("ident_mark") @db.VarChar(50)
+  pieceCount        Int       @map("piece_count")
+  signature         String?   @map("signature") @db.VarChar(50)
+  workerSymbol      Boolean?  @map("worker_symbol")
+  processSymbol     Boolean?  @map("process_symbol")
+  operationSymbol   Boolean?  @map("operation_symbol")
+  finishedAt        DateTime? @map("finished_at") @db.Timestamp(6)
+  isProcessFinished Boolean?  @map("is_process_finished")
+  note              String?   @map("note")
+  workOrderId       Int       @map("work_order_id")
+  qualityTypeId     Int       @map("quality_type_id")
+  reworkOperationId Int?      @map("rework_operation_id")
+  correctedAt       DateTime? @map("corrected_at") @db.Timestamp(6)
+  correctionNote    String?   @map("correction_note") @db.VarChar(500)
+
+  @@map("tech_processes_backup")
+  @@ignore
+}
+
+/// Was: tTehPostupakDokumentacija
+model TechProcessDocument {
+  id            Int         @id(map: "pk_tech_process_documents") @default(autoincrement()) @map("id")
+  techProcessId Int         @map("tech_process_id")
+  fileLink      String      @map("file_link") @db.VarChar(250)
+  fileName      String      @map("file_name") @db.VarChar(50)
+  techProcess   TechProcess @relation(fields: [techProcessId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_tech_process_documents_tech_process")
+
+  @@map("tech_process_documents")
+}
+
+/// Was: tVrsteKvalitetaDelova
+model PartQualityType {
+  id         Int         @id(map: "pk_part_quality_types") @map("id")
+  name       String      @map("name") @db.VarChar(50)
+  workOrders WorkOrder[]
+
+  @@map("part_quality_types")
+}
+
+/// Was: tVrsteRadnika
+model WorkerType {
+  id                   Int     @id(map: "pk_worker_types") @default(autoincrement()) @map("id")
+  name                 String  @map("name") @db.VarChar(50)
+  additionalPrivileges Boolean @default(false) @map("additional_privileges")
+
+  @@map("worker_types")
+}
+
+// ============================================================================
+// MISC
+// ============================================================================
+
+/// Was: tmp_T_KontroleNaFormi
+model TmpFormControl {
+  formName    String  @map("form_name") @db.VarChar(50)
+  controlName String  @map("control_name") @db.VarChar(50)
+  controlType String? @map("control_type") @db.VarChar(50)
+
+  @@id([formName, controlName], map: "pk_tmp_form_controls")
+  @@map("tmp_form_controls")
+}
+
+// ============================================================================
+// APPLICATION AUTH & AUDIT
+// ----------------------------------------------------------------------------
+// These tables do NOT come from BigBit / legacy MSSQL. They are owned by the
+// NestJS application layer:
+//   - `users`           : application accounts (email + password), distinct
+//                         from `workers` (production-floor staff) and
+//                         `registered_users` (legacy desktop app registry).
+//   - `refresh_tokens`  : JWT refresh-token rotation store.
+//   - `audit_log`       : append-only audit trail for write operations and
+//                         security events. Designed to survive user deletion
+//                         (FK is SetNull + denormalised `actor_username`).
+// ============================================================================
+
+/// Application user (NestJS auth). Email + password_hash login.
+model User {
+  id              Int            @id(map: "pk_users") @default(autoincrement()) @map("id")
+  email           String         @unique(map: "uq_users_email") @map("email") @db.VarChar(255)
+  passwordHash    String         @map("password_hash") @db.VarChar(255)
+  fullName        String?        @map("full_name") @db.VarChar(150)
+  /// Free-form role string. Expected values: "ADMIN", "USER". Kept as String
+  /// (not enum) so new roles can be introduced without a schema migration.
+  role            String         @default("USER") @map("role") @db.VarChar(30)
+  active          Boolean        @default(true) @map("active")
+  emailVerifiedAt DateTime?      @map("email_verified_at") @db.Timestamp(6)
+  lastLoginAt     DateTime?      @map("last_login_at") @db.Timestamp(6)
+  createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt       DateTime       @updatedAt @map("updated_at") @db.Timestamp(6)
+  refreshTokens   RefreshToken[]
+  auditLogs       AuditLog[]
+  bbSyncLogs      BbSyncLog[]
+
+  @@map("users")
+}
+
+/// JWT refresh token with rotation support.
+///
+/// - `tokenHash` is a hash of the opaque refresh token (never store raw tokens).
+/// - `revokedAt` marks logout / revocation; `expiresAt` is the natural TTL.
+/// - `replacedByTokenId` points to the new token after rotation (self-FK).
+model RefreshToken {
+  id                Int            @id(map: "pk_refresh_tokens") @default(autoincrement()) @map("id")
+  userId            Int            @map("user_id")
+  tokenHash         String         @unique(map: "uq_refresh_tokens_token_hash") @map("token_hash") @db.VarChar(255)
+  expiresAt         DateTime       @map("expires_at") @db.Timestamp(6)
+  revokedAt         DateTime?      @map("revoked_at") @db.Timestamp(6)
+  replacedByTokenId Int?           @map("replaced_by_token_id")
+  userAgent         String?        @map("user_agent") @db.VarChar(500)
+  ipAddress         String?        @map("ip_address") @db.VarChar(45)
+  createdAt         DateTime       @default(now()) @map("created_at") @db.Timestamp(6)
+  user              User           @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_refresh_tokens_user")
+  replacedBy        RefreshToken?  @relation("RefreshTokenRotation", fields: [replacedByTokenId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_refresh_tokens_replaced_by")
+  replacedTokens    RefreshToken[] @relation("RefreshTokenRotation")
+
+  @@index([userId], map: "idx_refresh_tokens_user_id")
+  @@index([expiresAt], map: "idx_refresh_tokens_expires_at")
+  @@map("refresh_tokens")
+}
+
+/// Append-only audit trail.
+///
+/// `entityId` is intentionally a `String` so it can hold any natural key shape
+/// (numeric ids, codes like `"VISA"`, composite keys serialised as strings).
+/// `actorUsername` is a denormalised snapshot so the log survives even if the
+/// user row is later deleted (FK uses SetNull).
+model AuditLog {
+  id            Int      @id(map: "pk_audit_log") @default(autoincrement()) @map("id")
+  actorUserId   Int?     @map("actor_user_id")
+  actorUsername String?  @map("actor_username") @db.VarChar(255)
+  action        String   @map("action") @db.VarChar(100)
+  entityType    String?  @map("entity_type") @db.VarChar(100)
+  entityId      String?  @map("entity_id") @db.VarChar(100)
+  beforeData    Json?    @map("before_data")
+  afterData     Json?    @map("after_data")
+  metadata      Json?    @map("metadata")
+  ipAddress     String?  @map("ip_address") @db.VarChar(45)
+  userAgent     String?  @map("user_agent") @db.VarChar(500)
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+  actor         User?    @relation(fields: [actorUserId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_audit_log_actor_user")
+
+  @@index([actorUserId], map: "idx_audit_log_actor_user_id")
+  @@index([entityType, entityId], map: "idx_audit_log_entity")
+  @@index([createdAt], map: "idx_audit_log_created_at")
+  @@map("audit_log")
+}
+
+// ============================================================================
+// BIGBIT SYNC (application-owned; not legacy BigBit tables)
+// ----------------------------------------------------------------------------
+// Sprint 1 decision: **approach B** — NestJS service connects to SQL Server
+// (BigBit) with a read-only client (e.g. `mssql` / tedious), pulls deltas,
+// upserts into Postgres via Prisma. `bb_sync_log` = append-only run history;
+// `bb_sync_state` = one bookmark row per sync scope (`entity`) with a JSON
+// cursor (shape depends on table: lastModifiedAt, lastId, rowversion, …).
+// ============================================================================
+
+/// One row per manual/cron/API sync run (BigBit → Postgres).
+model BbSyncLog {
+  id                    Int           @id(map: "pk_bb_sync_log") @default(autoincrement()) @map("id")
+  startedAt             DateTime      @default(now()) @map("started_at") @db.Timestamp(6)
+  finishedAt            DateTime?     @map("finished_at") @db.Timestamp(6)
+  /// `running` | `success` | `failed` | `partial` — kept as String (no Prisma enum migration churn).
+  status                String        @default("running") @map("status") @db.VarChar(20)
+  /// `manual` | `cron` | `api`
+  trigger               String        @default("manual") @map("trigger") @db.VarChar(20)
+  triggeredByUserId     Int?          @map("triggered_by_user_id")
+  /// What was synced, e.g. `customers`, `items`, `all_incremental`.
+  entityScope           String?       @map("entity_scope") @db.VarChar(100)
+  rowsFetched           Int           @default(0) @map("rows_fetched")
+  rowsUpserted          Int           @default(0) @map("rows_upserted")
+  rowsSkipped           Int           @default(0) @map("rows_skipped")
+  errorMessage          String?       @map("error_message")
+  metadata              Json?         @map("metadata")
+  triggeredBy           User?         @relation(fields: [triggeredByUserId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_bb_sync_log_triggered_by_user")
+  syncStatesLastSuccess BbSyncState[] @relation("BbSyncStateLastSuccessLog")
+
+  @@index([entityScope, startedAt], map: "idx_bb_sync_log_entity_scope_started_at")
+  @@index([status, startedAt], map: "idx_bb_sync_log_status_started_at")
+  @@map("bb_sync_log")
+}
+
+/// Incremental sync cursor per logical scope (`entity` = stable key, e.g. `customers`).
+model BbSyncState {
+  entity               String     @id(map: "pk_bb_sync_state") @map("entity") @db.VarChar(100)
+  /// Opaque cursor — e.g. `{ "lastModifiedAt": "...", "lastId": 123 }` or `{ "lastRowversion": "..." }`.
+  cursor               Json?      @map("cursor")
+  lastSuccessAt        DateTime?  @map("last_success_at") @db.Timestamp(6)
+  lastAttemptAt        DateTime?  @map("last_attempt_at") @db.Timestamp(6)
+  lastErrorMessage     String?    @map("last_error_message")
+  lastSuccessSyncLogId Int?       @map("last_success_sync_log_id")
+  updatedAt            DateTime   @updatedAt @map("updated_at") @db.Timestamp(6)
+  createdAt            DateTime   @default(now()) @map("created_at") @db.Timestamp(6)
+  lastSuccessSyncLog   BbSyncLog? @relation("BbSyncStateLastSuccessLog", fields: [lastSuccessSyncLogId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_bb_sync_state_last_success_log")
+
+  @@map("bb_sync_state")
+}
