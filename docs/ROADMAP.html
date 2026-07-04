@@ -1,0 +1,688 @@
+<!doctype html>
+<html lang="sr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ServoSync roadmap 1.0 → 4.0</title>
+</head>
+<body>
+<style>
+  :root {
+    --accent: #0d9488;
+    --accent-strong: #0b7d73;
+    --accent-fg: #ffffff;
+    --accent-subtle: #f0faf8;
+    --bg: #f7f9f9;
+    --surface: #ffffff;
+    --surface-2: #fbfcfc;
+    --ink: #22282c;
+    --ink-2: #79878e;
+    --line: #e3e8e8;
+    --line-soft: #eef2f2;
+    --petrol: #16232a;
+    --petrol-ink: #b9c6cc;
+    --info: #1971c2;      --info-bg: #e7f0fb;
+    --warn: #e8890c;      --warn-bg: #fdf0e0;
+    --ok: #2f9e44;        --ok-bg: #e6f5e9;
+    --danger: #d6453d;    --danger-bg: #fbe9e8;
+    --neutral: #8b9aa0;   --neutral-bg: #eef1f2;
+    --sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+    --mono: "Cascadia Mono", Consolas, ui-monospace, monospace;
+    --r-control: 7px;
+    --r-panel: 9px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --accent: #2dd4bf;
+      --accent-strong: #5eead4;
+      --accent-fg: #06201d;
+      --accent-subtle: rgba(45, 212, 191, 0.08);
+      --bg: #111c22;
+      --surface: #182730;
+      --surface-2: #14222a;
+      --ink: #e6edef;
+      --ink-2: #92a5ad;
+      --line: #26383f;
+      --line-soft: #1f3038;
+      --petrol: #0d161b;
+      --petrol-ink: #b9c6cc;
+      --info: #6aaef0;    --info-bg: rgba(64, 140, 217, 0.16);
+      --warn: #f0a13c;    --warn-bg: rgba(232, 137, 12, 0.16);
+      --ok: #62c877;      --ok-bg: rgba(47, 158, 68, 0.16);
+      --danger: #ea7d75;  --danger-bg: rgba(214, 69, 61, 0.16);
+      --neutral: #9fb0b7; --neutral-bg: rgba(139, 154, 160, 0.16);
+    }
+  }
+  :root[data-theme="dark"] {
+    --accent: #2dd4bf;
+    --accent-strong: #5eead4;
+    --accent-fg: #06201d;
+    --accent-subtle: rgba(45, 212, 191, 0.08);
+    --bg: #111c22;
+    --surface: #182730;
+    --surface-2: #14222a;
+    --ink: #e6edef;
+    --ink-2: #92a5ad;
+    --line: #26383f;
+    --line-soft: #1f3038;
+    --petrol: #0d161b;
+    --petrol-ink: #b9c6cc;
+    --info: #6aaef0;    --info-bg: rgba(64, 140, 217, 0.16);
+    --warn: #f0a13c;    --warn-bg: rgba(232, 137, 12, 0.16);
+    --ok: #62c877;      --ok-bg: rgba(47, 158, 68, 0.16);
+    --danger: #ea7d75;  --danger-bg: rgba(214, 69, 61, 0.16);
+    --neutral: #9fb0b7; --neutral-bg: rgba(139, 154, 160, 0.16);
+  }
+  :root[data-theme="light"] {
+    --accent: #0d9488;
+    --accent-strong: #0b7d73;
+    --accent-fg: #ffffff;
+    --accent-subtle: #f0faf8;
+    --bg: #f7f9f9;
+    --surface: #ffffff;
+    --surface-2: #fbfcfc;
+    --ink: #22282c;
+    --ink-2: #79878e;
+    --line: #e3e8e8;
+    --line-soft: #eef2f2;
+    --petrol: #16232a;
+    --petrol-ink: #b9c6cc;
+    --info: #1971c2;    --info-bg: #e7f0fb;
+    --warn: #e8890c;    --warn-bg: #fdf0e0;
+    --ok: #2f9e44;      --ok-bg: #e6f5e9;
+    --danger: #d6453d;  --danger-bg: #fbe9e8;
+    --neutral: #8b9aa0; --neutral-bg: #eef1f2;
+  }
+
+  * { box-sizing: border-box; }
+  html { background: var(--bg); }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.55;
+  }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 32px 24px 64px; }
+  a { color: var(--accent-strong); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+  /* ---------- header ---------- */
+  .eyebrow {
+    font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--ink-2); font-weight: 600;
+  }
+  h1 {
+    font-size: 30px; line-height: 1.15; margin: 6px 0 4px; font-weight: 650;
+    letter-spacing: -0.01em; text-wrap: balance;
+  }
+  .sub { color: var(--ink-2); font-size: 13px; margin: 0 0 18px; }
+  .sub code { font-family: var(--mono); font-size: 12px; }
+
+  h2 {
+    font-size: 20px; font-weight: 650; margin: 44px 0 4px; letter-spacing: -0.005em;
+    text-wrap: balance;
+  }
+  .h2-note { color: var(--ink-2); font-size: 13px; margin: 0 0 16px; }
+
+  /* ---------- pills & chips ---------- */
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 11.5px; font-weight: 600; letter-spacing: 0.02em;
+    padding: 2px 10px 2px 8px; border-radius: 999px; white-space: nowrap;
+  }
+  .pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .pill.ok      { color: var(--ok); background: var(--ok-bg); }
+  .pill.info    { color: var(--info); background: var(--info-bg); }
+  .pill.warn    { color: var(--warn); background: var(--warn-bg); }
+  .pill.neutral { color: var(--neutral); background: var(--neutral-bg); }
+  .pill.danger  { color: var(--danger); background: var(--danger-bg); }
+
+  .vchip {
+    font-family: var(--mono); font-size: 13px; font-weight: 600;
+    padding: 2px 9px; border-radius: var(--r-control);
+    background: var(--petrol); color: var(--petrol-ink);
+  }
+  .phase.current .vchip { background: var(--accent); color: var(--accent-fg); }
+
+  /* ---------- KPI cards ---------- */
+  .kpis {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(215px, 1fr));
+    gap: 12px; margin-top: 16px;
+  }
+  .kpi {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--r-panel); padding: 14px 16px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .kpi.current { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  .kpi-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .kpi-name { font-weight: 650; font-size: 14px; }
+  .kpi-fact { font-size: 24px; font-weight: 650; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .kpi-fact small { font-size: 12.5px; font-weight: 500; color: var(--ink-2); letter-spacing: 0; }
+  .kpi-note { font-size: 12.5px; color: var(--ink-2); margin: 0; }
+
+  /* ---------- timeline ---------- */
+  .timeline { position: relative; margin-top: 20px; padding-left: 30px; }
+  .timeline::before {
+    content: ""; position: absolute; left: 9px; top: 8px; bottom: 8px;
+    width: 2px; background: var(--line);
+  }
+  .phase { position: relative; margin-bottom: 22px; }
+  .phase::before {
+    content: ""; position: absolute; left: -27px; top: 14px;
+    width: 12px; height: 12px; border-radius: 50%;
+    background: var(--bg); border: 2px solid var(--neutral);
+  }
+  .phase.done::before    { border-color: var(--ok); background: var(--ok); }
+  .phase.active::before  { border-color: var(--info); background: var(--info); }
+  .phase.current::before {
+    border-color: var(--accent); background: var(--accent);
+    box-shadow: 0 0 0 4px var(--accent-subtle);
+  }
+  .card {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--r-panel); overflow: hidden;
+  }
+  .phase.current > .card { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  .card-head {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 12px 18px; background: var(--surface-2);
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .card-head h3 { margin: 0; font-size: 16px; font-weight: 650; }
+  .card-head .spacer { flex: 1; }
+  .card-body { padding: 14px 18px 16px; }
+  .card-body p { margin: 0 0 10px; max-width: 72ch; }
+  .card-body p:last-child { margin-bottom: 0; }
+
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 6px; }
+  @media (max-width: 640px) { .cols { grid-template-columns: 1fr; } }
+  .col {
+    background: var(--surface-2); border: 1px solid var(--line-soft);
+    border-radius: var(--r-control); padding: 10px 14px;
+  }
+  .col h4 {
+    margin: 0 0 6px; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--ink-2); font-weight: 650;
+  }
+  .col ul { margin: 0; padding-left: 16px; }
+  .col li { margin: 3px 0; font-size: 13px; }
+  .col li code, .card-body code {
+    font-family: var(--mono); font-size: 12px;
+    background: var(--line-soft); padding: 0 4px; border-radius: 4px;
+  }
+
+  ul.check { list-style: none; margin: 0; padding: 0; }
+  ul.check li { padding-left: 20px; position: relative; margin: 3px 0; font-size: 13px; }
+  ul.check li::before {
+    position: absolute; left: 0; top: 0; font-family: var(--mono); font-weight: 700;
+  }
+  ul.check li.yes::before  { content: "✓"; color: var(--ok); }
+  ul.check li.next::before { content: "›"; color: var(--info); }
+  ul.check li.wait::before { content: "!"; color: var(--warn); }
+
+  .modules { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .mod {
+    font-size: 12px; padding: 2px 9px; border-radius: 999px;
+    border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+  }
+  .mod.new { border-color: var(--accent); color: var(--accent-strong); font-weight: 600; }
+
+  /* ---------- flow diagrams ---------- */
+  .stage { margin: 18px 0 0; }
+  .stage-label {
+    font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--ink-2); font-weight: 650; margin-bottom: 8px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .flow-scroll { overflow-x: auto; padding-bottom: 6px; }
+  .flow { display: flex; align-items: center; gap: 0; min-width: max-content; }
+  .fbox {
+    border: 1px solid var(--line); background: var(--surface);
+    border-radius: var(--r-control); padding: 8px 14px; min-width: 130px;
+  }
+  .fbox b { display: block; font-size: 13px; font-weight: 650; }
+  .fbox span { display: block; font-size: 11.5px; color: var(--ink-2); font-family: var(--mono); margin-top: 1px; }
+  .fbox.dark { background: var(--petrol); border-color: var(--petrol); }
+  .fbox.dark b { color: #ffffff; }
+  .fbox.dark span { color: var(--petrol-ink); }
+  .fbox.accent { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  .fbox.fade { opacity: 0.55; }
+  .fbox.fade b { text-decoration: line-through; text-decoration-thickness: 1px; }
+  .arrow {
+    font-family: var(--mono); color: var(--ink-2); padding: 0 10px;
+    font-size: 13px; white-space: nowrap; text-align: center; flex: none;
+  }
+  .arrow small { display: block; font-size: 10px; letter-spacing: 0.04em; }
+
+  /* ---------- tables ---------- */
+  .tbl-scroll { overflow-x: auto; margin-top: 12px; border: 1px solid var(--line); border-radius: var(--r-panel); background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th {
+    text-align: left; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--ink-2); font-weight: 650; padding: 9px 14px;
+    background: var(--surface-2); border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  td { padding: 8px 14px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  td.v { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+
+  /* ---------- rules strip ---------- */
+  .rules { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; margin-top: 14px; }
+  .rule {
+    border-left: 3px solid var(--accent); background: var(--surface);
+    border-top: 1px solid var(--line); border-right: 1px solid var(--line); border-bottom: 1px solid var(--line);
+    border-radius: 0 var(--r-control) var(--r-control) 0;
+    padding: 10px 14px; font-size: 13px;
+  }
+  .rule b { display: block; margin-bottom: 2px; }
+
+  footer {
+    margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line);
+    color: var(--ink-2); font-size: 12px;
+  }
+  footer code { font-family: var(--mono); font-size: 11.5px; }
+</style>
+
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow">Servoteh · interni plan digitalizacije</div>
+    <h1>ServoSync roadmap 1.0 → 4.0</h1>
+    <p class="sub">Stanje na dan 4.7.2026. · izvor: <code>backend/docs/ROADMAP.md</code> + analiza sesije · cilj: jedan ERP+MES na sopstvenom serveru</p>
+  </header>
+
+  <!-- ============ STANJE DANAS ============ -->
+  <section>
+    <h2>Gde smo danas</h2>
+    <p class="h2-note">Četiri činjenice koje određuju sve ostalo.</p>
+    <div class="kpis">
+      <div class="kpi">
+        <div class="kpi-top"><span class="kpi-name">ServoSync 1.0</span><span class="pill ok">U produkciji</span></div>
+        <div class="kpi-fact">140 <small>tabela · ~360+ RLS politika</small></div>
+        <p class="kpi-note">Supabase cloud; razvoj zaključan 1.5.2026. Bezbednost živi u bazi (RLS + 238 DEFINER fn).</p>
+      </div>
+      <div class="kpi">
+        <div class="kpi-top"><span class="kpi-name">Međukorak</span><span class="pill info">Odobren 4.7.</span></div>
+        <div class="kpi-fact">2–3 <small>nedelje do nezavisnosti od clouda</small></div>
+        <p class="kpi-note">1.0 se seli na naš Ubuntu server: PostgreSQL + PostgREST + GoTrue, kod netaknut.</p>
+      </div>
+      <div class="kpi current">
+        <div class="kpi-top"><span class="kpi-name">ServoSync 2.0</span><span class="pill info">U toku — ovde smo</span></div>
+        <div class="kpi-fact">1/13 <small>syncera · ~90 modela · auth 0%</small></div>
+        <p class="kpi-note">Ovaj repo (Luka + Nesa). Šema portovana, sync skelet radi, auth i domenski moduli slede.</p>
+      </div>
+      <div class="kpi">
+        <div class="kpi-top"><span class="kpi-name">Odluke koje blokiraju</span><span class="pill warn">Čeka Negovan/Nesa</span></div>
+        <div class="kpi-fact">4 + 6 <small>§11 odluke + RBAC pitanja</small></div>
+        <p class="kpi-note">Hibrid šema, sync semantika, MSSQL logika, timestamp politika + RBAC/RLS predlog v0.1.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ FAZE ============ -->
+  <section>
+    <h2>Faze</h2>
+    <p class="h2-note">Redosled je namera, ne kalendar: 2.0 je temelj, 3.0 seli 1.0 na njega, 4.0 apsorbuje BigBit.</p>
+
+    <div class="timeline">
+
+      <!-- 1.0 -->
+      <div class="phase done">
+        <div class="card">
+          <div class="card-head">
+            <span class="vchip">1.0</span>
+            <h3>Operativni web moduli</h3>
+            <span class="spacer"></span>
+            <span class="pill ok">Živ · razvoj zaključan</span>
+          </div>
+          <div class="card-body">
+            <p>Nesini moduli koje fabrika koristi svaki dan. Aplikacija je <b>backend-in-the-database</b>: autorizacija, poslovna pravila i integracije žive u Postgres/Supabase sloju, ne u JS-u.</p>
+            <div class="cols">
+              <div class="col">
+                <h4>Baza (Supabase PG)</h4>
+                <ul>
+                  <li>140 tabela · 67 view-ova · 337+172 migracija</li>
+                  <li><b>~360+ RLS politika</b> = jedini authz sloj</li>
+                  <li>238 SECURITY DEFINER fn · 473 RAISE pravila</li>
+                  <li>11 rola u <code>user_roles</code> + CMMS pod-role</li>
+                </ul>
+              </div>
+              <div class="col">
+                <h4>Kod</h4>
+                <ul>
+                  <li>~151K linija JS (vanilla, bez framework-a) + 29K CSS</li>
+                  <li>83 servisa · ~753 poziva kroz <code>sbReq</code> wrapper</li>
+                  <li>Capacitor mobilne (Android/iOS) + PWA</li>
+                  <li>12 edge funkcija · pg_cron · 5 outbox tabela</li>
+                </ul>
+              </div>
+            </div>
+            <div class="modules">
+              <span class="mod">Kadrovska</span><span class="mod">Lokacije delova</span><span class="mod">Održavanje</span>
+              <span class="mod">Sastanci</span><span class="mod">Plan montaže</span><span class="mod">Plan proizvodnje</span>
+              <span class="mod">Praćenje proizvodnje</span><span class="mod">Projektni biro</span><span class="mod">Reversi</span>
+              <span class="mod">SCADA</span><span class="mod">Nalepnice</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- MEĐUKORAK -->
+      <div class="phase active">
+        <div class="card">
+          <div class="card-head">
+            <span class="vchip">1.5</span>
+            <h3>Međukorak — 1.0 sa clouda na naš server</h3>
+            <span class="spacer"></span>
+            <span class="pill info">Odobren 4.7.2026</span>
+          </div>
+          <div class="card-body">
+            <p>Infrastrukturni prelaz, <b>ne prevođenje koda</b>: PostgreSQL + PostgREST + GoTrue self-hosted na Ubuntu serveru. Front menja samo API URL i ključeve (sve ide kroz jedan config); RLS politike nastavljaju da čuvaju bezbednost nepromenjene.</p>
+            <div class="cols">
+              <div class="col">
+                <h4>Uslovi prelaza (faza 1)</h4>
+                <ul class="check">
+                  <li class="next">Pokriti i storage, 12 edge fn i pg_cron ekvivalente</li>
+                  <li class="next">Pinned verzije PostgREST/GoTrue — bez auto-update</li>
+                  <li class="next">Sve iza WireGuard-a; pristup fronta: Tunnel ili VPN</li>
+                  <li class="next">Sunset kriterijum po komponenti (gasi je 3.0)</li>
+                </ul>
+              </div>
+              <div class="col">
+                <h4>Šta time dobijamo</h4>
+                <ul>
+                  <li>Puna nezavisnost od Supabase clouda za 2–3 nedelje</li>
+                  <li>3.0 gubi ceo posao migracije podataka — baza je već tu</li>
+                  <li>Strangler-fig u 3.0 ide nad <b>istom</b> bazom</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 2.0 -->
+      <div class="phase current">
+        <div class="card">
+          <div class="card-head">
+            <span class="vchip">2.0</span>
+            <h3>Proizvodni core iz QBigTehn-a — ovaj repo</h3>
+            <span class="spacer"></span>
+            <span class="pill info">U toku</span>
+          </div>
+          <div class="card-body">
+            <p>1:1 (minimum) prerada Negovanovog QBigTehn sistema (Access + MS SQL) na <b>NestJS 11 + Prisma 6 + PostgreSQL 16</b>, on-prem. Ne kopira se ceo legacy: ~44% je realno jezgro, 26% je bloat koji ostaje van scope-a.</p>
+            <div class="cols">
+              <div class="col">
+                <h4>Baza (on-prem PG 16)</h4>
+                <ul>
+                  <li>~90 Prisma modela — 1:1 plosnat port legacy šeme</li>
+                  <li>Legacy ključ = <code>id</code> (Int), ne UUID · role/statusi String</li>
+                  <li>App-owned: <code>users</code>, <code>refresh_tokens</code>, <code>audit_log</code>, <code>bb_sync_*</code></li>
+                  <li>Sync tabele su <b>cache</b> — piše ih samo sync modul</li>
+                </ul>
+              </div>
+              <div class="col">
+                <h4>Kod (backend/src)</h4>
+                <ul>
+                  <li>Sync modul: MSSQL klijent strogo read-only, kursor, log</li>
+                  <li>Implementiran 1 od 13 Sprint-1 syncera (<code>customers</code>)</li>
+                  <li>Auth: tabele spremne, <b>modul još ne postoji</b> — <code>TODO(auth)</code></li>
+                  <li>RBAC/RLS predlog v0.1 napisan — čeka potvrdu</li>
+                </ul>
+              </div>
+            </div>
+            <div class="cols">
+              <div class="col">
+                <h4>Urađeno</h4>
+                <ul class="check">
+                  <li class="yes">Portovana cela šema + rename mapa + migracije</li>
+                  <li class="yes">Sync skelet (log, state, health) + prvi syncer</li>
+                  <li class="yes">Pravila rada (BACKEND_RULES, DESIGN_SYSTEM) — na GitHub-u</li>
+                  <li class="yes">RBAC/RLS predlog usklađen sa 1.0 rolama</li>
+                </ul>
+              </div>
+              <div class="col">
+                <h4>Sledi</h4>
+                <ul class="check">
+                  <li class="next">Auth V1 (JWT, ADMIN) + no-op RBAC guardovi</li>
+                  <li class="next">Synceri 2–13 (artikli, radnici, crteži…)</li>
+                  <li class="next">Prvi domenski modul: <b>TEHNOLOGIJA</b> (pilot za RBAC)</li>
+                  <li class="wait">§11 odluke — blokiraju hibrid šemu i MRP/BOM logiku</li>
+                </ul>
+              </div>
+            </div>
+            <div class="modules">
+              <span class="mod new">Tehnološki postupci (TP)</span><span class="mod">Radni nalozi (RN)</span>
+              <span class="mod">PDM / crteži / BOM</span><span class="mod">Nacrti</span><span class="mod">Primopredaje</span>
+              <span class="mod">Lokacije delova</span><span class="mod">Strukture (radnici/mašine)</span>
+              <span class="mod">MRP / nabavka (uvid)</span><span class="mod">Komitenti / predmeti (pregled)</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3.0 -->
+      <div class="phase">
+        <div class="card">
+          <div class="card-head">
+            <span class="vchip">3.0</span>
+            <h3>Objedinjavanje — 1.0 prelazi na stack 2.0</h3>
+            <span class="spacer"></span>
+            <span class="pill neutral">Planirano</span>
+          </div>
+          <div class="card-body">
+            <p>Svih ~19 modula 1.0 prelazi na PostgreSQL + NestJS + Next.js i spaja se sa 2.0 u <b>jednu aplikaciju</b>. Strangler-fig, modul po modul, nad istom bazom — bez prekida rada.</p>
+            <div class="cols">
+              <div class="col">
+                <h4>Najteži deo — autorizacija</h4>
+                <ul>
+                  <li>~360+ RLS politika → NestJS guardovi + query-scoping</li>
+                  <li>Prvi korak: <b>auth + RBAC paritet</b> (GoTrue → NestJS JWT)</li>
+                  <li>RBAC/RLS predlog iz 2.0 je pripremljen baš za ovo</li>
+                  <li>Paritet se dokazuje test matricom rola × endpoint</li>
+                </ul>
+              </div>
+              <div class="col">
+                <h4>Redosled</h4>
+                <ul class="check">
+                  <li class="next">Auth paritet, pa pilot modul (Lokacije ili Reversi)</li>
+                  <li class="next">Front: 83 servisa se repointuju sa PostgREST na NestJS</li>
+                  <li class="next">238 DEFINER RPC → NestJS servisi u transakciji</li>
+                  <li class="next">PostgREST/GoTrue se gase kad poslednji modul pređe</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 4.0 -->
+      <div class="phase">
+        <div class="card">
+          <div class="card-head">
+            <span class="vchip">4.0</span>
+            <h3>BigBit ERP ulazi u platformu</h3>
+            <span class="spacer"></span>
+            <span class="pill neutral">Planirano</span>
+          </div>
+          <div class="card-body">
+            <p>Komercijala (glavna knjiga, PDV/POPDV, fakture, robna dokumenta, magacin, SEF eFaktura) se rebuild-uje u ServoSync domene. BigBit prestaje da bude spoljni izvor istine, <code>bigbit-sync</code> most se ukida. Najveći regulatorni domen — ide tek posle stabilne 3.0.</p>
+            <div class="cols">
+              <div class="col">
+                <h4>Materijal već spreman</h4>
+                <ul>
+                  <li><code>BB_T_25.MDB</code> (297 MB, 201 tabela, ~88k artikala)</li>
+                  <li>VBA i forme izvučeni u <code>_analiza/izvoz/</code></li>
+                </ul>
+              </div>
+              <div class="col">
+                <h4>Kad krene</h4>
+                <ul>
+                  <li>Ista metodologija kao za QBigTehn: scope-triage → ekstrakcija logike → mapa šeme</li>
+                  <li>Fiskalizacija RS + SEF = posebna analiza</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============ ARHITEKTURA KROZ FAZE ============ -->
+  <section>
+    <h2>Arhitektura kroz faze — kuda idu podaci</h2>
+    <p class="h2-note">Ista slika koju smo dogovorili: front se ne prevodi u međukoraku, prevođenje je posao 3.0, modul po modul.</p>
+
+    <div class="stage">
+      <div class="stage-label">Danas <span class="pill ok">stanje</span></div>
+      <div class="flow-scroll"><div class="flow">
+        <div class="fbox"><b>Front 1.0</b><span>Cloudflare · vanilla JS</span></div>
+        <div class="arrow">──►<small>REST</small></div>
+        <div class="fbox dark"><b>Supabase cloud</b><span>PostgREST · GoTrue · PG + RLS</span></div>
+        <div class="arrow">&nbsp;&nbsp;·&nbsp;&nbsp;</div>
+        <div class="fbox"><b>Backend 2.0</b><span>NestJS · on-prem PG</span></div>
+        <div class="arrow">◄──<small>read-only sync</small></div>
+        <div class="fbox"><b>QBigTehn</b><span>MS SQL · bridge_reader</span></div>
+        <div class="arrow">◄──<small>EXT_* link</small></div>
+        <div class="fbox"><b>BigBit</b><span>Access ERP</span></div>
+      </div></div>
+    </div>
+
+    <div class="stage">
+      <div class="stage-label">Posle međukoraka <span class="pill info">odobreno</span></div>
+      <div class="flow-scroll"><div class="flow">
+        <div class="fbox"><b>Front 1.0</b><span>isti kod · novi URL</span></div>
+        <div class="arrow">──►<small>Tunnel/VPN</small></div>
+        <div class="fbox accent"><b>Ubuntu server</b><span>PostgREST · GoTrue · PG + RLS</span></div>
+        <div class="arrow">&nbsp;&nbsp;·&nbsp;&nbsp;</div>
+        <div class="fbox"><b>Backend 2.0</b><span>NestJS · isti server</span></div>
+        <div class="arrow">◄──<small>read-only sync</small></div>
+        <div class="fbox"><b>QBigTehn</b><span>MS SQL</span></div>
+      </div></div>
+    </div>
+
+    <div class="stage">
+      <div class="stage-label">Tokom 3.0 <span class="pill neutral">strangler-fig</span></div>
+      <div class="flow-scroll"><div class="flow">
+        <div class="fbox"><b>Front</b><span>servis po servis prelazi</span></div>
+        <div class="arrow">──►<small>novi moduli</small></div>
+        <div class="fbox accent"><b>NestJS</b><span>guardovi + query-scoping</span></div>
+        <div class="arrow">──►</div>
+        <div class="fbox dark"><b>Ista PG baza</b><span>jedan izvor istine</span></div>
+        <div class="arrow">◄──</div>
+        <div class="fbox"><b>PostgREST</b><span>sve manje modula</span></div>
+        <div class="arrow">◄──<small>stari moduli</small></div>
+        <div class="fbox"><b>Front</b><span>još nemigrirani deo</span></div>
+      </div></div>
+    </div>
+
+    <div class="stage">
+      <div class="stage-label">Kraj 3.0 → 4.0 <span class="pill neutral">cilj</span></div>
+      <div class="flow-scroll"><div class="flow">
+        <div class="fbox"><b>Jedan front</b><span>Next.js · Cloudflare</span></div>
+        <div class="arrow">──►</div>
+        <div class="fbox accent"><b>Jedan backend</b><span>NestJS · RBAC iz predloga</span></div>
+        <div class="arrow">──►</div>
+        <div class="fbox dark"><b>Jedan PostgreSQL</b><span>proizvodnja + operativa + komercijala</span></div>
+        <div class="arrow">&nbsp;&nbsp;·&nbsp;&nbsp;</div>
+        <div class="fbox fade"><b>PostgREST · GoTrue</b><span>ugašeni</span></div>
+        <div class="arrow">&nbsp;&nbsp;·&nbsp;&nbsp;</div>
+        <div class="fbox fade"><b>BigBit most</b><span>ukinut u 4.0</span></div>
+      </div></div>
+    </div>
+  </section>
+
+  <!-- ============ PRAVILA ============ -->
+  <section>
+    <h2>Pravila koja važe kroz sve faze</h2>
+    <div class="rules">
+      <div class="rule"><b>Jedan izvor istine po tabeli, jednosmerno.</b> „Oba smera" = više jednosmernih tokova; nikad dvosmerno na istim redovima.</div>
+      <div class="rule"><b>Overlay never touch cache.</b> Sync-ovane tabele su cache i piše ih samo sync; lokalna polja idu u overlay/app-owned tabele.</div>
+      <div class="rule"><b>U QBigTehn MSSQL se nikada ne piše.</b> Samo parametrizovani SELECT preko <code>bridge_reader</code> naloga.</div>
+      <div class="rule"><b>Front na Cloudflare, backend on-prem iza WireGuard-a.</b> Sync worker živi on-prem i zove izvore odlazno.</div>
+      <div class="rule"><b>Svaki privremeni most ima sunset datum.</b> Umire čim se modul integriše u 3.0 — nijedan most nije trajan.</div>
+      <div class="rule"><b>Otvorene odluke niko ne implementira unapred.</b> Dok odluka nije zapisana u BACKEND_RULES, ne postoji.</div>
+    </div>
+  </section>
+
+  <!-- ============ RIZICI ============ -->
+  <section>
+    <h2>Glavni rizici po fazi</h2>
+    <div class="tbl-scroll">
+      <table>
+        <tr><th>Faza</th><th>Rizik</th><th>Ublažavanje</th></tr>
+        <tr>
+          <td class="v">2.0</td>
+          <td>Negovan = usko grlo domenskog znanja; BOM/MRP procedure; ciklusi u BOM podacima obaraju PG (<code>WITH RECURSIVE</code> bez guarda visi)</td>
+          <td>Logika već ekstrahovana (analiza 05); anti-ciklus guard obavezan; potvrde sa Negovanom</td>
+        </tr>
+        <tr>
+          <td class="v">Međukorak</td>
+          <td>Mrežni pristup frontu (server iza WireGuard-a); komponente bez nadzora verzija</td>
+          <td>Cloudflare Tunnel ili VPN odluka u sklopu prelaza; pinned verzije; ništa javno izloženo</td>
+        </tr>
+        <tr>
+          <td class="v">3.0</td>
+          <td>~360+ RLS + 238 DEFINER bez drop-in zamene; RLS test pokrivenost u 1.0 označena RED</td>
+          <td>Strangler-fig sa pilot modulom; RBAC/RLS predlog kao mapa; test matrica rola × endpoint</td>
+        </tr>
+        <tr>
+          <td class="v">Tranzicija</td>
+          <td>Sync konflikti između sistema; ID mapiranje</td>
+          <td>Jedan vlasnik po tabeli; stabilan <code>legacy_*</code> ključ; tombstone strategija; sunset datumi</td>
+        </tr>
+        <tr>
+          <td class="v">4.0</td>
+          <td>Fiskalizacija RS, PDV, SEF — regulatorni domen</td>
+          <td>Ide tek posle stabilne 3.0; posebna analiza BigBit-a (materijal već spreman)</td>
+        </tr>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ ODLUKE ============ -->
+  <section>
+    <h2>Otvorene odluke — blokiraju, čekaju potvrdu</h2>
+    <div class="cols" style="margin-top: 12px;">
+      <div class="col">
+        <h4>BACKEND_RULES §11 (Negovan)</h4>
+        <ul class="check">
+          <li class="wait">Šema: 1:1 plosnato (sad) ili hibrid cache + overlay (preporuka)</li>
+          <li class="wait">Sync semantika: upsert vs insert-only; propagacija brisanja</li>
+          <li class="wait">BOM/MRP/RN logika iz MS SQL procedura → <code>WITH RECURSIVE</code></li>
+          <li class="wait">Timestamp politika za nove tabele</li>
+        </ul>
+      </div>
+      <div class="col">
+        <h4>RBAC/RLS predlog v0.1 (Negovan/Nesa)</h4>
+        <ul class="check">
+          <li class="wait">Obim prava role ŠEF van tehnologije</li>
+          <li class="wait">Da li CNC programer potpisuje/završava TP</li>
+          <li class="wait">Nova tabela <code>cnc_programs</code> — da ili prilozi uz TP</li>
+          <li class="wait">Pravi PG RLS kao dodatni sloj — predlog: ne sada</li>
+          <li class="wait">MENADZMENT u 2.0: samo read ili i write paritet</li>
+          <li class="wait">Imenovanje: ŠEF vs ŠEF_PROIZVODNJE; zamena drafta parom PROJEKTANT_VOĐA/INŽENJER</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    Izvori: <code>backend/docs/ROADMAP.md</code> · <code>backend/docs/BACKEND_RULES.md</code> ·
+    <code>backend/docs/design/RBAC_RLS_PREDLOG.md</code> · <code>backend/docs/migration/00–05</code> ·
+    <code>servoteh-plan-montaze/docs/RBAC_MATRIX.md</code><br>
+    Generisano 4.7.2026. iz analize oba repoa. Ovaj prikaz je snapshot — izvor istine su dokumenti u repou.
+  </footer>
+
+</div>
+
+</body>
+</html>

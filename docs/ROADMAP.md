@@ -1,6 +1,7 @@
 # ServoSync — Roadmap digitalizacije Servoteha (1.0 → 4.0)
 
 > Autoritativni plan verzija. Cilj: od razdvojenih legacy sistema (Access/VBA BigBit, MS SQL QBigTehn, Supabase plan-montaže) do **jednog ERP + MES rešenja** na sopstvenom serveru.
+> **Vizuelni prikaz:** [ROADMAP.html](ROADMAP.html) — otvoriti lokalno u browseru (snapshot 4.7.2026; izvor istine ostaje ovaj fajl).
 > Prateće analize: [migration/README.md](migration/README.md) · [00-comparison](migration/00-comparison-qbigtehn-vs-planmontaze.md) · [01-qbigtehn-architecture](migration/01-qbigtehn-architecture-analysis.md) · [02-scope](migration/02-qbigtehn-scope-triage.md) · [03-planmontaze](migration/03-planmontaze-complexity-profile.md) · [05-sqlserver-logic](migration/05-qbigtehn-sqlserver-logic.md).
 
 ---
