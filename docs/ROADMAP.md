@@ -9,7 +9,7 @@
 
 | Verzija | Šta je | Stack | Status | Rezultat |
 |---|---|---|---|---|
-| **1.0** | Web moduli koje Nesa razvija (kadrovska, lokacije, održavanje, sastanci, reversi, plan montaže…) | Vite + vanilla JS · **Supabase** (PG cloud) | **Živ, u produkciji** (razvoj se zaključava ~1.5.2026) | Operativna MES-nadgradnja preko BigTehn-a |
+| **1.0** | Web moduli koje Nesa razvija (kadrovska, lokacije, održavanje, sastanci, reversi, plan montaže…) | Vite + vanilla JS · **Supabase** (PG cloud) → **self-host on-prem (međukorak)** | **Živ, u produkciji** (razvoj zaključan ~1.5.2026); **međukorak odobren 4.7.2026** | Operativna MES-nadgradnja preko BigTehn-a |
 | **2.0** | 1:1 (minimum) prerada **QBigTehn** (Access + MS SQL, Negovanov sistem) — proizvodnja/tehnologija | **NestJS + Prisma + PostgreSQL** on-prem | **Kreće sa Lukom Tasićem** (ovaj repo) | Proizvodni core: RN, TP, PDM/BOM, MRP, primopredaje, lokacije |
 | **3.0** | Prebacivanje **1.0 → stack 2.0** (Postgres + NestJS + Next) i integracija u **jednu aplikaciju** | isti kao 2.0 | Planirano | Objedinjen MES: proizvodnja (2.0) + operativni moduli (1.0) |
 | **4.0** | Integracija **BigBit ERP** (Access/VBA, komercijala: GK/PDV/fakture/magacin) u 3.0 | isti kao 2.0 | Planirano | **Kompletan ERP + MES** — jedna platforma za ceo Servoteh |
@@ -38,6 +38,26 @@ kadrovska (HR) · lokacije delova · održavanje mašina · sastanci · plan mon
 
 ### Uloga u roadmap-u
 1.0 je **izvor poslovnih pravila, UX tokova, RLS/audit obrazaca i delimičnog SQL modela**. Ostaje živ dok se u 3.0 ne prebaci na stack 2.0. Za neke tabele (npr. `zaposleni`) **1.0/Supabase je izvor istine** i tokom tranzicije se sinhronizuje sa 2.0 (vidi „Sync tokom tranzicije").
+
+### Međukorak — 1.0 sa Supabase clouda na on-prem (ODOBRENO 2026-07-04)
+
+**Odluka (Nenad, 4.7.2026):** 1.0 se **pre 3.0** seli sa Supabase clouda na naš Ubuntu server kao
+self-hosted stack: **PostgreSQL + PostgREST + GoTrue** (open-source komponente uz PG — nije Supabase
+cloud). Kod aplikacije, sve RLS politike i način rada ostaju netaknuti; u frontu se menja samo API
+URL + ključevi (sav data-access ide kroz `sbReq` wrapper, pa je promena u jednom config mestu).
+
+- **Faza 1 (2–3 nedelje):** infra prelaz — puna nezavisnost od Supabase clouda. Obavezan obuhvat:
+  storage (fajlovi), 12 edge funkcija i pg_cron ekvivalenti — ne samo PostgREST+GoTrue; **pinned
+  verzije** komponenti (bez auto-update); sve iza WireGuard-a, ništa javno izloženo (pristup fronta
+  preko Cloudflare Tunnel-a ili VPN-a — odluka u sklopu prelaza).
+- **Faza 2 = postojeći 3.0 plan** (strangler-fig): NestJS preuzima modul po modul **nad istom bazom**;
+  svaka komponenta ima **sunset kriterijum** — gasi se tek kad poslednji modul koji je koristi pređe
+  na NestJS.
+- **Posledice po 3.0:** migracija podataka Supabase→on-prem **nestaje kao poseban posao** (podaci su
+  posle međukoraka već na on-prem PG; NestJS se u 3.0 kači na istu bazu koju služi PostgREST); auth
+  paritet (GoTrue → NestJS JWT) ostaje prvi korak 3.0; NestJS DB konekcija mora imati definisan odnos
+  prema RLS politikama (svoj DB user koji ih zaobilazi + guardovi u aplikaciji — da ne nastane dupla,
+  konfliktna autorizacija).
 
 ---
 
@@ -76,7 +96,7 @@ QBigTehn već **povlači matične podatke iz BigBit-a** (komitenti, artikli, pre
 - **Autorizacija (najteži deo):** 293 RLS politike + 238 SECURITY DEFINER funkcije → **NestJS guardovi + eksplicitno query-scoping** (Prisma nema nativni RLS). Bezbednosno kritičan rewrite; model je rola × per-projekat × managed_departments × override flagovi.
 - **Poslovna logika u bazi:** transakcioni RPC-ovi (reversi inventar, payroll, loc premeštanja) + 473 RAISE EXCEPTION → NestJS servisi ili `$queryRaw`.
 - **Supabase-native supstrat bez drop-in zamene:** GoTrue Auth → NestJS/Passport JWT; Storage → MinIO/S3; Realtime → WS gateway ili LISTEN/NOTIFY; pg_cron/pg_net/Vault → NestJS scheduler + BullMQ/pg-boss + outbox; push (Web Push/FCM/APNs).
-- **Podaci:** Supabase PG → on-prem PG (pg_dump/logička replikacija; data model je već Postgres, pa 1:1).
+- **Podaci:** rešeno **međukorakom** (vidi 1.0) — podaci su već na on-prem PG; NestJS se kači na istu bazu koju služi PostgREST, pa posebne migracije podataka nema.
 
 ### Sekvenca
 Strangler-fig, modul po modul: prvo auth + RBAC parnost, pa jedan modul kraj-do-kraja (npr. Lokacije ili Reversi kao pilot za merenje tempa), pa ostali; Supabase se gasi tek kad poslednji modul pređe.
@@ -117,7 +137,7 @@ Detalji i procena: postojeća analiza „Supabase↔PG sync" (dani do par nedelj
 ## Zavisnosti i sekvenca (zašto ovim redom)
 
 ```
-1.0 (Supabase, živ)  ──┐
+1.0 (živ; međukorak → self-host on-prem) ──┐
                        ├─►  3.0 (objedini 1.0 na stack 2.0)  ──►  4.0 (+ BigBit ERP)
 2.0 (QBigTehn core) ───┘
         ▲
@@ -141,4 +161,4 @@ Detalji i procena: postojeća analiza „Supabase↔PG sync" (dani do par nedelj
 
 ---
 
-*Poslednji update: 2026-07-03. Sve gornje je plan/analiza — ništa u kodu/šemi nije menjano; implementaciju radi Luka uz potvrde Nesa/Negovan.*
+*Poslednji update: 2026-07-04 — dodat **odobren međukorak** (1.0 self-host na on-prem: PostgreSQL + PostgREST + GoTrue). Implementaciju radi Luka uz potvrde Nesa/Negovan.*
