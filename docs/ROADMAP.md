@@ -15,7 +15,7 @@
 | **3.0** | Prebacivanje **1.0 → stack 2.0** (Postgres + NestJS + Next) i integracija u **jednu aplikaciju** | isti kao 2.0 | Planirano | Objedinjen MES: proizvodnja (2.0) + operativni moduli (1.0) |
 | **4.0** | Integracija **BigBit ERP** (Access/VBA, komercijala: GK/PDV/fakture/magacin) u 3.0 | isti kao 2.0 | Planirano | **Kompletan ERP + MES** — jedna platforma za ceo Servoteh |
 
-**Vodeći princip kroz sve faze:** on-prem PostgreSQL, jedan izvor istine po tabeli, `legacy_*` mapping sloj, **overlay-never-touch-cache** (sync sme da menja samo cache tabele; lokalna polja su u overlay-u). Front na Cloudflare, backend on-prem iza WireGuard VPN-a.
+**Vodeći princip kroz sve faze:** on-prem PostgreSQL, jedan izvor istine po tabeli, `legacy_*` mapping sloj, **overlay-never-touch-cache** (sync sme da menja samo cache tabele; lokalna polja su u overlay-u). Front na Cloudflare, backend on-prem — spolja dostupan **isključivo kroz Cloudflare Tunnel** (odluka 4.7.2026, umesto WireGuard VPN-a: javna adresa aplikacije ostaje **ista kao postojeća**, server se ne izlaže direktno, bez VPN aplikacija na uređajima).
 
 > **Napomena o terminologiji:** Lukini dizajn dokumenti (`ARCHITECTURE.md`) i claude.ai Project koriste „Faza 1 / Faza 2". Mapiranje: „Faza 1" = **ServoSync 1.0** (plan-montaže), „Faza 2" = **ServoSync 2.0** (ovaj repo). 3.0 i 4.0 su nove, dalje faze.
 
@@ -49,8 +49,9 @@ URL + ključevi (sav data-access ide kroz `sbReq` wrapper, pa je promena u jedno
 
 - **Faza 1 (2–3 nedelje):** infra prelaz — puna nezavisnost od Supabase clouda. Obavezan obuhvat:
   storage (fajlovi), 12 edge funkcija i pg_cron ekvivalenti — ne samo PostgREST+GoTrue; **pinned
-  verzije** komponenti (bez auto-update); sve iza WireGuard-a, ništa javno izloženo (pristup fronta
-  preko Cloudflare Tunnel-a ili VPN-a — odluka u sklopu prelaza).
+  verzije** komponenti (bez auto-update); pristup: **Cloudflare Tunnel (ODLUČENO 4.7.2026)** —
+  javna adresa aplikacije ostaje **ista kao postojeća**, server se ne izlaže direktno u internet,
+  bez VPN aplikacija na uređajima (ključno za mobilne telefone radnika).
 - **Faza 2 = postojeći 3.0 plan** (strangler-fig): NestJS preuzima modul po modul **nad istom bazom**;
   svaka komponenta ima **sunset kriterijum** — gasi se tek kad poslednji modul koji je koristi pređe
   na NestJS.
@@ -99,6 +100,19 @@ QBigTehn već **povlači matične podatke iz BigBit-a** (komitenti, artikli, pre
 - **Supabase-native supstrat bez drop-in zamene:** GoTrue Auth → NestJS/Passport JWT; Storage → MinIO/S3; Realtime → WS gateway ili LISTEN/NOTIFY; pg_cron/pg_net/Vault → NestJS scheduler + BullMQ/pg-boss + outbox; push (Web Push/FCM/APNs).
 - **Podaci:** rešeno **međukorakom** (vidi 1.0) — podaci su već na on-prem PG; NestJS se kači na istu bazu koju služi PostgREST, pa posebne migracije podataka nema.
 
+### Mobilna aplikacija (Capacitor) — kontrolna lista za preradu fronta
+Capacitor ljuska i native plugini **preživljavaju** — `server.url` u APK-u pokazuje na web, a javna
+adresa ostaje ista (Tunnel odluka), pa **novi APK treba samo ako se adresa promeni**. Prevodi se 5
+veza sa Supabase-om, ne aplikacija:
+1. **Offline queue** (~424 LOC) — čuva PostgREST putanje i replay-uje ih; prepisati na NestJS ugovor
+   uz očuvanje idempotencije (`client_event_uuid`). Najopasnija tačka: greška = tihi duplikati u magacinu.
+2. **Auth tok** — GoTrue PKCE/refresh/**passkeys** utkani u `sbReq` → NestJS JWT refresh + WebAuthn iznova.
+3. **Push** — FCM v1 / APNs / Web Push VAPID dispatch prelazi sa Supabase edge sloja u NestJS; native plugin ostaje.
+4. **Realtime** (`work_hours`) — `postgres_changes` → WS gateway ili LISTEN/NOTIFY.
+5. **Service worker / PWA keš** — Workbox regex ima hardkodovane Supabase URL-ove; ažurirati na nove API putanje.
+
+Mobilni UI ekrani (~7.3K LOC `mobile my*`) idu kroz istu preradu kao desktop ekrani — nisu poseban trošak.
+
 ### Sekvenca
 Strangler-fig, modul po modul: prvo auth + RBAC parnost, pa jedan modul kraj-do-kraja (npr. Lokacije ili Reversi kao pilot za merenje tempa), pa ostali; Supabase se gasi tek kad poslednji modul pređe.
 
@@ -125,7 +139,7 @@ U `BigbitRaznoNenad/` (van gita): `BB_T_25.MDB` (297M, eksterni magacin, 201 tab
 Dok sve ne postane jedna aplikacija (3.0), neki podaci se dele između Supabase (1.0) i on-prem PG (2.0), i QBigTehn/BigBit izvora. Pravila:
 
 - **Jedan izvor istine po tabeli, jednosmerno po tabeli.** „Oba smera" = više jednosmernih tokova, nikad dvosmerno na istim redovima (izbegava konflikt-pakao).
-- **Sync worker živi on-prem** i zove Supabase/izvore **odlazno** — ne izlaže se on-prem iza WireGuard-a.
+- **Sync worker živi on-prem** i zove Supabase/izvore **odlazno** — on-prem se ne izlaže direktno (jedini ulaz spolja je Cloudflare Tunnel).
 - **Postgres↔Postgres je lako** (obe strane PG): opcija A — reuse `bb-sync` framework sa novim `SourceConnector` (Supabase); opcija B — `postgres_fdw`; opcija C — logička replikacija.
 - **Primer `workers`:** Supabase `zaposleni` = izvor istine → jednosmerno pull u 2.0 `workers` (read-only cache + overlay za proizvodna polja). Ako 2.0 vraća nešto HR-u (npr. sati) → zaseban push, druga tabela.
 - **Stabilan ključ mapiranja** (šifra radnika kao `legacy_*` na obe strane) i **delete/tombstone** strategija su jedini pravi trošak; za matične podatke (stotine redova) je mali.
@@ -162,4 +176,4 @@ Detalji i procena: postojeća analiza „Supabase↔PG sync" (dani do par nedelj
 
 ---
 
-*Poslednji update: 2026-07-04 — dodat **odobren međukorak** (1.0 self-host na on-prem: PostgreSQL + PostgREST + GoTrue). Implementaciju radi Luka uz potvrde Nesa/Negovan.*
+*Poslednji update: 2026-07-04 — dodat **odobren međukorak** (1.0 self-host na on-prem: PostgreSQL + PostgREST + GoTrue); odluka **Cloudflare Tunnel umesto WireGuard-a** (ista javna adresa kao postojeća); mobilna (Capacitor) kontrolna lista za 3.0. Implementaciju radi Luka uz potvrde Nesa/Negovan.*

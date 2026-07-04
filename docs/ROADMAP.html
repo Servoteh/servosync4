@@ -389,7 +389,7 @@
                 <ul class="check">
                   <li class="next">Pokriti i storage, 12 edge fn i pg_cron ekvivalente</li>
                   <li class="next">Pinned verzije PostgREST/GoTrue — bez auto-update</li>
-                  <li class="next">Sve iza WireGuard-a; pristup fronta: Tunnel ili VPN</li>
+                  <li class="yes">Odlučeno 4.7.: <b>Cloudflare Tunnel</b> — ista javna adresa kao danas, bez VPN-a na uređajima</li>
                   <li class="next">Sunset kriterijum po komponenti (gasi je 3.0)</li>
                 </ul>
               </div>
@@ -494,6 +494,7 @@
                   <li class="next">Auth paritet, pa pilot modul (Lokacije ili Reversi)</li>
                   <li class="next">Front: 83 servisa se repointuju sa PostgREST na NestJS</li>
                   <li class="next">238 DEFINER RPC → NestJS servisi u transakciji</li>
+                  <li class="next">Mobilna (Capacitor ostaje): offline queue, auth/passkeys, push, realtime, SW keš</li>
                   <li class="next">PostgREST/GoTrue se gase kad poslednji modul pređe</li>
                 </ul>
               </div>
@@ -560,7 +561,7 @@
       <div class="stage-label">Posle međukoraka <span class="pill info">odobreno</span></div>
       <div class="flow-scroll"><div class="flow">
         <div class="fbox"><b>Front 1.0</b><span>isti kod · novi URL</span></div>
-        <div class="arrow">──►<small>Tunnel/VPN</small></div>
+        <div class="arrow">──►<small>CF Tunnel · ista adresa</small></div>
         <div class="fbox accent"><b>Ubuntu server</b><span>PostgREST · GoTrue · PG + RLS</span></div>
         <div class="arrow">&nbsp;&nbsp;·&nbsp;&nbsp;</div>
         <div class="fbox"><b>Backend 2.0</b><span>NestJS · isti server</span></div>
@@ -607,7 +608,7 @@
       <div class="rule"><b>Jedan izvor istine po tabeli, jednosmerno.</b> „Oba smera" = više jednosmernih tokova; nikad dvosmerno na istim redovima.</div>
       <div class="rule"><b>Overlay never touch cache.</b> Sync-ovane tabele su cache i piše ih samo sync; lokalna polja idu u overlay/app-owned tabele.</div>
       <div class="rule"><b>U QBigTehn MSSQL se nikada ne piše.</b> Samo parametrizovani SELECT preko <code>bridge_reader</code> naloga.</div>
-      <div class="rule"><b>Front na Cloudflare, backend on-prem iza WireGuard-a.</b> Sync worker živi on-prem i zove izvore odlazno.</div>
+      <div class="rule"><b>Front na Cloudflare, backend samo kroz Cloudflare Tunnel.</b> Ista javna adresa kao postojeća; server se ne izlaže direktno; sync worker zove izvore odlazno.</div>
       <div class="rule"><b>Svaki privremeni most ima sunset datum.</b> Umire čim se modul integriše u 3.0 — nijedan most nije trajan.</div>
       <div class="rule"><b>Otvorene odluke niko ne implementira unapred.</b> Dok odluka nije zapisana u BACKEND_RULES, ne postoji.</div>
     </div>
@@ -626,8 +627,8 @@
         </tr>
         <tr>
           <td class="v">Međukorak</td>
-          <td>Mrežni pristup frontu (server iza WireGuard-a); komponente bez nadzora verzija</td>
-          <td>Cloudflare Tunnel ili VPN odluka u sklopu prelaza; pinned verzije; ništa javno izloženo</td>
+          <td>Konfiguracija tunela (server ne sme biti direktno izložen); komponente bez nadzora verzija</td>
+          <td>Cloudflare Tunnel (odlučeno 4.7.) — ista javna adresa, jedini ulaz spolja; pinned verzije</td>
         </tr>
         <tr>
           <td class="v">3.0</td>
