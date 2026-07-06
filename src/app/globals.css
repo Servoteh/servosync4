@@ -47,6 +47,7 @@
   /* tipografija */
   --font-sans: var(--font-sans);
   --font-mono: var(--font-mono);
+  --text-2xs: var(--text-2xs);
   --text-xs: var(--text-xs);
   --text-sm: var(--text-sm);
   --text-base: var(--text-base);

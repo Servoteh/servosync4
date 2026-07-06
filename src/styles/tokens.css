@@ -1,8 +1,11 @@
 /*
  * ServoSync dizajn tokeni — JEDINI izvor istine za boje, tipografiju i razmake.
  * Pravila upotrebe: frontend/docs/DESIGN_SYSTEM.md (§3).
- * v0.1 — vrednosti se finalno kalibrišu prema screenshotovima ServoSync 1.0;
- * do tada su radne, ali obavezujuće (menja se token, nikad hex u komponenti).
+ * v0.2 (2026-07-06) — neutrale kalibrisane prema 1.0 svetloj temi (legacy.css):
+ * --bg preuzet iz 1.0 (#F4F6F8) radi jasnijeg odvajanja belih panela; sidebar
+ * blago svetliji da se petrolej ton vidi (v0.1 se čitao kao čisto crn).
+ * Akcenat ostaje teal — odluka "pravac C" (4.7.2026); 1.0 se preborava ka njemu,
+ * ne obrnuto (vidi plan-montaze/docs/CURSOR_UI_USKLADJIVANJE_2.0.md).
  */
 
 :root {
@@ -14,7 +17,7 @@
   --accent-subtle: #f0faf8;      /* selekcija reda, blaga isticanja */
 
   /* ---------- neutrale (hladno-sive sa blagim teal tonom) ---------- */
-  --bg: #f7f9f9;                 /* pozadina aplikacije */
+  --bg: #f4f6f8;                 /* pozadina aplikacije (kalibrisano: 1.0 light --bg) */
   --surface: #ffffff;            /* kartice, tabele, paneli */
   --surface-2: #fbfcfc;          /* zaglavlja tabela, blage zone */
   --ink: #22282c;                /* primarni tekst */
@@ -23,11 +26,11 @@
   --line: #e3e8e8;               /* ivice, separatori */
   --line-soft: #eef2f2;          /* linije unutar tabela */
 
-  /* ---------- sidebar (tamni petrolej) ---------- */
-  --sidebar-bg: #16232a;
+  /* ---------- sidebar (tamni petrolej; v0.2 svetliji da se ton vidi) ---------- */
+  --sidebar-bg: #1a2b33;
   --sidebar-ink: #b9c6cc;
   --sidebar-ink-active: #ffffff;
-  --sidebar-line: #24343d;
+  --sidebar-line: #294049;
   --sidebar-accent: #2dd4bf;     /* svetliji teal — aktivna stavka na tamnom */
 
   /* ---------- semantičke boje (SAMO statusi/poruke, nikad dekoracija) ---------- */
@@ -45,6 +48,7 @@
   /* ---------- tipografija ---------- */
   --font-sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
   --font-mono: "Cascadia Mono", Consolas, monospace;   /* šifre u tehničkim kontekstima, logovi */
+  --text-2xs: 10.5px;   /* UPPERCASE zaglavlja kolona u gustim tabelama */
   --text-xs: 12px;      /* pomoćni tekst, statusna traka */
   --text-sm: 12.5px;    /* ćelije gustih tabela */
   --text-base: 14px;    /* osnovni UI tekst, forme */

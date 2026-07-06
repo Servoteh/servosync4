@@ -43,8 +43,9 @@
   aktivnu navigaciju, selekciju, fokus. *Nigde drugde.*
 * **Semantičke boje** (statusi, nikad dekoracija):
   info/u-toku `#1971c2` · upozorenje/čekanje `#e8890c` · uspeh/završeno `#2f9e44` · greška/kašnjenje `#d6453d`.
-* **Neutrale:** hladno-sive sa blagim teal tonom (`#f7f9f9` pozadina, `#22282c` tekst, `#79878e` sekundarni tekst,
-  `#e3e8e8` linije). Sidebar: tamni petrolej `#16232a`.
+* **Neutrale:** hladno-sive sa blagim teal tonom (`#f4f6f8` pozadina — kalibrisano prema 1.0 svetloj temi,
+  `#22282c` tekst, `#79878e` sekundarni tekst, `#e3e8e8` linije). Sidebar: tamni petrolej `#1a2b33`
+  (v0.2: svetliji od prvobitnog `#16232a` da se petrolej ton vidi, a ne čita kao crn).
 * **Tipografija:** sistemski stack `"Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif`
   (aplikacija živi na Windows desktopima + tabletima). Skala: 12 / 12.5 / 14 / 16 / 20 / 24 px.
   Brojevi u tabelama i šifre: `font-variant-numeric: tabular-nums`.
@@ -52,8 +53,10 @@
   **Senke:** minimalne — hijerarhija se pravi linijama i pozadinama, ne senkama.
 * **Tamna tema:** tokeni su pripremljeni za nju, ali se ne isporučuje u 2.0 V1 (odluka se donosi u 3.0).
 
-> ⚠️ v0.1: paleta neutrala i akcenta se **finalno kalibriše prema screenshotovima ServoSync 1.0** —
-> dok se to ne uradi, vrednosti u `tokens.css` su radne, ali obavezujuće (menja se token, ne kod).
+> ✅ v0.2 (2026-07-06): neutrale **kalibrisane prema 1.0 svetloj temi** (`legacy.css`): pozadina preuzeta
+> 1:1 (`#F4F6F8`), sidebar posvetljen. **Akcenat ostaje teal** — odluka "pravac C": 1.0 se postepeno
+> preborava ka 2.0 paleti (vidi `plan-montaze/docs/CURSOR_UI_USKLADJIVANJE_2.0.md`), ne obrnuto;
+> narandžasti akcenat 1.0 (`#E8523A`) se NE preuzima. Promena tokena ovde = obavezan prenos u 1.0 port.
 
 ## 4. Raspored ekrana
 

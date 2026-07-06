@@ -65,7 +65,7 @@ export function DataTable<T>({
                 key={c.key}
                 className={cn(
                   'h-9 px-4 font-semibold uppercase tracking-[0.08em] text-ink-secondary',
-                  'text-[10.5px]',
+                  'text-2xs',
                   c.align === 'right' && 'text-right',
                 )}
               >
