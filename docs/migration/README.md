@@ -12,6 +12,7 @@ Read-only analize nastale multi-agent obradom legacy QBigTehn izvora, kanonskih 
 | [02-qbigtehn-scope-triage.md](02-qbigtehn-scope-triage.md) | Klasifikacija 873 legacy fajla: used (~44% jezgro) vs bloat (26%) vs ambiguous |
 | [03-planmontaze-complexity-profile.md](03-planmontaze-complexity-profile.md) | Profil kompleksnosti ServoSync 1.0 (obim, RLS, ocena težine 5/5) |
 | [05-qbigtehn-sqlserver-logic.md](05-qbigtehn-sqlserver-logic.md) | **Poslovna logika iz MS SQL-a** (BOM/MRP/RN/TP algoritmi, 51 SP + 63 fn) + mapiranje na `WITH RECURSIVE` |
+| [06-bigbit-preuzmi-iz-bb.md](06-bigbit-preuzmi-iz-bb.md) | **„Preuzmi iz BB" legacy mehanizam** — mapiranje kolona po tabeli (5 tabela, INSERT-only), transformacije, mirror, veza sa BigBit-om + PDM XML; referenca za `bigbit-sync` |
 
 ## Otvorena pitanja za Negovana/Nesu (blokiraju odluke)
 - Odluka o šemi: 1:1 vs **hibrid (legacy-cache + overlay)** vs kanonski (preporuka: hibrid).
