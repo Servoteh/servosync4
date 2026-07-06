@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="sr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ServoSync 2.0 — agenda za odluke</title>
+</head>
+<body>
+<style>
+  :root {
+    --bg: #f4f6f8; --surface: #ffffff; --surface-2: #fafbfc;
+    --ink: #22282c; --ink-2: #6b7a82; --line: #e3e8e8; --line-soft: #eef2f2;
+    --accent: #0d9488; --accent-fg: #fff; --accent-subtle: #eefaf8;
+    --petrol: #16232a; --petrol-ink: #c4d0d6;
+    --ok: #2f9e44; --ok-bg: #e6f5e9; --warn: #e8890c; --warn-bg: #fdf0e0;
+    --info: #1971c2; --info-bg: #e7f0fb; --danger: #d6453d;
+    --sans: "Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,sans-serif;
+    --mono: "Cascadia Mono",Consolas,ui-monospace,monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #101a20; --surface: #182730; --surface-2: #14222a;
+      --ink: #e6edef; --ink-2: #93a5ad; --line: #26383f; --line-soft: #1f3038;
+      --accent: #2dd4bf; --accent-fg: #06201d; --accent-subtle: rgba(45,212,191,.09);
+      --petrol: #0c151a; --petrol-ink: #c4d0d6;
+      --ok: #62c877; --ok-bg: rgba(47,158,68,.16); --warn: #f0a13c; --warn-bg: rgba(232,137,12,.16);
+      --info: #6aaef0; --info-bg: rgba(64,140,217,.16); --danger: #ea7d75;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #101a20; --surface: #182730; --surface-2: #14222a;
+    --ink: #e6edef; --ink-2: #93a5ad; --line: #26383f; --line-soft: #1f3038;
+    --accent: #2dd4bf; --accent-fg: #06201d; --accent-subtle: rgba(45,212,191,.09);
+    --petrol: #0c151a; --petrol-ink: #c4d0d6;
+    --ok: #62c877; --ok-bg: rgba(47,158,68,.16); --warn: #f0a13c; --warn-bg: rgba(232,137,12,.16);
+    --info: #6aaef0; --info-bg: rgba(64,140,217,.16); --danger: #ea7d75;
+  }
+  :root[data-theme="light"] {
+    --bg: #f4f6f8; --surface: #ffffff; --surface-2: #fafbfc;
+    --ink: #22282c; --ink-2: #6b7a82; --line: #e3e8e8; --line-soft: #eef2f2;
+    --accent: #0d9488; --accent-fg: #fff; --accent-subtle: #eefaf8;
+    --petrol: #16232a; --petrol-ink: #c4d0d6;
+    --ok: #2f9e44; --ok-bg: #e6f5e9; --warn: #e8890c; --warn-bg: #fdf0e0;
+    --info: #1971c2; --info-bg: #e7f0fb; --danger: #d6453d;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); font-size: 14px; line-height: 1.5; }
+  .wrap { max-width: 940px; margin: 0 auto; padding: 30px 22px 60px; }
+  .eyebrow { font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-2); font-weight: 600; }
+  h1 { font-size: 25px; margin: 5px 0 3px; font-weight: 650; letter-spacing: -.01em; }
+  .sub { color: var(--ink-2); font-size: 13px; margin: 0 0 8px; }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 12.5px; color: var(--ink-2); margin: 10px 0 4px; }
+  .meta b { color: var(--ink); font-weight: 600; }
+  h2 { font-size: 16px; font-weight: 650; margin: 30px 0 4px; display: flex; align-items: baseline; gap: 9px; }
+  h2 .n { font-family: var(--mono); font-size: 13px; color: var(--accent); font-weight: 700; }
+  .lead { color: var(--ink-2); font-size: 13px; margin: 0 0 12px; max-width: 78ch; }
+
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 9px; margin-bottom: 12px; overflow: hidden; }
+  .card-h { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; padding: 11px 16px; background: var(--surface-2); border-bottom: 1px solid var(--line-soft); }
+  .card-h .q { font-weight: 650; font-size: 14.5px; flex: 1; min-width: 60%; }
+  .card-b { padding: 12px 16px; display: grid; gap: 10px; }
+  @media (min-width: 680px) { .card-b { grid-template-columns: 1fr 1fr; } .card-b .full { grid-column: 1 / -1; } }
+  .box { background: var(--surface-2); border: 1px solid var(--line-soft); border-radius: 7px; padding: 9px 12px; }
+  .box h4 { margin: 0 0 4px; font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-2); font-weight: 650; }
+  .box p { margin: 0; font-size: 13px; }
+  .box.rec { border-color: var(--accent); background: var(--accent-subtle); }
+  .box.rec h4 { color: var(--accent); }
+  code { font-family: var(--mono); font-size: 12px; background: var(--line-soft); padding: 0 4px; border-radius: 4px; }
+
+  .tag { font-size: 10.5px; font-weight: 700; letter-spacing: .04em; padding: 2px 8px; border-radius: 999px; white-space: nowrap; text-transform: uppercase; }
+  .tag.block { color: var(--danger); background: var(--warn-bg); }
+  .tag.dec { color: var(--info); background: var(--info-bg); }
+  .who { font-size: 11.5px; color: var(--ink-2); }
+  .who b { color: var(--ink); }
+  .decide { display: inline-block; min-width: 130px; border-bottom: 1.5px solid var(--line); }
+
+  .unlock { font-size: 12.5px; color: var(--ink-2); padding: 8px 16px; border-top: 1px dashed var(--line); background: var(--surface); }
+  .unlock b { color: var(--ok); }
+
+  .banner { border-left: 3px solid var(--accent); background: var(--accent-subtle); border-radius: 0 7px 7px 0; padding: 11px 15px; font-size: 13px; margin: 4px 0 20px; }
+  .split { display: grid; gap: 12px; }
+  @media (min-width: 680px) { .split { grid-template-columns: 1fr 1fr; } }
+
+  table.src { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 4px; }
+  table.src th { text-align: left; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-2); font-weight: 650; padding: 7px 10px; border-bottom: 1px solid var(--line); }
+  table.src td { padding: 6px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  table.src tr:last-child td { border-bottom: 0; }
+  .pill { font-size: 10.5px; font-weight: 600; padding: 1px 8px; border-radius: 999px; white-space: nowrap; }
+  .pill.tmp { color: var(--warn); background: var(--warn-bg); }
+  .pill.perm { color: var(--ok); background: var(--ok-bg); }
+
+  footer { margin-top: 40px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--ink-2); font-size: 12px; }
+  footer code { background: none; padding: 0; }
+  @media print {
+    body { background: #fff; font-size: 11.5px; }
+    .card, .box { break-inside: avoid; }
+    h2 { break-after: avoid; }
+  }
+</style>
+
+<div class="wrap">
+  <div class="eyebrow">Servoteh · ServoSync 2.0</div>
+  <h1>Agenda za odluke — sastanak</h1>
+  <p class="sub">Deset otvorenih pitanja koja kod ne može da reši. Za svako: preporuka + šta odblokira. Odluka se upisuje u <code>BACKEND_RULES §11/§12</code> ili RBAC dokument — od tog trenutka se radi po njoj.</p>
+  <div class="meta">
+    <span><b>Kome:</b> Negovan (proizvodnja/QBigTehn/BigBit), Nesa (1.0/sync/RBAC)</span>
+    <span><b>Priprema:</b> nije potrebna — sav materijal u repou</span>
+    <span><b>Trajanje:</b> ~60 min (blok A) + zaseban radni termin (§7 BOM/MRP)</span>
+  </div>
+
+  <div class="banner">
+    <b>Ključna nova stavka od 7.7.:</b> potvrđeno je da su proizvodne tabele vlasništvo ServoSync-a
+    (tehnolog piše direktno), a QBigTehn sync je privremen. Ostaju <b>tri trajna/privremena izvora</b> —
+    prvo ih razrešiti, jer bez izvora podataka nema modula.
+  </div>
+
+  <!-- IZVORI PODATAKA -->
+  <h2><span class="n">A</span> Izvori podataka — tri sync-a</h2>
+  <p class="lead">Prvo zaključati odakle podaci dolaze. Ovo blokira <code>bigbit-sync</code> i PDM uvoz.</p>
+
+  <table class="src">
+    <tr><th>Sync</th><th>Izvor</th><th>Status</th><th>Šta nosi</th></tr>
+    <tr><td><b>A</b></td><td>QBigTehn MSSQL <code>vasa-SQL:5765</code></td><td><span class="pill tmp">privremen — gasi se</span></td><td>proba + jednokratni uvoz proizvodnje</td></tr>
+    <tr><td><b>B</b></td><td>BigBit (Access)</td><td><span class="pill perm">trajan do 4.0</span></td><td>komitenti, artikli, predmeti, prodavci</td></tr>
+    <tr><td><b>C</b></td><td>PDM / SolidWorks (MS SQL)</td><td><span class="pill perm">trajan, jednosmeran</span></td><td>sklopovi (BOM), crteži, dokumentacija</td></tr>
+  </table>
+
+  <div class="card">
+    <div class="card-h"><span class="q">1 · Kako se ServoSync kači na BigBit posle gašenja QBigTehn-a?</span><span class="tag block">Blokira Sync B</span></div>
+    <div class="card-b">
+      <div class="box"><h4>Problem</h4><p>Danas BigBit podaci stižu iz druge ruke (BigBit → QBigTehn → ServoSync). Kad QBigTehn nestane, veza se prekida.</p></div>
+      <div class="box rec"><h4>Preporuka</h4><p>BigBit izbaci <b>export (XML ili CSV)</b>, ServoSync uvozi (pun snapshot + UPSERT). Izbeći živi ODBC na <code>.MDB</code>. Ručni unos = rezerva za male entitete.</p></div>
+      <div class="box full"><h4>Potvrditi</h4><p>Format (XML vs CSV — šta je lakše u BigBit-u) · <b>ceo katalog artikala (10–88k) ili samo oni koje proizvodnja koristi?</b> (od toga zavisi da li je ručni unos artikala uopšte moguć) · okidač: dugme ili noćni zakazani export.</p></div>
+    </div>
+    <div class="unlock"><b>Odblokira:</b> BigBit-sync modul · komitente/artikle/predmete u svim modulima &nbsp;·&nbsp; <span class="who"><b>Odluka:</b> Negovan + Nesa</span> &nbsp; <span class="decide">&nbsp;</span></div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><span class="q">2 · PDM: XML ugovor ili direktno čitanje SQL-a?</span><span class="tag block">Blokira Sync C</span></div>
+    <div class="card-b">
+      <div class="box"><h4>Kontekst</h4><p>PDM (SolidWorks) je zasebna MS SQL baza. Treba stalan jednosmeran sync za sklopove/BOM, crteže i dokumentaciju. Šema već ima <code>drawing_import_log</code>, <code>POST /pdm/import</code>.</p></div>
+      <div class="box rec"><h4>Preporuka</h4><p><b>XML kao ugovor</b> (SolidWorks izbaci XML + BOM) uz automatizovan handoff da deluje kao kontinuiran sync — interna SolidWorks SQL šema je krhka za BOM.</p></div>
+      <div class="box full"><h4>Potvrditi</h4><p>Da li je „PDM MS SQL" sirov SolidWorks (→ ide XML) ili Servoteh-ov međusloj (→ direktan SQL je OK) · učestalost · da li PDF dokumentacija ide istim kanalom.</p></div>
+    </div>
+    <div class="unlock"><b>Odblokira:</b> PDM modul · sklopovi/BOM za proizvodnju · MRP nabavka iz sklopnog crteža &nbsp;·&nbsp; <span class="who"><b>Odluka:</b> Negovan + konstrukcija/PB</span> &nbsp; <span class="decide">&nbsp;</span></div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><span class="q">3 · BigBit sync semantika</span><span class="tag dec">Odluka</span></div>
+    <div class="card-b">
+      <div class="box"><h4>Legacy stanje</h4><p><code>PreuzmiIzBB</code> je INSERT-only: bez update-a (adresa se ne osvežava), bez brisanja, PIB placeholder <code>XX_&lt;šifra&gt;</code>, šifra prodavca=0.</p></div>
+      <div class="box rec"><h4>Preporuka</h4><p><b>BigBit-wins UPSERT</b> (rešava „nema update"); brisanje = soft-inactive (ne fizičko); potvrda da je sistem jednofirmski.</p></div>
+    </div>
+    <div class="unlock"><b>Odblokira:</b> pouzdan noćni sync bez iznenađenja &nbsp;·&nbsp; <span class="who"><b>Odluka:</b> Nesa</span> &nbsp; <span class="decide">&nbsp;</span></div>
+  </div>
+
+  <!-- ŠEMA -->
+  <h2><span class="n">B</span> Šema i timestamp</h2>
+  <div class="card">
+    <div class="card-h"><span class="q">4 · Cache/overlay za BigBit matične tabele</span><span class="tag dec">Odluka</span></div>
+    <div class="card-b">
+      <div class="box"><h4>Već razjašnjeno</h4><p>Proizvodne tabele = ServoSync vlasništvo, tehnolog piše direktno (nema pitanja). Ostaje samo BigBit ~8 matičnih tabela.</p></div>
+      <div class="box rec"><h4>Preporuka</h4><p>BigBit tabele su read-only cache; ako ikad zatreba lokalno polje (npr. proizvodni atribut artikla) → overlay tabela, ne u cache.</p></div>
+    </div>
+    <div class="unlock"><b>Odblokira:</b> potvrda da moduli smeju da referenciraju matične podatke &nbsp;·&nbsp; <span class="who"><b>Odluka:</b> Nesa</span> &nbsp; <span class="decide">&nbsp;</span></div>
+  </div>
+  <div class="card">
+    <div class="card-h"><span class="q">5 · Timestamp politika za nove tabele</span><span class="tag dec">Odluka · 5 min</span></div>
+    <div class="card-b">
+      <div class="box full"><h4>Pitanje</h4><p>Nove app-owned tabele: vreme <b>bez zone</b> (<code>Timestamp(6)</code>, kao legacy port) ili <b>sa zonom</b> (<code>Timestamptz</code>)? Jednokratno, ali se ne vraća.</p></div>
+    </div>
+    <div class="unlock"><span class="who"><b>Odluka:</b> Nesa/Luka</span> &nbsp; <span class="decide">&nbsp;</span></div>
+  </div>
+
+  <!-- RBAC -->
+  <h2><span class="n">C</span> RBAC — role i prava (pilot modul TEHNOLOGIJA)</h2>
+  <p class="lead">Pun predlog: <code>backend/docs/design/RBAC_RLS_PREDLOG.md</code>. Ovih 6 pitanja odblokiraju aktivaciju prava.</p>
+  <div class="split">
+    <div class="card">
+      <div class="card-h"><span class="q">6 · Obim role ŠEF van tehnologije</span></div>
+      <div class="card-b"><div class="box rec full"><h4>Predlog</h4><p>Pun rad + odobravanje na RN/primopredajama/lokacijama, pregled ostalog. Jedan šef ili više (šef tehnologije ≠ šef proizvodnje)?</p></div></div>
+      <div class="unlock"><span class="who"><b>Odluka:</b> Negovan</span> <span class="decide">&nbsp;</span></div>
+    </div>
+    <div class="card">
+      <div class="card-h"><span class="q">7 · Ko potpisuje/završava TP</span></div>
+      <div class="card-b"><div class="box rec full"><h4>Predlog</h4><p>Tehnolog (autor) i ŠEF. Da li i CNC programer sme da završi/potpiše TP?</p></div></div>
+      <div class="unlock"><span class="who"><b>Odluka:</b> Negovan</span> <span class="decide">&nbsp;</span></div>
+    </div>
+    <div class="card">
+      <div class="card-h"><span class="q">8 · Tabela <code>cnc_programs</code>?</span></div>
+      <div class="card-b"><div class="box rec full"><h4>Predlog</h4><p>Uvesti zasebnu tabelu (CNC programer vlasnik), ili CNC ostaje kao prilog uz TP (<code>tech_process_documents</code>)?</p></div></div>
+      <div class="unlock"><span class="who"><b>Odluka:</b> Negovan + CNC</span> <span class="decide">&nbsp;</span></div>
+    </div>
+    <div class="card">
+      <div class="card-h"><span class="q">9 · MENADZMENT + PG RLS</span></div>
+      <div class="card-b"><div class="box rec full"><h4>Predlog</h4><p>MENADZMENT: samo uvid u 2.0 (ne write). Pravi PostgreSQL RLS: <b>ne sada</b> (guardovi dovoljni) — potvrditi.</p></div></div>
+      <div class="unlock"><span class="who"><b>Odluka:</b> Nesa</span> <span class="decide">&nbsp;</span></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-h"><span class="q">10 · Imenovanje rola</span><span class="tag dec">Odluka</span></div>
+    <div class="card-b"><div class="box rec full"><h4>Predlog</h4><p><code>SEF</code> vs <code>SEF_PROIZVODNJE</code>; potvrda da par <code>PROJEKTANT_VODJA</code> / <code>INZENJER</code> zamenjuje staru draft rolu <code>PROJEKTNI_BIRO</code>.</p></div></div>
+    <div class="unlock"><span class="who"><b>Odluka:</b> Nesa + Negovan</span> <span class="decide">&nbsp;</span></div>
+  </div>
+
+  <!-- BOM/MRP -->
+  <h2><span class="n">D</span> Zaseban radni termin</h2>
+  <div class="card">
+    <div class="card-h"><span class="q">§ BOM/MRP/RN logika iz MS SQL procedura</span><span class="tag block">Najveći rizik</span></div>
+    <div class="card-b">
+      <div class="box"><h4>Zašto zaseban termin</h4><p>51 procedura + 63 funkcije (sastavnice, potrebe materijala). Samo Negovan zna šta je namera a šta istorijska slučajnost. Dubinski prolazak, ne u 60 min.</p></div>
+      <div class="box rec"><h4>Tehnički uslov</h4><p>Prevod na Postgres <code>WITH RECURSIVE</code> — <b>obavezan anti-ciklus guard</b> (bez njega PG visi na cikličnom BOM-u). Logika već ekstrahovana (analiza 05).</p></div>
+    </div>
+    <div class="unlock"><b>Odblokira:</b> MRP modul + računski delovi RN/BOM-a &nbsp;·&nbsp; <span class="who"><b>Vodi:</b> Negovan + Luka</span></div>
+  </div>
+
+  <footer>
+    Izvori: <code>backend/docs/BACKEND_RULES.md §3, §11</code> · <code>ROADMAP.md</code> ·
+    <code>design/RBAC_RLS_PREDLOG.md</code> · <code>ServoSync-specification.md</code> ·
+    <code>design/MODULE_SPEC_bigbit_sync.md</code> · <code>design/MODULE_SPEC_pdm.md</code><br>
+    Pripremljeno 7.7.2026. Svaka odluka se posle sastanka upisuje u BACKEND_RULES §11 → §12 (ili RBAC dokument) — dok nije tamo, ne postoji.
+  </footer>
+</div>
+
+</body>
+</html>

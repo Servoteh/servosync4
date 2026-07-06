@@ -173,17 +173,33 @@ Niko (ni AI sesija) ne implementira ove stvari pre zapisane odluke ovde:
    ako ikad zatreba lokalno polje na njima (npr. proizvodni atribut artikla), ide u overlay tabelu, ne u
    cache. Vidi [01-qbigtehn-architecture-analysis §5](migration/01-qbigtehn-architecture-analysis.md).
 2. **BigBit sync semantika:**
-   a) **Konekcija posle gašenja QBigTehn-a (NOVO, blokira `bigbit-sync`):** danas BigBit podaci stižu
-      iz druge ruke (BigBit → QBigTehn MSSQL → ServoSync). Kad QBigTehn nestane, na šta se `bigbit-sync`
-      kači direktno — BigBit SQL Server (spec [MODULE_SPEC_bigbit_sync §1](design/MODULE_SPEC_bigbit_sync.md))
-      ili Access `.MDB` (ROADMAP opis) ili export fajl? Bez odgovora Sync B nema izvor.
+   a) **Konekcija posle gašenja QBigTehn-a (blokira `bigbit-sync`).** Danas BigBit podaci stižu iz druge
+      ruke (BigBit → QBigTehn MSSQL → ServoSync). Kad QBigTehn nestane, `bigbit-sync` mora direktno na BigBit.
+      **PREPORUKA (Nenad + analiza 2026-07-07, čeka finalnu potvrdu formata):** BigBit **izbacuje export
+      (XML ili CSV)** koji ServoSync uvozi — kao primarni mehanizam za sve matične grupe. Razlozi: čisto
+      preko granice Linux(NestJS)↔Access, razdvojeno (nema žive konekcije, uz Cloudflare Tunnel postavku),
+      most ionako umire u 4.0 pa ne vredi CDC. **Pun snapshot + UPSERT po šifri** (rešava legacy „nema
+      update/nema delete" bagove); reuse `bb_sync_log`/`bb_sync_state` uz novi file `SourceConnector`.
+      **Ručni unos = rezerva** za male entitete (prodavci, komitenti, predmeti) i ispravke. **Izbeći**
+      živi ODBC/mdb-tools na `.MDB` sa Linuxa (`.accdb` slabo, Jet locking, najkrhkije).
+      *Potvrditi:* format (XML vs CSV, šta je lakše u BigBit VBA) i **da li ceo katalog artikala (10–88k)
+      ili samo artikli koje proizvodnja stvarno koristi** (menja da li je ručni unos artikala uopšte moguć).
    b) BigBit-wins **UPSERT** vs legacy insert-only (legacy `PreuzmiIzBB` je INSERT-only, vidi
-      [ServoSync-specification.md](../ServoSync-specification.md)); propagacija brisanja (tombstone?);
+      [ServoSync-specification.md](../ServoSync-specification.md)); propagacija brisanja (tombstone/soft-inactive?);
       PIB drift / šifra prodavca=0 popravke; potvrda single-tenant.
-3. **Poslovna logika iz MS SQL procedura** (BOM/MRP/RN): replikacija kroz `WITH RECURSIVE` — **obavezan
+3. **PDM sync — TREĆI trajni izvor (NOVO 2026-07-07, Nenad).** PDM (SolidWorks) je zasebna **MS SQL** baza;
+   ServoSync treba **stalni jednosmerni sync** za **sklopove (BOM: `drawing_components`/`drawing_assemblies`),
+   crteže i dokumentaciju**. Šema to već predviđa (`drawing_import_log`, `PDMXMLParser.bas`,
+   `POST /pdm/import`). **Otvoreno pitanje:** (a) **XML kao ugovor** (SolidWorks izbaci XML metapodatke +
+   BOM → ServoSync uvozi; postojeći spec, stabilan interfejs) uz **automatizovan handoff** da deluje kao
+   kontinuiran sync, vs (b) **direktno čitanje PDM MS SQL-a** (imamo već `mssql` klijent). **Preporuka: XML
+   ugovor + automatizacija**, jer je interna SolidWorks PDM SQL šema vendor-specifična i krhka za BOM.
+   *Potvrditi:* da li je „PDM MS SQL" sirov SolidWorks (→ XML) ili Servoteh-ov međusloj (→ direktan SQL OK);
+   učestalost; da li dokumentacija (PDF) ide kroz isti kanal. Vidi [MODULE_SPEC_pdm.md](design/MODULE_SPEC_pdm.md).
+4. **Poslovna logika iz MS SQL procedura** (BOM/MRP/RN): replikacija kroz `WITH RECURSIVE` — **obavezan
    anti-ciklus guard** (PG bez njega visi na cikličnim BOM podacima; vidi
    [05-qbigtehn-sqlserver-logic](migration/05-qbigtehn-sqlserver-logic.md)).
-4. **Timestamp politika za nove app-owned tabele** (`Timestamp(6)` kao legacy port vs `Timestamptz`).
+5. **Timestamp politika za nove app-owned tabele** (`Timestamp(6)` kao legacy port vs `Timestamptz`).
 
 ## 12. Promene ovog dokumenta
 
@@ -191,3 +207,4 @@ Niko (ni AI sesija) ne implementira ove stvari pre zapisane odluke ovde:
 |---|---|---|
 | 0.1 | 2026-07-04 | Prva verzija — kodifikovana stvarna praksa iz koda + usvojene konvencije iz ARCHITECTURE.md drafta; popisana odstupanja (§2) i otvorene odluke (§11). |
 | 0.2 | 2026-07-07 | Razjašnjeno vlasništvo tabela (§3, Nenad): proizvodne tabele = ServoSync vlasništvo (QBigTehn MSSQL sync je privremen, gasi se); cache/overlay (§11.1) suženo samo na BigBit matične podatke. §11.2 dopunjen novom blokadom: kako se `bigbit-sync` kači na BigBit posle gašenja QBigTehn-a. |
+| 0.3 | 2026-07-07 | §11.2a: preporuka za BigBit izvor = **export (XML/CSV) + UPSERT** (ne živi ODBC). Dodat §11.3: **PDM sync** kao treći trajni izvor (SolidWorks MS SQL → XML ugovor, preporuka). Model „tri sync-a" (A privremen / B BigBit / C PDM). |

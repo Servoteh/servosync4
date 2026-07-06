@@ -126,9 +126,19 @@ dnevnoj upotrebi**. Sve posle toga je širenje, ne izgradnja.
 2. **Sync:** BigBit-wins upsert vs legacy insert-only; delete-propagacija; single-tenant potvrda.
 3. **Poslovna logika iz MS SQL-a** (BOM/MRP/RN procedure) — replicirati preko `WITH RECURSIVE` (vidi [05-sqlserver-logic](migration/05-qbigtehn-sqlserver-logic.md)); pažnja na anti-ciklus guard (PG bez njega **visi**).
 
-### Bitna veza sa BigBit-om — RAZJAŠNJENO 2026-07-07 (Nenad)
+### Spoljni izvori podataka — RAZJAŠNJENO 2026-07-07 (Nenad)
 
-**Dva sync-a, ne jedan** (vidi [BACKEND_RULES §3 „Vlasništvo tabela"](BACKEND_RULES.md)):
+**Tri odvojena sync-a** (vidi [BACKEND_RULES §3 + §11](BACKEND_RULES.md)):
+
+- **Sync A — QBigTehn MSSQL (`vasa-SQL:5765`): PRIVREMEN.** Proba + jednokratni završni uvoz proizvodnje,
+  pa se gasi. ServoSync PG postaje jedini izvor istine za proizvodnju/tehnologiju.
+- **Sync B — BigBit matični podaci: TRAJAN do 4.0.** Komitenti, artikli, predmeti, prodavci (+ tarife,
+  grupe, magacini). **Preporuka izvora: export (XML/CSV) iz BigBit-a + UPSERT** (ne živi ODBC na `.MDB`).
+- **Sync C — PDM (SolidWorks, MS SQL): TRAJAN, jednosmeran.** Sklopovi (BOM), crteži, dokumentacija.
+  **Preporuka: XML ugovor (postojeći `POST /pdm/import` + `PDMXMLParser`) uz automatizovan handoff** —
+  interna SolidWorks SQL šema je krhka za direktno čitanje BOM-a. Šema već ima `drawing_import_log`.
+
+Detalji Sync-a B (legacy mehanizam koji nasleđuje):
 
 - **Sync A — QBigTehn MSSQL (`vasa-SQL:5765`), privremen.** Trenutni sync (62 entiteta) je **proba +
   jednokratni završni uvoz** proizvodnih podataka. Posle cutover-a se **gasi**, QBigTehn MSSQL se više
