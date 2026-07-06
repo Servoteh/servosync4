@@ -8,6 +8,8 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { MssqlClient } from './mssql.client';
 import { CustomerSyncer } from './syncers/customer.syncer';
+import { GenericSyncer } from './generic.syncer';
+import { SYNC_MAP } from './sync-map.generated';
 import { EntitySyncer, SyncCursor, SyncStrategy } from './sync.types';
 
 export interface RunSyncOptions {
@@ -30,12 +32,26 @@ export class SyncService {
     private readonly mssql: MssqlClient,
     customerSyncer: CustomerSyncer,
   ) {
-    // Register available syncers. New entities are added here.
+    // Hand-written syncers take precedence (e.g. customers has bespoke FK logic).
     this.register(customerSyncer);
+    // Generic, map-driven syncers for every other mapped table.
+    for (const mapping of SYNC_MAP) {
+      if (this.syncers.has(mapping.targetDb)) continue;
+      this.register(new GenericSyncer(mapping, this.mssql, this.prisma));
+    }
   }
 
   private register(syncer: EntitySyncer): void {
     this.syncers.set(syncer.entity, syncer);
+  }
+
+  /** Compact `entity_scope` label — the column is VarChar(100). */
+  private describeScope(requested: string[]): string {
+    if (requested.length === this.availableEntities.length) {
+      return `ALL (${requested.length})`;
+    }
+    const joined = requested.join(',');
+    return joined.length <= 100 ? joined : `${joined.slice(0, 90)}… (${requested.length})`;
   }
 
   get availableEntities(): string[] {
@@ -66,7 +82,7 @@ export class SyncService {
         status: 'running',
         trigger: options.trigger ?? 'manual',
         triggeredByUserId: options.triggeredByUserId ?? null,
-        entityScope: requested.join(','),
+        entityScope: this.describeScope(requested),
       },
     });
 
