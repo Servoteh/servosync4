@@ -1,0 +1,78 @@
+/*
+ * ServoSync dizajn tokeni — JEDINI izvor istine za boje, tipografiju i razmake.
+ * Pravila upotrebe: frontend/docs/DESIGN_SYSTEM.md (§3).
+ * v0.1 — vrednosti se finalno kalibrišu prema screenshotovima ServoSync 1.0;
+ * do tada su radne, ali obavezujuće (menja se token, nikad hex u komponenti).
+ */
+
+:root {
+  /* ---------- akcenat (primarne akcije, aktivna navigacija, selekcija, fokus) ---------- */
+  --accent: #0d9488;
+  --accent-hover: #0b7d73;
+  --accent-active: #0a6b62;
+  --accent-fg: #ffffff;          /* tekst na akcentnoj pozadini */
+  --accent-subtle: #f0faf8;      /* selekcija reda, blaga isticanja */
+
+  /* ---------- neutrale (hladno-sive sa blagim teal tonom) ---------- */
+  --bg: #f7f9f9;                 /* pozadina aplikacije */
+  --surface: #ffffff;            /* kartice, tabele, paneli */
+  --surface-2: #fbfcfc;          /* zaglavlja tabela, blage zone */
+  --ink: #22282c;                /* primarni tekst */
+  --ink-secondary: #79878e;      /* sekundarni tekst, zaglavlja kolona */
+  --ink-disabled: #a8b3b8;
+  --line: #e3e8e8;               /* ivice, separatori */
+  --line-soft: #eef2f2;          /* linije unutar tabela */
+
+  /* ---------- sidebar (tamni petrolej) ---------- */
+  --sidebar-bg: #16232a;
+  --sidebar-ink: #b9c6cc;
+  --sidebar-ink-active: #ffffff;
+  --sidebar-line: #24343d;
+  --sidebar-accent: #2dd4bf;     /* svetliji teal — aktivna stavka na tamnom */
+
+  /* ---------- semantičke boje (SAMO statusi/poruke, nikad dekoracija) ---------- */
+  --status-info: #1971c2;        /* u proizvodnji / u toku */
+  --status-info-bg: #e7f0fb;
+  --status-warn: #e8890c;        /* na čekanju / upozorenje */
+  --status-warn-bg: #fdf0e0;
+  --status-success: #2f9e44;     /* završeno / uspeh */
+  --status-success-bg: #e6f5e9;
+  --status-danger: #d6453d;      /* kasni / greška */
+  --status-danger-bg: #fbe9e8;
+  --status-neutral: #8b9aa0;     /* u pripremi */
+  --status-neutral-bg: #eef1f2;
+
+  /* ---------- tipografija ---------- */
+  --font-sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "Cascadia Mono", Consolas, monospace;   /* šifre u tehničkim kontekstima, logovi */
+  --text-xs: 12px;      /* pomoćni tekst, statusna traka */
+  --text-sm: 12.5px;    /* ćelije gustih tabela */
+  --text-base: 14px;    /* osnovni UI tekst, forme */
+  --text-md: 16px;      /* naslovi panela */
+  --text-lg: 20px;      /* naslovi ekrana */
+  --text-xl: 24px;      /* KPI vrednosti */
+
+  /* ---------- razmaci (4px mreža) i oblici ---------- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --radius-control: 7px;         /* dugmad, polja, pilule-uglovi */
+  --radius-panel: 9px;           /* kartice, tabele, paneli */
+
+  /* ---------- dimenzije rasporeda ---------- */
+  --sidebar-width: 208px;
+  --detail-panel-width: 300px;
+  --table-row-height: 35px;
+  --command-bar-height: 52px;
+
+  /* ---------- fokus ---------- */
+  --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
+}
+
+/*
+ * Tamna tema: NE isporučuje se u 2.0 V1 (DESIGN_SYSTEM.md §3).
+ * Kada odluka padne (3.0), ovde se redefinišu SAMO tokeni — komponente se ne diraju.
+ */

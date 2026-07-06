@@ -1,0 +1,85 @@
+@import "tailwindcss";
+@import "../styles/tokens.css";
+
+/*
+ * Tokeni (src/styles/tokens.css) su JEDINI izvor istine. Ovde ih samo izlažemo
+ * kao Tailwind utilitije (bg-accent, text-ink, border-line, bg-status-*, ...).
+ * Bez hex vrednosti i "magičnih px" u komponentama — DESIGN_SYSTEM.md §3.
+ * Dark tema se NE isporučuje u 2.0 V1 (§3).
+ */
+@theme inline {
+  /* neutrale / površine */
+  --color-app: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-ink: var(--ink);
+  --color-ink-secondary: var(--ink-secondary);
+  --color-ink-disabled: var(--ink-disabled);
+  --color-line: var(--line);
+  --color-line-soft: var(--line-soft);
+
+  /* akcenat */
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-active: var(--accent-active);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-subtle: var(--accent-subtle);
+
+  /* sidebar */
+  --color-sidebar: var(--sidebar-bg);
+  --color-sidebar-ink: var(--sidebar-ink);
+  --color-sidebar-ink-active: var(--sidebar-ink-active);
+  --color-sidebar-line: var(--sidebar-line);
+  --color-sidebar-accent: var(--sidebar-accent);
+
+  /* semantički statusi */
+  --color-status-info: var(--status-info);
+  --color-status-info-bg: var(--status-info-bg);
+  --color-status-warn: var(--status-warn);
+  --color-status-warn-bg: var(--status-warn-bg);
+  --color-status-success: var(--status-success);
+  --color-status-success-bg: var(--status-success-bg);
+  --color-status-danger: var(--status-danger);
+  --color-status-danger-bg: var(--status-danger-bg);
+  --color-status-neutral: var(--status-neutral);
+  --color-status-neutral-bg: var(--status-neutral-bg);
+
+  /* tipografija */
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --text-xs: var(--text-xs);
+  --text-sm: var(--text-sm);
+  --text-base: var(--text-base);
+  --text-md: var(--text-md);
+  --text-lg: var(--text-lg);
+  --text-xl: var(--text-xl);
+
+  /* radijusi */
+  --radius-control: var(--radius-control);
+  --radius-panel: var(--radius-panel);
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Šifre i brojevi u tabelama — tabular-nums (DESIGN_SYSTEM.md §5). */
+.tnums {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
