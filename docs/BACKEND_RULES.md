@@ -69,10 +69,19 @@ Ovde je draft **pregažen stvarnošću koda** — ovo su pravila:
   nikad ne edituje.** Problematičan lokalni DB: `npm run docker:db:fresh` + `npm run setup`.
 - Izmena šeme bez ažuriranja rename-mape (ako dira legacy tabelu) ili bez `///` komentara = nepotpun posao.
 
-### Vlasništvo tabela (ključno pravilo iz ROADMAP-a)
-- **Jedan izvor istine po tabeli, jednosmerno.** Tabele sync-ovane iz QBigTehn/BigBit-a su **cache** — piše ih
-  **samo sync**. Aplikativni kod ih čita, a lokalna/proizvodna polja idu u overlay/app-owned tabele
-  (tačan mehanizam: otvorena odluka §11.1 — do tada u cache tabele ne dodavati aplikativna polja).
+### Vlasništvo tabela (ključno pravilo iz ROADMAP-a) — RAZJAŠNJENO 2026-07-07 (Nenad)
+
+Dve sasvim različite vrste sync-a, ne mešati:
+
+- **Proizvodne/tehnološke tabele su VLASNIŠTVO ServoSync-a** (`tech_processes`, `work_orders`,
+  `operations`, `work_order_operations`, vreme rada, broj operacija, lokacije delova, primopredaje…).
+  QBigTehn MSSQL sync (`vasa-SQL:5765`) je **privremen — proba + jednokratni završni uvoz**, pa se
+  **GASI**. Od prve stvarne upotrebe tehnolog piše direktno u ove tabele; **nema cache/overlay problema**,
+  nema sync-a koji ih prepisuje. (QBigTehn MSSQL se posle cutover-a više ne koristi.)
+- **BigBit matični podaci su read-only cache** (`customers`, `projects`, `salespeople`, `items`,
+  `warehouses`, `tax_rates`, `item_groups`, `item_subgroups`). BigBit ostaje izvor istine **do 4.0**;
+  ove tabele piše samo `bigbit-sync`, aplikacija ih **samo referencira**, ne dopunjuje ih.
+  **Cache/overlay pitanje (§11.1) važi SAMO za ovu grupu**, ne za proizvodne tabele.
 - App-owned tabele (`users`, `refresh_tokens`, `audit_log`, `bb_sync_log`, `bb_sync_state`) su naše i sync ih ne dira.
 
 ## 4. Sync sa QBigTehn/BigBit-om (obrazac je zakucan postojećim kodom)
@@ -158,10 +167,19 @@ Ovde je draft **pregažen stvarnošću koda** — ovo su pravila:
 
 Niko (ni AI sesija) ne implementira ove stvari pre zapisane odluke ovde:
 
-1. **Šema: 1:1 plosnato (trenutno) vs hibrid (legacy-cache + overlay)** — vidi
-   [01-qbigtehn-architecture-analysis §5](migration/01-qbigtehn-architecture-analysis.md). Posledica po §3
-   "vlasništvo tabela".
-2. **Sync semantika:** BigBit-wins upsert vs insert-only; propagacija brisanja (tombstone?); potvrda single-tenant.
+1. **Cache/overlay mehanizam — SAMO za BigBit matične tabele.** Razjašnjeno 2026-07-07 (§3): proizvodne
+   tabele su ServoSync vlasništvo (nema pitanja), a QBigTehn MSSQL sync se gasi posle cutover-a. Otvoreno
+   ostaje samo: kako se drže lokalni dodaci na ~8 BigBit cache tabela (`customers`/`items`/`projects`…) —
+   ako ikad zatreba lokalno polje na njima (npr. proizvodni atribut artikla), ide u overlay tabelu, ne u
+   cache. Vidi [01-qbigtehn-architecture-analysis §5](migration/01-qbigtehn-architecture-analysis.md).
+2. **BigBit sync semantika:**
+   a) **Konekcija posle gašenja QBigTehn-a (NOVO, blokira `bigbit-sync`):** danas BigBit podaci stižu
+      iz druge ruke (BigBit → QBigTehn MSSQL → ServoSync). Kad QBigTehn nestane, na šta se `bigbit-sync`
+      kači direktno — BigBit SQL Server (spec [MODULE_SPEC_bigbit_sync §1](design/MODULE_SPEC_bigbit_sync.md))
+      ili Access `.MDB` (ROADMAP opis) ili export fajl? Bez odgovora Sync B nema izvor.
+   b) BigBit-wins **UPSERT** vs legacy insert-only (legacy `PreuzmiIzBB` je INSERT-only, vidi
+      [ServoSync-specification.md](../ServoSync-specification.md)); propagacija brisanja (tombstone?);
+      PIB drift / šifra prodavca=0 popravke; potvrda single-tenant.
 3. **Poslovna logika iz MS SQL procedura** (BOM/MRP/RN): replikacija kroz `WITH RECURSIVE` — **obavezan
    anti-ciklus guard** (PG bez njega visi na cikličnim BOM podacima; vidi
    [05-qbigtehn-sqlserver-logic](migration/05-qbigtehn-sqlserver-logic.md)).
@@ -172,3 +190,4 @@ Niko (ni AI sesija) ne implementira ove stvari pre zapisane odluke ovde:
 | Verzija | Datum | Šta |
 |---|---|---|
 | 0.1 | 2026-07-04 | Prva verzija — kodifikovana stvarna praksa iz koda + usvojene konvencije iz ARCHITECTURE.md drafta; popisana odstupanja (§2) i otvorene odluke (§11). |
+| 0.2 | 2026-07-07 | Razjašnjeno vlasništvo tabela (§3, Nenad): proizvodne tabele = ServoSync vlasništvo (QBigTehn MSSQL sync je privremen, gasi se); cache/overlay (§11.1) suženo samo na BigBit matične podatke. §11.2 dopunjen novom blokadom: kako se `bigbit-sync` kači na BigBit posle gašenja QBigTehn-a. |

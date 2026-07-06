@@ -126,8 +126,23 @@ dnevnoj upotrebi**. Sve posle toga je širenje, ne izgradnja.
 2. **Sync:** BigBit-wins upsert vs legacy insert-only; delete-propagacija; single-tenant potvrda.
 3. **Poslovna logika iz MS SQL-a** (BOM/MRP/RN procedure) — replicirati preko `WITH RECURSIVE` (vidi [05-sqlserver-logic](migration/05-qbigtehn-sqlserver-logic.md)); pažnja na anti-ciklus guard (PG bez njega **visi**).
 
-### Bitna veza sa BigBit-om
-QBigTehn već **povlači matične podatke iz BigBit-a** (komitenti, artikli, predmeti, prodavci) preko `EXT_*` linkovanih tabela (`PreuzmiIzBB`). Zato 2.0 od starta ima `bigbit-sync` modul — BigBit ostaje izvor istine za komercijalne matične podatke sve do 4.0.
+### Bitna veza sa BigBit-om — RAZJAŠNJENO 2026-07-07 (Nenad)
+
+**Dva sync-a, ne jedan** (vidi [BACKEND_RULES §3 „Vlasništvo tabela"](BACKEND_RULES.md)):
+
+- **Sync A — QBigTehn MSSQL (`vasa-SQL:5765`), privremen.** Trenutni sync (62 entiteta) je **proba +
+  jednokratni završni uvoz** proizvodnih podataka. Posle cutover-a se **gasi**, QBigTehn MSSQL se više
+  ne koristi, ServoSync PG je jedini izvor istine za proizvodnju/tehnologiju (tehnolog piše direktno).
+- **Sync B — BigBit matični podaci, trajan do 4.0.** Komitenti, artikli, predmeti, prodavci (+ tarife,
+  grupe, magacini) ostaju read-only cache; BigBit je izvor istine dok se u 4.0 ne apsorbuje.
+
+**Legacy mehanizam** koji Sync B nasleđuje: dugme **„Preuzmi iz BB"** (`RibbonModule.PreuzmiIzBB()`) u
+QMegaTeh-u, preko `EXT_*` ODBC linkova, **INSERT-only** (samo novi redovi; bez update-a i brisanja — 4
+poznata buga u [ServoSync-specification.md](ServoSync-specification.md)). 2.0 to menja u UPSERT.
+
+**⚠️ Otvorena blokada (§11.2a):** danas BigBit podaci stižu iz druge ruke (BigBit → QBigTehn MSSQL →
+ServoSync). Kad se QBigTehn ugasi, `bigbit-sync` mora da se kači **direktno na BigBit** — a nije potvrđeno
+da li je to BigBit SQL Server, Access `.MDB`, ili export fajl. Bez toga Sync B ostaje bez izvora.
 
 ---
 
