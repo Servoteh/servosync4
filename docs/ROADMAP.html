@@ -293,7 +293,7 @@
   <header>
     <div class="eyebrow">Servoteh · interni plan digitalizacije</div>
     <h1>ServoSync roadmap 1.0 → 4.0</h1>
-    <p class="sub">Stanje na dan 4.7.2026. · izvor: <code>backend/docs/ROADMAP.md</code> + analiza sesije · cilj: jedan ERP+MES na sopstvenom serveru</p>
+    <p class="sub">Stanje na dan 7.7.2026. · izvor: <code>backend/docs/ROADMAP.md</code> + analiza sesije · cilj: jedan ERP+MES na sopstvenom serveru</p>
   </header>
 
   <!-- ============ STANJE DANAS ============ -->
@@ -313,8 +313,8 @@
       </div>
       <div class="kpi current">
         <div class="kpi-top"><span class="kpi-name">ServoSync 2.0</span><span class="pill info">U toku — ovde smo</span></div>
-        <div class="kpi-fact">1/13 <small>syncera · ~90 modela · auth 0%</small></div>
-        <p class="kpi-note">Ovaj repo (Luka + Nesa). Šema portovana, sync skelet radi, auth i domenski moduli slede.</p>
+        <div class="kpi-fact">62 <small>entiteta u sync-u · ~520K redova · JWT login</small></div>
+        <p class="kpi-note">Ovaj repo (Luka + Nesa). Sync verifikovan na Dockeru; sledi server (ubuntusrv), refresh tokeni i pilot modul TP.</p>
       </div>
       <div class="kpi">
         <div class="kpi-top"><span class="kpi-name">Odluke koje blokiraju</span><span class="pill warn">Čeka Negovan/Nesa</span></div>
@@ -430,9 +430,9 @@
               <div class="col">
                 <h4>Kod (backend/src)</h4>
                 <ul>
-                  <li>Sync modul: MSSQL klijent strogo read-only, kursor, log</li>
-                  <li>Implementiran 1 od 13 Sprint-1 syncera (<code>customers</code>)</li>
-                  <li>Auth: tabele spremne, <b>modul još ne postoji</b> — <code>TODO(auth)</code></li>
+                  <li>Sync: <b>generički map-driven syncer, 62 entiteta</b> (~520K redova, MSSQL strogo read-only)</li>
+                  <li>Auth: <b>JWT login + guard na sync endpointima</b>; fali refresh rotacija i <code>/api/v1</code></li>
+                  <li>Front: login + Sinhronizacije ekrani na ui-kit-u; dizajn v1.0 konačan</li>
                   <li>RBAC/RLS predlog v0.1 napisan — čeka potvrdu</li>
                 </ul>
               </div>
@@ -442,18 +442,18 @@
                 <h4>Urađeno</h4>
                 <ul class="check">
                   <li class="yes">Portovana cela šema + rename mapa + migracije</li>
-                  <li class="yes">Sync skelet (log, state, health) + prvi syncer</li>
-                  <li class="yes">Pravila rada (BACKEND_RULES, DESIGN_SYSTEM) — na GitHub-u</li>
-                  <li class="yes">RBAC/RLS predlog usklađen sa 1.0 rolama</li>
+                  <li class="yes">Sync svih mapiranih tabela (62) — verifikovan na Dockeru</li>
+                  <li class="yes">JWT login + guard na sync; front login + Sinhronizacije</li>
+                  <li class="yes">Mreža: <code>vasa-SQL:5765</code> dostupan sa ubuntusrv (6.7.)</li>
                 </ul>
               </div>
               <div class="col">
-                <h4>Sledi</h4>
+                <h4>Sledi (plan A→D u ROADMAP-u)</h4>
                 <ul class="check">
-                  <li class="next">Auth V1 (JWT, ADMIN) + no-op RBAC guardovi</li>
-                  <li class="next">Synceri 2–13 (artikli, radnici, crteži…)</li>
-                  <li class="next">Prvi domenski modul: <b>TEHNOLOGIJA</b> (pilot za RBAC)</li>
-                  <li class="wait">§11 odluke — blokiraju hibrid šemu i MRP/BOM logiku</li>
+                  <li class="next">A: PG16 + backend + sync na ubuntusrv; backup; pa CF Tunnel</li>
+                  <li class="next">B: refresh rotacija · <code>/api/v1</code> · no-op RolesGuard + permisije</li>
+                  <li class="next">C: pilot <b>TEHNOLOGIJA</b> — TP read-only lista + detalj</li>
+                  <li class="wait">B4: sastanak Negovan/Nesa — §11 + RBAC (blokira mutacije)</li>
                 </ul>
               </div>
             </div>
@@ -680,7 +680,7 @@
     Izvori: <code>backend/docs/ROADMAP.md</code> · <code>backend/docs/BACKEND_RULES.md</code> ·
     <code>backend/docs/design/RBAC_RLS_PREDLOG.md</code> · <code>backend/docs/migration/00–05</code> ·
     <code>servoteh-plan-montaze/docs/RBAC_MATRIX.md</code><br>
-    Generisano 4.7.2026. iz analize oba repoa. Ovaj prikaz je snapshot — izvor istine su dokumenti u repou.
+    Generisano 7.7.2026. iz analize oba repoa. Ovaj prikaz je snapshot — izvor istine su dokumenti u repou.
   </footer>
 
 </div>

@@ -74,10 +74,52 @@ URL + ključevi (sav data-access ide kroz `sbReq` wrapper, pa je promena u jedno
 PDM/crteži/BOM · Nacrti · Primopredaje · Radni nalozi (RN) · Tehnološki postupci (TP)/Proizvodnja · Lokacije delova · Proizvodne strukture (radnici/mašine/operacije) · MRP/Nabavka (uvid) · Komitenti/Predmeti (pregled).
 **Van scope-a 2.0:** knjigovodstvo, PDV/KEPU, fakturisanje, fiskalizacija, POS — ostaje u BigBit-u (dolazi u 4.0).
 
-### Trenutno stanje repo-a
+### Trenutno stanje repo-a (checkpoint 2026-07-07)
 - `prisma/schema.prisma`: ~90 modela (**1:1 plosnat port cele BigBit MSSQL šeme**) — vidi [ERD mapu](../../_analiza/servosync-schema.html).
-- Sync modul: skelet (`MssqlClient`, generički `SyncService`, `bb_sync_log/state`) + **samo `CustomerSyncer`** od 13 planiranih Sprint-1 entiteta.
-- App-owned sloj (dobro): `users`, `refresh_tokens`, `audit_log`, `bb_sync_log/state`.
+- **Sync: generički map-driven syncer za sve mapirane tabele (62 entiteta, ~520K redova)** — verifikovan
+  kod Luke na Docker PG; sledi prelazak na ubuntusrv (mrežni preduslov proveren 6.7: `vasa-SQL:5765` dostupan).
+- **Auth V1 delimično:** JWT login modul + `JwtAuthGuard` na sync endpointima (`TODO(auth)` zatvoren).
+  Nedostaju: refresh rotacija (§7), `/api/v1` verzionisanje, no-op RolesGuard/permisije.
+- **Front:** login + Sinhronizacije ekrani na ui-kit-u; dizajn sistem KONAČAN (v1.0, 6.7.2026).
+- App-owned sloj: `users`, `refresh_tokens`, `audit_log`, `bb_sync_log/state`.
+
+### Plan rada ka aplikaciji 2.0 (ažurirano 2026-07-07)
+
+**Faza A — server (ništa je ne blokira, kreće odmah):**
+1. PostgreSQL 16 + backend na ubuntusrv (Docker compose: `db` + `api`), `.env` po `.env.example`,
+   `prisma migrate deploy`.
+2. ~~Mrežna provera ka `vasa-SQL:5765`~~ ✅ 6.7.2026 (TCP otvoren, 1.3ms, isti segment).
+3. Prvi sync run **sa servera** (login test `bridge_reader` + full sync) — server preuzima ulogu
+   Lukinog laptopa kao sync mašina.
+4. Backup od prvog dana: `pg_dump` cron na drugu lokaciju.
+5. **Cloudflare Tunnel za API + repoint fronta** — sme tek kad su svi mutirajući endpointi iza
+   auth guarda (za sync jeste ✅); DB port se NIKAD ne izlaže kroz Tunnel.
+6. Cron sync (`@nestjs/schedule`): noćni full + češći inkrementalni; e-mail/alert na `failed`.
+
+**Faza B — dovršetak auth/RBAC temelja (Luka, paralelno sa A):**
+1. Refresh tokeni sa rotacijom (§7 — tabela već postoji; access 24h + refresh 30d).
+2. `/api/v1` verzionisanje (`enableVersioning`) — **obavezno pre prvog domenskog endpointa**
+   (BACKEND_RULES §5); postojeći `sync/*` i `health` se sele pod `v1`.
+3. No-op `RolesGuard` + `@RequirePermission()` + katalog permisija iz
+   [RBAC_RLS_PREDLOG.md](design/RBAC_RLS_PREDLOG.md); skelet audit interceptora (§8).
+4. **Sastanak Negovan/Nesa (zakazuje Nenad — jedino što kod ne rešava):** 4 odluke §11 +
+   6 RBAC pitanja. Kritični put za sve mutacije u modulima.
+
+**Faza C — pilot modul: TEHNOLOGIJA (TP):**
+1. **Read-only prvo:** TP lista + master–detalj (postupak, operacije, dokumentacija) — API + ekran.
+   Može i PRE §11 odluka jer ništa ne piše; odmah upotrebljivo tehnolozima.
+2. RN read-only pregled (isti šablon, mala dodatna cena).
+3. Mutacije TP — **tek posle §11.1** (cache/overlay) i potvrde RBAC predloga.
+
+**Faza D — ostali moduli + V2 RBAC:**
+1. Redosled: RN → PDM/Crteži → Primopredaje → Lokacije → Strukture → MRP (uvid) → Komitenti (pregled);
+   svaki kraj-do-kraja po šablonu iz pilota.
+2. V2 RBAC aktivacija (seed rola TEHNOLOG, CNC_PROGRAMER, SEF…) kad su 2–3 modula živa —
+   guardovi već postoje kao no-op, pa je to konfiguracija.
+3. e2e permission matrica (rola × endpoint) raste uz svaki modul.
+
+**Definicija „imamo aplikaciju 2.0":** server kod nas + noćni sync + login + **TP i RN moduli u
+dnevnoj upotrebi**. Sve posle toga je širenje, ne izgradnja.
 
 ### Ključne otvorene odluke (blokiraju razvoj — POTVRDITI sa Negovanom)
 1. **Šema:** 1:1 plosnato (trenutno) vs **hibrid** (legacy-cache + overlay, preporuka) vs čist kanonski. Vidi [01-architecture §5](migration/01-qbigtehn-architecture-analysis.md).
@@ -176,4 +218,4 @@ Detalji i procena: postojeća analiza „Supabase↔PG sync" (dani do par nedelj
 
 ---
 
-*Poslednji update: 2026-07-04 — dodat **odobren međukorak** (1.0 self-host na on-prem: PostgreSQL + PostgREST + GoTrue); odluka **Cloudflare Tunnel umesto WireGuard-a** (ista javna adresa kao postojeća); mobilna (Capacitor) kontrolna lista za 3.0. Implementaciju radi Luka uz potvrde Nesa/Negovan.*
+*Poslednji update: 2026-07-07 — checkpoint stanja (sync 62 entiteta ✅, JWT auth ✅, front ekrani ✅, mreža ka vasa-SQL ✅) + **plan rada ka aplikaciji 2.0** (faze A–D u sekciji 2.0). Ranije: odobren međukorak (1.0 self-host: PostgreSQL + PostgREST + GoTrue), Cloudflare Tunnel umesto WireGuard-a, mobilna kontrolna lista za 3.0. Implementaciju radi Luka uz potvrde Nesa/Negovan.*
