@@ -7,9 +7,13 @@ import {
   ParseIntPipe,
   Post,
   Query,
+  Req,
+  UseGuards,
 } from '@nestjs/common';
 import { SyncService } from './sync.service';
 import { SyncStrategy } from './sync.types';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { AuthUser } from '../auth/jwt.strategy';
 
 interface RunSyncBody {
   entities?: string[];
@@ -22,12 +26,13 @@ interface RunSyncBody {
  * TODO(auth): once the auth module exists, guard POST /sync/run with an
  * ADMIN role guard. Left open for now since auth is not yet implemented.
  */
+@UseGuards(JwtAuthGuard)
 @Controller('sync')
 export class SyncController {
   constructor(private readonly syncService: SyncService) {}
 
   @Post('run')
-  async run(@Body() body: RunSyncBody) {
+  async run(@Body() body: RunSyncBody, @Req() req: { user: AuthUser }) {
     if (body?.strategy && !['incremental', 'full_refresh'].includes(body.strategy)) {
       throw new BadRequestException(
         'strategy must be "incremental" or "full_refresh"',
@@ -40,6 +45,7 @@ export class SyncController {
       entities: body?.entities,
       strategy: body?.strategy,
       trigger: 'manual',
+      triggeredByUserId: req.user.userId,
     });
   }
 
