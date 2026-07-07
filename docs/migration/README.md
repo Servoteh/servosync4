@@ -15,6 +15,7 @@ Read-only analize nastale multi-agent obradom legacy QBigTehn izvora, kanonskih 
 | [06-bigbit-preuzmi-iz-bb.md](06-bigbit-preuzmi-iz-bb.md) | **„Preuzmi iz BB" legacy mehanizam** — mapiranje kolona po tabeli (5 tabela, INSERT-only), transformacije, mirror, veza sa BigBit-om + PDM XML; referenca za `bigbit-sync` |
 | [07-bigbit-sef-efaktura.md](07-bigbit-sef-efaktura.md) | **SEF eFaktura reverse engineering** — gde integracija živi (OnLine BigBit), 12+ API endpointa, rekonstruisani tokovi izlaznih/ulaznih faktura, podloga za 4.0 SEF modul |
 | [08-qbigtehn-vba-domain-map.md](08-qbigtehn-vba-domain-map.md) | **Mapa QBigTehn VBA → 2.0 domeni** (455 fajlova, multi-agent): koji legacy modul pokriva koji 2.0 domen (TP/RN/PDM/MRP/lokacije/komitenti), poslovna pravila za prenos, šta je van scope-a |
+| [09-bigbit-online-domain-map.md](09-bigbit-online-domain-map.md) | **Mapa BigBit OnLine VBA → 4.0 domeni** (824 fajla, multi-agent): fakturisanje/GK/PDV/banke/magacin/matični → 4.0 domeni (finance/sales/inventory/tax/banking/sef), regulatorna pravila, šta se prenosi/prepisuje/baca |
 | [10-bigbit-glavni-meni.md](10-bigbit-glavni-meni.md) | **BigBit glavna maska (navigacija)** — transkript žive aplikacije (RDP): sve sekcije menija i dugmad komercijalnog ERP-a, mapirano na 4.0 domene (09 = analiza koda dopunjuje) |
 
 ## Otvorena pitanja za Negovana/Nesu (blokiraju odluke)
