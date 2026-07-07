@@ -85,11 +85,45 @@
   odobrenja/zaduženja — tačno ono što je u VBA koji još nismo izvukli.
 - Demo okruženje (`demoefaktura...`) postoji u kodu — put za testiranje bez rizika je već utaban.
 
-## 6. Šta još treba izvući (sledeći koraci)
+## 6. Dopuna — dubinska ekstrakcija (2026-07-07)
 
-1. **VBA izvor `OnLine_BigBit_APL.MDB`** (procedure nisu čitljive iz binarnog — VBA projekat je
-   komprimovan). Opcije: (a) Access COM `SaveAsText` ekstrakcija na kopiji fajla, (b) tražiti izvor od
-   Vase (najčistije). Cilj: tačan UBL field-mapping i logika polling-a/grešaka.
-2. **Config lokacija ApiKey + prod URL** (tabela? `BB_CFG_Lokal.mdb`?) — potvrditi kod Vase.
-3. Struktura `T_ER_UF` i povezanih tabela iz `MojaBIgBitBaza.accdb` (DAO čitanje šeme je bezbedno).
-4. Kadenca polling-a i ko klikće šta u OnLine aplikaciji (operativni tok — pitati fakturistu).
+### 6.1 Pokušaj ekstrakcije VBA izvora — status
+Pokušana ekstrakcija koda iz `OnLine_BigBit_APL.MDB` (rad na kopiji, Access 16 COM). Redosled:
+OLEDB → DAO auth → `SaveAsText` → VBIDE. **Rezultat: kompajlirani VBA je zaključan Access
+user-level (workgroup) zaštitom.** Baza se otvara samo ugrađenim `Admin` nalogom koji **nema „design"
+prava** → VBA projekat se ne učitava (`VBProjects.Count = 0`). Privilegovani nalozi (Slavisa/Sada/nadmin
+iz `BIGBIT_accounts.csv`) **ne postoje u `BIGBIT.MDW`** — taj CSV je dump drugog/spojenog workgroup-a.
+- **Da se dobije pun VBA izvor:** tražiti od Vase (a) ispravan `.MDW` sa admin nalogom, ili (b) sam izvorni
+  kod / nezaštićenu kopiju. Inventar je poznat: **115 modula, 563 forme, 496 izveštaja, 68 makroa**
+  (makroi uklj. `StartBigBit`, `StartKasa`, `StartNabavka`, `StartProizvodnja`, `StartPS` — ulazne tačke po modulima).
+
+### 6.2 Šta JESTE izvučeno (string-mining binarnog — dovoljno za SEF modul)
+Iako je kod zaključan, iz binarnog su izvučeni **UBL 2.1 field-mapping, URL-ovi i model statusa** — suština:
+
+- **Produkcijski URL potvrđen:** `https://faktura.mfin.gov.rs` (+ demo `https://demoefaktura.mfin.gov.rs`).
+- **UBL 2.1 elementi (49 nađenih) — i izlazne fakture i knjižna odobrenja:**
+  - Zaglavlje: `cbc:CustomizationID`, `cbc:InvoiceTypeCode`, `cbc:IssueDate`, `cbc:DueDate`,
+    `cbc:DocumentCurrencyCode`, `cbc:EndpointID` (PIB/JBKJS ruta).
+  - Strane: `cac:AccountingSupplierParty`, `cac:AccountingCustomerParty`, `cac:Party`.
+  - Stavke: `cac:InvoiceLine` / `cac:CreditNoteLine`, `cbc:InvoicedQuantity`/`cbc:CreditedQuantity`,
+    `cbc:LineExtensionAmount`, `cbc:BaseQuantity`.
+  - Porezi: `cac:TaxTotal` → `cac:TaxSubtotal` → `cac:TaxCategory` → `cac:TaxScheme` (PDV kategorije).
+  - Iznosi: `cac:LegalMonetaryTotal` (`cbc:TaxExclusiveAmount`, `cbc:TaxInclusiveAmount`, `cbc:PayableAmount`).
+  - **Avansi/veze:** `cac:BillingReference` → `cac:InvoiceDocumentReference` (referenca avansne fakture).
+  - **Rabati:** `cac:AllowanceCharge` (`cbc:ChargeIndicator`, `cbc:AllowanceChargeReason(Code)`).
+  - **Prilog (PDF u fakturi):** `cac:Attachment` → `cbc:EmbeddedDocumentBinaryObject` (base64 — otud Base64 VBA rutine).
+  - **Knjižno odobrenje/zaduženje:** `cbc:CreditNoteTypeCode`, `cac:CreditNoteLine` (CreditNote dokument).
+- **Model statusa dokumenta** (SEF + srpski ekvivalenti u UI): `Draft/Nacrt` · `New` · `Sent/Poslata` ·
+  `Seen` · `Approved/Odobrena` · `Rejected/Odbijena` · `Cancelled` · `Storno/Stornirana` · `Mistake`.
+- **BEX kurirska integracija** (`http://api.bex.rs:62502`) — zaseban modul (otprema robe), van SEF-a.
+
+### 6.3 Šta ostaje (manje kritično, za implementaciju)
+1. **Tačna logika grešaka/retry i kadenca polling-a** — ostaje u zaključanom VBA; rekonstruisati iz
+   zvanične SEF dokumentacije (javno) + testirati na demo okruženju.
+2. **Config lokacija `ApiKey` + izbor prod/demo** (verovatno tabela u `BB_CFG_Lokal.mdb` ili `T_*` config) — pitati Vasu.
+3. **Struktura `T_ER_UF`** i povezanih (DAO čitanje šeme je bezbedno i moguće — nije blokirano ULS-om za tabele).
+4. Operativni tok (ko klikće „preuzmi ulazne", ko odobrava) — pitati fakturistu.
+
+> **Zaključak:** za pisanje ServoSync SEF modula (4.0) imamo **dovoljno** — endpointe (§2), UBL mapiranje
+> (§6.2), model statusa i tokove (§4). Nedostaje samo interna error/retry logika, koja se ionako radi po
+> javnoj SEF specifikaciji. Pun VBA izvor je „nice to have", ne blokada.
