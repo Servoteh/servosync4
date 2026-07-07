@@ -128,9 +128,9 @@
   <div class="card">
     <div class="card-h"><span class="q">1 · Kako se ServoSync kači na BigBit posle gašenja QBigTehn-a?</span><span class="tag block">Blokira Sync B</span></div>
     <div class="card-b">
-      <div class="box"><h4>Problem</h4><p>Danas BigBit podaci stižu iz druge ruke (BigBit → QBigTehn → ServoSync). Kad QBigTehn nestane, veza se prekida.</p></div>
-      <div class="box rec"><h4>Preporuka</h4><p>BigBit izbaci <b>export (XML ili CSV)</b>, ServoSync uvozi (pun snapshot + UPSERT). Izbeći živi ODBC na <code>.MDB</code>. Ručni unos = rezerva za male entitete.</p></div>
-      <div class="box full"><h4>Potvrditi</h4><p>Format (XML vs CSV — šta je lakše u BigBit-u) · <b>ceo katalog artikala (10–88k) ili samo oni koje proizvodnja koristi?</b> (od toga zavisi da li je ručni unos artikala uopšte moguć) · okidač: dugme ili noćni zakazani export.</p></div>
+      <div class="box"><h4>Problem</h4><p>Danas BigBit podaci stižu iz druge ruke (BigBit → QBigTehn → ServoSync). Kad QBigTehn nestane, veza se prekida. Legacy izvor je Access <code>.MDB</code> (potvrđeno u VBA analizi).</p></div>
+      <div class="box rec"><h4>Tri varijante — redosled preferencije</h4><p><b>B) BigBit pređe na SQL Server</b> (Vasa voljan; upsizing na postojeću <code>vasa-SQL</code> instancu, Access front ostaje — isti obrazac kao QBigTehn; postojeći mssql konektor + inkrementalni sync) · <b>A) export XML/CSV</b> (plan B, uvek izvodljiv; snapshot + UPSERT) · <b>C) ručni unos</b> (rezerva, mali entiteti). Izbeći živi ODBC na <code>.MDB</code>.</p></div>
+      <div class="box full"><h4>Potvrditi</h4><p><b>Vasin rok za varijantu B</b> (pravi trošak = testiranje fiskalnih tokova posle migracije) · <b>strateško: koliko dugo ostajemo na 3.0?</b> 4.0 bez roka (PDV/knjigovodstvo rizik) → most živi godinama → investicija u B se isplati · ako ipak A: format (XML vs CSV) · <b>ceo katalog artikala (10–88k) ili samo korišćeni?</b> · okidač: dugme / noćni export / cron.</p></div>
     </div>
     <div class="unlock"><b>Odblokira:</b> BigBit-sync modul · komitente/artikle/predmete u svim modulima &nbsp;·&nbsp; <span class="who"><b>Odluka:</b> Negovan + Nesa</span> &nbsp; <span class="decide">&nbsp;</span></div>
   </div>

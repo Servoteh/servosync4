@@ -133,7 +133,9 @@ dnevnoj upotrebi**. Sve posle toga je širenje, ne izgradnja.
 - **Sync A — QBigTehn MSSQL (`vasa-SQL:5765`): PRIVREMEN.** Proba + jednokratni završni uvoz proizvodnje,
   pa se gasi. ServoSync PG postaje jedini izvor istine za proizvodnju/tehnologiju.
 - **Sync B — BigBit matični podaci: TRAJAN do 4.0.** Komitenti, artikli, predmeti, prodavci (+ tarife,
-  grupe, magacini). **Preporuka izvora: export (XML/CSV) iz BigBit-a + UPSERT** (ne živi ODBC na `.MDB`).
+  grupe, magacini). **Preferirani izvor: BigBit prelazi na SQL Server** (upsizing na postojeću `vasa-SQL`
+  instancu — Vasa voljan; postojeći `mssql` konektor + inkrementalni sync); **plan B: export (XML/CSV) +
+  UPSERT**; ručni unos samo kao rezerva. Ne živi ODBC na `.MDB`. Vidi [BACKEND_RULES §11.2a](BACKEND_RULES.md).
 - **Sync C — PDM (SolidWorks, MS SQL): TRAJAN, jednosmeran.** Sklopovi (BOM), crteži, dokumentacija.
   **Preporuka: XML ugovor (postojeći `POST /pdm/import` + `PDMXMLParser`) uz automatizovan handoff** —
   interna SolidWorks SQL šema je krhka za direktno čitanje BOM-a. Šema već ima `drawing_import_log`.
@@ -190,6 +192,12 @@ Strangler-fig, modul po modul: prvo auth + RBAC parnost, pa jedan modul kraj-do-
 ## ServoSync 4.0 — integracija BigBit ERP-a (komercijala)
 
 **Cilj:** apsorbovati **BigBit** (trenutno Access/VBA + eksterni magacin `BB_T_25.MDB`, komercijalni ERP: glavna knjiga, PDV/POPDV, fakture, robna dokumenta, magacin, banke, SEF) u ServoSync 3.0 → **kompletan ERP + MES** na jednoj platformi.
+
+> **Napomena o tempu (Nenad, 2026-07-07):** 4.0 **nema rok i pokreće se trigerima, ne kalendarom** —
+> PDV/knjigovodstvo/fiskalizacija je najrizičniji domen, a BigBit ga danas radi pouzdano. Legitimno
+> stabilno stanje je **duži period na 3.0 + BigBit na SQL Server-u** (vidi „Spoljni izvori", Sync B
+> varijanta B — usput olakšava i samu 4.0 kad dođe). Trigeri za 4.0: prestanak vendor podrške,
+> regulatorne promene (SEF i sl.), ili poslovna potreba za objedinjenim izveštavanjem.
 
 ### Šta to znači
 - BigBit prestaje da bude eksterni „izvor istine" — njegove funkcije (komitenti, artikli, cenovnik, robna dokumenta, GK, PDV, fakturisanje) se **rebuild-uju** u ServoSync domene (`inventory`, `finance`/GL, `sales`, `procurement`, `sef`).

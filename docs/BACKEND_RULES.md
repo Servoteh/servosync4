@@ -175,15 +175,21 @@ Niko (ni AI sesija) ne implementira ove stvari pre zapisane odluke ovde:
 2. **BigBit sync semantika:**
    a) **Konekcija posle gašenja QBigTehn-a (blokira `bigbit-sync`).** Danas BigBit podaci stižu iz druge
       ruke (BigBit → QBigTehn MSSQL → ServoSync). Kad QBigTehn nestane, `bigbit-sync` mora direktno na BigBit.
-      **PREPORUKA (Nenad + analiza 2026-07-07, čeka finalnu potvrdu formata):** BigBit **izbacuje export
-      (XML ili CSV)** koji ServoSync uvozi — kao primarni mehanizam za sve matične grupe. Razlozi: čisto
-      preko granice Linux(NestJS)↔Access, razdvojeno (nema žive konekcije, uz Cloudflare Tunnel postavku),
-      most ionako umire u 4.0 pa ne vredi CDC. **Pun snapshot + UPSERT po šifri** (rešava legacy „nema
-      update/nema delete" bagove); reuse `bb_sync_log`/`bb_sync_state` uz novi file `SourceConnector`.
-      **Ručni unos = rezerva** za male entitete (prodavci, komitenti, predmeti) i ispravke. **Izbeći**
-      živi ODBC/mdb-tools na `.MDB` sa Linuxa (`.accdb` slabo, Jet locking, najkrhkije).
-      *Potvrditi:* format (XML vs CSV, šta je lakše u BigBit VBA) i **da li ceo katalog artikala (10–88k)
-      ili samo artikli koje proizvodnja stvarno koristi** (menja da li je ručni unos artikala uopšte moguć).
+      **Tri varijante (redosled preferencije, Nenad 2026-07-07):**
+      - **B) BigBit prelazi na SQL Server (preferirano; Vasa voljan, pitanje njegovog vremena).**
+        Upsizing `.mdb` → baza na postojećoj `vasa-SQL` instanci (SSMA alat; Access front ostaje, tabele se
+        relinkuju — isti obrazac kao QBigTehn). ServoSync tada koristi **postojeći `mssql` konektor +
+        inkrementalni sync** (watermark/rowversion) — najčistije, i olakšava buduću 4.0 migraciju.
+        Pravi trošak: testiranje fiskalnih tokova posle migracije (Vasa).
+      - **A) Export (XML/CSV) iz BigBit-a** — uvek izvodljiv plan B ako Vasa ne stigne: pun snapshot +
+        UPSERT po šifri; čisto preko granice Linux↔Access, nema žive konekcije.
+      - **C) Ručni unos** — rezerva za male entitete (prodavci, komitenti, predmeti) i ispravke;
+        artikli (10–88k) ne mogu ručno.
+      **Izbeći** živi ODBC/mdb-tools na `.MDB` sa Linuxa (`.accdb` slabo, Jet locking, najkrhkije).
+      *Potvrditi:* Vasin rok za B; ako A — format (XML vs CSV); **ceo katalog artikala ili samo korišćeni**.
+      **Strateška napomena (Nenad, 2026-07-07):** prihvatljivo je **duže ostati na 3.0** (4.0 odloženo —
+      PDV/knjigovodstvo je najrizičniji domen), uz BigBit na SQL-u kao trajni komercijalni sistem. U tom
+      slučaju most B živi godinama → investicija u varijantu B se isplati; „sunset" mosta = 4.0, kad god bila.
    b) BigBit-wins **UPSERT** vs legacy insert-only (legacy `PreuzmiIzBB` je INSERT-only, vidi
       [ServoSync-specification.md](../ServoSync-specification.md)); propagacija brisanja (tombstone/soft-inactive?);
       PIB drift / šifra prodavca=0 popravke; potvrda single-tenant.
@@ -208,3 +214,4 @@ Niko (ni AI sesija) ne implementira ove stvari pre zapisane odluke ovde:
 | 0.1 | 2026-07-04 | Prva verzija — kodifikovana stvarna praksa iz koda + usvojene konvencije iz ARCHITECTURE.md drafta; popisana odstupanja (§2) i otvorene odluke (§11). |
 | 0.2 | 2026-07-07 | Razjašnjeno vlasništvo tabela (§3, Nenad): proizvodne tabele = ServoSync vlasništvo (QBigTehn MSSQL sync je privremen, gasi se); cache/overlay (§11.1) suženo samo na BigBit matične podatke. §11.2 dopunjen novom blokadom: kako se `bigbit-sync` kači na BigBit posle gašenja QBigTehn-a. |
 | 0.3 | 2026-07-07 | §11.2a: preporuka za BigBit izvor = **export (XML/CSV) + UPSERT** (ne živi ODBC). Dodat §11.3: **PDM sync** kao treći trajni izvor (SolidWorks MS SQL → XML ugovor, preporuka). Model „tri sync-a" (A privremen / B BigBit / C PDM). |
+| 0.4 | 2026-07-07 | §11.2a proširen u **tri varijante** sa novim redosledom preferencije: **B) BigBit → SQL Server** (upsizing na vasa-SQL, postojeći mssql konektor, inkrementalno) > A) export > C) ručno. Strateška napomena: duži period na 3.0 sa BigBit-on-SQL je prihvatljivo stabilno stanje; 4.0 trigger-based, ne kalendarski. |
