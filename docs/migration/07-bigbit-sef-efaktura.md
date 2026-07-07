@@ -87,7 +87,17 @@
 
 ## 6. Dopuna — dubinska ekstrakcija (2026-07-07)
 
-### 6.1 Pokušaj ekstrakcije VBA izvora — iscrpno, status: ZAKLJUČANO (Access ULS)
+### 6.1 Ekstrakcija VBA izvora — status: **USPELA** (DPB patch, 2026-07-08)
+
+> **RAZREŠENO.** Pun VBA izvor OnLine BigBit aplikacije je izvučen (824 komponente) — vidi **§8** za
+> definitivni SEF spec iz stvarnog koda. Način: fajl ima VBA project password (`DPB="..."` marker) →
+> **DPB→DPx hex patch** na kopiji (bajt `0x42`→`0x78` na offsetu VBA project info) uklanja lozinku
+> (`Protection=0`); zatim otvaranje kao `admin` preko `BIGBIT.MDW` (Open/Run prava) uz automatsko gašenje
+> „Unexpected error 40230" dijaloga → izvoz svih modula preko VBIDE. **ULS nije blokirao čitanje VBA** kad
+> je postojao Open/Run + uklonjena VBA lozinka. Izvor sačuvan: `BigbitRaznoNenad/_extracted/OnLine_BigBit_VBA/`
+> (824 .txt, van gita). Ispod (§6.1 stari opis) ostaje kao zapis prethodnih pokušaja.
+
+<details><summary>Prethodni (neuspeli) pokušaji — istorijski zapis</summary>
 Pokušana ekstrakcija iz `OnLine_BigBit_APL.MDB` (rad na kopiji, Access 16 COM). Redom probano:
 OLEDB → DAO auth (svi nalozi iz CSV-a + oba `.MDW` fajla, mali 4.5MB i veliki 41MB) → `SaveAsText` →
 VBIDE → **reprodukcija vlasničkih SID-ova** (CREATE USER sa PID-om iz CSV-a: `Slavisa`/163224,
@@ -115,7 +125,8 @@ VBIDE → **reprodukcija vlasničkih SID-ova** (CREATE USER sa PID-om iz CSV-a: 
 
 Inventar mete je poznat: **115 modula, 563 forme, 496 izveštaja, 68 makroa** (makroi uklj. `StartBigBit`,
 `StartKasa`, `StartNabavka`, `StartProizvodnja`, `StartPS` — ulazne tačke po modulima).
-**Napomena:** ekstrakcija VBA nije blokada za plan — SEF suština (§6.2) je već izvučena string-miningom.
+
+</details>
 
 ### 6.2 Šta JESTE izvučeno (string-mining binarnog — dovoljno za SEF modul)
 Iako je kod zaključan, iz binarnog su izvučeni **UBL 2.1 field-mapping, URL-ovi i model statusa** — suština:
@@ -147,3 +158,64 @@ Iako je kod zaključan, iz binarnog su izvučeni **UBL 2.1 field-mapping, URL-ov
 > **Zaključak:** za pisanje ServoSync SEF modula (4.0) imamo **dovoljno** — endpointe (§2), UBL mapiranje
 > (§6.2), model statusa i tokove (§4). Nedostaje samo interna error/retry logika, koja se ionako radi po
 > javnoj SEF specifikaciji. Pun VBA izvor je „nice to have", ne blokada.
+
+---
+
+## 8. Definitivni SEF spec — iz izvučenog VBA izvora (2026-07-08)
+
+> Iz stvarnog koda (`_extracted/OnLine_BigBit_VBA/`): `Class__ER_API_Class` (HTTP klijent),
+> `Module__SEF_API_Common` (ulazne fakture), `Module__ER_API_Common` (izlazne), `Class__SEF_Class`/`ER_Class`
+> (data-model). Ovo zamenjuje pretpostavke iz §2–§6 tačnim ponašanjem.
+
+### 8.1 HTTP klijent (`ER_API_Class`)
+- **Objekat:** `CreateObject("MSXML2.XMLHTTP")`, sinhroni pozivi (`.Open method, url, False`).
+- **Konfiguracija iz BB config-a** (ne hardkodovano): `ER_API_URL = ReadCFGParametar("ER_API_URL")`
+  (demo `https://demoefaktura.mfin.gov.rs` · prod `https://faktura.mfin.gov.rs`),
+  `ER_ApiKey = RFReadParameter("ER_ApiKey")` (u ServoSync-u → env/config, ne u kod).
+- **Autentifikacija:** header `ApiKey: <kljuc>` (metod `ER_Autenticate`).
+- **Zaglavlja:** `accept: text/plain`; `Content-Type: application/xml` (UBL) ili `application/json` (accept/reject/storno/cancel).
+- **Rate limit (VAŽNO):** MFIN dozvoljava **max 3 komande/s** — klijent broji (`ER_BrojKomandePoRedu Mod 3`)
+  i čeka do 1s. ServoSync mora imati isti throttle (npr. p-limit/queue).
+- **Rezultat:** `ReadyState=4` → `Status 200/304` = OK, inače greška sa `ResponseText`. `ResponseStatus=-1`
+  = „NE POSTOJI KOMUNIKACIJA SA SERVEROM".
+
+### 8.2 Izlazne fakture (`ER_API_Common`) — slanje
+| Funkcija | HTTP | Napomena |
+|---|---|---|
+| slanje | `POST /api/publicApi/sales-invoice/ubl` body=UBL XML, `?requestId=<UBL_RequestID>`, `?date=Auto`, opc. `&sendToCir=` | glavni tok |
+| status | `GET /api/publicApi/sales-invoice?invoiceId=<SalesInvoiceId>` | |
+| lista ID | `POST /api/publicApi/sales-invoice/ids` | |
+| promene | `POST /api/publicApi/sales-invoice/changes?date=<d>` | polling statusa |
+| potpisana | `GET /api/publicApi/sales-invoice/signature?invoiceId=` | preuzimanje potpisanog |
+| **storno** | `POST /api/publicApi/sales-invoice/storno` JSON body | guard: `ER_FakturaMozeDaSeStornira(status, id)` |
+| **otkazivanje** | `POST /api/publicApi/sales-invoice/cancel` JSON body | guard: `ER_FakturaMozeDaSeOtkaze(status, id)` |
+
+### 8.3 Ulazne fakture (`SEF_API_Common`) — preuzimanje
+| Funkcija | HTTP | Napomena |
+|---|---|---|
+| promene na dan | `POST /api/publicApi/purchase-invoice/changes?date=<d>` | dnevni polling |
+| ID po statusu/periodu | `POST /api/publicApi/purchase-invoice/ids?Status=<s>&dateFrom=&dateTo=` | statusi: `New`, … |
+| status fakture | `GET /api/publicApi/purchase-invoice?invoiceId=<id>` | |
+| **UBL XML** | `GET /api/publicApi/purchase-invoice/xml?invoiceId=<id>` | telo fakture |
+| **prihvati/odbij** | `POST /api/publicApi/purchase-invoice/acceptRejectPurchaseInvoice` JSON | rok 15 dana |
+
+JSON body za prihvatanje/odbijanje (tačno iz koda):
+```json
+{ "invoiceId": <id>, "accepted": "<True|False>", "Comments": "<opciono>" }
+```
+- **PDF iz UBL-a:** `SEF_UBLPreuzimanjeUlazneFakture` → `KonvertujXMLStringUBase64` → `DecodeBase64`
+  (`MSXML2.DOMDocument`, `bin.base64`) → binarni upis `.PDF`. U ServoSync-u: server-side XML→PDF render.
+
+### 8.4 Tabele stanja (SEF perzistencija)
+- `T_ER_DokumentaNabavke` (= `SEF_DokumentaNabavke`) — ulazne: `PurchaseInvoiceId`, `SalesInvoiceId`,
+  `InvoiceId`, `Status`, `OpisStatusa`, `LastModifiedUtc`, `PoslednjaIzmena`, dobavljač (PIB→`Komitenti.Sifra`).
+- `T_ER_StatusDokumenata` — istorija/šifarnik statusa. `T_ER_UF` — ulazne fakture (registar).
+- ServoSync ekvivalent: `sef_inbox` / `sef_outbox` + `sef_status_log`, watermark `LastModifiedUtc` za polling.
+
+### 8.5 Za ServoSync SEF modul (4.0) — konkretno
+1. NestJS `SefApiClient` (REST, `ApiKey` header, **throttle 3 req/s**), base URL + ključ iz config-a.
+2. Dva servisa: `SefOutbox` (UBL build → `/sales-invoice/ubl` → status polling → storno/cancel sa guard-ovima)
+   i `SefInbox` (polling `/purchase-invoice/changes|ids` → `/xml` → parse → accept/reject).
+3. UBL builder po §6.2 mapiranju; XML→PDF render za prikaz.
+4. `requestId` (idempotencija slanja) + `date=Auto` + opc. `sendToCir` (Centralni registar faktura za javni sektor).
+5. Statusni model iz §6.2; guard funkcije (`MozeDaSeStornira/Otkaze`) preneti kao pravila.
