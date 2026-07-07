@@ -87,15 +87,35 @@
 
 ## 6. Dopuna — dubinska ekstrakcija (2026-07-07)
 
-### 6.1 Pokušaj ekstrakcije VBA izvora — status
-Pokušana ekstrakcija koda iz `OnLine_BigBit_APL.MDB` (rad na kopiji, Access 16 COM). Redosled:
-OLEDB → DAO auth → `SaveAsText` → VBIDE. **Rezultat: kompajlirani VBA je zaključan Access
-user-level (workgroup) zaštitom.** Baza se otvara samo ugrađenim `Admin` nalogom koji **nema „design"
-prava** → VBA projekat se ne učitava (`VBProjects.Count = 0`). Privilegovani nalozi (Slavisa/Sada/nadmin
-iz `BIGBIT_accounts.csv`) **ne postoje u `BIGBIT.MDW`** — taj CSV je dump drugog/spojenog workgroup-a.
-- **Da se dobije pun VBA izvor:** tražiti od Vase (a) ispravan `.MDW` sa admin nalogom, ili (b) sam izvorni
-  kod / nezaštićenu kopiju. Inventar je poznat: **115 modula, 563 forme, 496 izveštaja, 68 makroa**
-  (makroi uklj. `StartBigBit`, `StartKasa`, `StartNabavka`, `StartProizvodnja`, `StartPS` — ulazne tačke po modulima).
+### 6.1 Pokušaj ekstrakcije VBA izvora — iscrpno, status: ZAKLJUČANO (Access ULS)
+Pokušana ekstrakcija iz `OnLine_BigBit_APL.MDB` (rad na kopiji, Access 16 COM). Redom probano:
+OLEDB → DAO auth (svi nalozi iz CSV-a + oba `.MDW` fajla, mali 4.5MB i veliki 41MB) → `SaveAsText` →
+VBIDE → **reprodukcija vlasničkih SID-ova** (CREATE USER sa PID-om iz CSV-a: `Slavisa`/163224,
+`Sada`/7028080, `nadmin`/224163, `ServoAdmin`/224163 — dodati u Admins, komandni `/wrkgrp` login).
+
+**Dijagnoza (definitivna):**
+- `AccessVBOM` trust radi (prazna baza daje `VBProjects=1`) — nije problem u podešavanju.
+- Baza se autentifikuje **samo** ugrađenim `Admin` (lozinka u CSV-u), koji **nema Open/Run ni design prava**.
+- `Access.Application.OpenCurrentDatabase` **ignoriše** `DBEngine.DefaultUser` (uvek loguje kao `Admin`) —
+  za pravi nalog Access se mora pokrenuti komandno `/wrkgrp /user /pwd`.
+- Reprodukovani nalozi (tačan Name+PID) autentifikuju, ali **baza ih odbija** („no permissions to use the
+  object"). Znači **Open/Run dozvola je na Admins GRUPI**, čiji SID zavisi od WID-a
+  (`Admins`: Name `SLAVISA`, Org `BIT CO.`, WID `BIGBIT224163` — sve u `BIGBIT_accounts.csv`).
+- SID Admins grupe se reprodukuje **isključivo** kreiranjem `.MDW` sa tim WID-om. U Office 2016 **nema**
+  `wrkgadm.exe` ni DAO metode za to → **nije skriptabilno** iz ovog okruženja.
+
+**Put za otključavanje (bilo koji od tri):**
+1. **Ručno, besplatno (5 min):** u Access-u otvoriti bilo koji `.mdb` → Database Tools → Users and
+   Permissions → **Workgroup Administrator → Create**, uneti tačno: Name `SLAVISA`, Organization `BIT CO.`,
+   Workgroup ID `BIGBIT224163` (iz CSV-a) → snimiti novi `.mdw` → **Join** taj `.mdw` → otvoriti
+   `OnLine_BigBit_APL.MDB` kao `Admin` (član reprodukovane Admins grupe) → puna prava → `SaveAsText`/VBIDE
+   izvezu svih 115 modula. (Kad se dobije taj `.mdw`, ekstrakcija je minut posla — javiti AI sesiji.)
+2. **Paid ULS-removal alat** (koji je već korišćen ranije) — skida zaštitu sa kopije.
+3. **Tražiti od Vase** ispravan `.MDW` sa admin nalogom ili sam izvorni kod.
+
+Inventar mete je poznat: **115 modula, 563 forme, 496 izveštaja, 68 makroa** (makroi uklj. `StartBigBit`,
+`StartKasa`, `StartNabavka`, `StartProizvodnja`, `StartPS` — ulazne tačke po modulima).
+**Napomena:** ekstrakcija VBA nije blokada za plan — SEF suština (§6.2) je već izvučena string-miningom.
 
 ### 6.2 Šta JESTE izvučeno (string-mining binarnog — dovoljno za SEF modul)
 Iako je kod zaključan, iz binarnog su izvučeni **UBL 2.1 field-mapping, URL-ovi i model statusa** — suština:
