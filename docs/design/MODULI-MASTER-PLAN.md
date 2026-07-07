@@ -1,7 +1,9 @@
-# ServoSync — master plan modula (2.0 → 4.0)
+# ServoSync — master plan modula (3.0 → 4.0, na 2.0 temelju)
 
-> Kompletan katalog svih modula ka jedinstvenoj ERP/MES platformi, sa izvorom, zavisnostima i „šta
-> pripremiti sada". Cilj: da svaki modul koji gradimo danas bude spreman da primi ono što dolazi kasnije.
+> Plan modula koje **pripremamo za kasnije**: 3.0 (operativa iz 1.0) i 4.0 (BigBit komercijala).
+> 2.0 (proizvodni core) je **temelj koji već gradimo** — ovde je dat kao polazno stanje (§1–§2) da bi
+> se videlo na šta se 3.0/4.0 naslanjaju. Cilj: da svaki modul koji gradimo danas bude spreman da primi
+> ono što dolazi kasnije.
 > Izvor procena: [ROADMAP.md](../ROADMAP.md), [migration/00–07](../migration/), reverse-eng BigBit-a
 > (SEF: [07](../migration/07-bigbit-sef-efaktura.md)). Presuda o sadržaju modula: Negovan/Nesa (§11).
 
@@ -31,7 +33,7 @@ Ovo nisu domenski moduli nego infrastruktura koju SVAKI modul koristi. Gradi se 
 
 ---
 
-## 2. Faza 2.0 — proizvodni core (QBigTehn → ServoSync, u toku)
+## 2. Polazno stanje — 2.0 proizvodni core (temelj, u toku)
 
 Sve su **ServoSync vlasništvo** (QBigTehn MSSQL sync je privremen seed, pa se gasi).
 
