@@ -14,6 +14,7 @@ Read-only analize nastale multi-agent obradom legacy QBigTehn izvora, kanonskih 
 | [05-qbigtehn-sqlserver-logic.md](05-qbigtehn-sqlserver-logic.md) | **Poslovna logika iz MS SQL-a** (BOM/MRP/RN/TP algoritmi, 51 SP + 63 fn) + mapiranje na `WITH RECURSIVE` |
 | [06-bigbit-preuzmi-iz-bb.md](06-bigbit-preuzmi-iz-bb.md) | **„Preuzmi iz BB" legacy mehanizam** — mapiranje kolona po tabeli (5 tabela, INSERT-only), transformacije, mirror, veza sa BigBit-om + PDM XML; referenca za `bigbit-sync` |
 | [07-bigbit-sef-efaktura.md](07-bigbit-sef-efaktura.md) | **SEF eFaktura reverse engineering** — gde integracija živi (OnLine BigBit), 12+ API endpointa, rekonstruisani tokovi izlaznih/ulaznih faktura, podloga za 4.0 SEF modul |
+| [08-qbigtehn-vba-domain-map.md](08-qbigtehn-vba-domain-map.md) | **Mapa QBigTehn VBA → 2.0 domeni** (455 fajlova, multi-agent): koji legacy modul pokriva koji 2.0 domen (TP/RN/PDM/MRP/lokacije/komitenti), poslovna pravila za prenos, šta je van scope-a |
 
 ## Otvorena pitanja za Negovana/Nesu (blokiraju odluke)
 - Odluka o šemi: 1:1 vs **hibrid (legacy-cache + overlay)** vs kanonski (preporuka: hibrid).

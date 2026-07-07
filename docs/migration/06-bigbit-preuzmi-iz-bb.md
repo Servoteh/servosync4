@@ -117,3 +117,70 @@ Potvrđuje analizu iz §11.2: kad QBigTehn nestane, ServoSync mora sam do BigBit
    drift i šifra=0 poprave umesto da se ponove.)
 4. **Mapiranje ključa artikla** `Sifra artikla (BB) → BBSifra artikla (cilj)` je obavezno (cilj ima svoj `IDArtikal`).
 5. `R_Tarife/R_Grupa/R_Podgrupa/Magacini` → pročitati `EXT_Import_DEF` iz Access baze (definicije nisu u kodu).
+
+---
+
+## 7. Verifikacija iz čistog VBA izvora (QBigTehn_APL, 2026-07-08)
+
+> Osnov: direktno čitanje VBA modula (`ImportIzBB_Module.bas`, `BBSQLModule.bas`, `modSyncMirrorTabele.bas`,
+> `EXT_Import.bas`, `LinkovaneTabele.bas`, `ADO_Module.bas`), ne string-mining. Zaključak: §1–§4 su **uglavnom
+> tačni**; sve razlike su niže. Najveće korekcije su u **mehanizmu upisa** (§7.2) i **mirror-u** (§7.4).
+
+### 7.1 Kolone i transformacije po tabeli — status vs §2
+
+| Tabela | Anti-join ključ | Kolone | Transformacije | Status |
+|---|---|---|---|---|
+| Vrste šifara (2.1) | `[Vrsta sifre]` | `[Vrsta sifre]`, `Opis` | nema | **POTVRĐENO** — ali NE ide kroz `ExportujTabeluUSQL`, već `UradiImportIzTabeleUTabelu` (direktan DAO `INSERT…SELECT`, Access→Access) |
+| Prodavci (2.2) | `[Sifra prodavca]` | 16 kolona kako doc navodi | `Password = IIf(IsNull([Password]),[Sifra prodavca],[Password])` | **POTVRĐENO** — preciznije: okida samo na `IsNull`, ne na prazan string |
+| Komitenti (2.3) | `Sifra` `LEFT JOIN Komitenti WHERE Komitenti.Sifra Is Null` | kako doc (uklj. `[Ziro racun_1..3]`, `[Vrsta sifre]`) | (a) `[Sifra prodavca]` hard-kod `0 AS [Sifra prodavca]`; (b) `PIB = IIf(Nz([PIB],"")="","XX_" & [Sifra],[PIB])` | **POTVRĐENO EGZAKTNO** — PIB placeholder pokriva i NULL i prazan string (`Nz`) |
+| Predmeti (2.4) | `IDPredmet` (1:1) | 34 kolone kako doc | nema | **POTVRĐENO** — `IDENTITY_INSERT ON` auto-detektovan (v. §7.2) |
+| R_Artikli (2.5) | BB `[Sifra artikla]` → cilj `[BBSifra artikla]` | ~70 kolona, `[Sifra artikla] AS [BBSifra artikla]` | nema (mapiranje ključa) | **POTVRĐENO** — poziva `ExportujTabeluUSQLBezIdentityKolone`; cilj sam generiše `IDArtikal` |
+
+### 7.2 Mehanizam upisa `ExportujTabeluUSQL` — DOPUNA §1 (`BBSQLModule.bas:497`)
+
+Doc §1 je opisao motor približno tačno; egzaktni detalji i zamke:
+
+- **Presek kolona:** za svako polje izvora `ADO_PostojiKolonaUTabeli(F_CNNString("SQL"), UTabelu, ImePolja)`; zadržavaju se samo kolone koje postoje u cilju. `Size` i `Type` se uzimaju sa **ciljne** kolone.
+- **Tekst se seče na dužinu CILJNE kolone:** `Left(Vrednost, SizeKoloneZaExport(i))` (za `dbText`).
+- **Datum:** `SQLFormatDatumIVreme(Vrednost, False)`.
+- **Apostrof (potvrda + zamka):** `Replace(Vrednost, "'", " ")` — apostrof se zamenjuje **RAZMAKOM, ne dublira** (`D'Or` → `D Or`, gubitak podatka). Doc §1 je ovo naveo tačno. **RAZLIKA:** mirror (§7.4) koristi drugačiju logiku (`' → ''`).
+- Sve vrednosti idu kao **stringovi u jednostrukim navodnicima**, red-po-red pojedinačnim `pCNN.Execute`.
+- **`IDENTITY_INSERT` je DINAMIČKI:** `ADO_IsIdentity(F_CNNString("SQL"), UTabelu)` → `SET IDENTITY_INSERT ON` na početku / `OFF` na kraju. Predmeti (identity `IDPredmet`) ⇒ `ON` (čuva BB ključ). R_Artikli ide `…BezIdentityKolone` gde je `IDENTITY_INSERT` **zakomentarisan** ⇒ nikad se ne pali.
+- **Nema transakcije/rollback:** broji `Ispravno`/`NEIspravno`, **delimičan uspeh je moguć** (pola tabele ubačeno pa greška).
+
+### 7.3 Connection stringovi — DOPUNA/KOREKCIJA §4
+
+- `F_CNNString(TypeCNN)` (`ADO_Module.bas:41`): bazni string = `LIB_CFGRW.CNN_CurrentDataBase` — **config-driven, NIJE hard-kodiran u kodu**. `TypeCNN="SQL"` skida `ODBC;` prefiks (čist string za ADO); `TypeCNN="ODBC"` garantuje `ODBC;` prefiks (za DAO linkove). **Cilj svih `Dodaj*` = QBigTehn SQL Server** preko `F_CNNString("SQL")`. `ImportPodToSQL` / `fsSifraArtiklaZaKatBarNaz` koriste `BBCFG.CNNString` / `CNN_CurrentDataBase` (isti SQL Server).
+- **Izvor (EXT_):** fizičke Access-linkovane tabele; `Connect = ";DATABASE=<putanja>\BB_T_25.MDB"` (Access) ili `"ODBC;…"`. `ForsirajNoveLinkoveZaIDBaze(IDBaze, CNNString)` prepisuje `tdf.Connect`.
+- **KOREKCIJA §4 (registar tabela):** doc navodi `BazeIFirme(FirmaZaBaze, TipBaze, IDBaze, Baza)`; u ovom izvozu stvarne config tabele su **`Baze` + `Baze_Tipovi`(`TipBaze→IDBaze`) + `BazeITabele`**(`Name, SourceTableName, IDBaze, CheckLink, CurrentSourceDataBase, SysFitLevel`), čitane preko `F_Baze_SQL(TipBaze)`. Putanje **nisu u VBA** — moraju se pročitati iz Access baze.
+- **NOVO (multi-firma):** postoji dimenzija `F_FirmaZaBaze()`/`SysFITFirma` i filter `SysFitLevel <= F_SysFitLevel` na `BazeITabele` — **koje se tabele uopšte linkuju zavisi od firme i FIT nivoa**. String-mining ovo nije uhvatio.
+
+### 7.4 Mirror `SyncMirrorZaKatBroj` — KOREKCIJA §3 (`modSyncMirrorTabele.bas`)
+
+§3 je pojednostavljen; egzaktan kod pokazuje finiji, per-sesija model:
+
+- **DELETE NIJE „ceo skup"** — scoped je po **`SessionID` I `KataloskiBroj`**: `DELETE FROM RobneStavkeMirror WHERE SessionID='..' AND KataloskiBroj=N'..'`. ⇒ **Mirror tabele imaju kolonu `SessionID`** koju šema iz doc-a ne navodi.
+- **Izvor spaja TRI EXT tabele** (doc navodi dve): `[EXT_T_Robne stavke] RS INNER JOIN EXT_R_Artikli RA ON RS.[Sifra artikla]=RA.[Sifra artikla] INNER JOIN [EXT_T_Robna dokumenta] D ON RS.IDDok=D.IDDok WHERE RA.[Kataloski broj]='..'`. `EXT_R_Artikli` služi za prevod **`Sifra artikla` → `Kataloski broj`**.
+- **Ciljne šeme (za implementaciju):**
+  - `RobnaDokumentaMirror(SessionID, IDDok, VrstaDokumenta, DatumDokumenta)` — uz `IF NOT EXISTS(… WHERE SessionID AND IDDok)` dedup.
+  - `RobneStavkeMirror(SessionID, IDStavke, IDDok, SifraArtikla, KataloskiBroj, IDMagacin, KolicinaUlaz, KolicinaIzlaz, PoslednjaIzmena)`.
+- **Količina (potvrda §3):** `Kolicina>0 → KolicinaUlaz`; `<0 → KolicinaIzlaz=Abs(...)`; `PoslednjaIzmena=GETDATE()`. `SifraArtikla` upisan kao `CLng` (numerički).
+- **Escaping:** `SqlEscape` dublira apostrof (`' → ''`), `SqlDec` menja decimalni zarez u tačku; koriste se `N'..'` unicode literali. **Zamka:** ceo blok je u `BeginTrans/CommitTrans` **DAO workspace** transakcije oko **ADO** `Execute` — ne štiti stvarne ADO pozive. `dbExt=CurrentDb` (čita preko app-ovih EXT_ linkova).
+
+### 7.5 `EXT_Import_DEF` i tri putanje importa — DOPUNA §2 note
+
+Potvrda da `R_Tarife/R_Grupa/R_Podgrupa/Magacini` NE idu kroz dugme. `ImportIzEXTTabele(ImeIzTabele, ImeUTabelu)` čita `SQLTextImport` i `SQLTextPostImport` iz Access tabele **`EXT_Import_DEF`** preko `DLookup` po (`[ImeIzTabele]` AND `[ImeUTabelu]`). Kolone: `ImeIzTabele, ImeUTabelu, SQLTextImport, SQLTextPostImport` — **redovi u `.accdb/.mdb`, ne u VBA**. Tri distinktna mehanizma importa u kodu:
+
+| Putanja | Smer | Kako | Identity |
+|---|---|---|---|
+| `UradiImportIzTabeleUTabelu` | Access→Access | direktan DAO `INSERT…SELECT` | — (Vrste šifara ide ovuda) |
+| `UradiImportIzTabeleUSQLTabelu` + `ImportPodToSQL` | Access→SQL | row-by-row ADO | `SET IDENTITY_INSERT` ako `IsAutoNumber(cilj)` |
+| `ExportujTabeluUSQL(BezIdentityKolone)` | Access→SQL | glavni tok „Dodaj*" (§7.2) | dinamički / isključen |
+
+### 7.6 Za implementaciju `bigbit-sync` — zaključak
+
+1. **Kolone/transformacije iz §2 su verifikovane** — mogu direktno u Prisma mapping. Zadržati kao svesnu odluku (ili popraviti): `[Sifra prodavca]=0`, `PIB="XX_"&Sifra`, a **`Password=[Sifra prodavca]` NE prenositi** (security).
+2. **Zameniti `ExportujTabeluUSQL` UPSERT servisom u JEDNOJ transakciji.** Legacy nema rollback (delimičan uspeh) i INSERT-only je (promene u BB se ne propagiraju). Presek kolona i sečenje teksta na dužinu cilja postaju eksplicitan Prisma DTO/validacija; **apostrof-→razmak NE reprodukovati** (koristiti pravu parametrizaciju).
+3. **Mirror u 2.0 mora imati `SessionID` (scope ključ) i tri-tabelni izvor** (`Robne stavke` × `R_Artikli` × `Robna dokumenta`). Preslikati kao staging tabelu sa `session/request` scope-om ili materijalizovan view; količinski split i dedup dokumenta zadržati.
+4. **Izvor konfiguracija (`Baze/Baze_Tipovi/BazeITabele`, `EXT_Import_DEF`) pročitati iz Access baze**, uz **multi-firma + `SysFitLevel` filter** — connection registry u 2.0 mora nositi dimenzije firma/tip-baze/FIT. Cilj upisa je uvek `CNN_CurrentDataBase` (config-driven, ne hard-kod).
+5. **R_Artikli:** obavezno mapiranje `Sifra artikla (BB) → BBSifra artikla (cilj)`; cilj generiše svoj `IDArtikal`. **Predmeti:** čuvati `IDPredmet` 1:1 (legacy pali `IDENTITY_INSERT`, u 2.0 to je prirodni ključ za UPSERT).
