@@ -11,16 +11,40 @@
 
 import { buildTspLabelProgram, type TspLabelFields } from './tspl2';
 
-const PROXY_URL = process.env.NEXT_PUBLIC_LABEL_PROXY_URL ?? '';
+/**
+ * URL proxy-ja se bira U RUNTIME-U (isti obrazac kao API base u `client.ts`), jer
+ * jedan statični build služi sve terminale, a proxy je uvek LOKALNI (localhost) na
+ * svakom pogonskom računaru:
+ *   1. eksplicitni override `window.__SERVOSYNC_LABEL_PROXY_URL__` (iz `/config.js`) → pobeđuje;
+ *   2. podrazumevano `http://localhost:8765/print` (Chrome dozvoljava http→localhost sa HTTPS strane);
+ *   3. bez window-a (prerender/testovi) → build env `NEXT_PUBLIC_LABEL_PROXY_URL`, pa localhost default.
+ * Terminal koji NE vrti proxy → fetch padne, `printControlLabels` vrati `{ok:false}` (kiosk to javi).
+ */
+const DEFAULT_PROXY_URL = 'http://localhost:8765/print';
+
+declare global {
+  interface Window {
+    /** Opcioni runtime override URL-a label-proxy-ja (vidi public/config.js). */
+    __SERVOSYNC_LABEL_PROXY_URL__?: string;
+  }
+}
+
+function resolveProxyUrl(): string {
+  if (typeof window !== 'undefined') {
+    const override = window.__SERVOSYNC_LABEL_PROXY_URL__?.trim();
+    return override ? override.replace(/\/+$/, '') : DEFAULT_PROXY_URL;
+  }
+  return process.env.NEXT_PUBLIC_LABEL_PROXY_URL || DEFAULT_PROXY_URL;
+}
 
 export interface LabelPrintResult {
   ok: boolean;
   reason?: string;
 }
 
-/** Da li je proxy konfigurisan (za prikaz upozorenja pre štampe). */
+/** Uvek postoji URL (override ili localhost default) — zadržano radi kompatibilnosti poziva. */
 export function isLabelProxyConfigured(): boolean {
-  return !!PROXY_URL;
+  return !!resolveProxyUrl();
 }
 
 /** Pošalji već sastavljen TSPL2 program proxy-ju (POST JSON). */
@@ -28,9 +52,10 @@ export async function dispatchNetworkLabelPrint(
   tspl2: string,
   meta?: Record<string, unknown>,
 ): Promise<LabelPrintResult> {
-  if (!PROXY_URL) return { ok: false, reason: 'no_proxy_url' };
+  const url = resolveProxyUrl();
+  if (!url) return { ok: false, reason: 'no_proxy_url' };
   try {
-    const r = await fetch(PROXY_URL, {
+    const r = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mode: 'tech_process', payload: { tspl2, ...meta } }),

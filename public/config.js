@@ -11,3 +11,10 @@
 // serveru (out/config.js) — bez ponovnog build-a; Cloudflare kopija ostaje prazna.
 //
 // window.__SERVOSYNC_API_URL__ = "http://192.168.64.28:3000/api";
+
+// Opcioni RUNTIME override za label-proxy (termalna štampa nalepnica, kiosk).
+// Podrazumevano se koristi http://localhost:8765/print (proxy je LOKALNI na svakom
+// pogonskom terminalu — servoteh-plan-montaze/tools/label-proxy → TCP 9100 na TSC ML340P).
+// Postavi SAMO ako proxy sluša na drugom portu/hostu na tom terminalu:
+//
+// window.__SERVOSYNC_LABEL_PROXY_URL__ = "http://localhost:8765/print";
