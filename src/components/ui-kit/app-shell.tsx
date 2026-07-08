@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
+  Briefcase,
   Building2,
   ClipboardList,
   DraftingCompass,
@@ -12,6 +13,7 @@ import {
   PencilRuler,
   RefreshCw,
   ShoppingCart,
+  Users,
   Workflow,
   type LucideIcon,
 } from 'lucide-react';
@@ -28,12 +30,14 @@ interface NavItem {
 const NAV: NavItem[] = [
   { label: 'Radni nalozi', href: '/work-orders', icon: ClipboardList },
   { label: 'Tehnološki postupci', href: '/tech-processes', icon: Workflow },
-  { label: 'PDM / Crteži', icon: DraftingCompass },
+  { label: 'PDM / Crteži', href: '/pdm', icon: DraftingCompass },
   { label: 'Nacrti', icon: PencilRuler },
   { label: 'Primopredaje', icon: PackageCheck },
   { label: 'Lokacije delova', icon: MapPin },
+  { label: 'Proizvodne strukture', href: '/structures', icon: Users },
   { label: 'MRP / Nabavka', icon: ShoppingCart },
-  { label: 'Komitenti', icon: Building2 },
+  { label: 'Komitenti', href: '/customers', icon: Building2 },
+  { label: 'Predmeti', href: '/projects', icon: Briefcase },
   { label: 'Sinhronizacije', href: '/syncs', icon: RefreshCw },
 ];
 

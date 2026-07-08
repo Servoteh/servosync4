@@ -1,0 +1,200 @@
+'use client';
+
+import { useState } from 'react';
+import { DataTable, type Column } from '@/components/ui-kit/data-table';
+import { StatusBadge } from '@/components/ui-kit/status-badge';
+import { EmptyState } from '@/components/ui-kit/empty-state';
+import { SearchBox } from '@/components/ui-kit/search-box';
+import { Pager } from '@/components/ui-kit/pager';
+import { ComboBox } from '@/components/ui-kit/combo-box';
+import {
+  useDrawings,
+  useMaterialsLookup,
+  useDesignersLookup,
+  type Drawing,
+} from '@/api/pdm';
+import { formatDate, formatNumber } from '@/lib/format';
+import { drawingStatusMeta, weightLabel } from './pdm-helpers';
+import { DrawingDetail } from './drawing-detail';
+
+const columns: Column<Drawing>[] = [
+  {
+    key: 'drawingNumber',
+    header: 'Broj crteža',
+    render: (r) => <span className="tnums font-semibold text-ink">{r.drawingNumber}</span>,
+  },
+  {
+    key: 'revision',
+    header: 'Rev.',
+    render: (r) => <span className="tnums text-ink-secondary">{r.revision}</span>,
+  },
+  { key: 'name', header: 'Naziv', render: (r) => r.name || '—' },
+  {
+    key: 'material',
+    header: 'Materijal',
+    render: (r) => <span className="text-ink-secondary">{r.material || '—'}</span>,
+  },
+  {
+    key: 'weight',
+    header: 'Masa',
+    align: 'right',
+    numeric: true,
+    render: (r) => weightLabel(r.weight),
+  },
+  {
+    key: 'designedBy',
+    header: 'Projektovao',
+    render: (r) => <span className="text-ink-secondary">{r.designedBy || '—'}</span>,
+  },
+  {
+    key: 'designDate',
+    header: 'Datum',
+    render: (r) => <span className="text-ink-secondary">{formatDate(r.designDate)}</span>,
+  },
+  {
+    key: 'status',
+    header: 'Status',
+    render: (r) => {
+      const s = drawingStatusMeta(r.status, r.pdmStatus);
+      return (
+        <span className="inline-flex items-center gap-1.5">
+          <StatusBadge tone={s.tone} label={s.label} />
+          {r.isProcurement && <StatusBadge tone="info" label="nabavno" />}
+        </span>
+      );
+    },
+  },
+];
+
+const filterInput =
+  'rounded-control border border-line bg-surface px-2.5 py-1.5 text-sm text-ink';
+
+export function DrawingsTab() {
+  const [q, setQ] = useState('');
+  const [revision, setRevision] = useState('');
+  const [material, setMaterial] = useState<string | null>(null);
+  const [designedBy, setDesignedBy] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const [expanded, setExpanded] = useState<number | null>(null);
+  const resetPage = () => setPage(1);
+
+  const list = useDrawings({
+    page,
+    q: q.trim() || undefined,
+    revision: revision.trim() || undefined,
+    material: material || undefined,
+    designedBy: designedBy || undefined,
+  });
+
+  const rows = list.data?.data ?? [];
+  const meta = list.data?.meta.pagination;
+  const hasFilter = !!(q || revision || material || designedBy);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="flex flex-col gap-1 text-xs text-ink-secondary">
+          Pretraga
+          <SearchBox
+            value={q}
+            onChange={(v) => {
+              setQ(v);
+              resetPage();
+            }}
+            placeholder="Broj, kat. broj, naziv…"
+          />
+        </div>
+        <label className="flex flex-col gap-1 text-xs text-ink-secondary">
+          Revizija
+          <input
+            value={revision}
+            onChange={(e) => {
+              setRevision(e.target.value);
+              resetPage();
+            }}
+            placeholder="npr. A"
+            className={`${filterInput} w-24`}
+          />
+        </label>
+        <div className="flex w-52 flex-col gap-1 text-xs text-ink-secondary">
+          Materijal
+          <ComboBox<string>
+            value={material}
+            onChange={(m) => {
+              setMaterial(m);
+              resetPage();
+            }}
+            useSearch={useMaterialsLookup}
+            getKey={(m) => m}
+            getLabel={(m) => m}
+            placeholder="Svi materijali…"
+          />
+        </div>
+        <div className="flex w-52 flex-col gap-1 text-xs text-ink-secondary">
+          Projektant
+          <ComboBox<string>
+            value={designedBy}
+            onChange={(dz) => {
+              setDesignedBy(dz);
+              resetPage();
+            }}
+            useSearch={useDesignersLookup}
+            getKey={(x) => x}
+            getLabel={(x) => x}
+            placeholder="Svi projektanti…"
+          />
+        </div>
+        {hasFilter && (
+          <button
+            onClick={() => {
+              setQ('');
+              setRevision('');
+              setMaterial(null);
+              setDesignedBy(null);
+              resetPage();
+            }}
+            className="rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2"
+          >
+            Očisti
+          </button>
+        )}
+        {meta && (
+          <span className="ml-auto text-sm text-ink-secondary">
+            {formatNumber(meta.total)} zapisa
+          </span>
+        )}
+      </div>
+
+      {list.error && (
+        <div className="rounded-panel border border-status-danger/30 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">
+          {(list.error as Error).message}
+        </div>
+      )}
+
+      <DataTable
+        columns={columns}
+        rows={rows}
+        rowKey={(r) => r.id}
+        loading={list.isLoading}
+        onRowActivate={(r) => setExpanded((e) => (e === r.id ? null : r.id))}
+        expandedKey={expanded}
+        renderExpanded={(r) => <DrawingDetail id={r.id} />}
+        empty={
+          <EmptyState
+            title="Nema crteža"
+            hint="Promeni filtere ili proveri da je PDM uvoz popunio podatke."
+          />
+        }
+      />
+
+      {meta && meta.totalPages > 1 && (
+        <Pager
+          page={meta.page}
+          totalPages={meta.totalPages}
+          onPrev={() => setPage((p) => Math.max(1, p - 1))}
+          onNext={() => setPage((p) => Math.min(meta.totalPages, p + 1))}
+        />
+      )}
+    </div>
+  );
+}
