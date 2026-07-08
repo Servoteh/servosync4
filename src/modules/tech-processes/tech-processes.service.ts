@@ -680,27 +680,35 @@ export class TechProcessesService {
         `Revizija se ne poklapa: nalog=${order.fields.revision}, operacija=${operation.fields.revision} — barkodovi ne pripadaju istom otisku.`,
       );
 
-    const { projectId, identNumber, variant } = order.fields;
+    const { projectId, identNumber } = order.fields;
+    const scannedVariant = order.fields.variant;
     const { operationNumber, workCenterCode } = operation.fields;
 
     const result = await this.prisma.$transaction(async (tx) => {
+      // Varijanta se menja U MESTU pri izmeni tehnologije/crteža (Vasa) — zato NE
+      // pinujemo skeniranu varijantu: (projectId, identNumber) jednoznačno određuje RN,
+      // pa uzimamo TEKUĆI red operacije (najviša varijanta). Staru varijantu sa otiska
+      // koristimo samo za detekciju zastarelosti (guard ispod).
       const where: Prisma.TechProcessWhereInput = {
         projectId,
         identNumber,
-        variant,
         workCenterCode,
       };
       if (operationNumber !== null) where.operationNumber = operationNumber;
 
       const tp = await tx.techProcess.findFirst({
         where,
-        orderBy: [{ isProcessFinished: "asc" }, { id: "asc" }],
+        orderBy: [
+          { variant: "desc" },
+          { isProcessFinished: "asc" },
+          { id: "asc" },
+        ],
       });
       if (!tp)
         throw new NotFoundException(
           `Operacija (RC ${workCenterCode}${
             operationNumber !== null ? `, op. ${operationNumber}` : ""
-          }) nije nađena u tehnološkom postupku RN ${identNumber} (predmet ${projectId}, var. ${variant}).`,
+          }) nije nađena u tehnološkom postupku RN ${identNumber} (predmet ${projectId}).`,
         );
       if (tp.isProcessFinished)
         throw new UnprocessableEntityException(
@@ -711,17 +719,16 @@ export class TechProcessesService {
         tx,
         projectId,
         identNumber,
-        variant,
+        tp.variant,
       );
       const planned = workOrder?.pieceCount ?? null;
 
-      // Verzioni guard (UPOZORENJE, ne blokada — MODULE_SPEC_stampa §5): otisak sa
-      // revizijom različitom od tekuće `work_orders.revision` je štampan pre izmene
-      // tehnologije/crteža. Otisak ne može biti noviji od tekuće revizije, pa je
-      // svako neslaganje "stariji otisak". Prijava rada svejedno prolazi.
-      const currentRevision = workOrder?.revision ?? null;
-      const staleWorkOrder =
-        currentRevision != null && currentRevision !== order.fields.revision;
+      // Verzioni guard (UPOZORENJE, ne blokada — MODULE_SPEC_stampa §5): pri izmeni
+      // tehnologije/crteža `variant` se podiže U MESTU (Vasa). Ako je varijanta sa
+      // otiska starija od tekuće → radnik je uzeo STAR odštampan nalog. Rad se svejedno
+      // evidentira na tekuću varijantu (`tp.variant`), uz upozorenje.
+      const currentVariant = tp.variant;
+      const staleWorkOrder = scannedVariant < currentVariant;
 
       // Prijava rada = akumulacija napravljenih komada na redu operacije.
       const newPieceCount = tp.pieceCount + dto.pieceCount;
@@ -753,7 +760,7 @@ export class TechProcessesService {
         tx,
         projectId,
         identNumber,
-        variant,
+        tp.variant,
       );
 
       return {
@@ -764,8 +771,8 @@ export class TechProcessesService {
         prioritized,
         workOrderCompleted,
         staleWorkOrder,
-        printedRevision: order.fields.revision,
-        currentRevision,
+        printedVariant: scannedVariant,
+        currentVariant,
       };
     });
 
@@ -782,10 +789,10 @@ export class TechProcessesService {
         operationsPrioritized: result.prioritized,
         workOrderCompleted: result.workOrderCompleted,
         workOrder: result.workOrder,
-        // Verzioni guard: upozorenje ako je skenirani otisak starije revizije (§5).
+        // Verzioni guard: upozorenje ako je skenirani otisak starije varijante (§5).
         staleWorkOrder: result.staleWorkOrder,
-        printedRevision: result.printedRevision,
-        currentRevision: result.currentRevision,
+        printedVariant: result.printedVariant,
+        currentVariant: result.currentVariant,
       },
     };
   }

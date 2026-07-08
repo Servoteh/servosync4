@@ -91,15 +91,22 @@ promene, a radnik ima **stari odštampan RN** u pogonu, sistem to hvata poređen
 Legacy komparator: `RazlikeIzmedju_tRN_tTehPostupak` (`queries.sql:1358`, `tTehPostupak.PrnTimer <> tRN.PrnTimer`).
 Legacy token `F_Timer()=CLng(Timer)` = sekunde od ponoći (slab: reset/sudari) i danas je uglavnom `0`.
 
-**Odluka 2.0 (Nenad, 2026-07-08):**
-1. Vezati za **`work_orders.revision`**, NE za sekunde-timer (bez reseta/sudara; okidač = izmena tehnologije/crteža = bump revizije).
-2. Ponašanje = **UPOZORENJE, ne blokada.** Prijava rada prolazi, ali vraća flag da je otisak stariji od tekuće revizije.
-3. `scan()` promena ([tech-processes.service.ts:655](../../src/modules/tech-processes/tech-processes.service.ts)):
-   - zadržati postojeću proveru nalog↔operacija (isti `revision` na oba barkoda = isti otisak);
-   - **dodati**: učitati tekući `work_orders.revision` po (projectId, identNumber, variant) i ako je
-     `scannedRevision < currentRevision` → u response `staleWorkOrder: true` + poruka
-     („Stari nalog — tehnologija/crtež su izmenjeni; preporučuje se novi odštampan nalog").
-   - front (kiosk) prikazuje upozorenje, radnik/šef potvrđuje i nastavlja.
+**Odluka 2.0 (Nenad, 2026-07-08) — ISPRAVLJENO posle domenske potvrde:**
+Verzija koja se menja pri izmeni tehnologije/crteža je **`variant`** (broj), i podiže se **U MESTU**
+(isti RN red, `variant` 0→1). *(Ne alfabetska `revision` — ona ostaje „A"; ranija pretpostavka bila pogrešna.)*
+`variant` je već u nalog-barkodu (polje 4), pa **format barkoda ostaje nepromenjen**.
+1. Guard poredi **`variant`** (skenirani sa otiska vs. tekući na RN-u).
+2. Ponašanje = **UPOZORENJE, ne blokada.** Rad se evidentira na **tekuću** varijantu, uz flag.
+3. `scan()` (`tech-processes.service.ts`):
+   - lookup `tech_processes` NE pinuje skeniranu varijantu (menja se u mestu): traži po
+     (projectId, identNumber, workCenterCode, operationNumber), `orderBy variant desc` → tekući red;
+   - `staleWorkOrder = scannedVariant < tp.variant` → response `staleWorkOrder` + `printedVariant`/`currentVariant`;
+   - „isti otisak" provera ostaje na `revision` (polje 5, ista u oba barkoda);
+   - front (kiosk) prikazuje upozorenje („Nalog štampan u varijanti X, tekuća je Y…"), rad prolazi.
+
+**Napomena (buduće poravnanje):** operacioni barkod polje 4 je trenutno literal `0`; po Vasi bi trebalo da nosi
+`variant` (radi jače „isti otisak" provere i para sa nalog poljem 4). Odloženo da se ne dira frontend/kontrola
+barkod-tipovi usred paralelnog rada — nije nužno za guard (guard koristi nalog varijantu).
 
 ## 6. Nalepnice — reuse iz ServoSync 1.0
 
@@ -144,16 +151,16 @@ Legacy token `F_Timer()=CLng(Timer)` = sekunde od ponoći (slab: reset/sudari) i
 
 ## 10. Odluke — rešene i otvorene
 
-**Rešeno (2026-07-08, Nenad):**
+**Rešeno (2026-07-08, Nenad/Vasa):**
 - ✅ **Zavisnosti:** `pdfmake` (RN PDF, bez headless browsera) + `bwip-js` (Code 128 SVG, server-native; jsbarcode
   je browser-side → ostaje samo za nalepnice/klijent) + `@types/pdfmake`.
-- ✅ **Verzioni guard = `revision`, UPOZORENJE** (ne blokada) — implementirano u `scan()` (§5).
+- ✅ **Verzioni guard = `variant`, U MESTU, UPOZORENJE** (ne blokada) — implementirano u `scan()` (§5).
+  *(Ispravka: verzija je `variant` broj koji se podiže u mestu, NE alfabetska `revision`.)*
 - ✅ **Nalepnice ostaju u 1.0 / kontrola stream**; 2.0 obezbeđuje kompatibilan barkod.
+- ✅ **TSPL2 proxy radi** — štampa nalepnica bez problema na 1.0 (potvrda Nenad); nema dodatnog posla.
+- ✅ **Polje 4 operacija-barkoda = `0`** (default); po Vasi vrednost dolazi iz varijante — buduće poravnanje da
+  polje 4 nosi `variant` (§5 napomena). Ne blokira guard.
 - ⏸️ **Kartice** — ID odložene, START/STOP van scope-a (§9 P3b).
 
-**Otvoreno — za Negovana/Vasu:**
-1. **`revision` bump proces** — potvrditi da izmena tehnologije/crteža uvek podiže `work_orders.revision` (okidač
-   guarda §5). Bez toga je guard benigan (ne okida lažno, ali ni ne hvata zastareo otisak).
-2. **Polje 4 operacija-barkoda** — trenutno `0` (verno legacy `rRN`; parser čita kao `identMark`). Da li treba
-   nositi stvarnu `Toznaka` (kao `rRNStavke`)?
-3. **TSPL2 proxy** (nalepnice) — dostupnost lokalnog agenta (`…PROXY_URL`→TCP 9100) sa Cloudflare fronta ka pogonu.
+**Otvoreno:** nema blokirajućih odluka za štampu; ostaje samo buduće poravnanje operacionog barkoda (polje 4 →
+`variant`) kad se sleže paralelni kontrola/barkod rad.
