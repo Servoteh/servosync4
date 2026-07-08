@@ -120,6 +120,19 @@ Napomene:
   katalog (`operator→RADNIK`, `technician→TEHNICAR_ODRZAVANJA`, `chief→SEF`, `management→MENADZMENT`,
   `admin→ADMIN`) uz modul-scope (vidi §4).
 
+### 2.1 Mapiranje stvarnih rukovodilaca (sistematizacija 2026 — odluka 2026-07-08)
+
+| Osoba | Naziv u sistematizaciji | Kanonska rola 2.0 | Scope / dodatno |
+|---|---|---|---|
+| **Miljan Nikodijević** | Rukovodilac proizvodnih operacija i tehnologije | **`SEF`** | proizvodnja + tehnologija (glavni ŠEF proizvodnog toka) |
+| **Nikola Ninković** | Šef mašinske obrade | **`SEF`** | ista rola; scope = mašinska obrada (radna jedinica) — po potrebi `scopeType='department'` |
+| **Milorad Jerotić** | Gl. mašinski inž. + Rukovodilac inženjeringa; **finalni potpisnik** | **`PROJEKTANT_VODJA`** + flag **`finalni_potpisnik`** | finalno odobrenje nacrta/primopredaje |
+
+> **V1 pojednostavljenje:** u ServoSync 1.0 su sva trojica `menadzment`. Prihvatljivo je da u 2.0 V1
+> ostanu `MENADZMENT` (uvid+write), a granularizacija na `SEF`/`PROJEKTANT_VODJA` + `finalni_potpisnik`
+> flag dolazi u V2 kad zaživi odobravanje/lansiranje. `finalni_potpisnik` = per-user override flag
+> (obrazac 1.0 „per-user flag", §1.3), ne zasebna rola.
+
 ---
 
 ## 3. Matrica prava — moduli 2.0 × role
