@@ -26,6 +26,13 @@ import { Pager } from '@/components/ui-kit/pager';
 import { Button } from '@/components/ui-kit/button';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { FormField, Input } from '@/components/ui-kit/form-field';
+import { ComboBox } from '@/components/ui-kit/combo-box';
+import {
+  useCustomersLookup,
+  useProjectsLookup,
+  type CustomerLookup,
+  type ProjectLookup,
+} from '@/api/lookups';
 import { formatDate, formatNumber } from '@/lib/format';
 
 const STATUS_META: Record<number, { tone: Tone; label: string }> = {
@@ -226,6 +233,8 @@ const EMPTY_FORM: CreateWorkOrderInput = {
 
 function NewWorkOrderDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [form, setForm] = useState<CreateWorkOrderInput>(EMPTY_FORM);
+  const [project, setProject] = useState<ProjectLookup | null>(null);
+  const [customer, setCustomer] = useState<CustomerLookup | null>(null);
   const create = useCreateWorkOrder();
   const set = (patch: Partial<CreateWorkOrderInput>) => setForm((f) => ({ ...f, ...patch }));
 
@@ -237,6 +246,8 @@ function NewWorkOrderDialog({ open, onClose }: { open: boolean; onClose: () => v
         productionDeadline: form.productionDeadline || undefined,
       });
       setForm(EMPTY_FORM);
+      setProject(null);
+      setCustomer(null);
       onClose();
     } catch {
       /* greška se prikazuje ispod */
@@ -271,19 +282,46 @@ function NewWorkOrderDialog({ open, onClose }: { open: boolean; onClose: () => v
           komitent se za sad unose šifrom (biranje iz liste stiže sa šifarnicima).
         </p>
         <div className="grid grid-cols-2 gap-3">
-          <FormField label="Predmet (šifra)" required>
-            <Input
-              type="number"
-              value={form.projectId || ''}
-              onChange={(e) => set({ projectId: Number(e.target.value) })}
+          <FormField label="Predmet" required>
+            <ComboBox<ProjectLookup>
+              value={project}
+              onChange={(p) => {
+                setProject(p);
+                setForm((f) => ({
+                  ...f,
+                  projectId: p?.id ?? 0,
+                  externalCustomerId: p?.customerId ?? f.externalCustomerId,
+                }));
+                if (p) setCustomer(null);
+              }}
+              useSearch={useProjectsLookup}
+              getKey={(p) => p.id}
+              getLabel={(p) => p.projectNumber}
+              getSublabel={(p) => p.projectName ?? p.description ?? ''}
+              placeholder="Broj/naziv predmeta…"
             />
           </FormField>
-          <FormField label="Komitent (šifra)" required>
-            <Input
-              type="number"
-              value={form.externalCustomerId || ''}
-              onChange={(e) => set({ externalCustomerId: Number(e.target.value) })}
+          <FormField label="Komitent" required>
+            <ComboBox<CustomerLookup>
+              value={customer}
+              onChange={(c) => {
+                setCustomer(c);
+                setForm((f) => ({
+                  ...f,
+                  externalCustomerId: c?.id ?? project?.customerId ?? 0,
+                }));
+              }}
+              useSearch={useCustomersLookup}
+              getKey={(c) => c.id}
+              getLabel={(c) => c.name}
+              getSublabel={(c) => [c.city, c.taxId].filter(Boolean).join(' · ')}
+              placeholder={project ? 'Iz predmeta — promeni po želji…' : 'Naziv/PIB…'}
             />
+            {!customer && form.externalCustomerId > 0 && (
+              <p className="mt-1 text-xs text-ink-disabled">
+                Preuzet iz predmeta (šifra {form.externalCustomerId}).
+              </p>
+            )}
           </FormField>
         </div>
         <FormField label="Naziv pozicije" required>
