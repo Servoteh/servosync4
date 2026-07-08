@@ -87,6 +87,10 @@ Front bira API base **u runtime-u u browseru** ([../src/api/client.ts](../src/ap
 `out/` build** radi i kroz Cloudflare i direktno na LAN-u. Kad internet padne (ili terminal nema izlaz na
 net), LAN put i dalje radi jer ne prolazi kroz Cloudflare edge — server (backend + PostgreSQL) rade lokalno.
 
+> **Preporučena varijanta:** neka **backend servira front** na `:3000` (isti origin, bez CORS-a, bez drugog
+> kontejnera) — runbook u [backend INFRASTRUKTURA.md §6b](../../backend/docs/infra/INFRASTRUKTURA.md). Dole
+> opisan zaseban `front-lan` nginx na `:8080` je alternativa ako ne želiš da backend servira statiku.
+
 **Kako se bira API:**
 
 | Front otvoren na… | API base | Put |
