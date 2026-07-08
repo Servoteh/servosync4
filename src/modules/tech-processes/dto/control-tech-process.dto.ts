@@ -1,18 +1,21 @@
 import { BadRequestException } from "@nestjs/common";
 
 /**
- * `POST /tech-processes/:id/control` — ZAVRŠNA KONTROLA (MODULE_SPEC_kontrola §3.2/§5,
- * legacy BarKodUnos2024 ekrani 5–7). Kontrolor se identifikuje ID karticom
- * (`workerCard` → `workers.cardId`; obavezan audit ko+kada, ODLUKE #14), unosi broj
- * iskontrolisanih (dobrih) komada, kvalitet, i **raspoređuje** komade po policama
- * (`part_locations`, MODULE_SPEC_lokacije §3.7 — lokacija tek posle završne kontrole).
+ * `POST /tech-processes/control` — ZAVRŠNA KONTROLA (MODULE_SPEC_kontrola §3.2/§5,
+ * legacy BarKodUnos2024 ekrani 5–7). Kontrolor skenira nalog + operaciju (kao kod
+ * prijave rada) i identifikuje se ID karticom (`workerCard` → `workers.cardId`;
+ * obavezan audit ko+kada, ODLUKE #14).
+ *
+ * 🔴 Create-on-scan (legacy `SacuvajRNSIzUnosaBarKoda`): za završnu kontrolu red u
+ * `tech_processes` obično NE postoji unapred (pravi se pri kontroli). Servis zato
+ * NAĐE otvoren red ili ga OTVORI — pošto proveri da je operacija u routingu RN-a
+ * (`work_order_operations`) i da je radni centar `significant_for_finishing`.
  *
  * 🔴 ProveriDefinisneKolicine (MODULE_SPEC_lokacije §3.3): zbir `locations[].quantity`
- * MORA biti jednak `pieceCount` — bez toga se kontrola ne snima.
+ * MORA biti jednak `pieceCount`. class-validator još nije uveden (BACKEND_RULES §6) — ručno.
  *
- * P1: DORADA/ŠKART (`qualityTypeId` 1/2) se prihvata i knjiži sa tim kvalitetom, ali
- * kreiranje child RN-a (`-D/-S`) + poruka tehnologu je P2 (TODO) — odgovor tada nosi
- * `childOrderPending: true`. class-validator još nije uveden (BACKEND_RULES §6) — ručno.
+ * P1: DORADA/ŠKART (`qualityTypeId` 1/2) se knjiži sa tim kvalitetom, ali child RN
+ * (`-D/-S`) + poruka tehnologu su P2 → odgovor nosi `childOrderPending: true`.
  */
 export interface ControlLocationInput {
   /** Pozicija/polica (FK `positions`) na koju se odlaže deo. */
@@ -22,6 +25,10 @@ export interface ControlLocationInput {
 }
 
 export interface ControlTechProcessDto {
+  /** Nalog barkod: `RNZ:projectId:identNumber:variant:revision`. */
+  orderBarcode: string;
+  /** Operacija (završne kontrole) barkod: `S:operationNumber:workCenterCode:0:revision`. */
+  operationBarcode: string;
   /** ID kartica kontrolora (`workers.cardId`) — obavezno (audit: ko + kada, ODLUKE #14). */
   workerCard: string;
   /** Ukupan broj iskontrolisanih komada — ceo broj ≥ 1 (= zbir `locations[].quantity`). */
@@ -38,6 +45,11 @@ const QUALITY_VALUES = new Set([0, 1, 2]);
 
 export function validateControl(dto: ControlTechProcessDto): void {
   const errors: string[] = [];
+
+  if (typeof dto?.orderBarcode !== "string" || !dto.orderBarcode.trim())
+    errors.push("Polje 'orderBarcode' je obavezno.");
+  if (typeof dto?.operationBarcode !== "string" || !dto.operationBarcode.trim())
+    errors.push("Polje 'operationBarcode' je obavezno.");
 
   if (typeof dto?.workerCard !== "string" || !dto.workerCard.trim())
     errors.push("Polje 'workerCard' (ID kartica kontrolora) je obavezno.");

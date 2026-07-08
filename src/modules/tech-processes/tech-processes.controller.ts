@@ -42,7 +42,7 @@ import type { ControlTechProcessDto } from "./dto/control-tech-process.dto";
  *   POST /api/v1/tech-processes/barcode/decode    { barcode }                             — parsira/validira JEDAN barkod
  *   POST /api/v1/tech-processes/scan              { orderBarcode, operationBarcode, pieceCount, workerCard? } — barkod prijava rada
  *   POST /api/v1/tech-processes/:id/finish        { pieceCount?, note?, workerCard? }      — zatvaranje postupka
- *   POST /api/v1/tech-processes/:id/control       { workerCard, pieceCount, qualityTypeId, locations[], note? } — ZAVRŠNA KONTROLA
+ *   POST /api/v1/tech-processes/control           { orderBarcode, operationBarcode, workerCard, pieceCount, qualityTypeId, locations[], note? } — ZAVRŠNA KONTROLA (create-on-scan)
  *
  * Traži JWT; read=`tehnologija.read`, write=`tehnologija.write` (V1 no-op guard,
  * V2 aktivacija). Mutacije odobrene (ODLUKE 2026-07-08: proizvodne tabele =
@@ -112,13 +112,10 @@ export class TechProcessesController {
     return this.techProcesses.finish(id, dto);
   }
 
-  @Post(":id/control")
+  @Post("control")
   @RequirePermission(PERMISSIONS.TEHNOLOGIJA_WRITE)
-  control(
-    @Param("id", ParseIntPipe) id: number,
-    @Body() dto: ControlTechProcessDto,
-  ) {
-    return this.techProcesses.control(id, dto);
+  control(@Body() dto: ControlTechProcessDto) {
+    return this.techProcesses.control(dto);
   }
 
   @Get(":id")
