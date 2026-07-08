@@ -179,17 +179,17 @@ Kad internet/Cloudflare padne, front na Cloudflare-u je nedostupan. Zato backend
 Uključuje se env promenljivom `FRONTEND_STATIC_DIR` (prazno = samo API, kao do sada); front sam izvede API
 na istom hostu:portu (`src/api/client.ts` runtime-resolve), pa radi bez ikakve dodatne konfiguracije.
 
-> ⚠️ Zavisi od merge-a `feat/wave-3 → main`: i runtime-resolve (frontend) i serviranje statike (`main.ts`)
-> su na `feat/wave-3`. Prod backend se auto-deploy-uje sa `main`, pa ovo proradi tek kad wave-3 uđe u `main`
-> (Lukin pregled) i backend se rebuilduje. Do tada je za test potreban ručni build backenda sa `feat/wave-3`.
+> Napomena: i runtime-resolve (frontend) i serviranje statike (`main.ts`) su na `main`. Push na `main`
+> auto-deploy-uje backend (rebuild kroz self-hosted runner) — kod za serviranje je prisutan, ali se front
+> na :3000 **aktivira tek** kad se dole postave `FRONTEND_STATIC_DIR` + volume (prazno → čist API, bez promene).
 
 Koraci na serveru (interaktivno; `admnenad`/`admluka` sa sudo). Compose je `/home/admluka/servosync/docker-compose.yml`:
 
 ```bash
 ssh ubuntusrv
 cd /home/admluka/servosync
-# 1) front repo kao izvor out/ (dok nije u main-u, uzmi feat/wave-3):
-sudo git clone -b feat/wave-3 https://github.com/servosync/frontend.git frontend
+# 1) front repo kao izvor out/:
+sudo git clone https://github.com/servosync/frontend.git frontend
 # 2) build out/ bez Node-a na hostu (jednokratni node kontejner):
 sudo docker run --rm -v "$PWD/frontend":/app -w /app node:22-bookworm-slim sh -c "npm ci && npm run build"
 ```
