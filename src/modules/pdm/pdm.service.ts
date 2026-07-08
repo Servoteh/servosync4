@@ -248,6 +248,36 @@ export class PdmService {
     };
   }
 
+  /**
+   * Uskladišten PDF crteža (`drawing_pdfs.pdf_binary`, bytea) za prikaz/preuzimanje.
+   * 404 ako crtež ne postoji ili nema binarnog sadržaja (npr. samo metapodaci).
+   */
+  async getPdfContent(id: number): Promise<{ buffer: Buffer; fileName: string }> {
+    const drawing = await this.prisma.drawing.findUnique({
+      where: { id },
+      select: { drawingNumber: true, revision: true },
+    });
+    if (!drawing) throw new NotFoundException(`Crtež ${id} ne postoji`);
+
+    const pdf = await this.prisma.drawingPdf.findUnique({
+      where: {
+        drawingNumber_revision: {
+          drawingNumber: drawing.drawingNumber,
+          revision: drawing.revision,
+        },
+      },
+      select: { pdfBinary: true, fileName: true },
+    });
+    if (!pdf?.pdfBinary)
+      throw new NotFoundException(
+        `PDF crteža ${drawing.drawingNumber} (rev ${drawing.revision}) nema uskladišten sadržaj.`,
+      );
+
+    const fileName =
+      pdf.fileName?.trim() || `${drawing.drawingNumber}-${drawing.revision}.pdf`;
+    return { buffer: Buffer.from(pdf.pdfBinary), fileName };
+  }
+
   // ---------------------------------------------------------------- BOM
 
   /**

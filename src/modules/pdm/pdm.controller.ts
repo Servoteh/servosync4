@@ -4,8 +4,11 @@ import {
   Param,
   ParseIntPipe,
   Query,
+  Res,
+  StreamableFile,
   UseGuards,
 } from "@nestjs/common";
+import type { Response } from "express";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
@@ -44,6 +47,22 @@ export class PdmController {
   @Get("drawings/:id")
   findDrawing(@Param("id", ParseIntPipe) id: number) {
     return this.pdm.findDrawing(id);
+  }
+
+  /** Uskladišten PDF crteža (stream). `?download=true` → attachment; inače inline (prikaz u browseru). */
+  @Get("drawings/:id/pdf/content")
+  async pdfContent(
+    @Param("id", ParseIntPipe) id: number,
+    @Query("download") download: string | undefined,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<StreamableFile> {
+    const { buffer, fileName } = await this.pdm.getPdfContent(id);
+    const disposition = download === "true" ? "attachment" : "inline";
+    res.set({
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `${disposition}; filename="${fileName}"`,
+    });
+    return new StreamableFile(buffer);
   }
 
   @Get("drawings/:id/bom")
