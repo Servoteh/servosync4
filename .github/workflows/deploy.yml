@@ -1,0 +1,45 @@
+name: deploy-backend
+
+# Auto-redeploy on merge to main. Runs on the self-hosted runner that lives on
+# the on-prem server (192.168.64.28) — outbound-only, nothing is exposed.
+# Docs-only pushes are ignored (paths filter) so we don't rebuild for nothing.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "prisma/**"
+      - "package.json"
+      - "package-lock.json"
+      - "Dockerfile"
+      - ".dockerignore"
+      - ".github/workflows/deploy.yml"
+
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, servosync]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build, migrate, restart
+        run: |
+          set -euo pipefail
+          # Ship source into the compose deploy dir (build context is ./backend).
+          rsync -a --delete \
+            --exclude .git --exclude node_modules --exclude dist \
+            ./ "$HOME/servosync/backend/"
+          cd "$HOME/servosync"
+          docker compose build backend
+          # Apply any new migrations (idempotent — no-op when none pending).
+          docker compose run --rm backend npx prisma migrate deploy
+          docker compose up -d backend
+
+      - name: Health check
+        run: |
+          sleep 5
+          curl -fsS http://localhost:3000/api > /dev/null && echo "backend healthy"
