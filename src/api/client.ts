@@ -45,3 +45,26 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
   }
   return res.json() as Promise<T>;
 }
+
+/** Kao `apiFetch`, ali vraća binarni `Blob` (PDF štampa i sl.). Isti auth header. */
+export async function apiBlob(path: string, options: RequestInit = {}): Promise<Blob> {
+  const token = getToken();
+  const res = await fetch(API + path, {
+    ...options,
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(options.headers || {}),
+    },
+  });
+  if (!res.ok) {
+    let message = 'Greška u komunikaciji sa serverom';
+    try {
+      const body = await res.json();
+      if (body?.message) message = Array.isArray(body.message) ? body.message.join(', ') : body.message;
+    } catch {
+      /* non-JSON error */
+    }
+    throw new ApiError(res.status, message);
+  }
+  return res.blob();
+}

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Copy, CopyPlus, Plus, Recycle } from 'lucide-react';
+import { Copy, CopyPlus, Plus, Printer, Recycle } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import {
   REWORK_QUALITY,
@@ -17,6 +17,7 @@ import {
   useWorkOrder,
   useWorkOrders,
   useWorkOrdersLookup,
+  openWorkOrderRnPdf,
   type BulkCloneResult,
   type CreateWorkOrderInput,
   type ReworkQuality,
@@ -115,7 +116,21 @@ function WorkOrderDetail({ id }: { id: number }) {
   const lock = useLockWorkOrder();
   const [copyOpen, setCopyOpen] = useState(false);
   const [reworkOpen, setReworkOpen] = useState(false);
+  const [printing, setPrinting] = useState(false);
+  const [printError, setPrintError] = useState<string | null>(null);
   const busy = approve.isPending || launch.isPending || lock.isPending;
+
+  async function onPrint() {
+    setPrinting(true);
+    setPrintError(null);
+    try {
+      await openWorkOrderRnPdf(id);
+    } catch (e) {
+      setPrintError(e instanceof Error ? e.message : 'Greška pri štampi radnog naloga.');
+    } finally {
+      setPrinting(false);
+    }
+  }
 
   if (q.isLoading) return <span className="text-sm text-ink-disabled">Učitavanje…</span>;
   if (q.error || !q.data)
@@ -138,6 +153,14 @@ function WorkOrderDetail({ id }: { id: number }) {
         <StatusBadge tone={s.tone} label={s.label} />
         {locked && <StatusBadge tone="warn" label="Zaključan" />}
         <span className="flex-1" />
+        <button
+          disabled={printing}
+          onClick={onPrint}
+          className={`${actionBtn} inline-flex items-center gap-1.5 border border-line text-ink-secondary`}
+        >
+          <Printer className="h-3.5 w-3.5" aria-hidden />
+          {printing ? 'Priprema…' : 'Štampaj RN'}
+        </button>
         {canCopyInto && (
           <button
             disabled={busy}
@@ -194,6 +217,11 @@ function WorkOrderDetail({ id }: { id: number }) {
         </button>
       </div>
 
+      {printError && (
+        <p className="text-sm text-status-danger" role="alert">
+          {printError}
+        </p>
+      )}
       {actionError && (
         <p className="text-sm text-status-danger" role="alert">
           {actionError.message}

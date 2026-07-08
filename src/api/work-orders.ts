@@ -1,8 +1,26 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiFetch } from './client';
+import { apiBlob, apiFetch } from './client';
 import type { Paginated, WorkerRef } from './tech-processes';
+
+/**
+ * Preuzmi RN dokument (PDF) i otvori ga u novom tabu za štampu.
+ * `bez-barkoda` = varijanta bez operacionih barkoda (MODULE_SPEC_stampa §4).
+ * Endpoint traži JWT, pa se PDF povlači kroz `apiBlob` (Authorization header),
+ * ne prostim `window.open` na URL.
+ */
+export async function openWorkOrderRnPdf(
+  id: number,
+  variant?: 'std' | 'bez-barkoda',
+): Promise<void> {
+  const qs = variant === 'bez-barkoda' ? '?variant=bez-barkoda' : '';
+  const blob = await apiBlob(`/v1/work-orders/${id}/print${qs}`);
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank', 'noopener');
+  // Oslobodi objectURL kad se tab otvori (dovoljno vremena da browser učita PDF).
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
 
 /** Radni status (handover_statuses id) — MODULE_SPEC_radni_nalozi §4. */
 export const WO_STATUS = {

@@ -1,22 +1,27 @@
 'use client';
 
 import { useCallback, useMemo, useState } from 'react';
-import { LogOut, RotateCcw } from 'lucide-react';
+import { LogOut, RotateCcw, UserRound } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { ApiError } from '@/api/client';
 import {
+  useControl,
   useDecodeBarcode,
   useFinish,
+  useIdentifyWorker,
   useScan,
+  type KioskWorker,
   type KioskWorkOrder,
   type OperationBarcodeFields,
   type OrderBarcodeFields,
 } from '@/api/kiosk';
 import { useTechProcessCard } from '@/api/tech-processes';
+import { printControlLabels } from '@/lib/label-print';
 import { formatDate, formatNumber } from '@/lib/format';
 import { ScanField } from './scan-field';
 import { BigMessage, type MessageTone } from './big-message';
 import { WorkPanel } from './work-panel';
+import { ControlPanel, type ControlSubmit } from './control-panel';
 
 interface OrderState {
   raw: string;
@@ -27,6 +32,9 @@ interface OrderState {
 interface OperationState {
   raw: string;
   fields: OperationBarcodeFields;
+  /** true = završna kontrola (operations.significantForFinishing) → KONTROLA režim. */
+  finalControl: boolean;
+  workCenterName: string | null;
 }
 type Feedback = { tone: MessageTone; title: string; detail?: string };
 
@@ -72,14 +80,18 @@ function OrderHeadline({ order }: { order: OrderState }) {
 
 export function KioskScanner({ workerName }: { workerName: string }) {
   const { logout } = useAuth();
+  const identify = useIdentifyWorker();
   const decode = useDecodeBarcode();
   const scan = useScan();
   const finish = useFinish();
+  const control = useControl();
 
+  // Radnik/kontrolor prijavljen ID karticom (BarKodUnos2024 ekran 1).
+  const [worker, setWorker] = useState<{ card: string; info: KioskWorker } | null>(null);
   const [order, setOrder] = useState<OrderState | null>(null);
   const [operation, setOperation] = useState<OperationState | null>(null);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
-  // Živa vrednost iz scan/finish odgovora (brži prikaz od refetch-a kartice).
+  // Živa vrednost iz scan/finish/control odgovora (brži prikaz od refetch-a kartice).
   const [override, setOverride] = useState<{ id: number; made: number; finished: boolean } | null>(
     null,
   );
@@ -109,12 +121,33 @@ export function KioskScanner({ workerName }: { workerName: string }) {
     )[0];
   }, [operation, card.data]);
 
-  const reset = useCallback(() => {
+  const resetOrder = useCallback(() => {
     setOrder(null);
     setOperation(null);
     setOverride(null);
     setFeedback(null);
   }, []);
+
+  const resetWorker = useCallback(() => {
+    setWorker(null);
+    resetOrder();
+  }, [resetOrder]);
+
+  async function onCardScan(cardId: string) {
+    try {
+      const { data } = await identify.mutateAsync(cardId);
+      setWorker({ card: cardId, info: data });
+      setFeedback({
+        tone: 'info',
+        title: `Prijavljen: ${data.fullName ?? data.username}`,
+        detail: data.isController
+          ? 'Kontrolor — skenirajte NALOG radnog naloga.'
+          : 'Skenirajte NALOG radnog naloga.',
+      });
+    } catch (e) {
+      setFeedback({ tone: 'danger', title: 'Kartica nije prepoznata', detail: errMessage(e) });
+    }
+  }
 
   async function onOrderScan(barcode: string) {
     try {
@@ -165,29 +198,39 @@ export function KioskScanner({ workerName }: { workerName: string }) {
         });
         return;
       }
-      if (data.fields.printTimer !== order.fields.printTimer) {
+      if (data.fields.revision !== order.fields.revision) {
         setFeedback({
           tone: 'danger',
           title: 'Barkod ne pripada nalogu',
-          detail: 'PrnTimer se ne poklapa — operacija je sa drugog naloga. Skenirajte pravu operaciju.',
+          detail: 'Revizija se ne poklapa — operacija je sa drugog otiska. Skenirajte pravu operaciju.',
         });
         return;
       }
       setOverride(null);
-      setOperation({ raw: barcode, fields: data.fields });
-      setFeedback(null);
+      setOperation({
+        raw: barcode,
+        fields: data.fields,
+        finalControl: data.operation?.significantForFinishing ?? false,
+        workCenterName: data.operation?.workCenterName ?? null,
+      });
+      setFeedback(
+        data.operation?.significantForFinishing
+          ? { tone: 'info', title: 'Završna kontrola', detail: 'Unesite komade, kvalitet i lokaciju, pa štampajte nalepnice.' }
+          : null,
+      );
     } catch (e) {
       setFeedback({ tone: 'danger', title: 'Neispravan barkod', detail: errMessage(e) });
     }
   }
 
   async function onEvidentiraj(pieces: number) {
-    if (!order || !operation) return;
+    if (!order || !operation || !worker) return;
     try {
       const { data } = await scan.mutateAsync({
         orderBarcode: order.raw,
         operationBarcode: operation.raw,
         pieceCount: pieces,
+        workerCard: worker.card,
       });
       setOverride({
         id: data.techProcess.id,
@@ -201,11 +244,23 @@ export function KioskScanner({ workerName }: { workerName: string }) {
       ];
       if (data.operationFinished) parts.push('Operacija je dostigla plan i zatvorena.');
       if (data.workOrderCompleted) parts.push('Radni nalog je završen.');
-      setFeedback({
-        tone: 'success',
-        title: `Evidentirano ${formatNumber(pieces)} kom`,
-        detail: parts.join(' · '),
-      });
+      if (data.staleWorkOrder) {
+        setFeedback({
+          tone: 'info',
+          title: `⚠ Star otisak — rad je evidentiran (${formatNumber(pieces)} kom)`,
+          detail: [
+            `Nalog je štampan u reviziji ${data.printedRevision}, tekuća je ${data.currentRevision ?? '—'}.`,
+            'Tehnologija/crtež su verovatno izmenjeni — preuzmite novi odštampan nalog.',
+            ...parts,
+          ].join(' · '),
+        });
+      } else {
+        setFeedback({
+          tone: 'success',
+          title: `Evidentirano ${formatNumber(pieces)} kom`,
+          detail: parts.join(' · '),
+        });
+      }
     } catch (e) {
       setFeedback({ tone: 'danger', title: 'Prijava nije uspela', detail: errMessage(e) });
     }
@@ -222,7 +277,7 @@ export function KioskScanner({ workerName }: { workerName: string }) {
       return;
     }
     try {
-      const { data } = await finish.mutateAsync({ id });
+      const { data } = await finish.mutateAsync({ id, workerCard: worker?.card });
       setOverride({ id: data.techProcess.id, made: data.techProcess.pieceCount, finished: true });
       const parts = [`Zatvoreno sa ${formatNumber(data.finishedPieces)} kom`];
       if (data.workOrderCompleted) parts.push('Radni nalog je završen.');
@@ -232,13 +287,89 @@ export function KioskScanner({ workerName }: { workerName: string }) {
     }
   }
 
+  async function onKontrola(input: ControlSubmit) {
+    const id = matched?.id ?? override?.id;
+    if (id == null || !worker) {
+      setFeedback({
+        tone: 'danger',
+        title: 'Kontrola nije moguća',
+        detail: 'Operacija završne kontrole nije pronađena u tehnološkom postupku.',
+      });
+      return;
+    }
+    try {
+      const { data } = await control.mutateAsync({ id, workerCard: worker.card, ...input });
+      setOverride({ id: data.techProcess.id, made: data.controlledPieces, finished: true });
+
+      // Štampa nalepnica (RNZ) — jedna po komadu (BarKodUnos2024 ekran 7).
+      const print = await printControlLabels({
+        fields: data.label.fields,
+        barcode: data.label.barcode,
+        copies: data.controlledPieces,
+      });
+
+      const parts = [`Iskontrolisano ${formatNumber(data.controlledPieces)} kom`];
+      if (data.workOrderCompleted) parts.push('Radni nalog je završen.');
+      if (data.childOrderPending) parts.push('Nalog za doradu/škart sledi u narednoj fazi.');
+
+      if (print.ok) {
+        setFeedback({
+          tone: 'success',
+          title: `Kontrola završena · nalepnice poslate (${formatNumber(data.controlledPieces)})`,
+          detail: parts.join(' · '),
+        });
+      } else {
+        const why =
+          print.reason === 'no_proxy_url'
+            ? 'Label-proxy nije podešen (NEXT_PUBLIC_LABEL_PROXY_URL) — nalepnice nisu odštampane.'
+            : `Štampa nalepnica nije uspela (${print.reason}).`;
+        setFeedback({
+          tone: 'info',
+          title: 'Kontrola završena — nalepnice NISU odštampane',
+          detail: [why, ...parts].join(' · '),
+        });
+      }
+    } catch (e) {
+      setFeedback({ tone: 'danger', title: 'Kontrola nije uspela', detail: errMessage(e) });
+    }
+  }
+
+  // --- render: prvo prijava karticom, pa nalog → operacija → panel ---
+
+  if (!worker) {
+    return (
+      <main className="flex flex-1 flex-col bg-app">
+        <header className="flex items-center justify-between gap-4 border-b border-line bg-surface px-6 py-4">
+          <span className="text-2xl font-bold text-ink">Kiosk — prijava radom</span>
+          <button
+            onClick={logout}
+            className="inline-flex h-14 items-center gap-2 rounded-control px-4 text-lg font-medium text-ink-secondary hover:bg-surface-2"
+          >
+            <LogOut className="h-5 w-5" aria-hidden />
+            Odjava terminala
+          </button>
+        </header>
+        <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-6 overflow-auto p-6">
+          {feedback && <BigMessage tone={feedback.tone} title={feedback.title} detail={feedback.detail} />}
+          <ScanField
+            key="scan-card"
+            label="Prijava za rad — skenirajte ID karticu"
+            placeholder="ID kartica…"
+            hint="Prislonite čitač na svoju identifikacionu karticu."
+            onScan={onCardScan}
+          />
+        </div>
+      </main>
+    );
+  }
+
   const stepNo = order ? (operation ? 3 : 2) : 1;
-  const stepLabel = stepNo === 1 ? 'Skeniraj nalog' : stepNo === 2 ? 'Skeniraj operaciju' : 'Prijava rada';
+  const stepLabel = stepNo === 1 ? 'Skeniraj nalog' : stepNo === 2 ? 'Skeniraj operaciju' : operation?.finalControl ? 'Kontrola' : 'Prijava rada';
 
   const made = override?.made ?? matched?.pieceCount ?? 0;
   const finished = override?.finished ?? !!matched?.isProcessFinished;
   const planned = order?.workOrder?.pieceCount ?? null;
-  const opName = matched?.operation?.workCenterName ?? operation?.fields.workCenterCode ?? '';
+  const opName = matched?.operation?.workCenterName ?? operation?.workCenterName ?? operation?.fields.workCenterCode ?? '';
   const operationLabel = operation
     ? `${operation.fields.operationNumber != null ? `Op. ${operation.fields.operationNumber} · ` : ''}${opName}`
     : '';
@@ -255,10 +386,13 @@ export function KioskScanner({ workerName }: { workerName: string }) {
           </span>
         </div>
         <div className="flex items-center gap-2">
-          <span className="hidden text-lg text-ink-secondary md:inline">{workerName}</span>
+          <span className="hidden items-center gap-1.5 text-lg text-ink md:inline-flex">
+            <UserRound className="h-5 w-5 text-ink-secondary" aria-hidden />
+            {worker.info.fullName ?? worker.info.username}
+          </span>
           {order && (
             <button
-              onClick={reset}
+              onClick={resetOrder}
               className="inline-flex h-14 items-center gap-2 rounded-control border-2 border-line bg-surface px-5 text-lg font-semibold text-ink hover:bg-surface-2"
             >
               <RotateCcw className="h-5 w-5" aria-hidden />
@@ -266,11 +400,11 @@ export function KioskScanner({ workerName }: { workerName: string }) {
             </button>
           )}
           <button
-            onClick={logout}
+            onClick={resetWorker}
             className="inline-flex h-14 items-center gap-2 rounded-control px-4 text-lg font-medium text-ink-secondary hover:bg-surface-2"
           >
             <LogOut className="h-5 w-5" aria-hidden />
-            Odjava
+            Odjava radnika
           </button>
         </div>
       </header>
@@ -300,7 +434,17 @@ export function KioskScanner({ workerName }: { workerName: string }) {
           />
         )}
 
-        {order && operation && (
+        {order && operation && operation.finalControl && !finished && !missing && !cardLoading && (
+          <ControlPanel
+            key={operation.raw}
+            operationLabel={operationLabel}
+            planned={planned}
+            busy={control.isPending}
+            onSubmit={onKontrola}
+          />
+        )}
+
+        {order && operation && !(operation.finalControl && !finished && !missing && !cardLoading) && (
           <WorkPanel
             key={operation.raw}
             operationLabel={operationLabel}

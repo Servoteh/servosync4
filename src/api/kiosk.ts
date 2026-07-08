@@ -7,9 +7,10 @@ import type { TechProcess } from './tech-processes';
 /**
  * Barkod kiosk (prijava rada u pogonu) — write-path tehnoloških postupaka
  * (backend/src/modules/tech-processes). Radnik skenira DVA barkoda:
- *   - nalog     `RNZ:IDPredmet:IdentBroj:Varijanta:PrnTimer`
- *   - operacija `S:Operacija:RJgrupaRC:Toznaka:PrnTimer`
- * `PrnTimer` je vezni ključ (mora biti isti u oba). Rute:
+ *   - nalog     `RNZ:projectId:identNumber:variant:revision`
+ *   - operacija `S:operationNumber:workCenterCode:0:revision`
+ * `revision` (polje 5) je verzioni pečat — mora biti ista u oba (isti otisak); ako je
+ * skenirani otisak starije revizije od tekućeg RN-a, scan vraća `staleWorkOrder` upozorenje. Rute:
  *   POST /v1/tech-processes/barcode/decode  { barcode }
  *   POST /v1/tech-processes/scan            { orderBarcode, operationBarcode, pieceCount }
  *   POST /v1/tech-processes/:id/finish      { pieceCount?, note? }
@@ -18,22 +19,24 @@ import type { TechProcess } from './tech-processes';
 
 const BASE = '/v1/tech-processes';
 
-/** Polja nalog-barkoda (`RNZ:IDPredmet:IdentBroj:Varijanta:PrnTimer`). */
+/** Polja nalog-barkoda (`RNZ:projectId:identNumber:variant:revision`). */
 export interface OrderBarcodeFields {
   projectId: number;
   identNumber: string;
   variant: number;
-  printTimer: number;
+  /** Revizija RN-a (verzioni pečat; legacy: PrnTimer). */
+  revision: string;
 }
 
-/** Polja operacija-barkoda (`S:Operacija:RJgrupaRC:Toznaka:PrnTimer`). */
+/** Polja operacija-barkoda (`S:operationNumber:workCenterCode:0:revision`). */
 export interface OperationBarcodeFields {
   /** null ako polje „Operacija" nije ceo broj. */
   operationNumber: number | null;
   operationRaw: string;
   workCenterCode: string;
   identMark: string;
-  printTimer: number;
+  /** Revizija RN-a (verzioni pečat, ista kao nalog; legacy: PrnTimer). */
+  revision: string;
 }
 
 /** RN razrešen iz nalog-barkoda (podskup `work_orders` koji vraća decode). */
@@ -62,6 +65,12 @@ export type DecodedBarcode =
       type: 'operacija';
       marker: 'S';
       fields: OperationBarcodeFields;
+      /**
+       * Razrešen radni centar iz šifarnika. `significantForFinishing = true` →
+       * operacija je ZAVRŠNA KONTROLA → kiosk grana u KONTROLA režim (MODULE_SPEC_kontrola §1).
+       * `null` ako RC nije u šifarniku `operations`.
+       */
+      operation: { workCenterName: string; significantForFinishing: boolean } | null;
     };
 
 export interface ScanInput {
@@ -69,6 +78,8 @@ export interface ScanInput {
   operationBarcode: string;
   /** Broj napravljenih komada u OVOJ prijavi (akumulira se; ceo broj ≥ 1). */
   pieceCount: number;
+  /** ID kartica radnika (audit ko je radio) — opciono. */
+  workerCard?: string;
 }
 
 export interface ScanResult {
@@ -79,6 +90,12 @@ export interface ScanResult {
   operationsPrioritized: number;
   workOrderCompleted: boolean;
   workOrder: KioskWorkOrder | null;
+  /** true = skenirani otisak je starije revizije od tekućeg RN-a (upozorenje, ne blokada). */
+  staleWorkOrder: boolean;
+  /** Revizija sa skeniranog barkoda (otisak). */
+  printedRevision: string;
+  /** Tekuća revizija RN-a u bazi (null ako RN nije razrešen). */
+  currentRevision: string | null;
 }
 
 export interface FinishInput {
@@ -86,6 +103,8 @@ export interface FinishInput {
   /** Konačan broj komada; bez njega → zatvara sa trenutnom evidentiranom količinom. */
   pieceCount?: number;
   note?: string;
+  /** ID kartica radnika (audit ko+kada) — opciono. */
+  workerCard?: string;
 }
 
 export interface FinishResult {
@@ -125,11 +144,101 @@ export function useScan() {
 export function useFinish() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, pieceCount, note }: FinishInput) =>
+    mutationFn: ({ id, pieceCount, note, workerCard }: FinishInput) =>
       apiFetch<{ data: FinishResult }>(`${BASE}/${id}/finish`, {
         method: 'POST',
-        body: JSON.stringify({ pieceCount, note }),
+        body: JSON.stringify({ pieceCount, note, workerCard }),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['tech-processes'] }),
+  });
+}
+
+// ------------------------------------------------------------------ KONTROLA (završna kontrola)
+
+/** Radnik razrešen iz ID kartice (kiosk login karticom — GET /worker?card=…). */
+export interface KioskWorker {
+  id: number;
+  fullName: string | null;
+  username: string;
+  workerTypeId: number;
+  workerType: string | null;
+  /** Tip radnika sa dodatnim ovlašćenjima = kontrolor (legacy DodatnaOvlascenja). */
+  isController: boolean;
+}
+
+/** Polja + RNZ barkod za termalnu nalepnicu (GET /label; i deo control odgovora). */
+export interface LabelData {
+  workOrderId: number;
+  /** RNZ payload (kiosk-dekodabilan): `RNZ:projectId:identNumber:variant:revision`. */
+  barcode: string;
+  plannedPieces: number;
+  quantity: number;
+  fields: {
+    brojPredmeta: string;
+    komitent: string;
+    nazivPredmeta: string;
+    nazivDela: string;
+    brojCrteza: string;
+    materijal: string;
+    kolicina: string;
+  };
+}
+
+/** Jedan raspored po polici (zbir svih = pieceCount). */
+export interface ControlLocationInput {
+  positionId: number;
+  quantity: number;
+}
+
+export interface ControlInput {
+  /** tech_processes.id operacije završne kontrole. */
+  id: number;
+  /** ID kartica kontrolora (obavezno). */
+  workerCard: string;
+  /** Ukupno iskontrolisano (= zbir locations[].quantity). */
+  pieceCount: number;
+  /** 0=dobar (P1), 1=dorada, 2=škart. */
+  qualityTypeId: number;
+  locations: ControlLocationInput[];
+  note?: string;
+}
+
+export interface ControlResult {
+  techProcess: TechProcess;
+  controlledPieces: number;
+  plannedPieces: number | null;
+  qualityTypeId: number;
+  locationsBooked: number;
+  operationsPrioritized: number;
+  workOrderCompleted: boolean;
+  workOrder: KioskWorkOrder | null;
+  label: LabelData;
+  /** true = dorada/škart — child RN (-D/-S) je P2 (još se ne kreira). */
+  childOrderPending: boolean;
+}
+
+/** Razreši radnika iz ID kartice (kiosk login). 404 ako kartica nije poznata. */
+export function useIdentifyWorker() {
+  return useMutation({
+    mutationFn: (cardId: string) =>
+      apiFetch<{ data: KioskWorker }>(
+        `${BASE}/worker?card=${encodeURIComponent(cardId)}`,
+      ),
+  });
+}
+
+/** Završna kontrola — kvalitet + raspored po policama + zatvaranje (jedna transakcija). */
+export function useControl() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...body }: ControlInput) =>
+      apiFetch<{ data: ControlResult; meta?: { note: string } }>(
+        `${BASE}/${id}/control`,
+        { method: 'POST', body: JSON.stringify(body) },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['tech-processes'] });
+      qc.invalidateQueries({ queryKey: ['part-locations'] });
+    },
   });
 }
