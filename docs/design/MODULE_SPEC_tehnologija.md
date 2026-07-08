@@ -44,17 +44,29 @@ CNC programi trenutno nemaju tabelu — predlog `cnc_programs` (RBAC §7.3, otvo
 **UI obrasci za 2.0 dizajn sistem:** kiosk/touch ekran (barkod, velika dugmad), master-detail (kartica + podforma),
 grid unos (operacije), bojena lista po severity-ju (kritični postupci) — vidi `frontend` repo, `docs/DESIGN_SYSTEM.md`.
 
-## 3. Poslovna pravila (🔴 = mora preživeti port; izvor [08 §1/§10](../migration/08-qbigtehn-vba-domain-map.md), [05](../migration/05-qbigtehn-sqlserver-logic.md))
+## 3. Poslovna pravila (🔴 = mora preživeti port; izvor [08 §1/§10](../migration/08-qbigtehn-vba-domain-map.md), [05](../migration/05-qbigtehn-sqlserver-logic.md), **razrešeno [15](../migration/15-bom-mrp-odluka-bez-negovana.md)**)
 
-1. **🔴 Barkod format:** `PredmetID:IdentBroj:Varijanta:Operacija:RJgrupaRC` (separatori `:`, fallback dekodiranje). `AGDesifrujBarKod`.
+> **Kanonske definicije (iz [15 §5](../migration/15-bom-mrp-odluka-bez-negovana.md)):** „RN završen" = **najnovija**
+> definicija (`ZavrsenoKomada>=Planirano` na `ZnacajneOperacijeZaZavrsen=1`), materijalizovati `isCompleted` i
+> deliti u svim ekranima. `NapravljenoKomada` — razdvojiti **tri metrike po kvalitetu**; za pokriće plana broj
+> samo `DOBAR` (kvalitet=0). Write-path prijave rada = 2 endpointa (`prijaviRad`/`zatvoriOperaciju`), svaki u
+> **jednoj transakciji** (legacy nije atomičan; `IDRN` se ne puni post-hoc nego kroz JOIN).
+
+1. **🔴 Barkod format (ISPRAVLJENO — vidi [migration/15 §5.1](../migration/15-bom-mrp-odluka-bez-negovana.md)):**
+   NISU jedan nego **DVA** barkoda, svaki 5 polja (4 separatora `:`): **nalog** `RNZ:IDPredmet:IdentBroj:Varijanta:PrnTimer`
+   i **operacija** `S:Operacija:RJgrupaRC:Toznaka:PrnTimer`. `PrnTimer` je **vezni ključ** (operacioni barkod
+   mora imati isti `PrnTimer` kao nalog). Validacija: `BrojSeparatora=4 AND (Left(bc,3)='RNZ' OR Left(bc,1)='S')`.
+   *(Stari jednobarkodni `PredmetID:...:RJgrupaRC` je mrtav test-kod `DesifrujBarKod_TEST`.)*
 2. **🔴 Zatvaranje postupka** (`OznaciDaJeZavrsenPostupak`): provera količina → `isProcessFinished=true` + `finishedAt` + **`priority=255`** (skinuto sa prioriteta). Premašaj količine → greška (ne zatvara). **U 2.0 = jedna DB transakcija.**
 3. **🔴 DORADA/ŠKART** (`ftDodatiPostupkeZaDoraduIliSkart`): zatvoreni redovi sa količinom dorade → **novi nalog** (`identNumber` sufiks `-D`n dorada / `-S`n škart) + poruka planeru/tehnologu. Kvalitet enum `0=dobar, 1=dorada, 2=škart`.
 4. **🔴 Autorizacija operacije:** radnik vidi/radi samo operacije čiji je `workCenterCode` u `machine_access` za tog radnika (join). Logovani radnik sme zatvarati tuđi postupak samo uz `definesApproval`/`additionalPrivileges`.
 5. **Prioritet operacije:** `100` ako `operations.usesPriority=true`, inače `255`.
 6. **Sumiranje** (komadi/vreme): u 2.0 **SUM na DB/API**, ne u UI (legacy sabira u podformi).
 7. `significantForFinishing` operacije određuju kad je postupak „završiv"; `isSkippable` = preskočiva.
-8. **🔴 Noćni auto-close (iz [zvaničnog uputstva](../migration/11-bb-tehnologija-uputstvo.md)):** nezatvoreni
-   nalozi se **automatski zatvaraju u 23h** → u 2.0 scheduled job (`@nestjs/schedule`).
+8. **Noćni auto-close u 23h — NOV zahtev, ne migracija** (iz [uputstva](../migration/11-bb-tehnologija-uputstvo.md);
+   **nema traga u legacy kodu** — [15 §5.5](../migration/15-bom-mrp-odluka-bez-negovana.md)): scheduled job
+   (`@nestjs/schedule`) u 23:00. **Potvrditi sa Negovanom:** vrednost `komada` pri auto-zatvaranju + flag
+   „auto-closed" da ne kvari KPI.
 9. **⚠️ Ograničenje za popraviti:** legacy „detaljan pregled gotovosti" i „dinamika izrade" **NE rade za ceo
    sklop** — 2.0 dodaje agregaciju gotovosti po sklopu (rekurzivni BOM CTE).
 

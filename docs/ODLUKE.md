@@ -24,9 +24,21 @@
   tehnologije*; Nikola Ninković = *Šef mašinske obrade*; Milorad Jerotić = *Gl. mašinski inž. + Rukovodilac
   inženjeringa; finalni potpisnik*. **Predlog mapiranja** u [RBAC_RLS_PREDLOG §2/§6](design/RBAC_RLS_PREDLOG.md).
   U 1.0 su svi „menadzment" — može tako i da ostane u V1, pa se granulira u V2.
-- **BOM/MRP logika (§11.3 dubinski):** Nenad traži **detaljnu analizu iz izvučenog koda** (SP/UDF) da se
-  odluči **bez Negovana**. Rezultat: [migration/05](migration/05-qbigtehn-sqlserver-logic.md) + nova analiza.
+- **BOM/MRP logika (§11.3 dubinski):** ✅ **URAĐENO 2026-07-08** — 5-agent analiza ukrstila SQL tela sa VBA
+  pozivima → [migration/15](migration/15-bom-mrp-odluka-bez-negovana.md). **13 od ~40 „POTVRDITI" tačaka
+  razrešeno iz koda** (odlučujemo sami); ostaje samo 5 za Negovana (vidi ispod).
 
-## Ostaje za sastanak / kasnije
-- Timestamp politika (Luka/Nesa) · potvrda da je PDM izvor međusloj (ne sirov SolidWorks) · BOM/MRP odluka
-  posle analize · ~40 „POTVRDITI" tačaka iz [migration/05](migration/05-qbigtehn-sqlserver-logic.md) · 8 AMBIGUOUS granica scope-a.
+## Ostaje za sastanak / kasnije (SKRAĆENO)
+
+**Za Nesu/Luku (tehnički):**
+- Timestamp politika (`Timestamptz` preporuka) · potvrda da je PDM izvor međusloj (ne sirov SolidWorks).
+
+**Za Negovana (poslovna/podatkovna semantika — 5 tačaka, [15 §6](migration/15-bom-mrp-odluka-bez-negovana.md)):**
+1. Magacin `IDMagacin`/`VrstaMag` → tip (gotova roba / poluproizvod / sirovina).
+2. Ciklus u sastavnici = **tvrda greška unosa** (preporuka) ili samo prekid eksplozije?
+3. 23h auto-close — vrednost `komada` + KPI flag (nema u kodu, nov zahtev).
+4. Šta je **predmet 4521** (i da li je 0 sentinel) → migrira se u flag `excludeFromReworkScrap`.
+5. BB robne konvencije (`Level 0/250`, `Vrsta='KODJ'`) + domen `Revizija` (slovna / numerička ≥10).
+
+**Ostalo (nije BOM/MRP):** TP vreme/„utrošeno", primopredaja status-matrica, lokacije — „POTVRDITI" tačke iz
+[05 §4/§5/§6](migration/05-qbigtehn-sqlserver-logic.md) · 8 AMBIGUOUS granica scope-a iz [02](migration/02-qbigtehn-scope-triage.md).

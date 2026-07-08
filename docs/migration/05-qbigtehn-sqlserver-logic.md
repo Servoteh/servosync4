@@ -2,6 +2,13 @@
 
 > Izvor: read-only multi-agent ekstrakcija (7 agenata) iz `script.sql` (51 SP + 63 fn + 9 view), 2026-07-03. Ovo je „algoritamski sloj" koji fali u repo-u — Negovanovo znanje izvučeno iz koda. Ništa nije menjano.
 
+> **⚠️ AŽURIRANJE 2026-07-08:** BOM/MRP „POTVRDITI" tačke (§1.4, §2.4) su **razrešene** ukrštanjem sa VBA
+> pozivima → [15-bom-mrp-odluka-bez-negovana.md](15-bom-mrp-odluka-bez-negovana.md). Dve tvrdnje ispod su
+> tamo **korigovane iz koda**: (1) „Zalihe iz `RobneStavkeMirror` po `KataloskiBroj`" (§2.1) opisuje **mrtvu
+> granu** — živi izvor je BigBit robno `BB_StanjeKolicinaNaDan` po `SifraArtikla`; (2) „bug otvorene
+> transakcije" (§2.4) **ne postoji** (`XACT_ABORT`+`TRY/CATCH`). Split A/B je **prividno** nekonzistentan
+> (klijent pre-netuje slobodne zalihe pre grane B).
+
 Jedinstvena referenca za migraciju QBigTehn (SQL Server, `dbo`) na Servosync 2.0 (PostgreSQL + NestJS).
 
 Presek celog sistema: dve paralelne sastavnice (PDM-nivo `KomponentePDMCrteza` po `IDCrtez`, dizajnerska; RN-nivo `tRNKomponente` po `IDRN`, izvrsna). Nabavni vs proizvodni deo se razdvaja iskljucivo preko `PDMCrtezi.Nabavka` (bit). Anti-ciklus u rekurzijama je string-putanja `'/id/id/'` + `CHARINDEX`. SQL Server maskira duboke/ciklicne podatke greskom `MAXRECURSION 100`; **PostgreSQL bez guarda VISI — to je crvena nit svih rizika.**
