@@ -8,6 +8,7 @@ import {
   SyncStrategy,
   TableMapping,
 } from './sync.types';
+import { isOwnedProductionTable } from './table-ownership';
 
 /**
  * Data-driven syncer for one QBigTehn table -> one Prisma model.
@@ -40,12 +41,31 @@ export class GenericSyncer implements EntitySyncer {
   async sync(options: {
     strategy: SyncStrategy;
     cursor: SyncCursor | null;
+    force?: boolean;
   }): Promise<SyncEntityResult> {
     const errors: string[] = [];
     const incremental =
       options.strategy === 'incremental' &&
       !!this.mapping.watermark &&
       !!options.cursor?.lastModifiedAt;
+
+    // Protect ServoSync-owned production tables: a full refresh would delete +
+    // reinsert, wiping anything a technologist entered after the initial import.
+    // Skip (never delete) once such a table has rows, unless the run is forced.
+    if (!incremental && isOwnedProductionTable(this.entity) && !options.force) {
+      const existing = await this.delegate().count();
+      if (existing > 0) {
+        return {
+          entity: this.entity,
+          rowsFetched: 0,
+          rowsUpserted: 0,
+          rowsSkipped: 0,
+          newCursor: options.cursor ?? { strategy: 'full_refresh' },
+          errors: [],
+          note: `Preskočeno (zaštita): ${existing} redova već postoji u ServoSync-owned tabeli. Prosledi force:true za ponovni uvoz.`,
+        };
+      }
+    }
 
     // Select only the mapped columns (bracket-quoted; QBigTehn names have spaces).
     const cols = this.mapping.columns.map((c) => `[${c.src}]`).join(', ');

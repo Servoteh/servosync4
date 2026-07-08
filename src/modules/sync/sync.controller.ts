@@ -18,6 +18,8 @@ import { AuthUser } from '../auth/jwt.strategy';
 interface RunSyncBody {
   entities?: string[];
   strategy?: SyncStrategy;
+  /** Allow destructive re-import of protected ServoSync-owned tables. */
+  force?: boolean;
 }
 
 /**
@@ -44,6 +46,7 @@ export class SyncController {
     return this.syncService.run({
       entities: body?.entities,
       strategy: body?.strategy,
+      force: body?.force === true,
       trigger: 'manual',
       triggeredByUserId: req.user.userId,
     });
