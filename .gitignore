@@ -4,3 +4,7 @@ coverage/
 .env
 *.log
 .DS_Store
+
+# Frontend build baked by the deploy workflow — keep the dir, ignore its contents.
+/frontend-static/*
+!/frontend-static/.gitkeep

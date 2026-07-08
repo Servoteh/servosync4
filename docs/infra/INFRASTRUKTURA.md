@@ -174,52 +174,52 @@ Detalji i ručni deploy: [frontend/docs/DEPLOY.md](../../../frontend/docs/DEPLOY
 
 ## 6b. Front na :3000 (LAN / offline fallback)
 
-Kad internet/Cloudflare padne, front na Cloudflare-u je nedostupan. Zato backend može da servira i
-**sam front** (Next static export `out/`) na svom portu — isti origin, **bez CORS-a i bez drugog kontejnera**.
-Uključuje se env promenljivom `FRONTEND_STATIC_DIR` (prazno = samo API, kao do sada); front sam izvede API
-na istom hostu:portu (`src/api/client.ts` runtime-resolve), pa radi bez ikakve dodatne konfiguracije.
+Kad internet/Cloudflare padne, backend može da servira i **sam front** (Next static export `out/`) na svom
+portu — isti origin, **bez CORS-a i bez drugog kontejnera**. Uključuje se env-om `FRONTEND_STATIC_DIR`
+(prazno = samo API); front sam izvede API na istom hostu:portu (`src/api/client.ts` runtime-resolve).
 
-> Napomena: i runtime-resolve (frontend) i serviranje statike (`main.ts`) su na `main`. Push na `main`
-> auto-deploy-uje backend (rebuild kroz self-hosted runner) — kod za serviranje je prisutan, ali se front
-> na :3000 **aktivira tek** kad se dole postave `FRONTEND_STATIC_DIR` + volume (prazno → čist API, bez promene).
+### Automatski (CI — podrazumevano)
 
-Koraci na serveru (interaktivno; `admnenad`/`admluka` sa sudo). Compose je `/home/admluka/servosync/docker-compose.yml`:
+Deploy workflow ([.github/workflows/deploy.yml](../../.github/workflows/deploy.yml)) build-uje
+`servosync/frontend` i **ugrađuje `out/` u backend image** (`/app/frontend-static`, `FRONTEND_STATIC_DIR`
+baked u Dockerfile-u). Dakle **svaki push na `main` → front na `:3000`**, bez diranja servera i bez šifre.
+
+- **Uslov (jednom):** GitHub secret `FRONTEND_REPO_TOKEN` u `servosync/backend` (Settings → Secrets and
+  variables → Actions → New repository secret) = fine-grained PAT, **read-only** na `servosync/frontend`
+  (Repository access → samo `frontend`; Permissions → Contents: Read). Bez njega deploy i dalje prolazi, ali
+  API-only (front korak se tiho preskoči → nema regresije).
+- Baked LAN-front se osvežava na sledećem **backend** deploy-u; front-only izmene ne okidaju ovaj workflow
+  (po potrebi: Actions → deploy-backend → Re-run).
+- Posle deploy-a: `curl -I http://localhost:3000/login` → 200; klijenti otvore `http://192.168.64.28:3000`.
+  (Health check u workflow-u ispisuje `front /login -> 200/404`.)
+
+### Ručno (fallback, bez CI-ja)
+
+Override na serveru (ne dira Lukin base compose). Kao **root** (home-ovi su `0750`):
 
 ```bash
-ssh ubuntusrv
+sudo -i
 cd /home/admluka/servosync
-# 1) front repo kao izvor out/:
-sudo git clone https://github.com/servosync/frontend.git frontend
-# 2) build out/ bez Node-a na hostu (jednokratni node kontejner):
-sudo docker run --rm -v "$PWD/frontend":/app -w /app node:22-bookworm-slim sh -c "npm ci && npm run build"
-```
-
-Zatim u `backend` servis u `docker-compose.yml` dodaj volume + env:
-
-```yaml
+git clone https://github.com/servosync/frontend.git frontend
+docker run --rm -v /home/admluka/servosync/frontend:/app -w /app node:22-bookworm-slim sh -c "npm ci && npm run build"
+cat > docker-compose.override.yml <<'EOF'
+services:
   backend:
-    # ... postojeće ...
     environment:
-      # ... postojeće (DATABASE_URL, JWT_SECRET, ...) ...
       FRONTEND_STATIC_DIR: /app/frontend-static
     volumes:
       - ./frontend/out:/app/frontend-static:ro
+EOF
+docker compose up -d backend
+curl -I http://localhost:3000/login          # -> 200
 ```
 
-```bash
-sudo docker compose up -d backend
-curl -I http://localhost:3000/login          # -> 200 (front na :3000)
-curl -fsS http://localhost:3000/api > /dev/null && echo "API i dalje radi"
-```
+Osvežavanje: `cd frontend && git pull && docker run --rm ... npm run build` — backend ne treba restart
+(bind-mount). Gašenje: obriši `docker-compose.override.yml` pa `docker compose up -d backend`. Verifikovano
+izolovano: `/login`, `/login/`, `/` → 200 HTML; `_next`/`config.js`/`favicon` → 200; `/api/*` prolazi ka kontrolerima.
 
-Klijenti otvore `http://192.168.64.28:3000` — dobiju front, API je na `.../api` (isti origin). Osvežavanje
-fronta: `cd frontend && sudo git pull && sudo docker run --rm ... npm ci && npm run build` (build gore) —
-backend ne treba restart (čita volume). Verifikovano izolovano: `/login`, `/login/`, `/` → 200 HTML;
-`_next`/`config.js`/`favicon` → 200; `/api/*` prolazi ka kontrolerima.
-
-> Alternativa (zaseban nginx kontejner na `:8080`, `front-lan`) je opisana u
-> [../../../frontend/docs/DEPLOY.md](../../../frontend/docs/DEPLOY.md) → „LAN pristup". Ovo (front na :3000)
-> je čistije: jedan origin, nema CORS-a, jedan servis.
+> Alternativa (zaseban nginx kontejner na `:8080`, `front-lan`): [../../../frontend/docs/DEPLOY.md](../../../frontend/docs/DEPLOY.md)
+> → „LAN pristup". Front-na-:3000 je čistije (jedan origin, bez CORS-a).
 
 ---
 
