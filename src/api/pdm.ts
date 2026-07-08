@@ -1,8 +1,19 @@
 'use client';
 
 import { useQuery } from '@tanstack/react-query';
-import { apiFetch } from './client';
+import { apiBlob, apiFetch } from './client';
 import type { Paginated } from './tech-processes';
+
+/**
+ * Otvori uskladišten PDF crteža u novom tabu (GET /pdm/drawings/:id/pdf/content).
+ * Endpoint traži JWT, pa se PDF povlači kroz `apiBlob` (Authorization header).
+ */
+export async function openDrawingPdf(id: number): Promise<void> {
+  const blob = await apiBlob(`/v1/pdm/drawings/${id}/pdf/content`);
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank', 'noopener');
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
 
 // ─────────────────────────────────────────────────────────────── tipovi
 

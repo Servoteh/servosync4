@@ -1,8 +1,9 @@
 'use client';
 
 import { useState, type ReactNode } from 'react';
+import { FileText } from 'lucide-react';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
-import { useDrawing } from '@/api/pdm';
+import { useDrawing, openDrawingPdf } from '@/api/pdm';
 import { formatDate, formatDateTime, formatNumber } from '@/lib/format';
 import { drawingStatusMeta, weightLabel } from './pdm-helpers';
 import { TabNav } from './tab-nav';
@@ -21,6 +22,20 @@ function Field({ label, value }: { label: string; value: ReactNode }) {
 export function DrawingDetail({ id }: { id: number }) {
   const q = useDrawing(id);
   const [tab, setTab] = useState('bom');
+  const [pdfOpening, setPdfOpening] = useState(false);
+  const [pdfError, setPdfError] = useState<string | null>(null);
+
+  async function onOpenPdf() {
+    setPdfOpening(true);
+    setPdfError(null);
+    try {
+      await openDrawingPdf(id);
+    } catch (e) {
+      setPdfError(e instanceof Error ? e.message : 'Greška pri otvaranju PDF-a.');
+    } finally {
+      setPdfOpening(false);
+    }
+  }
 
   if (q.isLoading) return <span className="text-sm text-ink-disabled">Učitavanje…</span>;
   if (q.error || !q.data)
@@ -62,18 +77,35 @@ export function DrawingDetail({ id }: { id: number }) {
           PDF crteža
         </p>
         {d.pdf ? (
-          <p className="text-ink-secondary">
-            {d.pdf.fileName ?? d.fileName ?? '—'}
-            {d.pdf.sizeKb != null && (
-              <span className="tnums"> · {formatNumber(d.pdf.sizeKb)} KB</span>
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-ink-secondary">
+              {d.pdf.fileName ?? d.fileName ?? '—'}
+              {d.pdf.sizeKb != null && (
+                <span className="tnums"> · {formatNumber(d.pdf.sizeKb)} KB</span>
+              )}
+              {d.pdf.uploadedAt && <span> · {formatDateTime(d.pdf.uploadedAt)}</span>}
+              {!d.pdf.hasBinary && (
+                <span className="text-ink-disabled"> · bez binarnog sadržaja</span>
+              )}
+            </p>
+            {d.pdf.hasBinary && (
+              <button
+                disabled={pdfOpening}
+                onClick={onOpenPdf}
+                className="inline-flex items-center gap-1.5 rounded-control border border-line px-3 py-1 text-xs font-semibold text-ink-secondary disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <FileText className="h-3.5 w-3.5" aria-hidden />
+                {pdfOpening ? 'Otvaram…' : 'Otvori PDF'}
+              </button>
             )}
-            {d.pdf.uploadedAt && <span> · {formatDateTime(d.pdf.uploadedAt)}</span>}
-            {!d.pdf.hasBinary && (
-              <span className="text-ink-disabled"> · bez binarnog sadržaja</span>
-            )}
-          </p>
+          </div>
         ) : (
           <span className="text-ink-disabled">Nema PDF-a za ovu reviziju.</span>
+        )}
+        {pdfError && (
+          <p className="mt-1 text-sm text-status-danger" role="alert">
+            {pdfError}
+          </p>
         )}
       </div>
 
