@@ -13,6 +13,9 @@ import { LookupsModule } from "./modules/lookups/lookups.module";
 import { StructuresModule } from "./modules/structures/structures.module";
 import { PdmModule } from "./modules/pdm/pdm.module";
 import { DirectoryModule } from "./modules/directory/directory.module";
+import { HandoversModule } from "./modules/handovers/handovers.module";
+import { PartLocationsModule } from "./modules/part-locations/part-locations.module";
+import { MrpModule } from "./modules/mrp/mrp.module";
 
 @Module({
   imports: [
@@ -26,6 +29,9 @@ import { DirectoryModule } from "./modules/directory/directory.module";
     StructuresModule,
     PdmModule,
     DirectoryModule,
+    HandoversModule,
+    PartLocationsModule,
+    MrpModule,
   ],
   controllers: [AppController],
   providers: [
