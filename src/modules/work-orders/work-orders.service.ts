@@ -5,11 +5,8 @@ import {
 } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
-import {
-  pageMeta,
-  parsePagination,
-  SAFE_WORKER_SELECT,
-} from "../../common/pagination";
+import { pageMeta, parsePagination } from "../../common/pagination";
+import { byId, uniqueIds } from "../../common/relations";
 import {
   CreateWorkOrderDto,
   validateCreateWorkOrder,
@@ -103,47 +100,138 @@ export class WorkOrdersService {
           revision: true,
           isLocked: true,
           handoverStatusId: true,
+          workerId: true,
+          qualityTypeId: true,
           enteredAt: true,
           productionDeadline: true,
-          worker: { select: SAFE_WORKER_SELECT },
-          qualityType: { select: { id: true, name: true } },
-          handoverStatus: { select: { id: true, name: true } },
         },
       }),
       this.prisma.workOrder.count({ where }),
     ]);
 
-    return { data: rows, meta: pageMeta(page, pageSize, total) };
+    const [workers, quals, statuses] = await Promise.all([
+      this.resolveWorkers(rows.map((r) => r.workerId)),
+      this.resolveQualityTypes(rows.map((r) => r.qualityTypeId)),
+      this.resolveStatuses(rows.map((r) => r.handoverStatusId)),
+    ]);
+
+    const data = rows.map((r) => ({
+      ...r,
+      worker: workers.get(r.workerId) ?? null,
+      qualityType: quals.get(r.qualityTypeId) ?? null,
+      handoverStatus: statuses.get(r.handoverStatusId) ?? null,
+    }));
+
+    return { data, meta: pageMeta(page, pageSize, total) };
   }
 
   async findOne(id: number) {
-    const row = await this.prisma.workOrder.findUnique({
+    const wo = await this.prisma.workOrder.findUnique({
       where: { id },
       include: {
-        worker: { select: SAFE_WORKER_SELECT },
-        handoverWorker: { select: SAFE_WORKER_SELECT },
-        qualityType: true,
-        handoverStatus: true,
-        operations: {
-          orderBy: { operationNumber: "asc" },
-          include: {
-            worker: { select: SAFE_WORKER_SELECT },
-            operation: true,
-          },
-        },
-        machinedParts: { include: { worker: { select: SAFE_WORKER_SELECT } } },
-        blanks: { include: { worker: { select: SAFE_WORKER_SELECT } } },
-        nonStandardParts: {
-          include: { worker: { select: SAFE_WORKER_SELECT } },
-        },
+        operations: { orderBy: { operationNumber: "asc" } },
+        machinedParts: true,
+        blanks: true,
+        nonStandardParts: true,
         components: true,
         itemComponents: true,
         approvals: { orderBy: { enteredAt: "desc" } },
         launches: { orderBy: { enteredAt: "desc" } },
       },
     });
-    if (!row) throw new NotFoundException(`Radni nalog ${id} ne postoji`);
-    return { data: row };
+    if (!wo) throw new NotFoundException(`Radni nalog ${id} ne postoji`);
+
+    const [workers, quals, statuses, ops] = await Promise.all([
+      this.resolveWorkers([
+        wo.workerId,
+        wo.handoverWorkerId,
+        ...wo.operations.map((o) => o.workerId),
+        ...wo.machinedParts.map((p) => p.workerId),
+        ...wo.blanks.map((p) => p.workerId),
+        ...wo.nonStandardParts.map((p) => p.workerId),
+      ]),
+      this.resolveQualityTypes([wo.qualityTypeId]),
+      this.resolveStatuses([wo.handoverStatusId]),
+      this.resolveOperationsByCode(wo.operations.map((o) => o.workCenterCode)),
+    ]);
+    const w = (wid: number) => workers.get(wid) ?? null;
+
+    const data = {
+      ...wo,
+      worker: w(wo.workerId),
+      handoverWorker: w(wo.handoverWorkerId),
+      qualityType: quals.get(wo.qualityTypeId) ?? null,
+      handoverStatus: statuses.get(wo.handoverStatusId) ?? null,
+      operations: wo.operations.map((o) => ({
+        ...o,
+        worker: w(o.workerId),
+        operation: ops.get(o.workCenterCode) ?? null,
+      })),
+      machinedParts: wo.machinedParts.map((p) => ({
+        ...p,
+        worker: w(p.workerId),
+      })),
+      blanks: wo.blanks.map((p) => ({ ...p, worker: w(p.workerId) })),
+      nonStandardParts: wo.nonStandardParts.map((p) => ({
+        ...p,
+        worker: w(p.workerId),
+      })),
+    };
+    return { data };
+  }
+
+  // --- batch resolveri (izbegavaju required-relation JOIN koji puca na orphan FK) ---
+
+  private async resolveWorkers(ids: number[]) {
+    const uniq = uniqueIds(ids);
+    if (!uniq.length) return new Map<number, never>();
+    return byId(
+      await this.prisma.worker.findMany({
+        where: { id: { in: uniq } },
+        select: { id: true, fullName: true, username: true },
+      }),
+    );
+  }
+
+  private async resolveQualityTypes(ids: number[]) {
+    const uniq = uniqueIds(ids);
+    if (!uniq.length) return new Map<number, never>();
+    return byId(
+      await this.prisma.partQualityType.findMany({
+        where: { id: { in: uniq } },
+        select: { id: true, name: true },
+      }),
+    );
+  }
+
+  private async resolveStatuses(ids: number[]) {
+    const uniq = uniqueIds(ids);
+    if (!uniq.length) return new Map<number, never>();
+    return byId(
+      await this.prisma.handoverStatus.findMany({
+        where: { id: { in: uniq } },
+        select: { id: true, name: true },
+      }),
+    );
+  }
+
+  private async resolveOperationsByCode(codes: string[]) {
+    const uniq = [...new Set(codes.filter(Boolean))];
+    const map = new Map<
+      string,
+      { workCenterCode: string; workCenterName: string; workUnitCode: string }
+    >();
+    if (!uniq.length) return map;
+    const rows = await this.prisma.operation.findMany({
+      where: { workCenterCode: { in: uniq } },
+      select: {
+        workCenterCode: true,
+        workCenterName: true,
+        workUnitCode: true,
+      },
+    });
+    for (const r of rows) map.set(r.workCenterCode, r);
+    return map;
   }
 
   // ---------------------------------------------------------------- CREATE

@@ -1,11 +1,8 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
-import {
-  pageMeta,
-  parsePagination,
-  SAFE_WORKER_SELECT,
-} from "../../common/pagination";
+import { pageMeta, parsePagination } from "../../common/pagination";
+import { byId, uniqueIds } from "../../common/relations";
 
 export interface ListTechProcessesQuery {
   page?: string;
@@ -19,8 +16,8 @@ export interface ListTechProcessesQuery {
 /**
  * Read-only access to technological processes (`tech_processes`).
  *
- * Data is owned by ServoSync (production/tech tables) and populated by the
- * QBigTehn sync. This service is READ ONLY — no writes until §11 / RBAC land.
+ * Relacije se razrešavaju batch upitima (ne Prisma required-relation JOIN) jer
+ * legacy podaci imaju orphan FK-ove koji bi inače dali 500. READ ONLY (do §11/RBAC).
  */
 @Injectable()
 export class TechProcessesService {
@@ -61,25 +58,40 @@ export class TechProcessesService {
           workOrderId: true,
           signature: true,
           note: true,
-          worker: { select: SAFE_WORKER_SELECT },
         },
       }),
       this.prisma.techProcess.count({ where }),
     ]);
 
-    return { data: rows, meta: pageMeta(page, pageSize, total) };
+    const workers = await this.resolveWorkers(rows.map((r) => r.workerId));
+    const data = rows.map((r) => ({
+      ...r,
+      worker: workers.get(r.workerId) ?? null,
+    }));
+
+    return { data, meta: pageMeta(page, pageSize, total) };
   }
 
   async findOne(id: number) {
-    const row = await this.prisma.techProcess.findUnique({
+    const tp = await this.prisma.techProcess.findUnique({
       where: { id },
-      include: {
-        worker: { select: SAFE_WORKER_SELECT },
-        documents: true,
-      },
+      include: { documents: true },
     });
-    if (!row)
+    if (!tp)
       throw new NotFoundException(`Tehnološki postupak ${id} ne postoji`);
-    return { data: row };
+
+    const workers = await this.resolveWorkers([tp.workerId]);
+    return { data: { ...tp, worker: workers.get(tp.workerId) ?? null } };
+  }
+
+  private async resolveWorkers(ids: number[]) {
+    const uniq = uniqueIds(ids);
+    if (!uniq.length) return new Map<number, never>();
+    return byId(
+      await this.prisma.worker.findMany({
+        where: { id: { in: uniq } },
+        select: { id: true, fullName: true, username: true },
+      }),
+    );
   }
 }
