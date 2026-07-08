@@ -218,6 +218,12 @@ Dok sve ne postane jedna aplikacija (3.0), neki podaci se dele između Supabase 
 - **Postgres↔Postgres je lako** (obe strane PG): opcija A — reuse `bb-sync` framework sa novim `SourceConnector` (Supabase); opcija B — `postgres_fdw`; opcija C — logička replikacija.
 - **Primer `workers`:** Supabase `zaposleni` = izvor istine → jednosmerno pull u 2.0 `workers` (read-only cache + overlay za proizvodna polja). Ako 2.0 vraća nešto HR-u (npr. sati) → zaseban push, druga tabela.
 - **Stabilan ključ mapiranja** (šifra radnika kao `legacy_*` na obe strane) i **delete/tombstone** strategija su jedini pravi trošak; za matične podatke (stotine redova) je mali.
+- **⚠️ Most za 1.0 Lokacije (`loc_*`) — kritičan pri gašenju QBigTehn-a.** 1.0 loc modul **ZAVISI od žive
+  QBigTehn baze u OBA smera**: (1) auto-ingest gde je deo na mašini iz **`tTehPostupak`** (preko bridge cache),
+  (2) šalje ručne pokrete nazad u QBigTehn (`sp_ApplyLocationEvent`). Pošto 2.0 preuzima proizvodnju kao vlasnik
+  (`tTehPostupak → tech_processes`), pri cutover-u QBigTehn-a **1.0 loc ingest se mora repointovati sa QBigTehn
+  cache-a na ServoSync `tech_processes`**, a outbound (`sp_ApplyLocationEvent`) se gasi/preusmerava na 2.0. Detalji:
+  [MODULE_SPEC_lokacije §8](design/MODULE_SPEC_lokacije.md). **Ne gasiti QBigTehn dok ovaj most nije prebačen.**
 - Svaki most ima **„sunset" datum** — umire čim se modul integriše u 3.0.
 
 Detalji i procena: postojeća analiza „Supabase↔PG sync" (dani do par nedelja po mostu, nizak rizik uz disciplinu).
