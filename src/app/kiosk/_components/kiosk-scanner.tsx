@@ -288,17 +288,22 @@ export function KioskScanner({ workerName }: { workerName: string }) {
   }
 
   async function onKontrola(input: ControlSubmit) {
-    const id = matched?.id ?? override?.id;
-    if (id == null || !worker) {
+    if (!order || !operation || !worker) {
       setFeedback({
         tone: 'danger',
         title: 'Kontrola nije moguća',
-        detail: 'Operacija završne kontrole nije pronađena u tehnološkom postupku.',
+        detail: 'Nedostaje nalog, operacija ili prijava karticom.',
       });
       return;
     }
     try {
-      const { data } = await control.mutateAsync({ id, workerCard: worker.card, ...input });
+      // Create-on-scan: backend nalazi/otvara red kontrole iz barkodova (ne treba tp.id).
+      const { data } = await control.mutateAsync({
+        orderBarcode: order.raw,
+        operationBarcode: operation.raw,
+        workerCard: worker.card,
+        ...input,
+      });
       setOverride({ id: data.techProcess.id, made: data.controlledPieces, finished: true });
 
       // Štampa nalepnica (RNZ) — jedna po komadu (BarKodUnos2024 ekran 7).
@@ -375,6 +380,8 @@ export function KioskScanner({ workerName }: { workerName: string }) {
     : '';
   const cardLoading = !!operation && card.isLoading;
   const missing = !!operation && !!card.data && !matched;
+  // Završna kontrola → KONTROLA panel (i kad red još ne postoji: create-on-scan).
+  const showControl = !!operation?.finalControl && !finished && !cardLoading;
 
   return (
     <main className="flex flex-1 flex-col bg-app">
@@ -434,7 +441,7 @@ export function KioskScanner({ workerName }: { workerName: string }) {
           />
         )}
 
-        {order && operation && operation.finalControl && !finished && !missing && !cardLoading && (
+        {order && operation && showControl && (
           <ControlPanel
             key={operation.raw}
             operationLabel={operationLabel}
@@ -444,7 +451,7 @@ export function KioskScanner({ workerName }: { workerName: string }) {
           />
         )}
 
-        {order && operation && !(operation.finalControl && !finished && !missing && !cardLoading) && (
+        {order && operation && !showControl && (
           <WorkPanel
             key={operation.raw}
             operationLabel={operationLabel}

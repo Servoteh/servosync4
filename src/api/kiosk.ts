@@ -192,8 +192,10 @@ export interface ControlLocationInput {
 }
 
 export interface ControlInput {
-  /** tech_processes.id operacije završne kontrole. */
-  id: number;
+  /** Nalog barkod: `RNZ:projectId:identNumber:variant:revision`. */
+  orderBarcode: string;
+  /** Operacija (završne kontrole) barkod: `S:operationNumber:workCenterCode:0:revision`. */
+  operationBarcode: string;
   /** ID kartica kontrolora (obavezno). */
   workerCard: string;
   /** Ukupno iskontrolisano (= zbir locations[].quantity). */
@@ -212,6 +214,8 @@ export interface ControlResult {
   locationsBooked: number;
   operationsPrioritized: number;
   workOrderCompleted: boolean;
+  /** true = red kontrole je otvoren u ovom pozivu (create-on-scan). */
+  techProcessOpened: boolean;
   workOrder: KioskWorkOrder | null;
   label: LabelData;
   /** true = dorada/škart — child RN (-D/-S) je P2 (još se ne kreira). */
@@ -232,10 +236,10 @@ export function useIdentifyWorker() {
 export function useControl() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, ...body }: ControlInput) =>
+    mutationFn: (input: ControlInput) =>
       apiFetch<{ data: ControlResult; meta?: { note: string } }>(
-        `${BASE}/${id}/control`,
-        { method: 'POST', body: JSON.stringify(body) },
+        `${BASE}/control`,
+        { method: 'POST', body: JSON.stringify(input) },
       ),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['tech-processes'] });
