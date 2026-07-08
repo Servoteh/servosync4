@@ -13,6 +13,13 @@ export function formatDateTime(iso: string | null | undefined): string {
   return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()}. ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+/** dd.MM.yyyy. (bez vremena) */
+export function formatDate(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()}.`;
+}
+
 /** 1.234.567 (srpsko grupisanje) */
 export function formatNumber(n: number): string {
   return nf.format(n);

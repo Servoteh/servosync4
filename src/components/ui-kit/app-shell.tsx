@@ -26,8 +26,8 @@ interface NavItem {
 
 // Moduli iz DESIGN_SYSTEM.md §4. Bez href = placeholder (seli se u 3.0).
 const NAV: NavItem[] = [
-  { label: 'Radni nalozi', icon: ClipboardList },
-  { label: 'Tehnološki postupci', icon: Workflow },
+  { label: 'Radni nalozi', href: '/work-orders', icon: ClipboardList },
+  { label: 'Tehnološki postupci', href: '/tech-processes', icon: Workflow },
   { label: 'PDM / Crteži', icon: DraftingCompass },
   { label: 'Nacrti', icon: PencilRuler },
   { label: 'Primopredaje', icon: PackageCheck },
