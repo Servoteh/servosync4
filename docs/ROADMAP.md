@@ -99,7 +99,9 @@ PDM/crteži/BOM · Nacrti · Primopredaje · Radni nalozi (RN) · Tehnološki po
 - **⏳ TALAS 3 (u izradi, sve na Opus multiagentima):** submit tok primopredaje (nacrt→primopredaja→odobri→
   lansira RN), copy/clone RN (kopiranje stavki, dorada/škart child, bulk-clone predmeta sa koeficijentom),
   lokacije mutacije (unos/prenos/trebovanje — signed-quantity ledger, neto stanje), barkod kiosk za pogon
-  (touch UI + 2-barkod prijava rada). NB: `handover_statuses` seed i FK-ovi za lansiranje čekaju Luku.
+  (touch UI + 2-barkod prijava rada). Seed `handover_statuses` (0–3) primenjen migracijom 8.7.2026 —
+  FK-ovi za submit/approve/launch/„Novi RN" rade. Otvoreno: firmer FK za launch→RN kontekst
+  (drawing_handovers nema project_id/quantity — sad heuristika).
 - App-owned sloj: `users`, `refresh_tokens`, `audit_log`, `bb_sync_log/state`.
 
 ### Plan rada ka aplikaciji 2.0 (ažurirano 2026-07-07)
@@ -139,7 +141,7 @@ PDM/crteži/BOM · Nacrti · Primopredaje · Radni nalozi (RN) · Tehnološki po
 1. ~~Redosled: RN → PDM/Crteži → Primopredaje → Lokacije → Strukture → MRP (uvid) → Komitenti (pregled);
    svaki kraj-do-kraja po šablonu iz pilota.~~ ✅ 8.7.2026 — svih 10 modula (talasi 0–2) živo; talas 3
    (submit/copy-clone/lokacije-mutacije/kiosk) u završnici. Multiagentni build (Workflow), read-putanje
-   batch-resolve. Preostalo za produkciju: `handover_statuses` seed + FK migracije za lansiranje (Luka).
+   batch-resolve. `handover_statuses` seed primenjen (8.7.2026). Otvoreno: firmer FK za launch→RN kontekst (Luka).
 2. V2 RBAC aktivacija (seed rola TEHNOLOG, CNC_PROGRAMER, SEF…) kad su 2–3 modula živa —
    guardovi već postoje kao no-op, pa je to konfiguracija.
 3. e2e permission matrica (rola × endpoint) raste uz svaki modul.
