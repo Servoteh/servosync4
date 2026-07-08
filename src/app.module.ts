@@ -7,6 +7,7 @@ import { SyncModule } from "./modules/sync/sync.module";
 import { AuthModule } from "./modules/auth/auth.module";
 import { TechProcessesModule } from "./modules/tech-processes/tech-processes.module";
 import { WorkOrdersModule } from "./modules/work-orders/work-orders.module";
+import { LookupsModule } from "./modules/lookups/lookups.module";
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { WorkOrdersModule } from "./modules/work-orders/work-orders.module";
     SyncModule,
     TechProcessesModule,
     WorkOrdersModule,
+    LookupsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
