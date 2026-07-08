@@ -17,6 +17,8 @@ export interface RunSyncOptions {
   strategy?: SyncStrategy;
   trigger?: 'manual' | 'cron' | 'api';
   triggeredByUserId?: number;
+  /** Allow destructive re-import of protected ServoSync-owned tables. */
+  force?: boolean;
 }
 
 @Injectable()
@@ -102,7 +104,11 @@ export class SyncService {
         const cursor = (state?.cursor as SyncCursor | null) ?? null;
 
         try {
-          const result = await syncer.sync({ strategy, cursor });
+          const result = await syncer.sync({
+            strategy,
+            cursor,
+            force: options.force,
+          });
           totalFetched += result.rowsFetched;
           totalUpserted += result.rowsUpserted;
           totalSkipped += result.rowsSkipped;
@@ -110,6 +116,7 @@ export class SyncService {
             rowsFetched: result.rowsFetched,
             rowsUpserted: result.rowsUpserted,
             rowsSkipped: result.rowsSkipped,
+            ...(result.note ? { note: result.note } : {}),
           };
 
           await this.prisma.bbSyncState.upsert({

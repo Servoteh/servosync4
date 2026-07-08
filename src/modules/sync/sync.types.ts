@@ -48,6 +48,8 @@ export interface SyncEntityResult {
   rowsSkipped: number;
   newCursor: SyncCursor | null;
   errors: string[];
+  /** Set when the entity was intentionally not synced (e.g. protected table). */
+  note?: string;
 }
 
 /**
@@ -62,5 +64,7 @@ export interface EntitySyncer {
   sync(options: {
     strategy: SyncStrategy;
     cursor: SyncCursor | null;
+    /** Override protection on ServoSync-owned tables (allow destructive re-import). */
+    force?: boolean;
   }): Promise<SyncEntityResult>;
 }
