@@ -97,9 +97,11 @@ akcija u Primopredaji), „Razlike verzija 1/2", „Unos predmeta".
 - `RJgrupaRC` kao string ključ → FK ka `operations`.
 - Plaintext lozinka radnika → hash; `cardId` = barkod login.
 
-## 7. Otvorena pitanja
+## 7. Odluke i otvorena pitanja
 
-1. **§11.1** (cache/overlay) — proizvodne tabele su ServoSync vlasništvo; potvrditi pre mutacija.
-2. **`cnc_programs` tabela** — uvesti ili CNC ostaje prilog uz TP (RBAC §7.3).
-3. **CNC_PROGRAMER potpisuje TP?** (RBAC §7.2).
-4. Da li se `machine_access` seed-uje iz QBigTehn ili unosi iznova.
+✅ **Odlučeno 2026-07-08 ([ODLUKE.md](../ODLUKE.md)):**
+- **§11.1 cache/overlay potvrđeno** — proizvodne tabele su ServoSync vlasništvo (mutacije dozvoljene čim modul postoji).
+- **`cnc_programs` tabela = DA** — uvodi se (app-owned; `CNC_PROGRAMER` vlasnik write-a; veza na crtež/TP, verzija, `fileLink`).
+- **Potpis/završetak TP = TEHNOLOG (autor) + ŠEF + CNC_PROGRAMER** (CNC programer SME).
+
+Otvoreno: da li i `KONTROLOR` učestvuje u potpisu; da li se `machine_access` seed-uje iz QBigTehn ili unosi iznova.

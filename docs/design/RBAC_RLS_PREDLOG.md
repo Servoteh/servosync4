@@ -264,18 +264,23 @@ kanal pristupa bazi (BI alati, drugi servisi). → otvoreno pitanje §7.4.
 
 ---
 
-## 7. Otvorena pitanja (blokiraju — za Negovana/Nesu)
+## 7. Odluke (Nenad, 2026-07-08) — vidi [ODLUKE.md](../ODLUKE.md)
 
-1. **Obim `SEF` prava van tehnologije** (§3): predloženo W+A na RN/primopredajama/lokacijama +
-   R na svemu ostalom. Da li šef dobija i write na strukturama (radnici/mašine) i planu? Da li
-   postoji jedan šef ili više (šef tehnologije vs šef proizvodnje → ako više, `scopeType='module'`)?
-2. **Da li `CNC_PROGRAMER` potpisuje/završava TP** ili samo `TEHNOLOG` (i `SEF`)?
-3. **Tabela `cnc_programs`** (§3.1.6): uvesti kao app-owned tabelu, ili CNC ostaje kao prilozi u
-   `tech_process_documents`?
-4. **PG RLS kao sloj 4** (§5): potvrditi „ne sada" (preporuka), ili zahtevati od starta?
-5. **`MENADZMENT` u 2.0**: samo read (predlog) ili od starta i write parnost sa 1.0 pravilima?
-6. **Imenovanje**: `SEF` vs `SEF_PROIZVODNJE`; potvrditi da se draft rola `PROJEKTNI_BIRO` zamenjuje
-   parom `PROJEKTANT_VODJA`/`INZENJER` (§2).
+1. **Obim `SEF` prava** → ✅ **ODLUČENO: pun rad + odobravanje** (RN/primopredaje/lokacije) + pregled ostalog.
+   **Jedan `SEF`** (ne per-modul). Uključuje write na strukturama i planu.
+2. **`CNC_PROGRAMER` potpisuje/završava TP?** → ✅ **DA.** Potpisuju/završavaju: **TEHNOLOG (autor) + ŠEF + CNC_PROGRAMER.**
+3. **Tabela `cnc_programs`** → ✅ **DA — uvodi se** (app-owned; CNC_PROGRAMER vlasnik write-a; veza na crtež/TP, verzija, fajl).
+4. **PG RLS** → ✅ **NE sada** — samo NestJS guardovi + query-scoping (pravi PG RLS eventualno u 3.0).
+5. **`MENADZMENT`** → ✅ **Uvid + write** (paritet sa 1.0), ne samo read.
+6. **Imenovanje/mapiranje ljudi** → ✅ **iz sistematizacije 2026** (§2 dopunjen):
+   - **Miljan Nikodijević** (*Rukovodilac proizvodnih operacija i tehnologije*) → **`SEF`** (proizvodnja/tehnologija).
+   - **Nikola Ninković** (*Šef mašinske obrade*) → **`SEF`** (isti rola, scope = mašinska obrada / radna jedinica).
+   - **Milorad Jerotić** (*Gl. mašinski inž. + Rukovodilac inženjeringa; **finalni potpisnik***) → **`PROJEKTANT_VODJA`**
+     + **`finalni potpisnik` flag** (finalno odobrenje nacrta/primopredaje).
+   - U 1.0 su svi **`MENADZMENT`** → prihvatljivo za V1 (svi MENADZMENT sa uvid+write), granularizacija (SEF/PROJEKTANT_VODJA) u V2.
+   - `SEF` (ne `SEF_PROIZVODNJE`); draft `PROJEKTNI_BIRO` zamenjen parom `PROJEKTANT_VODJA`/`INZENJER`.
+
+**Ostaje otvoreno:** potpis TP — da li i `KONTROLOR` učestvuje; tačan scope „mašinska obrada" za Nikolu (radna jedinica).
 
 ## 8. Redosled implementacije (kad se odobri)
 

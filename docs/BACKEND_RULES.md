@@ -165,43 +165,28 @@ Dve sasvim različite vrste sync-a, ne mešati:
 
 ## 11. Otvorene odluke — BLOKIRAJU, potvrda sa Negovanom/Nesom
 
+> **Deo odluka donet 2026-07-08 (Nenad) — vidi [ODLUKE.md](ODLUKE.md).** Ispod je stanje po tački.
+
 Niko (ni AI sesija) ne implementira ove stvari pre zapisane odluke ovde:
 
-1. **Cache/overlay mehanizam — SAMO za BigBit matične tabele.** Razjašnjeno 2026-07-07 (§3): proizvodne
-   tabele su ServoSync vlasništvo (nema pitanja), a QBigTehn MSSQL sync se gasi posle cutover-a. Otvoreno
-   ostaje samo: kako se drže lokalni dodaci na ~8 BigBit cache tabela (`customers`/`items`/`projects`…) —
-   ako ikad zatreba lokalno polje na njima (npr. proizvodni atribut artikla), ide u overlay tabelu, ne u
-   cache. Vidi [01-qbigtehn-architecture-analysis §5](migration/01-qbigtehn-architecture-analysis.md).
+1. ✅ **ODLUČENO (2026-07-08): cache/overlay potvrđeno.** BigBit matične tabele = **read-only cache**
+   (aplikacija ne piše po njima); proizvodne tabele = **ServoSync vlasništvo** (tehnolog piše direktno).
+   Ako ikad zatreba lokalno polje na cache tabeli → overlay tabela, ne u cache. QBigTehn MSSQL sync se gasi
+   posle cutover-a. Vidi [01 §5](migration/01-qbigtehn-architecture-analysis.md).
 2. **BigBit sync semantika:**
-   a) **Konekcija posle gašenja QBigTehn-a (blokira `bigbit-sync`).** Danas BigBit podaci stižu iz druge
-      ruke (BigBit → QBigTehn MSSQL → ServoSync). Kad QBigTehn nestane, `bigbit-sync` mora direktno na BigBit.
-      **Tri varijante (redosled preferencije, Nenad 2026-07-07):**
-      - **B) BigBit prelazi na SQL Server (preferirano; Vasa voljan, pitanje njegovog vremena).**
-        Upsizing `.mdb` → baza na postojećoj `vasa-SQL` instanci (SSMA alat; Access front ostaje, tabele se
-        relinkuju — isti obrazac kao QBigTehn). ServoSync tada koristi **postojeći `mssql` konektor +
-        inkrementalni sync** (watermark/rowversion) — najčistije, i olakšava buduću 4.0 migraciju.
-        Pravi trošak: testiranje fiskalnih tokova posle migracije (Vasa).
-      - **A) Export (XML/CSV) iz BigBit-a** — uvek izvodljiv plan B ako Vasa ne stigne: pun snapshot +
-        UPSERT po šifri; čisto preko granice Linux↔Access, nema žive konekcije.
-      - **C) Ručni unos** — rezerva za male entitete (prodavci, komitenti, predmeti) i ispravke;
-        artikli (10–88k) ne mogu ručno.
-      **Izbeći** živi ODBC/mdb-tools na `.MDB` sa Linuxa (`.accdb` slabo, Jet locking, najkrhkije).
-      *Potvrditi:* Vasin rok za B; ako A — format (XML vs CSV); **ceo katalog artikala ili samo korišćeni**.
-      **Strateška napomena (Nenad, 2026-07-07):** prihvatljivo je **duže ostati na 3.0** (4.0 odloženo —
-      PDV/knjigovodstvo je najrizičniji domen), uz BigBit na SQL-u kao trajni komercijalni sistem. U tom
-      slučaju most B živi godinama → investicija u varijantu B se isplati; „sunset" mosta = 4.0, kad god bila.
-   b) BigBit-wins **UPSERT** vs legacy insert-only (legacy `PreuzmiIzBB` je INSERT-only, vidi
-      [ServoSync-specification.md](../ServoSync-specification.md)); propagacija brisanja (tombstone/soft-inactive?);
-      PIB drift / šifra prodavca=0 popravke; potvrda single-tenant.
-3. **PDM sync — TREĆI trajni izvor (NOVO 2026-07-07, Nenad).** PDM (SolidWorks) je zasebna **MS SQL** baza;
-   ServoSync treba **stalni jednosmerni sync** za **sklopove (BOM: `drawing_components`/`drawing_assemblies`),
-   crteže i dokumentaciju**. Šema to već predviđa (`drawing_import_log`, `PDMXMLParser.bas`,
-   `POST /pdm/import`). **Otvoreno pitanje:** (a) **XML kao ugovor** (SolidWorks izbaci XML metapodatke +
-   BOM → ServoSync uvozi; postojeći spec, stabilan interfejs) uz **automatizovan handoff** da deluje kao
-   kontinuiran sync, vs (b) **direktno čitanje PDM MS SQL-a** (imamo već `mssql` klijent). **Preporuka: XML
-   ugovor + automatizacija**, jer je interna SolidWorks PDM SQL šema vendor-specifična i krhka za BOM.
-   *Potvrditi:* da li je „PDM MS SQL" sirov SolidWorks (→ XML) ili Servoteh-ov međusloj (→ direktan SQL OK);
-   učestalost; da li dokumentacija (PDF) ide kroz isti kanal. Vidi [MODULE_SPEC_pdm.md](design/MODULE_SPEC_pdm.md).
+   a) ✅ **ODLUČENO (2026-07-08): izvor = EXPORT (XML/CSV) iz BigBit-a.** Kad QBigTehn nestane, BigBit
+      izbacuje export fajl koji `bigbit-sync` uvozi (ne SQL Server upsizing, ne živi ODBC). *Potvrditi kod Vase:*
+      format (XML vs CSV) i **ceo katalog artikala ili samo korišćeni**. Mapiranje kolona po tabeli:
+      [06-bigbit-preuzmi-iz-bb.md](migration/06-bigbit-preuzmi-iz-bb.md).
+   b) ✅ **ODLUČENO (2026-07-08): INSERT-only (kao legacy)** — samo novi redovi, postojeći se ne ažuriraju.
+      **Svesna posledica:** promena adrese/PIB-a u BigBit-u se NE propagira; obrisan red ostaje. (Ako se
+      kasnije pokaže potreba za update-om, to je nova odluka.) Zadržati 3 legacy transformacije (PIB `XX_`,
+      šifra prodavca=0, password) ili ih popraviti — Luka/implementacija.
+3. ✅ **ODLUČENO (2026-07-08): PDM sync = DIREKTAN SQL** (čitanje PDM MS SQL baze; imamo `mssql` klijent).
+   Sync za sklopove (BOM: `drawing_components`/`drawing_assemblies`), crteže i dokumentaciju. ⚠️ **Potvrditi
+   pre implementacije:** da „PDM MS SQL" **nije sirov SolidWorks** nego Servoteh-ov međusloj — jer je interna
+   SolidWorks PDM SQL šema vendor-specifična i krhka za direktno BOM čitanje. Ako jeste sirov SolidWorks,
+   vratiti se na XML ugovor. Vidi [MODULE_SPEC_pdm.md](design/MODULE_SPEC_pdm.md), [ODLUKE.md](ODLUKE.md).
 4. **Poslovna logika iz MS SQL procedura** (BOM/MRP/RN): replikacija kroz `WITH RECURSIVE` — **obavezan
    anti-ciklus guard** (PG bez njega visi na cikličnim BOM podacima; vidi
    [05-qbigtehn-sqlserver-logic](migration/05-qbigtehn-sqlserver-logic.md)).
@@ -215,3 +200,4 @@ Niko (ni AI sesija) ne implementira ove stvari pre zapisane odluke ovde:
 | 0.2 | 2026-07-07 | Razjašnjeno vlasništvo tabela (§3, Nenad): proizvodne tabele = ServoSync vlasništvo (QBigTehn MSSQL sync je privremen, gasi se); cache/overlay (§11.1) suženo samo na BigBit matične podatke. §11.2 dopunjen novom blokadom: kako se `bigbit-sync` kači na BigBit posle gašenja QBigTehn-a. |
 | 0.3 | 2026-07-07 | §11.2a: preporuka za BigBit izvor = **export (XML/CSV) + UPSERT** (ne živi ODBC). Dodat §11.3: **PDM sync** kao treći trajni izvor (SolidWorks MS SQL → XML ugovor, preporuka). Model „tri sync-a" (A privremen / B BigBit / C PDM). |
 | 0.4 | 2026-07-07 | §11.2a proširen u **tri varijante** sa novim redosledom preferencije: **B) BigBit → SQL Server** (upsizing na vasa-SQL, postojeći mssql konektor, inkrementalno) > A) export > C) ručno. Strateška napomena: duži period na 3.0 sa BigBit-on-SQL je prihvatljivo stabilno stanje; 4.0 trigger-based, ne kalendarski. |
+| 0.5 | 2026-07-08 | **Odluke (Nenad) — [ODLUKE.md](ODLUKE.md):** §11.1 cache/overlay ✅ potvrđeno; §11.2a izvor = **EXPORT (XML/CSV)** (ne SQL Server); §11.2b = **INSERT-only**; §11.3 PDM = **direktan SQL** (uz potvrdu da nije sirov SolidWorks). RBAC: ŠEF pun rad+odobravanje, CNC potpisuje TP, `cnc_programs` DA, MENADZMENT uvid+write, PG RLS ne sada, role mapirane na sistematizaciju. Ostaje otvoreno: timestamp (§11.4), BOM/MRP (§11.3 logika — analiza u toku). |
