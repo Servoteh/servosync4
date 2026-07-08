@@ -42,7 +42,7 @@ CNC programi trenutno nemaju tabelu — predlog `cnc_programs` (RBAC §7.3, otvo
 | **Pregled po prioritetima/operacijama** (`PregledOperacijaPoPrioritetima`, `PPS_PregledPoOperacijama`) | lista | radni redosled | filter po radnom centru/prioritetu |
 
 **UI obrasci za 2.0 dizajn sistem:** kiosk/touch ekran (barkod, velika dugmad), master-detail (kartica + podforma),
-grid unos (operacije), bojena lista po severity-ju (kritični postupci) — [DESIGN_SYSTEM](../../frontend/docs/DESIGN_SYSTEM.md).
+grid unos (operacije), bojena lista po severity-ju (kritični postupci) — vidi `frontend` repo, `docs/DESIGN_SYSTEM.md`.
 
 ## 3. Poslovna pravila (🔴 = mora preživeti port; izvor [08 §1/§10](../migration/08-qbigtehn-vba-domain-map.md), [05](../migration/05-qbigtehn-sqlserver-logic.md))
 
