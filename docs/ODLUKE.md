@@ -9,7 +9,7 @@
 |---|---|---|---|
 | 1 | BigBit izvor posle gašenja QBigTehn-a | **Export (XML/CSV)** iz BigBit-a → ServoSync uvozi | Ne SQL Server. [BACKEND_RULES §11.2a](BACKEND_RULES.md), [MODULE_SPEC_bigbit_sync](design/MODULE_SPEC_bigbit_sync.md) |
 | 2 | BigBit sync semantika (update/delete) | **Insert-only (kao legacy)** — samo novi redovi | Ne UPSERT. Napomena: promene adrese/PIB-a iz BigBit-a se NE propagiraju (svesno). §11.2b |
-| 3 | PDM sync mehanizam | **Direktan SQL** (čitanje PDM MS SQL-a) | Podrazumeva da „PDM MS SQL" NIJE sirov SolidWorks nego Servoteh-ov međusloj — **potvrditi izvor** pre implementacije. §11.3 |
+| 3 | PDM sync mehanizam | **Direktan SQL** (čitanje PDM MS SQL-a) | ✅ Potvrđeno 8.7 (#12): „PDM MS SQL" = Servoteh-ov međusloj (SQL baza kojom mi upravljamo), ne sirov SolidWorks. §11.3 |
 | 4 | Cache/overlay | **Potvrđeno** — BigBit matične = read-only cache; proizvodne = ServoSync vlasništvo | §11.1 zatvoreno |
 | 5 | Timestamp politika | **ODLOŽENO** — Luka/Nesa odlučuju (tehnička sitnica) | Preporuka: `Timestamptz` za nove tabele. §11.4 ostaje otvoreno |
 | 6 | Obim role ŠEF | **Pun rad + odobravanje** (RN/primopredaje/lokacije) + pregled ostalog | Jedan ŠEF (ne per-modul). [RBAC §7.1] |
@@ -17,6 +17,19 @@
 | 8 | Tabela `cnc_programs` | **DA — uvodi se** (zasebna app-owned tabela) | CNC programer vlasnik write-a. [RBAC §7.3], [MODULE_SPEC_tehnologija] |
 | 9 | MENADZMENT prava | **Uvid + write** (paritet sa 1.0) | Ne samo read. [RBAC §7.5] |
 | 10 | PostgreSQL RLS | **Ne sada — samo NestJS guardovi + query-scoping** | Pravi PG RLS tek u 3.0 ako zatreba. [RBAC §7.4] |
+
+## Sesija 2026-07-08 (nastavak) — potvrde Negovan Vasić („Vasa" = ista osoba)
+
+| # | Pitanje | ODLUKA / POTVRDA | Primenjeno |
+|---|---|---|---|
+| 11 | BigBit export — format i obim | **XML**, i to **CEO katalog artikala** (ne samo korišćeni) | zatvara „potvrditi kod Vase" iz §11.2a; red #1 |
+| 12 | PDM izvor | ✅ **Servoteh-ov međusloj — SQL baza kojom MI upravljamo**, NE sirov SolidWorks → **direktan SQL je siguran** | zatvara §11.3 caveat; red #3 |
+| 13 | Prazne tabele iz sync-a (`tax_rates`/`warehouses`/`price_list_entries`/`goods_documents`…) | ✅ **Očekivano — prazne u samom izvoru.** Vasa je za QBigTehn koristio prilagođenu „BigBit-na-SQL" verziju, maskom sakrio forme koje ne treba da vidimo i adaptirao je na ono što nam treba → te tabele su **nepotrebne** (NIJE propuštena `EXT_` veza) | zatvara proveru A.3 |
+| 14 | Ko validira/završava TP | Uz Tehnolog(autor)+ŠEF+CNC: **KONTROLOR finalnom kontrolom validira da je TP završen** — i ako sve operacije nisu otkucane („ako on kaže da je dobro, dobro je"); **isto mogu svi iz `MENADZMENT`**. **Obavezan audit: ime+prezime + kada.** | RBAC §7.2 prošireno, §3.1 |
+| 15 | Nikola Ninković | **`MENADZMENT`** — šef CELE mašinske obrade; nema poseban scope (nije sporno) | RBAC §2.1 ispravljeno |
+| 16 | BOM/MRP/RN **logika izračuna** | **Nema gotove legacy procedure** — u fazi razrade u Tehnologiji, **ne koristi se trenutno**; **ServoSync 2.0 je DIZAJNIRA** (Nenad+Luka), ne reverse-eng. Anti-ciklus guard obavezan kad se gradi. **Ne blokira** (nije u upotrebi) | reframe §11.4; migration/15 tačke se gledaju kroz ovu prizmu |
+
+> Napomena: „Negovan" i „Vasa" u svim dokumentima = **Negovan Vasić, jedna osoba** (server `vasa-SQL` nazvan po njemu).
 
 ## Zadaci koje je Nenad tražio (u toku)
 
@@ -31,7 +44,8 @@
 ## Ostaje za sastanak / kasnije (SKRAĆENO)
 
 **Za Nesu/Luku (tehnički):**
-- Timestamp politika (`Timestamptz` preporuka) · potvrda da je PDM izvor međusloj (ne sirov SolidWorks).
+- Timestamp politika (`Timestamptz` preporuka). ~~potvrda PDM izvora~~ ✅ potvrđeno 8.7 (Servoteh međusloj).
+- **BOM/MRP/RN logika izračuna = 2.0 dizajnira** (odluka #16) — nije reverse-eng iz legacy-ja; deo „5 tačaka za Negovana" ispod time postaje NAŠA odluka, a ne pitanje za Vasu.
 
 **Za Negovana (poslovna/podatkovna semantika — 5 tačaka, [15 §6](migration/15-bom-mrp-odluka-bez-negovana.md)):**
 1. Magacin `IDMagacin`/`VrstaMag` → tip (gotova roba / poluproizvod / sirovina).

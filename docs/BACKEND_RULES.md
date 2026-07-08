@@ -174,22 +174,23 @@ Niko (ni AI sesija) ne implementira ove stvari pre zapisane odluke ovde:
    Ako ikad zatreba lokalno polje na cache tabeli → overlay tabela, ne u cache. QBigTehn MSSQL sync se gasi
    posle cutover-a. Vidi [01 §5](migration/01-qbigtehn-architecture-analysis.md).
 2. **BigBit sync semantika:**
-   a) ✅ **ODLUČENO (2026-07-08): izvor = EXPORT (XML/CSV) iz BigBit-a.** Kad QBigTehn nestane, BigBit
-      izbacuje export fajl koji `bigbit-sync` uvozi (ne SQL Server upsizing, ne živi ODBC). *Potvrditi kod Vase:*
-      format (XML vs CSV) i **ceo katalog artikala ili samo korišćeni**. Mapiranje kolona po tabeli:
+   a) ✅ **ODLUČENO (2026-07-08): izvor = EXPORT iz BigBit-a.** Kad QBigTehn nestane, BigBit izbacuje export
+      fajl koji `bigbit-sync` uvozi (ne SQL Server upsizing, ne živi ODBC). ✅ **Potvrđeno (Negovan/Vasa, 8.7):
+      format = XML, i to CEO katalog artikala** (ne samo korišćeni). Mapiranje kolona po tabeli:
       [06-bigbit-preuzmi-iz-bb.md](migration/06-bigbit-preuzmi-iz-bb.md).
    b) ✅ **ODLUČENO (2026-07-08): INSERT-only (kao legacy)** — samo novi redovi, postojeći se ne ažuriraju.
       **Svesna posledica:** promena adrese/PIB-a u BigBit-u se NE propagira; obrisan red ostaje. (Ako se
       kasnije pokaže potreba za update-om, to je nova odluka.) Zadržati 3 legacy transformacije (PIB `XX_`,
       šifra prodavca=0, password) ili ih popraviti — Luka/implementacija.
 3. ✅ **ODLUČENO (2026-07-08): PDM sync = DIREKTAN SQL** (čitanje PDM MS SQL baze; imamo `mssql` klijent).
-   Sync za sklopove (BOM: `drawing_components`/`drawing_assemblies`), crteže i dokumentaciju. ⚠️ **Potvrditi
-   pre implementacije:** da „PDM MS SQL" **nije sirov SolidWorks** nego Servoteh-ov međusloj — jer je interna
-   SolidWorks PDM SQL šema vendor-specifična i krhka za direktno BOM čitanje. Ako jeste sirov SolidWorks,
-   vratiti se na XML ugovor. Vidi [MODULE_SPEC_pdm.md](design/MODULE_SPEC_pdm.md), [ODLUKE.md](ODLUKE.md).
-4. **Poslovna logika iz MS SQL procedura** (BOM/MRP/RN): replikacija kroz `WITH RECURSIVE` — **obavezan
-   anti-ciklus guard** (PG bez njega visi na cikličnim BOM podacima; vidi
-   [05-qbigtehn-sqlserver-logic](migration/05-qbigtehn-sqlserver-logic.md)).
+   Sync za sklopove (BOM: `drawing_components`/`drawing_assemblies`), crteže i dokumentaciju. ✅ **Potvrđeno
+   (Negovan/Vasa, 8.7): „PDM MS SQL" = Servoteh-ov međusloj (SQL baza kojom MI upravljamo), NE sirov
+   SolidWorks → direktan SQL je siguran.** Vidi [MODULE_SPEC_pdm.md](design/MODULE_SPEC_pdm.md), [ODLUKE.md](ODLUKE.md).
+4. **Poslovna logika BOM/MRP/RN** — REFRAME (Nenad, 8.7): **nema gotove legacy procedure za repliciranje.**
+   Logika je u fazi razrade u Tehnologiji i **ne koristi se trenutno** → **ServoSync 2.0 je DIZAJNIRA**
+   (Nenad + Luka), ne reverse-eng iz legacy-ja. Kad se gradi: **obavezan anti-ciklus guard** u `WITH RECURSIVE`
+   (PG bez njega visi na cikličnoj sastavnici). **Ne blokira trenutno** (nije u upotrebi). Vidi
+   [05-qbigtehn-sqlserver-logic](migration/05-qbigtehn-sqlserver-logic.md), [ODLUKE.md #16](ODLUKE.md).
 5. **Timestamp politika za nove app-owned tabele** (`Timestamp(6)` kao legacy port vs `Timestamptz`).
 
 ## 12. Promene ovog dokumenta

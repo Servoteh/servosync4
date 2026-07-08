@@ -125,7 +125,7 @@ Napomene:
 | Osoba | Naziv u sistematizaciji | Kanonska rola 2.0 | Scope / dodatno |
 |---|---|---|---|
 | **Miljan Nikodijević** | Rukovodilac proizvodnih operacija i tehnologije | **`SEF`** | proizvodnja + tehnologija (glavni ŠEF proizvodnog toka) |
-| **Nikola Ninković** | Šef mašinske obrade | **`SEF`** | ista rola; scope = mašinska obrada (radna jedinica) — po potrebi `scopeType='department'` |
+| **Nikola Ninković** | Šef mašinske obrade | **`MENADZMENT`** | šef CELE mašinske obrade; nema poseban scope (potvrda Nenad 8.7) |
 | **Milorad Jerotić** | Gl. mašinski inž. + Rukovodilac inženjeringa; **finalni potpisnik** | **`PROJEKTANT_VODJA`** + flag **`finalni_potpisnik`** | finalno odobrenje nacrta/primopredaje |
 
 > **V1 pojednostavljenje:** u ServoSync 1.0 su sva trojica `menadzment`. Prihvatljivo je da u 2.0 V1
@@ -293,7 +293,10 @@ kanal pristupa bazi (BI alati, drugi servisi). → otvoreno pitanje §7.4.
    - U 1.0 su svi **`MENADZMENT`** → prihvatljivo za V1 (svi MENADZMENT sa uvid+write), granularizacija (SEF/PROJEKTANT_VODJA) u V2.
    - `SEF` (ne `SEF_PROIZVODNJE`); draft `PROJEKTNI_BIRO` zamenjen parom `PROJEKTANT_VODJA`/`INZENJER`.
 
-**Ostaje otvoreno:** potpis TP — da li i `KONTROLOR` učestvuje; tačan scope „mašinska obrada" za Nikolu (radna jedinica).
+**Razrešeno (Negovan/Vasa, 8.7):** potpis/završetak TP — **DA, `KONTROLOR` finalnom kontrolom validira da je TP
+završen** i ako sve operacije nisu otkucane („ako on kaže da je dobro, dobro je"); **isto mogu svi iz
+`MENADZMENT`**. Obavezan **audit zapis: ime+prezime + kada**. Nikola Ninković = **`MENADZMENT`** (šef CELE
+mašinske obrade), bez posebnog scope-a.
 
 ## 8. Redosled implementacije (kad se odobri)
 
