@@ -38,6 +38,9 @@ yarn-error.log*
 .env.*
 !.env.example
 !.env.production.example
+# .env.production sadrži samo NEXT_PUBLIC_API_URL (javni URL, ne tajna) —
+# komituje se da CF build sam zapeče vrednost, bez dashboard varijable.
+!.env.production
 
 # vercel
 .vercel
