@@ -9,9 +9,14 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
+import { PermissionsGuard } from "../../common/authz/permissions.guard";
+import { RequirePermission } from "../../common/authz/require-permission.decorator";
+import { PERMISSIONS } from "../../common/authz/permissions";
 import { WorkOrdersService } from "./work-orders.service";
 import type { ListWorkOrdersQuery } from "./work-orders.service";
 import type { CreateWorkOrderDto } from "./dto/create-work-order.dto";
+import type { ReworkWorkOrderDto } from "./dto/rework-work-order.dto";
+import type { BulkCloneWorkOrdersDto } from "./dto/bulk-clone-work-orders.dto";
 
 /**
  * API za radne naloge (Radni nalozi / RN).
@@ -21,8 +26,12 @@ import type { CreateWorkOrderDto } from "./dto/create-work-order.dto";
  *   POST /api/v1/work-orders/:id/approve  { approve?: boolean }  — odobri/odbij
  *   POST /api/v1/work-orders/:id/launch                          — lansiraj (mora biti saglasan)
  *   POST /api/v1/work-orders/:id/lock     { locked?: boolean }   — zaključaj/otključaj
+ *   POST /api/v1/work-orders/:id/copy-from/:sourceId             — kopiraj stavke u prazan cilj (RN_WRITE)
+ *   POST /api/v1/work-orders/:id/rework   { pieceCount, qualityTypeId, note? } — dorada/škart child (RN_WRITE)
+ *   POST /api/v1/work-orders/projects/:projectId/bulk-clone { targetProjectId, coefficient, workOrderIds? } — bulk-clone (RN_WRITE)
  *
  * Traži JWT. RBAC (ko sme odobri/lansiraj) je V2 — vidi TODO(auth) u servisu.
+ * Copy/clone/rework nose `@RequirePermission(RN_WRITE)` (V1 no-op guard).
  */
 @UseGuards(JwtAuthGuard)
 @Controller({ path: "work-orders", version: "1" })
@@ -63,5 +72,38 @@ export class WorkOrdersController {
     @Body() body: { locked?: boolean },
   ) {
     return this.workOrders.setLock(id, body?.locked !== false);
+  }
+
+  /** Kopiraj sve 4 vrste stavki iz `sourceId` u prazan `id` (cilj ne sme biti zaključan/lansiran). */
+  @Post(":id/copy-from/:sourceId")
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(PERMISSIONS.RN_WRITE)
+  copyFrom(
+    @Param("id", ParseIntPipe) id: number,
+    @Param("sourceId", ParseIntPipe) sourceId: number,
+  ) {
+    return this.workOrders.copyFrom(id, sourceId);
+  }
+
+  /** DORADA/ŠKART: kreiraj child RN iz `id` (sufiks -D/-S, kopira zaglavlje + sve stavke). */
+  @Post(":id/rework")
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(PERMISSIONS.RN_WRITE)
+  rework(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: ReworkWorkOrderDto,
+  ) {
+    return this.workOrders.rework(id, dto);
+  }
+
+  /** Bulk-clone svih (ili izabranih) naloga predmeta `projectId` u nov prazan predmet. */
+  @Post("projects/:projectId/bulk-clone")
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(PERMISSIONS.RN_WRITE)
+  bulkClone(
+    @Param("projectId", ParseIntPipe) projectId: number,
+    @Body() dto: BulkCloneWorkOrdersDto,
+  ) {
+    return this.workOrders.bulkClone(projectId, dto);
   }
 }

@@ -27,9 +27,10 @@ import type { UpdateHandoverDraftDto } from "./dto/update-handover-draft.dto";
  *   POST   /api/v1/handover-drafts            — kreiranje (zaglavlje + stavke), broj generiše server
  *   PATCH  /api/v1/handover-drafts/:id        — izmena zaglavlja (samo dok nije zaključan)
  *   DELETE /api/v1/handover-drafts/:id        — brisanje (samo dok nije zaključan; hard delete — vidi servis)
+ *   POST   /api/v1/handover-drafts/:id/submit — predaja u primopredaju (§6.3): zaključa nacrt i kreira drawing_handovers redove
  *
- * Ovaj talas: samo osnovni unos — BEZ BOM auto-populate wizarda, BEZ item-level
- * POST/PATCH/DELETE endpointa i BEZ `/submit` (predaja u primopredaju) — van skopa zadatka.
+ * Ovaj talas: osnovni unos + submit — BEZ BOM auto-populate wizarda i BEZ
+ * item-level POST/PATCH/DELETE endpointa (van skopa zadatka).
  * Traži JWT; read=PRIMOPREDAJE_READ, mutacije=PRIMOPREDAJE_WRITE (V1 no-op guard).
  */
 @UseGuards(JwtAuthGuard, PermissionsGuard)
@@ -72,5 +73,11 @@ export class HandoverDraftsController {
   @RequirePermission(PERMISSIONS.PRIMOPREDAJE_WRITE)
   remove(@Param("id", ParseIntPipe) id: number) {
     return this.drafts.remove(id);
+  }
+
+  @Post(":id/submit")
+  @RequirePermission(PERMISSIONS.PRIMOPREDAJE_WRITE)
+  submit(@Param("id", ParseIntPipe) id: number) {
+    return this.drafts.submit(id);
   }
 }

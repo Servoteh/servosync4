@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Injectable,
   NotFoundException,
+  UnprocessableEntityException,
 } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
@@ -11,9 +12,22 @@ import {
   SAFE_WORKER_SELECT,
 } from "../../common/pagination";
 import { byId, uniqueIds } from "../../common/relations";
+import { parseBarcode } from "./barcode";
+import { type ScanTechProcessDto, validateScan } from "./dto/scan-tech-process.dto";
+import {
+  type FinishTechProcessDto,
+  validateFinish,
+} from "./dto/finish-tech-process.dto";
 
 /** Vrste kvaliteta delova (`part_quality_types`, spec §1): 0=dobar,1=dorada,2=škart. */
 export const PART_QUALITY = { GOOD: 0, REWORK: 1, SCRAP: 2 } as const;
+
+/**
+ * „Skinuto sa prioriteta" pri zatvaranju postupka (§3 pravilo 2,
+ * legacy `OznaciDaJeZavrsenPostupak`). `tech_processes` NEMA `priority` kolonu —
+ * prioritet živi na `work_order_operations` (Was: tStavkeRN) → tamo se upisuje 255.
+ */
+const OPERATION_PRIORITY_DONE = 255;
 
 /**
  * Prag za „kritičan postupak" u danima do roka izrade (production_deadline sa RN-a).
@@ -114,7 +128,10 @@ interface RnProgressRaw {
  *
  * Relacije se razrešavaju batch upitima (ne Prisma required-relation JOIN) jer
  * legacy podaci imaju orphan FK-ove koji bi inače dali 500. Sume (komadi/vreme)
- * računa DB/API, ne UI (spec §3 pravilo 6). READ ONLY (do §11/RBAC).
+ * računa DB/API, ne UI (spec §3 pravilo 6).
+ *
+ * Sadrži i WRITE-PATH barkod prijave rada (§3 pravila 1/2; ODLUKE 2026-07-08:
+ * proizvodne tabele su ServoSync vlasništvo) — sve mutacije u `$transaction`.
  */
 @Injectable()
 export class TechProcessesService {
@@ -543,6 +560,380 @@ export class TechProcessesService {
 
     const workers = await this.resolveWorkers([tp.workerId]);
     return { data: { ...tp, worker: workers.get(tp.workerId) ?? null } };
+  }
+
+  // ============================================================ WRITE-PATH
+  // Barkod prijava rada (kiosk). §3 pravila 1/2; mutacije odobrene §7 (ODLUKE
+  // 2026-07-08: proizvodne tabele = ServoSync vlasništvo). Sve mutacije u
+  // Prisma `$transaction` (legacy nije bio atomičan — §6 zamka).
+
+  // ---------------------------------------------------------------- DECODE
+
+  /**
+   * `POST /barcode/decode` — parsira i validira JEDAN barkod. Vraća tip
+   * (nalog/operacija) + polja; za **nalog** dodatno razrešava RN (`work_orders`)
+   * i broj operacija u tehnološkom postupku po trojci (projectId, identNumber,
+   * variant). Nevalidan barkod → 400 (`parseBarcode` baca `BadRequestException`).
+   */
+  async decodeBarcode(barcode: string) {
+    const decoded = parseBarcode(barcode);
+    if (decoded.type === "operacija") {
+      return {
+        data: {
+          type: decoded.type,
+          marker: decoded.marker,
+          fields: decoded.fields,
+        },
+      };
+    }
+
+    // nalog → razreši RN + broj operacija u tehnološkom postupku.
+    const { projectId, identNumber, variant } = decoded.fields;
+    const [workOrder, operationCount] = await Promise.all([
+      this.prisma.workOrder.findFirst({
+        where: { projectId, identNumber, variant },
+        orderBy: { id: "asc" },
+        select: {
+          id: true,
+          projectId: true,
+          identNumber: true,
+          variant: true,
+          partName: true,
+          drawingNumber: true,
+          pieceCount: true,
+          productionDeadline: true,
+          handoverStatusId: true,
+          status: true,
+        },
+      }),
+      this.prisma.techProcess.count({
+        where: { projectId, identNumber, variant },
+      }),
+    ]);
+
+    return {
+      data: {
+        type: decoded.type,
+        marker: decoded.marker,
+        fields: decoded.fields,
+        workOrder,
+        techProcess: { operationCount },
+      },
+    };
+  }
+
+  // ---------------------------------------------------------------- SCAN (prijava rada)
+
+  /**
+   * `POST /scan` — barkod prijava rada. Radnik skenira nalog + operaciju i unosi
+   * broj napravljenih komada. Koraci (§3 pravilo 1, migration/15 §5):
+   *  1. parsiraj oba barkoda (400 na nevalidan); orderBarcode mora biti nalog,
+   *     operationBarcode operacija; `PrnTimer` mora biti isti (🔴 vezni ključ).
+   *  2. u transakciji nađi `tech_processes` red po trojci + `workCenterCode`
+   *     (+ `operationNumber` ako je numeričan) — jedan red = jedna operacija.
+   *  3. **akumuliraj** `pieceCount` (prijava = novi napravljeni komadi); ako je
+   *     dosegnut plan RN-a → `isProcessFinished=true` + `finishedAt` i `priority=255`
+   *     na `work_order_operations`.
+   *  4. ako su SVE značajne operacije završene → označi RN (`work_orders.status=true`).
+   *
+   * NAPOMENA: `tech_processes` NEMA kolonu radnog vremena — vreme ostaje izvedeno
+   * (elapsed entered→finished, vidi `card`/`workerPerformance`); ovde se NE upisuje.
+   */
+  async scan(dto: ScanTechProcessDto) {
+    validateScan(dto);
+    const order = parseBarcode(dto.orderBarcode);
+    const operation = parseBarcode(dto.operationBarcode);
+    if (order.type !== "nalog")
+      throw new BadRequestException(
+        "'orderBarcode' nije nalog-barkod (očekivano 'RNZ:...').",
+      );
+    if (operation.type !== "operacija")
+      throw new BadRequestException(
+        "'operationBarcode' nije operacija-barkod (očekivano 'S:...').",
+      );
+    // 🔴 vezni ključ: operacioni barkod mora imati isti PrnTimer kao nalog.
+    if (order.fields.printTimer !== operation.fields.printTimer)
+      throw new BadRequestException(
+        `PrnTimer se ne poklapa: nalog=${order.fields.printTimer}, operacija=${operation.fields.printTimer} — barkodovi ne pripadaju istom nalogu.`,
+      );
+
+    const { projectId, identNumber, variant } = order.fields;
+    const { operationNumber, workCenterCode } = operation.fields;
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const where: Prisma.TechProcessWhereInput = {
+        projectId,
+        identNumber,
+        variant,
+        workCenterCode,
+      };
+      if (operationNumber !== null) where.operationNumber = operationNumber;
+
+      const tp = await tx.techProcess.findFirst({
+        where,
+        orderBy: [{ isProcessFinished: "asc" }, { id: "asc" }],
+      });
+      if (!tp)
+        throw new NotFoundException(
+          `Operacija (RC ${workCenterCode}${
+            operationNumber !== null ? `, op. ${operationNumber}` : ""
+          }) nije nađena u tehnološkom postupku RN ${identNumber} (predmet ${projectId}, var. ${variant}).`,
+        );
+      if (tp.isProcessFinished)
+        throw new UnprocessableEntityException(
+          `Operacija (postupak ${tp.id}) je već zatvorena — prijava rada nije moguća.`,
+        );
+
+      const workOrder = await this.findWorkOrderByTriple(
+        tx,
+        projectId,
+        identNumber,
+        variant,
+      );
+      const planned = workOrder?.pieceCount ?? null;
+
+      // Prijava rada = akumulacija napravljenih komada na redu operacije.
+      const newPieceCount = tp.pieceCount + dto.pieceCount;
+      const reachedPlan = planned !== null && newPieceCount >= planned;
+
+      const updated = await tx.techProcess.update({
+        where: { id: tp.id },
+        data: {
+          pieceCount: newPieceCount,
+          ...(reachedPlan
+            ? { isProcessFinished: true, finishedAt: new Date() }
+            : {}),
+        },
+      });
+
+      // Dosegnut plan → operacija „skinuta sa prioriteta" (priority=255).
+      const prioritized = reachedPlan
+        ? await this.setOperationDonePriority(
+            tx,
+            workOrder?.id ?? tp.workOrderId,
+            tp.operationNumber,
+            tp.workCenterCode,
+          )
+        : 0;
+
+      const workOrderCompleted = await this.markWorkOrderIfComplete(
+        tx,
+        projectId,
+        identNumber,
+        variant,
+      );
+
+      return {
+        tp: updated,
+        workOrder,
+        planned,
+        reachedPlan,
+        prioritized,
+        workOrderCompleted,
+      };
+    });
+
+    const workers = await this.resolveWorkers([result.tp.workerId]);
+    return {
+      data: {
+        techProcess: {
+          ...result.tp,
+          worker: workers.get(result.tp.workerId) ?? null,
+        },
+        reportedPieces: dto.pieceCount,
+        plannedPieces: result.planned,
+        operationFinished: result.reachedPlan,
+        operationsPrioritized: result.prioritized,
+        workOrderCompleted: result.workOrderCompleted,
+        workOrder: result.workOrder,
+      },
+    };
+  }
+
+  // ---------------------------------------------------------------- FINISH
+
+  /**
+   * `POST /:id/finish` — zatvaranje postupka (§3 pravilo 2, legacy
+   * `OznaciDaJeZavrsenPostupak`). U jednoj transakciji:
+   *  - provera količina: napravljeno (`dto.pieceCount ?? postojeći`) ne sme
+   *    premašiti planirano sa RN-a → **422** (ne zatvara);
+   *  - `isProcessFinished=true` + `finishedAt`;
+   *  - `priority=255` na `work_order_operations` (TechProcess nema `priority`);
+   *  - ako su sve značajne operacije završene → označi RN (`status=true`).
+   */
+  async finish(id: number, dto?: FinishTechProcessDto) {
+    validateFinish(dto);
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const tp = await tx.techProcess.findUnique({ where: { id } });
+      if (!tp)
+        throw new NotFoundException(`Tehnološki postupak ${id} ne postoji`);
+      if (tp.isProcessFinished)
+        throw new UnprocessableEntityException(
+          `Postupak ${id} je već zatvoren.`,
+        );
+
+      const workOrder = await this.findWorkOrderByTriple(
+        tx,
+        tp.projectId,
+        tp.identNumber,
+        tp.variant,
+      );
+      const planned = workOrder?.pieceCount ?? null;
+      const effectivePieces = dto?.pieceCount ?? tp.pieceCount;
+
+      // 🔴 provera količina: premašaj plana → 422 (ne zatvara).
+      if (planned !== null && effectivePieces > planned)
+        throw new UnprocessableEntityException(
+          `Napravljeno (${effectivePieces}) premašuje planirano (${planned}) — postupak se ne može zatvoriti.`,
+        );
+
+      const updated = await tx.techProcess.update({
+        where: { id },
+        data: {
+          ...(dto?.pieceCount !== undefined
+            ? { pieceCount: dto.pieceCount }
+            : {}),
+          ...(dto?.note?.trim() ? { note: dto.note.trim() } : {}),
+          isProcessFinished: true,
+          finishedAt: new Date(),
+        },
+      });
+
+      const prioritized = await this.setOperationDonePriority(
+        tx,
+        workOrder?.id ?? tp.workOrderId,
+        tp.operationNumber,
+        tp.workCenterCode,
+      );
+
+      const workOrderCompleted = await this.markWorkOrderIfComplete(
+        tx,
+        tp.projectId,
+        tp.identNumber,
+        tp.variant,
+      );
+
+      return {
+        tp: updated,
+        workOrder,
+        planned,
+        effectivePieces,
+        prioritized,
+        workOrderCompleted,
+      };
+    });
+
+    const workers = await this.resolveWorkers([result.tp.workerId]);
+    return {
+      data: {
+        techProcess: {
+          ...result.tp,
+          worker: workers.get(result.tp.workerId) ?? null,
+        },
+        finishedPieces: result.effectivePieces,
+        plannedPieces: result.planned,
+        operationsPrioritized: result.prioritized,
+        workOrderCompleted: result.workOrderCompleted,
+        workOrder: result.workOrder,
+      },
+    };
+  }
+
+  // --- write-path helperi (unutar transakcije) ---
+
+  /** RN (`work_orders`) po trojci (projectId, identNumber, variant); null ako ne postoji. */
+  private async findWorkOrderByTriple(
+    tx: Prisma.TransactionClient,
+    projectId: number,
+    identNumber: string,
+    variant: number,
+  ) {
+    return tx.workOrder.findFirst({
+      where: { projectId, identNumber, variant },
+      orderBy: { id: "asc" },
+      select: {
+        id: true,
+        projectId: true,
+        identNumber: true,
+        variant: true,
+        partName: true,
+        drawingNumber: true,
+        pieceCount: true,
+        productionDeadline: true,
+        handoverStatusId: true,
+        status: true,
+      },
+    });
+  }
+
+  /**
+   * Upiši `priority=255` na `work_order_operations` red(ove) koji odgovaraju
+   * zatvorenoj operaciji (RN + operationNumber + workCenterCode). Best-effort:
+   * ako RN nije razrešen (workOrderId ≤ 0) ili nema odgovarajuće operative RN-a,
+   * vraća 0 (legacy tech_processes.workOrderId je često 0 — veza kroz JOIN).
+   */
+  private async setOperationDonePriority(
+    tx: Prisma.TransactionClient,
+    workOrderId: number,
+    operationNumber: number,
+    workCenterCode: string,
+  ): Promise<number> {
+    if (!workOrderId || workOrderId <= 0) return 0;
+    const res = await tx.workOrderOperation.updateMany({
+      where: { workOrderId, operationNumber, workCenterCode },
+      data: { priority: OPERATION_PRIORITY_DONE },
+    });
+    return res.count;
+  }
+
+  /**
+   * Kanonska definicija „RN završen" (§3, migration/15 §5): sve operacije čiji je
+   * radni centar `significantForFinishing=true` moraju biti završene
+   * (`isProcessFinished=true`). Ako jesu → označi RN (`work_orders.status=true`)
+   * i vrati `true`. Ako nema značajnih operacija ili nisu sve gotove → `false`,
+   * RN se ne dira.
+   *
+   * NAPOMENA (pretpostavka): ne postoji materijalizovana `isCompleted` kolona
+   * (§3 „materijalizovati isCompleted" traži migraciju — van skopa); dok se ne
+   * uvede, „RN završen" se beleži na postojeći `work_orders.status` (Boolean).
+   */
+  private async markWorkOrderIfComplete(
+    tx: Prisma.TransactionClient,
+    projectId: number,
+    identNumber: string,
+    variant: number,
+  ): Promise<boolean> {
+    const rows = await tx.techProcess.findMany({
+      where: { projectId, identNumber, variant },
+      select: { workCenterCode: true, isProcessFinished: true },
+    });
+    if (!rows.length) return false;
+
+    const codes = [...new Set(rows.map((r) => r.workCenterCode).filter(Boolean))];
+    const significant = await tx.operation.findMany({
+      where: { workCenterCode: { in: codes }, significantForFinishing: true },
+      select: { workCenterCode: true },
+    });
+    const sigCodes = new Set(significant.map((o) => o.workCenterCode));
+    const significantRows = rows.filter((r) => sigCodes.has(r.workCenterCode));
+    // Bez značajnih operacija nema kanonskog kriterijuma → ne označavamo.
+    if (!significantRows.length) return false;
+    if (!significantRows.every((r) => r.isProcessFinished === true))
+      return false;
+
+    const wo = await tx.workOrder.findFirst({
+      where: { projectId, identNumber, variant },
+      orderBy: { id: "asc" },
+      select: { id: true, status: true },
+    });
+    if (!wo) return false;
+    if (wo.status === true) return true; // već označen — idempotentno
+    await tx.workOrder.update({
+      where: { id: wo.id },
+      data: { status: true },
+    });
+    return true;
   }
 
   // --- batch resolveri (izbegavaju required-relation JOIN koji puca na orphan FK) ---

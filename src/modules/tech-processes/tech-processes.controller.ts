@@ -1,8 +1,10 @@
 import {
+  Body,
   Controller,
   Get,
   Param,
   ParseIntPipe,
+  Post,
   Query,
   UseGuards,
 } from "@nestjs/common";
@@ -18,6 +20,10 @@ import type {
   RnProgressQuery,
   WorkerPerformanceQuery,
 } from "./tech-processes.service";
+import type { DecodeBarcodeDto } from "./dto/decode-barcode.dto";
+import { validateDecodeBarcode } from "./dto/decode-barcode.dto";
+import type { ScanTechProcessDto } from "./dto/scan-tech-process.dto";
+import type { FinishTechProcessDto } from "./dto/finish-tech-process.dto";
 
 /**
  * Read-only API za tehnološke postupke (Tehnološki postupci / TP).
@@ -28,8 +34,13 @@ import type {
  *   GET /api/v1/tech-processes/rn-progress        — „Pregled RN — statusi delova" (planirano vs napravljeno)
  *   GET /api/v1/tech-processes/:id                — jedan TP + radnik + dokumentacija
  *
- * Traži JWT; permisija `tehnologija.read` (V1 no-op guard, V2 aktivacija).
- * Mutacije (barkod/finish/rework) dolaze kasnije, gejtovane RBAC + §11 odlukama.
+ *   POST /api/v1/tech-processes/barcode/decode    { barcode }                             — parsira/validira JEDAN barkod
+ *   POST /api/v1/tech-processes/scan              { orderBarcode, operationBarcode, pieceCount } — barkod prijava rada
+ *   POST /api/v1/tech-processes/:id/finish        { pieceCount?, note? }                  — zatvaranje postupka
+ *
+ * Traži JWT; read=`tehnologija.read`, write=`tehnologija.write` (V1 no-op guard,
+ * V2 aktivacija). Mutacije odobrene (ODLUKE 2026-07-08: proizvodne tabele =
+ * ServoSync vlasništvo). `rework` (dorada/škart → novi nalog) dolazi kasnije.
  */
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 @RequirePermission(PERMISSIONS.TEHNOLOGIJA_READ)
@@ -60,6 +71,28 @@ export class TechProcessesController {
   @Get("rn-progress")
   rnProgress(@Query() query: RnProgressQuery) {
     return this.techProcesses.rnProgress(query);
+  }
+
+  @Post("barcode/decode")
+  @RequirePermission(PERMISSIONS.TEHNOLOGIJA_WRITE)
+  decodeBarcode(@Body() dto: DecodeBarcodeDto) {
+    validateDecodeBarcode(dto);
+    return this.techProcesses.decodeBarcode(dto.barcode);
+  }
+
+  @Post("scan")
+  @RequirePermission(PERMISSIONS.TEHNOLOGIJA_WRITE)
+  scan(@Body() dto: ScanTechProcessDto) {
+    return this.techProcesses.scan(dto);
+  }
+
+  @Post(":id/finish")
+  @RequirePermission(PERMISSIONS.TEHNOLOGIJA_WRITE)
+  finish(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: FinishTechProcessDto,
+  ) {
+    return this.techProcesses.finish(id, dto);
   }
 
   @Get(":id")

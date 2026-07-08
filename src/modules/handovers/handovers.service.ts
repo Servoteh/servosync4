@@ -74,9 +74,10 @@ export interface ListHandoversQuery {
 
 /**
  * Primopredaje crteža (`drawing_handovers`) — MODULE_SPEC_nacrti_primopredaje
- * §6.4. Ovaj talas NE kreira `drawing_handovers` redove (predaja nacrta u
- * primopredaju — `/handover-drafts/:id/submit` — nije u skopu, vidi zadatak);
- * radi samo nad postojećim redovima: pregled + approve/reject/launch.
+ * §6.4. Ovaj servis radi nad POSTOJEĆIM redovima: pregled +
+ * approve/reject/launch. Kreiranje `drawing_handovers` redova (predaja nacrta u
+ * primopredaju — `/handover-drafts/:id/submit`, §6.3) je u
+ * `HandoverDraftsService.submit()`.
  *
  * TODO(auth): JWT payload nosi samo `userId` (User), nema User↔Worker vezu
  * (RBAC V2). Zato se `statusChangedById`/`launchedById` ovde postavljaju na

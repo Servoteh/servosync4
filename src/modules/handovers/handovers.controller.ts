@@ -28,8 +28,8 @@ import type { LaunchHandoverDto } from "./dto/launch-handover.dto";
  *   POST /api/v1/handovers/:id/reject       { reason }           — odbij (U OBRADI → ODBIJENO); reason OBAVEZAN
  *   POST /api/v1/handovers/:id/launch       { comment?, dueDate? } — lansiraj (SAGLASAN → LANSIRAN), kreira work_orders red
  *
- * Ovaj talas NE kreira `drawing_handovers` redove (predaja nacrta u primopredaju
- * nije u skopu — vidi handover-drafts.controller.ts). Traži JWT;
+ * Kreiranje `drawing_handovers` redova (predaja nacrta u primopredaju) je na
+ * `POST /handover-drafts/:id/submit` — vidi handover-drafts.controller.ts. Traži JWT;
  * read=PRIMOPREDAJE_READ, approve/reject/launch=PRIMOPREDAJE_APPROVE (V1 no-op guard).
  */
 @UseGuards(JwtAuthGuard, PermissionsGuard)

@@ -1,4 +1,5 @@
 import {
+  ConflictException,
   Injectable,
   NotFoundException,
   UnprocessableEntityException,
@@ -20,6 +21,7 @@ import {
   validateUpdateHandoverDraft,
 } from "./dto/update-handover-draft.dto";
 import { DraftNumberingService } from "./draft-numbering.service";
+import { HANDOVER_STATUS } from "./handovers.service";
 
 /** Podskup polja crteža bezbedan za izlaz — koristi se za mainDrawing/drawing na stavkama. */
 const DRAWING_SELECT = {
@@ -31,6 +33,14 @@ const DRAWING_SELECT = {
   dimensions: true,
   weight: true,
 } satisfies Prisma.DrawingSelect;
+
+/**
+ * `handover_draft_statuses.id` za "Predat" (§3.2). Seed je nepotvrđen (isti
+ * razlog zbog kog `create()` upisuje `statusId: 0` bez lookup provere), pa se u
+ * `submit()` postavlja SAMO ako taj lookup red postoji — inače se nacrt samo
+ * zaključa (`isLocked`), bez FK 500 na nepostojeći status.
+ */
+const DRAFT_STATUS_SUBMITTED = 2;
 
 const DRAFT_SELECT = {
   id: true,
@@ -65,11 +75,10 @@ export interface ListHandoverDraftsQuery {
 
 /**
  * Nacrti primopredaje (`handover_drafts` + `handover_draft_items`) —
- * MODULE_SPEC_nacrti_primopredaje §6.1/§6.2. Ovaj talas: samo osnovni unos
- * (zaglavlje + stavke pri kreiranju); BEZ BOM auto-populate wizarda, BEZ
- * pre-check-duplicate logike (§7.2) i BEZ `/submit` endpointa (predaja u
- * primopredaju — kreiranje `drawing_handovers` iz nacrta — nije u skopu ovog
- * talasa, vidi zadatak).
+ * MODULE_SPEC_nacrti_primopredaje §6.1/§6.2/§6.3. Osnovni unos (zaglavlje +
+ * stavke pri kreiranju) + `submit()` (predaja u primopredaju — §6.3, kreira
+ * `drawing_handovers` redove i zaključava nacrt). BEZ BOM auto-populate wizarda
+ * i BEZ pre-check-duplicate logike (§7.2) — van skopa ovog talasa.
  *
  * 🔴 `deleted_at` NE POSTOJI u šemi za `handover_drafts` (za razliku od
  * pretpostavke u spec §6.1 "Soft delete"). Bez izmene šeme (zabranjeno ovog
@@ -414,6 +423,134 @@ export class HandoverDraftsService {
       await tx.handoverDraft.delete({ where: { id } });
     });
     return { data: { id, deleted: true } };
+  }
+
+  // ------------------------------------------------------------- SUBMIT
+
+  /**
+   * Predaja nacrta u primopredaju (§6.3) — kompletira lanac nacrt→primopredaja.
+   * U JEDNOJ transakciji: zaključa nacrt i kreira po jedan `drawing_handovers`
+   * red za svaku ne-isključenu (`exclude_from_handover = false`) stavku, u
+   * statusu U OBRADI (na čekanju odobravanja).
+   *
+   * `drawing_handovers.handover_worker_id` je NOT NULL u šemi (i nema FK na
+   * `workers`), pa broadcast (spec §6.3 "NULL za sve tehnologe") nije moguć —
+   * po instrukciji zadatka koristi se `designerId` nacrta (fallback `0`); izbor
+   * konkretnog tehnologa (dijalog "Izbor tehnologa", §8.3) dolazi kasnijim
+   * talasom. Za razliku od `handover_draft_items.drawing_id`,
+   * `drawing_handovers.drawing_id` IMA DB FK, pa se crteži validiraju pre
+   * insert-a (orphan → 422, ne sirova FK greška 500 — BACKEND_RULES §7).
+   */
+  async submit(id: number) {
+    const existing = await this.prisma.handoverDraft.findUnique({
+      where: { id },
+      select: { id: true, isLocked: true, designerId: true },
+    });
+    if (!existing) throw new NotFoundException(`Nacrt ${id} ne postoji.`);
+    if (existing.isLocked)
+      throw new ConflictException(
+        "Nacrt je već predat (zaključan) — ne može se ponovo predati.",
+      );
+
+    const items = await this.prisma.handoverDraftItem.findMany({
+      where: { draftId: id, excludeFromHandover: false },
+      select: { id: true, drawingId: true },
+      orderBy: { id: "asc" },
+    });
+    if (!items.length)
+      throw new UnprocessableEntityException("Nacrt nema stavki za predaju.");
+
+    const drawingIds = uniqueIds(items.map((i) => i.drawingId));
+    const foundDrawings = await this.prisma.drawing.findMany({
+      where: { id: { in: drawingIds } },
+      select: { id: true },
+    });
+    const foundIds = new Set(foundDrawings.map((d) => d.id));
+    const missing = drawingIds.filter((d) => !foundIds.has(d));
+    if (missing.length)
+      throw new UnprocessableEntityException(
+        `Crtež(i) ne postoje: ${missing.join(", ")}.`,
+      );
+
+    const createdIds = await this.prisma.$transaction(async (tx) => {
+      // Serijalizuj konkurentne submit-ove istog nacrta — bez ovoga bi dva
+      // paralelna poziva oba prošla proveru `isLocked` i duplirala primopredaje
+      // (isti obrazac advisory lock-a kao draft-numbering.service.ts).
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`handover_draft_submit:${id}`}))`;
+
+      const fresh = await tx.handoverDraft.findUnique({
+        where: { id },
+        select: { isLocked: true },
+      });
+      if (!fresh) throw new NotFoundException(`Nacrt ${id} ne postoji.`);
+      if (fresh.isLocked)
+        throw new ConflictException(
+          "Nacrt je već predat (zaključan) — ne može se ponovo predati.",
+        );
+
+      // `drawing_handovers.id` jeste autoincrement, ali sync/import mogu da
+      // ubace eksplicitne id-jeve — poravnaj sekvencu pre insert-a (isti obrazac
+      // kao create()/launch()).
+      await tx.$executeRawUnsafe(
+        `SELECT setval(pg_get_serial_sequence('drawing_handovers','id'), (SELECT COALESCE(MAX(id),0) FROM drawing_handovers))`,
+      );
+
+      const now = new Date();
+      const handoverWorkerId = existing.designerId ?? 0;
+      const ids: number[] = [];
+      for (const item of items) {
+        const created = await tx.drawingHandover.create({
+          data: {
+            drawingId: item.drawingId,
+            handoverDate: now,
+            handoverWorkerId,
+            statusId: HANDOVER_STATUS.PENDING, // 0 — U OBRADI (na čekanju)
+            isLocked: false,
+          },
+          select: { id: true },
+        });
+        ids.push(created.id);
+      }
+
+      // Zaključaj nacrt; status "Predat" postavi SAMO ako taj lookup postoji
+      // (seed §3.2 nepotvrđen — vidi DRAFT_STATUS_SUBMITTED). UncheckedUpdateInput
+      // dozvoljava direktnu skalarno-FK dodelu (isti obrazac kao update()).
+      const submittedStatus = await tx.handoverDraftStatus.findUnique({
+        where: { id: DRAFT_STATUS_SUBMITTED },
+        select: { id: true },
+      });
+      const draftUpdate: Prisma.HandoverDraftUncheckedUpdateInput = {
+        isLocked: true,
+      };
+      if (submittedStatus) draftUpdate.statusId = DRAFT_STATUS_SUBMITTED;
+      await tx.handoverDraft.update({ where: { id }, data: draftUpdate });
+
+      return ids;
+    });
+
+    const createdRows = await this.prisma.drawingHandover.findMany({
+      where: { id: { in: createdIds } },
+      select: {
+        id: true,
+        drawingId: true,
+        handoverDate: true,
+        handoverWorkerId: true,
+        statusId: true,
+        isLocked: true,
+        createdAt: true,
+      },
+      orderBy: { id: "asc" },
+    });
+    const drawings = await this.resolveDrawingsByIds(
+      uniqueIds(createdRows.map((r) => r.drawingId)),
+    );
+    const handovers = createdRows.map((r) => ({
+      ...r,
+      drawing: drawings.get(r.drawingId) ?? null,
+    }));
+
+    const draft = (await this.findOne(id)).data;
+    return { data: { draft, handoversCreated: handovers.length, handovers } };
   }
 
   // --- batch resolveri (izbegavaju required-relation JOIN nad orphan FK-om) ---
