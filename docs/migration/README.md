@@ -17,6 +17,7 @@ Read-only analize nastale multi-agent obradom legacy QBigTehn izvora, kanonskih 
 | [08-qbigtehn-vba-domain-map.md](08-qbigtehn-vba-domain-map.md) | **Mapa QBigTehn VBA → 2.0 domeni** (455 fajlova, multi-agent): koji legacy modul pokriva koji 2.0 domen (TP/RN/PDM/MRP/lokacije/komitenti), poslovna pravila za prenos, šta je van scope-a |
 | [09-bigbit-online-domain-map.md](09-bigbit-online-domain-map.md) | **Mapa BigBit OnLine VBA → 4.0 domeni** (824 fajla, multi-agent): fakturisanje/GK/PDV/banke/magacin/matični → 4.0 domeni (finance/sales/inventory/tax/banking/sef), regulatorna pravila, šta se prenosi/prepisuje/baca |
 | [10-bigbit-glavni-meni.md](10-bigbit-glavni-meni.md) | **BigBit glavna maska (navigacija)** — transkript žive aplikacije (RDP): sve sekcije menija i dugmad komercijalnog ERP-a, mapirano na 4.0 domene (09 = analiza koda dopunjuje) |
+| [11-bb-tehnologija-uputstvo.md](11-bb-tehnologija-uputstvo.md) | **Zvanično uputstvo — vlasnikove napomene** (iz `BB Tehnologija opis.pdf`): ko koristi koji modul, najkorišćeniji ekrani (🎯 prioritet 2.0), šta IZBACITI (❌), poznata ograničenja (⚠️), poslovna pravila |
 
 ## Otvorena pitanja za Negovana/Nesu (blokiraju odluke)
 - Odluka o šemi: 1:1 vs **hibrid (legacy-cache + overlay)** vs kanonski (preporuka: hibrid).

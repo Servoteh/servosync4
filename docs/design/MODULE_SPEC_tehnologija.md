@@ -53,6 +53,10 @@ grid unos (operacije), bojena lista po severity-ju (kritični postupci) — [DES
 5. **Prioritet operacije:** `100` ako `operations.usesPriority=true`, inače `255`.
 6. **Sumiranje** (komadi/vreme): u 2.0 **SUM na DB/API**, ne u UI (legacy sabira u podformi).
 7. `significantForFinishing` operacije određuju kad je postupak „završiv"; `isSkippable` = preskočiva.
+8. **🔴 Noćni auto-close (iz [zvaničnog uputstva](../migration/11-bb-tehnologija-uputstvo.md)):** nezatvoreni
+   nalozi se **automatski zatvaraju u 23h** → u 2.0 scheduled job (`@nestjs/schedule`).
+9. **⚠️ Ograničenje za popraviti:** legacy „detaljan pregled gotovosti" i „dinamika izrade" **NE rade za ceo
+   sklop** — 2.0 dodaje agregaciju gotovosti po sklopu (rekurzivni BOM CTE).
 
 ## 4. RBAC (iz [RBAC_RLS_PREDLOG §3.1](RBAC_RLS_PREDLOG.md))
 
@@ -78,6 +82,11 @@ grid unos (operacije), bojena lista po severity-ju (kritični postupci) — [DES
 
 **Redosled implementacije:** (1) read-only lista+kartica+operacije+kritični → odmah upotrebljivo tehnolozima;
 (2) `machine_access` + dokumentacija; (3) barkod/finish/rework mutacije po §11.1 (cache/overlay) odluci.
+
+**🎯 Prioritet ekrana (iz [zvaničnog uputstva §sažetak](../migration/11-bb-tehnologija-uputstvo.md)):** najkorišćeniji
+su **Pregled RN (statusi delova)**, **Pregled TP (učinak po radniku)**, **Detaljan pregled gotovosti** i
+**Kartica TP** — graditi ih prve. **❌ NE graditi** (vlasnik izričito): zaseban „Lansiranje" ekran (lansiranje je
+akcija u Primopredaji), „Razlike verzija 1/2", „Unos predmeta".
 
 ## 6. Zamke iz legacy-ja (NE prenositi)
 

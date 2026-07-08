@@ -45,6 +45,8 @@
 4. **🔴 Mapiranje kvaliteta:** `qualityType` iz flagova — **Dorada → 1, Škart → 2, inače → 0** (enum `0=OK, 1=rework, 2=scrap`).
 5. **Koordinate police** `XPoz/YPoz/ZPoz` moraju biti numeričke; promena reda re-inicijalizuje parametre transfera.
 6. Metapodaci dela = join `work_orders × customers × workers`.
+7. **🔴 Lokacija se definiše tek POSLE ZAVRŠNE KONTROLE** (iz [zvaničnog uputstva](../migration/11-bb-tehnologija-uputstvo.md))
+   — deo dobija lokaciju kad prođe završnu kontrolu, ne ranije.
 
 ## 4. RBAC ([RBAC_RLS_PREDLOG](RBAC_RLS_PREDLOG.md))
 
