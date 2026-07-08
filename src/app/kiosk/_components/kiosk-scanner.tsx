@@ -249,7 +249,7 @@ export function KioskScanner({ workerName }: { workerName: string }) {
           tone: 'info',
           title: `⚠ Star otisak — rad je evidentiran (${formatNumber(pieces)} kom)`,
           detail: [
-            `Nalog je štampan u reviziji ${data.printedRevision}, tekuća je ${data.currentRevision ?? '—'}.`,
+            `Nalog je štampan u varijanti ${data.printedVariant}, tekuća je ${data.currentVariant}.`,
             'Tehnologija/crtež su verovatno izmenjeni — preuzmite novi odštampan nalog.',
             ...parts,
           ].join(' · '),

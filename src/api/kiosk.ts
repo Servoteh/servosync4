@@ -9,8 +9,9 @@ import type { TechProcess } from './tech-processes';
  * (backend/src/modules/tech-processes). Radnik skenira DVA barkoda:
  *   - nalog     `RNZ:projectId:identNumber:variant:revision`
  *   - operacija `S:operationNumber:workCenterCode:0:revision`
- * `revision` (polje 5) je verzioni pečat — mora biti ista u oba (isti otisak); ako je
- * skenirani otisak starije revizije od tekućeg RN-a, scan vraća `staleWorkOrder` upozorenje. Rute:
+ * `revision` (polje 5) = provera „isti otisak" (ista u oba barkoda). Verzioni pečat je
+ * `variant` (nalog polje 4): pri izmeni tehnologije/crteža podiže se varijanta U MESTU, pa
+ * scan sa starim otiskom (manja varijanta) vraća `staleWorkOrder` upozorenje. Rute:
  *   POST /v1/tech-processes/barcode/decode  { barcode }
  *   POST /v1/tech-processes/scan            { orderBarcode, operationBarcode, pieceCount }
  *   POST /v1/tech-processes/:id/finish      { pieceCount?, note? }
@@ -90,12 +91,12 @@ export interface ScanResult {
   operationsPrioritized: number;
   workOrderCompleted: boolean;
   workOrder: KioskWorkOrder | null;
-  /** true = skenirani otisak je starije revizije od tekućeg RN-a (upozorenje, ne blokada). */
+  /** true = skenirani otisak je starije VARIJANTE od tekućeg RN-a (upozorenje, ne blokada). */
   staleWorkOrder: boolean;
-  /** Revizija sa skeniranog barkoda (otisak). */
-  printedRevision: string;
-  /** Tekuća revizija RN-a u bazi (null ako RN nije razrešen). */
-  currentRevision: string | null;
+  /** Varijanta sa skeniranog barkoda (otisak). */
+  printedVariant: number;
+  /** Tekuća varijanta RN-a u bazi. */
+  currentVariant: number;
 }
 
 export interface FinishInput {
