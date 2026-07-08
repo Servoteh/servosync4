@@ -81,6 +81,69 @@ Backend NE izlažemo direktno; `cloudflared` na serveru cilja `http://localhost:
 
 Provera kad tunel proradi: `curl https://api.servosync2.servoteh.com/api` → health backend-a (bez auth-a).
 
+## LAN pristup / offline fallback (jedan build, bez rebuild-a)
+
+Front bira API base **u runtime-u u browseru** ([../src/api/client.ts](../src/api/client.ts)), pa **isti
+`out/` build** radi i kroz Cloudflare i direktno na LAN-u. Kad internet padne (ili terminal nema izlaz na
+net), LAN put i dalje radi jer ne prolazi kroz Cloudflare edge — server (backend + PostgreSQL) rade lokalno.
+
+**Kako se bira API:**
+
+| Front otvoren na… | API base | Put |
+|---|---|---|
+| `servosync2.servoteh.com`, `*.pages.dev` | `https://api.servosync2.servoteh.com/api` | kroz Cloudflare Tunnel |
+| LAN IP/hostname, npr. `http://192.168.64.28` | `http://<isti-host>:3000/api` | direktno na backend (LAN) |
+| `localhost:3001` (dev) | `http://localhost:3000/api` | lokalni backend |
+
+Redosled odlučivanja: `window.__SERVOSYNC_API_URL__` (override iz `/config.js`) → izvođenje iz adrese
+(tabela gore) → build-time `NEXT_PUBLIC_API_URL` (samo bez window-a) → `localhost:3000`.
+
+**Serviranje fronta sa LAN-a (na Ubuntu serveru 192.168.64.28 koji već vrti backend).**
+
+⚠️ `out/` fizički NE postoji na serveru (front ide na Cloudflare, ne na Ubuntu), a **prod compose nije u
+git-u** — živi kao `~/servosync/docker-compose.yml` pod `admluka` home-om (vidi
+[INFRASTRUKTURA.md §5](../../backend/docs/infra/INFRASTRUKTURA.md)). Zato se `front-lan` dodaje **ručno na
+serveru** (interaktivni SSH; docker traži sudo za `admnenad`/`admluka`). Build ide iz frontend repoa kroz
+[../Dockerfile](../Dockerfile) (nginx služi `out/`), pa nije potreban Node na hostu.
+
+Jednokratno + servis (na serveru, interaktivno):
+
+```bash
+ssh ubuntusrv
+cd ~/servosync
+git clone https://github.com/servosync/frontend.git frontend      # jednom (build kontekst)
+# u ~/servosync/docker-compose.yml dodaj servis:
+```
+```yaml
+  front-lan:
+    build:
+      context: ./frontend        # gore kloniran frontend repo
+    image: servosync-front-lan
+    ports:
+      - "8080:80"                # LAN: http://192.168.64.28:8080
+    restart: unless-stopped
+```
+```bash
+sudo docker compose up -d --build front-lan
+curl -I http://localhost:8080                                      # provera
+```
+
+Kasnije osvežavanje fronta: `cd ~/servosync/frontend && git pull && sudo docker compose up -d --build front-lan`.
+
+Klijenti otvaraju `http://192.168.64.28:8080` — front sam izvede API na `http://192.168.64.28:3000/api`.
+**Bez izmene koda i bez rebuild-a fronta na Cloudflare-u.** (Alternativa bez Dockerfile-a: `npx serve out -l 8080`
+uz prethodno prekopiran `out/` na server.)
+
+**Preduslovi / napomene:**
+- Backend sluša na `0.0.0.0:3000`, port otvoren na LAN-u, CORS `origin: true` → LAN origin prihvaćen bez podešavanja.
+- LAN je plain **http** (bez cert-a) — OK za ovaj fetch/localStorage app; nema secure-context feature-a.
+- Token je u `localStorage` **po origin-u** → prelazak Cloudflare↔LAN znači zasebnu prijavu.
+- **Za rad app-a internet NE treba** (backend + PG lokalno). Internet treba samo `cloudflared` tunelu i
+  GitHub deploy-u — ne i pokrenutoj aplikaciji.
+- **Override** (ako front i backend nisu na istoj mašini / poseban host): odkomentariši
+  `window.__SERVOSYNC_API_URL__` u posluženoj kopiji [`out/config.js`](../public/config.js) na LAN serveru —
+  menjaš samo taj jedan fajl, Cloudflare kopija ostaje prazna.
+
 ## CORS / auth napomene
 - Backend CORS je `origin: true` — prima front sa bilo kog origin-a, ne treba podešavati po domenu.
 - Login šalje `POST /api/auth/login`, token ide u **localStorage** (Bearer), ne cookie — nema
