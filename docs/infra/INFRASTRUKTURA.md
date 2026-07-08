@@ -172,6 +172,57 @@ Detalji i ručni deploy: [frontend/docs/DEPLOY.md](../../../frontend/docs/DEPLOY
 
 ---
 
+## 6b. Front na :3000 (LAN / offline fallback)
+
+Kad internet/Cloudflare padne, front na Cloudflare-u je nedostupan. Zato backend može da servira i
+**sam front** (Next static export `out/`) na svom portu — isti origin, **bez CORS-a i bez drugog kontejnera**.
+Uključuje se env promenljivom `FRONTEND_STATIC_DIR` (prazno = samo API, kao do sada); front sam izvede API
+na istom hostu:portu (`src/api/client.ts` runtime-resolve), pa radi bez ikakve dodatne konfiguracije.
+
+> ⚠️ Zavisi od merge-a `feat/wave-3 → main`: i runtime-resolve (frontend) i serviranje statike (`main.ts`)
+> su na `feat/wave-3`. Prod backend se auto-deploy-uje sa `main`, pa ovo proradi tek kad wave-3 uđe u `main`
+> (Lukin pregled) i backend se rebuilduje. Do tada je za test potreban ručni build backenda sa `feat/wave-3`.
+
+Koraci na serveru (interaktivno; `admnenad`/`admluka` sa sudo). Compose je `/home/admluka/servosync/docker-compose.yml`:
+
+```bash
+ssh ubuntusrv
+cd /home/admluka/servosync
+# 1) front repo kao izvor out/ (dok nije u main-u, uzmi feat/wave-3):
+sudo git clone -b feat/wave-3 https://github.com/servosync/frontend.git frontend
+# 2) build out/ bez Node-a na hostu (jednokratni node kontejner):
+sudo docker run --rm -v "$PWD/frontend":/app -w /app node:22-bookworm-slim sh -c "npm ci && npm run build"
+```
+
+Zatim u `backend` servis u `docker-compose.yml` dodaj volume + env:
+
+```yaml
+  backend:
+    # ... postojeće ...
+    environment:
+      # ... postojeće (DATABASE_URL, JWT_SECRET, ...) ...
+      FRONTEND_STATIC_DIR: /app/frontend-static
+    volumes:
+      - ./frontend/out:/app/frontend-static:ro
+```
+
+```bash
+sudo docker compose up -d backend
+curl -I http://localhost:3000/login          # -> 200 (front na :3000)
+curl -fsS http://localhost:3000/api > /dev/null && echo "API i dalje radi"
+```
+
+Klijenti otvore `http://192.168.64.28:3000` — dobiju front, API je na `.../api` (isti origin). Osvežavanje
+fronta: `cd frontend && sudo git pull && sudo docker run --rm ... npm ci && npm run build` (build gore) —
+backend ne treba restart (čita volume). Verifikovano izolovano: `/login`, `/login/`, `/` → 200 HTML;
+`_next`/`config.js`/`favicon` → 200; `/api/*` prolazi ka kontrolerima.
+
+> Alternativa (zaseban nginx kontejner na `:8080`, `front-lan`) je opisana u
+> [../../../frontend/docs/DEPLOY.md](../../../frontend/docs/DEPLOY.md) → „LAN pristup". Ovo (front na :3000)
+> je čistije: jedan origin, nema CORS-a, jedan servis.
+
+---
+
 ## 7. Bezbednosne napomene
 
 - **Nula direktno izloženih portova** na internet — sve javno ide kroz Cloudflare (Pages/Workers + Tunnel).
