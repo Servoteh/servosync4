@@ -2,17 +2,24 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Plus } from 'lucide-react';
+import { Copy, CopyPlus, Plus, Recycle } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import {
+  REWORK_QUALITY,
   WO_STATUS,
   useApproveWorkOrder,
+  useBulkCloneWorkOrders,
+  useCopyFromWorkOrder,
   useCreateWorkOrder,
   useLaunchWorkOrder,
   useLockWorkOrder,
+  useReworkWorkOrder,
   useWorkOrder,
   useWorkOrders,
+  useWorkOrdersLookup,
+  type BulkCloneResult,
   type CreateWorkOrderInput,
+  type ReworkQuality,
   type WorkOrder,
 } from '@/api/work-orders';
 import { ApiError } from '@/api/client';
@@ -106,6 +113,8 @@ function WorkOrderDetail({ id }: { id: number }) {
   const approve = useApproveWorkOrder();
   const launch = useLaunchWorkOrder();
   const lock = useLockWorkOrder();
+  const [copyOpen, setCopyOpen] = useState(false);
+  const [reworkOpen, setReworkOpen] = useState(false);
   const busy = approve.isPending || launch.isPending || lock.isPending;
 
   if (q.isLoading) return <span className="text-sm text-ink-disabled">Učitavanje…</span>;
@@ -114,6 +123,12 @@ function WorkOrderDetail({ id }: { id: number }) {
   const rn = q.data.data;
   const s = statusMeta(rn.handoverStatusId);
   const locked = !!rn.isLocked;
+  const isEmpty =
+    rn.operations.length === 0 &&
+    rn.machinedParts.length === 0 &&
+    rn.blanks.length === 0 &&
+    rn.nonStandardParts.length === 0;
+  const canCopyInto = isEmpty && !locked && rn.handoverStatusId !== WO_STATUS.LAUNCHED;
   const actionError =
     (approve.error as Error) || (launch.error as Error) || (lock.error as Error);
 
@@ -123,6 +138,26 @@ function WorkOrderDetail({ id }: { id: number }) {
         <StatusBadge tone={s.tone} label={s.label} />
         {locked && <StatusBadge tone="warn" label="Zaključan" />}
         <span className="flex-1" />
+        {canCopyInto && (
+          <button
+            disabled={busy}
+            onClick={() => setCopyOpen(true)}
+            className={`${actionBtn} inline-flex items-center gap-1.5 border border-line text-ink-secondary`}
+          >
+            <Copy className="h-3.5 w-3.5" aria-hidden />
+            Kopiraj iz naloga
+          </button>
+        )}
+        {!isEmpty && (
+          <button
+            disabled={busy}
+            onClick={() => setReworkOpen(true)}
+            className={`${actionBtn} inline-flex items-center gap-1.5 border border-line text-ink-secondary`}
+          >
+            <Recycle className="h-3.5 w-3.5" aria-hidden />
+            Dorada/Škart
+          </button>
+        )}
         {!locked && (rn.handoverStatusId === WO_STATUS.IN_PROGRESS || rn.handoverStatusId === WO_STATUS.REJECTED) && (
           <>
             <button
@@ -215,7 +250,208 @@ function WorkOrderDetail({ id }: { id: number }) {
           </div>
         )}
       </div>
+
+      <CopyFromWorkOrderDialog targetId={id} open={copyOpen} onClose={() => setCopyOpen(false)} />
+      <ReworkWorkOrderDialog sourceId={id} open={reworkOpen} onClose={() => setReworkOpen(false)} />
     </div>
+  );
+}
+
+/** „Kopiraj iz naloga" — izbor izvornog RN-a → prepiši sve stavke u prazan cilj. */
+function CopyFromWorkOrderDialog({
+  targetId,
+  open,
+  onClose,
+}: {
+  targetId: number;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const [source, setSource] = useState<WorkOrder | null>(null);
+  const copy = useCopyFromWorkOrder();
+
+  function close() {
+    setSource(null);
+    copy.reset();
+    onClose();
+  }
+
+  async function submit() {
+    if (!source) return;
+    try {
+      await copy.mutateAsync({ id: targetId, sourceId: source.id });
+      close();
+    } catch {
+      /* greška se prikazuje ispod */
+    }
+  }
+
+  const err =
+    copy.error instanceof ApiError ? copy.error.message : (copy.error as Error)?.message;
+  const sameAsTarget = source?.id === targetId;
+
+  return (
+    <Dialog
+      open={open}
+      onClose={close}
+      title="Kopiraj stavke iz naloga"
+      footer={
+        <>
+          <button
+            onClick={close}
+            className="rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2"
+          >
+            Otkaži
+          </button>
+          <Button onClick={submit} loading={copy.isPending} disabled={!source || sameAsTarget}>
+            Kopiraj
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        <p className="text-xs text-ink-disabled">
+          Kopira sve stavke (operacije, obrađeni/nestandardni delovi, pripremci) iz izabranog
+          naloga u ovaj. Cilj mora biti prazan i ne sme biti zaključan/lansiran.
+        </p>
+        <FormField label="Izvorni radni nalog" required>
+          <ComboBox<WorkOrder>
+            value={source}
+            onChange={setSource}
+            useSearch={useWorkOrdersLookup}
+            getKey={(w) => w.id}
+            getLabel={(w) => w.identNumber}
+            getSublabel={(w) =>
+              [w.partName, w.drawingNumber].filter(Boolean).join(' · ')
+            }
+            placeholder="Ident, naziv pozicije, crtež…"
+          />
+        </FormField>
+        {sameAsTarget && (
+          <p className="text-xs text-status-danger" role="alert">
+            Izvor i cilj moraju biti različiti nalozi.
+          </p>
+        )}
+        {err && (
+          <p className="text-sm text-status-danger" role="alert">
+            {err}
+          </p>
+        )}
+      </div>
+    </Dialog>
+  );
+}
+
+const EMPTY_REWORK = {
+  pieceCount: 1,
+  qualityTypeId: REWORK_QUALITY.DORADA as ReworkQuality,
+  note: '',
+};
+
+/** „Dorada/Škart" — količina + izbor dorada(1)/škart(2) → kreira child RN. */
+function ReworkWorkOrderDialog({
+  sourceId,
+  open,
+  onClose,
+}: {
+  sourceId: number;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const [form, setForm] = useState(EMPTY_REWORK);
+  const rework = useReworkWorkOrder();
+
+  function close() {
+    setForm(EMPTY_REWORK);
+    rework.reset();
+    onClose();
+  }
+
+  async function submit() {
+    try {
+      await rework.mutateAsync({
+        id: sourceId,
+        pieceCount: form.pieceCount,
+        qualityTypeId: form.qualityTypeId,
+        note: form.note.trim() || undefined,
+      });
+      close();
+    } catch {
+      /* greška se prikazuje ispod */
+    }
+  }
+
+  const err =
+    rework.error instanceof ApiError ? rework.error.message : (rework.error as Error)?.message;
+  const isDorada = form.qualityTypeId === REWORK_QUALITY.DORADA;
+
+  return (
+    <Dialog
+      open={open}
+      onClose={close}
+      title="Dorada / Škart"
+      footer={
+        <>
+          <button
+            onClick={close}
+            className="rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2"
+          >
+            Otkaži
+          </button>
+          <Button onClick={submit} loading={rework.isPending} disabled={form.pieceCount < 1}>
+            Kreiraj {isDorada ? 'doradu' : 'škart'}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        <p className="text-xs text-ink-disabled">
+          Iz ovog naloga nastaje nov child RN u istom predmetu (sufiks{' '}
+          <span className="tnums">-D</span>/<span className="tnums">-S</span>) sa kopijom zaglavlja
+          i svih stavki.
+        </p>
+        <div className="grid grid-cols-2 gap-3">
+          <FormField label="Vrsta" required>
+            <select
+              value={form.qualityTypeId}
+              onChange={(e) =>
+                setForm((f) => ({
+                  ...f,
+                  qualityTypeId: Number(e.target.value) as ReworkQuality,
+                }))
+              }
+              className="w-full rounded-control border border-line bg-surface px-2.5 py-1.5 text-sm text-ink"
+            >
+              <option value={REWORK_QUALITY.DORADA}>Dorada</option>
+              <option value={REWORK_QUALITY.SKART}>Škart</option>
+            </select>
+          </FormField>
+          <FormField label="Količina (kom)" required>
+            <Input
+              type="number"
+              min={1}
+              step={1}
+              value={form.pieceCount || ''}
+              onChange={(e) =>
+                setForm((f) => ({ ...f, pieceCount: Math.floor(Number(e.target.value)) }))
+              }
+            />
+          </FormField>
+        </div>
+        <FormField label="Napomena">
+          <Input
+            value={form.note}
+            placeholder="Prazno → preuzima napomenu izvora"
+            onChange={(e) => setForm((f) => ({ ...f, note: e.target.value }))}
+          />
+        </FormField>
+        {err && (
+          <p className="text-sm text-status-danger" role="alert">
+            {err}
+          </p>
+        )}
+      </div>
+    </Dialog>
   );
 }
 
@@ -380,6 +616,151 @@ function NewWorkOrderDialog({ open, onClose }: { open: boolean; onClose: () => v
   );
 }
 
+/** „Kloniraj predmet" — izvorni + ciljni predmet + koeficijent → bulk-clone. */
+function BulkCloneProjectDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const [source, setSource] = useState<ProjectLookup | null>(null);
+  const [target, setTarget] = useState<ProjectLookup | null>(null);
+  const [coefficient, setCoefficient] = useState(1);
+  const [result, setResult] = useState<BulkCloneResult | null>(null);
+  const clone = useBulkCloneWorkOrders();
+
+  function close() {
+    setSource(null);
+    setTarget(null);
+    setCoefficient(1);
+    setResult(null);
+    clone.reset();
+    onClose();
+  }
+
+  async function submit() {
+    if (!source || !target) return;
+    try {
+      const res = await clone.mutateAsync({
+        sourceProjectId: source.id,
+        targetProjectId: target.id,
+        coefficient,
+      });
+      setResult(res.data);
+    } catch {
+      /* greška se prikazuje ispod */
+    }
+  }
+
+  const err =
+    clone.error instanceof ApiError ? clone.error.message : (clone.error as Error)?.message;
+  const sameProject = !!source && !!target && source.id === target.id;
+  const invalidCoef = !(coefficient > 0);
+
+  return (
+    <Dialog
+      open={open}
+      onClose={close}
+      title="Kloniraj predmet"
+      footer={
+        result ? (
+          <Button onClick={close}>Zatvori</Button>
+        ) : (
+          <>
+            <button
+              onClick={close}
+              className="rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2"
+            >
+              Otkaži
+            </button>
+            <Button
+              onClick={submit}
+              loading={clone.isPending}
+              disabled={!source || !target || sameProject || invalidCoef}
+            >
+              Kloniraj
+            </Button>
+          </>
+        )
+      }
+    >
+      {result ? (
+        <div className="space-y-2 text-sm">
+          <p className="text-ink">
+            Klonirano <span className="tnums font-semibold">{formatNumber(result.count)}</span>{' '}
+            {result.count === 1 ? 'nalog' : 'naloga'} u novi predmet.
+          </p>
+          <div className="max-h-56 overflow-auto rounded-panel border border-line bg-surface">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-line bg-surface-2 text-left text-2xs uppercase tracking-[0.08em] text-ink-secondary">
+                  <th className="px-3 py-2 font-semibold">Novi RN</th>
+                  <th className="px-3 py-2 text-right font-semibold">Izvor (id)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {result.workOrders.map((w) => (
+                  <tr key={w.id} className="border-b border-line-soft last:border-0">
+                    <td className="tnums px-3 py-1.5 text-ink">{w.identNumber}</td>
+                    <td className="tnums px-3 py-1.5 text-right text-ink-secondary">
+                      {w.sourceId}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <p className="text-xs text-ink-disabled">
+            Kloniraj sve naloge izvornog predmeta u nov <em>prazan</em> predmet. Koeficijent množi
+            količine (norme operacija se ne skaliraju).
+          </p>
+          <div className="grid grid-cols-2 gap-3">
+            <FormField label="Izvorni predmet" required>
+              <ComboBox<ProjectLookup>
+                value={source}
+                onChange={setSource}
+                useSearch={useProjectsLookup}
+                getKey={(p) => p.id}
+                getLabel={(p) => p.projectNumber}
+                getSublabel={(p) => p.projectName ?? p.description ?? ''}
+                placeholder="Broj/naziv predmeta…"
+              />
+            </FormField>
+            <FormField label="Ciljni predmet" required>
+              <ComboBox<ProjectLookup>
+                value={target}
+                onChange={setTarget}
+                useSearch={useProjectsLookup}
+                getKey={(p) => p.id}
+                getLabel={(p) => p.projectNumber}
+                getSublabel={(p) => p.projectName ?? p.description ?? ''}
+                placeholder="Prazan predmet…"
+              />
+            </FormField>
+          </div>
+          <FormField label="Koeficijent" required>
+            <Input
+              type="number"
+              min={0}
+              step="any"
+              value={coefficient || ''}
+              onChange={(e) => setCoefficient(Number(e.target.value))}
+            />
+          </FormField>
+          {sameProject && (
+            <p className="text-xs text-status-danger" role="alert">
+              Ciljni predmet mora biti različit od izvornog.
+            </p>
+          )}
+          {err && (
+            <p className="text-sm text-status-danger" role="alert">
+              {err}
+            </p>
+          )}
+        </div>
+      )}
+    </Dialog>
+  );
+}
+
 export default function WorkOrdersPage() {
   const { user, isLoading } = useAuth();
   const router = useRouter();
@@ -390,6 +771,7 @@ export default function WorkOrdersPage() {
   const [page, setPage] = useState(1);
   const [expanded, setExpanded] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);
+  const [cloning, setCloning] = useState(false);
   const list = useWorkOrders({ page, q: q.trim() || undefined, statusId, from, to });
 
   useEffect(() => {
@@ -423,6 +805,10 @@ export default function WorkOrdersPage() {
               }}
               placeholder="Ident, naziv, crtež…"
             />
+            <Button variant="secondary" onClick={() => setCloning(true)}>
+              <CopyPlus className="h-4 w-4" aria-hidden />
+              Kloniraj predmet
+            </Button>
             <Button onClick={() => setCreating(true)}>
               <Plus className="h-4 w-4" aria-hidden />
               Novi RN
@@ -523,6 +909,7 @@ export default function WorkOrdersPage() {
       </div>
 
       <NewWorkOrderDialog open={creating} onClose={() => setCreating(false)} />
+      <BulkCloneProjectDialog open={cloning} onClose={() => setCloning(false)} />
     </AppShell>
   );
 }

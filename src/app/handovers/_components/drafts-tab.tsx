@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Pencil, Plus, Trash2 } from 'lucide-react';
+import { Pencil, Plus, Send, Trash2 } from 'lucide-react';
 import {
   useCreateHandoverDraft,
   useDeleteHandoverDraft,
@@ -9,6 +9,7 @@ import {
   useHandoverDraft,
   useHandoverDrafts,
   useHandoverLookups,
+  useSubmitHandoverDraft,
   useUpdateHandoverDraft,
   type CreateHandoverDraftInput,
   type CreateHandoverDraftItemInput,
@@ -28,6 +29,7 @@ import { FormField, Input } from '@/components/ui-kit/form-field';
 import { ComboBox } from '@/components/ui-kit/combo-box';
 import { formatDate, formatNumber } from '@/lib/format';
 import {
+  ConfirmDialog,
   ErrorText,
   Field,
   NativeSelect,
@@ -447,13 +449,17 @@ const itemColumns: Column<HandoverDraftDetail['items'][number]>[] = [
 function DraftDetail({
   draft,
   onEdit,
+  onSubmitted,
 }: {
   draft: HandoverDraft;
   onEdit: (detail: HandoverDraftDetail) => void;
+  onSubmitted: () => void;
 }) {
   const q = useHandoverDraft(draft.id);
   const del = useDeleteHandoverDraft();
+  const submit = useSubmitHandoverDraft();
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [confirmingSubmit, setConfirmingSubmit] = useState(false);
 
   if (q.isLoading) return <span className="text-sm text-ink-disabled">Učitavanje…</span>;
   if (q.error || !q.data)
@@ -505,9 +511,42 @@ function DraftDetail({
             )}
           </>
         )}
+        <button
+          onClick={() => setConfirmingSubmit(true)}
+          disabled={d.isLocked || submit.isPending}
+          title={d.isLocked ? 'Nacrt je već predat (zaključan).' : undefined}
+          className="inline-flex items-center gap-1.5 rounded-control bg-accent px-2.5 py-1 text-xs font-semibold text-accent-fg hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <Send className="h-3.5 w-3.5" aria-hidden />
+          Predaj u primopredaju
+        </button>
       </div>
 
       <ErrorText error={del.error} />
+
+      <ConfirmDialog
+        open={confirmingSubmit}
+        title="Predaja u primopredaju"
+        confirmLabel="Predaj"
+        message={
+          <>
+            Nacrt <span className="font-semibold text-ink">{d.draftNumber}</span> se zaključava i za
+            svaku ne-isključenu stavku se kreira primopredaja u statusu „U obradi”. Akcija se ne može
+            opozvati.
+          </>
+        }
+        loading={submit.isPending}
+        error={submit.error}
+        onCancel={() => setConfirmingSubmit(false)}
+        onConfirm={() =>
+          submit.mutate(d.id, {
+            onSuccess: () => {
+              setConfirmingSubmit(false);
+              onSubmitted();
+            },
+          })
+        }
+      />
 
       <dl className="grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-4">
         <Field label="Projektant" value={d.designer?.fullName ?? '—'} />
@@ -543,7 +582,7 @@ function DraftDetail({
 
 // ─────────────────────────────────────────────────────────────── tab
 
-export function DraftsTab() {
+export function DraftsTab({ onSubmitted }: { onSubmitted: () => void }) {
   const [q, setQ] = useState('');
   const [statusId, setStatusId] = useState<number | ''>('');
   const [isLocked, setIsLocked] = useState<'' | 'true' | 'false'>('');
@@ -650,6 +689,7 @@ export function DraftsTab() {
             onEdit={(detail) => {
               setEditing(detail);
             }}
+            onSubmitted={onSubmitted}
           />
         )}
         empty={

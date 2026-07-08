@@ -12,6 +12,13 @@ export const WO_STATUS = {
   LAUNCHED: 3,
 } as const;
 
+/** Vrsta child naloga za doradu/škart (part_quality_types id) — MODULE_SPEC §3.4. */
+export const REWORK_QUALITY = {
+  DORADA: 1,
+  SKART: 2,
+} as const;
+export type ReworkQuality = (typeof REWORK_QUALITY)[keyof typeof REWORK_QUALITY];
+
 export interface WorkOrder {
   id: number;
   projectId: number;
@@ -89,6 +96,38 @@ export interface WoListParams {
   to?: string;
 }
 
+/** Ulaz za DORADA/ŠKART child nalog (POST /:id/rework). */
+export interface ReworkWorkOrderInput {
+  /** Izvorni RN iz kog nastaje child. */
+  id: number;
+  /** Dorađena/škartirana količina — ceo broj ≥ 1. */
+  pieceCount: number;
+  /** 1 = DORADA (sufiks -D), 2 = ŠKART (sufiks -S). */
+  qualityTypeId: ReworkQuality;
+  /** Napomena child naloga (prazno → preuzima napomenu izvora). */
+  note?: string;
+}
+
+/** Ulaz za bulk-clone predmeta (POST /projects/:sourceProjectId/bulk-clone). */
+export interface BulkCloneInput {
+  /** Izvorni predmet (u putanji). */
+  sourceProjectId: number;
+  /** Ciljni (novi) prazan predmet. */
+  targetProjectId: number;
+  /** Množilac količina (> 0). */
+  coefficient: number;
+  /** Opciono: samo izabrani nalozi izvornog predmeta (prazno → svi). */
+  workOrderIds?: number[];
+}
+
+export interface BulkCloneResult {
+  sourceProjectId: number;
+  targetProjectId: number;
+  coefficient: number;
+  count: number;
+  workOrders: { sourceId: number; id: number; identNumber: string }[];
+}
+
 /** Paginirana lista radnih naloga (+ pretraga i filteri). */
 export function useWorkOrders(params: WoListParams) {
   const qs = new URLSearchParams();
@@ -104,6 +143,14 @@ export function useWorkOrders(params: WoListParams) {
     queryFn: () =>
       apiFetch<Paginated<WorkOrder>>(`/v1/work-orders${query ? `?${query}` : ''}`),
   });
+}
+
+/**
+ * Wrapper nad `useWorkOrders` za ComboBox (`useSearch: (q) => …`) — pretraga
+ * izvornog RN-a u dijalogu „Kopiraj iz naloga". Vraća prvu stranu liste.
+ */
+export function useWorkOrdersLookup(q: string) {
+  return useWorkOrders({ q: q || undefined });
 }
 
 /** Jedan RN sa operacijama + statusima + tokom (odobravanja/lansiranja). */
@@ -168,6 +215,61 @@ export function useLockWorkOrder() {
         method: 'POST',
         body: JSON.stringify({ locked }),
       }),
+    onSuccess: invalidate,
+  });
+}
+
+/** Kopiraj sve stavke iz izvornog RN-a (`sourceId`) u prazan cilj (`id`). */
+export function useCopyFromWorkOrder() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: ({ id, sourceId }: { id: number; sourceId: number }) =>
+      apiFetch<{ data: WorkOrderDetail }>(
+        `/v1/work-orders/${id}/copy-from/${sourceId}`,
+        { method: 'POST', body: '{}' },
+      ),
+    onSuccess: invalidate,
+  });
+}
+
+/** DORADA/ŠKART: kreiraj child RN iz izvora (sufiks -D/-S). */
+export function useReworkWorkOrder() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: ({ id, pieceCount, qualityTypeId, note }: ReworkWorkOrderInput) =>
+      apiFetch<{ data: WorkOrderDetail }>(`/v1/work-orders/${id}/rework`, {
+        method: 'POST',
+        body: JSON.stringify({
+          pieceCount,
+          qualityTypeId,
+          note: note?.trim() || undefined,
+        }),
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/** Kloniraj sve (ili izabrane) naloge izvornog predmeta u nov prazan predmet. */
+export function useBulkCloneWorkOrders() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: ({
+      sourceProjectId,
+      targetProjectId,
+      coefficient,
+      workOrderIds,
+    }: BulkCloneInput) =>
+      apiFetch<{ data: BulkCloneResult }>(
+        `/v1/work-orders/projects/${sourceProjectId}/bulk-clone`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            targetProjectId,
+            coefficient,
+            workOrderIds: workOrderIds?.length ? workOrderIds : undefined,
+          }),
+        },
+      ),
     onSuccess: invalidate,
   });
 }

@@ -3,6 +3,8 @@
 import type { ReactNode, SelectHTMLAttributes, TextareaHTMLAttributes } from 'react';
 import { HANDOVER_STATUS, type StatusRef } from '@/api/handovers';
 import { ApiError } from '@/api/client';
+import { Dialog } from '@/components/ui-kit/dialog';
+import { Button } from '@/components/ui-kit/button';
 import type { Tone } from '@/components/ui-kit/status-badge';
 import { cn } from '@/lib/cn';
 
@@ -27,6 +29,68 @@ export function ErrorText({ error }: { error: unknown }) {
 
 export const errorBox =
   'rounded-panel border border-status-danger/30 bg-status-danger-bg px-4 py-3 text-sm text-status-danger';
+
+// ─────────────────────────────────────────────────────────────── potvrda akcije
+
+/**
+ * Dijalog za potvrdu akcije (umesto window.confirm) — kit Dialog + dva dugmeta,
+ * isti obrazac kao na Radnicima/Strukturama. `danger` boji potvrdno dugme u
+ * status-danger za destruktivne akcije; `error` prikazuje grešku iz mutacije
+ * unutar dijaloga (dijalog ostaje otvoren dok se ne uspe).
+ */
+export function ConfirmDialog({
+  open,
+  title,
+  message,
+  confirmLabel = 'Potvrdi',
+  cancelLabel = 'Otkaži',
+  onConfirm,
+  onCancel,
+  loading,
+  danger,
+  error,
+}: {
+  open: boolean;
+  title: string;
+  message: ReactNode;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+  loading?: boolean;
+  danger?: boolean;
+  error?: unknown;
+}) {
+  return (
+    <Dialog
+      open={open}
+      onClose={onCancel}
+      title={title}
+      footer={
+        <>
+          <button
+            onClick={onCancel}
+            className="rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2"
+          >
+            {cancelLabel}
+          </button>
+          <Button
+            onClick={onConfirm}
+            loading={loading}
+            className={danger ? 'bg-status-danger text-white hover:bg-status-danger' : undefined}
+          >
+            {confirmLabel}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        <p className="text-sm text-ink-secondary">{message}</p>
+        <ErrorText error={error} />
+      </div>
+    </Dialog>
+  );
+}
 
 // ─────────────────────────────────────────────────────────────── sitni kontrolisani elementi
 

@@ -25,8 +25,10 @@ function SumTile({ label, value }: { label: string; value: string }) {
 
 /**
  * Kartica lokacije dela za jedan RN (expand red iz "Delovi na lokacijama"):
- * ledger istorija svih zapisa + zbir po poziciji + ukupno (GET /card/:workOrderId).
- * READ-ONLY — nema akcija (premeštanje/trebovanje van obima, vidi napomenu ispod).
+ * ledger istorija svih zapisa + NETO stanje po poziciji i ukupno (GET /card/:workOrderId).
+ * Neto = SUM(quantity sa predznakom) — unos/cilj prenosa (+), trebovanje/izvor prenosa (−).
+ * Mutacije (unos/prenos/trebovanje) su dugmad iznad tabele; ova kartica se osvežava
+ * automatski po uspešnoj mutaciji (invalidacija `['part-locations']`).
  */
 export function PartLocationCardDetail({ workOrderId }: { workOrderId: number }) {
   const q = usePartLocationCard(workOrderId);
@@ -47,16 +49,21 @@ export function PartLocationCardDetail({ workOrderId }: { workOrderId: number })
         <Field label="Zapisa u ledger-u" value={String(card.records.length)} />
       </dl>
 
-      <dl className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
-        <SumTile label="Ukupno (bruto)" value={`${formatNumber(card.totalQuantity)} kom`} />
-        {card.totalsByPosition.map((t) => (
-          <SumTile
-            key={t.positionId}
-            label={t.position?.positionCode ?? `Pozicija #${t.positionId}`}
-            value={`${formatNumber(t.quantity)} kom`}
-          />
-        ))}
-      </dl>
+      <div>
+        <p className="mb-1.5 text-2xs font-semibold uppercase tracking-[0.08em] text-ink-secondary">
+          Neto stanje po poziciji
+        </p>
+        <dl className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+          <SumTile label="Ukupno (neto)" value={`${formatNumber(card.totalQuantity)} kom`} />
+          {card.totalsByPosition.map((t) => (
+            <SumTile
+              key={t.positionId}
+              label={t.position?.positionCode ?? `Pozicija #${t.positionId}`}
+              value={`${formatNumber(t.quantity)} kom`}
+            />
+          ))}
+        </dl>
+      </div>
 
       {meta?.note && (
         <p className="rounded-control border border-line-soft bg-surface-2/60 px-3 py-2 text-xs text-ink-disabled">

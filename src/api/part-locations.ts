@@ -37,9 +37,10 @@ export interface PartLocationQualityRef {
 }
 
 /**
- * Jedan zapis u ledger-u lokacija delova (Was: tLokacijeDelova). READ-ONLY —
- * model nema polje smera (postavljeno/uklonjeno), pa je `quantity` bruto unos,
- * ne stanje.
+ * Jedan zapis u ledger-u lokacija delova (Was: tLokacijeDelova). LEDGER SA
+ * PREDZNAKOM (MODULE_SPEC_lokacije §3.1): postavljanje (unos / cilj prenosa) =
+ * +quantity, uklanjanje (trebovanje / izvor prenosa) = −quantity. Neto stanje
+ * dela na poziciji = SUM(quantity). Zapisi su append-only (korekcija = kontra-zapis).
  */
 export interface PartLocation {
   id: number;
@@ -58,14 +59,14 @@ export interface PartLocation {
   qualityType: PartLocationQualityRef | null;
 }
 
-/** Zbir količine po poziciji — deo kartice RN. */
+/** Neto stanje po poziciji (SUM quantity sa predznakom) — deo kartice RN. */
 export interface PartLocationPositionTotal {
   positionId: number;
   position: Position | null;
   quantity: number;
 }
 
-/** Kartica lokacije dela za jedan RN: ledger istorija + zbirovi (GET /card/:workOrderId). */
+/** Kartica lokacije dela za jedan RN: ledger istorija + NETO stanje (GET /card/:workOrderId). */
 export interface PartLocationCard {
   workOrderId: number;
   workOrder: PartLocationWorkOrderRef | null;
@@ -104,7 +105,7 @@ export function usePartLocations(params: PartLocationsListParams) {
   });
 }
 
-/** Kartica lokacije dela za dati RN — ledger istorija + zbir po poziciji + ukupno. */
+/** Kartica lokacije dela za dati RN — ledger istorija + NETO stanje po poziciji + ukupno. */
 export function usePartLocationCard(workOrderId: number | null) {
   return useQuery({
     queryKey: ['part-locations', 'card', workOrderId],
@@ -113,6 +114,86 @@ export function usePartLocationCard(workOrderId: number | null) {
         `/v1/part-locations/card/${workOrderId}`,
       ),
     enabled: workOrderId != null,
+  });
+}
+
+// ------------------------------------------------------------------ Ledger mutacije (unos / prenos / trebovanje)
+
+/** Unos lokacije — placement (+quantity), §3.1/§3.7. `projectId` izvodi backend iz RN-a. */
+export interface CreatePartLocationInput {
+  workOrderId: number;
+  positionId: number;
+  qualityTypeId: number;
+  /** Izvršilac (radnik) — FK `workers`; do auth veze uzima se radnik RN-a. */
+  workerId: number;
+  quantity: number;
+}
+
+/** Prenos dela sa police na policu — par (−qty izvor / +qty cilj) u transakciji, §3.2. */
+export interface TransferPartLocationInput {
+  workOrderId: number;
+  fromPositionId: number;
+  toPositionId: number;
+  qualityTypeId: number;
+  quantity: number;
+}
+
+/** Trebovanje/uklanjanje dela sa police — removal (−quantity), §3.2. */
+export interface RequisitionPartLocationInput {
+  workOrderId: number;
+  positionId: number;
+  qualityTypeId: number;
+  quantity: number;
+}
+
+/** Invalidacija svih upita lokacija (lista + kartice dele prefiks `['part-locations']`). */
+function useInvalidatePartLocations() {
+  const qc = useQueryClient();
+  return () => qc.invalidateQueries({ queryKey: ['part-locations'] });
+}
+
+/** Unos lokacije (POST /part-locations) — placement +qty. */
+export function useCreatePartLocation() {
+  const invalidate = useInvalidatePartLocations();
+  return useMutation({
+    mutationFn: (input: CreatePartLocationInput) =>
+      apiFetch<{ data: PartLocation; meta: { note: string } }>('/v1/part-locations', {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/** Prenos dela između pozicija (POST /part-locations/transfer) — −qty izvor / +qty cilj. */
+export function useTransferPartLocation() {
+  const invalidate = useInvalidatePartLocations();
+  return useMutation({
+    mutationFn: (input: TransferPartLocationInput) =>
+      apiFetch<{
+        data: { from: PartLocation; to: PartLocation };
+        meta: { note: string; fromBalanceAfter: number; toBalanceAfter: number };
+      }>('/v1/part-locations/transfer', {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/** Trebovanje dela sa pozicije (POST /part-locations/requisition) — removal −qty. */
+export function useRequisitionPartLocation() {
+  const invalidate = useInvalidatePartLocations();
+  return useMutation({
+    mutationFn: (input: RequisitionPartLocationInput) =>
+      apiFetch<{ data: PartLocation; meta: { note: string; balanceAfter: number } }>(
+        '/v1/part-locations/requisition',
+        {
+          method: 'POST',
+          body: JSON.stringify(input),
+        },
+      ),
+    onSuccess: invalidate,
   });
 }
 

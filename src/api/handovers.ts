@@ -213,6 +213,27 @@ export function useDeleteHandoverDraft() {
   });
 }
 
+/**
+ * Predaja nacrta u primopredaju (§6.3) — POST /v1/handover-drafts/:id/submit.
+ * Server zaključa nacrt i kreira po jedan `drawing_handovers` red (status U OBRADI)
+ * za svaku ne-isključenu stavku. Menja i nacrte (postaje zaključan) i primopredaje
+ * (novi redovi), pa invalidira OBA cache ključa. Dozvoljeno samo dok nacrt nije
+ * zaključan (backend vraća 409 inače) — UI drži dugme disabled za zaključan nacrt.
+ */
+export function useSubmitHandoverDraft() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<{
+        data: { draft: HandoverDraftDetail; handoversCreated: number; handovers: Handover[] };
+      }>(`/v1/handover-drafts/${id}/submit`, { method: 'POST' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['handover-drafts'] });
+      qc.invalidateQueries({ queryKey: ['handovers'] });
+    },
+  });
+}
+
 // ─────────────────────────────────────────────────────────────── Primopredaje (handovers)
 
 export interface DraftContextRef {

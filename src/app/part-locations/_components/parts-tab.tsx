@@ -1,15 +1,22 @@
 'use client';
 
 import { useState } from 'react';
+import { PackageMinus, PackagePlus, ArrowLeftRight } from 'lucide-react';
 import { PART_QUALITY } from '@/api/tech-processes';
 import { usePartLocations, type PartLocation } from '@/api/part-locations';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { SearchBox } from '@/components/ui-kit/search-box';
 import { Pager } from '@/components/ui-kit/pager';
+import { Button } from '@/components/ui-kit/button';
 import { formatDate, formatNumber } from '@/lib/format';
-import { ComingSoonNote, errorBox, qualityLabel, workerLabel } from './common';
+import { errorBox, qualityLabel, workerLabel } from './common';
 import { PartLocationCardDetail } from './part-location-card';
+import {
+  CreatePartLocationDialog,
+  TransferPartLocationDialog,
+  RequisitionPartLocationDialog,
+} from './part-location-forms';
 
 const columns: Column<PartLocation>[] = [
   {
@@ -69,15 +76,16 @@ const columns: Column<PartLocation>[] = [
 ];
 
 /**
- * "Delovi na lokacijama" — pregled ledger-a `part_locations` (READ-ONLY,
- * MODULE_SPEC_lokacije §1/§5). Expand reda = kartica dela za taj RN (ledger
- * istorija + stanje po poziciji).
+ * "Delovi na lokacijama" — pregled ledger-a `part_locations` + ledger mutacije
+ * (unos/prenos/trebovanje kroz dugmad gore desno), MODULE_SPEC_lokacije §1/§3.
+ * Expand reda = kartica dela za taj RN (ledger istorija + NETO stanje po poziciji).
  */
 export function PartsTab() {
   const [q, setQ] = useState('');
   const [qualityTypeId, setQualityTypeId] = useState<number | ''>('');
   const [page, setPage] = useState(1);
   const [expanded, setExpanded] = useState<number | null>(null);
+  const [dialog, setDialog] = useState<'create' | 'transfer' | 'requisition' | null>(null);
   const list = usePartLocations({ page, q: q.trim() || undefined, qualityTypeId });
 
   const rows = list.data?.data ?? [];
@@ -125,15 +133,24 @@ export function PartsTab() {
             </button>
           )}
         </div>
-        <span className="text-sm text-ink-secondary">
-          {meta ? `${formatNumber(meta.total)} zapisa` : ''}
-        </span>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="mr-1 text-sm text-ink-secondary">
+            {meta ? `${formatNumber(meta.total)} zapisa` : ''}
+          </span>
+          <Button onClick={() => setDialog('create')}>
+            <PackagePlus className="h-4 w-4" aria-hidden />
+            Unos lokacije
+          </Button>
+          <Button variant="secondary" onClick={() => setDialog('transfer')}>
+            <ArrowLeftRight className="h-4 w-4" aria-hidden />
+            Prenos
+          </Button>
+          <Button variant="secondary" onClick={() => setDialog('requisition')}>
+            <PackageMinus className="h-4 w-4" aria-hidden />
+            Trebovanje
+          </Button>
+        </div>
       </div>
-
-      <ComingSoonNote
-        title="Premeštanje i trebovanje delova između lokacija"
-        hint="Uskoro — ovaj pregled je za sada samo za čitanje, prenos i trebovanje dolaze u narednom talasu modula."
-      />
 
       {list.error && <div className={errorBox}>{(list.error as Error).message}</div>}
 
@@ -161,6 +178,13 @@ export function PartsTab() {
           onNext={() => setPage((p) => Math.min(meta.totalPages, p + 1))}
         />
       )}
+
+      <CreatePartLocationDialog open={dialog === 'create'} onClose={() => setDialog(null)} />
+      <TransferPartLocationDialog open={dialog === 'transfer'} onClose={() => setDialog(null)} />
+      <RequisitionPartLocationDialog
+        open={dialog === 'requisition'}
+        onClose={() => setDialog(null)}
+      />
     </div>
   );
 }

@@ -41,7 +41,7 @@ export default function HandoversPage() {
       <div className="flex-1 space-y-4 overflow-auto p-6">
         <Tabs value={tab} onChange={setTab} />
 
-        {tab === 'drafts' && <DraftsTab />}
+        {tab === 'drafts' && <DraftsTab onSubmitted={() => setTab('pending')} />}
         {tab === 'pending' && <PendingTab />}
         {tab === 'all' && <AllHandoversTab />}
       </div>
