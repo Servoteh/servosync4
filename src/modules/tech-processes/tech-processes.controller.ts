@@ -25,6 +25,7 @@ import type { DecodeBarcodeDto } from "./dto/decode-barcode.dto";
 import { validateDecodeBarcode } from "./dto/decode-barcode.dto";
 import type { ScanTechProcessDto } from "./dto/scan-tech-process.dto";
 import type { FinishTechProcessDto } from "./dto/finish-tech-process.dto";
+import type { ControlTechProcessDto } from "./dto/control-tech-process.dto";
 
 /**
  * Read-only API za tehnološke postupke (Tehnološki postupci / TP).
@@ -35,13 +36,17 @@ import type { FinishTechProcessDto } from "./dto/finish-tech-process.dto";
  *   GET /api/v1/tech-processes/rn-progress        — „Pregled RN — statusi delova" (planirano vs napravljeno)
  *   GET /api/v1/tech-processes/:id                — jedan TP + radnik + dokumentacija
  *
+ *   GET  /api/v1/tech-processes/worker            ?card=…                                 — radnik iz ID kartice (kiosk login)
+ *   GET  /api/v1/tech-processes/label             ?workOrderId=…&quantity=…               — podaci za nalepnicu (RNZ)
+ *
  *   POST /api/v1/tech-processes/barcode/decode    { barcode }                             — parsira/validira JEDAN barkod
- *   POST /api/v1/tech-processes/scan              { orderBarcode, operationBarcode, pieceCount } — barkod prijava rada
- *   POST /api/v1/tech-processes/:id/finish        { pieceCount?, note? }                  — zatvaranje postupka
+ *   POST /api/v1/tech-processes/scan              { orderBarcode, operationBarcode, pieceCount, workerCard? } — barkod prijava rada
+ *   POST /api/v1/tech-processes/:id/finish        { pieceCount?, note?, workerCard? }      — zatvaranje postupka
+ *   POST /api/v1/tech-processes/:id/control       { workerCard, pieceCount, qualityTypeId, locations[], note? } — ZAVRŠNA KONTROLA
  *
  * Traži JWT; read=`tehnologija.read`, write=`tehnologija.write` (V1 no-op guard,
  * V2 aktivacija). Mutacije odobrene (ODLUKE 2026-07-08: proizvodne tabele =
- * ServoSync vlasništvo). `rework` (dorada/škart → novi nalog) dolazi kasnije.
+ * ServoSync vlasništvo). `rework` (dorada/škart → novi nalog) dolazi u P2.
  */
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 @RequirePermission(PERMISSIONS.TEHNOLOGIJA_READ)
@@ -74,6 +79,16 @@ export class TechProcessesController {
     return this.techProcesses.rnProgress(query);
   }
 
+  @Get("worker")
+  worker(@Query("card") card: string) {
+    return this.techProcesses.identifyWorker(card);
+  }
+
+  @Get("label")
+  label(@Query() query: { workOrderId?: string; quantity?: string }) {
+    return this.techProcesses.label(query);
+  }
+
   @Post("barcode/decode")
   @HttpCode(200) // čist parse/read — ništa se ne kreira, ne 201
   @RequirePermission(PERMISSIONS.TEHNOLOGIJA_WRITE)
@@ -95,6 +110,15 @@ export class TechProcessesController {
     @Body() dto: FinishTechProcessDto,
   ) {
     return this.techProcesses.finish(id, dto);
+  }
+
+  @Post(":id/control")
+  @RequirePermission(PERMISSIONS.TEHNOLOGIJA_WRITE)
+  control(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: ControlTechProcessDto,
+  ) {
+    return this.techProcesses.control(id, dto);
   }
 
   @Get(":id")

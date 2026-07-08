@@ -293,7 +293,7 @@
   <header>
     <div class="eyebrow">Servoteh · interni plan digitalizacije</div>
     <h1>ServoSync roadmap 1.0 → 4.0</h1>
-    <p class="sub">Stanje na dan 7.7.2026. · izvor: <code>backend/docs/ROADMAP.md</code> + analiza sesije · cilj: jedan ERP+MES na sopstvenom serveru</p>
+    <p class="sub">Stanje na dan 8.7.2026. · izvor: <code>backend/docs/ROADMAP.md</code> + analiza sesije · cilj: jedan ERP+MES na sopstvenom serveru</p>
   </header>
 
   <!-- ============ STANJE DANAS ============ -->
@@ -601,6 +601,38 @@
     </div>
   </section>
 
+  <!-- ============ INFRASTRUKTURA ============ -->
+  <section>
+    <h2>Infrastruktura danas — ko gde radi</h2>
+    <p class="h2-note">Stvarno stanje, verifikovano 8.7.2026. · master zapis: <a href="infra/INFRASTRUKTURA.md"><code>docs/infra/INFRASTRUKTURA.md</code></a></p>
+    <div class="tbl-scroll">
+      <table>
+        <tr><th>Mašina</th><th>Uloga</th><th>Napomena</th></tr>
+        <tr>
+          <td class="v">Ubuntu · 192.168.64.28<br><small>alias <code>ubuntusrv</code></small></td>
+          <td>Prod <b>PostgreSQL</b> (Docker <code>postgres:18</code>, port 5435) + backend API (port 3000). Ubuntu 24.04, Docker 29.6.</td>
+          <td>backend radi; <code>cloudflared</code> tunel još nije pokrenut. Deploy: GitHub Actions runner na push u <code>main</code>.</td>
+        </tr>
+        <tr>
+          <td class="v">Bridge VM „DC" · 192.168.64.24</td>
+          <td>BigTehn→Supabase sync + SCADA relay + Kotlarnica SCADA (port 3000). Win Server 2016.</td>
+          <td>⚠ domen kontroler — planirana selidba na Ubuntu (systemd uniti spremni).</td>
+        </tr>
+        <tr>
+          <td class="v">Vasa-SQL · 192.168.64.25:5765</td>
+          <td>QBigTehn MS SQL — izvor legacy podataka, nalog <code>bridge_reader</code>.</td>
+          <td>read-only na celoj bazi (od 6.7.); konekcija iz 2.0 potvrđena.</td>
+        </tr>
+        <tr>
+          <td class="v">SCADA LAN · 192.168.75.x</td>
+          <td>Siemens S7, blue'Log, Unitronics, Loxone.</td>
+          <td>vidljivo samo sa bridge VM; komande allowlist + kill-switch.</td>
+        </tr>
+      </table>
+    </div>
+    <p class="h2-note" style="margin-top:12px;">Pristup prod bazi nije „samo Luka": port 5435 dostupan sa LAN-a, Nenad ima SSH (<code>ssh ubuntusrv</code>) + sudo. Fali još samo prod lozinka (u <code>.env</code> na serveru). Detalji i klijent-komande: <a href="infra/INFRASTRUKTURA.md"><code>INFRASTRUKTURA.md §4</code></a>.</p>
+  </section>
+
   <!-- ============ PRAVILA ============ -->
   <section>
     <h2>Pravila koja važe kroz sve faze</h2>
@@ -680,7 +712,7 @@
     Izvori: <code>backend/docs/ROADMAP.md</code> · <code>backend/docs/BACKEND_RULES.md</code> ·
     <code>backend/docs/design/RBAC_RLS_PREDLOG.md</code> · <code>backend/docs/migration/00–05</code> ·
     <code>servoteh-plan-montaze/docs/RBAC_MATRIX.md</code><br>
-    Generisano 7.7.2026. iz analize oba repoa. Ovaj prikaz je snapshot — izvor istine su dokumenti u repou.
+    Generisano 7.7.2026, ažurirano 8.7.2026. (infra zapis + potvrđen pristup prod serveru). Ovaj prikaz je snapshot — izvor istine su dokumenti u repou.
   </footer>
 
 </div>

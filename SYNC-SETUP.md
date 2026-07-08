@@ -82,6 +82,28 @@ Uspešan run vraća `status: "success"` i `rowsUpserted > 0`.
 
 ---
 
+## 7. Prava `bridge_reader` naloga
+
+**Stanje od 2026-07-06:** `bridge_reader` je član `db_datareader` role u `QBigTehn`:
+
+```sql
+USE QBigTehn;
+ALTER ROLE db_datareader ADD MEMBER bridge_reader;
+```
+
+Time čita **sve tabele (83) i sve view-ove (10), uključujući i buduće** — provereno testom istog
+dana. Nalog je i dalje strogo read-only (nikakav INSERT/UPDATE/DELETE). Odluka Nenada 2026-07-06:
+puna vidljivost umesto tabelu-po-tabelu (interni LAN, read-only nalog).
+
+`The SELECT permission was denied` više ne može da se javi; ako se ipak javi, neko je naknadno
+menjao role ili dodao DENY na serveru — proveriti sa adminom.
+
+Istorijat: nalog je prvobitno imao SELECT na 14 tabela (1.0 bridge, spisak u `servoteh-bridge`
+README §Korak 3), 2026-07-06 prošireno za 7 Sprint-1 tabela, pa istog dana zamenjeno
+`db_datareader` članstvom.
+
+---
+
 ## Endpoint pregled
 
 | Metod | Ruta | Opis |

@@ -1,36 +1,41 @@
 import { BadRequestException } from "@nestjs/common";
 
 /**
- * Barkod prijave rada (kiosk write-path) — MODULE_SPEC_tehnologija §3 pravilo 1
- * (ISPRAVLJENO, migration/15 §5.1). NISU jedan nego **DVA** barkoda, svaki 5 polja
+ * Barkod prijave rada (kiosk write-path) + generisanje barkoda za štampu RN-a
+ * (MODULE_SPEC_stampa §3). NISU jedan nego **DVA** barkoda, svaki 5 polja
  * (4 separatora `:`):
- *   - **nalog**     `RNZ:IDPredmet:IdentBroj:Varijanta:PrnTimer`
- *   - **operacija** `S:Operacija:RJgrupaRC:Toznaka:PrnTimer`
+ *   - **nalog**     `RNZ:projectId:identNumber:variant:revision`
+ *   - **operacija** `S:operationNumber:workCenterCode:0:revision`
  *
- * `PrnTimer` je **vezni ključ** — operacioni barkod mora imati isti `PrnTimer` kao
- * nalog (proverava se u servisu, ne ovde: ovaj modul parsira JEDAN barkod).
+ * **Polje 5 = `revision`** RN-a (verzioni pečat). Nalog i sve njegove operacije
+ * dele ISTU reviziju, pa `revision` služi dvostruko:
+ *   1. „isti otisak" — operacioni barkod mora imati istu `revision` kao nalog
+ *      (provera u servisu; barkodovi sa različitom revizijom ne pripadaju istom otisku);
+ *   2. detekcija **zastarelog otiska** — skenirana `revision` se poredi sa tekućom
+ *      `work_orders.revision`; neslaganje = štampan pre izmene tehnologije/crteža
+ *      → UPOZORENJE (ne blokada). Vidi MODULE_SPEC_stampa §5.
  *
- * Legacy validacija: `BrojSeparatora=4 AND (Left(bc,3)='RNZ' OR Left(bc,1)='S')`.
- * Ovde je marker provera pooštrena na TAČAN prvi segment (`parts[0] === 'RNZ' | 'S'`)
- * da `RNZX:...` ne prođe kao nalog — semantika ista, samo stroža (spec §6: bez
- * legacy zamki). Stari jednobarkodni `PredmetID:...:RJgrupaRC` je mrtav test-kod.
+ * Istorija: legacy QBigTehn je u polju 5 imao `PrnTimer` (= `CLng(Timer)`, sekunde
+ * od ponoći) kao verzioni pečat — 2.0 to menja u `revision` (logičnije, bez reseta
+ * i sudara). Polje 4 operacije = literal `0` (verno legacy `rRN`; skener ga čita kao
+ * `identMark`). Marker: TAČAN prvi segment (`RNZ` nalog / `S` operacija).
  */
 
 export type BarcodeType = "nalog" | "operacija";
 
-/** Polja iz nalog-barkoda (`RNZ:IDPredmet:IdentBroj:Varijanta:PrnTimer`). */
+/** Polja iz nalog-barkoda (`RNZ:projectId:identNumber:variant:revision`). */
 export interface OrderBarcodeFields {
-  /** IDPredmet → `tech_processes.projectId` / `work_orders.projectId`. */
+  /** IDPredmet → `work_orders.projectId` / `tech_processes.projectId`. */
   projectId: number;
   /** IdentBroj → `identNumber` (broj RN-a, npr. `1234/5`). */
   identNumber: string;
   /** Varijanta → `variant`. */
   variant: number;
-  /** PrnTimer → `printTimer` (vezni ključ nalog↔operacija). */
-  printTimer: number;
+  /** Revizija RN-a → `work_orders.revision` (verzioni pečat; legacy: PrnTimer). */
+  revision: string;
 }
 
-/** Polja iz operacija-barkoda (`S:Operacija:RJgrupaRC:Toznaka:PrnTimer`). */
+/** Polja iz operacija-barkoda (`S:operationNumber:workCenterCode:0:revision`). */
 export interface OperationBarcodeFields {
   /** Operacija → `tech_processes.operationNumber` (null ako nije ceo broj). */
   operationNumber: number | null;
@@ -38,10 +43,10 @@ export interface OperationBarcodeFields {
   operationRaw: string;
   /** RJgrupaRC → `tech_processes.workCenterCode` (FK ka `operations`). */
   workCenterCode: string;
-  /** Toznaka → `tech_processes.identMark`. */
+  /** Polje 4 (Toznaka u legacy `rRNStavke`; u `rRN` i 2.0 = literal `0`). */
   identMark: string;
-  /** PrnTimer → `printTimer` (vezni ključ nalog↔operacija). */
-  printTimer: number;
+  /** Revizija RN-a → `work_orders.revision` (isti kao nalog; legacy: PrnTimer). */
+  revision: string;
 }
 
 export type DecodedBarcode =
@@ -63,6 +68,18 @@ function parseIntStrict(value: string, name: string): number {
   if (!Number.isSafeInteger(n))
     throw new BadRequestException(`Barkod polje '${name}' je van opsega.`);
   return n;
+}
+
+/**
+ * Polje 5 = revizija (string). Legacy barkodovi tu nose numerički `PrnTimer`, a
+ * 2.0 alfanumeričku reviziju (npr. `A`) — zato NE parsiramo kao ceo broj, samo
+ * tražimo da je neprazno. Poređenje sa `work_orders.revision` radi servis.
+ */
+function parseRevision(value: string): string {
+  const s = value.trim();
+  if (!s)
+    throw new BadRequestException("Barkod polje 'Revizija' (polje 5) je obavezno.");
+  return s;
 }
 
 /**
@@ -89,7 +106,7 @@ export function parseBarcode(input: string): DecodedBarcode {
       projectId: parseIntStrict(parts[1], "IDPredmet"),
       identNumber: parts[2].trim(),
       variant: parseIntStrict(parts[3], "Varijanta"),
-      printTimer: parseIntStrict(parts[4], "PrnTimer"),
+      revision: parseRevision(parts[4]),
     };
     if (fields.projectId <= 0)
       throw new BadRequestException(
@@ -110,7 +127,7 @@ export function parseBarcode(input: string): DecodedBarcode {
         : null,
       workCenterCode,
       identMark: parts[3].trim(),
-      printTimer: parseIntStrict(parts[4], "PrnTimer"),
+      revision: parseRevision(parts[4]),
     };
     if (!workCenterCode)
       throw new BadRequestException(
@@ -122,4 +139,64 @@ export function parseBarcode(input: string): DecodedBarcode {
   throw new BadRequestException(
     `Nepoznat marker barkoda '${marker}' — očekivano 'RNZ' (nalog) ili 'S' (operacija).`,
   );
+}
+
+// ---------------------------------------------------------------------------
+// Enkoderi — generisanje barkod stringa za štampu RN-a (MODULE_SPEC_stampa §3).
+// Rezultat mora biti round-trip kompatibilan sa `parseBarcode` iznad.
+// ---------------------------------------------------------------------------
+
+/** Nijedno polje barkoda ne sme sadržati separator `:`. */
+function assertNoSeparator(value: string, name: string): void {
+  if (value.includes(":"))
+    throw new Error(`Barkod polje '${name}' ne sme sadržati ':' (dobijeno: '${value}').`);
+}
+
+/**
+ * Sastavlja nalog-barkod `RNZ:projectId:identNumber:variant:revision`.
+ * Baca `Error` na nevalidan ulaz (podaci iz `work_orders`, ne korisnički unos).
+ */
+export function formatOrderBarcode(fields: {
+  projectId: number;
+  identNumber: string;
+  variant: number;
+  revision: string;
+}): string {
+  const { projectId, identNumber, variant, revision } = fields;
+  if (!Number.isInteger(projectId) || projectId <= 0)
+    throw new Error(`formatOrderBarcode: projectId mora biti pozitivan ceo broj (dobijeno: ${projectId}).`);
+  if (!Number.isInteger(variant) || variant < 0)
+    throw new Error(`formatOrderBarcode: variant mora biti nenegativan ceo broj (dobijeno: ${variant}).`);
+  const ident = String(identNumber ?? "").trim();
+  if (!ident) throw new Error("formatOrderBarcode: identNumber je obavezan.");
+  const rev = String(revision ?? "").trim();
+  if (!rev) throw new Error("formatOrderBarcode: revision je obavezna.");
+  assertNoSeparator(ident, "identNumber");
+  assertNoSeparator(rev, "revision");
+  return `RNZ:${projectId}:${ident}:${variant}:${rev}`;
+}
+
+/**
+ * Sastavlja operacija-barkod `S:operationNumber:workCenterCode:{identMark}:revision`.
+ * `identMark` je podrazumevano `"0"` (verno legacy `rRN`; §10.4 — može postati
+ * Toznaka uz potvrdu Negovana). Baca `Error` na nevalidan ulaz.
+ */
+export function formatOperationBarcode(fields: {
+  operationNumber: number;
+  workCenterCode: string;
+  revision: string;
+  identMark?: string;
+}): string {
+  const { operationNumber, workCenterCode, revision, identMark = "0" } = fields;
+  if (!Number.isInteger(operationNumber))
+    throw new Error(`formatOperationBarcode: operationNumber mora biti ceo broj (dobijeno: ${operationNumber}).`);
+  const rc = String(workCenterCode ?? "").trim();
+  if (!rc) throw new Error("formatOperationBarcode: workCenterCode (RJgrupaRC) je obavezan.");
+  const mark = String(identMark ?? "0").trim() || "0";
+  const rev = String(revision ?? "").trim();
+  if (!rev) throw new Error("formatOperationBarcode: revision je obavezna.");
+  assertNoSeparator(rc, "workCenterCode");
+  assertNoSeparator(mark, "identMark");
+  assertNoSeparator(rev, "revision");
+  return `S:${operationNumber}:${rc}:${mark}:${rev}`;
 }

@@ -35,3 +35,6 @@ odstupanja su popisana u BACKEND_RULES.md §2 — ne "ispravljaj" kod prema draf
 - Ovaj repo je ServoSync **2.0**: proizvodni core (RN, TP, PDM/BOM, MRP...) prerađen iz QBigTehn legacy sistema.
 - Frontend u [../frontend/](../frontend/) ima sopstvena pravila ([../frontend/CLAUDE.md](../frontend/CLAUDE.md)).
 - Setup: `npm run bootstrap`; dev baza: Docker Postgres na portu 5435; prod ide na on-prem Ubuntu server.
+- **Infrastruktura i pristup** (mašine, prod baza, deploy, kako se prilazi bazi):
+  [docs/infra/INFRASTRUKTURA.md](docs/infra/INFRASTRUKTURA.md) — master; uz [docs/infra/INSTALACIJA-VM.md](docs/infra/INSTALACIJA-VM.md)
+  i [docs/infra/SCADA-RELAY.md](docs/infra/SCADA-RELAY.md).

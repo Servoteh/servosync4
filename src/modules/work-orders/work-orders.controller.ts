@@ -6,14 +6,19 @@ import {
   ParseIntPipe,
   Post,
   Query,
+  Res,
+  StreamableFile,
   UseGuards,
 } from "@nestjs/common";
+import type { Response } from "express";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
 import { PERMISSIONS } from "../../common/authz/permissions";
 import { WorkOrdersService } from "./work-orders.service";
 import type { ListWorkOrdersQuery } from "./work-orders.service";
+import { WorkOrderPrintService } from "./work-order-print.service";
+import type { RnPrintVariant } from "./work-order-print.service";
 import type { CreateWorkOrderDto } from "./dto/create-work-order.dto";
 import type { ReworkWorkOrderDto } from "./dto/rework-work-order.dto";
 import type { BulkCloneWorkOrdersDto } from "./dto/bulk-clone-work-orders.dto";
@@ -36,7 +41,10 @@ import type { BulkCloneWorkOrdersDto } from "./dto/bulk-clone-work-orders.dto";
 @UseGuards(JwtAuthGuard)
 @Controller({ path: "work-orders", version: "1" })
 export class WorkOrdersController {
-  constructor(private readonly workOrders: WorkOrdersService) {}
+  constructor(
+    private readonly workOrders: WorkOrdersService,
+    private readonly printService: WorkOrderPrintService,
+  ) {}
 
   @Get()
   list(@Query() query: ListWorkOrdersQuery) {
@@ -46,6 +54,25 @@ export class WorkOrdersController {
   @Get(":id")
   findOne(@Param("id", ParseIntPipe) id: number) {
     return this.workOrders.findOne(id);
+  }
+
+  /**
+   * Štampa RN dokumenta (PDF) — legacy `rRN`: RNZ zaglavlje + `S` barkod po operaciji,
+   * sva polja nose `revision`. `?variant=bez-barkoda` izostavlja barkodove.
+   */
+  @Get(":id/print")
+  async print(
+    @Param("id", ParseIntPipe) id: number,
+    @Query("variant") variant: string | undefined,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<StreamableFile> {
+    const v: RnPrintVariant = variant === "bez-barkoda" ? "bez-barkoda" : "std";
+    const { buffer, fileName } = await this.printService.buildRnPdf(id, v);
+    res.set({
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `inline; filename="${fileName}"`,
+    });
+    return new StreamableFile(buffer);
   }
 
   @Post()

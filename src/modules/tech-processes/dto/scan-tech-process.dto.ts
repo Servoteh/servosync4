@@ -3,17 +3,23 @@ import { BadRequestException } from "@nestjs/common";
 /**
  * `POST /tech-processes/scan` — barkod prijava rada (kiosk). Radnik skenira
  * DVA barkoda (nalog + operacija) i unosi broj napravljenih komada.
- * `PrnTimer` mora biti isti u oba barkoda (vezni ključ, provera u servisu).
+ * `revision` (polje 5) mora biti ista u oba barkoda — isti otisak (provera u servisu).
  *
  * class-validator još nije uveden (BACKEND_RULES §6) — validacija je ručna.
  */
 export interface ScanTechProcessDto {
-  /** Nalog barkod: `RNZ:IDPredmet:IdentBroj:Varijanta:PrnTimer`. */
+  /** Nalog barkod: `RNZ:projectId:identNumber:variant:revision`. */
   orderBarcode: string;
-  /** Operacija barkod: `S:Operacija:RJgrupaRC:Toznaka:PrnTimer`. */
+  /** Operacija barkod: `S:operationNumber:workCenterCode:0:revision`. */
   operationBarcode: string;
   /** Broj napravljenih komada u ovoj prijavi (ceo broj ≥ 1). */
   pieceCount: number;
+  /**
+   * ID kartica radnika (`workers.cardId`) koji prijavljuje rad — opciono.
+   * Ako je zadata, radnik se razrešava i upisuje na `tech_processes.workerId`
+   * (audit: ko je radio; legacy `SifraRadnika`). MODULE_SPEC_kontrola §4/§5.
+   */
+  workerCard?: string;
 }
 
 export function validateScan(dto: ScanTechProcessDto): void {
@@ -28,5 +34,10 @@ export function validateScan(dto: ScanTechProcessDto): void {
     dto.pieceCount < 1
   )
     errors.push("Polje 'pieceCount' mora biti ceo broj ≥ 1.");
+  if (
+    dto?.workerCard !== undefined &&
+    (typeof dto.workerCard !== "string" || !dto.workerCard.trim())
+  )
+    errors.push("Polje 'workerCard' mora biti neprazan string (ID kartica).");
   if (errors.length) throw new BadRequestException(errors);
 }

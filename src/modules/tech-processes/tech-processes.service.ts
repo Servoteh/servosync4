@@ -12,12 +12,16 @@ import {
   SAFE_WORKER_SELECT,
 } from "../../common/pagination";
 import { byId, uniqueIds } from "../../common/relations";
-import { parseBarcode } from "./barcode";
+import { parseBarcode, formatOrderBarcode } from "./barcode";
 import { type ScanTechProcessDto, validateScan } from "./dto/scan-tech-process.dto";
 import {
   type FinishTechProcessDto,
   validateFinish,
 } from "./dto/finish-tech-process.dto";
+import {
+  type ControlTechProcessDto,
+  validateControl,
+} from "./dto/control-tech-process.dto";
 
 /** Vrste kvaliteta delova (`part_quality_types`, spec §1): 0=dobar,1=dorada,2=škart. */
 export const PART_QUALITY = { GOOD: 0, REWORK: 1, SCRAP: 2 } as const;
@@ -578,11 +582,23 @@ export class TechProcessesService {
   async decodeBarcode(barcode: string) {
     const decoded = parseBarcode(barcode);
     if (decoded.type === "operacija") {
+      // Razreši metapodatke radnog centra: `significantForFinishing` (= završna
+      // kontrola → kiosk grana u KONTROLA režim, MODULE_SPEC_kontrola §1) + naziv.
+      const op = await this.prisma.operation.findUnique({
+        where: { workCenterCode: decoded.fields.workCenterCode },
+        select: { workCenterName: true, significantForFinishing: true },
+      });
       return {
         data: {
           type: decoded.type,
           marker: decoded.marker,
           fields: decoded.fields,
+          operation: op
+            ? {
+                workCenterName: op.workCenterName,
+                significantForFinishing: op.significantForFinishing === true,
+              }
+            : null,
         },
       };
     }
@@ -628,7 +644,9 @@ export class TechProcessesService {
    * `POST /scan` — barkod prijava rada. Radnik skenira nalog + operaciju i unosi
    * broj napravljenih komada. Koraci (§3 pravilo 1, migration/15 §5):
    *  1. parsiraj oba barkoda (400 na nevalidan); orderBarcode mora biti nalog,
-   *     operationBarcode operacija; `PrnTimer` mora biti isti (🔴 vezni ključ).
+   *     operationBarcode operacija; `revision` mora biti ista (🔴 isti otisak).
+   *     Dodatno: ako je otisak starije revizije od tekućeg RN-a → `staleWorkOrder`
+   *     upozorenje (ne blokira; MODULE_SPEC_stampa §5).
    *  2. u transakciji nađi `tech_processes` red po trojci + `workCenterCode`
    *     (+ `operationNumber` ako je numeričan) — jedan red = jedna operacija.
    *  3. **akumuliraj** `pieceCount` (prijava = novi napravljeni komadi); ako je
@@ -641,6 +659,10 @@ export class TechProcessesService {
    */
   async scan(dto: ScanTechProcessDto) {
     validateScan(dto);
+    // Identitet radnika iz ID kartice (opciono) → audit ko je radio (§4/§5).
+    const worker = dto.workerCard
+      ? await this.resolveWorkerByCard(dto.workerCard)
+      : null;
     const order = parseBarcode(dto.orderBarcode);
     const operation = parseBarcode(dto.operationBarcode);
     if (order.type !== "nalog")
@@ -651,10 +673,11 @@ export class TechProcessesService {
       throw new BadRequestException(
         "'operationBarcode' nije operacija-barkod (očekivano 'S:...').",
       );
-    // 🔴 vezni ključ: operacioni barkod mora imati isti PrnTimer kao nalog.
-    if (order.fields.printTimer !== operation.fields.printTimer)
+    // 🔴 „isti otisak": operacioni barkod mora imati istu reviziju kao nalog
+    // (polje 5). Legacy je ovde koristio PrnTimer; 2.0 = revizija (MODULE_SPEC_stampa §5).
+    if (order.fields.revision !== operation.fields.revision)
       throw new BadRequestException(
-        `PrnTimer se ne poklapa: nalog=${order.fields.printTimer}, operacija=${operation.fields.printTimer} — barkodovi ne pripadaju istom nalogu.`,
+        `Revizija se ne poklapa: nalog=${order.fields.revision}, operacija=${operation.fields.revision} — barkodovi ne pripadaju istom otisku.`,
       );
 
     const { projectId, identNumber, variant } = order.fields;
@@ -692,6 +715,14 @@ export class TechProcessesService {
       );
       const planned = workOrder?.pieceCount ?? null;
 
+      // Verzioni guard (UPOZORENJE, ne blokada — MODULE_SPEC_stampa §5): otisak sa
+      // revizijom različitom od tekuće `work_orders.revision` je štampan pre izmene
+      // tehnologije/crteža. Otisak ne može biti noviji od tekuće revizije, pa je
+      // svako neslaganje "stariji otisak". Prijava rada svejedno prolazi.
+      const currentRevision = workOrder?.revision ?? null;
+      const staleWorkOrder =
+        currentRevision != null && currentRevision !== order.fields.revision;
+
       // Prijava rada = akumulacija napravljenih komada na redu operacije.
       const newPieceCount = tp.pieceCount + dto.pieceCount;
       const reachedPlan = planned !== null && newPieceCount >= planned;
@@ -700,6 +731,8 @@ export class TechProcessesService {
         where: { id: tp.id },
         data: {
           pieceCount: newPieceCount,
+          // Audit: radnik koji je prijavio rad (ID kartica) — legacy `SifraRadnika`.
+          ...(worker ? { workerId: worker.id } : {}),
           ...(reachedPlan
             ? { isProcessFinished: true, finishedAt: new Date() }
             : {}),
@@ -730,6 +763,9 @@ export class TechProcessesService {
         reachedPlan,
         prioritized,
         workOrderCompleted,
+        staleWorkOrder,
+        printedRevision: order.fields.revision,
+        currentRevision,
       };
     });
 
@@ -746,6 +782,10 @@ export class TechProcessesService {
         operationsPrioritized: result.prioritized,
         workOrderCompleted: result.workOrderCompleted,
         workOrder: result.workOrder,
+        // Verzioni guard: upozorenje ako je skenirani otisak starije revizije (§5).
+        staleWorkOrder: result.staleWorkOrder,
+        printedRevision: result.printedRevision,
+        currentRevision: result.currentRevision,
       },
     };
   }
@@ -763,6 +803,9 @@ export class TechProcessesService {
    */
   async finish(id: number, dto?: FinishTechProcessDto) {
     validateFinish(dto);
+    const worker = dto?.workerCard
+      ? await this.resolveWorkerByCard(dto.workerCard)
+      : null;
 
     const result = await this.prisma.$transaction(async (tx) => {
       const tp = await tx.techProcess.findUnique({ where: { id } });
@@ -795,6 +838,7 @@ export class TechProcessesService {
             ? { pieceCount: dto.pieceCount }
             : {}),
           ...(dto?.note?.trim() ? { note: dto.note.trim() } : {}),
+          ...(worker ? { workerId: worker.id } : {}),
           isProcessFinished: true,
           finishedAt: new Date(),
         },
@@ -840,6 +884,190 @@ export class TechProcessesService {
     };
   }
 
+  // ---------------------------------------------------------------- CONTROL (završna kontrola)
+
+  /**
+   * `POST /:id/control` — ZAVRŠNA KONTROLA (MODULE_SPEC_kontrola §3.2/§5; legacy
+   * BarKodUnos2024 ekrani 5–7). U jednoj transakciji:
+   *  - kontrolor iz ID kartice (`workerCard` → `workers.cardId`) — audit ko+kada (ODLUKE #14);
+   *  - operacija MORA biti završna kontrola (`operations.significantForFinishing`);
+   *  - 🔴 zbir `locations[].quantity` = `pieceCount` (DTO), premašaj plana → 422;
+   *  - knjiži `part_locations` (+quantity placement; §3.7 — lokacija tek posle završne kontrole)
+   *    sa `qualityTypeId` i kontrolorom kao izvršiocem;
+   *  - zatvara postupak (`isProcessFinished`, `finishedAt`, `qualityTypeId`, `workerId`,
+   *    `priority=255`); ako su sve značajne operacije gotove → RN završen.
+   *
+   * P1: DORADA/ŠKART (kvalitet 1/2) se knjiži, ali child RN (`-D/-S`) + poruka tehnologu
+   * su P2 → odgovor nosi `childOrderPending: true`. Nalepnica (RNZ) se vraća u `label`
+   * (front štampa preko proxy-ja). `machine_access` provera kontrolora — TODO(P2).
+   */
+  async control(id: number, dto: ControlTechProcessDto) {
+    validateControl(dto);
+    const worker = await this.resolveWorkerByCard(dto.workerCard);
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const tp = await tx.techProcess.findUnique({ where: { id } });
+      if (!tp)
+        throw new NotFoundException(`Tehnološki postupak ${id} ne postoji`);
+      if (tp.isProcessFinished)
+        throw new UnprocessableEntityException(`Postupak ${id} je već zatvoren.`);
+
+      // Operacija mora biti završna kontrola (okidač punog toka — §1/§5).
+      const op = await tx.operation.findUnique({
+        where: { workCenterCode: tp.workCenterCode },
+        select: { significantForFinishing: true },
+      });
+      if (op?.significantForFinishing !== true)
+        throw new UnprocessableEntityException(
+          `Operacija (RC ${tp.workCenterCode}) nije završna kontrola — koristite prijavu rada/zatvaranje.`,
+        );
+
+      const workOrder = await this.findWorkOrderByTriple(
+        tx,
+        tp.projectId,
+        tp.identNumber,
+        tp.variant,
+      );
+      if (!workOrder)
+        throw new UnprocessableEntityException(
+          `RN za predmet ${tp.projectId}, ident ${tp.identNumber}, var. ${tp.variant} nije nađen — lokacija/nalepnica nisu mogući.`,
+        );
+      const planned = workOrder.pieceCount ?? null;
+      if (planned !== null && dto.pieceCount > planned)
+        throw new UnprocessableEntityException(
+          `Iskontrolisano (${dto.pieceCount}) premašuje planirano (${planned}) — kontrola se ne može snimiti.`,
+        );
+
+      // Knjiženje lokacija iskontrolisanih delova (+quantity placement, ledger §3.1/§3.7).
+      await this.alignPartLocationSequence(tx);
+      const now = new Date();
+      for (const loc of dto.locations) {
+        const pos = await tx.position.findUnique({
+          where: { id: loc.positionId },
+          select: { id: true },
+        });
+        if (!pos)
+          throw new NotFoundException(`Pozicija ${loc.positionId} ne postoji.`);
+        await tx.partLocation.create({
+          data: {
+            workOrderId: workOrder.id,
+            projectId: workOrder.projectId,
+            positionId: loc.positionId,
+            qualityTypeId: dto.qualityTypeId,
+            workerId: worker.id, // kontrolor = izvršilac (audit)
+            quantity: loc.quantity, // placement = +qty
+            recordDate: now,
+          },
+        });
+      }
+
+      const updated = await tx.techProcess.update({
+        where: { id },
+        data: {
+          pieceCount: dto.pieceCount,
+          qualityTypeId: dto.qualityTypeId,
+          workerId: worker.id, // kontrolor (audit ko+kada — ODLUKE #14)
+          isProcessFinished: true,
+          finishedAt: now,
+          ...(dto.note?.trim() ? { note: dto.note.trim() } : {}),
+        },
+      });
+
+      const prioritized = await this.setOperationDonePriority(
+        tx,
+        workOrder.id ?? tp.workOrderId,
+        tp.operationNumber,
+        tp.workCenterCode,
+      );
+      const workOrderCompleted = await this.markWorkOrderIfComplete(
+        tx,
+        tp.projectId,
+        tp.identNumber,
+        tp.variant,
+      );
+
+      return { tp: updated, workOrder, planned, prioritized, workOrderCompleted };
+    });
+
+    const label = await this.buildLabelData(result.workOrder.id, dto.pieceCount);
+    const childOrderPending = dto.qualityTypeId !== PART_QUALITY.GOOD;
+
+    return {
+      data: {
+        techProcess: {
+          ...result.tp,
+          worker: {
+            id: worker.id,
+            fullName: worker.fullName,
+            username: worker.username,
+          },
+        },
+        controlledPieces: dto.pieceCount,
+        plannedPieces: result.planned,
+        qualityTypeId: dto.qualityTypeId,
+        locationsBooked: dto.locations.length,
+        operationsPrioritized: result.prioritized,
+        workOrderCompleted: result.workOrderCompleted,
+        workOrder: result.workOrder,
+        label,
+        // Dorada/škart: child RN (-D/-S) + poruka tehnologu su P2.
+        childOrderPending,
+      },
+      ...(childOrderPending
+        ? {
+            meta: {
+              note: "Kvalitet dorada/škart evidentiran; kreiranje child RN-a (-D/-S) i poruka tehnologu dolaze u P2 (MODULE_SPEC_kontrola §8).",
+            },
+          }
+        : {}),
+    };
+  }
+
+  // ---------------------------------------------------------------- WORKER IDENTIFY (kiosk kartica)
+
+  /**
+   * `GET /worker?card=…` — razreši radnika iz ID kartice (kiosk login karticom,
+   * BarKodUnos2024 ekran 1). Vraća javni podskup + `isController` (tip radnika sa
+   * `additionalPrivileges` = kontrolor; legacy `tVrsteRadnika.DodatnaOvlascenja`).
+   */
+  async identifyWorker(cardId: string) {
+    const worker = await this.resolveWorkerByCard(cardId);
+    const type = worker.workerTypeId
+      ? await this.prisma.workerType.findUnique({
+          where: { id: worker.workerTypeId },
+          select: { name: true, additionalPrivileges: true },
+        })
+      : null;
+    return {
+      data: {
+        id: worker.id,
+        fullName: worker.fullName,
+        username: worker.username,
+        workerTypeId: worker.workerTypeId,
+        workerType: type?.name ?? null,
+        isController: type?.additionalPrivileges === true,
+      },
+    };
+  }
+
+  // ---------------------------------------------------------------- LABEL (nalepnica — podaci)
+
+  /**
+   * `GET /label?workOrderId=…&quantity=…` — podaci za termalnu nalepnicu (§6):
+   * polja `Nalepnice` reporta + RNZ barkod (`formatOrderBarcode`, kiosk-dekodabilan).
+   * Front gradi TSPL (`tspl2`) i štampa preko proxy-ja. Reuse: štampa na kontroli i reprint.
+   */
+  async label(query: { workOrderId?: string; quantity?: string }) {
+    const workOrderId = Number.parseInt(query.workOrderId ?? "", 10);
+    if (Number.isNaN(workOrderId))
+      throw new BadRequestException(
+        "Parametar 'workOrderId' je obavezan i mora biti broj.",
+      );
+    const q = Number.parseInt(query.quantity ?? "", 10);
+    const quantity = Number.isNaN(q) || q < 1 ? 1 : q;
+    return { data: await this.buildLabelData(workOrderId, quantity) };
+  }
+
   // --- write-path helperi (unutar transakcije) ---
 
   /** RN (`work_orders`) po trojci (projectId, identNumber, variant); null ako ne postoji. */
@@ -863,8 +1091,95 @@ export class TechProcessesService {
         productionDeadline: true,
         handoverStatusId: true,
         status: true,
+        revision: true,
       },
     });
+  }
+
+  /**
+   * ID kartica (`workers.cardId`) → radnik (javni podskup: id/ime/username/tip).
+   * 400 na praznu karticu, 404 ako radnik ne postoji. Legacy cardId ≈ jedinstven;
+   * na duplikat uzima najmanji id.
+   */
+  private async resolveWorkerByCard(cardId: string) {
+    const card = (cardId ?? "").trim();
+    if (!card)
+      throw new BadRequestException("ID kartica (workerCard) je obavezna.");
+    const worker = await this.prisma.worker.findFirst({
+      where: { cardId: card },
+      orderBy: { id: "asc" },
+      select: { id: true, fullName: true, username: true, workerTypeId: true },
+    });
+    if (!worker)
+      throw new NotFoundException(`Radnik sa ID karticom '${card}' nije nađen.`);
+    return worker;
+  }
+
+  /**
+   * Podaci za nalepnicu (§6): polja `Nalepnice` reporta + RNZ barkod
+   * (`RNZ:projectId:identNumber:variant:revision`). Naziv predmeta = `projects.projectName`,
+   * komitent = `customers.name` (preko predmeta). Batch-safe (skalar FK → poseban upit).
+   */
+  private async buildLabelData(workOrderId: number, quantity: number) {
+    const wo = await this.prisma.workOrder.findUnique({
+      where: { id: workOrderId },
+      select: {
+        id: true,
+        projectId: true,
+        identNumber: true,
+        variant: true,
+        revision: true,
+        partName: true,
+        drawingNumber: true,
+        material: true,
+        pieceCount: true,
+      },
+    });
+    if (!wo) throw new NotFoundException(`Radni nalog ${workOrderId} ne postoji`);
+
+    const project = await this.prisma.project.findUnique({
+      where: { id: wo.projectId },
+      select: { projectName: true, customerId: true },
+    });
+    const customer = project?.customerId
+      ? await this.prisma.customer.findUnique({
+          where: { id: project.customerId },
+          select: { name: true },
+        })
+      : null;
+
+    return {
+      workOrderId: wo.id,
+      barcode: formatOrderBarcode({
+        projectId: wo.projectId,
+        identNumber: wo.identNumber,
+        variant: wo.variant,
+        revision: wo.revision,
+      }),
+      plannedPieces: wo.pieceCount,
+      quantity,
+      fields: {
+        brojPredmeta: wo.identNumber,
+        komitent: customer?.name ?? "",
+        nazivPredmeta: project?.projectName ?? "",
+        nazivDela: wo.partName ?? "",
+        brojCrteza: wo.drawingNumber ?? "",
+        materijal: wo.material ?? "",
+        kolicina: `${quantity}/${wo.pieceCount}`,
+      },
+    };
+  }
+
+  /**
+   * Poravnaj `part_locations.id` sekvencu pre insert-a (synced eksplicitni id-jevi
+   * bi inače kolidirali sa autoincrement-om — isti obrazac kao PartLocationsService).
+   */
+  private async alignPartLocationSequence(
+    tx: Prisma.TransactionClient,
+  ): Promise<void> {
+    await tx.$executeRawUnsafe(
+      `SELECT setval(pg_get_serial_sequence('part_locations','id'), (SELECT COALESCE(MAX(id),0) FROM part_locations))`,
+    );
   }
 
   /**

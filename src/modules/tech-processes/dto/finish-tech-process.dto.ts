@@ -12,6 +12,11 @@ export interface FinishTechProcessDto {
   pieceCount?: number;
   /** Napomena uz zatvaranje. */
   note?: string;
+  /**
+   * ID kartica radnika (`workers.cardId`) koji zatvara postupak — opciono.
+   * Ako je zadata → upis na `tech_processes.workerId` (audit ko+kada). §4/§5.
+   */
+  workerCard?: string;
 }
 
 export function validateFinish(dto: FinishTechProcessDto | undefined): void {
@@ -19,4 +24,11 @@ export function validateFinish(dto: FinishTechProcessDto | undefined): void {
     if (!Number.isInteger(dto.pieceCount) || dto.pieceCount < 0)
       throw new BadRequestException("Polje 'pieceCount' mora biti ceo broj ≥ 0.");
   }
+  if (
+    dto?.workerCard !== undefined &&
+    (typeof dto.workerCard !== "string" || !dto.workerCard.trim())
+  )
+    throw new BadRequestException(
+      "Polje 'workerCard' mora biti neprazan string (ID kartica).",
+    );
 }
