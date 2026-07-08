@@ -87,7 +87,13 @@ Model 1.0 = **rola × per-projekat × managed_sub_departments × override flagov
 
 ## 2. Predlog kanonskog kataloga rola (2.0 + rezervisano za 3.0)
 
-Konvencija 2.0: **rola je String, velikim slovima** (BACKEND_RULES §2.2). Katalog je **nadskup**:
+> **⚠️ PREVAZIĐENO 2026-07-08 → [AUTHZ_UNIFIED.md](AUTHZ_UNIFIED.md) je IZVOR ISTINE.** Objedinjeni katalog
+> (1.0 taksonomija + 2.0) je u AUTHZ_UNIFIED §2 i u kodu (`src/common/authz/roles.ts`). Dve izmene u odnosu na
+> tabelu ispod: (1) konvencija je **lowercase** (`admin`/`sef`/`cnc_programer`), ne UPPERCASE; (2) dodate role
+> iz 1.0 prod koje su ovde falile — **`tim_lider`, `monter`, `proizvodni_radnik`** (2.0 `RADNIK` = `proizvodni_radnik`,
+> jedan ključ). Tabela ispod se zadržava kao obrazloženje prava po ulozi (i dalje važi), ali imena čitaj u lowercase.
+
+Konvencija 2.0: **rola je String, lowercase snake_case** ([BACKEND_RULES §2.2](../BACKEND_RULES.md); prevaziđeno „velikim slovima"). Katalog je **nadskup**:
 2.0 aktivira proizvodne role, a imena rola iz 1.0 su rezervisana odmah (da 3.0 ne dobije koliziju).
 
 | Kanonska rola | Poreklo | Aktivna u | Opis / prava (sažeto) |

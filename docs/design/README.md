@@ -9,7 +9,9 @@
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Lukin strateški draft (maj 2026); mestimično pregažen — odstupanja u [BACKEND_RULES §2](../BACKEND_RULES.md) |
 | [MODULI-MASTER-PLAN.md](MODULI-MASTER-PLAN.md) | Master plan svih modula 3.0→4.0 na 2.0 temelju (presečni sloj, domeni, konektori, redosled) |
-| [RBAC_RLS_PREDLOG.md](RBAC_RLS_PREDLOG.md) | Predlog RBAC/RLS modela (role, permisije, scope) — kompatibilan sa 1.0; čeka potvrdu |
+| [AUTHZ_UNIFIED.md](AUTHZ_UNIFIED.md) | **IZVOR ISTINE za role i autorizaciju** — objedinjeni katalog (1.0+2.0+3.0), RLS-ready blueprint, lowercase konvencija; materijalizovan u `src/common/authz/` |
+| [RBAC_RLS_PREDLOG.md](RBAC_RLS_PREDLOG.md) | Predlog RBAC/RLS modela (role, permisije, scope, matrica prava po modulu) — **§2 katalog prevaziđen** AUTHZ_UNIFIED-om; matrica prava i dalje važi |
+| [sql/authz_rls_ready.skeleton.sql](sql/authz_rls_ready.skeleton.sql) | Skelet „RLS-ready" migracije (GUC `app.user_id`, `user_roles`, FK-ovi, predikat-funkcije) — primeniti kroz `migrate:dev` kad DB bude gore |
 | [QBIGTEHN_UI_REFERENCE.md](QBIGTEHN_UI_REFERENCE.md) | **UI referenca** — 163 ekrana QBigTehn-a (dugmad/polja/layout) po domenu, za 2.0 build |
 
 ## Module specifikacije (implementacioni)

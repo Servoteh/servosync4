@@ -40,7 +40,12 @@ Ovde je draft **pregažen stvarnošću koda** — ovo su pravila:
    Nema surogat `legacy_*` kolone tamo gde je legacy šifra već ključ. App-owned tabele: `Int @default(autoincrement())`.
 2. **Statusi/role su `String`, ne Prisma enum** — namerno, da se izbegne migracija za svaku novu vrednost.
    Dozvoljene vrednosti se dokumentuju u `///` komentaru polja. Infra statusi malim slovima
-   (`running` / `success` / `partial` / `failed`), role velikim (`ADMIN`, `USER`).
+   (`running` / `success` / `partial` / `failed`). **Role: `lowercase snake_case`** (`admin`, `sef`,
+   `cnc_programer`, `proizvodni_radnik`) — **odluka 2026-07-08** ([ODLUKE.md](ODLUKE.md)), radi pariteta sa
+   1.0 prod (CHECK `user_roles_role_allowed`) i lowercase permission ključevima; **prevaziđeno „velikim
+   slovima"**. Katalog uloga = [design/AUTHZ_UNIFIED.md](design/AUTHZ_UNIFIED.md) + `src/common/authz/roles.ts`
+   (jedini izvor; ne držati listu na više mesta). *(Postojeći `User.role` default `'USER'`/`'ADMIN'` u šemi
+   se pri V2 aktivaciji migrira na lowercase katalog.)*
 3. **Vremena su `@db.Timestamp(6)`** (bez timezone) — cela šema je tako portovana; ne mešati sa `Timestamptz`
    u novim tabelama bez odluke u §11.
 4. **Sync modul se zove `sync`** (`src/modules/sync/`), tabele `bb_sync_log` / `bb_sync_state` — ne
@@ -202,3 +207,4 @@ Niko (ni AI sesija) ne implementira ove stvari pre zapisane odluke ovde:
 | 0.3 | 2026-07-07 | §11.2a: preporuka za BigBit izvor = **export (XML/CSV) + UPSERT** (ne živi ODBC). Dodat §11.3: **PDM sync** kao treći trajni izvor (SolidWorks MS SQL → XML ugovor, preporuka). Model „tri sync-a" (A privremen / B BigBit / C PDM). |
 | 0.4 | 2026-07-07 | §11.2a proširen u **tri varijante** sa novim redosledom preferencije: **B) BigBit → SQL Server** (upsizing na vasa-SQL, postojeći mssql konektor, inkrementalno) > A) export > C) ručno. Strateška napomena: duži period na 3.0 sa BigBit-on-SQL je prihvatljivo stabilno stanje; 4.0 trigger-based, ne kalendarski. |
 | 0.5 | 2026-07-08 | **Odluke (Nenad) — [ODLUKE.md](ODLUKE.md):** §11.1 cache/overlay ✅ potvrđeno; §11.2a izvor = **EXPORT (XML/CSV)** (ne SQL Server); §11.2b = **INSERT-only**; §11.3 PDM = **direktan SQL** (uz potvrdu da nije sirov SolidWorks). RBAC: ŠEF pun rad+odobravanje, CNC potpisuje TP, `cnc_programs` DA, MENADZMENT uvid+write, PG RLS ne sada, role mapirane na sistematizaciju. Ostaje otvoreno: timestamp (§11.4), BOM/MRP (§11.3 logika — analiza u toku). |
+| 0.6 | 2026-07-08 | **Authz objedinjavanje — [design/AUTHZ_UNIFIED.md](design/AUTHZ_UNIFIED.md):** §2.2 role = **lowercase** (prevaziđeno „velikim slovima"); jedinstveni katalog uloga (1.0 taksonomija + 2.0) u `src/common/authz/roles.ts` + `role-permissions.ts`. **PG RLS = „RLS-ready sada, nativni RLS u 3.0"** (skelet `design/sql/authz_rls_ready.skeleton.sql`: GUC `app.user_id`, `user_roles`/`user_permission_overrides`, `users.worker_id` FK, `created_by_id` FK, predikat-funkcije). App se sad konektuje kao owner `servosync` (zaobilazi RLS) — ne-superuser rola + `FORCE RLS` je 3.0 korak. |

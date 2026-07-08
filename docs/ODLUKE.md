@@ -17,6 +17,9 @@
 | 8 | Tabela `cnc_programs` | **DA — uvodi se** (zasebna app-owned tabela) | CNC programer vlasnik write-a. [RBAC §7.3], [MODULE_SPEC_tehnologija] |
 | 9 | MENADZMENT prava | **Uvid + write** (paritet sa 1.0) | Ne samo read. [RBAC §7.5] |
 | 10 | PostgreSQL RLS | **Ne sada — samo NestJS guardovi + query-scoping** | Pravi PG RLS tek u 3.0 ako zatreba. [RBAC §7.4] |
+| 11 | Konvencija imena rola | **lowercase snake_case** (`admin`/`sef`/`cnc_programer`) u oba repoa | Prevaziđeno UPPERCASE; paritet sa 1.0 prod. [BACKEND_RULES §2.2], [AUTHZ_UNIFIED](design/AUTHZ_UNIFIED.md) |
+| 12 | Nativni PG RLS pravac | **„RLS-ready sada, nativni RLS u 3.0"** | Temelji (GUC `app.user_id`, `user_roles`, `worker_id`/`created_by_id` FK, predikat-funkcije) da 3.0 bude flip-a-switch. Skelet: [sql/authz_rls_ready.skeleton.sql](design/sql/authz_rls_ready.skeleton.sql) |
+| 13 | Katalog rola — objedinjavanje | **Jedan katalog za 1.0+2.0+3.0** ([AUTHZ_UNIFIED](design/AUTHZ_UNIFIED.md), `roles.ts`) | `tim_lider`≠`sef`; `proizvodni_radnik`=`radnik`; `cnc_operater`≠`cnc_programer`; dodati `monter`/`tim_lider`/`proizvodni_radnik` |
 
 ## Sesija 2026-07-08 (nastavak) — potvrde Negovan Vasić („Vasa" = ista osoba)
 
