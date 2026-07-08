@@ -122,28 +122,38 @@ Legacy token `F_Timer()=CLng(Timer)` = sekunde od ponoći (slab: reset/sudari) i
 
 ## 8. Endpoints (backend)
 
-| Ruta | Metod | Opis |
-|---|---|---|
-| `/work-orders/:id/print` | GET | RN dokument PDF (varijante), utiskuje/čita revision za barkod |
-| `/work-orders/:id/labels` | GET | Nalepnice (TSPL2 + PDF/HTML), iz work_orders/operations |
-| `/pdm/drawings/:id/pdf/content` | GET | Serviranje uskladištenog PDM bytea (trenutno samo metapodaci) |
-| `/structures/workers/:id/card` | GET | ID kartica radnika (barkod = cardId) |
+| Ruta | Metod | Status | Opis |
+|---|---|---|---|
+| `/work-orders/:id/print` | GET | ✅ | RN dokument PDF (`?variant=std\|bez-barkoda`); RNZ + S po operaciji, revision |
+| `/pdm/drawings/:id/pdf/content` | GET | ✅ | Stream uskladištenog PDM bytea (`?download=true` → attachment) |
+| nalepnice | — | kontrola stream | frontend `tspl2.ts`/`label-print.ts` → TSC (ne backend endpoint) |
+| ID/START-STOP kartice | — | ⏸️ | odloženo / van scope-a (§9 P3b) |
 
-## 9. Fazni plan
+## 9. Fazni plan — status (2026-07-08)
 
-- **P0 — zajednički barkod modul:** `formatRnzBarcode` + `formatOperationBarcode` (jedan izvor istine); 2.0 puni
-  stvarni `projectId`/`revision`; uskladiti sa `barcode.ts` (polje 5 = revision).
-- **P1 — RN dokument** (`GET /work-orders/:id/print`) + verzioni guard u `scan()` (§5). **Prioritet — kiosk to čeka.**
-- **P2 — Nalepnice u 2.0** (port `tspl2.js` + jsbarcode) — ili ostaviti u 1.0 dok radi (§10.1).
-- **P3 — Kartice + PDM PDF serve.**
-- **P4 — Kancelarijski izveštaji/izvozi** (trijaža, delom van 2.0 scope-a).
+- **P0 — zajednički barkod modul** ✅ IMPLEMENTIRANO: `barcode.ts` polje 5 → `revision` (string) +
+  `formatOrderBarcode`/`formatOperationBarcode`; 2.0 puni stvarni `projectId`/`revision`. Testovi + tsc čisti.
+- **P1 — RN dokument** ✅ IMPLEMENTIRANO: `documents` modul (`BarcodeService` bwip-js + `PdfService` pdfmake),
+  `WorkOrderPrintService`, `GET /api/v1/work-orders/:id/print`, verzioni guard u `scan()` (§5), „Štampaj RN" dugme.
+- **P2 — Nalepnice** ↔ vozi paralelni **kontrola stream** (frontend `tspl2.ts` + `label-print.ts`, TSPL2→TSC);
+  2.0 barkod je kompatibilan (isti `revision` format). Ne duplira se ovde.
+- **P3a — PDM PDF serve** ✅ IMPLEMENTIRANO: `GET /api/v1/pdm/drawings/:id/pdf/content` + „Otvori PDF" dugme.
+- **P3b — Kartice** ⏸️ ODLOŽENO (Nenad, 2026-07-08): ID kartice = koriste se postojeće fizičke (ne pravimo dok ne
+  zatreba); START/STOP kartice = **van scope-a 2.0**.
+- **P4 — Kancelarijski izveštaji/izvozi** — nije počelo; niski prioritet, delom van 2.0 scope-a.
 
-## 10. Otvorene odluke i zavisnosti
+## 10. Odluke — rešene i otvorene
 
-1. **Gde žive nalepnice za 2.0** — ostaviti u 1.0 (radi) vs. portovati sad. Preporuka: ostaviti u 1.0, a u 2.0 samo
-   obezbediti kompatibilan barkod; P0+P1 odmah.
-2. **Zavisnosti** (`jsbarcode`, `pdfmake`/Puppeteer) — odobrenje (§10 BACKEND_RULES).
-3. **`revision` bump** — potvrditi da izmena tehnologije/crteža uvek podiže `work_orders.revision` (okidač guarda §5).
-4. **Polje 4 operacija-barkoda** — `0` (preporuka, verno rRN-u) vs. `Toznaka` — potvrda Negovana.
-5. **TSPL2 proxy** — dostupnost agenta (`…PROXY_URL`→9100) sa 2.0 fronta (Cloudflare) ka pogonu, ili backend šalje TSPL2.
-6. **PDF biblioteka** — izbor pre P1.
+**Rešeno (2026-07-08, Nenad):**
+- ✅ **Zavisnosti:** `pdfmake` (RN PDF, bez headless browsera) + `bwip-js` (Code 128 SVG, server-native; jsbarcode
+  je browser-side → ostaje samo za nalepnice/klijent) + `@types/pdfmake`.
+- ✅ **Verzioni guard = `revision`, UPOZORENJE** (ne blokada) — implementirano u `scan()` (§5).
+- ✅ **Nalepnice ostaju u 1.0 / kontrola stream**; 2.0 obezbeđuje kompatibilan barkod.
+- ⏸️ **Kartice** — ID odložene, START/STOP van scope-a (§9 P3b).
+
+**Otvoreno — za Negovana/Vasu:**
+1. **`revision` bump proces** — potvrditi da izmena tehnologije/crteža uvek podiže `work_orders.revision` (okidač
+   guarda §5). Bez toga je guard benigan (ne okida lažno, ali ni ne hvata zastareo otisak).
+2. **Polje 4 operacija-barkoda** — trenutno `0` (verno legacy `rRN`; parser čita kao `identMark`). Da li treba
+   nositi stvarnu `Toznaka` (kao `rRNStavke`)?
+3. **TSPL2 proxy** (nalepnice) — dostupnost lokalnog agenta (`…PROXY_URL`→TCP 9100) sa Cloudflare fronta ka pogonu.
