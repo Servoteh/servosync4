@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
   Param,
   ParseIntPipe,
   Post,
@@ -74,6 +75,7 @@ export class TechProcessesController {
   }
 
   @Post("barcode/decode")
+  @HttpCode(200) // čist parse/read — ništa se ne kreira, ne 201
   @RequirePermission(PERMISSIONS.TEHNOLOGIJA_WRITE)
   decodeBarcode(@Body() dto: DecodeBarcodeDto) {
     validateDecodeBarcode(dto);
