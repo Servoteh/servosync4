@@ -147,7 +147,8 @@ db `127.0.0.1:5436`).
 - **Restore žive 1.0 baze:** 198 tabela, 56 korisnika (bcrypt očuvan), 513 RLS, 697 fn, 5542 storage meta.
   **Login E2E** (kreiranje usera → login → token → autentikovani PostgREST 200). Zamke (drop baseline
   auth/storage, ownership, init-restart) rešene u `scripts/restore.sh`.
-- **Storage:** 115 realnih fajlova / 185 MB preneto; `bigtehn-drawings` (673 MB) preskočen (dedup §4.4).
+- **Storage:** 115 realnih fajlova / 185 MB preneto; `bigtehn-drawings` (673 MB) inicijalno preskočen —
+  **ISPRAVKA (audit 09.07):** za 1.5 se ipak MIGRIRA, dedup je 3.0 end-state (v. §4.4).
 - **Edge worker (edge-runtime):** svih 16 Deno fn služe verbatim na `/functions/v1/*`. **Tajne uvezane:**
   `PUSH_DISPATCH_KEY` (povraćen iz `private.app_config`), `RESEND`/`ANTHROPIC`/`OPENAI` (validirani — mejl
   poslat, AI odgovorio), **VAPID par regenerisan** (nov; public `BE9yAAa1…` → mora u `push.js:20` pri rebuild-u).
@@ -167,6 +168,16 @@ db `127.0.0.1:5436`).
 - **Drawings viewer → 2.0 `drawing_pdfs`** (§4.4) · **Loc most repoint** (§4.2) pre gašenja QBigTehn-a.
 
 > ⚠️ **CUTOVER JOŠ NIJE ODRAĐEN.** Zakazuje se za **veče/off-hours**; dok cloud radi, ništa od „pending" se ne aktivira.
+
+**AUDIT 09.07 (Fable-5) — pronađeni i primenjeni fixevi:**
+- **Push trigeri na sy15 privremeno DISABLED** — gađali su cloud sa važećim ključem (rizik duplog slanja).
+- **`activate-dispatch`:** fix statusa `'queued'` pri označavanju postojećeg outboxa.
+- **Freeze/read-only redosled** utvrđen (prvo freeze, pa dump) + **dump-first restore** (nema restore-a bez svežeg dumpa).
+- **`verify-parity` gate** — cutover ne ide dalje dok paritet cloud↔on-prem nije potvrđen.
+- **`API_EXTERNAL_URL`** ispravljen (GoTrue linkovi) + **Cloudflare Total TLS** za nov hostname.
+- **Passkeys se žrtvuju** pri prelasku (nov RP kontekst) + najava **prisilnog re-logina** korisnicima.
+- **Rollback tačka-bez-povratka** definisana; **LAN front TBD**.
+- Detalji i redosled koraka: `infra/self-host/CUTOVER_1.5.md`.
 
 ---
 
@@ -241,8 +252,13 @@ Kadrovska modul migrira pozno** u 3.0-D (rich šema se čuva, ne stapa se u `wor
   `src/services/drawings.js` (`drawing_no` `1133219_B` → `drawing_number=1133219`+`revision=B`; resolver već
   ima revision-fallback). Izvodi se pri cutover-u (§ App repoint u §5 tracker-u / RUNBOOK Faza 3).
 - Bridge `syncBigtehnDrawings` se **gasi** — u 3.0 ostaje JEDAN put uvoza crteža (2.0 PDM sync).
-- **Storage migracija 1.5 preskače `bigtehn-drawings` (673 MB)**; preneto je samo 115 realnih 1.0 fajlova
-  (185 MB) kroz `infra/self-host/scripts/migrate-storage.sh`.
+- ⚠️ **VAŽNA DISTINKCIJA (ispravka 09.07, Fable-5 audit): dedup je 3.0 END-STATE, ne 1.5.** Za **1.5
+  cutover** 1.0 ostaje **self-contained** → bucket `bigtehn-drawings` (673 MB) **SE MIGRIRA** na on-prem
+  storage (ne preskače se), jer adapter u `src/services/drawings.js` i JWT-interop ka 2.0 `drawing_pdfs`
+  nisu spremni na 1.5. Ranija tvrdnja da „storage migracija 1.5 preskače `bigtehn-drawings`" je POVUČENA.
+  Preskakanje/dedup se izvodi tek u 3.0, kad 1.0 viewer pređe na 2.0 `drawing_pdfs`.
+- Do audita je kroz `infra/self-host/scripts/migrate-storage.sh` preneto 115 realnih 1.0 fajlova (185 MB);
+  `bigtehn-drawings` se donosi u sklopu cutover pripreme (v. `infra/self-host/CUTOVER_1.5.md`).
 
 ---
 
@@ -310,6 +326,7 @@ Za svaki modul u 3.0, pre „gotovo":
 **(A) 1.5 cutover (1.0 → on-prem) — near-term:**
 - [ ] Cloudflare Tunnel hostname za `sy15` gateway; javna adresa (jedan origin ako se radi shell §2.1).
 - [ ] Repoint 1.0 front: `VITE_SUPABASE_URL` + nov anon ključ + hardkodovani URL-ovi (ocena.html/legacy/SW regex) + sateliti + APK.
+- [ ] ⚠️ **Cloud read-only je PREDUSLOV za start schedulera (ne posle)** — scheduler na sy15 se NE pokreće dok cloud još piše (dupli mejlovi/push).
 - [ ] **Označi postojeći outbox obrađenim** → uključi scheduler (naše dispatch fn) → **repoint push trigera** (cloud URL → gateway).
 - [ ] Nova VAPID public u `push.js:20` + rebuild.
 - [ ] Supabase → read-only; rollback prozor 7–14 dana; grep živog bundle-a za novi URL.
@@ -338,5 +355,6 @@ Za svaki modul u 3.0, pre „gotovo":
 |---|---|
 | 2026-07-09 | Prva verzija. Konsoliduje ROADMAP + AUTHZ_UNIFIED + INTEGRACIJA + RBAC_RLS_PREDLOG + migration/03,16 + DESIGN_SYSTEM. Ugrađuje odluke sesije 09.07: 1.5 pre 3.0 (§3), zaposleni = 1.0 izvor istine i aktivni (§4.1), responsivnost V1 zahtev (§1.8). Modul-tracker §5. |
 | 2026-07-09 (2) | **Faza 1.5 IZVRŠENA do data+auth+storage** — self-host stack živ na `ubuntusrv:~/servosync15` (`infra/self-host/`): baza restore (198 tabela, 56 korisnika, 513 RLS), storage 115 fajlova/185 MB, login E2E. **§4.4 dodato: crteži DEDUP** (1.0 viewer → 2.0 `drawing_pdfs`; `bigtehn-drawings` 673 MB se NE migrira; bridge `syncBigtehnDrawings` se gasi). Ostaje: Node worker, pg_cron, Tunnel, repoint. |
+| 2026-07-09 (5) | **Fable-5 audit primenjen** — cutover runbook + skripte ojačane (push trigeri disabled, activate-dispatch `'queued'` fix, freeze/read-only redosled, dump-first restore, verify-parity gate, API_EXTERNAL_URL, Total TLS, passkeys+re-login, rollback tačka-bez-povratka); **1.5 zadržava `bigtehn-drawings`** (dedup je 3.0 end-state, §4.4/§3.1); §8: cloud read-only PREDUSLOV za scheduler. |
 | 2026-07-09 (4) | **Razjašnjen pravac shell-a (§1 #9, §2.1, §2 dijagram):** `servosync.servoteh.com` (1.0) je JEDINI front (+ LAN); ceo 2.0 (`servosync2`) ulazi kao JEDAN iframe-modul „TEHNOLOGIJA" — NE 2.0-kao-shell. SSO: 2.0 prihvata isti JWT + jedan origin (`/tehnologija` path-routing, `basePath`). Cutover-readiness dodat: `CUTOVER_1.5.md` + scheduler (profil `cutover`) + `activate-dispatch.sql` (na main). |
 | 2026-07-09 (3) | **Edge worker gotov + odluka o objedinjenom frontu.** Edge-runtime služi svih 16 fn verbatim; sve tajne uvezane i validirane (mejl/AI/push; VAPID par regenerisan; PUSH_DISPATCH_KEY povraćen iz `private.app_config`). **§1 #9 + §2.1 dodato: Faza 3.0-shell** (objedinjeni front PRE migracije modula; **2.0 prihvata isti JWT kao 1.0** = jedan identitet; iframe-embed + jedan origin + embed-mode). **§3.1 dodato: stanje izvršenja 1.5** (done vs pending). **§8 razdvojen** na 1.5 cutover i finalni 3.0 cutover, uz off-hours upozorenje. **Cutover JOŠ NIJE odrađen** — ide uveče. |
