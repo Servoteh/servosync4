@@ -53,6 +53,8 @@ export interface WorkOrder {
   unit: string;
   revision: string;
   isLocked: boolean | null;
+  /** RN završen (sve značajne operacije gotove). */
+  status: boolean | null;
   handoverStatusId: number;
   enteredAt: string;
   productionDeadline: string | null;
@@ -113,6 +115,8 @@ export interface WoListParams {
   statusId?: number | '';
   from?: string;
   to?: string;
+  /** RN završen: '' = svi, 'true' = završeni, 'false' = u radu. */
+  completed?: '' | 'true' | 'false';
 }
 
 /** Ulaz za DORADA/ŠKART child nalog (POST /:id/rework). */
@@ -156,6 +160,7 @@ export function useWorkOrders(params: WoListParams) {
     qs.set('statusId', String(params.statusId));
   if (params.from) qs.set('from', params.from);
   if (params.to) qs.set('to', params.to);
+  if (params.completed) qs.set('completed', params.completed);
   const query = qs.toString();
   return useQuery({
     queryKey: ['work-orders', params],
