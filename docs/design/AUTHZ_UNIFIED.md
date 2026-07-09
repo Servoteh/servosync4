@@ -179,7 +179,10 @@ Sve ostalo (DB CHECK, `/me/permissions`, FE dropdown) se **izvodi** iz ova dva (
       `<Can>` gate (`src/lib/can.tsx`). **Nav sakriva module po ulozi** (admin vidi sve); primer dugmeta
       „Nova operacija" iza `strukture.write`. Build ✓ (16 ruta). NAPOMENA: LAN-front (:3000, baked u backend
       image) se osvežava tek na sledećem **backend** deploy-u; Cloudflare front odmah.
-- [ ] Proširiti `<Can>` na ostala akciona dugmad (RN lansiranje/odobravanje, primopredaje, lokacije write).
+- [x] `<Can>` prošireno na akciona dugmad (`8586d21`): structures (strukture.write), lokacije, primopredaje,
+      RN „Novi" (rn.write) + **Odobri/Odbij (rn.approve), Lansiraj (rn.launch)**.
+- [x] Backend deklaracije zatvorene (`b424343`): work-orders create/lock=rn.write, approve=rn.approve,
+      launch=rn.launch; **sync `POST /run`=sync.run (zatvoren `TODO(auth)`)**, GET=sync.read.
 - [ ] Nedelju dana na prod → pregled `SHADOW would-deny` logova pre enforce-a.
 
 ### Faza 3 — enforce
