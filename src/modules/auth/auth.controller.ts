@@ -10,6 +10,7 @@ import {
 import { AuthService } from './auth.service';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { AuthUser } from './jwt.strategy';
+import { permissionsForRoles } from '../../common/authz/role-permissions';
 
 interface LoginBody {
   email?: string;
@@ -32,5 +33,21 @@ export class AuthController {
   @Get('me')
   me(@Req() req: { user: AuthUser }) {
     return this.auth.me(req.user.userId);
+  }
+
+  /**
+   * Role-derived permission keys for the logged-in user (AUTHZ_UNIFIED §8 Faza 2).
+   * Single source: ROLE_PERMISSIONS map — the frontend hides/shows actions from this
+   * BEFORE any enforcement exists. `enforced` tells the FE whether the backend also denies.
+   * Bridge: reads the single `users.role` (JWT claim) until `user_roles` data lands.
+   */
+  @UseGuards(JwtAuthGuard)
+  @Get('me/permissions')
+  mePermissions(@Req() req: { user: AuthUser }) {
+    return {
+      role: req.user.role,
+      permissions: permissionsForRoles([req.user.role]),
+      enforced: process.env.AUTHZ_ENFORCE === 'true',
+    };
   }
 }

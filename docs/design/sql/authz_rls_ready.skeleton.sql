@@ -144,10 +144,13 @@ AS $$
     SELECT 1 FROM user_roles ur
     WHERE ur.user_id = app_current_user_id() AND ur.is_active
       AND ur.role IN ('menadzment', 'tim_lider')            -- samo uloge koje nose ovaj scope
-      AND ( (ur.role = 'menadzment' AND ur.managed_sub_department_ids IS NULL)  -- NULL=pun obim SAMO menadzment
+      AND ( (ur.role = 'menadzment'                          -- pun obim SAMO menadzment; "unset" =
+             AND (ur.managed_sub_department_ids IS NULL      --   NULL (1.0 import) ILI prazan niz
+                  OR cardinality(ur.managed_sub_department_ids) = 0))  --   (Prisma piše [] umesto NULL)
          OR p_sub_department_id = ANY(ur.managed_sub_department_ids) )
   )
 $$;
+-- >>> PRIMENJENO: prisma/migrations/20260709000000_authz_rls_ready/migration.sql (autoritativna verzija).
 
 
 -- =====================================================================

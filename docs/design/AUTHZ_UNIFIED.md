@@ -156,13 +156,44 @@ Radimo **direktno na produkciji (bez staging-a)** → aktivacija guard-a mora bi
 2. `src/common/authz/role-permissions.ts` — mapa prava.
 Sve ostalo (DB CHECK, `/me/permissions`, FE dropdown) se **izvodi** iz ova dva (ne prepisuje).
 
-## 8. Akcije
+## 8. Plan aktivacije — ZAKUCANO (Nenad, 2026-07-09)
 
-- [x] Objedinjeni katalog (§2) + kod (`roles.ts`, `role-permissions.ts`).
-- [x] Konvencija = lowercase (BACKEND_RULES §2.2).
-- [x] Skelet RLS-ready migracije (`sql/authz_rls_ready.skeleton.sql`).
-- [ ] Kad DB bude gore: preneti §A u `schema.prisma` + `migrate:dev`; §B/§C kao raw SQL u istoj migraciji.
-- [ ] `RBAC_RLS_PREDLOG §2` i `servosync2_role_taxonomy.md` → referenciraju OVAJ dokument (ne drže svoju listu).
-- [ ] `ScopeService` (RBAC §5 Sloj 2) — where-builderi koji zovu iste predikat-funkcije.
-- [ ] Dodati `proizvodni_radnik` unos-rada endpoint permisiju u kontrolere (`tehnologija.report_work`).
-- [ ] (3.0) uvesti ne-superuser rolu + `FORCE RLS` + `CREATE POLICY` po skeletu §D.
+> Odluka posle review-a (ispravke u commitu `9f641e7`): **ne portujemo 313 politika 1.0 sada — portujemo
+> ugovor.** Politike se u 3.0 prenose modul-po-modul sa žive `pg_policies` introspekcije (NE iz
+> RBAC_MATRIX.md — regex generator preskače CMMS/praćenje/SCADA). Svaki korak ispod je samostalno bezbedan.
+
+### Faza 1 — temelji u bazi (aditivno; diff → pregled → deploy)
+- [ ] `schema.prisma`: `UserRole` + `UserPermissionOverride` + `users.worker_id` FK.
+- [ ] Migracija `authz_rls_ready`: DDL + predikat-funkcije (§B/§C skeleta) + **`UPDATE users SET
+      role = lower(role)`** (bez ovoga aktivacija zaključava i admina — živi podaci su `'ADMIN'`/`'USER'`).
+- [ ] **Odstupanje od BACKEND_RULES §3 (`migrate:dev`), odobreno:** okruženje je prod-only → migracija se
+      generiše `prisma migrate diff` (datamodel→datamodel, bez žive baze), primenjuje **`npm run
+      migrate:prod`** (deploy; nikad ne resetuje). Pre deploy-a OBAVEZNO `prisma migrate status` (drift check).
+- [ ] Seed: `admin` uloga u `user_roles` za bar 2 naloga (break-glass).
+
+### Faza 2 — vidljivost pre enforce-a
+- [ ] `GET /auth/me/permissions` — frontend odmah može da sakriva dugmad, pre ikakvog odbijanja.
+- [ ] `PermissionsGuard` u **SHADOW MODE** (`AUTHZ_ENFORCE=false` default): izračuna odluku, loguje
+      would-be 403 (user, uloga, permisija, ruta), **pušta**. Nedelju dana na prod → pregled logova.
+
+### Faza 3 — enforce
+- [ ] `AUTHZ_ENFORCE=true` (rollback = env promena + restart, bez deploy-a).
+- [ ] e2e permission matrica (rola × endpoint × 200/403) — samo za endpoin­te koji postoje; raste sa modulima.
+
+### Faza 4 — row-scope (jedini pravi row-scoping u 2.0)
+- [ ] `ScopeService`: `proizvodni_radnik`→machine_access, TP-lock, owner-na-TP — where-builderi koji zovu
+      iste predikat-funkcije (§C).
+
+### 3.0 (kad dođe)
+- [ ] Ne-superuser DB rola + `FORCE RLS` (domenske tabele, NE `user_roles`!) + `CREATE POLICY` po skeletu §D.
+- [ ] Port 1.0 politika modul-po-modul sa žive `pg_policies`; Kadrovska/PII prva dobija RLS.
+
+### Šta NE radimo (zakucano)
+- ✗ RLS politike „za fioku" u 2.0 (drift bez enforce-a).
+- ✗ DB CHECK na `role` (BACKEND_RULES §2: bez enuma; kompenzacija = default-deny guard + `isKnownRole()` na dodeli).
+- ✗ `tim_lider` → `sef` mapiranje pri 3.0 seedu (najopasniji sudar kataloga — pogon bi dobio approve/launch).
+- ✗ `prisma migrate dev` na produkciji (ikad).
+
+### Ostalo
+- [ ] `RBAC_RLS_PREDLOG §2` i `servosync2_role_taxonomy.md` (1.0 repo) → referenciraju OVAJ dokument.
+- [ ] `tehnologija.report_work` permisija na barkod endpoin­tima (`/barcode/scan`, `/tech-processes/:id/finish`).
