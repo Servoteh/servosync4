@@ -1,0 +1,236 @@
+# ServoSync 3.0 — playbook migracije + modul-tracker
+
+> **Živi dokument. Postoji IDENTIČAN u oba repoa** — `servoteh-plan-montaze/docs/MIGRACIJA_3.0_PLAYBOOK.md`
+> (1.0) i `Servosync 2.0/backend/docs/MIGRACIJA_3.0_PLAYBOOK.md` (2.0). Izmena u jednom = obavezno preslikati
+> u drugi (isti sadržaj, da obe strane vide isti plan).
+>
+> **Šta je ovo:** jedno mesto za praćenje seobe ServoSync 1.0 (Supabase) na 2.0 stack (NestJS + Prisma +
+> PostgreSQL + Next.js) → jedna aplikacija (3.0). Konsoliduje planove razbacane po ~15 dokumenata i dodaje
+> modul-tracker sa statusom. **Izvori istine iznad ovoga:** [ROADMAP.md](ROADMAP.md),
+> [design/AUTHZ_UNIFIED.md](design/AUTHZ_UNIFIED.md), [ODLUKE.md](ODLUKE.md),
+> [design/INTEGRACIJA-1.0-2.0-ANALIZA.md](design/INTEGRACIJA-1.0-2.0-ANALIZA.md),
+> [frontend/docs/DESIGN_SYSTEM.md](../../frontend/docs/DESIGN_SYSTEM.md). *(Putanje važe iz 2.0 repoa; u 1.0
+> repou ekvivalenti su u `docs/db/` i `docs/`.)*
+
+---
+
+## 0. Terminologija i trenutno stanje
+
+| Verzija | Šta | Stack | Status |
+|---|---|---|---|
+| **1.0** | Operativni web moduli (kadrovska, lokacije, održavanje, sastanci, reversi, plan montaže…) | Vite + vanilla JS + **Supabase** | Živ na produkciji |
+| **2.0** | QBigTehn proizvodni core (RN, TP, PDM/BOM, MRP, primopredaje, lokacije delova) | **NestJS + Prisma + PostgreSQL on-prem + Next.js** | **Živ na produkciji (8.7.2026)** — `servosync2.servoteh.com`, API kroz Cloudflare Tunnel |
+| **3.0** | Seoba 1.0 modula na stack 2.0 → jedna aplikacija | isti kao 2.0 | **U planiranju — ovaj dokument** |
+| **4.0** | BigBit ERP (GK/PDV/SEF/fakture) apsorbovan | isti kao 2.0 | Trigger-based, bez roka |
+
+## 1. Odluke koje ovaj dokument sprovodi
+
+Zabetonirano (ne otvaramo ponovo — vidi [ODLUKE.md](ODLUKE.md), [AUTHZ_UNIFIED.md](design/AUTHZ_UNIFIED.md)):
+
+1. **Authz mehanizam:** NestJS **guardovi + query-scoping SADA**; nativni PostgreSQL RLS tek u 3.0 *ako zatreba*
+   („RLS-ready sada, flip-a-switch u 3.0"). 2.0 već ima temelje (GUC `app.user_id`, `user_roles`,
+   `worker_id`/`created_by_id` FK, predikat-funkcije) + Fazu 1–2 na produ (shadow-mode guard).
+2. **Jedan katalog rola** za 1.0+2.0+3.0 (lowercase snake_case, `src/common/authz/roles.ts`).
+   `tim_lider` ≠ `sef` (najopasniji sudar — pogrešno mapiranje bi dalo pogonu approve/launch).
+3. **Obrazac seobe:** *initial load → paralelni rad → delta resync → cutover* (NE trajni dvosmerni sync).
+   Odvojene baze/šeme na istom PG serveru; **merge po domenu kad modul dođe na red**, ne big-bang.
+4. **Authz paritet se povlači sa žive `pg_policies`** modul-po-modul — NIKAD iz `RBAC_MATRIX.md`
+   (regex generator preskače CMMS / praćenje proizvodnje / SCADA).
+5. **Mobilne (Capacitor) ostaju** — prevodi se 5 šavova, ne aplikacija (vidi §6).
+
+Novo (odluke iz sesije 2026-07-09, Nenad):
+
+6. ✅ **Idemo 1.5 PRE 3.0** (najpre 1.0 Supabase → on-prem PG, pa tek onda strangler-fig na NestJS). Vidi §3.
+7. ✅ **Zaposleni ostaju u 1.0 kao izvor istine i ostaju AKTIVNI.** `employees` (38 kolona) je bogatiji od
+   2.0 `workers` (16) i već ima **živ istorijat koji se prati** — ne zamenjuje se. 2.0 `workers` je izveden
+   operater-profil. Model spajanja u §4.
+8. ✅ **Dizajn sistem je responsivan/optimizovan za sve rezolucije uključujući telefon** — V1 zahtev, ne 3.0.
+   Uneto u [DESIGN_SYSTEM.md v0.2 §11](../../frontend/docs/DESIGN_SYSTEM.md). 2.0 ekrani danas to nisu →
+   saniraju se; novi prolaze responsive proveru (360/768/1024/1440 px).
+
+---
+
+## 2. Redosled (sekvenca 3.0)
+
+```
+1.5  (1.0 Supabase → on-prem PG, pored 2.0)
+ └─►  3.0-A  auth/RBAC paritet (najteži deo, ne preskače se)
+       └─►  3.0-B  PILOT modul (Reversi ILI Lokacije — samostalan, meri tempo)
+             └─►  3.0-C  prioritetni spojevi: Zaposleni (mapping) + Lokacije
+                   └─►  3.0-D  ostali moduli, strangler-fig (Supabase živ dok poslednji ne pređe)
+                         └─►  3.0-E  delta resync → cutover (gase se PostgREST/GoTrue)
+```
+
+**Zašto ovim redom:** authz je jedini pravi rizik (ocena 5/5, [migration/03](migration/03-planmontaze-complexity-profile.md));
+sve ostalo (UI, data model, čiste funkcije) je mehaničko. Pilot bira samostalan modul da se izmeri tempo pre
+nego što se dotakne Kadrovska (PII, zarade, najgušći authz).
+
+---
+
+## 3. Faza 1.5 — 1.0 sa Supabase clouda na on-prem PG (KADA i KAKO)
+
+**Cilj:** 1.0 radi na našem Ubuntu serveru (isti kao 2.0), **kod 1.0 nepromenjen** — menja se samo API URL +
+ključevi (sav data-access ide kroz `sbReq` wrapper). Posle 1.5 migracija podataka NESTAJE kao poseban posao u
+3.0 (NestJS se u 3.0 kači na istu bazu). Detalji: **1.0 repo → docs/db/MIGRACIJA_NA_POSTGRESQL.md**.
+
+**Obuhvat (ne samo PostgREST+GoTrue):**
+- [ ] **PostgreSQL 17** + ekstenzije (pg_cron, pgcrypto, uuid-ossp, btree_gist, pg_safeupdate) — pored 2.0 PG.
+- [ ] **PostgREST** → `/rest/v1` (ista gramatika — front netaknut).
+- [ ] **GoTrue** → `/auth/v1` (login, refresh, recovery, **passkeys** — verzija sa WebAuthn). Rizik-odluka:
+      ako self-hosted GoTrue nema kompatibilan passkey API → svesno žrtvovati passkeys (svi imaju lozinku),
+      NE blokirati migraciju.
+- [ ] **storage-api** → `/storage/v1` (fajlovi na disku/MinIO; provera sign gramatike).
+- [ ] **12 edge funkcija** → Node worker (`/functions/v1`), dispatcheri kao interval petlje nad outbox tabelama.
+- [ ] **pg_cron ekvivalenti** (17–26 poslova) + 5 outbox tabela + heartbeat monitoring od prvog dana.
+- [ ] **Realtime → polling** (jedina upotreba = indikator u grid-u sati; degradira se, servis se NE diže).
+- [ ] **Cloudflare Tunnel** → javna adresa OSTAJE ista (`servosync.servoteh.com`) — ključno za passkeys RP ID
+      i mobilne (bez novog APK-a).
+- [ ] **pgBackRest** + noćni logički dump off-site + testiran restore.
+
+**Kada:** pre pilota 3.0. To je infra posao (~2–3 nedelje po proceni), odvojen od NestJS razvoja; može teći dok
+2.0 tim radi domenske module. **Preduslov:** sanacija audit nalaza K1–K3
+(**1.0 repo → docs/db/IZVESTAJ_AUDIT_2026-07-04.md**) — migrira se čista baza.
+
+**Posle 1.5 obe baze su PG na istom serveru** → „otvaranje tabela" između njih postaje lako (§4).
+
+---
+
+## 4. „Otvaranje tabela" i spajanje domena (KADA i KAKO)
+
+Posle 1.5 imamo **dve PG baze/šeme na istom serveru** (1.0 i 2.0). Ne spajaju se prvog dana u jednu — spajaju
+se **po domenu, kad taj modul dođe na red** u 3.0. Pravila (iz ROADMAP „Sync tokom tranzicije"):
+
+- **Jedan izvor istine po tabeli, jednosmerno po tabeli.** „Oba smera" = više jednosmernih tokova, nikad
+  dvosmerno na istim redovima (izbegava konflikt-pakao).
+- **PG↔PG je lako** (obe strane Postgres): opcija A — reuse `bb-sync` framework sa novim `SourceConnector`
+  (čita 1.0 bazu); opcija B — `postgres_fdw`; opcija C — logička replikacija. Za matične podatke (stotine
+  redova) trošak je mali.
+- **Stabilan ključ mapiranja** (`legacy_*` na obe strane) + **delete/tombstone** strategija su jedini pravi trošak.
+- Svaki most ima **„sunset" datum** — umire čim se modul integriše u 3.0.
+
+### 4.1 Zaposleni — 1.0 `employees` je i ostaje izvor istine (ODLUKA #7)
+
+**`employees` (1.0) ostaje aktivan i vlasnik podataka o osobama.** Razlog: 38 kolona (matični, datum rođenja,
+adresa, banka, obrazovanje, lekarski, hitni kontakt, tim…) i **živ istorijat koji se prati** — nemerljivo
+bogatiji od 2.0 `workers` (16 kolona: login, kartica, radna jedinica, `defines_launch/approval`).
+
+| | 1.0 `employees` | 2.0 `workers` |
+|---|---|---|
+| Uloga | **person-master** (osoba, HR) — izvor istine | **operater-profil** (ko radi/potpisuje/lansira RN) |
+| Ključ | `uuid` | `integer` (legacy QBigTehn id) |
+| Vlasništvo u 3.0 | 1.0 / Kadrovska modul (migrira POZNO) | 2.0 (proizvodnja) |
+
+**Problem:** nema zajedničkog tvrdog ključa (mereno 8.7): matični 0/169 u `workers`; `card_id` 169/169 u
+`workers` vs `card_barcode` 0/155 u `employees`; ime = samo fuzzy (100/169).
+
+**Model spajanja:**
+1. **`worker_employee_map`** (mapping tabela sa potvrdom — isti obrazac koji 1.0 već ima za prisustvo
+   `katze_employee_map`: `match_method`, `confirmed_by`, `confirmed_at`). Seed = fuzzy po imenu → **čovek potvrdi**.
+2. **Uspostaviti tvrd ključ za ubuduće:** popuniti `card_id` ↔ `card_barcode` (ili matični) na jednoj strani.
+   *Otvoreno pitanje (Nesa/kadrovska): da li je `card_id` iz QBigTehn-a ista fizička kartica kao `card_barcode`
+   u 1.0? Ako da → najbrži tvrd ključ.*
+3. **`users.worker_id` FK** (već u 2.0 authz skeletonu) je most JWT-user → `worker` → (preko mape) → `employee`.
+   Tako proizvodni događaj (otkucana operacija) zna i koja je HR-osoba.
+4. **Smer podataka:** `employees` → `workers` je **jednosmerni pull** samo za identitet/display; proizvodna
+   polja (kartica, `machine_access`, `defines_*`) žive na `workers`/overlay, HR polja na `employees`. **Nijedna
+   tabela ne pokušava da poseduje oboje.** Ako 2.0 vraća nešto HR-u (npr. sati) → **zaseban push u zasebnu tabelu**.
+
+**Kada:** mapping se postavlja rano (već sada koristan — 2.0 proizvodnja referencira `workers`), ali **pun
+Kadrovska modul migrira pozno** u 3.0-D (rich šema se čuva, ne stapa se u `workers`).
+
+### 4.2 Lokacije — `loc_*` (1.0) je jedinstveni sistem (INTEGRACIJA §3)
+
+- **Fizičke lokacije = `loc_*` model iz 1.0** (hijerarhija, placements, movements ledger, offline
+  `client_event_uuid`) — jasno napredniji → postaje jedinstven sistem lokacija u 3.0.
+- **2.0 `part_locations` = praćenje proizvodnje** (koliko komada RN/pozicije je na kom kvalitetu/koraku), NE
+  fizička polica → mapira se na proizvodni status, ne na `loc_locations`.
+- ⚠️ **Kritičan most pri gašenju QBigTehn-a:** 1.0 loc modul zavisi od žive QBigTehn baze u OBA smera
+  (auto-ingest gde je deo na mašini iz `tTehPostupak`; outbound `sp_ApplyLocationEvent`). Pri cutover-u 2.0
+  preuzima proizvodnju kao vlasnik → 1.0 loc ingest se **repointuje sa QBigTehn cache-a na ServoSync
+  `tech_processes`**, outbound se gasi/preusmerava. **Ne gasiti QBigTehn dok ovaj most nije prebačen.**
+
+### 4.3 Ostala preklapanja imena (usaglasiti pre stapanja)
+
+`projects` (2.0 = predmeti 7.602 ≠ 1.0 = interni projekti 23) · `departments` (1.0 = izvor istine, 13 vs 1) ·
+`audit_log` (dve šeme → objediniti) · crteži (2.0 pun PDM vs 1.0 samo referencira). **Ne stapati naslepo po imenu.**
+
+---
+
+## 5. Modul-tracker (3.0)
+
+Legenda statusa: ⬜ nije poč(e)to · 🟡 u toku · ✅ gotovo (živo). „Authz težina" = koliko je authz paritet
+težak za taj modul. Sve iz 1.0 su **owner** (ServoSync piše).
+
+| Modul (1.0) | Faza | Authz izvor & težina | Ključne teškoće | Zavisnosti | BE | FE | Mob | Status |
+|---|---|---|---|---|---|---|---|---|
+| **Lokacije** (`loc_*`) | 3.0-B/C | scoped write; srednje | most na `tech_processes` (§4.2); offline ledger | 2.0 proizvodnja | ⬜ | ⬜ | ⬜ | ⬜ |
+| **Reversi** | 3.0-B | modul-manager write; srednje | transakcioni inventar RPC → NestJS tx; idempotencija | — | ⬜ | ⬜ | ⬜ | ⬜ |
+| **Sastanci** | 3.0-D | participant-scoped; srednje | `is_sastanak_ucesnik` scope; storage (PDF arhiva) | storage | ⬜ | ⬜ | ⬜ | ⬜ |
+| **Plan montaže** | 3.0-D | per-projekat (`has_edit_role`); srednje | project-scope + `tim_lider` (≠`sef`!) | employees map | ⬜ | ⬜ | ⬜ | ⬜ |
+| **Plan proizvodnje** | 3.0-D | modul-manager; srednje | overlay nad 2.0 RN/proizvodnjom | 2.0 RN | ⬜ | ⬜ | ⬜ | ⬜ |
+| **Praćenje proizvodnje** ⚠️ | 3.0-D | **dinamičke `format()` politike; VISOKA** | non-public `production/core/pdm` šeme; realtime unos | 2.0 proizvodnja, realtime | ⬜ | ⬜ | ⬜ | ⬜ |
+| **Projektni biro (PB)** | 3.0-D | `inzenjer`/`projektant_vodja` + `finalni_potpisnik`; srednje | per-user override flag | employees map | ⬜ | ⬜ | ⬜ | ⬜ |
+| **Održavanje (CMMS)** ⚠️ | 3.0-D | **odvojen role sistem (`maint_user_profiles`); VISOKA** | machine-scope; `auth.uid()` (ne email); RBAC_MATRIX preskače | employees map | ⬜ | ⬜ | ⬜ | ⬜ |
+| **Štampa nalepnica** | 3.0-D | modul-manager; nisko | veže se na print servis | print | ⬜ | ⬜ | ⬜ | ⬜ |
+| **SCADA / Energetika** ⚠️ | 3.0-D | **`scada_*` + service_role bridge; VISOKA** | safety sloj za komande; hardware; RBAC_MATRIX preskače | SCADA VM | ⬜ | ⬜ | ⬜ | ⬜ |
+| **Moj profil / Podešavanja (RBAC admin)** | 3.0-D | admin; srednje | mesto gde se admin-ira RBAC | user_roles | ⬜ | ⬜ | ⬜ | ⬜ |
+| **Kadrovska (HR)** | 3.0-D (POZNO) | **PII + zarade admin-only; NAJVIŠA** | `employees` = izvor istine (§4.1); `v_employees_safe` maska; zarade immutability | employees master | ⬜ | ⬜ | ⬜ | ⬜ |
+
+> ⚠️ = „skriveni modul" koji auto-`RBAC_MATRIX.md` preskače → authz OBAVEZNO povući sa žive `pg_policies`.
+> Kadrovska namerno ide poslednja: najgušći authz + PII + zarade; `employees` ostaje aktivan izvor istine celo vreme.
+
+---
+
+## 6. Mobilni šavovi (Capacitor ostaje — 5 tačaka)
+
+Ljuska i native plugini preživljavaju (`server.url` → web, javna adresa ista zbog Tunnel odluke; nov APK samo
+ako se adresa promeni). Prevodi se 5 veza sa Supabase-om, ne aplikacija:
+
+- [ ] **Offline queue** (~424 LOC) — čuva PostgREST putanje, replay; prepisati na NestJS ugovor uz očuvanu
+      idempotenciju (`client_event_uuid`). ⚠️ najopasnija tačka: greška = tihi duplikati u magacinu.
+- [ ] **Auth tok** — GoTrue PKCE/refresh/**passkeys** utkani u `sbReq` → NestJS JWT refresh + WebAuthn iznova.
+- [ ] **Push** — FCM v1 / APNs / Web Push VAPID dispatch prelazi sa Supabase edge sloja u NestJS; native plugin ostaje.
+- [ ] **Realtime** (`work_hours`) — `postgres_changes` → WS gateway ili LISTEN/NOTIFY.
+- [ ] **Service worker / PWA keš** — Workbox regex ima hardkodovane Supabase URL-ove → ažurirati na nove API putanje.
+
+Mobilni UI ekrani (~7.3K LOC) idu kroz istu preradu kao desktop — nisu poseban trošak.
+
+---
+
+## 7. Authz paritet — kontrolna lista po modulu (obrazac)
+
+Za svaki modul u 3.0, pre „gotovo":
+- [ ] Povučene žive politike modula sa `pg_policies` (NE iz RBAC_MATRIX.md).
+- [ ] Coarse sloj: `@RequirePermission('modul.akcija')` na endpointima.
+- [ ] Row sloj: `ScopeService` builder(i) — `scopeOwn` / `scopeManagedDepartments` / `scopeProject` /
+      `scopeMachineAccess` / `scopeUnlocked` po potrebi.
+- [ ] Mutaciona pravila u servisu: zaključavanja (lock/finished), flag provere (`definesLaunch`),
+      no-client-write tabele (audit/history piše samo servis).
+- [ ] SECURITY DEFINER RPC-ovi modula → NestJS servisne metode u transakciji + provera role u telu.
+- [ ] Storage bucket authz → presigned + ista provera u aplikaciji.
+- [ ] **e2e permission matrica** (rola × endpoint × 200/403 + row-scope asercije) — bez ovoga se paritet ne dokazuje.
+
+## 8. Cutover — kontrolna lista (kraj 3.0)
+
+- [ ] Freeze izmena šeme; poslednji delta resync po restrukturiranim domenima (transform, ne plain copy).
+- [ ] Smoke test novog stacka (login lozinka + passkey, RPC uzorak, upload/sign, mejl iz outboxa, push).
+- [ ] Env promena svuda (CF Pages, GitHub Secrets, `.env`, SW regex, mobilni `server.url` ako se menja adresa).
+- [ ] Rebuild + deploy; **grep živog bundle-a** za novi URL (SW drži stari bundle satima).
+- [ ] Supabase/stari izvor → read-only, rollback prozor 7–14 dana.
+- [ ] Gase se PostgREST/GoTrue (1.0) **i** QBigTehn sync (2.0) — cilj: isti prozor (ako write-paritet + usvajanje gotovi).
+- [ ] Loc most (§4.2) prebačen PRE gašenja QBigTehn-a.
+
+---
+
+## 9. Otvorena pitanja (za tim)
+
+1. **`card_id` (QBigTehn) == `card_barcode`/katze (1.0)?** Ako da → tvrd ključ za spajanje zaposlenih (§4.1).
+2. **`part_locations` (2.0)** = fizička pozicija ili proizvodni status? (Negovan; §4.2).
+3. **1.5 obuhvat i tempo** — potvrditi verzije komponenti (pinned) i redosled infra koraka.
+4. Koje su matične tabele „deljene" od prvog dana 3.0 (departments, auth) a koje ostaju po modulu.
+
+## 10. Changelog
+
+| Datum | Šta |
+|---|---|
+| 2026-07-09 | Prva verzija. Konsoliduje ROADMAP + AUTHZ_UNIFIED + INTEGRACIJA + RBAC_RLS_PREDLOG + migration/03,16 + DESIGN_SYSTEM. Ugrađuje odluke sesije 09.07: 1.5 pre 3.0 (§3), zaposleni = 1.0 izvor istine i aktivni (§4.1), responsivnost V1 zahtev (§1.8). Modul-tracker §5. |
