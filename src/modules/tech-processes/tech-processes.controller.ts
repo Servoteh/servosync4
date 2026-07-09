@@ -97,22 +97,25 @@ export class TechProcessesController {
     return this.techProcesses.label(query);
   }
 
+  // Kiosk (pogon): prijava rada = `tehnologija.report_work` (radnik/tehnolog/CNC/šef),
+  // finalna kontrola = `tehnologija.approve` (kontrolor/šef/menadžment). Poravnato sa nav
+  // gejtovanjem (Kucanje=report_work, Kontrola=approve) da enforce ne blokira pogon.
   @Post("barcode/decode")
   @HttpCode(200) // čist parse/read — ništa se ne kreira, ne 201
-  @RequirePermission(PERMISSIONS.TEHNOLOGIJA_WRITE)
+  @RequirePermission(PERMISSIONS.TEHNOLOGIJA_REPORT_WORK)
   decodeBarcode(@Body() dto: DecodeBarcodeDto) {
     validateDecodeBarcode(dto);
     return this.techProcesses.decodeBarcode(dto.barcode);
   }
 
   @Post("scan")
-  @RequirePermission(PERMISSIONS.TEHNOLOGIJA_WRITE)
+  @RequirePermission(PERMISSIONS.TEHNOLOGIJA_REPORT_WORK)
   scan(@Body() dto: ScanTechProcessDto) {
     return this.techProcesses.scan(dto);
   }
 
   @Post(":id/finish")
-  @RequirePermission(PERMISSIONS.TEHNOLOGIJA_WRITE)
+  @RequirePermission(PERMISSIONS.TEHNOLOGIJA_REPORT_WORK)
   finish(
     @Param("id", ParseIntPipe) id: number,
     @Body() dto: FinishTechProcessDto,
@@ -121,7 +124,7 @@ export class TechProcessesController {
   }
 
   @Post("control")
-  @RequirePermission(PERMISSIONS.TEHNOLOGIJA_WRITE)
+  @RequirePermission(PERMISSIONS.TEHNOLOGIJA_APPROVE)
   control(@Body() dto: ControlTechProcessDto) {
     return this.techProcesses.control(dto);
   }
