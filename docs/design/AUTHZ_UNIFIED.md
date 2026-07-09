@@ -186,7 +186,21 @@ Sve ostalo (DB CHECK, `/me/permissions`, FE dropdown) se **izvodi** iz ova dva (
 - [ ] Nedelju dana na prod → pregled `SHADOW would-deny` logova pre enforce-a.
 
 ### Faza 3 — enforce
-- [ ] `AUTHZ_ENFORCE=true` (rollback = env promena + restart, bez deploy-a).
+> **Coverage audit (2026-07-09):** svi `@RequirePermission` ključevi u upotrebi pokriveni; `admin` = sve.
+> Jedini živi ne-admin nalog `tehnolog` bi pod enforce izgubio (SVE namerno po matrici §3):
+> `strukture.write`, `lokacije.write`, `primopredaje.approve`, `sync.*`. Nema nenamernih uskraćenja.
+>
+> **Mehanizam flipa je SERVER-SIDE** (backend servis + env žive u override compose na serveru, ne u gitu):
+> ```
+> ssh ubuntusrv
+> cd ~/servosync/backend            # dodaj AUTHZ_ENFORCE=true u backend env (override compose / .env)
+> sudo docker compose up -d backend # restart (rollback = ukloni var + isti restart)
+> ```
+> **Preduslov za čist enforce:** frontend gejtuje glavne akcije, ali edit/delete redova (structures,
+> part-locations parts) i handover-approve NISU još iza `<Can>` → `tehnolog` bi na klik dobio čist 403
+> (poruka, ne kvar). Realni rizik nizak (tehnolog ne radi te akcije); polish = dovršiti `<Can>` pre flipa.
+- [ ] `AUTHZ_ENFORCE=true` na serveru (rollback = env promena + restart, bez deploy-a).
+- [ ] (polish) `<Can>` na preostale edit/delete/approve da nema 403-na-klik.
 - [ ] e2e permission matrica (rola × endpoint × 200/403) — samo za endpoin­te koji postoje; raste sa modulima.
 
 ### Faza 4 — row-scope (jedini pravi row-scoping u 2.0) — ✅ temelj 2026-07-09
