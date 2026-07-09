@@ -1256,7 +1256,7 @@ export class TechProcessesService {
     tx: Prisma.TransactionClient,
   ): Promise<void> {
     await tx.$executeRawUnsafe(
-      `SELECT setval(pg_get_serial_sequence('part_locations','id'), (SELECT COALESCE(MAX(id),0) FROM part_locations))`,
+      `SELECT setval(pg_get_serial_sequence('part_locations','id'), COALESCE((SELECT MAX(id) FROM part_locations),1), EXISTS(SELECT 1 FROM part_locations))`,
     );
   }
 
@@ -1268,7 +1268,7 @@ export class TechProcessesService {
     tx: Prisma.TransactionClient,
   ): Promise<void> {
     await tx.$executeRawUnsafe(
-      `SELECT setval(pg_get_serial_sequence('tech_processes','id'), (SELECT COALESCE(MAX(id),0) FROM tech_processes))`,
+      `SELECT setval(pg_get_serial_sequence('tech_processes','id'), COALESCE((SELECT MAX(id) FROM tech_processes),1), EXISTS(SELECT 1 FROM tech_processes))`,
     );
   }
 

@@ -261,9 +261,7 @@ export class WorkOrdersService {
     const created = await this.prisma.$transaction(async (tx) => {
       // Sync postavlja eksplicitne legacy id-jeve; poravnaj sekvencu pre insert-a
       // da autoincrement ne kolidira sa uvezenim redovima.
-      await tx.$executeRawUnsafe(
-        `SELECT setval(pg_get_serial_sequence('work_orders','id'), (SELECT COALESCE(MAX(id),0) FROM work_orders))`,
-      );
+      await this.alignSeq(tx, "work_orders");
       const { identNumber, variant } = await this.numbering.next(
         tx,
         dto.projectId,
@@ -1043,28 +1041,28 @@ export class WorkOrdersService {
   }
 
   /**
-   * Poravnaj `work_orders` sekvencu sa MAX(id) — sync uvozi eksplicitne legacy
-   * id-jeve, pa autoincrement inače kolidira (isti obrazac kao `create()`).
+   * Poravnaj identity sekvencu tabele sa MAX(id). Koristi **3-arg `setval`** sa
+   * `is_called = EXISTS(rows)` → na PRAZNOJ tabeli postavlja `is_called=false` (sledeći
+   * `nextval` = 1) umesto `setval(seq,0)` koji puca (`22003`, min sekvence je 1).
+   * `table` je literal iz koda (nije korisnički unos). Sync uvozi eksplicitne legacy
+   * id-jeve → autoincrement inače kolidira sa uvezenim redovima.
    */
-  private async alignWorkOrderSequence(tx: Prisma.TransactionClient) {
+  private async alignSeq(tx: Prisma.TransactionClient, table: string) {
     await tx.$executeRawUnsafe(
-      `SELECT setval(pg_get_serial_sequence('work_orders','id'), (SELECT COALESCE(MAX(id),0) FROM work_orders))`,
+      `SELECT setval(pg_get_serial_sequence('${table}','id'), COALESCE((SELECT MAX(id) FROM ${table}),1), EXISTS(SELECT 1 FROM ${table}))`,
     );
   }
 
-  /** Poravnaj sekvence 4 tabela stavki sa MAX(id) (vidi `alignWorkOrderSequence`). */
+  /** Poravnaj `work_orders` sekvencu (vidi `alignSeq`). */
+  private async alignWorkOrderSequence(tx: Prisma.TransactionClient) {
+    await this.alignSeq(tx, "work_orders");
+  }
+
+  /** Poravnaj sekvence 4 tabela stavki (vidi `alignSeq`). */
   private async alignItemSequences(tx: Prisma.TransactionClient) {
-    await tx.$executeRawUnsafe(
-      `SELECT setval(pg_get_serial_sequence('work_order_operations','id'), (SELECT COALESCE(MAX(id),0) FROM work_order_operations))`,
-    );
-    await tx.$executeRawUnsafe(
-      `SELECT setval(pg_get_serial_sequence('work_order_nonstandard_parts','id'), (SELECT COALESCE(MAX(id),0) FROM work_order_nonstandard_parts))`,
-    );
-    await tx.$executeRawUnsafe(
-      `SELECT setval(pg_get_serial_sequence('work_order_machined_parts','id'), (SELECT COALESCE(MAX(id),0) FROM work_order_machined_parts))`,
-    );
-    await tx.$executeRawUnsafe(
-      `SELECT setval(pg_get_serial_sequence('work_order_blanks','id'), (SELECT COALESCE(MAX(id),0) FROM work_order_blanks))`,
-    );
+    await this.alignSeq(tx, "work_order_operations");
+    await this.alignSeq(tx, "work_order_nonstandard_parts");
+    await this.alignSeq(tx, "work_order_machined_parts");
+    await this.alignSeq(tx, "work_order_blanks");
   }
 }
