@@ -324,6 +324,11 @@ export interface ControlResult {
   label: LabelData;
   /** true = dorada/škart — child RN (-D/-S) je P2 (još se ne kreira). */
   childOrderPending: boolean;
+  /**
+   * A-5 (shadow): upozorenja o ovlašćenju kontrolora / razdvajanju dužnosti — null ako je
+   * sve u redu. Dok je AUTHZ_ENFORCE isključen, kontrola prolazi uz upozorenje (ne blokira).
+   */
+  controllerWarnings: string[] | null;
 }
 
 /** Razreši radnika iz ID kartice (kiosk login). 404 ako kartica nije poznata. */

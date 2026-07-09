@@ -396,10 +396,13 @@ export function KioskScanner({ workerName }: { workerName: string }) {
       const parts = [`Iskontrolisano ${formatNumber(data.controlledPieces)} kom`];
       if (data.workOrderCompleted) parts.push('Radni nalog je završen.');
       if (data.childOrderPending) parts.push('Nalog za doradu/škart sledi u narednoj fazi.');
+      // A-5 (shadow): upozorenje o ovlašćenju kontrolora / razdvajanju dužnosti — istaknuto.
+      const warned = !!data.controllerWarnings?.length;
+      if (warned) parts.unshift(`⚠ ${data.controllerWarnings!.join(' · ⚠ ')}`);
 
       if (print.ok) {
         setFeedback({
-          tone: 'success',
+          tone: warned ? 'info' : 'success',
           title: `Kontrola završena · nalepnice poslate (${formatNumber(data.controlledPieces)})`,
           detail: parts.join(' · '),
         });
