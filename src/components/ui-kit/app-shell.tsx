@@ -12,6 +12,8 @@ import {
   PackageCheck,
   PencilRuler,
   RefreshCw,
+  ScanLine,
+  ShieldCheck,
   ShoppingCart,
   Users,
   Workflow,
@@ -27,7 +29,11 @@ interface NavItem {
 }
 
 // Moduli iz DESIGN_SYSTEM.md §4. Bez href = placeholder (seli se u 3.0).
+// Kucanje/Kontrola vode na pogonski kiosk (full-screen terminal, bez sidebar-a);
+// kiosk sam bira režim po skeniranoj operaciji (`significantForFinishing`).
 const NAV: NavItem[] = [
+  { label: 'Kucanje (pogon)', href: '/kiosk', icon: ScanLine },
+  { label: 'Kontrola (pogon)', href: '/kiosk', icon: ShieldCheck },
   { label: 'Radni nalozi', href: '/work-orders', icon: ClipboardList },
   { label: 'Tehnološki postupci', href: '/tech-processes', icon: Workflow },
   { label: 'PDM / Crteži', href: '/pdm', icon: DraftingCompass },
