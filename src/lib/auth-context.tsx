@@ -9,13 +9,20 @@ import {
 } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { getToken, setToken } from '@/api/client';
-import { useLogin, useMe, type PublicUser } from '@/api/auth';
+import { useLogin, useMe, useMyPermissions, type PublicUser } from '@/api/auth';
+import type { Permission } from '@/lib/permissions';
 
 interface AuthContextValue {
   user: PublicUser | null;
   isLoading: boolean;
   login: (email: string, password: string) => Promise<void>;
   logout: () => void;
+  /** Permission keys granted to the current user (empty until loaded). */
+  permissions: ReadonlySet<string>;
+  /** True if the user's role grants `permission`. Fail-closed while loading. */
+  can: (permission: Permission) => boolean;
+  /** Backend enforcement state (false = shadow mode). Informational for the UI. */
+  enforced: boolean;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -32,6 +39,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const meQuery = useMe(ready && hasToken);
+  const permsQuery = useMyPermissions(ready && hasToken);
 
   // A rejected `me` (expired/invalid token) drops us back to logged-out.
   useEffect(() => {
@@ -52,11 +60,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     qc.clear();
   };
 
+  const permissions: ReadonlySet<string> = new Set(
+    hasToken ? (permsQuery.data?.permissions ?? []) : [],
+  );
+
   const value: AuthContextValue = {
     user: hasToken ? (meQuery.data ?? null) : null,
     isLoading: !ready || (hasToken && meQuery.isPending),
     login,
     logout,
+    permissions,
+    can: (permission) => permissions.has(permission),
+    enforced: permsQuery.data?.enforced ?? false,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

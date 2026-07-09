@@ -25,6 +25,23 @@ export function useMe(enabled: boolean) {
   });
 }
 
+export interface MyPermissions {
+  role: string;
+  permissions: string[];
+  /** true = backend also denies (403); false = shadow mode (evaluate+log, allow). */
+  enforced: boolean;
+}
+
+/** Role-derived permission keys for the logged-in user (AUTHZ_UNIFIED §8 Faza 2). */
+export function useMyPermissions(enabled: boolean) {
+  return useQuery({
+    queryKey: ['me', 'permissions'],
+    queryFn: () => apiFetch<MyPermissions>('/auth/me/permissions'),
+    enabled,
+    retry: false,
+  });
+}
+
 /** Email + password login; stores the token and primes the `me` cache. */
 export function useLogin() {
   const qc = useQueryClient();

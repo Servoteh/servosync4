@@ -21,35 +21,43 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { useAuth } from '@/lib/auth-context';
+import { PERMISSIONS, type Permission } from '@/lib/permissions';
 
 interface NavItem {
   label: string;
   href?: string;
   icon: LucideIcon;
+  /** Modul je vidljiv u nav-u samo ako uloga ima ovu permisiju (AUTHZ_UNIFIED §8 Faza 2b). */
+  requires?: Permission;
 }
 
 // Moduli iz DESIGN_SYSTEM.md §4. Bez href = placeholder (seli se u 3.0).
 // Kucanje/Kontrola vode na pogonski kiosk (full-screen terminal, bez sidebar-a);
 // kiosk sam bira režim po skeniranoj operaciji (`significantForFinishing`).
+// `requires` = read/akcija permisija modula (vidljivost = paritet matrice RBAC §3).
 const NAV: NavItem[] = [
-  { label: 'Kucanje (pogon)', href: '/kiosk', icon: ScanLine },
-  { label: 'Kontrola (pogon)', href: '/kiosk', icon: ShieldCheck },
-  { label: 'Radni nalozi', href: '/work-orders', icon: ClipboardList },
-  { label: 'Tehnološki postupci', href: '/tech-processes', icon: Workflow },
-  { label: 'PDM / Crteži', href: '/pdm', icon: DraftingCompass },
-  { label: 'Nacrti', href: '/handovers', icon: PencilRuler },
-  { label: 'Primopredaje', href: '/handovers', icon: PackageCheck },
-  { label: 'Lokacije delova', href: '/part-locations', icon: MapPin },
-  { label: 'Proizvodne strukture', href: '/structures', icon: Users },
-  { label: 'MRP / Nabavka', href: '/mrp', icon: ShoppingCart },
-  { label: 'Komitenti', href: '/customers', icon: Building2 },
-  { label: 'Predmeti', href: '/projects', icon: Briefcase },
-  { label: 'Sinhronizacije', href: '/syncs', icon: RefreshCw },
+  { label: 'Kucanje (pogon)', href: '/kiosk', icon: ScanLine, requires: PERMISSIONS.TEHNOLOGIJA_REPORT_WORK },
+  { label: 'Kontrola (pogon)', href: '/kiosk', icon: ShieldCheck, requires: PERMISSIONS.TEHNOLOGIJA_APPROVE },
+  { label: 'Radni nalozi', href: '/work-orders', icon: ClipboardList, requires: PERMISSIONS.RN_READ },
+  { label: 'Tehnološki postupci', href: '/tech-processes', icon: Workflow, requires: PERMISSIONS.TEHNOLOGIJA_READ },
+  { label: 'PDM / Crteži', href: '/pdm', icon: DraftingCompass, requires: PERMISSIONS.PDM_READ },
+  { label: 'Nacrti', href: '/handovers', icon: PencilRuler, requires: PERMISSIONS.PRIMOPREDAJE_READ },
+  { label: 'Primopredaje', href: '/handovers', icon: PackageCheck, requires: PERMISSIONS.PRIMOPREDAJE_READ },
+  { label: 'Lokacije delova', href: '/part-locations', icon: MapPin, requires: PERMISSIONS.LOKACIJE_READ },
+  { label: 'Proizvodne strukture', href: '/structures', icon: Users, requires: PERMISSIONS.STRUKTURE_READ },
+  { label: 'MRP / Nabavka', href: '/mrp', icon: ShoppingCart, requires: PERMISSIONS.MRP_READ },
+  { label: 'Komitenti', href: '/customers', icon: Building2, requires: PERMISSIONS.DIRECTORY_READ },
+  { label: 'Predmeti', href: '/projects', icon: Briefcase, requires: PERMISSIONS.DIRECTORY_READ },
+  { label: 'Sinhronizacije', href: '/syncs', icon: RefreshCw, requires: PERMISSIONS.SYNC_READ },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const { user, logout } = useAuth();
+  const { user, logout, can } = useAuth();
+
+  // Vidljivi moduli po ulozi. Admin ima sve permisije → vidi ceo nav.
+  // (Backend je izvor istine — ovo samo krije afordanse; guard i dalje čuva rute.)
+  const visibleNav = NAV.filter((item) => !item.requires || can(item.requires));
 
   return (
     <div className="flex min-h-full flex-1">
@@ -58,7 +66,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           ServoSync
         </div>
         <nav className="flex-1 space-y-0.5 px-2 py-2">
-          {NAV.map((item) => {
+          {visibleNav.map((item) => {
             const active = item.href && pathname === item.href;
             const Icon = item.icon;
             const inner = (
