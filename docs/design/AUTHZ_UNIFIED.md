@@ -131,6 +131,24 @@ Ovaj dokument dodaje **izvor istine za V2 aktivaciju**:
 **V2 aktivacija = konfiguracija, ne prepravka kontrolera:** uključi logiku u `PermissionsGuard`
 (`roleHasPermission`) + seed `user_roles`. Kontroleri se ne diraju.
 
+### 6.1 Preduslovi aktivacije — da ne zaključamo produkciju
+
+Radimo **direktno na produkciji (bez staging-a)** → aktivacija guard-a mora biti fazna:
+
+1. **Normalizacija podataka:** živi `users.role` drži `'ADMIN'`/`'USER'` (uppercase), katalog je lowercase.
+   Bez `UPDATE users SET role = lower(role)` aktivacija bi **odbila i admina** (lockout). Kod ima i
+   defanzivnu normalizaciju (`normaliseRole()` u `role-permissions.ts`) — ali data-migracija je obavezna;
+   `'user'` je prelazna uloga → mapira se u `viewer`.
+2. **SHADOW MODE prvo (obavezno):** guard se prvo pušta u *log-only* režimu — env flag (npr.
+   `AUTHZ_ENFORCE=false` default): guard **izračuna** odluku, **loguje** would-be `403` (user, uloga,
+   permisija, endpoint), ali **pušta** zahtev. Nedelju dana na prod → pregled logova → tek onda
+   `AUTHZ_ENFORCE=true`. Ovo je jedina bezbedna aktivacija bez staging okruženja.
+3. **JWT most:** dok `user_roles` tabela ne zaživi, guard čita jednu ulogu iz `users.role` (JWT `role`
+   claim); posle migracije prelazi na union preko `user_roles` + `UserPermissionOverride`
+   (deny > grant > rola). `permissionsForRoles()` je rola-sloj — override se primenjuje POSLE uniona.
+4. **Break-glass:** pre flipa na enforce, potvrditi da bar dva naloga imaju `admin` (i da je
+   `AUTHZ_ENFORCE=false` rollback = restart sa env promenom, bez deploy-a).
+
 ## 7. Lanac dodavanja uloge u 2.0 (paralela 1.0 „7 mesta")
 
 1.0 ima 7-mesto lanac (taxonomy §5) — dupliranje liste na 4 mesta je rizik drifta. **2.0 svodi na 2 izvora:**

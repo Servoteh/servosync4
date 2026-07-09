@@ -35,6 +35,10 @@ CREATE TABLE IF NOT EXISTS user_roles (
   CONSTRAINT uq_user_roles UNIQUE (user_id, role, scope_type, scope_id)
 );
 CREATE INDEX IF NOT EXISTS idx_user_roles_user ON user_roles(user_id) WHERE is_active;
+-- NAPOMENA (svesno odstupanje od 1.0): BEZ DB CHECK-a na `role` (1.0 ima user_roles_role_allowed).
+-- BACKEND_RULES §2: role su String bez enuma da nova uloga ne traži migraciju. Validacija dodele
+-- se radi u aplikaciji (`isKnownRole()` iz src/common/authz/roles.ts) na admin endpointu dodele.
+-- Kompenzacija: guard je default-deny (nepoznata uloga = nula permisija), pa upis van kataloga ne eskalira.
 
 -- A.2  Per-user override flagovi (1.0: readonly/access/hide flags). deny > rola.
 CREATE TABLE IF NOT EXISTS user_permission_overrides (
@@ -129,6 +133,9 @@ AS $$
 $$;
 
 -- Managed sub-departments (menadzment/tim_lider Kadrovska/prisustvo scope; 3.0).
+-- PAŽNJA (1.0 semantika): NULL = pun obim važi SAMO za `menadzment` (legacy redovi bez niza);
+-- `tim_lider` MORA imati eksplicitan niz — i provera je ograničena na uloge koje taj scope nose.
+-- (Bez role-filtera bi SVAKI korisnik sa bilo kojim aktivnim role-redom i NULL nizom prošao.)
 CREATE OR REPLACE FUNCTION app_manages_sub_department(p_sub_department_id integer)
 RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER
 SET search_path = public, pg_temp
@@ -136,7 +143,8 @@ AS $$
   SELECT app_is_admin() OR EXISTS (
     SELECT 1 FROM user_roles ur
     WHERE ur.user_id = app_current_user_id() AND ur.is_active
-      AND ( ur.managed_sub_department_ids IS NULL           -- NULL = pun obim (legacy)
+      AND ur.role IN ('menadzment', 'tim_lider')            -- samo uloge koje nose ovaj scope
+      AND ( (ur.role = 'menadzment' AND ur.managed_sub_department_ids IS NULL)  -- NULL=pun obim SAMO menadzment
          OR p_sub_department_id = ANY(ur.managed_sub_department_ids) )
   )
 $$;
@@ -152,9 +160,16 @@ $$;
 -- GRANT USAGE ON SCHEMA public TO servosync_app;
 -- GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO servosync_app;
 --
+-- ⚠️ ZAMKA (anti-rekurzija, 1.0 lekcija 42P17): NE stavljati FORCE ROW LEVEL SECURITY na
+-- `user_roles`. SECURITY DEFINER helperi (app_has_role...) čitaju user_roles i rade upravo zato
+-- što ih owner-bypass pušta; FORCE RLS na user_roles + isti owner = rekurzija/denial.
+-- 1.0 to rešava tako što su helperi u vlasništvu `postgres` a politike važe za `authenticated`.
+-- Pravilo: FORCE RLS na DOMENSKE tabele — na `user_roles` samo ENABLE (politike za app rolu),
+-- helperi ostaju owner-bypass; ili helpere držati pod zasebnim owner-om koji RLS zaobilazi.
+--
 -- Primer politike (kad zatreba, 3.0) — koristi ISTE predikat-funkcije:
 -- ALTER TABLE tech_processes ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE tech_processes FORCE ROW LEVEL SECURITY;   -- da ni owner ne zaobilazi
+-- ALTER TABLE tech_processes FORCE ROW LEVEL SECURITY;   -- da ni owner ne zaobilazi (domenske tabele)
 -- CREATE POLICY tp_read  ON tech_processes FOR SELECT
 --   USING (app_has_role('tehnolog') OR app_has_role('sef') OR app_is_admin()
 --          OR app_has_machine(work_center_code));
