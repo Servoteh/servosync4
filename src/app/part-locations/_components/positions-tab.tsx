@@ -13,6 +13,8 @@ import { EmptyState } from '@/components/ui-kit/empty-state';
 import { SearchBox } from '@/components/ui-kit/search-box';
 import { Pager } from '@/components/ui-kit/pager';
 import { Button } from '@/components/ui-kit/button';
+import { Can } from '@/lib/can';
+import { PERMISSIONS } from '@/lib/permissions';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { FormField, Input } from '@/components/ui-kit/form-field';
 import { formatNumber } from '@/lib/format';
@@ -150,10 +152,12 @@ export function PositionsTab() {
             {meta ? `${formatNumber(meta.total)} pozicija` : ''}
           </span>
         </div>
-        <Button onClick={() => setCreating(true)}>
-          <Plus className="h-4 w-4" aria-hidden />
-          Nova pozicija
-        </Button>
+        <Can permission={PERMISSIONS.LOKACIJE_WRITE}>
+          <Button onClick={() => setCreating(true)}>
+            <Plus className="h-4 w-4" aria-hidden />
+            Nova pozicija
+          </Button>
+        </Can>
       </div>
 
       {list.error && <div className={errorBox}>{(list.error as Error).message}</div>}

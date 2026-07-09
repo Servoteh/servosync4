@@ -24,6 +24,8 @@ import { EmptyState } from '@/components/ui-kit/empty-state';
 import { SearchBox } from '@/components/ui-kit/search-box';
 import { Pager } from '@/components/ui-kit/pager';
 import { Button } from '@/components/ui-kit/button';
+import { Can } from '@/lib/can';
+import { PERMISSIONS } from '@/lib/permissions';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { FormField, Input } from '@/components/ui-kit/form-field';
 import { ComboBox } from '@/components/ui-kit/combo-box';
@@ -664,10 +666,12 @@ export function DraftsTab({ onSubmitted }: { onSubmitted: () => void }) {
             </button>
           )}
         </div>
-        <Button onClick={() => setCreating(true)}>
-          <Plus className="h-4 w-4" aria-hidden />
-          Novi nacrt
-        </Button>
+        <Can permission={PERMISSIONS.PRIMOPREDAJE_WRITE}>
+          <Button onClick={() => setCreating(true)}>
+            <Plus className="h-4 w-4" aria-hidden />
+            Novi nacrt
+          </Button>
+        </Can>
       </div>
 
       {meta && (

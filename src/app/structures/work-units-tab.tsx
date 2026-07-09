@@ -13,6 +13,8 @@ import { EmptyState } from '@/components/ui-kit/empty-state';
 import { SearchBox } from '@/components/ui-kit/search-box';
 import { Pager } from '@/components/ui-kit/pager';
 import { Button } from '@/components/ui-kit/button';
+import { Can } from '@/lib/can';
+import { PERMISSIONS } from '@/lib/permissions';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { FormField, Input } from '@/components/ui-kit/form-field';
 import { ErrorText } from './common';
@@ -127,10 +129,12 @@ export function WorkUnitsTab() {
           }}
           placeholder="Šifra ili naziv…"
         />
-        <Button onClick={() => setCreating(true)}>
-          <Plus className="h-4 w-4" aria-hidden />
-          Nova radna jedinica
-        </Button>
+        <Can permission={PERMISSIONS.STRUKTURE_WRITE}>
+          <Button onClick={() => setCreating(true)}>
+            <Plus className="h-4 w-4" aria-hidden />
+            Nova radna jedinica
+          </Button>
+        </Can>
       </div>
 
       {list.error && (

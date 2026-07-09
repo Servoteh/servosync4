@@ -32,6 +32,8 @@ import { EmptyState } from '@/components/ui-kit/empty-state';
 import { SearchBox } from '@/components/ui-kit/search-box';
 import { Pager } from '@/components/ui-kit/pager';
 import { Button } from '@/components/ui-kit/button';
+import { Can } from '@/lib/can';
+import { PERMISSIONS } from '@/lib/permissions';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { FormField, Input } from '@/components/ui-kit/form-field';
 import { ComboBox } from '@/components/ui-kit/combo-box';
@@ -182,7 +184,7 @@ function WorkOrderDetail({ id }: { id: number }) {
           </button>
         )}
         {!locked && (rn.handoverStatusId === WO_STATUS.IN_PROGRESS || rn.handoverStatusId === WO_STATUS.REJECTED) && (
-          <>
+          <Can permission={PERMISSIONS.RN_APPROVE}>
             <button
               disabled={busy}
               onClick={() => approve.mutate({ id, approve: true })}
@@ -197,16 +199,18 @@ function WorkOrderDetail({ id }: { id: number }) {
             >
               Odbij
             </button>
-          </>
+          </Can>
         )}
         {!locked && rn.handoverStatusId === WO_STATUS.APPROVED && (
-          <button
-            disabled={busy}
-            onClick={() => launch.mutate(id)}
-            className={`${actionBtn} bg-accent text-accent-fg`}
-          >
-            Lansiraj
-          </button>
+          <Can permission={PERMISSIONS.RN_LAUNCH}>
+            <button
+              disabled={busy}
+              onClick={() => launch.mutate(id)}
+              className={`${actionBtn} bg-accent text-accent-fg`}
+            >
+              Lansiraj
+            </button>
+          </Can>
         )}
         <button
           disabled={busy}
@@ -837,10 +841,12 @@ export default function WorkOrdersPage() {
               <CopyPlus className="h-4 w-4" aria-hidden />
               Kloniraj predmet
             </Button>
-            <Button onClick={() => setCreating(true)}>
-              <Plus className="h-4 w-4" aria-hidden />
-              Novi RN
-            </Button>
+            <Can permission={PERMISSIONS.RN_WRITE}>
+              <Button onClick={() => setCreating(true)}>
+                <Plus className="h-4 w-4" aria-hidden />
+                Novi RN
+              </Button>
+            </Can>
           </>
         }
       />
