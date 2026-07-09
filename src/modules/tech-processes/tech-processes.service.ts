@@ -1659,6 +1659,29 @@ export class TechProcessesService {
     const { projectId, identNumber, variant } = order.fields;
     const { operationNumber, workCenterCode, identMark } = operation.fields;
 
+    // A-5: (1) osoba mora biti OVLAŠĆEN kontrolor (sistematizacija „Kontrola" =
+    // workerType.additionalPrivileges) i (2) razdvajanje dužnosti — ne sme da radi završnu
+    // nad sopstvenim proizvodnim radom. Poštuje AUTHZ_ENFORCE kao guard: enforce → 403;
+    // shadow → upozorenje (kontrola dozvoljena, flag u odgovoru). Login-put (rola s
+    // `tehnologija.approve`) pokriva guard nad kontrolerom; ovde je karta-put (izvršilac).
+    const controllerWarnings: string[] = [];
+    if (!(await this.isAuthorizedController(worker.workerTypeId))) {
+      const msg = `Radnik „${worker.fullName ?? worker.username}" nije ovlašćen kontrolor (tip radnika bez kontrolorskih privilegija).`;
+      if (this.scope.isEnforced()) throw new ForbiddenException(msg);
+      this.logger.warn(
+        `SHADOW kontrolor-auth: ${msg} (AUTHZ_ENFORCE=false, kontrola dozvoljena)`,
+      );
+      controllerWarnings.push(msg);
+    }
+    if (await this.selfControlViolation(projectId, identNumber, variant, worker.id)) {
+      const msg = `Razdvajanje dužnosti: „${worker.fullName ?? worker.username}" je evidentirao rad na ovom delu — ne sme da radi završnu kontrolu nad sopstvenim radom.`;
+      if (this.scope.isEnforced()) throw new ForbiddenException(msg);
+      this.logger.warn(
+        `SHADOW self-control: ${msg} (AUTHZ_ENFORCE=false, kontrola dozvoljena)`,
+      );
+      controllerWarnings.push(msg);
+    }
+
     const result = await this.prisma.$transaction(async (tx) => {
       const workOrder = await this.findWorkOrderByTriple(
         tx,
@@ -1809,6 +1832,8 @@ export class TechProcessesService {
         // true = red kontrole je otvoren u ovom pozivu (nije postojao); false = ažuriran postojeći.
         techProcessOpened: result.opened,
         workOrder: result.workOrder,
+        // A-5 (shadow): upozorenja o ovlašćenju kontrolora / razdvajanju dužnosti (null ako OK).
+        controllerWarnings: controllerWarnings.length ? controllerWarnings : null,
         label,
         // Dorada/škart: child RN (-D/-S) + poruka tehnologu su P2.
         childOrderPending,
@@ -2056,6 +2081,45 @@ export class TechProcessesService {
       where,
       orderBy: [{ variant: "desc" }, { isProcessFinished: "asc" }, { id: "asc" }],
     });
+  }
+
+  /**
+   * A-5: da li je radnik OVLAŠĆEN kontrolor — tip radnika ima `additionalPrivileges`
+   * (sistematizacija „Kontrola"; legacy `tVrsteRadnika.DodatnaOvlascenja`). Isti signal kao
+   * `identifyWorker.isController`. Login-put (rola sa `tehnologija.approve`) je zaseban gate na guard-u.
+   */
+  private async isAuthorizedController(workerTypeId: number): Promise<boolean> {
+    if (!workerTypeId) return false;
+    const t = await this.prisma.workerType.findUnique({
+      where: { id: workerTypeId },
+      select: { additionalPrivileges: true },
+    });
+    return t?.additionalPrivileges === true;
+  }
+
+  /**
+   * A-5 razdvajanje dužnosti: da li je radnik evidentirao PROIZVODNI (ne završnu kontrolu)
+   * rad na ovom delu (project+ident+variant). Ako jeste → ne sme da radi završnu kontrolu nad njim.
+   */
+  private async selfControlViolation(
+    projectId: number,
+    identNumber: string,
+    variant: number,
+    workerId: number,
+  ): Promise<boolean> {
+    const rows = await this.prisma.techProcess.findMany({
+      where: { projectId, identNumber, variant, workerId },
+      select: { workCenterCode: true },
+    });
+    if (!rows.length) return false;
+    const codes = [...new Set(rows.map((r) => r.workCenterCode).filter(Boolean))];
+    const sig = await this.prisma.operation.findMany({
+      where: { workCenterCode: { in: codes }, significantForFinishing: true },
+      select: { workCenterCode: true },
+    });
+    const sigSet = new Set(sig.map((o) => o.workCenterCode));
+    // Proizvodni rad = bar jedan red čiji RC NIJE završna kontrola.
+    return rows.some((r) => !sigSet.has(r.workCenterCode));
   }
 
   /**
