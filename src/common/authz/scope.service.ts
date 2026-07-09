@@ -66,4 +66,42 @@ export class ScopeService {
     if (Object.keys(scope).length === 0) return base;
     return { AND: [base, scope] };
   }
+
+  // ---------------------------------------------------------------- MUTATION SCOPE
+
+  /**
+   * Whether authorization has teeth. Same flag as `PermissionsGuard` (AUTHZ_UNIFIED §6.1):
+   * `false` (default) = shadow (evaluate + log, allow); `true` = enforce (block).
+   */
+  isEnforced(): boolean {
+    return process.env.AUTHZ_ENFORCE === "true";
+  }
+
+  /** Work-center codes a specific Worker (barcode-identified, not the JWT user) may operate. */
+  async workerMachineCodes(workerId: number): Promise<string[]> {
+    const rows = await this.prisma.machineAccess.findMany({
+      where: { workerId },
+      select: { workCenterCode: true },
+    });
+    return rows.map((r) => r.workCenterCode);
+  }
+
+  /**
+   * Machine-access rule (MODULE_SPEC_tehnologija §3.4, 🔴): a worker reports work only on
+   * their machines. Returns a violation reason if the worker has DEFINED access and the
+   * work center is not among it; `null` = OK.
+   *
+   * Unseeded-safe: a worker with NO `machine_access` rows is treated as unrestricted
+   * (returns null) so incomplete data never blocks the shop floor. Enforcement decision
+   * (block vs warn) is the caller's, via `isEnforced()`.
+   */
+  async workerMachineViolation(
+    workerId: number,
+    workCenterCode: string,
+  ): Promise<string | null> {
+    const codes = await this.workerMachineCodes(workerId);
+    if (codes.length === 0) return null; // no defined access → don't block (unseeded)
+    if (codes.includes(workCenterCode)) return null;
+    return `Radnik #${workerId} nema pristup radnom centru ${workCenterCode} (machine_access).`;
+  }
 }

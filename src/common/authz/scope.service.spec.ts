@@ -82,4 +82,39 @@ describe("ScopeService", () => {
     const where = await scope.withTechProcessScope(user({ role: "sef" }), base);
     expect(where).toBe(base);
   });
+
+  describe("workerMachineViolation", () => {
+    it("returns null when worker has NO defined machine access (unseeded-safe)", async () => {
+      findMany.mockResolvedValue([]);
+      expect(await scope.workerMachineViolation(5, "CNC1")).toBeNull();
+    });
+
+    it("returns null when the work center is among the worker's machines", async () => {
+      findMany.mockResolvedValue([{ workCenterCode: "CNC1" }, { workCenterCode: "BRV" }]);
+      expect(await scope.workerMachineViolation(5, "CNC1")).toBeNull();
+    });
+
+    it("returns a reason when worker has access but NOT to this work center", async () => {
+      findMany.mockResolvedValue([{ workCenterCode: "BRV" }]);
+      const reason = await scope.workerMachineViolation(5, "CNC1");
+      expect(reason).toContain("CNC1");
+      expect(reason).toContain("machine_access");
+    });
+  });
+
+  describe("isEnforced", () => {
+    const prev = process.env.AUTHZ_ENFORCE;
+    afterEach(() => {
+      if (prev === undefined) delete process.env.AUTHZ_ENFORCE;
+      else process.env.AUTHZ_ENFORCE = prev;
+    });
+    it("is false unless AUTHZ_ENFORCE === 'true'", () => {
+      delete process.env.AUTHZ_ENFORCE;
+      expect(scope.isEnforced()).toBe(false);
+      process.env.AUTHZ_ENFORCE = "false";
+      expect(scope.isEnforced()).toBe(false);
+      process.env.AUTHZ_ENFORCE = "true";
+      expect(scope.isEnforced()).toBe(true);
+    });
+  });
 });

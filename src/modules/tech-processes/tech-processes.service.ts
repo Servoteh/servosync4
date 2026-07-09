@@ -1,6 +1,8 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
   UnprocessableEntityException,
 } from "@nestjs/common";
@@ -145,6 +147,8 @@ interface RnProgressRaw {
  */
 @Injectable()
 export class TechProcessesService {
+  private readonly logger = new Logger(TechProcessesService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly scope: ScopeService,
@@ -696,6 +700,23 @@ export class TechProcessesService {
     const scannedVariant = order.fields.variant;
     const { operationNumber, workCenterCode } = operation.fields;
 
+    // Machine-access (spec §3.4, 🔴): identifikovani radnik radi samo na svojim mašinama.
+    // Poštuje AUTHZ_ENFORCE (kao guard): enforce → 403; shadow → upozorenje + flag u odgovoru.
+    let machineAccessWarning: string | null = null;
+    if (worker) {
+      const violation = await this.scope.workerMachineViolation(
+        worker.id,
+        workCenterCode,
+      );
+      if (violation) {
+        if (this.scope.isEnforced()) throw new ForbiddenException(violation);
+        this.logger.warn(
+          `SHADOW machine-access: ${violation} (AUTHZ_ENFORCE=false, prijava rada dozvoljena)`,
+        );
+        machineAccessWarning = violation;
+      }
+    }
+
     const result = await this.prisma.$transaction(async (tx) => {
       // Varijanta se menja U MESTU pri izmeni tehnologije/crteža (Vasa) — zato NE
       // pinujemo skeniranu varijantu: (projectId, identNumber) jednoznačno određuje RN,
@@ -805,6 +826,8 @@ export class TechProcessesService {
         staleWorkOrder: result.staleWorkOrder,
         printedVariant: result.printedVariant,
         currentVariant: result.currentVariant,
+        // Machine-access (shadow): radnik nema pravo na taj RC (u enforce režimu bi bio 403).
+        machineAccessWarning,
       },
     };
   }
