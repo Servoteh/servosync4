@@ -1,4 +1,4 @@
-# ServoSync dizajn sistem — v0.1
+# ServoSync dizajn sistem — v0.2
 
 > **Autoritativna pravila izgleda i ponašanja frontenda.** Važi za ServoSync 2.0 i sve buduće module
 > (uključujući seobu 1.0 modula u verziji 3.0). Svaki ekran — pisao ga čovek ili AI — mora proći po ovim pravilima.
@@ -7,6 +7,11 @@
 > ServoSync 1.0, moderni alati. Od SAP Fiori-ja i Pantheona preuzimamo *obrasce* (gustina, tastatura-prvo,
 > KPI pločice, filter bar, master–detalj), **ne izgled**.
 > Vizuelno poređenje pravaca: https://claude.ai/code/artifact/27e2df4d-5082-4dee-92f2-ee51a88360c8
+>
+> **Odluka o responsivnosti (2026-07-09, Nenad):** dizajn sistem je **od prvog dana responsivan i
+> optimizovan za sve rezolucije i uređaje** — desktop, tablet i **telefon** (portret i pejzaž). Ekrani 2.0
+> danas to NISU (građeni desktop-prvo) → svaki NOV ekran mora proći responsive proveru (§11), a postojeći se
+> saniraju. Ovo menja raniji stav „telefon = samo pregled, pun mobilni UX tek u 3.0".
 >
 > **Kako se menja ovaj dokument:** pravilo se menja izmenom ovog fajla + tokena, nikad "izuzetkom u kodu".
 > Dok izmena nije ovde, ne postoji.
@@ -24,6 +29,10 @@
    semantičke boje, progres. Boja statusa ≠ boja akcenta.
 5. **Jedan izvor istine za stil** — sve boje, razmaci, veličine žive u tokenima
    ([tokens.css](../src/styles/tokens.css)). Hex vrednost ili "magični px" direktno u komponenti = bug.
+6. **Responsivno i optimizovano za sve uređaje** — isti ekran se **preslaguje** po širini, ne skalira
+   „zumiranjem". Nijedan ekran nije „samo za desktop": master–detalj → stack, gusta tabela → horizontalni
+   scroll ili kartica-po-redu, sidebar → off-canvas. Radi na telefonu (portret/pejzaž), tabletu i desktopu;
+   meri se na stvarnim širinama (§11), nije naknadna misao.
 
 ## 2. Stack (zakucano)
 
@@ -133,8 +142,21 @@ Svaka prečica se prikazuje u tooltip-u odgovarajuće kontrole.
 ## 11. Pristupačnost i responsive
 
 * Kontrast teksta min AA (4.5:1); fokus uvek vidljiv (akcentni prsten); sve interaktivno dostupno tabom.
-* Ciljne platforme: desktop (primarno), **tablet u pogonu** (landscape, min 1024 px — master–detalj se
-  slaže vertikalno), telefon (samo pregled/statusi, ne unos — puni mobilni UX se rešava u 3.0 sa iskustvom 1.0).
+* **Responsivnost je obavezna — sve rezolucije i uređaji (V1 zahtev, ne 3.0).** Isti ekran se preslaguje po
+  širini. Prelomne tačke (Tailwind podrazumevane): **telefon `< 640 px`**, **tablet `640–1024 px`**,
+  **desktop `> 1024 px`**. Ciljne platforme: desktop (primarno), tablet u pogonu i **telefon** (pogon + teren).
+  Pravila po širini:
+  * **AppShell:** na `< 1024 px` sidebar prelazi u off-canvas (hamburger); komandna traka i `Ctrl+K` ostaju.
+  * **Master–detalj:** desktop = dve kolone; tablet/telefon = jedna kolona — izbor reda otvara detalj kao punu
+    stranicu/sheet sa „← nazad" (ne bočni panel).
+  * **Tabele:** desktop = pune kolone; uža širina = horizontalni scroll unutar kartice **ili** „kartica po redu"
+    (label–vrednost za ključne kolone) — nikad odsečen sadržaj bez scrolla.
+  * **Filter bar** se na telefonu sklapa u dugme „Filteri" + panel; **KPI red** ide u horizontalni scroll.
+  * **Dijalozi/forme:** na telefonu full-screen sheet, polja jedno ispod drugog; **touch-mete min 44×44 px**.
+* **Unos je dozvoljen na telefonu** (ne samo pregled) — forme moraju biti upotrebljive prstom. Pun mobilni UX
+  iz 1.0 iskustva se dograđuje u 3.0, ali **baseline responsivnost i telefonski unos su V1 zahtev**.
+* **Provera pre „gotovo":** svaki ekran se testira na **360 px / 768 px / 1024 px / 1440 px**; `/dev/ui` katalog
+  prikazuje kit komponente na tim širinama (§12).
 * `prefers-reduced-motion` se poštuje; animacije samo funkcionalne (otvaranje panela, toast), ≤ 200 ms.
 
 ## 12. Proces i kontrola
@@ -142,6 +164,6 @@ Svaka prečica se prikazuje u tooltip-u odgovarajuće kontrole.
 1. **`/dev/ui` katalog** — interna ruta sa svim kit komponentama u svim stanjima; obavezno se dopunjava
    uz svaku novu komponentu/stanje. Služi kao vizuelni review i smoke test.
 2. **Review checklist za svaki novi ekran:** koristi samo kit? boje samo iz tokena? tastatura kompletna?
-   formati datuma/brojeva? terminologija iz §9? status mapa iz §7?
+   formati datuma/brojeva? terminologija iz §9? status mapa iz §7? **responsivan na 360/768/1024/1440 px (§11)?**
 3. **AI sesije** rade po [frontend/CLAUDE.md](../CLAUDE.md) koji upućuje na ovaj dokument — pravila su ista
    za ljude i za AI.
