@@ -17,6 +17,10 @@ interface LoginBody {
   password?: string;
 }
 
+interface SsoBody {
+  token?: string;
+}
+
 @Controller('auth')
 export class AuthController {
   constructor(private readonly auth: AuthService) {}
@@ -27,6 +31,15 @@ export class AuthController {
       throw new BadRequestException('email and password are required');
     }
     return this.auth.login(body.email, body.password);
+  }
+
+  /** SSO sa ServoSync 1.0 shell-a (iframe modul „Tehnologija") — vidi AuthService.ssoLogin. */
+  @Post('sso')
+  async sso(@Body() body: SsoBody) {
+    if (!body?.token) {
+      throw new BadRequestException('token is required');
+    }
+    return this.auth.ssoLogin(body.token);
   }
 
   @UseGuards(JwtAuthGuard)
