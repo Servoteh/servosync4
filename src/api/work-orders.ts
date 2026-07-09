@@ -69,6 +69,7 @@ export interface WorkOrderOperation {
   toolsFixtures: string | null;
   setupTime: number | null;
   cycleTime: number | null;
+  toolWeight: number | null;
   priority: number;
   worker: WorkerRef | null;
   operation: { workCenterCode: string; workCenterName: string } | null;
@@ -262,6 +263,106 @@ export function useReworkWorkOrder() {
           qualityTypeId,
           note: note?.trim() || undefined,
         }),
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/** Izmena zaglavlja RN-a (samo poslata polja). Identitet se ne menja. */
+export interface UpdateWorkOrderInput {
+  id: number;
+  partName?: string;
+  drawingNumber?: string;
+  material?: string;
+  materialDimension?: string;
+  pieceCount?: number;
+  unit?: string;
+  product?: string;
+  note?: string;
+  revision?: string;
+  qualityTypeId?: number;
+  workerId?: number;
+  productionDeadline?: string | null;
+  externalProjectName?: string;
+  externalCustomerId?: number;
+}
+
+/** Unos/izmena reda operacije TP-a (RC + norme Tpz/Tk + opis + prioritet). */
+export interface WorkOrderOperationInput {
+  operationNumber?: number;
+  workCenterCode: string;
+  workDescription: string;
+  toolsFixtures?: string;
+  setupTime?: number;
+  cycleTime?: number;
+  toolWeight?: number;
+  priority?: number;
+  workerId?: number;
+}
+
+/** Izmena zaglavlja RN-a (PATCH /:id). */
+export function useUpdateWorkOrder() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: ({ id, ...patch }: UpdateWorkOrderInput) =>
+      apiFetch<{ data: WorkOrderDetail }>(`/v1/work-orders/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/** Dodaj operaciju TP na RN (POST /:id/operations). */
+export function useAddOperation() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: ({ workOrderId, ...op }: WorkOrderOperationInput & { workOrderId: number }) =>
+      apiFetch<{ data: WorkOrderDetail }>(`/v1/work-orders/${workOrderId}/operations`, {
+        method: 'POST',
+        body: JSON.stringify(op),
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/** Izmena operacije RN-a (PATCH /:id/operations/:opId). */
+export function useUpdateOperation() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: ({
+      workOrderId,
+      operationId,
+      ...patch
+    }: Partial<WorkOrderOperationInput> & { workOrderId: number; operationId: number }) =>
+      apiFetch<{ data: WorkOrderDetail }>(
+        `/v1/work-orders/${workOrderId}/operations/${operationId}`,
+        { method: 'PATCH', body: JSON.stringify(patch) },
+      ),
+    onSuccess: invalidate,
+  });
+}
+
+/** Brisanje operacije RN-a (DELETE /:id/operations/:opId). */
+export function useDeleteOperation() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: ({ workOrderId, operationId }: { workOrderId: number; operationId: number }) =>
+      apiFetch<{ data: WorkOrderDetail }>(
+        `/v1/work-orders/${workOrderId}/operations/${operationId}`,
+        { method: 'DELETE' },
+      ),
+    onSuccess: invalidate,
+  });
+}
+
+/** Brisanje kompletnog RN-a (DELETE /:id). 422 ako zaključan / proizvodnja započeta. */
+export function useDeleteWorkOrder() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<{ data: { id: number; deleted: true } }>(`/v1/work-orders/${id}`, {
+        method: 'DELETE',
       }),
     onSuccess: invalidate,
   });

@@ -2,18 +2,23 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Copy, CopyPlus, Plus, Printer, Recycle } from 'lucide-react';
+import { Copy, CopyPlus, Pencil, Plus, Printer, Recycle, Trash2 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import {
   REWORK_QUALITY,
   WO_STATUS,
+  useAddOperation,
   useApproveWorkOrder,
   useBulkCloneWorkOrders,
   useCopyFromWorkOrder,
   useCreateWorkOrder,
+  useDeleteOperation,
+  useDeleteWorkOrder,
   useLaunchWorkOrder,
   useLockWorkOrder,
   useReworkWorkOrder,
+  useUpdateOperation,
+  useUpdateWorkOrder,
   useWorkOrder,
   useWorkOrders,
   useWorkOrdersLookup,
@@ -22,7 +27,10 @@ import {
   type CreateWorkOrderInput,
   type ReworkQuality,
   type WorkOrder,
+  type WorkOrderDetail as WorkOrderDetailData,
+  type WorkOrderOperation,
 } from '@/api/work-orders';
+import { useOperations, type Operation } from '@/api/structures';
 import { ApiError } from '@/api/client';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
@@ -112,15 +120,25 @@ const actionBtn =
   'rounded-control px-3 py-1.5 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-40';
 
 function WorkOrderDetail({ id }: { id: number }) {
+  const { can } = useAuth();
   const q = useWorkOrder(id);
   const approve = useApproveWorkOrder();
   const launch = useLaunchWorkOrder();
   const lock = useLockWorkOrder();
+  const delOp = useDeleteOperation();
+  const delRn = useDeleteWorkOrder();
   const [copyOpen, setCopyOpen] = useState(false);
   const [reworkOpen, setReworkOpen] = useState(false);
+  const [headerOpen, setHeaderOpen] = useState(false);
+  const [opDialog, setOpDialog] = useState<{ open: boolean; op: WorkOrderOperation | null }>({
+    open: false,
+    op: null,
+  });
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [printing, setPrinting] = useState(false);
   const [printError, setPrintError] = useState<string | null>(null);
-  const busy = approve.isPending || launch.isPending || lock.isPending;
+  const busy =
+    approve.isPending || launch.isPending || lock.isPending || delOp.isPending;
 
   async function onPrint() {
     setPrinting(true);
@@ -140,6 +158,12 @@ function WorkOrderDetail({ id }: { id: number }) {
   const rn = q.data.data;
   const s = statusMeta(rn.handoverStatusId);
   const locked = !!rn.isLocked;
+  const canEdit = !locked && can(PERMISSIONS.RN_WRITE);
+  const fmtNum = (n: number) => n.toLocaleString('sr-RS', { maximumFractionDigits: 3 });
+  const opTotal = rn.operations.reduce(
+    (sum, op) => sum + (op.setupTime ?? 0) + (op.cycleTime ?? 0) * rn.pieceCount,
+    0,
+  );
   const isEmpty =
     rn.operations.length === 0 &&
     rn.machinedParts.length === 0 &&
@@ -212,6 +236,26 @@ function WorkOrderDetail({ id }: { id: number }) {
             </button>
           </Can>
         )}
+        <Can permission={PERMISSIONS.RN_WRITE}>
+          {!locked && (
+            <button
+              disabled={busy}
+              onClick={() => setHeaderOpen(true)}
+              className={`${actionBtn} inline-flex items-center gap-1.5 border border-line text-ink-secondary`}
+            >
+              <Pencil className="h-3.5 w-3.5" aria-hidden />
+              Izmeni zaglavlje
+            </button>
+          )}
+          <button
+            disabled={busy}
+            onClick={() => setConfirmDelete(true)}
+            className={`${actionBtn} inline-flex items-center gap-1.5 border border-status-danger text-status-danger`}
+          >
+            <Trash2 className="h-3.5 w-3.5" aria-hidden />
+            Obriši RN
+          </button>
+        </Can>
         <button
           disabled={busy}
           onClick={() => lock.mutate({ id, locked: !locked })}
@@ -244,9 +288,20 @@ function WorkOrderDetail({ id }: { id: number }) {
       </dl>
 
       <div>
-        <p className="mb-1.5 text-2xs font-semibold uppercase tracking-[0.08em] text-ink-secondary">
-          Operacije ({rn.operations.length})
-        </p>
+        <div className="mb-1.5 flex items-center justify-between gap-2">
+          <p className="text-2xs font-semibold uppercase tracking-[0.08em] text-ink-secondary">
+            Operacije ({rn.operations.length})
+          </p>
+          {canEdit && (
+            <button
+              onClick={() => setOpDialog({ open: true, op: null })}
+              className={`${actionBtn} inline-flex items-center gap-1.5 border border-line text-ink-secondary`}
+            >
+              <Plus className="h-3.5 w-3.5" aria-hidden />
+              Dodaj operaciju
+            </button>
+          )}
+        </div>
         {rn.operations.length === 0 ? (
           <span className="text-sm text-ink-disabled">Nema operacija.</span>
         ) : (
@@ -257,34 +312,137 @@ function WorkOrderDetail({ id }: { id: number }) {
                   <th className="px-3 py-2 font-semibold">Op.</th>
                   <th className="px-3 py-2 font-semibold">RC</th>
                   <th className="px-3 py-2 font-semibold">Opis</th>
-                  <th className="px-3 py-2 text-right font-semibold">Priprema</th>
-                  <th className="px-3 py-2 text-right font-semibold">Ciklus</th>
+                  <th className="px-3 py-2 text-right font-semibold">Tpz</th>
+                  <th className="px-3 py-2 text-right font-semibold">Tk</th>
+                  <th className="px-3 py-2 text-right font-semibold">Ukupno</th>
+                  {canEdit && <th className="px-3 py-2 text-right font-semibold">Akcije</th>}
                 </tr>
               </thead>
               <tbody>
-                {rn.operations.map((op) => (
-                  <tr key={op.id} className="border-b border-line-soft last:border-0">
-                    <td className="tnums px-3 py-1.5 text-ink-secondary">{op.operationNumber}</td>
-                    <td className="px-3 py-1.5 text-ink">
-                      {op.operation?.workCenterName ?? op.workCenterCode}
-                    </td>
-                    <td className="px-3 py-1.5 text-ink">{op.workDescription}</td>
-                    <td className="tnums px-3 py-1.5 text-right text-ink-secondary">
-                      {op.setupTime ?? '—'}
-                    </td>
-                    <td className="tnums px-3 py-1.5 text-right text-ink-secondary">
-                      {op.cycleTime ?? '—'}
-                    </td>
-                  </tr>
-                ))}
+                {rn.operations.map((op) => {
+                  const uk = (op.setupTime ?? 0) + (op.cycleTime ?? 0) * rn.pieceCount;
+                  return (
+                    <tr key={op.id} className="border-b border-line-soft last:border-0">
+                      <td className="tnums px-3 py-1.5 text-ink-secondary">
+                        {op.operationNumber}
+                      </td>
+                      <td className="px-3 py-1.5 text-ink">
+                        {op.operation?.workCenterName ?? op.workCenterCode}
+                      </td>
+                      <td className="px-3 py-1.5 text-ink">{op.workDescription}</td>
+                      <td className="tnums px-3 py-1.5 text-right text-ink-secondary">
+                        {op.setupTime != null ? fmtNum(op.setupTime) : '—'}
+                      </td>
+                      <td className="tnums px-3 py-1.5 text-right text-ink-secondary">
+                        {op.cycleTime != null ? fmtNum(op.cycleTime) : '—'}
+                      </td>
+                      <td className="tnums px-3 py-1.5 text-right text-ink">{fmtNum(uk)}</td>
+                      {canEdit && (
+                        <td className="px-3 py-1.5 text-right">
+                          <div className="inline-flex gap-1">
+                            <button
+                              onClick={() => setOpDialog({ open: true, op })}
+                              aria-label="Izmeni operaciju"
+                              className="rounded-control border border-line px-2 py-1 text-ink-secondary hover:bg-surface-2"
+                            >
+                              <Pencil className="h-3.5 w-3.5" aria-hidden />
+                            </button>
+                            <button
+                              disabled={busy}
+                              onClick={() =>
+                                delOp.mutate({ workOrderId: id, operationId: op.id })
+                              }
+                              aria-label="Obriši operaciju"
+                              className="rounded-control border border-line px-2 py-1 text-status-danger hover:bg-status-danger-bg disabled:opacity-40"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" aria-hidden />
+                            </button>
+                          </div>
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
               </tbody>
+              <tfoot>
+                <tr className="border-t border-line bg-surface-2 text-2xs uppercase tracking-[0.08em] text-ink-secondary">
+                  <td className="px-3 py-2 font-semibold" colSpan={5}>
+                    Ukupno (Tpz + Tk × {formatNumber(rn.pieceCount)} kom)
+                  </td>
+                  <td className="tnums px-3 py-2 text-right font-semibold text-ink">
+                    {fmtNum(opTotal)}
+                  </td>
+                  {canEdit && <td />}
+                </tr>
+              </tfoot>
             </table>
           </div>
+        )}
+        {delOp.error && (
+          <p className="mt-1.5 text-sm text-status-danger" role="alert">
+            {(delOp.error as Error).message}
+          </p>
         )}
       </div>
 
       <CopyFromWorkOrderDialog targetId={id} open={copyOpen} onClose={() => setCopyOpen(false)} />
       <ReworkWorkOrderDialog sourceId={id} open={reworkOpen} onClose={() => setReworkOpen(false)} />
+      <OperationDialog
+        workOrderId={id}
+        operation={opDialog.op}
+        open={opDialog.open}
+        onClose={() => setOpDialog({ open: false, op: null })}
+      />
+      <EditHeaderDialog rn={rn} open={headerOpen} onClose={() => setHeaderOpen(false)} />
+      <Dialog
+        open={confirmDelete}
+        onClose={() => {
+          delRn.reset();
+          setConfirmDelete(false);
+        }}
+        title="Obrisati radni nalog?"
+        footer={
+          <>
+            <button
+              onClick={() => {
+                delRn.reset();
+                setConfirmDelete(false);
+              }}
+              className="rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2"
+            >
+              Otkaži
+            </button>
+            <button
+              disabled={delRn.isPending}
+              onClick={async () => {
+                try {
+                  await delRn.mutateAsync(id);
+                  setConfirmDelete(false);
+                } catch {
+                  /* greška se prikazuje ispod */
+                }
+              }}
+              className="rounded-control bg-status-danger px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-50"
+            >
+              {delRn.isPending ? 'Brisanje…' : 'Obriši RN'}
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-2 text-sm">
+          <p className="text-ink">
+            RN <span className="tnums font-semibold">{rn.identNumber}</span> i sve njegove stavke
+            biće trajno obrisani. Blokirano ako je zaključan ili je proizvodnja započeta.
+          </p>
+          {delRn.error && (
+            <p className="text-sm text-status-danger" role="alert">
+              {delRn.error instanceof ApiError
+                ? delRn.error.message
+                : (delRn.error as Error)?.message}
+            </p>
+          )}
+        </div>
+      </Dialog>
     </div>
   );
 }
@@ -477,6 +635,346 @@ function ReworkWorkOrderDialog({
             onChange={(e) => setForm((f) => ({ ...f, note: e.target.value }))}
           />
         </FormField>
+        {err && (
+          <p className="text-sm text-status-danger" role="alert">
+            {err}
+          </p>
+        )}
+      </div>
+    </Dialog>
+  );
+}
+
+/** "" ili nevalidan broj → undefined; inače broj (za opciona numerička polja). */
+function numOrUndef(s: string): number | undefined {
+  const t = s.trim();
+  if (t === '') return undefined;
+  const n = Number(t);
+  return Number.isNaN(n) ? undefined : n;
+}
+
+const EMPTY_OP_FORM = {
+  operationNumber: '',
+  workDescription: '',
+  toolsFixtures: '',
+  setupTime: '',
+  cycleTime: '',
+  toolWeight: '',
+  priority: '',
+};
+
+/** Dodaj/izmeni operaciju TP-a (RC + norme Tpz/Tk + opis + prioritet). */
+function OperationDialog({
+  workOrderId,
+  operation,
+  open,
+  onClose,
+}: {
+  workOrderId: number;
+  operation: WorkOrderOperation | null;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const editing = !!operation;
+  const add = useAddOperation();
+  const upd = useUpdateOperation();
+  const [rc, setRc] = useState<Operation | null>(null);
+  const [form, setForm] = useState(EMPTY_OP_FORM);
+
+  useEffect(() => {
+    if (!open) return;
+    add.reset();
+    upd.reset();
+    if (operation) {
+      setRc({
+        workCenterCode: operation.workCenterCode,
+        workCenterName: operation.operation?.workCenterName ?? operation.workCenterCode,
+      } as Operation);
+      setForm({
+        operationNumber: String(operation.operationNumber),
+        workDescription: operation.workDescription ?? '',
+        toolsFixtures: operation.toolsFixtures ?? '',
+        setupTime: operation.setupTime != null ? String(operation.setupTime) : '',
+        cycleTime: operation.cycleTime != null ? String(operation.cycleTime) : '',
+        toolWeight: operation.toolWeight != null ? String(operation.toolWeight) : '',
+        priority: String(operation.priority),
+      });
+    } else {
+      setRc(null);
+      setForm(EMPTY_OP_FORM);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, operation]);
+
+  const set = (patch: Partial<typeof EMPTY_OP_FORM>) => setForm((f) => ({ ...f, ...patch }));
+  const busy = add.isPending || upd.isPending;
+  const err =
+    (add.error instanceof ApiError ? add.error.message : (add.error as Error)?.message) ||
+    (upd.error instanceof ApiError ? upd.error.message : (upd.error as Error)?.message);
+  const canSave = !busy && (editing || !!rc) && form.workDescription.trim().length > 0;
+
+  function close() {
+    add.reset();
+    upd.reset();
+    onClose();
+  }
+
+  async function submit() {
+    if (!canSave) return;
+    const common = {
+      workDescription: form.workDescription.trim(),
+      toolsFixtures: form.toolsFixtures.trim() || undefined,
+      setupTime: numOrUndef(form.setupTime),
+      cycleTime: numOrUndef(form.cycleTime),
+      toolWeight: numOrUndef(form.toolWeight),
+      priority: numOrUndef(form.priority),
+      operationNumber: numOrUndef(form.operationNumber),
+    };
+    try {
+      if (editing && operation) {
+        await upd.mutateAsync({
+          workOrderId,
+          operationId: operation.id,
+          ...common,
+          ...(rc ? { workCenterCode: rc.workCenterCode } : {}),
+        });
+      } else if (rc) {
+        await add.mutateAsync({ workOrderId, workCenterCode: rc.workCenterCode, ...common });
+      }
+      close();
+    } catch {
+      /* greška se prikazuje ispod */
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onClose={close}
+      title={editing ? 'Izmeni operaciju' : 'Dodaj operaciju'}
+      footer={
+        <>
+          <button
+            onClick={close}
+            className="rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2"
+          >
+            Otkaži
+          </button>
+          <Button onClick={submit} loading={busy} disabled={!canSave}>
+            {editing ? 'Sačuvaj' : 'Dodaj'}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        <FormField label="Radni centar (RC)" required>
+          <ComboBox<Operation>
+            value={rc}
+            onChange={setRc}
+            useSearch={(query) => useOperations({ q: query || undefined })}
+            getKey={(o) => o.workCenterCode}
+            getLabel={(o) => `${o.workCenterName} (${o.workCenterCode})`}
+            getSublabel={(o) => (o.significantForFinishing ? 'završna kontrola' : '')}
+            placeholder="Šifra/naziv radnog centra…"
+          />
+        </FormField>
+        <FormField label="Opis rada" required>
+          <Input
+            value={form.workDescription}
+            onChange={(e) => set({ workDescription: e.target.value })}
+          />
+        </FormField>
+        <div className="grid grid-cols-2 gap-3">
+          <FormField label="Priprema (Tpz)">
+            <Input
+              type="number"
+              min={0}
+              step="any"
+              value={form.setupTime}
+              onChange={(e) => set({ setupTime: e.target.value })}
+            />
+          </FormField>
+          <FormField label="Ciklus (Tk)">
+            <Input
+              type="number"
+              min={0}
+              step="any"
+              value={form.cycleTime}
+              onChange={(e) => set({ cycleTime: e.target.value })}
+            />
+          </FormField>
+        </div>
+        <FormField label="Alat / pribor">
+          <Input
+            value={form.toolsFixtures}
+            onChange={(e) => set({ toolsFixtures: e.target.value })}
+          />
+        </FormField>
+        <div className="grid grid-cols-2 gap-3">
+          <FormField label="Broj operacije" hint="prazno → auto (MAX+10)">
+            <Input
+              type="number"
+              min={0}
+              step={1}
+              value={form.operationNumber}
+              onChange={(e) => set({ operationNumber: e.target.value })}
+            />
+          </FormField>
+          <FormField label="Prioritet" hint="prazno → iz radnog centra">
+            <Input
+              type="number"
+              min={0}
+              step={1}
+              value={form.priority}
+              onChange={(e) => set({ priority: e.target.value })}
+            />
+          </FormField>
+        </div>
+        {err && (
+          <p className="text-sm text-status-danger" role="alert">
+            {err}
+          </p>
+        )}
+      </div>
+    </Dialog>
+  );
+}
+
+/** Izmena zaglavlja RN-a (naziv, crtež, materijal, količina, rok…). */
+function EditHeaderDialog({
+  rn,
+  open,
+  onClose,
+}: {
+  rn: WorkOrderDetailData;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const upd = useUpdateWorkOrder();
+  const [form, setForm] = useState({
+    partName: '',
+    drawingNumber: '',
+    material: '',
+    materialDimension: '',
+    unit: '',
+    product: '',
+    revision: '',
+    pieceCount: '1',
+    productionDeadline: '',
+  });
+
+  useEffect(() => {
+    if (!open) return;
+    upd.reset();
+    setForm({
+      partName: rn.partName,
+      drawingNumber: rn.drawingNumber,
+      material: rn.material,
+      materialDimension: rn.materialDimension,
+      unit: rn.unit,
+      product: rn.product ?? '',
+      revision: rn.revision,
+      pieceCount: String(rn.pieceCount),
+      productionDeadline: rn.productionDeadline ? rn.productionDeadline.slice(0, 10) : '',
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, rn]);
+
+  const set = (patch: Partial<typeof form>) => setForm((f) => ({ ...f, ...patch }));
+  const err = upd.error instanceof ApiError ? upd.error.message : (upd.error as Error)?.message;
+  const pieces = Number(form.pieceCount);
+  const valid =
+    form.partName.trim() &&
+    form.drawingNumber.trim() &&
+    form.material.trim() &&
+    form.materialDimension.trim() &&
+    Number.isInteger(pieces) &&
+    pieces >= 1;
+
+  async function submit() {
+    if (!valid) return;
+    try {
+      await upd.mutateAsync({
+        id: rn.id,
+        partName: form.partName.trim(),
+        drawingNumber: form.drawingNumber.trim(),
+        material: form.material.trim(),
+        materialDimension: form.materialDimension.trim(),
+        unit: form.unit.trim() || undefined,
+        product: form.product.trim() || undefined,
+        revision: form.revision.trim() || undefined,
+        pieceCount: pieces,
+        productionDeadline: form.productionDeadline || null,
+      });
+      onClose();
+    } catch {
+      /* greška se prikazuje ispod */
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title={`Izmeni zaglavlje — RN ${rn.identNumber}`}
+      footer={
+        <>
+          <button
+            onClick={onClose}
+            className="rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2"
+          >
+            Otkaži
+          </button>
+          <Button onClick={submit} loading={upd.isPending} disabled={!valid}>
+            Sačuvaj
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        <FormField label="Naziv pozicije" required>
+          <Input value={form.partName} onChange={(e) => set({ partName: e.target.value })} />
+        </FormField>
+        <div className="grid grid-cols-2 gap-3">
+          <FormField label="Broj crteža" required>
+            <Input
+              value={form.drawingNumber}
+              onChange={(e) => set({ drawingNumber: e.target.value })}
+            />
+          </FormField>
+          <FormField label="Revizija">
+            <Input value={form.revision} onChange={(e) => set({ revision: e.target.value })} />
+          </FormField>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <FormField label="Materijal" required>
+            <Input value={form.material} onChange={(e) => set({ material: e.target.value })} />
+          </FormField>
+          <FormField label="Dimenzija materijala" required>
+            <Input
+              value={form.materialDimension}
+              onChange={(e) => set({ materialDimension: e.target.value })}
+            />
+          </FormField>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <FormField label="Količina (kom)" required>
+            <Input
+              type="number"
+              min={1}
+              step={1}
+              value={form.pieceCount}
+              onChange={(e) => set({ pieceCount: e.target.value })}
+            />
+          </FormField>
+          <FormField label="Rok isporuke">
+            <Input
+              type="date"
+              value={form.productionDeadline}
+              onChange={(e) => set({ productionDeadline: e.target.value })}
+            />
+          </FormField>
+        </div>
         {err && (
           <p className="text-sm text-status-danger" role="alert">
             {err}
