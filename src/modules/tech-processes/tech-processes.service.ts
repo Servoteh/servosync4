@@ -2098,8 +2098,12 @@ export class TechProcessesService {
   }
 
   /**
-   * A-5 razdvajanje dužnosti: da li je radnik evidentirao PROIZVODNI (ne završnu kontrolu)
-   * rad na ovom delu (project+ident+variant). Ako jeste → ne sme da radi završnu kontrolu nad njim.
+   * A-5 razdvajanje dužnosti: da li je radnik evidentirao PROIZVODNI rad na ovom delu
+   * (project+ident+variant). Ako jeste → ne sme da radi završnu kontrolu nad njim.
+   *
+   * „Proizvodni rad" NE uključuje kontrolne operacije: ni završnu (`significantForFinishing`)
+   * ni RC-ove čiji naziv sadrži „kontrol" (npr. 8.4 Međufazna Kontrola) — kontrolor koji je
+   * radio međufaznu SME da radi završnu (analiza 90d: 422/1190 kontrola bi inače lažno okinulo).
    */
   private async selfControlViolation(
     projectId: number,
@@ -2113,13 +2117,19 @@ export class TechProcessesService {
     });
     if (!rows.length) return false;
     const codes = [...new Set(rows.map((r) => r.workCenterCode).filter(Boolean))];
-    const sig = await this.prisma.operation.findMany({
-      where: { workCenterCode: { in: codes }, significantForFinishing: true },
+    const controlOps = await this.prisma.operation.findMany({
+      where: {
+        workCenterCode: { in: codes },
+        OR: [
+          { significantForFinishing: true },
+          { workCenterName: { contains: "ontrol", mode: "insensitive" } },
+        ],
+      },
       select: { workCenterCode: true },
     });
-    const sigSet = new Set(sig.map((o) => o.workCenterCode));
-    // Proizvodni rad = bar jedan red čiji RC NIJE završna kontrola.
-    return rows.some((r) => !sigSet.has(r.workCenterCode));
+    const controlSet = new Set(controlOps.map((o) => o.workCenterCode));
+    // Proizvodni rad = bar jedan red čiji RC nije nikakva kontrola.
+    return rows.some((r) => !controlSet.has(r.workCenterCode));
   }
 
   /**
