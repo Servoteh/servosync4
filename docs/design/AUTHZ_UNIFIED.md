@@ -162,19 +162,19 @@ Sve ostalo (DB CHECK, `/me/permissions`, FE dropdown) se **izvodi** iz ova dva (
 > ugovor.** Politike se u 3.0 prenose modul-po-modul sa žive `pg_policies` introspekcije (NE iz
 > RBAC_MATRIX.md — regex generator preskače CMMS/praćenje/SCADA). Svaki korak ispod je samostalno bezbedan.
 
-### Faza 1 — temelji u bazi (aditivno; diff → pregled → deploy)
-- [ ] `schema.prisma`: `UserRole` + `UserPermissionOverride` + `users.worker_id` FK.
-- [ ] Migracija `authz_rls_ready`: DDL + predikat-funkcije (§B/§C skeleta) + **`UPDATE users SET
-      role = lower(role)`** (bez ovoga aktivacija zaključava i admina — živi podaci su `'ADMIN'`/`'USER'`).
-- [ ] **Odstupanje od BACKEND_RULES §3 (`migrate:dev`), odobreno:** okruženje je prod-only → migracija se
-      generiše `prisma migrate diff` (datamodel→datamodel, bez žive baze), primenjuje **`npm run
-      migrate:prod`** (deploy; nikad ne resetuje). Pre deploy-a OBAVEZNO `prisma migrate status` (drift check).
-- [ ] Seed: `admin` uloga u `user_roles` za bar 2 naloga (break-glass).
+### Faza 1 — temelji u bazi (aditivno; diff → pregled → deploy) ✅ ZAVRŠENO 2026-07-09
+- [x] `schema.prisma`: `UserRole` + `UserPermissionOverride` + `users.worker_id` FK.
+- [x] Migracija `20260709000000_authz_rls_ready`: DDL + predikat-funkcije (§B/§C) + `UPDATE users SET
+      role = lower(role)`. Primenjena na prod (`migrate deploy`), status čist (bez drift-a).
+- [x] **Odstupanje od BACKEND_RULES §3 odobreno** (§12 v0.7): generisano `migrate diff`, primenjeno `migrate:prod`.
+- [x] Seed: `admin` za nenad + luka (break-glass ✔), `tehnolog` za tehnologija@. Smoke-test uživo: GUC
+      identitet + `app_*` funkcije rade (admin=true za admina, false bez GUC-a = default-deny).
 
-### Faza 2 — vidljivost pre enforce-a
-- [ ] `GET /auth/me/permissions` — frontend odmah može da sakriva dugmad, pre ikakvog odbijanja.
-- [ ] `PermissionsGuard` u **SHADOW MODE** (`AUTHZ_ENFORCE=false` default): izračuna odluku, loguje
-      would-be 403 (user, uloga, permisija, ruta), **pušta**. Nedelju dana na prod → pregled logova.
+### Faza 2 — vidljivost pre enforce-a ✅ deploy 2026-07-09 (skupljanje logova u toku)
+- [x] `GET /auth/me/permissions` — živo na prod (`/api/auth/me/permissions` → 401 bez tokena, ranije 404).
+- [x] `PermissionsGuard` u **SHADOW MODE** deployovan (`AUTHZ_ENFORCE` nije `true` → default log-only).
+      Verifikovano: sve `/api/v1/*` rute 401 (auth radi), nijedna 403/500 (guard ne blokira).
+- [ ] Nedelju dana na prod → pregled `SHADOW would-deny` logova pre enforce-a.
 
 ### Faza 3 — enforce
 - [ ] `AUTHZ_ENFORCE=true` (rollback = env promena + restart, bez deploy-a).
