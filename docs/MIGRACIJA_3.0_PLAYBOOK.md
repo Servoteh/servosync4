@@ -47,10 +47,11 @@ Novo (odluke iz sesije 2026-07-09, Nenad):
 8. ✅ **Dizajn sistem je responsivan/optimizovan za sve rezolucije uključujući telefon** — V1 zahtev, ne 3.0.
    Uneto u [DESIGN_SYSTEM.md v0.2 §11](../../frontend/docs/DESIGN_SYSTEM.md). 2.0 ekrani danas to nisu →
    saniraju se; novi prolaze responsive proveru (360/768/1024/1440 px).
-9. ✅ **Objedinjeni front PRE migracije modula (Faza 3.0-shell) + JEDAN identitet.** Aplikacije se spajaju u
-   prikazu odmah (strangler-fig „unified shell"), a moduli migriraju nevidljivo ispod. Ključni temelj:
-   **2.0 prihvata ISTI JWT kao 1.0** (email claim, isti GoTrue secret) → jedan identitet za oba stacka
-   (uklapa se u [AUTHZ_UNIFIED](design/AUTHZ_UNIFIED.md)). Razrada u §2.1. *(Odlaže se — sada samo plan.)*
+9. ✅ **Objedinjeni front — `servosync.servoteh.com` (1.0) je JEDINI front; 2.0 = modul „TEHNOLOGIJA".**
+   (ODLUKA 09.07, Nenad — razjašnjeno.) 1.0 ostaje home/shell (+ LAN adresa) sa svim operativnim modulima;
+   **ceo 2.0 (sad `servosync2`) ulazi kao JEDAN iframe-modul „Tehnologija"** — NE obrnuto. Temelj:
+   **2.0 prihvata ISTI JWT kao 1.0** (email claim, isti GoTrue secret) → jedan login (uklapa se u
+   [AUTHZ_UNIFIED](design/AUTHZ_UNIFIED.md)). Razrada u §2.1. *(Odlaže se — sada samo plan.)*
 
 ---
 
@@ -59,8 +60,8 @@ Novo (odluke iz sesije 2026-07-09, Nenad):
 ```
 1.5   (1.0 Supabase → on-prem PG, pored 2.0)          ← IZVRŠENO do cutover-a (§3.1)
  └─► AUTH INTEROP  2.0 prihvata 1.0 JWT (isti secret, email claim) → JEDAN identitet   (§2.1)
-      └─► 3.0-SHELL  objedinjeni front (2.0 Next shell + iframe-embed 1.0 modula, jedan origin)   (§2.1)
-           │         → OD SADA: jedna aplikacija u prikazu; moduli migriraju NEVIDLJIVO ispod
+      └─► 3.0-SHELL  1.0 = JEDINI front (servosync.servoteh.com + LAN); 2.0 = modul „TEHNOLOGIJA" (iframe)   (§2.1)
+           │         → OD SADA: jedna aplikacija u prikazu (1.0 home + Tehnologija sub-app)
            └─► 3.0-B  PILOT modul (Reversi/Lokacije) — prelaz = „iframe → nativna Next ruta"
                 └─► 3.0-C  prioritetni spojevi: Zaposleni (mapping) + Lokacije
                      └─► 3.0-D  ostali moduli, strangler-fig (svaki: authz paritet §7 + „iframe→ruta")
@@ -77,31 +78,33 @@ pre nego što se dotakne Kadrovska (PII, zarade, najgušći authz).
 
 ## 2.1 Faza 3.0-shell — objedinjeni front PRE migracije modula (ODLUKA 09.07, Nenad)
 
-**Cilj:** spojiti 1.0 (Vite/vanilla) i 2.0 (Next.js) u **jednu aplikaciju u prikazu ODMAH**, bez čekanja da se
-moduli prepišu. Klasičan strangler-fig sa „unified shell": jedan omotač prikazuje SVE module — neke nativno iz
-2.0, neke embed iz 1.0 — pa se migracija radi modul-po-modul **nevidljivo ispod**. 1.0 NE mora da bude Next.
+**Cilj:** jedna aplikacija u prikazu ODMAH. **`servosync.servoteh.com` (1.0) je i ostaje JEDINI front**
+(+ LAN adresa kao offline fallback). **Ceo 2.0 (sad `servosync2.servoteh.com`) ulazi kao JEDAN modul
+„TEHNOLOGIJA"** na ekranu 1.0 — NE obrnuto. Nema prepravke 1.0 modula; 2.0 se samo embed-uje.
 
-**Mehanizam:**
-- **2.0 Next.js = shell** (već ima AppShell/sidebar/dizajn sistem). Sidebar drži SVE module.
-- **Migrirani / 2.0 nativni** → Next rute. **Još-ne-migrirani (1.0)** → **iframe** ka 1.0 app (na on-prem stacku).
-- Kad modul migrira: samo **„iframe → nativna Next ruta"** — sidebar i URL isti, korisnik ne primeti prelaz.
-  (SCADA u 1.0 već koristi iframe embedding — obrazac poznat.)
+**Mehanizam (1.0 = shell/home, 2.0 = jedan modul):**
+- **1.0 app = home/shell** — već ima hub + nav sa svim operativnim modulima (kadrovska, sastanci, reversi,
+  lokacije, održavanje, plan montaže, PB, SCADA…). Posle 1.5 ga on-prem stack servira na
+  `servosync.servoteh.com` (+ LAN, kao offline fallback — isti obrazac kao 2.0 „front na :3000").
+- **Nova stavka „Tehnologija" u 1.0 nav-u → iframe ka 2.0 app-u** (ceo servosync2 sa svojim RN/TP/PDM/…
+  nav-om; bogata domenska pod-aplikacija, kao što SCADA modul već radi kroz iframe).
+- Kasnija **Vite→Next migracija** pojedinih 1.0 modula je ODVOJEN, dugoročan tok — ne blokira ovo; end-state
+  shell-a (da li ostaje 1.0 ili se prelazi na Next) bira se kasnije. Ovde je cilj **ujedinjenje prikaza**, ne prepravka.
 
-**JEDAN identitet (odabrana odluka, čistije od dual-login):**
-- **2.0 (NestJS) prihvata ISTI JWT kao 1.0 (GoTrue)** — isti secret, `email` claim kao osovina; 2.0 validira
-  GoTrue-izdat token i mapira `email` → 2.0 user/role (preko `AUTHZ_UNIFIED` kataloga). → **jedan login za oba.**
-- **Jedan origin** (npr. `app.servoteh.com`): `/*` → 2.0 shell; shell iframe-uje 1.0 module. Isti origin →
-  deljen `localStorage`/cookie → 1.0 iframe čita isti token (1.0 ionako čita iz `localStorage`).
+**JEDAN identitet + JEDAN origin (SSO):**
+- **2.0 (NestJS) prihvata ISTI JWT kao 1.0 (GoTrue)** — isti secret, `email` claim → mapiranje na 2.0
+  user/role (`AUTHZ_UNIFIED`). Korisnik se loguje jednom u 1.0; „Tehnologija" iframe radi bez novog login-a.
+- **Serviranje pod ISTIM origin-om:** `servosync.servoteh.com/*` → 1.0 front; `servosync.servoteh.com/tehnologija/*`
+  → 2.0 front (path-routing kroz Cloudflare/gateway). Isti origin → deljen `localStorage`/cookie → iframe čita
+  isti token. **2.0 se pokreće pod `basePath=/tehnologija`** (`NEXT_PUBLIC_API_URL` + `next.config` basePath).
 
-**Dve caveate:**
-- **Vizuelni šav:** 1.0 (vanilla, narandžasti akcenat) ≠ teal 2.0 shell. `docs/CURSOR_UI_USKLADJIVANJE_2.0.md`
-  gura 1.0 ka teal paleti → šav se smanjuje; svaki migriran modul postaje potpuno nativan/konzistentan.
-- **Dupli nav:** 1.0 modul se **deep-linkuje** + „embed mode" (sakrije 1.0 chrome, samo sadržaj modula) da se
-  ne pojavi meni-u-meniju. Mala izmena u 1.0.
+**Caveate:**
+- **Vizuelni šav:** 1.0 (vanilla) ≠ teal 2.0; `docs/CURSOR_UI_USKLADJIVANJE_2.0.md` gura 1.0 ka teal → šav se smanjuje.
+- **„Tehnologija" ima svoj nav** (RN/TP/PDM…) — to je OK (domenski sub-app), nije smetajući dupli nav.
 
-**Kada:** posle 1.5 cutover-a (oba na istom serveru + jedan domen), **PRE** migracije modula.
-**Konkretan BE zadatak koji ovo otključava:** 2.0 JWT strategija da prihvata GoTrue tokene (validacija istim
-secret-om + `email`→user/role mapiranje). To je i prvi korak ka punom auth paritetu (§7).
+**Kada:** posle 1.5 cutover-a. **BE zadatak:** 2.0 JWT strategija da prihvata GoTrue tokene (isti secret +
+`email`→user/role) — i prvi korak ka punom auth paritetu (§7). **FE zadatak:** „Tehnologija" nav stavka +
+iframe u 1.0 + 2.0 pod `basePath=/tehnologija` + jedan origin (Cloudflare path-routing).
 
 ---
 
@@ -335,4 +338,5 @@ Za svaki modul u 3.0, pre „gotovo":
 |---|---|
 | 2026-07-09 | Prva verzija. Konsoliduje ROADMAP + AUTHZ_UNIFIED + INTEGRACIJA + RBAC_RLS_PREDLOG + migration/03,16 + DESIGN_SYSTEM. Ugrađuje odluke sesije 09.07: 1.5 pre 3.0 (§3), zaposleni = 1.0 izvor istine i aktivni (§4.1), responsivnost V1 zahtev (§1.8). Modul-tracker §5. |
 | 2026-07-09 (2) | **Faza 1.5 IZVRŠENA do data+auth+storage** — self-host stack živ na `ubuntusrv:~/servosync15` (`infra/self-host/`): baza restore (198 tabela, 56 korisnika, 513 RLS), storage 115 fajlova/185 MB, login E2E. **§4.4 dodato: crteži DEDUP** (1.0 viewer → 2.0 `drawing_pdfs`; `bigtehn-drawings` 673 MB se NE migrira; bridge `syncBigtehnDrawings` se gasi). Ostaje: Node worker, pg_cron, Tunnel, repoint. |
+| 2026-07-09 (4) | **Razjašnjen pravac shell-a (§1 #9, §2.1, §2 dijagram):** `servosync.servoteh.com` (1.0) je JEDINI front (+ LAN); ceo 2.0 (`servosync2`) ulazi kao JEDAN iframe-modul „TEHNOLOGIJA" — NE 2.0-kao-shell. SSO: 2.0 prihvata isti JWT + jedan origin (`/tehnologija` path-routing, `basePath`). Cutover-readiness dodat: `CUTOVER_1.5.md` + scheduler (profil `cutover`) + `activate-dispatch.sql` (na main). |
 | 2026-07-09 (3) | **Edge worker gotov + odluka o objedinjenom frontu.** Edge-runtime služi svih 16 fn verbatim; sve tajne uvezane i validirane (mejl/AI/push; VAPID par regenerisan; PUSH_DISPATCH_KEY povraćen iz `private.app_config`). **§1 #9 + §2.1 dodato: Faza 3.0-shell** (objedinjeni front PRE migracije modula; **2.0 prihvata isti JWT kao 1.0** = jedan identitet; iframe-embed + jedan origin + embed-mode). **§3.1 dodato: stanje izvršenja 1.5** (done vs pending). **§8 razdvojen** na 1.5 cutover i finalni 3.0 cutover, uz off-hours upozorenje. **Cutover JOŠ NIJE odrađen** — ide uveče. |
