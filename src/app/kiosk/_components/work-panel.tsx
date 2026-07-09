@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, type KeyboardEvent } from 'react';
-import { AlertTriangle, Check, Lock, Minus, Plus } from 'lucide-react';
+import { useEffect, useState, type KeyboardEvent } from 'react';
+import { AlertTriangle, Check, Clock, Lock, Minus, Play, Plus, Square } from 'lucide-react';
 import { Button } from '@/components/ui-kit/button';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
@@ -20,6 +20,14 @@ interface WorkPanelProps {
   /** Skenirana operacija nije nađena u tehnološkom postupku ovog naloga. */
   missing: boolean;
   loading: boolean;
+  /** Otvorena vremenska sesija radnika za ovu operaciju (A-4) — null = START režim. */
+  openSession: { id: number; startedAt: string } | null;
+  sessionLoading: boolean;
+  zapocinjanje: boolean;
+  zavrsavanje: boolean;
+  onZapocni: () => void;
+  onZavrsiRad: (pieces: number) => void;
+  /** Brza prijava (scan) — bez merenja vremena. */
   evidentiranje: boolean;
   zatvaranje: boolean;
   onEvidentiraj: (pieces: number) => void;
@@ -56,6 +64,86 @@ function Stat({
   );
 }
 
+/** Živi tajmer trajanja otvorene sesije (osvežava svake sekunde). */
+function ElapsedBanner({ startedAt }: { startedAt: string }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const sec = Math.max(0, Math.floor((now - new Date(startedAt).getTime()) / 1000));
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const txt = h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+  return (
+    <div className="flex items-center justify-center gap-3 rounded-panel border-2 border-accent/40 bg-accent-subtle px-5 py-4 text-accent">
+      <Clock className="h-8 w-8 shrink-0" aria-hidden />
+      <span className="text-lg font-semibold uppercase tracking-wide">Rad u toku</span>
+      <span className="tnums text-5xl font-bold">{txt}</span>
+    </div>
+  );
+}
+
+/** +/- brojač komada (deljeno START-brza-prijava i STOP). */
+function PieceStepper({
+  pieces,
+  setPieces,
+  busy,
+  onEnter,
+}: {
+  pieces: number;
+  setPieces: (updater: (p: number) => number) => void;
+  busy: boolean;
+  onEnter: () => void;
+}) {
+  const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') onEnter();
+  };
+  return (
+    <div>
+      <div className="mb-2 text-lg font-semibold uppercase tracking-wide text-ink-secondary">
+        Broj napravljenih komada
+      </div>
+      <div className="flex items-stretch gap-3">
+        <button
+          type="button"
+          onClick={() => setPieces((p) => Math.max(1, p - 1))}
+          disabled={busy || pieces <= 1}
+          aria-label="Manje"
+          className="grid h-20 w-20 shrink-0 place-items-center rounded-panel border-2 border-line bg-surface text-ink hover:bg-surface-2 disabled:opacity-40"
+        >
+          <Minus className="h-8 w-8" aria-hidden />
+        </button>
+        <input
+          type="number"
+          min={1}
+          inputMode="numeric"
+          value={pieces || ''}
+          disabled={busy}
+          onChange={(e) => {
+            const n = Math.floor(Number(e.target.value));
+            setPieces(() => (Number.isFinite(n) && n > 0 ? n : 0));
+          }}
+          onKeyDown={onKeyDown}
+          aria-label="Broj napravljenih komada"
+          className="tnums h-20 w-full min-w-0 flex-1 rounded-panel border-2 border-line bg-surface text-center text-5xl font-bold text-ink focus-visible:border-accent focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50"
+        />
+        <button
+          type="button"
+          onClick={() => setPieces((p) => p + 1)}
+          disabled={busy}
+          aria-label="Više"
+          className="grid h-20 w-20 shrink-0 place-items-center rounded-panel border-2 border-line bg-surface text-ink hover:bg-surface-2 disabled:opacity-40"
+        >
+          <Plus className="h-8 w-8" aria-hidden />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function WorkPanel({
   operationLabel,
   identMark,
@@ -64,6 +152,12 @@ export function WorkPanel({
   finished,
   missing,
   loading,
+  openSession,
+  sessionLoading,
+  zapocinjanje,
+  zavrsavanje,
+  onZapocni,
+  onZavrsiRad,
   evidentiranje,
   zatvaranje,
   onEvidentiraj,
@@ -71,7 +165,7 @@ export function WorkPanel({
 }: WorkPanelProps) {
   const [pieces, setPieces] = useState(1);
   const [confirm, setConfirm] = useState(false);
-  const busy = evidentiranje || zatvaranje;
+  const busy = evidentiranje || zatvaranje || zapocinjanje || zavrsavanje;
   const remaining = planned != null ? Math.max(0, planned - made) : null;
 
   if (loading) {
@@ -97,13 +191,24 @@ export function WorkPanel({
     );
   }
 
-  const step = (d: number) => setPieces((p) => Math.max(1, p + d));
-  const submit = () => {
+  const stopWork = () => {
+    if (!busy && pieces >= 1) onZavrsiRad(pieces);
+  };
+  const quickReport = () => {
     if (!busy && pieces >= 1) onEvidentiraj(pieces);
   };
-  const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter') submit();
-  };
+
+  const zatvoriDugme = (
+    <button
+      type="button"
+      disabled={busy}
+      onClick={() => setConfirm(true)}
+      className="inline-flex h-20 items-center justify-center gap-3 rounded-control border-2 border-status-danger px-4 text-2xl font-bold text-status-danger hover:bg-status-danger-bg disabled:opacity-50"
+    >
+      <Lock className="h-7 w-7" aria-hidden />
+      Zatvori operaciju
+    </button>
+  );
 
   return (
     <div className="space-y-6">
@@ -137,68 +242,62 @@ export function WorkPanel({
             Operacija je zatvorena — prijava rada nije moguća.
           </span>
         </div>
-      ) : (
+      ) : sessionLoading ? (
+        <div className="grid place-items-center rounded-panel border border-line bg-surface px-6 py-8 text-lg text-ink-secondary">
+          Provera sesije…
+        </div>
+      ) : openSession ? (
+        /* STOP režim: rad je u toku — unesi komade i završi. */
         <>
-          <div>
-            <div className="mb-2 text-lg font-semibold uppercase tracking-wide text-ink-secondary">
-              Broj napravljenih komada
-            </div>
-            <div className="flex items-stretch gap-3">
-              <button
-                type="button"
-                onClick={() => step(-1)}
-                disabled={busy || pieces <= 1}
-                aria-label="Manje"
-                className="grid h-20 w-20 shrink-0 place-items-center rounded-panel border-2 border-line bg-surface text-ink hover:bg-surface-2 disabled:opacity-40"
-              >
-                <Minus className="h-8 w-8" aria-hidden />
-              </button>
-              <input
-                type="number"
-                min={1}
-                inputMode="numeric"
-                value={pieces || ''}
-                disabled={busy}
-                onChange={(e) => {
-                  const n = Math.floor(Number(e.target.value));
-                  setPieces(Number.isFinite(n) && n > 0 ? n : 0);
-                }}
-                onKeyDown={onKeyDown}
-                aria-label="Broj napravljenih komada"
-                className="tnums h-20 w-full min-w-0 flex-1 rounded-panel border-2 border-line bg-surface text-center text-5xl font-bold text-ink focus-visible:border-accent focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50"
-              />
-              <button
-                type="button"
-                onClick={() => step(1)}
-                disabled={busy}
-                aria-label="Više"
-                className="grid h-20 w-20 shrink-0 place-items-center rounded-panel border-2 border-line bg-surface text-ink hover:bg-surface-2 disabled:opacity-40"
-              >
-                <Plus className="h-8 w-8" aria-hidden />
-              </button>
-            </div>
-          </div>
-
+          <ElapsedBanner startedAt={openSession.startedAt} />
+          <PieceStepper pieces={pieces} setPieces={setPieces} busy={busy} onEnter={stopWork} />
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Button
               variant="primary"
+              loading={zavrsavanje}
+              disabled={busy || pieces < 1}
+              onClick={stopWork}
+              className="h-20 gap-3 text-2xl font-bold"
+            >
+              <Square className="h-7 w-7" aria-hidden />
+              Završi rad
+            </Button>
+            {zatvoriDugme}
+          </div>
+        </>
+      ) : (
+        /* START režim: započni merenje vremena, ili brza prijava bez merenja. */
+        <>
+          <Button
+            variant="primary"
+            loading={zapocinjanje}
+            disabled={busy}
+            onClick={onZapocni}
+            className="h-24 w-full gap-3 text-3xl font-bold"
+          >
+            <Play className="h-9 w-9" aria-hidden />
+            Započni rad
+          </Button>
+
+          <div className="flex items-center gap-3 text-base font-semibold uppercase tracking-wide text-ink-disabled">
+            <span className="h-px flex-1 bg-line" />
+            ili brza prijava (bez merenja vremena)
+            <span className="h-px flex-1 bg-line" />
+          </div>
+
+          <PieceStepper pieces={pieces} setPieces={setPieces} busy={busy} onEnter={quickReport} />
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Button
+              variant="secondary"
               loading={evidentiranje}
               disabled={busy || pieces < 1}
-              onClick={submit}
+              onClick={quickReport}
               className="h-20 gap-3 text-2xl font-bold"
             >
               <Check className="h-7 w-7" aria-hidden />
               Evidentiraj
             </Button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => setConfirm(true)}
-              className="inline-flex h-20 items-center justify-center gap-3 rounded-control border-2 border-status-danger px-4 text-2xl font-bold text-status-danger hover:bg-status-danger-bg disabled:opacity-50"
-            >
-              <Lock className="h-7 w-7" aria-hidden />
-              Zatvori operaciju
-            </button>
+            {zatvoriDugme}
           </div>
         </>
       )}

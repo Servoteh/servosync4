@@ -1,6 +1,6 @@
 'use client';
 
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from './client';
 import type { TechProcess } from './tech-processes';
 
@@ -151,6 +151,110 @@ export function useFinish() {
         body: JSON.stringify({ pieceCount, note, workerCard }),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['tech-processes'] }),
+  });
+}
+
+// ------------------------------------------------------------------ START/STOP (A-4: evidencija vremena, „dva skena")
+
+export interface StartWorkInput {
+  orderBarcode: string;
+  operationBarcode: string;
+  /** ID kartica radnika (obavezno — identitet ključa sesiju). */
+  workerCard: string;
+}
+
+export interface StartWorkResult {
+  session: { id: number; startedAt: string; techProcessId: number };
+  techProcess: TechProcess;
+  workOrder: KioskWorkOrder | null;
+  staleWorkOrder: boolean;
+  printedVariant: number;
+  currentVariant: number;
+  machineAccessWarning: string | null;
+  /** Upozorenje: radnik već ima otvorenu sesiju na drugoj operaciji (rad svejedno započet). */
+  multitaskingWarning: string | null;
+}
+
+export interface StopWorkInput {
+  orderBarcode: string;
+  operationBarcode: string;
+  workerCard: string;
+  /** Broj napravljenih komada u OVOJ sesiji (ceo broj ≥ 1). */
+  pieceCount: number;
+  note?: string;
+}
+
+export interface StopWorkResult extends ScanResult {
+  session: {
+    id: number;
+    startedAt: string;
+    stoppedAt: string;
+    /** Trajanje sesije (sekunde). */
+    elapsedSeconds: number;
+    /** true = trenutna sesija (nije bilo START skena — jednokratni fallback). */
+    instant: boolean;
+  };
+}
+
+export interface OpenSessionResult {
+  techProcessId: number;
+  operationFinished: boolean;
+  open: boolean;
+  session: { id: number; startedAt: string } | null;
+  worker: { id: number; fullName: string | null };
+}
+
+/** START skena — otvara vremensku sesiju za (radnik, operacija). */
+export function useStartWork() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: StartWorkInput) =>
+      apiFetch<{ data: StartWorkResult }>(`${BASE}/work/start`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['tech-processes'] }),
+  });
+}
+
+/** STOP skena — zatvara sesiju + akumulira komade (isti efekat kao scan). */
+export function useStopWork() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: StopWorkInput) =>
+      apiFetch<{ data: StopWorkResult }>(`${BASE}/work/stop`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['tech-processes'] }),
+  });
+}
+
+/**
+ * Stanje sesije za (radnik, operacija) razrešeno iz barkodova — vodi kiosk
+ * START/STOP režim. `enabled=false` isključuje upit (npr. dok nema oba barkoda).
+ */
+export function useOpenSession(params: {
+  orderBarcode?: string;
+  operationBarcode?: string;
+  workerCard?: string;
+  enabled: boolean;
+}) {
+  const qs = new URLSearchParams();
+  if (params.orderBarcode) qs.set('orderBarcode', params.orderBarcode);
+  if (params.operationBarcode) qs.set('operationBarcode', params.operationBarcode);
+  if (params.workerCard) qs.set('workerCard', params.workerCard);
+  return useQuery({
+    queryKey: [
+      'tech-processes',
+      'work-open',
+      params.orderBarcode,
+      params.operationBarcode,
+      params.workerCard,
+    ],
+    queryFn: () =>
+      apiFetch<{ data: OpenSessionResult }>(`${BASE}/work/open?${qs.toString()}`),
+    enabled: params.enabled,
   });
 }
 

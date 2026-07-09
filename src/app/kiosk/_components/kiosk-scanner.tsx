@@ -9,7 +9,10 @@ import {
   useDecodeBarcode,
   useFinish,
   useIdentifyWorker,
+  useOpenSession,
   useScan,
+  useStartWork,
+  useStopWork,
   type KioskWorker,
   type KioskWorkOrder,
   type OperationBarcodeFields,
@@ -85,6 +88,8 @@ export function KioskScanner({ workerName }: { workerName: string }) {
   const scan = useScan();
   const finish = useFinish();
   const control = useControl();
+  const startWork = useStartWork();
+  const stopWork = useStopWork();
 
   // Radnik/kontrolor prijavljen ID karticom (BarKodUnos2024 ekran 1).
   const [worker, setWorker] = useState<{ card: string; info: KioskWorker } | null>(null);
@@ -120,6 +125,16 @@ export function KioskScanner({ workerName }: { workerName: string }) {
       (a, b) => Number(!!a.isProcessFinished) - Number(!!b.isProcessFinished) || a.id - b.id,
     )[0];
   }, [operation, card.data]);
+
+  // Stanje vremenske sesije (A-4) — vodi START/STOP režim u WorkPanel-u.
+  // Isključeno za završnu kontrolu (ta ima svoj panel/tok).
+  const openSession = useOpenSession({
+    orderBarcode: order?.raw,
+    operationBarcode: operation?.raw,
+    workerCard: worker?.card,
+    enabled: !!order && !!operation && !!worker && operation?.finalControl !== true,
+  });
+  const session = openSession.data?.data.open ? openSession.data.data.session : null;
 
   const resetOrder = useCallback(() => {
     setOrder(null);
@@ -263,6 +278,71 @@ export function KioskScanner({ workerName }: { workerName: string }) {
       }
     } catch (e) {
       setFeedback({ tone: 'danger', title: 'Prijava nije uspela', detail: errMessage(e) });
+    }
+  }
+
+  async function onZapocni() {
+    if (!order || !operation || !worker) return;
+    try {
+      const { data } = await startWork.mutateAsync({
+        orderBarcode: order.raw,
+        operationBarcode: operation.raw,
+        workerCard: worker.card,
+      });
+      await openSession.refetch();
+      const detail: string[] = [];
+      if (data.multitaskingWarning) detail.push(data.multitaskingWarning);
+      if (data.staleWorkOrder)
+        detail.push(
+          `⚠ Star otisak: štampan u varijanti ${data.printedVariant}, tekuća je ${data.currentVariant}.`,
+        );
+      setFeedback({
+        tone: data.staleWorkOrder || data.multitaskingWarning ? 'info' : 'success',
+        title: 'Rad započet',
+        detail: detail.length
+          ? detail.join(' · ')
+          : 'Merenje vremena je pokrenuto — skenirajte STOP („Završi rad") kad završite.',
+      });
+    } catch (e) {
+      setFeedback({ tone: 'danger', title: 'Početak rada nije uspeo', detail: errMessage(e) });
+    }
+  }
+
+  async function onZavrsiRad(pieces: number) {
+    if (!order || !operation || !worker) return;
+    try {
+      const { data } = await stopWork.mutateAsync({
+        orderBarcode: order.raw,
+        operationBarcode: operation.raw,
+        workerCard: worker.card,
+        pieceCount: pieces,
+      });
+      setOverride({
+        id: data.techProcess.id,
+        made: data.techProcess.pieceCount,
+        finished: !!data.techProcess.isProcessFinished,
+      });
+      await openSession.refetch();
+      const sec = data.session.elapsedSeconds;
+      const dur =
+        sec >= 3600
+          ? `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`
+          : `${Math.floor(sec / 60)}m ${sec % 60}s`;
+      const parts = [
+        `Napravljeno ${formatNumber(data.techProcess.pieceCount)}${
+          data.plannedPieces != null ? ' / ' + formatNumber(data.plannedPieces) : ''
+        } kom`,
+        `Trajanje ${dur}`,
+      ];
+      if (data.operationFinished) parts.push('Operacija je dostigla plan i zatvorena.');
+      if (data.workOrderCompleted) parts.push('Radni nalog je završen.');
+      setFeedback({
+        tone: 'success',
+        title: `Rad završen (${formatNumber(pieces)} kom)`,
+        detail: parts.join(' · '),
+      });
+    } catch (e) {
+      setFeedback({ tone: 'danger', title: 'Završetak rada nije uspeo', detail: errMessage(e) });
     }
   }
 
@@ -461,6 +541,12 @@ export function KioskScanner({ workerName }: { workerName: string }) {
             finished={finished}
             missing={missing}
             loading={cardLoading}
+            openSession={session}
+            sessionLoading={openSession.isLoading}
+            zapocinjanje={startWork.isPending}
+            zavrsavanje={stopWork.isPending}
+            onZapocni={onZapocni}
+            onZavrsiRad={onZavrsiRad}
             evidentiranje={scan.isPending}
             zatvaranje={finish.isPending}
             onEvidentiraj={onEvidentiraj}
