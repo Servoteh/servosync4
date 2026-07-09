@@ -110,6 +110,15 @@ pre nego što se dotakne Kadrovska (PII, zarade, najgušći authz).
 - Kasnija **Vite→Next migracija** pojedinih 1.0 modula je ODVOJEN, dugoročan tok — ne blokira ovo; end-state
   shell-a (da li ostaje 1.0 ili se prelazi na Next) bira se kasnije. Ovde je cilj **ujedinjenje prikaza**, ne prepravka.
 
+**Faznost prikaza (POTVRĐENO 09.07, Nenad — na osnovu mockup-a¹):**
+1. **Start:** „Tehnologija" = ZASEBNA kartica na HUB-u (pored „Proizvodnja") — nula prepravke, odmah upotrebljivo.
+2. **Kasnije — spajanje/grupisanje:** „Tehnologija" (2.0 core) i „Proizvodnja" (1.0 planiranje/praćenje) se
+   **prirodno stapaju u jednu grupu** — 1.0 Proizvodnja danas čita `bigtehn_*_cache` koji UMIRE sa QBigTehn
+   cutover-om, pa se Praćenje/Plan proizvodnje ionako repointuju na 2.0 `tech_processes` (§4.2, tracker §5).
+   Grupisanje modula na HUB-u (i eventualno spajanje kartica) radi se TADA, ne sada.
+
+¹ Interaktivni mockup (HUB + modul Tehnologija + šav-toggle): https://claude.ai/code/artifact/455027a0-0201-44a5-8f37-8374f2cac34f
+
 **JEDAN identitet + JEDAN origin (SSO):**
 - **2.0 (NestJS) prihvata ISTI JWT kao 1.0 (GoTrue)** — isti secret, `email` claim → mapiranje na 2.0
   user/role (`AUTHZ_UNIFIED`). Korisnik se loguje jednom u 1.0; „Tehnologija" iframe radi bez novog login-a.
