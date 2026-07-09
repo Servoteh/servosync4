@@ -42,6 +42,19 @@ export function useMyPermissions(enabled: boolean) {
   });
 }
 
+/**
+ * SSO sa ServoSync 1.0 shell-a (iframe modul „Tehnologija"): menja 1.0 access
+ * token za NAŠ token preko POST /auth/sso. Plain funkcija (ne hook) — poziva
+ * se iz `message` listener-a u AuthProvider-u. 401 = nema aktivnog 2.0 naloga
+ * za taj email → pozivalac ćuti i ostavlja običan login ekran.
+ */
+export function ssoExchange(token: string) {
+  return apiFetch<LoginResponse>('/auth/sso', {
+    method: 'POST',
+    body: JSON.stringify({ token }),
+  });
+}
+
 /** Email + password login; stores the token and primes the `me` cache. */
 export function useLogin() {
   const qc = useQueryClient();
