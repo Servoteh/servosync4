@@ -189,9 +189,16 @@ Sve ostalo (DB CHECK, `/me/permissions`, FE dropdown) se **izvodi** iz ova dva (
 - [ ] `AUTHZ_ENFORCE=true` (rollback = env promena + restart, bez deploy-a).
 - [ ] e2e permission matrica (rola × endpoint × 200/403) — samo za endpoin­te koji postoje; raste sa modulima.
 
-### Faza 4 — row-scope (jedini pravi row-scoping u 2.0)
-- [ ] `ScopeService`: `proizvodni_radnik`→machine_access, TP-lock, owner-na-TP — where-builderi koji zovu
-      iste predikat-funkcije (§C).
+### Faza 4 — row-scope (jedini pravi row-scoping u 2.0) — ✅ temelj 2026-07-09
+- [x] **JWT nosi `workerId`** (iz `users.worker_id`) — keystone za sve row-scope (auth.service + jwt.strategy).
+- [x] **`ScopeService`** (`src/common/authz/scope.service.ts`, `@Global AuthzModule`): `techProcessScope()` /
+      `withTechProcessScope()` — `proizvodni_radnik` → samo `machine_access` radni centri (prazno = ništa,
+      fail-closed); ostale (već read-ovlašćene) uloge → sve. Boot verifikovan, 6 unit testova.
+- [x] Primenjeno na **`GET /tech-processes`** (list + count scoped). Bezbedno na prod: nema `proizvodni_radnik`
+      naloga još → no-op za admin/tehnolog.
+- [ ] Proširiti scope na `worker`/`card`/`rn-progress` read-ove i na **mutacije** (scan/finish samo za svoje
+      mašine; TP-lock = završen TP menja samo `sef`/`admin`; owner-na-TP) — sledeći pod-korak.
+- [ ] `created_by_id` FK (owner-only obrazac) kad zatreba.
 
 ### 3.0 (kad dođe)
 - [ ] Ne-superuser DB rola + `FORCE RLS` (domenske tabele, NE `user_roles`!) + `CREATE POLICY` po skeletu §D.

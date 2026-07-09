@@ -4,6 +4,7 @@ import { APP_INTERCEPTOR } from "@nestjs/core";
 import { AppController } from "./app.controller";
 import { AppService } from "./app.service";
 import { PrismaModule } from "./prisma/prisma.module";
+import { AuthzModule } from "./common/authz/authz.module";
 import { AuditInterceptor } from "./common/audit/audit.interceptor";
 import { SyncModule } from "./modules/sync/sync.module";
 import { AuthModule } from "./modules/auth/auth.module";
@@ -21,6 +22,7 @@ import { MrpModule } from "./modules/mrp/mrp.module";
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     PrismaModule,
+    AuthzModule,
     AuthModule,
     SyncModule,
     TechProcessesModule,

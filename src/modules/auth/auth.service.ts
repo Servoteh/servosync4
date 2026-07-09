@@ -10,6 +10,11 @@ export interface PublicUser {
   role: string;
 }
 
+/** PublicUser + JWT-internal fields (never returned to the client). */
+interface AuthenticatedUser extends PublicUser {
+  workerId: number | null;
+}
+
 @Injectable()
 export class AuthService {
   constructor(
@@ -18,7 +23,7 @@ export class AuthService {
   ) {}
 
   /** Validate credentials; returns the user or throws 401. */
-  async validate(email: string, password: string): Promise<PublicUser> {
+  async validate(email: string, password: string): Promise<AuthenticatedUser> {
     const user = await this.prisma.user.findUnique({
       where: { email: email.toLowerCase().trim() },
     });
@@ -32,7 +37,13 @@ export class AuthService {
       data: { lastLoginAt: new Date() },
     });
 
-    return { id: user.id, email: user.email, fullName: user.fullName, role: user.role };
+    return {
+      id: user.id,
+      email: user.email,
+      fullName: user.fullName,
+      role: user.role,
+      workerId: user.workerId,
+    };
   }
 
   /** Issue a signed access token for an already-validated user. */
@@ -42,8 +53,11 @@ export class AuthService {
       sub: user.id,
       email: user.email,
       role: user.role,
+      workerId: user.workerId,
     });
-    return { accessToken, user };
+    // `workerId` is JWT-internal (row-scope); PublicUser stays as-is for the client.
+    const { workerId: _workerId, ...publicUser } = user;
+    return { accessToken, user: publicUser };
   }
 
   async me(userId: number): Promise<PublicUser> {

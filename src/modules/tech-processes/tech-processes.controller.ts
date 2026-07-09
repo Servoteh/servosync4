@@ -8,9 +8,11 @@ import {
   ParseIntPipe,
   Post,
   Query,
+  Req,
   UseGuards,
 } from "@nestjs/common";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
+import type { AuthUser } from "../auth/jwt.strategy";
 import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
 import { PERMISSIONS } from "../../common/authz/permissions";
@@ -57,8 +59,12 @@ export class TechProcessesController {
   constructor(private readonly techProcesses: TechProcessesService) {}
 
   @Get()
-  list(@Query() query: ListTechProcessesQuery) {
-    return this.techProcesses.list(query);
+  list(
+    @Query() query: ListTechProcessesQuery,
+    @Req() req: { user: AuthUser },
+  ) {
+    // Row-scope: proizvodni_radnik → samo svoje mašine (ScopeService).
+    return this.techProcesses.list(query, req.user);
   }
 
   @Get("card")

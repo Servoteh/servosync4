@@ -6,6 +6,8 @@ import {
 } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
+import { ScopeService } from "../../common/authz/scope.service";
+import type { AuthUser } from "../auth/jwt.strategy";
 import {
   pageMeta,
   parsePagination,
@@ -143,22 +145,28 @@ interface RnProgressRaw {
  */
 @Injectable()
 export class TechProcessesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly scope: ScopeService,
+  ) {}
 
   // ---------------------------------------------------------------- LIST
 
-  async list(query: ListTechProcessesQuery) {
+  async list(query: ListTechProcessesQuery, user?: AuthUser) {
     const { page, pageSize, skip, take } = parsePagination(
       query.page,
       query.pageSize,
     );
 
-    const where: Prisma.TechProcessWhereInput = {};
+    const filter: Prisma.TechProcessWhereInput = {};
     if (query.identNumber) {
-      where.identNumber = { contains: query.identNumber, mode: "insensitive" };
+      filter.identNumber = { contains: query.identNumber, mode: "insensitive" };
     }
     const projectId = Number.parseInt(query.projectId ?? "", 10);
-    if (!Number.isNaN(projectId)) where.projectId = projectId;
+    if (!Number.isNaN(projectId)) filter.projectId = projectId;
+
+    // Row-scope: `proizvodni_radnik` vidi samo svoje mašine; ostali (već read-ovlašćeni) sve.
+    const where = await this.scope.withTechProcessScope(user, filter);
 
     const [rows, total] = await this.prisma.$transaction([
       this.prisma.techProcess.findMany({
