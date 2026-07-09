@@ -174,6 +174,12 @@ Sve ostalo (DB CHECK, `/me/permissions`, FE dropdown) se **izvodi** iz ova dva (
 - [x] `GET /auth/me/permissions` — živo na prod (`/api/auth/me/permissions` → 401 bez tokena, ranije 404).
 - [x] `PermissionsGuard` u **SHADOW MODE** deployovan (`AUTHZ_ENFORCE` nije `true` → default log-only).
       Verifikovano: sve `/api/v1/*` rute 401 (auth radi), nijedna 403/500 (guard ne blokira).
+- [x] **Frontend veže `/auth/me/permissions`** (repo `frontend`, commit `b239734`): `src/lib/permissions.ts`
+      (mirror kataloga), `useMyPermissions()` hook, `auth-context` izlaže `permissions`+`can()`+`enforced`,
+      `<Can>` gate (`src/lib/can.tsx`). **Nav sakriva module po ulozi** (admin vidi sve); primer dugmeta
+      „Nova operacija" iza `strukture.write`. Build ✓ (16 ruta). NAPOMENA: LAN-front (:3000, baked u backend
+      image) se osvežava tek na sledećem **backend** deploy-u; Cloudflare front odmah.
+- [ ] Proširiti `<Can>` na ostala akciona dugmad (RN lansiranje/odobravanje, primopredaje, lokacije write).
 - [ ] Nedelju dana na prod → pregled `SHADOW would-deny` logova pre enforce-a.
 
 ### Faza 3 — enforce
