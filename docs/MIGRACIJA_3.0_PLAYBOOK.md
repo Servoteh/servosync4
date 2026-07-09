@@ -152,7 +152,22 @@ Kadrovska modul migrira pozno** u 3.0-D (rich šema se čuva, ne stapa se u `wor
 ### 4.3 Ostala preklapanja imena (usaglasiti pre stapanja)
 
 `projects` (2.0 = predmeti 7.602 ≠ 1.0 = interni projekti 23) · `departments` (1.0 = izvor istine, 13 vs 1) ·
-`audit_log` (dve šeme → objediniti) · crteži (2.0 pun PDM vs 1.0 samo referencira). **Ne stapati naslepo po imenu.**
+`audit_log` (dve šeme → objediniti) · crteži (vidi §4.4). **Ne stapati naslepo po imenu.**
+
+### 4.4 Crteži — DEDUP: 1.0 viewer čita iz 2.0 `drawing_pdfs` (ODLUKA 2026-07-09, Nenad)
+
+**Nalaz (mereno uživo 09.07):** 1.0 `bigtehn-drawings` bucket (5426 fajlova, **673 MB**) i 2.0 `drawing_pdfs`
+(`pdf_binary` bytea, 5425) su **isti crteži iz istog PDM izvora** — 1.0 kao PDF izvezen u
+`C:\PDMExport\PDFImportovano` (bridge `syncBigtehnDrawings` → bucket), 2.0 direktno iz PDM MS SQL
+(`Was: PDM_PDFCrtezi`). Pokrivenost **4595/4596 distinct brojeva = 99,98%** u 2.0 `drawing_pdfs`.
+
+**Odluka:** NE duplirati crteže — 2.0 `drawing_pdfs` je jedina kanonska on-prem kopija.
+- 1.0 pregled crteža (Praćenje proizvodnje, Plan Montaže) **čita iz 2.0 `drawing_pdfs`**: adapter u
+  `src/services/drawings.js` (`drawing_no` `1133219_B` → `drawing_number=1133219`+`revision=B`; resolver već
+  ima revision-fallback). Izvodi se pri cutover-u (§ App repoint u §5 tracker-u / RUNBOOK Faza 3).
+- Bridge `syncBigtehnDrawings` se **gasi** — u 3.0 ostaje JEDAN put uvoza crteža (2.0 PDM sync).
+- **Storage migracija 1.5 preskače `bigtehn-drawings` (673 MB)**; preneto je samo 115 realnih 1.0 fajlova
+  (185 MB) kroz `infra/self-host/scripts/migrate-storage.sh`.
 
 ---
 
@@ -234,3 +249,4 @@ Za svaki modul u 3.0, pre „gotovo":
 | Datum | Šta |
 |---|---|
 | 2026-07-09 | Prva verzija. Konsoliduje ROADMAP + AUTHZ_UNIFIED + INTEGRACIJA + RBAC_RLS_PREDLOG + migration/03,16 + DESIGN_SYSTEM. Ugrađuje odluke sesije 09.07: 1.5 pre 3.0 (§3), zaposleni = 1.0 izvor istine i aktivni (§4.1), responsivnost V1 zahtev (§1.8). Modul-tracker §5. |
+| 2026-07-09 (2) | **Faza 1.5 IZVRŠENA do data+auth+storage** — self-host stack živ na `ubuntusrv:~/servosync15` (`infra/self-host/`): baza restore (198 tabela, 56 korisnika, 513 RLS), storage 115 fajlova/185 MB, login E2E. **§4.4 dodato: crteži DEDUP** (1.0 viewer → 2.0 `drawing_pdfs`; `bigtehn-drawings` 673 MB se NE migrira; bridge `syncBigtehnDrawings` se gasi). Ostaje: Node worker, pg_cron, Tunnel, repoint. |
