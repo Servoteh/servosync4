@@ -22,6 +22,10 @@ import {
   type ControlTechProcessDto,
   validateControl,
 } from "./dto/control-tech-process.dto";
+import {
+  type StornoTechProcessDto,
+  validateStorno,
+} from "./dto/storno-tech-process.dto";
 
 /** Vrste kvaliteta delova (`part_quality_types`, spec §1): 0=dobar,1=dorada,2=škart. */
 export const PART_QUALITY = { GOOD: 0, REWORK: 1, SCRAP: 2 } as const;
@@ -1144,6 +1148,102 @@ export class TechProcessesService {
     const q = Number.parseInt(query.quantity ?? "", 10);
     const quantity = Number.isNaN(q) || q < 1 ? 1 : q;
     return { data: await this.buildLabelData(workOrderId, quantity) };
+  }
+
+  // ---------------------------------------------------------------- ISPRAVKE (kucanje)
+  // Storno (kontra-red) i audited-delete otkucane operacije. Snapshot pre brisanja ide u
+  // `audit_log.beforeData` (red je povratljiv). NAPOMENA: dedikovana
+  // `tech_process_corrections` tabela + restore UI su moguća kasnija dorada (sad audit_log).
+
+  /**
+   * `POST /:id/storno` — STORNIRANJE (legacy `StornirajTehPostupak`): upiši KONTRA-red
+   * sa `pieceCount = -n` (radnik ostaje izvorni; neto se poništava). Guard: `n` ≤
+   * evidentirano na redu. Ne briše ništa. Audit u `audit_log` (beforeData = izvorni red).
+   */
+  async storno(id: number, dto: StornoTechProcessDto) {
+    validateStorno(dto);
+    const result = await this.prisma.$transaction(async (tx) => {
+      const tp = await tx.techProcess.findUnique({ where: { id } });
+      if (!tp)
+        throw new NotFoundException(`Tehnološki postupak ${id} ne postoji`);
+      if (dto.pieceCount > tp.pieceCount)
+        throw new UnprocessableEntityException(
+          `Storno (${dto.pieceCount}) je veći od evidentiranog broja komada (${tp.pieceCount}).`,
+        );
+
+      await this.alignTechProcessSequence(tx);
+      const counter = await tx.techProcess.create({
+        data: {
+          workerId: tp.workerId, // izvorni radnik (kao legacy INSERT SELECT)
+          projectId: tp.projectId,
+          identNumber: tp.identNumber,
+          variant: tp.variant,
+          operationNumber: tp.operationNumber,
+          workCenterCode: tp.workCenterCode,
+          identMark: tp.identMark,
+          pieceCount: -dto.pieceCount,
+          qualityTypeId: tp.qualityTypeId,
+          workOrderId: tp.workOrderId,
+          isProcessFinished: true,
+          finishedAt: new Date(),
+          note: `STORNO${dto.note?.trim() ? ": " + dto.note.trim() : ""} (izvor postupak ${id})`,
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          action: "STORNO",
+          entityType: "tech-processes",
+          entityId: String(id),
+          beforeData: this.snapshot(tp),
+          afterData: {
+            counterRowId: counter.id,
+            storniranoKomada: dto.pieceCount,
+          },
+        },
+      });
+      return { counter };
+    });
+    return {
+      data: {
+        storniranoKomada: dto.pieceCount,
+        counterRow: result.counter,
+        sourceTechProcessId: id,
+      },
+    };
+  }
+
+  /**
+   * `DELETE /:id` — audited brisanje otkucane operacije (legacy `spObrisiTP`): snapshot
+   * reda (+ dokumenata) u `audit_log.beforeData`, pa brisanje. Alat za ispravku loše
+   * evidentiranih kucanja (bez lock-guarda, kao legacy — potvrda je na UI-u).
+   */
+  async deleteEntry(id: number, dto?: { note?: string }) {
+    const tp = await this.prisma.techProcess.findUnique({
+      where: { id },
+      include: { documents: true },
+    });
+    if (!tp) throw new NotFoundException(`Tehnološki postupak ${id} ne postoji`);
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.auditLog.create({
+        data: {
+          action: "DELETE tech-processes",
+          entityType: "tech-processes",
+          entityId: String(id),
+          beforeData: this.snapshot(tp),
+          metadata: dto?.note?.trim() ? { note: dto.note.trim() } : undefined,
+        },
+      });
+      if (tp.documents.length)
+        await tx.techProcessDocument.deleteMany({ where: { techProcessId: id } });
+      await tx.techProcess.delete({ where: { id } });
+    });
+    return { data: { id, deleted: true, backedUpTo: "audit_log" } };
+  }
+
+  /** JSON-bezbedan snimak reda za `audit_log` (datumi → ISO string). */
+  private snapshot(row: unknown): Prisma.InputJsonValue {
+    return JSON.parse(JSON.stringify(row)) as Prisma.InputJsonValue;
   }
 
   // --- write-path helperi (unutar transakcije) ---

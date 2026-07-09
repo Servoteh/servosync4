@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   Param,
@@ -26,6 +27,7 @@ import { validateDecodeBarcode } from "./dto/decode-barcode.dto";
 import type { ScanTechProcessDto } from "./dto/scan-tech-process.dto";
 import type { FinishTechProcessDto } from "./dto/finish-tech-process.dto";
 import type { ControlTechProcessDto } from "./dto/control-tech-process.dto";
+import type { StornoTechProcessDto } from "./dto/storno-tech-process.dto";
 
 /**
  * Read-only API za tehnološke postupke (Tehnološki postupci / TP).
@@ -116,6 +118,26 @@ export class TechProcessesController {
   @RequirePermission(PERMISSIONS.TEHNOLOGIJA_WRITE)
   control(@Body() dto: ControlTechProcessDto) {
     return this.techProcesses.control(dto);
+  }
+
+  /** STORNO otkucane operacije (kontra-red, ne briše). */
+  @Post(":id/storno")
+  @RequirePermission(PERMISSIONS.TEHNOLOGIJA_WRITE)
+  storno(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: StornoTechProcessDto,
+  ) {
+    return this.techProcesses.storno(id, dto);
+  }
+
+  /** Audited brisanje otkucane operacije (snapshot u audit_log pa brisanje). */
+  @Delete(":id")
+  @RequirePermission(PERMISSIONS.TEHNOLOGIJA_WRITE)
+  deleteEntry(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto?: { note?: string },
+  ) {
+    return this.techProcesses.deleteEntry(id, dto);
   }
 
   @Get(":id")
