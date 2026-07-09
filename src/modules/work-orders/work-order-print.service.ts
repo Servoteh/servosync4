@@ -5,6 +5,7 @@ import { SAFE_WORKER_SELECT } from "../../common/pagination";
 import { PdfService } from "../documents/pdf.service";
 import { BarcodeService } from "../documents/barcode.service";
 import { formatOrderBarcode, formatOperationBarcode } from "../tech-processes/barcode";
+import { SERVOTEH_LOGO_DATA_URL } from "../documents/servoteh-logo";
 
 export type RnPrintVariant = "std" | "bez-barkoda";
 
@@ -122,17 +123,27 @@ export class WorkOrderPrintService {
   }): TDocumentDefinitions {
     const { wo, customerName, tehnologName, opCatalog, withBarcode, orderBarcodeSvg } = args;
 
-    const headerLeft: Content = [
-      { text: "RADNI NALOG", style: "title" },
-      { text: `${wo.identNumber}   ·   revizija ${wo.revision}`, style: "subtitle" },
-    ];
+    // Zaglavlje (parity sa legacy rRN): logo Servoteha gore-levo, naziv u sredini,
+    // RNZ barkod desno.
     const headerColumns: Content = {
       columns: [
-        headerLeft,
+        { image: SERVOTEH_LOGO_DATA_URL, width: 128 },
+        {
+          width: "*",
+          margin: [12, 4, 0, 0],
+          stack: [
+            { text: "RADNI NALOG", style: "title" },
+            {
+              text: `${wo.identNumber}   ·   revizija ${wo.revision}`,
+              style: "subtitle",
+            },
+          ],
+        },
         orderBarcodeSvg
-          ? { svg: orderBarcodeSvg, fit: [220, 46], alignment: "right" }
-          : { text: "", width: "*" },
+          ? { svg: orderBarcodeSvg, fit: [190, 46], alignment: "right" }
+          : { text: "", width: "auto" },
       ],
+      columnGap: 8,
     };
 
     const infoRow = (l1: string, v1: string, l2: string, v2: string): Content[] => [
