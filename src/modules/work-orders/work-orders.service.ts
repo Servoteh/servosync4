@@ -58,6 +58,18 @@ export interface ListWorkOrdersQuery {
   to?: string;
 }
 
+/** Filteri za plansku tablu operacija po prioritetu (QBigTehn „Prioritet"). */
+export interface ListOperationQueueQuery {
+  page?: string;
+  pageSize?: string;
+  /** Pretraga po identu / nazivu pozicije / crtežu RN-a. */
+  q?: string;
+  /** Radni centar (Operation.workCenterCode). */
+  workCenterCode?: string;
+  /** '1'/'true' = samo operacije sa dodeljenim prioritetom (priority < 255). */
+  onlyPrioritized?: string;
+}
+
 @Injectable()
 export class WorkOrdersService {
   constructor(
@@ -251,6 +263,102 @@ export class WorkOrdersService {
     });
     for (const r of rows) map.set(r.workCenterCode, r);
     return map;
+  }
+
+  /**
+   * Planska tabla operacija po prioritetu (QBigTehn „Prioritet") — operacije
+   * NEZAVRŠENIH radnih naloga, sortirane po prioritetu (manji broj = hitnije),
+   * pa po roku isporuke i broju operacije. Filteri: RC (`workCenterCode`), pretraga
+   * (`q`), `onlyPrioritized` (samo priority < 255). Enrichment batch-resolverima
+   * (bez required-JOIN-a; WHERE-relacija samo isključuje orphan-e, ne puca 500).
+   */
+  async operationQueue(query: ListOperationQueueQuery) {
+    const { page, pageSize, skip, take } = parsePagination(
+      query.page,
+      query.pageSize,
+    );
+
+    // WHERE-relacija na workOrder je INNER JOIN filter (orphan operacije samo ispadaju).
+    const woFilter: Prisma.WorkOrderWhereInput = {
+      status: { not: true }, // nezavršeni RN
+    };
+    if (query.q) {
+      woFilter.OR = [
+        { identNumber: { contains: query.q, mode: "insensitive" } },
+        { partName: { contains: query.q, mode: "insensitive" } },
+        { drawingNumber: { contains: query.q, mode: "insensitive" } },
+      ];
+    }
+
+    const where: Prisma.WorkOrderOperationWhereInput = { workOrder: { is: woFilter } };
+    if (query.workCenterCode) where.workCenterCode = query.workCenterCode;
+    if (query.onlyPrioritized === "1" || query.onlyPrioritized === "true") {
+      where.priority = { lt: 255 };
+    }
+
+    const [rows, total] = await this.prisma.$transaction([
+      this.prisma.workOrderOperation.findMany({
+        where,
+        orderBy: [
+          { priority: "asc" },
+          { workOrderId: "asc" },
+          { operationNumber: "asc" },
+        ],
+        skip,
+        take,
+        select: {
+          id: true,
+          workOrderId: true,
+          operationNumber: true,
+          workCenterCode: true,
+          workDescription: true,
+          priority: true,
+          setupTime: true,
+          cycleTime: true,
+          workerId: true,
+        },
+      }),
+      this.prisma.workOrderOperation.count({ where }),
+    ]);
+
+    const [orders, ops, workers] = await Promise.all([
+      this.resolveWorkOrderHeaders(rows.map((r) => r.workOrderId)),
+      this.resolveOperationsByCode(rows.map((r) => r.workCenterCode)),
+      this.resolveWorkers(rows.map((r) => r.workerId)),
+    ]);
+
+    const data = rows.map((r) => ({
+      ...r,
+      workOrder: orders.get(r.workOrderId) ?? null,
+      operation: ops.get(r.workCenterCode) ?? null,
+      worker: workers.get(r.workerId) ?? null,
+    }));
+
+    return { data, meta: pageMeta(page, pageSize, total) };
+  }
+
+  /** Batch-resolve zaglavlja RN-ova (za plansku tablu i sl.) — bez required-JOIN-a. */
+  private async resolveWorkOrderHeaders(ids: number[]) {
+    const uniq = uniqueIds(ids);
+    if (!uniq.length) return new Map<number, never>();
+    return byId(
+      await this.prisma.workOrder.findMany({
+        where: { id: { in: uniq } },
+        select: {
+          id: true,
+          identNumber: true,
+          variant: true,
+          projectId: true,
+          partName: true,
+          drawingNumber: true,
+          revision: true,
+          pieceCount: true,
+          productionDeadline: true,
+          handoverStatusId: true,
+          status: true,
+        },
+      }),
+    );
   }
 
   // ---------------------------------------------------------------- CREATE

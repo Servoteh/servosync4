@@ -18,7 +18,10 @@ import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
 import { PERMISSIONS } from "../../common/authz/permissions";
 import { WorkOrdersService } from "./work-orders.service";
-import type { ListWorkOrdersQuery } from "./work-orders.service";
+import type {
+  ListWorkOrdersQuery,
+  ListOperationQueueQuery,
+} from "./work-orders.service";
 import { WorkOrderPrintService } from "./work-order-print.service";
 import type { RnPrintVariant } from "./work-order-print.service";
 import type { CreateWorkOrderDto } from "./dto/create-work-order.dto";
@@ -57,6 +60,12 @@ export class WorkOrdersController {
   @Get()
   list(@Query() query: ListWorkOrdersQuery) {
     return this.workOrders.list(query);
+  }
+
+  /** Planska tabla operacija po prioritetu (QBigTehn „Prioritet"). Mora pre `:id`. */
+  @Get("operations/queue")
+  operationQueue(@Query() query: ListOperationQueueQuery) {
+    return this.workOrders.operationQueue(query);
   }
 
   @Get(":id")
