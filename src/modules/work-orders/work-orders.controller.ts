@@ -42,8 +42,9 @@ import type {
  *   POST /api/v1/work-orders/:id/rework   { pieceCount, qualityTypeId, note? } — dorada/škart child (RN_WRITE)
  *   POST /api/v1/work-orders/projects/:projectId/bulk-clone { targetProjectId, coefficient, workOrderIds? } — bulk-clone (RN_WRITE)
  *
- * Traži JWT. RBAC (ko sme odobri/lansiraj) je V2 — vidi TODO(auth) u servisu.
- * Copy/clone/rework nose `@RequirePermission(RN_WRITE)` (V1 no-op guard).
+ * Traži JWT. Mutacije nose `@RequirePermission`: create/lock/copy/clone/rework = `rn.write`,
+ * approve = `rn.approve`, launch = `rn.launch`. Guard je shadow-mode (V1). Drugi gate za
+ * approve/launch (`Worker.definesApproval`/`definesLaunch`) je V2 u servisu — TODO(auth) u servisu.
  */
 @UseGuards(JwtAuthGuard)
 @Controller({ path: "work-orders", version: "1" })
@@ -83,6 +84,8 @@ export class WorkOrdersController {
   }
 
   @Post()
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(PERMISSIONS.RN_WRITE)
   create(@Body() dto: CreateWorkOrderDto) {
     return this.workOrders.create(dto);
   }
@@ -140,7 +143,10 @@ export class WorkOrdersController {
     return this.workOrders.remove(id);
   }
 
+  /** Odobri/odbij RN. Permisija `rn.approve`; drugi gate (Worker.definesApproval) je V2 u servisu. */
   @Post(":id/approve")
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(PERMISSIONS.RN_APPROVE)
   approve(
     @Param("id", ParseIntPipe) id: number,
     @Body() body: { approve?: boolean },
@@ -148,12 +154,17 @@ export class WorkOrdersController {
     return this.workOrders.approve(id, body?.approve !== false);
   }
 
+  /** Lansiraj RN. Permisija `rn.launch`; drugi gate (Worker.definesLaunch) je V2 u servisu. */
   @Post(":id/launch")
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(PERMISSIONS.RN_LAUNCH)
   launch(@Param("id", ParseIntPipe) id: number) {
     return this.workOrders.launch(id);
   }
 
   @Post(":id/lock")
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(PERMISSIONS.RN_WRITE)
   lock(
     @Param("id", ParseIntPipe) id: number,
     @Body() body: { locked?: boolean },
