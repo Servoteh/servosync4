@@ -51,10 +51,23 @@ const CRITICAL_ORANGE_MAX_DAYS = 2;
 export interface ListTechProcessesQuery {
   page?: string;
   pageSize?: string;
+  /** Pretraga: ident broj (substring, case-insensitive). Alias za `identNumber`. */
+  q?: string;
   /** Filter by ident number (substring, case-insensitive). */
   identNumber?: string;
   /** Filter by project id. */
   projectId?: string;
+  /** Radnik (tačan id). */
+  workerId?: string;
+  /** Radni centar (RJgrupaRC). */
+  workCenterCode?: string;
+  /** Vrsta kvaliteta (0=dobar,1=dorada,2=škart). */
+  qualityTypeId?: string;
+  /** `"true"` = samo završeni; `"false"` = samo otvoreni (nezavršeni); prazno = svi. */
+  finished?: string;
+  /** Evidentirano od/do (ISO 8601) — filter po `enteredAt`. */
+  from?: string;
+  to?: string;
 }
 
 /** „Kartica TP" — jedan postupak = trojka (projectId, identNumber, variant). */
@@ -162,12 +175,26 @@ export class TechProcessesService {
       query.pageSize,
     );
 
+    const intEq = (v: string | undefined) => {
+      const n = Number.parseInt(v ?? "", 10);
+      return Number.isNaN(n) ? undefined : n;
+    };
     const filter: Prisma.TechProcessWhereInput = {};
-    if (query.identNumber) {
-      filter.identNumber = { contains: query.identNumber, mode: "insensitive" };
+    const ident = query.q?.trim() || query.identNumber;
+    if (ident) filter.identNumber = { contains: ident, mode: "insensitive" };
+    filter.projectId = intEq(query.projectId);
+    filter.workerId = intEq(query.workerId);
+    filter.qualityTypeId = intEq(query.qualityTypeId);
+    if (query.workCenterCode?.trim())
+      filter.workCenterCode = query.workCenterCode.trim();
+    if (query.finished === "true") filter.isProcessFinished = true;
+    else if (query.finished === "false") filter.isProcessFinished = { not: true };
+    if (query.from || query.to) {
+      const range: Prisma.DateTimeFilter = {};
+      if (query.from) range.gte = new Date(query.from);
+      if (query.to) range.lte = new Date(query.to);
+      filter.enteredAt = range;
     }
-    const projectId = Number.parseInt(query.projectId ?? "", 10);
-    if (!Number.isNaN(projectId)) filter.projectId = projectId;
 
     // Row-scope: `proizvodni_radnik` vidi samo svoje mašine; ostali (već read-ovlašćeni) sve.
     const where = await this.scope.withTechProcessScope(user, filter);
@@ -200,10 +227,16 @@ export class TechProcessesService {
       this.prisma.techProcess.count({ where }),
     ]);
 
-    const workers = await this.resolveWorkers(rows.map((r) => r.workerId));
+    const [workers, ops, quals] = await Promise.all([
+      this.resolveWorkers(rows.map((r) => r.workerId)),
+      this.resolveOperationsByCode(rows.map((r) => r.workCenterCode)),
+      this.resolveQualityTypes(rows.map((r) => r.qualityTypeId)),
+    ]);
     const data = rows.map((r) => ({
       ...r,
       worker: workers.get(r.workerId) ?? null,
+      operation: ops.get(r.workCenterCode) ?? null,
+      qualityType: quals.get(r.qualityTypeId) ?? null,
     }));
 
     return { data, meta: pageMeta(page, pageSize, total) };
