@@ -1,9 +1,11 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseIntPipe,
+  Patch,
   Post,
   Query,
   Res,
@@ -22,6 +24,11 @@ import type { RnPrintVariant } from "./work-order-print.service";
 import type { CreateWorkOrderDto } from "./dto/create-work-order.dto";
 import type { ReworkWorkOrderDto } from "./dto/rework-work-order.dto";
 import type { BulkCloneWorkOrdersDto } from "./dto/bulk-clone-work-orders.dto";
+import type { UpdateWorkOrderDto } from "./dto/update-work-order.dto";
+import type {
+  CreateWorkOrderOperationDto,
+  UpdateWorkOrderOperationDto,
+} from "./dto/work-order-operation.dto";
 
 /**
  * API za radne naloge (Radni nalozi / RN).
@@ -78,6 +85,59 @@ export class WorkOrdersController {
   @Post()
   create(@Body() dto: CreateWorkOrderDto) {
     return this.workOrders.create(dto);
+  }
+
+  /** Izmena zaglavlja RN-a (samo poslata polja; identitet se ne menja). */
+  @Patch(":id")
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(PERMISSIONS.RN_WRITE)
+  updateHeader(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: UpdateWorkOrderDto,
+  ) {
+    return this.workOrders.updateHeader(id, dto);
+  }
+
+  /** Dodaj operaciju TP na RN (RC + norme Tpz/Tk + opis + prioritet). */
+  @Post(":id/operations")
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(PERMISSIONS.RN_WRITE)
+  addOperation(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: CreateWorkOrderOperationDto,
+  ) {
+    return this.workOrders.addOperation(id, dto);
+  }
+
+  /** Izmena operacije RN-a. */
+  @Patch(":id/operations/:opId")
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(PERMISSIONS.RN_WRITE)
+  updateOperation(
+    @Param("id", ParseIntPipe) id: number,
+    @Param("opId", ParseIntPipe) opId: number,
+    @Body() dto: UpdateWorkOrderOperationDto,
+  ) {
+    return this.workOrders.updateOperation(id, opId, dto);
+  }
+
+  /** Brisanje operacije RN-a. */
+  @Delete(":id/operations/:opId")
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(PERMISSIONS.RN_WRITE)
+  deleteOperation(
+    @Param("id", ParseIntPipe) id: number,
+    @Param("opId", ParseIntPipe) opId: number,
+  ) {
+    return this.workOrders.deleteOperation(id, opId);
+  }
+
+  /** Brisanje kompletnog RN-a (cascade). Guard: zaključan / proizvodnja započeta. */
+  @Delete(":id")
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(PERMISSIONS.RN_WRITE)
+  remove(@Param("id", ParseIntPipe) id: number) {
+    return this.workOrders.remove(id);
   }
 
   @Post(":id/approve")

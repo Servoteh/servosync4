@@ -20,6 +20,16 @@ import {
   BulkCloneWorkOrdersDto,
   validateBulkCloneWorkOrders,
 } from "./dto/bulk-clone-work-orders.dto";
+import {
+  UpdateWorkOrderDto,
+  validateUpdateWorkOrder,
+} from "./dto/update-work-order.dto";
+import {
+  CreateWorkOrderOperationDto,
+  UpdateWorkOrderOperationDto,
+  validateCreateOperation,
+  validateUpdateOperation,
+} from "./dto/work-order-operation.dto";
 import { WorkOrderNumberingService } from "./work-order-numbering.service";
 
 /** Radni status (MODULE_SPEC_radni_nalozi §4): handover_statuses id. */
@@ -289,6 +299,252 @@ export class WorkOrdersService {
       });
     });
     return this.findOne(created.id);
+  }
+
+  // ------------------------------------------------- HEADER EDIT + TP AUTHORING
+  // Izmena zaglavlja RN-a i CRUD operacija (`work_order_operations`) — legacy
+  // `Form_UnosRN` edit mode + `Form_UnosStavkiRN`. Guard: zaključan RN se ne menja.
+
+  /** Zaključan RN se ne sme menjati (legacy `AllowEdits/Deletions=false` kad `Zakljucano`). */
+  private assertEditable(wo: { isLocked: boolean | null }): void {
+    if (wo.isLocked)
+      throw new UnprocessableEntityException("Zaključan RN se ne može menjati.");
+  }
+
+  /** Izmena zaglavlja RN-a (samo poslata polja). Identitet se ne menja. */
+  async updateHeader(id: number, dto: UpdateWorkOrderDto) {
+    validateUpdateWorkOrder(dto);
+    const wo = await this.prisma.workOrder.findUnique({
+      where: { id },
+      select: { id: true, isLocked: true },
+    });
+    if (!wo) throw new NotFoundException(`Radni nalog ${id} ne postoji`);
+    this.assertEditable(wo);
+
+    const data: Prisma.WorkOrderUncheckedUpdateInput = {};
+    if (dto.partName !== undefined) data.partName = dto.partName.trim();
+    if (dto.drawingNumber !== undefined)
+      data.drawingNumber = dto.drawingNumber.trim();
+    if (dto.material !== undefined) data.material = dto.material.trim();
+    if (dto.materialDimension !== undefined)
+      data.materialDimension = dto.materialDimension.trim();
+    if (dto.unit !== undefined) data.unit = dto.unit.trim() || "kom";
+    if (dto.product !== undefined) data.product = dto.product?.trim() || null;
+    if (dto.note !== undefined) data.note = dto.note?.trim() || null;
+    if (dto.revision !== undefined) data.revision = dto.revision.trim() || "A";
+    if (dto.qualityTypeId !== undefined) data.qualityTypeId = dto.qualityTypeId;
+    if (dto.materialId !== undefined) data.materialId = dto.materialId;
+    if (dto.workerId !== undefined) data.workerId = dto.workerId;
+    if (dto.externalCustomerId !== undefined)
+      data.externalCustomerId = dto.externalCustomerId;
+    if (dto.externalProjectName !== undefined)
+      data.externalProjectName = dto.externalProjectName?.trim() || null;
+    if (dto.pieceCount !== undefined) data.pieceCount = dto.pieceCount;
+    if (dto.productionDeadline !== undefined)
+      data.productionDeadline = dto.productionDeadline
+        ? new Date(dto.productionDeadline)
+        : null;
+
+    await this.prisma.workOrder.update({ where: { id }, data });
+    return this.findOne(id);
+  }
+
+  /**
+   * Dodaj operaciju na RN (`Form_UnosStavkiRN` „Nova stavka"). `workCenterCode` mora
+   * postojati u šifarniku `operations`. `operationNumber` izostavljen → `MAX+10`.
+   * `priority` izostavljen → iz `operations.usesPriority` (100/255).
+   */
+  async addOperation(workOrderId: number, dto: CreateWorkOrderOperationDto) {
+    validateCreateOperation(dto);
+    const wo = await this.prisma.workOrder.findUnique({
+      where: { id: workOrderId },
+      select: { id: true, isLocked: true },
+    });
+    if (!wo) throw new NotFoundException(`Radni nalog ${workOrderId} ne postoji`);
+    this.assertEditable(wo);
+
+    const code = dto.workCenterCode.trim();
+    const op = await this.prisma.operation.findUnique({
+      where: { workCenterCode: code },
+      select: { workCenterCode: true, usesPriority: true },
+    });
+    if (!op)
+      throw new UnprocessableEntityException(
+        `Radni centar '${code}' ne postoji u šifarniku operacija.`,
+      );
+
+    await this.prisma.$transaction(async (tx) => {
+      await this.alignItemSequences(tx);
+      let operationNumber = dto.operationNumber;
+      if (operationNumber === undefined) {
+        const agg = await tx.workOrderOperation.aggregate({
+          where: { workOrderId },
+          _max: { operationNumber: true },
+        });
+        operationNumber = (agg._max.operationNumber ?? 0) + 10;
+      }
+      const priority = dto.priority ?? (op.usesPriority ? 100 : 255);
+      await tx.workOrderOperation.create({
+        data: {
+          workOrderId,
+          operationNumber,
+          workCenterCode: code,
+          workDescription: dto.workDescription.trim(),
+          toolsFixtures: dto.toolsFixtures?.trim() || null,
+          setupTime: dto.setupTime ?? 0,
+          cycleTime: dto.cycleTime ?? 0,
+          toolWeight: dto.toolWeight ?? 0,
+          priority,
+          workerId: dto.workerId ?? 0,
+        },
+      });
+    });
+    return this.findOne(workOrderId);
+  }
+
+  /** Izmena operacije RN-a (samo poslata polja). Promena RC re-izvodi prioritet ako nije zadat. */
+  async updateOperation(
+    workOrderId: number,
+    operationId: number,
+    dto: UpdateWorkOrderOperationDto,
+  ) {
+    validateUpdateOperation(dto);
+    const wo = await this.prisma.workOrder.findUnique({
+      where: { id: workOrderId },
+      select: { id: true, isLocked: true },
+    });
+    if (!wo) throw new NotFoundException(`Radni nalog ${workOrderId} ne postoji`);
+    this.assertEditable(wo);
+
+    const existing = await this.prisma.workOrderOperation.findUnique({
+      where: { id: operationId },
+      select: { id: true, workOrderId: true },
+    });
+    if (!existing || existing.workOrderId !== workOrderId)
+      throw new NotFoundException(
+        `Operacija ${operationId} ne pripada radnom nalogu ${workOrderId}.`,
+      );
+
+    const data: Prisma.WorkOrderOperationUncheckedUpdateInput = {};
+    if (dto.operationNumber !== undefined)
+      data.operationNumber = dto.operationNumber;
+    if (dto.workDescription !== undefined)
+      data.workDescription = dto.workDescription.trim();
+    if (dto.toolsFixtures !== undefined)
+      data.toolsFixtures = dto.toolsFixtures?.trim() || null;
+    if (dto.setupTime !== undefined) data.setupTime = dto.setupTime;
+    if (dto.cycleTime !== undefined) data.cycleTime = dto.cycleTime;
+    if (dto.toolWeight !== undefined) data.toolWeight = dto.toolWeight;
+    if (dto.priority !== undefined) data.priority = dto.priority;
+    if (dto.workerId !== undefined) data.workerId = dto.workerId;
+    if (dto.workCenterCode !== undefined) {
+      const code = dto.workCenterCode.trim();
+      const op = await this.prisma.operation.findUnique({
+        where: { workCenterCode: code },
+        select: { workCenterCode: true, usesPriority: true },
+      });
+      if (!op)
+        throw new UnprocessableEntityException(
+          `Radni centar '${code}' ne postoji u šifarniku operacija.`,
+        );
+      data.workCenterCode = code;
+      if (dto.priority === undefined) data.priority = op.usesPriority ? 100 : 255;
+    }
+
+    await this.prisma.workOrderOperation.update({
+      where: { id: operationId },
+      data,
+    });
+    return this.findOne(workOrderId);
+  }
+
+  /** Brisanje operacije RN-a (+ eventualne skice te operacije). Guard: RN nije zaključan. */
+  async deleteOperation(workOrderId: number, operationId: number) {
+    const wo = await this.prisma.workOrder.findUnique({
+      where: { id: workOrderId },
+      select: { id: true, isLocked: true },
+    });
+    if (!wo) throw new NotFoundException(`Radni nalog ${workOrderId} ne postoji`);
+    this.assertEditable(wo);
+
+    const existing = await this.prisma.workOrderOperation.findUnique({
+      where: { id: operationId },
+      select: { id: true, workOrderId: true },
+    });
+    if (!existing || existing.workOrderId !== workOrderId)
+      throw new NotFoundException(
+        `Operacija ${operationId} ne pripada radnom nalogu ${workOrderId}.`,
+      );
+
+    await this.prisma.$transaction(async (tx) => {
+      // FK slika je NoAction → obriši skice operacije pre reda.
+      await tx.workOrderOperationImage.deleteMany({
+        where: { workOrderOperationId: operationId },
+      });
+      await tx.workOrderOperation.delete({ where: { id: operationId } });
+    });
+    return this.findOne(workOrderId);
+  }
+
+  /**
+   * Brisanje kompletnog RN-a sa kaskadom (`spObrisiKompletanNalog`, §K). Sve FK relacije
+   * su `NoAction` → brišemo eksplicitno, dubina prvo, u jednoj transakciji:
+   * slike operacija → operacije → machined/blanks/nonstandard → komponente → itemKomponente
+   * → odobravanja → lansiranja → RN. **NE dira `tech_processes`** (kao legacy).
+   * 🔴 Guard: zaključan RN (422) i „proizvodnja započeta" — postoji ijedan `tech_processes`
+   * red po trojci (422). Namerno bez varijante koja briše i evidenciju rada (legacy je to
+   * imao samo u test-formi).
+   */
+  async remove(id: number) {
+    const wo = await this.prisma.workOrder.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        isLocked: true,
+        projectId: true,
+        identNumber: true,
+        variant: true,
+      },
+    });
+    if (!wo) throw new NotFoundException(`Radni nalog ${id} ne postoji`);
+    if (wo.isLocked)
+      throw new UnprocessableEntityException(
+        "Zaključan RN se ne može obrisati.",
+      );
+    const started = await this.prisma.techProcess.count({
+      where: {
+        projectId: wo.projectId,
+        identNumber: wo.identNumber,
+        variant: wo.variant,
+      },
+    });
+    if (started > 0)
+      throw new UnprocessableEntityException(
+        "Po ovom nalogu je započeta proizvodnja (postoje evidentirane operacije) — ne može se obrisati.",
+      );
+
+    await this.prisma.$transaction(async (tx) => {
+      const ops = await tx.workOrderOperation.findMany({
+        where: { workOrderId: id },
+        select: { id: true },
+      });
+      if (ops.length)
+        await tx.workOrderOperationImage.deleteMany({
+          where: { workOrderOperationId: { in: ops.map((o) => o.id) } },
+        });
+      await tx.workOrderOperation.deleteMany({ where: { workOrderId: id } });
+      await tx.workOrderMachinedPart.deleteMany({ where: { workOrderId: id } });
+      await tx.workOrderBlank.deleteMany({ where: { workOrderId: id } });
+      await tx.workOrderNonstandardPart.deleteMany({
+        where: { workOrderId: id },
+      });
+      await tx.workOrderComponent.deleteMany({ where: { workOrderId: id } });
+      await tx.workOrderItemComponent.deleteMany({ where: { workOrderId: id } });
+      await tx.workOrderApproval.deleteMany({ where: { workOrderId: id } });
+      await tx.workOrderLaunch.deleteMany({ where: { workOrderId: id } });
+      await tx.workOrder.delete({ where: { id } });
+    });
+    return { data: { id, deleted: true } };
   }
 
   // ---------------------------------------------------------------- WORKFLOW
