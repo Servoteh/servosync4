@@ -34,6 +34,20 @@
 
 > Napomena: „Negovan" i „Vasa" u svim dokumentima = **Negovan Vasić, jedna osoba** (server `vasa-SQL` nazvan po njemu).
 
+## Sesija 2026-07-09 (Nenad) — Kontrola/Kucanje + gap analiza + skop
+
+| # | Pitanje | ODLUKA | Primenjeno |
+|---|---|---|---|
+| 17 | Nalepnica barkod | **RNZ** (`RNZ:projectId:identNumber:variant:revision`) — kiosk/telefon dekodabilan | [MODULE_SPEC_kontrola §6/§10], [MODULE_SPEC_stampa §3.1] |
+| 18 | Mobilni UNOS sa telefona | **Faza 2** (priprema od P1: čist REST/JWT + telefon-čitljiv RNZ); ne gradi se u pilotu | [MODULE_SPEC_kontrola §8] |
+| 19 | Gap QBigTehn→2.0 | **Gradimo sve što je bilo (i bolje)** — propust je iz nepotpunih uputstava, ne namere | [migration/16], backlog Tier A–D |
+| 20 | Redosled gradnje | **Tier A prvo** (proizvodni core: TP authoring, RN izmena/stavke/brisanje, ispravke kucanja) | [migration/16 §4] |
+| 21 | Start/stop evidencija vremena rada | **DA — dva skena** (start+stop po operaciji → stvarno utrošeno vreme); veći zahvat u kucanje model | Tier A-4; preduslov za vreme-analitike |
+| 22 | MRP/nabavka obim | **Za sad read-only** (write/planning stack odložen) | [migration/16 §4 Tier D], §11.3 |
+| 23 | Matični podaci (komitenti/predmeti/materijali) | **Read-only iz BigBit-a** — uređuju se u BigBit-u; 2.0 samo prikazuje (bez ekrana za izmenu) | [migration/16 §3.7] |
+
+> Kontrola/Kucanje P1 (kiosk create-on-scan + nalepnica) je **na produkciji i verifikovan** (2026-07-09).
+
 ## Zadaci koje je Nenad tražio (u toku)
 
 - **Role/imenovanje (§6 RBAC):** iz sistematizacije — Miljan Nikodijević = *Rukovodilac proizvodnih operacija i

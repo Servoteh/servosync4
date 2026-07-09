@@ -124,10 +124,10 @@ Kondenzovano, samo akcijski jazovi. Puni izveštaji po domenu u sesijskom transk
 12. **Skica/dokumentacija/CNC upload** (po operaciji/TP).
 13. **RBAC enforce** (ugasiti V1 no-op) + generalni record-lock + user/rola admin ekran.
 
-**Tier D — obim/odluka (potvrditi pre gradnje):**
-14. **MRP write stack** (planiranje, rezervacije, odluke, proknjiženje, zahtevi za nabavku, mail) — trenutno svesno read-only (§11.3). Gradimo? Koliko (NALMA/BigBit deo je van skopa)?
-15. **Start/stop evidencija rada** (dvo-sken) — preduslov za verne vreme-analitike (Tier B tačka 5). Uvodimo u model?
-16. **Master-data write** (komitenti/predmeti/materijali) — BigBit je izvor; ostaje read-only ili 2.0 preuzima uređivanje? + materijali/artikli šifarnik-ekran.
-17. **Company/godina/OJ kontekst**, CFG admin, DB alati — koliko od ovoga uopšte treba u 2.0.
+**Tier D — obim/odluka (rešeno 2026-07-09, ODLUKE #21-23):**
+14. **MRP write stack** — ✅ **ODLOŽENO**, ostaje read-only za sad (ODLUKE #22).
+15. **Start/stop evidencija rada** (dvo-sken) — ✅ **GRADI SE** (ODLUKE #21 → Tier A-4); preduslov za vreme-analitike (Tier B t.5).
+16. **Master-data (komitenti/predmeti/materijali)** — ✅ **read-only iz BigBit-a** (ODLUKE #23); bez ekrana za izmenu i bez šifarnika materijala za sad.
+17. **Company/godina/OJ kontekst, CFG admin, DB alati** — ostaje otvoreno (nisko na listi; verovatno van 2.0 pilota).
 
-> Skop-odluke (Tier D + start/stop + master-data vlasništvo) traže potvrdu Nenad/Negovan/Luka pre gradnje.
+> Redosled: **Tier A → B → C** (ODLUKE #20). Start/stop se uvlači u Tier A (A-4). MRP i master-data write se ne diraju.
