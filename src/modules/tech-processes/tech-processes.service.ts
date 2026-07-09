@@ -51,6 +51,13 @@ const OPERATION_PRIORITY_DONE = 255;
 const CRITICAL_YELLOW_MAX_DAYS = 7;
 const CRITICAL_ORANGE_MAX_DAYS = 2;
 
+/**
+ * Pogonska vremenska zona za kalendarske/satne kante u analitici sesija (A-4).
+ * `Timestamptz` se pre `::date`/`date_trunc('hour')` kastuje `AT TIME ZONE`, da smena
+ * 08–16 istog dana ne bude pogrešno „preko dana" (dizajn A-4 §4).
+ */
+const SHOP_TZ = "Europe/Belgrade";
+
 export interface ListTechProcessesQuery {
   page?: string;
   pageSize?: string;
@@ -98,6 +105,18 @@ export interface RnProgressQuery {
   projectId?: string;
   /** Pretraga: ident / naziv pozicije / crtež. */
   q?: string;
+}
+
+/** Filteri za analitiku vremenskih sesija (A-4: dnevnik / zbir / po satu / loše). */
+export interface SessionQuery {
+  /** Od (ISO); default = to − 30 dana. */
+  from?: string;
+  /** Do (ISO); default = sada. */
+  to?: string;
+  workCenterCode?: string;
+  workerId?: string;
+  page?: string;
+  pageSize?: string;
 }
 
 // --- oblici sirovih redova iz $queryRaw upita (snake_case iz baze) ---
@@ -149,6 +168,52 @@ interface RnProgressRaw {
   made_good_any: number;
   operation_count: number;
   finished_operation_count: number;
+}
+
+interface SessionDailyRaw {
+  day: Date;
+  session_count: number;
+  worker_count: number;
+  pieces: number;
+  elapsed_seconds: number;
+  open_count: number;
+}
+
+interface SessionSummaryRaw {
+  project_id: number;
+  ident_number: string;
+  variant: number;
+  operation_number: number;
+  work_center_code: string;
+  made: number;
+  actual_seconds: number;
+  session_count: number;
+  setup_time: number | null;
+  cycle_time: number | null;
+}
+
+interface SessionHourlyRaw {
+  hour_local: string;
+  session_count: number;
+  worker_count: number;
+  pieces: number;
+  seconds: number;
+}
+
+interface PoorlyRecordedRaw {
+  id: number;
+  tech_process_id: number;
+  worker_id: number;
+  project_id: number;
+  ident_number: string;
+  variant: number;
+  operation_number: number;
+  work_center_code: string;
+  started_at: Date;
+  stopped_at: Date | null;
+  piece_count: number;
+  auto_closed: boolean;
+  reason: string;
 }
 
 /**
@@ -960,6 +1025,251 @@ export class TechProcessesService {
         workOrder: result.workOrder,
       },
     };
+  }
+
+  // ---------------------------------------------------------------- ANALITIKA SESIJA (A-4: v_work_sessions)
+
+  /** Opseg (from/to) za analitiku sesija; default poslednjih 30 dana. */
+  private sessionRange(query: SessionQuery) {
+    const to = this.parseDateParam(query.to, "to") ?? new Date();
+    const from =
+      this.parseDateParam(query.from, "from") ??
+      new Date(to.getTime() - 30 * 86_400_000);
+    return { from, to };
+  }
+
+  /** WHERE uslovi zajednički dnevniku/zbiru/po-satu (nad v_work_sessions). */
+  private sessionConds(query: SessionQuery, from: Date, to: Date): Prisma.Sql[] {
+    const conds: Prisma.Sql[] = [
+      Prisma.sql`started_at >= ${from}`,
+      Prisma.sql`started_at < ${to}`,
+    ];
+    if (query.workCenterCode?.trim())
+      conds.push(Prisma.sql`work_center_code = ${query.workCenterCode.trim()}`);
+    const wid = Number.parseInt(query.workerId ?? "", 10);
+    if (!Number.isNaN(wid)) conds.push(Prisma.sql`worker_id = ${wid}`);
+    return conds;
+  }
+
+  /** Naziv RC po šifri (za obogaćivanje pregleda). */
+  private async resolveWorkCenterNames(codes: string[]) {
+    const uniq = [...new Set(codes.filter(Boolean))];
+    const map = new Map<string, string>();
+    if (!uniq.length) return map;
+    const rows = await this.prisma.operation.findMany({
+      where: { workCenterCode: { in: uniq } },
+      select: { workCenterCode: true, workCenterName: true },
+    });
+    for (const r of rows) map.set(r.workCenterCode, r.workCenterName);
+    return map;
+  }
+
+  /**
+   * DNEVNIK PROIZVODNJE — po danu (lokalna TZ): broj sesija/operacija, radnika, komada,
+   * utrošeno vreme (gde je sesija zatvorena), otvoreno. Nad `v_work_sessions` (uključuje
+   * i legacy redove — dnevnik prikazuje SVU evidentiranu aktivnost).
+   */
+  async sessionsDaily(query: SessionQuery) {
+    const { from, to } = this.sessionRange(query);
+    const whereSql = Prisma.sql`WHERE ${Prisma.join(this.sessionConds(query, from, to), " AND ")}`;
+    const rows = await this.prisma.$queryRaw<SessionDailyRaw[]>(Prisma.sql`
+      SELECT (started_at AT TIME ZONE ${SHOP_TZ})::date AS day,
+             (COUNT(*))::int AS session_count,
+             (COUNT(DISTINCT worker_id))::int AS worker_count,
+             COALESCE(SUM(piece_count), 0)::int AS pieces,
+             COALESCE(SUM(EXTRACT(EPOCH FROM (stopped_at - started_at)))
+                      FILTER (WHERE source = 'entry' AND stopped_at IS NOT NULL AND stopped_at >= started_at), 0)::float8 AS elapsed_seconds,
+             (COUNT(*) FILTER (WHERE stopped_at IS NULL))::int AS open_count
+      FROM v_work_sessions
+      ${whereSql}
+      GROUP BY 1
+      ORDER BY 1 DESC
+    `);
+    const data = rows.map((r) => ({
+      day: r.day.toISOString().slice(0, 10),
+      sessionCount: r.session_count,
+      workerCount: r.worker_count,
+      pieces: r.pieces,
+      elapsedSeconds: Math.round(r.elapsed_seconds),
+      elapsedMinutes: Math.round(r.elapsed_seconds / 60),
+      openCount: r.open_count,
+    }));
+    return {
+      data,
+      meta: { from: from.toISOString(), to: to.toISOString(), days: data.length },
+    };
+  }
+
+  /**
+   * ZBIR PO OPERACIJAMA — utrošeno vreme (Σ stop−start) vs normirano (Tpz + Tk×kom;
+   * `work_order_operations.setup_time/cycle_time`). Nad `v_work_sessions` (legacy daje
+   * grublje vreme entered→finished). Paginirano; sortirano po utrošenom vremenu.
+   */
+  async sessionsSummary(query: SessionQuery) {
+    const { page, pageSize, skip, take } = parsePagination(
+      query.page,
+      query.pageSize,
+    );
+    const { from, to } = this.sessionRange(query);
+    // Uslovi sa `s.` prefiksom (JOIN alias) — GROUP BY je nad v_work_sessions s.
+    const conds: Prisma.Sql[] = [
+      Prisma.sql`s.started_at >= ${from}`,
+      Prisma.sql`s.started_at < ${to}`,
+    ];
+    if (query.workCenterCode?.trim())
+      conds.push(Prisma.sql`s.work_center_code = ${query.workCenterCode.trim()}`);
+    const wid = Number.parseInt(query.workerId ?? "", 10);
+    if (!Number.isNaN(wid)) conds.push(Prisma.sql`s.worker_id = ${wid}`);
+    const sWhere = Prisma.sql`WHERE ${Prisma.join(conds, " AND ")}`;
+
+    const normSubq = (col: "setup_time" | "cycle_time") => Prisma.sql`
+      (SELECT op.${Prisma.raw(col)} FROM work_order_operations op
+         JOIN work_orders wo ON wo.id = op.work_order_id
+        WHERE wo.project_id = s.project_id AND wo.ident_number = s.ident_number
+          AND wo.variant = s.variant AND op.operation_number = s.operation_number
+          AND op.work_center_code = s.work_center_code
+        ORDER BY op.id LIMIT 1)::float8`;
+
+    const rows = await this.prisma.$queryRaw<SessionSummaryRaw[]>(Prisma.sql`
+      SELECT s.project_id, s.ident_number, s.variant, s.operation_number, s.work_center_code,
+             COALESCE(SUM(s.piece_count), 0)::int AS made,
+             COALESCE(SUM(EXTRACT(EPOCH FROM (s.stopped_at - s.started_at)))
+                      FILTER (WHERE s.source = 'entry' AND s.stopped_at IS NOT NULL AND s.stopped_at >= s.started_at), 0)::float8 AS actual_seconds,
+             (COUNT(*))::int AS session_count,
+             ${normSubq("setup_time")} AS setup_time,
+             ${normSubq("cycle_time")} AS cycle_time
+      FROM v_work_sessions s
+      ${sWhere}
+      GROUP BY s.project_id, s.ident_number, s.variant, s.operation_number, s.work_center_code
+      ORDER BY actual_seconds DESC, made DESC
+      LIMIT ${take} OFFSET ${skip}
+    `);
+    const totalRes = await this.prisma.$queryRaw<{ count: number }[]>(Prisma.sql`
+      SELECT (COUNT(*))::int AS count FROM (
+        SELECT 1 FROM v_work_sessions s ${sWhere}
+        GROUP BY s.project_id, s.ident_number, s.variant, s.operation_number, s.work_center_code
+      ) g
+    `);
+    const total = totalRes[0]?.count ?? 0;
+
+    const names = await this.resolveWorkCenterNames(rows.map((r) => r.work_center_code));
+    const data = rows.map((r) => {
+      const setup = r.setup_time ?? 0;
+      const cycle = r.cycle_time ?? 0;
+      const normMinutes = setup + cycle * r.made;
+      const actualMinutes = r.actual_seconds / 60;
+      return {
+        projectId: r.project_id,
+        identNumber: r.ident_number,
+        variant: r.variant,
+        operationNumber: r.operation_number,
+        workCenterCode: r.work_center_code,
+        workCenterName: names.get(r.work_center_code) ?? null,
+        made: r.made,
+        sessionCount: r.session_count,
+        actualMinutes: Math.round(actualMinutes * 10) / 10,
+        normMinutes: Math.round(normMinutes * 10) / 10,
+        diffMinutes: Math.round((actualMinutes - normMinutes) * 10) / 10,
+        hasNorm: r.setup_time !== null || r.cycle_time !== null,
+      };
+    });
+    return { data, meta: pageMeta(page, pageSize, total) };
+  }
+
+  /**
+   * PO SATU — iskorišćenost po satu (lokalna TZ): broj sesija, radnika, komada, sekundi.
+   * Nad `v_work_sessions`. Sat je `YYYY-MM-DD HH:00` u pogonskoj zoni.
+   */
+  async sessionsHourly(query: SessionQuery) {
+    const { from, to } = this.sessionRange(query);
+    const whereSql = Prisma.sql`WHERE ${Prisma.join(this.sessionConds(query, from, to), " AND ")}`;
+    const rows = await this.prisma.$queryRaw<SessionHourlyRaw[]>(Prisma.sql`
+      SELECT to_char(date_trunc('hour', started_at AT TIME ZONE ${SHOP_TZ}), 'YYYY-MM-DD HH24:00') AS hour_local,
+             (COUNT(*))::int AS session_count,
+             (COUNT(DISTINCT worker_id))::int AS worker_count,
+             COALESCE(SUM(piece_count), 0)::int AS pieces,
+             COALESCE(SUM(EXTRACT(EPOCH FROM (stopped_at - started_at)))
+                      FILTER (WHERE source = 'entry' AND stopped_at IS NOT NULL AND stopped_at >= started_at), 0)::float8 AS seconds
+      FROM v_work_sessions
+      ${whereSql}
+      GROUP BY 1
+      ORDER BY 1 DESC
+    `);
+    const data = rows.map((r) => ({
+      hourLocal: r.hour_local,
+      sessionCount: r.session_count,
+      workerCount: r.worker_count,
+      pieces: r.pieces,
+      seconds: Math.round(r.seconds),
+      minutes: Math.round(r.seconds / 60),
+    }));
+    return {
+      data,
+      meta: { from: from.toISOString(), to: to.toISOString(), hours: data.length },
+    };
+  }
+
+  /**
+   * LOŠE EVIDENTIRANI — vremenske sesije bez ispravnog para START/STOP: bez stopa,
+   * negativno trajanje, auto-zatvorene, ili start/stop u različitim danima. Samo NATIVNE
+   * sesije (`work_time_entries`) — legacy „otvoreni" postupci su normala (vide se u Evidenciji).
+   */
+  async sessionsPoorlyRecorded(query: SessionQuery) {
+    const { page, pageSize, skip, take } = parsePagination(
+      query.page,
+      query.pageSize,
+    );
+    const conds: Prisma.Sql[] = [
+      Prisma.sql`(stopped_at IS NULL
+        OR stopped_at < started_at
+        OR auto_closed = true
+        OR (started_at AT TIME ZONE ${SHOP_TZ})::date <> (stopped_at AT TIME ZONE ${SHOP_TZ})::date)`,
+    ];
+    if (query.workCenterCode?.trim())
+      conds.push(Prisma.sql`work_center_code = ${query.workCenterCode.trim()}`);
+    const wid = Number.parseInt(query.workerId ?? "", 10);
+    if (!Number.isNaN(wid)) conds.push(Prisma.sql`worker_id = ${wid}`);
+    const whereSql = Prisma.sql`WHERE ${Prisma.join(conds, " AND ")}`;
+
+    const rows = await this.prisma.$queryRaw<PoorlyRecordedRaw[]>(Prisma.sql`
+      SELECT id, tech_process_id, worker_id, project_id, ident_number, variant,
+             operation_number, work_center_code, started_at, stopped_at, piece_count, auto_closed,
+             CASE WHEN stopped_at IS NULL THEN 'bez_stopa'
+                  WHEN stopped_at < started_at THEN 'negativno'
+                  WHEN auto_closed = true THEN 'auto_zatvoreno'
+                  ELSE 'preko_dana' END AS reason
+      FROM work_time_entries
+      ${whereSql}
+      ORDER BY started_at DESC
+      LIMIT ${take} OFFSET ${skip}
+    `);
+    const totalRes = await this.prisma.$queryRaw<{ count: number }[]>(Prisma.sql`
+      SELECT (COUNT(*))::int AS count FROM work_time_entries ${whereSql}
+    `);
+    const total = totalRes[0]?.count ?? 0;
+
+    const [workers, names] = await Promise.all([
+      this.resolveWorkers(rows.map((r) => r.worker_id)),
+      this.resolveWorkCenterNames(rows.map((r) => r.work_center_code)),
+    ]);
+    const data = rows.map((r) => ({
+      id: r.id,
+      techProcessId: r.tech_process_id,
+      workerId: r.worker_id,
+      worker: workers.get(r.worker_id) ?? null,
+      projectId: r.project_id,
+      identNumber: r.ident_number,
+      variant: r.variant,
+      operationNumber: r.operation_number,
+      workCenterCode: r.work_center_code,
+      workCenterName: names.get(r.work_center_code) ?? null,
+      startedAt: r.started_at,
+      stoppedAt: r.stopped_at,
+      pieceCount: r.piece_count,
+      autoClosed: r.auto_closed,
+      reason: r.reason,
+    }));
+    return { data, meta: pageMeta(page, pageSize, total) };
   }
 
   // ---------------------------------------------------------------- START/STOP (A-4: evidencija vremena)

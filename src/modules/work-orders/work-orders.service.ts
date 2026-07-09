@@ -56,6 +56,8 @@ export interface ListWorkOrdersQuery {
   from?: string;
   /** Otvoren do (ISO). */
   to?: string;
+  /** RN završen (`work_orders.status`): '' = svi, 'true' = završeni, 'false' = u radu. */
+  completed?: string;
 }
 
 /** Filteri za plansku tablu operacija po prioritetu (QBigTehn „Prioritet"). */
@@ -101,6 +103,8 @@ export class WorkOrdersService {
     where.projectId = intEq(query.projectId);
     where.workerId = intEq(query.workerId);
     where.externalCustomerId = intEq(query.customerId);
+    if (query.completed === "true") where.status = true;
+    else if (query.completed === "false") where.status = { not: true };
     if (query.from || query.to) {
       const range: Prisma.DateTimeFilter = {};
       if (query.from) range.gte = new Date(query.from);
@@ -130,6 +134,7 @@ export class WorkOrdersService {
           unit: true,
           revision: true,
           isLocked: true,
+          status: true,
           handoverStatusId: true,
           workerId: true,
           qualityTypeId: true,

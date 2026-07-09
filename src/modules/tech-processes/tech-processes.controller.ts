@@ -22,6 +22,7 @@ import type {
   CriticalQuery,
   ListTechProcessesQuery,
   RnProgressQuery,
+  SessionQuery,
   WorkerPerformanceQuery,
 } from "./tech-processes.service";
 import type { DecodeBarcodeDto } from "./dto/decode-barcode.dto";
@@ -87,6 +88,30 @@ export class TechProcessesController {
   @Get("rn-progress")
   rnProgress(@Query() query: RnProgressQuery) {
     return this.techProcesses.rnProgress(query);
+  }
+
+  /** DNEVNIK PROIZVODNJE — evidentirana aktivnost po danu (A-4). Mora pre `:id`. */
+  @Get("sessions/daily")
+  sessionsDaily(@Query() query: SessionQuery) {
+    return this.techProcesses.sessionsDaily(query);
+  }
+
+  /** ZBIR PO OPERACIJAMA — utrošeno vreme vs normirano (A-4). */
+  @Get("sessions/summary")
+  sessionsSummary(@Query() query: SessionQuery) {
+    return this.techProcesses.sessionsSummary(query);
+  }
+
+  /** PO SATU — iskorišćenost po satu (A-4). */
+  @Get("sessions/hourly")
+  sessionsHourly(@Query() query: SessionQuery) {
+    return this.techProcesses.sessionsHourly(query);
+  }
+
+  /** LOŠE EVIDENTIRANI — sesije bez ispravnog START/STOP para (A-4). */
+  @Get("sessions/poorly-recorded")
+  sessionsPoorlyRecorded(@Query() query: SessionQuery) {
+    return this.techProcesses.sessionsPoorlyRecorded(query);
   }
 
   @Get("worker")
