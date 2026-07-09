@@ -52,6 +52,25 @@ Novo (odluke iz sesije 2026-07-09, Nenad):
    **ceo 2.0 (sad `servosync2`) ulazi kao JEDAN iframe-modul „Tehnologija"** — NE obrnuto. Temelj:
    **2.0 prihvata ISTI JWT kao 1.0** (email claim, isti GoTrue secret) → jedan login (uklapa se u
    [AUTHZ_UNIFIED](design/AUTHZ_UNIFIED.md)). Razrada u §2.1. *(Odlaže se — sada samo plan.)*
+10. ✅ **Cutover odluke POTVRĐENE 09.07 (D1–D4, Nenad):**
+    - **D1 Backend:** `api.servosync.servoteh.com` + Cloudflare **Total TLS** (subdomen 3. nivoa, Universal
+      SSL ga ne pokriva) + **reuse postojećeg `servosync2` cloudflared-a** — dodatni public hostname ingress
+      u Zero Trust dashboard-u (`api.servosync.servoteh.com → http://localhost:8080`); jedan cloudflared
+      služi više hostname-ova, BEZ novog tunela/kontejnera. CORS u Caddy-ju.
+    - **D2 LAN front:** **DA, minimalno** — Caddy vhost servira 1.0 `dist` (static) + same-origin proxy
+      (`/rest /auth /storage /functions`) na LAN portu `:8090`; kad internet/CF padne, LAN URL radi sve
+      on-prem. ⚠️ Zahteva **same-origin API base u LAN build-u** (`VITE_SUPABASE_URL` relativan/prazan →
+      `sbReq` isti origin) = zaseban LAN build ILI runtime-resolve API base (kao 2.0 `client.ts`).
+      Forward-compatible sa shell-om (§2.1).
+    - **D3 GoTrue SMTP = Resend** (VIŠE NIJE opciono): `SMTP_HOST=smtp.resend.com`, `SMTP_PORT=587`,
+      `SMTP_USER=resend`, `SMTP_PASS=<RESEND_API_KEY>`, sender `obavestenja@servoteh.com`. Uz
+      `API_EXTERNAL_URL`=backend + `SITE_URL`=front + redirect allowlist (front `/reset-password`) →
+      reset lozinke + invite RADE.
+    - **D4 Rollback = forward-only:** drain→freeze; rollback (env nazad) SAMO do **tačke-bez-povratka
+      ~T+2h** (ili prvi kritičan upis); posle toga se NE vraćamo — Supabase ostaje read-only 7 dana SAMO
+      kao READ referenca; reverse-delta (sy15→cloud) samo u katastrofi, ručno.
+
+    Razrada koraka: `infra/self-host/CUTOVER_1.5.md`.
 
 ---
 
@@ -355,6 +374,7 @@ Za svaki modul u 3.0, pre „gotovo":
 |---|---|
 | 2026-07-09 | Prva verzija. Konsoliduje ROADMAP + AUTHZ_UNIFIED + INTEGRACIJA + RBAC_RLS_PREDLOG + migration/03,16 + DESIGN_SYSTEM. Ugrađuje odluke sesije 09.07: 1.5 pre 3.0 (§3), zaposleni = 1.0 izvor istine i aktivni (§4.1), responsivnost V1 zahtev (§1.8). Modul-tracker §5. |
 | 2026-07-09 (2) | **Faza 1.5 IZVRŠENA do data+auth+storage** — self-host stack živ na `ubuntusrv:~/servosync15` (`infra/self-host/`): baza restore (198 tabela, 56 korisnika, 513 RLS), storage 115 fajlova/185 MB, login E2E. **§4.4 dodato: crteži DEDUP** (1.0 viewer → 2.0 `drawing_pdfs`; `bigtehn-drawings` 673 MB se NE migrira; bridge `syncBigtehnDrawings` se gasi). Ostaje: Node worker, pg_cron, Tunnel, repoint. |
+| 2026-07-09 (6) | **Potvrđene 4 cutover odluke (D1–D4, §1 #10)** — backend `api.servosync.servoteh.com` + Total TLS + reuse `servosync2` cloudflared tunela (ingress u dashboard-u), LAN front DA (minimalni same-origin Caddy vhost `:8090`, CUTOVER T‑4b), GoTrue SMTP=Resend (obavezno, ne opcija), rollback forward-only (tačka-bez-povratka ~T+2h). |
 | 2026-07-09 (5) | **Fable-5 audit primenjen** — cutover runbook + skripte ojačane (push trigeri disabled, activate-dispatch `'queued'` fix, freeze/read-only redosled, dump-first restore, verify-parity gate, API_EXTERNAL_URL, Total TLS, passkeys+re-login, rollback tačka-bez-povratka); **1.5 zadržava `bigtehn-drawings`** (dedup je 3.0 end-state, §4.4/§3.1); §8: cloud read-only PREDUSLOV za scheduler. |
 | 2026-07-09 (4) | **Razjašnjen pravac shell-a (§1 #9, §2.1, §2 dijagram):** `servosync.servoteh.com` (1.0) je JEDINI front (+ LAN); ceo 2.0 (`servosync2`) ulazi kao JEDAN iframe-modul „TEHNOLOGIJA" — NE 2.0-kao-shell. SSO: 2.0 prihvata isti JWT + jedan origin (`/tehnologija` path-routing, `basePath`). Cutover-readiness dodat: `CUTOVER_1.5.md` + scheduler (profil `cutover`) + `activate-dispatch.sql` (na main). |
 | 2026-07-09 (3) | **Edge worker gotov + odluka o objedinjenom frontu.** Edge-runtime služi svih 16 fn verbatim; sve tajne uvezane i validirane (mejl/AI/push; VAPID par regenerisan; PUSH_DISPATCH_KEY povraćen iz `private.app_config`). **§1 #9 + §2.1 dodato: Faza 3.0-shell** (objedinjeni front PRE migracije modula; **2.0 prihvata isti JWT kao 1.0** = jedan identitet; iframe-embed + jedan origin + embed-mode). **§3.1 dodato: stanje izvršenja 1.5** (done vs pending). **§8 razdvojen** na 1.5 cutover i finalni 3.0 cutover, uz off-hours upozorenje. **Cutover JOŠ NIJE odrađen** — ide uveče. |
