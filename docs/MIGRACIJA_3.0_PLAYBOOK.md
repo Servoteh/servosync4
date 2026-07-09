@@ -47,23 +47,61 @@ Novo (odluke iz sesije 2026-07-09, Nenad):
 8. ✅ **Dizajn sistem je responsivan/optimizovan za sve rezolucije uključujući telefon** — V1 zahtev, ne 3.0.
    Uneto u [DESIGN_SYSTEM.md v0.2 §11](../../frontend/docs/DESIGN_SYSTEM.md). 2.0 ekrani danas to nisu →
    saniraju se; novi prolaze responsive proveru (360/768/1024/1440 px).
+9. ✅ **Objedinjeni front PRE migracije modula (Faza 3.0-shell) + JEDAN identitet.** Aplikacije se spajaju u
+   prikazu odmah (strangler-fig „unified shell"), a moduli migriraju nevidljivo ispod. Ključni temelj:
+   **2.0 prihvata ISTI JWT kao 1.0** (email claim, isti GoTrue secret) → jedan identitet za oba stacka
+   (uklapa se u [AUTHZ_UNIFIED](design/AUTHZ_UNIFIED.md)). Razrada u §2.1. *(Odlaže se — sada samo plan.)*
 
 ---
 
 ## 2. Redosled (sekvenca 3.0)
 
 ```
-1.5  (1.0 Supabase → on-prem PG, pored 2.0)
- └─►  3.0-A  auth/RBAC paritet (najteži deo, ne preskače se)
-       └─►  3.0-B  PILOT modul (Reversi ILI Lokacije — samostalan, meri tempo)
-             └─►  3.0-C  prioritetni spojevi: Zaposleni (mapping) + Lokacije
-                   └─►  3.0-D  ostali moduli, strangler-fig (Supabase živ dok poslednji ne pređe)
-                         └─►  3.0-E  delta resync → cutover (gase se PostgREST/GoTrue)
+1.5   (1.0 Supabase → on-prem PG, pored 2.0)          ← IZVRŠENO do cutover-a (§3.1)
+ └─► AUTH INTEROP  2.0 prihvata 1.0 JWT (isti secret, email claim) → JEDAN identitet   (§2.1)
+      └─► 3.0-SHELL  objedinjeni front (2.0 Next shell + iframe-embed 1.0 modula, jedan origin)   (§2.1)
+           │         → OD SADA: jedna aplikacija u prikazu; moduli migriraju NEVIDLJIVO ispod
+           └─► 3.0-B  PILOT modul (Reversi/Lokacije) — prelaz = „iframe → nativna Next ruta"
+                └─► 3.0-C  prioritetni spojevi: Zaposleni (mapping) + Lokacije
+                     └─► 3.0-D  ostali moduli, strangler-fig (svaki: authz paritet §7 + „iframe→ruta")
+                          └─► 3.0-E  delta resync → cutover (gase se PostgREST/GoTrue)
 ```
 
-**Zašto ovim redom:** authz je jedini pravi rizik (ocena 5/5, [migration/03](migration/03-planmontaze-complexity-profile.md));
-sve ostalo (UI, data model, čiste funkcije) je mehaničko. Pilot bira samostalan modul da se izmeri tempo pre
-nego što se dotakne Kadrovska (PII, zarade, najgušći authz).
+**Zašto ovim redom:** authz paritet po modulu (§7) je jedini pravi rizik (ocena 5/5,
+[migration/03](migration/03-planmontaze-complexity-profile.md)); sve ostalo (UI, data model, čiste funkcije)
+je mehaničko. **Novo: shell se pravi PRE migracije modula** — korisnik dobija „jednu aplikaciju" odmah, a
+svaki modul se onda migrira nevidljivo (iframe→nativna ruta). Pilot bira samostalan modul da se izmeri tempo
+pre nego što se dotakne Kadrovska (PII, zarade, najgušći authz).
+
+---
+
+## 2.1 Faza 3.0-shell — objedinjeni front PRE migracije modula (ODLUKA 09.07, Nenad)
+
+**Cilj:** spojiti 1.0 (Vite/vanilla) i 2.0 (Next.js) u **jednu aplikaciju u prikazu ODMAH**, bez čekanja da se
+moduli prepišu. Klasičan strangler-fig sa „unified shell": jedan omotač prikazuje SVE module — neke nativno iz
+2.0, neke embed iz 1.0 — pa se migracija radi modul-po-modul **nevidljivo ispod**. 1.0 NE mora da bude Next.
+
+**Mehanizam:**
+- **2.0 Next.js = shell** (već ima AppShell/sidebar/dizajn sistem). Sidebar drži SVE module.
+- **Migrirani / 2.0 nativni** → Next rute. **Još-ne-migrirani (1.0)** → **iframe** ka 1.0 app (na on-prem stacku).
+- Kad modul migrira: samo **„iframe → nativna Next ruta"** — sidebar i URL isti, korisnik ne primeti prelaz.
+  (SCADA u 1.0 već koristi iframe embedding — obrazac poznat.)
+
+**JEDAN identitet (odabrana odluka, čistije od dual-login):**
+- **2.0 (NestJS) prihvata ISTI JWT kao 1.0 (GoTrue)** — isti secret, `email` claim kao osovina; 2.0 validira
+  GoTrue-izdat token i mapira `email` → 2.0 user/role (preko `AUTHZ_UNIFIED` kataloga). → **jedan login za oba.**
+- **Jedan origin** (npr. `app.servoteh.com`): `/*` → 2.0 shell; shell iframe-uje 1.0 module. Isti origin →
+  deljen `localStorage`/cookie → 1.0 iframe čita isti token (1.0 ionako čita iz `localStorage`).
+
+**Dve caveate:**
+- **Vizuelni šav:** 1.0 (vanilla, narandžasti akcenat) ≠ teal 2.0 shell. `docs/CURSOR_UI_USKLADJIVANJE_2.0.md`
+  gura 1.0 ka teal paleti → šav se smanjuje; svaki migriran modul postaje potpuno nativan/konzistentan.
+- **Dupli nav:** 1.0 modul se **deep-linkuje** + „embed mode" (sakrije 1.0 chrome, samo sadržaj modula) da se
+  ne pojavi meni-u-meniju. Mala izmena u 1.0.
+
+**Kada:** posle 1.5 cutover-a (oba na istom serveru + jedan domen), **PRE** migracije modula.
+**Konkretan BE zadatak koji ovo otključava:** 2.0 JWT strategija da prihvata GoTrue tokene (validacija istim
+secret-om + `email`→user/role mapiranje). To je i prvi korak ka punom auth paritetu (§7).
 
 ---
 
@@ -92,6 +130,40 @@ ključevi (sav data-access ide kroz `sbReq` wrapper). Posle 1.5 migracija podata
 (**1.0 repo → docs/db/IZVESTAJ_AUDIT_2026-07-04.md**) — migrira se čista baza.
 
 **Posle 1.5 obe baze su PG na istom serveru** → „otvaranje tabela" između njih postaje lako (§4).
+
+### 3.1 Faza 1.5 — STANJE IZVRŠENJA (2026-07-09)
+
+Runbook: `docs/db/RUNBOOK_1.5_SELF_HOST.md` · infra-as-code: `infra/self-host/` (compose, Caddyfile,
+scripts `setup`/`restore`/`migrate-storage`/`gen-jwt-keys`, `functions-main` router). **Stack živi na
+`ubuntusrv:~/servosync15`, izolovan od 2.0** (projekat `servosync15`, kontejneri `sy15-*`, gateway `:8080`,
+db `127.0.0.1:5436`).
+
+**✅ URAĐENO i validirano uživo:**
+- **Stack (6 kontejnera):** PG17 `supabase/postgres:17.6.1.136` + GoTrue `v2.189` + PostgREST `v14.12` +
+  storage-api `v1.60.4` + Caddy gateway + edge-runtime `v1.74`.
+- **Restore žive 1.0 baze:** 198 tabela, 56 korisnika (bcrypt očuvan), 513 RLS, 697 fn, 5542 storage meta.
+  **Login E2E** (kreiranje usera → login → token → autentikovani PostgREST 200). Zamke (drop baseline
+  auth/storage, ownership, init-restart) rešene u `scripts/restore.sh`.
+- **Storage:** 115 realnih fajlova / 185 MB preneto; `bigtehn-drawings` (673 MB) preskočen (dedup §4.4).
+- **Edge worker (edge-runtime):** svih 16 Deno fn služe verbatim na `/functions/v1/*`. **Tajne uvezane:**
+  `PUSH_DISPATCH_KEY` (povraćen iz `private.app_config`), `RESEND`/`ANTHROPIC`/`OPENAI` (validirani — mejl
+  poslat, AI odgovorio), **VAPID par regenerisan** (nov; public `BE9yAAa1…` → mora u `push.js:20` pri rebuild-u).
+  `FCM_SERVICE_ACCOUNT` prazno (opciono). Vrednosti u `~/servosync15/.env` + `.found_secrets` (chmod 600).
+- **pg_cron:** 22 posla restore-ovana + aktivna; **enqueue** poslovi pune outbox; **dispatch pulse** pokazuju
+  na cloud preko vault-a (ne dekriptuje → NE šalje = bezbedno).
+- **Committovano na main** (1.0 + 2.0 gde je zajedničko): playbook, runbook, `infra/self-host/`, edge-runtime.
+
+**⏳ PENDING = CUTOVER (radi se UVEČE / off-hours, kad niko ne radi — 1.0 cloud je JOŠ ŽIV!):**
+- **Cloudflare Tunnel** hostname za 1.5 gateway (javna dostupnost) + (odluka §2.1) jedan origin za shell.
+- **Repoint 1.0 front:** `VITE_SUPABASE_URL` + nov anon ključ → nov build; hardkodovani URL-ovi (ocena.html,
+  legacy, SW regex); sateliti (bridge/loc-sync/SCADA); nov APK ako se adresa menja.
+- **Uključivanje dispatch-a** SAMO na cutover-u (inače **dupli mejlovi/push** — cloud je živ): (1) označi
+  postojeći outbox obrađenim, (2) scheduler zove NAŠE dispatch fn, (3) repoint push trigera (URL cloud→gateway;
+  ključ već iz `app_config`).
+- **VAPID public → `src/services/push.js:20`** (nov par) + rebuild; stare web-push pretplate se gase (radnici se ponovo pretplate).
+- **Drawings viewer → 2.0 `drawing_pdfs`** (§4.4) · **Loc most repoint** (§4.2) pre gašenja QBigTehn-a.
+
+> ⚠️ **CUTOVER JOŠ NIJE ODRAĐEN.** Zakazuje se za **veče/off-hours**; dok cloud radi, ništa od „pending" se ne aktivira.
 
 ---
 
@@ -225,8 +297,21 @@ Za svaki modul u 3.0, pre „gotovo":
 - [ ] Storage bucket authz → presigned + ista provera u aplikaciji.
 - [ ] **e2e permission matrica** (rola × endpoint × 200/403 + row-scope asercije) — bez ovoga se paritet ne dokazuje.
 
-## 8. Cutover — kontrolna lista (kraj 3.0)
+## 8. Cutover — kontrolna lista
 
+> ⚠️ **SVAKI cutover ide UVEČE / off-hours (kad niko ne radi).** Dva cutover-a: **(A) 1.5 cutover** —
+> 1.0 sa Supabase clouda na on-prem (blizak; stanje/pending u §3.1); **(B) finalni 3.0 cutover** — gase se
+> PostgREST/GoTrue + QBigTehn sync. Kritično: dok stari izvor radi, **NE uključivati dispatch** na novom
+> stacku (dupli mejlovi/push realnim korisnicima).
+
+**(A) 1.5 cutover (1.0 → on-prem) — near-term:**
+- [ ] Cloudflare Tunnel hostname za `sy15` gateway; javna adresa (jedan origin ako se radi shell §2.1).
+- [ ] Repoint 1.0 front: `VITE_SUPABASE_URL` + nov anon ključ + hardkodovani URL-ovi (ocena.html/legacy/SW regex) + sateliti + APK.
+- [ ] **Označi postojeći outbox obrađenim** → uključi scheduler (naše dispatch fn) → **repoint push trigera** (cloud URL → gateway).
+- [ ] Nova VAPID public u `push.js:20` + rebuild.
+- [ ] Supabase → read-only; rollback prozor 7–14 dana; grep živog bundle-a za novi URL.
+
+**(B) finalni 3.0 cutover (kraj migracije modula):**
 - [ ] Freeze izmena šeme; poslednji delta resync po restrukturiranim domenima (transform, ne plain copy).
 - [ ] Smoke test novog stacka (login lozinka + passkey, RPC uzorak, upload/sign, mejl iz outboxa, push).
 - [ ] Env promena svuda (CF Pages, GitHub Secrets, `.env`, SW regex, mobilni `server.url` ako se menja adresa).
@@ -250,3 +335,4 @@ Za svaki modul u 3.0, pre „gotovo":
 |---|---|
 | 2026-07-09 | Prva verzija. Konsoliduje ROADMAP + AUTHZ_UNIFIED + INTEGRACIJA + RBAC_RLS_PREDLOG + migration/03,16 + DESIGN_SYSTEM. Ugrađuje odluke sesije 09.07: 1.5 pre 3.0 (§3), zaposleni = 1.0 izvor istine i aktivni (§4.1), responsivnost V1 zahtev (§1.8). Modul-tracker §5. |
 | 2026-07-09 (2) | **Faza 1.5 IZVRŠENA do data+auth+storage** — self-host stack živ na `ubuntusrv:~/servosync15` (`infra/self-host/`): baza restore (198 tabela, 56 korisnika, 513 RLS), storage 115 fajlova/185 MB, login E2E. **§4.4 dodato: crteži DEDUP** (1.0 viewer → 2.0 `drawing_pdfs`; `bigtehn-drawings` 673 MB se NE migrira; bridge `syncBigtehnDrawings` se gasi). Ostaje: Node worker, pg_cron, Tunnel, repoint. |
+| 2026-07-09 (3) | **Edge worker gotov + odluka o objedinjenom frontu.** Edge-runtime služi svih 16 fn verbatim; sve tajne uvezane i validirane (mejl/AI/push; VAPID par regenerisan; PUSH_DISPATCH_KEY povraćen iz `private.app_config`). **§1 #9 + §2.1 dodato: Faza 3.0-shell** (objedinjeni front PRE migracije modula; **2.0 prihvata isti JWT kao 1.0** = jedan identitet; iframe-embed + jedan origin + embed-mode). **§3.1 dodato: stanje izvršenja 1.5** (done vs pending). **§8 razdvojen** na 1.5 cutover i finalni 3.0 cutover, uz off-hours upozorenje. **Cutover JOŠ NIJE odrađen** — ide uveče. |
