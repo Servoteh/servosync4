@@ -45,8 +45,13 @@
 | 21 | Start/stop evidencija vremena rada | **DA — dva skena** (start+stop po operaciji → stvarno utrošeno vreme); veći zahvat u kucanje model | Tier A-4; preduslov za vreme-analitike |
 | 22 | MRP/nabavka obim | **Za sad read-only** (write/planning stack odložen) | [migration/16 §4 Tier D], §11.3 |
 | 23 | Matični podaci (komitenti/predmeti/materijali) | **Read-only iz BigBit-a** — uređuju se u BigBit-u; 2.0 samo prikazuje (bez ekrana za izmenu) | [migration/16 §3.7] |
+| 24 | A-4 zatvaranje zaboravljenih sesija | **Odjava-driven** (radnik se kuca na izlazu → `stopped_at = odjava`; Supabase/prisustvo integracija). `POST /work/auto-close` (>N h) je samo interim i **namerno NIJE na cron-u** | Nesa 2026-07-09 |
+| 25 | A-5 ko sme završnu kontrolu | **5 imenovanih kontrolora** (worker tip „Kontrola" = `additional_privileges`): B. Krstić, M. Mutić, N. Petrović, D. Uzelac, M. Cvetković (deljeni nalog `kontrola@servoteh.com`). Autorizacija = login svojim nalogom (rola `kontrolor`) **ILI** ID kartica — bilo koji put dovoljan. (Ninković/Nikodijević/Jaraković su šefovi, ne kontrolori) | Nesa 2026-07-09; `users` id 4–8 |
+| 26 | A-5 razdvajanje dužnosti | Operater **ne sme** završnu kontrolu nad delom na kom je evidentirao proizvodni rad. **Kontrolne operacije (npr. 8.4 Međufazna) se NE računaju** kao proizvodni rad — inače 422/1190 kontrola u 90d lažno okida | Nesa 2026-07-09; `selfControlViolation` |
+| 27 | AUTHZ_ENFORCE | **`true` na produkciji od 2026-07-09** (Nesa odobrio; podloga: 0/161 machine-access rupa u 30d, kontrole 90d isključivo tip „Kontrola", 0 shadow-deny u logovima). Rollback: obriši `AUTHZ_ENFORCE` red u `backend.env` na serveru + `docker compose up -d` | verifikovana 403/200 matrica |
 
 > Kontrola/Kucanje P1 (kiosk create-on-scan + nalepnica) je **na produkciji i verifikovan** (2026-07-09).
+> A-4 start/stop + A-5 kontrolor autorizacija su **na produkciji, enforcement UKLJUČEN** (2026-07-09).
 
 ## Zadaci koje je Nenad tražio (u toku)
 
