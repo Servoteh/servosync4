@@ -1578,6 +1578,7 @@ model Worker {
   workOrders           WorkOrder[]                @relation("WorkOrderWorker")
   workOrderOperations  WorkOrderOperation[]
   techProcesses        TechProcess[]
+  workTimeEntries      WorkTimeEntry[]
   users                User[]                     @relation("UserWorker")
 
   @@map("workers")
@@ -1659,8 +1660,38 @@ model TechProcess {
   reworkOperationId Int?                  @default(0) @map("rework_operation_id")
   worker            Worker                @relation(fields: [workerId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_tech_processes_worker")
   documents         TechProcessDocument[]
+  workTimeEntries   WorkTimeEntry[]
 
   @@map("tech_processes")
+}
+
+/// New in 2.0 — per-execution work-time ledger ("dva skena": START + STOP).
+/// Decomposes legacy tTehPostupak.DatumIVremeUnosa/DatumIVremeZavrsetka into an
+/// append-only session ledger. tech_processes keeps the accumulated pieceCount;
+/// a session's piece_count is that stop-scan's contribution (reconciled by construction).
+model WorkTimeEntry {
+  id              Int         @id(map: "pk_work_time_entries") @default(autoincrement()) @map("id")
+  techProcessId   Int         @map("tech_process_id")
+  workOrderId     Int?        @map("work_order_id")
+  projectId       Int         @default(0) @map("project_id")
+  identNumber     String      @map("ident_number") @db.VarChar(50)
+  variant         Int         @default(0) @map("variant")
+  operationNumber Int         @map("operation_number")
+  workCenterCode  String      @map("work_center_code") @db.VarChar(5)
+  workerId        Int         @map("worker_id")
+  startedAt       DateTime    @map("started_at") @db.Timestamptz(6)
+  stoppedAt       DateTime?   @map("stopped_at") @db.Timestamptz(6)
+  pieceCount      Int         @default(0) @map("piece_count")
+  qualityTypeId   Int         @default(0) @map("quality_type_id")
+  autoClosed      Boolean     @default(false) @map("auto_closed")
+  note            String?     @map("note")
+  createdAt       DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  techProcess     TechProcess @relation(fields: [techProcessId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_time_entries_tech_process")
+  worker          Worker      @relation(fields: [workerId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_time_entries_worker")
+
+  @@index([techProcessId], map: "idx_work_time_entries_tech_process")
+  @@index([startedAt], map: "idx_work_time_entries_started_at")
+  @@map("work_time_entries")
 }
 
 /// Was: tTehPostupakBackup (no PK in original — kept @@ignore)

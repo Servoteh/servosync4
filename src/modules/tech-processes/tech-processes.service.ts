@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   Logger,
@@ -30,6 +31,8 @@ import {
   type StornoTechProcessDto,
   validateStorno,
 } from "./dto/storno-tech-process.dto";
+import { type StartWorkDto, validateStartWork } from "./dto/start-work.dto";
+import { type StopWorkDto, validateStopWork } from "./dto/stop-work.dto";
 
 /** Vrste kvaliteta delova (`part_quality_types`, spec §1): 0=dobar,1=dorada,2=škart. */
 export const PART_QUALITY = { GOOD: 0, REWORK: 1, SCRAP: 2 } as const;
@@ -959,6 +962,347 @@ export class TechProcessesService {
     };
   }
 
+  // ---------------------------------------------------------------- START/STOP (A-4: evidencija vremena)
+
+  /**
+   * `POST /work/start` — START skena („dva skena", A-4). Otvara vremensku sesiju
+   * (`work_time_entries`, `stopped_at = NULL`) za radnika + operaciju. Sesija je
+   * ključana po (workerId, techProcessId) — parcijalni unique indeks garantuje najviše
+   * jednu otvorenu sesiju po radniku+operaciji (2.0 analogon `DefinisiIDPostupkaZaRadnika`).
+   * NE dira `tech_processes` (komadi se knjiže tek na STOP). Multitasking = samo upozorenje.
+   */
+  async startWork(dto: StartWorkDto) {
+    validateStartWork(dto);
+    const worker = await this.resolveWorkerByCard(dto.workerCard);
+    const { order, operation } = this.parseWorkBarcodes(
+      dto.orderBarcode,
+      dto.operationBarcode,
+    );
+    const { projectId, identNumber } = order.fields;
+    const scannedVariant = order.fields.variant;
+    const { operationNumber, workCenterCode } = operation.fields;
+    const machineAccessWarning = await this.checkMachineAccess(
+      worker.id,
+      workCenterCode,
+    );
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const tp = await this.findRoutingTp(
+        tx,
+        projectId,
+        identNumber,
+        workCenterCode,
+        operationNumber,
+      );
+      if (!tp)
+        throw new NotFoundException(
+          `Operacija (RC ${workCenterCode}${
+            operationNumber !== null ? `, op. ${operationNumber}` : ""
+          }) nije nađena u tehnološkom postupku RN ${identNumber} (predmet ${projectId}).`,
+        );
+      if (tp.isProcessFinished)
+        throw new UnprocessableEntityException(
+          `Operacija (postupak ${tp.id}) je već zatvorena — rad se ne može započeti.`,
+        );
+
+      const workOrder = await this.findWorkOrderByTriple(
+        tx,
+        projectId,
+        identNumber,
+        tp.variant,
+      );
+
+      // Multitasking (2.0 nema `MultiNalog` kolonu): otvorena sesija na DRUGOJ operaciji
+      // → samo upozorenje (rad se svejedno započinje). Hard-block je P2.
+      const otherOpen = await tx.workTimeEntry.findFirst({
+        where: {
+          workerId: worker.id,
+          stoppedAt: null,
+          NOT: { techProcessId: tp.id },
+        },
+        select: { operationNumber: true, workCenterCode: true },
+      });
+
+      let entry;
+      try {
+        entry = await tx.workTimeEntry.create({
+          data: {
+            techProcessId: tp.id,
+            workOrderId: workOrder?.id ?? (tp.workOrderId || null),
+            projectId,
+            identNumber,
+            variant: tp.variant,
+            operationNumber: tp.operationNumber,
+            workCenterCode: tp.workCenterCode,
+            workerId: worker.id,
+            startedAt: new Date(),
+            stoppedAt: null,
+            pieceCount: 0,
+          },
+        });
+      } catch (e) {
+        if (
+          e instanceof Prisma.PrismaClientKnownRequestError &&
+          e.code === "P2002"
+        )
+          throw new ConflictException(
+            `Rad na ovoj operaciji je već započet (otvorena sesija) — skeniraj STOP da završiš.`,
+          );
+        throw e;
+      }
+
+      return {
+        entry,
+        tp,
+        workOrder,
+        otherOpen,
+        staleWorkOrder: scannedVariant < tp.variant,
+        currentVariant: tp.variant,
+      };
+    });
+
+    return {
+      data: {
+        session: {
+          id: result.entry.id,
+          startedAt: result.entry.startedAt,
+          techProcessId: result.tp.id,
+        },
+        techProcess: result.tp,
+        workOrder: result.workOrder,
+        staleWorkOrder: result.staleWorkOrder,
+        printedVariant: scannedVariant,
+        currentVariant: result.currentVariant,
+        machineAccessWarning,
+        multitaskingWarning: result.otherOpen
+          ? `Već imaš otvorenu sesiju na drugoj operaciji (RC ${result.otherOpen.workCenterCode}, op. ${result.otherOpen.operationNumber}). Rad je svejedno započet.`
+          : null,
+      },
+    };
+  }
+
+  /**
+   * `POST /work/stop` — STOP skena („dva skena", A-4). Zatvara otvorenu sesiju radnika
+   * za tu operaciju (`stopped_at`, `piece_count`) i AKUMULIRA komade na `tech_processes`
+   * (isti efekat kao `scan` — komadi ostaju autoritativni na redu operacije). Ako otvorena
+   * sesija ne postoji, kreira trenutnu (`started_at = stopped_at`) — jednokratni fallback.
+   */
+  async stopWork(dto: StopWorkDto) {
+    validateStopWork(dto);
+    const worker = await this.resolveWorkerByCard(dto.workerCard);
+    const { order, operation } = this.parseWorkBarcodes(
+      dto.orderBarcode,
+      dto.operationBarcode,
+    );
+    const { projectId, identNumber } = order.fields;
+    const scannedVariant = order.fields.variant;
+    const { operationNumber, workCenterCode } = operation.fields;
+    const machineAccessWarning = await this.checkMachineAccess(
+      worker.id,
+      workCenterCode,
+    );
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const tp = await this.findRoutingTp(
+        tx,
+        projectId,
+        identNumber,
+        workCenterCode,
+        operationNumber,
+      );
+      if (!tp)
+        throw new NotFoundException(
+          `Operacija (RC ${workCenterCode}${
+            operationNumber !== null ? `, op. ${operationNumber}` : ""
+          }) nije nađena u tehnološkom postupku RN ${identNumber} (predmet ${projectId}).`,
+        );
+      if (tp.isProcessFinished)
+        throw new UnprocessableEntityException(
+          `Operacija (postupak ${tp.id}) je već zatvorena — prijava rada nije moguća.`,
+        );
+
+      const workOrder = await this.findWorkOrderByTriple(
+        tx,
+        projectId,
+        identNumber,
+        tp.variant,
+      );
+      const planned = workOrder?.pieceCount ?? null;
+      const note = dto.note?.trim() || null;
+      const now = new Date();
+
+      // Zatvori otvorenu sesiju ili kreiraj trenutnu (single-shot fallback).
+      const open = await tx.workTimeEntry.findFirst({
+        where: { workerId: worker.id, techProcessId: tp.id, stoppedAt: null },
+        orderBy: { id: "desc" },
+      });
+      const startedAt = open ? open.startedAt : now;
+      const session = open
+        ? await tx.workTimeEntry.update({
+            where: { id: open.id },
+            data: { stoppedAt: now, pieceCount: dto.pieceCount, note },
+          })
+        : await tx.workTimeEntry.create({
+            data: {
+              techProcessId: tp.id,
+              workOrderId: workOrder?.id ?? (tp.workOrderId || null),
+              projectId,
+              identNumber,
+              variant: tp.variant,
+              operationNumber: tp.operationNumber,
+              workCenterCode: tp.workCenterCode,
+              workerId: worker.id,
+              startedAt: now,
+              stoppedAt: now,
+              pieceCount: dto.pieceCount,
+              note,
+            },
+          });
+
+      // AKUMULACIJA (isto kao scan()): komadi na red operacije + eventualno zatvaranje.
+      const newPieceCount = tp.pieceCount + dto.pieceCount;
+      const reachedPlan = planned !== null && newPieceCount >= planned;
+      const updated = await tx.techProcess.update({
+        where: { id: tp.id },
+        data: {
+          pieceCount: newPieceCount,
+          workerId: worker.id,
+          ...(reachedPlan ? { isProcessFinished: true, finishedAt: now } : {}),
+        },
+      });
+      const prioritized = reachedPlan
+        ? await this.setOperationDonePriority(
+            tx,
+            workOrder?.id ?? tp.workOrderId,
+            tp.operationNumber,
+            tp.workCenterCode,
+          )
+        : 0;
+      const workOrderCompleted = await this.markWorkOrderIfComplete(
+        tx,
+        projectId,
+        identNumber,
+        tp.variant,
+      );
+
+      return {
+        tp: updated,
+        session,
+        startedAt,
+        stoppedAt: now,
+        instant: !open,
+        workOrder,
+        planned,
+        reachedPlan,
+        prioritized,
+        workOrderCompleted,
+        staleWorkOrder: scannedVariant < tp.variant,
+        currentVariant: tp.variant,
+      };
+    });
+
+    const workers = await this.resolveWorkers([result.tp.workerId]);
+    const elapsedSeconds = Math.max(
+      0,
+      Math.round(
+        (result.stoppedAt.getTime() - result.startedAt.getTime()) / 1000,
+      ),
+    );
+    return {
+      data: {
+        techProcess: {
+          ...result.tp,
+          worker: workers.get(result.tp.workerId) ?? null,
+        },
+        session: {
+          id: result.session.id,
+          startedAt: result.startedAt,
+          stoppedAt: result.stoppedAt,
+          elapsedSeconds,
+          instant: result.instant,
+        },
+        reportedPieces: dto.pieceCount,
+        plannedPieces: result.planned,
+        operationFinished: result.reachedPlan,
+        operationsPrioritized: result.prioritized,
+        workOrderCompleted: result.workOrderCompleted,
+        workOrder: result.workOrder,
+        staleWorkOrder: result.staleWorkOrder,
+        printedVariant: scannedVariant,
+        currentVariant: result.currentVariant,
+        machineAccessWarning,
+      },
+    };
+  }
+
+  /**
+   * `GET /work/open` — stanje sesije za (radnik, operacija) razrešeno iz barkodova.
+   * Vodi kiosk: postoji otvorena sesija → STOP režim; ne postoji → START režim.
+   */
+  async openSession(query: {
+    orderBarcode?: string;
+    operationBarcode?: string;
+    workerCard?: string;
+  }) {
+    const worker = await this.resolveWorkerByCard(query.workerCard ?? "");
+    const { order, operation } = this.parseWorkBarcodes(
+      query.orderBarcode ?? "",
+      query.operationBarcode ?? "",
+    );
+    const { projectId, identNumber } = order.fields;
+    const { operationNumber, workCenterCode } = operation.fields;
+
+    const tp = await this.findRoutingTp(
+      this.prisma,
+      projectId,
+      identNumber,
+      workCenterCode,
+      operationNumber,
+    );
+    if (!tp)
+      throw new NotFoundException(
+        `Operacija (RC ${workCenterCode}${
+          operationNumber !== null ? `, op. ${operationNumber}` : ""
+        }) nije nađena u tehnološkom postupku RN ${identNumber} (predmet ${projectId}).`,
+      );
+
+    const entry = await this.prisma.workTimeEntry.findFirst({
+      where: { workerId: worker.id, techProcessId: tp.id, stoppedAt: null },
+      orderBy: { id: "desc" },
+      select: { id: true, startedAt: true },
+    });
+
+    return {
+      data: {
+        techProcessId: tp.id,
+        operationFinished: tp.isProcessFinished ?? false,
+        open: !!entry,
+        session: entry ? { id: entry.id, startedAt: entry.startedAt } : null,
+        worker: { id: worker.id, fullName: worker.fullName },
+      },
+    };
+  }
+
+  /**
+   * `POST /work/auto-close` — zatvori sesije ostavljene otvorene (npr. preko noći).
+   * Poziva ga EKSTERNI cron/systemd (bez nove zavisnosti, ODLUKE #A4-autoclose).
+   * Sve `stopped_at IS NULL` starije od `olderThanHours` (default 12h) → `stopped_at = now`,
+   * `auto_closed = true`; komadi ostaju (0 ako nije bilo STOP-a). Ostaju flag-ovane u
+   * „Loše evidentirani". NE dira `tech_processes`.
+   */
+  async autoCloseOpenSessions(olderThanHours = 12) {
+    const hours = Number.isFinite(olderThanHours) && olderThanHours > 0 ? olderThanHours : 12;
+    const cutoff = new Date(Date.now() - hours * 3_600_000);
+    const res = await this.prisma.workTimeEntry.updateMany({
+      where: { stoppedAt: null, startedAt: { lt: cutoff } },
+      data: { stoppedAt: new Date(), autoClosed: true },
+    });
+    this.logger.log(
+      `auto-close sesija: zatvoreno ${res.count} (otvorene duže od ${hours}h)`,
+    );
+    return { data: { closed: res.count, olderThanHours: hours } };
+  }
+
   // ---------------------------------------------------------------- CONTROL (završna kontrola)
 
   /**
@@ -1335,6 +1679,72 @@ export class TechProcessesService {
         status: true,
         revision: true,
       },
+    });
+  }
+
+  /**
+   * Parsiraj + validiraj nalog/operacija barkodove (isti otisak: ista revizija u oba).
+   * Deljeno između start/stop/openSession (isti ugovor kao `scan()`).
+   */
+  private parseWorkBarcodes(orderBarcode: string, operationBarcode: string) {
+    const order = parseBarcode(orderBarcode);
+    const operation = parseBarcode(operationBarcode);
+    if (order.type !== "nalog")
+      throw new BadRequestException(
+        "'orderBarcode' nije nalog-barkod (očekivano 'RNZ:...').",
+      );
+    if (operation.type !== "operacija")
+      throw new BadRequestException(
+        "'operationBarcode' nije operacija-barkod (očekivano 'S:...').",
+      );
+    if (order.fields.revision !== operation.fields.revision)
+      throw new BadRequestException(
+        `Revizija se ne poklapa: nalog=${order.fields.revision}, operacija=${operation.fields.revision} — barkodovi ne pripadaju istom otisku.`,
+      );
+    return { order, operation };
+  }
+
+  /**
+   * Machine-access provera (spec §3.4). Poštuje AUTHZ_ENFORCE kao guard: enforce → 403;
+   * shadow → upozorenje (vraća poruku, rad dozvoljen). Isti obrazac kao `scan()`.
+   */
+  private async checkMachineAccess(
+    workerId: number,
+    workCenterCode: string,
+  ): Promise<string | null> {
+    const violation = await this.scope.workerMachineViolation(
+      workerId,
+      workCenterCode,
+    );
+    if (!violation) return null;
+    if (this.scope.isEnforced()) throw new ForbiddenException(violation);
+    this.logger.warn(
+      `SHADOW machine-access: ${violation} (AUTHZ_ENFORCE=false, rad dozvoljen)`,
+    );
+    return violation;
+  }
+
+  /**
+   * Tekući red operacije u routingu (najviša varijanta) — varijanta se menja U MESTU
+   * pri izmeni tehnologije/crteža, pa (projectId, identNumber, workCenterCode[, opNumber])
+   * jednoznačno vodi na tekuću. Isti lookup kao `scan()`.
+   */
+  private async findRoutingTp(
+    tx: Prisma.TransactionClient,
+    projectId: number,
+    identNumber: string,
+    workCenterCode: string,
+    operationNumber: number | null,
+  ) {
+    const where: Prisma.TechProcessWhereInput = {
+      projectId,
+      identNumber,
+      workCenterCode,
+    };
+    if (operationNumber !== null) where.operationNumber = operationNumber;
+    return tx.techProcess.findFirst({
+      where,
+      orderBy: [{ variant: "desc" }, { isProcessFinished: "asc" }, { id: "asc" }],
     });
   }
 

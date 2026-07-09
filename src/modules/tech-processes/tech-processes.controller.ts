@@ -30,6 +30,8 @@ import type { ScanTechProcessDto } from "./dto/scan-tech-process.dto";
 import type { FinishTechProcessDto } from "./dto/finish-tech-process.dto";
 import type { ControlTechProcessDto } from "./dto/control-tech-process.dto";
 import type { StornoTechProcessDto } from "./dto/storno-tech-process.dto";
+import type { StartWorkDto } from "./dto/start-work.dto";
+import type { StopWorkDto } from "./dto/stop-work.dto";
 
 /**
  * Read-only API za tehnološke postupke (Tehnološki postupci / TP).
@@ -97,6 +99,16 @@ export class TechProcessesController {
     return this.techProcesses.label(query);
   }
 
+  /** Stanje sesije za (radnik, operacija) iz barkodova — vodi kiosk START/STOP. */
+  @Get("work/open")
+  @RequirePermission(PERMISSIONS.TEHNOLOGIJA_REPORT_WORK)
+  openSession(
+    @Query()
+    query: { orderBarcode?: string; operationBarcode?: string; workerCard?: string },
+  ) {
+    return this.techProcesses.openSession(query);
+  }
+
   // Kiosk (pogon): prijava rada = `tehnologija.report_work` (radnik/tehnolog/CNC/šef),
   // finalna kontrola = `tehnologija.approve` (kontrolor/šef/menadžment). Poravnato sa nav
   // gejtovanjem (Kucanje=report_work, Kontrola=approve) da enforce ne blokira pogon.
@@ -127,6 +139,28 @@ export class TechProcessesController {
   @RequirePermission(PERMISSIONS.TEHNOLOGIJA_APPROVE)
   control(@Body() dto: ControlTechProcessDto) {
     return this.techProcesses.control(dto);
+  }
+
+  /** START skena („dva skena") — otvara vremensku sesiju. */
+  @Post("work/start")
+  @RequirePermission(PERMISSIONS.TEHNOLOGIJA_REPORT_WORK)
+  startWork(@Body() dto: StartWorkDto) {
+    return this.techProcesses.startWork(dto);
+  }
+
+  /** STOP skena („dva skena") — zatvara sesiju + akumulira komade. */
+  @Post("work/stop")
+  @RequirePermission(PERMISSIONS.TEHNOLOGIJA_REPORT_WORK)
+  stopWork(@Body() dto: StopWorkDto) {
+    return this.techProcesses.stopWork(dto);
+  }
+
+  /** Auto-close otvorenih sesija (poziva eksterni cron). Gate: `tehnologija.write`. */
+  @Post("work/auto-close")
+  @HttpCode(200)
+  @RequirePermission(PERMISSIONS.TEHNOLOGIJA_WRITE)
+  autoClose(@Body() body?: { olderThanHours?: number }) {
+    return this.techProcesses.autoCloseOpenSessions(body?.olderThanHours);
   }
 
   /** STORNO otkucane operacije (kontra-red, ne briše). */
