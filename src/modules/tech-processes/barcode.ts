@@ -76,7 +76,9 @@ function parseIntStrict(value: string, name: string): number {
  * tražimo da je neprazno. Poređenje sa `work_orders.revision` radi servis.
  */
 function parseRevision(value: string): string {
-  const s = value.trim();
+  // Uppercase: keyboard-wedge skener sa nestabilnim CapsLock-om sme da pošalje "a"
+  // u jednom skenu a "A" u drugom — poređenje „isti otisak" ne sme da padne na tome.
+  const s = value.trim().toUpperCase();
   if (!s)
     throw new BadRequestException(
       "Barkod polje 'Revizija' (polje 5) je obavezno.",
@@ -91,7 +93,11 @@ function parseRevision(value: string): string {
 export function parseBarcode(input: string): DecodedBarcode {
   if (typeof input !== "string")
     throw new BadRequestException("Barkod mora biti string.");
-  const raw = input.trim();
+  // Keyboard-wedge tolerancija (pogon 2026-07-10, prod logovi): skener na nekim
+  // računarima šalje ';' umesto ':' (ne stigne da „drži" Shift) i obrće velika/mala
+  // slova (CapsLock/brzina) — npr. "rnz;10350;9400/3/120;0;44474". Normalizujemo pre
+  // parsiranja: ';'→':' (identi ne sadrže ';') + marker case-insensitive.
+  const raw = input.trim().replace(/;/g, ":");
   if (!raw) throw new BadRequestException("Barkod je prazan.");
 
   // 🔴 Struktura: tačno 4 separatora → 5 polja. Greška PRIKAZUJE očitani sadržaj
@@ -106,7 +112,8 @@ export function parseBarcode(input: string): DecodedBarcode {
   }
   const parts = raw.split(":");
 
-  const marker = parts[0];
+  // Marker case-insensitive (CapsLock na skener-terminalu: "rnz"/"rNZ"/"s").
+  const marker = parts[0].toUpperCase();
   if (marker === "RNZ") {
     const fields: OrderBarcodeFields = {
       projectId: parseIntStrict(parts[1], "IDPredmet"),

@@ -41,9 +41,39 @@ describe("barcode — parseBarcode", () => {
     expect(d.fields.revision).toBe("44963");
   });
 
+  it("keyboard-wedge tolerancija: ';' umesto ':' i obrnuta slova (prod logovi 2026-07-10)", () => {
+    // Skener na pogonskom računaru šalje ';' (propušten Shift) i mala slova (CapsLock).
+    const d = parseBarcode("rnz;10350;9400/3/120;0;44474");
+    expect(d.type).toBe("nalog");
+    if (d.type !== "nalog") return;
+    expect(d.fields).toEqual({
+      projectId: 10350,
+      identNumber: "9400/3/120",
+      variant: 0,
+      revision: "44474",
+    });
+
+    const op = parseBarcode("S;5;1.10;0:44474"); // mešano ';' i ':'
+    expect(op.type).toBe("operacija");
+    if (op.type !== "operacija") return;
+    expect(op.fields.operationNumber).toBe(5);
+    expect(op.fields.workCenterCode).toBe("1.10");
+    expect(op.fields.revision).toBe("44474");
+  });
+
+  it("revizija se normalizuje u velika slova (nestabilan CapsLock ne kvari isti-otisak poređenje)", () => {
+    const d = parseBarcode("RNZ:2597:06/93-4:0:a");
+    if (d.type !== "nalog") throw new Error("očekivan nalog");
+    expect(d.fields.revision).toBe("A");
+  });
+
   it("baca kad nema tačno 4 separatora", () => {
-    expect(() => parseBarcode("RNZ:2597:06/93-4:0")).toThrow(BadRequestException);
-    expect(() => parseBarcode("RNZ:2597:06/93-4:0:A:X")).toThrow(BadRequestException);
+    expect(() => parseBarcode("RNZ:2597:06/93-4:0")).toThrow(
+      BadRequestException,
+    );
+    expect(() => parseBarcode("RNZ:2597:06/93-4:0:A:X")).toThrow(
+      BadRequestException,
+    );
   });
 
   it("baca na nepoznat marker", () => {
@@ -52,8 +82,12 @@ describe("barcode — parseBarcode", () => {
   });
 
   it("baca kad je IDPredmet ≤ 0 ili revizija prazna", () => {
-    expect(() => parseBarcode("RNZ:0:06/93-4:0:A")).toThrow(BadRequestException);
-    expect(() => parseBarcode("RNZ:2597:06/93-4:0:")).toThrow(BadRequestException);
+    expect(() => parseBarcode("RNZ:0:06/93-4:0:A")).toThrow(
+      BadRequestException,
+    );
+    expect(() => parseBarcode("RNZ:2597:06/93-4:0:")).toThrow(
+      BadRequestException,
+    );
   });
 
   it("baca kad operacija nema radni centar", () => {
@@ -96,16 +130,35 @@ describe("barcode — formatOrderBarcode / formatOperationBarcode", () => {
 
   it("baca na nevalidan ulaz", () => {
     expect(() =>
-      formatOrderBarcode({ projectId: 0, identNumber: "x", variant: 0, revision: "A" }),
+      formatOrderBarcode({
+        projectId: 0,
+        identNumber: "x",
+        variant: 0,
+        revision: "A",
+      }),
     ).toThrow();
     expect(() =>
-      formatOrderBarcode({ projectId: 1, identNumber: "", variant: 0, revision: "A" }),
+      formatOrderBarcode({
+        projectId: 1,
+        identNumber: "",
+        variant: 0,
+        revision: "A",
+      }),
     ).toThrow();
     expect(() =>
-      formatOrderBarcode({ projectId: 1, identNumber: "a:b", variant: 0, revision: "A" }),
+      formatOrderBarcode({
+        projectId: 1,
+        identNumber: "a:b",
+        variant: 0,
+        revision: "A",
+      }),
     ).toThrow(/':'/);
     expect(() =>
-      formatOperationBarcode({ operationNumber: 1, workCenterCode: "", revision: "A" }),
+      formatOperationBarcode({
+        operationNumber: 1,
+        workCenterCode: "",
+        revision: "A",
+      }),
     ).toThrow();
   });
 });
@@ -145,12 +198,22 @@ describe("barcode — round-trip (format → parse)", () => {
   it("nalog i operacija istog otiska dele istu reviziju (isti otisak)", () => {
     const rev = "B";
     const order = parseBarcode(
-      formatOrderBarcode({ projectId: 1, identNumber: "10/1", variant: 0, revision: rev }),
+      formatOrderBarcode({
+        projectId: 1,
+        identNumber: "10/1",
+        variant: 0,
+        revision: rev,
+      }),
     );
     const op = parseBarcode(
-      formatOperationBarcode({ operationNumber: 10, workCenterCode: "RC1", revision: rev }),
+      formatOperationBarcode({
+        operationNumber: 10,
+        workCenterCode: "RC1",
+        revision: rev,
+      }),
     );
-    if (order.type !== "nalog" || op.type !== "operacija") throw new Error("tip");
+    if (order.type !== "nalog" || op.type !== "operacija")
+      throw new Error("tip");
     expect(order.fields.revision).toBe(op.fields.revision);
   });
 });
