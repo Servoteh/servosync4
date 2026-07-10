@@ -1,14 +1,16 @@
 /**
- * Štampa termalnih nalepnica preko lokalnog label-proxy-ja (MODULE_SPEC_kontrola §6,
- * MODULE_SPEC_stampa §6). Port iz ServoSync 1.0 (`dispatchOptionalNetworkLabelPrint`).
+ * Štampa termalnih nalepnica (MODULE_SPEC_kontrola §6, MODULE_SPEC_stampa §6).
  *
- * Proxy je Node servis na pogonskom računaru (`servoteh-plan-montaze/tools/label-proxy`)
- * koji prima JSON sa `payload.tspl2` i piše RAW TSPL2 u TCP 9100 na TSC ML340P —
- * zaobilazi browser/driver print. URL se konfiguriše po terminalu:
- *   `NEXT_PUBLIC_LABEL_PROXY_URL` (npr. http://localhost:8765/print).
- * Ako nije postavljen → `{ ok:false, reason:'no_proxy_url' }` (UI to javi; bez tihe greške).
+ * PRIMARNI put (2026-07-10): BACKEND — `POST /v1/tech-processes/labels/print` šalje RAW
+ * TSPL2 sa servera direktno na TCP 9100 štampača. Razlog: Chrome „Local Network Access"
+ * blokira fetch sa HTTPS strane ka `http://localhost` (per-PC proxy je zato nepouzdan);
+ * backend put radi sa SVAKOG uređaja (i telefon/tablet), bez ikakvog podešavanja terminala.
+ *
+ * FALLBACK: lokalni label-proxy (`tools/label-proxy`, port iz 1.0) — koristi se samo ako
+ * backend štampa padne (npr. server ne vidi štampač), a browser sme localhost.
  */
 
+import { apiFetch, ApiError } from '@/api/client';
 import { buildTspLabelProgram, type TspLabelFields } from './tspl2';
 
 /**
@@ -47,22 +49,41 @@ export function isLabelProxyConfigured(): boolean {
   return !!resolveProxyUrl();
 }
 
-/** Pošalji već sastavljen TSPL2 program proxy-ju (POST JSON). */
+/**
+ * Pošalji već sastavljen TSPL2 program štampaču: prvo kroz BACKEND (radi svuda),
+ * pa fallback na lokalni proxy. Ne baca — vraća `{ok, reason}`.
+ */
 export async function dispatchNetworkLabelPrint(
   tspl2: string,
   meta?: Record<string, unknown>,
 ): Promise<LabelPrintResult> {
+  // 1) Backend put (HTTPS ka API-ju — nema Chrome localhost blokada).
+  let backendReason: string;
+  try {
+    await apiFetch<{ data: { ok: boolean } }>('/v1/tech-processes/labels/print', {
+      method: 'POST',
+      body: JSON.stringify({ tspl2, copies: meta?.copies }),
+    });
+    return { ok: true };
+  } catch (e) {
+    backendReason =
+      e instanceof ApiError || e instanceof Error ? e.message : String(e);
+  }
+
+  // 2) Fallback: lokalni label-proxy (samo ako browser sme localhost).
   const url = resolveProxyUrl();
-  if (!url) return { ok: false, reason: 'no_proxy_url' };
+  if (!url) return { ok: false, reason: backendReason };
   try {
     const r = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mode: 'tech_process', payload: { tspl2, ...meta } }),
     });
-    return { ok: r.ok, reason: r.ok ? undefined : `http_${r.status}` };
+    if (r.ok) return { ok: true };
+    return { ok: false, reason: `server: ${backendReason} · proxy: http_${r.status}` };
   } catch (e) {
-    return { ok: false, reason: e instanceof Error ? e.message : String(e) };
+    const proxyReason = e instanceof Error ? e.message : String(e);
+    return { ok: false, reason: `server: ${backendReason} · proxy: ${proxyReason}` };
   }
 }
 

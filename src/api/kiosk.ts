@@ -365,6 +365,19 @@ export function useWorkerMe() {
   });
 }
 
+/**
+ * Podaci za nalepnicu (GET /label) — za DOŠTAMPAVANJE kad je završna kontrola već
+ * urađena (kiosk nudi samo štampu; ne dira evidenciju).
+ */
+export function useLabelData() {
+  return useMutation({
+    mutationFn: ({ workOrderId, quantity }: { workOrderId: number; quantity: number }) =>
+      apiFetch<{ data: LabelData }>(
+        `${BASE}/label?workOrderId=${workOrderId}&quantity=${quantity}`,
+      ),
+  });
+}
+
 /** Završna kontrola — kvalitet + raspored po policama + zatvaranje (jedna transakcija). */
 export function useControl() {
   const qc = useQueryClient();

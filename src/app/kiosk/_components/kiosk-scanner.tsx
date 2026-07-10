@@ -9,6 +9,7 @@ import {
   useDecodeBarcode,
   useFinish,
   useIdentifyWorker,
+  useLabelData,
   useOpenSession,
   useScan,
   useStartWork,
@@ -26,6 +27,7 @@ import { ScanField } from './scan-field';
 import { BigMessage, type MessageTone } from './big-message';
 import { WorkPanel } from './work-panel';
 import { ControlPanel, type ControlSubmit } from './control-panel';
+import { ReprintPanel } from './reprint-panel';
 
 interface OrderState {
   raw: string;
@@ -93,6 +95,8 @@ export function KioskScanner({ workerName }: { workerName: string }) {
   const control = useControl();
   const startWork = useStartWork();
   const stopWork = useStopWork();
+  const labelData = useLabelData();
+  const [reprinting, setReprinting] = useState(false);
 
   // Radnik/kontrolor prijavljen ID karticom (BarKodUnos2024 ekran 1).
   const [worker, setWorker] = useState<{ card: string; info: KioskWorker } | null>(null);
@@ -448,6 +452,46 @@ export function KioskScanner({ workerName }: { workerName: string }) {
     }
   }
 
+  /** DOŠTAMPAVANJE — kontrola već urađena: samo štampa, bez diranja evidencije. */
+  async function onReprint(copies: number) {
+    if (!order?.workOrder) {
+      setFeedback({
+        tone: 'danger',
+        title: 'Štampa nije moguća',
+        detail: 'Radni nalog nije razrešen iz barkoda.',
+      });
+      return;
+    }
+    setReprinting(true);
+    try {
+      const { data } = await labelData.mutateAsync({
+        workOrderId: order.workOrder.id,
+        quantity: copies,
+      });
+      const print = await printControlLabels({
+        fields: data.fields,
+        barcode: data.barcode,
+        copies,
+      });
+      if (print.ok) {
+        setFeedback({
+          tone: 'success',
+          title: `Nalepnice poslate na štampu (${formatNumber(copies)})`,
+        });
+      } else {
+        setFeedback({
+          tone: 'danger',
+          title: 'Štampa nalepnica nije uspela',
+          detail: `${print.reason ?? 'nepoznata greška'}`,
+        });
+      }
+    } catch (e) {
+      setFeedback({ tone: 'danger', title: 'Štampa nije uspela', detail: errMessage(e) });
+    } finally {
+      setReprinting(false);
+    }
+  }
+
   // --- render: prvo prijava karticom, pa nalog → operacija → panel ---
 
   if (!worker && !cardGate && me.isLoading) {
@@ -509,6 +553,8 @@ export function KioskScanner({ workerName }: { workerName: string }) {
   const missing = !!operation && !!card.data && !matched && !inRouting;
   // Završna kontrola → KONTROLA panel (i kad red još ne postoji: create-on-scan).
   const showControl = !!operation?.finalControl && !finished && !cardLoading;
+  // Kontrola VEĆ urađena → nudi se samo DOŠTAMPAVANJE nalepnica (Nesa 2026-07-10).
+  const showReprint = !!operation?.finalControl && finished && !cardLoading;
 
   return (
     <main className="flex flex-1 flex-col bg-app">
@@ -578,7 +624,17 @@ export function KioskScanner({ workerName }: { workerName: string }) {
           />
         )}
 
-        {order && operation && !showControl && (
+        {order && operation && showReprint && (
+          <ReprintPanel
+            key={`reprint-${operation.raw}`}
+            operationLabel={operationLabel}
+            controlled={made}
+            busy={reprinting}
+            onPrint={onReprint}
+          />
+        )}
+
+        {order && operation && !showControl && !showReprint && (
           <WorkPanel
             key={operation.raw}
             operationLabel={operationLabel}
