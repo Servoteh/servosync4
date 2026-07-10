@@ -552,13 +552,25 @@ export class ReversiService {
 
   /** Inicijalno stanje reznog po lokaciji — `rev_cutting_tool_seed_stock`. */
   async seedStock(email: string, catalogId: string, dto: SeedStockDto) {
+    let locationId = dto.locationId;
+    if (!locationId) {
+      const rows = await this.sy15.db.$queryRaw<{ id: string }[]>`
+        SELECT id FROM loc_locations WHERE location_code = 'ALAT-MAG-01' LIMIT 1`;
+      if (!rows[0]) {
+        throw new UnprocessableEntityException(
+          "Magacin ALAT-MAG-01 ne postoji — pošalji locationId",
+        );
+      }
+      locationId = rows[0].id;
+    }
+    const locId = locationId;
     return this.runTx(
       email,
       dto.clientEventId,
       "reversi.seed-stock",
       async (tx) => {
         const rows = await tx.$queryRaw<{ result: unknown }[]>`
-        SELECT rev_cutting_tool_seed_stock(${catalogId}::uuid, ${dto.locationId}::uuid,
+        SELECT rev_cutting_tool_seed_stock(${catalogId}::uuid, ${locId}::uuid,
           ${dto.qty}::numeric) AS result`;
         return rows[0]?.result ?? null;
       },
