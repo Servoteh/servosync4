@@ -23,7 +23,9 @@ export function ReprintPanel({
   busy: boolean;
   onPrint: (copies: number) => void;
 }) {
-  const [copies, setCopies] = useState(Math.max(1, controlled || 1));
+  // Default 1 nalepnica (Nesa 2026-07-10) — broj se po potrebi povećava; NE nudi
+  // automatski celu iskontrolisanu količinu.
+  const [copies, setCopies] = useState(1);
 
   return (
     <div className="space-y-6">
