@@ -720,7 +720,7 @@ export class TechProcessesService {
       };
     }
 
-    // nalog → razreši RN + broj operacija u tehnološkom postupku.
+    // nalog → razreši RN + broj operacija u tehnološkom postupku + routing.
     const { projectId, identNumber, variant } = decoded.fields;
     const [workOrder, operationCount] = await Promise.all([
       this.prisma.workOrder.findFirst({
@@ -744,6 +744,17 @@ export class TechProcessesService {
       }),
     ]);
 
+    // Routing RN-a (work_order_operations) — kiosk po njemu zna da li je skenirana
+    // operacija U NALOGU i kad `tech_processes` red još ne postoji (create-on-scan
+    // za RN kreiran u 2.0; red se otvara pri prvom skenu).
+    const routing = workOrder
+      ? await this.prisma.workOrderOperation.findMany({
+          where: { workOrderId: workOrder.id },
+          orderBy: { operationNumber: "asc" },
+          select: { operationNumber: true, workCenterCode: true },
+        })
+      : [];
+
     return {
       data: {
         type: decoded.type,
@@ -751,6 +762,7 @@ export class TechProcessesService {
         fields: decoded.fields,
         workOrder,
         techProcess: { operationCount },
+        routing,
       },
     };
   }
@@ -799,7 +811,7 @@ export class TechProcessesService {
 
     const { projectId, identNumber } = order.fields;
     const scannedVariant = order.fields.variant;
-    const { operationNumber, workCenterCode } = operation.fields;
+    const { operationNumber, workCenterCode, identMark } = operation.fields;
 
     // Machine-access (spec §3.4, 🔴): identifikovani radnik radi samo na svojim mašinama.
     // Poštuje AUTHZ_ENFORCE (kao guard): enforce → 403; shadow → upozorenje + flag u odgovoru.
@@ -822,28 +834,16 @@ export class TechProcessesService {
       // Varijanta se menja U MESTU pri izmeni tehnologije/crteža (Vasa) — zato NE
       // pinujemo skeniranu varijantu: (projectId, identNumber) jednoznačno određuje RN,
       // pa uzimamo TEKUĆI red operacije (najviša varijanta). Staru varijantu sa otiska
-      // koristimo samo za detekciju zastarelosti (guard ispod).
-      const where: Prisma.TechProcessWhereInput = {
+      // koristimo samo za detekciju zastarelosti (guard ispod). CREATE-ON-SCAN: za RN
+      // kreiran u 2.0 red se otvara pri prvom skenu (validacija protiv routinga RN-a).
+      const { tp } = await this.findOrOpenRoutingTp(
+        tx,
         projectId,
         identNumber,
         workCenterCode,
-      };
-      if (operationNumber !== null) where.operationNumber = operationNumber;
-
-      const tp = await tx.techProcess.findFirst({
-        where,
-        orderBy: [
-          { variant: "desc" },
-          { isProcessFinished: "asc" },
-          { id: "asc" },
-        ],
-      });
-      if (!tp)
-        throw new NotFoundException(
-          `Operacija (RC ${workCenterCode}${
-            operationNumber !== null ? `, op. ${operationNumber}` : ""
-          }) nije nađena u tehnološkom postupku RN ${identNumber} (predmet ${projectId}).`,
-        );
+        operationNumber,
+        identMark,
+      );
       if (tp.isProcessFinished)
         throw new UnprocessableEntityException(
           `Operacija (postupak ${tp.id}) je već zatvorena — prijava rada nije moguća.`,
@@ -1290,26 +1290,22 @@ export class TechProcessesService {
     );
     const { projectId, identNumber } = order.fields;
     const scannedVariant = order.fields.variant;
-    const { operationNumber, workCenterCode } = operation.fields;
+    const { operationNumber, workCenterCode, identMark } = operation.fields;
     const machineAccessWarning = await this.checkMachineAccess(
       worker.id,
       workCenterCode,
     );
 
     const result = await this.prisma.$transaction(async (tx) => {
-      const tp = await this.findRoutingTp(
+      // CREATE-ON-SCAN: RN kreiran u 2.0 nema unapred red — otvara se pri prvom skenu.
+      const { tp } = await this.findOrOpenRoutingTp(
         tx,
         projectId,
         identNumber,
         workCenterCode,
         operationNumber,
+        identMark,
       );
-      if (!tp)
-        throw new NotFoundException(
-          `Operacija (RC ${workCenterCode}${
-            operationNumber !== null ? `, op. ${operationNumber}` : ""
-          }) nije nađena u tehnološkom postupku RN ${identNumber} (predmet ${projectId}).`,
-        );
       if (tp.isProcessFinished)
         throw new UnprocessableEntityException(
           `Operacija (postupak ${tp.id}) je već zatvorena — rad se ne može započeti.`,
@@ -1406,26 +1402,23 @@ export class TechProcessesService {
     );
     const { projectId, identNumber } = order.fields;
     const scannedVariant = order.fields.variant;
-    const { operationNumber, workCenterCode } = operation.fields;
+    const { operationNumber, workCenterCode, identMark } = operation.fields;
     const machineAccessWarning = await this.checkMachineAccess(
       worker.id,
       workCenterCode,
     );
 
     const result = await this.prisma.$transaction(async (tx) => {
-      const tp = await this.findRoutingTp(
+      // CREATE-ON-SCAN: RN kreiran u 2.0 nema unapred red — otvara se pri prvom skenu
+      // (single-shot STOP bez START-a na svežem RN-u takođe mora da prođe).
+      const { tp } = await this.findOrOpenRoutingTp(
         tx,
         projectId,
         identNumber,
         workCenterCode,
         operationNumber,
+        identMark,
       );
-      if (!tp)
-        throw new NotFoundException(
-          `Operacija (RC ${workCenterCode}${
-            operationNumber !== null ? `, op. ${operationNumber}` : ""
-          }) nije nađena u tehnološkom postupku RN ${identNumber} (predmet ${projectId}).`,
-        );
       if (tp.isProcessFinished)
         throw new UnprocessableEntityException(
           `Operacija (postupak ${tp.id}) je već zatvorena — prijava rada nije moguća.`,
@@ -1569,12 +1562,40 @@ export class TechProcessesService {
       workCenterCode,
       operationNumber,
     );
-    if (!tp)
-      throw new NotFoundException(
-        `Operacija (RC ${workCenterCode}${
-          operationNumber !== null ? `, op. ${operationNumber}` : ""
-        }) nije nađena u tehnološkom postupku RN ${identNumber} (predmet ${projectId}).`,
-      );
+    if (!tp) {
+      // Red još ne postoji (RN kreiran u 2.0) — validiraj protiv routinga RN-a i vrati
+      // „nema sesije": START skena će red otvoriti (create-on-scan). Read-only ruta ne kreira.
+      const wo = await this.prisma.workOrder.findFirst({
+        where: { projectId, identNumber },
+        orderBy: { variant: "desc" },
+        select: { id: true },
+      });
+      const routing = wo
+        ? await this.prisma.workOrderOperation.findFirst({
+            where: {
+              workOrderId: wo.id,
+              workCenterCode,
+              ...(operationNumber !== null ? { operationNumber } : {}),
+            },
+            select: { id: true },
+          })
+        : null;
+      if (!routing)
+        throw new NotFoundException(
+          `Operacija (RC ${workCenterCode}${
+            operationNumber !== null ? `, op. ${operationNumber}` : ""
+          }) nije nađena u tehnološkom postupku RN ${identNumber} (predmet ${projectId}).`,
+        );
+      return {
+        data: {
+          techProcessId: null,
+          operationFinished: false,
+          open: false,
+          session: null,
+          worker: { id: worker.id, fullName: worker.fullName },
+        },
+      };
+    }
 
     const entry = await this.prisma.workTimeEntry.findFirst({
       where: { workerId: worker.id, techProcessId: tp.id, stoppedAt: null },
@@ -1584,7 +1605,7 @@ export class TechProcessesService {
 
     return {
       data: {
-        techProcessId: tp.id,
+        techProcessId: tp.id as number | null,
         operationFinished: tp.isProcessFinished ?? false,
         open: !!entry,
         session: entry ? { id: entry.id, startedAt: entry.startedAt } : null,
@@ -1787,12 +1808,36 @@ export class TechProcessesService {
         });
       }
 
-      const prioritized = await this.setOperationDonePriority(
-        tx,
-        workOrder.id,
-        operationNumber,
-        workCenterCode,
-      );
+      // Završna kontrola POTVRĐUJE sve ostale neotkucane/otvorene operacije RN-a
+      // (Nesa 2026-07-10): deo koji je prošao završnu kontrolu je fizički prošao i
+      // prethodne operacije — one se zatvaraju (isProcessFinished + finishedAt), a
+      // komadi/radnik im se NE diraju (0 ako nisu kucane — ne izmišljamo evidenciju).
+      // Druge ZAVRŠNE operacije (significantForFinishing) se ne potvrđuju implicitno:
+      // zapis o kvalitetu sme da nastane samo stvarnom kontrolom.
+      const significant = await tx.operation.findMany({
+        where: { significantForFinishing: true },
+        select: { workCenterCode: true },
+      });
+      const confirmedOps = await tx.techProcess.updateMany({
+        where: {
+          projectId,
+          identNumber,
+          variant,
+          id: { not: tp.id },
+          isProcessFinished: { not: true },
+          workCenterCode: { notIn: significant.map((o) => o.workCenterCode) },
+        },
+        data: { isProcessFinished: true, finishedAt: now },
+      });
+
+      // Ceo RN silazi sa prioriteta (ne samo kontrolna operacija) — nalog je gotov.
+      const prioritized = await tx.workOrderOperation.updateMany({
+        where: {
+          workOrderId: workOrder.id,
+          priority: { not: OPERATION_PRIORITY_DONE },
+        },
+        data: { priority: OPERATION_PRIORITY_DONE },
+      });
       const workOrderCompleted = await this.markWorkOrderIfComplete(
         tx,
         projectId,
@@ -1804,7 +1849,8 @@ export class TechProcessesService {
         tp,
         workOrder,
         planned,
-        prioritized,
+        prioritized: prioritized.count,
+        confirmedOperations: confirmedOps.count,
         workOrderCompleted,
         opened: !existingOpen,
       };
@@ -1828,6 +1874,8 @@ export class TechProcessesService {
         qualityTypeId: dto.qualityTypeId,
         locationsBooked: dto.locations.length,
         operationsPrioritized: result.prioritized,
+        // Broj neotkucanih/otvorenih operacija RN-a zatvorenih ovom završnom kontrolom.
+        confirmedOperations: result.confirmedOperations,
         workOrderCompleted: result.workOrderCompleted,
         // true = red kontrole je otvoren u ovom pozivu (nije postojao); false = ažuriran postojeći.
         techProcessOpened: result.opened,
@@ -2178,6 +2226,74 @@ export class TechProcessesService {
     const controlSet = new Set(controlOps.map((o) => o.workCenterCode));
     // Proizvodni rad = bar jedan red čiji RC nije nikakva kontrola.
     return rows.some((r) => !controlSet.has(r.workCenterCode));
+  }
+
+  /**
+   * CREATE-ON-SCAN za OBIČNE operacije (Nesa 2026-07-10): RN kreiran u 2.0 NEMA unapred
+   * redove u `tech_processes` (legacy nalozi su ih dobijali iz MSSQL sync-a) — red se
+   * otvara pri PRVOM skenu, pošto se operacija validira protiv routinga RN-a
+   * (`work_order_operations`). Isti obrazac kao `control()` (legacy
+   * SacuvajRNSIzUnosaBarKoda). 404 ako RN ne postoji; 422 ako operacija nije u routingu.
+   */
+  private async findOrOpenRoutingTp(
+    tx: Prisma.TransactionClient,
+    projectId: number,
+    identNumber: string,
+    workCenterCode: string,
+    operationNumber: number | null,
+    identMark: string,
+  ) {
+    const existing = await this.findRoutingTp(
+      tx,
+      projectId,
+      identNumber,
+      workCenterCode,
+      operationNumber,
+    );
+    if (existing) return { tp: existing, opened: false };
+
+    // Tekući RN (najviša varijanta — varijanta se diže U MESTU pri izmeni tehnologije).
+    const wo = await tx.workOrder.findFirst({
+      where: { projectId, identNumber },
+      orderBy: { variant: "desc" },
+      select: { id: true, variant: true },
+    });
+    if (!wo)
+      throw new NotFoundException(
+        `RN za predmet ${projectId}, ident ${identNumber} nije nađen.`,
+      );
+    const routingWhere: Prisma.WorkOrderOperationWhereInput = {
+      workOrderId: wo.id,
+      workCenterCode,
+    };
+    if (operationNumber !== null) routingWhere.operationNumber = operationNumber;
+    const routing = await tx.workOrderOperation.findFirst({
+      where: routingWhere,
+      orderBy: { id: "asc" },
+      select: { operationNumber: true },
+    });
+    if (!routing)
+      throw new UnprocessableEntityException(
+        `Operacija (RC ${workCenterCode}${
+          operationNumber !== null ? `, op. ${operationNumber}` : ""
+        }) nije u tehnološkom postupku RN ${identNumber} (predmet ${projectId}).`,
+      );
+
+    await this.alignTechProcessSequence(tx);
+    const tp = await tx.techProcess.create({
+      data: {
+        projectId,
+        identNumber,
+        variant: wo.variant,
+        operationNumber: routing.operationNumber,
+        workCenterCode,
+        identMark: identMark || "0",
+        pieceCount: 0,
+        workerId: 0,
+        workOrderId: wo.id,
+      },
+    });
+    return { tp, opened: true };
   }
 
   /**
