@@ -60,6 +60,9 @@ export const ROLE_PERMISSIONS: Partial<Record<RoleKey, readonly PermissionKey[]>
   [ROLES.KONTROLOR]: [
     P.TEHNOLOGIJA_READ,
     P.TEHNOLOGIJA_APPROVE, // finalna kontrola: validira završen TP (uz OBAVEZAN audit zapis)
+    // Kontrolori i KUCAJU (prijem kooperacije/cinkovanja — 90d prod podataka) + kiosk scan/
+    // start/stop rute traže report_work; bez ovoga enforce blokira kontrolora na kiosku.
+    P.TEHNOLOGIJA_REPORT_WORK,
     P.RN_READ,
     P.PDM_READ,
     // Matrica §3: KONTROLOR = W (prijem/kvalitet), approve primopredaje je SEF-ov (W+A).

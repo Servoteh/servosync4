@@ -119,6 +119,12 @@ export class TechProcessesController {
     return this.techProcesses.identifyWorker(card);
   }
 
+  /** Radnik vezan za prijavljeni nalog (`users.worker_id`) — kiosk preskače karticu; null za deljene naloge. */
+  @Get("worker/me")
+  workerMe(@Req() req: { user: AuthUser }) {
+    return this.techProcesses.identifyWorkerFromUser(req.user);
+  }
+
   @Get("label")
   label(@Query() query: { workOrderId?: string; quantity?: string }) {
     return this.techProcesses.label(query);
@@ -139,7 +145,9 @@ export class TechProcessesController {
   // gejtovanjem (Kucanje=report_work, Kontrola=approve) da enforce ne blokira pogon.
   @Post("barcode/decode")
   @HttpCode(200) // čist parse/read — ništa se ne kreira, ne 201
-  @RequirePermission(PERMISSIONS.TEHNOLOGIJA_REPORT_WORK)
+  // READ (ne report_work): dekodiranje je čist parse bez upisa — treba i kontroloru
+  // (kiosk KONTROLA skenira nalog/operaciju pre `control`) i menadžmentu (approve bez kucanja).
+  @RequirePermission(PERMISSIONS.TEHNOLOGIJA_READ)
   decodeBarcode(@Body() dto: DecodeBarcodeDto) {
     validateDecodeBarcode(dto);
     return this.techProcesses.decodeBarcode(dto.barcode);

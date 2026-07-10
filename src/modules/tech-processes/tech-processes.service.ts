@@ -1875,6 +1875,54 @@ export class TechProcessesService {
     };
   }
 
+  /**
+   * `GET /worker/me` — auto-identifikacija radnika iz LIČNOG naloga (JWT `workerId`,
+   * `users.worker_id`). Kiosk preskače skeniranje ID kartice kad je prijavljen lični nalog
+   * (npr. marina.mutic@ na telefonu); deljeni terminal-nalozi (kontrola@, tehnologija@)
+   * NEMAJU vezanog radnika → `data: null` → kartica ostaje obavezna (odluka Nesa 2026-07-09).
+   * Vraća i `cardId` da front nastavi postojeći tok (workerCard u scan/control/start/stop).
+   */
+  async identifyWorkerFromUser(user?: AuthUser) {
+    if (!user?.userId) return { data: null };
+    // Veza se čita SVEŽE iz baze (ne iz JWT claim-a) — stari token izdat pre izmene
+    // users.worker_id ne sme da auto-prijavi pogrešnog radnika na deljenom terminalu.
+    const account = await this.prisma.user.findUnique({
+      where: { id: user.userId },
+      select: { workerId: true },
+    });
+    const workerId = account?.workerId ?? null;
+    if (!workerId) return { data: null };
+    const worker = await this.prisma.worker.findUnique({
+      where: { id: workerId },
+      select: {
+        id: true,
+        fullName: true,
+        username: true,
+        workerTypeId: true,
+        cardId: true,
+      },
+    });
+    // Bez radnika ili bez kartice → nazad na skeniranje kartice (tok traži cardId).
+    if (!worker || !worker.cardId?.trim()) return { data: null };
+    const type = worker.workerTypeId
+      ? await this.prisma.workerType.findUnique({
+          where: { id: worker.workerTypeId },
+          select: { name: true, additionalPrivileges: true },
+        })
+      : null;
+    return {
+      data: {
+        id: worker.id,
+        fullName: worker.fullName,
+        username: worker.username,
+        workerTypeId: worker.workerTypeId,
+        workerType: type?.name ?? null,
+        isController: type?.additionalPrivileges === true,
+        cardId: worker.cardId,
+      },
+    };
+  }
+
   // ---------------------------------------------------------------- LABEL (nalepnica — podaci)
 
   /**
