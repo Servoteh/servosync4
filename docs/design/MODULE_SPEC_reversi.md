@@ -7,7 +7,7 @@
 | **Faza** | **3.0-B (PILOT)** — prvi 1.0 modul koji se seli na 2.0 stack |
 | **Izvor** | 1.0 ŽIVI kod (`src/services/reversiService.js` 1623 LOC + `src/ui/reversi/` 28 fajlova) + **žive `pg_policies`/`pg_proc` (snimljeno 10.07)** |
 | **Authz snapshot** | [`authz-snapshots/reversi-fn-defs-2026-07-10.sql`](authz-snapshots/reversi-fn-defs-2026-07-10.sql) (23 fn, pune definicije) |
-| **Status** | Spec spreman — čeka review (Nenad) pre R1 |
+| **Status** | Spec odobren (Nenad, 10.07) — R0 ✅ re-verifikovano na živoj sy15 (42 politike, 0 drift vs snapshot); R1 u toku |
 
 > Pilot bira Reversi jer je samostalan i mali (žive količine 10.07: 47 alata, 26 dokumenata, 41 stavka,
 > 27 recipient lokacija; rezni alat šema postoji ali još 0 podataka) — merimo tempo pre težih modula.
@@ -57,7 +57,7 @@ view-ove ($queryRaw) — view-ovi ostaju u bazi (jeftino, paritet 1:1). „Moje"
 
 ## 2. Žive politike (pg_policies snapshot 10.07) — obrazac
 
-Izmereno: **44 politike na 14 tabela**, čist obrazac (izuzeci eksplicitno):
+Izmereno: **42 politike na 14 tabela**, čist obrazac (izuzeci eksplicitno):
 
 | Obrazac | Tabele | 2.0 prevod |
 |---|---|---|
