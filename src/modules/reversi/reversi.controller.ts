@@ -4,6 +4,7 @@ import {
   Get,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   Query,
   Req,
@@ -30,6 +31,10 @@ import {
   WriteOffDto,
 } from "./dto/reversi-tx.dto";
 import { BulkImportToolsDto } from "./dto/reversi-bulk.dto";
+import {
+  CuttingToolCreateDto,
+  CuttingToolUpdateDto,
+} from "./dto/reversi-cutting.dto";
 
 interface AuthedRequest {
   user: { userId: number; email: string; role: string };
@@ -114,6 +119,42 @@ export class ReversiController {
   @Get("reports/machines")
   machines() {
     return this.reversi.reportMachines();
+  }
+
+  @Get("reports/cutting-by-machine")
+  cuttingByMachine(@Query("machineCode") machineCode?: string) {
+    return this.reversi.cuttingByMachine(machineCode);
+  }
+
+  @Get("machines/:code/heads")
+  machineHeads(@Param("code") code: string) {
+    return this.reversi.machineHeads(code);
+  }
+
+  // ---------- Rezni alat (katalog) ----------
+
+  @Get("cutting-tools")
+  listCuttingTools(@Query("q") q?: string) {
+    return this.reversi.listCuttingTools(q);
+  }
+
+  @Post("cutting-tools")
+  @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
+  createCuttingTool(
+    @Req() req: AuthedRequest,
+    @Body() dto: CuttingToolCreateDto,
+  ) {
+    return this.reversi.createCuttingTool(req.user.email, dto);
+  }
+
+  @Patch("cutting-tools/:id")
+  @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
+  updateCuttingTool(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: CuttingToolUpdateDto,
+  ) {
+    return this.reversi.updateCuttingTool(req.user.email, id, dto);
   }
 
   @Get("lookups/employees")

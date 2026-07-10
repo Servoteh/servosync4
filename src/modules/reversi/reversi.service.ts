@@ -17,6 +17,10 @@ import type {
   WriteOffDto,
 } from "./dto/reversi-tx.dto";
 import type { BulkToolRowDto } from "./dto/reversi-bulk.dto";
+import type {
+  CuttingToolCreateDto,
+  CuttingToolUpdateDto,
+} from "./dto/reversi-cutting.dto";
 
 /**
  * Reversi — 3.0 PILOT, R1 read sloj (MODULE_SPEC_reversi.md §4/§9).
@@ -273,6 +277,92 @@ export class ReversiService {
   /** Mašine za Reversi kontekst (view nad maint_machines; u 1.0 REVOKE anon — ovde JWT + reversi.read). */
   async reportMachines() {
     const data = await this.sy15.db.$queryRaw`SELECT * FROM v_rev_machines`;
+    return { data };
+  }
+
+  // ---------- Rezni alat (rev_cutting_tool_catalog) ----------
+
+  /** Katalog reznog alata + ukupno na stanju (suma po lokacijama). */
+  async listCuttingTools(q?: string) {
+    const term = (q ?? "").trim();
+    const where: Prisma.RevCuttingToolCatalogWhereInput = term
+      ? {
+          OR: [
+            { oznaka: { contains: term, mode: "insensitive" } },
+            { naziv: { contains: term, mode: "insensitive" } },
+            { barcode: { contains: term, mode: "insensitive" } },
+          ],
+        }
+      : {};
+    const catalog = await this.sy15.db.revCuttingToolCatalog.findMany({
+      where,
+      orderBy: { oznaka: "asc" },
+      take: 500,
+    });
+    const stock = await this.sy15.db.revCuttingToolStock.groupBy({
+      by: ["catalogId"],
+      _sum: { onHandQty: true },
+    });
+    const onHand = new Map(
+      stock.map((s) => [s.catalogId, Number(s._sum.onHandQty ?? 0)]),
+    );
+    const data = catalog.map((c) => ({
+      ...c,
+      onHandQty: onHand.get(c.id) ?? 0,
+    }));
+    return { data };
+  }
+
+  async createCuttingTool(email: string, dto: CuttingToolCreateDto) {
+    return this.sy15.withUser(email, async (tx) => {
+      const rows = await tx.$queryRaw<{ id: string }[]>`
+        INSERT INTO rev_cutting_tool_catalog (oznaka, naziv, unit, min_stock_qty, compatible_machine_codes, napomena, created_by)
+        VALUES (${dto.oznaka.trim()}, ${dto.naziv.trim()}, ${dto.unit ?? "kom"},
+          ${dto.minStockQty ?? 0}, ${dto.compatibleMachineCodes ?? []}::text[],
+          ${dto.napomena ?? null}, auth.uid())
+        RETURNING id`;
+      return { data: { id: rows[0]?.id } };
+    });
+  }
+
+  async updateCuttingTool(
+    email: string,
+    id: string,
+    dto: CuttingToolUpdateDto,
+  ) {
+    const data = await this.sy15.db.revCuttingToolCatalog.update({
+      where: { id },
+      data: {
+        ...(dto.naziv !== undefined ? { naziv: dto.naziv.trim() } : {}),
+        ...(dto.unit !== undefined ? { unit: dto.unit } : {}),
+        ...(dto.minStockQty !== undefined
+          ? { minStockQty: dto.minStockQty }
+          : {}),
+        ...(dto.compatibleMachineCodes !== undefined
+          ? { compatibleMachineCodes: dto.compatibleMachineCodes }
+          : {}),
+        ...(dto.status !== undefined ? { status: dto.status } : {}),
+        ...(dto.napomena !== undefined ? { napomena: dto.napomena } : {}),
+      },
+    });
+    return { data };
+  }
+
+  /** Rezni alat po mašini (v_rev_cts_by_machine) — opcioni filter po šifri mašine. */
+  async cuttingByMachine(machineCode?: string) {
+    const data = machineCode
+      ? await this.sy15.db
+          .$queryRaw`SELECT * FROM v_rev_cts_by_machine WHERE machine_code = ${machineCode}`
+      : await this.sy15.db.$queryRaw`SELECT * FROM v_rev_cts_by_machine`;
+    return { data };
+  }
+
+  /** Glave na kartici mašine (rev_machine_heads). */
+  async machineHeads(machineCode: string) {
+    const data = await this.sy15.db.revMachineHead.findMany({
+      where: { machineCode },
+      orderBy: { oznaka: "asc" },
+    });
     return { data };
   }
 
