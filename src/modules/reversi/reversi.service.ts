@@ -288,6 +288,63 @@ export class ReversiService {
     return { data };
   }
 
+  /**
+   * Razrešavanje skeniranog/otkucanog barkoda → tip + zapis (paritet 1.0
+   * `resolveReversiBarcode` + `normalizeBarcodeText`):
+   *   ALAT-NNNNNN → HAND (rev_tools.barcode),
+   *   RZN-NNNNNN  → CUTTING (rev_cutting_tool_catalog.barcode),
+   *   inače 4–16 alnum → EMPLOYEE (employees.card_barcode).
+   * `data:null` = format prepoznat ali nema zapisa; `kind:UNKNOWN` = nepoznat format.
+   */
+  async lookupBarcode(raw?: string): Promise<{
+    data: {
+      kind: "HAND" | "CUTTING" | "EMPLOYEE" | "UNKNOWN";
+      barcode: string;
+      record: unknown;
+    };
+  }> {
+    const barcode = this.normalizeBarcode(raw);
+    if (!barcode)
+      return { data: { kind: "UNKNOWN", barcode: "", record: null } };
+
+    if (/^ALAT-\d{6}$/i.test(barcode)) {
+      const rows = await this.sy15.db.revTool.findMany({
+        where: { barcode },
+        take: 1,
+      });
+      return { data: { kind: "HAND", barcode, record: rows[0] ?? null } };
+    }
+    if (/^RZN-\d{6}$/i.test(barcode)) {
+      const rows = await this.sy15.db.revCuttingToolCatalog.findMany({
+        where: { barcode },
+        take: 1,
+      });
+      return { data: { kind: "CUTTING", barcode, record: rows[0] ?? null } };
+    }
+    if (/^[A-Z0-9]{4,16}$/i.test(barcode)) {
+      const rows = await this.sy15.db.$queryRaw<
+        { id: string; full_name: string; department: string | null }[]
+      >`
+        SELECT id, full_name, department FROM employees
+        WHERE card_barcode = ${barcode} AND is_active IS TRUE LIMIT 1`;
+      return { data: { kind: "EMPLOYEE", barcode, record: rows[0] ?? null } };
+    }
+    return { data: { kind: "UNKNOWN", barcode, record: null } };
+  }
+
+  /** Paritet 1.0 `normalizeBarcodeText`: skini *…* okvir, CR/LF/TAB i nevidljive znakove. */
+  private normalizeBarcode(raw?: string): string {
+    let t = String(raw ?? "")
+      .replace(/[\r\n\t]+/g, "")
+      .trim();
+    if (t.startsWith("*") && t.endsWith("*") && t.length >= 3)
+      t = t.slice(1, -1);
+    // Zero-width space/joiner/BOM (U+200B–U+200D, U+FEFF) — bez regex-literala
+    // da izvor ostane čist ASCII (eslint no-irregular-whitespace).
+    const ZERO_WIDTH = new Set([0x200b, 0x200c, 0x200d, 0xfeff]);
+    return [...t].filter((ch) => !ZERO_WIDTH.has(ch.codePointAt(0)!)).join("").trim();
+  }
+
   // ---------- R2: transakcione akcije (Faza A — postojeće DB fn u tx + GUC + idempotency) ----------
   // DB fn SAME gate-uju rev_can_manage() iz GUC claims (drugi sloj posle guard-a) i
   // SAME drže atomarnost rev_* ↔ loc_* (spec §0). Greške: 42501→403, P0001→422, 23505→409.

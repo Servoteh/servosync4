@@ -47,6 +47,8 @@ describe("Reversi permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     "restore",
     "uploadSignaturePdf",
     "getSignaturePdfUrl",
+    "lookupEmployees",
+    "lookupBarcode",
   ]) {
     serviceMock[m] = jest.fn().mockResolvedValue({ data: [] });
   }
@@ -148,6 +150,9 @@ describe("Reversi permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     );
     it("GET /reports/warehouse → 200 za viewer", async () => {
       await get("/reports/warehouse", "viewer").expect(200);
+    });
+    it("GET /lookups/barcode → 200 za magacioner (skener resolver = reversi.read)", async () => {
+      await get("/lookups/barcode?code=ALAT-000057", "magacioner").expect(200);
     });
     it("bez identiteta → 403 (JwtAuthGuard stub)", async () => {
       await request(app.getHttpServer())

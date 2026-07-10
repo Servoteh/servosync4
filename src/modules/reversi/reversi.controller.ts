@@ -120,6 +120,12 @@ export class ReversiController {
     return this.reversi.lookupEmployees(q);
   }
 
+  /** Razrešavanje skeniranog barkoda (ALAT-/RZN-/card) — paritet 1.0 resolveReversiBarcode. */
+  @Get("lookups/barcode")
+  lookupBarcode(@Query("code") code?: string) {
+    return this.reversi.lookupBarcode(code);
+  }
+
   // ---------- R2: transakcione akcije (sve manage; idempotency = clientEventId) ----------
 
   @Post("issue")
