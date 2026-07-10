@@ -109,19 +109,45 @@ export interface TechProcessCardRow {
   qualityType: { id: number; name: string } | null;
 }
 
+/** Agregat jedne operacije kartice — grupa kucanja po (operationNumber, workCenterCode). */
+export interface CardOperation {
+  operationNumber: number;
+  workCenterCode: string;
+  /** Isti resolved oblik kao rows[].operation. */
+  operation: OperationRef | null;
+  /** Broj kucanja (redova) u grupi — storno i KOM=0 ulaze. */
+  entryCount: number;
+  /** Σ pieceCount: total = SVI redovi; good/rework/scrap po qualityTypeId 0/1/2; storno se netuje. */
+  pieces: { total: number; good: number; rework: number; scrap: number };
+  /** Bar jedan red grupe je zatvoren. */
+  isFinished: boolean;
+  /** Min enteredAt grupe (ISO). */
+  firstEnteredAt: string;
+  /** Max finishedAt grupe (ISO); null ako nijedan red nije završen. */
+  lastFinishedAt: string | null;
+  /** Σ (finishedAt−enteredAt) u minutima; null dok nijedan red grupe nema oba vremena. */
+  elapsedMinutes: number | null;
+}
+
 /** „Kartica tehnološkog postupka": redovi + sume (komadi po kvalitetu, vreme). */
 export interface TechProcessCard {
   projectId: number;
   identNumber: string;
   variant: number;
+  /** Broj DISTINCT (operationNumber, workCenterCode) parova — NE broj redova/kucanja. */
   operationCount: number;
+  /** Broj distinct parova sa bar jednim završenim redom — NE broj zatvorenih redova. */
   finishedCount: number;
   summary: {
     totalPieces: number;
     piecesByQuality: { good: number; rework: number; scrap: number };
+    /** Ukupan broj redova (kucanja) — stara semantika operationCount-a. */
+    entryCount: number;
     /** Izvedeno (entered→finished); null ako nijedna operacija nije završena. */
     totalElapsedMinutes: number | null;
   };
+  /** Agregati po operaciji, redosled pojavljivanja (OP asc, id asc). */
+  operations: CardOperation[];
   rows: TechProcessCardRow[];
 }
 

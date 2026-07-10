@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { Fragment, useEffect, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
 import {
@@ -11,6 +11,7 @@ import {
   useTechProcesses,
   useWorkerPerformance,
   type CardKey,
+  type CardOperation,
   type CriticalSeverity,
   type CriticalTechProcess,
   type OperationRef,
@@ -255,6 +256,49 @@ function SumTile({ label, value, tone }: { label: string; value: ReactNode; tone
   );
 }
 
+/**
+ * Ključ grupe kucanja — backend sortira redove kartice po
+ * (operationNumber, workCenterCode, id), pa su grupe garantovano kontiguozne.
+ */
+function cardGroupKey(operationNumber: number, workCenterCode: string): string {
+  return `${operationNumber}|${workCenterCode}`;
+}
+
+/** Grupni header red kartice — agregat operacije IZ API-ja (operations[]), UI ništa ne sabira. */
+function CardGroupHeaderRow({
+  group,
+  row,
+  colCount,
+}: {
+  group: CardOperation | undefined;
+  row: TechProcessCardRow;
+  colCount: number;
+}) {
+  return (
+    <tr className="border-b border-line bg-surface-2">
+      <td colSpan={colCount} className="px-4 py-2">
+        <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+          <span className="font-semibold text-ink">
+            OP <span className="tnums">{row.operationNumber}</span> ·{' '}
+            {centerLabel(group?.operation ?? row.operation, row.workCenterCode)}
+          </span>
+          {group && (
+            <span className="tnums text-xs text-ink-secondary">
+              Σ {formatNumber(group.pieces.total)} kom (
+              <span className="text-status-success">{formatNumber(group.pieces.good)} dobar</span>
+              {' · '}
+              <span className="text-status-warn">{formatNumber(group.pieces.rework)} dorada</span>
+              {' · '}
+              <span className="text-status-danger">{formatNumber(group.pieces.scrap)} škart</span>
+              ) · {formatNumber(group.entryCount)} kucanja
+            </span>
+          )}
+        </div>
+      </td>
+    </tr>
+  );
+}
+
 /** „Kartica tehnološkog postupka" — redovi + sume po kvalitetu + ukupno vreme (poziv /card). */
 function TechProcessCardDetail({ tp }: { tp: TechProcess }) {
   const key: CardKey = {
@@ -270,11 +314,15 @@ function TechProcessCardDetail({ tp }: { tp: TechProcess }) {
 
   const card = q.data.data;
   const s = card.summary;
+  const opByKey = new Map(
+    card.operations.map((o) => [cardGroupKey(o.operationNumber, o.workCenterCode), o]),
+  );
+  const colCount = cardRowColumns.length;
   return (
     <div className="space-y-3">
       <SectionHeading
         title="Kartica tehnološkog postupka"
-        count={`${formatNumber(card.operationCount)} operacija · ${formatNumber(card.finishedCount)} završeno`}
+        count={`${formatNumber(card.operationCount)} operacija · ${formatNumber(card.finishedCount)} završeno · ${formatNumber(s.entryCount)} kucanja`}
       />
 
       <dl className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
@@ -286,12 +334,68 @@ function TechProcessCardDetail({ tp }: { tp: TechProcess }) {
         <SumTile label="Varijanta" value={String(card.variant)} />
       </dl>
 
-      <DataTable
-        columns={cardRowColumns}
-        rows={card.rows}
-        rowKey={(r) => r.id}
-        empty={<EmptyState title="Kartica nema operacija" />}
-      />
+      {/* Kucanja grupisana po operaciji — DataTable nema grouping, pa raw tabela u DataTable
+          stilu sa injektovanim grupnim header redovima (obrazac kao operacije RN u work-orders). */}
+      <div className="overflow-x-auto rounded-panel border border-line bg-surface">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-line bg-surface-2 text-left">
+              {cardRowColumns.map((c) => (
+                <th
+                  key={c.key}
+                  className={cn(
+                    'h-9 px-4 text-2xs font-semibold uppercase tracking-[0.08em] text-ink-secondary',
+                    c.align === 'right' && 'text-right',
+                  )}
+                >
+                  {c.header}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {card.rows.length === 0 ? (
+              <tr>
+                <td colSpan={colCount} className="p-0">
+                  <EmptyState title="Kartica nema operacija" />
+                </td>
+              </tr>
+            ) : (
+              card.rows.map((r, i) => {
+                const groupKey = cardGroupKey(r.operationNumber, r.workCenterCode);
+                const prev = i > 0 ? card.rows[i - 1] : null;
+                const isGroupStart =
+                  !prev || cardGroupKey(prev.operationNumber, prev.workCenterCode) !== groupKey;
+                return (
+                  <Fragment key={r.id}>
+                    {isGroupStart && (
+                      <CardGroupHeaderRow
+                        group={opByKey.get(groupKey)}
+                        row={r}
+                        colCount={colCount}
+                      />
+                    )}
+                    <tr className="h-[var(--table-row-height)] border-b border-line-soft">
+                      {cardRowColumns.map((c) => (
+                        <td
+                          key={c.key}
+                          className={cn(
+                            'px-4 text-ink',
+                            c.align === 'right' && 'text-right',
+                            c.numeric && 'tnums',
+                          )}
+                        >
+                          {c.render(r)}
+                        </td>
+                      ))}
+                    </tr>
+                  </Fragment>
+                );
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
