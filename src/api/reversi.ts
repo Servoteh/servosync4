@@ -337,3 +337,38 @@ export const useStockDelta = () =>
     (v) => `/v1/reversi/tools/${v.toolId}/stock-delta`,
     ({ clientEventId, delta, reason, note }) => ({ clientEventId, delta, reason, note }),
   );
+
+/** Red view-a `v_rev_machines` (nad maint_machines — Reversi kontekst mašina). */
+export interface MachineRow {
+  machine_code: string;
+  name: string;
+  type: string | null;
+  manufacturer: string | null;
+  model: string | null;
+  location: string | null;
+  tracked: boolean | null;
+  archived_at: string | null;
+}
+
+/** Red view-a `v_rev_cts_by_machine` (rezni alat po mašini). */
+export interface CuttingByMachineRow {
+  machine_code: string;
+  machine_name: string | null;
+  catalog_id: string;
+  barcode: string | null;
+  oznaka: string;
+  naziv: string;
+  unit: string | null;
+  remaining_qty: number | null;
+  last_issued_at: string | null;
+  last_issued_to_name: string | null;
+  subgroup_label: string | null;
+  group_label: string | null;
+}
+
+export function useReversiMachines() {
+  return useQuery({
+    queryKey: [...KEYS.reports, 'machines'],
+    queryFn: () => apiFetch<{ data: MachineRow[] }>('/v1/reversi/reports/machines'),
+  });
+}
