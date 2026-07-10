@@ -10,10 +10,11 @@ import { Tabs, type TabItem } from './_components/tabs';
 import { MojiAlatiTab } from './_components/moji-alati-tab';
 import { DokumentiTab } from './_components/dokumenti-tab';
 import { MagacinTab } from './_components/magacin-tab';
+import { RezniAlatTab } from './_components/rezni-alat-tab';
 import { MasineTab } from './_components/masine-tab';
 import { OtpisanoTab } from './_components/otpisano-tab';
 
-type TabKey = 'moji' | 'dokumenti' | 'magacin' | 'masine' | 'otpisano';
+type TabKey = 'moji' | 'dokumenti' | 'magacin' | 'rezni' | 'masine' | 'otpisano';
 
 /**
  * Reversi — 3.0 PILOT (MODULE_SPEC_reversi.md §6): zaduženja alata/LZO/kooperacije.
@@ -43,6 +44,7 @@ export default function ReversiPage() {
     { key: 'moji', label: 'Moji alati' },
     { key: 'dokumenti', label: 'Izdavanje i povraćaj' },
     { key: 'magacin', label: 'Stanje magacina' },
+    { key: 'rezni', label: 'Rezni alat' },
     { key: 'masine', label: 'Mašine' },
     ...(manage ? [{ key: 'otpisano' as const, label: 'Otpisan alat' }] : []),
   ];
@@ -57,6 +59,7 @@ export default function ReversiPage() {
         {tab === 'moji' && <MojiAlatiTab />}
         {tab === 'dokumenti' && <DokumentiTab />}
         {tab === 'magacin' && <MagacinTab />}
+        {tab === 'rezni' && <RezniAlatTab />}
         {tab === 'masine' && <MasineTab />}
         {tab === 'otpisano' && manage && <OtpisanoTab />}
       </div>

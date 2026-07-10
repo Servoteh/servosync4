@@ -6,6 +6,7 @@ import { EmptyState } from '@/components/ui-kit/empty-state';
 import { SearchBox } from '@/components/ui-kit/search-box';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { useReversiMachines, type MachineRow } from '@/api/reversi';
+import { MachineCardDialog } from './machine-card-dialog';
 
 /**
  * Mašine u Reversi kontekstu (v_rev_machines nad maint_machines — 1.0 revMasineTab).
@@ -14,6 +15,7 @@ import { useReversiMachines, type MachineRow } from '@/api/reversi';
  */
 export function MasineTab() {
   const [q, setQ] = useState('');
+  const [openMachine, setOpenMachine] = useState<MachineRow | null>(null);
   const machines = useReversiMachines();
 
   const rows = useMemo(() => {
@@ -57,8 +59,10 @@ export function MasineTab() {
         rows={rows}
         rowKey={(r) => r.machine_code}
         loading={machines.isLoading}
+        onRowActivate={(r) => setOpenMachine(r)}
         empty={<EmptyState title="Nema mašina" hint="Nijedna mašina ne odgovara pretrazi." />}
       />
+      <MachineCardDialog machine={openMachine} onClose={() => setOpenMachine(null)} />
     </div>
   );
 }

@@ -478,3 +478,95 @@ export function useReversiMachines() {
     queryFn: () => apiFetch<{ data: MachineRow[] }>('/v1/reversi/reports/machines'),
   });
 }
+
+// ------------------------------------------------------------------ rezni alat
+
+export interface CuttingTool {
+  id: string;
+  barcode: string | null;
+  oznaka: string;
+  naziv: string;
+  unit: string;
+  status: string;
+  minStockQty: number;
+  compatibleMachineCodes: string[];
+  napomena: string | null;
+  onHandQty: number;
+}
+
+export function useCuttingTools(q: string) {
+  return useQuery({
+    queryKey: ['reversi', 'cutting', 'catalog', q],
+    queryFn: () => apiFetch<{ data: CuttingTool[] }>(`/v1/reversi/cutting-tools${qs({ q })}`),
+  });
+}
+
+export interface CuttingToolCreate {
+  oznaka: string;
+  naziv: string;
+  unit?: string;
+  minStockQty?: number;
+  compatibleMachineCodes?: string[];
+  napomena?: string;
+}
+
+export function useCreateCuttingTool() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: CuttingToolCreate) =>
+      apiFetch<{ data: { id: string } }>('/v1/reversi/cutting-tools', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['reversi', 'cutting'] }),
+  });
+}
+
+export interface MachineHead {
+  id: string;
+  machineCode: string;
+  oznaka: string;
+  naziv: string;
+  tip: string | null;
+  serijskiBroj: string | null;
+  status: string;
+  napomena: string | null;
+}
+
+export function useMachineHeads(machineCode: string | null) {
+  return useQuery({
+    queryKey: ['reversi', 'machine-heads', machineCode],
+    enabled: !!machineCode,
+    queryFn: () => apiFetch<{ data: MachineHead[] }>(`/v1/reversi/machines/${machineCode}/heads`),
+  });
+}
+
+export function useCuttingByMachine(machineCode: string | null) {
+  return useQuery({
+    queryKey: ['reversi', 'cutting', 'by-machine', machineCode],
+    enabled: !!machineCode,
+    queryFn: () =>
+      apiFetch<{ data: CuttingByMachineRow[] }>(`/v1/reversi/reports/cutting-by-machine${qs({ machineCode: machineCode ?? '' })}`),
+  });
+}
+
+/** Seed/dopuna stanja reznog po lokaciji (rev_cutting_tool_seed_stock). */
+export interface SeedStockVars {
+  clientEventId: string;
+  catalogId: string;
+  locationId: string;
+  qty: number;
+}
+export const useSeedCuttingStock = () =>
+  useReversiTx<SeedStockVars>(
+    (v) => `/v1/reversi/cutting-tools/${v.catalogId}/seed-stock`,
+    ({ clientEventId, locationId, qty }) =>
+      locationId ? { clientEventId, locationId, qty } : { clientEventId, qty },
+  );
+
+/** Izdavanje reznog na mašinu (rev_issue_cutting_reversal jsonb pass-through). */
+export const useCuttingIssue = () =>
+  useReversiTx<IssueVars>(
+    () => '/v1/reversi/cutting-issue',
+    (v) => v,
+  );
