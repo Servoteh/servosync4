@@ -784,7 +784,17 @@ export class TechProcessesService {
    * variant). Nevalidan barkod → 400 (`parseBarcode` baca `BadRequestException`).
    */
   async decodeBarcode(barcode: string) {
-    const decoded = parseBarcode(barcode);
+    let decoded: ReturnType<typeof parseBarcode>;
+    try {
+      decoded = parseBarcode(barcode);
+    } catch (e) {
+      // Dijagnostika iz pogona: loguj ŠTA je skener stvarno poslao (pogrešan barkod
+      // sa papira, presečen sken, raspored tastature skenera...) — čita se iz docker logs.
+      this.logger.warn(
+        `barcode decode FAIL: "${String(barcode ?? "").slice(0, 64)}" — ${(e as Error).message}`,
+      );
+      throw e;
+    }
     if (decoded.type === "operacija") {
       // Razreši metapodatke radnog centra: `significantForFinishing` (= završna
       // kontrola → kiosk grana u KONTROLA režim, MODULE_SPEC_kontrola §1) + naziv.
