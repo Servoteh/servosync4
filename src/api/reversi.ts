@@ -1,7 +1,7 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiFetch, apiPostForm } from './client';
+import { apiFetch, apiUpload } from './client';
 
 /** Tip razrešenog barkoda (BE /reversi/lookups/barcode — paritet 1.0 resolveReversiBarcode). */
 export type BarcodeKind = 'HAND' | 'CUTTING' | 'EMPLOYEE' | 'UNKNOWN';
@@ -400,7 +400,7 @@ export function useUploadSignaturePdf() {
     mutationFn: async ({ docId, blob }: { docId: string; blob: Blob }) => {
       const fd = new FormData();
       fd.append('file', blob, `${docId}.pdf`);
-      return apiPostForm<{ data: { path: string } }>(
+      return apiUpload<{ data: { path: string } }>(
         `/v1/reversi/documents/${docId}/signature-pdf`,
         fd,
       );
