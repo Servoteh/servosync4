@@ -7,7 +7,7 @@
 | **Faza** | **3.0-B (PILOT)** — prvi 1.0 modul koji se seli na 2.0 stack |
 | **Izvor** | 1.0 ŽIVI kod (`src/services/reversiService.js` 1623 LOC + `src/ui/reversi/` 28 fajlova) + **žive `pg_policies`/`pg_proc` (snimljeno 10.07)** |
 | **Authz snapshot** | [`authz-snapshots/reversi-fn-defs-2026-07-10.sql`](authz-snapshots/reversi-fn-defs-2026-07-10.sql) (23 fn, pune definicije) |
-| **Status** | Spec odobren (Nenad, 10.07) — R0 ✅ re-verifikovano na živoj sy15 (42 politike, 0 drift vs snapshot); R1 u toku |
+| **Status** | R0 ✅ (0 drift) · R1 ✅ read sloj · R2 🟡 tx akcije+idempotency ✅ VERIFIKOVANO na živoj sy15 (preostaju: bulk-import BE, storage presigned, e2e matrica) · infra: `rev_api_idempotency` + rola `servosync2_app` ŽIVE (1.0 repo `sql/migrations/20260710_rev_api_idempotency.sql`) |
 
 > Pilot bira Reversi jer je samostalan i mali (žive količine 10.07: 47 alata, 26 dokumenata, 41 stavka,
 > 27 recipient lokacija; rezni alat šema postoji ali još 0 podataka) — merimo tempo pre težih modula.
