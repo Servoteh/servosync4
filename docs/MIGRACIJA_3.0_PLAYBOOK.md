@@ -100,6 +100,20 @@ pre nego što se dotakne Kadrovska (PII, zarade, najgušći authz).
 **Cilj:** jedna aplikacija u prikazu ODMAH. **`servosync.servoteh.com` (1.0) je i ostaje JEDINI front**
 (+ LAN adresa kao offline fallback). **Ceo 2.0 (sad `servosync2.servoteh.com`) ulazi kao JEDAN modul
 „TEHNOLOGIJA"** na ekranu 1.0 — NE obrnuto. Nema prepravke 1.0 modula; 2.0 se samo embed-uje.
+*(Smer 3.0 NEPROMENJEN: dugoročno se 1.0 moduli prepisuju NA 2.0 stack — 1.0 shell je privremeni ulaz.)*
+
+> ✅ **PRVA FAZA IZVRŠENA 10.07.2026 — modul 📐 Tehnologija + SSO ŽIVI NA PRODU.**
+> - **1.0:** HUB kartica → ruta `/tehnologija` → iframe ka `servosync2.servoteh.com`
+>   (`src/ui/tehnologija/`, main `54f514a` + SSO bridge `887d31a`; obrazac za nove module = energetika-scada).
+> - **SSO (varijanta postMessage — NE basePath/same-origin; to ostaje opcija za kasnije):** 2.0 u iframe-u
+>   bez sesije javi `ss2-sso-ready` → 1.0 vrati `ss2-sso-token` (tekući GoTrue access token, origin-provereno
+>   u OBA smera) → 2.0 front `POST /api/auth/sso` → backend (`bbb1b82`) verifikuje token **deljenim
+>   `SY15_JWT_SECRET`** i po email-u (`users.email` unique) izda SVOJ token. **Autorizacija = postojanje
+>   AKTIVNOG 2.0 naloga** (rola/permisije ostaju 2.0-ove): admin/tehnolozi/kontrolori ulaze bez kucanja;
+>   bez naloga → normalan 2.0 login u iframe-u. Zajednički nalozi (npr. `tehnologija@`) NEMAJU SSO — lični email.
+> - **Usput otkriveno i REŠENO:** `api.servosync2.servoteh.com` **nije postojao u DNS-u** (2.0 API je radio
+>   SAMO sa LAN-a!) → dodata ruta u `servosync2` tunel (`localhost:3000`); 530/1033 = ruta na pogrešnom tunelu.
+> - **Tehnički vodič za dalji rad na modulu (2.0 repo): `backend/docs/SSO_TEHNOLOGIJA.md`.**
 
 **Mehanizam (1.0 = shell/home, 2.0 = jedan modul):**
 - **1.0 app = home/shell** — već ima hub + nav sa svim operativnim modulima (kadrovska, sastanci, reversi,
@@ -185,17 +199,37 @@ db `127.0.0.1:5436`).
   na cloud preko vault-a (ne dekriptuje → NE šalje = bezbedno).
 - **Committovano na main** (1.0 + 2.0 gde je zajedničko): playbook, runbook, `infra/self-host/`, edge-runtime.
 
-**⏳ PENDING = CUTOVER (radi se UVEČE / off-hours, kad niko ne radi — 1.0 cloud je JOŠ ŽIV!):**
-- **Cloudflare Tunnel** hostname za 1.5 gateway (javna dostupnost) + (odluka §2.1) jedan origin za shell.
-- **Repoint 1.0 front:** `VITE_SUPABASE_URL` + nov anon ključ → nov build; hardkodovani URL-ovi (ocena.html,
-  legacy, SW regex); sateliti (bridge/loc-sync/SCADA); nov APK ako se adresa menja.
-- **Uključivanje dispatch-a** SAMO na cutover-u (inače **dupli mejlovi/push** — cloud je živ): (1) označi
-  postojeći outbox obrađenim, (2) scheduler zove NAŠE dispatch fn, (3) repoint push trigera (URL cloud→gateway;
-  ključ već iz `app_config`).
-- **VAPID public → `src/services/push.js:20`** (nov par) + rebuild; stare web-push pretplate se gase (radnici se ponovo pretplate).
-- **Drawings viewer → 2.0 `drawing_pdfs`** (§4.4) · **Loc most repoint** (§4.2) pre gašenja QBigTehn-a.
+**✅ CUTOVER 1.5 IZVRŠEN u noći 09→10.07.2026 (~23:30–01:00; sve verifikovano uživo):**
+- **Freeze clouda:** read-only GUC + terminate + **PostgREST kill-switch** (Management API
+  `db_schema→frozen`) — GUC sam NIJE dovoljan, PostgREST otvara transakcije eksplicitnim `READ WRITE`!
+  Original config za rollback: `~/servosync15/.postgrest_rollback.json`.
+- **Finalni dump+restore:** parity SVE ZELENO (157 employees / 56 auth.users / 5414 work_hours / 513 RLS / 22 cron).
+- **Storage 5543/5543 fail=0** iz pre-staged keša (`dumps/storage-cache`, 1.2 GB) za ~2 min; `objects.version`
+  se REGENERIŠE pri uploadu → storage migracija UVEK posle finalnog restore-a (inače 404).
+- **Dispatch bez flood-a:** outbox mark `'sent'`, 3 cloud-pulse cron ugašena, push trigeri → `http://gateway`,
+  scheduler pulsevi svi 200 (fn imaju fail-closed gate → service Bearer na SVE pozive).
+- **Front repoint ŽIV:** `servosync.servoteh.com` → `api.servosync.servoteh.com` (reuse `servosync2` tunel +
+  Total TLS). Hirurški repoint 10 linija (grana `cutover/front-repoint` je nosila STARIJI `push.js` — checkout
+  cele grane bi regresovao native push!). **Shim u `src/lib/constants.js`** (stari/prazan env → on-prem
+  URL+anon) jer se **DVA build pipeline-a trkaju** (GH Actions + CF Pages git build sa SVOJIM env-om).
+- **Sateliti:** bridge (BigTehn+Katze) = **systemd na ubuntusrv** (`~/servoteh-bridge`) → repointovan na
+  `localhost:8080`, sync `success`; `loc_bigtehn_ingest` = pg_cron U BAZI (samo-migrirao). **LAN fallback
+  front** `http://192.168.64.28:8090` (T‑4b vhost) živ.
+- **Noćne drame (rešene):** dupli CORS (gateway = JEDINI izvor CORS-a, `strip_upstream_cors`), SW keš na
+  desktopu drži stari bundle, CF Pages env trka. Sve lekcije: `infra/self-host/CUTOVER_1.5.md`.
+- **Zarade hardening (10.07):** `kadr_get_contract_salary` DEFINER RPC je propuštao `poslovni_admin` →
+  zategnut na `current_user_is_admin()` (`sql/migrations/20260710_salary_contract_admin_only.sql`).
 
-> ⚠️ **CUTOVER JOŠ NIJE ODRAĐEN.** Zakazuje se za **veče/off-hours**; dok cloud radi, ništa od „pending" se ne aktivira.
+**⏳ OSTAJE (post-cutover operativa — plan: `docs/PLAN_POST_CUTOVER_KONSOLIDACIJA.md`):**
+- **SCADA VM bridge repoint** — upisi stali 10.07 u 00:27; Energetika pokazuje bajato dok se `.env` na
+  SCADA VM ne repointuje (isti recept kao bridge).
+- **Drawings job:** `BIGTEHN_DRAWINGS_DIR` prazan na ubuntu bridge instanci → treba putanja/share do PDF
+  crteža (poslednji uspešan upload 09.07 07:00 sa stare lokacije).
+- **CF Pages env fix + konsolidacija na JEDAN build pipeline** (shim štiti u međuvremenu).
+- **Cloud = READ referenca do ~17.07** → dekomisija + rotacija ključeva (`send-reminders` edge fn NIJE u
+  repou — izvući pre gašenja!).
+- `FCM_SERVICE_ACCOUNT` prazan (native push degradiran) · **passkeys ne rade na 1.5** (prijava lozinkom) ·
+  `supabase/config.toml` + sb-sql/deploy-edge skilovi još pokazuju na cloud.
 
 **AUDIT 09.07 (Fable-5) — pronađeni i primenjeni fixevi:**
 - **Push trigeri na sy15 privremeno DISABLED** — gađali su cloud sa važećim ključem (rizik duplog slanja).
@@ -351,7 +385,7 @@ Za svaki modul u 3.0, pre „gotovo":
 > PostgREST/GoTrue + QBigTehn sync. Kritično: dok stari izvor radi, **NE uključivati dispatch** na novom
 > stacku (dupli mejlovi/push realnim korisnicima).
 
-**(A) 1.5 cutover (1.0 → on-prem) — near-term:**
+**(A) 1.5 cutover (1.0 → on-prem) — ✅ IZVRŠEN 10.07.2026** (stanje/lekcije: §3.1 + `infra/self-host/CUTOVER_1.5.md`):
 - [ ] Cloudflare Tunnel hostname za `sy15` gateway; javna adresa (jedan origin ako se radi shell §2.1).
 - [ ] Repoint 1.0 front: `VITE_SUPABASE_URL` + nov anon ključ + hardkodovani URL-ovi (ocena.html/legacy/SW regex) + sateliti + APK.
 - [ ] ⚠️ **Cloud read-only je PREDUSLOV za start schedulera (ne posle)** — scheduler na sy15 se NE pokreće dok cloud još piše (dupli mejlovi/push).
@@ -381,6 +415,7 @@ Za svaki modul u 3.0, pre „gotovo":
 
 | Datum | Šta |
 |---|---|
+| 2026-07-10 | **CUTOVER 1.5 IZVRŠEN** (§3.1: freeze uz PostgREST kill-switch — GUC nedovoljan!, parity zeleno, storage iz keša 5543/5543, scheduler, LAN vhost :8090, shim za trku DVA build pipeline-a) + **§2.1 prva faza IZVRŠENA: modul 📐 Tehnologija + SSO RADI** (postMessage handoff, 2.0 `POST /api/auth/sso`, `api.servosync2` ruta u tunelu — DNS NIJE postojao). Zarade: `kadr_get_contract_salary` admin-only. Tehnolozi otvoreni na obe strane. Detalji: `CUTOVER_1.5.md` + 2.0 `backend/docs/SSO_TEHNOLOGIJA.md`. |
 | 2026-07-09 | Prva verzija. Konsoliduje ROADMAP + AUTHZ_UNIFIED + INTEGRACIJA + RBAC_RLS_PREDLOG + migration/03,16 + DESIGN_SYSTEM. Ugrađuje odluke sesije 09.07: 1.5 pre 3.0 (§3), zaposleni = 1.0 izvor istine i aktivni (§4.1), responsivnost V1 zahtev (§1.8). Modul-tracker §5. |
 | 2026-07-09 (2) | **Faza 1.5 IZVRŠENA do data+auth+storage** — self-host stack živ na `ubuntusrv:~/servosync15` (`infra/self-host/`): baza restore (198 tabela, 56 korisnika, 513 RLS), storage 115 fajlova/185 MB, login E2E. **§4.4 dodato: crteži DEDUP** (1.0 viewer → 2.0 `drawing_pdfs`; `bigtehn-drawings` 673 MB se NE migrira; bridge `syncBigtehnDrawings` se gasi). Ostaje: Node worker, pg_cron, Tunnel, repoint. |
 | 2026-07-09 (6) | **Potvrđene 4 cutover odluke (D1–D4, §1 #10)** — backend `api.servosync.servoteh.com` + Total TLS + reuse `servosync2` cloudflared tunela (ingress u dashboard-u), LAN front DA (minimalni same-origin Caddy vhost `:8090`, CUTOVER T‑4b), GoTrue SMTP=Resend (obavezno, ne opcija), rollback forward-only (tačka-bez-povratka ~T+2h). |
