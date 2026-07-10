@@ -1,0 +1,16 @@
+{
+  "name": "servoteh-label-proxy",
+  "version": "1.0.0",
+  "description": "Local TSPL2 raw proxy za TSC ML340P - zaobilazi Chrome i Windows printer driver",
+  "type": "module",
+  "main": "label-proxy.mjs",
+  "scripts": {
+    "start": "node label-proxy.mjs",
+    "probe": "node -e \"fetch('http://localhost:8765/probe').then(r=>r.json()).then(j=>console.log(j))\""
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "private": true,
+  "license": "UNLICENSED"
+}

@@ -32,6 +32,8 @@ interface OrderState {
   fields: OrderBarcodeFields;
   workOrder: KioskWorkOrder | null;
   operationCount: number;
+  /** Routing RN-a — operacija je validna i kad tech_processes red još ne postoji. */
+  routing: { operationNumber: number; workCenterCode: string }[];
 }
 interface OperationState {
   raw: string;
@@ -203,6 +205,7 @@ export function KioskScanner({ workerName }: { workerName: string }) {
         fields: data.fields,
         workOrder: data.workOrder,
         operationCount: data.techProcess.operationCount,
+        routing: data.routing,
       });
       setFeedback(
         data.workOrder
@@ -415,6 +418,8 @@ export function KioskScanner({ workerName }: { workerName: string }) {
       });
 
       const parts = [`Iskontrolisano ${formatNumber(data.controlledPieces)} kom`];
+      if (data.confirmedOperations > 0)
+        parts.push(`Potvrđeno ${formatNumber(data.confirmedOperations)} neotkucanih operacija.`);
       if (data.workOrderCompleted) parts.push('Radni nalog je završen.');
       if (data.childOrderPending) parts.push('Nalog za doradu/škart sledi u narednoj fazi.');
       // A-5 (shadow): upozorenje o ovlašćenju kontrolora / razdvajanju dužnosti — istaknuto.
@@ -430,8 +435,8 @@ export function KioskScanner({ workerName }: { workerName: string }) {
       } else {
         const why =
           print.reason === 'no_proxy_url'
-            ? 'Label-proxy nije podešen (NEXT_PUBLIC_LABEL_PROXY_URL) — nalepnice nisu odštampane.'
-            : `Štampa nalepnica nije uspela (${print.reason}).`;
+            ? 'Label-proxy nije podešen — nalepnice nisu odštampane.'
+            : `Štampa nalepnica nije uspela (${print.reason}) — proveri da je label-proxy pokrenut na OVOM računaru (start.bat, localhost:8765; frontend/tools/label-proxy).`;
         setFeedback({
           tone: 'info',
           title: 'Kontrola završena — nalepnice NISU odštampane',
@@ -491,7 +496,17 @@ export function KioskScanner({ workerName }: { workerName: string }) {
     ? `${operation.fields.operationNumber != null ? `Op. ${operation.fields.operationNumber} · ` : ''}${opName}`
     : '';
   const cardLoading = !!operation && card.isLoading;
-  const missing = !!operation && !!card.data && !matched;
+  // Operacija je „u nalogu" ako ima tech_processes red ILI je u routingu RN-a
+  // (za RN kreiran u 2.0 red se otvara pri prvom skenu — create-on-scan).
+  const inRouting =
+    !!operation &&
+    !!order?.routing.some(
+      (r) =>
+        r.workCenterCode === operation.fields.workCenterCode &&
+        (operation.fields.operationNumber === null ||
+          r.operationNumber === operation.fields.operationNumber),
+    );
+  const missing = !!operation && !!card.data && !matched && !inRouting;
   // Završna kontrola → KONTROLA panel (i kad red još ne postoji: create-on-scan).
   const showControl = !!operation?.finalControl && !finished && !cardLoading;
 

@@ -61,6 +61,11 @@ export type DecodedBarcode =
       fields: OrderBarcodeFields;
       workOrder: KioskWorkOrder | null;
       techProcess: { operationCount: number };
+      /**
+       * Routing RN-a (work_order_operations) — operacija JESTE u nalogu i kad
+       * `tech_processes` red još ne postoji (create-on-scan za RN kreiran u 2.0).
+       */
+      routing: { operationNumber: number; workCenterCode: string }[];
     }
   | {
       type: 'operacija';
@@ -197,7 +202,8 @@ export interface StopWorkResult extends ScanResult {
 }
 
 export interface OpenSessionResult {
-  techProcessId: number;
+  /** null = red operacije još ne postoji (otvoriće ga START skena — create-on-scan). */
+  techProcessId: number | null;
   operationFinished: boolean;
   open: boolean;
   session: { id: number; startedAt: string } | null;
@@ -317,6 +323,8 @@ export interface ControlResult {
   qualityTypeId: number;
   locationsBooked: number;
   operationsPrioritized: number;
+  /** Neotkucane/otvorene operacije RN-a zatvorene ovom završnom kontrolom (Nesa 2026-07-10). */
+  confirmedOperations: number;
   workOrderCompleted: boolean;
   /** true = red kontrole je otvoren u ovom pozivu (create-on-scan). */
   techProcessOpened: boolean;
