@@ -27,7 +27,13 @@ describe("ScopeService", () => {
   });
 
   it("does not restrict non-radnik roles (see all)", async () => {
-    for (const role of ["admin", "sef", "tehnolog", "cnc_programer", "menadzment"]) {
+    for (const role of [
+      "admin",
+      "sef",
+      "tehnolog",
+      "cnc_programer",
+      "menadzment",
+    ]) {
       const where = await scope.techProcessScope(user({ role }));
       expect(where).toEqual({});
     }
@@ -90,7 +96,10 @@ describe("ScopeService", () => {
     });
 
     it("returns null when the work center is among the worker's machines", async () => {
-      findMany.mockResolvedValue([{ workCenterCode: "CNC1" }, { workCenterCode: "BRV" }]);
+      findMany.mockResolvedValue([
+        { workCenterCode: "CNC1" },
+        { workCenterCode: "BRV" },
+      ]);
       expect(await scope.workerMachineViolation(5, "CNC1")).toBeNull();
     });
 

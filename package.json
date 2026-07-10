@@ -12,7 +12,7 @@
   "scripts": {
     "bootstrap": "npm install && node scripts/setup.cjs",
     "setup": "node scripts/setup.cjs",
-    "prebuild": "prisma generate",
+    "prebuild": "prisma generate && prisma generate --schema prisma/sy15.prisma",
     "build": "nest build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
