@@ -429,7 +429,7 @@ export class ReversiService {
     const doc = await this.sy15.db.revDocument.findUnique({ where: { id } });
     if (!doc) throw new NotFoundException(`Reversi dokument ${id} ne postoji`);
     const { base, key } = this.storageCfg();
-    const path = `${doc.docNumber.replace(/[^\w.\-]+/g, "_")}.pdf`;
+    const path = `${doc.docNumber.replace(/[^\w.-]+/g, "_")}.pdf`;
     const res = await fetch(
       `${base}/object/reversal-pdf/${encodeURIComponent(path)}`,
       {
