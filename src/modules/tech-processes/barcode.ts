@@ -78,7 +78,9 @@ function parseIntStrict(value: string, name: string): number {
 function parseRevision(value: string): string {
   const s = value.trim();
   if (!s)
-    throw new BadRequestException("Barkod polje 'Revizija' (polje 5) je obavezno.");
+    throw new BadRequestException(
+      "Barkod polje 'Revizija' (polje 5) je obavezno.",
+    );
   return s;
 }
 
@@ -92,12 +94,16 @@ export function parseBarcode(input: string): DecodedBarcode {
   const raw = input.trim();
   if (!raw) throw new BadRequestException("Barkod je prazan.");
 
-  // 🔴 Struktura: tačno 4 separatora → 5 polja.
+  // 🔴 Struktura: tačno 4 separatora → 5 polja. Greška PRIKAZUJE očitani sadržaj
+  // (dijagnostika iz pogona: pogrešan barkod sa papira — npr. broj crteža, presečen
+  // sken, pogrešan raspored tastature skenera...).
   const separatorCount = (raw.match(/:/g) ?? []).length;
-  if (separatorCount !== 4)
+  if (separatorCount !== 4) {
+    const shown = raw.length > 48 ? `${raw.slice(0, 48)}…` : raw;
     throw new BadRequestException(
-      `Barkod mora imati tačno 4 separatora ':' (5 polja), a ima ${separatorCount}.`,
+      `Barkod mora imati tačno 4 separatora ':' (5 polja), a ima ${separatorCount}. Očitano: „${shown}" — skenirajte barkod NALOGA (RNZ) ili OPERACIJE (S), ne npr. barkod crteža.`,
     );
+  }
   const parts = raw.split(":");
 
   const marker = parts[0];
@@ -149,7 +155,9 @@ export function parseBarcode(input: string): DecodedBarcode {
 /** Nijedno polje barkoda ne sme sadržati separator `:`. */
 function assertNoSeparator(value: string, name: string): void {
   if (value.includes(":"))
-    throw new Error(`Barkod polje '${name}' ne sme sadržati ':' (dobijeno: '${value}').`);
+    throw new Error(
+      `Barkod polje '${name}' ne sme sadržati ':' (dobijeno: '${value}').`,
+    );
 }
 
 /**
@@ -164,9 +172,13 @@ export function formatOrderBarcode(fields: {
 }): string {
   const { projectId, identNumber, variant, revision } = fields;
   if (!Number.isInteger(projectId) || projectId <= 0)
-    throw new Error(`formatOrderBarcode: projectId mora biti pozitivan ceo broj (dobijeno: ${projectId}).`);
+    throw new Error(
+      `formatOrderBarcode: projectId mora biti pozitivan ceo broj (dobijeno: ${projectId}).`,
+    );
   if (!Number.isInteger(variant) || variant < 0)
-    throw new Error(`formatOrderBarcode: variant mora biti nenegativan ceo broj (dobijeno: ${variant}).`);
+    throw new Error(
+      `formatOrderBarcode: variant mora biti nenegativan ceo broj (dobijeno: ${variant}).`,
+    );
   const ident = String(identNumber ?? "").trim();
   if (!ident) throw new Error("formatOrderBarcode: identNumber je obavezan.");
   const rev = String(revision ?? "").trim();
@@ -189,9 +201,14 @@ export function formatOperationBarcode(fields: {
 }): string {
   const { operationNumber, workCenterCode, revision, identMark = "0" } = fields;
   if (!Number.isInteger(operationNumber))
-    throw new Error(`formatOperationBarcode: operationNumber mora biti ceo broj (dobijeno: ${operationNumber}).`);
+    throw new Error(
+      `formatOperationBarcode: operationNumber mora biti ceo broj (dobijeno: ${operationNumber}).`,
+    );
   const rc = String(workCenterCode ?? "").trim();
-  if (!rc) throw new Error("formatOperationBarcode: workCenterCode (RJgrupaRC) je obavezan.");
+  if (!rc)
+    throw new Error(
+      "formatOperationBarcode: workCenterCode (RJgrupaRC) je obavezan.",
+    );
   const mark = String(identMark ?? "0").trim() || "0";
   const rev = String(revision ?? "").trim();
   if (!rev) throw new Error("formatOperationBarcode: revision je obavezna.");

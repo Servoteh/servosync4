@@ -93,6 +93,27 @@ export interface CardQuery {
   variant?: string;
 }
 
+/**
+ * Akumulator agregata po operaciji u kartici TP — ključ (operationNumber,
+ * workCenterCode). Legacy semantika zbira: `Sum(Komada) GROUP BY (trojka,
+ * Operacija, RJgrupaRC)` — tTehPostupak_NapravljenoKomada.sql / RNPregledPostupci.sql.
+ */
+interface CardOperationAcc {
+  operationNumber: number;
+  workCenterCode: string;
+  /** Broj kucanja (redova) grupe — KOM=0 sesije ulaze u broj, ne u komade. */
+  entryCount: number;
+  /** Σ pieceCount: `total` = SVI redovi; good/rework/scrap po kvalitetu 0/1/2. */
+  pieces: { total: number; good: number; rework: number; scrap: number };
+  /** Bar jedan red grupe je zatvoren (isProcessFinished). */
+  isFinished: boolean;
+  firstEnteredAt: Date;
+  lastFinishedAt: Date | null;
+  /** Σ elapsed (finishedAt−enteredAt) po redovima koji imaju oba vremena. */
+  elapsedSeconds: number;
+  hasElapsed: boolean;
+}
+
 export interface CriticalQuery {
   page?: string;
   pageSize?: string;
@@ -320,9 +341,15 @@ export class TechProcessesService {
   // ---------------------------------------------------------------- CARD (Kartica TP)
 
   /**
-   * „Kartica TP": svi redovi (operacije) jednog postupka + API-side sume.
+   * „Kartica TP": svi redovi (kucanja) jednog postupka + API-side sume.
    * Postupak je identifikovan trojkom (projectId, identNumber, variant).
+   * Red = jedno kucanje (legacy tTehPostupak); operacija = grupa redova po
+   * (operationNumber, workCenterCode) — agregati u `data.operations`.
    * Sume (komadi po kvalitetu 0/1/2, ukupno vreme) računa API — ne UI (spec §3 pravilo 6).
+   *
+   * Header brojevi: `operationCount` = DISTINCT (operationNumber, workCenterCode)
+   * parovi, `finishedCount` = parovi sa bar jednim zatvorenim redom,
+   * `summary.entryCount` = ukupan broj redova (kucanja).
    */
   async card(query: CardQuery) {
     const projectId = Number.parseInt(query.projectId ?? "", 10);
@@ -352,12 +379,14 @@ export class TechProcessesService {
       this.resolveOperationsByCode(rows.map((r) => r.workCenterCode)),
     ]);
 
-    // Sume na API-ju (spec §3 pravilo 6: SUM na DB/API, ne u UI).
+    // Sume na API-ju (spec §3 pravilo 6: SUM na DB/API, ne u UI) + agregat po
+    // operaciji (OP, RC) u istoj petlji — redovi su već sortirani, pa Map čuva
+    // redosled pojavljivanja. Storno (negativan pieceCount) se prirodno netuje.
     const piecesByQuality = { good: 0, rework: 0, scrap: 0 };
     let totalPieces = 0;
-    let finishedCount = 0;
     let totalElapsedSeconds = 0;
     let hasElapsed = false;
+    const opGroups = new Map<string, CardOperationAcc>();
     for (const r of rows) {
       const pieces = r.pieceCount;
       totalPieces += pieces;
@@ -366,30 +395,81 @@ export class TechProcessesService {
         piecesByQuality.rework += pieces;
       else if (r.qualityTypeId === PART_QUALITY.SCRAP)
         piecesByQuality.scrap += pieces;
-      if (r.isProcessFinished) finishedCount += 1;
-      if (r.finishedAt) {
-        totalElapsedSeconds += Math.max(
-          0,
-          (r.finishedAt.getTime() - r.enteredAt.getTime()) / 1000,
-        );
+      const elapsedSeconds = r.finishedAt
+        ? Math.max(0, (r.finishedAt.getTime() - r.enteredAt.getTime()) / 1000)
+        : null;
+      if (elapsedSeconds !== null) {
+        totalElapsedSeconds += elapsedSeconds;
         hasElapsed = true;
       }
+
+      const key = `${r.operationNumber}|${r.workCenterCode}`;
+      let g = opGroups.get(key);
+      if (!g) {
+        g = {
+          operationNumber: r.operationNumber,
+          workCenterCode: r.workCenterCode,
+          entryCount: 0,
+          pieces: { total: 0, good: 0, rework: 0, scrap: 0 },
+          isFinished: false,
+          firstEnteredAt: r.enteredAt,
+          lastFinishedAt: null,
+          elapsedSeconds: 0,
+          hasElapsed: false,
+        };
+        opGroups.set(key, g);
+      }
+      g.entryCount += 1;
+      g.pieces.total += pieces;
+      if (r.qualityTypeId === PART_QUALITY.GOOD) g.pieces.good += pieces;
+      else if (r.qualityTypeId === PART_QUALITY.REWORK)
+        g.pieces.rework += pieces;
+      else if (r.qualityTypeId === PART_QUALITY.SCRAP) g.pieces.scrap += pieces;
+      if (r.isProcessFinished === true) g.isFinished = true;
+      if (r.enteredAt < g.firstEnteredAt) g.firstEnteredAt = r.enteredAt;
+      if (
+        r.finishedAt &&
+        (!g.lastFinishedAt || r.finishedAt > g.lastFinishedAt)
+      )
+        g.lastFinishedAt = r.finishedAt;
+      if (elapsedSeconds !== null) {
+        g.elapsedSeconds += elapsedSeconds;
+        g.hasElapsed = true;
+      }
     }
+
+    const operations = [...opGroups.values()].map((g) => ({
+      operationNumber: g.operationNumber,
+      workCenterCode: g.workCenterCode,
+      operation: ops.get(g.workCenterCode) ?? null,
+      entryCount: g.entryCount,
+      pieces: g.pieces,
+      isFinished: g.isFinished,
+      firstEnteredAt: g.firstEnteredAt,
+      lastFinishedAt: g.lastFinishedAt,
+      // Izvedeno (kao summary): null dok nijedan red grupe nije zatvoren.
+      elapsedMinutes: g.hasElapsed ? Math.round(g.elapsedSeconds / 60) : null,
+    }));
 
     const data = {
       projectId,
       identNumber,
       variant,
-      operationCount: rows.length,
-      finishedCount,
+      // DISTINCT (operationNumber, workCenterCode) parovi — ne broj kucanja.
+      operationCount: operations.length,
+      // Parovi sa bar jednim zatvorenim redom — ne broj zatvorenih redova.
+      finishedCount: operations.filter((o) => o.isFinished).length,
       summary: {
         totalPieces,
         piecesByQuality,
+        // Ukupan broj redova (kucanja) preko svih operacija.
+        entryCount: rows.length,
         // Izvedeno: tech_processes nema kolonu radnog vremena — elapsed entered→finished.
         totalElapsedMinutes: hasElapsed
           ? Math.round(totalElapsedSeconds / 60)
           : null,
       },
+      operations,
       rows: rows.map((r) => ({
         ...r,
         worker: workers.get(r.workerId) ?? null,
@@ -823,7 +903,7 @@ export class TechProcessesService {
     // Machine-access (spec §3.4, 🔴): identifikovani radnik radi samo na svojim mašinama.
     // Poštuje AUTHZ_ENFORCE (kao guard): enforce → 403; shadow → upozorenje + flag u odgovoru.
     let machineAccessWarning: string | null = null;
-    if (worker) {
+    if (worker && !this.isTestWorker(worker.id)) {
       const violation = await this.scope.workerMachineViolation(
         worker.id,
         workCenterCode,
@@ -1716,7 +1796,12 @@ export class TechProcessesService {
     // shadow → upozorenje (kontrola dozvoljena, flag u odgovoru). Login-put (rola s
     // `tehnologija.approve`) pokriva guard nad kontrolerom; ovde je karta-put (izvršilac).
     const controllerWarnings: string[] = [];
-    if (!(await this.isAuthorizedController(worker.workerTypeId))) {
+    const testWorker = this.isTestWorker(worker.id);
+    if (testWorker)
+      this.logger.warn(
+        `TEST radnik #${worker.id} (${worker.fullName ?? worker.username}) — kontrolor-auth i SoD provere preskočene (AUTHZ_TEST_WORKER_IDS, ODLUKE #32).`,
+      );
+    if (!testWorker && !(await this.isAuthorizedController(worker.workerTypeId))) {
       const msg = `Radnik „${worker.fullName ?? worker.username}" nije ovlašćen kontrolor (tip radnika bez kontrolorskih privilegija).`;
       if (this.scope.isEnforced()) throw new ForbiddenException(msg);
       this.logger.warn(
@@ -1725,12 +1810,13 @@ export class TechProcessesService {
       controllerWarnings.push(msg);
     }
     if (
-      await this.selfControlViolation(
+      !testWorker &&
+      (await this.selfControlViolation(
         projectId,
         identNumber,
         variant,
         worker.id,
-      )
+      ))
     ) {
       const msg = `Razdvajanje dužnosti: „${worker.fullName ?? worker.username}" je evidentirao rad na ovom delu — ne sme da radi završnu kontrolu nad sopstvenim radom.`;
       if (this.scope.isEnforced()) throw new ForbiddenException(msg);
@@ -2213,6 +2299,22 @@ export class TechProcessesService {
   }
 
   /**
+   * PRIVREMENI TEST RADNICI (ODLUKE #32, Nesa 2026-07-10): env `AUTHZ_TEST_WORKER_IDS`
+   * (CSV worker id-jeva, npr. "74" = Jovica Milošević). Test radnik preskače SERVISNE
+   * provere na kiosku (machine-access, kontrolor-auth, razdvajanje dužnosti) da bi mogao
+   * da testira SVE tokove. Guard/permisije se NE preskaču (nalog mora imati rolu).
+   * UKIDANJE: obriši env red + `docker compose up -d`. Ne koristiti za stvarne radnike.
+   */
+  private isTestWorker(workerId: number): boolean {
+    if (!workerId) return false;
+    return (process.env.AUTHZ_TEST_WORKER_IDS ?? "")
+      .split(",")
+      .map((s) => Number.parseInt(s.trim(), 10))
+      .filter(Number.isFinite)
+      .includes(workerId);
+  }
+
+  /**
    * Parsiraj + validiraj nalog/operacija barkodove (isti otisak: ista revizija u oba).
    * Deljeno između start/stop/openSession (isti ugovor kao `scan()`).
    */
@@ -2242,6 +2344,7 @@ export class TechProcessesService {
     workerId: number,
     workCenterCode: string,
   ): Promise<string | null> {
+    if (this.isTestWorker(workerId)) return null; // ODLUKE #32: test radnik
     const violation = await this.scope.workerMachineViolation(
       workerId,
       workCenterCode,
