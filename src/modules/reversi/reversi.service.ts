@@ -515,8 +515,17 @@ export class ReversiService {
     return this.callJsonFn(email, dto, "reversi.return", "rev_confirm_return");
   }
 
-  /** Izdavanje reznog alata na mašinu — `rev_issue_cutting_reversal(jsonb)`. */
-  cuttingIssue(email: string, dto: JsonPayloadTxDto) {
+  /**
+   * Izdavanje reznog alata na mašinu — `rev_issue_cutting_reversal(jsonb)`.
+   * Ako `source_location_id` nije prosleđen, koristi magacin ALAT-MAG-01 (odakle
+   * se rezni skida u mašinu — inače dekrement padne na lokaciju sa 0 → 23514).
+   */
+  async cuttingIssue(email: string, dto: JsonPayloadTxDto) {
+    if (!dto.payload.source_location_id) {
+      const rows = await this.sy15.db.$queryRaw<{ id: string }[]>`
+        SELECT id FROM loc_locations WHERE location_code = 'ALAT-MAG-01' LIMIT 1`;
+      if (rows[0]) dto.payload.source_location_id = rows[0].id;
+    }
     return this.callJsonFn(
       email,
       dto,
@@ -647,8 +656,10 @@ export class ReversiService {
     const meta = (e as { meta?: { code?: string; message?: string } }).meta;
     const message = meta?.message ?? (e as Error).message;
     if (meta?.code === "42501") throw new ForbiddenException(message);
-    if (meta?.code === "P0001") throw new UnprocessableEntityException(message);
+    if (meta?.code === "P0001" || meta?.code === "P0002") throw new UnprocessableEntityException(message);
     if (meta?.code === "23505") throw new ConflictException(message);
+    // 23514 = check constraint (npr. negativna zaliha reznog) — poslovna greška, ne 500.
+    if (meta?.code === "23514") throw new UnprocessableEntityException(message);
     throw e;
   }
 
