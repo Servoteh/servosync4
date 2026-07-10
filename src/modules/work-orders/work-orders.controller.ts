@@ -8,12 +8,14 @@ import {
   Patch,
   Post,
   Query,
+  Req,
   Res,
   StreamableFile,
   UseGuards,
 } from "@nestjs/common";
 import type { Response } from "express";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
+import type { AuthUser } from "../auth/jwt.strategy";
 import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
 import { PERMISSIONS } from "../../common/authz/permissions";
@@ -95,8 +97,8 @@ export class WorkOrdersController {
   @Post()
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermission(PERMISSIONS.RN_WRITE)
-  create(@Body() dto: CreateWorkOrderDto) {
-    return this.workOrders.create(dto);
+  create(@Body() dto: CreateWorkOrderDto, @Req() req: { user: AuthUser }) {
+    return this.workOrders.create(dto, req.user);
   }
 
   /** Izmena zaglavlja RN-a (samo poslata polja; identitet se ne menja). */
@@ -110,15 +112,16 @@ export class WorkOrdersController {
     return this.workOrders.updateHeader(id, dto);
   }
 
-  /** Dodaj operaciju TP na RN (RC + norme Tpz/Tk + opis + prioritet). */
+  /** Dodaj operaciju TP na RN (RC + norme Tpz/Tk + opis + prioritet). Autor stavke = JWT radnik ako DTO ne kaže drugačije. */
   @Post(":id/operations")
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermission(PERMISSIONS.RN_WRITE)
   addOperation(
     @Param("id", ParseIntPipe) id: number,
     @Body() dto: CreateWorkOrderOperationDto,
+    @Req() req: { user: AuthUser },
   ) {
-    return this.workOrders.addOperation(id, dto);
+    return this.workOrders.addOperation(id, dto, req.user);
   }
 
   /** Izmena operacije RN-a. */
@@ -159,16 +162,23 @@ export class WorkOrdersController {
   approve(
     @Param("id", ParseIntPipe) id: number,
     @Body() body: { approve?: boolean },
+    @Req() req: { user: AuthUser },
   ) {
-    return this.workOrders.approve(id, body?.approve !== false);
+    return this.workOrders.approve(id, body?.approve !== false, req.user);
   }
 
-  /** Lansiraj RN. Permisija `rn.launch`; drugi gate (Worker.definesLaunch) je V2 u servisu. */
+  /**
+   * Lansiraj RN. Permisija `rn.launch`; drugi gate (Worker.definesLaunch) je V2 u servisu.
+   * Ako je RN vezan za primopredaju, i ona ide na LANSIRAN (ista transakcija).
+   */
   @Post(":id/launch")
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermission(PERMISSIONS.RN_LAUNCH)
-  launch(@Param("id", ParseIntPipe) id: number) {
-    return this.workOrders.launch(id);
+  launch(
+    @Param("id", ParseIntPipe) id: number,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.workOrders.launch(id, req.user);
   }
 
   @Post(":id/lock")

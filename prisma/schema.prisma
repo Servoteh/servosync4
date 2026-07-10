@@ -572,6 +572,12 @@ model DrawingHandover {
   createdAt           DateTime?            @default(now()) @map("created_at") @db.Timestamp(6)
   updatedAt           DateTime?            @default(now()) @map("updated_at") @db.Timestamp(6)
   isLocked            Boolean?             @default(false) @map("is_locked")
+  /// APP-ONLY 2.0 column (no legacy source): technologist picked by the head of
+  /// technology when approving the handover — writes the tech process (TP).
+  /// Legacy PrimopredajaCrteza is empty and this table becomes ServoSync-owned at
+  /// cutover, so extending it is a deliberate, documented deviation from the
+  /// "synced tables are cache" rule. 0 = not assigned.
+  technologistId      Int                  @default(0) @map("technologist_id")
   drawing             Drawing              @relation(fields: [drawingId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_drawing_handovers_drawing")
   status              HandoverStatus       @relation(fields: [statusId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_drawing_handovers_status")
   handoverPdfs        DrawingHandoverPdf[]
@@ -1784,27 +1790,27 @@ model TmpFormControl {
 
 /// Application user (NestJS auth). Email + password_hash login.
 model User {
-  id              Int            @id(map: "pk_users") @default(autoincrement()) @map("id")
-  email           String         @unique(map: "uq_users_email") @map("email") @db.VarChar(255)
-  passwordHash    String         @map("password_hash") @db.VarChar(255)
-  fullName        String?        @map("full_name") @db.VarChar(150)
+  id                  Int                      @id(map: "pk_users") @default(autoincrement()) @map("id")
+  email               String                   @unique(map: "uq_users_email") @map("email") @db.VarChar(255)
+  passwordHash        String                   @map("password_hash") @db.VarChar(255)
+  fullName            String?                  @map("full_name") @db.VarChar(150)
   /// Primary role, lowercase snake_case (catalog: src/common/authz/roles.ts; AUTHZ_UNIFIED.md).
   /// Kept as String (not enum) so new roles can be introduced without a schema migration.
   /// Legacy values "ADMIN"/"USER" are lowercased by the authz_rls_ready migration.
-  role            String         @default("user") @map("role") @db.VarChar(30)
-  active          Boolean        @default(true) @map("active")
-  emailVerifiedAt DateTime?      @map("email_verified_at") @db.Timestamp(6)
-  lastLoginAt     DateTime?      @map("last_login_at") @db.Timestamp(6)
+  role                String                   @default("user") @map("role") @db.VarChar(30)
+  active              Boolean                  @default(true) @map("active")
+  emailVerifiedAt     DateTime?                @map("email_verified_at") @db.Timestamp(6)
+  lastLoginAt         DateTime?                @map("last_login_at") @db.Timestamp(6)
   /// Bridge JWT user -> production Worker (definesApproval/definesLaunch, machine_access).
   /// RLS-ready keystone (AUTHZ_UNIFIED §5).
-  workerId        Int?           @map("worker_id")
-  createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamp(6)
-  updatedAt       DateTime       @updatedAt @map("updated_at") @db.Timestamp(6)
-  worker          Worker?        @relation("UserWorker", fields: [workerId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_users_worker")
-  refreshTokens   RefreshToken[]
-  auditLogs       AuditLog[]
-  bbSyncLogs      BbSyncLog[]
-  userRoles       UserRole[]
+  workerId            Int?                     @map("worker_id")
+  createdAt           DateTime                 @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt           DateTime                 @updatedAt @map("updated_at") @db.Timestamp(6)
+  worker              Worker?                  @relation("UserWorker", fields: [workerId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_users_worker")
+  refreshTokens       RefreshToken[]
+  auditLogs           AuditLog[]
+  bbSyncLogs          BbSyncLog[]
+  userRoles           UserRole[]
   permissionOverrides UserPermissionOverride[]
 
   @@map("users")
@@ -1815,19 +1821,19 @@ model User {
 /// Role values: lowercase catalog in src/common/authz/roles.ts (no DB CHECK by design —
 /// BACKEND_RULES §2; assignment endpoint validates via isKnownRole(), guard is default-deny).
 model UserRole {
-  id        Int      @id(map: "pk_user_roles") @default(autoincrement()) @map("id")
-  userId    Int      @map("user_id")
-  role      String   @map("role") @db.VarChar(30)
+  id                      Int      @id(map: "pk_user_roles") @default(autoincrement()) @map("id")
+  userId                  Int      @map("user_id")
+  role                    String   @map("role") @db.VarChar(30)
   /// "global" | "project" | "department" | "module"
-  scopeType String   @default("global") @map("scope_type") @db.VarChar(20)
-  scopeId   String?  @map("scope_id") @db.VarChar(64)
+  scopeType               String   @default("global") @map("scope_type") @db.VarChar(20)
+  scopeId                 String?  @map("scope_id") @db.VarChar(64)
   /// 1.0 Kadrovska/prisustvo scope. Semantics: empty/NULL = full scope FOR `menadzment` ONLY
   /// (legacy 1.0 rows); `tim_lider` must have an explicit list (see app_manages_sub_department()).
-  managedSubDepartmentIds Int[] @map("managed_sub_department_ids")
-  isActive  Boolean  @default(true) @map("is_active")
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamp(6)
-  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamp(6)
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_user_roles_user")
+  managedSubDepartmentIds Int[]    @map("managed_sub_department_ids")
+  isActive                Boolean  @default(true) @map("is_active")
+  createdAt               DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt               DateTime @updatedAt @map("updated_at") @db.Timestamp(6)
+  user                    User     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_user_roles_user")
 
   @@unique([userId, role, scopeType, scopeId], map: "uq_user_roles")
   @@index([userId], map: "idx_user_roles_user")

@@ -8,6 +8,8 @@ import { Prisma, WorkOrder } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { pageMeta, parsePagination } from "../../common/pagination";
 import { byId, uniqueIds } from "../../common/relations";
+import { alignIdSequence } from "../../common/db-sequences";
+import type { AuthUser } from "../auth/jwt.strategy";
 import {
   CreateWorkOrderDto,
   validateCreateWorkOrder,
@@ -295,7 +297,9 @@ export class WorkOrdersService {
       ];
     }
 
-    const where: Prisma.WorkOrderOperationWhereInput = { workOrder: { is: woFilter } };
+    const where: Prisma.WorkOrderOperationWhereInput = {
+      workOrder: { is: woFilter },
+    };
     if (query.workCenterCode) where.workCenterCode = query.workCenterCode;
     if (query.onlyPrioritized === "1" || query.onlyPrioritized === "true") {
       where.priority = { lt: 255 };
@@ -368,7 +372,7 @@ export class WorkOrdersService {
 
   // ---------------------------------------------------------------- CREATE
 
-  async create(dto: CreateWorkOrderDto) {
+  async create(dto: CreateWorkOrderDto, actor?: AuthUser) {
     validateCreateWorkOrder(dto);
 
     const created = await this.prisma.$transaction(async (tx) => {
@@ -396,7 +400,9 @@ export class WorkOrdersService {
           revision: dto.revision?.trim() || "A",
           qualityTypeId: dto.qualityTypeId ?? 0,
           materialId: dto.materialId ?? 0,
-          workerId: dto.workerId ?? 0,
+          // workerId = TEHNOLOG autor TP-a; kod ručnog unosa to je po pravilu
+          // sam prijavljeni tehnolog (JWT worker) ako DTO ne kaže drugačije.
+          workerId: dto.workerId ?? actor?.workerId ?? 0,
           externalProjectName: dto.externalProjectName?.trim() || null,
           productionDeadline: dto.productionDeadline
             ? new Date(dto.productionDeadline)
@@ -419,7 +425,9 @@ export class WorkOrdersService {
   /** Zaključan RN se ne sme menjati (legacy `AllowEdits/Deletions=false` kad `Zakljucano`). */
   private assertEditable(wo: { isLocked: boolean | null }): void {
     if (wo.isLocked)
-      throw new UnprocessableEntityException("Zaključan RN se ne može menjati.");
+      throw new UnprocessableEntityException(
+        "Zaključan RN se ne može menjati.",
+      );
   }
 
   /** Izmena zaglavlja RN-a (samo poslata polja). Identitet se ne menja. */
@@ -464,14 +472,22 @@ export class WorkOrdersService {
    * Dodaj operaciju na RN (`Form_UnosStavkiRN` „Nova stavka"). `workCenterCode` mora
    * postojati u šifarniku `operations`. `operationNumber` izostavljen → `MAX+10`.
    * `priority` izostavljen → iz `operations.usesPriority` (100/255).
+   * `workerId` = autor stavke: DTO ako je poslat, inače radnik iz JWT-a (isti
+   * obrazac kao `create()` zaglavlja) — UI ga ne šalje, pa bi bez fallback-a
+   * sve nove operacije imale workerId=0.
    */
-  async addOperation(workOrderId: number, dto: CreateWorkOrderOperationDto) {
+  async addOperation(
+    workOrderId: number,
+    dto: CreateWorkOrderOperationDto,
+    actor?: AuthUser,
+  ) {
     validateCreateOperation(dto);
     const wo = await this.prisma.workOrder.findUnique({
       where: { id: workOrderId },
       select: { id: true, isLocked: true },
     });
-    if (!wo) throw new NotFoundException(`Radni nalog ${workOrderId} ne postoji`);
+    if (!wo)
+      throw new NotFoundException(`Radni nalog ${workOrderId} ne postoji`);
     this.assertEditable(wo);
 
     const code = dto.workCenterCode.trim();
@@ -506,7 +522,7 @@ export class WorkOrdersService {
           cycleTime: dto.cycleTime ?? 0,
           toolWeight: dto.toolWeight ?? 0,
           priority,
-          workerId: dto.workerId ?? 0,
+          workerId: dto.workerId ?? actor?.workerId ?? 0,
         },
       });
     });
@@ -524,7 +540,8 @@ export class WorkOrdersService {
       where: { id: workOrderId },
       select: { id: true, isLocked: true },
     });
-    if (!wo) throw new NotFoundException(`Radni nalog ${workOrderId} ne postoji`);
+    if (!wo)
+      throw new NotFoundException(`Radni nalog ${workOrderId} ne postoji`);
     this.assertEditable(wo);
 
     const existing = await this.prisma.workOrderOperation.findUnique({
@@ -559,7 +576,8 @@ export class WorkOrdersService {
           `Radni centar '${code}' ne postoji u šifarniku operacija.`,
         );
       data.workCenterCode = code;
-      if (dto.priority === undefined) data.priority = op.usesPriority ? 100 : 255;
+      if (dto.priority === undefined)
+        data.priority = op.usesPriority ? 100 : 255;
     }
 
     await this.prisma.workOrderOperation.update({
@@ -575,7 +593,8 @@ export class WorkOrdersService {
       where: { id: workOrderId },
       select: { id: true, isLocked: true },
     });
-    if (!wo) throw new NotFoundException(`Radni nalog ${workOrderId} ne postoji`);
+    if (!wo)
+      throw new NotFoundException(`Radni nalog ${workOrderId} ne postoji`);
     this.assertEditable(wo);
 
     const existing = await this.prisma.workOrderOperation.findUnique({
@@ -650,7 +669,9 @@ export class WorkOrdersService {
         where: { workOrderId: id },
       });
       await tx.workOrderComponent.deleteMany({ where: { workOrderId: id } });
-      await tx.workOrderItemComponent.deleteMany({ where: { workOrderId: id } });
+      await tx.workOrderItemComponent.deleteMany({
+        where: { workOrderId: id },
+      });
       await tx.workOrderApproval.deleteMany({ where: { workOrderId: id } });
       await tx.workOrderLaunch.deleteMany({ where: { workOrderId: id } });
       await tx.workOrder.delete({ where: { id } });
@@ -661,10 +682,11 @@ export class WorkOrdersService {
   // ---------------------------------------------------------------- WORKFLOW
 
   /**
-   * Odobri / odbij RN. TODO(auth): permisija `rn.approve` (Worker.definesApproval,
-   * workerType ∈ {Tehnolog, Inženjeri}) — aktivira se uz RBAC (V2).
+   * Odobri / odbij RN. Autor odobravanja = JWT-vezan radnik (`users.worker_id`).
+   * TODO(auth): drugi gate `Worker.definesApproval` (workerType ∈ {Tehnolog,
+   * Inženjeri}) — aktivira se uz RBAC (V2).
    */
-  async approve(id: number, approve: boolean) {
+  async approve(id: number, approve: boolean, actor?: AuthUser) {
     const wo = await this.prisma.workOrder.findUnique({
       where: { id },
       select: { id: true, isLocked: true },
@@ -684,6 +706,7 @@ export class WorkOrdersService {
         );
     }
 
+    const actorWorkerId = actor?.workerId ?? 0;
     await this.prisma.$transaction(async (tx) => {
       await tx.workOrder.update({
         where: { id },
@@ -696,8 +719,9 @@ export class WorkOrdersService {
           workOrderId: id,
           isApproved: approve,
           enteredAt: new Date(),
-          // TODO(auth): createdByWorkerId/Signature iz User↔Worker veze (RBAC §4).
-          updatedByWorkerId: 0,
+          // TODO(auth): *Signature polja iz User↔Worker veze (RBAC §4).
+          createdByWorkerId: actorWorkerId,
+          updatedByWorkerId: actorWorkerId,
         },
       });
     });
@@ -705,13 +729,22 @@ export class WorkOrdersService {
   }
 
   /**
-   * Lansiraj RN. Preduslov: mora biti SAGLASAN (nikad obrnuto).
-   * TODO(auth): permisija `rn.launch` (rola ∈ {ŠEF,TEHNOLOG,ADMIN} + Worker.definesLaunch).
+   * Lansiraj RN. Preduslov: mora biti SAGLASAN (nikad obrnuto). Ako je RN
+   * nastao iz primopredaje (`drawing_handover_id > 0`) i "original" je za nju
+   * (najmanji id — klonovi dele FK), u ISTOJ transakciji se i primopredaja
+   * podiže na LANSIRAN + zaključava — lansiranje sa RN strane sklanja stavku
+   * iz taba "Odobrene" (prepare-work-order tok, P1).
+   * TODO(auth): drugi gate `Worker.definesLaunch` — V2.
    */
-  async launch(id: number) {
+  async launch(id: number, actor?: AuthUser) {
     const wo = await this.prisma.workOrder.findUnique({
       where: { id },
-      select: { id: true, isLocked: true, handoverStatusId: true },
+      select: {
+        id: true,
+        isLocked: true,
+        handoverStatusId: true,
+        drawingHandoverId: true,
+      },
     });
     if (!wo) throw new NotFoundException(`Radni nalog ${id} ne postoji`);
     if (wo.isLocked)
@@ -723,19 +756,59 @@ export class WorkOrdersService {
         "RN mora biti SAGLASAN pre lansiranja.",
       );
 
+    const actorWorkerId = actor?.workerId ?? null;
     await this.prisma.$transaction(async (tx) => {
-      await tx.workOrder.update({
-        where: { id },
+      // Uslovni update: dva konkurentna launch-a (dva taba / paralelni
+      // handover-level launch) — samo prvi prolazi, drugi dobija 409 umesto
+      // duplog launch reda.
+      const updated = await tx.workOrder.updateMany({
+        where: { id, handoverStatusId: WO_STATUS.APPROVED, isLocked: false },
         data: { handoverStatusId: WO_STATUS.LAUNCHED },
       });
+      if (updated.count === 0)
+        throw new ConflictException(
+          "RN je u međuvremenu promenjen (lansiran/zaključan) — osvežite pregled.",
+        );
       await tx.workOrderLaunch.create({
         data: {
           workOrderId: id,
           isLaunched: true,
           enteredAt: new Date(),
-          updatedByWorkerId: 0,
+          createdByWorkerId: actorWorkerId ?? 0,
+          updatedByWorkerId: actorWorkerId ?? 0,
         },
       });
+      if (wo.drawingHandoverId > 0) {
+        // Klonovi (rework/bulk-clone) dele isti drawing_handover_id — na
+        // primopredaju propagira SAMO "original" (najmanji id, isti kriterijum
+        // kao findHandoverWorkOrder u handovers servisu); lansiranje škart/
+        // dorada child-a ne sme da prepiše launchedAt/By primopredaje.
+        const original = await tx.workOrder.findFirst({
+          where: { drawingHandoverId: wo.drawingHandoverId },
+          orderBy: { id: "asc" },
+          select: { id: true },
+        });
+        if (original?.id === id) {
+          // updateMany (ne update): FK nema DB constraint, orphan referenca ne
+          // sme da obori lansiranje RN-a (isti razlog kao batch-resolve čitanja);
+          // guard `statusId != LANSIRAN` čuva postojeći launch audit.
+          const now = new Date();
+          await tx.drawingHandover.updateMany({
+            where: {
+              id: wo.drawingHandoverId,
+              statusId: { not: WO_STATUS.LAUNCHED },
+            },
+            data: {
+              statusId: WO_STATUS.LAUNCHED,
+              statusChangedAt: now,
+              statusChangedById: actorWorkerId,
+              launchedAt: now,
+              launchedById: actorWorkerId,
+              isLocked: true,
+            },
+          });
+        }
+      }
     });
     return this.findOne(id);
   }
@@ -826,7 +899,10 @@ export class WorkOrdersService {
       const letter = dto.qualityTypeId === 1 ? "D" : "S";
       const prefix = `${source.identNumber}-${letter}`;
       const siblings = await tx.workOrder.findMany({
-        where: { projectId: source.projectId, identNumber: { startsWith: prefix } },
+        where: {
+          projectId: source.projectId,
+          identNumber: { startsWith: prefix },
+        },
         select: { identNumber: true },
       });
       const used = new Set<number>();
@@ -1154,16 +1230,13 @@ export class WorkOrdersService {
   }
 
   /**
-   * Poravnaj identity sekvencu tabele sa MAX(id). Koristi **3-arg `setval`** sa
-   * `is_called = EXISTS(rows)` → na PRAZNOJ tabeli postavlja `is_called=false` (sledeći
-   * `nextval` = 1) umesto `setval(seq,0)` koji puca (`22003`, min sekvence je 1).
-   * `table` je literal iz koda (nije korisnički unos). Sync uvozi eksplicitne legacy
-   * id-jeve → autoincrement inače kolidira sa uvezenim redovima.
+   * Poravnaj identity sekvencu tabele sa MAX(id) — delegira na zajednički
+   * `alignIdSequence` (src/common/db-sequences.ts, 3-arg `setval` bezbedan i
+   * na praznoj tabeli). Sync uvozi eksplicitne legacy id-jeve → autoincrement
+   * inače kolidira sa uvezenim redovima.
    */
   private async alignSeq(tx: Prisma.TransactionClient, table: string) {
-    await tx.$executeRawUnsafe(
-      `SELECT setval(pg_get_serial_sequence('${table}','id'), COALESCE((SELECT MAX(id) FROM ${table}),1), EXISTS(SELECT 1 FROM ${table}))`,
-    );
+    await alignIdSequence(tx, table);
   }
 
   /** Poravnaj `work_orders` sekvencu (vidi `alignSeq`). */

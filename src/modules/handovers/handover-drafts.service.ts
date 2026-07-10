@@ -12,6 +12,7 @@ import {
   SAFE_WORKER_SELECT,
 } from "../../common/pagination";
 import { byId, uniqueIds } from "../../common/relations";
+import { alignIdSequence } from "../../common/db-sequences";
 import {
   CreateHandoverDraftDto,
   validateCreateHandoverDraft,
@@ -288,13 +289,9 @@ export class HandoverDraftsService {
     const created = await this.prisma.$transaction(async (tx) => {
       // App-owned tabele (nema sync/legacy import ovog talasa) — setval je
       // jeftina odbrana ako se ikad uveze istorijski batch sa eksplicitnim id.
-      await tx.$executeRawUnsafe(
-        `SELECT setval(pg_get_serial_sequence('handover_drafts','id'), (SELECT COALESCE(MAX(id),0) FROM handover_drafts))`,
-      );
+      await alignIdSequence(tx, "handover_drafts");
       if (items.length) {
-        await tx.$executeRawUnsafe(
-          `SELECT setval(pg_get_serial_sequence('handover_draft_items','id'), (SELECT COALESCE(MAX(id),0) FROM handover_draft_items))`,
-        );
+        await alignIdSequence(tx, "handover_draft_items");
       }
 
       const draftNumber = await this.numbering.next(tx);
@@ -491,9 +488,7 @@ export class HandoverDraftsService {
       // `drawing_handovers.id` jeste autoincrement, ali sync/import mogu da
       // ubace eksplicitne id-jeve — poravnaj sekvencu pre insert-a (isti obrazac
       // kao create()/launch()).
-      await tx.$executeRawUnsafe(
-        `SELECT setval(pg_get_serial_sequence('drawing_handovers','id'), (SELECT COALESCE(MAX(id),0) FROM drawing_handovers))`,
-      );
+      await alignIdSequence(tx, "drawing_handovers");
 
       const now = new Date();
       const handoverWorkerId = existing.designerId ?? 0;

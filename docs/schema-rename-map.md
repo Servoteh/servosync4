@@ -674,6 +674,12 @@ Za svaku tabelu navedene su kolone u istom redosledu kao u staroj `schema.prisma
 | `PrviUnos` | `created_at` | `createdAt` |
 | `PoslednjaIzmena` | `updated_at` | `updatedAt` |
 | `Zakljucano` | `is_locked` | `isLocked` |
+| — *(nema legacy izvora)* | `technologist_id` | `technologistId` |
+
+> **App-only kolona 2.0** (migracija `20260710090000_technologist_and_status_seeds`): `technologist_id`
+> = tehnolog koga šef tehnologije dodeljuje pri odobravanju primopredaje (piše TP). Legacy
+> `PrimopredajaCrteza` je prazna i tabela na cutover-u prelazi u ServoSync vlasništvo, pa je
+> odstupanje od pravila „sync tabele su cache" svesno i dokumentovano. `0` = nije dodeljen.
 
 ### `Prodavci` → `salespeople`
 
