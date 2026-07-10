@@ -414,6 +414,36 @@ export function fetchSignaturePdfUrl(docId: string): Promise<{ data: { url: stri
   return apiFetch(`/v1/reversi/documents/${docId}/signature-pdf`);
 }
 
+export interface BulkToolRow {
+  oznaka: string;
+  naziv: string;
+  serijskiBroj?: string;
+  isQuantity?: boolean;
+  isConsumable?: boolean;
+  totalQty?: number;
+  napomena?: string;
+}
+
+export interface BulkImportResult {
+  created: number;
+  skipped: number;
+  total: number;
+  errors: { oznaka: string; error: string }[];
+}
+
+/** Bulk-import inventara ručnog alata (redovi parsirani iz XLSX/CSV na klijentu). */
+export function useBulkImportTools() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (rows: BulkToolRow[]) =>
+      apiFetch<{ data: BulkImportResult }>('/v1/reversi/bulk-import/tools', {
+        method: 'POST',
+        body: JSON.stringify({ rows }),
+      }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['reversi'] }),
+  });
+}
+
 /** Red view-a `v_rev_machines` (nad maint_machines — Reversi kontekst mašina). */
 export interface MachineRow {
   machine_code: string;

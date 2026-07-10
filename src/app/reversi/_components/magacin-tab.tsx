@@ -7,11 +7,18 @@ import { SearchBox } from '@/components/ui-kit/search-box';
 import { formatNumber } from '@/lib/format';
 import { useWarehouse, type WarehouseRow } from '@/api/reversi';
 import { ToolDetailDialog } from './tool-detail-dialog';
+import { BulkImportDialog } from './bulk-import-dialog';
+import { Button } from '@/components/ui-kit/button';
+import { useAuth } from '@/lib/auth-context';
+import { PERMISSIONS } from '@/lib/permissions';
 
 /** Objedinjeno stanje magacina (v_rev_warehouse_unified — paritet 1.0 magacinTab). */
 export function MagacinTab() {
+  const { can } = useAuth();
+  const manage = can(PERMISSIONS.REVERSI_MANAGE);
   const [q, setQ] = useState('');
   const [toolId, setToolId] = useState<string | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
   const warehouse = useWarehouse();
 
   const rows = useMemo(() => {
@@ -51,7 +58,16 @@ export function MagacinTab() {
 
   return (
     <div className="space-y-3">
-      <SearchBox value={q} onChange={setQ} placeholder="Oznaka, naziv, barkod, grupa…" />
+      <div className="flex items-center gap-2">
+        <div className="flex-1">
+          <SearchBox value={q} onChange={setQ} placeholder="Oznaka, naziv, barkod, grupa…" />
+        </div>
+        {manage && (
+          <Button variant="secondary" onClick={() => setImportOpen(true)}>
+            Uvoz alata
+          </Button>
+        )}
+      </div>
       <DataTable
         columns={cols}
         rows={rows}
@@ -65,6 +81,7 @@ export function MagacinTab() {
         empty={<EmptyState title="Magacin je prazan" hint="Nema stavki koje odgovaraju pretrazi." />}
       />
       <ToolDetailDialog toolId={toolId} onClose={() => setToolId(null)} />
+      {manage && <BulkImportDialog open={importOpen} onClose={() => setImportOpen(false)} />}
     </div>
   );
 }
