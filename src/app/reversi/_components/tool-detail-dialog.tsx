@@ -12,6 +12,7 @@ import {
   newClientEventId,
   useReversiTool,
   useRestoreTool,
+  useStockDelta,
   useWriteOffTool,
 } from '@/api/reversi';
 
@@ -35,13 +36,32 @@ export function ToolDetailDialog({ toolId, onClose }: { toolId: string | null; o
   const detail = useReversiTool(toolId);
   const writeOff = useWriteOffTool();
   const restore = useRestoreTool();
+  const stockDelta = useStockDelta();
 
   const [woOpen, setWoOpen] = useState(false);
   const [razlog, setRazlog] = useState('');
   const [woStatus, setWoStatus] = useState<'scrapped' | 'lost'>('scrapped');
+  const [recQty, setRecQty] = useState(1);
   const [error, setError] = useState<string | null>(null);
 
   const t = detail.data?.data;
+
+  async function doReceive() {
+    if (!t || recQty <= 0) return;
+    setError(null);
+    try {
+      await stockDelta.mutateAsync({
+        clientEventId: newClientEventId(),
+        toolId: t.id,
+        delta: recQty,
+        reason: 'RECEIPT',
+        note: 'Prijem u magacin',
+      });
+      setRecQty(1);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Prijem nije uspeo.');
+    }
+  }
 
   async function doWriteOff() {
     if (!t) return;
@@ -110,6 +130,23 @@ export function ToolDetailDialog({ toolId, onClose }: { toolId: string | null; o
               </>
             )}
           </div>
+
+          {manage && t.status === 'active' && (t.isQuantity || t.isConsumable) && (
+            <div className="flex items-end gap-2 rounded-control border border-line p-3">
+              <FormField label="Prijem u magacin (+ količina)">
+                <input
+                  className={`${INPUT} w-28`}
+                  type="number"
+                  min={1}
+                  value={recQty}
+                  onChange={(e) => setRecQty(Math.max(1, Number(e.target.value) || 1))}
+                />
+              </FormField>
+              <Button variant="secondary" loading={stockDelta.isPending} onClick={() => void doReceive()}>
+                Primi
+              </Button>
+            </div>
+          )}
 
           {woOpen && (
             <div className="space-y-2 rounded-control border border-status-danger/40 bg-status-danger-bg/40 p-3">

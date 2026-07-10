@@ -17,6 +17,7 @@ import { useAuth } from '@/lib/auth-context';
 import { PERMISSIONS } from '@/lib/permissions';
 import { IssueDialog } from './issue-dialog';
 import { ReturnDialog } from './return-dialog';
+import { SignaturePdfActions } from './signature-pdf-actions';
 
 const STATUS_FILTERS = [
   { key: '', label: 'Svi' },
@@ -117,16 +118,19 @@ export function DokumentiTab() {
               {detail.data?.data.napomena && (
                 <div className="pt-1 text-xs text-ink-secondary">Napomena: {detail.data.data.napomena}</div>
               )}
-              {manage &&
-                detail.data &&
-                detail.data.data.status !== 'RETURNED' &&
-                detail.data.data.lines.some((l) => l.lineStatus === 'ISSUED') && (
-                  <div className="pt-2">
-                    <Button variant="secondary" onClick={() => setReturnDocId(detail.data.data.id)}>
-                      Vrati…
-                    </Button>
-                  </div>
-                )}
+              <div className="flex flex-wrap items-center gap-2">
+                {manage &&
+                  detail.data &&
+                  detail.data.data.status !== 'RETURNED' &&
+                  detail.data.data.lines.some((l) => l.lineStatus === 'ISSUED') && (
+                    <div className="pt-2">
+                      <Button variant="secondary" onClick={() => setReturnDocId(detail.data.data.id)}>
+                        Vrati…
+                      </Button>
+                    </div>
+                  )}
+              </div>
+              {detail.data && <SignaturePdfActions doc={detail.data.data} manage={manage} />}
             </div>
           )
         }

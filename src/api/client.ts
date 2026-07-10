@@ -104,3 +104,24 @@ export async function apiBlob(path: string, options: RequestInit = {}): Promise<
   }
   return res.blob();
 }
+
+/** Kao `apiFetch`, ali šalje `FormData` (multipart — bez Content-Type, browser ga sam postavlja). */
+export async function apiPostForm<T>(path: string, form: FormData): Promise<T> {
+  const token = getToken();
+  const res = await fetch(resolveApiBase() + path, {
+    method: 'POST',
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: form,
+  });
+  if (!res.ok) {
+    let message = 'Greška u komunikaciji sa serverom';
+    try {
+      const body = await res.json();
+      if (body?.message) message = Array.isArray(body.message) ? body.message.join(', ') : body.message;
+    } catch {
+      /* non-JSON error */
+    }
+    throw new ApiError(res.status, message);
+  }
+  return res.json() as Promise<T>;
+}

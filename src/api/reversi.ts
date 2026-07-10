@@ -1,7 +1,7 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiFetch } from './client';
+import { apiFetch, apiPostForm } from './client';
 
 /** Tip razrešenog barkoda (BE /reversi/lookups/barcode — paritet 1.0 resolveReversiBarcode). */
 export type BarcodeKind = 'HAND' | 'CUTTING' | 'EMPLOYEE' | 'UNKNOWN';
@@ -392,6 +392,27 @@ export const useStockDelta = () =>
     (v) => `/v1/reversi/tools/${v.toolId}/stock-delta`,
     ({ clientEventId, delta, reason, note }) => ({ clientEventId, delta, reason, note }),
   );
+
+/** Upload potpisnice (multipart) na BE (bucket reversal-pdf). */
+export function useUploadSignaturePdf() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ docId, blob }: { docId: string; blob: Blob }) => {
+      const fd = new FormData();
+      fd.append('file', blob, `${docId}.pdf`);
+      return apiPostForm<{ data: { path: string } }>(
+        `/v1/reversi/documents/${docId}/signature-pdf`,
+        fd,
+      );
+    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['reversi', 'documents'] }),
+  });
+}
+
+/** Potpisan URL za preuzimanje potpisnice (GET). */
+export function fetchSignaturePdfUrl(docId: string): Promise<{ data: { url: string; expiresIn: number } }> {
+  return apiFetch(`/v1/reversi/documents/${docId}/signature-pdf`);
+}
 
 /** Red view-a `v_rev_machines` (nad maint_machines — Reversi kontekst mašina). */
 export interface MachineRow {
