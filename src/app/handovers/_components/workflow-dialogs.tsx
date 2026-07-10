@@ -5,7 +5,7 @@
 // Svaki dijalog sam drži svoju mutaciju; greška iz backenda se prikazuje unutra
 // (dijalog ostaje otvoren dok akcija ne uspe).
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
 import { Printer } from 'lucide-react';
@@ -23,10 +23,24 @@ import { Dialog } from '@/components/ui-kit/dialog';
 import { Button } from '@/components/ui-kit/button';
 import { FormField, Input } from '@/components/ui-kit/form-field';
 import { ComboBox } from '@/components/ui-kit/combo-box';
-import { ErrorText, Textarea } from './common';
+import { ErrorText, LEGACY_TOOLTIP, Textarea } from './common';
 
 const cancelBtn =
   'rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40';
+
+/**
+ * Tooltip omotač za disabled potvrdno dugme legacy primopredaje — kit Button
+ * ima `disabled:pointer-events-none`, pa `title` mora na roditeljski span.
+ * Poslednja odbrana za stariji/otvoren dijalog: trigger dugmad su već disabled,
+ * a backend 409 poruka je krajnja istina (prikaz kroz ErrorText/ApiError tok).
+ */
+function LegacyGuardSpan({ legacy, children }: { legacy: boolean; children: ReactNode }) {
+  return (
+    <span title={legacy ? LEGACY_TOOLTIP : undefined} className="inline-flex">
+      {children}
+    </span>
+  );
+}
 
 /**
  * Odobravanje primopredaje (U OBRADI → SAGLASAN) — Miljan (šef tehnologije)
@@ -75,9 +89,15 @@ export function ApproveHandoverDialog({
           <button onClick={onClose} className={cancelBtn}>
             Otkaži
           </button>
-          <Button onClick={submit} loading={approve.isPending} disabled={!technologist}>
-            Odobri
-          </Button>
+          <LegacyGuardSpan legacy={handover.isLegacy}>
+            <Button
+              onClick={submit}
+              loading={approve.isPending}
+              disabled={!technologist || handover.isLegacy}
+            >
+              Odobri
+            </Button>
+          </LegacyGuardSpan>
         </>
       }
     >
@@ -205,9 +225,11 @@ export function LaunchHandoverDialog({
             <button onClick={close} disabled={launch.isPending} className={cancelBtn}>
               Otkaži
             </button>
-            <Button onClick={submit} loading={launch.isPending}>
-              Lansiraj RN
-            </Button>
+            <LegacyGuardSpan legacy={handover.isLegacy}>
+              <Button onClick={submit} loading={launch.isPending} disabled={handover.isLegacy}>
+                Lansiraj RN
+              </Button>
+            </LegacyGuardSpan>
           </>
         )
       }
@@ -296,9 +318,15 @@ export function ReturnToPendingDialog({
           <button onClick={onClose} className={cancelBtn}>
             Otkaži
           </button>
-          <Button onClick={submit} loading={returnToPending.isPending}>
-            Vrati na čekanje
-          </Button>
+          <LegacyGuardSpan legacy={handover.isLegacy}>
+            <Button
+              onClick={submit}
+              loading={returnToPending.isPending}
+              disabled={handover.isLegacy}
+            >
+              Vrati na čekanje
+            </Button>
+          </LegacyGuardSpan>
         </>
       }
     >

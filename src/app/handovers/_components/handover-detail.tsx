@@ -15,7 +15,14 @@ import { FormField } from '@/components/ui-kit/form-field';
 import { Can } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
 import { formatDate, formatDateTime } from '@/lib/format';
-import { ErrorText, Field, Textarea, handoverStatusMeta } from './common';
+import {
+  ErrorText,
+  Field,
+  LEGACY_TOOLTIP,
+  LegacyBadge,
+  Textarea,
+  handoverStatusMeta,
+} from './common';
 import {
   ApproveHandoverDialog,
   LaunchHandoverDialog,
@@ -101,6 +108,12 @@ export function HandoverDetailPanel({ handover }: { handover: Handover }) {
 
   const s = handoverStatusMeta(handover.statusId);
   const locked = !!handover.isLocked;
+  // Legacy red (deriviran iz QBigTehn tRN-a): mutacije do cutover-a idu u
+  // QBigTehn — dugmad disabled sa tooltipom; backend 409 poruka je krajnja
+  // istina ako stariji tab ipak okine (prikaz kroz postojeći ApiError tok).
+  // Čitanje i štampa crteža rade normalno.
+  const legacy = handover.isLegacy;
+  const legacyTitle = legacy ? LEGACY_TOOLTIP : undefined;
   const drawing = handover.drawing;
   // Odbij/Lansiraj/Vrati greške se prikazuju unutar svog dijaloga — ovde samo
   // "Otkucaj TP" (nema dijalog, direktna mutacija).
@@ -111,6 +124,7 @@ export function HandoverDetailPanel({ handover }: { handover: Handover }) {
       <div className="flex flex-wrap items-center gap-2">
         <StatusBadge tone={s.tone} label={s.label} />
         {locked && <StatusBadge tone="warn" label="Zaključana" />}
+        {legacy && <LegacyBadge />}
         <span className="flex-1" />
         {/* Štampa crteža je read-only (endpoint = primopredaje.read, kao i sam
             prikaz) — dostupna u svakom statusu, bez permission gate-a. */}
@@ -126,14 +140,16 @@ export function HandoverDetailPanel({ handover }: { handover: Handover }) {
         {!locked && handover.statusId === HANDOVER_STATUS.PENDING && (
           <Can permission={PERMISSIONS.PRIMOPREDAJE_APPROVE}>
             <button
-              disabled={busy}
+              disabled={busy || legacy}
+              title={legacyTitle}
               onClick={() => setApproving(true)}
               className={`${actionBtn} bg-status-success text-white`}
             >
               Odobri
             </button>
             <button
-              disabled={busy}
+              disabled={busy || legacy}
+              title={legacyTitle}
               onClick={() => setRejecting(true)}
               className={`${actionBtn} border border-status-danger text-status-danger`}
             >
@@ -154,7 +170,8 @@ export function HandoverDetailPanel({ handover }: { handover: Handover }) {
             ) : (
               <Can permission={PERMISSIONS.RN_WRITE}>
                 <button
-                  disabled={busy}
+                  disabled={busy || legacy}
+                  title={legacyTitle}
                   onClick={() =>
                     prepare.mutate(handover.id, {
                       onSuccess: (res) => router.push(`/work-orders?open=${res.data.workOrderId}`),
@@ -168,14 +185,16 @@ export function HandoverDetailPanel({ handover }: { handover: Handover }) {
             )}
             <Can permission={PERMISSIONS.PRIMOPREDAJE_APPROVE}>
               <button
-                disabled={busy}
+                disabled={busy || legacy}
+                title={legacyTitle}
                 onClick={() => setLaunching(true)}
                 className={`${actionBtn} border border-accent text-accent`}
               >
                 Lansiraj
               </button>
               <button
-                disabled={busy}
+                disabled={busy || legacy}
+                title={legacyTitle}
                 onClick={() => setReturning(true)}
                 className={`${actionBtn} border border-line text-ink-secondary`}
               >

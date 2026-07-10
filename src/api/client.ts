@@ -82,6 +82,31 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
   return res.json() as Promise<T>;
 }
 
+/**
+ * Kao `apiFetch`, ali za multipart upload (`FormData`): `Content-Type` se NE
+ * postavlja ručno — browser sam upisuje `multipart/form-data; boundary=…`.
+ * Isti Authorization / ApiError tok kao `apiFetch`.
+ */
+export async function apiUpload<T>(path: string, form: FormData): Promise<T> {
+  const token = getToken();
+  const res = await fetch(resolveApiBase() + path, {
+    method: 'POST',
+    body: form,
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) {
+    let message = 'Greška u komunikaciji sa serverom';
+    try {
+      const body = await res.json();
+      if (body?.message) message = Array.isArray(body.message) ? body.message.join(', ') : body.message;
+    } catch {
+      /* non-JSON error */
+    }
+    throw new ApiError(res.status, message);
+  }
+  return res.json() as Promise<T>;
+}
+
 /** Kao `apiFetch`, ali vraća binarni `Blob` (PDF štampa i sl.). Isti auth header. */
 export async function apiBlob(path: string, options: RequestInit = {}): Promise<Blob> {
   const token = getToken();

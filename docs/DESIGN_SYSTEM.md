@@ -109,6 +109,12 @@
 | RN / operacija | Na čekanju | narandžasta | `--status-warn` |
 | RN / operacija | Završen(o) | zelena | `--status-success` |
 | RN | Kasni (rok probijen) | crvena | `--status-danger` |
+| RN / primopredaja | Zaključan(a) (`isLocked`) | narandžasta | `--status-warn` |
+| Primopredaja | U obradi | neutralna | `--status-neutral` |
+| Primopredaja | Saglasan | zelena | `--status-success` |
+| Primopredaja | Odbijeno | crvena | `--status-danger` |
+| Primopredaja | Lansiran | info plava | `--status-info` |
+| Primopredaja | Legacy (iz QBigTehn, do cutover-a) | neutralna | `--status-neutral` |
 | Sync (bb_sync) | Greška sinhronizacije | crvena | `--status-danger` |
 
 Novi status = nova vrsta u ovoj tabeli **pre** upotrebe u kodu.

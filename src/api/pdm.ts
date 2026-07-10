@@ -1,7 +1,7 @@
 'use client';
 
-import { useQuery } from '@tanstack/react-query';
-import { apiBlob, apiFetch } from './client';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { apiBlob, apiFetch, apiUpload } from './client';
 import type { Paginated } from './tech-processes';
 
 /**
@@ -160,6 +160,51 @@ export interface PdmLookups {
   designers: string[];
 }
 
+/**
+ * Statistika XML uvoza (deo odgovora POST /v1/pdm/import) — 1:1 sa backend
+ * `PdmImportStats` (pdm-import.service.ts).
+ */
+export interface ImportXmlStats {
+  documentsInFile: number;
+  drawingsCreated: number;
+  drawingsUpdated: number;
+  drawingsSkipped: number;
+  bomEdgesCreated: number;
+  oldRevisionRelinks: number;
+  /** true = ceo fajl preskočen jer root (broj, revizija) već postoji. */
+  skippedExisting: boolean;
+  errors: string[];
+}
+
+/**
+ * Rezultat XML uvoza — POST /v1/pdm/import (multipart `file`, isti endpoint
+ * koristi i pdm-bridge). Poslovno odbijanje je HTTP 2xx sa `success:false`
+ * (HTTP greške idu kroz `ApiError`). Skip celog fajla (backend dedup) se čita
+ * iz `stats.skippedExisting`.
+ */
+export interface ImportXmlResult {
+  importId?: number | null;
+  fileName: string;
+  success: boolean;
+  statusMessage: string | null;
+  stats?: ImportXmlStats | null;
+}
+
+/** Rezultat PDF uvoza — POST /v1/pdm/pdf-import (multipart `file`). */
+export interface ImportPdfResult {
+  importId?: number | null;
+  fileName: string;
+  success: boolean;
+  statusMessage: string | null;
+  /**
+   * false = crtež još nije uvezen (XML kasni za PDF-om) — PDF je sačuvan i
+   * čeka XML. Benigno stanje, ne greška.
+   */
+  drawingExists?: boolean;
+  /** true = zamenjen postojeći PDF za isti (broj, revizija). */
+  replaced?: boolean;
+}
+
 // ─────────────────────────────────────────────────────────────── parametri
 
 export interface DrawingListParams {
@@ -245,6 +290,41 @@ export function useImportLog(params: ImportLogParams) {
     queryKey: ['pdm', 'import-log', params],
     queryFn: () =>
       apiFetch<Paginated<ImportLogRow>>(`/v1/pdm/import-log${query ? `?${query}` : ''}`),
+  });
+}
+
+/** Uvoz menja i log i crteže (XML upsert / PDF vezivanje) — invalidira oba ključa. */
+function useInvalidatePdmImports() {
+  const qc = useQueryClient();
+  return () => {
+    qc.invalidateQueries({ queryKey: ['pdm', 'import-log'] });
+    qc.invalidateQueries({ queryKey: ['pdm', 'drawings'] });
+  };
+}
+
+/** Ručni uvoz PDM XML izvoza — backend prima JEDAN fajl po pozivu. */
+export function useImportDrawingXml() {
+  const invalidate = useInvalidatePdmImports();
+  return useMutation({
+    mutationFn: (file: File) => {
+      const form = new FormData();
+      form.append('file', file, file.name);
+      return apiUpload<{ data: ImportXmlResult }>('/v1/pdm/import', form);
+    },
+    onSuccess: invalidate,
+  });
+}
+
+/** Ručni uvoz PDF-a crteža — backend prima JEDAN fajl po pozivu. */
+export function useImportDrawingPdf() {
+  const invalidate = useInvalidatePdmImports();
+  return useMutation({
+    mutationFn: (file: File) => {
+      const form = new FormData();
+      form.append('file', file, file.name);
+      return apiUpload<{ data: ImportPdfResult }>('/v1/pdm/pdf-import', form);
+    },
+    onSuccess: invalidate,
   });
 }
 

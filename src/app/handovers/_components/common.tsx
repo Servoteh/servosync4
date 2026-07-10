@@ -5,7 +5,7 @@ import { HANDOVER_STATUS, type StatusRef } from '@/api/handovers';
 import { ApiError } from '@/api/client';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Button } from '@/components/ui-kit/button';
-import type { Tone } from '@/components/ui-kit/status-badge';
+import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
 import { cn } from '@/lib/cn';
 
 // ─────────────────────────────────────────────────────────────── greške
@@ -133,6 +133,26 @@ export function Field({ label, value }: { label: string; value: ReactNode }) {
       <dt className="text-2xs uppercase tracking-[0.08em] text-ink-disabled">{label}</dt>
       <dd className="text-ink">{value}</dd>
     </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────── legacy redovi
+
+/** Tooltip za legacy primopredaje — isti tekst na bedžu i na disabled dugmadima. */
+export const LEGACY_TOOLTIP =
+  'Sinhronizovano iz QBigTehn — akcije do cutover-a u QBigTehn';
+
+/**
+ * Mali neutralni bedž „Legacy" — red primopredaje deriviran sync-om iz QBigTehn
+ * tRN-a (`isLegacy` iz backend enrich-a). Benigno: pregled i štampa crteža rade
+ * normalno; odobri/odbij/otkucaj/lansiraj/vrati do cutover-a blokira backend
+ * guard (409, poruka iz backenda je krajnja istina) — UI drži dugmad disabled.
+ */
+export function LegacyBadge() {
+  return (
+    <span title={LEGACY_TOOLTIP} className="inline-flex">
+      <StatusBadge tone="neutral" label="Legacy" />
+    </span>
   );
 }
 
