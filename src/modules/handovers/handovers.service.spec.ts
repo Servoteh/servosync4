@@ -455,4 +455,119 @@ describe("HandoversService", () => {
       expect(prisma.drawingHandover.update).not.toHaveBeenCalled();
     });
   });
+
+  // ---------------------------------------------- LEGACY GUARD (tranzicija)
+
+  describe("legacy guard (HANDOVER_LEGACY_GUARD)", () => {
+    /** Derivirani red iz tRN sync-a (legacyRnId != null) — mutacije blokirane. */
+    const derivedPending = {
+      id: 5,
+      statusId: 0,
+      isLocked: false,
+      legacyRnId: 1126,
+    };
+    const derivedApproved = { ...approvedHandover, legacyRnId: 1126 };
+
+    const originalGuard = process.env.HANDOVER_LEGACY_GUARD;
+    beforeEach(() => {
+      delete process.env.HANDOVER_LEGACY_GUARD; // default = guard aktivan
+    });
+    afterAll(() => {
+      if (originalGuard === undefined) delete process.env.HANDOVER_LEGACY_GUARD;
+      else process.env.HANDOVER_LEGACY_GUARD = originalGuard;
+    });
+
+    /** Validan tehnolog za approve tok (validacija ide PRE tranzicije). */
+    function mockValidTechnologist() {
+      prisma.worker.findUnique.mockResolvedValue({
+        id: 9,
+        definesApproval: true,
+        active: true,
+      });
+    }
+
+    it("409 na approve za derivirani red — bez upisa", async () => {
+      mockValidTechnologist();
+      prisma.drawingHandover.findUnique.mockResolvedValue(derivedPending);
+
+      await expect(
+        service.approve(5, { technologistId: 9 }, actor),
+      ).rejects.toBeInstanceOf(ConflictException);
+      await expect(
+        service.approve(5, { technologistId: 9 }, actor),
+      ).rejects.toThrow(/QBigTehn/);
+      expect(prisma.drawingHandover.update).not.toHaveBeenCalled();
+    });
+
+    it("409 na reject za derivirani red — bez upisa", async () => {
+      prisma.drawingHandover.findUnique.mockResolvedValue(derivedPending);
+
+      await expect(service.reject(5, "razlog", actor)).rejects.toThrow(
+        /QBigTehn/,
+      );
+      expect(prisma.drawingHandover.update).not.toHaveBeenCalled();
+    });
+
+    it("409 na returnToPending za derivirani red — bez upisa", async () => {
+      prisma.drawingHandover.findUnique.mockResolvedValue({
+        id: 5,
+        statusId: 1,
+        isLocked: false,
+        legacyRnId: 1126,
+      });
+      prisma.workOrder.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.returnToPending(5, { reason: "x" }, actor),
+      ).rejects.toThrow(/QBigTehn/);
+      expect(prisma.drawingHandover.update).not.toHaveBeenCalled();
+    });
+
+    it("409 na prepareWorkOrder za derivirani red — i pre idempotentnog izlaza", async () => {
+      prisma.drawingHandover.findUnique.mockResolvedValue(derivedApproved);
+
+      await expect(service.prepareWorkOrder(5, actor)).rejects.toThrow(
+        /QBigTehn/,
+      );
+      expect(prisma.workOrder.create).not.toHaveBeenCalled();
+    });
+
+    it("409 na launch za derivirani red — bez launch reda i bez upisa", async () => {
+      prisma.drawingHandover.findUnique.mockResolvedValue(derivedApproved);
+
+      await expect(service.launch(5, {}, actor)).rejects.toThrow(/QBigTehn/);
+      expect(prisma.workOrderLaunch.create).not.toHaveBeenCalled();
+      expect(prisma.drawingHandover.update).not.toHaveBeenCalled();
+    });
+
+    it("HANDOVER_LEGACY_GUARD='false' → approve deriviranog reda prolazi (cutover)", async () => {
+      process.env.HANDOVER_LEGACY_GUARD = "false";
+      mockValidTechnologist();
+      prisma.drawingHandover.findUnique.mockResolvedValue(derivedPending);
+
+      await service.approve(5, { technologistId: 9 }, actor);
+
+      expect(prisma.drawingHandover.update).toHaveBeenCalledWith({
+        where: { id: 5 },
+        data: containing({ statusId: 1, technologistId: 9 }),
+      });
+    });
+
+    it("nativni red (legacyRnId=null) nije blokiran", async () => {
+      mockValidTechnologist();
+      prisma.drawingHandover.findUnique.mockResolvedValue({
+        id: 5,
+        statusId: 0,
+        isLocked: false,
+        legacyRnId: null,
+      });
+
+      await service.approve(5, { technologistId: 9 }, actor);
+
+      expect(prisma.drawingHandover.update).toHaveBeenCalledWith({
+        where: { id: 5 },
+        data: containing({ statusId: 1 }),
+      });
+    });
+  });
 });

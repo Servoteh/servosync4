@@ -1,5 +1,5 @@
 /** Per-entity sync strategy. */
-export type SyncStrategy = 'incremental' | 'full_refresh';
+export type SyncStrategy = "incremental" | "full_refresh";
 
 /** One mapped column: source (QBigTehn) -> Prisma field, with scalar type info. */
 export interface ColumnMapping {
@@ -15,8 +15,8 @@ export interface ColumnMapping {
 
 /** Primary key of a target model — single `@id` or composite `@@id`. */
 export type PkMapping =
-  | { kind: 'single'; field: string }
-  | { kind: 'composite'; fields: string[]; name: string };
+  | { kind: "single"; field: string }
+  | { kind: "composite"; fields: string[]; name: string };
 
 /** One source table -> one Prisma model, fully described for the generic engine. */
 export interface TableMapping {
@@ -36,8 +36,12 @@ export interface TableMapping {
 export interface SyncCursor {
   /** ISO timestamp of the last `PoslednjaIzmena` processed (incremental). */
   lastModifiedAt?: string;
-  /** Marker for full-refresh entities. */
-  strategy?: 'full_refresh';
+  /**
+   * Marker for entities without a watermark: `full_refresh` (generic wipe +
+   * reinsert) or `derived_full_pass` (handover derivation — always a full,
+   * idempotent upsert pass; any inherited cursor is ignored).
+   */
+  strategy?: "full_refresh" | "derived_full_pass";
 }
 
 /** Result of syncing a single entity. */
@@ -48,7 +52,10 @@ export interface SyncEntityResult {
   rowsSkipped: number;
   newCursor: SyncCursor | null;
   errors: string[];
-  /** Set when the entity was intentionally not synced (e.g. protected table). */
+  /**
+   * Optional human-readable note surfaced in `bb_sync_log` metadata (e.g.
+   * protected-table skip, post-step remap summary).
+   */
   note?: string;
 }
 

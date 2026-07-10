@@ -58,6 +58,7 @@ const HANDOVER_SELECT = {
   createdAt: true,
   updatedAt: true,
   technologistId: true,
+  legacyRnId: true,
 } satisfies Prisma.DrawingHandoverSelect;
 
 /** Podskup RN polja koji launch/prepare vraćaju (isti kao dosadašnji launch). */
@@ -80,6 +81,7 @@ interface HandoverForWorkOrder {
   isLocked: boolean | null;
   handoverWorkerId: number;
   technologistId: number;
+  legacyRnId: number | null;
 }
 
 /** Razrešeni kontekst (crtež + nacrt/stavka + predmet) za građenje RN zaglavlja. */
@@ -328,10 +330,11 @@ export class HandoversService {
 
       const handover = await tx.drawingHandover.findUnique({
         where: { id },
-        select: { id: true, statusId: true, isLocked: true },
+        select: { id: true, statusId: true, isLocked: true, legacyRnId: true },
       });
       if (!handover)
         throw new NotFoundException(`Primopredaja ${id} ne postoji.`);
+      this.assertNotLegacyGuarded(handover);
       if (handover.isLocked)
         throw new UnprocessableEntityException("Primopredaja je zaključana.");
       if (handover.statusId !== HANDOVER_STATUS.APPROVED)
@@ -359,6 +362,22 @@ export class HandoversService {
     return this.findOne(id);
   }
 
+  /**
+   * Tranziciona politika do cutover-a: derivirani redovi (`legacyRnId != null`,
+   * izvedeni iz tRN derivacionim sync-om) se odobravaju/odbijaju/lansiraju u
+   * QBigTehn-u (Miljan) — mutacija ovde bi bila pregažena sledećim sync-om, pa
+   * je blokirana sa 409. UKIDANJE NA CUTOVER: `HANDOVER_LEGACY_GUARD=false` u
+   * backend.env + compose up (isti rollback obrazac kao AUTHZ_ENFORCE, bez
+   * deploy-a); kolona `legacy_rn_id` ostaje kao provenance. Nativni redovi
+   * (`legacyRnId == null`) nisu blokirani.
+   */
+  private assertNotLegacyGuarded(h: { legacyRnId: number | null }): void {
+    if (h.legacyRnId != null && process.env.HANDOVER_LEGACY_GUARD !== "false")
+      throw new ConflictException(
+        "Legacy primopredaja iz QBigTehn-a — do prelaska (cutover) odobravanje/odbijanje/lansiranje se radi u QBigTehn; izmene ovde bi bile pregažene sledećim sync-om.",
+      );
+  }
+
   private async transition(
     id: number,
     opts: {
@@ -375,10 +394,11 @@ export class HandoversService {
     await this.prisma.$transaction(async (tx) => {
       const handover = await tx.drawingHandover.findUnique({
         where: { id },
-        select: { id: true, statusId: true, isLocked: true },
+        select: { id: true, statusId: true, isLocked: true, legacyRnId: true },
       });
       if (!handover)
         throw new NotFoundException(`Primopredaja ${id} ne postoji.`);
+      this.assertNotLegacyGuarded(handover);
       if (handover.isLocked)
         throw new UnprocessableEntityException("Primopredaja je zaključana.");
       if (handover.statusId !== opts.from)
@@ -408,6 +428,9 @@ export class HandoversService {
    */
   async prepareWorkOrder(id: number, actor?: AuthUser) {
     const handover = await this.getHandoverForWorkOrder(id);
+    // Pre idempotentnog izlaza: i "samo vrati postojeći RN" tok je deo mutirajuće
+    // radnje koja se do cutover-a radi u QBigTehn-u za derivirane redove.
+    this.assertNotLegacyGuarded(handover);
 
     // Brzi idempotentni izlaz (van transakcije; race pokriva advisory lock dole).
     const preExisting = await this.findHandoverWorkOrder(this.prisma, id);
@@ -434,7 +457,7 @@ export class HandoversService {
 
       const fresh = await tx.drawingHandover.findUnique({
         where: { id },
-        select: { statusId: true, isLocked: true },
+        select: { statusId: true, isLocked: true, legacyRnId: true },
       });
       if (
         !fresh ||
@@ -444,6 +467,8 @@ export class HandoversService {
         throw new ConflictException(
           "Primopredaja mora biti SAGLASAN da bi se otkucao TP (kreirao RN).",
         );
+      // Sveže stanje posle lock-a: derivacioni sync je mogao da označi red.
+      this.assertNotLegacyGuarded(fresh);
 
       // Guard protiv duplog RN-a: konkurentni prepare/launch je serijalizovan
       // advisory lock-om, pa je ova ponovna provera pouzdana.
@@ -489,6 +514,7 @@ export class HandoversService {
       );
 
     const handover = await this.getHandoverForWorkOrder(id);
+    this.assertNotLegacyGuarded(handover);
     if (handover.isLocked)
       throw new UnprocessableEntityException("Primopredaja je zaključana.");
     if (handover.statusId !== HANDOVER_STATUS.APPROVED)
@@ -507,7 +533,7 @@ export class HandoversService {
 
       const fresh = await tx.drawingHandover.findUnique({
         where: { id },
-        select: { statusId: true, isLocked: true },
+        select: { statusId: true, isLocked: true, legacyRnId: true },
       });
       if (
         !fresh ||
@@ -517,6 +543,8 @@ export class HandoversService {
         throw new ConflictException(
           "Primopredaja mora biti SAGLASAN pre lansiranja.",
         );
+      // Sveže stanje posle lock-a: derivacioni sync je mogao da označi red.
+      this.assertNotLegacyGuarded(fresh);
 
       const existing = await this.findHandoverWorkOrder(tx, id);
       let workOrder: Prisma.WorkOrderGetPayload<{
@@ -605,6 +633,7 @@ export class HandoversService {
         isLocked: true,
         handoverWorkerId: true,
         technologistId: true,
+        legacyRnId: true,
       },
     });
     if (!handover)
@@ -871,6 +900,9 @@ export class HandoversService {
 
     return rows.map((r) => ({
       ...r,
+      // UI badge: derivirani red iz tRN (QBigTehn) — mutacije blokira
+      // HANDOVER_LEGACY_GUARD do cutover-a.
+      isLegacy: r.legacyRnId != null,
       drawing: drawings.get(r.drawingId) ?? null,
       status: statuses.get(r.statusId) ?? null,
       handoverWorker: workers.get(r.handoverWorkerId) ?? null,

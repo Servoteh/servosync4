@@ -3,19 +3,20 @@ import {
   Injectable,
   Logger,
   NotFoundException,
-} from '@nestjs/common';
-import { Prisma } from '@prisma/client';
-import { PrismaService } from '../../prisma/prisma.service';
-import { MssqlClient } from './mssql.client';
-import { CustomerSyncer } from './syncers/customer.syncer';
-import { GenericSyncer } from './generic.syncer';
-import { SYNC_MAP } from './sync-map.generated';
-import { EntitySyncer, SyncCursor, SyncStrategy } from './sync.types';
+} from "@nestjs/common";
+import { Prisma } from "@prisma/client";
+import { PrismaService } from "../../prisma/prisma.service";
+import { MssqlClient } from "./mssql.client";
+import { CustomerSyncer } from "./syncers/customer.syncer";
+import { HandoverDerivationSyncer } from "./syncers/handover-derivation.syncer";
+import { GenericSyncer } from "./generic.syncer";
+import { SYNC_MAP } from "./sync-map.generated";
+import { EntitySyncer, SyncCursor, SyncStrategy } from "./sync.types";
 
 export interface RunSyncOptions {
   entities?: string[];
   strategy?: SyncStrategy;
-  trigger?: 'manual' | 'cron' | 'api';
+  trigger?: "manual" | "cron" | "api";
   triggeredByUserId?: number;
   /** Allow destructive re-import of protected ServoSync-owned tables. */
   force?: boolean;
@@ -33,6 +34,7 @@ export class SyncService {
     private readonly prisma: PrismaService,
     private readonly mssql: MssqlClient,
     customerSyncer: CustomerSyncer,
+    handoverDerivationSyncer: HandoverDerivationSyncer,
   ) {
     // Hand-written syncers take precedence (e.g. customers has bespoke FK logic).
     this.register(customerSyncer);
@@ -41,9 +43,22 @@ export class SyncService {
       if (this.syncers.has(mapping.targetDb)) continue;
       this.register(new GenericSyncer(mapping, this.mssql, this.prisma));
     }
+    // AFTER the generic loop on purpose: re-registration replaces the generic
+    // PrimopredajaCrteza mapping (its source table is empty on the live MSSQL;
+    // sync-map.generated.ts is generated and must not be edited). The handover
+    // rows are instead DERIVED from tRN attributes. Ordering matters: the
+    // derivation (and its work_orders.drawing_handover_id remap) must run
+    // AFTER the work_orders re-import in an "all entities" run, otherwise a
+    // force re-import would reset the remapped FK right after the remap.
+    // `register` deletes before set — a plain Map.set would KEEP the original
+    // insertion position of the generic mapping (before work_orders).
+    this.register(handoverDerivationSyncer);
   }
 
   private register(syncer: EntitySyncer): void {
+    // delete-then-set moves a re-registered entity to the END of the Map's
+    // insertion order (Map.set on an existing key keeps the old position).
+    this.syncers.delete(syncer.entity);
     this.syncers.set(syncer.entity, syncer);
   }
 
@@ -52,8 +67,10 @@ export class SyncService {
     if (requested.length === this.availableEntities.length) {
       return `ALL (${requested.length})`;
     }
-    const joined = requested.join(',');
-    return joined.length <= 100 ? joined : `${joined.slice(0, 90)}… (${requested.length})`;
+    const joined = requested.join(",");
+    return joined.length <= 100
+      ? joined
+      : `${joined.slice(0, 90)}… (${requested.length})`;
   }
 
   get availableEntities(): string[] {
@@ -66,7 +83,7 @@ export class SyncService {
    */
   async run(options: RunSyncOptions = {}) {
     if (this.running) {
-      throw new ConflictException('A sync run is already in progress');
+      throw new ConflictException("A sync run is already in progress");
     }
 
     const requested = options.entities?.length
@@ -75,14 +92,14 @@ export class SyncService {
 
     const unknown = requested.filter((e) => !this.syncers.has(e));
     if (unknown.length) {
-      throw new NotFoundException(`Unknown entities: ${unknown.join(', ')}`);
+      throw new NotFoundException(`Unknown entities: ${unknown.join(", ")}`);
     }
 
     this.running = true;
     const log = await this.prisma.bbSyncLog.create({
       data: {
-        status: 'running',
-        trigger: options.trigger ?? 'manual',
+        status: "running",
+        trigger: options.trigger ?? "manual",
         triggeredByUserId: options.triggeredByUserId ?? null,
         entityScope: this.describeScope(requested),
       },
@@ -158,10 +175,10 @@ export class SyncService {
 
       const status =
         failures === 0
-          ? 'success'
+          ? "success"
           : failures < requested.length
-            ? 'partial'
-            : 'failed';
+            ? "partial"
+            : "failed";
 
       return this.prisma.bbSyncLog.update({
         where: { id: log.id },
@@ -178,7 +195,11 @@ export class SyncService {
       const message = err instanceof Error ? err.message : String(err);
       return this.prisma.bbSyncLog.update({
         where: { id: log.id },
-        data: { status: 'failed', finishedAt: new Date(), errorMessage: message },
+        data: {
+          status: "failed",
+          finishedAt: new Date(),
+          errorMessage: message,
+        },
       });
     } finally {
       this.running = false;
@@ -186,7 +207,7 @@ export class SyncService {
   }
 
   getState() {
-    return this.prisma.bbSyncState.findMany({ orderBy: { entity: 'asc' } });
+    return this.prisma.bbSyncState.findMany({ orderBy: { entity: "asc" } });
   }
 
   async getEntityState(entity: string) {
@@ -199,7 +220,7 @@ export class SyncService {
 
   getLogs(limit = 50) {
     return this.prisma.bbSyncLog.findMany({
-      orderBy: { startedAt: 'desc' },
+      orderBy: { startedAt: "desc" },
       take: Math.min(limit, 200),
     });
   }
@@ -213,7 +234,7 @@ export class SyncService {
   async health() {
     const mssql = await this.mssql.healthCheck();
     return {
-      source: mssql.ok ? 'up' : 'down',
+      source: mssql.ok ? "up" : "down",
       sqlServerVersion: mssql.version,
       error: mssql.error,
       entities: this.availableEntities,

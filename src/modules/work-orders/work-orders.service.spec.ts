@@ -49,6 +49,17 @@ describe("WorkOrdersService (workflow)", () => {
   let service: WorkOrdersService;
   let prisma: ReturnType<typeof prismaMock>;
 
+  // Determinizam legacy guard-a (isti obrazac kao handovers.service.spec.ts):
+  // odsutna promenljiva = guard aktivan (default).
+  const originalGuard = process.env.HANDOVER_LEGACY_GUARD;
+  beforeAll(() => {
+    delete process.env.HANDOVER_LEGACY_GUARD;
+  });
+  afterAll(() => {
+    if (originalGuard === undefined) delete process.env.HANDOVER_LEGACY_GUARD;
+    else process.env.HANDOVER_LEGACY_GUARD = originalGuard;
+  });
+
   beforeEach(async () => {
     prisma = prismaMock();
     const mod: TestingModule = await Test.createTestingModule({
@@ -92,9 +103,11 @@ describe("WorkOrdersService (workflow)", () => {
         }),
       });
       // updateMany (ne update): FK bez constraint-a može biti orphan;
-      // `statusId != 3` čuva launch audit već lansirane primopredaje.
+      // `statusId != 3` čuva launch audit već lansirane primopredaje;
+      // `legacyRnId: null` (guard aktivan po default-u) štiti derivirane
+      // legacy redove od mutacije iz 2.0 do cutover-a.
       expect(prisma.drawingHandover.updateMany).toHaveBeenCalledWith({
-        where: { id: 5, statusId: { not: 3 } },
+        where: { id: 5, statusId: { not: 3 }, legacyRnId: null },
         data: containing({
           statusId: 3,
           isLocked: true,
@@ -102,6 +115,30 @@ describe("WorkOrdersService (workflow)", () => {
           statusChangedById: 77,
         }),
       });
+    });
+
+    it("HANDOVER_LEGACY_GUARD='false' (cutover) → propagacija BEZ legacyRnId filtera", async () => {
+      const original = process.env.HANDOVER_LEGACY_GUARD;
+      process.env.HANDOVER_LEGACY_GUARD = "false";
+      try {
+        prisma.workOrder.findUnique.mockResolvedValue({
+          id: 7,
+          isLocked: false,
+          handoverStatusId: 1,
+          drawingHandoverId: 5,
+        });
+        prisma.workOrder.findFirst.mockResolvedValue({ id: 7 });
+
+        await service.launch(7, actor);
+
+        expect(prisma.drawingHandover.updateMany).toHaveBeenCalledWith({
+          where: { id: 5, statusId: { not: 3 } },
+          data: containing({ statusId: 3, isLocked: true }),
+        });
+      } finally {
+        if (original === undefined) delete process.env.HANDOVER_LEGACY_GUARD;
+        else process.env.HANDOVER_LEGACY_GUARD = original;
+      }
     });
 
     it("ne dira primopredaju kad RN nije nastao iz nje (drawingHandoverId=0)", async () => {

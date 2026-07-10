@@ -578,6 +578,12 @@ model DrawingHandover {
   /// cutover, so extending it is a deliberate, documented deviation from the
   /// "synced tables are cache" rule. 0 = not assigned.
   technologistId      Int                  @default(0) @map("technologist_id")
+  /// APP-ONLY provenance (no legacy column source): tRN.IDRN of the source legacy
+  /// row — the legacy handover lives as attributes of the tRN row (PrimopredajaCrteza
+  /// is empty even on the live MSSQL), so the derivation syncer upserts by this key.
+  /// NULL = native 2.0 row (handover-drafts submit). Table is ServoSync-owned, same
+  /// precedent as technologist_id above.
+  legacyRnId          Int?                 @unique(map: "uq_drawing_handovers_legacy_rn_id") @map("legacy_rn_id")
   drawing             Drawing              @relation(fields: [drawingId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_drawing_handovers_drawing")
   status              HandoverStatus       @relation(fields: [statusId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_drawing_handovers_status")
   handoverPdfs        DrawingHandoverPdf[]

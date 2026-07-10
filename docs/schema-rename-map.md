@@ -675,11 +675,20 @@ Za svaku tabelu navedene su kolone u istom redosledu kao u staroj `schema.prisma
 | `PoslednjaIzmena` | `updated_at` | `updatedAt` |
 | `Zakljucano` | `is_locked` | `isLocked` |
 | — *(nema legacy izvora)* | `technologist_id` | `technologistId` |
+| — *(provenance: `tRN.IDRN`)* | `legacy_rn_id` | `legacyRnId` |
 
 > **App-only kolona 2.0** (migracija `20260710090000_technologist_and_status_seeds`): `technologist_id`
 > = tehnolog koga šef tehnologije dodeljuje pri odobravanju primopredaje (piše TP). Legacy
 > `PrimopredajaCrteza` je prazna i tabela na cutover-u prelazi u ServoSync vlasništvo, pa je
 > odstupanje od pravila „sync tabele su cache" svesno i dokumentovano. `0` = nije dodeljen.
+
+> **App-only kolona 2.0** (migracija `20260711090000_drawing_handovers_legacy_rn_id`): `legacy_rn_id`
+> = `tRN.IDRN` izvornog legacy reda — legacy primopredaja živi kao atributi `tRN` reda
+> (`PrimopredajaCrteza` je prazna i na živom MSSQL-u), pa derivacioni syncer
+> (`handover-derivation.syncer.ts`) izvodi redove iz `tRN` i upsert-uje ih po ovoj unique koloni
+> (`uq_drawing_handovers_legacy_rn_id`; PG unique dozvoljava više NULL). `NULL` = nativni 2.0 red.
+> Do cutover-a mutacije nad deriviranim redovima blokira env prekidač `HANDOVER_LEGACY_GUARD`
+> (v. `.env.example`); kolona ostaje i posle cutover-a kao provenance.
 
 ### `Prodavci` → `salespeople`
 

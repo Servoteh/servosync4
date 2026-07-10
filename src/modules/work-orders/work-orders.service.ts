@@ -792,11 +792,20 @@ export class WorkOrdersService {
           // updateMany (ne update): FK nema DB constraint, orphan referenca ne
           // sme da obori lansiranje RN-a (isti razlog kao batch-resolve čitanja);
           // guard `statusId != LANSIRAN` čuva postojeći launch audit.
+          // HANDOVER_LEGACY_GUARD (paritet handovers.assertNotLegacyGuarded):
+          // dok je guard aktivan, derivirani legacy redovi (legacyRnId != null)
+          // se NE diraju — QBigTehn ih i dalje vodi, a naša mutacija bi bila
+          // pregažena sledećim derivacionim run-om (uz rizik da remap FK-a još
+          // nije prošao pa bi update pogodio NEPOVEZAN red). Launch RN-a
+          // prolazi; propagacija se tiho preskače kroz updateMany filter.
+          const legacyGuardActive =
+            process.env.HANDOVER_LEGACY_GUARD !== "false";
           const now = new Date();
           await tx.drawingHandover.updateMany({
             where: {
               id: wo.drawingHandoverId,
               statusId: { not: WO_STATUS.LAUNCHED },
+              ...(legacyGuardActive ? { legacyRnId: null } : {}),
             },
             data: {
               statusId: WO_STATUS.LAUNCHED,
