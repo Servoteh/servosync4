@@ -305,7 +305,7 @@ export class ReversiService {
   async confirmReturn(email: string, dto: JsonPayloadTxDto) {
     if (!dto.payload.return_to_location_id) {
       const rows = await this.sy15.db.$queryRaw<{ id: string }[]>`
-        SELECT id FROM loc_locations WHERE code = 'ALAT-MAG-01' LIMIT 1`;
+        SELECT id FROM loc_locations WHERE location_code = 'ALAT-MAG-01' LIMIT 1`;
       if (!rows[0]) {
         throw new UnprocessableEntityException(
           "Magacin ALAT-MAG-01 ne postoji u loc_locations — pošalji return_to_location_id",
