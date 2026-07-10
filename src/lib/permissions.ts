@@ -26,6 +26,10 @@ export const PERMISSIONS = {
   DIRECTORY_READ: 'directory.read',
   SYNC_RUN: 'sync.run',
   SYNC_READ: 'sync.read',
+  // Reversi — 3.0 pilot (2.0 backend docs/design/MODULE_SPEC_reversi.md §3)
+  REVERSI_READ: 'reversi.read',
+  REVERSI_MANAGE: 'reversi.manage',
+  REVERSI_TEAM_READ: 'reversi.team_read',
 } as const;
 
 export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];

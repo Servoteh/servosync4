@@ -21,6 +21,7 @@ import {
   ShoppingCart,
   Users,
   Workflow,
+  Wrench,
   type LucideIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
@@ -74,6 +75,14 @@ const NAV_SECTIONS: NavSection[] = [
       { label: 'PDM / Crteži', href: '/pdm', icon: DraftingCompass, requires: PERMISSIONS.PDM_READ },
       { label: 'Nacrti', href: '/handovers', icon: PencilRuler, requires: PERMISSIONS.PRIMOPREDAJE_READ },
       { label: 'Primopredaje', href: '/handovers', icon: PackageCheck, requires: PERMISSIONS.PRIMOPREDAJE_READ },
+    ],
+  },
+  {
+    // MES domen (PLAN_MODULA_MES_3.0 §4) — prvi stanovnik: Reversi (3.0 pilot);
+    // Održavanje (CMMS) i Energetika/SCADA ulaze seobom u 3.0-D.
+    title: 'Oprema i energija',
+    items: [
+      { label: 'Reversi', href: '/reversi', icon: Wrench, requires: PERMISSIONS.REVERSI_READ },
     ],
   },
   {
