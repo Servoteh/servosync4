@@ -3,6 +3,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  ServiceUnavailableException,
   UnprocessableEntityException,
 } from "@nestjs/common";
 import { Prisma } from "@prisma-sy15/client";
@@ -411,5 +412,89 @@ export class ReversiService {
     if (meta?.code === "P0001") throw new UnprocessableEntityException(message);
     if (meta?.code === "23505") throw new ConflictException(message);
     throw e;
+  }
+
+  // ---------- R2: potpisnica PDF (bucket `reversal-pdf` u sy15 storage-api, spec §7) ----------
+  // Paritet 1.0: putanja u bucketu = `${docNumber.replace(/[^\w.\-]+/g,'_')}.pdf`,
+  // `pdf_storage_path` = ta ista bucket-relativna putanja (1.0 UI je čita u
+  // paralelnom radu — format se NE menja). Za razliku od 1.0 (fire-and-forget,
+  // greška progutana), ovde je upload deo odgovora: 4xx/5xx → klijent zna i ponovi.
+
+  async uploadSignaturePdf(id: string, file?: Express.Multer.File) {
+    if (!file?.buffer?.length || file.mimetype !== "application/pdf") {
+      throw new UnprocessableEntityException(
+        "Očekivan PDF fajl (multipart polje `file`)",
+      );
+    }
+    const doc = await this.sy15.db.revDocument.findUnique({ where: { id } });
+    if (!doc) throw new NotFoundException(`Reversi dokument ${id} ne postoji`);
+    const { base, key } = this.storageCfg();
+    const path = `${doc.docNumber.replace(/[^\w.\-]+/g, "_")}.pdf`;
+    const res = await fetch(
+      `${base}/object/reversal-pdf/${encodeURIComponent(path)}`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${key}`,
+          "content-type": "application/pdf",
+          "x-upsert": "true",
+        },
+        body: new Uint8Array(file.buffer),
+      },
+    );
+    if (!res.ok) {
+      throw new UnprocessableEntityException(
+        `Upload potpisnice nije uspeo (storage ${res.status}: ${(await res.text()).slice(0, 200)})`,
+      );
+    }
+    await this.sy15.db.revDocument.update({
+      where: { id },
+      data: { pdfStoragePath: path, pdfGeneratedAt: new Date() },
+    });
+    return { data: { path } };
+  }
+
+  async getSignaturePdfUrl(id: string) {
+    const doc = await this.sy15.db.revDocument.findUnique({ where: { id } });
+    if (!doc) throw new NotFoundException(`Reversi dokument ${id} ne postoji`);
+    if (!doc.pdfStoragePath)
+      throw new NotFoundException(
+        "Dokument nema potpisnicu (pdf_storage_path prazan)",
+      );
+    const { base, key } = this.storageCfg();
+    const res = await fetch(
+      `${base}/object/sign/reversal-pdf/${encodeURIComponent(doc.pdfStoragePath)}`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${key}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ expiresIn: 3600 }),
+      },
+    );
+    if (!res.ok) {
+      throw new UnprocessableEntityException(
+        `Potpisivanje URL-a nije uspelo (storage ${res.status})`,
+      );
+    }
+    const body = (await res.json()) as { signedURL?: string };
+    if (!body.signedURL)
+      throw new UnprocessableEntityException(
+        "storage-api nije vratio signedURL",
+      );
+    return { data: { url: `${base}${body.signedURL}`, expiresIn: 3600 } };
+  }
+
+  /** sy15 storage-api (isti stack kao PostgREST — javno `/storage/v1` kroz gateway). */
+  private storageCfg() {
+    const base = process.env.SY15_STORAGE_URL?.replace(/\/$/, "");
+    const key = process.env.SY15_SERVICE_KEY;
+    if (!base || !key) {
+      throw new ServiceUnavailableException(
+        "sy15 storage nije konfigurisan (SY15_STORAGE_URL / SY15_SERVICE_KEY)",
+      );
+    }
+    return { base, key };
   }
 }

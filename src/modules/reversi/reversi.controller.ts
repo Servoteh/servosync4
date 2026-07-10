@@ -7,8 +7,11 @@ import {
   Post,
   Query,
   Req,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from "@nestjs/common";
+import { FileInterceptor } from "@nestjs/platform-express";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
@@ -176,5 +179,22 @@ export class ReversiController {
     @Body() dto: TxBaseDto,
   ) {
     return this.reversi.restore(req.user.email, id, dto);
+  }
+
+  // ---------- R2: potpisnica PDF (spec §7) ----------
+
+  @Post("documents/:id/signature-pdf")
+  @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
+  @UseInterceptors(FileInterceptor("file"))
+  uploadSignaturePdf(
+    @Param("id", ParseUUIDPipe) id: string,
+    @UploadedFile() file?: Express.Multer.File,
+  ) {
+    return this.reversi.uploadSignaturePdf(id, file);
+  }
+
+  @Get("documents/:id/signature-pdf")
+  signaturePdfUrl(@Param("id", ParseUUIDPipe) id: string) {
+    return this.reversi.getSignaturePdfUrl(id);
   }
 }
