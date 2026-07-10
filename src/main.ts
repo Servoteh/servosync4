@@ -1,4 +1,8 @@
-import { VERSION_NEUTRAL, VersioningType } from "@nestjs/common";
+import {
+  ValidationPipe,
+  VERSION_NEUTRAL,
+  VersioningType,
+} from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import type { NestExpressApplication } from "@nestjs/platform-express";
 import type { NextFunction, Request, Response } from "express";
@@ -17,6 +21,10 @@ async function bootstrap() {
     type: VersioningType.URI,
     defaultVersion: VERSION_NEUTRAL,
   });
+  // Globalni ValidationPipe (BACKEND_RULES §8) — uveden uz prve mutacione DTO
+  // klase (Reversi R2). Handleri sa interface tipovima (postojeći read moduli)
+  // nemaju metatype-klasu → pipe ih preskače (bez promene ponašanja).
+  app.useGlobalPipes(new ValidationPipe({ transform: true, whitelist: true }));
 
   // Optional same-origin frontend: serve the Next static export (`out/`) so the app
   // is reachable directly on the LAN (http://<host>:3000) without internet, Cloudflare,
@@ -32,8 +40,13 @@ async function bootstrap() {
     // useStaticAssets (which applies express.static immediately) so it runs first.
     app.use((req: Request, _res: Response, next: NextFunction) => {
       const p = req.path;
-      const skip = p.startsWith("/api") || p.startsWith("/_next") || p.includes("..");
-      if ((req.method === "GET" || req.method === "HEAD") && !skip && !extname(p)) {
+      const skip =
+        p.startsWith("/api") || p.startsWith("/_next") || p.includes("..");
+      if (
+        (req.method === "GET" || req.method === "HEAD") &&
+        !skip &&
+        !extname(p)
+      ) {
         const rel = p === "/" ? "/index.html" : `${p.replace(/\/+$/, "")}.html`;
         if (existsSync(join(frontendDir, rel))) {
           req.url = rel + req.url.slice(p.length); // rewrite path, keep querystring

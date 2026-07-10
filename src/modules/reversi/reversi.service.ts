@@ -1,7 +1,20 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import {
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+  UnprocessableEntityException,
+} from "@nestjs/common";
 import { Prisma } from "@prisma-sy15/client";
-import { Sy15Service } from "../../common/sy15/sy15.service";
+import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
 import { pageMeta, parsePagination } from "../../common/pagination";
+import type {
+  JsonPayloadTxDto,
+  SeedStockDto,
+  StockDeltaDto,
+  TxBaseDto,
+  WriteOffDto,
+} from "./dto/reversi-tx.dto";
 
 /**
  * Reversi — 3.0 PILOT, R1 read sloj (MODULE_SPEC_reversi.md §4/§9).
@@ -259,5 +272,144 @@ export class ReversiService {
   async reportMachines() {
     const data = await this.sy15.db.$queryRaw`SELECT * FROM v_rev_machines`;
     return { data };
+  }
+
+  // ---------- R2: transakcione akcije (Faza A — postojeće DB fn u tx + GUC + idempotency) ----------
+  // DB fn SAME gate-uju rev_can_manage() iz GUC claims (drugi sloj posle guard-a) i
+  // SAME drže atomarnost rev_* ↔ loc_* (spec §0). Greške: 42501→403, P0001→422, 23505→409.
+
+  /** Izdavanje TOOL/COOPERATION_GOODS reversa — `rev_issue_reversal(jsonb)`. */
+  issue(email: string, dto: JsonPayloadTxDto) {
+    return this.callJsonFn(email, dto, "reversi.issue", "rev_issue_reversal");
+  }
+
+  /** Povraćaj ručnog/kooperacije — `rev_confirm_return(jsonb)`. */
+  confirmReturn(email: string, dto: JsonPayloadTxDto) {
+    return this.callJsonFn(email, dto, "reversi.return", "rev_confirm_return");
+  }
+
+  /** Izdavanje reznog alata na mašinu — `rev_issue_cutting_reversal(jsonb)`. */
+  cuttingIssue(email: string, dto: JsonPayloadTxDto) {
+    return this.callJsonFn(
+      email,
+      dto,
+      "reversi.cutting-issue",
+      "rev_issue_cutting_reversal",
+    );
+  }
+
+  /** Povraćaj reznog u magacin — `rev_confirm_cutting_return(jsonb)`. */
+  cuttingReturn(email: string, dto: JsonPayloadTxDto) {
+    return this.callJsonFn(
+      email,
+      dto,
+      "reversi.cutting-return",
+      "rev_confirm_cutting_return",
+    );
+  }
+
+  /** Prijem/korekcija zalihe količinskog alata — `rev_hand_tool_apply_delta`. */
+  async stockDelta(email: string, toolId: string, dto: StockDeltaDto) {
+    return this.runTx(
+      email,
+      dto.clientEventId,
+      "reversi.stock-delta",
+      async (tx) => {
+        const rows = await tx.$queryRaw<{ result: number }[]>`
+        SELECT rev_hand_tool_apply_delta(${toolId}::uuid, ${dto.delta}::int,
+          ${dto.reason}, ${dto.note ?? null}) AS result`;
+        return rows[0]?.result ?? null;
+      },
+    );
+  }
+
+  /** Inicijalno stanje reznog po lokaciji — `rev_cutting_tool_seed_stock`. */
+  async seedStock(email: string, catalogId: string, dto: SeedStockDto) {
+    return this.runTx(
+      email,
+      dto.clientEventId,
+      "reversi.seed-stock",
+      async (tx) => {
+        const rows = await tx.$queryRaw<{ result: unknown }[]>`
+        SELECT rev_cutting_tool_seed_stock(${catalogId}::uuid, ${dto.locationId}::uuid,
+          ${dto.qty}::numeric) AS result`;
+        return rows[0]?.result ?? null;
+      },
+    );
+  }
+
+  /** Otpis alata — `rev_write_off_tool`. */
+  async writeOff(email: string, toolId: string, dto: WriteOffDto) {
+    return this.runTx(
+      email,
+      dto.clientEventId,
+      "reversi.write-off",
+      async (tx) => {
+        const rows = await tx.$queryRaw<{ result: unknown }[]>`
+        SELECT rev_write_off_tool(${toolId}::uuid, ${dto.razlog ?? null},
+          ${dto.datum ?? null}::date, ${dto.status ?? "scrapped"}) AS result`;
+        return rows[0]?.result ?? null;
+      },
+    );
+  }
+
+  /** Vraćanje otpisanog alata u upotrebu — `rev_restore_tool`. */
+  async restore(email: string, toolId: string, dto: TxBaseDto) {
+    return this.runTx(
+      email,
+      dto.clientEventId,
+      "reversi.restore",
+      async (tx) => {
+        const rows = await tx.$queryRaw<{ result: unknown }[]>`
+        SELECT rev_restore_tool(${toolId}::uuid) AS result`;
+        return rows[0]?.result ?? null;
+      },
+    );
+  }
+
+  /** Zajednički put za jsonb pass-through funkcije (issue/return varijante). */
+  private callJsonFn(
+    email: string,
+    dto: JsonPayloadTxDto,
+    action: string,
+    fnName: string,
+  ) {
+    return this.runTx(email, dto.clientEventId, action, async (tx) => {
+      // fnName je iz zatvorenog skupa iznad (nije korisnički unos) — sme u Unsafe.
+      const rows = await tx.$queryRawUnsafe(
+        `SELECT ${fnName}($1::jsonb) AS result`,
+        JSON.stringify(dto.payload),
+      );
+      return rows[0]?.result ?? null;
+    });
+  }
+
+  private async runTx<T>(
+    email: string,
+    clientEventId: string,
+    action: string,
+    fn: (tx: Sy15Tx) => Promise<T>,
+  ) {
+    try {
+      const outcome = await this.sy15.runIdempotent(
+        email,
+        clientEventId,
+        action,
+        fn,
+      );
+      return { data: outcome.result, meta: { idempotent: outcome.idempotent } };
+    } catch (e) {
+      this.rethrowSy15(e);
+    }
+  }
+
+  /** SQLSTATE iz DB fn → HTTP semantika (spec §5). */
+  private rethrowSy15(e: unknown): never {
+    const meta = (e as { meta?: { code?: string; message?: string } }).meta;
+    const message = meta?.message ?? (e as Error).message;
+    if (meta?.code === "42501") throw new ForbiddenException(message);
+    if (meta?.code === "P0001") throw new UnprocessableEntityException(message);
+    if (meta?.code === "23505") throw new ConflictException(message);
+    throw e;
   }
 }

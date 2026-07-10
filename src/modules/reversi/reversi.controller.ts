@@ -1,8 +1,10 @@
 import {
+  Body,
   Controller,
   Get,
   Param,
   ParseUUIDPipe,
+  Post,
   Query,
   Req,
   UseGuards,
@@ -17,6 +19,13 @@ import type {
   ListDocumentsQuery,
   ListToolsQuery,
 } from "./reversi.service";
+import {
+  JsonPayloadTxDto,
+  SeedStockDto,
+  StockDeltaDto,
+  TxBaseDto,
+  WriteOffDto,
+} from "./dto/reversi-tx.dto";
 
 interface AuthedRequest {
   user: { userId: number; email: string; role: string };
@@ -101,5 +110,71 @@ export class ReversiController {
   @Get("reports/machines")
   machines() {
     return this.reversi.reportMachines();
+  }
+
+  // ---------- R2: transakcione akcije (sve manage; idempotency = clientEventId) ----------
+
+  @Post("issue")
+  @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
+  issue(@Req() req: AuthedRequest, @Body() dto: JsonPayloadTxDto) {
+    return this.reversi.issue(req.user.email, dto);
+  }
+
+  @Post("return")
+  @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
+  confirmReturn(@Req() req: AuthedRequest, @Body() dto: JsonPayloadTxDto) {
+    return this.reversi.confirmReturn(req.user.email, dto);
+  }
+
+  @Post("cutting-issue")
+  @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
+  cuttingIssue(@Req() req: AuthedRequest, @Body() dto: JsonPayloadTxDto) {
+    return this.reversi.cuttingIssue(req.user.email, dto);
+  }
+
+  @Post("cutting-return")
+  @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
+  cuttingReturn(@Req() req: AuthedRequest, @Body() dto: JsonPayloadTxDto) {
+    return this.reversi.cuttingReturn(req.user.email, dto);
+  }
+
+  @Post("tools/:id/stock-delta")
+  @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
+  stockDelta(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: StockDeltaDto,
+  ) {
+    return this.reversi.stockDelta(req.user.email, id, dto);
+  }
+
+  @Post("cutting-tools/:id/seed-stock")
+  @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
+  seedStock(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: SeedStockDto,
+  ) {
+    return this.reversi.seedStock(req.user.email, id, dto);
+  }
+
+  @Post("tools/:id/write-off")
+  @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
+  writeOff(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: WriteOffDto,
+  ) {
+    return this.reversi.writeOff(req.user.email, id, dto);
+  }
+
+  @Post("tools/:id/restore")
+  @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
+  restore(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: TxBaseDto,
+  ) {
+    return this.reversi.restore(req.user.email, id, dto);
   }
 }

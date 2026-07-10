@@ -1,4 +1,5 @@
 import {
+  ConflictException,
   Injectable,
   Logger,
   OnModuleDestroy,
@@ -58,6 +59,47 @@ export class Sy15Service implements OnModuleDestroy {
     return this.db.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT set_config('request.jwt.claims', ${claims}, true)`;
       return fn(tx);
+    });
+  }
+
+  /**
+   * Idempotentno izvršavanje transakcione akcije (spec §5). Registar =
+   * `rev_api_idempotency` (sy15, RLS-zaključan — piše ga samo backend, u ISTOJ
+   * transakciji sa akcijom, pa rollback akcije briše i ključ → retry dozvoljen).
+   * Ponovljen `clientEventId`: vraća sačuvan rezultat BEZ izvršavanja (dupli
+   * klik/retry ≠ dupli revers — 1.0 front ovo nema). Konkurentan isti ključ
+   * čeka na PK unique dok prva tx ne završi. Ključ upotrebljen za DRUGU akciju → 409.
+   */
+  async runIdempotent<T>(
+    email: string,
+    clientEventId: string,
+    action: string,
+    fn: (tx: Sy15Tx) => Promise<T>,
+  ): Promise<{ idempotent: boolean; result: T }> {
+    const claims = JSON.stringify({ email, role: "authenticated" });
+    return this.db.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT set_config('request.jwt.claims', ${claims}, true)`;
+      const inserted = await tx.$executeRaw`
+        INSERT INTO rev_api_idempotency (client_event_id, action)
+        VALUES (${clientEventId}::uuid, ${action})
+        ON CONFLICT (client_event_id) DO NOTHING`;
+      if (inserted === 0) {
+        const rows = await tx.$queryRaw<{ action: string; result: T }[]>`
+          SELECT action, result FROM rev_api_idempotency
+          WHERE client_event_id = ${clientEventId}::uuid`;
+        const stored = rows[0];
+        if (!stored || stored.action !== action) {
+          throw new ConflictException(
+            `clientEventId ${clientEventId} je već upotrebljen za akciju "${stored?.action ?? "?"}"`,
+          );
+        }
+        return { idempotent: true, result: stored.result };
+      }
+      const result = await fn(tx);
+      await tx.$executeRaw`
+        UPDATE rev_api_idempotency SET result = ${JSON.stringify(result ?? null)}::jsonb
+        WHERE client_event_id = ${clientEventId}::uuid`;
+      return { idempotent: false, result };
     });
   }
 
