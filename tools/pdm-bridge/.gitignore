@@ -1,0 +1,6 @@
+# Lokalna konfiguracija i runtime artefakti bridge-a — nikad u git.
+.env
+pdm-bridge.state.json
+pdm-bridge.state.json.tmp
+pdm-bridge.log
+node_modules/

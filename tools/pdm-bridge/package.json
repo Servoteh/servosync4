@@ -1,0 +1,14 @@
+{
+  "name": "servosync-pdm-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ServoSync 2.0 PDM bridge — nosi PDM XML/PDF izvoze sa share-ova u POST /v1/pdm/import i /v1/pdm/pdf-import (nula zavisnosti, Windows Task Scheduler).",
+  "type": "module",
+  "engines": {
+    "node": ">=20.6"
+  },
+  "scripts": {
+    "start": "node --env-file=.env pdm-bridge.mjs",
+    "smoke": "node pdm-bridge.mjs --smoke"
+  }
+}
