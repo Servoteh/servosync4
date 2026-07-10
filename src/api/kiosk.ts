@@ -341,6 +341,22 @@ export function useIdentifyWorker() {
   });
 }
 
+/** Radnik vezan za LIČNI nalog (users.worker_id) + njegova kartica. */
+export type KioskWorkerMe = KioskWorker & { cardId: string };
+
+/**
+ * Auto-identifikacija iz prijavljenog naloga — kiosk preskače skeniranje kartice kad je
+ * ulogovan lični nalog kontrolora/radnika (npr. marina.mutic@ na telefonu). Deljeni
+ * terminal-nalozi (kontrola@, tehnologija@) vraćaju `data: null` → kartica obavezna.
+ */
+export function useWorkerMe() {
+  return useQuery({
+    queryKey: ['kiosk', 'worker-me'],
+    queryFn: () => apiFetch<{ data: KioskWorkerMe | null }>(`${BASE}/worker/me`),
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
 /** Završna kontrola — kvalitet + raspored po policama + zatvaranje (jedna transakcija). */
 export function useControl() {
   const qc = useQueryClient();

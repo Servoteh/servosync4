@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { LogOut, RotateCcw, UserRound } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { ApiError } from '@/api/client';
@@ -13,6 +13,7 @@ import {
   useScan,
   useStartWork,
   useStopWork,
+  useWorkerMe,
   type KioskWorker,
   type KioskWorkOrder,
   type OperationBarcodeFields,
@@ -93,6 +94,9 @@ export function KioskScanner({ workerName }: { workerName: string }) {
 
   // Radnik/kontrolor prijavljen ID karticom (BarKodUnos2024 ekran 1).
   const [worker, setWorker] = useState<{ card: string; info: KioskWorker } | null>(null);
+  // LIČNI nalog (users.worker_id) preskače karticu; posle „Odjava radnika" kartica se opet traži.
+  const me = useWorkerMe();
+  const [cardGate, setCardGate] = useState(false);
   const [order, setOrder] = useState<OrderState | null>(null);
   const [operation, setOperation] = useState<OperationState | null>(null);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
@@ -145,8 +149,25 @@ export function KioskScanner({ workerName }: { workerName: string }) {
 
   const resetWorker = useCallback(() => {
     setWorker(null);
+    setCardGate(true); // eksplicitna odjava → sledeći radnik se identifikuje karticom
     resetOrder();
   }, [resetOrder]);
+
+  // Auto-prijava iz LIČNOG naloga (worker/me): preskoči karticu (odluka Nesa 2026-07-09).
+  // Deljeni nalozi (kontrola@, tehnologija@) vraćaju null → ostaje kartica.
+  useEffect(() => {
+    if (worker || cardGate) return;
+    const info = me.data?.data;
+    if (!info) return;
+    setWorker({ card: info.cardId, info });
+    setFeedback({
+      tone: 'info',
+      title: `Prijavljen: ${info.fullName ?? info.username} (nalog)`,
+      detail: info.isController
+        ? 'Kontrolor — skenirajte NALOG radnog naloga.'
+        : 'Skenirajte NALOG radnog naloga.',
+    });
+  }, [me.data, worker, cardGate]);
 
   async function onCardScan(cardId: string) {
     try {
@@ -423,6 +444,14 @@ export function KioskScanner({ workerName }: { workerName: string }) {
   }
 
   // --- render: prvo prijava karticom, pa nalog → operacija → panel ---
+
+  if (!worker && !cardGate && me.isLoading) {
+    return (
+      <main className="grid flex-1 place-items-center bg-app text-xl text-ink-secondary">
+        Prijava…
+      </main>
+    );
+  }
 
   if (!worker) {
     return (
