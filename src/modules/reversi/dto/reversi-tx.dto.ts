@@ -43,8 +43,10 @@ export class StockDeltaDto extends TxBaseDto {
 }
 
 export class SeedStockDto extends TxBaseDto {
+  /** Ako se izostavi, backend koristi magacin ALAT-MAG-01 (paritet 1.0 seed). */
+  @IsOptional()
   @IsUUID()
-  locationId!: string;
+  locationId?: string;
 
   @IsNumber()
   @IsPositive()

@@ -16,6 +16,11 @@ import type {
   TxBaseDto,
   WriteOffDto,
 } from "./dto/reversi-tx.dto";
+import type { BulkToolRowDto } from "./dto/reversi-bulk.dto";
+import type {
+  CuttingToolCreateDto,
+  CuttingToolUpdateDto,
+} from "./dto/reversi-cutting.dto";
 
 /**
  * Reversi — 3.0 PILOT, R1 read sloj (MODULE_SPEC_reversi.md §4/§9).
@@ -275,6 +280,140 @@ export class ReversiService {
     return { data };
   }
 
+  // ---------- Rezni alat (rev_cutting_tool_catalog) ----------
+
+  /** Katalog reznog alata + ukupno na stanju (suma po lokacijama). */
+  async listCuttingTools(q?: string) {
+    const term = (q ?? "").trim();
+    const where: Prisma.RevCuttingToolCatalogWhereInput = term
+      ? {
+          OR: [
+            { oznaka: { contains: term, mode: "insensitive" } },
+            { naziv: { contains: term, mode: "insensitive" } },
+            { barcode: { contains: term, mode: "insensitive" } },
+          ],
+        }
+      : {};
+    const catalog = await this.sy15.db.revCuttingToolCatalog.findMany({
+      where,
+      orderBy: { oznaka: "asc" },
+      take: 500,
+    });
+    const stock = await this.sy15.db.revCuttingToolStock.groupBy({
+      by: ["catalogId"],
+      _sum: { onHandQty: true },
+    });
+    const onHand = new Map(
+      stock.map((s) => [s.catalogId, Number(s._sum.onHandQty ?? 0)]),
+    );
+    const data = catalog.map((c) => ({
+      ...c,
+      onHandQty: onHand.get(c.id) ?? 0,
+    }));
+    return { data };
+  }
+
+  async createCuttingTool(email: string, dto: CuttingToolCreateDto) {
+    return this.sy15.withUser(email, async (tx) => {
+      const rows = await tx.$queryRaw<{ id: string }[]>`
+        INSERT INTO rev_cutting_tool_catalog (oznaka, naziv, unit, min_stock_qty, compatible_machine_codes, napomena, created_by)
+        VALUES (${dto.oznaka.trim()}, ${dto.naziv.trim()}, ${dto.unit ?? "kom"},
+          ${dto.minStockQty ?? 0}, ${dto.compatibleMachineCodes ?? []}::text[],
+          ${dto.napomena ?? null}, auth.uid())
+        RETURNING id`;
+      return { data: { id: rows[0]?.id } };
+    });
+  }
+
+  async updateCuttingTool(
+    email: string,
+    id: string,
+    dto: CuttingToolUpdateDto,
+  ) {
+    const data = await this.sy15.db.revCuttingToolCatalog.update({
+      where: { id },
+      data: {
+        ...(dto.naziv !== undefined ? { naziv: dto.naziv.trim() } : {}),
+        ...(dto.unit !== undefined ? { unit: dto.unit } : {}),
+        ...(dto.minStockQty !== undefined
+          ? { minStockQty: dto.minStockQty }
+          : {}),
+        ...(dto.compatibleMachineCodes !== undefined
+          ? { compatibleMachineCodes: dto.compatibleMachineCodes }
+          : {}),
+        ...(dto.status !== undefined ? { status: dto.status } : {}),
+        ...(dto.napomena !== undefined ? { napomena: dto.napomena } : {}),
+      },
+    });
+    return { data };
+  }
+
+  /** Rezni alat po mašini (v_rev_cts_by_machine) — opcioni filter po šifri mašine. */
+  async cuttingByMachine(machineCode?: string) {
+    const data = machineCode
+      ? await this.sy15.db
+          .$queryRaw`SELECT * FROM v_rev_cts_by_machine WHERE machine_code = ${machineCode}`
+      : await this.sy15.db.$queryRaw`SELECT * FROM v_rev_cts_by_machine`;
+    return { data };
+  }
+
+  /** Glave na kartici mašine (rev_machine_heads). */
+  async machineHeads(machineCode: string) {
+    const data = await this.sy15.db.revMachineHead.findMany({
+      where: { machineCode },
+      orderBy: { oznaka: "asc" },
+    });
+    return { data };
+  }
+
+  /**
+   * Bulk-import inventara ručnog alata (paritet 1.0 bulkImportModal tip 1).
+   * Idempotentno po `oznaka` (postojeći alat = skip). Barkod/loc_item_ref_id
+   * dodeljuju trigeri. Vraća zbir kreiranih/preskočenih + greške po redu.
+   * Alat je odmah upotrebljiv u Izdaj (početno smeštanje u magacin je opcioni
+   * follow-up — izdavanje uzima iz null lokacije bez problema).
+   */
+  async bulkImportTools(rows: BulkToolRowDto[]) {
+    let created = 0;
+    let skipped = 0;
+    const errors: { oznaka: string; error: string }[] = [];
+
+    for (const row of rows) {
+      const oznaka = row.oznaka.trim();
+      try {
+        const existing = await this.sy15.db.revTool.findFirst({
+          where: { oznaka },
+          select: { id: true },
+        });
+        if (existing) {
+          skipped++;
+          continue;
+        }
+        const isQuantity = row.isQuantity ?? false;
+        const isConsumable = row.isConsumable ?? false;
+        await this.sy15.db.revTool.create({
+          data: {
+            oznaka,
+            naziv: row.naziv.trim(),
+            serijskiBroj: row.serijskiBroj?.trim() || null,
+            isQuantity,
+            isConsumable,
+            totalQty: isQuantity || isConsumable ? (row.totalQty ?? 0) : 1,
+            napomena: row.napomena?.trim() || null,
+            status: "active",
+          },
+        });
+        created++;
+      } catch (e) {
+        errors.push({
+          oznaka,
+          error: e instanceof Error ? e.message : "greška",
+        });
+      }
+    }
+    return { data: { created, skipped, errors, total: rows.length } };
+  }
+
   /** Picker radnika za Izdaj modal (paritet 1.0 fetchEmployees — samo aktivni, bez PII). */
   async lookupEmployees(q?: string) {
     const term = `%${(q ?? "").trim()}%`;
@@ -342,7 +481,10 @@ export class ReversiService {
     // Zero-width space/joiner/BOM (U+200B–U+200D, U+FEFF) — bez regex-literala
     // da izvor ostane čist ASCII (eslint no-irregular-whitespace).
     const ZERO_WIDTH = new Set([0x200b, 0x200c, 0x200d, 0xfeff]);
-    return [...t].filter((ch) => !ZERO_WIDTH.has(ch.codePointAt(0)!)).join("").trim();
+    return [...t]
+      .filter((ch) => !ZERO_WIDTH.has(ch.codePointAt(0)!))
+      .join("")
+      .trim();
   }
 
   // ---------- R2: transakcione akcije (Faza A — postojeće DB fn u tx + GUC + idempotency) ----------
@@ -373,8 +515,17 @@ export class ReversiService {
     return this.callJsonFn(email, dto, "reversi.return", "rev_confirm_return");
   }
 
-  /** Izdavanje reznog alata na mašinu — `rev_issue_cutting_reversal(jsonb)`. */
-  cuttingIssue(email: string, dto: JsonPayloadTxDto) {
+  /**
+   * Izdavanje reznog alata na mašinu — `rev_issue_cutting_reversal(jsonb)`.
+   * Ako `source_location_id` nije prosleđen, koristi magacin ALAT-MAG-01 (odakle
+   * se rezni skida u mašinu — inače dekrement padne na lokaciju sa 0 → 23514).
+   */
+  async cuttingIssue(email: string, dto: JsonPayloadTxDto) {
+    if (!dto.payload.source_location_id) {
+      const rows = await this.sy15.db.$queryRaw<{ id: string }[]>`
+        SELECT id FROM loc_locations WHERE location_code = 'ALAT-MAG-01' LIMIT 1`;
+      if (rows[0]) dto.payload.source_location_id = rows[0].id;
+    }
     return this.callJsonFn(
       email,
       dto,
@@ -410,13 +561,25 @@ export class ReversiService {
 
   /** Inicijalno stanje reznog po lokaciji — `rev_cutting_tool_seed_stock`. */
   async seedStock(email: string, catalogId: string, dto: SeedStockDto) {
+    let locationId = dto.locationId;
+    if (!locationId) {
+      const rows = await this.sy15.db.$queryRaw<{ id: string }[]>`
+        SELECT id FROM loc_locations WHERE location_code = 'ALAT-MAG-01' LIMIT 1`;
+      if (!rows[0]) {
+        throw new UnprocessableEntityException(
+          "Magacin ALAT-MAG-01 ne postoji — pošalji locationId",
+        );
+      }
+      locationId = rows[0].id;
+    }
+    const locId = locationId;
     return this.runTx(
       email,
       dto.clientEventId,
       "reversi.seed-stock",
       async (tx) => {
         const rows = await tx.$queryRaw<{ result: unknown }[]>`
-        SELECT rev_cutting_tool_seed_stock(${catalogId}::uuid, ${dto.locationId}::uuid,
+        SELECT rev_cutting_tool_seed_stock(${catalogId}::uuid, ${locId}::uuid,
           ${dto.qty}::numeric) AS result`;
         return rows[0]?.result ?? null;
       },
@@ -493,8 +656,10 @@ export class ReversiService {
     const meta = (e as { meta?: { code?: string; message?: string } }).meta;
     const message = meta?.message ?? (e as Error).message;
     if (meta?.code === "42501") throw new ForbiddenException(message);
-    if (meta?.code === "P0001") throw new UnprocessableEntityException(message);
+    if (meta?.code === "P0001" || meta?.code === "P0002") throw new UnprocessableEntityException(message);
     if (meta?.code === "23505") throw new ConflictException(message);
+    // 23514 = check constraint (npr. negativna zaliha reznog) — poslovna greška, ne 500.
+    if (meta?.code === "23514") throw new UnprocessableEntityException(message);
     throw e;
   }
 

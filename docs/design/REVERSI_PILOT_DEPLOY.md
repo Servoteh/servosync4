@@ -53,7 +53,24 @@ Reversi se pojavi u nav-u „Oprema i energija" za korisnike sa `reversi.read`.
 - Kao magacioner: „+ Izdaj" → skeniraj/izaberi alat → Izdaj → dokument OPEN; pa „Vrati…" → RETURNED.
 - Paritet: isti dokument vidljiv i u 1.0 Reversi UI-ju (ista baza).
 
-## Preostalo za R3 (nije blokada za puštanje — Nenad dorađuje)
-- Bulk-import (XLSX) endpoint + FE ekran (1.0 radi klijentski; seli se na BE).
-- Rezni alat tab + kartica mašine (katalog reznog danas prazan).
-- Skener „za povraćaj" (skeniraj alat → nađi otvoren revers) — sada je skener u Izdaj.
+## Paritet sa 1.0 — DODATO (11.07)
+- **Kartica alata** (klik na red u Magacinu/Otpisano): baterije, servisi, Otpiši/Vrati u upotrebu, Prijem zaliha.
+- **Potpisnica PDF**: „Generiši" (client jsPDF + Roboto) → upload; „Preuzmi" (potpisan URL).
+- **Bulk-import** inventara ručnog alata (XLSX/CSV, dugme „Uvoz alata" u Magacinu) — verifikovano na živoj bazi.
+- **Skener** (kamera BarcodeDetector + HID + ručni unos) u „Izdaj".
+- **Rezni alat** tab: katalog (create/update/list + na stanju), Zaliha (seed), Izdaj na mašinu; **Mašine** → kartica (rezni na mašini + glave).
+
+## ⚠️ Rezni alat — traži domensku validaciju (Nenad, sa realnim podacima)
+Katalog reznog je danas PRAZAN. Verifikovano na živoj bazi: **create + seed rade**.
+**Cutting ISSUE/RETURN source-location model NIJE potvrđen** — `rev_issue_cutting_reversal`
+dekrementira izvornu lokaciju; sintetički test (seed u magacin → izdaj na mašinu) je
+pao na check-constraint (negativna zaliha) jer stvarni model verovatno seeduje rezni na
+DRUGU lokaciju (mašina/alat-specifičnu), ne magacin. BE defaultuje `source_location_id`
+na ALAT-MAG-01 i mapira grešku na 422 (čist error, ne 500), ali **tok izdavanja reznog
+treba proći sa Nenadom kad se unese realni katalog** (koja lokacija je izvor). Ručni alat
+(TOOL/COOPERATION) tok je potpuno dokazan na živoj bazi (REV-TOOL-2026-0027).
+
+## Preostalo (opciono, Nenad)
+- Uvoz postojećih reversa (bulk tip 3) + rezni katalog (tip 2) — sada samo ručni alat (tip 1).
+- Skener „za povraćaj" (skeniraj alat → nađi otvoren revers) — sada je skener u „Izdaj".
+- Početno smeštanje uvezenog alata u magacin (loc placement) — sada je alat odmah upotrebljiv iz null lokacije.

@@ -49,6 +49,12 @@ describe("Reversi permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     "getSignaturePdfUrl",
     "lookupEmployees",
     "lookupBarcode",
+    "bulkImportTools",
+    "listCuttingTools",
+    "createCuttingTool",
+    "updateCuttingTool",
+    "cuttingByMachine",
+    "machineHeads",
   ]) {
     serviceMock[m] = jest.fn().mockResolvedValue({ data: [] });
   }
@@ -201,6 +207,17 @@ describe("Reversi permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
       await post(`/tools/${VALID_UUID}/write-off`, "magacioner", {
         clientEventId: VALID_UUID,
       }).expect(201);
+    });
+    it("POST /bulk-import/tools → 403 za viewer, 201 za magacioner", async () => {
+      const body = { rows: [{ oznaka: "T1", naziv: "Test alat" }] };
+      await post("/bulk-import/tools", "viewer", body).expect(403);
+      await post("/bulk-import/tools", "magacioner", body).expect(201);
+    });
+    it("GET /cutting-tools → 200 za viewer (read); POST → 403 viewer, 201 magacioner", async () => {
+      await get("/cutting-tools", "viewer").expect(200);
+      const body = { oznaka: "RZN-1", naziv: "Glodalo" };
+      await post("/cutting-tools", "viewer", body).expect(403);
+      await post("/cutting-tools", "magacioner", body).expect(201);
     });
     it("POST /issue bez validnog clientEventId → 400 (ValidationPipe)", async () => {
       await post("/issue", "admin", {
