@@ -365,7 +365,13 @@ export class TechProcessesService {
 
     const rows = await this.prisma.techProcess.findMany({
       where: { projectId, identNumber, variant },
-      orderBy: [{ operationNumber: "asc" }, { id: "asc" }],
+      // workCenterCode in orderBy keeps each (OP, RC) group contiguous — the UI
+      // inserts a group header on every key change between adjacent rows.
+      orderBy: [
+        { operationNumber: "asc" },
+        { workCenterCode: "asc" },
+        { id: "asc" },
+      ],
       include: { documents: true },
     });
     if (!rows.length)
@@ -1811,7 +1817,10 @@ export class TechProcessesService {
       this.logger.warn(
         `TEST radnik #${worker.id} (${worker.fullName ?? worker.username}) — kontrolor-auth i SoD provere preskočene (AUTHZ_TEST_WORKER_IDS, ODLUKE #32).`,
       );
-    if (!testWorker && !(await this.isAuthorizedController(worker.workerTypeId))) {
+    if (
+      !testWorker &&
+      !(await this.isAuthorizedController(worker.workerTypeId))
+    ) {
       const msg = `Radnik „${worker.fullName ?? worker.username}" nije ovlašćen kontrolor (tip radnika bez kontrolorskih privilegija).`;
       if (this.scope.isEnforced()) throw new ForbiddenException(msg);
       this.logger.warn(
@@ -2156,7 +2165,8 @@ export class TechProcessesService {
       );
 
     const host = process.env.LABEL_PRINTER_HOST || "192.168.70.20";
-    const port = Number.parseInt(process.env.LABEL_PRINTER_PORT ?? "", 10) || 9100;
+    const port =
+      Number.parseInt(process.env.LABEL_PRINTER_PORT ?? "", 10) || 9100;
 
     const bytes = await new Promise<number>((resolve, reject) => {
       const sock = createConnection({ host, port });
