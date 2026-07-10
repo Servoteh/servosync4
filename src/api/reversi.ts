@@ -233,6 +233,22 @@ export function useScrapped(enabled: boolean) {
   });
 }
 
+export interface EmployeeOption {
+  id: string;
+  full_name: string;
+  department: string | null;
+  position: string | null;
+}
+
+/** Picker radnika za Izdaj (BE /reversi/lookups/employees — aktivni, bez PII). */
+export function useEmployeeLookup(q: string) {
+  return useQuery({
+    queryKey: ['reversi', 'lookups', 'employees', q],
+    queryFn: () =>
+      apiFetch<{ data: EmployeeOption[] }>(`/v1/reversi/lookups/employees${qs({ q })}`),
+  });
+}
+
 export function useTeamIssued(enabled: boolean) {
   return useQuery({
     queryKey: [...KEYS.reports, 'team-issued'],

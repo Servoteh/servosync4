@@ -12,6 +12,11 @@ import {
   type ReversiDocument,
 } from '@/api/reversi';
 import { DOC_TYPE_LABEL, DocStatusBadge, LineStatusBadge } from './common';
+import { Button } from '@/components/ui-kit/button';
+import { useAuth } from '@/lib/auth-context';
+import { PERMISSIONS } from '@/lib/permissions';
+import { IssueDialog } from './issue-dialog';
+import { ReturnDialog } from './return-dialog';
 
 const STATUS_FILTERS = [
   { key: '', label: 'Svi' },
@@ -28,10 +33,14 @@ function recipientLabel(d: ReversiDocument): string {
 
 /** Lista reversa (read paritet 1.0 zaduzenjaPanel) + detalj stavki na Enter/klik. */
 export function DokumentiTab() {
+  const { can } = useAuth();
+  const manage = can(PERMISSIONS.REVERSI_MANAGE);
   const [q, setQ] = useState('');
   const [status, setStatus] = useState('');
   const [page, setPage] = useState(1);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [issueOpen, setIssueOpen] = useState(false);
+  const [returnDocId, setReturnDocId] = useState<string | null>(null);
 
   const docs = useReversiDocuments({ q: q || undefined, status: status || undefined, page, pageSize: 50 });
   const detail = useReversiDocument(openId);
@@ -76,6 +85,11 @@ export function DokumentiTab() {
             </button>
           ))}
         </div>
+        {manage && (
+          <div className="ml-auto">
+            <Button onClick={() => setIssueOpen(true)}>+ Izdaj</Button>
+          </div>
+        )}
       </div>
 
       <DataTable
@@ -103,6 +117,16 @@ export function DokumentiTab() {
               {detail.data?.data.napomena && (
                 <div className="pt-1 text-xs text-ink-secondary">Napomena: {detail.data.data.napomena}</div>
               )}
+              {manage &&
+                detail.data &&
+                detail.data.data.status !== 'RETURNED' &&
+                detail.data.data.lines.some((l) => l.lineStatus === 'ISSUED') && (
+                  <div className="pt-2">
+                    <Button variant="secondary" onClick={() => setReturnDocId(detail.data.data.id)}>
+                      Vrati…
+                    </Button>
+                  </div>
+                )}
             </div>
           )
         }
@@ -117,6 +141,9 @@ export function DokumentiTab() {
           onNext={() => setPage((p) => Math.min(meta.totalPages, p + 1))}
         />
       )}
+
+      {manage && <IssueDialog open={issueOpen} onClose={() => setIssueOpen(false)} />}
+      {manage && <ReturnDialog docId={returnDocId} onClose={() => setReturnDocId(null)} />}
     </div>
   );
 }
