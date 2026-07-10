@@ -1,15 +1,22 @@
 import {
+  Body,
   Controller,
   Get,
   Param,
   ParseIntPipe,
+  Post,
   Query,
+  Req,
   Res,
   StreamableFile,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from "@nestjs/common";
+import { FileInterceptor } from "@nestjs/platform-express";
 import type { Response } from "express";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
+import type { AuthUser } from "../auth/jwt.strategy";
 import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
 import { PERMISSIONS } from "../../common/authz/permissions";
@@ -20,24 +27,71 @@ import type {
   ListDrawingsQuery,
   WhereUsedQuery,
 } from "./pdm.service";
+import { PdmImportService } from "./pdm-import.service";
+import type { UploadedMultipartFile } from "./pdm-import.service";
 
 /**
- * API za PDM (Projektna dokumentacija) — READ-ONLY katalog crteža.
- *   GET /api/v1/pdm/drawings                — lista (filteri: q, revision, material, designedBy, statusId, isProcurement)
- *   GET /api/v1/pdm/drawings/:id            — detalj + PDF metapodaci + import info
- *   GET /api/v1/pdm/drawings/:id/bom        — rekurzivna sastavnica (?depth=1..20, ?expandAll=true → samo flat)
- *   GET /api/v1/pdm/drawings/:id/where-used — obrnuta sastavnica (?recursive=true → tranzitivni parent-i)
- *   GET /api/v1/pdm/import-log              — istorija XML uvoza (?success=, ?isCritical=)
- *   GET /api/v1/pdm/lookups                 — statusi + distinct materijali + projektanti (za filtere)
+ * API za PDM (Projektna dokumentacija) — katalog crteža + nativni intake.
+ *   GET  /api/v1/pdm/drawings                — lista (filteri: q, revision, material, designedBy, statusId, isProcurement)
+ *   GET  /api/v1/pdm/drawings/:id            — detalj + PDF metapodaci + import info
+ *   GET  /api/v1/pdm/drawings/:id/bom        — rekurzivna sastavnica (?depth=1..20, ?expandAll=true → samo flat)
+ *   GET  /api/v1/pdm/drawings/:id/where-used — obrnuta sastavnica (?recursive=true → tranzitivni parent-i)
+ *   GET  /api/v1/pdm/import-log              — istorija XML uvoza (?success=, ?isCritical=)
+ *   GET  /api/v1/pdm/lookups                 — statusi + distinct materijali + projektanti (za filtere)
+ *   POST /api/v1/pdm/import                  — XML uvoz (multipart: file + sourcePath?) [PDM_IMPORT]
+ *   POST /api/v1/pdm/pdf-import              — PDF uvoz (multipart: file + drawingNumber?/revision?/sourcePath?) [PDM_IMPORT]
  *
- * Traži JWT + PDM_READ (guard je V1 no-op — ključ se samo deklariše).
- * XML import (write) NIJE ovde — dolazi kasnije uz PDM sync (PDM_IMPORT).
+ * Read rute traže JWT + PDM_READ (klasni guard); import rute PDM_IMPORT —
+ * `PermissionsGuard` koristi getAllAndOverride([handler, class]) pa metoda
+ * pobedi klasu. Multi-fajl: endpoint prima JEDAN fajl; UI/bridge šalju
+ * sekvencijalno, svaki fajl = svoj log red + svoj response.
  */
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 @RequirePermission(PERMISSIONS.PDM_READ)
 @Controller({ path: "pdm", version: "1" })
 export class PdmController {
-  constructor(private readonly pdm: PdmService) {}
+  constructor(
+    private readonly pdm: PdmService,
+    private readonly pdmImport: PdmImportService,
+  ) {}
+
+  /**
+   * XML uvoz iz SolidWorks PDM-a (MODULE_SPEC_pdm §5.5). Poslovna
+   * validaciona greška → 200 + success:false (bridge/UI čitaju flag);
+   * 400 samo bez fajla; 413 preko 10 MB.
+   */
+  @Post("import")
+  @RequirePermission(PERMISSIONS.PDM_IMPORT)
+  @UseInterceptors(
+    FileInterceptor("file", { limits: { fileSize: 10 * 1024 * 1024 } }),
+  )
+  importXml(
+    @UploadedFile() file: UploadedMultipartFile | undefined,
+    @Body() body: { sourcePath?: string } | undefined,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.pdmImport.importXml(file, body?.sourcePath, req.user);
+  }
+
+  /**
+   * PDF uvoz — ime fajla `{Broj}_{Rev}.pdf` / `{Broj}.pdf`; eksplicitna
+   * form polja imaju prednost. Crtež ne mora postojati (PDF pre XML-a).
+   */
+  @Post("pdf-import")
+  @RequirePermission(PERMISSIONS.PDM_IMPORT)
+  @UseInterceptors(
+    FileInterceptor("file", { limits: { fileSize: 50 * 1024 * 1024 } }),
+  )
+  importPdf(
+    @UploadedFile() file: UploadedMultipartFile | undefined,
+    @Body()
+    body:
+      | { drawingNumber?: string; revision?: string; sourcePath?: string }
+      | undefined,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.pdmImport.importPdf(file, body ?? {}, req.user);
+  }
 
   @Get("drawings")
   listDrawings(@Query() query: ListDrawingsQuery) {
