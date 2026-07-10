@@ -6,6 +6,7 @@ import { Button } from '@/components/ui-kit/button';
 import { FormField } from '@/components/ui-kit/form-field';
 import { SearchBox } from '@/components/ui-kit/search-box';
 import { formatNumber } from '@/lib/format';
+import { ScanLine } from 'lucide-react';
 import {
   newClientEventId,
   useEmployeeLookup,
@@ -13,6 +14,7 @@ import {
   useReversiTools,
   type ReversiTool,
 } from '@/api/reversi';
+import { ScanOverlay } from './scan-overlay';
 
 const INPUT =
   'w-full rounded-control border border-line bg-surface-2 px-2.5 py-1.5 text-sm text-ink outline-none focus:border-accent';
@@ -50,6 +52,7 @@ export function IssueDialog({ open, onClose }: { open: boolean; onClose: () => v
   const [coopName, setCoopName] = useState('');
   const [coopQty, setCoopQty] = useState(1);
   const [error, setError] = useState<string | null>(null);
+  const [scanOpen, setScanOpen] = useState(false);
   // Jedan ključ po otvorenoj formi → retry ISTOG submita ne pravi dupli revers.
   const [clientEventId, setClientEventId] = useState(newClientEventId);
 
@@ -63,10 +66,10 @@ export function IssueDialog({ open, onClose }: { open: boolean; onClose: () => v
   }, [tools.data, lines]);
 
   function addTool(t: ReversiTool) {
-    setLines((ls) => [
+    setLines((ls) => (ls.some((l) => l.tool?.id === t.id) ? ls : [
       ...ls,
       { key: t.id, tool: t, quantity: 1, unit: 'kom' },
-    ]);
+    ]));
     setToolQ('');
   }
 
@@ -214,9 +217,16 @@ export function IssueDialog({ open, onClose }: { open: boolean; onClose: () => v
         )}
 
         {docType === 'TOOL' ? (
-          <FormField label="Dodaj alat" hint="Kucaj oznaku, naziv ili skeniraj barkod (HID čitač).">
+          <FormField label="Dodaj alat" hint="Kucaj oznaku/naziv, skeniraj kamerom ili HID čitačem.">
             <div className="space-y-1">
-              <SearchBox value={toolQ} onChange={setToolQ} placeholder="Oznaka, naziv, barkod…" />
+              <div className="flex gap-2">
+                <div className="flex-1">
+                  <SearchBox value={toolQ} onChange={setToolQ} placeholder="Oznaka, naziv, barkod…" />
+                </div>
+                <Button variant="secondary" onClick={() => setScanOpen(true)}>
+                  <ScanLine className="mr-1 h-4 w-4" /> Skeniraj
+                </Button>
+              </div>
               {toolQ && (
                 <div className="max-h-40 overflow-auto rounded-control border border-line">
                   {toolResults.map((t) => (
@@ -307,6 +317,17 @@ export function IssueDialog({ open, onClose }: { open: boolean; onClose: () => v
           </p>
         )}
       </div>
+
+      {scanOpen && (
+        <ScanOverlay
+          title="Skeniraj alat"
+          accept={['HAND']}
+          onResult={(r) => {
+            if (r.kind === 'HAND' && r.record) addTool(r.record as ReversiTool);
+          }}
+          onClose={() => setScanOpen(false)}
+        />
+      )}
     </Dialog>
   );
 }

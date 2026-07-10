@@ -3,6 +3,23 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from './client';
 
+/** Tip razrešenog barkoda (BE /reversi/lookups/barcode — paritet 1.0 resolveReversiBarcode). */
+export type BarcodeKind = 'HAND' | 'CUTTING' | 'EMPLOYEE' | 'UNKNOWN';
+
+export interface BarcodeResult {
+  kind: BarcodeKind;
+  barcode: string;
+  record: ReversiTool | { id: string; full_name: string; department: string | null } | Record<string, unknown> | null;
+}
+
+/**
+ * Imperativno razrešavanje skeniranog/otkucanog barkoda (poziva se iz skener
+ * overlay-a i HID-wedge polja, ne kao useQuery jer je on-demand po skenu).
+ */
+export function lookupBarcode(code: string): Promise<{ data: BarcodeResult }> {
+  return apiFetch<{ data: BarcodeResult }>(`/v1/reversi/lookups/barcode?code=${encodeURIComponent(code)}`);
+}
+
 // ------------------------------------------------------------------ tipovi
 // Reversi — 3.0 PILOT (2.0 backend docs/design/MODULE_SPEC_reversi.md §4).
 // Podaci žive u sy15 (1.0) bazi; backend vraća DVE vrste oblika:
