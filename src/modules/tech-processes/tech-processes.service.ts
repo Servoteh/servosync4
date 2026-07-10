@@ -1,4 +1,5 @@
 import {
+  BadGatewayException,
   BadRequestException,
   ConflictException,
   ForbiddenException,
@@ -7,6 +8,7 @@ import {
   NotFoundException,
   UnprocessableEntityException,
 } from "@nestjs/common";
+import { createConnection } from "node:net";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { ScopeService } from "../../common/authz/scope.service";
@@ -18,7 +20,10 @@ import {
 } from "../../common/pagination";
 import { byId, uniqueIds } from "../../common/relations";
 import { parseBarcode, formatOrderBarcode } from "./barcode";
-import { type ScanTechProcessDto, validateScan } from "./dto/scan-tech-process.dto";
+import {
+  type ScanTechProcessDto,
+  validateScan,
+} from "./dto/scan-tech-process.dto";
 import {
   type FinishTechProcessDto,
   validateFinish,
@@ -33,6 +38,7 @@ import {
 } from "./dto/storno-tech-process.dto";
 import { type StartWorkDto, validateStartWork } from "./dto/start-work.dto";
 import { type StopWorkDto, validateStopWork } from "./dto/stop-work.dto";
+import { type PrintLabelDto, validatePrintLabel } from "./dto/print-label.dto";
 
 /** Vrste kvaliteta delova (`part_quality_types`, spec §1): 0=dobar,1=dorada,2=škart. */
 export const PART_QUALITY = { GOOD: 0, REWORK: 1, SCRAP: 2 } as const;
@@ -256,7 +262,8 @@ export class TechProcessesService {
     if (query.workCenterCode?.trim())
       filter.workCenterCode = query.workCenterCode.trim();
     if (query.finished === "true") filter.isProcessFinished = true;
-    else if (query.finished === "false") filter.isProcessFinished = { not: true };
+    else if (query.finished === "false")
+      filter.isProcessFinished = { not: true };
     if (query.from || query.to) {
       const range: Prisma.DateTimeFilter = {};
       if (query.from) range.gte = new Date(query.from);
@@ -1039,7 +1046,11 @@ export class TechProcessesService {
   }
 
   /** WHERE uslovi zajednički dnevniku/zbiru/po-satu (nad v_work_sessions). */
-  private sessionConds(query: SessionQuery, from: Date, to: Date): Prisma.Sql[] {
+  private sessionConds(
+    query: SessionQuery,
+    from: Date,
+    to: Date,
+  ): Prisma.Sql[] {
     const conds: Prisma.Sql[] = [
       Prisma.sql`started_at >= ${from}`,
       Prisma.sql`started_at < ${to}`,
@@ -1096,7 +1107,11 @@ export class TechProcessesService {
     }));
     return {
       data,
-      meta: { from: from.toISOString(), to: to.toISOString(), days: data.length },
+      meta: {
+        from: from.toISOString(),
+        to: to.toISOString(),
+        days: data.length,
+      },
     };
   }
 
@@ -1117,7 +1132,9 @@ export class TechProcessesService {
       Prisma.sql`s.started_at < ${to}`,
     ];
     if (query.workCenterCode?.trim())
-      conds.push(Prisma.sql`s.work_center_code = ${query.workCenterCode.trim()}`);
+      conds.push(
+        Prisma.sql`s.work_center_code = ${query.workCenterCode.trim()}`,
+      );
     const wid = Number.parseInt(query.workerId ?? "", 10);
     if (!Number.isNaN(wid)) conds.push(Prisma.sql`s.worker_id = ${wid}`);
     const sWhere = Prisma.sql`WHERE ${Prisma.join(conds, " AND ")}`;
@@ -1144,7 +1161,9 @@ export class TechProcessesService {
       ORDER BY actual_seconds DESC, made DESC
       LIMIT ${take} OFFSET ${skip}
     `);
-    const totalRes = await this.prisma.$queryRaw<{ count: number }[]>(Prisma.sql`
+    const totalRes = await this.prisma.$queryRaw<
+      { count: number }[]
+    >(Prisma.sql`
       SELECT (COUNT(*))::int AS count FROM (
         SELECT 1 FROM v_work_sessions s ${sWhere}
         GROUP BY s.project_id, s.ident_number, s.variant, s.operation_number, s.work_center_code
@@ -1152,7 +1171,9 @@ export class TechProcessesService {
     `);
     const total = totalRes[0]?.count ?? 0;
 
-    const names = await this.resolveWorkCenterNames(rows.map((r) => r.work_center_code));
+    const names = await this.resolveWorkCenterNames(
+      rows.map((r) => r.work_center_code),
+    );
     const data = rows.map((r) => {
       const setup = r.setup_time ?? 0;
       const cycle = r.cycle_time ?? 0;
@@ -1205,7 +1226,11 @@ export class TechProcessesService {
     }));
     return {
       data,
-      meta: { from: from.toISOString(), to: to.toISOString(), hours: data.length },
+      meta: {
+        from: from.toISOString(),
+        to: to.toISOString(),
+        hours: data.length,
+      },
     };
   }
 
@@ -1243,7 +1268,9 @@ export class TechProcessesService {
       ORDER BY started_at DESC
       LIMIT ${take} OFFSET ${skip}
     `);
-    const totalRes = await this.prisma.$queryRaw<{ count: number }[]>(Prisma.sql`
+    const totalRes = await this.prisma.$queryRaw<
+      { count: number }[]
+    >(Prisma.sql`
       SELECT (COUNT(*))::int AS count FROM work_time_entries ${whereSql}
     `);
     const total = totalRes[0]?.count ?? 0;
@@ -1622,7 +1649,10 @@ export class TechProcessesService {
    * „Loše evidentirani". NE dira `tech_processes`.
    */
   async autoCloseOpenSessions(olderThanHours = 12) {
-    const hours = Number.isFinite(olderThanHours) && olderThanHours > 0 ? olderThanHours : 12;
+    const hours =
+      Number.isFinite(olderThanHours) && olderThanHours > 0
+        ? olderThanHours
+        : 12;
     const cutoff = new Date(Date.now() - hours * 3_600_000);
     const res = await this.prisma.workTimeEntry.updateMany({
       where: { stoppedAt: null, startedAt: { lt: cutoff } },
@@ -1694,7 +1724,14 @@ export class TechProcessesService {
       );
       controllerWarnings.push(msg);
     }
-    if (await this.selfControlViolation(projectId, identNumber, variant, worker.id)) {
+    if (
+      await this.selfControlViolation(
+        projectId,
+        identNumber,
+        variant,
+        worker.id,
+      )
+    ) {
       const msg = `Razdvajanje dužnosti: „${worker.fullName ?? worker.username}" je evidentirao rad na ovom delu — ne sme da radi završnu kontrolu nad sopstvenim radom.`;
       if (this.scope.isEnforced()) throw new ForbiddenException(msg);
       this.logger.warn(
@@ -1856,7 +1893,10 @@ export class TechProcessesService {
       };
     });
 
-    const label = await this.buildLabelData(result.workOrder.id, dto.pieceCount);
+    const label = await this.buildLabelData(
+      result.workOrder.id,
+      dto.pieceCount,
+    );
     const childOrderPending = dto.qualityTypeId !== PART_QUALITY.GOOD;
 
     return {
@@ -1881,7 +1921,9 @@ export class TechProcessesService {
         techProcessOpened: result.opened,
         workOrder: result.workOrder,
         // A-5 (shadow): upozorenja o ovlašćenju kontrolora / razdvajanju dužnosti (null ako OK).
-        controllerWarnings: controllerWarnings.length ? controllerWarnings : null,
+        controllerWarnings: controllerWarnings.length
+          ? controllerWarnings
+          : null,
         label,
         // Dorada/škart: child RN (-D/-S) + poruka tehnologu su P2.
         childOrderPending,
@@ -1989,6 +2031,60 @@ export class TechProcessesService {
     return { data: await this.buildLabelData(workOrderId, quantity) };
   }
 
+  /**
+   * `POST /labels/print` — RAW TSPL2 direktno na mrežni štampač (TCP 9100, TSC ML340P).
+   * Server je na istom LAN-u kao štampač; browser NE dira localhost (Chrome „Local
+   * Network Access" blokira HTTPS→localhost, pa je per-PC proxy nepouzdan). Iste odbrane
+   * kao 1.0 label-proxy: TSPL2 komande koje menjaju KONFIGURACIJU štampača se odbijaju
+   * (422) — pogrešan SIZE/GAP ume da „zaglavi" štampač. Printer adresa: env
+   * `LABEL_PRINTER_HOST`/`LABEL_PRINTER_PORT` (default 192.168.70.20:9100).
+   */
+  async printRawLabel(dto: PrintLabelDto) {
+    validatePrintLabel(dto);
+    const tspl2 = dto.tspl2;
+    const FORBIDDEN = [
+      "SIZE ",
+      "GAP ",
+      "DENSITY ",
+      "SPEED ",
+      "CODEPAGE ",
+      "SET TEAR",
+      "REFERENCE ",
+      "OFFSET ",
+    ];
+    const upper = tspl2.toUpperCase();
+    const hit = FORBIDDEN.find((c) => upper.includes(c));
+    if (hit)
+      throw new UnprocessableEntityException(
+        `TSPL2 sadrži zabranjenu komandu '${hit.trim()}' (menja konfiguraciju štampača) — štampa odbijena.`,
+      );
+
+    const host = process.env.LABEL_PRINTER_HOST || "192.168.70.20";
+    const port = Number.parseInt(process.env.LABEL_PRINTER_PORT ?? "", 10) || 9100;
+
+    const bytes = await new Promise<number>((resolve, reject) => {
+      const sock = createConnection({ host, port });
+      const fail = (msg: string) => {
+        sock.destroy();
+        reject(new BadGatewayException(`Štampač ${host}:${port} — ${msg}`));
+      };
+      sock.setTimeout(10_000, () => fail("timeout (10s)"));
+      sock.once("error", (e) => fail(e.message));
+      sock.once("connect", () => {
+        sock.write(tspl2, "binary", (err) => {
+          if (err) return fail(err.message);
+          const n = Buffer.byteLength(tspl2, "binary");
+          sock.end(() => resolve(n));
+        });
+      });
+    });
+
+    this.logger.log(
+      `label print: ${bytes} B → ${host}:${port} (copies=${dto.copies ?? "?"})`,
+    );
+    return { data: { ok: true, bytes, printer: `${host}:${port}` } };
+  }
+
   // ---------------------------------------------------------------- ISPRAVKE (kucanje)
   // Storno (kontra-red) i audited-delete otkucane operacije. Snapshot pre brisanja ide u
   // `audit_log.beforeData` (red je povratljiv). NAPOMENA: dedikovana
@@ -2061,7 +2157,8 @@ export class TechProcessesService {
       where: { id },
       include: { documents: true },
     });
-    if (!tp) throw new NotFoundException(`Tehnološki postupak ${id} ne postoji`);
+    if (!tp)
+      throw new NotFoundException(`Tehnološki postupak ${id} ne postoji`);
 
     await this.prisma.$transaction(async (tx) => {
       await tx.auditLog.create({
@@ -2074,7 +2171,9 @@ export class TechProcessesService {
         },
       });
       if (tp.documents.length)
-        await tx.techProcessDocument.deleteMany({ where: { techProcessId: id } });
+        await tx.techProcessDocument.deleteMany({
+          where: { techProcessId: id },
+        });
       await tx.techProcess.delete({ where: { id } });
     });
     return { data: { id, deleted: true, backedUpTo: "audit_log" } };
@@ -2175,7 +2274,11 @@ export class TechProcessesService {
     if (operationNumber !== null) where.operationNumber = operationNumber;
     return tx.techProcess.findFirst({
       where,
-      orderBy: [{ variant: "desc" }, { isProcessFinished: "asc" }, { id: "asc" }],
+      orderBy: [
+        { variant: "desc" },
+        { isProcessFinished: "asc" },
+        { id: "asc" },
+      ],
     });
   }
 
@@ -2212,7 +2315,9 @@ export class TechProcessesService {
       select: { workCenterCode: true },
     });
     if (!rows.length) return false;
-    const codes = [...new Set(rows.map((r) => r.workCenterCode).filter(Boolean))];
+    const codes = [
+      ...new Set(rows.map((r) => r.workCenterCode).filter(Boolean)),
+    ];
     const controlOps = await this.prisma.operation.findMany({
       where: {
         workCenterCode: { in: codes },
@@ -2266,7 +2371,8 @@ export class TechProcessesService {
       workOrderId: wo.id,
       workCenterCode,
     };
-    if (operationNumber !== null) routingWhere.operationNumber = operationNumber;
+    if (operationNumber !== null)
+      routingWhere.operationNumber = operationNumber;
     const routing = await tx.workOrderOperation.findFirst({
       where: routingWhere,
       orderBy: { id: "asc" },
@@ -2311,7 +2417,9 @@ export class TechProcessesService {
       select: { id: true, fullName: true, username: true, workerTypeId: true },
     });
     if (!worker)
-      throw new NotFoundException(`Radnik sa ID karticom '${card}' nije nađen.`);
+      throw new NotFoundException(
+        `Radnik sa ID karticom '${card}' nije nađen.`,
+      );
     return worker;
   }
 
@@ -2335,7 +2443,8 @@ export class TechProcessesService {
         pieceCount: true,
       },
     });
-    if (!wo) throw new NotFoundException(`Radni nalog ${workOrderId} ne postoji`);
+    if (!wo)
+      throw new NotFoundException(`Radni nalog ${workOrderId} ne postoji`);
 
     const project = await this.prisma.project.findUnique({
       where: { id: wo.projectId },
@@ -2437,7 +2546,9 @@ export class TechProcessesService {
     });
     if (!rows.length) return false;
 
-    const codes = [...new Set(rows.map((r) => r.workCenterCode).filter(Boolean))];
+    const codes = [
+      ...new Set(rows.map((r) => r.workCenterCode).filter(Boolean)),
+    ];
     const significant = await tx.operation.findMany({
       where: { workCenterCode: { in: codes }, significantForFinishing: true },
       select: { workCenterCode: true },

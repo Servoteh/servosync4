@@ -33,6 +33,7 @@ import type { ControlTechProcessDto } from "./dto/control-tech-process.dto";
 import type { StornoTechProcessDto } from "./dto/storno-tech-process.dto";
 import type { StartWorkDto } from "./dto/start-work.dto";
 import type { StopWorkDto } from "./dto/stop-work.dto";
+import type { PrintLabelDto } from "./dto/print-label.dto";
 
 /**
  * Read-only API za tehnološke postupke (Tehnološki postupci / TP).
@@ -62,10 +63,7 @@ export class TechProcessesController {
   constructor(private readonly techProcesses: TechProcessesService) {}
 
   @Get()
-  list(
-    @Query() query: ListTechProcessesQuery,
-    @Req() req: { user: AuthUser },
-  ) {
+  list(@Query() query: ListTechProcessesQuery, @Req() req: { user: AuthUser }) {
     // Row-scope: proizvodni_radnik → samo svoje mašine (ScopeService).
     return this.techProcesses.list(query, req.user);
   }
@@ -130,12 +128,24 @@ export class TechProcessesController {
     return this.techProcesses.label(query);
   }
 
+  /** RAW TSPL2 → mrežni termalni štampač (server-side; browser ne dira localhost). */
+  @Post("labels/print")
+  @HttpCode(200) // slanje bajtova štampaču — ništa se ne kreira u bazi
+  @RequirePermission(PERMISSIONS.TEHNOLOGIJA_REPORT_WORK)
+  printLabel(@Body() dto: PrintLabelDto) {
+    return this.techProcesses.printRawLabel(dto);
+  }
+
   /** Stanje sesije za (radnik, operacija) iz barkodova — vodi kiosk START/STOP. */
   @Get("work/open")
   @RequirePermission(PERMISSIONS.TEHNOLOGIJA_REPORT_WORK)
   openSession(
     @Query()
-    query: { orderBarcode?: string; operationBarcode?: string; workerCard?: string },
+    query: {
+      orderBarcode?: string;
+      operationBarcode?: string;
+      workerCard?: string;
+    },
   ) {
     return this.techProcesses.openSession(query);
   }
