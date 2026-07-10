@@ -29,6 +29,7 @@ import {
   TxBaseDto,
   WriteOffDto,
 } from "./dto/reversi-tx.dto";
+import { BulkImportToolsDto } from "./dto/reversi-bulk.dto";
 
 interface AuthedRequest {
   user: { userId: number; email: string; role: string };
@@ -124,6 +125,13 @@ export class ReversiController {
   @Get("lookups/barcode")
   lookupBarcode(@Query("code") code?: string) {
     return this.reversi.lookupBarcode(code);
+  }
+
+  /** Bulk-import inventara ručnog alata (XLSX/CSV parsira klijent, šalje redove). */
+  @Post("bulk-import/tools")
+  @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
+  bulkImportTools(@Body() dto: BulkImportToolsDto) {
+    return this.reversi.bulkImportTools(dto.rows);
   }
 
   // ---------- R2: transakcione akcije (sve manage; idempotency = clientEventId) ----------

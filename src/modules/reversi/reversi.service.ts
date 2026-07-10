@@ -16,6 +16,7 @@ import type {
   TxBaseDto,
   WriteOffDto,
 } from "./dto/reversi-tx.dto";
+import type { BulkToolRowDto } from "./dto/reversi-bulk.dto";
 
 /**
  * Reversi — 3.0 PILOT, R1 read sloj (MODULE_SPEC_reversi.md §4/§9).
@@ -275,6 +276,54 @@ export class ReversiService {
     return { data };
   }
 
+  /**
+   * Bulk-import inventara ručnog alata (paritet 1.0 bulkImportModal tip 1).
+   * Idempotentno po `oznaka` (postojeći alat = skip). Barkod/loc_item_ref_id
+   * dodeljuju trigeri. Vraća zbir kreiranih/preskočenih + greške po redu.
+   * Alat je odmah upotrebljiv u Izdaj (početno smeštanje u magacin je opcioni
+   * follow-up — izdavanje uzima iz null lokacije bez problema).
+   */
+  async bulkImportTools(rows: BulkToolRowDto[]) {
+    let created = 0;
+    let skipped = 0;
+    const errors: { oznaka: string; error: string }[] = [];
+
+    for (const row of rows) {
+      const oznaka = row.oznaka.trim();
+      try {
+        const existing = await this.sy15.db.revTool.findFirst({
+          where: { oznaka },
+          select: { id: true },
+        });
+        if (existing) {
+          skipped++;
+          continue;
+        }
+        const isQuantity = row.isQuantity ?? false;
+        const isConsumable = row.isConsumable ?? false;
+        await this.sy15.db.revTool.create({
+          data: {
+            oznaka,
+            naziv: row.naziv.trim(),
+            serijskiBroj: row.serijskiBroj?.trim() || null,
+            isQuantity,
+            isConsumable,
+            totalQty: isQuantity || isConsumable ? (row.totalQty ?? 0) : 1,
+            napomena: row.napomena?.trim() || null,
+            status: "active",
+          },
+        });
+        created++;
+      } catch (e) {
+        errors.push({
+          oznaka,
+          error: e instanceof Error ? e.message : "greška",
+        });
+      }
+    }
+    return { data: { created, skipped, errors, total: rows.length } };
+  }
+
   /** Picker radnika za Izdaj modal (paritet 1.0 fetchEmployees — samo aktivni, bez PII). */
   async lookupEmployees(q?: string) {
     const term = `%${(q ?? "").trim()}%`;
@@ -342,7 +391,10 @@ export class ReversiService {
     // Zero-width space/joiner/BOM (U+200B–U+200D, U+FEFF) — bez regex-literala
     // da izvor ostane čist ASCII (eslint no-irregular-whitespace).
     const ZERO_WIDTH = new Set([0x200b, 0x200c, 0x200d, 0xfeff]);
-    return [...t].filter((ch) => !ZERO_WIDTH.has(ch.codePointAt(0)!)).join("").trim();
+    return [...t]
+      .filter((ch) => !ZERO_WIDTH.has(ch.codePointAt(0)!))
+      .join("")
+      .trim();
   }
 
   // ---------- R2: transakcione akcije (Faza A — postojeće DB fn u tx + GUC + idempotency) ----------
