@@ -115,6 +115,11 @@ export class ReversiController {
     return this.reversi.reportMachines();
   }
 
+  @Get("lookups/employees")
+  lookupEmployees(@Query("q") q?: string) {
+    return this.reversi.lookupEmployees(q);
+  }
+
   // ---------- R2: transakcione akcije (sve manage; idempotency = clientEventId) ----------
 
   @Post("issue")

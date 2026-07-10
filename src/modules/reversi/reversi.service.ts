@@ -275,6 +275,19 @@ export class ReversiService {
     return { data };
   }
 
+  /** Picker radnika za Izdaj modal (paritet 1.0 fetchEmployees — samo aktivni, bez PII). */
+  async lookupEmployees(q?: string) {
+    const term = `%${(q ?? "").trim()}%`;
+    const data = await this.sy15.db.$queryRaw`
+      SELECT id, full_name, department, "position"
+      FROM employees
+      WHERE is_active IS TRUE
+        AND (${(q ?? "").trim()} = '' OR full_name ILIKE ${term} OR department ILIKE ${term})
+      ORDER BY full_name ASC
+      LIMIT 50`;
+    return { data };
+  }
+
   // ---------- R2: transakcione akcije (Faza A — postojeće DB fn u tx + GUC + idempotency) ----------
   // DB fn SAME gate-uju rev_can_manage() iz GUC claims (drugi sloj posle guard-a) i
   // SAME drže atomarnost rev_* ↔ loc_* (spec §0). Greške: 42501→403, P0001→422, 23505→409.
@@ -284,8 +297,22 @@ export class ReversiService {
     return this.callJsonFn(email, dto, "reversi.issue", "rev_issue_reversal");
   }
 
-  /** Povraćaj ručnog/kooperacije — `rev_confirm_return(jsonb)`. */
-  confirmReturn(email: string, dto: JsonPayloadTxDto) {
+  /**
+   * Povraćaj ručnog/kooperacije — `rev_confirm_return(jsonb)`.
+   * Ako klijent ne pošalje `return_to_location_id`, backend ga popuni magacinom
+   * `ALAT-MAG-01` (isti default koji 1.0 front hardkoduje — `MAG_CODE`).
+   */
+  async confirmReturn(email: string, dto: JsonPayloadTxDto) {
+    if (!dto.payload.return_to_location_id) {
+      const rows = await this.sy15.db.$queryRaw<{ id: string }[]>`
+        SELECT id FROM loc_locations WHERE code = 'ALAT-MAG-01' LIMIT 1`;
+      if (!rows[0]) {
+        throw new UnprocessableEntityException(
+          "Magacin ALAT-MAG-01 ne postoji u loc_locations — pošalji return_to_location_id",
+        );
+      }
+      dto.payload.return_to_location_id = rows[0].id;
+    }
     return this.callJsonFn(email, dto, "reversi.return", "rev_confirm_return");
   }
 

@@ -55,12 +55,35 @@ export class Sy15Service implements OnModuleDestroy {
    * Isti obrazac kao 1.0 Management API skripte.
    */
   async withUser<T>(email: string, fn: (tx: Sy15Tx) => Promise<T>): Promise<T> {
-    const claims = JSON.stringify({ email, role: "authenticated" });
     return this.db.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT set_config('request.jwt.claims', ${claims}, true)`;
+      await this.setClaims(tx as Sy15Tx, email);
       return fn(tx);
     });
   }
+
+  /**
+   * Postavi GUC claims za transakciju. `sub` = sy15 `auth.users.id` po email-u —
+   * OBAVEZAN za mutacije: rev_issue_reversal/confirm_return upisuju
+   * `issued_by`/`return_confirmed_by` preko `auth.uid()` (= claims->>'sub');
+   * bez sub-a INSERT pada na NOT NULL. Keširano po email-u (id se ne menja).
+   */
+  private async setClaims(tx: Sy15Tx, email: string): Promise<void> {
+    let sub = this.subByEmail.get(email);
+    if (sub === undefined) {
+      const rows = await tx.$queryRaw<{ id: string }[]>`
+        SELECT id FROM auth.users
+        WHERE lower(email) = lower(${email}) AND deleted_at IS NULL
+        LIMIT 1`;
+      sub = rows[0]?.id ?? null;
+      this.subByEmail.set(email, sub);
+    }
+    const claims = JSON.stringify(
+      sub ? { sub, email, role: "authenticated" } : { email, role: "authenticated" },
+    );
+    await tx.$queryRaw`SELECT set_config('request.jwt.claims', ${claims}, true)`;
+  }
+
+  private readonly subByEmail = new Map<string, string | null>();
 
   /**
    * Idempotentno izvršavanje transakcione akcije (spec §5). Registar =
@@ -76,9 +99,8 @@ export class Sy15Service implements OnModuleDestroy {
     action: string,
     fn: (tx: Sy15Tx) => Promise<T>,
   ): Promise<{ idempotent: boolean; result: T }> {
-    const claims = JSON.stringify({ email, role: "authenticated" });
     return this.db.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT set_config('request.jwt.claims', ${claims}, true)`;
+      await this.setClaims(tx as Sy15Tx, email);
       const inserted = await tx.$executeRaw`
         INSERT INTO rev_api_idempotency (client_event_id, action)
         VALUES (${clientEventId}::uuid, ${action})
