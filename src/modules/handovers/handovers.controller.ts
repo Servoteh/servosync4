@@ -7,14 +7,19 @@ import {
   Post,
   Query,
   Req,
+  Res,
+  StreamableFile,
   UseGuards,
 } from "@nestjs/common";
+import type { Response } from "express";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
 import { PERMISSIONS } from "../../common/authz/permissions";
 import { HandoversService } from "./handovers.service";
 import type { ListHandoversQuery } from "./handovers.service";
+import { PrintBundleService } from "./print-bundle.service";
+import type { PrintBundleQuery } from "./print-bundle.service";
 import type { AuthUser } from "../auth/jwt.strategy";
 import type { ApproveHandoverDto } from "./dto/approve-handover.dto";
 import type { RejectHandoverDto } from "./dto/reject-handover.dto";
@@ -28,6 +33,8 @@ import type { LaunchHandoverDto } from "./dto/launch-handover.dto";
  *   GET  /api/v1/handovers/technologists    — radnici sa defines_approval=true (id/fullName/username)
  *   GET  /api/v1/handovers/pending-approval — tehnolog inbox (status U OBRADI / na čekanju)
  *   GET  /api/v1/handovers/:id              — detalj
+ *   GET  /api/v1/handovers/:id/print-bundle     — P3: crtež te primopredaje za štampu (isti oblik kao na nacrtu)
+ *   GET  /api/v1/handovers/:id/print-bundle/pdf — P3: PDF crteža te primopredaje (per-RN štampa)
  *   POST /api/v1/handovers/:id/approve            { technologistId, comment? } — odobri (U OBRADI → SAGLASAN) + dodeli tehnologa
  *   POST /api/v1/handovers/:id/reject             { reason }           — odbij (U OBRADI → ODBIJENO); reason OBAVEZAN
  *   POST /api/v1/handovers/:id/return-to-pending  { reason? }          — vrati na čekanje (SAGLASAN → U OBRADI, undo; 409 ako RN postoji)
@@ -46,7 +53,10 @@ import type { LaunchHandoverDto } from "./dto/launch-handover.dto";
 @RequirePermission(PERMISSIONS.PRIMOPREDAJE_READ)
 @Controller({ path: "handovers", version: "1" })
 export class HandoversController {
-  constructor(private readonly handovers: HandoversService) {}
+  constructor(
+    private readonly handovers: HandoversService,
+    private readonly printing: PrintBundleService,
+  ) {}
 
   @Get("lookups")
   lookups() {
@@ -71,6 +81,30 @@ export class HandoversController {
   @Get(":id")
   findOne(@Param("id", ParseIntPipe) id: number) {
     return this.handovers.findOne(id);
+  }
+
+  /** P3: bundle od JEDNOG crteža ove primopredaje — isti oblik odgovora kao na nacrtu (korisno za per-RN štampu). */
+  @Get(":id/print-bundle")
+  printBundle(@Param("id", ParseIntPipe) id: number) {
+    return this.printing.handoverBundle(id);
+  }
+
+  /** P3: PDF crteža ove primopredaje (?format= / ?drawingIds= kao na nacrtu) — browser print dijalog bira štampač. */
+  @Get(":id/print-bundle/pdf")
+  async printBundlePdf(
+    @Param("id", ParseIntPipe) id: number,
+    @Query() query: PrintBundleQuery,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<StreamableFile> {
+    const { buffer, fileName } = await this.printing.handoverBundlePdf(
+      id,
+      query,
+    );
+    res.set({
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `inline; filename="${fileName}"`,
+    });
+    return new StreamableFile(buffer);
   }
 
   @Post(":id/approve")
