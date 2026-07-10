@@ -376,7 +376,7 @@ export class ReversiService {
   ) {
     return this.runTx(email, dto.clientEventId, action, async (tx) => {
       // fnName je iz zatvorenog skupa iznad (nije korisnički unos) — sme u Unsafe.
-      const rows = await tx.$queryRawUnsafe(
+      const rows = await tx.$queryRawUnsafe<{ result: unknown }[]>(
         `SELECT ${fnName}($1::jsonb) AS result`,
         JSON.stringify(dto.payload),
       );
