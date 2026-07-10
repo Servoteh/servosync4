@@ -5,8 +5,12 @@ import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Pager } from '@/components/ui-kit/pager';
+import { Button } from '@/components/ui-kit/button';
+import { Can } from '@/lib/can';
+import { PERMISSIONS } from '@/lib/permissions';
 import { useImportLog, type ImportLogRow } from '@/api/pdm';
 import { formatDateTime, formatNumber } from '@/lib/format';
+import { ImportDialog, type ImportKind } from './import-dialog';
 
 const columns: Column<ImportLogRow>[] = [
   {
@@ -47,6 +51,7 @@ export function ImportLogTab() {
   const [page, setPage] = useState(1);
   const [success, setSuccess] = useState<'' | 'true' | 'false'>('');
   const [onlyCritical, setOnlyCritical] = useState(false);
+  const [importKind, setImportKind] = useState<ImportKind | null>(null);
   const resetPage = () => setPage(1);
 
   const list = useImportLog({
@@ -88,11 +93,21 @@ export function ImportLogTab() {
           />
           Samo kritične
         </label>
-        {meta && (
-          <span className="ml-auto text-sm text-ink-secondary">
-            {formatNumber(meta.total)} zapisa
-          </span>
-        )}
+        <span className="ml-auto inline-flex items-end gap-2">
+          {meta && (
+            <span className="pb-1.5 text-sm text-ink-secondary">
+              {formatNumber(meta.total)} zapisa
+            </span>
+          )}
+          {/* Ručni uvoz (isti endpointi kao pdm-bridge) — samo sa pdm.import
+              permisijom (backend guard vraća 403, dugmad se kriju). */}
+          <Can permission={PERMISSIONS.PDM_IMPORT}>
+            <Button onClick={() => setImportKind('xml')}>Uvezi XML</Button>
+            <Button variant="secondary" onClick={() => setImportKind('pdf')}>
+              Uvezi PDF
+            </Button>
+          </Can>
+        </span>
       </div>
 
       {list.error && (
@@ -121,6 +136,10 @@ export function ImportLogTab() {
           onPrev={() => setPage((p) => Math.max(1, p - 1))}
           onNext={() => setPage((p) => Math.min(meta.totalPages, p + 1))}
         />
+      )}
+
+      {importKind && (
+        <ImportDialog kind={importKind} open onClose={() => setImportKind(null)} />
       )}
     </div>
   );

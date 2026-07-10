@@ -7,16 +7,20 @@ import { EmptyState } from '@/components/ui-kit/empty-state';
 import { SearchBox } from '@/components/ui-kit/search-box';
 import { Pager } from '@/components/ui-kit/pager';
 import { formatDate, formatNumber } from '@/lib/format';
-import { NativeSelect, errorBox } from './common';
+import { LegacyBadge, NativeSelect, errorBox } from './common';
 import { HandoverDetailPanel } from './handover-detail';
 
 const columns: Column<Handover>[] = [
   {
     key: 'drawing',
     header: 'Crtež',
+    // Tab nema kolonu Status (sve je U OBRADI) — Legacy bedž ide uz broj crteža.
     render: (r) => (
-      <span className="tnums font-semibold text-ink">
-        {r.drawing ? `${r.drawing.drawingNumber} / ${r.drawing.revision}` : '—'}
+      <span className="inline-flex items-center gap-1.5">
+        <span className="tnums font-semibold text-ink">
+          {r.drawing ? `${r.drawing.drawingNumber} / ${r.drawing.revision}` : '—'}
+        </span>
+        {r.isLegacy && <LegacyBadge />}
       </span>
     ),
   },

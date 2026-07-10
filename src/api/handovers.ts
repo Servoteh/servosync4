@@ -268,6 +268,12 @@ export interface Handover {
   updatedAt: string | null;
   /** Dodeljeni tehnolog koji piše TP (0 = nije dodeljen — dodela ide kroz approve). */
   technologistId: number;
+  /**
+   * Red deriviran sync-om iz QBigTehn tRN-a (`legacy_rn_id != null`, backend
+   * enrich). Benigno za čitanje/štampu; odobri/odbij/lansiraj/vrati do
+   * cutover-a blokira backend guard sa 409 — UI drži dugmad disabled.
+   */
+  isLegacy: boolean;
   drawing: DrawingRef | null;
   status: StatusRef | null;
   handoverWorker: WorkerRef | null;

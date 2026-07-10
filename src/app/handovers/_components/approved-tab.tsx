@@ -18,7 +18,7 @@ import { ComboBox } from '@/components/ui-kit/combo-box';
 import { Can } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
 import { formatDate, formatNumber } from '@/lib/format';
-import { errMsg, errorBox } from './common';
+import { LEGACY_TOOLTIP, LegacyBadge, errMsg, errorBox } from './common';
 import { HandoverDetailPanel } from './handover-detail';
 import { LaunchHandoverDialog, ReturnToPendingDialog } from './workflow-dialogs';
 
@@ -62,9 +62,13 @@ export function ApprovedTab() {
     {
       key: 'drawing',
       header: 'Crtež',
+      // Tab nema kolonu Status (sve je SAGLASAN) — Legacy bedž ide uz broj crteža.
       render: (r) => (
-        <span className="tnums font-semibold text-ink">
-          {r.drawing ? `${r.drawing.drawingNumber} / ${r.drawing.revision}` : '—'}
+        <span className="inline-flex items-center gap-1.5">
+          <span className="tnums font-semibold text-ink">
+            {r.drawing ? `${r.drawing.drawingNumber} / ${r.drawing.revision}` : '—'}
+          </span>
+          {r.isLegacy && <LegacyBadge />}
         </span>
       ),
     },
@@ -114,7 +118,8 @@ export function ApprovedTab() {
           ) : (
             <Can permission={PERMISSIONS.RN_WRITE}>
               <button
-                disabled={prepare.isPending}
+                disabled={prepare.isPending || r.isLegacy}
+                title={r.isLegacy ? LEGACY_TOOLTIP : undefined}
                 onClick={() => onPrepare(r)}
                 className={`${rowBtn} bg-accent text-accent-fg`}
               >
@@ -122,16 +127,20 @@ export function ApprovedTab() {
               </button>
             </Can>
           )}
+          {/* Legacy red: mutacije do cutover-a idu u QBigTehn (backend 409 je
+              krajnja istina ako stariji tab ipak okine) — dugmad disabled. */}
           <Can permission={PERMISSIONS.PRIMOPREDAJE_APPROVE}>
             <button
-              disabled={prepare.isPending}
+              disabled={prepare.isPending || r.isLegacy}
+              title={r.isLegacy ? LEGACY_TOOLTIP : undefined}
               onClick={() => setLaunchTarget(r)}
               className={`${rowBtn} border border-accent text-accent`}
             >
               Lansiraj
             </button>
             <button
-              disabled={prepare.isPending}
+              disabled={prepare.isPending || r.isLegacy}
+              title={r.isLegacy ? LEGACY_TOOLTIP : undefined}
               onClick={() => setReturnTarget(r)}
               className={`${rowBtn} border border-line text-ink-secondary`}
             >

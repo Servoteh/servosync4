@@ -8,7 +8,13 @@ import { EmptyState } from '@/components/ui-kit/empty-state';
 import { SearchBox } from '@/components/ui-kit/search-box';
 import { Pager } from '@/components/ui-kit/pager';
 import { formatDate, formatNumber } from '@/lib/format';
-import { HANDOVER_STATUS_OPTIONS, NativeSelect, errorBox, handoverStatusMeta } from './common';
+import {
+  HANDOVER_STATUS_OPTIONS,
+  LegacyBadge,
+  NativeSelect,
+  errorBox,
+  handoverStatusMeta,
+} from './common';
 import { HandoverDetailPanel } from './handover-detail';
 
 const columns: Column<Handover>[] = [
@@ -38,6 +44,7 @@ const columns: Column<Handover>[] = [
         <span className="inline-flex items-center gap-1.5">
           <StatusBadge tone={s.tone} label={s.label} />
           {r.isLocked && <StatusBadge tone="warn" label="Zaključana" />}
+          {r.isLegacy && <LegacyBadge />}
         </span>
       );
     },
