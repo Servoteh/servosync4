@@ -218,6 +218,44 @@ export function useReversiTools(params: ReversiToolsParams) {
   });
 }
 
+export interface ToolBattery {
+  id: string;
+  serijskiBroj: string | null;
+  kapacitet: string | null;
+  datumNabavke: string | null;
+  status: string;
+  napomena: string | null;
+}
+
+export interface ToolService {
+  id: string;
+  datum: string;
+  tip: string;
+  opis: string | null;
+  izvrsilac: string | null;
+  trosak: string | number | null;
+  status: string;
+  napomena: string | null;
+}
+
+export type ReversiToolDetail = ReversiTool & {
+  datumKupovine?: string | null;
+  nabavnaVrednost?: string | number | null;
+  otpisDatum?: string | null;
+  otpisRazlog?: string | null;
+  batteries: ToolBattery[];
+  services: ToolService[];
+};
+
+/** Kartica alata: osnovno + baterije + servisi (GET /reversi/tools/:id). */
+export function useReversiTool(id: string | null) {
+  return useQuery({
+    queryKey: [...KEYS.tools, 'detail', id],
+    enabled: !!id,
+    queryFn: () => apiFetch<{ data: ReversiToolDetail }>(`/v1/reversi/tools/${id}`),
+  });
+}
+
 export function useMyIssuedTools() {
   return useQuery({
     queryKey: [...KEYS.reports, 'my-issued'],

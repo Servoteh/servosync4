@@ -6,10 +6,12 @@ import { EmptyState } from '@/components/ui-kit/empty-state';
 import { SearchBox } from '@/components/ui-kit/search-box';
 import { formatNumber } from '@/lib/format';
 import { useWarehouse, type WarehouseRow } from '@/api/reversi';
+import { ToolDetailDialog } from './tool-detail-dialog';
 
 /** Objedinjeno stanje magacina (v_rev_warehouse_unified — paritet 1.0 magacinTab). */
 export function MagacinTab() {
   const [q, setQ] = useState('');
+  const [toolId, setToolId] = useState<string | null>(null);
   const warehouse = useWarehouse();
 
   const rows = useMemo(() => {
@@ -55,8 +57,14 @@ export function MagacinTab() {
         rows={rows}
         rowKey={(r) => `${r.grupa}-${r.item_id}-${r.location_code ?? ''}`}
         loading={warehouse.isLoading}
+        onRowActivate={(r) => {
+          // Kartica se otvara samo za ručni alat/opremu (rev_tools); rezni alat ima
+          // svoj tok (kartica reznog stiže sa reznim modulom).
+          if (!/rezn/i.test(r.grupa)) setToolId(r.item_id);
+        }}
         empty={<EmptyState title="Magacin je prazan" hint="Nema stavki koje odgovaraju pretrazi." />}
       />
+      <ToolDetailDialog toolId={toolId} onClose={() => setToolId(null)} />
     </div>
   );
 }

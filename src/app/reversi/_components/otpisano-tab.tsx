@@ -1,14 +1,17 @@
 'use client';
 
+import { useState } from 'react';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { formatDate, formatNumber } from '@/lib/format';
 import { useScrapped, type ScrappedRow } from '@/api/reversi';
+import { ToolDetailDialog } from './tool-detail-dialog';
 
 /** Otpisan/izgubljen alat (v_rev_otpisani_alat — manage-only, paritet 1.0 reversiScrappedTab). */
 export function OtpisanoTab() {
   const scrapped = useScrapped(true);
+  const [toolId, setToolId] = useState<string | null>(null);
 
   const cols: Column<ScrappedRow>[] = [
     { key: 'oznaka', header: 'Oznaka', render: (r) => <span className="font-medium">{r.oznaka}</span> },
@@ -37,12 +40,16 @@ export function OtpisanoTab() {
   ];
 
   return (
-    <DataTable
-      columns={cols}
-      rows={scrapped.data?.data ?? []}
-      rowKey={(r) => r.id}
-      loading={scrapped.isLoading}
-      empty={<EmptyState title="Nema otpisanog alata" hint="Nijedan alat nije otpisan ni izgubljen." />}
-    />
+    <>
+      <DataTable
+        columns={cols}
+        rows={scrapped.data?.data ?? []}
+        rowKey={(r) => r.id}
+        loading={scrapped.isLoading}
+        onRowActivate={(r) => setToolId(r.id)}
+        empty={<EmptyState title="Nema otpisanog alata" hint="Nijedan alat nije otpisan ni izgubljen." />}
+      />
+      <ToolDetailDialog toolId={toolId} onClose={() => setToolId(null)} />
+    </>
   );
 }
