@@ -21,6 +21,7 @@ import {
   LaunchHandoverDialog,
   ReturnToPendingDialog,
 } from './workflow-dialogs';
+import { PrintDrawingsDialog } from './print-drawings-dialog';
 
 const actionBtn =
   'rounded-control px-3 py-1.5 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-40';
@@ -95,6 +96,7 @@ export function HandoverDetailPanel({ handover }: { handover: Handover }) {
   const [rejecting, setRejecting] = useState(false);
   const [launching, setLaunching] = useState(false);
   const [returning, setReturning] = useState(false);
+  const [printOpen, setPrintOpen] = useState(false);
   const busy = reject.isPending || prepare.isPending;
 
   const s = handoverStatusMeta(handover.statusId);
@@ -110,6 +112,14 @@ export function HandoverDetailPanel({ handover }: { handover: Handover }) {
         <StatusBadge tone={s.tone} label={s.label} />
         {locked && <StatusBadge tone="warn" label="Zaključana" />}
         <span className="flex-1" />
+        {/* Štampa crteža je read-only (endpoint = primopredaje.read, kao i sam
+            prikaz) — dostupna u svakom statusu, bez permission gate-a. */}
+        <button
+          onClick={() => setPrintOpen(true)}
+          className={`${actionBtn} border border-line text-ink-secondary`}
+        >
+          Štampaj sve crteže
+        </button>
         {/* Permission gate po obrascu sa work-orders/page.tsx — dugmad bez
             permisije se kriju (backend enforce vraća 403). Odobri/Odbij/
             Lansiraj/Vrati = primopredaje.approve; Otkucaj TP kreira RN = rn.write. */}
@@ -250,6 +260,16 @@ export function HandoverDetailPanel({ handover }: { handover: Handover }) {
         handover={handover}
         open={returning}
         onClose={() => setReturning(false)}
+      />
+      <PrintDrawingsDialog
+        open={printOpen}
+        onClose={() => setPrintOpen(false)}
+        scope={{ kind: 'handover', id: handover.id }}
+        subtitle={
+          drawing
+            ? `Crtež ${drawing.drawingNumber} / ${drawing.revision}`
+            : `Primopredaja #${handover.id}`
+        }
       />
     </div>
   );
