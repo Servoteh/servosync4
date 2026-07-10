@@ -244,6 +244,12 @@ export interface DraftContextRef {
   quantityToProduce: number;
 }
 
+/** RN kreiran iz primopredaje (`work_orders.drawing_handover_id`) — null dok ne postoji. */
+export interface WorkOrderRef {
+  id: number;
+  identNumber: string;
+}
+
 /** Red primopredaje — GET /v1/handovers, /v1/handovers/pending-approval, /v1/handovers/:id. */
 export interface Handover {
   id: number;
@@ -260,11 +266,16 @@ export interface Handover {
   isLocked: boolean | null;
   createdAt: string | null;
   updatedAt: string | null;
+  /** Dodeljeni tehnolog koji piše TP (0 = nije dodeljen — dodela ide kroz approve). */
+  technologistId: number;
   drawing: DrawingRef | null;
   status: StatusRef | null;
   handoverWorker: WorkerRef | null;
   statusChangedBy: WorkerRef | null;
   launchedBy: WorkerRef | null;
+  technologist: WorkerRef | null;
+  /** RN otkucan iz ove primopredaje (prepare-work-order / launch) — null dok ne postoji. */
+  workOrder: WorkOrderRef | null;
   /** Najbolji-pokušaj veza ka nacrtu/stavci (`resolveDraftContext` — heuristika, vidi servis). */
   draftContext: DraftContextRef | null;
 }
@@ -275,6 +286,7 @@ export interface HandoverListParams {
   drawingNumber?: string;
   projectId?: number | '';
   handoverWorkerId?: number | '';
+  technologistId?: number | '';
   from?: string;
   to?: string;
 }
@@ -286,6 +298,7 @@ function buildHandoverQuery(params: HandoverListParams): string {
     drawingNumber: params.drawingNumber,
     projectId: params.projectId === '' ? undefined : params.projectId,
     handoverWorkerId: params.handoverWorkerId === '' ? undefined : params.handoverWorkerId,
+    technologistId: params.technologistId === '' ? undefined : params.technologistId,
     from: params.from,
     to: params.to,
   });
@@ -330,21 +343,84 @@ export function useTechnologists() {
   });
 }
 
+/**
+ * Adapter za `ComboBox`: tehnolozi filtrirani klijentski — lista je mala i
+ * endpoint nema `q` parametar (isti obrazac kao `useDrawingsLookup` ispod).
+ */
+export function useTechnologistsLookup(q: string) {
+  const list = useTechnologists();
+  const needle = q.trim().toLowerCase();
+  const all = list.data?.data ?? [];
+  const data = needle
+    ? all.filter((t) =>
+        [t.fullName ?? '', t.username].some((s) => s.toLowerCase().includes(needle)),
+      )
+    : all;
+  return { data: { data }, isLoading: list.isLoading };
+}
+
 function useInvalidateHandovers() {
   const qc = useQueryClient();
   return () => qc.invalidateQueries({ queryKey: ['handovers'] });
 }
 
-/** Odobri primopredaju (U OBRADI → SAGLASAN). */
+/**
+ * Odobri primopredaju (U OBRADI → SAGLASAN) + dodeli tehnologa koji piše TP.
+ * `technologistId` je OBAVEZAN (backend 422 ako fali / nije aktivan tehnolog).
+ */
 export function useApproveHandover() {
   const invalidate = useInvalidateHandovers();
   return useMutation({
-    mutationFn: ({ id, comment }: { id: number; comment?: string }) =>
+    mutationFn: ({
+      id,
+      technologistId,
+      comment,
+    }: {
+      id: number;
+      technologistId: number;
+      comment?: string;
+    }) =>
       apiFetch<{ data: Handover }>(`/v1/handovers/${id}/approve`, {
         method: 'POST',
-        body: JSON.stringify({ comment }),
+        body: JSON.stringify({ technologistId, comment }),
       }),
     onSuccess: invalidate,
+  });
+}
+
+/**
+ * Vrati odobrenu primopredaju na čekanje (SAGLASAN → U OBRADI, undo odobravanja).
+ * Backend vraća 409 ako RN za primopredaju već postoji (poruka nosi identNumber
+ * + uput da se RN prvo obriše/razreši) — prikazuje se u dijalogu.
+ */
+export function useReturnHandoverToPending() {
+  const invalidate = useInvalidateHandovers();
+  return useMutation({
+    mutationFn: ({ id, reason }: { id: number; reason?: string }) =>
+      apiFetch<{ data: Handover }>(`/v1/handovers/${id}/return-to-pending`, {
+        method: 'POST',
+        body: JSON.stringify({ reason }),
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/**
+ * "Otkucaj TP" — kreiraj RN iz odobrene primopredaje BEZ lansiranja (primopredaja
+ * ostaje SAGLASAN). Idempotentno: ako RN već postoji vraća ga sa `existing: true`.
+ */
+export function usePrepareHandoverWorkOrder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<{ data: { workOrderId: number; identNumber: string; existing: boolean } }>(
+        `/v1/handovers/${id}/prepare-work-order`,
+        { method: 'POST', body: '{}' },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['handovers'] });
+      qc.invalidateQueries({ queryKey: ['work-orders'] });
+    },
   });
 }
 
@@ -373,15 +449,32 @@ export function useDrawingsLookup(q: string) {
 }
 export type { Drawing };
 
-/** Lansiraj primopredaju (SAGLASAN → LANSIRAN) — kreira `work_orders` red. */
+/** RN u odgovoru lansiranja (novi ili postojeći iz prepare toka). */
+export interface LaunchedWorkOrderRef {
+  id: number;
+  identNumber: string;
+  variant: number;
+  projectId: number;
+  drawingNumber: string;
+  revision: string;
+  pieceCount: number;
+  handoverStatusId: number;
+}
+
+/**
+ * Lansiraj primopredaju (SAGLASAN → LANSIRAN) — kreira `work_orders` red, ili
+ * podiže postojeći RN (prepare tok) na LANSIRAN. PAŽNJA: namerno NE invalidira
+ * cache — success ekran (`LaunchHandoverDialog`) živi u expandovanom redu liste,
+ * pa bi invalidacija sklonila red (i dijalog) pre nego što korisnik stigne do
+ * „Otvori RN"/„Štampaj RN". Invalidaciju handovers+work-orders radi dijalog
+ * pri zatvaranju.
+ */
 export function useLaunchHandover() {
-  const invalidate = useInvalidateHandovers();
   return useMutation({
     mutationFn: ({ id, comment, dueDate }: { id: number; comment?: string; dueDate?: string }) =>
-      apiFetch<{ data: { handover: Handover; workOrder: { id: number; identNumber: string } } }>(
+      apiFetch<{ data: { handover: Handover; workOrder: LaunchedWorkOrderRef } }>(
         `/v1/handovers/${id}/launch`,
         { method: 'POST', body: JSON.stringify({ comment, dueDate }) },
       ),
-    onSuccess: invalidate,
   });
 }

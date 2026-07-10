@@ -217,16 +217,23 @@ export function useApproveWorkOrder() {
   });
 }
 
-/** Lansiraj RN (mora biti saglasan). */
+/**
+ * Lansiraj RN (mora biti saglasan). Ako je RN nastao iz primopredaje
+ * (`drawing_handover_id > 0`), backend u istoj transakciji diže i primopredaju
+ * na LANSIRAN — zato se invalidira i `handovers` cache (tab „Odobrene").
+ */
 export function useLaunchWorkOrder() {
-  const invalidate = useInvalidate();
+  const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: number) =>
       apiFetch<{ data: WorkOrderDetail }>(`/v1/work-orders/${id}/launch`, {
         method: 'POST',
         body: '{}',
       }),
-    onSuccess: invalidate,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['work-orders'] });
+      qc.invalidateQueries({ queryKey: ['handovers'] });
+    },
   });
 }
 

@@ -1304,6 +1304,26 @@ export default function WorkOrdersPage() {
   const [cloning, setCloning] = useState(false);
   const list = useWorkOrders({ page, q: q.trim() || undefined, statusId, from, to });
 
+  // Deep-link ?open=<id> (dolazak sa /handovers: „Otkucaj TP" / „Otvori RN") —
+  // učitaj taj RN, filtriraj listu po njegovom identu (da red sigurno bude
+  // vidljiv) i otvori expand sa TP editorom. window.location umesto
+  // useSearchParams jer je build statički export (Suspense zahtev).
+  const [openId, setOpenId] = useState<number | null>(null);
+  useEffect(() => {
+    const raw = new URLSearchParams(window.location.search).get('open');
+    const id = raw ? Number(raw) : NaN;
+    if (Number.isInteger(id) && id > 0) setOpenId(id);
+  }, []);
+  const openRn = useWorkOrder(openId);
+  const openRnData = openRn.data?.data;
+  useEffect(() => {
+    if (!openRnData) return;
+    setQ(openRnData.identNumber);
+    setPage(1);
+    setExpanded(openRnData.id);
+    setOpenId(null); // jednokratno — dalja pretraga/filteri su korisnikovi
+  }, [openRnData]);
+
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
   }, [user, isLoading, router]);

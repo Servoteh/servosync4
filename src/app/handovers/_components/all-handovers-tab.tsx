@@ -48,9 +48,19 @@ const columns: Column<Handover>[] = [
     render: (r) => <span className="text-ink-secondary">{formatDate(r.handoverDate)}</span>,
   },
   {
-    key: 'worker',
+    key: 'technologist',
     header: 'Tehnolog',
-    render: (r) => <span className="text-ink-secondary">{r.handoverWorker?.fullName ?? '—'}</span>,
+    render: (r) => <span className="text-ink-secondary">{r.technologist?.fullName ?? '—'}</span>,
+  },
+  {
+    key: 'workOrder',
+    header: 'RN',
+    render: (r) =>
+      r.workOrder ? (
+        <span className="tnums font-semibold text-ink">{r.workOrder.identNumber}</span>
+      ) : (
+        <span className="text-ink-disabled">—</span>
+      ),
   },
 ];
 
@@ -58,7 +68,7 @@ const columns: Column<Handover>[] = [
 export function AllHandoversTab() {
   const [q, setQ] = useState('');
   const [statusId, setStatusId] = useState<number | ''>('');
-  const [handoverWorkerId, setHandoverWorkerId] = useState<number | ''>('');
+  const [technologistId, setTechnologistId] = useState<number | ''>('');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [page, setPage] = useState(1);
@@ -70,14 +80,14 @@ export function AllHandoversTab() {
     page,
     drawingNumber: q.trim() || undefined,
     statusId,
-    handoverWorkerId,
+    technologistId,
     from: from || undefined,
     to: to || undefined,
   });
 
   const rows = list.data?.data ?? [];
   const meta = list.data?.meta.pagination;
-  const hasFilter = !!(q || statusId !== '' || handoverWorkerId !== '' || from || to);
+  const hasFilter = !!(q || statusId !== '' || technologistId !== '' || from || to);
 
   return (
     <div className="space-y-4">
@@ -113,9 +123,9 @@ export function AllHandoversTab() {
         <label className="flex flex-col gap-1 text-xs text-ink-secondary">
           Za tehnologa
           <NativeSelect
-            value={handoverWorkerId}
+            value={technologistId}
             onChange={(e) => {
-              setHandoverWorkerId(e.target.value === '' ? '' : Number(e.target.value));
+              setTechnologistId(e.target.value === '' ? '' : Number(e.target.value));
               resetPage();
             }}
           >
@@ -156,7 +166,7 @@ export function AllHandoversTab() {
             onClick={() => {
               setQ('');
               setStatusId('');
-              setHandoverWorkerId('');
+              setTechnologistId('');
               setFrom('');
               setTo('');
               resetPage();
@@ -186,7 +196,7 @@ export function AllHandoversTab() {
         empty={
           <EmptyState
             title="Nema primopredaja"
-            hint="Promeni filtere ili proveri da su nacrti predati u primopredaju."
+            hint="Promeni filtere ili proveri da su nacrti predati u primopredaju. Legacy istorija primopredaja stiže finalnim jednokratnim uvozom iz QBigTehn-a."
           />
         }
       />
