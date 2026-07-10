@@ -1,7 +1,7 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiFetch } from './client';
+import { apiBlob, apiFetch } from './client';
 import type { Paginated, WorkerRef } from './tech-processes';
 import { useDrawings, type Drawing } from './pdm';
 
@@ -477,4 +477,85 @@ export function useLaunchHandover() {
         { method: 'POST', body: JSON.stringify({ comment, dueDate }) },
       ),
   });
+}
+
+// ─────────────────────────────────────────────────────── Štampa crteža (print-bundle, P3)
+
+/** Detektovan format prve strane PDF-a crteža — 'custom' = ne-ISO dimenzije ili nečitljiv PDF. */
+export type PrintPageFormat = 'A0' | 'A1' | 'A2' | 'A3' | 'A4' | 'custom';
+
+/** Stavka print bundle-a — sve stavke nacrta dedupovane po crtežu (backend PrintBundleService). */
+export interface PrintBundleItem {
+  drawingId: number;
+  /** null za orphan drawingId (nema DB FK-a — crtež ne postoji u `drawings`). */
+  drawingNumber: string | null;
+  revision: string | null;
+  name: string | null;
+  /** Isključena iz primopredaje — ostaje u listi radi prikaza, ali se NE štampa. */
+  excluded: boolean;
+  hasPdf: boolean;
+  /** Veličina PDF-a u KB (server računa bez učitavanja bloba); null bez PDF-a. */
+  sizeKb: number | null;
+  /** null = nema PDF-a ili isključena stavka (format se ne detektuje). */
+  pageFormat: PrintPageFormat | null;
+}
+
+/** Grupa za štampu — samo ne-isključene stavke sa PDF-om, redosled A0→A4→custom. */
+export interface PrintBundleGroup {
+  format: PrintPageFormat;
+  count: number;
+  drawingIds: number[];
+}
+
+export interface PrintBundle {
+  items: PrintBundleItem[];
+  groups: PrintBundleGroup[];
+  /** Ne-isključene stavke bez PDF-a — ne mogu se štampati. */
+  missingCount: number;
+}
+
+/** Nivo štampe: nacrt (svi crteži) ili primopredaja (jedan crtež) — iste rute, različit koren. */
+export interface PrintBundleScope {
+  kind: 'draft' | 'handover';
+  id: number;
+}
+
+function printBundleBase(scope: PrintBundleScope): string {
+  return scope.kind === 'draft' ? `/v1/handover-drafts/${scope.id}` : `/v1/handovers/${scope.id}`;
+}
+
+/** Pregled crteža NACRTA za štampu — GET /v1/handover-drafts/:id/print-bundle. */
+export function useDraftPrintBundle(id: number | null) {
+  return useQuery({
+    queryKey: ['handover-drafts', 'print-bundle', id],
+    queryFn: () => apiFetch<{ data: PrintBundle }>(`/v1/handover-drafts/${id}/print-bundle`),
+    enabled: id != null,
+  });
+}
+
+/** Pregled crteža PRIMOPREDAJE za štampu (uvek 1 stavka) — GET /v1/handovers/:id/print-bundle. */
+export function useHandoverPrintBundle(id: number | null) {
+  return useQuery({
+    queryKey: ['handovers', 'print-bundle', id],
+    queryFn: () => apiFetch<{ data: PrintBundle }>(`/v1/handovers/${id}/print-bundle`),
+    enabled: id != null,
+  });
+}
+
+/**
+ * Preuzmi JEDAN spojen PDF izabranih crteža kao `Blob` (za skriveni iframe +
+ * `print()` ili otvaranje u novom tabu). `format` XOR `drawingIds` — backend
+ * vraća 422 za oba zajedno; bez ijednog = svi ne-isključeni crteži sa PDF-om.
+ * Endpoint traži JWT, pa se PDF povlači kroz `apiBlob` (Authorization header),
+ * isti obrazac kao `openWorkOrderRnPdf` — ne prosti `window.open` na URL.
+ */
+export async function fetchPrintBundlePdf(
+  scope: PrintBundleScope,
+  selection: { format?: PrintPageFormat; drawingIds?: number[] } = {},
+): Promise<Blob> {
+  const query = buildQuery({
+    format: selection.format,
+    drawingIds: selection.drawingIds?.length ? selection.drawingIds.join(',') : undefined,
+  });
+  return apiBlob(`${printBundleBase(scope)}/print-bundle/pdf${query}`);
 }

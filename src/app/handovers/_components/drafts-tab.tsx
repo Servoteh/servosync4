@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Pencil, Plus, Send, Trash2 } from 'lucide-react';
+import { Pencil, Plus, Printer, Send, Trash2 } from 'lucide-react';
 import {
   useCreateHandoverDraft,
   useDeleteHandoverDraft,
@@ -40,6 +40,7 @@ import {
   draftTypeLabel,
   errorBox,
 } from './common';
+import { PrintDrawingsDialog } from './print-drawings-dialog';
 
 const columns: Column<HandoverDraft>[] = [
   {
@@ -462,6 +463,7 @@ function DraftDetail({
   const submit = useSubmitHandoverDraft();
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [confirmingSubmit, setConfirmingSubmit] = useState(false);
+  const [printOpen, setPrintOpen] = useState(false);
 
   if (q.isLoading) return <span className="text-sm text-ink-disabled">Učitavanje…</span>;
   if (q.error || !q.data)
@@ -476,6 +478,15 @@ function DraftDetail({
         <StatusBadge tone={s.tone} label={s.label} />
         {d.isLocked && <StatusBadge tone="warn" label="Zaključan" />}
         <span className="flex-1" />
+        {/* Štampa je read-only — dostupna i za zaključan nacrt, bez permission gate-a
+            (endpoint traži samo primopredaje.read, isto kao i sam prikaz). */}
+        <button
+          onClick={() => setPrintOpen(true)}
+          className="inline-flex items-center gap-1.5 rounded-control border border-line px-2.5 py-1 text-xs font-semibold text-ink-secondary hover:bg-surface-2"
+        >
+          <Printer className="h-3.5 w-3.5" aria-hidden />
+          Štampaj sve crteže
+        </button>
         {!d.isLocked && (
           <>
             <button
@@ -525,6 +536,13 @@ function DraftDetail({
       </div>
 
       <ErrorText error={del.error} />
+
+      <PrintDrawingsDialog
+        open={printOpen}
+        onClose={() => setPrintOpen(false)}
+        scope={{ kind: 'draft', id: d.id }}
+        subtitle={`Nacrt ${d.draftNumber}`}
+      />
 
       <ConfirmDialog
         open={confirmingSubmit}
