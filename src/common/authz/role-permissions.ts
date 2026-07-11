@@ -23,6 +23,21 @@ const P = PERMISSIONS;
 /** Sve permisije (za `admin`). */
 const ALL: PermissionKey[] = Object.values(P);
 
+/**
+ * Read-only „pod" za 2.0 pilot module — isto što dobija `viewer`.
+ * Svaka 1.0 rola koja preko SSO-a (iframe „Tehnologija", auth.service.ts
+ * SY15_ROLE_PRIORITY) uđe u 2.0, a nema svoje kurirane permisije, dobija BAR
+ * ovaj uvid — inače bi uz AUTHZ_ENFORCE=true dobila 403 na ceo modul (manje od
+ * viewer-a). Write/approve i dalje traži kuriranu rolu.
+ */
+const VIEWER_READ_BASELINE: readonly PermissionKey[] = [
+  P.TEHNOLOGIJA_READ,
+  P.RN_READ,
+  P.PDM_READ,
+  P.DIRECTORY_READ,
+  P.REVERSI_READ,
+];
+
 export const ROLE_PERMISSIONS: Partial<
   Record<RoleKey, readonly PermissionKey[]>
 > = {
@@ -51,9 +66,13 @@ export const ROLE_PERMISSIONS: Partial<
     P.MRP_READ,
     P.DIRECTORY_READ,
     P.SYNC_READ,
+    // Reversi paritet 1.0: sef NIJE u rev_can_manage() → read + team scope, BEZ manage.
+    P.REVERSI_READ,
+    P.REVERSI_TEAM_READ,
   ],
 
   [ROLES.TEHNOLOG]: [
+    P.REVERSI_READ, // paritet 1.0: SELECT za sve prijavljene
     P.TEHNOLOGIJA_READ,
     P.TEHNOLOGIJA_WRITE,
     P.TEHNOLOGIJA_APPROVE,
@@ -78,6 +97,7 @@ export const ROLE_PERMISSIONS: Partial<
   ],
 
   [ROLES.CNC_PROGRAMER]: [
+    P.REVERSI_READ, // paritet 1.0: SELECT za sve prijavljene
     P.TEHNOLOGIJA_READ,
     P.TEHNOLOGIJA_WRITE,
     P.TEHNOLOGIJA_APPROVE,
@@ -92,6 +112,7 @@ export const ROLE_PERMISSIONS: Partial<
   ],
 
   [ROLES.KONTROLOR]: [
+    P.REVERSI_READ, // paritet 1.0: SELECT za sve prijavljene
     P.TEHNOLOGIJA_READ,
     P.TEHNOLOGIJA_APPROVE, // finalna kontrola: validira završen TP (uz OBAVEZAN audit zapis)
     // Kontrolori i KUCAJU (prijem kooperacije/cinkovanja — 90d prod podataka) + kiosk scan/
@@ -117,6 +138,9 @@ export const ROLE_PERMISSIONS: Partial<
     P.PRIMOPREDAJE_READ,
     P.MRP_READ,
     P.DIRECTORY_READ,
+    // Reversi (3.0 pilot): magacioner je nosilac modula — rev_can_manage() paritet.
+    P.REVERSI_READ,
+    P.REVERSI_MANAGE,
   ],
 
   [ROLES.PROIZVODNI_RADNIK]: [
@@ -126,6 +150,7 @@ export const ROLE_PERMISSIONS: Partial<
     P.RN_READ,
     P.STRUKTURE_READ, // matrica §3: R (own) — svoj radnik-zapis / svoj machine_access
     P.LOKACIJE_READ,
+    P.REVERSI_READ, // paritet 1.0: SELECT za sve prijavljene („Moji alati")
     // BEZ directory.read — matrica §3: RADNIK nema komitente/predmete.
   ],
 
@@ -135,6 +160,7 @@ export const ROLE_PERMISSIONS: Partial<
     P.PDM_READ,
     P.TEHNOLOGIJA_READ,
     P.RN_READ, // matrica §3: R (kontekst za MRP uvid)
+    P.REVERSI_READ, // paritet 1.0: SELECT za sve prijavljene
   ],
 
   [ROLES.MENADZMENT]: [
@@ -158,36 +184,60 @@ export const ROLE_PERMISSIONS: Partial<
     P.MRP_READ,
     P.DIRECTORY_READ,
     P.SYNC_READ,
+    // Reversi paritet 1.0: menadzment JESTE u rev_can_manage().
+    P.REVERSI_READ,
+    P.REVERSI_MANAGE,
+    P.REVERSI_TEAM_READ,
   ],
+
+  // AKTIVIRANE 10.07.2026 uz 3.0-pilot Reversi (Nenad) — paritet rev_can_manage().
+  // Ostale permisije dobijaju kad njihovi moduli (PB/Plan montaže) stignu u 3.0;
+  // per-projekat scope (scopeType='project') sprovodi ScopeService tada.
+  [ROLES.PM]: [
+    P.REVERSI_READ,
+    P.REVERSI_MANAGE,
+    P.TEHNOLOGIJA_READ,
+    P.RN_READ,
+    P.PDM_READ,
+    P.DIRECTORY_READ, // baseline uvid (kao viewer)
+  ],
+  [ROLES.LEADPM]: [
+    P.REVERSI_READ,
+    P.REVERSI_MANAGE,
+    P.TEHNOLOGIJA_READ,
+    P.RN_READ,
+    P.PDM_READ,
+    P.DIRECTORY_READ, // baseline uvid (kao viewer)
+  ],
+
+  // tim_lider: read-baseline (SSO uvid) + zaduženja svog tima; write čeka 3.0.
+  [ROLES.TIM_LIDER]: [...VIEWER_READ_BASELINE, P.REVERSI_TEAM_READ],
 
   // Biro role (P4_SPEC_pdm_intake_PREDLOG §6.5.3, odluka Nenad 11.07 — §0 t.3):
   // projektanti biroa MORAJU raditi u 2.0 pre cutover-a (kreiranje/uređivanje
-  // nacrta primopredaje), pa `inzenjer`/`projektant_vodja` dobijaju minimalni
-  // 2.0 set ODMAH. Role u katalogu ostaju tier "3.0" — ovo je rana aktivacija
-  // permisija, ne nova uloga. AUTHZ_ENFORCE=true je živ na prod-u: bez ovih
-  // unosa biro dobija 403 na sve.
-  [ROLES.INZENJER]: [
-    P.PDM_READ,
-    P.PRIMOPREDAJE_READ,
-    P.PRIMOPREDAJE_WRITE, // kreiranje/uređivanje nacrta primopredaje (§6.5.3)
-    P.TEHNOLOGIJA_READ,
-    P.RN_READ,
-    P.DIRECTORY_READ,
-  ],
-
+  // nacrta primopredaje) — read-baseline (SSO uvid) + primopredaje write.
+  // Role u katalogu ostaju tier "3.0" — rana aktivacija permisija, ne nova uloga.
   [ROLES.PROJEKTANT_VODJA]: [
-    P.PDM_READ,
+    ...VIEWER_READ_BASELINE,
     P.PRIMOPREDAJE_READ,
     P.PRIMOPREDAJE_WRITE, // kreiranje/uređivanje nacrta primopredaje (§6.5.3)
-    P.TEHNOLOGIJA_READ,
-    P.RN_READ,
-    P.DIRECTORY_READ,
+  ],
+  [ROLES.INZENJER]: [
+    ...VIEWER_READ_BASELINE,
+    P.PRIMOPREDAJE_READ,
+    P.PRIMOPREDAJE_WRITE, // kreiranje/uređivanje nacrta primopredaje (§6.5.3)
   ],
 
-  // Ostale 3.0-rezervisane i deferred uloge nemaju 2.0 permisije (njihovi
-  // moduli još ne postoje) — izuzetak su biro role iznad (§6.5.3).
-  // Baseline uvid dobija samo `viewer` (read gde ima smisla u 2.0 pilotu).
-  [ROLES.VIEWER]: [P.TEHNOLOGIJA_READ, P.RN_READ, P.PDM_READ, P.DIRECTORY_READ],
+  // 1.0 kancelarijske role bez 2.0-modula (tier 3.0/reservisano): preko SSO-a
+  // ulaze u „Tehnologiju" pa MORAJU imati read-baseline (bez ovoga ih
+  // AUTHZ_ENFORCE=true zaključa na 403). Kuriranje write-a stiže sa modulima.
+  [ROLES.HR]: [...VIEWER_READ_BASELINE],
+  [ROLES.POSLOVNI_ADMIN]: [...VIEWER_READ_BASELINE],
+  [ROLES.CNC_OPERATER]: [...VIEWER_READ_BASELINE],
+  [ROLES.MONTER]: [...VIEWER_READ_BASELINE],
+
+  // Baseline uvid dobija i `viewer` (read gde ima smisla u 2.0 pilotu).
+  [ROLES.VIEWER]: [...VIEWER_READ_BASELINE],
 };
 
 /**

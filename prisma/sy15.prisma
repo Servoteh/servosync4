@@ -1,0 +1,251 @@
+// ServoSync 3.0 — sy15 (1.0) baza: Reversi pilot (MODULE_SPEC_reversi.md).
+// GENERISANO iz zive sy15 information_schema 2026-07-10 — NE menjaj rucno bez re-verifikacije.
+// Tabele OSTAJU u sy15 bazi (spec §0): ovo je drugi datasource, NE deo glavne 2.0 seme.
+// Uuid PK se ZADRZAVA (1.0 poreklo; BACKEND_RULES §2 "id nije uuid" vazi za QBigTehn legacy port).
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../node_modules/@prisma-sy15/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("SY15_DATABASE_URL")
+}
+
+model RevTool {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  oznaka String
+  naziv String
+  serijskiBroj String? @map("serijski_broj")
+  datumKupovine DateTime? @map("datum_kupovine") @db.Date
+  status String @default("active")
+  napomena String?
+  locItemRefId String? @map("loc_item_ref_id")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String? @map("created_by") @db.Uuid
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  bigtehnSifraArtikla Int? @map("bigtehn_sifra_artikla")
+  /// NOT NULL in DB, assigned by the rev_tools_before_insert_barcode trigger —
+  /// dbgenerated() makes it optional on create (bulkImportTools inserts without it).
+  barcode String @default(dbgenerated())
+  subgroupId String? @map("subgroup_id") @db.Uuid
+  isQuantity Boolean @default(false) @map("is_quantity")
+  totalQty Int @default(1) @map("total_qty")
+  isConsumable Boolean @default(false) @map("is_consumable")
+  minStockQty Int? @map("min_stock_qty")
+  maxStockQty Int? @map("max_stock_qty")
+  subsubgroupId String? @map("subsubgroup_id") @db.Uuid
+  garancijaDo DateTime? @map("garancija_do") @db.Date
+  garancijaNapomena String? @map("garancija_napomena")
+  imaPunjac Boolean @default(false) @map("ima_punjac")
+  punjacSerijski String? @map("punjac_serijski")
+  otpisDatum DateTime? @map("otpis_datum") @db.Date
+  otpisRazlog String? @map("otpis_razlog")
+  otpisBy String? @map("otpis_by") @db.Uuid
+  nabavnaVrednost Decimal? @map("nabavna_vrednost") @db.Decimal
+  @@unique([locItemRefId], map: "rev_tools_loc_item_ref_id_key")
+  @@map("rev_tools")
+}
+
+model RevDocument {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  docNumber String @map("doc_number")
+  docType String @map("doc_type")
+  recipientType String @map("recipient_type")
+  recipientEmployeeId String? @map("recipient_employee_id") @db.Uuid
+  recipientEmployeeName String? @map("recipient_employee_name")
+  recipientDepartment String? @map("recipient_department")
+  recipientCompanyName String? @map("recipient_company_name")
+  recipientCompanyPib String? @map("recipient_company_pib")
+  recipientLocId String? @map("recipient_loc_id") @db.Uuid
+  expectedReturnDate DateTime? @map("expected_return_date") @db.Date
+  issuedAt DateTime @default(now()) @map("issued_at") @db.Timestamptz(6)
+  issuedBy String @map("issued_by") @db.Uuid
+  status String @default("OPEN")
+  returnConfirmedBy String? @map("return_confirmed_by") @db.Uuid
+  returnConfirmedAt DateTime? @map("return_confirmed_at") @db.Timestamptz(6)
+  returnNotes String? @map("return_notes")
+  pdfStoragePath String? @map("pdf_storage_path")
+  pdfGeneratedAt DateTime? @map("pdf_generated_at") @db.Timestamptz(6)
+  napomena String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  recipientMachineCode String? @map("recipient_machine_code")
+  issuedToEmployeeId String? @map("issued_to_employee_id") @db.Uuid
+  issuedToEmployeeName String? @map("issued_to_employee_name")
+  bulkImportLegacyKey String? @map("bulk_import_legacy_key")
+  @@unique([docNumber], map: "rev_documents_doc_number_key")
+  @@map("rev_documents")
+}
+
+model RevDocumentLine {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  documentId String @map("document_id") @db.Uuid
+  sortOrder Int @default(0) @map("sort_order")
+  lineType String @map("line_type")
+  toolId String? @map("tool_id") @db.Uuid
+  drawingNo String? @map("drawing_no")
+  workOrderId String? @map("work_order_id") @db.Uuid
+  partName String? @map("part_name")
+  quantity Decimal @default(1) @db.Decimal
+  unit String @default("kom")
+  napomena String?
+  issueMovementId String? @map("issue_movement_id") @db.Uuid
+  returnedQuantity Decimal @default(0) @map("returned_quantity") @db.Decimal
+  returnMovementId String? @map("return_movement_id") @db.Uuid
+  lineStatus String @default("ISSUED") @map("line_status")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  cuttingToolCatalogId String? @map("cutting_tool_catalog_id") @db.Uuid
+  @@map("rev_document_lines")
+}
+
+model RevRecipientLocation {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  recipientType String @map("recipient_type")
+  recipientKey String @map("recipient_key")
+  recipientLabel String @map("recipient_label")
+  locLocationId String @map("loc_location_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  @@unique([recipientType, recipientKey], map: "rev_recipient_locations_recipient_type_recipient_key_key")
+  @@map("rev_recipient_locations")
+}
+
+model RevCuttingToolCatalog {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  barcode String?
+  oznaka String
+  naziv String
+  compatibleMachineCodes String[] @default(dbgenerated("ARRAY[]::text[]")) @map("compatible_machine_codes")
+  unit String @default("kom")
+  status String @default("active")
+  napomena String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String? @map("created_by") @db.Uuid
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  bigtehnSifraArtikla Int? @map("bigtehn_sifra_artikla")
+  minStockQty Int @default(0) @map("min_stock_qty")
+  subgroupId String? @map("subgroup_id") @db.Uuid
+  maxStockQty Int? @map("max_stock_qty")
+  @@unique([barcode], map: "rev_cutting_tool_catalog_barcode_key")
+  @@map("rev_cutting_tool_catalog")
+}
+
+model RevCuttingToolStock {
+  catalogId String @map("catalog_id") @db.Uuid
+  locationId String @map("location_id") @db.Uuid
+  onHandQty Decimal @default(0) @map("on_hand_qty") @db.Decimal
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@id([catalogId, locationId])
+  @@map("rev_cutting_tool_stock")
+}
+
+model RevDocumentCuttingAssignee {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  documentId String @map("document_id") @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  role String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  @@unique([documentId, employeeId], map: "rev_document_cutting_assignees_document_id_employee_id_key")
+  @@map("rev_document_cutting_assignees")
+}
+
+model RevInventoryGroup {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code String
+  label String
+  appliesTo String @map("applies_to")
+  displayOrder Int @default(100) @map("display_order")
+  icon String?
+  isSeeded Boolean @default(true) @map("is_seeded")
+  napomena String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@unique([code], map: "rev_inventory_groups_code_key")
+  @@map("rev_inventory_groups")
+}
+
+model RevInventorySubgroup {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  groupId String @map("group_id") @db.Uuid
+  code String
+  label String
+  displayOrder Int @default(100) @map("display_order")
+  isSeeded Boolean @default(true) @map("is_seeded")
+  napomena String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@unique([groupId, code], map: "rev_inventory_subgroups_group_id_code_key")
+  @@map("rev_inventory_subgroups")
+}
+
+model RevInventorySubsubgroup {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  subgroupId String @map("subgroup_id") @db.Uuid
+  code String
+  label String
+  displayOrder Int @default(100) @map("display_order")
+  isSeeded Boolean @default(false) @map("is_seeded")
+  napomena String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@unique([subgroupId, code], map: "rev_inventory_subsubgroups_subgroup_id_code_key")
+  @@map("rev_inventory_subsubgroups")
+}
+
+model RevMachineHead {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  machineCode String @map("machine_code")
+  oznaka String
+  naziv String
+  tip String?
+  serijskiBroj String? @map("serijski_broj")
+  status String @default("ACTIVE")
+  napomena String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String? @default(dbgenerated("auth.uid()")) @map("created_by") @db.Uuid
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("rev_machine_heads")
+}
+
+model RevToolBattery {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  toolId String @map("tool_id") @db.Uuid
+  serijskiBroj String? @map("serijski_broj")
+  kapacitet String?
+  datumNabavke DateTime? @map("datum_nabavke") @db.Date
+  status String @default("active")
+  napomena String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String? @default(dbgenerated("auth.uid()")) @map("created_by") @db.Uuid
+  @@map("rev_tool_batteries")
+}
+
+model RevToolServiceLog {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  toolId String @map("tool_id") @db.Uuid
+  datum DateTime @default(dbgenerated("CURRENT_DATE")) @db.Date
+  tip String @default("popravka")
+  opis String?
+  izvrsilac String?
+  trosak Decimal? @db.Decimal
+  status String @default("zavrsen")
+  napomena String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String? @default(dbgenerated("auth.uid()")) @map("created_by") @db.Uuid
+  @@map("rev_tool_service_log")
+}
+
+model RevToolStockLedger {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  toolId String @map("tool_id") @db.Uuid
+  delta Int
+  reason String
+  balanceAfter Int @map("balance_after")
+  refDocId String? @map("ref_doc_id") @db.Uuid
+  refLineId String? @map("ref_line_id") @db.Uuid
+  note String?
+  createdBy String? @default(dbgenerated("auth.uid()")) @map("created_by") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  @@map("rev_tool_stock_ledger")
+}

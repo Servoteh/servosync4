@@ -37,6 +37,12 @@ export const PERMISSIONS = {
   // Sync administracija
   SYNC_RUN: "sync.run",
   SYNC_READ: "sync.read",
+  // Reversi — 3.0 PILOT (zaduženja alata/LZO/rezni; MODULE_SPEC_reversi.md §3).
+  // Paritet žive 1.0 politike: read = svi prijavljeni; manage = rev_can_manage()
+  // (admin/menadzment/pm/leadpm/magacioner); team_read = get_team_issued_tools scope.
+  REVERSI_READ: "reversi.read",
+  REVERSI_MANAGE: "reversi.manage",
+  REVERSI_TEAM_READ: "reversi.team_read",
 } as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
