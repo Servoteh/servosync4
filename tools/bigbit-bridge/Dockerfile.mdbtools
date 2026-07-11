@@ -1,0 +1,7 @@
+# Minimal mdb-tools image for the BigBit bridge. Built once by install-timer.sh
+# so the nightly job does not apt-install on every run.
+FROM debian:stable-slim
+RUN apt-get update -qq \
+ && apt-get install -y -qq --no-install-recommends mdbtools \
+ && rm -rf /var/lib/apt/lists/*
+ENTRYPOINT []

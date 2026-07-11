@@ -1,0 +1,20 @@
+# BigBit bridge allow-list (KEEP-SYNC). One line per table:
+#   AccessTable | pg_target | sql_file (in sql/)
+# The deny-list (EXCLUDE-TVRDO in F3) is enforced by simply NOT listing tables
+# here - the script never mdb-export-s anything outside this manifest.
+#
+# Column order in each sql/*.sql staging table MUST match the Access table's
+# storage order (mdb-export emits all columns in that order; \copy loads
+# positionally after skipping the header).
+#
+# --- v0 pilot: 3 item classifier tables (models existed in 2.0 but were never
+#     synced - items had group/subgroup/origin CODES without NAMES, F1 gap) ---
+R_Grupa    | item_groups    | item_groups.sql
+R_Podgrupa | item_subgroups | item_subgroups.sql
+R_Poreklo  | item_origins   | item_origins.sql
+#
+# --- phase 2 (BLOCKED on items.id key-space decision, plan 7.2/7.3):
+#     Komitenti, Predmeti, R_Artikli, Cenovnik, Magacini, Prodavci
+#     (Prodavci: NEVER expose [Password] - plain-text; needs a projection since
+#      mdb-export dumps the whole table).
+# --- phase 3: the rest of KEEP-SYNC from BB_T_26-analiza-F3-inventar-207-tabela.md

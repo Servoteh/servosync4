@@ -1,0 +1,5 @@
+# These run on Linux (ubuntusrv) - keep LF regardless of the repo's autocrlf.
+*.sh            text eol=lf
+*.sql           text eol=lf
+tables.manifest text eol=lf
+Dockerfile*     text eol=lf
