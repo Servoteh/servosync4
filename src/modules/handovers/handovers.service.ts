@@ -1,11 +1,13 @@
 import {
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
   UnprocessableEntityException,
 } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
+import { NotificationsService } from "../notifications/notifications.service";
 import {
   pageMeta,
   parsePagination,
@@ -14,6 +16,11 @@ import {
 import { byId, uniqueIds } from "../../common/relations";
 import { alignIdSequence } from "../../common/db-sequences";
 import { parseDateParam } from "../../common/date-params";
+import {
+  isActiveTechnologist,
+  technologistWorkerWhere,
+  TECHNOLOGIST_CHECK_SELECT,
+} from "../../common/workers/technologist-criteria";
 import type { AuthUser } from "../auth/jwt.strategy";
 import { LaunchHandoverDto } from "./dto/launch-handover.dto";
 import { ApproveHandoverDto } from "./dto/approve-handover.dto";
@@ -60,6 +67,9 @@ const HANDOVER_SELECT = {
   updatedAt: true,
   technologistId: true,
   legacyRnId: true,
+  technologistAssignedAt: true,
+  technologistAssignedById: true,
+  productionDeadline: true,
 } satisfies Prisma.DrawingHandoverSelect;
 
 /** Podskup RN polja koji launch/prepare vraćaju (isti kao dosadašnji launch). */
@@ -83,6 +93,8 @@ interface HandoverForWorkOrder {
   handoverWorkerId: number;
   technologistId: number;
   legacyRnId: number | null;
+  /** Rok unet pri odobravanju (§6.5.1) — fallback za `work_orders.production_deadline`. */
+  productionDeadline: Date | null;
 }
 
 /** Razrešeni kontekst (crtež + nacrt/stavka + predmet) za građenje RN zaglavlja. */
@@ -138,7 +150,12 @@ export interface ListHandoversQuery {
  */
 @Injectable()
 export class HandoversService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(HandoversService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifications: NotificationsService,
+  ) {}
 
   // ---------------------------------------------------------------- READ
 
@@ -228,10 +245,18 @@ export class HandoversService {
     return { data: { draftStatuses, handoverStatuses } };
   }
 
-  /** `GET /handovers/technologists` — `defines_approval=true` radnici, samo id/fullName/username (§3.4/§8.3). */
+  /**
+   * `GET /handovers/technologists` — aktivni radnici vrste „Tehnolog"
+   * (worker_types po imenu, legacy paritet `tRadnici.IDVrsteRadnika=1`; P4
+   * spec §6.3, odluka #2 — `defines_approval` je NAPUŠTEN za ovaj kriterijum).
+   * Zajednički helper = isti izvor istine kao approve validacija, take-over
+   * gate i notifikacije. Samo id/fullName/username (§3.4/§8.3).
+   */
   async technologists() {
+    const where = await technologistWorkerWhere(this.prisma);
+    if (!where) return { data: [] };
     const data = await this.prisma.worker.findMany({
-      where: { definesApproval: true, active: true },
+      where,
       select: SAFE_WORKER_SELECT,
       orderBy: { fullName: "asc" },
     });
@@ -242,8 +267,13 @@ export class HandoversService {
 
   /**
    * Odobri primopredaju (§6.4 + P1): šef tehnologije OBAVEZNO bira tehnologa
-   * (`technologistId`) koji piše TP. Tehnolog mora biti aktivan radnik sa
-   * `defines_approval=true` — isti kriterijum kao `GET /handovers/technologists`.
+   * (`technologistId`) koji piše TP. Tehnolog mora biti AKTIVAN radnik vrste
+   * „Tehnolog" (zajednički helper, P4 spec §6.3 — isti kriterijum kao
+   * `GET /handovers/technologists`; `defines_approval` je napušten za ovaj
+   * kriterijum i ostaje samo RN-level approve/launch gate, §6.2). Opcioni
+   * `dueDate` (§6.5.1) upisuje rok izrade (`production_deadline`) koji se
+   * kasnije propagira u RN. Uz tehnologa se pišu i audit kolone
+   * `technologist_assigned_at/by` (isti mehanizam kao take-over).
    * Preduslov: status U OBRADI.
    */
   async approve(id: number, dto: ApproveHandoverDto, actor?: AuthUser) {
@@ -263,18 +293,21 @@ export class HandoversService {
       throw new UnprocessableEntityException(
         "Komentar može imati najviše 250 karaktera.",
       );
+    // `new Date("bilo šta")` = Invalid Date → PrismaClientValidationError →
+    // goli 500; validiraj rok pre bilo kakvog upisa (ista provera kao launch).
+    const dueDate = parseDateParam(dto?.dueDate, "dueDate");
 
     const technologist = await this.prisma.worker.findUnique({
       where: { id: technologistId },
-      select: { id: true, definesApproval: true, active: true },
+      select: TECHNOLOGIST_CHECK_SELECT,
     });
     if (!technologist)
       throw new UnprocessableEntityException(
         `Tehnolog ${technologistId} ne postoji.`,
       );
-    if (!technologist.definesApproval || !technologist.active)
+    if (!(await isActiveTechnologist(this.prisma, technologist)))
       throw new UnprocessableEntityException(
-        `Radnik ${technologistId} nije aktivan tehnolog (defines_approval) — izaberite tehnologa sa /handovers/technologists liste.`,
+        `Radnik ${technologistId} nije aktivan radnik vrste "Tehnolog" — izaberite tehnologa sa /handovers/technologists liste.`,
       );
 
     await this.transition(id, {
@@ -282,7 +315,15 @@ export class HandoversService {
       to: HANDOVER_STATUS.APPROVED,
       comment,
       actorWorkerId: actor?.workerId ?? null,
-      extra: { technologistId },
+      extra: {
+        technologistId,
+        technologistAssignedAt: new Date(),
+        technologistAssignedById: actor?.workerId ?? null,
+        // `?? null` (ne undefined): approve bez roka mora da OBRIŠE eventualni
+        // stari rok — approve je autoritativan za rok (return-to-pending ga
+        // ionako prazni, ali budi eksplicitan).
+        productionDeadline: dueDate ?? null,
+      },
       wrongStateMessage:
         "Primopredaja mora biti U OBRADI (na čekanju) da bi bila odobrena.",
     });
@@ -356,6 +397,12 @@ export class HandoversService {
         data: {
           statusId: HANDOVER_STATUS.PENDING,
           technologistId: 0, // undo dodele tehnologa
+          // Uz undo tehnologa se prazne i audit kolone dodele (nema „tekućeg"
+          // tehnologa → nema ni „kada/ko dodelio") i rok unet pri odobravanju
+          // (§6.5.1 — sledeći approve upisuje svež rok).
+          technologistAssignedAt: null,
+          technologistAssignedById: null,
+          productionDeadline: null,
           statusChangedAt: new Date(),
           statusChangedById: actor?.workerId ?? null,
           // `?? null` (ne undefined): undo bez razloga mora da OBRIŠE komentar
@@ -365,6 +412,163 @@ export class HandoversService {
       });
     });
     return this.findOne(id);
+  }
+
+  /**
+   * „Preuzmi izradu" (P4 spec §6.4, odluka #4): bilo koji AKTIVAN radnik vrste
+   * „Tehnolog" (isti helper kao §6.3; permisioni gate `primopredaje.write` je u
+   * kontroleru — worker-type provera je drugi, precizniji gate) preuzima
+   * zaduženje na SAGLASNOJ, nezaključanoj, ne-legacy primopredaji. Legacy
+   * paritet: `UPDATE tRN SET SifraRadnika` — tehnolozi „jedni drugima imaju
+   * pravo da pomažu". `technologist_id` se PREPIŠE (prvobitno dodeljeni se ne
+   * pamti), audit ide u `technologist_assigned_at/by`; ako postoji pripremljen
+   * RN koji nije lansiran/zaključan, i `work_orders.worker_id` prelazi na
+   * preuzimaoca (bez toga bi kartica RN-a pokazivala starog tehnologa).
+   * Idempotentno: već moj → 200 `{ alreadyOwner: true }` bez upisa.
+   * NAPOMENA (prihvaćeno odstupanje): `alreadyOwner` je top-level ključ pored
+   * `data` — doslovna forma iz spec §6.4 („200 {alreadyOwner: true}"), svesno
+   * van envelope ugovora BACKEND_RULES §5 ({ data, meta }); FE tip
+   * (api/handovers.ts) je vezan za ovaj oblik — ne „popravljati" bez FE-a.
+   * Konkurentnost: uslovni `updateMany` — poslednji pobeđuje (poslovno
+   * prihvatljivo), ali launch/lock u međuvremenu obara na 409.
+   */
+  async takeOver(id: number, actor?: AuthUser) {
+    const actorWorkerId = actor?.workerId ?? null;
+    if (!actorWorkerId || actorWorkerId <= 0)
+      throw new UnprocessableEntityException(
+        'Nalog nije vezan za radnika (users.worker_id) — preuzimanje izrade zahteva aktivnog radnika vrste "Tehnolog".',
+      );
+    const worker = await this.prisma.worker.findUnique({
+      where: { id: actorWorkerId },
+      select: TECHNOLOGIST_CHECK_SELECT,
+    });
+    if (!worker || !(await isActiveTechnologist(this.prisma, worker)))
+      throw new UnprocessableEntityException(
+        'Samo aktivan radnik vrste "Tehnolog" može preuzeti izradu primopredaje.',
+      );
+
+    let alreadyOwner = false;
+    let previousTechnologistId = 0;
+
+    await this.prisma.$transaction(async (tx) => {
+      // Isti advisory lock kao prepare/launch: serijalizuje take-over sa
+      // prepare/launch/return tokovima nad istom primopredajom, pa su provere
+      // ispod (i RN update dole) pouzdane u odnosu na te tokove.
+      await this.lockHandoverWorkOrder(tx, id);
+
+      const handover = await tx.drawingHandover.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          statusId: true,
+          isLocked: true,
+          legacyRnId: true,
+          technologistId: true,
+        },
+      });
+      if (!handover)
+        throw new NotFoundException(`Primopredaja ${id} ne postoji.`);
+      // Do cutover-a se preuzimanje radi u QBigTehn-u — nativni upis bi
+      // pregazio sledeći derivacioni run.
+      this.assertNotLegacyGuarded(handover);
+      // 409 (ne 422 kao drugde za isLocked): zaključanost je ovde posledica
+      // lansiranja — konflikt stanja, ne nevalidan zahtev.
+      if (handover.isLocked)
+        throw new ConflictException(
+          "Primopredaja je zaključana — izrada se ne može preuzeti.",
+        );
+      if (handover.statusId !== HANDOVER_STATUS.APPROVED)
+        throw new ConflictException(
+          "Primopredaja mora biti SAGLASAN (odobrena, pre lansiranja) da bi se izrada preuzela.",
+        );
+
+      if (handover.technologistId === actorWorkerId) {
+        alreadyOwner = true; // idempotentno — bez upisa
+        return;
+      }
+      previousTechnologistId = handover.technologistId;
+
+      // Uslovni updateMany (obrazac iz transition()): konkurentni launch/lock
+      // ne uzima uvek naš advisory lock (npr. RN-level launch propagacija), pa
+      // where ponavlja preduslove — gubitnik pada na 409 umesto da pregazi.
+      const updated = await tx.drawingHandover.updateMany({
+        where: { id, statusId: HANDOVER_STATUS.APPROVED, isLocked: false },
+        data: {
+          technologistId: actorWorkerId,
+          technologistAssignedAt: new Date(),
+          technologistAssignedById: actorWorkerId, // preuzimalac = sam sebi
+        },
+      });
+      if (updated.count === 0)
+        throw new ConflictException(
+          "Primopredaja je u međuvremenu promenjena (lansirana/zaključana) — osvežite pregled.",
+        );
+
+      // Pripremljen RN („Otkucaj TP") koji NIJE lansiran/zaključan prati
+      // tehnologa (legacy paritet: tRN JESTE RN pa SifraRadnika menja i
+      // vlasnika naloga). Lansiran/zaključan RN se NE dira.
+      // `work_orders.is_locked` je Boolean? (legacy sync iz tRN.Zakljucano
+      // ostavlja NULL) — spoljna provera `!workOrder.isLocked` NULL tretira
+      // kao otključan, pa i where mora da uhvati NULL (eksplicitni OR;
+      // `isLocked: false` NE matchuje NULL → worker_id se tiho ne prepiše).
+      const workOrder = await this.findHandoverWorkOrder(tx, id);
+      if (
+        workOrder &&
+        !workOrder.isLocked &&
+        workOrder.handoverStatusId !== HANDOVER_STATUS.LAUNCHED
+      ) {
+        await tx.workOrder.updateMany({
+          where: {
+            id: workOrder.id,
+            OR: [{ isLocked: false }, { isLocked: null }],
+            handoverStatusId: { not: HANDOVER_STATUS.LAUNCHED },
+          },
+          data: { workerId: actorWorkerId },
+        });
+      }
+    });
+
+    // Notifikacija prethodnom tehnologu (spec §8 #12): POSLE transakcije,
+    // best-effort — pad notifikacije ne obara preuzimanje.
+    if (!alreadyOwner && previousTechnologistId > 0)
+      await this.notifyTakeOver(id, previousTechnologistId, actorWorkerId);
+
+    const detail = await this.findOne(id);
+    return alreadyOwner ? { ...detail, alreadyOwner: true } : detail;
+  }
+
+  /**
+   * Emit „NN je preuzeo izradu za primopredaju X" prethodnom tehnologu —
+   * best-effort obrazac iz `handover-drafts.notifySubmitted` (26d3538): ceo u
+   * try/catch, greška se loguje i guta jer je mutacija već uspela.
+   */
+  private async notifyTakeOver(
+    handoverId: number,
+    previousTechnologistId: number,
+    actorWorkerId: number,
+  ): Promise<void> {
+    try {
+      const workers = await this.resolveWorkers([actorWorkerId]);
+      const actorRef = workers.get(actorWorkerId);
+      const actorName =
+        actorRef?.fullName || actorRef?.username || `#${actorWorkerId}`;
+      const created = await this.notifications.notifyWorkers(
+        [previousTechnologistId],
+        {
+          type: "primopredaja.preuzeta",
+          message: `${actorName} je preuzeo izradu za primopredaju ${handoverId}`,
+          refTable: "drawing_handovers",
+          refId: handoverId,
+        },
+      );
+      this.logger.log(
+        `Notifikacija primopredaja.preuzeta (primopredaja ${handoverId}): ${created} primalaca`,
+      );
+    } catch (e) {
+      this.logger.error(
+        `Notifikacija primopredaja.preuzeta FAIL (primopredaja ${handoverId}): ${(e as Error).message}`,
+      );
+    }
   }
 
   /**
@@ -590,11 +794,14 @@ export class HandoversService {
         // launch/reject/lock ne uzima naš advisory lock, pa je posle gornjeg
         // čitanja mogao da promeni RN — bezuslovni update bi pregazio tuđi
         // prelaz (npr. ODBIJENO → LANSIRAN) i napravio dupli launch red.
+        // OR hvata i `is_locked IS NULL` (legacy sync ostavlja NULL; provera
+        // iznad NULL tretira kao otključan — `isLocked: false` ga NE matchuje
+        // pa bi legacy RN davao trajni lažni 409).
         const updated = await tx.workOrder.updateMany({
           where: {
             id: existing.id,
             handoverStatusId: HANDOVER_STATUS.APPROVED,
-            isLocked: false,
+            OR: [{ isLocked: false }, { isLocked: null }],
           },
           data,
         });
@@ -625,6 +832,10 @@ export class HandoversService {
         });
       }
 
+      // Sync (tLansiranRN mapiranje) upisuje eksplicitne legacy id-jeve —
+      // poravnaj sekvencu pre insert-a (isti obrazac kao `alignIdSequence`
+      // za work_orders u createHandoverWorkOrder).
+      await alignIdSequence(tx, "work_order_launches");
       await tx.workOrderLaunch.create({
         data: {
           workOrderId: workOrder.id,
@@ -675,6 +886,7 @@ export class HandoversService {
         handoverWorkerId: true,
         technologistId: true,
         legacyRnId: true,
+        productionDeadline: true,
       },
     });
     if (!handover)
@@ -739,7 +951,9 @@ export class HandoversService {
    * advisory lock-om po predmetu). NE kreira launch red i NE menja primopredaju
    * — to je odgovornost pozivaoca. `workerId` RN-a = TEHNOLOG
    * (`handover.technologistId` ako je dodeljen, inače radnik iz JWT-a), NE
-   * "kreator" — tehnolog je autor TP-a.
+   * "kreator" — tehnolog je autor TP-a. Rok RN-a (§6.5.1): eksplicitni launch
+   * `dueDate` > rok primopredaje (`production_deadline` unet pri odobravanju)
+   * > NULL.
    */
   private async createHandoverWorkOrder(
     tx: Prisma.TransactionClient,
@@ -787,7 +1001,9 @@ export class HandoversService {
         handoverWorkerId: handover.handoverWorkerId,
         handoverStatusId: opts.handoverStatusId,
         enteredAt: new Date(),
-        productionDeadline: opts.dueDate ?? null,
+        // Override redosled (§6.5.1): eksplicitni launch dueDate > rok unet
+        // pri odobravanju primopredaje > bez roka.
+        productionDeadline: opts.dueDate ?? handover.productionDeadline ?? null,
         note: opts.comment?.trim() || null,
         status: false,
         isLocked: false,
@@ -935,6 +1151,7 @@ export class HandoversService {
           ...rows.map((r) => r.statusChangedById),
           ...rows.map((r) => r.launchedById),
           ...rows.map((r) => r.technologistId),
+          ...rows.map((r) => r.technologistAssignedById),
         ]),
         this.resolveDraftContext(rows.map((r) => r.drawingId)),
         this.resolveWorkOrderRefs(rows.map((r) => r.id)),
@@ -954,6 +1171,9 @@ export class HandoversService {
       launchedBy: r.launchedById ? (workers.get(r.launchedById) ?? null) : null,
       technologist:
         r.technologistId > 0 ? (workers.get(r.technologistId) ?? null) : null,
+      technologistAssignedBy: r.technologistAssignedById
+        ? (workers.get(r.technologistAssignedById) ?? null)
+        : null,
       workOrder: workOrders.get(r.id) ?? null,
       draftContext: draftCtx.get(r.drawingId) ?? null,
     }));

@@ -759,6 +759,10 @@ export class WorkOrdersService {
           handoverStatusId: approve ? WO_STATUS.APPROVED : WO_STATUS.REJECTED,
         },
       });
+      // Sync (§5.3 tSaglasanRN uvoz) upisuje eksplicitne legacy id-jeve —
+      // poravnaj sekvencu pre insert-a (isti obrazac kao create()/alignSeq),
+      // inače prvi approve posle uvoza pada na P2002 duplikat PK.
+      await this.alignSeq(tx, "work_order_approvals");
       await tx.workOrderApproval.create({
         data: {
           workOrderId: id,
@@ -813,15 +817,25 @@ export class WorkOrdersService {
       }
       // Uslovni update: dva konkurentna launch-a (dva taba / paralelni
       // handover-level launch) — samo prvi prolazi, drugi dobija 409 umesto
-      // duplog launch reda.
+      // duplog launch reda. `is_locked` je Boolean? (legacy sync iz
+      // tRN.Zakljucano ostavlja NULL) — spoljna provera `!wo.isLocked` NULL
+      // tretira kao otključan, pa i where mora da uhvati NULL (eksplicitni OR;
+      // `isLocked: false` NE matchuje NULL → trajni lažni 409).
       const updated = await tx.workOrder.updateMany({
-        where: { id, handoverStatusId: WO_STATUS.APPROVED, isLocked: false },
+        where: {
+          id,
+          handoverStatusId: WO_STATUS.APPROVED,
+          OR: [{ isLocked: false }, { isLocked: null }],
+        },
         data: { handoverStatusId: WO_STATUS.LAUNCHED },
       });
       if (updated.count === 0)
         throw new ConflictException(
           "RN je u međuvremenu promenjen (lansiran/zaključan) — osvežite pregled.",
         );
+      // Sync (tLansiranRN mapiranje) upisuje eksplicitne legacy id-jeve —
+      // poravnaj sekvencu pre insert-a (isti obrazac kao approve gore).
+      await this.alignSeq(tx, "work_order_launches");
       await tx.workOrderLaunch.create({
         data: {
           workOrderId: id,

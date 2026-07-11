@@ -6,13 +6,7 @@ import {
 import { PrismaService } from "../../prisma/prisma.service";
 import type { AuthUser } from "../auth/jwt.strategy";
 import { uniqueIds } from "../../common/relations";
-
-/**
- * `worker_types.name` for the technologist group (prod: id 1, name 'Tehnolog').
- * Matched by name (case-insensitive) rather than a hard-coded id so a reseeded
- * lookup table keeps working; multiple matching types are all included.
- */
-const TECHNOLOGIST_TYPE_NAME = "Tehnolog";
+import { resolveTechnologistWorkerIds } from "../../common/workers/technologist-criteria";
 
 /** Payload for one logical notification, fanned out to N recipient workers. */
 export interface NotifyPayload {
@@ -76,22 +70,14 @@ export class NotificationsService {
 
   /**
    * Recipient group TEHNOLOG: active workers whose worker type is 'Tehnolog'
-   * (worker_types id 1 on prod; matched by name). Two batch queries — no
-   * required JOIN (orphan `workerTypeId` must not 500, legacy-read rule).
+   * (worker_types id 1 on prod; matched by name). Delegates to the shared
+   * criterion helper (`common/workers/technologist-criteria.ts`, spec §6.3) —
+   * the SAME source of truth as `GET /handovers/technologists`, `approve()`
+   * validation and the take-over actor gate. Two batch queries — no required
+   * JOIN (orphan `workerTypeId` must not 500, legacy-read rule).
    */
   async resolveTechnologistWorkerIds(): Promise<number[]> {
-    const types = await this.prisma.workerType.findMany({
-      where: { name: { equals: TECHNOLOGIST_TYPE_NAME, mode: "insensitive" } },
-      select: { id: true },
-    });
-    const typeIds = types.map((t) => t.id).filter((id) => id > 0);
-    if (!typeIds.length) return [];
-
-    const workers = await this.prisma.worker.findMany({
-      where: { active: true, workerTypeId: { in: typeIds } },
-      select: { id: true },
-    });
-    return workers.map((w) => w.id);
+    return resolveTechnologistWorkerIds(this.prisma);
   }
 
   // ---------------------------------------------------------------- READ

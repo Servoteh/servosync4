@@ -30,14 +30,15 @@ import type { LaunchHandoverDto } from "./dto/launch-handover.dto";
  * Primopredaje crteža (`drawing_handovers`) — MODULE_SPEC_nacrti_primopredaje §6.4/§6.5.
  *   GET  /api/v1/handovers                  — lista (statusId, drawingNumber, projectId, technologistId, from, to)
  *   GET  /api/v1/handovers/lookups          — draft statusi + handover statusi
- *   GET  /api/v1/handovers/technologists    — radnici sa defines_approval=true (id/fullName/username)
+ *   GET  /api/v1/handovers/technologists    — aktivni radnici vrste "Tehnolog" (id/fullName/username; P4 §6.3)
  *   GET  /api/v1/handovers/pending-approval — tehnolog inbox (status U OBRADI / na čekanju)
  *   GET  /api/v1/handovers/:id              — detalj
  *   GET  /api/v1/handovers/:id/print-bundle     — P3: crtež te primopredaje za štampu (isti oblik kao na nacrtu)
  *   GET  /api/v1/handovers/:id/print-bundle/pdf — P3: PDF crteža te primopredaje (per-RN štampa)
- *   POST /api/v1/handovers/:id/approve            { technologistId, comment? } — odobri (U OBRADI → SAGLASAN) + dodeli tehnologa
+ *   POST /api/v1/handovers/:id/approve            { technologistId, comment?, dueDate? } — odobri (U OBRADI → SAGLASAN) + dodeli tehnologa + rok izrade (§6.5.1)
  *   POST /api/v1/handovers/:id/reject             { reason }           — odbij (U OBRADI → ODBIJENO); reason OBAVEZAN
  *   POST /api/v1/handovers/:id/return-to-pending  { reason? }          — vrati na čekanje (SAGLASAN → U OBRADI, undo; 409 ako RN postoji)
+ *   POST /api/v1/handovers/:id/take-over                               — "Preuzmi izradu" (§6.4): tehnolog preuzima zaduženje na SAGLASNOJ primopredaji
  *   POST /api/v1/handovers/:id/prepare-work-order                      — "Otkucaj TP": kreira RN bez lansiranja (idempotentno)
  *   POST /api/v1/handovers/:id/launch             { comment?, dueDate? } — lansiraj (SAGLASAN → LANSIRAN); reuse prepare RN-a ako postoji
  *
@@ -45,9 +46,12 @@ import type { LaunchHandoverDto } from "./dto/launch-handover.dto";
  * `POST /handover-drafts/:id/submit` — vidi handover-drafts.controller.ts. Traži JWT;
  * read=PRIMOPREDAJE_READ; approve/reject/launch/return-to-pending=PRIMOPREDAJE_APPROVE
  * (undo odobravanja = ista težina kao approve — WRITE role, npr. kontrolor/menadžment,
- * ne smeju poništiti šefovo odobrenje); prepare-work-order=RN_WRITE (kreira
- * `work_orders` red — isti gate kao POST /work-orders; kontrolor bez RN_WRITE ne
- * sme ovuda da kreira RN). Bez novih ključeva.
+ * ne smeju poništiti šefovo odobrenje); take-over=PRIMOPREDAJE_WRITE + servisni
+ * worker-type gate „aktivan radnik vrste Tehnolog" (namerno NE nova permisija —
+ * KONTROLOR/MENADZMENT imaju WRITE pa je drugi gate obavezan, §6.4);
+ * prepare-work-order=RN_WRITE (kreira `work_orders` red — isti gate kao
+ * POST /work-orders; kontrolor bez RN_WRITE ne sme ovuda da kreira RN).
+ * Bez novih ključeva.
  */
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 @RequirePermission(PERMISSIONS.PRIMOPREDAJE_READ)
@@ -136,6 +140,20 @@ export class HandoversController {
     @Req() req: { user: AuthUser },
   ) {
     return this.handovers.returnToPending(id, dto, req.user);
+  }
+
+  /**
+   * "Preuzmi izradu" (§6.4): aktivan radnik vrste "Tehnolog" preuzima zaduženje
+   * na SAGLASNOJ, nezaključanoj, ne-legacy primopredaji (worker-type gate je u
+   * servisu). Idempotentno: već moj → { alreadyOwner: true } bez upisa.
+   */
+  @Post(":id/take-over")
+  @RequirePermission(PERMISSIONS.PRIMOPREDAJE_WRITE)
+  takeOver(
+    @Param("id", ParseIntPipe) id: number,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.handovers.takeOver(id, req.user);
   }
 
   /** "Otkucaj TP" — kreiraj RN bez lansiranja (idempotentno; primopredaja ostaje SAGLASAN). Kreira `work_orders` red → RN_WRITE. */

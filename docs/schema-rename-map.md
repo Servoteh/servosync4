@@ -676,6 +676,9 @@ Za svaku tabelu navedene su kolone u istom redosledu kao u staroj `schema.prisma
 | `Zakljucano` | `is_locked` | `isLocked` |
 | — *(nema legacy izvora)* | `technologist_id` | `technologistId` |
 | — *(provenance: `tRN.IDRN`)* | `legacy_rn_id` | `legacyRnId` |
+| — *(nema legacy izvora)* | `technologist_assigned_at` | `technologistAssignedAt` |
+| — *(nema legacy izvora)* | `technologist_assigned_by_id` | `technologistAssignedById` |
+| — *(nema legacy izvora)* | `production_deadline` | `productionDeadline` |
 
 > **App-only kolona 2.0** (migracija `20260710090000_technologist_and_status_seeds`): `technologist_id`
 > = tehnolog koga šef tehnologije dodeljuje pri odobravanju primopredaje (piše TP). Legacy
@@ -689,6 +692,15 @@ Za svaku tabelu navedene su kolone u istom redosledu kao u staroj `schema.prisma
 > (`uq_drawing_handovers_legacy_rn_id`; PG unique dozvoljava više NULL). `NULL` = nativni 2.0 red.
 > Do cutover-a mutacije nad deriviranim redovima blokira env prekidač `HANDOVER_LEGACY_GUARD`
 > (v. `.env.example`); kolona ostaje i posle cutover-a kao provenance.
+
+> **App-only kolone 2.0** (migracija `20260711170000_handover_takeover_and_deadline`, P4 spec
+> §6.4/§6.5.1): `technologist_assigned_at` + `technologist_assigned_by_id` = audit dodele tehnologa
+> („kada" i „ko") — pišu ih i `approve()` (šef bira tehnologa) i `POST /handovers/:id/take-over`
+> („Preuzmi izradu"; preuzimalac je sam sebi assigned_by); `production_deadline` = rok izrade unet
+> pri ODOBRAVANJU (legacy: rok unosi inženjer koji odobrava) — propagira se u
+> `work_orders.production_deadline` pri kreiranju RN-a, eksplicitni launch `dueDate` ima prednost.
+> Sve tri prazni `return-to-pending` uz undo tehnologa. `TIMESTAMP(6)` namerno prati sestrinske
+> kolone tabele. Isti presedan „tabela prelazi u ServoSync vlasništvo" kao `technologist_id` gore.
 
 ### `Prodavci` → `salespeople`
 

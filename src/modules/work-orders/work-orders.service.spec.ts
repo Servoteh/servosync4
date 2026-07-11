@@ -117,8 +117,14 @@ describe("WorkOrdersService (workflow)", () => {
       await service.launch(7, actor);
 
       // Uslovni update — konkurentni launch gubi trku i dobija 409.
+      // OR hvata i is_locked NULL (legacy sync ostavlja NULL; `isLocked: false`
+      // ga NE matchuje → trajni lažni 409 na legacy RN-u).
       expect(prisma.workOrder.updateMany).toHaveBeenCalledWith({
-        where: { id: 7, handoverStatusId: 1, isLocked: false },
+        where: {
+          id: 7,
+          handoverStatusId: 1,
+          OR: [{ isLocked: false }, { isLocked: null }],
+        },
         data: { handoverStatusId: 3 },
       });
       expect(prisma.workOrderLaunch.create).toHaveBeenCalledWith({

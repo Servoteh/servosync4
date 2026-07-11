@@ -1,9 +1,11 @@
 import { Test, TestingModule } from "@nestjs/testing";
 import {
+  BadRequestException,
   ConflictException,
   UnprocessableEntityException,
 } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
+import { NotificationsService } from "../notifications/notifications.service";
 import { HandoversService } from "./handovers.service";
 import type { AuthUser } from "../auth/jwt.strategy";
 
@@ -14,6 +16,9 @@ const actor: AuthUser = {
   role: "sef",
   workerId: 77,
 };
+
+/** Nalog bez vezanog radnika (kancelarijski / stari token). */
+const actorNoWorker: AuthUser = { ...actor, workerId: null };
 
 /**
  * Mock PrismaService: `$transaction(cb)` prosleđuje ISTI mock kao `tx`
@@ -42,6 +47,8 @@ function prismaMock() {
       findUnique: jest.fn(),
       findMany: jest.fn().mockResolvedValue([]),
     },
+    // Kriterijum tehnologa (§6.3 helper): default = vrsta 'Tehnolog' postoji (id 1).
+    workerType: { findMany: jest.fn().mockResolvedValue([{ id: 1 }]) },
     drawing: {
       findUnique: jest.fn(),
       findMany: jest.fn().mockResolvedValue([]),
@@ -66,7 +73,7 @@ function prismaMock() {
 const containing = (obj: Record<string, unknown>): unknown =>
   expect.objectContaining(obj) as unknown;
 
-/** Odobrena primopredaja (SAGLASAN) sa dodeljenim tehnologom 9. */
+/** Odobrena primopredaja (SAGLASAN) sa dodeljenim tehnologom 9, bez roka. */
 const approvedHandover = {
   id: 5,
   drawingId: 10,
@@ -74,18 +81,22 @@ const approvedHandover = {
   isLocked: false,
   handoverWorkerId: 8,
   technologistId: 9,
+  productionDeadline: null,
 };
 
 describe("HandoversService", () => {
   let service: HandoversService;
   let prisma: ReturnType<typeof prismaMock>;
+  let notifications: { notifyWorkers: jest.Mock };
 
   beforeEach(async () => {
     prisma = prismaMock();
+    notifications = { notifyWorkers: jest.fn().mockResolvedValue(1) };
     const mod: TestingModule = await Test.createTestingModule({
       providers: [
         HandoversService,
         { provide: PrismaService, useValue: prisma },
+        { provide: NotificationsService, useValue: notifications },
       ],
     }).compile();
     service = mod.get(HandoversService);
@@ -93,6 +104,67 @@ describe("HandoversService", () => {
     jest
       .spyOn(service, "findOne")
       .mockResolvedValue({ data: { id: 5 } } as never);
+  });
+
+  /** Validan tehnolog 9 (aktivan, vrsta 'Tehnolog') za approve tok. */
+  function mockValidTechnologist() {
+    prisma.worker.findUnique.mockResolvedValue({
+      id: 9,
+      active: true,
+      workerTypeId: 1,
+    });
+  }
+
+  /** Podesi kompletan kontekst za kreiranje RN-a (crtež + nacrt + predmet). */
+  function mockWorkOrderContext() {
+    prisma.handoverDraftItem.findMany.mockResolvedValue([
+      { id: 1, drawingId: 10, quantityToProduce: 4, draftId: 2 },
+    ]);
+    prisma.handoverDraft.findMany.mockResolvedValue([
+      { id: 2, draftNumber: "N-1", projectId: 3 },
+    ]);
+    prisma.drawing.findUnique.mockResolvedValue({
+      id: 10,
+      drawingNumber: "D-10",
+      revision: "B",
+      name: "Ploča",
+      material: "S355",
+      dimensions: "10x10",
+    });
+    prisma.project.findUnique.mockResolvedValue({
+      id: 3,
+      projectNumber: "P100",
+      customerId: 55,
+    });
+  }
+
+  // -------------------------------------------------------- TECHNOLOGISTS
+
+  describe("technologists", () => {
+    it("lista = aktivni radnici vrste 'Tehnolog' (helper kriterijum, ne defines_approval)", async () => {
+      prisma.worker.findMany.mockResolvedValue([
+        { id: 9, fullName: "Tehnolog Devet", username: "t9" },
+      ]);
+
+      const result = await service.technologists();
+
+      expect(result.data).toHaveLength(1);
+      expect(prisma.workerType.findMany).toHaveBeenCalledWith({
+        where: { name: { equals: "Tehnolog", mode: "insensitive" } },
+        select: { id: true },
+      });
+      expect(prisma.worker.findMany).toHaveBeenCalledWith({
+        where: { active: true, workerTypeId: { in: [1] } },
+        select: { id: true, fullName: true, username: true },
+        orderBy: { fullName: "asc" },
+      });
+    });
+
+    it("nema vrste 'Tehnolog' u lookup-u → prazna lista, radnici se ne traže", async () => {
+      prisma.workerType.findMany.mockResolvedValue([]);
+      await expect(service.technologists()).resolves.toEqual({ data: [] });
+      expect(prisma.worker.findMany).not.toHaveBeenCalled();
+    });
   });
 
   // ------------------------------------------------------------- APPROVE
@@ -117,23 +189,30 @@ describe("HandoversService", () => {
       expect(prisma.drawingHandover.updateMany).not.toHaveBeenCalled();
     });
 
-    it("odbija radnika bez defines_approval — 422", async () => {
+    it("odbija radnika koji nije vrste 'Tehnolog' — 422 (kriterijum §6.3, ne defines_approval)", async () => {
       prisma.worker.findUnique.mockResolvedValue({
         id: 9,
-        definesApproval: false,
         active: true,
+        workerTypeId: 2, // npr. Kontrolor
       });
       await expect(
         service.approve(5, { technologistId: 9 }, actor),
       ).rejects.toBeInstanceOf(UnprocessableEntityException);
     });
 
-    it("upisuje technologistId + statusId=1 + statusChangedById iz JWT-a", async () => {
+    it("odbija NEAKTIVNOG radnika vrste 'Tehnolog' — 422", async () => {
       prisma.worker.findUnique.mockResolvedValue({
         id: 9,
-        definesApproval: true,
-        active: true,
+        active: false,
+        workerTypeId: 1,
       });
+      await expect(
+        service.approve(5, { technologistId: 9 }, actor),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    });
+
+    it("upisuje technologistId + statusId=1 + statusChangedById + audit dodele; bez roka → production_deadline null", async () => {
+      mockValidTechnologist();
       prisma.drawingHandover.findUnique.mockResolvedValue({
         id: 5,
         statusId: 0,
@@ -151,16 +230,45 @@ describe("HandoversService", () => {
           technologistId: 9,
           statusChangedById: 77,
           statusChangeComment: "ok",
+          technologistAssignedAt: expect.any(Date) as Date,
+          technologistAssignedById: 77,
+          productionDeadline: null,
         }),
       });
     });
 
-    it("409 kad konkurentni prelaz pobedi (updateMany count=0)", async () => {
-      prisma.worker.findUnique.mockResolvedValue({
-        id: 9,
-        definesApproval: true,
-        active: true,
+    it("upisuje rok (dueDate) u production_deadline (§6.5.1)", async () => {
+      mockValidTechnologist();
+      prisma.drawingHandover.findUnique.mockResolvedValue({
+        id: 5,
+        statusId: 0,
+        isLocked: false,
       });
+
+      await service.approve(
+        5,
+        { technologistId: 9, dueDate: "2026-09-01" },
+        actor,
+      );
+
+      expect(prisma.drawingHandover.updateMany).toHaveBeenCalledWith({
+        where: { id: 5, statusId: 0, isLocked: false },
+        data: containing({
+          statusId: 1,
+          productionDeadline: new Date("2026-09-01"),
+        }),
+      });
+    });
+
+    it("400 za nevalidan dueDate — pre bilo kakvog upisa", async () => {
+      await expect(
+        service.approve(5, { technologistId: 9, dueDate: "nije-datum" }, actor),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.drawingHandover.updateMany).not.toHaveBeenCalled();
+    });
+
+    it("409 kad konkurentni prelaz pobedi (updateMany count=0)", async () => {
+      mockValidTechnologist();
       prisma.drawingHandover.findUnique.mockResolvedValue({
         id: 5,
         statusId: 0,
@@ -174,11 +282,7 @@ describe("HandoversService", () => {
     });
 
     it("409 kad primopredaja nije U OBRADI", async () => {
-      prisma.worker.findUnique.mockResolvedValue({
-        id: 9,
-        definesApproval: true,
-        active: true,
-      });
+      mockValidTechnologist();
       prisma.drawingHandover.findUnique.mockResolvedValue({
         id: 5,
         statusId: 1,
@@ -221,7 +325,7 @@ describe("HandoversService", () => {
       expect(prisma.drawingHandover.update).not.toHaveBeenCalled();
     });
 
-    it("vraća na 0 i čisti tehnologa kad RN ne postoji", async () => {
+    it("vraća na 0 i čisti tehnologa + audit dodele + rok (§6.5.1)", async () => {
       prisma.drawingHandover.findUnique.mockResolvedValue({
         id: 5,
         statusId: 1,
@@ -236,6 +340,9 @@ describe("HandoversService", () => {
         data: containing({
           statusId: 0,
           technologistId: 0,
+          technologistAssignedAt: null,
+          technologistAssignedById: null,
+          productionDeadline: null,
           statusChangedById: 77,
           statusChangeComment: "pogrešan tehnolog",
         }),
@@ -254,32 +361,204 @@ describe("HandoversService", () => {
     });
   });
 
-  // -------------------------------------------------- PREPARE-WORK-ORDER
+  // --------------------------------------------------------- TAKE-OVER (§6.4)
 
-  describe("prepareWorkOrder", () => {
-    /** Podesi kompletan kontekst za kreiranje RN-a (crtež + nacrt + predmet). */
-    function mockWorkOrderContext() {
-      prisma.handoverDraftItem.findMany.mockResolvedValue([
-        { id: 1, drawingId: 10, quantityToProduce: 4, draftId: 2 },
-      ]);
-      prisma.handoverDraft.findMany.mockResolvedValue([
-        { id: 2, draftNumber: "N-1", projectId: 3 },
-      ]);
-      prisma.drawing.findUnique.mockResolvedValue({
-        id: 10,
-        drawingNumber: "D-10",
-        revision: "B",
-        name: "Ploča",
-        material: "S355",
-        dimensions: "10x10",
-      });
-      prisma.project.findUnique.mockResolvedValue({
-        id: 3,
-        projectNumber: "P100",
-        customerId: 55,
+  describe("takeOver", () => {
+    /** Akter 77 = aktivan radnik vrste 'Tehnolog'. */
+    function mockTechnologistActor() {
+      prisma.worker.findUnique.mockResolvedValue({
+        id: 77,
+        active: true,
+        workerTypeId: 1,
       });
     }
 
+    /** SAGLASNA primopredaja tehnologa 9 (nije akterova). */
+    function mockApprovedHandover(over: Record<string, unknown> = {}) {
+      prisma.drawingHandover.findUnique.mockResolvedValue({
+        id: 5,
+        statusId: 1,
+        isLocked: false,
+        legacyRnId: null,
+        technologistId: 9,
+        ...over,
+      });
+    }
+
+    it("422 kad nalog nije vezan za radnika (workerId null) — bez ikakvog upita", async () => {
+      await expect(service.takeOver(5, actorNoWorker)).rejects.toBeInstanceOf(
+        UnprocessableEntityException,
+      );
+      expect(prisma.worker.findUnique).not.toHaveBeenCalled();
+      expect(prisma.drawingHandover.updateMany).not.toHaveBeenCalled();
+    });
+
+    it("422 kad akter nije radnik vrste 'Tehnolog'", async () => {
+      prisma.worker.findUnique.mockResolvedValue({
+        id: 77,
+        active: true,
+        workerTypeId: 3, // šef/kontrolor — ima primopredaje.write, ali nije Tehnolog
+      });
+      await expect(service.takeOver(5, actor)).rejects.toBeInstanceOf(
+        UnprocessableEntityException,
+      );
+      expect(prisma.drawingHandover.updateMany).not.toHaveBeenCalled();
+    });
+
+    it("422 kad je akter neaktivan radnik vrste 'Tehnolog'", async () => {
+      prisma.worker.findUnique.mockResolvedValue({
+        id: 77,
+        active: false,
+        workerTypeId: 1,
+      });
+      await expect(service.takeOver(5, actor)).rejects.toBeInstanceOf(
+        UnprocessableEntityException,
+      );
+    });
+
+    it("preuzima: uslovni updateMany (where ponavlja preduslove) + audit kolone; RN worker_id prati tehnologa", async () => {
+      mockTechnologistActor();
+      mockApprovedHandover();
+      prisma.workOrder.findFirst.mockResolvedValue({
+        id: 42,
+        identNumber: "P100/7",
+        handoverStatusId: 1, // pripremljen, NE lansiran
+        isLocked: false,
+      });
+
+      const result = await service.takeOver(5, actor);
+
+      expect(prisma.drawingHandover.updateMany).toHaveBeenCalledWith({
+        where: { id: 5, statusId: 1, isLocked: false },
+        data: containing({
+          technologistId: 77,
+          technologistAssignedAt: expect.any(Date) as Date,
+          technologistAssignedById: 77, // preuzimalac = sam sebi
+        }),
+      });
+      // Pripremljen (nelansiran/nezaključan) RN prati tehnologa — uslovno.
+      // OR hvata i is_locked NULL (legacy sync ostavlja NULL; `isLocked: false`
+      // ga NE matchuje → worker_id se tiho ne bi prepisao).
+      expect(prisma.workOrder.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 42,
+          OR: [{ isLocked: false }, { isLocked: null }],
+          handoverStatusId: { not: 3 },
+        },
+        data: { workerId: 77 },
+      });
+      expect(result).toEqual({ data: { id: 5 } });
+      expect(result).not.toHaveProperty("alreadyOwner");
+    });
+
+    it("notifikacija prethodnom tehnologu — best-effort, posle upisa", async () => {
+      mockTechnologistActor();
+      mockApprovedHandover();
+
+      await service.takeOver(5, actor);
+
+      expect(notifications.notifyWorkers).toHaveBeenCalledWith(
+        [9],
+        containing({
+          type: "primopredaja.preuzeta",
+          refTable: "drawing_handovers",
+          refId: 5,
+        }),
+      );
+    });
+
+    it("pad notifikacije NE obara preuzimanje", async () => {
+      mockTechnologistActor();
+      mockApprovedHandover();
+      notifications.notifyWorkers.mockRejectedValue(new Error("smtp down"));
+
+      await expect(service.takeOver(5, actor)).resolves.toEqual({
+        data: { id: 5 },
+      });
+    });
+
+    it("bez notifikacije kad tehnolog nije bio dodeljen (technologistId=0)", async () => {
+      mockTechnologistActor();
+      mockApprovedHandover({ technologistId: 0 });
+
+      await service.takeOver(5, actor);
+
+      expect(prisma.drawingHandover.updateMany).toHaveBeenCalled();
+      expect(notifications.notifyWorkers).not.toHaveBeenCalled();
+    });
+
+    it("idempotentno: već moj → alreadyOwner:true, BEZ upisa i BEZ notifikacije", async () => {
+      mockTechnologistActor();
+      mockApprovedHandover({ technologistId: 77 });
+
+      const result = await service.takeOver(5, actor);
+
+      expect(result).toEqual({ data: { id: 5 }, alreadyOwner: true });
+      expect(prisma.drawingHandover.updateMany).not.toHaveBeenCalled();
+      expect(prisma.workOrder.updateMany).not.toHaveBeenCalled();
+      expect(notifications.notifyWorkers).not.toHaveBeenCalled();
+    });
+
+    it("ne dira LANSIRAN/zaključan RN (worker_id ostaje)", async () => {
+      mockTechnologistActor();
+      mockApprovedHandover();
+      prisma.workOrder.findFirst.mockResolvedValue({
+        id: 42,
+        identNumber: "P100/7",
+        handoverStatusId: 3, // lansiran RN — vlasnik se ne menja
+        isLocked: false,
+      });
+
+      await service.takeOver(5, actor);
+
+      expect(prisma.drawingHandover.updateMany).toHaveBeenCalled();
+      expect(prisma.workOrder.updateMany).not.toHaveBeenCalled();
+    });
+
+    it("409 za legacy (derivirani) red — bez upisa", async () => {
+      mockTechnologistActor();
+      mockApprovedHandover({ legacyRnId: 1126 });
+
+      await expect(service.takeOver(5, actor)).rejects.toThrow(/QBigTehn/);
+      expect(prisma.drawingHandover.updateMany).not.toHaveBeenCalled();
+    });
+
+    it("409 kad je primopredaja LANSIRANA (statusId=3)", async () => {
+      mockTechnologistActor();
+      mockApprovedHandover({ statusId: 3 });
+
+      await expect(service.takeOver(5, actor)).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(prisma.drawingHandover.updateMany).not.toHaveBeenCalled();
+    });
+
+    it("409 kad je primopredaja zaključana", async () => {
+      mockTechnologistActor();
+      mockApprovedHandover({ isLocked: true });
+
+      await expect(service.takeOver(5, actor)).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(prisma.drawingHandover.updateMany).not.toHaveBeenCalled();
+    });
+
+    it("409 za konkurentnog gubitnika (updateMany count=0) — bez RN update-a i notifikacije", async () => {
+      mockTechnologistActor();
+      mockApprovedHandover();
+      prisma.drawingHandover.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(service.takeOver(5, actor)).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(prisma.workOrder.updateMany).not.toHaveBeenCalled();
+      expect(notifications.notifyWorkers).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------- PREPARE-WORK-ORDER
+
+  describe("prepareWorkOrder", () => {
     it("idempotentno: postojeći RN → existing:true, bez novog reda", async () => {
       prisma.drawingHandover.findUnique.mockResolvedValue(approvedHandover);
       prisma.workOrder.findFirst.mockResolvedValue({
@@ -328,6 +607,34 @@ describe("HandoversService", () => {
       );
       expect(prisma.workOrderLaunch.create).not.toHaveBeenCalled();
       expect(prisma.drawingHandover.update).not.toHaveBeenCalled();
+    });
+
+    it("propagira rok primopredaje (production_deadline iz approve-a) u RN (§6.5.1)", async () => {
+      const deadline = new Date("2026-09-01");
+      prisma.drawingHandover.findUnique.mockResolvedValue({
+        ...approvedHandover,
+        productionDeadline: deadline,
+      });
+      prisma.workOrder.findFirst.mockResolvedValue(null);
+      mockWorkOrderContext();
+      prisma.workOrder.create.mockResolvedValue({
+        id: 100,
+        identNumber: "P100/1",
+        variant: 0,
+        projectId: 3,
+        drawingNumber: "D-10",
+        revision: "B",
+        pieceCount: 4,
+        handoverStatusId: 1,
+      });
+
+      await service.prepareWorkOrder(5, actor);
+
+      expect(prisma.workOrder.create).toHaveBeenCalledWith(
+        containing({
+          data: containing({ productionDeadline: deadline }),
+        }),
+      );
     });
 
     it("workerId RN-a = JWT radnik kad tehnolog nije dodeljen (technologistId=0)", async () => {
@@ -399,9 +706,14 @@ describe("HandoversService", () => {
 
       expect(prisma.workOrder.create).not.toHaveBeenCalled();
       // Uslovni updateMany (guard protiv konkurentnog RN-level prelaza).
+      // OR hvata i is_locked NULL (legacy sync ostavlja NULL — inače lažni 409).
       expect(prisma.workOrder.updateMany).toHaveBeenCalledWith(
         containing({
-          where: { id: 42, handoverStatusId: 1, isLocked: false },
+          where: {
+            id: 42,
+            handoverStatusId: 1,
+            OR: [{ isLocked: false }, { isLocked: null }],
+          },
           data: containing({
             handoverStatusId: 3,
             productionDeadline: expect.any(Date),
@@ -434,6 +746,63 @@ describe("HandoversService", () => {
         }),
       });
       expect(result.data.workOrder.id).toBe(42);
+    });
+
+    it("eksplicitni launch dueDate ima prednost nad rokom primopredaje (override §6.5.1)", async () => {
+      prisma.drawingHandover.findUnique.mockResolvedValue({
+        ...approvedHandover,
+        productionDeadline: new Date("2026-09-01"), // rok iz approve-a
+      });
+      prisma.workOrder.findFirst.mockResolvedValue(null);
+      mockWorkOrderContext();
+      prisma.workOrder.create.mockResolvedValue({
+        id: 100,
+        identNumber: "P100/1",
+        variant: 0,
+        projectId: 3,
+        drawingNumber: "D-10",
+        revision: "B",
+        pieceCount: 4,
+        handoverStatusId: 3,
+      });
+
+      await service.launch(5, { dueDate: "2026-08-01" }, actor);
+
+      expect(prisma.workOrder.create).toHaveBeenCalledWith(
+        containing({
+          data: containing({
+            productionDeadline: new Date("2026-08-01"), // launch, ne approve rok
+          }),
+        }),
+      );
+    });
+
+    it("bez launch dueDate-a novi RN nasleđuje rok primopredaje (§6.5.1)", async () => {
+      const deadline = new Date("2026-09-01");
+      prisma.drawingHandover.findUnique.mockResolvedValue({
+        ...approvedHandover,
+        productionDeadline: deadline,
+      });
+      prisma.workOrder.findFirst.mockResolvedValue(null);
+      mockWorkOrderContext();
+      prisma.workOrder.create.mockResolvedValue({
+        id: 100,
+        identNumber: "P100/1",
+        variant: 0,
+        projectId: 3,
+        drawingNumber: "D-10",
+        revision: "B",
+        pieceCount: 4,
+        handoverStatusId: 3,
+      });
+
+      await service.launch(5, {}, actor);
+
+      expect(prisma.workOrder.create).toHaveBeenCalledWith(
+        containing({
+          data: containing({ productionDeadline: deadline }),
+        }),
+      );
     });
 
     it("409 kad primopredaja nije SAGLASAN", async () => {
@@ -507,15 +876,6 @@ describe("HandoversService", () => {
       if (originalGuard === undefined) delete process.env.HANDOVER_LEGACY_GUARD;
       else process.env.HANDOVER_LEGACY_GUARD = originalGuard;
     });
-
-    /** Validan tehnolog za approve tok (validacija ide PRE tranzicije). */
-    function mockValidTechnologist() {
-      prisma.worker.findUnique.mockResolvedValue({
-        id: 9,
-        definesApproval: true,
-        active: true,
-      });
-    }
 
     it("409 na approve za derivirani red — bez upisa", async () => {
       mockValidTechnologist();
