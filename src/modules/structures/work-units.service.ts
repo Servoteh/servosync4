@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { pageMeta, parsePagination } from "../../common/pagination";
@@ -68,5 +72,37 @@ export class WorkUnitsService {
     if (dto.name !== undefined) data.name = dto.name.trim();
     const updated = await this.prisma.workUnit.update({ where: { id }, data });
     return { data: updated };
+  }
+
+  /**
+   * Brisanje radne jedinice (PLAN_dorade_2026-07-10 D1 t.3):
+   *   - code="0" je sistemski default (`workers.workUnitCode @default("0")`) — 409;
+   *   - 409 ako je referišu `operations.workUnitCode` ili `workers.workUnitCode` —
+   *     ta polja NEMAJU FK ka work_units, pa je count pre-check jedini guard
+   *     protiv orphan-ovanja.
+   */
+  async remove(id: number) {
+    const existing = await this.prisma.workUnit.findUnique({
+      where: { id },
+      select: { id: true, code: true },
+    });
+    if (!existing)
+      throw new NotFoundException(`Radna jedinica ${id} ne postoji.`);
+    if (existing.code.trim() === "0")
+      throw new ConflictException(
+        "Radna jedinica '0' je sistemski zapis i ne može se obrisati.",
+      );
+
+    const [inOperations, inWorkers] = await Promise.all([
+      this.prisma.operation.count({ where: { workUnitCode: existing.code } }),
+      this.prisma.worker.count({ where: { workUnitCode: existing.code } }),
+    ]);
+    if (inOperations > 0 || inWorkers > 0)
+      throw new ConflictException(
+        `Radna jedinica '${existing.code}' se ne može obrisati jer je referencirana (operacije: ${inOperations}, radnici: ${inWorkers}).`,
+      );
+
+    await this.prisma.workUnit.delete({ where: { id } });
+    return { data: { id, deleted: true } };
   }
 }

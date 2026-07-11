@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseIntPipe,
@@ -22,9 +23,10 @@ import type {
 
 /**
  * Vrste poslova — šifarnik (MODULE_SPEC_structures §6.4).
- *   GET   /api/v1/structures/worker-types      — lista (q)
- *   POST  /api/v1/structures/worker-types      — kreiranje
- *   PATCH /api/v1/structures/worker-types/:id  — izmena
+ *   GET    /api/v1/structures/worker-types      — lista (q)
+ *   POST   /api/v1/structures/worker-types      — kreiranje
+ *   PATCH  /api/v1/structures/worker-types/:id  — izmena
+ *   DELETE /api/v1/structures/worker-types/:id  — brisanje (409: id=0 ili ima radnika)
  *
  * Traži JWT; read=STRUKTURE_READ, mutacije=STRUKTURE_WRITE (V1 no-op guard).
  */
@@ -52,5 +54,11 @@ export class WorkerTypesController {
     @Body() dto: UpdateWorkerTypeDto,
   ) {
     return this.workerTypes.update(id, dto);
+  }
+
+  @Delete(":id")
+  @RequirePermission(PERMISSIONS.STRUKTURE_WRITE)
+  remove(@Param("id", ParseIntPipe) id: number) {
+    return this.workerTypes.remove(id);
   }
 }

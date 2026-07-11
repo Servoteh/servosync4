@@ -66,6 +66,10 @@ export const ROLE_PERMISSIONS: Partial<
     P.RN_LAUNCH,
     P.PDM_READ,
     P.STRUKTURE_READ,
+    // Strukture write (vrste poslova, RJ, operacije, radnici): odluka Nenad
+    // 10.07.2026 (PLAN_dorade_2026-07-10 D1) — dodavanje/izmena struktura
+    // dozvoljena i TEHNOLOG/MENADZMENT rolama uz ADMIN/SEF.
+    P.STRUKTURE_WRITE,
     P.PRIMOPREDAJE_READ,
     P.PRIMOPREDAJE_WRITE,
     P.LOKACIJE_READ,
@@ -140,8 +144,11 @@ export const ROLE_PERMISSIONS: Partial<
     P.RN_READ,
     P.RN_WRITE,
     P.PDM_READ,
-    // Strukture: samo R (matrica §3; write struktura je SEF-ov — 1.0 nema strukture pa nema pariteta).
+    // Strukture: R + W — odluka Nenad 10.07.2026 (PLAN_dorade_2026-07-10 D1)
+    // prevazilazi „samo R" iz matrice §3: dodavanje/izmena struktura dozvoljena
+    // i MENADZMENT/TEHNOLOG rolama uz ADMIN/SEF.
     P.STRUKTURE_READ,
+    P.STRUKTURE_WRITE,
     // Primopredaje: W po paritetu; APPROVE namerno NE — finalno odobrenje ide per-user
     // (`finalni_potpisnik` override — Milorad Jerotić) ili SEF/ADMIN, ne blanket menadžmentu.
     P.PRIMOPREDAJE_READ,

@@ -1,4 +1,5 @@
 import {
+  ConflictException,
   Injectable,
   NotFoundException,
   UnprocessableEntityException,
@@ -235,6 +236,85 @@ export class WorkersService {
       data: { active: false },
     });
     return this.findOne(id);
+  }
+
+  /**
+   * Tvrdo brisanje SAMO za radnika bez IJEDNE reference — čišćenje typo unosa
+   * (PLAN_dorade_2026-07-10, odluka #7). Spec §2.2 inače kaže „nikad hard
+   * delete": svaka referenca → 409 „deaktiviraj umesto brisanja".
+   * Pre-check je iscrpan i namerno preko count-ova (deo referenci ima FK pa bi
+   * delete pukao P2003, ali istoriju bez FK-a niko drugi ne čuva). Izuzetak:
+   * `app_notifications` (recipient bez FK-a) se NE broji nego se BRIŠE u istoj
+   * transakciji — istorija notifikacija nije poslovna istorija, a orphan inbox
+   * bi nasledio sledeći radnik sa istim id-em (create poravnava sekvencu na MAX).
+   */
+  async remove(id: number) {
+    const existing = await this.prisma.worker.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+    if (!existing) throw new NotFoundException(`Radnik ${id} ne postoji.`);
+
+    const counts = await Promise.all([
+      this.prisma.techProcess.count({ where: { workerId: id } }),
+      this.prisma.workTimeEntry.count({ where: { workerId: id } }),
+      this.prisma.workOrderOperation.count({ where: { workerId: id } }),
+      // Obe relacije RN-a: autor (workerId) i primopredaja (handoverWorkerId).
+      this.prisma.workOrder.count({
+        where: { OR: [{ workerId: id }, { handoverWorkerId: id }] },
+      }),
+      this.prisma.machineAccess.count({ where: { workerId: id } }),
+      this.prisma.partLocation.count({ where: { workerId: id } }),
+      this.prisma.workOrderMachinedPart.count({ where: { workerId: id } }),
+      this.prisma.workOrderBlank.count({ where: { workerId: id } }),
+      this.prisma.workOrderNonstandardPart.count({ where: { workerId: id } }),
+      this.prisma.handoverDraft.count({ where: { designerId: id } }),
+      this.prisma.user.count({ where: { workerId: id } }),
+      // No-FK reference (radnik kao izvršilac/učesnik u istoriji drugih tabela):
+      this.prisma.drawingHandover.count({
+        where: {
+          OR: [
+            { handoverWorkerId: id },
+            { technologistId: id },
+            { statusChangedById: id },
+            { launchedById: id },
+          ],
+        },
+      }),
+      this.prisma.workOrderLaunch.count({
+        where: { OR: [{ createdByWorkerId: id }, { updatedByWorkerId: id }] },
+      }),
+      this.prisma.workOrderApproval.count({
+        where: { OR: [{ createdByWorkerId: id }, { updatedByWorkerId: id }] },
+      }),
+      this.prisma.drawingPlan.count({ where: { planningWorkerId: id } }),
+      this.prisma.mrpDemand.count({ where: { workerId: id } }),
+    ]);
+    if (counts.some((c) => c > 0))
+      throw new ConflictException(
+        "Radnik ima istoriju — deaktiviraj umesto brisanja.",
+      );
+
+    try {
+      // Notifikacije radnika (bez FK-a) se čiste zajedno sa radnikom — vidi docstring.
+      await this.prisma.$transaction([
+        this.prisma.appNotification.deleteMany({
+          where: { recipientWorkerId: id },
+        }),
+        this.prisma.worker.delete({ where: { id } }),
+      ]);
+    } catch (e) {
+      // Trka (referenca nastala posle pre-checka) ili nepokrivena FK referenca.
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === "P2003"
+      )
+        throw new ConflictException(
+          "Radnik ima istoriju — deaktiviraj umesto brisanja.",
+        );
+      throw e;
+    }
+    return { data: { id, deleted: true } };
   }
 
   // ---------------------------------------------------------------- RULES

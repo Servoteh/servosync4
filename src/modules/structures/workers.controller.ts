@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseIntPipe,
@@ -19,11 +20,12 @@ import type { CreateWorkerDto, UpdateWorkerDto } from "./dto/worker.dto";
 
 /**
  * Radnici — šifarnik (MODULE_SPEC_structures §6.1).
- *   GET   /api/v1/structures/workers               — lista (q, workUnitCode, workerTypeId, active)
- *   GET   /api/v1/structures/workers/:id           — detalj + machineAccess
- *   POST  /api/v1/structures/workers               — kreiranje
- *   PATCH /api/v1/structures/workers/:id           — izmena
- *   POST  /api/v1/structures/workers/:id/deactivate — soft delete (active=false)
+ *   GET    /api/v1/structures/workers               — lista (q, workUnitCode, workerTypeId, active)
+ *   GET    /api/v1/structures/workers/:id           — detalj + machineAccess
+ *   POST   /api/v1/structures/workers               — kreiranje
+ *   PATCH  /api/v1/structures/workers/:id           — izmena (i reaktivacija: {active:true})
+ *   POST   /api/v1/structures/workers/:id/deactivate — soft delete (active=false)
+ *   DELETE /api/v1/structures/workers/:id           — hard delete SAMO bez ijedne reference (inače 409)
  *
  * NIKAD ne vraća/prima `password` / `workerPassword` (spec §5.5).
  * Traži JWT; read=STRUKTURE_READ, mutacije=STRUKTURE_WRITE (V1 no-op guard).
@@ -60,5 +62,11 @@ export class WorkersController {
   @RequirePermission(PERMISSIONS.STRUKTURE_WRITE)
   deactivate(@Param("id", ParseIntPipe) id: number) {
     return this.workers.deactivate(id);
+  }
+
+  @Delete(":id")
+  @RequirePermission(PERMISSIONS.STRUKTURE_WRITE)
+  remove(@Param("id", ParseIntPipe) id: number) {
+    return this.workers.remove(id);
   }
 }

@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseIntPipe,
@@ -19,9 +20,10 @@ import type { CreateWorkUnitDto, UpdateWorkUnitDto } from "./dto/work-unit.dto";
 
 /**
  * Radne jedinice — šifarnik (MODULE_SPEC_structures §6.2).
- *   GET   /api/v1/structures/work-units      — lista (q)
- *   POST  /api/v1/structures/work-units      — kreiranje
- *   PATCH /api/v1/structures/work-units/:id  — izmena
+ *   GET    /api/v1/structures/work-units      — lista (q)
+ *   POST   /api/v1/structures/work-units      — kreiranje
+ *   PATCH  /api/v1/structures/work-units/:id  — izmena
+ *   DELETE /api/v1/structures/work-units/:id  — brisanje (409: code="0" ili referencirana)
  *
  * Traži JWT; read=STRUKTURE_READ, mutacije=STRUKTURE_WRITE (V1 no-op guard).
  */
@@ -49,5 +51,11 @@ export class WorkUnitsController {
     @Body() dto: UpdateWorkUnitDto,
   ) {
     return this.workUnits.update(id, dto);
+  }
+
+  @Delete(":id")
+  @RequirePermission(PERMISSIONS.STRUKTURE_WRITE)
+  remove(@Param("id", ParseIntPipe) id: number) {
+    return this.workUnits.remove(id);
   }
 }

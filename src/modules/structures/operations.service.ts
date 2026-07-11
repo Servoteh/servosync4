@@ -140,8 +140,11 @@ export class OperationsService {
 
   /**
    * Brisanje je blokirano ako je operacija referencirana u `work_order_operations`
-   * ili `machine_access` (spec §2.2 — RN-ovi referenciraju operacije). 409 sa
-   * srpskom porukom. P2003 (bilo koja druga FK referenca) se mapira u isti 409.
+   * ili `machine_access` (spec §2.2 — RN-ovi referenciraju operacije), kao i u
+   * `tech_processes` / `work_time_entries` — te dve tabele NEMAJU FK ka
+   * operations, pa bi se istorija kucanja orphan-ovala bez count pre-checka
+   * (PLAN_dorade_2026-07-10 D1 t.2). 409 sa srpskom porukom koja nabraja sve
+   * brojače. P2003 (bilo koja druga FK referenca) se mapira u isti 409.
    */
   async remove(code: string) {
     const existing = await this.prisma.operation.findUnique({
@@ -151,13 +154,23 @@ export class OperationsService {
     if (!existing)
       throw new NotFoundException(`Operacija '${code}' ne postoji.`);
 
-    const [inWorkOrders, inAccess] = await Promise.all([
-      this.prisma.workOrderOperation.count({ where: { workCenterCode: code } }),
-      this.prisma.machineAccess.count({ where: { workCenterCode: code } }),
-    ]);
-    if (inWorkOrders > 0 || inAccess > 0)
+    const [inWorkOrders, inAccess, inTechProcesses, inTimeEntries] =
+      await Promise.all([
+        this.prisma.workOrderOperation.count({
+          where: { workCenterCode: code },
+        }),
+        this.prisma.machineAccess.count({ where: { workCenterCode: code } }),
+        this.prisma.techProcess.count({ where: { workCenterCode: code } }),
+        this.prisma.workTimeEntry.count({ where: { workCenterCode: code } }),
+      ]);
+    if (
+      inWorkOrders > 0 ||
+      inAccess > 0 ||
+      inTechProcesses > 0 ||
+      inTimeEntries > 0
+    )
       throw new ConflictException(
-        `Operacija '${code}' se ne može obrisati jer je referencirana (radni nalozi: ${inWorkOrders}, pristup mašinama: ${inAccess}).`,
+        `Operacija '${code}' se ne može obrisati jer je referencirana (radni nalozi: ${inWorkOrders}, pristup mašinama: ${inAccess}, kucanja: ${inTechProcesses}, evidencija vremena: ${inTimeEntries}).`,
       );
 
     try {

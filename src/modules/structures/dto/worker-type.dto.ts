@@ -4,7 +4,10 @@ import { BadRequestException } from "@nestjs/common";
 export interface CreateWorkerTypeDto {
   /** Naziv vrste posla — obavezno. */
   name: string;
-  /** Ima dodatna prava (npr. zatvaranje tuđih naloga). */
+  /**
+   * Ovlašćeni kontrolor (završna kontrola) — signal za A-5 završnu kontrolu /
+   * kiosk (legacy „dodatna prava", npr. zatvaranje tuđih naloga).
+   */
   additionalPrivileges?: boolean;
 }
 
