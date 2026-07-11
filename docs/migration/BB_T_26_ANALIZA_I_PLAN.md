@@ -116,7 +116,7 @@ Ove tabele se u dizajnu sync-a NIKAD ne registruju (deny-lista, §4 detaljnog sy
 | 3 | Landed cost ključ raspodele (carina) | referent uvoza (Tatjana) | otvoreno |
 | ~~5~~ | ~~4.0 izvor sync-a (XML export?)~~ | — | ✅ **REŠENO** (Nenad): **WinServer skripta → PG direktno**, NE XML (§7.3). Ažurirati BACKEND_RULES §11.2a / ODLUKE. |
 | 6 | `BBPravaPristupa` → mapiranje na 2.0 RBAC role | Nenad/Negovan | otvoreno |
-| 7 | `items.id` ostaje QBigTehn-ključ (uz external_item_id remap) ili prelazi na BigBit šifru? — preduslov FAZE 2 skripte (Komitenti/Artikli/Cenovnik) | Negovan | otvoreno (§7.2/§7.3) |
+| ~~7~~ | ~~`items.id` QBigTehn-ključ vs BigBit šifra?~~ | — | ✅ **REŠENO (Fable §7.6): opcija A** — items.id ostaje QBigTehn ključ, BigBit samo preko external_item_id (migracija matematički neizvodljiva: 57.998 kolizija). Negovanu ostaje samo spot-provera (Komitenti PIB / Predmeti broj / Magacini naziv). |
 | 8 | Cenovnik/R_Artikli-flagovi = **UPSERT** (ne insert-only §11.2b) — nova odluka | Negovan | predloženo (§7.3); pilot već radi UPSERT na šifarnicima |
 | 9 | BigBit ULS kredencijal sa READ pravom za skriptu na Srv-all (nalog `Slavisa`, lozinka u runtime CFG) | Negovan | **traži se** — jedini preduslov za ACE čitač (§7.3/§7.5) |
 
@@ -263,6 +263,62 @@ jednoj kofi:
 > Depoziti) nula može značiti „živi u radnoj godišnjoj .mdb". Pošto su ionako MP/EXCLUDE, ne menja plan.
 > Snapshot ostaje na ubuntusrv `~/bb-analiza/` za dalja merenja.
 
+## 7.6 ID-prostor: zašto ovako i kako Faza 2
+
+> Ova sekcija ZATVARA otvorenu odluku #7 (§5). Zaključak: **items.id ostaje QBigTehn ključ; BigBit se vezuje isključivo preko `items.external_item_id`** (opcija A). Detalji i dokazi ispod; puni deep-dive u G1/G2/G3 dokumentima (`BB_T_26-analiza-G1-zasto-lokalni-id.md`, `-G2-blast-radius-2.0.md`, `-G3-bigbit-kljucevi-faza2.md`).
+
+### 7.6.1 ZAŠTO je QBigTehn uveo lokalni ID (odgovor, ne hipoteza)
+
+Lokalni IDENTITY u QBigTehn kopiji postoji **tačno tamo gde QBigTehn lokalno piše** — i nigde drugde:
+
+- **R_Artikli je jedina prava dual-key tabela**: `[Sifra artikla] int IDENTITY(1,1)` PK (qbigtehn_sqlserver.sql:6499, PK :6567–6570) + retrofitovana `[BBSifra artikla] int NOT NULL` kao poslednja od 68 kolona (:6566) sa `DEFAULT ((0))` dodatim zasebnim ALTER-om (:7575). U BigBit originalu ta kolona **ne postoji** (BB_T_26_schema.sql:930–999, 67 kolona). Razlog: proizvodni core (RN/TP/PDM uvoz) **sam kreira artikle**, pa bi deljenje BigBit ID prostora garantovalo kolizije sa artiklima koje BigBit kreira nezavisno. `DEFAULT 0` je sentinel „artikal nije iz BigBit-a".
+- **Komitenti i Predmeti prenose BigBit ključ 1:1** (IDENTITY_INSERT u „Preuzmi iz BB", doc 06 par. 2.3–2.4) — zato NEMAJU BB* kolonu; ID prostori se poklapaju jer QBigTehn te tabele ne kreira lokalno. Dokaz da su prostori isti: `tRN.[BBIDKomitent]` (qbigtehn_sqlserver.sql:1665) se u procedurama join-uje direktno na `Komitenti.Sifra` (:552) — prefiks „BB" je tu konvencija POREKLA polja, ne zaseban ID prostor.
+- **Cenovnik i Magacini uopšte ne idu kroz „Preuzmi iz BB"**, pa im surogat ID nikad nije ni mapiran na BigBit (doc 06, sekcija „Tabele koje NISU u dugmetu").
+- **Kritično za Fazu 2**: znanje o remapiranju živi SAMO u Access VBA — `[BBSifra artikla]` se u celom ~37k-linijskom SQL dumpu pominje tačno 2× i oba puta u DDL-u (:6566, :7575); nijedna procedura/view ga ne koristi. Gašenjem Access frontenda most nestaje iz runtime-a → **Faza 2 skripta ga mora reimplementirati**.
+
+2.0 je ovo nasledio verbatim: `items.id ← [Sifra artikla]` (sync-map.generated.ts:2657–2661, `isId:true`), `items.external_item_id ← [BBSifra artikla]` (:3126–3127; schema.prisma:835, `@default(0)`, **bez unique indeksa**).
+
+### 7.6.2 Opcije za Fazu 2
+
+**Opcija A — zadrži `items.id` = QBigTehn ključ; BigBit match preko `external_item_id`; novi BigBit artikli dobijaju nov lokalni 2.0 id.**
+
+- *Za*: nula migracije ključa; proizvodni lanac netaknut; kompatibilno sa tekućim MSSQL syncom do cutover-a; identičan obrazac koji je QBigTehn 15+ godina dokazano koristio (samo se most seli iz VBA u sync servis).
+- *Protiv/rizik*: `external_item_id` mora dobiti parcijalni unique indeks (danas ga nema; u prod 0 duplikata za vrednosti >0 — bezbedno); dok paralelno rade MSSQL sync i BigBit drop sync, postoji dual-writer sudar na INSERT-u (rešivo, vidi 7.6.3).
+- *Blast radius*: **0 redova se menja.**
+
+**Opcija B — migracija `items.id` na BigBit šifru.**
+
+- *Za*: posle cutover-a „jedan ID prostor", nema remapa u Cenovnik uvozu.
+- *Protiv/rizik*: **matematički neizvodljivo in-place** — 90.986/92.357 artikala ima `id ≠ external_item_id`, a **57.998 BigBit šifri jednako je lokalnom id-u NEKOG DRUGOG artikla** (opsezi id 1..93359 vs ext 17048..127472 se preklapaju) → svaka neremapovana meka referenca (mrp_item_stock.item_id koji je PK, mrp_demand_items, work_order_item_components sa 1.027 redova od kojih 33 ne rezolviraju u BigBit prostoru) ćutke pokazuje na **pogrešan artikal**. Plus: 1.371 lokalno kreiranih artikala (ext=0) nema BigBit šifru uopšte — za njih ključ ne postoji. Plus: tekući MSSQL sync je vlasnik ključa (`GenericSyncer` full_refresh = deleteMany+createMany sa izvornim id, generic.syncer.ts:127–140) — svaka promena biva pregažena sledećim syncom.
+- *Blast radius*: ceo items + svi FK/meke reference, uz tihu korupciju kao failure mode.
+
+**Opcija C — hibrid (novi artikli na BigBit šifri, stari na QBigTehn).**
+
+- *Za*: ništa suštinski.
+- *Protiv/rizik*: jedan `id` stubac sa dva značenja u preklapajućim opsezima — 57.998 kolizija znači da se za dati broj **ne može znati** iz kog je prostora; gore od B jer je nedeterminizam trajan.
+
+### 7.6.3 PREPORUKA: Opcija A — definitivno
+
+`items.id` se NE dira, ni sada ni posle cutover-a. Obrazloženje u jednoj rečenici: proizvodni lanac (tech_processes/work_orders/operations/drawings) je ServoSync vlasništvo i **ne referiše items.id** (vezuje se stringovima drawingNumber/catalogNumber/material i preko projects.id/customers.id — schema.prisma:1497–1504, :1672–1699), pa „čistiji" ključ ne kupuje ništa, a kolizija prostora (57.998) čini svaku migraciju ruskim ruletom. QBigTehn sync je privremen, ali njegov ID prostor postaje **trajni 2.0 ID prostor** — posle cutover-a 2.0 autoincrement nastavlja sekvencu, a BigBit ostaje spoljni sistem čiji ključ živi u `external_item_id`, tačno kao što je `[BBSifra artikla]` živela u kopiji.
+
+**Preduslovi (uraditi PRE prvog BigBit upisa):**
+
+1. Migracija: parcijalni unique indeks `uq_items_external_item_id ON items(external_item_id) WHERE external_item_id <> 0` (prod danas: 0 duplikata — prolazi).
+2. Dodati `@@unique` na `price_list_entries` po poslovnom ključu (danas ne postoji, schema.prisma:107–123).
+3. Živa spot-provera 1:1 očuvanja ID-a za Komitente (PIB), Predmete (BrojPredmeta) i Magacine (naziv) — DDL to sugeriše ali ne dokazuje (kopija nema BB-most kolone za te tabele).
+
+**Plan po tabeli (redosled uključivanja = redosled ispod; Cenovnik obavezno poslednji zbog remapa):**
+
+| # | Tabela | 2.0 cilj | UPSERT ključ | Novi redovi | Remap | Svežina |
+|---|---|---|---|---|---|---|
+| 1 | **Komitenti** | `customers` | `customers.id = Komitenti.Sifra` (prostor već BigBit — 36.753/36.753 tRN.BBIDKomitent rezolvira) | INSERT sa BigBit ID (IDENTITY_INSERT ekvivalent) | nema | watermark `PoslednjaIzmena` (BB_T_26_schema.sql:2461) — jedina tabela sa inkrementalom |
+| 2 | **Magacini** | `warehouses` | `warehouses.id = IDMagacin` — posle ručnog poravnanja (nije u „Preuzmi iz BB", tabela mala, prod 0 redova → blast radius 0) | INSERT sa BigBit ID | `IDFirma` degradiran u atribut (BB NOT NULL :528 vs kopija NULL :6266) — preneti kao kolonu, van ključa | nema datetime → full refresh + UPSERT |
+| 3 | **Predmeti** | `projects` | `projects.id = IDPredmet` (najveća izloženost ključa: ~145.700 redova + RN barkod — zato spot-provera iz preduslova br. 3 OBAVEZNA pre prvog run-a) | INSERT sa BigBit ID | nema | samo `DatumIVreme`=unos (:893) → full refresh + UPSERT |
+| 4 | **R_Artikli** | `items` | `items.external_item_id = [Sifra artikla]` iz BigBit-a (WHERE ext<>0), **NIKAD items.id** | **UPDATE-only + park-lista** dok MSSQL sync radi (dual-writer: skripta ne sme INSERT-ovati jer će QBigTehn IDENTITY isti lokalni broj dodeliti drugom artiklu); posle cutover-a: INSERT sa lokalnim autoincrement id + ext=BigBit šifra | BigBit šifra ide SAMO u `external_item_id`; 0 izuzeti iz UPSERT-a (sentinel lokalnih) | samo `DatumIVremeArt`=unos, flagovi Aktivan/ZaBrisanje bez timestampa (:975–976) → full refresh + UPSERT |
+| 5 | **Cenovnik** | `price_list_entries` | poslovni ključ `(item_id, document_type_code)` — BigBit `Cenovnik.ID` NE koristiti (nezavisna auto-sekvenca bez most kolone; kopija-ID takođe, qbigtehn:6190) | INSERT po poslovnom ključu (prod 0 redova → blast radius 0) | **dvostepeni**: BigBit `[Sifra artikla]` (:194, u BigBit prostoru!) → `items.external_item_id` → `items.id` → `item_id`; red bez pogotka = skip+log (u kopiji je ista kolona već remapovana na lokalnu — dokaz FK Cenovnik_FK00, qbigtehn:8097–8100); `warehouse_id` ne postoji ni u izvoru ni u cilju | nema datetime → full refresh + UPSERT |
+
+**Obrazac izvršenja**: dokazani pilot §7.5 — staging temp tabela + `INSERT … ON CONFLICT DO UPDATE` u jednoj transakciji po tabeli, ceo run u gornjem redosledu. **Jedan pisac po tabeli**: dok MSSQL sync radi, BigBit skripta nad `items` sme samo UPDATE preko `external_item_id` (novi BigBit artikli idu na park-listu i ulaze kroz QBigTehn tok); na cutover-u se MSSQL sync gasi, park-lista prazni, i BigBit skripta preuzima i INSERT. Time odluka #7 prelazi u status **REŠENO (opcija A)** — Negovanu ostaje samo spot-provera iz preduslova br. 3, ne arhitektonska odluka.
+
 ## 8. Artefakti ove analize (u repou)
 - `_analiza/bigbit/BB_T_26_schema.sql` — kompletan DDL (207 tabela).
 - `backend/docs/migration/BB_T_26-analiza-klaster-A-maticni-tehnologija-reversi.md`
@@ -271,4 +327,7 @@ jednoj kofi:
 - `backend/docs/migration/BB_T_26-analiza-F1-pokrivenost-polja.md` — trostrano poređenje polja (pitanje #3)
 - `backend/docs/migration/BB_T_26-analiza-F2-mehanizam-sync.md` — dizajn sync-a sa allow/deny listom
 - `backend/docs/migration/BB_T_26-analiza-F3-inventar-207-tabela.md` — svih 207 tabela u 3 kofe
-- Ovaj dokument = master pregled + plan (§7 objedinjuje F1/F2/F3).
+- `backend/docs/migration/BB_T_26-analiza-G1-zasto-lokalni-id.md` — zašto QBigTehn ima lokalni ID (Faza 2)
+- `backend/docs/migration/BB_T_26-analiza-G2-blast-radius-2.0.md` — blast radius promene items.id u 2.0
+- `backend/docs/migration/BB_T_26-analiza-G3-bigbit-kljucevi-faza2.md` — BigBit PK/UPSERT ključevi za Fazu 2
+- Ovaj dokument = master pregled + plan (§7 objedinjuje F1/F2/F3; §7.6 objedinjuje G1/G2/G3).
