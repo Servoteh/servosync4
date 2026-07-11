@@ -4,7 +4,7 @@ import { LookupsService } from "./lookups.service";
 
 /**
  * Lookup-ovi za biranje iz liste:
- *   GET /api/v1/lookups/projects?q=   — predmeti (id, broj, naziv, komitent)
+ *   GET /api/v1/lookups/projects?q=   — predmeti (id, broj, naziv, komitent id + `customer {id, name}`)
  *   GET /api/v1/lookups/customers?q=  — komitenti (id, naziv, mesto, PIB)
  */
 @UseGuards(JwtAuthGuard)

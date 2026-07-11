@@ -18,7 +18,7 @@ export class LookupsService {
         { projectName: { contains: q, mode: "insensitive" } },
       ];
     }
-    const data = await this.prisma.project.findMany({
+    const rows = await this.prisma.project.findMany({
       where,
       take: 25,
       orderBy: { id: "desc" },
@@ -30,6 +30,23 @@ export class LookupsService {
         description: true,
       },
     });
+
+    // Komitent uz predmet (D9: vidljiv prefill u „Novi RN") — batch-resolve
+    // umesto required-JOIN-a (orphan/0 customerId ne sme da obori lookup).
+    const customerIds = [
+      ...new Set(rows.map((r) => r.customerId).filter((id) => id > 0)),
+    ];
+    const customers = customerIds.length
+      ? await this.prisma.customer.findMany({
+          where: { id: { in: customerIds } },
+          select: { id: true, name: true },
+        })
+      : [];
+    const byId = new Map(customers.map((c) => [c.id, c]));
+    const data = rows.map((r) => ({
+      ...r,
+      customer: byId.get(r.customerId) ?? null,
+    }));
     return { data };
   }
 

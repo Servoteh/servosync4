@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
@@ -587,6 +588,47 @@ export class WorkOrdersService {
     return this.findOne(workOrderId);
   }
 
+  /**
+   * CAM prioritet operacije (legacy grid-unos u `PregledOperacijaPoPrioritetima`).
+   * Namenski endpoint iza `tehnologija.write` — CNC programer NEMA `rn.write`,
+   * pa ne sme kroz `updateOperation`. Dozvoljeno i na LANSIRANOM RN-u (prioritet
+   * je pogonska odluka, ne izmena TP-a); zaključan RN → 422. Opseg 0–255
+   * (255 = bez prioriteta / dno planske table).
+   */
+  async setOperationPriority(operationId: number, priority: number) {
+    if (
+      typeof priority !== "number" ||
+      !Number.isInteger(priority) ||
+      priority < 0 ||
+      priority > 255
+    )
+      throw new BadRequestException("Prioritet mora biti ceo broj 0–255.");
+
+    const op = await this.prisma.workOrderOperation.findUnique({
+      where: { id: operationId },
+      select: { id: true, workOrderId: true },
+    });
+    if (!op) throw new NotFoundException(`Operacija ${operationId} ne postoji`);
+
+    // Batch-resolve umesto required-JOIN (orphan FK ne sme da obori 500);
+    // orphan operacija (RN ne postoji) nema lock guard — izmena prolazi.
+    const wo = await this.prisma.workOrder.findUnique({
+      where: { id: op.workOrderId },
+      select: { isLocked: true },
+    });
+    if (wo?.isLocked)
+      throw new UnprocessableEntityException(
+        "Zaključan RN — prioritet operacije se ne može menjati.",
+      );
+
+    const updated = await this.prisma.workOrderOperation.update({
+      where: { id: operationId },
+      data: { priority },
+      select: { id: true, workOrderId: true, priority: true },
+    });
+    return { data: updated };
+  }
+
   /** Brisanje operacije RN-a (+ eventualne skice te operacije). Guard: RN nije zaključan. */
   async deleteOperation(workOrderId: number, operationId: number) {
     const wo = await this.prisma.workOrder.findUnique({
@@ -884,6 +926,86 @@ export class WorkOrdersService {
     });
 
     return this.findOne(targetId);
+  }
+
+  /**
+   * „Prepiši isti postupak" (legacy `PrepisiZaglavljePostupka`,
+   * QBigTehn_APL/modules/RN_Modul.bas:179): klon RN-a kao NOVI red sa ISTIM
+   * `identNumber` i `variant = MAX(variant)+1` — legacy
+   * `fsSledecaVrednostVarijante` gleda (projectId, drawingNumber, revision), ali
+   * `updateHeader` sme da promeni crtež/reviziju postojećoj varijanti pa bi MAX
+   * samo po trojci vratio zauzetu varijantu za isti ident → uzima se VEĆI od dva
+   * MAX-a: po legacy trojci i po (projectId, identNumber). Advisory lock po
+   * predmetu (isti ključ kao numbering/rework) serijalizuje konkurentne klonove;
+   * DB mreža je `uq_work_orders_project_ident_variant` (trojka na koju se vezuju
+   * `tech_processes` kucanja i RNZ barkod mora biti jedinstvena).
+   * Zaglavlje kroz `buildCloneHeader` (status = U OBRADI,
+   * otključan — launch stanje se NE kopira); `drawingHandoverId` se NE kopira:
+   * nova varijanta nije vezana za staru primopredaju (rework klonovi ga dele jer
+   * su remedijacija ISTE varijante, a launch propagacija ionako gađa samo
+   * "original" — najmanji id po FK). Stavke: sve 4 vrste kroz `cloneItems`
+   * (coefficient 1, prioritet regen §3.4). Kiosk staleWorkOrder guard ovim
+   * oživljava za native naloge: scan otiska sa starom varijantom → upozorenje.
+   */
+  async cloneVariant(sourceId: number) {
+    const created = await this.prisma.$transaction(async (tx) => {
+      const source = await tx.workOrder.findUnique({ where: { id: sourceId } });
+      if (!source)
+        throw new NotFoundException(`Radni nalog ${sourceId} ne postoji`);
+
+      // Serijalizuj po predmetu — MAX(variant) račun i insert bez race-a.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${source.projectId})`;
+
+      // MAX po OBA ključa (vidi docstring) — veći od dva + 1.
+      const [byDrawing, byIdent] = await Promise.all([
+        tx.workOrder.aggregate({
+          where: {
+            projectId: source.projectId,
+            drawingNumber: source.drawingNumber,
+            revision: source.revision,
+          },
+          _max: { variant: true },
+        }),
+        tx.workOrder.aggregate({
+          where: {
+            projectId: source.projectId,
+            identNumber: source.identNumber,
+          },
+          _max: { variant: true },
+        }),
+      ]);
+      const variant =
+        Math.max(
+          byDrawing._max.variant ?? source.variant,
+          byIdent._max.variant ?? source.variant,
+        ) + 1;
+
+      await this.alignWorkOrderSequence(tx);
+      await this.alignItemSequences(tx);
+
+      const clone = await tx.workOrder.create({
+        data: this.buildCloneHeader(source, {
+          identNumber: source.identNumber,
+          variant,
+          drawingHandoverId: 0,
+        }),
+        select: { id: true, identNumber: true, variant: true },
+      });
+
+      await this.cloneItems(tx, sourceId, clone.id, {
+        coefficient: 1,
+        recomputePriority: true,
+      });
+      return clone;
+    });
+
+    return {
+      data: {
+        workOrderId: created.id,
+        identNumber: created.identNumber,
+        variant: created.variant,
+      },
+    };
   }
 
   /**

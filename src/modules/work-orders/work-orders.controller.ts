@@ -44,11 +44,14 @@ import type {
  *   POST /api/v1/work-orders/:id/launch                          — lansiraj (mora biti saglasan)
  *   POST /api/v1/work-orders/:id/lock     { locked?: boolean }   — zaključaj/otključaj
  *   POST /api/v1/work-orders/:id/copy-from/:sourceId             — kopiraj stavke u prazan cilj (RN_WRITE)
+ *   POST /api/v1/work-orders/:id/clone-variant                   — „Prepiši isti postupak": klon kao sledeća varijanta (RN_WRITE)
  *   POST /api/v1/work-orders/:id/rework   { pieceCount, qualityTypeId, note? } — dorada/škart child (RN_WRITE)
  *   POST /api/v1/work-orders/projects/:projectId/bulk-clone { targetProjectId, coefficient, workOrderIds? } — bulk-clone (RN_WRITE)
+ *   PATCH /api/v1/work-orders/operations/:opId/priority { priority } — CAM prioritet (TEHNOLOGIJA_WRITE)
  *
  * Traži JWT. Mutacije nose `@RequirePermission`: create/lock/copy/clone/rework = `rn.write`,
- * approve = `rn.approve`, launch = `rn.launch`. Guard je shadow-mode (V1). Drugi gate za
+ * approve = `rn.approve`, launch = `rn.launch`, prioritet operacije = `tehnologija.write`
+ * (CNC programer nema `rn.write`). Guard je shadow-mode (V1). Drugi gate za
  * approve/launch (`Worker.definesApproval`/`definesLaunch`) je V2 u servisu — TODO(auth) u servisu.
  */
 @UseGuards(JwtAuthGuard)
@@ -136,6 +139,21 @@ export class WorkOrdersController {
     return this.workOrders.updateOperation(id, opId, dto);
   }
 
+  /**
+   * CAM prioritet operacije (planska tabla „Operacije po prioritetu"). Namerno
+   * iza `tehnologija.write` (ne `rn.write`) — CNC programer prioritizuje, a
+   * nema pravo izmene RN-a. Dozvoljeno i na lansiranom RN-u; zaključan → 422.
+   */
+  @Patch("operations/:opId/priority")
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(PERMISSIONS.TEHNOLOGIJA_WRITE)
+  setOperationPriority(
+    @Param("opId", ParseIntPipe) opId: number,
+    @Body() body: { priority?: number },
+  ) {
+    return this.workOrders.setOperationPriority(opId, body?.priority as number);
+  }
+
   /** Brisanje operacije RN-a. */
   @Delete(":id/operations/:opId")
   @UseGuards(JwtAuthGuard, PermissionsGuard)
@@ -200,6 +218,18 @@ export class WorkOrdersController {
     @Param("sourceId", ParseIntPipe) sourceId: number,
   ) {
     return this.workOrders.copyFrom(id, sourceId);
+  }
+
+  /**
+   * „Prepiši isti postupak": klon RN-a kao NOVI red sa istim identom i
+   * `variant = MAX+1` po (predmet, crtež, revizija). Vraća
+   * `{ data: { workOrderId, identNumber, variant } }`.
+   */
+  @Post(":id/clone-variant")
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(PERMISSIONS.RN_WRITE)
+  cloneVariant(@Param("id", ParseIntPipe) id: number) {
+    return this.workOrders.cloneVariant(id);
   }
 
   /** DORADA/ŠKART: kreiraj child RN iz `id` (sufiks -D/-S, kopira zaglavlje + sve stavke). */
