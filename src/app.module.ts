@@ -18,6 +18,8 @@ import { HandoversModule } from "./modules/handovers/handovers.module";
 import { PartLocationsModule } from "./modules/part-locations/part-locations.module";
 import { MrpModule } from "./modules/mrp/mrp.module";
 import { NotificationsModule } from "./modules/notifications/notifications.module";
+import { Sy15Module } from "./common/sy15/sy15.module";
+import { ReversiModule } from "./modules/reversi/reversi.module";
 
 @Module({
   imports: [
@@ -36,6 +38,9 @@ import { NotificationsModule } from "./modules/notifications/notifications.modul
     PartLocationsModule,
     MrpModule,
     NotificationsModule,
+    // 3.0 pilot — podaci u sy15 (1.0) bazi (MODULE_SPEC_reversi.md §0)
+    Sy15Module,
+    ReversiModule,
   ],
   controllers: [AppController],
   providers: [

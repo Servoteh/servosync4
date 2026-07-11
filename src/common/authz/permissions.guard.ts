@@ -35,9 +35,11 @@ export class PermissionsGuard implements CanActivate {
     >(PERMISSION_KEY_METADATA, [context.getHandler(), context.getClass()]);
     if (!required) return true;
 
-    const request = context
-      .switchToHttp()
-      .getRequest<{ user?: { userId: number; email: string; role: string }; method: string; url: string }>();
+    const request = context.switchToHttp().getRequest<{
+      user?: { userId: number; email: string; role: string };
+      method: string;
+      url: string;
+    }>();
     const user = request.user;
     // Authentication is JwtAuthGuard's job; without an identity there is nothing to evaluate.
     if (!user) return true;
@@ -49,7 +51,9 @@ export class PermissionsGuard implements CanActivate {
       this.logger.warn(`DENY ${detail}`);
       return false; // Nest → 403 Forbidden
     }
-    this.logger.warn(`SHADOW would-deny ${detail} (AUTHZ_ENFORCE=false, allowing)`);
+    this.logger.warn(
+      `SHADOW would-deny ${detail} (AUTHZ_ENFORCE=false, allowing)`,
+    );
     return true;
   }
 }

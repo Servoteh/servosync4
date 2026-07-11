@@ -41,7 +41,9 @@ export class ScopeService {
    * TechProcess visibility. `proizvodni_radnik` → only rows on their machines
    * (empty set = sees nothing, fail-closed); every other (already read-authorised) role → unrestricted.
    */
-  async techProcessScope(user: AuthUser): Promise<Prisma.TechProcessWhereInput> {
+  async techProcessScope(
+    user: AuthUser,
+  ): Promise<Prisma.TechProcessWhereInput> {
     if (!this.isRadnik(user)) return {};
     const codes = await this.machineAccessCodes(user);
     if (codes.length === 0) {
