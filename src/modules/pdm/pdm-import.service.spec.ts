@@ -150,6 +150,8 @@ function prismaMock() {
       findUnique: jest.fn().mockResolvedValue(null),
       upsert: jest.fn().mockResolvedValue({}),
     },
+    // alignIdSequence (setval poravnanje pre nativnih insert-a) ide kroz raw SQL.
+    $executeRawUnsafe: jest.fn().mockResolvedValue(1),
     $transaction: jest.fn(),
   };
   m.$transaction.mockImplementation((arg: unknown) =>

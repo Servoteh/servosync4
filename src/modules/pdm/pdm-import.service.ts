@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
+import { alignIdSequence } from "../../common/db-sequences";
 import { PrismaService } from "../../prisma/prisma.service";
 import type { AuthUser } from "../auth/jwt.strategy";
 import {
@@ -264,6 +265,12 @@ export class PdmImportService {
     user: AuthUser,
     stats: PdmImportStats,
   ): Promise<void> {
+    // Sync/finalni uvoz pune obe tabele EKSPLICITNIM legacy id-jevima, pa
+    // autoincrement bez poravnanja kolidira (P2002 → 500) na prvom nativnom
+    // insert-u — ista bomba viđena uživo 11.07 na drawing_import_log.
+    await alignIdSequence(tx, "drawings");
+    await alignIdSequence(tx, "drawing_components");
+
     const now = new Date();
 
     // (1) Dedup dokumenata po (docId, revizija) — prva pojava nosi atribute.
@@ -562,6 +569,9 @@ export class PdmImportService {
     statusMessage: string;
     isCritical: boolean;
   }): Promise<number> {
+    // Tabela je sync-ovana sa eksplicitnim legacy id-jevima — poravnaj sekvencu
+    // pre svakog nativnog upisa (uzrok prod 500 P2002 11.07).
+    await alignIdSequence(this.prisma, "drawing_import_log");
     const log = await this.prisma.drawingImportLog.create({
       data: {
         fileName: clipRequired(entry.fileName, 255),
