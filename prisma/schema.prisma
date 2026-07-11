@@ -1515,6 +1515,10 @@ model WorkOrder {
   approvals             WorkOrderApproval[]
   operations            WorkOrderOperation[]
 
+  /// Triple = business identity of a work order (tech_processes bookings and the
+  /// RNZ barcode bind to it). D5 clone-variant relies on this as the DB net for
+  /// MAX(variant)+1 races/collisions (prod verified duplicate-free 2026-07-11).
+  @@unique([projectId, identNumber, variant], map: "uq_work_orders_project_ident_variant")
   @@map("work_orders")
 }
 
@@ -1944,6 +1948,36 @@ model BbSyncLog {
   @@index([entityScope, startedAt], map: "idx_bb_sync_log_entity_scope_started_at")
   @@index([status, startedAt], map: "idx_bb_sync_log_status_started_at")
   @@map("bb_sync_log")
+}
+
+// ============================================================================
+// IN-APP NOTIFICATIONS (application-owned)
+// ----------------------------------------------------------------------------
+// D8 first phase (PLAN_dorade_2026-07-10): the "zvonce" — rows are materialised
+// PER RECIPIENT worker at emit time (tech-processes control() on rework/scrap,
+// handover-drafts submit()) and read/marked by the notifications module.
+// NOT the legacy `notifications` model (Was: Info) above — that one is untouched.
+// ============================================================================
+
+/// App-owned (2.0, no legacy source). One row per recipient worker; `recipientWorkerId`
+/// references `workers.id` WITHOUT a DB FK on purpose — notification history must not
+/// block worker maintenance, and reads resolve workers batch-style anyway (relations.ts).
+/// Timestamptz like `work_time_entries` (the other 2.0 app-owned production table).
+model AppNotification {
+  id                Int       @id(map: "pk_app_notifications") @default(autoincrement()) @map("id")
+  /// Kind: 'kontrola.skart' | 'kontrola.dorada' | 'primopredaja.nova' — String, not enum (BACKEND_RULES §2).
+  type              String    @map("type") @db.VarChar(40)
+  /// Fully rendered Serbian UI message (composed at emit time).
+  message           String    @map("message") @db.VarChar(500)
+  /// Referenced table for UI navigation, e.g. 'work_orders' | 'handover_drafts'.
+  refTable          String?   @map("ref_table") @db.VarChar(40)
+  refId             Int?      @map("ref_id")
+  recipientWorkerId Int       @map("recipient_worker_id")
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  readAt            DateTime? @map("read_at") @db.Timestamptz(6)
+
+  @@index([recipientWorkerId, readAt, createdAt(sort: Desc)], map: "idx_app_notifications_recipient_read_created")
+  @@map("app_notifications")
 }
 
 /// Incremental sync cursor per logical scope (`entity` = stable key, e.g. `customers`).

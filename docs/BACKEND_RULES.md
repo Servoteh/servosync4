@@ -46,8 +46,9 @@ Ovde je draft **pregažen stvarnošću koda** — ovo su pravila:
    slovima"**. Katalog uloga = [design/AUTHZ_UNIFIED.md](design/AUTHZ_UNIFIED.md) + `src/common/authz/roles.ts`
    (jedini izvor; ne držati listu na više mesta). *(Postojeći `User.role` default `'USER'`/`'ADMIN'` u šemi
    se pri V2 aktivaciji migrira na lowercase katalog.)*
-3. **Vremena su `@db.Timestamp(6)`** (bez timezone) — cela šema je tako portovana; ne mešati sa `Timestamptz`
-   u novim tabelama bez odluke u §11.
+3. **Vremena:** legacy-portovane tabele su `@db.Timestamp(6)` (bez timezone) — cela šema je tako
+   portovana i to se ne dira. **Nove app-owned tabele koriste `@db.Timestamptz(6)`** — §11.5 zatvoren
+   2026-07-11 kodifikacijom presedana iz koda (`work_time_entries`, `app_notifications`).
 4. **Sync modul se zove `sync`** (`src/modules/sync/`), tabele `bb_sync_log` / `bb_sync_state` — ne
    `bigbit-sync` / `bigbit_sync_log` iz drafta.
 5. **Šema je 1:1 plosnat port** cele legacy šeme (~90 modela) sa engleskim imenima — ne "kanonski redizajn"
@@ -161,7 +162,10 @@ Dve sasvim različite vrste sync-a, ne mešati:
 
 ## 10. Jezik i okruženje
 
-- **Kod, komentari, imena, commit poruke: engleski. Dokumentacija u `docs/`: srpski.** (Postojeća praksa.)
+- **Kod, imena, commit poruke: engleski. Dokumentacija u `docs/`: srpski.** Komentari u kodu: **srpski
+  ili engleski** — domenski/poslovni komentari su u praksi na srpskom (terminologija RN/TP/primopredaja
+  ne prevodi se dobro), `///` komentari u `schema.prisma` pretežno na engleskom; oba su prihvatljiva,
+  pravilo usklađeno sa stvarnom konvencijom 2026-07-11 (ranije „sve engleski", što niko nije sprovodio).
 - Legacy fajlovi (`legacy/`, `ServoSync-specification.md`) ostaju na srpskom — opisuju izvorni sistem, ne diraju se.
 - Env promenljive: `SCREAMING_SNAKE`, grupisane prefiksom (`BIGBIT_DB_*`). **Nova env promenljiva bez reda u
   `.env.example` ne postoji.** Tajne se ne komituju (`.env` je van gita).
@@ -196,7 +200,10 @@ Niko (ni AI sesija) ne implementira ove stvari pre zapisane odluke ovde:
    (Nenad + Luka), ne reverse-eng iz legacy-ja. Kad se gradi: **obavezan anti-ciklus guard** u `WITH RECURSIVE`
    (PG bez njega visi na cikličnoj sastavnici). **Ne blokira trenutno** (nije u upotrebi). Vidi
    [05-qbigtehn-sqlserver-logic](migration/05-qbigtehn-sqlserver-logic.md), [ODLUKE.md #16](ODLUKE.md).
-5. **Timestamp politika za nove app-owned tabele** (`Timestamp(6)` kao legacy port vs `Timestamptz`).
+5. ✅ **ZATVORENO (2026-07-11, kodifikacija presedana iz koda): nove app-owned tabele = `Timestamptz(6)`.**
+   Presedan su `work_time_entries` (A-4) i `app_notifications` (D8) — obe dokumentovane `///` komentarom i
+   migracijom; legacy-portovane tabele ostaju `Timestamp(6)` (§2.3). Ako Negovan/Nesa ospore, revidira se
+   novom odlukom ovde.
 
 ## 12. Promene ovog dokumenta
 
@@ -209,3 +216,4 @@ Niko (ni AI sesija) ne implementira ove stvari pre zapisane odluke ovde:
 | 0.5 | 2026-07-08 | **Odluke (Nenad) — [ODLUKE.md](ODLUKE.md):** §11.1 cache/overlay ✅ potvrđeno; §11.2a izvor = **EXPORT (XML/CSV)** (ne SQL Server); §11.2b = **INSERT-only**; §11.3 PDM = **direktan SQL** (uz potvrdu da nije sirov SolidWorks). RBAC: ŠEF pun rad+odobravanje, CNC potpisuje TP, `cnc_programs` DA, MENADZMENT uvid+write, PG RLS ne sada, role mapirane na sistematizaciju. Ostaje otvoreno: timestamp (§11.4), BOM/MRP (§11.3 logika — analiza u toku). |
 | 0.6 | 2026-07-08 | **Authz objedinjavanje — [design/AUTHZ_UNIFIED.md](design/AUTHZ_UNIFIED.md):** §2.2 role = **lowercase** (prevaziđeno „velikim slovima"); jedinstveni katalog uloga (1.0 taksonomija + 2.0) u `src/common/authz/roles.ts` + `role-permissions.ts`. **PG RLS = „RLS-ready sada, nativni RLS u 3.0"** (skelet `design/sql/authz_rls_ready.skeleton.sql`: GUC `app.user_id`, `user_roles`/`user_permission_overrides`, `users.worker_id` FK, `created_by_id` FK, predikat-funkcije). App se sad konektuje kao owner `servosync` (zaobilazi RLS) — ne-superuser rola + `FORCE RLS` je 3.0 korak. |
 | 0.7 | 2026-07-09 | **Authz Faza 1–2 ([AUTHZ_UNIFIED §8](design/AUTHZ_UNIFIED.md)):** šema dobija `user_roles` + `user_permission_overrides` + `users.worker_id` (migracija `20260709000000_authz_rls_ready`: DDL + `lower(role)` data-fix + `app_*` predikat-funkcije). **Odobreno odstupanje od §3 (`migrate:dev`)** za prod-only okruženje: migracija generisana `prisma migrate diff` (datamodel→datamodel), primenjuje se **isključivo `migrate:prod` (deploy)** uz prethodni `migrate status` drift-check; `migrate dev` na produkciji zabranjen. `PermissionsGuard` = **shadow mode** (`AUTHZ_ENFORCE`, default false = log-only); novi `GET /auth/me/permissions`. |
+| 0.8 | 2026-07-11 | **Kodifikacija stvarne prakse (review dorada 10.07):** §11.5 zatvoren — nove app-owned tabele = `Timestamptz(6)` (presedan `work_time_entries` + `app_notifications`); §2.3 usklađen. §10: komentari u kodu smeju biti na srpskom ili engleskom (kod/imena/commit poruke ostaju engleski) — pisano pravilo se razišlo sa konvencijom celog koda. |

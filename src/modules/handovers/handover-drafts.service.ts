@@ -1,11 +1,13 @@
 import {
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
   UnprocessableEntityException,
 } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
+import { NotificationsService } from "../notifications/notifications.service";
 import {
   pageMeta,
   parsePagination,
@@ -88,9 +90,12 @@ export interface ListHandoverDraftsQuery {
  */
 @Injectable()
 export class HandoverDraftsService {
+  private readonly logger = new Logger(HandoverDraftsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly numbering: DraftNumberingService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   // ---------------------------------------------------------------- READ
@@ -545,7 +550,50 @@ export class HandoverDraftsService {
     }));
 
     const draft = (await this.findOne(id)).data;
+
+    // D8 emit 2 (PLAN_dorade §D8): nova primopredaja → in-app notifikacija grupi
+    // TEHNOLOG. POSLE uspešne transakcije, best-effort — helper je ceo u try/catch,
+    // pad notifikacije NE obara predaju nacrta.
+    await this.notifySubmitted(draft, handovers.length);
+
     return { data: { draft, handoversCreated: handovers.length, handovers } };
+  }
+
+  /**
+   * D8 emit 2: „Kreirana nova primopredaja {draftNumber} — {N} stavki
+   * (projektant {ime})" → grupa TEHNOLOG (aktivni radnici vrste 'Tehnolog').
+   * Best-effort: svaka greška se loguje i guta — submit() je već uspeo.
+   */
+  private async notifySubmitted(
+    draft: {
+      id: number;
+      draftNumber: string;
+      designerId: number;
+      designer: { fullName: string | null; username: string } | null;
+    },
+    itemCount: number,
+  ): Promise<void> {
+    try {
+      const technologists =
+        await this.notifications.resolveTechnologistWorkerIds();
+      const designerName =
+        draft.designer?.fullName ||
+        draft.designer?.username ||
+        `#${draft.designerId}`;
+      const created = await this.notifications.notifyWorkers(technologists, {
+        type: "primopredaja.nova",
+        message: `Kreirana nova primopredaja ${draft.draftNumber} — ${itemCount} stavki (projektant ${designerName})`,
+        refTable: "handover_drafts",
+        refId: draft.id,
+      });
+      this.logger.log(
+        `D8 notifikacija primopredaja.nova (${draft.draftNumber}): ${created} primalaca`,
+      );
+    } catch (e) {
+      this.logger.error(
+        `D8 notifikacija FAIL (nacrt ${draft.id}): ${(e as Error).message}`,
+      );
+    }
   }
 
   // --- batch resolveri (izbegavaju required-relation JOIN nad orphan FK-om) ---

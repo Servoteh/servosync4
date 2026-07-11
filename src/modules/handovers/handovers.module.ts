@@ -1,5 +1,6 @@
 import { Module } from "@nestjs/common";
 import { PrismaModule } from "../../prisma/prisma.module";
+import { NotificationsModule } from "../notifications/notifications.module";
 import { HandoversController } from "./handovers.controller";
 import { HandoversService } from "./handovers.service";
 import { HandoverDraftsController } from "./handover-drafts.controller";
@@ -15,13 +16,13 @@ import { PrintBundleService } from "./print-bundle.service";
  *   - `PrintBundleService` (P3): štampa svih crteža nacrta/primopredaje — spojen PDF (pdf-lib),
  *     grupisanje po formatu strane; zajednički helper za oba nivoa.
  *
- * BEZ notifikacionog podsistema (nema `app_notifications` tabele ovog talasa — inbox
- * se rešava filtriranjem, ne "zvoncem"). BEZ šema izmena/migracija. Ne dira work-orders folder.
+ * D8: `handover-drafts.submit()` emituje in-app notifikaciju grupi TEHNOLOG
+ * („Kreirana nova primopredaja…") preko `NotificationsService` (NotificationsModule).
  *
  * Registracija u `app.module.ts` je posao integratora (dodati `HandoversModule` u `imports`).
  */
 @Module({
-  imports: [PrismaModule],
+  imports: [PrismaModule, NotificationsModule],
   controllers: [HandoversController, HandoverDraftsController],
   providers: [
     HandoversService,

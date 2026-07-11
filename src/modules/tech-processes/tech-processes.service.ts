@@ -12,6 +12,7 @@ import { createConnection } from "node:net";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { ScopeService } from "../../common/authz/scope.service";
+import { NotificationsService } from "../notifications/notifications.service";
 import type { AuthUser } from "../auth/jwt.strategy";
 import {
   pageMeta,
@@ -260,6 +261,7 @@ export class TechProcessesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly scope: ScopeService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   // ---------------------------------------------------------------- LIST
@@ -934,11 +936,13 @@ export class TechProcessesService {
     }
 
     const result = await this.prisma.$transaction(async (tx) => {
-      // Varijanta se menja U MESTU pri izmeni tehnologije/crteža (Vasa) — zato NE
-      // pinujemo skeniranu varijantu: (projectId, identNumber) jednoznačno određuje RN,
-      // pa uzimamo TEKUĆI red operacije (najviša varijanta). Staru varijantu sa otiska
-      // koristimo samo za detekciju zastarelosti (guard ispod). CREATE-ON-SCAN: za RN
-      // kreiran u 2.0 red se otvara pri prvom skenu (validacija protiv routinga RN-a).
+      // D5 klon-varijanta („Prepiši isti postupak", potvrda Negovan — legacy
+      // semantika): izmena tehnologije/crteža otvara NOVI RN red sa MAX(variant)+1.
+      // Zato se skeniranoj varijanti NE veruje: rad se knjiži na TEKUĆU varijantu
+      // (najviši `work_orders` red), a red operacije je PINOVAN na nju — kucanja
+      // stare varijante ostaju netaknuta. Skenirana varijanta služi samo za
+      // staleWorkOrder guard ispod. CREATE-ON-SCAN: red se otvara pri prvom skenu
+      // (validacija protiv routinga RN-a).
       const { tp } = await this.findOrOpenRoutingTp(
         tx,
         projectId,
@@ -960,10 +964,11 @@ export class TechProcessesService {
       );
       const planned = workOrder?.pieceCount ?? null;
 
-      // Verzioni guard (UPOZORENJE, ne blokada — MODULE_SPEC_stampa §5): pri izmeni
-      // tehnologije/crteža `variant` se podiže U MESTU (Vasa). Ako je varijanta sa
-      // otiska starija od tekuće → radnik je uzeo STAR odštampan nalog. Rad se svejedno
-      // evidentira na tekuću varijantu (`tp.variant`), uz upozorenje.
+      // Verzioni guard (UPOZORENJE, ne blokada — MODULE_SPEC_stampa §5): posle D5
+      // klona tekući RN ima veću varijantu od one na starom otisku. `tp.variant` je
+      // pinovan na tekući RN (findOrOpenRoutingTp), pa manja varijanta sa otiska =
+      // radnik je uzeo STAR odštampan nalog. Rad se svejedno evidentira na tekuću
+      // varijantu, uz upozorenje.
       const currentVariant = tp.variant;
       const staleWorkOrder = scannedVariant < currentVariant;
 
@@ -1678,31 +1683,38 @@ export class TechProcessesService {
     const { projectId, identNumber } = order.fields;
     const { operationNumber, workCenterCode } = operation.fields;
 
+    // Tekući RN (najviša varijanta — D5 klon otvara novi red); operacija se traži
+    // PINOVANO na njegovu varijantu, isto kao START/STOP write-path.
+    const wo = await this.findCurrentWorkOrder(
+      this.prisma,
+      projectId,
+      identNumber,
+    );
+    if (!wo)
+      throw new NotFoundException(
+        `RN za predmet ${projectId}, ident ${identNumber} nije nađen.`,
+      );
+
     const tp = await this.findRoutingTp(
       this.prisma,
       projectId,
       identNumber,
+      wo.variant,
       workCenterCode,
       operationNumber,
     );
     if (!tp) {
-      // Red još ne postoji (RN kreiran u 2.0) — validiraj protiv routinga RN-a i vrati
-      // „nema sesije": START skena će red otvoriti (create-on-scan). Read-only ruta ne kreira.
-      const wo = await this.prisma.workOrder.findFirst({
-        where: { projectId, identNumber },
-        orderBy: { variant: "desc" },
+      // Red za tekuću varijantu još ne postoji (RN kreiran u 2.0 ili sveža D5
+      // klon-varijanta) — validiraj protiv routinga RN-a i vrati „nema sesije":
+      // START skena će red otvoriti (create-on-scan). Read-only ruta ne kreira.
+      const routing = await this.prisma.workOrderOperation.findFirst({
+        where: {
+          workOrderId: wo.id,
+          workCenterCode,
+          ...(operationNumber !== null ? { operationNumber } : {}),
+        },
         select: { id: true },
       });
-      const routing = wo
-        ? await this.prisma.workOrderOperation.findFirst({
-            where: {
-              workOrderId: wo.id,
-              workCenterCode,
-              ...(operationNumber !== null ? { operationNumber } : {}),
-            },
-            select: { id: true },
-          })
-        : null;
       if (!routing)
         throw new NotFoundException(
           `Operacija (RC ${workCenterCode}${
@@ -1776,9 +1788,11 @@ export class TechProcessesService {
    *  - zatvara postupak (`isProcessFinished`, `finishedAt`, `qualityTypeId`, `workerId`,
    *    `priority=255`); ako su sve značajne operacije gotove → RN završen.
    *
-   * P1: DORADA/ŠKART (kvalitet 1/2) se knjiži, ali child RN (`-D/-S`) + poruka tehnologu
-   * su P2 → odgovor nosi `childOrderPending: true`. Nalepnica (RNZ) se vraća u `label`
-   * (front štampa preko proxy-ja). `machine_access` provera kontrolora — TODO(P2).
+   * P1: DORADA/ŠKART (kvalitet 1/2) se knjiži, ali child RN (`-D/-S`) je P2 →
+   * odgovor nosi `childOrderPending: true`. D8: dorada/škart POSLE transakcije emituje
+   * in-app notifikaciju (tehnolozi + projektant crteža — `notifyQualityIssue`).
+   * Nalepnica (RNZ) se vraća u `label` (front štampa preko proxy-ja).
+   * `machine_access` provera kontrolora — TODO(P2).
    */
   async control(dto: ControlTechProcessDto) {
     validateControl(dto);
@@ -2004,6 +2018,21 @@ export class TechProcessesService {
     );
     const childOrderPending = dto.qualityTypeId !== PART_QUALITY.GOOD;
 
+    // D8 emit: DORADA i ŠKART (odluka Nenad, PLAN_dorade §D8) → in-app notifikacija
+    // tehnolozima + projektantu crteža. POSLE uspešne transakcije, best-effort —
+    // helper je ceo u try/catch, pad notifikacije NE obara kucanje kontrole.
+    if (childOrderPending) {
+      await this.notifyQualityIssue({
+        workOrderId: result.workOrder.id,
+        identNumber: result.workOrder.identNumber,
+        operationNumber,
+        workCenterCode,
+        qualityTypeId: dto.qualityTypeId,
+        pieceCount: dto.pieceCount,
+        controllerName: worker.fullName || worker.username,
+      });
+    }
+
     return {
       data: {
         techProcess: {
@@ -2030,13 +2059,13 @@ export class TechProcessesService {
           ? controllerWarnings
           : null,
         label,
-        // Dorada/škart: child RN (-D/-S) + poruka tehnologu su P2.
+        // Dorada/škart: child RN (-D/-S) je P2; notifikacija tehnolozima je poslata (D8).
         childOrderPending,
       },
       ...(childOrderPending
         ? {
             meta: {
-              note: "Kvalitet dorada/škart evidentiran; kreiranje child RN-a (-D/-S) i poruka tehnologu dolaze u P2 (MODULE_SPEC_kontrola §8).",
+              note: "Kvalitet dorada/škart evidentiran; notifikacija tehnolozima poslata (D8). Kreiranje child RN-a (-D/-S) dolazi u P2 (MODULE_SPEC_kontrola §8).",
             },
           }
         : {}),
@@ -2378,30 +2407,46 @@ export class TechProcessesService {
   }
 
   /**
-   * Tekući red operacije u routingu (najviša varijanta) — varijanta se menja U MESTU
-   * pri izmeni tehnologije/crteža, pa (projectId, identNumber, workCenterCode[, opNumber])
-   * jednoznačno vodi na tekuću. Isti lookup kao `scan()`.
+   * Tekući RN za (projectId, identNumber) = red sa najvišom varijantom. D5
+   * klon-varijanta („Prepiši isti postupak", legacy semantika — potvrda Negovan)
+   * pri izmeni tehnologije/crteža otvara NOVI `work_orders` red sa MAX(variant)+1,
+   * pa tekuću varijantu određuje `work_orders`, ne `tech_processes`.
+   */
+  private async findCurrentWorkOrder(
+    tx: Prisma.TransactionClient,
+    projectId: number,
+    identNumber: string,
+  ) {
+    return tx.workOrder.findFirst({
+      where: { projectId, identNumber },
+      orderBy: { variant: "desc" },
+      select: { id: true, variant: true },
+    });
+  }
+
+  /**
+   * Red operacije u routingu PINOVAN na zadatu varijantu (varijanta tekućeg RN-a
+   * iz `findCurrentWorkOrder`). Nova klon-varijanta (D5) nema kucanja — red stare
+   * varijante NE sme da „upije" rad novog otiska, zato je `variant` deo ključa.
    */
   private async findRoutingTp(
     tx: Prisma.TransactionClient,
     projectId: number,
     identNumber: string,
+    variant: number,
     workCenterCode: string,
     operationNumber: number | null,
   ) {
     const where: Prisma.TechProcessWhereInput = {
       projectId,
       identNumber,
+      variant,
       workCenterCode,
     };
     if (operationNumber !== null) where.operationNumber = operationNumber;
     return tx.techProcess.findFirst({
       where,
-      orderBy: [
-        { variant: "desc" },
-        { isProcessFinished: "asc" },
-        { id: "asc" },
-      ],
+      orderBy: [{ isProcessFinished: "asc" }, { id: "asc" }],
     });
   }
 
@@ -2457,11 +2502,13 @@ export class TechProcessesService {
   }
 
   /**
-   * CREATE-ON-SCAN za OBIČNE operacije (Nesa 2026-07-10): RN kreiran u 2.0 NEMA unapred
-   * redove u `tech_processes` (legacy nalozi su ih dobijali iz MSSQL sync-a) — red se
-   * otvara pri PRVOM skenu, pošto se operacija validira protiv routinga RN-a
-   * (`work_order_operations`). Isti obrazac kao `control()` (legacy
-   * SacuvajRNSIzUnosaBarKoda). 404 ako RN ne postoji; 422 ako operacija nije u routingu.
+   * CREATE-ON-SCAN za OBIČNE operacije (Nesa 2026-07-10): red u `tech_processes`
+   * se NAĐE ili OTVORI za TEKUĆU varijantu RN-a — i za RN kreiran u 2.0 (nema
+   * unapred redove; legacy nalozi su ih dobijali iz MSSQL sync-a) i za svežu D5
+   * klon-varijantu (novi RN red, kucanja kreću od nule). Operacija se validira
+   * protiv routinga tekućeg RN-a (`work_order_operations`). Isti obrazac kao
+   * `control()` (legacy SacuvajRNSIzUnosaBarKoda). 404 ako RN ne postoji;
+   * 422 ako operacija nije u routingu.
    */
   private async findOrOpenRoutingTp(
     tx: Prisma.TransactionClient,
@@ -2471,25 +2518,23 @@ export class TechProcessesService {
     operationNumber: number | null,
     identMark: string,
   ) {
+    // Tekući RN prvo — kiosk uvek knjiži na najvišu varijantu (D5 klon = novi red).
+    const wo = await this.findCurrentWorkOrder(tx, projectId, identNumber);
+    if (!wo)
+      throw new NotFoundException(
+        `RN za predmet ${projectId}, ident ${identNumber} nije nađen.`,
+      );
+
     const existing = await this.findRoutingTp(
       tx,
       projectId,
       identNumber,
+      wo.variant,
       workCenterCode,
       operationNumber,
     );
     if (existing) return { tp: existing, opened: false };
 
-    // Tekući RN (najviša varijanta — varijanta se diže U MESTU pri izmeni tehnologije).
-    const wo = await tx.workOrder.findFirst({
-      where: { projectId, identNumber },
-      orderBy: { variant: "desc" },
-      select: { id: true, variant: true },
-    });
-    if (!wo)
-      throw new NotFoundException(
-        `RN za predmet ${projectId}, ident ${identNumber} nije nađen.`,
-      );
     const routingWhere: Prisma.WorkOrderOperationWhereInput = {
       workOrderId: wo.id,
       workCenterCode,
@@ -2523,6 +2568,113 @@ export class TechProcessesService {
       },
     });
     return { tp, opened: true };
+  }
+
+  /**
+   * D8 emit 1 (PLAN_dorade §D8, odluka Nenad: I dorada I škart): završna kontrola
+   * sa kvalitetom ≠ dobar → in-app notifikacija. Primaoci: grupa TEHNOLOG +
+   * (best-effort) projektant crteža (`resolveWorkOrderDesignerId`). Poziva se
+   * POSLE uspešne transakcije; CEO helper je u try/catch — pad notifikacije se
+   * loguje i NIKAD ne obara kucanje kontrole.
+   */
+  private async notifyQualityIssue(input: {
+    workOrderId: number;
+    identNumber: string;
+    operationNumber: number;
+    workCenterCode: string;
+    qualityTypeId: number;
+    pieceCount: number;
+    controllerName: string | null;
+  }): Promise<void> {
+    try {
+      const scrap = input.qualityTypeId === PART_QUALITY.SCRAP;
+      const recipients =
+        await this.notifications.resolveTechnologistWorkerIds();
+      const designerId = await this.resolveWorkOrderDesignerId(
+        input.workOrderId,
+      );
+      if (designerId) recipients.push(designerId);
+
+      const created = await this.notifications.notifyWorkers(recipients, {
+        type: scrap ? "kontrola.skart" : "kontrola.dorada",
+        message: `${scrap ? "ŠKART" : "DORADA"} na RN ${input.identNumber} op ${input.operationNumber} (${input.workCenterCode}) — kontrolor ${input.controllerName ?? "?"}, ${input.pieceCount} kom`,
+        refTable: "work_orders",
+        refId: input.workOrderId,
+      });
+      this.logger.log(
+        `D8 notifikacija ${scrap ? "ŠKART" : "DORADA"} (RN ${input.identNumber}): ${created} primalaca${designerId ? ` (uklj. projektant #${designerId})` : ""}`,
+      );
+    } catch (e) {
+      this.logger.error(
+        `D8 notifikacija FAIL (RN ${input.identNumber}, kvalitet ${input.qualityTypeId}): ${(e as Error).message}`,
+      );
+    }
+  }
+
+  /**
+   * Best-effort lanac do projektanta crteža RN-a (PLAN_dorade §D8, odluka #6):
+   * work_order → `drawingHandoverId` → drawing_handovers.drawingId → najskorija
+   * ne-isključena stavka nacrta (nema FK-a — isti obrazac kao handovers
+   * `resolveDraftContext`) → handover_drafts.designerId. Kad lanac pukne na bilo
+   * kom koraku (legacy RN-ovi nemaju primopredaju), FALLBACK: `drawings.designedBy`
+   * string → tačno (case-insensitive) poklapanje sa `workers.fullName` aktivnog
+   * radnika. Bez poklapanja → `null` BEZ greške.
+   */
+  private async resolveWorkOrderDesignerId(
+    workOrderId: number,
+  ): Promise<number | null> {
+    const wo = await this.prisma.workOrder.findUnique({
+      where: { id: workOrderId },
+      select: { drawingHandoverId: true, drawingId: true },
+    });
+    if (!wo) return null;
+
+    let drawingId = wo.drawingId;
+    if (wo.drawingHandoverId > 0) {
+      const handover = await this.prisma.drawingHandover.findUnique({
+        where: { id: wo.drawingHandoverId },
+        select: { drawingId: true },
+      });
+      if (handover) {
+        drawingId = handover.drawingId;
+        const item = await this.prisma.handoverDraftItem.findFirst({
+          where: { drawingId: handover.drawingId, excludeFromHandover: false },
+          orderBy: [{ draftId: "desc" }, { id: "desc" }],
+          select: { draftId: true },
+        });
+        if (item) {
+          const draft = await this.prisma.handoverDraft.findUnique({
+            where: { id: item.draftId },
+            select: { designerId: true },
+          });
+          if (draft && draft.designerId > 0) return draft.designerId;
+        }
+      }
+    }
+    return this.resolveDesignerByDrawingAuthor(drawingId);
+  }
+
+  /**
+   * Fallback odluke #6: `drawings.designedBy` je slobodan string (ime iz PDM-a),
+   * ne ključ — zato SAMO tačno (case-insensitive) poklapanje sa `fullName`
+   * AKTIVNOG radnika; fuzzy bi rizikovao pogrešan inbox. Nema poklapanja → null.
+   */
+  private async resolveDesignerByDrawingAuthor(
+    drawingId: number,
+  ): Promise<number | null> {
+    if (!drawingId || drawingId <= 0) return null;
+    const drawing = await this.prisma.drawing.findUnique({
+      where: { id: drawingId },
+      select: { designedBy: true },
+    });
+    const name = drawing?.designedBy?.trim();
+    if (!name) return null;
+    const worker = await this.prisma.worker.findFirst({
+      where: { fullName: { equals: name, mode: "insensitive" }, active: true },
+      orderBy: { id: "asc" },
+      select: { id: true },
+    });
+    return worker?.id ?? null;
   }
 
   /**

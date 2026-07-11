@@ -17,6 +17,7 @@ import { DirectoryModule } from "./modules/directory/directory.module";
 import { HandoversModule } from "./modules/handovers/handovers.module";
 import { PartLocationsModule } from "./modules/part-locations/part-locations.module";
 import { MrpModule } from "./modules/mrp/mrp.module";
+import { NotificationsModule } from "./modules/notifications/notifications.module";
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { MrpModule } from "./modules/mrp/mrp.module";
     HandoversModule,
     PartLocationsModule,
     MrpModule,
+    NotificationsModule,
   ],
   controllers: [AppController],
   providers: [
