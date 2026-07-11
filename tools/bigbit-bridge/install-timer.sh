@@ -9,7 +9,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE="${BB_MDBTOOLS_IMAGE:-servosync/mdbtools:local}"
 RUN_TIME="05:30"
-RUN_USER="$(id -un)"
+# When invoked via sudo, run the service as the invoking user (has docker + reads
+# the drop folder), not root.
+RUN_USER="${SUDO_USER:-$(id -un)}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
