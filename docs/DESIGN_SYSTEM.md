@@ -69,9 +69,10 @@
 
 ## 4. Raspored ekrana
 
-* **AppShell** (uvek): levi sidebar 188–240 px sa modulima (Radni nalozi, Tehnološki postupci, PDM/Crteži,
+* **AppShell** (uvek): levi sidebar 188–240 px sa modulima (Radni nalozi, Realizacija, PDM/Crteži,
   Nacrti, Primopredaje, Lokacije delova, MRP/Nabavka, Komitenti) + komandna traka gore
-  (naslov, broj zapisa, globalna pretraga `Ctrl+K`, primarna akcija desno).
+  (naslov, broj zapisa, globalna pretraga `Ctrl+K`, **zvonce notifikacija** (D8: badge nepročitanih +
+  panel inbox-a; vidljivo samo nalogu sa vezanim radnikom), primarna akcija desno).
 * **Tri obrasca ekrana** — svaki novi ekran je jedan od ovih, ništa četvrto bez izmene ovog dokumenta:
   1. **Lista** — filter bar + gusta tabela (+ opcioni KPI red iznad, max 4 pločice);
   2. **Master–detalj** — lista levo, detalj panel desno (288–320 px); selekcija reda puni panel;
@@ -116,6 +117,9 @@
 | Primopredaja | Lansiran | info plava | `--status-info` |
 | Primopredaja | Legacy (iz QBigTehn, do cutover-a) | neutralna | `--status-neutral` |
 | Sync (bb_sync) | Greška sinhronizacije | crvena | `--status-danger` |
+| Notifikacija (D8) | Škart (`kontrola.skart`) | crvena | `--status-danger` |
+| Notifikacija (D8) | Dorada (`kontrola.dorada`) | narandžasta | `--status-warn` |
+| Notifikacija (D8) | Primopredaja (`primopredaja.nova`) | info plava | `--status-info` |
 
 Novi status = nova vrsta u ovoj tabeli **pre** upotrebe u kodu.
 

@@ -1,8 +1,10 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
+import { useEffect, useRef, useState } from 'react';
 import {
+  Bell,
   Briefcase,
   Building2,
   CheckCircle2,
@@ -27,6 +29,15 @@ import {
 import { cn } from '@/lib/cn';
 import { useAuth } from '@/lib/auth-context';
 import { PERMISSIONS, type Permission } from '@/lib/permissions';
+import {
+  useMarkAllNotificationsRead,
+  useMarkNotificationRead,
+  useNotifications,
+  useUnreadNotificationsCount,
+  type AppNotification,
+} from '@/api/notifications';
+import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
+import { formatDateTime } from '@/lib/format';
 
 interface NavItem {
   label: string;
@@ -63,7 +74,7 @@ const NAV_SECTIONS: NavSection[] = [
       { label: 'Radni nalozi', href: '/work-orders', icon: ClipboardList, requires: PERMISSIONS.RN_READ },
       { label: 'Operacije po prioritetu', href: '/operations-queue', icon: ListOrdered, requires: PERMISSIONS.RN_READ },
       { label: 'Završeni nalozi', href: '/completed-orders', icon: CheckCircle2, requires: PERMISSIONS.RN_READ },
-      { label: 'Tehnološki postupci', href: '/tech-processes', icon: Workflow, requires: PERMISSIONS.TEHNOLOGIJA_READ },
+      { label: 'Realizacija', href: '/tech-processes', icon: Workflow, requires: PERMISSIONS.TEHNOLOGIJA_READ },
       { label: 'Lokacije delova', href: '/part-locations', icon: MapPin, requires: PERMISSIONS.LOKACIJE_READ },
       { label: 'Proizvodne strukture', href: '/structures', icon: Users, requires: PERMISSIONS.STRUKTURE_READ },
       { label: 'MRP / Nabavka', href: '/mrp', icon: ShoppingCart, requires: PERMISSIONS.MRP_READ },
@@ -95,6 +106,146 @@ const NAV_SECTIONS: NavSection[] = [
   },
 ];
 
+// ------------------------------------------------------------------ zvonce (D8 notifikacije)
+
+/** Tip notifikacije → StatusBadge (kanonska mapa, DESIGN_SYSTEM §7). */
+const NOTIFICATION_BADGE: Record<string, { tone: Tone; label: string }> = {
+  'kontrola.skart': { tone: 'danger', label: 'Škart' },
+  'kontrola.dorada': { tone: 'warn', label: 'Dorada' },
+  'primopredaja.nova': { tone: 'info', label: 'Primopredaja' },
+};
+
+/** refTable → ruta modula (navigacija na klik; bez deep-linka — lista modula). */
+const NOTIFICATION_ROUTE: Record<string, string> = {
+  work_orders: '/work-orders',
+  handover_drafts: '/handovers',
+};
+
+/**
+ * Zvonce sa brojem nepročitanih (polling 30 s) + panel sa inbox-om. Backend
+ * filtrira po radniku iz JWT-a (users.worker_id) — nalog bez vezanog radnika
+ * ima prazan inbox. Klik na stavku = označi pročitanom + skok na modul.
+ */
+function NotificationBell({ enabled }: { enabled: boolean }) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  const unreadQ = useUnreadNotificationsCount(enabled);
+  const listQ = useNotifications(enabled && open);
+  const markRead = useMarkNotificationRead();
+  const markAll = useMarkAllNotificationsRead();
+
+  const unread = unreadQ.data?.data.unread ?? 0;
+  const rows = listQ.data?.data ?? [];
+
+  // Esc + klik van panela zatvaraju (tastatura je deo definicije gotovog, §7).
+  useEffect(() => {
+    if (!open) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') setOpen(false);
+    }
+    function onMouseDown(e: MouseEvent) {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('mousedown', onMouseDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('mousedown', onMouseDown);
+    };
+  }, [open]);
+
+  function onActivate(n: AppNotification) {
+    if (!n.readAt) markRead.mutate(n.id);
+    const route = n.refTable ? NOTIFICATION_ROUTE[n.refTable] : undefined;
+    if (route) router.push(route);
+    setOpen(false);
+  }
+
+  if (!enabled) return null;
+
+  return (
+    <div ref={rootRef}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        aria-label={unread > 0 ? `Notifikacije (${unread} nepročitanih)` : 'Notifikacije'}
+        aria-expanded={open}
+        className="relative rounded-control p-1.5 text-sidebar-ink hover:bg-sidebar-line hover:text-sidebar-ink-active"
+      >
+        <Bell className="h-4 w-4" aria-hidden />
+        {unread > 0 && (
+          <span
+            className="tnums absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-status-danger px-1 text-2xs font-semibold text-sidebar-ink-active"
+            aria-hidden
+          >
+            {unread > 99 ? '99+' : unread}
+          </span>
+        )}
+      </button>
+
+      {open && (
+        <div className="fixed left-2 top-[var(--command-bar-height)] z-50 w-96 max-w-[calc(100vw-16px)] rounded-panel border border-line bg-surface shadow-lg">
+          <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
+            <span className="text-base font-semibold text-ink">Notifikacije</span>
+            {unread > 0 && (
+              <button
+                onClick={() => markAll.mutate()}
+                disabled={markAll.isPending}
+                className="rounded-control px-2 py-1 text-xs font-medium text-accent hover:bg-accent-subtle disabled:opacity-50"
+              >
+                Označi sve
+              </button>
+            )}
+          </div>
+
+          <div className="max-h-96 overflow-y-auto">
+            {listQ.isLoading ? (
+              <div className="px-4 py-6 text-center text-sm text-ink-secondary">Učitavanje…</div>
+            ) : listQ.error ? (
+              <div className="px-4 py-6 text-center text-sm text-status-danger">
+                Greška pri učitavanju notifikacija.
+              </div>
+            ) : rows.length === 0 ? (
+              <div className="px-4 py-6 text-center text-sm text-ink-secondary">
+                Nema notifikacija.
+              </div>
+            ) : (
+              rows.map((n) => {
+                const badge = NOTIFICATION_BADGE[n.type];
+                return (
+                  <button
+                    key={n.id}
+                    onClick={() => onActivate(n)}
+                    className={cn(
+                      'block w-full border-b border-line-soft px-4 py-2.5 text-left hover:bg-surface-2',
+                      !n.readAt && 'bg-accent-subtle',
+                    )}
+                  >
+                    <div className="flex items-center gap-2">
+                      {badge ? (
+                        <StatusBadge tone={badge.tone} label={badge.label} />
+                      ) : (
+                        <StatusBadge tone="neutral" label={n.type} />
+                      )}
+                      <span className="tnums ml-auto shrink-0 text-xs text-ink-secondary">
+                        {formatDateTime(n.createdAt)}
+                      </span>
+                    </div>
+                    <p className={cn('mt-1 text-sm text-ink', !n.readAt && 'font-medium')}>
+                      {n.message}
+                    </p>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { user, logout, can } = useAuth();
@@ -110,8 +261,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex min-h-full flex-1">
       <aside className="flex w-[var(--sidebar-width)] shrink-0 flex-col bg-sidebar text-sidebar-ink">
-        <div className="flex h-[var(--command-bar-height)] items-center px-5 text-md font-semibold text-sidebar-ink-active">
+        <div className="flex h-[var(--command-bar-height)] items-center justify-between px-5 text-md font-semibold text-sidebar-ink-active">
           ServoSync
+          <NotificationBell enabled={!!user} />
         </div>
         <nav className="flex-1 px-2 py-2">
           {visibleSections.map((section, sectionIndex) => (

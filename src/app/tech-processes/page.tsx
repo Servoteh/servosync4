@@ -97,7 +97,7 @@ const errorBox =
 
 type TabKey = 'list' | 'critical' | 'worker' | 'rn';
 const TABS: { key: TabKey; label: string }[] = [
-  { key: 'list', label: 'Postupci' },
+  { key: 'list', label: 'Kucanja' },
   { key: 'critical', label: 'Kritični' },
   { key: 'worker', label: 'Učinak radnika' },
   { key: 'rn', label: 'Gotovost RN' },
@@ -117,7 +117,7 @@ function Tabs({ value, onChange }: { value: TabKey; onChange: (k: TabKey) => voi
   return (
     <div
       role="tablist"
-      aria-label="Prikaz tehnoloških postupaka"
+      aria-label="Prikaz realizacije"
       onKeyDown={onKeyDown}
       className="inline-flex gap-1 rounded-panel border border-line bg-surface p-1"
     >
@@ -145,7 +145,7 @@ function Tabs({ value, onChange }: { value: TabKey; onChange: (k: TabKey) => voi
   );
 }
 
-// ================================================================== TAB: POSTUPCI (lista + kartica)
+// ================================================================== TAB: KUCANJA (lista + kartica)
 
 const listColumns: Column<TechProcess>[] = [
   {
@@ -299,7 +299,7 @@ function CardGroupHeaderRow({
   );
 }
 
-/** „Kartica tehnološkog postupka" — redovi + sume po kvalitetu + ukupno vreme (poziv /card). */
+/** „Kartica kucanja" — redovi + sume po kvalitetu + ukupno vreme (poziv /card). */
 function TechProcessCardDetail({ tp }: { tp: TechProcess }) {
   const key: CardKey = {
     projectId: tp.projectId,
@@ -321,7 +321,7 @@ function TechProcessCardDetail({ tp }: { tp: TechProcess }) {
   return (
     <div className="space-y-3">
       <SectionHeading
-        title="Kartica tehnološkog postupka"
+        title="Kartica kucanja"
         count={`${formatNumber(card.operationCount)} operacija · ${formatNumber(card.finishedCount)} završeno · ${formatNumber(s.entryCount)} kucanja`}
       />
 
@@ -413,7 +413,7 @@ function PostupciPanel() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <SectionHeading
-          title="Tehnološki postupci"
+          title="Kucanja"
           count={meta ? `${formatNumber(meta.total)} zapisa` : undefined}
         />
         <SearchBox
@@ -438,7 +438,7 @@ function PostupciPanel() {
         renderExpanded={(r) => <TechProcessCardDetail tp={r} />}
         empty={
           <EmptyState
-            title="Nema tehnoloških postupaka"
+            title="Nema kucanja"
             hint="Promeni pretragu ili proveri da je sync popunio podatke."
           />
         }
@@ -816,7 +816,7 @@ export default function TechProcessesPage() {
 
   return (
     <AppShell>
-      <PageHeader title="Tehnološki postupci" />
+      <PageHeader title="Realizacija" />
 
       <div className="flex-1 space-y-4 overflow-auto p-6">
         <Tabs value={tab} onChange={setTab} />
