@@ -49,7 +49,10 @@ export function DataTable<T>({
       setFocus((f) => Math.max(f - 1, 0));
     } else if (e.key === 'Enter') {
       e.preventDefault();
-      onRowActivate?.(rows[focus]);
+      // `focus` može biti van opsega ako se `rows` suzio (promena filtera/pretrage)
+      // a strelice još nisu pomerile fokus — bez guarda rows[focus] je undefined.
+      const row = rows[focus];
+      if (row) onRowActivate?.(row);
     }
   }
 

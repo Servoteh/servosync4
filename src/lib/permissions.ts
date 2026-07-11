@@ -29,6 +29,7 @@ export const PERMISSIONS = {
   // Reversi — 3.0 pilot (2.0 backend docs/design/MODULE_SPEC_reversi.md §3)
   REVERSI_READ: 'reversi.read',
   REVERSI_MANAGE: 'reversi.manage',
+  // Rezervisano za „Moj tim" pogled (TL/šef) — UI još nije priključen; vidi TODO u api/reversi.ts.
   REVERSI_TEAM_READ: 'reversi.team_read',
 } as const;
 

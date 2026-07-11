@@ -1,4 +1,22 @@
 import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
+import { EmptyState } from '@/components/ui-kit/empty-state';
+
+/**
+ * Sadržaj `empty` slota tabele koji razlikuje grešku učitavanja od stvarno
+ * praznog skupa. Bez ovoga (uz globalni `retry:false`) neuspeo fetch izgleda kao
+ * „nema podataka" — obmanjujuće (npr. „Magacin je prazan" magacioneru).
+ */
+export function tableEmpty(isError: boolean, title: string, hint: string) {
+  if (isError) {
+    return (
+      <EmptyState
+        title="Greška pri učitavanju"
+        hint="Podaci trenutno nisu dostupni. Osveži stranicu ili pokušaj ponovo."
+      />
+    );
+  }
+  return <EmptyState title={title} hint={hint} />;
+}
 
 /** Domenski statusi Reversi dokumenata/stavki → ton + srpska labela (paritet 1.0). */
 const DOC_STATUS: Record<string, { tone: Tone; label: string }> = {

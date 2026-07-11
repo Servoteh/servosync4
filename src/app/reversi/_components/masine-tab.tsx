@@ -2,10 +2,10 @@
 
 import { useMemo, useState } from 'react';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
-import { EmptyState } from '@/components/ui-kit/empty-state';
 import { SearchBox } from '@/components/ui-kit/search-box';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { useReversiMachines, type MachineRow } from '@/api/reversi';
+import { tableEmpty } from './common';
 import { MachineCardDialog } from './machine-card-dialog';
 
 /**
@@ -60,7 +60,7 @@ export function MasineTab() {
         rowKey={(r) => r.machine_code}
         loading={machines.isLoading}
         onRowActivate={(r) => setOpenMachine(r)}
-        empty={<EmptyState title="Nema mašina" hint="Nijedna mašina ne odgovara pretrazi." />}
+        empty={tableEmpty(machines.isError, 'Nema mašina', 'Nijedna mašina ne odgovara pretrazi.')}
       />
       <MachineCardDialog machine={openMachine} onClose={() => setOpenMachine(null)} />
     </div>

@@ -2,10 +2,10 @@
 
 import { useMemo, useState } from 'react';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
-import { EmptyState } from '@/components/ui-kit/empty-state';
 import { SearchBox } from '@/components/ui-kit/search-box';
 import { formatNumber } from '@/lib/format';
 import { useWarehouse, type WarehouseRow } from '@/api/reversi';
+import { tableEmpty } from './common';
 import { ToolDetailDialog } from './tool-detail-dialog';
 import { BulkImportDialog } from './bulk-import-dialog';
 import { Button } from '@/components/ui-kit/button';
@@ -78,7 +78,7 @@ export function MagacinTab() {
           // svoj tok (kartica reznog stiže sa reznim modulom).
           if (!/rezn/i.test(r.grupa)) setToolId(r.item_id);
         }}
-        empty={<EmptyState title="Magacin je prazan" hint="Nema stavki koje odgovaraju pretrazi." />}
+        empty={tableEmpty(warehouse.isError, 'Magacin je prazan', 'Nema stavki koje odgovaraju pretrazi.')}
       />
       <ToolDetailDialog toolId={toolId} onClose={() => setToolId(null)} />
       {manage && <BulkImportDialog open={importOpen} onClose={() => setImportOpen(false)} />}

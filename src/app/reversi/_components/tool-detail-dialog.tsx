@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Button } from '@/components/ui-kit/button';
 import { FormField } from '@/components/ui-kit/form-field';
@@ -44,10 +44,21 @@ export function ToolDetailDialog({ toolId, onClose }: { toolId: string | null; o
   const [recQty, setRecQty] = useState(1);
   const [error, setError] = useState<string | null>(null);
 
+  // Dijalog ostaje montiran (roditelj menja samo `toolId`); resetuj panel otpisa
+  // i unos prijema pri promeni alata — inače otvoren otpis/razlog sa prethodnog
+  // alata „procuri" na sledeći (rizik pogrešnog otpisa).
+  useEffect(() => {
+    setWoOpen(false);
+    setRazlog('');
+    setWoStatus('scrapped');
+    setRecQty(1);
+    setError(null);
+  }, [toolId]);
+
   const t = detail.data?.data;
 
   async function doReceive() {
-    if (!t || recQty <= 0) return;
+    if (!t || recQty <= 0 || stockDelta.isPending) return;
     setError(null);
     try {
       await stockDelta.mutateAsync({
@@ -64,7 +75,7 @@ export function ToolDetailDialog({ toolId, onClose }: { toolId: string | null; o
   }
 
   async function doWriteOff() {
-    if (!t) return;
+    if (!t || writeOff.isPending) return;
     setError(null);
     try {
       await writeOff.mutateAsync({ clientEventId: newClientEventId(), toolId: t.id, razlog: razlog.trim() || undefined, status: woStatus });
@@ -76,7 +87,7 @@ export function ToolDetailDialog({ toolId, onClose }: { toolId: string | null; o
   }
 
   async function doRestore() {
-    if (!t) return;
+    if (!t || restore.isPending) return;
     setError(null);
     try {
       await restore.mutateAsync({ clientEventId: newClientEventId(), toolId: t.id });

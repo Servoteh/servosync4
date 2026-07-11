@@ -17,6 +17,8 @@ export function MachineCardDialog({ machine, onClose }: { machine: MachineRow | 
           <div className="space-y-1 rounded-control border border-line p-2">
             {cutting.isLoading ? (
               <p className="text-xs text-ink-secondary">Učitavanje…</p>
+            ) : cutting.isError ? (
+              <p className="text-xs text-status-danger">Podaci trenutno nisu dostupni.</p>
             ) : (cutting.data?.data ?? []).length === 0 ? (
               <p className="text-xs text-ink-secondary">Nema zaduženog reznog alata.</p>
             ) : (
@@ -37,6 +39,8 @@ export function MachineCardDialog({ machine, onClose }: { machine: MachineRow | 
           <div className="space-y-1 rounded-control border border-line p-2">
             {heads.isLoading ? (
               <p className="text-xs text-ink-secondary">Učitavanje…</p>
+            ) : heads.isError ? (
+              <p className="text-xs text-status-danger">Podaci trenutno nisu dostupni.</p>
             ) : (heads.data?.data ?? []).length === 0 ? (
               <p className="text-xs text-ink-secondary">Nema evidentiranih glava.</p>
             ) : (

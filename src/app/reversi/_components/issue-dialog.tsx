@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Button } from '@/components/ui-kit/button';
 import { FormField } from '@/components/ui-kit/form-field';
@@ -31,11 +31,11 @@ interface DraftLine {
 }
 
 /**
- * Izdaj alat/kooperaciju — prva mutacija novog UI-ja (rev_issue_reversal preko
- * POST /reversi/issue). Payload = isti jsonb kao 1.0 issueDialog; idempotency
- * ključ se generiše JEDNOM po otvaranju forme (retry submita nosi isti ključ).
- * HID barkod čitač radi kroz polje pretrage (kuca kao tastatura); kamera-skener
- * stiže u sledećem preseku R3.
+ * Izdaj alat/kooperaciju — mutacija rev_issue_reversal preko POST /reversi/issue.
+ * Payload = isti jsonb kao 1.0 issueDialog; idempotency ključ se generiše JEDNOM
+ * po otvaranju forme (retry ISTOG submita nosi isti ključ; svako novo otvaranje =
+ * nov ključ i prazna forma). HID barkod čitač radi kroz polje pretrage (kuca kao
+ * tastatura); kamera-skener kroz ScanOverlay.
  */
 export function IssueDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [docType, setDocType] = useState<DocType>('TOOL');
@@ -75,15 +75,23 @@ export function IssueDialog({ open, onClose }: { open: boolean; onClose: () => v
 
   function addCoopLine() {
     if (!coopName.trim()) return;
+    // Stabilan jedinstven ključ — ime/indeks se ponavljaju (dodaj/ukloni/dodaj),
+    // pa bi `coop-${len}-${name}` kolidirao i dirao pogrešnu stavku.
+    const key = newClientEventId();
     setLines((ls) => [
       ...ls,
-      { key: `coop-${ls.length}-${coopName}`, tool: null, partName: coopName.trim(), quantity: coopQty || 1, unit: 'kom' },
+      { key, tool: null, partName: coopName.trim(), quantity: coopQty || 1, unit: 'kom' },
     ]);
     setCoopName('');
     setCoopQty(1);
   }
 
-  function reset() {
+  // Svako otvaranje = prazna forma i NOV idempotency ključ. Dijalog ostaje
+  // montiran (roditelj mu prosleđuje `open`), pa se stanje mora ručno očistiti —
+  // inače „procuri" nedovršeni nacrt i stari ključ na sledeće izdavanje.
+  const reset = useCallback(() => {
+    setDocType('TOOL');
+    setRecipientType('EMPLOYEE');
     setLines([]);
     setEmployee(null);
     setEmpQ('');
@@ -92,9 +100,17 @@ export function IssueDialog({ open, onClose }: { open: boolean; onClose: () => v
     setCompanyPib('');
     setReturnDate('');
     setNote('');
+    setToolQ('');
+    setCoopName('');
+    setCoopQty(1);
+    setScanOpen(false);
     setError(null);
     setClientEventId(newClientEventId());
-  }
+  }, []);
+
+  useEffect(() => {
+    if (open) reset();
+  }, [open, reset]);
 
   async function submit() {
     setError(null);
@@ -151,7 +167,18 @@ export function IssueDialog({ open, onClose }: { open: boolean; onClose: () => v
       <div className="space-y-4">
         <div className="grid grid-cols-2 gap-3">
           <FormField label="Tip dokumenta" required>
-            <select className={INPUT} value={docType} onChange={(e) => setDocType(e.target.value as DocType)}>
+            <select
+              className={INPUT}
+              value={docType}
+              onChange={(e) => {
+                // Promena tipa čisti stavke — inače bi payload nosio TOOL linije
+                // pod COOPERATION_GOODS (i obrnuto) → nekonzistentan dokument.
+                setDocType(e.target.value as DocType);
+                setLines([]);
+                setToolQ('');
+                setCoopName('');
+              }}
+            >
               <option value="TOOL">Alat / oprema</option>
               <option value="COOPERATION_GOODS">Kooperacija</option>
             </select>

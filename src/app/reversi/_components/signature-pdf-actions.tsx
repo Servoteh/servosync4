@@ -5,7 +5,6 @@ import { Button } from '@/components/ui-kit/button';
 import { generateReversiPdf } from '@/lib/reversi-pdf';
 import {
   fetchSignaturePdfUrl,
-  useReversiDocument,
   useUploadSignaturePdf,
   type ReversiDocumentDetail,
 } from '@/api/reversi';
@@ -17,7 +16,6 @@ import {
  */
 export function SignaturePdfActions({ doc, manage }: { doc: ReversiDocumentDetail; manage: boolean }) {
   const upload = useUploadSignaturePdf();
-  const refetch = useReversiDocument(doc.id);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -26,8 +24,9 @@ export function SignaturePdfActions({ doc, manage }: { doc: ReversiDocumentDetai
     setBusy(true);
     try {
       const blob = await generateReversiPdf(doc);
+      // upload.onSuccess invalidira ['reversi','documents'] → obuhvata i detail
+      // query ovog dokumenta, pa ručni refetch nije potreban.
       await upload.mutateAsync({ docId: doc.id, blob });
-      await refetch.refetch();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Generisanje potpisnice nije uspelo.');
     } finally {
@@ -37,10 +36,16 @@ export function SignaturePdfActions({ doc, manage }: { doc: ReversiDocumentDetai
 
   async function download() {
     setError(null);
+    // Otvori prozor SINHRONO (u okviru klik-gesta) pa mu tek onda postavi URL —
+    // inače (posle await-a) popup blocker tiho pojede presigned link.
+    const win = window.open('about:blank', '_blank');
+    if (win) win.opener = null;
     try {
       const { data } = await fetchSignaturePdfUrl(doc.id);
-      window.open(data.url, '_blank', 'noopener');
+      if (win) win.location.href = data.url;
+      else window.location.href = data.url; // popup blokiran → fallback u istom tabu
     } catch (e) {
+      win?.close();
       setError(e instanceof Error ? e.message : 'Preuzimanje nije uspelo.');
     }
   }

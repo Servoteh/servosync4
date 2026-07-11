@@ -1,10 +1,9 @@
 'use client';
 
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
-import { EmptyState } from '@/components/ui-kit/empty-state';
 import { formatDate, formatNumber } from '@/lib/format';
 import { useMyConsumed, useMyIssuedTools, type MyConsumedRow, type MyIssuedRow } from '@/api/reversi';
-import { DocStatusBadge } from './common';
+import { DocStatusBadge, tableEmpty } from './common';
 
 /** Self-service „Moji alati" — izdato na mene + potrošeno (paritet 1.0 mojaZaduzenja). */
 export function MojiAlatiTab() {
@@ -38,7 +37,7 @@ export function MojiAlatiTab() {
           rows={issued.data?.data ?? []}
           rowKey={(r) => `${r.document_id}-${r.oznaka}-${r.serijski_broj ?? ''}`}
           loading={issued.isLoading}
-          empty={<EmptyState title="Nema zaduženja" hint="Trenutno nemaš zadužen alat ni opremu." />}
+          empty={tableEmpty(issued.isError, 'Nema zaduženja', 'Trenutno nemaš zadužen alat ni opremu.')}
         />
       </section>
 
@@ -49,7 +48,7 @@ export function MojiAlatiTab() {
           rows={consumed.data?.data ?? []}
           rowKey={(r) => r.ledger_id}
           loading={consumed.isLoading}
-          empty={<EmptyState title="Nema potrošnje" hint="Nema evidentirane potrošnje na tvoje ime." />}
+          empty={tableEmpty(consumed.isError, 'Nema potrošnje', 'Nema evidentirane potrošnje na tvoje ime.')}
         />
       </section>
     </div>

@@ -132,6 +132,9 @@ export function BulkImportDialog({ open, onClose }: { open: boolean; onClose: ()
               accept=".xlsx,.xls,.csv"
               onChange={(e) => {
                 const f = e.target.files?.[0];
+                // Očisti value da izbor ISTOG fajla drugi put (npr. posle ispravke
+                // u Excelu) ponovo okine onChange.
+                e.target.value = '';
                 if (f) void onFile(f);
               }}
               className="block w-full text-sm text-ink file:mr-3 file:rounded-control file:border file:border-line file:bg-surface-2 file:px-3 file:py-1.5 file:text-sm"

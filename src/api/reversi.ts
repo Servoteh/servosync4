@@ -171,8 +171,21 @@ export interface ReversiToolsParams {
  * Idempotency ključ mutacije (backend `rev_api_idempotency`): generiši JEDNOM
  * po korisničkoj akciji (klik) i prosledi u variables — retry ISTE akcije nosi
  * ISTI ključ (backend vraća sačuvan rezultat umesto duplog izvršenja).
+ *
+ * `crypto.randomUUID` postoji SAMO u secure context-u (https / localhost); na
+ * LAN pristupu (`http://192.168.x.x:3000`) ga nema, pa pada nazad na
+ * `getRandomValues` (dostupan i van secure context-a) — RFC 4122 v4.
  */
-export const newClientEventId = (): string => crypto.randomUUID();
+export function newClientEventId(): string {
+  const c = globalThis.crypto;
+  if (typeof c?.randomUUID === 'function') return c.randomUUID();
+  const b = new Uint8Array(16);
+  c.getRandomValues(b);
+  b[6] = (b[6] & 0x0f) | 0x40; // verzija 4
+  b[8] = (b[8] & 0x3f) | 0x80; // varijanta 10xx
+  const h = Array.from(b, (x) => x.toString(16).padStart(2, '0'));
+  return `${h[0]}${h[1]}${h[2]}${h[3]}-${h[4]}${h[5]}-${h[6]}${h[7]}-${h[8]}${h[9]}-${h[10]}${h[11]}${h[12]}${h[13]}${h[14]}${h[15]}`;
+}
 
 function qs(params: Record<string, string | number | undefined>): string {
   const sp = new URLSearchParams();
@@ -270,20 +283,16 @@ export function useMyConsumed() {
   });
 }
 
-export function useWarehouse(allLocations = false) {
+export function useWarehouse() {
   return useQuery({
-    queryKey: [...KEYS.reports, 'warehouse', allLocations],
-    queryFn: () =>
-      apiFetch<{ data: WarehouseRow[] }>(
-        `/v1/reversi/reports/warehouse${allLocations ? '?allLocations=true' : ''}`,
-      ),
+    queryKey: [...KEYS.reports, 'warehouse'],
+    queryFn: () => apiFetch<{ data: WarehouseRow[] }>('/v1/reversi/reports/warehouse'),
   });
 }
 
-export function useScrapped(enabled: boolean) {
+export function useScrapped() {
   return useQuery({
     queryKey: [...KEYS.reports, 'scrapped'],
-    enabled,
     queryFn: () => apiFetch<{ data: ScrappedRow[] }>('/v1/reversi/reports/scrapped'),
   });
 }
@@ -304,14 +313,9 @@ export function useEmployeeLookup(q: string) {
   });
 }
 
-export function useTeamIssued(enabled: boolean) {
-  return useQuery({
-    queryKey: [...KEYS.reports, 'team-issued'],
-    enabled,
-    queryFn: () =>
-      apiFetch<{ data: Record<string, unknown>[] }>('/v1/reversi/reports/team-issued'),
-  });
-}
+// TODO(reversi): „Moj tim" pogled (TL/šef vidi zaduženja svog tima) — spec §6/§8,
+// permisija reversi.team_read (get_team_issued_tools kroz GUC). Odloženo dok BE
+// endpoint /reversi/reports/team-issued ne postoji; ranije stanje je bio mrtav hook.
 
 // ------------------------------------------------------------------ mutations
 // Sve nose obavezan clientEventId (vidi newClientEventId). Odgovor:
@@ -554,7 +558,8 @@ export function useCuttingByMachine(machineCode: string | null) {
 export interface SeedStockVars {
   clientEventId: string;
   catalogId: string;
-  locationId: string;
+  /** Opciono — bez lokacije BE koristi podrazumevani magacin (ALAT-MAG-01). */
+  locationId?: string;
   qty: number;
 }
 export const useSeedCuttingStock = () =>

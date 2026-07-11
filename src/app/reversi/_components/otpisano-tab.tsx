@@ -2,15 +2,15 @@
 
 import { useState } from 'react';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
-import { EmptyState } from '@/components/ui-kit/empty-state';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { formatDate, formatNumber } from '@/lib/format';
 import { useScrapped, type ScrappedRow } from '@/api/reversi';
+import { tableEmpty } from './common';
 import { ToolDetailDialog } from './tool-detail-dialog';
 
 /** Otpisan/izgubljen alat (v_rev_otpisani_alat — manage-only, paritet 1.0 reversiScrappedTab). */
 export function OtpisanoTab() {
-  const scrapped = useScrapped(true);
+  const scrapped = useScrapped();
   const [toolId, setToolId] = useState<string | null>(null);
 
   const cols: Column<ScrappedRow>[] = [
@@ -47,7 +47,7 @@ export function OtpisanoTab() {
         rowKey={(r) => r.id}
         loading={scrapped.isLoading}
         onRowActivate={(r) => setToolId(r.id)}
-        empty={<EmptyState title="Nema otpisanog alata" hint="Nijedan alat nije otpisan ni izgubljen." />}
+        empty={tableEmpty(scrapped.isError, 'Nema otpisanog alata', 'Nijedan alat nije otpisan ni izgubljen.')}
       />
       <ToolDetailDialog toolId={toolId} onClose={() => setToolId(null)} />
     </>

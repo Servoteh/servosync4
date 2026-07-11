@@ -2,7 +2,6 @@
 
 import { useState } from 'react';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
-import { EmptyState } from '@/components/ui-kit/empty-state';
 import { SearchBox } from '@/components/ui-kit/search-box';
 import { Pager } from '@/components/ui-kit/pager';
 import { formatDate, formatNumber } from '@/lib/format';
@@ -11,7 +10,7 @@ import {
   useReversiDocuments,
   type ReversiDocument,
 } from '@/api/reversi';
-import { DOC_TYPE_LABEL, DocStatusBadge, LineStatusBadge } from './common';
+import { DOC_TYPE_LABEL, DocStatusBadge, LineStatusBadge, tableEmpty } from './common';
 import { Button } from '@/components/ui-kit/button';
 import { useAuth } from '@/lib/auth-context';
 import { PERMISSIONS } from '@/lib/permissions';
@@ -78,8 +77,8 @@ export function DokumentiTab() {
               }}
               className={
                 status === f.key
-                  ? 'rounded-control bg-accent px-2.5 py-1 text-xs font-medium text-white'
-                  : 'rounded-control border border-line px-2.5 py-1 text-xs text-ink-secondary hover:bg-surface-raised'
+                  ? 'rounded-control bg-accent px-2.5 py-1 text-xs font-medium text-accent-fg'
+                  : 'rounded-control border border-line px-2.5 py-1 text-xs text-ink-secondary hover:bg-surface-2'
               }
             >
               {f.label}
@@ -134,7 +133,7 @@ export function DokumentiTab() {
             </div>
           )
         }
-        empty={<EmptyState title="Nema reversa" hint="Nijedan dokument ne odgovara filterima." />}
+        empty={tableEmpty(docs.isError, 'Nema reversa', 'Nijedan dokument ne odgovara filterima.')}
       />
 
       {meta && meta.totalPages > 1 && (

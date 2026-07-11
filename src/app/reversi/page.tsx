@@ -18,9 +18,11 @@ type TabKey = 'moji' | 'dokumenti' | 'magacin' | 'rezni' | 'masine' | 'otpisano'
 
 /**
  * Reversi — 3.0 PILOT (MODULE_SPEC_reversi.md §6): zaduženja alata/LZO/kooperacije.
- * R3 prvi presek = read paritet (Moji alati / Dokumenti / Magacin / Otpisano);
- * Izdaj/Vrati modali + skener + Mašine + bulk-import stižu u nastavku R3.
+ * Tabovi: Moji alati / Izdavanje i povraćaj / Stanje magacina / Rezni alat / Mašine
+ * / Otpisan alat. Izdaj/Vrati modali, kamera+HID skener i bulk-import su uključeni.
  * Tab „Otpisano" je manage-only (paritet 1.0 `manageOnly` taba).
+ * Napomena: BE `/v1/reversi/*` (R1/R2) i `reversi.*` permisije još ne postoje —
+ * do tada je modul dostupan tek kad backend katalog počne da emituje te permisije.
  */
 export default function ReversiPage() {
   const { user, isLoading, can } = useAuth();

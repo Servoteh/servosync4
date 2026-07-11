@@ -59,6 +59,14 @@ export function ScanOverlay({
   const [manual, setManual] = useState('');
   const [cameraOn, setCameraOn] = useState(false);
 
+  // Roditelj prosleđuje `accept`/`onResult`/`onClose` kao inline literale (nov
+  // identitet na svaki render). Držimo ih u ref-u da `resolve` i kamera-efekat
+  // ostanu stabilni — inače se kamera gasi i ponovo pali na svaki render roditelja.
+  const cbRef = useRef({ accept, onResult, onClose });
+  useEffect(() => {
+    cbRef.current = { accept, onResult, onClose };
+  });
+
   const say = useCallback((msg: string, kind: 'info' | 'error' = 'info') => {
     setStatus(msg);
     setStatusKind(kind);
@@ -75,19 +83,19 @@ export function ScanOverlay({
       try {
         const { data } = await lookupBarcode(code);
         if (data.kind === 'UNKNOWN') return say(`Nepoznat format: ${code}`, 'error');
-        if (!accept.includes(data.kind))
+        if (!cbRef.current.accept.includes(data.kind))
           return say(`${KIND_HINT[data.kind]} nije dozvoljen u ovom koraku`, 'error');
         if (!data.record) return say(`Barkod ${code} nije u evidenciji`, 'error');
         navigator.vibrate?.(80);
-        onResult(data);
-        onClose();
+        cbRef.current.onResult(data);
+        cbRef.current.onClose();
       } catch (e) {
         say(e instanceof Error ? e.message : 'Greška pri razrešavanju.', 'error');
       } finally {
         busyRef.current = false;
       }
     },
-    [accept, onResult, onClose, say],
+    [say],
   );
 
   // Kamera + petlja detekcije.
@@ -141,14 +149,19 @@ export function ScanOverlay({
     };
   }, [resolve, say]);
 
-  // Esc zatvara.
+  // Esc zatvara SAMO skener. Capture-faza + stopPropagation presreće događaj pre
+  // roditeljskog Dialog-a (koji takođe sluša window keydown) — inače jedan Esc
+  // sruši i skener i ceo tok Izdaj.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        cbRef.current.onClose();
+      }
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, []);
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-black" role="dialog" aria-modal="true" aria-label={title}>

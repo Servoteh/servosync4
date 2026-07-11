@@ -2,7 +2,6 @@
 
 import { useState } from 'react';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
-import { EmptyState } from '@/components/ui-kit/empty-state';
 import { SearchBox } from '@/components/ui-kit/search-box';
 import { Button } from '@/components/ui-kit/button';
 import { Dialog } from '@/components/ui-kit/dialog';
@@ -17,6 +16,7 @@ import {
   useSeedCuttingStock,
   type CuttingTool,
 } from '@/api/reversi';
+import { tableEmpty } from './common';
 import { CuttingIssueDialog } from './cutting-issue-dialog';
 
 const INPUT =
@@ -75,7 +75,11 @@ export function RezniAlatTab() {
         rows={catalog.data?.data ?? []}
         rowKey={(r) => r.id}
         loading={catalog.isLoading}
-        empty={<EmptyState title="Katalog reznog alata je prazan" hint={'Dodaj šifru dugmetom „Nova šifra“.'} />}
+        empty={tableEmpty(
+          catalog.isError,
+          'Katalog reznog alata je prazan',
+          manage ? 'Dodaj šifru dugmetom „Nova šifra“.' : 'Nema unetog reznog alata.',
+        )}
       />
 
       {manage && createOpen && <CreateCuttingDialog onClose={() => setCreateOpen(false)} />}
@@ -147,7 +151,7 @@ function SeedDialog({ tool, onClose }: { tool: CuttingTool; onClose: () => void 
   async function submit() {
     setError(null);
     try {
-      await seed.mutateAsync({ clientEventId: newClientEventId(), catalogId: tool.id, locationId: '', qty });
+      await seed.mutateAsync({ clientEventId: newClientEventId(), catalogId: tool.id, qty });
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Dopuna nije uspela.');

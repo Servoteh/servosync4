@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Button } from '@/components/ui-kit/button';
 import { FormField } from '@/components/ui-kit/form-field';
@@ -32,6 +32,16 @@ export function ReturnDialog({
   const [notes, setNotes] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [clientEventId, setClientEventId] = useState(newClientEventId);
+
+  // Dijalog ostaje montiran (roditelj menja samo `docId`); resetuj stanje i uzmi
+  // NOV idempotency ključ pri svakom otvaranju/promeni dokumenta — inače
+  // napomena/količine i ključ „procure" sa prethodnog dokumenta.
+  useEffect(() => {
+    setQty({});
+    setNotes('');
+    setError(null);
+    setClientEventId(newClientEventId());
+  }, [docId]);
 
   const issuedLines = useMemo(
     () => (detail.data?.data.lines ?? []).filter((l) => l.lineStatus === 'ISSUED'),
