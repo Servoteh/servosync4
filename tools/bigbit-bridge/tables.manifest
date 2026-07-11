@@ -13,8 +13,13 @@ R_Grupa    | item_groups    | item_groups.sql
 R_Podgrupa | item_subgroups | item_subgroups.sql
 R_Poreklo  | item_origins   | item_origins.sql
 #
-# --- phase 2 (BLOCKED on items.id key-space decision, plan 7.2/7.3):
-#     Komitenti, Predmeti, R_Artikli, Cenovnik, Magacini, Prodavci
+# --- phase 2 (ID-space RESOLVED, plan 7.6 = option A). Order matters: masters
+#     before Cenovnik (Cenovnik remaps item via items.external_item_id).
+Magacini   | warehouses     | warehouses.sql
+# Komitenti  | customers          | customers.sql          (dual-writer: MSSQL sync owns customers; dry-run first)
+# Predmeti   | projects           | projects.sql           (dual-writer; dry-run first)
+# R_Artikli  | items              | items.sql              (UPDATE-only via external_item_id while MSSQL sync runs)
+# Cenovnik   | price_list_entries | price_list_entries.sql (two-step remap; after items)
 #     (Prodavci: NEVER expose [Password] - plain-text; needs a projection since
 #      mdb-export dumps the whole table).
 # --- phase 3: the rest of KEEP-SYNC from BB_T_26-analiza-F3-inventar-207-tabela.md

@@ -107,7 +107,7 @@ while IFS='|' read -r access_table target sql_file || [[ -n "$access_table" ]]; 
   # 1) mdb-export the whole table to CSV (ULS-free). '-H' would drop the header;
   #    we KEEP the header and \copy skips it (HEADER true), loading positionally.
   if ! docker run --rm -v "$SRC_DIR":/db:ro "$BB_MDBTOOLS_IMAGE" \
-        mdb-export -q '"' "/db/$SRC_BASE" "$access_table" > "$csv_host" 2>"$RUN_DIR/$target.mdberr"; then
+        mdb-export -q '"' -D '%Y-%m-%d %H:%M:%S' -T '%Y-%m-%d %H:%M:%S' "/db/$SRC_BASE" "$access_table" > "$csv_host" 2>"$RUN_DIR/$target.mdberr"; then
     log "ERROR" "$access_table: mdb-export pao ($(head -1 "$RUN_DIR/$target.mdberr"))."; failed=$((failed+1)); continue
   fi
   rows_read=$(( $(wc -l < "$csv_host") - 1 )); [[ $rows_read -lt 0 ]] && rows_read=0
