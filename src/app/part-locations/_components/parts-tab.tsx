@@ -9,6 +9,8 @@ import { EmptyState } from '@/components/ui-kit/empty-state';
 import { SearchBox } from '@/components/ui-kit/search-box';
 import { Pager } from '@/components/ui-kit/pager';
 import { Button } from '@/components/ui-kit/button';
+import { Can } from '@/lib/can';
+import { PERMISSIONS } from '@/lib/permissions';
 import { formatDate, formatNumber } from '@/lib/format';
 import { errorBox, qualityLabel, workerLabel } from './common';
 import { PartLocationCardDetail } from './part-location-card';
@@ -137,18 +139,23 @@ export function PartsTab() {
           <span className="mr-1 text-sm text-ink-secondary">
             {meta ? `${formatNumber(meta.total)} zapisa` : ''}
           </span>
-          <Button onClick={() => setDialog('create')}>
-            <PackagePlus className="h-4 w-4" aria-hidden />
-            Unos lokacije
-          </Button>
-          <Button variant="secondary" onClick={() => setDialog('transfer')}>
-            <ArrowLeftRight className="h-4 w-4" aria-hidden />
-            Prenos
-          </Button>
-          <Button variant="secondary" onClick={() => setDialog('requisition')}>
-            <PackageMinus className="h-4 w-4" aria-hidden />
-            Trebovanje
-          </Button>
+          {/* POST /, /transfer, /requisition traže lokacije.write — tehnolog/
+              kontrolor imaju samo read pa mutirajuće akcije ne vide (obrazac
+              iz positions-tab.tsx). */}
+          <Can permission={PERMISSIONS.LOKACIJE_WRITE}>
+            <Button onClick={() => setDialog('create')}>
+              <PackagePlus className="h-4 w-4" aria-hidden />
+              Unos lokacije
+            </Button>
+            <Button variant="secondary" onClick={() => setDialog('transfer')}>
+              <ArrowLeftRight className="h-4 w-4" aria-hidden />
+              Prenos
+            </Button>
+            <Button variant="secondary" onClick={() => setDialog('requisition')}>
+              <PackageMinus className="h-4 w-4" aria-hidden />
+              Trebovanje
+            </Button>
+          </Can>
         </div>
       </div>
 

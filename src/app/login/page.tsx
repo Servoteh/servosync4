@@ -27,7 +27,8 @@ export default function LoginPage() {
   } = useForm<FormValues>({ defaultValues: { email: '', password: '' } });
 
   useEffect(() => {
-    if (!isLoading && user) router.replace('/syncs');
+    // /work-orders (rn.read imaju SVE uloge), ne /syncs — vidi app/page.tsx.
+    if (!isLoading && user) router.replace('/work-orders');
   }, [user, isLoading, router]);
 
   async function onSubmit(values: FormValues) {
@@ -40,7 +41,7 @@ export default function LoginPage() {
     }
     try {
       await login(values.email, values.password);
-      router.replace('/syncs');
+      router.replace('/work-orders');
     } catch (err) {
       const message =
         err instanceof ApiError && err.status === 401

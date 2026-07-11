@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { RefreshCw } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
+import { Can } from '@/lib/can';
+import { PERMISSIONS } from '@/lib/permissions';
 import { useRunSync, useSyncLogs, type SyncLog } from '@/api/sync';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
@@ -90,10 +92,12 @@ export default function SyncsPage() {
         title="Sinhronizacije"
         count={rows.length ? `${formatNumber(rows.length)} zapisa` : undefined}
         actions={
-          <Button onClick={() => runSync.mutate()} loading={runSync.isPending}>
-            {!runSync.isPending && <RefreshCw className="h-4 w-4" aria-hidden />}
-            {runSync.isPending ? 'Sinhronizacija u toku…' : 'Pokreni sync'}
-          </Button>
+          <Can permission={PERMISSIONS.SYNC_RUN}>
+            <Button onClick={() => runSync.mutate()} loading={runSync.isPending}>
+              {!runSync.isPending && <RefreshCw className="h-4 w-4" aria-hidden />}
+              {runSync.isPending ? 'Sinhronizacija u toku…' : 'Pokreni sync'}
+            </Button>
+          </Can>
         }
       />
 

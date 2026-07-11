@@ -125,13 +125,15 @@ export function PositionsTab() {
       header: '',
       align: 'right',
       render: (r) => (
-        <button
-          onClick={() => setEditing(r)}
-          className="inline-flex items-center gap-1.5 rounded-control border border-line px-2.5 py-1 text-xs font-semibold text-ink-secondary hover:bg-surface-2"
-        >
-          <Pencil className="h-3.5 w-3.5" aria-hidden />
-          Izmeni
-        </button>
+        <Can permission={PERMISSIONS.LOKACIJE_WRITE}>
+          <button
+            onClick={() => setEditing(r)}
+            className="inline-flex items-center gap-1.5 rounded-control border border-line px-2.5 py-1 text-xs font-semibold text-ink-secondary hover:bg-surface-2"
+          >
+            <Pencil className="h-3.5 w-3.5" aria-hidden />
+            Izmeni
+          </button>
+        </Can>
       ),
     },
   ];

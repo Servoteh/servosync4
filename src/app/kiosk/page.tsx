@@ -31,5 +31,5 @@ export default function KioskPage() {
     );
   }
 
-  return <KioskScanner workerName={user.fullName ?? user.email} />;
+  return <KioskScanner />;
 }

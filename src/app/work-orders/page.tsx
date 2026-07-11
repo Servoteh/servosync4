@@ -197,14 +197,16 @@ function WorkOrderDetail({
           {printing ? 'Priprema…' : 'Štampaj RN'}
         </button>
         {canCopyInto && (
-          <button
-            disabled={busy}
-            onClick={() => setCopyOpen(true)}
-            className={`${actionBtn} inline-flex items-center gap-1.5 border border-line text-ink-secondary`}
-          >
-            <Copy className="h-3.5 w-3.5" aria-hidden />
-            Kopiraj iz naloga
-          </button>
+          <Can permission={PERMISSIONS.RN_WRITE}>
+            <button
+              disabled={busy}
+              onClick={() => setCopyOpen(true)}
+              className={`${actionBtn} inline-flex items-center gap-1.5 border border-line text-ink-secondary`}
+            >
+              <Copy className="h-3.5 w-3.5" aria-hidden />
+              Kopiraj iz naloga
+            </button>
+          </Can>
         )}
         <Can permission={PERMISSIONS.RN_WRITE}>
           <button
@@ -217,14 +219,16 @@ function WorkOrderDetail({
           </button>
         </Can>
         {!isEmpty && (
-          <button
-            disabled={busy}
-            onClick={() => setReworkOpen(true)}
-            className={`${actionBtn} inline-flex items-center gap-1.5 border border-line text-ink-secondary`}
-          >
-            <Recycle className="h-3.5 w-3.5" aria-hidden />
-            Dorada/Škart
-          </button>
+          <Can permission={PERMISSIONS.RN_WRITE}>
+            <button
+              disabled={busy}
+              onClick={() => setReworkOpen(true)}
+              className={`${actionBtn} inline-flex items-center gap-1.5 border border-line text-ink-secondary`}
+            >
+              <Recycle className="h-3.5 w-3.5" aria-hidden />
+              Dorada/Škart
+            </button>
+          </Can>
         )}
         {!locked && (rn.handoverStatusId === WO_STATUS.IN_PROGRESS || rn.handoverStatusId === WO_STATUS.REJECTED) && (
           <Can permission={PERMISSIONS.RN_APPROVE}>
@@ -275,13 +279,15 @@ function WorkOrderDetail({
             Obriši RN
           </button>
         </Can>
-        <button
-          disabled={busy}
-          onClick={() => lock.mutate({ id, locked: !locked })}
-          className={`${actionBtn} border border-line text-ink-secondary`}
-        >
-          {locked ? 'Otključaj' : 'Zaključaj'}
-        </button>
+        <Can permission={PERMISSIONS.RN_WRITE}>
+          <button
+            disabled={busy}
+            onClick={() => lock.mutate({ id, locked: !locked })}
+            className={`${actionBtn} border border-line text-ink-secondary`}
+          >
+            {locked ? 'Otključaj' : 'Zaključaj'}
+          </button>
+        </Can>
       </div>
 
       {printError && (
@@ -1456,11 +1462,11 @@ export default function WorkOrdersPage() {
               }}
               placeholder="Ident, naziv, crtež…"
             />
-            <Button variant="secondary" onClick={() => setCloning(true)}>
-              <CopyPlus className="h-4 w-4" aria-hidden />
-              Kloniraj predmet
-            </Button>
             <Can permission={PERMISSIONS.RN_WRITE}>
+              <Button variant="secondary" onClick={() => setCloning(true)}>
+                <CopyPlus className="h-4 w-4" aria-hidden />
+                Kloniraj predmet
+              </Button>
               <Button onClick={() => setCreating(true)}>
                 <Plus className="h-4 w-4" aria-hidden />
                 Novi RN

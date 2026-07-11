@@ -14,6 +14,8 @@ import { EmptyState } from '@/components/ui-kit/empty-state';
 import { SearchBox } from '@/components/ui-kit/search-box';
 import { Button } from '@/components/ui-kit/button';
 import { Dialog } from '@/components/ui-kit/dialog';
+import { Can } from '@/lib/can';
+import { PERMISSIONS } from '@/lib/permissions';
 import { cn } from '@/lib/cn';
 import { Checkbox, ErrorText, ConfirmDialog } from './common';
 
@@ -164,14 +166,16 @@ function AssignedPanel({ workerId }: { workerId: number }) {
       header: '',
       align: 'right',
       render: (r) => (
-        <button
-          onClick={() => setRemoving(r)}
-          className="inline-flex items-center gap-1.5 rounded-control border border-line px-2.5 py-1 text-xs font-semibold text-status-danger hover:bg-status-danger-bg"
-          aria-label={`Ukloni ${r.workCenterCode}`}
-        >
-          <Trash2 className="h-3.5 w-3.5" aria-hidden />
-          Ukloni
-        </button>
+        <Can permission={PERMISSIONS.STRUKTURE_WRITE}>
+          <button
+            onClick={() => setRemoving(r)}
+            className="inline-flex items-center gap-1.5 rounded-control border border-line px-2.5 py-1 text-xs font-semibold text-status-danger hover:bg-status-danger-bg"
+            aria-label={`Ukloni ${r.workCenterCode}`}
+          >
+            <Trash2 className="h-3.5 w-3.5" aria-hidden />
+            Ukloni
+          </button>
+        </Can>
       ),
     },
   ];
@@ -201,10 +205,14 @@ function AssignedPanel({ workerId }: { workerId: number }) {
             {w.workerType?.name ?? '—'} · {w.workUnit?.name ?? w.workUnitCode}
           </p>
         </div>
-        <Button onClick={() => setAssigning(true)}>
-          <ListPlus className="h-4 w-4" aria-hidden />
-          Dodeli operacije
-        </Button>
+        {/* POST /machine-access(/batch) i DELETE traže strukture.write — isti
+            Can obrazac kao ostali structures tabovi (workers/operations/…). */}
+        <Can permission={PERMISSIONS.STRUKTURE_WRITE}>
+          <Button onClick={() => setAssigning(true)}>
+            <ListPlus className="h-4 w-4" aria-hidden />
+            Dodeli operacije
+          </Button>
+        </Can>
       </div>
 
       <DataTable

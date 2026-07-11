@@ -44,11 +44,6 @@ export interface LabelPrintResult {
   reason?: string;
 }
 
-/** Uvek postoji URL (override ili localhost default) — zadržano radi kompatibilnosti poziva. */
-export function isLabelProxyConfigured(): boolean {
-  return !!resolveProxyUrl();
-}
-
 /**
  * Pošalji već sastavljen TSPL2 program štampaču: prvo kroz BACKEND (radi svuda),
  * pa fallback na lokalni proxy. Ne baca — vraća `{ok, reason}`.
@@ -70,9 +65,9 @@ export async function dispatchNetworkLabelPrint(
       e instanceof ApiError || e instanceof Error ? e.message : String(e);
   }
 
-  // 2) Fallback: lokalni label-proxy (samo ako browser sme localhost).
+  // 2) Fallback: lokalni label-proxy (samo ako browser sme localhost);
+  // `resolveProxyUrl` uvek vrati ne-prazan URL (override ili localhost default).
   const url = resolveProxyUrl();
-  if (!url) return { ok: false, reason: backendReason };
   try {
     const r = await fetch(url, {
       method: 'POST',

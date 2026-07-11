@@ -10,7 +10,9 @@ export default function Home() {
 
   useEffect(() => {
     if (isLoading) return;
-    router.replace(user ? '/syncs' : '/login');
+    // /work-orders (rn.read imaju SVE uloge), ne /syncs — sync.read imaju samo
+    // admin/šef/menadžment, pa bi ostale uloge sletele na 403 stranicu.
+    router.replace(user ? '/work-orders' : '/login');
   }, [user, isLoading, router]);
 
   return (

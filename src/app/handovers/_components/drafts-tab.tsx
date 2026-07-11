@@ -242,7 +242,13 @@ function DraftFormDialog({
           >
             Otkaži
           </button>
-          <Button onClick={submit} loading={mut.isPending}>
+          <Button
+            onClick={submit}
+            loading={mut.isPending}
+            // Bez ovoga se šalje designerId=Number('')=0 / projectId=0 i čeka
+            // backend 400 — isti obrazac kao NewWorkOrderDialog (work-orders).
+            disabled={!form.project || (!isEdit && !form.designerId.trim())}
+          >
             Snimi
           </Button>
         </>
@@ -487,52 +493,56 @@ function DraftDetail({
           <Printer className="h-3.5 w-3.5" aria-hidden />
           Štampaj sve crteže
         </button>
-        {!d.isLocked && (
-          <>
-            <button
-              onClick={() => onEdit(d)}
-              className="inline-flex items-center gap-1.5 rounded-control border border-line px-2.5 py-1 text-xs font-semibold text-ink-secondary hover:bg-surface-2"
-            >
-              <Pencil className="h-3.5 w-3.5" aria-hidden />
-              Izmeni
-            </button>
-            {!confirmingDelete ? (
+        {/* PATCH/DELETE/submit traže primopredaje.write (handover-drafts.controller) —
+            uloge sa samo read (cnc_programer, magacioner) ne vide mutirajuće akcije. */}
+        <Can permission={PERMISSIONS.PRIMOPREDAJE_WRITE}>
+          {!d.isLocked && (
+            <>
               <button
-                onClick={() => setConfirmingDelete(true)}
-                className="inline-flex items-center gap-1.5 rounded-control border border-status-danger px-2.5 py-1 text-xs font-semibold text-status-danger hover:bg-status-danger-bg"
+                onClick={() => onEdit(d)}
+                className="inline-flex items-center gap-1.5 rounded-control border border-line px-2.5 py-1 text-xs font-semibold text-ink-secondary hover:bg-surface-2"
               >
-                <Trash2 className="h-3.5 w-3.5" aria-hidden />
-                Obriši
+                <Pencil className="h-3.5 w-3.5" aria-hidden />
+                Izmeni
               </button>
-            ) : (
-              <span className="inline-flex items-center gap-1.5">
-                <span className="text-xs text-ink-secondary">Obrisati nacrt?</span>
+              {!confirmingDelete ? (
                 <button
-                  onClick={() => del.mutate(d.id)}
-                  disabled={del.isPending}
-                  className="rounded-control bg-status-danger px-2.5 py-1 text-xs font-semibold text-white disabled:opacity-50"
+                  onClick={() => setConfirmingDelete(true)}
+                  className="inline-flex items-center gap-1.5 rounded-control border border-status-danger px-2.5 py-1 text-xs font-semibold text-status-danger hover:bg-status-danger-bg"
                 >
-                  Potvrdi
+                  <Trash2 className="h-3.5 w-3.5" aria-hidden />
+                  Obriši
                 </button>
-                <button
-                  onClick={() => setConfirmingDelete(false)}
-                  className="rounded-control border border-line px-2.5 py-1 text-xs text-ink-secondary hover:bg-surface-2"
-                >
-                  Otkaži
-                </button>
-              </span>
-            )}
-          </>
-        )}
-        <button
-          onClick={() => setConfirmingSubmit(true)}
-          disabled={d.isLocked || submit.isPending}
-          title={d.isLocked ? 'Nacrt je već predat (zaključan).' : undefined}
-          className="inline-flex items-center gap-1.5 rounded-control bg-accent px-2.5 py-1 text-xs font-semibold text-accent-fg hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          <Send className="h-3.5 w-3.5" aria-hidden />
-          Predaj u primopredaju
-        </button>
+              ) : (
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="text-xs text-ink-secondary">Obrisati nacrt?</span>
+                  <button
+                    onClick={() => del.mutate(d.id)}
+                    disabled={del.isPending}
+                    className="rounded-control bg-status-danger px-2.5 py-1 text-xs font-semibold text-white disabled:opacity-50"
+                  >
+                    Potvrdi
+                  </button>
+                  <button
+                    onClick={() => setConfirmingDelete(false)}
+                    className="rounded-control border border-line px-2.5 py-1 text-xs text-ink-secondary hover:bg-surface-2"
+                  >
+                    Otkaži
+                  </button>
+                </span>
+              )}
+            </>
+          )}
+          <button
+            onClick={() => setConfirmingSubmit(true)}
+            disabled={d.isLocked || submit.isPending}
+            title={d.isLocked ? 'Nacrt je već predat (zaključan).' : undefined}
+            className="inline-flex items-center gap-1.5 rounded-control bg-accent px-2.5 py-1 text-xs font-semibold text-accent-fg hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Send className="h-3.5 w-3.5" aria-hidden />
+            Predaj u primopredaju
+          </button>
+        </Can>
       </div>
 
       <ErrorText error={del.error} />

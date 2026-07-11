@@ -86,7 +86,7 @@ function OrderHeadline({ order }: { order: OrderState }) {
   );
 }
 
-export function KioskScanner({ workerName }: { workerName: string }) {
+export function KioskScanner() {
   const { logout } = useAuth();
   const identify = useIdentifyWorker();
   const decode = useDecodeBarcode();
@@ -290,7 +290,7 @@ export function KioskScanner({ workerName }: { workerName: string }) {
       if (data.staleWorkOrder) {
         setFeedback({
           tone: 'info',
-          title: `⚠ Star otisak — rad je evidentiran (${formatNumber(pieces)} kom)`,
+          title: `Star otisak — rad je evidentiran (${formatNumber(pieces)} kom)`,
           detail: [
             `Nalog je štampan u varijanti ${data.printedVariant}, tekuća je ${data.currentVariant}.`,
             'Tehnologija/crtež su verovatno izmenjeni — preuzmite novi odštampan nalog.',
@@ -322,7 +322,7 @@ export function KioskScanner({ workerName }: { workerName: string }) {
       if (data.multitaskingWarning) detail.push(data.multitaskingWarning);
       if (data.staleWorkOrder)
         detail.push(
-          `⚠ Star otisak: štampan u varijanti ${data.printedVariant}, tekuća je ${data.currentVariant}.`,
+          `Star otisak: štampan u varijanti ${data.printedVariant}, tekuća je ${data.currentVariant}.`,
         );
       setFeedback({
         tone: data.staleWorkOrder || data.multitaskingWarning ? 'info' : 'success',
@@ -428,7 +428,7 @@ export function KioskScanner({ workerName }: { workerName: string }) {
       if (data.childOrderPending) parts.push('Nalog za doradu/škart sledi u narednoj fazi.');
       // A-5 (shadow): upozorenje o ovlašćenju kontrolora / razdvajanju dužnosti — istaknuto.
       const warned = !!data.controllerWarnings?.length;
-      if (warned) parts.unshift(`⚠ ${data.controllerWarnings!.join(' · ⚠ ')}`);
+      if (warned) parts.unshift(data.controllerWarnings!.join(' · '));
 
       if (print.ok) {
         setFeedback({
@@ -437,10 +437,7 @@ export function KioskScanner({ workerName }: { workerName: string }) {
           detail: parts.join(' · '),
         });
       } else {
-        const why =
-          print.reason === 'no_proxy_url'
-            ? 'Label-proxy nije podešen — nalepnice nisu odštampane.'
-            : `Štampa nalepnica nije uspela (${print.reason}) — proveri da je label-proxy pokrenut na OVOM računaru (start.bat, localhost:8765; frontend/tools/label-proxy).`;
+        const why = `Štampa nalepnica nije uspela (${print.reason}) — proveri da je label-proxy pokrenut na OVOM računaru (start.bat, localhost:8765; frontend/tools/label-proxy).`;
         setFeedback({
           tone: 'info',
           title: 'Kontrola završena — nalepnice NISU odštampane',

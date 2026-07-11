@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   HANDOVER_STATUS,
@@ -37,16 +37,28 @@ function RejectDialog({
   open,
   onClose,
   onSubmit,
+  onOpenReset,
   loading,
   error,
 }: {
   open: boolean;
   onClose: () => void;
   onSubmit: (reason: string) => void;
+  /** Reset mutacije iz panela (hook živi tamo) — poziva se pri otvaranju. */
+  onOpenReset: () => void;
   loading: boolean;
   error: unknown;
 }) {
   const [reason, setReason] = useState('');
+
+  // Reset-na-open (isti obrazac kao Approve/Launch/Return u workflow-dialogs):
+  // bez ovoga ponovno otvaranje na ISTOM redu prikaže stari razlog i staru grešku.
+  useEffect(() => {
+    if (!open) return;
+    setReason('');
+    onOpenReset();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   return (
     <Dialog
@@ -261,6 +273,7 @@ export function HandoverDetailPanel({ handover }: { handover: Handover }) {
       <RejectDialog
         open={rejecting}
         onClose={() => setRejecting(false)}
+        onOpenReset={() => reject.reset()}
         loading={reject.isPending}
         error={reject.error}
         onSubmit={(reason) =>
