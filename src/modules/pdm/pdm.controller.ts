@@ -112,9 +112,20 @@ export class PdmController {
   ): Promise<StreamableFile> {
     const { buffer, fileName } = await this.pdm.getPdfContent(id);
     const disposition = download === "true" ? "attachment" : "inline";
+    // `fileName` može nositi dijakritike (decodeOriginalName pri uvozu ih
+    // namerno restaurira latin1→utf8) — Node setHeader odbija znakove van
+    // latin1 (ERR_INVALID_CHAR → 500). Zato: ASCII fallback u `filename=` +
+    // RFC 5987 `filename*` sa punim UTF-8 imenom (browseri biraju filename*).
+    const asciiName =
+      fileName.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_") ||
+      "crtez.pdf";
+    const utf8Name = encodeURIComponent(fileName).replace(
+      /['()*]/g,
+      (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
+    );
     res.set({
       "Content-Type": "application/pdf",
-      "Content-Disposition": `${disposition}; filename="${fileName}"`,
+      "Content-Disposition": `${disposition}; filename="${asciiName}"; filename*=UTF-8''${utf8Name}`,
     });
     return new StreamableFile(buffer);
   }

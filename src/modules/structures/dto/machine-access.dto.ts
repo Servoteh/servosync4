@@ -20,6 +20,8 @@ export interface BatchMachineAccessDto {
   remove?: string[];
 }
 
+// Dužine po schema.prisma (MachineAccess: workCenterCode VarChar(5), note
+// VarChar(250)) — bez provere duži unos puca kao PG 22001 / P2000 → goli 500.
 export function validateCreateMachineAccess(dto: CreateMachineAccessDto): void {
   const errors: string[] = [];
   if (
@@ -30,6 +32,14 @@ export function validateCreateMachineAccess(dto: CreateMachineAccessDto): void {
     errors.push("Radnik (workerId) je obavezan.");
   if (typeof dto?.workCenterCode !== "string" || !dto.workCenterCode.trim())
     errors.push("Šifra operacije (workCenterCode) je obavezna.");
+  else if (dto.workCenterCode.trim().length > 5)
+    errors.push("Šifra operacije sme imati najviše 5 karaktera.");
+  if (
+    dto?.note !== undefined &&
+    dto.note !== null &&
+    (typeof dto.note !== "string" || dto.note.length > 250)
+  )
+    errors.push("Napomena sme imati najviše 250 karaktera.");
   if (errors.length) throw new BadRequestException(errors);
 }
 

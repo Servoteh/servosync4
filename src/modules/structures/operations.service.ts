@@ -6,6 +6,7 @@ import {
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { pageMeta, parsePagination } from "../../common/pagination";
+import { alignIdSequence } from "../../common/db-sequences";
 import {
   CreateOperationDto,
   UpdateOperationDto,
@@ -90,9 +91,7 @@ export class OperationsService {
       throw new ConflictException(`Operacija sa šifrom '${code}' već postoji.`);
 
     const created = await this.prisma.$transaction(async (tx) => {
-      await tx.$executeRawUnsafe(
-        `SELECT setval(pg_get_serial_sequence('operations','id'), (SELECT COALESCE(MAX(id),0) FROM operations))`,
-      );
+      await alignIdSequence(tx, "operations");
       return tx.operation.create({
         data: {
           workCenterCode: code,

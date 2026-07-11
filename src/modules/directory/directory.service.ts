@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { pageMeta, parsePagination } from "../../common/pagination";
 import { byId, uniqueIds } from "../../common/relations";
+import { parseDateParam } from "../../common/date-params";
 
 /**
  * Poslovna polja komitenta (BigBit cache `customers`). NAMERNO izostavljeno:
@@ -179,10 +180,12 @@ export class DirectoryService {
     };
     where.customerId = intEq(query.customerId);
     if (query.status) where.status = query.status;
-    if (query.from || query.to) {
+    const from = parseDateParam(query.from, "from");
+    const to = parseDateParam(query.to, "to");
+    if (from || to) {
       const range: Prisma.DateTimeFilter = {};
-      if (query.from) range.gte = new Date(query.from);
-      if (query.to) range.lte = new Date(query.to);
+      if (from) range.gte = from;
+      if (to) range.lte = to;
       where.openedAt = range;
     }
 

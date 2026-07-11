@@ -27,12 +27,15 @@ function prismaMock() {
       findMany: jest.fn().mockResolvedValue([]),
       count: jest.fn().mockResolvedValue(0),
       update: jest.fn().mockResolvedValue({}),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     workOrder: {
       findFirst: jest.fn().mockResolvedValue(null),
+      findUnique: jest.fn(),
       findMany: jest.fn().mockResolvedValue([]),
       create: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     workOrderLaunch: { create: jest.fn().mockResolvedValue({}) },
     worker: {
@@ -103,7 +106,7 @@ describe("HandoversService", () => {
         service.approve(5, { technologistId: 0 }, actor),
       ).rejects.toBeInstanceOf(UnprocessableEntityException);
       expect(prisma.worker.findUnique).not.toHaveBeenCalled();
-      expect(prisma.drawingHandover.update).not.toHaveBeenCalled();
+      expect(prisma.drawingHandover.updateMany).not.toHaveBeenCalled();
     });
 
     it("odbija nepostojećeg tehnologa — 422", async () => {
@@ -111,7 +114,7 @@ describe("HandoversService", () => {
       await expect(
         service.approve(5, { technologistId: 999 }, actor),
       ).rejects.toBeInstanceOf(UnprocessableEntityException);
-      expect(prisma.drawingHandover.update).not.toHaveBeenCalled();
+      expect(prisma.drawingHandover.updateMany).not.toHaveBeenCalled();
     });
 
     it("odbija radnika bez defines_approval — 422", async () => {
@@ -139,8 +142,10 @@ describe("HandoversService", () => {
 
       await service.approve(5, { technologistId: 9, comment: "ok" }, actor);
 
-      expect(prisma.drawingHandover.update).toHaveBeenCalledWith({
-        where: { id: 5 },
+      // Uslovni updateMany (guard protiv konkurentnog approve/reject):
+      // where nosi i from-status i isLocked, ne samo id.
+      expect(prisma.drawingHandover.updateMany).toHaveBeenCalledWith({
+        where: { id: 5, statusId: 0, isLocked: false },
         data: containing({
           statusId: 1,
           technologistId: 9,
@@ -148,6 +153,24 @@ describe("HandoversService", () => {
           statusChangeComment: "ok",
         }),
       });
+    });
+
+    it("409 kad konkurentni prelaz pobedi (updateMany count=0)", async () => {
+      prisma.worker.findUnique.mockResolvedValue({
+        id: 9,
+        definesApproval: true,
+        active: true,
+      });
+      prisma.drawingHandover.findUnique.mockResolvedValue({
+        id: 5,
+        statusId: 0,
+        isLocked: false,
+      });
+      prisma.drawingHandover.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(
+        service.approve(5, { technologistId: 9 }, actor),
+      ).rejects.toBeInstanceOf(ConflictException);
     });
 
     it("409 kad primopredaja nije U OBRADI", async () => {
@@ -174,7 +197,7 @@ describe("HandoversService", () => {
           actor,
         ),
       ).rejects.toBeInstanceOf(UnprocessableEntityException);
-      expect(prisma.drawingHandover.update).not.toHaveBeenCalled();
+      expect(prisma.drawingHandover.updateMany).not.toHaveBeenCalled();
     });
   });
 
@@ -357,7 +380,7 @@ describe("HandoversService", () => {
         handoverStatusId: 1, // SAGLASAN
         isLocked: false,
       });
-      prisma.workOrder.update.mockResolvedValue({
+      prisma.workOrder.findUnique.mockResolvedValue({
         id: 42,
         identNumber: "P100/7",
         variant: 0,
@@ -375,16 +398,24 @@ describe("HandoversService", () => {
       );
 
       expect(prisma.workOrder.create).not.toHaveBeenCalled();
-      expect(prisma.workOrder.update).toHaveBeenCalledWith(
+      // Uslovni updateMany (guard protiv konkurentnog RN-level prelaza).
+      expect(prisma.workOrder.updateMany).toHaveBeenCalledWith(
         containing({
-          where: { id: 42 },
+          where: { id: 42, handoverStatusId: 1, isLocked: false },
           data: containing({
             handoverStatusId: 3,
             productionDeadline: expect.any(Date),
-            note: "hitno",
           }),
         }),
       );
+      // `note` postojećeg RN-a se NE prepisuje launch komentarom (komentar ide
+      // u drawing_handovers.statusChangeComment).
+      const updateManyData = (
+        prisma.workOrder.updateMany.mock.calls[0] as [
+          { data: Record<string, unknown> },
+        ]
+      )[0].data;
+      expect(updateManyData).not.toHaveProperty("note");
       expect(prisma.workOrderLaunch.create).toHaveBeenCalledWith({
         data: containing({
           workOrderId: 42,
@@ -496,7 +527,7 @@ describe("HandoversService", () => {
       await expect(
         service.approve(5, { technologistId: 9 }, actor),
       ).rejects.toThrow(/QBigTehn/);
-      expect(prisma.drawingHandover.update).not.toHaveBeenCalled();
+      expect(prisma.drawingHandover.updateMany).not.toHaveBeenCalled();
     });
 
     it("409 na reject za derivirani red — bez upisa", async () => {
@@ -505,7 +536,7 @@ describe("HandoversService", () => {
       await expect(service.reject(5, "razlog", actor)).rejects.toThrow(
         /QBigTehn/,
       );
-      expect(prisma.drawingHandover.update).not.toHaveBeenCalled();
+      expect(prisma.drawingHandover.updateMany).not.toHaveBeenCalled();
     });
 
     it("409 na returnToPending za derivirani red — bez upisa", async () => {
@@ -547,8 +578,8 @@ describe("HandoversService", () => {
 
       await service.approve(5, { technologistId: 9 }, actor);
 
-      expect(prisma.drawingHandover.update).toHaveBeenCalledWith({
-        where: { id: 5 },
+      expect(prisma.drawingHandover.updateMany).toHaveBeenCalledWith({
+        where: { id: 5, statusId: 0, isLocked: false },
         data: containing({ statusId: 1, technologistId: 9 }),
       });
     });
@@ -564,8 +595,8 @@ describe("HandoversService", () => {
 
       await service.approve(5, { technologistId: 9 }, actor);
 
-      expect(prisma.drawingHandover.update).toHaveBeenCalledWith({
-        where: { id: 5 },
+      expect(prisma.drawingHandover.updateMany).toHaveBeenCalledWith({
+        where: { id: 5, statusId: 0, isLocked: false },
         data: containing({ statusId: 1 }),
       });
     });

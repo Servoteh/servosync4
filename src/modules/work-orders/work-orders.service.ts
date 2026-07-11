@@ -10,6 +10,7 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { pageMeta, parsePagination } from "../../common/pagination";
 import { byId, uniqueIds } from "../../common/relations";
 import { alignIdSequence } from "../../common/db-sequences";
+import { parseDateParam } from "../../common/date-params";
 import type { AuthUser } from "../auth/jwt.strategy";
 import {
   CreateWorkOrderDto,
@@ -108,10 +109,12 @@ export class WorkOrdersService {
     where.externalCustomerId = intEq(query.customerId);
     if (query.completed === "true") where.status = true;
     else if (query.completed === "false") where.status = { not: true };
-    if (query.from || query.to) {
+    const from = parseDateParam(query.from, "from");
+    const to = parseDateParam(query.to, "to");
+    if (from || to) {
       const range: Prisma.DateTimeFilter = {};
-      if (query.from) range.gte = new Date(query.from);
-      if (query.to) range.lte = new Date(query.to);
+      if (from) range.gte = from;
+      if (to) range.lte = to;
       where.enteredAt = range;
     }
 
@@ -800,6 +803,14 @@ export class WorkOrdersService {
 
     const actorWorkerId = actor?.workerId ?? null;
     await this.prisma.$transaction(async (tx) => {
+      if (wo.drawingHandoverId > 0) {
+        // Isti advisory lock kao handovers prepare/launch
+        // (`lockHandoverWorkOrder`): serijalizuje RN-level i handover-level
+        // launch za istu primopredaju. Bez njega handover-strana pročita
+        // stanje PRE našeg komita (READ COMMITTED), odblokira se na row-locku
+        // i bezuslovno prođe → dupli launch red + pregažen launch audit.
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`drawing_handover_wo:${wo.drawingHandoverId}`}))`;
+      }
       // Uslovni update: dva konkurentna launch-a (dva taba / paralelni
       // handover-level launch) — samo prvi prolazi, drugi dobija 409 umesto
       // duplog launch reda.
@@ -1152,6 +1163,12 @@ export class WorkOrdersService {
             projectId: targetProjectId,
             identNumber,
             pieceCount: Math.max(1, Math.round(src.pieceCount * coefficient)),
+            // Klon u DRUGOM predmetu nije vezan za izvornu primopredaju (isto
+            // kao cloneVariant): nasleđen FK bi posle brisanja izvora učinio
+            // klon "originalom" (najmanji id) za tuđu primopredaju — launch
+            // klona bi lansirao nepovezanu primopredaju. (rework NAMERNO deli
+            // FK — remedijacija iste varijante, vidi docstring rework-a.)
+            drawingHandoverId: 0,
           }),
           select: { id: true },
         });

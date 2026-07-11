@@ -20,6 +20,7 @@ import {
   SAFE_WORKER_SELECT,
 } from "../../common/pagination";
 import { byId, uniqueIds } from "../../common/relations";
+import { parseDateParam } from "../../common/date-params";
 import { parseBarcode, formatOrderBarcode } from "./barcode";
 import {
   type ScanTechProcessDto,
@@ -287,10 +288,12 @@ export class TechProcessesService {
     if (query.finished === "true") filter.isProcessFinished = true;
     else if (query.finished === "false")
       filter.isProcessFinished = { not: true };
-    if (query.from || query.to) {
+    const from = parseDateParam(query.from, "from");
+    const to = parseDateParam(query.to, "to");
+    if (from || to) {
       const range: Prisma.DateTimeFilter = {};
-      if (query.from) range.gte = new Date(query.from);
-      if (query.to) range.lte = new Date(query.to);
+      if (from) range.gte = from;
+      if (to) range.lte = to;
       filter.enteredAt = range;
     }
 
@@ -595,8 +598,8 @@ export class TechProcessesService {
    * tech_processes nema kolonu radnog vremena. Sume računa DB (spec §3 pravilo 6).
    */
   async workerPerformance(query: WorkerPerformanceQuery) {
-    const from = this.parseDateParam(query.from, "from");
-    const to = this.parseDateParam(query.to, "to");
+    const from = parseDateParam(query.from, "from");
+    const to = parseDateParam(query.to, "to");
 
     const conds: Prisma.Sql[] = [];
     if (from) conds.push(Prisma.sql`entered_at >= ${from}`);
@@ -644,19 +647,6 @@ export class TechProcessesService {
         workerCount: data.length,
       },
     };
-  }
-
-  private parseDateParam(
-    value: string | undefined,
-    name: string,
-  ): Date | undefined {
-    if (value === undefined || value === "") return undefined;
-    const d = new Date(value);
-    if (Number.isNaN(d.getTime()))
-      throw new BadRequestException(
-        `Parametar '${name}' nije ispravan datum (ISO 8601).`,
-      );
-    return d;
   }
 
   // ---------------------------------------------------------------- RN PROGRESS
@@ -1139,9 +1129,9 @@ export class TechProcessesService {
 
   /** Opseg (from/to) za analitiku sesija; default poslednjih 30 dana. */
   private sessionRange(query: SessionQuery) {
-    const to = this.parseDateParam(query.to, "to") ?? new Date();
+    const to = parseDateParam(query.to, "to") ?? new Date();
     const from =
-      this.parseDateParam(query.from, "from") ??
+      parseDateParam(query.from, "from") ??
       new Date(to.getTime() - 30 * 86_400_000);
     return { from, to };
   }

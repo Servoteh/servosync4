@@ -15,6 +15,7 @@ import {
 } from "../../common/pagination";
 import { byId, uniqueIds } from "../../common/relations";
 import { alignIdSequence } from "../../common/db-sequences";
+import { parseDateParam } from "../../common/date-params";
 import {
   CreateHandoverDraftDto,
   validateCreateHandoverDraft,
@@ -122,10 +123,12 @@ export class HandoverDraftsService {
     where.projectId = intEq(query.projectId);
     if (query.isLocked === "true") where.isLocked = true;
     else if (query.isLocked === "false") where.isLocked = false;
-    if (query.from || query.to) {
+    const from = parseDateParam(query.from, "from");
+    const to = parseDateParam(query.to, "to");
+    if (from || to) {
       const range: Prisma.DateTimeFilter = {};
-      if (query.from) range.gte = new Date(query.from);
-      if (query.to) range.lte = new Date(query.to);
+      if (from) range.gte = from;
+      if (to) range.lte = to;
       where.draftDate = range;
     }
 

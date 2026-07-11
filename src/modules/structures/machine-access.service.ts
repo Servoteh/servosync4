@@ -12,6 +12,7 @@ import {
   SAFE_WORKER_SELECT,
 } from "../../common/pagination";
 import { byId, uniqueIds } from "../../common/relations";
+import { alignIdSequence } from "../../common/db-sequences";
 import {
   BatchMachineAccessDto,
   CreateMachineAccessDto,
@@ -125,9 +126,7 @@ export class MachineAccessService {
       );
 
     const created = await this.prisma.$transaction(async (tx) => {
-      await tx.$executeRawUnsafe(
-        `SELECT setval(pg_get_serial_sequence('machine_access','id'), (SELECT COALESCE(MAX(id),0) FROM machine_access))`,
-      );
+      await alignIdSequence(tx, "machine_access");
       return tx.machineAccess.create({
         data: {
           workerId: dto.workerId,
@@ -201,9 +200,7 @@ export class MachineAccessService {
           .filter((c) => !haveNow.has(c))
           .map((c) => ({ workerId: dto.workerId, workCenterCode: c }));
         if (toCreate.length) {
-          await tx.$executeRawUnsafe(
-            `SELECT setval(pg_get_serial_sequence('machine_access','id'), (SELECT COALESCE(MAX(id),0) FROM machine_access))`,
-          );
+          await alignIdSequence(tx, "machine_access");
           await tx.machineAccess.createMany({ data: toCreate });
         }
       }

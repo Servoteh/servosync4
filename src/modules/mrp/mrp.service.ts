@@ -7,6 +7,7 @@ import {
   SAFE_WORKER_SELECT,
 } from "../../common/pagination";
 import { byId, uniqueIds } from "../../common/relations";
+import { parseDateParam } from "../../common/date-params";
 
 /**
  * MRP / Nabavka — SAMO UVID (MODULE_SPEC_mrp.md, BACKEND_RULES §11.3).
@@ -164,10 +165,12 @@ export class MrpService {
     where.status = parseIntParam(query.status);
     where.projectId = parseIntParam(query.projectId);
     where.workerId = parseIntParam(query.workerId);
-    if (query.from || query.to) {
+    const from = parseDateParam(query.from, "from");
+    const to = parseDateParam(query.to, "to");
+    if (from || to) {
       const range: Prisma.DateTimeFilter = {};
-      if (query.from) range.gte = new Date(query.from);
-      if (query.to) range.lte = new Date(query.to);
+      if (from) range.gte = from;
+      if (to) range.lte = to;
       where.demandDate = range;
     }
 
