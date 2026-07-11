@@ -11,7 +11,7 @@
 | Verzija | Šta je | Stack | Status | Rezultat |
 |---|---|---|---|---|
 | **1.0** | Web moduli koje Nesa razvija (kadrovska, lokacije, održavanje, sastanci, reversi, plan montaže…) | Vite + vanilla JS · **Supabase** (PG cloud) → **self-host on-prem (međukorak)** | **Živ, u produkciji** (razvoj zaključan ~1.5.2026); **međukorak odobren 4.7.2026** | Operativna MES-nadgradnja preko BigTehn-a |
-| **2.0** | 1:1 (minimum) prerada **QBigTehn** (Access + MS SQL, Negovanov sistem) — proizvodnja/tehnologija | **NestJS + Prisma + PostgreSQL** on-prem | **Deploy živ (8.7.2026):** backend on-prem + front na Cloudflare (API kroz Tunnel), login radi kraj-do-kraja; domenski moduli u izradi | Proizvodni core: RN, TP, PDM/BOM, MRP, primopredaje, lokacije |
+| **2.0** | 1:1 (minimum) prerada **QBigTehn** (Access + MS SQL, Negovanov sistem) — proizvodnja/tehnologija | **NestJS + Prisma + PostgreSQL** on-prem | **Praktično završen (12.7.2026):** modul „Tehnologija" živ, spojen u 1.5 na `servosync.servoteh.com/tehnologija`; tehnolog tok (P0–P5), auto-uvoz PDM XML, RBAC enforced. Ostaje kozmetika. | Proizvodni core: RN, TP, PDM/BOM, MRP, primopredaje, lokacije |
 | **3.0** | Prebacivanje **1.0 → stack 2.0** (Postgres + NestJS + Next) i integracija u **jednu aplikaciju** | isti kao 2.0 | Planirano | Objedinjen MES: proizvodnja (2.0) + operativni moduli (1.0) |
 | **4.0** | Integracija **BigBit ERP** (Access/VBA, komercijala: GK/PDV/fakture/magacin) u 3.0 | isti kao 2.0 | Planirano | **Kompletan ERP + MES** — jedna platforma za ceo Servoteh |
 
@@ -73,6 +73,21 @@ URL + ključevi (sav data-access ide kroz `sbReq` wrapper, pa je promena u jedno
 ### Domen (9 modula, scope V1)
 PDM/crteži/BOM · Nacrti · Primopredaje · Radni nalozi (RN) · Tehnološki postupci (TP)/Proizvodnja · Lokacije delova · Proizvodne strukture (radnici/mašine/operacije) · MRP/Nabavka (uvid) · Komitenti/Predmeti (pregled).
 **Van scope-a 2.0:** knjigovodstvo, PDV/KEPU, fakturisanje, fiskalizacija, POS — ostaje u BigBit-u (dolazi u 4.0).
+
+### ✅ Checkpoint 2026-07-12 — modul „Tehnologija" praktično završen + BigBit sync otvoren
+
+Od 8.7. do danas (detaljno: [PREOSTALE_FAZE.md](PREOSTALE_FAZE.md) + [MODUL_TEHNOLOGIJA.md](MODUL_TEHNOLOGIJA.md)):
+- **Tehnolog tok (P0–P5) živ:** dodela tehnologa pri **odobravanju** primopredaje, „Otkucaj TP" iz
+  primopredaje, undo odobrenih, pretraga po tehnologu, notifikacije dorade; RBAC `AUTHZ_ENFORCE=true`.
+- **Automatski uvoz PDM XML — ŽIV:** `pdm-bridge` na ubuntu serveru (systemd timer, CIFS mount) →
+  `POST /pdm/import`; PDF crtež se ne briše. Usput: hotfix „P2002 sequence bomba" (`alignIdSequence`).
+- **1.5 merge:** 2.0 dostupan na `servosync.servoteh.com/tehnologija` (ne više `servosync2`).
+- **BigBit → 2.0 sync (nova radna linija):** BB_T_26 snapshot (ceo BigBit ERP, 207 tabela) analiziran;
+  **Faza 1 živa** (3 šifarnika artikala → nazivi grupa/porekla), **Faza 2 matične tabele pripremljene
+  ali gated do cutover-a** (Magacini živo; customers/projects/items/Cenovnik čekaju). Izvor sync-a
+  **izmenjen: ubuntu + `mdb-tools` (drop share), NE XML export** (vidi §Sync B ispod). Alat:
+  [`tools/bigbit-bridge/`](../tools/bigbit-bridge/); plan: [migration/BB_T_26_ANALIZA_I_PLAN.md](migration/BB_T_26_ANALIZA_I_PLAN.md).
+- **Preostalo za 2.0 = kozmetika** (UI dorade, sitni bugfix) — nema više velikih modula.
 
 ### Trenutno stanje repo-a (checkpoint 2026-07-08)
 - `prisma/schema.prisma`: ~90 modela (**1:1 plosnat port cele BigBit MSSQL šeme**) — vidi [ERD mapu](../../_analiza/servosync-schema.html).
@@ -160,10 +175,13 @@ dnevnoj upotrebi**. Sve posle toga je širenje, ne izgradnja.
 
 - **Sync A — QBigTehn MSSQL (`vasa-SQL:5765`): PRIVREMEN.** Proba + jednokratni završni uvoz proizvodnje,
   pa se gasi. ServoSync PG postaje jedini izvor istine za proizvodnju/tehnologiju.
-- **Sync B — BigBit matični podaci: TRAJAN do 4.0.** Komitenti, artikli, predmeti, prodavci (+ tarife,
-  grupe, magacini). **Preferirani izvor: BigBit prelazi na SQL Server** (upsizing na postojeću `vasa-SQL`
-  instancu — Vasa voljan; postojeći `mssql` konektor + inkrementalni sync); **plan B: export (XML/CSV) +
-  UPSERT**; ručni unos samo kao rezerva. Ne živi ODBC na `.MDB`. Vidi [BACKEND_RULES §11.2a](BACKEND_RULES.md).
+- **Sync B — BigBit matični podaci: TRAJAN do 4.0. ✅ IZVOR REŠEN (Nenad 11.7.2026).** Komitenti, artikli,
+  predmeti, prodavci, magacini, cenovnik (+ tarife, grupe/porekla). **Mehanizam: ubuntu server čita BigBit
+  `.mdb` `mdb-tools`-om (ignoriše Access ULS, bez lozinke) i piše direktno u PG** — NE XML export, NE preko
+  NestJS sync modula (menja stariju §11.2a „export" odluku). BigBit noćni izvoz stiže na SMB drop share
+  `\\192.168.64.28\bigbit-incoming`; dnevni `INSERT … ON CONFLICT DO UPDATE`. Alat: [`tools/bigbit-bridge/`](../tools/bigbit-bridge/).
+  ID-prostor rešen (opcija A): `items.id` = QBigTehn ključ, BigBit preko `items.external_item_id`
+  ([migration/BB_T_26_ANALIZA_I_PLAN.md §7.6](migration/BB_T_26_ANALIZA_I_PLAN.md)).
 - **Sync C — PDM (SolidWorks, MS SQL): TRAJAN, jednosmeran.** Sklopovi (BOM), crteži, dokumentacija.
   **Preporuka: XML ugovor (postojeći `POST /pdm/import` + `PDMXMLParser`) uz automatizovan handoff** —
   interna SolidWorks SQL šema je krhka za direktno čitanje BOM-a. Šema već ima `drawing_import_log`.
@@ -180,9 +198,11 @@ Detalji Sync-a B (legacy mehanizam koji nasleđuje):
 QMegaTeh-u, preko `EXT_*` ODBC linkova, **INSERT-only** (samo novi redovi; bez update-a i brisanja — 4
 poznata buga u [ServoSync-specification.md](ServoSync-specification.md)). 2.0 to menja u UPSERT.
 
-**⚠️ Otvorena blokada (§11.2a):** danas BigBit podaci stižu iz druge ruke (BigBit → QBigTehn MSSQL →
-ServoSync). Kad se QBigTehn ugasi, `bigbit-sync` mora da se kači **direktno na BigBit** — a nije potvrđeno
-da li je to BigBit SQL Server, Access `.MDB`, ili export fajl. Bez toga Sync B ostaje bez izvora.
+**✅ Blokada §11.2a REŠENA (11.7.2026):** pitanje „kako se `bigbit-sync` kači direktno na BigBit kad se
+QBigTehn ugasi" je zatvoreno — **ubuntu server čita BigBit Access `.mdb` preko `mdb-tools`** (drop share
+sa BigBit noćnog izvoza). Nije potreban ni SQL Server upsizing ni XML ugovor; ULS se zaobilazi na nivou
+čitača. Faza 1 (šifarnici) je već živa; matične tabele su pripremljene i čekaju cutover (da ne prepisuju
+živi Sync A). Detalji i preostali koraci: [PREOSTALE_FAZE.md](PREOSTALE_FAZE.md).
 
 ---
 
@@ -386,4 +406,9 @@ Detalji i procena: postojeća analiza „Supabase↔PG sync" (dani do par nedelj
 
 ---
 
-*Poslednji update: 2026-07-08 — **deploy 2.0 živ**: backend on-prem (Docker: Postgres 18 + NestJS) + front kao git-povezan Cloudflare Worker (`servosync2.servoteh.com`, auto-deploy na push na `main`) + API kroz Cloudflare Tunnel (`api.servosync2.servoteh.com`, Total TLS), **login potvrđen kraj-do-kraja** (procedura: [../../frontend/docs/DEPLOY.md](../../frontend/docs/DEPLOY.md)). Takođe: **proširen §4.0** (BigBit apsorpcija) na osnovu analize tri zvanična korisnička uputstva (master/knjigovodstvo, Nabavka, Carina — [migration/12–14](migration/README.md)): stvarni dokument-vođeni tokovi (A–F), nabavka (RFQ→PO→3-way match), korigovan carinski scope (JCI radi špedicija), ne-sistemske zavisnosti, domeni + redosled odozdo-naviše, preduslovi za sastanak. Ranije (2026-07-07): checkpoint stanja (sync 62 entiteta ✅, JWT auth ✅, front ekrani ✅, mreža ka vasa-SQL ✅) + plan rada ka aplikaciji 2.0 (faze A–D); odobren međukorak (1.0 self-host: PostgreSQL + PostgREST + GoTrue), Cloudflare Tunnel umesto WireGuard-a. Implementaciju radi Luka uz potvrde Nesa/Negovan.*
+*Poslednji update: 2026-07-12 — **modul „Tehnologija" (2.0) praktično završen**: tehnolog tok P0–P5,
+auto-uvoz PDM XML (bridge na ubuntu), RBAC enforced, spojen u 1.5 na `servosync.servoteh.com/tehnologija`;
+ostaje kozmetika. **Otvorena BigBit → 2.0 sync radna linija** (Faza 1 živa, Faza 2 gated do cutover-a);
+izvor Sync-a B rešen = ubuntu + `mdb-tools` (drop share), NE XML — vidi [PREOSTALE_FAZE.md](PREOSTALE_FAZE.md).*
+
+*Ranije 2026-07-08 — **deploy 2.0 živ**: backend on-prem (Docker: Postgres 18 + NestJS) + front kao git-povezan Cloudflare Worker (`servosync2.servoteh.com`, auto-deploy na push na `main`) + API kroz Cloudflare Tunnel (`api.servosync2.servoteh.com`, Total TLS), **login potvrđen kraj-do-kraja** (procedura: [../../frontend/docs/DEPLOY.md](../../frontend/docs/DEPLOY.md)). Takođe: **proširen §4.0** (BigBit apsorpcija) na osnovu analize tri zvanična korisnička uputstva (master/knjigovodstvo, Nabavka, Carina — [migration/12–14](migration/README.md)): stvarni dokument-vođeni tokovi (A–F), nabavka (RFQ→PO→3-way match), korigovan carinski scope (JCI radi špedicija), ne-sistemske zavisnosti, domeni + redosled odozdo-naviše, preduslovi za sastanak. Ranije (2026-07-07): checkpoint stanja (sync 62 entiteta ✅, JWT auth ✅, front ekrani ✅, mreža ka vasa-SQL ✅) + plan rada ka aplikaciji 2.0 (faze A–D); odobren međukorak (1.0 self-host: PostgreSQL + PostgREST + GoTrue), Cloudflare Tunnel umesto WireGuard-a. Implementaciju radi Luka uz potvrde Nesa/Negovan.*
