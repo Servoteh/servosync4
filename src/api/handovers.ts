@@ -1,7 +1,8 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiBlob, apiFetch } from './client';
+import { apiBlob, apiFetch, getToken } from './client';
 import type { Paginated, WorkerRef } from './tech-processes';
 import { useDrawings, type Drawing } from './pdm';
 
@@ -41,6 +42,36 @@ export interface DrawingRef {
   material: string | null;
   dimensions: string | null;
   weight?: number | null;
+}
+
+// ─────────────────────────────────────────────── moj radnik (workerId iz JWT-a)
+
+/**
+ * `workerId` tekućeg naloga iz JWT claim-a. Backend NAMERNO ne vraća workerId
+ * u `PublicUser` (`/auth/me`) — claim u tokenu je jedini izvor na klijentu
+ * (backend auth.service.ts: "workerId is JWT-internal"). Dekodira se payload
+ * segment (base64url) BEZ verifikacije potpisa — ovo je UI afordansa
+ * (sakrij/prikaži dugme), ne bezbednosna granica: backend guard je krajnja
+ * istina (npr. take-over 422 za nalog bez radnika).
+ */
+export function getMyWorkerId(): number | null {
+  const token = getToken();
+  const payloadPart = token?.split('.')[1];
+  if (!payloadPart) return null;
+  try {
+    const json = atob(payloadPart.replace(/-/g, '+').replace(/_/g, '/'));
+    const workerId: unknown = (JSON.parse(json) as { workerId?: unknown }).workerId;
+    return typeof workerId === 'number' && workerId > 0 ? workerId : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Hook varijanta — čita token tek posle mount-a (SSR-safe, kao AuthProvider). */
+export function useMyWorkerId(): number | null {
+  const [workerId, setWorkerId] = useState<number | null>(null);
+  useEffect(() => setWorkerId(getMyWorkerId()), []);
+  return workerId;
 }
 
 // ─────────────────────────────────────────────────────────────── Nacrti (handover-drafts)
@@ -175,15 +206,83 @@ function useInvalidateDrafts() {
   return () => qc.invalidateQueries({ queryKey: ['handover-drafts'] });
 }
 
-/** Kreiranje novog nacrta (zaglavlje + opciono stavke) — broj generiše server. */
+/**
+ * SOFT upozorenje uz kreiranje nacrta (P4 §6.5.3/§6.5.4) — `meta.warnings` u
+ * create odgovoru; `message` je srpska poruka spremna za direktan prikaz.
+ * Hard blokada je samo ne-odobren `pdm_status` (422 pre bilo kakvog upisa) —
+ * nju prikazuje postojeći ErrorText tok forme.
+ */
+export interface DraftItemWarning {
+  type: 'missing_pdf' | 'not_latest_revision' | 'duplicate';
+  drawingId: number;
+  drawingNumber: string;
+  revision: string;
+  message: string;
+}
+
+/**
+ * Kreiranje novog nacrta (zaglavlje + opciono stavke) — broj generiše server.
+ * `meta.warnings` (P4 §6.5.3/§6.5.4): nedostajući PDF / ne-poslednja revizija /
+ * pre-check duplikat su soft upozorenja — nacrt JESTE kreiran, UI ih prikazuje
+ * bez blokade. Ne-odobren `pdm_status` je hard 422 (nacrt se NE kreira).
+ */
 export function useCreateHandoverDraft() {
   const invalidate = useInvalidateDrafts();
   return useMutation({
     mutationFn: (input: CreateHandoverDraftInput) =>
-      apiFetch<{ data: HandoverDraftDetail }>('/v1/handover-drafts', {
-        method: 'POST',
-        body: JSON.stringify(input),
-      }),
+      apiFetch<{ data: HandoverDraftDetail; meta: { warnings: DraftItemWarning[] } }>(
+        '/v1/handover-drafts',
+        {
+          method: 'POST',
+          body: JSON.stringify(input),
+        },
+      ),
+    onSuccess: invalidate,
+  });
+}
+
+/**
+ * Odluka projektanta nad SPORNOM stavkom (`pre_check_duplicate=true`) —
+ * konstante 1:1 sa backend `dto/decide-draft-item.dto.ts` (legacy `OdlukaAkcija`,
+ * P4 §6.5.4). `NONE` (0) = nerešeno; takva ne-isključena stavka blokira submit.
+ */
+export const DRAFT_ITEM_DECISION = {
+  NONE: 0,
+  /** Isključi stavku iz primopredaje (`exclude_from_handover=true`). */
+  EXCLUDE: 1,
+  /** Predaj ponovo — svesno prihvata duplikat, količina ostaje. */
+  RESUBMIT: 2,
+  /** Dopuni — koriguje količinu za izradu (traži `newQuantity`). */
+  ADJUST: 3,
+} as const;
+
+/**
+ * POST /v1/handover-drafts/:id/items/:itemId/decision (P4 §6.5.4). Akcija 3
+ * (Dopuni) OBAVEZNO nosi `newQuantity` (400 uz 1/2 ili bez nje uz 3); 422 za
+ * zaključan nacrt ili ne-spornu stavku; 404 za tuđu/nepostojeću stavku.
+ * Re-odluka je dozvoljena dok nacrt nije zaključan.
+ */
+export function useDecideDraftItem() {
+  const invalidate = useInvalidateDrafts();
+  return useMutation({
+    mutationFn: ({
+      draftId,
+      itemId,
+      action,
+      newQuantity,
+    }: {
+      draftId: number;
+      itemId: number;
+      action: number;
+      newQuantity?: number;
+    }) =>
+      apiFetch<{ data: HandoverDraftItem }>(
+        `/v1/handover-drafts/${draftId}/items/${itemId}/decision`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ action, newQuantity }),
+        },
+      ),
     onSuccess: invalidate,
   });
 }
@@ -219,6 +318,9 @@ export function useDeleteHandoverDraft() {
  * za svaku ne-isključenu stavku. Menja i nacrte (postaje zaključan) i primopredaje
  * (novi redovi), pa invalidira OBA cache ključa. Dozvoljeno samo dok nacrt nije
  * zaključan (backend vraća 409 inače) — UI drži dugme disabled za zaključan nacrt.
+ * NOVI gate (P4 §6.5.4): 422 „Nacrt ima sporne stavke bez odluke projektanta"
+ * dok postoji ne-isključena stavka `pre_check_duplicate=true` bez odluke — UI
+ * blokira dugme po istom kriterijumu (`isUnresolvedDisputedItem`).
  */
 export function useSubmitHandoverDraft() {
   const qc = useQueryClient();
@@ -268,6 +370,16 @@ export interface Handover {
   updatedAt: string | null;
   /** Dodeljeni tehnolog koji piše TP (0 = nije dodeljen — dodela ide kroz approve). */
   technologistId: number;
+  /** Kada je TEKUĆI tehnolog dodeljen/preuzeo (approve ili take-over) — ISO | null. */
+  technologistAssignedAt: string | null;
+  /** Ko je izveo dodelu (approve = šef; take-over = sam preuzimalac) — worker id | null. */
+  technologistAssignedById: number | null;
+  /**
+   * Rok izrade unet pri ODOBRAVANJU (P4 §6.5.1) — ISO | null. Propagira se u
+   * `work_orders.production_deadline` pri prepare/launch (eksplicitni launch
+   * `dueDate` ima prednost); return-to-pending ga prazni.
+   */
+  productionDeadline: string | null;
   /**
    * Red deriviran sync-om iz QBigTehn tRN-a (`legacy_rn_id != null`, backend
    * enrich). Benigno za čitanje/štampu; odobri/odbij/lansiraj/vrati do
@@ -280,6 +392,8 @@ export interface Handover {
   statusChangedBy: WorkerRef | null;
   launchedBy: WorkerRef | null;
   technologist: WorkerRef | null;
+  /** Razrešen `technologistAssignedById` (backend enrich) — null dok nema dodele. */
+  technologistAssignedBy: WorkerRef | null;
   /** RN otkucan iz ove primopredaje (prepare-work-order / launch) — null dok ne postoji. */
   workOrder: WorkOrderRef | null;
   /** Najbolji-pokušaj veza ka nacrtu/stavci (`resolveDraftContext` — heuristika, vidi servis). */
@@ -340,7 +454,12 @@ export function useHandoverLookups() {
   });
 }
 
-/** Radnici sa `defines_approval=true` — tehnolozi za dijalog/filter "Izbor tehnologa". */
+/**
+ * Aktivni radnici vrste „Tehnolog" (`worker_types.name`, P4 §6.3 odluka #2 —
+ * `defines_approval` je NAPUŠTEN za ovaj kriterijum) — za dijalog/filter
+ * "Izbor tehnologa" i vidljivost dugmeta „Preuzmi izradu" (isti kriterijum
+ * kao backend approve validacija i take-over gate).
+ */
 export function useTechnologists() {
   return useQuery({
     queryKey: ['handovers', 'technologists'],
@@ -372,7 +491,9 @@ function useInvalidateHandovers() {
 
 /**
  * Odobri primopredaju (U OBRADI → SAGLASAN) + dodeli tehnologa koji piše TP.
- * `technologistId` je OBAVEZAN (backend 422 ako fali / nije aktivan tehnolog).
+ * `technologistId` je OBAVEZAN (backend 422 ako fali / nije aktivan radnik
+ * vrste „Tehnolog"). `dueDate` (P4 §6.5.1) je OPCION rok izrade (ISO; 400 za
+ * nevalidan datum) → `production_deadline`, kasnije se propagira u RN.
  */
 export function useApproveHandover() {
   const invalidate = useInvalidateHandovers();
@@ -381,23 +502,47 @@ export function useApproveHandover() {
       id,
       technologistId,
       comment,
+      dueDate,
     }: {
       id: number;
       technologistId: number;
       comment?: string;
+      dueDate?: string;
     }) =>
       apiFetch<{ data: Handover }>(`/v1/handovers/${id}/approve`, {
         method: 'POST',
-        body: JSON.stringify({ technologistId, comment }),
+        body: JSON.stringify({ technologistId, comment, dueDate }),
       }),
     onSuccess: invalidate,
   });
 }
 
 /**
- * Vrati odobrenu primopredaju na čekanje (SAGLASAN → U OBRADI, undo odobravanja).
- * Backend vraća 409 ako RN za primopredaju već postoji (poruka nosi identNumber
- * + uput da se RN prvo obriše/razreši) — prikazuje se u dijalogu.
+ * „Preuzmi izradu" (P4 §6.4, odluka #4) — POST /v1/handovers/:id/take-over.
+ * Akter (JWT `workerId`) mora biti AKTIVAN radnik vrste „Tehnolog" (422 inače,
+ * i 422 za nalog bez radnika); primopredaja mora biti SAGLASAN, nezaključana i
+ * ne-legacy (409 — i za zaključanu, dokumentovana devijacija od 422 drugde u
+ * modulu). Prepisuje `technologist_id` na aktera (+ RN `worker_id` ako je RN
+ * otkucan a nelansiran); prethodni tehnolog dobija notifikaciju (best-effort).
+ * Idempotentno: već moj → 200 `{ alreadyOwner: true }` bez upisa.
+ */
+export function useTakeOverHandover() {
+  const invalidate = useInvalidateHandovers();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<{ data: Handover; alreadyOwner?: boolean }>(`/v1/handovers/${id}/take-over`, {
+        method: 'POST',
+        body: '{}',
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/**
+ * Vrati odobrenu primopredaju na čekanje (SAGLASAN → U OBRADI, undo odobravanja
+ * — uz tehnologa se prazne i rok izrade i audit dodele). Backend vraća 409 ako
+ * RN za primopredaju već postoji (poruka nosi identNumber + uput da se RN prvo
+ * obriše/razreši) — prikazuje se u dijalogu.
  */
 export function useReturnHandoverToPending() {
   const invalidate = useInvalidateHandovers();

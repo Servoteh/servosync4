@@ -116,10 +116,12 @@
 | Primopredaja | Odbijeno | crvena | `--status-danger` |
 | Primopredaja | Lansiran | info plava | `--status-info` |
 | Primopredaja | Legacy (iz QBigTehn, do cutover-a) | neutralna | `--status-neutral` |
+| Nacrt / stavka | Sporna (pre-check duplikat bez odluke) | narandžasta | `--status-warn` |
 | Sync (bb_sync) | Greška sinhronizacije | crvena | `--status-danger` |
 | Notifikacija (D8) | Škart (`kontrola.skart`) | crvena | `--status-danger` |
 | Notifikacija (D8) | Dorada (`kontrola.dorada`) | narandžasta | `--status-warn` |
 | Notifikacija (D8) | Primopredaja (`primopredaja.nova`) | info plava | `--status-info` |
+| Notifikacija (D8) | Preuzeta izrada (`primopredaja.preuzeta`) | info plava | `--status-info` |
 
 Novi status = nova vrsta u ovoj tabeli **pre** upotrebe u kodu.
 

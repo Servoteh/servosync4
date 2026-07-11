@@ -20,6 +20,7 @@ import { PERMISSIONS } from '@/lib/permissions';
 import { formatDate, formatNumber } from '@/lib/format';
 import { LEGACY_TOOLTIP, LegacyBadge, errMsg, errorBox } from './common';
 import { HandoverDetailPanel } from './handover-detail';
+import { TakeOverButton } from './take-over-button';
 import { LaunchHandoverDialog, ReturnToPendingDialog } from './workflow-dialogs';
 
 const rowBtn =
@@ -86,6 +87,17 @@ export function ApprovedTab() {
       render: (r) => <span className="text-ink-secondary">{formatDate(r.handoverDate)}</span>,
     },
     {
+      // Rok izrade unet pri odobravanju (P4 §6.5.1) — propagira se u RN.
+      key: 'deadline',
+      header: 'Rok',
+      render: (r) =>
+        r.productionDeadline ? (
+          <span className="text-ink-secondary">{formatDate(r.productionDeadline)}</span>
+        ) : (
+          <span className="text-ink-disabled">—</span>
+        ),
+    },
+    {
       key: 'technologist',
       header: 'Tehnolog',
       render: (r) => <span className="text-ink-secondary">{r.technologist?.fullName ?? '—'}</span>,
@@ -127,6 +139,12 @@ export function ApprovedTab() {
               </button>
             </Can>
           )}
+          {/* „Preuzmi izradu" (P4 §6.4) — komponenta se sama krije kad je red
+              legacy/zaključan ili je zaduženje već moje (workerId iz JWT-a). */}
+          <TakeOverButton
+            handover={r}
+            className={`${rowBtn} border border-line text-ink-secondary hover:bg-surface-2`}
+          />
           {/* Legacy red: mutacije do cutover-a idu u QBigTehn (backend 409 je
               krajnja istina ako stariji tab ipak okine) — dugmad disabled. */}
           <Can permission={PERMISSIONS.PRIMOPREDAJE_APPROVE}>

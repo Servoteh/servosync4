@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Pencil, Plus, Printer, Send, Trash2 } from 'lucide-react';
 import {
+  DRAFT_ITEM_DECISION,
   useCreateHandoverDraft,
   useDeleteHandoverDraft,
   useDrawingsLookup,
@@ -13,9 +14,11 @@ import {
   useUpdateHandoverDraft,
   type CreateHandoverDraftInput,
   type CreateHandoverDraftItemInput,
+  type DraftItemWarning,
   type Drawing,
   type HandoverDraft,
   type HandoverDraftDetail,
+  type HandoverDraftItem,
 } from '@/api/handovers';
 import { useProjectsLookup, type ProjectLookup } from '@/api/lookups';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
@@ -32,6 +35,8 @@ import { ComboBox } from '@/components/ui-kit/combo-box';
 import { formatDate, formatNumber } from '@/lib/format';
 import {
   ConfirmDialog,
+  DRAFT_ITEM_DECISION_LABEL,
+  DRAFT_TYPE_OPTIONS,
   ErrorText,
   Field,
   NativeSelect,
@@ -39,7 +44,10 @@ import {
   draftStatusMeta,
   draftTypeLabel,
   errorBox,
+  isUnresolvedDisputedItem,
+  warnBox,
 } from './common';
+import { DecideDraftItemDialog } from './decision-dialog';
 import { PrintDrawingsDialog } from './print-drawings-dialog';
 
 const columns: Column<HandoverDraft>[] = [
@@ -57,6 +65,12 @@ const columns: Column<HandoverDraft>[] = [
     key: 'project',
     header: 'Predmet',
     render: (r) => r.project?.projectNumber ?? `#${r.projectId}`,
+  },
+  {
+    // Tip nacrta (P4 §6.5.2) — labele su radne do potvrde biroa (common.tsx).
+    key: 'draftType',
+    header: 'Tip',
+    render: (r) => <span className="text-ink-secondary">{draftTypeLabel(r.draftType)}</span>,
   },
   {
     key: 'mainDrawing',
@@ -178,6 +192,10 @@ function DraftFormDialog({
   const isEdit = draft != null;
   const [form, setForm] = useState<DraftFormState>(() => toFormState(draft));
   const [items, setItems] = useState<DraftItemDraft[]>([]);
+  // Soft upozorenja iz create odgovora (meta.warnings, P4 §6.5.3/§6.5.4) —
+  // nacrt JESTE kreiran, pa se umesto tihog zatvaranja prikaže lista (inline,
+  // isti obrazac "success ekrana" kao LaunchHandoverDialog).
+  const [warnings, setWarnings] = useState<DraftItemWarning[] | null>(null);
   const lookups = useHandoverLookups();
   const create = useCreateHandoverDraft();
   const update = useUpdateHandoverDraft();
@@ -188,6 +206,7 @@ function DraftFormDialog({
     if (open) {
       setForm(toFormState(draft));
       setItems([]);
+      setWarnings(null);
     }
   }, [open, draft]);
 
@@ -221,12 +240,45 @@ function DraftFormDialog({
               note: i.note.trim() || undefined,
             })),
         };
-        await create.mutateAsync(payload);
+        const res = await create.mutateAsync(payload);
+        const created = res.meta?.warnings ?? [];
+        if (created.length > 0) {
+          setWarnings(created);
+          return; // dijalog ostaje otvoren sa listom upozorenja
+        }
       }
       onClose();
     } catch {
       /* greška se prikazuje ispod */
     }
+  }
+
+  // Ekran upozorenja posle uspešnog kreiranja: hard greške ne dolaze ovde
+  // (422 obara mutaciju), pa je jedino dugme „Zatvori".
+  if (warnings) {
+    return (
+      <Dialog
+        open={open}
+        onClose={onClose}
+        title="Novi nacrt primopredaje"
+        footer={
+          <Button variant="secondary" onClick={onClose}>
+            Zatvori
+          </Button>
+        }
+      >
+        <div className="space-y-3">
+          <p className="text-sm text-ink">
+            Nacrt je kreiran, ali stavke nose upozorenja — proverite ih pre predaje u primopredaju:
+          </p>
+          <ul className={`${warnBox} list-disc space-y-1 pl-8`}>
+            {warnings.map((w, i) => (
+              <li key={`${w.drawingId}-${w.type}-${i}`}>{w.message}</li>
+            ))}
+          </ul>
+        </div>
+      </Dialog>
+    );
   }
 
   return (
@@ -300,15 +352,19 @@ function DraftFormDialog({
           )}
         </div>
         <div className="grid grid-cols-2 gap-3">
+          {/* Vrednosti 0/1/2 = backend draft_type; labele radne do potvrde
+              biroa (P4 §8 #6) — jedan izvor: DRAFT_TYPE_LABEL u common.tsx. */}
           <FormField label="Tip nacrta">
             <NativeSelect
               value={form.draftType}
               onChange={(e) => set({ draftType: Number(e.target.value) })}
               className="w-full"
             >
-              <option value={0}>Glavni sklop</option>
-              <option value={1}>Pojedinačni sklop</option>
-              <option value={2}>Podsklopovi</option>
+              {DRAFT_TYPE_OPTIONS.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.label}
+                </option>
+              ))}
             </NativeSelect>
           </FormField>
           <FormField label="Broj komada" required>
@@ -410,50 +466,107 @@ function DraftFormDialog({
 
 // ─────────────────────────────────────────────────────────────── detalj (expand) + stavke
 
-const itemColumns: Column<HandoverDraftDetail['items'][number]>[] = [
-  {
-    key: 'drawing',
-    header: 'Crtež',
-    render: (r) => (
-      <span className="tnums font-semibold text-ink">
-        {r.drawing ? `${r.drawing.drawingNumber} / ${r.drawing.revision}` : `#${r.drawingId}`}
-      </span>
-    ),
-  },
-  { key: 'name', header: 'Naziv', render: (r) => r.drawing?.name || '—' },
-  {
-    key: 'quantityDefined',
-    header: 'Kol. definisana',
-    align: 'right',
-    numeric: true,
-    render: (r) => formatNumber(r.quantityDefinedInDrawing ?? 0),
-  },
-  {
-    key: 'quantityToProduce',
-    header: 'Kol. za izradu',
-    align: 'right',
-    numeric: true,
-    render: (r) => <span className="font-semibold text-ink">{formatNumber(r.quantityToProduce)}</span>,
-  },
-  {
-    key: 'mainDrawing',
-    header: 'Vodeći sklop',
-    render: (r) => (
-      <span className="tnums text-ink-secondary">{r.mainDrawing?.drawingNumber ?? '—'}</span>
-    ),
-  },
-  {
-    key: 'flags',
-    header: 'Napomena',
-    render: (r) => (
-      <span className="inline-flex flex-wrap items-center gap-1.5">
-        {r.preCheckDuplicate && <StatusBadge tone="warn" label="Duplikat" />}
-        {r.excludeFromHandover && <StatusBadge tone="neutral" label="Isključena" />}
-        <span className="text-ink-secondary">{r.note || '—'}</span>
-      </span>
-    ),
-  },
-];
+/**
+ * Kolone stavki zavise od stanja nacrta (zaključan?) i callback-a za odluku,
+ * pa se grade po detalju (isti razlog kao kolone u approved-tab.tsx).
+ * Sporne stavke (§6.5.4): badge „Sporna" dok nema odluke (tačno kriterijum
+ * backend submit gate-a); posle odluke ostaje neutralni „Duplikat" trag.
+ */
+function buildItemColumns(opts: {
+  locked: boolean;
+  onDecide: (item: HandoverDraftItem) => void;
+}): Column<HandoverDraftItem>[] {
+  return [
+    {
+      key: 'drawing',
+      header: 'Crtež',
+      render: (r) => (
+        <span className="tnums font-semibold text-ink">
+          {r.drawing ? `${r.drawing.drawingNumber} / ${r.drawing.revision}` : `#${r.drawingId}`}
+        </span>
+      ),
+    },
+    { key: 'name', header: 'Naziv', render: (r) => r.drawing?.name || '—' },
+    {
+      key: 'quantityDefined',
+      header: 'Kol. definisana',
+      align: 'right',
+      numeric: true,
+      render: (r) => formatNumber(r.quantityDefinedInDrawing ?? 0),
+    },
+    {
+      key: 'quantityToProduce',
+      header: 'Kol. za izradu',
+      align: 'right',
+      numeric: true,
+      render: (r) => (
+        <span className="font-semibold text-ink">{formatNumber(r.quantityToProduce)}</span>
+      ),
+    },
+    {
+      key: 'mainDrawing',
+      header: 'Vodeći sklop',
+      render: (r) => (
+        <span className="tnums text-ink-secondary">{r.mainDrawing?.drawingNumber ?? '—'}</span>
+      ),
+    },
+    {
+      key: 'flags',
+      header: 'Napomena',
+      render: (r) => (
+        <span className="inline-flex flex-wrap items-center gap-1.5">
+          {isUnresolvedDisputedItem(r) ? (
+            <StatusBadge tone="warn" label="Sporna" />
+          ) : (
+            r.preCheckDuplicate && (
+              <span
+                title={
+                  r.decisionAction > 0
+                    ? `Odluka: ${DRAFT_ITEM_DECISION_LABEL[r.decisionAction] ?? '—'}${
+                        r.decisionDateTime ? ` · ${formatDate(r.decisionDateTime)}` : ''
+                      }`
+                    : undefined
+                }
+                className="inline-flex"
+              >
+                <StatusBadge tone="neutral" label="Duplikat" />
+              </span>
+            )
+          )}
+          {r.excludeFromHandover && <StatusBadge tone="neutral" label="Isključena" />}
+          <span className="text-ink-secondary">{r.note || '—'}</span>
+        </span>
+      ),
+    },
+    {
+      // Odluka projektanta (§6.5.4) — samo za pre-check duplikate; re-odluka
+      // dozvoljena dok nacrt nije zaključan (backend 422 za zaključan).
+      key: 'decision',
+      header: 'Odluka',
+      align: 'right',
+      render: (r) =>
+        r.preCheckDuplicate && !opts.locked ? (
+          <Can permission={PERMISSIONS.PRIMOPREDAJE_WRITE}>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                opts.onDecide(r);
+              }}
+              className="rounded-control border border-line px-2.5 py-1 text-xs font-semibold text-ink-secondary hover:bg-surface-2"
+            >
+              {r.decisionAction === DRAFT_ITEM_DECISION.NONE ? 'Odluči' : 'Promeni odluku'}
+            </button>
+          </Can>
+        ) : r.preCheckDuplicate ? (
+          <span className="text-ink-secondary">
+            {DRAFT_ITEM_DECISION_LABEL[r.decisionAction] ?? '—'}
+          </span>
+        ) : (
+          <span className="text-ink-disabled">—</span>
+        ),
+    },
+  ];
+}
 
 function DraftDetail({
   draft,
@@ -470,6 +583,7 @@ function DraftDetail({
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [confirmingSubmit, setConfirmingSubmit] = useState(false);
   const [printOpen, setPrintOpen] = useState(false);
+  const [deciding, setDeciding] = useState<HandoverDraftItem | null>(null);
 
   if (q.isLoading) return <span className="text-sm text-ink-disabled">Učitavanje…</span>;
   if (q.error || !q.data)
@@ -477,6 +591,10 @@ function DraftDetail({
 
   const d = q.data.data;
   const s = draftStatusMeta(d.status);
+  // Sporne stavke bez odluke (§6.5.4) — isti kriterijum kao backend submit
+  // gate (422): predaja je blokirana i u UI dok se sve ne odluče.
+  const unresolved = d.items.filter(isUnresolvedDisputedItem);
+  const itemColumns = buildItemColumns({ locked: !!d.isLocked, onDecide: setDeciding });
 
   return (
     <div className="space-y-4 text-sm">
@@ -535,8 +653,14 @@ function DraftDetail({
           )}
           <button
             onClick={() => setConfirmingSubmit(true)}
-            disabled={d.isLocked || submit.isPending}
-            title={d.isLocked ? 'Nacrt je već predat (zaključan).' : undefined}
+            disabled={d.isLocked || submit.isPending || unresolved.length > 0}
+            title={
+              d.isLocked
+                ? 'Nacrt je već predat (zaključan).'
+                : unresolved.length > 0
+                  ? 'Nacrt ima sporne stavke bez odluke projektanta — donesite odluku (kolona „Odluka”) pre predaje.'
+                  : undefined
+            }
             className="inline-flex items-center gap-1.5 rounded-control bg-accent px-2.5 py-1 text-xs font-semibold text-accent-fg hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
           >
             <Send className="h-3.5 w-3.5" aria-hidden />
@@ -547,11 +671,31 @@ function DraftDetail({
 
       <ErrorText error={del.error} />
 
+      {/* Blokada predaje dok ima spornih stavki bez odluke (§6.5.4) — backend
+          422 poruka je krajnja istina (prikaz u ConfirmDialog-u ispod). */}
+      {!d.isLocked && unresolved.length > 0 && (
+        <div className={warnBox}>
+          Sporne stavke bez odluke projektanta:{' '}
+          {unresolved
+            .map((i) => (i.drawing ? i.drawing.drawingNumber : `#${i.drawingId}`))
+            .join(', ')}{' '}
+          — „Predaj u primopredaju” je blokirano dok se za svaku ne donese odluka (kolona
+          „Odluka” u tabeli stavki).
+        </div>
+      )}
+
       <PrintDrawingsDialog
         open={printOpen}
         onClose={() => setPrintOpen(false)}
         scope={{ kind: 'draft', id: d.id }}
         subtitle={`Nacrt ${d.draftNumber}`}
+      />
+
+      <DecideDraftItemDialog
+        draftId={d.id}
+        item={deciding}
+        open={deciding != null}
+        onClose={() => setDeciding(null)}
       />
 
       <ConfirmDialog

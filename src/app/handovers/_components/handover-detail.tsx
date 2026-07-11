@@ -28,6 +28,7 @@ import {
   LaunchHandoverDialog,
   ReturnToPendingDialog,
 } from './workflow-dialogs';
+import { TakeOverButton } from './take-over-button';
 import { PrintDrawingsDialog } from './print-drawings-dialog';
 
 const actionBtn =
@@ -171,6 +172,12 @@ export function HandoverDetailPanel({ handover }: { handover: Handover }) {
         )}
         {!locked && handover.statusId === HANDOVER_STATUS.APPROVED && (
           <>
+            {/* „Preuzmi izradu" (P4 §6.4) — komponenta se sama krije kad je red
+                legacy/zaključan ili je zaduženje već moje (workerId iz JWT-a). */}
+            <TakeOverButton
+              handover={handover}
+              className={`${actionBtn} border border-line text-ink-secondary hover:bg-surface-2`}
+            />
             {handover.workOrder ? (
               <button
                 disabled={busy}
@@ -245,6 +252,18 @@ export function HandoverDetailPanel({ handover }: { handover: Handover }) {
           }
         />
         <Field label="Datum primopredaje" value={formatDate(handover.handoverDate)} />
+        {/* Rok izrade unet pri odobravanju (P4 §6.5.1) — propagira se u RN. */}
+        <Field
+          label="Rok izrade"
+          value={handover.productionDeadline ? formatDate(handover.productionDeadline) : '—'}
+        />
+        {/* Audit dodele tehnologa (approve = šef; take-over = sam preuzimalac). */}
+        {handover.technologistAssignedAt && (
+          <Field
+            label="Tehnolog dodeljen"
+            value={`${formatDateTime(handover.technologistAssignedAt)} · ${handover.technologistAssignedBy?.fullName ?? '—'}`}
+          />
+        )}
         <Field
           label="Promena statusa"
           value={

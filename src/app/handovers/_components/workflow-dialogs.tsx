@@ -44,7 +44,9 @@ function LegacyGuardSpan({ legacy, children }: { legacy: boolean; children: Reac
 
 /**
  * Odobravanje primopredaje (U OBRADI → SAGLASAN) — Miljan (šef tehnologije)
- * OBAVEZNO bira tehnologa koji piše TP; bez izbora dugme je disabled.
+ * OBAVEZNO bira tehnologa koji piše TP; bez izbora dugme je disabled. Rok
+ * izrade (P4 §6.5.1) je OPCION dok Miljan ne potvrdi obaveznost (§8 #8) —
+ * upisuje se u primopredaju i propagira u RN pri kucanju TP-a/lansiranju.
  */
 export function ApproveHandoverDialog({
   handover,
@@ -57,12 +59,14 @@ export function ApproveHandoverDialog({
 }) {
   const approve = useApproveHandover();
   const [technologist, setTechnologist] = useState<WorkerRef | null>(null);
+  const [dueDate, setDueDate] = useState('');
   const [comment, setComment] = useState('');
 
   useEffect(() => {
     if (!open) return;
     approve.reset();
     setTechnologist(null);
+    setDueDate('');
     setComment('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -73,6 +77,7 @@ export function ApproveHandoverDialog({
       {
         id: handover.id,
         technologistId: technologist.id,
+        dueDate: dueDate || undefined,
         comment: comment.trim() || undefined,
       },
       { onSuccess: onClose },
@@ -121,6 +126,12 @@ export function ApproveHandoverDialog({
             getSublabel={(t) => t.username}
             placeholder="Ime tehnologa…"
           />
+        </FormField>
+        <FormField
+          label="Rok izrade"
+          hint="Opciono — upisuje se u primopredaju i propagira u RN pri kucanju TP-a/lansiranju."
+        >
+          <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
         </FormField>
         <FormField label="Komentar">
           <Textarea

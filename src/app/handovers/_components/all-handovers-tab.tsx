@@ -55,6 +55,17 @@ const columns: Column<Handover>[] = [
     render: (r) => <span className="text-ink-secondary">{formatDate(r.handoverDate)}</span>,
   },
   {
+    // Rok izrade unet pri odobravanju (P4 §6.5.1) — null za redove bez roka.
+    key: 'deadline',
+    header: 'Rok',
+    render: (r) =>
+      r.productionDeadline ? (
+        <span className="text-ink-secondary">{formatDate(r.productionDeadline)}</span>
+      ) : (
+        <span className="text-ink-disabled">—</span>
+      ),
+  },
+  {
     key: 'technologist',
     header: 'Tehnolog',
     render: (r) => <span className="text-ink-secondary">{r.technologist?.fullName ?? '—'}</span>,

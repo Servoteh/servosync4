@@ -113,12 +113,14 @@ const NOTIFICATION_BADGE: Record<string, { tone: Tone; label: string }> = {
   'kontrola.skart': { tone: 'danger', label: 'Škart' },
   'kontrola.dorada': { tone: 'warn', label: 'Dorada' },
   'primopredaja.nova': { tone: 'info', label: 'Primopredaja' },
+  'primopredaja.preuzeta': { tone: 'info', label: 'Preuzeta izrada' },
 };
 
 /** refTable → ruta modula (navigacija na klik; bez deep-linka — lista modula). */
 const NOTIFICATION_ROUTE: Record<string, string> = {
   work_orders: '/work-orders',
   handover_drafts: '/handovers',
+  drawing_handovers: '/handovers',
 };
 
 /**

@@ -1,7 +1,12 @@
 'use client';
 
 import type { ReactNode, SelectHTMLAttributes, TextareaHTMLAttributes } from 'react';
-import { HANDOVER_STATUS, type StatusRef } from '@/api/handovers';
+import {
+  DRAFT_ITEM_DECISION,
+  HANDOVER_STATUS,
+  type HandoverDraftItem,
+  type StatusRef,
+} from '@/api/handovers';
 import { ApiError } from '@/api/client';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Button } from '@/components/ui-kit/button';
@@ -29,6 +34,10 @@ export function ErrorText({ error }: { error: unknown }) {
 
 export const errorBox =
   'rounded-panel border border-status-danger/30 bg-status-danger-bg px-4 py-3 text-sm text-status-danger';
+
+/** Warn varijanta `errorBox`-a — soft upozorenja (nisu blokada), P4 §6.5.3/§6.5.4. */
+export const warnBox =
+  'rounded-panel border border-status-warn/30 bg-status-warn-bg px-4 py-3 text-sm text-status-warn';
 
 // ─────────────────────────────────────────────────────────────── potvrda akcije
 
@@ -198,11 +207,46 @@ export function draftStatusMeta(status: StatusRef | null): { tone: Tone; label: 
   return { tone, label };
 }
 
+/**
+ * Tip nacrta (`handover_drafts.draft_type`, SmallInt 0/1/2 — vrednosti iz
+ * backend `dto/create-handover-draft.dto.ts`, NE menjati). Labele po legacy
+ * rečniku (P4_SPEC §0 default: „Parcijalna predaja delova/podsklopova" /
+ * „Glavni sklop"); mapiranje vrednosti 0/1/2 potvrđuje biro (§8 #6) —
+ * korekcija labele ide SAMO ovde.
+ */
 export const DRAFT_TYPE_LABEL: Record<number, string> = {
   0: 'Glavni sklop',
-  1: 'Pojedinačni sklop',
-  2: 'Podsklopovi',
+  1: 'Parcijalna predaja — delovi',
+  2: 'Parcijalna predaja — podsklopovi',
 };
 export function draftTypeLabel(draftType: number): string {
   return DRAFT_TYPE_LABEL[draftType] ?? `#${draftType}`;
 }
+/** Opcije za select „Tip nacrta" — izvedene iz iste konstante (jedan izvor labela). */
+export const DRAFT_TYPE_OPTIONS: { id: number; label: string }[] = Object.entries(
+  DRAFT_TYPE_LABEL,
+).map(([id, label]) => ({ id: Number(id), label }));
+
+// ─────────────────────────────────────────────────────────────── sporne stavke (§6.5.4)
+
+/**
+ * Sporna stavka BEZ odluke projektanta: pre-check duplikat koji nije isključen
+ * i nema `decision_action` — tačno kriterijum backend submit gate-a (422
+ * „Nacrt ima sporne stavke bez odluke projektanta"). UI: badge „Sporna" +
+ * blokirano „Predaj u primopredaju" dok postoji ijedna.
+ */
+export function isUnresolvedDisputedItem(item: HandoverDraftItem): boolean {
+  return (
+    item.preCheckDuplicate &&
+    !item.excludeFromHandover &&
+    item.decisionAction === DRAFT_ITEM_DECISION.NONE
+  );
+}
+
+/** Labela VEĆ DONETE odluke (prikaz u tabeli stavki) — akcije iz `DRAFT_ITEM_DECISION`. */
+export const DRAFT_ITEM_DECISION_LABEL: Record<number, string> = {
+  [DRAFT_ITEM_DECISION.NONE]: 'Bez odluke',
+  [DRAFT_ITEM_DECISION.EXCLUDE]: 'Isključena',
+  [DRAFT_ITEM_DECISION.RESUBMIT]: 'Predata ponovo',
+  [DRAFT_ITEM_DECISION.ADJUST]: 'Dopunjena',
+};
