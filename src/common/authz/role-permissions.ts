@@ -23,6 +23,21 @@ const P = PERMISSIONS;
 /** Sve permisije (za `admin`). */
 const ALL: PermissionKey[] = Object.values(P);
 
+/**
+ * Read-only „pod" za 2.0 pilot module — isto što dobija `viewer`.
+ * Svaka 1.0 rola koja preko SSO-a (iframe „Tehnologija", auth.service.ts
+ * SY15_ROLE_PRIORITY) uđe u 2.0, a nema svoje kurirane permisije, dobija BAR
+ * ovaj uvid — inače bi uz AUTHZ_ENFORCE=true dobila 403 na ceo modul (manje od
+ * viewer-a). Write/approve i dalje traži kuriranu rolu.
+ */
+const VIEWER_READ_BASELINE: readonly PermissionKey[] = [
+  P.TEHNOLOGIJA_READ,
+  P.RN_READ,
+  P.PDM_READ,
+  P.DIRECTORY_READ,
+  P.REVERSI_READ,
+];
+
 export const ROLE_PERMISSIONS: Partial<
   Record<RoleKey, readonly PermissionKey[]>
 > = {
@@ -195,18 +210,21 @@ export const ROLE_PERMISSIONS: Partial<
     P.DIRECTORY_READ, // baseline uvid (kao viewer)
   ],
 
-  // Još NEAKTIVNA (tier 3.0) — mapa unapred spremna: tim_lider vidi zaduženja svog tima.
-  [ROLES.TIM_LIDER]: [P.REVERSI_READ, P.REVERSI_TEAM_READ],
+  // tim_lider: read-baseline (SSO uvid) + zaduženja svog tima; write čeka 3.0.
+  [ROLES.TIM_LIDER]: [...VIEWER_READ_BASELINE, P.REVERSI_TEAM_READ],
 
-  // 3.0-rezervisane i deferred uloge nemaju 2.0 permisije (njihovi moduli još ne postoje).
-  // Baseline uvid dobija samo `viewer` (read gde ima smisla u 2.0 pilotu).
-  [ROLES.VIEWER]: [
-    P.TEHNOLOGIJA_READ,
-    P.RN_READ,
-    P.PDM_READ,
-    P.DIRECTORY_READ,
-    P.REVERSI_READ, // paritet 1.0: SELECT za sve prijavljene
-  ],
+  // 1.0 kancelarijske/inženjerske role bez 2.0-modula (tier 3.0/reservisano):
+  // preko SSO-a ulaze u „Tehnologiju" pa MORAJU imati read-baseline (bez ovoga
+  // ih AUTHZ_ENFORCE=true zaključa na 403). Kuriranje write-a stiže sa modulima.
+  [ROLES.HR]: [...VIEWER_READ_BASELINE],
+  [ROLES.POSLOVNI_ADMIN]: [...VIEWER_READ_BASELINE],
+  [ROLES.PROJEKTANT_VODJA]: [...VIEWER_READ_BASELINE],
+  [ROLES.INZENJER]: [...VIEWER_READ_BASELINE],
+  [ROLES.CNC_OPERATER]: [...VIEWER_READ_BASELINE],
+  [ROLES.MONTER]: [...VIEWER_READ_BASELINE],
+
+  // Baseline uvid dobija i `viewer` (read gde ima smisla u 2.0 pilotu).
+  [ROLES.VIEWER]: [...VIEWER_READ_BASELINE],
 };
 
 /**
