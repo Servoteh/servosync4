@@ -62,13 +62,18 @@ Posle **definitivnog** odgovora bridge premešta fajl (paritet legacy `PremestiX
 
    Log ide u konzolu i u `pdm-bridge.log` (append).
 
+Operativni redosled sa skriptama (`smoke-check.ps1` → `install-task.ps1`) i ljudskim koracima:
+[§ Puštanje u pogon (P4c)](#puštanje-u-pogon-p4c--pasivni-rad-uz-legacy).
+
 ### Servisni nalog (API)
 
 `PDM_BRIDGE_EMAIL/PASSWORD` je ServoSync korisnik čija rola nosi permisiju **`pdm.import`** —
 na prod-u je `AUTHZ_ENFORCE=true`, pa bez nje svaki upload pada sa 403. `pdm.import` nose
 role **`admin` i `sef`** (`src/common/authz/role-permissions.ts`); napravi zaseban servisni
 nalog (npr. `pdm-bridge@servoteh.com`) sa rolom **`sef`** (minimum koji nosi permisiju; uz
-potvrdu SoD rafinacije iz A-5 pre dodele) — ne koristi lični niti `admin`. JWT važi
+potvrdu SoD rafinacije iz A-5 pre dodele) — ne koristi lični niti `admin`. ⚠️ Alternativa
+(otvorena odluka P4_SPEC §8 #10): namenska mini-rola samo `pdm.import` + `pdm.read` — vidi
+[§ Puštanje u pogon (P4c)](#puštanje-u-pogon-p4c--pasivni-rad-uz-legacy) korak 1. JWT važi
 `JWT_EXPIRES_IN` (7d); bridge se svakako loguje na početku svakog run-a, a na 401 usred
 slanja uradi jedan re-login pa ponovi fajl.
 
@@ -79,6 +84,11 @@ Task Scheduler nalog (`/RU`) mora imati **read** na oba UNC share-a; u aktivnom 
 probaj `dir \\<bigbit-server>\PDMExport\XML`.
 
 ## Task Scheduler (na 5 minuta)
+
+> **Automatizovano:** `install-task.ps1` registruje task sa SVIM podešavanjima iz ove sekcije
+> (uključujući *Start in* — bez GUI koraka) — vidi
+> [§ Puštanje u pogon (P4c)](#puštanje-u-pogon-p4c--pasivni-rad-uz-legacy) korak 4.
+> Ispod je ručni postupak (referenca / fallback).
 
 ```bat
 schtasks /Create /TN "ServoSync PDM Bridge" ^
@@ -168,6 +178,174 @@ pa se radi samo kad je state sumnjiv ili posle promene share putanja (ključ je 
   i obriši state (ili samo taj zapis iz `pdm-bridge.state.json`).
 - Sve ostalo: `pdm-bridge.log` ima pun trag po fajlu (rezultat + `statusMessage` backenda);
   istorija uvoza je i u aplikaciji: `GET /api/v1/pdm/import-log`.
+
+## Puštanje u pogon (P4c) — pasivni rad uz legacy
+
+Operativni paket po [P4_SPEC §2.4](../../docs/design/P4_SPEC_pdm_intake_PREDLOG.md): bridge radi
+**pasivno** paralelno sa legacy 10-min skriptama **≥ 1 nedelju**, brojevi se porede dnevno, pa tek
+onda cutover ([runbook 17](../../docs/migration/17-cutover-runbook.md)). Koraci koje mora da uradi
+čovek su označeni **[ČOVEK]** — skripte ništa od toga ne rade same i ništa se ne provizionira
+daljinski.
+
+| # | Korak | Ko / čime |
+|---|-------|-----------|
+| 1 | Servisni nalog + permisija | **[ČOVEK]** (⚠️ odluka §8 #10) |
+| 2 | Izbor mašine + `.env` kredencijali | **[ČOVEK]** |
+| 3 | Provera preduslova | `smoke-check.ps1` |
+| 4 | Registracija Task Scheduler taska | `install-task.ps1` + **[ČOVEK]** lozinka |
+| 5 | Paralelna verifikacija ≥ 1 nedelja | **[ČOVEK]** dnevno (SQL dole) |
+| 6 | Rollback po potrebi | `uninstall-task.ps1` |
+
+### 1. [ČOVEK] Servisni nalog `pdm-bridge@servoteh.com` + permisija
+
+Admin kreira ServoSync korisnika `pdm-bridge@servoteh.com` (jaka lozinka; ne koristi se lični
+nalog niti `admin`). `AUTHZ_ENFORCE=true` je živ na prod-u, pa rola MORA nositi `pdm.import`.
+
+⚠️ **Otvorena odluka (P4_SPEC §8 #10, Nenad)** — dve opcije, odluka se donosi PRE dodele:
+
+- **Opcija A (bez izmene koda, dostupna odmah):** rola **`sef`** — jedina ne-admin rola koja
+  danas nosi `pdm.import`. Mana: nosi i širok set (tehnologija/RN write+approve, primopredaje
+  approve…) — za servisni nalog je to više nego što treba (SoD potvrda iz A-5 obavezna pre dodele).
+- **Opcija B (predlog spec-a, čistiji SoD):** namenska **mini-rola** samo sa `pdm.import` +
+  `pdm.read` — sitna izmena `src/common/authz/roles.ts` + `role-permissions.ts` i deploy.
+  **NIJE implementirana** — čeka Nenadovu odluku; ovaj paket je namerno ne uvodi unapred.
+
+Do odluke: nalog sme dobiti `sef` (dokumentovano ograničenje); kasnija zamena role ne traži
+nikakvu promenu na bridge strani (isti email/lozinka, ista permisija).
+
+### 2. [ČOVEK] Izbor mašine i kredencijali
+
+- Windows mašina koja **vidi oba UNC share-a** i API (kandidat: BigBit server ili mašina u istoj
+  mreži — vidi „Instalacija" gore). Odluku donosi čovek — skripte NE biraju mašinu.
+- Kopirati folder `pdm-bridge` (npr. `C:\ServoSync\pdm-bridge`), `copy .env.example .env`,
+  popuniti: API base, email/lozinku servisnog naloga iz koraka 1, share putanje.
+  `PDM_BRIDGE_MODE` ostaje `passive` (default) — **obavezno** dok legacy skripte žive.
+- `.env` sadrži lozinku → nikad u git (`.gitignore` je već pokriva); NTFS prava na folder
+  ograničiti na naloge kojima treba.
+
+### 3. Provera preduslova — `smoke-check.ps1`
+
+Iz foldera skripte, pod nalogom koji će pokretati task (ili bar jednom pod njim):
+
+```bat
+powershell -NoProfile -ExecutionPolicy Bypass -File smoke-check.ps1
+```
+
+Proverava, **bez slanja ijednog fajla**: Node ≥ 20.6; `.env` kompletan + mod `passive`;
+vidljivost share-ova (+ broj zatečenih fajlova); upisivost foldera (state/log); `GET /health`
+(baza `up`); login servisnim nalogom; **probu permisije `pdm.import` bez fajla** —
+`POST /v1/pdm/import` bez `file` polja: očekivan odgovor je 400 „Nedostaje XML fajl"
+(guard prošao, backend odbija PRE ikakve obrade — ne nastaje ni log red), a 403 znači da rola
+nema permisiju (korak 1 nije završen). Exit 0 = sve prošlo.
+
+### 4. Registracija taska — `install-task.ps1`
+
+Iz **admin** PowerShell-a, u folderu skripte:
+
+```bat
+powershell -NoProfile -ExecutionPolicy Bypass -File install-task.ps1 -RunAsUser DOMEN\nalog
+```
+
+Parametri: `-RunAsUser` (obavezan — Windows nalog sa read na share-ovima), `-NodeExe`
+(default: auto-detekcija), `-ScriptDir` (default: folder skripte), `-IntervalMinutes`
+(default 5), `-TaskName` (default `ServoSync PDM Bridge`).
+
+- Postavlja SVE iz sekcije „Task Scheduler" bez GUI koraka: *Start in* (WorkingDirectory),
+  *Do not start a new instance*, *Run whether user is logged on or not*, stop posle 1h,
+  *StartWhenAvailable*.
+- **[ČOVEK] unosi lozinku naloga interaktivno** (Read-Host) — ne prosleđuje se kroz fajl,
+  ne ostaje zapisana nigde.
+- Greška `0x80070569` pri registraciji = nalogu fali *Log on as a batch job*
+  (`secpol.msc` → Local Policies → User Rights Assignment).
+- **Idempotentno:** ponovno pokretanje pregazi postojeći task (`-Force` re-register) — promena
+  intervala/naloga = samo ponovo pokreni skriptu.
+
+Prvi run odmah: `Start-ScheduledTask -TaskName "ServoSync PDM Bridge"`, pa proveriti
+`pdm-bridge.log` i *Last Run Result* (`Get-ScheduledTaskInfo`; exit kodovi gore).
+
+### 5. [ČOVEK] Paralelna verifikacija ≥ 1 nedelja (runbook preduslov)
+
+Svaki radni dan se porede brojevi uvoza i pregledaju kritične greške — dve strane:
+
+**2.0 strana** (`ssh ubuntusrv`, pa `docker exec -it servosync-pg psql -U servosync -d servosync`):
+
+```sql
+-- XML uvozi po danu. PDF se namerno isključuje: legacy PDMXMLImportLog NE loguje
+-- PDF-ove, a 2.0 ih piše u ISTU tabelu (status_message prefiks 'PDF:').
+-- imported_at je bez TZ (kontejner beleži UTC) — otud konverzija u lokalni dan;
+-- jednom proveri `docker exec servosync-pg date`, pa ako je već lokalno vreme
+-- zameni prvi red sa: imported_at::date AS dan.
+SELECT (imported_at AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Belgrade')::date AS dan,
+       count(*)                            AS ukupno,
+       count(*) FILTER (WHERE success)     AS uspesno,
+       count(*) FILTER (WHERE NOT success) AS palo,
+       count(*) FILTER (WHERE is_critical) AS kriticno
+FROM   drawing_import_log
+WHERE  lower(file_name) LIKE '%.xml'
+  AND  imported_at >= now() - interval '8 days'
+GROUP  BY 1
+ORDER  BY 1 DESC;
+```
+
+**Legacy strana** (SSMS na `Vasa-SQL,5765`, baza `QBigTehn` — dovoljan je read-only
+`bridge_reader` nalog):
+
+```sql
+SELECT CAST(l.ImportTimestamp AS date)                AS Dan,
+       COUNT(*)                                       AS Ukupno,
+       SUM(CASE WHEN l.Uspesno  = 1 THEN 1 ELSE 0 END) AS Uspesno,
+       SUM(CASE WHEN l.Uspesno  = 0 THEN 1 ELSE 0 END) AS Palo,
+       SUM(CASE WHEN l.Kriticno = 1 THEN 1 ELSE 0 END) AS Kriticno
+FROM   dbo.PDMXMLImportLog AS l
+WHERE  l.ImportTimestamp >= DATEADD(day, -8, GETDATE())
+GROUP  BY CAST(l.ImportTimestamp AS date)
+ORDER  BY Dan DESC;
+```
+
+Za dan sa razlikom — uparivanje po imenu fajla (jučerašnji dan):
+
+```sql
+-- 2.0 (psql):
+SELECT file_name, success, is_critical, status_message
+FROM   drawing_import_log
+WHERE  lower(file_name) LIKE '%.xml'
+  AND  (imported_at AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Belgrade')::date = current_date - 1
+ORDER  BY file_name;
+
+-- legacy (SSMS):
+SELECT l.NazivFajla, l.Uspesno, l.Kriticno, l.StatusPoruka
+FROM   dbo.PDMXMLImportLog AS l
+WHERE  CAST(l.ImportTimestamp AS date) = CAST(DATEADD(day, -1, GETDATE()) AS date)
+ORDER  BY l.NazivFajla;
+```
+
+Kritične greške (dnevno, cilj = 0): u aplikaciji PDM → tab uvoza (filter „kritično"), API
+`GET /api/v1/pdm/import-log?isCritical=true`, ili psql:
+`SELECT imported_at, file_name, status_message FROM drawing_import_log WHERE is_critical AND imported_at >= now() - interval '1 day';`
+
+**Očekivane (legitimne) razlike** — ne alarmirati:
+
+- 2.0 log broji i **ručne UI upload-ove** („Uvezi XML" dugme) — legacy ih nema;
+- bridge isti sadržaj šalje **jednom** (state dedup) — legacy ume da reprocesira isti fajl
+  više puta (svaki prolaz = novi log red);
+- fajl koji legacy skloni **pre nego što ga bridge vidi** (kreiran neposredno pre legacy
+  run-a, uz `MIN_AGE_S` prozor) — proveriti sledeći dan; ako se ponavlja, smanjiti interval.
+
+**Kriterijum prolaza** (preduslov runbook §1): ≥ 1 kalendarska nedelja u kojoj (1) svaki
+uspešan legacy XML uvoz ima pandan u `drawing_import_log` (po imenu fajla), (2) `kriticno = 0`
+na 2.0 strani, (3) task nema run-ove sa *Last Run Result* `0x2`/`0x3` (auth/konfiguracija).
+Neobjašnjena razlika = STOP — rešava se pre zakazivanja cutover-a.
+
+### 6. Rollback
+
+```bat
+powershell -NoProfile -ExecutionPolicy Bypass -File uninstall-task.ps1 -DisableOnly
+```
+
+`-DisableOnly` pauzira task (ostaje registrovan; `Enable-ScheduledTask` vraća); bez parametra
+task se uklanja. Pasivni mod ništa nije pomerao ni menjao na share-ovima — legacy tok je
+netaknut, rollback nema proizvodni uticaj. State fajl se namerno ne briše (ponovno uključivanje
+ne šalje ponovo već poslato).
 
 ## Prelazak na aktivni mod (cutover)
 

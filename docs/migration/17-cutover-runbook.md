@@ -15,15 +15,19 @@ se NE gasi (odluka „QBigTehn privremen / BigBit trajan").
 
 - [ ] P4a na produkciji ≥ nedelju dana: XML/PDF uvoz radi (bridge u pasivnom modu paralelno sa legacy
       skriptama — brojevi u `drawing_import_log` se poklapaju sa legacy `PDMXMLImportLog`).
+      Instalacija i dnevna verifikacija: `tools/pdm-bridge/` — `smoke-check.ps1` / `install-task.ps1` / `uninstall-task.ps1` + README §„Puštanje u pogon (P4c)" (gotovi SQL upiti za obe strane).
 - [ ] ⚠️ ODLUKA #3 revidirana (Negovan potpis): PDM izvor = nativni XML+PDF uvoz u 2.0, ne trajni SQL sync.
 - [ ] ⚠️ `draft_id` kolona na `drawing_handovers` (zamena resolveDraftContext heuristike) — odluka Negovan.
 - [ ] ⚠️ Semantika undo-a kad RN postoji (storno RN-a?) — odluka Miljan/Negovan.
 - [ ] Obuka: projektanti (nacrt u 2.0 umesto QMegaTeh), Miljan (odobravanje u 2.0), tehnolozi (kucanje TP
       u 2.0 — tok „Otkucaj TP" već živ).
-- [ ] Popisane tabele lanca bez syncer-a i pripremljena jednokratna dopunska skripta
-      (drawing_plan_items, tPDM/tPLP/tPND stavke, work_order_approvals… — spisak u PLAN §2.9 t.3).
-- [ ] Verifikacioni SQL report spreman (COUNT/MAX(id) po tabeli, MAX RN ordinal po predmetu, FK orfani,
-      broj PDF blobova) — uporedni legacy vs 2.0.
+- [ ] ✅ Dopunska skripta za tabele bez syncer-a = **isporučeni §5.3 privremeni synceri** u sync modulu
+      (`src/modules/sync/syncers/legacy-chain-item.syncer.ts` + 6 izvedenih: tPDM/tPLP/tPND,
+      tSaglasanRN, PDM_PlaniranjeStavke, PrimopredajaPDFCrteza; registrovani POSLEDNJI, rade
+      **isključivo uz `force:true`** — običan run je no-op).
+- [ ] ✅ Verifikacioni report = **`backend/tools/cutover-verify/cutover-verify.mjs`** (COUNT/MAX(id) po
+      tabeli, derivacija, MAX RN ordinal po predmetu, soft-FK orfani, PDF blobovi, statusna
+      distribucija; exit 0 = paritet — vidi `tools/cutover-verify/README.md`).
 
 ## 2. Dan cutover-a (redosled je NEPREGOVARAN — ponovni sync posle nativnih upisa TIHO GAZI 2.0 redove)
 
@@ -32,16 +36,22 @@ se NE gasi (odluka „QBigTehn privremen / BigBit trajan").
 2. Sačekati **poslednji ciklus 10-min skripti** (XML/PDF → BigBit server → baza) + ručno pokrenuti legacy
    uvoz za zaostale fajlove; proveriti da su folderi XML/PDF prazni ili preneseni.
 3. **Finalni sync u 2.0** — force/full refresh (kursori u `bb_sync_state` resetovati za tabele lanca;
-   pažnja: kursor za drawing_handovers je ranije pomeren fallback-om) + jednokratna dopunska skripta za
-   tabele bez syncer-a.
-4. **Verifikacioni report** (tačka 1 poslednja stavka) — mora biti 1:1; odstupanja se rešavaju PRE nastavka.
+   pažnja: kursor za drawing_handovers je ranije pomeren fallback-om). §5.3 privremeni synceri (tabele
+   bez generisanog mapiranja) su registrovani poslednji i uvoze **samo u ovom force run-u** (bez force
+   su no-op); posle uvoza sami poravnavaju svoje sekvence.
+4. **Verifikacioni report**: `node tools/cutover-verify/cutover-verify.mjs > report.md` (iz backend
+   checkout-a; **exit 0 obavezan**) — mora biti 1:1; odstupanja se rešavaju PRE nastavka.
 5. **setval poravnanje** svih sekvenci (`alignIdSequence` helper, 3-arg oblik) — sve tabele lanca.
 6. **Gašenje sync-a lanca**: izbaciti qbigtehn-tabele iz sync mape (split trajni/privremeni deo);
    derivacioni tRN→drawing_handovers syncer se gasi; deploy backenda.
 7. **Otključavanje**: skinuti guard mutacija sa legacy-deriviranih primopredaja (env flag / ownership);
    bridge prebaciti u **aktivni mod** (move u Importovano/Neuspelo); legacy 10-min skripte ugasiti.
-8. **Smoke test lanca uživo**: XML iz PDM-a → crtež u 2.0 → nacrt → submit → Miljan approve (+tehnolog) →
-   „Otkucaj TP" → štampa → lansiraj → kucanje na kiosku → kartica TP.
+8. **Smoke test lanca uživo — OBA toka lansiranja** (P4 spec §6.1, odluka #1):
+   - **Tok A (primopredaja):** XML iz PDM-a → crtež u 2.0 → nacrt → submit → Miljan approve (+tehnolog) →
+     „Otkucaj TP" → štampa → lansiraj → kucanje na kiosku → kartica TP.
+   - **Tok B (blanko RN):** `POST /work-orders` („Unos radnog naloga", blanko) → CRUD operacija →
+     approve → `POST /work-orders/:id/launch`; za RN vezan za primopredaju proveriti propagaciju:
+     izvorna primopredaja prelazi na status 3 (LANSIRAN) + zaključana (`is_locked`).
 9. 1.0 loc-most / integracije koje čitaju QBigTehn preusmeriti ako postoje (proveriti INTEGRACIJA doc).
 
 ## 3. Rollback plan
