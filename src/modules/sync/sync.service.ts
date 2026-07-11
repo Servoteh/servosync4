@@ -9,6 +9,12 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { MssqlClient } from "./mssql.client";
 import { CustomerSyncer } from "./syncers/customer.syncer";
 import { HandoverDerivationSyncer } from "./syncers/handover-derivation.syncer";
+import { DrawingHandoverPdfSyncer } from "./syncers/drawing-handover-pdf.syncer";
+import { DrawingPlanItemSyncer } from "./syncers/drawing-plan-item.syncer";
+import { WorkOrderApprovalSyncer } from "./syncers/work-order-approval.syncer";
+import { WorkOrderBlankSyncer } from "./syncers/work-order-blank.syncer";
+import { WorkOrderMachinedPartSyncer } from "./syncers/work-order-machined-part.syncer";
+import { WorkOrderNonstandardPartSyncer } from "./syncers/work-order-nonstandard-part.syncer";
 import { GenericSyncer } from "./generic.syncer";
 import { SYNC_MAP } from "./sync-map.generated";
 import { EntitySyncer, SyncCursor, SyncStrategy } from "./sync.types";
@@ -35,6 +41,12 @@ export class SyncService {
     private readonly mssql: MssqlClient,
     customerSyncer: CustomerSyncer,
     handoverDerivationSyncer: HandoverDerivationSyncer,
+    workOrderMachinedPartSyncer: WorkOrderMachinedPartSyncer,
+    workOrderBlankSyncer: WorkOrderBlankSyncer,
+    workOrderNonstandardPartSyncer: WorkOrderNonstandardPartSyncer,
+    workOrderApprovalSyncer: WorkOrderApprovalSyncer,
+    drawingPlanItemSyncer: DrawingPlanItemSyncer,
+    drawingHandoverPdfSyncer: DrawingHandoverPdfSyncer,
   ) {
     // Hand-written syncers take precedence (e.g. customers has bespoke FK logic).
     this.register(customerSyncer);
@@ -53,6 +65,19 @@ export class SyncService {
     // `register` deletes before set — a plain Map.set would KEEP the original
     // insertion position of the generic mapping (before work_orders).
     this.register(handoverDerivationSyncer);
+    // TEMPORARY §5.3 chain-item importers (tables WITHOUT a generated mapping)
+    // — LAST on purpose, so an "all entities" run imports every parent first
+    // (work_orders, workers, operations, drawing_plans, drawings and the
+    // derived drawing_handovers). Their required FKs are enforced, so this
+    // ordering is what makes the one-time final import resolve. The whole
+    // block is deleted at cutover with the sync-map split — see
+    // QBIGTEHN_CHAIN_ENTITIES in table-ownership.ts.
+    this.register(workOrderMachinedPartSyncer);
+    this.register(workOrderBlankSyncer);
+    this.register(workOrderNonstandardPartSyncer);
+    this.register(workOrderApprovalSyncer);
+    this.register(drawingPlanItemSyncer);
+    this.register(drawingHandoverPdfSyncer);
   }
 
   private register(syncer: EntitySyncer): void {

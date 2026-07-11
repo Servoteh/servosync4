@@ -100,7 +100,10 @@ Dve sasvim različite vrste sync-a, ne mešati:
 3. **Upsert po legacy ključu** (`Sifra` → `id`), mapiranje kolona **iscrpno** (sve izvorne kolone), helperi
    `num/str/bool/date` za null-safe konverziju.
 4. **FK-ovi se razrešavaju unapred** — nepostojeće reference se **null-uju**, red se ne odbacuje zbog toga
-   (lookup tabela možda još nije sync-ovana).
+   (lookup tabela možda još nije sync-ovana). **Prihvaćeno odstupanje (P4 §5.3):** privremeni chain-item
+   synceri imaju **NOT NULL** FK-ove koji se ne mogu null-ovati — red sa nerazrešivim obaveznim roditeljem
+   se **preskače + prijavljuje** (skip+report; registrovani su poslednji, a `tools/cutover-verify/` report
+   hvata ostatke).
 5. **Greška na redu = skip + log, nikad pad celog run-a.** Max 20 poruka o greškama po run-u u rezultatu;
    `rowsSkipped` se broji. Run status: `success` / `partial` / `failed`.
 6. **Svaki run = red u `bb_sync_log`** (append-only) sa per-entity metadata; kursor napreduje u `bb_sync_state`
@@ -217,3 +220,4 @@ Niko (ni AI sesija) ne implementira ove stvari pre zapisane odluke ovde:
 | 0.6 | 2026-07-08 | **Authz objedinjavanje — [design/AUTHZ_UNIFIED.md](design/AUTHZ_UNIFIED.md):** §2.2 role = **lowercase** (prevaziđeno „velikim slovima"); jedinstveni katalog uloga (1.0 taksonomija + 2.0) u `src/common/authz/roles.ts` + `role-permissions.ts`. **PG RLS = „RLS-ready sada, nativni RLS u 3.0"** (skelet `design/sql/authz_rls_ready.skeleton.sql`: GUC `app.user_id`, `user_roles`/`user_permission_overrides`, `users.worker_id` FK, `created_by_id` FK, predikat-funkcije). App se sad konektuje kao owner `servosync` (zaobilazi RLS) — ne-superuser rola + `FORCE RLS` je 3.0 korak. |
 | 0.7 | 2026-07-09 | **Authz Faza 1–2 ([AUTHZ_UNIFIED §8](design/AUTHZ_UNIFIED.md)):** šema dobija `user_roles` + `user_permission_overrides` + `users.worker_id` (migracija `20260709000000_authz_rls_ready`: DDL + `lower(role)` data-fix + `app_*` predikat-funkcije). **Odobreno odstupanje od §3 (`migrate:dev`)** za prod-only okruženje: migracija generisana `prisma migrate diff` (datamodel→datamodel), primenjuje se **isključivo `migrate:prod` (deploy)** uz prethodni `migrate status` drift-check; `migrate dev` na produkciji zabranjen. `PermissionsGuard` = **shadow mode** (`AUTHZ_ENFORCE`, default false = log-only); novi `GET /auth/me/permissions`. |
 | 0.8 | 2026-07-11 | **Kodifikacija stvarne prakse (review dorada 10.07):** §11.5 zatvoren — nove app-owned tabele = `Timestamptz(6)` (presedan `work_time_entries` + `app_notifications`); §2.3 usklađen. §10: komentari u kodu smeju biti na srpskom ili engleskom (kod/imena/commit poruke ostaju engleski) — pisano pravilo se razišlo sa konvencijom celog koda. |
+| 0.9 | 2026-07-11 | **§4.4 prihvaćeno odstupanje (P4 §5.3):** privremeni chain-item synceri red sa nerazrešivim OBAVEZNIM (NOT NULL) FK-om preskaču + prijavljuju umesto null-ovanja (null nije moguć); pokriveno cutover-verify reportom. |
