@@ -18,14 +18,21 @@ import { alignIdSequence } from "../../common/db-sequences";
 import { parseDateParam } from "../../common/date-params";
 import {
   CreateHandoverDraftDto,
+  CreateHandoverDraftItemInput,
   validateCreateHandoverDraft,
 } from "./dto/create-handover-draft.dto";
 import {
   UpdateHandoverDraftDto,
   validateUpdateHandoverDraft,
 } from "./dto/update-handover-draft.dto";
+import {
+  DecideDraftItemDto,
+  DRAFT_ITEM_DECISION,
+  validateDecideDraftItem,
+} from "./dto/decide-draft-item.dto";
 import { DraftNumberingService } from "./draft-numbering.service";
 import { HANDOVER_STATUS } from "./handovers.service";
+import { isApprovedPdmState, normalizeRevision } from "../pdm/pdm-xml-parser";
 
 /** Podskup polja crteža bezbedan za izlaz — koristi se za mainDrawing/drawing na stavkama. */
 const DRAWING_SELECT = {
@@ -62,6 +69,18 @@ const DRAFT_SELECT = {
   updatedAt: true,
 } satisfies Prisma.HandoverDraftSelect;
 
+/**
+ * SOFT upozorenje uz `create()` (P4_SPEC §6.5.3 + §6.5.4) — vraća se u
+ * `meta.warnings` BEZ blokade (hard blokada je samo ne-odobren `pdm_status`).
+ */
+export interface DraftItemWarning {
+  type: "missing_pdf" | "not_latest_revision" | "duplicate";
+  drawingId: number;
+  drawingNumber: string;
+  revision: string;
+  message: string;
+}
+
 export interface ListHandoverDraftsQuery {
   page?: string;
   pageSize?: string;
@@ -81,8 +100,20 @@ export interface ListHandoverDraftsQuery {
  * Nacrti primopredaje (`handover_drafts` + `handover_draft_items`) —
  * MODULE_SPEC_nacrti_primopredaje §6.1/§6.2/§6.3. Osnovni unos (zaglavlje +
  * stavke pri kreiranju) + `submit()` (predaja u primopredaju — §6.3, kreira
- * `drawing_handovers` redove i zaključava nacrt). BEZ BOM auto-populate wizarda
- * i BEZ pre-check-duplicate logike (§7.2) — van skopa ovog talasa.
+ * `drawing_handovers` redove i zaključava nacrt). BEZ BOM auto-populate
+ * wizarda (van skopa).
+ *
+ * P4_SPEC_pdm_intake_PREDLOG §0 t.3+t.4 (odluka Nenad 11.07):
+ *  - §6.5.3 preduslovi stavke pri `create()`: ne-odobren `pdm_status` = HARD
+ *    422 (isti kriterijum kao XML uvoz — `isApprovedPdmState`); nedostajući
+ *    PDF i ne-poslednja revizija = SOFT upozorenja u `meta.warnings`;
+ *  - §6.5.4 pre-check duplikata (legacy `viewOdlukePredProvera` /
+ *    MODULE_SPEC §7.2): ranije puštanje istog crteža na ISTOM predmetu →
+ *    `pre_check_*` kolone + upozorenje; odluka projektanta preko
+ *    `decideItem()` (1=Isključi, 2=Predaj ponovo, 3=Dopuni); `submit()` gate
+ *    odbija dok postoji sporna stavka bez odluke.
+ * Svaki budući add-item put MORA proći kroz iste helpere
+ * (`checkItemPreconditions` + `preCheckItems`).
  *
  * 🔴 `deleted_at` NE POSTOJI u šemi za `handover_drafts` (za razliku od
  * pretpostavke u spec §6.1 "Soft delete"). Bez izmene šeme (zabranjeno ovog
@@ -294,6 +325,24 @@ export class HandoverDraftsService {
         );
     }
 
+    // §6.5.3 preduslovi stavke (P4_SPEC §0 t.3): ODOBREN pdm_status = hard
+    // 422; PDF + poslednja revizija = soft upozorenja (meta.warnings).
+    const warnings = await this.checkItemPreconditions(
+      items.map((i) => i.drawingId),
+    );
+
+    // §6.5.4 pre-check duplikata (P4_SPEC §0 t.4): ranije puštanje istog
+    // crteža na ISTOM predmetu → pre_check_* kolone + upozorenje u meta.
+    const preCheck = await this.preCheckItems(
+      {
+        projectId: dto.projectId,
+        pieceCount: dto.pieceCount,
+        mainDrawingId: dto.mainDrawingId ?? null,
+      },
+      items,
+    );
+    warnings.push(...preCheck.warnings);
+
     const created = await this.prisma.$transaction(async (tx) => {
       // App-owned tabele (nema sync/legacy import ovog talasa) — setval je
       // jeftina odbrana ako se ikad uveze istorijski batch sa eksplicitnim id.
@@ -317,14 +366,22 @@ export class HandoverDraftsService {
           isLocked: false,
           items: items.length
             ? {
-                create: items.map((i) => ({
-                  drawingId: i.drawingId,
-                  quantityToProduce: i.quantityToProduce ?? 1,
-                  mainDrawingId: i.mainDrawingId ?? null,
-                  isMain: i.isMain ?? false,
-                  note: i.note?.trim() || null,
-                  quantityDefinedInDrawing: i.quantityDefinedInDrawing ?? 0,
-                })),
+                create: items.map((i, idx) => {
+                  const flag = preCheck.flags.get(idx);
+                  return {
+                    drawingId: i.drawingId,
+                    quantityToProduce: i.quantityToProduce ?? 1,
+                    mainDrawingId: i.mainDrawingId ?? null,
+                    isMain: i.isMain ?? false,
+                    note: i.note?.trim() || null,
+                    quantityDefinedInDrawing: i.quantityDefinedInDrawing ?? 0,
+                    // §6.5.4: sporna stavka nosi pre_check_* provenance;
+                    // odluka (decision_action) kreće od 0 = nerešeno.
+                    preCheckDuplicate: flag !== undefined,
+                    preCheckDraftId: flag?.preCheckDraftId ?? null,
+                    preCheckWorkOrderId: flag?.preCheckWorkOrderId ?? null,
+                  };
+                }),
               }
             : undefined,
         },
@@ -332,7 +389,328 @@ export class HandoverDraftsService {
       });
     });
 
-    return this.findOne(created.id);
+    // Envelope: soft upozorenja NE blokiraju (§6.5.3/§6.5.4 — meta.warnings).
+    return { ...(await this.findOne(created.id)), meta: { warnings } };
+  }
+
+  // ------------------------- §6.5.3 / §6.5.4 preduslovi i pre-check stavki
+
+  /**
+   * §6.5.3 preduslovi stavke (P4_SPEC §0 t.3, legacy pravilo biroa): u nacrt
+   * ulazi samo crtež koji je ODOBREN, ima PDF i poslednja je revizija.
+   *  - ne-odobren `pdm_status` → HARD 422 (isti kriterijum kao XML uvoz:
+   *    case-insensitive „odobreno" / „izmena bez revizije");
+   *  - nedostajući PDF / ne-poslednja revizija → SOFT upozorenje (PDF ume da
+   *    kasni za XML-om; ručni izuzeci postoje — §8 #9 default).
+   * PDF exists ide po (broj, revizija) BEZ učitavanja bloba; „poslednja
+   * revizija" = MAX(revision) po drawing_number (SQL string MAX semantika,
+   * poređenje normalizovano prazan→"A").
+   */
+  private async checkItemPreconditions(
+    itemDrawingIds: number[],
+  ): Promise<DraftItemWarning[]> {
+    const uniq = uniqueIds(itemDrawingIds);
+    if (!uniq.length) return [];
+
+    const drawings = await this.prisma.drawing.findMany({
+      where: { id: { in: uniq } },
+      select: {
+        id: true,
+        drawingNumber: true,
+        revision: true,
+        pdmStatus: true,
+      },
+    });
+
+    const notApproved = drawings.filter(
+      (d) => !isApprovedPdmState(d.pdmStatus),
+    );
+    if (notApproved.length)
+      throw new UnprocessableEntityException(
+        `Crtež(i) nisu ODOBRENI u PDM-u: ${notApproved
+          .map(
+            (d) =>
+              `${d.drawingNumber} rev ${d.revision} (status "${d.pdmStatus}")`,
+          )
+          .join(", ")} — u nacrt ulaze samo odobreni crteži (§6.5.3).`,
+      );
+
+    const warnings: DraftItemWarning[] = [];
+
+    const pdfKey = (n: string, r: string) => `${n} ${r}`;
+    const pdfs = await this.prisma.drawingPdf.findMany({
+      where: {
+        OR: drawings.map((d) => ({
+          drawingNumber: d.drawingNumber,
+          revision: d.revision,
+        })),
+        pdfBinary: { not: null },
+      },
+      select: { drawingNumber: true, revision: true },
+    });
+    const pdfKeys = new Set(
+      pdfs.map((p) => pdfKey(p.drawingNumber, p.revision)),
+    );
+
+    const maxRevs = await this.prisma.drawing.groupBy({
+      by: ["drawingNumber"],
+      where: {
+        drawingNumber: {
+          in: [...new Set(drawings.map((d) => d.drawingNumber))],
+        },
+      },
+      _max: { revision: true },
+    });
+    const maxByNumber = new Map(
+      maxRevs.map((g) => [g.drawingNumber, g._max.revision]),
+    );
+
+    for (const d of drawings) {
+      if (!pdfKeys.has(pdfKey(d.drawingNumber, d.revision)))
+        warnings.push({
+          type: "missing_pdf",
+          drawingId: d.id,
+          drawingNumber: d.drawingNumber,
+          revision: d.revision,
+          message: `Crtež ${d.drawingNumber} rev ${d.revision} nema PDF — proverite pre predaje (PDF ume da kasni za XML-om).`,
+        });
+      const max = maxByNumber.get(d.drawingNumber);
+      if (
+        max != null &&
+        normalizeRevision(max) !== normalizeRevision(d.revision)
+      )
+        warnings.push({
+          type: "not_latest_revision",
+          drawingId: d.id,
+          drawingNumber: d.drawingNumber,
+          revision: d.revision,
+          message: `Crtež ${d.drawingNumber} rev ${d.revision} nije poslednja revizija (poslednja: ${max}).`,
+        });
+    }
+    return warnings;
+  }
+
+  /**
+   * §6.5.4 pre-check duplikata (P4_SPEC §0 t.4; legacy `viewOdlukePredProvera`
+   * + MODULE_SPEC §7.2): za svaku stavku traži RANIJE puštanje istog crteža na
+   * ISTOM predmetu — `work_orders` po (projectId + drawingId, fallback
+   * drawingNumber jer synced RN-ovi umeju imati drawing_id=0) i stavke drugih
+   * nacrta istog predmeta (dva batch upita, bez required JOIN-a — legacy-read
+   * pravilo). Pogodak → `pre_check_duplicate=true` + provenance kolone +
+   * upozorenje; uz to se tražena količina poredi sa PDM sastavnicom
+   * (`drawing_components.required_quantity × pieceCount` za parent iz nacrta)
+   * i neslaganje ulazi u razlog. Nabavni crteži (`is_procurement`) su izuzeti
+   * — paritet legacy `WHERE ISNULL(pc.Nabavka,0)=0`.
+   *
+   * `flags` je mapa po INDEKSU stavke u ulaznom nizu (ista stavka može da se
+   * ponovi). `excludeDraftId` služi budućem add-item putu (isključi tekući
+   * nacrt iz pretrage ranijih stavki).
+   */
+  private async preCheckItems(
+    ctx: {
+      projectId: number;
+      pieceCount: number;
+      mainDrawingId?: number | null;
+      excludeDraftId?: number;
+    },
+    items: CreateHandoverDraftItemInput[],
+  ): Promise<{
+    flags: Map<
+      number,
+      { preCheckDraftId: number | null; preCheckWorkOrderId: number | null }
+    >;
+    warnings: DraftItemWarning[];
+  }> {
+    const flags = new Map<
+      number,
+      { preCheckDraftId: number | null; preCheckWorkOrderId: number | null }
+    >();
+    const warnings: DraftItemWarning[] = [];
+    if (!items.length) return { flags, warnings };
+
+    const drawings = await this.prisma.drawing.findMany({
+      where: { id: { in: uniqueIds(items.map((i) => i.drawingId)) } },
+      select: {
+        id: true,
+        drawingNumber: true,
+        revision: true,
+        isProcurement: true,
+      },
+    });
+    const drawingById = byId(drawings);
+    const checkDrawings = drawings.filter((d) => !d.isProcurement);
+    if (!checkDrawings.length) return { flags, warnings };
+    const checkIds = checkDrawings.map((d) => d.id);
+    const checkNumbers = [
+      ...new Set(checkDrawings.map((d) => d.drawingNumber)),
+    ];
+
+    // (1) Raniji RN istog crteža na istom predmetu (legacy: tRN po
+    // IDPredmet+IDCrtez). orderBy id desc → prvi pogodak = najnoviji RN.
+    const workOrders = await this.prisma.workOrder.findMany({
+      where: {
+        projectId: ctx.projectId,
+        OR: [
+          { drawingId: { in: checkIds } },
+          { drawingNumber: { in: checkNumbers } },
+        ],
+      },
+      select: { id: true, drawingId: true, drawingNumber: true },
+      orderBy: { id: "desc" },
+    });
+
+    // (2) Stavke RANIJIH nacrta istog predmeta (isključene stavke ne broje —
+    // paritet legacy zbira ISNULL(IskljuciPrimopredaju,0)=0).
+    const projectDraftIds = (
+      await this.prisma.handoverDraft.findMany({
+        where: { projectId: ctx.projectId },
+        select: { id: true },
+      })
+    )
+      .map((d) => d.id)
+      .filter((id) => id !== ctx.excludeDraftId);
+    const priorItems = projectDraftIds.length
+      ? await this.prisma.handoverDraftItem.findMany({
+          where: {
+            draftId: { in: projectDraftIds },
+            drawingId: { in: checkIds },
+            excludeFromHandover: false,
+          },
+          select: { id: true, draftId: true, drawingId: true },
+          orderBy: { draftId: "desc" },
+        })
+      : [];
+
+    // (3) PDM sastavnica za poređenje količine: parent = stavkin
+    // mainDrawingId, fallback zaglavlje nacrta.
+    const parentIds = uniqueIds(
+      items.map((i) => i.mainDrawingId ?? ctx.mainDrawingId),
+    );
+    const bomEdges = parentIds.length
+      ? await this.prisma.drawingComponent.findMany({
+          where: {
+            parentDrawingId: { in: parentIds },
+            childDrawingId: { in: checkIds },
+          },
+          select: {
+            parentDrawingId: true,
+            childDrawingId: true,
+            requiredQuantity: true,
+          },
+        })
+      : [];
+
+    items.forEach((item, idx) => {
+      const d = drawingById.get(item.drawingId);
+      if (!d || d.isProcurement) return;
+      const wo = workOrders.find(
+        (w) =>
+          w.drawingId === item.drawingId || w.drawingNumber === d.drawingNumber,
+      );
+      const prior = priorItems.find((p) => p.drawingId === item.drawingId);
+      if (!wo && !prior) return;
+
+      flags.set(idx, {
+        preCheckDraftId: prior?.draftId ?? null,
+        preCheckWorkOrderId: wo?.id ?? null,
+      });
+
+      const reasons: string[] = [];
+      if (wo) reasons.push(`već pušten na RN #${wo.id} istog predmeta`);
+      if (prior) reasons.push(`već u nacrtu #${prior.draftId} istog predmeta`);
+
+      const parentId = item.mainDrawingId ?? ctx.mainDrawingId ?? null;
+      const edge =
+        parentId !== null
+          ? bomEdges.find(
+              (e) =>
+                e.parentDrawingId === parentId &&
+                e.childDrawingId === item.drawingId,
+            )
+          : undefined;
+      if (edge) {
+        const expected = edge.requiredQuantity * ctx.pieceCount;
+        const requested = item.quantityToProduce ?? 1;
+        if (requested !== expected)
+          reasons.push(
+            `tražena količina ${requested} ≠ količina po PDM sastavnici ${expected} (${edge.requiredQuantity} × ${ctx.pieceCount} kom sklopa)`,
+          );
+      }
+
+      warnings.push({
+        type: "duplicate",
+        drawingId: d.id,
+        drawingNumber: d.drawingNumber,
+        revision: d.revision,
+        message: `Sporna stavka — crtež ${d.drawingNumber} rev ${d.revision}: ${reasons.join("; ")}. Potrebna odluka projektanta pre predaje (Isključi / Predaj ponovo / Dopuni).`,
+      });
+    });
+
+    return { flags, warnings };
+  }
+
+  // ----------------------------------------------------- ITEM DECISION §6.5.4
+
+  /**
+   * Odluka projektanta nad SPORNOM stavkom (P4_SPEC §0 t.4 + §6.5.4; legacy
+   * `OdlukaAkcija`): 1=Isključi (`exclude_from_handover=true`), 2=Predaj
+   * ponovo (prihvata duplikat), 3=Dopuni (koriguje `quantity_to_produce` na
+   * `newQuantity` — razlika po legacy semantici „dopuni razliku"). Upisuje
+   * `decision_action` + `decision_date_time`. Re-odluka je dozvoljena dok
+   * nacrt nije zaključan; akcije 2/3 vraćaju ranije isključenu stavku u
+   * predaju (`exclude_from_handover=false`).
+   */
+  async decideItem(draftId: number, itemId: number, dto: DecideDraftItemDto) {
+    validateDecideDraftItem(dto);
+
+    const draft = await this.prisma.handoverDraft.findUnique({
+      where: { id: draftId },
+      select: { id: true, isLocked: true },
+    });
+    if (!draft) throw new NotFoundException(`Nacrt ${draftId} ne postoji.`);
+    if (draft.isLocked)
+      throw new UnprocessableEntityException(
+        "Nacrt je zaključan (predat) — odluka nad stavkom više nije moguća.",
+      );
+
+    const item = await this.prisma.handoverDraftItem.findUnique({
+      where: { id: itemId },
+      select: { id: true, draftId: true, preCheckDuplicate: true },
+    });
+    if (!item || item.draftId !== draftId)
+      throw new NotFoundException(
+        `Stavka ${itemId} ne postoji na nacrtu ${draftId}.`,
+      );
+    if (!item.preCheckDuplicate)
+      throw new UnprocessableEntityException(
+        "Stavka nije sporna (nema pre-check duplikata) — odluka nije primenljiva (§6.5.4).",
+      );
+
+    const data: Prisma.HandoverDraftItemUncheckedUpdateInput = {
+      decisionAction: dto.action,
+      decisionDateTime: new Date(),
+      excludeFromHandover: dto.action === DRAFT_ITEM_DECISION.EXCLUDE,
+    };
+    if (dto.action === DRAFT_ITEM_DECISION.ADJUST)
+      data.quantityToProduce = dto.newQuantity;
+
+    const updated = await this.prisma.handoverDraftItem.update({
+      where: { id: itemId },
+      data,
+    });
+
+    const drawings = await this.resolveDrawingsByIds(
+      uniqueIds([updated.drawingId, updated.mainDrawingId]),
+    );
+    return {
+      data: {
+        ...updated,
+        drawing: drawings.get(updated.drawingId) ?? null,
+        mainDrawing: updated.mainDrawingId
+          ? (drawings.get(updated.mainDrawingId) ?? null)
+          : null,
+      },
+    };
   }
 
   // ------------------------------------------------------------- UPDATE
@@ -459,11 +837,32 @@ export class HandoverDraftsService {
 
     const items = await this.prisma.handoverDraftItem.findMany({
       where: { draftId: id, excludeFromHandover: false },
-      select: { id: true, drawingId: true },
+      select: {
+        id: true,
+        drawingId: true,
+        preCheckDuplicate: true,
+        decisionAction: true,
+      },
       orderBy: { id: "asc" },
     });
     if (!items.length)
       throw new UnprocessableEntityException("Nacrt nema stavki za predaju.");
+
+    // §6.5.4 gate (P4_SPEC §0 t.4; legacy: dugme „Predaj" blokirano dok
+    // postoji nerešena sporna stavka): pre_check_duplicate bez odluke → 422.
+    // Isključene stavke (odluka 1) su već van `excludeFromHandover` filtera.
+    const undecided = items.filter(
+      (i) =>
+        i.preCheckDuplicate && i.decisionAction === DRAFT_ITEM_DECISION.NONE,
+    );
+    if (undecided.length)
+      throw new UnprocessableEntityException(
+        `Nacrt ima sporne stavke bez odluke projektanta (stavke: ${undecided
+          .map((i) => i.id)
+          .join(
+            ", ",
+          )}) — pre predaje izaberite odluku: Isključi (1), Predaj ponovo (2) ili Dopuni (3).`,
+      );
 
     const drawingIds = uniqueIds(items.map((i) => i.drawingId));
     const foundDrawings = await this.prisma.drawing.findMany({

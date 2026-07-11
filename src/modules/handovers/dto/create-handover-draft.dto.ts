@@ -2,8 +2,9 @@ import { BadRequestException } from "@nestjs/common";
 
 /**
  * Jedna stavka nacrta pri kreiranju (MODULE_SPEC_nacrti_primopredaje §6.2).
- * Samo osnovni unos ovog talasa — bez BOM auto-populate wizarda i bez
- * pre-check-duplicate logike (§7.2, ostavljeno za kasnije).
+ * Bez BOM auto-populate wizarda (van skopa). Pre-check duplikata (§7.2 /
+ * P4_SPEC §6.5.4) i preduslove stavke (§6.5.3) servis računa sam — klijent
+ * NE šalje pre_check_* polja.
  */
 export interface CreateHandoverDraftItemInput {
   /** Crtež stavke — obavezno (`drawing_id` nema DB FK, validira se ovde). */

@@ -23,6 +23,7 @@ import { PrintBundleService } from "./print-bundle.service";
 import type { PrintBundleQuery } from "./print-bundle.service";
 import type { CreateHandoverDraftDto } from "./dto/create-handover-draft.dto";
 import type { UpdateHandoverDraftDto } from "./dto/update-handover-draft.dto";
+import type { DecideDraftItemDto } from "./dto/decide-draft-item.dto";
 
 /**
  * Nacrti primopredaje (`handover_drafts`) — MODULE_SPEC_nacrti_primopredaje §6.1/§6.2.
@@ -32,12 +33,15 @@ import type { UpdateHandoverDraftDto } from "./dto/update-handover-draft.dto";
  *   POST   /api/v1/handover-drafts            — kreiranje (zaglavlje + stavke), broj generiše server
  *   PATCH  /api/v1/handover-drafts/:id        — izmena zaglavlja (samo dok nije zaključan)
  *   DELETE /api/v1/handover-drafts/:id        — brisanje (samo dok nije zaključan; hard delete — vidi servis)
- *   POST   /api/v1/handover-drafts/:id/submit — predaja u primopredaju (§6.3): zaključa nacrt i kreira drawing_handovers redove
+ *   POST   /api/v1/handover-drafts/:id/submit — predaja u primopredaju (§6.3): zaključa nacrt i kreira drawing_handovers redove;
+ *                                               odbija (422) dok postoje sporne stavke bez odluke (P4_SPEC §6.5.4 gate)
+ *   POST   /api/v1/handover-drafts/:id/items/:itemId/decision — odluka projektanta nad spornom stavkom
+ *                                               (P4_SPEC §0 t.4 + §6.5.4; 1=Isključi, 2=Predaj ponovo, 3=Dopuni)
  *   GET    /api/v1/handover-drafts/:id/print-bundle     — P3: crteži za štampu (hasPdf/sizeKb/pageFormat + grupe po formatu)
  *   GET    /api/v1/handover-drafts/:id/print-bundle/pdf — P3: JEDAN spojen PDF (?format=A4 ILI ?drawingIds=1,2,3; bez oba = svi)
  *
- * Ovaj talas: osnovni unos + submit — BEZ BOM auto-populate wizarda i BEZ
- * item-level POST/PATCH/DELETE endpointa (van skopa zadatka).
+ * BEZ BOM auto-populate wizarda i BEZ generičkog item-level POST/PATCH/DELETE
+ * (van skopa; decision ruta je jedina item-level mutacija).
  * Traži JWT; read=PRIMOPREDAJE_READ, mutacije=PRIMOPREDAJE_WRITE (V1 no-op guard).
  */
 @UseGuards(JwtAuthGuard, PermissionsGuard)
@@ -110,5 +114,19 @@ export class HandoverDraftsController {
   @RequirePermission(PERMISSIONS.PRIMOPREDAJE_WRITE)
   submit(@Param("id", ParseIntPipe) id: number) {
     return this.drafts.submit(id);
+  }
+
+  /**
+   * §6.5.4 (P4_SPEC §0 t.4): odluka projektanta nad SPORNOM stavkom
+   * (pre_check_duplicate) — 1=Isključi, 2=Predaj ponovo, 3=Dopuni (+newQuantity).
+   */
+  @Post(":id/items/:itemId/decision")
+  @RequirePermission(PERMISSIONS.PRIMOPREDAJE_WRITE)
+  decideItem(
+    @Param("id", ParseIntPipe) id: number,
+    @Param("itemId", ParseIntPipe) itemId: number,
+    @Body() dto: DecideDraftItemDto,
+  ) {
+    return this.drafts.decideItem(id, itemId, dto);
   }
 }

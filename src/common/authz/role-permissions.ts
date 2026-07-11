@@ -160,7 +160,32 @@ export const ROLE_PERMISSIONS: Partial<
     P.SYNC_READ,
   ],
 
-  // 3.0-rezervisane i deferred uloge nemaju 2.0 permisije (njihovi moduli još ne postoje).
+  // Biro role (P4_SPEC_pdm_intake_PREDLOG §6.5.3, odluka Nenad 11.07 — §0 t.3):
+  // projektanti biroa MORAJU raditi u 2.0 pre cutover-a (kreiranje/uređivanje
+  // nacrta primopredaje), pa `inzenjer`/`projektant_vodja` dobijaju minimalni
+  // 2.0 set ODMAH. Role u katalogu ostaju tier "3.0" — ovo je rana aktivacija
+  // permisija, ne nova uloga. AUTHZ_ENFORCE=true je živ na prod-u: bez ovih
+  // unosa biro dobija 403 na sve.
+  [ROLES.INZENJER]: [
+    P.PDM_READ,
+    P.PRIMOPREDAJE_READ,
+    P.PRIMOPREDAJE_WRITE, // kreiranje/uređivanje nacrta primopredaje (§6.5.3)
+    P.TEHNOLOGIJA_READ,
+    P.RN_READ,
+    P.DIRECTORY_READ,
+  ],
+
+  [ROLES.PROJEKTANT_VODJA]: [
+    P.PDM_READ,
+    P.PRIMOPREDAJE_READ,
+    P.PRIMOPREDAJE_WRITE, // kreiranje/uređivanje nacrta primopredaje (§6.5.3)
+    P.TEHNOLOGIJA_READ,
+    P.RN_READ,
+    P.DIRECTORY_READ,
+  ],
+
+  // Ostale 3.0-rezervisane i deferred uloge nemaju 2.0 permisije (njihovi
+  // moduli još ne postoje) — izuzetak su biro role iznad (§6.5.3).
   // Baseline uvid dobija samo `viewer` (read gde ima smisla u 2.0 pilotu).
   [ROLES.VIEWER]: [P.TEHNOLOGIJA_READ, P.RN_READ, P.PDM_READ, P.DIRECTORY_READ],
 };

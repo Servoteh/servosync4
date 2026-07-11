@@ -68,8 +68,18 @@ export class PdmXmlStructureError extends Error {
   }
 }
 
-/** State vrednosti koje prolaze uvoz (trim + lowercase poređenje). */
-const VALID_STATES = new Set(["odobreno", "izmena bez revizije"]);
+/**
+ * State vrednosti koje prolaze uvoz (trim + lowercase poređenje) — paritet
+ * legacy ProveriXMLFajl. Eksportovano kao JEDAN izvor istine za kriterijum
+ * „crtež je odobren": isti skup koriste i preduslovi stavke nacrta
+ * primopredaje (P4_SPEC §6.5.3 — handover-drafts.service).
+ */
+export const APPROVED_PDM_STATES = new Set(["odobreno", "izmena bez revizije"]);
+
+/** Da li je State/pdm_status „odobren" (trim + case-insensitive). */
+export function isApprovedPdmState(raw: string | null | undefined): boolean {
+  return APPROVED_PDM_STATES.has((raw ?? "").trim().toLowerCase());
+}
 
 /** Maks. dužina broja crteža / oznake (kolone drawings VarChar(20)). */
 const MAX_DOC_ID_LENGTH = 20;
@@ -266,7 +276,7 @@ export function validateParsedFile(file: ParsedPdmFile): string[] {
     if (!marking) errors.push(`${label}: nedostaje Oznaka`);
     if (!referenceCount) errors.push(`${label}: nedostaje Reference Count`);
 
-    if (!VALID_STATES.has(state.toLowerCase()))
+    if (!isApprovedPdmState(state))
       errors.push(`${label}: nevalidan State "${state}"`);
 
     if (row.docId.length > MAX_DOC_ID_LENGTH)
