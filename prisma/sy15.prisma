@@ -26,7 +26,9 @@ model RevTool {
   createdBy String? @map("created_by") @db.Uuid
   updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
   bigtehnSifraArtikla Int? @map("bigtehn_sifra_artikla")
-  barcode String
+  /// NOT NULL in DB, assigned by the rev_tools_before_insert_barcode trigger —
+  /// dbgenerated() makes it optional on create (bulkImportTools inserts without it).
+  barcode String @default(dbgenerated())
   subgroupId String? @map("subgroup_id") @db.Uuid
   isQuantity Boolean @default(false) @map("is_quantity")
   totalQty Int @default(1) @map("total_qty")
