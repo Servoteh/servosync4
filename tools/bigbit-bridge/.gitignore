@@ -1,0 +1,5 @@
+# Lokalna konfiguracija i runtime artefakti bridge-a — nikad u git.
+bigbit-bridge.env
+bigbit-bridge.log
+temp/
+run-*/
