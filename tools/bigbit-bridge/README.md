@@ -58,10 +58,18 @@ Jednokratno, kao root na ubuntusrv:
 sudo bash setup-samba-drop.sh bbdrop '<samba-lozinka>'
 ```
 Napravi Samba share `\\192.168.64.28\bigbit-incoming` (folder `/srv/bigbit-incoming`,
-`setgid`, deljena grupa `bbdrop`) — piše ga nalog `bbdrop`, čita ga korisnik koji
-pokreće bridge. Zatim na BigBit mašini zakazati Windows task koji kopira izvezeni
-`.mdb` u taj share, i u `bigbit-bridge.env` postaviti `BB_SRC_MDB=/srv/bigbit-incoming`.
-Bridge onda svakog jutra uzme **najnoviji** `.mdb` iz foldera.
+`force user = bbdrop`, fajlovi 0664 world-readable) — piše ga nalog `bbdrop`, čita ga
+korisnik koji pokreće bridge. U `bigbit-bridge.env` postaviti
+`BB_SRC_MDB=/srv/bigbit-incoming`; bridge svakog jutra uzme **najnoviji** `.mdb`.
+
+⚠️ **Guest (bez lozinke) NE radi** — moderni Windows blokira „unauthenticated guest
+access" sigurnosnom politikom (potvrđeno). Zato ide autentifikovani nalog `bbdrop`.
+Na BigBit mašini, Windows task pre kopiranja mapira share sa tim nalogom, npr.:
+```bat
+net use \\192.168.64.28\bigbit-incoming /user:bbdrop <samba-lozinka> /persistent:yes
+copy /Y "C:\BackUP_BigBit\BigBit\BB_T_26_*.mdb" \\192.168.64.28\bigbit-incoming\
+```
+(`--guest` mod postoji u skripti, ali samo ako se na Windows-u dozvoli insecure guest.)
 
 ## Instalacija
 

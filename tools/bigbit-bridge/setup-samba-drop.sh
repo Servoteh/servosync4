@@ -29,13 +29,11 @@ id -u "$SMB_USER" >/dev/null 2>&1 || useradd -M -s /usr/sbin/nologin -g "$SMB_US
 usermod -aG "$SMB_USER" "$BRIDGE_USER"
 
 echo "== 3/5 drop folder $DROP =="
+# World-readable (0775 dir / 0664 files) in BOTH modes so the bridge (running as
+# $BRIDGE_USER) reads it regardless of group-membership session timing. Writes
+# are forced to $SMB_USER by the share (force user).
 mkdir -p "$DROP"
-if [[ $GUEST -eq 1 ]]; then
-  # guest writes are forced to $SMB_USER; files world-readable so the bridge reads them
-  chown "$SMB_USER:$SMB_USER" "$DROP"; chmod 0775 "$DROP"
-else
-  chown "$SMB_USER:$SMB_USER" "$DROP"; chmod 2770 "$DROP"   # setgid: shared group
-fi
+chown "$SMB_USER:$SMB_USER" "$DROP"; chmod 0775 "$DROP"
 # migrate anything already dropped into the home test folder
 if [[ -d "/home/$BRIDGE_USER/bigbit-incoming" ]]; then
   find "/home/$BRIDGE_USER/bigbit-incoming" -maxdepth 1 -iname '*.mdb' -exec cp -n {} "$DROP/" \; 2>/dev/null || true
@@ -44,11 +42,17 @@ if [[ -d "/home/$BRIDGE_USER/bigbit-incoming" ]]; then
 fi
 
 echo "== 4/5 share u /etc/samba/smb.conf =="
-if ! grep -q "^\[$SHARE\]" /etc/samba/smb.conf; then
-  if [[ $GUEST -eq 1 ]]; then
-    # passwordless: unknown users map to guest; writes owned by $SMB_USER
-    grep -q '^\s*map to guest' /etc/samba/smb.conf || sed -i '/^\[global\]/a \   map to guest = Bad User' /etc/samba/smb.conf
-    cat >> /etc/samba/smb.conf <<CONF
+# Remove any existing [SHARE] block first so re-running can SWITCH modes
+# (e.g. guest -> authenticated) instead of silently keeping the old one.
+if grep -q "^\[$SHARE\]" /etc/samba/smb.conf; then
+  awk -v s="[$SHARE]" '$0==s {inblk=1; next} /^\[/{inblk=0} !inblk{print}' \
+    /etc/samba/smb.conf > /etc/samba/smb.conf.new && mv /etc/samba/smb.conf.new /etc/samba/smb.conf
+  echo "   (postojeci [$SHARE] uklonjen - upisujem novi)"
+fi
+if [[ $GUEST -eq 1 ]]; then
+  # passwordless: unknown users map to guest; writes owned by $SMB_USER
+  grep -q '^\s*map to guest' /etc/samba/smb.conf || sed -i '/^\[global\]/a \   map to guest = Bad User' /etc/samba/smb.conf
+  cat >> /etc/samba/smb.conf <<CONF
 
 [$SHARE]
    comment = ServoSync BigBit izvoz (drop, guest)
@@ -61,8 +65,10 @@ if ! grep -q "^\[$SHARE\]" /etc/samba/smb.conf; then
    create mask = 0664
    directory mask = 0775
 CONF
-  else
-    cat >> /etc/samba/smb.conf <<CONF
+else
+  # authenticated: writer logs in as $SMB_USER; files world-readable (0664) so
+  # the bridge reads them regardless of its group session.
+  cat >> /etc/samba/smb.conf <<CONF
 
 [$SHARE]
    comment = ServoSync BigBit izvoz (drop folder)
@@ -70,15 +76,12 @@ CONF
    browseable = yes
    read only = no
    guest ok = no
-   valid users = @$SMB_USER
+   valid users = $SMB_USER
+   force user = $SMB_USER
    force group = $SMB_USER
-   create mask = 0660
-   force create mode = 0660
-   directory mask = 2770
+   create mask = 0664
+   directory mask = 0775
 CONF
-  fi
-else
-  echo "   (share [$SHARE] vec postoji u smb.conf - preskacem)"
 fi
 
 echo "== 5/5 nalog/lozinka + firewall + restart =="
