@@ -1,13 +1,14 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Plus, Pencil, UserX } from 'lucide-react';
+import { Plus, Pencil, Trash2, UserCheck, UserX } from 'lucide-react';
 import {
   useWorkers,
   useWorker,
   useCreateWorker,
   useUpdateWorker,
   useDeactivateWorker,
+  useDeleteWorker,
   useWorkUnits,
   useWorkerTypes,
   type Worker,
@@ -76,7 +77,8 @@ const columns: Column<Worker>[] = [
         <StatusBadge tone="neutral" label="Neaktivan" />
       ),
   },
-  { key: 'permissions', header: 'Prava', render: (r) => <PermissionPills w={r} /> },
+  // Kolona „Prava" je namerno sklonjena iz tabele (Nenad 10.07) — flagovi
+  // saglasnost/lansiranje ostaju vidljivi u expand-detalju i formi.
 ];
 
 function Field({ label, value }: { label: string; value: string }) {
@@ -93,8 +95,11 @@ function Field({ label, value }: { label: string; value: string }) {
 function WorkerDetailRow({ id }: { id: number }) {
   const q = useWorker(id);
   const deactivate = useDeactivateWorker();
+  const activate = useUpdateWorker();
+  const del = useDeleteWorker();
   const [editing, setEditing] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   if (q.isLoading) return <span className="text-sm text-ink-disabled">Učitavanje…</span>;
   if (q.error || !q.data)
@@ -110,29 +115,68 @@ function WorkerDetailRow({ id }: { id: number }) {
     }
   }
 
+  async function doActivate() {
+    try {
+      await activate.mutateAsync({ id: w.id, data: { active: true } });
+    } catch {
+      /* greška se prikazuje ispod dugmadi */
+    }
+  }
+
+  async function doDelete() {
+    try {
+      await del.mutateAsync(w.id);
+      setConfirmingDelete(false);
+    } catch {
+      /* greška (409 „ima istoriju") se prikazuje u dijalogu */
+    }
+  }
+
   return (
     <div className="space-y-4 text-sm">
       <div className="flex flex-wrap items-center gap-2">
         <PermissionPills w={w} />
         {w.multiAccount && <StatusBadge tone="neutral" label="Više naloga" />}
         <span className="flex-1" />
-        <button
-          onClick={() => setEditing(true)}
-          className="inline-flex items-center gap-1.5 rounded-control border border-line px-3 py-1.5 text-xs font-semibold text-ink-secondary hover:bg-surface-2"
-        >
-          <Pencil className="h-3.5 w-3.5" aria-hidden />
-          Izmeni
-        </button>
-        {w.active && (
+        <Can permission={PERMISSIONS.STRUKTURE_WRITE}>
           <button
-            onClick={() => setConfirming(true)}
+            onClick={() => setEditing(true)}
+            className="inline-flex items-center gap-1.5 rounded-control border border-line px-3 py-1.5 text-xs font-semibold text-ink-secondary hover:bg-surface-2"
+          >
+            <Pencil className="h-3.5 w-3.5" aria-hidden />
+            Izmeni
+          </button>
+          {w.active ? (
+            <button
+              onClick={() => setConfirming(true)}
+              className="inline-flex items-center gap-1.5 rounded-control border border-status-danger px-3 py-1.5 text-xs font-semibold text-status-danger hover:bg-status-danger-bg"
+            >
+              <UserX className="h-3.5 w-3.5" aria-hidden />
+              Deaktiviraj
+            </button>
+          ) : (
+            <button
+              onClick={doActivate}
+              disabled={activate.isPending}
+              className="inline-flex items-center gap-1.5 rounded-control border border-line px-3 py-1.5 text-xs font-semibold text-ink-secondary hover:bg-surface-2 disabled:opacity-50"
+            >
+              <UserCheck className="h-3.5 w-3.5" aria-hidden />
+              Aktiviraj
+            </button>
+          )}
+          <button
+            onClick={() => {
+              del.reset();
+              setConfirmingDelete(true);
+            }}
             className="inline-flex items-center gap-1.5 rounded-control border border-status-danger px-3 py-1.5 text-xs font-semibold text-status-danger hover:bg-status-danger-bg"
           >
-            <UserX className="h-3.5 w-3.5" aria-hidden />
-            Deaktiviraj
+            <Trash2 className="h-3.5 w-3.5" aria-hidden />
+            Obriši
           </button>
-        )}
+        </Can>
       </div>
+      <ErrorText error={activate.error} />
 
       <dl className="grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-4">
         <Field label="Šifra" value={w.idNumber || '—'} />
@@ -183,6 +227,23 @@ function WorkerDetailRow({ id }: { id: number }) {
         onCancel={() => setConfirming(false)}
         loading={deactivate.isPending}
         error={deactivate.error}
+      />
+      <ConfirmDialog
+        open={confirmingDelete}
+        danger
+        title="Brisanje radnika"
+        message={
+          <>
+            Da li da obrišem radnika <b>{w.fullName || w.username}</b>? Brisanje je moguće samo za
+            pogrešan unos — radnik bez ijednog kucanja, naloga ili druge istorije. Radnika sa
+            istorijom deaktiviraj umesto brisanja.
+          </>
+        }
+        confirmLabel="Obriši"
+        onConfirm={doDelete}
+        onCancel={() => setConfirmingDelete(false)}
+        loading={del.isPending}
+        error={del.error}
       />
     </div>
   );

@@ -9,6 +9,12 @@ export interface ProjectLookup {
   projectName: string | null;
   customerId: number;
   description: string | null;
+  /**
+   * Komitent predmeta (D9 prefill u „Novi RN"); null kad predmet nema komitenta
+   * (customerId 0/orphan). Opciono jer lokalni konstruktori ProjectLookup-a
+   * (npr. handover draft → predmet) ne nose komitenta.
+   */
+  customer?: { id: number; name: string } | null;
 }
 
 export interface CustomerLookup {

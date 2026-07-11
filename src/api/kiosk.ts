@@ -10,8 +10,10 @@ import type { TechProcess } from './tech-processes';
  *   - nalog     `RNZ:projectId:identNumber:variant:revision`
  *   - operacija `S:operationNumber:workCenterCode:0:revision`
  * `revision` (polje 5) = provera „isti otisak" (ista u oba barkoda). Verzioni pečat je
- * `variant` (nalog polje 4): pri izmeni tehnologije/crteža podiže se varijanta U MESTU, pa
- * scan sa starim otiskom (manja varijanta) vraća `staleWorkOrder` upozorenje. Rute:
+ * `variant` (nalog polje 4): pri izmeni tehnologije/crteža varijanta raste kroz KLON —
+ * „Prepiši isti postupak" (POST /work-orders/:id/clone-variant) pravi NOVI RN red sa istim
+ * identom i `variant = MAX+1`; kiosk razrešava TEKUĆI RN (najviša varijanta), pa scan sa
+ * starim otiskom (manja varijanta) vraća `staleWorkOrder` upozorenje. Rute:
  *   POST /v1/tech-processes/barcode/decode  { barcode }
  *   POST /v1/tech-processes/scan            { orderBarcode, operationBarcode, pieceCount }
  *   POST /v1/tech-processes/:id/finish      { pieceCount?, note? }

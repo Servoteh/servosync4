@@ -1,11 +1,12 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Plus, Pencil } from 'lucide-react';
+import { Plus, Pencil, Trash2 } from 'lucide-react';
 import {
   useWorkUnits,
   useCreateWorkUnit,
   useUpdateWorkUnit,
+  useDeleteWorkUnit,
   type WorkUnit,
 } from '@/api/structures';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
@@ -17,7 +18,7 @@ import { Can } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { FormField, Input } from '@/components/ui-kit/form-field';
-import { ErrorText } from './common';
+import { ConfirmDialog, ErrorText } from './common';
 
 function WorkUnitFormDialog({
   open,
@@ -90,10 +91,22 @@ export function WorkUnitsTab() {
   const [page, setPage] = useState(1);
   const [editing, setEditing] = useState<WorkUnit | null>(null);
   const [creating, setCreating] = useState(false);
+  const [deleting, setDeleting] = useState<WorkUnit | null>(null);
   const list = useWorkUnits({ page, q: q.trim() || undefined });
+  const del = useDeleteWorkUnit();
 
   const rows = list.data?.data ?? [];
   const meta = list.data?.meta.pagination;
+
+  async function doDelete() {
+    if (!deleting) return;
+    try {
+      await del.mutateAsync(deleting.id);
+      setDeleting(null);
+    } catch {
+      /* greška se prikazuje u dijalogu */
+    }
+  }
 
   const columns: Column<WorkUnit>[] = [
     {
@@ -107,13 +120,28 @@ export function WorkUnitsTab() {
       header: '',
       align: 'right',
       render: (r) => (
-        <button
-          onClick={() => setEditing(r)}
-          className="inline-flex items-center gap-1.5 rounded-control border border-line px-2.5 py-1 text-xs font-semibold text-ink-secondary hover:bg-surface-2"
-        >
-          <Pencil className="h-3.5 w-3.5" aria-hidden />
-          Izmeni
-        </button>
+        <span className="inline-flex justify-end gap-1.5">
+          {/* Sve mutirajuće akcije iza Can (obrazac workers-tab): read-only rola ne sme da vidi „Izmeni" pa dobije 403 na snimanju. */}
+          <Can permission={PERMISSIONS.STRUKTURE_WRITE}>
+            <button
+              onClick={() => setEditing(r)}
+              className="inline-flex items-center gap-1.5 rounded-control border border-line px-2.5 py-1 text-xs font-semibold text-ink-secondary hover:bg-surface-2"
+            >
+              <Pencil className="h-3.5 w-3.5" aria-hidden />
+              Izmeni
+            </button>
+            <button
+              onClick={() => {
+                del.reset();
+                setDeleting(r);
+              }}
+              className="inline-flex items-center gap-1.5 rounded-control border border-status-danger px-2.5 py-1 text-xs font-semibold text-status-danger hover:bg-status-danger-bg"
+            >
+              <Trash2 className="h-3.5 w-3.5" aria-hidden />
+              Obriši
+            </button>
+          </Can>
+        </span>
       ),
     },
   ];
@@ -162,6 +190,22 @@ export function WorkUnitsTab() {
 
       <WorkUnitFormDialog open={creating} unit={null} onClose={() => setCreating(false)} />
       <WorkUnitFormDialog open={editing != null} unit={editing} onClose={() => setEditing(null)} />
+      <ConfirmDialog
+        open={deleting != null}
+        danger
+        title="Brisanje radne jedinice"
+        message={
+          <>
+            Da li da obrišem radnu jedinicu <b>{deleting?.code}</b> · {deleting?.name}? Brisanje je
+            moguće samo ako je ne koristi nijedna operacija ni radnik.
+          </>
+        }
+        confirmLabel="Obriši"
+        onConfirm={doDelete}
+        onCancel={() => setDeleting(null)}
+        loading={del.isPending}
+        error={del.error}
+      />
     </div>
   );
 }

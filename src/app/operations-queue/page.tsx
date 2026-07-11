@@ -1,10 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
 import { useOperationQueue, type OperationQueueEntry } from '@/api/operation-queue';
+import { useSetOperationPriority } from '@/api/work-orders';
 import { useOperations, type Operation } from '@/api/structures';
+import { ApiError } from '@/api/client';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
@@ -13,6 +15,7 @@ import { SearchBox } from '@/components/ui-kit/search-box';
 import { Pager } from '@/components/ui-kit/pager';
 import { ComboBox } from '@/components/ui-kit/combo-box';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
+import { PERMISSIONS } from '@/lib/permissions';
 import { formatDate, formatNumber } from '@/lib/format';
 
 /** Prioritet 255 = nije prioritizovano (dno liste). Manji broj = hitnije. */
@@ -23,8 +26,105 @@ function isOverdue(deadline: string | null): boolean {
   return new Date(deadline).getTime() < Date.now();
 }
 
+/**
+ * Inline izmena CAM prioriteta (D7, legacy `PregledOperacijaPoPrioritetima`
+ * unos u gridu): klik na vrednost → number input (0–255); Enter/blur snima
+ * (optimistic kroz `useSetOperationPriority`), Esc otkazuje. Bez
+ * `tehnologija.write` prikazuje samo vrednost. Zaključan RN → 422 (poruka
+ * ispod vrednosti, optimistic izmena se vraća).
+ */
+function PriorityCell({ row, canWrite }: { row: OperationQueueEntry; canWrite: boolean }) {
+  const setPriority = useSetOperationPriority();
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState('');
+  const [rangeError, setRangeError] = useState(false);
+  const cancelRef = useRef(false);
+
+  const display =
+    row.priority >= NO_PRIORITY ? (
+      <span className="text-ink-disabled">—</span>
+    ) : (
+      <StatusBadge tone={row.priority < 100 ? 'danger' : 'warn'} label={String(row.priority)} />
+    );
+
+  if (!canWrite) return display;
+
+  const apiError =
+    setPriority.error instanceof ApiError
+      ? setPriority.error.message
+      : (setPriority.error as Error | null)?.message;
+
+  function commit() {
+    const n = Number(value.trim());
+    if (value.trim() === '' || !Number.isInteger(n) || n < 0 || n > 255) {
+      setRangeError(true);
+      return false;
+    }
+    setEditing(false);
+    if (n !== row.priority) setPriority.mutate({ operationId: row.id, priority: n });
+    return true;
+  }
+
+  if (editing) {
+    return (
+      <span className="inline-flex flex-col items-end gap-0.5">
+        <input
+          autoFocus
+          type="number"
+          min={0}
+          max={255}
+          step={1}
+          value={value}
+          onChange={(e) => {
+            setValue(e.target.value);
+            setRangeError(false);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commit();
+            else if (e.key === 'Escape') {
+              cancelRef.current = true;
+              setEditing(false);
+            }
+          }}
+          onBlur={() => {
+            if (cancelRef.current) cancelRef.current = false;
+            else if (!commit()) setEditing(false);
+          }}
+          aria-label="Prioritet (0–255)"
+          aria-invalid={rangeError}
+          className="tnums w-16 rounded-control border border-line bg-surface px-1.5 py-0.5 text-right text-sm text-ink"
+        />
+        {rangeError && <span className="text-2xs text-status-danger">Ceo broj 0–255</span>}
+      </span>
+    );
+  }
+
+  return (
+    <span className="inline-flex flex-col items-end gap-0.5">
+      <button
+        onClick={() => {
+          setPriority.reset();
+          setRangeError(false);
+          setValue(row.priority >= NO_PRIORITY ? '' : String(row.priority));
+          setEditing(true);
+        }}
+        title="Izmeni prioritet (0–255)"
+        aria-label={`Izmeni prioritet operacije ${row.operationNumber}`}
+        className="rounded-control px-1 py-0.5 hover:bg-surface-2"
+      >
+        {display}
+      </button>
+      {apiError && (
+        <span className="max-w-40 text-right text-2xs text-status-danger" role="alert">
+          {apiError}
+        </span>
+      )}
+    </span>
+  );
+}
+
 export default function OperationsQueuePage() {
-  const { user, isLoading } = useAuth();
+  const { user, isLoading, can } = useAuth();
   const router = useRouter();
   const [q, setQ] = useState('');
   const [rc, setRc] = useState<Operation | null>(null);
@@ -52,18 +152,16 @@ export default function OperationsQueuePage() {
   const rows = list.data?.data ?? [];
   const meta = list.data?.meta.pagination;
 
+  // Inline izmena prioriteta samo uz tehnologija.write (CNC programer je ima).
+  const canSetPriority = can(PERMISSIONS.TEHNOLOGIJA_WRITE);
+
   const columns: Column<OperationQueueEntry>[] = [
     {
       key: 'priority',
       header: 'Prioritet',
       align: 'right',
       numeric: true,
-      render: (r) =>
-        r.priority >= NO_PRIORITY ? (
-          <span className="text-ink-disabled">—</span>
-        ) : (
-          <StatusBadge tone={r.priority < 100 ? 'danger' : 'warn'} label={String(r.priority)} />
-        ),
+      render: (r) => <PriorityCell row={r} canWrite={canSetPriority} />,
     },
     {
       key: 'identNumber',

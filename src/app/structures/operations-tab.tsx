@@ -1,11 +1,12 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Plus, Pencil } from 'lucide-react';
+import { Plus, Pencil, Trash2 } from 'lucide-react';
 import {
   useOperations,
   useCreateOperation,
   useUpdateOperation,
+  useDeleteOperation,
   useWorkUnits,
   type Operation,
   type OperationCreateInput,
@@ -20,7 +21,7 @@ import { FormField, Input } from '@/components/ui-kit/form-field';
 import { Can } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
 import { formatNumber } from '@/lib/format';
-import { Checkbox, ErrorText, FlagCell, NativeSelect } from './common';
+import { Checkbox, ConfirmDialog, ErrorText, FlagCell, NativeSelect } from './common';
 
 interface OperationFormState {
   workCenterCode: string;
@@ -190,16 +191,28 @@ export function OperationsTab() {
   const [page, setPage] = useState(1);
   const [editing, setEditing] = useState<Operation | null>(null);
   const [creating, setCreating] = useState(false);
+  const [deleting, setDeleting] = useState<Operation | null>(null);
   const list = useOperations({
     page,
     q: q.trim() || undefined,
     workUnitCode: workUnitCode || undefined,
   });
   const units = useWorkUnits({ pageSize: 200 });
+  const del = useDeleteOperation();
 
   const rows = list.data?.data ?? [];
   const meta = list.data?.meta.pagination;
   const resetPage = () => setPage(1);
+
+  async function doDelete() {
+    if (!deleting) return;
+    try {
+      await del.mutateAsync(deleting.workCenterCode);
+      setDeleting(null);
+    } catch {
+      /* greška se prikazuje u dijalogu */
+    }
+  }
 
   const columns: Column<Operation>[] = [
     {
@@ -269,13 +282,28 @@ export function OperationsTab() {
       header: '',
       align: 'right',
       render: (r) => (
-        <button
-          onClick={() => setEditing(r)}
-          className="inline-flex items-center gap-1.5 rounded-control border border-line px-2.5 py-1 text-xs font-semibold text-ink-secondary hover:bg-surface-2"
-        >
-          <Pencil className="h-3.5 w-3.5" aria-hidden />
-          Izmeni
-        </button>
+        <span className="inline-flex justify-end gap-1.5">
+          {/* Sve mutirajuće akcije iza Can (obrazac workers-tab): read-only rola ne sme da vidi „Izmeni" pa dobije 403 na snimanju. */}
+          <Can permission={PERMISSIONS.STRUKTURE_WRITE}>
+            <button
+              onClick={() => setEditing(r)}
+              className="inline-flex items-center gap-1.5 rounded-control border border-line px-2.5 py-1 text-xs font-semibold text-ink-secondary hover:bg-surface-2"
+            >
+              <Pencil className="h-3.5 w-3.5" aria-hidden />
+              Izmeni
+            </button>
+            <button
+              onClick={() => {
+                del.reset();
+                setDeleting(r);
+              }}
+              className="inline-flex items-center gap-1.5 rounded-control border border-status-danger px-2.5 py-1 text-xs font-semibold text-status-danger hover:bg-status-danger-bg"
+            >
+              <Trash2 className="h-3.5 w-3.5" aria-hidden />
+              Obriši
+            </button>
+          </Can>
+        </span>
       ),
     },
   ];
@@ -352,6 +380,23 @@ export function OperationsTab() {
         open={editing != null}
         operation={editing}
         onClose={() => setEditing(null)}
+      />
+      <ConfirmDialog
+        open={deleting != null}
+        danger
+        title="Brisanje operacije"
+        message={
+          <>
+            Da li da obrišem operaciju <b>{deleting?.workCenterCode}</b> ·{' '}
+            {deleting?.workCenterName}? Brisanje je moguće samo ako operacija nije referencirana
+            (radni nalozi, pristup mašinama, kucanja, evidencija vremena).
+          </>
+        }
+        confirmLabel="Obriši"
+        onConfirm={doDelete}
+        onCancel={() => setDeleting(null)}
+        loading={del.isPending}
+        error={del.error}
       />
     </div>
   );

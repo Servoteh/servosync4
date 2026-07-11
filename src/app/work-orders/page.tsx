@@ -10,6 +10,7 @@ import {
   useAddOperation,
   useApproveWorkOrder,
   useBulkCloneWorkOrders,
+  useCloneVariantWorkOrder,
   useCopyFromWorkOrder,
   useCreateWorkOrder,
   useDeleteOperation,
@@ -119,7 +120,14 @@ function Field({ label, value }: { label: string; value: string }) {
 const actionBtn =
   'rounded-control px-3 py-1.5 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-40';
 
-function WorkOrderDetail({ id }: { id: number }) {
+function WorkOrderDetail({
+  id,
+  onOpenWorkOrder,
+}: {
+  id: number;
+  /** Otvori drugi RN u listi (npr. novonastali klon-varijantu). */
+  onOpenWorkOrder?: (id: number) => void;
+}) {
   const { can } = useAuth();
   const q = useWorkOrder(id);
   const approve = useApproveWorkOrder();
@@ -128,6 +136,7 @@ function WorkOrderDetail({ id }: { id: number }) {
   const delOp = useDeleteOperation();
   const delRn = useDeleteWorkOrder();
   const [copyOpen, setCopyOpen] = useState(false);
+  const [cloneOpen, setCloneOpen] = useState(false);
   const [reworkOpen, setReworkOpen] = useState(false);
   const [headerOpen, setHeaderOpen] = useState(false);
   const [opDialog, setOpDialog] = useState<{ open: boolean; op: WorkOrderOperation | null }>({
@@ -197,6 +206,16 @@ function WorkOrderDetail({ id }: { id: number }) {
             Kopiraj iz naloga
           </button>
         )}
+        <Can permission={PERMISSIONS.RN_WRITE}>
+          <button
+            disabled={busy}
+            onClick={() => setCloneOpen(true)}
+            className={`${actionBtn} inline-flex items-center gap-1.5 border border-line text-ink-secondary`}
+          >
+            <CopyPlus className="h-3.5 w-3.5" aria-hidden />
+            Prepiši isti postupak
+          </button>
+        </Can>
         {!isEmpty && (
           <button
             disabled={busy}
@@ -386,6 +405,14 @@ function WorkOrderDetail({ id }: { id: number }) {
       </div>
 
       <CopyFromWorkOrderDialog targetId={id} open={copyOpen} onClose={() => setCopyOpen(false)} />
+      <CloneVariantDialog
+        sourceId={id}
+        identNumber={rn.identNumber}
+        variant={rn.variant}
+        open={cloneOpen}
+        onClose={() => setCloneOpen(false)}
+        onCloned={onOpenWorkOrder}
+      />
       <ReworkWorkOrderDialog sourceId={id} open={reworkOpen} onClose={() => setReworkOpen(false)} />
       <OperationDialog
         workOrderId={id}
@@ -532,6 +559,86 @@ function CopyFromWorkOrderDialog({
   );
 }
 
+/**
+ * „Prepiši isti postupak" (legacy klon-varijanta): potvrda → POST /:id/clone-variant.
+ * Nastaje NOVI RN sa istim identom i sledećom varijantom (MAX+1 po predmet/crtež/
+ * revizija), kopijom zaglavlja i svih stavki; status kreće od U OBRADI. Posle
+ * uspeha se otvara novi RN (`onCloned`).
+ */
+function CloneVariantDialog({
+  sourceId,
+  identNumber,
+  variant,
+  open,
+  onClose,
+  onCloned,
+}: {
+  sourceId: number;
+  identNumber: string;
+  variant: number;
+  open: boolean;
+  onClose: () => void;
+  onCloned?: (id: number) => void;
+}) {
+  const clone = useCloneVariantWorkOrder();
+
+  function close() {
+    clone.reset();
+    onClose();
+  }
+
+  async function submit() {
+    try {
+      const res = await clone.mutateAsync(sourceId);
+      close();
+      onCloned?.(res.data.workOrderId);
+    } catch {
+      /* greška se prikazuje ispod */
+    }
+  }
+
+  const err =
+    clone.error instanceof ApiError ? clone.error.message : (clone.error as Error)?.message;
+
+  return (
+    <Dialog
+      open={open}
+      onClose={close}
+      title="Prepiši isti postupak"
+      footer={
+        <>
+          <button
+            onClick={close}
+            className="rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2"
+          >
+            Otkaži
+          </button>
+          <Button onClick={submit} loading={clone.isPending}>
+            Prepiši
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-2 text-sm">
+        <p className="text-ink">
+          Iz RN <span className="tnums font-semibold">{identNumber}</span> (varijanta{' '}
+          <span className="tnums">{variant}</span>) nastaje NOV radni nalog sa istim identom i
+          sledećom varijantom — kopija zaglavlja i svih stavki, status od početka (U obradi).
+        </p>
+        <p className="text-xs text-ink-disabled">
+          Stari odštampani RN ostaje na staroj varijanti — skeniranje tog otiska na kiosku od
+          tada prijavljuje upozorenje o zastarelom nalogu.
+        </p>
+        {err && (
+          <p className="text-sm text-status-danger" role="alert">
+            {err}
+          </p>
+        )}
+      </div>
+    </Dialog>
+  );
+}
+
 const EMPTY_REWORK = {
   pieceCount: 1,
   qualityTypeId: REWORK_QUALITY.DORADA as ReworkQuality,
@@ -660,10 +767,14 @@ const EMPTY_OP_FORM = {
   setupTime: '',
   cycleTime: '',
   toolWeight: '',
-  priority: '',
 };
 
-/** Dodaj/izmeni operaciju TP-a (RC + norme Tpz/Tk + opis + prioritet). */
+/**
+ * Dodaj/izmeni operaciju TP-a (RC + norme Tpz/Tk + opis). Polje „Prioritet" je
+ * namerno UKLONJENO (D7): default dolazi iz RC-a (`usesPriority` → 100/255) na
+ * backendu, a CAM prioritet se zadaje inline na stranici „Operacije po
+ * prioritetu" (tehnologija.write).
+ */
 function OperationDialog({
   workOrderId,
   operation,
@@ -697,7 +808,6 @@ function OperationDialog({
         setupTime: operation.setupTime != null ? String(operation.setupTime) : '',
         cycleTime: operation.cycleTime != null ? String(operation.cycleTime) : '',
         toolWeight: operation.toolWeight != null ? String(operation.toolWeight) : '',
-        priority: String(operation.priority),
       });
     } else {
       setRc(null);
@@ -721,13 +831,13 @@ function OperationDialog({
 
   async function submit() {
     if (!canSave) return;
+    // `priority` se NE šalje (D7): add → backend default iz RC-a; edit → nepromenjen.
     const common = {
       workDescription: form.workDescription.trim(),
       toolsFixtures: form.toolsFixtures.trim() || undefined,
       setupTime: numOrUndef(form.setupTime),
       cycleTime: numOrUndef(form.cycleTime),
       toolWeight: numOrUndef(form.toolWeight),
-      priority: numOrUndef(form.priority),
       operationNumber: numOrUndef(form.operationNumber),
     };
     try {
@@ -818,15 +928,6 @@ function OperationDialog({
               step={1}
               value={form.operationNumber}
               onChange={(e) => set({ operationNumber: e.target.value })}
-            />
-          </FormField>
-          <FormField label="Prioritet" hint="prazno → iz radnog centra">
-            <Input
-              type="number"
-              min={0}
-              step={1}
-              value={form.priority}
-              onChange={(e) => set({ priority: e.target.value })}
             />
           </FormField>
         </div>
@@ -1036,7 +1137,11 @@ function NewWorkOrderDialog({ open, onClose }: { open: boolean; onClose: () => v
           >
             Otkaži
           </button>
-          <Button onClick={submit} loading={create.isPending}>
+          <Button
+            onClick={submit}
+            loading={create.isPending}
+            disabled={!form.projectId || !form.externalCustomerId}
+          >
             Snimi
           </Button>
         </>
@@ -1044,8 +1149,8 @@ function NewWorkOrderDialog({ open, onClose }: { open: boolean; onClose: () => v
     >
       <div className="space-y-3">
         <p className="text-xs text-ink-disabled">
-          Broj naloga (<span className="tnums">predmet/redni</span>) generiše sistem. Predmet i
-          komitent se za sad unose šifrom (biranje iz liste stiže sa šifarnicima).
+          Broj naloga (<span className="tnums">predmet/redni</span>) generiše sistem. Izbor
+          predmeta popunjava komitenta iz predmeta (može se promeniti).
         </p>
         <div className="grid grid-cols-2 gap-3">
           <FormField label="Predmet" required>
@@ -1053,12 +1158,16 @@ function NewWorkOrderDialog({ open, onClose }: { open: boolean; onClose: () => v
               value={project}
               onChange={(p) => {
                 setProject(p);
+                // D9: komitent predmeta se VIDLJIVO prepiše u ComboBox (ostaje
+                // izmenljiv); predmet bez komitenta → polje prazno i obavezno
+                // (ne upisuje se 0 koje bi oborilo snimanje).
+                const c = p?.customer ?? null;
+                setCustomer(c ? { id: c.id, name: c.name, city: null, taxId: null } : null);
                 setForm((f) => ({
                   ...f,
                   projectId: p?.id ?? 0,
-                  externalCustomerId: p?.customerId ?? f.externalCustomerId,
+                  externalCustomerId: c?.id ?? 0,
                 }));
-                if (p) setCustomer(null);
               }}
               useSearch={useProjectsLookup}
               getKey={(p) => p.id}
@@ -1072,10 +1181,7 @@ function NewWorkOrderDialog({ open, onClose }: { open: boolean; onClose: () => v
               value={customer}
               onChange={(c) => {
                 setCustomer(c);
-                setForm((f) => ({
-                  ...f,
-                  externalCustomerId: c?.id ?? project?.customerId ?? 0,
-                }));
+                setForm((f) => ({ ...f, externalCustomerId: c?.id ?? 0 }));
               }}
               useSearch={useCustomersLookup}
               getKey={(c) => c.id}
@@ -1083,11 +1189,6 @@ function NewWorkOrderDialog({ open, onClose }: { open: boolean; onClose: () => v
               getSublabel={(c) => [c.city, c.taxId].filter(Boolean).join(' · ')}
               placeholder={project ? 'Iz predmeta — promeni po želji…' : 'Naziv/PIB…'}
             />
-            {!customer && form.externalCustomerId > 0 && (
-              <p className="mt-1 text-xs text-ink-disabled">
-                Preuzet iz predmeta (šifra {form.externalCustomerId}).
-              </p>
-            )}
           </FormField>
         </div>
         <FormField label="Naziv pozicije" required>
@@ -1441,7 +1542,11 @@ export default function WorkOrdersPage() {
           loading={list.isLoading}
           onRowActivate={(r) => setExpanded((e) => (e === r.id ? null : r.id))}
           expandedKey={expanded}
-          renderExpanded={(r) => <WorkOrderDetail id={r.id} />}
+          renderExpanded={(r) => (
+            // onOpenWorkOrder = deep-link tok (?open=): novi klon-varijanta RN
+            // se filtrira po identu i otvara u listi.
+            <WorkOrderDetail id={r.id} onOpenWorkOrder={setOpenId} />
+          )}
           empty={
             <EmptyState
               title="Nema radnih naloga"

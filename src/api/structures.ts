@@ -155,7 +155,11 @@ export function useUpdateWorker() {
   });
 }
 
-/** Soft delete — postavlja active=false (backend nikad ne briše radnika). */
+/**
+ * Soft delete — postavlja active=false. Ovo je PODRAZUMEVANI put za sklanjanje
+ * radnika; tvrdo brisanje (useDeleteWorker ispod) postoji samo za radnika bez
+ * ijedne reference (typo unos), inače backend vraća 409.
+ */
 export function useDeactivateWorker() {
   const invalidate = useInvalidate();
   return useMutation({
@@ -163,6 +167,21 @@ export function useDeactivateWorker() {
       apiFetch<{ data: WorkerDetail }>(`/v1/structures/workers/${id}/deactivate`, {
         method: 'POST',
         body: '{}',
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/**
+ * Tvrdo brisanje radnika — dozvoljeno SAMO kad radnik nema nijednu referencu
+ * (typo unos); backend inače vraća 409 „deaktiviraj umesto brisanja".
+ */
+export function useDeleteWorker() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<{ data: { id: number; deleted: boolean } }>(`/v1/structures/workers/${id}`, {
+        method: 'DELETE',
       }),
     onSuccess: invalidate,
   });
@@ -221,6 +240,18 @@ export function useUpdateWorkUnit() {
   });
 }
 
+/** Brisanje RJ — backend vraća 409 ako je referišu operacije/radnici ili je code="0". */
+export function useDeleteWorkUnit() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<{ data: { id: number; deleted: boolean } }>(`/v1/structures/work-units/${id}`, {
+        method: 'DELETE',
+      }),
+    onSuccess: invalidate,
+  });
+}
+
 // ===========================================================================
 // VRSTE POSLOVA — /v1/structures/worker-types
 // ===========================================================================
@@ -269,6 +300,18 @@ export function useUpdateWorkerType() {
       apiFetch<{ data: WorkerType }>(`/v1/structures/worker-types/${id}`, {
         method: 'PATCH',
         body: JSON.stringify(data),
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/** Brisanje vrste posla — backend vraća 409 ako postoji ijedan radnik te vrste ili je id=0 (NN). */
+export function useDeleteWorkerType() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<{ data: { id: number; deleted: boolean } }>(`/v1/structures/worker-types/${id}`, {
+        method: 'DELETE',
       }),
     onSuccess: invalidate,
   });

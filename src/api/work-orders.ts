@@ -263,6 +263,31 @@ export function useCopyFromWorkOrder() {
   });
 }
 
+/** Rezultat klona „Prepiši isti postupak" (POST /:id/clone-variant). */
+export interface CloneVariantResult {
+  workOrderId: number;
+  identNumber: string;
+  variant: number;
+}
+
+/**
+ * „Prepiši isti postupak" (legacy klon-varijanta): NOVI RN sa ISTIM identom i
+ * `variant = MAX+1` po (predmet, crtež, revizija); kopira zaglavlje + sve stavke,
+ * status kreće od U OBRADI. Stari odštampani RN (manja varijanta) od tada pada
+ * na kiosk `staleWorkOrder` upozorenje.
+ */
+export function useCloneVariantWorkOrder() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<{ data: CloneVariantResult }>(`/v1/work-orders/${id}/clone-variant`, {
+        method: 'POST',
+        body: '{}',
+      }),
+    onSuccess: invalidate,
+  });
+}
+
 /** DORADA/ŠKART: kreiraj child RN iz izvora (sufiks -D/-S). */
 export function useReworkWorkOrder() {
   const invalidate = useInvalidate();
@@ -352,6 +377,53 @@ export function useUpdateOperation() {
         { method: 'PATCH', body: JSON.stringify(patch) },
       ),
     onSuccess: invalidate,
+  });
+}
+
+/** Ulaz za CAM prioritet operacije (PATCH /operations/:id/priority). */
+export interface SetOperationPriorityInput {
+  operationId: number;
+  /** 0–255 (255 = bez prioriteta / dno planske table). */
+  priority: number;
+}
+
+/** Podskup keširanog reda planske table dovoljan za optimistic update prioriteta. */
+type PriorityRow = { id: number; priority: number };
+
+/**
+ * CAM prioritet operacije sa planske table „Operacije po prioritetu" (D7).
+ * Namenski endpoint iza `tehnologija.write` — CNC programer NEMA `rn.write`;
+ * dozvoljeno i na lansiranom RN-u, zaključan RN → 422. Optimistic update
+ * keša planske table (rollback na grešku) + invalidacija na kraju.
+ */
+export function useSetOperationPriority() {
+  const qc = useQueryClient();
+  const queueKey = ['work-orders', 'operation-queue'];
+  return useMutation({
+    mutationFn: ({ operationId, priority }: SetOperationPriorityInput) =>
+      apiFetch<{ data: { id: number; workOrderId: number; priority: number } }>(
+        `/v1/work-orders/operations/${operationId}/priority`,
+        { method: 'PATCH', body: JSON.stringify({ priority }) },
+      ),
+    onMutate: async ({ operationId, priority }) => {
+      await qc.cancelQueries({ queryKey: queueKey });
+      const snapshots = qc.getQueriesData<{ data: PriorityRow[] }>({ queryKey: queueKey });
+      qc.setQueriesData<{ data: PriorityRow[] }>({ queryKey: queueKey }, (old) =>
+        old
+          ? {
+              ...old,
+              data: old.data.map((r) => (r.id === operationId ? { ...r, priority } : r)),
+            }
+          : old,
+      );
+      return { snapshots };
+    },
+    onError: (_err, _input, ctx) => {
+      for (const [key, data] of ctx?.snapshots ?? []) qc.setQueryData(key, data);
+    },
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: queueKey });
+    },
   });
 }
 
