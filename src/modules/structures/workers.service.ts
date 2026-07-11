@@ -8,6 +8,7 @@ import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { pageMeta, parsePagination } from "../../common/pagination";
 import { byId } from "../../common/relations";
+import { alignIdSequence } from "../../common/db-sequences";
 import {
   CreateWorkerDto,
   UpdateWorkerDto,
@@ -150,9 +151,7 @@ export class WorkersService {
 
     const created = await this.prisma.$transaction(async (tx) => {
       // Sync ubacuje eksplicitne legacy id-jeve; poravnaj sekvencu pre insert-a.
-      await tx.$executeRawUnsafe(
-        `SELECT setval(pg_get_serial_sequence('workers','id'), (SELECT COALESCE(MAX(id),0) FROM workers))`,
-      );
+      await alignIdSequence(tx, "workers");
       return tx.worker.create({
         data: {
           username: dto.username.trim(),

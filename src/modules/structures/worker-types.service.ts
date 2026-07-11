@@ -6,6 +6,7 @@ import {
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { pageMeta, parsePagination } from "../../common/pagination";
+import { alignIdSequence } from "../../common/db-sequences";
 import {
   CreateWorkerTypeDto,
   UpdateWorkerTypeDto,
@@ -45,9 +46,7 @@ export class WorkerTypesService {
   async create(dto: CreateWorkerTypeDto) {
     validateCreateWorkerType(dto);
     const created = await this.prisma.$transaction(async (tx) => {
-      await tx.$executeRawUnsafe(
-        `SELECT setval(pg_get_serial_sequence('worker_types','id'), (SELECT COALESCE(MAX(id),0) FROM worker_types))`,
-      );
+      await alignIdSequence(tx, "worker_types");
       return tx.workerType.create({
         data: {
           name: dto.name.trim(),

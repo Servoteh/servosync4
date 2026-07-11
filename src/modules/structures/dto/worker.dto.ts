@@ -38,6 +38,22 @@ export interface CreateWorkerDto {
 
 export type UpdateWorkerDto = Partial<CreateWorkerDto>;
 
+// Dužine po schema.prisma (Worker) — bez ovih provera duži unos puca kao
+// PG 22001 / Prisma P2000 → goli 500 umesto 400 (obrazac iz position.dto.ts).
+const WORKER_MAX_LENGTHS: [
+  keyof CreateWorkerDto,
+  number,
+  string, // labela za poruku
+][] = [
+  ["username", 50, "Korisničko ime"],
+  ["fullName", 50, "Ime i prezime"],
+  ["idNumber", 20, "Šifra radnika"],
+  ["cardId", 50, "ID kartice"],
+  ["loginAccount", 50, "Login account"],
+  ["workUnitCode", 5, "Šifra radne jedinice"],
+  ["signatureImage", 150, "Putanja do slike potpisa"],
+];
+
 export function validateCreateWorker(dto: CreateWorkerDto): void {
   const errors: string[] = [];
   if (typeof dto?.username !== "string" || !dto.username.trim())
@@ -47,5 +63,10 @@ export function validateCreateWorker(dto: CreateWorkerDto): void {
     (!Number.isInteger(dto.workerTypeId) || dto.workerTypeId < 0)
   )
     errors.push("Vrsta posla (workerTypeId) mora biti nenegativan ceo broj.");
+  for (const [field, max, label] of WORKER_MAX_LENGTHS) {
+    const v = dto?.[field];
+    if (typeof v === "string" && v.trim().length > max)
+      errors.push(`${label} sme imati najviše ${max} karaktera.`);
+  }
   if (errors.length) throw new BadRequestException(errors);
 }

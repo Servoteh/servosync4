@@ -11,6 +11,7 @@ import {
   SAFE_WORKER_SELECT,
 } from "../../common/pagination";
 import { byId, uniqueIds } from "../../common/relations";
+import { alignIdSequence } from "../../common/db-sequences";
 import {
   CreatePartLocationDto,
   RequisitionPartLocationDto,
@@ -224,7 +225,7 @@ export class PartLocationsService {
     const { projectId } = await this.resolveWorkOrderContext(dto.workOrderId);
 
     const created = await this.prisma.$transaction(async (tx) => {
-      await this.alignIdSequence(tx);
+      await this.alignPartLocationSequence(tx);
       return tx.partLocation.create({
         data: {
           workOrderId: dto.workOrderId,
@@ -279,7 +280,7 @@ export class PartLocationsService {
             `(raspoloživo ${available}, traženo ${dto.quantity}).`,
         );
 
-      await this.alignIdSequence(tx);
+      await this.alignPartLocationSequence(tx);
       const now = new Date();
       const fromRecord = await tx.partLocation.create({
         data: {
@@ -358,7 +359,7 @@ export class PartLocationsService {
             `(raspoloživo ${available}, traženo ${dto.quantity}).`,
         );
 
-      await this.alignIdSequence(tx);
+      await this.alignPartLocationSequence(tx);
       const record = await tx.partLocation.create({
         data: {
           workOrderId: dto.workOrderId,
@@ -417,12 +418,13 @@ export class PartLocationsService {
    * `part_locations.id` ima serijsku sekvencu (`@default(autoincrement())`), a sync
    * upisuje eksplicitne legacy id-jeve; poravnaj sekvencu pre insert-a da
    * autoincrement ne kolidira sa uvezenim redovima (isti obrazac kao
-   * `work-orders.service.ts` create()). Sekvenca (ne DMax+1) dodeljuje id atomično.
+   * `work-orders.service.ts` create()). Delegira na zajednički `alignIdSequence`
+   * (src/common/db-sequences.ts) — 3-arg `setval` bezbedan i na praznoj tabeli.
    */
-  private async alignIdSequence(tx: Prisma.TransactionClient): Promise<void> {
-    await tx.$executeRawUnsafe(
-      `SELECT setval(pg_get_serial_sequence('part_locations','id'), (SELECT COALESCE(MAX(id),0) FROM part_locations))`,
-    );
+  private async alignPartLocationSequence(
+    tx: Prisma.TransactionClient,
+  ): Promise<void> {
+    await alignIdSequence(tx, "part_locations");
   }
 
   /**

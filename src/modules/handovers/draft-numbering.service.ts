@@ -22,17 +22,20 @@ export class DraftNumberingService {
 
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${prefix}))`;
 
-    const latestToday = await tx.handoverDraft.findFirst({
+    // Numerički MAX preko svih redova dana (obrazac iz `nextWorkOrderIdent`),
+    // NE `orderBy draftNumber desc` string sort: leksikografski je '999' >
+    // '1000' pa bi se od 1000. nacrta u danu isti seq dodeljivao iznova
+    // (draft_number nema unique constraint → tihi duplikati).
+    const rows = await tx.handoverDraft.findMany({
       where: { draftNumber: { startsWith: prefix } },
-      orderBy: { draftNumber: "desc" },
       select: { draftNumber: true },
     });
+    let maxSeq = 0;
+    for (const r of rows) {
+      const n = Number.parseInt(r.draftNumber.slice(prefix.length), 10);
+      if (!Number.isNaN(n) && n > maxSeq) maxSeq = n;
+    }
 
-    const lastSeq = latestToday
-      ? Number.parseInt(latestToday.draftNumber.slice(prefix.length), 10)
-      : 0;
-    const seq = Number.isNaN(lastSeq) ? 1 : lastSeq + 1;
-
-    return `${prefix}${String(seq).padStart(3, "0")}`;
+    return `${prefix}${String(maxSeq + 1).padStart(3, "0")}`;
   }
 }

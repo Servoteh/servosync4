@@ -226,7 +226,7 @@ export class PrintBundleService {
   }
 
   private pdfKey(drawingNumber: string, revision: string): string {
-    return `${drawingNumber} ${revision}`;
+    return `${drawingNumber}\u0000${revision}`;
   }
 
   /**

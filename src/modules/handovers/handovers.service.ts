@@ -13,6 +13,7 @@ import {
 } from "../../common/pagination";
 import { byId, uniqueIds } from "../../common/relations";
 import { alignIdSequence } from "../../common/db-sequences";
+import { parseDateParam } from "../../common/date-params";
 import type { AuthUser } from "../auth/jwt.strategy";
 import { LaunchHandoverDto } from "./dto/launch-handover.dto";
 import { ApproveHandoverDto } from "./dto/approve-handover.dto";
@@ -155,10 +156,12 @@ export class HandoversService {
     where.statusId = intEq(query.statusId);
     where.handoverWorkerId = intEq(query.handoverWorkerId);
     where.technologistId = intEq(query.technologistId);
-    if (query.from || query.to) {
+    const from = parseDateParam(query.from, "from");
+    const to = parseDateParam(query.to, "to");
+    if (from || to) {
       const range: Prisma.DateTimeFilter = {};
-      if (query.from) range.gte = new Date(query.from);
-      if (query.to) range.lte = new Date(query.to);
+      if (from) range.gte = from;
+      if (to) range.lte = to;
       where.handoverDate = range;
     }
 
@@ -355,7 +358,9 @@ export class HandoversService {
           technologistId: 0, // undo dodele tehnologa
           statusChangedAt: new Date(),
           statusChangedById: actor?.workerId ?? null,
-          statusChangeComment: reason,
+          // `?? null` (ne undefined): undo bez razloga mora da OBRIŠE komentar
+          // prethodnog prelaza (approve poruku) — undefined bi ga tiho zadržao.
+          statusChangeComment: reason ?? null,
         },
       });
     });
@@ -388,7 +393,7 @@ export class HandoversService {
       /** Radnik iz JWT-a (`users.worker_id`) koji izvodi prelaz. */
       actorWorkerId?: number | null;
       /** Dodatne kolone koje se upisuju atomično sa prelazom (npr. technologistId). */
-      extra?: Prisma.DrawingHandoverUncheckedUpdateInput;
+      extra?: Prisma.DrawingHandoverUncheckedUpdateManyInput;
     },
   ) {
     await this.prisma.$transaction(async (tx) => {
@@ -404,16 +409,25 @@ export class HandoversService {
       if (handover.statusId !== opts.from)
         throw new ConflictException(opts.wrongStateMessage);
 
-      await tx.drawingHandover.update({
-        where: { id },
+      // Uslovni update (obrazac iz work-orders.launch): konkurentni approve i
+      // reject u READ COMMITTED oba prođu guard iznad, drugi bi bezuslovnim
+      // update-om pregazio prvog (npr. reject prepiše approve, a technologistId
+      // ostane dodeljen) — where po from-statusu ga umesto toga obara na 409.
+      const updated = await tx.drawingHandover.updateMany({
+        where: { id, statusId: opts.from, isLocked: false },
         data: {
           statusId: opts.to,
           statusChangedAt: new Date(),
           statusChangedById: opts.actorWorkerId ?? null,
-          statusChangeComment: opts.comment ?? undefined,
+          // `?? null` (ne undefined): prelaz bez komentara mora da OBRIŠE
+          // komentar prethodnog prelaza — undefined bi ga tiho zadržao uz
+          // novi statusChangedAt/By audit.
+          statusChangeComment: opts.comment ?? null,
           ...opts.extra,
         },
       });
+      if (updated.count === 0)
+        throw new ConflictException(opts.wrongStateMessage);
     });
   }
 
@@ -512,6 +526,9 @@ export class HandoversService {
       throw new UnprocessableEntityException(
         "Komentar može imati najviše 250 karaktera.",
       );
+    // `new Date("bilo šta")` = Invalid Date → PrismaClientValidationError →
+    // goli 500; validiraj rok pre bilo kakvog upisa.
+    const dueDate = parseDateParam(dto?.dueDate, "dueDate");
 
     const handover = await this.getHandoverForWorkOrder(id);
     this.assertNotLegacyGuarded(handover);
@@ -562,16 +579,38 @@ export class HandoversService {
           throw new ConflictException(
             `RN ${existing.identNumber} za ovu primopredaju je odbijen/zaključan — razrešite ga na Radnim nalozima pre lansiranja primopredaje.`,
           );
-        const data: Prisma.WorkOrderUncheckedUpdateInput = {
+        const data: Prisma.WorkOrderUncheckedUpdateManyInput = {
           handoverStatusId: HANDOVER_STATUS.LAUNCHED,
         };
-        if (dto?.dueDate) data.productionDeadline = new Date(dto.dueDate);
-        if (comment) data.note = comment;
-        workOrder = await tx.workOrder.update({
-          where: { id: existing.id },
+        if (dueDate) data.productionDeadline = dueDate;
+        // `note` postojećeg RN-a se NE prepisuje: tehnolog je na prepare-
+        // kreiranom RN-u mogao da upiše napomenu (updateHeader), a launch
+        // komentar ionako ide u `drawing_handovers.status_change_comment`.
+        // Uslovni update (obrazac iz work-orders.launch): konkurentni RN-level
+        // launch/reject/lock ne uzima naš advisory lock, pa je posle gornjeg
+        // čitanja mogao da promeni RN — bezuslovni update bi pregazio tuđi
+        // prelaz (npr. ODBIJENO → LANSIRAN) i napravio dupli launch red.
+        const updated = await tx.workOrder.updateMany({
+          where: {
+            id: existing.id,
+            handoverStatusId: HANDOVER_STATUS.APPROVED,
+            isLocked: false,
+          },
           data,
+        });
+        if (updated.count === 0)
+          throw new ConflictException(
+            `RN ${existing.identNumber} je u međuvremenu promenjen (lansiran/odbijen/zaključan) — osvežite pregled.`,
+          );
+        const refreshed = await tx.workOrder.findUnique({
+          where: { id: existing.id },
           select: HANDOVER_WO_SELECT,
         });
+        if (!refreshed)
+          throw new ConflictException(
+            `RN ${existing.identNumber} je u međuvremenu obrisan — osvežite pregled.`,
+          );
+        workOrder = refreshed;
       } else {
         // `ctx` je null samo ako je RN postojao pri pre-checku pa je obrisan
         // pre lock-a (uska utrka) — učitaj kontekst u mestu umesto `ctx!`
@@ -581,7 +620,7 @@ export class HandoversService {
           ctx: ctx ?? (await this.loadWorkOrderContext(handover)),
           handoverStatusId: HANDOVER_STATUS.LAUNCHED,
           actorWorkerId,
-          dueDate: dto?.dueDate,
+          dueDate,
           comment,
         });
       }
@@ -602,7 +641,9 @@ export class HandoversService {
           statusId: HANDOVER_STATUS.LAUNCHED,
           statusChangedAt: new Date(),
           statusChangedById: actorWorkerId,
-          statusChangeComment: comment,
+          // `?? null` (ne undefined): launch bez komentara mora da OBRIŠE
+          // komentar prethodnog prelaza (approve poruku) uz novi audit.
+          statusChangeComment: comment ?? null,
           launchedAt: new Date(),
           launchedById: actorWorkerId,
           isLocked: true,
@@ -707,7 +748,8 @@ export class HandoversService {
       ctx: HandoverWorkOrderContext;
       handoverStatusId: number;
       actorWorkerId: number | null;
-      dueDate?: string;
+      /** Već validiran (`parseDateParam` u `launch()`), zato `Date` a ne string. */
+      dueDate?: Date;
       comment?: string;
     },
   ) {
@@ -745,7 +787,7 @@ export class HandoversService {
         handoverWorkerId: handover.handoverWorkerId,
         handoverStatusId: opts.handoverStatusId,
         enteredAt: new Date(),
-        productionDeadline: opts.dueDate ? new Date(opts.dueDate) : null,
+        productionDeadline: opts.dueDate ?? null,
         note: opts.comment?.trim() || null,
         status: false,
         isLocked: false,
