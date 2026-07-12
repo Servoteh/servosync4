@@ -1524,6 +1524,11 @@ model WorkOrder {
   drawingId             Int                        @default(0) @map("drawing_id")
   handoverStatusId      Int                        @default(3) @map("handover_status_id")
   handoverWorkerId      Int                        @default(0) @map("handover_worker_id")
+  /// APP-ONLY (Miljan t.2, ODLUKE #35): dorada/škart child RN → izvorni RN
+  /// (work_orders.id). Strukturisano poreklo umesto samo `-D`/`-S` sufiksa u
+  /// identNumber-u — omogućava praćenje toka proizvodnje od izvornog naloga.
+  /// 0 = nema (ručni unos, clone-variant, bulk-clone). Popunjava ga rework().
+  parentWorkOrderId     Int                        @default(0) @map("parent_work_order_id")
   launches              WorkOrderLaunch[]
   machinedParts         WorkOrderMachinedPart[]
   blanks                WorkOrderBlank[]
@@ -2000,6 +2005,26 @@ model AppNotification {
 
   @@index([recipientWorkerId, readAt, createdAt(sort: Desc)], map: "idx_app_notifications_recipient_read_created")
   @@map("app_notifications")
+}
+
+/// App-owned (2.0, ODLUKE #8 + Miljan t.7). CAM/programiranje status po poziciji
+/// (RN): jedan red po `workOrderId`. Pozicija „zahteva CAM" se izvodi iz rutinga
+/// (operacija sa `operations.usesPriority=true`) — ovde se pamti SAMO da li je CAM
+/// završen + audit ko/kada (JWT worker). `workOrderId` bez DB FK (batch-resolve,
+/// isti razlog kao AppNotification). Timestamptz kao ostale 2.0 app-owned tabele.
+model CncProgram {
+  id                  Int       @id(map: "pk_cnc_programs") @default(autoincrement()) @map("id")
+  workOrderId         Int       @map("work_order_id")
+  isDone              Boolean   @default(false) @map("is_done")
+  /// Radnik (JWT worker_id) koji je čekirao „CAM završen"; NULL kad nije završeno.
+  completedByWorkerId Int?      @map("completed_by_worker_id")
+  completedAt         DateTime? @map("completed_at") @db.Timestamptz(6)
+  note                String?   @map("note") @db.VarChar(500)
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([workOrderId], map: "uq_cnc_programs_work_order")
+  @@map("cnc_programs")
 }
 
 /// Incremental sync cursor per logical scope (`entity` = stable key, e.g. `customers`).

@@ -62,6 +62,8 @@ export interface ListWorkOrdersQuery {
   to?: string;
   /** RN završen (`work_orders.status`): '' = svi, 'true' = završeni, 'false' = u radu. */
   completed?: string;
+  /** '1'/'true' = samo dorada/škart nalozi (poreklo != 0), pregled t.2. */
+  reworkOnly?: string;
 }
 
 /** Filteri za plansku tablu operacija po prioritetu (QBigTehn „Prioritet"). */
@@ -109,6 +111,8 @@ export class WorkOrdersService {
     where.externalCustomerId = intEq(query.customerId);
     if (query.completed === "true") where.status = true;
     else if (query.completed === "false") where.status = { not: true };
+    if (query.reworkOnly === "true" || query.reworkOnly === "1")
+      where.parentWorkOrderId = { gt: 0 };
     const from = parseDateParam(query.from, "from");
     const to = parseDateParam(query.to, "to");
     if (from || to) {
@@ -146,15 +150,20 @@ export class WorkOrdersService {
           qualityTypeId: true,
           enteredAt: true,
           productionDeadline: true,
+          parentWorkOrderId: true,
         },
       }),
       this.prisma.workOrder.count({ where }),
     ]);
 
-    const [workers, quals, statuses] = await Promise.all([
+    const [workers, quals, statuses, parents, locations] = await Promise.all([
       this.resolveWorkers(rows.map((r) => r.workerId)),
       this.resolveQualityTypes(rows.map((r) => r.qualityTypeId)),
       this.resolveStatuses(rows.map((r) => r.handoverStatusId)),
+      // t.2: izvorni RN za dorada/škart naloge (poreklo).
+      this.resolveParentRefs(rows.map((r) => r.parentWorkOrderId)),
+      // t.5: neto lokacije po pozicijama (relevantno za završene naloge).
+      this.resolveLocations(rows.map((r) => r.id)),
     ]);
 
     const data = rows.map((r) => ({
@@ -162,6 +171,11 @@ export class WorkOrdersService {
       worker: workers.get(r.workerId) ?? null,
       qualityType: quals.get(r.qualityTypeId) ?? null,
       handoverStatus: statuses.get(r.handoverStatusId) ?? null,
+      parentWorkOrder:
+        r.parentWorkOrderId > 0
+          ? (parents.get(r.parentWorkOrderId) ?? null)
+          : null,
+      locations: locations.get(r.id) ?? [],
     }));
 
     return { data, meta: pageMeta(page, pageSize, total) };
@@ -183,19 +197,28 @@ export class WorkOrdersService {
     });
     if (!wo) throw new NotFoundException(`Radni nalog ${id} ne postoji`);
 
-    const [workers, quals, statuses, ops] = await Promise.all([
-      this.resolveWorkers([
-        wo.workerId,
-        wo.handoverWorkerId,
-        ...wo.operations.map((o) => o.workerId),
-        ...wo.machinedParts.map((p) => p.workerId),
-        ...wo.blanks.map((p) => p.workerId),
-        ...wo.nonStandardParts.map((p) => p.workerId),
-      ]),
-      this.resolveQualityTypes([wo.qualityTypeId]),
-      this.resolveStatuses([wo.handoverStatusId]),
-      this.resolveOperationsByCode(wo.operations.map((o) => o.workCenterCode)),
-    ]);
+    const [workers, quals, statuses, ops, parents, children, locations] =
+      await Promise.all([
+        this.resolveWorkers([
+          wo.workerId,
+          wo.handoverWorkerId,
+          ...wo.operations.map((o) => o.workerId),
+          ...wo.machinedParts.map((p) => p.workerId),
+          ...wo.blanks.map((p) => p.workerId),
+          ...wo.nonStandardParts.map((p) => p.workerId),
+        ]),
+        this.resolveQualityTypes([wo.qualityTypeId]),
+        this.resolveStatuses([wo.handoverStatusId]),
+        this.resolveOperationsByCode(
+          wo.operations.map((o) => o.workCenterCode),
+        ),
+        // t.2 poreklo: izvorni RN (ako je ovo dorada/škart child).
+        this.resolveParentRefs([wo.parentWorkOrderId]),
+        // t.2 reverse: dorada/škart naslednici ovog RN-a.
+        this.reworkChildren(wo.id),
+        // t.5: neto lokacije po pozicijama.
+        this.resolveLocations([wo.id]),
+      ]);
     const w = (wid: number) => workers.get(wid) ?? null;
 
     const data = {
@@ -204,6 +227,12 @@ export class WorkOrdersService {
       handoverWorker: w(wo.handoverWorkerId),
       qualityType: quals.get(wo.qualityTypeId) ?? null,
       handoverStatus: statuses.get(wo.handoverStatusId) ?? null,
+      parentWorkOrder:
+        wo.parentWorkOrderId > 0
+          ? (parents.get(wo.parentWorkOrderId) ?? null)
+          : null,
+      reworkChildren: children,
+      locations: locations.get(wo.id) ?? [],
       operations: wo.operations.map((o) => ({
         ...o,
         worker: w(o.workerId),
@@ -273,6 +302,72 @@ export class WorkOrdersService {
       },
     });
     for (const r of rows) map.set(r.workCenterCode, r);
+    return map;
+  }
+
+  /**
+   * Batch: id → kratki ref izvornog RN-a (t.2 poreklo). 0-ovi se preskaču.
+   * Orphan/obrisani izvor → nema unosa (UI prikaže samo id ako želi).
+   */
+  private async resolveParentRefs(ids: number[]) {
+    const uniq = uniqueIds(ids.filter((id) => id > 0));
+    const map = new Map<
+      number,
+      { id: number; identNumber: string; variant: number }
+    >();
+    if (!uniq.length) return map;
+    const rows = await this.prisma.workOrder.findMany({
+      where: { id: { in: uniq } },
+      select: { id: true, identNumber: true, variant: true },
+    });
+    for (const r of rows) map.set(r.id, r);
+    return map;
+  }
+
+  /** Dorada/škart naslednici RN-a (reverse od parentWorkOrderId), t.2. */
+  private async reworkChildren(workOrderId: number) {
+    return this.prisma.workOrder.findMany({
+      where: { parentWorkOrderId: workOrderId },
+      select: {
+        id: true,
+        identNumber: true,
+        variant: true,
+        qualityTypeId: true,
+        pieceCount: true,
+      },
+      orderBy: { id: "asc" },
+    });
+  }
+
+  /**
+   * Batch: workOrderId → neto lokacije [{ positionCode, quantity }] (t.5).
+   * `part_locations` je signed ledger — neto = SUM(quantity) po (RN, pozicija);
+   * prikazuju se samo pozicije sa pozitivnim neto stanjem. Prazno kad RN nema
+   * evidentiranu lokaciju (nezavršeni / kontrola još nije lokovala delove).
+   */
+  private async resolveLocations(workOrderIds: number[]) {
+    const uniq = uniqueIds(workOrderIds);
+    const map = new Map<number, { positionCode: string; quantity: number }[]>();
+    if (!uniq.length) return map;
+    const grouped = await this.prisma.partLocation.groupBy({
+      by: ["workOrderId", "positionId"],
+      where: { workOrderId: { in: uniq } },
+      _sum: { quantity: true },
+    });
+    const positive = grouped.filter((g) => (g._sum.quantity ?? 0) > 0);
+    const positions = byId(
+      await this.prisma.position.findMany({
+        where: { id: { in: uniqueIds(positive.map((g) => g.positionId)) } },
+        select: { id: true, positionCode: true },
+      }),
+    );
+    for (const g of positive) {
+      const code = positions.get(g.positionId)?.positionCode;
+      if (!code) continue;
+      const list = map.get(g.workOrderId) ?? [];
+      list.push({ positionCode: code, quantity: g._sum.quantity ?? 0 });
+      map.set(g.workOrderId, list);
+    }
     return map;
   }
 
@@ -1081,6 +1176,8 @@ export class WorkOrdersService {
           qualityTypeId: dto.qualityTypeId,
           pieceCount: dto.pieceCount,
           note: dto.note?.trim() || source.note,
+          // Strukturisano poreklo (t.2): child dorada/škart RN pamti izvorni RN.
+          parentWorkOrderId: sourceId,
         }),
         select: { id: true },
       });
@@ -1268,6 +1365,9 @@ export class WorkOrdersService {
       handoverStatusId: WO_STATUS.IN_PROGRESS,
       handoverWorkerId: src.handoverWorkerId,
       variant: src.variant,
+      // Poreklo se NE nasleđuje po defaultu (clone-variant/bulk-clone su nezavisni
+      // nalozi); rework() ga eksplicitno override-uje na izvorni RN.
+      parentWorkOrderId: 0,
       ...overrides,
     };
   }
