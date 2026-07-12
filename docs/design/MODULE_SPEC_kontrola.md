@@ -12,6 +12,10 @@
 > Legacy „Kontrola" je imala **zaseban terminal/aplikaciju** (BarKodUnos2024) u kojoj su kontrolori radili. U 2.0
 > se **svi loguju u istu aplikaciju**; kontrola i kucanje postaju dva režima proširenog kioska. Ovaj spec ne
 > duplira tehnologiju/lokacije/štampu — **povezuje** ih i definiše samo ono što je specifično za terminal.
+>
+> **Ulaz u kiosk (od 12.07.2026):** nav stavke „Kucanje (pogon)"/„Kontrola (pogon)" su UKLONJENE iz 2.0
+> sidebara — kiosk se otvara direktnim URL-om `/kiosk` na terminalima ili preko 1.0 HUB pločica u oblasti
+> Proizvodnja (iframe deep-link, SSO handoff). Ruta i režimska logika su nepromenjeni.
 
 ## 1. Cilj i kontekst
 

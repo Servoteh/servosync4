@@ -1844,7 +1844,10 @@ svejedno evidentira. Vraća se u `scan`/`start`/`stop` odgovoru
 #### 4.6 Kiosk (pogon)
 
 `frontend/src/app/kiosk/` — full-screen touch panel, NAMERNO bez AppShell
-sidebar-a (poseban obrazac ekrana). Glavna komponenta `KioskScanner`
+sidebar-a (poseban obrazac ekrana). Od 12.07.2026 kiosk NEMA nav stavke u 2.0
+sidebaru („Kucanje (pogon)"/„Kontrola (pogon)" uklonjene) — ulaz je direktan
+URL na terminalima ili 1.0 HUB pločice u oblasti Proizvodnja (iframe deep-link
+na `/kiosk`). Glavna komponenta `KioskScanner`
 (`_components/kiosk-scanner.tsx`). Tok u 3 koraka:
 
 1. **Prijava** — ID karticom (`onCardScan` → `useIdentifyWorker`) ILI
