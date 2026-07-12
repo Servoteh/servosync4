@@ -16,6 +16,19 @@
    `auth.uid()`). Postojeće SECURITY DEFINER funkcije, RLS predikati i „moji/tim" view-ovi
    rade bez prepisivanja → **paritet po konstrukciji**. Tela funkcija se portuju u TS tek
    posle cutover-a (Faza B), nikad tokom seobe.
+2a. **⚠️ BYPASSRLS istina + SET-ROLE most (nalaz review-a Talasa B, 12.07).** Rola
+   `servosync2_app` ima `BYPASSRLS` → RLS politike se NE evaluiraju za direktne
+   Prisma/queryRaw upite kroz `withUser`. To je bezbedno SAMO za module gde su čitanja
+   `SELECT true` a mutacije idu kroz DEFINER RPC (Reversi, Lokacije). **Za svaku tabelu sa
+   row-scoped SELECT/DML politikom (učesnik/svoje/mgmt scope) OBAVEZAN je
+   `Sy15Service.withUserRls`**: GUC claims + `SET LOCAL ROLE authenticated` u istoj tx —
+   politike i table privilegije tada važe identično kao kroz PostgREST (1.0 paritet po
+   konstrukciji; `servosync2_app` je član `authenticated` od 12.07,
+   1.0 migracija `20260712_talas_b_r0_set_role_bridge.sql`). Posledica za R0: talasi čija
+   cela front površina ide kroz `withUserRls` NE traže direktne table/fn grantove —
+   nasleđuju ih od `authenticated`. Zabranjeno je „emulirati" RLS WHERE klauzulama u TS-u
+   (duplira policy logiku — krši §C). SECURITY INVOKER fn (npr. `ai_chat_sql`) smeju se
+   izvršavati ISKLJUČIVO pod `withUserRls`, nikad kao BYPASSRLS rola.
 3. **Paralelni rad = ista baza.** 1.0 UI i 2.0 UI rade nad ISTIM podacima istovremeno.
    „Cutover" modula je čist UI preklop (hub kartica → 2.0 ruta) sa 1.0 kao instant fallback.
    Nema feature flag-ova, nema resync-a, nema duplih baza.
