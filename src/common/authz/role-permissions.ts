@@ -195,6 +195,11 @@ export const ROLE_PERMISSIONS: Partial<
     P.REVERSI_READ,
     P.REVERSI_MANAGE,
     P.REVERSI_TEAM_READ,
+    // Energetika/SCADA (Talas E, MODULE_SPEC_scada_30 §2): paritet
+    // `scada_is_admin_or_management()` — SAMO admin (ALL) + menadzment. SCADA nije
+    // za sve → BEZ viewer read-baseline; nijedna druga rola (ni sef/tehnolog).
+    P.ENERGETIKA_READ,
+    P.ENERGETIKA_CONTROL,
   ],
 
   // AKTIVIRANE 10.07.2026 uz 3.0-pilot Reversi (Nenad) — paritet rev_can_manage().

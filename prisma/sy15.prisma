@@ -249,3 +249,77 @@ model RevToolStockLedger {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   @@map("rev_tool_stock_ledger")
 }
+
+// =====================================================================
+// TALAS E — Energetika / SCADA (scada_*). MODULE_SPEC_scada_30.md §1.
+// GENERISANO iz zive sy15 information_schema 2026-07-12 (cloud restore-izvor;
+// poznat drift = SAMO scada_alarm_push_trg URL, ne dira sheme tabela).
+// PK se ZADRZAVA (text key / uuid / composite (site,metric,ts)). Bez FK relacija
+// (1.0 sema ih nema). Upisuje ISKLJUCIVO bridge (service_role) — 2.0 BE u R1 samo
+// CITA (kroz withUserRls: scada_* politike su scada_is_admin_or_management()-scope,
+// a servosync2_app ima BYPASSRLS — doktrina A.2a). scada_notify_prefs NEMA model:
+// v2, cita se $queryRaw kad dobije UI (spec §2/§7 P6).
+// =====================================================================
+
+model ScadaSite {
+  key String @id
+  name String
+  kind String
+  protocol String?
+  online Boolean @default(false)
+  lastSeen DateTime? @map("last_seen") @db.Timestamptz(6)
+  sortOrder Int @default(0) @map("sort_order")
+  meta Json @default("{}")
+  @@map("scada_sites")
+}
+
+model ScadaSnapshot {
+  siteKey String @id @map("site_key")
+  payload Json
+  online Boolean @default(false)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("scada_snapshots")
+}
+
+model ScadaHistory {
+  siteKey String @map("site_key")
+  metric String
+  ts DateTime @db.Timestamptz(6)
+  value Float?
+  @@id([siteKey, metric, ts])
+  @@map("scada_history")
+}
+
+model ScadaAlarm {
+  // id = bigint identity; ZADUZEN service_role (bridge). Cita se; BE ga preslikava
+  // u Number pre JSON odgovora (BigInt nije JSON-serializabilan) — vidi service.
+  id BigInt @id @default(autoincrement())
+  siteKey String @map("site_key")
+  code String
+  severity Int @default(3) @db.SmallInt
+  text String?
+  active Boolean @default(true)
+  raisedAt DateTime @default(now()) @map("raised_at") @db.Timestamptz(6)
+  clearedAt DateTime? @map("cleared_at") @db.Timestamptz(6)
+  @@map("scada_alarms")
+}
+
+model ScadaCommand {
+  // outbox + audit u jednom (NIKAD se ne brise — spec §1). status: pending/claimed/
+  // applied/failed/rejected/expired. idempotency_key = 1.0 'ui-<ts>-<rand>' (partial
+  // unique u bazi). R1 samo CITA (audit tab + poll); INSERT + cancel su R2 (control).
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  siteKey String @map("site_key")
+  target String
+  op String @default("set")
+  value Json?
+  status String @default("pending")
+  requestedBy String @map("requested_by")
+  requestedAt DateTime @default(now()) @map("requested_at") @db.Timestamptz(6)
+  claimedAt DateTime? @map("claimed_at") @db.Timestamptz(6)
+  appliedAt DateTime? @map("applied_at") @db.Timestamptz(6)
+  expiresAt DateTime @default(dbgenerated("(now() + '00:02:00'::interval)")) @map("expires_at") @db.Timestamptz(6)
+  idempotencyKey String? @map("idempotency_key")
+  result Json?
+  @@map("scada_commands")
+}

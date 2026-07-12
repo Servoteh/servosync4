@@ -62,6 +62,33 @@ export class Sy15Service implements OnModuleDestroy {
   }
 
   /**
+   * GUC most + SET-ROLE (doktrina A.2a — nalaz review-a Talasa B, 12.07). Rola
+   * `servosync2_app` ima **BYPASSRLS** → za direktne Prisma/queryRaw upite kroz
+   * `withUser` se RLS politike NE evaluiraju. Za svaku tabelu sa row-scoped ili
+   * mgmt-scope SELECT/DML politikom (npr. scada_* = `scada_is_admin_or_management()`)
+   * OBAVEZAN je ovaj put: postavi claims (kao app rola — `authenticated` NEMA SELECT
+   * na `auth.users`), pa `SET LOCAL ROLE authenticated` u ISTOJ transakciji → politike
+   * i table privilegije važe identično kao kroz PostgREST (1.0 paritet po konstrukciji).
+   * Redosled je bitan: claims PRE `SET ROLE`. (`servosync2_app` je član `authenticated`
+   * od 12.07 — 1.0 migracija `20260712_talas_b_r0_set_role_bridge.sql`.)
+   *
+   * NE menja `withUser` (BYPASSRLS put je i dalje ispravan za module gde su čitanja
+   * `SELECT true` a mutacije idu kroz DEFINER RPC — Reversi/Lokacije).
+   */
+  async withUserRls<T>(
+    email: string,
+    fn: (tx: Sy15Tx) => Promise<T>,
+  ): Promise<T> {
+    return this.db.$transaction(async (tx) => {
+      await this.setClaims(tx, email);
+      // Role name je konstanta (nije korisnički unos) — Unsafe je bezbedan; SET LOCAL
+      // ROLE ne prima parametre. Skida BYPASSRLS za ostatak tx → RLS se evaluira.
+      await tx.$executeRawUnsafe("SET LOCAL ROLE authenticated");
+      return fn(tx);
+    });
+  }
+
+  /**
    * Postavi GUC claims za transakciju. `sub` = sy15 `auth.users.id` po email-u —
    * OBAVEZAN za mutacije: rev_issue_reversal/confirm_return upisuju
    * `issued_by`/`return_confirmed_by` preko `auth.uid()` (= claims->>'sub');
@@ -78,7 +105,9 @@ export class Sy15Service implements OnModuleDestroy {
       this.subByEmail.set(email, sub);
     }
     const claims = JSON.stringify(
-      sub ? { sub, email, role: "authenticated" } : { email, role: "authenticated" },
+      sub
+        ? { sub, email, role: "authenticated" }
+        : { email, role: "authenticated" },
     );
     await tx.$queryRaw`SELECT set_config('request.jwt.claims', ${claims}, true)`;
   }
