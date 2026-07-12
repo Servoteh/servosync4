@@ -273,6 +273,8 @@ Plan proizvodnje (view čitanja + overlay write) → Plan montaže (Gantt FE + A
 
 ## 7. Otvorena pitanja (Nenad presuđuje; svako sa predlogom)
 
+> ✅ **PRESUĐENO 12.07.2026 (Nenad): „VAŽE PREDLOZI" — sva pitanja + H1–H4 usvojeni bez izuzetaka.**
+
 1. **`tim_lider` edit Plana montaže je danas fantomski** (§2-2): front dozvoljava, ali izmene ne stižu u bazu (save sloj `canEdit()` + RLS bez tim_lider-a) — žive samo u localStorage tog browsera i nestaju na reload sa DB-a. **Predlog:** u 2.0 dati tim_lider-u PRAVI edit — dodela `montaza.edit` u role-permissions + proširiti `has_edit_role()` (ili GUC poziv sa dopunom) za tim_lider; eksplicitno odstupanje od 1.0 sa razlogom „1.0 ponašanje je bag-by-omission".
 2. **`has_edit_role` širina (hr, poslovni_admin)**: DB dozvoljava edit PM tabela i za hr/poslovni_admin, front ih ne pušta. **Predlog:** paritet — DB širina ostaje (GUC), UI dodela `montaza.edit` BEZ hr/poslovni_admin (kao danas); zabeleženo kao pravilo firme, ne dirati fn.
 3. **Pogon ne može da otvori PDF crteža** (`can_read_production_drawings` bez cnc_operater/tim_lider/proizvodni_radnik/monter) iako vidi Plan proizvodnje/Praćenje. **Predlog:** v1 = strogi paritet (isti gate na presigned); odmah otvoriti follow-up odluku da se doda bar `cnc_operater` (izgleda kao propust, ali je možda namerno — crteži su IP).

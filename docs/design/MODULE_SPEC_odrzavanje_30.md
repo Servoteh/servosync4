@@ -416,6 +416,8 @@ dvoslojni `/me` gating.
 
 ## 7. Otvorena pitanja (Nenad presuđuje; svako sa konkretnim predlogom)
 
+> ✅ **PRESUĐENO 12.07.2026 (Nenad): „VAŽE PREDLOZI" — sva pitanja + H1–H4 usvojeni bez izuzetaka.**
+
 1. **Mrtav notifikacioni dispatch.** Edge `maint-notify-dispatch` ne može da radi (RPC-ovi
    `maint_dispatch_dequeue/mark_sent/mark_failed` nikad primenjeni na živu bazu; nema schedulera;
    30 poruka `queued`, poslednja isporuka aprila). **Predlog:** u Talasu F seliti SAMO paritet

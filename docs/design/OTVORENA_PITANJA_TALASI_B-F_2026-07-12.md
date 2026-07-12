@@ -1,5 +1,7 @@
 # KONSOLIDOVANA OTVORENA PITANJA — talasi B–F (spec faza, 12.07.2026)
 
+> ✅ **PRESUĐENO 12.07.2026 (Nenad): „VAŽE PREDLOZI" — sva pitanja + H1–H4 usvojeni bez izuzetaka.**
+
 **Svrha:** Nenad presuđuje u JEDNOM prolazu. Svako pitanje ima predlog — odgovor
 „**VAŽE PREDLOZI**" prihvata sve; izuzeci se navode po broju (npr. „važe osim C3, E2").
 Puni kontekst svakog pitanja: §7 odgovarajućeg MODULE_SPEC-a.

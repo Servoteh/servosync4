@@ -347,6 +347,8 @@ duplirati Kadrovska tela — svaka „popravka" HR RPC-a je van obima (vlasnik G
 
 ## 7. Otvorena pitanja (Nenad presuđuje; svako sa predlogom)
 
+> ✅ **PRESUĐENO 12.07.2026 (Nenad): „VAŽE PREDLOZI" — sva pitanja + H1–H4 usvojeni bez izuzetaka.**
+
 1. **Dvostrano upravljanje nalozima tokom paralelnog rada** — 2.0 admin konzola mora li da održava i 1.0 svet?
    **Predlog: DA — 2.0 postaje master**: invite/edit/reset piše u sy15 (GoTrue admin API + `user_roles`) I u 2.0
    (`users`/`user_roles`/`user_permission_overrides`); 1.0 usersTab ostaje read-fallback do cutover-a taba; smer

@@ -190,6 +190,8 @@ Bez SSE/WS u v1 — front poll-uje kao 1.0 (snapshots ~5–10 s aktivan tab, ban
 
 ## 7. Otvorena pitanja (Nenad presuđuje; svako sa predlogom)
 
+> ✅ **PRESUĐENO 12.07.2026 (Nenad): „VAŽE PREDLOZI" — sva pitanja + H1–H4 usvojeni bez izuzetaka.**
+
 1. **Hosting HMI statике**: kopija `public/scada-hmi/` u 2.0 front public/ (dva primerka do
    gašenja 1.0 — ispravke se rade u 1.0 repou pa kopiraju)? **Predlog: DA, kopija** + README
    napomena „izvor istine = 1.0 repo"; sinhronizacija je retka (ekrani stabilni od 07/2026).

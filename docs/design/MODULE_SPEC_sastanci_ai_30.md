@@ -260,6 +260,8 @@ zapisnika, pozivnice, PDF — kao u 1.0.
 
 ## 7. Otvorena pitanja (Nenad presuđuje — svako sa predlogom)
 
+> ✅ **PRESUĐENO 12.07.2026 (Nenad): „VAŽE PREDLOZI" — sva pitanja + H1–H4 usvojeni bez izuzetaka.**
+
 1. **Edge `ai-chat` → NestJS port?** 2.0 FE nema 1.0 GoTrue JWT pa edge ne može da ga autentifikuje.
    **Predlog: DA — port u NestJS** (ključevi u BE env; tool-use petlja u TS; 22 RPC alata NETAKNUTA
    kroz GUC most sa identitetom 2.0 korisnika; upis istorije BE rolom = ekvivalent service role).
