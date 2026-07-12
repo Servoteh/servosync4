@@ -7,6 +7,7 @@ import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
 import { Tabs, type TabKey } from './_components/tabs';
 import { PendingTab } from './_components/pending-tab';
+import { WritingTab } from './_components/writing-tab';
 import { ApprovedTab } from './_components/approved-tab';
 import { AllHandoversTab } from './_components/all-handovers-tab';
 
@@ -14,6 +15,8 @@ import { AllHandoversTab } from './_components/all-handovers-tab';
  * Primopredaje (MODULE_SPEC_nacrti_primopredaje §8) — tok odobravanja
  * (tehnolozi, ODLUKE #33) nad backend/src/modules/handovers/:
  *   - Na čekanju  → GET /v1/handovers/pending-approval + approve/reject (handovers.controller.ts)
+ *   - Na pisanju  → GET /v1/handovers/writing-stats (brojači) + GET /v1/handovers?statusId=1
+ *                   (read-only pregled kod tehnologa na pisanju tehnologije, Paket A t.9)
  *   - Odobrene    → GET /v1/handovers?statusId=1 + prepare-work-order/launch/return-to-pending
  *   - Sve primopredaje → GET /v1/handovers + isti workflow dugmad
  * Nacrti (handover-drafts, radni prostor projektanata) su na zasebnoj ruti /nacrti.
@@ -43,6 +46,7 @@ export default function HandoversPage() {
         <Tabs value={tab} onChange={setTab} />
 
         {tab === 'pending' && <PendingTab />}
+        {tab === 'writing' && <WritingTab />}
         {tab === 'approved' && <ApprovedTab />}
         {tab === 'all' && <AllHandoversTab />}
       </div>

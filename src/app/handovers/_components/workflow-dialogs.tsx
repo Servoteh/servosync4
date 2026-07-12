@@ -61,6 +61,7 @@ export function ApproveHandoverDialog({
   const [technologist, setTechnologist] = useState<WorkerRef | null>(null);
   const [dueDate, setDueDate] = useState('');
   const [comment, setComment] = useState('');
+  const [urgent, setUrgent] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -68,6 +69,7 @@ export function ApproveHandoverDialog({
     setTechnologist(null);
     setDueDate('');
     setComment('');
+    setUrgent(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
@@ -79,6 +81,8 @@ export function ApproveHandoverDialog({
         technologistId: technologist.id,
         dueDate: dueDate || undefined,
         comment: comment.trim() || undefined,
+        // Paket A t.10 — šalje se samo kad je štriklirano (hook izostavlja false).
+        isUrgent: urgent || undefined,
       },
       { onSuccess: onClose },
     );
@@ -133,6 +137,19 @@ export function ApproveHandoverDialog({
         >
           <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
         </FormField>
+        {/* HITNO (Paket A t.10) — crveni bedž uz status svuda gde se primopredaja lista. */}
+        <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
+          <input
+            type="checkbox"
+            checked={urgent}
+            onChange={(e) => setUrgent(e.target.checked)}
+            className="h-4 w-4 shrink-0 accent-accent"
+          />
+          <span className="font-medium text-status-danger">HITNO</span>
+          <span className="text-xs text-ink-secondary">
+            — primopredaja se svuda označava crvenim bedžom „HITNO”.
+          </span>
+        </label>
         <FormField label="Komentar">
           <Textarea
             value={comment}

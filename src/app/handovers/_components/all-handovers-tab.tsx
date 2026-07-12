@@ -12,6 +12,7 @@ import {
   HANDOVER_STATUS_OPTIONS,
   LegacyBadge,
   NativeSelect,
+  UrgentBadge,
   errorBox,
   handoverStatusMeta,
 } from './common';
@@ -43,6 +44,8 @@ const columns: Column<Handover>[] = [
       return (
         <span className="inline-flex items-center gap-1.5">
           <StatusBadge tone={s.tone} label={s.label} />
+          {/* HITNO (Paket A t.10) — uz status, ne umesto njega (DESIGN_SYSTEM §7). */}
+          {r.isUrgent && <UrgentBadge />}
           {r.isLocked && <StatusBadge tone="warn" label="Zaključana" />}
           {r.isLegacy && <LegacyBadge />}
         </span>

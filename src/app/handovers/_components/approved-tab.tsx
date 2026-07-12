@@ -18,7 +18,7 @@ import { ComboBox } from '@/components/ui-kit/combo-box';
 import { Can } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
 import { formatDate, formatNumber } from '@/lib/format';
-import { LEGACY_TOOLTIP, LegacyBadge, errMsg, errorBox } from './common';
+import { LEGACY_TOOLTIP, LegacyBadge, UrgentBadge, errMsg, errorBox } from './common';
 import { HandoverDetailPanel } from './handover-detail';
 import { TakeOverButton } from './take-over-button';
 import { LaunchHandoverDialog, ReturnToPendingDialog } from './workflow-dialogs';
@@ -63,12 +63,13 @@ export function ApprovedTab() {
     {
       key: 'drawing',
       header: 'Crtež',
-      // Tab nema kolonu Status (sve je SAGLASAN) — Legacy bedž ide uz broj crteža.
+      // Tab nema kolonu Status (sve je SAGLASAN) — Legacy/HITNO bedž ide uz broj crteža.
       render: (r) => (
         <span className="inline-flex items-center gap-1.5">
           <span className="tnums font-semibold text-ink">
             {r.drawing ? `${r.drawing.drawingNumber} / ${r.drawing.revision}` : '—'}
           </span>
+          {r.isUrgent && <UrgentBadge />}
           {r.isLegacy && <LegacyBadge />}
         </span>
       ),

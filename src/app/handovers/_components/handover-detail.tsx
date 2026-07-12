@@ -8,6 +8,7 @@ import {
   useRejectHandover,
   type Handover,
 } from '@/api/handovers';
+import { openDrawingPdf } from '@/api/pdm';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Button } from '@/components/ui-kit/button';
@@ -21,6 +22,7 @@ import {
   LEGACY_TOOLTIP,
   LegacyBadge,
   Textarea,
+  UrgentBadge,
   handoverStatusMeta,
 } from './common';
 import {
@@ -117,6 +119,8 @@ export function HandoverDetailPanel({ handover }: { handover: Handover }) {
   const [launching, setLaunching] = useState(false);
   const [returning, setReturning] = useState(false);
   const [printOpen, setPrintOpen] = useState(false);
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const [pdfError, setPdfError] = useState<string | null>(null);
   const busy = reject.isPending || prepare.isPending;
 
   const s = handoverStatusMeta(handover.statusId);
@@ -132,13 +136,46 @@ export function HandoverDetailPanel({ handover }: { handover: Handover }) {
   // "Otkucaj TP" (nema dijalog, direktna mutacija).
   const actionError = prepare.error;
 
+  /**
+   * PDF crteža stavke (Paket A t.3) — isti obrazac kao /pdm i print dijalog:
+   * endpoint traži JWT pa običan <a href> NE radi; fetch blob kroz api klijent
+   * (`openDrawingPdf` = apiBlob → objectURL → window.open). PDF koji ne postoji
+   * (404) prikazuje poruku ispod dugmadi — ekran se ne ruši.
+   */
+  async function onOpenPdf() {
+    if (pdfBusy) return;
+    setPdfBusy(true);
+    setPdfError(null);
+    try {
+      await openDrawingPdf(handover.drawingId);
+    } catch (e) {
+      setPdfError(
+        e instanceof Error && e.message
+          ? e.message
+          : 'PDF crteža nije dostupan — proveri da je PDF uvezen u PDM.',
+      );
+    } finally {
+      setPdfBusy(false);
+    }
+  }
+
   return (
     <div className="space-y-4 text-sm">
       <div className="flex flex-wrap items-center gap-2">
         <StatusBadge tone={s.tone} label={s.label} />
+        {/* HITNO (Paket A t.10) — uz status, ne umesto njega (DESIGN_SYSTEM §7). */}
+        {handover.isUrgent && <UrgentBadge />}
         {locked && <StatusBadge tone="warn" label="Zaključana" />}
         {legacy && <LegacyBadge />}
         <span className="flex-1" />
+        {/* PDF crteža je read-only kao i štampa — dostupan u svakom statusu. */}
+        <button
+          onClick={onOpenPdf}
+          disabled={pdfBusy}
+          className={`${actionBtn} border border-line text-ink-secondary`}
+        >
+          {pdfBusy ? 'Otvaranje PDF-a…' : 'PDF crteža'}
+        </button>
         {/* Štampa crteža je read-only (endpoint = primopredaje.read, kao i sam
             prikaz) — dostupna u svakom statusu, bez permission gate-a. */}
         <button
@@ -225,6 +262,11 @@ export function HandoverDetailPanel({ handover }: { handover: Handover }) {
       </div>
 
       {actionError && <ErrorText error={actionError} />}
+      {pdfError && (
+        <p className="text-sm text-status-danger" role="alert">
+          {pdfError}
+        </p>
+      )}
 
       <dl className="grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-4">
         <Field label="Crtež" value={drawing ? `${drawing.drawingNumber} / ${drawing.revision}` : '—'} />

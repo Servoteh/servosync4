@@ -386,6 +386,12 @@ export interface Handover {
    * cutover-a blokira backend guard sa 409 — UI drži dugmad disabled.
    */
   isLegacy: boolean;
+  /**
+   * HITNO oznaka (Paket A t.10) — postavlja se pri odobravanju (approve telo,
+   * `isUrgent`). Opciono/defanzivno: stariji backend polje ne vraća
+   * (undefined = nije hitno). Prikaz: crveni „HITNO" bedž uz status.
+   */
+  isUrgent?: boolean;
   drawing: DrawingRef | null;
   status: StatusRef | null;
   handoverWorker: WorkerRef | null;
@@ -484,6 +490,42 @@ export function useTechnologistsLookup(q: string) {
   return { data: { data }, isLoading: list.isLoading };
 }
 
+// ─────────────────────────────── brojači „na pisanju tehnologije" (Paket A t.9)
+
+export interface WritingStatsTechnologist {
+  workerId: number;
+  fullName: string | null;
+  count: number;
+}
+
+export interface WritingStatsProject {
+  projectId: number | null;
+  code: string | null;
+  name: string | null;
+  count: number;
+}
+
+/** GET /v1/handovers/writing-stats — primopredaje SAGLASAN + dodeljen tehnolog, nelansirane. */
+export interface WritingStats {
+  total: number;
+  byTechnologist: WritingStatsTechnologist[];
+  byProject: WritingStatsProject[];
+}
+
+/**
+ * Brojači primopredaja „na pisanju tehnologije" za tab „Na pisanju".
+ * DEFANZIVNO: endpoint je nov — dok backend ne stigne vraća 404, pa `retry:
+ * false` (ne ponavljati uzaludno) i UI na grešku TIHO sakrije brojače.
+ */
+export function useHandoverWritingStats() {
+  return useQuery({
+    queryKey: ['handovers', 'writing-stats'],
+    queryFn: () => apiFetch<{ data: WritingStats }>('/v1/handovers/writing-stats'),
+    retry: false,
+    staleTime: 60_000,
+  });
+}
+
 function useInvalidateHandovers() {
   const qc = useQueryClient();
   return () => qc.invalidateQueries({ queryKey: ['handovers'] });
@@ -494,6 +536,8 @@ function useInvalidateHandovers() {
  * `technologistId` je OBAVEZAN (backend 422 ako fali / nije aktivan radnik
  * vrste „Tehnolog"). `dueDate` (P4 §6.5.1) je OPCION rok izrade (ISO; 400 za
  * nevalidan datum) → `production_deadline`, kasnije se propagira u RN.
+ * `isUrgent` (Paket A t.10) je OPCION — šalje se SAMO kad je true, da stariji
+ * backend (whitelist validacija) ne odbije telo sa nepoznatim poljem.
  */
 export function useApproveHandover() {
   const invalidate = useInvalidateHandovers();
@@ -503,15 +547,22 @@ export function useApproveHandover() {
       technologistId,
       comment,
       dueDate,
+      isUrgent,
     }: {
       id: number;
       technologistId: number;
       comment?: string;
       dueDate?: string;
+      isUrgent?: boolean;
     }) =>
       apiFetch<{ data: Handover }>(`/v1/handovers/${id}/approve`, {
         method: 'POST',
-        body: JSON.stringify({ technologistId, comment, dueDate }),
+        body: JSON.stringify({
+          technologistId,
+          comment,
+          dueDate,
+          ...(isUrgent ? { isUrgent: true } : {}),
+        }),
       }),
     onSuccess: invalidate,
   });

@@ -112,6 +112,7 @@
 | RN | Kasni (rok probijen) | crvena | `--status-danger` |
 | RN / primopredaja | Zaključan(a) (`isLocked`) | narandžasta | `--status-warn` |
 | Primopredaja | U obradi | neutralna | `--status-neutral` |
+| Primopredaja / TP kartica | Hitno (`isUrgent`, uz status — ne umesto njega) | crvena | `--status-danger` |
 | Primopredaja | Saglasan | zelena | `--status-success` |
 | Primopredaja | Odbijeno | crvena | `--status-danger` |
 | Primopredaja | Lansiran | info plava | `--status-info` |

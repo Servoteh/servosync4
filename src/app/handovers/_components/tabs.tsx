@@ -8,10 +8,13 @@ import { cn } from '@/lib/cn';
 
 // Tab „Nacrti" je izdvojen na zasebnu rutu /nacrti (ODLUKE #33 — radni
 // prostor projektanata, odvojen od toka odobravanja).
-export type TabKey = 'pending' | 'approved' | 'all';
+// „Na pisanju" (Paket A t.9) = primopredaje kod tehnologa na pisanju
+// tehnologije (SAGLASAN + dodeljen tehnolog, nelansirane) + brojači.
+export type TabKey = 'pending' | 'writing' | 'approved' | 'all';
 
 export const TABS: { key: TabKey; label: string }[] = [
   { key: 'pending', label: 'Na čekanju' },
+  { key: 'writing', label: 'Na pisanju' },
   { key: 'approved', label: 'Odobrene' },
   { key: 'all', label: 'Sve primopredaje' },
 ];

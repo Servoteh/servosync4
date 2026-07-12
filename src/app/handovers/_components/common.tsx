@@ -165,6 +165,20 @@ export function LegacyBadge() {
   );
 }
 
+/**
+ * Crveni bedž „HITNO" (Paket A t.10) — kanonska mapa DESIGN_SYSTEM §7
+ * (Primopredaja/TP kartica · Hitno · `--status-danger`). Prikazuje se UZ
+ * status (ne umesto njega) svuda gde se primopredaja lista; postavlja se
+ * checkbox-om pri odobravanju (`isUrgent` u approve telu).
+ */
+export function UrgentBadge() {
+  return (
+    <span title="Označeno kao hitno pri odobravanju" className="inline-flex">
+      <StatusBadge tone="danger" label="HITNO" />
+    </span>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────── statusi
 
 /**

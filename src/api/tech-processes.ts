@@ -10,6 +10,16 @@ export interface WorkerRef {
   username: string;
 }
 
+/**
+ * Tehnolog autor TP-a (sa RN-a) — Paket A t.6a. `username` je ovde nullable
+ * (za razliku od `WorkerRef`) jer backend ugovor tako definiše polje.
+ */
+export interface TechnologistRef {
+  id: number;
+  fullName: string | null;
+  username: string | null;
+}
+
 export interface TechProcess {
   id: number;
   workerId: number;
@@ -26,7 +36,13 @@ export interface TechProcess {
   workOrderId: number;
   signature: string | null;
   note: string | null;
+  /** Radnik koji je otkucao red (postojeće polje — NE tehnolog). */
   worker: WorkerRef | null;
+  /**
+   * Tehnolog autor TP-a (sa RN-a) — Paket A t.6a. Opciono/defanzivno: polje
+   * stiže sa novim backendom; stariji backend ga ne vraća (undefined).
+   */
+  technologist?: TechnologistRef | null;
 }
 
 export interface TechProcessDocument {
@@ -134,6 +150,11 @@ export interface TechProcessCard {
   projectId: number;
   identNumber: string;
   variant: number;
+  /**
+   * HITNO oznaka sa primopredaje (Paket A t.10) — badge u zaglavlju kartice.
+   * Opciono/defanzivno: stariji backend polje ne vraća (undefined = nije hitno).
+   */
+  isUrgent?: boolean;
   /** Broj DISTINCT (operationNumber, workCenterCode) parova — NE broj redova/kucanja. */
   operationCount: number;
   /** Broj distinct parova sa bar jednim završenim redom — NE broj zatvorenih redova. */

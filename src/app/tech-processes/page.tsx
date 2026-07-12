@@ -177,9 +177,20 @@ const listColumns: Column<TechProcess>[] = [
       ),
   },
   {
+    // Miljanov feedback t.6a: `worker` = radnik koji je otkucao red (header je
+    // ranije POGREŠNO glasio „Tehnolog") — tehnolog autor TP-a je zasebna kolona.
     key: 'worker',
-    header: 'Tehnolog',
+    header: 'Radnik',
     render: (r) => <span className="text-ink-secondary">{r.worker?.fullName ?? '—'}</span>,
+  },
+  {
+    // Tehnolog autor TP-a (sa RN-a) — novo polje `technologist` (defanzivno:
+    // stariji backend ga ne vraća → „—").
+    key: 'technologist',
+    header: 'Tehnolog',
+    render: (r) => (
+      <span className="text-ink-secondary">{r.technologist?.fullName ?? '—'}</span>
+    ),
   },
   {
     key: 'enteredAt',
@@ -320,10 +331,14 @@ function TechProcessCardDetail({ tp }: { tp: TechProcess }) {
   const colCount = cardRowColumns.length;
   return (
     <div className="space-y-3">
-      <SectionHeading
-        title="Kartica kucanja"
-        count={`${formatNumber(card.operationCount)} operacija · ${formatNumber(card.finishedCount)} završeno · ${formatNumber(s.entryCount)} kucanja`}
-      />
+      <div className="flex flex-wrap items-center gap-3">
+        <SectionHeading
+          title="Kartica kucanja"
+          count={`${formatNumber(card.operationCount)} operacija · ${formatNumber(card.finishedCount)} završeno · ${formatNumber(s.entryCount)} kucanja`}
+        />
+        {/* HITNO sa primopredaje (Paket A t.10) — kanonska mapa DESIGN_SYSTEM §7. */}
+        {card.isUrgent && <StatusBadge tone="danger" label="HITNO" />}
+      </div>
 
       <dl className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
         <SumTile label="Ukupno kom" value={formatNumber(s.totalPieces)} />
