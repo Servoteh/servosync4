@@ -6,10 +6,11 @@ import { cn } from '@/lib/cn';
 // Kopirano iz src/app/tech-processes/page.tsx (zadatak: "Tabovi: kopiraj Tabs iz
 // tech-processes/page.tsx") — segmentovana pilula-navigacija, ista kao tamo.
 
-export type TabKey = 'drafts' | 'pending' | 'approved' | 'all';
+// Tab „Nacrti" je izdvojen na zasebnu rutu /nacrti (ODLUKE #33 — radni
+// prostor projektanata, odvojen od toka odobravanja).
+export type TabKey = 'pending' | 'approved' | 'all';
 
 export const TABS: { key: TabKey; label: string }[] = [
-  { key: 'drafts', label: 'Nacrti' },
   { key: 'pending', label: 'Na čekanju' },
   { key: 'approved', label: 'Odobrene' },
   { key: 'all', label: 'Sve primopredaje' },

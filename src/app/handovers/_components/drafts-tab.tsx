@@ -575,7 +575,7 @@ function DraftDetail({
 }: {
   draft: HandoverDraft;
   onEdit: (detail: HandoverDraftDetail) => void;
-  onSubmitted: () => void;
+  onSubmitted?: () => void;
 }) {
   const q = useHandoverDraft(draft.id);
   const del = useDeleteHandoverDraft();
@@ -716,7 +716,7 @@ function DraftDetail({
           submit.mutate(d.id, {
             onSuccess: () => {
               setConfirmingSubmit(false);
-              onSubmitted();
+              onSubmitted?.();
             },
           })
         }
@@ -756,7 +756,7 @@ function DraftDetail({
 
 // ─────────────────────────────────────────────────────────────── tab
 
-export function DraftsTab({ onSubmitted }: { onSubmitted: () => void }) {
+export function DraftsTab({ onSubmitted }: { onSubmitted?: () => void }) {
   const [q, setQ] = useState('');
   const [statusId, setStatusId] = useState<number | ''>('');
   const [isLocked, setIsLocked] = useState<'' | 'true' | 'false'>('');

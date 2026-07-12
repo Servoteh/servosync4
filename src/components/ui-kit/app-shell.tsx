@@ -84,8 +84,11 @@ const NAV_SECTIONS: NavSection[] = [
     title: 'Projektovanje',
     items: [
       { label: 'PDM / Crteži', href: '/pdm', icon: DraftingCompass, requires: PERMISSIONS.PDM_READ },
-      { label: 'Nacrti', href: '/handovers', icon: PencilRuler, requires: PERMISSIONS.PRIMOPREDAJE_READ },
-      { label: 'Primopredaje', href: '/handovers', icon: PackageCheck, requires: PERMISSIONS.PRIMOPREDAJE_READ },
+      // Nacrti (projektanti, gate write) i Primopredaje (tehnolozi, gate
+      // approve) su ODVOJENE rute — deljena ruta je palila obe stavke kao
+      // aktivne istovremeno (ODLUKE #33).
+      { label: 'Nacrti', href: '/nacrti', icon: PencilRuler, requires: PERMISSIONS.PRIMOPREDAJE_WRITE },
+      { label: 'Primopredaje', href: '/handovers', icon: PackageCheck, requires: PERMISSIONS.PRIMOPREDAJE_APPROVE },
     ],
   },
   {
@@ -119,7 +122,7 @@ const NOTIFICATION_BADGE: Record<string, { tone: Tone; label: string }> = {
 /** refTable → ruta modula (navigacija na klik; bez deep-linka — lista modula). */
 const NOTIFICATION_ROUTE: Record<string, string> = {
   work_orders: '/work-orders',
-  handover_drafts: '/handovers',
+  handover_drafts: '/nacrti',
   drawing_handovers: '/handovers',
 };
 
