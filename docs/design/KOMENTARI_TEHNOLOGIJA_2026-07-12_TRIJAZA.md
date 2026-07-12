@@ -1,31 +1,41 @@
-# Komentari tehnologije na 2.0 — trijaža (2026-07-12)
+# Komentari tehnologije na 2.0 — trijaža + status (2026-07-12)
 
 Izvor: `Komentari tehnologija V2.0.pdf` (Miljan — „meni i Jovici" u t.10; PDF u ovom folderu).
 Trijaža ukrštena sa stanjem koda na dan 12.07.2026 (posle ODLUKE #33 — razdvajanje
 Nacrti `/nacrti` / Primopredaje `/handovers` + `primopredaje.approve` za tehnolog/menadžment).
 
+> **STATUS 12.07.2026:** Paket A (t.1/3/6a/9/10) i Paket B (t.2/5/7) **ISPORUČENI i verifikovani
+> na produkciji** (ODLUKE #34/#35). **Paket C (t.4, t.6b, t.8) je NAMERNO ODLOŽEN za posle 3.0
+> migracije** — sve tri tačke se preklapaju sa 3.0 preraspodelom modula / integracijom lokacija /
+> mobilnom aplikacijom, pa bi rad sada stvorio konflikte sa 3.0 rewrite-om. Opis u
+> [ROADMAP.md §3.0](../ROADMAP.md). Ovaj dokument je izvor istine statusa Miljanovog feedback-a.
+
 Status legenda: ✅ već postoji · 🐛 potvrđen bug · 🔧 mali zahvat · 🏗️ srednji · 📐 arhitektura/3.0.
+Realizacija: **A** = isporučeno (Paket A) · **B** = isporučeno (Paket B) · **⏸ 3.0** = odloženo za 3.0.
 
-| # | Komentar | Trijaža | Nalaz / predlog |
-|---|---|---|---|
-| 1 | Ne upisuje tehnologa pri novom RN („može po loginu") | ✅ + **data fix** | Backend VEĆ default-uje na login: `workerId: dto.workerId ?? actor?.workerId ?? 0` (work-orders.service.ts create). Stvarni uzrok: **`users.worker_id` NIJE vezan** za tehnologe u prod bazi (miljan id11, nikola id12, aleksandar id14, stefan id15, dragan id16 — svi NULL; jedino jovica id13→74). Fix = UPDATE users na produ (mapiranje po imenu iz `workers`, uz potvrdu) — isti fix odblokira i „Preuzmi izradu" (traži vezanog radnika) i notifikacije (inbox po worker_id). |
-| 2 | Dorada/škart inicira SAMO kontrola; tehnolozi (svi) lansiraju novi RN po doradi/škartu | 🏗️ | Dugme „Dorada/Škart" na RN kartici danas nije ograničeno na kontrolore. Predlog: gate akcije na kontrolor-put (paritet A-5 finalne kontrole), a za tehnologe tok „novi RN po doradi/škartu" (klon sa vezom na izvorni RN — postoji `Prepiši isti postupak`/clone-variant kao osnova; dodati referencu porekla radi praćenja od sečenja). Traži kratku spec odluku o statusima izvornog RN-a. |
-| 3 | U primopredaji uvid u crtež (PDF) | 🔧 | Backend već ima `GET /pdm/drawings/:id/pdf/content` i print-bundle. Dodati pregled PDF-a po stavci u handover-detail (i na nacrtu) — dugme/inline viewer, bez novih endpointa. |
-| 4 | Statusi pozicije kroz ceo tok (U PROJEKTOVANJU → … → ZAVRŠEN NA LOKACIJI, 8 koraka) | 📐 | Jedinstvena IZVEDENA statusna mapa preko postojećih izvora: drawing State → nacrt status → primopredaja 0/1/2/3 → RN/TP → kucanja → lokacija. NE uvoditi novu status kolonu — derived view + jedan ekran „Tok pozicije". Preseca se sa integracijom lokacija (3.0) i P5 cutover-om; zaseban spec pre gradnje. Trenutni bedževi (PREDAT/ODOBRENO/ZA PRIMOPREDAJU/U OBRADI/LANSIRAN/SAGLASAN) ostaju kao sirovi statusi ispod mape. |
-| 5 | Završene pozicije: dodati lokaciju | 🏗️ | Kolona „Lokacija" u Završeni nalozi — join na lokacije delova (part-locations postoji read-only). Zavisi od kvaliteta legacy lokacijskih podataka; malo ako su podaci upotrebljivi. |
-| 6a | Realizacija: kolona „Tehnolog" pogrešna | 🐛 | POTVRĐENO: frontend `tech-processes/page.tsx` header „Tehnolog" renderuje `r.worker` = radnik koji je KUCAO red (tech_processes.worker_id), ne autora TP-a. Fix: preimenovati kolonu u „Radnik" + dodati pravu kolonu Tehnolog iz `work_orders.worker_id` (batch-resolve u list endpointu). |
-| 6b | „Praćenje i planiranje proizvodnje" kao modul u PROIZVODNJA; izbaciti Realizaciju iz tehnologije | 📐 | Nav sekcija „Proizvodnja" već postoji (Realizacija je u njoj); NOVI modul planiranja = 3.0 tema (2.0 ceo postaje modul „Tehnologija" u 3.0 — preraspodela modula se radi tamo). Zabeležiti kao 3.0 zahtev. |
-| 7 | CAM Programiranje modul (lista pozicija za CAM + cekiranje „završen" sa auditom po loginu) | 🏗️ | Osnova postoji: CAM prioritet inline endpoint + odluka o `cnc_programs` tabeli (ODLUKE #8). Novi ekran „CAM lista" + polje završeno/ko/kada (JWT workerId). Kandidat za sledeći talas. |
-| 8 | Evidencija RN mobilni modul za radnike; izbaciti kucanje/kontrola (pogon) iz tehnologije | 📐 | Mobilni unos = Faza 2 (ODLUKE #18; priprema urađena: čist REST/JWT + telefon-čitljiv RNZ). Preraspodela pogonskih ekrana = 3.0 modul struktura, uz 6b. |
-| 9 | Pod Primopredaje: pregled crteža „na pisanju tehnologije" + filter/brojači po tehnologu i predmetu | 🔧/🏗️ | Direktno nadovezivanje na razdvojeni `/handovers`: `technologistId` filter već postoji (P0/P1); dodati tab/pregled „Na pisanju" (SAGLASAN sa dodeljenim tehnologom, pre lansiranja) + agregat broj crteža po tehnologu / po predmetu. |
-| 10 | Status HITNO pri slanju tehnolozima, vidljiv i na TP (danas crvene nalepnice) | 🔧 | Polje `is_urgent` na `drawing_handovers`, postavlja se pri approve (Miljan/Jovica od 12.07 imaju `primopredaje.approve` — poklapa se sa tokom), badge u Primopredaje + TP kartici + RN štampi. Migracija + DTO + UI bedž. |
+| # | Komentar | Trijaža | Status | Nalaz / šta je urađeno |
+|---|---|---|---|---|
+| 1 | Ne upisuje tehnologa pri novom RN („može po loginu") | ✅ + **data fix** | **✅ A** | Backend je VEĆ default-ovao na login; uzrok je bio nevezan `users.worker_id`. **Urađeno:** vezani na produ (Miljan→13, Nikola→43, Aleksandar→77, Stefan→181, Dragan→2226; ODLUKE #34). Odblokiralo i „Preuzmi izradu" + notifikacije. |
+| 2 | Dorada/škart inicira SAMO kontrola; tehnolozi (svi) lansiraju novi RN po doradi/škartu | 🏗️ | **✅ B** | Role su bile ispravne (kontrola inicira kvalitet na kiosku, tehnolozi lansiraju rework iza `rn.write`). **Urađeno (ODLUKE #35):** strukturisano poreklo `work_orders.parent_work_order_id` — `rework()` upisuje izvorni RN; kartica prikazuje izvor + dorada/škart decu; filter „Samo dorada/škart". Workflow role NEPROMENJENE. |
+| 3 | U primopredaji uvid u crtež (PDF) | 🔧 | **✅ A** | **Urađeno:** dugme „PDF crteža" u detalju primopredaje (reuse `GET /pdm/drawings/:id/pdf/content` kroz autentifikovani blob). |
+| 4 | Statusi pozicije kroz ceo tok (U PROJEKTOVANJU → … → ZAVRŠEN NA LOKACIJI, 8 koraka) | 📐 | **⏸ 3.0** | Jedinstvena IZVEDENA statusna mapa preko postojećih izvora (drawing State → nacrt → primopredaja 0/1/2/3 → RN/TP → kucanja → lokacija). **ODLOŽENO za 3.0** — preseca ceo lifecycle kroz module (PB/projektovanje → tehnologija → proizvodnja → lokacije) i integraciju lokacija koja je 3.0 tema; radeći sada bi se kosilo sa 3.0 rewrite-om. Detalj: [ROADMAP §3.0](../ROADMAP.md). |
+| 5 | Završene pozicije: dodati lokaciju | 🏗️ | **✅ B** | **Urađeno:** kolona „Lokacija" na /completed-orders (neto iz `part_locations` ledgera, SUM po poziciji, batch-resolve u work-orders list). |
+| 6a | Realizacija: kolona „Tehnolog" pogrešna | 🐛 | **✅ A** | **Urađeno:** kolona koja je prikazivala radnika koji je kucao preimenovana u „Radnik" + prava kolona „Tehnolog" (RN `worker_id`, batch-resolve). |
+| 6b | „Praćenje i planiranje proizvodnje" kao modul u PROIZVODNJA; izbaciti Realizaciju iz tehnologije | 📐 | **⏸ 3.0** | NOVI modul planiranja + preraspodela ekrana. **ODLOŽENO za 3.0** — ceo 2.0 postaje modul „Tehnologija" u 3.0 i tada se moduli preraspodeljuju; raditi sada = dupli posao + konflikt sa 3.0 reorg. Detalj: [ROADMAP §3.0](../ROADMAP.md). |
+| 7 | CAM Programiranje modul (lista pozicija za CAM + cekiranje „završen" sa auditom po loginu) | 🏗️ | **✅ B** | **Urađeno (ODLUKE #35):** nova tabela `cnc_programs` + modul `cnc-programs`, ekran „CAM programiranje" (pozicije sa `operations.usesPriority=true`), inline checkbox „CAM završen" sa auditom ko/kada iz JWT-a; gate `tehnologija.read/write`. |
+| 8 | Evidencija RN mobilni modul za radnike; izbaciti kucanje/kontrola (pogon) iz tehnologije | 📐 | **⏸ 3.0 (delom ✅)** | Pogonski ekrani su VEĆ premešteni u 1.0 HUB (ODLUKE #33 nastavak — pločice „Kucanje/Kontrola (pogon)", sidebar stavke uklonjene). **Mobilni „Evidencija RN" za radnike ODLOŽEN za 3.0** — mobilna aplikacija (Capacitor) se prerađuje u 3.0 (ODLUKE #18, Faza 2); priprema postoji (čist REST/JWT + telefon-čitljiv RNZ). Detalj: [ROADMAP §3.0](../ROADMAP.md). |
+| 9 | Pod Primopredaje: pregled crteža „na pisanju tehnologije" + filter/brojači po tehnologu i predmetu | 🔧/🏗️ | **✅ A** | **Urađeno:** tab „Na pisanju" na /handovers + `GET /handovers/writing-stats` (brojači po tehnologu / po predmetu). |
+| 10 | Status HITNO pri slanju tehnolozima, vidljiv i na TP (danas crvene nalepnice) | 🔧 | **✅ A** | **Urađeno (ODLUKE #34):** `drawing_handovers.is_urgent`, checkbox pri approve, badge u listama/detalju/TP kartici + crveni „HITNO" na RN štampi (menja fizičke nalepnice). |
 
-## Predlog paketa (za potvrdu pre rada)
+## Status realizacije (12.07.2026)
 
-- **Paket A — quick winovi:** 1 (data fix `users.worker_id` na produ), 6a (kolona Radnik/Tehnolog),
-  3 (PDF uvid u primopredaji), 10 (HITNO), 9 (pregled „Na pisanju" + brojači).
-- **Paket B — sledeći talas:** 2 (dorada/škart tok sa poreklom RN-a), 5 (lokacija u završenim), 7 (CAM ekran).
-- **Paket C — spec/3.0:** 4 (izvedena statusna mapa pozicije — zaseban spec), 6b + 8 (reorganizacija
-  modula Proizvodnja + mobilni).
+- **Paket A — ISPORUČEN** (ODLUKE #34, backend `33d86df` + frontend `af0632e`): t.1 (worker_id vezani),
+  t.6a (Radnik/Tehnolog kolone), t.3 (PDF uvid), t.10 (HITNO), t.9 (tab „Na pisanju" + writing-stats).
+- **Paket B — ISPORUČEN** (ODLUKE #35, backend `4760bd5` + frontend `c239310`): t.2 (poreklo dorada/škart
+  RN-a `parent_work_order_id`), t.5 (lokacija u završenim), t.7 (CAM modul `cnc_programs`).
+- **Paket C — ODLOŽEN ZA POSLE 3.0 MIGRACIJE** (odluka Nenad 12.07 — izbeći konflikte sa 3.0 rewrite-om):
+  t.4 (izvedena statusna mapa pozicije kroz ceo lifecycle), t.6b (modul „Praćenje i planiranje" +
+  preraspodela ekrana), t.8-mobilni (Evidencija RN mobilni). Opisani kao 3.0 zahtevi u
+  [ROADMAP.md §3.0 „Zahtevi tehnologije (Miljan) za 3.0"](../ROADMAP.md). **Ne implementirati u 2.0.**
 
 Odluke se, kad padnu, upisuju u [ODLUKE.md](../ODLUKE.md).

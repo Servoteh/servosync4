@@ -87,6 +87,13 @@ Od 8.7. do danas (detaljno: [PREOSTALE_FAZE.md](PREOSTALE_FAZE.md) + [MODUL_TEHN
   ali gated do cutover-a** (Magacini živo; customers/projects/items/Cenovnik čekaju). Izvor sync-a
   **izmenjen: ubuntu + `mdb-tools` (drop share), NE XML export** (vidi §Sync B ispod). Alat:
   [`tools/bigbit-bridge/`](../tools/bigbit-bridge/); plan: [migration/BB_T_26_ANALIZA_I_PLAN.md](migration/BB_T_26_ANALIZA_I_PLAN.md).
+- **Feedback tehnologije (Miljan, „Komentari V2.0") — Paketi A+B ISPORUČENI 12.07:** 10 komentara
+  ukršteno sa kodom ([design/KOMENTARI_TEHNOLOGIJA_2026-07-12_TRIJAZA.md](design/KOMENTARI_TEHNOLOGIJA_2026-07-12_TRIJAZA.md)).
+  **Paket A** (ODLUKE #34): tehnolozi vezani na radnike (`users.worker_id`), HITNO flag
+  (`is_urgent` + badge/RN-štampa), Radnik/Tehnolog kolone u Realizaciji, PDF crteža iz primopredaje,
+  tab „Na pisanju" + `writing-stats`. **Paket B** (ODLUKE #35): poreklo dorada/škart RN-a
+  (`work_orders.parent_work_order_id`), lokacija u završenim nalozima, CAM modul (`cnc_programs`,
+  ekran „CAM programiranje" sa audit-om). **Paket C (t.4/6b/8) ODLOŽEN za 3.0** — vidi §3.0 dole.
 - **Preostalo za 2.0 = kozmetika** (UI dorade, sitni bugfix) — nema više velikih modula.
 
 ### Trenutno stanje repo-a (checkpoint 2026-07-08)
@@ -229,6 +236,41 @@ veza sa Supabase-om, ne aplikacija:
 5. **Service worker / PWA keš** — Workbox regex ima hardkodovane Supabase URL-ove; ažurirati na nove API putanje.
 
 Mobilni UI ekrani (~7.3K LOC `mobile my*`) idu kroz istu preradu kao desktop ekrani — nisu poseban trošak.
+
+### Zahtevi tehnologije (Miljan) koji čekaju 3.0 — Paket C
+
+Tri tačke iz feedback-a tehnologije („Komentari V2.0", trijaža:
+[design/KOMENTARI_TEHNOLOGIJA_2026-07-12_TRIJAZA.md](design/KOMENTARI_TEHNOLOGIJA_2026-07-12_TRIJAZA.md))
+su **namerno odložene za 3.0** (odluka Nenad 12.07.2026) jer se svaka preseca sa 3.0 poslom —
+raditi ih u 2.0 sada značilo bi dupli posao i konflikte sa 3.0 rewrite-om:
+
+- **t.4 — Jedinstvena statusna mapa pozicije kroz ceo tok.** Miljan traži jasan sled statusa:
+  *U PROJEKTOVANJU → NA ODOBRENJU VODEĆEG PROJEKTANTA → NA ODOBRENJU ZA PISANJE TEHNOLOGIJE →
+  NA PISANJU TEHNOLOGIJE → LANSIRAN U PROIZVODNJU → LANSIRAN A NIJE ZAPOČETA PROIZVODNJA
+  (nema materijala…) → U TOKU PROIZVODNJA → ZAVRŠEN I NA NEKOJ LOKACIJI.*
+  Pristup: **IZVEDENA (derived) statusna mapa**, ne nova status kolona — spaja postojeće izvore
+  (drawing State → nacrt → primopredaja 0/1/2/3 → RN/TP → kucanja → lokacija) u jedan „Tok pozicije"
+  ekran. **Zašto 3.0:** mapa preseca ceo lifecycle kroz module koji u 3.0 tek dolaze u isti stack
+  (projektni biro/projektovanje iz 1.0) + oslanja se na **integraciju lokacija** (3.0 tema); prvi
+  koraci (U PROJEKTOVANJU / odobrenje vodećeg projektanta) žive u PB modulu koji se seli u 3.0.
+  Traži zaseban spec kad PB i lokacije budu u istom stack-u.
+
+- **t.6b — Modul „Praćenje i planiranje proizvodnje" + izbaciti „Realizaciju" iz Tehnologije.**
+  Miljan traži da se planiranje/praćenje izdvoji kao poseban modul u domenu Proizvodnja, a „Realizacija"
+  (kucanja) skloni iz Tehnologije. **Zašto 3.0:** ceo 2.0 postaje jedan modul „Tehnologija" u 3.0 i
+  tada se moduli **preraspodeljuju po MES domenima** (isti posao kao HUB restrukturiranje već urađeno
+  u 1.0). Praviti novi modul + seliti ekrane sada = dupli rad koji se u 3.0 reorg-u ionako ponavlja.
+  U 3.0 se rešava zajedno sa preraspodelom domena Proizvodnja.
+
+- **t.8 — Mobilna „Evidencija radnih naloga" za radnike u proizvodnji/kontroli.** (Pogonski ekrani
+  „Kucanje/Kontrola (pogon)" su VEĆ premešteni u 1.0 HUB pločice — ODLUKE #33 nastavak — pa je taj deo
+  t.8 gotov.) Preostaje **mobilni pregled/evidencija RN** vidljiv radnicima. **Zašto 3.0:** mobilna
+  aplikacija (Capacitor) se u 3.0 prerađuje kao celina (vidi „Mobilna aplikacija" gore — offline queue,
+  auth, push, realtime, SW keš); dodavati nov mobilni ekran pre te prerade znači graditi na sloju koji
+  se menja. Priprema postoji od 2.0 (čist REST/JWT + telefon-čitljiv RNZ barkod, ODLUKE #18 Faza 2).
+
+Kad 3.0 krene, ove tačke ulaze u odgovarajuće korake sekvence (t.6b uz preraspodelu domena Proizvodnja,
+t.4 kad PB+lokacije budu u istom stack-u, t.8 uz mobilnu preradu). **Do tada se NE diraju u 2.0.**
 
 ### Sekvenca
 Strangler-fig, modul po modul: prvo auth + RBAC parnost, pa jedan modul kraj-do-kraja (npr. Lokacije ili Reversi kao pilot za merenje tempa), pa ostali; Supabase se gasi tek kad poslednji modul pređe.
