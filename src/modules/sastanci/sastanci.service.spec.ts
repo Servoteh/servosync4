@@ -28,7 +28,10 @@ describe("SastanciService — withUserRls most + BigInt out", () => {
         (_email: string, fn: (t: unknown) => Promise<unknown>) => fn(tx),
       ),
     };
-    const svc = new SastanciService(sy15 as unknown as Sy15Service);
+    const svc = new SastanciService(
+      sy15 as unknown as Sy15Service,
+      {} as never,
+    );
     return { svc, sy15, tx };
   }
 

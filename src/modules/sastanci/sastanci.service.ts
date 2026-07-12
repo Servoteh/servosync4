@@ -5,8 +5,10 @@ import {
   NotFoundException,
   UnprocessableEntityException,
 } from "@nestjs/common";
+import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
+import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
 import { pageMeta, parsePagination } from "../../common/pagination";
 import type {
   AkcijeQueryDto,
@@ -44,8 +46,10 @@ import type {
   UpdatePrefsDto,
   UpdateSastanakDto,
   UpdateTemaDto,
+  UpdateSlikaDto,
   UpdateTemplateDto,
   UpdateUcesnikDto,
+  UploadSlikaDto,
   WeeklyOdloziDto,
   WeeklyPomeriDto,
   WeeklyVratiDto,
@@ -89,7 +93,10 @@ const AKCIJE_ORDER = Prisma.sql`ORDER BY rb ASC NULLS LAST, rok ASC NULLS LAST, 
 
 @Injectable()
 export class SastanciService {
-  constructor(private readonly sy15: Sy15Service) {}
+  constructor(
+    private readonly sy15: Sy15Service,
+    private readonly storage: Sy15StorageService,
+  ) {}
 
   // ---------- Liste / pretraga ----------
 
@@ -1696,5 +1703,191 @@ export class SastanciService {
       );
       return { data: { model: rows[0]?.result ?? null } };
     });
+  }
+
+  // ==========================================================================
+  // R2.2 — STORAGE (bucketi sastanci-arhiva, sastanak-slike) preko sy15 storage-api
+  // BE proxy sa SY15_SERVICE_KEY (Reversi obrazac); pravo se proverava PRE operacije
+  // kroz withUserRls nad meta-redom (bucket RLS se zaobilazi service ključem).
+  // Putanje IDENTIČNE 1.0 (paralelni rad — §C): arhiva `{id}/{ts}_zapisnik.pdf`,
+  // slike `{id}/{uuid}_{safeBase}`.
+  // ==========================================================================
+
+  /**
+   * Upload PDF zapisnika u `sastanci-arhiva` (paritet uploadSastanakPdf). Vraća
+   * storagePath koji FE prosleđuje u `/lock` (RPC upiše path PRE meeting_locked
+   * trigera — §2 p.8). Ako arhiva red već postoji (regeneriši na zaključanom),
+   * PATCH-uje path (best-effort, kroz withUserRls — RLS write-scope presuđuje).
+   * Guard = sastanci.edit (paritet bucket INSERT = has_edit_role).
+   */
+  async uploadArhivaPdf(email: string, id: string, file?: Express.Multer.File) {
+    if (!file?.buffer?.length || file.mimetype !== "application/pdf") {
+      throw new UnprocessableEntityException(
+        "Očekivan PDF fajl (multipart polje `file`)",
+      );
+    }
+    // Postojanje + read-vidljivost sastanka (SELECT je `true` za sve prijavljene).
+    await this.withUserMapped(email, async (tx) => {
+      const c = await tx.sastanak.count({ where: { id } });
+      if (!c) throw new NotFoundException(`Sastanak ${id} ne postoji`);
+    });
+    const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const storagePath = `${id}/${ts}_zapisnik.pdf`;
+    await this.storage.upload(
+      "sastanci-arhiva",
+      storagePath,
+      new Uint8Array(file.buffer),
+      "application/pdf",
+    );
+    // Ako red postoji (npr. regeneriši na zaključanom) — upiši path; RLS presuđuje.
+    await this.withUserMapped(email, async (tx) => {
+      await tx.sastanakArhiva.updateMany({
+        where: { sastanakId: id },
+        data: {
+          zapisnikStoragePath: storagePath,
+          zapisnikSizeBytes: BigInt(file.buffer.length),
+          zapisnikGeneratedAt: new Date(),
+        },
+      });
+    });
+    return { data: { storagePath } };
+  }
+
+  /**
+   * Presigned URL PDF-a zapisnika. Fajl je vidljiv samo mgmt ∨ učesniku (bucket
+   * SELECT politika) — proveravamo kroz withUserRls PRE potpisivanja (service ključ
+   * zaobilazi bucket RLS). Paritet downloadSastanakPdf.
+   */
+  async getArhivaPdfUrl(email: string, id: string) {
+    const path = await this.withUserMapped(email, async (tx) => {
+      const allowed = await tx.$queryRaw<{ ok: boolean }[]>(
+        Prisma.sql`SELECT (current_user_is_management() OR is_sastanak_ucesnik(${id}::uuid)) AS ok`,
+      );
+      if (!allowed[0]?.ok) {
+        throw new ForbiddenException(
+          "Nemate pravo na PDF zapisnika (niste učesnik ni rukovodstvo)",
+        );
+      }
+      const arh = await tx.sastanakArhiva.findUnique({
+        where: { sastanakId: id },
+        select: { zapisnikStoragePath: true },
+      });
+      if (!arh?.zapisnikStoragePath) {
+        throw new NotFoundException(
+          "Arhiva nema PDF (zapisnik_storage_path prazan)",
+        );
+      }
+      return arh.zapisnikStoragePath;
+    });
+    return { data: await this.storage.signUrl("sastanci-arhiva", path, 300) };
+  }
+
+  /**
+   * Upload slike uz tačku zapisnika u `sastanak-slike` + meta u presek_slike.
+   * Meta INSERT ide PRE upload-a kroz withUserRls (RLS write-scope enforce; bez
+   * orphan fajla ako pravo fali); pad upload-a → rollback meta. Paritet uploadPresekSlika.
+   */
+  async uploadSlika(
+    email: string,
+    id: string,
+    dto: UploadSlikaDto,
+    file?: Express.Multer.File,
+  ) {
+    if (!file?.buffer?.length) {
+      throw new UnprocessableEntityException(
+        "Očekivan fajl (multipart `file`)",
+      );
+    }
+    const ext = (file.originalname.split(".").pop() ?? "jpg").toLowerCase();
+    const safeBase = file.originalname
+      .replace(/[^a-z0-9_.-]/gi, "_")
+      .slice(0, 80);
+    const uuid = randomUUID();
+    const storagePath = `${id}/${uuid}_${safeBase || `slika.${ext}`}`;
+    // 1) Meta pod RLS-om (write-scope presuđuje) — pre upload-a (bez orphan fajla).
+    const meta = await this.withUserMapped(email, async (tx) => {
+      const existingCount = await tx.presekSlika.count({
+        where: { sastanakId: id },
+      });
+      return tx.presekSlika.create({
+        data: {
+          sastanakId: id,
+          aktivnostId: dto.aktivnostId ?? null,
+          storagePath,
+          fileName: file.originalname,
+          mimeType: file.mimetype ?? null,
+          sizeBytes: BigInt(file.buffer.length),
+          caption: dto.caption ?? null,
+          redosled: existingCount,
+          uploadedByEmail: email,
+        },
+      });
+    });
+    // 2) Upload fajla; pad → rollback meta reda.
+    try {
+      await this.storage.upload(
+        "sastanak-slike",
+        storagePath,
+        new Uint8Array(file.buffer),
+        file.mimetype || "application/octet-stream",
+        false,
+      );
+    } catch (e) {
+      await this.withUserMapped(email, async (tx) => {
+        await tx.presekSlika.deleteMany({ where: { id: meta.id } });
+      }).catch(() => {
+        /* rollback best-effort */
+      });
+      throw e;
+    }
+    return { data: this.slikaOut(meta) };
+  }
+
+  updateSlika(email: string, slikaId: string, dto: UpdateSlikaDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const exists =
+        (await tx.presekSlika.count({ where: { id: slikaId } })) > 0;
+      const { count } = await tx.presekSlika.updateMany({
+        where: { id: slikaId },
+        data: {
+          ...(dto.caption !== undefined ? { caption: dto.caption } : {}),
+          ...(dto.redosled !== undefined ? { redosled: dto.redosled } : {}),
+        },
+      });
+      this.assertAffected(exists, count, `Slika ${slikaId}`);
+      const row = await tx.presekSlika.findUnique({ where: { id: slikaId } });
+      return { data: row ? this.slikaOut(row) : null };
+    });
+  }
+
+  /** Obriši meta (RLS presuđuje) pa fajl iz bucketa (paritet deletePresekSlika). */
+  async deleteSlika(email: string, slikaId: string) {
+    const path = await this.withUserMapped(email, async (tx) => {
+      const row = await tx.presekSlika.findUnique({
+        where: { id: slikaId },
+        select: { storagePath: true },
+      });
+      const exists = !!row;
+      const { count } = await tx.presekSlika.deleteMany({
+        where: { id: slikaId },
+      });
+      this.assertAffected(exists, count, `Slika ${slikaId}`);
+      return row?.storagePath ?? null;
+    });
+    if (path) await this.storage.remove("sastanak-slike", path);
+    return { data: { ok: true } };
+  }
+
+  /** Presigned URL slike (bucket SELECT = svi prijavljeni; guard read). */
+  async getSlikaUrl(email: string, slikaId: string) {
+    const path = await this.withUserMapped(email, async (tx) => {
+      const row = await tx.presekSlika.findUnique({
+        where: { id: slikaId },
+        select: { storagePath: true },
+      });
+      if (!row) throw new NotFoundException(`Slika ${slikaId} ne postoji`);
+      return row.storagePath;
+    });
+    return { data: await this.storage.signUrl("sastanak-slike", path, 3600) };
   }
 }

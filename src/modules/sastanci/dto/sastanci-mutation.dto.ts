@@ -357,11 +357,24 @@ export class UpdatePrefsDto {
   @IsOptional() @IsBoolean() onMeetingReminder?: boolean;
 }
 
-/* ── Slike (meta patch) ── */
+/* ── Slike ── */
+
+/** Multipart polja uz upload slike (fajl je `file`). */
+export class UploadSlikaDto {
+  @IsOptional() @IsUUID() aktivnostId?: string;
+  @IsOptional() @IsString() caption?: string;
+}
 
 export class UpdateSlikaDto {
   @IsOptional() @IsString() caption?: string;
   @IsOptional() @IsInt() redosled?: number;
+}
+
+/* ── Arhiva PDF (lock/regeneriši) ── */
+
+/** Idempotentni upload PDF zapisnika (multipart `file`) uz opcioni clientEventId. */
+export class ArhivaPdfDto {
+  @IsOptional() @IsUUID() clientEventId?: string;
 }
 
 /* ── Sedmični ── */

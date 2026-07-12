@@ -23,6 +23,11 @@ const sqlText = (m: jest.Mock): string => {
   const calls = m.mock.calls as unknown as { strings: string[] }[][];
   return calls[0][0].strings.join("?");
 };
+/** N-ti argument prvog poziva mocka (izbegava no-unsafe-member-access). */
+const callArg = (m: jest.Mock, arg = 0): unknown => {
+  const calls = m.mock.calls as unknown as unknown[][];
+  return calls[0][arg];
+};
 
 function makeSvc() {
   const tx = {
@@ -64,7 +69,22 @@ function makeSvc() {
       deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
       findUnique: jest.fn().mockResolvedValue({ id: "ak1" }),
     },
-    $queryRaw: jest.fn().mockResolvedValue([{ result: "ok", n: 3 }]),
+    presekSlika: {
+      count: jest.fn().mockResolvedValue(0),
+      create: jest
+        .fn()
+        .mockResolvedValue({ id: "sl1", storagePath: "p", sizeBytes: null }),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+      findUnique: jest.fn().mockResolvedValue({ storagePath: "x/y.jpg" }),
+    },
+    sastanakArhiva: {
+      updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      findUnique: jest
+        .fn()
+        .mockResolvedValue({ zapisnikStoragePath: "id/z.pdf" }),
+    },
+    $queryRaw: jest.fn().mockResolvedValue([{ result: "ok", n: 3, ok: true }]),
   };
   const sy15 = {
     withUser: jest.fn(),
@@ -80,8 +100,16 @@ function makeSvc() {
       ) => ({ idempotent: false, result: await fn(tx) }),
     ),
   };
-  const svc = new SastanciService(sy15 as unknown as Sy15Service);
-  return { svc, sy15, tx };
+  const storage = {
+    upload: jest.fn().mockResolvedValue(undefined),
+    signUrl: jest.fn().mockResolvedValue({ url: "u", expiresIn: 300 }),
+    remove: jest.fn().mockResolvedValue(undefined),
+  };
+  const svc = new SastanciService(
+    sy15 as unknown as Sy15Service,
+    storage as never,
+  );
+  return { svc, sy15, tx, storage };
 }
 
 describe("SastanciService R2 mutacije", () => {
@@ -174,5 +202,47 @@ describe("SastanciService R2 mutacije", () => {
       status: "zavrsen",
     });
     expect(out.data).toEqual({ updated: 2 });
+  });
+
+  // ── R2.2 Storage ──
+  it("uploadSlika: meta INSERT PRE upload-a (RLS write-scope, bez orphan fajla)", async () => {
+    const { svc, storage, tx } = makeSvc();
+    const order: string[] = [];
+    tx.presekSlika.create.mockImplementationOnce(() => {
+      order.push("meta");
+      return Promise.resolve({ id: "sl1", storagePath: "p", sizeBytes: null });
+    });
+    storage.upload.mockImplementationOnce(() => {
+      order.push("upload");
+      return Promise.resolve(undefined);
+    });
+    await svc.uploadSlika("u@servoteh.com", ID, { caption: "c" }, {
+      buffer: Buffer.from("x"),
+      originalname: "a b.jpg",
+      mimetype: "image/jpeg",
+    } as unknown as Express.Multer.File);
+    expect(order).toEqual(["meta", "upload"]);
+    expect(callArg(storage.upload)).toBe("sastanak-slike");
+  });
+
+  it("getArhivaPdfUrl: nije učesnik ni mgmt → 403 (bez potpisivanja)", async () => {
+    const { svc, tx, storage } = makeSvc();
+    tx.$queryRaw.mockResolvedValueOnce([{ ok: false }]);
+    await expect(
+      svc.getArhivaPdfUrl("u@servoteh.com", ID),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(storage.signUrl).not.toHaveBeenCalled();
+  });
+
+  it("uploadArhivaPdf: putanja `{id}/{ts}_zapisnik.pdf` u sastanci-arhiva", async () => {
+    const { svc, storage } = makeSvc();
+    const out = await svc.uploadArhivaPdf("u@servoteh.com", ID, {
+      buffer: Buffer.from("%PDF-1.4"),
+      mimetype: "application/pdf",
+    } as unknown as Express.Multer.File);
+    expect(callArg(storage.upload)).toBe("sastanci-arhiva");
+    expect(out.data.storagePath).toMatch(
+      new RegExp(`^${ID}/.*_zapisnik\\.pdf$`),
+    );
   });
 });

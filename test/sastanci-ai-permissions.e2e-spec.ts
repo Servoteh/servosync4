@@ -98,6 +98,13 @@ describe("Sastanci + AI permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     "weeklyOdlozi",
     "weeklyVrati",
     "setAiModel",
+    // R2.2 storage
+    "uploadArhivaPdf",
+    "getArhivaPdfUrl",
+    "uploadSlika",
+    "updateSlika",
+    "deleteSlika",
+    "getSlikaUrl",
   ]) {
     sastanciMock[m] = jest.fn().mockResolvedValue({ data: { ok: true } });
   }
@@ -455,6 +462,35 @@ describe("Sastanci + AI permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
       await send("post", `/sastanci/${VALID_UUID}/rsvp`, "viewer", {
         status: "mozda",
       }).expect(400);
+    });
+  });
+
+  describe("R2.2 Storage — arhiva PDF / slike (edit vs read)", () => {
+    it("GET /sastanci/:id/arhiva/pdf → 200 viewer (read-nivo)", async () => {
+      await get(`/sastanci/${VALID_UUID}/arhiva/pdf`, "viewer").expect(200);
+    });
+    it("GET /sastanci/slike/:slikaId/sign → 200 viewer, 403 magacioner", async () => {
+      await get(`/sastanci/slike/${VALID_UUID}/sign`, "viewer").expect(200);
+      await get(`/sastanci/slike/${VALID_UUID}/sign`, "magacioner").expect(403);
+    });
+    it("POST /sastanci/:id/slike → 201 pm (edit), 403 viewer", async () => {
+      await send("post", `/sastanci/${VALID_UUID}/slike`, "pm", {}).expect(201);
+      await send("post", `/sastanci/${VALID_UUID}/slike`, "viewer", {}).expect(
+        403,
+      );
+    });
+    it("DELETE /sastanci/slike/:slikaId → 200 admin, 403 viewer", async () => {
+      await send("delete", `/sastanci/slike/${VALID_UUID}`, "admin").expect(
+        200,
+      );
+      await send("delete", `/sastanci/slike/${VALID_UUID}`, "viewer").expect(
+        403,
+      );
+    });
+    it("POST /sastanci/:id/arhiva/pdf → 403 viewer (edit-only)", async () => {
+      await send("post", `/sastanci/${VALID_UUID}/arhiva/pdf`, "viewer").expect(
+        403,
+      );
     });
   });
 

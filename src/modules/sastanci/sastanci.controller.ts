@@ -10,8 +10,11 @@ import {
   Put,
   Query,
   Req,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from "@nestjs/common";
+import { FileInterceptor } from "@nestjs/platform-express";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
@@ -52,9 +55,11 @@ import {
   UpdateOdlukaDto,
   UpdatePrefsDto,
   UpdateSastanakDto,
+  UpdateSlikaDto,
   UpdateTemaDto,
   UpdateTemplateDto,
   UpdateUcesnikDto,
+  UploadSlikaDto,
   WeeklyOdloziDto,
   WeeklyPomeriDto,
   WeeklyVratiDto,
@@ -427,6 +432,34 @@ export class SastanciController {
     return this.sastanci.deleteAktivnost(req.user.email, aktId);
   }
 
+  // Slike preseka (globalno-unikatni id; storage sastanak-slike)
+  @Patch("slike/:slikaId")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  updateSlika(
+    @Req() req: AuthedRequest,
+    @Param("slikaId", ParseUUIDPipe) slikaId: string,
+    @Body() dto: UpdateSlikaDto,
+  ) {
+    return this.sastanci.updateSlika(req.user.email, slikaId, dto);
+  }
+
+  @Delete("slike/:slikaId")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  deleteSlika(
+    @Req() req: AuthedRequest,
+    @Param("slikaId", ParseUUIDPipe) slikaId: string,
+  ) {
+    return this.sastanci.deleteSlika(req.user.email, slikaId);
+  }
+
+  @Get("slike/:slikaId/sign")
+  signSlika(
+    @Req() req: AuthedRequest,
+    @Param("slikaId", ParseUUIDPipe) slikaId: string,
+  ) {
+    return this.sastanci.getSlikaUrl(req.user.email, slikaId);
+  }
+
   // Sedmični (weekly_move gate = sast_weekly_movers u DB kroz GUC)
   @Post("weekly/pomeri")
   @RequirePermission(PERMISSIONS.SASTANCI_WEEKLY_MOVE)
@@ -612,6 +645,39 @@ export class SastanciController {
     @Param("odlId", ParseUUIDPipe) odlId: string,
   ) {
     return this.sastanci.deleteOdluka(req.user.email, odlId);
+  }
+
+  // Storage: PDF zapisnika (sastanci-arhiva)
+  @Post(":id/arhiva/pdf")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  @UseInterceptors(FileInterceptor("file"))
+  uploadArhivaPdf(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @UploadedFile() file?: Express.Multer.File,
+  ) {
+    return this.sastanci.uploadArhivaPdf(req.user.email, id, file);
+  }
+
+  @Get(":id/arhiva/pdf")
+  arhivaPdfUrl(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return this.sastanci.getArhivaPdfUrl(req.user.email, id);
+  }
+
+  // Storage: slika uz tačku (sastanak-slike)
+  @Post(":id/slike")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  @UseInterceptors(FileInterceptor("file"))
+  uploadSlika(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: UploadSlikaDto,
+    @UploadedFile() file?: Express.Multer.File,
+  ) {
+    return this.sastanci.uploadSlika(req.user.email, id, dto, file);
   }
 
   // bare :id (POSLEDNJE — da ne uhvati literale/pod-rute)
