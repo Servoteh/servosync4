@@ -30,6 +30,15 @@ export const PERMISSIONS = {
   // Lokacije delova
   LOKACIJE_READ: "lokacije.read",
   LOKACIJE_WRITE: "lokacije.write",
+  // Lokacije delova — 3.0 Talas A (fizičke lokacije loc_*; MODULE_SPEC_lokacije_30.md §2).
+  // 4 authz nivoa žive politike: read = svi prijavljeni; move = loc_can_create_movement()
+  // (manage role ILI aktivan zaposleni po email-u — širinu odlučuje DB fn kroz GUC);
+  // manage = loc_can_manage_locations() (admin/menadzment/pm/leadpm); admin = loc_is_admin()
+  // (samo admin); labels = 1.0 canPrintLocLabels() (manage + magacioner + cnc_operater).
+  LOKACIJE_MOVE: "lokacije.move",
+  LOKACIJE_MANAGE: "lokacije.manage",
+  LOKACIJE_ADMIN: "lokacije.admin",
+  LOKACIJE_LABELS: "lokacije.labels",
   // MRP / Nabavka
   MRP_READ: "mrp.read",
   // Šifarnici / pregledi (komitenti, predmeti)
