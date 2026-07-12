@@ -105,12 +105,24 @@ describe("Sastanci + AI permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     "updateSlika",
     "deleteSlika",
     "getSlikaUrl",
+    // R2.3 AI rezime
+    "aiSummary",
   ]) {
     sastanciMock[m] = jest.fn().mockResolvedValue({ data: { ok: true } });
   }
   const aiMock: Record<string, jest.Mock> = {};
-  for (const m of ["conversations", "messages", "me", "limit"]) {
-    aiMock[m] = jest.fn().mockResolvedValue({ data: [] });
+  for (const m of [
+    "conversations",
+    "messages",
+    "me",
+    "limit",
+    // R2.3 mutacije
+    "chat",
+    "deleteConversation",
+    "signImage",
+    "projects",
+  ]) {
+    aiMock[m] = jest.fn().mockResolvedValue({ data: { ok: true } });
   }
 
   beforeAll(async () => {
@@ -462,6 +474,58 @@ describe("Sastanci + AI permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
       await send("post", `/sastanci/${VALID_UUID}/rsvp`, "viewer", {
         status: "mozda",
       }).expect(400);
+    });
+  });
+
+  describe("R2.3 AI chat mutacije — ai.chat (/ai za sve aktivne uloge)", () => {
+    it.each(["admin", "monter", "magacioner", "viewer"])(
+      "POST /ai/chat → 201 za %s",
+      async (role) => {
+        await send("post", "/ai/chat", role, { message: "zdravo" }).expect(201);
+      },
+    );
+    it.each(["nepoznata_rola", "user"])(
+      "POST /ai/chat → 403 za %s (default deny)",
+      async (role) => {
+        await send("post", "/ai/chat", role, { message: "x" }).expect(403);
+      },
+    );
+    it("DELETE /ai/conversations/:id → 200 za monter (ai.chat), 400 ne-uuid", async () => {
+      await send("delete", `/ai/conversations/${VALID_UUID}`, "monter").expect(
+        200,
+      );
+      await send("delete", "/ai/conversations/nije-uuid", "monter").expect(400);
+    });
+    it("GET /ai/projects → 200 za tehnolog; GET /ai/images/sign → 200 za pm", async () => {
+      await get("/ai/projects", "tehnolog").expect(200);
+      await get("/ai/images/sign?path=abc/x.jpg", "pm").expect(200);
+    });
+    it("POST /ai/chat: engine van allowliste → 400 (admin)", async () => {
+      await send("post", "/ai/chat", "admin", {
+        message: "x",
+        engine: "grok",
+      }).expect(400);
+    });
+  });
+
+  describe("R2.3 AI rezime — /sastanci/:id/ai-summary (sastanci.read)", () => {
+    it("POST /sastanci/:id/ai-summary → 201 viewer (read)", async () => {
+      await send("post", `/sastanci/${VALID_UUID}/ai-summary`, "viewer", {
+        sastanak: { naslov: "T" },
+      }).expect(201);
+    });
+    it("POST /sastanci/:id/ai-summary → 403 magacioner (nema read)", async () => {
+      await send("post", `/sastanci/${VALID_UUID}/ai-summary`, "magacioner", {
+        sastanak: {},
+      }).expect(403);
+    });
+    it("POST /sastanci/:id/ai-summary: bez `sastanak` → 400", async () => {
+      await send(
+        "post",
+        `/sastanci/${VALID_UUID}/ai-summary`,
+        "admin",
+        {},
+      ).expect(400);
     });
   });
 

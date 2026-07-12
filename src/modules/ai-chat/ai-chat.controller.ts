@@ -1,16 +1,24 @@
 import {
+  Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseUUIDPipe,
+  Post,
+  Query,
   Req,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from "@nestjs/common";
+import { FileInterceptor } from "@nestjs/platform-express";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
 import { PERMISSIONS } from "../../common/authz/permissions";
 import { AiChatService } from "./ai-chat.service";
+import { ChatDto } from "./dto/ai-chat.dto";
 
 interface AuthedRequest {
   user: { userId: number; email: string; role: string };
@@ -46,5 +54,38 @@ export class AiChatController {
   @Get("conversations/:id/messages")
   messages(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string) {
     return this.ai.messages(req.user.email, id);
+  }
+
+  @Get("projects")
+  projects(@Req() req: AuthedRequest) {
+    return this.ai.projects(req.user.email);
+  }
+
+  /** Presigned URL priloga (ai-chat-images); vidljivost niti presuđuje RLS. */
+  @Get("images/sign")
+  signImage(@Req() req: AuthedRequest, @Query("path") path: string) {
+    return this.ai.signImage(req.user.email, String(path ?? ""));
+  }
+
+  // ---------- R2.3 mutacije ----------
+
+  /** Port edge `ai-chat`: 4 engine-a + tool-use petlja + vision (multipart `image`). */
+  @Post("chat")
+  @UseInterceptors(FileInterceptor("image"))
+  chat(
+    @Req() req: AuthedRequest,
+    @Body() dto: ChatDto,
+    @UploadedFile() image?: Express.Multer.File,
+  ) {
+    return this.ai.chat(req.user.email, dto, image);
+  }
+
+  /** Brisanje svoje LIČNE niti (RLS delete_own). */
+  @Delete("conversations/:id")
+  deleteConversation(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return this.ai.deleteConversation(req.user.email, id);
   }
 }

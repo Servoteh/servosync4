@@ -105,11 +105,13 @@ function makeSvc() {
     signUrl: jest.fn().mockResolvedValue({ url: "u", expiresIn: 300 }),
     remove: jest.fn().mockResolvedValue(undefined),
   };
+  const ai = { summarize: jest.fn().mockResolvedValue({ summary: "s" }) };
   const svc = new SastanciService(
     sy15 as unknown as Sy15Service,
     storage as never,
+    ai as never,
   );
-  return { svc, sy15, tx, storage };
+  return { svc, sy15, tx, storage, ai };
 }
 
 describe("SastanciService R2 mutacije", () => {

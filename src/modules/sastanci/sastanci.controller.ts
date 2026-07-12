@@ -46,6 +46,7 @@ import {
   ReorderDto,
   ReorderRangDto,
   RsvpDto,
+  AiSummaryDto,
   SetAiModelDto,
   TemaAdminRangDto,
   TemaDodeliDto,
@@ -678,6 +679,17 @@ export class SastanciController {
     @UploadedFile() file?: Express.Multer.File,
   ) {
     return this.sastanci.uploadSlika(req.user.email, id, dto, file);
+  }
+
+  // AI rezime „Sažmi zapisnik" (read; Anthropic — B2)
+  @Post(":id/ai-summary")
+  aiSummary(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: AiSummaryDto,
+  ) {
+    void id;
+    return this.sastanci.aiSummary(req.user.email, dto.sastanak);
   }
 
   // bare :id (POSLEDNJE — da ne uhvati literale/pod-rute)

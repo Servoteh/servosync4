@@ -31,6 +31,7 @@ describe("SastanciService — withUserRls most + BigInt out", () => {
     const svc = new SastanciService(
       sy15 as unknown as Sy15Service,
       {} as never,
+      {} as never,
     );
     return { svc, sy15, tx };
   }

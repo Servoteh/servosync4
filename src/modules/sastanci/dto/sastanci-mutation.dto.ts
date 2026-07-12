@@ -6,6 +6,7 @@ import {
   IsIn,
   IsInt,
   IsISO8601,
+  IsObject,
   IsOptional,
   IsString,
   IsUUID,
@@ -399,4 +400,11 @@ export class WeeklyVratiDto {
 export class SetAiModelDto {
   @IsIn(["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"])
   model!: string;
+}
+
+/* ── AI rezime sastanka (Sažmi zapisnik) ── */
+
+export class AiSummaryDto {
+  /** Sklopljen objekat sastanka (naslov/datum/učesnici/grupe akcija/diff) — FE gradi. */
+  @IsObject() sastanak!: Record<string, unknown>;
 }

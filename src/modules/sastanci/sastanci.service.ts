@@ -9,7 +9,13 @@ import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
 import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
+import { AiProviderService } from "../../common/ai/ai-provider.service";
 import { pageMeta, parsePagination } from "../../common/pagination";
+import {
+  SUMMARY_ALLOWED_MODELS,
+  SUMMARY_SYSTEM_PROMPT,
+  buildSummaryContent,
+} from "./sastanci-summary";
 import type {
   AkcijeQueryDto,
   ListSastanciQueryDto,
@@ -96,6 +102,7 @@ export class SastanciService {
   constructor(
     private readonly sy15: Sy15Service,
     private readonly storage: Sy15StorageService,
+    private readonly ai: AiProviderService,
   ) {}
 
   // ---------- Liste / pretraga ----------
@@ -1703,6 +1710,31 @@ export class SastanciService {
       );
       return { data: { model: rows[0]?.result ?? null } };
     });
+  }
+
+  /**
+   * „Sažmi zapisnik" (presuda B2, port edge sastanci-ai-summary): model iz
+   * sastanci_ai_settings (fallback SAST_AI_MODEL env pa opus), Anthropic one-shot.
+   * Guard = sastanci.read (prijavljen korisnik). FE sklopi objekat sastanka.
+   */
+  async aiSummary(email: string, sastanak: Record<string, unknown>) {
+    if (JSON.stringify(sastanak).length > 40000) {
+      throw new UnprocessableEntityException(
+        "Sastanak je prevelik za sažimanje.",
+      );
+    }
+    const model = await this.withUserMapped(email, async (tx) => {
+      const rows = await tx.$queryRaw<{ model: string | null }[]>(
+        Prisma.sql`SELECT model FROM sastanci_ai_settings WHERE id = 1 LIMIT 1`,
+      );
+      const m = rows[0]?.model ?? "";
+      if (SUMMARY_ALLOWED_MODELS.includes(m)) return m;
+      const env = process.env.SAST_AI_MODEL ?? "";
+      return SUMMARY_ALLOWED_MODELS.includes(env) ? env : "claude-opus-4-8";
+    });
+    const content = buildSummaryContent(sastanak);
+    const out = await this.ai.summarize(model, SUMMARY_SYSTEM_PROMPT, content);
+    return { data: out };
   }
 
   // ==========================================================================
