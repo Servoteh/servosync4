@@ -50,8 +50,56 @@ describe("Sastanci + AI permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     "odluke",
     "findArhiva",
     "findOne",
+    // R2 mutacije
+    "createSastanak",
+    "updateSastanak",
+    "deleteSastanak",
+    "lock",
+    "reopen",
+    "sendInvites",
+    "remindUnprepared",
+    "resendLocked",
+    "setMyRsvp",
+    "bulkUcesnici",
+    "addUcesnik",
+    "updateUcesnik",
+    "removeUcesnik",
+    "markPrisutni",
+    "createAktivnost",
+    "updateAktivnost",
+    "deleteAktivnost",
+    "reorderAktivnosti",
+    "seedFromTeme",
+    "createOdluka",
+    "updateOdluka",
+    "deleteOdluka",
+    "createAkcija",
+    "patchAkcija",
+    "deleteAkcija",
+    "bulkStatus",
+    "createTema",
+    "updateTema",
+    "deleteTema",
+    "setTemaHitno",
+    "setTemaRazmatranje",
+    "setTemaAdminRang",
+    "reorderRang",
+    "dodeliTemu",
+    "createDraftTema",
+    "draftTeme",
+    "draftReview",
+    "draftUvedi",
+    "createTemplate",
+    "updateTemplate",
+    "deleteTemplate",
+    "instantiate",
+    "updatePrefs",
+    "weeklyPomeri",
+    "weeklyOdlozi",
+    "weeklyVrati",
+    "setAiModel",
   ]) {
-    sastanciMock[m] = jest.fn().mockResolvedValue({ data: [] });
+    sastanciMock[m] = jest.fn().mockResolvedValue({ data: { ok: true } });
   }
   const aiMock: Record<string, jest.Mock> = {};
   for (const m of ["conversations", "messages", "me", "limit"]) {
@@ -103,6 +151,17 @@ describe("Sastanci + AI permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     const r = request(app.getHttpServer()).get(`/api/v1${path}`);
     return role ? r.set("x-test-role", role) : r;
   };
+  const send = (
+    method: "post" | "patch" | "delete" | "put",
+    path: string,
+    role?: string,
+    body?: object,
+  ) => {
+    const r = request(app.getHttpServer())[method](`/api/v1${path}`);
+    if (role) r.set("x-test-role", role);
+    return body ? r.send(body) : r;
+  };
+  const CID = "3b241101-e2bb-4255-8caf-4136c566a962";
 
   // Paritet 1.0 canAccessSastanci.
   const SASTANCI_READ_ROLES = [
@@ -241,6 +300,176 @@ describe("Sastanci + AI permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     });
     it("bez identiteta → 403", async () => {
       await get("/ai/conversations").expect(403);
+    });
+  });
+
+  // ==========================================================================
+  // R2 MUTACIJE — rola × endpoint × 200/403 (AUTHZ_ENFORCE=true)
+  // ==========================================================================
+
+  // has_edit_role paritet (menija: read-role + poslovni_admin koji NEMA read).
+  const EDIT_ROLES = [
+    "admin",
+    "menadzment",
+    "hr",
+    "pm",
+    "leadpm",
+    "poslovni_admin",
+  ];
+  const NO_EDIT_ROLES = [
+    "viewer", // read ali NE edit
+    "sef",
+    "magacioner",
+    "monter",
+    "proizvodni_radnik",
+    "tehnolog",
+  ];
+  const MANAGE_ROLES = ["admin", "menadzment"];
+  const NO_MANAGE_ROLES = ["hr", "pm", "leadpm", "poslovni_admin", "viewer"];
+
+  describe("Create sastanak — sastanci.edit", () => {
+    const body = { clientEventId: CID, naslov: "T", datum: "2026-07-15" };
+    it.each(EDIT_ROLES)("POST /sastanci → 201 za %s", async (role) => {
+      await send("post", "/sastanci", role, body).expect(201);
+    });
+    it.each(NO_EDIT_ROLES)("POST /sastanci → 403 za %s", async (role) => {
+      await send("post", "/sastanci", role, body).expect(403);
+    });
+  });
+
+  describe("PATCH/DELETE sastanak — sastanci.edit", () => {
+    it("PATCH /sastanci/:id → 200 leadpm, 403 viewer", async () => {
+      await send("patch", `/sastanci/${VALID_UUID}`, "leadpm", {
+        naslov: "x",
+      }).expect(200);
+      await send("patch", `/sastanci/${VALID_UUID}`, "viewer", {
+        naslov: "x",
+      }).expect(403);
+    });
+    it("DELETE /sastanci/:id → 200 admin, 403 sef", async () => {
+      await send("delete", `/sastanci/${VALID_UUID}`, "admin").expect(200);
+      await send("delete", `/sastanci/${VALID_UUID}`, "sef").expect(403);
+    });
+  });
+
+  describe("Manage-akcije (invites/remind/resend/reopen) — sastanci.manage", () => {
+    it.each(MANAGE_ROLES)(
+      "POST /sastanci/:id/invites → 201 za %s",
+      async (role) => {
+        await send("post", `/sastanci/${VALID_UUID}/invites`, role).expect(201);
+      },
+    );
+    it.each(NO_MANAGE_ROLES)(
+      "POST /sastanci/:id/invites → 403 za %s (edit ali ne manage)",
+      async (role) => {
+        await send("post", `/sastanci/${VALID_UUID}/invites`, role).expect(403);
+      },
+    );
+    it("POST /sastanci/:id/reopen → 200 menadzment, 403 hr", async () => {
+      await send("post", `/sastanci/${VALID_UUID}/reopen`, "menadzment").expect(
+        201,
+      );
+      await send("post", `/sastanci/${VALID_UUID}/reopen`, "hr").expect(403);
+    });
+  });
+
+  describe("RSVP + prefs — read-nivo (svako svoje)", () => {
+    it("POST /sastanci/:id/rsvp → 201 za viewer (read-role)", async () => {
+      await send("post", `/sastanci/${VALID_UUID}/rsvp`, "viewer", {
+        status: "dolazim",
+      }).expect(201);
+    });
+    it("PATCH /sastanci/prefs → 200 za viewer", async () => {
+      await send("patch", "/sastanci/prefs", "viewer", {
+        onNewAkcija: false,
+      }).expect(200);
+    });
+    it("POST /sastanci/:id/rsvp → 403 za magacioner (nema sastanci.read)", async () => {
+      await send("post", `/sastanci/${VALID_UUID}/rsvp`, "magacioner", {
+        status: "dolazim",
+      }).expect(403);
+    });
+  });
+
+  describe("Weekly move — sastanci.weekly_move (mgmt vidljivost; DB movers gate)", () => {
+    it.each(["admin", "menadzment"])(
+      "POST /sastanci/weekly/pomeri → 201 za %s",
+      async (role) => {
+        await send("post", "/sastanci/weekly/pomeri", role, {
+          datum: "2026-07-20",
+        }).expect(201);
+      },
+    );
+    it.each(["hr", "pm", "leadpm", "viewer", "poslovni_admin"])(
+      "POST /sastanci/weekly/pomeri → 403 za %s",
+      async (role) => {
+        await send("post", "/sastanci/weekly/pomeri", role, {
+          datum: "2026-07-20",
+        }).expect(403);
+      },
+    );
+  });
+
+  describe("AI model — sastanci.ai_model (SAMO admin)", () => {
+    it("PUT /sastanci/ai-model → 200 za admin", async () => {
+      await send("put", "/sastanci/ai-model", "admin", {
+        model: "claude-opus-4-8",
+      }).expect(200);
+    });
+    it.each(["menadzment", "hr", "pm", "leadpm", "viewer"])(
+      "PUT /sastanci/ai-model → 403 za %s",
+      async (role) => {
+        await send("put", "/sastanci/ai-model", role, {
+          model: "claude-opus-4-8",
+        }).expect(403);
+      },
+    );
+  });
+
+  describe("DTO validacija mutacija (400 pre servisa)", () => {
+    it("POST /sastanci bez clientEventId → 400 (admin)", async () => {
+      await send("post", "/sastanci", "admin", {
+        naslov: "T",
+        datum: "2026-07-15",
+      }).expect(400);
+    });
+    it("POST /sastanci: nevalidan datum → 400", async () => {
+      await send("post", "/sastanci", "admin", {
+        clientEventId: CID,
+        naslov: "T",
+        datum: "nije-datum",
+      }).expect(400);
+    });
+    it("PUT /sastanci/ai-model: model van allowliste → 400 (admin)", async () => {
+      await send("put", "/sastanci/ai-model", "admin", {
+        model: "gpt-4o",
+      }).expect(400);
+    });
+    it("POST /sastanci/akcije/bulk-status: prazan ids → 400", async () => {
+      await send("post", "/sastanci/akcije/bulk-status", "admin", {
+        ids: [],
+        status: "zavrsen",
+      }).expect(400);
+    });
+    it("POST /sastanci/:id/rsvp: nevalidan status → 400", async () => {
+      await send("post", `/sastanci/${VALID_UUID}/rsvp`, "viewer", {
+        status: "mozda",
+      }).expect(400);
+    });
+  });
+
+  describe("Route ordering (write) — literali ne bivaju uhvaćeni kao :id", () => {
+    it("POST /sastanci/akcije NIJE :id/lock (201 admin, ne 400 uuid)", async () => {
+      await send("post", "/sastanci/akcije", "admin", {
+        clientEventId: CID,
+        naslov: "A",
+      }).expect(201);
+    });
+    it("PATCH /sastanci/prefs NIJE PATCH /:id (200, ne 400 uuid)", async () => {
+      await send("patch", "/sastanci/prefs", "admin", {}).expect(200);
+    });
+    it("POST /sastanci/weekly/vrati NIJE :id (201 admin)", async () => {
+      await send("post", "/sastanci/weekly/vrati", "admin", {}).expect(201);
     });
   });
 });

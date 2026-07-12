@@ -1,8 +1,13 @@
 import {
+  Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseUUIDPipe,
+  Patch,
+  Post,
+  Put,
   Query,
   Req,
   UseGuards,
@@ -19,6 +24,41 @@ import {
   TemeQueryDto,
   WeeklyDiffQueryDto,
 } from "./dto/sastanci-query.dto";
+import {
+  AddUcesnikDto,
+  BulkStatusDto,
+  BulkUcesniciDto,
+  CreateAkcijaDto,
+  CreateAktivnostDto,
+  CreateDraftTemaDto,
+  CreateOdlukaDto,
+  CreateSastanakDto,
+  CreateTemaDto,
+  CreateTemplateDto,
+  DraftReviewDto,
+  DraftUvediDto,
+  InstantiateTemplateDto,
+  LockSastanakDto,
+  PatchAkcijaDto,
+  ReorderDto,
+  ReorderRangDto,
+  RsvpDto,
+  SetAiModelDto,
+  TemaAdminRangDto,
+  TemaDodeliDto,
+  TemaHitnoDto,
+  TemaRazmatranjeDto,
+  UpdateAktivnostDto,
+  UpdateOdlukaDto,
+  UpdatePrefsDto,
+  UpdateSastanakDto,
+  UpdateTemaDto,
+  UpdateTemplateDto,
+  UpdateUcesnikDto,
+  WeeklyOdloziDto,
+  WeeklyPomeriDto,
+  WeeklyVratiDto,
+} from "./dto/sastanci-mutation.dto";
 
 interface AuthedRequest {
   user: { userId: number; email: string; role: string };
@@ -177,5 +217,417 @@ export class SastanciController {
   @Get(":id")
   one(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string) {
     return this.sastanci.findOne(req.user.email, id);
+  }
+
+  // ==========================================================================
+  // R2 — MUTACIJE (route ordering: literali pre :id; bare :id na kraju)
+  // Guard klase = `sastanci.read`; write akcije eskaliraju na edit/manage/
+  // weekly_move/ai_model per-metod. Row-odluka (trio/učesnik) presuđuje sy15 RLS.
+  // ==========================================================================
+
+  // ---------- literal-prefiks write ----------
+
+  @Post()
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  create(@Req() req: AuthedRequest, @Body() dto: CreateSastanakDto) {
+    return this.sastanci.createSastanak(req.user.email, dto);
+  }
+
+  // Akcioni plan
+  @Post("akcije")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  createAkcija(@Req() req: AuthedRequest, @Body() dto: CreateAkcijaDto) {
+    return this.sastanci.createAkcija(req.user.email, dto);
+  }
+
+  @Post("akcije/bulk-status")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  bulkStatus(@Req() req: AuthedRequest, @Body() dto: BulkStatusDto) {
+    return this.sastanci.bulkStatus(req.user.email, dto);
+  }
+
+  @Patch("akcije/:id")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  patchAkcija(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: PatchAkcijaDto,
+  ) {
+    return this.sastanci.patchAkcija(req.user.email, id, dto);
+  }
+
+  @Delete("akcije/:id")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  deleteAkcija(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return this.sastanci.deleteAkcija(req.user.email, id);
+  }
+
+  // PM teme
+  @Post("teme")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  createTema(@Req() req: AuthedRequest, @Body() dto: CreateTemaDto) {
+    return this.sastanci.createTema(req.user.email, dto);
+  }
+
+  @Post("teme/reorder-rang")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  reorderRang(@Req() req: AuthedRequest, @Body() dto: ReorderRangDto) {
+    return this.sastanci.reorderRang(req.user.email, dto);
+  }
+
+  @Post("teme/draft")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  createDraftTema(@Req() req: AuthedRequest, @Body() dto: CreateDraftTemaDto) {
+    return this.sastanci.createDraftTema(req.user.email, dto);
+  }
+
+  @Get("teme/draft")
+  draftTeme(
+    @Req() req: AuthedRequest,
+    @Query("projektId", ParseUUIDPipe) projektId: string,
+  ) {
+    return this.sastanci.draftTeme(req.user.email, projektId);
+  }
+
+  @Patch("teme/:id")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  updateTema(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: UpdateTemaDto,
+  ) {
+    return this.sastanci.updateTema(req.user.email, id, dto);
+  }
+
+  @Delete("teme/:id")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  deleteTema(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return this.sastanci.deleteTema(req.user.email, id);
+  }
+
+  @Post("teme/:id/hitno")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  temaHitno(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: TemaHitnoDto,
+  ) {
+    return this.sastanci.setTemaHitno(req.user.email, id, dto);
+  }
+
+  @Post("teme/:id/za-razmatranje")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  temaRazmatranje(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: TemaRazmatranjeDto,
+  ) {
+    return this.sastanci.setTemaRazmatranje(req.user.email, id, dto);
+  }
+
+  @Post("teme/:id/admin-rang")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  temaAdminRang(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: TemaAdminRangDto,
+  ) {
+    return this.sastanci.setTemaAdminRang(req.user.email, id, dto);
+  }
+
+  @Post("teme/:id/dodeli")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  temaDodeli(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: TemaDodeliDto,
+  ) {
+    return this.sastanci.dodeliTemu(req.user.email, id, dto);
+  }
+
+  @Post("teme/:id/draft-review")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  draftReview(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: DraftReviewDto,
+  ) {
+    return this.sastanci.draftReview(req.user.email, id, dto);
+  }
+
+  @Post("teme/:id/uvedi")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  draftUvedi(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: DraftUvediDto,
+  ) {
+    return this.sastanci.draftUvedi(req.user.email, id, dto);
+  }
+
+  // Šabloni
+  @Post("templates")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  createTemplate(@Req() req: AuthedRequest, @Body() dto: CreateTemplateDto) {
+    return this.sastanci.createTemplate(req.user.email, dto);
+  }
+
+  @Patch("templates/:id")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  updateTemplate(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: UpdateTemplateDto,
+  ) {
+    return this.sastanci.updateTemplate(req.user.email, id, dto);
+  }
+
+  @Delete("templates/:id")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  deleteTemplate(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return this.sastanci.deleteTemplate(req.user.email, id);
+  }
+
+  @Post("templates/:id/instantiate")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  instantiate(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: InstantiateTemplateDto,
+  ) {
+    return this.sastanci.instantiate(req.user.email, id, dto);
+  }
+
+  // Tačke zapisnika (globalno-unikatni akt id)
+  @Patch("aktivnosti/:aktId")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  updateAktivnost(
+    @Req() req: AuthedRequest,
+    @Param("aktId", ParseUUIDPipe) aktId: string,
+    @Body() dto: UpdateAktivnostDto,
+  ) {
+    return this.sastanci.updateAktivnost(req.user.email, aktId, dto);
+  }
+
+  @Delete("aktivnosti/:aktId")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  deleteAktivnost(
+    @Req() req: AuthedRequest,
+    @Param("aktId", ParseUUIDPipe) aktId: string,
+  ) {
+    return this.sastanci.deleteAktivnost(req.user.email, aktId);
+  }
+
+  // Sedmični (weekly_move gate = sast_weekly_movers u DB kroz GUC)
+  @Post("weekly/pomeri")
+  @RequirePermission(PERMISSIONS.SASTANCI_WEEKLY_MOVE)
+  weeklyPomeri(@Req() req: AuthedRequest, @Body() dto: WeeklyPomeriDto) {
+    return this.sastanci.weeklyPomeri(req.user.email, dto);
+  }
+
+  @Post("weekly/odlozi")
+  @RequirePermission(PERMISSIONS.SASTANCI_WEEKLY_MOVE)
+  weeklyOdlozi(@Req() req: AuthedRequest, @Body() dto: WeeklyOdloziDto) {
+    return this.sastanci.weeklyOdlozi(req.user.email, dto);
+  }
+
+  @Post("weekly/vrati")
+  @RequirePermission(PERMISSIONS.SASTANCI_WEEKLY_MOVE)
+  weeklyVrati(@Req() req: AuthedRequest, @Body() dto: WeeklyVratiDto) {
+    return this.sastanci.weeklyVrati(req.user.email, dto);
+  }
+
+  // Prefs (svoje — guard read; RLS po email claim-u)
+  @Patch("prefs")
+  updatePrefs(@Req() req: AuthedRequest, @Body() dto: UpdatePrefsDto) {
+    return this.sastanci.updatePrefs(req.user.email, dto);
+  }
+
+  // AI model (admin)
+  @Put("ai-model")
+  @RequirePermission(PERMISSIONS.SASTANCI_AI_MODEL)
+  setAiModel(@Req() req: AuthedRequest, @Body() dto: SetAiModelDto) {
+    return this.sastanci.setAiModel(req.user.email, dto);
+  }
+
+  // ---------- :id-prefiks write ----------
+
+  @Post(":id/lock")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  lock(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: LockSastanakDto,
+  ) {
+    return this.sastanci.lock(req.user.email, id, dto);
+  }
+
+  @Post(":id/reopen")
+  @RequirePermission(PERMISSIONS.SASTANCI_MANAGE)
+  reopen(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string) {
+    return this.sastanci.reopen(req.user.email, id);
+  }
+
+  @Post(":id/invites")
+  @RequirePermission(PERMISSIONS.SASTANCI_MANAGE)
+  invites(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string) {
+    return this.sastanci.sendInvites(req.user.email, id);
+  }
+
+  @Post(":id/remind-unprepared")
+  @RequirePermission(PERMISSIONS.SASTANCI_MANAGE)
+  remind(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string) {
+    return this.sastanci.remindUnprepared(req.user.email, id);
+  }
+
+  @Post(":id/resend-locked")
+  @RequirePermission(PERMISSIONS.SASTANCI_MANAGE)
+  resend(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string) {
+    return this.sastanci.resendLocked(req.user.email, id);
+  }
+
+  @Post(":id/rsvp")
+  rsvp(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: RsvpDto,
+  ) {
+    return this.sastanci.setMyRsvp(req.user.email, id, dto);
+  }
+
+  @Post(":id/mark-prisutni")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  markPrisutni(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return this.sastanci.markPrisutni(req.user.email, id);
+  }
+
+  @Put(":id/ucesnici")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  bulkUcesnici(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: BulkUcesniciDto,
+  ) {
+    return this.sastanci.bulkUcesnici(req.user.email, id, dto);
+  }
+
+  @Post(":id/ucesnici")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  addUcesnik(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: AddUcesnikDto,
+  ) {
+    return this.sastanci.addUcesnik(req.user.email, id, dto);
+  }
+
+  @Patch(":id/ucesnici/:email")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  updateUcesnik(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Param("email") email: string,
+    @Body() dto: UpdateUcesnikDto,
+  ) {
+    return this.sastanci.updateUcesnik(req.user.email, id, email, dto);
+  }
+
+  @Delete(":id/ucesnici/:email")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  removeUcesnik(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Param("email") email: string,
+  ) {
+    return this.sastanci.removeUcesnik(req.user.email, id, email);
+  }
+
+  @Post(":id/aktivnosti/reorder")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  reorderAktivnosti(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: ReorderDto,
+  ) {
+    return this.sastanci.reorderAktivnosti(req.user.email, id, dto);
+  }
+
+  @Post(":id/aktivnosti/seed-from-teme")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  seedFromTeme(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return this.sastanci.seedFromTeme(req.user.email, id);
+  }
+
+  @Post(":id/aktivnosti")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  createAktivnost(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: CreateAktivnostDto,
+  ) {
+    return this.sastanci.createAktivnost(req.user.email, id, dto);
+  }
+
+  @Post(":id/odluke")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  createOdluka(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: CreateOdlukaDto,
+  ) {
+    return this.sastanci.createOdluka(req.user.email, id, dto);
+  }
+
+  @Patch(":id/odluke/:odlId")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  updateOdluka(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Param("odlId", ParseUUIDPipe) odlId: string,
+    @Body() dto: UpdateOdlukaDto,
+  ) {
+    return this.sastanci.updateOdluka(req.user.email, odlId, dto);
+  }
+
+  @Delete(":id/odluke/:odlId")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  deleteOdluka(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Param("odlId", ParseUUIDPipe) odlId: string,
+  ) {
+    return this.sastanci.deleteOdluka(req.user.email, odlId);
+  }
+
+  // bare :id (POSLEDNJE — da ne uhvati literale/pod-rute)
+  @Patch(":id")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  update(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: UpdateSastanakDto,
+  ) {
+    return this.sastanci.updateSastanak(req.user.email, id, dto);
+  }
+
+  @Delete(":id")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  remove(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string) {
+    return this.sastanci.deleteSastanak(req.user.email, id);
   }
 }

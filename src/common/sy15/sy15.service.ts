@@ -161,6 +161,59 @@ export class Sy15Service implements OnModuleDestroy {
     });
   }
 
+  /**
+   * Idempotencija + RLS paritet (TALAS B, spec §3): kao `runIdempotent`, ALI se
+   * akcija (`fn`) izvršava pod `SET LOCAL ROLE authenticated` (kao `withUserRls`),
+   * pa sastanci REST write-ovi prolaze kroz iste RLS politike kao 1.0 PostgREST
+   * (`has_edit_role ∧ (učesnik ∨ mgmt ∨ organizator-trio)`) — scope se NE duplira
+   * u kodu.
+   *
+   * Registar (`rev_api_idempotency`) je RLS-zaključan („piše ga samo backend");
+   * `authenticated` nema grant na njega. Zato se INSERT/UPDATE ključa rade pod
+   * konekcionom rolom (`servosync2_app`, BYPASSRLS), a `SET LOCAL ROLE authenticated`
+   * se uključuje SAMO oko `fn` i vrati (`RESET ROLE`) pre UPDATE-a rezultata. Sve u
+   * ISTOJ transakciji: rollback akcije briše i ključ → retry dozvoljen; dupli
+   * `clientEventId` vraća sačuvan rezultat bez ponovnog izvršavanja; ključ
+   * upotrebljen za DRUGU akciju → 409.
+   *
+   * `withUser`/`runIdempotent` (Reversi/Lokacije) se NE menjaju.
+   */
+  async runIdempotentRls<T>(
+    email: string,
+    clientEventId: string,
+    action: string,
+    fn: (tx: Sy15Tx) => Promise<T>,
+  ): Promise<{ idempotent: boolean; result: T }> {
+    return this.db.$transaction(async (tx) => {
+      await this.setClaims(tx, email);
+      // Registar se piše pod BYPASSRLS konekcionom rolom (authenticated nema grant).
+      const inserted = await tx.$executeRaw`
+        INSERT INTO rev_api_idempotency (client_event_id, action)
+        VALUES (${clientEventId}::uuid, ${action})
+        ON CONFLICT (client_event_id) DO NOTHING`;
+      if (inserted === 0) {
+        const rows = await tx.$queryRaw<{ action: string; result: T }[]>`
+          SELECT action, result FROM rev_api_idempotency
+          WHERE client_event_id = ${clientEventId}::uuid`;
+        const stored = rows[0];
+        if (!stored || stored.action !== action) {
+          throw new ConflictException(
+            `clientEventId ${clientEventId} je već upotrebljen za akciju "${stored?.action ?? "?"}"`,
+          );
+        }
+        return { idempotent: true, result: stored.result };
+      }
+      // Akcija ide pod istim RLS/privilegijama kao 1.0 PostgREST.
+      await tx.$executeRaw`SET LOCAL ROLE authenticated`;
+      const result = await fn(tx);
+      await tx.$executeRaw`RESET ROLE`;
+      await tx.$executeRaw`
+        UPDATE rev_api_idempotency SET result = ${JSON.stringify(result ?? null)}::jsonb
+        WHERE client_event_id = ${clientEventId}::uuid`;
+      return { idempotent: false, result };
+    });
+  }
+
   async onModuleDestroy(): Promise<void> {
     await this.client?.$disconnect();
   }

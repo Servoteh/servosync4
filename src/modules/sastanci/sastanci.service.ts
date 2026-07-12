@@ -1,4 +1,5 @@
 import {
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -14,6 +15,42 @@ import type {
   TemeQueryDto,
   WeeklyDiffQueryDto,
 } from "./dto/sastanci-query.dto";
+import type {
+  AddUcesnikDto,
+  BulkStatusDto,
+  BulkUcesniciDto,
+  CreateAkcijaDto,
+  CreateAktivnostDto,
+  CreateDraftTemaDto,
+  CreateOdlukaDto,
+  CreateSastanakDto,
+  CreateTemaDto,
+  CreateTemplateDto,
+  DraftReviewDto,
+  DraftUvediDto,
+  InstantiateTemplateDto,
+  LockSastanakDto,
+  PatchAkcijaDto,
+  ReorderDto,
+  ReorderRangDto,
+  RsvpDto,
+  SetAiModelDto,
+  TemaAdminRangDto,
+  TemaDodeliDto,
+  TemaHitnoDto,
+  TemaRazmatranjeDto,
+  UpdateAktivnostDto,
+  UpdateOdlukaDto,
+  UpdatePrefsDto,
+  UpdateSastanakDto,
+  UpdateTemaDto,
+  UpdateTemplateDto,
+  UpdateUcesnikDto,
+  WeeklyOdloziDto,
+  WeeklyPomeriDto,
+  WeeklyVratiDto,
+} from "./dto/sastanci-mutation.dto";
+import { nextOccurrence } from "./templates-cadence";
 
 /**
  * Sastanci — 3.0 TALAS B, R1 read sloj (MODULE_SPEC_sastanci_ai_30.md §3).
@@ -550,20 +587,1114 @@ export class SastanciService {
     }
   }
 
-  /** SQLSTATE iz DB fn → HTTP semantika (paritet Reversi §5): 42501→403, P0001/P0002→422. */
+  /**
+   * SQLSTATE iz DB fn/RLS → HTTP semantika (paritet Reversi §5):
+   * 42501→403, P0001/P0002→422, 23514(check, npr. nepoznat model)→422, 23505→409.
+   * Prisma P2025 (RLS-filtrovan UPDATE/DELETE = 0 redova) prepuštamo pozivaocu koji
+   * je već razrešio postojanje reda (assertAffected) — ako stigne dovde → 403.
+   */
   private rethrowSy15(e: unknown): never {
     if (
       e instanceof NotFoundException ||
       e instanceof ForbiddenException ||
-      e instanceof UnprocessableEntityException
+      e instanceof UnprocessableEntityException ||
+      e instanceof ConflictException
     ) {
       throw e;
     }
     const meta = (e as { meta?: { code?: string; message?: string } }).meta;
+    const code = meta?.code ?? (e as { code?: string }).code;
     const message = meta?.message ?? (e as Error).message;
-    if (meta?.code === "42501") throw new ForbiddenException(message);
-    if (meta?.code === "P0001" || meta?.code === "P0002")
+    if (code === "42501") throw new ForbiddenException(message);
+    if (code === "P0001" || code === "P0002" || code === "23514")
       throw new UnprocessableEntityException(message);
+    if (code === "23505") throw new ConflictException(message);
+    if (code === "P2025") throw new ForbiddenException(message);
     throw e;
+  }
+
+  // ============================================================================
+  // R2 — MUTACIJE (REST write kroz withUserRls/runIdempotentRls; RLS presuđuje red)
+  // ============================================================================
+  // Sav write ide pod `SET LOCAL ROLE authenticated` (withUserRls/runIdempotentRls) →
+  // sy15 RLS politike (`has_edit_role ∧ (učesnik ∨ mgmt ∨ organizator-trio)`) rade
+  // IDENTIČNO kao 1.0 PostgREST — scope se NE duplira u kodu (doktrina A.2a/§C).
+  // RLS-filtrovan UPDATE/DELETE (0 redova) → `assertAffected` razdvaja 404 (ne postoji)
+  // od 403 (postoji ali nema prava). INSERT u sastanci_notification_log je ZABRANJEN
+  // (presuda B10) — enqueue ide isključivo kroz postojeće DEFINER RPC-ove.
+
+  /** Idempotentna akcija sa nus-efektima (create/lock/bulk-replace/instantiate). */
+  private async runIdem<T>(
+    email: string,
+    clientEventId: string,
+    action: string,
+    fn: (tx: Sy15Tx) => Promise<T>,
+  ) {
+    try {
+      const out = await this.sy15.runIdempotentRls(
+        email,
+        clientEventId,
+        action,
+        fn,
+      );
+      return { data: out.result, meta: { idempotent: out.idempotent } };
+    } catch (e) {
+      this.rethrowSy15(e);
+    }
+  }
+
+  /** Konverzija 'YYYY-MM-DD' → Date za @db.Date kolonu (Prisma uzima datum-deo). */
+  private toDbDate(v?: string | null): Date | null | undefined {
+    if (v === undefined) return undefined;
+    if (v === null || v === "") return null;
+    return new Date(`${v}T00:00:00Z`);
+  }
+
+  /** Konverzija 'HH:MM[:SS]' → Date za @db.Time kolonu (Prisma uzima vreme-deo). */
+  private toDbTime(v?: string | null): Date | null | undefined {
+    if (v === undefined) return undefined;
+    if (v === null || v === "") return null;
+    const t = v.length === 5 ? `${v}:00` : v;
+    return new Date(`1970-01-01T${t}Z`);
+  }
+
+  /** Posle updateMany/deleteMany sa 0 pogodaka: 404 ako red ne postoji (po SELECT-u),
+   *  inače 403 (postoji ali RLS write-scope odbija). Ne duplira write-scope. */
+  private assertAffected(exists: boolean, count: number, what: string): void {
+    if (count > 0) return;
+    if (!exists) throw new NotFoundException(`${what} ne postoji`);
+    throw new ForbiddenException(`Nemate pravo nad: ${what}`);
+  }
+
+  // ---------- Sastanci CRUD ----------
+
+  /** Kreiraj sastanak (paritet saveSastanak; RLS INSERT = has_edit_role). */
+  createSastanak(email: string, dto: CreateSastanakDto) {
+    return this.runIdem(
+      email,
+      dto.clientEventId,
+      "sastanci.create-sastanak",
+      async (tx) => {
+        const row = await tx.sastanak.create({
+          data: {
+            tip: dto.tip ?? "sedmicni",
+            naslov: dto.naslov,
+            datum: this.toDbDate(dto.datum)!,
+            vreme: this.toDbTime(dto.vreme) ?? null,
+            mesto: dto.mesto ?? "",
+            projekatId: dto.projekatId ?? null,
+            vodioEmail: dto.vodioEmail ?? null,
+            vodioLabel: dto.vodioLabel ?? null,
+            zapisnicarEmail: dto.zapisnicarEmail ?? null,
+            zapisnicarLabel: dto.zapisnicarLabel ?? null,
+            status: dto.status ?? "planiran",
+            napomena: dto.napomena ?? null,
+            createdByEmail: email,
+          },
+        });
+        return row;
+      },
+    );
+  }
+
+  /** Izmena sastanka (paritet saveSastanak/updateStatus; RLS UPDATE = mgmt∨trio). */
+  async updateSastanak(email: string, id: string, dto: UpdateSastanakDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const exists = (await tx.sastanak.count({ where: { id } })) > 0;
+      const data: Prisma.SastanakUpdateInput = {
+        ...(dto.tip !== undefined ? { tip: dto.tip } : {}),
+        ...(dto.naslov !== undefined ? { naslov: dto.naslov } : {}),
+        ...(dto.datum !== undefined
+          ? { datum: this.toDbDate(dto.datum)! }
+          : {}),
+        ...(dto.vreme !== undefined ? { vreme: this.toDbTime(dto.vreme) } : {}),
+        ...(dto.mesto !== undefined ? { mesto: dto.mesto } : {}),
+        ...(dto.projekatId !== undefined ? { projekatId: dto.projekatId } : {}),
+        ...(dto.vodioEmail !== undefined ? { vodioEmail: dto.vodioEmail } : {}),
+        ...(dto.vodioLabel !== undefined ? { vodioLabel: dto.vodioLabel } : {}),
+        ...(dto.zapisnicarEmail !== undefined
+          ? { zapisnicarEmail: dto.zapisnicarEmail }
+          : {}),
+        ...(dto.zapisnicarLabel !== undefined
+          ? { zapisnicarLabel: dto.zapisnicarLabel }
+          : {}),
+        ...(dto.status !== undefined ? { status: dto.status } : {}),
+        ...(dto.napomena !== undefined ? { napomena: dto.napomena } : {}),
+        updatedAt: new Date(),
+      };
+      const { count } = await tx.sastanak.updateMany({ where: { id }, data });
+      this.assertAffected(exists, count, `Sastanak ${id}`);
+      return { data: await tx.sastanak.findUnique({ where: { id } }) };
+    });
+  }
+
+  async deleteSastanak(email: string, id: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const exists = (await tx.sastanak.count({ where: { id } })) > 0;
+      const { count } = await tx.sastanak.deleteMany({ where: { id } });
+      this.assertAffected(exists, count, `Sastanak ${id}`);
+      return { data: { ok: true } };
+    });
+  }
+
+  /** Zaključaj (arhiva snapshot + status; PDF path PRE meeting_locked trigera — §2 p.8). */
+  lock(email: string, id: string, dto: LockSastanakDto) {
+    return this.runIdem(
+      email,
+      dto.clientEventId,
+      "sastanci.lock",
+      async (tx) => {
+        const rows = await tx.$queryRaw<{ result: unknown }[]>(
+          Prisma.sql`SELECT sast_zakljucaj_sastanak(${id}::uuid, NULL, ${dto.pdfStoragePath ?? null}) AS result`,
+        );
+        return rows[0]?.result ?? null;
+      },
+    );
+  }
+
+  /** Reopen (mgmt): zakljucan → u_toku, očisti zakljucan_* (paritet otvojiPonovo). */
+  reopen(email: string, id: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const exists = (await tx.sastanak.count({ where: { id } })) > 0;
+      const { count } = await tx.sastanak.updateMany({
+        where: { id },
+        data: {
+          status: "u_toku",
+          zakljucanAt: null,
+          zakljucanByEmail: null,
+          updatedAt: new Date(),
+        },
+      });
+      this.assertAffected(exists, count, `Sastanak ${id}`);
+      return { data: await tx.sastanak.findUnique({ where: { id } }) };
+    });
+  }
+
+  // ---------- Pozivnice / podsetnici (delete-pa-enqueue RPC — re-send semantika) ----------
+
+  /** Pošalji pozivnice + stamp pozivnice_poslate_at (paritet sendInvites; RPC=mgmt). */
+  sendInvites(email: string, id: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const rows = await tx.$queryRaw<{ n: number }[]>(
+        Prisma.sql`SELECT sastanci_send_invites(${id}::uuid) AS n`,
+      );
+      const n = Number(rows[0]?.n ?? 0);
+      if (n > 0) {
+        await tx.sastanak.updateMany({
+          where: { id },
+          data: { pozivnicePoslateAt: new Date() },
+        });
+      }
+      return { data: { sent: n } };
+    });
+  }
+
+  remindUnprepared(email: string, id: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const rows = await tx.$queryRaw<{ n: number }[]>(
+        Prisma.sql`SELECT sastanci_remind_unprepared(${id}::uuid) AS n`,
+      );
+      return { data: { reminded: Number(rows[0]?.n ?? 0) } };
+    });
+  }
+
+  resendLocked(email: string, id: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const rows = await tx.$queryRaw<{ n: number }[]>(
+        Prisma.sql`SELECT sastanci_resend_meeting_locked(${id}::uuid) AS n`,
+      );
+      return { data: { resent: Number(rows[0]?.n ?? 0) } };
+    });
+  }
+
+  /** Moj RSVP (sastanci_set_my_rsvp — svako svoj; idempotentno po vrednosti). */
+  setMyRsvp(email: string, id: string, dto: RsvpDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const rows = await tx.$queryRaw<{ result: string }[]>(
+        Prisma.sql`SELECT sastanci_set_my_rsvp(${id}::uuid, ${dto.status ?? null}) AS result`,
+      );
+      return { data: { rsvp: rows[0]?.result ?? null } };
+    });
+  }
+
+  // ---------- Učesnici ----------
+
+  /** Bulk replace (DELETE pa INSERT — regeneriše rsvp_token, briše RSVP; §2 p.6/B8). */
+  bulkUcesnici(email: string, id: string, dto: BulkUcesniciDto) {
+    return this.runIdem(
+      email,
+      dto.clientEventId,
+      "sastanci.bulk-ucesnici",
+      async (tx) => {
+        await tx.sastanakUcesnik.deleteMany({ where: { sastanakId: id } });
+        if (dto.ucesnici.length) {
+          await tx.sastanakUcesnik.createMany({
+            data: dto.ucesnici.map((u) => ({
+              sastanakId: id,
+              email: u.email.toLowerCase().trim(),
+              label: u.label ?? null,
+              prisutan: u.prisutan !== false,
+              pozvan: u.pozvan !== false,
+              napomena: u.napomena ?? null,
+            })),
+          });
+        }
+        return { count: dto.ucesnici.length };
+      },
+    );
+  }
+
+  addUcesnik(email: string, id: string, dto: AddUcesnikDto) {
+    return this.withUserMapped(email, async (tx) => {
+      await tx.sastanakUcesnik.create({
+        data: {
+          sastanakId: id,
+          email: dto.email.toLowerCase().trim(),
+          label: dto.label ?? null,
+          prisutan: false,
+          pozvan: true,
+        },
+      });
+      return { data: { ok: true } };
+    });
+  }
+
+  updateUcesnik(
+    email: string,
+    id: string,
+    ucesnikEmail: string,
+    dto: UpdateUcesnikDto,
+  ) {
+    return this.withUserMapped(email, async (tx) => {
+      const key = ucesnikEmail.toLowerCase().trim();
+      const exists =
+        (await tx.sastanakUcesnik.count({
+          where: { sastanakId: id, email: key },
+        })) > 0;
+      const { count } = await tx.sastanakUcesnik.updateMany({
+        where: { sastanakId: id, email: key },
+        data: {
+          ...(dto.pozvan !== undefined ? { pozvan: dto.pozvan } : {}),
+          ...(dto.prisutan !== undefined ? { prisutan: dto.prisutan } : {}),
+          ...(dto.pripremljen !== undefined
+            ? { pripremljen: dto.pripremljen }
+            : {}),
+          ...(dto.priprema !== undefined
+            ? { priprema: dto.priprema || null }
+            : {}),
+        },
+      });
+      this.assertAffected(exists, count, `Učesnik ${key}`);
+      return { data: { ok: true } };
+    });
+  }
+
+  removeUcesnik(email: string, id: string, ucesnikEmail: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const key = ucesnikEmail.toLowerCase().trim();
+      const exists =
+        (await tx.sastanakUcesnik.count({
+          where: { sastanakId: id, email: key },
+        })) > 0;
+      const { count } = await tx.sastanakUcesnik.deleteMany({
+        where: { sastanakId: id, email: key },
+      });
+      this.assertAffected(exists, count, `Učesnik ${key}`);
+      return { data: { ok: true } };
+    });
+  }
+
+  /** „▶ Počni" default-prisutan: svi pozvani → prisutan (idempotentno; paritet markPozvaniPrisutni). */
+  markPrisutni(email: string, id: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const { count } = await tx.sastanakUcesnik.updateMany({
+        where: { sastanakId: id, pozvan: true },
+        data: { prisutan: true },
+      });
+      return { data: { updated: count } };
+    });
+  }
+
+  // ---------- Tačke zapisnika (presek_aktivnosti) ----------
+
+  createAktivnost(email: string, id: string, dto: CreateAktivnostDto) {
+    return this.runIdem(
+      email,
+      dto.clientEventId,
+      "sastanci.create-aktivnost",
+      async (tx) => {
+        // rb/redosled = max+1 (paritet savePresekAktivnost).
+        const agg = await tx.presekAktivnost.aggregate({
+          where: { sastanakId: id },
+          _max: { rb: true },
+        });
+        const next = (agg._max.rb ?? 0) + 1;
+        const row = await tx.presekAktivnost.create({
+          data: {
+            sastanakId: id,
+            rb: next,
+            redosled: next,
+            naslov: dto.naslov ?? "Nova tačka",
+            podRn: dto.podRn ?? null,
+            sadrzajHtml: dto.sadrzajHtml ?? null,
+            sadrzajText: dto.sadrzajText ?? null,
+            odgovoranEmail: dto.odgovoranEmail ?? null,
+            odgovoranLabel: dto.odgovoranLabel ?? null,
+            odgovoranText: dto.odgovoranText ?? null,
+            rok: this.toDbDate(dto.rok) ?? null,
+            rokText: dto.rokText ?? null,
+            status: dto.status ?? "u_toku",
+            napomena: dto.napomena ?? null,
+            temaId: dto.temaId ?? null,
+          },
+        });
+        return row;
+      },
+    );
+  }
+
+  updateAktivnost(email: string, aktId: string, dto: UpdateAktivnostDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const exists =
+        (await tx.presekAktivnost.count({ where: { id: aktId } })) > 0;
+      const { count } = await tx.presekAktivnost.updateMany({
+        where: { id: aktId },
+        data: {
+          ...(dto.naslov !== undefined ? { naslov: dto.naslov } : {}),
+          ...(dto.podRn !== undefined ? { podRn: dto.podRn } : {}),
+          ...(dto.sadrzajHtml !== undefined
+            ? { sadrzajHtml: dto.sadrzajHtml }
+            : {}),
+          ...(dto.sadrzajText !== undefined
+            ? { sadrzajText: dto.sadrzajText }
+            : {}),
+          ...(dto.odgovoranEmail !== undefined
+            ? { odgovoranEmail: dto.odgovoranEmail }
+            : {}),
+          ...(dto.odgovoranLabel !== undefined
+            ? { odgovoranLabel: dto.odgovoranLabel }
+            : {}),
+          ...(dto.odgovoranText !== undefined
+            ? { odgovoranText: dto.odgovoranText }
+            : {}),
+          ...(dto.rok !== undefined ? { rok: this.toDbDate(dto.rok) } : {}),
+          ...(dto.rokText !== undefined ? { rokText: dto.rokText } : {}),
+          ...(dto.status !== undefined ? { status: dto.status } : {}),
+          ...(dto.napomena !== undefined ? { napomena: dto.napomena } : {}),
+          updatedAt: new Date(),
+        },
+      });
+      this.assertAffected(exists, count, `Tačka ${aktId}`);
+      return {
+        data: await tx.presekAktivnost.findUnique({ where: { id: aktId } }),
+      };
+    });
+  }
+
+  deleteAktivnost(email: string, aktId: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const exists =
+        (await tx.presekAktivnost.count({ where: { id: aktId } })) > 0;
+      const { count } = await tx.presekAktivnost.deleteMany({
+        where: { id: aktId },
+      });
+      this.assertAffected(exists, count, `Tačka ${aktId}`);
+      return { data: { ok: true } };
+    });
+  }
+
+  /** Reorder tačaka (redosled = index; idempotentno; paritet reorderPresekAktivnosti). */
+  reorderAktivnosti(email: string, id: string, dto: ReorderDto) {
+    return this.withUserMapped(email, async (tx) => {
+      let updated = 0;
+      for (let i = 0; i < dto.ids.length; i++) {
+        const { count } = await tx.presekAktivnost.updateMany({
+          where: { id: dto.ids[i], sastanakId: id },
+          data: { redosled: i },
+        });
+        updated += count;
+      }
+      return { data: { updated } };
+    });
+  }
+
+  /** Most teme→zapisnik: seed tačaka iz pm_teme (dedup po tema_id; §3 BE tx). */
+  seedFromTeme(email: string, id: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const teme = await tx.pmTema.findMany({
+        where: { sastanakId: id },
+        select: { id: true, naslov: true },
+      });
+      if (!teme.length) return { data: { inserted: 0, skipped: 0 } };
+      const existing = await tx.presekAktivnost.findMany({
+        where: { sastanakId: id },
+        select: { temaId: true, rb: true, redosled: true },
+      });
+      const used = new Set(
+        existing.map((a) => a.temaId).filter((x): x is string => !!x),
+      );
+      const fresh = teme.filter((t) => !used.has(t.id));
+      if (!fresh.length) return { data: { inserted: 0, skipped: teme.length } };
+      let rb = existing.reduce((m, a) => Math.max(m, a.rb ?? 0), 0);
+      let redosled = existing.reduce((m, a) => Math.max(m, a.redosled ?? 0), 0);
+      const now = new Date();
+      await tx.presekAktivnost.createMany({
+        data: fresh.map((t) => {
+          rb += 1;
+          redosled += 1;
+          return {
+            sastanakId: id,
+            naslov: t.naslov || "Tema",
+            temaId: t.id,
+            status: "u_toku",
+            rb,
+            redosled,
+            createdAt: now,
+            updatedAt: now,
+          };
+        }),
+      });
+      return {
+        data: { inserted: fresh.length, skipped: teme.length - fresh.length },
+      };
+    });
+  }
+
+  // ---------- Odluke ----------
+
+  createOdluka(email: string, id: string, dto: CreateOdlukaDto) {
+    return this.runIdem(
+      email,
+      dto.clientEventId,
+      "sastanci.create-odluka",
+      async (tx) => {
+        const row = await tx.sastanakOdluka.create({
+          data: {
+            sastanakId: id,
+            rb: dto.rb ?? null,
+            naslov: dto.naslov,
+            opis: dto.opis ?? null,
+            odlucioEmail: dto.odlucioEmail ?? null,
+            odlucioLabel: dto.odlucioLabel ?? null,
+            odlukaDatum: this.toDbDate(dto.odlukaDatum) ?? null,
+            uticaj: dto.uticaj ?? null,
+            vezaTemaId: dto.vezaTemaId ?? null,
+            vezaAkcijaId: dto.vezaAkcijaId ?? null,
+            status: dto.status ?? "na_snazi",
+          },
+        });
+        return row;
+      },
+    );
+  }
+
+  updateOdluka(email: string, odlId: string, dto: UpdateOdlukaDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const exists =
+        (await tx.sastanakOdluka.count({ where: { id: odlId } })) > 0;
+      const { count } = await tx.sastanakOdluka.updateMany({
+        where: { id: odlId },
+        data: {
+          ...(dto.rb !== undefined ? { rb: dto.rb } : {}),
+          ...(dto.naslov !== undefined ? { naslov: dto.naslov } : {}),
+          ...(dto.opis !== undefined ? { opis: dto.opis } : {}),
+          ...(dto.odlucioEmail !== undefined
+            ? { odlucioEmail: dto.odlucioEmail }
+            : {}),
+          ...(dto.odlucioLabel !== undefined
+            ? { odlucioLabel: dto.odlucioLabel }
+            : {}),
+          ...(dto.odlukaDatum !== undefined
+            ? { odlukaDatum: this.toDbDate(dto.odlukaDatum) }
+            : {}),
+          ...(dto.uticaj !== undefined ? { uticaj: dto.uticaj } : {}),
+          ...(dto.vezaTemaId !== undefined
+            ? { vezaTemaId: dto.vezaTemaId }
+            : {}),
+          ...(dto.vezaAkcijaId !== undefined
+            ? { vezaAkcijaId: dto.vezaAkcijaId }
+            : {}),
+          ...(dto.status !== undefined ? { status: dto.status } : {}),
+          updatedAt: new Date(),
+        },
+      });
+      this.assertAffected(exists, count, `Odluka ${odlId}`);
+      return {
+        data: await tx.sastanakOdluka.findUnique({ where: { id: odlId } }),
+      };
+    });
+  }
+
+  deleteOdluka(email: string, odlId: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const exists =
+        (await tx.sastanakOdluka.count({ where: { id: odlId } })) > 0;
+      const { count } = await tx.sastanakOdluka.deleteMany({
+        where: { id: odlId },
+      });
+      this.assertAffected(exists, count, `Odluka ${odlId}`);
+      return { data: { ok: true } };
+    });
+  }
+
+  // ---------- Akcioni plan ----------
+
+  createAkcija(email: string, dto: CreateAkcijaDto) {
+    return this.runIdem(
+      email,
+      dto.clientEventId,
+      "sastanci.create-akcija",
+      async (tx) => {
+        const row = await tx.akcioniPlan.create({
+          data: {
+            sastanakId: dto.sastanakId ?? null,
+            temaId: dto.temaId ?? null,
+            projekatId: dto.projekatId ?? null,
+            rb: dto.rb ?? null,
+            naslov: dto.naslov,
+            opis: dto.opis ?? null,
+            odgovoranEmail: dto.odgovoranEmail ?? null,
+            odgovoranLabel: dto.odgovoranLabel ?? null,
+            odgovoranText: dto.odgovoranText ?? null,
+            rok: this.toDbDate(dto.rok) ?? null,
+            rokText: dto.rokText ?? null,
+            status: dto.status ?? "otvoren",
+            prioritet: dto.prioritet ?? 2,
+            createdByEmail: email,
+          },
+        });
+        return row;
+      },
+    );
+  }
+
+  /** Inline patch (paritet patchAkcija): zavrsen → snapshot zatvoren_*; reopen → očisti. */
+  patchAkcija(email: string, id: string, dto: PatchAkcijaDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const exists = (await tx.akcioniPlan.count({ where: { id } })) > 0;
+      const data: Prisma.AkcioniPlanUpdateInput = {
+        ...(dto.naslov !== undefined ? { naslov: dto.naslov } : {}),
+        ...(dto.sastanakId !== undefined ? { sastanakId: dto.sastanakId } : {}),
+        ...(dto.projekatId !== undefined ? { projekatId: dto.projekatId } : {}),
+        ...(dto.rb !== undefined ? { rb: dto.rb } : {}),
+        ...(dto.opis !== undefined ? { opis: dto.opis } : {}),
+        ...(dto.odgovoranEmail !== undefined
+          ? { odgovoranEmail: dto.odgovoranEmail }
+          : {}),
+        ...(dto.odgovoranLabel !== undefined
+          ? { odgovoranLabel: dto.odgovoranLabel }
+          : {}),
+        ...(dto.odgovoranText !== undefined
+          ? { odgovoranText: dto.odgovoranText }
+          : {}),
+        ...(dto.rok !== undefined ? { rok: this.toDbDate(dto.rok) } : {}),
+        ...(dto.rokText !== undefined ? { rokText: dto.rokText } : {}),
+        ...(dto.prioritet !== undefined ? { prioritet: dto.prioritet } : {}),
+        updatedAt: new Date(),
+      };
+      if (dto.status !== undefined) {
+        data.status = dto.status;
+        if (dto.status === "zavrsen") {
+          data.zatvorenAt = new Date();
+          data.zatvorenByEmail = email;
+          if (dto.zatvorenNapomena !== undefined)
+            data.zatvorenNapomena = dto.zatvorenNapomena || null;
+        } else {
+          data.zatvorenAt = null;
+          data.zatvorenByEmail = null;
+        }
+      }
+      const { count } = await tx.akcioniPlan.updateMany({
+        where: { id },
+        data,
+      });
+      this.assertAffected(exists, count, `Akcija ${id}`);
+      return { data: await tx.akcioniPlan.findUnique({ where: { id } }) };
+    });
+  }
+
+  deleteAkcija(email: string, id: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const exists = (await tx.akcioniPlan.count({ where: { id } })) > 0;
+      const { count } = await tx.akcioniPlan.deleteMany({ where: { id } });
+      this.assertAffected(exists, count, `Akcija ${id}`);
+      return { data: { ok: true } };
+    });
+  }
+
+  /** Bulk status (paritet updateAkcijeStatusBulk — vraća STVARNO izmenjen broj, RLS može odbiti deo). */
+  bulkStatus(email: string, dto: BulkStatusDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const data: Prisma.AkcioniPlanUpdateManyMutationInput = {
+        status: dto.status,
+        updatedAt: new Date(),
+      };
+      if (dto.status === "zavrsen") {
+        data.zatvorenAt = new Date();
+        data.zatvorenByEmail = email;
+      }
+      const { count } = await tx.akcioniPlan.updateMany({
+        where: { id: { in: dto.ids } },
+        data,
+      });
+      return { data: { updated: count } };
+    });
+  }
+
+  // ---------- PM teme ----------
+
+  createTema(email: string, dto: CreateTemaDto) {
+    return this.runIdem(
+      email,
+      dto.clientEventId,
+      "sastanci.create-tema",
+      async (tx) => {
+        const row = await tx.pmTema.create({
+          data: {
+            vrsta: dto.vrsta ?? "tema",
+            oblast: dto.oblast ?? "opste",
+            naslov: dto.naslov,
+            opis: dto.opis ?? null,
+            projekatId: dto.projekatId ?? null,
+            status: dto.status ?? "predlog",
+            prioritet: dto.prioritet ?? 2,
+            hitno: dto.hitno === true,
+            zaRazmatranje: dto.zaRazmatranje === true,
+            sastanakId: dto.sastanakId ?? null,
+            predlozioEmail: email,
+            predlozioLabel: email,
+          },
+        });
+        return row;
+      },
+    );
+  }
+
+  updateTema(email: string, id: string, dto: UpdateTemaDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const exists = (await tx.pmTema.count({ where: { id } })) > 0;
+      const data: Prisma.PmTemaUpdateInput = {
+        ...(dto.vrsta !== undefined ? { vrsta: dto.vrsta } : {}),
+        ...(dto.oblast !== undefined ? { oblast: dto.oblast } : {}),
+        ...(dto.naslov !== undefined ? { naslov: dto.naslov } : {}),
+        ...(dto.opis !== undefined ? { opis: dto.opis } : {}),
+        ...(dto.projekatId !== undefined ? { projekatId: dto.projekatId } : {}),
+        ...(dto.status !== undefined ? { status: dto.status } : {}),
+        ...(dto.prioritet !== undefined ? { prioritet: dto.prioritet } : {}),
+        ...(dto.hitno !== undefined ? { hitno: dto.hitno } : {}),
+        ...(dto.zaRazmatranje !== undefined
+          ? { zaRazmatranje: dto.zaRazmatranje }
+          : {}),
+        ...(dto.sastanakId !== undefined ? { sastanakId: dto.sastanakId } : {}),
+        updatedAt: new Date(),
+      };
+      // Rešeno stanje → snapshot resio_* (paritet buildTemaPayload).
+      if (
+        dto.status &&
+        ["usvojeno", "odbijeno", "odlozeno", "zatvoreno"].includes(dto.status)
+      ) {
+        data.resioEmail = email;
+        data.resioLabel = email;
+        data.resioAt = new Date();
+        if (dto.resioNapomena !== undefined)
+          data.resioNapomena = dto.resioNapomena || null;
+      }
+      const { count } = await tx.pmTema.updateMany({ where: { id }, data });
+      this.assertAffected(exists, count, `Tema ${id}`);
+      return { data: await tx.pmTema.findUnique({ where: { id } }) };
+    });
+  }
+
+  deleteTema(email: string, id: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const exists = (await tx.pmTema.count({ where: { id } })) > 0;
+      const { count } = await tx.pmTema.deleteMany({ where: { id } });
+      this.assertAffected(exists, count, `Tema ${id}`);
+      return { data: { ok: true } };
+    });
+  }
+
+  setTemaHitno(email: string, id: string, dto: TemaHitnoDto) {
+    return this.patchTema(email, id, { hitno: dto.hitno }, `Tema ${id}`);
+  }
+
+  setTemaRazmatranje(email: string, id: string, dto: TemaRazmatranjeDto) {
+    return this.patchTema(
+      email,
+      id,
+      {
+        zaRazmatranje: dto.zaRazmatranje,
+        adminRangByEmail: email,
+        adminRangAt: new Date(),
+      },
+      `Tema ${id}`,
+    );
+  }
+
+  setTemaAdminRang(email: string, id: string, dto: TemaAdminRangDto) {
+    return this.patchTema(
+      email,
+      id,
+      {
+        adminRang: dto.rang ?? null,
+        adminRangByEmail: email,
+        adminRangAt: new Date(),
+      },
+      `Tema ${id}`,
+    );
+  }
+
+  /** Reorder ranga po projektu (admin — FE gate; DB = has_edit_role). */
+  reorderRang(email: string, dto: ReorderRangDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const ts = new Date();
+      let updated = 0;
+      for (const it of dto.items) {
+        const { count } = await tx.pmTema.updateMany({
+          where: { id: it.id },
+          data: {
+            adminRang: it.rang ?? null,
+            adminRangByEmail: email,
+            adminRangAt: ts,
+            updatedAt: ts,
+          },
+        });
+        updated += count;
+      }
+      return { data: { updated } };
+    });
+  }
+
+  dodeliTemu(email: string, id: string, dto: TemaDodeliDto) {
+    return this.patchTema(
+      email,
+      id,
+      {
+        status: "usvojeno",
+        sastanakId: dto.sastanakId,
+        resioEmail: email,
+        resioLabel: email,
+        resioAt: new Date(),
+      },
+      `Tema ${id}`,
+    );
+  }
+
+  createDraftTema(email: string, dto: CreateDraftTemaDto) {
+    return this.runIdem(
+      email,
+      dto.clientEventId,
+      "sastanci.create-draft-tema",
+      async (tx) => {
+        const row = await tx.pmTema.create({
+          data: {
+            projekatId: dto.projektId,
+            sastanakId: null,
+            status: "draft",
+            vrsta: dto.vrsta ?? "tema",
+            oblast: dto.oblast ?? "opste",
+            naslov: dto.naslov.trim(),
+            opis: dto.opis ?? null,
+            prioritet: dto.prioritet ?? 2,
+            hitno: dto.hitno === true,
+            predlozioEmail: email,
+            predlozioLabel: dto.predlozioLabel ?? email,
+          },
+        });
+        return row;
+      },
+    );
+  }
+
+  async draftTeme(email: string, projektId: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const data = await tx.pmTema.findMany({
+        where: { projekatId: projektId, status: "draft", sastanakId: null },
+        orderBy: [{ createdAt: "asc" }],
+      });
+      return { data };
+    });
+  }
+
+  /** Pregled draft teme (usvoji/odbij) — WHERE status=draft (paritet pregledajDraftTemu). */
+  draftReview(email: string, id: string, dto: DraftReviewDto) {
+    const status =
+      dto.odluka === "aktivna"
+        ? "usvojeno"
+        : dto.odluka === "odbijena"
+          ? "odbijeno"
+          : dto.odluka;
+    return this.withUserMapped(email, async (tx) => {
+      const exists =
+        (await tx.pmTema.count({ where: { id, status: "draft" } })) > 0;
+      const { count } = await tx.pmTema.updateMany({
+        where: { id, status: "draft" },
+        data: {
+          status,
+          resioEmail: email,
+          resioLabel: email,
+          resioAt: new Date(),
+          resioNapomena: dto.napomena ?? null,
+          updatedAt: new Date(),
+        },
+      });
+      this.assertAffected(exists, count, `Draft tema ${id}`);
+      return { data: await tx.pmTema.findUnique({ where: { id } }) };
+    });
+  }
+
+  draftUvedi(email: string, id: string, dto: DraftUvediDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const exists =
+        (await tx.pmTema.count({ where: { id, status: "usvojeno" } })) > 0;
+      const { count } = await tx.pmTema.updateMany({
+        where: { id, status: "usvojeno" },
+        data: { sastanakId: dto.sastanakId, updatedAt: new Date() },
+      });
+      this.assertAffected(exists, count, `Usvojena tema ${id}`);
+      return { data: await tx.pmTema.findUnique({ where: { id } }) };
+    });
+  }
+
+  /** Zajednički PATCH jedne teme (flag/rang/dodela) — RLS presuđuje red. */
+  private patchTema(
+    email: string,
+    id: string,
+    data: Prisma.PmTemaUpdateManyMutationInput,
+    what: string,
+  ) {
+    return this.withUserMapped(email, async (tx) => {
+      const exists = (await tx.pmTema.count({ where: { id } })) > 0;
+      const { count } = await tx.pmTema.updateMany({
+        where: { id },
+        data: { ...data, updatedAt: new Date() },
+      });
+      this.assertAffected(exists, count, what);
+      return { data: await tx.pmTema.findUnique({ where: { id } }) };
+    });
+  }
+
+  // ---------- Šabloni ----------
+
+  createTemplate(email: string, dto: CreateTemplateDto) {
+    return this.runIdem(
+      email,
+      dto.clientEventId,
+      "sastanci.create-template",
+      async (tx) => {
+        const tpl = await tx.sastanciTemplate.create({
+          data: {
+            naziv: dto.naziv,
+            tip: dto.tip ?? "sedmicni",
+            mesto: dto.mesto ?? null,
+            vodioEmail: dto.vodioEmail ?? null,
+            zapisnicarEmail: dto.zapisnicarEmail ?? null,
+            cadence: dto.cadence ?? "none",
+            cadenceDow: dto.cadenceDow ?? null,
+            cadenceDom: dto.cadenceDom ?? null,
+            vreme: this.toDbTime(dto.vreme) ?? null,
+            napomena: dto.napomena ?? null,
+            isActive: dto.isActive !== false,
+            createdByEmail: email,
+          },
+        });
+        if (dto.ucesnici?.length) {
+          await tx.sastanciTemplateUcesnik.createMany({
+            data: dto.ucesnici.map((u) => ({
+              templateId: tpl.id,
+              email: u.email.toLowerCase().trim(),
+              label: u.label ?? null,
+            })),
+          });
+        }
+        return tpl;
+      },
+    );
+  }
+
+  updateTemplate(email: string, id: string, dto: UpdateTemplateDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const exists = (await tx.sastanciTemplate.count({ where: { id } })) > 0;
+      const { count } = await tx.sastanciTemplate.updateMany({
+        where: { id },
+        data: {
+          ...(dto.naziv !== undefined ? { naziv: dto.naziv } : {}),
+          ...(dto.tip !== undefined ? { tip: dto.tip } : {}),
+          ...(dto.mesto !== undefined ? { mesto: dto.mesto } : {}),
+          ...(dto.vodioEmail !== undefined
+            ? { vodioEmail: dto.vodioEmail }
+            : {}),
+          ...(dto.zapisnicarEmail !== undefined
+            ? { zapisnicarEmail: dto.zapisnicarEmail }
+            : {}),
+          ...(dto.cadence !== undefined ? { cadence: dto.cadence } : {}),
+          ...(dto.cadenceDow !== undefined
+            ? { cadenceDow: dto.cadenceDow }
+            : {}),
+          ...(dto.cadenceDom !== undefined
+            ? { cadenceDom: dto.cadenceDom }
+            : {}),
+          ...(dto.vreme !== undefined
+            ? { vreme: this.toDbTime(dto.vreme) }
+            : {}),
+          ...(dto.napomena !== undefined ? { napomena: dto.napomena } : {}),
+          ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
+          updatedAt: new Date(),
+        },
+      });
+      this.assertAffected(exists, count, `Šablon ${id}`);
+      if (dto.ucesnici !== undefined) {
+        await tx.sastanciTemplateUcesnik.deleteMany({
+          where: { templateId: id },
+        });
+        if (dto.ucesnici.length) {
+          await tx.sastanciTemplateUcesnik.createMany({
+            data: dto.ucesnici.map((u) => ({
+              templateId: id,
+              email: u.email.toLowerCase().trim(),
+              label: u.label ?? null,
+            })),
+          });
+        }
+      }
+      return { data: await tx.sastanciTemplate.findUnique({ where: { id } }) };
+    });
+  }
+
+  deleteTemplate(email: string, id: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const exists = (await tx.sastanciTemplate.count({ where: { id } })) > 0;
+      const { count } = await tx.sastanciTemplate.deleteMany({ where: { id } });
+      this.assertAffected(exists, count, `Šablon ${id}`);
+      return { data: { ok: true } };
+    });
+  }
+
+  /** Instanciraj šablon → nov sastanak + učesnici (nextOccurrence port; pozivalac uvek u listi). */
+  instantiate(email: string, id: string, dto: InstantiateTemplateDto) {
+    return this.runIdem(
+      email,
+      dto.clientEventId,
+      "sastanci.instantiate-template",
+      async (tx) => {
+        const tpl = await tx.sastanciTemplate.findUnique({ where: { id } });
+        if (!tpl) throw new NotFoundException(`Šablon ${id} ne postoji`);
+        const ucesnici = await tx.sastanciTemplateUcesnik.findMany({
+          where: { templateId: id },
+        });
+        const datum = nextOccurrence({
+          cadence: tpl.cadence,
+          cadenceDow: tpl.cadenceDow,
+          cadenceDom: tpl.cadenceDom,
+          createdAt: tpl.createdAt,
+        });
+        const sast = await tx.sastanak.create({
+          data: {
+            tip: tpl.tip || "sedmicni",
+            naslov: tpl.naziv,
+            datum: new Date(`${datum}T00:00:00Z`),
+            vreme: tpl.vreme ?? null,
+            mesto: tpl.mesto ?? "",
+            status: "planiran",
+            vodioEmail: tpl.vodioEmail ?? null,
+            zapisnicarEmail: tpl.zapisnicarEmail ?? null,
+            napomena: tpl.napomena ?? null,
+            createdByEmail: email,
+          },
+        });
+        const map = new Map<string, string | null>();
+        for (const u of ucesnici)
+          map.set(u.email.toLowerCase().trim(), u.label ?? u.email);
+        if (!map.has(email)) map.set(email, email);
+        await tx.sastanakUcesnik.createMany({
+          data: [...map.entries()].map(([em, label]) => ({
+            sastanakId: sast.id,
+            email: em,
+            label: label ?? em,
+            prisutan: true,
+            pozvan: true,
+          })),
+        });
+        return { id: sast.id, datum };
+      },
+    );
+  }
+
+  // ---------- Prefs (svoje) ----------
+
+  updatePrefs(email: string, dto: UpdatePrefsDto) {
+    return this.withUserMapped(email, async (tx) => {
+      // Osiguraj red (DEFINER RPC) pa PATCH svog reda (RLS: svoje po email claim-u).
+      await tx.$queryRaw(Prisma.sql`SELECT sastanci_get_or_create_my_prefs()`);
+      const key = email.toLowerCase();
+      await tx.sastanciNotificationPref.updateMany({
+        where: { email: key },
+        data: {
+          ...(dto.onNewAkcija !== undefined
+            ? { onNewAkcija: dto.onNewAkcija }
+            : {}),
+          ...(dto.onChangeAkcija !== undefined
+            ? { onChangeAkcija: dto.onChangeAkcija }
+            : {}),
+          ...(dto.onMeetingInvite !== undefined
+            ? { onMeetingInvite: dto.onMeetingInvite }
+            : {}),
+          ...(dto.onMeetingLocked !== undefined
+            ? { onMeetingLocked: dto.onMeetingLocked }
+            : {}),
+          ...(dto.onActionReminder !== undefined
+            ? { onActionReminder: dto.onActionReminder }
+            : {}),
+          ...(dto.onMeetingReminder !== undefined
+            ? { onMeetingReminder: dto.onMeetingReminder }
+            : {}),
+          updatedAt: new Date(),
+        },
+      });
+      const data = await tx.sastanciNotificationPref.findUnique({
+        where: { email: key },
+      });
+      return { data };
+    });
+  }
+
+  // ---------- Sedmični (weekly_move gate = sast_weekly_movers tabela u DB kroz GUC) ----------
+
+  weeklyPomeri(email: string, dto: WeeklyPomeriDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const rows = await tx.$queryRaw<{ result: string }[]>(
+        Prisma.sql`SELECT sast_weekly_pomeri(${dto.datum}::date, ${dto.vreme ?? "09:00"}::time) AS result`,
+      );
+      return { data: { sastanakId: rows[0]?.result ?? null } };
+    });
+  }
+
+  weeklyOdlozi(email: string, dto: WeeklyOdloziDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const rows = await tx.$queryRaw<{ result: unknown }[]>(
+        Prisma.sql`SELECT sast_weekly_odlozi(${dto.weekMonday ?? null}::date, ${dto.reason ?? null}) AS result`,
+      );
+      return { data: rows[0]?.result ?? null };
+    });
+  }
+
+  weeklyVrati(email: string, dto: WeeklyVratiDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const rows = await tx.$queryRaw<{ result: unknown }[]>(
+        Prisma.sql`SELECT sast_weekly_vrati(${dto.weekMonday ?? null}::date) AS result`,
+      );
+      return { data: rows[0]?.result ?? null };
+    });
+  }
+
+  // ---------- AI model (admin — set_sastanci_ai_model gate-uje current_user_is_admin) ----------
+
+  setAiModel(email: string, dto: SetAiModelDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const rows = await tx.$queryRaw<{ result: string }[]>(
+        Prisma.sql`SELECT set_sastanci_ai_model(${dto.model}) AS result`,
+      );
+      return { data: { model: rows[0]?.result ?? null } };
+    });
   }
 }
