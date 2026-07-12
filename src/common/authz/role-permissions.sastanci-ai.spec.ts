@@ -1,6 +1,6 @@
 import { PERMISSIONS } from "./permissions";
 import { roleHasPermission } from "./role-permissions";
-import { ROLES } from "./roles";
+import { ALL_ROLE_KEYS, ROLES } from "./roles";
 
 /**
  * Sastanci + AI permission matrica (MODULE_SPEC_sastanci_ai_30.md §2/§7 P6, presuda 12.07):
@@ -121,6 +121,40 @@ describe("Sastanci + AI permission matrix (paritet 1.0 gate-ova)", () => {
 
   it.each(AI_ROLES)("%s ima ai.chat (1.0 /ai za sve)", (role) => {
     expect(roleHasPermission(role, PERMISSIONS.AI_CHAT)).toBe(true);
+  });
+
+  /**
+   * KOMPLETNOST nad ALL_ROLE_KEYS (test-hardening): svaka permisija se dodeljuje
+   * TAČNO očekivanom skupu — nijedna uloga VAN skupa je nema. Bez ovoga, pogrešan
+   * budući grant (npr. ai.chat → tehnicar_odrzavanja, ili weekly_move → hr) prolazi
+   * neopaženo jer je manuelna lista bila samo pozitivna.
+   */
+  describe("kompletnost nad ALL_ROLE_KEYS (wrong-grant tripwire)", () => {
+    const expectedExactly = (
+      perm: (typeof PERMISSIONS)[keyof typeof PERMISSIONS],
+      allowed: readonly string[],
+    ) => {
+      const set = new Set<string>(allowed);
+      for (const role of ALL_ROLE_KEYS) {
+        expect({ role, has: roleHasPermission(role, perm) }).toEqual({
+          role,
+          has: set.has(role),
+        });
+      }
+    };
+
+    it("sastanci.read = TAČNO canAccessSastanci skup", () =>
+      expectedExactly(PERMISSIONS.SASTANCI_READ, READ_ROLES));
+    it("sastanci.edit = TAČNO has_edit_role skup", () =>
+      expectedExactly(PERMISSIONS.SASTANCI_EDIT, EDIT_ROLES));
+    it("sastanci.manage = TAČNO {admin, menadzment}", () =>
+      expectedExactly(PERMISSIONS.SASTANCI_MANAGE, MANAGE_ROLES));
+    it("sastanci.weekly_move = TAČNO {admin, menadzment}", () =>
+      expectedExactly(PERMISSIONS.SASTANCI_WEEKLY_MOVE, MANAGE_ROLES));
+    it("sastanci.ai_model = TAČNO {admin}", () =>
+      expectedExactly(PERMISSIONS.SASTANCI_AI_MODEL, [ROLES.ADMIN]));
+    it("ai.chat = TAČNO AI_ROLES (tehnicar_odrzavanja/nabavka/… NEMAJU)", () =>
+      expectedExactly(PERMISSIONS.AI_CHAT, AI_ROLES));
   });
 
   it("nepoznata uloga = default deny (sastanci.* i ai.chat)", () => {

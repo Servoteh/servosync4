@@ -1,5 +1,11 @@
+import {
+  BadGatewayException,
+  BadRequestException,
+  HttpException,
+} from "@nestjs/common";
 import { AiChatService } from "./ai-chat.service";
 import type { Sy15Service } from "../../common/sy15/sy15.service";
+import type { AiProviderService } from "../../common/ai/ai-provider.service";
 
 /**
  * RLS most (review 12.07, CRITICAL leak): ai_chat_conversations/messages RLS
@@ -69,6 +75,71 @@ describe("AiChatService — withUserRls most (leak guard)", () => {
 });
 
 /**
+ * signImage — path-traversal hardening (review nalaz #2): pošto potpisujemo
+ * servisnim ključem, putanja MORA biti striktno `{convId-uuid}/{ime}`; `..`,
+ * apsolutna putanja i dodatni `/` segmenti se odbijaju PRE potpisivanja.
+ */
+describe("AiChatService.signImage (path traversal)", () => {
+  const CONV = "3b241101-e2bb-4255-8caf-4136c566a962";
+  function make(convVisible = true) {
+    const tx = {
+      $queryRaw: jest.fn().mockResolvedValue(convVisible ? [{ id: CONV }] : []),
+    };
+    const sy15 = {
+      withUser: jest.fn(),
+      withUserRls: jest.fn((_e: string, fn: (t: unknown) => Promise<unknown>) =>
+        fn(tx),
+      ),
+    };
+    const storage = {
+      signUrl: jest.fn().mockResolvedValue({ url: "u", expiresIn: 3600 }),
+    };
+    const svc = new AiChatService(
+      sy15 as unknown as Sy15Service,
+      {} as never,
+      storage as never,
+    );
+    return { svc, storage };
+  }
+
+  it.each([
+    `${CONV}/../${CONV}/x.png`,
+    `${CONV}/a/b.png`,
+    `../${CONV}/x.png`,
+    `/etc/passwd`,
+    `${CONV}/..`,
+    `${CONV}/`,
+    `not-a-uuid/x.png`,
+    `${CONV}/x;y.png`,
+  ])("odbija %s → 400, BEZ potpisivanja", async (bad) => {
+    const { svc, storage } = make();
+    await expect(svc.signImage("u@servoteh.com", bad)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(storage.signUrl).not.toHaveBeenCalled();
+  });
+
+  it("validan `{convId}/{uuid}.jpg` → potpisuje REKONSTRUISANU putanju", async () => {
+    const { svc, storage } = make();
+    const name = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jpg";
+    await svc.signImage("u@servoteh.com", `${CONV}/${name}`);
+    expect(storage.signUrl).toHaveBeenCalledWith(
+      "ai-chat-images",
+      `${CONV}/${name}`,
+      3600,
+    );
+  });
+
+  it("nit nevidljiva (RLS 0 redova) → 403, BEZ potpisivanja", async () => {
+    const { svc, storage } = make(false);
+    await expect(
+      svc.signImage("u@servoteh.com", `${CONV}/x.jpg`),
+    ).rejects.toThrow(/pristup/);
+    expect(storage.signUrl).not.toHaveBeenCalled();
+  });
+});
+
+/**
  * R2.3 execTool dispatch — „18 alata → ai_chat_* RPC imena" (§0). Mokujemo sy15 da
  * uhvati SQL i AiProviderService.embed; NE zovemo živu bazu ni AI API.
  */
@@ -132,6 +203,103 @@ describe("AiChatService.execTool dispatch (alat → RPC ime)", () => {
     const { exec } = make();
     await expect(exec("nema_me", {})).resolves.toEqual({
       error: "nepoznat_alat",
+    });
+  });
+});
+
+/**
+ * chat() ugovor odgovora + greške (review #7/#8): odgovor nosi remaining/limit
+ * (1.0 UI upozorenje), a greška engine-a NOSI conversationId (retry ne pravi
+ * orphan nit koja troši dnevni limit).
+ */
+describe("AiChatService.chat (remaining/limit + upstream conversationId)", () => {
+  const CONV = "3b241101-e2bb-4255-8caf-4136c566a962";
+  function make(chatWithTools: jest.Mock) {
+    const tx = {
+      // tx1 redosled: currentUid, dailyUsed, resolveConversation(new), resolveAuthor
+      $queryRaw: jest
+        .fn()
+        .mockResolvedValueOnce([{ uid: "U1" }]) // auth.uid()
+        .mockResolvedValueOnce([{ used: 3 }]) // dnevni limit
+        .mockResolvedValueOnce([{ id: CONV }]) // INSERT conversation RETURNING id
+        .mockResolvedValueOnce([
+          { full_name: "Pera Perić", position: "Monter" },
+        ]),
+      $executeRaw: jest.fn().mockResolvedValue(1),
+    };
+    const sy15 = {
+      withUser: jest.fn((_e: string, fn: (t: unknown) => Promise<unknown>) =>
+        fn(tx),
+      ),
+      withUserRls: jest.fn(),
+    };
+    const ai = {
+      engineConfig: jest.fn().mockReturnValue({
+        engine: "openai",
+        kind: "openai",
+        url: "u",
+        key: "k",
+        model: "m",
+      }),
+      chatWithTools,
+      generateTitle: jest.fn().mockResolvedValue("Naslov"),
+    };
+    const svc = new AiChatService(
+      sy15 as unknown as Sy15Service,
+      ai as unknown as AiProviderService,
+      {} as never,
+    );
+    return { svc, ai };
+  }
+
+  it("uspeh: odgovor nosi remaining = limit-used-1 i limit", async () => {
+    const chatWithTools = jest.fn().mockResolvedValue({
+      reply: "Zdravo!",
+      model: "m",
+      tokensIn: 1,
+      tokensOut: 1,
+    });
+    const { svc } = make(chatWithTools);
+    const out = await svc.chat("u@servoteh.com", { message: "cao" });
+    expect(out.data.conversationId).toBe(CONV);
+    expect(out.data.remaining).toBe(46); // 50 - 3 - 1
+    expect(out.data.limit).toBe(50);
+  });
+
+  it("engine HTTP greška → 502 sa conversationId (upstream_error)", async () => {
+    const chatWithTools = jest
+      .fn()
+      .mockRejectedValue(new BadGatewayException("upstream_error"));
+    const { svc } = make(chatWithTools);
+    let err!: HttpException;
+    try {
+      await svc.chat("u@servoteh.com", { message: "cao" });
+    } catch (e) {
+      err = e as HttpException;
+    }
+    expect(err).toBeInstanceOf(HttpException);
+    expect(err.getStatus()).toBe(502);
+    expect(err.getResponse()).toEqual({
+      error: "upstream_error",
+      conversationId: CONV,
+    });
+  });
+
+  it("mrežni throw → 502 upstream_unreachable sa conversationId", async () => {
+    const chatWithTools = jest
+      .fn()
+      .mockRejectedValue(new Error("ECONNREFUSED"));
+    const { svc } = make(chatWithTools);
+    let err!: HttpException;
+    try {
+      await svc.chat("u@servoteh.com", { message: "cao" });
+    } catch (e) {
+      err = e as HttpException;
+    }
+    expect(err.getStatus()).toBe(502);
+    expect(err.getResponse()).toEqual({
+      error: "upstream_unreachable",
+      conversationId: CONV,
     });
   });
 });

@@ -48,6 +48,7 @@ function makeSvc() {
     presekAktivnost: {
       aggregate: jest.fn().mockResolvedValue({ _max: { rb: 2 } }),
       create: jest.fn().mockResolvedValue({ id: "a1" }),
+      createMany: jest.fn().mockResolvedValue({ count: 1 }),
       count: jest.fn().mockResolvedValue(1),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -234,6 +235,53 @@ describe("SastanciService R2 mutacije", () => {
       svc.getArhivaPdfUrl("u@servoteh.com", ID),
     ).rejects.toBeInstanceOf(ForbiddenException);
     expect(storage.signUrl).not.toHaveBeenCalled();
+  });
+
+  // ── Review fixes #4/#5/#6 ──
+  it("createAktivnost: default status 'planiran' (1.0 gazi DB default 'u_toku')", async () => {
+    const { svc, tx } = makeSvc();
+    await svc.createAktivnost("u@servoteh.com", ID, { clientEventId: CID });
+    expect(argData(tx.presekAktivnost.create).status).toBe("planiran");
+  });
+
+  it("seedFromTeme: status 'planiran' + podRn iz koda projekta + orderBy prioritet", async () => {
+    const { svc, tx } = makeSvc();
+    tx.pmTema.findMany.mockResolvedValueOnce([
+      { id: "t1", naslov: "Tema A", projekatId: "p1" },
+    ]);
+    tx.presekAktivnost.findMany.mockResolvedValueOnce([]); // postojeće tačke
+    tx.$queryRaw.mockResolvedValueOnce([{ id: "p1", project_code: "9400/7" }]); // projekti
+    await svc.seedFromTeme("u@servoteh.com", ID);
+    const rows = argData(tx.presekAktivnost.createMany) as unknown as {
+      status: string;
+      podRn: string | null;
+    }[];
+    expect(rows[0].status).toBe("planiran");
+    expect(rows[0].podRn).toBe("9400/7");
+    const findArg = callArg(tx.pmTema.findMany) as {
+      orderBy: { prioritet?: string }[];
+    };
+    expect(findArg.orderBy[0].prioritet).toBe("desc");
+  });
+
+  it("updateTema: ČUVA postojeću resio_* atribuciju (B menja naslov, ne preotima A)", async () => {
+    const { svc, tx } = makeSvc();
+    tx.pmTema.findUnique.mockResolvedValueOnce({
+      resioEmail: "a@servoteh.com",
+      resioLabel: "A. Rešić",
+      resioAt: new Date("2026-01-01T00:00:00Z"),
+      resioNapomena: "prvo rešenje",
+    });
+    await svc.updateTema("b@servoteh.com", ID, {
+      naslov: "novi naslov",
+      status: "usvojeno",
+    });
+    const data = (
+      callArg(tx.pmTema.updateMany) as { data: Record<string, unknown> }
+    ).data;
+    expect(data.resioEmail).toBe("a@servoteh.com"); // NE b@
+    expect(data.resioLabel).toBe("A. Rešić");
+    expect(data.resioNapomena).toBe("prvo rešenje");
   });
 
   it("uploadArhivaPdf: putanja `{id}/{ts}_zapisnik.pdf` u sastanci-arhiva", async () => {

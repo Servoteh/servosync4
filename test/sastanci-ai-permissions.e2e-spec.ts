@@ -14,6 +14,12 @@ import { AiChatController } from "../src/modules/ai-chat/ai-chat.controller";
 import { AiChatService } from "../src/modules/ai-chat/ai-chat.service";
 import { MediaAiController } from "../src/modules/media-ai/media-ai.controller";
 import { MediaAiService } from "../src/modules/media-ai/media-ai.service";
+import { ALL_ROLE_KEYS } from "../src/common/authz/roles";
+import { roleHasPermission } from "../src/common/authz/role-permissions";
+import {
+  PERMISSIONS,
+  type PermissionKey,
+} from "../src/common/authz/permissions";
 
 /**
  * e2e PERMISSION MATRICA — Sastanci + AI (MODULE_SPEC_sastanci_ai_30.md §5 t.30),
@@ -189,49 +195,19 @@ describe("Sastanci + AI permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
   };
   const CID = "3b241101-e2bb-4255-8caf-4136c566a962";
 
-  // Paritet 1.0 canAccessSastanci.
-  const SASTANCI_READ_ROLES = [
-    "admin",
-    "menadzment",
-    "hr",
-    "pm",
-    "leadpm",
-    "viewer",
-  ];
-  const SASTANCI_NO_READ = [
-    "sef",
-    "tehnolog",
-    "cnc_programer",
-    "kontrolor",
-    "magacioner",
-    "proizvodni_radnik",
-    "nabavka_view",
-    "tim_lider",
-    "monter",
-    "cnc_operater",
-    "poslovni_admin", // ima edit ali NE read
-    // Presuda B6 (§7 P6): biro role nisu u canAccessSastanci — pin protiv regresije.
-    "projektant_vodja",
-    "inzenjer",
-  ];
-  // 1.0 /ai za sve → sve aktivne uloge.
-  const AI_ROLES = [
-    "admin",
-    "menadzment",
-    "hr",
-    "pm",
-    "leadpm",
-    "viewer",
-    "sef",
-    "tehnolog",
-    "magacioner",
-    "proizvodni_radnik",
-    "tim_lider",
-    "monter",
-    "cnc_operater",
-    "poslovni_admin",
-    "nabavka_view",
-  ];
+  // Test-hardening (bonus): liste se IZVODE iz ALL_ROLE_KEYS umesto ručno → svaka
+  // uloga iz kataloga dobija 200/403 assertion (nova/pogrešno-grantovana uloga se
+  // NE može provući). Tačnost skupova (koja rola sme šta) pinuje unit
+  // `role-permissions.sastanci-ai.spec` (kompletnost nad ALL_ROLE_KEYS).
+  const rolesWith = (perm: PermissionKey) =>
+    ALL_ROLE_KEYS.filter((r) => roleHasPermission(r, perm));
+  const rolesWithout = (perm: PermissionKey) =>
+    ALL_ROLE_KEYS.filter((r) => !roleHasPermission(r, perm));
+
+  const SASTANCI_READ_ROLES = rolesWith(PERMISSIONS.SASTANCI_READ);
+  const SASTANCI_NO_READ = rolesWithout(PERMISSIONS.SASTANCI_READ);
+  const AI_ROLES = rolesWith(PERMISSIONS.AI_CHAT);
+  const AI_DENIED = rolesWithout(PERMISSIONS.AI_CHAT);
 
   describe("Sastanci read — sastanci.read (canAccessSastanci paritet)", () => {
     it.each(SASTANCI_READ_ROLES)("GET /sastanci → 200 za %s", async (role) => {
@@ -309,8 +285,8 @@ describe("Sastanci + AI permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
       await get("/ai/me", "monter").expect(200);
       await get("/ai/limit", "proizvodni_radnik").expect(200);
     });
-    it.each(["nepoznata_rola", "user"])(
-      "GET /ai/conversations → 403 za %s (default deny)",
+    it.each(AI_DENIED)(
+      "GET /ai/conversations → 403 za %s (nema ai.chat)",
       async (role) => {
         await get("/ai/conversations", role).expect(403);
       },
@@ -333,25 +309,15 @@ describe("Sastanci + AI permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
   // R2 MUTACIJE — rola × endpoint × 200/403 (AUTHZ_ENFORCE=true)
   // ==========================================================================
 
-  // has_edit_role paritet (menija: read-role + poslovni_admin koji NEMA read).
-  const EDIT_ROLES = [
-    "admin",
-    "menadzment",
-    "hr",
-    "pm",
-    "leadpm",
-    "poslovni_admin",
-  ];
-  const NO_EDIT_ROLES = [
-    "viewer", // read ali NE edit
-    "sef",
-    "magacioner",
-    "monter",
-    "proizvodni_radnik",
-    "tehnolog",
-  ];
-  const MANAGE_ROLES = ["admin", "menadzment"];
-  const NO_MANAGE_ROLES = ["hr", "pm", "leadpm", "poslovni_admin", "viewer"];
+  // Izvedeno iz ALL_ROLE_KEYS (test-hardening): svaka uloga pokrivena; skupove
+  // pinuje unit spec. NO_* je puni komplement, uklj. i katalog-role bez modula
+  // (tehnicar_odrzavanja/nabavka/…) — pogrešan budući grant obara test.
+  const EDIT_ROLES = rolesWith(PERMISSIONS.SASTANCI_EDIT);
+  const NO_EDIT_ROLES = rolesWithout(PERMISSIONS.SASTANCI_EDIT);
+  const MANAGE_ROLES = rolesWith(PERMISSIONS.SASTANCI_MANAGE);
+  const NO_MANAGE_ROLES = rolesWithout(PERMISSIONS.SASTANCI_MANAGE);
+  const WEEKLY_ROLES = rolesWith(PERMISSIONS.SASTANCI_WEEKLY_MOVE);
+  const NO_WEEKLY_ROLES = rolesWithout(PERMISSIONS.SASTANCI_WEEKLY_MOVE);
 
   describe("Create sastanak — sastanci.edit", () => {
     const body = { clientEventId: CID, naslov: "T", datum: "2026-07-15" };
@@ -397,6 +363,37 @@ describe("Sastanci + AI permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
       );
       await send("post", `/sastanci/${VALID_UUID}/reopen`, "hr").expect(403);
     });
+    // Boundary (review bonus): remind-unprepared + resend-locked su TAKOĐE manage.
+    it.each(MANAGE_ROLES)(
+      "POST /:id/remind-unprepared + /resend-locked → 201 za %s",
+      async (role) => {
+        await send(
+          "post",
+          `/sastanci/${VALID_UUID}/remind-unprepared`,
+          role,
+        ).expect(201);
+        await send(
+          "post",
+          `/sastanci/${VALID_UUID}/resend-locked`,
+          role,
+        ).expect(201);
+      },
+    );
+    it.each(NO_MANAGE_ROLES)(
+      "POST /:id/remind-unprepared + /resend-locked → 403 za %s",
+      async (role) => {
+        await send(
+          "post",
+          `/sastanci/${VALID_UUID}/remind-unprepared`,
+          role,
+        ).expect(403);
+        await send(
+          "post",
+          `/sastanci/${VALID_UUID}/resend-locked`,
+          role,
+        ).expect(403);
+      },
+    );
   });
 
   describe("RSVP + prefs — read-nivo (svako svoje)", () => {
@@ -418,20 +415,25 @@ describe("Sastanci + AI permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
   });
 
   describe("Weekly move — sastanci.weekly_move (mgmt vidljivost; DB movers gate)", () => {
-    it.each(["admin", "menadzment"])(
-      "POST /sastanci/weekly/pomeri → 201 za %s",
+    it.each(WEEKLY_ROLES)(
+      "POST /weekly/pomeri·odlozi·vrati → 201 za %s",
       async (role) => {
         await send("post", "/sastanci/weekly/pomeri", role, {
           datum: "2026-07-20",
         }).expect(201);
+        // Boundary (review bonus): odlozi + vrati su TAKOĐE weekly_move.
+        await send("post", "/sastanci/weekly/odlozi", role, {}).expect(201);
+        await send("post", "/sastanci/weekly/vrati", role, {}).expect(201);
       },
     );
-    it.each(["hr", "pm", "leadpm", "viewer", "poslovni_admin"])(
-      "POST /sastanci/weekly/pomeri → 403 za %s",
+    it.each(NO_WEEKLY_ROLES)(
+      "POST /weekly/pomeri·odlozi·vrati → 403 za %s",
       async (role) => {
         await send("post", "/sastanci/weekly/pomeri", role, {
           datum: "2026-07-20",
         }).expect(403);
+        await send("post", "/sastanci/weekly/odlozi", role, {}).expect(403);
+        await send("post", "/sastanci/weekly/vrati", role, {}).expect(403);
       },
     );
   });

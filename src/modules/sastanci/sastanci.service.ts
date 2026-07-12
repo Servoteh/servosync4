@@ -957,7 +957,9 @@ export class SastanciService {
             odgovoranText: dto.odgovoranText ?? null,
             rok: this.toDbDate(dto.rok) ?? null,
             rokText: dto.rokText ?? null,
-            status: dto.status ?? "u_toku",
+            // 1.0 savePresekAktivnost (sastanciDetalj.js:242) EKSPLICITNO piše 'planiran'
+            // (namerno gazi DB default 'u_toku') — vidi se u zaključanom zapisnik-PDF-u.
+            status: dto.status ?? "planiran",
             napomena: dto.napomena ?? null,
             temaId: dto.temaId ?? null,
           },
@@ -1032,12 +1034,23 @@ export class SastanciService {
     });
   }
 
-  /** Most teme→zapisnik: seed tačaka iz pm_teme (dedup po tema_id; §3 BE tx). */
+  /**
+   * Most teme→zapisnik: seed tačaka iz pm_teme (dedup po tema_id; §3 BE tx).
+   * Paritet 1.0 seedZapisnikFromTeme (sastanciDetalj.js:456-499): teme se sortiraju
+   * `prioritet.desc.nullslast, admin_rang.asc.nullslast, created_at.asc` PRE dodele
+   * rb/redosled; `pod_rn` = kod projekta teme (best-effort → null ako tema nema
+   * projekat); status EKSPLICITNO 'planiran'.
+   */
   seedFromTeme(email: string, id: string) {
     return this.withUserMapped(email, async (tx) => {
       const teme = await tx.pmTema.findMany({
         where: { sastanakId: id },
-        select: { id: true, naslov: true },
+        select: { id: true, naslov: true, projekatId: true },
+        orderBy: [
+          { prioritet: "desc" },
+          { adminRang: { sort: "asc", nulls: "last" } },
+          { createdAt: "asc" },
+        ],
       });
       if (!teme.length) return { data: { inserted: 0, skipped: 0 } };
       const existing = await tx.presekAktivnost.findMany({
@@ -1049,6 +1062,29 @@ export class SastanciService {
       );
       const fresh = teme.filter((t) => !used.has(t.id));
       if (!fresh.length) return { data: { inserted: 0, skipped: teme.length } };
+
+      // pod_rn iz koda projekta teme (best-effort; null ako projekat/kod fali).
+      const projIds = [
+        ...new Set(
+          fresh.map((t) => t.projekatId).filter((x): x is string => !!x),
+        ),
+      ];
+      const codeByProj = new Map<string, string>();
+      if (projIds.length) {
+        try {
+          const rows = await tx.$queryRaw<
+            { id: string; project_code: string | null }[]
+          >(
+            Prisma.sql`SELECT id, project_code FROM projects WHERE id = ANY(${projIds}::uuid[])`,
+          );
+          for (const r of rows) {
+            if (r.project_code) codeByProj.set(r.id, r.project_code);
+          }
+        } catch {
+          /* pod_rn ostaje null — best-effort (paritet 1.0) */
+        }
+      }
+
       let rb = existing.reduce((m, a) => Math.max(m, a.rb ?? 0), 0);
       let redosled = existing.reduce((m, a) => Math.max(m, a.redosled ?? 0), 0);
       const now = new Date();
@@ -1059,8 +1095,9 @@ export class SastanciService {
           return {
             sastanakId: id,
             naslov: t.naslov || "Tema",
+            podRn: t.projekatId ? (codeByProj.get(t.projekatId) ?? null) : null,
             temaId: t.id,
-            status: "u_toku",
+            status: "planiran",
             rb,
             redosled,
             createdAt: now,
@@ -1286,7 +1323,18 @@ export class SastanciService {
 
   updateTema(email: string, id: string, dto: UpdateTemaDto) {
     return this.withUserMapped(email, async (tx) => {
-      const exists = (await tx.pmTema.count({ where: { id } })) > 0;
+      // Čitamo postojeći red (za exists + očuvanje resio_* atribucije — B menja
+      // samo naslov, ne sme da preotme ko je A rešio; paritet buildTemaPayload).
+      const cur = await tx.pmTema.findUnique({
+        where: { id },
+        select: {
+          resioEmail: true,
+          resioLabel: true,
+          resioAt: true,
+          resioNapomena: true,
+        },
+      });
+      const exists = !!cur;
       const data: Prisma.PmTemaUpdateInput = {
         ...(dto.vrsta !== undefined ? { vrsta: dto.vrsta } : {}),
         ...(dto.oblast !== undefined ? { oblast: dto.oblast } : {}),
@@ -1302,16 +1350,19 @@ export class SastanciService {
         ...(dto.sastanakId !== undefined ? { sastanakId: dto.sastanakId } : {}),
         updatedAt: new Date(),
       };
-      // Rešeno stanje → snapshot resio_* (paritet buildTemaPayload).
+      // Rešeno stanje → snapshot resio_* ali ČUVA postojećeg rešavača (1.0:
+      // resio_email = existing || cu.email; resio_at = existing || now).
       if (
         dto.status &&
         ["usvojeno", "odbijeno", "odlozeno", "zatvoreno"].includes(dto.status)
       ) {
-        data.resioEmail = email;
-        data.resioLabel = email;
-        data.resioAt = new Date();
-        if (dto.resioNapomena !== undefined)
-          data.resioNapomena = dto.resioNapomena || null;
+        data.resioEmail = cur?.resioEmail || email;
+        data.resioLabel = cur?.resioLabel || cur?.resioEmail || email;
+        data.resioAt = cur?.resioAt ?? new Date();
+        data.resioNapomena =
+          dto.resioNapomena !== undefined
+            ? dto.resioNapomena || null
+            : (cur?.resioNapomena ?? null);
       }
       const { count } = await tx.pmTema.updateMany({ where: { id }, data });
       this.assertAffected(exists, count, `Tema ${id}`);

@@ -651,7 +651,10 @@ export class SastanciController {
   // Storage: PDF zapisnika (sastanci-arhiva)
   @Post(":id/arhiva/pdf")
   @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
-  @UseInterceptors(FileInterceptor("file"))
+  // Hard DoS cap ~20MB za PDF zapisnika (multer aborta pre baferovanja).
+  @UseInterceptors(
+    FileInterceptor("file", { limits: { fileSize: 20 * 1024 * 1024 } }),
+  )
   uploadArhivaPdf(
     @Req() req: AuthedRequest,
     @Param("id", ParseUUIDPipe) id: string,
@@ -671,7 +674,10 @@ export class SastanciController {
   // Storage: slika uz tačku (sastanak-slike)
   @Post(":id/slike")
   @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
-  @UseInterceptors(FileInterceptor("file"))
+  // Hard DoS cap ~20MB za sliku preseka (multer aborta pre baferovanja).
+  @UseInterceptors(
+    FileInterceptor("file", { limits: { fileSize: 20 * 1024 * 1024 } }),
+  )
   uploadSlika(
     @Req() req: AuthedRequest,
     @Param("id", ParseUUIDPipe) id: string,

@@ -71,7 +71,10 @@ export class AiChatController {
 
   /** Port edge `ai-chat`: 4 engine-a + tool-use petlja + vision (multipart `image`). */
   @Post("chat")
-  @UseInterceptors(FileInterceptor("image"))
+  // Hard DoS cap ~12MB; servis dodatno primenjuje 6MB pravilo (§2 p.17).
+  @UseInterceptors(
+    FileInterceptor("image", { limits: { fileSize: 12 * 1024 * 1024 } }),
+  )
   chat(
     @Req() req: AuthedRequest,
     @Body() dto: ChatDto,

@@ -27,7 +27,10 @@ export class MediaAiController {
   constructor(private readonly media: MediaAiService) {}
 
   @Post("stt")
-  @UseInterceptors(FileInterceptor("audio"))
+  // Hard DoS cap ~25MB (Whisper limit); servis dodatno primenjuje 15MB pravilo 1.0.
+  @UseInterceptors(
+    FileInterceptor("audio", { limits: { fileSize: 25 * 1024 * 1024 } }),
+  )
   stt(@Body() dto: SttMetaDto, @UploadedFile() audio?: Express.Multer.File) {
     return this.media.transcribe(dto, audio);
   }

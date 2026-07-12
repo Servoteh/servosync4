@@ -1,4 +1,5 @@
 import {
+  BadGatewayException,
   BadRequestException,
   ForbiddenException,
   HttpException,
@@ -57,6 +58,8 @@ export const AI_DAILY_LIMIT = 50;
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
 const IMAGE_MIME_RE = /^image\/(jpeg|png|webp|gif)$/;
 const HISTORY_LIMIT = 20;
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 @Injectable()
 export class AiChatService {
@@ -182,11 +185,11 @@ export class AiChatService {
     // ── tx1: uid + limit + konverzacija + istorija + autor (BYPASSRLS = service role)
     const setup = await this.sy15.withUser(email, async (tx) => {
       const uid = await this.currentUid(tx);
-      await this.assertUnderDailyLimit(tx);
+      const used = await this.assertUnderDailyLimit(tx);
       const conv = await this.resolveConversation(tx, uid, dto, message);
       const history = conv.isNew ? [] : await this.loadHistory(tx, conv.convId);
       const author = await this.resolveAuthor(tx, email);
-      return { uid, ...conv, history, author };
+      return { uid, ...conv, history, author, used };
     });
 
     // ── slika u bucket (van tx; putanja `{convId}/{uuid}.{ext}`)
@@ -218,21 +221,29 @@ export class AiChatService {
       setup.scope === "project"
         ? `${setup.author.name}: ${effectiveMessage}`
         : effectiveMessage;
+    // VERBATIM index.ts:848-849 (spisak alata + „belešku ISKLJUČIVO na izričit zahtev").
     const extraSystem =
       setup.scope === "project"
-        ? `\n\nDELJENA PROJEKTNA NIT — projekat ${setup.convRef}. Timski razgovor: poruke vide SVI; učesnici su označeni imenom. Ovde NEMAŠ lične alate (GO, sati, zaposleni, SQL). Za pitanja o projektu prvo pozovi projekat_info("${setup.convRef}").`
-        : `\n\nKORISNIK U OVOM RAZGOVORU: ${setup.author.name}${setup.author.position ? " — " + setup.author.position : ""}. Oslovljavaj ga po imenu.`;
+        ? `\n\nDELJENA PROJEKTNA NIT — projekat ${setup.convRef}. Ovo je timski razgovor: poruke vide SVI prijavljeni korisnici, a učesnici su označeni imenom na početku poruke (obraćaj im se po imenu). Ovde NEMAŠ lične alate (GO, sati, zaposleni, SQL) — dostupni su samo projekat_info, pretrazi_znanje i dodaj_belesku. Za pitanja o projektu prvo pozovi projekat_info("${setup.convRef}"). Belešku dodaj ISKLJUČIVO kad neko izričito traži da se nešto zapiše.`
+        : `\n\nKORISNIK U OVOM RAZGOVORU: ${setup.author.name}${setup.author.position ? " — " + setup.author.position : ""}. Znaš ko je bez pitanja; oslovljavaj ga po imenu, prirodno i bez preteranog ponavljanja.`;
     const system = SYSTEM_PROMPT + DATE_LINE() + extraSystem;
 
-    const out = await this.ai.chatWithTools(
-      cfg,
-      histForModel,
-      msgForModel,
-      toolsForScope(setup.scope),
-      system,
-      image,
-      (name, args) => this.execTool(email, name, args),
-    );
+    // Engine se poziva POSLE kreiranja niti/upisa user-poruke → greška MORA nositi
+    // conversationId (paritet edge index.ts:853-859): retry ne pravi orphan niti.
+    let out;
+    try {
+      out = await this.ai.chatWithTools(
+        cfg,
+        histForModel,
+        msgForModel,
+        toolsForScope(setup.scope),
+        system,
+        image,
+        (name, args) => this.execTool(email, name, args),
+      );
+    } catch (e) {
+      throw this.upstreamError(e, setup.convId);
+    }
     if (!out.reply) {
       throw new HttpException(
         { error: "empty_output", conversationId: setup.convId },
@@ -281,8 +292,30 @@ export class AiChatService {
         authorName: setup.author.name,
         title: newTitle ?? undefined,
         imagePath: imagePath ?? undefined,
+        // 1.0 UI čita za upozorenje „još X poruka danas" (index.ts:890-891).
+        remaining: Math.max(0, AI_DAILY_LIMIT - setup.used - 1),
+        limit: AI_DAILY_LIMIT,
       },
     };
+  }
+
+  /**
+   * Greška engine-a → 502 sa conversationId (paritet edge index.ts:853-859):
+   * upstream_error (HTTP ne-2xx = BadGatewayException iz chatWithTools) vs
+   * upstream_unreachable (mrežni throw/fetch fail). Bez ovoga retry pravi orphan
+   * niti koje troše dnevni limit.
+   */
+  private upstreamError(e: unknown, conversationId: string): HttpException {
+    // chatWithTools baca BadGatewayException za HTTP ne-2xx; mrežni fetch-throw je
+    // generički Error → upstream_unreachable (paritet edge).
+    const isUpstream = e instanceof BadGatewayException;
+    return new HttpException(
+      {
+        error: isUpstream ? "upstream_error" : "upstream_unreachable",
+        conversationId,
+      },
+      HttpStatus.BAD_GATEWAY,
+    );
   }
 
   /** Brisanje svoje LIČNE niti (RLS delete_own presuđuje — bez ownership WHERE). */
@@ -299,10 +332,28 @@ export class AiChatService {
     });
   }
 
-  /** Presigned URL priloga (ai-chat-images) — vidljivost niti presuđuje RLS. */
+  /**
+   * Presigned URL priloga (ai-chat-images). BEZBEDNOST: pošto potpisujemo servisnim
+   * ključem (zaobilazi bucket RLS), putanja MORA biti striktno `{convId-uuid}/{ime}`
+   * (bez `..`, bez apsolutne putanje, bez dodatnih `/`) — inače bi `<conv>/../<tuđi
+   * conv>/x` pobegao iz niti. Rekonstruišemo putanju server-side i potpisujemo NJU,
+   * ne sirovi klijentski string. Vidljivost niti presuđuje RLS (withUserRls).
+   */
   async signImage(email: string, path: string) {
-    const convId = path.split("/")[0];
-    if (!convId) throw new BadRequestException("Neispravna putanja slike.");
+    const segs = String(path ?? "").split("/");
+    const convId = segs[0];
+    const name = segs[1];
+    const safeName = /^[A-Za-z0-9._-]+$/;
+    if (
+      segs.length !== 2 ||
+      !UUID_RE.test(convId) ||
+      !name ||
+      name === "." ||
+      name === ".." ||
+      !safeName.test(name)
+    ) {
+      throw new BadRequestException("Neispravna putanja slike.");
+    }
     await this.withUserMapped(email, async (tx) => {
       const rows = await tx.$queryRaw<{ id: string }[]>(
         Prisma.sql`SELECT id FROM ai_chat_conversations WHERE id = ${convId}::uuid LIMIT 1`,
@@ -311,7 +362,14 @@ export class AiChatService {
         throw new ForbiddenException("Nemate pristup ovom prilogu.");
       }
     });
-    return { data: await this.storage.signUrl("ai-chat-images", path, 3600) };
+    // Potpiši REKONSTRUISANU putanju (sanitizovani segmenti), ne sirovi string.
+    return {
+      data: await this.storage.signUrl(
+        "ai-chat-images",
+        `${convId}/${name}`,
+        3600,
+      ),
+    };
   }
 
   /** Projekti za picker projektne niti (fetchAiProjects; RLS pozivaoca). */
@@ -379,14 +437,15 @@ export class AiChatService {
     return uid;
   }
 
-  /** Dnevni limit (COUNT role='user' od UTC ponoći; §2 pravilo 10) → 429. */
-  private async assertUnderDailyLimit(tx: Sy15Tx): Promise<void> {
+  /** Dnevni limit (COUNT role='user' od UTC ponoći; §2 pravilo 10) → 429; vraća `used`. */
+  private async assertUnderDailyLimit(tx: Sy15Tx): Promise<number> {
     const rows = await tx.$queryRaw<{ used: number }[]>(
       Prisma.sql`SELECT count(*)::int AS used FROM ai_chat_messages
         WHERE user_id = auth.uid() AND role = 'user'
           AND created_at >= (date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')`,
     );
-    if ((rows[0]?.used ?? 0) >= AI_DAILY_LIMIT) {
+    const used = rows[0]?.used ?? 0;
+    if (used >= AI_DAILY_LIMIT) {
       throw new HttpException(
         {
           error: "daily_limit",
@@ -396,6 +455,7 @@ export class AiChatService {
         HttpStatus.TOO_MANY_REQUESTS,
       );
     }
+    return used;
   }
 
   /**
