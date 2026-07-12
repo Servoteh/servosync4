@@ -8,6 +8,7 @@ import type { INestApplication } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
 import request from "supertest";
 import { JwtAuthGuard } from "../src/modules/auth/jwt-auth.guard";
+import { ALL_ROLE_KEYS } from "../src/common/authz/roles";
 import { EnergetikaController } from "../src/modules/energetika/energetika.controller";
 import { EnergetikaService } from "../src/modules/energetika/energetika.service";
 
@@ -85,25 +86,10 @@ describe("Energetika permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
 
   // read = SAMO admin + menadzment (paritet scada_is_admin_or_management).
   const READ_ROLES = ["admin", "menadzment"];
-  // Sve ostale uloge — NEMA SCADA pristupa (nema viewer read-baseline).
+  // SVE ostale katalogisane uloge (izvedeno iz ALL_ROLE_KEYS — review nalaz 12.07:
+  // ručna lista je izostavljala 5 rezervisanih rola) + degenerisani slučajevi.
   const DENIED_ROLES = [
-    "sef",
-    "tehnolog",
-    "cnc_programer",
-    "kontrolor",
-    "magacioner",
-    "proizvodni_radnik",
-    "nabavka_view",
-    "pm",
-    "leadpm",
-    "tim_lider",
-    "monter",
-    "cnc_operater",
-    "hr",
-    "poslovni_admin",
-    "projektant_vodja",
-    "inzenjer",
-    "viewer",
+    ...ALL_ROLE_KEYS.filter((r) => !READ_ROLES.includes(r)),
     "user",
     "nepoznata_rola",
   ];

@@ -1,6 +1,6 @@
 import { PERMISSIONS } from "./permissions";
 import { roleHasPermission } from "./role-permissions";
-import { ROLES } from "./roles";
+import { ALL_ROLE_KEYS, ROLES } from "./roles";
 
 /**
  * Energetika / SCADA permission matrica (MODULE_SPEC_scada_30.md §2) — rola-sloj
@@ -13,26 +13,12 @@ import { ROLES } from "./roles";
 describe("Energetika permission matrix (paritet scada_is_admin_or_management)", () => {
   const ALLOWED_ROLES = [ROLES.ADMIN, ROLES.MENADZMENT];
 
-  // Sve ostale aktivne/rezervisane uloge — NIJEDNA ne sme imati SCADA pristup.
-  const DENIED_ROLES = [
-    ROLES.SEF,
-    ROLES.TEHNOLOG,
-    ROLES.CNC_PROGRAMER,
-    ROLES.KONTROLOR,
-    ROLES.MAGACIONER,
-    ROLES.PROIZVODNI_RADNIK,
-    ROLES.NABAVKA_VIEW,
-    ROLES.PM,
-    ROLES.LEADPM,
-    ROLES.TIM_LIDER,
-    ROLES.MONTER,
-    ROLES.CNC_OPERATER,
-    ROLES.HR,
-    ROLES.POSLOVNI_ADMIN,
-    ROLES.PROJEKTANT_VODJA,
-    ROLES.INZENJER,
-    ROLES.VIEWER,
-  ];
+  // SVE ostale katalogisane uloge (izvedeno iz ALL_ROLE_KEYS, ne ručna lista —
+  // review nalaz 12.07: hardkodovana lista je izostavljala 5 rezervisanih rola,
+  // pa budući pogrešan grant npr. tehnicar_odrzavanja ne bi oborio nijedan test).
+  const DENIED_ROLES = ALL_ROLE_KEYS.filter(
+    (r) => !(ALLOWED_ROLES as string[]).includes(r),
+  );
 
   it.each(ALLOWED_ROLES)(
     "%s ima energetika.read i energetika.control",

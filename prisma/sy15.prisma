@@ -254,8 +254,11 @@ model RevToolStockLedger {
 // TALAS E — Energetika / SCADA (scada_*). MODULE_SPEC_scada_30.md §1.
 // GENERISANO iz zive sy15 information_schema 2026-07-12 (cloud restore-izvor;
 // poznat drift = SAMO scada_alarm_push_trg URL, ne dira sheme tabela).
-// PK se ZADRZAVA (text key / uuid / composite (site,metric,ts)). Bez FK relacija
-// (1.0 sema ih nema). Upisuje ISKLJUCIVO bridge (service_role) — 2.0 BE u R1 samo
+// PK se ZADRZAVA (text key / uuid / composite (site,metric,ts)). Bez relation
+// POLJA (konvencija fajla, spec §5a) — ali FK-ovi POSTOJE u bazi: site_key →
+// scada_sites(key) sa ON DELETE CASCADE na snapshots/history/alarms (commands
+// bez CASCADE); DELETE scada_sites reda tiho brise celu istoriju tog sistema!
+// Upisuje ISKLJUCIVO bridge (service_role) — 2.0 BE u R1 samo
 // CITA (kroz withUserRls: scada_* politike su scada_is_admin_or_management()-scope,
 // a servosync2_app ima BYPASSRLS — doktrina A.2a). scada_notify_prefs NEMA model:
 // v2, cita se $queryRaw kad dobije UI (spec §2/§7 P6).
