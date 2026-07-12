@@ -115,33 +115,44 @@ deo mobilnih šavova u finalnom 3.0 (playbook §6) — zabeleženo kao svesno od
 
 ## 5. Parity matrica (doktrina B — status se ažurira TOKOM rada)
 
+> **R1 izvršen 12.07** (grana `wave-a/lokacije`): Prisma modeli (`LocLocation`,
+> `LocItemPlacement`, `LocLocationMovement` + 4 enuma) u `prisma/sy15.prisma`;
+> `lokacije.{read,move,manage,admin,labels}` permisije + dodele (`cnc_operater`
+> aktiviran tier→v2); modul `src/modules/locations/` — **11 GET endpointa**
+> (locations +`:id`, placements, movements, reports/by-location + suggest,
+> predmet/:id/tps, lookups/{validate-order,barcode}, definitions-audit,
+> sync/{status,outbound}); barkod parser VERAN port (`barcode.ts`). Testovi:
+> unit rola-matrica + unit barkod (parser+shelf) + **e2e permission matrica 202**
+> (rola × endpoint × 200/403, AUTHZ_ENFORCE=true). Build 0 greš., lint čist,
+> ceo paket zelen (349 unit / 261 e2e). Mutacije = R2, FE/mobilno = R3.
+
 | # | Funkcija | Status |
 |---|---|---|
-| 1 | Dashboard KPI + poslednji pokreti + banneri | NOT_STARTED |
-| 2 | Browse šifarnik + hijerarhija + edit/toggle (manage) | NOT_STARTED |
-| 3 | Nova lokacija / izmena (RLS paritet) | NOT_STARTED |
-| 4 | Premeštaj kaveza (`loc_move_cage`) | NOT_STARTED |
-| 5 | Placements pretraga + istorija stavke | NOT_STARTED |
-| 6 | **Brzo premeštanje (movement, 11 tipova, idempotentno)** | NOT_STARTED |
-| 7 | Skener: RNZ/short/compact parse + autofill (placements/op-status/crtež) | NOT_STARTED |
-| 8 | Skener: shelf barkod (LP:/kratki format) → destinacija | NOT_STARTED |
-| 9 | Pregled predmeta (TP-ovi, op-status, PDF crteža) | NOT_STARTED |
-| 10 | Report po lokacijama (12 filtera) + CSV + suggest | NOT_STARTED |
-| 11 | Istorija premeštanja + filteri + CSV | NOT_STARTED |
-| 12 | Štampa nalepnica: TP (RNZ) + police, batch | NOT_STARTED |
-| 13 | Istorija definicija (audit, manage) | NOT_STARTED |
-| 14 | Sync tab: status/arm/run-now/outbound (admin) | NOT_STARTED |
-| 15 | Mobilni tok (skener + batch) — responsive | NOT_STARTED |
-| 16 | e2e permission matrica (read/move/manage/admin/labels) | NOT_STARTED |
-| 17 | Reversi spoj: initial placement alata IZ 2.0 Reversija → `/locations/movements` | NOT_STARTED |
-| 18 | ⭐ REZNI FIX: izdavanje reznog sa MACHINE lokacije (rešava Reversi caveat) | NOT_STARTED |
+| 1 | Dashboard KPI + poslednji pokreti + banneri | R1: BE read izvori (movements + sync/status banneri) IMPLEMENTED+TESTED; UI R3 |
+| 2 | Browse šifarnik + hijerarhija + edit/toggle (manage) | R1: browse read (`GET /locations` +filteri kind/hall/active/q) IMPLEMENTED+TESTED; edit/toggle R2, UI R3 |
+| 3 | Nova lokacija / izmena (RLS paritet) | NOT_STARTED (R2) |
+| 4 | Premeštaj kaveza (`loc_move_cage`) | NOT_STARTED (R2) |
+| 5 | Placements pretraga + istorija stavke | R1: read (`GET /placements` + istorija po item_ref) IMPLEMENTED+TESTED |
+| 6 | **Brzo premeštanje (movement, 11 tipova, idempotentno)** | NOT_STARTED (R2 — `loc_create_movement` + client_event_uuid) |
+| 7 | Skener: RNZ/short/compact parse + autofill (placements/op-status/crtež) | R1: parser+resolve (`GET /lookups/barcode` ITEM → placements) IMPLEMENTED+TESTED (unit); autofill UI R3 |
+| 8 | Skener: shelf barkod (LP:/kratki format) → destinacija | R1: shelf resolver (`GET /lookups/barcode` SHELF) IMPLEMENTED+TESTED (unit) |
+| 9 | Pregled predmeta (TP-ovi, op-status, PDF crteža) | R1: TP+op-status read (`GET /predmet/:id/tps`, opc. `workOrderId`) IMPLEMENTED+TESTED; PDF/UI R3 |
+| 10 | Report po lokacijama (12 filtera) + CSV + suggest | R1: report+suggest read (`GET /reports/by-location` svih 13 param + `/suggest-naziv-dela`) IMPLEMENTED+TESTED; CSV/UI R3 |
+| 11 | Istorija premeštanja + filteri + CSV | R1: read + SVI filteri (korisnik/lokacija/tip/nalog/datum) (`GET /movements`) IMPLEMENTED+TESTED; CSV/UI R3 |
+| 12 | Štampa nalepnica: TP (RNZ) + police, batch | NOT_STARTED (R2 — reuse TSPL2) |
+| 13 | Istorija definicija (audit, manage) | R1: read (`GET /definitions-audit`, manage gate) IMPLEMENTED+TESTED |
+| 14 | Sync tab: status/arm/run-now/outbound (admin) | R1: status+outbound read (`GET /sync/status`,`/sync/outbound`, admin gate) IMPLEMENTED+TESTED; arm/run-now R2 |
+| 15 | Mobilni tok (skener + batch) — responsive | NOT_STARTED (R3) |
+| 16 | e2e permission matrica (read/move/manage/admin/labels) | TESTED — unit rola-matrica (svih 5) + e2e read/manage/admin (202 slučaja); move/labels bez R1 endpointa (mutacije R2) pa dokazani unit-om |
+| 17 | Reversi spoj: initial placement alata IZ 2.0 Reversija → `/locations/movements` | NOT_STARTED (R3) |
+| 18 | ⭐ REZNI FIX: izdavanje reznog sa MACHINE lokacije (rešava Reversi caveat) | NOT_STARTED (R3) |
 
 ## 6. Redosled izvođenja (R-faze za CEO talas)
 
 | Faza | Šta | Gate |
 |---|---|---|
 | R0 | Nenadov review spec-a + re-verifikacija snapshot-a na živoj sy15 + grants za `servosync2_app` (loc tabele write, execute na 12 front fn, SELECT bigtehn cache/views — migracija u 1.0 repo) | odobreno |
-| R1 | BE read sloj: Prisma modeli u sy15.prisma + svi GET endpointi + `lokacije.*` permisije + e2e read matrica | read paritet |
+| R1 ✅ | BE read sloj: Prisma modeli u sy15.prisma + svi GET endpointi + `lokacije.*` permisije + e2e read matrica — **URAĐEN 12.07** (grana `wave-a/lokacije`, §5 note) | read paritet ✅ |
 | R2 | BE mutacije: movements (client_event_uuid), cage-move, locations CRUD, sync arm/run, labels print (reuse TSPL2); e2e full | write paritet |
 | R3 | FE: 9 tabova + modali + skener proširenje + mobilno; **⭐ Rezni fix u Reversiju** (izvorna lokacija = MACHINE) | UI paritet |
 | R4 | Živi smoke (pun ciklus: sken → premeštaj → istorija → nalepnica) + Playwright happy-path + paralelni rad → hub preklop | parity gate (doktrina D) |
