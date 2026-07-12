@@ -12,11 +12,13 @@ import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
 import { PERMISSIONS } from "../../common/authz/permissions";
 import { SastanciService } from "./sastanci.service";
-import type {
-  AkcijeQuery,
-  ListSastanciQuery,
-  TemeQuery,
-} from "./sastanci.service";
+import {
+  AkcijeQueryDto,
+  ListSastanciQueryDto,
+  NotificationsQueryDto,
+  TemeQueryDto,
+  WeeklyDiffQueryDto,
+} from "./dto/sastanci-query.dto";
 
 interface AuthedRequest {
   user: { userId: number; email: string; role: string };
@@ -25,7 +27,8 @@ interface AuthedRequest {
 /**
  * Sastanci — 3.0 TALAS B, R1 read endpoints (MODULE_SPEC_sastanci_ai_30.md §3).
  * Klasa: `sastanci.read` (paritet 1.0 front gate `canAccessSastanci` — VIDLJIVOST menija;
- * row-nivo/organizator-trio/učesnik-scope OSTAJE u sy15 bazi kroz GUC most).
+ * row-nivo/organizator-trio/učesnik-scope presuđuje sy15 RLS kroz `withUserRls`
+ * — GUC claims + SET LOCAL ROLE authenticated, review 12.07).
  * Mutacije + 13 front RPC + storage presigned + `/ai-summary` su R2 — ovde ih NEMA.
  *
  * ⚠️ Route ordering: sve LITERAL rute pre `:id` (inače bi `:id` uhvatio `/akcije` itd.).
@@ -39,7 +42,7 @@ export class SastanciController {
   // ---------- literal rute (pre :id) ----------
 
   @Get()
-  list(@Req() req: AuthedRequest, @Query() query: ListSastanciQuery) {
+  list(@Req() req: AuthedRequest, @Query() query: ListSastanciQueryDto) {
     return this.sastanci.list(req.user.email, query);
   }
 
@@ -81,9 +84,9 @@ export class SastanciController {
   @Get("notifications")
   notifications(
     @Req() req: AuthedRequest,
-    @Query("sastanakId") sastanakId?: string,
+    @Query() query: NotificationsQueryDto,
   ) {
-    return this.sastanci.notifications(req.user.email, sastanakId);
+    return this.sastanci.notifications(req.user.email, query);
   }
 
   @Get("ai-model")
@@ -93,13 +96,16 @@ export class SastanciController {
 
   // Akcioni plan — literal „akcije/*" pre :id-a
   @Get("akcije")
-  akcije(@Req() req: AuthedRequest, @Query() query: AkcijeQuery) {
+  akcije(@Req() req: AuthedRequest, @Query() query: AkcijeQueryDto) {
     return this.sastanci.listAkcije(req.user.email, query);
   }
 
   @Get("akcije/weekly-diff")
-  akcijeWeeklyDiff(@Req() req: AuthedRequest) {
-    return this.sastanci.akcijeWeeklyDiff(req.user.email);
+  akcijeWeeklyDiff(
+    @Req() req: AuthedRequest,
+    @Query() query: WeeklyDiffQueryDto,
+  ) {
+    return this.sastanci.akcijeWeeklyDiff(req.user.email, query);
   }
 
   @Get("akcije/:id/istorija")
@@ -112,7 +118,7 @@ export class SastanciController {
 
   // PM teme
   @Get("teme")
-  teme(@Req() req: AuthedRequest, @Query() query: TemeQuery) {
+  teme(@Req() req: AuthedRequest, @Query() query: TemeQueryDto) {
     return this.sastanci.listTeme(req.user.email, query);
   }
 

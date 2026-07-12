@@ -34,6 +34,9 @@ describe("Sastanci + AI permission matrix (paritet 1.0 gate-ova)", () => {
     ROLES.MONTER,
     ROLES.CNC_OPERATER,
     ROLES.POSLOVNI_ADMIN, // ima edit, ali NE read (nije u canAccessSastanci)
+    // Presuda B6 (§7 P6): biro role NISU u canAccessSastanci — pin protiv regresije.
+    ROLES.PROJEKTANT_VODJA,
+    ROLES.INZENJER,
   ];
   const EDIT_ROLES = [
     ROLES.ADMIN,

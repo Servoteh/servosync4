@@ -116,6 +116,7 @@ describe("Sastanci + AI permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
   const SASTANCI_NO_READ = [
     "sef",
     "tehnolog",
+    "cnc_programer",
     "kontrolor",
     "magacioner",
     "proizvodni_radnik",
@@ -124,6 +125,9 @@ describe("Sastanci + AI permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     "monter",
     "cnc_operater",
     "poslovni_admin", // ima edit ali NE read
+    // Presuda B6 (§7 P6): biro role nisu u canAccessSastanci — pin protiv regresije.
+    "projektant_vodja",
+    "inzenjer",
   ];
   // 1.0 /ai za sve → sve aktivne uloge.
   const AI_ROLES = [
@@ -178,6 +182,37 @@ describe("Sastanci + AI permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     it("GET /sastanci/:id → 200 za pm (uuid), 400 za ne-uuid", async () => {
       await get(`/sastanci/${VALID_UUID}`, "pm").expect(200);
       await get("/sastanci/nije-uuid", "pm").expect(400);
+    });
+  });
+
+  describe("Query DTO validacija (nalaz 3g — nevalidan uuid/datum = 400, ne 500)", () => {
+    it("GET /sastanci/akcije?sastanakId=nije-uuid → 400; validan uuid → 200", async () => {
+      await get("/sastanci/akcije?sastanakId=nije-uuid", "admin").expect(400);
+      await get(`/sastanci/akcije?sastanakId=${VALID_UUID}`, "admin").expect(
+        200,
+      );
+    });
+    it("GET /sastanci/akcije/weekly-diff: since nije ISO → 400; ISO → 200", async () => {
+      await get(
+        "/sastanci/akcije/weekly-diff?since=nije-datum",
+        "admin",
+      ).expect(400);
+      await get(
+        "/sastanci/akcije/weekly-diff?since=2026-07-01T00:00:00Z",
+        "admin",
+      ).expect(200);
+    });
+    it("GET /sastanci/teme?projekatId=nije-uuid → 400", async () => {
+      await get("/sastanci/teme?projekatId=nije-uuid", "admin").expect(400);
+    });
+    it("GET /sastanci/notifications?sastanakId=nije-uuid → 400", async () => {
+      await get("/sastanci/notifications?sastanakId=nije-uuid", "hr").expect(
+        400,
+      );
+    });
+    it("GET /sastanci?from=nije-datum → 400; from=2026-07-01 → 200", async () => {
+      await get("/sastanci?from=nije-datum", "viewer").expect(400);
+      await get("/sastanci?from=2026-07-01", "viewer").expect(200);
     });
   });
 

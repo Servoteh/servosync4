@@ -8,22 +8,26 @@ import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
 
 /**
  * AI asistent — 3.0 TALAS B, R1 READ sloj (MODULE_SPEC_sastanci_ai_30.md §3).
- * R1 = SAMO čitanje istorije + limit + „ja" kartica. SVE ide kroz GUC most
- * (`Sy15Service.withUser`) jer RLS na ai_chat_* čita `auth.uid()` (= GUC `sub` claim):
- *   - conversations SELECT = own (auth.uid()) + project-scope SVIMA,
- *   - messages SELECT = own + project,
+ * R1 = SAMO čitanje istorije + limit + „ja" kartica. SVE ide kroz
+ * `Sy15Service.withUserRls` (GUC claims + SET LOCAL ROLE authenticated — review 12.07:
+ * konekciona rola je BYPASSRLS pa RLS važi tek pod authenticated):
+ *   - conversations SELECT = own (auth.uid()) + project-scope SVIMA (RLS),
+ *   - messages SELECT = own + project (RLS),
  *   - dnevni limit broji `role='user'` poruke od UTC ponoći (§2 pravilo 10).
  *
  * ── R2 (NIJE ovde) ────────────────────────────────────────────────────────
  * Port edge `ai-chat` u NestJS (§7 P1): POST `/ai/chat` sa tool-use petljom.
  *   * 4 engine-a (ChatGPT/Claude/Gemini/Kimi) — ključevi u BE env.
- *   * 18 alata → 22 `ai_chat_*` RPC-a se NE prepisuju; zovu se kroz GUC most SA
+ *   * 18 alata → 22 `ai_chat_*` RPC-a se NE prepisuju; zovu se kroz withUserRls SA
  *     identitetom korisnika (auth.uid()+email) — scope presuđuje baza (Kadrovska/
- *     Održavanje/PB/Plan). U DELJENOJ projektnoj niti LIČNI alati (GO/sati/zaposleni/
- *     SQL) su ISKLJUČENI; poruke se modelu prefiksuju imenom autora (§2 pravilo 11).
+ *     Održavanje/PB/Plan), a SECURITY INVOKER alati (ai_chat_sql, ai_chat_prijavi_kvar)
+ *     rade kao u 1.0 jer se izvršavaju kao authenticated. U DELJENOJ projektnoj niti
+ *     LIČNI alati (GO/sati/zaposleni/SQL) su ISKLJUČENI; poruke se modelu prefiksuju
+ *     imenom autora (§2 pravilo 11).
  *   * vision: max ~6MB base64, JPG/PNG/WEBP/GIF, resize 1568px; upload → `ai-chat-images`.
  *   * limit 50/dan UTC (COUNT role='user'); pad auto-naslova (gpt-4o-mini) ne ruši slanje.
- *   * upis istorije SERVER-SIDE (ekvivalent service role — vidi R0 grants DRAFT ai_chat).
+ *   * upis istorije SERVER-SIDE (RLS INSERT/UPDATE = „NIKO"; R2 bira mehanizam:
+ *     upis BEZ SET ROLE (BYPASSRLS konekcija = ekvivalent service role) ili DEFINER RPC).
  * Ostali R2: DELETE `/ai/conversations/:id` (samo svoje lične niti), `/ai/projects`,
  *   `/ai/images/sign`, `/ai/stt` + `/ai/refine` (P4 presečna infra), `/ai/chat`.
  * ──────────────────────────────────────────────────────────────────────────
@@ -92,12 +96,18 @@ export class AiChatService {
 
   // ---------- interno ----------
 
+  /**
+   * Sav pristup ide kroz `withUserRls` (GUC + SET LOCAL ROLE authenticated) —
+   * KRITIČNO za ai_chat_* (review 12.07): konekciona rola je BYPASSRLS, pa bi
+   * čitanje bez SET ROLE vraćalo TUĐE LIČNE NITI. Pod `authenticated` RLS
+   * (own auth.uid() + project-scope) presuđuje red kao u 1.0 PostgREST-u.
+   */
   private async withUserMapped<T>(
     email: string,
     fn: (tx: Sy15Tx) => Promise<T>,
   ): Promise<T> {
     try {
-      return await this.sy15.withUser(email, fn);
+      return await this.sy15.withUserRls(email, fn);
     } catch (e) {
       this.rethrowSy15(e);
     }

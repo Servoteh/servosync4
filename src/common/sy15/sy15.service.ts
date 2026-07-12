@@ -56,7 +56,41 @@ export class Sy15Service implements OnModuleDestroy {
    */
   async withUser<T>(email: string, fn: (tx: Sy15Tx) => Promise<T>): Promise<T> {
     return this.db.$transaction(async (tx) => {
-      await this.setClaims(tx as Sy15Tx, email);
+      await this.setClaims(tx, email);
+      return fn(tx);
+    });
+  }
+
+  /**
+   * GUC most + RLS paritet (TALAS B review 12.07): kao `withUser`, ALI se posle
+   * postavljanja claims-a izvršava `SET LOCAL ROLE authenticated` u ISTOJ transakciji.
+   *
+   * Zašto: IZMERENO na živoj sy15 — konekciona rola `servosync2_app` ima
+   * `rolbypassrls = TRUE` (i nije član nijedne role), pa SVI upiti kroz `withUser`
+   * ZAOBILAZE RLS politike (GUC claims tada služe samo DEFINER funkcijama).
+   * `SET LOCAL ROLE authenticated` (rolbypassrls = f) izvršava ceo tx pod ISTIM
+   * RLS politikama + table/fn privilegijama kao 1.0 PostgREST → paritet po
+   * konstrukciji; SECURITY INVOKER fn (npr. ai_chat_sql, ai_chat_prijavi_kvar)
+   * rade tačno kao u 1.0. Row-scoped read-ovi (ai_chat_* svoje-niti,
+   * sastanci_notification_log svoje∨mgmt, pm_teme vidljivost…) NE dupliraju
+   * scope u WHERE — presuđuje RLS.
+   *
+   * PREDUSLOV na sy15 (R0, glavna sesija — talasB-R0-grants-DRAFT.sql):
+   * `GRANT authenticated TO servosync2_app;` — bez članstva SET ROLE pada (42501).
+   * TODO(integracija): posle primene grant-a verifikovati živim smoke-om
+   * (tuđa lična AI nit → 0 redova; tuđi notification_log → samo mgmt).
+   *
+   * `withUser` (Reversi/Lokacije) se NE menja — njihovo ponašanje ostaje netaknuto.
+   * Claims (uklj. lookup auth.users za `sub`) idu PRE SET ROLE —
+   * authenticated nema SELECT na auth.users.
+   */
+  async withUserRls<T>(
+    email: string,
+    fn: (tx: Sy15Tx) => Promise<T>,
+  ): Promise<T> {
+    return this.db.$transaction(async (tx) => {
+      await this.setClaims(tx, email);
+      await tx.$executeRaw`SET LOCAL ROLE authenticated`;
       return fn(tx);
     });
   }
@@ -78,7 +112,9 @@ export class Sy15Service implements OnModuleDestroy {
       this.subByEmail.set(email, sub);
     }
     const claims = JSON.stringify(
-      sub ? { sub, email, role: "authenticated" } : { email, role: "authenticated" },
+      sub
+        ? { sub, email, role: "authenticated" }
+        : { email, role: "authenticated" },
     );
     await tx.$queryRaw`SELECT set_config('request.jwt.claims', ${claims}, true)`;
   }
@@ -100,7 +136,7 @@ export class Sy15Service implements OnModuleDestroy {
     fn: (tx: Sy15Tx) => Promise<T>,
   ): Promise<{ idempotent: boolean; result: T }> {
     return this.db.$transaction(async (tx) => {
-      await this.setClaims(tx as Sy15Tx, email);
+      await this.setClaims(tx, email);
       const inserted = await tx.$executeRaw`
         INSERT INTO rev_api_idempotency (client_event_id, action)
         VALUES (${clientEventId}::uuid, ${action})
