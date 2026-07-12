@@ -91,6 +91,10 @@ export const ROLE_PERMISSIONS: Partial<
     P.STRUKTURE_WRITE,
     P.PRIMOPREDAJE_READ,
     P.PRIMOPREDAJE_WRITE,
+    // APPROVE: odluka Nenad 12.07.2026 (ODLUKE #33) — tehnolozi (Miljan,
+    // Jovica) odobravaju, dodeljuju tehnologa i lansiraju primopredaje;
+    // paritet QBigTehn gde „Jovica i Miljan" odobravaju (frmIzborTehnologa).
+    P.PRIMOPREDAJE_APPROVE,
     P.LOKACIJE_READ,
     P.MRP_READ,
     P.DIRECTORY_READ,
@@ -175,10 +179,13 @@ export const ROLE_PERMISSIONS: Partial<
     // i MENADZMENT/TEHNOLOG rolama uz ADMIN/SEF.
     P.STRUKTURE_READ,
     P.STRUKTURE_WRITE,
-    // Primopredaje: W po paritetu; APPROVE namerno NE — finalno odobrenje ide per-user
-    // (`finalni_potpisnik` override — Milorad Jerotić) ili SEF/ADMIN, ne blanket menadžmentu.
+    // Primopredaje: PRIVREMENO pun pristup (read/write/approve) — odluka Nenad
+    // 12.07.2026 (ODLUKE #33): menadžment vidi i Nacrte i Primopredaje dok se
+    // tok ne ustali; APPROVE UKINUTI kasnije (vraća se na per-user
+    // `finalni_potpisnik` override ili SEF/ADMIN).
     P.PRIMOPREDAJE_READ,
     P.PRIMOPREDAJE_WRITE,
+    P.PRIMOPREDAJE_APPROVE,
     P.LOKACIJE_READ,
     P.LOKACIJE_WRITE, // 1.0 obrazac 10: menadzment piše lokacije
     P.MRP_READ,
