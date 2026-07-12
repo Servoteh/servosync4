@@ -8,7 +8,7 @@
 | **Izvor** | 1.0 ŽIVI kod (`src/services/lokacije.js` ~1100 LOC + `src/ui/lokacije/` 7 fajlova ~11k LOC + `stampaNalepnica/` 1.2k) + živi DB (snimljeno 12.07) |
 | **Authz snapshot** | [`authz-snapshots/lokacije-fn-defs-2026-07-12.sql`](authz-snapshots/lokacije-fn-defs-2026-07-12.sql) (36 fn) |
 | **Doktrina** | [`MIGRACIONA_DOKTRINA_3.0.md`](MIGRACIONA_DOKTRINA_3.0.md) — VAŽI U CELOSTI |
-| **Status** | Spec spreman — čeka Nenadov review (R0) |
+| **Status** | ✅ **ODOBREN (Nenad, 12.07)** — sva 4 pitanja §7 presuđena („važe predlozi"); spreman za R1 (izvršava Opus po doktrini) |
 
 > ⚠️ **NE mešati sa postojećim 2.0 `part-locations`** (`MODULE_SPEC_lokacije.md`) — to je
 > QBigTehn magacinski ledger (praćenje kroz pogon, domen Proizvodnja). OVO je 1.0 sistem
@@ -147,12 +147,13 @@ deo mobilnih šavova u finalnom 3.0 (playbook §6) — zabeleženo kao svesno od
 | R4 | Živi smoke (pun ciklus: sken → premeštaj → istorija → nalepnica) + Playwright happy-path + paralelni rad → hub preklop | parity gate (doktrina D) |
 | R5 | Retrospektiva tempa → ažurirati PROCENA_SEOBE (druga merna tačka!) | kalibracija |
 
-## 7. Otvorena pitanja (za R0 review)
+## 7. Odluke R0 — ✅ PRESUĐENO (Nenad, 12.07: „važe predlozi")
 
-1. **Predmet tab izvor**: v1 čita iste `bigtehn_*` cache tabele iz sy15 (paritet). Repoint
-   na 2.0 `tech_processes` = zaseban most uz QBigTehn cutover (playbook §4.2) — NE sada. OK?
-2. **PDF crteža u Predmet tabu**: 1.0 čita bucket; 2.0 ima `drawing_pdfs` — koristiti 2.0
-   PDM odmah (dedup ranije za ovaj ekran) ili sy15 bucket za striktni paritet? *Predlog: 2.0 PDM.*
-3. **`cnc_operater` aktivacija** (labels permisija) — kao pm/leadpm obrazac. *Predlog: aktivirati.*
-4. **Sync tab** — seli se (admin kontrola postojećeg workera) ili ostaje samo u 1.0 do
-   QBigTehn cutover-a? *Predlog: seliti (tanko — 3 RPC-a), 1.0 ostaje fallback.*
+1. **Predmet tab izvor**: ✅ **DA** — v1 čita iste `bigtehn_*` cache tabele iz sy15 (paritet).
+   Repoint na 2.0 `tech_processes` = zaseban most uz QBigTehn cutover (playbook §4.2), NE sada.
+2. **PDF crteža u Predmet tabu**: ✅ **2.0 PDM** (`drawing_pdfs`) — dedup ranije za ovaj ekran;
+   sy15 bucket se za ovaj ekran ne koristi.
+3. **`cnc_operater` aktivacija** (labels permisija): ✅ **DA** — aktivirati kao pm/leadpm obrazac
+   (tier → v2 + dodela u `role-permissions.ts`).
+4. **Sync tab**: ✅ **SELITI** — admin kontrola postojećeg workera (3 tanka RPC-a + read queue);
+   1.0 Sync tab ostaje kao fallback do QBigTehn cutover-a.
