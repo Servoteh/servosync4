@@ -81,6 +81,19 @@ export default function CompletedOrdersPage() {
         ),
     },
     {
+      key: 'locations',
+      header: 'Lokacija',
+      render: (r) => {
+        const locs = r.locations;
+        if (!locs || locs.length === 0) return <span className="text-ink-disabled">—</span>;
+        return (
+          <span className="tnums text-ink-secondary">
+            {locs.map((l) => `${l.positionCode} (${formatNumber(l.quantity)})`).join(', ')}
+          </span>
+        );
+      },
+    },
+    {
       key: 'status',
       header: 'Status',
       render: () => <StatusBadge tone="success" label="Završen" />,

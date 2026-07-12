@@ -166,6 +166,14 @@ function WorkOrderDetail({
     return <span className="text-sm text-status-danger">Greška pri učitavanju detalja.</span>;
   const rn = q.data.data;
   const s = statusMeta(rn.handoverStatusId);
+  // Vrsta porekla za dorada/škart child se čita iz sufiksa identa (-D / -S).
+  const originKind = rn.parentWorkOrder
+    ? rn.identNumber.endsWith('-D')
+      ? 'dorada'
+      : rn.identNumber.endsWith('-S')
+        ? 'škart'
+        : null
+    : null;
   const locked = !!rn.isLocked;
   const canEdit = !locked && can(PERMISSIONS.RN_WRITE);
   const fmtNum = (n: number) => n.toLocaleString('sr-RS', { maximumFractionDigits: 3 });
@@ -311,6 +319,51 @@ function WorkOrderDetail({
         <Field label="Otvoren" value={formatDate(rn.enteredAt)} />
         <Field label="Rok" value={formatDate(rn.productionDeadline)} />
       </dl>
+
+      {(rn.parentWorkOrder || (rn.reworkChildren?.length ?? 0) > 0) && (
+        <div className="space-y-1 rounded-panel border border-line bg-surface-2/60 px-3 py-2">
+          {rn.parentWorkOrder && (
+            <p className="text-ink-secondary">
+              Nastao iz{originKind ? ` (${originKind})` : ''}:{' '}
+              {onOpenWorkOrder ? (
+                <button
+                  onClick={() => onOpenWorkOrder(rn.parentWorkOrder!.id)}
+                  className="tnums font-semibold text-accent hover:underline"
+                >
+                  RN {rn.parentWorkOrder.identNumber}
+                </button>
+              ) : (
+                <span className="tnums font-semibold text-ink">
+                  RN {rn.parentWorkOrder.identNumber}
+                </span>
+              )}
+            </p>
+          )}
+          {rn.reworkChildren && rn.reworkChildren.length > 0 && (
+            <p className="text-ink-secondary">
+              Dorada/škart nalozi:{' '}
+              {rn.reworkChildren.map((c, i) => (
+                <span key={c.id}>
+                  {i > 0 && ', '}
+                  {onOpenWorkOrder ? (
+                    <button
+                      onClick={() => onOpenWorkOrder(c.id)}
+                      className="tnums font-semibold text-accent hover:underline"
+                    >
+                      RN {c.identNumber}
+                    </button>
+                  ) : (
+                    <span className="tnums font-semibold text-ink">RN {c.identNumber}</span>
+                  )}{' '}
+                  <span className="text-ink-disabled">
+                    ({c.qualityTypeId === REWORK_QUALITY.DORADA ? 'dorada' : 'škart'})
+                  </span>
+                </span>
+              ))}
+            </p>
+          )}
+        </div>
+      )}
 
       <div>
         <div className="mb-1.5 flex items-center justify-between gap-2">
@@ -1405,11 +1458,12 @@ export default function WorkOrdersPage() {
   const [statusId, setStatusId] = useState<number | ''>('');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
+  const [reworkOnly, setReworkOnly] = useState(false);
   const [page, setPage] = useState(1);
   const [expanded, setExpanded] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);
   const [cloning, setCloning] = useState(false);
-  const list = useWorkOrders({ page, q: q.trim() || undefined, statusId, from, to });
+  const list = useWorkOrders({ page, q: q.trim() || undefined, statusId, from, to, reworkOnly });
 
   // Deep-link ?open=<id> (dolazak sa /handovers: „Otkucaj TP" / „Otvori RN") —
   // učitaj taj RN, filtriraj listu po njegovom identu (da red sigurno bude
@@ -1519,13 +1573,26 @@ export default function WorkOrdersPage() {
               className="rounded-control border border-line bg-surface px-2.5 py-1.5 text-sm text-ink"
             />
           </label>
-          {(statusId !== '' || from || to || q) && (
+          <label className="flex items-center gap-2 pb-1.5 text-sm text-ink-secondary">
+            <input
+              type="checkbox"
+              checked={reworkOnly}
+              onChange={(e) => {
+                setReworkOnly(e.target.checked);
+                resetPage();
+              }}
+              className="h-4 w-4 rounded border-line"
+            />
+            Samo dorada/škart
+          </label>
+          {(statusId !== '' || from || to || q || reworkOnly) && (
             <button
               onClick={() => {
                 setQ('');
                 setStatusId('');
                 setFrom('');
                 setTo('');
+                setReworkOnly(false);
                 resetPage();
               }}
               className="rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2"

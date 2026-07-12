@@ -61,6 +61,17 @@ export interface WorkOrder {
   worker: WorkerRef | null;
   qualityType: { id: number; name: string } | null;
   handoverStatus: { id: number; name: string } | null;
+  /**
+   * Izvorni RN iz kog je nastao ovaj dorada/škart child (Paket B t.2).
+   * null kad RN nije dorada/škart naslednik. Opciono/defanzivno — polje stiže
+   * sa novim backendom (stariji ga ne vraća → undefined).
+   */
+  parentWorkOrder?: { id: number; identNumber: string; variant: number } | null;
+  /**
+   * Neto lokacije dela kroz proizvodnju (Paket B t.5). Opciono/defanzivno —
+   * prazno/undefined dok backend ne isporuči podatak.
+   */
+  locations?: Array<{ positionCode: string; quantity: number }>;
 }
 
 export interface WorkOrderOperation {
@@ -86,6 +97,17 @@ export interface WorkOrderApprovalRow {
 
 export interface WorkOrderDetail extends WorkOrder {
   handoverWorker: WorkerRef | null;
+  /**
+   * Dorada/škart naslednici ovog RN-a (Paket B t.2, samo na /:id detalju).
+   * qualityTypeId: 1 = dorada, 2 = škart. Opciono/defanzivno.
+   */
+  reworkChildren?: Array<{
+    id: number;
+    identNumber: string;
+    variant: number;
+    qualityTypeId: number;
+    pieceCount: number;
+  }>;
   operations: WorkOrderOperation[];
   approvals: WorkOrderApprovalRow[];
   launches: { id: number; isLaunched: boolean | null; enteredAt: string }[];
@@ -117,6 +139,8 @@ export interface WoListParams {
   to?: string;
   /** RN završen: '' = svi, 'true' = završeni, 'false' = u radu. */
   completed?: '' | 'true' | 'false';
+  /** true = samo dorada/škart nalozi (imaju izvorni RN) — Paket B t.2. */
+  reworkOnly?: boolean;
 }
 
 /** Ulaz za DORADA/ŠKART child nalog (POST /:id/rework). */
@@ -161,6 +185,7 @@ export function useWorkOrders(params: WoListParams) {
   if (params.from) qs.set('from', params.from);
   if (params.to) qs.set('to', params.to);
   if (params.completed) qs.set('completed', params.completed);
+  if (params.reworkOnly) qs.set('reworkOnly', 'true');
   const query = qs.toString();
   return useQuery({
     queryKey: ['work-orders', params],
