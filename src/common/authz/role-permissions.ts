@@ -38,6 +38,20 @@ const VIEWER_READ_BASELINE: readonly PermissionKey[] = [
   P.REVERSI_READ,
 ];
 
+/**
+ * Sastanci + AI TALAS B (MODULE_SPEC_sastanci_ai_30.md §2/§7 P6, presuda 12.07):
+ *   - `sastanci.read`  = 1.0 `canAccessSastanci` front gate = admin/leadpm/pm/menadzment/hr/viewer.
+ *     (DB SELECT je `true` za sve authenticated, ali guard = VIDLJIVOST menija;
+ *     operativne role monter/tim_lider/proizvodni_radnik/magacioner/cnc_operater/sef/…
+ *     NE vide modul. Širenje = svesna odluka kasnije.)
+ *   - `sastanci.edit`  = 1.0 `has_edit_role` paritet = admin/menadzment/hr/pm/leadpm/poslovni_admin
+ *     (poslovni_admin ima edit ali NE read — front ga ne prikazuje, ali DB/edit-scope ga pušta;
+ *      viewer ima read ali NE edit). Row-odluka (učesnik-scope/organizator-trio) OSTAJE u bazi.
+ *   - `sastanci.manage` = admin/menadzment (pozivnice/podsetnici/resend/reopen).
+ *   - `sastanci.weekly_move` = VIDLJIVOST dugmadi; prava odluka = tabela `sast_weekly_movers`
+ *      (danas Nenad+Zoran, NIJE rola) kroz GUC. Dajemo je mgmt-u da guard ne blokira movere.
+ * `ai.chat` = SVE aktivne uloge (1.0 „/ai za sve"); upis istorije je server-side.
+ */
 export const ROLE_PERMISSIONS: Partial<
   Record<RoleKey, readonly PermissionKey[]>
 > = {
@@ -69,6 +83,8 @@ export const ROLE_PERMISSIONS: Partial<
     // Reversi paritet 1.0: sef NIJE u rev_can_manage() → read + team scope, BEZ manage.
     P.REVERSI_READ,
     P.REVERSI_TEAM_READ,
+    // Sastanci: sef NIJE u canAccessSastanci (§7 P6) → BEZ sastanci.*. AI: /ai za sve.
+    P.AI_CHAT,
   ],
 
   [ROLES.TEHNOLOG]: [
@@ -94,6 +110,7 @@ export const ROLE_PERMISSIONS: Partial<
     P.LOKACIJE_READ,
     P.MRP_READ,
     P.DIRECTORY_READ,
+    P.AI_CHAT, // 1.0 /ai za sve (Sastanci: nije u canAccessSastanci)
   ],
 
   [ROLES.CNC_PROGRAMER]: [
@@ -109,6 +126,7 @@ export const ROLE_PERMISSIONS: Partial<
     P.LOKACIJE_READ,
     P.MRP_READ,
     P.DIRECTORY_READ,
+    P.AI_CHAT, // 1.0 /ai za sve
   ],
 
   [ROLES.KONTROLOR]: [
@@ -126,6 +144,7 @@ export const ROLE_PERMISSIONS: Partial<
     P.STRUKTURE_READ,
     P.LOKACIJE_READ, // matrica §3: R
     P.DIRECTORY_READ,
+    P.AI_CHAT, // 1.0 /ai za sve
   ],
 
   [ROLES.MAGACIONER]: [
@@ -141,6 +160,8 @@ export const ROLE_PERMISSIONS: Partial<
     // Reversi (3.0 pilot): magacioner je nosilac modula — rev_can_manage() paritet.
     P.REVERSI_READ,
     P.REVERSI_MANAGE,
+    // Sastanci: magacioner NE dobija sastanci.* (§7 P6). AI: /ai za sve.
+    P.AI_CHAT,
   ],
 
   [ROLES.PROIZVODNI_RADNIK]: [
@@ -152,6 +173,8 @@ export const ROLE_PERMISSIONS: Partial<
     P.LOKACIJE_READ,
     P.REVERSI_READ, // paritet 1.0: SELECT za sve prijavljene („Moji alati")
     // BEZ directory.read — matrica §3: RADNIK nema komitente/predmete.
+    // Sastanci: proizvodni_radnik NE dobija sastanci.* (§7 P6). AI: /ai za sve.
+    P.AI_CHAT,
   ],
 
   [ROLES.NABAVKA_VIEW]: [
@@ -161,6 +184,7 @@ export const ROLE_PERMISSIONS: Partial<
     P.TEHNOLOGIJA_READ,
     P.RN_READ, // matrica §3: R (kontekst za MRP uvid)
     P.REVERSI_READ, // paritet 1.0: SELECT za sve prijavljene
+    P.AI_CHAT, // 1.0 /ai za sve
   ],
 
   [ROLES.MENADZMENT]: [
@@ -188,6 +212,12 @@ export const ROLE_PERMISSIONS: Partial<
     P.REVERSI_READ,
     P.REVERSI_MANAGE,
     P.REVERSI_TEAM_READ,
+    // Sastanci: mgmt = read+edit+manage+weekly_move (current_user_is_management paritet).
+    P.SASTANCI_READ,
+    P.SASTANCI_EDIT,
+    P.SASTANCI_MANAGE,
+    P.SASTANCI_WEEKLY_MOVE,
+    P.AI_CHAT,
   ],
 
   // AKTIVIRANE 10.07.2026 uz 3.0-pilot Reversi (Nenad) — paritet rev_can_manage().
@@ -200,6 +230,10 @@ export const ROLE_PERMISSIONS: Partial<
     P.RN_READ,
     P.PDM_READ,
     P.DIRECTORY_READ, // baseline uvid (kao viewer)
+    // Sastanci: pm je u canAccessSastanci + has_edit_role → read + edit.
+    P.SASTANCI_READ,
+    P.SASTANCI_EDIT,
+    P.AI_CHAT,
   ],
   [ROLES.LEADPM]: [
     P.REVERSI_READ,
@@ -208,10 +242,15 @@ export const ROLE_PERMISSIONS: Partial<
     P.RN_READ,
     P.PDM_READ,
     P.DIRECTORY_READ, // baseline uvid (kao viewer)
+    // Sastanci: leadpm je u canAccessSastanci + has_edit_role → read + edit.
+    P.SASTANCI_READ,
+    P.SASTANCI_EDIT,
+    P.AI_CHAT,
   ],
 
   // tim_lider: read-baseline (SSO uvid) + zaduženja svog tima; write čeka 3.0.
-  [ROLES.TIM_LIDER]: [...VIEWER_READ_BASELINE, P.REVERSI_TEAM_READ],
+  // Sastanci: tim_lider NE dobija sastanci.* (§7 P6). AI: /ai za sve.
+  [ROLES.TIM_LIDER]: [...VIEWER_READ_BASELINE, P.REVERSI_TEAM_READ, P.AI_CHAT],
 
   // Biro role (P4_SPEC_pdm_intake_PREDLOG §6.5.3, odluka Nenad 11.07 — §0 t.3):
   // projektanti biroa MORAJU raditi u 2.0 pre cutover-a (kreiranje/uređivanje
@@ -221,23 +260,33 @@ export const ROLE_PERMISSIONS: Partial<
     ...VIEWER_READ_BASELINE,
     P.PRIMOPREDAJE_READ,
     P.PRIMOPREDAJE_WRITE, // kreiranje/uređivanje nacrta primopredaje (§6.5.3)
+    P.AI_CHAT, // 1.0 /ai za sve (nije u canAccessSastanci)
   ],
   [ROLES.INZENJER]: [
     ...VIEWER_READ_BASELINE,
     P.PRIMOPREDAJE_READ,
     P.PRIMOPREDAJE_WRITE, // kreiranje/uređivanje nacrta primopredaje (§6.5.3)
+    P.AI_CHAT, // 1.0 /ai za sve (nije u canAccessSastanci)
   ],
 
   // 1.0 kancelarijske role bez 2.0-modula (tier 3.0/reservisano): preko SSO-a
   // ulaze u „Tehnologiju" pa MORAJU imati read-baseline (bez ovoga ih
   // AUTHZ_ENFORCE=true zaključa na 403). Kuriranje write-a stiže sa modulima.
-  [ROLES.HR]: [...VIEWER_READ_BASELINE],
-  [ROLES.POSLOVNI_ADMIN]: [...VIEWER_READ_BASELINE],
-  [ROLES.CNC_OPERATER]: [...VIEWER_READ_BASELINE],
-  [ROLES.MONTER]: [...VIEWER_READ_BASELINE],
+  // HR: u canAccessSastanci + has_edit_role → sastanci.read + edit. /ai svima.
+  [ROLES.HR]: [
+    ...VIEWER_READ_BASELINE,
+    P.SASTANCI_READ,
+    P.SASTANCI_EDIT,
+    P.AI_CHAT,
+  ],
+  // poslovni_admin: has_edit_role (edit) ali NIJE u canAccessSastanci (bez read) — §2 paritet.
+  [ROLES.POSLOVNI_ADMIN]: [...VIEWER_READ_BASELINE, P.SASTANCI_EDIT, P.AI_CHAT],
+  [ROLES.CNC_OPERATER]: [...VIEWER_READ_BASELINE, P.AI_CHAT],
+  [ROLES.MONTER]: [...VIEWER_READ_BASELINE, P.AI_CHAT],
 
   // Baseline uvid dobija i `viewer` (read gde ima smisla u 2.0 pilotu).
-  [ROLES.VIEWER]: [...VIEWER_READ_BASELINE],
+  // Sastanci: viewer je u canAccessSastanci → SAMO read (bez edit). /ai svima.
+  [ROLES.VIEWER]: [...VIEWER_READ_BASELINE, P.SASTANCI_READ, P.AI_CHAT],
 };
 
 /**

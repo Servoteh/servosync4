@@ -249,3 +249,273 @@ model RevToolStockLedger {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   @@map("rev_tool_stock_ledger")
 }
+
+// ============================================================================
+// TALAS B — Sastanci + AI asistent (MODULE_SPEC_sastanci_ai_30.md §1).
+// GENERISANO iz zive sy15 information_schema 2026-07-12 (Management API, read-only).
+// Ista pravila kao rev_*: uuid PK se ZADRZAVA, camelCase @map, BEZ FK relacija
+// (spajanja su rucni batch-resolve). NE mapiraju se (RPC-only / $queryRaw, spec §1):
+//   sastanci_ai_settings, sast_weekly_movers, sast_weekly_skip, ai_uputstva,
+//   ai_project_notes, ai_masina_docs. `embedding` (pgvector) kolone se NE mapiraju.
+// ============================================================================
+
+model Sastanak {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tip String @default("sedmicni")
+  naslov String
+  datum DateTime @db.Date
+  vreme DateTime? @db.Time(6)
+  mesto String? @default("")
+  projekatId String? @map("projekat_id") @db.Uuid
+  vodioEmail String? @map("vodio_email")
+  vodioLabel String? @map("vodio_label")
+  zapisnicarEmail String? @map("zapisnicar_email")
+  zapisnicarLabel String? @map("zapisnicar_label")
+  status String @default("planiran")
+  zakljucanAt DateTime? @map("zakljucan_at") @db.Timestamptz(6)
+  zakljucanByEmail String? @map("zakljucan_by_email")
+  napomena String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdByEmail String? @map("created_by_email")
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  pozivnicePoslateAt DateTime? @map("pozivnice_poslate_at") @db.Timestamptz(6)
+  @@map("sastanci")
+}
+
+model SastanakUcesnik {
+  sastanakId String @map("sastanak_id") @db.Uuid
+  email String
+  label String?
+  prisutan Boolean @default(true)
+  pozvan Boolean @default(true)
+  napomena String?
+  pripremljen Boolean @default(false)
+  priprema String?
+  rsvpStatus String? @map("rsvp_status")
+  rsvpAt DateTime? @map("rsvp_at") @db.Timestamptz(6)
+  /// TAJNA magic-linka — NIKAD ne izlagati kroz API (servisi biraju kolone eksplicitno).
+  rsvpToken String @default(dbgenerated("gen_random_uuid()")) @map("rsvp_token") @db.Uuid
+  @@id([sastanakId, email])
+  @@map("sastanak_ucesnici")
+}
+
+model PresekAktivnost {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sastanakId String @map("sastanak_id") @db.Uuid
+  rb Int
+  redosled Int @default(0)
+  naslov String
+  podRn String? @map("pod_rn")
+  sadrzajHtml String? @map("sadrzaj_html")
+  sadrzajText String? @map("sadrzaj_text")
+  odgovoranEmail String? @map("odgovoran_email")
+  odgovoranLabel String? @map("odgovoran_label")
+  odgovoranText String? @map("odgovoran_text")
+  rok DateTime? @db.Date
+  rokText String? @map("rok_text")
+  status String @default("u_toku")
+  napomena String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  temaId String? @map("tema_id") @db.Uuid
+  @@map("presek_aktivnosti")
+}
+
+model PresekSlika {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sastanakId String @map("sastanak_id") @db.Uuid
+  aktivnostId String? @map("aktivnost_id") @db.Uuid
+  storagePath String @map("storage_path")
+  fileName String? @map("file_name")
+  mimeType String? @map("mime_type")
+  sizeBytes BigInt? @map("size_bytes")
+  caption String?
+  redosled Int @default(0)
+  uploadedByEmail String? @map("uploaded_by_email")
+  uploadedAt DateTime @default(now()) @map("uploaded_at") @db.Timestamptz(6)
+  @@map("presek_slike")
+}
+
+model SastanakArhiva {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sastanakId String @unique @map("sastanak_id") @db.Uuid
+  snapshot Json @db.JsonB
+  zapisnikStoragePath String? @map("zapisnik_storage_path")
+  zapisnikSizeBytes BigInt? @map("zapisnik_size_bytes")
+  zapisnikGeneratedAt DateTime? @map("zapisnik_generated_at") @db.Timestamptz(6)
+  arhiviraoEmail String? @map("arhivirao_email")
+  arhiviraoLabel String? @map("arhivirao_label")
+  arhiviranoAt DateTime @default(now()) @map("arhivirano_at") @db.Timestamptz(6)
+  @@map("sastanak_arhiva")
+}
+
+model SastanakOdluka {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sastanakId String @map("sastanak_id") @db.Uuid
+  rb Int?
+  naslov String
+  opis String?
+  odlucioEmail String? @map("odlucio_email")
+  odlucioLabel String? @map("odlucio_label")
+  odlukaDatum DateTime? @map("odluka_datum") @db.Date
+  uticaj String?
+  vezaTemaId String? @map("veza_tema_id") @db.Uuid
+  vezaAkcijaId String? @map("veza_akcija_id") @db.Uuid
+  status String @default("na_snazi")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("sastanak_odluke")
+}
+
+model AkcioniPlan {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sastanakId String? @map("sastanak_id") @db.Uuid
+  temaId String? @map("tema_id") @db.Uuid
+  projekatId String? @map("projekat_id") @db.Uuid
+  rb Int?
+  naslov String
+  opis String?
+  odgovoranEmail String? @map("odgovoran_email")
+  odgovoranLabel String? @map("odgovoran_label")
+  odgovoranText String? @map("odgovoran_text")
+  rok DateTime? @db.Date
+  rokText String? @map("rok_text")
+  status String @default("otvoren")
+  prioritet Int @default(2)
+  zatvorenAt DateTime? @map("zatvoren_at") @db.Timestamptz(6)
+  zatvorenByEmail String? @map("zatvoren_by_email")
+  zatvorenNapomena String? @map("zatvoren_napomena")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdByEmail String? @map("created_by_email")
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("akcioni_plan")
+}
+
+model AkcioniPlanIstorija {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  akcijaId String @map("akcija_id") @db.Uuid
+  polje String
+  staro String?
+  novo String?
+  izmenioEmail String? @map("izmenio_email")
+  izmenjenoAt DateTime @default(now()) @map("izmenjeno_at") @db.Timestamptz(6)
+  @@map("akcioni_plan_istorija")
+}
+
+model PmTema {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  vrsta String @default("tema")
+  oblast String @default("opste")
+  naslov String
+  opis String?
+  projekatId String? @map("projekat_id") @db.Uuid
+  status String @default("predlog")
+  prioritet Int @default(2)
+  sastanakId String? @map("sastanak_id") @db.Uuid
+  predlozioEmail String @map("predlozio_email")
+  predlozioLabel String? @map("predlozio_label")
+  predlozioAt DateTime @default(now()) @map("predlozio_at") @db.Timestamptz(6)
+  resioEmail String? @map("resio_email")
+  resioLabel String? @map("resio_label")
+  resioAt DateTime? @map("resio_at") @db.Timestamptz(6)
+  resioNapomena String? @map("resio_napomena")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  hitno Boolean @default(false)
+  zaRazmatranje Boolean @default(false) @map("za_razmatranje")
+  adminRang Int? @map("admin_rang")
+  adminRangByEmail String? @map("admin_rang_by_email")
+  adminRangAt DateTime? @map("admin_rang_at") @db.Timestamptz(6)
+  @@map("pm_teme")
+}
+
+model SastanciTemplate {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  naziv String
+  tip String
+  mesto String?
+  vodioEmail String? @map("vodio_email")
+  zapisnicarEmail String? @map("zapisnicar_email")
+  cadence String
+  cadenceDow Int? @map("cadence_dow")
+  cadenceDom Int? @map("cadence_dom")
+  vreme DateTime? @db.Time(6)
+  napomena String?
+  isActive Boolean @default(true) @map("is_active")
+  createdByEmail String? @map("created_by_email")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("sastanci_templates")
+}
+
+model SastanciTemplateUcesnik {
+  templateId String @map("template_id") @db.Uuid
+  email String
+  label String?
+  @@id([templateId, email])
+  @@map("sastanci_template_ucesnici")
+}
+
+model SastanciNotificationPref {
+  email String @id
+  onNewAkcija Boolean @default(true) @map("on_new_akcija")
+  onChangeAkcija Boolean @default(true) @map("on_change_akcija")
+  onMeetingInvite Boolean @default(true) @map("on_meeting_invite")
+  onMeetingLocked Boolean @default(true) @map("on_meeting_locked")
+  onActionReminder Boolean @default(true) @map("on_action_reminder")
+  onMeetingReminder Boolean @default(true) @map("on_meeting_reminder")
+  emailAddress String? @map("email_address")
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("sastanci_notification_prefs")
+}
+
+model SastanciNotificationLog {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  kind String
+  channel String @default("email")
+  recipientEmail String @map("recipient_email")
+  recipientLabel String? @map("recipient_label")
+  subject String
+  bodyHtml String? @map("body_html")
+  bodyText String? @map("body_text")
+  relatedSastanakId String? @map("related_sastanak_id") @db.Uuid
+  relatedAkcijaId String? @map("related_akcija_id") @db.Uuid
+  status String @default("queued")
+  scheduledAt DateTime @default(now()) @map("scheduled_at") @db.Timestamptz(6)
+  nextAttemptAt DateTime @default(now()) @map("next_attempt_at") @db.Timestamptz(6)
+  lastAttemptAt DateTime? @map("last_attempt_at") @db.Timestamptz(6)
+  attempts Int @default(0)
+  maxAttempts Int @default(5) @map("max_attempts")
+  error String?
+  payload Json? @db.JsonB
+  createdByEmail String? @map("created_by_email")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  sentAt DateTime? @map("sent_at") @db.Timestamptz(6)
+  @@map("sastanci_notification_log")
+}
+
+model AiChatConversation {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId String? @map("user_id") @db.Uuid
+  title String @default("Razgovor")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  scope String @default("personal")
+  projectRef String? @map("project_ref")
+  @@map("ai_chat_conversations")
+}
+
+model AiChatMessage {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  conversationId String @map("conversation_id") @db.Uuid
+  userId String @map("user_id") @db.Uuid
+  role String
+  content String
+  tokensIn Int? @map("tokens_in")
+  tokensOut Int? @map("tokens_out")
+  model String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  authorName String? @map("author_name")
+  imagePath String? @map("image_path")
+  @@map("ai_chat_messages")
+}
