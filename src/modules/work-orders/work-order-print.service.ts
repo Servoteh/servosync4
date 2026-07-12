@@ -4,7 +4,10 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { SAFE_WORKER_SELECT } from "../../common/pagination";
 import { PdfService } from "../documents/pdf.service";
 import { BarcodeService } from "../documents/barcode.service";
-import { formatOrderBarcode, formatOperationBarcode } from "../tech-processes/barcode";
+import {
+  formatOrderBarcode,
+  formatOperationBarcode,
+} from "../tech-processes/barcode";
 import { SERVOTEH_LOGO_DATA_URL } from "../documents/servoteh-logo";
 
 export type RnPrintVariant = "std" | "bez-barkoda";
@@ -29,12 +32,14 @@ export class WorkOrderPrintService {
   ): Promise<{ buffer: Buffer; fileName: string }> {
     const wo = await this.prisma.workOrder.findUnique({
       where: { id },
-      include: { operations: { orderBy: [{ operationNumber: "asc" }, { id: "asc" }] } },
+      include: {
+        operations: { orderBy: [{ operationNumber: "asc" }, { id: "asc" }] },
+      },
     });
     if (!wo) throw new NotFoundException(`Radni nalog ${id} ne postoji.`);
 
     // Batch-resolve imena (bez required-relation JOIN-a — orphan FK pravilo).
-    const [customer, tehnolog, opCatalog] = await Promise.all([
+    const [customer, tehnolog, opCatalog, handover] = await Promise.all([
       wo.externalCustomerId > 0
         ? this.prisma.customer.findUnique({
             where: { id: wo.externalCustomerId },
@@ -48,6 +53,14 @@ export class WorkOrderPrintService {
           })
         : Promise.resolve(null),
       this.resolveWorkCenterNames(wo.operations.map((o) => o.workCenterCode)),
+      // HITNO (Miljan t.10): flag sa vezane primopredaje — na dokumentu menja
+      // crvenu nalepnicu koja se do sada ručno lepila na odštampani TP.
+      wo.drawingHandoverId > 0
+        ? this.prisma.drawingHandover.findUnique({
+            where: { id: wo.drawingHandoverId },
+            select: { isUrgent: true },
+          })
+        : Promise.resolve(null),
     ]);
 
     const withBarcode = variant !== "bez-barkoda";
@@ -77,6 +90,7 @@ export class WorkOrderPrintService {
       opCatalog,
       withBarcode,
       orderBarcodeSvg,
+      isUrgent: handover?.isUrgent === true,
     });
 
     const buffer = await this.pdf.render(docDefinition);
@@ -85,8 +99,12 @@ export class WorkOrderPrintService {
   }
 
   /** Mapa workCenterCode → workCenterName iz `operations` šifarnika. */
-  private async resolveWorkCenterNames(codes: string[]): Promise<Map<string, string>> {
-    const unique = [...new Set(codes.map((c) => (c ?? "").trim()).filter(Boolean))];
+  private async resolveWorkCenterNames(
+    codes: string[],
+  ): Promise<Map<string, string>> {
+    const unique = [
+      ...new Set(codes.map((c) => (c ?? "").trim()).filter(Boolean)),
+    ];
     if (!unique.length) return new Map();
     const rows = await this.prisma.operation.findMany({
       where: { workCenterCode: { in: unique } },
@@ -120,8 +138,17 @@ export class WorkOrderPrintService {
     opCatalog: Map<string, string>;
     withBarcode: boolean;
     orderBarcodeSvg: string | null;
+    isUrgent: boolean;
   }): TDocumentDefinitions {
-    const { wo, customerName, tehnologName, opCatalog, withBarcode, orderBarcodeSvg } = args;
+    const {
+      wo,
+      customerName,
+      tehnologName,
+      opCatalog,
+      withBarcode,
+      orderBarcodeSvg,
+      isUrgent,
+    } = args;
 
     // Zaglavlje (parity sa legacy rRN): logo Servoteha gore-levo, naziv u sredini,
     // RNZ barkod desno.
@@ -132,7 +159,15 @@ export class WorkOrderPrintService {
           width: "*",
           margin: [12, 4, 0, 0],
           stack: [
-            { text: "RADNI NALOG", style: "title" },
+            {
+              text: isUrgent
+                ? [
+                    { text: "RADNI NALOG" },
+                    { text: "   HITNO", style: "urgent" },
+                  ]
+                : "RADNI NALOG",
+              style: "title",
+            },
             {
               text: `${wo.identNumber}   ·   revizija ${wo.revision}`,
               style: "subtitle",
@@ -146,7 +181,12 @@ export class WorkOrderPrintService {
       columnGap: 8,
     };
 
-    const infoRow = (l1: string, v1: string, l2: string, v2: string): Content[] => [
+    const infoRow = (
+      l1: string,
+      v1: string,
+      l2: string,
+      v2: string,
+    ): Content[] => [
       { text: l1, style: "lbl" },
       { text: v1 || "—", style: "val" },
       { text: l2, style: "lbl" },
@@ -172,8 +212,22 @@ export class WorkOrderPrintService {
       layout: "lightHorizontalLines",
     };
 
-    const head = ["Op.", "Radni centar", "Opis rada", "Tpz", "Tk", "Alat/pribor"];
-    const widths: (string | number)[] = ["auto", "auto", "*", "auto", "auto", "auto"];
+    const head = [
+      "Op.",
+      "Radni centar",
+      "Opis rada",
+      "Tpz",
+      "Tk",
+      "Alat/pribor",
+    ];
+    const widths: (string | number)[] = [
+      "auto",
+      "auto",
+      "*",
+      "auto",
+      "auto",
+      "auto",
+    ];
     if (withBarcode) {
       head.push("Barkod");
       widths.push(140);
@@ -184,7 +238,10 @@ export class WorkOrderPrintService {
       const rcName = opCatalog.get(o.workCenterCode) ?? "";
       const cells: Content[] = [
         { text: String(o.operationNumber), style: "td" },
-        { text: [o.workCenterCode, rcName].filter(Boolean).join(" · "), style: "td" },
+        {
+          text: [o.workCenterCode, rcName].filter(Boolean).join(" · "),
+          style: "td",
+        },
         { text: o.workDescription ?? "", style: "td" },
         { text: fmtNum(o.setupTime), style: "tdNum" },
         { text: fmtNum(o.cycleTime), style: "tdNum" },
@@ -206,7 +263,9 @@ export class WorkOrderPrintService {
             opSvg = null;
           }
         }
-        cells.push(opSvg ? { svg: opSvg, fit: [136, 26] } : { text: "—", style: "td" });
+        cells.push(
+          opSvg ? { svg: opSvg, fit: [136, 26] } : { text: "—", style: "td" },
+        );
       }
       return cells;
     });
@@ -216,7 +275,11 @@ export class WorkOrderPrintService {
           table: { headerRows: 1, widths, body: [headerCells, ...bodyRows] },
           layout: "lightHorizontalLines",
         }
-      : { text: "Nema operacija na ovom nalogu.", italics: true, margin: [0, 6, 0, 0] };
+      : {
+          text: "Nema operacija na ovom nalogu.",
+          italics: true,
+          margin: [0, 6, 0, 0],
+        };
 
     return {
       pageSize: "A4",
@@ -224,6 +287,8 @@ export class WorkOrderPrintService {
       content: [headerColumns, info, opsTable],
       styles: {
         title: { fontSize: 18, bold: true },
+        // Digitalna zamena za crvenu HITNO nalepnicu (Miljan t.10).
+        urgent: { fontSize: 18, bold: true, color: "#c00000" },
         subtitle: { fontSize: 11, color: "#555", margin: [0, 2, 0, 0] },
         lbl: { fontSize: 8, bold: true, color: "#555" },
         val: { fontSize: 9 },

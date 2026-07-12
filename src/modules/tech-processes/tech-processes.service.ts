@@ -328,19 +328,50 @@ export class TechProcessesService {
       this.prisma.techProcess.count({ where }),
     ]);
 
-    const [workers, ops, quals] = await Promise.all([
+    const [workers, ops, quals, technologists] = await Promise.all([
       this.resolveWorkers(rows.map((r) => r.workerId)),
       this.resolveOperationsByCode(rows.map((r) => r.workCenterCode)),
       this.resolveQualityTypes(rows.map((r) => r.qualityTypeId)),
+      this.resolveWorkOrderTechnologists(rows.map((r) => r.workOrderId)),
     ]);
     const data = rows.map((r) => ({
       ...r,
       worker: workers.get(r.workerId) ?? null,
       operation: ops.get(r.workCenterCode) ?? null,
       qualityType: quals.get(r.qualityTypeId) ?? null,
+      // Tehnolog autor TP-a = work_orders.worker_id (Miljan t.6a: „Tehnolog"
+      // kolona je do sada prikazivala radnika koji je kucao red — `worker`
+      // ostaje to, a ovo je pravi tehnolog sa RN-a; null kad RN nije razrešen).
+      technologist: technologists.get(r.workOrderId) ?? null,
     }));
 
     return { data, meta: pageMeta(page, pageSize, total) };
+  }
+
+  /**
+   * Batch: workOrderId → tehnolog (work_orders.worker_id). Legacy redovi često
+   * imaju workOrderId 0 (veza kroz JOIN, ne FK) — preskaču se; orphan RN/radnik
+   * → null (obrazac common/relations, bez required JOIN-a).
+   */
+  private async resolveWorkOrderTechnologists(ids: number[]) {
+    const uniq = uniqueIds(ids);
+    const map = new Map<
+      number,
+      { id: number; fullName: string | null; username: string | null }
+    >();
+    if (!uniq.length) return map;
+    const workOrders = await this.prisma.workOrder.findMany({
+      where: { id: { in: uniq } },
+      select: { id: true, workerId: true },
+    });
+    const workers = await this.resolveWorkers(
+      workOrders.map((w) => w.workerId),
+    );
+    for (const wo of workOrders) {
+      const worker = workers.get(wo.workerId);
+      if (worker) map.set(wo.id, worker);
+    }
+    return map;
   }
 
   // ---------------------------------------------------------------- CARD (Kartica TP)
@@ -462,10 +493,26 @@ export class TechProcessesService {
       elapsedMinutes: g.hasElapsed ? Math.round(g.elapsedSeconds / 60) : null,
     }));
 
+    // HITNO (Miljan t.10): flag sa primopredaje vezane za RN ove trojke —
+    // isti put kao rok u critical() (RN po trojci → drawing_handover); najstariji
+    // RN = original (klonovi dele drawing_handover_id).
+    const cardWorkOrder = await this.prisma.workOrder.findFirst({
+      where: { projectId, identNumber, variant, drawingHandoverId: { gt: 0 } },
+      select: { drawingHandoverId: true },
+      orderBy: { id: "asc" },
+    });
+    const cardHandover = cardWorkOrder
+      ? await this.prisma.drawingHandover.findUnique({
+          where: { id: cardWorkOrder.drawingHandoverId },
+          select: { isUrgent: true },
+        })
+      : null;
+
     const data = {
       projectId,
       identNumber,
       variant,
+      isUrgent: cardHandover?.isUrgent ?? false,
       // DISTINCT (operationNumber, workCenterCode) parovi — ne broj kucanja.
       operationCount: operations.length,
       // Parovi sa bar jednim zatvorenim redom — ne broj zatvorenih redova.

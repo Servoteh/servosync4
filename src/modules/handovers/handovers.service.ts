@@ -70,6 +70,7 @@ const HANDOVER_SELECT = {
   technologistAssignedAt: true,
   technologistAssignedById: true,
   productionDeadline: true,
+  isUrgent: true,
 } satisfies Prisma.DrawingHandoverSelect;
 
 /** Podskup RN polja koji launch/prepare vraćaju (isti kao dosadašnji launch). */
@@ -263,6 +264,74 @@ export class HandoversService {
     return { data };
   }
 
+  /**
+   * `GET /handovers/writing-stats` — pregled „na pisanju tehnologije" (Miljan
+   * t.9): SAGLASAN + dodeljen tehnolog (lansiranjem status prelazi u LANSIRAN,
+   * pa filter po statusu implicitno isključuje lansirane). Brojači po tehnologu
+   * i po predmetu; predmet se razrešava preko draft konteksta crteža — isti
+   * izvor istine kao `enrich()` (`resolveDraftContext`). Skup „na pisanju" je
+   * operativno mali (desetine redova), pa se broji u servisu umesto groupBy
+   * (predmet nije kolona primopredaje već izveden odnos).
+   */
+  async writingStats() {
+    const rows = await this.prisma.drawingHandover.findMany({
+      where: {
+        statusId: HANDOVER_STATUS.APPROVED,
+        technologistId: { gt: 0 },
+      },
+      select: { id: true, drawingId: true, technologistId: true },
+    });
+
+    const [workers, draftCtx] = await Promise.all([
+      this.resolveWorkers(rows.map((r) => r.technologistId)),
+      this.resolveDraftContext(rows.map((r) => r.drawingId)),
+    ]);
+    const projectIds = uniqueIds(
+      [...draftCtx.values()].map((c) => c.projectId),
+    );
+    const projects = byId(
+      await this.prisma.project.findMany({
+        where: { id: { in: projectIds } },
+        select: { id: true, projectNumber: true, description: true },
+      }),
+    );
+
+    const techCounts = new Map<number, number>();
+    const projectCounts = new Map<number | null, number>();
+    for (const r of rows) {
+      techCounts.set(
+        r.technologistId,
+        (techCounts.get(r.technologistId) ?? 0) + 1,
+      );
+      const projectId = draftCtx.get(r.drawingId)?.projectId ?? null;
+      projectCounts.set(projectId, (projectCounts.get(projectId) ?? 0) + 1);
+    }
+
+    const byTechnologist = [...techCounts.entries()]
+      .map(([workerId, count]) => ({
+        workerId,
+        fullName: workers.get(workerId)?.fullName ?? null,
+        count,
+      }))
+      .sort((a, b) => b.count - a.count);
+    const byProject = [...projectCounts.entries()]
+      .map(([projectId, count]) => ({
+        projectId,
+        code:
+          projectId != null
+            ? (projects.get(projectId)?.projectNumber ?? null)
+            : null,
+        name:
+          projectId != null
+            ? (projects.get(projectId)?.description ?? null)
+            : null,
+        count,
+      }))
+      .sort((a, b) => b.count - a.count);
+
+    return { data: { total: rows.length, byTechnologist, byProject } };
+  }
+
   // ------------------------------------------------------------ WORKFLOW
 
   /**
@@ -323,6 +392,10 @@ export class HandoversService {
         // stari rok — approve je autoritativan za rok (return-to-pending ga
         // ionako prazni, ali budi eksplicitan).
         productionDeadline: dueDate ?? null,
+        // HITNO (t.10): approve je autoritativan i za urgentnost — izostanak
+        // flaga je eksplicitno false (legacy: crvena nalepnica se lepi pri
+        // slanju tehnolozima, tj. tačno u ovom koraku).
+        isUrgent: dto?.isUrgent === true,
       },
       wrongStateMessage:
         "Primopredaja mora biti U OBRADI (na čekanju) da bi bila odobrena.",
@@ -403,6 +476,7 @@ export class HandoversService {
           technologistAssignedAt: null,
           technologistAssignedById: null,
           productionDeadline: null,
+          isUrgent: false, // sledeći approve ponovo odlučuje o hitnosti
           statusChangedAt: new Date(),
           statusChangedById: actor?.workerId ?? null,
           // `?? null` (ne undefined): undo bez razloga mora da OBRIŠE komentar

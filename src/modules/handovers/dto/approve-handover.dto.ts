@@ -18,4 +18,10 @@ export interface ApproveHandoverDto {
    * obaveznost (spec §8 #8).
    */
   dueDate?: string;
+  /**
+   * HITNO (Miljan t.10, legacy: crvene nalepnice na odštampanom TP-u) —
+   * approver označava hitne crteže pri slanju tehnolozima. Izostanak = false;
+   * badge u listama, na TP kartici i RN štampi. Return-to-pending ga briše.
+   */
+  isUrgent?: boolean;
 }

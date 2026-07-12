@@ -77,6 +77,12 @@ export class HandoversController {
     return this.handovers.pendingApproval(query);
   }
 
+  /** Brojači „na pisanju tehnologije" po tehnologu/predmetu (Miljan t.9). */
+  @Get("writing-stats")
+  writingStats() {
+    return this.handovers.writingStats();
+  }
+
   @Get()
   list(@Query() query: ListHandoversQuery) {
     return this.handovers.list(query);

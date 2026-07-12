@@ -601,6 +601,11 @@ model DrawingHandover {
   /// an explicit launch dueDate overrides it. Nullable (optional until Miljan
   /// confirms it is mandatory, spec §8 #8). Cleared by return-to-pending.
   productionDeadline       DateTime?            @map("production_deadline") @db.Timestamp(6)
+  /// APP-ONLY (Miljan t.10): URGENT flag set by the approver when sending the
+  /// handover to technologists (legacy: red "HITNO" stickers on the printed TP).
+  /// Shown as a badge in handover lists, on the TP card and on the printed RN.
+  /// Same ServoSync-owned-table precedent as technologist_id above.
+  isUrgent                 Boolean              @default(false) @map("is_urgent")
   drawing                  Drawing              @relation(fields: [drawingId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_drawing_handovers_drawing")
   status                   HandoverStatus       @relation(fields: [statusId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_drawing_handovers_status")
   handoverPdfs             DrawingHandoverPdf[]
