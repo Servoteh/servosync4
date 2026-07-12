@@ -12,6 +12,8 @@ import { SastanciController } from "../src/modules/sastanci/sastanci.controller"
 import { SastanciService } from "../src/modules/sastanci/sastanci.service";
 import { AiChatController } from "../src/modules/ai-chat/ai-chat.controller";
 import { AiChatService } from "../src/modules/ai-chat/ai-chat.service";
+import { MediaAiController } from "../src/modules/media-ai/media-ai.controller";
+import { MediaAiService } from "../src/modules/media-ai/media-ai.service";
 
 /**
  * e2e PERMISSION MATRICA — Sastanci + AI (MODULE_SPEC_sastanci_ai_30.md §5 t.30),
@@ -124,14 +126,19 @@ describe("Sastanci + AI permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
   ]) {
     aiMock[m] = jest.fn().mockResolvedValue({ data: { ok: true } });
   }
+  const mediaMock: Record<string, jest.Mock> = {
+    transcribe: jest.fn().mockResolvedValue({ data: { ok: true } }),
+    refine: jest.fn().mockResolvedValue({ data: { ok: true } }),
+  };
 
   beforeAll(async () => {
     process.env.AUTHZ_ENFORCE = "true"; // pre instanciranja PermissionsGuard-a
     const moduleRef = await Test.createTestingModule({
-      controllers: [SastanciController, AiChatController],
+      controllers: [SastanciController, AiChatController, MediaAiController],
       providers: [
         { provide: SastanciService, useValue: sastanciMock },
         { provide: AiChatService, useValue: aiMock },
+        { provide: MediaAiService, useValue: mediaMock },
       ],
     })
       .overrideGuard(JwtAuthGuard)
@@ -505,6 +512,36 @@ describe("Sastanci + AI permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
         message: "x",
         engine: "grok",
       }).expect(400);
+    });
+  });
+
+  describe("R2.4 Media/AI — /ai/stt + /ai/refine (ai.chat, presuda B4)", () => {
+    it.each(["admin", "monter", "magacioner", "viewer"])(
+      "POST /ai/refine → 201 za %s",
+      async (role) => {
+        await send("post", "/ai/refine", role, { tekst: "sirov" }).expect(201);
+      },
+    );
+    it.each(["nepoznata_rola", "user"])(
+      "POST /ai/refine → 403 za %s (default deny)",
+      async (role) => {
+        await send("post", "/ai/refine", role, { tekst: "x" }).expect(403);
+      },
+    );
+    it("POST /ai/refine: prazan tekst DTO nije (samo validacija tipa) → 201 (servis odlučuje)", async () => {
+      await send("post", "/ai/refine", "admin", { tekst: "x" }).expect(201);
+    });
+    it("POST /ai/refine: profil van allowliste → 400", async () => {
+      await send("post", "/ai/refine", "admin", {
+        tekst: "x",
+        profil: "nepostoji",
+      }).expect(400);
+    });
+    it("POST /ai/stt → 201 za viewer (ai.chat)", async () => {
+      await send("post", "/ai/stt", "viewer", {}).expect(201);
+    });
+    it("POST /ai/stt → 403 za nepoznata_rola", async () => {
+      await send("post", "/ai/stt", "nepoznata_rola", {}).expect(403);
     });
   });
 

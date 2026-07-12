@@ -216,36 +216,36 @@ zapisnika, pozivnice, PDF — kao u 1.0.
 
 | # | Funkcija | Status |
 |---|---|---|
-| 1 | Lista sastanaka + filteri + kalendar/week view | R1 read (GET /sastanci + filteri, /my, /next-weekly = paritet loadNextPlaniranSastanak: bilo koji tip, Beograd-datum — korigovano u review-u 12.07): IMPLEMENTED · kalendar/week-view (FE) + kreiranje: R3/R2 |
-| 2 | Novi sastanak (modal) + izmena + brisanje (RLS paritet trio/mgmt) | NOT_STARTED |
-| 3 | Detalj: učesnici (add/remove/bulk, pozvan/prisutan, autocomplete iz directory-ja) | R1 read (GET /:id/full + /:id/ucesnici BEZ rsvp_token; /user-directory RPC): IMPLEMENTED · write (add/remove/bulk): R2 |
-| 4 | Status tok: Počni (auto-prisutni) → Završi → Zaključaj → Reopen (mgmt) | NOT_STARTED |
-| 5 | Zaključavanje sa PDF-om (jsPDF port + upload + `sast_zakljucaj_sastanak`) | NOT_STARTED |
-| 6 | Zapisnik: tačke CRUD + reorder + rich text + slike (upload/sign/delete) | R1 read (GET /:id/aktivnosti + /:id/slike meta): IMPLEMENTED · CRUD/reorder/upload: R2 |
-| 7 | Most teme→zapisnik (seed, dedup po tema_id) | NOT_STARTED |
-| 8 | AI rezime „Sažmi zapisnik" (BE endpoint + izbor modela admin) | NOT_STARTED |
-| 9 | Akcioni plan: tabela + kanban + inline patch + bulk status + istorija + weekly diff | R1 read (GET /akcije nad v_akcioni_plan + filteri + 1.0 sort rb/rok/prioritet/created_at; /akcije/:id/istorija; /akcije/weekly-diff = PARITET loadWeeklyDiffStats: since+projekatId → novo/zavrsenoOveNedelje/kasni/aktivnih — prva R1 verzija NIJE bila paritet, korigovano u review-u 12.07): IMPLEMENTED · patch/bulk: R2 |
-| 10 | PM teme: ceo životni ciklus + hitno/za_razmatranje/admin_rang + reorder po projektu | R1 read (GET /teme nad v_pm_teme_pregled + 1.0 filteri/sort iz loadPmTeme; row-vidljivost = RLS kroz `withUserRls` — BYPASSRLS fix, review 12.07): IMPLEMENTED · životni ciklus/reorder: R2 |
-| 11 | Draft teme tok (predlog iz projekta → pregled → usvajanje/uvoz na sastanak) | NOT_STARTED |
-| 12 | Šabloni + instanciranje (nextOccurrence port u BE) | NOT_STARTED |
-| 13 | Pozivnice: send (mgmt) + stamp + auto-invite na add učesnika (trigger — samo proveriti) | NOT_STARTED |
-| 14 | Priprema: pripremljen/priprema + podsetnik nepripremljenima | NOT_STARTED |
-| 15 | RSVP: in-app (moj odgovor) + prikaz statusa; magic-link tok NETAKNUT (samo e2e provera) | NOT_STARTED |
-| 16 | Resend zapisnika (meeting_locked) | NOT_STARTED |
-| 17 | Sedmični: status + pomeri/odloži/vrati (DB gate movers) | R1 read (GET /weekly = sast_weekly_status, can_move): IMPLEMENTED · pomeri/odloži/vrati (weekly_move): R2 |
-| 18 | Podešavanja notifikacija (prefs) + pregled log-a (svoje/mgmt) | R1 read (GET /prefs = get_or_create_my_prefs; GET /notifications — „svoje∨mgmt" = RLS kroz `withUserRls`, BYPASSRLS fix 12.07): IMPLEMENTED · PATCH prefs: R2 |
-| 19 | Odluke tab CRUD | R1 read (GET /:id/odluke): IMPLEMENTED · CRUD: R2 |
-| 20 | Arhiva: lista svih + snapshot pregled + PDF download/regeneriši/preview nacrta | R1 read (GET /arhive lista + /:id/arhiva snapshot): IMPLEMENTED · PDF download/regeneriši (presigned): R2 |
-| 21 | Dashboard (KPI brojke) + globalna pretraga + komandna paleta | R1 read (GET /dashboard-stats = sast_dashboard_stats; /search = PARITET searchSastanciGlobal: min 2 kar., {akcije: 4 ilike polja limit 30, sastanci: samo naslov limit 15} — prva R1 verzija NIJE bila paritet, korigovano 12.07): IMPLEMENTED · komandna paleta (FE): R3 |
-| 22 | Mobilni sastanci tok (read + 3 laka write-a + deep-link) — responsive | NOT_STARTED |
-| 23 | AI: istorija (lične+projektne) + brisanje svoje niti | R1 read (GET /ai/conversations, /:id/messages, /ai/me, /ai/limit UTC) — svoje-niti scoping SPROVEDEN kroz `withUserRls` (SET LOCAL ROLE authenticated; BYPASSRLS leak fix, review 12.07): IMPLEMENTED · DELETE niti: R2 |
-| 24 | AI: `/ai/chat` port — 4 engine-a + tool-use petlja (18 alata kroz GUC) + limit 50/dan UTC | NOT_STARTED |
-| 25 | AI: projektne niti (jedna po projektu, bez ličnih alata, ime autora) | NOT_STARTED |
-| 26 | AI: vision (resize + upload + sign) + auto-naslov niti | NOT_STARTED |
-| 27 | AI: pretraga uputstava sa embedding-om (embed poziv u BE) + dodaj_uputstvo/belešku + backfill | NOT_STARTED |
-| 28 | AI mobilni `/m/ai` (sesija 6h, sheet istorije) — responsive | NOT_STARTED |
-| 29 | 🎤 STT + ✨ refine na 2.0 (zapisnik + chat) — po odluci P4 | NOT_STARTED |
-| 30 | e2e permission matrica (read/edit/manage/weekly_move/ai_model/ai.chat + row asercije: učesnik-scope, pm_teme vidljivost, ai svoje-niti, zaključan=409) | R1 rola-sloj: TESTED (unit `role-permissions.sastanci-ai.spec` 50 — uklj. B6 pin projektant_vodja/inzenjer; e2e `sastanci-ai-permissions.e2e` 52: rola × 200/403 + route-ordering + query-DTO 400; `sy15.service.spec` pinuje withUserRls redosled claims→SET ROLE; `sastanci/ai-chat.service.spec` pinuju withUserRls most + BigInt→Number) · row-asercije (učesnik/pm_teme/ai-niti/zaključan): R2 živi smoke |
+| 1 | Lista sastanaka + filteri + kalendar/week view | R1 read (GET /sastanci + filteri, /my, /next-weekly = paritet loadNextPlaniranSastanak: bilo koji tip, Beograd-datum — korigovano u review-u 12.07): IMPLEMENTED · **kreiranje: R2 IMPLEMENTED+TESTED** (v. #2) · kalendar/week-view (FE): R3 |
+| 2 | Novi sastanak (modal) + izmena + brisanje (RLS paritet trio/mgmt) | **R2 IMPLEMENTED+TESTED** (POST /sastanci kroz runIdempotentRls; PATCH/DELETE /:id kroz withUserRls — RLS UPDATE/DELETE = mgmt∨trio; assertAffected 403 vs 404; unit + e2e edit-matrica). Row-ishod trio čeka R4 živi smoke · modal (FE) R3 |
+| 3 | Detalj: učesnici (add/remove/bulk, pozvan/prisutan, autocomplete iz directory-ja) | R1 read IMPLEMENTED · **R2 write IMPLEMENTED+TESTED**: PUT /:id/ucesnici (bulk delete+insert, regen rsvp_token — B8), POST/PATCH/DELETE /:id/ucesnici/:email, POST /:id/mark-prisutni (unit + e2e) |
+| 4 | Status tok: Počni (auto-prisutni) → Završi → Zaključaj → Reopen (mgmt) | **R2 IMPLEMENTED+TESTED** (PATCH status; mark-prisutni; POST /:id/lock RPC; POST /:id/reopen = manage; e2e manage-matrica). Row-ishod (trio-lock) R4 smoke · jsPDF render (FE) R3 |
+| 5 | Zaključavanje sa PDF-om (jsPDF port + upload + `sast_zakljucaj_sastanak`) | **R2 IMPLEMENTED+TESTED** (POST /:id/lock = sast_zakljucaj_sastanak sa pdfStoragePath PRE meeting_locked trigera — §2 p.8; PDF upload R2.2; unit lock-dispatch). jsPDF render + tok (FE) R3 · živi mejl-prilog R4 |
+| 6 | Zapisnik: tačke CRUD + reorder + rich text + slike (upload/sign/delete) | R1 read IMPLEMENTED · **R2 IMPLEMENTED+TESTED**: aktivnosti CRUD (max+1 rb) + POST /:id/aktivnosti/reorder + slike upload/sign/delete (R2.2; meta-pre-upload). rich text (FE) R3 |
+| 7 | Most teme→zapisnik (seed, dedup po tema_id) | **R2 IMPLEMENTED+TESTED** (POST /:id/aktivnosti/seed-from-teme; BE tx dedup po tema_id; e2e edit) |
+| 8 | AI rezime „Sažmi zapisnik" (BE endpoint + izbor modela admin) | **R2.3 IMPLEMENTED+TESTED** (POST /:id/ai-summary — port edge; model iz sastanci_ai_settings fallback SAST_AI_MODEL→opus; Anthropic one-shot; e2e read + DTO 400). Živi Claude poziv R4 |
+| 9 | Akcioni plan: tabela + kanban + inline patch + bulk status + istorija + weekly diff | R1 read IMPLEMENTED · **R2 IMPLEMENTED+TESTED**: POST /akcije, PATCH /akcije/:id (zavrsen→snapshot zatvoren_*; reopen→očisti), DELETE, POST /akcije/bulk-status (STVARNI broj — RLS deo). kanban (FE) R3 |
+| 10 | PM teme: ceo životni ciklus + hitno/za_razmatranje/admin_rang + reorder po projektu | R1 read IMPLEMENTED · **R2 IMPLEMENTED+TESTED**: POST/PATCH/DELETE /teme, /teme/:id/hitno · /za-razmatranje · /admin-rang · /dodeli, POST /teme/reorder-rang (admin FE-gate; DB=has_edit_role) |
+| 11 | Draft teme tok (predlog iz projekta → pregled → usvajanje/uvoz na sastanak) | **R2 IMPLEMENTED+TESTED** (POST /teme/draft, GET /teme/draft, POST /teme/:id/draft-review [WHERE status=draft], /teme/:id/uvedi [WHERE status=usvojeno]) |
+| 12 | Šabloni + instanciranje (nextOccurrence port u BE) | **R2 IMPLEMENTED+TESTED** (POST/PATCH/DELETE /templates + ucesnici; POST /templates/:id/instantiate — `templates-cadence.nextOccurrence` port 1:1, pozivalac uvek u listi) |
+| 13 | Pozivnice: send (mgmt) + stamp + auto-invite na add učesnika (trigger — samo proveriti) | **R2 IMPLEMENTED+TESTED** (POST /:id/invites = sastanci_send_invites + stamp pozivnice_poslate_at; e2e manage). Auto-invite trigger NETAKNUT (pozadina) · živi mejl R4 |
+| 14 | Priprema: pripremljen/priprema + podsetnik nepripremljenima | **R2 IMPLEMENTED+TESTED** (PATCH /:id/ucesnici/:email pripremljen/priprema; POST /:id/remind-unprepared = RPC mgmt) |
+| 15 | RSVP: in-app (moj odgovor) + prikaz statusa; magic-link tok NETAKNUT (samo e2e provera) | **R2 IMPLEMENTED+TESTED** (POST /:id/rsvp = sastanci_set_my_rsvp; e2e read-nivo + DTO status 400). Magic-link edge NETAKNUT · živi smoke R4 |
+| 16 | Resend zapisnika (meeting_locked) | **R2 IMPLEMENTED+TESTED** (POST /:id/resend-locked = RPC mgmt; e2e manage) |
+| 17 | Sedmični: status + pomeri/odloži/vrati (DB gate movers) | R1 read IMPLEMENTED · **R2 IMPLEMENTED+TESTED**: POST /weekly/pomeri·odlozi·vrati kroz withUserRls (movers gate u DB fn; e2e weekly_move matrica) |
+| 18 | Podešavanja notifikacija (prefs) + pregled log-a (svoje/mgmt) | R1 read IMPLEMENTED · **R2 IMPLEMENTED+TESTED**: PATCH /prefs (get_or_create pa PATCH svog reda po email claim; e2e read-nivo). Log INSERT NIJE izložen (B10) |
+| 19 | Odluke tab CRUD | R1 read IMPLEMENTED · **R2 IMPLEMENTED+TESTED**: POST /:id/odluke, PATCH/DELETE /:id/odluke/:odlId |
+| 20 | Arhiva: lista svih + snapshot pregled + PDF download/regeneriši/preview nacrta | R1 read IMPLEMENTED · **R2.2 IMPLEMENTED+TESTED**: POST /:id/arhiva/pdf (put `{id}/{ts}_zapisnik.pdf` = 1.0) + GET signed (mgmt∨učesnik provera kroz withUserRls; unit path+403; e2e). jsPDF preview nacrta (FE) R3 |
+| 21 | Dashboard (KPI brojke) + globalna pretraga + komandna paleta | R1 read IMPLEMENTED · komandna paleta (FE): R3 |
+| 22 | Mobilni sastanci tok (read + 3 laka write-a + deep-link) — responsive | NOT_STARTED (FE R3) |
+| 23 | AI: istorija (lične+projektne) + brisanje svoje niti | R1 read IMPLEMENTED · **R2.3 DELETE IMPLEMENTED+TESTED** (DELETE /ai/conversations/:id kroz withUserRls — RLS delete_own, bez ownership WHERE; 0 redova→404; unit + e2e) |
+| 24 | AI: `/ai/chat` port — 4 engine-a + tool-use petlja (18 alata kroz GUC) + limit 50/dan UTC | **R2.3 IMPLEMENTED+TESTED** (POST /ai/chat: AiProviderService 4 engine-a; tool-loop skeleton — mokovani engine, oba puta; execTool dispatch 18 alata → ai_chat_* kroz withUserRls; limit UTC; upis istorije withUser+auth.uid(); e2e ai.chat + DTO engine 400). Živi engine/scope alata R4 smoke (traži ključeve) |
+| 25 | AI: projektne niti (jedna po projektu, bez ličnih alata, ime autora) | **R2.3 IMPLEMENTED** (resolveConversation reuse najstarije po project_ref; toolsForScope isključuje lične alate; prefiks imena autora). TESTED preko chatWithTools+toolsForScope · živi smoke R4 |
+| 26 | AI: vision (resize + upload + sign) + auto-naslov niti | **R2.3 IMPLEMENTED** (multipart `image` → parseImage 6MB/mime → ai-chat-images bucket; generateTitle nove lične niti; GET /ai/images/sign RLS-vidljivost). Klijentski resize (FE) R3 · živi upload R4 |
+| 27 | AI: pretraga uputstava sa embedding-om (embed poziv u BE) + dodaj_uputstvo/belešku + backfill | **R2.3 IMPLEMENTED+TESTED** (execTool: embed pre pretrazi_uputstva/masina_uputstvo; backfill embedinga posle dodaj_uputstvo/belesku — withUser best-effort; unit embedding-dispatch). Živi OpenAI embed R4 |
+| 28 | AI mobilni `/m/ai` (sesija 6h, sheet istorije) — responsive | NOT_STARTED (FE R3) |
+| 29 | 🎤 STT + ✨ refine na 2.0 (zapisnik + chat) — po odluci P4 | **R2.4 IMPLEMENTED+TESTED** (media-ai modul: POST /ai/stt Whisper + POST /ai/refine — AiProviderService; profili refine-a; unit + e2e ai.chat). FE dugmad (🎤/✨) R3 · živi Whisper/OpenAI R4 |
+| 30 | e2e permission matrica (read/edit/manage/weekly_move/ai_model/ai.chat + row asercije: učesnik-scope, pm_teme vidljivost, ai svoje-niti, zaključan=409) | **R2 PROŠIRENA — TESTED**: e2e `sastanci-ai-permissions.e2e` **125** (rola×endpoint×200/403 za edit/manage/weekly_move/ai_model/ai.chat; storage; AI chat/rezime/media; DTO 400; route-ordering write); unit **372** (`sy15.service` runIdempotentRls redosled+replay+konflikt; `sastanci.mutations` assertAffected/idempotency/storage; `ai-provider` tool-loop mokovani engine; `ai-chat` execTool dispatch + delete scoping; `media-ai`). Row-asercije (učesnik/pm_teme/ai-niti/zaključan=409) → R4 živi smoke |
 
 ## 6. Redosled izvođenja (R-faze za CEO talas)
 

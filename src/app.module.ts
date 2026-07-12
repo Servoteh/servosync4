@@ -23,6 +23,7 @@ import { AiModule } from "./common/ai/ai.module";
 import { ReversiModule } from "./modules/reversi/reversi.module";
 import { SastanciModule } from "./modules/sastanci/sastanci.module";
 import { AiChatModule } from "./modules/ai-chat/ai-chat.module";
+import { MediaAiModule } from "./modules/media-ai/media-ai.module";
 
 @Module({
   imports: [
@@ -49,6 +50,8 @@ import { AiChatModule } from "./modules/ai-chat/ai-chat.module";
     // 3.0 TALAS B — Sastanci + AI asistent (MODULE_SPEC_sastanci_ai_30.md §0)
     SastanciModule,
     AiChatModule,
+    // Zajednički media/AI (STT + refine) — presuda B4; C/D/G reuse.
+    MediaAiModule,
   ],
   controllers: [AppController],
   providers: [
