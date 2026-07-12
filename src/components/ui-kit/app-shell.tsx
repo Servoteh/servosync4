@@ -18,8 +18,6 @@ import {
   PackageCheck,
   PencilRuler,
   RefreshCw,
-  ScanLine,
-  ShieldCheck,
   ShoppingCart,
   Users,
   Workflow,
@@ -53,8 +51,10 @@ interface NavSection {
 }
 
 // Moduli iz DESIGN_SYSTEM.md §4. Bez href = placeholder (seli se u 3.0).
-// Kucanje/Kontrola vode na pogonski kiosk (full-screen terminal, bez sidebar-a);
-// kiosk sam bira režim po skeniranoj operaciji (`significantForFinishing`).
+// Pogonski kiosk (/kiosk) NEMA nav stavku (12.07.2026): otvara se direktnim
+// URL-om na terminalima ili preko 1.0 HUB pločica „Kucanje (pogon)" /
+// „Kontrola (pogon)" (iframe deep-link); kiosk sam bira režim po skeniranoj
+// operaciji (`significantForFinishing`).
 // `requires` = read/akcija permisija modula (vidljivost = paritet matrice RBAC §3).
 //
 // Sekcije = MES domeni (PLAN_MODULA_MES_3.0, 1.0 repo docs/ — Korak 1).
@@ -67,8 +67,6 @@ const NAV_SECTIONS: NavSection[] = [
   {
     title: 'Proizvodnja',
     items: [
-      { label: 'Kucanje (pogon)', href: '/kiosk', icon: ScanLine, requires: PERMISSIONS.TEHNOLOGIJA_REPORT_WORK },
-      { label: 'Kontrola (pogon)', href: '/kiosk', icon: ShieldCheck, requires: PERMISSIONS.TEHNOLOGIJA_APPROVE },
       { label: 'Evidencija u proizvodnji', href: '/production-log', icon: ListChecks, requires: PERMISSIONS.TEHNOLOGIJA_READ },
       { label: 'Analitika vremena', href: '/session-analytics', icon: Clock, requires: PERMISSIONS.TEHNOLOGIJA_READ },
       { label: 'Radni nalozi', href: '/work-orders', icon: ClipboardList, requires: PERMISSIONS.RN_READ },
