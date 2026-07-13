@@ -17,6 +17,8 @@ coverage/
 # next.js
 /.next/
 /out/
+# generiše ga next.config.ts pri svakom build-u/dev-u (detekcija zastarelog klijenta)
+/public/version.json
 
 # production
 /build

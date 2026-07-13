@@ -147,7 +147,8 @@ Svaka prečica se prikazuje u tooltip-u odgovarajuće kontrole.
 
 `AppShell` · `DataTable` · `FilterBar` · `KpiTile` · `StatusBadge` · `ProgressCell` · `DetailPanel` ·
 `FormField` (+ `DateField`, `NumberField`, `SelectField`, `ComboBox`) · `Dialog` · `ConfirmDialog` ·
-`Toast` · `EmptyState` · `PageHeader` · `Tabs`
+`Toast` · `EmptyState` · `PageHeader` · `Tabs` · `UpdateBanner` (globalna traka "nova verzija — osvežite";
+prikazom upravlja `UpdateNotifier`, montiran jednom u root layout)
 
 **Pravilo kita:** ekrani se sklapaju **isključivo** od kit komponenti. Nova komponenta prvo ulazi u kit,
 `/dev/ui` katalog i ovaj spisak — pa tek onda u ekran. "Privremeni div sa stilovima" ne postoji.

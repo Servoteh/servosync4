@@ -3,6 +3,7 @@ import Script from "next/script";
 import "./globals.css";
 import { QueryProvider } from "@/api/query-provider";
 import { AuthProvider } from "@/lib/auth-context";
+import { UpdateNotifier } from "@/components/update-notifier";
 
 export const metadata: Metadata = {
   title: "ServoSync",
@@ -23,6 +24,8 @@ export default function RootLayout({
         <QueryProvider>
           <AuthProvider>{children}</AuthProvider>
         </QueryProvider>
+        {/* Baner "dostupna je nova verzija — osvežite" (poredi bundle vs /version.json) */}
+        <UpdateNotifier />
       </body>
     </html>
   );
