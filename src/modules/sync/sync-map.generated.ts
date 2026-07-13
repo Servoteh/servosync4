@@ -1,6807 +1,4409 @@
 // AUTO-GENERISANO iz docs/schema-rename-map.md + Prisma DMMF. Ne editovati rucno.
-// Regenerisi skriptom scratchpad/gen-map.js. Tabela: 62.
-import type { TableMapping } from './sync.types';
+// Regenerisi skriptom scratchpad/gen-map.js. Tabela: 33.
+import type { TableMapping } from "./sync.types";
 
 export const SYNC_MAP: TableMapping[] = [
   {
-    "source": "BBDefUser",
-    "model": "DefaultUser",
-    "targetDb": "default_users",
-    "pk": {
-      "kind": "single",
-      "field": "username"
+    source: "BBDefUser",
+    model: "DefaultUser",
+    targetDb: "default_users",
+    pk: {
+      kind: "single",
+      field: "username",
     },
-    "watermark": null,
-    "columns": [
+    watermark: null,
+    columns: [
       {
-        "src": "UserName",
-        "field": "username",
-        "type": "String",
-        "nullable": false,
-        "isId": true
+        src: "UserName",
+        field: "username",
+        type: "String",
+        nullable: false,
+        isId: true,
       },
       {
-        "src": "DefaultGodina",
-        "field": "defaultYear",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
+        src: "DefaultGodina",
+        field: "defaultYear",
+        type: "Int",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "DefaultOJ",
-        "field": "defaultOrgUnitId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
+        src: "DefaultOJ",
+        field: "defaultOrgUnitId",
+        type: "Int",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "DefaultOD",
-        "field": "defaultDepartmentId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
+        src: "DefaultOD",
+        field: "defaultDepartmentId",
+        type: "Int",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "UnlockGodina",
-        "field": "unlockYear",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
+        src: "UnlockGodina",
+        field: "unlockYear",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "UnlockOJ",
-        "field": "unlockOrgUnit",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
+        src: "UnlockOJ",
+        field: "unlockOrgUnit",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "UnlockOD",
-        "field": "unlockDepartment",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
+        src: "UnlockOD",
+        field: "unlockDepartment",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Level",
-        "field": "level",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
+        src: "Level",
+        field: "level",
+        type: "Int",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "MaxLevel",
-        "field": "maxLevel",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      }
-    ]
+        src: "MaxLevel",
+        field: "maxLevel",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+    ],
   },
   {
-    "source": "BBOdeljenja",
-    "model": "Department",
-    "targetDb": "departments",
-    "pk": {
-      "kind": "single",
-      "field": "id"
+    source: "BBOdeljenja",
+    model: "Department",
+    targetDb: "departments",
+    pk: {
+      kind: "single",
+      field: "id",
     },
-    "watermark": null,
-    "columns": [
+    watermark: null,
+    columns: [
       {
-        "src": "OD",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
+        src: "OD",
+        field: "id",
+        type: "Int",
+        nullable: false,
+        isId: true,
       },
       {
-        "src": "OznakaOD",
-        "field": "code",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "OznakaOD",
+        field: "code",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "OpisOD",
-        "field": "description",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      }
-    ]
+        src: "OpisOD",
+        field: "description",
+        type: "String",
+        nullable: false,
+        isId: false,
+      },
+    ],
   },
   {
-    "source": "BBOrgJedinice",
-    "model": "OrganizationalUnit",
-    "targetDb": "organizational_units",
-    "pk": {
-      "kind": "single",
-      "field": "id"
+    source: "BBOrgJedinice",
+    model: "OrganizationalUnit",
+    targetDb: "organizational_units",
+    pk: {
+      kind: "single",
+      field: "id",
     },
-    "watermark": null,
-    "columns": [
+    watermark: null,
+    columns: [
       {
-        "src": "OJ",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
+        src: "OJ",
+        field: "id",
+        type: "Int",
+        nullable: false,
+        isId: true,
       },
       {
-        "src": "OznakaOJ",
-        "field": "code",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "OznakaOJ",
+        field: "code",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "OpisOJ",
-        "field": "description",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      }
-    ]
+        src: "OpisOJ",
+        field: "description",
+        type: "String",
+        nullable: false,
+        isId: false,
+      },
+    ],
   },
   {
-    "source": "BBPravaPristupa",
-    "model": "AccessRight",
-    "targetDb": "access_rights",
-    "pk": {
-      "kind": "single",
-      "field": "id"
+    source: "BBPravaPristupa",
+    model: "AccessRight",
+    targetDb: "access_rights",
+    pk: {
+      kind: "single",
+      field: "id",
     },
-    "watermark": null,
-    "columns": [
+    watermark: null,
+    columns: [
       {
-        "src": "ID",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
+        src: "ID",
+        field: "id",
+        type: "Int",
+        nullable: false,
+        isId: true,
       },
       {
-        "src": "ImeUsera",
-        "field": "username",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "ImeUsera",
+        field: "username",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "ImeForme",
-        "field": "formName",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "ImeForme",
+        field: "formName",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "ImeKontrole",
-        "field": "controlName",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "ImeKontrole",
+        field: "controlName",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "Visible",
-        "field": "visible",
-        "type": "Boolean",
-        "nullable": false,
-        "isId": false
+        src: "Visible",
+        field: "visible",
+        type: "Boolean",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "Locked",
-        "field": "locked",
-        "type": "Boolean",
-        "nullable": false,
-        "isId": false
+        src: "Locked",
+        field: "locked",
+        type: "Boolean",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "Enabled",
-        "field": "enabled",
-        "type": "Boolean",
-        "nullable": false,
-        "isId": false
+        src: "Enabled",
+        field: "enabled",
+        type: "Boolean",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "Vrednost",
-        "field": "value",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Vrednost",
+        field: "value",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "RecordSource",
-        "field": "recordSource",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "RecordSource",
+        field: "recordSource",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Filter",
-        "field": "filter",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      }
-    ]
+        src: "Filter",
+        field: "filter",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+    ],
   },
   {
-    "source": "CFG_Global",
-    "model": "GlobalConfig",
-    "targetDb": "global_config",
-    "pk": {
-      "kind": "composite",
-      "fields": [
-        "companyId",
-        "parameter"
-      ],
-      "name": "companyId_parameter"
+    source: "CFG_Global",
+    model: "GlobalConfig",
+    targetDb: "global_config",
+    pk: {
+      kind: "composite",
+      fields: ["companyId", "parameter"],
+      name: "companyId_parameter",
     },
-    "watermark": null,
-    "columns": [
+    watermark: null,
+    columns: [
       {
-        "src": "IDFirma",
-        "field": "companyId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
+        src: "IDFirma",
+        field: "companyId",
+        type: "Int",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "Parametar",
-        "field": "parameter",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "Parametar",
+        field: "parameter",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "Vrednost",
-        "field": "value",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Vrednost",
+        field: "value",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Tip",
-        "field": "type",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Tip",
+        field: "type",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Opis",
-        "field": "description",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      }
-    ]
+        src: "Opis",
+        field: "description",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+    ],
   },
   {
-    "source": "CFG_Sys",
-    "model": "SystemConfig",
-    "targetDb": "system_config",
-    "pk": {
-      "kind": "single",
-      "field": "parameter"
+    source: "CFG_Sys",
+    model: "SystemConfig",
+    targetDb: "system_config",
+    pk: {
+      kind: "single",
+      field: "parameter",
     },
-    "watermark": null,
-    "columns": [
+    watermark: null,
+    columns: [
       {
-        "src": "Parametar",
-        "field": "parameter",
-        "type": "String",
-        "nullable": false,
-        "isId": true
+        src: "Parametar",
+        field: "parameter",
+        type: "String",
+        nullable: false,
+        isId: true,
       },
       {
-        "src": "Vrednost",
-        "field": "value",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Vrednost",
+        field: "value",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Tip",
-        "field": "type",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Tip",
+        field: "type",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Opis",
-        "field": "description",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Opis",
+        field: "description",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "DIVUnos",
-        "field": "createdAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
-      }
-    ]
+        src: "DIVUnos",
+        field: "createdAt",
+        type: "DateTime",
+        nullable: true,
+        isId: false,
+      },
+    ],
   },
   {
-    "source": "Cenovnik",
-    "model": "PriceListEntry",
-    "targetDb": "price_list_entries",
-    "pk": {
-      "kind": "single",
-      "field": "id"
+    source: "Cenovnik",
+    model: "PriceListEntry",
+    targetDb: "price_list_entries",
+    pk: {
+      kind: "single",
+      field: "id",
     },
-    "watermark": null,
-    "columns": [
+    watermark: null,
+    columns: [
       {
-        "src": "ID",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
+        src: "ID",
+        field: "id",
+        type: "Int",
+        nullable: false,
+        isId: true,
       },
       {
-        "src": "Sifra artikla",
-        "field": "itemId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
+        src: "Sifra artikla",
+        field: "itemId",
+        type: "Int",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "Vrsta dokumenta",
-        "field": "documentTypeId",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "Vrsta dokumenta",
+        field: "documentTypeId",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "Cena",
-        "field": "price",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
+        src: "Cena",
+        field: "price",
+        type: "Float",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Tarifa",
-        "field": "taxRateCode",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "Tarifa",
+        field: "taxRateCode",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "CenaBezPDV",
-        "field": "priceWithoutVat",
-        "type": "Decimal",
-        "nullable": true,
-        "isId": false
+        src: "CenaBezPDV",
+        field: "priceWithoutVat",
+        type: "Decimal",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Taksa",
-        "field": "fee",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
+        src: "Taksa",
+        field: "fee",
+        type: "Float",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Prn",
-        "field": "print",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
+        src: "Prn",
+        field: "print",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "CenaSaPDV",
-        "field": "priceWithVat",
-        "type": "Decimal",
-        "nullable": true,
-        "isId": false
+        src: "CenaSaPDV",
+        field: "priceWithVat",
+        type: "Decimal",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "CheckCenaSaPDV",
-        "field": "checkPriceWithVat",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
+        src: "CheckCenaSaPDV",
+        field: "checkPriceWithVat",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "ZakCen",
-        "field": "isLocked",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      }
-    ]
+        src: "ZakCen",
+        field: "isLocked",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+    ],
   },
   {
-    "source": "Info",
-    "model": "Notification",
-    "targetDb": "notifications",
-    "pk": {
-      "kind": "single",
-      "field": "id"
+    source: "Info",
+    model: "Notification",
+    targetDb: "notifications",
+    pk: {
+      kind: "single",
+      field: "id",
     },
-    "watermark": null,
-    "columns": [
+    watermark: null,
+    columns: [
       {
-        "src": "ID",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
+        src: "ID",
+        field: "id",
+        type: "Int",
+        nullable: false,
+        isId: true,
       },
       {
-        "src": "DatumIVremeSlanja",
-        "field": "sentAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
+        src: "DatumIVremeSlanja",
+        field: "sentAt",
+        type: "DateTime",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "KoJePoslao",
-        "field": "sentBy",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "KoJePoslao",
+        field: "sentBy",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Prijem",
-        "field": "received",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
+        src: "Prijem",
+        field: "received",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "DatumIVremePrijema",
-        "field": "receivedAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
+        src: "DatumIVremePrijema",
+        field: "receivedAt",
+        type: "DateTime",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "KoJePrimio",
-        "field": "receivedBy",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      }
-    ]
+        src: "KoJePrimio",
+        field: "receivedBy",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+    ],
   },
   {
-    "source": "Komitenti",
-    "model": "Customer",
-    "targetDb": "customers",
-    "pk": {
-      "kind": "single",
-      "field": "id"
+    source: "Komitenti",
+    model: "Customer",
+    targetDb: "customers",
+    pk: {
+      kind: "single",
+      field: "id",
     },
-    "watermark": "updatedAt",
-    "columns": [
+    watermark: "updatedAt",
+    columns: [
       {
-        "src": "Sifra",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
+        src: "Sifra",
+        field: "id",
+        type: "Int",
+        nullable: false,
+        isId: true,
       },
       {
-        "src": "Naziv",
-        "field": "name",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "Naziv",
+        field: "name",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "Poslovnica",
-        "field": "branch",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Poslovnica",
+        field: "branch",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Mesto",
-        "field": "city",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Mesto",
+        field: "city",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Adresa",
-        "field": "address",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Adresa",
+        field: "address",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Postanski broj",
-        "field": "postalCode",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Postanski broj",
+        field: "postalCode",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Ziro racun_1",
-        "field": "bankAccount1",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Ziro racun_1",
+        field: "bankAccount1",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Ziro racun_2",
-        "field": "bankAccount2",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Ziro racun_2",
+        field: "bankAccount2",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Ziro racun_3",
-        "field": "bankAccount3",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Ziro racun_3",
+        field: "bankAccount3",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Telefon",
-        "field": "phone",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Telefon",
+        field: "phone",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Fax",
-        "field": "fax",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Fax",
+        field: "fax",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Kontakt",
-        "field": "contact",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Kontakt",
+        field: "contact",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Napomena",
-        "field": "note",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Napomena",
+        field: "note",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Drzava",
-        "field": "country",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Drzava",
+        field: "country",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Region",
-        "field": "region",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
+        src: "Region",
+        field: "region",
+        type: "Int",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Vrsta sifre",
-        "field": "codeTypeCode",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Vrsta sifre",
+        field: "codeTypeCode",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Email",
-        "field": "email",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Email",
+        field: "email",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Mobilni",
-        "field": "mobile",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Mobilni",
+        field: "mobile",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Datum rodjenja",
-        "field": "birthDate",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
+        src: "Datum rodjenja",
+        field: "birthDate",
+        type: "DateTime",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Web adresa",
-        "field": "webAddress",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Web adresa",
+        field: "webAddress",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Sifra prodavca",
-        "field": "salespersonId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
+        src: "Sifra prodavca",
+        field: "salespersonId",
+        type: "Int",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "RabatKomitenta",
-        "field": "customerDiscount",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
+        src: "RabatKomitenta",
+        field: "customerDiscount",
+        type: "Float",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "ZastKodKupca",
-        "field": "buyerProtectionCode",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "ZastKodKupca",
+        field: "buyerProtectionCode",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "PIB",
-        "field": "taxId",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "PIB",
+        field: "taxId",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "PDVStatus",
-        "field": "vatStatus",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
+        src: "PDVStatus",
+        field: "vatStatus",
+        type: "Int",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "MSifra",
-        "field": "externalCode",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "MSifra",
+        field: "externalCode",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Odlozeno",
-        "field": "paymentTermDays",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
+        src: "Odlozeno",
+        field: "paymentTermDays",
+        type: "Int",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "IDRuta",
-        "field": "routeId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
+        src: "IDRuta",
+        field: "routeId",
+        type: "Int",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "IDVozac",
-        "field": "driverId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
+        src: "IDVozac",
+        field: "driverId",
+        type: "Int",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "IDUplatniRacun",
-        "field": "paymentAccountId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
+        src: "IDUplatniRacun",
+        field: "paymentAccountId",
+        type: "Int",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "FakturisanjePoMestimaIsporuke",
-        "field": "invoicePerDeliveryAddress",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
+        src: "FakturisanjePoMestimaIsporuke",
+        field: "invoicePerDeliveryAddress",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Cenovnik",
-        "field": "priceListCode",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Cenovnik",
+        field: "priceListCode",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "PrviUnos",
-        "field": "createdAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
+        src: "PrviUnos",
+        field: "createdAt",
+        type: "DateTime",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "PoslednjaIzmena",
-        "field": "updatedAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
+        src: "PoslednjaIzmena",
+        field: "updatedAt",
+        type: "DateTime",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "PrviUnosUser",
-        "field": "createdBy",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "PrviUnosUser",
+        field: "createdBy",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "PoslednjaIzmenaUser",
-        "field": "updatedBy",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "PoslednjaIzmenaUser",
+        field: "updatedBy",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "ProcenatProvizije",
-        "field": "commissionPercent",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
+        src: "ProcenatProvizije",
+        field: "commissionPercent",
+        type: "Float",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "FiktRabatKomitenta",
-        "field": "fictitiousDiscount",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
+        src: "FiktRabatKomitenta",
+        field: "fictitiousDiscount",
+        type: "Float",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "KomitentiNacinPlacanja",
-        "field": "paymentMethod",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "KomitentiNacinPlacanja",
+        field: "paymentMethod",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "PotpisKom",
-        "field": "signature",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "PotpisKom",
+        field: "signature",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "SkraceniNaziv",
-        "field": "shortName",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "SkraceniNaziv",
+        field: "shortName",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "DatumIVremeKom",
-        "field": "recordCreatedAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
+        src: "DatumIVremeKom",
+        field: "recordCreatedAt",
+        type: "DateTime",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "ProveraDuga",
-        "field": "checkDebt",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
+        src: "ProveraDuga",
+        field: "checkDebt",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "KreditLimit",
-        "field": "creditLimit",
-        "type": "Decimal",
-        "nullable": true,
-        "isId": false
+        src: "KreditLimit",
+        field: "creditLimit",
+        type: "Decimal",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "NeProveravajPIB",
-        "field": "skipTaxIdValidation",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
+        src: "NeProveravajPIB",
+        field: "skipTaxIdValidation",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "IDPantheon",
-        "field": "pantheonId",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "IDPantheon",
+        field: "pantheonId",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "NewsLetter",
-        "field": "newsletter",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
+        src: "NewsLetter",
+        field: "newsletter",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "PostaNaDruguAdresu",
-        "field": "mailToDifferentAddress",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
+        src: "PostaNaDruguAdresu",
+        field: "mailToDifferentAddress",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "GLN",
-        "field": "gln",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "GLN",
+        field: "gln",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "KLRucProc",
-        "field": "manualMarkupPercent",
-        "type": "Decimal",
-        "nullable": true,
-        "isId": false
+        src: "KLRucProc",
+        field: "manualMarkupPercent",
+        type: "Decimal",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "NapomenaZaSalda",
-        "field": "balanceNote",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "NapomenaZaSalda",
+        field: "balanceNote",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "NePrikazatiUPregledu",
-        "field": "hideInOverview",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
+        src: "NePrikazatiUPregledu",
+        field: "hideInOverview",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "JBKJS",
-        "field": "publicSectorId",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "JBKJS",
+        field: "publicSectorId",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "MaticniBroj",
-        "field": "registrationNumber",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "MaticniBroj",
+        field: "registrationNumber",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "ER_XMLSaPopustomPoArtiklu",
-        "field": "einvoiceXmlPerItemDiscount",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
+        src: "ER_XMLSaPopustomPoArtiklu",
+        field: "einvoiceXmlPerItemDiscount",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "CRF",
-        "field": "centralInvoiceRegistry",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      }
-    ]
+        src: "CRF",
+        field: "centralInvoiceRegistry",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+    ],
   },
   {
-    "source": "KomponentePDMCrteza",
-    "model": "DrawingComponent",
-    "targetDb": "drawing_components",
-    "pk": {
-      "kind": "single",
-      "field": "id"
+    source: "MRP_PotrebeStavke",
+    model: "MrpDemandItem",
+    targetDb: "mrp_demand_items",
+    pk: {
+      kind: "single",
+      field: "id",
     },
-    "watermark": null,
-    "columns": [
+    watermark: null,
+    columns: [
       {
-        "src": "IDKomponenteCrteza",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
+        src: "IDPotrebaStavka",
+        field: "id",
+        type: "Int",
+        nullable: false,
+        isId: true,
       },
       {
-        "src": "ZaIDCrtez",
-        "field": "parentDrawingId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
+        src: "IDPotreba",
+        field: "demandId",
+        type: "Int",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "TrebaIDCrtez",
-        "field": "childDrawingId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
+        src: "IDCrtezIzvora",
+        field: "sourceDrawingId",
+        type: "Int",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "PotrebnoKomada",
-        "field": "requiredQuantity",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      }
-    ]
+        src: "IDCrtezNabavke",
+        field: "procurementDrawingId",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "SifraArtikla",
+        field: "itemId",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "KataloskiBrojStavka",
+        field: "itemCatalogNumber",
+        type: "String",
+        nullable: false,
+        isId: false,
+      },
+      {
+        src: "NazivArtiklaStavka",
+        field: "itemName",
+        type: "String",
+        nullable: false,
+        isId: false,
+      },
+      {
+        src: "JedinicaMereStavka",
+        field: "itemUnit",
+        type: "String",
+        nullable: false,
+        isId: false,
+      },
+      {
+        src: "IzvorStavke",
+        field: "itemSource",
+        type: "Int",
+        nullable: false,
+        isId: false,
+      },
+      {
+        src: "KolicinaPotrebna",
+        field: "requiredQuantity",
+        type: "Decimal",
+        nullable: false,
+        isId: false,
+      },
+      {
+        src: "DatumPotrebe",
+        field: "demandDate",
+        type: "DateTime",
+        nullable: false,
+        isId: false,
+      },
+      {
+        src: "VremeIsporukeDana",
+        field: "leadTimeDays",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "DatumNabavke",
+        field: "procurementDate",
+        type: "DateTime",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Napomena",
+        field: "note",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "DIVUnosa",
+        field: "createdAt",
+        type: "DateTime",
+        nullable: false,
+        isId: false,
+      },
+      {
+        src: "DIVUnosaKorisnik",
+        field: "createdBy",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "DIVIzmena",
+        field: "updatedAt",
+        type: "DateTime",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "DIVIzmenaKorisnik",
+        field: "updatedBy",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "DobavljacID",
+        field: "supplierId",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "StatusStavke",
+        field: "itemStatus",
+        type: "Int",
+        nullable: false,
+        isId: false,
+      },
+      {
+        src: "KolicinaRezervisano",
+        field: "reservedQuantity",
+        type: "Decimal",
+        nullable: false,
+        isId: false,
+      },
+      {
+        src: "KolicinaZaNabavku",
+        field: "toProcureQuantity",
+        type: "Decimal",
+        nullable: false,
+        isId: false,
+      },
+    ],
   },
   {
-    "source": "MRP_PotrebeStavke",
-    "model": "MrpDemandItem",
-    "targetDb": "mrp_demand_items",
-    "pk": {
-      "kind": "single",
-      "field": "id"
+    source: "MRP_StanjeArtikala",
+    model: "MrpItemStock",
+    targetDb: "mrp_item_stock",
+    pk: {
+      kind: "single",
+      field: "itemId",
     },
-    "watermark": null,
-    "columns": [
+    watermark: "updatedAt",
+    columns: [
       {
-        "src": "IDPotrebaStavka",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
+        src: "SifraArtikla",
+        field: "itemId",
+        type: "Int",
+        nullable: false,
+        isId: true,
       },
       {
-        "src": "IDPotreba",
-        "field": "demandId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
+        src: "Zalihe",
+        field: "inStock",
+        type: "Decimal",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "IDCrtezIzvora",
-        "field": "sourceDrawingId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
+        src: "Rezervisane",
+        field: "reserved",
+        type: "Decimal",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "IDCrtezNabavke",
-        "field": "procurementDrawingId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
+        src: "Naziv",
+        field: "name",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "SifraArtikla",
-        "field": "itemId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
+        src: "KataloskiBroj",
+        field: "catalogNumber",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "KataloskiBrojStavka",
-        "field": "itemCatalogNumber",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "JedinicaMere",
+        field: "unit",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "NazivArtiklaStavka",
-        "field": "itemName",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "PoslednjaIzmena",
+        field: "updatedAt",
+        type: "DateTime",
+        nullable: true,
+        isId: false,
       },
-      {
-        "src": "JedinicaMereStavka",
-        "field": "itemUnit",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "IzvorStavke",
-        "field": "itemSource",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "KolicinaPotrebna",
-        "field": "requiredQuantity",
-        "type": "Decimal",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "DatumPotrebe",
-        "field": "demandDate",
-        "type": "DateTime",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "VremeIsporukeDana",
-        "field": "leadTimeDays",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "DatumNabavke",
-        "field": "procurementDate",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Napomena",
-        "field": "note",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "DIVUnosa",
-        "field": "createdAt",
-        "type": "DateTime",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "DIVUnosaKorisnik",
-        "field": "createdBy",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "DIVIzmena",
-        "field": "updatedAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "DIVIzmenaKorisnik",
-        "field": "updatedBy",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "DobavljacID",
-        "field": "supplierId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "StatusStavke",
-        "field": "itemStatus",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "KolicinaRezervisano",
-        "field": "reservedQuantity",
-        "type": "Decimal",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "KolicinaZaNabavku",
-        "field": "toProcureQuantity",
-        "type": "Decimal",
-        "nullable": false,
-        "isId": false
-      }
-    ]
+    ],
   },
   {
-    "source": "MRP_StanjeArtikala",
-    "model": "MrpItemStock",
-    "targetDb": "mrp_item_stock",
-    "pk": {
-      "kind": "single",
-      "field": "itemId"
+    source: "MRP_SyncStatus",
+    model: "MrpSyncStatus",
+    targetDb: "mrp_sync_status",
+    pk: {
+      kind: "single",
+      field: "syncKey",
     },
-    "watermark": "updatedAt",
-    "columns": [
+    watermark: null,
+    columns: [
       {
-        "src": "SifraArtikla",
-        "field": "itemId",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
+        src: "SyncKey",
+        field: "syncKey",
+        type: "String",
+        nullable: false,
+        isId: true,
       },
       {
-        "src": "Zalihe",
-        "field": "inStock",
-        "type": "Decimal",
-        "nullable": false,
-        "isId": false
+        src: "PoslednjiSync",
+        field: "lastSyncedAt",
+        type: "DateTime",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Rezervisane",
-        "field": "reserved",
-        "type": "Decimal",
-        "nullable": false,
-        "isId": false
+        src: "PoslednjiSyncKorisnik",
+        field: "lastSyncedBy",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Naziv",
-        "field": "name",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Napomena",
+        field: "note",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
-      {
-        "src": "KataloskiBroj",
-        "field": "catalogNumber",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "JedinicaMere",
-        "field": "unit",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "PoslednjaIzmena",
-        "field": "updatedAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
-      }
-    ]
+    ],
   },
   {
-    "source": "MRP_SyncStatus",
-    "model": "MrpSyncStatus",
-    "targetDb": "mrp_sync_status",
-    "pk": {
-      "kind": "single",
-      "field": "syncKey"
+    source: "Magacini",
+    model: "Warehouse",
+    targetDb: "warehouses",
+    pk: {
+      kind: "single",
+      field: "id",
     },
-    "watermark": null,
-    "columns": [
+    watermark: null,
+    columns: [
       {
-        "src": "SyncKey",
-        "field": "syncKey",
-        "type": "String",
-        "nullable": false,
-        "isId": true
+        src: "IDFirma",
+        field: "companyId",
+        type: "Int",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "PoslednjiSync",
-        "field": "lastSyncedAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
+        src: "IDMagacin",
+        field: "id",
+        type: "Int",
+        nullable: false,
+        isId: true,
       },
       {
-        "src": "PoslednjiSyncKorisnik",
-        "field": "lastSyncedBy",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Magacin",
+        field: "name",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "Napomena",
-        "field": "note",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      }
-    ]
+        src: "UlicaIBroj",
+        field: "street",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Mesto",
+        field: "city",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "ProsecneCene",
+        field: "averagePrices",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "VrstaMag",
+        field: "warehouseType",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "KontoMag",
+        field: "account",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "ImeMagacionera",
+        field: "managerName",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "BrLkMagacionera",
+        field: "managerIdNumber",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "PotpisSlika",
+        field: "signatureImagePath",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+    ],
   },
   {
-    "source": "Magacini",
-    "model": "Warehouse",
-    "targetDb": "warehouses",
-    "pk": {
-      "kind": "single",
-      "field": "id"
+    source: "Parametri za rad",
+    model: "WorkParameter",
+    targetDb: "work_parameters",
+    pk: {
+      kind: "single",
+      field: "username",
     },
-    "watermark": null,
-    "columns": [
+    watermark: null,
+    columns: [
       {
-        "src": "IDFirma",
-        "field": "companyId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
+        src: "Korisnik",
+        field: "username",
+        type: "String",
+        nullable: false,
+        isId: true,
       },
       {
-        "src": "IDMagacin",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
+        src: "VrstaDokumenta",
+        field: "documentType",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Magacin",
-        "field": "name",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "Telefon",
+        field: "phone",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "UlicaIBroj",
-        "field": "street",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Poslednji broj fakture",
+        field: "lastInvoiceNumber",
+        type: "Int",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Mesto",
-        "field": "city",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Poslednji broj profakture",
+        field: "lastProformaNumber",
+        type: "Int",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "ProsecneCene",
-        "field": "averagePrices",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
+        src: "Faktura kroz",
+        field: "invoiceThrough",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "VrstaMag",
-        "field": "warehouseType",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Profaktura kroz",
+        field: "proformaThrough",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "KontoMag",
-        "field": "account",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Faktura prefix",
+        field: "invoicePrefix",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "ImeMagacionera",
-        "field": "managerName",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Profaktura prefix",
+        field: "proformaPrefix",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
-      {
-        "src": "BrLkMagacionera",
-        "field": "managerIdNumber",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "PotpisSlika",
-        "field": "signatureImagePath",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      }
-    ]
+    ],
   },
   {
-    "source": "NacrtPrimopredaje",
-    "model": "HandoverDraft",
-    "targetDb": "handover_drafts",
-    "pk": {
-      "kind": "single",
-      "field": "id"
+    source: "Predmeti",
+    model: "Project",
+    targetDb: "projects",
+    pk: {
+      kind: "single",
+      field: "id",
     },
-    "watermark": "updatedAt",
-    "columns": [
+    watermark: null,
+    columns: [
       {
-        "src": "IDNacrtPrim",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
+        src: "IDPredmet",
+        field: "id",
+        type: "Int",
+        nullable: false,
+        isId: true,
       },
       {
-        "src": "IDProjektant",
-        "field": "designerId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
+        src: "BrojPredmeta",
+        field: "projectNumber",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "DatumNacrta",
-        "field": "draftDate",
-        "type": "DateTime",
-        "nullable": false,
-        "isId": false
+        src: "Opis",
+        field: "description",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "IDPredmet",
-        "field": "projectId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
+        src: "DatumOtvaranja",
+        field: "openedAt",
+        type: "DateTime",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "BrojKomada",
-        "field": "pieceCount",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
+        src: "IDProdavac",
+        field: "salespersonId",
+        type: "Int",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "IDStatusNacrtaPrimopredaje",
-        "field": "statusId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
+        src: "IDKomitent",
+        field: "customerId",
+        type: "Int",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "Napomena",
-        "field": "note",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "NextAction",
+        field: "nextAction",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Potpis",
-        "field": "signature",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "DatumZakljucenja",
+        field: "closedAt",
+        type: "DateTime",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "PrviUnos",
-        "field": "createdAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
+        src: "Memo",
+        field: "memo",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "PoslednjaIzmena",
-        "field": "updatedAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
+        src: "Status",
+        field: "status",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "BrojNacrta",
-        "field": "draftNumber",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "NasaRef",
+        field: "ourRef",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Zakljucano",
-        "field": "isLocked",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
+        src: "NasKontakt1",
+        field: "ourContact1",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "TipNacrta",
-        "field": "draftType",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
+        src: "NasKontakt2",
+        field: "ourContact2",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "IDGlavniCrtez",
-        "field": "mainDrawingId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      }
-    ]
+        src: "NasTel1",
+        field: "ourPhone1",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "NasTel2",
+        field: "ourPhone2",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "VasaRef",
+        field: "theirRef",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "VasKontakt1",
+        field: "theirContact1",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "VasKontakt2",
+        field: "theirContact2",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "VasTel1",
+        field: "theirPhone1",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "VasTel2",
+        field: "theirPhone2",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "NabavnaVrednost",
+        field: "procurementValue",
+        type: "Decimal",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Carina",
+        field: "customs",
+        type: "Decimal",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Spedicija",
+        field: "forwarding",
+        type: "Decimal",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Prevoz",
+        field: "transport",
+        type: "Decimal",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Ostalo",
+        field: "other",
+        type: "Decimal",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "InoDobavljac",
+        field: "foreignSupplierId",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "RJ",
+        field: "workUnitCode",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "devvaluta",
+        field: "currency",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "kurs",
+        field: "exchangeRate",
+        type: "Decimal",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "IDVrstaPosla",
+        field: "workTypeId",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "NazivPredmeta",
+        field: "projectName",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "RokZavrsetka",
+        field: "deadline",
+        type: "DateTime",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Potpis",
+        field: "signature",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "DatumIVreme",
+        field: "createdAt",
+        type: "DateTime",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "BrojUgovora",
+        field: "contractNumber",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "DatumUgovora",
+        field: "contractDate",
+        type: "DateTime",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "BrojNarudzbenice",
+        field: "orderNumber",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "DatumNarudzbenice",
+        field: "orderDate",
+        type: "DateTime",
+        nullable: true,
+        isId: false,
+      },
+    ],
   },
   {
-    "source": "NacrtPrimopredajeStavke",
-    "model": "HandoverDraftItem",
-    "targetDb": "handover_draft_items",
-    "pk": {
-      "kind": "single",
-      "field": "id"
+    source: "Prodavci",
+    model: "Salesperson",
+    targetDb: "salespeople",
+    pk: {
+      kind: "single",
+      field: "id",
     },
-    "watermark": "updatedAt",
-    "columns": [
+    watermark: null,
+    columns: [
       {
-        "src": "IDNacrtStavka",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
+        src: "Sifra prodavca",
+        field: "id",
+        type: "Int",
+        nullable: false,
+        isId: true,
       },
       {
-        "src": "IDNacrtPrim",
-        "field": "draftId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
+        src: "Prodavac",
+        field: "name",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "IDCrtez",
-        "field": "drawingId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
+        src: "Region",
+        field: "region",
+        type: "Int",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Napomena",
-        "field": "note",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "ProcenatZaObracun",
+        field: "commissionPercent",
+        type: "Float",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Potpis",
-        "field": "signature",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "DeljivoUGrupi",
+        field: "splitInTeam",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "PrviUnos",
-        "field": "createdAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
+        src: "ImeProdavca",
+        field: "firstName",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "PoslednjaIzmena",
-        "field": "updatedAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
+        src: "BrLkProdavca",
+        field: "idNumber",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "KolicinaZaIzradu",
-        "field": "quantityToProduce",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
+        src: "LogAcc",
+        field: "loginAccount",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "IDGlavniCrtez",
-        "field": "mainDrawingId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
+        src: "Password",
+        field: "password",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "IsGlavni",
-        "field": "isMain",
-        "type": "Boolean",
-        "nullable": false,
-        "isId": false
+        src: "Aktivan",
+        field: "active",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "PredProveraDuplikat",
-        "field": "preCheckDuplicate",
-        "type": "Boolean",
-        "nullable": false,
-        "isId": false
+        src: "NefiskalniRN",
+        field: "nonFiscalWorkOrder",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "PredProveraIDNacrtPrim",
-        "field": "preCheckDraftId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
+        src: "Storniranje",
+        field: "canCancel",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "PredProveraIDRN",
-        "field": "preCheckWorkOrderId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
+        src: "PotpisSlika",
+        field: "signatureImage",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "IskljuciPrimopredaju",
-        "field": "excludeFromHandover",
-        "type": "Boolean",
-        "nullable": false,
-        "isId": false
+        src: "OznakaTima",
+        field: "teamCode",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "OdlukaAkcija",
-        "field": "decisionAction",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
+        src: "Telefon",
+        field: "phone",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "DIVOdluke",
-        "field": "decisionDateTime",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
+        src: "Email",
+        field: "email",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
-      {
-        "src": "KolicinaDefinisanaUCrtezu",
-        "field": "quantityDefinedInDrawing",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      }
-    ]
+    ],
   },
   {
-    "source": "Nalepnice",
-    "model": "Label",
-    "targetDb": "labels",
-    "pk": {
-      "kind": "single",
-      "field": "id"
+    source: "R_Artikli",
+    model: "Item",
+    targetDb: "items",
+    pk: {
+      kind: "single",
+      field: "id",
     },
-    "watermark": null,
-    "columns": [
+    watermark: null,
+    columns: [
       {
-        "src": "ID",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
+        src: "Sifra artikla",
+        field: "id",
+        type: "Int",
+        nullable: false,
+        isId: true,
       },
       {
-        "src": "IDRN",
-        "field": "workOrderId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
+        src: "Kataloski broj",
+        field: "catalogNumber",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "IDPostupka",
-        "field": "techProcessId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
+        src: "BarKod",
+        field: "barCode",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "IdentBroj",
-        "field": "identNumber",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "PLU",
+        field: "plu",
+        type: "Int",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "BarKod",
-        "field": "barCode",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "ExtSifra",
+        field: "externalCode",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "NazivPredmeta",
-        "field": "projectName",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "Naziv",
+        field: "name",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "Komitent",
-        "field": "customer",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "Jedinica mere",
+        field: "unit",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "NazivDela",
-        "field": "partName",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "Pakovanje",
+        field: "packaging",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "BrojCrteza",
-        "field": "drawingNumber",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "InoJm",
+        field: "foreignUnit",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Materijal",
-        "field": "material",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "Kutija",
+        field: "box",
+        type: "Float",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "DatumUnosa",
-        "field": "enteredAt",
-        "type": "DateTime",
-        "nullable": false,
-        "isId": false
+        src: "Transportno pakovanje",
+        field: "transportPackaging",
+        type: "Float",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Kolicina",
-        "field": "quantity",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
+        src: "Poreklo",
+        field: "originCode",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "UkupnaKolicina",
-        "field": "totalQuantity",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
+        src: "Grupa",
+        field: "groupCode",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "PRN",
-        "field": "print",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      }
-    ]
+        src: "Podgrupa",
+        field: "subgroupCode",
+        type: "String",
+        nullable: false,
+        isId: false,
+      },
+      {
+        src: "Tarifa robe",
+        field: "goodsTaxRateCode",
+        type: "String",
+        nullable: false,
+        isId: false,
+      },
+      {
+        src: "Tarifa usluga",
+        field: "serviceTaxRateCode",
+        type: "String",
+        nullable: false,
+        isId: false,
+      },
+      {
+        src: "Uvek porez na robu",
+        field: "alwaysTaxGoods",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Uvek porez na usluge",
+        field: "alwaysTaxServices",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "VP cena",
+        field: "wholesalePrice",
+        type: "Float",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "MP cena",
+        field: "retailPrice",
+        type: "Float",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "NabDevCena",
+        field: "fxPurchasePrice",
+        type: "Float",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "ProdDevCena",
+        field: "fxSalePrice",
+        type: "Float",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Minimalna kolicina",
+        field: "minQuantity",
+        type: "Float",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "ArtTaksa",
+        field: "itemFee",
+        type: "Float",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Odlozeno",
+        field: "paymentTermDays",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Neoporezivi deo",
+        field: "nonTaxablePart",
+        type: "Float",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "MaxRabatProc",
+        field: "maxDiscountPercent",
+        type: "Float",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Memo",
+        field: "memo",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "KngSifra",
+        field: "accountingCode",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "ArtAkciza",
+        field: "itemExcise",
+        type: "Float",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "KngSifra_2",
+        field: "accountingCode2",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "ZavTrosProiz",
+        field: "finalProcessingCost",
+        type: "Float",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "CarStopa",
+        field: "customsRate",
+        type: "Float",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "IDRaster",
+        field: "rasterId",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "CarTarifa",
+        field: "customsTariff",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "ZemljaPorekla",
+        field: "originCountry",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Polica",
+        field: "shelf",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "INONaziv",
+        field: "foreignName",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "SifDob",
+        field: "supplierId",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "WebOpis",
+        field: "webDescription",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "OpisArtikla",
+        field: "itemDescription",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Tezina",
+        field: "weight",
+        type: "Float",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "PDFLink",
+        field: "pdfLink",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "ZaBrisanje",
+        field: "toDelete",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Aktivan",
+        field: "active",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "CenaZaUpisUCen",
+        field: "priceToWritePricelist",
+        type: "Float",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "IDMestoIzdavanja",
+        field: "issuePlaceId",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Proizvodjac",
+        field: "manufacturer",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "HPS",
+        field: "hps",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "PotpisArt",
+        field: "signature",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "DatumIVremeArt",
+        field: "createdAt",
+        type: "DateTime",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "KolUPak",
+        field: "quantityInPackage",
+        type: "Float",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "KLRucProc",
+        field: "manualMarkupPercent",
+        type: "Decimal",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "OsnJM",
+        field: "baseUnit",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "SlikaSimbolaLink",
+        field: "symbolImageLink",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "MPKaloProc",
+        field: "retailLossPercent",
+        type: "Float",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "WordLokacija",
+        field: "wordLocation",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "VPKaloProc",
+        field: "wholesaleLossPercent",
+        type: "Float",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "NeVodiZalihe",
+        field: "notStockTracked",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "TezinaKg",
+        field: "weightKg",
+        type: "Float",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Zapremina",
+        field: "volume",
+        type: "Float",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Povrsina",
+        field: "area",
+        type: "Float",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "RSort",
+        field: "sortOrder",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "AkcijskiRabat",
+        field: "promotionDiscount",
+        type: "Float",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Napomena2",
+        field: "note2",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "IDKvalitetArtikla",
+        field: "qualityTypeId",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Debljina",
+        field: "thickness",
+        type: "Float",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "BBSifra artikla",
+        field: "externalItemId",
+        type: "Int",
+        nullable: false,
+        isId: false,
+      },
+    ],
   },
   {
-    "source": "PDMCrtezi",
-    "model": "Drawing",
-    "targetDb": "drawings",
-    "pk": {
-      "kind": "single",
-      "field": "id"
+    source: "R_Tarife",
+    model: "TaxRate",
+    targetDb: "tax_rates",
+    pk: {
+      kind: "single",
+      field: "id",
     },
-    "watermark": null,
-    "columns": [
+    watermark: null,
+    columns: [
       {
-        "src": "IDCrtez",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
+        src: "ID",
+        field: "id",
+        type: "Int",
+        nullable: false,
+        isId: true,
       },
       {
-        "src": "pdmWeID",
-        "field": "externalId",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "Tarifa",
+        field: "code",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "TransactionDate",
-        "field": "transactionDate",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
+        src: "Osnovna stopa",
+        field: "baseRate",
+        type: "Float",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "DesignDate",
-        "field": "designDate",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
+        src: "Zeleznica stopa",
+        field: "railwayRate",
+        type: "Float",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "DesignBy",
-        "field": "designedBy",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Gradska stopa",
+        field: "cityRate",
+        type: "Float",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "ApprovedDate",
-        "field": "approvedDate",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
+        src: "Ratna stopa",
+        field: "warRate",
+        type: "Float",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "ApprovedBy",
-        "field": "approvedBy",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Posebna stopa",
+        field: "specialRate",
+        type: "Float",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "BrojCrteza",
-        "field": "drawingNumber",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "Opis",
+        field: "description",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Revizija",
-        "field": "revision",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "Vazi od",
+        field: "validFrom",
+        type: "DateTime",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Kolicina",
-        "field": "quantity",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
+        src: "Vazi do",
+        field: "validTo",
+        type: "DateTime",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "KataloskiBroj",
-        "field": "catalogNumber",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "PDVGrupa",
+        field: "vatGroup",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
-      {
-        "src": "Naziv",
-        "field": "name",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Materijal",
-        "field": "material",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "RN",
-        "field": "workOrderRef",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Dimenzije",
-        "field": "dimensions",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Oznaka",
-        "field": "marking",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Tezina",
-        "field": "weight",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Naziv fajla",
-        "field": "fileName",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "PDMStatusCrteza",
-        "field": "pdmStatus",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Comment",
-        "field": "comment",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "WhereUsed",
-        "field": "whereUsed",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Naziv_projekta",
-        "field": "projectName",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "DIVUnosa",
-        "field": "createdAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Potpis",
-        "field": "signature",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "IDStatusCrteza",
-        "field": "statusId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Nabavka",
-        "field": "isProcurement",
-        "type": "Boolean",
-        "nullable": false,
-        "isId": false
-      }
-    ]
+    ],
   },
   {
-    "source": "PDMXMLImportLog",
-    "model": "DrawingImportLog",
-    "targetDb": "drawing_import_log",
-    "pk": {
-      "kind": "single",
-      "field": "id"
+    source: "R_Vrste dokumenata",
+    model: "DocumentType",
+    targetDb: "document_types",
+    pk: {
+      kind: "single",
+      field: "id",
     },
-    "watermark": null,
-    "columns": [
+    watermark: null,
+    columns: [
       {
-        "src": "IDLog",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
+        src: "ID",
+        field: "id",
+        type: "Int",
+        nullable: false,
+        isId: true,
       },
       {
-        "src": "NazivFajla",
-        "field": "fileName",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "Vrsta dokumenta",
+        field: "code",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "PutanjaFajla",
-        "field": "filePath",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "Opis",
+        field: "description",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "ImportTimestamp",
-        "field": "importedAt",
-        "type": "DateTime",
-        "nullable": false,
-        "isId": false
+        src: "Ulazni",
+        field: "isInbound",
+        type: "Boolean",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "Uspesno",
-        "field": "success",
-        "type": "Boolean",
-        "nullable": false,
-        "isId": false
+        src: "Analiticki konto",
+        field: "analyticalAccount",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "StatusPoruka",
-        "field": "statusMessage",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Knjiziti analitiku",
+        field: "postAnalytical",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Kriticno",
-        "field": "isCritical",
-        "type": "Boolean",
-        "nullable": false,
-        "isId": false
-      }
-    ]
+        src: "Sema za kontiranje",
+        field: "postingTemplate",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Knjiziti sintetiku",
+        field: "postSynthetic",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Prodaja sa PPP",
+        field: "saleWithPpp",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Prodaja sa PPU",
+        field: "saleWithPpu",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "KnjizitiTKZad",
+        field: "postRetailCharge",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "KnjizitiTKRazd",
+        field: "postRetailDischarge",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "TextZaReport",
+        field: "reportText",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "KnjizitiUPDVEvidenciju",
+        field: "postInVatLedger",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "KEPUDefZaduzenje",
+        field: "kepuDefaultCharge",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "KEPUDefRazduzenje",
+        field: "kepuDefaultDischarge",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "InterniDokument",
+        field: "isInternalDocument",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "NumeracijaOd",
+        field: "numberingStart",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "KOTP",
+        field: "isFiscal",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "PrefiksBrojaDok",
+        field: "documentNumberPrefix",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "IDMagacinZaVrstuDok",
+        field: "defaultWarehouseId",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "KODJ",
+        field: "isDepartmental",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "FR",
+        field: "isFr",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "UticeNaZalihe",
+        field: "affectsStock",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+    ],
   },
   {
-    "source": "PDM_PDFCrtezi",
-    "model": "DrawingPdf",
-    "targetDb": "drawing_pdfs",
-    "pk": {
-      "kind": "composite",
-      "fields": [
-        "drawingNumber",
-        "revision"
-      ],
-      "name": "drawingNumber_revision"
+    source: "Radni fajlovi",
+    model: "Company",
+    targetDb: "companies",
+    pk: {
+      kind: "single",
+      field: "id",
     },
-    "watermark": null,
-    "columns": [
+    watermark: null,
+    columns: [
       {
-        "src": "BrojCrteza",
-        "field": "drawingNumber",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "IDBaze",
+        field: "id",
+        type: "Int",
+        nullable: false,
+        isId: true,
       },
       {
-        "src": "Revizija",
-        "field": "revision",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "Firma",
+        field: "companyName",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "NazivFajla",
-        "field": "fileName",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Naziv baze",
+        field: "databaseName",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "DatumUnosa",
-        "field": "uploadedAt",
-        "type": "DateTime",
-        "nullable": false,
-        "isId": false
+        src: "Logo",
+        field: "logo",
+        type: "Bytes",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "VelicinaKB",
-        "field": "sizeKb",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
+        src: "Mesto",
+        field: "city",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "KorisnikUnosa",
-        "field": "uploadedBy",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Adresa",
+        field: "address",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "PDFBinary",
-        "field": "pdfBinary",
-        "type": "Bytes",
-        "nullable": true,
-        "isId": false
-      }
-    ]
+        src: "Telefon",
+        field: "phone",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Fax",
+        field: "fax",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Ziro racun",
+        field: "bankAccount",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Delatnost",
+        field: "businessActivity",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Sifra delatnosti",
+        field: "businessActivityCode",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Opstina",
+        field: "municipality",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Napomena",
+        field: "note",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Specijal",
+        field: "variant",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "e-mail",
+        field: "email",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Maticni broj",
+        field: "registrationNumber",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Registarski broj",
+        field: "registryNumber",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Podracuni",
+        field: "subAccounts",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Kasa_ProdavnicaID",
+        field: "posStoreId",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Kasa_KupacID",
+        field: "posBuyerId",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Kasa_VrstaDokumenta",
+        field: "posDocumentTypeCode",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Kasa_RadniNalogID",
+        field: "posWorkOrderId",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "BrDecUlKl",
+        field: "inboundDecimalPlaces",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "BrDecIzKl",
+        field: "outboundDecimalPlaces",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "KursDeli",
+        field: "splitExchangeRate",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "ProveraZalihaMag",
+        field: "checkWarehouseStock",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "AutoPodelaPrihoda",
+        field: "autoSplitRevenue",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "FakturnaJeVPZaUlKl",
+        field: "inboundIsWholesale",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "KepuPoNabavnojCeni",
+        field: "kepuAtPurchasePrice",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "TrgovackaPoKursu",
+        field: "retailByExchangeRate",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "KepuPoKursu",
+        field: "kepuByExchangeRate",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "GKPoKursu",
+        field: "gkByExchangeRate",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "KontoKupac",
+        field: "customerAccount",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "KontoDobavljac",
+        field: "supplierAccount",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "KnjiziRazlikeNaTK",
+        field: "postRetailDifferences",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "KnjiziRazlikeNaKEPU",
+        field: "postKepuDifferences",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "KnjiziRazlikeNaMPKEPU",
+        field: "postRetailKepuDifferences",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "GKPoKursuObrnuto",
+        field: "gkByExchangeRateReverse",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "AutoZakRoba",
+        field: "autoLockGoods",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "AutoZakGK",
+        field: "autoLockGk",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "StarijeOdDanaRoba",
+        field: "olderThanDaysGoods",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "StarijeOdDanaGk",
+        field: "olderThanDaysGk",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "ProveraPorukaInterval",
+        field: "notificationCheckInterval",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "DekodirajBarKod",
+        field: "decodeBarcode",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "PIB",
+        field: "taxId",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Garancija",
+        field: "warranty",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "KEPUPoKNGCeni",
+        field: "kepuAtCostAccountingPrice",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "PEPDV",
+        field: "pepdv",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Vlasnik",
+        field: "owner",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "PoreskaSifra",
+        field: "taxCode",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Galeb",
+        field: "galeb",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Raster",
+        field: "raster",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "PG_Naziv baze",
+        field: "pgDatabaseName",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "ServerZaGaleb",
+        field: "isGalebServer",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "KlijentZaGaleb",
+        field: "isGalebClient",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "FP_ImeStampaca",
+        field: "fiscalPrinterName",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "MestoIzdavanjaRacuna",
+        field: "invoiceIssuingPlace",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Kasa_KasaID",
+        field: "posCashRegisterId",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "WebAdresa",
+        field: "webAddress",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "APRText",
+        field: "aprText",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "SaljiBosson",
+        field: "sendBosson",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Kasa_Cenovnik",
+        field: "posPriceListCode",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "VPCenovnik",
+        field: "wholesalePriceListCode",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "FooterText",
+        field: "footerText",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Logo_Footer",
+        field: "logoFooter",
+        type: "Bytes",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "RPT_Memorandum_Header",
+        field: "reportHeader",
+        type: "String",
+        nullable: false,
+        isId: false,
+      },
+      {
+        src: "RPT_Memorandum_Footer",
+        field: "reportFooter",
+        type: "String",
+        nullable: false,
+        isId: false,
+      },
+      {
+        src: "LogoFontSize",
+        field: "logoFontSize",
+        type: "Int",
+        nullable: false,
+        isId: false,
+      },
+      {
+        src: "PDVStatus",
+        field: "vatStatus",
+        type: "Int",
+        nullable: false,
+        isId: false,
+      },
+      {
+        src: "JBKJS",
+        field: "publicSectorId",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "ER_ApiKey",
+        field: "einvoiceApiKey",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "NazivFirmeNezvanicno",
+        field: "unofficialCompanyName",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+    ],
   },
   {
-    "source": "PDM_Planiranje",
-    "model": "DrawingPlan",
-    "targetDb": "drawing_plans",
-    "pk": {
-      "kind": "single",
-      "field": "id"
+    source: "RobnaDokumentaMirror",
+    model: "GoodsDocumentMirror",
+    targetDb: "goods_documents_mirror",
+    pk: {
+      kind: "single",
+      field: "id",
     },
-    "watermark": "updatedAt",
-    "columns": [
+    watermark: null,
+    columns: [
       {
-        "src": "IDPlan",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
+        src: "IDDok",
+        field: "id",
+        type: "Int",
+        nullable: false,
+        isId: true,
       },
       {
-        "src": "IDPredmet",
-        "field": "projectId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
+        src: "VrstaDokumenta",
+        field: "documentType",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "IDCrtezSklopa",
-        "field": "assemblyDrawingId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
+        src: "DatumDokumenta",
+        field: "documentDate",
+        type: "DateTime",
+        nullable: false,
+        isId: false,
       },
-      {
-        "src": "KolicinaZaIzradu",
-        "field": "quantityToProduce",
-        "type": "Decimal",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "StatusPlaniranja",
-        "field": "planningStatus",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "DatumPlaniranja",
-        "field": "planningDate",
-        "type": "DateTime",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "SifraRadnikaPlaniranja",
-        "field": "planningWorkerId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Napomena",
-        "field": "note",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Potpis",
-        "field": "signature",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "PrviUnos",
-        "field": "createdAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "PoslednjaIzmena",
-        "field": "updatedAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Zakljucano",
-        "field": "isLocked",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "BrojPlana",
-        "field": "planNumber",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "BrojCrtezaPlana",
-        "field": "planDrawingNumber",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "RevizijaPlana",
-        "field": "planRevision",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      }
-    ]
+    ],
   },
   {
-    "source": "Parametri za rad",
-    "model": "WorkParameter",
-    "targetDb": "work_parameters",
-    "pk": {
-      "kind": "single",
-      "field": "username"
+    source: "RobneStavkeMirror",
+    model: "GoodsDocumentItemMirror",
+    targetDb: "goods_document_items_mirror",
+    pk: {
+      kind: "single",
+      field: "id",
     },
-    "watermark": null,
-    "columns": [
+    watermark: "updatedAt",
+    columns: [
       {
-        "src": "Korisnik",
-        "field": "username",
-        "type": "String",
-        "nullable": false,
-        "isId": true
+        src: "IDStavke",
+        field: "id",
+        type: "Int",
+        nullable: false,
+        isId: true,
       },
       {
-        "src": "VrstaDokumenta",
-        "field": "documentType",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "IDDok",
+        field: "documentId",
+        type: "Int",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "Telefon",
-        "field": "phone",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "SifraArtikla",
+        field: "itemId",
+        type: "Int",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "Poslednji broj fakture",
-        "field": "lastInvoiceNumber",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
+        src: "KataloskiBroj",
+        field: "catalogNumber",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Poslednji broj profakture",
-        "field": "lastProformaNumber",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
+        src: "IDMagacin",
+        field: "warehouseId",
+        type: "Int",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "Faktura kroz",
-        "field": "invoiceThrough",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "KolicinaUlaz",
+        field: "quantityIn",
+        type: "Decimal",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "Profaktura kroz",
-        "field": "proformaThrough",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "KolicinaIzlaz",
+        field: "quantityOut",
+        type: "Decimal",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "Faktura prefix",
-        "field": "invoicePrefix",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "PoslednjaIzmena",
+        field: "updatedAt",
+        type: "DateTime",
+        nullable: false,
+        isId: false,
       },
-      {
-        "src": "Profaktura prefix",
-        "field": "proformaPrefix",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      }
-    ]
+    ],
   },
   {
-    "source": "Predmeti",
-    "model": "Project",
-    "targetDb": "projects",
-    "pk": {
-      "kind": "single",
-      "field": "id"
+    source: "T_Robna dokumenta",
+    model: "GoodsDocument",
+    targetDb: "goods_documents",
+    pk: {
+      kind: "single",
+      field: "id",
     },
-    "watermark": null,
-    "columns": [
+    watermark: null,
+    columns: [
       {
-        "src": "IDPredmet",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
+        src: "IDDok",
+        field: "id",
+        type: "Int",
+        nullable: false,
+        isId: true,
       },
       {
-        "src": "BrojPredmeta",
-        "field": "projectNumber",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "IDFirma",
+        field: "companyId",
+        type: "Int",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "Opis",
-        "field": "description",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Ulaz",
+        field: "isInbound",
+        type: "Boolean",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "DatumOtvaranja",
-        "field": "openedAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
+        src: "Broj naloga",
+        field: "orderNumber",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "IDProdavac",
-        "field": "salespersonId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
+        src: "Vrsta naloga",
+        field: "orderType",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "IDKomitent",
-        "field": "customerId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
+        src: "Broj dokumenta",
+        field: "documentNumber",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "NextAction",
-        "field": "nextAction",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Vrsta dokumenta",
+        field: "documentType",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "DatumZakljucenja",
-        "field": "closedAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
+        src: "Sifra komitenta",
+        field: "customerId",
+        type: "Int",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "Memo",
-        "field": "memo",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Datum dokumenta",
+        field: "documentDate",
+        type: "DateTime",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "Status",
-        "field": "status",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Datum knjizenja",
+        field: "postingDate",
+        type: "DateTime",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "NasaRef",
-        "field": "ourRef",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Datum valute",
+        field: "dueDate",
+        type: "DateTime",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "NasKontakt1",
-        "field": "ourContact1",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Opis",
+        field: "description",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "NasKontakt2",
-        "field": "ourContact2",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Nacin otpreme",
+        field: "shipmentMethod",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "NasTel1",
-        "field": "ourPhone1",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Fco",
+        field: "fco",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "NasTel2",
-        "field": "ourPhone2",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Broj izjave",
+        field: "statementNumber",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "VasaRef",
-        "field": "theirRef",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Datum izjave",
+        field: "statementDate",
+        type: "DateTime",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "VasKontakt1",
-        "field": "theirContact1",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Sifra prodavca",
+        field: "salespersonId",
+        type: "Int",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "VasKontakt2",
-        "field": "theirContact2",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Nacin placanja",
+        field: "paymentMethod",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "VasTel1",
-        "field": "theirPhone1",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "IDTrebZaProizvodnju",
+        field: "productionRequestId",
+        type: "Int",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "VasTel2",
-        "field": "theirPhone2",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "IDMagacinDOK",
+        field: "warehouseId",
+        type: "Int",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "NabavnaVrednost",
-        "field": "procurementValue",
-        "type": "Decimal",
-        "nullable": true,
-        "isId": false
+        src: "Memo",
+        field: "memo",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Carina",
-        "field": "customs",
-        "type": "Decimal",
-        "nullable": true,
-        "isId": false
+        src: "Kurs",
+        field: "exchangeRate",
+        type: "Float",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Spedicija",
-        "field": "forwarding",
-        "type": "Decimal",
-        "nullable": true,
-        "isId": false
+        src: "IDRadniNalog",
+        field: "workOrderId",
+        type: "Int",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Prevoz",
-        "field": "transport",
-        "type": "Decimal",
-        "nullable": true,
-        "isId": false
+        src: "ObrKurs",
+        field: "accountingExchangeRate",
+        type: "Float",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Ostalo",
-        "field": "other",
-        "type": "Decimal",
-        "nullable": true,
-        "isId": false
+        src: "Carina",
+        field: "customs",
+        type: "Float",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "InoDobavljac",
-        "field": "foreignSupplierId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
+        src: "Spedicija",
+        field: "forwarding",
+        type: "Float",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "RJ",
-        "field": "workUnitCode",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "OstaliZavTros",
+        field: "otherDependentCosts",
+        type: "Float",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "devvaluta",
-        "field": "currency",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "DevVredFak",
+        field: "fxInvoiceValue",
+        type: "Float",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "kurs",
-        "field": "exchangeRate",
-        "type": "Decimal",
-        "nullable": true,
-        "isId": false
+        src: "Level",
+        field: "level",
+        type: "Int",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "IDVrstaPosla",
-        "field": "workTypeId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
+        src: "IDPredmet",
+        field: "projectId",
+        type: "Int",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "NazivPredmeta",
-        "field": "projectName",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Zakljucano",
+        field: "isLocked",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "RokZavrsetka",
-        "field": "deadline",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
+        src: "IDDokUF",
+        field: "linkedInboundDocId",
+        type: "Int",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Potpis",
-        "field": "signature",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "IDDokIF",
+        field: "linkedInvoiceDocId",
+        type: "Int",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "DatumIVreme",
-        "field": "createdAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
+        src: "Rezervisi",
+        field: "reserveStock",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "BrojUgovora",
-        "field": "contractNumber",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "CarKurs",
+        field: "customsExchangeRate",
+        type: "Float",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "DatumUgovora",
-        "field": "contractDate",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
+        src: "IDDokUSL",
+        field: "linkedServiceDocId",
+        type: "Int",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "BrojNarudzbenice",
-        "field": "orderNumber",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "PovCarOsn",
+        field: "customsRefundBase",
+        type: "Float",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "DatumNarudzbenice",
-        "field": "orderDate",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
-      }
-    ]
+        src: "DevValuta",
+        field: "currency",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "IDMestoIsporuke",
+        field: "deliveryPlaceId",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "IDRuta",
+        field: "routeId",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "IDVozac",
+        field: "driverId",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "OJ",
+        field: "orgUnitId",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Potpisano",
+        field: "isSigned",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "OD",
+        field: "departmentId",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Potpis",
+        field: "signature",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "DatumIVreme",
+        field: "createdAt",
+        type: "DateTime",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Godina",
+        field: "year",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "DatIVreme",
+        field: "registeredAt",
+        type: "DateTime",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "IDKontaktOsobe",
+        field: "contactPersonId",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "PrimljenNovac",
+        field: "cashReceived",
+        type: "Decimal",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "UsloviPlacanja",
+        field: "paymentTerms",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "PrimljeniCekovi",
+        field: "checksReceived",
+        type: "Decimal",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "PrimljenaKartica",
+        field: "cardReceived",
+        type: "Decimal",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "IDKasa",
+        field: "cashRegisterId",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "StampanFiskalno",
+        field: "fiscalPrinted",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "PrimljeniVirmani",
+        field: "bankTransferReceived",
+        type: "Decimal",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "IDDokExtBaza",
+        field: "externalDbDocId",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "DokBarKod",
+        field: "documentBarCode",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "DokBrojKutija",
+        field: "documentBoxCount",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+    ],
   },
   {
-    "source": "PrimopredajaCrteza",
-    "model": "DrawingHandover",
-    "targetDb": "drawing_handovers",
-    "pk": {
-      "kind": "single",
-      "field": "id"
+    source: "T_Robne stavke",
+    model: "GoodsDocumentItem",
+    targetDb: "goods_document_items",
+    pk: {
+      kind: "single",
+      field: "id",
     },
-    "watermark": "updatedAt",
-    "columns": [
+    watermark: null,
+    columns: [
       {
-        "src": "IDPrimopredaje",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
+        src: "IDStavke",
+        field: "id",
+        type: "Int",
+        nullable: false,
+        isId: true,
       },
       {
-        "src": "IDCrtez",
-        "field": "drawingId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
+        src: "IDDok",
+        field: "documentId",
+        type: "Int",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "DatumPredaje",
-        "field": "handoverDate",
-        "type": "DateTime",
-        "nullable": false,
-        "isId": false
+        src: "Sifra artikla",
+        field: "itemId",
+        type: "Int",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "IDRadnikPredaje",
-        "field": "handoverWorkerId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
+        src: "Kolicina",
+        field: "quantity",
+        type: "Float",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "IDStatusPrimopredaje",
-        "field": "statusId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
+        src: "KG_Kolicina",
+        field: "kgQuantity",
+        type: "Float",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "DatumPromeneStatusa",
-        "field": "statusChangedAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
+        src: "Nabavna cena - neto",
+        field: "purchasePriceNet",
+        type: "Float",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "IDRadnikPromeneStatusa",
-        "field": "statusChangedById",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
+        src: "Zavisni trosak - sopstveni",
+        field: "dependentCostOwn",
+        type: "Float",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "KomentarPromeneStatusa",
-        "field": "statusChangeComment",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Zavisni trosak - dobavljac",
+        field: "dependentCostSupplier",
+        type: "Float",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "DatumLansiranja",
-        "field": "launchedAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
+        src: "Kalkulativna VP cena",
+        field: "calculatedWholesalePrice",
+        type: "Float",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "IDRadnikLansiranja",
-        "field": "launchedById",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
+        src: "Kalkulativna MP cena",
+        field: "calculatedRetailPrice",
+        type: "Float",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "Napomena",
-        "field": "note",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Stvarna VP cena",
+        field: "actualWholesalePrice",
+        type: "Float",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "Potpis",
-        "field": "signature",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Stvarna MP cena",
+        field: "actualRetailPrice",
+        type: "Float",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "PrviUnos",
-        "field": "createdAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
+        src: "Taksa",
+        field: "fee",
+        type: "Float",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "PoslednjaIzmena",
-        "field": "updatedAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
+        src: "Obracunat porez na ulazu - roba",
+        field: "inboundTaxCalculated",
+        type: "Boolean",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "Zakljucano",
-        "field": "isLocked",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      }
-    ]
+        src: "Tarifa - roba - ulaz",
+        field: "inboundGoodsTaxRate",
+        type: "String",
+        nullable: false,
+        isId: false,
+      },
+      {
+        src: "Obracunat porez na usluge",
+        field: "servicesTaxCalculated",
+        type: "Boolean",
+        nullable: false,
+        isId: false,
+      },
+      {
+        src: "Tarifa - usluge - izlaz",
+        field: "outboundServicesTaxRate",
+        type: "String",
+        nullable: false,
+        isId: false,
+      },
+      {
+        src: "Obracunat  porez na robu",
+        field: "goodsTaxCalculated",
+        type: "Boolean",
+        nullable: false,
+        isId: false,
+      },
+      {
+        src: "Tarifa - roba - Izlaz",
+        field: "outboundGoodsTaxRate",
+        type: "String",
+        nullable: false,
+        isId: false,
+      },
+      {
+        src: "RabatProc",
+        field: "discountPercent",
+        type: "Float",
+        nullable: false,
+        isId: false,
+      },
+      {
+        src: "KasaProc",
+        field: "cashDiscountPercent",
+        type: "Float",
+        nullable: false,
+        isId: false,
+      },
+      {
+        src: "Odlozeno",
+        field: "paymentTermDays",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Neoporezivi deo",
+        field: "nonTaxablePart",
+        type: "Float",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Akciza",
+        field: "excise",
+        type: "Float",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "FiksniPorez",
+        field: "fixedTax",
+        type: "Float",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "DevNabCena",
+        field: "fxPurchasePrice",
+        type: "Float",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "IDMagacin",
+        field: "warehouseId",
+        type: "Int",
+        nullable: false,
+        isId: false,
+      },
+      {
+        src: "KNGCena",
+        field: "accountingPrice",
+        type: "Float",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "CarStopa",
+        field: "customsRate",
+        type: "Float",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "IDPredmetStavka",
+        field: "projectItemId",
+        type: "Int",
+        nullable: false,
+        isId: false,
+      },
+      {
+        src: "OpisStavke",
+        field: "itemDescription",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "ID_PO",
+        field: "purchaseOrderId",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "PakPoOsnJM",
+        field: "packagePerBaseUnit",
+        type: "Float",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "IDPrepisaneStavke",
+        field: "copiedFromItemId",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "ProknjizenoIzProfUIF",
+        field: "postedFromProformaToInvoice",
+        type: "Boolean",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "IDStavkeTrebovanja",
+        field: "requisitionItemId",
+        type: "Int",
+        nullable: true,
+        isId: false,
+      },
+    ],
   },
   {
-    "source": "Prodavci",
-    "model": "Salesperson",
-    "targetDb": "salespeople",
-    "pk": {
-      "kind": "single",
-      "field": "id"
+    source: "UplatniRacuni",
+    model: "PaymentAccount",
+    targetDb: "payment_accounts",
+    pk: {
+      kind: "single",
+      field: "id",
     },
-    "watermark": null,
-    "columns": [
+    watermark: null,
+    columns: [
       {
-        "src": "Sifra prodavca",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
+        src: "IDFirma",
+        field: "companyId",
+        type: "Int",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "Prodavac",
-        "field": "name",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "ID",
+        field: "id",
+        type: "Int",
+        nullable: false,
+        isId: true,
       },
       {
-        "src": "Region",
-        "field": "region",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
+        src: "UplatniRacun",
+        field: "accountNumber",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "ProcenatZaObracun",
-        "field": "commissionPercent",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
+        src: "NazivBanke",
+        field: "bankName",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "DeljivoUGrupi",
-        "field": "splitInTeam",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
+        src: "Default",
+        field: "isDefault",
+        type: "Boolean",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "ImeProdavca",
-        "field": "firstName",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Rbr",
+        field: "sortOrder",
+        type: "Int",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "BrLkProdavca",
-        "field": "idNumber",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "KodZemlje",
+        field: "countryCode",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "LogAcc",
-        "field": "loginAccount",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "OznakaBanke",
+        field: "bankCode",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
-      {
-        "src": "Password",
-        "field": "password",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Aktivan",
-        "field": "active",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "NefiskalniRN",
-        "field": "nonFiscalWorkOrder",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Storniranje",
-        "field": "canCancel",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "PotpisSlika",
-        "field": "signatureImage",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "OznakaTima",
-        "field": "teamCode",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Telefon",
-        "field": "phone",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Email",
-        "field": "email",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      }
-    ]
+    ],
   },
   {
-    "source": "R_Artikli",
-    "model": "Item",
-    "targetDb": "items",
-    "pk": {
-      "kind": "single",
-      "field": "id"
+    source: "Vrste sifara",
+    model: "CodeType",
+    targetDb: "code_types",
+    pk: {
+      kind: "single",
+      field: "code",
     },
-    "watermark": null,
-    "columns": [
-      {
-        "src": "Sifra artikla",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
-      },
-      {
-        "src": "Kataloski broj",
-        "field": "catalogNumber",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "BarKod",
-        "field": "barCode",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "PLU",
-        "field": "plu",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "ExtSifra",
-        "field": "externalCode",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Naziv",
-        "field": "name",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Jedinica mere",
-        "field": "unit",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Pakovanje",
-        "field": "packaging",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "InoJm",
-        "field": "foreignUnit",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Kutija",
-        "field": "box",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Transportno pakovanje",
-        "field": "transportPackaging",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Poreklo",
-        "field": "originCode",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Grupa",
-        "field": "groupCode",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Podgrupa",
-        "field": "subgroupCode",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Tarifa robe",
-        "field": "goodsTaxRateCode",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Tarifa usluga",
-        "field": "serviceTaxRateCode",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Uvek porez na robu",
-        "field": "alwaysTaxGoods",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Uvek porez na usluge",
-        "field": "alwaysTaxServices",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "VP cena",
-        "field": "wholesalePrice",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "MP cena",
-        "field": "retailPrice",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "NabDevCena",
-        "field": "fxPurchasePrice",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "ProdDevCena",
-        "field": "fxSalePrice",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Minimalna kolicina",
-        "field": "minQuantity",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "ArtTaksa",
-        "field": "itemFee",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Odlozeno",
-        "field": "paymentTermDays",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Neoporezivi deo",
-        "field": "nonTaxablePart",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "MaxRabatProc",
-        "field": "maxDiscountPercent",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Memo",
-        "field": "memo",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "KngSifra",
-        "field": "accountingCode",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "ArtAkciza",
-        "field": "itemExcise",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "KngSifra_2",
-        "field": "accountingCode2",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "ZavTrosProiz",
-        "field": "finalProcessingCost",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "CarStopa",
-        "field": "customsRate",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "IDRaster",
-        "field": "rasterId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "CarTarifa",
-        "field": "customsTariff",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "ZemljaPorekla",
-        "field": "originCountry",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Polica",
-        "field": "shelf",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "INONaziv",
-        "field": "foreignName",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "SifDob",
-        "field": "supplierId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "WebOpis",
-        "field": "webDescription",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "OpisArtikla",
-        "field": "itemDescription",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Tezina",
-        "field": "weight",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "PDFLink",
-        "field": "pdfLink",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "ZaBrisanje",
-        "field": "toDelete",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Aktivan",
-        "field": "active",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "CenaZaUpisUCen",
-        "field": "priceToWritePricelist",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "IDMestoIzdavanja",
-        "field": "issuePlaceId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Proizvodjac",
-        "field": "manufacturer",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "HPS",
-        "field": "hps",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "PotpisArt",
-        "field": "signature",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "DatumIVremeArt",
-        "field": "createdAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "KolUPak",
-        "field": "quantityInPackage",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "KLRucProc",
-        "field": "manualMarkupPercent",
-        "type": "Decimal",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "OsnJM",
-        "field": "baseUnit",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "SlikaSimbolaLink",
-        "field": "symbolImageLink",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "MPKaloProc",
-        "field": "retailLossPercent",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "WordLokacija",
-        "field": "wordLocation",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "VPKaloProc",
-        "field": "wholesaleLossPercent",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "NeVodiZalihe",
-        "field": "notStockTracked",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "TezinaKg",
-        "field": "weightKg",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Zapremina",
-        "field": "volume",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Povrsina",
-        "field": "area",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "RSort",
-        "field": "sortOrder",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "AkcijskiRabat",
-        "field": "promotionDiscount",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Napomena2",
-        "field": "note2",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "IDKvalitetArtikla",
-        "field": "qualityTypeId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Debljina",
-        "field": "thickness",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "BBSifra artikla",
-        "field": "externalItemId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      }
-    ]
+    watermark: null,
+    columns: [
+      {
+        src: "Vrsta sifre",
+        field: "code",
+        type: "String",
+        nullable: false,
+        isId: true,
+      },
+      {
+        src: "Opis",
+        field: "description",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+    ],
   },
   {
-    "source": "R_Tarife",
-    "model": "TaxRate",
-    "targetDb": "tax_rates",
-    "pk": {
-      "kind": "single",
-      "field": "id"
+    source: "_Dnevnik",
+    model: "Journal",
+    targetDb: "journal",
+    pk: {
+      kind: "single",
+      field: "id",
     },
-    "watermark": null,
-    "columns": [
+    watermark: null,
+    columns: [
       {
-        "src": "ID",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
+        src: "ID",
+        field: "id",
+        type: "Int",
+        nullable: false,
+        isId: true,
       },
       {
-        "src": "Tarifa",
-        "field": "code",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "Opis",
+        field: "message",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "Osnovna stopa",
-        "field": "baseRate",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
+        src: "DIV",
+        field: "createdAt",
+        type: "DateTime",
+        nullable: false,
+        isId: false,
       },
-      {
-        "src": "Zeleznica stopa",
-        "field": "railwayRate",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Gradska stopa",
-        "field": "cityRate",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Ratna stopa",
-        "field": "warRate",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Posebna stopa",
-        "field": "specialRate",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Opis",
-        "field": "description",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Vazi od",
-        "field": "validFrom",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Vazi do",
-        "field": "validTo",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "PDVGrupa",
-        "field": "vatGroup",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      }
-    ]
+    ],
   },
   {
-    "source": "R_Vrste dokumenata",
-    "model": "DocumentType",
-    "targetDb": "document_types",
-    "pk": {
-      "kind": "single",
-      "field": "id"
+    source: "_RegAccess",
+    model: "AppAccessLog",
+    targetDb: "app_access_log",
+    pk: {
+      kind: "single",
+      field: "id",
     },
-    "watermark": null,
-    "columns": [
+    watermark: null,
+    columns: [
       {
-        "src": "ID",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
+        src: "ID",
+        field: "id",
+        type: "Int",
+        nullable: false,
+        isId: true,
       },
       {
-        "src": "Vrsta dokumenta",
-        "field": "code",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "HDSn",
+        field: "hardwareId",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Opis",
-        "field": "description",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "WinUser",
+        field: "windowsUser",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Ulazni",
-        "field": "isInbound",
-        "type": "Boolean",
-        "nullable": false,
-        "isId": false
+        src: "ComputerName",
+        field: "computerName",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Analiticki konto",
-        "field": "analyticalAccount",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "IPAdress",
+        field: "ipAddress",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Knjiziti analitiku",
-        "field": "postAnalytical",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
+        src: "Program_Name",
+        field: "programName",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Sema za kontiranje",
-        "field": "postingTemplate",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
+        src: "CNNString",
+        field: "connectionString",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Knjiziti sintetiku",
-        "field": "postSynthetic",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
+        src: "Login_Time",
+        field: "loginAt",
+        type: "DateTime",
+        nullable: true,
+        isId: false,
       },
-      {
-        "src": "Prodaja sa PPP",
-        "field": "saleWithPpp",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Prodaja sa PPU",
-        "field": "saleWithPpu",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "KnjizitiTKZad",
-        "field": "postRetailCharge",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "KnjizitiTKRazd",
-        "field": "postRetailDischarge",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "TextZaReport",
-        "field": "reportText",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "KnjizitiUPDVEvidenciju",
-        "field": "postInVatLedger",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "KEPUDefZaduzenje",
-        "field": "kepuDefaultCharge",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "KEPUDefRazduzenje",
-        "field": "kepuDefaultDischarge",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "InterniDokument",
-        "field": "isInternalDocument",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "NumeracijaOd",
-        "field": "numberingStart",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "KOTP",
-        "field": "isFiscal",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "PrefiksBrojaDok",
-        "field": "documentNumberPrefix",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "IDMagacinZaVrstuDok",
-        "field": "defaultWarehouseId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "KODJ",
-        "field": "isDepartmental",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "FR",
-        "field": "isFr",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "UticeNaZalihe",
-        "field": "affectsStock",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      }
-    ]
+    ],
   },
   {
-    "source": "Radni fajlovi",
-    "model": "Company",
-    "targetDb": "companies",
-    "pk": {
-      "kind": "single",
-      "field": "id"
+    source: "_RegApps",
+    model: "RegisteredApp",
+    targetDb: "registered_apps",
+    pk: {
+      kind: "single",
+      field: "appName",
     },
-    "watermark": null,
-    "columns": [
+    watermark: "updatedAt",
+    columns: [
       {
-        "src": "IDBaze",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
+        src: "DBName",
+        field: "databaseName",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Firma",
-        "field": "companyName",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "AppName",
+        field: "appName",
+        type: "String",
+        nullable: false,
+        isId: true,
       },
       {
-        "src": "Naziv baze",
-        "field": "databaseName",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "Disabled",
+        field: "disabled",
+        type: "Boolean",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "Logo",
-        "field": "logo",
-        "type": "Bytes",
-        "nullable": true,
-        "isId": false
+        src: "AplFile",
+        field: "appFile",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "Mesto",
-        "field": "city",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "MDWFile",
+        field: "mdwFile",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Adresa",
-        "field": "address",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "ClientDir",
+        field: "clientDir",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Telefon",
-        "field": "phone",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "DownloadDir",
+        field: "downloadDir",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Fax",
-        "field": "fax",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "PrviUnos",
+        field: "createdAt",
+        type: "DateTime",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Ziro racun",
-        "field": "bankAccount",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "PoslednjaIzmena",
+        field: "updatedAt",
+        type: "DateTime",
+        nullable: true,
+        isId: false,
       },
-      {
-        "src": "Delatnost",
-        "field": "businessActivity",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Sifra delatnosti",
-        "field": "businessActivityCode",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Opstina",
-        "field": "municipality",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Napomena",
-        "field": "note",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Specijal",
-        "field": "variant",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "e-mail",
-        "field": "email",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Maticni broj",
-        "field": "registrationNumber",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Registarski broj",
-        "field": "registryNumber",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Podracuni",
-        "field": "subAccounts",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Kasa_ProdavnicaID",
-        "field": "posStoreId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Kasa_KupacID",
-        "field": "posBuyerId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Kasa_VrstaDokumenta",
-        "field": "posDocumentTypeCode",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Kasa_RadniNalogID",
-        "field": "posWorkOrderId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "BrDecUlKl",
-        "field": "inboundDecimalPlaces",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "BrDecIzKl",
-        "field": "outboundDecimalPlaces",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "KursDeli",
-        "field": "splitExchangeRate",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "ProveraZalihaMag",
-        "field": "checkWarehouseStock",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "AutoPodelaPrihoda",
-        "field": "autoSplitRevenue",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "FakturnaJeVPZaUlKl",
-        "field": "inboundIsWholesale",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "KepuPoNabavnojCeni",
-        "field": "kepuAtPurchasePrice",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "TrgovackaPoKursu",
-        "field": "retailByExchangeRate",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "KepuPoKursu",
-        "field": "kepuByExchangeRate",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "GKPoKursu",
-        "field": "gkByExchangeRate",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "KontoKupac",
-        "field": "customerAccount",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "KontoDobavljac",
-        "field": "supplierAccount",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "KnjiziRazlikeNaTK",
-        "field": "postRetailDifferences",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "KnjiziRazlikeNaKEPU",
-        "field": "postKepuDifferences",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "KnjiziRazlikeNaMPKEPU",
-        "field": "postRetailKepuDifferences",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "GKPoKursuObrnuto",
-        "field": "gkByExchangeRateReverse",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "AutoZakRoba",
-        "field": "autoLockGoods",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "AutoZakGK",
-        "field": "autoLockGk",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "StarijeOdDanaRoba",
-        "field": "olderThanDaysGoods",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "StarijeOdDanaGk",
-        "field": "olderThanDaysGk",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "ProveraPorukaInterval",
-        "field": "notificationCheckInterval",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "DekodirajBarKod",
-        "field": "decodeBarcode",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "PIB",
-        "field": "taxId",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Garancija",
-        "field": "warranty",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "KEPUPoKNGCeni",
-        "field": "kepuAtCostAccountingPrice",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "PEPDV",
-        "field": "pepdv",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Vlasnik",
-        "field": "owner",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "PoreskaSifra",
-        "field": "taxCode",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Galeb",
-        "field": "galeb",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Raster",
-        "field": "raster",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "PG_Naziv baze",
-        "field": "pgDatabaseName",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "ServerZaGaleb",
-        "field": "isGalebServer",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "KlijentZaGaleb",
-        "field": "isGalebClient",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "FP_ImeStampaca",
-        "field": "fiscalPrinterName",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "MestoIzdavanjaRacuna",
-        "field": "invoiceIssuingPlace",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Kasa_KasaID",
-        "field": "posCashRegisterId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "WebAdresa",
-        "field": "webAddress",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "APRText",
-        "field": "aprText",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "SaljiBosson",
-        "field": "sendBosson",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Kasa_Cenovnik",
-        "field": "posPriceListCode",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "VPCenovnik",
-        "field": "wholesalePriceListCode",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "FooterText",
-        "field": "footerText",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Logo_Footer",
-        "field": "logoFooter",
-        "type": "Bytes",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "RPT_Memorandum_Header",
-        "field": "reportHeader",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "RPT_Memorandum_Footer",
-        "field": "reportFooter",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "LogoFontSize",
-        "field": "logoFontSize",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "PDVStatus",
-        "field": "vatStatus",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "JBKJS",
-        "field": "publicSectorId",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "ER_ApiKey",
-        "field": "einvoiceApiKey",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "NazivFirmeNezvanicno",
-        "field": "unofficialCompanyName",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      }
-    ]
+    ],
   },
   {
-    "source": "RobnaDokumentaMirror",
-    "model": "GoodsDocumentMirror",
-    "targetDb": "goods_documents_mirror",
-    "pk": {
-      "kind": "single",
-      "field": "id"
+    source: "_RegAppsFiles",
+    model: "RegisteredAppFile",
+    targetDb: "registered_app_files",
+    pk: {
+      kind: "composite",
+      fields: ["appName", "fileName"],
+      name: "appName_fileName",
     },
-    "watermark": null,
-    "columns": [
+    watermark: "updatedAt",
+    columns: [
       {
-        "src": "IDDok",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
+        src: "DBName",
+        field: "databaseName",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "VrstaDokumenta",
-        "field": "documentType",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "AppName",
+        field: "appName",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "DatumDokumenta",
-        "field": "documentDate",
-        "type": "DateTime",
-        "nullable": false,
-        "isId": false
-      }
-    ]
+        src: "AppFileName",
+        field: "fileName",
+        type: "String",
+        nullable: false,
+        isId: false,
+      },
+      {
+        src: "ClientDir",
+        field: "clientDir",
+        type: "String",
+        nullable: false,
+        isId: false,
+      },
+      {
+        src: "Install",
+        field: "install",
+        type: "Boolean",
+        nullable: false,
+        isId: false,
+      },
+      {
+        src: "Update",
+        field: "update",
+        type: "Boolean",
+        nullable: false,
+        isId: false,
+      },
+      {
+        src: "PrviUnos",
+        field: "createdAt",
+        type: "DateTime",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "PoslednjaIzmena",
+        field: "updatedAt",
+        type: "DateTime",
+        nullable: true,
+        isId: false,
+      },
+    ],
   },
   {
-    "source": "RobneStavkeMirror",
-    "model": "GoodsDocumentItemMirror",
-    "targetDb": "goods_document_items_mirror",
-    "pk": {
-      "kind": "single",
-      "field": "id"
+    source: "_RegUsers",
+    model: "RegisteredUser",
+    targetDb: "registered_users",
+    pk: {
+      kind: "single",
+      field: "id",
     },
-    "watermark": "updatedAt",
-    "columns": [
+    watermark: "updatedAt",
+    columns: [
       {
-        "src": "IDStavke",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
+        src: "DBName",
+        field: "databaseName",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "IDDok",
-        "field": "documentId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
+        src: "RegUserID",
+        field: "id",
+        type: "Int",
+        nullable: false,
+        isId: true,
       },
       {
-        "src": "SifraArtikla",
-        "field": "itemId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
+        src: "Disabled",
+        field: "disabled",
+        type: "Boolean",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "KataloskiBroj",
-        "field": "catalogNumber",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "HDSn",
+        field: "hardwareId",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "IDMagacin",
-        "field": "warehouseId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
+        src: "WinUser",
+        field: "windowsUser",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "KolicinaUlaz",
-        "field": "quantityIn",
-        "type": "Decimal",
-        "nullable": false,
-        "isId": false
+        src: "ComputerName",
+        field: "computerName",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "KolicinaIzlaz",
-        "field": "quantityOut",
-        "type": "Decimal",
-        "nullable": false,
-        "isId": false
+        src: "IPAdress",
+        field: "ipAddress",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "PoslednjaIzmena",
-        "field": "updatedAt",
-        "type": "DateTime",
-        "nullable": false,
-        "isId": false
-      }
-    ]
+        src: "Name",
+        field: "fullName",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "email",
+        field: "email",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Telefon",
+        field: "phone",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "Opis",
+        field: "description",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "VaziOdDatuma",
+        field: "validFrom",
+        type: "DateTime",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "VaziDoDatuma",
+        field: "validTo",
+        type: "DateTime",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "PrviUnos",
+        field: "createdAt",
+        type: "DateTime",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "PoslednjaIzmena",
+        field: "updatedAt",
+        type: "DateTime",
+        nullable: true,
+        isId: false,
+      },
+    ],
   },
   {
-    "source": "SklopoviPDMCrteza",
-    "model": "DrawingAssembly",
-    "targetDb": "drawing_assemblies",
-    "pk": {
-      "kind": "single",
-      "field": "id"
+    source: "_RegUsersApps",
+    model: "RegisteredUserApp",
+    targetDb: "registered_user_apps",
+    pk: {
+      kind: "composite",
+      fields: ["userId", "appName"],
+      name: "userId_appName",
     },
-    "watermark": null,
-    "columns": [
+    watermark: "updatedAt",
+    columns: [
       {
-        "src": "IDSklopoviCrteza",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
+        src: "DBName",
+        field: "databaseName",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "IDCrtez",
-        "field": "childDrawingId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
+        src: "RegUserID",
+        field: "userId",
+        type: "Int",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "KoristiSeUIDCrteza",
-        "field": "parentDrawingId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
+        src: "AppName",
+        field: "appName",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "KoristiSeBrojKomada",
-        "field": "quantity",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      }
-    ]
+        src: "Disabled",
+        field: "disabled",
+        type: "Boolean",
+        nullable: false,
+        isId: false,
+      },
+      {
+        src: "BBUserName",
+        field: "bbUserName",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "BBPassword",
+        field: "bbPassword",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "BBMacroName",
+        field: "bbMacroName",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "EXCL",
+        field: "excl",
+        type: "Boolean",
+        nullable: false,
+        isId: false,
+      },
+      {
+        src: "RUNTIME",
+        field: "runtime",
+        type: "Boolean",
+        nullable: false,
+        isId: false,
+      },
+      {
+        src: "BBExtraStartUp",
+        field: "bbExtraStartUp",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "BBCMD",
+        field: "bbCmd",
+        type: "String",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "PrviUnos",
+        field: "createdAt",
+        type: "DateTime",
+        nullable: true,
+        isId: false,
+      },
+      {
+        src: "PoslednjaIzmena",
+        field: "updatedAt",
+        type: "DateTime",
+        nullable: true,
+        isId: false,
+      },
+    ],
   },
   {
-    "source": "T_Planer",
-    "model": "PlannerEntry",
-    "targetDb": "planner_entries",
-    "pk": {
-      "kind": "single",
-      "field": "id"
+    source: "_Rev",
+    model: "AppRevision",
+    targetDb: "app_revisions",
+    pk: {
+      kind: "single",
+      field: "id",
     },
-    "watermark": null,
-    "columns": [
+    watermark: null,
+    columns: [
       {
-        "src": "ID",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
+        src: "ID",
+        field: "id",
+        type: "Int",
+        nullable: false,
+        isId: true,
       },
       {
-        "src": "IDFirma",
-        "field": "companyId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
+        src: "APP",
+        field: "app",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "KadaDatum",
-        "field": "scheduledDate",
-        "type": "DateTime",
-        "nullable": false,
-        "isId": false
+        src: "Ver",
+        field: "version",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "KadaVreme",
-        "field": "scheduledTime",
-        "type": "DateTime",
-        "nullable": false,
-        "isId": false
+        src: "VerDatum",
+        field: "versionDate",
+        type: "DateTime",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "OdKoga",
-        "field": "fromUser",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "Tema",
+        field: "topic",
+        type: "String",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "ZaKoga",
-        "field": "toUser",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "Opis",
+        field: "description",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Subject",
-        "field": "subject",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "Uradjeno",
+        field: "isDone",
+        type: "Boolean",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "Prioritet",
-        "field": "priority",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
+        src: "Firma",
+        field: "company",
+        type: "String",
+        nullable: true,
+        isId: false,
       },
       {
-        "src": "Poruka",
-        "field": "message",
-        "type": "String",
-        "nullable": true,
-        "isId": false
+        src: "DIVUnos",
+        field: "createdAt",
+        type: "DateTime",
+        nullable: false,
+        isId: false,
       },
       {
-        "src": "RepeatCode",
-        "field": "repeatCode",
-        "type": "String",
-        "nullable": false,
-        "isId": false
+        src: "SubRev",
+        field: "subRevision",
+        type: "Int",
+        nullable: false,
+        isId: false,
       },
-      {
-        "src": "CheckUradjeno",
-        "field": "isDone",
-        "type": "Boolean",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "KadaJeUradjeno",
-        "field": "doneAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "KoJeUradio",
-        "field": "doneBy",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "IDProgToExecute",
-        "field": "programToExecute",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "AutoExec",
-        "field": "autoExec",
-        "type": "Boolean",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "DIVPrviUnos",
-        "field": "createdAt",
-        "type": "DateTime",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "DIVPoslednjaIzmena",
-        "field": "updatedAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
-      }
-    ]
+    ],
   },
-  {
-    "source": "T_PlanerGrupeUsera",
-    "model": "PlannerUserGroup",
-    "targetDb": "planner_user_groups",
-    "pk": {
-      "kind": "single",
-      "field": "id"
-    },
-    "watermark": null,
-    "columns": [
-      {
-        "src": "ID",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
-      },
-      {
-        "src": "NazivGrupe",
-        "field": "groupName",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "UserName",
-        "field": "username",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      }
-    ]
-  },
-  {
-    "source": "T_Robna dokumenta",
-    "model": "GoodsDocument",
-    "targetDb": "goods_documents",
-    "pk": {
-      "kind": "single",
-      "field": "id"
-    },
-    "watermark": null,
-    "columns": [
-      {
-        "src": "IDDok",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
-      },
-      {
-        "src": "IDFirma",
-        "field": "companyId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Ulaz",
-        "field": "isInbound",
-        "type": "Boolean",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Broj naloga",
-        "field": "orderNumber",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Vrsta naloga",
-        "field": "orderType",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Broj dokumenta",
-        "field": "documentNumber",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Vrsta dokumenta",
-        "field": "documentType",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Sifra komitenta",
-        "field": "customerId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Datum dokumenta",
-        "field": "documentDate",
-        "type": "DateTime",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Datum knjizenja",
-        "field": "postingDate",
-        "type": "DateTime",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Datum valute",
-        "field": "dueDate",
-        "type": "DateTime",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Opis",
-        "field": "description",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Nacin otpreme",
-        "field": "shipmentMethod",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Fco",
-        "field": "fco",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Broj izjave",
-        "field": "statementNumber",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Datum izjave",
-        "field": "statementDate",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Sifra prodavca",
-        "field": "salespersonId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Nacin placanja",
-        "field": "paymentMethod",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "IDTrebZaProizvodnju",
-        "field": "productionRequestId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "IDMagacinDOK",
-        "field": "warehouseId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Memo",
-        "field": "memo",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Kurs",
-        "field": "exchangeRate",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "IDRadniNalog",
-        "field": "workOrderId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "ObrKurs",
-        "field": "accountingExchangeRate",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Carina",
-        "field": "customs",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Spedicija",
-        "field": "forwarding",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "OstaliZavTros",
-        "field": "otherDependentCosts",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "DevVredFak",
-        "field": "fxInvoiceValue",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Level",
-        "field": "level",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "IDPredmet",
-        "field": "projectId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Zakljucano",
-        "field": "isLocked",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "IDDokUF",
-        "field": "linkedInboundDocId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "IDDokIF",
-        "field": "linkedInvoiceDocId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Rezervisi",
-        "field": "reserveStock",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "CarKurs",
-        "field": "customsExchangeRate",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "IDDokUSL",
-        "field": "linkedServiceDocId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "PovCarOsn",
-        "field": "customsRefundBase",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "DevValuta",
-        "field": "currency",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "IDMestoIsporuke",
-        "field": "deliveryPlaceId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "IDRuta",
-        "field": "routeId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "IDVozac",
-        "field": "driverId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "OJ",
-        "field": "orgUnitId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Potpisano",
-        "field": "isSigned",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "OD",
-        "field": "departmentId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Potpis",
-        "field": "signature",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "DatumIVreme",
-        "field": "createdAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Godina",
-        "field": "year",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "DatIVreme",
-        "field": "registeredAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "IDKontaktOsobe",
-        "field": "contactPersonId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "PrimljenNovac",
-        "field": "cashReceived",
-        "type": "Decimal",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "UsloviPlacanja",
-        "field": "paymentTerms",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "PrimljeniCekovi",
-        "field": "checksReceived",
-        "type": "Decimal",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "PrimljenaKartica",
-        "field": "cardReceived",
-        "type": "Decimal",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "IDKasa",
-        "field": "cashRegisterId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "StampanFiskalno",
-        "field": "fiscalPrinted",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "PrimljeniVirmani",
-        "field": "bankTransferReceived",
-        "type": "Decimal",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "IDDokExtBaza",
-        "field": "externalDbDocId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "DokBarKod",
-        "field": "documentBarCode",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "DokBrojKutija",
-        "field": "documentBoxCount",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      }
-    ]
-  },
-  {
-    "source": "T_Robne stavke",
-    "model": "GoodsDocumentItem",
-    "targetDb": "goods_document_items",
-    "pk": {
-      "kind": "single",
-      "field": "id"
-    },
-    "watermark": null,
-    "columns": [
-      {
-        "src": "IDStavke",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
-      },
-      {
-        "src": "IDDok",
-        "field": "documentId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Sifra artikla",
-        "field": "itemId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Kolicina",
-        "field": "quantity",
-        "type": "Float",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "KG_Kolicina",
-        "field": "kgQuantity",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Nabavna cena - neto",
-        "field": "purchasePriceNet",
-        "type": "Float",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Zavisni trosak - sopstveni",
-        "field": "dependentCostOwn",
-        "type": "Float",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Zavisni trosak - dobavljac",
-        "field": "dependentCostSupplier",
-        "type": "Float",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Kalkulativna VP cena",
-        "field": "calculatedWholesalePrice",
-        "type": "Float",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Kalkulativna MP cena",
-        "field": "calculatedRetailPrice",
-        "type": "Float",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Stvarna VP cena",
-        "field": "actualWholesalePrice",
-        "type": "Float",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Stvarna MP cena",
-        "field": "actualRetailPrice",
-        "type": "Float",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Taksa",
-        "field": "fee",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Obracunat porez na ulazu - roba",
-        "field": "inboundTaxCalculated",
-        "type": "Boolean",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Tarifa - roba - ulaz",
-        "field": "inboundGoodsTaxRate",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Obracunat porez na usluge",
-        "field": "servicesTaxCalculated",
-        "type": "Boolean",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Tarifa - usluge - izlaz",
-        "field": "outboundServicesTaxRate",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Obracunat  porez na robu",
-        "field": "goodsTaxCalculated",
-        "type": "Boolean",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Tarifa - roba - Izlaz",
-        "field": "outboundGoodsTaxRate",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "RabatProc",
-        "field": "discountPercent",
-        "type": "Float",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "KasaProc",
-        "field": "cashDiscountPercent",
-        "type": "Float",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Odlozeno",
-        "field": "paymentTermDays",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Neoporezivi deo",
-        "field": "nonTaxablePart",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Akciza",
-        "field": "excise",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "FiksniPorez",
-        "field": "fixedTax",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "DevNabCena",
-        "field": "fxPurchasePrice",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "IDMagacin",
-        "field": "warehouseId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "KNGCena",
-        "field": "accountingPrice",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "CarStopa",
-        "field": "customsRate",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "IDPredmetStavka",
-        "field": "projectItemId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "OpisStavke",
-        "field": "itemDescription",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "ID_PO",
-        "field": "purchaseOrderId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "PakPoOsnJM",
-        "field": "packagePerBaseUnit",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "IDPrepisaneStavke",
-        "field": "copiedFromItemId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "ProknjizenoIzProfUIF",
-        "field": "postedFromProformaToInvoice",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "IDStavkeTrebovanja",
-        "field": "requisitionItemId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      }
-    ]
-  },
-  {
-    "source": "UplatniRacuni",
-    "model": "PaymentAccount",
-    "targetDb": "payment_accounts",
-    "pk": {
-      "kind": "single",
-      "field": "id"
-    },
-    "watermark": null,
-    "columns": [
-      {
-        "src": "IDFirma",
-        "field": "companyId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "ID",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
-      },
-      {
-        "src": "UplatniRacun",
-        "field": "accountNumber",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "NazivBanke",
-        "field": "bankName",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Default",
-        "field": "isDefault",
-        "type": "Boolean",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Rbr",
-        "field": "sortOrder",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "KodZemlje",
-        "field": "countryCode",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "OznakaBanke",
-        "field": "bankCode",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      }
-    ]
-  },
-  {
-    "source": "Vrste sifara",
-    "model": "CodeType",
-    "targetDb": "code_types",
-    "pk": {
-      "kind": "single",
-      "field": "code"
-    },
-    "watermark": null,
-    "columns": [
-      {
-        "src": "Vrsta sifre",
-        "field": "code",
-        "type": "String",
-        "nullable": false,
-        "isId": true
-      },
-      {
-        "src": "Opis",
-        "field": "description",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      }
-    ]
-  },
-  {
-    "source": "_Dnevnik",
-    "model": "Journal",
-    "targetDb": "journal",
-    "pk": {
-      "kind": "single",
-      "field": "id"
-    },
-    "watermark": null,
-    "columns": [
-      {
-        "src": "ID",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
-      },
-      {
-        "src": "Opis",
-        "field": "message",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "DIV",
-        "field": "createdAt",
-        "type": "DateTime",
-        "nullable": false,
-        "isId": false
-      }
-    ]
-  },
-  {
-    "source": "_RegAccess",
-    "model": "AppAccessLog",
-    "targetDb": "app_access_log",
-    "pk": {
-      "kind": "single",
-      "field": "id"
-    },
-    "watermark": null,
-    "columns": [
-      {
-        "src": "ID",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
-      },
-      {
-        "src": "HDSn",
-        "field": "hardwareId",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "WinUser",
-        "field": "windowsUser",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "ComputerName",
-        "field": "computerName",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "IPAdress",
-        "field": "ipAddress",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Program_Name",
-        "field": "programName",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "CNNString",
-        "field": "connectionString",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Login_Time",
-        "field": "loginAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
-      }
-    ]
-  },
-  {
-    "source": "_RegApps",
-    "model": "RegisteredApp",
-    "targetDb": "registered_apps",
-    "pk": {
-      "kind": "single",
-      "field": "appName"
-    },
-    "watermark": "updatedAt",
-    "columns": [
-      {
-        "src": "DBName",
-        "field": "databaseName",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "AppName",
-        "field": "appName",
-        "type": "String",
-        "nullable": false,
-        "isId": true
-      },
-      {
-        "src": "Disabled",
-        "field": "disabled",
-        "type": "Boolean",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "AplFile",
-        "field": "appFile",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "MDWFile",
-        "field": "mdwFile",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "ClientDir",
-        "field": "clientDir",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "DownloadDir",
-        "field": "downloadDir",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "PrviUnos",
-        "field": "createdAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "PoslednjaIzmena",
-        "field": "updatedAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
-      }
-    ]
-  },
-  {
-    "source": "_RegAppsFiles",
-    "model": "RegisteredAppFile",
-    "targetDb": "registered_app_files",
-    "pk": {
-      "kind": "composite",
-      "fields": [
-        "appName",
-        "fileName"
-      ],
-      "name": "appName_fileName"
-    },
-    "watermark": "updatedAt",
-    "columns": [
-      {
-        "src": "DBName",
-        "field": "databaseName",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "AppName",
-        "field": "appName",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "AppFileName",
-        "field": "fileName",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "ClientDir",
-        "field": "clientDir",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Install",
-        "field": "install",
-        "type": "Boolean",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Update",
-        "field": "update",
-        "type": "Boolean",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "PrviUnos",
-        "field": "createdAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "PoslednjaIzmena",
-        "field": "updatedAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
-      }
-    ]
-  },
-  {
-    "source": "_RegUsers",
-    "model": "RegisteredUser",
-    "targetDb": "registered_users",
-    "pk": {
-      "kind": "single",
-      "field": "id"
-    },
-    "watermark": "updatedAt",
-    "columns": [
-      {
-        "src": "DBName",
-        "field": "databaseName",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "RegUserID",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
-      },
-      {
-        "src": "Disabled",
-        "field": "disabled",
-        "type": "Boolean",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "HDSn",
-        "field": "hardwareId",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "WinUser",
-        "field": "windowsUser",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "ComputerName",
-        "field": "computerName",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "IPAdress",
-        "field": "ipAddress",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Name",
-        "field": "fullName",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "email",
-        "field": "email",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Telefon",
-        "field": "phone",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Opis",
-        "field": "description",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "VaziOdDatuma",
-        "field": "validFrom",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "VaziDoDatuma",
-        "field": "validTo",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "PrviUnos",
-        "field": "createdAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "PoslednjaIzmena",
-        "field": "updatedAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
-      }
-    ]
-  },
-  {
-    "source": "_RegUsersApps",
-    "model": "RegisteredUserApp",
-    "targetDb": "registered_user_apps",
-    "pk": {
-      "kind": "composite",
-      "fields": [
-        "userId",
-        "appName"
-      ],
-      "name": "userId_appName"
-    },
-    "watermark": "updatedAt",
-    "columns": [
-      {
-        "src": "DBName",
-        "field": "databaseName",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "RegUserID",
-        "field": "userId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "AppName",
-        "field": "appName",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Disabled",
-        "field": "disabled",
-        "type": "Boolean",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "BBUserName",
-        "field": "bbUserName",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "BBPassword",
-        "field": "bbPassword",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "BBMacroName",
-        "field": "bbMacroName",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "EXCL",
-        "field": "excl",
-        "type": "Boolean",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "RUNTIME",
-        "field": "runtime",
-        "type": "Boolean",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "BBExtraStartUp",
-        "field": "bbExtraStartUp",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "BBCMD",
-        "field": "bbCmd",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "PrviUnos",
-        "field": "createdAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "PoslednjaIzmena",
-        "field": "updatedAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
-      }
-    ]
-  },
-  {
-    "source": "_Rev",
-    "model": "AppRevision",
-    "targetDb": "app_revisions",
-    "pk": {
-      "kind": "single",
-      "field": "id"
-    },
-    "watermark": null,
-    "columns": [
-      {
-        "src": "ID",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
-      },
-      {
-        "src": "APP",
-        "field": "app",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Ver",
-        "field": "version",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "VerDatum",
-        "field": "versionDate",
-        "type": "DateTime",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Tema",
-        "field": "topic",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Opis",
-        "field": "description",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Uradjeno",
-        "field": "isDone",
-        "type": "Boolean",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Firma",
-        "field": "company",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "DIVUnos",
-        "field": "createdAt",
-        "type": "DateTime",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "SubRev",
-        "field": "subRevision",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      }
-    ]
-  },
-  {
-    "source": "tLansiranRN",
-    "model": "WorkOrderLaunch",
-    "targetDb": "work_order_launches",
-    "pk": {
-      "kind": "single",
-      "field": "id"
-    },
-    "watermark": null,
-    "columns": [
-      {
-        "src": "IDLansiran",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
-      },
-      {
-        "src": "IDRN",
-        "field": "workOrderId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Lansiran",
-        "field": "isLaunched",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "DatumUnosa",
-        "field": "enteredAt",
-        "type": "DateTime",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "DIVUnos",
-        "field": "createdAt",
-        "type": "DateTime",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "SifraRadnikaUnos",
-        "field": "createdByWorkerId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "PotpisUnos",
-        "field": "createdBySignature",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "DIVIspravke",
-        "field": "updatedAt",
-        "type": "DateTime",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "SifraRadnikaIspravka",
-        "field": "updatedByWorkerId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "PotpisIspravka",
-        "field": "updatedBySignature",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      }
-    ]
-  },
-  {
-    "source": "tLokacijeDelova",
-    "model": "PartLocation",
-    "targetDb": "part_locations",
-    "pk": {
-      "kind": "single",
-      "field": "id"
-    },
-    "watermark": null,
-    "columns": [
-      {
-        "src": "IDLokacije",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
-      },
-      {
-        "src": "IDRN",
-        "field": "workOrderId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "IDPredmet",
-        "field": "projectId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "IDVrstaKvaliteta",
-        "field": "qualityTypeId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "IDPozicija",
-        "field": "positionId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "SifraRadnika",
-        "field": "workerId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Datum",
-        "field": "recordDate",
-        "type": "DateTime",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Kolicina",
-        "field": "quantity",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "DatumIVremeUnosa",
-        "field": "createdAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
-      }
-    ]
-  },
-  {
-    "source": "tOperacije",
-    "model": "Operation",
-    "targetDb": "operations",
-    "pk": {
-      "kind": "single",
-      "field": "id"
-    },
-    "watermark": null,
-    "columns": [
-      {
-        "src": "IDOperacije",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
-      },
-      {
-        "src": "RJgrupaRC",
-        "field": "workCenterCode",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "NazivGrupeRC",
-        "field": "workCenterName",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Napomena",
-        "field": "note",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "IDRadneJedinice",
-        "field": "workUnitCode",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "BezPostupka",
-        "field": "withoutProcess",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "ZnacajneOperacijeZaZavrsen",
-        "field": "significantForFinishing",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "KoristiPrioritet",
-        "field": "usesPriority",
-        "type": "Boolean",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "PreskocivaOperacija",
-        "field": "isSkippable",
-        "type": "Boolean",
-        "nullable": false,
-        "isId": false
-      }
-    ]
-  },
-  {
-    "source": "tPozicije",
-    "model": "Position",
-    "targetDb": "positions",
-    "pk": {
-      "kind": "single",
-      "field": "id"
-    },
-    "watermark": null,
-    "columns": [
-      {
-        "src": "IDPozicije",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
-      },
-      {
-        "src": "Pozicija",
-        "field": "positionCode",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Opis",
-        "field": "description",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      }
-    ]
-  },
-  {
-    "source": "tPristupMasini",
-    "model": "MachineAccess",
-    "targetDb": "machine_access",
-    "pk": {
-      "kind": "single",
-      "field": "id"
-    },
-    "watermark": null,
-    "columns": [
-      {
-        "src": "IDPristupMasini",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
-      },
-      {
-        "src": "SifraRadnika",
-        "field": "workerId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "RJgrupaRC",
-        "field": "workCenterCode",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Napomena",
-        "field": "note",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      }
-    ]
-  },
-  {
-    "source": "tRN",
-    "model": "WorkOrder",
-    "targetDb": "work_orders",
-    "pk": {
-      "kind": "single",
-      "field": "id"
-    },
-    "watermark": null,
-    "columns": [
-      {
-        "src": "IDRN",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
-      },
-      {
-        "src": "IDPredmet",
-        "field": "projectId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "IdentBroj",
-        "field": "identNumber",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Varijanta",
-        "field": "variant",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "BBIDKomitent",
-        "field": "externalCustomerId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "BBNazivPredmeta",
-        "field": "externalProjectName",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "BBDatumOtvaranja",
-        "field": "externalOpenedAt",
-        "type": "DateTime",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "DatumUnosa",
-        "field": "enteredAt",
-        "type": "DateTime",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Komada",
-        "field": "pieceCount",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "BrojCrteza",
-        "field": "drawingNumber",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Proizvod",
-        "field": "product",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "TezinaNeobrDela",
-        "field": "unprocessedPartWeight",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "NazivDela",
-        "field": "partName",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "IdentMaterijala",
-        "field": "materialId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Materijal",
-        "field": "material",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "DimenzijaMaterijala",
-        "field": "materialDimension",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "JM",
-        "field": "unit",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "TezinaObrDela",
-        "field": "processedPartWeight",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Napomena",
-        "field": "note",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "StatusRN",
-        "field": "status",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "RokIzrade",
-        "field": "productionDeadline",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "DIVUnosaRN",
-        "field": "createdAt",
-        "type": "DateTime",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "DIVIspravkeRN",
-        "field": "updatedAt",
-        "type": "DateTime",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "SifraRadnika",
-        "field": "workerId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Zakljucano",
-        "field": "isLocked",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Potpis",
-        "field": "signature",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "PrnTimer",
-        "field": "printTimer",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "VezaSaBrojemCrteza",
-        "field": "parentDrawingRef",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "IDVrstaKvaliteta",
-        "field": "qualityTypeId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Revizija",
-        "field": "revision",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "IDPrimopredaje",
-        "field": "drawingHandoverId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "IDCrtez",
-        "field": "drawingId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "IDStatusPrimopredaje",
-        "field": "handoverStatusId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "SifraRadnikaPrimopredaje",
-        "field": "handoverWorkerId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      }
-    ]
-  },
-  {
-    "source": "tRNKomponente",
-    "model": "WorkOrderComponent",
-    "targetDb": "work_order_components",
-    "pk": {
-      "kind": "single",
-      "field": "id"
-    },
-    "watermark": null,
-    "columns": [
-      {
-        "src": "IDKomponente",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
-      },
-      {
-        "src": "IDRN",
-        "field": "workOrderId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "IDRNPodkomponenta",
-        "field": "componentWorkOrderId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "BrojKomada",
-        "field": "quantity",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Napomena",
-        "field": "note",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      }
-    ]
-  },
-  {
-    "source": "tRNNDKomponente",
-    "model": "WorkOrderItemComponent",
-    "targetDb": "work_order_item_components",
-    "pk": {
-      "kind": "single",
-      "field": "id"
-    },
-    "watermark": null,
-    "columns": [
-      {
-        "src": "IDNDKomponente",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
-      },
-      {
-        "src": "IDRN",
-        "field": "workOrderId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "SifraArtikla",
-        "field": "itemId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "BrojKomada",
-        "field": "quantity",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Napomena",
-        "field": "note",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      }
-    ]
-  },
-  {
-    "source": "tR_Grupa",
-    "model": "ProductionItemGroup",
-    "targetDb": "production_item_groups",
-    "pk": {
-      "kind": "single",
-      "field": "id"
-    },
-    "watermark": null,
-    "columns": [
-      {
-        "src": "ID",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
-      },
-      {
-        "src": "Grupa",
-        "field": "code",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Opis",
-        "field": "description",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      }
-    ]
-  },
-  {
-    "source": "tRadneJedinice",
-    "model": "WorkUnit",
-    "targetDb": "work_units",
-    "pk": {
-      "kind": "single",
-      "field": "id"
-    },
-    "watermark": null,
-    "columns": [
-      {
-        "src": "ID",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
-      },
-      {
-        "src": "IDRadneJedinice",
-        "field": "code",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "RadnaJedinica",
-        "field": "name",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      }
-    ]
-  },
-  {
-    "source": "tRadnici",
-    "model": "Worker",
-    "targetDb": "workers",
-    "pk": {
-      "kind": "single",
-      "field": "id"
-    },
-    "watermark": null,
-    "columns": [
-      {
-        "src": "SifraRadnika",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
-      },
-      {
-        "src": "Radnik",
-        "field": "username",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "ProcenatZaObracun",
-        "field": "commissionPercent",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "ImeIPrezime",
-        "field": "fullName",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "BrLkRadnika",
-        "field": "idNumber",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Password",
-        "field": "password",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Aktivan",
-        "field": "active",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "IDRadneJedinice",
-        "field": "workUnitCode",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "IDKartice",
-        "field": "cardId",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "LogAcc",
-        "field": "loginAccount",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "IDVrsteRadnika",
-        "field": "workerTypeId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "PotpisSlika",
-        "field": "signatureImage",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "DefiniseSaglasan",
-        "field": "definesApproval",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "DefiniseLansiran",
-        "field": "definesLaunch",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "MultiNalog",
-        "field": "multiAccount",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "PasswordRadnika",
-        "field": "workerPassword",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      }
-    ]
-  },
-  {
-    "source": "tStavkeRN",
-    "model": "WorkOrderOperation",
-    "targetDb": "work_order_operations",
-    "pk": {
-      "kind": "single",
-      "field": "id"
-    },
-    "watermark": null,
-    "columns": [
-      {
-        "src": "IDStavkeRN",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
-      },
-      {
-        "src": "IDRN",
-        "field": "workOrderId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Operacija",
-        "field": "operationNumber",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "RJgrupaRC",
-        "field": "workCenterCode",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "OpisRada",
-        "field": "workDescription",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "AlatPribor",
-        "field": "toolsFixtures",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Tpz",
-        "field": "setupTime",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Tk",
-        "field": "cycleTime",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "TezinaTO",
-        "field": "toolWeight",
-        "type": "Float",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "SifraRadnika",
-        "field": "workerId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "DIVUnosa",
-        "field": "createdAt",
-        "type": "DateTime",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "DIVIspravke",
-        "field": "updatedAt",
-        "type": "DateTime",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Prioritet",
-        "field": "priority",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      }
-    ]
-  },
-  {
-    "source": "tStavkeRNSlike",
-    "model": "WorkOrderOperationImage",
-    "targetDb": "work_order_operation_images",
-    "pk": {
-      "kind": "single",
-      "field": "id"
-    },
-    "watermark": null,
-    "columns": [
-      {
-        "src": "ID",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
-      },
-      {
-        "src": "IDStavkeRN",
-        "field": "workOrderOperationId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "LinkSlika",
-        "field": "imageLink",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "ImeFajla",
-        "field": "fileName",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      }
-    ]
-  },
-  {
-    "source": "tTehPostupak",
-    "model": "TechProcess",
-    "targetDb": "tech_processes",
-    "pk": {
-      "kind": "single",
-      "field": "id"
-    },
-    "watermark": null,
-    "columns": [
-      {
-        "src": "IDPostupka",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
-      },
-      {
-        "src": "SifraRadnika",
-        "field": "workerId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "IDPredmet",
-        "field": "projectId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "IdentBroj",
-        "field": "identNumber",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Varijanta",
-        "field": "variant",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "PrnTimer",
-        "field": "printTimer",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "DatumIVremeUnosa",
-        "field": "enteredAt",
-        "type": "DateTime",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Operacija",
-        "field": "operationNumber",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "RJgrupaRC",
-        "field": "workCenterCode",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Toznaka",
-        "field": "identMark",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Komada",
-        "field": "pieceCount",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "Potpis",
-        "field": "signature",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "SimbolRadnik",
-        "field": "workerSymbol",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "SimbolPostupak",
-        "field": "processSymbol",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "SimbolOperacija",
-        "field": "operationSymbol",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "DatumIVremeZavrsetka",
-        "field": "finishedAt",
-        "type": "DateTime",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "ZavrsenPostupak",
-        "field": "isProcessFinished",
-        "type": "Boolean",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "Napomena",
-        "field": "note",
-        "type": "String",
-        "nullable": true,
-        "isId": false
-      },
-      {
-        "src": "IDRN",
-        "field": "workOrderId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "IDVrstaKvaliteta",
-        "field": "qualityTypeId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "DoradaOperacije",
-        "field": "reworkOperationId",
-        "type": "Int",
-        "nullable": true,
-        "isId": false
-      }
-    ]
-  },
-  {
-    "source": "tTehPostupakDokumentacija",
-    "model": "TechProcessDocument",
-    "targetDb": "tech_process_documents",
-    "pk": {
-      "kind": "single",
-      "field": "id"
-    },
-    "watermark": null,
-    "columns": [
-      {
-        "src": "ID",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
-      },
-      {
-        "src": "IDPostupka",
-        "field": "techProcessId",
-        "type": "Int",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "LinkFajla",
-        "field": "fileLink",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "ImeFajla",
-        "field": "fileName",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      }
-    ]
-  },
-  {
-    "source": "tVrsteKvalitetaDelova",
-    "model": "PartQualityType",
-    "targetDb": "part_quality_types",
-    "pk": {
-      "kind": "single",
-      "field": "id"
-    },
-    "watermark": null,
-    "columns": [
-      {
-        "src": "IDVrstaKvaliteta",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
-      },
-      {
-        "src": "VrstaKvaliteta",
-        "field": "name",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      }
-    ]
-  },
-  {
-    "source": "tVrsteRadnika",
-    "model": "WorkerType",
-    "targetDb": "worker_types",
-    "pk": {
-      "kind": "single",
-      "field": "id"
-    },
-    "watermark": null,
-    "columns": [
-      {
-        "src": "IDVrsteRadnika",
-        "field": "id",
-        "type": "Int",
-        "nullable": false,
-        "isId": true
-      },
-      {
-        "src": "VrstaRadnika",
-        "field": "name",
-        "type": "String",
-        "nullable": false,
-        "isId": false
-      },
-      {
-        "src": "DodatnaOvlascenja",
-        "field": "additionalPrivileges",
-        "type": "Boolean",
-        "nullable": false,
-        "isId": false
-      }
-    ]
-  }
 ];

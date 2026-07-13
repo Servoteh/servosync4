@@ -1,12 +1,15 @@
 /**
  * ServoSync-owned production/technology tables (ODLUKE.md 2026-07-08 + BACKEND_RULES §3).
  *
- * Decision: the QBigTehn MSSQL sync is a TEMPORARY trial + one-time final import,
- * then it is retired. From first real use the technologist writes to these tables
- * directly, so a re-run of the sync must NOT wipe hand-entered data.
+ * Decision: the QBigTehn MSSQL sync was a TEMPORARY trial + one-time final import,
+ * then retired. CUTOVER IZVRŠEN 2026-07-14 (runbook §17) — od prvog realnog
+ * korišćenja tehnolog piše u ove tabele direktno, pa ponovni sync NE SME da
+ * pregazi ručno unete podatke.
  *
  * The generic syncer therefore refuses to full-refresh (deleteMany + reinsert) any
  * of these once they already contain rows, unless the run is explicitly forced.
+ * (Chain synceri koji su ih punili su obrisani na cutover-u; ova zaštita ostaje
+ * za slučaj da generički syncer ikad dobije mapiranje na owned tabelu.)
  * Everything else (BigBit master data, PDM drawings, legacy reference/config) is
  * read-only cache and safe to refresh.
  */
@@ -18,9 +21,9 @@ export const OWNED_PRODUCTION_TABLES = new Set<string>([
   "work_order_item_components",
   "work_order_launches",
   "work_order_operation_images",
-  // stavke RN bez generisanog mapiranja (P4 §5.3 privremeni synceri) — 2.0 ih
-  // već piše nativno (approve -> work_order_approvals, clone-variant -> parts),
-  // pa full refresh bez force NE SME da ih obriše.
+  // stavke RN bez generisanog mapiranja (nekad P4 §5.3 privremeni synceri,
+  // obrisani na cutover-u 2026-07-14) — 2.0 ih piše nativno (approve ->
+  // work_order_approvals, clone-variant -> parts), ostaju owned/zaštićene.
   "work_order_machined_parts",
   "work_order_blanks",
   "work_order_nonstandard_parts",
@@ -58,13 +61,18 @@ export function isOwnedProductionTable(entity: string): boolean {
  * QBigTehn chain — the TEMPORARY part of the sync (P4 spec §7.2, ODLUKE
  * "QBigTehn sync privremen / BigBit trajan").
  *
- * Everything in this set is synced from QBigTehn only until the cutover
- * (docs/migration/17-cutover-runbook.md). On cutover day (runbook step 6) the
- * whole chain is REMOVED FROM REGISTRATION — its entries are dropped from
- * `sync-map.generated.ts` (regenerate) and the temporary §5.3 syncers plus the
- * handover derivation syncer are deleted from `SyncService`/`SyncModule`.
- * Deliberately NOT a runtime "skip" flag: dead code gets deleted, it does not
- * linger behind a switch.
+ * CUTOVER IZVRŠEN 2026-07-14 (docs/migration/17-cutover-runbook.md korak 6):
+ * finalni force uvoz je odrađen, pa je ceo lanac UKLONJEN IZ REGISTRACIJE — svi
+ * entiteti ispod izbačeni su iz `sync-map.generated.ts`, a §5.3 privremeni
+ * synceri + handover-derivation syncer OBRISANI iz `SyncService`/`SyncModule`
+ * (mrtav kod se briše, ne stoji iza prekidača). Od tada ove tabele piše
+ * isključivo 2.0.
+ *
+ * Ovaj set se ZADRŽAVA kao dokumentacija/zaštita: `isOwnedProductionTable` +
+ * generički syncer i dalje koriste `OWNED_PRODUCTION_TABLES` da odbiju
+ * destruktivan re-import owned tabela; `QBIGTEHN_CHAIN_ENTITIES` je izvor
+ * istine šta je nekad bilo u lancu (npr. `sync.service.spec.ts` proverava da
+ * NIJEDAN chain entitet više nije registrovan).
  *
  * Everything mapped in `sync-map.generated.ts` that is NOT in this set is the
  * PERMANENT BigBit master-data sync (customers, projects, items, warehouses,
@@ -72,11 +80,12 @@ export function isOwnedProductionTable(entity: string): boolean {
  * those after the cutover.
  *
  * Derivation of the list (spec §7.2): cross-checked against
- * `sync-map.generated.ts` (29 mapped targets) + the six §5.3 chain-item tables
- * that have no generated mapping (tPDM, tPLP, tPND, tSaglasanRN,
- * PDM_PlaniranjeStavke, PrimopredajaPDFCrteza). The one-time seeded production
- * lookups (workers, worker_types, operations, …) are part of the chain: after
- * cutover they are ServoSync-owned and no longer refreshed from QBigTehn.
+ * `sync-map.generated.ts` (29 mapped targets, izbačeni na cutover-u) + the six
+ * §5.3 chain-item tables that had no generated mapping (tPDM, tPLP, tPND,
+ * tSaglasanRN, PDM_PlaniranjeStavke, PrimopredajaPDFCrteza). The one-time
+ * seeded production lookups (workers, worker_types, operations, …) are part of
+ * the chain: after cutover they are ServoSync-owned and no longer refreshed
+ * from QBigTehn.
  */
 export const QBIGTEHN_CHAIN_ENTITIES = new Set<string>([
   // PDM crteži / BOM / intake log / PDF-ovi / planiranje
@@ -90,7 +99,7 @@ export const QBIGTEHN_CHAIN_ENTITIES = new Set<string>([
   // nacrti i primopredaje
   "handover_drafts",
   "handover_draft_items",
-  "drawing_handovers", // derivacija iz tRN (handover-derivation.syncer.ts)
+  "drawing_handovers", // nekad derivacija iz tRN (handover-derivation.syncer.ts, obrisan na cutover-u)
   "drawing_handover_pdfs", // §5.3 (PrimopredajaPDFCrteza)
   // radni nalozi + stavke
   "work_orders",
