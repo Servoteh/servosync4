@@ -47,6 +47,9 @@ function prismaMock() {
       findUnique: jest.fn(),
       findMany: jest.fn().mockResolvedValue([]),
     },
+    // `resolveActorWorkerId` svež lookup (JWT bez workerId): default = nema veze
+    // (workerId null) → actor sa workerId=null i dalje pada na 422 gde treba.
+    user: { findUnique: jest.fn().mockResolvedValue({ workerId: null }) },
     // Kriterijum tehnologa (§6.3 helper): default = vrsta 'Tehnolog' postoji (id 1).
     workerType: { findMany: jest.fn().mockResolvedValue([{ id: 1 }]) },
     drawing: {
@@ -433,12 +436,32 @@ describe("HandoversService", () => {
       });
     }
 
-    it("422 kad nalog nije vezan za radnika (workerId null) — bez ikakvog upita", async () => {
+    it("422 kad nalog nije vezan ni u tokenu ni u bazi (svež lookup takođe null)", async () => {
+      // JWT bez workerId → resolveActorWorkerId proba svež users.worker_id; kad
+      // je i tamo null, i dalje 422 (ali JESTE pokušan svež lookup, ne slepo iz tokena).
+      prisma.user.findUnique.mockResolvedValue({ workerId: null });
       await expect(service.takeOver(5, actorNoWorker)).rejects.toBeInstanceOf(
         UnprocessableEntityException,
       );
+      expect(prisma.user.findUnique).toHaveBeenCalledWith({
+        where: { id: actorNoWorker.userId },
+        select: { workerId: true },
+      });
       expect(prisma.worker.findUnique).not.toHaveBeenCalled();
       expect(prisma.drawingHandover.updateMany).not.toHaveBeenCalled();
+    });
+
+    it("STALE token (workerId null), ali users.worker_id vezan naknadno → preuzima (svež lookup)", async () => {
+      // Igor-scenario na take-over: token nema worker, baza ga ima → NE 422.
+      prisma.user.findUnique.mockResolvedValue({ workerId: 77 });
+      mockTechnologistActor(); // worker 77 = aktivan Tehnolog
+      mockApprovedHandover();
+      await service.takeOver(5, actorNoWorker);
+      // worker check je tekao nad SVEŽE razrešenim id-em 77, ne nad tokenom
+      expect(prisma.worker.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 77 } }),
+      );
+      expect(prisma.drawingHandover.updateMany).toHaveBeenCalled();
     });
 
     it("422 kad akter nije radnik vrste 'Tehnolog'", async () => {

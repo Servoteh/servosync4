@@ -16,6 +16,7 @@ import {
 import { byId, uniqueIds } from "../../common/relations";
 import { alignIdSequence } from "../../common/db-sequences";
 import { parseDateParam } from "../../common/date-params";
+import { resolveActorWorkerId } from "../../common/workers/resolve-actor-worker";
 import {
   CreateHandoverDraftDto,
   CreateHandoverDraftItemInput,
@@ -296,16 +297,9 @@ export class HandoverDraftsService {
     // Zamka (proba 13.07, Igor): JWT nosi workerId iz trenutka izdavanja tokena.
     // Ako se users.worker_id VEŽE naknadno (SSO-JIT nalog dobio radnika posle
     // prvog logina), stari token i dalje ima workerId=null → create pada 422 dok
-    // se korisnik ne re-loguje. Zato: kad token nema workerId, čitaj SVEŽ
-    // users.worker_id iz baze po userId-u umesto da se oslanjamo na token.
-    let actorWorkerId = actor?.workerId ?? null;
-    if (!actorWorkerId && actor?.userId) {
-      const freshUser = await this.prisma.user.findUnique({
-        where: { id: actor.userId },
-        select: { workerId: true },
-      });
-      actorWorkerId = freshUser?.workerId ?? null;
-    }
+    // se korisnik ne re-loguje. `resolveActorWorkerId` čita SVEŽ users.worker_id
+    // kad token nema workerId (deljeno sa take-over i RN autorstvom).
+    const actorWorkerId = await resolveActorWorkerId(this.prisma, actor);
     const designerId = dto.designerId ?? actorWorkerId ?? 0;
     if (!designerId || designerId <= 0)
       throw new UnprocessableEntityException(

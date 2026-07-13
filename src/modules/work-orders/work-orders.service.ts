@@ -11,6 +11,7 @@ import { pageMeta, parsePagination } from "../../common/pagination";
 import { byId, uniqueIds } from "../../common/relations";
 import { alignIdSequence } from "../../common/db-sequences";
 import { parseDateParam } from "../../common/date-params";
+import { resolveActorWorkerId } from "../../common/workers/resolve-actor-worker";
 import type { AuthUser } from "../auth/jwt.strategy";
 import {
   CreateWorkOrderDto,
@@ -502,6 +503,10 @@ export class WorkOrdersService {
   async create(dto: CreateWorkOrderDto, actor?: AuthUser) {
     validateCreateWorkOrder(dto);
 
+    // Svež users.worker_id kad JWT nema workerId (naknadno vezan radnik) — inače
+    // se autor TP-a tiho upisuje kao radnik 0. Vidi resolve-actor-worker.ts.
+    const actorWorkerId = await resolveActorWorkerId(this.prisma, actor);
+
     const created = await this.prisma.$transaction(async (tx) => {
       // Sync postavlja eksplicitne legacy id-jeve; poravnaj sekvencu pre insert-a
       // da autoincrement ne kolidira sa uvezenim redovima.
@@ -528,8 +533,8 @@ export class WorkOrdersService {
           qualityTypeId: dto.qualityTypeId ?? 0,
           materialId: dto.materialId ?? 0,
           // workerId = TEHNOLOG autor TP-a; kod ručnog unosa to je po pravilu
-          // sam prijavljeni tehnolog (JWT worker) ako DTO ne kaže drugačije.
-          workerId: dto.workerId ?? actor?.workerId ?? 0,
+          // sam prijavljeni tehnolog (svež worker) ako DTO ne kaže drugačije.
+          workerId: dto.workerId ?? actorWorkerId ?? 0,
           externalProjectName: dto.externalProjectName?.trim() || null,
           productionDeadline: dto.productionDeadline
             ? new Date(dto.productionDeadline)
@@ -599,9 +604,9 @@ export class WorkOrdersService {
    * Dodaj operaciju na RN (`Form_UnosStavkiRN` „Nova stavka"). `workCenterCode` mora
    * postojati u šifarniku `operations`. `operationNumber` izostavljen → `MAX+10`.
    * `priority` izostavljen → iz `operations.usesPriority` (100/255).
-   * `workerId` = autor stavke: DTO ako je poslat, inače radnik iz JWT-a (isti
-   * obrazac kao `create()` zaglavlja) — UI ga ne šalje, pa bi bez fallback-a
-   * sve nove operacije imale workerId=0.
+   * `workerId` = autor stavke: DTO ako je poslat, inače SVEŽ radnik naloga
+   * (isti obrazac kao `create()` zaglavlja) — UI ga ne šalje, pa bi bez
+   * fallback-a sve nove operacije imale workerId=0.
    */
   async addOperation(
     workOrderId: number,
@@ -609,6 +614,7 @@ export class WorkOrdersService {
     actor?: AuthUser,
   ) {
     validateCreateOperation(dto);
+    const actorWorkerId = await resolveActorWorkerId(this.prisma, actor);
     const wo = await this.prisma.workOrder.findUnique({
       where: { id: workOrderId },
       select: { id: true, isLocked: true },
@@ -649,7 +655,7 @@ export class WorkOrdersService {
           cycleTime: dto.cycleTime ?? 0,
           toolWeight: dto.toolWeight ?? 0,
           priority,
-          workerId: dto.workerId ?? actor?.workerId ?? 0,
+          workerId: dto.workerId ?? actorWorkerId ?? 0,
         },
       });
     });
@@ -874,7 +880,9 @@ export class WorkOrdersService {
         );
     }
 
-    const actorWorkerId = actor?.workerId ?? 0;
+    // Svež users.worker_id kad JWT nema workerId (naknadno vezan radnik) — inače
+    // se createdBy/updatedBy audit tiho beleži kao radnik 0.
+    const actorWorkerId = (await resolveActorWorkerId(this.prisma, actor)) ?? 0;
     await this.prisma.$transaction(async (tx) => {
       await tx.workOrder.update({
         where: { id },
@@ -928,7 +936,9 @@ export class WorkOrdersService {
         "RN mora biti SAGLASAN pre lansiranja.",
       );
 
-    const actorWorkerId = actor?.workerId ?? null;
+    // Svež users.worker_id kad JWT nema workerId (naknadno vezan radnik) — inače
+    // se launch audit (statusChangedById/launchedById) tiho beleži kao radnik 0.
+    const actorWorkerId = await resolveActorWorkerId(this.prisma, actor);
     await this.prisma.$transaction(async (tx) => {
       if (wo.drawingHandoverId > 0) {
         // Isti advisory lock kao handovers prepare/launch

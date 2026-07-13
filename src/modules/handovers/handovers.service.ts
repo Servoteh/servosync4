@@ -16,6 +16,7 @@ import {
 import { byId, uniqueIds } from "../../common/relations";
 import { alignIdSequence } from "../../common/db-sequences";
 import { parseDateParam } from "../../common/date-params";
+import { resolveActorWorkerId } from "../../common/workers/resolve-actor-worker";
 import {
   engineerWorkerWhere,
   isActiveTechnologist,
@@ -368,6 +369,8 @@ export class HandoversService {
    * Preduslov: status U OBRADI.
    */
   async approve(id: number, dto: ApproveHandoverDto, actor?: AuthUser) {
+    // Svež users.worker_id kad JWT nema workerId (naknadno vezan radnik).
+    const actorWorkerId = await resolveActorWorkerId(this.prisma, actor);
     const technologistId = dto?.technologistId;
     if (
       typeof technologistId !== "number" ||
@@ -405,11 +408,11 @@ export class HandoversService {
       from: HANDOVER_STATUS.PENDING,
       to: HANDOVER_STATUS.APPROVED,
       comment,
-      actorWorkerId: actor?.workerId ?? null,
+      actorWorkerId,
       extra: {
         technologistId,
         technologistAssignedAt: new Date(),
-        technologistAssignedById: actor?.workerId ?? null,
+        technologistAssignedById: actorWorkerId,
         // `?? null` (ne undefined): approve bez roka mora da OBRIŠE eventualni
         // stari rok — approve je autoritativan za rok (return-to-pending ga
         // ionako prazni, ali budi eksplicitan).
@@ -434,6 +437,8 @@ export class HandoversService {
    * grupni UPDATE). Lansiranje NIJE grupno (legacy je per-RN).
    */
   async approveBatch(dto: ApproveHandoverBatchDto, actor?: AuthUser) {
+    // Svež users.worker_id kad JWT nema workerId (naknadno vezan radnik).
+    const actorWorkerId = await resolveActorWorkerId(this.prisma, actor);
     const ids = validateHandoverIds(dto?.handoverIds);
     const technologistId = dto?.technologistId;
     if (
@@ -468,11 +473,11 @@ export class HandoversService {
       from: HANDOVER_STATUS.PENDING,
       to: HANDOVER_STATUS.APPROVED,
       comment,
-      actorWorkerId: actor?.workerId ?? null,
+      actorWorkerId,
       extra: {
         technologistId,
         technologistAssignedAt: new Date(),
-        technologistAssignedById: actor?.workerId ?? null,
+        technologistAssignedById: actorWorkerId,
         productionDeadline: dueDate ?? null,
         isUrgent: dto?.isUrgent === true,
       },
@@ -481,6 +486,8 @@ export class HandoversService {
 
   /** GRUPNO odbijanje (legacy paritet: status 2 grupno). `reason` OBAVEZAN. */
   async rejectBatch(dto: RejectHandoverBatchDto, actor?: AuthUser) {
+    // Svež users.worker_id kad JWT nema workerId (naknadno vezan radnik).
+    const actorWorkerId = await resolveActorWorkerId(this.prisma, actor);
     const ids = validateHandoverIds(dto?.handoverIds);
     const reason = dto?.reason?.trim();
     if (!reason)
@@ -494,7 +501,7 @@ export class HandoversService {
       from: HANDOVER_STATUS.PENDING,
       to: HANDOVER_STATUS.REJECTED,
       comment: reason,
-      actorWorkerId: actor?.workerId ?? null,
+      actorWorkerId,
     });
   }
 
@@ -578,6 +585,8 @@ export class HandoversService {
 
   /** Odbij primopredaju. `reason` je OBAVEZAN (razlika od approve), §6.4. */
   async reject(id: number, reason: string, actor?: AuthUser) {
+    // Svež users.worker_id kad JWT nema workerId (naknadno vezan radnik).
+    const actorWorkerId = await resolveActorWorkerId(this.prisma, actor);
     if (!reason || !reason.trim())
       throw new UnprocessableEntityException("Razlog odbijanja je obavezan.");
     if (reason.trim().length > 250)
@@ -589,7 +598,7 @@ export class HandoversService {
       from: HANDOVER_STATUS.PENDING,
       to: HANDOVER_STATUS.REJECTED,
       comment: reason.trim(),
-      actorWorkerId: actor?.workerId ?? null,
+      actorWorkerId,
       wrongStateMessage:
         "Primopredaja mora biti U OBRADI (na čekanju) da bi bila odbijena.",
     });
@@ -604,6 +613,8 @@ export class HandoversService {
    * `status_change_comment` polje.
    */
   async returnToPending(id: number, dto?: ReturnHandoverDto, actor?: AuthUser) {
+    // Svež users.worker_id kad JWT nema workerId (naknadno vezan radnik).
+    const actorWorkerId = await resolveActorWorkerId(this.prisma, actor);
     const reason = dto?.reason?.trim() || undefined;
     if (reason && reason.length > 250)
       throw new UnprocessableEntityException(
@@ -651,7 +662,7 @@ export class HandoversService {
           productionDeadline: null,
           isUrgent: false, // sledeći approve ponovo odlučuje o hitnosti
           statusChangedAt: new Date(),
-          statusChangedById: actor?.workerId ?? null,
+          statusChangedById: actorWorkerId,
           // `?? null` (ne undefined): undo bez razloga mora da OBRIŠE komentar
           // prethodnog prelaza (approve poruku) — undefined bi ga tiho zadržao.
           statusChangeComment: reason ?? null,
@@ -680,7 +691,10 @@ export class HandoversService {
    * prihvatljivo), ali launch/lock u međuvremenu obara na 409.
    */
   async takeOver(id: number, actor?: AuthUser) {
-    const actorWorkerId = actor?.workerId ?? null;
+    // Svež users.worker_id kad JWT nema workerId (naknadno vezan radnik) — inače
+    // bi tehnolog čiji je radnik vezan posle logina bio blokiran 422 dok se ne
+    // re-loguje (ista zamka kao nacrti create, proba 13.07 Igor).
+    const actorWorkerId = await resolveActorWorkerId(this.prisma, actor);
     if (!actorWorkerId || actorWorkerId <= 0)
       throw new UnprocessableEntityException(
         'Nalog nije vezan za radnika (users.worker_id) — preuzimanje izrade zahteva aktivnog radnika vrste "Tehnolog".',
@@ -892,6 +906,9 @@ export class HandoversService {
    * OSTAJE u statusu SAGLASAN — kasniji launch podiže oba na LANSIRAN.
    */
   async prepareWorkOrder(id: number, actor?: AuthUser) {
+    // Svež users.worker_id kad JWT nema workerId (naknadno vezan radnik) — inače
+    // se autor RN-a (kad tehnolog nije dodeljen) tiho beleži kao radnik 0.
+    const actorWorkerId = await resolveActorWorkerId(this.prisma, actor);
     const handover = await this.getHandoverForWorkOrder(id);
     // Pre idempotentnog izlaza: i "samo vrati postojeći RN" tok je deo mutirajuće
     // radnje koja se do cutover-a radi u QBigTehn-u za derivirane redove.
@@ -949,7 +966,7 @@ export class HandoversService {
         handover,
         ctx,
         handoverStatusId: HANDOVER_STATUS.APPROVED, // NE lansiran — samo TP kucanje
-        actorWorkerId: actor?.workerId ?? null,
+        actorWorkerId,
       });
       return {
         workOrderId: workOrder.id,
@@ -995,7 +1012,8 @@ export class HandoversService {
     const preExisting = await this.findHandoverWorkOrder(this.prisma, id);
     const ctx = preExisting ? null : await this.loadWorkOrderContext(handover);
 
-    const actorWorkerId = actor?.workerId ?? null;
+    // Svež users.worker_id kad JWT nema workerId (naknadno vezan radnik).
+    const actorWorkerId = await resolveActorWorkerId(this.prisma, actor);
     const result = await this.prisma.$transaction(async (tx) => {
       await this.lockHandoverWorkOrder(tx, id);
 
