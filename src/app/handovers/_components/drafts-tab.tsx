@@ -7,6 +7,8 @@ import {
   useCreateHandoverDraft,
   useDeleteHandoverDraft,
   useDrawingsLookup,
+  useApprovers,
+  getMyWorkerId,
   useHandoverDraft,
   useHandoverDrafts,
   useHandoverLookups,
@@ -124,6 +126,8 @@ interface DraftFormState {
   pieceCount: string;
   note: string;
   statusId: number;
+  /** Odobravač kome ide notifikacija (worker id); '' = nije izabran. */
+  notifyApproverWorkerId: number | '';
 }
 
 interface DraftItemDraft {
@@ -225,6 +229,7 @@ function toFormState(draft: HandoverDraftDetail | null): DraftFormState {
     pieceCount: draft ? String(draft.pieceCount) : '1',
     note: draft?.note ?? '',
     statusId: draft?.statusId ?? 0,
+    notifyApproverWorkerId: '',
   };
 }
 
@@ -255,6 +260,13 @@ function DraftFormDialog({
   const lookups = useHandoverLookups();
   // Projektant nacrta = UVEK ulogovani korisnik (bez izbora); prikaz iz /auth/me.
   const { user: me } = useAuth();
+  // Odobravači (Nenad 13.07): projektant bira kome ide notifikacija. Ako je sam
+  // ulogovani jedan od odobravača → sam kreira primopredaju, izbor nije potreban.
+  const approvers = useApprovers();
+  const myWorkerId = getMyWorkerId();
+  const iAmApprover =
+    myWorkerId != null &&
+    (approvers.data?.data ?? []).some((a) => a.id === myWorkerId);
   const create = useCreateHandoverDraft();
   const update = useUpdateHandoverDraft();
   const mut = isEdit ? update : create;
@@ -338,6 +350,11 @@ function DraftFormDialog({
           draftType: form.draftType,
           pieceCount: Number(form.pieceCount) || 0,
           note: form.note.trim() || undefined,
+          // Odobravač: šalje se samo kad ulogovani NIJE sam odobravač (backend
+          // ga tada ignoriše ionako). Obaveznost validira i backend (422).
+          ...(!iAmApprover && form.notifyApproverWorkerId !== ''
+            ? { notifyApproverWorkerId: form.notifyApproverWorkerId }
+            : {}),
           items: items
             .filter((i) => i.drawing)
             .map<CreateHandoverDraftItemInput>((i) => ({
@@ -410,8 +427,12 @@ function DraftFormDialog({
             onClick={submit}
             loading={mut.isPending}
             // Predmet je obavezan (inače projectId=0 → backend 400). Projektant
-            // je uvek ulogovani korisnik, ne blokira snimanje.
-            disabled={!form.project}
+            // je uvek ulogovani korisnik, ne blokira snimanje. Kod novog nacrta
+            // odobravač je obavezan osim kad je ulogovani sam odobravač.
+            disabled={
+              !form.project ||
+              (!isEdit && !iAmApprover && form.notifyApproverWorkerId === '')
+            }
           >
             Snimi
           </Button>
@@ -441,6 +462,33 @@ function DraftFormDialog({
             // 422 sa jasnom porukom (nema tihog pogrešnog projektanta).
             <FormField label="Projektant" hint="Ulogovani korisnik (automatski).">
               <Input value={me?.fullName ?? me?.email ?? '—'} disabled />
+            </FormField>
+          )}
+          {!isEdit && !iAmApprover && (
+            // Odobravač kome ide notifikacija (in-app + mejl) da kreira
+            // primopredaju. OBAVEZAN (backend 422 bez izbora). Kad je ulogovani
+            // sam odobravač, ovo se ne prikazuje (sam kreira primopredaju).
+            <FormField
+              label="Pošalji na odobrenje"
+              required
+              hint="Odobravač dobija notifikaciju da kreira primopredaju."
+            >
+              <NativeSelect
+                value={form.notifyApproverWorkerId}
+                onChange={(e) =>
+                  set({
+                    notifyApproverWorkerId: e.target.value ? Number(e.target.value) : '',
+                  })
+                }
+                className="w-full"
+              >
+                <option value="">— izaberi odobravača —</option>
+                {(approvers.data?.data ?? []).map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.fullName ?? a.username ?? `#${a.id}`}
+                  </option>
+                ))}
+              </NativeSelect>
             </FormField>
           )}
           {isEdit && (

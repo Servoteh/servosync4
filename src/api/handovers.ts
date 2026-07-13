@@ -142,6 +142,11 @@ export interface CreateHandoverDraftInput {
   draftType?: number;
   pieceCount: number;
   note?: string;
+  /**
+   * Odobravač kome ide notifikacija (worker id iz `useApprovers`). Obavezan kad
+   * ulogovani NIJE sam odobravač; backend validira i emit-uje notifikaciju.
+   */
+  notifyApproverWorkerId?: number;
   items?: CreateHandoverDraftItemInput[];
 }
 
@@ -558,6 +563,28 @@ export function useEngineersLookup(q: string) {
       )
     : all;
   return { data: { data }, isLoading: list.isLoading };
+}
+
+// ─────────────────────────────── odobravači primopredaje (Nenad 13.07)
+
+export interface ApproverRef {
+  id: number;
+  fullName: string | null;
+  username: string | null;
+}
+
+/**
+ * Fiksni skup odobravača primopredaje (aktivni) — GET /v1/handovers/approvers.
+ * Padajuća lista „pošalji na odobrenje" u nacrtu; izabranom stiže notifikacija
+ * (in-app + mejl) da treba da kreira primopredaju. Isti oblik kao engineers.
+ */
+export function useApprovers() {
+  return useQuery({
+    queryKey: ['handovers', 'approvers'],
+    queryFn: () => apiFetch<{ data: ApproverRef[] }>('/v1/handovers/approvers'),
+    retry: false,
+    staleTime: 5 * 60_000,
+  });
 }
 
 // ─────────────────────────────── brojači „na pisanju tehnologije" (Paket A t.9)
