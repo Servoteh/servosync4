@@ -341,6 +341,49 @@ export interface ControlResult {
   controllerWarnings: string[] | null;
 }
 
+// ------------------------------------------------------------------ MOJI OTVORENI (runda 2 t.3)
+
+/**
+ * Otvoren tehnološki postupak radnika — red iz GET /worker/open (runda 2 t.3).
+ * Lista svih operacija koje je radnik započeo/prijavljivao a nije zatvorio, da
+ * ih može zatvoriti bez ponovnog skeniranja oba barkoda.
+ */
+export interface MyOpenRow {
+  id: number;
+  projectId: number;
+  identNumber: string;
+  variant: number;
+  operationNumber: number;
+  workCenterCode: string;
+  operation: { workCenterName: string } | null;
+  /** Napravljeno (akumulirano) na operaciji. */
+  pieceCount: number;
+  /** Planirano (potrebno) — null ako nije poznato. */
+  plannedPieces: number | null;
+  enteredAt: string;
+  /** true = radnik ima OTVORENU vremensku sesiju (A-4) na ovoj operaciji. */
+  hasOpenSession: boolean;
+}
+
+/**
+ * „Moji otvoreni" — operacije koje je prijavljeni radnik započeo a nije zatvorio
+ * (runda 2 t.3). `card` je OPCION: lični nalozi rade i bez kartice (backend čita
+ * `worker_id` iz JWT-a); deljeni terminal-nalozi šalju karticu. `enabled` gasi
+ * upit dok radnik nije prijavljen.
+ */
+export function useMyOpen(card: string | null, enabled: boolean) {
+  const qs = card ? `?card=${encodeURIComponent(card)}` : '';
+  return useQuery({
+    queryKey: ['tech-processes', 'worker-open', card],
+    queryFn: () =>
+      apiFetch<{ data: MyOpenRow[]; meta: { workerId: number; workerCard: string | null } }>(
+        `${BASE}/worker/open${qs}`,
+      ),
+    enabled,
+    staleTime: 10_000,
+  });
+}
+
 /** Razreši radnika iz ID kartice (kiosk login). 404 ako kartica nije poznata. */
 export function useIdentifyWorker() {
   return useMutation({

@@ -409,6 +409,8 @@ export interface Handover {
 
 export interface HandoverListParams {
   page?: number;
+  /** Veličina strane (backend default 50, trenutno klampuje na max 200). */
+  pageSize?: number;
   statusId?: number | '';
   drawingNumber?: string;
   projectId?: number | '';
@@ -421,6 +423,7 @@ export interface HandoverListParams {
 function buildHandoverQuery(params: HandoverListParams): string {
   return buildQuery({
     page: params.page && params.page > 1 ? params.page : undefined,
+    pageSize: params.pageSize,
     statusId: params.statusId === '' ? undefined : params.statusId,
     drawingNumber: params.drawingNumber,
     projectId: params.projectId === '' ? undefined : params.projectId,
@@ -447,6 +450,33 @@ export function usePendingApprovalHandovers(params: HandoverListParams) {
     queryKey: ['handovers', 'pending-approval', params],
     queryFn: () => apiFetch<Paginated<Handover>>(`/v1/handovers/pending-approval${query}`),
   });
+}
+
+/**
+ * Sve PENDING (U OBRADI) pozicije istog broja nacrta — za grupno odobravanje
+ * cele primopredaje (runda 2 t.4). Nema server-side filtera po draftNumber, pa
+ * se povuče velika strana (`pageSize=500`, backend klampuje na max) i filtrira
+ * KLIJENTSKI po `draftContext.draftNumber`. `enabled` gasi upit dok grupni
+ * dijalog nije otvoren (dugme se prikazuje iz reda koji već ima draftNumber).
+ * Iz skupa se izbacuju legacy/zaključane pozicije — one ionako ne mogu batch
+ * (backend bi ih vratio u `skipped`), a ovde ne treba da uđu u brojač.
+ */
+export function usePendingHandoversByDraft(draftNumber: string | null, enabled: boolean) {
+  const query = useQuery({
+    queryKey: ['handovers', 'pending-approval', { pageSize: 500 }],
+    queryFn: () =>
+      apiFetch<Paginated<Handover>>(`/v1/handovers/pending-approval?pageSize=500`),
+    enabled: enabled && !!draftNumber,
+    staleTime: 15_000,
+  });
+  const all = query.data?.data ?? [];
+  const rows = draftNumber
+    ? all.filter(
+        (h) =>
+          h.draftContext?.draftNumber === draftNumber && !h.isLegacy && !h.isLocked,
+      )
+    : [];
+  return { rows, isLoading: query.isLoading, error: query.error };
 }
 
 /** Draft statusi + primopredaja statusi (lookup za filtere/forme). */
@@ -674,6 +704,73 @@ export function useRejectHandover() {
       apiFetch<{ data: Handover }>(`/v1/handovers/${id}/reject`, {
         method: 'POST',
         body: JSON.stringify({ reason }),
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+// ─────────────────────────────── grupno odobravanje/odbijanje celog nacrta (runda 2, t.4)
+
+/**
+ * Rezultat batch odobravanja/odbijanja — koliko je obrađeno + spisak
+ * preskočenih (id + razlog: npr. već obrađena, legacy, zaključana). Isti oblik
+ * za `approve-batch` i `reject-batch`.
+ */
+export interface HandoverBatchResult {
+  approved: number;
+  skipped: { id: number; reason: string }[];
+}
+
+/**
+ * Grupno odobravanje CELE primopredaje (runda 2 t.4 — Miljan: „odobrava se cela
+ * primopredaja, sve pozicije istog broja nacrta"). Isti izbor kao pojedinačni
+ * `useApproveHandover` (tehnolog OBAVEZAN, rok/HITNO/komentar opcioni), samo nad
+ * više `handoverIds` odjednom. Backend vraća `{ approved, skipped[] }` — pozicije
+ * koje ne mogu (već obrađene / legacy / zaključane) idu u `skipped`, ne obaraju
+ * ceo poziv. `isUrgent` se šalje SAMO kad je true (isti razlog kao pojedinačni).
+ */
+export function useApproveHandoverBatch() {
+  const invalidate = useInvalidateHandovers();
+  return useMutation({
+    mutationFn: ({
+      handoverIds,
+      technologistId,
+      comment,
+      dueDate,
+      isUrgent,
+    }: {
+      handoverIds: number[];
+      technologistId: number;
+      comment?: string;
+      dueDate?: string;
+      isUrgent?: boolean;
+    }) =>
+      apiFetch<{ data: HandoverBatchResult }>(`/v1/handovers/approve-batch`, {
+        method: 'POST',
+        body: JSON.stringify({
+          handoverIds,
+          technologistId,
+          dueDate,
+          comment,
+          ...(isUrgent ? { isUrgent: true } : {}),
+        }),
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/**
+ * Grupno odbijanje CELE primopredaje (runda 2 t.4) — `reason` je OBAVEZAN (isti
+ * kao pojedinačni `useRejectHandover`). Backend vraća `{ approved, skipped[] }`
+ * (isti oblik kao approve-batch; `approved` = broj odbijenih pozicija).
+ */
+export function useRejectHandoverBatch() {
+  const invalidate = useInvalidateHandovers();
+  return useMutation({
+    mutationFn: ({ handoverIds, reason }: { handoverIds: number[]; reason: string }) =>
+      apiFetch<{ data: HandoverBatchResult }>(`/v1/handovers/reject-batch`, {
+        method: 'POST',
+        body: JSON.stringify({ handoverIds, reason }),
       }),
     onSuccess: invalidate,
   });

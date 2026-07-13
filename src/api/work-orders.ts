@@ -59,6 +59,13 @@ export interface WorkOrder {
   enteredAt: string;
   productionDeadline: string | null;
   worker: WorkerRef | null;
+  /**
+   * Vrsta kvaliteta RN-a (`part_quality_types` id): 1 = Dorada, 2 = Škart,
+   * ostalo/0 = Redovan. Prikaz kroz StatusBadge (runda 2 t.1) — backend šalje
+   * ceo red pa je `qualityTypeId` na top nivou (uz razrešen `qualityType`).
+   * Opciono/defanzivno: stariji backend polje ne vraća (undefined = Redovan).
+   */
+  qualityTypeId?: number;
   qualityType: { id: number; name: string } | null;
   handoverStatus: { id: number; name: string } | null;
   /**

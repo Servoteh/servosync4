@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { Copy, CopyPlus, Pencil, Plus, Printer, Recycle, Trash2 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
@@ -108,7 +108,7 @@ const columns: Column<WorkOrder>[] = [
   },
 ];
 
-function Field({ label, value }: { label: string; value: string }) {
+function Field({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div>
       <dt className="text-2xs uppercase tracking-[0.08em] text-ink-disabled">{label}</dt>
@@ -313,7 +313,20 @@ function WorkOrderDetail({
         <Field label="Materijal" value={rn.material || '—'} />
         <Field label="Dimenzija" value={rn.materialDimension || '—'} />
         <Field label="Revizija" value={rn.revision} />
-        <Field label="Kvalitet" value={rn.qualityType?.name ?? '—'} />
+        {/* Kvalitet (runda 2 t.1) — Dorada/Škart kroz StatusBadge (kanonska mapa
+            DESIGN_SYSTEM §7: dorada = warn, škart = danger); ostalo = „Redovan". */}
+        <Field
+          label="Kvalitet"
+          value={
+            rn.qualityTypeId === REWORK_QUALITY.DORADA ? (
+              <StatusBadge tone="warn" label="Dorada" />
+            ) : rn.qualityTypeId === REWORK_QUALITY.SKART ? (
+              <StatusBadge tone="danger" label="Škart" />
+            ) : (
+              'Redovan'
+            )
+          }
+        />
         <Field label="Predmet (spolja)" value={rn.externalProjectName ?? String(rn.projectId)} />
         <Field label="Tehnolog" value={rn.worker?.fullName ?? '—'} />
         <Field label="Otvoren" value={formatDate(rn.enteredAt)} />

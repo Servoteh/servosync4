@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   HANDOVER_STATUS,
+  usePendingHandoversByDraft,
   usePrepareHandoverWorkOrder,
   useRejectHandover,
   type Handover,
@@ -28,7 +29,9 @@ import {
 import {
   ApproveHandoverDialog,
   LaunchHandoverDialog,
+  RejectAllHandoverDialog,
   ReturnToPendingDialog,
+  type HandoverBatch,
 } from './workflow-dialogs';
 import { TakeOverButton } from './take-over-button';
 import { PrintDrawingsDialog } from './print-drawings-dialog';
@@ -116,12 +119,34 @@ export function HandoverDetailPanel({ handover }: { handover: Handover }) {
   const prepare = usePrepareHandoverWorkOrder();
   const [approving, setApproving] = useState(false);
   const [rejecting, setRejecting] = useState(false);
+  const [approvingAll, setApprovingAll] = useState(false);
+  const [rejectingAll, setRejectingAll] = useState(false);
   const [launching, setLaunching] = useState(false);
   const [returning, setReturning] = useState(false);
   const [printOpen, setPrintOpen] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false);
   const [pdfError, setPdfError] = useState<string | null>(null);
   const busy = reject.isPending || prepare.isPending;
+
+  // Grupno odobri/odbij cele primopredaje (runda 2 t.4) — prikupi SVE PENDING
+  // pozicije istog broja nacrta (klijentski filter nad pending-approval listom,
+  // pageSize=500). Dostupno samo kad red pripada nacrtu (`draftContext.draftNumber`).
+  const draftNumber = handover.draftContext?.draftNumber ?? null;
+  const showGroup =
+    !!draftNumber &&
+    !handover.isLocked &&
+    handover.statusId === HANDOVER_STATUS.PENDING &&
+    !handover.isLegacy;
+  const groupPending = usePendingHandoversByDraft(draftNumber, showGroup);
+  const batch: HandoverBatch | null =
+    draftNumber && groupPending.rows.length
+      ? {
+          handoverIds: groupPending.rows.map((r) => r.id),
+          count: groupPending.rows.length,
+          draftNumber,
+        }
+      : null;
+  const groupDisabled = busy || groupPending.isLoading || !batch;
 
   const s = handoverStatusMeta(handover.statusId);
   const locked = !!handover.isLocked;
@@ -197,6 +222,24 @@ export function HandoverDetailPanel({ handover }: { handover: Handover }) {
             >
               Odobri
             </button>
+            {/* Grupno odobravanje cele primopredaje (runda 2 t.4) — Miljan:
+                „odobrava se cela primopredaja, sve pozicije istog broja nacrta".
+                Dostupno samo kad red pripada nacrtu (`draftContext.draftNumber`);
+                disabled dok se lista pozicija učitava. */}
+            {showGroup && (
+              <button
+                disabled={groupDisabled}
+                title={
+                  groupPending.isLoading
+                    ? 'Učitavanje pozicija nacrta…'
+                    : `Odobri sve pozicije nacrta ${draftNumber}`
+                }
+                onClick={() => setApprovingAll(true)}
+                className={`${actionBtn} bg-status-success text-white`}
+              >
+                Odobri ceo nacrt
+              </button>
+            )}
             <button
               disabled={busy || legacy}
               title={legacyTitle}
@@ -205,6 +248,20 @@ export function HandoverDetailPanel({ handover }: { handover: Handover }) {
             >
               Odbij
             </button>
+            {showGroup && (
+              <button
+                disabled={groupDisabled}
+                title={
+                  groupPending.isLoading
+                    ? 'Učitavanje pozicija nacrta…'
+                    : `Odbij sve pozicije nacrta ${draftNumber}`
+                }
+                onClick={() => setRejectingAll(true)}
+                className={`${actionBtn} border border-status-danger text-status-danger`}
+              >
+                Odbij ceo nacrt
+              </button>
+            )}
           </Can>
         )}
         {!locked && handover.statusId === HANDOVER_STATUS.APPROVED && (
@@ -333,6 +390,23 @@ export function HandoverDetailPanel({ handover }: { handover: Handover }) {
         open={approving}
         onClose={() => setApproving(false)}
       />
+      {/* Grupni mod (runda 2 t.4) — batch se računa tek kad je lista pozicija
+          učitana; dijalog se ne renderuje bez njega (dugme je do tad disabled). */}
+      {batch && (
+        <ApproveHandoverDialog
+          handover={handover}
+          open={approvingAll}
+          onClose={() => setApprovingAll(false)}
+          batch={batch}
+        />
+      )}
+      {batch && (
+        <RejectAllHandoverDialog
+          batch={batch}
+          open={rejectingAll}
+          onClose={() => setRejectingAll(false)}
+        />
+      )}
       <RejectDialog
         open={rejecting}
         onClose={() => setRejecting(false)}

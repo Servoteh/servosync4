@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { LogOut, RotateCcw, UserRound } from 'lucide-react';
+import { ListChecks, LogOut, RotateCcw, UserRound } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { ApiError } from '@/api/client';
 import {
@@ -10,6 +10,7 @@ import {
   useFinish,
   useIdentifyWorker,
   useLabelData,
+  useMyOpen,
   useOpenSession,
   useScan,
   useStartWork,
@@ -28,6 +29,7 @@ import { BigMessage, type MessageTone } from './big-message';
 import { WorkPanel } from './work-panel';
 import { ControlPanel, type ControlSubmit } from './control-panel';
 import { ReprintPanel } from './reprint-panel';
+import { MyOpenPanel } from './my-open-panel';
 
 interface OrderState {
   raw: string;
@@ -103,6 +105,8 @@ export function KioskScanner() {
   // LIČNI nalog (users.worker_id) preskače karticu; posle „Odjava radnika" kartica se opet traži.
   const me = useWorkerMe();
   const [cardGate, setCardGate] = useState(false);
+  // „Moji otvoreni" (runda 2 t.3) — panel zamenjuje skener korak dok je otvoren.
+  const [myOpen, setMyOpen] = useState(false);
   const [order, setOrder] = useState<OrderState | null>(null);
   const [operation, setOperation] = useState<OperationState | null>(null);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
@@ -146,6 +150,11 @@ export function KioskScanner() {
   });
   const session = openSession.data?.data.open ? openSession.data.data.session : null;
 
+  // Brojač „Moji otvoreni" (runda 2 t.3) — samo za bedž u headeru; puna lista
+  // se otvara u MyOpenPanel-u. Lični nalog šalje kartica=null (backend čita JWT).
+  const myOpenCount = useMyOpen(worker?.card ?? null, !!worker);
+  const openCount = myOpenCount.data?.data.length ?? 0;
+
   const resetOrder = useCallback(() => {
     setOrder(null);
     setOperation(null);
@@ -156,6 +165,7 @@ export function KioskScanner() {
   const resetWorker = useCallback(() => {
     setWorker(null);
     setCardGate(true); // eksplicitna odjava → sledeći radnik se identifikuje karticom
+    setMyOpen(false);
     resetOrder();
   }, [resetOrder]);
 
@@ -174,6 +184,17 @@ export function KioskScanner() {
         : 'Skenirajte NALOG radnog naloga.',
     });
   }, [me.data, worker, cardGate]);
+
+  // Esc zatvara „Moji otvoreni" panel (DESIGN_SYSTEM §8). Dijalog potvrde unutar
+  // panela ima svoj Esc (kit Dialog) — ovaj hvata samo kad panela ima a dijaloga nema.
+  useEffect(() => {
+    if (!myOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMyOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [myOpen]);
 
   async function onCardScan(cardId: string) {
     try {
@@ -567,7 +588,18 @@ export function KioskScanner() {
             <UserRound className="h-5 w-5 text-ink-secondary" aria-hidden />
             {worker.info.fullName ?? worker.info.username}
           </span>
-          {order && (
+          {/* „Moji otvoreni" (runda 2 t.3) — veliko touch dugme, N iz hooka;
+              otvara panel umesto skener koraka. Sakriveno dok je panel otvoren. */}
+          {!myOpen && (
+            <button
+              onClick={() => setMyOpen(true)}
+              className="inline-flex h-14 items-center gap-2 rounded-control border-2 border-accent bg-accent-subtle px-5 text-lg font-semibold text-accent hover:bg-accent-subtle/70"
+            >
+              <ListChecks className="h-5 w-5" aria-hidden />
+              Moji otvoreni {openCount > 0 && <span className="tnums">({openCount})</span>}
+            </button>
+          )}
+          {order && !myOpen && (
             <button
               onClick={resetOrder}
               className="inline-flex h-14 items-center gap-2 rounded-control border-2 border-line bg-surface px-5 text-lg font-semibold text-ink hover:bg-surface-2"
@@ -587,6 +619,10 @@ export function KioskScanner() {
       </header>
 
       <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-6 overflow-auto p-6">
+        {myOpen ? (
+          <MyOpenPanel card={worker.card} onBack={() => setMyOpen(false)} />
+        ) : (
+          <>
         {order && <OrderHeadline order={order} />}
 
         {feedback && <BigMessage tone={feedback.tone} title={feedback.title} detail={feedback.detail} />}
@@ -652,6 +688,8 @@ export function KioskScanner() {
             onEvidentiraj={onEvidentiraj}
             onZatvori={onZatvori}
           />
+        )}
+          </>
         )}
       </div>
     </main>

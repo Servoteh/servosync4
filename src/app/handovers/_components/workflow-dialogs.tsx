@@ -11,10 +11,13 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Printer } from 'lucide-react';
 import {
   useApproveHandover,
+  useApproveHandoverBatch,
   useLaunchHandover,
+  useRejectHandoverBatch,
   useReturnHandoverToPending,
   useTechnologistsLookup,
   type Handover,
+  type HandoverBatchResult,
   type LaunchedWorkOrderRef,
 } from '@/api/handovers';
 import type { WorkerRef } from '@/api/tech-processes';
@@ -23,7 +26,38 @@ import { Dialog } from '@/components/ui-kit/dialog';
 import { Button } from '@/components/ui-kit/button';
 import { FormField, Input } from '@/components/ui-kit/form-field';
 import { ComboBox } from '@/components/ui-kit/combo-box';
-import { ErrorText, LEGACY_TOOLTIP, Textarea } from './common';
+import { ErrorText, LEGACY_TOOLTIP, Textarea, warnBox } from './common';
+
+/**
+ * „Grupni mod" za odobri/odbij CELE primopredaje (runda 2 t.4) — svi ID-jevi
+ * PENDING pozicija istog broja nacrta + broj pozicija (za naslov/poruku).
+ * Kad je prosleđen, dijalog gađa `approve-batch`/`reject-batch` umesto
+ * pojedinačnog endpointa.
+ */
+export interface HandoverBatch {
+  handoverIds: number[];
+  count: number;
+  draftNumber: string;
+}
+
+/** Spisak preskočenih pozicija iz batch odgovora (id + razlog) — warn box. */
+function SkippedList({ skipped }: { skipped: HandoverBatchResult['skipped'] }) {
+  if (!skipped.length) return null;
+  return (
+    <div className={warnBox}>
+      <p className="font-medium">
+        Preskočeno pozicija: <span className="tnums">{skipped.length}</span>
+      </p>
+      <ul className="mt-1 list-disc space-y-0.5 pl-5">
+        {skipped.map((s) => (
+          <li key={s.id}>
+            <span className="tnums">#{s.id}</span> — {s.reason}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 const cancelBtn =
   'rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40';
@@ -52,29 +86,56 @@ export function ApproveHandoverDialog({
   handover,
   open,
   onClose,
+  batch,
 }: {
   handover: Handover;
   open: boolean;
   onClose: () => void;
+  /**
+   * Grupni mod (runda 2 t.4) — kad je prosleđen, dijalog odobrava SVE PENDING
+   * pozicije istog nacrta odjednom (approve-batch); bez njega je pojedinačno.
+   */
+  batch?: HandoverBatch;
 }) {
   const approve = useApproveHandover();
+  const approveBatch = useApproveHandoverBatch();
   const [technologist, setTechnologist] = useState<WorkerRef | null>(null);
   const [dueDate, setDueDate] = useState('');
   const [comment, setComment] = useState('');
   const [urgent, setUrgent] = useState(false);
+  // Rezultat batch-a (approved + skipped) — success ekran ostaje dok korisnik ne zatvori.
+  const [result, setResult] = useState<HandoverBatchResult | null>(null);
 
   useEffect(() => {
     if (!open) return;
     approve.reset();
+    approveBatch.reset();
     setTechnologist(null);
     setDueDate('');
     setComment('');
     setUrgent(false);
+    setResult(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
+  const pending = approve.isPending || approveBatch.isPending;
+  const error = batch ? approveBatch.error : approve.error;
+
   function submit() {
     if (!technologist) return;
+    if (batch) {
+      approveBatch.mutate(
+        {
+          handoverIds: batch.handoverIds,
+          technologistId: technologist.id,
+          dueDate: dueDate || undefined,
+          comment: comment.trim() || undefined,
+          isUrgent: urgent || undefined,
+        },
+        { onSuccess: (res) => setResult(res.data) },
+      );
+      return;
+    }
     approve.mutate(
       {
         id: handover.id,
@@ -88,78 +149,199 @@ export function ApproveHandoverDialog({
     );
   }
 
+  const title = batch
+    ? `Odobri ceo nacrt ${batch.draftNumber} — ${batch.count} ${batch.count === 1 ? 'pozicija' : 'pozicija'}`
+    : 'Odobravanje primopredaje';
+
   return (
     <Dialog
       open={open}
       onClose={onClose}
-      title="Odobravanje primopredaje"
+      title={title}
       footer={
-        <>
-          <button onClick={onClose} className={cancelBtn}>
-            Otkaži
-          </button>
-          <LegacyGuardSpan legacy={handover.isLegacy}>
-            <Button
-              onClick={submit}
-              loading={approve.isPending}
-              disabled={!technologist || handover.isLegacy}
-            >
-              Odobri
-            </Button>
-          </LegacyGuardSpan>
-        </>
+        result ? (
+          <Button variant="secondary" onClick={onClose}>
+            Zatvori
+          </Button>
+        ) : (
+          <>
+            <button onClick={onClose} className={cancelBtn}>
+              Otkaži
+            </button>
+            <LegacyGuardSpan legacy={!batch && handover.isLegacy}>
+              <Button
+                onClick={submit}
+                loading={pending}
+                disabled={!technologist || (!batch && handover.isLegacy)}
+              >
+                {batch ? 'Odobri ceo nacrt' : 'Odobri'}
+              </Button>
+            </LegacyGuardSpan>
+          </>
+        )
       }
     >
-      <div className="space-y-3">
-        <p className="text-xs text-ink-disabled">
-          Crtež{' '}
-          <span className="tnums">
-            {handover.drawing
-              ? `${handover.drawing.drawingNumber} / ${handover.drawing.revision}`
-              : `#${handover.drawingId}`}
-          </span>{' '}
-          prelazi u status „Saglasan” i dodeljuje se tehnologu koji kuca TP.
-        </p>
-        <FormField label="Tehnolog" required hint="Piše tehnološki postupak (TP) za ovaj RN.">
-          <ComboBox<WorkerRef>
-            value={technologist}
-            onChange={setTechnologist}
-            useSearch={useTechnologistsLookup}
-            getKey={(t) => t.id}
-            getLabel={(t) => t.fullName ?? t.username}
-            getSublabel={(t) => t.username}
-            placeholder="Ime tehnologa…"
-          />
-        </FormField>
-        <FormField
-          label="Rok izrade"
-          hint="Opciono — upisuje se u primopredaju i propagira u RN pri kucanju TP-a/lansiranju."
-        >
-          <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
-        </FormField>
-        {/* HITNO (Paket A t.10) — crveni bedž uz status svuda gde se primopredaja lista. */}
-        <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
-          <input
-            type="checkbox"
-            checked={urgent}
-            onChange={(e) => setUrgent(e.target.checked)}
-            className="h-4 w-4 shrink-0 accent-accent"
-          />
-          <span className="font-medium text-status-danger">HITNO</span>
-          <span className="text-xs text-ink-secondary">
-            — primopredaja se svuda označava crvenim bedžom „HITNO”.
-          </span>
-        </label>
-        <FormField label="Komentar">
-          <Textarea
-            value={comment}
-            maxLength={250}
-            onChange={(e) => setComment(e.target.value)}
-            placeholder="Npr. prioritetno — kupac čeka…"
-          />
-        </FormField>
-        <ErrorText error={approve.error} />
-      </div>
+      {result ? (
+        <div className="space-y-3">
+          <p className="text-sm text-ink">
+            Odobreno <span className="tnums font-semibold">{result.approved}</span>{' '}
+            {result.approved === 1 ? 'pozicija' : 'pozicija'}.
+          </p>
+          <SkippedList skipped={result.skipped} />
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <p className="text-xs text-ink-disabled">
+            {batch ? (
+              <>
+                Sve pozicije nacrta{' '}
+                <span className="tnums">{batch.draftNumber}</span> ({batch.count}) prelaze u status
+                „Saglasan” i dodeljuju se izabranom tehnologu.
+              </>
+            ) : (
+              <>
+                Crtež{' '}
+                <span className="tnums">
+                  {handover.drawing
+                    ? `${handover.drawing.drawingNumber} / ${handover.drawing.revision}`
+                    : `#${handover.drawingId}`}
+                </span>{' '}
+                prelazi u status „Saglasan” i dodeljuje se tehnologu koji kuca TP.
+              </>
+            )}
+          </p>
+          <FormField label="Tehnolog" required hint="Piše tehnološki postupak (TP) za ovaj RN.">
+            <ComboBox<WorkerRef>
+              value={technologist}
+              onChange={setTechnologist}
+              useSearch={useTechnologistsLookup}
+              getKey={(t) => t.id}
+              getLabel={(t) => t.fullName ?? t.username}
+              getSublabel={(t) => t.username}
+              placeholder="Ime tehnologa…"
+            />
+          </FormField>
+          <FormField
+            label="Rok izrade"
+            hint="Opciono — upisuje se u primopredaju i propagira u RN pri kucanju TP-a/lansiranju."
+          >
+            <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+          </FormField>
+          {/* HITNO (Paket A t.10) — crveni bedž uz status svuda gde se primopredaja lista. */}
+          <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
+            <input
+              type="checkbox"
+              checked={urgent}
+              onChange={(e) => setUrgent(e.target.checked)}
+              className="h-4 w-4 shrink-0 accent-accent"
+            />
+            <span className="font-medium text-status-danger">HITNO</span>
+            <span className="text-xs text-ink-secondary">
+              — primopredaja se svuda označava crvenim bedžom „HITNO”.
+            </span>
+          </label>
+          <FormField label="Komentar">
+            <Textarea
+              value={comment}
+              maxLength={250}
+              onChange={(e) => setComment(e.target.value)}
+              placeholder="Npr. prioritetno — kupac čeka…"
+            />
+          </FormField>
+          <ErrorText error={error} />
+        </div>
+      )}
+    </Dialog>
+  );
+}
+
+/**
+ * Grupno ODBIJANJE cele primopredaje (runda 2 t.4) — sve PENDING pozicije istog
+ * nacrta odjednom. Razlog je OBAVEZAN (mala textarea). Posle uspeha prikaže
+ * „Odbijeno N pozicija" + spisak preskočenih.
+ */
+export function RejectAllHandoverDialog({
+  batch,
+  open,
+  onClose,
+}: {
+  batch: HandoverBatch;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const rejectBatch = useRejectHandoverBatch();
+  const [reason, setReason] = useState('');
+  const [result, setResult] = useState<HandoverBatchResult | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    rejectBatch.reset();
+    setReason('');
+    setResult(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  function submit() {
+    if (!reason.trim()) return;
+    rejectBatch.mutate(
+      { handoverIds: batch.handoverIds, reason: reason.trim() },
+      { onSuccess: (res) => setResult(res.data) },
+    );
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title={`Odbij ceo nacrt ${batch.draftNumber} — ${batch.count} pozicija`}
+      footer={
+        result ? (
+          <Button variant="secondary" onClick={onClose}>
+            Zatvori
+          </Button>
+        ) : (
+          <>
+            <button onClick={onClose} className={cancelBtn}>
+              Otkaži
+            </button>
+            <Button
+              onClick={submit}
+              loading={rejectBatch.isPending}
+              disabled={!reason.trim()}
+              className="bg-status-danger text-white hover:bg-status-danger"
+            >
+              Odbij ceo nacrt
+            </Button>
+          </>
+        )
+      }
+    >
+      {result ? (
+        <div className="space-y-3">
+          <p className="text-sm text-ink">
+            Odbijeno <span className="tnums font-semibold">{result.approved}</span>{' '}
+            {result.approved === 1 ? 'pozicija' : 'pozicija'}.
+          </p>
+          <SkippedList skipped={result.skipped} />
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <p className="text-xs text-ink-disabled">
+            Sve pozicije nacrta <span className="tnums">{batch.draftNumber}</span> ({batch.count})
+            prelaze u status „Odbijeno”.
+          </p>
+          <FormField label="Razlog odbijanja" required hint="Obavezno — najviše 250 karaktera.">
+            <Textarea
+              value={reason}
+              maxLength={250}
+              autoFocus
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="Npr. nacrt se menja — nova revizija crteža…"
+            />
+          </FormField>
+          <ErrorText error={rejectBatch.error} />
+        </div>
+      )}
     </Dialog>
   );
 }
