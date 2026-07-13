@@ -31,6 +31,17 @@ export const PERMISSIONS = {
   REVERSI_MANAGE: 'reversi.manage',
   // Rezervisano za „Moj tim" pogled (TL/šef) — UI još nije priključen; vidi TODO u api/reversi.ts.
   REVERSI_TEAM_READ: 'reversi.team_read',
+  // Sastanci + AI asistent — 3.0 TALAS B (backend docs/design/MODULE_SPEC_sastanci_ai_30.md §2).
+  // Paritet backend role-permissions: read = canAccessSastanci (admin/leadpm/pm/menadzment/hr/viewer);
+  // edit = has_edit_role (+poslovni_admin); manage/weekly_move = admin/menadzment; ai_model = admin.
+  // sastanci.weekly_move je SAMO vidljivost dugmadi — pravu odluku presuđuje tabela sast_weekly_movers.
+  SASTANCI_READ: 'sastanci.read',
+  SASTANCI_EDIT: 'sastanci.edit',
+  SASTANCI_MANAGE: 'sastanci.manage',
+  SASTANCI_WEEKLY_MOVE: 'sastanci.weekly_move',
+  SASTANCI_AI_MODEL: 'sastanci.ai_model',
+  // AI asistent = SVE aktivne uloge (1.0 „/ai za sve").
+  AI_CHAT: 'ai.chat',
 } as const;
 
 export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
