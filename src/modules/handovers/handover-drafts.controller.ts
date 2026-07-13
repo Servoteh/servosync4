@@ -8,6 +8,7 @@ import {
   Patch,
   Post,
   Query,
+  Req,
   Res,
   StreamableFile,
   UseGuards,
@@ -18,6 +19,7 @@ import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
 import { PERMISSIONS } from "../../common/authz/permissions";
 import { HandoverDraftsService } from "./handover-drafts.service";
+import type { AuthUser } from "../auth/jwt.strategy";
 import type { ListHandoverDraftsQuery } from "./handover-drafts.service";
 import { PrintBundleService } from "./print-bundle.service";
 import type { PrintBundleQuery } from "./print-bundle.service";
@@ -91,8 +93,9 @@ export class HandoverDraftsController {
 
   @Post()
   @RequirePermission(PERMISSIONS.PRIMOPREDAJE_WRITE)
-  create(@Body() dto: CreateHandoverDraftDto) {
-    return this.drafts.create(dto);
+  create(@Body() dto: CreateHandoverDraftDto, @Req() req: { user: AuthUser }) {
+    // Actor = default projektant kad designerId nije poslat (proba 13.07).
+    return this.drafts.create(dto, req.user);
   }
 
   @Patch(":id")

@@ -32,6 +32,7 @@ import {
 } from "./dto/decide-draft-item.dto";
 import { DraftNumberingService } from "./draft-numbering.service";
 import { HANDOVER_STATUS } from "./handovers.service";
+import type { AuthUser } from "../auth/jwt.strategy";
 import { isApprovedPdmState, normalizeRevision } from "../pdm/pdm-xml-parser";
 
 /** Podskup polja crteža bezbedan za izlaz — koristi se za mainDrawing/drawing na stavkama. */
@@ -283,17 +284,30 @@ export class HandoverDraftsService {
 
   // -------------------------------------------------------------- CREATE
 
-  async create(dto: CreateHandoverDraftDto) {
+  async create(dto: CreateHandoverDraftDto, actor?: AuthUser) {
     validateCreateHandoverDraft(dto);
     const items = dto.items ?? [];
 
+    // Proba 13.07: designerId je opcion — default je ULOGOVANI korisnik (JWT
+    // workerId), po nameri spec-a (P4 §: designer = current user). Eksplicitan
+    // izbor ostaje moguć (vođa unosi za kolegu), ali radnik mora biti AKTIVAN
+    // (slobodan unos šifre je propuštao stare/neaktivne operatere).
+    const designerId = dto.designerId ?? actor?.workerId ?? 0;
+    if (!designerId || designerId <= 0)
+      throw new UnprocessableEntityException(
+        "Projektant je obavezan — izaberite projektanta ili vežite nalog za radnika (users.worker_id).",
+      );
     const designer = await this.prisma.worker.findUnique({
-      where: { id: dto.designerId },
-      select: { id: true },
+      where: { id: designerId },
+      select: { id: true, active: true },
     });
     if (!designer)
       throw new UnprocessableEntityException(
-        `Projektant ${dto.designerId} ne postoji.`,
+        `Projektant ${designerId} ne postoji.`,
+      );
+    if (designer.active !== true)
+      throw new UnprocessableEntityException(
+        `Radnik ${designerId} nije aktivan — projektant nacrta mora biti aktivan zaposleni.`,
       );
 
     const project = await this.prisma.project.findUnique({
@@ -355,7 +369,7 @@ export class HandoverDraftsService {
 
       return tx.handoverDraft.create({
         data: {
-          designerId: dto.designerId,
+          designerId,
           projectId: dto.projectId,
           mainDrawingId: dto.mainDrawingId ?? null,
           draftType: dto.draftType ?? 0,

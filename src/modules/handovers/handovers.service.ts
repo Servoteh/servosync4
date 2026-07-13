@@ -17,6 +17,7 @@ import { byId, uniqueIds } from "../../common/relations";
 import { alignIdSequence } from "../../common/db-sequences";
 import { parseDateParam } from "../../common/date-params";
 import {
+  engineerWorkerWhere,
   isActiveTechnologist,
   technologistWorkerWhere,
   TECHNOLOGIST_CHECK_SELECT,
@@ -255,6 +256,22 @@ export class HandoversService {
    */
   async technologists() {
     const where = await technologistWorkerWhere(this.prisma);
+    if (!where) return { data: [] };
+    const data = await this.prisma.worker.findMany({
+      where,
+      select: SAFE_WORKER_SELECT,
+      orderBy: { fullName: "asc" },
+    });
+    return { data };
+  }
+
+  /**
+   * `GET /handovers/engineers` — AKTIVNI radnici vrste „Inženjeri" za
+   * projektant-picker u nacrtu (živa proba 13.07: slobodan unos šifre je
+   * dozvolio neaktivnog operatera). Isti oblik kao `technologists()`.
+   */
+  async engineers() {
+    const where = await engineerWorkerWhere(this.prisma);
     if (!where) return { data: [] };
     const data = await this.prisma.worker.findMany({
       where,

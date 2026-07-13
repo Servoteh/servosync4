@@ -72,6 +72,12 @@ export class HandoversController {
     return this.handovers.technologists();
   }
 
+  /** Aktivni inženjeri biroa — projektant picker u nacrtu (proba 13.07). */
+  @Get("engineers")
+  engineers() {
+    return this.handovers.engineers();
+  }
+
   @Get("pending-approval")
   pendingApproval(@Query() query: ListHandoversQuery) {
     return this.handovers.pendingApproval(query);

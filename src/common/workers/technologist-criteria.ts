@@ -80,3 +80,36 @@ export async function isActiveTechnologist(
   const typeIds = await resolveTechnologistTypeIds(db);
   return typeIds.includes(worker.workerTypeId);
 }
+
+// ---------------------------------------------------------------- inženjeri
+
+/**
+ * Paralelni kriterijum za PROJEKTANTE biroa (živa proba 13.07.2026: designer
+ * picker je nudio bilo koju šifru, pa i neaktivnog operatera): projektant =
+ * AKTIVAN radnik vrste 'Inženjeri' (worker_types; prod id 5). Ista mehanika
+ * kao tehnolog kriterijum — po IMENU vrste, bez required JOIN-a. Potrošači:
+ * `GET /handovers/engineers` (picker) — namerno NE hard-gate u create()
+ * (admin/test nalozi bez inženjer-radnika moraju moći da vode nacrt), tamo se
+ * proverava samo da je radnik AKTIVAN.
+ */
+export const ENGINEER_TYPE_NAME = "Inženjeri";
+
+/** Ids of `worker_types` matching 'Inženjeri' — `[]` when no match. */
+export async function resolveEngineerTypeIds(
+  db: TechnologistCriteriaDb,
+): Promise<number[]> {
+  const types = await db.workerType.findMany({
+    where: { name: { equals: ENGINEER_TYPE_NAME, mode: "insensitive" } },
+    select: { id: true },
+  });
+  return types.map((t) => t.id).filter((id) => id > 0);
+}
+
+/** Prisma `where` za aktivne inženjere, ili `null` kad vrsta ne postoji. */
+export async function engineerWorkerWhere(
+  db: TechnologistCriteriaDb,
+): Promise<Prisma.WorkerWhereInput | null> {
+  const typeIds = await resolveEngineerTypeIds(db);
+  if (!typeIds.length) return null;
+  return { active: true, workerTypeId: { in: typeIds } };
+}

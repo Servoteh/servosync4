@@ -23,8 +23,12 @@ export interface CreateHandoverDraftItemInput {
  * NIJE deo ovog talasa (van skopa zadatka).
  */
 export interface CreateHandoverDraftDto {
-  /** Projektant — obavezno (FK workers). */
-  designerId: number;
+  /**
+   * Projektant (FK workers) — OPCION od 13.07.2026 (proba): kad se izostavi,
+   * servis uzima ULOGOVANOG korisnika (JWT workerId). Radnik mora biti AKTIVAN
+   * (validira servis).
+   */
+  designerId?: number;
   /** Predmet — obavezno (FK projects); tačka dodele predmeta crtežima. */
   projectId: number;
   /** Glavni crtež sklopa — opciono (FK drawings). */
@@ -43,7 +47,9 @@ export function validateCreateHandoverDraft(dto: CreateHandoverDraftDto): void {
     if (typeof v !== "number" || !Number.isInteger(v) || v <= 0)
       errors.push(`${name} je obavezan.`);
   };
-  reqPosInt(dto?.designerId, "Projektant");
+  // designerId je opcion (default = ulogovani u servisu); kad JESTE poslat,
+  // mora biti pozitivan ceo broj.
+  if (dto?.designerId !== undefined) reqPosInt(dto.designerId, "Projektant");
   reqPosInt(dto?.projectId, "Predmet");
   if (
     typeof dto?.pieceCount !== "number" ||

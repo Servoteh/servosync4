@@ -146,7 +146,10 @@ const containing = (obj: Record<string, unknown>): unknown =>
  */
 function fullPrismaMock(drawings: DrawingRow[]) {
   const m = {
-    worker: { findUnique: jest.fn().mockResolvedValue({ id: 33 }) },
+    // create() od 13.07 traži i AKTIVNOG projektanta (proba: neaktivan operater).
+    worker: {
+      findUnique: jest.fn().mockResolvedValue({ id: 33, active: true }),
+    },
     project: { findUnique: jest.fn().mockResolvedValue({ id: 4 }) },
     drawing: { findMany: jest.fn(), groupBy: jest.fn() },
     drawingPdf: { findMany: jest.fn() },
