@@ -212,13 +212,27 @@ export class ProjektniBiroService {
 
   // ---------- Saveti (eng tips — DEFINER RPC, draft/vidljivost u DB) ----------
 
-  /** Lista saveta (pb_list_eng_tips, tsv pretraga + filteri; draft vidi autor+admin — RLS). */
+  /**
+   * Lista saveta (pb_list_eng_tips). Ključevi p_filter-a su 1:1 sa ŽIVIM telom fn i 1.0
+   * `pbEngTips.listEngTips` (§C paritet): `search`/`category_ids`(uuid[])/`tags`/`my_only`/
+   * `include_drafts`/`sort`/`limit`/`offset`. RPC NEMA project/status filter; draft vidljivost
+   * je `include_drafts` (autor∨admin u DB). Defaulti kao 1.0 (sort=recent, limit=200, offset=0).
+   */
   listTips(email: string, query: TipsQueryDto) {
-    const filter: Record<string, unknown> = {};
-    if (query.q) filter.q = query.q;
-    if (query.categoryId) filter.category_id = query.categoryId;
-    if (query.status) filter.status = query.status;
-    if (query.projectId) filter.project_id = query.projectId;
+    const tags = (query.tags ?? "")
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean);
+    const filter = {
+      search: query.q?.trim() || null,
+      category_ids: query.categoryId ? [query.categoryId] : null,
+      tags: tags.length ? tags : null,
+      my_only: query.myOnly === "true",
+      include_drafts: query.includeDrafts === "true",
+      sort: query.sort ?? "recent",
+      limit: clampInt(query.limit, 200, 1, 500),
+      offset: clampInt(query.offset, 0, 0, Number.MAX_SAFE_INTEGER),
+    };
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.$queryRaw<unknown[]>(
         Prisma.sql`SELECT * FROM pb_list_eng_tips(${JSON.stringify(filter)}::jsonb)`,
@@ -304,6 +318,18 @@ function clampWindow(v?: string): number {
   const n = Number.parseInt(v ?? "", 10);
   if (!Number.isFinite(n) || n <= 0) return 20;
   return Math.min(n, 120);
+}
+
+/** Parsiraj int uz default + clamp [min,max] (limit/offset saveta; RPC re-clampa i sam). */
+function clampInt(
+  v: string | undefined,
+  def: number,
+  min: number,
+  max: number,
+): number {
+  const n = Number.parseInt(v ?? "", 10);
+  if (!Number.isFinite(n)) return def;
+  return Math.min(Math.max(n, min), max);
 }
 
 /** BigInt kolona (Prisma model) → Number (BigInt ne prežive res.json). */

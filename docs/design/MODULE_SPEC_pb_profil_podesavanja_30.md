@@ -300,7 +300,7 @@ Idempotencija: PB nema svoj mehanizam → `rev_api_idempotency` obrazac (`client
 | 11 | Gantt (zoom, drag datuma, tooltip, plan vs ostvareno) | NOT_STARTED |
 | 12 | Work reports: kalendar + unos (STT) + brisanje + obračun po periodu | IMPLEMENTED (R1 read: GET /pb/work-reports+/summary self∨all u DB; unos/STT/brisanje = R2/R3) |
 | 13 | Analiza po projektu + aktivni problemi | NOT_STARTED (R3 FE nad postojećim read-om) |
-| 14 | Saveti: lista/pretraga/filteri/like/detalj/editor/prilozi/draft-scope | IMPLEMENTED (R1 read: GET /pb/tips+/:id+/categories tsv+draft-scope u DB; like/editor/prilozi = R2) |
+| 14 | Saveti: lista/pretraga/filteri/like/detalj/editor/prilozi/draft-scope | IMPLEMENTED (R1 read: GET /pb/tips+/:id+/categories tsv+draft-scope u DB; like/editor/prilozi = R2). Adversarni review fix: p_filter ključevi mapirani 1:1 na živu fn (search/category_ids/tags/my_only/include_drafts/sort/limit/offset) — raniji q/category_id/status/project_id bili no-op; pinovano unit spec-om. |
 | 15 | Kategorije saveta CRUD (admin) + PB notif config (admin) | IMPLEMENTED (R1 read: GET /pb/tips/categories + /notification-config; CRUD/PATCH = R2 pb.admin) |
 | 16 | PB mobilni tok („Moji zadaci" self-filter, responsive) | NOT_STARTED (R3 FE) |
 | **Moj profil** | | |

@@ -1,4 +1,11 @@
-import { IsISO8601, IsOptional, IsString, IsUUID } from "class-validator";
+import {
+  IsBooleanString,
+  IsISO8601,
+  IsIn,
+  IsOptional,
+  IsString,
+  IsUUID,
+} from "class-validator";
 
 /**
  * Query DTO-i za Projektni biro read endpointe (TALAS D, R1).
@@ -39,10 +46,26 @@ export class LoadStatsQueryDto {
   @IsOptional() @IsString() windowDays?: string;
 }
 
+/**
+ * Filteri saveta — mapiraju se 1:1 na `pb_list_eng_tips(p_filter jsonb)` ključeve
+ * (verifikovano živo telo fn + 1.0 `pbEngTips.listEngTips`): `search`, `category_ids`
+ * (uuid[]), `tags` (text[]), `my_only`, `include_drafts`, `sort`, `limit`, `offset`.
+ * RPC NEMA project/status filter — draft vidljivost je `include_drafts` (bool; autor∨admin
+ * u DB), a published je uvek vidljiv. Skalar `categoryId` se obmotava u `category_ids: [id]`.
+ */
 export class TipsQueryDto {
+  /** Pretraga (search_tsv websearch); → `search`. */
   @IsOptional() @IsString() q?: string;
+  /** Jedna kategorija; → `category_ids: [categoryId]`. */
   @IsOptional() @IsUUID() categoryId?: string;
-  /** draft | published (draft vidi samo autor+admin — RLS u DB). */
-  @IsOptional() @IsString() status?: string;
-  @IsOptional() @IsUUID() projectId?: string;
+  /** CSV tagova; → `tags` (text[], lower/trim u DB). */
+  @IsOptional() @IsString() tags?: string;
+  /** Samo moji saveti; → `my_only`. */
+  @IsOptional() @IsBooleanString() myOnly?: string;
+  /** Uključi nacrte (autor∨admin u DB); → `include_drafts` (zamena 1.0 „status=draft"). */
+  @IsOptional() @IsBooleanString() includeDrafts?: string;
+  /** Sort: recent | popular; → `sort` (default recent). */
+  @IsOptional() @IsIn(["recent", "popular"]) sort?: string;
+  @IsOptional() @IsString() limit?: string;
+  @IsOptional() @IsString() offset?: string;
 }
