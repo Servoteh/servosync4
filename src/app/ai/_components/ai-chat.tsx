@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Bot, ImagePlus, Plus, Send, Trash2, X, MessagesSquare } from 'lucide-react';
 import { cn } from '@/lib/cn';
+import { ApiError } from '@/api/client';
 import { aiMdLite } from '@/lib/ai-md';
 import { resizeImageFile } from '@/lib/image-resize';
 import { DictateButton } from '@/components/voice-controls';
@@ -139,6 +140,19 @@ export function AiChat({ variant = 'desktop' }: { variant?: 'desktop' | 'mobile'
       setInput('');
       setImage(null);
     } catch (e) {
+      // Engine 502 nosi {error, conversationId}: nit + korisnikova poruka su VEĆ
+      // upisane server-side. Zakači aktivnu nit da retry nastavi ISTU (ne pravi
+      // orphan koji dvaput troši dnevni limit — paritet 1.0 aiChat.js). Input se
+      // NE briše da korisnik lako ponovi.
+      const cid =
+        e instanceof ApiError && e.body && typeof e.body === 'object'
+          ? (e.body as { conversationId?: string }).conversationId
+          : undefined;
+      if (cid) {
+        setActiveId(cid);
+        void convs.refetch();
+        void limit.refetch();
+      }
       alert(e instanceof Error ? e.message : 'Slanje nije uspelo.');
     }
   }

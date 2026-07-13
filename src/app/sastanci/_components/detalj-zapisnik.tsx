@@ -15,11 +15,20 @@ import {
   useUpdateAktivnost,
   type Aktivnost,
   type SastanakFull,
+  type WeeklyDiff,
 } from '@/api/sastanci';
-import { INPUT_CLS } from './common';
+import { formatDatum, formatVreme, INPUT_CLS } from './common';
 
 /** Zapisnik tab — tačke (CRUD + reorder + STT/refine + obrađeno) + Uvezi teme + AI rezime. */
-export function DetaljZapisnik({ sast, canEdit }: { sast: SastanakFull; canEdit: boolean }) {
+export function DetaljZapisnik({
+  sast,
+  canEdit,
+  weeklyDiff,
+}: {
+  sast: SastanakFull;
+  canEdit: boolean;
+  weeklyDiff?: WeeklyDiff | null;
+}) {
   const seed = useSeedFromTeme();
   const create = useCreateAktivnost();
   const reorder = useReorderAktivnosti();
@@ -41,12 +50,37 @@ export function DetaljZapisnik({ sast, canEdit }: { sast: SastanakFull; canEdit:
   async function runSummary() {
     setSummBusy(true);
     try {
+      // Payload MORA pratiti backend buildSummaryContent (§sastanci-summary):
+      // {naslov,datum,vreme,mesto,ucesnici[],diff,grupe[{code,naziv,akcije[…]}]}.
+      // Ranije poslati {aktivnosti,akcije} bili su ignorisani → „(nema zadataka)"
+      // (review nalaz #2). Grupe = paritet 1.0 buildPayload/packAkcija.
+      const grupe = sast.akcije.length
+        ? [
+            {
+              code: '',
+              naziv: 'Akcioni plan',
+              akcije: sast.akcije.map((a, i) => ({
+                rb: a.rb ?? i + 1,
+                naslov: a.naslov,
+                opis: a.opis ?? '',
+                odgovoran: a.odgovoran_label || a.odgovoran_text || a.odgovoran_email || '',
+                rok: a.rok_text || (a.rok ? formatDatum(a.rok) : ''),
+                status: a.status,
+              })),
+            },
+          ]
+        : [];
+      const diff = weeklyDiff
+        ? { dodato: weeklyDiff.novo, zavrseno: weeklyDiff.zavrsenoOveNedelje, kasni: weeklyDiff.kasni }
+        : null;
       const res = await aiSummary(sast.id, {
         naslov: sast.naslov,
-        datum: sast.datum,
+        datum: formatDatum(sast.datum),
+        vreme: sast.vreme ? formatVreme(sast.vreme) : '',
+        mesto: sast.mesto ?? '',
         ucesnici: sast.ucesnici.map((u) => u.label || u.email),
-        aktivnosti: tacke.map((t) => ({ naslov: t.naslov, tekst: t.sadrzajText })),
-        akcije: sast.akcije.map((a) => ({ naslov: a.naslov, status: a.effective_status })),
+        diff,
+        grupe,
       });
       setSummary(res.data.summary);
     } catch (e) {

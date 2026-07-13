@@ -23,6 +23,9 @@ export function DraftTemeTab() {
   const temeQ = useTeme({});
   const [projektId, setProjektId] = useState<string>('');
   const drafts = useDraftTeme(projektId || null);
+  // Usvojene teme BEZ sastanka = kandidati za „Uvedi na sastanak" (paritet 1.0
+  // draftTemePanel: zasebna kolona; draftUvedi radi SAMO na status='usvojeno').
+  const usvojeneQ = useTeme({ status: 'usvojeno', projekatId: projektId || undefined });
   const planiraniQ = useSastanci({ status: 'planiran', pageSize: 100 });
   const createDraft = useCreateDraftTema();
   const review = useDraftReview();
@@ -60,6 +63,9 @@ export function DraftTemeTab() {
   }
 
   const rows = drafts.data?.data ?? [];
+  const usvojene = (usvojeneQ.data?.data ?? []).filter(
+    (t) => t.projekat_id === projektId && !t.sastanak_id,
+  );
 
   return (
     <div className="space-y-4">
@@ -99,6 +105,8 @@ export function DraftTemeTab() {
             <Button loading={createDraft.isPending} onClick={() => void addDraft()}>+ Predloži</Button>
           </section>
 
+          {/* Nacrti: samo Prihvati (→usvojeno) / Odbaci (→odbijeno). Uvođenje NA
+              sastanak radi tek nad usvojenima (draftUvedi WHERE status='usvojeno'). */}
           <section className="space-y-2">
             <h3 className="text-sm font-semibold text-ink">Nacrti tema</h3>
             {drafts.isLoading ? (
@@ -110,10 +118,28 @@ export function DraftTemeTab() {
                 {rows.map((t) => (
                   <li key={t.id} className="flex flex-wrap items-center gap-2 rounded-panel border border-line bg-surface px-3 py-2">
                     <span className="flex-1 text-sm text-ink">{t.naslov}</span>
-                    <Button variant="secondary" onClick={() => review.mutate({ id: t.id, odluka: 'aktivna' })}>Usvoji</Button>
-                    <Button variant="ghost" onClick={() => review.mutate({ id: t.id, odluka: 'odbijena' })}>Odbij</Button>
+                    <Button variant="secondary" loading={review.isPending} onClick={() => review.mutate({ id: t.id, odluka: 'aktivna' })}>Prihvati</Button>
+                    <Button variant="ghost" onClick={() => review.mutate({ id: t.id, odluka: 'odbijena' })}>Odbaci</Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          {/* Usvojene teme (bez sastanka) — uvedi na planirani sastanak. */}
+          <section className="space-y-2">
+            <h3 className="text-sm font-semibold text-ink">Usvojene — za dodavanje na sastanak</h3>
+            {usvojeneQ.isLoading ? (
+              <p className="text-sm text-ink-secondary">Učitavanje…</p>
+            ) : usvojene.length === 0 ? (
+              <p className="text-sm text-ink-secondary">Nema usvojenih tema koje čekaju sastanak.</p>
+            ) : (
+              <ul className="space-y-2">
+                {usvojene.map((t) => (
+                  <li key={t.id} className="flex flex-wrap items-center gap-2 rounded-panel border border-line bg-surface px-3 py-2">
+                    <span className="flex-1 text-sm text-ink">{t.naslov}</span>
                     <select
-                      className={`${INPUT_CLS} w-48`}
+                      className={`${INPUT_CLS} w-56`}
                       defaultValue=""
                       onChange={(e) => {
                         if (e.target.value) uvedi.mutate({ id: t.id, sastanakId: e.target.value });

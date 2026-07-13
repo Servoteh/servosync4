@@ -778,11 +778,12 @@ export interface AkcijaInput {
   status?: string;
   prioritet?: number;
 }
+// NAPOMENA: akcija-mutacije invalidiraju ŠIROK ['sastanci'] ključ (KEYS.all) —
+// akcije se prikazuju i u detalju sastanka (`useSastanakFull` = ['sastanci','detail',
+// id,'full']) i na mobilnom; usko invalidiranje samo ['sastanci','akcije'] ostavljalo
+// je detalj bajat (mobilni highlight statusa se nije pomerao — review nalaz #5).
 export const useCreateAkcija = () =>
-  useSastanciMutation<{ clientEventId: string } & AkcijaInput>(
-    (v) => post('/akcije', v),
-    KEYS.akcije,
-  );
+  useSastanciMutation<{ clientEventId: string } & AkcijaInput>((v) => post('/akcije', v));
 
 export interface AkcijaPatch {
   naslov?: string;
@@ -800,18 +801,14 @@ export interface AkcijaPatch {
   zatvorenNapomena?: string;
 }
 export const usePatchAkcija = () =>
-  useSastanciMutation<{ id: string; patch: AkcijaPatch }>(
-    (v) => patch(`/akcije/${v.id}`, v.patch),
-    KEYS.akcije,
-  );
+  useSastanciMutation<{ id: string; patch: AkcijaPatch }>((v) => patch(`/akcije/${v.id}`, v.patch));
 
 export const useDeleteAkcija = () =>
-  useSastanciMutation<{ id: string }>((v) => del(`/akcije/${v.id}`), KEYS.akcije);
+  useSastanciMutation<{ id: string }>((v) => del(`/akcije/${v.id}`));
 
 export const useBulkStatusAkcije = () =>
-  useSastanciMutation<{ ids: string[]; status: string }>(
-    (v) => post('/akcije/bulk-status', { ids: v.ids, status: v.status }),
-    KEYS.akcije,
+  useSastanciMutation<{ ids: string[]; status: string }>((v) =>
+    post('/akcije/bulk-status', { ids: v.ids, status: v.status }),
   );
 
 /* ── PM teme ── */

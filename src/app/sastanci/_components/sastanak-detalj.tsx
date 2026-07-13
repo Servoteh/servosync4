@@ -8,6 +8,7 @@ import { Can } from '@/lib/can';
 import { Button } from '@/components/ui-kit/button';
 import {
   newClientEventId,
+  useAkcijeWeeklyDiff,
   useLockSastanak,
   useMarkPrisutni,
   useReopenSastanak,
@@ -50,6 +51,11 @@ export function SastanakDetalj({ id, onBack }: { id: string; onBack: () => void 
   const sast = fullQ.data?.data;
   const canEdit = can(PERMISSIONS.SASTANCI_EDIT);
 
+  // Weekly diff za red „Od prošlog sastanka" (PDF/AI rezime). `since` = trenutak
+  // zaključavanja (paritet 1.0; prethodni-zaključani je R4 preciznije sidro).
+  const diffQ = useAkcijeWeeklyDiff({ since: sast?.zakljucanAt ?? undefined });
+  const weeklyDiff = diffQ.data?.data ?? null;
+
   async function pocni() {
     if (!sast) return;
     setBusy('pocni');
@@ -68,7 +74,7 @@ export function SastanakDetalj({ id, onBack }: { id: string; onBack: () => void 
     if (!confirm('Zaključati sastanak? Zapisnik se generiše i šalje učesnicima.')) return;
     setBusy('lock');
     try {
-      const blob = await generateSastanakPdf(buildPdfInput(sast));
+      const blob = await generateSastanakPdf(buildPdfInput(sast, weeklyDiff));
       const cid = newClientEventId();
       const up = await uploadPdf.mutateAsync({ id: sast.id, blob, clientEventId: cid });
       await lock.mutateAsync({ id: sast.id, clientEventId: cid, pdfStoragePath: up.data.storagePath });
@@ -153,11 +159,11 @@ export function SastanakDetalj({ id, onBack }: { id: string; onBack: () => void 
 
           <Tabs tabs={tabs} value={tab} onChange={setTab} ariaLabel="Detalj sastanka" />
 
-          {tab === 'zapisnik' && <DetaljZapisnik sast={sast} canEdit={canEdit} />}
+          {tab === 'zapisnik' && <DetaljZapisnik sast={sast} canEdit={canEdit} weeklyDiff={weeklyDiff} />}
           {tab === 'akcije' && <DetaljAkcije sastanakId={sast.id} canEdit={canEdit} />}
           {tab === 'priprema' && <DetaljPriprema sast={sast} canEdit={canEdit} />}
           {tab === 'odluke' && <DetaljOdluke sastanakId={sast.id} odluke={sast.odluke} canEdit={canEdit} />}
-          {tab === 'arhiva' && <DetaljArhiva sast={sast} />}
+          {tab === 'arhiva' && <DetaljArhiva sast={sast} weeklyDiff={weeklyDiff} />}
         </div>
       )}
     </>

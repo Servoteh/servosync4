@@ -3,13 +3,18 @@
 import { useState } from 'react';
 import { FileDown, Eye } from 'lucide-react';
 import { Button } from '@/components/ui-kit/button';
-import { fetchArhivaPdfUrl, type SastanakFull } from '@/api/sastanci';
+import { fetchArhivaPdfUrl, type SastanakFull, type WeeklyDiff } from '@/api/sastanci';
 import { generateSastanakPdf, type SastanakPdfInput } from '@/lib/sastanci-pdf';
 import { formatDateTime } from '@/lib/format';
 
-/** Sklopi SastanakFull → ulaz za jsPDF generator (jedna grupa akcija). */
-export function buildPdfInput(sast: SastanakFull): SastanakPdfInput {
+/**
+ * Sklopi SastanakFull → ulaz za jsPDF generator (jedna grupa akcija). `diff`
+ * (weekly diff) daje red „Od prošlog sastanka" — 1.0 ga uvek ima u zvaničnom/
+ * emailovanom PDF-u (review nalaz #3).
+ */
+export function buildPdfInput(sast: SastanakFull, diff?: WeeklyDiff | null): SastanakPdfInput {
   return {
+    diffSummary: diff ?? null,
     naslov: sast.naslov,
     datum: sast.datum,
     vreme: sast.vreme,
@@ -51,14 +56,14 @@ export function buildPdfInput(sast: SastanakFull): SastanakPdfInput {
 }
 
 /** Arhiva tab detalja — pregled nacrta PDF (nezaključan) / preuzimanje (zaključan). */
-export function DetaljArhiva({ sast }: { sast: SastanakFull }) {
+export function DetaljArhiva({ sast, weeklyDiff }: { sast: SastanakFull; weeklyDiff?: WeeklyDiff | null }) {
   const [busy, setBusy] = useState(false);
   const locked = sast.status === 'zakljucan';
 
   async function preview() {
     setBusy(true);
     try {
-      const blob = await generateSastanakPdf(buildPdfInput(sast));
+      const blob = await generateSastanakPdf(buildPdfInput(sast, weeklyDiff));
       const url = URL.createObjectURL(blob);
       window.open(url, '_blank', 'noopener');
       setTimeout(() => URL.revokeObjectURL(url), 60_000);
