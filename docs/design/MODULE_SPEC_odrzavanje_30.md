@@ -346,7 +346,7 @@ Paritet 23 sekcije 1.0 (`/maintenance/*`), 2.0 ui-kit, responsive (bez zasebnog 
 
 | # | Funkcija | Status |
 |---|---|---|
-| 1 | `/maintenance/me` (profil + efektivna prava; FE gating paritet) | NOT_STARTED |
+| 1 | `/maintenance/me` (profil + efektivna prava; FE gating paritet) | **R1: BE IMPLEMENTED** (GET; helper fn preko GUC + FE gate-ovi §2.4; unit) |
 | 2 | Dashboard KPI + kategorije + prioritetna lista + filteri + „Moje" | NOT_STARTED |
 | 3 | Karton mašine: Pregled tab (status, override prikaz, due zadaci) | NOT_STARTED |
 | 4 | Potvrda kontrole (insert maint_checks, result enum, napomena) | NOT_STARTED |
@@ -390,10 +390,41 @@ Paritet 23 sekcije 1.0 (`/maintenance/*`), 2.0 ui-kit, responsive (bez zasebnog 
 | 42 | Mobilni tok /m/odrzavanje (hub→lista→karton→prijava kvara+foto) | NOT_STARTED |
 | 43 | Foto incidenta kroz `maint_attach_incident_files` RPC (§7.3) | NOT_STARTED |
 | 44 | Storage proxy (upload/sign/delete; putanje 1.0-kompatibilne) | NOT_STARTED |
-| 45 | GUC sub+email test: operator scope, chief-bez-globalne-role, magacioner krug | NOT_STARTED |
-| 46 | e2e permission matrica (maint rola × ERP rola × endpoint × 200/403) | NOT_STARTED |
+| 45 | GUC sub+email test: operator scope, chief-bez-globalne-role, magacioner krug | **R1: SINTETIČKI unit** (operator/technician/chief/mgmt gate-derivacija + withUserRls routing; živi smoke = R4) |
+| 46 | e2e permission matrica (maint rola × ERP rola × endpoint × 200/403) | **R1: READ matrica IMPLEMENTED** (rola×endpoint×200/403, AUTHZ_ENFORCE=true; write matrica = R2) |
 | 47 | Idempotencija mutacija (clientEventId / rev_api_idempotency obrazac) | NOT_STARTED |
 | 48 | Živi smoke: pun ciklus (QR sken → prijava kvara → auto-WO → dodela → delovi/rad → završen → izveštaj) | NOT_STARTED |
+
+### 5.1 R1 (BE read sloj) — status 2026-07-13 (`src/modules/odrzavanje/`)
+
+R1 = **SAMO READ** (BE), sve kroz `Sy15Service.withUserRls` (GUC sub+email + `SET LOCAL ROLE
+authenticated`) → 102 RLS politike enforce row-scope **po konstrukciji**. Mutacije = R2.
+
+**Isporučeno:**
+- **Prisma**: 32 modela + 23 enuma dodato u `prisma/sy15.prisma` (generisano iz žive
+  information_schema; `maint_wo_number_counter` namerno izostavljen — deny-all/$queryRaw nikad).
+- **Permisije** (`permissions.ts`/`role-permissions.ts`): `odrzavanje.read/report/write/admin_ui`;
+  read+report = SVE aktivne uloge (F8), write = {admin, sef, magacioner, menadzment,
+  tehnicar_odrzavanja}, admin_ui = {admin, menadzment, magacioner}. `tehnicar_odrzavanja`
+  AKTIVIRAN (dosad bez bloka). Dvoslojni model u komentarima.
+- **GET endpointi** (`odrzavanje.read` klasa): `/me`, `/dashboard`, `/facility-types` (F5 → []),
+  mašine (+importable, +deletion-log, +/:code, +status-override/notes/files/tasks/checks),
+  preventiva (`/tasks`, `/tasks/due`, `/tasks/:id`, `/checks`), incidenti (lista/detalj/events),
+  radni nalozi (lista+grupe, `/assignable`, detalj+events/parts/labor), vozila (lista/detalj/tires/
+  service-plan/parts/bookings/+due), vozači (lista/detalj — PII), IT/objekti (lista/detalj),
+  sredstva (`/assets`, service-plan/+due), kalendar (`/calendar/deadlines`), zalihe
+  (`/parts`+/:id/stock-movements, `/suppliers`, `/locations`), dokumenta (meta lista/detalj),
+  `/settings`, `/notification-rules`, `/notifications`, izveštaji (incidents/work-orders/attention).
+- **R0 grants**: `authz-snapshots/talasF-R0-grants-DRAFT.sql` — verifikovano na restore-izvoru:
+  **0 rupa** (SELECT sve tabele+view, EXECUTE helper+RPC, cross-module SELECT već na `authenticated`).
+- **Testovi**: unit rola-matrica (`role-permissions.odrzavanje.spec.ts`) + sintetički
+  operator/technician/chief scope + withUserRls routing (`odrzavanje.service.spec.ts`) +
+  e2e read matrica (`test/odrzavanje-permissions.e2e-spec.ts`, AUTHZ_ENFORCE=true).
+
+**TODO (R2+):** sve mutacije (nalozi/incidenti/kontrole/napomene/fajlovi/settings/rules), 16 front
+RPC (create/archive/restore/ensure/import/rename/delete-hard/retry/preventive-WO/check-deadlines),
+storage-proxy (§7.4), foto incidenta kroz `maint_attach_incident_files` (§7.3), idempotencija,
+INSERT-bez-representation=201 (§7.6), write e2e matrica, verifikacija trigera (auto-WO/wo_number/audit).
 
 ## 6. Redosled izvođenja (R-faze za CEO talas)
 
