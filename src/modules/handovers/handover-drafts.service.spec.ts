@@ -150,6 +150,11 @@ function fullPrismaMock(drawings: DrawingRow[]) {
     worker: {
       findUnique: jest.fn().mockResolvedValue({ id: 33, active: true }),
     },
+    // Fallback (proba 13.07, Igor): kad JWT nema workerId, create() čita svež
+    // users.worker_id iz baze. Default = nema veze (odgovara starom SSO nalogu).
+    user: {
+      findUnique: jest.fn().mockResolvedValue({ workerId: null }),
+    },
     project: { findUnique: jest.fn().mockResolvedValue({ id: 4 }) },
     drawing: { findMany: jest.fn(), groupBy: jest.fn() },
     drawingPdf: { findMany: jest.fn() },
@@ -211,7 +216,10 @@ function fullPrismaMock(drawings: DrawingRow[]) {
 
 /** Payload nested item create-a (za asertacije pre_check_* upisa). */
 interface DraftCreateArg {
-  data: { items?: { create: Record<string, unknown>[] } };
+  data: {
+    designerId?: number;
+    items?: { create: Record<string, unknown>[] };
+  };
 }
 
 async function makeFullService(drawings: DrawingRow[]) {
@@ -301,6 +309,61 @@ describe("HandoverDraftsService — §6.5.3 preduslovi stavke (create)", () => {
     });
 
     expect(res.meta.warnings).toEqual([]);
+  });
+});
+
+describe("HandoverDraftsService — projektant iz baze kad JWT nema workerId (proba 13.07, Igor)", () => {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { designerId: _omit, ...NO_DESIGNER_DTO } = BASE_DTO;
+  const STALE_ACTOR = {
+    userId: 37,
+    email: "igor.vostic@servoteh.com",
+    role: "menadzment",
+    workerId: null,
+  };
+
+  it("token bez workerId, ali users.worker_id vezan naknadno → svež lookup po userId popuni projektanta", async () => {
+    const { service, prisma } = await makeFullService([APPROVED]);
+    // SSO nalog dobio radnika posle logina — baza zna, token ne.
+    prisma.user.findUnique.mockResolvedValue({ workerId: 197 });
+    prisma.worker.findUnique.mockResolvedValue({ id: 197, active: true });
+
+    await service.create(NO_DESIGNER_DTO, STALE_ACTOR);
+
+    expect(prisma.user.findUnique).toHaveBeenCalledWith({
+      where: { id: 37 },
+      select: { workerId: true },
+    });
+    const arg = (
+      prisma.handoverDraft.create.mock.calls as [DraftCreateArg][]
+    )[0][0];
+    expect(arg.data.designerId).toBe(197);
+  });
+
+  it("token bez workerId i nalog i dalje nevezan → 422 (ne pada tiho na designer=0)", async () => {
+    const { service, prisma } = await makeFullService([APPROVED]);
+    prisma.user.findUnique.mockResolvedValue({ workerId: null });
+
+    const err = await errorOf(service.create(NO_DESIGNER_DTO, STALE_ACTOR));
+
+    expect(err).toBeInstanceOf(UnprocessableEntityException);
+    expect((err as Error).message).toContain("Projektant je obavezan");
+    expect(prisma.handoverDraft.create).not.toHaveBeenCalled();
+  });
+
+  it("token IMA workerId → ne dira bazu (bez suvišnog users lookup-a)", async () => {
+    const { service, prisma } = await makeFullService([APPROVED]);
+
+    await service.create(NO_DESIGNER_DTO, {
+      ...STALE_ACTOR,
+      workerId: 33,
+    });
+
+    expect(prisma.user.findUnique).not.toHaveBeenCalled();
+    const arg = (
+      prisma.handoverDraft.create.mock.calls as [DraftCreateArg][]
+    )[0][0];
+    expect(arg.data.designerId).toBe(33);
   });
 });
 

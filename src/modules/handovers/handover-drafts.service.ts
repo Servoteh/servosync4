@@ -292,7 +292,21 @@ export class HandoverDraftsService {
     // workerId), po nameri spec-a (P4 §: designer = current user). Eksplicitan
     // izbor ostaje moguć (vođa unosi za kolegu), ali radnik mora biti AKTIVAN
     // (slobodan unos šifre je propuštao stare/neaktivne operatere).
-    const designerId = dto.designerId ?? actor?.workerId ?? 0;
+    //
+    // Zamka (proba 13.07, Igor): JWT nosi workerId iz trenutka izdavanja tokena.
+    // Ako se users.worker_id VEŽE naknadno (SSO-JIT nalog dobio radnika posle
+    // prvog logina), stari token i dalje ima workerId=null → create pada 422 dok
+    // se korisnik ne re-loguje. Zato: kad token nema workerId, čitaj SVEŽ
+    // users.worker_id iz baze po userId-u umesto da se oslanjamo na token.
+    let actorWorkerId = actor?.workerId ?? null;
+    if (!actorWorkerId && actor?.userId) {
+      const freshUser = await this.prisma.user.findUnique({
+        where: { id: actor.userId },
+        select: { workerId: true },
+      });
+      actorWorkerId = freshUser?.workerId ?? null;
+    }
+    const designerId = dto.designerId ?? actorWorkerId ?? 0;
     if (!designerId || designerId <= 0)
       throw new UnprocessableEntityException(
         "Projektant je obavezan — izaberite projektanta ili vežite nalog za radnika (users.worker_id).",
