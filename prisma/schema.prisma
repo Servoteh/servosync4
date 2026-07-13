@@ -2020,6 +2020,12 @@ model CncProgram {
   completedByWorkerId Int?      @map("completed_by_worker_id")
   completedAt         DateTime? @map("completed_at") @db.Timestamptz(6)
   note                String?   @map("note") @db.VarChar(500)
+  /// CAM red (prioritizacija prevlačenjem — Miljan/Nikola/Jovica). Rang 1..N nad
+  /// rangiranim pozicijama; NULL = nerangirana. Renumeracija bez rupa u servisu.
+  queueOrder          Int?      @map("queue_order")
+  /// Radnik (svež users.worker_id lookup) koji je poslednji promenio redosled.
+  queueSetByWorkerId  Int?      @map("queue_set_by_worker_id")
+  queueSetAt          DateTime? @map("queue_set_at") @db.Timestamptz(6)
   createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt           DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 

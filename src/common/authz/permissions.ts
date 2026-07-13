@@ -12,6 +12,11 @@ export const PERMISSIONS = {
   /** Unos rada (barkod prijava/zatvaranje operacije) — uža mutacija za proizvodnog radnika,
    *  bez punog `tehnologija.write`. Endpointi: /barcode/scan, /tech-processes/:id/finish. */
   TEHNOLOGIJA_REPORT_WORK: "tehnologija.report_work",
+  /** CAM red — redosled CAM pozicija (prevlačenje). Određuju ga IMENOVANI tehnolozi
+   *  (miljan/nikola/jovica) preko `user_permission_overrides` grant-ova; NE dodaje se
+   *  nijednoj roli u role-permissions.ts (admin nasleđuje kroz ALL). Endpoint:
+   *  PATCH /v1/cnc-programs/:workOrderId/queue. */
+  CAM_PRIORITET: "tehnologija.cam_prioritet",
   // Radni nalozi
   RN_READ: "rn.read",
   RN_WRITE: "rn.write",

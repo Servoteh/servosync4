@@ -16,6 +16,7 @@ import { PERMISSIONS } from "../../common/authz/permissions";
 import { CncProgramsService } from "./cnc-programs.service";
 import type { ListCncProgramsQuery } from "./cnc-programs.service";
 import type { SetCncProgramDoneDto } from "./dto/set-cnc-program-done.dto";
+import type { MoveCncQueueDto } from "./dto/move-cnc-queue.dto";
 import type { AuthUser } from "../auth/jwt.strategy";
 
 /**
@@ -38,6 +39,22 @@ export class CncProgramsController {
   @Get()
   list(@Query() query: ListCncProgramsQuery) {
     return this.cncPrograms.list(query);
+  }
+
+  /**
+   * Redosled CAM reda (prevlačenje). Statičniji segment `:workOrderId/queue`
+   * MORA biti iznad `:workOrderId` da Nest ruter ne bi „posenčio" ovu rutu.
+   * Gate: NOVA permisija `tehnologija.cam_prioritet` (imenovani tehnolozi preko
+   * grant-a; `tehnologija.write` je preširok — ima ga i cnc_programer).
+   */
+  @Patch(":workOrderId/queue")
+  @RequirePermission(PERMISSIONS.CAM_PRIORITET)
+  moveInQueue(
+    @Param("workOrderId", ParseIntPipe) workOrderId: number,
+    @Body() dto: MoveCncQueueDto,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.cncPrograms.moveInQueue(workOrderId, dto, req.user);
   }
 
   @Patch(":workOrderId")
