@@ -17,6 +17,11 @@ import { byId, uniqueIds } from "../../common/relations";
 import { alignIdSequence } from "../../common/db-sequences";
 import { parseDateParam } from "../../common/date-params";
 import { resolveActorWorkerId } from "../../common/workers/resolve-actor-worker";
+import { MailService } from "../../common/mail/mail.service";
+import {
+  isPrimopredajaApprover,
+  findApproverByWorkerId,
+} from "../../common/authz/primopredaja-approvers";
 import {
   CreateHandoverDraftDto,
   CreateHandoverDraftItemInput,
@@ -130,6 +135,7 @@ export class HandoverDraftsService {
     private readonly prisma: PrismaService,
     private readonly numbering: DraftNumberingService,
     private readonly notifications: NotificationsService,
+    private readonly mail: MailService,
   ) {}
 
   // ---------------------------------------------------------------- READ
@@ -327,6 +333,24 @@ export class HandoverDraftsService {
         `Predmet ${dto.projectId} ne postoji.`,
       );
 
+    // Odobravač (notifikacija „kreiran nacrt — kreiraj primopredaju", Nenad
+    // 13.07): OBAVEZAN kad projektant NIJE sam jedan od 6 odobravača; kad JESTE,
+    // ignoriše se (sam kreira primopredaju). Kad je obavezan, mora biti IZ skupa.
+    const creatorIsApprover = isPrimopredajaApprover(designerId);
+    let approver = null;
+    if (!creatorIsApprover) {
+      const chosen = dto.notifyApproverWorkerId;
+      if (!chosen || chosen <= 0)
+        throw new UnprocessableEntityException(
+          "Izaberite odobravača kome ide notifikacija za kreiranje primopredaje.",
+        );
+      approver = findApproverByWorkerId(chosen);
+      if (!approver)
+        throw new UnprocessableEntityException(
+          `Radnik ${chosen} nije u listi odobravača primopredaje.`,
+        );
+    }
+
     // `handover_draft_items.drawing_id` NEMA DB FK (legacy obrazac) — validiraj
     // ovde da se ne kreiraju orphan reference (§6.1/§6.2).
     const drawingIds = uniqueIds([
@@ -412,7 +436,61 @@ export class HandoverDraftsService {
     });
 
     // Envelope: soft upozorenja NE blokiraju (§6.5.3/§6.5.4 — meta.warnings).
-    return { ...(await this.findOne(created.id)), meta: { warnings } };
+    const result = { ...(await this.findOne(created.id)), meta: { warnings } };
+
+    // Notifikacija odobravaču (in-app + mejl) — samo kad je izabran (projektant
+    // NIJE sam odobravač). D8 pravilo: NE sme da obori upis nacrta → try/catch,
+    // greška se loguje ali se nacrt svejedno vraća.
+    if (approver) {
+      const draftNumber = result.data?.draftNumber ?? String(created.id);
+      const designerName = result.data?.designer?.fullName ?? "projektant";
+      await this.notifyApprover(approver, {
+        draftId: created.id,
+        draftNumber,
+        designerName,
+      });
+    }
+
+    return result;
+  }
+
+  /**
+   * Pošalji odobravaču in-app notifikaciju i mejl (Resend) da je kreiran nacrt
+   * koji treba pretvoriti u primopredaju. Nikad ne baca (D8): svaki kanal je u
+   * svom try/catch, pa pad jednog (ili oba) ne ruši kreiranje nacrta.
+   */
+  private async notifyApprover(
+    approver: { workerId: number; email: string; fullName: string },
+    ctx: { draftId: number; draftNumber: string; designerName: string },
+  ): Promise<void> {
+    const message = `${ctx.designerName} je kreirao nacrt ${ctx.draftNumber} — potrebno je kreirati primopredaju.`;
+    try {
+      await this.notifications.notifyWorkers([approver.workerId], {
+        type: "nacrt.kreiran",
+        message,
+        refTable: "handover_drafts",
+        refId: ctx.draftId,
+      });
+    } catch (e) {
+      this.logger.error(
+        `In-app notifikacija odobravaču ${approver.workerId} FAIL (nacrt ${ctx.draftId}): ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+    try {
+      await this.mail.send({
+        to: approver.email,
+        subject: `Nova primopredaja za kreiranje — nacrt ${ctx.draftNumber}`,
+        html:
+          `<p>Poštovani ${approver.fullName},</p>` +
+          `<p>${ctx.designerName} je kreirao nacrt <strong>${ctx.draftNumber}</strong>.</p>` +
+          `<p>Potrebno je da kreirate primopredaju (odobrite nacrt) u ServoSync-u.</p>` +
+          `<p>— ServoSync</p>`,
+      });
+    } catch (e) {
+      this.logger.error(
+        `Mejl odobravaču ${approver.email} FAIL (nacrt ${ctx.draftId}): ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
   }
 
   // ------------------------- §6.5.3 / §6.5.4 preduslovi i pre-check stavki

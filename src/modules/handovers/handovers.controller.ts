@@ -82,6 +82,15 @@ export class HandoversController {
     return this.handovers.engineers();
   }
 
+  /**
+   * Odobravači primopredaje — padajuća lista „pošalji na odobrenje" u nacrtu
+   * (Nenad 13.07: fiksnih 6, filtrirano na aktivne). Notifikacija ide izabranom.
+   */
+  @Get("approvers")
+  approvers() {
+    return this.handovers.approvers();
+  }
+
   @Get("pending-approval")
   pendingApproval(@Query() query: ListHandoversQuery) {
     return this.handovers.pendingApproval(query);

@@ -5,6 +5,7 @@ import {
 } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
 import { NotificationsService } from "../notifications/notifications.service";
+import { MailService } from "../../common/mail/mail.service";
 import { DraftNumberingService } from "./draft-numbering.service";
 import { HandoverDraftsService } from "./handover-drafts.service";
 
@@ -34,6 +35,10 @@ function notificationsMock() {
   };
 }
 
+function mailMock() {
+  return { send: jest.fn().mockResolvedValue(true), configured: false };
+}
+
 const DRAFT = {
   id: 15,
   draftNumber: "D-2026-15",
@@ -53,6 +58,7 @@ describe("HandoverDraftsService — D8 emit notifikacija (submit)", () => {
         { provide: PrismaService, useValue: {} },
         { provide: DraftNumberingService, useValue: {} },
         { provide: NotificationsService, useValue: notifications },
+        { provide: MailService, useValue: mailMock() },
       ],
     }).compile();
     emit = mod.get(HandoverDraftsService);
@@ -224,6 +230,8 @@ interface DraftCreateArg {
 
 async function makeFullService(drawings: DrawingRow[]) {
   const prisma = fullPrismaMock(drawings);
+  const notifications = notificationsMock();
+  const mail = mailMock();
   const mod: TestingModule = await Test.createTestingModule({
     providers: [
       HandoverDraftsService,
@@ -232,7 +240,8 @@ async function makeFullService(drawings: DrawingRow[]) {
         provide: DraftNumberingService,
         useValue: { next: jest.fn().mockResolvedValue("2026-0001") },
       },
-      { provide: NotificationsService, useValue: notificationsMock() },
+      { provide: NotificationsService, useValue: notifications },
+      { provide: MailService, useValue: mail },
     ],
   }).compile();
   const service = mod.get(HandoverDraftsService);
@@ -240,13 +249,15 @@ async function makeFullService(drawings: DrawingRow[]) {
   jest.spyOn(service, "findOne").mockResolvedValue({
     data: { id: 15, draftNumber: "2026-0001", designerId: 33, designer: null },
   } as never);
-  return { service, prisma };
+  return { service, prisma, notifications, mail };
 }
 
 const BASE_DTO = {
   designerId: 33,
   projectId: 4,
   pieceCount: 3,
+  // designer 33 NIJE odobravač → izbor odobravača je obavezan (197 = Igor je u skupu).
+  notifyApproverWorkerId: 197,
   items: [{ drawingId: 10, quantityToProduce: 6 }],
 };
 
@@ -364,6 +375,66 @@ describe("HandoverDraftsService — projektant iz baze kad JWT nema workerId (pr
       prisma.handoverDraft.create.mock.calls as [DraftCreateArg][]
     )[0][0];
     expect(arg.data.designerId).toBe(33);
+  });
+});
+
+describe("HandoverDraftsService — notifikacija odobravaču (create, Nenad 13.07)", () => {
+  // designer 33 NIJE odobravač; 197 (Igor) JESTE.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { notifyApproverWorkerId: _omit, ...NO_APPROVER_DTO } = BASE_DTO;
+
+  it("projektant NIJE odobravač i NEMA izbor → 422, bez upisa nacrta", async () => {
+    const { service, prisma } = await makeFullService([APPROVED]);
+    const err = await errorOf(service.create(NO_APPROVER_DTO));
+    expect(err).toBeInstanceOf(UnprocessableEntityException);
+    expect((err as Error).message).toContain("Izaberite odobravača");
+    expect(prisma.handoverDraft.create).not.toHaveBeenCalled();
+  });
+
+  it("izbor van skupa 6 → 422 (nije u listi odobravača)", async () => {
+    const { service, prisma } = await makeFullService([APPROVED]);
+    const err = await errorOf(
+      service.create({ ...NO_APPROVER_DTO, notifyApproverWorkerId: 99999 }),
+    );
+    expect(err).toBeInstanceOf(UnprocessableEntityException);
+    expect((err as Error).message).toContain("nije u listi odobravača");
+    expect(prisma.handoverDraft.create).not.toHaveBeenCalled();
+  });
+
+  it("validan izbor → nacrt kreiran + in-app notifyWorkers + mejl izabranom", async () => {
+    const { service, notifications, mail } = await makeFullService([APPROVED]);
+    await service.create({ ...NO_APPROVER_DTO, notifyApproverWorkerId: 197 });
+    expect(notifications.notifyWorkers).toHaveBeenCalledWith(
+      [197],
+      expect.objectContaining({
+        type: "nacrt.kreiran",
+        refTable: "handover_drafts",
+      }),
+    );
+    expect(mail.send).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "igor.vostic@servoteh.com" }),
+    );
+  });
+
+  it("projektant JESTE odobravač (197) → nema obavezan izbor, nema notifikacije", async () => {
+    const { service, notifications, mail, prisma } = await makeFullService([
+      APPROVED,
+    ]);
+    prisma.worker.findUnique.mockResolvedValue({ id: 197, active: true });
+    // bez notifyApproverWorkerId — ne sme da padne 422 jer je sam odobravač
+    await service.create({ ...NO_APPROVER_DTO, designerId: 197 });
+    expect(notifications.notifyWorkers).not.toHaveBeenCalled();
+    expect(mail.send).not.toHaveBeenCalled();
+    expect(prisma.handoverDraft.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("in-app notifikacija padne → nacrt SE svejedno kreira (D8)", async () => {
+    const { service, notifications, prisma } = await makeFullService([
+      APPROVED,
+    ]);
+    notifications.notifyWorkers.mockRejectedValue(new Error("db down"));
+    await service.create({ ...NO_APPROVER_DTO, notifyApproverWorkerId: 197 });
+    expect(prisma.handoverDraft.create).toHaveBeenCalledTimes(1);
   });
 });
 

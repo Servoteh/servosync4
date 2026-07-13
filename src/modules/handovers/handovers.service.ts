@@ -23,6 +23,7 @@ import {
   technologistWorkerWhere,
   TECHNOLOGIST_CHECK_SELECT,
 } from "../../common/workers/technologist-criteria";
+import { PRIMOPREDAJA_APPROVERS } from "../../common/authz/primopredaja-approvers";
 import type { AuthUser } from "../auth/jwt.strategy";
 import { LaunchHandoverDto } from "./dto/launch-handover.dto";
 import { ApproveHandoverDto } from "./dto/approve-handover.dto";
@@ -281,6 +282,22 @@ export class HandoversService {
     if (!where) return { data: [] };
     const data = await this.prisma.worker.findMany({
       where,
+      select: SAFE_WORKER_SELECT,
+      orderBy: { fullName: "asc" },
+    });
+    return { data };
+  }
+
+  /**
+   * Odobravači primopredaje — fiksnih 6 (PRIMOPREDAJA_APPROVERS, Nenad 13.07),
+   * filtrirano na AKTIVNE radnike (neaktivan odobravač se ne nudi). Vraća isti
+   * oblik kao engineers/technologists (id/fullName/username) da FE picker deli
+   * komponentu. Redosled po imenu.
+   */
+  async approvers() {
+    const ids = PRIMOPREDAJA_APPROVERS.map((a) => a.workerId);
+    const data = await this.prisma.worker.findMany({
+      where: { id: { in: ids }, active: true },
       select: SAFE_WORKER_SELECT,
       orderBy: { fullName: "asc" },
     });

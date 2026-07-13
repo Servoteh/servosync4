@@ -38,6 +38,13 @@ export interface CreateHandoverDraftDto {
   /** Broj komada za proizvodnju — obavezno. */
   pieceCount: number;
   note?: string;
+  /**
+   * Odobravač kome ide notifikacija „kreiran nacrt — kreiraj primopredaju"
+   * (worker id iz PRIMOPREDAJA_APPROVERS skupa). OBAVEZAN kad projektant NIJE
+   * sam odobravač; ignoriše se kad jeste (sam kreira primopredaju). Validaciju
+   * (obaveznost + pripadnost skupu) radi servis — zavisi od toga ko je akter.
+   */
+  notifyApproverWorkerId?: number;
   items?: CreateHandoverDraftItemInput[];
 }
 
