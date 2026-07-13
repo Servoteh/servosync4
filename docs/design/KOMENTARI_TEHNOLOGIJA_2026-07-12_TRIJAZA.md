@@ -38,4 +38,25 @@ Realizacija: **A** = isporučeno (Paket A) · **B** = isporučeno (Paket B) · *
   preraspodela ekrana), t.8-mobilni (Evidencija RN mobilni). Opisani kao 3.0 zahtevi u
   [ROADMAP.md §3.0 „Zahtevi tehnologije (Miljan) za 3.0"](../ROADMAP.md). **Ne implementirati u 2.0.**
 
+**Nadgradnja 13.07 (probe runda 1+2, van originalnih 10 tačaka):**
+
+- Projektant tok: `GET /handovers/engineers` (aktivni „Inženjeri") + projektant ComboBox sa
+  prefill-om ulogovanog; `designerId` opcion (default = JWT worker, 422 za neaktivnog); **AUTO-BOM**
+  (izbor glavnog sklopa automatski izlistava pozicije iz sastavnice); labela „Predato tehnologu" →
+  **„Predao (projektant)"**.
+- Grupno odobravanje/odbijanje **po nacrtu** (`approve-batch`/`reject-batch`, ODLUKE #36) — CELA
+  primopredaja odjednom; lansiranje ostaje pojedinačno.
+- Kiosk **„Moji otvoreni"** (`GET /tech-processes/worker/open`) — zatvaranje otvorenih postupaka iz
+  liste kroz `/:id/finish` bez ponovnog skeniranja.
+- CAM lista filtrira pozicije sa otkucanim CNC glodanjem/struganjem ili završnom kontrolom →
+  **549→271** pozicija (ručno glodanje/struganje izuzeto).
+- Dimenzija materijala (`materialDimension`) u info tabeli RN štampe.
+- Kvalitet badge na RN detalju: „Dorada" (warn) / „Škart" (danger) za `qualityTypeId` 1/2, tekst
+  „Redovan" za 0.
+- **Login parnost 1.0→2.0**: svi 1.0 korisnici → 2.0 nalog sa istom lozinkom (27 update + 31 insert;
+  backup `users_pwhash_backup_20260713`) + 17 biro naloga (Milorad Jerotić=`projektant_vodja`,
+  ostali `inzenjer`).
+- E2E simulacija toka na produ + **id-floor fix `b064a96`** (native `drawing_handovers.id` kolizija
+  sa legacy `work_orders.drawing_handover_id` → `submit()` floor GREATEST, native od 10000+).
+
 Odluke se, kad padnu, upisuju u [ODLUKE.md](../ODLUKE.md).

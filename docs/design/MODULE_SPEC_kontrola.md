@@ -45,6 +45,10 @@ Screenshotovi su u izvornom `.docx` (koren repoa). Polja su verna legacy-ju:
 ### 3.1 KUCANJE (prijava rada) — ekrani 1→2→3→4
 **Tok:** sken kartice (radnik) → sken RN barkoda → sken operacija barkoda → „ZAPOČELI STE" potvrda → keypad: broj komada (+ napomena/dokumentacija) → zatvori.
 **Dodatne funkcije (ekran 1):** *Zatvori nalog drugog radnika* (uz `definesApproval`/dodatna ovlašćenja), *Unos novog TP pre zatvaranja započetog* (rad na 2 RJ / 2 RN paralelno), *Detaljan pregled postupaka*.
+**„Moji otvoreni"** *(isporučeno 13.07.2026, ODLUKE #36/proba r2)*: kiosk panel sa listom otvorenih
+postupaka prijavljenog radnika (`GET /tech-processes/worker/open` — kartica ili JWT worker, +
+`hasOpenSession`); zatvaranje operacije direktno iz liste kroz postojeći `POST /:id/finish`, **bez
+ponovnog skeniranja** RN+operacija barkoda — alternativa sken-driven toku gore.
 **Uglavnom već isplaniran/izgrađen** — vidi [MODULE_SPEC_tehnologija §3, §5](MODULE_SPEC_tehnologija.md). **Delta ovog terminala:** identitet iz kartice, „ZAPOČELI STE" potvrda, dodatne funkcije (§4).
 
 ### 3.2 KONTROLA (završna kontrola) — ekrani 1→2→3→**5→6→7**
@@ -87,6 +91,7 @@ Screenshotovi su u izvornom `.docx` (koren repoa). Polja su verna legacy-ju:
 |---|---|---|
 | `/tech-processes/scan` | POST | **+ `workerCard`** (identitet iz kartice); prijava rada |
 | `/tech-processes/:id/finish` | POST | zatvaranje; kontrolor sme i bez svih otkucanih (ODLUKE #14) |
+| `/tech-processes/worker/open` | GET | **isporučeno 13.07.2026 (ODLUKE #36)** — „Moji otvoreni": otvoreni postupci radnika (`?card=` ili JWT worker) + `hasOpenSession`; zatvaranje iz liste kroz `/:id/finish` bez ponovnog skeniranja |
 | `/tech-processes/:id/control` | POST | **novo** — završna kontrola: `{ workerCard, qualityTypeId, pieceCount, locations: [{positionId, quantity}], note? }`; jedna transakcija: kvalitet + lokacije + zatvaranje + child RN |
 | `/tech-processes/:id/rework` | POST | dorada/škart → novi nalog ([tehnologija §5](MODULE_SPEC_tehnologija.md)) |
 | `/work-orders/:id/labels` | GET | TSPL2/PDF nalepnice ([stampa §8](MODULE_SPEC_stampa.md)) |

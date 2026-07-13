@@ -1,4 +1,4 @@
-# ServoSync — preostale faze (stanje 2026-07-12)
+# ServoSync — preostale faze (stanje 2026-07-13)
 
 > Šta je urađeno zaključno sa danas i **šta konkretno ostaje** do 4.0. Autoritativni
 > plan verzija ostaje [ROADMAP.md](ROADMAP.md); ovaj dokument je „operativni TODO" —
@@ -19,9 +19,28 @@ strukture, MRP/Nabavka (uvid), Komitenti/Predmeti (pregled), barkod (RN dokument
   ka PDM/BigBit share-ovima) čita XML i šalje u `POST /pdm/import`; PDF crtež se ne briše.
 - **RBAC enforced na produkciji** (`AUTHZ_ENFORCE=true`); 5 kontrolora, SoD pravila.
 - **Batch print** crteža sa izborom štampača (ploter/A4), zbir po operaciji, RN barkod verzioni guard.
+- **Probe na produkciji + dorade 12–13.07 (ODLUKE #33–#36):**
+  - `/nacrti` (gate `primopredaje.write`) i `/handovers` (gate `primopredaje.approve`) razdvojeni;
+    tehnolog+menadzment dobili `primopredaje.approve` (menadzment privremeno).
+  - **Paket A** (#34): tehnolozi vezani na radnike (`users.worker_id`), HITNO flag (`is_urgent` +
+    badge/RN-štampa), kolone Radnik/Tehnolog u Realizaciji, „PDF crteža" u detalju, tab „Na pisanju"
+    + `writing-stats`.
+  - **Paket B** (#35): poreklo dorada/škart RN-a (`parent_work_order_id`, filter `?reworkOnly`),
+    `locations[]` u listi RN + kolona Lokacija na `/completed-orders`, **NOVI modul `cnc-programs`**
+    (tabela `cnc_programs`, lista pozicija + ček „CAM urađen", nav „CAM programiranje").
+  - **Proba r1:** AUTO-BOM (sklop izlistava pozicije iz sastavnice), `designerId` opcion + projektant
+    ComboBox, `GET /handovers/engineers`, labela „Predao (projektant)".
+  - **Proba r2** (#36): `approve-batch`/`reject-batch` (grupno po nacrtu; lansiranje pojedinačno),
+    kiosk „Moji otvoreni" (`GET /tech-processes/worker/open`, zatvaranje bez skeniranja), CAM filter
+    549→271, dimenzija materijala u RN štampi, kvalitet badge.
+  - **E2E tok na produ + fix `b064a96`** (id-floor: native primopredaje od 10000+); **login parnost
+    1.0→2.0** (27 update + 31 insert, backup `users_pwhash_backup_20260713`) + 17 biro naloga;
+    sidebar stavke Kucanje/Kontrola (pogon) uklonjene (ulaz `/kiosk` / 1.0 HUB). PDF gap:
+    [design/PDF_GAP_2026-07-13.md](design/PDF_GAP_2026-07-13.md).
 
-**Preostalo za 2.0 = kozmetika, ne izgradnja:** UI dorade, sitni bugfix, poravnavanje naziva sa
-QBigTehn-om. Nema više velikih modula — „imamo aplikaciju 2.0" je ispunjeno.
+**Preostalo za 2.0 = uglavnom kozmetika, ne izgradnja:** UI dorade, sitni bugfix, poravnavanje
+naziva sa QBigTehn-om. „Imamo aplikaciju 2.0" je ispunjeno — mada je 12–13.07 ipak isporučen i
+jedan mali novi modul (`cnc-programs`/CAM programiranje), pa „kozmetika" važi od ovog checkpointa.
 
 ---
 
@@ -91,5 +110,6 @@ Kad proizvodnja pređe potpuno na 2.0 kao izvor istine:
 
 ---
 
-*Poslednji update: 2026-07-12 — otvorena BigBit sync radna linija (Faza 1 živa, Faza 2 gated do
-cutover-a); 2.0 „Tehnologija" praktično završen (ostaje kozmetika).*
+*Poslednji update: 2026-07-13 — probe na produkciji + paketi dorada A/B isporučeni (ODLUKE
+#33–#36, uklj. novi mali modul `cnc-programs`), login parnost 1.0→2.0; BigBit sync linija
+nepromenjena (Faza 1 živa, Faza 2 gated do cutover-a); 2.0 „Tehnologija" praktično završen.*

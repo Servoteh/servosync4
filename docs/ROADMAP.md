@@ -74,6 +74,48 @@ URL + ključevi (sav data-access ide kroz `sbReq` wrapper, pa je promena u jedno
 PDM/crteži/BOM · Nacrti · Primopredaje · Radni nalozi (RN) · Tehnološki postupci (TP)/Proizvodnja · Lokacije delova · Proizvodne strukture (radnici/mašine/operacije) · MRP/Nabavka (uvid) · Komitenti/Predmeti (pregled).
 **Van scope-a 2.0:** knjigovodstvo, PDV/KEPU, fakturisanje, fiskalizacija, POS — ostaje u BigBit-u (dolazi u 4.0).
 
+### ✅ Checkpoint 2026-07-13 — probe na produkciji + dorade (ODLUKE #33–#36)
+
+Isporuke 12–13.07 (detaljno: [MODUL_TEHNOLOGIJA.md](MODUL_TEHNOLOGIJA.md) +
+[design/KOMENTARI_TEHNOLOGIJA_2026-07-12_TRIJAZA.md](design/KOMENTARI_TEHNOLOGIJA_2026-07-12_TRIJAZA.md)):
+
+- **Nacrti/Primopredaje razdvojeni** (ODLUKE #33): `/nacrti` (gate `primopredaje.write`, projektanti)
+  vs `/handovers` (gate `primopredaje.approve`, tehnolozi); tehnolog+menadzment dobili
+  `primopredaje.approve` (menadzment PRIVREMENO).
+- **Paket A** (#34): `users.worker_id` vezani za 5 tehnologa (Miljan→13, Nikola→43, Aleksandar→77,
+  Stefan→181, Dragan→2226); **HITNO** flag (`drawing_handovers.is_urgent`, migracija
+  `20260712180000`; postavlja approve, briše return-to-pending; badge svuda + crveni „HITNO" na RN
+  štampi); Realizacija: kolona „Radnik" (kucao) + nova „Tehnolog"; dugme „PDF crteža" u detalju
+  primopredaje; tab „Na pisanju" + `GET /handovers/writing-stats`.
+- **Paket B** (#35): `work_orders.parent_work_order_id` (migracija `20260712200000`; `rework()`
+  upisuje, enrich vraća `parentWorkOrder`+`reworkChildren`, filter `?reworkOnly=true`);
+  `locations[{positionCode,quantity}]` (neto `part_locations` SUM) u listi RN + kolona Lokacija na
+  `/completed-orders`; **NOVI modul `cnc-programs`** + tabela `cnc_programs` (migracija
+  `20260712210000`): GET lista pozicija (`usesPriority` RC — 17.0/17.1 CAM Programiranje) + PATCH
+  `{isDone,note?}` sa auditom iz JWT-a; nav „CAM programiranje".
+- **2.0 sidebar:** stavke „Kucanje (pogon)"/„Kontrola (pogon)" UKLONJENE — ulaz = direktan URL
+  `/kiosk` ili 1.0 HUB pločice.
+- **E2E simulacija toka na produ 13.07 + bug fix `b064a96`:** native `drawing_handovers.id` kolizija
+  sa legacy `work_orders.drawing_handover_id` (nosi ID NACRTA iz tRN, 1..3446, 3349 RN-ova) → launch
+  409 na tuđem RN-u; `submit()` sekvenca sada floor `GREATEST(MAX(id), MAX(legacy ref), 9999)` →
+  native primopredaje od 10000+ do cutover remapa.
+- **Login parnost 1.0→2.0:** svi 1.0 korisnici imaju 2.0 nalog sa ISTOM 1.0 lozinkom (27 update + 31
+  insert po SSO JIT mapiranju; backup `users_pwhash_backup_20260713` u prod bazi; servisni nalozi
+  netaknuti). +17 biro naloga (Milorad Jerotić=`projektant_vodja`, ostali `inzenjer`, svi
+  worker-linked); dejan.cirkovic i jovan.blagojevic nemaju 1.0 nalog → privremena lozinka.
+- **Proba runda 1:** `GET /handovers/engineers` (aktivni „Inženjeri"); `designerId` OPCION (default =
+  JWT worker; mora AKTIVAN — 422); projektant ComboBox + prefill; **AUTO-BOM** (izbor glavnog sklopa
+  automatski izlistava pozicije iz sastavnice; nabavni tiho preskočeni, neodobreni uz upozorenje);
+  labela „Predato tehnologu" → **„Predao (projektant)"**.
+- **Proba runda 2** (#36): `approve-batch`/`reject-batch` — grupno odobravanje/odbijanje CELE
+  primopredaje po broju nacrta (best-effort `{approved, skipped[]}`; legacy paritet
+  `spPromeniStatusPrimopredaje`; **lansiranje ostaje pojedinačno**); `GET /tech-processes/worker/open`
+  (kiosk „Moji otvoreni", zatvaranje bez ponovnog skeniranja); CAM lista filtrira otkucane CNC
+  glodanje/struganje i završnu kontrolu → **549→271** pozicija; dimenzija materijala u RN štampi;
+  kvalitet badge Dorada/Škart/„Redovan".
+- **PDF gap:** deo odobrenih crteža bez PDF-a (istorija pre pdm-bridge-a) — analiza i plan u
+  [design/PDF_GAP_2026-07-13.md](design/PDF_GAP_2026-07-13.md).
+
 ### ✅ Checkpoint 2026-07-12 — modul „Tehnologija" praktično završen + BigBit sync otvoren
 
 Od 8.7. do danas (detaljno: [PREOSTALE_FAZE.md](PREOSTALE_FAZE.md) + [MODUL_TEHNOLOGIJA.md](MODUL_TEHNOLOGIJA.md)):

@@ -119,7 +119,10 @@ Ovaj dvostepeni proces postoji zato što:
 - **WhatsApp notifikacije** — V3
 - **WebSocket real-time push** — V1 koristi polling (frontend pita server na 30s)
 - **Editor za nacrte posle predaje** — kad je nacrt jednom predaje (statusId promenjen), ne može se menjati. Mora se obrisati i kreirati novi
-- **Bulk operacije** (odobri/odbij više primopredaja odjednom) — V2
+- **Bulk operacije** (odobri/odbij više primopredaja odjednom) — ~~V2~~ **ISPORUČENO**
+  (13.07.2026, ODLUKE #36/proba r2): `POST /handovers/approve-batch` + `POST /handovers/reject-batch`
+  — grupno odobravanje/odbijanje CELE primopredaje (sve pozicije istog broja nacrta); **LANSIRANJE
+  OSTAJE POJEDINAČNO** (batch se ne odnosi na launch). Vidi §6.4.
 - **Notifikacija o "kasnenju"** — npr. "Primopredaja [X] čeka odobravanje već 3 dana" — V2
 
 ---
@@ -175,6 +178,9 @@ Iz Lukin schema:
 - `drawing_id` (FK → drawings)
 - `handover_date` (Timestamp)
 - `handover_worker_id` (FK → workers) — **kome se predaje (tehnolog)**
+  *(izmena isporučena 13.07.2026, proba r1: u realizaciji `handoverWorker` = **`designerId` nacrta**
+  — projektant koji predaje; UI labela „Predato tehnologu" → **„Predao (projektant)"**. Tehnolog-
+  primalac živi u `technologist_id`.)*
 - `status_id` (FK → handover_statuses) — status primopredaje
 - `status_changed_at` (Timestamp, nullable)
 - `status_changed_by_id` (FK → workers, nullable)
@@ -368,7 +374,7 @@ Već postoje flags u `workers` koje su ključne za workflow:
 
 | From | To | Trigger | Pravila |
 |---|---|---|---|
-| (none) | `ZaKreiranje` | Projektant kreira nacrt | designer_id = current user; project_id required; main_drawing_id required |
+| (none) | `ZaKreiranje` | Projektant kreira nacrt | designer_id = current user *(izmena 13.07.2026, proba r1: `designerId` OPCION — default JWT worker, override kroz ComboBox; radnik mora biti AKTIVAN, inače hard 422)*; project_id required; main_drawing_id required |
 | `ZaKreiranje` | `ZaPrimopredaju` | Projektant označi "Spreman za primopredaju" | Nacrt mora imati barem 1 stavku |
 | `ZaPrimopredaju` | `Predat` | Projektant klikne "Predaj" | is_locked = TRUE; kreiraju se DrawingHandover entry-ji; šalju se notifikacije |
 | Bilo koji | `Storniran` | Projektant otkazuje | Samo ako `is_locked = FALSE` |
@@ -489,6 +495,8 @@ Response: kreiran nacrt sa auto-generated `draftNumber` (format `G-{yymmdd}-{seq
 **`PATCH /api/v1/handover-drafts/:id`** — ažuriraj nacrt
 
 Body: parcijalni update (osim immutable polja: `designer_id`, `draft_number`, `created_at`).
+*(Napomena 13.07.2026, proba r1: `designer_id` se pri KREIRANJU bira slobodno — opcion, default JWT
+worker; „immutable" ovde znači samo da se ne menja kroz PATCH.)*
 
 **Pravila:**
 - Ne može se ažurirati ako `is_locked = TRUE` (status `Predat` ili dalje)
@@ -624,6 +632,15 @@ Pravila:
 - `comment` JE OBAVEZAN (razlika od `approve` gde je opcionalan)
 
 Transakcija slično `approve`-u + obavezan comment.
+
+**`POST /api/v1/handovers/approve-batch`** / **`POST /api/v1/handovers/reject-batch`** — grupno
+*(isporučeno 13.07.2026, ODLUKE #36/proba r2)*
+
+Request body: `{handoverIds[], technologistId, dueDate?, isUrgent?, comment?}` (approve) odnosno
+`{handoverIds[], reason}` (reject). Grupno odobravanje/odbijanje **CELE primopredaje** — sve
+pozicije istog broja nacrta; FE grupiše po `draftContext.draftNumber` jer `drawing_handovers` NEMA
+draft FK. Best-effort `updateMany`, response `{approved, skipped:[{id, reason}]}`. Legacy paritet:
+`spPromeniStatusPrimopredaje` (0/1/2 grupno). **LANSIRANJE OSTAJE POJEDINAČNO.**
 
 **`POST /api/v1/handovers/:id/launch`** — lansiraj primopredaju (kreira RN)
 
@@ -1016,6 +1033,11 @@ Proizvodnja zna razdvojiti jer su povezani sa različitim predmetima.
 
 Kad projektant izabere `mainDrawingId` i `draftType=0` (Glavni sklop), sistem automatski BOM-expand glavnog sklopa i prebaci sve komponente kao `HandoverDraftItem`-e. Projektant može onda da ručno isključi pojedine.
 
+*(Isporučeno 13.07.2026, proba r1 — kao pun **AUTO-BOM**: izbor glavnog sklopa AUTOMATSKI izlistava
+sve pozicije iz sastavnice — `useBom` **flat rekurzivno** kroz podsklopove; nabavni delovi
+(`is_procurement`) se **tiho preskaču**; neodobreni u PDM-u se preskaču **uz upozorenje**; sam sklop
+ulazi kao prva stavka `isMain`.)*
+
 ### 8.3 Dialog: Izbor tehnologa
 
 **Pogled (PDF strana 6):**
@@ -1310,6 +1332,8 @@ Konkretno uradi:
    - POST /handovers/:id/approve, /reject: @Roles('defines_approval')
    - POST /handovers/:id/launch: @Roles('defines_launch')
    - POST /handover-drafts/:id/submit: only draft creator (designer_id = current user)
+     *(zastarelo od 13.07.2026, proba r1: `designerId` je opcion — default JWT worker, override
+     dozvoljen; jedino pravilo je da radnik mora biti AKTIVAN — 422)*
 
 8. Validacija (class-validator):
    - CreateHandoverDraftDto, UpdateHandoverDraftDto

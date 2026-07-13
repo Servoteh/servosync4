@@ -26,7 +26,8 @@
 | `part_quality_types` | tVrsteKvalitetaDelova | vrste kvaliteta (dorada/škart) | enum `0=dobar, 1=dorada, 2=škart` |
 
 **Ključna veza:** `RJgrupaRC` (workCenterCode) je labav string ključ svuda u legacy-ju → u 2.0 **pravi FK** ka `operations`.
-CNC programi trenutno nemaju tabelu — predlog `cnc_programs` (RBAC §7.3, otvoreno).
+CNC programi imaju tabelu **`cnc_programs`** (migracija `20260712210000`, ODLUKE #8 realizovan
+13.07.2026) — modul `src/modules/cnc-programs`, ekran „CAM programiranje" (vidi §5).
 
 ## 2. Ekrani (iz stvarnog QBigTehn dizajna `Izvoz/Forme`)
 
@@ -60,7 +61,9 @@ grid unos (operacije), bojena lista po severity-ju (kritični postupci) — vidi
 2. **🔴 Zatvaranje postupka** (`OznaciDaJeZavrsenPostupak`): provera količina → `isProcessFinished=true` + `finishedAt` + **`priority=255`** (skinuto sa prioriteta). Premašaj količine → greška (ne zatvara). **U 2.0 = jedna DB transakcija.**
 3. **🔴 DORADA/ŠKART** (`ftDodatiPostupkeZaDoraduIliSkart`): zatvoreni redovi sa količinom dorade → **novi nalog** (`identNumber` sufiks `-D`n dorada / `-S`n škart) + poruka planeru/tehnologu. Kvalitet enum `0=dobar, 1=dorada, 2=škart`.
 4. **🔴 Autorizacija operacije:** radnik vidi/radi samo operacije čiji je `workCenterCode` u `machine_access` za tog radnika (join). Logovani radnik sme zatvarati tuđi postupak samo uz `definesApproval`/`additionalPrivileges`.
-5. **Prioritet operacije:** `100` ako `operations.usesPriority=true`, inače `255`.
+5. **Prioritet operacije:** `100` ako `operations.usesPriority=true`, inače `255`. *(Isto
+   `usesPriority` pravilo definiše i **CAM listu** modula `cnc-programs` — pozicije za CAM =
+   nezavršeni RN sa operacijom na `usesPriority` RC-u (17.0/17.1 CAM Programiranje); vidi §5.)*
 6. **Sumiranje** (komadi/vreme): u 2.0 **SUM na DB/API**, ne u UI (legacy sabira u podformi).
 7. `significantForFinishing` operacije određuju kad je postupak „završiv"; `isSkippable` = preskočiva.
 8. **Noćni auto-close u 23h — NOV zahtev, ne migracija** (iz [uputstva](../migration/11-bb-tehnologija-uputstvo.md);
@@ -91,6 +94,8 @@ grid unos (operacije), bojena lista po severity-ju (kritični postupci) — vidi
 | `/barcode/scan` | POST | evidencija izvršenja (barkod) | **mutacija — posle §11** |
 | `/tech-processes/:id/finish` | POST | zatvaranje postupka (transakcija) | **mutacija — posle §11** |
 | `/tech-processes/:id/rework` | POST | dorada/škart → novi nalog | **mutacija — posle §11** |
+| `/cnc-programs` | GET | **isporučeno 13.07.2026** (Paket B, ODLUKE #35) — CAM lista: pozicije = nezavršeni RN sa `usesPriority` operacijom; filtrira otkucane CNC glodanje/struganje (RC naziv počinje „CNC") i završnu kontrolu (`significantForFinishing`) → 549→271; ručno glodanje/struganje IZUZETO | ✅ (gate `tehnologija.read`) |
+| `/cnc-programs/:workOrderId` | PATCH | **isporučeno 13.07.2026** — `{isDone, note?}` ček „CAM urađen"; audit `completedByWorkerId`/`completedAt` iz JWT-a; nav ekran „CAM programiranje" | ✅ (gate `tehnologija.write`) |
 
 **Redosled implementacije:** (1) read-only lista+kartica+operacije+kritični → odmah upotrebljivo tehnolozima;
 (2) `machine_access` + dokumentacija; (3) barkod/finish/rework mutacije po §11.1 (cache/overlay) odluci.
@@ -113,7 +118,9 @@ akcija u Primopredaji), „Razlike verzija 1/2", „Unos predmeta".
 
 ✅ **Odlučeno 2026-07-08 ([ODLUKE.md](../ODLUKE.md)):**
 - **§11.1 cache/overlay potvrđeno** — proizvodne tabele su ServoSync vlasništvo (mutacije dozvoljene čim modul postoji).
-- **`cnc_programs` tabela = DA** — uvodi se (app-owned; `CNC_PROGRAMER` vlasnik write-a; veza na crtež/TP, verzija, `fileLink`).
+- **`cnc_programs` tabela = DA** — **UVEDENA** (migracija `20260712210000`, ODLUKE #8 realizovan
+  13.07.2026 kroz NOVI modul `cnc-programs`; app-owned; gate read=`tehnologija.read`,
+  write=`tehnologija.write`; rute u §5).
 - **Potpis/završetak TP = TEHNOLOG (autor) + ŠEF + CNC_PROGRAMER** (CNC programer SME).
 
 Otvoreno: da li i `KONTROLOR` učestvuje u potpisu; da li se `machine_access` seed-uje iz QBigTehn ili unosi iznova.
