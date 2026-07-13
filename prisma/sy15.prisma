@@ -519,3 +519,401 @@ model AiChatMessage {
   imagePath String? @map("image_path")
   @@map("ai_chat_messages")
 }
+
+// ============================================================================
+// TALAS D — Projektni biro + Podešavanja (RBAC/matični) (MODULE_SPEC_pb_profil_podesavanja_30.md §1).
+// GENERISANO iz zive baze (Management API information_schema, read-only, 2026-07-13).
+// Ista pravila kao rev_*/sastanci: uuid PK se ZADRZAVA, camelCase @map, BEZ FK relacija
+// (spajanja su rucni batch-resolve; 1.0 sema ih nema). Enum kolone se mapiraju kroz
+// Prisma enum + @map na clanovima (cirilica/spejsovi u DB labelama).
+// NE mapira se (RPC-only / drugi izvor — spec §1/§2):
+//   predmet_aktivacija (zivi u `production` semi, pristup samo kroz
+//     list_predmet_aktivacija_admin()/set_predmet_aktivacija()),
+//   audit_log (read kroz view v_settings_audit_log $queryRaw),
+//   `search_tsv` (tsvector) kolona pb_eng_tips se NE mapira (kao embedding).
+// MOJ PROFIL nema svoje modele (agregator kroz GUC nad tudjim tabelama/RPC — spec §0.2).
+// ============================================================================
+
+enum PbTaskVrsta {
+  Projektovanje3D @map("Projektovanje 3D")
+  Dokumentacija   @map("Dokumentacija")
+  Nabavka         @map("Nabavka")
+  Algoritam       @map("Algoritam")
+  Montaza         @map("Montaža")
+  @@map("pb_task_vrsta")
+}
+
+enum PbPrioritet {
+  Visok   @map("Visok")
+  Srednji @map("Srednji")
+  Nizak   @map("Nizak")
+  @@map("pb_prioritet")
+}
+
+enum PbTaskStatus {
+  NijePocelo @map("Nije počelo")
+  UToku      @map("U toku")
+  Pregled    @map("Pregled")
+  Zavrseno   @map("Završeno")
+  Blokirano  @map("Blokirano")
+  @@map("pb_task_status")
+}
+
+enum PbEngTipStatus {
+  draft
+  published
+  @@map("pb_eng_tip_status")
+}
+
+model PbTask {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  naziv String
+  opis String?
+  problem String?
+  projectId String? @map("project_id") @db.Uuid
+  employeeId String? @map("employee_id") @db.Uuid
+  vrsta PbTaskVrsta @default(Projektovanje3D)
+  prioritet PbPrioritet @default(Srednji)
+  status PbTaskStatus @default(NijePocelo)
+  datumPocetkaPlan DateTime? @map("datum_pocetka_plan") @db.Date
+  datumZavrsetkaPlan DateTime? @map("datum_zavrsetka_plan") @db.Date
+  datumPocetkaReal DateTime? @map("datum_pocetka_real") @db.Date
+  datumZavrsetkaReal DateTime? @map("datum_zavrsetka_real") @db.Date
+  procenatZavrsenosti Int @default(0) @map("procenat_zavrsenosti")
+  normaSatiDan Int @default(4) @map("norma_sati_dan")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  createdBy String? @map("created_by")
+  updatedBy String? @map("updated_by")
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+  @@map("pb_tasks")
+}
+
+model PbWorkReport {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String? @map("employee_id") @db.Uuid
+  datum DateTime @db.Date
+  sati Decimal @db.Decimal
+  opis String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String? @map("created_by")
+  @@map("pb_work_reports")
+}
+
+model PbTaskComment {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  taskId String @map("task_id") @db.Uuid
+  body String
+  mentions String[] @default([])
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  createdBy String? @map("created_by")
+  createdByUserId String? @map("created_by_user_id") @db.Uuid
+  editedAt DateTime? @map("edited_at") @db.Timestamptz(6)
+  @@map("pb_task_comments")
+}
+
+model PbTaskDep {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  taskId String @map("task_id") @db.Uuid
+  dependsOnTaskId String @map("depends_on_task_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String? @map("created_by")
+  @@unique([taskId, dependsOnTaskId])
+  @@map("pb_task_deps")
+}
+
+model PbTaskFile {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  taskId String @map("task_id") @db.Uuid
+  fileName String @map("file_name")
+  storagePath String @unique @map("storage_path")
+  mimeType String? @map("mime_type")
+  sizeBytes BigInt? @map("size_bytes")
+  category String?
+  description String?
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+  uploadedAt DateTime @default(now()) @map("uploaded_at") @db.Timestamptz(6)
+  uploadedBy String? @map("uploaded_by") @db.Uuid
+  uploadedByEmail String? @map("uploaded_by_email")
+  @@map("pb_task_files")
+}
+
+model PbEngTip {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  naslov String
+  telo String
+  categoryId String? @map("category_id") @db.Uuid
+  tags String[] @default([])
+  vendor String?
+  url String?
+  projectId String? @map("project_id") @db.Uuid
+  status PbEngTipStatus @default(draft)
+  authorId String? @map("author_id") @db.Uuid
+  authorEmail String? @map("author_email")
+  likesCount Int @default(0) @map("likes_count")
+  viewsCount Int @default(0) @map("views_count")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  createdBy String? @map("created_by")
+  updatedBy String? @map("updated_by")
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+  @@map("pb_eng_tips")
+}
+
+model PbEngTipCategory {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  naziv String @unique
+  slug String @unique
+  ikona String?
+  boja String?
+  redosled Int @default(0)
+  jeAktivna Boolean @default(true) @map("je_aktivna")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("pb_eng_tip_categories")
+}
+
+model PbEngTipLike {
+  tipId String @map("tip_id") @db.Uuid
+  userId String @map("user_id") @db.Uuid
+  userEmail String? @map("user_email")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  @@id([tipId, userId])
+  @@map("pb_eng_tip_likes")
+}
+
+model PbEngTipFile {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tipId String @map("tip_id") @db.Uuid
+  storagePath String @map("storage_path")
+  fileName String @map("file_name")
+  mimeType String? @map("mime_type")
+  sizeBytes BigInt? @map("size_bytes")
+  isImage Boolean? @map("is_image")
+  uploadedBy String? @map("uploaded_by")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  @@map("pb_eng_tip_files")
+}
+
+model PbNotificationConfig {
+  id Int @id @default(1)
+  enabled Boolean @default(true)
+  deadlineWarningDays Int @default(3) @map("deadline_warning_days")
+  overloadThresholdPct Int @default(100) @map("overload_threshold_pct")
+  emailRecipients String[] @default([]) @map("email_recipients")
+  notifyOnBlocked Boolean @default(true) @map("notify_on_blocked")
+  notifyOnOverload Boolean @default(true) @map("notify_on_overload")
+  notifyOnDeadlineWarning Boolean @default(true) @map("notify_on_deadline_warning")
+  notifyOnDeadlineOverdue Boolean @default(true) @map("notify_on_deadline_overdue")
+  notifyOnNoEngineer Boolean @default(false) @map("notify_on_no_engineer")
+  updatedAt DateTime? @map("updated_at") @db.Timestamptz(6)
+  updatedBy String? @map("updated_by")
+  quietHoursStart DateTime? @map("quiet_hours_start") @db.Time(6)
+  quietHoursEnd DateTime? @map("quiet_hours_end") @db.Time(6)
+  quietHoursTz String @default("Europe/Belgrade") @map("quiet_hours_tz")
+  digestMode Boolean @default(false) @map("digest_mode")
+  @@map("pb_notification_config")
+}
+
+model PbNotificationLog {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  channel String
+  recipient String
+  recipientUserId String? @map("recipient_user_id") @db.Uuid
+  subject String?
+  body String
+  triggerType String @map("trigger_type")
+  relatedTaskId String? @map("related_task_id") @db.Uuid
+  relatedEmployeeId String? @map("related_employee_id") @db.Uuid
+  status String @default("pending")
+  error String?
+  attempts Int @default(0)
+  scheduledAt DateTime @default(now()) @map("scheduled_at") @db.Timestamptz(6)
+  nextAttemptAt DateTime @default(now()) @map("next_attempt_at") @db.Timestamptz(6)
+  lastAttemptAt DateTime? @map("last_attempt_at") @db.Timestamptz(6)
+  sentAt DateTime? @map("sent_at") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  payload Json? @db.JsonB
+  @@map("pb_notification_log")
+}
+
+// ---- Podešavanja: RBAC + matični (spec §1/§2.2/§2.3) ----
+
+/// 1.0 email-based user_roles (razlicito od 2.0 `UserRole` u schema.prisma — FK-based).
+/// Nullable niz-kolone `managed_departments`/`managed_sub_department_ids` se NE citaju
+/// kroz `tx.userRoleSy15.findMany` (Prisma ne podrzava nullable scalar-liste — NULL red bi
+/// pao pri deserijalizaciji); Podešavanja ih cita kroz $queryRaw (row_to_json). Kolone su
+/// deklarisane radi tacnosti seme; citaju se raw. Scope (managedSubDepartmentIds) i
+/// override-kolone (plan_montaze_readonly/kadrovska_access/kadrovska_hide_contracts) su
+/// data-migracija u R2 (matrica #44) — R1 samo cita.
+model UserRoleSy15 {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email String
+  role String
+  projectId String? @map("project_id") @db.Uuid
+  isActive Boolean? @default(true) @map("is_active")
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  fullName String? @map("full_name")
+  team String?
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  createdBy String? @map("created_by")
+  mustChangePassword Boolean? @default(false) @map("must_change_password")
+  userId String? @map("user_id") @db.Uuid
+  managedDepartments String[] @map("managed_departments")
+  managedSubDepartmentIds Int[] @map("managed_sub_department_ids")
+  planMontazeReadonly Boolean @default(false) @map("plan_montaze_readonly")
+  kadrovskaAccess Boolean @default(false) @map("kadrovska_access")
+  kadrovskaHideContracts Boolean @default(false) @map("kadrovska_hide_contracts")
+  @@map("user_roles")
+}
+
+model Department {
+  id Int @id @default(autoincrement())
+  name String
+  sortOrder Int @default(0) @map("sort_order") @db.SmallInt
+  @@map("departments")
+}
+
+model SubDepartment {
+  id Int @id @default(autoincrement())
+  departmentId Int @map("department_id")
+  name String
+  sortOrder Int @default(0) @map("sort_order") @db.SmallInt
+  @@map("sub_departments")
+}
+
+model JobPosition {
+  id Int @id @default(autoincrement())
+  departmentId Int @map("department_id")
+  subDepartmentId Int? @map("sub_department_id")
+  name String
+  sortOrder Int @default(0) @map("sort_order") @db.SmallInt
+  summaryMd String? @map("summary_md")
+  expectationsMd String? @map("expectations_md")
+  responsibilitiesMd String? @map("responsibilities_md")
+  dutiesMd String? @map("duties_md")
+  profileUpdatedAt DateTime? @map("profile_updated_at") @db.Timestamptz(6)
+  profileUpdatedBy String? @map("profile_updated_by")
+  reportsToLine String? @map("reports_to_line")
+  authorityMd String? @map("authority_md")
+  kpiMd String? @map("kpi_md")
+  qualificationsMd String? @map("qualifications_md")
+  collaborationMd String? @map("collaboration_md")
+  @@map("job_positions")
+}
+
+model CompanyProfile {
+  id Int @id @default(1)
+  missionMd String? @map("mission_md")
+  visionMd String? @map("vision_md")
+  valuesMd String? @map("values_md")
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy String? @map("updated_by")
+  @@map("company_profile")
+}
+
+model KadrGridEditorAllowlist {
+  email String @id
+  note String @default("")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  @@map("kadr_grid_editor_allowlist")
+}
+
+model KadrHoliday {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  holidayDate DateTime @unique @map("holiday_date") @db.Date
+  name String
+  isWorkday Boolean @default(false) @map("is_workday")
+  note String? @default("")
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("kadr_holidays")
+}
+
+model EmployeeExpectation {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  title String
+  descriptionMd String? @map("description_md")
+  dueDate DateTime? @map("due_date") @db.Date
+  priority String @default("srednja")
+  status String @default("aktivno")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String @map("created_by")
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy String? @map("updated_by")
+  completedAt DateTime? @map("completed_at") @db.Timestamptz(6)
+  completionNote String? @map("completion_note")
+  planId String? @map("plan_id") @db.Uuid
+  category String @default("ostalo")
+  progress Int @default(0) @db.SmallInt
+  @@map("employee_expectations")
+}
+
+model CompetenceGroup {
+  id Int @id @default(autoincrement())
+  code String @unique
+  nameSr String @map("name_sr")
+  descriptionSr String? @map("description_sr")
+  scope String @default("strucna")
+  sortOrder Int @default(100) @map("sort_order")
+  isActive Boolean @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy String? @map("updated_by")
+  @@map("competence_groups")
+}
+
+model Competence {
+  id Int @id @default(autoincrement())
+  groupId Int @map("group_id")
+  code String @unique
+  nameSr String @map("name_sr")
+  descriptionSr String? @map("description_sr")
+  sortOrder Int @default(100) @map("sort_order")
+  isActive Boolean @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy String? @map("updated_by")
+  @@map("competences")
+}
+
+model CompetenceLevel {
+  id Int @id @default(autoincrement())
+  competenceId Int @map("competence_id")
+  level Int @db.SmallInt
+  descriptorSr String @map("descriptor_sr")
+  @@unique([competenceId, level])
+  @@map("competence_levels")
+}
+
+model CompetenceProfile {
+  id Int @id @default(autoincrement())
+  code String @unique
+  nameSr String @map("name_sr")
+  descriptionSr String? @map("description_sr")
+  sortOrder Int @default(100) @map("sort_order")
+  isActive Boolean @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy String? @map("updated_by")
+  @@map("competence_profiles")
+}
+
+model CompetenceQuestion {
+  id Int @id @default(autoincrement())
+  groupId Int? @map("group_id")
+  code String @unique
+  textSr String @map("text_sr")
+  sortOrder Int @default(100) @map("sort_order")
+  isActive Boolean @default(true) @map("is_active")
+  @@map("competence_questions")
+}
+
+model ProfilePosition {
+  id Int @id @default(autoincrement())
+  profileId Int @map("profile_id")
+  positionId Int @unique @map("position_id")
+  @@map("profile_positions")
+}

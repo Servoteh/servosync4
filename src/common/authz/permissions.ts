@@ -59,6 +59,47 @@ export const PERMISSIONS = {
   SASTANCI_AI_MODEL: "sastanci.ai_model",
   // AI asistent chat — 1.0 „/ai za sve" → sve aktivne uloge; upis istorije je server-side.
   AI_CHAT: "ai.chat",
+  // Projektni biro — 3.0 TALAS D (MODULE_SPEC_pb_profil_podesavanja_30.md §2.5).
+  // Guard = paritet ŽIVIH 1.0 DB gate-ova; ROW-odluka (work_reports self-scope, eng
+  // tips draft/org-clanstvo, komentar 1h prozor) OSTAJE u sy15 bazi (RLS + DEFINER RPC
+  // kroz GUC most). Zato je „read" = DB SELECT `true` (svi prijavljeni), NE front meni.
+  //   read        = pb_can_* SELECT `true`/`deleted_at IS NULL` = svi prijavljeni (§2.1)
+  //   comment     = pb_can_comment() = edit-krug ∪ inzenjer
+  //   edit        = pb_can_edit_tasks() = admin/hr/menadzment/pm/leadpm/poslovni_admin/projektant_vodja
+  //   progress    = pb_update_task_progress (inzenjer restriktovani edit; + svi sa edit)
+  //   reports_all = pb_current_user_can_see_all_reports() = admin/leadpm/pm/menadzment (+ DB row-pravilo „Rukovodstvo inženjeringa")
+  //   reports_own = work_reports self-scope (row u DB) — svako svoje
+  //   tips_write  = can_write_pb_eng_tips() = edit-krug ∪ inzenjer/projektant_vodja (+ org-clanstvo u DB fn)
+  //   admin       = current_user_is_admin() (notif config, kategorije saveta)
+  PB_READ: "pb.read",
+  PB_COMMENT: "pb.comment",
+  PB_EDIT: "pb.edit",
+  PB_PROGRESS: "pb.progress",
+  PB_REPORTS_ALL: "pb.reports_all",
+  PB_REPORTS_OWN: "pb.reports_own",
+  PB_TIPS_WRITE: "pb.tips_write",
+  PB_ADMIN: "pb.admin",
+  // Podešavanja — RBAC admin konzola + matični (§2.2/§3.3). R1 = READ sloj (lista
+  // korisnika/rola/override/matični/audit-read); dvostrano upravljanje nalozima (D1) i
+  // audit dvoizvor (D10) su R2. Guard = paritet 1.0 admin gate-ova:
+  //   users               = current_user_is_admin() (usersTab, grid urednici, uloge&dozvole matrica)
+  //   org_profile         = current_user_can_manage_org_profile() = admin/menadzment/pm/leadpm
+  //                         (company_profile / opisi pozicija / očekivanja / kompetence)
+  //   predmet_aktivacija  = can_manage_predmet_aktivacija() = admin/menadzment
+  //   audit               = admin (v_settings_audit_log SELECT)
+  //   system              = admin (dijagnostika + AI model izbor)
+  SETTINGS_USERS: "settings.users",
+  SETTINGS_ORG_PROFILE: "settings.org_profile",
+  SETTINGS_PREDMET_AKTIVACIJA: "settings.predmet_aktivacija",
+  SETTINGS_AUDIT: "settings.audit",
+  SETTINGS_SYSTEM: "settings.system",
+  // Moj profil (👤 self-service za sve ~157) — agregator kroz GUC (§0.2/§2.5).
+  //   self = SVAKI prijavljen (scope visi na lower(email) → aktivan employees red;
+  //          bez reda → prazan profil). Row-odluka je RLS/DEFINER u bazi.
+  //   team = menadžerske sekcije (canSubmitVacationRequestForOthers × managed_sub_department_ids):
+  //          admin/hr/menadzment/leadpm/pm/poslovni_admin (prazan scope = nema tima — DB odlučuje).
+  PROFILE_SELF: "profile.self",
+  PROFILE_TEAM: "profile.team",
 } as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];

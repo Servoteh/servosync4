@@ -24,6 +24,9 @@ import { ReversiModule } from "./modules/reversi/reversi.module";
 import { SastanciModule } from "./modules/sastanci/sastanci.module";
 import { AiChatModule } from "./modules/ai-chat/ai-chat.module";
 import { MediaAiModule } from "./modules/media-ai/media-ai.module";
+import { ProjektniBiroModule } from "./modules/projektni-biro/projektni-biro.module";
+import { MojProfilModule } from "./modules/moj-profil/moj-profil.module";
+import { PodesavanjaModule } from "./modules/podesavanja/podesavanja.module";
 
 @Module({
   imports: [
@@ -52,6 +55,11 @@ import { MediaAiModule } from "./modules/media-ai/media-ai.module";
     AiChatModule,
     // Zajednički media/AI (STT + refine) — presuda B4; C/D/G reuse.
     MediaAiModule,
+    // 3.0 TALAS D — Projektni biro + Moj profil + Podešavanja/RBAC
+    // (MODULE_SPEC_pb_profil_podesavanja_30.md §3; R1 = read sloj).
+    ProjektniBiroModule,
+    MojProfilModule,
+    PodesavanjaModule,
   ],
   controllers: [AppController],
   providers: [

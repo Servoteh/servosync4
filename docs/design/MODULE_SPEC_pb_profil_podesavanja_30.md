@@ -278,12 +278,18 @@ Idempotencija: PB nema svoj mehanizam → `rev_api_idempotency` obrazac (`client
 
 ## 5. Parity matrica (doktrina B — puni se TOKOM rada; bez nje nema implementacije)
 
+> **R1 (BE read sloj) izvršen 2026-07-13** (grana `wave-d/pb-profil-podesavanja`): Prisma modeli
+> (11 PB + 14 Podešavanja/matični), permisije `pb.*`/`settings.*`/`profile.*` + dodele (§2.5/D7),
+> moduli `projektni-biro`/`moj-profil`/`podesavanja` (GET kroz `withUserRls`), R0 grants draft, unit
+> (24) + e2e (192) permission matrica. „IMPLEMENTED (R1 read)" = read površina gotova; mutacije/FE
+> označene per red (R2 = BE write, R3 = FE). `npx tsc` + `npm run build` + testovi zeleni.
+
 | # | Funkcija | Status |
 |---|---|---|
 | **PB** | | |
-| 1 | Plan: tabela+kartice, filteri, sort, grupisanje po projektu | NOT_STARTED |
-| 2 | Plan: alarmi (rok/bez inženjera/prekoračenje kapaciteta) + opterećenost (load+team stats) | NOT_STARTED |
-| 3 | Plan: bulk akcije + saved views + CSV | NOT_STARTED |
+| 1 | Plan: tabela+kartice, filteri, sort, grupisanje po projektu | IMPLEMENTED (R1 read: GET /pb/tasks+/:id embed+filteri; kartice/grupisanje/saved-views = FE R3) |
+| 2 | Plan: alarmi (rok/bez inženjera/prekoračenje kapaciteta) + opterećenost (load+team stats) | IMPLEMENTED (R1 read: GET /pb/load-stats+/team-load-stats; alarmi = FE R3) |
+| 3 | Plan: bulk akcije + saved views + CSV | NOT_STARTED (R2 write / R3 FE) |
 | 4 | Task editor modal (pun edit, optimistic lock 409) + Opis/Problem | NOT_STARTED |
 | 5 | **Restriktovani edit inzenjera (`/progress` RPC put)** | NOT_STARTED |
 | 6 | Soft delete (pojedinačno + bulk) | NOT_STARTED |
@@ -292,43 +298,43 @@ Idempotencija: PB nema svoj mehanizam → `rev_api_idempotency` obrazac (`client
 | 9 | Prilozi taska (presigned, soft-delete, 24h prozor) | NOT_STARTED |
 | 10 | Kanban (5 kolona, brze akcije, done 10d) | NOT_STARTED |
 | 11 | Gantt (zoom, drag datuma, tooltip, plan vs ostvareno) | NOT_STARTED |
-| 12 | Work reports: kalendar + unos (STT) + brisanje + obračun po periodu | NOT_STARTED |
-| 13 | Analiza po projektu + aktivni problemi | NOT_STARTED |
-| 14 | Saveti: lista/pretraga/filteri/like/detalj/editor/prilozi/draft-scope | NOT_STARTED |
-| 15 | Kategorije saveta CRUD (admin) + PB notif config (admin) | NOT_STARTED |
-| 16 | PB mobilni tok („Moji zadaci" self-filter, responsive) | NOT_STARTED |
+| 12 | Work reports: kalendar + unos (STT) + brisanje + obračun po periodu | IMPLEMENTED (R1 read: GET /pb/work-reports+/summary self∨all u DB; unos/STT/brisanje = R2/R3) |
+| 13 | Analiza po projektu + aktivni problemi | NOT_STARTED (R3 FE nad postojećim read-om) |
+| 14 | Saveti: lista/pretraga/filteri/like/detalj/editor/prilozi/draft-scope | IMPLEMENTED (R1 read: GET /pb/tips+/:id+/categories tsv+draft-scope u DB; like/editor/prilozi = R2) |
+| 15 | Kategorije saveta CRUD (admin) + PB notif config (admin) | IMPLEMENTED (R1 read: GET /pb/tips/categories + /notification-config; CRUD/PATCH = R2 pb.admin) |
+| 16 | PB mobilni tok („Moji zadaci" self-filter, responsive) | NOT_STARTED (R3 FE) |
 | **Moj profil** | | |
-| 17 | Profil header + mapiranje email→employee (+prazan profil poruka) | NOT_STARTED |
-| 18 | GO: saldo + zahtevi + submit (provere) + revise/cancel/delete + mejl queue | NOT_STARTED |
-| 19 | GO istorija + Evidencija GO PDF | NOT_STARTED |
-| 20 | Nadoknada sati (lista+podnošenje+brisanje) + Plaćeno odsustvo | NOT_STARTED |
-| 21 | Mesečni sati iz grida + primedba (upsert/delete) + Karnet PDF | NOT_STARTED |
-| 22 | Prisustvo (dnevni pregled, eventi, korekcija — i za člana tima) | NOT_STARTED |
-| 23 | Moj tim (scope, saldo/odsustva/alati po članu, karnet tima, PDF pozicije člana) | NOT_STARTED |
-| 24 | Onboarding pregled + Dokumenti i rokovi (lekarski/ugovori) | NOT_STARTED |
-| 25 | Razgovori + „Upoznat sam" + korektivne mere pregled | NOT_STARTED |
-| 26 | 360 samoprocena (open/save/submit) + rezultati | NOT_STARTED |
-| 27 | Dev plan (samoprocena, check-in) + Očekivanja (self status) | NOT_STARTED |
-| 28 | Opis pozicije + PDF; Vrednosti firme (baza); Kompanijske vrednosti + Pravilnik GO (statika+print PDF+ack) | NOT_STARTED |
-| 29 | Zaduženja (revers) — reuse Reversi API | NOT_STARTED |
-| 30 | Kolege na odsustvu | NOT_STARTED |
+| 17 | Profil header + mapiranje email→employee (+prazan profil poruka) | IMPLEMENTED (R1: GET /profile/me v_employees_safe+get_my_user_roles+hasProfile poruka) |
+| 18 | GO: saldo + zahtevi + submit (provere) + revise/cancel/delete + mejl queue | IMPLEMENTED (R1 read: GET /profile/vacation saldo+zahtevi+istorija; submit/revise/cancel/delete/mejl = R2) |
+| 19 | GO istorija + Evidencija GO PDF | IMPLEMENTED (R1 read: vacation_history u /profile/vacation; Evidencija PDF = R3) |
+| 20 | Nadoknada sati (lista+podnošenje+brisanje) + Plaćeno odsustvo | IMPLEMENTED (R1 read: GET /profile/makeup-paid-leave; podnošenje/brisanje = R2) |
+| 21 | Mesečni sati iz grida + primedba (upsert/delete) + Karnet PDF | NOT_STARTED (work_hours grid read + primedba upsert = R2; Karnet PDF = R3) |
+| 22 | Prisustvo (dnevni pregled, eventi, korekcija — i za člana tima) | IMPLEMENTED (R1 read: GET /profile/attendance v_attendance_daily; korekcija+član-tima = R2) |
+| 23 | Moj tim (scope, saldo/odsustva/alati po članu, karnet tima, PDF pozicije člana) | NOT_STARTED (profile.team dodela postoji; endpointi = R2) |
+| 24 | Onboarding pregled + Dokumenti i rokovi (lekarski/ugovori) | NOT_STARTED (R2 — G-domen read kroz GUC) |
+| 25 | Razgovori + „Upoznat sam" + korektivne mere pregled | IMPLEMENTED (R1 read: GET /profile/talks; „Upoznat sam"/mere = R2) |
+| 26 | 360 samoprocena (open/save/submit) + rezultati | NOT_STARTED (R2 — assessment_* RPC kroz GUC) |
+| 27 | Dev plan (samoprocena, check-in) + Očekivanja (self status) | IMPLEMENTED (R1 read: GET /profile/expectations self; dev-plan/check-in = R2) |
+| 28 | Opis pozicije + PDF; Vrednosti firme (baza); Kompanijske vrednosti + Pravilnik GO (statika+print PDF+ack) | IMPLEMENTED (R1 read: GET /profile/position + /company-values; PDF/pravilnik statika+ack = R3/R2) |
+| 29 | Zaduženja (revers) — reuse Reversi API | REUSE (bez novog koda — /reversi/reports/my-issued+my-consumed već u 2.0; FE veže R3) |
+| 30 | Kolege na odsustvu | IMPLEMENTED (R1: GET /profile/colleagues-on-leave absences∩DANAS) |
 | **Podešavanja** | | |
-| 31 | Korisnici: lista + stat kartice + chipovi prava + filteri | NOT_STARTED |
-| 32 | **Invite tok (dvostrani: GoTrue+sy15 user_roles+2.0 users/roles/overrides + welcome mejl)** | NOT_STARTED |
-| 33 | Edit korisnika (rola/scope/override/must_change) — piše u OBA sveta | NOT_STARTED |
-| 34 | Kopiranje prava (form-fill, ne snima) | NOT_STARTED |
-| 35 | Reset lozinke + deaktivacija/aktivacija + brisanje uz potvrdu | NOT_STARTED |
-| 36 | Uloge i dozvole — živ prikaz kataloga (roles.ts + ROLE_PERMISSIONS) | NOT_STARTED |
-| 37 | Grid urednici CRUD | NOT_STARTED |
-| 38 | Organizacija: struktura CRUD + opisi pozicija + bulk import | NOT_STARTED |
-| 39 | Vrednosti firme edit; Očekivanja CRUD+bulk; Okvir kompetencija (pregled+admin editor) | NOT_STARTED |
-| 40 | Podešavanje predmeta (list/set RPC, audit u RPC) | NOT_STARTED |
-| 41 | Audit log tab (sy15 view + 2.0 AuditLog) | NOT_STARTED |
-| 42 | Sistem tab (dijagnostika + AI model izbor) + Integracije/Notifikacije hub | NOT_STARTED |
+| 31 | Korisnici: lista + stat kartice + chipovi prava + filteri | IMPLEMENTED (R1 read: GET /admin/users lista+filteri q/role/isActive; kartice/chipovi = FE R3; 2.0-strana union = R2) |
+| 32 | **Invite tok (dvostrani: GoTrue+sy15 user_roles+2.0 users/roles/overrides + welcome mejl)** | NOT_STARTED (D1 — R2, master 2.0→1.0) |
+| 33 | Edit korisnika (rola/scope/override/must_change) — piše u OBA sveta | NOT_STARTED (D1 — R2; R1 samo čita override/scope kolone) |
+| 34 | Kopiranje prava (form-fill, ne snima) | NOT_STARTED (R3 FE) |
+| 35 | Reset lozinke + deaktivacija/aktivacija + brisanje uz potvrdu | NOT_STARTED (D1 — R2) |
+| 36 | Uloge i dozvole — živ prikaz kataloga (roles.ts + ROLE_PERMISSIONS) | IMPLEMENTED (R1: GET /admin/roles/catalog + /permissions/matrix — jedan izvor, bez erpRbacMatrix) |
+| 37 | Grid urednici CRUD | IMPLEMENTED (R1 read: GET /admin/grid-editors; CRUD = R2) |
+| 38 | Organizacija: struktura CRUD + opisi pozicija + bulk import | IMPLEMENTED (R1 read: GET /admin/org/structure dept+subdept+pozicije; CRUD/import = R2) |
+| 39 | Vrednosti firme edit; Očekivanja CRUD+bulk; Okvir kompetencija (pregled+admin editor) | IMPLEMENTED (R1 read: GET /admin/company-profile + /expectations + /competence-framework; edit = R2) |
+| 40 | Podešavanje predmeta (list/set RPC, audit u RPC) | IMPLEMENTED (R1 read: GET /admin/predmet-aktivacija list RPC; set = R2 — tabela u `production` šemi) |
+| 41 | Audit log tab (sy15 view + 2.0 AuditLog) | IMPLEMENTED (R1 read: GET /admin/audit-log v_settings_audit_log paginacija; 2.0 AuditLog dvoizvor = R2/D10) |
+| 42 | Sistem tab (dijagnostika + AI model izbor) + Integracije/Notifikacije hub | IMPLEMENTED (R1 read: GET /admin/system/ai-models sastanci_ai_settings; montaza AI + dijagnostika/hub = R2/R3) |
 | **Presek** | | |
-| 43 | e2e permission matrica (pb.read/comment/edit/progress/tips_write/reports_all/admin × settings.* × profile self/team; override deny/grant) | NOT_STARTED |
-| 44 | Overrides data-migracija: user_roles kolone → user_permission_overrides + UserRole scope (54 reda) | NOT_STARTED |
-| 45 | GUC sub+email na SVIM profil/PB mutacijama (auth.uid() potrošači: likes, storage owner, ack) | NOT_STARTED |
+| 43 | e2e permission matrica (pb.read/comment/edit/progress/tips_write/reports_all/admin × settings.* × profile self/team; override deny/grant) | TESTED (unit 24 + e2e 192, AUTHZ_ENFORCE=true, DENIED iz ALL_ROLE_KEYS; override deny/grant row = R2) |
+| 44 | Overrides data-migracija: user_roles kolone → user_permission_overrides + UserRole scope (54 reda) | NOT_STARTED (R2 — R1 modeluje/čita override+scope kolone user_roles) |
+| 45 | GUC sub+email na SVIM profil/PB mutacijama (auth.uid() potrošači: likes, storage owner, ack) | TESTED za READ (withUserRls postavlja sub+email na svim R1 GET-ovima); mutacije = R2 |
 
 ## 6. Redosled izvođenja (R-faze za CEO talas)
 
