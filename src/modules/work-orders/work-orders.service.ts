@@ -197,7 +197,7 @@ export class WorkOrdersService {
     });
     if (!wo) throw new NotFoundException(`Radni nalog ${id} ne postoji`);
 
-    const [workers, quals, statuses, ops, parents, children, locations] =
+    const [workers, quals, statuses, ops, parents, children, locations, draft] =
       await Promise.all([
         this.resolveWorkers([
           wo.workerId,
@@ -218,6 +218,8 @@ export class WorkOrdersService {
         this.reworkChildren(wo.id),
         // t.5: neto lokacije po pozicijama.
         this.resolveLocations([wo.id]),
+        // Nacrt iz kog RN potiče — za „PDF cela primopredaja" (svi crteži nacrta).
+        this.resolveDraftRef(wo.drawingId),
       ]);
     const w = (wid: number) => workers.get(wid) ?? null;
 
@@ -233,6 +235,9 @@ export class WorkOrdersService {
           : null,
       reworkChildren: children,
       locations: locations.get(wo.id) ?? [],
+      // Nacrt iz kog RN potiče (za „PDF cela primopredaja"); null za ručne/
+      // dorada RN-ove bez razrešivog nacrta.
+      draftContext: draft,
       operations: wo.operations.map((o) => ({
         ...o,
         worker: w(o.workerId),
@@ -322,6 +327,29 @@ export class WorkOrdersService {
     });
     for (const r of rows) map.set(r.id, r);
     return map;
+  }
+
+  /**
+   * Nacrt (handover_draft) iz kog crtež RN-a potiče — za „PDF cela primopredaja"
+   * (svi crteži nacrta preko `/handover-drafts/:draftId/print-bundle`). Ista
+   * drawing→draft heuristika kao `HandoversService.resolveDraftContext` (najskorija
+   * ne-isključena stavka istog crteža). `null` za ručne/dorada RN-ove bez nacrta.
+   */
+  private async resolveDraftRef(
+    drawingId: number,
+  ): Promise<{ draftId: number; draftNumber: string } | null> {
+    if (!drawingId || drawingId <= 0) return null;
+    const item = await this.prisma.handoverDraftItem.findFirst({
+      where: { drawingId, excludeFromHandover: false },
+      select: { draftId: true },
+      orderBy: [{ draftId: "desc" }, { id: "desc" }],
+    });
+    if (!item) return null;
+    const draft = await this.prisma.handoverDraft.findUnique({
+      where: { id: item.draftId },
+      select: { id: true, draftNumber: true },
+    });
+    return draft ? { draftId: draft.id, draftNumber: draft.draftNumber } : null;
   }
 
   /** Dorada/škart naslednici RN-a (reverse od parentWorkOrderId), t.2. */
