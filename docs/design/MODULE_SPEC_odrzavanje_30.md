@@ -418,8 +418,22 @@ authenticated`) → 102 RLS politike enforce row-scope **po konstrukciji**. Muta
 - **R0 grants**: `authz-snapshots/talasF-R0-grants-DRAFT.sql` — verifikovano na restore-izvoru:
   **0 rupa** (SELECT sve tabele+view, EXECUTE helper+RPC, cross-module SELECT već na `authenticated`).
 - **Testovi**: unit rola-matrica (`role-permissions.odrzavanje.spec.ts`) + sintetički
-  operator/technician/chief scope + withUserRls routing (`odrzavanje.service.spec.ts`) +
-  e2e read matrica (`test/odrzavanje-permissions.e2e-spec.ts`, AUTHZ_ENFORCE=true).
+  operator/technician/chief scope + withUserRls routing + line-item/bigint/WO-embed
+  fix-evi (`odrzavanje.service.spec.ts`) + **schema-pin** (`odrzavanje.schema.spec.ts` —
+  skener imena view-ova/kolona protiv žive allowliste, bez baze) + e2e read matrica
+  (`test/odrzavanje-permissions.e2e-spec.ts`, AUTHZ_ENFORCE=true).
+
+**Adversarni review 2026-07-13 (ispravljeno na istoj grani):** e2e mockuje servis pa raw
+SQL nikad nije pogodio bazu — 6 schema-neusklađenosti otkriveno protiv žive šeme i ispravljeno:
+(1+2, CRITICAL) `v_maint_machine_current_status` izlaže kolonu **`status`**, ne `effective_status`
+— mašine lista+karton su bile 500; (3, HIGH) `v_maint_parts_with_vehicles` NEMA `asset_id` —
+filter „po vozilu" ide preko **`vehicle_codes`** (asset_code razrešen iz asset_id); (4, HIGH)
+`/dashboard` `v_maint_cmms_daily_summary` (8 int8) → **BigInt→Number** (JSON-500); (5, MEDIUM)
+`/reports/work-orders` sada agregira **LINE-ITEM-e** (wo_parts×unit_cost + fallback, wo_labor min),
+ne nepostojeći WO-header rollup; (6, MEDIUM) `/incidents` lista ugnježđuje **WO summary**
+(paritet 1.0). + (verify) `status-override` filtrira istekle (`valid_until >= now()`).
+Kompletan re-audit SVIH `$queryRaw`: **0 dodatnih** neusklađenosti (svi ostali view-ovi/kolone/
+WHERE-ovi validni). Schema-pin test hvata ovu klasu ubuduće bez žive baze.
 
 **TODO (R2+):** sve mutacije (nalozi/incidenti/kontrole/napomene/fajlovi/settings/rules), 16 front
 RPC (create/archive/restore/ensure/import/rename/delete-hard/retry/preventive-WO/check-deadlines),

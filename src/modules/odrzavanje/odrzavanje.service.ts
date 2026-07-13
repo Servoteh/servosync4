@@ -115,6 +115,9 @@ const INCIDENT_STATUSES = new Set([
 ]);
 const INCIDENT_SEVERITIES = new Set(["minor", "major", "critical"]);
 const NOTIF_STATUSES = new Set(["queued", "sent", "failed"]);
+/** Guard za query-param uuid (kontroler ga NE ParseUUIDPipe-uje) — pre Prisma @db.Uuid casta. */
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** WO kanban grupe (spec §4.3): 4 grupe nad 10 statusa. */
 const WO_GROUP: Record<string, string> = {
@@ -230,7 +233,9 @@ export class OdrzavanjeService {
       return {
         data: {
           machineStatus,
-          dailySummary: (dailySummary as unknown[])[0] ?? null,
+          // v_maint_cmms_daily_summary ima 8 int8 (bigint) kolona → res.json baca
+          // TypeError (isti bug rešen u sastanci) → numRows konvertuje bigint→Number.
+          dailySummary: this.numRows((dailySummary as unknown[])[0] ?? null),
           categoryCounts,
           openIncidents,
           openWorkOrders,
@@ -278,8 +283,10 @@ export class OdrzavanjeService {
       const codes = rows.map((m) => m.machineCode);
       const [statuses, responsibles] = await Promise.all([
         codes.length
-          ? tx.$queryRaw<{ machine_code: string; effective_status: string }[]>(
-              Prisma.sql`SELECT machine_code, effective_status
+          ? tx.$queryRaw<{ machine_code: string; status: string }[]>(
+              // v_maint_machine_current_status izlaže `status` (NE effective_status);
+              // 1.0 maintenance.js čita `status`.
+              Prisma.sql`SELECT machine_code, status
                 FROM v_maint_machine_current_status
                 WHERE machine_code IN (${Prisma.join(codes)})`,
             )
@@ -290,7 +297,7 @@ export class OdrzavanjeService {
         ),
       ]);
       const statusByCode = new Map(
-        statuses.map((s) => [s.machine_code, s.effective_status]),
+        statuses.map((s) => [s.machine_code, s.status]),
       );
       const data = rows.map((m) => ({
         ...m,
@@ -334,19 +341,18 @@ export class OdrzavanjeService {
           `Mašina ${code} ne postoji ili nije vidljiva`,
         );
       const [statusRows, override, responsibles] = await Promise.all([
-        tx.$queryRaw<{ effective_status: string }[]>(
-          Prisma.sql`SELECT effective_status FROM v_maint_machine_current_status
+        tx.$queryRaw<{ status: string }[]>(
+          // view kolona je `status` (NE effective_status) — paritet 1.0.
+          Prisma.sql`SELECT status FROM v_maint_machine_current_status
             WHERE machine_code = ${code}`,
         ),
-        tx.maintMachineStatusOverride.findUnique({
-          where: { machineCode: code },
-        }),
+        this.activeOverride(tx, code),
         this.resolveProfiles(tx, [machine.responsibleUserId]),
       ]);
       return {
         data: {
           ...machine,
-          effectiveStatus: statusRows[0]?.effective_status ?? null,
+          effectiveStatus: statusRows[0]?.status ?? null,
           statusOverride: override,
           responsibleName: machine.responsibleUserId
             ? (responsibles.get(machine.responsibleUserId) ?? null)
@@ -358,9 +364,7 @@ export class OdrzavanjeService {
 
   async machineStatusOverride(email: string, code: string) {
     return this.withUserMapped(email, async (tx) => {
-      const data = await tx.maintMachineStatusOverride.findUnique({
-        where: { machineCode: code },
-      });
+      const data = await this.activeOverride(tx, code);
       return { data };
     });
   }
@@ -449,7 +453,7 @@ export class OdrzavanjeService {
       ...(query.machineCode ? { machineCode: query.machineCode } : {}),
     };
     return this.withUserMapped(email, async (tx) => {
-      const [data, total] = await Promise.all([
+      const [rows, total] = await Promise.all([
         tx.maintIncident.findMany({
           where,
           orderBy: { reportedAt: "desc" },
@@ -458,6 +462,30 @@ export class OdrzavanjeService {
         }),
         tx.maintIncident.count({ where }),
       ]);
+      // 1.0 (fetchMaintIncidents) ugnježđuje maint_work_orders(wo_id,wo_number,
+      // status,title,priority) u svaki incident (globalna lista + machine-history).
+      const woIds = [
+        ...new Set(
+          rows.map((r) => r.workOrderId).filter((x): x is string => !!x),
+        ),
+      ];
+      const wos = woIds.length
+        ? await tx.maintWorkOrder.findMany({
+            where: { woId: { in: woIds } },
+            select: {
+              woId: true,
+              woNumber: true,
+              status: true,
+              title: true,
+              priority: true,
+            },
+          })
+        : [];
+      const woById = new Map(wos.map((w) => [w.woId, w]));
+      const data = rows.map((r) => ({
+        ...r,
+        workOrder: r.workOrderId ? (woById.get(r.workOrderId) ?? null) : null,
+      }));
       return { data, meta: pageMeta(page, pageSize, total) };
     });
   }
@@ -872,10 +900,21 @@ export class OdrzavanjeService {
       query.pageSize,
     );
     // „Po vozilu" ide preko view-a (v_maint_parts_with_vehicles) — paritet 1.0 filtera.
+    // ⚠️ View NEMA asset_id; filtrira se po `vehicle_codes` (text[] asset_code-ova) koji
+    // sadrži šifru vozila (paritet 1.0 `vehicle_codes=cs.{code}`). Param je asset_id
+    // vozila → razreši u asset_code pa `<code> = ANY(vehicle_codes)`.
     if (query.vehicleId) {
+      const vid = query.vehicleId;
+      if (!UUID_RE.test(vid)) return { data: [] };
       return this.withUserMapped(email, async (tx) => {
+        const asset = await tx.maintAsset.findFirst({
+          where: { assetId: vid, assetType: "vehicle" },
+          select: { assetCode: true },
+        });
+        if (!asset) return { data: [] };
         const data = await tx.$queryRaw(
-          Prisma.sql`SELECT * FROM v_maint_parts_with_vehicles WHERE asset_id = ${query.vehicleId}::uuid`,
+          Prisma.sql`SELECT * FROM v_maint_parts_with_vehicles
+            WHERE ${asset.assetCode} = ANY(vehicle_codes)`,
         );
         return { data };
       });
@@ -1077,33 +1116,91 @@ export class OdrzavanjeService {
     });
   }
 
+  /**
+   * WO troškovi — agregacija LINE-ITEM-a (paritet 1.0 maintReportsPanel):
+   * partsCost = Σ(quantity × (wo_parts.unit_cost ?? maint_parts.unit_cost)) nad wo_parts;
+   * laborMinutes = Σ(minutes) nad wo_labor. WO header kolone (cost_total/labor_minutes)
+   * NISU pouzdan rollup (nijedan trigger ih ne agregira iz stavki) — NE sabiraju se.
+   */
   async reportWorkOrderCosts(email: string, period?: string) {
     const days = this.periodDays(period);
     return this.withUserMapped(email, async (tx) => {
       const where: Prisma.MaintWorkOrderWhereInput = days
         ? { createdAt: { gte: this.sinceDate(days) } }
         : {};
-      const rows = await tx.maintWorkOrder.findMany({
+      const wos = await tx.maintWorkOrder.findMany({
         where,
-        select: {
-          woId: true,
-          woNumber: true,
-          type: true,
-          status: true,
-          costTotal: true,
-          laborMinutes: true,
-        },
+        select: { woId: true, type: true, assetType: true },
       });
-      const costTotal = rows.reduce((a, r) => a + Number(r.costTotal ?? 0), 0);
-      const laborMinutes = rows.reduce((a, r) => a + (r.laborMinutes ?? 0), 0);
+      const emptyPeriod = days ? `${days}d` : "all";
+      if (!wos.length) {
+        return {
+          data: {
+            totalWorkOrders: 0,
+            partsCost: 0,
+            laborMinutes: 0,
+            costByAssetType: {},
+            byType: {},
+            period: emptyPeriod,
+          },
+        };
+      }
+      const woIds = wos.map((w) => w.woId);
+      const assetTypeByWo = new Map(
+        wos.map((w) => [w.woId, String(w.assetType)]),
+      );
+      const [parts, labor] = await Promise.all([
+        tx.maintWoPart.findMany({
+          where: { woId: { in: woIds } },
+          select: { woId: true, partId: true, quantity: true, unitCost: true },
+        }),
+        tx.maintWoLabor.findMany({
+          where: { woId: { in: woIds } },
+          select: { minutes: true },
+        }),
+      ]);
+      // Fallback jedinične cene iz maint_parts kad wo_parts.unit_cost fali (paritet 1.0).
+      const missing = [
+        ...new Set(
+          parts
+            .filter((p) => p.unitCost == null && p.partId)
+            .map((p) => p.partId as string),
+        ),
+      ];
+      const catalogCost = new Map<string, number>();
+      if (missing.length) {
+        const cat = await tx.maintPart.findMany({
+          where: { partId: { in: missing } },
+          select: { partId: true, unitCost: true },
+        });
+        for (const c of cat) catalogCost.set(c.partId, Number(c.unitCost ?? 0));
+      }
+      const partCost = (p: {
+        partId: string | null;
+        quantity: Prisma.Decimal | null;
+        unitCost: Prisma.Decimal | null;
+      }) =>
+        Number(p.quantity ?? 0) *
+        (p.unitCost != null
+          ? Number(p.unitCost)
+          : p.partId
+            ? (catalogCost.get(p.partId) ?? 0)
+            : 0);
+      const partsCost = parts.reduce((a, p) => a + partCost(p), 0);
+      const laborMinutes = labor.reduce((a, l) => a + (l.minutes ?? 0), 0);
+      const costByAssetType: Record<string, number> = {};
+      for (const p of parts) {
+        const at = assetTypeByWo.get(p.woId) ?? "—";
+        costByAssetType[at] = (costByAssetType[at] ?? 0) + partCost(p);
+      }
       return {
         data: {
-          total: rows.length,
-          costTotal,
+          totalWorkOrders: wos.length,
+          partsCost,
           laborMinutes,
-          byType: this.countBy(rows, (r) => r.type),
-          rows,
-          period: days ? `${days}d` : "all",
+          costByAssetType,
+          byType: this.countBy(wos, (w) => String(w.type)),
+          period: emptyPeriod,
         },
       };
     });
@@ -1156,6 +1253,40 @@ export class OdrzavanjeService {
       ...row,
       sizeBytes: row.sizeBytes === null ? null : Number(row.sizeBytes),
     };
+  }
+
+  /**
+   * $queryRaw nad view-om vraća int8 kolone kao JS BigInt → `res.json` baca TypeError.
+   * Konvertuje TOP-LEVEL bigint polja reda u Number (ne recurse-uje — Prisma Decimal
+   * poljima se NE dira, ostaju kao string kroz toJSON). Primenjuje se na raw view redove
+   * sa agregatnim count-ovima (npr. v_maint_cmms_daily_summary — 8 int8 kolona).
+   */
+  private numRows<T>(v: T): T {
+    const fix = (o: unknown): unknown => {
+      if (o === null || typeof o !== "object") {
+        return typeof o === "bigint" ? Number(o) : o;
+      }
+      if (Array.isArray(o)) return o.map(fix);
+      const out: Record<string, unknown> = {};
+      for (const [k, val] of Object.entries(o as Record<string, unknown>)) {
+        out[k] = typeof val === "bigint" ? Number(val) : val;
+      }
+      return out;
+    };
+    return fix(v) as T;
+  }
+
+  /**
+   * Ručni status override — SAMO važeći (paritet 1.0 fetchMaintMachineOverride:
+   * `valid_until IS NULL OR valid_until >= now()`). Istekli override se NE vraća.
+   */
+  private async activeOverride(tx: Sy15Tx, code: string) {
+    return tx.maintMachineStatusOverride.findFirst({
+      where: {
+        machineCode: code,
+        OR: [{ validUntil: null }, { validUntil: { gte: new Date() } }],
+      },
+    });
   }
 
   private sinceDate(days: number): Date {

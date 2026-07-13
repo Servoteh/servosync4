@@ -22,6 +22,16 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
       findMany: jest.fn().mockResolvedValue([]),
       count: jest.fn().mockResolvedValue(0),
     },
+    maintWorkOrder: {
+      findMany: jest.fn().mockResolvedValue([]),
+      count: jest.fn().mockResolvedValue(0),
+    },
+    maintWoPart: { findMany: jest.fn().mockResolvedValue([]) },
+    maintWoLabor: { findMany: jest.fn().mockResolvedValue([]) },
+    maintPart: {
+      findMany: jest.fn().mockResolvedValue([]),
+      count: jest.fn().mockResolvedValue(0),
+    },
     maintUserProfile: {
       findUnique: jest.fn().mockResolvedValue(null),
       findMany: jest.fn().mockResolvedValue([]),
@@ -169,5 +179,98 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
   it("korisnik bez ijednog sloja (ni profil ni floor-read): sva gate-a false (ali read/report guard opšte pravo)", async () => {
     const d = await meFor({ uid: "u9", maint_role: null });
     for (const g of Object.values(d.gates)) expect(g).toBe(false);
+  });
+
+  // ------- adversarni review fix-evi (2026-07-13) -------
+
+  it("dashboard konvertuje int8 (bigint) sažetak u Number (JSON-safe, #4)", async () => {
+    const tx = makeTx({
+      $queryRaw: jest
+        .fn()
+        // redosled poziva: machineStatus, dailySummary, categoryCounts
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([
+          { active_work_orders: 5n, open_incidents: 2n, open_wo_p1: 1n },
+        ])
+        .mockResolvedValueOnce([]),
+      maintIncident: { count: jest.fn().mockResolvedValue(2) },
+      maintWorkOrder: { count: jest.fn().mockResolvedValue(5) },
+    });
+    const { sy15 } = makeSy15(tx);
+    const svc = new OdrzavanjeService(sy15);
+    const res = (await svc.dashboard("x@servoteh.com")) as unknown as {
+      data: { dailySummary: Record<string, unknown> };
+    };
+    const s = res.data.dailySummary;
+    for (const v of Object.values(s)) expect(typeof v).toBe("number");
+    expect(s.active_work_orders).toBe(5);
+  });
+
+  it("listIncidents ugnježđuje WO summary po work_order_id (#6, paritet 1.0)", async () => {
+    const tx = makeTx({
+      maintIncident: {
+        findMany: jest.fn().mockResolvedValue([
+          { id: "i1", workOrderId: "w1" },
+          { id: "i2", workOrderId: null },
+        ]),
+        count: jest.fn().mockResolvedValue(2),
+      },
+      maintWorkOrder: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            woId: "w1",
+            woNumber: "WO-2026-00001",
+            status: "novi",
+            title: "T",
+            priority: "p1_zastoj",
+          },
+        ]),
+      },
+    });
+    const { sy15 } = makeSy15(tx);
+    const svc = new OdrzavanjeService(sy15);
+    const res = (await svc.listIncidents("x@servoteh.com", {})) as {
+      data: { id: string; workOrder: { woNumber: string } | null }[];
+    };
+    expect(res.data[0].workOrder?.woNumber).toBe("WO-2026-00001");
+    expect(res.data[1].workOrder).toBeNull();
+  });
+
+  it("reportWorkOrderCosts agregira LINE-ITEM-e (wo_parts×unit_cost + fallback, wo_labor min) — #5", async () => {
+    const tx = makeTx({
+      maintWorkOrder: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue([
+            { woId: "w1", type: "kvar", assetType: "machine" },
+          ]),
+      },
+      maintWoPart: {
+        findMany: jest.fn().mockResolvedValue([
+          { woId: "w1", partId: null, quantity: 2, unitCost: 10 }, // 20
+          { woId: "w1", partId: "p1", quantity: 3, unitCost: null }, // fallback 5 → 15
+        ]),
+      },
+      maintWoLabor: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue([{ minutes: 30 }, { minutes: 45 }]),
+      },
+      maintPart: {
+        findMany: jest.fn().mockResolvedValue([{ partId: "p1", unitCost: 5 }]),
+      },
+    });
+    const { sy15 } = makeSy15(tx);
+    const svc = new OdrzavanjeService(sy15);
+    const res = (await svc.reportWorkOrderCosts("x@servoteh.com", "90")) as {
+      data: {
+        partsCost: number;
+        laborMinutes: number;
+        costByAssetType: Record<string, number>;
+      };
+    };
+    expect(res.data.partsCost).toBe(35); // 2*10 + 3*5(fallback)
+    expect(res.data.laborMinutes).toBe(75);
+    expect(res.data.costByAssetType.machine).toBe(35);
   });
 });
