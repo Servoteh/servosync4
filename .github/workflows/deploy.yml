@@ -3,7 +3,10 @@ name: deploy-backend
 # Auto-redeploy on merge to main. Runs on the self-hosted runner that lives on
 # the on-prem server (192.168.64.28) — outbound-only, nothing is exposed.
 # Docs-only pushes are ignored (paths filter) so we don't rebuild for nothing.
+# workflow_dispatch: manual trigger for frontend-only refreshes — the bake pulls
+# frontend main at deploy time, so a FE-only change needs no backend push.
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
