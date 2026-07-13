@@ -281,7 +281,9 @@ export function HandoverDetailPanel({ handover }: { handover: Handover }) {
               : 'nije povezan sa nacrtom'
           }
         />
-        <Field label="Predato tehnologu" value={handover.handoverWorker?.fullName ?? '—'} />
+        {/* `handoverWorker` = PROJEKTANT koji je predao (ne tehnolog!) — tačna
+            semantika potvrđena na živoj probi primopredaje. */}
+        <Field label="Predao (projektant)" value={handover.handoverWorker?.fullName ?? '—'} />
         <Field label="Tehnolog (TP)" value={handover.technologist?.fullName ?? '—'} />
         <Field
           label="RN"

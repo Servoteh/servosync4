@@ -1,7 +1,12 @@
 'use client';
 
 import { useState } from 'react';
-import { usePendingApprovalHandovers, useTechnologists, type Handover } from '@/api/handovers';
+import {
+  useEngineers,
+  usePendingApprovalHandovers,
+  useTechnologists,
+  type Handover,
+} from '@/api/handovers';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { SearchBox } from '@/components/ui-kit/search-box';
@@ -46,9 +51,11 @@ const columns: Column<Handover>[] = [
     render: (r) => <span className="text-ink-secondary">{formatDate(r.handoverDate)}</span>,
   },
   {
+    // `handoverWorker` = PROJEKTANT koji je predao (ne tehnolog!) — tačna
+    // semantika potvrđena na živoj probi primopredaje.
     key: 'worker',
-    header: 'Predato tehnologu',
-    render: (r) => <span className="text-ink-secondary">{r.handoverWorker?.fullName ?? 'svima'}</span>,
+    header: 'Predao (projektant)',
+    render: (r) => <span className="text-ink-secondary">{r.handoverWorker?.fullName ?? '—'}</span>,
   },
 ];
 
@@ -62,7 +69,12 @@ export function PendingTab() {
   const [expanded, setExpanded] = useState<number | null>(null);
   const resetPage = () => setPage(1);
 
+  // Filter „Predao" ide po `handoverWorkerId` = PROJEKTANT koji je predao —
+  // opcije su inženjeri (novi endpoint); dok backend ne stigne (404) fallback
+  // na tehnologe, da filter ne ostane prazan.
+  const engineers = useEngineers();
   const technologists = useTechnologists();
+  const submitters = engineers.data?.data ?? technologists.data?.data ?? [];
   const list = usePendingApprovalHandovers({
     page,
     drawingNumber: q.trim() || undefined,
@@ -89,7 +101,7 @@ export function PendingTab() {
           />
         </div>
         <label className="flex flex-col gap-1 text-xs text-ink-secondary">
-          Za tehnologa
+          Predao
           <NativeSelect
             value={handoverWorkerId}
             onChange={(e) => {
@@ -98,9 +110,9 @@ export function PendingTab() {
             }}
           >
             <option value="">Svi</option>
-            {(technologists.data?.data ?? []).map((t) => (
+            {submitters.map((t) => (
               <option key={t.id} value={t.id}>
-                {t.fullName ?? t.username}
+                {t.fullName ?? t.username ?? `#${t.id}`}
               </option>
             ))}
           </NativeSelect>

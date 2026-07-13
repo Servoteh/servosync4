@@ -7,19 +7,24 @@ import {
   useCreateHandoverDraft,
   useDeleteHandoverDraft,
   useDrawingsLookup,
+  useEngineers,
+  useEngineersLookup,
   useHandoverDraft,
   useHandoverDrafts,
   useHandoverLookups,
+  useMyWorkerId,
   useSubmitHandoverDraft,
   useUpdateHandoverDraft,
   type CreateHandoverDraftInput,
   type CreateHandoverDraftItemInput,
   type DraftItemWarning,
   type Drawing,
+  type EngineerRef,
   type HandoverDraft,
   type HandoverDraftDetail,
   type HandoverDraftItem,
 } from '@/api/handovers';
+import { useBom, type DrawingSummary } from '@/api/pdm';
 import { useProjectsLookup, type ProjectLookup } from '@/api/lookups';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
@@ -116,7 +121,10 @@ const columns: Column<HandoverDraft>[] = [
 // ─────────────────────────────────────────────────────────────── forma (novi / izmena)
 
 interface DraftFormState {
+  /** Ručni unos šifre radnika — fallback dok GET /v1/handovers/engineers ne postoji (404). */
   designerId: string;
+  /** Projektant izabran iz šifarnika inženjera — prednost nad `designerId`. */
+  designer: EngineerRef | null;
   project: ProjectLookup | null;
   draftType: number;
   mainDrawing: Drawing | null;
@@ -130,11 +138,64 @@ interface DraftItemDraft {
   drawing: Drawing | null;
   quantityToProduce: string;
   note: string;
+  /** Auto-BOM polja — postavlja ih popuna iz sastavnice; ručno dodate stavke ih nemaju. */
+  isMain?: boolean;
+  mainDrawingId?: number;
+  quantityDefinedInDrawing?: number;
+}
+
+/**
+ * Odobren PDM status — 1:1 sa backend `APPROVED_PDM_STATES`
+ * (pdm/pdm-xml-parser.ts): trim + case-insensitive ∈ {odobreno, izmena bez
+ * revizije}. Komponente van skupa se pri auto-popuni stavki PRESKAČU jer bi
+ * backend ceo create odbio sa 422 („Crtež(i) nisu ODOBRENI u PDM-u").
+ */
+const APPROVED_PDM_STATES = new Set(['odobreno', 'izmena bez revizije']);
+function isApprovedPdmStatus(pdmStatus: string): boolean {
+  return APPROVED_PDM_STATES.has(pdmStatus.trim().toLowerCase());
+}
+
+/** `DrawingSummary` (BOM čvor) → `Drawing` oblik za stavku (isti obrazac kao `toFormState`). */
+function summaryToDrawing(s: DrawingSummary): Drawing {
+  return {
+    id: s.id,
+    drawingNumber: s.drawingNumber,
+    revision: s.revision,
+    catalogNumber: s.catalogNumber,
+    name: s.name,
+    material: s.material,
+    dimensions: null,
+    weight: s.weight,
+    marking: '',
+    isProcurement: s.isProcurement,
+    pdmStatus: s.pdmStatus,
+    statusId: 0,
+    designedBy: null,
+    designDate: null,
+    approvedBy: null,
+    approvedDate: null,
+    fileName: null,
+    projectName: null,
+    workOrderRef: null,
+    createdAt: null,
+    status: null,
+  };
+}
+
+/** Srpska množina za upozorenje o preskočenim delovima (1 deo / 2 dela / 5 delova). */
+function skippedCountLabel(n: number): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return `${formatNumber(n)} deo preskočen`;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14))
+    return `${formatNumber(n)} dela preskočena`;
+  return `${formatNumber(n)} delova preskočeno`;
 }
 
 function toFormState(draft: HandoverDraftDetail | null): DraftFormState {
   return {
     designerId: draft ? String(draft.designerId) : '',
+    designer: null,
     project: draft?.project
       ? {
           id: draft.project.id,
@@ -196,19 +257,88 @@ function DraftFormDialog({
   // nacrt JESTE kreiran, pa se umesto tihog zatvaranja prikaže lista (inline,
   // isti obrazac "success ekrana" kao LaunchHandoverDialog).
   const [warnings, setWarnings] = useState<DraftItemWarning[] | null>(null);
+  // Auto-BOM: id sklopa čija se sastavnica čeka za popunu stavki (null = ništa).
+  const [autoFillId, setAutoFillId] = useState<number | null>(null);
+  // Neodobreni delovi preskočeni pri poslednjoj auto-popuni (brojevi crteža).
+  const [skippedDrawings, setSkippedDrawings] = useState<string[]>([]);
+  // Prefill projektanta se radi tačno jednom po otvaranju (da refetch šifarnika
+  // ne pregazi svesno obrisan izbor korisnika).
+  const [designerPrefilled, setDesignerPrefilled] = useState(false);
   const lookups = useHandoverLookups();
+  // Šifarnik inženjera — 404/greška pre backend deploja → fallback na ručni unos šifre.
+  const engineers = useEngineers();
+  const myWorkerId = useMyWorkerId();
   const create = useCreateHandoverDraft();
   const update = useUpdateHandoverDraft();
   const mut = isEdit ? update : create;
   const set = (patch: Partial<DraftFormState>) => setForm((f) => ({ ...f, ...patch }));
+  // Sastavnica izabranog sklopa — učitava se tek kad korisnik izabere glavni crtež.
+  const bom = useBom(autoFillId, open && !isEdit);
 
   useEffect(() => {
     if (open) {
       setForm(toFormState(draft));
       setItems([]);
       setWarnings(null);
+      setAutoFillId(null);
+      setSkippedDrawings([]);
+      setDesignerPrefilled(false);
     }
   }, [open, draft]);
+
+  // PREFILL projektanta: za NOVI nacrt default = ulogovani korisnik, ako je
+  // njegov `workerId` (JWT claim) u listi inženjera. Kancelarijski nalog
+  // (workerId=null) ili radnik van šifarnika → polje ostaje prazno, korisnik bira.
+  useEffect(() => {
+    if (!open || isEdit || designerPrefilled || myWorkerId == null) return;
+    const me = engineers.data?.data.find((e) => e.id === myWorkerId);
+    if (!me) return;
+    setForm((f) => (f.designer ? f : { ...f, designer: me }));
+    setDesignerPrefilled(true);
+  }, [open, isEdit, designerPrefilled, myWorkerId, engineers.data]);
+
+  // AUTO-BOM („U nacrtu biram samo sklop i on izlista sve pozicije u sklopu"):
+  // kad stigne sastavnica izabranog sklopa, stavke = sklop kao prva (isMain) +
+  // sve proizvodne komponente iz `flat` liste (rekurzivno agregirano). Nabavni
+  // delovi (isProcurement) se preskaču TIHO — legacy paritet, ne proizvode se;
+  // neodobreni u PDM-u se preskaču UZ upozorenje (backend bi ceo create odbio
+  // sa 422). Lista je početna — projektant posle ručno menja/briše/dodaje.
+  useEffect(() => {
+    if (autoFillId == null) return;
+    const data = bom.data?.data;
+    if (!data || data.drawing.id !== autoFillId) return; // stale keš pri promeni sklopa
+    const pieces = Number(form.pieceCount) || 1;
+    const producible = data.flat.filter((r) => r.drawing && !r.drawing.isProcurement);
+    const skipped = producible
+      .filter((r) => !isApprovedPdmStatus(r.drawing!.pdmStatus))
+      .map((r) => r.drawing!.drawingNumber);
+    const rootDrawing =
+      form.mainDrawing && form.mainDrawing.id === data.drawing.id
+        ? form.mainDrawing
+        : summaryToDrawing(data.drawing);
+    setItems([
+      {
+        ...newItemRow(),
+        drawing: rootDrawing,
+        quantityToProduce: String(pieces),
+        isMain: true,
+        quantityDefinedInDrawing: 1,
+      },
+      ...producible
+        .filter((r) => isApprovedPdmStatus(r.drawing!.pdmStatus))
+        .map((r) => ({
+          ...newItemRow(),
+          drawing: summaryToDrawing(r.drawing!),
+          quantityToProduce: String(r.totalQuantity * pieces),
+          mainDrawingId: data.drawing.id,
+          quantityDefinedInDrawing: r.totalQuantity,
+        })),
+    ]);
+    setSkippedDrawings(skipped);
+    setAutoFillId(null);
+    // form.* se čita u trenutku popune (snapshot) — ne sme da retrigeruje popunu.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoFillId, bom.data]);
 
   async function submit() {
     try {
@@ -225,8 +355,14 @@ function DraftFormDialog({
           },
         });
       } else {
+        // Projektant: izbor iz šifarnika ima prednost; fallback ručna šifra
+        // (samo dok /engineers vraća grešku). Kad nema ni jednog — designerId
+        // se IZOSTAVLJA i backend uzima ulogovanog (JWT workerId).
+        const designerId =
+          form.designer?.id ??
+          (engineers.isError && form.designerId.trim() ? Number(form.designerId) : undefined);
         const payload: CreateHandoverDraftInput = {
-          designerId: Number(form.designerId),
+          ...(designerId ? { designerId } : {}),
           projectId: form.project?.id ?? 0,
           mainDrawingId: form.mainDrawing?.id,
           draftType: form.draftType,
@@ -238,6 +374,12 @@ function DraftFormDialog({
               drawingId: i.drawing!.id,
               quantityToProduce: Number(i.quantityToProduce) || 1,
               note: i.note.trim() || undefined,
+              // Auto-BOM polja — šalju se samo kad postoje (ručne stavke ih nemaju).
+              ...(i.isMain ? { isMain: true } : {}),
+              ...(i.mainDrawingId != null ? { mainDrawingId: i.mainDrawingId } : {}),
+              ...(i.quantityDefinedInDrawing != null
+                ? { quantityDefinedInDrawing: i.quantityDefinedInDrawing }
+                : {}),
             })),
         };
         const res = await create.mutateAsync(payload);
@@ -297,9 +439,11 @@ function DraftFormDialog({
           <Button
             onClick={submit}
             loading={mut.isPending}
-            // Bez ovoga se šalje designerId=Number('')=0 / projectId=0 i čeka
-            // backend 400 — isti obrazac kao NewWorkOrderDialog (work-orders).
-            disabled={!form.project || (!isEdit && !form.designerId.trim())}
+            // Bez ovoga se šalje projectId=0 i čeka backend 400 — isti obrazac
+            // kao NewWorkOrderDialog (work-orders). Šifra projektanta je
+            // obavezna SAMO u fallback režimu (stari backend bez /engineers
+            // traži designerId); sa šifarnikom je opciona — backend default.
+            disabled={!form.project || (!isEdit && engineers.isError && !form.designerId.trim())}
           >
             Snimi
           </Button>
@@ -308,10 +452,7 @@ function DraftFormDialog({
     >
       <div className="space-y-3">
         {!isEdit && (
-          <p className="text-xs text-ink-disabled">
-            Broj nacrta generiše sistem. Projektant se unosi šifrom radnika (biranje iz liste
-            stiže sa šifarnicima).
-          </p>
+          <p className="text-xs text-ink-disabled">Broj nacrta generiše sistem.</p>
         )}
         <div className="grid grid-cols-2 gap-3">
           <FormField label="Predmet" required>
@@ -325,16 +466,31 @@ function DraftFormDialog({
               placeholder="Broj/naziv predmeta…"
             />
           </FormField>
-          {!isEdit && (
-            <FormField label="Projektant" required hint="Šifra radnika">
-              <Input
-                type="number"
-                min={1}
-                value={form.designerId}
-                onChange={(e) => set({ designerId: e.target.value })}
-              />
-            </FormField>
-          )}
+          {!isEdit &&
+            (engineers.isError ? (
+              // Fallback pre backend deploja (GET /v1/handovers/engineers →
+              // 404): ručni unos šifre radnika da forma ne bude blokirana.
+              <FormField label="Projektant" required hint="Šifra radnika">
+                <Input
+                  type="number"
+                  min={1}
+                  value={form.designerId}
+                  onChange={(e) => set({ designerId: e.target.value })}
+                />
+              </FormField>
+            ) : (
+              <FormField label="Projektant" hint="Podrazumevano ulogovani korisnik.">
+                <ComboBox<EngineerRef>
+                  value={form.designer}
+                  onChange={(d) => set({ designer: d })}
+                  useSearch={useEngineersLookup}
+                  getKey={(w) => w.id}
+                  getLabel={(w) => w.fullName ?? w.username ?? `#${w.id}`}
+                  getSublabel={(w) => w.username ?? ''}
+                  placeholder="Ime projektanta…"
+                />
+              </FormField>
+            ))}
           {isEdit && (
             <FormField label="Status nacrta">
               <NativeSelect
@@ -376,10 +532,38 @@ function DraftFormDialog({
             />
           </FormField>
         </div>
-        <FormField label="Glavni crtež sklopa" hint="Opciono — ako je nacrt za ceo sklop.">
+        <FormField
+          label="Glavni crtež sklopa"
+          hint={
+            isEdit
+              ? 'Opciono — ako je nacrt za ceo sklop.'
+              : 'Opciono — izbor sklopa automatski izlistava sve pozicije iz sastavnice u stavke.'
+          }
+        >
           <ComboBox<Drawing>
             value={form.mainDrawing}
-            onChange={(d) => set({ mainDrawing: d })}
+            onChange={(d) => {
+              set({ mainDrawing: d });
+              if (isEdit) return;
+              // Auto-BOM okidač: izbor sklopa pokreće učitavanje sastavnice;
+              // postojeće stavke se zamenjuju uz potvrdu (legacy: projektant
+              // posle može ručno isključiti/menjati pojedine).
+              setSkippedDrawings([]);
+              if (!d) {
+                setAutoFillId(null);
+                return;
+              }
+              if (
+                items.length > 0 &&
+                !window.confirm(
+                  'Izbor sklopa zamenjuje postojeće stavke pozicijama iz njegove sastavnice. Nastaviti?',
+                )
+              ) {
+                setAutoFillId(null);
+                return;
+              }
+              setAutoFillId(d.id);
+            }}
             useSearch={useDrawingsLookup}
             getKey={(d) => d.id}
             getLabel={(d) => `${d.drawingNumber} / ${d.revision}`}
@@ -397,6 +581,14 @@ function DraftFormDialog({
 
         {!isEdit && (
           <div className="space-y-2">
+            {/* Neodobreni delovi preskočeni pri auto-popuni iz sastavnice —
+                backend bi ceo create odbio sa 422, zato ne ulaze u stavke. */}
+            {skippedDrawings.length > 0 && (
+              <div className={warnBox}>
+                {skippedCountLabel(skippedDrawings.length)} — nisu ODOBRENI u PDM-u:{' '}
+                <span className="tnums">{skippedDrawings.join(', ')}</span>
+              </div>
+            )}
             <div className="flex items-center justify-between">
               <p className="text-2xs font-semibold uppercase tracking-[0.08em] text-ink-secondary">
                 Stavke ({items.length})
@@ -410,6 +602,16 @@ function DraftFormDialog({
                 Dodaj stavku
               </button>
             </div>
+            {/* Sklopovi znaju da imaju stotine delova — vidljiv indikator dok
+                se sastavnica vuče, da „prazne stavke" ne zbune projektanta. */}
+            {autoFillId != null && bom.isLoading && (
+              <p className="text-xs text-ink-secondary">Učitavanje sastavnice sklopa…</p>
+            )}
+            {autoFillId != null && bom.isError && (
+              <p className="text-sm text-status-danger" role="alert">
+                Sastavnica sklopa se nije učitala — stavke dodajte ručno.
+              </p>
+            )}
             {items.length > 0 && (
               <div className="space-y-2 rounded-control border border-line bg-surface-2/40 p-2.5">
                 {items.map((it, idx) => (

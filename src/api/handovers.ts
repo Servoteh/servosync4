@@ -135,7 +135,8 @@ export interface CreateHandoverDraftItemInput {
 }
 
 export interface CreateHandoverDraftInput {
-  designerId: number;
+  /** Opciono — kad se izostavi, backend uzima ulogovanog (JWT `workerId`). */
+  designerId?: number;
   projectId: number;
   mainDrawingId?: number;
   draftType?: number;
@@ -485,6 +486,45 @@ export function useTechnologistsLookup(q: string) {
   const data = needle
     ? all.filter((t) =>
         [t.fullName ?? '', t.username].some((s) => s.toLowerCase().includes(needle)),
+      )
+    : all;
+  return { data: { data }, isLoading: list.isLoading };
+}
+
+/** Radnik iz šifarnika inženjera — isti oblik kao tehnolozi, ali `username` može biti null. */
+export interface EngineerRef {
+  id: number;
+  fullName: string | null;
+  username: string | null;
+}
+
+/**
+ * AKTIVNI radnici vrste „Inženjeri" (projektanti koji predaju nacrte) — GET
+ * /v1/handovers/engineers, isti oblik odgovora kao `useTechnologists`.
+ * DEFANZIVNO: endpoint je nov — dok backend ne stigne vraća 404, pa `retry:
+ * false` (ne ponavljati uzaludno); potrošač (DraftFormDialog) na grešku pada
+ * nazad na ručni unos šifre radnika.
+ */
+export function useEngineers() {
+  return useQuery({
+    queryKey: ['handovers', 'engineers'],
+    queryFn: () => apiFetch<{ data: EngineerRef[] }>('/v1/handovers/engineers'),
+    retry: false,
+    staleTime: 5 * 60_000,
+  });
+}
+
+/**
+ * Adapter za `ComboBox`: inženjeri filtrirani klijentski — lista je mala i
+ * endpoint nema `q` parametar (isti obrazac kao `useTechnologistsLookup`).
+ */
+export function useEngineersLookup(q: string) {
+  const list = useEngineers();
+  const needle = q.trim().toLowerCase();
+  const all = list.data?.data ?? [];
+  const data = needle
+    ? all.filter((e) =>
+        [e.fullName ?? '', e.username ?? ''].some((s) => s.toLowerCase().includes(needle)),
       )
     : all;
   return { data: { data }, isLoading: list.isLoading };
