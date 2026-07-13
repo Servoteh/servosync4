@@ -33,6 +33,7 @@ import {
 } from '@/api/work-orders';
 import { useOperations, type Operation } from '@/api/structures';
 import { openDrawingPdf } from '@/api/pdm';
+import { OperationsTable } from '@/app/work-orders/_components/operations-table';
 import { PrintDrawingsDialog } from '@/app/handovers/_components/print-drawings-dialog';
 import { ApiError } from '@/api/client';
 import { AppShell } from '@/components/ui-kit/app-shell';
@@ -193,11 +194,6 @@ function WorkOrderDetail({
     : null;
   const locked = !!rn.isLocked;
   const canEdit = !locked && can(PERMISSIONS.RN_WRITE);
-  const fmtNum = (n: number) => n.toLocaleString('sr-RS', { maximumFractionDigits: 3 });
-  const opTotal = rn.operations.reduce(
-    (sum, op) => sum + (op.setupTime ?? 0) + (op.cycleTime ?? 0) * rn.pieceCount,
-    0,
-  );
   const isEmpty =
     rn.operations.length === 0 &&
     rn.machinedParts.length === 0 &&
@@ -433,78 +429,14 @@ function WorkOrderDetail({
         {rn.operations.length === 0 ? (
           <span className="text-sm text-ink-disabled">Nema operacija.</span>
         ) : (
-          <div className="overflow-x-auto rounded-panel border border-line bg-surface">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-line bg-surface-2 text-left text-2xs uppercase tracking-[0.08em] text-ink-secondary">
-                  <th className="px-3 py-2 font-semibold">Op.</th>
-                  <th className="px-3 py-2 font-semibold">RC</th>
-                  <th className="px-3 py-2 font-semibold">Opis</th>
-                  <th className="px-3 py-2 text-right font-semibold">Tpz</th>
-                  <th className="px-3 py-2 text-right font-semibold">Tk</th>
-                  <th className="px-3 py-2 text-right font-semibold">Ukupno</th>
-                  {canEdit && <th className="px-3 py-2 text-right font-semibold">Akcije</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {rn.operations.map((op) => {
-                  const uk = (op.setupTime ?? 0) + (op.cycleTime ?? 0) * rn.pieceCount;
-                  return (
-                    <tr key={op.id} className="border-b border-line-soft last:border-0">
-                      <td className="tnums px-3 py-1.5 text-ink-secondary">
-                        {op.operationNumber}
-                      </td>
-                      <td className="px-3 py-1.5 text-ink">
-                        {op.operation?.workCenterName ?? op.workCenterCode}
-                      </td>
-                      <td className="px-3 py-1.5 text-ink">{op.workDescription}</td>
-                      <td className="tnums px-3 py-1.5 text-right text-ink-secondary">
-                        {op.setupTime != null ? fmtNum(op.setupTime) : '—'}
-                      </td>
-                      <td className="tnums px-3 py-1.5 text-right text-ink-secondary">
-                        {op.cycleTime != null ? fmtNum(op.cycleTime) : '—'}
-                      </td>
-                      <td className="tnums px-3 py-1.5 text-right text-ink">{fmtNum(uk)}</td>
-                      {canEdit && (
-                        <td className="px-3 py-1.5 text-right">
-                          <div className="inline-flex gap-1">
-                            <button
-                              onClick={() => setOpDialog({ open: true, op })}
-                              aria-label="Izmeni operaciju"
-                              className="rounded-control border border-line px-2 py-1 text-ink-secondary hover:bg-surface-2"
-                            >
-                              <Pencil className="h-3.5 w-3.5" aria-hidden />
-                            </button>
-                            <button
-                              disabled={busy}
-                              onClick={() =>
-                                delOp.mutate({ workOrderId: id, operationId: op.id })
-                              }
-                              aria-label="Obriši operaciju"
-                              className="rounded-control border border-line px-2 py-1 text-status-danger hover:bg-status-danger-bg disabled:opacity-40"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" aria-hidden />
-                            </button>
-                          </div>
-                        </td>
-                      )}
-                    </tr>
-                  );
-                })}
-              </tbody>
-              <tfoot>
-                <tr className="border-t border-line bg-surface-2 text-2xs uppercase tracking-[0.08em] text-ink-secondary">
-                  <td className="px-3 py-2 font-semibold" colSpan={5}>
-                    Ukupno (Tpz + Tk × {formatNumber(rn.pieceCount)} kom)
-                  </td>
-                  <td className="tnums px-3 py-2 text-right font-semibold text-ink">
-                    {fmtNum(opTotal)}
-                  </td>
-                  {canEdit && <td />}
-                </tr>
-              </tfoot>
-            </table>
-          </div>
+          <OperationsTable
+            operations={rn.operations}
+            pieceCount={rn.pieceCount}
+            canEdit={canEdit}
+            onEdit={(op) => setOpDialog({ open: true, op })}
+            onDelete={(op) => delOp.mutate({ workOrderId: id, operationId: op.id })}
+            deleteDisabled={busy}
+          />
         )}
         {delOp.error && (
           <p className="mt-1.5 text-sm text-status-danger" role="alert">

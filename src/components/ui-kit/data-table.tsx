@@ -20,6 +20,10 @@ interface DataTableProps<T> {
   expandedKey?: string | number | null;
   empty?: ReactNode;
   loading?: boolean;
+  /** Uključi native HTML5 prevlačenje redova (uz `onRowDrop`). */
+  rowDraggable?: boolean;
+  /** Poziva se pri spuštanju prevučenog reda na drugi (ključevi kao stringovi). */
+  onRowDrop?: (dragKey: string, overKey: string) => void;
 }
 
 /**
@@ -35,9 +39,13 @@ export function DataTable<T>({
   expandedKey,
   empty,
   loading,
+  rowDraggable,
+  onRowDrop,
 }: DataTableProps<T>) {
   const [focus, setFocus] = useState(0);
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
   const bodyRef = useRef<HTMLTableSectionElement>(null);
+  const dnd = !!rowDraggable && !!onRowDrop;
 
   function onKeyDown(e: KeyboardEvent<HTMLTableSectionElement>) {
     if (!rows.length) return;
@@ -108,10 +116,46 @@ export function DataTable<T>({
                       onRowActivate?.(row);
                     }}
                     aria-selected={isFocused}
+                    draggable={dnd || undefined}
+                    onDragStart={
+                      dnd
+                        ? (e) => {
+                            e.dataTransfer.setData('text/plain', String(key));
+                            e.dataTransfer.effectAllowed = 'move';
+                          }
+                        : undefined
+                    }
+                    onDragOver={
+                      dnd
+                        ? (e) => {
+                            e.preventDefault();
+                            e.dataTransfer.dropEffect = 'move';
+                            if (dropTarget !== String(key)) setDropTarget(String(key));
+                          }
+                        : undefined
+                    }
+                    onDragLeave={
+                      dnd
+                        ? () => {
+                            setDropTarget((t) => (t === String(key) ? null : t));
+                          }
+                        : undefined
+                    }
+                    onDrop={
+                      dnd
+                        ? (e) => {
+                            e.preventDefault();
+                            const dragKey = e.dataTransfer.getData('text/plain');
+                            setDropTarget(null);
+                            if (dragKey) onRowDrop?.(dragKey, String(key));
+                          }
+                        : undefined
+                    }
                     className={cn(
                       'h-[var(--table-row-height)] cursor-pointer border-b border-line-soft',
                       'hover:bg-surface-2',
                       isFocused && 'bg-accent-subtle shadow-[inset_3px_0_0_var(--accent)]',
+                      dnd && dropTarget === String(key) && 'border-t-2 border-t-accent',
                     )}
                   >
                     {columns.map((c) => (

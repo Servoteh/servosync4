@@ -9,6 +9,9 @@ export const PERMISSIONS = {
   TEHNOLOGIJA_WRITE: 'tehnologija.write',
   TEHNOLOGIJA_APPROVE: 'tehnologija.approve',
   TEHNOLOGIJA_REPORT_WORK: 'tehnologija.report_work',
+  // CAM redosled (per-user grant) — samo tehnolozi kojima je dodeljen
+  // ređaju CAM listu prevlačenjem; CNC programeri vide redosled read-only.
+  CAM_PRIORITET: 'tehnologija.cam_prioritet',
   RN_READ: 'rn.read',
   RN_WRITE: 'rn.write',
   RN_APPROVE: 'rn.approve',
