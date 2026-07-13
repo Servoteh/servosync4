@@ -1,4 +1,12 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+  UnauthorizedException,
+  UnprocessableEntityException,
+} from "@nestjs/common";
 import {
   LocMovementTypeEnum,
   LocPlacementStatusEnum,
@@ -6,6 +14,8 @@ import {
   Prisma,
 } from "@prisma-sy15/client";
 import { Sy15Service } from "../../common/sy15/sy15.service";
+import { LabelPrintService } from "../../common/printing/label-print.service";
+import type { PrintLabelDto } from "../../common/printing/print-label.dto";
 import { pageMeta, parsePagination } from "../../common/pagination";
 import {
   normalizeBarcodeText,
@@ -15,6 +25,20 @@ import {
   resolveCompositeShelfScan,
   type ShelfLoc,
 } from "./barcode";
+import type {
+  CageMoveDto,
+  CreateLocationDto,
+  CreateMovementDto,
+  UpdateLocationDto,
+} from "./dto/locations-tx.dto";
+
+/** jsonb envelope koji Lokacije mutacione DB fn vraćaju (`{ok, error?, ...}`). */
+export interface FnEnvelope {
+  ok?: boolean;
+  error?: string;
+  detail?: string;
+  [key: string]: unknown;
+}
 
 /**
  * Lokacije delova — 3.0 Talas A, R1 READ sloj (MODULE_SPEC_lokacije_30.md §3).
@@ -131,7 +155,10 @@ const UUID_RE =
 
 @Injectable()
 export class LocationsService {
-  constructor(private readonly sy15: Sy15Service) {}
+  constructor(
+    private readonly sy15: Sy15Service,
+    private readonly labelPrint: LabelPrintService,
+  ) {}
 
   // ==========================================================================
   // Lokacije (šifarnik + hijerarhija) — fetchLocations paritet
@@ -642,6 +669,225 @@ export class LocationsService {
       (tx) => tx.$queryRaw`SELECT * FROM loc_locations_audit(${l}::int)`,
     );
     return { data };
+  }
+
+  // ==========================================================================
+  // R2: MUTACIJE (MODULE_SPEC_lokacije_30.md §3, parity §5 stavke 3/4/6/12/14)
+  // Lokacije mutacione DB fn (loc_create_movement/loc_move_cage/loc_bigtehn_ingest_*)
+  // NE bacaju SQLSTATE — vraćaju jsonb envelope `{ok, error?}` (unwrapEnvelope →
+  // 401/403/404/422). CRUD ide direktno Prisma-om kroz withUser (RLS bypass, ali GUC
+  // claims su OBAVEZNI: audit triger `audit_row_change` čita auth.jwt()/auth.uid();
+  // BEFORE trigeri računaju path_cached/depth i sprovode hijerarhiju) — greške mapira
+  // rethrowMutation. Autorizacija je dvoslojna: HTTP guard (lokacije.move/manage/admin)
+  // + DB row-odluka (loc_can_create_movement/loc_can_manage_locations/loc_is_admin).
+  // ==========================================================================
+
+  /** Kavez/hala nedostaju → 404 (ostali cage/hall envelope errori su 422). */
+  private static readonly CAGE_NOT_FOUND: ReadonlySet<string> = new Set([
+    "cage_not_found",
+    "hall_not_found",
+  ]);
+  private static readonly EMPTY_SET: ReadonlySet<string> = new Set<string>();
+
+  /**
+   * Pokret (SVE tipove) — `loc_create_movement(jsonb)` kroz GUC most. Payload = 1:1
+   * paritet 1.0 jsonb (snake_case ključevi). Idempotencija je NATIVNA: DB fn proverava
+   * `client_event_uuid` (UNIQUE) i na replay/23505 vraća `{ok:true, id, idempotent:true}`
+   * BEZ dupliranja pokreta — zato ovde NEMA rev_api_idempotency (doktrina A4).
+   */
+  async createMovement(email: string, dto: CreateMovementDto) {
+    const payload: Record<string, unknown> = {
+      client_event_uuid: dto.clientEventUuid,
+      item_ref_table: dto.itemRefTable,
+      item_ref_id: dto.itemRefId,
+      movement_type: dto.movementType,
+    };
+    if (dto.orderNo !== undefined) payload.order_no = dto.orderNo;
+    if (dto.drawingNo !== undefined) payload.drawing_no = dto.drawingNo;
+    if (dto.quantity !== undefined) payload.quantity = dto.quantity;
+    if (dto.toLocationId !== undefined)
+      payload.to_location_id = dto.toLocationId;
+    if (dto.fromLocationId !== undefined)
+      payload.from_location_id = dto.fromLocationId;
+    if (dto.movementReason !== undefined)
+      payload.movement_reason = dto.movementReason;
+    if (dto.note !== undefined) payload.note = dto.note;
+    if (dto.movedAt !== undefined) payload.moved_at = dto.movedAt;
+
+    const result = await this.sy15.withUser(email, async (tx) => {
+      // fnName je fiksan literal (ne korisnički unos) — payload ide kao $1 bind.
+      const rows = await tx.$queryRawUnsafe<{ result: FnEnvelope }[]>(
+        "SELECT loc_create_movement($1::jsonb) AS result",
+        JSON.stringify(payload),
+      );
+      return rows[0]?.result ?? null;
+    });
+    const env = this.unwrapEnvelope(result);
+    return { data: env, meta: { idempotent: env.idempotent === true } };
+  }
+
+  /** Premeštaj kaveza u drugu halu — `loc_move_cage` (manage: loc_can_manage_locations). */
+  async moveCage(email: string, dto: CageMoveDto) {
+    const result = await this.sy15.withUser(email, async (tx) => {
+      const rows = await tx.$queryRaw<{ result: FnEnvelope }[]>`
+        SELECT loc_move_cage(
+          ${dto.cageId}::uuid, ${dto.newHallId}::uuid, ${dto.reason ?? null}::text
+        ) AS result`;
+      return rows[0]?.result ?? null;
+    });
+    return {
+      data: this.unwrapEnvelope(result, LocationsService.CAGE_NOT_FOUND),
+    };
+  }
+
+  /** Nova master lokacija (Prisma INSERT; paritet 1.0 createLocation, is_active=true). */
+  async createLocation(email: string, dto: CreateLocationDto) {
+    try {
+      const data = await this.sy15.withUser(email, (tx) =>
+        tx.locLocation.create({
+          data: {
+            locationCode: dto.locationCode.trim(),
+            name: dto.name.trim(),
+            locationType: dto.locationType as LocTypeEnum,
+            parentId: dto.parentId ?? null,
+            capacityNote: dto.capacityNote ?? null,
+            notes: dto.notes ?? null,
+            isActive: true,
+          },
+        }),
+      );
+      return { data };
+    } catch (e) {
+      this.rethrowMutation(e);
+    }
+  }
+
+  /** Izmena master lokacije (Prisma UPDATE; SAMO 1.0-editabilna polja). */
+  async updateLocation(email: string, id: string, dto: UpdateLocationDto) {
+    const data: Prisma.LocLocationUpdateInput = {};
+    if (dto.name !== undefined) data.name = dto.name.trim();
+    if (dto.locationType !== undefined)
+      data.locationType = dto.locationType as LocTypeEnum;
+    if (dto.parentId !== undefined) data.parentId = dto.parentId; // može null (koren)
+    if (dto.isActive !== undefined) data.isActive = dto.isActive;
+    if (dto.capacityNote !== undefined) data.capacityNote = dto.capacityNote;
+    if (dto.notes !== undefined) data.notes = dto.notes;
+    if (Object.keys(data).length === 0)
+      throw new BadRequestException("PATCH bez ijednog polja za izmenu");
+
+    try {
+      const updated = await this.sy15.withUser(email, (tx) =>
+        tx.locLocation.update({ where: { id }, data }),
+      );
+      return { data: updated };
+    } catch (e) {
+      this.rethrowMutation(e);
+    }
+  }
+
+  /** Sync: arm/disarm bigtehn ingest worker — `loc_bigtehn_ingest_arm` (admin). */
+  async syncArm(email: string, armed: boolean) {
+    const result = await this.sy15.withUser(email, async (tx) => {
+      const rows = await tx.$queryRaw<{ result: FnEnvelope }[]>`
+        SELECT loc_bigtehn_ingest_arm(${armed}::boolean) AS result`;
+      return rows[0]?.result ?? null;
+    });
+    return { data: this.unwrapEnvelope(result) };
+  }
+
+  /** Sync: ručno okidanje ingest-a — `loc_bigtehn_ingest_run_now` (admin). */
+  async syncRunNow(email: string) {
+    const result = await this.sy15.withUser(email, async (tx) => {
+      const rows = await tx.$queryRaw<{ result: FnEnvelope }[]>`
+        SELECT loc_bigtehn_ingest_run_now() AS result`;
+      return rows[0]?.result ?? null;
+    });
+    return { data: this.unwrapEnvelope(result) };
+  }
+
+  /**
+   * Štampa nalepnica (police + TP) — REUSE deljenog 2.0 TSPL2 transporta
+   * (`LabelPrintService`, isti koji koristi Tehnologija). Front (R3) gradi TSPL2 u
+   * 1.0 formatu (shelf: `LP:`/„ŠIF_HALE - ŠIF_POLICE`); backend samo prosleđuje RAW.
+   */
+  async printLabel(dto: PrintLabelDto) {
+    return { data: await this.labelPrint.printRawTspl(dto) };
+  }
+
+  /**
+   * jsonb envelope `{ok, error?}` → HTTP semantika. `not_authenticated`→401,
+   * `not_authorized`/`not_admin`/`no_role`→403, navedeni „not_found" errori→404,
+   * sve ostalo (poslovna/validaciona greška DB fn) → 422.
+   */
+  private unwrapEnvelope(
+    result: FnEnvelope | null,
+    notFound: ReadonlySet<string> = LocationsService.EMPTY_SET,
+  ): FnEnvelope {
+    if (!result || typeof result !== "object")
+      throw new UnprocessableEntityException(
+        "DB funkcija nije vratila rezultat",
+      );
+    if (result.ok === true) return result;
+
+    const error = typeof result.error === "string" ? result.error : "unknown";
+    const scalar = (v: unknown): string =>
+      typeof v === "number" || typeof v === "string" || typeof v === "boolean"
+        ? String(v)
+        : JSON.stringify(v);
+    let msg =
+      typeof result.detail === "string" ? `${error}: ${result.detail}` : error;
+    if (error === "insufficient_quantity" && result.available !== undefined)
+      msg = `${error} (dostupno ${scalar(result.available)}, traženo ${scalar(result.requested)})`;
+
+    if (error === "not_authenticated") throw new UnauthorizedException(msg);
+    if (
+      error === "not_authorized" ||
+      error === "not_admin" ||
+      error === "no_role"
+    )
+      throw new ForbiddenException(msg);
+    if (notFound.has(error)) throw new NotFoundException(msg);
+    throw new UnprocessableEntityException(msg);
+  }
+
+  /** Prisma/PG greška iz CRUD-a → HTTP (unique→409, not_found→404, triger/FK→422). */
+  private rethrowMutation(e: unknown): never {
+    if (e instanceof Prisma.PrismaClientKnownRequestError) {
+      if (e.code === "P2002")
+        throw new ConflictException(
+          "location_code već postoji (jedinstvena šifra)",
+        );
+      if (e.code === "P2025")
+        throw new NotFoundException("Lokacija ne postoji");
+      // FK (P2003) / raw DB constraint (P2010) / ostalo znano = poslovna greška.
+      throw new UnprocessableEntityException(this.dbMessage(e));
+    }
+    // Triger RAISE EXCEPTION (hijerarhija/ciklus) stiže kao Unknown/Validation.
+    if (
+      e instanceof Prisma.PrismaClientUnknownRequestError ||
+      e instanceof Prisma.PrismaClientValidationError
+    ) {
+      throw new UnprocessableEntityException(this.dbMessage(e));
+    }
+    // Reversi obrazac: SQLSTATE iz $queryRaw (defanzivno, ako se ikad koristi).
+    const meta = (e as { meta?: { code?: string; message?: string } }).meta;
+    const code = meta?.code;
+    const message = meta?.message ?? this.dbMessage(e);
+    if (code === "42501") throw new ForbiddenException(message);
+    if (code === "23505") throw new ConflictException(message);
+    if (code === "P0001" || code === "23514" || code === "23503")
+      throw new UnprocessableEntityException(message);
+    throw e;
+  }
+
+  /** Poslednji neprazan red Prisma poruke (DB tekst trigera) — čist 422 message. */
+  private dbMessage(e: unknown): string {
+    const raw = e instanceof Error ? e.message : String(e);
+    const lines = raw
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    return lines[lines.length - 1] ?? raw;
   }
 
   // ---------- helpers ----------

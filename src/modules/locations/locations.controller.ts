@@ -1,8 +1,11 @@
 import {
+  Body,
   Controller,
   Get,
   Param,
   ParseUUIDPipe,
+  Patch,
+  Post,
   Query,
   Req,
   UseGuards,
@@ -11,6 +14,7 @@ import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
 import { PERMISSIONS } from "../../common/authz/permissions";
+import type { PrintLabelDto } from "../../common/printing/print-label.dto";
 import { LocationsService } from "./locations.service";
 import type {
   ListLocationsQuery,
@@ -19,19 +23,31 @@ import type {
   PredmetTpsQuery,
   ReportByLocationQuery,
 } from "./locations.service";
+import {
+  CageMoveDto,
+  CreateLocationDto,
+  CreateMovementDto,
+  SyncArmDto,
+  UpdateLocationDto,
+} from "./dto/locations-tx.dto";
 
 interface AuthedRequest {
   user: { userId: number; email: string; role: string };
 }
 
 /**
- * Lokacije delova — 3.0 Talas A, R1 READ endpointi (MODULE_SPEC_lokacije_30.md §3).
+ * Lokacije delova — 3.0 Talas A, R1 READ + R2 MUTACIJE (MODULE_SPEC_lokacije_30.md §3).
  * Klasni gate = `lokacije.read` (živa politika: SELECT za sve prijavljene). Method
- * override-i: `lokacije.manage` (istorija definicija), `lokacije.admin` (sync/outbound).
- * Mutacije (movements/cage-move/CRUD/labels/sync arm) su R2 — ovde ih namerno NEMA.
+ * override-i po živoj politici (spec §2): `lokacije.move` (movements = loc_can_create_movement),
+ * `lokacije.manage` (CRUD + cage-move + definitions-audit = loc_can_manage_locations),
+ * `lokacije.admin` (sync = loc_is_admin), `lokacije.labels` (štampa = 1.0 canPrintLocLabels).
  *
- * VAŽNO: statičke rute (placements/movements/...) su deklarisane PRE parametarske
- * `:id` — inače bi Express „:id" pojeo `/locations/placements` (ParseUUIDPipe → 400).
+ * NAPOMENA (cage-move): DB fn `loc_move_cage` traži `loc_can_manage_locations()` (manage,
+ * NE move) — zato je guard `lokacije.manage` (paritet spec §3 + živa fn; usklađeno sa
+ * e2e matricom), premda R2 instrukcija pominje „move".
+ *
+ * VAŽNO: statičke rute (placements/movements/sync/...) su deklarisane PRE parametarskih
+ * (`GET :id`, `PATCH :id`) — inače bi Express „:id" pojeo statičku putanju (400).
  */
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 @RequirePermission(PERMISSIONS.LOKACIJE_READ)
@@ -119,7 +135,62 @@ export class LocationsController {
     return this.locations.syncOutbound(limit, req.user.email);
   }
 
-  // ---------- Jedna lokacija po id (PARAMETARSKA — MORA biti poslednja) ----------
+  // ==================== R2: MUTACIJE ====================
+
+  /** Pokret (SVE tipove) — loc_create_movement(jsonb); idempotencija = client_event_uuid. */
+  @Post("movements")
+  @RequirePermission(PERMISSIONS.LOKACIJE_MOVE)
+  createMovement(@Req() req: AuthedRequest, @Body() dto: CreateMovementDto) {
+    return this.locations.createMovement(req.user.email, dto);
+  }
+
+  /** Premeštaj kaveza u drugu halu — loc_move_cage (manage; vidi napomenu iznad). */
+  @Post("cage-move")
+  @RequirePermission(PERMISSIONS.LOKACIJE_MANAGE)
+  moveCage(@Req() req: AuthedRequest, @Body() dto: CageMoveDto) {
+    return this.locations.moveCage(req.user.email, dto);
+  }
+
+  /** Nova master lokacija (Prisma INSERT nad loc_locations; RLS/triger paritet). */
+  @Post()
+  @RequirePermission(PERMISSIONS.LOKACIJE_MANAGE)
+  createLocation(@Req() req: AuthedRequest, @Body() dto: CreateLocationDto) {
+    return this.locations.createLocation(req.user.email, dto);
+  }
+
+  /** Štampa nalepnica (police + TP) — reuse deljenog 2.0 TSPL2 transporta. */
+  @Post("labels/print")
+  @RequirePermission(PERMISSIONS.LOKACIJE_LABELS)
+  printLabel(@Body() dto: PrintLabelDto) {
+    return this.locations.printLabel(dto);
+  }
+
+  /** Sync: arm/disarm bigtehn ingest worker — loc_bigtehn_ingest_arm (admin). */
+  @Post("sync/arm")
+  @RequirePermission(PERMISSIONS.LOKACIJE_ADMIN)
+  syncArm(@Req() req: AuthedRequest, @Body() dto: SyncArmDto) {
+    return this.locations.syncArm(req.user.email, dto.armed);
+  }
+
+  /** Sync: ručno okidanje ingest-a — loc_bigtehn_ingest_run_now (admin). */
+  @Post("sync/run-now")
+  @RequirePermission(PERMISSIONS.LOKACIJE_ADMIN)
+  syncRunNow(@Req() req: AuthedRequest) {
+    return this.locations.syncRunNow(req.user.email);
+  }
+
+  // ---------- Parametarske rute (:id) — MORA posle statičkih ----------
+
+  /** Izmena master lokacije (Prisma UPDATE; SAMO 1.0-editabilna polja). */
+  @Patch(":id")
+  @RequirePermission(PERMISSIONS.LOKACIJE_MANAGE)
+  updateLocation(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: UpdateLocationDto,
+  ) {
+    return this.locations.updateLocation(req.user.email, id, dto);
+  }
 
   @Get(":id")
   findLocation(@Param("id", ParseUUIDPipe) id: string) {

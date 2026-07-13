@@ -125,25 +125,45 @@ deo mobilnih šavova u finalnom 3.0 (playbook §6) — zabeleženo kao svesno od
 > unit rola-matrica + unit barkod (parser+shelf) + **e2e permission matrica 202**
 > (rola × endpoint × 200/403, AUTHZ_ENFORCE=true). Build 0 greš., lint čist,
 > ceo paket zelen (349 unit / 261 e2e). Mutacije = R2, FE/mobilno = R3.
+>
+> **R2 izvršen 13.07** (grana `wave-a/lokacije`): BE mutacije — **7 novih endpointa**
+> u `src/modules/locations/` (POST `/movements`→`loc_create_movement`, POST `/cage-move`
+> →`loc_move_cage`, POST `/` + PATCH `/:id` = CRUD `loc_locations` Prisma kroz `withUser`,
+> POST `/sync/arm`→`loc_bigtehn_ingest_arm`, POST `/sync/run-now`→`loc_bigtehn_ingest_run_now`,
+> POST `/labels/print`). DTO-i (class-validator, camelCase→snake_case) u `dto/locations-tx.dto.ts`.
+> Idempotencija = NATIVNA `client_event_uuid` (DB fn replay → `{ok,idempotent:true}`; NE
+> rev_api_idempotency, doktrina A4). jsonb envelope `{ok,error}` → HTTP (401/403/404/422);
+> CRUD Prisma greške → HTTP (P2002→409, P2025→404, triger/FK→422). **TSPL2 REUSE**: RAW
+> transport izdvojen iz `TechProcessesService.printRawLabel` u deljeni
+> `common/printing/LabelPrintService` (`PrintingModule`) — koriste ga i Tehnologija i
+> Lokacije; NE piše se nov TSPL2 (front R3 gradi shelf/TP program u 1.0 formatu).
+> Guard po živoj politici (spec §2): movements=`move`, cage-move+CRUD=`manage`, sync=`admin`,
+> labels=`labels`. ⚠️ cage-move guard je **`manage`** (ne „move" iz R2 instrukcije) — jer
+> `loc_move_cage` DB fn traži `loc_can_manage_locations()`; usklađeno sa spec §3 + e2e.
+> Šema re-verifikovana (Management API, read-only): potpisi 4 fn + `loc_locations` kolone +
+> oba enuma = 0 drift. Testovi: **+21 unit** (payload paritet, idempotency, envelope+SQLSTATE
+> mapiranje) + **e2e matrica 202→288** (nove move/manage/admin/labels mutacione grane +
+> ValidationPipe 400 grane). tsc 0, build 0, lint 0 novih grešaka; ceo paket zelen
+> (**370 unit / 347 e2e**). FE 9 tabova + skener + rezni fix = R3.
 
 | # | Funkcija | Status |
 |---|---|---|
 | 1 | Dashboard KPI + poslednji pokreti + banneri | R1: BE read izvori (movements + sync/status banneri) IMPLEMENTED+TESTED; UI R3 |
-| 2 | Browse šifarnik + hijerarhija + edit/toggle (manage) | R1: browse read (`GET /locations` +filteri kind/hall/active/q) IMPLEMENTED+TESTED; edit/toggle R2, UI R3 |
-| 3 | Nova lokacija / izmena (RLS paritet) | NOT_STARTED (R2) |
-| 4 | Premeštaj kaveza (`loc_move_cage`) | NOT_STARTED (R2) |
+| 2 | Browse šifarnik + hijerarhija + edit/toggle (manage) | R1: browse read (`GET /locations` +filteri kind/hall/active/q) IMPLEMENTED+TESTED; R2: edit/toggle (`PATCH /:id` isActive) IMPLEMENTED+TESTED; UI R3 |
+| 3 | Nova lokacija / izmena (RLS paritet) | R2: `POST /locations` + `PATCH /:id` (Prisma kroz `withUser`, SAMO 1.0-editabilna polja, triger/RLS paritet) IMPLEMENTED+TESTED (unit CRUD + SQLSTATE→HTTP; e2e manage gate); UI R3 |
+| 4 | Premeštaj kaveza (`loc_move_cage`) | R2: `POST /cage-move` (manage gate; envelope→HTTP) IMPLEMENTED+TESTED (unit bind+404/422; e2e manage) |
 | 5 | Placements pretraga + istorija stavke | R1: read (`GET /placements` + istorija po item_ref) IMPLEMENTED+TESTED |
-| 6 | **Brzo premeštanje (movement, 11 tipova, idempotentno)** | NOT_STARTED (R2 — `loc_create_movement` + client_event_uuid) |
+| 6 | **Brzo premeštanje (movement, 11 tipova, idempotentno)** | R2: `POST /movements`→`loc_create_movement(jsonb)` kroz `withUser`; DTO paritet 1:1 (camelCase→snake_case), NATIVNA idempotencija `client_event_uuid` IMPLEMENTED+TESTED (unit payload paritet + replay + envelope; e2e move gate + 400); UI select 11 tipova R3 |
 | 7 | Skener: RNZ/short/compact parse + autofill (placements/op-status/crtež) | R1: parser+resolve (`GET /lookups/barcode` ITEM → placements) IMPLEMENTED+TESTED (unit); autofill UI R3 |
 | 8 | Skener: shelf barkod (LP:/kratki format) → destinacija | R1: shelf resolver (`GET /lookups/barcode` SHELF) IMPLEMENTED+TESTED (unit) |
 | 9 | Pregled predmeta (TP-ovi, op-status, PDF crteža) | R1: TP+op-status read (`GET /predmet/:id/tps`, opc. `workOrderId`) IMPLEMENTED+TESTED; PDF/UI R3 |
 | 10 | Report po lokacijama (12 filtera) + CSV + suggest | R1: report+suggest read (`GET /reports/by-location` svih 13 param + `/suggest-naziv-dela`) IMPLEMENTED+TESTED; CSV/UI R3 |
 | 11 | Istorija premeštanja + filteri + CSV | R1: read + SVI filteri (korisnik/lokacija/tip/nalog/datum) (`GET /movements`) IMPLEMENTED+TESTED; CSV/UI R3 |
-| 12 | Štampa nalepnica: TP (RNZ) + police, batch | NOT_STARTED (R2 — reuse TSPL2) |
+| 12 | Štampa nalepnica: TP (RNZ) + police, batch | R2: `POST /labels/print` (labels gate) — REUSE deljenog `LabelPrintService` (RAW TSPL2 transport, isti kao Tehnologija; NE piše se nov TSPL2) IMPLEMENTED+TESTED (unit delegacija; e2e labels gate); front gradi shelf/TP program u 1.0 formatu R3 |
 | 13 | Istorija definicija (audit, manage) | R1: read (`GET /definitions-audit`, manage gate) IMPLEMENTED+TESTED |
-| 14 | Sync tab: status/arm/run-now/outbound (admin) | R1: status+outbound read (`GET /sync/status`,`/sync/outbound`, admin gate) IMPLEMENTED+TESTED; arm/run-now R2 |
+| 14 | Sync tab: status/arm/run-now/outbound (admin) | R1: status+outbound read (`GET /sync/status`,`/sync/outbound`, admin gate) IMPLEMENTED+TESTED; R2: `POST /sync/arm`+`/sync/run-now` (admin gate; envelope→HTTP) IMPLEMENTED+TESTED (unit not_admin→403; e2e admin) |
 | 15 | Mobilni tok (skener + batch) — responsive | NOT_STARTED (R3) |
-| 16 | e2e permission matrica (read/move/manage/admin/labels) | TESTED — unit rola-matrica (svih 5) + e2e read/manage/admin (202 slučaja); move/labels bez R1 endpointa (mutacije R2) pa dokazani unit-om |
+| 16 | e2e permission matrica (read/move/manage/admin/labels) | R2: TESTED — SVIH 5 nivoa sa realnim endpointima: e2e 288 slučaja (read/move/manage/admin/labels × rola × 200/403 + ValidationPipe 400, AUTHZ_ENFORCE=true) + unit rola-matrica |
 | 17 | Reversi spoj: initial placement alata IZ 2.0 Reversija → `/locations/movements` | NOT_STARTED (R3) |
 | 18 | ⭐ REZNI FIX: izdavanje reznog sa MACHINE lokacije (rešava Reversi caveat) | NOT_STARTED (R3) |
 
