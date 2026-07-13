@@ -15,6 +15,7 @@ import {
   type LocMovementType,
 } from '@/api/lokacije';
 import { LocationSelect } from './location-select';
+import { normalizeLocMovementKeys } from './label-build';
 import { ScanOverlay } from './scan-overlay';
 
 const INPUT =
@@ -63,30 +64,42 @@ export function MovementDialog({
   const [quantity, setQuantity] = useState('1');
   const [reason, setReason] = useState('');
   const [note, setNote] = useState('');
+  const [returnToUnplaced, setReturnToUnplaced] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [scan, setScan] = useState<null | 'item' | 'from' | 'to'>(null);
 
   const itemRefTable = preset?.itemRefTable ?? 'bigtehn_rn';
-  const needFrom = needsFrom(movementType);
+  // „Neraspoređeno" (paritet 1.0) uvek traži polaznu lokaciju (vraća komad sa police
+  // u nesmešteni pool); inače from je nepotreban za INITIAL_PLACEMENT/INVENTORY.
+  const needFrom = returnToUnplaced || needsFrom(movementType);
+  const needTo = !returnToUnplaced && movementType !== 'SCRAP';
 
   async function submit() {
     setError(null);
     if (!itemRefId.trim()) return setError('Unesi/skeniraj stavku (broj crteža ili TP ref).');
-    if (!toLocationId && movementType !== 'SCRAP') return setError('Izaberi odredišnu lokaciju.');
+    if (needTo && !toLocationId) return setError('Izaberi odredišnu lokaciju ili „Neraspoređeno".');
+    if (returnToUnplaced && !fromLocationId)
+      return setError('Za „Neraspoređeno" izaberi polaznu policu u polju „Sa lokacije".');
     const qty = Number(quantity);
     if (!Number.isFinite(qty) || qty <= 0) return setError('Količina mora biti veća od 0.');
+
+    // Paritet 1.0 modals.js:1838 — kanonizuj nalog+TP pre slanja (dash/slash/9400).
+    const norm = normalizeLocMovementKeys(orderNo, itemRefId);
+    // Neraspoređeno → CORRECTION bez odredišta, sa polaznom (modals.js:1866/1955).
+    const effectiveType: LocMovementType = returnToUnplaced ? 'CORRECTION' : movementType;
+
     try {
       // Retry iste akcije nosi isti clientEventUuid → DB fn vraća {idempotent:true}
       // bez dupliranja pokreta (native idempotencija); tok je isti — zatvori formu.
       await create.mutateAsync({
         clientEventUuid,
         itemRefTable,
-        itemRefId: itemRefId.trim(),
-        movementType,
-        orderNo: orderNo.trim() || undefined,
+        itemRefId: norm.itemRefId,
+        movementType: effectiveType,
+        orderNo: norm.orderNo || undefined,
         drawingNo: drawingNo.trim() || undefined,
         quantity: qty,
-        toLocationId: toLocationId ?? undefined,
+        toLocationId: needTo ? toLocationId ?? undefined : undefined,
         fromLocationId: needFrom ? fromLocationId ?? undefined : undefined,
         movementReason: reason.trim() || undefined,
         note: note.trim() || undefined,
@@ -148,7 +161,11 @@ export function MovementDialog({
           </FormField>
 
           {needFrom && (
-            <FormField label="Sa lokacije (polazna)" hint="Ostavi prazno za auto-razrešavanje trenutne lokacije">
+            <FormField
+              label="Sa lokacije (polazna)"
+              required={returnToUnplaced}
+              hint={returnToUnplaced ? 'Obavezno za „Neraspoređeno" — polica sa koje se vraća' : 'Ostavi prazno za auto-razrešavanje trenutne lokacije'}
+            >
               <LocationSelect
                 locations={locList}
                 value={fromLocationId}
@@ -160,15 +177,27 @@ export function MovementDialog({
           )}
 
           {movementType !== 'SCRAP' && (
-            <FormField label="Na lokaciju (odredišna)" required>
-              <LocationSelect
-                locations={locList}
-                value={toLocationId}
-                onChange={setToLocationId}
-                onScan={() => setScan('to')}
-                placeholder="Pretraži policu/kavez/mašinu…"
-              />
-            </FormField>
+            <>
+              {needTo && (
+                <FormField label="Na lokaciju (odredišna)" required>
+                  <LocationSelect
+                    locations={locList}
+                    value={toLocationId}
+                    onChange={setToLocationId}
+                    onScan={() => setScan('to')}
+                    placeholder="Pretraži policu/kavez/mašinu…"
+                  />
+                </FormField>
+              )}
+              <label className="flex items-center gap-2 text-sm text-ink">
+                <input
+                  type="checkbox"
+                  checked={returnToUnplaced}
+                  onChange={(e) => setReturnToUnplaced(e.target.checked)}
+                />
+                Neraspoređeno (vrati sa police u nesmešteni pool — bez odredišta)
+              </label>
+            </>
           )}
 
           <div className="grid grid-cols-2 gap-3">

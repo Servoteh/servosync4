@@ -1,11 +1,11 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Download } from 'lucide-react';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { Pager } from '@/components/ui-kit/pager';
 import { Button } from '@/components/ui-kit/button';
-import { useReportByLocation, type ReportRow } from '@/api/lokacije';
+import { HALL_TYPES, useAllLocations, useReportByLocation, useReportSuggest, type LocLocation, type ReportRow } from '@/api/lokacije';
 import { downloadCsv, tableEmpty } from './common';
 
 const INPUT = 'h-9 rounded-control border border-line bg-surface px-2.5 text-sm text-ink outline-none focus:border-accent';
@@ -16,17 +16,31 @@ const num = (v: unknown): string => (v == null || v === '' ? '—' : String(v));
 export function ReportTab() {
   const [orderNo, setOrderNo] = useState('');
   const [drawingNo, setDrawingNo] = useState('');
+  const [tpNo, setTpNo] = useState('');
   const [nazivDela, setNazivDela] = useState('');
+  const [nazivFocus, setNazivFocus] = useState(false);
   const [locationQ, setLocationQ] = useState('');
+  const [hallId, setHallId] = useState('');
+  const [locationKind, setLocationKind] = useState<'' | 'shelf' | 'cage'>('');
   const [projectSearch, setProjectSearch] = useState('');
   const [page, setPage] = useState(1);
   const pageSize = 100;
 
+  const halls = useAllLocations('true');
+  const hallOptions = useMemo<LocLocation[]>(
+    () => (halls.data ?? []).filter((l) => HALL_TYPES.includes(l.locationType)).sort((a, b) => a.locationCode.localeCompare(b.locationCode)),
+    [halls.data],
+  );
+  const suggest = useReportSuggest(nazivDela);
+
   const q = useReportByLocation({
     orderNo: orderNo || undefined,
     drawingNo: drawingNo || undefined,
+    tpNo: tpNo || undefined,
     nazivDela: nazivDela || undefined,
     locationQ: locationQ || undefined,
+    hallId: hallId || undefined,
+    locationKind: locationKind || undefined,
     projectSearch: projectSearch || undefined,
     page,
     pageSize,
@@ -71,12 +85,50 @@ export function ReportTab() {
     );
   }
 
+  const suggestions = suggest.data?.data ?? [];
+
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <input className={INPUT} placeholder="Nalog" value={orderNo} onChange={(e) => { setOrderNo(e.target.value); setPage(1); }} />
         <input className={INPUT} placeholder="Crtež" value={drawingNo} onChange={(e) => { setDrawingNo(e.target.value); setPage(1); }} />
-        <input className={INPUT} placeholder="Naziv dela" value={nazivDela} onChange={(e) => { setNazivDela(e.target.value); setPage(1); }} />
+        <input className={INPUT} placeholder="TP" value={tpNo} onChange={(e) => { setTpNo(e.target.value); setPage(1); }} />
+        <div className="relative">
+          <input
+            className={INPUT}
+            placeholder="Naziv dela"
+            value={nazivDela}
+            onChange={(e) => { setNazivDela(e.target.value); setPage(1); }}
+            onFocus={() => setNazivFocus(true)}
+            onBlur={() => setTimeout(() => setNazivFocus(false), 150)}
+          />
+          {nazivFocus && suggestions.length > 0 && (
+            <div className="absolute z-10 mt-1 max-h-56 w-64 overflow-auto rounded-control border border-line bg-surface shadow-lg">
+              {suggestions.map((s, i) => (
+                <button
+                  key={`${s.naziv_dela}|${i}`}
+                  type="button"
+                  onMouseDown={(e) => { e.preventDefault(); setNazivDela(s.naziv_dela); setNazivFocus(false); setPage(1); }}
+                  className="flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-sm hover:bg-surface-2"
+                >
+                  <span className="truncate text-ink">{s.naziv_dela}</span>
+                  {s.placement_count != null && <span className="shrink-0 text-xs text-ink-disabled">{s.placement_count}</span>}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <select className={INPUT} value={hallId} onChange={(e) => { setHallId(e.target.value); setPage(1); }} title="Hala">
+          <option value="">Sve hale</option>
+          {hallOptions.map((h) => (
+            <option key={h.id} value={h.id}>{h.locationCode} — {h.name}</option>
+          ))}
+        </select>
+        <select className={INPUT} value={locationKind} onChange={(e) => { setLocationKind(e.target.value as '' | 'shelf' | 'cage'); setPage(1); }} title="Vrsta lokacije">
+          <option value="">Police + kavezi</option>
+          <option value="shelf">Samo police</option>
+          <option value="cage">Samo kavezi</option>
+        </select>
         <input className={INPUT} placeholder="Lokacija (šifra)" value={locationQ} onChange={(e) => { setLocationQ(e.target.value); setPage(1); }} />
         <input className={INPUT} placeholder="Projekat / komitent" value={projectSearch} onChange={(e) => { setProjectSearch(e.target.value); setPage(1); }} />
         <span className="ml-auto text-sm text-ink-secondary tnums">{total} zapisa</span>

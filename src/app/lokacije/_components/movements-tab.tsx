@@ -14,31 +14,55 @@ import {
   type LocMovement,
 } from '@/api/lokacije';
 import { buildLocIndex, downloadCsv, movementLabel, tableEmpty } from './common';
+import { LocationSelect } from './location-select';
 
 const INPUT = 'h-9 rounded-control border border-line bg-surface px-2.5 text-sm text-ink outline-none focus:border-accent';
+
+/**
+ * Skraćen `moved_by` (UUID → prvih 8 znakova) — paritet 1.0 fallback prikaza kada
+ * lista korisnika/imena nije dostupna (index.js:2505; nema users-by-id endpointa u
+ * 2.0 kontroleru — `moved_by` je auth.uid, ne worker id).
+ */
+function shortUser(id: string | null | undefined): string {
+  const s = String(id ?? '').trim();
+  return s ? `${s.slice(0, 8)}…` : '—';
+}
 
 /** Istorija premeštanja (movements) — filteri korisnik/lokacija/tip/nalog/datum + CSV. */
 export function MovementsTab() {
   const [search, setSearch] = useState('');
   const [movementType, setMovementType] = useState('');
   const [orderNo, setOrderNo] = useState('');
+  const [locationId, setLocationId] = useState<string | null>(null);
+  const [userId, setUserId] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [page, setPage] = useState(1);
   const pageSize = 100;
 
   const locs = useAllLocations('all');
-  const locIndex = useMemo(() => buildLocIndex(locs.data ?? []), [locs.data]);
+  const locList = useMemo(() => locs.data ?? [], [locs.data]);
+  const locIndex = useMemo(() => buildLocIndex(locList), [locList]);
 
-  const q = useMovements({
+  const baseFilters = {
     search: search || undefined,
     movementType: movementType || undefined,
     orderNo: orderNo || undefined,
+    locationId: locationId || undefined,
     dateFrom: dateFrom || undefined,
     dateTo: dateTo || undefined,
-    page,
-    pageSize,
-  });
+  };
+
+  const q = useMovements({ ...baseFilters, userId: userId || undefined, page, pageSize });
+
+  // Opcije za „Korisnik" filter (paritet 1.0 „Svi" + lista): distinct moved_by iz
+  // istog skupa BEZ userId filtera (da izbor ne sruši sopstvenu listu na jednog).
+  const userSource = useMovements({ ...baseFilters, pageSize: 500 });
+  const userOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const m of userSource.data?.data ?? []) if (m.movedBy) set.add(m.movedBy);
+    return [...set].sort();
+  }, [userSource.data]);
 
   const rows = q.data?.data ?? [];
   const meta = q.data?.meta.pagination;
@@ -52,13 +76,14 @@ export function MovementsTab() {
     { key: 'from', header: 'Sa', render: (r) => locIndex.labelOf(r.fromLocationId) },
     { key: 'to', header: 'Na', render: (r) => locIndex.labelOf(r.toLocationId) },
     { key: 'qty', header: 'Kol.', align: 'right', numeric: true, render: (r) => String(r.quantity) },
+    { key: 'user', header: 'Korisnik', render: (r) => <span className="tnums text-ink-secondary" title={r.movedBy}>{shortUser(r.movedBy)}</span> },
     { key: 'note', header: 'Napomena', render: (r) => <span className="text-ink-secondary">{r.movementReason || r.note || '—'}</span> },
   ];
 
   function exportCsv() {
     downloadCsv(
       `pokreti_lokacija_${new Date().toISOString().slice(0, 10)}.csv`,
-      ['Vreme', 'Tip', 'Nalog', 'Stavka', 'Crtež', 'Sa', 'Na', 'Količina', 'Razlog/Napomena'],
+      ['Vreme', 'Tip', 'Nalog', 'Stavka', 'Crtež', 'Sa', 'Na', 'Količina', 'Korisnik', 'Razlog/Napomena'],
       rows.map((r) => [
         formatDateTime(r.movedAt),
         movementLabel(r.movementType),
@@ -68,6 +93,7 @@ export function MovementsTab() {
         locIndex.labelOf(r.fromLocationId),
         locIndex.labelOf(r.toLocationId),
         String(r.quantity),
+        r.movedBy,
         r.movementReason || r.note || '',
       ]),
     );
@@ -84,6 +110,12 @@ export function MovementsTab() {
             <option key={t} value={t}>{MOVEMENT_TYPE_LABEL[t]}</option>
           ))}
         </select>
+        <select className={INPUT} value={userId} onChange={(e) => { setUserId(e.target.value); setPage(1); }} title="Korisnik">
+          <option value="">Svi korisnici</option>
+          {userOptions.map((u) => (
+            <option key={u} value={u}>{shortUser(u)}</option>
+          ))}
+        </select>
         <label className="flex items-center gap-1 text-xs text-ink-secondary">
           Od <input className={INPUT} type="date" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setPage(1); }} />
         </label>
@@ -93,6 +125,15 @@ export function MovementsTab() {
         <Button variant="secondary" onClick={exportCsv} disabled={rows.length === 0} className="ml-auto">
           <Download className="h-4 w-4" /> CSV
         </Button>
+      </div>
+
+      <div className="max-w-md">
+        <LocationSelect
+          locations={locList}
+          value={locationId}
+          onChange={(v) => { setLocationId(v); setPage(1); }}
+          placeholder="Filter po lokaciji (polazna ILI odredišna)…"
+        />
       </div>
 
       <DataTable

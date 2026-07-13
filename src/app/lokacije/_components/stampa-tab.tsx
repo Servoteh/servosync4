@@ -9,11 +9,15 @@ import { buildTspLabelProgram, buildTspShelfLabelProgram } from '@/lib/tspl2';
 import { labelDate } from '@/lib/label-print';
 import { SHELF_TYPES, useAllLocations, usePrintLocLabel, type LocLocation } from '@/api/lokacije';
 import { buildLocIndex, tableEmpty } from './common';
-import { formatRnzBarcode, shelfBarcodeValue } from './label-build';
+import { formatRnzBarcode, shelfPrintBarcode } from './label-build';
 
 const INPUT = 'h-9 w-full rounded-control border border-line bg-surface-2 px-2.5 text-sm text-ink outline-none focus:border-accent';
 
-/** Štampa nalepnica — police (batch, LP: kompozit) + pojedinačna TP nalepnica (RNZ). */
+// Police (SHELF/RACK/BIN) + kavezi (CAGE) se štampaju (paritet 1.0 — nalepnica
+// se lepi na policu ILI kavez). Hale/mašine nemaju fizičku nalepnicu ovog tipa.
+const PRINTABLE_LOC_TYPES = [...SHELF_TYPES, 'CAGE'] as const;
+
+/** Štampa nalepnica — police/kavezi (batch, kratka „HALA - POLICA" linija) + TP (RNZ). */
 export function StampaTab() {
   const print = usePrintLocLabel();
   const locs = useAllLocations('true');
@@ -21,13 +25,14 @@ export function StampaTab() {
   const locIndex = useMemo(() => buildLocIndex(locList), [locList]);
 
   const shelves = useMemo(
-    () => locList.filter((l) => SHELF_TYPES.includes(l.locationType)),
+    () => locList.filter((l) => (PRINTABLE_LOC_TYPES as readonly string[]).includes(l.locationType)),
     [locList],
   );
 
   const [q, setQ] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [copies, setCopies] = useState('1');
+  const [codeType, setCodeType] = useState<'barcode' | 'qr'>('barcode');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
@@ -49,19 +54,21 @@ export function StampaTab() {
   async function printShelves() {
     setMsg(null);
     const chosen = shelves.filter((l) => selected.has(l.id));
-    if (chosen.length === 0) return setMsg('Izaberi bar jednu policu.');
+    if (chosen.length === 0) return setMsg('Izaberi bar jednu policu ili kavez.');
     const n = Math.max(1, Math.floor(Number(copies) || 1));
     setBusy(true);
     let ok = 0;
     try {
       for (const sh of chosen) {
         const hall = locIndex.hallOf(sh.id);
-        const bc = shelfBarcodeValue(sh.id, hall?.id) || sh.locationCode;
-        const tspl2 = buildTspShelfLabelProgram({ barcodeValue: bc, footline: sh.locationCode, codeType: 'barcode', copies: n });
+        // KRATKA linija „HALA - POLICA" (ne LP: kompozit — predugačak za CODE128);
+        // backend parseShortShelfBarcodePair je razrešava na sken.
+        const { barcodeValue } = shelfPrintBarcode(sh, hall);
+        const tspl2 = buildTspShelfLabelProgram({ barcodeValue, footline: sh.locationCode, codeType, copies: n });
         await print.mutateAsync({ tspl2, copies: n });
         ok += 1;
       }
-      setMsg(`Poslato ${ok} / ${chosen.length} nalepnica polica na štampač.`);
+      setMsg(`Poslato ${ok} / ${chosen.length} nalepnica na štampač.`);
       setSelected(new Set());
     } catch (e) {
       setMsg(`Štampano ${ok} / ${chosen.length}. Greška: ${e instanceof Error ? e.message : 'nepoznata'}`);
@@ -80,21 +87,26 @@ export function StampaTab() {
     },
     { key: 'code', header: 'Šifra', render: (r) => <span className="font-medium">{r.locationCode}</span> },
     { key: 'hall', header: 'Hala', render: (r) => locIndex.hallOf(r.id)?.locationCode ?? '—' },
+    { key: 'preview', header: 'Barkod', render: (r) => <span className="text-xs text-ink-secondary">{shelfPrintBarcode(r, locIndex.hallOf(r.id)).barcodeValue}</span> },
     { key: 'name', header: 'Naziv', render: (r) => r.name },
   ];
 
   return (
     <div className="space-y-6">
       <section className="space-y-3">
-        <h3 className="text-md font-semibold text-ink">Nalepnice polica</h3>
+        <h3 className="text-md font-semibold text-ink">Nalepnice polica i kaveza</h3>
         <div className="flex flex-wrap items-center gap-2">
-          <input className={`${INPUT} max-w-64`} placeholder="Pretraga polica…" value={q} onChange={(e) => setQ(e.target.value)} />
+          <input className={`${INPUT} max-w-64`} placeholder="Pretraga polica/kaveza…" value={q} onChange={(e) => setQ(e.target.value)} />
+          <select className={`${INPUT} w-32`} value={codeType} onChange={(e) => setCodeType(e.target.value as 'barcode' | 'qr')} title="Tip koda">
+            <option value="barcode">Barkod</option>
+            <option value="qr">QR kod</option>
+          </select>
           <label className="flex items-center gap-1.5 text-sm text-ink-secondary">
             Kopija <input className={`${INPUT} w-20`} type="number" min={1} value={copies} onChange={(e) => setCopies(e.target.value)} />
           </label>
           <span className="text-sm text-ink-secondary tnums">{selected.size} izabrano</span>
           <Button className="ml-auto" loading={busy} onClick={() => void printShelves()} disabled={selected.size === 0}>
-            <Printer className="h-4 w-4" /> Štampaj police
+            <Printer className="h-4 w-4" /> Štampaj
           </Button>
         </div>
         <DataTable
@@ -103,7 +115,7 @@ export function StampaTab() {
           rowKey={(r) => r.id}
           onRowActivate={(r) => toggle(r.id)}
           loading={locs.isLoading}
-          empty={tableEmpty(locs.isError, 'Nema polica', 'Nema aktivnih polica za štampu.')}
+          empty={tableEmpty(locs.isError, 'Nema polica/kaveza', 'Nema aktivnih polica ili kaveza za štampu.')}
         />
         {msg && <p className="text-sm text-ink-secondary">{msg}</p>}
       </section>

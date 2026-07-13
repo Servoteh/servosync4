@@ -410,13 +410,21 @@ export function useReportByLocation(params: ReportParams, enabled = true) {
   });
 }
 
+/** Red autosugestije naziva dela (loc_report_suggest_naziv_dela — niz OBJEKATA). */
+export interface ReportSuggestion {
+  naziv_dela: string;
+  broj_crteza?: string;
+  placement_count?: number;
+  [key: string]: unknown;
+}
+
 /** Autosugestija naziva dela za report filter (loc_report_suggest_naziv_dela). */
 export function useReportSuggest(q: string) {
   return useQuery({
     queryKey: [...KEYS.report, 'suggest', q],
     enabled: q.trim().length >= 2,
     queryFn: () =>
-      apiFetch<{ data: string[] }>(
+      apiFetch<{ data: ReportSuggestion[] }>(
         `/v1/locations/reports/suggest-naziv-dela${qs({ q })}`,
       ),
   });
