@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+  <script src="scada-bridge-shim.js"></script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Kotlarnica 1 — Servoteh</title>
+  <link rel="stylesheet" href="theme.css" />
+</head>
+<body>
+  <header class="t-bar">
+    <div class="t-brand"><span class="t-logobox"><img class="t-logo" src="servoteh-logo.png" alt="Servoteh"></span><span class="bt">🔥 KOTLARNICA 1</span><span class="sub">Unitronics · Servoteh</span></div>
+    <div class="t-right">
+      <nav class="t-nav">
+        <a href="/">Pregled</a>
+        <a href="/kot1.html" class="active">Kotlarnica 1</a>
+        <a href="/kot2.html">Kotlarnica 2</a>
+        <a href="/kot3.html">Kotlarnica 3</a>
+        <a href="/solar-kaco.html">Solar KACO</a>
+        <a href="/solar-sigen.html">Solar Sigenergy</a>
+      </nav>
+      <span class="t-clock" id="clock"></span>
+      <button class="t-toggle" id="themeBtn">☾ Tamna</button>
+    </div>
+  </header>
+
+  <section class="statstrip" id="strip"></section>
+  <section class="statstrip" id="cmdbar" style="border-top:none"></section>
+
+  <div class="synwrap">
+    <div class="synbox"><div id="syn"></div></div>
+    <aside>
+      <div class="sec-title">Zone</div>
+      <div class="pnl" id="zones"></div>
+      <div class="sec-title" style="margin-top:16px">Status postrojenja</div>
+      <div class="pnl" id="status"></div>
+      <div class="sec-title" style="margin-top:16px">Alarmi</div>
+      <div class="pnl" id="alarms"></div>
+    </aside>
+  </div>
+
+  <h2 class="sec-title" style="padding:0 20px;margin-top:4px">UREĐAJI PO ZONI · status rada + fizički prekidač</h2>
+  <section style="padding:0 20px 8px">
+    <div class="pnl"><div class="rgrid" id="devzones"></div></div>
+  </section>
+
+  <h2 class="sec-title" style="padding:0 20px;margin-top:4px">IZLAZI GREJANJA PO ZONI (T1–T7)</h2>
+  <section style="padding:0 20px 8px">
+    <div class="pnl"><div class="csteps" id="zoneouts" style="flex-wrap:wrap;gap:8px"></div></div>
+  </section>
+
+  <h2 class="sec-title" style="padding:0 20px;margin-top:4px">KOMANDE · zadate temperature, ručne komande, raspored</h2>
+  <section class="grid2" style="padding:0 20px 28px;align-items:start">
+    <div class="pnl"><h3>ZADATE TEMPERATURE (°C)</h3><div id="setpoints"></div></div>
+    <div class="pnl"><h3>RUČNE KOMANDE (kaloriferi / pumpe)</h3><div id="manual" class="csteps" style="flex-wrap:wrap;gap:8px"></div>
+      <h3 style="margin-top:14px">RASPORED</h3><div id="sched"></div></div>
+  </section>
+
+  <h2 class="sec-title" style="padding:0 20px;margin-top:4px">TRENDOVI · poslednja 24h (temperature)</h2>
+  <section style="padding:0 20px 28px">
+    <div class="pnl"><canvas id="trend" height="240" style="width:100%;display:block"></canvas>
+      <div id="trendleg" class="trendleg"></div></div>
+  </section>
+
+  <style>
+    /* lokalni dodaci (theme.css se ne dira) — koristi HP-HMI tokene */
+    .trendleg{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:10px}
+    .trendleg .lg{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
+    .trendleg .lg i{width:14px;height:3px;border-radius:2px;display:inline-block}
+    .swled{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--muted)}
+    .swled .dot{width:9px;height:9px;border-radius:50%;background:var(--muted);display:inline-block}
+    .swled .dot.run{background:var(--ok)}
+    .devtile{display:flex;flex-direction:column;gap:6px}
+    .devtile .top{display:flex;justify-content:space-between;align-items:center}
+    .devtile .dn{font-weight:700}
+    .devtile .dz{font-size:10px;color:var(--muted);letter-spacing:1px;text-transform:uppercase}
+    .devtile .dbot{display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--border);padding-top:7px}
+  </style>
+
+  <script src="hmi.js"></script>
+  <script src="kot1.js"></script>
+</body>
+</html>

@@ -34,6 +34,12 @@ export const PERMISSIONS = {
   REVERSI_MANAGE: 'reversi.manage',
   // Rezervisano za „Moj tim" pogled (TL/šef) — UI još nije priključen; vidi TODO u api/reversi.ts.
   REVERSI_TEAM_READ: 'reversi.team_read',
+  // Energetika / SCADA — 3.0 TALAS E (backend docs/design/MODULE_SPEC_scada_30.md §2).
+  // Paritet žive 1.0 politike: SAMO admin + menadzment (BEZ viewer baseline). U kodu su
+  // read/control NAMERNO odvojeni ključevi (ista dodela u v1) — control gate-uje komandni
+  // tok (POST /commands + cancel), read sve GET-ove. Presuda E5: `energetika.*`, ne `scada.*`.
+  ENERGETIKA_READ: 'energetika.read',
+  ENERGETIKA_CONTROL: 'energetika.control',
 } as const;
 
 export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];

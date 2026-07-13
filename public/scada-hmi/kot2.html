@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+  <script src="scada-bridge-shim.js"></script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Kotlarnica 2 — Siemens · Servoteh</title>
+  <link rel="stylesheet" href="theme.css" />
+  <style>
+    /* Trend grafik (lokalno) — isti pattern kao solar-kaco */
+    .sg-metrics{padding:14px 16px 12px}
+    .sg-legend{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+    .sg-chip{display:inline-flex;align-items:center;gap:7px;padding:5px 12px;border-radius:18px;border:1px solid var(--border);
+      background:var(--panel-2);cursor:pointer;font-size:12px;font-weight:700;user-select:none}
+    .sg-chip .dot{width:10px;height:10px;border-radius:50%}
+    .sg-chip.off{opacity:.38}
+    .sg-chartwrap{position:relative;width:100%;height:200px}
+    #k2Chart{width:100%;height:100%;display:block}
+    .sg-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:13px;text-align:center;padding:0 20px}
+  </style>
+</head>
+<body>
+  <header class="t-bar">
+    <div class="t-brand"><span class="t-logobox"><img class="t-logo" src="servoteh-logo.png" alt="Servoteh"></span><span class="bt">🔥 KOTLARNICA 2</span><span class="sub">Siemens S7-1200 · Hala 3/4/5</span></div>
+    <div class="t-right">
+      <nav class="t-nav">
+        <a href="/">Pregled</a>
+        <a href="/kot1.html">Kotlarnica 1</a>
+        <a href="/kot2.html" class="active">Kotlarnica 2</a>
+        <a href="/kot3.html">Kotlarnica 3</a>
+        <a href="/solar-kaco.html">Solar KACO</a>
+        <a href="/solar-sigen.html">Solar Sigenergy</a>
+      </nav>
+      <span class="t-clock" id="clock"></span>
+      <button class="t-toggle" id="themeBtn">☾ Tamna</button>
+    </div>
+  </header>
+
+  <section class="statstrip" id="strip"></section>
+  <section class="statstrip" id="cmdbar" style="border-top:none"></section>
+
+  <div class="synwrap">
+    <div class="synbox"><div id="syn"></div></div>
+    <aside>
+      <div class="sec-title">Kotao i bezbednost</div>
+      <div class="pnl" id="safety"></div>
+      <div class="sec-title" style="margin-top:16px">Raspored · satnice (0–23 h)</div>
+      <div class="pnl" id="sched"></div>
+      <div class="sec-title" style="margin-top:16px">Oprema</div>
+      <div class="pnl" id="info"></div>
+      <div class="sec-title" style="margin-top:16px">Alarmi</div>
+      <div class="pnl" id="alarms"></div>
+      <div class="sec-title" style="margin-top:16px">Trend (24h)</div>
+      <div class="pnl sg-metrics">
+        <div class="sg-legend" id="k2Legend"></div>
+        <div class="sg-chartwrap"><canvas id="k2Chart"></canvas><div class="sg-empty" id="k2Empty"></div></div>
+      </div>
+    </aside>
+  </div>
+
+  <script src="hmi.js"></script>
+  <script src="kot2.js"></script>
+</body>
+</html>
