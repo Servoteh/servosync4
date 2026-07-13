@@ -146,7 +146,8 @@ Svaka prečica se prikazuje u tooltip-u odgovarajuće kontrole.
 ## 10. UI kit (v1 spisak)
 
 `AppShell` · `DataTable` · `FilterBar` · `KpiTile` · `StatusBadge` · `ProgressCell` · `DetailPanel` ·
-`FormField` (+ `DateField`, `NumberField`, `SelectField`, `ComboBox`) · `Dialog` · `ConfirmDialog` ·
+`FormField` (+ `DateField`, `NumberField`, `SelectField`, `ComboBox`) · `Input` · `Textarea`
+(višelinijski unos; Enter = novi red, `rows` podrazumevano 3) · `Dialog` · `ConfirmDialog` ·
 `Toast` · `EmptyState` · `PageHeader` · `Tabs` · `UpdateBanner` (globalna traka "nova verzija — osvežite";
 prikazom upravlja `UpdateNotifier`, montiran jednom u root layout)
 

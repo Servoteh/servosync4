@@ -48,6 +48,7 @@ import { Can } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { FormField, Input } from '@/components/ui-kit/form-field';
+import { Textarea } from '@/components/ui-kit/textarea';
 import { ComboBox } from '@/components/ui-kit/combo-box';
 import {
   useCustomersLookup,
@@ -938,7 +939,8 @@ function OperationDialog({
           />
         </FormField>
         <FormField label="Opis rada" required>
-          <Input
+          <Textarea
+            rows={3}
             value={form.workDescription}
             onChange={(e) => set({ workDescription: e.target.value })}
           />
