@@ -21,6 +21,7 @@ import {
   RefreshCw,
   ShoppingCart,
   Users,
+  Warehouse,
   Workflow,
   Wrench,
   type LucideIcon,
@@ -89,6 +90,15 @@ const NAV_SECTIONS: NavSection[] = [
       // aktivne istovremeno (ODLUKE #33).
       { label: 'Nacrti', href: '/nacrti', icon: PencilRuler, requires: PERMISSIONS.PRIMOPREDAJE_WRITE },
       { label: 'Primopredaje', href: '/handovers', icon: PackageCheck, requires: PERMISSIONS.PRIMOPREDAJE_APPROVE },
+    ],
+  },
+  {
+    // Logistika (PLAN_MODULA_MES_3.0 §4 / MODULE_SPEC_lokacije_30 §4) — 1.0 fizičke
+    // lokacije (hale/police/kavezi/mašine, loc_*) seobom Talas A. ODVOJENO od
+    // „Lokacije delova" (part-locations, Proizvodnja) — QBigTehn ledger; ne stapaju se.
+    title: 'Logistika',
+    items: [
+      { label: 'Lokacije', href: '/lokacije', icon: Warehouse, requires: PERMISSIONS.LOKACIJE_READ },
     ],
   },
   {
