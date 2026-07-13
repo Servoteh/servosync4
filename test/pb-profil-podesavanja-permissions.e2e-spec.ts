@@ -14,6 +14,7 @@ import { MojProfilController } from "../src/modules/moj-profil/moj-profil.contro
 import { MojProfilService } from "../src/modules/moj-profil/moj-profil.service";
 import { PodesavanjaController } from "../src/modules/podesavanja/podesavanja.controller";
 import { PodesavanjaService } from "../src/modules/podesavanja/podesavanja.service";
+import { PodesavanjaUsersService } from "../src/modules/podesavanja/podesavanja-users.service";
 import { ALL_ROLE_KEYS } from "../src/common/authz/roles";
 import { roleHasPermission } from "../src/common/authz/role-permissions";
 import {
@@ -83,6 +84,16 @@ describe("Talas D permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     "aiModels",
     "findUser",
   ]);
+  // R2 write sloj (D1) — samo DI; ovaj fajl testira READ permisije, write ima svoj e2e.
+  const settingsUsersMock = mkMock([
+    "invite",
+    "update",
+    "resetPassword",
+    "deactivate",
+    "activate",
+    "setMustChangePassword",
+    "softDelete",
+  ]);
 
   beforeAll(async () => {
     process.env.AUTHZ_ENFORCE = "true";
@@ -96,6 +107,7 @@ describe("Talas D permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
         { provide: ProjektniBiroService, useValue: pbMock },
         { provide: MojProfilService, useValue: profilMock },
         { provide: PodesavanjaService, useValue: settingsMock },
+        { provide: PodesavanjaUsersService, useValue: settingsUsersMock },
       ],
     })
       .overrideGuard(JwtAuthGuard)

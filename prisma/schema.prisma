@@ -1826,6 +1826,9 @@ model User {
   /// Legacy values "ADMIN"/"USER" are lowercased by the authz_rls_ready migration.
   role                String                   @default("user") @map("role") @db.VarChar(30)
   active              Boolean                  @default(true) @map("active")
+  /// Force-change gate (Talas D / D3): admin reset ili invite postavlja true; 2.0 force-change
+  /// ekran (R3 FE) ga briše po uspešnoj promeni lozinke. Paritet 1.0 `user_roles.must_change_password`.
+  mustChangePassword  Boolean                  @default(false) @map("must_change_password")
   emailVerifiedAt     DateTime?                @map("email_verified_at") @db.Timestamp(6)
   lastLoginAt         DateTime?                @map("last_login_at") @db.Timestamp(6)
   /// Bridge JWT user -> production Worker (definesApproval/definesLaunch, machine_access).
