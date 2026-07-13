@@ -210,11 +210,19 @@ Konvencije: envelope `{data, meta}`, Decimal string, GUC `withUser` na SVIM pozi
 
 ## 5. Parity matrica (doktrina B — puni se TOKOM rada)
 
+> **R1 read sloj GOTOV (BE only) — grana `wave-c/planovi-pracenje`.** Tri kontrolera (`/montaza`,
+> `/plan-proizvodnje`, `/pracenje`), SVI GET read endpointi po §3 kroz `withUserRls`; permisije
+> `montaza.*`/`plan_proizvodnje.*`/`pracenje.*` (paritet živih 1.0 gate-ova + C1/C2); Prisma
+> modeli za 8 public tabela; R0 grants = **0 rupa** (verifikovano na živoj sy15). Testovi:
+> unit rola-matrica (`role-permissions.planovi-pracenje.spec`) + e2e permission matrica
+> (`planovi-pracenje-permissions.e2e-spec`, AUTHZ_ENFORCE=true). Statusi ispod: `R1r` = read
+> sloj IMPLEMENTED+TESTED; write/AI/FE dimenzije ostaju za R2/R3.
+
 | # | Funkcija | Status |
 |---|---|---|
 | **Plan montaže** | | |
 | 1 | Hub + 4 pogleda + deep-link `?view=` | NOT_STARTED |
-| 2 | Lista projekata (pb_list_projects ⋈ aktivacija) + ⭐ redosled | NOT_STARTED |
+| 2 | Lista projekata (pb_list_projects ⋈ aktivacija) + ⭐ redosled | R1r ✓ read IMPL+TESTED · write/FE → R2/R3 (stablo JEDNIM upitom C8; ⭐ redosled=FE) |
 | 3 | Plan tabela: faze CRUD + 8 checks + statusi/pct + business rules (status↔pct, end≥start) | NOT_STARTED |
 | 4 | Filteri (search/lokacija/status/vođa/spremnost/datumi/rizik) + sakrij završene | NOT_STARTED |
 | 5 | Debounce save + status panel + identitet-po-izmeni (D-4) | NOT_STARTED |
@@ -223,39 +231,39 @@ Konvencije: envelope `{data, meta}`, Decimal string, GUC `withUser` na SVIM pozi
 | 8 | Opis faze + povezani crteži + glavni crtež sklopa (PDF exists-check + signed URL) | NOT_STARTED |
 | 9 | Export JSON/XLSX/PDF (Gantt+Total) + Import JSON | NOT_STARTED |
 | 10 | Per-user override plan_montaze_readonly (deny montaza.edit) | NOT_STARTED |
-| 11 | AI izveštaji: lista + filter + detalj (fotke, PDF) + poveži predmet | NOT_STARTED |
+| 11 | AI izveštaji: lista + filter + detalj (fotke, PDF) + poveži predmet | R1r ✓ read IMPL+TESTED · write/FE → R2/R3 (lista/filter/detalj+fotke meta; poveži predmet=R2) |
 | 12 | AI izveštaji: kreiranje (tekst+fotke → AI → preview → idempotentno snimanje + retry fotki/PDF) | NOT_STARTED |
 | 13 | AI generisanje na BE (port edge; model allowlist + admin izbor) | NOT_STARTED |
 | 14 | Mobilni /m/montaza + /m/izvestaj (responsive) + 🎤 diktat | NOT_STARTED |
 | **Plan proizvodnje** | | |
-| 15 | Po mašini: izbor mašine/odeljenja + red operacija (RPC paginacija po RN) | NOT_STARTED |
+| 15 | Po mašini: izbor mašine/odeljenja + red operacija (RPC paginacija po RN) | R1r ✓ read IMPL+TESTED · write/FE → R2/R3 (machines + operations?machine=/dept= read) |
 | 16 | Status pill ciklus + napomena + drag-drop reorder + pin-to-top | NOT_STARTED |
 | 17 | HITNO set/clear (+razlog) | NOT_STARTED |
 | 18 | REASSIGN single/bulk + force (+razlog) + idempotencija clientEventId | NOT_STARTED |
 | 19 | CAM ready + ready_override (TP-sidra ručni SPREMNO) | NOT_STARTED |
-| 20 | Po crtežu: pretraga + bulk premeštanje | NOT_STARTED |
-| 21 | Zauzetost mašina (agregat) + Pregled svih (matrica 5 radnih dana, praznici) | NOT_STARTED |
-| 22 | Kooperacija: auto grupe (admin CRUD bez DELETE) + ručno slanje/vraćanje (partner/rok) | NOT_STARTED |
-| 23 | Skice: upload/galerija/soft-delete + signed URL (gate can_read_production_drawings) | NOT_STARTED |
-| 24 | TP procedura modal + PDF crteža iz keša | NOT_STARTED |
-| 25 | Bridge sync banner (3 job-а) | NOT_STARTED |
+| 20 | Po crtežu: pretraga + bulk premeštanje | R1r ✓ read IMPL+TESTED · write/FE → R2/R3 (operations/search read; bulk=R2) |
+| 21 | Zauzetost mašina (agregat) + Pregled svih (matrica 5 radnih dana, praznici) | R1r ✓ read IMPL+TESTED · write/FE → R2/R3 (operations/all read; matrica=FE) |
+| 22 | Kooperacija: auto grupe (admin CRUD bez DELETE) + ručno slanje/vraćanje (partner/rok) | R1r ✓ read IMPL+TESTED · write/FE → R2/R3 (cooperation + groups read; write=R2) |
+| 23 | Skice: upload/galerija/soft-delete + signed URL (gate can_read_production_drawings) | R1r ✓ read IMPL+TESTED · write/FE → R2/R3 (drawings lista read; upload/signed URL=R2) |
+| 24 | TP procedura modal + PDF crteža iz keša | R1r ✓ read IMPL+TESTED · write/FE → R2/R3 (tech-procedure read; PDF signed URL=R2) |
+| 25 | Bridge sync banner (3 job-а) | R1r ✓ IMPL+TESTED (read) (bridge-status) |
 | 26 | Mobilni /m/proizvodnja (red po mašini; edit za editore) | NOT_STARTED |
 | **Praćenje proizvodnje** | | |
-| 27 | Kontrolna tabla (portfolio: status/napredak/filteri/sort) | NOT_STARTED |
-| 28 | Aktivni predmeti (lista + ↑↓ prioritet admin) | NOT_STARTED |
-| 29 | Stablo podsklopova + drill-down (ensure_radni_nalog_iz_bigtehn) | NOT_STARTED |
-| 30 | Tabela praćenja: izveštaj + statusi + filteri + napomena + manual/parent override | NOT_STARTED |
+| 27 | Kontrolna tabla (portfolio: status/napredak/filteri/sort) | R1r ✓ IMPL+TESTED (read) (portfolio; filteri/sort=FE) |
+| 28 | Aktivni predmeti (lista + ↑↓ prioritet admin) | R1r ✓ read IMPL+TESTED · write/FE → R2/R3 (predmeti + plan-prioritet read; ↑↓=R2) |
+| 29 | Stablo podsklopova + drill-down (ensure_radni_nalog_iz_bigtehn) | R1r ✓ read IMPL+TESTED · write/FE → R2/R3 (podsklopovi + rn/resolve + rn read; ensure=R2) |
+| 30 | Tabela praćenja: izveštaj + statusi + filteri + napomena + manual/parent override | R1r ✓ read IMPL+TESTED · write/FE → R2/R3 (izvestaj read; override/napomena=R2) |
 | 31 | Excel/PDF izvoz tabele + Tab1 Excel (+ export-log koji RADI, server-side) | NOT_STARTED |
-| 32 | RN ekran Tab1: pozicije local/bigtehn fallback + side panel (prijave + crteži) | NOT_STARTED |
-| 33 | RN ekran Tab2: operativni plan CRUD + zatvori/blokada/odblokiraj + zavisnosti + auto/manual status | NOT_STARTED |
-| 34 | Promocija akcione tačke (Sastanci most) + istorija (blokade svi, audit admin) | NOT_STARTED |
+| 32 | RN ekran Tab1: pozicije local/bigtehn fallback + side panel (prijave + crteži) | R1r ✓ IMPL+TESTED (read) (rn + prijave read) |
+| 33 | RN ekran Tab2: operativni plan CRUD + zatvori/blokada/odblokiraj + zavisnosti + auto/manual status | R1r ✓ read IMPL+TESTED · write/FE → R2/R3 (operativni-plan + can-edit read; CRUD=R2) |
+| 34 | Promocija akcione tačke (Sastanci most) + istorija (blokade svi, audit admin) | R1r ✓ read IMPL+TESTED · write/FE → R2/R3 (istorija blokade + akcione-tacke lookup read; promocija+audit=R2) |
 | 35 | Polling refresh 30 s + deep-link ruter (predmet/rn/#tab, popstate) | NOT_STARTED |
-| 36 | Pretraga delova (search_proizvodnja_delovi → otvara RN) | NOT_STARTED |
+| 36 | Pretraga delova (search_proizvodnja_delovi → otvara RN) | R1r ✓ IMPL+TESTED (read) (search-delovi) |
 | 37 | Mobilni /m/pracenje (predmeti → pozicije + override) | NOT_STARTED |
 | **Presečno** | | |
-| 38 | e2e permission matrica (read/edit/manage/force/koop_admin/prioritet/ai_admin × uloge × 200/403; row asercije autor-scope izveštaja i project-scope pm) | NOT_STARTED |
+| 38 | e2e permission matrica (read/edit/manage/force/koop_admin/prioritet/ai_admin × uloge × 200/403; row asercije autor-scope izveštaja i project-scope pm) | R1r ✓ read matrica TESTED (rola×endpoint×200/403, AUTHZ_ENFORCE=true); full write matrica + row-scope → R2 |
 | 39 | GUC sub claim na svim mutacijama (auth.uid() putevi: izveštaji, prioritet, aktivnosti) | NOT_STARTED |
-| 40 | Grants za `servosync2_app` (write na 9 public tabela, EXECUTE na ~35 front RPC, SELECT na bigtehn keš + bridge view-ove + 3 bucketa) — migracija u 1.0 repo, primena kao supabase_admin | NOT_STARTED |
+| 40 | Grants za `servosync2_app` (write na 9 public tabela, EXECUTE na ~35 front RPC, SELECT na bigtehn keš + bridge view-ove + 3 bucketa) — migracija u 1.0 repo, primena kao supabase_admin | R1r ✓ READ grants 0 rupa (35 tab/view SELECT + 21 RPC EXECUTE za authenticated; talasC-R0-grants-DRAFT.sql); write/bucket grants → R2 |
 
 ## 6. Redosled izvođenja (R-faze za CEO talas)
 

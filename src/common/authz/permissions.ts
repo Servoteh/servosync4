@@ -59,6 +59,39 @@ export const PERMISSIONS = {
   SASTANCI_AI_MODEL: "sastanci.ai_model",
   // AI asistent chat — 1.0 „/ai za sve" → sve aktivne uloge; upis istorije je server-side.
   AI_CHAT: "ai.chat",
+
+  // Plan montaže + izveštaji montera — 3.0 TALAS C (MODULE_SPEC_planovi_pracenje_30.md §2/§3).
+  // Guard = VIDLJIVOST (paritet ŽIVIH 1.0 gate-ova); ROW-odluka (has_edit_role project-scope,
+  // autor-scope izveštaja) OSTAJE u sy15 kroz GUC (withUserRls). Modul „Montaža" je UNGATED
+  // u 1.0 (router.assertModuleAllowed nema montaza granu; hub kartica bez gate-a) →
+  // read/izvestaji = svaka aktivna 2.0 rola.
+  //   read       = svaki prijavljen (Montaža modul ungated)
+  //   edit       = canEditPlanMontaze = canEdit()∪tim_lider (PRESUDA C1: tim_lider PRAVI edit)
+  //   izvestaji  = create svima (autor-scope u DB); manage-tuđih = row-odluka (autor∨mgmt∨admin)
+  //   ai_admin   = set_montaza_ai_model = current_user_is_admin
+  MONTAZA_READ: "montaza.read",
+  MONTAZA_EDIT: "montaza.edit",
+  MONTAZA_IZVESTAJI: "montaza.izvestaji",
+  MONTAZA_AI_ADMIN: "montaza.ai_admin",
+  // Plan proizvodnje — TALAS C. Modul „proizvodnja" je ROUTER-gated u 1.0
+  // (canAccessPlanProizvodnje) — nosi i Planiranje i Praćenje.
+  //   read        = canAccessPlanProizvodnje (9 rola, v. role-permissions)
+  //   edit        = can_edit_plan_proizvodnje = admin/pm/menadzment
+  //   force       = can_force_plan_reassign = admin/menadzment (reassign p_force + SELECT audita)
+  //   koop_admin  = current_user_is_admin (auto-koop grupe)
+  PLAN_PROIZVODNJE_READ: "plan_proizvodnje.read",
+  PLAN_PROIZVODNJE_EDIT: "plan_proizvodnje.edit",
+  PLAN_PROIZVODNJE_FORCE: "plan_proizvodnje.force",
+  PLAN_PROIZVODNJE_KOOP_ADMIN: "plan_proizvodnje.koop_admin",
+  // Praćenje proizvodnje — TALAS C (isti router gate kao Plan proizvodnje).
+  //   read      = canAccessPlanProizvodnje (isti gate)
+  //   edit      = can_edit_pracenje = admin/pm/menadzment (+has_edit_role širina u DB kroz GUC)
+  //   manage    = can_manage_predmet_aktivacija = admin/menadzment (napomene/override/aktivacija/⭐)
+  //   prioritet = ↑↓ prioritet praćenja = SAMO admin
+  PRACENJE_READ: "pracenje.read",
+  PRACENJE_EDIT: "pracenje.edit",
+  PRACENJE_MANAGE: "pracenje.manage",
+  PRACENJE_PRIORITET: "pracenje.prioritet",
 } as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];

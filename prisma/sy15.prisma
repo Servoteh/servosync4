@@ -519,3 +519,176 @@ model AiChatMessage {
   imagePath String? @map("image_path")
   @@map("ai_chat_messages")
 }
+
+// ============================================================================
+// TALAS C — Plan montaže + Plan proizvodnje + Praćenje (MODULE_SPEC_planovi_pracenje_30.md §1)
+// SAMO public tabele koje 2.0 BE čita/piše DIREKTNO. Non-public šeme (production/
+// core/pdm) se NE introspektuju: front im prilazi kroz public bridge view-ove +
+// wrapper RPC-ove ($queryRaw kroz withUserRls). Kolone snimljene sa žive sy15
+// (information_schema 2026-07-13). Uuid/bigint PK se ZADRŽAVA (1.0 poreklo).
+// ============================================================================
+
+/// Plan montaže — projekat (lista = pb_list_projects ⋈ predmet_aktivacija; red AUTO-kreira trigger pri aktivaciji predmeta).
+model PmProject {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  projectCode String @map("project_code")
+  projectName String @map("project_name")
+  projectm String? @default("")
+  projectDeadline DateTime? @map("project_deadline") @db.Date
+  pmEmail String? @default("") @map("pm_email")
+  leadpmEmail String? @default("") @map("leadpm_email")
+  reminderEnabled Boolean? @default(false) @map("reminder_enabled")
+  status String? @default("active")
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  bigtehnItemId Int? @map("bigtehn_item_id")
+  @@map("projects")
+}
+
+/// Plan montaže — WP (nalog montaže, rn_code); glavni crtež sklopa = assembly_drawing_no.
+model PmWorkPackage {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  projectId String @map("project_id") @db.Uuid
+  rnCode String? @default("") @map("rn_code")
+  rnOrder Int? @default(1) @map("rn_order")
+  name String
+  location String? @default("Dobanovci")
+  responsibleEngineerDefault String? @default("") @map("responsible_engineer_default")
+  montageLeadDefault String? @default("") @map("montage_lead_default")
+  deadline DateTime? @db.Date
+  sortOrder Int? @default(0) @map("sort_order")
+  isActive Boolean? @default(true) @map("is_active")
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  assemblyDrawingNo String @default("") @map("assembly_drawing_no")
+  @@map("work_packages")
+}
+
+/// Plan montaže — faza (checks jsonb = 8×bool spremnosti; linked_drawings jsonb; actual_*_date).
+model PmPhase {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  projectId String @map("project_id") @db.Uuid
+  workPackageId String @map("work_package_id") @db.Uuid
+  phaseName String @map("phase_name")
+  location String? @default("Dobanovci")
+  startDate DateTime? @map("start_date") @db.Date
+  endDate DateTime? @map("end_date") @db.Date
+  responsibleEngineer String? @default("") @map("responsible_engineer")
+  montageLead String? @default("") @map("montage_lead")
+  status Int? @default(0)
+  pct Int? @default(0)
+  checks Json?
+  blocker String? @default("")
+  note String? @default("")
+  sortOrder Int? @default(0) @map("sort_order")
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy String? @default("") @map("updated_by")
+  phaseType String? @default("mechanical") @map("phase_type")
+  description String?
+  linkedDrawings Json @map("linked_drawings")
+  actualStartDate DateTime? @map("actual_start_date") @db.Date
+  actualEndDate DateTime? @map("actual_end_date") @db.Date
+  @@map("phases")
+}
+
+/// Izveštaj montera (klijentski UUID id = idempotencija; broj puni BEFORE INSERT trigger; autor = auth.uid()).
+model PmIzvestaj {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  brojIzvestaja String? @map("broj_izvestaja")
+  status String @default("u_toku")
+  datumRada DateTime? @map("datum_rada") @db.Date
+  predmetItemId Int? @map("predmet_item_id")
+  predmetBroj String? @map("predmet_broj")
+  nazivProjekta String? @map("naziv_projekta")
+  klijent String?
+  lokacija String?
+  pocetakRada String? @map("pocetak_rada")
+  krajRada String? @map("kraj_rada")
+  opisRadova String? @map("opis_radova")
+  problemi String?
+  otvoreneStavke String? @map("otvorene_stavke")
+  dodatniClanovi Json @map("dodatni_clanovi")
+  autorUserId String @default(dbgenerated("auth.uid()")) @map("autor_user_id") @db.Uuid
+  autorIme String? @map("autor_ime")
+  siroviTekst String? @map("sirovi_tekst")
+  aiModel String? @map("ai_model")
+  aiJson Json? @map("ai_json")
+  pdfPath String? @map("pdf_path")
+  pdfNaziv String? @map("pdf_naziv")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  finalizedAt DateTime? @map("finalized_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("montaza_izvestaji")
+}
+
+/// Fotke izveštaja montera (storage bucket montaza-izvestaji; max 16 po izveštaju).
+model PmIzvestajFoto {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  izvestajId String @map("izvestaj_id") @db.Uuid
+  redniBroj Int @default(1) @map("redni_broj")
+  storagePath String @map("storage_path")
+  opis String?
+  mimeType String? @map("mime_type")
+  sizeBytes BigInt? @map("size_bytes")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  @@map("montaza_izvestaj_fotke")
+}
+
+/// Plan proizvodnje — overlay (UNIQUE work_order_id+line_id; history = append-only trigger; DELETE nikad).
+model PpOverlay {
+  id BigInt @id @default(autoincrement())
+  workOrderId BigInt @map("work_order_id")
+  lineId BigInt @map("line_id")
+  shiftSortOrder Int? @map("shift_sort_order")
+  localStatus String @default("waiting") @map("local_status")
+  shiftNote String? @map("shift_note")
+  assignedMachineCode String? @map("assigned_machine_code")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  createdBy String? @map("created_by")
+  updatedBy String? @map("updated_by")
+  archivedAt DateTime? @map("archived_at") @db.Timestamptz(6)
+  archivedReason String? @map("archived_reason")
+  camReady Boolean @default(false) @map("cam_ready")
+  camReadyAt DateTime? @map("cam_ready_at") @db.Timestamptz(6)
+  camReadyBy String? @map("cam_ready_by")
+  cooperationStatus String @default("none") @map("cooperation_status")
+  cooperationPartner String? @map("cooperation_partner")
+  cooperationSetBy String? @map("cooperation_set_by")
+  cooperationSetAt DateTime? @map("cooperation_set_at") @db.Timestamptz(6)
+  cooperationExpectedReturn DateTime? @map("cooperation_expected_return") @db.Date
+  readyOverride Boolean @default(false) @map("ready_override")
+  readyOverrideAt DateTime? @map("ready_override_at") @db.Timestamptz(6)
+  readyOverrideBy String? @map("ready_override_by")
+  @@unique([workOrderId, lineId])
+  @@map("production_overlays")
+}
+
+/// Plan proizvodnje — HITNO flag (PK work_order_id; DELETE nikad — samo set/clear preko cleared_at).
+model PpUrgency {
+  workOrderId BigInt @id @map("work_order_id")
+  isUrgent Boolean @default(true) @map("is_urgent")
+  reason String?
+  setBy String? @map("set_by")
+  setAt DateTime @default(now()) @map("set_at") @db.Timestamptz(6)
+  clearedAt DateTime? @map("cleared_at") @db.Timestamptz(6)
+  clearedBy String? @map("cleared_by")
+  @@map("production_urgency_overrides")
+}
+
+/// Plan proizvodnje — skice (soft-delete deleted_at; storage bucket production-drawings).
+model PpDrawing {
+  id BigInt @id @default(autoincrement())
+  workOrderId BigInt @map("work_order_id")
+  lineId BigInt @map("line_id")
+  storagePath String @map("storage_path")
+  fileName String @map("file_name")
+  mimeType String? @map("mime_type")
+  sizeBytes BigInt? @map("size_bytes")
+  uploadedAt DateTime @default(now()) @map("uploaded_at") @db.Timestamptz(6)
+  uploadedBy String? @map("uploaded_by")
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+  deletedBy String? @map("deleted_by")
+  @@map("production_drawings")
+}
