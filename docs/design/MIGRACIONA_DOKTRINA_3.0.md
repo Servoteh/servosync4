@@ -29,6 +29,17 @@
    nasleđuju ih od `authenticated`. Zabranjeno je „emulirati" RLS WHERE klauzulama u TS-u
    (duplira policy logiku — krši §C). SECURITY INVOKER fn (npr. `ai_chat_sql`) smeju se
    izvršavati ISKLJUČIVO pod `withUserRls`, nikad kao BYPASSRLS rola.
+2b. **⚠️ withUserRls NIJE univerzalni štit — non-invoker view zaobilazi RLS (nalaz review-a
+   Talasa G, 13.07).** `withUserRls` (SET LOCAL ROLE authenticated) čini da RLS radi SAMO za
+   direktno upitane tabele i **`security_invoker=true`** view-ove. **View koji NIJE
+   security_invoker (reloptions=NULL, vlasništvo `postgres`/BYPASSRLS) izvršava se kao
+   VLASNIK → RLS bazne tabele se NE primenjuje ČAK ni pod `withUserRls`.** Zato: (a) za
+   SVAKI view koji modul čita PROVERI `security_invoker` status na živoj bazi
+   (`pg_class.reloptions` / `docs/db/snapshot/05_view.md`) — NE veruj spec tvrdnji „svi su
+   invoker" (u G specu tvrđeno 14, a `v_kadr_audit_log`/`v_kadr_medical_exam_status`/
+   `v_kadr_certificate_status` NISU); (b) za svaki NON-invoker view guard MORA potpuno
+   replicirati baznu SELECT politiku (RLS ne pomaže) — npr. audit→admin, medical/certs→manage,
+   PII→pii; nedovoljan klasni `read` guard = leak (JMBG/zarade). Ovo je flip-strana pravila 2a.
 3. **Paralelni rad = ista baza.** 1.0 UI i 2.0 UI rade nad ISTIM podacima istovremeno.
    „Cutover" modula je čist UI preklop (hub kartica → 2.0 ruta) sa 1.0 kao instant fallback.
    Nema feature flag-ova, nema resync-a, nema duplih baza.
