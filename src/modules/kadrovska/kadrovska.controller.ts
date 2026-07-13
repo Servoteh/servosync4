@@ -1,5 +1,6 @@
 import {
   Controller,
+  ForbiddenException,
   Get,
   Param,
   ParseUUIDPipe,
@@ -36,13 +37,34 @@ interface AuthedRequest {
  * ROW/PII maska OSTAJE u sy15 (RLS + v_employees_safe + DEFINER helperi kroz GUC).
  * Mutacije/RPC-write/PDF/payroll engine/storage proxy su R2 — ovde ih NEMA.
  *
- * ⚠️ Route ordering: LITERAL rute pre `:id` (nema top-level `:id` rute — svaki detalj
- * je namespace-ovan: employees/:id, dev-plans/:id/*, assessments/:id/*).
+ * ⚠️ NON-INVOKER VIEW GUARD (adversarni review R1, CRITICAL): 3 view-a KOJE modul čita
+ * NISU `security_invoker` (owner postgres = BYPASSRLS): `v_kadr_audit_log`,
+ * `v_kadr_medical_exam_status`, `v_kadr_certificate_status`. Pod `withUserRls`
+ * (SET LOCAL ROLE authenticated) oni rade kao postgres → RLS bazne tabele se NE
+ * primenjuje → GUARD je JEDINA zaštita. Zato izveštaji nad njima NISU pod (preširokom)
+ * `kadrovska.read` nego pod NAMENSKIM rutama koje TAČNO repliciraju baznu SELECT politiku:
+ *   - reports/audit  → `kadrovska.admin`  (kadr_audit_log_select = current_user_is_admin)
+ *   - reports/medical → `kadrovska.manage` (= hr_or_admin ∨ poslovni_admin — tačan skup)
+ *   - reports/certs   → `kadrovska.manage` (= hr_or_admin ∨ poslovni_admin)
+ * Dedicirani `/medical-exams` i `/certificates` (isti non-invoker view-ovi) su VEĆ pod
+ * `kadrovska.manage`. Generička `reports/:kind` (RLS-svesni/R2 kindovi) EKSPLICITNO
+ * odbija ova 3 (defense-in-depth ako se redosled ruta ikad slomi).
+ *
+ * ⚠️ Route ordering: LITERAL rute pre `:kind`/`:id` (nema top-level `:id` rute — svaki
+ * detalj je namespace-ovan: employees/:id, dev-plans/:id/*, assessments/:id/*).
  */
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 @RequirePermission(PERMISSIONS.KADROVSKA_READ)
 @Controller({ path: "kadrovska", version: "1" })
 export class KadrovskaController {
+  /** Izveštaji nad NON-INVOKER view-ovima (BYPASSRLS) — SAMO kroz namenske guard-ovane
+   *  rute; generička `reports/:kind` ih odbija (defense-in-depth). */
+  private static readonly NON_INVOKER_REPORTS = new Set([
+    "audit",
+    "medical",
+    "certs",
+  ]);
+
   constructor(private readonly kadrovska: KadrovskaService) {}
 
   // ---------- Pregled ----------
@@ -57,8 +79,36 @@ export class KadrovskaController {
     return this.kadrovska.dashboard(req.user.email, q);
   }
 
+  // Izveštaji nad NON-INVOKER view-ovima — namenske rute sa TAČNOM baznom permisijom
+  // (guard = jedina zaštita; RLS ne pomaže jer view radi kao postgres). Deklarisane PRE
+  // generičke `reports/:kind` (Express: literal pre param).
+  @Get("reports/audit")
+  @RequirePermission(PERMISSIONS.KADROVSKA_ADMIN)
+  reportAudit(@Req() req: AuthedRequest) {
+    return this.kadrovska.report(req.user.email, "audit");
+  }
+
+  @Get("reports/medical")
+  @RequirePermission(PERMISSIONS.KADROVSKA_MANAGE)
+  reportMedical(@Req() req: AuthedRequest) {
+    return this.kadrovska.report(req.user.email, "medical");
+  }
+
+  @Get("reports/certs")
+  @RequirePermission(PERMISSIONS.KADROVSKA_MANAGE)
+  reportCerts(@Req() req: AuthedRequest) {
+    return this.kadrovska.report(req.user.email, "certs");
+  }
+
+  /** Generički izveštaji (RLS-svesni ili R2 501/422). NE sme da servira 3 non-invoker
+   *  kinda — oni idu kroz namenske gore; defense-in-depth 403 ako routing ikad padne. */
   @Get("reports/:kind")
   report(@Req() req: AuthedRequest, @Param("kind") kind: string) {
+    if (KadrovskaController.NON_INVOKER_REPORTS.has(kind)) {
+      throw new ForbiddenException(
+        `Izveštaj '${kind}' ide kroz namensku rutu sa strožom permisijom`,
+      );
+    }
     return this.kadrovska.report(req.user.email, kind);
   }
 

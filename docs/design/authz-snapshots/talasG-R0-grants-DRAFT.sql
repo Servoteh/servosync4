@@ -118,6 +118,18 @@ end $$;
 --     u R1 read — `employees` je izvor istine; ako Reversi/2.0 već drži most, G ga NE
 --     duplira. Ako fali i na sy15 → van G obima (2.0-side tabela).
 --
+-- [2b] NON-INVOKER VIEW-OVI (adversarni review R1, CRITICAL — izmereno cloud 13.07,
+--     RE-VERIFIKOVATI na sy15): `v_kadr_audit_log`, `v_kadr_medical_exam_status`,
+--     `v_kadr_certificate_status` imaju reloptions=NULL (NISU security_invoker), owner
+--     postgres (BYPASSRLS). Pod SET ROLE authenticated rade kao postgres → RLS bazne
+--     tabele NE važi → za njih je APP GUARD jedina zaštita (kao 1.0 front gate). BE ih
+--     čita SAMO kroz guard-ovane rute (reports/audit=admin, reports/medical|certs=manage;
+--     /medical-exams i /certificates već pod manage). Provera na sy15:
+--        SELECT relname, pg_get_userbyid(relowner), reloptions FROM pg_class
+--        WHERE relkind='v' AND relname LIKE 'v_kadr_%';
+--     Ako se na sy15 dodaju security_invoker=on → RLS preuzima i guard postaje
+--     defense-in-depth (ne menjati guard bez re-provere bazne politike).
+--
 -- [3] development_plan_checkins → stvarno ime je `development_checkins` (spec §1.1
 --     nabraja „development_plans (+_checkins)"; kolone: id/plan_id/employee_id/
 --     checkin_date/author_email/author_kind/note_md/created_at). Prisma model

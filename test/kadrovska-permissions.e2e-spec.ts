@@ -218,6 +218,23 @@ describe("Kadrovska permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
       perm: PERMISSIONS.KADROVSKA_SALARY,
       label: "salary/payroll",
     },
+    // Izveštaji nad NON-INVOKER view-ovima (adversarni review CRITICAL) — guard je
+    // JEDINA zaštita jer view radi kao postgres (BYPASSRLS). Bazna politika replicirana:
+    {
+      path: "/kadrovska/reports/audit",
+      perm: PERMISSIONS.KADROVSKA_ADMIN,
+      label: "reports/audit (non-invoker → admin)",
+    },
+    {
+      path: "/kadrovska/reports/medical",
+      perm: PERMISSIONS.KADROVSKA_MANAGE,
+      label: "reports/medical (non-invoker → manage)",
+    },
+    {
+      path: "/kadrovska/reports/certs",
+      perm: PERMISSIONS.KADROVSKA_MANAGE,
+      label: "reports/certs (non-invoker → manage)",
+    },
   ];
 
   describe("rola × endpoint × 200/403 (izvedeno iz ALL_ROLE_KEYS)", () => {
@@ -253,6 +270,39 @@ describe("Kadrovska permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
       await get(p, "poslovni_admin").expect(200);
       await get(p, "hr").expect(403); // ⚠️ HR NEMA PII
       await get(p, "menadzment").expect(403);
+    });
+  });
+
+  describe("CRITICAL — non-invoker view izveštaji NISU pod (preširokim) kadrovska.read", () => {
+    it("reports/audit: 200 admin; 403 read-role bez admin (HR/menadzment/poslovni_admin/projektant_vodja)", async () => {
+      await get("/kadrovska/reports/audit", "admin").expect(200);
+      // Sve ove IMAJU kadrovska.read (pre fix-a bi curilo salary_terms before/after + PII izmene):
+      for (const role of [
+        "hr",
+        "menadzment",
+        "poslovni_admin",
+        "projektant_vodja",
+      ]) {
+        await get("/kadrovska/reports/audit", role).expect(403);
+      }
+    });
+    it("reports/medical + reports/certs: 200 manage (admin/hr/poslovni_admin); 403 read-ali-ne-manage (menadzment/projektant_vodja)", async () => {
+      for (const p of [
+        "/kadrovska/reports/medical",
+        "/kadrovska/reports/certs",
+      ]) {
+        for (const role of ["admin", "hr", "poslovni_admin"]) {
+          await get(p, role).expect(200);
+        }
+        for (const role of ["menadzment", "projektant_vodja"]) {
+          await get(p, role).expect(403);
+        }
+      }
+    });
+    it("reports/audit|medical|certs kroz namenske rute (literal pre :kind); generički kind read-ok", async () => {
+      // Generički R2 kind (vacation) je pod kadrovska.read — read-role prolazi guard
+      // (servis bi vratio 501 uživo; mok vraća 200 → dokaz da ruta NIJE 403-guardovana).
+      await get("/kadrovska/reports/vacation", "projektant_vodja").expect(200);
     });
   });
 

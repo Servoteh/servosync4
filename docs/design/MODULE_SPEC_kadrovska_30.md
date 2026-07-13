@@ -28,7 +28,8 @@
 
 ## 0. Obim — šta se SELI, šta NE (FRONT vs POZADINA)
 
-**Živi DB objekti (13.07):** ~49 G-tabela (public), 14 kanonskih view-ova (svi `security_invoker=true`),
+**Živi DB objekti (13.07):** ~49 G-tabela (public), 14 kanonskih view-ova (**11 `security_invoker=true`; 3 NISU** —
+vidi §1.2 ⚠️ i §3.1),
 119 funkcija, 141 RLS politike + 4 storage, ~20 trigera, 1 privatni storage bucket (`employee-docs`),
 **9 pg_cron poslova** (od 22 ukupno na bazi), 4 edge funkcije.
 
@@ -122,12 +123,25 @@ tabele dozvoljen `$queryRaw`; predlog je pun model za sve sa CRUD-om iz fronta.
 `company_profile`(1), `competences`+`competence_*`(okvir kompetencija — koristi ga i 360), `user_roles`(54, email-based),
 `predmet_aktivacija` (grid → veži predmet). Grants za `servosync2_app` moraju pokriti SELECT na njih (paritet kroz GUC).
 
-### 1.2 View-ovi koje front ČITA (14; svi `security_invoker=true` → rola treba SELECT i na osnovnim tabelama, doktrina A6)
+### 1.2 View-ovi koje front ČITA (14; **11 `security_invoker=true`, 3 NISU** — vidi ⚠️ ispod)
 
 `v_employees_safe` (PII maska — kanon!), `v_vacation_balance` (**GO grid-kanon**, §2.6),
 `v_attendance_now`, `v_attendance_daily`, `v_attendance_shadow_monthly`, `v_attendance_vs_grid`,
 `v_salary_payroll_month`, `v_employee_current_salary`, `v_development_plans`, `v_employee_expectations`,
 `v_assessment_scope`, `v_kadr_audit_log`, `v_kadr_certificate_status`, `v_kadr_medical_exam_status`.
+
+> ⚠️ **NON-INVOKER VIEW-OVI (adversarni review R1, IZMERENO 13.07 — pg_class.reloptions).**
+> Tvrdnja „svih 14 security_invoker" je NETAČNA. **3 view-a NISU `security_invoker`**
+> (`reloptions=NULL`, owner `postgres` = BYPASSRLS): **`v_kadr_audit_log`,
+> `v_kadr_certificate_status`, `v_kadr_medical_exam_status`**. Pod `withUserRls`
+> (SET LOCAL ROLE authenticated) oni se izvršavaju kao `postgres` → **RLS bazne tabele se
+> NE primenjuje** → za njih GUARD MORA replicirati baznu SELECT politiku (RLS ne pomaže).
+> Bazne politike (izmereno): `kadr_audit_log_select = current_user_is_admin()`;
+> `kadr_medical_exams_select` = `kadr_certificates_select` = `hr_or_admin ∨ poslovni_admin`.
+> Preostalih 11 (uklj. `v_employees_safe`, `v_vacation_balance`, oba salary + attendance/dev)
+> JESU `security_invoker` → RLS radi pod authenticated (maska/row-scope kroz GUC).
+> **Bigint kolone (res.json ne serijalizuje BigInt → 500):** SAMO `v_development_plans`
+> (goals_total/goals_done) i `v_kadr_audit_log` (id) — BE ih pretvara u Number (numify).
 
 ### 1.3 Prisma odluka
 
@@ -313,7 +327,9 @@ gridEditor, vacationEditor, canPii, canSalary, managedSubDeptIds}` iz GUC upita)
 |---|---|---|---|
 | `/kadrovska/me` | GET | read | efektivna prava (gore) |
 | `/kadrovska/dashboard` | GET | read | `kadr_dashboard_kpis` + `mini_reports` + `action_stack` (1 poziv umesto 3) |
-| `/kadrovska/reports/:kind` | GET | read (PII izveštaji `pii`, audit `admin`) | 11 izveštaja (sick/demo/org/vacation/overtime/field/medical/certs/children/risk/audit); XLSX/CSV u BE ili FE |
+| `/kadrovska/reports/audit` | GET | **admin** (non-invoker view — guard je jedina zaštita!) | `v_kadr_audit_log` (NON-invoker → bazna `current_user_is_admin`); id bigint→Number |
+| `/kadrovska/reports/medical` · `/certs` | GET | **manage** (non-invoker view — guard replicira baznu) | `v_kadr_{medical_exam,certificate}_status` (NON-invoker → bazna `hr_or_admin ∨ poslovni_admin` = `manage`) |
+| `/kadrovska/reports/:kind` (ostali) | GET | read (R2 kindovi 501; non-invoker kindovi ODBIJENI — idu kroz namenske gore) | sick/demo/org/vacation/overtime/field/children/risk; XLSX/CSV = R2 |
 | `/kadrovska/reports/risk/run` | POST | manage | `kadr_trigger_weekly_risk_summary` (ručni okid) |
 | `/kadrovska/notifications` (+`/:id/retry`,`/cancel`,`/delete`) | GET/POST/DELETE | manage | `kadr_notification_log` read + config; `kadr_trigger_schedule_hr_reminders`, `kadr_queue_payroll_notifications`; retarget priloga knjigovođi |
 | `/kadrovska/notification-config` | GET/PATCH | manage | singleton |
@@ -426,9 +442,12 @@ Skener: QR nalepnice zaposlenih (kioskQrAdmin) = generisanje (jsPDF+qrcode), NE 
 
 > **R1 read izvršen (13.07, grana `wave-g/kadrovska`):** Prisma modeli (~40 tabela, §1),
 > `kadrovska.*` permisije (14 ključeva, §2.4) + rola-matrica, i GET read sloj po 5 hub-grupa
-> (~35 endpointa) — SVE kroz `withUserRls` (doktrina A.2a). Testovi: unit rola-matrica (16),
-> PII-leak guard (41 read metoda × 0 dodira BYPASSRLS `db`), e2e permission matrica (48). tsc +
-> build + svi testovi (419 unit / 3 e2e suite) zeleni. Mutacije/RPC-write/PDF/payroll = R2.
+> (~38 endpointa) — SVE kroz `withUserRls` (doktrina A.2a). **Adversarni review R1 (6 nalaza,
+> 1 CRITICAL):** 3 NON-invoker view-a (§1.2 ⚠️) tražila namenske guard-ove (reports/audit=admin,
+> medical/certs=manage) umesto preširokog `read`; 2 bigint view-kolone → Number. Testovi: unit
+> rola-matrica (16), PII-leak guard (41 read metoda × 0 dodira BYPASSRLS `db`), BigInt→Number (2),
+> e2e permission matrica (57, uklj. non-invoker leak-guard). tsc + build + svi testovi zeleni.
+> Mutacije/RPC-write/PDF/payroll = R2.
 
 | # | Funkcija | Status |
 |---|---|---|
@@ -436,7 +455,7 @@ Skener: QR nalepnice zaposlenih (kioskQrAdmin) = generisanje (jsPDF+qrcode), NE 
 | **Pregled** | | |
 | 2 | Dashboard: KPI + 3 Chart.js grafikona + action stack + deep-link | IMPLEMENTED (R1 read: kadr_dashboard_kpis+mini_reports+action_stack 1 poziv; grafikoni R3) |
 | 3 | Izveštaji: 11 vrsta (sick/demo/org/vacation/overtime/field/medical/certs/children/risk/audit) + XLSX/CSV | NOT_STARTED |
-| 4 | Izveštaji PII/audit gating (canViewEmployeePii / isAdmin) | NOT_STARTED |
+| 4 | Izveštaji PII/audit gating (canViewEmployeePii / isAdmin) | TESTED (R1: NON-invoker view fix — audit=admin, medical/certs=manage; e2e leak-guard) |
 | 5 | Notifikacije: queue UI + config + retry/cancel/delete + risk/hr-reminders ručni okid | NOT_STARTED |
 | **Odmori** | | |
 | 6 | GO: stat kartice + Gantt po odeljenjima + Excel | NOT_STARTED |
