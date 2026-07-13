@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   UnprocessableEntityException,
 } from "@nestjs/common";
@@ -22,6 +23,53 @@ import {
 const CAM_LIST_MAX_PAGE_SIZE = 500;
 /** Safety cap na broj kandidata koje učitavamo (CAM skup je ~stotine pozicija). */
 const CAM_CANDIDATES_CAP = 1000;
+
+/** Minimalna polja za prikazni redosled CAM reda (list i move dele komparator). */
+export interface CamDisplayRef {
+  id: number;
+  productionDeadline: Date | null;
+  queueOrder: number | null;
+}
+
+/**
+ * Komparator PRIKAZNOG redosleda (ugovor sa FE): queue_order asc NULLS LAST →
+ * rok asc NULLS LAST (PG semantika dosadašnjeg `productionDeadline: asc`) →
+ * id desc. `moveInQueue` računa mete nad ISTIM redosledom koji FE renderuje —
+ * to je bio review HIGH nalaz (meta sme biti i NErangiran red).
+ */
+export function compareCamDisplay(a: CamDisplayRef, b: CamDisplayRef): number {
+  const qa = a.queueOrder;
+  const qb = b.queueOrder;
+  if (qa !== qb) {
+    if (qa == null) return 1; // NULL rang ide posle rangiranog
+    if (qb == null) return -1;
+    return qa - qb;
+  }
+  const da = a.productionDeadline ? a.productionDeadline.getTime() : null;
+  const db = b.productionDeadline ? b.productionDeadline.getTime() : null;
+  if (da !== db) {
+    if (da == null) return 1; // NULL rok ide posle (PG asc NULLS LAST)
+    if (db == null) return -1;
+    return da - db;
+  }
+  return b.id - a.id; // id desc
+}
+
+/**
+ * Čist izračun novog redosleda: `moved` se ubacuje ODMAH IZA `after`
+ * (null = na vrh) u prikaznom redosledu `displayIds`. Poziv garantuje da su
+ * `moved` i `after` u skupu. Vraća NOV niz (ne mutira ulaz).
+ */
+export function computeNewCamOrder(
+  displayIds: number[],
+  moved: number,
+  after: number | null,
+): number[] {
+  const working = displayIds.filter((id) => id !== moved);
+  const insertAt = after === null ? 0 : working.indexOf(after) + 1;
+  working.splice(insertAt, 0, moved);
+  return working;
+}
 
 export interface ListCncProgramsQuery {
   page?: string;
@@ -46,6 +94,8 @@ export interface ListCncProgramsQuery {
  */
 @Injectable()
 export class CncProgramsService {
+  private readonly logger = new Logger(CncProgramsService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   /** Radni centri (šifre) čije operacije koriste prioritet = kandidati za CAM. */
@@ -150,6 +200,9 @@ export class CncProgramsService {
     const candidates = await this.prisma.workOrder.findMany({
       where,
       take: CAM_CANDIDATES_CAP,
+      // Deterministična truncacija na cap-u (review LOW: bez orderBy bi cap
+      // sekao proizvoljno). Rok/id je i fallback prikaznog redosleda.
+      orderBy: [{ productionDeadline: "asc" }, { id: "desc" }],
       select: {
         id: true,
         projectId: true,
@@ -162,6 +215,10 @@ export class CncProgramsService {
         productionDeadline: true,
       },
     });
+    if (candidates.length === CAM_CANDIDATES_CAP)
+      this.logger.warn(
+        `CAM kandidata je tačno ${CAM_CANDIDATES_CAP} (cap) — mogući odsečeni redovi; razmotriti veći cap ili DB-side sort.`,
+      );
 
     const programRows = await this.prisma.cncProgram.findMany({
       where: { workOrderId: { in: candidates.map((r) => r.id) } },
@@ -204,25 +261,21 @@ export class CncProgramsService {
     if (query.onlyPending === "true" || query.onlyPending === "1")
       merged = merged.filter((r) => !r.cam.isDone);
 
-    // Sort po ugovoru: queueOrder asc NULLS LAST → productionDeadline asc NULLS
-    // LAST (kao dosadašnji Prisma `productionDeadline: asc` na PG) → id desc.
-    merged.sort((a, b) => {
-      const qa = a.cam.queueOrder;
-      const qb = b.cam.queueOrder;
-      if (qa !== qb) {
-        if (qa == null) return 1; // NULL red ide posle rangiranog
-        if (qb == null) return -1;
-        return qa - qb;
-      }
-      const da = a.productionDeadline ? a.productionDeadline.getTime() : null;
-      const db = b.productionDeadline ? b.productionDeadline.getTime() : null;
-      if (da !== db) {
-        if (da == null) return 1; // NULL rok ide posle (PG asc NULLS LAST)
-        if (db == null) return -1;
-        return da - db;
-      }
-      return b.id - a.id; // id desc
-    });
+    // Sort po ugovoru — DELJENI komparator sa moveInQueue (isti prikazni red).
+    merged.sort((a, b) =>
+      compareCamDisplay(
+        {
+          id: a.id,
+          productionDeadline: a.productionDeadline,
+          queueOrder: a.cam.queueOrder,
+        },
+        {
+          id: b.id,
+          productionDeadline: b.productionDeadline,
+          queueOrder: b.cam.queueOrder,
+        },
+      ),
+    );
 
     const total = merged.length;
     const data = merged.slice(
@@ -270,9 +323,11 @@ export class CncProgramsService {
    * Premeštanje pozicije u CAM redu (prevlačenje) — Miljan/Nikola/Jovica.
    *
    * Semantika (ugovor sa FE): `afterWorkOrderId` = id reda NEPOSREDNO IZNAD mete
-   * (null = na vrh); prevučena pozicija se ubacuje ISPOD njega. `remove: true` =
-   * skida poziciju iz rangiranja (queue_order → NULL). Rang se renumeriše 1..N
-   * bez rupa nakon svake operacije.
+   * u PRIKAZNOM redosledu (null = na vrh); prevučena pozicija se ubacuje ISPOD
+   * njega. Meta sme biti i NErangiran red (review HIGH: početno stanje je ceo
+   * red nerangiran) — potez MATERIJALIZUJE rang 1..N za ceo prikazni red, pa je
+   * redosled posle prvog poteza potpuno eksplicitan. `remove: true` = skida
+   * poziciju iz rangiranja (queue_order → NULL, vraća se u nerangiranu zonu).
    *
    * Konkurentnost: `pg_advisory_xact_lock` serijalizuje izmene reda (poslednji
    * pobeđuje — poslovno OK). Audit `queueSetByWorkerId` iz SVEŽEG worker lookup-a
@@ -285,36 +340,72 @@ export class CncProgramsService {
   ) {
     validateMoveCncQueue(dto);
 
-    return this.prisma.$transaction(async (tx) => {
-      // Serijalizuj sve izmene CAM reda (jedan logički lock za ceo red).
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('cam_queue'))`;
+    // Kandidati se filtriraju ISTIM predikatima kao list() (review LOW: ranija
+    // verzija je proveravala samo postojanje RN-a, pa se mogao rangirati i
+    // završen/ne-CAM nalog).
+    const [camCodes, camDoneCodes] = await Promise.all([
+      this.camWorkCenterCodes(),
+      this.camDoneWorkCenterCodes(),
+    ]);
+    const camDoneIds = await this.workOrderIdsWithCamDone(camDoneCodes);
 
-      const wo = await tx.workOrder.findUnique({
-        where: { id: workOrderId },
-        select: { id: true },
-      });
-      if (!wo)
-        throw new NotFoundException(`Radni nalog ${workOrderId} ne postoji.`);
+    return this.prisma.$transaction(
+      async (tx) => {
+        // Serijalizuj sve izmene CAM reda (jedan logički lock za ceo red).
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('cam_queue'))`;
 
-      // Trenutni rangirani red (queue_order NOT NULL), rastuće.
-      const ranked = await tx.cncProgram.findMany({
-        where: { queueOrder: { not: null } },
-        select: { workOrderId: true, queueOrder: true },
-        orderBy: { queueOrder: "asc" },
-      });
-      let order = ranked.map((r) => r.workOrderId);
+        const candidates = await tx.workOrder.findMany({
+          where: {
+            status: { not: true },
+            operations: { some: { workCenterCode: { in: camCodes } } },
+            ...(camDoneIds.length ? { id: { notIn: camDoneIds } } : {}),
+          },
+          take: CAM_CANDIDATES_CAP,
+          orderBy: [{ productionDeadline: "asc" }, { id: "desc" }],
+          select: { id: true, productionDeadline: true },
+        });
+        const candidateIds = new Set(candidates.map((c) => c.id));
 
-      if (dto.remove === true) {
-        // Skini iz rangiranja (ako je uopšte u redu; inače no-op) i renumeriši.
-        const wasRanked = order.includes(workOrderId);
-        order = order.filter((id) => id !== workOrderId);
-        if (wasRanked) {
-          const p = await tx.cncProgram.findUnique({
-            where: { workOrderId },
-            select: { workOrderId: true },
+        if (!candidateIds.has(workOrderId)) {
+          const wo = await tx.workOrder.findUnique({
+            where: { id: workOrderId },
+            select: { id: true },
           });
-          // Red mora postojati ako je bio rangiran, ali branimo se od trke.
-          if (p)
+          if (!wo)
+            throw new NotFoundException(
+              `Radni nalog ${workOrderId} ne postoji.`,
+            );
+          throw new UnprocessableEntityException(
+            `Pozicija ${workOrderId} nije u CAM redu (završena je ili nema CAM operaciju).`,
+          );
+        }
+
+        const programs = await tx.cncProgram.findMany({
+          where: { workOrderId: { in: [...candidateIds] } },
+          select: { workOrderId: true, queueOrder: true },
+        });
+        const rankOf = new Map(
+          programs.map((p) => [p.workOrderId, p.queueOrder]),
+        );
+
+        // PRIKAZNI redosled — identičan onome što FE renderuje (deljeni
+        // komparator sa list()). Review HIGH: meta poteza sme biti i
+        // NErangiran red (početno stanje je ceo red nerangiran).
+        const display = candidates
+          .map((c) => ({
+            id: c.id,
+            productionDeadline: c.productionDeadline,
+            queueOrder: rankOf.get(c.id) ?? null,
+          }))
+          .sort(compareCamDisplay)
+          .map((c) => c.id);
+
+        if (dto.remove === true) {
+          // Skini iz rangiranja (queue_order → NULL) i kompaktuj PREOSTALE
+          // rangirane 1..N (nerangirani se ne diraju — red se vraća u
+          // „nerangiranu zonu" po roku).
+          const wasRanked = rankOf.get(workOrderId) != null;
+          if (wasRanked)
             await tx.cncProgram.update({
               where: { workOrderId },
               data: {
@@ -323,70 +414,63 @@ export class CncProgramsService {
                 queueSetAt: null,
               },
             });
+          const remainingRanked = display.filter(
+            (id) => id !== workOrderId && rankOf.get(id) != null,
+          );
+          await this.renumberQueue(tx, remainingRanked, actor);
+          return { data: { workOrderId, queueOrder: null } };
         }
-        await this.renumberQueue(tx, order, workOrderId, actor);
-        return { data: { workOrderId, queueOrder: null } };
-      }
 
-      // Ubacivanje: afterWorkOrderId = red IZNAD mete (null = vrh).
-      const after = dto.afterWorkOrderId ?? null;
-      if (after !== null) {
-        if (after === workOrderId) {
-          // Drop na samog sebe = no-op; vrati trenutni rang.
-          const idx = order.indexOf(workOrderId);
+        const after = dto.afterWorkOrderId ?? null;
+        if (after !== null && after === workOrderId) {
+          // Drop na samog sebe = no-op (bez upisa); vrati trenutni rang.
           return {
-            data: { workOrderId, queueOrder: idx >= 0 ? idx + 1 : null },
+            data: { workOrderId, queueOrder: rankOf.get(workOrderId) ?? null },
           };
         }
-        if (!order.includes(after))
+        if (after !== null && !candidateIds.has(after))
           throw new UnprocessableEntityException(
-            `Pozicija ${after} nije u CAM redu (mora biti rangirana).`,
+            `Pozicija ${after} nije u CAM redu — meta poteza mora biti pozicija iz liste.`,
           );
-      }
 
-      // Izbaci prevučeni red iz trenutne pozicije (ako je već rangiran), pa ga
-      // ubaci ODMAH IZA `after` (ili na vrh kad je after === null).
-      order = order.filter((id) => id !== workOrderId);
-      const insertAt = after === null ? 0 : order.indexOf(after) + 1;
-      order.splice(insertAt, 0, workOrderId);
-
-      await this.renumberQueue(tx, order, workOrderId, actor);
-      const newQueueOrder = order.indexOf(workOrderId) + 1;
-      return { data: { workOrderId, queueOrder: newQueueOrder } };
-    });
+        // Novi redosled + MATERIJALIZACIJA: rang 1..N se upisuje za CEO
+        // prikazni red (ne samo rangirani deo). Time svaki sused postaje
+        // validna meta narednih poteza, a redosled je potpuno eksplicitan.
+        // Novi RN-ovi koji se kasnije pojave ulaze nerangirani na dno.
+        const newOrder = computeNewCamOrder(display, workOrderId, after);
+        await this.renumberQueue(tx, newOrder, actor);
+        return {
+          data: { workOrderId, queueOrder: newOrder.indexOf(workOrderId) + 1 },
+        };
+      },
+      // Batch upis je 1 round-trip, ali lock čekanje ulazi u budžet transakcije
+      // (review LOW: Prisma default 5s) — dižemo eksplicitno.
+      { timeout: 15_000 },
+    );
   }
 
   /**
-   * Renumeriše rang 1..N bez rupa nad datim redosledom `order` (niz workOrderId).
-   * Audit (`queueSetByWorkerId`/`queueSetAt`) upisuje SAMO na dodirnutim redovima;
-   * ovde radi renumeraciju za sve (splice/remove pomera rangove) — jeftino jer je
-   * red mali (~stotine). `queueSetByWorkerId` = svež worker lookup aktora.
+   * Materijalizuje rang 1..N nad datim redosledom JEDNIM SQL iskazom
+   * (unnest + ON CONFLICT po `uq_cnc_programs_work_order`) — review LOW:
+   * N sekvencijalnih upserta je probijalo Prisma tx budžet. Audit
+   * `queueSetByWorkerId` = svež worker lookup aktora (nikad direktno JWT).
    */
   private async renumberQueue(
     tx: Prisma.TransactionClient,
     order: number[],
-    _movedWorkOrderId: number,
     actor?: AuthUser,
   ): Promise<void> {
+    if (!order.length) return;
     const workerId = await resolveActorWorkerId(tx, actor);
-    const now = new Date();
-    for (let i = 0; i < order.length; i++) {
-      const woId = order[i];
-      const queueOrder = i + 1;
-      await tx.cncProgram.upsert({
-        where: { workOrderId: woId },
-        create: {
-          workOrderId: woId,
-          queueOrder,
-          queueSetByWorkerId: workerId,
-          queueSetAt: now,
-        },
-        update: {
-          queueOrder,
-          queueSetByWorkerId: workerId,
-          queueSetAt: now,
-        },
-      });
-    }
+    const ranks = order.map((_, i) => i + 1);
+    await tx.$executeRaw`
+      INSERT INTO cnc_programs (work_order_id, queue_order, queue_set_by_worker_id, queue_set_at)
+      SELECT u.wo_id, u.rank, ${workerId}, now()
+      FROM unnest(${order}::int[], ${ranks}::int[]) AS u(wo_id, rank)
+      ON CONFLICT (work_order_id) DO UPDATE
+      SET queue_order = EXCLUDED.queue_order,
+          queue_set_by_worker_id = EXCLUDED.queue_set_by_worker_id,
+          queue_set_at = EXCLUDED.queue_set_at
+    `;
   }
 }

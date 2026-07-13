@@ -29,17 +29,6 @@ interface UpsertAuditArg {
   update: { completedByWorkerId: number | null; completedAt: Date | null };
 }
 
-/** Argument queue upsert-a (renumeracija reda). */
-interface QueueUpsertArg {
-  where: { workOrderId: number };
-  create: {
-    workOrderId: number;
-    queueOrder: number;
-    queueSetByWorkerId: number | null;
-  };
-  update: { queueOrder: number; queueSetByWorkerId: number | null };
-}
-
 interface PrismaMock {
   operation: { findMany: jest.Mock };
   workOrder: { findMany: jest.Mock; count: jest.Mock; findUnique: jest.Mock };
@@ -239,159 +228,185 @@ describe("CncProgramsService", () => {
   });
 
   describe("moveInQueue", () => {
-    /** Vrati mapu workOrderId → queueOrder iz svih upsert poziva (poslednji pobeđuje). */
-    function queueFromUpserts(): Map<number, number> {
-      const calls = prisma.cncProgram.upsert.mock.calls as QueueUpsertArg[][];
-      const m = new Map<number, number>();
-      for (const [arg] of calls)
-        m.set(arg.where.workOrderId, arg.update.queueOrder);
-      return m;
+    /**
+     * Materijalizovani redosled iz batch `$executeRaw` poziva (unnest):
+     * values = [workerId, order[], ranks[]] — vraćamo order (prvi niz).
+     */
+    function materializedOrder(): number[] | null {
+      const calls = prisma.$executeRaw.mock.calls as unknown[][];
+      for (const call of calls) {
+        const arrays = call.filter(Array.isArray) as number[][];
+        // Tagged-template poziv: [strings, ...values]; strings je niz stringova,
+        // pa tražimo poziv sa DVA numerička niza (order + ranks).
+        const numeric = arrays.filter(
+          (a) => a.length === 0 || typeof a[0] === "number",
+        );
+        if (numeric.length === 2) return numeric[0];
+      }
+      return null;
     }
 
-    it("na vrh (afterWorkOrderId=null) — nerangiran ulazi ispred svih", async () => {
-      prisma.workOrder.findUnique.mockResolvedValue({ id: 99 });
-      prisma.cncProgram.findMany.mockResolvedValue([
-        { workOrderId: 20, queueOrder: 1 },
-        { workOrderId: 30, queueOrder: 2 },
+    /** Audit workerId iz batch poziva (prvi ne-niz value posle strings-a). */
+    function materializedWorkerId(): number | null {
+      const calls = prisma.$executeRaw.mock.calls as unknown[][];
+      for (const call of calls) {
+        const arrays = call.filter(Array.isArray) as number[][];
+        const numeric = arrays.filter(
+          (a) => a.length === 0 || typeof a[0] === "number",
+        );
+        if (numeric.length === 2) {
+          const vals = call.slice(1).filter((v) => !Array.isArray(v));
+          return (vals[0] as number) ?? null;
+        }
+      }
+      return null;
+    }
+
+    /** Kandidati CAM reda + trenutni rangovi (mock celog lanca). */
+    function mockQueue(
+      candidates: { id: number; deadline?: string }[],
+      ranks: Record<number, number> = {},
+    ) {
+      prisma.operation.findMany.mockResolvedValue([{ workCenterCode: "17.0" }]);
+      prisma.$queryRaw.mockResolvedValue([]); // camDoneIds prazan
+      prisma.workOrder.findMany.mockResolvedValue(
+        candidates.map((c) => ({
+          id: c.id,
+          productionDeadline: c.deadline ? new Date(c.deadline) : null,
+        })),
+      );
+      prisma.cncProgram.findMany.mockResolvedValue(
+        Object.entries(ranks).map(([id, q]) => ({
+          workOrderId: Number(id),
+          queueOrder: q,
+        })),
+      );
+    }
+
+    it("HIGH fix: SVI nerangirani — potez 'iza nerangiranog suseda' USPEVA i materijalizuje ceo red", async () => {
+      // Početno stanje CAM reda: niko nije rangiran; prikaz po roku: 10, 20, 30.
+      mockQueue([
+        { id: 10, deadline: "2026-07-20" },
+        { id: 20, deadline: "2026-07-25" },
+        { id: 30, deadline: "2026-08-01" },
       ]);
+      // Prevuci 30 odmah ispod 10 (meta 20 → afterWorkOrderId=10, NErangiran!).
+      const res = await service.moveInQueue(
+        30,
+        { afterWorkOrderId: 10 },
+        actor,
+      );
+      expect(res.data).toEqual({ workOrderId: 30, queueOrder: 2 });
+      // Ceo prikazni red materijalizovan 1..3: [10, 30, 20].
+      expect(materializedOrder()).toEqual([10, 30, 20]);
+    });
+
+    it("na vrh (afterWorkOrderId=null) — nerangiran ulazi ispred svih, svi dobijaju rang", async () => {
+      mockQueue(
+        [
+          { id: 20, deadline: "2026-07-20" },
+          { id: 30, deadline: "2026-07-25" },
+          { id: 99, deadline: "2026-08-01" },
+        ],
+        { 20: 1, 30: 2 },
+      );
       const res = await service.moveInQueue(
         99,
         { afterWorkOrderId: null },
         actor,
       );
       expect(res.data).toEqual({ workOrderId: 99, queueOrder: 1 });
-      const q = queueFromUpserts();
-      expect(q.get(99)).toBe(1);
-      expect(q.get(20)).toBe(2);
-      expect(q.get(30)).toBe(3);
+      expect(materializedOrder()).toEqual([99, 20, 30]);
     });
 
-    it("iza rangiranog reda (afterWorkOrderId=20)", async () => {
-      prisma.workOrder.findUnique.mockResolvedValue({ id: 99 });
-      prisma.cncProgram.findMany.mockResolvedValue([
-        { workOrderId: 20, queueOrder: 1 },
-        { workOrderId: 30, queueOrder: 2 },
-      ]);
+    it("iza rangiranog reda u mešanom stanju (rangirani pre nerangiranih)", async () => {
+      // Prikaz: 20(r1), 30(r2), 40(nerangiran).
+      mockQueue(
+        [
+          { id: 40, deadline: "2026-07-10" },
+          { id: 20, deadline: "2026-07-20" },
+          { id: 30, deadline: "2026-07-25" },
+        ],
+        { 20: 1, 30: 2 },
+      );
       const res = await service.moveInQueue(
-        99,
+        40,
         { afterWorkOrderId: 20 },
         actor,
       );
-      expect(res.data).toEqual({ workOrderId: 99, queueOrder: 2 });
-      const q = queueFromUpserts();
-      expect(q.get(20)).toBe(1);
-      expect(q.get(99)).toBe(2);
-      expect(q.get(30)).toBe(3);
+      expect(res.data).toEqual({ workOrderId: 40, queueOrder: 2 });
+      expect(materializedOrder()).toEqual([20, 40, 30]);
     });
 
-    it("premešta već rangiran red — renumeracija 1..N bez rupa", async () => {
-      prisma.workOrder.findUnique.mockResolvedValue({ id: 30 });
-      prisma.cncProgram.findMany.mockResolvedValue([
-        { workOrderId: 10, queueOrder: 1 },
-        { workOrderId: 20, queueOrder: 2 },
-        { workOrderId: 30, queueOrder: 3 },
-      ]);
-      // Premesti 30 na vrh.
-      const res = await service.moveInQueue(
-        30,
-        { afterWorkOrderId: null },
-        actor,
-      );
-      expect(res.data).toEqual({ workOrderId: 30, queueOrder: 1 });
-      const q = queueFromUpserts();
-      expect(q.get(30)).toBe(1);
-      expect(q.get(10)).toBe(2);
-      expect(q.get(20)).toBe(3);
-      // Bez rupa: rangovi su tačno {1,2,3}.
-      expect([...q.values()].sort()).toEqual([1, 2, 3]);
-    });
-
-    it("remove skida iz rangiranja i renumeriše ostatak", async () => {
-      prisma.workOrder.findUnique.mockResolvedValue({ id: 20 });
-      prisma.cncProgram.findMany.mockResolvedValue([
-        { workOrderId: 10, queueOrder: 1 },
-        { workOrderId: 20, queueOrder: 2 },
-        { workOrderId: 30, queueOrder: 3 },
-      ]);
-      prisma.cncProgram.findUnique.mockResolvedValue({ workOrderId: 20 });
-      const res = await service.moveInQueue(20, { remove: true }, actor);
-      expect(res.data).toEqual({ workOrderId: 20, queueOrder: null });
-      // 20 postavljen na NULL.
-      const updateCalls = prisma.cncProgram.update.mock.calls as {
-        where: { workOrderId: number };
-        data: { queueOrder: number | null };
-      }[][];
-      expect(updateCalls[0][0].where.workOrderId).toBe(20);
-      expect(updateCalls[0][0].data.queueOrder).toBeNull();
-      // Ostatak renumerisan 1..2.
-      const q = queueFromUpserts();
-      expect(q.get(10)).toBe(1);
-      expect(q.get(30)).toBe(2);
-      expect(q.has(20)).toBe(false);
-    });
-
-    it("422 kad afterWorkOrderId nije rangiran", async () => {
-      prisma.workOrder.findUnique.mockResolvedValue({ id: 99 });
-      prisma.cncProgram.findMany.mockResolvedValue([
-        { workOrderId: 20, queueOrder: 1 },
-      ]);
-      await expect(
-        service.moveInQueue(99, { afterWorkOrderId: 777 }, actor),
-      ).rejects.toThrow(UnprocessableEntityException);
-    });
-
-    it("404 kad WO ne postoji", async () => {
-      prisma.workOrder.findUnique.mockResolvedValue(null);
-      await expect(
-        service.moveInQueue(999, { afterWorkOrderId: null }, actor),
-      ).rejects.toThrow(NotFoundException);
-    });
-
-    it("422 kad su i afterWorkOrderId i remove prisutni", async () => {
-      prisma.workOrder.findUnique.mockResolvedValue({ id: 99 });
-      await expect(
-        service.moveInQueue(
-          99,
-          { afterWorkOrderId: null, remove: true },
-          actor,
-        ),
-      ).rejects.toThrow(UnprocessableEntityException);
-    });
-
-    it("422 kad nema ni afterWorkOrderId ni remove", async () => {
-      prisma.workOrder.findUnique.mockResolvedValue({ id: 99 });
-      await expect(service.moveInQueue(99, {}, actor)).rejects.toThrow(
-        UnprocessableEntityException,
-      );
-    });
-
-    it("drop na samog sebe = no-op (vraća trenutni rang)", async () => {
-      prisma.workOrder.findUnique.mockResolvedValue({ id: 20 });
-      prisma.cncProgram.findMany.mockResolvedValue([
-        { workOrderId: 10, queueOrder: 1 },
-        { workOrderId: 20, queueOrder: 2 },
-      ]);
+    it("drop na samog sebe = no-op (bez materijalizacije), vraća trenutni rang", async () => {
+      mockQueue([{ id: 20 }, { id: 30 }], { 20: 1 });
       const res = await service.moveInQueue(
         20,
         { afterWorkOrderId: 20 },
         actor,
       );
-      expect(res.data).toEqual({ workOrderId: 20, queueOrder: 2 });
-      expect(prisma.cncProgram.upsert).not.toHaveBeenCalled();
+      expect(res.data).toEqual({ workOrderId: 20, queueOrder: 1 });
+      expect(materializedOrder()).toBeNull();
     });
 
-    it("audit queueSetByWorkerId iz svežeg lookup-a za stale JWT", async () => {
-      prisma.workOrder.findUnique.mockResolvedValue({ id: 99 });
-      prisma.cncProgram.findMany.mockResolvedValue([]);
-      // JWT nema workerId → svež users.worker_id lookup vraća 13.
-      prisma.user.findUnique.mockResolvedValue({ workerId: 13 });
-      await service.moveInQueue(99, { afterWorkOrderId: null }, staleActor);
-      const calls = prisma.cncProgram.upsert.mock.calls as QueueUpsertArg[][];
-      expect(calls[0][0].create.queueSetByWorkerId).toBe(13);
-      expect(prisma.user.findUnique).toHaveBeenCalledWith({
-        where: { id: 9 },
-        select: { workerId: true },
+    it("remove skida rang i kompaktuje PREOSTALE rangirane (nerangirani netaknuti)", async () => {
+      mockQueue([{ id: 20 }, { id: 30 }, { id: 40 }, { id: 50 }], {
+        20: 1,
+        30: 2,
+        40: 3,
       });
+      const res = await service.moveInQueue(30, { remove: true }, actor);
+      expect(res.data).toEqual({ workOrderId: 30, queueOrder: null });
+      expect(prisma.cncProgram.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { workOrderId: 30 },
+          data: expect.objectContaining({ queueOrder: null }) as unknown,
+        }),
+      );
+      // Kompaktovani samo preostali RANGIRANI [20, 40] → 1..2 (50 ostaje nerangiran).
+      expect(materializedOrder()).toEqual([20, 40]);
+    });
+
+    it("pozicija van CAM reda (završena/bez CAM operacije) → 422, RN nepostojeći → 404", async () => {
+      mockQueue([{ id: 20 }]);
+      // 99 nije kandidat, ali RN postoji → 422.
+      prisma.workOrder.findUnique.mockResolvedValue({ id: 99 });
+      await expect(
+        service.moveInQueue(99, { afterWorkOrderId: null }, actor),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      // 77 nije kandidat i RN NE postoji → 404.
+      prisma.workOrder.findUnique.mockResolvedValue(null);
+      await expect(
+        service.moveInQueue(77, { afterWorkOrderId: null }, actor),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it("meta (afterWorkOrderId) van CAM reda → 422", async () => {
+      mockQueue([{ id: 20 }, { id: 30 }]);
+      await expect(
+        service.moveInQueue(20, { afterWorkOrderId: 555 }, actor),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(materializedOrder()).toBeNull();
+    });
+
+    it("DTO: oba polja ili nijedno → 422 pre transakcije", async () => {
+      await expect(service.moveInQueue(20, {}, actor)).rejects.toBeInstanceOf(
+        UnprocessableEntityException,
+      );
+      await expect(
+        service.moveInQueue(20, { afterWorkOrderId: 5, remove: true }, actor),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it("audit queueSetByWorkerId iz SVEŽEG lookup-a za stale JWT (workerId=null u tokenu)", async () => {
+      mockQueue([{ id: 20 }, { id: 30 }]);
+      prisma.user.findUnique.mockResolvedValue({ workerId: 74 });
+      await service.moveInQueue(30, { afterWorkOrderId: null }, staleActor);
+      expect(prisma.user.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 9 } }),
+      );
+      expect(materializedWorkerId()).toBe(74);
     });
   });
 
