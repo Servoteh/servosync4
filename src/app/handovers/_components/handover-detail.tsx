@@ -433,11 +433,20 @@ export function HandoverDetailPanel({ handover }: { handover: Handover }) {
       <PrintDrawingsDialog
         open={printOpen}
         onClose={() => setPrintOpen(false)}
-        scope={{ kind: 'handover', id: handover.id }}
+        // „Štampaj sve crteže" = SVI crteži nacrta (draft scope), ne samo ovaj
+        // jedan crtež primopredaje (handover bundle je uvek 1 stavka). Fallback
+        // na handover scope za derivirane legacy redove bez razrešivog nacrta.
+        scope={
+          handover.draftContext
+            ? { kind: 'draft', id: handover.draftContext.draftId }
+            : { kind: 'handover', id: handover.id }
+        }
         subtitle={
-          drawing
-            ? `Crtež ${drawing.drawingNumber} / ${drawing.revision}`
-            : `Primopredaja #${handover.id}`
+          handover.draftContext
+            ? `Nacrt ${handover.draftContext.draftNumber} — svi crteži`
+            : drawing
+              ? `Crtež ${drawing.drawingNumber} / ${drawing.revision}`
+              : `Primopredaja #${handover.id}`
         }
       />
     </div>

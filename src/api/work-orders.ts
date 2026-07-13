@@ -52,6 +52,10 @@ export interface WorkOrder {
   materialDimension: string;
   unit: string;
   revision: string;
+  /** Crtež RN-a (`work_orders.drawing_id`); 0 = nema — za „PDF crteža" pojedinačno. */
+  drawingId?: number;
+  /** Primopredaja iz koje je RN nastao (0 = ručni RN). */
+  drawingHandoverId?: number;
   isLocked: boolean | null;
   /** RN završen (sve značajne operacije gotove). */
   status: boolean | null;
@@ -104,6 +108,11 @@ export interface WorkOrderApprovalRow {
 
 export interface WorkOrderDetail extends WorkOrder {
   handoverWorker: WorkerRef | null;
+  /**
+   * Nacrt iz kog RN potiče (za „PDF cela primopredaja" — svi crteži nacrta).
+   * null za ručne/dorada RN-ove bez razrešivog nacrta. Opciono/defanzivno.
+   */
+  draftContext?: { draftId: number; draftNumber: string } | null;
   /**
    * Dorada/škart naslednici ovog RN-a (Paket B t.2, samo na /:id detalju).
    * qualityTypeId: 1 = dorada, 2 = škart. Opciono/defanzivno.

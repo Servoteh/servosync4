@@ -32,6 +32,8 @@ import {
   type WorkOrderOperation,
 } from '@/api/work-orders';
 import { useOperations, type Operation } from '@/api/structures';
+import { openDrawingPdf } from '@/api/pdm';
+import { PrintDrawingsDialog } from '@/app/handovers/_components/print-drawings-dialog';
 import { ApiError } from '@/api/client';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
@@ -161,6 +163,21 @@ function WorkOrderDetail({
     }
   }
 
+  // PDF crteža RN-a (pojedinačno) — isti obrazac kao „PDF crteža" na primopredaji.
+  const [drawingPdfBusy, setDrawingPdfBusy] = useState(false);
+  const [bundleOpen, setBundleOpen] = useState(false);
+  async function onOpenDrawingPdf(drawingId: number) {
+    setDrawingPdfBusy(true);
+    setPrintError(null);
+    try {
+      await openDrawingPdf(drawingId);
+    } catch (e) {
+      setPrintError(e instanceof Error ? e.message : 'PDF crteža nema uskladišten sadržaj.');
+    } finally {
+      setDrawingPdfBusy(false);
+    }
+  }
+
   if (q.isLoading) return <span className="text-sm text-ink-disabled">Učitavanje…</span>;
   if (q.error || !q.data)
     return <span className="text-sm text-status-danger">Greška pri učitavanju detalja.</span>;
@@ -204,6 +221,26 @@ function WorkOrderDetail({
           <Printer className="h-3.5 w-3.5" aria-hidden />
           {printing ? 'Priprema…' : 'Štampaj RN'}
         </button>
+        {/* PDF crteža RN-a — samo kad RN ima vezan crtež. */}
+        {!!rn.drawingId && rn.drawingId > 0 && (
+          <button
+            disabled={drawingPdfBusy}
+            onClick={() => onOpenDrawingPdf(rn.drawingId as number)}
+            className={`${actionBtn} border border-line text-ink-secondary`}
+          >
+            {drawingPdfBusy ? 'Otvaranje…' : 'PDF crteža'}
+          </button>
+        )}
+        {/* Svi crteži cele primopredaje (nacrta) — skriveno za ručne/dorada RN
+            bez razrešivog nacrta. */}
+        {rn.draftContext && (
+          <button
+            onClick={() => setBundleOpen(true)}
+            className={`${actionBtn} border border-line text-ink-secondary`}
+          >
+            PDF cela primopredaja
+          </button>
+        )}
         {canCopyInto && (
           <Can permission={PERMISSIONS.RN_WRITE}>
             <button
@@ -486,6 +523,14 @@ function WorkOrderDetail({
         onCloned={onOpenWorkOrder}
       />
       <ReworkWorkOrderDialog sourceId={id} open={reworkOpen} onClose={() => setReworkOpen(false)} />
+      {rn.draftContext && (
+        <PrintDrawingsDialog
+          open={bundleOpen}
+          onClose={() => setBundleOpen(false)}
+          scope={{ kind: 'draft', id: rn.draftContext.draftId }}
+          subtitle={`Nacrt ${rn.draftContext.draftNumber} — svi crteži`}
+        />
+      )}
       <OperationDialog
         workOrderId={id}
         operation={opDialog.op}

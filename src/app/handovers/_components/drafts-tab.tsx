@@ -7,19 +7,15 @@ import {
   useCreateHandoverDraft,
   useDeleteHandoverDraft,
   useDrawingsLookup,
-  useEngineers,
-  useEngineersLookup,
   useHandoverDraft,
   useHandoverDrafts,
   useHandoverLookups,
-  useMyWorkerId,
   useSubmitHandoverDraft,
   useUpdateHandoverDraft,
   type CreateHandoverDraftInput,
   type CreateHandoverDraftItemInput,
   type DraftItemWarning,
   type Drawing,
-  type EngineerRef,
   type HandoverDraft,
   type HandoverDraftDetail,
   type HandoverDraftItem,
@@ -33,6 +29,7 @@ import { SearchBox } from '@/components/ui-kit/search-box';
 import { Pager } from '@/components/ui-kit/pager';
 import { Button } from '@/components/ui-kit/button';
 import { Can } from '@/lib/can';
+import { useAuth } from '@/lib/auth-context';
 import { PERMISSIONS } from '@/lib/permissions';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { FormField, Input } from '@/components/ui-kit/form-field';
@@ -121,10 +118,6 @@ const columns: Column<HandoverDraft>[] = [
 // ─────────────────────────────────────────────────────────────── forma (novi / izmena)
 
 interface DraftFormState {
-  /** Ručni unos šifre radnika — fallback dok GET /v1/handovers/engineers ne postoji (404). */
-  designerId: string;
-  /** Projektant izabran iz šifarnika inženjera — prednost nad `designerId`. */
-  designer: EngineerRef | null;
   project: ProjectLookup | null;
   draftType: number;
   mainDrawing: Drawing | null;
@@ -194,8 +187,6 @@ function skippedCountLabel(n: number): string {
 
 function toFormState(draft: HandoverDraftDetail | null): DraftFormState {
   return {
-    designerId: draft ? String(draft.designerId) : '',
-    designer: null,
     project: draft?.project
       ? {
           id: draft.project.id,
@@ -261,13 +252,9 @@ function DraftFormDialog({
   const [autoFillId, setAutoFillId] = useState<number | null>(null);
   // Neodobreni delovi preskočeni pri poslednjoj auto-popuni (brojevi crteža).
   const [skippedDrawings, setSkippedDrawings] = useState<string[]>([]);
-  // Prefill projektanta se radi tačno jednom po otvaranju (da refetch šifarnika
-  // ne pregazi svesno obrisan izbor korisnika).
-  const [designerPrefilled, setDesignerPrefilled] = useState(false);
   const lookups = useHandoverLookups();
-  // Šifarnik inženjera — 404/greška pre backend deploja → fallback na ručni unos šifre.
-  const engineers = useEngineers();
-  const myWorkerId = useMyWorkerId();
+  // Projektant nacrta = UVEK ulogovani korisnik (bez izbora); prikaz iz /auth/me.
+  const { user: me } = useAuth();
   const create = useCreateHandoverDraft();
   const update = useUpdateHandoverDraft();
   const mut = isEdit ? update : create;
@@ -282,20 +269,8 @@ function DraftFormDialog({
       setWarnings(null);
       setAutoFillId(null);
       setSkippedDrawings([]);
-      setDesignerPrefilled(false);
     }
   }, [open, draft]);
-
-  // PREFILL projektanta: za NOVI nacrt default = ulogovani korisnik, ako je
-  // njegov `workerId` (JWT claim) u listi inženjera. Kancelarijski nalog
-  // (workerId=null) ili radnik van šifarnika → polje ostaje prazno, korisnik bira.
-  useEffect(() => {
-    if (!open || isEdit || designerPrefilled || myWorkerId == null) return;
-    const me = engineers.data?.data.find((e) => e.id === myWorkerId);
-    if (!me) return;
-    setForm((f) => (f.designer ? f : { ...f, designer: me }));
-    setDesignerPrefilled(true);
-  }, [open, isEdit, designerPrefilled, myWorkerId, engineers.data]);
 
   // AUTO-BOM („U nacrtu biram samo sklop i on izlista sve pozicije u sklopu"):
   // kad stigne sastavnica izabranog sklopa, stavke = sklop kao prva (isMain) +
@@ -355,14 +330,9 @@ function DraftFormDialog({
           },
         });
       } else {
-        // Projektant: izbor iz šifarnika ima prednost; fallback ručna šifra
-        // (samo dok /engineers vraća grešku). Kad nema ni jednog — designerId
-        // se IZOSTAVLJA i backend uzima ulogovanog (JWT workerId).
-        const designerId =
-          form.designer?.id ??
-          (engineers.isError && form.designerId.trim() ? Number(form.designerId) : undefined);
+        // Projektant = ulogovani korisnik: `designerId` se NE šalje, backend
+        // uzima JWT workera (Nenad 13.07 — bez izbora projektanta).
         const payload: CreateHandoverDraftInput = {
-          ...(designerId ? { designerId } : {}),
           projectId: form.project?.id ?? 0,
           mainDrawingId: form.mainDrawing?.id,
           draftType: form.draftType,
@@ -439,11 +409,9 @@ function DraftFormDialog({
           <Button
             onClick={submit}
             loading={mut.isPending}
-            // Bez ovoga se šalje projectId=0 i čeka backend 400 — isti obrazac
-            // kao NewWorkOrderDialog (work-orders). Šifra projektanta je
-            // obavezna SAMO u fallback režimu (stari backend bez /engineers
-            // traži designerId); sa šifarnikom je opciona — backend default.
-            disabled={!form.project || (!isEdit && engineers.isError && !form.designerId.trim())}
+            // Predmet je obavezan (inače projectId=0 → backend 400). Projektant
+            // je uvek ulogovani korisnik, ne blokira snimanje.
+            disabled={!form.project}
           >
             Snimi
           </Button>
@@ -466,31 +434,15 @@ function DraftFormDialog({
               placeholder="Broj/naziv predmeta…"
             />
           </FormField>
-          {!isEdit &&
-            (engineers.isError ? (
-              // Fallback pre backend deploja (GET /v1/handovers/engineers →
-              // 404): ručni unos šifre radnika da forma ne bude blokirana.
-              <FormField label="Projektant" required hint="Šifra radnika">
-                <Input
-                  type="number"
-                  min={1}
-                  value={form.designerId}
-                  onChange={(e) => set({ designerId: e.target.value })}
-                />
-              </FormField>
-            ) : (
-              <FormField label="Projektant" hint="Podrazumevano ulogovani korisnik.">
-                <ComboBox<EngineerRef>
-                  value={form.designer}
-                  onChange={(d) => set({ designer: d })}
-                  useSearch={useEngineersLookup}
-                  getKey={(w) => w.id}
-                  getLabel={(w) => w.fullName ?? w.username ?? `#${w.id}`}
-                  getSublabel={(w) => w.username ?? ''}
-                  placeholder="Ime projektanta…"
-                />
-              </FormField>
-            ))}
+          {!isEdit && (
+            // Projektant je UVEK ulogovani korisnik (Nenad 13.07: bez padajućeg
+            // menija — designerId se NE šalje, backend uzima JWT worker). Prikaz
+            // je informativan; kancelarijski nalog bez vezanog radnika → backend
+            // 422 sa jasnom porukom (nema tihog pogrešnog projektanta).
+            <FormField label="Projektant" hint="Ulogovani korisnik (automatski).">
+              <Input value={me?.fullName ?? me?.email ?? '—'} disabled />
+            </FormField>
+          )}
           {isEdit && (
             <FormField label="Status nacrta">
               <NativeSelect
