@@ -62,6 +62,29 @@ export class Sy15Service implements OnModuleDestroy {
   }
 
   /**
+   * Kao `withUser`, ali NAKON claims-a prebacuje sesijsku rolu na `authenticated`
+   * (`SET LOCAL ROLE`) — tako se ROW-SCOPED RLS politike STVARNO evaluiraju (npr.
+   * `loc_placements_select` krije `item_ref_table='rev_tools'` redove od ne-manage
+   * korisnika). Bez ovoga `servosync2_app` (BYPASSRLS) bi vratio i skrivene redove
+   * → curenje (paritet 1.0 gde PostgREST radi kao `authenticated` sa aktivnim RLS).
+   *
+   * Redosled je OBAVEZAN: claims se čitaju iz `auth.users` kao `servosync2_app`
+   * (rola `authenticated` NEMA SELECT na `auth.users`) PA se tek onda prebacuje rola.
+   * Preduslov je članstvo `GRANT authenticated TO servosync2_app` (Talas B R0).
+   * `withUser` OSTAJE za DEFINER/`SELECT true` putanje (ne menja se).
+   */
+  async withUserRls<T>(
+    email: string,
+    fn: (tx: Sy15Tx) => Promise<T>,
+  ): Promise<T> {
+    return this.db.$transaction(async (tx) => {
+      await this.setClaims(tx, email);
+      await tx.$executeRawUnsafe("SET LOCAL ROLE authenticated");
+      return fn(tx);
+    });
+  }
+
+  /**
    * Postavi GUC claims za transakciju. `sub` = sy15 `auth.users.id` po email-u —
    * OBAVEZAN za mutacije: rev_issue_reversal/confirm_return upisuju
    * `issued_by`/`return_confirmed_by` preko `auth.uid()` (= claims->>'sub');

@@ -32,9 +32,15 @@ describe("LocationsService — R2 mutacije", () => {
   let tx: {
     $queryRawUnsafe: jest.Mock;
     $queryRaw: jest.Mock;
+    $executeRawUnsafe: jest.Mock;
     locLocation: { create: jest.Mock; update: jest.Mock };
+    locItemPlacement: { findMany: jest.Mock; count: jest.Mock };
   };
-  let sy15: { withUser: jest.Mock };
+  let sy15: {
+    withUser: jest.Mock;
+    withUserRls: jest.Mock;
+    db: { locItemPlacement: { findMany: jest.Mock; count: jest.Mock } };
+  };
   let labelPrint: { printRawTspl: jest.Mock };
   let service: LocationsService;
 
@@ -42,12 +48,17 @@ describe("LocationsService — R2 mutacije", () => {
     tx = {
       $queryRawUnsafe: jest.fn(),
       $queryRaw: jest.fn(),
+      $executeRawUnsafe: jest.fn(),
       locLocation: { create: jest.fn(), update: jest.fn() },
+      locItemPlacement: { findMany: jest.fn(), count: jest.fn() },
     };
+    const runTx = (_email: string, fn: (t: Sy15Tx) => Promise<unknown>) =>
+      fn(tx as unknown as Sy15Tx);
     sy15 = {
-      withUser: jest.fn((_email: string, fn: (t: Sy15Tx) => Promise<unknown>) =>
-        fn(tx as unknown as Sy15Tx),
-      ),
+      withUser: jest.fn(runTx),
+      withUserRls: jest.fn(runTx),
+      // sy15.db = BYPASSRLS put; placements reads NE smeju ovuda (leak).
+      db: { locItemPlacement: { findMany: jest.fn(), count: jest.fn() } },
     };
     labelPrint = { printRawTspl: jest.fn() };
     service = new LocationsService(
@@ -341,5 +352,53 @@ describe("LocationsService — R2 mutacije", () => {
       bytes: 42,
       printer: "192.168.70.20:9100",
     });
+  });
+
+  // ---------- R1 read leak fix: placements row-scoped → withUserRls ----------
+  // Dokaz: listPlacements/lookupBarcode čitaju loc_item_placements (RLS
+  // loc_placements_select krije rev_tools od ne-manage) kroz withUserRls, NE kroz
+  // sy15.db (BYPASSRLS bi vratio skrivene rev_tools redove bilo kome sa read).
+
+  it("listPlacements: čita kroz withUserRls (RLS scope), NIKAD kroz sy15.db (BYPASSRLS)", async () => {
+    tx.locItemPlacement.findMany.mockResolvedValue([{ id: "p1" }]);
+    tx.locItemPlacement.count.mockResolvedValue(1);
+    const res = await service.listPlacements(
+      { itemRefTable: "rev_tools" },
+      EMAIL,
+    );
+    expect(sy15.withUserRls).toHaveBeenCalledWith(EMAIL, expect.any(Function));
+    expect(sy15.db.locItemPlacement.findMany).not.toHaveBeenCalled();
+    expect(sy15.db.locItemPlacement.count).not.toHaveBeenCalled();
+    expect(res.data).toEqual([{ id: "p1" }]);
+    const call = tx.locItemPlacement.findMany.mock.calls[0] as [
+      { where: { itemRefTable: string } },
+    ];
+    expect(call[0].where.itemRefTable).toBe("rev_tools");
+  });
+
+  it("listPlacements: default bigtehn_rn ide kroz withUserRls", async () => {
+    tx.locItemPlacement.findMany.mockResolvedValue([]);
+    tx.locItemPlacement.count.mockResolvedValue(0);
+    await service.listPlacements({}, EMAIL);
+    expect(sy15.withUserRls).toHaveBeenCalledTimes(1);
+  });
+
+  it("listPlacements: nedozvoljen item_ref_table → 400, NE dira bazu", async () => {
+    await expect(
+      service.listPlacements({ itemRefTable: "employees" }, EMAIL),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(sy15.withUserRls).not.toHaveBeenCalled();
+    expect(sy15.db.locItemPlacement.findMany).not.toHaveBeenCalled();
+  });
+
+  it("lookupBarcode: ITEM razrešenje čita placements kroz withUserRls (ne sy15.db)", async () => {
+    tx.locItemPlacement.findMany.mockResolvedValue([]);
+    const out = await service.lookupBarcode(
+      EMAIL,
+      "RNZ:8693:7351/1088:0:39757",
+    );
+    expect((out.data as { kind: string }).kind).toBe("ITEM");
+    expect(sy15.withUserRls).toHaveBeenCalledWith(EMAIL, expect.any(Function));
+    expect(sy15.db.locItemPlacement.findMany).not.toHaveBeenCalled();
   });
 });

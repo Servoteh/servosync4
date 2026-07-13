@@ -136,6 +136,14 @@ const PLACEMENT_STATUSES = new Set<string>(
 );
 const MOVEMENT_TYPES = new Set<string>(Object.values(LocMovementTypeEnum));
 
+/**
+ * Žive `item_ref_table` vrednosti u `loc_item_placements` (whitelist za placements
+ * selektor — klijent-kontrolisan param se NE prosleđuje proizvoljno u where).
+ * `rev_tools` je dozvoljen ali je ROW-SCOPED (RLS `loc_placements_select` ga krije
+ * od ne-manage; zato placements idu kroz `withUserRls`).
+ */
+const PLACEMENT_ITEM_TABLES = new Set<string>(["bigtehn_rn", "rev_tools"]);
+
 /** Sort kolone koje `loc_report_parts_by_locations` prihvata (REPORT_SORT_WHITELIST). */
 const REPORT_SORT_WHITELIST = new Set([
   "updated_at",
@@ -217,14 +225,22 @@ export class LocationsService {
   // Placements (stanje smeštaja) — fetchPlacements / fetchItemPlacements paritet
   // ==========================================================================
 
-  async listPlacements(query: ListPlacementsQuery) {
+  async listPlacements(query: ListPlacementsQuery, email: string) {
     const { page, pageSize, skip, take } = parsePagination(
       query.page,
       query.pageSize,
       500,
     );
     // Paritet 1.0 fetchPlacements: glavna lista je scope-ovana na bigtehn_rn.
+    // itemRefTable je klijent-kontrolisan → whitelist (ne prosleđuj proizvoljnu
+    // tabelu u where; jedine žive vrednosti su bigtehn_rn i rev_tools).
     const itemRefTable = (query.itemRefTable ?? "bigtehn_rn").trim();
+    if (!PLACEMENT_ITEM_TABLES.has(itemRefTable))
+      throw new BadRequestException(
+        `Nedozvoljen item_ref_table „${itemRefTable}" (dozvoljeni: ${[
+          ...PLACEMENT_ITEM_TABLES,
+        ].join(", ")})`,
+      );
     const where: Prisma.LocItemPlacementWhereInput = { itemRefTable };
 
     if (query.itemRefId && query.itemRefId.trim())
@@ -249,15 +265,19 @@ export class LocationsService {
       ];
     }
 
-    const [data, total] = await Promise.all([
-      this.sy15.db.locItemPlacement.findMany({
+    // ROW-SCOPED tabela: RLS `loc_placements_select` krije `item_ref_table='rev_tools'`
+    // od ne-manage (rev_can_manage). `sy15.db` (BYPASSRLS) bi vratio SVE rev_tools
+    // redove bilo kome sa `lokacije.read` → MORA kroz `withUserRls` (doktrina A.2a).
+    const { data, total } = await this.sy15.withUserRls(email, async (tx) => {
+      const rows = await tx.locItemPlacement.findMany({
         where,
         orderBy: { updatedAt: "desc" },
         skip,
         take,
-      }),
-      this.sy15.db.locItemPlacement.count({ where }),
-    ]);
+      });
+      const count = await tx.locItemPlacement.count({ where });
+      return { data: rows, total: count };
+    });
     return { data, meta: pageMeta(page, pageSize, total) };
   }
 
@@ -464,7 +484,7 @@ export class LocationsService {
    * police). `kind:'UNKNOWN'` = format nije prepoznat. Row-vidljivost placements-a
    * (RLS rev_tools) ostaje u bazi.
    */
-  async lookupBarcode(raw: string | undefined) {
+  async lookupBarcode(email: string, raw: string | undefined) {
     const clean = normalizeBarcodeText(raw);
     if (!clean)
       return { data: { kind: "UNKNOWN" as const, parsed: null, records: [] } };
@@ -473,6 +493,7 @@ export class LocationsService {
     const parsed = parseBigTehnBarcode(clean);
     if (parsed) {
       const records = await this.resolveItemPlacements(
+        email,
         "bigtehn_rn",
         parsed.orderNo,
         parsed.itemRefId,
@@ -518,6 +539,7 @@ export class LocationsService {
    * kombinacije u jednom upitu; završni filter je isti `placementRowMatchesPredmetTp`.
    */
   private async resolveItemPlacements(
+    email: string,
     itemRefTable: string,
     orderNo: string,
     tpRef: string,
@@ -550,11 +572,15 @@ export class LocationsService {
     }
     if (!or.length) return [];
 
-    const rows = await this.sy15.db.locItemPlacement.findMany({
-      where: { itemRefTable, OR: or },
-      orderBy: { updatedAt: "desc" },
-      take: 200,
-    });
+    // Row-scoped tabela (rev_tools scope) → withUserRls, kao listPlacements
+    // (ovde je itemRefTable uvek 'bigtehn_rn', ali RLS mora da se evaluira).
+    const rows = await this.sy15.withUserRls(email, (tx) =>
+      tx.locItemPlacement.findMany({
+        where: { itemRefTable, OR: or },
+        orderBy: { updatedAt: "desc" },
+        take: 200,
+      }),
+    );
 
     const byId = new Map<string, (typeof rows)[number]>();
     for (const r of rows) {

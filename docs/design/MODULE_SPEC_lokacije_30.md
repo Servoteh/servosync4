@@ -145,6 +145,19 @@ deo mobilnih šavova u finalnom 3.0 (playbook §6) — zabeleženo kao svesno od
 > mapiranje) + **e2e matrica 202→288** (nove move/manage/admin/labels mutacione grane +
 > ValidationPipe 400 grane). tsc 0, build 0, lint 0 novih grešaka; ceo paket zelen
 > (**370 unit / 347 e2e**). FE 9 tabova + skener + rezni fix = R3.
+>
+> **R2 security follow-up (13.07, adversarni review):** MEDIUM leak u R1 read putu —
+> `GET /placements` (i `lookups/barcode` ITEM razrešenje) čitao je `loc_item_placements`
+> kroz `sy15.db` (`servosync2_app` = BYPASSRLS), pa je row-scoped RLS `loc_placements_select`
+> (krije `item_ref_table='rev_tools'` od ne-`rev_can_manage`) bio zaobiđen → svako sa
+> `lokacije.read` je mogao dobiti rev_tools placements. FIX (doktrina A.2a): dodat
+> `Sy15Service.withUserRls` (claims PA `SET LOCAL ROLE authenticated` u istoj tx → RLS se
+> evaluira); `listPlacements` + `resolveItemPlacements` prebačeni na njega; `itemRefTable`
+> whitelist (`bigtehn_rn`/`rev_tools`, ostalo → 400). Audit svih `loc_*` SELECT politika
+> (Management API): **jedina** row-scoped je `loc_placements_select` — ostale su `true`
+> (locations/movements/heartbeat/ingest_state) ili `loc_is_admin()` (sync outbound/alerts),
+> pa `withUser`/DEFINER ostaju ispravni. +4 unit (dokaz da placements idu kroz withUserRls,
+> ne sy15.db; 400 na nedozvoljenu tabelu). Ceo paket zelen (**374 unit / 347 e2e**).
 
 | # | Funkcija | Status |
 |---|---|---|

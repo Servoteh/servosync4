@@ -65,8 +65,12 @@ export class LocationsController {
   // ---------- Placements / Movements ----------
 
   @Get("placements")
-  listPlacements(@Query() query: ListPlacementsQuery) {
-    return this.locations.listPlacements(query);
+  listPlacements(
+    @Req() req: AuthedRequest,
+    @Query() query: ListPlacementsQuery,
+  ) {
+    // withUserRls: RLS `loc_placements_select` krije rev_tools od ne-manage (email → GUC).
+    return this.locations.listPlacements(query, req.user.email);
   }
 
   @Get("movements")
@@ -109,8 +113,9 @@ export class LocationsController {
 
   /** Skener resolver (RNZ/short/compact stavke + shelf) — paritet 1.0 (spec §3). */
   @Get("lookups/barcode")
-  lookupBarcode(@Query("code") code?: string) {
-    return this.locations.lookupBarcode(code);
+  lookupBarcode(@Req() req: AuthedRequest, @Query("code") code?: string) {
+    // ITEM razrešenje čita loc_item_placements (row-scoped) → withUserRls (email → GUC).
+    return this.locations.lookupBarcode(req.user.email, code);
   }
 
   // ---------- Istorija definicija (manage) ----------
