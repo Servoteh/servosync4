@@ -59,6 +59,39 @@ export const PERMISSIONS = {
   SASTANCI_AI_MODEL: "sastanci.ai_model",
   // AI asistent chat — 1.0 „/ai za sve" → sve aktivne uloge; upis istorije je server-side.
   AI_CHAT: "ai.chat",
+  // Kadrovska (HR) — 3.0 TALAS G (MODULE_SPEC_kadrovska_30.md §2.4, presuda §7 „VAŽE
+  // SVI PREDLOZI"). Guard = VIDLJIVOST (paritet 1.0 auth.js/shared.js gate-ova); ROW/PII
+  // maska OSTAJE u sy15 (RLS + v_employees_safe + DEFINER helperi kroz GUC most).
+  //   read           = 1.0 canAccessKadrovska: admin/hr/menadzment/poslovni_admin/projektant_vodja
+  //   edit           = 1.0 has_edit_role: admin/hr/menadzment/pm/leadpm/poslovni_admin
+  //   manage         = 1.0 kadr_can_manage_hr (is_hr_or_admin ∨ pii): admin/hr/poslovni_admin
+  //   admin          = 1.0 current_user_is_admin: SAMO admin (nop/praznici/audit/purge)
+  //   pii            = 1.0 current_user_can_manage_employee_pii: admin ∨ poslovni_admin (HR NEMA!)
+  //   salary         = 1.0 canAccessSalary: SAMO admin (HR namerno nema)
+  //   contracts_read = 1.0 canViewContracts: read minus projektant_vodja (minus per-user hide)
+  //   grid_edit      = 1.0 can_edit_kadrovska_grid: DB allowlist (kadr_grid_editor_allowlist) → per-user override
+  //   vacation_edit  = 1.0 can_edit_vacation_balance: DB allowlist (kadr_vacation_editor_allowlist) → per-user override
+  //   vacreq_manage  = 1.0 current_user_can_manage_vacreq: admin/hr/menadzment/pm/leadpm/poslovni_admin (+row-scope)
+  //   vacreq_admin   = 1.0 current_user_is_vacreq_admin: SAMO Zoran (named per-user override; admin via ALL)
+  //   attendance     = 1.0 canSeePrisustvo: admin/hr/menadzment (+gridEditor override)
+  //   attendance_shadow = 1.0 canSeeShadow: admin/hr/menadzment
+  //   dev_manage     = 1.0 manages_dev_plan/talk/assessment (row-scope): admin/menadzment/hr/pm/leadpm (niko o sebi = DB)
+  // ⚠️ G1 (§7.1): `kadrovska.read` je KANON zajedno sa Talasom D (D-override
+  // `kadrovska_access` mapira na ISTI ključ `kadrovska.read`) — ne uvoditi drugi ključ.
+  KADROVSKA_READ: "kadrovska.read",
+  KADROVSKA_EDIT: "kadrovska.edit",
+  KADROVSKA_MANAGE: "kadrovska.manage",
+  KADROVSKA_ADMIN: "kadrovska.admin",
+  KADROVSKA_PII: "kadrovska.pii",
+  KADROVSKA_SALARY: "kadrovska.salary",
+  KADROVSKA_CONTRACTS_READ: "kadrovska.contracts_read",
+  KADROVSKA_GRID_EDIT: "kadrovska.grid_edit",
+  KADROVSKA_VACATION_EDIT: "kadrovska.vacation_edit",
+  KADROVSKA_VACREQ_MANAGE: "kadrovska.vacreq_manage",
+  KADROVSKA_VACREQ_ADMIN: "kadrovska.vacreq_admin",
+  KADROVSKA_ATTENDANCE: "kadrovska.attendance",
+  KADROVSKA_ATTENDANCE_SHADOW: "kadrovska.attendance_shadow",
+  KADROVSKA_DEV_MANAGE: "kadrovska.dev_manage",
 } as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];

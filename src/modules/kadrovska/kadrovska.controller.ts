@@ -1,0 +1,321 @@
+import {
+  Controller,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Query,
+  Req,
+  UseGuards,
+} from "@nestjs/common";
+import { JwtAuthGuard } from "../auth/jwt-auth.guard";
+import { PermissionsGuard } from "../../common/authz/permissions.guard";
+import { RequirePermission } from "../../common/authz/require-permission.decorator";
+import { PERMISSIONS } from "../../common/authz/permissions";
+import { KadrovskaService } from "./kadrovska.service";
+import {
+  AbsencesQueryDto,
+  AttendanceDailyQueryDto,
+  ByEmployeeQueryDto,
+  GridQueryDto,
+  ListEmployeesQueryDto,
+  MonthQueryDto,
+  NotificationsQueryDto,
+  RequestsQueryDto,
+  VacationQueryDto,
+  WorkHoursQueryDto,
+} from "./dto/kadrovska-query.dto";
+
+interface AuthedRequest {
+  user: { userId: number; email: string; role: string };
+}
+
+/**
+ * Kadrovska (HR) — 3.0 TALAS G, R1 read endpoints (MODULE_SPEC_kadrovska_30.md §3).
+ * Klasa: `kadrovska.read` (paritet 1.0 `canAccessKadrovska` — VIDLJIVOST menija).
+ * Stroža prava po ruti kroz per-method `@RequirePermission` (pii/manage/salary/…);
+ * ROW/PII maska OSTAJE u sy15 (RLS + v_employees_safe + DEFINER helperi kroz GUC).
+ * Mutacije/RPC-write/PDF/payroll engine/storage proxy su R2 — ovde ih NEMA.
+ *
+ * ⚠️ Route ordering: LITERAL rute pre `:id` (nema top-level `:id` rute — svaki detalj
+ * je namespace-ovan: employees/:id, dev-plans/:id/*, assessments/:id/*).
+ */
+@UseGuards(JwtAuthGuard, PermissionsGuard)
+@RequirePermission(PERMISSIONS.KADROVSKA_READ)
+@Controller({ path: "kadrovska", version: "1" })
+export class KadrovskaController {
+  constructor(private readonly kadrovska: KadrovskaService) {}
+
+  // ---------- Pregled ----------
+
+  @Get("me")
+  me(@Req() req: AuthedRequest) {
+    return this.kadrovska.me(req.user.email);
+  }
+
+  @Get("dashboard")
+  dashboard(@Req() req: AuthedRequest, @Query() q: MonthQueryDto) {
+    return this.kadrovska.dashboard(req.user.email, q);
+  }
+
+  @Get("reports/:kind")
+  report(@Req() req: AuthedRequest, @Param("kind") kind: string) {
+    return this.kadrovska.report(req.user.email, kind);
+  }
+
+  @Get("notifications")
+  @RequirePermission(PERMISSIONS.KADROVSKA_MANAGE)
+  notifications(@Req() req: AuthedRequest, @Query() q: NotificationsQueryDto) {
+    return this.kadrovska.notifications(req.user.email, q);
+  }
+
+  @Get("notification-config")
+  @RequirePermission(PERMISSIONS.KADROVSKA_MANAGE)
+  notificationConfig(@Req() req: AuthedRequest) {
+    return this.kadrovska.notificationConfig(req.user.email);
+  }
+
+  // ---------- Odmori ----------
+
+  @Get("vacation/balance")
+  vacationBalance(@Req() req: AuthedRequest, @Query() q: VacationQueryDto) {
+    return this.kadrovska.vacationBalance(req.user.email, q);
+  }
+
+  @Get("vacation/history")
+  vacationHistory(@Req() req: AuthedRequest, @Query() q: VacationQueryDto) {
+    return this.kadrovska.vacationHistory(req.user.email, q);
+  }
+
+  @Get("vacation/entitlements")
+  vacationEntitlements(
+    @Req() req: AuthedRequest,
+    @Query() q: VacationQueryDto,
+  ) {
+    return this.kadrovska.vacationEntitlements(req.user.email, q);
+  }
+
+  @Get("requests")
+  @RequirePermission(PERMISSIONS.KADROVSKA_VACREQ_MANAGE)
+  requests(@Req() req: AuthedRequest, @Query() q: RequestsQueryDto) {
+    return this.kadrovska.requests(req.user.email, q);
+  }
+
+  @Get("absences/absent-now")
+  absentNow(@Req() req: AuthedRequest) {
+    return this.kadrovska.absentNow(req.user.email);
+  }
+
+  @Get("absences")
+  absences(@Req() req: AuthedRequest, @Query() q: AbsencesQueryDto) {
+    return this.kadrovska.absences(req.user.email, q);
+  }
+
+  // ---------- Sati ----------
+
+  @Get("grid")
+  grid(@Req() req: AuthedRequest, @Query() q: GridQueryDto) {
+    return this.kadrovska.grid(req.user.email, q);
+  }
+
+  @Get("work-hours")
+  workHours(@Req() req: AuthedRequest, @Query() q: WorkHoursQueryDto) {
+    return this.kadrovska.workHours(req.user.email, q);
+  }
+
+  @Get("attendance/now")
+  @RequirePermission(PERMISSIONS.KADROVSKA_ATTENDANCE)
+  attendanceNow(@Req() req: AuthedRequest) {
+    return this.kadrovska.attendanceNow(req.user.email);
+  }
+
+  @Get("attendance/shadow")
+  @RequirePermission(PERMISSIONS.KADROVSKA_ATTENDANCE_SHADOW)
+  attendanceShadow(@Req() req: AuthedRequest, @Query() q: MonthQueryDto) {
+    return this.kadrovska.attendanceShadow(req.user.email, q);
+  }
+
+  @Get("attendance/vs-grid")
+  @RequirePermission(PERMISSIONS.KADROVSKA_ATTENDANCE_SHADOW)
+  attendanceVsGrid(
+    @Req() req: AuthedRequest,
+    @Query() q: AttendanceDailyQueryDto,
+  ) {
+    return this.kadrovska.attendanceVsGrid(req.user.email, q);
+  }
+
+  @Get("attendance/daily")
+  attendanceDaily(
+    @Req() req: AuthedRequest,
+    @Query() q: AttendanceDailyQueryDto,
+  ) {
+    return this.kadrovska.attendanceDaily(req.user.email, q);
+  }
+
+  @Get("attendance/corrections")
+  attendanceCorrections(
+    @Req() req: AuthedRequest,
+    @Query() q: AttendanceDailyQueryDto,
+  ) {
+    return this.kadrovska.attendanceCorrections(req.user.email, q);
+  }
+
+  @Get("attendance/extra-recipients")
+  @RequirePermission(PERMISSIONS.KADROVSKA_MANAGE)
+  attendanceExtraRecipients(@Req() req: AuthedRequest) {
+    return this.kadrovska.attendanceExtraRecipients(req.user.email);
+  }
+
+  // ---------- Zaposleni ----------
+
+  @Get("employees")
+  employees(@Req() req: AuthedRequest, @Query() q: ListEmployeesQueryDto) {
+    return this.kadrovska.employees(req.user.email, q);
+  }
+
+  @Get("employees/:id/children")
+  @RequirePermission(PERMISSIONS.KADROVSKA_PII)
+  employeeChildren(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return this.kadrovska.employeeChildren(req.user.email, id);
+  }
+
+  @Get("employees/:id/bank-cards")
+  @RequirePermission(PERMISSIONS.KADROVSKA_PII)
+  employeeBankCards(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return this.kadrovska.employeeBankCards(req.user.email, id);
+  }
+
+  @Get("employees/:id/foreign-docs")
+  @RequirePermission(PERMISSIONS.KADROVSKA_PII)
+  employeeForeignDocs(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return this.kadrovska.employeeForeignDocs(req.user.email, id);
+  }
+
+  @Get("employees/:id/personal-docs")
+  @RequirePermission(PERMISSIONS.KADROVSKA_PII)
+  employeePersonalDocs(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return this.kadrovska.employeePersonalDocs(req.user.email, id);
+  }
+
+  @Get("employees/:id/documents")
+  @RequirePermission(PERMISSIONS.KADROVSKA_PII)
+  employeeDocuments(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return this.kadrovska.employeeDocuments(req.user.email, id);
+  }
+
+  @Get("employees/:id")
+  employee(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string) {
+    return this.kadrovska.employee(req.user.email, id);
+  }
+
+  @Get("medical-exams")
+  @RequirePermission(PERMISSIONS.KADROVSKA_MANAGE)
+  medicalExams(@Req() req: AuthedRequest, @Query() q: ByEmployeeQueryDto) {
+    return this.kadrovska.medicalExams(req.user.email, q);
+  }
+
+  @Get("certificates")
+  @RequirePermission(PERMISSIONS.KADROVSKA_MANAGE)
+  certificates(@Req() req: AuthedRequest, @Query() q: ByEmployeeQueryDto) {
+    return this.kadrovska.certificates(req.user.email, q);
+  }
+
+  @Get("contracts")
+  @RequirePermission(PERMISSIONS.KADROVSKA_CONTRACTS_READ)
+  contracts(@Req() req: AuthedRequest, @Query() q: ByEmployeeQueryDto) {
+    return this.kadrovska.contracts(req.user.email, q);
+  }
+
+  @Get("directory")
+  directory(@Req() req: AuthedRequest) {
+    return this.kadrovska.directory(req.user.email);
+  }
+
+  @Get("onboarding/templates")
+  @RequirePermission(PERMISSIONS.KADROVSKA_MANAGE)
+  onboardingTemplates(@Req() req: AuthedRequest) {
+    return this.kadrovska.onboardingTemplates(req.user.email);
+  }
+
+  @Get("onboarding")
+  @RequirePermission(PERMISSIONS.KADROVSKA_MANAGE)
+  onboarding(@Req() req: AuthedRequest, @Query() q: ByEmployeeQueryDto) {
+    return this.kadrovska.onboarding(req.user.email, q);
+  }
+
+  @Get("dev-plans/:id/checkins")
+  @RequirePermission(PERMISSIONS.KADROVSKA_DEV_MANAGE)
+  devPlanCheckins(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return this.kadrovska.devPlanCheckins(req.user.email, id);
+  }
+
+  @Get("dev-plans")
+  @RequirePermission(PERMISSIONS.KADROVSKA_DEV_MANAGE)
+  devPlans(@Req() req: AuthedRequest, @Query() q: ByEmployeeQueryDto) {
+    return this.kadrovska.devPlans(req.user.email, q);
+  }
+
+  @Get("expectations")
+  @RequirePermission(PERMISSIONS.KADROVSKA_DEV_MANAGE)
+  expectations(@Req() req: AuthedRequest, @Query() q: ByEmployeeQueryDto) {
+    return this.kadrovska.expectations(req.user.email, q);
+  }
+
+  @Get("talks")
+  @RequirePermission(PERMISSIONS.KADROVSKA_DEV_MANAGE)
+  talks(@Req() req: AuthedRequest, @Query() q: ByEmployeeQueryDto) {
+    return this.kadrovska.talks(req.user.email, q);
+  }
+
+  @Get("assessments/:id/scope")
+  @RequirePermission(PERMISSIONS.KADROVSKA_DEV_MANAGE)
+  assessmentScope(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return this.kadrovska.assessmentScope(req.user.email, id);
+  }
+
+  @Get("assessments")
+  @RequirePermission(PERMISSIONS.KADROVSKA_DEV_MANAGE)
+  assessments(@Req() req: AuthedRequest, @Query() q: ByEmployeeQueryDto) {
+    return this.kadrovska.assessments(req.user.email, q);
+  }
+
+  // ---------- Zarade (SAMO admin — kadrovska.salary) ----------
+
+  @Get("salary/terms")
+  @RequirePermission(PERMISSIONS.KADROVSKA_SALARY)
+  salaryTerms(@Req() req: AuthedRequest, @Query() q: ByEmployeeQueryDto) {
+    return this.kadrovska.salaryTerms(req.user.email, q);
+  }
+
+  @Get("salary/current")
+  @RequirePermission(PERMISSIONS.KADROVSKA_SALARY)
+  salaryCurrent(@Req() req: AuthedRequest, @Query() q: ByEmployeeQueryDto) {
+    return this.kadrovska.salaryCurrent(req.user.email, q);
+  }
+
+  @Get("salary/payroll")
+  @RequirePermission(PERMISSIONS.KADROVSKA_SALARY)
+  salaryPayroll(@Req() req: AuthedRequest, @Query() q: MonthQueryDto) {
+    return this.kadrovska.salaryPayroll(req.user.email, q);
+  }
+}

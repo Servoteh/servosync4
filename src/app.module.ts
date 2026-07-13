@@ -24,6 +24,7 @@ import { ReversiModule } from "./modules/reversi/reversi.module";
 import { SastanciModule } from "./modules/sastanci/sastanci.module";
 import { AiChatModule } from "./modules/ai-chat/ai-chat.module";
 import { MediaAiModule } from "./modules/media-ai/media-ai.module";
+import { KadrovskaModule } from "./modules/kadrovska/kadrovska.module";
 
 @Module({
   imports: [
@@ -52,6 +53,8 @@ import { MediaAiModule } from "./modules/media-ai/media-ai.module";
     AiChatModule,
     // Zajednički media/AI (STT + refine) — presuda B4; C/D/G reuse.
     MediaAiModule,
+    // 3.0 TALAS G — Kadrovska/HR (MODULE_SPEC_kadrovska_30.md §0); PII + zarade.
+    KadrovskaModule,
   ],
   controllers: [AppController],
   providers: [
