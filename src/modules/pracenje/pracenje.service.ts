@@ -91,12 +91,16 @@ export class PracenjeService {
     if (!qv) throw new BadRequestException("Unesi RN broj ili RN UUID.");
     if (UUID_RE.test(qv)) return { data: { id: qv } };
     const like = `%${qv}%`;
-    const numeric = /^\d+$/.test(qv);
+    // `legacy_idrn` je INTEGER, a Prisma vezuje ${qv} kao TEXT param → poređenje
+    // `integer = text` pada na 42883 („operator does not exist") bez ::int cast-a
+    // (za SVAKI čisto-numerički ref, npr. „9400" kojim počinju svi RN brojevi).
+    // Ograniči na int4 opseg da ::int ne baci 22003; van opsega rn_broj ILIKE i dalje radi.
+    const numeric = /^\d+$/.test(qv) && Number(qv) <= 2147483647;
     return this.read(email, async (tx) => {
       const rows = await tx.$queryRaw<{ id: string; rn_broj: string }[]>(
         Prisma.sql`SELECT id, rn_broj FROM radni_nalog
           WHERE rn_broj = ${qv} OR rn_broj ILIKE ${like}
-            ${numeric ? Prisma.sql`OR legacy_idrn = ${qv}` : Prisma.empty}
+            ${numeric ? Prisma.sql`OR legacy_idrn = ${qv}::int` : Prisma.empty}
           ORDER BY rn_broj ASC LIMIT 5`,
       );
       if (rows.length === 1) return { data: { id: rows[0].id } };

@@ -268,4 +268,49 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     await get("/plan-proizvodnje/machines", "magacioner").expect(403);
     await get("/pracenje/portfolio", "magacioner").expect(403);
   });
+
+  // ---------- Adversarni review R1 (regresija) ----------
+
+  describe("Review nalaz #1 — rnResolve numerički ref (grana legacy_idrn::int)", () => {
+    // Ranije e2e je gađao samo ne-numerički `?ref=RN-1` pa legacy_idrn grana nije bila
+    // dohvaćena. Čisto-numerički ref (npr. „9400" kojim počinju SVI RN brojevi) MORA proći
+    // do servisa (200 kroz mock). SQL ispravnost (`legacy_idrn = $1::int` umesto
+    // `integer = text` → 42883) verifikovana na živoj sy15 (read-only).
+    it("GET /pracenje/rn/resolve?ref=9400 → 200 (admin)", async () => {
+      await get("/pracenje/rn/resolve?ref=9400", "admin").expect(200);
+    });
+    it("GET /pracenje/rn/resolve?ref=45767 → 200 (legacy_idrn numerik)", async () => {
+      await get("/pracenje/rn/resolve?ref=45767", "admin").expect(200);
+    });
+  });
+
+  describe("Review nalaz #2 — decimalni broj u BigInt/::int polju → 400 (ne 500)", () => {
+    // `@IsNumberString` je primao „1.5" pa je `BigInt("1.5")` bacao SyntaxError PRE
+    // try/catch-a → 500. `@Matches(/^\d+$/)` odbija decimale u pipe-u → 400.
+    it("GET /plan-proizvodnje/drawings?workOrder=1.5&line=1 → 400 (admin)", async () => {
+      await get(
+        "/plan-proizvodnje/drawings?workOrder=1.5&line=1",
+        "admin",
+      ).expect(400);
+    });
+    it("GET /plan-proizvodnje/drawings?workOrder=40681&line=1 → 200 (validno)", async () => {
+      await get(
+        "/plan-proizvodnje/drawings?workOrder=40681&line=1",
+        "admin",
+      ).expect(200);
+    });
+    it("GET /pracenje/predmeti/7602/izvestaj?rootRn=1.5 → 400", async () => {
+      await get(
+        "/pracenje/predmeti/7602/izvestaj?rootRn=1.5",
+        "admin",
+      ).expect(400);
+    });
+    it("GET /pracenje/prijave?workOrder=1.5&op=2 → 400; ?op=2.5 → 400", async () => {
+      await get("/pracenje/prijave?workOrder=1.5&op=2", "admin").expect(400);
+      await get("/pracenje/prijave?workOrder=1&op=2.5", "admin").expect(400);
+    });
+    it("GET /pracenje/prijave?workOrder=40681&op=2 → 200 (validno)", async () => {
+      await get("/pracenje/prijave?workOrder=40681&op=2", "admin").expect(200);
+    });
+  });
 });

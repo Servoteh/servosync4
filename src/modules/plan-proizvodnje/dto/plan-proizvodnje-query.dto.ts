@@ -1,6 +1,11 @@
-import { IsNumberString, IsOptional, IsString } from "class-validator";
+import { IsNumberString, IsOptional, IsString, Matches } from "class-validator";
 
-/** Query DTO-i za Plan proizvodnje read endpointe (nevalidan broj → 400). */
+/**
+ * Query DTO-i za Plan proizvodnje read endpointe (nevalidan broj → 400).
+ * ⚠️ Polja koja idu u `BigInt(...)` MORAJU biti SAMO cifre (`^\d+$`): `@IsNumberString`
+ * prima „1.5" → `BigInt("1.5")` baca SyntaxError PRE try/catch-a → 500 (krši DTO ugovor).
+ */
+const DIGITS = /^\d+$/;
 
 export class OperationsQueryDto {
   /** rj_code mašine → RPC plan_pp_open_ops_for_machine (paginacija po RN). */
@@ -20,6 +25,6 @@ export class CooperationQueryDto {
 }
 
 export class DrawingsQueryDto {
-  @IsNumberString() workOrder!: string;
-  @IsNumberString() line!: string;
+  @Matches(DIGITS) workOrder!: string;
+  @Matches(DIGITS) line!: string;
 }
