@@ -141,3 +141,154 @@ describe("Kadrovska R2 mutacije — write-path guard + idempotencija", () => {
     );
   });
 });
+
+/**
+ * INTEGRACIONI TESTOVI payroll recompute→engine WIRING (adversarni review R2).
+ * Zlatni testovi engine-a su izolovani i NISU uhvatili dva CRITICAL bug-a u wiring-u:
+ *  #1 mapTerm bez `amount` fallbacka → fiksni zaposleni (unet kroz kadr_set_contract_salary:
+ *     amount=neto, fixed_amount=0) dobija platu 0;
+ *  #2 fond dvostruko oduzima neplaceno → potplaćivanje.
+ * Ovi testovi voze CELU putanju recompute (grid→terms→engine) na mokovanoj sy15 tx.
+ */
+describe("payrollRecompute — integracija (mapTerm/fond wiring, novac)", () => {
+  const EMAIL = "admin@servoteh.com";
+  const EMP = "3b241101-e2bb-4255-8caf-4136c566a962";
+
+  function makeService(tx: unknown) {
+    const sy15 = {
+      withUserRls: jest.fn(async (_e: string, fn: (t: unknown) => Promise<unknown>) => fn(tx)),
+      runIdempotentRls: jest.fn(),
+      withUser: jest.fn(),
+      runIdempotent: jest.fn(),
+    } as Record<string, unknown>;
+    Object.defineProperty(sy15, "db", {
+      get() {
+        throw new Error("BYPASSRLS dodirnut u recompute");
+      },
+    });
+    const storage = { upload: jest.fn(), signUrl: jest.fn(), remove: jest.fn() };
+    return new KadrovskaMutationsService(sy15 as never, storage as never);
+  }
+
+  // tx sa: bez praznika, jedan zaposleni, zadatim work_hours + term redom.
+  // $queryRaw redosled u recompute: (1) salary_payroll (postojeći) → [], (2) salary_terms → [term].
+  function makeTx(opts: {
+    workType?: string;
+    workHours: Array<Record<string, unknown>>;
+    term: Record<string, unknown>;
+  }) {
+    return {
+      kadrHoliday: { findMany: jest.fn().mockResolvedValue([]) },
+      employee: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue([
+            { id: EMP, workType: opts.workType ?? "ugovor", hireDate: null, fullName: "Test Radnik" },
+          ]),
+      },
+      workHours: { findMany: jest.fn().mockResolvedValue(opts.workHours) },
+      salaryPayroll: { findFirst: jest.fn().mockResolvedValue(null) },
+      $queryRaw: jest
+        .fn()
+        .mockResolvedValueOnce([]) // postojeći salary_payroll red
+        .mockResolvedValueOnce([opts.term]), // salary_terms
+    };
+  }
+
+  function weekdaysInMonth(y: number, m: number): number {
+    const last = new Date(y, m, 0).getDate();
+    let c = 0;
+    for (let d = 1; d <= last; d++) {
+      const dow = new Date(y, m - 1, d).getDay();
+      if (dow !== 0 && dow !== 6) c++;
+    }
+    return c;
+  }
+  function firstNWeekdayUtcDates(y: number, m: number, n: number): Date[] {
+    const out: Date[] = [];
+    const last = new Date(y, m, 0).getDate();
+    for (let d = 1; d <= last && out.length < n; d++) {
+      const dow = new Date(y, m - 1, d).getDay();
+      if (dow !== 0 && dow !== 6) out.push(new Date(Date.UTC(y, m - 1, d)));
+    }
+    return out;
+  }
+
+  it("#1 fiksno sa amount=70000 / fixed_amount=0 → ukupna_zarada 70000 (NE 0)", async () => {
+    // kadr_set_contract_salary INSERT-uje fiksno OVAKO: amount=neto, fixed_amount=0.
+    const tx = makeTx({
+      workHours: [],
+      term: {
+        salary_type: "ugovor",
+        compensation_model: "fiksno",
+        fixed_amount: 0,
+        amount: 70000,
+        hourly_rate: 0,
+      },
+    });
+    const svc = makeService(tx);
+    const out = (await svc.payrollRecompute(EMAIL, { year: 2026, month: 7 })) as {
+      data: { rows: Array<{ ukupna_zarada: number; compensation_model: string }> };
+    };
+    expect(out.data.rows[0].compensation_model).toBe("fiksno");
+    expect(out.data.rows[0].ukupna_zarada).toBe(70000);
+  });
+
+  it("#1 satnica sa amount=600 (salary_type=satnica) → hourly=600 (NE 0)", async () => {
+    // 160h redovnih × 600 = 96000. hourly izvire iz `amount` kad je salary_type='satnica'.
+    const y = 2026;
+    const m = 7;
+    // 20 radnih dana × 8h; koristimo prvih 20 weekday-a sa 8h.
+    const days = firstNWeekdayUtcDates(y, m, 20).map((wd) => ({
+      workDate: wd,
+      hours: 8,
+      overtimeHours: 0,
+      twoMachineHours: 0,
+      fieldHours: 0,
+      absenceCode: null,
+      absenceSubtype: null,
+    }));
+    const tx = makeTx({
+      workHours: days,
+      term: {
+        salary_type: "satnica",
+        compensation_model: "satnica",
+        amount: 600,
+        hourly_rate: 0,
+        hourly_transport_amount: 0,
+      },
+    });
+    const svc = makeService(tx);
+    const out = (await svc.payrollRecompute(EMAIL, { year: y, month: m })) as {
+      data: { rows: Array<{ ukupna_zarada: number }> };
+    };
+    expect(out.data.rows[0].ukupna_zarada).toBe(20 * 8 * 600);
+  });
+
+  it("#2 fiksno 100000 + 5 neplaćenih (22-radna meseca) → 77272.73 + fond 176 (NE 70588.24/136)", async () => {
+    const y = 2026;
+    let m = 0;
+    for (let mm = 1; mm <= 12; mm++) if (weekdaysInMonth(y, mm) === 22) { m = mm; break; }
+    expect(m).toBeGreaterThan(0); // postoji 22-radni mesec u 2026
+    const npDays = firstNWeekdayUtcDates(y, m, 5).map((wd) => ({
+      workDate: wd,
+      hours: 0,
+      overtimeHours: 0,
+      twoMachineHours: 0,
+      fieldHours: 0,
+      absenceCode: "np",
+      absenceSubtype: null,
+    }));
+    const tx = makeTx({
+      workHours: npDays,
+      term: { salary_type: "ugovor", compensation_model: "fiksno", fixed_amount: 100000, amount: 0 },
+    });
+    const svc = makeService(tx);
+    const out = (await svc.payrollRecompute(EMAIL, { year: y, month: m })) as {
+      data: { rows: Array<{ ukupna_zarada: number; fond_sati_meseca: number }> };
+    };
+    // PUN fond (22×8=176) — NE umanjen (136); jedna proporcionalna redukcija 17/22.
+    expect(out.data.rows[0].fond_sati_meseca).toBe(176);
+    expect(out.data.rows[0].ukupna_zarada).toBe(77272.73);
+  });
+});

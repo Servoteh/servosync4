@@ -13,6 +13,7 @@ import {
   aggregateWorkHoursForMonth,
   computeEarnings,
   computeMonthlyFond,
+  deriveCompensationModel,
   type SalaryTermsInput,
 } from "./payroll/payroll-calc";
 import type * as D from "./dto/kadrovska-mutation.dto";
@@ -447,23 +448,29 @@ export class KadrovskaMutationsService {
    *  RPC vraća {applied:false, reason:'stale'} bez raise → mapiramo u 409. */
   updateEmployee(email: string, id: string, dto: D.UpdateEmployeeDto) {
     return this.mutate(email, undefined, "kadr.employee.update", async (tx) => {
+      // Optimistic token: klijentski (ms) usklađen na punu µs vrednost iz baze.
+      const expected = this.reconcileToken(
+        dto.expectedUpdatedAt,
+        await this.fullPrecUpdatedAt(tx, "employees", id),
+      );
       const res = await this.rpcJson(
         tx,
-        Prisma.sql`SELECT hr_update_employee(${id}::uuid, ${JSON.stringify(dto.patch)}::jsonb, ${dto.expectedUpdatedAt ?? null}::timestamptz) AS v`,
+        Prisma.sql`SELECT hr_update_employee(${id}::uuid, ${JSON.stringify(dto.patch)}::jsonb, ${expected}::timestamptz) AS v`,
       );
       this.assertApplied(res, "Zaposleni je u međuvremenu izmenjen");
       return res;
     });
   }
 
-  /** Deaktivacija = hr_update_employee patch {is_active:false} (interni optimistic). */
+  /** Deaktivacija = hr_update_employee patch {is_active:false}; primeni na tekućem
+   *  stanju (server čita PUNU µs updated_at → RPC exact-eq prolazi). */
   deactivateEmployee(email: string, id: string, dto: D.OptIdempotentDto) {
     return this.mutate(email, dto.clientEventId, "kadr.employee.deactivate", async (tx) => {
-      const cur = await tx.employee.findUnique({ where: { id }, select: { updatedAt: true } });
-      if (!cur) throw new NotFoundException(`Zaposleni ${id} ne postoji`);
+      const token = await this.fullPrecUpdatedAt(tx, "employees", id);
+      if (token === null) throw new NotFoundException(`Zaposleni ${id} ne postoji`);
       const res = await this.rpcJson(
         tx,
-        Prisma.sql`SELECT hr_update_employee(${id}::uuid, ${JSON.stringify({ is_active: false })}::jsonb, ${cur.updatedAt?.toISOString() ?? null}::timestamptz) AS v`,
+        Prisma.sql`SELECT hr_update_employee(${id}::uuid, ${JSON.stringify({ is_active: false })}::jsonb, ${token}::timestamptz) AS v`,
       );
       this.assertApplied(res, "Zaposleni je u međuvremenu izmenjen");
       return res;
@@ -923,7 +930,8 @@ export class KadrovskaMutationsService {
           descriptionMd: dto.descriptionMd,
           dueDate: dto.dueDate ? this.date(dto.dueDate) : null,
           responsibleEmployeeId: dto.responsibleEmployeeId ?? null,
-          status: "otvorena",
+          // 1.0 domen (talks.js): u_toku → ispunjeno (NE otvorena/zavrsena).
+          status: "u_toku",
           sort: dto.sort ?? 0,
         },
       }),
@@ -938,7 +946,7 @@ export class KadrovskaMutationsService {
             ...(dto.descriptionMd != null ? { descriptionMd: dto.descriptionMd } : {}),
             ...(dto.dueDate ? { dueDate: this.date(dto.dueDate) } : {}),
             ...(dto.responsibleEmployeeId !== undefined ? { responsibleEmployeeId: dto.responsibleEmployeeId } : {}),
-            ...(dto.status != null ? { status: dto.status, ...(dto.status === "zavrsena" ? { completedAt: new Date() } : {}) } : {}),
+            ...(dto.status != null ? { status: dto.status, ...(dto.status === "ispunjeno" ? { completedAt: new Date() } : {}) } : {}),
             ...(dto.note !== undefined ? { note: dto.note } : {}),
             ...(dto.sort != null ? { sort: dto.sort } : {}),
             updatedAt: new Date(),
@@ -1071,24 +1079,37 @@ export class KadrovskaMutationsService {
     );
   }
 
-  /** hr_upsert_salary_payroll — V2 optimistic; {applied:false, reason:stale|locked|row_exists} → 409. */
+  /** hr_upsert_salary_payroll — V2 optimistic; {applied:false, reason:stale|locked|row_exists} → 409.
+   *  Ako klijent šalje UPDATE (row.id + expected_updated_at), uskladi token na punu µs. */
   payrollUpsert(email: string, dto: D.PayrollUpsertDto) {
     return this.mutate(email, dto.clientEventId, "kadr.payroll.upsert", async (tx) => {
+      const row = { ...dto.row };
+      const id = typeof row.id === "string" && row.id ? row.id : null;
+      if (id && "expected_updated_at" in row) {
+        row.expected_updated_at = this.reconcileToken(
+          row.expected_updated_at as string | null | undefined,
+          await this.fullPrecUpdatedAt(tx, "salary_payroll", id),
+        );
+      }
       const res = await this.rpcJson(
         tx,
-        Prisma.sql`SELECT hr_upsert_salary_payroll(${JSON.stringify(dto.row)}::jsonb) AS v`,
+        Prisma.sql`SELECT hr_upsert_salary_payroll(${JSON.stringify(row)}::jsonb) AS v`,
       );
       this.assertApplied(res, "Obračun je u međuvremenu izmenjen/zaključan");
       return res;
     });
   }
 
-  /** 🔒 Zaključavanje (status='paid') kroz upsert; optimistic expected_updated_at. */
+  /** 🔒 Zaključavanje (status='paid') kroz upsert; optimistic token usklađen na µs. */
   payrollLock(email: string, id: string, dto: D.PayrollLockDto) {
     return this.mutate(email, dto.clientEventId, "kadr.payroll.lock", async (tx) => {
+      const expected = this.reconcileToken(
+        dto.expectedUpdatedAt,
+        await this.fullPrecUpdatedAt(tx, "salary_payroll", id),
+      );
       const res = await this.rpcJson(
         tx,
-        Prisma.sql`SELECT hr_upsert_salary_payroll(${JSON.stringify({ id, status: "paid", expected_updated_at: dto.expectedUpdatedAt })}::jsonb) AS v`,
+        Prisma.sql`SELECT hr_upsert_salary_payroll(${JSON.stringify({ id, status: "paid", expected_updated_at: expected })}::jsonb) AS v`,
       );
       this.assertApplied(res, "Obračun je u međuvremenu izmenjen/zaključan");
       return res;
@@ -1158,7 +1179,35 @@ export class KadrovskaMutationsService {
           hireDate: emp.hireDate ? emp.hireDate.toISOString().slice(0, 10) : null,
         });
         const neplacenoDays = agg.neplacenoDays ?? 0;
-        const fond = computeMonthlyFond(year, month, holSet, neplacenoDays).fondSati;
+        // ⚠ PUN (bruto) fond — BEZ neplacenoDays. computeEarnings radi JEDINU
+        // proporcionalnu redukciju (fiksno/jednokratno grana). Paritet 1.0
+        // computeDisplayTotals (salaryPayroll.js:285). Dvostruko oduzimanje np bi
+        // POTPLATILO fiksne zaposlene (npr. 70588.24 umesto 77272.73).
+        const fond = computeMonthlyFond(year, month, holSet).fondSati;
+
+        // Postojeći payroll red: advance + teren fallback + optimistic token
+        // (updated_at::text = PUNA µs preciznost; JS Date bi izgubio µs → lažan 409).
+        const exRows = await tx.$queryRaw<
+          {
+            id: string;
+            status: string | null;
+            advance_amount: unknown;
+            domestic_days: unknown;
+            foreign_days: unknown;
+            u: string | null;
+          }[]
+        >(
+          Prisma.sql`SELECT id, status, advance_amount, domestic_days, foreign_days, updated_at::text AS u
+             FROM salary_payroll
+             WHERE employee_id = ${emp.id}::uuid
+               AND period_year = ${year}::int AND period_month = ${month}::int
+             LIMIT 1`,
+        );
+        const existing = exRows[0];
+        // Teren fallback na postojeći red (1.0 computeDisplayTotals:287-288).
+        const domDays = domesticDays > 0 ? domesticDays : Number(existing?.domestic_days ?? 0);
+        const forDays = foreignDays > 0 ? foreignDays : Number(existing?.foreign_days ?? 0);
+        const advanceAmount = Number(existing?.advance_amount ?? 0);
 
         const termRows = await tx.$queryRaw<Record<string, unknown>[]>(
           Prisma.sql`SELECT * FROM salary_terms
@@ -1173,7 +1222,8 @@ export class KadrovskaMutationsService {
           workType: emp.workType,
           terms: term,
           hours: agg,
-          terrain: { domestic: domesticDays, foreign: foreignDays },
+          terrain: { domestic: domDays, foreign: forDays },
+          advanceAmount,
           neplacenoDays,
           fondSati: fond,
         });
@@ -1193,8 +1243,8 @@ export class KadrovskaMutationsService {
           bolovanje_65_sati: agg.bolovanje65Sati,
           bolovanje_100_sati: agg.bolovanje100Sati,
           dve_masine_sati: agg.dveMasineSati,
-          teren_u_zemlji_count: domesticDays,
-          teren_u_inostranstvu_count: foreignDays,
+          teren_u_zemlji_count: domDays,
+          teren_u_inostranstvu_count: forDays,
           compensation_model: res.compensationModel,
           payable_hours: res.payableHours,
           ukupna_zarada: res.ukupnaZarada,
@@ -1204,19 +1254,13 @@ export class KadrovskaMutationsService {
         };
 
         if (dto.persist) {
-          const existing = await tx.salaryPayroll.findFirst({
-            where: { employeeId: emp.id, periodYear: year, periodMonth: month },
-            select: { id: true, updatedAt: true, status: true },
-          });
           if (existing?.status === "paid") {
             results.push({ ...preview, persisted: false, reason: "locked" });
             continue;
           }
           const row = {
             ...preview,
-            ...(existing
-              ? { id: existing.id, expected_updated_at: existing.updatedAt?.toISOString() }
-              : {}),
+            ...(existing ? { id: existing.id, expected_updated_at: existing.u } : {}),
           };
           const up = await this.rpcJson(
             tx,
@@ -1276,13 +1320,13 @@ export class KadrovskaMutationsService {
       ),
     );
   }
-  /** Otkazivanje: skloni iz dispatch domena (bira samo 'queued'/'failed'). ⚠️ ako živa
-   *  šema ima status CHECK bez 'cancelled' → 23514→422 (vidljivo, ne tiho); TODO verif. */
+  /** Otkazivanje: status→'canceled' (JEDNO L — živi CHECK `kadr_notif_status_chk` =
+   *  {queued,sent,failed,canceled}; G10 ne menjamo CHECK). Skloni iz dispatch domena. */
   notificationCancel(email: string, id: string) {
     return this.mutate(email, undefined, "kadr.notif.cancel", (tx) =>
       this.requireRows(
         tx.$executeRaw(
-          Prisma.sql`UPDATE kadr_notification_log SET status='cancelled' WHERE id=${id}::uuid AND status <> 'sent'`,
+          Prisma.sql`UPDATE kadr_notification_log SET status='canceled' WHERE id=${id}::uuid AND status <> 'sent'`,
         ),
         "Notifikacija",
       ),
@@ -1530,6 +1574,39 @@ export class KadrovskaMutationsService {
     return new Date(`${v.slice(0, 10)}T00:00:00Z`);
   }
 
+  /**
+   * PUNA (µs) preciznost `updated_at` kao text — optimistic-lock RPC-ovi rade EXACT
+   * equality na timestamptz. Prisma → JS Date gubi µs (ms) → večiti lažni 409.
+   * `table` je zatvoren skup (nije korisnički unos) → Prisma.raw je bezbedno.
+   */
+  private async fullPrecUpdatedAt(
+    tx: Sy15Tx,
+    table: "employees" | "salary_payroll",
+    id: string,
+  ): Promise<string | null> {
+    const rows = await tx.$queryRaw<{ u: string | null }[]>(
+      Prisma.sql`SELECT updated_at::text AS u FROM ${Prisma.raw(table)} WHERE id = ${id}::uuid`,
+    );
+    return rows[0]?.u ?? null;
+  }
+
+  /**
+   * Uskladi klijentski optimistic token (ms preciznost — sve što klijent može da
+   * vidi kroz Prisma read) sa punom µs vrednošću iz baze: ako se poklapaju NA ms
+   * granularnosti → vrati punu µs vrednost (RPC exact-eq prolazi); ako ne → vrati
+   * klijentski token (RPC → stale → 409, stvaran konflikt). Bez tokena → null (→409).
+   */
+  private reconcileToken(
+    clientToken: string | null | undefined,
+    dbText: string | null,
+  ): string | null {
+    if (!clientToken) return null;
+    if (dbText == null) return clientToken;
+    return new Date(clientToken).getTime() === new Date(dbText).getTime()
+      ? dbText
+      : clientToken;
+  }
+
   private numifyRow(row: Record<string, unknown>): Record<string, unknown> {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(row)) out[k] = typeof v === "bigint" ? Number(v) : v;
@@ -1614,24 +1691,47 @@ export class KadrovskaMutationsService {
     return out;
   }
 
-  /** salary_terms DB red (snake) → engine SalaryTermsInput (coerce Decimal→number). */
+  /**
+   * salary_terms DB red (snake) → engine SalaryTermsInput. PARITET 1.0
+   * `termsForPayrollCalc` (salaryPayroll.js:144-167) — KRITIČNO za tačnu zaradu:
+   *  - `hourly = salary_type==='satnica' ? amount : hourly_rate`
+   *  - `fixedAmount = fixed_amount || (fiksno/jednokratno ? amount : 0)`  ⚠ `amount`
+   *    fallback: kadr_set_contract_salary INSERT-uje fiksno sa amount=neto, fixed_amount=0
+   *    → bez fallbacka svaki takav zaposleni bi imao platu 0.
+   *  - transport/teren fallback na transport_allowance_rsd / per_diem_rsd / per_diem_eur.
+   * `num()` semantika (null→0) + `||` fallback identično 1.0.
+   */
   private mapTerm(row?: Record<string, unknown>): SalaryTermsInput {
     if (!row) return {};
-    const n = (v: unknown) => (v == null ? undefined : Number(v));
+    const num = (v: unknown) => (v == null || isNaN(Number(v)) ? 0 : Number(v));
+    const salaryType = (row.salary_type as string) ?? null;
+    const model =
+      (row.compensation_model as string) ||
+      deriveCompensationModel({ salaryType }) ||
+      null;
+    const hourly =
+      salaryType === "satnica" ? num(row.amount) : num(row.hourly_rate);
+    const fixedAmt =
+      num(row.fixed_amount) ||
+      (model === "fiksno" || model === "jednokratno" ? num(row.amount) : 0);
     return {
-      compensationModel: (row.compensation_model as string) ?? null,
-      salaryType: (row.salary_type as string) ?? null,
-      fixedAmount: n(row.fixed_amount),
-      fixedTransportComponent: n(row.fixed_transport_component),
-      fixedExtraHourRate: n(row.fixed_extra_hour_rate),
+      compensationModel: model,
+      salaryType,
+      fixedAmount: fixedAmt,
+      fixedTransportComponent: num(row.fixed_transport_component),
+      fixedExtraHourRate: num(row.fixed_extra_hour_rate),
       fixedNoExtraHours: Boolean(row.fixed_no_extra_hours),
-      firstPartAmount: n(row.first_part_amount),
-      splitHourRate: n(row.split_hour_rate),
-      splitTransportAmount: n(row.split_transport_amount),
-      hourlyRate: n(row.hourly_rate),
-      hourlyTransportAmount: n(row.hourly_transport_amount),
-      terrainDomesticRate: n(row.terrain_domestic_rate),
-      terrainForeignRate: n(row.terrain_foreign_rate),
+      firstPartAmount: num(row.first_part_amount),
+      splitHourRate: num(row.split_hour_rate),
+      splitTransportAmount:
+        num(row.split_transport_amount) || num(row.transport_allowance_rsd),
+      hourlyRate: hourly,
+      hourlyTransportAmount:
+        num(row.hourly_transport_amount) || num(row.transport_allowance_rsd),
+      terrainDomesticRate:
+        num(row.terrain_domestic_rate) || num(row.per_diem_rsd),
+      terrainForeignRate:
+        num(row.terrain_foreign_rate) || num(row.per_diem_eur),
     };
   }
 
@@ -1649,6 +1749,8 @@ export class KadrovskaMutationsService {
     const code = meta?.code ?? (e as { code?: string }).code;
     const message = meta?.message ?? (e as Error).message;
     if (code === "42501") throw new ForbiddenException(message);
+    // 02000 = no_data (RPC RAISE za nedostajući red: employee_missing / payroll_row_missing).
+    if (code === "02000") throw new NotFoundException(message);
     if (code === "P0001" || code === "P0002" || code === "23514" || code === "22023" || code === "23502")
       throw new UnprocessableEntityException(message);
     if (code === "23505") throw new ConflictException(message);

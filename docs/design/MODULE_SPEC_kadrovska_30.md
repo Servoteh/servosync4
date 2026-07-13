@@ -463,7 +463,19 @@ Skener: QR nalepnice zaposlenih (kioskQrAdmin) = generisanje (jsPDF+qrcode), NE 
 > (G10); dispatch/push OSTAJE 1.0 pozadina. Testovi: unit write-path guard (5:
 > idempotencija+BYPASSRLS sentinel+409+42501→403), payroll zlatni (36), e2e mutaciona
 > matrica (47: salary=admin, pii=admin+poslovni_admin, nop=admin, vacreq/grid/dev/
-> manage + DTO 400). tsc+build+svi testovi zeleni. **TODO R3 (FE):** PDF ćirilica
+> manage + DTO 400). tsc+build+svi testovi zeleni.
+> **Adversarni review R2 (7 nalaza, 2 CRITICAL u obračunu — NOVAC):** (#1) `mapTerm`
+> dobio `amount` fallback (`fixedAmount = fixed_amount || amount` za fiksno/jednokratno;
+> `hourly = salary_type==='satnica' ? amount : hourly_rate`) — bez toga svaki zaposleni
+> unet kroz `kadr_set_contract_salary` (amount=neto, fixed_amount=0) imao bi platu 0;
+> (#2) recompute `computeMonthlyFond` BEZ neplacenoDays (pun fond) — engine radi JEDINU
+> proporciju, kraj dvostrukog oduzimanja np (potplaćivanje); (#3) `notification.cancel`
+> `'cancelled'`→`'canceled'` (živi CHECK); (#4) optimistic token PUNA µs preciznost
+> (`updated_at::text` + ms-reconcile) umesto JS Date (lažan 409); (#5) 360-kampanja guard
+> `manage`→`dev_manage` (org_profile role); (#6) SQLSTATE 02000→404; + corrective_measure
+> status `u_toku`/`ispunjeno` (paritet talks.js). **Integracioni testovi recompute→engine
+> (3)** hvataju #1/#2 (zlatni engine-testovi ih nisu jer testiraju engine izolovano).
+> **TODO R3 (FE):** PDF ćirilica
 > generatori (Rešenje GO/Aneks/Potvrde/Karnet/payslip), QR bedževi, „↩ Vrati" grid
 > revert (nema RPC — re-batch old_data), bulk-import/ZIP, apply-to-grid za non-GO
 > odsustva, kiosk/token edge tokovi (pozadina), mobilni „Moje prisustvo".

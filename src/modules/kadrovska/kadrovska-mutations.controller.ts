@@ -500,8 +500,11 @@ export class KadrovskaMutationsController {
   open360(@Req() req: AuthedRequest, @Body() dto: D.Open360Dto) {
     return this.m.assessmentOpen360(this.email(req), dto);
   }
+  /** 360 kampanja — RPC gate = current_user_can_manage_org_profile ∨ admin
+   *  (= admin/menadzment/pm/leadpm). DEV_MANAGE je najuži ključ koji ih sve pušta
+   *  (superskup uz hr, kog RPC 42501-uje ako nije org_profile — defense-in-depth). */
   @Post("assessments/campaign")
-  @RequirePermission(PERMISSIONS.KADROVSKA_MANAGE)
+  @RequirePermission(PERMISSIONS.KADROVSKA_DEV_MANAGE)
   openCampaign(@Req() req: AuthedRequest, @Body() dto: D.OpenCampaignDto) {
     return this.m.assessmentOpenCampaign(this.email(req), dto);
   }
