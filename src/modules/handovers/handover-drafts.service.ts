@@ -892,10 +892,21 @@ export class HandoverDraftsService {
           "Nacrt je već predat (zaključan) — ne može se ponovo predati.",
         );
 
-      // `drawing_handovers.id` jeste autoincrement, ali sync/import mogu da
-      // ubace eksplicitne id-jeve — poravnaj sekvencu pre insert-a (isti obrazac
-      // kao create()/launch()).
-      await alignIdSequence(tx, "drawing_handovers");
+      // `drawing_handovers.id` mora preskočiti i LEGACY reference: sync upisuje
+      // u `work_orders.drawing_handover_id` ID NACRTA iz tRN (opseg 1..~3446,
+      // memorija/spec §5.3 — remapuje se tek cutover backfill-om). Native
+      // primopredaja sa id-jem u tom opsegu bi se „zakačila" za tuđe legacy
+      // RN-ove (prepare/launch nađu strani RN → 409 ili pogrešan reuse) —
+      // nađeno E2E probom 13.07.2026. Zato pod = GREATEST(MAX(id) tabele,
+      // MAX(legacy referenci), 9999): native redovi žive od 10000 naviše dok
+      // cutover ne razreši semantiku. Običan alignIdSequence NIJE dovoljan —
+      // na praznoj tabeli resetuje sekvencu na 1.
+      await tx.$executeRaw`SELECT setval(pg_get_serial_sequence('drawing_handovers','id'),
+        GREATEST(
+          COALESCE((SELECT MAX(id) FROM drawing_handovers), 0),
+          COALESCE((SELECT MAX(drawing_handover_id) FROM work_orders), 0),
+          9999
+        ), true)`;
 
       const now = new Date();
       const handoverWorkerId = existing.designerId ?? 0;
