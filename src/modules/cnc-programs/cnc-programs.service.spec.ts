@@ -29,6 +29,8 @@ function prismaMock() {
       upsert: jest.fn(),
     },
     worker: { findMany: jest.fn().mockResolvedValue([]) },
+    // Skup RN id-jeva sa otkucanim CAM-done (CNC/kontrola) — prazan u testu.
+    $queryRaw: jest.fn().mockResolvedValue([]),
     $transaction: jest.fn((arg: unknown) =>
       Array.isArray(arg) ? Promise.all(arg) : (arg as () => unknown)(),
     ),

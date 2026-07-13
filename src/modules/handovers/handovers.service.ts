@@ -25,6 +25,11 @@ import {
 import type { AuthUser } from "../auth/jwt.strategy";
 import { LaunchHandoverDto } from "./dto/launch-handover.dto";
 import { ApproveHandoverDto } from "./dto/approve-handover.dto";
+import {
+  ApproveHandoverBatchDto,
+  RejectHandoverBatchDto,
+  validateHandoverIds,
+} from "./dto/batch-handover.dto";
 import { ReturnHandoverDto } from "./dto/return-handover.dto";
 
 /**
@@ -418,6 +423,157 @@ export class HandoversService {
         "Primopredaja mora biti U OBRADI (na čekanju) da bi bila odobrena.",
     });
     return this.findOne(id);
+  }
+
+  /**
+   * GRUPNO odobravanje (proba 13.07, Miljan; legacy paritet:
+   * `spPromeniStatusPrimopredaje` statuse 0/1/2 radi grupno po nacrtu).
+   * Isti tehnolog/rok/HITNO/komentar za sve; per-red guardovi (PENDING,
+   * otključan, ne-legacy) kroz uslovni `updateMany` — redovi koji ne prolaze
+   * se preskaču i vraćaju u `skipped` sa razlogom (best-effort, kao legacy
+   * grupni UPDATE). Lansiranje NIJE grupno (legacy je per-RN).
+   */
+  async approveBatch(dto: ApproveHandoverBatchDto, actor?: AuthUser) {
+    const ids = validateHandoverIds(dto?.handoverIds);
+    const technologistId = dto?.technologistId;
+    if (
+      typeof technologistId !== "number" ||
+      !Number.isInteger(technologistId) ||
+      technologistId <= 0
+    )
+      throw new UnprocessableEntityException(
+        "Tehnolog (technologistId) je obavezan — pozitivan ceo broj.",
+      );
+    const comment = dto?.comment?.trim() || undefined;
+    if (comment && comment.length > 250)
+      throw new UnprocessableEntityException(
+        "Komentar može imati najviše 250 karaktera.",
+      );
+    const dueDate = parseDateParam(dto?.dueDate, "dueDate");
+
+    const technologist = await this.prisma.worker.findUnique({
+      where: { id: technologistId },
+      select: TECHNOLOGIST_CHECK_SELECT,
+    });
+    if (!technologist)
+      throw new UnprocessableEntityException(
+        `Tehnolog ${technologistId} ne postoji.`,
+      );
+    if (!(await isActiveTechnologist(this.prisma, technologist)))
+      throw new UnprocessableEntityException(
+        `Radnik ${technologistId} nije aktivan radnik vrste "Tehnolog" — izaberite tehnologa sa /handovers/technologists liste.`,
+      );
+
+    return this.batchTransition(ids, {
+      from: HANDOVER_STATUS.PENDING,
+      to: HANDOVER_STATUS.APPROVED,
+      comment,
+      actorWorkerId: actor?.workerId ?? null,
+      extra: {
+        technologistId,
+        technologistAssignedAt: new Date(),
+        technologistAssignedById: actor?.workerId ?? null,
+        productionDeadline: dueDate ?? null,
+        isUrgent: dto?.isUrgent === true,
+      },
+    });
+  }
+
+  /** GRUPNO odbijanje (legacy paritet: status 2 grupno). `reason` OBAVEZAN. */
+  async rejectBatch(dto: RejectHandoverBatchDto, actor?: AuthUser) {
+    const ids = validateHandoverIds(dto?.handoverIds);
+    const reason = dto?.reason?.trim();
+    if (!reason)
+      throw new UnprocessableEntityException("Razlog odbijanja je obavezan.");
+    if (reason.length > 250)
+      throw new UnprocessableEntityException(
+        "Razlog odbijanja može imati najviše 250 karaktera.",
+      );
+
+    return this.batchTransition(ids, {
+      from: HANDOVER_STATUS.PENDING,
+      to: HANDOVER_STATUS.REJECTED,
+      comment: reason,
+      actorWorkerId: actor?.workerId ?? null,
+    });
+  }
+
+  /**
+   * Zajednički grupni prelaz: pre-check po redu (postojanje/status/lock/legacy
+   * → `skipped` sa srpskim razlogom), pa JEDAN uslovni `updateMany` nad
+   * preostalima (isti guard `where` kao `transition()` — konkurentna promena
+   * ne biva pregažena, samo završi u skipped kao „promenjena u međuvremenu").
+   */
+  private async batchTransition(
+    ids: number[],
+    opts: {
+      from: number;
+      to: number;
+      comment?: string;
+      actorWorkerId: number | null;
+      extra?: Prisma.DrawingHandoverUncheckedUpdateManyInput;
+    },
+  ) {
+    const result = await this.prisma.$transaction(async (tx) => {
+      const rows = await tx.drawingHandover.findMany({
+        where: { id: { in: ids } },
+        select: { id: true, statusId: true, isLocked: true, legacyRnId: true },
+      });
+      const byIdMap = new Map(rows.map((r) => [r.id, r]));
+
+      const skipped: { id: number; reason: string }[] = [];
+      const eligible: number[] = [];
+      for (const id of ids) {
+        const row = byIdMap.get(id);
+        if (!row) skipped.push({ id, reason: "Primopredaja ne postoji." });
+        else if (
+          row.legacyRnId != null &&
+          process.env.HANDOVER_LEGACY_GUARD !== "false"
+        )
+          skipped.push({
+            id,
+            reason: "Legacy primopredaja — do cutover-a se menja u QBigTehn-u.",
+          });
+        else if (row.isLocked)
+          skipped.push({ id, reason: "Primopredaja je zaključana." });
+        else if (row.statusId !== opts.from)
+          skipped.push({
+            id,
+            reason: "Nije više na čekanju (status promenjen).",
+          });
+        else eligible.push(id);
+      }
+
+      let approved = 0;
+      if (eligible.length) {
+        const updated = await tx.drawingHandover.updateMany({
+          where: {
+            id: { in: eligible },
+            statusId: opts.from,
+            isLocked: false,
+          },
+          data: {
+            statusId: opts.to,
+            statusChangedAt: new Date(),
+            statusChangedById: opts.actorWorkerId,
+            statusChangeComment: opts.comment ?? null,
+            ...opts.extra,
+          },
+        });
+        approved = updated.count;
+        if (approved < eligible.length) {
+          // Konkurentna promena između pre-check-a i update-a — prijavi razliku.
+          skipped.push(
+            ...Array.from({ length: eligible.length - approved }, (_, i) => ({
+              id: eligible[i],
+              reason: "Promenjena u međuvremenu — osvežite listu.",
+            })),
+          );
+        }
+      }
+      return { approved, skipped };
+    });
+    return { data: result };
   }
 
   /** Odbij primopredaju. `reason` je OBAVEZAN (razlika od approve), §6.4. */

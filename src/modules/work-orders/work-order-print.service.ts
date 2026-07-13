@@ -122,6 +122,7 @@ export class WorkOrderPrintService {
       drawingNumber: string;
       partName: string;
       material: string;
+      materialDimension: string;
       pieceCount: number;
       productionDeadline: Date | null;
       operations: Array<{
@@ -199,7 +200,7 @@ export class WorkOrderPrintService {
         body: [
           infoRow("Komitent", customerName, "Predmet", String(wo.projectId)),
           infoRow("Crtež", wo.drawingNumber, "Naziv dela", wo.partName),
-          infoRow("Materijal", wo.material, "Varijanta", String(wo.variant)),
+          infoRow("Materijal", wo.material, "Dimenzija", wo.materialDimension),
           infoRow(
             "Rok izrade",
             fmtDate(wo.productionDeadline),
@@ -207,6 +208,7 @@ export class WorkOrderPrintService {
             `${wo.pieceCount} kom`,
           ),
           infoRow("Tehnolog", tehnologName, "Revizija", wo.revision),
+          infoRow("Varijanta", String(wo.variant), "", ""),
         ],
       },
       layout: "lightHorizontalLines",

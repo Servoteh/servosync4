@@ -123,6 +123,20 @@ export class TechProcessesController {
     return this.techProcesses.identifyWorkerFromUser(req.user);
   }
 
+  /**
+   * „Moji otvoreni" (kiosk, proba 13.07): otvoreni postupci radnika + plan +
+   * `hasOpenSession` — zatvaranje iz liste ide postojećim `POST /:id/finish`,
+   * bez ponovnog skeniranja. Radnik = kartica (`?card=`) ili prijavljeni nalog.
+   */
+  @Get("worker/open")
+  @RequirePermission(PERMISSIONS.TEHNOLOGIJA_REPORT_WORK)
+  workerOpen(
+    @Query("card") card: string | undefined,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.techProcesses.openForWorker(card, req.user);
+  }
+
   @Get("label")
   label(@Query() query: { workOrderId?: string; quantity?: string }) {
     return this.techProcesses.label(query);

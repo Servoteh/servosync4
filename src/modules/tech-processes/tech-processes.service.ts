@@ -374,6 +374,126 @@ export class TechProcessesService {
     return map;
   }
 
+  // -------------------------------------------------- MOJI OTVORENI (kiosk)
+
+  /**
+   * Otvoreni postupci radnika za kiosk (proba 13.07: radnik je morao ponovo da
+   * skenira barkodove da bi zatvorio nalog). Radnik se identifikuje karticom
+   * (`card`) ILI prijavljenim nalogom (JWT `users.worker_id`) — isti izbor kao
+   * `worker/me`. Vraća `tech_processes WHERE workerId AND isProcessFinished!=true`
+   * (bez machine-scope-a — eksplicitno „moji", ne „na mojoj mašini"), obogaćeno
+   * operacijom, planiranim (iz `work_orders`) i `hasOpenSession` (postoji
+   * otvorena `work_time_entries` sesija) da UI zna „Završi rad" vs „Zatvori".
+   * Zatvaranje iz liste koristi POSTOJEĆI `POST /:id/finish` sa `id` reda.
+   */
+  async openForWorker(card: string | undefined, user?: AuthUser) {
+    const trimmed = (card ?? "").trim();
+    let workerId: number;
+    let workerCard: string | null = null;
+    if (trimmed) {
+      const worker = await this.resolveWorkerByCard(trimmed);
+      workerId = worker.id;
+      workerCard = trimmed;
+    } else {
+      const account = user?.userId
+        ? await this.prisma.user.findUnique({
+            where: { id: user.userId },
+            select: { workerId: true },
+          })
+        : null;
+      if (!account?.workerId)
+        throw new BadRequestException(
+          "Radnik nije prepoznat — skenirajte ID karticu ili se prijavite ličnim nalogom vezanim za radnika.",
+        );
+      workerId = account.workerId;
+    }
+
+    const rows = await this.prisma.techProcess.findMany({
+      where: { workerId, isProcessFinished: { not: true } },
+      orderBy: [{ enteredAt: "desc" }, { id: "desc" }],
+      select: {
+        id: true,
+        projectId: true,
+        identNumber: true,
+        variant: true,
+        operationNumber: true,
+        workCenterCode: true,
+        pieceCount: true,
+        enteredAt: true,
+      },
+    });
+
+    const [ops, planned, openSessionIds] = await Promise.all([
+      this.resolveOperationsByCode(rows.map((r) => r.workCenterCode)),
+      this.resolvePlannedByTriple(
+        rows.map((r) => ({
+          projectId: r.projectId,
+          identNumber: r.identNumber,
+          variant: r.variant,
+        })),
+      ),
+      this.resolveOpenSessionTechProcessIds(
+        workerId,
+        rows.map((r) => r.id),
+      ),
+    ]);
+
+    const data = rows.map((r) => ({
+      ...r,
+      operation: ops.get(r.workCenterCode) ?? null,
+      plannedPieces:
+        planned.get(`${r.projectId}|${r.identNumber}|${r.variant}`) ?? null,
+      hasOpenSession: openSessionIds.has(r.id),
+    }));
+    return { data, meta: { workerId, workerCard } };
+  }
+
+  /** Batch: trojka → planirano (`work_orders.piece_count`), za prikaz napravljeno/plan. */
+  private async resolvePlannedByTriple(
+    triples: { projectId: number; identNumber: string; variant: number }[],
+  ) {
+    const map = new Map<string, number>();
+    const keys = new Set(
+      triples.map((t) => `${t.projectId}|${t.identNumber}|${t.variant}`),
+    );
+    if (!keys.size) return map;
+    const idents = [...new Set(triples.map((t) => t.identNumber))];
+    const wos = await this.prisma.workOrder.findMany({
+      where: { identNumber: { in: idents } },
+      select: {
+        projectId: true,
+        identNumber: true,
+        variant: true,
+        pieceCount: true,
+      },
+    });
+    for (const wo of wos) {
+      const key = `${wo.projectId}|${wo.identNumber}|${wo.variant}`;
+      if (keys.has(key) && !map.has(key)) map.set(key, wo.pieceCount);
+    }
+    return map;
+  }
+
+  /** Skup `techProcessId`-jeva sa OTVORENOM (`stopped_at IS NULL`) sesijom radnika. */
+  private async resolveOpenSessionTechProcessIds(
+    workerId: number,
+    techProcessIds: number[],
+  ) {
+    const set = new Set<number>();
+    const uniq = uniqueIds(techProcessIds);
+    if (!uniq.length) return set;
+    const sessions = await this.prisma.workTimeEntry.findMany({
+      where: {
+        workerId,
+        techProcessId: { in: uniq },
+        stoppedAt: null,
+      },
+      select: { techProcessId: true },
+    });
+    for (const s of sessions) set.add(s.techProcessId);
+    return set;
+  }
+
   // ---------------------------------------------------------------- CARD (Kartica TP)
 
   /**

@@ -43,22 +43,78 @@ export class CncProgramsService {
     return [...new Set(ops.map((o) => o.workCenterCode).filter(Boolean))];
   }
 
+  /**
+   * Šifre radnih centara koji ZNAČE da je CAM već urađen (proba 13.07, Miljan):
+   *  - CNC glodanje/struganje (naziv počinje „CNC") — CAM programiranje PRETHODI
+   *    tim operacijama, pa otkucano CNC ⇒ CAM implicitno urađen (glavni signal:
+   *    izbacuje 271/549 pozicija);
+   *  - završna kontrola (`significantForFinishing`) — pozicija proizvodno gotova.
+   * Pozicija čija je trojka otkucala bilo koju od ovih (isProcessFinished) izlazi
+   * iz CAM liste. Naziv „CNC" je jedini stabilan signal (svi ti RC-ovi imaju
+   * `uses_priority=f`, `significant=f`); univerzalno glodanje/struganje (ručne
+   * mašine, bez CAM-a) su namerno IZUZETI.
+   */
+  private async camDoneWorkCenterCodes(): Promise<string[]> {
+    const ops = await this.prisma.operation.findMany({
+      where: {
+        OR: [
+          { workCenterName: { startsWith: "CNC", mode: "insensitive" } },
+          { significantForFinishing: true },
+        ],
+      },
+      select: { workCenterCode: true },
+    });
+    return [...new Set(ops.map((o) => o.workCenterCode).filter(Boolean))];
+  }
+
+  /**
+   * Id-jevi RN-ova čija je trojka (projectId, identNumber, variant) otkucala
+   * operaciju koja implicira urađen CAM (CNC glodanje/struganje ili završna
+   * kontrola). `tech_processes`↔`work_orders` veza je poslovna trojka (nema
+   * FK/relacije), pa raw JOIN po trojci. `[]` kad nema takvih RC-ova.
+   */
+  private async workOrderIdsWithCamDone(
+    camDoneCodes: string[],
+  ): Promise<number[]> {
+    if (!camDoneCodes.length) return [];
+    const rows = await this.prisma.$queryRaw<{ id: number }[]>(Prisma.sql`
+      SELECT DISTINCT wo.id
+      FROM work_orders wo
+      JOIN tech_processes tp
+        ON tp.project_id = wo.project_id
+       AND tp.ident_number = wo.ident_number
+       AND tp.variant = wo.variant
+      WHERE tp.work_center_code IN (${Prisma.join(camDoneCodes)})
+        AND COALESCE(tp.is_process_finished, false) = true
+    `);
+    return rows.map((r) => r.id);
+  }
+
   async list(query: ListCncProgramsQuery) {
     const { page, pageSize, skip, take } = parsePagination(
       query.page,
       query.pageSize,
     );
 
-    const camCodes = await this.camWorkCenterCodes();
+    const [camCodes, camDoneCodes] = await Promise.all([
+      this.camWorkCenterCodes(),
+      this.camDoneWorkCenterCodes(),
+    ]);
     if (!camCodes.length) {
       return { data: [], meta: pageMeta(page, pageSize, 0) };
     }
 
-    // Pozicija zahteva CAM = NEZAVRŠEN RN (status ≠ true) sa bar jednom
-    // operacijom na CAM radnom centru. `some` relacijski filter = bez ručnog JOIN-a.
+    // Pozicija zahteva CAM = NEZAVRŠEN RN sa bar jednom CAM operacijom
+    // (`usesPriority`, tj. 17.0/17.1), a NIJE joj otkucana operacija koja
+    // implicira urađen CAM — CNC glodanje/struganje (CAM prethodi) ili završna
+    // kontrola (proba 13.07 — smanjuje 549→~270 pozicija). `tech_processes` NEMA
+    // Prisma relaciju na WorkOrder (veza je poslovna trojka), pa se izračuna skup
+    // RN id-jeva sa otkucanim CAM-done signalom i isključi kroz `id notIn`.
+    const camDoneIds = await this.workOrderIdsWithCamDone(camDoneCodes);
     const where: Prisma.WorkOrderWhereInput = {
       status: { not: true },
       operations: { some: { workCenterCode: { in: camCodes } } },
+      ...(camDoneIds.length ? { id: { notIn: camDoneIds } } : {}),
     };
     if (query.q) {
       where.OR = [

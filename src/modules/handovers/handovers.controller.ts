@@ -22,6 +22,10 @@ import { PrintBundleService } from "./print-bundle.service";
 import type { PrintBundleQuery } from "./print-bundle.service";
 import type { AuthUser } from "../auth/jwt.strategy";
 import type { ApproveHandoverDto } from "./dto/approve-handover.dto";
+import type {
+  ApproveHandoverBatchDto,
+  RejectHandoverBatchDto,
+} from "./dto/batch-handover.dto";
 import type { RejectHandoverDto } from "./dto/reject-handover.dto";
 import type { ReturnHandoverDto } from "./dto/return-handover.dto";
 import type { LaunchHandoverDto } from "./dto/launch-handover.dto";
@@ -141,6 +145,30 @@ export class HandoversController {
     @Req() req: { user: AuthUser },
   ) {
     return this.handovers.reject(id, dto?.reason, req.user);
+  }
+
+  /**
+   * Grupno odobravanje CELE primopredaje (proba 13.07 — sve pozicije istog
+   * nacrta jednim klikom). FE grupiše po `draftContext.draftNumber` i šalje
+   * eksplicitnu listu `handoverIds`. Best-effort: vraća `{ approved, skipped }`.
+   */
+  @Post("approve-batch")
+  @RequirePermission(PERMISSIONS.PRIMOPREDAJE_APPROVE)
+  approveBatch(
+    @Body() dto: ApproveHandoverBatchDto,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.handovers.approveBatch(dto, req.user);
+  }
+
+  /** Grupno odbijanje cele primopredaje (legacy paritet: status 2 grupno). */
+  @Post("reject-batch")
+  @RequirePermission(PERMISSIONS.PRIMOPREDAJE_APPROVE)
+  rejectBatch(
+    @Body() dto: RejectHandoverBatchDto,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.handovers.rejectBatch(dto, req.user);
   }
 
   /** "Vrati na čekanje" — undo odobravanja (ista težina kao approve); 409 ako RN već postoji. */

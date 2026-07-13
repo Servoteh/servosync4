@@ -305,6 +305,54 @@ describe("HandoversService", () => {
     });
   });
 
+  // -------------------------------------------------- GRUPNO (batch) approve
+
+  describe("approveBatch", () => {
+    it("422 za praznu listu id-jeva", async () => {
+      await expect(
+        service.approveBatch({ handoverIds: [], technologistId: 9 }, actor),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    });
+
+    it("odobri PENDING redove, preskoči zaključan/legacy/pogrešan status uz razlog", async () => {
+      mockValidTechnologist();
+      // 4 tražena: 1 PENDING (ok), 2 zaključan, 3 legacy, 4 već SAGLASAN.
+      prisma.drawingHandover.findMany.mockResolvedValue([
+        { id: 1, statusId: 0, isLocked: false, legacyRnId: null },
+        { id: 2, statusId: 0, isLocked: true, legacyRnId: null },
+        { id: 3, statusId: 0, isLocked: false, legacyRnId: 500 },
+        { id: 4, statusId: 1, isLocked: false, legacyRnId: null },
+      ]);
+      prisma.drawingHandover.updateMany.mockResolvedValue({ count: 1 });
+
+      const res = await service.approveBatch(
+        { handoverIds: [1, 2, 3, 4], technologistId: 9, isUrgent: true },
+        actor,
+      );
+
+      // Samo id=1 je eligible → updateMany po tom skupu, sa istim guardom.
+      expect(prisma.drawingHandover.updateMany).toHaveBeenCalledWith({
+        where: { id: { in: [1] }, statusId: 0, isLocked: false },
+        data: containing({
+          statusId: 1,
+          technologistId: 9,
+          isUrgent: true,
+          statusChangedById: 77,
+        }),
+      });
+      expect(res.data.approved).toBe(1);
+      expect(res.data.skipped.map((s) => s.id).sort()).toEqual([2, 3, 4]);
+    });
+
+    it("422 za neaktivnog/nepostojećeg tehnologa — bez ikakvog upisa", async () => {
+      prisma.worker.findUnique.mockResolvedValue(null);
+      await expect(
+        service.approveBatch({ handoverIds: [1], technologistId: 999 }, actor),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(prisma.drawingHandover.updateMany).not.toHaveBeenCalled();
+    });
+  });
+
   // ---------------------------------------------------- RETURN-TO-PENDING
 
   describe("returnToPending", () => {
