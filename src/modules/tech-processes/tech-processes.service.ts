@@ -408,8 +408,27 @@ export class TechProcessesService {
       workerId = account.workerId;
     }
 
+    // Proba 13.07 (Jovica): red operacije se pri START skenu otvara sa
+    // workerId=0 (vlasnik se štancuje tek pri prijavi/zatvaranju), a red je i
+    // DELJEN između radnika (po trojci+operaciji) — filter samo po
+    // tech_processes.worker_id zato NE vidi redove na kojima radnik ima
+    // OTVORENU sesiju. „Moji otvoreni" = moji redovi ILI redovi mojih
+    // otvorenih sesija (work_time_entries.stopped_at IS NULL).
+    const openSessions = await this.prisma.workTimeEntry.findMany({
+      where: { workerId, stoppedAt: null },
+      select: { techProcessId: true },
+    });
+    const openSessionIds = new Set(
+      openSessions
+        .map((s) => s.techProcessId)
+        .filter((id): id is number => id != null && id > 0),
+    );
+
     const rows = await this.prisma.techProcess.findMany({
-      where: { workerId, isProcessFinished: { not: true } },
+      where: {
+        isProcessFinished: { not: true },
+        OR: [{ workerId }, { id: { in: [...openSessionIds] } }],
+      },
       orderBy: [{ enteredAt: "desc" }, { id: "desc" }],
       select: {
         id: true,
@@ -423,7 +442,9 @@ export class TechProcessesService {
       },
     });
 
-    const [ops, planned, openSessionIds] = await Promise.all([
+    // `hasOpenSession` dolazi iz već učitanog skupa otvorenih sesija (gore) —
+    // bez drugog upita ka work_time_entries.
+    const [ops, planned] = await Promise.all([
       this.resolveOperationsByCode(rows.map((r) => r.workCenterCode)),
       this.resolvePlannedByTriple(
         rows.map((r) => ({
@@ -431,10 +452,6 @@ export class TechProcessesService {
           identNumber: r.identNumber,
           variant: r.variant,
         })),
-      ),
-      this.resolveOpenSessionTechProcessIds(
-        workerId,
-        rows.map((r) => r.id),
       ),
     ]);
 
@@ -472,26 +489,6 @@ export class TechProcessesService {
       if (keys.has(key) && !map.has(key)) map.set(key, wo.pieceCount);
     }
     return map;
-  }
-
-  /** Skup `techProcessId`-jeva sa OTVORENOM (`stopped_at IS NULL`) sesijom radnika. */
-  private async resolveOpenSessionTechProcessIds(
-    workerId: number,
-    techProcessIds: number[],
-  ) {
-    const set = new Set<number>();
-    const uniq = uniqueIds(techProcessIds);
-    if (!uniq.length) return set;
-    const sessions = await this.prisma.workTimeEntry.findMany({
-      where: {
-        workerId,
-        techProcessId: { in: uniq },
-        stoppedAt: null,
-      },
-      select: { techProcessId: true },
-    });
-    for (const s of sessions) set.add(s.techProcessId);
-    return set;
   }
 
   // ---------------------------------------------------------------- CARD (Kartica TP)
@@ -1107,6 +1104,7 @@ export class TechProcessesService {
         workCenterCode,
         operationNumber,
         identMark,
+        worker?.id ?? 0,
       );
       if (tp.isProcessFinished)
         throw new UnprocessableEntityException(
@@ -1590,6 +1588,7 @@ export class TechProcessesService {
         workCenterCode,
         operationNumber,
         identMark,
+        worker.id,
       );
       if (tp.isProcessFinished)
         throw new UnprocessableEntityException(
@@ -1703,6 +1702,7 @@ export class TechProcessesService {
         workCenterCode,
         operationNumber,
         identMark,
+        worker.id,
       );
       if (tp.isProcessFinished)
         throw new UnprocessableEntityException(
@@ -2674,6 +2674,11 @@ export class TechProcessesService {
     workCenterCode: string,
     operationNumber: number | null,
     identMark: string,
+    // Proba 13.07 (Jovica): red se ranije otvarao sa workerId=0 pa „Moji
+    // otvoreni" (filter po tech_processes.worker_id) nije video START-ovan red
+    // do prve prijave. Kreator (radnik sa skenirane kartice) se štancuje ODMAH;
+    // prijava/zatvaranje i dalje prepisuju vlasnika (legacy semantika).
+    creatorWorkerId = 0,
   ) {
     // Tekući RN prvo — kiosk uvek knjiži na najvišu varijantu (D5 klon = novi red).
     const wo = await this.findCurrentWorkOrder(tx, projectId, identNumber);
@@ -2720,7 +2725,7 @@ export class TechProcessesService {
         workCenterCode,
         identMark: identMark || "0",
         pieceCount: 0,
-        workerId: 0,
+        workerId: creatorWorkerId,
         workOrderId: wo.id,
       },
     });

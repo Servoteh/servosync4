@@ -24,8 +24,12 @@ function prismaMock() {
     workOrder: {
       findUnique: jest.fn().mockResolvedValue(null),
       findFirst: jest.fn().mockResolvedValue(null),
+      findMany: jest.fn().mockResolvedValue([]),
     },
     workOrderOperation: { findFirst: jest.fn().mockResolvedValue(null) },
+    // openForWorker: otvorene sesije radnika + svež users.worker_id fallback.
+    workTimeEntry: { findMany: jest.fn().mockResolvedValue([]) },
+    user: { findUnique: jest.fn().mockResolvedValue(null) },
     drawingHandover: { findUnique: jest.fn().mockResolvedValue(null) },
     handoverDraftItem: { findFirst: jest.fn().mockResolvedValue(null) },
     handoverDraft: { findUnique: jest.fn().mockResolvedValue(null) },
@@ -464,5 +468,143 @@ describe("TechProcessesService — D8 emit notifikacija (control dorada/škart)"
       emit.notifyQualityIssue(QUALITY_INPUT),
     ).resolves.toBeUndefined();
     expect(notifications.notifyWorkers).not.toHaveBeenCalled();
+  });
+});
+
+describe("TechProcessesService — openForWorker (Moji otvoreni, proba 13.07 Jovica)", () => {
+  let service: TechProcessesService;
+  let prisma: ReturnType<typeof prismaMock>;
+
+  beforeEach(async () => {
+    prisma = prismaMock();
+    const mod: TestingModule = await Test.createTestingModule({
+      providers: [
+        TechProcessesService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: ScopeService, useValue: {} },
+        { provide: NotificationsService, useValue: notificationsMock() },
+      ],
+    }).compile();
+    service = mod.get(TechProcessesService);
+    // Kartica → radnik 74 (Jovica).
+    prisma.worker.findFirst.mockResolvedValue({
+      id: 74,
+      fullName: "Jovica Milosevic",
+      username: "jovica",
+      workerTypeId: 1,
+    });
+  });
+
+  it("vraća red DELJENE operacije sa mojom otvorenom sesijom iako tp.workerId NIJE moj (workerId=0)", async () => {
+    // Jovicin slučaj: START sken otvorio red sa workerId=0, sesija njegova.
+    prisma.workTimeEntry.findMany.mockResolvedValue([
+      { techProcessId: 117084 },
+    ]);
+    prisma.techProcess.findMany.mockResolvedValue([
+      tpRow({ id: 117084, workerId: 0 }),
+    ]);
+
+    const { data, meta } = await service.openForWorker("CARD74", undefined);
+
+    expect(meta.workerId).toBe(74);
+    expect(data).toHaveLength(1);
+    expect(data[0].hasOpenSession).toBe(true);
+    // Upit mora da traži: moje redove ILI redove mojih otvorenih sesija.
+    expect(prisma.techProcess.findMany).toHaveBeenCalledWith(
+      containing({
+        where: containing({
+          isProcessFinished: { not: true },
+          OR: [{ workerId: 74 }, { id: { in: [117084] } }],
+        }),
+      }),
+    );
+  });
+
+  it("moji redovi bez otvorene sesije i dalje ulaze (vlasništvo), hasOpenSession=false", async () => {
+    prisma.workTimeEntry.findMany.mockResolvedValue([]);
+    prisma.techProcess.findMany.mockResolvedValue([tpRow({ workerId: 74 })]);
+
+    const { data } = await service.openForWorker("CARD74", undefined);
+
+    expect(data).toHaveLength(1);
+    expect(data[0].hasOpenSession).toBe(false);
+  });
+
+  it("bez kartice: nalog bez vezanog radnika → 400 sa jasnom porukom", async () => {
+    prisma.user.findUnique.mockResolvedValue({ workerId: null });
+
+    await expect(
+      service.openForWorker(undefined, {
+        userId: 5,
+        email: "x@y",
+        role: "proizvodni_radnik",
+        workerId: null,
+      }),
+    ).rejects.toThrow("Radnik nije prepoznat");
+  });
+});
+
+describe("TechProcessesService — create-on-scan štancuje kreatora (proba 13.07 Jovica)", () => {
+  let service: TechProcessesService;
+  let prisma: ReturnType<typeof prismaMock>;
+
+  beforeEach(async () => {
+    prisma = prismaMock();
+    const mod: TestingModule = await Test.createTestingModule({
+      providers: [
+        TechProcessesService,
+        { provide: PrismaService, useValue: prisma },
+        {
+          provide: ScopeService,
+          useValue: {
+            workerMachineViolation: jest.fn().mockResolvedValue(null),
+            isEnforced: jest.fn().mockReturnValue(false),
+          },
+        },
+        { provide: NotificationsService, useValue: notificationsMock() },
+      ],
+    }).compile();
+    service = mod.get(TechProcessesService);
+    prisma.workOrder.findFirst.mockResolvedValue({
+      id: 900,
+      projectId: 2597,
+      identNumber: "06/93-4",
+      variant: 1,
+      pieceCount: 10,
+      revision: "A",
+    });
+    prisma.worker.findFirst.mockResolvedValue({
+      id: 74,
+      fullName: "Jovica Milosevic",
+      username: "jovica",
+      workerTypeId: 1,
+    });
+  });
+
+  it("startWork: novi red operacije dobija workerId radnika sa kartice (NE 0)", async () => {
+    prisma.techProcess.findFirst.mockResolvedValue(null); // red ne postoji → create
+    prisma.workOrderOperation.findFirst.mockResolvedValue({
+      operationNumber: 10,
+    });
+    prisma.techProcess.create.mockResolvedValue(
+      tpRow({ id: 555, workerId: 74, variant: 1, workOrderId: 900 }),
+    );
+    // startWork: multitasking findFirst (druga otvorena sesija) → null; create sesije.
+    (prisma.workTimeEntry as Record<string, jest.Mock>).findFirst = jest
+      .fn()
+      .mockResolvedValue(null);
+    (prisma.workTimeEntry as Record<string, jest.Mock>).create = jest
+      .fn()
+      .mockResolvedValue({ id: 1, startedAt: new Date() });
+
+    await service.startWork({
+      workerCard: "CARD74",
+      orderBarcode: "RNZ:2597:06/93-4:1:A",
+      operationBarcode: "S:10:0102:0:A",
+    });
+
+    expect(prisma.techProcess.create).toHaveBeenCalledWith(
+      containing({ data: containing({ workerId: 74 }) }),
+    );
   });
 });
