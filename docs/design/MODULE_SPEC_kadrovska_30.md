@@ -520,6 +520,13 @@ put probija PII maske; row-scope je gust). Najveći tehnički rizici: (1) `withU
 
 ## 7. Otvorena pitanja (Nenad presuđuje; svako sa konkretnim predlogom)
 
+> ✅ **PRESUĐENO 13.07.2026 (Nenad): VAŽE SVI PREDLOZI (G1–G11).** Eksplicitni izbori na 3 suštinska pitanja:
+> **G3** = payroll engine u **BE servis** + zlatni testovi (uslov: potvrditi da su sve godišnje poreske tablice u kodu pre porta).
+> **G6** = **dodati `/m/prisustvo` u 2.0 v1** (svesno proširenje; dnevni pregled + korekcija, ne menja RLS).
+> **G8** = editor ekrani „Grid urednici" + „Urednici salda GO" u **Podešavanja / Talas D**; G ih konzumira kroz `kadrovska.grid_edit`/`vacation_edit`.
+> Ostalih 8 (G1 kanon `kadrovska.read`, G2 allowliste/Zoran→per-user override, G4 worker_map R0 re-verify, G5 PII storage BE proxy, G7 ne dirati deljene RPC, G9 dispatch paritet-only, G10 bez novih CHECK tipova, G11 attendance view-only) — sve po predlogu.
+
+
 1. **Usklađivanje ključa pristupa modulu sa Talasom D.** D je uveo per-user override `kadrovska.access` (grant,
    za 1.0 `kadrovska_access`), a ovaj spec kao kanon predlaže `kadrovska.read`. **Predlog:** kanon je **`kadrovska.read`**
    (bazni pristup = `canAccessKadrovska`); D-override preimenovati/aliasovati u `kadrovska.read` (grant) da postoji JEDAN
