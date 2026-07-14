@@ -404,6 +404,9 @@ export const SS_KEYS = {
   subtab: 'ss2_kadr_odsustva_subtab_v1',
   period: 'ss2_kadr_odsustva_period_v1',
   sort: 'ss2_kadr_odsustva_sort_v1',
+  search: 'ss2_kadr_odsustva_search_v1',
+  /** Pre-filter za Mesečni grid (klik na red Pregleda) — GridTab pretraga = TODO(P1a). */
+  gridSearch: 'ss2_kadr_grid_search_v1',
 } as const;
 
 export function ssGet(key: string, fallback: string): string {
