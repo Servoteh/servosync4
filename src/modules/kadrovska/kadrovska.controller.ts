@@ -21,6 +21,7 @@ import {
   ListEmployeesQueryDto,
   MonthQueryDto,
   NotificationsQueryDto,
+  ReportQueryDto,
   RequestsQueryDto,
   VacationQueryDto,
   WorkHoursQueryDto,
@@ -108,19 +109,33 @@ export class KadrovskaController {
     return this.kadrovska.reportChildren(req.user.email);
   }
 
-  /** Generički izveštaji (RLS-svesni ili R2 501/422). NE sme da servira non-invoker/PII
-   *  kindove — oni idu kroz namenske gore; defense-in-depth 403 ako routing ikad padne. */
+  /** Izveštaj „Rizik" (PII — 1.0 canViewEmployeePii gate) — BO agregat po zaposlenom +
+   *  isteci lekarskog/ugovora; nivo rizika i heatmap računa FE (1.0 logika). */
+  @Get("reports/risk")
+  @RequirePermission(PERMISSIONS.KADROVSKA_PII)
+  reportRisk(@Req() req: AuthedRequest, @Query() q: ReportQueryDto) {
+    return this.kadrovska.reportRisk(req.user.email, q);
+  }
+
+  /** Generički izveštaji (view-read ili SQL agregat; nepoznat kind → 422). NE sme da
+   *  servira non-invoker/PII kindove — oni idu kroz namenske rute gore; defense-in-depth
+   *  403 ako routing ikad padne. */
   @Get("reports/:kind")
-  report(@Req() req: AuthedRequest, @Param("kind") kind: string) {
+  report(
+    @Req() req: AuthedRequest,
+    @Param("kind") kind: string,
+    @Query() q: ReportQueryDto,
+  ) {
     if (
       KadrovskaController.NON_INVOKER_REPORTS.has(kind) ||
-      kind === "children"
+      kind === "children" ||
+      kind === "risk"
     ) {
       throw new ForbiddenException(
         `Izveštaj '${kind}' ide kroz namensku rutu sa strožom permisijom`,
       );
     }
-    return this.kadrovska.report(req.user.email, kind);
+    return this.kadrovska.report(req.user.email, kind, q);
   }
 
   @Get("notifications")

@@ -17,6 +17,7 @@ import type {
   ListEmployeesQueryDto,
   MonthQueryDto,
   NotificationsQueryDto,
+  ReportQueryDto,
   RequestsQueryDto,
   VacationQueryDto,
   WorkHoursQueryDto,
@@ -125,42 +126,262 @@ export class KadrovskaService {
 
   /** Izveštaji koji su 1:1 čitanje kanonskog view-a/tabele (view-ови su RLS-svesni).
    *  PII izveštaji gate-uje `kadrovska.pii` (kontroler), audit `kadrovska.admin`;
-   *  redove i dalje maskira RLS kroz withUserRls. Agregatni/XLSX izveštaji = R2. */
+   *  redove i dalje maskira RLS kroz withUserRls. */
   private static readonly REPORT_SOURCES: Record<string, string> = {
     medical: "v_kadr_medical_exam_status",
     certs: "v_kadr_certificate_status",
     audit: "v_kadr_audit_log",
   };
-  /** Kindovi koji traže agregaciju iz grida / XLSX render → i dalje R2 (parity matrica #3).
-   *  „children" je izdvojen u namensku PII rutu (reportChildren); ostali agregati čekaju
-   *  odluku (FE-agregacija nad postojećim read-ovima vs. kanonski sy15 agregat-view). */
-  private static readonly REPORT_R2 = new Set([
-    "sick",
-    "demo",
-    "org",
-    "vacation",
-    "overtime",
-    "field",
-    "risk",
-  ]);
 
-  async report(email: string, kind: string) {
+  /**
+   * Izveštaji — dispatch po kind-u (paritet 1.0 reportsTab.js pod-izveštaja).
+   * View-kindovi (medical/certs/audit) = 1:1 čitanje; agregatni kindovi (sick/demo/
+   * org/vacation/overtime/field) repliciraju 1.0 FE agregaciju u SQL-u nad ISTIM
+   * izvorima (work_hours grid, v_employees_safe, org tabele, v_vacation_balance) —
+   * XLSX/CSV render i summary chips ostaju FE. `children`/`risk` su namenske PII rute.
+   */
+  async report(email: string, kind: string, q: ReportQueryDto = {}) {
     const view = KadrovskaService.REPORT_SOURCES[kind];
-    if (!view) {
-      if (KadrovskaService.REPORT_R2.has(kind)) {
-        // Agregat/XLSX izveštaj — R2 (engine + exporteri). Honest 501 umesto tihe greške.
-        throw new NotImplementedException(
-          `Izveštaj '${kind}' je R2 (agregat/XLSX exporter)`,
+    if (view) {
+      return this.withUserMapped(email, async (tx) => {
+        const data = await tx.$queryRaw(
+          Prisma.sql`SELECT * FROM ${Prisma.raw(view)} ORDER BY 1`,
         );
-      }
-      throw new UnprocessableEntityException(`Nepoznat izveštaj '${kind}'`);
+        // v_kadr_audit_log.id je bigint → Number (res.json ne serijalizuje BigInt).
+        return { data: this.numify(data) };
+      });
     }
+    switch (kind) {
+      case "sick":
+        return this.reportSick(email, q);
+      case "demo":
+        return this.reportDemo(email);
+      case "org":
+        return this.reportOrg(email);
+      case "vacation":
+        return this.reportVacation(email, q);
+      case "overtime":
+        return this.reportOvertime(email, q);
+      case "field":
+        return this.reportField(email, q);
+      default:
+        throw new UnprocessableEntityException(`Nepoznat izveštaj '${kind}'`);
+    }
+  }
+
+  /**
+   * Bolovanja (1.0 bolovanjeListFromWorkHours): dnevne 'bo' ćelije grida spojene u
+   * epizode (uzastopni dani istog zaposlenog + istog subtype-a — gaps-and-islands).
+   * Vraća epizode; per-emp agregat/chips računa FE (paritet sickReport._aggregate).
+   */
+  private async reportSick(email: string, q: ReportQueryDto) {
     return this.withUserMapped(email, async (tx) => {
-      const data = await tx.$queryRaw(
-        Prisma.sql`SELECT * FROM ${Prisma.raw(view)} ORDER BY 1`,
-      );
-      // v_kadr_audit_log.id je bigint → Number (res.json ne serijalizuje BigInt).
+      const conds: Prisma.Sql[] = [Prisma.sql`absence_code = 'bo'`];
+      if (q.from) conds.push(Prisma.sql`work_date >= ${q.from.slice(0, 10)}::date`);
+      if (q.to) conds.push(Prisma.sql`work_date <= ${q.to.slice(0, 10)}::date`);
+      const data = await tx.$queryRaw(Prisma.sql`
+        WITH bo AS (
+          SELECT employee_id, work_date, lower(coalesce(absence_subtype, '')) AS sub
+            FROM work_hours
+           WHERE ${Prisma.join(conds, " AND ")}
+        ), g AS (
+          SELECT employee_id, sub, work_date,
+                 work_date - (ROW_NUMBER() OVER (PARTITION BY employee_id, sub ORDER BY work_date))::int AS anchor
+            FROM bo
+        )
+        SELECT employee_id, MIN(work_date) AS date_from, MAX(work_date) AS date_to,
+               (MAX(work_date) - MIN(work_date) + 1) AS days_count,
+               NULLIF(sub, '') AS absence_subtype
+          FROM g
+         GROUP BY employee_id, sub, anchor
+         ORDER BY employee_id, date_from`);
       return { data: this.numify(data) };
+    });
+  }
+
+  /** Demografija (1.0 demoReport) — polja za distribucije (rod/starost/obrazovanje/staž/
+   *  odeljenje) iz v_employees_safe; bucket-ovanje i chips računa FE. PII maska view-a. */
+  private async reportDemo(email: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const data = await tx.$queryRaw(Prisma.sql`
+        SELECT id, full_name, gender, birth_date, education_level, hire_date,
+               department, department_id, is_active
+          FROM v_employees_safe ORDER BY full_name`);
+      return { data };
+    });
+  }
+
+  /** Organogram (1.0 orgChartReport) — struktura (departments → sub_departments →
+   *  job_positions) + zaposleni sa grupišućim poljima; stablo sklapa FE. */
+  private async reportOrg(email: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const [departments, subDepartments, jobPositions, employees] = await Promise.all([
+        tx.$queryRaw(
+          Prisma.sql`SELECT id, name, sort_order FROM departments ORDER BY sort_order, name`,
+        ),
+        tx.$queryRaw(
+          Prisma.sql`SELECT id, department_id, name, sort_order FROM sub_departments ORDER BY sort_order, name`,
+        ),
+        tx.$queryRaw(
+          Prisma.sql`SELECT id, department_id, sub_department_id, name, sort_order FROM job_positions ORDER BY sort_order, name`,
+        ),
+        tx.$queryRaw(Prisma.sql`
+          SELECT id, full_name, position, position_id, sub_department_id, department_id, is_active
+            FROM v_employees_safe ORDER BY full_name`),
+      ]);
+      return { data: { departments, subDepartments, jobPositions, employees } };
+    });
+  }
+
+  /** Saldo GO (1.0 vacationReport) — v_vacation_balance + entitlements za godinu +
+   *  fallback broj GO dana iz grida (countGoDaysByEmployeeForYear). Spajanje radi FE. */
+  private async reportVacation(email: string, q: ReportQueryDto) {
+    const year = q.year ?? new Date().getUTCFullYear();
+    return this.withUserMapped(email, async (tx) => {
+      const [balances, entitlements, gridGoDays] = await Promise.all([
+        tx.$queryRaw(
+          Prisma.sql`SELECT * FROM v_vacation_balance WHERE year = ${year}::int`,
+        ),
+        tx.vacationEntitlement.findMany({ where: { year } }),
+        tx.$queryRaw(Prisma.sql`
+          SELECT employee_id, count(*)::int AS days
+            FROM work_hours
+           WHERE absence_code = 'go'
+             AND work_date >= ${`${year}-01-01`}::date
+             AND work_date <= ${`${year}-12-31`}::date
+           GROUP BY employee_id`),
+      ]);
+      return {
+        data: {
+          year,
+          balances: this.numify(balances),
+          entitlements,
+          gridGoDays: this.numify(gridGoDays),
+        },
+      };
+    });
+  }
+
+  /**
+   * Prekovremeni (1.0 overtimeByEmployeeForPeriod): po zaposlenom Σ overtime,
+   * Σ two_machine (sa dana kad je bilo prekovremenih), broj dana, poslednji datum;
+   * + zaposleni SAMO sa two_machine satima (bez overtime-a) kao zasebni redovi.
+   * ⚠️ Namerno odstupanje od 1.0: tm-only zaposlenom 1.0 broji SAMO PRVI red (bug u
+   * petlji `if (map.has(id)) continue`); ovde se sabiraju svi tm redovi (intencija).
+   */
+  private async reportOvertime(email: string, q: ReportQueryDto) {
+    const period: Prisma.Sql[] = [];
+    if (q.from) period.push(Prisma.sql`work_date >= ${q.from.slice(0, 10)}::date`);
+    if (q.to) period.push(Prisma.sql`work_date <= ${q.to.slice(0, 10)}::date`);
+    const and = period.length
+      ? Prisma.sql`AND ${Prisma.join(period, " AND ")}`
+      : Prisma.empty;
+    return this.withUserMapped(email, async (tx) => {
+      const data = await tx.$queryRaw(Prisma.sql`
+        WITH ot AS (
+          SELECT employee_id,
+                 SUM(coalesce(overtime_hours, 0)) AS total_overtime,
+                 SUM(coalesce(two_machine_hours, 0)) AS two_machine_hours,
+                 COUNT(*)::int AS days,
+                 MAX(work_date) AS last_date
+            FROM work_hours
+           WHERE coalesce(overtime_hours, 0) > 0 ${and}
+           GROUP BY employee_id
+        ), tm AS (
+          SELECT employee_id,
+                 SUM(coalesce(two_machine_hours, 0)) AS two_machine_hours,
+                 MAX(work_date) AS last_date
+            FROM work_hours
+           WHERE coalesce(two_machine_hours, 0) > 0 ${and}
+           GROUP BY employee_id
+        )
+        SELECT employee_id, total_overtime, two_machine_hours, days, last_date FROM ot
+        UNION ALL
+        SELECT t.employee_id, 0, t.two_machine_hours, 0, t.last_date FROM tm t
+         WHERE NOT EXISTS (SELECT 1 FROM ot o WHERE o.employee_id = t.employee_id)
+         ORDER BY total_overtime DESC`);
+      return { data: this.numify(data) };
+    });
+  }
+
+  /** Terenski (1.0 fieldWorkByEmployeeForPeriod): dani/sati po zaposlenom, domaći
+   *  (subtype ≠ 'foreign') vs inostrani; dan = red sa field_hours > 0. */
+  private async reportField(email: string, q: ReportQueryDto) {
+    const conds: Prisma.Sql[] = [Prisma.sql`coalesce(field_hours, 0) > 0`];
+    if (q.from) conds.push(Prisma.sql`work_date >= ${q.from.slice(0, 10)}::date`);
+    if (q.to) conds.push(Prisma.sql`work_date <= ${q.to.slice(0, 10)}::date`);
+    return this.withUserMapped(email, async (tx) => {
+      const data = await tx.$queryRaw(Prisma.sql`
+        SELECT employee_id,
+               COUNT(*) FILTER (WHERE coalesce(field_subtype, '') <> 'foreign')::int AS domestic_days,
+               coalesce(SUM(field_hours) FILTER (WHERE coalesce(field_subtype, '') <> 'foreign'), 0) AS domestic_hours,
+               COUNT(*) FILTER (WHERE field_subtype = 'foreign')::int AS foreign_days,
+               coalesce(SUM(field_hours) FILTER (WHERE field_subtype = 'foreign'), 0) AS foreign_hours,
+               MAX(work_date) AS last_date
+          FROM work_hours
+         WHERE ${Prisma.join(conds, " AND ")}
+         GROUP BY employee_id
+         ORDER BY COUNT(*) DESC`);
+      return { data: this.numify(data) };
+    });
+  }
+
+  /**
+   * Rizik (1.0 riskReport, PII gate): po zaposlenom BO dani/epizode u periodu
+   * (grid 'bo' epizode + absences tip 'bolovanje' — 1.0 spaja OBA izvora),
+   * istek lekarskog (v_employees_safe.medical_exam_expires) i najnovijeg aktivnog
+   * ugovora (date_from DESC — 1.0 activeConByEmp). Nivo (visok/srednji/nizak),
+   * razlozi i heatmap = FE (1.0 _computeRiskLevel logika).
+   */
+  async reportRisk(email: string, q: ReportQueryDto) {
+    const months = q.months ?? 12;
+    const today = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Europe/Belgrade",
+    }).format(new Date());
+    const start = new Date(`${today}T00:00:00Z`);
+    start.setUTCMonth(start.getUTCMonth() - months);
+    const periodStart = start.toISOString().slice(0, 10);
+    return this.withUserMapped(email, async (tx) => {
+      const data = await tx.$queryRaw(Prisma.sql`
+        WITH bo AS (
+          SELECT employee_id, work_date, lower(coalesce(absence_subtype, '')) AS sub
+            FROM work_hours
+           WHERE absence_code = 'bo'
+             AND work_date >= ${periodStart}::date AND work_date <= ${today}::date
+        ), g AS (
+          SELECT employee_id, sub, work_date,
+                 work_date - (ROW_NUMBER() OVER (PARTITION BY employee_id, sub ORDER BY work_date))::int AS anchor
+            FROM bo
+        ), grid_ep AS (
+          SELECT employee_id, MIN(work_date) AS date_from, MAX(work_date) AS date_to
+            FROM g GROUP BY employee_id, sub, anchor
+        ), abs_ep AS (
+          SELECT employee_id, date_from, date_to
+            FROM absences
+           WHERE type = 'bolovanje' AND archived_at IS NULL
+             AND date_from IS NOT NULL AND date_to IS NOT NULL
+             AND date_to >= ${periodStart}::date AND date_from <= ${today}::date
+        ), bo_all AS (
+          SELECT * FROM grid_ep UNION ALL SELECT * FROM abs_ep
+        ), agg AS (
+          SELECT employee_id,
+                 SUM(GREATEST(0, LEAST(date_to, ${today}::date) - GREATEST(date_from, ${periodStart}::date) + 1))::int AS bo_days,
+                 COUNT(*)::int AS bo_count
+            FROM bo_all GROUP BY employee_id
+        ), con AS (
+          SELECT DISTINCT ON (employee_id) employee_id, date_to
+            FROM contracts
+           WHERE archived_at IS NULL AND is_active IS NOT FALSE
+           ORDER BY employee_id, date_from DESC NULLS LAST
+        )
+        SELECT e.id AS employee_id, e.full_name, e.department, e.position, e.is_active,
+               coalesce(a.bo_days, 0) AS bo_days, coalesce(a.bo_count, 0) AS bo_count,
+               e.medical_exam_expires, c.date_to AS contract_date_to
+          FROM v_employees_safe e
+          LEFT JOIN agg a ON a.employee_id = e.id
+          LEFT JOIN con c ON c.employee_id = e.id
+         ORDER BY e.full_name`);
+      return { data: { months, periodStart, periodEnd: today, rows: this.numify(data) } };
     });
   }
 
