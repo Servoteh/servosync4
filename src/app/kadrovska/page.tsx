@@ -12,9 +12,12 @@ import { OdmoriTab } from './_components/odmori-tab';
 import { GridTab } from './_components/grid-tab';
 import { PrisustvoTab } from './_components/prisustvo-tab';
 import { RazvojTab } from './_components/razvoj-tab';
+import { OnboardingTab } from './_components/onboarding-tab';
+import { NotifikacijeTab } from './_components/notifikacije-tab';
+import { IzvestajiTab } from './_components/izvestaji-tab';
 import { ZaradeTab } from './_components/zarade-tab';
 
-type TabKey = 'zaposleni' | 'odmori' | 'sati' | 'prisustvo' | 'razvoj' | 'zarade';
+type TabKey = 'zaposleni' | 'odmori' | 'sati' | 'prisustvo' | 'razvoj' | 'onboarding' | 'notifikacije' | 'izvestaji' | 'zarade';
 
 /**
  * Kadrovska (HR) — 3.0 TALAS G (POSLEDNJI; PII + zarade).
@@ -40,6 +43,8 @@ export default function KadrovskaPage() {
 
   const canSalary = can(PERMISSIONS.KADROVSKA_SALARY);
   const canDev = can(PERMISSIONS.KADROVSKA_DEV_MANAGE);
+  const canManage = can(PERMISSIONS.KADROVSKA_MANAGE);
+  const canRead = can(PERMISSIONS.KADROVSKA_READ);
 
   const tabs: TabItem<TabKey>[] = [
     { key: 'zaposleni', label: 'Zaposleni' },
@@ -47,6 +52,9 @@ export default function KadrovskaPage() {
     { key: 'sati', label: 'Radni sati' },
     { key: 'prisustvo', label: 'Prisustvo' },
     ...(canDev ? [{ key: 'razvoj' as const, label: 'Razvoj i razgovori' }] : []),
+    ...(canManage ? [{ key: 'onboarding' as const, label: 'Uvođenje/Izlazak' }] : []),
+    ...(canRead ? [{ key: 'izvestaji' as const, label: 'Izveštaji' }] : []),
+    ...(canManage ? [{ key: 'notifikacije' as const, label: 'Notifikacije' }] : []),
     ...(canSalary ? [{ key: 'zarade' as const, label: 'Zarade' }] : []),
   ];
 
@@ -61,6 +69,9 @@ export default function KadrovskaPage() {
         {tab === 'sati' && <GridTab />}
         {tab === 'prisustvo' && <PrisustvoTab />}
         {tab === 'razvoj' && canDev && <RazvojTab />}
+        {tab === 'onboarding' && canManage && <OnboardingTab />}
+        {tab === 'izvestaji' && canRead && <IzvestajiTab />}
+        {tab === 'notifikacije' && canManage && <NotifikacijeTab />}
         {tab === 'zarade' && canSalary && <ZaradeTab />}
       </div>
     </AppShell>
