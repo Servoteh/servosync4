@@ -6,6 +6,7 @@ import { useAuth } from '@/lib/auth-context';
 import {
   PART_QUALITY,
   useCriticalTechProcesses,
+  useReopenTechProcess,
   useRnProgress,
   useTechProcessCard,
   useTechProcesses,
@@ -21,6 +22,7 @@ import {
   type WorkerPerformance,
   type WorkerRef,
 } from '@/api/tech-processes';
+import { ApiError } from '@/api/client';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
 import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
@@ -28,6 +30,9 @@ import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { SearchBox } from '@/components/ui-kit/search-box';
 import { Pager } from '@/components/ui-kit/pager';
+import { Dialog } from '@/components/ui-kit/dialog';
+import { Can } from '@/lib/can';
+import { PERMISSIONS } from '@/lib/permissions';
 import { formatDate, formatNumber } from '@/lib/format';
 import { cn } from '@/lib/cn';
 
@@ -275,35 +280,60 @@ function cardGroupKey(operationNumber: number, workCenterCode: string): string {
   return `${operationNumber}|${workCenterCode}`;
 }
 
+/** Cilj radnje „Otvori operaciju" (jedan red operacije + kontekst za potvrdu). */
+interface ReopenTarget {
+  id: number;
+  operationNumber: number;
+  workCenter: string;
+}
+
 /** Grupni header red kartice — agregat operacije IZ API-ja (operations[]), UI ništa ne sabira. */
 function CardGroupHeaderRow({
   group,
   row,
   colCount,
+  onReopen,
 }: {
   group: CardOperation | undefined;
   row: TechProcessCardRow;
   colCount: number;
+  /** Klik na „Otvori operaciju" (samo za završene operacije, iza tehnologija.write). */
+  onReopen: (target: ReopenTarget) => void;
 }) {
+  const center = centerLabel(group?.operation ?? row.operation, row.workCenterCode);
   return (
     <tr className="border-b border-line bg-surface-2">
       <td colSpan={colCount} className="px-4 py-2">
         <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
           <span className="font-semibold text-ink">
-            OP <span className="tnums">{row.operationNumber}</span> ·{' '}
-            {centerLabel(group?.operation ?? row.operation, row.workCenterCode)}
+            OP <span className="tnums">{row.operationNumber}</span> · {center}
           </span>
-          {group && (
-            <span className="tnums text-xs text-ink-secondary">
-              Σ {formatNumber(group.pieces.total)} kom (
-              <span className="text-status-success">{formatNumber(group.pieces.good)} dobar</span>
-              {' · '}
-              <span className="text-status-warn">{formatNumber(group.pieces.rework)} dorada</span>
-              {' · '}
-              <span className="text-status-danger">{formatNumber(group.pieces.scrap)} škart</span>
-              ) · {formatNumber(group.entryCount)} kucanja
-            </span>
-          )}
+          <div className="flex flex-wrap items-center gap-3">
+            {group && (
+              <span className="tnums text-xs text-ink-secondary">
+                Σ {formatNumber(group.pieces.total)} kom (
+                <span className="text-status-success">{formatNumber(group.pieces.good)} dobar</span>
+                {' · '}
+                <span className="text-status-warn">{formatNumber(group.pieces.rework)} dorada</span>
+                {' · '}
+                <span className="text-status-danger">{formatNumber(group.pieces.scrap)} škart</span>
+                ) · {formatNumber(group.entryCount)} kucanja
+              </span>
+            )}
+            {/* Ponovo otvori završenu operaciju za doradu — iza tehnologija.write. */}
+            {group?.isFinished && (
+              <Can permission={PERMISSIONS.TEHNOLOGIJA_WRITE}>
+                <button
+                  onClick={() =>
+                    onReopen({ id: row.id, operationNumber: row.operationNumber, workCenter: center })
+                  }
+                  className="rounded-control border border-line px-2.5 py-1 text-xs font-semibold text-ink-secondary hover:bg-surface"
+                >
+                  Otvori operaciju
+                </button>
+              </Can>
+            )}
+          </div>
         </div>
       </td>
     </tr>
@@ -318,6 +348,23 @@ function TechProcessCardDetail({ tp }: { tp: TechProcess }) {
     variant: tp.variant,
   };
   const q = useTechProcessCard(key);
+  const reopen = useReopenTechProcess();
+  const [reopenTarget, setReopenTarget] = useState<ReopenTarget | null>(null);
+
+  function closeReopen() {
+    reopen.reset();
+    setReopenTarget(null);
+  }
+
+  async function confirmReopen() {
+    if (!reopenTarget) return;
+    try {
+      await reopen.mutateAsync(reopenTarget.id);
+      setReopenTarget(null);
+    } catch {
+      /* greška se prikazuje ispod */
+    }
+  }
 
   if (q.isLoading) return <span className="text-sm text-ink-disabled">Učitavanje…</span>;
   if (q.error || !q.data)
@@ -388,6 +435,7 @@ function TechProcessCardDetail({ tp }: { tp: TechProcess }) {
                         group={opByKey.get(groupKey)}
                         row={r}
                         colCount={colCount}
+                        onReopen={setReopenTarget}
                       />
                     )}
                     <tr className="h-[var(--table-row-height)] border-b border-line-soft">
@@ -411,6 +459,49 @@ function TechProcessCardDetail({ tp }: { tp: TechProcess }) {
           </tbody>
         </table>
       </div>
+
+      <Dialog
+        open={reopenTarget != null}
+        onClose={closeReopen}
+        title="Otvoriti operaciju?"
+        footer={
+          <>
+            <button
+              onClick={closeReopen}
+              className="rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2"
+            >
+              Otkaži
+            </button>
+            <button
+              disabled={reopen.isPending}
+              onClick={confirmReopen}
+              className="rounded-control bg-accent px-3 py-1.5 text-sm font-semibold text-accent-fg disabled:opacity-50"
+            >
+              {reopen.isPending ? 'Otvaranje…' : 'Otvori operaciju'}
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-3 text-sm">
+          <p className="text-ink">
+            {reopenTarget && (
+              <>
+                Operacija{' '}
+                <span className="tnums font-semibold">OP {reopenTarget.operationNumber}</span> ·{' '}
+                {reopenTarget.workCenter} će ponovo biti otvorena za doradu — prijava rada na
+                kiosku će ponovo biti moguća.
+              </>
+            )}
+          </p>
+          {reopen.error && (
+            <p className="text-sm text-status-danger" role="alert">
+              {reopen.error instanceof ApiError
+                ? reopen.error.message
+                : (reopen.error as Error)?.message}
+            </p>
+          )}
+        </div>
+      </Dialog>
     </div>
   );
 }

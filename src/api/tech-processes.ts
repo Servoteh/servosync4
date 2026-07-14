@@ -1,6 +1,6 @@
 'use client';
 
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from './client';
 
 /** Bezbedan podskup radnika (backend nikad ne vraća lozinke). */
@@ -196,6 +196,27 @@ export function useTechProcessCard(key: CardKey | null) {
       );
     },
     enabled: key != null,
+  });
+}
+
+// ------------------------------------------------------------------ PONOVO OTVORI OPERACIJU (/reopen)
+
+/**
+ * PONOVO OTVORI završenu operaciju za DORADU (POST /:id/reopen). Backend nalazi
+ * operaciju kojoj `id` (jedan red postupka) pripada i sve njene završene redove
+ * vraća u rad (`is_process_finished` → false), pa kiosk ponovo dozvoljava
+ * prijavu rada. Iza `tehnologija.write`. Po uspehu poništava keš postupaka
+ * (lista + kartica dele prefiks `['tech-processes']`).
+ */
+export function useReopenTechProcess() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<{ data: { id: number; reopened: number } }>(
+        `/v1/tech-processes/${id}/reopen`,
+        { method: 'POST' },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['tech-processes'] }),
   });
 }
 
