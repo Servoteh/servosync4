@@ -1,51 +1,81 @@
 'use client';
 
-import { useState } from 'react';
-import { FileText, QrCode } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { FileText, QrCode, History, Stethoscope, Award } from 'lucide-react';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Button } from '@/components/ui-kit/button';
+import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { useAuth } from '@/lib/auth-context';
 import { PERMISSIONS } from '@/lib/permissions';
 import { formatDate } from '@/lib/format';
 import { generateBadgeSheetPdf, openBlob, downloadBlob } from '@/lib/hr-pdf';
 import {
   useEmployee,
+  useEmployeePii,
   useContracts,
-  useEmployeeDocuments,
-  useEmployeeChildren,
-  useEmployeeBankCards,
   useMedicalExams,
   useCertificates,
-  signDocument,
 } from '@/api/kadrovska';
 import { Field, LockedNote, sv, SummaryChips } from './common';
+import { EDU_LEVEL_LABELS, contractStatus, empDisplayName } from './emp-shared';
 import { DocGenDialog } from './doc-gen-dialog';
+import { ChildrenSection, BankCardsSection, PersonalDocsSection, ForeignDocsSection } from './dosije/pii-sections';
+import { DocumentsSection } from './dosije/documents-section';
+import { MedicalExamsDialog } from './dosije/medical-modal';
+import { CertificatesDialog } from './dosije/certificates-modal';
+import { EmployeeAuditDialog } from './dosije/audit-modal';
+import { SectionTitle } from './dosije/shared';
 
 /**
- * Dosije (karton) zaposlenog — read-only master–detalj panel.
+ * Dosije (karton) zaposlenog — master–detalj panel (P3: PII sekcije, lekarski,
+ * sertifikati, audit, dokumenta). Read osnovnih polja + CRUD PII pod-resursa.
  *
- * IZDVOJENO iz `zaposleni-tab.tsx` (P2 refaktor, prvi korak) bez izmena ponašanja
- * da bi P3 mogao da nadograđuje PII/lekarski/sertifikati/audit modale nezavisno
- * od liste/CRUD-a (P2). Ako menjaš ovaj fajl, pazi: lista NE zna za interne detalje
- * dosijea — jedini ugovor je `<DosijeDialog id onClose />`.
+ * PII gating STRIKTNO: sekcije deca/kartice/dokumenta/lična/stranac + PII karton
+ * su nevidljive bez `kadrovska.pii` (LockedNote). Lekarski/sertifikati traže
+ * `kadrovska.manage`; audit `kadrovska.admin` — presuđuje BE guard + sy15 RLS.
+ *
+ * `focus` (opciono) — otvara odmah ciljni modal (P2 red-dugmad 🩺/📜/📒):
+ *   <DosijeDialog id focus="medical" onClose /> · 'certs' · 'audit'.
+ * Bez focusa ponašanje je identično dosadašnjem (kompatibilno sa P2 listom).
  */
-export function DosijeDialog({ id, onClose }: { id: string; onClose: () => void }) {
+export type DosijeFocus = 'medical' | 'certs' | 'audit';
+
+export function DosijeDialog({ id, focus, onClose }: { id: string; focus?: DosijeFocus; onClose: () => void }) {
   const { can } = useAuth();
   const canPii = can(PERMISSIONS.KADROVSKA_PII);
   const canContracts = can(PERMISSIONS.KADROVSKA_CONTRACTS_READ);
   const canManage = can(PERMISSIONS.KADROVSKA_MANAGE);
+  const canAdmin = can(PERMISSIONS.KADROVSKA_ADMIN);
+  const canEditPii = canPii; // PII pod-resursi (BE guard = kadrovska.pii)
 
   const empQ = useEmployee(id);
   const emp = empQ.data?.data;
+  const piiQ = useEmployeePii(id, canPii);
+  const pii = piiQ.data?.data;
   const contractsQ = useContracts({ employeeId: id }, canContracts);
-  const docsQ = useEmployeeDocuments(id, canPii);
-  const childrenQ = useEmployeeChildren(id, canPii);
-  const cardsQ = useEmployeeBankCards(id, canPii);
   const medicalQ = useMedicalExams({ employeeId: id }, canManage);
   const certsQ = useCertificates({ employeeId: id }, canManage);
 
   const [docGen, setDocGen] = useState(false);
   const [badgeBusy, setBadgeBusy] = useState(false);
+  const [openModal, setOpenModal] = useState<DosijeFocus | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+
+  // Row-dugmad integracija (P2): otvori ciljni modal odmah po montiranju.
+  useEffect(() => {
+    if (!focus) return;
+    if (focus === 'audit' && !canAdmin) return;
+    if ((focus === 'medical' || focus === 'certs') && !canManage) return;
+    setOpenModal(focus);
+  }, [focus, canAdmin, canManage]);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 3500);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  const name = emp ? empDisplayName(emp) : '';
 
   async function makeBadge() {
     if (!emp) return;
@@ -59,14 +89,22 @@ export function DosijeDialog({ id, onClose }: { id: string; onClose: () => void 
     }
   }
 
+  const eduLevel = sv(pii, 'education_level');
+
   return (
     <Dialog
       open
       onClose={onClose}
-      title={emp?.full_name ? `Dosije — ${emp.full_name}` : 'Dosije zaposlenog'}
+      size="xl"
+      title={name ? `Dosije — ${name}` : 'Dosije zaposlenog'}
       footer={
         <>
-          <Button variant="secondary" onClick={makeBadge} loading={badgeBusy}>
+          {canAdmin && (
+            <Button variant="ghost" onClick={() => setOpenModal('audit')} disabled={!emp} title="Istorija izmena (audit)">
+              <History className="h-4 w-4" aria-hidden /> Istorija izmena
+            </Button>
+          )}
+          <Button variant="secondary" onClick={makeBadge} loading={badgeBusy} disabled={!emp}>
             <QrCode className="h-4 w-4" aria-hidden /> QR bedž
           </Button>
           <Button onClick={() => setDocGen(true)} disabled={!emp}>
@@ -79,130 +117,134 @@ export function DosijeDialog({ id, onClose }: { id: string; onClose: () => void 
         <p className="py-8 text-center text-sm text-ink-secondary">Učitavanje…</p>
       ) : (
         <div className="space-y-6">
+          {/* ── Osnovno ── */}
           <section>
-            <h3 className="mb-2 text-sm font-semibold text-ink">Osnovno</h3>
+            <SectionTitle>Osnovno</SectionTitle>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
               <Field label="Ime i prezime">{emp.full_name}</Field>
               <Field label="Pozicija">{emp.position}</Field>
               <Field label="Odeljenje">{emp.department}</Field>
+              <Field label="Pododeljenje">{sv(emp, 'sub_department_name')}</Field>
               <Field label="Tim">{emp.team}</Field>
               <Field label="Telefon (službeni)">{emp.phone_work}</Field>
               <Field label="Email">{emp.email}</Field>
+              <Field label="Zaposlen od">{sv(emp, 'hire_date') ? formatDate(sv(emp, 'hire_date')) : ''}</Field>
               <Field label="Status">{emp.is_active ? 'Aktivan' : 'Neaktivan'}</Field>
             </div>
           </section>
 
+          {/* ── Lični podaci (PII karton) ── */}
+          <section>
+            <SectionTitle>Lični podaci (PII) {!canPii && '🔒'}</SectionTitle>
+            {!canPii ? (
+              <LockedNote text="Lični podaci (JMBG, adresa, banka, hitni kontakt) vidljivi su samo Kadrovskoj sa PII pravom (admin / poslovni admin)." />
+            ) : piiQ.isLoading ? (
+              <p className="text-sm text-ink-secondary">Učitavanje…</p>
+            ) : (
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                <Field label="Datum rođenja">{sv(pii, 'birth_date') ? formatDate(sv(pii, 'birth_date')) : ''}</Field>
+                <Field label="JMBG">{sv(pii, 'personal_id')}</Field>
+                <Field label="Pol">{sv(pii, 'gender')}</Field>
+                <Field label="Adresa">{sv(pii, 'address')}</Field>
+                <Field label="Grad">{[sv(pii, 'postal_code'), sv(pii, 'city')].filter(Boolean).join(' ')}</Field>
+                <Field label="Telefon (privatni)">{sv(pii, 'phone_private')}</Field>
+                <Field label="Obrazovanje">{eduLevel ? EDU_LEVEL_LABELS[eduLevel] ?? eduLevel : ''}</Field>
+                <Field label="Zvanje / titula">{sv(pii, 'education_title')}</Field>
+                <Field label="Banka">{sv(pii, 'bank_name')}</Field>
+                <Field label="Broj računa">{sv(pii, 'bank_account')}</Field>
+                <Field label="Hitni kontakt">
+                  {[sv(pii, 'emergency_contact_name'), sv(pii, 'emergency_contact_relation')].filter(Boolean).join(' · ')}
+                </Field>
+                <Field label="Hitni telefon">
+                  {[sv(pii, 'emergency_contact_phone'), sv(pii, 'emergency_contact_phone_alt')].filter(Boolean).join(' / ')}
+                </Field>
+              </div>
+            )}
+          </section>
+
+          {/* ── Ugovori ── */}
           {canContracts && (
             <section>
-              <h3 className="mb-2 text-sm font-semibold text-ink">Ugovori</h3>
+              <SectionTitle>Ugovori</SectionTitle>
               {(contractsQ.data?.data ?? []).length === 0 ? (
                 <p className="text-sm text-ink-secondary">Nema ugovora.</p>
               ) : (
                 <ul className="space-y-1 text-sm">
-                  {(contractsQ.data?.data ?? []).map((c) => (
-                    <li key={c.id} className="flex items-center justify-between rounded-control border border-line px-3 py-1.5">
-                      <span>
-                        {c.contractType}
-                        {c.probniRad ? ' · probni rad' : ''}
-                      </span>
-                      <span className="text-ink-secondary">
-                        {formatDate(c.dateFrom)} — {c.dateTo ? formatDate(c.dateTo) : 'na neodređeno'}
-                      </span>
-                    </li>
-                  ))}
+                  {(contractsQ.data?.data ?? []).map((c) => {
+                    const st = contractStatus(c);
+                    const tone = st.key === 'expired' ? 'danger' : st.key === 'expiring' ? 'warn' : st.key === 'inactive' ? 'neutral' : 'success';
+                    return (
+                      <li key={c.id} className="flex items-center justify-between gap-2 rounded-control border border-line px-3 py-1.5">
+                        <span>
+                          {c.contractType}
+                          {c.probniRad ? ` · probni rad${c.probniMeseci ? ` (${c.probniMeseci} mes.)` : ''}` : ''}
+                        </span>
+                        <span className="flex items-center gap-2">
+                          <span className="text-ink-secondary">
+                            {formatDate(c.dateFrom)} — {c.dateTo ? formatDate(c.dateTo) : 'na neodređeno'}
+                          </span>
+                          <StatusBadge tone={tone} label={st.label} />
+                        </span>
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
             </section>
           )}
 
-          <section>
-            <h3 className="mb-2 text-sm font-semibold text-ink">Dokumenta {!canPii && '🔒'}</h3>
-            {!canPii ? (
-              <LockedNote text="Dokumenta i lični podaci vidljivi su samo Kadrovskoj sa PII pravom (admin / poslovni admin)." />
-            ) : (docsQ.data?.data ?? []).length === 0 ? (
-              <p className="text-sm text-ink-secondary">Nema priloženih dokumenata.</p>
-            ) : (
-              <ul className="space-y-1 text-sm">
-                {(docsQ.data?.data ?? []).map((d) => (
-                  <li key={d.id} className="flex items-center justify-between rounded-control border border-line px-3 py-1.5">
-                    <span>
-                      <span className="text-ink-secondary">{d.docType}</span> · {d.fileName || '—'}
-                    </span>
-                    <button
-                      className="text-accent hover:underline"
-                      onClick={async () => {
-                        try {
-                          const r = await signDocument(d.id);
-                          if (r.data) window.open(r.data, '_blank');
-                        } catch {
-                          /* noop */
-                        }
-                      }}
-                    >
-                      Otvori
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-
-          {canPii && (
-            <section>
-              <h3 className="mb-2 text-sm font-semibold text-ink">Lični podaci (PII)</h3>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <div className="text-2xs font-semibold uppercase tracking-wider text-ink-secondary">Deca</div>
-                  {(childrenQ.data?.data ?? []).length === 0 ? (
-                    <p className="text-sm text-ink-secondary">—</p>
-                  ) : (
-                    <ul className="text-sm">
-                      {(childrenQ.data?.data ?? []).map((c) => (
-                        <li key={c.id}>
-                          {c.firstName} {c.birthDate ? `(${formatDate(c.birthDate)})` : ''}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-                <div>
-                  <div className="text-2xs font-semibold uppercase tracking-wider text-ink-secondary">Kartice banke</div>
-                  {(cardsQ.data?.data ?? []).length === 0 ? (
-                    <p className="text-sm text-ink-secondary">—</p>
-                  ) : (
-                    <ul className="text-sm">
-                      {(cardsQ.data?.data ?? []).map((c) => (
-                        <li key={c.id}>
-                          {c.bank} {c.validThru ? `· do ${formatDate(c.validThru)}` : ''}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              </div>
-            </section>
-          )}
-
+          {/* ── Zdravlje i sertifikati ── */}
           {canManage && (
             <section>
-              <h3 className="mb-2 text-sm font-semibold text-ink">Zdravlje i sertifikati</h3>
+              <SectionTitle
+                action={
+                  <span className="flex gap-2">
+                    <Button variant="ghost" onClick={() => setOpenModal('medical')} disabled={!emp}>
+                      <Stethoscope className="h-4 w-4" aria-hidden /> Lekarski
+                    </Button>
+                    <Button variant="ghost" onClick={() => setOpenModal('certs')} disabled={!emp}>
+                      <Award className="h-4 w-4" aria-hidden /> Sertifikati
+                    </Button>
+                  </span>
+                }
+              >
+                Zdravlje i sertifikati
+              </SectionTitle>
               <SummaryChips
                 items={[
-                  { label: 'Lekarski pregledi', value: (medicalQ.data?.data ?? []).length },
+                  { label: 'Lekarski status', value: sv(medicalQ.data?.data?.[0], 'medical_exam_expires') ? formatDate(sv(medicalQ.data?.data?.[0], 'medical_exam_expires')) : '—' },
                   { label: 'Sertifikati', value: (certsQ.data?.data ?? []).length },
                 ]}
               />
-              {(medicalQ.data?.data ?? []).slice(0, 3).map((m, i) => (
-                <p key={i} className="mt-1 text-sm text-ink-secondary">
-                  🩺 {sv(m, 'exam_type')} — važi do {sv(m, 'valid_until') ? formatDate(sv(m, 'valid_until')) : '—'}
-                </p>
-              ))}
             </section>
           )}
+
+          {/* ── PII pod-resursi (CRUD) ── */}
+          <section>
+            <SectionTitle>Porodica i dokumenta {!canPii && '🔒'}</SectionTitle>
+            {!canPii ? (
+              <LockedNote text="Deca, kartice banke, lična/strana dokumenta i priloženi fajlovi vidljivi su samo Kadrovskoj sa PII pravom." />
+            ) : (
+              <div className="space-y-6">
+                <ChildrenSection employeeId={id} canEdit={canEditPii} onToast={setToast} />
+                <BankCardsSection employeeId={id} canEdit={canEditPii} onToast={setToast} />
+                <PersonalDocsSection employeeId={id} canEdit={canEditPii} onToast={setToast} />
+                <ForeignDocsSection employeeId={id} canEdit={canEditPii} onToast={setToast} />
+                <DocumentsSection employeeId={id} canEdit={canEditPii} onToast={setToast} />
+              </div>
+            )}
+          </section>
         </div>
       )}
 
       {docGen && emp && <DocGenDialog employee={emp} onClose={() => setDocGen(false)} />}
+      {openModal === 'medical' && emp && <MedicalExamsDialog employeeId={id} employeeName={name} canEdit={canManage} onClose={() => setOpenModal(null)} />}
+      {openModal === 'certs' && emp && <CertificatesDialog employeeId={id} employeeName={name} canEdit={canManage} onClose={() => setOpenModal(null)} />}
+      {openModal === 'audit' && emp && <EmployeeAuditDialog employeeId={id} employeeName={name} onClose={() => setOpenModal(null)} />}
+
+      {toast && (
+        <div className="fixed bottom-4 left-1/2 z-[60] -translate-x-1/2 rounded-panel border border-line bg-surface px-4 py-2 text-sm text-ink shadow-lg">{toast}</div>
+      )}
     </Dialog>
   );
 }
