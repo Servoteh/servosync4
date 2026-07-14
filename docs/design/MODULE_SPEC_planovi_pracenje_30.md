@@ -216,54 +216,71 @@ Konvencije: envelope `{data, meta}`, Decimal string, GUC `withUser` na SVIM pozi
 > modeli za 8 public tabela; R0 grants = **0 rupa** (verifikovano na živoj sy15). Testovi:
 > unit rola-matrica (`role-permissions.planovi-pracenje.spec`) + e2e permission matrica
 > (`planovi-pracenje-permissions.e2e-spec`, AUTHZ_ENFORCE=true). Statusi ispod: `R1r` = read
-> sloj IMPLEMENTED+TESTED; write/AI/FE dimenzije ostaju za R2/R3.
+> sloj IMPLEMENTED+TESTED.
+>
+> **R2 mutacioni sloj GOTOV (BE only) — ista grana.** PM CRUD (projects/WP/phases upsert-po-id,
+> `montaza.edit` uklj. `tim_lider` C1) + izveštaji (idempotentan POST kroz `runIdempotentRls` +
+> foto/PDF upload u `montaza-izvestaji` + poveži-predmet) + **AI port** (`extractWithTool` na
+> `AiProviderService`, edge `montaza-izvestaj-ai` → NestJS, model-allowlist + admin izbor) + PP
+> (overlay merge-upsert, urgency set/clear-nikad-DELETE, reassign single/bulk force+idempotencija,
+> auto-koop grupe admin, skice upload/soft-delete + signed URL, bigtehn PDF gate C3) + Praćenje
+> (operativni plan CRUD/zatvori/blokada/odblokiraj/promocija, override/napomena/parent-override,
+> ↑↓ prioritet admin, `ensure_radni_nalog_iz_bigtehn`, export-log server-side P4). SVE kroz
+> `withUserRls` (row-scoped) / `runIdempotentRls` (ne-idempotentni POST); row/scope-odluka
+> (has_edit_role/can_edit_pracenje/autor-scope) presuđuje sy15. Testovi: unit mutacije
+> (`plan-montaze.mutations.spec`, `plan-proizvodnje.mutations.spec`, `montaza-ai.spec`,
+> `drawings.spec`) + e2e **full write matrica** (rola×mutacioni-endpoint×200/403, AUTHZ_ENFORCE=true).
+> `R2w` = write/mutacioni sloj IMPLEMENTED+TESTED (BE); FE/mobilne dimenzije ostaju za R3.
+> ⚠️ Write/bucket **grants** (`servosync2_app` INSERT/UPDATE/DELETE na 9 public tabela + EXECUTE
+> na mutacione RPC + storage) = DB migracija u 1.0 repo, primenjuje se kao supabase_admin PRE
+> R4 živog smoke-a — NIJE deo ovog BE commita (v. red 40).
 
 | # | Funkcija | Status |
 |---|---|---|
 | **Plan montaže** | | |
 | 1 | Hub + 4 pogleda + deep-link `?view=` | NOT_STARTED |
-| 2 | Lista projekata (pb_list_projects ⋈ aktivacija) + ⭐ redosled | R1r ✓ read IMPL+TESTED · write/FE → R2/R3 (stablo JEDNIM upitom C8; ⭐ redosled=FE) |
-| 3 | Plan tabela: faze CRUD + 8 checks + statusi/pct + business rules (status↔pct, end≥start) | NOT_STARTED |
-| 4 | Filteri (search/lokacija/status/vođa/spremnost/datumi/rizik) + sakrij završene | NOT_STARTED |
-| 5 | Debounce save + status panel + identitet-po-izmeni (D-4) | NOT_STARTED |
-| 6 | Meta modali projekat/WP (rok, PM/leadPM mejlovi, rn_code/rn_order, lokacije) | NOT_STARTED |
-| 7 | Gantt (drag/resize, boje lokacija) + Ukupan Gant (svi projekti, drag preko WP granica) | NOT_STARTED |
-| 8 | Opis faze + povezani crteži + glavni crtež sklopa (PDF exists-check + signed URL) | NOT_STARTED |
-| 9 | Export JSON/XLSX/PDF (Gantt+Total) + Import JSON | NOT_STARTED |
-| 10 | Per-user override plan_montaze_readonly (deny montaza.edit) | NOT_STARTED |
-| 11 | AI izveštaji: lista + filter + detalj (fotke, PDF) + poveži predmet | R1r ✓ read IMPL+TESTED · write/FE → R2/R3 (lista/filter/detalj+fotke meta; poveži predmet=R2) |
-| 12 | AI izveštaji: kreiranje (tekst+fotke → AI → preview → idempotentno snimanje + retry fotki/PDF) | NOT_STARTED |
-| 13 | AI generisanje na BE (port edge; model allowlist + admin izbor) | NOT_STARTED |
+| 2 | Lista projekata (pb_list_projects ⋈ aktivacija) + ⭐ redosled | R2w ✓ read+write IMPL+TESTED (stablo JEDNIM upitom C8; projects/WP/phases upsert-po-id) · ⭐ redosled + FE → R3 |
+| 3 | Plan tabela: faze CRUD + 8 checks + statusi/pct + business rules (status↔pct, end≥start) | R2w ✓ BE faze CRUD IMPL+TESTED (`checks` 8-bool niz, `linked_drawings`, `actual_*_date`) · 8-checks UI + business-rules util + tabela → R3 (FE) |
+| 4 | Filteri (search/lokacija/status/vođa/spremnost/datumi/rizik) + sakrij završene | NOT_STARTED (FE → R3) |
+| 5 | Debounce save + status panel + identitet-po-izmeni (D-4) | R2w ✓ BE (upsert-po-id = last-write-wins paritet; `updated_by` na BE) · debounce/status panel = FE → R3 |
+| 6 | Meta modali projekat/WP (rok, PM/leadPM mejlovi, rn_code/rn_order, lokacije) | R2w ✓ BE upsert (project/WP meta uklj. `assembly_drawing_no`, `rn_order`→`sort_order`) · modal UI → R3 |
+| 7 | Gantt (drag/resize, boje lokacija) + Ukupan Gant (svi projekti, drag preko WP granica) | NOT_STARTED (FE → R3) |
+| 8 | Opis faze + povezani crteži + glavni crtež sklopa (PDF exists-check + signed URL) | R2w ✓ BE (faza `description`/`linked_drawings`; `lookups/drawings` exists-check; `drawings/bigtehn/sign` signed URL gate C3) · modal UI → R3 |
+| 9 | Export JSON/XLSX/PDF (Gantt+Total) + Import JSON | NOT_STARTED (klijentski izvoz → R3) |
+| 10 | Per-user override plan_montaze_readonly (deny montaza.edit) | DB paritet: `user_permission_overrides` deny `montaza.edit` (guard već poštuje deny) · FE gate → R3 |
+| 11 | AI izveštaji: lista + filter + detalj (fotke, PDF) + poveži predmet | R2w ✓ read+write IMPL+TESTED (lista/filter/detalj+fotke; `reports/:id/predmet` poveži-predmet + signed URL PDF/fotke) |
+| 12 | AI izveštaji: kreiranje (tekst+fotke → AI → preview → idempotentno snimanje + retry fotki/PDF) | R2w ✓ BE IMPL+TESTED (`POST /reports` idempotentno preko klijentskog UUID kroz `runIdempotentRls`; foto/PDF upload sa ciljanim retry-em neuspelih) · preview UI → R3 |
+| 13 | AI generisanje na BE (port edge; model allowlist + admin izbor) | R2w ✓ IMPL+TESTED (`POST /reports/ai-generate` = port edge `montaza-izvestaj-ai`; `extractWithTool` vision + tool_choice; model iz `montaza_ai_settings` allowlist; `PUT /ai-model` admin) |
 | 14 | Mobilni /m/montaza + /m/izvestaj (responsive) + 🎤 diktat | NOT_STARTED |
 | **Plan proizvodnje** | | |
-| 15 | Po mašini: izbor mašine/odeljenja + red operacija (RPC paginacija po RN) | R1r ✓ read IMPL+TESTED · write/FE → R2/R3 (machines + operations?machine=/dept= read) |
-| 16 | Status pill ciklus + napomena + drag-drop reorder + pin-to-top | NOT_STARTED |
-| 17 | HITNO set/clear (+razlog) | NOT_STARTED |
-| 18 | REASSIGN single/bulk + force (+razlog) + idempotencija clientEventId | NOT_STARTED |
-| 19 | CAM ready + ready_override (TP-sidra ručni SPREMNO) | NOT_STARTED |
-| 20 | Po crtežu: pretraga + bulk premeštanje | R1r ✓ read IMPL+TESTED · write/FE → R2/R3 (operations/search read; bulk=R2) |
-| 21 | Zauzetost mašina (agregat) + Pregled svih (matrica 5 radnih dana, praznici) | R1r ✓ read IMPL+TESTED · write/FE → R2/R3 (operations/all read; matrica=FE) |
-| 22 | Kooperacija: auto grupe (admin CRUD bez DELETE) + ručno slanje/vraćanje (partner/rok) | R1r ✓ read IMPL+TESTED · write/FE → R2/R3 (cooperation + groups read; write=R2) |
-| 23 | Skice: upload/galerija/soft-delete + signed URL (gate can_read_production_drawings) | R1r ✓ read IMPL+TESTED · write/FE → R2/R3 (drawings lista read; upload/signed URL=R2) |
-| 24 | TP procedura modal + PDF crteža iz keša | R1r ✓ read IMPL+TESTED · write/FE → R2/R3 (tech-procedure read; PDF signed URL=R2) |
+| 15 | Po mašini: izbor mašine/odeljenja + red operacija (RPC paginacija po RN) | R1r ✓ read IMPL+TESTED · FE → R3 (machines + operations?machine=/dept= read) |
+| 16 | Status pill ciklus + napomena + drag-drop reorder + pin-to-top | R2w ✓ BE IMPL+TESTED (`POST /overlays` merge-upsert `local_status`/`shift_note`/`shift_sort_order`; `POST /overlays/reorder` 1..n) · drag-drop UI → R3 |
+| 17 | HITNO set/clear (+razlog) | R2w ✓ BE IMPL+TESTED (`PUT/DELETE /urgency/:wo` = set/clear-flag; DELETE NIKAD red — `cleared_*`) |
+| 18 | REASSIGN single/bulk + force (+razlog) + idempotencija clientEventId | R2w ✓ BE IMPL+TESTED (`reassign`/`reassign/bulk` RPC; `p_client_event_uuid`; force → `plan_proizvodnje.force` mirror-guard + DB `can_force_plan_reassign`) |
+| 19 | CAM ready + ready_override (TP-sidra ručni SPREMNO) | R2w ✓ BE IMPL+TESTED (overlay `cam_ready`/`ready_override` + `_at`/`_by` stamp na BE) |
+| 20 | Po crtežu: pretraga + bulk premeštanje | R2w ✓ read+write IMPL+TESTED (operations/search read; bulk premeštanje = `reassign/bulk` JEDAN client_event_uuid) |
+| 21 | Zauzetost mašina (agregat) + Pregled svih (matrica 5 radnih dana, praznici) | R1r ✓ read IMPL+TESTED · matrica render → R3 (operations/all read) |
+| 22 | Kooperacija: auto grupe (admin CRUD bez DELETE) + ručno slanje/vraćanje (partner/rok) | R2w ✓ BE IMPL+TESTED (`cooperation/groups` POST/PATCH `koop_admin`, soft removed_at; ručno slanje/vraćanje = overlay `cooperation_status`/partner/rok merge) |
+| 23 | Skice: upload/galerija/soft-delete + signed URL (gate can_read_production_drawings) | R2w ✓ BE IMPL+TESTED (`POST/DELETE /drawings` upload+soft-delete; `drawings/:id/sign` signed URL gate C3) · galerija UI → R3 |
+| 24 | TP procedura modal + PDF crteža iz keša | R2w ✓ BE IMPL+TESTED (tech-procedure read; `drawings/bigtehn/sign` sanit+revizija-fallback+signed URL gate C3) · modal UI → R3 |
 | 25 | Bridge sync banner (3 job-а) | R1r ✓ IMPL+TESTED (read) (bridge-status) |
 | 26 | Mobilni /m/proizvodnja (red po mašini; edit za editore) | NOT_STARTED |
 | **Praćenje proizvodnje** | | |
 | 27 | Kontrolna tabla (portfolio: status/napredak/filteri/sort) | R1r ✓ IMPL+TESTED (read) (portfolio; filteri/sort=FE) |
-| 28 | Aktivni predmeti (lista + ↑↓ prioritet admin) | R1r ✓ read IMPL+TESTED · write/FE → R2/R3 (predmeti + plan-prioritet read; ↑↓=R2) |
-| 29 | Stablo podsklopova + drill-down (ensure_radni_nalog_iz_bigtehn) | R1r ✓ read IMPL+TESTED · write/FE → R2/R3 (podsklopovi + rn/resolve + rn read; ensure=R2) |
-| 30 | Tabela praćenja: izveštaj + statusi + filteri + napomena + manual/parent override | R1r ✓ read IMPL+TESTED · write/FE → R2/R3 (izvestaj read; override/napomena=R2) |
-| 31 | Excel/PDF izvoz tabele + Tab1 Excel (+ export-log koji RADI, server-side) | NOT_STARTED |
-| 32 | RN ekran Tab1: pozicije local/bigtehn fallback + side panel (prijave + crteži) | R1r ✓ IMPL+TESTED (read) (rn + prijave read) |
-| 33 | RN ekran Tab2: operativni plan CRUD + zatvori/blokada/odblokiraj + zavisnosti + auto/manual status | R1r ✓ read IMPL+TESTED · write/FE → R2/R3 (operativni-plan + can-edit read; CRUD=R2) |
-| 34 | Promocija akcione tačke (Sastanci most) + istorija (blokade svi, audit admin) | R1r ✓ read IMPL+TESTED · write/FE → R2/R3 (istorija blokade + akcione-tacke lookup read; promocija+audit=R2) |
+| 28 | Aktivni predmeti (lista + ↑↓ prioritet admin) | R2w ✓ read+write IMPL+TESTED (predmeti + plan-prioritet read; `PUT /prioritet` `shift_predmet_prioritet` `pracenje.prioritet`=admin) |
+| 29 | Stablo podsklopova + drill-down (ensure_radni_nalog_iz_bigtehn) | R2w ✓ read+write IMPL+TESTED (podsklopovi + rn/resolve + rn read; `POST /rn/ensure-from-bigtehn` DEFINER svaki korisnik) |
+| 30 | Tabela praćenja: izveštaj + statusi + filteri + napomena + manual/parent override | R2w ✓ BE IMPL+TESTED (izvestaj read; `PUT /napomena` + `/override` + `/parent-override` `pracenje.manage`) · filteri = FE → R3 |
+| 31 | Excel/PDF izvoz tabele + Tab1 Excel (+ export-log koji RADI, server-side) | R2w ✓ BE (`POST /export-log` server-side kroz `withUser` = P4, prvi put PRORADI) · Excel/PDF izvoz = FE → R3 |
+| 32 | RN ekran Tab1: pozicije local/bigtehn fallback + side panel (prijave + crteži) | R1r ✓ IMPL+TESTED (read) (rn + prijave read; `crtez/sign` signed URL gate C3) |
+| 33 | RN ekran Tab2: operativni plan CRUD + zatvori/blokada/odblokiraj + zavisnosti + auto/manual status | R2w ✓ BE IMPL+TESTED (`POST /aktivnosti` upsert 24-param; `/zatvori` `/blokiraj`(razlog obavezan→400) `/odblokiraj`; `pracenje.edit`) · UI → R3 |
+| 34 | Promocija akcione tačke (Sastanci most) + istorija (blokade svi, audit admin) | R2w ✓ BE IMPL+TESTED (`POST /aktivnosti/promote` `promovisi_akcionu_tacku`; istorija blokade svima + audit admin-only kroz RLS) |
 | 35 | Polling refresh 30 s + deep-link ruter (predmet/rn/#tab, popstate) | NOT_STARTED |
 | 36 | Pretraga delova (search_proizvodnja_delovi → otvara RN) | R1r ✓ IMPL+TESTED (read) (search-delovi) |
 | 37 | Mobilni /m/pracenje (predmeti → pozicije + override) | NOT_STARTED |
 | **Presečno** | | |
-| 38 | e2e permission matrica (read/edit/manage/force/koop_admin/prioritet/ai_admin × uloge × 200/403; row asercije autor-scope izveštaja i project-scope pm) | R1r ✓ read matrica TESTED (rola×endpoint×200/403, AUTHZ_ENFORCE=true); full write matrica + row-scope → R2 |
-| 39 | GUC sub claim na svim mutacijama (auth.uid() putevi: izveštaji, prioritet, aktivnosti) | NOT_STARTED |
-| 40 | Grants za `servosync2_app` (write na 9 public tabela, EXECUTE na ~35 front RPC, SELECT na bigtehn keš + bridge view-ove + 3 bucketa) — migracija u 1.0 repo, primena kao supabase_admin | R1r ✓ READ grants 0 rupa (35 tab/view SELECT + 21 RPC EXECUTE za authenticated; talasC-R0-grants-DRAFT.sql); write/bucket grants → R2 |
+| 38 | e2e permission matrica (read/edit/manage/force/koop_admin/prioritet/ai_admin × uloge × 200/403; row asercije autor-scope izveštaja i project-scope pm) | R2w ✓ read+write matrica TESTED (rola×endpoint×200/403 iz `ALL_ROLE_KEYS`, AUTHZ_ENFORCE=true; C1 tim_lider edit, C2 hr/poslovni_admin deny, force-eskalacija, blokiraj razlog→400); row-scope (autor/project-scope) = DB živi smoke R4 |
+| 39 | GUC sub claim na svim mutacijama (auth.uid() putevi: izveštaji, prioritet, aktivnosti) | R2w ✓ IMPL (sve mutacije kroz `withUserRls`/`runIdempotentRls` = GUC claims sa `sub`; izveštaj `autor_user_id`=auth.uid() DB default; export-log `actor_uid`=auth.uid()) |
+| 40 | Grants za `servosync2_app` (write na 9 public tabela, EXECUTE na ~35 front RPC, SELECT na bigtehn keš + bridge view-ove + 3 bucketa) — migracija u 1.0 repo, primena kao supabase_admin | R1r ✓ READ grants 0 rupa (35 tab/view SELECT + 21 RPC EXECUTE za authenticated; talasC-R0-grants-DRAFT.sql); **write/bucket grants = TODO** (INSERT/UPDATE/DELETE na 9 tabela + EXECUTE na mutacione RPC + storage; migracija u 1.0 repo, primena kao supabase_admin PRE R4 — van ovog BE commita) |
 
 ## 6. Redosled izvođenja (R-faze za CEO talas)
 

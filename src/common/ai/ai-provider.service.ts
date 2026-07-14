@@ -354,6 +354,77 @@ export class AiProviderService {
     throw new BadGatewayException("upstream_error");
   }
 
+  /**
+   * Anthropic one-shot sa OBAVEZNIM alatom (port edge `montaza-izvestaj-ai` — TALAS C).
+   * `tool_choice: {type:'tool', name}` forsira strukturisan izlaz; vraćamo `input`
+   * bloka `tool_use`. Vision blokovi (base64 slike) idu u `content`. Identičan model/
+   * limiti/schema kao 1.0 edge — pozivalac (PlanMontazeService) validira limite i
+   * allowlist PRE poziva. Greške mapirane kao edge: refusal/max_tokens → 422,
+   * parse_failed/upstream → 502, bez ključa → 503.
+   */
+  async extractWithTool(opts: {
+    model: string;
+    system: string;
+    tool: { name: string; description: string; input_schema: Record<string, unknown> };
+    content: unknown[];
+    maxTokens?: number;
+  }): Promise<{
+    toolInput: Record<string, unknown>;
+    model: string;
+    usage: unknown;
+  }> {
+    const key = this.env("ANTHROPIC_API_KEY");
+    if (!key) {
+      throw new ServiceUnavailableException(
+        "ANTHROPIC_API_KEY nije postavljen na serveru.",
+      );
+    }
+    let res: Response;
+    try {
+      res = await fetch(ANTHROPIC_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": key,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: opts.model,
+          max_tokens: opts.maxTokens ?? 4000,
+          system: opts.system,
+          tools: [opts.tool],
+          tool_choice: { type: "tool", name: opts.tool.name },
+          messages: [{ role: "user", content: opts.content }],
+        }),
+      });
+    } catch {
+      throw new BadGatewayException("upstream_unreachable");
+    }
+    if (!res.ok) throw new BadGatewayException("upstream_error");
+    const data: any = await res.json();
+    if (data?.stop_reason === "refusal") {
+      throw new UnprocessableEntityException("Model je odbio zahtev.");
+    }
+    if (data?.stop_reason === "max_tokens") {
+      throw new UnprocessableEntityException(
+        "Odgovor je predugačak (max_tokens) — suzi tekst/broj fotki.",
+      );
+    }
+    const block = Array.isArray(data?.content)
+      ? data.content.find(
+          (b: any) => b?.type === "tool_use" && b?.name === opts.tool.name,
+        )
+      : null;
+    if (!block || typeof block.input !== "object") {
+      throw new BadGatewayException("parse_failed");
+    }
+    return {
+      toolInput: block.input as Record<string, unknown>,
+      model: data?.model || opts.model,
+      usage: data?.usage ?? null,
+    };
+  }
+
   /** Anthropic one-shot rezime (port `sastanci-ai-summary`). */
   async summarize(
     model: string,

@@ -46,6 +46,24 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     "aiModel",
     "lookupPredmeti",
     "lookupDrawings",
+    // R2 mutacije
+    "upsertProject",
+    "updateProject",
+    "deleteProject",
+    "upsertWorkPackage",
+    "updateWorkPackage",
+    "deleteWorkPackage",
+    "upsertPhase",
+    "updatePhase",
+    "deletePhase",
+    "createReport",
+    "linkPredmet",
+    "uploadPhotos",
+    "uploadPdf",
+    "reportPdfUrl",
+    "photoUrl",
+    "aiGenerate",
+    "setAiModel",
   ]);
   const ppMock = mk([
     "machines",
@@ -58,6 +76,19 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     "drawings",
     "techProcedure",
     "bridgeStatus",
+    // R2 mutacije
+    "upsertOverlay",
+    "reorderOverlays",
+    "setUrgent",
+    "clearUrgent",
+    "reassign",
+    "bulkReassign",
+    "upsertCooperationGroup",
+    "patchCooperationGroup",
+    "uploadDrawing",
+    "deleteDrawing",
+    "drawingSignUrl",
+    "bigtehnDrawingSignUrl",
   ]);
   const pracenjeMock = mk([
     "portfolio",
@@ -75,6 +106,19 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     "akcioneTacke",
     "searchDelovi",
     "planPrioritet",
+    // R2 mutacije
+    "upsertAktivnost",
+    "zatvoriAktivnost",
+    "blokirajAktivnost",
+    "odblokirajAktivnost",
+    "promoteAkcionaTacka",
+    "upsertNapomena",
+    "upsertManualOverride",
+    "upsertParentOverride",
+    "shiftPrioritet",
+    "ensureRnFromBigtehn",
+    "logExport",
+    "crtezSignUrl",
   ]);
 
   beforeAll(async () => {
@@ -126,6 +170,16 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
   const get = (path: string, role?: string) => {
     const r = request(app.getHttpServer()).get(`/api/v1${path}`);
     return role ? r.set("x-test-role", role) : r;
+  };
+  const send = (
+    method: "post" | "put" | "patch" | "delete",
+    path: string,
+    role?: string,
+    body?: object,
+  ) => {
+    let r = request(app.getHttpServer())[method](`/api/v1${path}`);
+    if (role) r = r.set("x-test-role", role);
+    return body ? r.send(body) : r;
   };
 
   const rolesWith = (perm: PermissionKey) =>
@@ -311,6 +365,289 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     });
     it("GET /pracenje/prijave?workOrder=40681&op=2 → 200 (validno)", async () => {
       await get("/pracenje/prijave?workOrder=40681&op=2", "admin").expect(200);
+    });
+  });
+
+  // ==========================================================================
+  // R2 — MUTACIONA permission matrica (rola × endpoint × 200/403, AUTHZ_ENFORCE=true)
+  // ==========================================================================
+
+  const MONTAZA_EDIT = rolesWith(PERMISSIONS.MONTAZA_EDIT);
+  const MONTAZA_NO_EDIT = rolesWithout(PERMISSIONS.MONTAZA_EDIT);
+  const MONTAZA_IZV = rolesWith(PERMISSIONS.MONTAZA_IZVESTAJI);
+  const MONTAZA_NO_IZV = rolesWithout(PERMISSIONS.MONTAZA_IZVESTAJI);
+  const MONTAZA_AI = rolesWith(PERMISSIONS.MONTAZA_AI_ADMIN);
+  const MONTAZA_NO_AI = rolesWithout(PERMISSIONS.MONTAZA_AI_ADMIN);
+  const PP_EDIT = rolesWith(PERMISSIONS.PLAN_PROIZVODNJE_EDIT);
+  const PP_NO_EDIT = rolesWithout(PERMISSIONS.PLAN_PROIZVODNJE_EDIT);
+  const PP_KOOP = rolesWith(PERMISSIONS.PLAN_PROIZVODNJE_KOOP_ADMIN);
+  const PP_NO_KOOP = rolesWithout(PERMISSIONS.PLAN_PROIZVODNJE_KOOP_ADMIN);
+  const PR_EDIT = rolesWith(PERMISSIONS.PRACENJE_EDIT);
+  const PR_NO_EDIT = rolesWithout(PERMISSIONS.PRACENJE_EDIT);
+  const PR_MANAGE = rolesWith(PERMISSIONS.PRACENJE_MANAGE);
+  const PR_NO_MANAGE = rolesWithout(PERMISSIONS.PRACENJE_MANAGE);
+  const PR_PRIO = rolesWith(PERMISSIONS.PRACENJE_PRIORITET);
+  const PR_NO_PRIO = rolesWithout(PERMISSIONS.PRACENJE_PRIORITET);
+
+  describe("Plan montaže PM CRUD — montaza.edit (C1 tim_lider; C2 hr/poslovni_admin NEMAJU)", () => {
+    const body = { projectCode: "X", projectName: "Y" };
+    it.each(MONTAZA_EDIT)("POST /montaza/projects → 200 za %s", async (role) => {
+      await send("post", "/montaza/projects", role, body).expect(201);
+    });
+    it.each(MONTAZA_NO_EDIT)(
+      "POST /montaza/projects → 403 za %s",
+      async (role) => {
+        await send("post", "/montaza/projects", role, body).expect(403);
+      },
+    );
+    it("C1: tim_lider IMA edit (POST projects 201); C2: hr/poslovni_admin/viewer 403", async () => {
+      await send("post", "/montaza/projects", "tim_lider", body).expect(201);
+      await send("post", "/montaza/projects", "hr", body).expect(403);
+      await send("post", "/montaza/projects", "poslovni_admin", body).expect(403);
+      await send("post", "/montaza/projects", "viewer", body).expect(403);
+    });
+    it("PATCH/DELETE projects + work-packages + phases → montaza.edit (tim_lider 200, viewer 403)", async () => {
+      await send("patch", `/montaza/projects/${UUID}`, "tim_lider", {}).expect(200);
+      await send("delete", `/montaza/projects/${UUID}`, "viewer").expect(403);
+      await send("post", "/montaza/work-packages", "tim_lider", {
+        projectId: UUID,
+        name: "N",
+      }).expect(201);
+      await send("post", "/montaza/phases", "leadpm", {
+        projectId: UUID,
+        workPackageId: UUID,
+        phaseName: "F",
+      }).expect(201);
+      await send("post", "/montaza/phases", "hr", {
+        projectId: UUID,
+        workPackageId: UUID,
+        phaseName: "F",
+      }).expect(403);
+    });
+  });
+
+  describe("Izveštaji montera — montaza.izvestaji (kreiranje svima; ne-aktivne role 403)", () => {
+    it.each(MONTAZA_IZV)("POST /montaza/reports → 201 za %s", async (role) => {
+      await send("post", "/montaza/reports", role, { id: UUID }).expect(201);
+    });
+    it.each(MONTAZA_NO_IZV)(
+      "POST /montaza/reports → 403 za %s (deferred rola)",
+      async (role) => {
+        await send("post", "/montaza/reports", role, { id: UUID }).expect(403);
+      },
+    );
+    it("monter (pogon) kreira izveštaj (201) i AI-generate (201); user 403", async () => {
+      await send("post", "/montaza/reports", "monter", { id: UUID }).expect(201);
+      await send("post", "/montaza/reports/ai-generate", "monter", {
+        tekst: "x",
+      }).expect(201);
+      await send("post", "/montaza/reports/ai-generate", "user", {
+        tekst: "x",
+      }).expect(403);
+    });
+    it("PATCH /montaza/reports/:id/predmet → 200 monter (autor-scope u DB)", async () => {
+      await send("patch", `/montaza/reports/${UUID}/predmet`, "monter", {}).expect(200);
+    });
+  });
+
+  describe("AI model — montaza.ai_admin (SAMO admin)", () => {
+    it.each(MONTAZA_AI)("PUT /montaza/ai-model → 200 za %s", async (role) => {
+      await send("put", "/montaza/ai-model", role, {
+        model: "claude-opus-4-8",
+      }).expect(200);
+    });
+    it.each(MONTAZA_NO_AI)(
+      "PUT /montaza/ai-model → 403 za %s",
+      async (role) => {
+        await send("put", "/montaza/ai-model", role, {
+          model: "claude-opus-4-8",
+        }).expect(403);
+      },
+    );
+    it("menadzment ima izvestaji ali NE ai_admin → ai-model 403", async () => {
+      await send("put", "/montaza/ai-model", "menadzment", {
+        model: "claude-opus-4-8",
+      }).expect(403);
+    });
+  });
+
+  describe("Plan proizvodnje write — plan_proizvodnje.edit", () => {
+    const ov = { workOrderId: "1", lineId: "1" };
+    it.each(PP_EDIT)("POST /plan-proizvodnje/overlays → 201 za %s", async (role) => {
+      await send("post", "/plan-proizvodnje/overlays", role, ov).expect(201);
+    });
+    it.each(PP_NO_EDIT)(
+      "POST /plan-proizvodnje/overlays → 403 za %s",
+      async (role) => {
+        await send("post", "/plan-proizvodnje/overlays", role, ov).expect(403);
+      },
+    );
+    it("urgency PUT/DELETE + drawings POST/DELETE + reorder → edit (pm 200, viewer 403)", async () => {
+      await send("put", "/plan-proizvodnje/urgency/9400", "pm", {}).expect(200);
+      await send("delete", "/plan-proizvodnje/urgency/9400", "viewer").expect(403);
+      await send("post", "/plan-proizvodnje/overlays/reorder", "pm", {
+        items: [{ workOrderId: "1", lineId: "1" }],
+      }).expect(201);
+      await send("delete", "/plan-proizvodnje/drawings/5", "viewer").expect(403);
+    });
+    it("overlays validacija: workOrderId '1.5' → 400 (digits), '1' → 201 (pm)", async () => {
+      await send("post", "/plan-proizvodnje/overlays", "pm", {
+        workOrderId: "1.5",
+        lineId: "1",
+      }).expect(400);
+    });
+  });
+
+  describe("Reassign — edit; force → plan_proizvodnje.force", () => {
+    it("reassign BEZ force → edit (pm 200); SA force → force (pm 403, menadzment 200, admin 200)", async () => {
+      await send("post", "/plan-proizvodnje/reassign", "pm", {
+        workOrderId: "1",
+        lineId: "1",
+      }).expect(201);
+      await send("post", "/plan-proizvodnje/reassign", "pm", {
+        workOrderId: "1",
+        lineId: "1",
+        force: true,
+      }).expect(403);
+      await send("post", "/plan-proizvodnje/reassign", "menadzment", {
+        workOrderId: "1",
+        lineId: "1",
+        force: true,
+      }).expect(201);
+      await send("post", "/plan-proizvodnje/reassign/bulk", "admin", {
+        pairs: [{ workOrderId: "1", lineId: "1" }],
+        force: true,
+      }).expect(201);
+    });
+    it("reassign viewer (nema edit) → 403 i bez force", async () => {
+      await send("post", "/plan-proizvodnje/reassign", "viewer", {
+        workOrderId: "1",
+        lineId: "1",
+      }).expect(403);
+    });
+  });
+
+  describe("Auto-koop grupe — plan_proizvodnje.koop_admin (SAMO admin)", () => {
+    const g = { rjGroupCode: "2.10", groupLabel: "L" };
+    it.each(PP_KOOP)(
+      "POST /plan-proizvodnje/cooperation/groups → 201 za %s",
+      async (role) => {
+        await send("post", "/plan-proizvodnje/cooperation/groups", role, g).expect(201);
+      },
+    );
+    it.each(PP_NO_KOOP)(
+      "POST /plan-proizvodnje/cooperation/groups → 403 za %s",
+      async (role) => {
+        await send("post", "/plan-proizvodnje/cooperation/groups", role, g).expect(403);
+      },
+    );
+    it("pm/menadzment imaju edit ali NE koop_admin → grupe 403", async () => {
+      await send("post", "/plan-proizvodnje/cooperation/groups", "pm", g).expect(403);
+      await send("post", "/plan-proizvodnje/cooperation/groups", "menadzment", g).expect(403);
+    });
+  });
+
+  describe("Praćenje operativni plan — pracenje.edit", () => {
+    const akt = { odeljenjeId: UUID, nazivAktivnosti: "A" };
+    it.each(PR_EDIT)("POST /pracenje/aktivnosti → 201 za %s", async (role) => {
+      await send("post", "/pracenje/aktivnosti", role, akt).expect(201);
+    });
+    it.each(PR_NO_EDIT)(
+      "POST /pracenje/aktivnosti → 403 za %s",
+      async (role) => {
+        await send("post", "/pracenje/aktivnosti", role, akt).expect(403);
+      },
+    );
+    it("blokiraj (razlog obavezan): validan 201, prazan razlog 400 (pm)", async () => {
+      await send("post", `/pracenje/aktivnosti/${UUID}/blokiraj`, "pm", {
+        razlog: "kvar",
+      }).expect(201);
+      await send("post", `/pracenje/aktivnosti/${UUID}/blokiraj`, "pm", {
+        razlog: "",
+      }).expect(400);
+    });
+    it("promote (edit) + ensure-from-bigtehn (read) route ordering", async () => {
+      await send("post", "/pracenje/aktivnosti/promote", "pm", {
+        akcioniPlanId: UUID,
+        odeljenjeId: UUID,
+        rnId: UUID,
+      }).expect(201);
+      await send("post", "/pracenje/rn/ensure-from-bigtehn", "viewer", {
+        workOrderId: "9400",
+      }).expect(201);
+    });
+  });
+
+  describe("Praćenje napomene/override — pracenje.manage (admin/menadzment, NE pm)", () => {
+    const ov = { bigtehnRnId: "9400" };
+    it.each(PR_MANAGE)(
+      "PUT /pracenje/predmeti/:id/override → 200 za %s",
+      async (role) => {
+        await send("put", "/pracenje/predmeti/7602/override", role, ov).expect(200);
+      },
+    );
+    it.each(PR_NO_MANAGE)(
+      "PUT /pracenje/predmeti/:id/override → 403 za %s",
+      async (role) => {
+        await send("put", "/pracenje/predmeti/7602/override", role, ov).expect(403);
+      },
+    );
+    it("pm ima pracenje.edit ali NE manage → override 403, aktivnost 201", async () => {
+      await send("put", "/pracenje/predmeti/7602/napomena", "pm", {
+        bigtehnRnId: "9400",
+        note: "x",
+      }).expect(403);
+      await send("post", "/pracenje/aktivnosti", "pm", {
+        odeljenjeId: UUID,
+        nazivAktivnosti: "A",
+      }).expect(201);
+    });
+  });
+
+  describe("Praćenje ↑↓ prioritet — pracenje.prioritet (SAMO admin)", () => {
+    it.each(PR_PRIO)(
+      "PUT /pracenje/predmeti/:id/prioritet → 200 za %s",
+      async (role) => {
+        await send("put", "/pracenje/predmeti/7602/prioritet", role, {
+          direction: "up",
+        }).expect(200);
+      },
+    );
+    it.each(PR_NO_PRIO)(
+      "PUT /pracenje/predmeti/:id/prioritet → 403 za %s",
+      async (role) => {
+        await send("put", "/pracenje/predmeti/7602/prioritet", role, {
+          direction: "up",
+        }).expect(403);
+      },
+    );
+    it("menadzment ima manage ali NE prioritet → 403; invalid direction → 400 (admin)", async () => {
+      await send("put", "/pracenje/predmeti/7602/prioritet", "menadzment", {
+        direction: "up",
+      }).expect(403);
+      await send("put", "/pracenje/predmeti/7602/prioritet", "admin", {
+        direction: "sideways",
+      }).expect(400);
+    });
+  });
+
+  describe("Route ordering + validacija (R2 literali)", () => {
+    it("GET /plan-proizvodnje/drawings/bigtehn/sign?code=X → 200 (NIJE drawings/:id/sign)", async () => {
+      await get("/plan-proizvodnje/drawings/bigtehn/sign?code=1061228", "admin").expect(200);
+    });
+    it("GET /plan-proizvodnje/drawings/5/sign → 200 (ParseIntPipe), /abc/sign → 400", async () => {
+      await get("/plan-proizvodnje/drawings/5/sign", "viewer").expect(200);
+      await get("/plan-proizvodnje/drawings/abc/sign", "viewer").expect(400);
+    });
+    it("GET /pracenje/crtez/sign?code=X → 200 (read); export-log POST → 200 (read)", async () => {
+      await get("/pracenje/crtez/sign?code=1061228", "cnc_operater").expect(200);
+      await send("post", "/pracenje/export-log", "viewer", {
+        tab: "operativni_plan",
+      }).expect(201);
+    });
+    it("GET /montaza/reports/photo/:photoId/sign → 200 uuid, 400 ne-uuid (NIJE reports/:id)", async () => {
+      await get(`/montaza/reports/photo/${UUID}/sign`, "monter").expect(200);
+      await get("/montaza/reports/photo/nije-uuid/sign", "monter").expect(400);
     });
   });
 });
