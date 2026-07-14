@@ -3,11 +3,14 @@
 import { useEffect, type ReactNode } from 'react';
 import { X } from 'lucide-react';
 
-/**
- * Modalni dijalog (DESIGN_SYSTEM.md §4/§10). Esc zatvara; klik na pozadinu zatvara.
- * `size`: 'md' (default, kratke forme) · 'xl' (duge forme sa sekcijama — karton
- * zaposlenog) · '2xl' (grid unosi tipa brzi/bulk unos).
- */
+const SIZE_CLASS = {
+  md: 'max-w-lg',
+  lg: 'max-w-2xl',
+  xl: 'max-w-4xl',
+  '2xl': 'max-w-6xl',
+} as const;
+
+/** Modalni dijalog (DESIGN_SYSTEM.md §4/§10). Esc zatvara; klik na pozadinu zatvara. */
 export function Dialog({
   open,
   onClose,
@@ -21,7 +24,8 @@ export function Dialog({
   title: string;
   children: ReactNode;
   footer?: ReactNode;
-  size?: 'md' | 'xl' | '2xl';
+  /** Širina modala: md (≈ obrazac), lg/xl/2xl (šire tabele/zarade). */
+  size?: keyof typeof SIZE_CLASS;
 }) {
   useEffect(() => {
     if (!open) return;
@@ -40,10 +44,7 @@ export function Dialog({
       role="presentation"
     >
       <div
-        className={
-          'w-full rounded-panel border border-line bg-surface shadow-xl ' +
-          (size === '2xl' ? 'max-w-6xl' : size === 'xl' ? 'max-w-3xl' : 'max-w-lg')
-        }
+        className={`w-full ${SIZE_CLASS[size]} rounded-panel border border-line bg-surface shadow-xl`}
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"

@@ -1481,4 +1481,36 @@ export function useGridMonths(months: { year: number; month: number }[]): GridMo
     isLoading: results.some((r) => r.isLoading),
     isFetching: results.some((r) => r.isFetching),
   };
+/** hr_upsert_salary_payroll rezultat (V2 optimistic). Na konflikt BE baca 409
+ *  (ConflictException `… (stale|locked|row_exists)`) — pozivalac hvata ApiError. */
+export interface PayrollUpsertResult {
+  applied: boolean;
+  id?: string;
+  status?: string;
+  total_rsd?: number | string;
+  ukupna_zarada?: number | string;
+  updated_at?: string;
+  reason?: string;
+}
+/** V2 upsert reda mesečnog obračuna. `row` = snake_case payload (+ id/expected_updated_at za UPDATE). */
+export const usePayrollUpsert = () =>
+  useKadrMutation<{ row: Record<string, unknown>; clientEventId?: string }, TxResponse<PayrollUpsertResult>>(
+    (v) => post('/salary/payroll/upsert', { row: v.row, clientEventId: v.clientEventId }),
+    KEYS.salary,
+  );
+/** Brisanje reda obračuna. Paid red → BE 409 („prvo otključaj pa obriši"). */
+export const useDeletePayroll = () => useKadrMutation<{ id: string }>((v) => del(`/salary/payroll/${v.id}`), KEYS.salary);
+
+/* HR outbox (kadr_notification_log) — retarget/cancel/dispatch (tok „tabele knjigovođi"). */
+export const useNotifRetarget = () =>
+  useKadrMutation<{ id: string; recipient: string; subject?: string; body?: string }>((v) => {
+    const { id, ...bodyRest } = v;
+    return post(`/notifications/${id}/retarget`, bodyRest);
+  }, KEYS.notifications);
+export const useNotifCancel = () => useKadrMutation<{ id: string }>((v) => post(`/notifications/${v.id}/cancel`), KEYS.notifications);
+/** 🔔 „Pošalji čekaće" — sinhroni BE proxy na 1.0 edge hr-notify-dispatch. */
+export const useNotifDispatch = () => useKadrMutation<Record<string, never>>(() => post('/notifications/dispatch'), KEYS.notifications);
+/** Imperativni fetch outbox redova (event-handler tok; van React Query keša). */
+export function fetchNotifications(params: { status?: string; type?: string } = {}): Promise<{ data: ViewRow[] }> {
+  return apiFetch<{ data: ViewRow[] }>(`${BASE}/notifications${qs({ ...params })}`);
 }
