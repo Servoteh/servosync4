@@ -66,6 +66,7 @@ export function ImenikTab() {
     return () => clearTimeout(t);
   }, [toast]);
 
+  // Loop-all (BE klampuje pageSize na 200 → pageSize:500 bi tiho odsekao preko 200).
   const listQ = useAllEmployees(true);
   const all = useMemo(() => listQ.data ?? [], [listQ.data]);
   const updateMut = useUpdateEmployee();

@@ -1010,11 +1010,128 @@ export function useAllEmployees(active?: boolean) {
         );
         out.push(...res.data);
         if (out.length >= res.meta.pagination.total || res.data.length < pageSize) break;
-      }
-      return out;
-    },
+// ============================================================================
+// ── P3 (Dosije) dopune — append-only ──
+// PII karton + lekarski/sertifikati/audit. Ugovor po IZVORU (vidi §Zamke gore):
+//   • personal-docs / foreign-docs READ = Prisma model → camelCase; WRITE `data`
+//     nosi SNAKE_CASE ključeve (BE mapForeign/mapPersonal snake→model).
+//   • medical/certs READ = status view (snake_case). ⚠️ v_kadr_medical_exam_status
+//     je PER-ZAPOSLENI (jedan red: medical_exam_date/expires/status), NEMA istorije
+//     pojedinačnih pregleda ni exam id — edit/delete pojedinačnog reda nije moguć
+//     bez BE dopune. v_kadr_certificate_status je PER-SERTIFIKAT (id + status) →
+//     pun CRUD radi.
+//   • reports/audit vraća CEO v_kadr_audit_log (bez filtera) → filtriraj po
+//     employee_id klijentski; guard = kadrovska.admin.
+// ============================================================================
+
+/** Lični dokument (LK/pasoš/vozačka) — Prisma model, camelCase (READ). */
+export interface EmployeePersonalDoc {
+  id: string;
+  employeeId: string;
+  lkNumber: string | null;
+  lkExpiry: string | null;
+  passportNumber: string | null;
+  passportExpiry: string | null;
+  driverLicenseNumber: string | null;
+  driverLicenseExpiry: string | null;
+  driverLicenseCategories: string | null;
+  note: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+/** Strani dokument (pasoš/viza/radna/boravišna) — Prisma model, camelCase (READ). */
+export interface EmployeeForeignDoc {
+  id: string;
+  employeeId: string;
+  passportNumber: string | null;
+  passportExpiry: string | null;
+  visaNumber: string | null;
+  visaExpiry: string | null;
+  workPermitNumber: string | null;
+  workPermitExpiry: string | null;
+  residencePermitNumber: string | null;
+  residencePermitExpiry: string | null;
+  residenceAddress: string | null;
+  bankAccount: string | null;
+  foreignIdNumber: string | null;
+  note: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** PII karton (v_employees_safe, unmaskirano za PII pozivaoca) — GET /employees/:id/pii. */
+export interface EmployeePii extends ViewRow {
+  id: string;
+  full_name: string | null;
+  birth_date: string | null;
+  gender: string | null;
+  education_level: string | null;
+  education_title: string | null;
+  personal_id: string | null;
+  bank_name: string | null;
+  bank_account: string | null;
+  address: string | null;
+  city: string | null;
+  postal_code: string | null;
+  phone_private: string | null;
+  emergency_contact_name: string | null;
+  emergency_contact_phone: string | null;
+  emergency_contact_relation: string | null;
+  emergency_contact_phone_alt: string | null;
+}
+
+/** v_kadr_audit_log red (snake_case). before/after su JSON snapshotovi. */
+export interface AuditLogRow extends ViewRow {
+  id: number;
+  actor_user_id: string | null;
+  actor_email: string | null;
+  action: 'INSERT' | 'UPDATE' | 'DELETE' | string;
+  table_name: string | null;
+  row_id: string | null;
+  employee_id: string | null;
+  employee_name: string | null;
+  before_data: Record<string, unknown> | null;
+  after_data: Record<string, unknown> | null;
+  changed_at: string | null;
+}
+
+/** PII karton (deca/adresa/rođenje/sprema/banka/kontakti). enabled samo uz kadrovska.pii. */
+export function useEmployeePii(id: string | null, enabled = true) {
+  return useQuery({
+    queryKey: [...KEYS.pii(id ?? 'none'), 'card'],
+    enabled: !!id && enabled,
+    retry: false,
+    queryFn: () => apiFetch<{ data: EmployeePii }>(`${BASE}/employees/${id}/pii`),
   });
 }
+
+/** Uski bruto (za auto-popunu ugovora) — GET /employees/:id/contract-bruto (PII). */
+export function useContractBruto(id: string | null, enabled = true) {
+  return useQuery({
+    queryKey: [...KEYS.pii(id ?? 'none'), 'contract-bruto'],
+    enabled: !!id && enabled,
+    retry: false,
+    queryFn: () => apiFetch<{ data: { employeeId: string; bruto: number | null } }>(`${BASE}/employees/${id}/contract-bruto`),
+  });
+}
+
+/** Audit log (CEO v_kadr_audit_log; filter po zaposlenom = klijentski). Guard = admin. */
+export function useAuditReport(enabled = true) {
+  return useQuery({
+    queryKey: [...KEYS.all, 'reports', 'audit'],
+    enabled,
+    retry: false,
+    queryFn: () => apiFetch<{ data: AuditLogRow[] }>(`${BASE}/reports/audit`),
+  });
+}
+
+/** Izmena lekarskog pregleda (manage) — nedostajala u P2 setu. Napomena: bez GET
+ *  istorije pojedinačnih pregleda (status view) ovaj id retko dolazi iz FE-a. */
+export const useUpdateMedical = () =>
+  useKadrMutation<{ id: string; patch: Record<string, unknown> }>((v) => patch(`/medical-exams/${v.id}`, v.patch), KEYS.medical);
+/** Izmena sertifikata (manage) — koristi status-view `id` (per-sertifikat). */
+export const useUpdateCert = () =>
+  useKadrMutation<{ id: string; patch: Record<string, unknown> }>((v) => patch(`/certificates/${v.id}`, v.patch), KEYS.certificates);
 
 /* Org struktura (GET /org-structure) — kaskadni selekti odeljenje→pododeljenje→
    pozicija u kartonu; Prisma camelCase redovi (departments/sub_departments/job_positions). */
