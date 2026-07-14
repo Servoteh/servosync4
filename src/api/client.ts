@@ -54,6 +54,12 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
+    /**
+     * Parsirano telo odgovora greške (kad je JSON). Dodato aditivno — postojeći
+     * pozivi koji čitaju samo `message`/`status` rade nepromenjeno. Koristi ga npr.
+     * AI chat da iz 502 tela izvuče `conversationId` (retry ne pravi orphan nit).
+     */
+    public body: unknown = null,
   ) {
     super(message);
   }
@@ -71,13 +77,15 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
   });
   if (!res.ok) {
     let message = 'Greška u komunikaciji sa serverom';
+    let body: unknown = null;
     try {
-      const body = await res.json();
-      if (body?.message) message = Array.isArray(body.message) ? body.message.join(', ') : body.message;
+      body = await res.json();
+      const m = (body as { message?: unknown })?.message;
+      if (m) message = Array.isArray(m) ? m.join(', ') : String(m);
     } catch {
       /* non-JSON error */
     }
-    throw new ApiError(res.status, message);
+    throw new ApiError(res.status, message, body);
   }
   return res.json() as Promise<T>;
 }
@@ -96,13 +104,15 @@ export async function apiUpload<T>(path: string, form: FormData): Promise<T> {
   });
   if (!res.ok) {
     let message = 'Greška u komunikaciji sa serverom';
+    let body: unknown = null;
     try {
-      const body = await res.json();
-      if (body?.message) message = Array.isArray(body.message) ? body.message.join(', ') : body.message;
+      body = await res.json();
+      const m = (body as { message?: unknown })?.message;
+      if (m) message = Array.isArray(m) ? m.join(', ') : String(m);
     } catch {
       /* non-JSON error */
     }
-    throw new ApiError(res.status, message);
+    throw new ApiError(res.status, message, body);
   }
   return res.json() as Promise<T>;
 }
@@ -119,13 +129,15 @@ export async function apiBlob(path: string, options: RequestInit = {}): Promise<
   });
   if (!res.ok) {
     let message = 'Greška u komunikaciji sa serverom';
+    let body: unknown = null;
     try {
-      const body = await res.json();
-      if (body?.message) message = Array.isArray(body.message) ? body.message.join(', ') : body.message;
+      body = await res.json();
+      const m = (body as { message?: unknown })?.message;
+      if (m) message = Array.isArray(m) ? m.join(', ') : String(m);
     } catch {
       /* non-JSON error */
     }
-    throw new ApiError(res.status, message);
+    throw new ApiError(res.status, message, body);
   }
   return res.blob();
 }

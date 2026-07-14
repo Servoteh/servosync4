@@ -5,8 +5,10 @@ import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import {
   Bell,
+  Bot,
   Briefcase,
   Building2,
+  CalendarClock,
   CalendarRange,
   CheckCircle2,
   CircleUser,
@@ -135,6 +137,15 @@ const NAV_SECTIONS: NavSection[] = [
     title: 'Kadrovska',
     items: [
       { label: 'Kadrovska', href: '/kadrovska', icon: IdCard, requires: PERMISSIONS.KADROVSKA_READ },
+    ],
+  },
+  {
+    // Saradnja (PLAN_MODULA domen) — seoba 3.0 TALAS B: Sastanci + AI asistent.
+    // Sastanci: vidljivost = canAccessSastanci (sastanci.read). AI: „/ai za sve" (ai.chat).
+    title: 'Saradnja',
+    items: [
+      { label: 'Sastanci', href: '/sastanci', icon: CalendarClock, requires: PERMISSIONS.SASTANCI_READ },
+      { label: 'AI asistent', href: '/ai', icon: Bot, requires: PERMISSIONS.AI_CHAT },
     ],
   },
   {
