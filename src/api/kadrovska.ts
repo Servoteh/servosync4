@@ -1010,6 +1010,12 @@ export function useAllEmployees(active?: boolean) {
         );
         out.push(...res.data);
         if (out.length >= res.meta.pagination.total || res.data.length < pageSize) break;
+      }
+      return out;
+    },
+  });
+}
+
 // ============================================================================
 // ── P3 (Dosije) dopune — append-only ──
 // PII karton + lekarski/sertifikati/audit. Ugovor po IZVORU (vidi §Zamke gore):
@@ -1059,7 +1065,6 @@ export interface EmployeeForeignDoc {
   updatedAt: string;
 }
 
-  full_name: string | null;
 // ============================================================================
 // P4 — UGOVORI + HR DOKUMENTA AUTO-TOK (append-only). Novi BE endpointi
 // (kb1/p1a-core): GET org-structure, GET employees/:id/pii, GET
@@ -1135,12 +1140,24 @@ export interface ContractBruto {
 }
 
 export function useEmployeePii(id: string | null, enabled = true) {
+  return useQuery({
+    queryKey: [...KEYS.pii(id ?? 'none'), 'card'],
+    enabled: !!id && enabled,
+    retry: false,
+    queryFn: () => apiFetch<{ data: EmployeePii }>(`${BASE}/employees/${id}/pii`),
+  });
+}
 // ------------------------------------------------------------------ P5 GO dopune
 
 /** Praznici u rasponu (most odsustvo→grid; datum povratka na Rešenju). Baza read. */
 export function useHolidays(params: { from?: string; to?: string } = {}, enabled = true) {
   return useQuery({
     queryKey: ['kadrovska', 'holidays', params],
+    enabled,
+    queryFn: () => apiFetch<{ data: KadrHoliday[] }>(`${BASE}/holidays${qs({ ...params })}`),
+  });
+}
+
 // ============================================================================
 // P6 — GRID RADNIH SATI (inline editor). Append-only (v3.0 Talas G / P6).
 // BE ugovor: C:/kb1 (kadrovska-be/p1a-core). Sve pod /v1/kadrovska osim
@@ -1266,7 +1283,8 @@ export interface OrgJobPosition {
 export interface OrgStructure {
   departments: OrgDepartment[];
   subDepartments: OrgSubDepartment[];
-  jobPositions: OrgJobPosition[];
+  // BE jobPosition.findMany bez `select` → pun red (opisna *_md polja) = JobPosition (rich).
+  jobPositions: JobPosition[];
 }
 export function useOrgStructure(enabled = true) {
   return useQuery({
@@ -1293,18 +1311,16 @@ export function fetchContractBruto(id: string): Promise<{ data: ContractBruto }>
 export const useDeleteContract = () =>
   useKadrMutation<{ id: string }>((v) => del(`/contracts/${v.id}`), KEYS.contracts);
 
-    queryFn: () => apiFetch<{ data: ViewRow }>(`${BASE}/employees/${id}/pii`),
-  });
-}
-
 /** 🔔 Ručni okidač HR dispatch-a (proxy na 1.0 edge hr-notify-dispatch). */
 export interface DispatchResult { ok?: boolean; processed?: number; sent?: number; failed?: number; error?: string }
 export const useDispatchNotifications = () =>
   useKadrMutation<void, TxResponse<DispatchResult>>(() => post('/notifications/dispatch'));
 
 /** Imperativni fetch PII kartona (JMBG i dr.) — za Rešenje o GO tok (van React tree-a). */
-export function fetchEmployeePii(id: string): Promise<{ data: ViewRow }> {
-  return apiFetch<{ data: ViewRow }>(`${BASE}/employees/${id}/pii`);
+export function fetchEmployeePii(id: string): Promise<{ data: EmployeePii }> {
+  return apiFetch<{ data: EmployeePii }>(`${BASE}/employees/${id}/pii`);
+}
+
 /** GET /grid za proizvoljan mesec (copyPrev) — jednokratni fetch, van React Query keša. */
 export function fetchGridMonth(params: { year: number; month: number }): Promise<{ data: GridResponse }> {
   return apiFetch<{ data: GridResponse }>(`${BASE}/grid${qs({ ...params })}`);
@@ -1478,6 +1494,8 @@ export function useGridMonths(months: { year: number; month: number }[]): GridMo
     isLoading: results.some((r) => r.isLoading),
     isFetching: results.some((r) => r.isFetching),
   };
+}
+
 /** hr_upsert_salary_payroll rezultat (V2 optimistic). Na konflikt BE baca 409
  *  (ConflictException `… (stale|locked|row_exists)`) — pozivalac hvata ApiError. */
 export interface PayrollUpsertResult {
