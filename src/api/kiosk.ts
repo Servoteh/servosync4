@@ -321,6 +321,10 @@ export interface ControlInput {
 export interface ControlResult {
   techProcess: TechProcess;
   controlledPieces: number;
+  /** true = operacija je ovom kontrolom dostigla plan i zatvorena; false = kontrola snimljena, operacija još otvorena. */
+  operationFinished: boolean;
+  /** Ukupno iskontrolisano na operaciji (akumulirano kroz sve kontrole), ne samo u ovom pozivu. */
+  controlledCumulative: number;
   plannedPieces: number | null;
   qualityTypeId: number;
   locationsBooked: number;

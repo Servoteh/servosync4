@@ -16,6 +16,8 @@ export const PERMISSIONS = {
   RN_WRITE: 'rn.write',
   RN_APPROVE: 'rn.approve',
   RN_LAUNCH: 'rn.launch',
+  // Prinudno brisanje RN-a sa evidentiranim radom (admin/šef) — DELETE /:id/force.
+  RN_DELETE_FORCE: 'rn.delete.force',
   PDM_READ: 'pdm.read',
   PDM_IMPORT: 'pdm.import',
   STRUKTURE_READ: 'strukture.read',

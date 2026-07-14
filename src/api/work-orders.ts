@@ -493,6 +493,23 @@ export function useDeleteWorkOrder() {
   });
 }
 
+/**
+ * Prinudno brisanje RN-a (DELETE /:id/force) — iza `rn.delete.force` (admin/šef).
+ * Za razliku od običnog brisanja, TRAJNO briše RN i sav evidentiran rad
+ * (prijave rada/kucanja); ne može se poništiti. Koristi se kad obično brisanje
+ * padne na 422 (postoji evidentiran rad ili je RN zaključan).
+ */
+export function useForceDeleteWorkOrder() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<{ data: { id: number; deleted: true } }>(`/v1/work-orders/${id}/force`, {
+        method: 'DELETE',
+      }),
+    onSuccess: invalidate,
+  });
+}
+
 /** Kloniraj sve (ili izabrane) naloge izvornog predmeta u nov prazan predmet. */
 export function useBulkCloneWorkOrders() {
   const invalidate = useInvalidate();

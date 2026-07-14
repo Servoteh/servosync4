@@ -48,6 +48,9 @@ interface OperationState {
 }
 type Feedback = { tone: MessageTone; title: string; detail?: string };
 
+/** Deljeni terminal: posle uspešnog kucanja radnik se auto-odjavi (sledeći može da se prijavi). */
+const AUTO_LOGOUT_SECONDS = 20;
+
 function errMessage(e: unknown): string {
   if (e instanceof ApiError || e instanceof Error) return e.message;
   return 'Nepoznata greška — pokušajte ponovo.';
@@ -155,19 +158,39 @@ export function KioskScanner() {
   const myOpenCount = useMyOpen(worker?.card ?? null, !!worker);
   const openCount = myOpenCount.data?.data.length ?? 0;
 
+  // Auto-odjava posle uspešnog kucanja (deljeni terminal) — vidljivo odbrojavanje.
+  // Definisano PRE resetOrder da nema TDZ u deps nizovima kasnijih callback-ova/efekata.
+  const [logoutIn, setLogoutIn] = useState<number | null>(null);
+  const cancelAutoLogout = useCallback(() => setLogoutIn(null), []);
+  const armAutoLogout = useCallback(() => setLogoutIn(AUTO_LOGOUT_SECONDS), []);
+
   const resetOrder = useCallback(() => {
+    cancelAutoLogout();
     setOrder(null);
     setOperation(null);
     setOverride(null);
     setFeedback(null);
-  }, []);
+  }, [cancelAutoLogout]);
 
   const resetWorker = useCallback(() => {
     setWorker(null);
     setCardGate(true); // eksplicitna odjava → sledeći radnik se identifikuje karticom
     setMyOpen(false);
+    setLogoutIn(null);
     resetOrder();
   }, [resetOrder]);
+
+  // Auto-odjava: tik na sekundu (setTimeout po tiku, ne interval); na 0 pozovi resetWorker
+  // (NE useAuth().logout — to ruši ceo terminal). resetWorker vrati cardGate=true.
+  useEffect(() => {
+    if (logoutIn === null) return;
+    if (logoutIn <= 0) {
+      resetWorker();
+      return;
+    }
+    const t = setTimeout(() => setLogoutIn((n) => (n === null ? null : n - 1)), 1000);
+    return () => clearTimeout(t);
+  }, [logoutIn, resetWorker]);
 
   // Auto-prijava iz LIČNOG naloga (worker/me): preskoči karticu (odluka Nesa 2026-07-09).
   // Deljeni nalozi (kontrola@, tehnologija@) vraćaju null → ostaje kartica.
@@ -197,6 +220,7 @@ export function KioskScanner() {
   }, [myOpen]);
 
   async function onCardScan(cardId: string) {
+    cancelAutoLogout();
     try {
       const { data } = await identify.mutateAsync(cardId);
       setWorker({ card: cardId, info: data });
@@ -213,6 +237,7 @@ export function KioskScanner() {
   }
 
   async function onOrderScan(barcode: string) {
+    cancelAutoLogout();
     try {
       const { data } = await decode.mutateAsync(barcode);
       if (data.type !== 'nalog') {
@@ -251,6 +276,7 @@ export function KioskScanner() {
   }
 
   async function onOperationScan(barcode: string) {
+    cancelAutoLogout();
     if (!order) return;
     try {
       const { data } = await decode.mutateAsync(barcode);
@@ -288,6 +314,7 @@ export function KioskScanner() {
   }
 
   async function onEvidentiraj(pieces: number) {
+    cancelAutoLogout();
     if (!order || !operation || !worker) return;
     try {
       const { data } = await scan.mutateAsync({
@@ -325,12 +352,14 @@ export function KioskScanner() {
           detail: parts.join(' · '),
         });
       }
+      armAutoLogout();
     } catch (e) {
       setFeedback({ tone: 'danger', title: 'Prijava nije uspela', detail: errMessage(e) });
     }
   }
 
   async function onZapocni() {
+    cancelAutoLogout();
     if (!order || !operation || !worker) return;
     try {
       const { data } = await startWork.mutateAsync({
@@ -358,6 +387,7 @@ export function KioskScanner() {
   }
 
   async function onZavrsiRad(pieces: number) {
+    cancelAutoLogout();
     if (!order || !operation || !worker) return;
     try {
       const { data } = await stopWork.mutateAsync({
@@ -390,12 +420,14 @@ export function KioskScanner() {
         title: `Rad završen (${formatNumber(pieces)} kom)`,
         detail: parts.join(' · '),
       });
+      armAutoLogout();
     } catch (e) {
       setFeedback({ tone: 'danger', title: 'Završetak rada nije uspeo', detail: errMessage(e) });
     }
   }
 
   async function onZatvori() {
+    cancelAutoLogout();
     const id = matched?.id ?? override?.id;
     if (id == null) {
       setFeedback({
@@ -411,12 +443,14 @@ export function KioskScanner() {
       const parts = [`Zatvoreno sa ${formatNumber(data.finishedPieces)} kom`];
       if (data.workOrderCompleted) parts.push('Radni nalog je završen.');
       setFeedback({ tone: 'success', title: 'Operacija zatvorena', detail: parts.join(' · ') });
+      armAutoLogout();
     } catch (e) {
       setFeedback({ tone: 'danger', title: 'Zatvaranje nije uspelo', detail: errMessage(e) });
     }
   }
 
   async function onKontrola(input: ControlSubmit) {
+    cancelAutoLogout();
     if (!order || !operation || !worker) {
       setFeedback({
         tone: 'danger',
@@ -433,7 +467,11 @@ export function KioskScanner() {
         workerCard: worker.card,
         ...input,
       });
-      setOverride({ id: data.techProcess.id, made: data.controlledPieces, finished: true });
+      setOverride({
+        id: data.techProcess.id,
+        made: data.controlledCumulative,
+        finished: data.operationFinished,
+      });
 
       // Štampa nalepnica (RNZ) — jedna po komadu (BarKodUnos2024 ekran 7).
       const print = await printControlLabels({
@@ -451,20 +489,39 @@ export function KioskScanner() {
       const warned = !!data.controllerWarnings?.length;
       if (warned) parts.unshift(data.controllerWarnings!.join(' · '));
 
-      if (print.ok) {
+      const printFailReason = `Štampa nalepnica nije uspela (${print.reason}) — proveri da je label-proxy pokrenut na OVOM računaru (start.bat, localhost:8765; frontend/tools/label-proxy).`;
+
+      if (!data.operationFinished) {
+        // Operacija još nije dostigla plan — kontrola snimljena delimično; prikaži ukupno/preostalo.
+        const remaining =
+          data.plannedPieces != null
+            ? Math.max(0, data.plannedPieces - data.controlledCumulative)
+            : null;
+        const progress = `Iskontrolisano ukupno ${formatNumber(data.controlledCumulative)}${
+          data.plannedPieces != null ? ' / ' + formatNumber(data.plannedPieces) : ''
+        } kom${remaining != null ? ` — preostalo ${formatNumber(remaining)}` : ''}`;
+        parts.unshift(progress);
+        setFeedback({
+          tone: 'info',
+          title: print.ok
+            ? 'Kontrola snimljena — operacija još otvorena'
+            : 'Kontrola snimljena — operacija još otvorena (nalepnice NISU odštampane)',
+          detail: (print.ok ? parts : [printFailReason, ...parts]).join(' · '),
+        });
+      } else if (print.ok) {
         setFeedback({
           tone: warned ? 'info' : 'success',
           title: `Kontrola završena · nalepnice poslate (${formatNumber(data.controlledPieces)})`,
           detail: parts.join(' · '),
         });
       } else {
-        const why = `Štampa nalepnica nije uspela (${print.reason}) — proveri da je label-proxy pokrenut na OVOM računaru (start.bat, localhost:8765; frontend/tools/label-proxy).`;
         setFeedback({
           tone: 'info',
           title: 'Kontrola završena — nalepnice NISU odštampane',
-          detail: [why, ...parts].join(' · '),
+          detail: [printFailReason, ...parts].join(' · '),
         });
       }
+      armAutoLogout();
     } catch (e) {
       setFeedback({ tone: 'danger', title: 'Kontrola nije uspela', detail: errMessage(e) });
     }
@@ -472,6 +529,7 @@ export function KioskScanner() {
 
   /** DOŠTAMPAVANJE — kontrola već urađena: samo štampa, bez diranja evidencije. */
   async function onReprint(copies: number) {
+    cancelAutoLogout();
     if (!order?.workOrder) {
       setFeedback({
         tone: 'danger',
@@ -592,7 +650,10 @@ export function KioskScanner() {
               otvara panel umesto skener koraka. Sakriveno dok je panel otvoren. */}
           {!myOpen && (
             <button
-              onClick={() => setMyOpen(true)}
+              onClick={() => {
+                cancelAutoLogout();
+                setMyOpen(true);
+              }}
               className="inline-flex h-14 items-center gap-2 rounded-control border-2 border-accent bg-accent-subtle px-5 text-lg font-semibold text-accent hover:bg-accent-subtle/70"
             >
               <ListChecks className="h-5 w-5" aria-hidden />
@@ -626,6 +687,31 @@ export function KioskScanner() {
         {order && <OrderHeadline order={order} />}
 
         {feedback && <BigMessage tone={feedback.tone} title={feedback.title} detail={feedback.detail} />}
+
+        {logoutIn !== null && (
+          <div className="rounded-panel border-2 border-accent bg-accent-subtle p-5">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <span className="text-lg font-semibold text-ink">
+                Automatska odjava za <span className="tnums text-accent">{logoutIn}</span> s — sledeći
+                radnik može da se prijavi.
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={cancelAutoLogout}
+                  className="inline-flex h-14 items-center gap-2 rounded-control border-2 border-line bg-surface px-5 text-lg font-semibold text-ink hover:bg-surface-2"
+                >
+                  Ostani prijavljen
+                </button>
+                <button
+                  onClick={resetWorker}
+                  className="inline-flex h-14 items-center gap-2 rounded-control bg-status-danger px-5 text-lg font-semibold text-white hover:bg-status-danger/90"
+                >
+                  Odjavi odmah
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {!order && (
           <ScanField

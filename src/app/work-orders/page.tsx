@@ -15,6 +15,7 @@ import {
   useCreateWorkOrder,
   useDeleteOperation,
   useDeleteWorkOrder,
+  useForceDeleteWorkOrder,
   useLaunchWorkOrder,
   useLockWorkOrder,
   useReworkWorkOrder,
@@ -139,6 +140,7 @@ function WorkOrderDetail({
   const lock = useLockWorkOrder();
   const delOp = useDeleteOperation();
   const delRn = useDeleteWorkOrder();
+  const forceDelRn = useForceDeleteWorkOrder();
   const [copyOpen, setCopyOpen] = useState(false);
   const [cloneOpen, setCloneOpen] = useState(false);
   const [reworkOpen, setReworkOpen] = useState(false);
@@ -203,6 +205,9 @@ function WorkOrderDetail({
   const canCopyInto = isEmpty && !locked && rn.handoverStatusId !== WO_STATUS.LAUNCHED;
   const actionError =
     (approve.error as Error) || (launch.error as Error) || (lock.error as Error);
+  // Obično brisanje palo na 422 (evidentiran rad / zaključan RN) → korisnicima sa
+  // `rn.delete.force` nudimo prinudno brisanje.
+  const deleteBlocked422 = delRn.error instanceof ApiError && delRn.error.status === 422;
 
   return (
     <div className="space-y-4 text-sm">
@@ -475,6 +480,7 @@ function WorkOrderDetail({
         open={confirmDelete}
         onClose={() => {
           delRn.reset();
+          forceDelRn.reset();
           setConfirmDelete(false);
         }}
         title="Obrisati radni nalog?"
@@ -483,6 +489,7 @@ function WorkOrderDetail({
             <button
               onClick={() => {
                 delRn.reset();
+                forceDelRn.reset();
                 setConfirmDelete(false);
               }}
               className="rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2"
@@ -506,10 +513,11 @@ function WorkOrderDetail({
           </>
         }
       >
-        <div className="space-y-2 text-sm">
+        <div className="space-y-3 text-sm">
           <p className="text-ink">
             RN <span className="tnums font-semibold">{rn.identNumber}</span> i sve njegove stavke
-            biće trajno obrisani. Blokirano ako je zaključan ili je proizvodnja započeta.
+            biće trajno obrisani. Brisanje je blokirano ako je RN zaključan ili je proizvodnja
+            započeta (postoji evidentiran rad).
           </p>
           {delRn.error && (
             <p className="text-sm text-status-danger" role="alert">
@@ -517,6 +525,40 @@ function WorkOrderDetail({
                 ? delRn.error.message
                 : (delRn.error as Error)?.message}
             </p>
+          )}
+          {/* 422 (evidentiran rad / zaključan RN): admin/šef sa `rn.delete.force`
+              može prinudno obrisati RN zajedno sa svim prijavama rada. */}
+          {deleteBlocked422 && (
+            <Can permission={PERMISSIONS.RN_DELETE_FORCE}>
+              <div className="space-y-2 rounded-panel border border-status-danger/30 bg-status-danger-bg px-3 py-2.5">
+                <p className="text-sm font-semibold text-status-danger">Prinudno brisanje</p>
+                <p className="text-xs text-ink-secondary">
+                  Prinudno brisanje TRAJNO briše ovaj RN i sve njegove prijave rada/kucanja. Ova
+                  radnja se NE može poništiti.
+                </p>
+                <button
+                  disabled={forceDelRn.isPending}
+                  onClick={async () => {
+                    try {
+                      await forceDelRn.mutateAsync(id);
+                      setConfirmDelete(false);
+                    } catch {
+                      /* greška se prikazuje ispod */
+                    }
+                  }}
+                  className="rounded-control bg-status-danger px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-50"
+                >
+                  {forceDelRn.isPending ? 'Brisanje…' : 'Prinudno obriši'}
+                </button>
+                {forceDelRn.error && (
+                  <p className="text-sm text-status-danger" role="alert">
+                    {forceDelRn.error instanceof ApiError
+                      ? forceDelRn.error.message
+                      : (forceDelRn.error as Error)?.message}
+                  </p>
+                )}
+              </div>
+            </Can>
           )}
         </div>
       </Dialog>
