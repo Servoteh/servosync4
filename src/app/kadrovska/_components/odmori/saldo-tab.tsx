@@ -278,9 +278,7 @@ export function SaldoTab() {
             <button type="button" className="rounded-control px-1.5 py-1 text-xs text-ink-secondary hover:bg-surface-2" title="Evidencija odobrenog avansa (CEO/CFO)" onClick={() => setModal({ type: 'advance', row: r })}>🛫</button>
           )}
           <button type="button" className="rounded-control px-1.5 py-1 text-xs text-ink-secondary hover:bg-surface-2" title="GO istorija iz starih Excel fajlova" onClick={() => setModal({ type: 'history', row: r })}>📜</button>
-          {canResenje && (
-            <button type="button" className="rounded-control px-1.5 py-1 text-xs text-ink-secondary hover:bg-surface-2" title="Rešenje o GO (PDF)" onClick={() => openResenje(r)}>📄</button>
-          )}
+          <button type="button" className="rounded-control px-1.5 py-1 text-xs text-ink-secondary hover:bg-surface-2" title="Rešenje o GO (PDF, štampa)" onClick={() => openResenje(r)}>📄</button>
         </div>
       ),
     },
