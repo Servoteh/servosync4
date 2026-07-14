@@ -32,3 +32,5 @@ export { generateKarnetPdf } from './karnet';
 export type { KarnetInput, KarnetEmployee, KarnetDay, KarnetRow, KarnetTotals } from './karnet';
 export { generateBadgeSheetPdf, generateBadgeToken, downloadBlob, openBlob } from './badges';
 export type { BadgeItem } from './badges';
+export { exportAssessmentPdf } from './assessment';
+export type { AssessmentPdfInput, AssessmentPdfGroup, AssessmentPdfComp } from './assessment';

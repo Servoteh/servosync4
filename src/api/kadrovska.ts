@@ -1293,9 +1293,6 @@ export function fetchContractBruto(id: string): Promise<{ data: ContractBruto }>
 export const useDeleteContract = () =>
   useKadrMutation<{ id: string }>((v) => del(`/contracts/${v.id}`), KEYS.contracts);
 
-/** Izmena podešavanja obaveštenja (contract_lead_days i ostalo) — manage. */
-export const useUpdateNotificationConfig = () =>
-  useKadrMutation<Partial<NotificationConfig>>((v) => patch('/notification-config', v), KEYS.notifications);
     queryFn: () => apiFetch<{ data: ViewRow }>(`${BASE}/employees/${id}/pii`),
   });
 }
@@ -1507,7 +1504,6 @@ export const useNotifRetarget = () =>
     const { id, ...bodyRest } = v;
     return post(`/notifications/${id}/retarget`, bodyRest);
   }, KEYS.notifications);
-export const useNotifCancel = () => useKadrMutation<{ id: string }>((v) => post(`/notifications/${v.id}/cancel`), KEYS.notifications);
 /** 🔔 „Pošalji čekaće" — sinhroni BE proxy na 1.0 edge hr-notify-dispatch. */
 export const useNotifDispatch = () => useKadrMutation<Record<string, never>>(() => post('/notifications/dispatch'), KEYS.notifications);
 /** Imperativni fetch outbox redova (event-handler tok; van React Query keša). */
@@ -1570,3 +1566,352 @@ export const useEnsureQrBadge = () =>
     // invalidiranje sprečava buru refetch-eva pri bulk generisanju (N zaposlenih).
     ['kadrovska', 'badges'],
   );
+// ============================================================================
+// PAKET P11 — RAZVOJ / RAZGOVORI / 360 / ONBOARDING / NOTIFIKACIJE / IZVEŠTAJI
+// Append-only proširenje (paritet 1.0: planRazvojaTab/talksSection/assessment360Modal/
+// onboardingTab/hrNotificationsTab/reportsTab). Reads = snake_case view/RPC (dev-plans/
+// expectations/scope/framework/reversi/notifications) ILI camelCase Prisma (checkins/
+// raters/results/targets/scores/onboarding/templates). Mutacije koje kreiraju red nose
+// OBAVEZAN clientEventId; prelazi opcioni. Row-scope/PII presuđuje sy15 RLS na backendu.
+// ============================================================================
+
+// ------------------------------------------------------------------ P11 tipovi
+
+/** development_checkins red (1-na-1 dnevnik) — camelCase Prisma. */
+export interface DevCheckin {
+  id: string;
+  planId: string;
+  employeeId: string;
+  checkinDate: string | null;
+  authorKind: string | null;
+  authorEmail: string | null;
+  noteMd: string | null;
+  createdBy: string | null;
+  createdAt: string;
+}
+
+/** assessment_raters red — ocenjivač + status + pozivnica (camelCase Prisma). */
+export interface AssessmentRater {
+  id: string;
+  assessmentId: string;
+  raterKind: string; // self | peer | leader
+  raterEmployeeId: string | null;
+  raterEmail: string | null;
+  status: string; // pending | submitted
+  invitedAt: string | null;
+  submittedAt: string | null;
+  token?: string | null;
+}
+
+/** assessment_results agregat po grupi/kompetenciji (Decimal → string). */
+export interface AssessmentResult {
+  id: string;
+  assessmentId: string;
+  scopeKind: string; // group | competence
+  refId: number;
+  selfAvg: string | number | null;
+  peerAvg: string | number | null;
+  leaderVal: string | number | null;
+  targetVal: string | number | null;
+}
+export interface AssessmentTarget {
+  competenceId: number;
+  targetLevel: number | null;
+}
+export interface AssessmentScore {
+  competenceId: number;
+  level: number | null;
+  comment: string | null;
+}
+
+/** Kampanja 360 red = Assessment + ciklus + rateri (assembled u servisu). */
+export interface CampaignAssessment extends Assessment {
+  cycle: { id: string; title: string | null; periodLabel: string | null } | null;
+  raters: AssessmentRater[];
+}
+
+export interface OnboardingTemplate {
+  id: string;
+  name: string;
+  kind: string; // onboarding | offboarding
+  isActive: boolean;
+  createdBy: string | null;
+  createdAt: string;
+}
+export interface OnboardingTemplateItem {
+  id: string;
+  templateId: string;
+  title: string;
+  description: string | null;
+  assigneeHint: string | null;
+  offsetDays: number | null;
+  sortOrder: number;
+}
+
+/** Invite (edge fn assessment-invite) rezultat — dry-run kad Resend nije podešen. */
+export interface InviteResult {
+  ok?: boolean;
+  sent?: number;
+  skipped?: unknown[];
+  reason?: string;
+  error?: string;
+  [k: string]: unknown;
+}
+
+// ------------------------------------------------------------------ P11 reads
+
+/** Dnevnik 1-na-1 jednog plana. */
+export function useDevPlanCheckins(planId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: [...KEYS.dev, 'checkins', planId ?? 'none'],
+    enabled: !!planId && enabled,
+    retry: false,
+    queryFn: () => apiFetch<{ data: DevCheckin[] }>(`${BASE}/dev-plans/${planId}/checkins`),
+  });
+}
+/** Razvojni ciljevi (v_employee_expectations) — planId suženje za detalj plana. */
+export function useExpectations(params: { employeeId?: string; planId?: string; status?: string } = {}, enabled = true) {
+  return useQuery({
+    queryKey: [...KEYS.dev, 'expectations', params],
+    enabled,
+    retry: false,
+    queryFn: () => apiFetch<{ data: ViewRow[] }>(`${BASE}/expectations${qs({ ...params })}`),
+  });
+}
+/** Pregled kampanja 360 (procene + ciklus + rateri). */
+export function useAssessmentCampaigns(params: { employeeId?: string; status?: string } = {}, enabled = true) {
+  return useQuery({
+    queryKey: [...KEYS.assessments, 'campaigns', params],
+    enabled,
+    retry: false,
+    queryFn: () => apiFetch<{ data: CampaignAssessment[] }>(`${BASE}/assessments/campaign${qs({ ...params })}`),
+  });
+}
+export function useAssessmentScope(id: string | null, enabled = true) {
+  return useQuery({
+    queryKey: [...KEYS.assessments, 'scope', id ?? 'none'],
+    enabled: !!id && enabled,
+    retry: false,
+    queryFn: () => apiFetch<{ data: ViewRow[] }>(`${BASE}/assessments/${id}/scope`),
+  });
+}
+export function useAssessmentRaters(id: string | null, enabled = true) {
+  return useQuery({
+    queryKey: [...KEYS.assessments, 'raters', id ?? 'none'],
+    enabled: !!id && enabled,
+    retry: false,
+    queryFn: () => apiFetch<{ data: AssessmentRater[] }>(`${BASE}/assessments/${id}/raters`),
+  });
+}
+export function useAssessmentResults(id: string | null, enabled = true) {
+  return useQuery({
+    queryKey: [...KEYS.assessments, 'results', id ?? 'none'],
+    enabled: !!id && enabled,
+    retry: false,
+    queryFn: () => apiFetch<{ data: AssessmentResult[] }>(`${BASE}/assessments/${id}/results`),
+  });
+}
+export function useAssessmentTargets(id: string | null, enabled = true) {
+  return useQuery({
+    queryKey: [...KEYS.assessments, 'targets', id ?? 'none'],
+    enabled: !!id && enabled,
+    retry: false,
+    queryFn: () => apiFetch<{ data: AssessmentTarget[] }>(`${BASE}/assessments/${id}/targets`),
+  });
+}
+export function useAssessmentRaterScores(raterId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: [...KEYS.assessments, 'rater-scores', raterId ?? 'none'],
+    enabled: !!raterId && enabled,
+    retry: false,
+    queryFn: () => apiFetch<{ data: AssessmentScore[] }>(`${BASE}/assessments/raters/${raterId}/scores`),
+  });
+}
+export function useAssessmentFramework(enabled = true) {
+  return useQuery({
+    queryKey: [...KEYS.assessments, 'framework'],
+    enabled,
+    retry: false,
+    staleTime: 5 * 60_000,
+    queryFn: () => apiFetch<{ data: ViewRow[] }>(`${BASE}/assessments/framework`),
+  });
+}
+
+/** Uvođenje/izlazak — aktivni tokovi + zadaci. */
+export function useOnboarding(params: { employeeId?: string; status?: string } = {}, enabled = true) {
+  return useQuery({
+    queryKey: [...KEYS.onboarding, 'runs', params],
+    enabled,
+    retry: false,
+    queryFn: () => apiFetch<{ data: { runs: OnboardingRun[]; tasks: OnboardingTask[] } }>(`${BASE}/onboarding${qs({ ...params })}`),
+  });
+}
+export function useOnboardingTemplates(enabled = true) {
+  return useQuery({
+    queryKey: [...KEYS.onboarding, 'templates'],
+    enabled,
+    retry: false,
+    queryFn: () => apiFetch<{ data: { templates: OnboardingTemplate[]; items: OnboardingTemplateItem[] } }>(`${BASE}/onboarding/templates`),
+  });
+}
+/** Offboarding: neizmirena REVERSI zaduženja zaposlenog (panel „Zaduženja za vraćanje"). */
+export function useOffboardingReversi(employeeId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: [...KEYS.onboarding, 'reversi', employeeId ?? 'none'],
+    enabled: !!employeeId && enabled,
+    retry: false,
+    queryFn: () => apiFetch<{ data: ViewRow[] }>(`${BASE}/onboarding/reversi/${employeeId}`),
+  });
+}
+
+/** Generički izveštaj (kind: sick/demo/org/vacation/overtime/field/medical/certs/audit/
+ *  children/risk). Shape zavisi od kind-a — pozivalac kastuje. */
+export function useReport<T = unknown>(kind: string, params: { from?: string; to?: string; year?: number; months?: number } = {}, enabled = true) {
+  return useQuery({
+    queryKey: ['kadrovska', 'report', kind, params],
+    enabled,
+    retry: false,
+    queryFn: () => apiFetch<{ data: T }>(`${BASE}/reports/${kind}${qs({ ...params })}`),
+  });
+}
+
+// ------------------------------------------------------------------ P11 mutacije: Plan razvoja
+export interface DevPlanInput {
+  employeeId: string;
+  periodLabel: string;
+  periodStart?: string | null;
+  periodEnd?: string | null;
+  careerGoalMd?: string | null;
+  targetPositionId?: number | null;
+  mentorEmployeeId?: string | null;
+  status?: string;
+}
+export const useCreateDevPlan = () =>
+  useKadrMutation<DevPlanInput & { clientEventId: string }, TxResponse<Record<string, unknown>>>((v) => post('/dev-plans', v), KEYS.dev);
+export const useUpdateDevPlan = () =>
+  useKadrMutation<{ id: string; patch: Partial<DevPlanInput & { summaryMd: string | null; selfAssessmentMd: string | null }> }>((v) => patch(`/dev-plans/${v.id}`, v.patch), KEYS.dev);
+export const useDeleteDevPlan = () => useKadrMutation<{ id: string }>((v) => del(`/dev-plans/${v.id}`), KEYS.dev);
+
+/* Razvojni ciljevi (expectations) */
+export interface ExpectationInput {
+  employeeId: string;
+  title: string;
+  category: string;
+  priority: string;
+  descriptionMd?: string | null;
+  dueDate?: string | null;
+  planId?: string;
+}
+export const useCreateExpectation = () =>
+  useKadrMutation<ExpectationInput & { clientEventId: string }>((v) => post('/expectations', v), KEYS.dev);
+export const useUpdateExpectation = () =>
+  useKadrMutation<{ id: string; patch: Partial<ExpectationInput & { status: string; progress: number; completionNote: string }> }>((v) => patch(`/expectations/${v.id}`, v.patch), KEYS.dev);
+export const useDeleteExpectation = () => useKadrMutation<{ id: string }>((v) => del(`/expectations/${v.id}`), KEYS.dev);
+
+/* Dnevnik 1-na-1 (checkins) */
+export const useCreateCheckin = () =>
+  useKadrMutation<{ planId: string; employeeId: string; checkinDate?: string | null; authorKind?: string; noteMd?: string; clientEventId: string }>((v) => {
+    const { planId, ...body } = v;
+    return post(`/dev-plans/${planId}/checkins`, body);
+  }, KEYS.dev);
+export const useDeleteCheckin = () => useKadrMutation<{ id: string }>((v) => del(`/checkins/${v.id}`), KEYS.dev);
+
+// ------------------------------------------------------------------ P11 mutacije: Razgovori
+export interface TalkInput {
+  employeeId: string;
+  talkType: string;
+  talkDate?: string | null;
+  title?: string | null;
+  zapisnikMd?: string | null;
+  planId?: string;
+  raiseDecision?: string | null;
+  raisePercent?: number | null;
+  raiseEffectiveFrom?: string | null;
+  raiseNote?: string | null;
+}
+export const useCreateTalk = () =>
+  useKadrMutation<TalkInput & { clientEventId: string }, TxResponse<EmployeeTalk>>((v) => post('/talks', v), KEYS.talks);
+export const useUpdateTalk = () =>
+  useKadrMutation<{ id: string; patch: Partial<TalkInput & { status: string }> }, TxResponse<EmployeeTalk>>((v) => patch(`/talks/${v.id}`, v.patch), KEYS.talks);
+export const useDeleteTalk = () => useKadrMutation<{ id: string }>((v) => del(`/talks/${v.id}`), KEYS.talks);
+export const useShareTalk = () =>
+  useKadrMutation<{ id: string; clientEventId?: string }, TxResponse<{ status?: string; emailed?: boolean }>>((v) => post(`/talks/${v.id}/share`, { clientEventId: v.clientEventId }), KEYS.talks);
+export const useUnshareTalk = () =>
+  useKadrMutation<{ id: string; clientEventId?: string }, TxResponse<{ status?: string }>>((v) => post(`/talks/${v.id}/unshare`, { clientEventId: v.clientEventId }), KEYS.talks);
+
+/* Korektivni planovi + mere */
+export const useCreateCorrectivePlan = () =>
+  useKadrMutation<{ employeeId: string; talkId?: string; visibleToEmployee?: boolean; reasonMd?: string | null; status?: string; followupDate?: string | null; clientEventId: string }, TxResponse<CorrectivePlan>>((v) => post('/corrective-plans', v), KEYS.talks);
+export const useUpdateCorrectivePlan = () =>
+  useKadrMutation<{ id: string; patch: { reasonMd?: string | null; status?: string; followupDate?: string | null; closedAt?: string | null; visibleToEmployee?: boolean } }>((v) => patch(`/corrective-plans/${v.id}`, v.patch), KEYS.talks);
+export interface MeasureInput {
+  planId: string;
+  descriptionMd: string;
+  dueDate?: string | null;
+  responsibleEmployeeId?: string | null;
+  status?: string;
+  note?: string | null;
+}
+export const useCreateMeasure = () =>
+  useKadrMutation<MeasureInput & { clientEventId: string }>((v) => post('/corrective-measures', v), KEYS.talks);
+export const useUpdateMeasure = () =>
+  useKadrMutation<{ id: string; patch: Partial<Omit<MeasureInput, 'planId'>> }>((v) => patch(`/corrective-measures/${v.id}`, v.patch), KEYS.talks);
+export const useDeleteMeasure = () => useKadrMutation<{ id: string }>((v) => del(`/corrective-measures/${v.id}`), KEYS.talks);
+
+// ------------------------------------------------------------------ P11 mutacije: 360 (state hooks + imperativne fn)
+export const useCloseAssessment = () => useKadrMutation<{ id: string; clientEventId?: string }>((v) => post(`/assessments/${v.id}/close`, { clientEventId: v.clientEventId }), KEYS.assessments);
+export const useReopenAssessment = () => useKadrMutation<{ id: string; clientEventId?: string }>((v) => post(`/assessments/${v.id}/reopen`, { clientEventId: v.clientEventId }), KEYS.assessments);
+export const useShareAssessment = () => useKadrMutation<{ id: string; clientEventId?: string }>((v) => post(`/assessments/${v.id}/share`, { clientEventId: v.clientEventId }), KEYS.assessments);
+export const useUnshareAssessment = () => useKadrMutation<{ id: string; clientEventId?: string }>((v) => post(`/assessments/${v.id}/unshare`, { clientEventId: v.clientEventId }), KEYS.assessments);
+export const useOpenCampaign = () =>
+  useKadrMutation<{ title: string; period: string; employeeIds: string[]; clientEventId: string }, TxResponse<unknown>>((v) => post('/assessments/campaign', v), KEYS.assessments);
+
+/** Imperativne 360 operacije (modal orkestrira sekvence open→save→setTargets→compute). */
+export function openAssessment360(vars: { employeeId: string; period?: string | null; peerEmployeeIds?: string[]; peerEmails?: string[]; cycle?: string; clientEventId: string }): Promise<TxResponse<string>> {
+  return post<string>('/assessments/360', vars);
+}
+export function saveAssessmentScores(raterId: string, items: { competenceId: number; level?: number | null; comment?: string }[]): Promise<TxResponse<{ upserted: number }>> {
+  return post(`/assessments/raters/${raterId}/scores`, { items });
+}
+export function setAssessmentTargets(id: string, targets: { competence_id: number; target_level: number | null }[]): Promise<TxResponse<unknown>> {
+  return post(`/assessments/${id}/targets`, { targets });
+}
+export function computeAssessment(id: string): Promise<TxResponse<unknown>> {
+  return post(`/assessments/${id}/compute`, {});
+}
+export function assessmentGapToGoals(id: string, source = 'leader', minGap = 1): Promise<TxResponse<number>> {
+  return post<number>(`/assessments/${id}/gap`, { source, minGap });
+}
+export function assessmentInvite(id: string): Promise<TxResponse<InviteResult>> {
+  return post(`/assessments/${id}/invite`, {});
+}
+export function assessmentInviteCycle(cycleId: string, notifyCreator = true): Promise<TxResponse<InviteResult>> {
+  return post(`/assessments/cycles/${cycleId}/invite`, { notifyCreator });
+}
+
+// ------------------------------------------------------------------ P11 mutacije: Onboarding
+export const useOnboardingStart = () =>
+  useKadrMutation<{ employeeId: string; templateId: string; startDate?: string | null; clientEventId: string }, TxResponse<string>>((v) => post('/onboarding/start', v), KEYS.onboarding);
+export const useOnboardingTask = () =>
+  useKadrMutation<{ id: string; status?: string; done?: boolean; note?: string }>((v) => patch(`/onboarding/tasks/${v.id}`, { status: v.status, done: v.done, note: v.note }), KEYS.onboarding);
+export const useOnboardingRunStatus = () =>
+  useKadrMutation<{ id: string; status: string; clientEventId?: string }>((v) => patch(`/onboarding/runs/${v.id}`, { status: v.status, clientEventId: v.clientEventId }), KEYS.onboarding);
+export const useCreateOnbTemplate = () =>
+  useKadrMutation<{ name: string; kind: string; clientEventId: string }>((v) => post('/onboarding/templates', v), KEYS.onboarding);
+export const useDeleteOnbTemplate = () => useKadrMutation<{ id: string }>((v) => del(`/onboarding/templates/${v.id}`), KEYS.onboarding);
+export const useCreateOnbItem = () =>
+  useKadrMutation<{ templateId: string; title: string; assigneeHint?: string; offsetDays?: number; sortOrder?: number; clientEventId: string }>((v) => post('/onboarding/template-items', v), KEYS.onboarding);
+export const useDeleteOnbItem = () => useKadrMutation<{ id: string }>((v) => del(`/onboarding/template-items/${v.id}`), KEYS.onboarding);
+
+// ------------------------------------------------------------------ P11 mutacije: Notifikacije
+export const useNotifRetry = () => useKadrMutation<{ id: string }>((v) => post(`/notifications/${v.id}/retry`), KEYS.notifications);
+export const useNotifCancel = () => useKadrMutation<{ id: string }>((v) => post(`/notifications/${v.id}/cancel`), KEYS.notifications);
+export const useNotifDelete = () => useKadrMutation<{ id: string }>((v) => del(`/notifications/${v.id}`), KEYS.notifications);
+export const useUpdateNotificationConfig = () =>
+  useKadrMutation<Partial<NotificationConfig>, TxResponse<NotificationConfig>>((v) => patch('/notification-config', v), KEYS.notifications);
+export const useTriggerHrReminders = () =>
+  useKadrMutation<void, TxResponse<Record<string, unknown>>>(() => post('/notifications/hr-reminders/run'), KEYS.notifications);
+export const useTriggerWeeklyRisk = () =>
+  useKadrMutation<void, TxResponse<unknown>>(() => post('/reports/risk/run'), KEYS.notifications);
+export const useTriggerPayrollNotify = () =>
+  useKadrMutation<{ year: number; month: number; clientEventId?: string }, TxResponse<number>>((v) => post('/notifications/payroll/run', v), KEYS.notifications);
