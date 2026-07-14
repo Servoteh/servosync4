@@ -579,6 +579,55 @@ describe("HandoverDraftsService — §6.5.4 gate na submit()", () => {
     expect(res.data.handoversCreated).toBe(1);
     expect(prisma.drawingHandover.create).toHaveBeenCalledTimes(1);
   });
+
+  it("stara revizija stavke → 422 (puštanje blokirano), transakcija se ne otvara", async () => {
+    const oldRev = drawingRow({ id: 12, drawingNumber: "555", revision: "A" });
+    const newRev = drawingRow({ id: 13, drawingNumber: "555", revision: "B" });
+    const { service, prisma } = await makeFullService([oldRev, newRev]);
+    prisma.handoverDraft.findUnique.mockResolvedValue({
+      id: 8,
+      isLocked: false,
+      designerId: 33,
+    });
+    prisma.handoverDraftItem.findMany.mockResolvedValue([
+      { id: 1, drawingId: 12, preCheckDuplicate: false, decisionAction: 0 },
+    ]);
+
+    const err = await errorOf(service.submit(8));
+
+    expect(err).toBeInstanceOf(UnprocessableEntityException);
+    expect((err as Error).message).toContain("stare revizije");
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("poslednja revizija stavke → prolazi (predaja se izvršava)", async () => {
+    const oldRev = drawingRow({ id: 12, drawingNumber: "555", revision: "A" });
+    const newRev = drawingRow({ id: 13, drawingNumber: "555", revision: "B" });
+    const { service, prisma } = await makeFullService([oldRev, newRev]);
+    prisma.handoverDraft.findUnique.mockResolvedValue({
+      id: 8,
+      isLocked: false,
+      designerId: 33,
+    });
+    prisma.handoverDraftItem.findMany.mockResolvedValue([
+      { id: 1, drawingId: 13, preCheckDuplicate: false, decisionAction: 0 },
+    ]);
+    prisma.drawingHandover.findMany.mockResolvedValue([
+      {
+        id: 100,
+        drawingId: 13,
+        handoverDate: new Date(),
+        handoverWorkerId: 33,
+        statusId: 0,
+        isLocked: false,
+        createdAt: null,
+      },
+    ]);
+
+    const res = await service.submit(8);
+
+    expect(res.data.handoversCreated).toBe(1);
+  });
 });
 
 describe("HandoverDraftsService — decideItem (§6.5.4 odluka projektanta)", () => {
