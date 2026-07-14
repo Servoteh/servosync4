@@ -12,6 +12,7 @@ import {
   IsUUID,
   MaxLength,
   MinLength,
+  ValidateIf,
 } from "class-validator";
 
 /**
@@ -324,6 +325,31 @@ export class DetailsUpsertDto {
   @IsObject() details!: Record<string, unknown>;
 }
 
+/**
+ * PATCH core `maint_assets` reda (HIGH#2 paritet 1.0 `patchMaintAsset`) — vozilo/IT/objekat
+ * edit modali menjaju name/status/proizvođač/model/serijski/napomene + `location_id`/
+ * `responsible_user_id` (create RPC ih NE prima → jedini put da se postave). `null` briše
+ * vezu (unassign). Row-odluku (asset_visible ∧ erp/chief/admin) presuđuje RLS.
+ */
+export class PatchAssetCoreDto {
+  @IsOptional() @IsString() @MaxLength(300) name?: string;
+  @IsOptional() @IsIn(OP_STATUS) status?: string;
+  @IsOptional() @IsString() manufacturer?: string;
+  @IsOptional() @IsString() model?: string;
+  @IsOptional() @IsString() serialNumber?: string;
+  @IsOptional() @IsString() supplier?: string;
+  @IsOptional() @IsString() notes?: string;
+  /** uuid maint_locations ILI null (unassign). */
+  @IsOptional() @ValidateIf((_o, v) => v !== null) @IsUUID() locationId?:
+    | string
+    | null;
+  /** uuid odgovornog korisnika ILI null (unassign). */
+  @IsOptional()
+  @ValidateIf((_o, v) => v !== null)
+  @IsUUID()
+  responsibleUserId?: string | null;
+}
+
 /* ════════════════════════ Vozila ════════════════════════ */
 
 export class TollTagDto {
@@ -431,7 +457,9 @@ export class CreateDriverDto extends IdempotentDto {
   @IsOptional() @IsBoolean() isInternal?: boolean;
   @IsOptional() @IsUUID() authUserId?: string;
   @IsString() @MaxLength(100) driversLicenseNumber!: string;
-  @IsArray() @ArrayMinSize(1) @IsString({ each: true })
+  @IsArray()
+  @ArrayMinSize(1)
+  @IsString({ each: true })
   driversLicenseCategories!: string[];
   @IsISO8601() driversLicenseValidUntil!: string;
   @IsOptional() @IsString() idCardNumber?: string;
@@ -448,7 +476,9 @@ export class UpdateDriverDto {
   @IsOptional() @IsString() @MaxLength(300) fullName?: string;
   @IsOptional() @IsBoolean() isInternal?: boolean;
   @IsOptional() @IsString() driversLicenseNumber?: string;
-  @IsOptional() @IsArray() @IsString({ each: true })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
   driversLicenseCategories?: string[];
   @IsOptional() @IsISO8601() driversLicenseValidUntil?: string;
   @IsOptional() @IsString() idCardNumber?: string;
@@ -583,7 +613,9 @@ export class UpdateSettingsDto {
   @IsOptional() @IsBoolean() notifyOnMajorIncident?: boolean;
   @IsOptional() @IsBoolean() notifyOnCriticalIncident?: boolean;
   @IsOptional() @IsBoolean() notifyOnOverduePreventive?: boolean;
-  @IsOptional() @IsArray() @IsIn(NOTIF_CHANNEL, { each: true })
+  @IsOptional()
+  @IsArray()
+  @IsIn(NOTIF_CHANNEL, { each: true })
   notificationChannels?: string[];
   @IsOptional() @IsString() notes?: string;
 }

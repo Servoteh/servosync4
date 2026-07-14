@@ -54,6 +54,7 @@ import {
   FileMetaDto,
   IncidentEventDto,
   LinkPartDto,
+  PatchAssetCoreDto,
   RenameMachineDto,
   ReportIncidentDto,
   ShelfDto,
@@ -765,6 +766,17 @@ export class OdrzavanjeController {
     return this.odr.restoreVehicle(req.user.email, id);
   }
 
+  // Core maint_assets red vozila (HIGH#2; location_id/responsible_user_id — inače neupisivi).
+  @Patch("vehicles/:id")
+  @RequirePermission(PERMISSIONS.ODRZAVANJE_WRITE)
+  patchVehicleCore(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: PatchAssetCoreDto,
+  ) {
+    return this.odr.patchAssetCore(req.user.email, id, dto);
+  }
+
   @Put("vehicles/:id/details")
   @RequirePermission(PERMISSIONS.ODRZAVANJE_WRITE)
   upsertVehicleDetails(
@@ -984,6 +996,17 @@ export class OdrzavanjeController {
     return this.odr.createItAsset(req.user.email, dto);
   }
 
+  // Core maint_assets red IT opreme (HIGH#2).
+  @Patch("it-assets/:id")
+  @RequirePermission(PERMISSIONS.ODRZAVANJE_WRITE)
+  patchItAssetCore(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: PatchAssetCoreDto,
+  ) {
+    return this.odr.patchAssetCore(req.user.email, id, dto);
+  }
+
   @Put("it-assets/:id/details")
   @RequirePermission(PERMISSIONS.ODRZAVANJE_WRITE)
   upsertItDetails(
@@ -998,6 +1021,17 @@ export class OdrzavanjeController {
   @RequirePermission(PERMISSIONS.ODRZAVANJE_WRITE)
   createFacility(@Req() req: AuthedRequest, @Body() dto: CreateMaintAssetDto) {
     return this.odr.createFacility(req.user.email, dto);
+  }
+
+  // Core maint_assets red objekta (HIGH#2).
+  @Patch("facilities/:id")
+  @RequirePermission(PERMISSIONS.ODRZAVANJE_WRITE)
+  patchFacilityCore(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: PatchAssetCoreDto,
+  ) {
+    return this.odr.patchAssetCore(req.user.email, id, dto);
   }
 
   @Put("facilities/:id/details")

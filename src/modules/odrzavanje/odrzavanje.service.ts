@@ -32,6 +32,7 @@ import type {
   FileMetaDto,
   IncidentEventDto,
   LinkPartDto,
+  PatchAssetCoreDto,
   ReportIncidentDto,
   ShelfDto,
   StatusOverrideDto,
@@ -1498,42 +1499,65 @@ export class OdrzavanjeService {
 
   async updateMachine(email: string, code: string, dto: UpdateMachineDto) {
     return this.withUserMapped(email, async (tx) => {
-      const exists = (await tx.maintMachine.count({ where: { machineCode: code } })) > 0;
+      const exists =
+        (await tx.maintMachine.count({ where: { machineCode: code } })) > 0;
       const uid = await this.uid(tx);
       const { count } = await tx.maintMachine.updateMany({
         where: { machineCode: code },
         data: {
           ...(dto.name !== undefined ? { name: dto.name } : {}),
           ...(dto.type !== undefined ? { type: dto.type } : {}),
-          ...(dto.manufacturer !== undefined ? { manufacturer: dto.manufacturer } : {}),
+          ...(dto.manufacturer !== undefined
+            ? { manufacturer: dto.manufacturer }
+            : {}),
           ...(dto.model !== undefined ? { model: dto.model } : {}),
-          ...(dto.serialNumber !== undefined ? { serialNumber: dto.serialNumber } : {}),
-          ...(dto.yearOfManufacture !== undefined ? { yearOfManufacture: dto.yearOfManufacture } : {}),
-          ...(dto.yearCommissioned !== undefined ? { yearCommissioned: dto.yearCommissioned } : {}),
+          ...(dto.serialNumber !== undefined
+            ? { serialNumber: dto.serialNumber }
+            : {}),
+          ...(dto.yearOfManufacture !== undefined
+            ? { yearOfManufacture: dto.yearOfManufacture }
+            : {}),
+          ...(dto.yearCommissioned !== undefined
+            ? { yearCommissioned: dto.yearCommissioned }
+            : {}),
           ...(dto.location !== undefined ? { location: dto.location } : {}),
-          ...(dto.departmentId !== undefined ? { departmentId: dto.departmentId } : {}),
+          ...(dto.departmentId !== undefined
+            ? { departmentId: dto.departmentId }
+            : {}),
           ...(dto.powerKw !== undefined ? { powerKw: dto.powerKw } : {}),
           ...(dto.weightKg !== undefined ? { weightKg: dto.weightKg } : {}),
           ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
           ...(dto.tracked !== undefined ? { tracked: dto.tracked } : {}),
-          ...(dto.responsibleUserId !== undefined ? { responsibleUserId: dto.responsibleUserId } : {}),
+          ...(dto.responsibleUserId !== undefined
+            ? { responsibleUserId: dto.responsibleUserId }
+            : {}),
           updatedBy: uid,
           updatedAt: new Date(),
         },
       });
       this.assertAffected(exists, count, `Mašina ${code}`);
-      return { data: await tx.maintMachine.findUnique({ where: { machineCode: code } }) };
+      return {
+        data: await tx.maintMachine.findUnique({
+          where: { machineCode: code },
+        }),
+      };
     });
   }
 
   /** Soft-delete mašine: archived_at = now(), tracked = false (paritet archiveMaintMachine). */
   async archiveMachine(email: string, code: string) {
     return this.withUserMapped(email, async (tx) => {
-      const exists = (await tx.maintMachine.count({ where: { machineCode: code } })) > 0;
+      const exists =
+        (await tx.maintMachine.count({ where: { machineCode: code } })) > 0;
       const uid = await this.uid(tx);
       const { count } = await tx.maintMachine.updateMany({
         where: { machineCode: code },
-        data: { archivedAt: new Date(), tracked: false, updatedBy: uid, updatedAt: new Date() },
+        data: {
+          archivedAt: new Date(),
+          tracked: false,
+          updatedBy: uid,
+          updatedAt: new Date(),
+        },
       });
       this.assertAffected(exists, count, `Mašina ${code}`);
       return { data: { ok: true } };
@@ -1542,11 +1566,17 @@ export class OdrzavanjeService {
 
   async restoreMachine(email: string, code: string) {
     return this.withUserMapped(email, async (tx) => {
-      const exists = (await tx.maintMachine.count({ where: { machineCode: code } })) > 0;
+      const exists =
+        (await tx.maintMachine.count({ where: { machineCode: code } })) > 0;
       const uid = await this.uid(tx);
       const { count } = await tx.maintMachine.updateMany({
         where: { machineCode: code },
-        data: { archivedAt: null, tracked: true, updatedBy: uid, updatedAt: new Date() },
+        data: {
+          archivedAt: null,
+          tracked: true,
+          updatedBy: uid,
+          updatedAt: new Date(),
+        },
       });
       this.assertAffected(exists, count, `Mašina ${code}`);
       return { data: { ok: true } };
@@ -1622,7 +1652,9 @@ export class OdrzavanjeService {
 
   async clearStatusOverride(email: string, code: string) {
     return this.withUserMapped(email, async (tx) => {
-      await tx.maintMachineStatusOverride.deleteMany({ where: { machineCode: code } });
+      await tx.maintMachineStatusOverride.deleteMany({
+        where: { machineCode: code },
+      });
       return { data: { ok: true } };
     });
   }
@@ -1650,7 +1682,8 @@ export class OdrzavanjeService {
 
   async updateNote(email: string, noteId: string, dto: UpdateNoteDto) {
     return this.withUserMapped(email, async (tx) => {
-      const exists = (await tx.maintMachineNote.count({ where: { id: noteId } })) > 0;
+      const exists =
+        (await tx.maintMachineNote.count({ where: { id: noteId } })) > 0;
       const { count } = await tx.maintMachineNote.updateMany({
         where: { id: noteId },
         data: {
@@ -1677,7 +1710,9 @@ export class OdrzavanjeService {
     file?: Express.Multer.File,
   ) {
     if (!file?.buffer?.length) {
-      throw new UnprocessableEntityException("Očekivan fajl (multipart `file`)");
+      throw new UnprocessableEntityException(
+        "Očekivan fajl (multipart `file`)",
+      );
     }
     const uuid = randomUUID().replace(/-/g, "").slice(0, 12);
     const storagePath = `${code}/${uuid}_${this.safeFileName(file.originalname)}`;
@@ -1720,7 +1755,9 @@ export class OdrzavanjeService {
         where: { id },
         data: {
           ...(dto.category !== undefined ? { category: dto.category } : {}),
-          ...(dto.description !== undefined ? { description: dto.description } : {}),
+          ...(dto.description !== undefined
+            ? { description: dto.description }
+            : {}),
         },
       });
       this.assertAffected(exists, count, `Fajl ${id}`);
@@ -1754,7 +1791,8 @@ export class OdrzavanjeService {
         where: { id },
         select: { storagePath: true, deletedAt: true },
       });
-      if (!row || row.deletedAt) throw new NotFoundException(`Fajl ${id} ne postoji`);
+      if (!row || row.deletedAt)
+        throw new NotFoundException(`Fajl ${id} ne postoji`);
       return row.storagePath;
     });
     return { data: await this.storage.signUrl(MAINT_BUCKET, path, 300) };
@@ -1798,13 +1836,27 @@ export class OdrzavanjeService {
         where: { id },
         data: {
           ...(dto.title !== undefined ? { title: dto.title } : {}),
-          ...(dto.description !== undefined ? { description: dto.description } : {}),
-          ...(dto.instructions !== undefined ? { instructions: dto.instructions } : {}),
-          ...(dto.intervalValue !== undefined ? { intervalValue: dto.intervalValue } : {}),
-          ...(dto.intervalUnit !== undefined ? { intervalUnit: dto.intervalUnit as never } : {}),
-          ...(dto.severity !== undefined ? { severity: dto.severity as never } : {}),
-          ...(dto.requiredRole !== undefined ? { requiredRole: dto.requiredRole as never } : {}),
-          ...(dto.gracePeriodDays !== undefined ? { gracePeriodDays: dto.gracePeriodDays } : {}),
+          ...(dto.description !== undefined
+            ? { description: dto.description }
+            : {}),
+          ...(dto.instructions !== undefined
+            ? { instructions: dto.instructions }
+            : {}),
+          ...(dto.intervalValue !== undefined
+            ? { intervalValue: dto.intervalValue }
+            : {}),
+          ...(dto.intervalUnit !== undefined
+            ? { intervalUnit: dto.intervalUnit as never }
+            : {}),
+          ...(dto.severity !== undefined
+            ? { severity: dto.severity as never }
+            : {}),
+          ...(dto.requiredRole !== undefined
+            ? { requiredRole: dto.requiredRole as never }
+            : {}),
+          ...(dto.gracePeriodDays !== undefined
+            ? { gracePeriodDays: dto.gracePeriodDays }
+            : {}),
           ...(dto.active !== undefined ? { active: dto.active } : {}),
           updatedBy: uid,
           updatedAt: new Date(),
@@ -1895,13 +1947,27 @@ export class OdrzavanjeService {
         where: { id },
         data: {
           ...(dto.status !== undefined ? { status: dto.status as never } : {}),
-          ...(dto.assignedTo !== undefined ? { assignedTo: dto.assignedTo } : {}),
-          ...(dto.severity !== undefined ? { severity: dto.severity as never } : {}),
-          ...(dto.resolutionNotes !== undefined ? { resolutionNotes: dto.resolutionNotes } : {}),
-          ...(dto.downtimeMinutes !== undefined ? { downtimeMinutes: dto.downtimeMinutes } : {}),
-          ...(dto.resolvedAt !== undefined ? { resolvedAt: this.toDbTs(dto.resolvedAt) } : {}),
-          ...(dto.closedAt !== undefined ? { closedAt: this.toDbTs(dto.closedAt) } : {}),
-          ...(dto.safetyMarker !== undefined ? { safetyMarker: dto.safetyMarker } : {}),
+          ...(dto.assignedTo !== undefined
+            ? { assignedTo: dto.assignedTo }
+            : {}),
+          ...(dto.severity !== undefined
+            ? { severity: dto.severity as never }
+            : {}),
+          ...(dto.resolutionNotes !== undefined
+            ? { resolutionNotes: dto.resolutionNotes }
+            : {}),
+          ...(dto.downtimeMinutes !== undefined
+            ? { downtimeMinutes: dto.downtimeMinutes }
+            : {}),
+          ...(dto.resolvedAt !== undefined
+            ? { resolvedAt: this.toDbTs(dto.resolvedAt) }
+            : {}),
+          ...(dto.closedAt !== undefined
+            ? { closedAt: this.toDbTs(dto.closedAt) }
+            : {}),
+          ...(dto.safetyMarker !== undefined
+            ? { safetyMarker: dto.safetyMarker }
+            : {}),
           updatedBy: uid,
           updatedAt: new Date(),
         },
@@ -1940,7 +2006,9 @@ export class OdrzavanjeService {
     files: Express.Multer.File[],
   ) {
     if (!files?.length) {
-      throw new UnprocessableEntityException("Očekivane fotografije (multipart `files`)");
+      throw new UnprocessableEntityException(
+        "Očekivane fotografije (multipart `files`)",
+      );
     }
     // machine_code incidenta (za 1.0-kompatibilnu putanju); RLS SELECT presuđuje vidljivost.
     const machineCode = await this.withUserMapped(email, async (tx) => {
@@ -1966,7 +2034,9 @@ export class OdrzavanjeService {
       paths.push(p);
     }
     if (!paths.length) {
-      throw new UnprocessableEntityException("Nijedna fotografija nije prihvaćena");
+      throw new UnprocessableEntityException(
+        "Nijedna fotografija nije prihvaćena",
+      );
     }
     const ok = await this.withUserMapped(email, async (tx) => {
       const rows = await tx.$queryRaw<{ ok: boolean }[]>(
@@ -2009,43 +2079,77 @@ export class OdrzavanjeService {
   /** Kanban status/dodela/prioritet/rok/closure. wo_events piše trigger — NE dupliramo. */
   async updateWorkOrder(email: string, id: string, dto: UpdateWorkOrderDto) {
     return this.withUserMapped(email, async (tx) => {
-      const exists = (await tx.maintWorkOrder.count({ where: { woId: id } })) > 0;
+      const exists =
+        (await tx.maintWorkOrder.count({ where: { woId: id } })) > 0;
       const uid = await this.uid(tx);
       const { count } = await tx.maintWorkOrder.updateMany({
         where: { woId: id },
         data: {
           ...(dto.status !== undefined ? { status: dto.status as never } : {}),
-          ...(dto.priority !== undefined ? { priority: dto.priority as never } : {}),
-          ...(dto.assignedTo !== undefined ? { assignedTo: dto.assignedTo } : {}),
+          ...(dto.priority !== undefined
+            ? { priority: dto.priority as never }
+            : {}),
+          ...(dto.assignedTo !== undefined
+            ? { assignedTo: dto.assignedTo }
+            : {}),
           ...(dto.dueAt !== undefined ? { dueAt: this.toDbTs(dto.dueAt) } : {}),
           ...(dto.title !== undefined ? { title: dto.title } : {}),
-          ...(dto.description !== undefined ? { description: dto.description } : {}),
-          ...(dto.closureComment !== undefined ? { closureComment: dto.closureComment } : {}),
-          ...(dto.startedAt !== undefined ? { startedAt: this.toDbTs(dto.startedAt) } : {}),
-          ...(dto.completedAt !== undefined ? { completedAt: this.toDbTs(dto.completedAt) } : {}),
-          ...(dto.downtimeFrom !== undefined ? { downtimeFrom: this.toDbTs(dto.downtimeFrom) } : {}),
-          ...(dto.downtimeTo !== undefined ? { downtimeTo: this.toDbTs(dto.downtimeTo) } : {}),
-          ...(dto.laborMinutes !== undefined ? { laborMinutes: dto.laborMinutes } : {}),
+          ...(dto.description !== undefined
+            ? { description: dto.description }
+            : {}),
+          ...(dto.closureComment !== undefined
+            ? { closureComment: dto.closureComment }
+            : {}),
+          ...(dto.startedAt !== undefined
+            ? { startedAt: this.toDbTs(dto.startedAt) }
+            : {}),
+          ...(dto.completedAt !== undefined
+            ? { completedAt: this.toDbTs(dto.completedAt) }
+            : {}),
+          ...(dto.downtimeFrom !== undefined
+            ? { downtimeFrom: this.toDbTs(dto.downtimeFrom) }
+            : {}),
+          ...(dto.downtimeTo !== undefined
+            ? { downtimeTo: this.toDbTs(dto.downtimeTo) }
+            : {}),
+          ...(dto.laborMinutes !== undefined
+            ? { laborMinutes: dto.laborMinutes }
+            : {}),
           ...(dto.costTotal !== undefined ? { costTotal: dto.costTotal } : {}),
-          ...(dto.estimatedCost !== undefined ? { estimatedCost: dto.estimatedCost } : {}),
-          ...(dto.safetyMarker !== undefined ? { safetyMarker: dto.safetyMarker } : {}),
-          ...(dto.vehicleServiceCategory !== undefined ? { vehicleServiceCategory: dto.vehicleServiceCategory as never } : {}),
-          ...(dto.odometerKmAtService !== undefined ? { odometerKmAtService: dto.odometerKmAtService } : {}),
-          ...(dto.externalServicerName !== undefined ? { externalServicerName: dto.externalServicerName } : {}),
+          ...(dto.estimatedCost !== undefined
+            ? { estimatedCost: dto.estimatedCost }
+            : {}),
+          ...(dto.safetyMarker !== undefined
+            ? { safetyMarker: dto.safetyMarker }
+            : {}),
+          ...(dto.vehicleServiceCategory !== undefined
+            ? { vehicleServiceCategory: dto.vehicleServiceCategory as never }
+            : {}),
+          ...(dto.odometerKmAtService !== undefined
+            ? { odometerKmAtService: dto.odometerKmAtService }
+            : {}),
+          ...(dto.externalServicerName !== undefined
+            ? { externalServicerName: dto.externalServicerName }
+            : {}),
           updatedBy: uid,
           updatedAt: new Date(),
         },
       });
       this.assertAffected(exists, count, `Radni nalog ${id}`);
       const wo = await tx.maintWorkOrder.findUnique({ where: { woId: id } });
-      return { data: wo ? { ...wo, group: WO_GROUP[wo.status] ?? null } : null };
+      return {
+        data: wo ? { ...wo, group: WO_GROUP[wo.status] ?? null } : null,
+      };
     });
   }
 
   async deleteWorkOrder(email: string, id: string) {
     return this.withUserMapped(email, async (tx) => {
-      const exists = (await tx.maintWorkOrder.count({ where: { woId: id } })) > 0;
-      const { count } = await tx.maintWorkOrder.deleteMany({ where: { woId: id } });
+      const exists =
+        (await tx.maintWorkOrder.count({ where: { woId: id } })) > 0;
+      const { count } = await tx.maintWorkOrder.deleteMany({
+        where: { woId: id },
+      });
       this.assertAffected(exists, count, `Radni nalog ${id}`);
       return { data: { ok: true } };
     });
@@ -2113,13 +2217,28 @@ export class OdrzavanjeService {
   // ---------- Vozila (RPC create/archive/restore + details + pod-entiteti) ----------
 
   createVehicle(email: string, dto: CreateMaintAssetDto) {
-    return this.createAssetViaRpc(email, dto, "create_maint_vehicle", "create-vehicle");
+    return this.createAssetViaRpc(
+      email,
+      dto,
+      "create_maint_vehicle",
+      "create-vehicle",
+    );
   }
   createItAsset(email: string, dto: CreateMaintAssetDto) {
-    return this.createAssetViaRpc(email, dto, "create_maint_it_asset", "create-it-asset");
+    return this.createAssetViaRpc(
+      email,
+      dto,
+      "create_maint_it_asset",
+      "create-it-asset",
+    );
   }
   createFacility(email: string, dto: CreateMaintAssetDto) {
-    return this.createAssetViaRpc(email, dto, "create_maint_facility", "create-facility");
+    return this.createAssetViaRpc(
+      email,
+      dto,
+      "create_maint_facility",
+      "create-facility",
+    );
   }
 
   private createAssetViaRpc(
@@ -2128,30 +2247,51 @@ export class OdrzavanjeService {
     fn: string,
     action: string,
   ) {
-    return this.runIdem(email, dto.clientEventId, `odrzavanje.${action}`, async (tx) => {
-      const rows = await tx.$queryRaw<{ id: string | null }[]>(
-        Prisma.sql`SELECT public.${Prisma.raw(fn)}(
+    return this.runIdem(
+      email,
+      dto.clientEventId,
+      `odrzavanje.${action}`,
+      async (tx) => {
+        const rows = await tx.$queryRaw<{ id: string | null }[]>(
+          Prisma.sql`SELECT public.${Prisma.raw(fn)}(
           ${dto.assetCode.trim()}, ${dto.name.trim()}, ${dto.status ?? "running"},
           ${dto.manufacturer ?? null}, ${dto.model ?? null}, ${dto.serialNumber ?? null},
           ${dto.supplier ?? null}, ${dto.assetNotes ?? null},
           ${JSON.stringify(dto.details ?? {})}::jsonb) AS id`,
-      );
-      return { assetId: rows[0]?.id ?? null };
-    });
+        );
+        return { assetId: rows[0]?.id ?? null };
+      },
+    );
   }
 
   archiveVehicle(email: string, assetId: string, reason: string) {
-    return this.rpcBool(email, "archive_maint_vehicle", Prisma.sql`${assetId}::uuid, ${reason}`);
+    return this.rpcBool(
+      email,
+      "archive_maint_vehicle",
+      Prisma.sql`${assetId}::uuid, ${reason}`,
+    );
   }
   restoreVehicle(email: string, assetId: string) {
-    return this.rpcBool(email, "restore_maint_vehicle", Prisma.sql`${assetId}::uuid`);
+    return this.rpcBool(
+      email,
+      "restore_maint_vehicle",
+      Prisma.sql`${assetId}::uuid`,
+    );
   }
   /** archive/restore IT+objekti (isti RPC za oba; guard asset_type IN it/facility). */
   archiveAsset(email: string, assetId: string, reason: string) {
-    return this.rpcBool(email, "archive_maint_asset", Prisma.sql`${assetId}::uuid, ${reason}`);
+    return this.rpcBool(
+      email,
+      "archive_maint_asset",
+      Prisma.sql`${assetId}::uuid, ${reason}`,
+    );
   }
   restoreAsset(email: string, assetId: string) {
-    return this.rpcBool(email, "restore_maint_asset", Prisma.sql`${assetId}::uuid`);
+    return this.rpcBool(
+      email,
+      "restore_maint_asset",
+      Prisma.sql`${assetId}::uuid`,
+    );
   }
 
   private rpcBool(email: string, fn: string, args: Prisma.Sql) {
@@ -2163,17 +2303,59 @@ export class OdrzavanjeService {
     });
   }
 
+  /**
+   * PATCH core `maint_assets` reda (HIGH#2 paritet 1.0 `patchMaintAsset`) — vozilo/IT/objekat.
+   * `location_id`/`responsible_user_id` create RPC NE prima → ovo je jedini put da se postave
+   * (1.0 to radi naknadnim patch-om). `null` = unassign; undefined = ne diraj. Row-odluka
+   * (asset_visible ∧ erp/chief/admin — `maint_assets_update` RLS) presuđuje DB (42501→403).
+   */
+  async patchAssetCore(email: string, assetId: string, dto: PatchAssetCoreDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const exists = (await tx.maintAsset.count({ where: { assetId } })) > 0;
+      const uid = await this.uid(tx);
+      const { count } = await tx.maintAsset.updateMany({
+        where: { assetId },
+        data: {
+          ...(dto.name !== undefined ? { name: dto.name } : {}),
+          ...(dto.status !== undefined ? { status: dto.status as never } : {}),
+          ...(dto.manufacturer !== undefined
+            ? { manufacturer: dto.manufacturer }
+            : {}),
+          ...(dto.model !== undefined ? { model: dto.model } : {}),
+          ...(dto.serialNumber !== undefined
+            ? { serialNumber: dto.serialNumber }
+            : {}),
+          ...(dto.supplier !== undefined ? { supplier: dto.supplier } : {}),
+          ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
+          ...(dto.locationId !== undefined
+            ? { locationId: dto.locationId }
+            : {}),
+          ...(dto.responsibleUserId !== undefined
+            ? { responsibleUserId: dto.responsibleUserId }
+            : {}),
+          updatedBy: uid,
+          updatedAt: new Date(),
+        },
+      });
+      this.assertAffected(exists, count, `Sredstvo ${assetId}`);
+      return { data: await tx.maintAsset.findUnique({ where: { assetId } }) };
+    });
+  }
+
   /** Allowlist kolona details (paritet 1.0 upsert body — nema mass-assignment). */
   private pickVehicleDetails(d: Record<string, unknown>) {
-    const s = (k: string) => (d[k] == null || d[k] === "" ? null : String(d[k]));
-    const n = (k: string) => (d[k] == null || d[k] === "" ? null : Number(d[k]));
+    const s = (k: string) =>
+      d[k] == null || d[k] === "" ? null : String(d[k]);
+    const n = (k: string) =>
+      d[k] == null || d[k] === "" ? null : Number(d[k]);
     const b = (k: string) => Boolean(d[k]);
     return {
       registrationPlate: s("registration_plate"),
       vin: s("vin"),
       odometerKm: n("odometer_km"),
       fuelType: s("fuel_type"),
-      registrationExpiresAt: this.toDbDate(s("registration_expires_at")) ?? null,
+      registrationExpiresAt:
+        this.toDbDate(s("registration_expires_at")) ?? null,
       insuranceExpiresAt: this.toDbDate(s("insurance_expires_at")) ?? null,
       serviceDueAt: this.toDbDate(s("service_due_at")) ?? null,
       serviceIntervalKm: n("service_interval_km"),
@@ -2186,7 +2368,8 @@ export class OdrzavanjeService {
       usageType: (s("usage_type") as never) ?? null,
       gpsProvider: ((s("gps_provider") as never) ?? "nema") as never,
       gpsDeviceId: s("gps_device_id"),
-      firstAidKitExpiresAt: this.toDbDate(s("first_aid_kit_expires_at")) ?? null,
+      firstAidKitExpiresAt:
+        this.toDbDate(s("first_aid_kit_expires_at")) ?? null,
       isPrivateVehicle: b("is_private_vehicle"),
       ownerId: s("owner_id"),
       primaryDriverId: s("primary_driver_id"),
@@ -2194,7 +2377,11 @@ export class OdrzavanjeService {
   }
 
   /** Upsert details vozila (PK asset_id; paritet upsertMaintVehicleDetails). */
-  async upsertVehicleDetails(email: string, assetId: string, dto: DetailsUpsertDto) {
+  async upsertVehicleDetails(
+    email: string,
+    assetId: string,
+    dto: DetailsUpsertDto,
+  ) {
     return this.withUserMapped(email, async (tx) => {
       const uid = await this.uid(tx);
       const base = { ...this.pickVehicleDetails(dto.details), updatedBy: uid };
@@ -2209,7 +2396,8 @@ export class OdrzavanjeService {
 
   patchVehicleTollTag(email: string, assetId: string, dto: TollTagDto) {
     return this.withUserMapped(email, async (tx) => {
-      const exists = (await tx.maintVehicleDetails.count({ where: { assetId } })) > 0;
+      const exists =
+        (await tx.maintVehicleDetails.count({ where: { assetId } })) > 0;
       const uid = await this.uid(tx);
       const { count } = await tx.maintVehicleDetails.updateMany({
         where: { assetId },
@@ -2227,14 +2415,21 @@ export class OdrzavanjeService {
 
   patchVehicleShelf(email: string, assetId: string, dto: ShelfDto) {
     return this.withUserMapped(email, async (tx) => {
-      const exists = (await tx.maintVehicleDetails.count({ where: { assetId } })) > 0;
+      const exists =
+        (await tx.maintVehicleDetails.count({ where: { assetId } })) > 0;
       const uid = await this.uid(tx);
       const { count } = await tx.maintVehicleDetails.updateMany({
         where: { assetId },
         data: {
-          ...(dto.hasPartsSet !== undefined ? { hasPartsSet: dto.hasPartsSet } : {}),
-          ...(dto.partsShelf !== undefined ? { partsShelf: dto.partsShelf || null } : {}),
-          ...(dto.partsNotes !== undefined ? { partsNotes: dto.partsNotes || null } : {}),
+          ...(dto.hasPartsSet !== undefined
+            ? { hasPartsSet: dto.hasPartsSet }
+            : {}),
+          ...(dto.partsShelf !== undefined
+            ? { partsShelf: dto.partsShelf || null }
+            : {}),
+          ...(dto.partsNotes !== undefined
+            ? { partsNotes: dto.partsNotes || null }
+            : {}),
           updatedBy: uid,
         },
       });
@@ -2247,7 +2442,8 @@ export class OdrzavanjeService {
 
   async upsertItDetails(email: string, assetId: string, dto: DetailsUpsertDto) {
     const d = dto.details;
-    const s = (k: string) => (d[k] == null || d[k] === "" ? null : String(d[k]));
+    const s = (k: string) =>
+      d[k] == null || d[k] === "" ? null : String(d[k]);
     return this.withUserMapped(email, async (tx) => {
       const uid = await this.uid(tx);
       const base = {
@@ -2274,10 +2470,16 @@ export class OdrzavanjeService {
     });
   }
 
-  async upsertFacilityDetails(email: string, assetId: string, dto: DetailsUpsertDto) {
+  async upsertFacilityDetails(
+    email: string,
+    assetId: string,
+    dto: DetailsUpsertDto,
+  ) {
     const d = dto.details;
-    const s = (k: string) => (d[k] == null || d[k] === "" ? null : String(d[k]));
-    const n = (k: string) => (d[k] == null || d[k] === "" ? null : Number(d[k]));
+    const s = (k: string) =>
+      d[k] == null || d[k] === "" ? null : String(d[k]);
+    const n = (k: string) =>
+      d[k] == null || d[k] === "" ? null : Number(d[k]);
     return this.withUserMapped(email, async (tx) => {
       const uid = await this.uid(tx);
       const base = {
@@ -2331,7 +2533,8 @@ export class OdrzavanjeService {
 
   async updateTire(email: string, tireId: string, dto: UpdateTireDto) {
     return this.withUserMapped(email, async (tx) => {
-      const exists = (await tx.maintVehicleTire.count({ where: { tireSetId: tireId } })) > 0;
+      const exists =
+        (await tx.maintVehicleTire.count({ where: { tireSetId: tireId } })) > 0;
       const uid = await this.uid(tx);
       const { count } = await tx.maintVehicleTire.updateMany({
         where: { tireSetId: tireId },
@@ -2341,8 +2544,12 @@ export class OdrzavanjeService {
           ...(dto.count !== undefined ? { count: dto.count } : {}),
           ...(dto.status !== undefined ? { status: dto.status as never } : {}),
           ...(dto.shelfCode !== undefined ? { shelfCode: dto.shelfCode } : {}),
-          ...(dto.installedOnVehicle !== undefined ? { installedOnVehicle: dto.installedOnVehicle } : {}),
-          ...(dto.purchasedAt !== undefined ? { purchasedAt: this.toDbDate(dto.purchasedAt) } : {}),
+          ...(dto.installedOnVehicle !== undefined
+            ? { installedOnVehicle: dto.installedOnVehicle }
+            : {}),
+          ...(dto.purchasedAt !== undefined
+            ? { purchasedAt: this.toDbDate(dto.purchasedAt) }
+            : {}),
           ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
           updatedBy: uid,
           updatedAt: new Date(),
@@ -2355,8 +2562,11 @@ export class OdrzavanjeService {
 
   async deleteTire(email: string, tireId: string) {
     return this.withUserMapped(email, async (tx) => {
-      const exists = (await tx.maintVehicleTire.count({ where: { tireSetId: tireId } })) > 0;
-      const { count } = await tx.maintVehicleTire.deleteMany({ where: { tireSetId: tireId } });
+      const exists =
+        (await tx.maintVehicleTire.count({ where: { tireSetId: tireId } })) > 0;
+      const { count } = await tx.maintVehicleTire.deleteMany({
+        where: { tireSetId: tireId },
+      });
       this.assertAffected(exists, count, `Guma ${tireId}`);
       return { data: { ok: true } };
     });
@@ -2364,7 +2574,11 @@ export class OdrzavanjeService {
 
   // ---------- Servisni plan vozila + generisanje WO ----------
 
-  createVehicleServicePlan(email: string, assetId: string, dto: CreateVehicleServicePlanDto) {
+  createVehicleServicePlan(
+    email: string,
+    assetId: string,
+    dto: CreateVehicleServicePlanDto,
+  ) {
     if (dto.intervalKm == null && dto.intervalMonths == null) {
       throw new UnprocessableEntityException("Zadaj interval (km ili meseci)");
     }
@@ -2382,7 +2596,8 @@ export class OdrzavanjeService {
             intervalMonths: dto.intervalMonths ?? null,
             lastDoneAt: this.toDbDate(dto.lastDoneAt) ?? null,
             lastDoneKm: dto.lastDoneKm ?? null,
-            vehicleServiceCategory: (dto.vehicleServiceCategory as never) ?? null,
+            vehicleServiceCategory:
+              (dto.vehicleServiceCategory as never) ?? null,
             priority: (dto.priority ?? "p4_planirano") as never,
             notes: dto.notes ?? null,
             active: dto.active ?? true,
@@ -2394,20 +2609,37 @@ export class OdrzavanjeService {
     );
   }
 
-  async updateVehicleServicePlan(email: string, planId: string, dto: UpdateVehicleServicePlanDto) {
+  async updateVehicleServicePlan(
+    email: string,
+    planId: string,
+    dto: UpdateVehicleServicePlanDto,
+  ) {
     return this.withUserMapped(email, async (tx) => {
-      const exists = (await tx.maintVehicleServicePlan.count({ where: { planId } })) > 0;
+      const exists =
+        (await tx.maintVehicleServicePlan.count({ where: { planId } })) > 0;
       const uid = await this.uid(tx);
       const { count } = await tx.maintVehicleServicePlan.updateMany({
         where: { planId },
         data: {
           ...(dto.name !== undefined ? { name: dto.name } : {}),
-          ...(dto.intervalKm !== undefined ? { intervalKm: dto.intervalKm } : {}),
-          ...(dto.intervalMonths !== undefined ? { intervalMonths: dto.intervalMonths } : {}),
-          ...(dto.lastDoneAt !== undefined ? { lastDoneAt: this.toDbDate(dto.lastDoneAt) } : {}),
-          ...(dto.lastDoneKm !== undefined ? { lastDoneKm: dto.lastDoneKm } : {}),
-          ...(dto.vehicleServiceCategory !== undefined ? { vehicleServiceCategory: dto.vehicleServiceCategory as never } : {}),
-          ...(dto.priority !== undefined ? { priority: dto.priority as never } : {}),
+          ...(dto.intervalKm !== undefined
+            ? { intervalKm: dto.intervalKm }
+            : {}),
+          ...(dto.intervalMonths !== undefined
+            ? { intervalMonths: dto.intervalMonths }
+            : {}),
+          ...(dto.lastDoneAt !== undefined
+            ? { lastDoneAt: this.toDbDate(dto.lastDoneAt) }
+            : {}),
+          ...(dto.lastDoneKm !== undefined
+            ? { lastDoneKm: dto.lastDoneKm }
+            : {}),
+          ...(dto.vehicleServiceCategory !== undefined
+            ? { vehicleServiceCategory: dto.vehicleServiceCategory as never }
+            : {}),
+          ...(dto.priority !== undefined
+            ? { priority: dto.priority as never }
+            : {}),
           ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
           ...(dto.active !== undefined ? { active: dto.active } : {}),
           updatedBy: uid,
@@ -2421,8 +2653,11 @@ export class OdrzavanjeService {
 
   async deleteVehicleServicePlan(email: string, planId: string) {
     return this.withUserMapped(email, async (tx) => {
-      const exists = (await tx.maintVehicleServicePlan.count({ where: { planId } })) > 0;
-      const { count } = await tx.maintVehicleServicePlan.deleteMany({ where: { planId } });
+      const exists =
+        (await tx.maintVehicleServicePlan.count({ where: { planId } })) > 0;
+      const { count } = await tx.maintVehicleServicePlan.deleteMany({
+        where: { planId },
+      });
       this.assertAffected(exists, count, `Plan servisa ${planId}`);
       return { data: { ok: true } };
     });
@@ -2459,7 +2694,12 @@ export class OdrzavanjeService {
     );
   }
 
-  async updatePartVehicleLink(email: string, assetId: string, partId: string, dto: UpdatePartLinkDto) {
+  async updatePartVehicleLink(
+    email: string,
+    assetId: string,
+    partId: string,
+    dto: UpdatePartLinkDto,
+  ) {
     return this.withUserMapped(email, async (tx) => {
       const exists =
         (await tx.maintPartVehicle.count({ where: { assetId, partId } })) > 0;
@@ -2482,7 +2722,9 @@ export class OdrzavanjeService {
     return this.withUserMapped(email, async (tx) => {
       const exists =
         (await tx.maintPartVehicle.count({ where: { assetId, partId } })) > 0;
-      const { count } = await tx.maintPartVehicle.deleteMany({ where: { assetId, partId } });
+      const { count } = await tx.maintPartVehicle.deleteMany({
+        where: { assetId, partId },
+      });
       this.assertAffected(exists, count, `Veza deo↔vozilo`);
       return { data: { ok: true } };
     });
@@ -2516,12 +2758,15 @@ export class OdrzavanjeService {
 
   async updateBooking(email: string, bookingId: string, dto: UpdateBookingDto) {
     return this.withUserMapped(email, async (tx) => {
-      const exists = (await tx.maintVehicleBooking.count({ where: { bookingId } })) > 0;
+      const exists =
+        (await tx.maintVehicleBooking.count({ where: { bookingId } })) > 0;
       const uid = await this.uid(tx);
       const { count } = await tx.maintVehicleBooking.updateMany({
         where: { bookingId },
         data: {
-          ...(dto.startAt !== undefined ? { startAt: new Date(dto.startAt) } : {}),
+          ...(dto.startAt !== undefined
+            ? { startAt: new Date(dto.startAt) }
+            : {}),
           ...(dto.endAt !== undefined ? { endAt: new Date(dto.endAt) } : {}),
           ...(dto.driverId !== undefined ? { driverId: dto.driverId } : {}),
           ...(dto.purpose !== undefined ? { purpose: dto.purpose } : {}),
@@ -2538,8 +2783,11 @@ export class OdrzavanjeService {
 
   async deleteBooking(email: string, bookingId: string) {
     return this.withUserMapped(email, async (tx) => {
-      const exists = (await tx.maintVehicleBooking.count({ where: { bookingId } })) > 0;
-      const { count } = await tx.maintVehicleBooking.deleteMany({ where: { bookingId } });
+      const exists =
+        (await tx.maintVehicleBooking.count({ where: { bookingId } })) > 0;
+      const { count } = await tx.maintVehicleBooking.deleteMany({
+        where: { bookingId },
+      });
       this.assertAffected(exists, count, `Rezervacija ${bookingId}`);
       return { data: { ok: true } };
     });
@@ -2553,7 +2801,10 @@ export class OdrzavanjeService {
       );
       const r = rows[0];
       return {
-        data: { enqueued: Number(r?.enqueued ?? 0), skipped: Number(r?.skipped ?? 0) },
+        data: {
+          enqueued: Number(r?.enqueued ?? 0),
+          skipped: Number(r?.skipped ?? 0),
+        },
       };
     });
   }
@@ -2594,15 +2845,19 @@ export class OdrzavanjeService {
           data: {
             fullName: dto.fullName.trim(),
             isInternal: dto.isInternal !== false,
-            authUserId: dto.isInternal === false ? null : (dto.authUserId ?? null),
+            authUserId:
+              dto.isInternal === false ? null : (dto.authUserId ?? null),
             driversLicenseNumber: dto.driversLicenseNumber.trim(),
             driversLicenseCategories: dto.driversLicenseCategories
               .map((c) => c.trim())
               .filter(Boolean),
-            driversLicenseValidUntil: this.toDbDate(dto.driversLicenseValidUntil)!,
+            driversLicenseValidUntil: this.toDbDate(
+              dto.driversLicenseValidUntil,
+            )!,
             idCardNumber: dto.idCardNumber ?? null,
             idCardValidUntil: this.toDbDate(dto.idCardValidUntil) ?? null,
-            medicalCheckValidUntil: this.toDbDate(dto.medicalCheckValidUntil) ?? null,
+            medicalCheckValidUntil:
+              this.toDbDate(dto.medicalCheckValidUntil) ?? null,
             phone: dto.phone ?? null,
             jmbg: dto.jmbg ?? null,
             address: dto.address ?? null,
@@ -2618,19 +2873,42 @@ export class OdrzavanjeService {
 
   async updateDriver(email: string, id: string, dto: UpdateDriverDto) {
     return this.withUserMapped(email, async (tx) => {
-      const exists = (await tx.maintDriver.count({ where: { driverId: id } })) > 0;
+      const exists =
+        (await tx.maintDriver.count({ where: { driverId: id } })) > 0;
       const uid = await this.uid(tx);
       const { count } = await tx.maintDriver.updateMany({
         where: { driverId: id },
         data: {
           ...(dto.fullName !== undefined ? { fullName: dto.fullName } : {}),
-          ...(dto.isInternal !== undefined ? { isInternal: dto.isInternal } : {}),
-          ...(dto.driversLicenseNumber !== undefined ? { driversLicenseNumber: dto.driversLicenseNumber } : {}),
-          ...(dto.driversLicenseCategories !== undefined ? { driversLicenseCategories: dto.driversLicenseCategories } : {}),
-          ...(dto.driversLicenseValidUntil !== undefined ? { driversLicenseValidUntil: this.toDbDate(dto.driversLicenseValidUntil) } : {}),
-          ...(dto.idCardNumber !== undefined ? { idCardNumber: dto.idCardNumber } : {}),
-          ...(dto.idCardValidUntil !== undefined ? { idCardValidUntil: this.toDbDate(dto.idCardValidUntil) } : {}),
-          ...(dto.medicalCheckValidUntil !== undefined ? { medicalCheckValidUntil: this.toDbDate(dto.medicalCheckValidUntil) } : {}),
+          ...(dto.isInternal !== undefined
+            ? { isInternal: dto.isInternal }
+            : {}),
+          ...(dto.driversLicenseNumber !== undefined
+            ? { driversLicenseNumber: dto.driversLicenseNumber }
+            : {}),
+          ...(dto.driversLicenseCategories !== undefined
+            ? { driversLicenseCategories: dto.driversLicenseCategories }
+            : {}),
+          ...(dto.driversLicenseValidUntil !== undefined
+            ? {
+                driversLicenseValidUntil: this.toDbDate(
+                  dto.driversLicenseValidUntil,
+                ),
+              }
+            : {}),
+          ...(dto.idCardNumber !== undefined
+            ? { idCardNumber: dto.idCardNumber }
+            : {}),
+          ...(dto.idCardValidUntil !== undefined
+            ? { idCardValidUntil: this.toDbDate(dto.idCardValidUntil) }
+            : {}),
+          ...(dto.medicalCheckValidUntil !== undefined
+            ? {
+                medicalCheckValidUntil: this.toDbDate(
+                  dto.medicalCheckValidUntil,
+                ),
+              }
+            : {}),
           ...(dto.phone !== undefined ? { phone: dto.phone } : {}),
           ...(dto.jmbg !== undefined ? { jmbg: dto.jmbg } : {}),
           ...(dto.address !== undefined ? { address: dto.address } : {}),
@@ -2641,13 +2919,16 @@ export class OdrzavanjeService {
         },
       });
       this.assertAffected(exists, count, `Vozač ${id}`);
-      return { data: await tx.maintDriver.findUnique({ where: { driverId: id } }) };
+      return {
+        data: await tx.maintDriver.findUnique({ where: { driverId: id } }),
+      };
     });
   }
 
   archiveDriver(email: string, id: string, reason: string) {
     return this.withUserMapped(email, async (tx) => {
-      const exists = (await tx.maintDriver.count({ where: { driverId: id } })) > 0;
+      const exists =
+        (await tx.maintDriver.count({ where: { driverId: id } })) > 0;
       const uid = await this.uid(tx);
       const { count } = await tx.maintDriver.updateMany({
         where: { driverId: id },
@@ -2666,7 +2947,8 @@ export class OdrzavanjeService {
 
   restoreDriver(email: string, id: string) {
     return this.withUserMapped(email, async (tx) => {
-      const exists = (await tx.maintDriver.count({ where: { driverId: id } })) > 0;
+      const exists =
+        (await tx.maintDriver.count({ where: { driverId: id } })) > 0;
       const uid = await this.uid(tx);
       const { count } = await tx.maintDriver.updateMany({
         where: { driverId: id },
@@ -2686,8 +2968,11 @@ export class OdrzavanjeService {
   /** Hard-delete vozača (RLS: erp adm/mgmt ∨ SAMO maint admin profil — chief NE, §2.5.9). */
   async deleteDriver(email: string, id: string) {
     return this.withUserMapped(email, async (tx) => {
-      const exists = (await tx.maintDriver.count({ where: { driverId: id } })) > 0;
-      const { count } = await tx.maintDriver.deleteMany({ where: { driverId: id } });
+      const exists =
+        (await tx.maintDriver.count({ where: { driverId: id } })) > 0;
+      const { count } = await tx.maintDriver.deleteMany({
+        where: { driverId: id },
+      });
       this.assertAffected(exists, count, `Vozač ${id}`);
       return { data: { ok: true } };
     });
@@ -2695,7 +2980,11 @@ export class OdrzavanjeService {
 
   // ---------- Servisni plan IT/objekti + generisanje WO ----------
 
-  createAssetServicePlan(email: string, assetId: string, dto: CreateAssetServicePlanDto) {
+  createAssetServicePlan(
+    email: string,
+    assetId: string,
+    dto: CreateAssetServicePlanDto,
+  ) {
     return this.runIdem(
       email,
       dto.clientEventId,
@@ -2719,17 +3008,28 @@ export class OdrzavanjeService {
     );
   }
 
-  async updateAssetServicePlan(email: string, planId: string, dto: UpdateAssetServicePlanDto) {
+  async updateAssetServicePlan(
+    email: string,
+    planId: string,
+    dto: UpdateAssetServicePlanDto,
+  ) {
     return this.withUserMapped(email, async (tx) => {
-      const exists = (await tx.maintAssetServicePlan.count({ where: { planId } })) > 0;
+      const exists =
+        (await tx.maintAssetServicePlan.count({ where: { planId } })) > 0;
       const uid = await this.uid(tx);
       const { count } = await tx.maintAssetServicePlan.updateMany({
         where: { planId },
         data: {
           ...(dto.name !== undefined ? { name: dto.name } : {}),
-          ...(dto.intervalMonths !== undefined ? { intervalMonths: dto.intervalMonths } : {}),
-          ...(dto.lastDoneAt !== undefined ? { lastDoneAt: this.toDbDate(dto.lastDoneAt) } : {}),
-          ...(dto.priority !== undefined ? { priority: dto.priority as never } : {}),
+          ...(dto.intervalMonths !== undefined
+            ? { intervalMonths: dto.intervalMonths }
+            : {}),
+          ...(dto.lastDoneAt !== undefined
+            ? { lastDoneAt: this.toDbDate(dto.lastDoneAt) }
+            : {}),
+          ...(dto.priority !== undefined
+            ? { priority: dto.priority as never }
+            : {}),
           ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
           ...(dto.active !== undefined ? { active: dto.active } : {}),
           updatedBy: uid,
@@ -2743,8 +3043,11 @@ export class OdrzavanjeService {
 
   async deleteAssetServicePlan(email: string, planId: string) {
     return this.withUserMapped(email, async (tx) => {
-      const exists = (await tx.maintAssetServicePlan.count({ where: { planId } })) > 0;
-      const { count } = await tx.maintAssetServicePlan.deleteMany({ where: { planId } });
+      const exists =
+        (await tx.maintAssetServicePlan.count({ where: { planId } })) > 0;
+      const { count } = await tx.maintAssetServicePlan.deleteMany({
+        where: { planId },
+      });
       this.assertAffected(exists, count, `Plan servisa ${planId}`);
       return { data: { ok: true } };
     });
@@ -2797,14 +3100,22 @@ export class OdrzavanjeService {
         data: {
           ...(dto.partCode !== undefined ? { partCode: dto.partCode } : {}),
           ...(dto.name !== undefined ? { name: dto.name } : {}),
-          ...(dto.description !== undefined ? { description: dto.description } : {}),
+          ...(dto.description !== undefined
+            ? { description: dto.description }
+            : {}),
           ...(dto.unit !== undefined ? { unit: dto.unit } : {}),
-          ...(dto.supplierId !== undefined ? { supplierId: dto.supplierId } : {}),
-          ...(dto.manufacturer !== undefined ? { manufacturer: dto.manufacturer } : {}),
+          ...(dto.supplierId !== undefined
+            ? { supplierId: dto.supplierId }
+            : {}),
+          ...(dto.manufacturer !== undefined
+            ? { manufacturer: dto.manufacturer }
+            : {}),
           ...(dto.model !== undefined ? { model: dto.model } : {}),
           ...(dto.minStock !== undefined ? { minStock: dto.minStock } : {}),
           // current_stock održava trigger iz ledger-a; ručni patch dozvoljen (paritet 1.0).
-          ...(dto.currentStock !== undefined ? { currentStock: dto.currentStock } : {}),
+          ...(dto.currentStock !== undefined
+            ? { currentStock: dto.currentStock }
+            : {}),
           ...(dto.unitCost !== undefined ? { unitCost: dto.unitCost } : {}),
           ...(dto.active !== undefined ? { active: dto.active } : {}),
           updatedBy: uid,
@@ -2819,7 +3130,9 @@ export class OdrzavanjeService {
   /** Insert-only kretanje zaliha (trigger primenjuje delta na current_stock; sme u minus). */
   createStockMovement(email: string, partId: string, dto: StockMovementDto) {
     if (!Number.isFinite(dto.quantity) || dto.quantity === 0) {
-      throw new UnprocessableEntityException("Količina mora biti različita od 0");
+      throw new UnprocessableEntityException(
+        "Količina mora biti različita od 0",
+      );
     }
     return this.runIdem(
       email,
@@ -2866,7 +3179,8 @@ export class OdrzavanjeService {
 
   async updateSupplier(email: string, id: string, dto: UpdateSupplierDto) {
     return this.withUserMapped(email, async (tx) => {
-      const exists = (await tx.maintSupplier.count({ where: { supplierId: id } })) > 0;
+      const exists =
+        (await tx.maintSupplier.count({ where: { supplierId: id } })) > 0;
       const uid = await this.uid(tx);
       const { count } = await tx.maintSupplier.updateMany({
         where: { supplierId: id },
@@ -2882,7 +3196,9 @@ export class OdrzavanjeService {
         },
       });
       this.assertAffected(exists, count, `Dobavljač ${id}`);
-      return { data: await tx.maintSupplier.findUnique({ where: { supplierId: id } }) };
+      return {
+        data: await tx.maintSupplier.findUnique({ where: { supplierId: id } }),
+      };
     });
   }
 
@@ -2908,14 +3224,19 @@ export class OdrzavanjeService {
 
   async updateLocation(email: string, id: string, dto: UpdateLocationDto) {
     return this.withUserMapped(email, async (tx) => {
-      const exists = (await tx.maintLocation.count({ where: { locationId: id } })) > 0;
+      const exists =
+        (await tx.maintLocation.count({ where: { locationId: id } })) > 0;
       const { count } = await tx.maintLocation.updateMany({
         where: { locationId: id },
         data: {
           ...(dto.name !== undefined ? { name: dto.name } : {}),
           ...(dto.code !== undefined ? { code: dto.code || null } : {}),
-          ...(dto.locationType !== undefined ? { locationType: dto.locationType } : {}),
-          ...(dto.parentLocationId !== undefined ? { parentLocationId: dto.parentLocationId } : {}),
+          ...(dto.locationType !== undefined
+            ? { locationType: dto.locationType }
+            : {}),
+          ...(dto.parentLocationId !== undefined
+            ? { parentLocationId: dto.parentLocationId }
+            : {}),
           ...(dto.active !== undefined ? { active: dto.active } : {}),
           updatedAt: new Date(),
         },
@@ -2934,7 +3255,9 @@ export class OdrzavanjeService {
     file?: Express.Multer.File,
   ) {
     if (!file?.buffer?.length) {
-      throw new UnprocessableEntityException("Očekivan fajl (multipart `file`)");
+      throw new UnprocessableEntityException(
+        "Očekivan fajl (multipart `file`)",
+      );
     }
     const uuid = randomUUID().replace(/-/g, "").slice(0, 16);
     const storagePath = `documents/${dto.entityType}/${dto.entityId}/${uuid}_${this.safeFileName(file.originalname)}`;
@@ -2947,7 +3270,8 @@ export class OdrzavanjeService {
           assetId: dto.entityType === "asset" ? dto.entityId : null,
           woId: dto.entityType === "work_order" ? dto.entityId : null,
           incidentId: dto.entityType === "incident" ? dto.entityId : null,
-          preventiveTaskId: dto.entityType === "preventive_task" ? dto.entityId : null,
+          preventiveTaskId:
+            dto.entityType === "preventive_task" ? dto.entityId : null,
           driverId: dto.entityType === "driver" ? dto.entityId : null,
           fileName: file.originalname,
           storagePath,
@@ -2970,7 +3294,9 @@ export class OdrzavanjeService {
       );
     } catch (e) {
       await this.withUserMapped(email, async (tx) => {
-        await tx.maintDocument.deleteMany({ where: { documentId: meta.documentId } });
+        await tx.maintDocument.deleteMany({
+          where: { documentId: meta.documentId },
+        });
       }).catch(() => {});
       throw e;
     }
@@ -2979,13 +3305,18 @@ export class OdrzavanjeService {
 
   updateDocument(email: string, id: string, dto: UpdateDocumentDto) {
     return this.withUserMapped(email, async (tx) => {
-      const exists = (await tx.maintDocument.count({ where: { documentId: id } })) > 0;
+      const exists =
+        (await tx.maintDocument.count({ where: { documentId: id } })) > 0;
       const { count } = await tx.maintDocument.updateMany({
         where: { documentId: id },
         data: {
-          ...(dto.validUntil !== undefined ? { validUntil: this.toDbDate(dto.validUntil) } : {}),
+          ...(dto.validUntil !== undefined
+            ? { validUntil: this.toDbDate(dto.validUntil) }
+            : {}),
           ...(dto.category !== undefined ? { category: dto.category } : {}),
-          ...(dto.description !== undefined ? { description: dto.description } : {}),
+          ...(dto.description !== undefined
+            ? { description: dto.description }
+            : {}),
         },
       });
       this.assertAffected(exists, count, `Dokument ${id}`);
@@ -3018,7 +3349,8 @@ export class OdrzavanjeService {
         where: { documentId: id },
         select: { storagePath: true, deletedAt: true },
       });
-      if (!row || row.deletedAt) throw new NotFoundException(`Dokument ${id} ne postoji`);
+      if (!row || row.deletedAt)
+        throw new NotFoundException(`Dokument ${id} ne postoji`);
       return row.storagePath;
     });
     return { data: await this.storage.signUrl(MAINT_BUCKET, path, 300) };
@@ -3032,18 +3364,42 @@ export class OdrzavanjeService {
       await tx.maintSettings.updateMany({
         where: { id: 1 },
         data: {
-          ...(dto.autoCreateWoMajor !== undefined ? { autoCreateWoMajor: dto.autoCreateWoMajor } : {}),
-          ...(dto.autoCreateWoCritical !== undefined ? { autoCreateWoCritical: dto.autoCreateWoCritical } : {}),
-          ...(dto.safetyMarkerRequiresWo !== undefined ? { safetyMarkerRequiresWo: dto.safetyMarkerRequiresWo } : {}),
-          ...(dto.defaultWoPriority !== undefined ? { defaultWoPriority: dto.defaultWoPriority as never } : {}),
-          ...(dto.majorWoDueHours !== undefined ? { majorWoDueHours: dto.majorWoDueHours } : {}),
-          ...(dto.criticalWoDueHours !== undefined ? { criticalWoDueHours: dto.criticalWoDueHours } : {}),
-          ...(dto.preventiveDueWarningDays !== undefined ? { preventiveDueWarningDays: dto.preventiveDueWarningDays } : {}),
-          ...(dto.notificationEnabled !== undefined ? { notificationEnabled: dto.notificationEnabled } : {}),
-          ...(dto.notifyOnMajorIncident !== undefined ? { notifyOnMajorIncident: dto.notifyOnMajorIncident } : {}),
-          ...(dto.notifyOnCriticalIncident !== undefined ? { notifyOnCriticalIncident: dto.notifyOnCriticalIncident } : {}),
-          ...(dto.notifyOnOverduePreventive !== undefined ? { notifyOnOverduePreventive: dto.notifyOnOverduePreventive } : {}),
-          ...(dto.notificationChannels !== undefined ? { notificationChannels: dto.notificationChannels as never } : {}),
+          ...(dto.autoCreateWoMajor !== undefined
+            ? { autoCreateWoMajor: dto.autoCreateWoMajor }
+            : {}),
+          ...(dto.autoCreateWoCritical !== undefined
+            ? { autoCreateWoCritical: dto.autoCreateWoCritical }
+            : {}),
+          ...(dto.safetyMarkerRequiresWo !== undefined
+            ? { safetyMarkerRequiresWo: dto.safetyMarkerRequiresWo }
+            : {}),
+          ...(dto.defaultWoPriority !== undefined
+            ? { defaultWoPriority: dto.defaultWoPriority as never }
+            : {}),
+          ...(dto.majorWoDueHours !== undefined
+            ? { majorWoDueHours: dto.majorWoDueHours }
+            : {}),
+          ...(dto.criticalWoDueHours !== undefined
+            ? { criticalWoDueHours: dto.criticalWoDueHours }
+            : {}),
+          ...(dto.preventiveDueWarningDays !== undefined
+            ? { preventiveDueWarningDays: dto.preventiveDueWarningDays }
+            : {}),
+          ...(dto.notificationEnabled !== undefined
+            ? { notificationEnabled: dto.notificationEnabled }
+            : {}),
+          ...(dto.notifyOnMajorIncident !== undefined
+            ? { notifyOnMajorIncident: dto.notifyOnMajorIncident }
+            : {}),
+          ...(dto.notifyOnCriticalIncident !== undefined
+            ? { notifyOnCriticalIncident: dto.notifyOnCriticalIncident }
+            : {}),
+          ...(dto.notifyOnOverduePreventive !== undefined
+            ? { notifyOnOverduePreventive: dto.notifyOnOverduePreventive }
+            : {}),
+          ...(dto.notificationChannels !== undefined
+            ? { notificationChannels: dto.notificationChannels as never }
+            : {}),
           ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
           updatedBy: uid,
           updatedAt: new Date(),
@@ -3078,20 +3434,35 @@ export class OdrzavanjeService {
     );
   }
 
-  async updateNotificationRule(email: string, id: string, dto: UpdateNotificationRuleDto) {
+  async updateNotificationRule(
+    email: string,
+    id: string,
+    dto: UpdateNotificationRuleDto,
+  ) {
     return this.withUserMapped(email, async (tx) => {
-      const exists = (await tx.maintNotificationRule.count({ where: { ruleId: id } })) > 0;
+      const exists =
+        (await tx.maintNotificationRule.count({ where: { ruleId: id } })) > 0;
       const uid = await this.uid(tx);
       const { count } = await tx.maintNotificationRule.updateMany({
         where: { ruleId: id },
         data: {
           ...(dto.eventType !== undefined ? { eventType: dto.eventType } : {}),
           ...(dto.severity !== undefined ? { severity: dto.severity } : {}),
-          ...(dto.assetType !== undefined ? { assetType: dto.assetType as never } : {}),
-          ...(dto.targetRole !== undefined ? { targetRole: dto.targetRole as never } : {}),
-          ...(dto.channel !== undefined ? { channel: dto.channel as never } : {}),
-          ...(dto.delayMinutes !== undefined ? { delayMinutes: dto.delayMinutes } : {}),
-          ...(dto.escalationLevel !== undefined ? { escalationLevel: dto.escalationLevel } : {}),
+          ...(dto.assetType !== undefined
+            ? { assetType: dto.assetType as never }
+            : {}),
+          ...(dto.targetRole !== undefined
+            ? { targetRole: dto.targetRole as never }
+            : {}),
+          ...(dto.channel !== undefined
+            ? { channel: dto.channel as never }
+            : {}),
+          ...(dto.delayMinutes !== undefined
+            ? { delayMinutes: dto.delayMinutes }
+            : {}),
+          ...(dto.escalationLevel !== undefined
+            ? { escalationLevel: dto.escalationLevel }
+            : {}),
           ...(dto.enabled !== undefined ? { enabled: dto.enabled } : {}),
           ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
           updatedBy: uid,
@@ -3099,7 +3470,11 @@ export class OdrzavanjeService {
         },
       });
       this.assertAffected(exists, count, `Pravilo ${id}`);
-      return { data: await tx.maintNotificationRule.findUnique({ where: { ruleId: id } }) };
+      return {
+        data: await tx.maintNotificationRule.findUnique({
+          where: { ruleId: id },
+        }),
+      };
     });
   }
 

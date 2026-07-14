@@ -391,7 +391,7 @@ Paritet 23 sekcije 1.0 (`/maintenance/*`), 2.0 ui-kit, responsive (bez zasebnog 
 | 43 | Foto incidenta kroz `maint_attach_incident_files` RPC (§7.3) | NOT_STARTED |
 | 44 | Storage proxy (upload/sign/delete; putanje 1.0-kompatibilne) | NOT_STARTED |
 | 45 | GUC sub+email test: operator scope, chief-bez-globalne-role, magacioner krug | **R1: SINTETIČKI unit** (operator/technician/chief/mgmt gate-derivacija + withUserRls routing; živi smoke = R4) |
-| 46 | e2e permission matrica (maint rola × ERP rola × endpoint × 200/403) | **R1+R2: READ+WRITE matrica IMPLEMENTED** (rola×endpoint×200/403/201; WRITE vs REPORT gate; route ordering novih literala; DTO/param 400; AUTHZ_ENFORCE=true; 191 e2e) |
+| 46 | e2e permission matrica (maint rola × ERP rola × endpoint × 200/403) | **R1+R2: READ+WRITE matrica IMPLEMENTED** (rola×endpoint×200/403/201; WRITE vs REPORT gate; route ordering novih literala; DTO/param 400; AUTHZ_ENFORCE=true; 255 e2e) |
 | 47 | Idempotencija mutacija (clientEventId / rev_api_idempotency obrazac) | **R2: BE IMPLEMENTED** (`runIdempotentRls` clientEventId na svim „create" POST-ovima; PATCH/PUT/DELETE/RPC idempotentni bez ključa) |
 | 48 | Živi smoke: pun ciklus (QR sken → prijava kvara → auto-WO → dodela → delovi/rad → završen → izveštaj) | NOT_STARTED |
 
@@ -473,11 +473,30 @@ duplira u TS). RLS-filtrovan UPDATE/DELETE (0 redova) → `assertAffected` razdv
 - **Testovi**: schema-pin proširen (RPC potpisi/return, ::enum castovi, INSERT tabele, dinamički
   Prisma.raw fn-literali — sve protiv authz-snapshot žive šeme; 10 pin testova); e2e write/report
   matrica (rola×endpoint×200/403/201, REPORT≠WRITE, route ordering novih literala, DTO/param 400 —
-  **191 e2e**); unit servisa (constructor + storage stub). `tsc --noEmit` + `nest build` zeleni.
+  **255 e2e**); unit servisa (constructor + storage stub). `tsc --noEmit` + `nest build` zeleni.
 - **Schema-verifikacija (adversarni, pre koda)**: svih 16 RPC potpisa + RETURNS, raw INSERT kolone
   (`maint_incidents`/`maint_machines`), 3 enum tipa, i PK field-imena (updateMany/deleteMany where)
   provereni protiv `authz-snapshots/talasF-fn-defs-2026-07-12.sql` + `prisma/sy15.prisma` (živa
   information_schema) — **0 neusklađenosti** (klasa 2 CRITICAL kolone iz R1 review-a ne ponavlja se).
+
+**Adversarni review F-R2 (2026-07-14, 2 HIGH — ispravljeno na istoj grani):**
+- **HIGH#1 (dvoslojni authz — guard uži od RLS):** `odrzavanje.write` je bio strogi podskup
+  {admin,sef,magacioner,menadzment,tehnicar_odrzavanja}, ali živa maint write vlast =
+  `maint_is_erp_admin_or_management() OR maint_profile_role() IN ('chief','admin')`.
+  `maint_profile_role()` je auth.uid()-baziran (NIJE u JWT-u) → guard ga ne vidi; 4 od 6 živih
+  chief profila su ERP viewer/hr (npr. luka.petrovic=viewer, CMMS backend admin) → strogi guard
+  bi ih 403-ovao PRE RLS na svih ~80 mutacija (krši §2.5.1 + §7.7). **Fix:** `odrzavanje.write`
+  = SVE aktivne uloge (coarse-superset, kao read/report); PRAVU odluku donosi DB RLS
+  (`maint_assets_update` USING erp-admin ∨ chief/admin → 42501→403). `admin_ui` ostaje
+  restriktivan. e2e: write prolazi guard za sve aktivne role, deferred/inactive i dalje 403.
+- **HIGH#2 (paritet — fali PATCH core `maint_assets`):** 3.0 je imao samo `/details`,`/toll-tag`,
+  `/shelf` + pod-entitete, NIJEDAN PATCH nad `maint_assets` redom. 1.0 `patchMaintAsset` menja core
+  (name/status/manufacturer/model/serial_number/notes/**location_id**/**responsible_user_id**) u sva
+  3 edit modala; `location_id`/`responsible_user_id` create RPC NE prima → u 3.0 nikad ne bi mogli
+  biti postavljeni. **Fix:** `PATCH /vehicles/:id` + `/it-assets/:id` + `/facilities/:id` →
+  `patchAssetCore` (guard write, kroz `withUserRls`; kolone verifikovane protiv `prisma/sy15.prisma`
+  `MaintAsset`; `null` = unassign; bare `:id` ne senči pod-rute). Testovi: PATCH core 200/400/403 +
+  route-shadow guard.
 
 **TODO (R3+):** sav FE (23 sekcije), profili održavanja admin mutacije (#40 — SoD guard netaknut),
 verifikacija trigera kroz živi upis (auto-WO/wo_number/auto-notify/audit, #12), mobilni + QR (#41,#42),

@@ -148,6 +148,7 @@ describe("Održavanje permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     "upsertFacilityDetails",
     "archiveAsset",
     "restoreAsset",
+    "patchAssetCore",
     "createAssetServicePlan",
     "ensureAssetServiceWos",
     "updateAssetServicePlan",
@@ -435,7 +436,7 @@ describe("Održavanje permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     });
   });
 
-  describe("REPORT — prijava kvara = opšte pravo (F6); PATCH incidenta = WRITE", () => {
+  describe("REPORT — prijava kvara = opšte pravo (F6); guard coarse, RLS presuđuje", () => {
     it.each(REPORT_ROLES)(
       "POST /incidents → 201 za %s (report; INSERT-bez-SELECT paritet)",
       async (role) => {
@@ -457,13 +458,14 @@ describe("Održavanje permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
         );
       },
     );
-    it("read-only rola (monter): prijava kvara 201, ali izmena incidenta (write) 403", async () => {
+    it("HIGH#1: read-only ERP rola (monter) prolazi guard za prijavu (report) I izmenu (write) — chief-profil kroz nju NE sme 403; RLS presuđuje red", async () => {
+      // monter može nositi maint chief profil (auth.uid()) → guard NE sme 403.
       await post("/maintenance/incidents", "monter", incidentBody()).expect(
         201,
       );
       await patch(`/maintenance/incidents/${VALID_UUID}`, "monter", {
         status: "acknowledged",
-      }).expect(403);
+      }).expect(200);
     });
   });
 
@@ -512,6 +514,88 @@ describe("Održavanje permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
       await post("/maintenance/machines", "admin", {
         machineCode: "M-99",
       }).expect(400);
+    });
+  });
+
+  // ======================================================================
+  // HIGH#1 — write guard je COARSE-SUPERSET: SVE aktivne role prolaze guard za
+  // mutaciju (chief-profil kroz bilo koju ERP rolu ne sme 403 pre RLS). Row-odluka
+  // (42501→403) = živi smoke (R4). Deferred/inactive role i dalje 403 (deny).
+  // ======================================================================
+  describe("HIGH#1 — write guard permisivan za sve aktivne role (RLS presuđuje red)", () => {
+    it.each(READ_ROLES)(
+      "PATCH /settings → prolazi guard (≠403) za %s (aktivna rola)",
+      async (role) => {
+        const res = await patch("/maintenance/settings", role, {});
+        expect(res.status).not.toBe(403);
+        expect(res.status).toBe(200);
+      },
+    );
+    it("READ_ROLES i WRITE_ROLES su isti skup (coarse-superset)", () => {
+      expect([...WRITE_ROLES].sort()).toEqual([...READ_ROLES].sort());
+    });
+    it.each(NO_WRITE)(
+      "PATCH /settings → 403 za %s (deferred/inactive; deny ostaje)",
+      async (role) => {
+        await patch("/maintenance/settings", role, {}).expect(403);
+      },
+    );
+  });
+
+  // ======================================================================
+  // HIGH#2 — PATCH core maint_assets (vozilo/IT/objekat): name/status/…/location_id/
+  // responsible_user_id (create RPC ih NE prima → jedini put upisa). Guard=write,
+  // RLS=asset_visible ∧ erp/chief/admin.
+  // ======================================================================
+  describe("HIGH#2 — PATCH core maint_assets (vozilo/IT/objekat)", () => {
+    it.each(["vehicles", "it-assets", "facilities"])(
+      "PATCH /%s/:id → 200 (write; core + responsibleUserId patch)",
+      async (seg) => {
+        svcMock.patchAssetCore.mockClear();
+        await patch(`/maintenance/${seg}/${VALID_UUID}`, "sef", {
+          name: "X",
+          status: "degraded",
+          responsibleUserId: VALID_UUID,
+        }).expect(200);
+        expect(svcMock.patchAssetCore).toHaveBeenCalled();
+      },
+    );
+    it("PATCH /vehicles/:id → 200 uz null-clear location/responsible (unassign)", async () => {
+      await patch(`/maintenance/vehicles/${VALID_UUID}`, "sef", {
+        locationId: null,
+        responsibleUserId: null,
+      }).expect(200);
+    });
+    it("PATCH /vehicles/:id → 400 status van skupa (DTO)", async () => {
+      await patch(`/maintenance/vehicles/${VALID_UUID}`, "sef", {
+        status: "xxx",
+      }).expect(400);
+    });
+    it("PATCH /vehicles/:id → 400 ne-uuid param", async () => {
+      await patch("/maintenance/vehicles/nije-uuid", "sef", {}).expect(400);
+    });
+    it("PATCH /vehicles/:id → 403 za deferred rolu (nabavka)", async () => {
+      await patch(`/maintenance/vehicles/${VALID_UUID}`, "nabavka", {}).expect(
+        403,
+      );
+    });
+    it("bare :id NE senči pod-rute: PATCH /vehicles/:id/toll-tag i /shelf i dalje rade", async () => {
+      svcMock.patchVehicleTollTag.mockClear();
+      svcMock.patchVehicleShelf.mockClear();
+      svcMock.patchAssetCore.mockClear();
+      await patch(
+        `/maintenance/vehicles/${VALID_UUID}/toll-tag`,
+        "sef",
+        {},
+      ).expect(200);
+      await patch(
+        `/maintenance/vehicles/${VALID_UUID}/shelf`,
+        "sef",
+        {},
+      ).expect(200);
+      expect(svcMock.patchVehicleTollTag).toHaveBeenCalled();
+      expect(svcMock.patchVehicleShelf).toHaveBeenCalled();
+      expect(svcMock.patchAssetCore).not.toHaveBeenCalled();
     });
   });
 });
