@@ -84,6 +84,27 @@ export const PERMISSIONS = {
   ODRZAVANJE_REPORT: 'odrzavanje.report',
   ODRZAVANJE_WRITE: 'odrzavanje.write',
   ODRZAVANJE_ADMIN_UI: 'odrzavanje.admin_ui',
+  // Kadrovska (HR) — 3.0 TALAS G (MODULE_SPEC_kadrovska_30.md §2.4 / presuda §7).
+  // `kadrovska.read` = KANON vidljivosti modula (paritet 1.0 canAccessKadrovska).
+  // Stroža prava po ekranu/akciji: pii (admin∨poslovni_admin — HR NEMA PII!),
+  // salary (SAMO admin), contracts_read, grid_edit, vacation_edit, vacreq_manage/admin,
+  // attendance (view-only), attendance_shadow, dev_manage. `profile.self` = svaki zaposleni
+  // (samo-podnošenje GO/korekcija/„upoznat sam"/samoprocena). Backend guard presuđuje;
+  // FE ovim SAMO krije afordanse (zarade/PII se NE prikazuju ulozi bez ključa).
+  KADROVSKA_READ: 'kadrovska.read',
+  KADROVSKA_EDIT: 'kadrovska.edit',
+  KADROVSKA_MANAGE: 'kadrovska.manage',
+  KADROVSKA_ADMIN: 'kadrovska.admin',
+  KADROVSKA_PII: 'kadrovska.pii',
+  KADROVSKA_SALARY: 'kadrovska.salary',
+  KADROVSKA_CONTRACTS_READ: 'kadrovska.contracts_read',
+  KADROVSKA_GRID_EDIT: 'kadrovska.grid_edit',
+  KADROVSKA_VACATION_EDIT: 'kadrovska.vacation_edit',
+  KADROVSKA_VACREQ_MANAGE: 'kadrovska.vacreq_manage',
+  KADROVSKA_VACREQ_ADMIN: 'kadrovska.vacreq_admin',
+  KADROVSKA_ATTENDANCE: 'kadrovska.attendance',
+  KADROVSKA_ATTENDANCE_SHADOW: 'kadrovska.attendance_shadow',
+  KADROVSKA_DEV_MANAGE: 'kadrovska.dev_manage',
 } as const;
 
 export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
