@@ -104,6 +104,7 @@ describe("Talas D permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     "deletePaidLeave",
     "submitAttendanceCorrection",
     "ackDocument",
+    "acknowledgeTalk",
     "openSelfAssessment",
     "saveSelfScores",
     "saveSelfAnswers",
@@ -415,6 +416,27 @@ describe("Talas D permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
         naziv: "x",
       }).expect(403);
     });
+    it("POST /pb/tasks obrnut plan-datum → 400 (paritet assertValidTaskInput)", async () => {
+      await send("post", "/pb/tasks", "admin", {
+        clientEventId: UUID,
+        naziv: "T",
+        datumPocetkaPlan: "2026-06-01",
+        datumZavrsetkaPlan: "2026-05-01",
+      }).expect(400);
+      // isti dan dozvoljen (strogo <)
+      await send("post", "/pb/tasks", "admin", {
+        clientEventId: UUID,
+        naziv: "T",
+        datumPocetkaPlan: "2026-06-01",
+        datumZavrsetkaPlan: "2026-06-01",
+      }).expect(201);
+    });
+    it("PATCH /pb/tasks/:id obrnut real-datum → 400", async () => {
+      await send("patch", `/pb/tasks/${UUID}`, "admin", {
+        datumPocetkaReal: "2026-06-10",
+        datumZavrsetkaReal: "2026-06-01",
+      }).expect(400);
+    });
   });
 
   describe("PB progress — pb.progress (inzenjer restriktovani edit + edit-krug)", () => {
@@ -590,6 +612,23 @@ describe("Talas D permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
         "proizvodni_radnik",
         {},
       ).expect(201);
+    });
+    it("POST /profile/talks/:id/acknowledge → 201 monter, 403 bez identiteta, 400 ne-uuid", async () => {
+      await send(
+        "post",
+        `/profile/talks/${UUID}/acknowledge`,
+        "monter",
+      ).expect(201);
+      await send(
+        "post",
+        `/profile/talks/${UUID}/acknowledge`,
+        undefined,
+      ).expect(403);
+      await send(
+        "post",
+        "/profile/talks/nije-uuid/acknowledge",
+        "monter",
+      ).expect(400);
     });
   });
 });

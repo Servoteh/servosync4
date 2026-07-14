@@ -10,11 +10,50 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  Matches,
   Max,
   MaxLength,
   Min,
   MinLength,
+  registerDecorator,
+  type ValidationArguments,
+  type ValidationOptions,
 } from "class-validator";
+
+/** HH:MM(:SS) — prozor tišine (paritet 1.0 <input type=time>); prazan/null = obriši prozor. */
+const TIME_RE = /^\d{2}:\d{2}(:\d{2})?$/;
+
+/**
+ * Unakrsna provera datuma (paritet 1.0 `assertValidTaskInput`): kraj ne sme biti PRE
+ * početka (isti dan dozvoljen). Proverava SAMO kad su OBA polja prisutna (PATCH parcijalni
+ * paritet — 1.0 poredi samo payload, ne DB). Format svakog polja validira `@IsISO8601`.
+ */
+function IsNotBeforeSibling(
+  startField: string,
+  options?: ValidationOptions,
+): PropertyDecorator {
+  return (object, propertyName) => {
+    registerDecorator({
+      name: "isNotBeforeSibling",
+      target: object.constructor,
+      propertyName: propertyName as string,
+      constraints: [startField],
+      options,
+      validator: {
+        validate(value: unknown, args: ValidationArguments) {
+          const start = (args.object as Record<string, unknown>)[
+            args.constraints[0] as string
+          ];
+          if (value == null || start == null) return true;
+          const e = Date.parse(String(value));
+          const s = Date.parse(String(start));
+          if (Number.isNaN(e) || Number.isNaN(s)) return true;
+          return e >= s;
+        },
+      },
+    });
+  };
+}
 
 /**
  * Mutacioni DTO-ovi za Projektni biro R2 (MODULE_SPEC_pb_profil_podesavanja_30.md §3.1).
@@ -56,9 +95,19 @@ export class CreateTaskDto extends PbIdempotentDto {
   @IsOptional() @IsIn(TASK_PRIORITET as unknown as string[]) prioritet?: string;
   @IsOptional() @IsIn(TASK_STATUS as unknown as string[]) status?: string;
   @IsOptional() @IsISO8601() datumPocetkaPlan?: string;
-  @IsOptional() @IsISO8601() datumZavrsetkaPlan?: string;
+  @IsOptional()
+  @IsISO8601()
+  @IsNotBeforeSibling("datumPocetkaPlan", {
+    message: "Planirani rok ne može biti pre datuma početka",
+  })
+  datumZavrsetkaPlan?: string;
   @IsOptional() @IsISO8601() datumPocetkaReal?: string;
-  @IsOptional() @IsISO8601() datumZavrsetkaReal?: string;
+  @IsOptional()
+  @IsISO8601()
+  @IsNotBeforeSibling("datumPocetkaReal", {
+    message: "Realni završetak ne može biti pre realnog početka",
+  })
+  datumZavrsetkaReal?: string;
   @IsOptional() @IsInt() @Min(0) @Max(100) procenatZavrsenosti?: number;
   @IsOptional() @IsInt() @Min(1) @Max(7) normaSatiDan?: number;
 }
@@ -73,9 +122,19 @@ export class UpdateTaskDto {
   @IsOptional() @IsIn(TASK_PRIORITET as unknown as string[]) prioritet?: string;
   @IsOptional() @IsIn(TASK_STATUS as unknown as string[]) status?: string;
   @IsOptional() @IsISO8601() datumPocetkaPlan?: string;
-  @IsOptional() @IsISO8601() datumZavrsetkaPlan?: string;
+  @IsOptional()
+  @IsISO8601()
+  @IsNotBeforeSibling("datumPocetkaPlan", {
+    message: "Planirani rok ne može biti pre datuma početka",
+  })
+  datumZavrsetkaPlan?: string;
   @IsOptional() @IsISO8601() datumPocetkaReal?: string;
-  @IsOptional() @IsISO8601() datumZavrsetkaReal?: string;
+  @IsOptional()
+  @IsISO8601()
+  @IsNotBeforeSibling("datumPocetkaReal", {
+    message: "Realni završetak ne može biti pre realnog početka",
+  })
+  datumZavrsetkaReal?: string;
   @IsOptional() @IsInt() @Min(0) @Max(100) procenatZavrsenosti?: number;
   @IsOptional() @IsInt() @Min(1) @Max(7) normaSatiDan?: number;
   /** Optimistic lock — PATCH prolazi samo ako `updated_at` u bazi i dalje odgovara (409 inače). */
@@ -136,6 +195,12 @@ export class NotifConfigPatchDto {
   @IsOptional() @IsBoolean() notifyOnDeadlineOverdue?: boolean;
   @IsOptional() @IsBoolean() notifyOnNoEngineer?: boolean;
   @IsOptional() @IsBoolean() digestMode?: boolean;
+  /**
+   * Prozor tišine (paritet 1.0 podesavanjaTab quiet_hours_start/end; DB `pb_in_quiet_hours()`
+   * gasi dispatch). 'HH:MM' postavlja, `null` briše prozor. @IsOptional pušta null (= obriši).
+   */
+  @IsOptional() @Matches(TIME_RE) quietHoursStart?: string | null;
+  @IsOptional() @Matches(TIME_RE) quietHoursEnd?: string | null;
 }
 
 /**

@@ -184,6 +184,16 @@ export class MojProfilController {
     return this.profil.ackDocument(req.user.email, dto);
   }
 
+  // ---------- Razgovori — „Upoznat sam" (potvrda zapisnika razgovora) ----------
+
+  @Post("talks/:id/acknowledge")
+  acknowledgeTalk(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return this.profil.acknowledgeTalk(req.user.email, id);
+  }
+
   // ---------- 360 samoprocena ----------
 
   @Post("assessment/self/open")

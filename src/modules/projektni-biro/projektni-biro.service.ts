@@ -716,6 +716,18 @@ export class ProjektniBiroService {
         updatedAt: new Date(),
       };
       await tx.pbNotificationConfig.update({ where: { id: 1 }, data });
+      // Prozor tišine (@db.Time(6) — Prisma očekuje DateTime; pišemo raw uz ::time cast,
+      // paritet 1.0 'HH:MM'|null). `pb_in_quiet_hours()` čita ove kolone da gasi dispatch.
+      if (dto.quietHoursStart !== undefined || dto.quietHoursEnd !== undefined) {
+        const qh: Prisma.Sql[] = [];
+        if (dto.quietHoursStart !== undefined)
+          qh.push(Prisma.sql`quiet_hours_start = ${dto.quietHoursStart}::time`);
+        if (dto.quietHoursEnd !== undefined)
+          qh.push(Prisma.sql`quiet_hours_end = ${dto.quietHoursEnd}::time`);
+        await tx.$executeRaw(
+          Prisma.sql`UPDATE pb_notification_config SET ${Prisma.join(qh, ", ")} WHERE id = 1`,
+        );
+      }
       return {
         data: await tx.pbNotificationConfig.findUnique({ where: { id: 1 } }),
       };

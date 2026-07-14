@@ -332,4 +332,26 @@ describe("ProjektniBiroService R2 mutacije", () => {
     expect(arg.data.enabled).toBe(false);
     expect(arg.data.updatedBy).toBe("u@x");
   });
+
+  it("updateNotificationConfig: quiet_hours persist (raw UPDATE ::time, paritet 1.0)", async () => {
+    const { svc, tx } = makeSvc();
+    await svc.updateNotificationConfig("u@x", {
+      quietHoursStart: "22:00",
+      quietHoursEnd: "06:00",
+    });
+    const text = qText(tx.$executeRaw);
+    expect(text).toContain("UPDATE pb_notification_config");
+    expect(text).toContain("quiet_hours_start = ");
+    expect(text).toContain("::time");
+    expect(text).toContain("quiet_hours_end = ");
+    expect(qVals(tx.$executeRaw)).toEqual(
+      expect.arrayContaining(["22:00", "06:00"]),
+    );
+  });
+
+  it("updateNotificationConfig: bez quiet_hours polja → NEMA raw UPDATE-a", async () => {
+    const { svc, tx } = makeSvc();
+    await svc.updateNotificationConfig("u@x", { enabled: true });
+    expect(tx.$executeRaw).not.toHaveBeenCalled();
+  });
 });

@@ -227,6 +227,21 @@ describe("MojProfilService R2 mutacije", () => {
     expect((out.data as { alreadyAcked: boolean }).alreadyAcked).toBe(false);
   });
 
+  // ---------- Razgovori „Upoznat sam" (talk_acknowledge) ----------
+
+  it("acknowledgeTalk: poziva talk_acknowledge RPC (evidencija koju summary broji)", async () => {
+    const { svc, sy15, tx } = makeSvc();
+    tx.$queryRaw.mockResolvedValueOnce([{ result: { status: "potvrdjen" } }]);
+    const out = await svc.acknowledgeTalk("u@x", ID);
+    // withUserRls (row „samo svoje" presuđuje DEFINER/RLS), NE runIdem.
+    expect(sy15.withUserRls).toHaveBeenCalled();
+    expect(sy15.runIdempotentRls).not.toHaveBeenCalled();
+    expect(qText(tx.$queryRaw)).toContain("talk_acknowledge(");
+    expect((out.data as { status: string }).status).toBe("potvrdjen");
+    // Dekrement summary().unacknowledgedTalks je po konstrukciji: RPC postavlja
+    // acknowledged_at, a summary broji `acknowledged_at IS NULL` (živi smoke R4).
+  });
+
   // ---------- 360 ----------
 
   it("openSelfAssessment/submit: assessment_open_self / assessment_self_submit", async () => {

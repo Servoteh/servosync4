@@ -576,6 +576,23 @@ export class MojProfilService {
     );
   }
 
+  // ---------- Razgovori — „Upoznat sam" (talk_acknowledge) ----------
+
+  /**
+   * Potvrda razgovora (paritet 1.0 talks.acknowledgeTalk → RPC talk_acknowledge): postavlja
+   * `employee_talks.acknowledged_at` + status='potvrdjen' (evidencija potvrde koju HR čita).
+   * Row-scope „samo svoje" presuđuje DEFINER/RLS kroz GUC; guard = profile.self. Idempotentno
+   * po prirodi (ponovna potvrda bezopasna) → withUserRls, bez idempotency ključa.
+   */
+  acknowledgeTalk(email: string, id: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const rows = await tx.$queryRaw<{ result: unknown }[]>(
+        Prisma.sql`SELECT talk_acknowledge(${id}::uuid) AS result`,
+      );
+      return { data: jsonSafe(rows[0]?.result ?? null) };
+    });
+  }
+
   // ---------- 360 samoprocena (assessment_open_self / scores / answers / self_submit) ----------
 
   /** Otvori/nađi sopstvenu samoprocenu (assessment_open_self → assessment_id). */
