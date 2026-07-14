@@ -481,7 +481,10 @@ export class CreateSalaryTermDto extends IdempotentDto {
 export class UpdateSalaryTermDto {
   @IsOptional() @IsString() salaryType?: string;
   @IsOptional() @IsISO8601() effectiveFrom?: string;
-  @IsOptional() @IsISO8601() effectiveTo?: string;
+  /** P9 dopuna: eksplicitni `null` VRAĆA term na „aktivno" (effective_to=NULL) —
+   *  „Ispravi u mestu" tok. `@IsOptional` preskače validaciju za null; izostavljeno
+   *  = ne diraj. */
+  @IsOptional() @IsISO8601() effectiveTo?: string | null;
   @IsOptional() @IsString() compensationModel?: string;
   @IsObject() @IsOptional() amounts?: Record<string, unknown>;
   @IsOptional() @IsString() note?: string;

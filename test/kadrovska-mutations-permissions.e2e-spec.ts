@@ -118,6 +118,16 @@ describe("Kadrovska R2 mutacije — permission matrica (e2e)", () => {
     { method: "patch", path: "/kadrovska/notification-config", perm: PERMISSIONS.KADROVSKA_MANAGE, body: { enabled: true }, ok: 200, label: "notif config (manage)" },
     { method: "post", path: "/kadrovska/notifications/hr-reminders/run", perm: PERMISSIONS.KADROVSKA_MANAGE, body: {}, ok: 201, label: "hr-reminders run (manage)" },
     { method: "post", path: `/kadrovska/employees/${U}/contract-salary`, perm: PERMISSIONS.KADROVSKA_SALARY, body: { neto: 100000, bruto: 130000 }, ok: 201, label: "contract-salary (admin)" },
+    // P1a BE-gap jezgro (14.07): nove mutacione rute.
+    { method: "post", path: "/kadrovska/requests/nop", perm: PERMISSIONS.KADROVSKA_EDIT, body: { employeeId: U, workDate: "2026-07-01" }, ok: 201, label: "nop predlog create (edit)" },
+    { method: "delete", path: `/kadrovska/work-hours/${U}`, perm: PERMISSIONS.KADROVSKA_GRID_EDIT, ok: 200, label: "work-hours row delete (grid_edit)" },
+    { method: "post", path: `/kadrovska/absences/${U}/archive`, perm: PERMISSIONS.KADROVSKA_EDIT, body: {}, ok: 201, label: "absence archive (edit)" },
+    { method: "post", path: `/kadrovska/absences/${U}/restore`, perm: PERMISSIONS.KADROVSKA_EDIT, body: {}, ok: 201, label: "absence restore (edit)" },
+    { method: "delete", path: `/kadrovska/contracts/${U}`, perm: PERMISSIONS.KADROVSKA_EDIT, ok: 200, label: "contract delete iz arhive (edit)" },
+    { method: "delete", path: `/kadrovska/salary/payroll/${U}`, perm: PERMISSIONS.KADROVSKA_SALARY, ok: 200, label: "payroll delete (admin; paid=409 u servisu)" },
+    { method: "post", path: `/kadrovska/notifications/${U}/retarget`, perm: PERMISSIONS.KADROVSKA_MANAGE, body: { recipient: "holpen@gmail.com" }, ok: 201, label: "notif retarget (manage)" },
+    { method: "post", path: "/kadrovska/notifications/dispatch", perm: PERMISSIONS.KADROVSKA_VACREQ_MANAGE, body: {}, ok: 201, label: "dispatch proxy (vacreq_manage)" },
+    { method: "post", path: `/kadrovska/employees/${U}/badges/qr`, perm: PERMISSIONS.KADROVSKA_MANAGE, body: {}, ok: 201, label: "QR bedž get-or-create (manage)" },
   ];
 
   describe("rola × endpoint × 2xx/403 (izvedeno iz ALL_ROLE_KEYS)", () => {

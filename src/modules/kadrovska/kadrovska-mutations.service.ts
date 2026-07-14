@@ -1269,7 +1269,11 @@ export class KadrovskaMutationsService {
           data: {
             ...(dto.salaryType != null ? { salaryType: dto.salaryType } : {}),
             ...(dto.effectiveFrom ? { effectiveFrom: this.date(dto.effectiveFrom)! } : {}),
-            ...(dto.effectiveTo ? { effectiveTo: this.date(dto.effectiveTo) } : {}),
+            // P9: eksplicitni null ČISTI effective_to (term nazad na „aktivno");
+            // izostavljeno (undefined) = ne diraj.
+            ...(dto.effectiveTo !== undefined
+              ? { effectiveTo: dto.effectiveTo ? this.date(dto.effectiveTo) : null }
+              : {}),
             ...(dto.compensationModel !== undefined ? { compensationModel: dto.compensationModel } : {}),
             ...this.salaryAmounts(dto.amounts),
             ...(dto.note !== undefined ? { note: dto.note } : {}),
@@ -2026,7 +2030,10 @@ export class KadrovskaMutationsService {
     return out;
   }
 
-  /** amounts objekat (comp modeli) → Prisma salary_terms numerička polja. */
+  /** amounts objekat (comp modeli + meta odobrenja) → Prisma salary_terms polja.
+   *  P9 dopuna 14.07: FE šalje i approvedBy/approvedAt/contractRef (salaryTab:659-699
+   *  — ko je odobrio uslove, datum odobrenja, ref. ugovora) — whitelist ih je tiho
+   *  odbacivao. approvedAt je DATE → this.date() (Prisma @db.Date ne prima 'YYYY-MM-DD'). */
   private salaryAmounts(a?: Record<string, unknown>): Record<string, unknown> {
     if (!a) return {};
     const keys: Record<string, string> = {
@@ -2052,9 +2059,18 @@ export class KadrovskaMutationsService {
       cashAllowanceRsd: "cashAllowanceRsd",
       paymentWindowOverride: "paymentWindowOverride",
       payrollGroup: "payrollGroup",
+      approvedBy: "approvedBy",
+      approvedAt: "approvedAt",
+      contractRef: "contractRef",
     };
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(a)) if (keys[k]) out[keys[k]] = v;
+    if ("approvedAt" in out) {
+      out.approvedAt =
+        typeof out.approvedAt === "string" && out.approvedAt
+          ? this.date(out.approvedAt)
+          : null;
+    }
     return out;
   }
 
