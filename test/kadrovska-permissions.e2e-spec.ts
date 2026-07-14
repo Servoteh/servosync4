@@ -65,6 +65,7 @@ describe("Kadrovska permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     "employeeForeignDocs",
     "employeePersonalDocs",
     "employeeDocuments",
+    "employeeMedicalExams",
     "employee",
     "medicalExams",
     "certificates",
@@ -180,6 +181,11 @@ describe("Kadrovska permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
       path: "/kadrovska/medical-exams",
       perm: PERMISSIONS.KADROVSKA_MANAGE,
       label: "medical-exams",
+    },
+    {
+      path: `/kadrovska/employees/${VALID_UUID}/medical-exams`,
+      perm: PERMISSIONS.KADROVSKA_MANAGE,
+      label: "employees/:id/medical-exams (istorija pregleda)",
     },
     {
       path: "/kadrovska/onboarding",

@@ -933,7 +933,15 @@ export class KadrovskaService {
     const { page, pageSize, skip, take } = parsePagination(q.page, q.pageSize);
     return this.withUserMapped(email, async (tx) => {
       const conds: Prisma.Sql[] = [];
-      if (q.q) conds.push(Prisma.sql`full_name ILIKE ${`%${q.q}%`}`);
+      // Multi-polja pretraga (paritet 1.0 employeesTab: ime/pozicija/email/telefon/
+      // odeljenje/tim/napomena) — sve kolone su na v_employees_safe. Server-side jer
+      // je lista server-paginirana (klijentski filter bi gledao samo tekuću stranu).
+      if (q.q) {
+        const p = `%${q.q}%`;
+        conds.push(
+          Prisma.sql`(full_name ILIKE ${p} OR position ILIKE ${p} OR email ILIKE ${p} OR phone_work ILIKE ${p} OR department ILIKE ${p} OR team ILIKE ${p} OR note ILIKE ${p})`,
+        );
+      }
       if (q.department) conds.push(Prisma.sql`department = ${q.department}`);
       if (q.active === "true") conds.push(Prisma.sql`is_active = true`);
       if (q.active === "false") conds.push(Prisma.sql`is_active = false`);
@@ -1089,6 +1097,35 @@ export class KadrovskaService {
       });
       return { data: rows.map((d) => this.docOut(d)) };
     });
+  }
+
+  /**
+   * Istorija lekarskih pregleda jednog zaposlenog (kadr_medical_exams) — SVI redovi po
+   * pregledu za listu Izmeni/Obriši (paritet 1.0 medicalTab; zero-loss review nalaz #4).
+   * Status view `v_kadr_medical_exam_status` (metod `medicalExams`) daje SAMO 1 zbirni red
+   * per-zaposleni BEZ exam id → ne može da hrani per-red akcije. Vraća TAČAN camelCase
+   * ugovor (Prisma model oblik, `select` na 10 polja koje FE gradi). Row-scope kroz
+   * withUserRls (RLS presuđuje; ruta je pod kadrovska.manage kao PATCH/DELETE medical). DESC.
+   */
+  async employeeMedicalExams(email: string, employeeId: string) {
+    return this.withUserMapped(email, async (tx) => ({
+      data: await tx.kadrMedicalExam.findMany({
+        where: { employeeId },
+        orderBy: [{ examDate: "desc" }],
+        select: {
+          id: true,
+          employeeId: true,
+          examDate: true,
+          validUntil: true,
+          examType: true,
+          institution: true,
+          costRsd: true,
+          documentUrl: true,
+          note: true,
+          createdAt: true,
+        },
+      }),
+    }));
   }
 
   /** Lekarski pregledi — status view (v_kadr_medical_exam_status); manage/poslovni_admin. */

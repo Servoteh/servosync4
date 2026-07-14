@@ -92,6 +92,7 @@ describe("Kadrovska R1 read — PII leak guard (sve kroz withUserRls, NIKAD this
       service.employeeForeignDocs(EMAIL, UUID),
       service.employeePersonalDocs(EMAIL, UUID),
       service.employeeDocuments(EMAIL, UUID),
+      service.employeeMedicalExams(EMAIL, UUID),
       service.medicalExams(EMAIL, {}),
       service.certificates(EMAIL, {}),
       service.contracts(EMAIL, {}),
@@ -117,8 +118,8 @@ describe("Kadrovska R1 read — PII leak guard (sve kroz withUserRls, NIKAD this
 
   it("SVAKI read ulazi kroz withUserRls (RLS put), a NIKAD kroz withUser (samo-claims put)", async () => {
     const results = await invokeAll();
-    // 41 read metoda → tačno toliko withUserRls poziva (svaki metod = 1 tx).
-    expect(withUserRls.mock.calls.length).toBe(41);
+    // 42 read metoda → tačno toliko withUserRls poziva (svaki metod = 1 tx).
+    expect(withUserRls.mock.calls.length).toBe(42);
     expect(withUser).not.toHaveBeenCalled();
     // Svaki withUserRls poziv ima email kao prvi argument (GUC claims → auth.uid()).
     for (const call of withUserRls.mock.calls as unknown[][]) {

@@ -353,6 +353,19 @@ export class KadrovskaController {
     return this.kadrovska.contractBruto(req.user.email, id);
   }
 
+  /** Istorija lekarskih pregleda zaposlenog — SVI pregledi (exam_date DESC), pun red po
+   *  pregledu za Izmeni/Obriši (status view `medical-exams` daje samo 1 zbirni red bez exam
+   *  id; zero-loss review #4). Pod `kadrovska.manage` kao i medical mutacije
+   *  (POST employees/:id/medical-exams, PATCH/DELETE medical-exams/:id). */
+  @Get("employees/:id/medical-exams")
+  @RequirePermission(PERMISSIONS.KADROVSKA_MANAGE)
+  employeeMedicalExams(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return this.kadrovska.employeeMedicalExams(req.user.email, id);
+  }
+
   @Get("employees/:id")
   employee(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string) {
     return this.kadrovska.employee(req.user.email, id);
