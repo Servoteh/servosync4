@@ -36,6 +36,12 @@ const VIEWER_READ_BASELINE: readonly PermissionKey[] = [
   P.PDM_READ,
   P.DIRECTORY_READ,
   P.REVERSI_READ,
+  // Lokacije (Talas A): read = „svi prijavljeni" (živa politika `select true`) →
+  // baseline za sve SSO uloge. `lokacije.move` je NAMERNO širok na guard-sloju —
+  // pravu row-odluku (manage ILI aktivan zaposleni po email-u) donosi DB fn
+  // `loc_can_create_movement()` kroz GUC (spec §2; širina OSTAJE u bazi).
+  P.LOKACIJE_READ,
+  P.LOKACIJE_MOVE,
 ];
 
 /**
@@ -106,6 +112,9 @@ const BASE_ROLE_PERMISSIONS: Partial<
     P.PRIMOPREDAJE_APPROVE,
     P.LOKACIJE_READ,
     P.LOKACIJE_WRITE,
+    // Lokacije Talas A: sef NIJE u loc_can_manage_locations() → read + move (DB fn
+    // pušta i aktivnog zaposlenog), BEZ manage/labels.
+    P.LOKACIJE_MOVE,
     P.MRP_READ,
     P.DIRECTORY_READ,
     P.SYNC_READ,
@@ -143,6 +152,7 @@ const BASE_ROLE_PERMISSIONS: Partial<
     // paritet QBigTehn gde „Jovica i Miljan" odobravaju (frmIzborTehnologa).
     P.PRIMOPREDAJE_APPROVE,
     P.LOKACIJE_READ,
+    P.LOKACIJE_MOVE, // Talas A: read + move (row-odluka u DB fn)
     P.MRP_READ,
     P.DIRECTORY_READ,
     ...ODRZAVANJE_MODULE, // F8: CMMS uvid + prijava kvara (opšte pravo)
@@ -160,6 +170,7 @@ const BASE_ROLE_PERMISSIONS: Partial<
     P.STRUKTURE_READ,
     P.PRIMOPREDAJE_READ,
     P.LOKACIJE_READ,
+    P.LOKACIJE_MOVE, // Talas A: read + move (row-odluka u DB fn)
     P.MRP_READ,
     P.DIRECTORY_READ,
     ...ODRZAVANJE_MODULE, // F8: CMMS uvid + prijava kvara
@@ -180,6 +191,7 @@ const BASE_ROLE_PERMISSIONS: Partial<
     P.PRIMOPREDAJE_WRITE,
     P.STRUKTURE_READ,
     P.LOKACIJE_READ, // matrica §3: R
+    P.LOKACIJE_MOVE, // Talas A: read + move (row-odluka u DB fn)
     P.DIRECTORY_READ,
     ...ODRZAVANJE_MODULE, // F8: CMMS uvid + prijava kvara
     P.AI_CHAT, // 1.0 /ai za sve
@@ -188,6 +200,11 @@ const BASE_ROLE_PERMISSIONS: Partial<
   [ROLES.MAGACIONER]: [
     P.LOKACIJE_READ,
     P.LOKACIJE_WRITE,
+    // Lokacije Talas A: magacioner = nosilac modula. loc_can_manage_locations() ga NE
+    // sadrži (manage je admin/menadzment/pm/leadpm), ali 1.0 canPrintLocLabels() DA →
+    // move + labels, BEZ manage (spec §2).
+    P.LOKACIJE_MOVE,
+    P.LOKACIJE_LABELS,
     P.TEHNOLOGIJA_READ,
     P.RN_READ,
     P.PDM_READ,
@@ -213,6 +230,7 @@ const BASE_ROLE_PERMISSIONS: Partial<
     P.RN_READ,
     P.STRUKTURE_READ, // matrica §3: R (own) — svoj radnik-zapis / svoj machine_access
     P.LOKACIJE_READ,
+    P.LOKACIJE_MOVE, // Talas A: read + move (row-odluka u DB fn — aktivan zaposleni)
     P.REVERSI_READ, // paritet 1.0: SELECT za sve prijavljene („Moji alati")
     // BEZ directory.read — matrica §3: RADNIK nema komitente/predmete.
     ...ODRZAVANJE_MODULE, // F8: prijava kvara je opšte pravo (radnik prijavljuje kvar)
@@ -229,6 +247,8 @@ const BASE_ROLE_PERMISSIONS: Partial<
     P.REVERSI_READ, // paritet 1.0: SELECT za sve prijavljene
     ...ODRZAVANJE_MODULE, // F8: CMMS uvid + prijava kvara
     P.AI_CHAT, // 1.0 /ai za sve
+    P.LOKACIJE_READ, // Talas A: read = svi prijavljeni
+    P.LOKACIJE_MOVE, // Talas A: move (row-odluka u DB fn)
   ],
 
   [ROLES.MENADZMENT]: [
@@ -252,6 +272,11 @@ const BASE_ROLE_PERMISSIONS: Partial<
     P.PRIMOPREDAJE_APPROVE,
     P.LOKACIJE_READ,
     P.LOKACIJE_WRITE, // 1.0 obrazac 10: menadzment piše lokacije
+    // Lokacije Talas A: menadzment JESTE u loc_can_manage_locations() → pun set osim
+    // admin (sync/outbound je samo za loc_is_admin() = admin).
+    P.LOKACIJE_MOVE,
+    P.LOKACIJE_MANAGE,
+    P.LOKACIJE_LABELS,
     P.MRP_READ,
     P.DIRECTORY_READ,
     P.SYNC_READ,
@@ -281,6 +306,11 @@ const BASE_ROLE_PERMISSIONS: Partial<
   [ROLES.PM]: [
     P.REVERSI_READ,
     P.REVERSI_MANAGE,
+    // Lokacije Talas A: pm/leadpm su u loc_can_manage_locations() → pun set osim admin.
+    P.LOKACIJE_READ,
+    P.LOKACIJE_MOVE,
+    P.LOKACIJE_MANAGE,
+    P.LOKACIJE_LABELS,
     P.TEHNOLOGIJA_READ,
     P.RN_READ,
     P.PDM_READ,
@@ -294,6 +324,11 @@ const BASE_ROLE_PERMISSIONS: Partial<
   [ROLES.LEADPM]: [
     P.REVERSI_READ,
     P.REVERSI_MANAGE,
+    // Lokacije Talas A: pm/leadpm su u loc_can_manage_locations() → pun set osim admin.
+    P.LOKACIJE_READ,
+    P.LOKACIJE_MOVE,
+    P.LOKACIJE_MANAGE,
+    P.LOKACIJE_LABELS,
     P.TEHNOLOGIJA_READ,
     P.RN_READ,
     P.PDM_READ,
@@ -351,10 +386,13 @@ const BASE_ROLE_PERMISSIONS: Partial<
     P.SASTANCI_EDIT,
     P.AI_CHAT,
   ],
+  // cnc_operater AKTIVIRAN uz Talas A (roles.ts tier v2) — 1.0 canPrintLocLabels()
+  // ga uključuje → labels (uz read+move iz VIEWER_READ_BASELINE); + F8 CMMS + /ai.
   [ROLES.CNC_OPERATER]: [
     ...VIEWER_READ_BASELINE,
     ...ODRZAVANJE_MODULE, // F8: prijava kvara je opšte pravo
     P.AI_CHAT,
+    P.LOKACIJE_LABELS, // Talas A: štampa nalepnica (canPrintLocLabels paritet)
   ],
   [ROLES.MONTER]: [
     ...VIEWER_READ_BASELINE,

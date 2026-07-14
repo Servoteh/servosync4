@@ -1,5 +1,4 @@
 import {
-  BadGatewayException,
   BadRequestException,
   ConflictException,
   ForbiddenException,
@@ -8,10 +7,10 @@ import {
   NotFoundException,
   UnprocessableEntityException,
 } from "@nestjs/common";
-import { createConnection } from "node:net";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { ScopeService } from "../../common/authz/scope.service";
+import { LabelPrintService } from "../../common/printing/label-print.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import type { AuthUser } from "../auth/jwt.strategy";
 import {
@@ -40,7 +39,7 @@ import {
 } from "./dto/storno-tech-process.dto";
 import { type StartWorkDto, validateStartWork } from "./dto/start-work.dto";
 import { type StopWorkDto, validateStopWork } from "./dto/stop-work.dto";
-import { type PrintLabelDto, validatePrintLabel } from "./dto/print-label.dto";
+import type { PrintLabelDto } from "./dto/print-label.dto";
 
 /** Vrste kvaliteta delova (`part_quality_types`, spec §1): 0=dobar,1=dorada,2=škart. */
 export const PART_QUALITY = { GOOD: 0, REWORK: 1, SCRAP: 2 } as const;
@@ -263,6 +262,7 @@ export class TechProcessesService {
     private readonly prisma: PrismaService,
     private readonly scope: ScopeService,
     private readonly notifications: NotificationsService,
+    private readonly labelPrint: LabelPrintService,
   ) {}
 
   // ---------------------------------------------------------------- LIST
@@ -2371,50 +2371,7 @@ export class TechProcessesService {
    * `LABEL_PRINTER_HOST`/`LABEL_PRINTER_PORT` (default 192.168.70.20:9100).
    */
   async printRawLabel(dto: PrintLabelDto) {
-    validatePrintLabel(dto);
-    const tspl2 = dto.tspl2;
-    const FORBIDDEN = [
-      "SIZE ",
-      "GAP ",
-      "DENSITY ",
-      "SPEED ",
-      "CODEPAGE ",
-      "SET TEAR",
-      "REFERENCE ",
-      "OFFSET ",
-    ];
-    const upper = tspl2.toUpperCase();
-    const hit = FORBIDDEN.find((c) => upper.includes(c));
-    if (hit)
-      throw new UnprocessableEntityException(
-        `TSPL2 sadrži zabranjenu komandu '${hit.trim()}' (menja konfiguraciju štampača) — štampa odbijena.`,
-      );
-
-    const host = process.env.LABEL_PRINTER_HOST || "192.168.70.20";
-    const port =
-      Number.parseInt(process.env.LABEL_PRINTER_PORT ?? "", 10) || 9100;
-
-    const bytes = await new Promise<number>((resolve, reject) => {
-      const sock = createConnection({ host, port });
-      const fail = (msg: string) => {
-        sock.destroy();
-        reject(new BadGatewayException(`Štampač ${host}:${port} — ${msg}`));
-      };
-      sock.setTimeout(10_000, () => fail("timeout (10s)"));
-      sock.once("error", (e) => fail(e.message));
-      sock.once("connect", () => {
-        sock.write(tspl2, "binary", (err) => {
-          if (err) return fail(err.message);
-          const n = Buffer.byteLength(tspl2, "binary");
-          sock.end(() => resolve(n));
-        });
-      });
-    });
-
-    this.logger.log(
-      `label print: ${bytes} B → ${host}:${port} (copies=${dto.copies ?? "?"})`,
-    );
-    return { data: { ok: true, bytes, printer: `${host}:${port}` } };
+    return { data: await this.labelPrint.printRawTspl(dto) };
   }
 
   // ---------------------------------------------------------------- ISPRAVKE (kucanje)

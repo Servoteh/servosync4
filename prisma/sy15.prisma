@@ -1992,3 +1992,135 @@ model ScadaCommand {
   result Json?
   @@map("scada_commands")
 }
+
+// ============================================================================
+// Lokacije delova (Talas A — MODULE_SPEC_lokacije_30.md §1, snapshot žive sy15
+// 2026-07-12). Fizičke lokacije: HALA→POLICA + MAŠINA + KAVEZ. Kao rev_* modeli:
+// BEZ FK relacija (1.0 šema ih nema — spajanja su ručna batch-resolve), uuid PK
+// se ZADRŽAVA, camelCase + @map. Native PG enumi se mapiraju na Prisma enume
+// (@@map na DB tip) da `where` filteri po movement_type/placement_status rade.
+// ============================================================================
+
+/// loc_locations.location_type — poslovna klasifikacija (lokacijeTypes.js).
+enum LocTypeEnum {
+  WAREHOUSE
+  RACK
+  SHELF
+  BIN
+  PROJECT
+  PRODUCTION
+  ASSEMBLY
+  SERVICE
+  FIELD
+  TRANSIT
+  OFFICE
+  TEMP
+  SCRAPPED
+  OTHER
+  MACHINE
+  CAGE
+
+  @@map("loc_type_enum")
+}
+
+/// loc_item_placements.placement_status — stanje smeštaja stavke.
+enum LocPlacementStatusEnum {
+  ACTIVE
+  IN_TRANSIT
+  PENDING_CONFIRMATION
+  UNKNOWN
+
+  @@map("loc_placement_status_enum")
+}
+
+/// loc_location_movements.movement_type — tipovi pokreta (append-only ledger).
+enum LocMovementTypeEnum {
+  INITIAL_PLACEMENT
+  TRANSFER
+  ASSIGN_TO_PROJECT
+  RETURN_FROM_PROJECT
+  SEND_TO_SERVICE
+  RETURN_FROM_SERVICE
+  SEND_TO_FIELD
+  RETURN_FROM_FIELD
+  SCRAP
+  CORRECTION
+  INVENTORY_ADJUSTMENT
+  REVERSAL_ISSUE
+  REVERSAL_RETURN
+
+  @@map("loc_movement_type_enum")
+}
+
+/// loc_location_movements.sync_status — status MSSQL write-back-a (worker).
+enum LocSyncStatusEnum {
+  PENDING
+  IN_PROGRESS
+  SYNCED
+  FAILED
+  DEAD_LETTER
+
+  @@map("loc_sync_status_enum")
+}
+
+model LocLocation {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  locationCode String @map("location_code")
+  name String
+  locationType LocTypeEnum @map("location_type")
+  parentId String? @map("parent_id") @db.Uuid
+  /// NOT NULL u DB, održava ga trigger hijerarhije — default '' za paritet.
+  pathCached String @default("") @map("path_cached")
+  depth Int @default(0) @db.SmallInt
+  isActive Boolean @default(true) @map("is_active")
+  capacityNote String? @map("capacity_note")
+  notes String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String? @map("created_by") @db.Uuid
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy String? @map("updated_by") @db.Uuid
+  @@map("loc_locations")
+}
+
+model LocItemPlacement {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  itemRefTable String @map("item_ref_table")
+  itemRefId String @map("item_ref_id")
+  locationId String @map("location_id") @db.Uuid
+  placementStatus LocPlacementStatusEnum @default(ACTIVE) @map("placement_status")
+  lastMovementId String? @map("last_movement_id") @db.Uuid
+  placedAt DateTime @default(now()) @map("placed_at") @db.Timestamptz(6)
+  placedBy String? @map("placed_by") @db.Uuid
+  notes String?
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  quantity Decimal @default(1) @db.Decimal
+  orderNo String @default("") @map("order_no")
+  drawingNo String @default("") @map("drawing_no")
+  @@unique([itemRefTable, itemRefId, orderNo, locationId], map: "loc_item_placements_item_order_loc_uq")
+  @@map("loc_item_placements")
+}
+
+model LocLocationMovement {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  itemRefTable String @map("item_ref_table")
+  itemRefId String @map("item_ref_id")
+  fromLocationId String? @map("from_location_id") @db.Uuid
+  toLocationId String? @map("to_location_id") @db.Uuid
+  movementType LocMovementTypeEnum @map("movement_type")
+  movementReason String? @map("movement_reason")
+  note String?
+  movedAt DateTime @default(now()) @map("moved_at") @db.Timestamptz(6)
+  movedBy String @map("moved_by") @db.Uuid
+  approvedBy String? @map("approved_by") @db.Uuid
+  approvedAt DateTime? @map("approved_at") @db.Timestamptz(6)
+  correctionOfMovementId String? @map("correction_of_movement_id") @db.Uuid
+  syncStatus LocSyncStatusEnum @default(PENDING) @map("sync_status")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  quantity Decimal @default(1) @db.Decimal
+  orderNo String @default("") @map("order_no")
+  drawingNo String @default("") @map("drawing_no")
+  source String @default("manual")
+  /// idempotencija pokreta VEĆ postoji u 1.0 (loc_create_movement) — R2 koristi NJU.
+  clientEventUuid String? @map("client_event_uuid") @db.Uuid
+  @@map("loc_location_movements")
+}

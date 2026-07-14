@@ -2,6 +2,7 @@ import { Test, TestingModule } from "@nestjs/testing";
 import { PrismaService } from "../../prisma/prisma.service";
 import { ScopeService } from "../../common/authz/scope.service";
 import { NotificationsService } from "../notifications/notifications.service";
+import { LabelPrintService } from "../../common/printing/label-print.service";
 import { TechProcessesService } from "./tech-processes.service";
 
 /** Mock PrismaService — modeli koje dodiruju `card()`, `scan()` i D8 emit helperi. */
@@ -117,6 +118,7 @@ describe("TechProcessesService — card (agregat po operaciji)", () => {
         { provide: PrismaService, useValue: prisma },
         { provide: ScopeService, useValue: {} },
         { provide: NotificationsService, useValue: notificationsMock() },
+        { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
       ],
     }).compile();
     service = mod.get(TechProcessesService);
@@ -272,6 +274,7 @@ describe("TechProcessesService — scan pinuje TEKUĆU varijantu RN-a (D5 klon =
         { provide: PrismaService, useValue: prisma },
         { provide: ScopeService, useValue: {} },
         { provide: NotificationsService, useValue: notificationsMock() },
+        { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
       ],
     }).compile();
     service = mod.get(TechProcessesService);
@@ -382,6 +385,7 @@ describe("TechProcessesService — D8 emit notifikacija (control dorada/škart)"
         { provide: PrismaService, useValue: prisma },
         { provide: ScopeService, useValue: {} },
         { provide: NotificationsService, useValue: notifications },
+        { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
       ],
     }).compile();
     emit = mod.get(TechProcessesService);

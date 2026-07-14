@@ -169,8 +169,8 @@ export const ROLE_CATALOG: RoleMeta[] = [
     label: "CNC operater",
     origin: "oba",
     module: "Proizvodnja — pregled+štampa",
-    tier: "3.0",
-    note: "Nizak nivo: pregled proizvodnje + štampa nalepnica. Držati ODVOJENO od cnc_programer.",
+    tier: "v2",
+    note: "AKTIVIRANA 12.07.2026 uz Talas A — labels permisija (Nenad). Nizak nivo: pregled proizvodnje + štampa nalepnica. Držati ODVOJENO od cnc_programer.",
   },
   {
     key: ROLES.PM,

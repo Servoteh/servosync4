@@ -34,6 +34,7 @@ import { MojProfilModule } from "./modules/moj-profil/moj-profil.module";
 import { PodesavanjaModule } from "./modules/podesavanja/podesavanja.module";
 import { OdrzavanjeModule } from "./modules/odrzavanje/odrzavanje.module";
 import { EnergetikaModule } from "./modules/energetika/energetika.module";
+import { LocationsModule } from "./modules/locations/locations.module";
 
 @Module({
   imports: [
@@ -77,6 +78,8 @@ import { EnergetikaModule } from "./modules/energetika/energetika.module";
     OdrzavanjeModule,
     // 3.0 Talas E — Energetika/SCADA read sloj (MODULE_SPEC_scada_30.md §3)
     EnergetikaModule,
+    // 3.0 Talas A — Lokacije delova (loc_*; MODULE_SPEC_lokacije_30.md §0)
+    LocationsModule,
   ],
   controllers: [AppController],
   providers: [
