@@ -23,7 +23,10 @@ describe("ProjektniBiroService.listTips — mapiranje filtera (paritet pb_list_e
       withUserRls: (_email: string, fn: (tx: Sy15Tx) => Promise<unknown>) =>
         fn(tx),
     } as unknown as Sy15Service;
-    return { svc: new ProjektniBiroService(sy15), calls };
+    const storage = {} as unknown as import(
+      "../../common/sy15/sy15-storage.service"
+    ).Sy15StorageService;
+    return { svc: new ProjektniBiroService(sy15, storage), calls };
   };
 
   /** Izvuci prosleđeni p_filter JSON iz zabeleženog Prisma.Sql (jedini string value). */
