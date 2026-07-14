@@ -18,7 +18,14 @@ export function EmployeeAuditDialog({ employeeId, employeeName, onClose }: { emp
   const q = useAuditReport(true);
   const [open, setOpen] = useState<Set<number>>(new Set());
 
-  const rows = useMemo(() => (q.data?.data ?? []).filter((r) => r.employee_id === employeeId), [q.data, employeeId]);
+  // BE vraća ORDER BY id (rastuće); 1.0 prikazuje najnovije prvo.
+  const rows = useMemo(
+    () =>
+      (q.data?.data ?? [])
+        .filter((r) => r.employee_id === employeeId)
+        .sort((a, b) => String(b.changed_at ?? '').localeCompare(String(a.changed_at ?? ''))),
+    [q.data, employeeId],
+  );
 
   function toggle(id: number) {
     setOpen((prev) => {
