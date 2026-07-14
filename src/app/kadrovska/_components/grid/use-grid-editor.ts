@@ -68,6 +68,7 @@ export interface GridEditor {
   applyPaste: (startEmpId: string, startYmd: string, startKind: CellKind, matrix: string[][], visibleEmpIds: string[]) => number;
   restore: (empId: string, ymd: string, vals: GridDelta) => void;
   hasErrors: () => boolean;
+  refresh: () => void;
   dirtyCount: () => number;
   dirtyEmployeeCount: () => number;
   buildBatchRows: () => import('@/api/kadrovska').GridBatchRow[];
@@ -384,6 +385,9 @@ export function useGridEditor({ days, getDbRow, editable, isAdmin, onNopAttempt 
 
   // ── Statusi / save priprema ─────────────────────────────────────────
 
+  // Prisili re-render blokova posle spoljnog refetch-a (30s polling / Osveži).
+  const refresh = useCallback(() => bumpStruct(), [bumpStruct]);
+
   const isDirty = useCallback((empId: string, ymd: string) => dirtyRef.current.has(gridDirtyKey(empId, ymd)), []);
   const cellError = useCallback((empId: string, ymd: string, kind: CellKind) => errRef.current.has(`${empId}|${ymd}|${kind}`), []);
   const hasErrors = useCallback(() => errRef.current.size > 0, []);
@@ -467,6 +471,7 @@ export function useGridEditor({ days, getDbRow, editable, isAdmin, onNopAttempt 
       buildBatchRows,
       collectNopSync,
       clearDirty,
+      refresh,
     }),
     [
       editable,
@@ -493,6 +498,7 @@ export function useGridEditor({ days, getDbRow, editable, isAdmin, onNopAttempt 
       buildBatchRows,
       collectNopSync,
       clearDirty,
+      refresh,
     ],
   );
 }

@@ -57,7 +57,7 @@ export function fmtWhAuditValue(key: string, v: unknown): string {
 type Snapshot = Record<string, unknown> | null | undefined;
 
 export interface AuditRow {
-  id?: string;
+  id?: string | number;
   action?: string;
   actorEmail?: string | null;
   changedAt?: string | null;
