@@ -101,14 +101,17 @@ export function MedicalExamsDialog({ employeeId, employeeName, canEdit, onClose 
       notify('⚠ „Važi do" ne može biti pre datuma pregleda');
       return;
     }
+    // Izmena: prazno polje šalje null da BE OBRIŠE staru vrednost (BE piše !== undefined).
+    // Kreiranje: prazno polje se izostavlja (undefined). Paritet 1.0 (moguće očistiti ustanovu/napomenu/URL/trošak).
+    const blank = editId ? null : undefined;
     const body = {
       examDate,
       examType,
-      validUntil: validUntil || undefined,
-      institution: inst.trim() || undefined,
-      costRsd: cost ? Number(cost) : undefined,
-      documentUrl: docUrl.trim() || undefined,
-      note: note.trim() || undefined,
+      validUntil: validUntil || blank,
+      institution: inst.trim() || blank,
+      costRsd: cost ? Number(cost) : blank,
+      documentUrl: docUrl.trim() || blank,
+      note: note.trim() || blank,
     };
     try {
       if (editId) await updateM.mutateAsync({ id: editId, patch: body });
