@@ -6,12 +6,15 @@ import type { VacationRequest } from '@/api/kadrovska';
 import type { BalanceRow } from './types';
 import { deptColor, daysInYear, dayOfYearZero, clampYmd, todayIso, MONTH_NAMES } from './helpers';
 
-// Gantt prikaz GO po odeljenjima (1.0 vacationTab.renderGantt). Segmenti se
-// izvode iz zahteva (pending=željeni / approved-budući=odobren / approved-prošli=
-// iskorišćeno) — jedini izvor perioda dostupan bez teškog grid fetch-a.
+// Gantt prikaz GO po odeljenjima (1.0 vacationTab.renderGantt). Dual-source
+// (paritet 1.0): pending/budući-approved iz zahteva; iskorišćeno (prošli GO) iz
+// GRID-a (work_hours absence_code='go') — hvata i GO upisan direktno u grid bez
+// zahteva (uvoz/bonus/ručni). NAPOMENA: grid izvor je kapiran na 500 redova
+// (GET /work-hours) — za >500 GO redova u godini najstariji mogu izostati.
 
 type BarKind = 'pending' | 'approved' | 'used' | 'over';
 interface Seg { from: string; to: string; days: number; kind: BarKind; label: string }
+export type GridSeg = { from: string; to: string; days: number };
 
 const BAR_STYLE: Record<BarKind, string> = {
   pending: 'repeating-linear-gradient(45deg,#E8A83855,#E8A83855 4px,#E8A83833 4px,#E8A83833 8px)',
@@ -20,24 +23,26 @@ const BAR_STYLE: Record<BarKind, string> = {
   over: '#C6534F',
 };
 
-function segsForEmp(vac: VacationRequest[], isOver: boolean): Seg[] {
+function segsForEmp(vac: VacationRequest[], gridSegs: GridSeg[], isOver: boolean): Seg[] {
   const today = todayIso();
   const out: Seg[] = [];
+  // Zahtevi: željeni (pending) + budući odobreni. Prošli odobreni se NE crtaju
+  // ovde — pokriva ih grid (izbegava duple trake za isti period).
   for (const r of vac) {
     if (!r.dateFrom || !r.dateTo) continue;
     const from = r.dateFrom.slice(0, 10);
     const to = r.dateTo.slice(0, 10);
-    if (r.status === 'pending') {
-      out.push({ from, to, days: r.daysCount, kind: 'pending', label: 'Željeni GO (čeka odobrenje)' });
-    } else if (r.status === 'approved') {
-      if (to >= today) out.push({ from, to, days: r.daysCount, kind: 'approved', label: 'Odobren GO' });
-      else out.push({ from, to, days: r.daysCount, kind: isOver ? 'over' : 'used', label: 'Iskorišćeno GO' });
-    }
+    if (r.status === 'pending') out.push({ from, to, days: r.daysCount, kind: 'pending', label: 'Željeni GO (čeka odobrenje)' });
+    else if (r.status === 'approved' && to >= today) out.push({ from, to, days: r.daysCount, kind: 'approved', label: 'Odobren GO' });
+  }
+  // Grid GO ćelije (iskorišćeno) — uključuje i grid-only GO bez zahteva.
+  for (const s of gridSegs) {
+    out.push({ from: s.from, to: s.to, days: s.days, kind: isOver ? 'over' : 'used', label: 'Iskorišćeno GO' });
   }
   return out;
 }
 
-export function VacationGantt({ rows, vac, year }: { rows: BalanceRow[]; vac: VacationRequest[]; year: number }) {
+export function VacationGantt({ rows, vac, gridSegs, year }: { rows: BalanceRow[]; vac: VacationRequest[]; gridSegs: Map<string, GridSeg[]>; year: number }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const totalDays = daysInYear(year);
   const today = todayIso();
@@ -133,7 +138,7 @@ export function VacationGantt({ rows, vac, year }: { rows: BalanceRow[]; vac: Va
                   </div>
                   {dRows.map((r) => {
                     const isOver = r.daysRemaining < 0;
-                    const segs = segsForEmp(vacByEmp.get(r.emp.id) || [], isOver);
+                    const segs = segsForEmp(vacByEmp.get(r.emp.id) || [], gridSegs.get(r.emp.id) || [], isOver);
                     const remCls = r.daysRemainingAccrued < 0 ? 'text-status-danger' : r.daysRemainingAccrued < 3 ? 'text-status-warn' : 'text-ink-secondary';
                     return (
                       <div key={r.emp.id} className="flex items-center gap-2 border-b border-line-soft py-1 last:border-0">

@@ -111,3 +111,19 @@ export function clampYmd(ymd: string, year: number): string {
 }
 
 export const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'Maj', 'Jun', 'Jul', 'Avg', 'Sep', 'Okt', 'Nov', 'Dec'];
+
+/** Spoji sortiran niz YYYY-MM-DD u uzastopne segmente {from,to,days} (port 1.0 allGoSegmentsForYear). */
+export function mergeConsecutiveDays(daysIso: string[]): { from: string; to: string; days: number }[] {
+  const uniq = [...new Set(daysIso.filter(Boolean))].sort();
+  const out: { from: string; to: string; days: number }[] = [];
+  let start: string | null = null;
+  let prev: string | null = null;
+  let count = 0;
+  const flush = () => { if (start && prev) out.push({ from: start, to: prev, days: count }); };
+  for (const d of uniq) {
+    if (prev && addDaysIso(prev, 1) === d) { prev = d; count++; }
+    else { flush(); start = d; prev = d; count = 1; }
+  }
+  flush();
+  return out;
+}

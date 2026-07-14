@@ -15,13 +15,17 @@ import {
   useVacationBalance,
   useVacationEntitlements,
   useRequests,
+  useWorkHours,
+  useHolidays,
   useSaveEntitlement,
+  fetchEmployeePii,
   newClientEventId,
 } from '@/api/kadrovska';
-import { SummaryChips } from '../common';
+import { SummaryChips, sv } from '../common';
 import { computeBalanceRows } from './compute';
 import { toRosterEmp, type BalanceRow, type RosterEmp } from './types';
-import { deptColor, REVIEW_FLAG_BADGE, nextWorkingDay } from './helpers';
+import { deptColor, REVIEW_FLAG_BADGE, nextWorkingDay, holidaySetFromRows, mergeConsecutiveDays } from './helpers';
+import type { GridSeg } from './gantt';
 import { AccrualModal, AdvanceModal } from './entitlement-modals';
 import { HistoryModal } from './history-modal';
 import { VacationGantt } from './gantt';
@@ -52,7 +56,23 @@ export function SaldoTab() {
   const balanceQ = useVacationBalance({ year });
   const entQ = useVacationEntitlements({ year });
   const reqQ = useRequests({}, canEdit || can(PERMISSIONS.KADROVSKA_VACREQ_MANAGE));
+  const whQ = useWorkHours({ from: `${year}-01-01`, to: `${year}-12-31` });
+  const holQ = useHolidays({ from: `${year}-01-01`, to: `${year + 1}-01-31` });
   const saveCarry = useSaveEntitlement();
+
+  // Grid GO segmenti za Gantt (work_hours absence_code='go' → uzastopni dani po zaposlenom).
+  const gridSegs = useMemo(() => {
+    const byEmp = new Map<string, string[]>();
+    for (const r of whQ.data?.data ?? []) {
+      if (r.absenceCode !== 'go') continue;
+      const d = String(r.workDate).slice(0, 10);
+      if (!byEmp.has(r.employeeId)) byEmp.set(r.employeeId, []);
+      byEmp.get(r.employeeId)!.push(d);
+    }
+    const map = new Map<string, GridSeg[]>();
+    for (const [emp, days] of byEmp) map.set(emp, mergeConsecutiveDays(days));
+    return map;
+  }, [whQ.data]);
 
   const roster: RosterEmp[] = useMemo(
     () => (empQ.data?.data ?? []).map(toRosterEmp),
@@ -123,13 +143,16 @@ export function SaldoTab() {
       days = Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400000) + 1;
     }
     try {
-      const returnIso = nextWorkingDay(to, null);
+      let jmbg = '________________';
+      if (canPii) { try { const p = await fetchEmployeePii(row.emp.id); jmbg = sv(p.data, 'personal_id') || jmbg; } catch { /* nema PII */ } }
+      const returnIso = nextWorkingDay(to, holidaySetFromRows(holQ.data?.data));
       const { blob, fileName } = await generateVacationDecisionPdf({
-        brojResenja: `GO-${year}-${String(row.emp.id).replace(/-/g, '').slice(0, 4).toUpperCase()}`,
+        brojResenja: `GO-${year}-${String(row.emp.id).slice(0, 8).toUpperCase()}`,
         datumDonosenja: formatDate(new Date().toISOString().slice(0, 10)),
         mesto: 'Dobanovci',
         godina: year,
         imePrezime: row.emp.name,
+        jmbg,
         radnoMesto: row.emp.position,
         brojDana: days,
         datumOd: formatDate(from),
@@ -343,7 +366,7 @@ export function SaldoTab() {
           empty={<EmptyState title="Nema zaposlenih za prikaz" />}
         />
       ) : (
-        <VacationGantt rows={rows} vac={reqQ.data?.data?.vacation ?? []} year={year} />
+        <VacationGantt rows={rows} vac={reqQ.data?.data?.vacation ?? []} gridSegs={gridSegs} year={year} />
       )}
 
       {modal?.type === 'accrual' && (
