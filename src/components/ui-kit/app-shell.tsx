@@ -8,10 +8,12 @@ import {
   Briefcase,
   Building2,
   CheckCircle2,
+  CircleUser,
   ClipboardList,
   Clock,
   Cpu,
   DraftingCompass,
+  FolderKanban,
   ListChecks,
   ListOrdered,
   LogOut,
@@ -20,6 +22,7 @@ import {
   PencilRuler,
   RefreshCw,
   ShoppingCart,
+  SlidersHorizontal,
   Users,
   Workflow,
   Wrench,
@@ -83,12 +86,23 @@ const NAV_SECTIONS: NavSection[] = [
   {
     title: 'Projektovanje',
     items: [
+      // Projektni biro (3.0 TALAS D) — plan/kanban/gantt/izveštaji/analiza/saveti.
+      // Vidljivost = pb.read (SELECT `true` paritet = svi prijavljeni).
+      { label: 'Projektni biro', href: '/pb', icon: FolderKanban, requires: PERMISSIONS.PB_READ },
       { label: 'PDM / Crteži', href: '/pdm', icon: DraftingCompass, requires: PERMISSIONS.PDM_READ },
       // Nacrti (projektanti, gate write) i Primopredaje (tehnolozi, gate
       // approve) su ODVOJENE rute — deljena ruta je palila obe stavke kao
       // aktivne istovremeno (ODLUKE #33).
       { label: 'Nacrti', href: '/nacrti', icon: PencilRuler, requires: PERMISSIONS.PRIMOPREDAJE_WRITE },
       { label: 'Primopredaje', href: '/handovers', icon: PackageCheck, requires: PERMISSIONS.PRIMOPREDAJE_APPROVE },
+    ],
+  },
+  {
+    // Lično (3.0 TALAS D) — Moj profil je self-service agregator za svakog
+    // prijavljenog (profile.self = SELECT true paritet). Top-level, van MES domena.
+    title: 'Lično',
+    items: [
+      { label: 'Moj profil', href: '/profil', icon: CircleUser, requires: PERMISSIONS.PROFILE_SELF },
     ],
   },
   {
@@ -102,6 +116,10 @@ const NAV_SECTIONS: NavSection[] = [
   {
     title: 'Sistem',
     items: [
+      // Podešavanja (3.0 TALAS D) — RBAC admin konzola + matični + sistem.
+      // Vidljivost = settings.org_profile (admin/menadzment/pm/leadpm = 1.0
+      // canAccessPodesavanja); admin-only tabovi se dodatno gejtuju u samoj strani.
+      { label: 'Podešavanja', href: '/podesavanja', icon: SlidersHorizontal, requires: PERMISSIONS.SETTINGS_ORG_PROFILE },
       { label: 'Komitenti', href: '/customers', icon: Building2, requires: PERMISSIONS.DIRECTORY_READ },
       { label: 'Predmeti', href: '/projects', icon: Briefcase, requires: PERMISSIONS.DIRECTORY_READ },
       { label: 'Sinhronizacije', href: '/syncs', icon: RefreshCw, requires: PERMISSIONS.SYNC_READ },

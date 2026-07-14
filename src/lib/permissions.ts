@@ -36,6 +36,31 @@ export const PERMISSIONS = {
   REVERSI_MANAGE: 'reversi.manage',
   // Rezervisano za „Moj tim" pogled (TL/šef) — UI još nije priključen; vidi TODO u api/reversi.ts.
   REVERSI_TEAM_READ: 'reversi.team_read',
+  // Projektni biro — 3.0 TALAS D (MODULE_SPEC_pb_profil_podesavanja_30.md §2.5).
+  // read = svi prijavljeni; comment = edit-krug ∪ inzenjer; edit = admin/hr/menadzment/pm/
+  // leadpm/poslovni_admin/projektant_vodja; progress = inzenjer restriktovani edit (+edit);
+  // reports_all = admin/leadpm/pm/menadzment; reports_own = svako svoje (row u DB);
+  // tips_write = edit-krug ∪ inzenjer/projektant_vodja; admin = notif config + kategorije.
+  PB_READ: 'pb.read',
+  PB_COMMENT: 'pb.comment',
+  PB_EDIT: 'pb.edit',
+  PB_PROGRESS: 'pb.progress',
+  PB_REPORTS_ALL: 'pb.reports_all',
+  PB_REPORTS_OWN: 'pb.reports_own',
+  PB_TIPS_WRITE: 'pb.tips_write',
+  PB_ADMIN: 'pb.admin',
+  // Moj profil — self-service za sve (agregator). self = svaki prijavljen; team = menadžerske sekcije.
+  PROFILE_SELF: 'profile.self',
+  PROFILE_TEAM: 'profile.team',
+  // Podešavanja (RBAC admin konzola + matični + sistem) — TALAS D §3.3.
+  // users = admin (korisnici/uloge-dozvole/grid urednici/struktura); org_profile = admin/
+  // menadzment/pm/leadpm (vrednosti firme/opisi/očekivanja/kompetence); predmet_aktivacija =
+  // admin/menadzment; audit + system = admin.
+  SETTINGS_USERS: 'settings.users',
+  SETTINGS_ORG_PROFILE: 'settings.org_profile',
+  SETTINGS_PREDMET_AKTIVACIJA: 'settings.predmet_aktivacija',
+  SETTINGS_AUDIT: 'settings.audit',
+  SETTINGS_SYSTEM: 'settings.system',
 } as const;
 
 export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
