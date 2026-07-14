@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+  <script src="scada-bridge-shim.js"></script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Solar Sigenergy — Servoteh</title>
+  <link rel="stylesheet" href="theme.css" />
+  <style>
+    /* Sigen-inspirisane kartice + Power Metrics grafik (lokalno, ne dira theme.css) */
+    .sg-row{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px}
+    @media(max-width:760px){.sg-row{grid-template-columns:1fr}}
+    .sg-card{padding:16px 18px}
+    .sg-h{font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--muted);font-weight:800}
+    .sg-modev{font-size:22px;font-weight:800;margin-top:9px;line-height:1.1}
+    .sg-sub2{font-size:12px;color:var(--muted);margin-top:4px}
+    .sg-battv{display:flex;align-items:baseline;gap:5px;margin-top:8px}
+    .sg-battv b{font-family:var(--mono);font-size:27px;font-weight:800}
+    .sg-battv .u{color:var(--muted);font-size:13px}
+    .sg-bar{display:flex;gap:4px;margin-top:13px}
+    .sg-seg{flex:1;height:14px;border-radius:3px;background:var(--panel-2);border:1px solid var(--border)}
+    .sg-seg.on{background:linear-gradient(180deg,#3fe6c7,#12b497);border-color:transparent;box-shadow:0 0 8px rgba(45,212,191,.35)}
+    .sg-metrics{padding:14px 16px 12px}
+    .sg-legend{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+    .sg-chip{display:inline-flex;align-items:center;gap:7px;padding:5px 12px;border-radius:18px;border:1px solid var(--border);
+      background:var(--panel-2);cursor:pointer;font-size:12px;font-weight:700;user-select:none}
+    .sg-chip .dot{width:10px;height:10px;border-radius:50%}
+    .sg-chip.off{opacity:.38}
+    .sg-chartwrap{position:relative;width:100%;height:264px}
+    #sgChart{width:100%;height:100%;display:block}
+    .sg-hint{font-size:11px;color:var(--muted)}
+    .sg-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:13px;text-align:center;padding:0 20px}
+  </style>
+</head>
+<body>
+  <header class="t-bar">
+    <div class="t-brand"><span class="t-logobox"><img class="t-logo" src="servoteh-logo.png" alt="Servoteh"></span><span class="bt">☀ SOLAR SIGENERGY</span><span class="sub">Sigenergy · cloud</span></div>
+    <div class="t-right">
+      <nav class="t-nav">
+        <a href="/">Pregled</a>
+        <a href="/kot1.html">Kotlarnica 1</a>
+        <a href="/kot2.html">Kotlarnica 2</a>
+        <a href="/kot3.html">Kotlarnica 3</a>
+        <a href="/solar-kaco.html">Solar KACO</a>
+        <a href="/solar-sigen.html" class="active">Solar Sigenergy</a>
+      </nav>
+      <span class="t-clock" id="clock"></span>
+      <button class="t-toggle" id="themeBtn">☾ Tamna</button>
+    </div>
+  </header>
+
+  <section class="statstrip" id="strip"></section>
+
+  <div class="synwrap">
+    <div class="synbox"><div id="syn"></div></div>
+    <aside>
+      <div class="sec-title">Proizvodnja</div>
+      <div class="pnl" id="prod"></div>
+      <div class="sec-title" style="margin-top:16px">Snaga (svi tokovi)</div>
+      <div class="pnl" id="power"></div>
+      <div class="sec-title" style="margin-top:16px">Režim i status</div>
+      <div class="pnl" id="alarms"></div>
+    </aside>
+  </div>
+
+  <main style="padding-top:0">
+    <section class="sg-row">
+      <div class="pnl sg-card sg-mode">
+        <div class="sg-h">Trenutni režim</div>
+        <div class="sg-modev" id="sgMode">—</div>
+        <div class="sg-sub2" id="sgModeSub">Sigenergy</div>
+      </div>
+      <div class="pnl sg-card sg-batt">
+        <div class="sg-h">Nivo baterije</div>
+        <div class="sg-battv"><b id="sgSoc">—</b><span class="u">%</span></div>
+        <div class="sg-bar" id="sgBar"></div>
+      </div>
+    </section>
+
+    <div class="sec-title">Power Metrics — danas (kW)</div>
+    <div class="pnl sg-metrics" style="margin-bottom:18px">
+      <div class="sg-legend" id="sgLegend"></div>
+      <div class="sg-chartwrap"><canvas id="sgChart"></canvas><div class="sg-empty" id="sgEmpty"></div></div>
+    </div>
+
+    <div class="sec-title">Svi sistemi — zbirno</div>
+    <div class="pnl" id="agg" style="margin-bottom:18px"></div>
+    <div class="sec-title">Sistemi (po elektrani)</div>
+    <div class="cards" id="syslist"></div>
+  </main>
+
+  <script src="hmi.js"></script>
+  <script src="solar-sigen.js"></script>
+</body>
+</html>

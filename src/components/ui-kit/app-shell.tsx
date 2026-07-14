@@ -33,6 +33,7 @@ import {
   Users,
   Workflow,
   Wrench,
+  Zap,
   type LucideIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
@@ -124,11 +125,13 @@ const NAV_SECTIONS: NavSection[] = [
   },
   {
     // MES domen (PLAN_MODULA_MES_3.0 §4) — prvi stanovnik: Reversi (3.0 pilot);
-    // Održavanje (CMMS) i Energetika/SCADA ulaze seobom u 3.0-D.
+    // Energetika/SCADA je seljena u Talasu E; Održavanje (CMMS) ulazi kasnije.
     title: 'Oprema i energija',
     items: [
       { label: 'Reversi', href: '/reversi', icon: Wrench, requires: PERMISSIONS.REVERSI_READ },
       { label: 'Održavanje', href: '/odrzavanje', icon: Cog, requires: PERMISSIONS.ODRZAVANJE_READ },
+      // Energetika/SCADA — vidljiva SAMO admin+menadzment (energetika.read; paritet 1.0).
+      { label: 'Energetika', href: '/energetika', icon: Zap, requires: PERMISSIONS.ENERGETIKA_READ },
     ],
   },
   {
