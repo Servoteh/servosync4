@@ -73,7 +73,23 @@ export function ShadowView() {
         return cmp ? `${Math.round((svNum(r, 'ok_dana') / cmp) * 100)}%` : '—';
       },
     },
-    { key: 'dev', header: 'Odstupanja', align: 'right', numeric: true, render: (r) => svNum(r, 'problem_dana') || '' },
+    {
+      key: 'dev',
+      header: 'Odstupanja',
+      align: 'right',
+      numeric: true,
+      // >2 problematična dana = zaposleni za razgovor (paritet 1.0 row highlight;
+      // deljeni DataTable nema per-row stil pa signal ide kroz ćeliju).
+      render: (r) => {
+        const n = svNum(r, 'problem_dana');
+        if (!n) return '';
+        return n > 2 ? (
+          <span className="rounded-full bg-status-warn-bg px-2 py-0.5 font-semibold text-status-warn">{n}</span>
+        ) : (
+          n
+        );
+      },
+    },
     {
       key: 'avg',
       header: 'Ø razlika',
