@@ -75,6 +75,15 @@ export const PERMISSIONS = {
   SETTINGS_PREDMET_AKTIVACIJA: 'settings.predmet_aktivacija',
   SETTINGS_AUDIT: 'settings.audit',
   SETTINGS_SYSTEM: 'settings.system',
+  // Održavanje / CMMS — 3.0 TALAS F (backend docs/design/MODULE_SPEC_odrzavanje_30.md §3, presuda F8).
+  // Dvoslojni authz: ove permisije = COARSE kapija (read/report/write = sve aktivne uloge,
+  // row-scope presuđuje 102 sy15 RLS politike). FINU odluku UI donosi preko `/maintenance/me`
+  // (maintRole operator/technician/chief/management/admin + gates). `admin_ui` je restriktivan
+  // (admin/menadzment/magacioner) — SAMO za prikaz admin ekrana, NIJE bezbednosna granica.
+  ODRZAVANJE_READ: 'odrzavanje.read',
+  ODRZAVANJE_REPORT: 'odrzavanje.report',
+  ODRZAVANJE_WRITE: 'odrzavanje.write',
+  ODRZAVANJE_ADMIN_UI: 'odrzavanje.admin_ui',
 } as const;
 
 export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
