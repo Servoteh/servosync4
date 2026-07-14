@@ -331,11 +331,22 @@ export function HandoverDetailPanel({ handover }: { handover: Handover }) {
         <Field label="Materijal" value={drawing?.material || '—'} />
         <Field label="Dimenzije" value={drawing?.dimensions || '—'} />
         <Field
-          label="Nacrt / predmet"
+          label="Nacrt"
           value={
             handover.draftContext
               ? `${handover.draftContext.draftNumber} · ${handover.draftContext.quantityToProduce} kom`
               : 'nije povezan sa nacrtom'
+          }
+        />
+        {/* Predmet = broj predmeta po kome je crtež pušten (backend enrich). */}
+        <Field
+          label="Predmet"
+          value={
+            handover.project ? (
+              <span className="tnums">{handover.project.projectNumber}</span>
+            ) : (
+              '—'
+            )
           }
         />
         {/* `handoverWorker` = PROJEKTANT koji je predao (ne tehnolog!) — tačna

@@ -43,6 +43,12 @@ export interface TechProcess {
    * stiže sa novim backendom; stariji backend ga ne vraća (undefined).
    */
   technologist?: TechnologistRef | null;
+  /**
+   * Crtež sa RN-a (work_orders.drawing_number) — kolona „Crtež" u listi kucanja.
+   * Opciono/defanzivno: novo backend polje (lista); stariji backend / findOne
+   * detalj ga ne vraća (undefined), a null kad RN nije razrešen (workOrderId=0).
+   */
+  drawingNumber?: string | null;
 }
 
 export interface TechProcessDocument {
@@ -145,6 +151,17 @@ export interface CardOperation {
   elapsedMinutes: number | null;
 }
 
+/**
+ * Jedna operacija iz routinga RN-a (work_order_operations) — paritet QBigTehn
+ * kartice: prikaz i operacija koja NEMA nijedno kucanje. `workCenterName` je null
+ * kad je RC nerazrešiv (orphan).
+ */
+export interface CardRoutingOperation {
+  operationNumber: number;
+  workCenterCode: string;
+  workCenterName: string | null;
+}
+
 /** „Kartica tehnološkog postupka": redovi + sume (komadi po kvalitetu, vreme). */
 export interface TechProcessCard {
   projectId: number;
@@ -169,6 +186,12 @@ export interface TechProcessCard {
   };
   /** Agregati po operaciji, redosled pojavljivanja (OP asc, id asc). */
   operations: CardOperation[];
+  /**
+   * Routing tekućeg RN-a — SVE operacije postupka (i one bez ijednog kucanja).
+   * UI merge-uje sa `operations`/`rows` (neotkucane = prazne grupe). Opciono/
+   * defanzivno: stariji backend polje ne vraća (undefined = samo otkucane grupe).
+   */
+  routing?: CardRoutingOperation[];
   rows: TechProcessCardRow[];
 }
 

@@ -160,6 +160,13 @@ const listColumns: Column<TechProcess>[] = [
   },
   { key: 'identMark', header: 'Oznaka', render: (r) => r.identMark || '—' },
   {
+    // Crtež sa RN-a (work_orders.drawing_number) — novo polje `drawingNumber`
+    // (defanzivno: stariji backend ga ne vraća → „—").
+    key: 'drawingNumber',
+    header: 'Crtež',
+    render: (r) => <span className="tnums text-ink-secondary">{r.drawingNumber || '—'}</span>,
+  },
+  {
     key: 'workCenter',
     header: 'RC',
     render: (r) => <span className="text-ink-secondary">{r.workCenterCode}</span>,
@@ -340,6 +347,55 @@ function CardGroupHeaderRow({
   );
 }
 
+/**
+ * Grupni header za operaciju IZ ROUTINGA koja NEMA nijedno kucanje (paritet
+ * QBigTehn „Kartica tehnološkog postupka": npr. međufazna/završna kontrola prazne
+ * dok se ne otkucaju). Isti stil kao `CardGroupHeaderRow`, ali bez agregata i bez
+ * „Otvori operaciju" dugmeta (nema šta da se otvara).
+ */
+function EmptyGroupHeaderRow({
+  operationNumber,
+  workCenter,
+  colCount,
+}: {
+  operationNumber: number;
+  workCenter: string;
+  colCount: number;
+}) {
+  return (
+    <tr className="border-b border-line bg-surface-2">
+      <td colSpan={colCount} className="px-4 py-2">
+        <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+          <span className="font-semibold text-ink">
+            OP <span className="tnums">{operationNumber}</span> · {workCenter}
+          </span>
+          <span className="text-xs text-ink-secondary">Nema kucanja</span>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+/**
+ * Grupa reda kartice za render — otkucana (sa redovima) ili prazna (iz routinga,
+ * bez kucanja). Sortira se po broju operacije, pa po RC-u.
+ */
+type CardRenderGroup =
+  | {
+      kind: 'kucano';
+      key: string;
+      operationNumber: number;
+      workCenterCode: string;
+      rows: TechProcessCardRow[];
+    }
+  | {
+      kind: 'prazno';
+      key: string;
+      operationNumber: number;
+      workCenterCode: string;
+      workCenter: string;
+    };
+
 /** „Kartica kucanja" — redovi + sume po kvalitetu + ukupno vreme (poziv /card). */
 function TechProcessCardDetail({ tp }: { tp: TechProcess }) {
   const key: CardKey = {
@@ -376,6 +432,38 @@ function TechProcessCardDetail({ tp }: { tp: TechProcess }) {
     card.operations.map((o) => [cardGroupKey(o.operationNumber, o.workCenterCode), o]),
   );
   const colCount = cardRowColumns.length;
+
+  // Grupe sa kucanjima — iz card.rows (backend sortiran po OP, RC, id → kontiguozne).
+  const kucaneGroups = new Map<string, CardRenderGroup>();
+  for (const r of card.rows) {
+    const key = cardGroupKey(r.operationNumber, r.workCenterCode);
+    const g = kucaneGroups.get(key);
+    if (g && g.kind === 'kucano') g.rows.push(r);
+    else
+      kucaneGroups.set(key, {
+        kind: 'kucano',
+        key,
+        operationNumber: r.operationNumber,
+        workCenterCode: r.workCenterCode,
+        rows: [r],
+      });
+  }
+  // Routing operacije BEZ ijednog kucanja → prazne grupe (paritet QBigTehn kartice).
+  const prazneGroups: CardRenderGroup[] = (card.routing ?? [])
+    .filter((op) => !kucaneGroups.has(cardGroupKey(op.operationNumber, op.workCenterCode)))
+    .map((op) => ({
+      kind: 'prazno',
+      key: cardGroupKey(op.operationNumber, op.workCenterCode),
+      operationNumber: op.operationNumber,
+      workCenterCode: op.workCenterCode,
+      workCenter: op.workCenterName || op.workCenterCode || '—',
+    }));
+  // Otkucane + neotkucane, sortirane po broju operacije rastuće (pa po RC-u).
+  const groups: CardRenderGroup[] = [...kucaneGroups.values(), ...prazneGroups].sort(
+    (a, b) =>
+      a.operationNumber - b.operationNumber ||
+      a.workCenterCode.localeCompare(b.workCenterCode),
+  );
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-3">
@@ -416,45 +504,51 @@ function TechProcessCardDetail({ tp }: { tp: TechProcess }) {
             </tr>
           </thead>
           <tbody>
-            {card.rows.length === 0 ? (
+            {groups.length === 0 ? (
               <tr>
                 <td colSpan={colCount} className="p-0">
                   <EmptyState title="Kartica nema operacija" />
                 </td>
               </tr>
             ) : (
-              card.rows.map((r, i) => {
-                const groupKey = cardGroupKey(r.operationNumber, r.workCenterCode);
-                const prev = i > 0 ? card.rows[i - 1] : null;
-                const isGroupStart =
-                  !prev || cardGroupKey(prev.operationNumber, prev.workCenterCode) !== groupKey;
-                return (
-                  <Fragment key={r.id}>
-                    {isGroupStart && (
-                      <CardGroupHeaderRow
-                        group={opByKey.get(groupKey)}
-                        row={r}
-                        colCount={colCount}
-                        onReopen={setReopenTarget}
-                      />
-                    )}
-                    <tr className="h-[var(--table-row-height)] border-b border-line-soft">
-                      {cardRowColumns.map((c) => (
-                        <td
-                          key={c.key}
-                          className={cn(
-                            'px-4 text-ink',
-                            c.align === 'right' && 'text-right',
-                            c.numeric && 'tnums',
-                          )}
-                        >
-                          {c.render(r)}
-                        </td>
-                      ))}
-                    </tr>
+              groups.map((g) =>
+                g.kind === 'prazno' ? (
+                  <EmptyGroupHeaderRow
+                    key={g.key}
+                    operationNumber={g.operationNumber}
+                    workCenter={g.workCenter}
+                    colCount={colCount}
+                  />
+                ) : (
+                  <Fragment key={g.key}>
+                    <CardGroupHeaderRow
+                      group={opByKey.get(g.key)}
+                      row={g.rows[0]}
+                      colCount={colCount}
+                      onReopen={setReopenTarget}
+                    />
+                    {g.rows.map((r) => (
+                      <tr
+                        key={r.id}
+                        className="h-[var(--table-row-height)] border-b border-line-soft"
+                      >
+                        {cardRowColumns.map((c) => (
+                          <td
+                            key={c.key}
+                            className={cn(
+                              'px-4 text-ink',
+                              c.align === 'right' && 'text-right',
+                              c.numeric && 'tnums',
+                            )}
+                          >
+                            {c.render(r)}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
                   </Fragment>
-                );
-              })
+                ),
+              )
             )}
           </tbody>
         </table>
