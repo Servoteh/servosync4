@@ -5,11 +5,33 @@ import { SearchBox } from '@/components/ui-kit/search-box';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { useSearchDelovi } from '@/api/pracenje';
 
-/** Pretraga delova (search_proizvodnja_delovi) → otvara RN drill-down po bigtehn RN id-ju. */
-export function PretragaTab({ onOpenRnBigtehn }: { onOpenRnBigtehn: (bigtehnRnId: string) => void }) {
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Pretraga delova (search_proizvodnja_delovi) → otvara RN drill-down. Živi RPC vraća
+ * `bigtehn_work_order_id` (bigint MES id) i `rn_id` (uuid Faza-2 RN, NULL za bigtehn pogodak).
+ * MES pogodak (rn_id uuid) ide direktno; inače ensure-from-bigtehn preko bigtehn_work_order_id.
+ */
+export function PretragaTab({
+  onOpenRnBigtehn,
+  onOpenRnUuid,
+}: {
+  onOpenRnBigtehn: (bigtehnRnId: string) => void;
+  onOpenRnUuid: (rnId: string) => void;
+}) {
   const [q, setQ] = useState('');
   const search = useSearchDelovi(q);
   const rows = search.data?.data ?? [];
+
+  function openRow(r: Record<string, unknown>) {
+    const rnId = r.rn_id;
+    if (typeof rnId === 'string' && UUID_RE.test(rnId)) {
+      onOpenRnUuid(rnId);
+      return;
+    }
+    const wo = r.bigtehn_work_order_id;
+    if (wo != null && wo !== '') onOpenRnBigtehn(String(wo));
+  }
 
   return (
     <div className="space-y-3">
@@ -28,22 +50,24 @@ export function PretragaTab({ onOpenRnBigtehn }: { onOpenRnBigtehn: (bigtehnRnId
                 <th className="px-3 py-1.5">Crtež</th>
                 <th className="px-3 py-1.5">Naziv</th>
                 <th className="px-3 py-1.5">RN</th>
-                <th className="px-3 py-1.5">Predmet</th>
+                <th className="px-3 py-1.5">Koordinator</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((r, i) => {
-                const rnBig = r.bigtehn_rn_id ?? r.work_order_id ?? r.node_id ?? r.rn_id;
+                const rev = r.revision ? ` (${String(r.revision)})` : '';
                 return (
                   <tr
                     key={i}
                     className="cursor-pointer border-b border-line-soft hover:bg-surface-2"
-                    onClick={() => rnBig && onOpenRnBigtehn(String(rnBig))}
+                    onClick={() => openRow(r)}
                   >
-                    <td className="px-3 py-1.5 font-medium text-ink">{String(r.broj_crteza ?? r.drawing_no ?? '—')}</td>
-                    <td className="px-3 py-1.5">{String(r.naziv_dela ?? r.naziv ?? '—')}</td>
-                    <td className="px-3 py-1.5 text-xs">{String(r.rn_broj ?? r.rn_ident_broj ?? '—')}</td>
-                    <td className="px-3 py-1.5 text-xs">{String(r.broj_predmeta ?? r.predmet ?? '—')}</td>
+                    <td className="px-3 py-1.5 font-medium text-ink">
+                      {r.drawing_no ? `${String(r.drawing_no)}${rev}` : '—'}
+                    </td>
+                    <td className="px-3 py-1.5">{String(r.naziv ?? '—')}</td>
+                    <td className="px-3 py-1.5 text-xs">{String(r.rn_broj ?? '—')}</td>
+                    <td className="px-3 py-1.5 text-xs">{String(r.koordinator ?? '—')}</td>
                   </tr>
                 );
               })}

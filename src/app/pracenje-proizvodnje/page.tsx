@@ -95,7 +95,9 @@ export default function PracenjePage() {
       <main className="flex-1 overflow-auto p-6">
         {screen.kind === 'tab' && screen.tab === 'kontrolna' && <KontrolnaTab onOpenPredmet={openPredmet} />}
         {screen.kind === 'tab' && screen.tab === 'predmeti' && <PredmetiTab onOpenPredmet={openPredmet} />}
-        {screen.kind === 'tab' && screen.tab === 'pretraga' && <PretragaTab onOpenRnBigtehn={openRnBigtehn} />}
+        {screen.kind === 'tab' && screen.tab === 'pretraga' && (
+          <PretragaTab onOpenRnBigtehn={openRnBigtehn} onOpenRnUuid={openRnUuid} />
+        )}
         {screen.kind === 'predmet' && (
           <PredmetView
             itemId={screen.itemId}

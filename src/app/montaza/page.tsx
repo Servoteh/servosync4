@@ -56,7 +56,9 @@ export default function MontazaPage() {
   const projectsQ = useProjectsTree();
   const projects = projectsQ.data?.data ?? [];
   const canEdit = can(PERMISSIONS.MONTAZA_EDIT);
-  const canManage = can(PERMISSIONS.MONTAZA_AI_ADMIN); // menadžment/admin za tuđe izveštaje
+  // Afordansa upravljanja tuđim izveštajima (kozmetika hinta — DB presuđuje autor∨mgmt∨admin).
+  // `montaza.edit` (menadžment/pm/admin/tim_lider) je bliži nego admin-only ai_admin.
+  const canManage = canEdit;
 
   if (isLoading || !user) {
     return <main className="grid flex-1 place-items-center text-sm text-ink-secondary">Učitavanje…</main>;
