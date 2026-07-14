@@ -138,6 +138,8 @@ export type AuditRow = {
   action?: string;
   record_id?: string;
   actor_email?: string;
+  /** v_settings_audit_log kolona izmenjenih polja (verifikovano protiv žive baze). */
+  diff_keys?: string[] | null;
   changed_fields?: string[] | null;
 } & Record<string, unknown>;
 export type AiModelSetting = { id: number; model: string; updated_at: string; updated_by: string | null } | null;

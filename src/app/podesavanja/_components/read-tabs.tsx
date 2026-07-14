@@ -247,9 +247,9 @@ export function PredmetTab() {
             <tbody>
               {rows.slice(0, 300).map((r, i) => (
                 <tr key={i} className="border-b border-line-soft">
-                  <td className="py-1.5 font-mono text-xs text-ink">{str(r, 'sifra', 'code', 'ident_broj')}</td>
-                  <td className="py-1.5 text-ink">{str(r, 'naziv', 'name')}</td>
-                  <td className="py-1.5 text-ink-secondary">{str(r, 'komitent', 'customer')}</td>
+                  <td className="py-1.5 font-mono text-xs text-ink">{str(r, 'broj_predmeta', 'sifra', 'code', 'ident_broj')}</td>
+                  <td className="py-1.5 text-ink">{str(r, 'naziv_predmeta', 'naziv', 'name')}</td>
+                  <td className="py-1.5 text-ink-secondary">{str(r, 'customer_name', 'komitent', 'customer')}</td>
                   <td className="py-1.5">{r.aktivan || r.je_aktivan ? '✅' : '—'}</td>
                   <td className="py-1.5">{r.je_projektovanje_montaza ? '✅' : '—'}</td>
                   <td className="py-1.5 text-ink-secondary">{str(r, 'napomena')}</td>
@@ -300,7 +300,7 @@ export function AuditTab() {
                       {r.action && <StatusBadge tone={AUDIT_ACTION_TONE[r.action] ?? 'neutral'} label={r.action} />}
                     </td>
                     <td className="px-3 py-1.5 font-mono text-xs text-ink-secondary">{(r.record_id ?? '').toString().slice(0, 40)}</td>
-                    <td className="px-3 py-1.5 text-xs text-ink-secondary">{(r.changed_fields ?? []).slice(0, 6).join(', ')}</td>
+                    <td className="px-3 py-1.5 text-xs text-ink-secondary">{(r.diff_keys ?? r.changed_fields ?? []).slice(0, 6).join(', ')}</td>
                     <td className="px-3 py-1.5 text-ink-secondary">{r.actor_email ?? '—'}</td>
                   </tr>
                 ))}
