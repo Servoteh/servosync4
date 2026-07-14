@@ -39,6 +39,17 @@ const columns: Column<Handover>[] = [
     ),
   },
   {
+    // Predmet = broj predmeta po kome je crtež pušten (backend enrich).
+    key: 'project',
+    header: 'Predmet',
+    render: (r) =>
+      r.project ? (
+        <span className="tnums text-ink">{r.project.projectNumber}</span>
+      ) : (
+        <span className="text-ink-disabled">—</span>
+      ),
+  },
+  {
     key: 'quantity',
     header: 'Kom',
     align: 'right',

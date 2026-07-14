@@ -410,6 +410,12 @@ export interface Handover {
   workOrder: WorkOrderRef | null;
   /** Najbolji-pokušaj veza ka nacrtu/stavci (`resolveDraftContext` — heuristika, vidi servis). */
   draftContext: DraftContextRef | null;
+  /**
+   * Predmet po kome je crtež pušten (broj predmeta, npr. „9000") — backend ga
+   * izvodi iz draft konteksta crteža (`enrich`), jer `drawing_handovers` nema
+   * `project_id`. `null` za redove bez razrešenog nacrta (npr. legacy redovi).
+   */
+  project: { id: number; projectNumber: string } | null;
 }
 
 export interface HandoverListParams {
