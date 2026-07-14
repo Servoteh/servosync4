@@ -1,30 +1,54 @@
 'use client';
 
-// Lekarski pregledi — modal (paritet 1.0 medicalExamsModal.js, uz BE ograničenje).
+// Lekarski pregledi — modal (paritet 1.0 medicalExamsModal.js).
 //
-// ⚠️ BE GAP: GET /medical-exams vraća v_kadr_medical_exam_status — PER-ZAPOSLENI
-// (jedan red: medical_exam_date/expires/status/days_to_expiry), NEMA istorije
-// pojedinačnih pregleda ni exam `id`. Zato modal prikazuje TRENUTNI status i
-// dozvoljava DODAVANJE novog pregleda (POST → DB trigger ažurira employees.*),
-// ali NE listu/izmenu/brisanje pojedinačnih pregleda. Kad BE doda GET istorije
-// (kadr_medical_exams po zaposlenom + id), lista i edit/delete se dodaju ovde.
+// Dva sloja:
+//   • TRENUTNI STATUS (GET /medical-exams = v_kadr_medical_exam_status, per-zaposleni:
+//     medical_exam_date/expires/status/days_to_expiry) + „Dodaj pregled" (POST → DB
+//     trigger ažurira employees.*).
+//   • ISTORIJA POJEDINAČNIH PREGLEDA (GET /employees/:id/medical-exams =
+//     kadr_medical_exams, camelCase, exam_date DESC) sa po-redu Izmeni/Obriši
+//     (PATCH/DELETE /medical-exams/:id). Poslednji unos i dalje diktira aktuelni status.
 
 import { useState } from 'react';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Button } from '@/components/ui-kit/button';
 import { formatDate } from '@/lib/format';
-import { newClientEventId, useMedicalExams, useCreateMedical } from '@/api/kadrovska';
+import {
+  newClientEventId,
+  useMedicalExams,
+  useMedicalExamHistory,
+  useCreateMedical,
+  useUpdateMedical,
+  useDeleteMedical,
+  type MedicalExam,
+} from '@/api/kadrovska';
 import { sv } from '../common';
-import { EXAM_TYPE_LABELS, INPUT_CLS, StatusFromView, toDateInput } from './shared';
+import {
+  ConfirmDialog,
+  EXAM_TYPE_LABELS,
+  INPUT_CLS,
+  ROW_BTN,
+  ROW_BTN_DANGER,
+  StatusFromView,
+  fmtRsd,
+  toDateInput,
+} from './shared';
 
 type Toast = (msg: string) => void;
 
 export function MedicalExamsDialog({ employeeId, employeeName, canEdit, onClose }: { employeeId: string; employeeName: string; canEdit: boolean; onClose: () => void }) {
   const q = useMedicalExams({ employeeId }, true);
+  const histQ = useMedicalExamHistory(employeeId, true);
   const createM = useCreateMedical();
+  const updateM = useUpdateMedical();
+  const delM = useDeleteMedical();
   const [adding, setAdding] = useState(false);
+  const [editId, setEditId] = useState<string | null>(null);
+  const [delId, setDelId] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const status = (q.data?.data?.[0] as Record<string, unknown> | undefined) ?? undefined;
+  const hist = histQ.data?.data ?? [];
 
   const notify: Toast = (m) => {
     setToast(m);
@@ -50,6 +74,24 @@ export function MedicalExamsDialog({ employeeId, employeeName, canEdit, onClose 
     setNote('');
   }
 
+  function closeForm() {
+    setAdding(false);
+    setEditId(null);
+    resetForm();
+  }
+
+  function startEdit(row: MedicalExam) {
+    setEditId(row.id);
+    setExamDate(toDateInput(row.examDate) || today);
+    setValidUntil(toDateInput(row.validUntil));
+    setExamType(row.examType || 'redovan');
+    setCost(row.costRsd != null ? String(row.costRsd) : '');
+    setInst(row.institution || '');
+    setDocUrl(row.documentUrl || '');
+    setNote(row.note || '');
+    setAdding(true);
+  }
+
   async function save() {
     if (!examDate) {
       notify('⚠ Datum pregleda je obavezan');
@@ -59,24 +101,34 @@ export function MedicalExamsDialog({ employeeId, employeeName, canEdit, onClose 
       notify('⚠ „Važi do" ne može biti pre datuma pregleda');
       return;
     }
+    const body = {
+      examDate,
+      examType,
+      validUntil: validUntil || undefined,
+      institution: inst.trim() || undefined,
+      costRsd: cost ? Number(cost) : undefined,
+      documentUrl: docUrl.trim() || undefined,
+      note: note.trim() || undefined,
+    };
     try {
-      await createM.mutateAsync({
-        employeeId,
-        clientEventId: newClientEventId(),
-        examDate,
-        examType,
-        validUntil: validUntil || undefined,
-        institution: inst.trim() || undefined,
-        costRsd: cost ? Number(cost) : undefined,
-        documentUrl: docUrl.trim() || undefined,
-        note: note.trim() || undefined,
-      });
-      resetForm();
-      setAdding(false);
-      notify('✅ Pregled sačuvan');
+      if (editId) await updateM.mutateAsync({ id: editId, patch: body });
+      else await createM.mutateAsync({ employeeId, clientEventId: newClientEventId(), ...body });
+      closeForm();
+      notify(editId ? '✏️ Izmenjeno' : '✅ Pregled sačuvan');
     } catch {
       notify('⚠ Čuvanje nije uspelo');
     }
+  }
+
+  async function remove() {
+    if (!delId) return;
+    try {
+      await delM.mutateAsync({ id: delId });
+      notify('🗑 Obrisano');
+    } catch {
+      notify('⚠ Brisanje nije uspelo');
+    }
+    setDelId(null);
   }
 
   return (
@@ -114,7 +166,7 @@ export function MedicalExamsDialog({ employeeId, employeeName, canEdit, onClose 
 
         {adding && canEdit && (
           <div className="space-y-3 rounded-panel border border-line bg-surface-2 p-4">
-            <h4 className="text-sm font-semibold text-ink">Novi lekarski pregled</h4>
+            <h4 className="text-sm font-semibold text-ink">{editId ? 'Izmena lekarskog pregleda' : 'Novi lekarski pregled'}</h4>
             <div className="grid grid-cols-2 gap-3">
               <Field label="Datum pregleda *">
                 <input className={INPUT_CLS} type="date" value={examDate} onChange={(e) => setExamDate(e.target.value)} />
@@ -145,28 +197,75 @@ export function MedicalExamsDialog({ employeeId, employeeName, canEdit, onClose 
               <textarea className={`${INPUT_CLS} h-auto py-2`} rows={2} value={note} onChange={(e) => setNote(e.target.value)} />
             </Field>
             <div className="flex gap-2">
-              <Button
-                variant="secondary"
-                onClick={() => {
-                  setAdding(false);
-                  resetForm();
-                }}
-              >
+              <Button variant="secondary" onClick={closeForm}>
                 Otkaži
               </Button>
-              <Button onClick={() => void save()} loading={createM.isPending}>
+              <Button onClick={() => void save()} loading={createM.isPending || updateM.isPending}>
                 Sačuvaj
               </Button>
             </div>
           </div>
         )}
 
+        {/* Istorija pojedinačnih pregleda (DOPUNA — trenutni status + dodavanje ostaju iznad). */}
+        <div className="space-y-2">
+          <h4 className="text-sm font-semibold text-ink">Istorija pregleda</h4>
+          {histQ.isLoading ? (
+            <p className="text-sm text-ink-secondary">Učitavanje…</p>
+          ) : hist.length === 0 ? (
+            <p className="py-4 text-center text-sm text-ink-secondary">Nema upisanih pregleda.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-line text-left text-xs text-ink-secondary">
+                    <th className="py-1.5 pr-2">Datum</th>
+                    <th className="px-2">Tip</th>
+                    <th className="px-2">Važi do</th>
+                    <th className="px-2">Ustanova</th>
+                    <th className="px-2">Trošak</th>
+                    <th className="px-2">Napomena</th>
+                    {canEdit && <th className="px-2 text-right">Akcije</th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {hist.map((r) => (
+                    <tr key={r.id} className="border-b border-line/60">
+                      <td className="py-1.5 pr-2 text-ink">{r.examDate ? formatDate(r.examDate) : '—'}</td>
+                      <td className="px-2 text-ink-secondary">{EXAM_TYPE_LABELS[r.examType] ?? r.examType}</td>
+                      <td className="px-2 text-ink-secondary">{r.validUntil ? formatDate(r.validUntil) : '—'}</td>
+                      <td className="px-2 text-ink-secondary">{r.institution || '—'}</td>
+                      <td className="px-2 text-ink-secondary">{r.costRsd != null ? fmtRsd(r.costRsd) : '—'}</td>
+                      <td className="px-2 text-ink-secondary">{r.note || '—'}</td>
+                      {canEdit && (
+                        <td className="px-2">
+                          <span className="flex justify-end gap-1">
+                            <button className={ROW_BTN} onClick={() => startEdit(r)}>
+                              Izmeni
+                            </button>
+                            <button className={ROW_BTN_DANGER} onClick={() => setDelId(r.id)}>
+                              Obriši
+                            </button>
+                          </span>
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
         <p className="text-xs text-ink-secondary">
-          Napomena: prikaz istorije pojedinačnih pregleda čeka BE dopunu (GET liste `kadr_medical_exams` po zaposlenom).
-          Dodavanje novog pregleda odmah ažurira aktuelni status iznad.
+          Najnoviji pregled automatski postaje aktuelni datum/istek na profilu zaposlenog; izmena ili brisanje reda iznad
+          odmah osveži aktuelni status.
         </p>
       </div>
 
+      {delId && (
+        <ConfirmDialog title="Brisanje pregleda" body="Obrisati ovaj lekarski pregled? Akcija je trajna." busy={delM.isPending} onCancel={() => setDelId(null)} onConfirm={() => void remove()} />
+      )}
       {toast && (
         <div className="fixed bottom-4 left-1/2 z-[60] -translate-x-1/2 rounded-panel border border-line bg-surface px-4 py-2 text-sm text-ink shadow-lg">{toast}</div>
       )}

@@ -8,7 +8,7 @@ import {
   useVacationBalance,
   useWorkHours,
   useHolidays,
-  useEmployeePiiCard,
+  useEmployeePii,
   useUploadDocument,
   newClientEventId,
   type VacationHistory,
@@ -68,7 +68,7 @@ export function HistoryModal({
   const balQ = useVacationBalance({ employeeId, year });
   const whQ = useWorkHours({ employeeId, from: `${year}-01-01`, to: `${year}-12-31` });
   const holQ = useHolidays({ from: `${year}-01-01`, to: `${year + 1}-01-31` });
-  const piiQ = useEmployeePiiCard(employeeId, canPii);
+  const piiQ = useEmployeePii(employeeId, canPii);
   const upload = useUploadDocument();
 
   const [busy, setBusy] = useState<string | null>(null);

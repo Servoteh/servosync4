@@ -8,16 +8,17 @@ import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { useAuth } from '@/lib/auth-context';
 import { PERMISSIONS } from '@/lib/permissions';
 import { formatDate } from '@/lib/format';
-import { generateBadgeSheetPdf, openBlob, downloadBlob } from '@/lib/hr-pdf';
+import { generateBadgeSheetPdf, generateJobPositionPdf, openBlob, downloadBlob } from '@/lib/hr-pdf';
 import {
   useEmployee,
   useEmployeePii,
   useContracts,
   useMedicalExams,
   useCertificates,
+  useOrgStructure,
 } from '@/api/kadrovska';
 import { Field, LockedNote, sv, SummaryChips } from './common';
-import { EDU_LEVEL_LABELS, contractStatus, empDisplayName } from './emp-shared';
+import { EDU_LEVEL_LABELS, WORK_TYPE_OPTIONS, contractStatus, empDisplayName } from './emp-shared';
 import { DocGenDialog } from './doc-gen-dialog';
 import { ChildrenSection, BankCardsSection, PersonalDocsSection, ForeignDocsSection } from './dosije/pii-sections';
 import { DocumentsSection } from './dosije/documents-section';
@@ -55,9 +56,11 @@ export function DosijeDialog({ id, focus, onClose }: { id: string; focus?: Dosij
   const contractsQ = useContracts({ employeeId: id }, canContracts);
   const medicalQ = useMedicalExams({ employeeId: id }, canManage);
   const certsQ = useCertificates({ employeeId: id }, canManage);
+  const orgQ = useOrgStructure();
 
   const [docGen, setDocGen] = useState(false);
   const [badgeBusy, setBadgeBusy] = useState(false);
+  const [posBusy, setPosBusy] = useState(false);
   const [openModal, setOpenModal] = useState<DosijeFocus | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
@@ -89,7 +92,31 @@ export function DosijeDialog({ id, focus, onClose }: { id: string; focus?: Dosij
     }
   }
 
+  // „Opis pozicije (PDF)" — job_positions red po position_id (paritet P4 zaposleni-tab).
+  const positionId = Number(sv(emp, 'position_id')) || 0;
+  async function makePositionPdf() {
+    if (!emp) return;
+    const pos = orgQ.data?.data.jobPositions.find((p) => p.id === positionId);
+    if (!pos) {
+      setToast('Zaposlenom nije dodeljeno radno mesto iz sistematizacije.');
+      return;
+    }
+    setPosBusy(true);
+    try {
+      const { blob, fileName } = await generateJobPositionPdf(pos, { fullName: emp.full_name, department: emp.department || '' });
+      openBlob(blob);
+      downloadBlob(blob, fileName);
+    } finally {
+      setPosBusy(false);
+    }
+  }
+
   const eduLevel = sv(pii, 'education_level');
+  // Osnovno (non-PII iz v_employees_safe): Tip rada (human label) / Krsna slava / Dan slave (MMDD → MM-DD).
+  const workType = sv(emp, 'work_type');
+  const workTypeLabel = WORK_TYPE_OPTIONS.find(([v]) => v === workType)?.[1] ?? workType;
+  const slavaDayRaw = sv(emp, 'slava_day');
+  const slavaDay = slavaDayRaw && slavaDayRaw.length === 4 ? `${slavaDayRaw.slice(0, 2)}-${slavaDayRaw.slice(2, 4)}` : slavaDayRaw;
 
   return (
     <Dialog
@@ -107,6 +134,11 @@ export function DosijeDialog({ id, focus, onClose }: { id: string; focus?: Dosij
           <Button variant="secondary" onClick={makeBadge} loading={badgeBusy} disabled={!emp}>
             <QrCode className="h-4 w-4" aria-hidden /> QR bedž
           </Button>
+          {positionId > 0 && (
+            <Button variant="secondary" onClick={makePositionPdf} loading={posBusy} disabled={!emp}>
+              <FileText className="h-4 w-4" aria-hidden /> Opis pozicije (PDF)
+            </Button>
+          )}
           <Button onClick={() => setDocGen(true)} disabled={!emp}>
             <FileText className="h-4 w-4" aria-hidden /> Generiši dokument
           </Button>
@@ -130,6 +162,9 @@ export function DosijeDialog({ id, focus, onClose }: { id: string; focus?: Dosij
               <Field label="Email">{emp.email}</Field>
               <Field label="Zaposlen od">{sv(emp, 'hire_date') ? formatDate(sv(emp, 'hire_date')) : ''}</Field>
               <Field label="Status">{emp.is_active ? 'Aktivan' : 'Neaktivan'}</Field>
+              <Field label="Tip rada">{workTypeLabel}</Field>
+              <Field label="Krsna slava">{sv(emp, 'slava')}</Field>
+              <Field label="Dan slave">{slavaDay}</Field>
             </div>
           </section>
 

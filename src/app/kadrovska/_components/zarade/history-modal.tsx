@@ -102,7 +102,7 @@ export function HistoryModal({
     <Dialog
       open={open}
       onClose={onClose}
-      size="xl"
+      size="xl2"
       title={`📜 Istorija zarada — ${employeeName}`}
       footer={
         <>

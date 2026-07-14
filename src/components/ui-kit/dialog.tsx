@@ -6,7 +6,9 @@ import { X } from 'lucide-react';
 const SIZE_CLASS = {
   md: 'max-w-lg',
   lg: 'max-w-2xl',
-  xl: 'max-w-4xl',
+  xl: 'max-w-3xl',
+  // xl2 = namerno širi (896px) za guste tabele (Istorija zarada); ne preklapa deljeni `xl`.
+  xl2: 'max-w-4xl',
   '2xl': 'max-w-6xl',
 } as const;
 

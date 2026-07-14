@@ -63,10 +63,6 @@ export default function KadrovskaPage() {
   const [group, setGroup] = useState<GroupKey | null>(null);
   const [tab, setTab] = useState<TabKey>('pregled');
 
-  useEffect(() => {
-    if (!isLoading && !user) router.replace('/login');
-  }, [user, isLoading, router]);
-
   const canSalary = can(PERMISSIONS.KADROVSKA_SALARY);
   const canDev = can(PERMISSIONS.KADROVSKA_DEV_MANAGE);
   // Imenik = 1.0 canViewPhoneDirectory krug (admin/menadzment/hr/poslovni_admin);
@@ -75,6 +71,17 @@ export default function KadrovskaPage() {
   const canContracts = can(PERMISSIONS.KADROVSKA_CONTRACTS_READ);
   const canManage = can(PERMISSIONS.KADROVSKA_MANAGE);
   const canRead = can(PERMISSIONS.KADROVSKA_READ);
+  // Prisustvo = paritet 1.0 canSeePrisustvo (attendance ∨ attendance_shadow); BE
+  // @RequirePermission(ATTENDANCE) na /attendance/now + interni PrisustvoTab gating.
+  const canAttendance = can(PERMISSIONS.KADROVSKA_ATTENDANCE);
+  const canAttendanceShadow = can(PERMISSIONS.KADROVSKA_ATTENDANCE_SHADOW);
+
+  // Redirect: neprijavljen → /login; prijavljen bez kadrovska.read → / (paritet 1.0
+  // renderKadrovskaModule guard-a; efekat + hard-guard u renderu = defense-in-depth).
+  useEffect(() => {
+    if (!isLoading && !user) router.replace('/login');
+    else if (!isLoading && user && !canRead) router.replace('/');
+  }, [user, isLoading, router, canRead]);
 
   // Vidljivost taba (postojeći permisijski uslovi; zaposleni/odmori/odsustva/sati/prisustvo = read-baseline).
   const tabVisible: Record<TabKey, boolean> = useMemo(
@@ -90,10 +97,10 @@ export default function KadrovskaPage() {
       odmori: true,
       odsustva: true,
       sati: true,
-      prisustvo: true,
+      prisustvo: canAttendance || canAttendanceShadow,
       zarade: canSalary,
     }),
-    [canRead, canManage, canImenik, canContracts, canDev, canSalary],
+    [canRead, canManage, canImenik, canContracts, canDev, canSalary, canAttendance, canAttendanceShadow],
   );
 
   const TAB_LABEL: Record<TabKey, string> = {
@@ -121,6 +128,12 @@ export default function KadrovskaPage() {
 
   if (isLoading || !user) {
     return <main className="grid flex-1 place-items-center text-sm text-ink-secondary">Učitavanje…</main>;
+  }
+
+  // Hard-guard (paritet 1.0): korisnik bez kadrovska.read NE renderuje modul.
+  if (!canRead) {
+    router.replace('/');
+    return <main className="grid flex-1 place-items-center text-sm text-ink-secondary">Preusmeravanje…</main>;
   }
 
   const firstTabOf = (gid: GroupKey): TabKey => groups.find((g) => g.id === gid)?.tabs[0] ?? 'pregled';
@@ -212,7 +225,7 @@ export default function KadrovskaPage() {
             {tab === 'odmori' && <OdmoriTab />}
             {tab === 'odsustva' && <OdsustvaTab onNavigateGrid={() => openTab('sati')} />}
             {tab === 'sati' && <GridTab />}
-            {tab === 'prisustvo' && <PrisustvoTab />}
+            {tab === 'prisustvo' && (canAttendance || canAttendanceShadow) && <PrisustvoTab />}
             {tab === 'zarade' && canSalary && <ZaradeTab />}
           </>
         )}

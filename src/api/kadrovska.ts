@@ -1265,16 +1265,6 @@ export function useKadrHolidays(params: { from?: string; to?: string } = {}, ena
   });
 }
 
-/** PII karton (personal_id/JMBG i dr.) — enabled samo uz kadrovska.pii. */
-export function useEmployeePiiCard(id: string | null, enabled = true) {
-  return useQuery({
-    queryKey: [...KEYS.pii(id ?? 'none'), 'card'],
-    enabled: !!id && enabled,
-    retry: false,
-    queryFn: () => apiFetch<{ data: EmployeePii }>(`${BASE}/employees/${id}/pii`),
-  });
-}
-
 /** Uski bruto (za auto-popunu ugovora) — GET /employees/:id/contract-bruto (PII). */
 export function useContractBruto(id: string | null, enabled = true) {
   return useQuery({
@@ -1295,10 +1285,35 @@ export function useAuditReport(enabled = true) {
   });
 }
 
-/** Izmena lekarskog pregleda (manage) — nedostajala u P2 setu. Napomena: bez GET
- *  istorije pojedinačnih pregleda (status view) ovaj id retko dolazi iz FE-a. */
+/** Izmena lekarskog pregleda (manage) — PATCH /medical-exams/:id. Id dolazi iz
+ *  istorije pojedinačnih pregleda (useMedicalExamHistory). */
 export const useUpdateMedical = () =>
   useKadrMutation<{ id: string; patch: Record<string, unknown> }>((v) => patch(`/medical-exams/${v.id}`, v.patch), KEYS.medical);
+
+/** Pojedinačni lekarski pregled (kadr_medical_exams red) — camelCase (Prisma), exam_date DESC.
+ *  Odvojeno od `useMedicalExams` (v_kadr_medical_exam_status = per-zaposleni status view). */
+export interface MedicalExam {
+  id: string;
+  employeeId: string;
+  examDate: string;
+  validUntil: string | null;
+  examType: string;
+  institution: string | null;
+  costRsd: number | null;
+  documentUrl: string | null;
+  note: string | null;
+  createdAt: string;
+}
+/** Istorija pregleda zaposlenog — GET /employees/:id/medical-exams → { data: MedicalExam[] }.
+ *  Ključ pod KEYS.medical da POST/PATCH/DELETE (KEYS.medical invalidacija) osveže i istoriju. */
+export function useMedicalExamHistory(id: string | null, enabled = true) {
+  return useQuery({
+    queryKey: [...KEYS.medical, 'history', id ?? 'none'],
+    enabled: !!id && enabled,
+    retry: false,
+    queryFn: () => apiFetch<{ data: MedicalExam[] }>(`${BASE}/employees/${id}/medical-exams`),
+  });
+}
 /** Izmena sertifikata (manage) — koristi status-view `id` (per-sertifikat). */
 export const useUpdateCert = () =>
   useKadrMutation<{ id: string; patch: Record<string, unknown> }>((v) => patch(`/certificates/${v.id}`, v.patch), KEYS.certificates);
