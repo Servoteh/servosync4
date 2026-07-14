@@ -75,8 +75,11 @@ export class KadrovskaMutationsController {
     return this.m.grantBonusGo(this.email(req), dto);
   }
 
-  /** Podnošenje GO zahteva — self (∨ mgmt); vidljivost read, INSERT RLS presuđuje. */
+  /** Podnošenje GO zahteva — self (∨ mgmt). Guard = coarse-superset `profile.self`
+   *  (SVE aktivne uloge — pm/leadpm menadžeri i self-podnosioci); vr_insert RLS
+   *  (self ∨ has_edit_role∧manages_employee ∨ admin/hr/vacreq_admin) presuđuje red. */
   @Post("requests/vacation")
+  @RequirePermission(PERMISSIONS.PROFILE_SELF)
   submitVacation(@Req() req: AuthedRequest, @Body() dto: D.SubmitVacationDto) {
     return this.m.submitVacation(this.email(req), dto);
   }
@@ -228,12 +231,15 @@ export class KadrovskaMutationsController {
     return this.m.resolveRemark(this.email(req), id, dto);
   }
 
-  /* Prisustvo korekcije — own ∨ manager (RPC guard); vidljivost read. */
+  /* Prisustvo korekcije — own ∨ manager. Guard = coarse-superset `profile.self`
+     (sve aktivne uloge); RPC (own ∨ manager scope) presuđuje. */
   @Post("attendance/corrections")
+  @RequirePermission(PERMISSIONS.PROFILE_SELF)
   submitCorrection(@Req() req: AuthedRequest, @Body() dto: D.SubmitCorrectionDto) {
     return this.m.submitCorrection(this.email(req), dto);
   }
   @Post("attendance/corrections/:id/cancel")
+  @RequirePermission(PERMISSIONS.PROFILE_SELF)
   cancelCorrection(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string, @Body() dto: D.OptIdempotentDto) {
     return this.m.cancelCorrection(this.email(req), id, dto);
   }
@@ -473,8 +479,10 @@ export class KadrovskaMutationsController {
   talkUnshare(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string, @Body() dto: D.OptIdempotentDto) {
     return this.m.talkUnshare(this.email(req), id, dto);
   }
-  /** „Upoznat sam" — zaposleni potvrđuje (self; RPC guard); vidljivost read. */
+  /** „Upoznat sam" — zaposleni potvrđuje (self). Guard = `profile.self` (svi
+   *  zaposleni potvrđuju svoj razgovor); RPC self-scope presuđuje. */
   @Post("talks/:id/acknowledge")
+  @RequirePermission(PERMISSIONS.PROFILE_SELF)
   talkAck(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string, @Body() dto: D.OptIdempotentDto) {
     return this.m.talkAcknowledge(this.email(req), id, dto);
   }
@@ -508,12 +516,15 @@ export class KadrovskaMutationsController {
   openCampaign(@Req() req: AuthedRequest, @Body() dto: D.OpenCampaignDto) {
     return this.m.assessmentOpenCampaign(this.email(req), dto);
   }
-  /** Samoprocena — self (deljeno sa Moj profil/D); vidljivost read. */
+  /** Samoprocena — self (deljeno sa Moj profil/D). Guard = `profile.self` (svaki
+   *  zaposleni pokreće/predaje svoju samoprocenu); RPC self-scope presuđuje. */
   @Post("assessments/self")
+  @RequirePermission(PERMISSIONS.PROFILE_SELF)
   openSelf(@Req() req: AuthedRequest, @Body() dto: D.OpenSelfDto) {
     return this.m.assessmentOpenSelf(this.email(req), dto);
   }
   @Post("assessments/:id/self-submit")
+  @RequirePermission(PERMISSIONS.PROFILE_SELF)
   selfSubmit(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string, @Body() dto: D.OptIdempotentDto) {
     return this.m.assessmentSelfSubmit(this.email(req), id, dto);
   }

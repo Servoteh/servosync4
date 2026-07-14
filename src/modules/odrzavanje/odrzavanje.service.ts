@@ -2044,6 +2044,17 @@ export class OdrzavanjeService {
       );
       return rows[0]?.ok === true;
     });
+    // RPC je autoritet (reported_by = auth.uid()). Ako odbije (nisi prijavilac),
+    // OČISTI upload-ovane bajtove — inače ostaju kao orphan u bucketu (review nalaz,
+    // merge-klasa „autorizacija oko upload-a"; RPC ostaje jedini izvor authz-a).
+    if (!ok) {
+      await Promise.allSettled(
+        paths.map((p) => this.storage.remove(MAINT_BUCKET, p)),
+      );
+      throw new ForbiddenException(
+        "Prilaganje fotografija dozvoljeno je samo prijaviocu incidenta.",
+      );
+    }
     return { data: { attached: ok, paths } };
   }
 

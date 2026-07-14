@@ -95,6 +95,15 @@ describe("Kadrovska R2 mutacije — permission matrica (e2e)", () => {
     { method: "post", path: "/kadrovska/vacation/entitlements", perm: PERMISSIONS.KADROVSKA_VACATION_EDIT, body: { clientEventId: U, employeeId: U, year: 2026, daysTotal: 20 }, ok: 201, label: "entitlement save (vacation_edit)" },
     { method: "post", path: `/kadrovska/requests/vacation/${U}/approve`, perm: PERMISSIONS.KADROVSKA_VACREQ_MANAGE, body: {}, ok: 201, label: "vacation approve (vacreq)" },
     { method: "post", path: "/kadrovska/vacation/bonus", perm: PERMISSIONS.KADROVSKA_VACREQ_MANAGE, body: { clientEventId: U, employeeId: U, workDate: "2026-07-01" }, ok: 201, label: "bonus GO (vacreq)" },
+    // self ∨ manager rute — coarse-superset guard `profile.self` (sve aktivne uloge;
+    // RPC/RLS presuđuje red). Review fix 14.07: pre je klasni KADROVSKA_READ 403-ovao
+    // pm/leadpm (menadžer-podnos) i operativne uloge (self talk-ack/samoprocena).
+    { method: "post", path: "/kadrovska/requests/vacation", perm: PERMISSIONS.PROFILE_SELF, body: { clientEventId: U, year: 2026, dateFrom: "2026-07-01", dateTo: "2026-07-05", daysCount: 5 }, ok: 201, label: "submit vacation (self/mgr)" },
+    { method: "post", path: "/kadrovska/attendance/corrections", perm: PERMISSIONS.PROFILE_SELF, body: { employeeId: U, day: "2026-07-01" }, ok: 201, label: "submit correction (self/mgr)" },
+    { method: "post", path: `/kadrovska/attendance/corrections/${U}/cancel`, perm: PERMISSIONS.PROFILE_SELF, body: {}, ok: 201, label: "cancel correction (self/mgr)" },
+    { method: "post", path: `/kadrovska/talks/${U}/acknowledge`, perm: PERMISSIONS.PROFILE_SELF, body: {}, ok: 201, label: "talk ack (self)" },
+    { method: "post", path: "/kadrovska/assessments/self", perm: PERMISSIONS.PROFILE_SELF, body: { clientEventId: U }, ok: 201, label: "self-assessment open (self)" },
+    { method: "post", path: `/kadrovska/assessments/${U}/self-submit`, perm: PERMISSIONS.PROFILE_SELF, body: {}, ok: 201, label: "self-assessment submit (self)" },
     { method: "post", path: `/kadrovska/requests/nop/${U}/approve`, perm: PERMISSIONS.KADROVSKA_ADMIN, body: {}, ok: 201, label: "nop approve (admin)" },
     { method: "post", path: "/kadrovska/grid/batch", perm: PERMISSIONS.KADROVSKA_GRID_EDIT, body: { rows: [{ employeeId: U, workDate: "2026-07-01", hours: 8 }] }, ok: 201, label: "grid/batch (grid_edit)" },
     { method: "post", path: "/kadrovska/grid/go/set", perm: PERMISSIONS.KADROVSKA_GRID_EDIT, body: { employeeId: U, dateFrom: "2026-07-01", dateTo: "2026-07-05" }, ok: 201, label: "grid GO set (grid_edit)" },
