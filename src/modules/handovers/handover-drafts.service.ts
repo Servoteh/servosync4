@@ -1,5 +1,6 @@
 import {
   ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
@@ -923,8 +924,32 @@ export class HandoverDraftsService {
    * talasom. Za razliku od `handover_draft_items.drawing_id`,
    * `drawing_handovers.drawing_id` IMA DB FK, pa se crteži validiraju pre
    * insert-a (orphan → 422, ne sirova FK greška 500 — BACKEND_RULES §7).
+   *
+   * Tvrda kapija (Nenad 14.07): sam čin predaje sme SAMO jedan od 6 odobravača
+   * ili admin (403). Kreiranje nacrta i izbor odobravača ostaju otvoreni svim
+   * projektantima — to je samo notifikacija, ne pravo predaje.
    */
-  async submit(id: number) {
+  async submit(id: number, actor: AuthUser) {
+    // Tvrda kapija (Nenad 14.07): predaju u primopredaju vrši samo jedan od 6
+    // odobravača ILI admin (zoran — nalog bez worker_id, zato rola a ne lista);
+    // izbor odobravača pri kreiranju nacrta je samo notifikacija, ne pravo.
+    //
+    // Zamka (proba 13.07, Igor): JWT zamrzava workerId u trenutku izdavanja. Ako
+    // je odobravačev users.worker_id vezan naknadno (SSO-JIT nalog dobio radnika
+    // posle prvog logina), stari token nosi workerId=null i sirova provera liste
+    // bi lažno odbila baš jednog od 6 (403 dok se ne re-loguje). Zato efektivni
+    // radnik ide preko `resolveActorWorkerId` (svež users.worker_id samo kad token
+    // nema workerId — isti helper kao create()/take-over). Taj jedini DB read je
+    // samo za NE-admin i prethodi svakom čitanju/upisu podataka nacrta.
+    const isAdmin = actor.role?.trim().toLowerCase() === "admin";
+    if (!isAdmin) {
+      const actorWorkerId = await resolveActorWorkerId(this.prisma, actor);
+      if (!isPrimopredajaApprover(actorWorkerId))
+        throw new ForbiddenException(
+          "Predaju u primopredaju vrši samo ovlašćeni odobravač (ili admin) — izabrani odobravač dobija notifikaciju pri kreiranju nacrta.",
+        );
+    }
+
     const existing = await this.prisma.handoverDraft.findUnique({
       where: { id },
       select: { id: true, isLocked: true, designerId: true },

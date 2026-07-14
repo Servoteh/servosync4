@@ -36,7 +36,8 @@ import type { DecideDraftItemDto } from "./dto/decide-draft-item.dto";
  *   PATCH  /api/v1/handover-drafts/:id        — izmena zaglavlja (samo dok nije zaključan)
  *   DELETE /api/v1/handover-drafts/:id        — brisanje (samo dok nije zaključan; hard delete — vidi servis)
  *   POST   /api/v1/handover-drafts/:id/submit — predaja u primopredaju (§6.3): zaključa nacrt i kreira drawing_handovers redove;
- *                                               odbija (422) dok postoje sporne stavke bez odluke (P4_SPEC §6.5.4 gate)
+ *                                               odbija (422) dok postoje sporne stavke bez odluke (P4_SPEC §6.5.4 gate);
+ *                                               tvrda kapija (Nenad 14.07): predaju vrši SAMO jedan od 6 odobravača ili admin (403)
  *   POST   /api/v1/handover-drafts/:id/items/:itemId/decision — odluka projektanta nad spornom stavkom
  *                                               (P4_SPEC §0 t.4 + §6.5.4; 1=Isključi, 2=Predaj ponovo, 3=Dopuni)
  *   GET    /api/v1/handover-drafts/:id/print-bundle     — P3: crteži za štampu (hasPdf/sizeKb/pageFormat + grupe po formatu)
@@ -115,8 +116,13 @@ export class HandoverDraftsController {
 
   @Post(":id/submit")
   @RequirePermission(PERMISSIONS.PRIMOPREDAJE_WRITE)
-  submit(@Param("id", ParseIntPipe) id: number) {
-    return this.drafts.submit(id);
+  submit(
+    @Param("id", ParseIntPipe) id: number,
+    @Req() req: { user: AuthUser },
+  ) {
+    // Tvrda kapija (Nenad 14.07): predaju vrši samo jedan od 6 odobravača ili
+    // admin — actor ide servisu na proveru.
+    return this.drafts.submit(id, req.user);
   }
 
   /**

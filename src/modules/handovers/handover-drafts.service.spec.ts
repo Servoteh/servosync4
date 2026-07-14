@@ -1,6 +1,7 @@
 import { Test, TestingModule } from "@nestjs/testing";
 import {
   BadRequestException,
+  ForbiddenException,
   UnprocessableEntityException,
 } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
@@ -533,6 +534,14 @@ describe("HandoverDraftsService — §6.5.4 pre-check duplikata (create)", () =>
   });
 });
 
+/** Ovlašćeni odobravač (197 = Igor je u skupu 6) — prolazi tvrdu kapiju predaje. */
+const SUBMIT_ACTOR = {
+  userId: 1,
+  email: "igor.vostic@servoteh.com",
+  role: "inzenjer",
+  workerId: 197,
+};
+
 describe("HandoverDraftsService — §6.5.4 gate na submit()", () => {
   it("sporna stavka BEZ odluke (decision_action=0) → 422, transakcija se ne otvara", async () => {
     const { service, prisma } = await makeFullService([APPROVED]);
@@ -545,7 +554,7 @@ describe("HandoverDraftsService — §6.5.4 gate na submit()", () => {
       { id: 1, drawingId: 10, preCheckDuplicate: true, decisionAction: 0 },
     ]);
 
-    const err = await errorOf(service.submit(8));
+    const err = await errorOf(service.submit(8, SUBMIT_ACTOR));
 
     expect(err).toBeInstanceOf(UnprocessableEntityException);
     expect((err as Error).message).toContain("sporne stavke bez odluke");
@@ -574,7 +583,7 @@ describe("HandoverDraftsService — §6.5.4 gate na submit()", () => {
       },
     ]);
 
-    const res = await service.submit(8);
+    const res = await service.submit(8, SUBMIT_ACTOR);
 
     expect(res.data.handoversCreated).toBe(1);
     expect(prisma.drawingHandover.create).toHaveBeenCalledTimes(1);
@@ -593,7 +602,7 @@ describe("HandoverDraftsService — §6.5.4 gate na submit()", () => {
       { id: 1, drawingId: 12, preCheckDuplicate: false, decisionAction: 0 },
     ]);
 
-    const err = await errorOf(service.submit(8));
+    const err = await errorOf(service.submit(8, SUBMIT_ACTOR));
 
     expect(err).toBeInstanceOf(UnprocessableEntityException);
     expect((err as Error).message).toContain("stare revizije");
@@ -624,9 +633,154 @@ describe("HandoverDraftsService — §6.5.4 gate na submit()", () => {
       },
     ]);
 
-    const res = await service.submit(8);
+    const res = await service.submit(8, SUBMIT_ACTOR);
 
     expect(res.data.handoversCreated).toBe(1);
+  });
+});
+
+describe("HandoverDraftsService — tvrda kapija predaje (Nenad 14.07)", () => {
+  /** Nacrt spreman za predaju: odobren crtež, nesporna stavka, poslednja revizija. */
+  async function submittableSetup() {
+    const { service, prisma } = await makeFullService([APPROVED]);
+    prisma.handoverDraft.findUnique.mockResolvedValue({
+      id: 8,
+      isLocked: false,
+      designerId: 33,
+    });
+    prisma.handoverDraftItem.findMany.mockResolvedValue([
+      { id: 1, drawingId: 10, preCheckDuplicate: false, decisionAction: 0 },
+    ]);
+    prisma.drawingHandover.findMany.mockResolvedValue([
+      {
+        id: 100,
+        drawingId: 10,
+        handoverDate: new Date(),
+        handoverWorkerId: 33,
+        statusId: 0,
+        isLocked: false,
+        createdAt: null,
+      },
+    ]);
+    return { service, prisma };
+  }
+
+  it("ne-odobravač bez admin role → 403, ništa se ne upisuje (transakcija se ne otvara)", async () => {
+    const { service, prisma } = await submittableSetup();
+
+    const err = await errorOf(
+      service.submit(8, {
+        userId: 2,
+        email: "luka.talovic@servoteh.com",
+        role: "inzenjer",
+        workerId: 2204,
+      }),
+    );
+
+    expect(err).toBeInstanceOf(ForbiddenException);
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    // Pozitivan claim (2204) → resolver veruje tokenu, bez svežeg users lookup-a.
+    expect(prisma.user.findUnique).not.toHaveBeenCalled();
+  });
+
+  it("odobravač (workerId 197) prolazi kapiju i predaje se — bez suvišnog users lookup-a", async () => {
+    const { service, prisma } = await submittableSetup();
+
+    const res = await service.submit(8, SUBMIT_ACTOR);
+
+    expect(res.data.handoversCreated).toBe(1);
+    expect(prisma.drawingHandover.create).toHaveBeenCalledTimes(1);
+    // Token nosi workerId 197 → resolver ne dira bazu.
+    expect(prisma.user.findUnique).not.toHaveBeenCalled();
+  });
+
+  it("odobravač sa STARIM tokenom (workerId=null, users.worker_id vezan naknadno) prolazi — svež lookup (proba 13.07, Igor)", async () => {
+    const { service, prisma } = await submittableSetup();
+    prisma.user.findUnique.mockResolvedValue({ workerId: 197 });
+
+    const res = await service.submit(8, {
+      userId: 1,
+      email: "igor.vostic@servoteh.com",
+      role: "inzenjer",
+      workerId: null,
+    });
+
+    expect(prisma.user.findUnique).toHaveBeenCalledWith({
+      where: { id: 1 },
+      select: { workerId: true },
+    });
+    expect(res.data.handoversCreated).toBe(1);
+    expect(prisma.drawingHandover.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("STARI token ne-odobravača (workerId=null, svež users.worker_id=2204 nije u skupu) → 403", async () => {
+    const { service, prisma } = await submittableSetup();
+    // Token bez radnika; svež users.worker_id vezan, ali NIJE jedan od 6.
+    prisma.user.findUnique.mockResolvedValue({ workerId: 2204 });
+
+    const err = await errorOf(
+      service.submit(8, {
+        userId: 5,
+        email: "luka.talovic@servoteh.com",
+        role: "inzenjer",
+        workerId: null,
+      }),
+    );
+
+    expect(err).toBeInstanceOf(ForbiddenException);
+    // Resolver JE morao da pročita svež users.worker_id (token je bio prazan).
+    expect(prisma.user.findUnique).toHaveBeenCalledWith({
+      where: { id: 5 },
+      select: { workerId: true },
+    });
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("kancelarijski nalog bez radnika (token null + users.worker_id NULL) → 403", async () => {
+    const { service, prisma } = await submittableSetup();
+    prisma.user.findUnique.mockResolvedValue({ workerId: null });
+
+    const err = await errorOf(
+      service.submit(8, {
+        userId: 6,
+        email: "kancelarija@servoteh.com",
+        role: "inzenjer",
+        workerId: null,
+      }),
+    );
+
+    expect(err).toBeInstanceOf(ForbiddenException);
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("admin bez worker_id (zoran) prolazi kapiju — rola, ne lista", async () => {
+    const { service, prisma } = await submittableSetup();
+
+    const res = await service.submit(8, {
+      userId: 3,
+      email: "zoran.jarakovic@servoteh.com",
+      role: "admin",
+      workerId: null,
+    });
+
+    expect(res.data.handoversCreated).toBe(1);
+    expect(prisma.drawingHandover.create).toHaveBeenCalledTimes(1);
+    // Admin kratko-spaja PRE resolvera → nema svežeg users lookup-a.
+    expect(prisma.user.findUnique).not.toHaveBeenCalled();
+  });
+
+  it("admin velikim slovima (ADMIN) prolazi — case-insensitive normalizacija", async () => {
+    const { service, prisma } = await submittableSetup();
+
+    const res = await service.submit(8, {
+      userId: 3,
+      email: "zoran.jarakovic@servoteh.com",
+      role: "ADMIN",
+      workerId: null,
+    });
+
+    expect(res.data.handoversCreated).toBe(1);
+    expect(prisma.user.findUnique).not.toHaveBeenCalled();
   });
 });
 
