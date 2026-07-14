@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Button } from '@/components/ui-kit/button';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { useAuth } from '@/lib/auth-context';
@@ -124,9 +124,12 @@ export function OdobravanjeTab({ onCount }: { onCount?: (n: number) => void }) {
   const byType = useMemo(() => {
     const c = { go: 0, makeup: 0, paid: 0, nop: 0 };
     for (const it of inbox) c[it.type]++;
-    onCount?.(inbox.length);
     return c;
-  }, [inbox, onCount]);
+  }, [inbox]);
+
+  useEffect(() => {
+    onCount?.(inbox.length);
+  }, [inbox.length, onCount]);
 
   function describe(it: InboxItem): string {
     const r = it.r;

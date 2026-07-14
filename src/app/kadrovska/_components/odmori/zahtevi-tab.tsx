@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Button } from '@/components/ui-kit/button';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { EmptyState } from '@/components/ui-kit/empty-state';
@@ -91,9 +91,12 @@ export function ZahteviTab({ onOpenCount }: { onOpenCount?: (n: number) => void 
       else if (r.status === 'approved') c.approved++;
       else if (r.status === 'rejected') c.rejected++;
     }
-    onOpenCount?.(c.pending + c.sef_approved);
     return c;
-  }, [all, onOpenCount]);
+  }, [all]);
+
+  useEffect(() => {
+    onOpenCount?.(counts.pending + counts.sef_approved);
+  }, [counts.pending, counts.sef_approved, onOpenCount]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
