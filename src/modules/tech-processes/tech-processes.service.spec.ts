@@ -1006,6 +1006,7 @@ describe("TechProcessesService — reopen zatvorene operacije (dorada)", () => {
         { provide: PrismaService, useValue: prisma },
         { provide: ScopeService, useValue: {} },
         { provide: NotificationsService, useValue: notificationsMock() },
+        { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
       ],
     }).compile();
     service = mod.get(TechProcessesService);
