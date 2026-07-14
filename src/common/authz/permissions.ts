@@ -143,6 +143,20 @@ export const PERMISSIONS = {
   //          admin/hr/menadzment/leadpm/pm/poslovni_admin (prazan scope = nema tima — DB odlučuje).
   PROFILE_SELF: "profile.self",
   PROFILE_TEAM: "profile.team",
+  // Održavanje / CMMS — 3.0 TALAS F (MODULE_SPEC_odrzavanje_30.md §2/§3, presuda F8).
+  // ⚠️ DVOSLOJNI authz: guard je SAMO gruba kapija (VIDLJIVOST). Stvarnu row-odluku
+  // donosi 102 RLS politike kroz `Sy15Service.withUserRls` — maint_user_profiles po
+  // **auth.uid()** (operator machine-scope/technician/chief/management/admin) + ERP
+  // sloj po **email-u** (maint_is_erp_admin*, maint_has_floor_read_access). Guard NE
+  // može izraziti maint profil; FE fino-gejtuje preko `GET /maintenance/me`.
+  //   read      = prijava kvara + čitanje CMMS = OPŠTE pravo (F8) → sve aktivne uloge
+  //   report    = prijava kvara (incidents INSERT reported_by=ja) → sve aktivne uloge
+  //   write     = maint mutacije; gruba ERP-aproks. maint chief/admin sloja (RLS/RPC autoritativan)
+  //   admin_ui  = prikaz admin UI-ja (admin/menadzment/magacioner) — NIJE bezbednosna granica
+  ODRZAVANJE_READ: "odrzavanje.read",
+  ODRZAVANJE_REPORT: "odrzavanje.report",
+  ODRZAVANJE_WRITE: "odrzavanje.write",
+  ODRZAVANJE_ADMIN_UI: "odrzavanje.admin_ui",
 } as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];

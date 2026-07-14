@@ -39,6 +39,29 @@ const VIEWER_READ_BASELINE: readonly PermissionKey[] = [
 ];
 
 /**
+ * Održavanje / CMMS — 3.0 TALAS F (MODULE_SPEC_odrzavanje_30.md §2/§3, presuda F8).
+ * `read`+`report`+`write` idu SVIM AKTIVNIM ulogama — guard je SAMO gruba modul-kapija
+ * (VIDLJIVOST), NIKAD uža od žive RLS write-vlasti.
+ *
+ * ⚠️ Zašto je i `write` coarse-superset (adversarni review F-R2, HIGH#1): živa maint
+ * write vlast = `maint_is_erp_admin_or_management() OR maint_profile_role() IN
+ * ('chief','admin')`. `maint_profile_role()` je auth.uid()-baziran (NIJE u JWT-u), pa ga
+ * guard NE MOŽE videti. Živo: 4 od 6 chief profila su ERP viewer/hr (npr. luka.petrovic
+ * = viewer, a CMMS backend admin) → strogi write-guard bi ih 403-ovao PRE RLS na svih ~80
+ * mutacija (krši §2.5.1 „chief-bez-globalne-role MORA zadržati pristup" + §7.7). Zato je
+ * write gruba kapija za sve aktivne uloge; PRAVU odluku donosi DB: `maint_assets_update`
+ * USING `maint_is_erp_admin() OR profile IN (chief,admin)` → neovlašćen write = 42501→403
+ * kroz `Sy15Service.withUserRls`. Guard = modul-kapija, RLS/RPC = autoritet reda.
+ * `admin_ui` OSTAJE restriktivan (SAMO prikaz admin UI-ja; nije bezbednosna granica).
+ * FE fino-gejtuje preko `/maintenance/me` (maint_profile_role).
+ */
+const ODRZAVANJE_MODULE: readonly PermissionKey[] = [
+  P.ODRZAVANJE_READ,
+  P.ODRZAVANJE_REPORT,
+  P.ODRZAVANJE_WRITE,
+];
+
+/**
  * Sastanci + AI TALAS B (MODULE_SPEC_sastanci_ai_30.md §2/§7 P6, presuda 12.07):
  *   - `sastanci.read`  = 1.0 `canAccessSastanci` front gate = admin/leadpm/pm/menadzment/hr/viewer.
  *     (DB SELECT je `true` za sve authenticated, ali guard = VIDLJIVOST menija;
@@ -51,6 +74,9 @@ const VIEWER_READ_BASELINE: readonly PermissionKey[] = [
  *   - `sastanci.weekly_move` = VIDLJIVOST dugmadi; prava odluka = tabela `sast_weekly_movers`
  *      (danas Nenad+Zoran, NIJE rola) kroz GUC. Dajemo je mgmt-u da guard ne blokira movere.
  * `ai.chat` = SVE aktivne uloge (1.0 „/ai za sve"); upis istorije je server-side.
+ *
+ * Održavanje (TALAS F): read+report+write svim aktivnim ulogama (`...ODRZAVANJE_MODULE` —
+ * coarse-superset, HIGH#1; RLS/RPC presuđuje red); admin_ui = {admin, menadzment, magacioner}.
  */
 const BASE_ROLE_PERMISSIONS: Partial<
   Record<RoleKey, readonly PermissionKey[]>
@@ -86,6 +112,8 @@ const BASE_ROLE_PERMISSIONS: Partial<
     // Reversi paritet 1.0: sef NIJE u rev_can_manage() → read + team scope, BEZ manage.
     P.REVERSI_READ,
     P.REVERSI_TEAM_READ,
+    // Održavanje: read+report+write (coarse — bundle); RLS/RPC presuđuje red.
+    ...ODRZAVANJE_MODULE,
     // Sastanci: sef NIJE u canAccessSastanci (§7 P6) → BEZ sastanci.*. AI: /ai za sve.
     P.AI_CHAT,
   ],
@@ -117,6 +145,7 @@ const BASE_ROLE_PERMISSIONS: Partial<
     P.LOKACIJE_READ,
     P.MRP_READ,
     P.DIRECTORY_READ,
+    ...ODRZAVANJE_MODULE, // F8: CMMS uvid + prijava kvara (opšte pravo)
     P.AI_CHAT, // 1.0 /ai za sve (Sastanci: nije u canAccessSastanci)
   ],
 
@@ -133,6 +162,7 @@ const BASE_ROLE_PERMISSIONS: Partial<
     P.LOKACIJE_READ,
     P.MRP_READ,
     P.DIRECTORY_READ,
+    ...ODRZAVANJE_MODULE, // F8: CMMS uvid + prijava kvara
     P.AI_CHAT, // 1.0 /ai za sve
   ],
 
@@ -151,6 +181,7 @@ const BASE_ROLE_PERMISSIONS: Partial<
     P.STRUKTURE_READ,
     P.LOKACIJE_READ, // matrica §3: R
     P.DIRECTORY_READ,
+    ...ODRZAVANJE_MODULE, // F8: CMMS uvid + prijava kvara
     P.AI_CHAT, // 1.0 /ai za sve
   ],
 
@@ -167,6 +198,10 @@ const BASE_ROLE_PERMISSIONS: Partial<
     // Reversi (3.0 pilot): magacioner je nosilac modula — rev_can_manage() paritet.
     P.REVERSI_READ,
     P.REVERSI_MANAGE,
+    // Održavanje: magacioner je u maint_is_erp_admin_or_management krugu (§2.5.2) +
+    // canManageMaintCatalog (§2.4) → read+report+write (bundle) + admin_ui.
+    ...ODRZAVANJE_MODULE,
+    P.ODRZAVANJE_ADMIN_UI,
     // Sastanci: magacioner NE dobija sastanci.* (§7 P6). AI: /ai za sve.
     P.AI_CHAT,
   ],
@@ -180,6 +215,7 @@ const BASE_ROLE_PERMISSIONS: Partial<
     P.LOKACIJE_READ,
     P.REVERSI_READ, // paritet 1.0: SELECT za sve prijavljene („Moji alati")
     // BEZ directory.read — matrica §3: RADNIK nema komitente/predmete.
+    ...ODRZAVANJE_MODULE, // F8: prijava kvara je opšte pravo (radnik prijavljuje kvar)
     // Sastanci: proizvodni_radnik NE dobija sastanci.* (§7 P6). AI: /ai za sve.
     P.AI_CHAT,
   ],
@@ -191,6 +227,7 @@ const BASE_ROLE_PERMISSIONS: Partial<
     P.TEHNOLOGIJA_READ,
     P.RN_READ, // matrica §3: R (kontekst za MRP uvid)
     P.REVERSI_READ, // paritet 1.0: SELECT za sve prijavljene
+    ...ODRZAVANJE_MODULE, // F8: CMMS uvid + prijava kvara
     P.AI_CHAT, // 1.0 /ai za sve
   ],
 
@@ -222,6 +259,9 @@ const BASE_ROLE_PERMISSIONS: Partial<
     P.REVERSI_READ,
     P.REVERSI_MANAGE,
     P.REVERSI_TEAM_READ,
+    // Održavanje: menadzment je u maint_is_erp_admin_or_management krugu → read+report+write (bundle) + admin_ui.
+    ...ODRZAVANJE_MODULE,
+    P.ODRZAVANJE_ADMIN_UI,
     // Sastanci: mgmt = read+edit+manage+weekly_move (current_user_is_management paritet).
     P.SASTANCI_READ,
     P.SASTANCI_EDIT,
@@ -240,6 +280,7 @@ const BASE_ROLE_PERMISSIONS: Partial<
     P.RN_READ,
     P.PDM_READ,
     P.DIRECTORY_READ, // baseline uvid (kao viewer)
+    ...ODRZAVANJE_MODULE, // F8: CMMS uvid + prijava kvara (pm ima floor-read u maint)
     // Sastanci: pm je u canAccessSastanci + has_edit_role → read + edit.
     P.SASTANCI_READ,
     P.SASTANCI_EDIT,
@@ -252,6 +293,7 @@ const BASE_ROLE_PERMISSIONS: Partial<
     P.RN_READ,
     P.PDM_READ,
     P.DIRECTORY_READ, // baseline uvid (kao viewer)
+    ...ODRZAVANJE_MODULE, // F8: CMMS uvid + prijava kvara (leadpm ima floor-read u maint)
     // Sastanci: leadpm je u canAccessSastanci + has_edit_role → read + edit.
     P.SASTANCI_READ,
     P.SASTANCI_EDIT,
@@ -259,8 +301,13 @@ const BASE_ROLE_PERMISSIONS: Partial<
   ],
 
   // tim_lider: read-baseline (SSO uvid) + zaduženja svog tima; write čeka 3.0.
-  // Sastanci: tim_lider NE dobija sastanci.* (§7 P6). AI: /ai za sve.
-  [ROLES.TIM_LIDER]: [...VIEWER_READ_BASELINE, P.REVERSI_TEAM_READ, P.AI_CHAT],
+  // Održavanje: tim_lider ima floor-read u maint (§2.5.3) → read+report. Sastanci: NE (§7 P6).
+  [ROLES.TIM_LIDER]: [
+    ...VIEWER_READ_BASELINE,
+    ...ODRZAVANJE_MODULE,
+    P.REVERSI_TEAM_READ,
+    P.AI_CHAT,
+  ],
 
   // Biro role (P4_SPEC_pdm_intake_PREDLOG §6.5.3, odluka Nenad 11.07 — §0 t.3):
   // projektanti biroa MORAJU raditi u 2.0 pre cutover-a (kreiranje/uređivanje
@@ -268,12 +315,14 @@ const BASE_ROLE_PERMISSIONS: Partial<
   // Role u katalogu ostaju tier "3.0" — rana aktivacija permisija, ne nova uloga.
   [ROLES.PROJEKTANT_VODJA]: [
     ...VIEWER_READ_BASELINE,
+    ...ODRZAVANJE_MODULE, // F8: prijava kvara je opšte pravo
     P.PRIMOPREDAJE_READ,
     P.PRIMOPREDAJE_WRITE, // kreiranje/uređivanje nacrta primopredaje (§6.5.3)
     P.AI_CHAT, // 1.0 /ai za sve (nije u canAccessSastanci)
   ],
   [ROLES.INZENJER]: [
     ...VIEWER_READ_BASELINE,
+    ...ODRZAVANJE_MODULE, // F8: prijava kvara je opšte pravo
     P.PRIMOPREDAJE_READ,
     P.PRIMOPREDAJE_WRITE, // kreiranje/uređivanje nacrta primopredaje (§6.5.3)
     P.AI_CHAT, // 1.0 /ai za sve (nije u canAccessSastanci)
@@ -285,18 +334,44 @@ const BASE_ROLE_PERMISSIONS: Partial<
   // HR: u canAccessSastanci + has_edit_role → sastanci.read + edit. /ai svima.
   [ROLES.HR]: [
     ...VIEWER_READ_BASELINE,
+    ...ODRZAVANJE_MODULE, // F8: prijava kvara je opšte pravo
     P.SASTANCI_READ,
     P.SASTANCI_EDIT,
     P.AI_CHAT,
   ],
   // poslovni_admin: has_edit_role (edit) ali NIJE u canAccessSastanci (bez read) — §2 paritet.
-  [ROLES.POSLOVNI_ADMIN]: [...VIEWER_READ_BASELINE, P.SASTANCI_EDIT, P.AI_CHAT],
-  [ROLES.CNC_OPERATER]: [...VIEWER_READ_BASELINE, P.AI_CHAT],
-  [ROLES.MONTER]: [...VIEWER_READ_BASELINE, P.AI_CHAT],
+  [ROLES.POSLOVNI_ADMIN]: [
+    ...VIEWER_READ_BASELINE,
+    ...ODRZAVANJE_MODULE, // F8: prijava kvara je opšte pravo
+    P.SASTANCI_EDIT,
+    P.AI_CHAT,
+  ],
+  [ROLES.CNC_OPERATER]: [
+    ...VIEWER_READ_BASELINE,
+    ...ODRZAVANJE_MODULE, // F8: prijava kvara je opšte pravo
+    P.AI_CHAT,
+  ],
+  [ROLES.MONTER]: [
+    ...VIEWER_READ_BASELINE,
+    ...ODRZAVANJE_MODULE, // F8: prijava kvara je opšte pravo (monter ima floor-read u maint)
+    P.AI_CHAT,
+  ],
+
+  // tehnicar_odrzavanja: CMMS 'technician' ERP-ekvivalent (roles.ts) — AKTIVIRAN Talasom F.
+  // 1.0 pravi maint identitet živi u maint_user_profiles.role (paralelni sistem po auth.uid());
+  // ova ERP-rola je gruba kapija za guard (read+report+write). Row/close-gate presuđuje RLS/RPC.
+  // Namerno BEZ VIEWER_READ_BASELINE/ai.chat (maint-only rola; ne širi na sastanci/reversi/tehnologija exact-set).
+  [ROLES.TEHNICAR_ODRZAVANJA]: [...ODRZAVANJE_MODULE],
 
   // Baseline uvid dobija i `viewer` (read gde ima smisla u 2.0 pilotu).
+  // Održavanje: viewer je fallback rola → read+report (chief-bez-globalne-role vidi mašine kroz RLS).
   // Sastanci: viewer je u canAccessSastanci → SAMO read (bez edit). /ai svima.
-  [ROLES.VIEWER]: [...VIEWER_READ_BASELINE, P.SASTANCI_READ, P.AI_CHAT],
+  [ROLES.VIEWER]: [
+    ...VIEWER_READ_BASELINE,
+    ...ODRZAVANJE_MODULE,
+    P.SASTANCI_READ,
+    P.AI_CHAT,
+  ],
 };
 
 /**

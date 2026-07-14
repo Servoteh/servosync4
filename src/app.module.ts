@@ -32,6 +32,7 @@ import { PracenjeModule } from "./modules/pracenje/pracenje.module";
 import { ProjektniBiroModule } from "./modules/projektni-biro/projektni-biro.module";
 import { MojProfilModule } from "./modules/moj-profil/moj-profil.module";
 import { PodesavanjaModule } from "./modules/podesavanja/podesavanja.module";
+import { OdrzavanjeModule } from "./modules/odrzavanje/odrzavanje.module";
 
 @Module({
   imports: [
@@ -71,6 +72,8 @@ import { PodesavanjaModule } from "./modules/podesavanja/podesavanja.module";
     ProjektniBiroModule,
     MojProfilModule,
     PodesavanjaModule,
+    // 3.0 TALAS F — Održavanje (CMMS) read sloj (MODULE_SPEC_odrzavanje_30.md §0)
+    OdrzavanjeModule,
   ],
   controllers: [AppController],
   providers: [
