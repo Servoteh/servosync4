@@ -265,6 +265,132 @@ describe("payrollRecompute — integracija (mapTerm/fond wiring, novac)", () => 
     expect(out.data.rows[0].ukupna_zarada).toBe(20 * 8 * 600);
   });
 
+  it("CRITICAL #2: recompute persist PRENOSI advance_paid_on/final_paid_on (RPC ih bez ključa briše)", async () => {
+    const y = 2026;
+    const m = 7;
+    const captured: Array<{ values: unknown[] }> = [];
+    const tx = {
+      kadrHoliday: { findMany: jest.fn().mockResolvedValue([]) },
+      employee: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue([{ id: EMP, workType: "ugovor", hireDate: null, fullName: "Test" }]),
+      },
+      workHours: { findMany: jest.fn().mockResolvedValue([]) },
+      $queryRaw: jest
+        .fn()
+        // (1) postojeći salary_payroll red — sa datumima isplate
+        .mockResolvedValueOnce([
+          {
+            id: EMP,
+            status: "u_obradi",
+            advance_amount: 0,
+            domestic_days: 0,
+            foreign_days: 0,
+            apo: "2026-07-10",
+            fpo: "2026-08-05",
+            u: "2026-07-31 10:00:00+00",
+          },
+        ])
+        // (2) salary_terms
+        .mockResolvedValueOnce([
+          { salary_type: "ugovor", compensation_model: "fiksno", fixed_amount: 100000, amount: 0 },
+        ])
+        // (3) hr_upsert_salary_payroll — uhvati JSON row
+        .mockImplementationOnce((sql: { values: unknown[] }) => {
+          captured.push(sql);
+          return Promise.resolve([{ v: { applied: true } }]);
+        }),
+    };
+    const svc = makeService(tx);
+    await svc.payrollRecompute(EMAIL, { year: y, month: m, employeeId: EMP, persist: true });
+    expect(captured).toHaveLength(1);
+    const row = JSON.parse(String(captured[0].values[0])) as Record<string, unknown>;
+    expect(row.advance_paid_on).toBe("2026-07-10");
+    expect(row.final_paid_on).toBe("2026-08-05");
+    expect(row.expected_updated_at).toBe("2026-07-31 10:00:00+00");
+  });
+
+  it("CRITICAL #2: payrollLock šalje postojeće advance_paid_on/final_paid_on u p_row", async () => {
+    const captured: Array<{ values: unknown[] }> = [];
+    const tx = {
+      $queryRaw: jest
+        .fn()
+        .mockResolvedValueOnce([
+          { u: "2026-07-31 10:00:00.123456+00", apo: "2026-07-10", fpo: "2026-08-05" },
+        ])
+        .mockImplementationOnce((sql: { values: unknown[] }) => {
+          captured.push(sql);
+          return Promise.resolve([{ v: { applied: true } }]);
+        }),
+    };
+    const svc = makeService(tx);
+    await svc.payrollLock(EMAIL, EMP, { expectedUpdatedAt: "2026-07-31T10:00:00.123Z" });
+    const row = JSON.parse(String(captured[0].values[0])) as Record<string, unknown>;
+    expect(row.status).toBe("paid");
+    expect(row.advance_paid_on).toBe("2026-07-10");
+    expect(row.final_paid_on).toBe("2026-08-05");
+    // µs token usklađen (ms-jednak → puna DB vrednost).
+    expect(row.expected_updated_at).toBe("2026-07-31 10:00:00.123456+00");
+  });
+
+  it("HIGH #5: ručni payrollUpsert K3.3 reda ubacuje SVEŽU ukupna_zarada (trigger short-circuit fix)", async () => {
+    const y = 2026;
+    const m = 7;
+    const captured: Array<{ values: unknown[] }> = [];
+    const tx = {
+      kadrHoliday: { findMany: jest.fn().mockResolvedValue([]) },
+      employee: { findFirst: jest.fn().mockResolvedValue({ workType: "ugovor", hireDate: null }) },
+      workHours: { findMany: jest.fn().mockResolvedValue([]) },
+      $queryRaw: jest
+        .fn()
+        // (1) postojeći red po id
+        .mockResolvedValueOnce([
+          {
+            employee_id: EMP,
+            period_year: y,
+            period_month: m,
+            status: "u_obradi",
+            advance_amount: 20000,
+            domestic_days: 0,
+            foreign_days: 0,
+            transport_rsd: 0,
+            per_diem_rsd: 0,
+            per_diem_eur: 0,
+            apo: null,
+            fpo: null,
+            u: "2026-07-31 10:00:00+00",
+          },
+        ])
+        // (2) salary_terms (K3.3 fiksno)
+        .mockResolvedValueOnce([
+          { salary_type: "ugovor", compensation_model: "fiksno", fixed_amount: 100000, amount: 0 },
+        ])
+        // (3) RPC — uhvati row
+        .mockImplementationOnce((sql: { values: unknown[] }) => {
+          captured.push(sql);
+          return Promise.resolve([{ v: { applied: true } }]);
+        }),
+    };
+    const svc = makeService(tx);
+    await svc.payrollUpsert(EMAIL, {
+      row: {
+        id: EMP,
+        expected_updated_at: "2026-07-31T10:00:00.000Z",
+        advance_amount: 20000,
+      },
+    });
+    const row = JSON.parse(String(captured[0].values[0])) as Record<string, unknown>;
+    // Fiksno 100000, bez neplaćenih → sveža ukupna_zarada 100000 (NE stara iz baze).
+    expect(row.ukupna_zarada).toBe(100000);
+    expect(row.compensation_model).toBe("fiksno");
+    expect(row.payable_hours).toBeDefined();
+    expect(row.fond_sati_meseca).toBeGreaterThan(0);
+    // CRITICAL #2 (defanziva i na upsert putu): ključevi datuma prisutni (null = nema promene).
+    expect("advance_paid_on" in row).toBe(true);
+    expect("final_paid_on" in row).toBe(true);
+  });
+
   it("#2 fiksno 100000 + 5 neplaćenih (22-radna meseca) → 77272.73 + fond 176 (NE 70588.24/136)", async () => {
     const y = 2026;
     let m = 0;
