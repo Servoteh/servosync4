@@ -15,6 +15,7 @@ describe("Kadrovska R2 mutacije — write-path guard + idempotencija", () => {
   let dbAccessed = false;
   let withUserRls: jest.Mock;
   let runIdempotentRls: jest.Mock;
+  let mailSend: jest.Mock;
   let service: KadrovskaMutationsService;
 
   const modelStub = {
@@ -61,7 +62,9 @@ describe("Kadrovska R2 mutacije — write-path guard + idempotencija", () => {
       },
     });
     const storage = { upload: jest.fn(), signUrl: jest.fn(), remove: jest.fn() };
-    service = new KadrovskaMutationsService(sy15 as never, storage as never);
+    mailSend = jest.fn().mockResolvedValue(true);
+    const mail = { configured: true, send: mailSend };
+    service = new KadrovskaMutationsService(sy15 as never, storage as never, mail as never);
   });
 
   it("kreiranje (create) ide kroz runIdempotentRls sa clientEventId + email", async () => {
@@ -140,6 +143,84 @@ describe("Kadrovska R2 mutacije — write-path guard + idempotencija", () => {
       ForbiddenException,
     );
   });
+
+  // ── Review #24: raise_* odluka o zaradi vezana za tip 'godisnji' ──────────
+  it("createTalk: raise_* upisani samo za 'godisnji'; za drugi tip forsiran null", async () => {
+    const created: Record<string, unknown>[] = [];
+    const tx = new Proxy(
+      {},
+      {
+        get(_t, prop) {
+          if (prop === "employeeTalk")
+            return { create: jest.fn(async (a: { data: Record<string, unknown> }) => (created.push(a.data), { id: UUID })) };
+          if (prop === "$executeRaw") return jest.fn().mockResolvedValue(1);
+          return modelStub;
+        },
+      },
+    );
+    (service as unknown as { sy15: { runIdempotentRls: unknown } }).sy15.runIdempotentRls = jest.fn(
+      async (_e, _c, _a, fn: (t: unknown) => Promise<unknown>) => ({ idempotent: false, result: await fn(tx) }),
+    );
+    await service.createTalk(EMAIL, {
+      clientEventId: UUID, employeeId: UUID, talkType: "jedan_na_jedan",
+      raiseDecision: "da", raisePercent: 5, raiseEffectiveFrom: "2026-08-01", raiseNote: "x",
+    } as never);
+    expect(created[0]).toMatchObject({
+      raiseDecision: null, raisePercent: null, raiseEffectiveFrom: null, raiseNote: null,
+    });
+    await service.createTalk(EMAIL, {
+      clientEventId: UUID, employeeId: UUID, talkType: "godisnji",
+      raiseDecision: "da", raisePercent: 5,
+    } as never);
+    expect(created[1]).toMatchObject({ raiseDecision: "da", raisePercent: 5 });
+  });
+
+  it("updateTalk: promena tipa sa 'godisnji' na drugi FORSIRA raise_* na null (efektivni tip)", async () => {
+    const updates: Record<string, unknown>[] = [];
+    const tx = new Proxy(
+      {},
+      {
+        get(_t, prop) {
+          if (prop === "employeeTalk")
+            return {
+              findUnique: jest.fn().mockResolvedValue({ talkType: "godisnji" }),
+              updateMany: jest.fn(async (a: { data: Record<string, unknown> }) => (updates.push(a.data), { count: 1 })),
+            };
+          return modelStub;
+        },
+      },
+    );
+    (service as unknown as { sy15: { withUserRls: unknown } }).sy15.withUserRls = jest.fn(
+      async (_e: string, fn: (t: unknown) => Promise<unknown>) => fn(tx),
+    );
+    // Menja tip u 'korektivni' bez slanja raise ključeva → sve 4 kolone eksplicitno null.
+    await service.updateTalk(EMAIL, UUID, { talkType: "korektivni" } as never);
+    expect(updates[0]).toMatchObject({
+      raiseDecision: null, raisePercent: null, raiseEffectiveFrom: null, raiseNote: null,
+    });
+  });
+
+  // ── Review #23: prazan ciklus — rani return, bez rezime mejla kreatoru ────
+  it("assessmentInvite: prazan ciklus vraća 'Ciklus nema procena' i NE šalje mejl", async () => {
+    const tx = new Proxy(
+      {},
+      {
+        get(_t, prop) {
+          if (prop === "assessmentCycle")
+            return { findUnique: jest.fn().mockResolvedValue({ title: "C", periodLabel: "2026", createdBy: "boss@x.com" }) };
+          if (prop === "assessment") return { findMany: jest.fn().mockResolvedValue([]) };
+          if (prop === "$queryRaw") return jest.fn().mockResolvedValue([]);
+          return modelStub;
+        },
+      },
+    );
+    (service as unknown as { sy15: { withUserRls: unknown } }).sy15.withUserRls = jest.fn(
+      async (_e: string, fn: (t: unknown) => Promise<unknown>) => fn(tx),
+    );
+    const res = await service.assessmentInvite(EMAIL, { cycleId: UUID });
+    expect(res).toEqual({ data: { ok: true, sent: 0, skipped: [], message: "Ciklus nema procena." } });
+    expect(mailSend).not.toHaveBeenCalled();
+  });
 });
 
 /**
@@ -167,7 +248,8 @@ describe("payrollRecompute — integracija (mapTerm/fond wiring, novac)", () => 
       },
     });
     const storage = { upload: jest.fn(), signUrl: jest.fn(), remove: jest.fn() };
-    return new KadrovskaMutationsService(sy15 as never, storage as never);
+    const mail = { configured: true, send: jest.fn().mockResolvedValue(true) };
+    return new KadrovskaMutationsService(sy15 as never, storage as never, mail as never);
   }
 
   // tx sa: bez praznika, jedan zaposleni, zadatim work_hours + term redom.

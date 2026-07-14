@@ -479,6 +479,33 @@ export class KadrovskaMutationsController {
   onboardingTask(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string, @Body() dto: D.OnboardingTaskDto) {
     return this.m.onboardingTask(this.email(req), id, dto);
   }
+  /** „✓ Završi tok" / „Otkaži tok" — run.status done/canceled (1.0 setOnbRunStatus). */
+  @Patch("onboarding/runs/:id")
+  @RequirePermission(PERMISSIONS.KADROVSKA_MANAGE)
+  onboardingRunStatus(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string, @Body() dto: D.OnboardingRunStatusDto) {
+    return this.m.onboardingRunStatus(this.email(req), id, dto);
+  }
+  /* Šabloni + stavke (manage; RLS kadr_can_manage_hr). Brisanje šablona: tokovi ostaju. */
+  @Post("onboarding/templates")
+  @RequirePermission(PERMISSIONS.KADROVSKA_MANAGE)
+  createOnbTemplate(@Req() req: AuthedRequest, @Body() dto: D.CreateOnbTemplateDto) {
+    return this.m.createOnbTemplate(this.email(req), dto);
+  }
+  @Delete("onboarding/templates/:id")
+  @RequirePermission(PERMISSIONS.KADROVSKA_MANAGE)
+  deleteOnbTemplate(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string) {
+    return this.m.deleteOnbTemplate(this.email(req), id);
+  }
+  @Post("onboarding/template-items")
+  @RequirePermission(PERMISSIONS.KADROVSKA_MANAGE)
+  createOnbItem(@Req() req: AuthedRequest, @Body() dto: D.CreateOnbTemplateItemDto) {
+    return this.m.createOnbTemplateItem(this.email(req), dto);
+  }
+  @Delete("onboarding/template-items/:id")
+  @RequirePermission(PERMISSIONS.KADROVSKA_MANAGE)
+  deleteOnbItem(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string) {
+    return this.m.deleteOnbTemplateItem(this.email(req), id);
+  }
 
   /* Razvoj / razgovori / 360 (dev_manage; self/read za neke) */
   @Post("dev-plans")
@@ -496,6 +523,18 @@ export class KadrovskaMutationsController {
   updateDevPlan(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string, @Body() dto: D.UpdateDevPlanDto) {
     return this.m.updateDevPlan(this.email(req), id, dto);
   }
+  /** Brisanje plana (1.0 admin dugme; RLS dp_delete=admin) — ciljevi se odvezuju (FK). */
+  @Delete("dev-plans/:id")
+  @RequirePermission(PERMISSIONS.KADROVSKA_ADMIN)
+  deleteDevPlan(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string) {
+    return this.m.deleteDevPlan(this.email(req), id);
+  }
+  /** Brisanje beleške 1-na-1 (RLS dc_delete: autor ∨ manages_dev_plan). */
+  @Delete("checkins/:id")
+  @RequirePermission(PERMISSIONS.KADROVSKA_DEV_MANAGE)
+  deleteCheckin(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string) {
+    return this.m.deleteCheckin(this.email(req), id);
+  }
   @Post("expectations")
   @RequirePermission(PERMISSIONS.KADROVSKA_DEV_MANAGE)
   createExpectation(@Req() req: AuthedRequest, @Body() dto: D.CreateExpectationDto) {
@@ -505,6 +544,12 @@ export class KadrovskaMutationsController {
   @RequirePermission(PERMISSIONS.KADROVSKA_DEV_MANAGE)
   updateExpectation(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string, @Body() dto: D.UpdateExpectationDto) {
     return this.m.updateExpectation(this.email(req), id, dto);
+  }
+  /** Brisanje razvojnog cilja (1.0 admin dugme; RLS ee_delete=admin). */
+  @Delete("expectations/:id")
+  @RequirePermission(PERMISSIONS.KADROVSKA_ADMIN)
+  deleteExpectation(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string) {
+    return this.m.deleteExpectation(this.email(req), id);
   }
   @Post("talks")
   @RequirePermission(PERMISSIONS.KADROVSKA_DEV_MANAGE)
@@ -533,6 +578,24 @@ export class KadrovskaMutationsController {
   updateTalk(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string, @Body() dto: D.UpdateTalkDto) {
     return this.m.updateTalk(this.email(req), id, dto);
   }
+  /** Brisanje zapisnika (1.0: nacrt=autor, podeljen/potvrđen=SAMO admin) — guard
+   *  dev_manage, razliku presuđuje RLS talks_delete (admin ∨ manage∧nacrt). */
+  @Delete("talks/:id")
+  @RequirePermission(PERMISSIONS.KADROVSKA_DEV_MANAGE)
+  deleteTalk(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string) {
+    return this.m.deleteTalk(this.email(req), id);
+  }
+  /* Korektivni planovi (1.0 saveCorrectivePlan/updateCorrectivePlan; RLS cplans_*) */
+  @Post("corrective-plans")
+  @RequirePermission(PERMISSIONS.KADROVSKA_DEV_MANAGE)
+  createCorrectivePlan(@Req() req: AuthedRequest, @Body() dto: D.CreateCorrectivePlanDto) {
+    return this.m.createCorrectivePlan(this.email(req), dto);
+  }
+  @Patch("corrective-plans/:id")
+  @RequirePermission(PERMISSIONS.KADROVSKA_DEV_MANAGE)
+  updateCorrectivePlan(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string, @Body() dto: D.UpdateCorrectivePlanDto) {
+    return this.m.updateCorrectivePlan(this.email(req), id, dto);
+  }
   @Post("corrective-measures")
   @RequirePermission(PERMISSIONS.KADROVSKA_DEV_MANAGE)
   createMeasure(@Req() req: AuthedRequest, @Body() dto: D.CreateMeasureDto) {
@@ -542,6 +605,11 @@ export class KadrovskaMutationsController {
   @RequirePermission(PERMISSIONS.KADROVSKA_DEV_MANAGE)
   updateMeasure(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string, @Body() dto: D.UpdateMeasureDto) {
     return this.m.updateMeasure(this.email(req), id, dto);
+  }
+  @Delete("corrective-measures/:id")
+  @RequirePermission(PERMISSIONS.KADROVSKA_DEV_MANAGE)
+  deleteMeasure(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string) {
+    return this.m.deleteMeasure(this.email(req), id);
   }
 
   /* 360 procene */
@@ -609,6 +677,36 @@ export class KadrovskaMutationsController {
   @RequirePermission(PERMISSIONS.KADROVSKA_DEV_MANAGE)
   setState(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string, @Body() dto: D.SetStateDto) {
     return this.m.assessmentSetState(this.email(req), id, dto);
+  }
+  /** Upis ocena po rater id (leader) — 1.0 saveScores upsert; RLS asc_write (svoj
+   *  rater ∧ collecting) presuđuje, pa tuđi rater id → 403.
+   *
+   *  TODO(paket „Moj profil → Moja procena", review #25): ruta NAMERNO ostaje pod
+   *  dev_manage (rukovodilački 360 modal) i NE pokriva 1.0 SELF-assessment tok
+   *  (običan zaposleni upisuje svoje ocene/odgovore). Self tok dobija ODVOJENE rute
+   *  `POST assessments/self/scores` + `assessments/self/answers` pod PROFILE_SELF
+   *  (isti obrazac kao postojeći assessments/self i :id/self-submit) — RLS asc_write
+   *  (rater=pozivalac ∧ collecting) tada presuđuje 1.0-verno. NE labaviti guard ovde.
+   *  ⚠️ kb2 još NEMA rutu za assessment_answers (1.0 saveAnswers) — bez nje self tok
+   *  gubi odgovore na otvorena pitanja, a submit prolazi (prazna procena). */
+  @Post("assessments/raters/:raterId/scores")
+  @RequirePermission(PERMISSIONS.KADROVSKA_DEV_MANAGE)
+  saveScores(@Req() req: AuthedRequest, @Param("raterId", ParseUUIDPipe) raterId: string, @Body() dto: D.SaveScoresDto) {
+    return this.m.assessmentSaveScores(this.email(req), raterId, dto);
+  }
+  /** ✉ Pozivnice za CEO ciklus (kampanju) + rezime kreatoru — port edge fn
+   *  assessment-invite (cycle režim). 4-segmentna literal ruta, ne sudara se sa :id. */
+  @Post("assessments/cycles/:cycleId/invite")
+  @RequirePermission(PERMISSIONS.KADROVSKA_DEV_MANAGE)
+  inviteCycle(@Req() req: AuthedRequest, @Param("cycleId", ParseUUIDPipe) cycleId: string, @Body() dto: D.InviteCycleDto) {
+    return this.m.assessmentInvite(this.email(req), { cycleId, notifyCreator: dto.notifyCreator });
+  }
+  /** ✉ Pozivnice za jednu procenu — port edge fn assessment-invite. */
+  @Post("assessments/:id/invite")
+  @RequirePermission(PERMISSIONS.KADROVSKA_DEV_MANAGE)
+  invite(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string, @Body() dto: D.OptIdempotentDto) {
+    void dto;
+    return this.m.assessmentInvite(this.email(req), { assessmentId: id });
   }
 
   // ---------- ZARADE (SAMO admin) ----------

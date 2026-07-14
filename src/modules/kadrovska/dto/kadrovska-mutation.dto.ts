@@ -12,6 +12,7 @@ import {
   IsString,
   IsUUID,
   Matches,
+  Max,
   MaxLength,
   Min,
   ValidateNested,
@@ -385,6 +386,24 @@ export class OnboardingTaskDto {
   @IsOptional() @IsBoolean() done?: boolean;
   @IsOptional() @IsString() note?: string;
 }
+/** Promena statusa toka: „✓ Završi tok" (done) / „Otkaži tok" (canceled) — 1.0 setOnbRunStatus. */
+export class OnboardingRunStatusDto extends OptIdempotentDto {
+  @IsIn(["active", "done", "canceled"]) status!: string;
+}
+/** Šablon uvođenja/izlaska (naziv + tip). */
+export class CreateOnbTemplateDto extends IdempotentDto {
+  @IsString() @MaxLength(200) name!: string;
+  @IsIn(["onboarding", "offboarding"]) kind!: string;
+}
+/** Stavka šablona (naziv, zaduženi hint, rok +N dana, sort). */
+export class CreateOnbTemplateItemDto extends IdempotentDto {
+  @IsUUID() templateId!: string;
+  @IsString() @MaxLength(300) title!: string;
+  @IsOptional() @IsString() description?: string;
+  @IsOptional() @IsString() assigneeHint?: string;
+  @IsOptional() @IsInt() offsetDays?: number;
+  @IsOptional() @IsInt() sortOrder?: number;
+}
 
 /* Razvoj / razgovori / 360 (kadrovska.dev_manage; self za neke) */
 export class CreateDevPlanDto extends IdempotentDto {
@@ -433,6 +452,9 @@ export class UpdateExpectationDto {
   @IsOptional() @IsInt() progress?: number;
   @IsOptional() @IsString() completionNote?: string;
 }
+/** Odluka o zaradi (godišnji razgovor, 1.0 talksSection.js) — deljena Create/Update. */
+const RAISE_DECISIONS = ["da", "ne", "odlozeno"] as const;
+
 export class CreateTalkDto extends IdempotentDto {
   @IsUUID() employeeId!: string;
   @IsString() talkType!: string;
@@ -440,6 +462,11 @@ export class CreateTalkDto extends IdempotentDto {
   @IsOptional() @IsString() title?: string;
   @IsOptional() @IsString() zapisnikMd?: string;
   @IsOptional() @IsUUID() planId?: string;
+  /** Godišnji razgovor — strukturisana odluka o zaradi (da/ne/odloženo, %, važi-od, obrazloženje). */
+  @IsOptional() @IsIn(RAISE_DECISIONS) raiseDecision?: string;
+  @IsOptional() @IsNumber() raisePercent?: number;
+  @IsOptional() @IsISO8601() raiseEffectiveFrom?: string;
+  @IsOptional() @IsString() @MaxLength(500) raiseNote?: string;
 }
 export class UpdateTalkDto {
   @IsOptional() @IsString() talkType?: string;
@@ -447,19 +474,44 @@ export class UpdateTalkDto {
   @IsOptional() @IsString() title?: string;
   @IsOptional() @IsString() zapisnikMd?: string;
   @IsOptional() @IsString() status?: string;
+  @IsOptional() @IsIn(RAISE_DECISIONS) raiseDecision?: string;
+  @IsOptional() @IsNumber() raisePercent?: number;
+  @IsOptional() @IsISO8601() raiseEffectiveFrom?: string;
+  @IsOptional() @IsString() @MaxLength(500) raiseNote?: string;
+}
+
+/** Korektivni plan (1.0 saveCorrectivePlan/updateCorrectivePlan). Editor: razlog/status/
+ *  follow-up; closed_at pri zatvaranju; visible_to_employee prati status razgovora. */
+export class CreateCorrectivePlanDto extends IdempotentDto {
+  @IsUUID() employeeId!: string;
+  @IsOptional() @IsUUID() talkId?: string;
+  @IsOptional() @IsBoolean() visibleToEmployee?: boolean;
+  @IsOptional() @IsString() reasonMd?: string;
+  @IsOptional() @IsString() status?: string;
+  @IsOptional() @IsISO8601() followupDate?: string;
+}
+export class UpdateCorrectivePlanDto {
+  @IsOptional() @IsString() reasonMd?: string;
+  @IsOptional() @IsString() status?: string;
+  @IsOptional() @IsISO8601() followupDate?: string;
+  @IsOptional() @IsISO8601() closedAt?: string;
+  @IsOptional() @IsBoolean() visibleToEmployee?: boolean;
 }
 export class CreateMeasureDto extends IdempotentDto {
   @IsUUID() planId!: string;
   @IsString() descriptionMd!: string;
   @IsOptional() @IsISO8601() dueDate?: string;
   @IsOptional() @IsUUID() responsibleEmployeeId?: string;
+  /** 1.0 modal default = 'otvoreno' (NE 'u_toku'); status-select šalje izbor. */
+  @IsOptional() @IsIn(["otvoreno", "u_toku", "ispunjeno", "neispunjeno"]) status?: string;
+  @IsOptional() @IsString() @MaxLength(500) note?: string;
   @IsOptional() @IsInt() sort?: number;
 }
 export class UpdateMeasureDto {
   @IsOptional() @IsString() descriptionMd?: string;
   @IsOptional() @IsISO8601() dueDate?: string;
   @IsOptional() @IsUUID() responsibleEmployeeId?: string;
-  @IsOptional() @IsString() status?: string;
+  @IsOptional() @IsIn(["otvoreno", "u_toku", "ispunjeno", "neispunjeno"]) status?: string;
   @IsOptional() @IsString() note?: string;
   @IsOptional() @IsInt() sort?: number;
 }
@@ -490,6 +542,26 @@ export class GapToGoalsDto extends OptIdempotentDto {
 export class SetStateDto extends OptIdempotentDto {
   @IsString() status!: string;
   @IsBoolean() visible!: boolean;
+}
+
+/** Ocena rukovodioca po kompetenciji (0–5 ili null = obriši ocenu). */
+export class ScoreItemDto {
+  @IsInt() competenceId!: number;
+  @IsOptional() @IsInt() @Min(0) @Max(5) level?: number | null;
+  @IsOptional() @IsString() @MaxLength(1000) comment?: string;
+}
+/** Bulk upsert ocena jednog ocenjivača (1.0 saveScores, on_conflict=rater_id,competence_id). */
+export class SaveScoresDto extends OptIdempotentDto {
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => ScoreItemDto)
+  items!: ScoreItemDto[];
+}
+/** Email pozivnice ocenjivačima (1.0 edge fn assessment-invite). Per-ciklus varijanta
+ *  nosi opciju rezimea kreatoru (default true). Per-procena varijanta prima id u ruti. */
+export class InviteCycleDto extends OptIdempotentDto {
+  @IsOptional() @IsBoolean() notifyCreator?: boolean;
 }
 
 /* Employee documents (storage proxy; kadrovska.pii) — multipart/form-data body!

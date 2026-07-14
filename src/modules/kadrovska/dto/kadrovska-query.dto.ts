@@ -137,8 +137,25 @@ export class NotificationsQueryDto {
   @IsOptional() @IsString() type?: string;
 }
 
+/** Agregatni izveštaji (sick/overtime/field: from/to; vacation: year; risk: months). */
+export class ReportQueryDto {
+  @IsOptional() @IsISO8601() from?: string;
+  @IsOptional() @IsISO8601() to?: string;
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(2000)
+  @Max(2100)
+  year?: number;
+  /** Risk: period bolovanja unazad u mesecima (1.0 select 6/12/24; default 12). */
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(60) months?: number;
+}
+
 /** Filtriranje po zaposlenom (medical/certs/contracts/onboarding/dev/talks/assessments). */
 export class ByEmployeeQueryDto {
   @IsOptional() @IsUUID() employeeId?: string;
   @IsOptional() @IsString() status?: string;
+  /** Suženje na jedan plan razvoja (samo /expectations — 1.0 loadAllExpectations({planId})
+   *  učitava razvojne ciljeve grupisane po planu u detalju plana). */
+  @IsOptional() @IsUUID() planId?: string;
 }
