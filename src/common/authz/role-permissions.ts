@@ -52,7 +52,7 @@ const VIEWER_READ_BASELINE: readonly PermissionKey[] = [
  *      (danas Nenad+Zoran, NIJE rola) kroz GUC. Dajemo je mgmt-u da guard ne blokira movere.
  * `ai.chat` = SVE aktivne uloge (1.0 „/ai za sve"); upis istorije je server-side.
  */
-export const ROLE_PERMISSIONS: Partial<
+const BASE_ROLE_PERMISSIONS: Partial<
   Record<RoleKey, readonly PermissionKey[]>
 > = {
   [ROLES.ADMIN]: ALL,
@@ -298,6 +298,87 @@ export const ROLE_PERMISSIONS: Partial<
   // Sastanci: viewer je u canAccessSastanci → SAMO read (bez edit). /ai svima.
   [ROLES.VIEWER]: [...VIEWER_READ_BASELINE, P.SASTANCI_READ, P.AI_CHAT],
 };
+
+/**
+ * TALAS C — Plan montaže + Plan proizvodnje + Praćenje (MODULE_SPEC_planovi_pracenje_30.md
+ * §2/§7, presuda 13.07 „VAŽE PREDLOZI C1–C11"). Dodele su PARITET ŽIVIH 1.0 gate-ova
+ * (`src/state/auth.js`), NE labavog spec teksta — gde spec kaže „svi prijavljeni", a živi
+ * router gate je uži, uzimamo TAČAN gate (doktrina §C: ne širiti).
+ *
+ *  montaza.read / montaza.izvestaji : Modul „Montaža" je UNGATED u 1.0
+ *    (`router.assertModuleAllowed` NEMA montaza granu; hub kartica bez `canAccess`) →
+ *    SVAKA aktivna 2.0 rola. Izveštaji: kreiranje svima (autor_user_id=auth.uid() RLS),
+ *    manage-tuđih je DB row-odluka (autor∨mgmt∨admin), ne posebna permisija.
+ *  plan_proizvodnje.read / pracenje.read : Modul „Proizvodnja" (nosi i Planiranje i
+ *    Praćenje) je ROUTER-gated `canAccessPlanProizvodnje` (auth.js:370) =
+ *    {admin, leadpm, pm, menadzment, hr, viewer, cnc_operater, tim_lider, proizvodni_radnik}.
+ *  montaza.edit : `canEditPlanMontaze` (auth.js:138) = `canEdit()`∪tim_lider =
+ *    {admin, leadpm, pm, menadzment, tim_lider}. PRESUDA C1: tim_lider dobija PRAVI edit —
+ *    1.0 je bag-by-omission (save sloj `canEdit()` + RLS `has_edit_role` su odbijali njegove
+ *    izmene → živele samo u localStorage). U 2.0 se ISPRAVLJA (DB grant za tim_lider ide uz
+ *    R2 mutacije). PRESUDA C2: hr/poslovni_admin NISU u UI dodeli iako `has_edit_role` u DB
+ *    važi za njih — širina OSTAJE u GUC-u (row-odluka), ne u guardu.
+ *  plan_proizvodnje.edit / pracenje.edit : `canEditPlanProizvodnje` (auth.js:375) /
+ *    `can_edit_pracenje` = {admin, pm, menadzment} (has_edit_role project-scope širina
+ *    ostaje u DB kroz GUC).
+ *  plan_proizvodnje.force : `can_force_plan_reassign` = {admin, menadzment}.
+ *  pracenje.manage : `can_manage_predmet_aktivacija` = {admin, menadzment}.
+ *  plan_proizvodnje.koop_admin / pracenje.prioritet / montaza.ai_admin :
+ *    `current_user_is_admin` = {admin}.
+ *
+ * Deferred/prelazno role (nabavka/kvalitet/prodaja/finansije/tehnicar_odrzavanja/user)
+ * NISU u BASE mapi → default-deny (nisu dodeljene nijednom živom korisniku).
+ */
+const PP_READ_ROLES: readonly string[] = [
+  ROLES.ADMIN,
+  ROLES.LEADPM,
+  ROLES.PM,
+  ROLES.MENADZMENT,
+  ROLES.HR,
+  ROLES.VIEWER,
+  ROLES.CNC_OPERATER,
+  ROLES.TIM_LIDER,
+  ROLES.PROIZVODNI_RADNIK,
+];
+const MONTAZA_EDIT_ROLES: readonly string[] = [
+  ROLES.ADMIN,
+  ROLES.LEADPM,
+  ROLES.PM,
+  ROLES.MENADZMENT,
+  ROLES.TIM_LIDER, // C1 — PRAVI edit (1.0 bag-by-omission ispravljen)
+];
+const PP_EDIT_ROLES: readonly string[] = [ROLES.ADMIN, ROLES.PM, ROLES.MENADZMENT];
+const PP_FORCE_ROLES: readonly string[] = [ROLES.ADMIN, ROLES.MENADZMENT];
+const PRACENJE_MANAGE_ROLES: readonly string[] = [ROLES.ADMIN, ROLES.MENADZMENT];
+const ADMIN_ONLY: readonly string[] = [ROLES.ADMIN];
+
+/** Talas-C permisije koje rola dobija po pariteta gate-ova (bez ADMIN — on ima ALL). */
+function talasCGrants(role: string): PermissionKey[] {
+  const g: PermissionKey[] = [P.MONTAZA_READ, P.MONTAZA_IZVESTAJI];
+  if (PP_READ_ROLES.includes(role)) g.push(P.PLAN_PROIZVODNJE_READ, P.PRACENJE_READ);
+  if (MONTAZA_EDIT_ROLES.includes(role)) g.push(P.MONTAZA_EDIT);
+  if (PP_EDIT_ROLES.includes(role)) g.push(P.PLAN_PROIZVODNJE_EDIT, P.PRACENJE_EDIT);
+  if (PP_FORCE_ROLES.includes(role)) g.push(P.PLAN_PROIZVODNJE_FORCE);
+  if (PRACENJE_MANAGE_ROLES.includes(role)) g.push(P.PRACENJE_MANAGE);
+  if (ADMIN_ONLY.includes(role))
+    g.push(P.PLAN_PROIZVODNJE_KOOP_ADMIN, P.PRACENJE_PRIORITET, P.MONTAZA_AI_ADMIN);
+  return g;
+}
+
+/**
+ * Objedinjena mapa: BASE (kurirane reversi/sastanci/tehnologija/… dodele) + TALAS C injekcija.
+ * ADMIN već ima ALL (uklj. sve talas-C ključeve) pa ga ne diramo. Dedup preko Set-a.
+ */
+export const ROLE_PERMISSIONS: Partial<
+  Record<RoleKey, readonly PermissionKey[]>
+> = Object.fromEntries(
+  Object.entries(BASE_ROLE_PERMISSIONS).map(([role, perms]) => [
+    role,
+    role === ROLES.ADMIN
+      ? perms
+      : [...new Set<PermissionKey>([...(perms ?? []), ...talasCGrants(role)])],
+  ]),
+) as Partial<Record<RoleKey, readonly PermissionKey[]>>;
 
 /**
  * Normalise a stored role value to the catalog key.
