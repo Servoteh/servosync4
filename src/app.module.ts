@@ -33,6 +33,7 @@ import { ProjektniBiroModule } from "./modules/projektni-biro/projektni-biro.mod
 import { MojProfilModule } from "./modules/moj-profil/moj-profil.module";
 import { PodesavanjaModule } from "./modules/podesavanja/podesavanja.module";
 import { OdrzavanjeModule } from "./modules/odrzavanje/odrzavanje.module";
+import { EnergetikaModule } from "./modules/energetika/energetika.module";
 
 @Module({
   imports: [
@@ -74,6 +75,8 @@ import { OdrzavanjeModule } from "./modules/odrzavanje/odrzavanje.module";
     PodesavanjaModule,
     // 3.0 TALAS F — Održavanje (CMMS) read sloj (MODULE_SPEC_odrzavanje_30.md §0)
     OdrzavanjeModule,
+    // 3.0 Talas E — Energetika/SCADA read sloj (MODULE_SPEC_scada_30.md §3)
+    EnergetikaModule,
   ],
   controllers: [AppController],
   providers: [

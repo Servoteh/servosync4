@@ -173,17 +173,53 @@ Bez SSE/WS u v1 — front poll-uje kao 1.0 (snapshots ~5–10 s aktivan tab, ban
 | 13 | Touch M2 kot2: setpoint/režimi/kotao/pumpe/kaloriferi/raspored/RESET alarma; E-stop samo status | NOT_STARTED |
 | 14 | Touch M2 kot3: sobe (heat/cool pravilo)/ventilatori/prekidači | NOT_STARTED |
 | 15 | Touch M2 sigen (`payload.control` gate) + kaco read-only | NOT_STARTED |
-| 16 | e2e permission matrica (read/control × admin/menadzment/ostali × 200/403) | NOT_STARTED |
-| 17 | e2e komandni lanac BEZ dodira PLC-a (van-allowlist target → bridge `rejected`) | NOT_STARTED |
-| 18 | Živi smoke: bezopasna komanda (setpoint na ISTU vrednost) → `applied` + audit | NOT_STARTED |
+| 16 | e2e permission matrica (read/control × admin/menadzment/ostali × 200/403) | **TESTED (read R1 + control R2)** — read: 8 GET × {admin,menadzment 200 / ostali 403}; control: POST /commands + /commands/:id/cancel × {admin,menadzment 200 / ostali 403} + DTO 400 (ValidationPipe) + ParseUUIDPipe 400; + unit rola-matrica (energetika.read/control = SAMO admin+menadzment; viewer/pm/hr/monter NEMAJU) |
+| 17 | e2e komandni lanac BEZ dodira PLC-a (van-allowlist target → bridge `rejected`) | **TESTED (R2)** — safety e2e: kot2 `Web_Estop` (E-stop van allowlist-a) / nepoznat tag / solar-kaco read-only → POST 200 `pending` → bridge-double `rejected`, `plcWrite` spy 0 poziva; pozitivna kontrola (setpoint 20 °C → `applied` + tačno 1 PLC upis) |
+| 18 | Živi smoke: bezopasna komanda (setpoint na ISTU vrednost) → `applied` + audit | NOT_STARTED (R4) |
+
+### 5a. R1 BE read sloj (§3 GET endpointi) — status po stavci
+
+Svi kroz `withUserRls` (doktrina A.2a — scada politike su `scada_is_admin_or_management()`-scope,
+a `servosync2_app` ima BYPASSRLS). Prisma modeli: `ScadaSite/ScadaSnapshot/ScadaHistory/ScadaAlarm/ScadaCommand`
+u `prisma/sy15.prisma` (bez FK; `scada_notify_prefs` NEMA model — v2, $queryRaw). SQLSTATE mapiranje kao Reversi.
+
+| # | BE stavka | Endpoint | Status |
+|---|---|---|---|
+| R1.1 | Prisma modeli 5 scada_* tabela (camelCase @map, PK zadržan) | — | IMPLEMENTED (prisma generate ✓) |
+| R1.2 | `energetika.read`/`energetika.control` permisije + dodela admin+menadzment | — | TESTED (unit+e2e) |
+| R1.3 | `Sy15Service.withUserRls` (claims → SET LOCAL ROLE authenticated) | — | IMPLEMENTED |
+| R1.4 | Sistemi | `GET /energetika/sites` | IMPLEMENTED (e2e permisija) |
+| R1.5 | Snapshot agregat + **`serverNow`** (E4, DB now() aditivno) | `GET /energetika/snapshots` | IMPLEMENTED (e2e permisija) |
+| R1.6 | Snapshot jednog sistema (+serverNow) | `GET /energetika/snapshots/:siteKey` | IMPLEMENTED (e2e permisija) |
+| R1.7 | Istorija — BE preseti kot1/kot2/kot3/sigen/kaco (B2: DESC+12000+reverse) | `GET /energetika/history/:siteKey` | IMPLEMENTED (e2e permisija) |
+| R1.8 | Aktivni alarmi (limit 100) | `GET /energetika/alarms` | IMPLEMENTED (e2e permisija) |
+| R1.9 | Istorija alarma jednog sistema | `GET /energetika/alarms/:siteKey` | IMPLEMENTED (e2e permisija) |
+| R1.10 | Poslednje komande (audit tab, ≤40) | `GET /energetika/commands` | IMPLEMENTED (e2e permisija) |
+| R1.11 | Status komande (poll) | `GET /energetika/commands/:id` | IMPLEMENTED (e2e permisija) |
+
+> Živi smoke read endpointa (podaci kroz withUserRls na sy15) = R1 gate glavne sesije (traži SY15_* env).
+
+### 5b. R2 BE komandni sloj (§3 POST endpointi) — status po stavci
+
+Semantika ZAMRZNUTA (§7). Sve kroz `withUserRls`; guard `energetika.control` (per-metod override
+iznad klasnog `energetika.read`). SQLSTATE: 42501→403, P0001/P0002/23514→422, 23505→409.
+
+| # | BE stavka | Endpoint | Status |
+|---|---|---|---|
+| R2.1 | INSERT `scada_commands` (`status='pending'`, `requested_by = lower(jwt email)`, NATIVNI `idempotency_key` `ui-<ts>-<rand>` — NE rev_api_idempotency; RLS `scada_cmd_insert` WITH CHECK forsira svoje ime + pending + NULL-ovi) | `POST /energetika/commands` | TESTED (unit + e2e permisija + safety e2e) |
+| R2.2 | Otkaži svoju pending komandu (DEFINER `scada_cancel_command(p_id uuid) returns text`; vraća STVARNI status, `'missing'` ako nema reda) | `POST /energetika/commands/:id/cancel` | TESTED (unit + e2e permisija) |
+| R2.3 | `SendCommandDto` (class-validator: siteKey/target neprazni, op/value/clientEventId opciони; **NEMA `@IsIn` na target** — bridge je jedini autoritet allowlist-a) + `:id` `ParseUUIDPipe` | — | TESTED (DTO 400 + ParseUUIDPipe 400 e2e) |
+| R2.4 | Safety invarijanta: van-allowlist target uđe kao `pending` i bridge ga odbije BEZ dodira PLC-a (2.0 BE NIKAD ne piše na PLC) | — | TESTED (safety e2e, `plcWrite` 0 poziva) |
+
+> POST `/commands` + `/commands/:id/cancel` (scada_cancel_command) = **R2 — IMPLEMENTED/TESTED** (semantika ZAMRZNUTA); potpisi kolona/fn re-verifikovani protiv žive 1.0 šeme (`add_scada_module.sql` + `add_scada_v2_command_safety.sql`).
 
 ## 6. Redosled izvođenja (R-faze za ceo talas)
 
 | Faza | Šta | Gate |
 |---|---|---|
 | R0 | Nenad presudi §7 + **re-verifikacija na živoj sy15**: snapshot drift (očekivan SAMO trigger URL → gateway), svež `scada_snapshots.updated_at` (bridge živ), `cron.job` scada_watchdog postoji i radi na sy15, pg_net + `private.app_config.push_dispatch_key` živi, poslednji `BRIDGE_STALE`/push ishodi; **grants za `servosync2_app`** (SELECT 6 tabela, INSERT `scada_commands`, EXECUTE `scada_cancel_command` + `scada_is_admin_or_management`) — ISKLJUČIVO kao `supabase_admin` (doktrina A6), migracija u 1.0 repo | odobreno |
-| R1 | BE read: Prisma modeli u sy15.prisma + svi GET (§3) + `energetika.*` permisije + e2e read matrica | read paritet |
-| R2 | BE komande: POST /commands (GUC, idempotency_key) + /cancel; e2e: svoje-ime CHECK, non-admin 403, **van-allowlist target → `rejected` end-to-end** (vežba ceo lanac bez dodira PLC-a) | write paritet |
+| R1 ✅ | BE read: Prisma modeli u sy15.prisma + svi GET (§3) + `energetika.*` permisije + e2e read matrica (grana `wave-e/energetika`; §5a; tsc+build+300 unit+171 e2e zeleni) | read paritet — **DONE** (živi smoke = glavna sesija sa SY15_* env) |
+| R2 ✅ | BE komande: POST /commands (withUserRls, NATIVNI idempotency_key) + /cancel (scada_cancel_command); e2e: svoje-ime CHECK, non-admin 403, **van-allowlist target → `rejected` end-to-end** (ceo lanac bez dodira PLC-a); tsc+build+41 energetika-unit+281 energetika-e2e zeleni (grana `wave-e/energetika`; §5b) | write paritet — **DONE** (živi smoke = R4) |
 | R3 | FE: iframe host + most + protokol + tabovi + touch prikaz + audit tab; `node --check` na shim posle SVAKE izmene statike | UI paritet |
 | R4 | Živi smoke (setpoint na istu vrednost → applied; timeout tok sa ugašenim bridge-relayem → cancel/expired) + Playwright happy-path + paralelni rad sa 1.0 → hub preklop (1.0 kartica → 2.0 ruta, 1.0 fallback) | parity gate (doktrina D) |
 | R5 | Retrospektiva tempa → ažurirati PROCENA_SEOBE | kalibracija |

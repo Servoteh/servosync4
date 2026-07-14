@@ -157,6 +157,15 @@ export const PERMISSIONS = {
   ODRZAVANJE_REPORT: "odrzavanje.report",
   ODRZAVANJE_WRITE: "odrzavanje.write",
   ODRZAVANJE_ADMIN_UI: "odrzavanje.admin_ui",
+  // Energetika / SCADA — 3.0 TALAS E (nadzor+kontrola kotlarnica/solara; MODULE_SPEC_scada_30 §2).
+  // Paritet žive 1.0 politike (9 politika, snapshot 12.07 — re-verifikovano 0 drift):
+  // SELECT na svih 6 tabela + INSERT scada_commands + scada_cancel_command RPC gate-uju
+  // `scada_is_admin_or_management()` = GLOBALNA rola (project_id IS NULL, is_active) admin
+  // ILI menadzment. Dva ključa iako je dodela ista: 1.0 `canControlScada() ≡
+  // canAccessEnergetikaScada()` ali su fn NAMERNO odvojene (spec §2 skrivena pravila t.1) →
+  // 2.0 zadržava read/control par (razdvajanje kad kontrola dobije uži scope u budućnosti).
+  ENERGETIKA_READ: "energetika.read",
+  ENERGETIKA_CONTROL: "energetika.control",
 } as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
