@@ -160,7 +160,9 @@ export function TermModal({
     const splitHourRate = parseFloat(f.splitHourRate) || 0;
 
     // amounts: whitelist BE salaryAmounts (kadrovska-mutations.service.ts). NETO/BRUTO
-    // se izvode iz Iznos + Neto/Bruto (jedan izvor istine).
+    // se izvode iz Iznos + Neto/Bruto (jedan izvor istine). K3.3 ključevi idu SAMO
+    // za aktivan model (1.0 buildTermPayload gating) — edit 'dva_dela' ne sme da
+    // upiše fixed_amount i obrnuto; izostavljen ključ = BE ga preskače.
     const amounts: Record<string, unknown> = {
       amount,
       amountType: f.amountType,
@@ -177,19 +179,26 @@ export function TermModal({
       paymentWindowOverride: f.paymentWindowOverride || null,
       payrollGroup: f.payrollGroup,
       cashAllowanceRsd: parseFloat(f.cashAllowanceRsd) || 0,
-      fixedAmount,
-      fixedTransportComponent: transport,
-      fixedExtraHourRate,
-      firstPartAmount,
-      splitHourRate,
-      splitTransportAmount: transport,
-      hourlyTransportAmount: transport,
       // approvedBy/approvedAt/contractRef — TODO(P1a): BE amounts whitelist ih još ne
       // prima (biće tiho odbačeni dok se ne dopune DTO/salaryAmounts).
       approvedBy: f.approvedBy || null,
       approvedAt: approvedAt || null,
       contractRef: f.contractRef || null,
     };
+    if (fixedLike) {
+      // `|| amount` fallback je 1.0-kanonski SAMO u fiksno/jednokratno grani (salary.js:93).
+      amounts.fixedAmount = fixedAmount;
+      amounts.fixedTransportComponent = transport;
+      amounts.fixedExtraHourRate = fixedExtraHourRate;
+    } else if (model === 'dva_dela') {
+      amounts.firstPartAmount = firstPartAmount;
+      amounts.splitHourRate = splitHourRate;
+      amounts.splitTransportAmount = transport;
+    } else if (model === 'satnica' || model === 'praksa') {
+      amounts.hourlyTransportAmount = transport;
+      // SATNICA: prvi deo (01–05) = ugovoreni NETO uz mogući ručni override.
+      if (model === 'satnica') amounts.firstPartAmount = firstPartAmount;
+    }
 
     try {
       if (isEdit && term?.id) {
@@ -198,7 +207,9 @@ export function TermModal({
           patch: {
             salaryType: f.salaryType,
             effectiveFrom: f.effectiveFrom,
-            ...(f.effectiveTo ? { effectiveTo: f.effectiveTo } : {}),
+            // null = OBRIŠI „Važi do" (red ponovo aktivan); BE ugovor: null=clear,
+            // undefined=ne diraj (1.0 buildTermPayload semantika).
+            effectiveTo: f.effectiveTo || null,
             compensationModel: model,
             amounts,
             note: f.note,

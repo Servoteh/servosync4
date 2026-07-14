@@ -2,6 +2,8 @@
 // `src/lib/payrollGroupsPdf.js` na 2.0 pdf-core (bundlovan jsPDF + Roboto/UTF-8,
 // logo iz /public). Kolone: rb | PREZIME | IME | NETO (prevoz: iznos) + UKUPNO.
 // Grupa 'kes' se NE šalje knjigovođi (ni u prevoz).
+// ⚠ Ime/prezime: pozivalac (accountant-modal) čita first_name/last_name kolone
+// v_employees_safe; splitName je SAMO fallback (full_name = „Prezime Ime").
 
 import { newPdf, drawLogo } from './pdf-core';
 import { MONTHS_SR_LAT } from '@/app/kadrovska/_components/zarade/calc';
@@ -27,11 +29,16 @@ function fmtRsd0(x: number): string {
   return Math.round(Number(x || 0)).toLocaleString('sr-RS', { maximumFractionDigits: 0 });
 }
 
-/** Prezime = poslednji token, Ime = ostatak (full_name = „Ime Prezime"). */
+/**
+ * Fallback SAMO kad view red nema first_name/last_name kolone (živa baza: 0
+ * takvih redova). `full_name` na sy15 je „Prezime Ime" (employees_sync_full_name
+ * trigger: last||' '||first) → PRVI token = prezime, ostatak = ime (1.0
+ * employeeNames.js fallbackSurname semantika).
+ */
 export function splitName(full: string): { firstName: string; lastName: string } {
   const parts = String(full || '').trim().split(/\s+/).filter(Boolean);
   if (parts.length <= 1) return { firstName: '', lastName: parts[0] || '' };
-  return { lastName: parts[parts.length - 1], firstName: parts.slice(0, -1).join(' ') };
+  return { lastName: parts[0], firstName: parts.slice(1).join(' ') };
 }
 
 /** NETO za tabelu: snapshot neto_rsd → fallback amount (RSD/neto/ne-satnica). */
@@ -202,9 +209,10 @@ export async function buildPayrollGroupPdfs({
   if (!(m >= 1 && m <= 12) || !yr) throw new Error('Neispravan mesec/godina');
   const mLabel = MONTHS_SR_LAT[m - 1].toUpperCase();
 
+  const cmp = (x: string, y: string) => x.localeCompare(y, 'sr', { sensitivity: 'base' });
   const list = joined
     .filter((j) => (String(j.sal.payroll_group ?? 'standard') || 'standard') !== 'kes')
-    .sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName, 'sr'));
+    .sort((a, b) => cmp(a.lastName, b.lastName) || cmp(a.firstName, b.firstName));
 
   const toRow = (j: GroupJoined, value: number): TableRow => ({ lastName: j.lastName, firstName: j.firstName, value });
 

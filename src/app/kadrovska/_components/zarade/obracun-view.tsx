@@ -16,6 +16,7 @@ import {
   usePayrollUpsert,
   usePayrollLock,
   usePayrollUnlock,
+  useDeletePayroll,
   useUploadDocument,
   newClientEventId,
 } from '@/api/kadrovska';
@@ -148,6 +149,7 @@ export function ObracunView() {
   const upsert = usePayrollUpsert();
   const lock = usePayrollLock();
   const unlock = usePayrollUnlock();
+  const deletePayroll = useDeletePayroll();
   const uploadDoc = useUploadDocument();
 
   const rows = useMemo(() => (payrollQ.data?.data ?? []) as ViewRow[], [payrollQ.data]);
@@ -321,6 +323,24 @@ export function ObracunView() {
     }
   }
 
+  async function deleteRow(r: ViewRow) {
+    const id = rowId(r);
+    if (!window.confirm('Obrisati ceo obračun za ovog zaposlenog u ovom mesecu? Akcija je trajna.')) return;
+    setRowBusy(id);
+    try {
+      await deletePayroll.mutateAsync({ id });
+      setEdits((prev) => { const cp = { ...prev }; delete cp[id]; return cp; });
+      setMsg('🗑 Obrisano');
+    } catch (e) {
+      // BE 409: paid red — prvo otključaj pa obriši.
+      if (e instanceof ApiError && e.status === 409) setMsg('⚠ Obračun je zaključan (isplaćen) — klikni na status da otključaš pa obriši');
+      else if (e instanceof ApiError && e.status === 403) setMsg('⚠ Niste admin');
+      else setMsg('⚠ Brisanje nije uspelo');
+    } finally {
+      setRowBusy(null);
+    }
+  }
+
   async function lockMonthBulk() {
     const candidates = rows.filter((r) => s(r, 'status') === 'finalized');
     if (!candidates.length) {
@@ -430,9 +450,14 @@ export function ObracunView() {
         'Ukupno RSD', 'Ukupno EUR', 'II deo (RSD)',
         'II deo datum', 'Status', 'Napomena',
       ]];
-      const list = rows.map((r) => merged(r, edits[rowId(r)]));
-      for (const m of list) {
-        const t = displayTotals(m, false);
+      // Ista merged/dirty logika kao render tabele — izvezeni red je interno
+      // konzistentan (stavke i totali iz istog stanja).
+      const list = rows.map((r) => {
+        const e = edits[rowId(r)];
+        return { m: merged(r, e), dirty: !!e };
+      });
+      for (const { m, dirty } of list) {
+        const t = displayTotals(m, dirty);
         aoa.push([
           s(m, 'employee_name'), s(m, 'employee_position'), s(m, 'employee_department'), s(m, 'salary_type'),
           n(m, 'advance_amount'), s(m, 'advance_paid_on').slice(0, 10),
@@ -639,9 +664,7 @@ export function ObracunView() {
                         </button>
                         <button onClick={() => cycleStatus(r)} disabled={busy} className="rounded-control px-2 py-1 text-xs text-ink-secondary hover:bg-surface-2 disabled:opacity-50" title="Promeni status (paid = otključavanje)">↑ Status</button>
                         <button onClick={() => pdfOne(r)} className="rounded-control px-2 py-1 text-xs text-ink-secondary hover:bg-surface-2" title="Generiši PDF obračun za zaposlenog">📄 PDF</button>
-                        {/* TODO(P1a): DELETE /salary/payroll/:id ne postoji na BE — dugme se
-                            aktivira kad P1a doda endpoint (uz guard da paid ne sme). */}
-                        <button disabled className="rounded-control px-2 py-1 text-xs text-status-danger opacity-40" title="Čeka P1a: BE DELETE /salary/payroll/:id endpoint">🗑</button>
+                        <button onClick={() => deleteRow(r)} disabled={busy} className="rounded-control px-2 py-1 text-xs text-status-danger hover:bg-status-danger/10 disabled:opacity-50" title="Obriši red (paid → prvo otključaj)">🗑</button>
                       </div>
                     </td>
                   </tr>
