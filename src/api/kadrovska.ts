@@ -1095,3 +1095,27 @@ export const useUpdateMedical = () =>
 /** Izmena sertifikata (manage) — koristi status-view `id` (per-sertifikat). */
 export const useUpdateCert = () =>
   useKadrMutation<{ id: string; patch: Record<string, unknown> }>((v) => patch(`/certificates/${v.id}`, v.patch), KEYS.certificates);
+
+/**
+ * SVI zaposleni (loop-all) — zaobilazi BE clamp `pageSize=200` (parsePagination
+ * maxSize=200): `useEmployees({pageSize:500})` tiho odseca preko 200. Vuče stranu
+ * po stranu (pageSize 200) do meta.totalPages i vraća RAVAN niz. Za ekrane koji
+ * filtriraju/sortiraju klijentski (imenik, lista). Rezultat = `q.data` je niz.
+ */
+export function useAllEmployees(enabled = true, params: Omit<EmployeesParams, 'page' | 'pageSize'> = {}) {
+  return useQuery({
+    queryKey: [...KEYS.employees, 'all', params],
+    enabled,
+    queryFn: async () => {
+      const pageSize = 200;
+      const first = await apiFetch<{ data: EmployeeSafe[]; meta: PageMeta }>(`${BASE}/employees${qs({ ...params, page: 1, pageSize })}`);
+      const totalPages = first.meta?.pagination?.totalPages ?? 1;
+      const out = [...first.data];
+      for (let p = 2; p <= totalPages; p++) {
+        const next = await apiFetch<{ data: EmployeeSafe[]; meta: PageMeta }>(`${BASE}/employees${qs({ ...params, page: p, pageSize })}`);
+        out.push(...next.data);
+      }
+      return out;
+    },
+  });
+}

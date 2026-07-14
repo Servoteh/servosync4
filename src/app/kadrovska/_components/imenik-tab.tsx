@@ -9,7 +9,7 @@ import { SearchBox } from '@/components/ui-kit/search-box';
 import { useAuth } from '@/lib/auth-context';
 import { PERMISSIONS } from '@/lib/permissions';
 import { ApiError } from '@/api/client';
-import { useEmployees, useUpdateEmployee, type EmployeeSafe } from '@/api/kadrovska';
+import { useAllEmployees, useUpdateEmployee, type EmployeeSafe } from '@/api/kadrovska';
 import { employeeVCard, isSrMobile, normalizeSrPhone, prettyPhone, telLink, waLink } from '@/lib/phone';
 import { sv } from './common';
 import { Avatar, compareEmpByLastFirst, empDisplayName, kontaktRec } from './emp-shared';
@@ -64,8 +64,9 @@ export function ImenikTab() {
     return () => clearTimeout(t);
   }, [toast]);
 
-  const listQ = useEmployees({ pageSize: 500 });
-  const all = useMemo(() => listQ.data?.data ?? [], [listQ.data]);
+  // Loop-all (BE klampuje pageSize na 200 → pageSize:500 bi tiho odsekao preko 200).
+  const listQ = useAllEmployees(true);
+  const all = useMemo(() => listQ.data ?? [], [listQ.data]);
   const updateMut = useUpdateEmployee();
 
   const rows = useMemo(() => {
