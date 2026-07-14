@@ -320,6 +320,7 @@ const EmployeeBlock = memo(
                     value={editor.displayValue(emp.id, d.ymd, 'field')}
                     disabled={!editable}
                     maxLength={6}
+                    title={lastTitle(d.ymd)}
                     onChange={(e) => editor.onCellChange(emp.id, d.ymd, 'field', e.target.value)}
                     onBlur={() => editor.onCellBlur(emp.id, d.ymd, 'field')}
                     onFocus={(e) => e.currentTarget.select()}
