@@ -2124,3 +2124,781 @@ model LocLocationMovement {
   clientEventUuid String? @map("client_event_uuid") @db.Uuid
   @@map("loc_location_movements")
 }
+
+// ============================================================================
+// TALAS G — KADROVSKA (HR). MODULE_SPEC_kadrovska_30.md §1 (šema: živa sy15/cloud
+// kroz Management API, 13.07). camelCase @map, @@map, BEZ FK relacija (1.0 šema ih
+// na app-nivou ne koristi — spajanja su ručni batch-resolve, kao Sastanci/Reversi).
+// KRITIČNO (doktrina A.2a): PII maska (v_employees_safe / current_user_can_manage_
+// employee_pii) i zarade (admin-only) su ROW/ROLE-scoped u sy15 RLS. Ovi modeli su
+// SAMO mapiranje kolona — BE ih čita ISKLJUČIVO kroz `withUserRls` (SET LOCAL ROLE
+// authenticated); BYPASSRLS put (this.sy15.db) bi PROBIO maske. Read employees ide
+// kroz VIEW `v_employees_safe` ($queryRaw), NE kroz Employee.findMany default-select.
+// attendance_events (480.885 redova) = VIEW-ONLY (v_attendance_*); NEMA write modela
+// (G11 — jednosmerni tok: bridge Katze + kiosk pune events, front samo čita).
+// ============================================================================
+
+// ---------- Jezgro ----------
+model Employee {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  fullName String @map("full_name")
+  position String?
+  department String?
+  phone String?
+  email String?
+  hireDate DateTime? @map("hire_date") @db.Date
+  isActive Boolean? @map("is_active")
+  note String?
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  // PII polja (kroz v_employees_safe / current_user_can_manage_employee_pii):
+  firstName String? @map("first_name")
+  lastName String? @map("last_name")
+  personalId String? @map("personal_id")
+  birthDate DateTime? @map("birth_date") @db.Date
+  gender String?
+  address String?
+  city String?
+  postalCode String? @map("postal_code")
+  bankName String? @map("bank_name")
+  bankAccount String? @map("bank_account")
+  phonePrivate String? @map("phone_private")
+  emergencyContactName String? @map("emergency_contact_name")
+  emergencyContactPhone String? @map("emergency_contact_phone")
+  slava String?
+  slavaDay String? @map("slava_day")
+  educationLevel String? @map("education_level")
+  educationTitle String? @map("education_title")
+  medicalExamDate DateTime? @map("medical_exam_date") @db.Date
+  medicalExamExpires DateTime? @map("medical_exam_expires") @db.Date
+  team String?
+  workType String @map("work_type")
+  departmentId Int? @map("department_id")
+  subDepartmentId Int? @map("sub_department_id")
+  positionId Int? @map("position_id")
+  emergencyContactRelation String? @map("emergency_contact_relation")
+  emergencyContactPhoneAlt String? @map("emergency_contact_phone_alt")
+  cardBarcode String? @map("card_barcode")
+  @@map("employees")
+}
+
+model Contract {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  contractType String @map("contract_type")
+  contractNumber String? @map("contract_number")
+  position String?
+  dateFrom DateTime @map("date_from") @db.Date
+  dateTo DateTime? @map("date_to") @db.Date
+  isActive Boolean? @map("is_active")
+  note String?
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  archivedAt DateTime? @map("archived_at") @db.Timestamptz(6)
+  archivedBy String? @map("archived_by") @db.Uuid
+  probniRad Boolean @map("probni_rad")
+  probniMeseci Int? @map("probni_meseci")
+  @@map("contracts")
+}
+
+// ---------- Zaposleni: PII tabele (current_user_can_manage_employee_pii) ----------
+model EmployeeChild {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  firstName String @map("first_name")
+  birthDate DateTime? @map("birth_date") @db.Date
+  note String?
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("employee_children")
+}
+
+model EmployeeBankCard {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  bank String
+  cardNumber String? @map("card_number")
+  validThru DateTime? @map("valid_thru") @db.Date
+  isActive Boolean @map("is_active")
+  note String?
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("employee_bank_cards")
+}
+
+model EmployeeForeignDoc {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  passportNumber String? @map("passport_number")
+  passportExpiry DateTime? @map("passport_expiry") @db.Date
+  visaNumber String? @map("visa_number")
+  visaExpiry DateTime? @map("visa_expiry") @db.Date
+  workPermitNumber String? @map("work_permit_number")
+  workPermitExpiry DateTime? @map("work_permit_expiry") @db.Date
+  residencePermitNumber String? @map("residence_permit_number")
+  residencePermitExpiry DateTime? @map("residence_permit_expiry") @db.Date
+  residenceAddress String? @map("residence_address")
+  bankAccount String? @map("bank_account")
+  foreignIdNumber String? @map("foreign_id_number")
+  note String?
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("employee_foreign_docs")
+}
+
+model EmployeePersonalDoc {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  lkNumber String? @map("lk_number")
+  lkExpiry DateTime? @map("lk_expiry") @db.Date
+  passportNumber String? @map("passport_number")
+  passportExpiry DateTime? @map("passport_expiry") @db.Date
+  driverLicenseNumber String? @map("driver_license_number")
+  driverLicenseExpiry DateTime? @map("driver_license_expiry") @db.Date
+  driverLicenseCategories String? @map("driver_license_categories")
+  note String?
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("employee_personal_docs")
+}
+
+model EmployeeDocument {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  docType String @map("doc_type")
+  fileName String @map("file_name")
+  storagePath String @map("storage_path")
+  mimeType String? @map("mime_type")
+  sizeBytes BigInt? @map("size_bytes")
+  description String?
+  uploadedAt DateTime @default(now()) @map("uploaded_at") @db.Timestamptz(6)
+  uploadedBy String? @map("uploaded_by") @db.Uuid
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+  @@map("employee_documents")
+}
+
+model KadrCertificate {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  certType String @map("cert_type")
+  certName String @map("cert_name")
+  issuer String?
+  documentNo String? @map("document_no")
+  issuedOn DateTime @map("issued_on") @db.Date
+  expiresOn DateTime? @map("expires_on") @db.Date
+  costRsd Decimal @map("cost_rsd") @db.Decimal
+  documentUrl String? @map("document_url")
+  note String?
+  createdBy String? @map("created_by") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("kadr_certificates")
+}
+
+model KadrMedicalExam {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  examDate DateTime @map("exam_date") @db.Date
+  validUntil DateTime? @map("valid_until") @db.Date
+  examType String @map("exam_type")
+  institution String?
+  costRsd Decimal @map("cost_rsd") @db.Decimal
+  documentUrl String? @map("document_url")
+  note String?
+  createdBy String? @map("created_by") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("kadr_medical_exams")
+}
+
+model EmployeeBadge {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  badgeType String @map("badge_type")
+  code String
+  codeShort String? @map("code_short")
+  validFrom DateTime @default(now()) @map("valid_from") @db.Timestamptz(6)
+  validTo DateTime? @map("valid_to") @db.Timestamptz(6)
+  isActive Boolean @map("is_active")
+  source String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("employee_badges")
+}
+
+// ---------- Odmori ----------
+model VacationRequest {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  year Int
+  dateFrom DateTime @map("date_from") @db.Date
+  dateTo DateTime @map("date_to") @db.Date
+  daysCount Int @map("days_count")
+  note String
+  status String
+  reviewedBy String? @map("reviewed_by")
+  reviewedAt DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  rejectionNote String? @map("rejection_note")
+  submittedBy String @map("submitted_by")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  level1By String? @map("level1_by")
+  level1At DateTime? @map("level1_at") @db.Timestamptz(6)
+  @@map("vacation_requests")
+}
+
+model VacationEntitlement {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  year Int
+  daysTotal Int @map("days_total")
+  daysCarriedOver Int @map("days_carried_over")
+  note String?
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  reviewFlag String? @map("review_flag")
+  source String?
+  openingUsed Int @map("opening_used")
+  accrualModel Boolean @map("accrual_model")
+  accrualBase Int @map("accrual_base")
+  accrualStart DateTime? @map("accrual_start") @db.Date
+  advanceApproved Boolean @map("advance_approved")
+  advanceApprovedBy String? @map("advance_approved_by")
+  advanceApprovedAt DateTime? @map("advance_approved_at") @db.Timestamptz(6)
+  advanceNote String? @map("advance_note")
+  @@map("vacation_entitlements")
+}
+
+model VacationHistory {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  year Int
+  entitledDays Int? @map("entitled_days")
+  usedDays Int? @map("used_days")
+  remainingDays Int? @map("remaining_days")
+  entries Json @map("entries") @db.JsonB
+  rawBlock String? @map("raw_block")
+  source String
+  sourceFile String? @map("source_file")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("vacation_history")
+}
+
+model VacationBonusDay {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  year Int
+  days Decimal @db.Decimal
+  workDate DateTime? @map("work_date") @db.Date
+  reason String
+  makeupRequestId String? @map("makeup_request_id") @db.Uuid
+  addedBy String? @map("added_by")
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  @@map("vacation_bonus_days")
+}
+
+model Absence {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  type String
+  dateFrom DateTime @map("date_from") @db.Date
+  dateTo DateTime @map("date_to") @db.Date
+  daysCount Int? @map("days_count")
+  note String?
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  paidReason String? @map("paid_reason")
+  absenceSubtype String? @map("absence_subtype")
+  slobodanReason String? @map("slobodan_reason")
+  archivedAt DateTime? @map("archived_at") @db.Timestamptz(6)
+  archivedBy String? @map("archived_by") @db.Uuid
+  @@map("absences")
+}
+
+model MakeupRequest {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  absenceDate DateTime @map("absence_date") @db.Date
+  absenceHours Decimal @map("absence_hours") @db.Decimal
+  reason String
+  makeupPlan String @map("makeup_plan")
+  makeupDeadline DateTime? @map("makeup_deadline") @db.Date
+  status String
+  level1By String? @map("level1_by")
+  level1At DateTime? @map("level1_at") @db.Timestamptz(6)
+  reviewedBy String? @map("reviewed_by")
+  reviewedAt DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  completedBy String? @map("completed_by")
+  completedAt DateTime? @map("completed_at") @db.Timestamptz(6)
+  rejectionNote String? @map("rejection_note")
+  submittedBy String @map("submitted_by")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  compensationType String @map("compensation_type")
+  weekendWorkDate DateTime? @map("weekend_work_date") @db.Date
+  stornoBy String? @map("storno_by")
+  stornoAt DateTime? @map("storno_at") @db.Timestamptz(6)
+  stornoNote String? @map("storno_note")
+  @@map("makeup_requests")
+}
+
+model PaidLeaveRequest {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  leaveType String @map("leave_type")
+  dateFrom DateTime @map("date_from") @db.Date
+  dateTo DateTime @map("date_to") @db.Date
+  daysCount Int @map("days_count")
+  reason String
+  proofNote String @map("proof_note")
+  status String
+  level1By String? @map("level1_by")
+  level1At DateTime? @map("level1_at") @db.Timestamptz(6)
+  reviewedBy String? @map("reviewed_by")
+  reviewedAt DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  rejectionNote String? @map("rejection_note")
+  submittedBy String @map("submitted_by")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("paid_leave_requests")
+}
+
+model NopRequest {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  workDate DateTime @map("work_date") @db.Date
+  reason String?
+  status String
+  requestedBy String? @map("requested_by")
+  reviewedBy String? @map("reviewed_by")
+  reviewedAt DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  reviewNote String? @map("review_note")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("nop_requests")
+}
+
+// ---------- Sati ----------
+model WorkHours {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  workDate DateTime @map("work_date") @db.Date
+  hours Decimal @db.Decimal
+  overtimeHours Decimal @map("overtime_hours") @db.Decimal
+  projectRef String? @map("project_ref")
+  note String?
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  fieldHours Decimal @map("field_hours") @db.Decimal
+  absenceCode String? @map("absence_code")
+  twoMachineHours Decimal @map("two_machine_hours") @db.Decimal
+  fieldSubtype String? @map("field_subtype")
+  absenceSubtype String? @map("absence_subtype")
+  lastEditedBy String? @map("last_edited_by")
+  fieldPredmetBroj String? @map("field_predmet_broj")
+  fieldPredmetNaziv String? @map("field_predmet_naziv")
+  @@map("work_hours")
+}
+
+model WorkHoursRemark {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  year Int
+  month Int
+  note String
+  status String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  resolvedBy String? @map("resolved_by")
+  resolvedAt DateTime? @map("resolved_at") @db.Timestamptz(6)
+  @@map("work_hours_remarks")
+}
+
+model AttendanceCorrection {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  day DateTime @db.Date
+  correctedIn DateTime? @map("corrected_in") @db.Time(6)
+  correctedOut DateTime? @map("corrected_out") @db.Time(6)
+  reason String
+  status String
+  createdBy String @map("created_by")
+  createdForSelf Boolean @map("created_for_self")
+  eventIds BigInt[] @map("event_ids")
+  cancelledBy String? @map("cancelled_by")
+  cancelledAt DateTime? @map("cancelled_at") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("attendance_corrections")
+}
+
+model AttendanceNotifyExtra {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  subDepartmentId Int? @map("sub_department_id")
+  email String
+  note String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  @@map("attendance_notify_extra")
+}
+
+// ---------- Zarade (admin-only; immutability trigger) ----------
+model SalaryTerm {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  salaryType String @map("salary_type")
+  effectiveFrom DateTime @map("effective_from") @db.Date
+  effectiveTo DateTime? @map("effective_to") @db.Date
+  amount Decimal @db.Decimal
+  amountType String @map("amount_type")
+  currency String
+  hourlyRate Decimal? @map("hourly_rate") @db.Decimal
+  contractRef String? @map("contract_ref")
+  note String?
+  createdBy String? @map("created_by")
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  transportAllowanceRsd Decimal @map("transport_allowance_rsd") @db.Decimal
+  perDiemRsd Decimal @map("per_diem_rsd") @db.Decimal
+  perDiemEur Decimal @map("per_diem_eur") @db.Decimal
+  compensationModel String? @map("compensation_model")
+  fixedAmount Decimal @map("fixed_amount") @db.Decimal
+  fixedTransportComponent Decimal @map("fixed_transport_component") @db.Decimal
+  fixedExtraHourRate Decimal @map("fixed_extra_hour_rate") @db.Decimal
+  firstPartAmount Decimal @map("first_part_amount") @db.Decimal
+  splitHourRate Decimal @map("split_hour_rate") @db.Decimal
+  splitTransportAmount Decimal @map("split_transport_amount") @db.Decimal
+  hourlyTransportAmount Decimal @map("hourly_transport_amount") @db.Decimal
+  terrainDomesticRate Decimal @map("terrain_domestic_rate") @db.Decimal
+  terrainForeignRate Decimal @map("terrain_foreign_rate") @db.Decimal
+  netoRsd Decimal? @map("neto_rsd") @db.Decimal
+  brutoRsd Decimal? @map("bruto_rsd") @db.Decimal
+  approvedBy String? @map("approved_by")
+  approvedAt DateTime? @map("approved_at") @db.Date
+  fixedNoExtraHours Boolean @map("fixed_no_extra_hours")
+  paymentWindowOverride String? @map("payment_window_override")
+  payrollGroup String @map("payroll_group")
+  cashAllowanceRsd Decimal @map("cash_allowance_rsd") @db.Decimal
+  @@map("salary_terms")
+}
+
+model SalaryPayroll {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  periodYear Int @map("period_year")
+  periodMonth Int @map("period_month")
+  salaryType String @map("salary_type")
+  advanceAmount Decimal @map("advance_amount") @db.Decimal
+  advancePaidOn DateTime? @map("advance_paid_on") @db.Date
+  advanceNote String? @map("advance_note")
+  fixedSalary Decimal @map("fixed_salary") @db.Decimal
+  hoursWorked Decimal @map("hours_worked") @db.Decimal
+  hourlyRate Decimal @map("hourly_rate") @db.Decimal
+  transportRsd Decimal @map("transport_rsd") @db.Decimal
+  domesticDays Int @map("domestic_days")
+  perDiemRsd Decimal @map("per_diem_rsd") @db.Decimal
+  foreignDays Int @map("foreign_days")
+  perDiemEur Decimal @map("per_diem_eur") @db.Decimal
+  totalRsd Decimal @map("total_rsd") @db.Decimal
+  totalEur Decimal @map("total_eur") @db.Decimal
+  secondPartRsd Decimal @map("second_part_rsd") @db.Decimal
+  finalPaidOn DateTime? @map("final_paid_on") @db.Date
+  status String
+  note String?
+  createdBy String? @map("created_by")
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  compensationModel String? @map("compensation_model")
+  fondSatiMeseca Decimal @map("fond_sati_meseca") @db.Decimal
+  redovanRadSati Decimal @map("redovan_rad_sati") @db.Decimal
+  prekovremeniSati Decimal @map("prekovremeni_sati") @db.Decimal
+  praznikPlaceniSati Decimal @map("praznik_placeni_sati") @db.Decimal
+  praznikRadSati Decimal @map("praznik_rad_sati") @db.Decimal
+  godisnjiSati Decimal @map("godisnji_sati") @db.Decimal
+  slobodniDaniSati Decimal @map("slobodni_dani_sati") @db.Decimal
+  bolovanje65Sati Decimal @map("bolovanje_65_sati") @db.Decimal
+  bolovanje100Sati Decimal @map("bolovanje_100_sati") @db.Decimal
+  dveMasineSati Decimal @map("dve_masine_sati") @db.Decimal
+  terenUZemljiCount Int @map("teren_u_zemlji_count")
+  terenUInostranstvuCount Int @map("teren_u_inostranstvu_count")
+  payableHours Decimal @map("payable_hours") @db.Decimal
+  ukupnaZarada Decimal @map("ukupna_zarada") @db.Decimal
+  prviDeo Decimal @map("prvi_deo") @db.Decimal
+  preostaloZaIsplatu Decimal @map("preostalo_za_isplatu") @db.Decimal
+  warnings Json @db.JsonB
+  @@map("salary_payroll")
+}
+
+// ---------- Razvoj / 360 / razgovori ----------
+model Assessment {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  cycleId String? @map("cycle_id") @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  planId String? @map("plan_id") @db.Uuid
+  profileId Int? @map("profile_id")
+  periodLabel String @map("period_label")
+  status String
+  visibleToEmployee Boolean @map("visible_to_employee")
+  openedBy String @map("opened_by")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("assessments")
+}
+
+model AssessmentCycle {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  title String
+  periodLabel String @map("period_label")
+  status String
+  openedAt DateTime? @default(now()) @map("opened_at") @db.Timestamptz(6)
+  closedAt DateTime? @map("closed_at") @db.Timestamptz(6)
+  createdBy String @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  @@map("assessment_cycles")
+}
+
+model AssessmentRater {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  assessmentId String @map("assessment_id") @db.Uuid
+  raterKind String @map("rater_kind")
+  raterEmployeeId String? @map("rater_employee_id") @db.Uuid
+  raterEmail String? @map("rater_email")
+  token String?
+  status String
+  invitedAt DateTime? @default(now()) @map("invited_at") @db.Timestamptz(6)
+  submittedAt DateTime? @map("submitted_at") @db.Timestamptz(6)
+  @@map("assessment_raters")
+}
+
+model AssessmentScore {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  raterId String @map("rater_id") @db.Uuid
+  competenceId Int @map("competence_id")
+  level Int? @db.SmallInt
+  comment String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  @@map("assessment_scores")
+}
+
+model AssessmentAnswer {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  raterId String @map("rater_id") @db.Uuid
+  questionCode String @map("question_code")
+  answerText String? @map("answer_text")
+  @@map("assessment_answers")
+}
+
+model AssessmentTarget {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  assessmentId String @map("assessment_id") @db.Uuid
+  competenceId Int @map("competence_id")
+  targetLevel Int? @map("target_level") @db.SmallInt
+  @@map("assessment_targets")
+}
+
+model AssessmentResult {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  assessmentId String @map("assessment_id") @db.Uuid
+  scopeKind String @map("scope_kind")
+  refId Int @map("ref_id")
+  selfAvg Decimal? @map("self_avg") @db.Decimal
+  peerAvg Decimal? @map("peer_avg") @db.Decimal
+  peerCount Int @map("peer_count")
+  leaderVal Decimal? @map("leader_val") @db.Decimal
+  targetVal Decimal? @map("target_val") @db.Decimal
+  @@map("assessment_results")
+}
+
+model DevelopmentPlan {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  periodLabel String @map("period_label")
+  periodStart DateTime? @map("period_start") @db.Date
+  periodEnd DateTime? @map("period_end") @db.Date
+  careerGoalMd String? @map("career_goal_md")
+  targetPositionId Int? @map("target_position_id")
+  mentorEmployeeId String? @map("mentor_employee_id") @db.Uuid
+  summaryMd String? @map("summary_md")
+  selfAssessmentMd String? @map("self_assessment_md")
+  status String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String @map("created_by")
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy String? @map("updated_by")
+  @@map("development_plans")
+}
+
+model DevelopmentCheckin {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  planId String @map("plan_id") @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  checkinDate DateTime @map("checkin_date") @db.Date
+  authorEmail String? @map("author_email")
+  authorKind String? @map("author_kind")
+  noteMd String? @map("note_md")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  @@map("development_checkins")
+}
+
+
+model EmployeeTalk {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  talkType String @map("talk_type")
+  talkDate DateTime @default(now()) @map("talk_date") @db.Date
+  title String?
+  zapisnikMd String? @map("zapisnik_md")
+  status String
+  conductedBy String? @map("conducted_by")
+  planId String? @map("plan_id") @db.Uuid
+  raiseDecision String? @map("raise_decision")
+  raisePercent Decimal? @map("raise_percent") @db.Decimal
+  raiseEffectiveFrom DateTime? @map("raise_effective_from") @db.Date
+  raiseNote String? @map("raise_note")
+  sharedAt DateTime? @map("shared_at") @db.Timestamptz(6)
+  acknowledgedAt DateTime? @map("acknowledged_at") @db.Timestamptz(6)
+  createdBy String? @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedBy String? @map("updated_by")
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("employee_talks")
+}
+
+model CorrectivePlan {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  talkId String? @map("talk_id") @db.Uuid
+  closingTalkId String? @map("closing_talk_id") @db.Uuid
+  reasonMd String? @map("reason_md")
+  status String
+  followupDate DateTime? @map("followup_date") @db.Date
+  followupNotifiedAt DateTime? @map("followup_notified_at") @db.Timestamptz(6)
+  visibleToEmployee Boolean @map("visible_to_employee")
+  createdBy String? @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  closedAt DateTime? @map("closed_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("corrective_plans")
+}
+
+model CorrectiveMeasure {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  planId String @map("plan_id") @db.Uuid
+  descriptionMd String @map("description_md")
+  dueDate DateTime? @map("due_date") @db.Date
+  responsibleEmployeeId String? @map("responsible_employee_id") @db.Uuid
+  status String
+  completedAt DateTime? @map("completed_at") @db.Timestamptz(6)
+  note String?
+  sort Int
+  escalatedAt DateTime? @map("escalated_at") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("corrective_measures")
+}
+
+// ---------- Uvođenje / Izlazak ----------
+model KadrOnboardingRun {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  templateId String? @map("template_id") @db.Uuid
+  kind String
+  startDate DateTime @default(now()) @map("start_date") @db.Date
+  status String
+  note String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String? @map("created_by")
+  @@map("kadr_onboarding_runs")
+}
+
+model KadrOnboardingTask {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  runId String @map("run_id") @db.Uuid
+  title String
+  description String?
+  sortOrder Int @map("sort_order")
+  dueDate DateTime? @map("due_date") @db.Date
+  assigneeHint String? @map("assignee_hint")
+  status String
+  doneAt DateTime? @map("done_at") @db.Timestamptz(6)
+  doneBy String? @map("done_by")
+  note String?
+  @@map("kadr_onboarding_tasks")
+}
+
+model KadrOnboardingTemplate {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name String
+  kind String
+  isActive Boolean @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String? @map("created_by")
+  @@map("kadr_onboarding_templates")
+}
+
+model KadrOnboardingTemplateItem {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  templateId String @map("template_id") @db.Uuid
+  title String
+  description String?
+  sortOrder Int @map("sort_order")
+  offsetDays Int @map("offset_days")
+  assigneeHint String? @map("assignee_hint")
+  @@map("kadr_onboarding_template_items")
+}
+
+// ---------- Sistem ----------
+model KadrNotificationConfig {
+  id Int @id
+  enabled Boolean
+  medicalLeadDays Int @map("medical_lead_days")
+  contractLeadDays Int @map("contract_lead_days")
+  birthdayEnabled Boolean @map("birthday_enabled")
+  workAnniversaryEnabled Boolean @map("work_anniversary_enabled")
+  whatsappRecipients String[] @map("whatsapp_recipients")
+  emailRecipients String[] @map("email_recipients")
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy String? @map("updated_by")
+  childBirthdayEnabled Boolean @map("child_birthday_enabled")
+  birthdayOversightEnabled Boolean @map("birthday_oversight_enabled")
+  birthdayDigestEnabled Boolean @map("birthday_digest_enabled")
+  lkLeadDays Int @map("lk_lead_days")
+  passportLeadDays Int @map("passport_lead_days")
+  driverLicenseLeadDays Int @map("driver_license_lead_days")
+  medicalEmpLeadDays Int @map("medical_emp_lead_days")
+  @@map("kadr_notification_config")
+}
+
+model KadrDocumentAck {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  refType String @map("ref_type")
+  refId String @map("ref_id")
+  label String?
+  ackedAt DateTime @default(now()) @map("acked_at") @db.Timestamptz(6)
+  ackedBy String? @map("acked_by")
+  @@map("kadr_document_ack")
+}
+
+
+model DevicePushToken {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId String @map("user_id") @db.Uuid
+  platform String
+  endpoint String?
+  p256dh String?
+  auth String?
+  token String?
+  userAgent String? @map("user_agent")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  lastSeen DateTime @default(now()) @map("last_seen") @db.Timestamptz(6)
+  @@map("device_push_tokens")
+}
+
+
+model KadrVacationEditorAllowlist {
+  email String @id
+  note String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  @@map("kadr_vacation_editor_allowlist")
+}

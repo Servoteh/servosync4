@@ -35,6 +35,7 @@ import { PodesavanjaModule } from "./modules/podesavanja/podesavanja.module";
 import { OdrzavanjeModule } from "./modules/odrzavanje/odrzavanje.module";
 import { EnergetikaModule } from "./modules/energetika/energetika.module";
 import { LocationsModule } from "./modules/locations/locations.module";
+import { KadrovskaModule } from "./modules/kadrovska/kadrovska.module";
 
 @Module({
   imports: [
@@ -80,6 +81,8 @@ import { LocationsModule } from "./modules/locations/locations.module";
     EnergetikaModule,
     // 3.0 Talas A — Lokacije delova (loc_*; MODULE_SPEC_lokacije_30.md §0)
     LocationsModule,
+    // 3.0 TALAS G — Kadrovska/HR (MODULE_SPEC_kadrovska_30.md §0); PII + zarade.
+    KadrovskaModule,
   ],
   controllers: [AppController],
   providers: [

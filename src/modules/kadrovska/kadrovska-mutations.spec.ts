@@ -1,0 +1,294 @@
+import { ConflictException, ForbiddenException } from "@nestjs/common";
+import { KadrovskaMutationsService } from "./kadrovska-mutations.service";
+
+/**
+ * R2 WRITE PATH GUARD (MODULE_SPEC_kadrovska_30.md §5 t.48/51, doktrina A.2a/A4).
+ * Dokazuje da SVE mutacije Kadrovske idu kroz `withUserRls`/`runIdempotentRls`
+ * (RLS + GUC), NIKAD kroz `this.sy15.db` (BYPASSRLS) — inače bi PII/zarade write
+ * politike bile zaobiđene. Plus: idempotencija (create=obavezan clientEventId),
+ * optimistic-lock → 409, SQLSTATE 42501 → 403.
+ */
+describe("Kadrovska R2 mutacije — write-path guard + idempotencija", () => {
+  const EMAIL = "test@servoteh.com";
+  const UUID = "3b241101-e2bb-4255-8caf-4136c566a962";
+
+  let dbAccessed = false;
+  let withUserRls: jest.Mock;
+  let runIdempotentRls: jest.Mock;
+  let service: KadrovskaMutationsService;
+
+  const modelStub = {
+    create: jest.fn().mockResolvedValue({ id: UUID }),
+    update: jest.fn().mockResolvedValue({ id: UUID }),
+    updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+    findFirst: jest.fn().mockResolvedValue(null),
+    findUnique: jest.fn().mockResolvedValue({ updatedAt: new Date() }),
+    findMany: jest.fn().mockResolvedValue([]),
+  };
+  const mkTx = () =>
+    new Proxy(
+      {},
+      {
+        get(_t, prop) {
+          if (prop === "$queryRaw")
+            return jest.fn().mockResolvedValue([{ v: { applied: true } }]);
+          if (prop === "$executeRaw") return jest.fn().mockResolvedValue(1);
+          return modelStub;
+        },
+      },
+    );
+
+  beforeEach(() => {
+    dbAccessed = false;
+    withUserRls = jest.fn(async (_e: string, fn: (tx: unknown) => Promise<unknown>) =>
+      fn(mkTx()),
+    );
+    runIdempotentRls = jest.fn(async (_e, _cid, _a, fn: (tx: unknown) => Promise<unknown>) => ({
+      idempotent: false,
+      result: await fn(mkTx()),
+    }));
+    const sy15 = {
+      withUserRls,
+      runIdempotentRls,
+      withUser: jest.fn(),
+      runIdempotent: jest.fn(),
+    } as Record<string, unknown>;
+    Object.defineProperty(sy15, "db", {
+      get() {
+        dbAccessed = true;
+        throw new Error("PII LEAK: this.sy15.db (BYPASSRLS) dodirnut u write putanji");
+      },
+    });
+    const storage = { upload: jest.fn(), signUrl: jest.fn(), remove: jest.fn() };
+    service = new KadrovskaMutationsService(sy15 as never, storage as never);
+  });
+
+  it("kreiranje (create) ide kroz runIdempotentRls sa clientEventId + email", async () => {
+    await service.createAbsence(EMAIL, {
+      clientEventId: UUID,
+      employeeId: UUID,
+      type: "godisnji",
+      dateFrom: "2026-07-01",
+      dateTo: "2026-07-05",
+    } as never);
+    expect(runIdempotentRls).toHaveBeenCalledTimes(1);
+    expect(runIdempotentRls.mock.calls[0][0]).toBe(EMAIL);
+    expect(runIdempotentRls.mock.calls[0][1]).toBe(UUID);
+    expect(withUserRls).not.toHaveBeenCalled();
+    expect(dbAccessed).toBe(false);
+  });
+
+  it("odluka bez clientEventId → withUserRls; sa clientEventId → runIdempotentRls", async () => {
+    await service.vacationApprove(EMAIL, UUID, {});
+    expect(withUserRls).toHaveBeenCalledTimes(1);
+    expect(runIdempotentRls).not.toHaveBeenCalled();
+
+    withUserRls.mockClear();
+    await service.vacationApprove(EMAIL, UUID, { clientEventId: UUID });
+    expect(runIdempotentRls).toHaveBeenCalledTimes(1);
+    expect(withUserRls).not.toHaveBeenCalled();
+  });
+
+  it("nijedna mutacija ne dodiruje this.sy15.db (BYPASSRLS sentinel)", async () => {
+    await Promise.allSettled([
+      service.submitVacation(EMAIL, { clientEventId: UUID, year: 2026, dateFrom: "2026-07-01", dateTo: "2026-07-02", daysCount: 2 } as never),
+      service.vacationReject(EMAIL, UUID, { note: "x" }),
+      service.gridBatch(EMAIL, { rows: [{ employeeId: UUID, workDate: "2026-07-01", hours: 8 }] } as never),
+      service.gridSetGo(EMAIL, { employeeId: UUID, dateFrom: "2026-07-01", dateTo: "2026-07-02" }),
+      service.createEmployee(EMAIL, { clientEventId: UUID, fullName: "X", workType: "ugovor" } as never),
+      service.createChild(EMAIL, UUID, { clientEventId: UUID, firstName: "A" } as never),
+      service.createBankCard(EMAIL, UUID, { clientEventId: UUID, bank: "B" } as never),
+      service.createMedical(EMAIL, UUID, { clientEventId: UUID, examDate: "2026-07-01", examType: "sistematski" } as never),
+      service.createSalaryTerm(EMAIL, { clientEventId: UUID, employeeId: UUID, salaryType: "ugovor", effectiveFrom: "2026-07-01" } as never),
+      service.payrollInit(EMAIL, { year: 2026, month: 7 }),
+      service.updateNotificationConfig(EMAIL, { enabled: true }),
+      service.triggerWeeklyRisk(EMAIL),
+    ]);
+    expect(dbAccessed).toBe(false);
+  });
+
+  it("optimistic-lock: {applied:false, reason:'stale'} → 409 Conflict", async () => {
+    withUserRls = jest.fn(async (_e, fn: (tx: unknown) => Promise<unknown>) =>
+      fn(
+        new Proxy(
+          {},
+          {
+            get(_t, prop) {
+              if (prop === "$queryRaw")
+                return jest
+                  .fn()
+                  .mockResolvedValue([{ v: { applied: false, reason: "stale" } }]);
+              return modelStub;
+            },
+          },
+        ),
+      ),
+    );
+    (service as unknown as { sy15: { withUserRls: unknown } }).sy15.withUserRls = withUserRls;
+    await expect(
+      service.updateEmployee(EMAIL, UUID, { patch: { note: "x" } }),
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it("SQLSTATE 42501 (RLS/DEFINER guard) → 403 Forbidden", async () => {
+    const err = Object.assign(new Error("permission_denied"), { code: "42501" });
+    (service as unknown as { sy15: { withUserRls: unknown } }).sy15.withUserRls = jest
+      .fn()
+      .mockRejectedValue(err);
+    await expect(service.vacationApprove(EMAIL, UUID, {})).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+  });
+});
+
+/**
+ * INTEGRACIONI TESTOVI payroll recompute→engine WIRING (adversarni review R2).
+ * Zlatni testovi engine-a su izolovani i NISU uhvatili dva CRITICAL bug-a u wiring-u:
+ *  #1 mapTerm bez `amount` fallbacka → fiksni zaposleni (unet kroz kadr_set_contract_salary:
+ *     amount=neto, fixed_amount=0) dobija platu 0;
+ *  #2 fond dvostruko oduzima neplaceno → potplaćivanje.
+ * Ovi testovi voze CELU putanju recompute (grid→terms→engine) na mokovanoj sy15 tx.
+ */
+describe("payrollRecompute — integracija (mapTerm/fond wiring, novac)", () => {
+  const EMAIL = "admin@servoteh.com";
+  const EMP = "3b241101-e2bb-4255-8caf-4136c566a962";
+
+  function makeService(tx: unknown) {
+    const sy15 = {
+      withUserRls: jest.fn(async (_e: string, fn: (t: unknown) => Promise<unknown>) => fn(tx)),
+      runIdempotentRls: jest.fn(),
+      withUser: jest.fn(),
+      runIdempotent: jest.fn(),
+    } as Record<string, unknown>;
+    Object.defineProperty(sy15, "db", {
+      get() {
+        throw new Error("BYPASSRLS dodirnut u recompute");
+      },
+    });
+    const storage = { upload: jest.fn(), signUrl: jest.fn(), remove: jest.fn() };
+    return new KadrovskaMutationsService(sy15 as never, storage as never);
+  }
+
+  // tx sa: bez praznika, jedan zaposleni, zadatim work_hours + term redom.
+  // $queryRaw redosled u recompute: (1) salary_payroll (postojeći) → [], (2) salary_terms → [term].
+  function makeTx(opts: {
+    workType?: string;
+    workHours: Array<Record<string, unknown>>;
+    term: Record<string, unknown>;
+  }) {
+    return {
+      kadrHoliday: { findMany: jest.fn().mockResolvedValue([]) },
+      employee: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue([
+            { id: EMP, workType: opts.workType ?? "ugovor", hireDate: null, fullName: "Test Radnik" },
+          ]),
+      },
+      workHours: { findMany: jest.fn().mockResolvedValue(opts.workHours) },
+      salaryPayroll: { findFirst: jest.fn().mockResolvedValue(null) },
+      $queryRaw: jest
+        .fn()
+        .mockResolvedValueOnce([]) // postojeći salary_payroll red
+        .mockResolvedValueOnce([opts.term]), // salary_terms
+    };
+  }
+
+  function weekdaysInMonth(y: number, m: number): number {
+    const last = new Date(y, m, 0).getDate();
+    let c = 0;
+    for (let d = 1; d <= last; d++) {
+      const dow = new Date(y, m - 1, d).getDay();
+      if (dow !== 0 && dow !== 6) c++;
+    }
+    return c;
+  }
+  function firstNWeekdayUtcDates(y: number, m: number, n: number): Date[] {
+    const out: Date[] = [];
+    const last = new Date(y, m, 0).getDate();
+    for (let d = 1; d <= last && out.length < n; d++) {
+      const dow = new Date(y, m - 1, d).getDay();
+      if (dow !== 0 && dow !== 6) out.push(new Date(Date.UTC(y, m - 1, d)));
+    }
+    return out;
+  }
+
+  it("#1 fiksno sa amount=70000 / fixed_amount=0 → ukupna_zarada 70000 (NE 0)", async () => {
+    // kadr_set_contract_salary INSERT-uje fiksno OVAKO: amount=neto, fixed_amount=0.
+    const tx = makeTx({
+      workHours: [],
+      term: {
+        salary_type: "ugovor",
+        compensation_model: "fiksno",
+        fixed_amount: 0,
+        amount: 70000,
+        hourly_rate: 0,
+      },
+    });
+    const svc = makeService(tx);
+    const out = (await svc.payrollRecompute(EMAIL, { year: 2026, month: 7 })) as {
+      data: { rows: Array<{ ukupna_zarada: number; compensation_model: string }> };
+    };
+    expect(out.data.rows[0].compensation_model).toBe("fiksno");
+    expect(out.data.rows[0].ukupna_zarada).toBe(70000);
+  });
+
+  it("#1 satnica sa amount=600 (salary_type=satnica) → hourly=600 (NE 0)", async () => {
+    // 160h redovnih × 600 = 96000. hourly izvire iz `amount` kad je salary_type='satnica'.
+    const y = 2026;
+    const m = 7;
+    // 20 radnih dana × 8h; koristimo prvih 20 weekday-a sa 8h.
+    const days = firstNWeekdayUtcDates(y, m, 20).map((wd) => ({
+      workDate: wd,
+      hours: 8,
+      overtimeHours: 0,
+      twoMachineHours: 0,
+      fieldHours: 0,
+      absenceCode: null,
+      absenceSubtype: null,
+    }));
+    const tx = makeTx({
+      workHours: days,
+      term: {
+        salary_type: "satnica",
+        compensation_model: "satnica",
+        amount: 600,
+        hourly_rate: 0,
+        hourly_transport_amount: 0,
+      },
+    });
+    const svc = makeService(tx);
+    const out = (await svc.payrollRecompute(EMAIL, { year: y, month: m })) as {
+      data: { rows: Array<{ ukupna_zarada: number }> };
+    };
+    expect(out.data.rows[0].ukupna_zarada).toBe(20 * 8 * 600);
+  });
+
+  it("#2 fiksno 100000 + 5 neplaćenih (22-radna meseca) → 77272.73 + fond 176 (NE 70588.24/136)", async () => {
+    const y = 2026;
+    let m = 0;
+    for (let mm = 1; mm <= 12; mm++) if (weekdaysInMonth(y, mm) === 22) { m = mm; break; }
+    expect(m).toBeGreaterThan(0); // postoji 22-radni mesec u 2026
+    const npDays = firstNWeekdayUtcDates(y, m, 5).map((wd) => ({
+      workDate: wd,
+      hours: 0,
+      overtimeHours: 0,
+      twoMachineHours: 0,
+      fieldHours: 0,
+      absenceCode: "np",
+      absenceSubtype: null,
+    }));
+    const tx = makeTx({
+      workHours: npDays,
+      term: { salary_type: "ugovor", compensation_model: "fiksno", fixed_amount: 100000, amount: 0 },
+    });
+    const svc = makeService(tx);
+    const out = (await svc.payrollRecompute(EMAIL, { year: y, month: m })) as {
+      data: { rows: Array<{ ukupna_zarada: number; fond_sati_meseca: number }> };
+    };
+    // PUN fond (22×8=176) — NE umanjen (136); jedna proporcionalna redukcija 17/22.
+    expect(out.data.rows[0].fond_sati_meseca).toBe(176);
+    expect(out.data.rows[0].ukupna_zarada).toBe(77272.73);
+  });
+});

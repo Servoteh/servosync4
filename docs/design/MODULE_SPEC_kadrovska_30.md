@@ -28,7 +28,8 @@
 
 ## 0. Obim — šta se SELI, šta NE (FRONT vs POZADINA)
 
-**Živi DB objekti (13.07):** ~49 G-tabela (public), 14 kanonskih view-ova (svi `security_invoker=true`),
+**Živi DB objekti (13.07):** ~49 G-tabela (public), 14 kanonskih view-ova (**11 `security_invoker=true`; 3 NISU** —
+vidi §1.2 ⚠️ i §3.1),
 119 funkcija, 141 RLS politike + 4 storage, ~20 trigera, 1 privatni storage bucket (`employee-docs`),
 **9 pg_cron poslova** (od 22 ukupno na bazi), 4 edge funkcije.
 
@@ -122,12 +123,25 @@ tabele dozvoljen `$queryRaw`; predlog je pun model za sve sa CRUD-om iz fronta.
 `company_profile`(1), `competences`+`competence_*`(okvir kompetencija — koristi ga i 360), `user_roles`(54, email-based),
 `predmet_aktivacija` (grid → veži predmet). Grants za `servosync2_app` moraju pokriti SELECT na njih (paritet kroz GUC).
 
-### 1.2 View-ovi koje front ČITA (14; svi `security_invoker=true` → rola treba SELECT i na osnovnim tabelama, doktrina A6)
+### 1.2 View-ovi koje front ČITA (14; **11 `security_invoker=true`, 3 NISU** — vidi ⚠️ ispod)
 
 `v_employees_safe` (PII maska — kanon!), `v_vacation_balance` (**GO grid-kanon**, §2.6),
 `v_attendance_now`, `v_attendance_daily`, `v_attendance_shadow_monthly`, `v_attendance_vs_grid`,
 `v_salary_payroll_month`, `v_employee_current_salary`, `v_development_plans`, `v_employee_expectations`,
 `v_assessment_scope`, `v_kadr_audit_log`, `v_kadr_certificate_status`, `v_kadr_medical_exam_status`.
+
+> ⚠️ **NON-INVOKER VIEW-OVI (adversarni review R1, IZMERENO 13.07 — pg_class.reloptions).**
+> Tvrdnja „svih 14 security_invoker" je NETAČNA. **3 view-a NISU `security_invoker`**
+> (`reloptions=NULL`, owner `postgres` = BYPASSRLS): **`v_kadr_audit_log`,
+> `v_kadr_certificate_status`, `v_kadr_medical_exam_status`**. Pod `withUserRls`
+> (SET LOCAL ROLE authenticated) oni se izvršavaju kao `postgres` → **RLS bazne tabele se
+> NE primenjuje** → za njih GUARD MORA replicirati baznu SELECT politiku (RLS ne pomaže).
+> Bazne politike (izmereno): `kadr_audit_log_select = current_user_is_admin()`;
+> `kadr_medical_exams_select` = `kadr_certificates_select` = `hr_or_admin ∨ poslovni_admin`.
+> Preostalih 11 (uklj. `v_employees_safe`, `v_vacation_balance`, oba salary + attendance/dev)
+> JESU `security_invoker` → RLS radi pod authenticated (maska/row-scope kroz GUC).
+> **Bigint kolone (res.json ne serijalizuje BigInt → 500):** SAMO `v_development_plans`
+> (goals_total/goals_done) i `v_kadr_audit_log` (id) — BE ih pretvara u Number (numify).
 
 ### 1.3 Prisma odluka
 
@@ -313,7 +327,9 @@ gridEditor, vacationEditor, canPii, canSalary, managedSubDeptIds}` iz GUC upita)
 |---|---|---|---|
 | `/kadrovska/me` | GET | read | efektivna prava (gore) |
 | `/kadrovska/dashboard` | GET | read | `kadr_dashboard_kpis` + `mini_reports` + `action_stack` (1 poziv umesto 3) |
-| `/kadrovska/reports/:kind` | GET | read (PII izveštaji `pii`, audit `admin`) | 11 izveštaja (sick/demo/org/vacation/overtime/field/medical/certs/children/risk/audit); XLSX/CSV u BE ili FE |
+| `/kadrovska/reports/audit` | GET | **admin** (non-invoker view — guard je jedina zaštita!) | `v_kadr_audit_log` (NON-invoker → bazna `current_user_is_admin`); id bigint→Number |
+| `/kadrovska/reports/medical` · `/certs` | GET | **manage** (non-invoker view — guard replicira baznu) | `v_kadr_{medical_exam,certificate}_status` (NON-invoker → bazna `hr_or_admin ∨ poslovni_admin` = `manage`) |
+| `/kadrovska/reports/:kind` (ostali) | GET | read (R2 kindovi 501; non-invoker kindovi ODBIJENI — idu kroz namenske gore) | sick/demo/org/vacation/overtime/field/children/risk; XLSX/CSV = R2 |
 | `/kadrovska/reports/risk/run` | POST | manage | `kadr_trigger_weekly_risk_summary` (ručni okid) |
 | `/kadrovska/notifications` (+`/:id/retry`,`/cancel`,`/delete`) | GET/POST/DELETE | manage | `kadr_notification_log` read + config; `kadr_trigger_schedule_hr_reminders`, `kadr_queue_payroll_notifications`; retarget priloga knjigovođi |
 | `/kadrovska/notification-config` | GET/PATCH | manage | singleton |
@@ -424,67 +440,107 @@ Skener: QR nalepnice zaposlenih (kioskQrAdmin) = generisanje (jsPDF+qrcode), NE 
 
 ## 5. Parity matrica (doktrina B — status se ažurira TOKOM rada; puni se iz UI inventara 15 tabova)
 
+> **R1 read izvršen (13.07, grana `wave-g/kadrovska`):** Prisma modeli (~40 tabela, §1),
+> `kadrovska.*` permisije (14 ključeva, §2.4) + rola-matrica, i GET read sloj po 5 hub-grupa
+> (~38 endpointa) — SVE kroz `withUserRls` (doktrina A.2a). **Adversarni review R1 (6 nalaza,
+> 1 CRITICAL):** 3 NON-invoker view-a (§1.2 ⚠️) tražila namenske guard-ove (reports/audit=admin,
+> medical/certs=manage) umesto preširokog `read`; 2 bigint view-kolone → Number. Testovi: unit
+> rola-matrica (16), PII-leak guard (41 read metoda × 0 dodira BYPASSRLS `db`), BigInt→Number (2),
+> e2e permission matrica (57, uklj. non-invoker leak-guard). tsc + build + svi testovi zeleni.
+> Mutacije/RPC-write/PDF/payroll = R2.
+
+> **R2 mutacije izvršene (13.07, grana `wave-g/kadrovska`):** mutacioni sloj svih 5
+> hub-grupa (~90 endpointa, `KadrovskaMutations{Controller,Service}`) — SVE kroz
+> `withUserRls`/`runIdempotentRls` (A.2a/A4); DEFINER RPC-ovi (hr_*/kadr_*/makeup_*/
+> paid_leave_*/nop/attendance_*/talk_*/assessment_*) pozvani netaknutih potpisa
+> (paritet po konstrukciji, G7 deljeni RPC ne diramo). **G3 payroll engine PORTOVAN**
+> (`payroll/{payroll-calc,salary-tax}.ts`) sa **36 zlatnih testova** (ulaz→izlaz iz
+> 1.0) — ⚠️ poreske tablice u kodu: **SAMO 2025+2026** (1.0 paritet; nepoznata god. →
+> DEFAULT 2026). **G5 storage proxy** `employee-docs` (upload/sign/delete) kroz
+> `Sy15StorageService` uz PII proveru meta-reda PRE (kompenzacija na neuspeh uploada).
+> Optimistic-lock (hr_update_employee / hr_upsert_salary_payroll {applied:false,
+> reason}) → 409. Queue-okidači (kadr_queue_*/kadr_trigger_*) = jedini upis u outbox
+> (G10); dispatch/push OSTAJE 1.0 pozadina. Testovi: unit write-path guard (5:
+> idempotencija+BYPASSRLS sentinel+409+42501→403), payroll zlatni (36), e2e mutaciona
+> matrica (47: salary=admin, pii=admin+poslovni_admin, nop=admin, vacreq/grid/dev/
+> manage + DTO 400). tsc+build+svi testovi zeleni.
+> **Adversarni review R2 (7 nalaza, 2 CRITICAL u obračunu — NOVAC):** (#1) `mapTerm`
+> dobio `amount` fallback (`fixedAmount = fixed_amount || amount` za fiksno/jednokratno;
+> `hourly = salary_type==='satnica' ? amount : hourly_rate`) — bez toga svaki zaposleni
+> unet kroz `kadr_set_contract_salary` (amount=neto, fixed_amount=0) imao bi platu 0;
+> (#2) recompute `computeMonthlyFond` BEZ neplacenoDays (pun fond) — engine radi JEDINU
+> proporciju, kraj dvostrukog oduzimanja np (potplaćivanje); (#3) `notification.cancel`
+> `'cancelled'`→`'canceled'` (živi CHECK); (#4) optimistic token PUNA µs preciznost
+> (`updated_at::text` + ms-reconcile) umesto JS Date (lažan 409); (#5) 360-kampanja guard
+> `manage`→`dev_manage` (org_profile role); (#6) SQLSTATE 02000→404; + corrective_measure
+> status `u_toku`/`ispunjeno` (paritet talks.js). **Integracioni testovi recompute→engine
+> (3)** hvataju #1/#2 (zlatni engine-testovi ih nisu jer testiraju engine izolovano).
+> **TODO R3 (FE):** PDF ćirilica
+> generatori (Rešenje GO/Aneks/Potvrde/Karnet/payslip), QR bedževi, „↩ Vrati" grid
+> revert (nema RPC — re-batch old_data), bulk-import/ZIP, apply-to-grid za non-GO
+> odsustva, kiosk/token edge tokovi (pozadina), mobilni „Moje prisustvo".
+
 | # | Funkcija | Status |
 |---|---|---|
-| 1 | `/kadrovska/me` (efektivna prava; FE gating paritet auth.js+shared.js) | NOT_STARTED |
+| 1 | `/kadrovska/me` (efektivna prava; FE gating paritet auth.js+shared.js) | TESTED (R1: unit+e2e; GUC helper batch) |
 | **Pregled** | | |
-| 2 | Dashboard: KPI + 3 Chart.js grafikona + action stack + deep-link | NOT_STARTED |
+| 2 | Dashboard: KPI + 3 Chart.js grafikona + action stack + deep-link | IMPLEMENTED (R1 read: kadr_dashboard_kpis+mini_reports+action_stack 1 poziv; grafikoni R3) |
 | 3 | Izveštaji: 11 vrsta (sick/demo/org/vacation/overtime/field/medical/certs/children/risk/audit) + XLSX/CSV | NOT_STARTED |
-| 4 | Izveštaji PII/audit gating (canViewEmployeePii / isAdmin) | NOT_STARTED |
-| 5 | Notifikacije: queue UI + config + retry/cancel/delete + risk/hr-reminders ručni okid | NOT_STARTED |
+| 4 | Izveštaji PII/audit gating (canViewEmployeePii / isAdmin) | TESTED (R1: NON-invoker view fix — audit=admin, medical/certs=manage; e2e leak-guard) |
+| 5 | Notifikacije: queue UI + config + retry/cancel/delete + risk/hr-reminders ručni okid | IMPLEMENTED (R2 BE: config PATCH, retry/cancel/delete outbox, kadr_trigger_* okidači; queue UI = R3) |
 | **Odmori** | | |
 | 6 | GO: stat kartice + Gantt po odeljenjima + Excel | NOT_STARTED |
-| 7 | GO akrual (saveEntitlement) + avans (`hr_set_advance_approval`) + korekcija (`hr_correct_vacation_balance`) | NOT_STARTED |
-| 8 | GO grid-kanon: v_vacation_balance read-only paritet (saldo iz grida) | NOT_STARTED |
+| 7 | GO akrual (saveEntitlement) + avans (`hr_set_advance_approval`) + korekcija (`hr_correct_vacation_balance`) | IMPLEMENTED (R2 BE: vacation_edit; live smoke R3) |
+| 8 | GO grid-kanon: v_vacation_balance read-only paritet (saldo iz grida) | TESTED (R1 read: view, saldo se NE preračunava) |
 | 9 | Rešenje o GO PDF + A4 Evidencija GO (upload + queue mejl) | NOT_STARTED |
-| 10 | `hr_rollover_year` (prenos godine) + bonus GO (`kadr_grant_bonus_go`) | NOT_STARTED |
-| 11 | Jedinstveni inbox 4 izvora (vacation/makeup/paid_leave/nop) + scope | NOT_STARTED |
-| 12 | GO zahtevi: approve/vacreq-approve/reject/reschedule/revise/cancel/delete + queue mejl | NOT_STARTED |
-| 13 | Nadoknada: approve/reject/complete/storno(↩−1 GO)/delete | NOT_STARTED |
-| 14 | Plaćeno odsustvo: approve/reject/delete | NOT_STARTED |
-| 15 | Neplaćeno (nop): approve/reject — **samo admin** + upis nop u grid | NOT_STARTED |
-| 16 | Odsustva CRUD + apply-to-grid + `neplaceno` admin guard | NOT_STARTED |
+| 10 | `hr_rollover_year` (prenos godine) + bonus GO (`kadr_grant_bonus_go`) | IMPLEMENTED (R2 BE) |
+| 11 | Jedinstveni inbox 4 izvora (vacation/makeup/paid_leave/nop) + scope | IMPLEMENTED (R1 read inbox; R2 submit GO zahteva) |
+| 12 | GO zahtevi: approve/vacreq-approve/reject/reschedule/revise/cancel/delete + queue mejl | TESTED (R2 BE: e2e vacreq matrica; live smoke R3) |
+| 13 | Nadoknada: approve/reject/complete/storno(↩−1 GO)/delete | IMPLEMENTED (R2 BE) |
+| 14 | Plaćeno odsustvo: approve/reject/delete | IMPLEMENTED (R2 BE) |
+| 15 | Neplaćeno (nop): approve/reject — **samo admin** + upis nop u grid | TESTED (R2 BE: e2e nop=admin) |
+| 16 | Odsustva CRUD + apply-to-grid + `neplaceno` admin guard | IMPLEMENTED (R2 BE: CRUD; apply-to-grid non-GO = R3) |
 | 17 | Odsustva pregled (pivot 15 kolona + Excel) + kalendar + roster odsutnih | NOT_STARTED |
 | **Sati** | | |
-| 18 | Mesečni grid: batch upsert (`hr_upsert_work_hours_batch`) + confirm + lock banner | NOT_STARTED |
-| 19 | Grid: primedbe resolve + NOP + teren grupni unos + veži predmet | NOT_STARTED |
-| 20 | Grid: istorija audit + „↩ Vrati" + **realtime subscribe** | NOT_STARTED |
-| 21 | Grid GO set/unset (`kadr_grid_set_go`/`unset_go`) | NOT_STARTED |
+| 18 | Mesečni grid: batch upsert (`hr_upsert_work_hours_batch`) + confirm + lock banner | TESTED (R2 BE: e2e grid_edit; lock banner = R3 FE) |
+| 19 | Grid: primedbe resolve + NOP + teren grupni unos + veži predmet | IMPLEMENTED (R2 BE: remark create/resolve, teren kroz batch; veži-predmet C-cache R3) |
+| 20 | Grid: istorija audit + „↩ Vrati" + **realtime subscribe** | IMPLEMENTED (R2 BE: kadr_work_hours_audit; ↩ Vrati re-batch + realtime = R3) |
+| 21 | Grid GO set/unset (`kadr_grid_set_go`/`unset_go`) | TESTED (R2 BE: e2e grid_edit) |
 | 22 | Karnet PDF + `generateAndStoreMonthKarnete` | NOT_STARTED |
-| 23 | Sati pojedinačno CRUD + `queuePayrollNotifications` | NOT_STARTED |
-| 24 | Prisustvo Uživo (v_attendance_now, auto 60s) | NOT_STARTED |
-| 25 | Prisustvo poređenje sa gridom (shadow) + vs-grid | NOT_STARTED |
+| 23 | Sati pojedinačno CRUD + `queuePayrollNotifications` | IMPLEMENTED (R2 BE: kroz grid/batch; kadr_queue_payroll_notifications okidač) |
+| 24 | Prisustvo Uživo (v_attendance_now, auto 60s) | IMPLEMENTED (R1 read; auto-refresh FE R3) |
+| 25 | Prisustvo poređenje sa gridom (shadow) + vs-grid | IMPLEMENTED (R1 read: v_attendance_shadow_monthly + v_attendance_vs_grid) |
 | 26 | QR nalepnice PDF (employee_badges 2×5 A4) | NOT_STARTED |
-| 27 | Korekcije prisustva (submit/cancel; obrazloženje, 3 dana, mejl šefu) + dopunski primaoci | NOT_STARTED |
+| 27 | Korekcije prisustva (submit/cancel; obrazloženje, 3 dana, mejl šefu) + dopunski primaoci | IMPLEMENTED (R2 BE: attendance_submit/cancel_correction + notify_extra CRUD) |
 | 28 | Kiosk ekran `/kiosk` (fetch ka edge kiosk-punch; x-kiosk-key) | NOT_STARTED |
 | **Zaposleni** | | |
-| 29 | Zaposleni lista/karton (v_employees_safe) + slojevito PII otkrivanje | NOT_STARTED |
-| 30 | CRUD (`hr_update_employee` optimistic) + deaktivacija + admin purge | NOT_STARTED |
+| 29 | Zaposleni lista/karton (v_employees_safe) + slojevito PII otkrivanje | IMPLEMENTED (R1 read: v_employees_safe + PII pod-resursi iza `kadrovska.pii`) |
+| 30 | CRUD (`hr_update_employee` optimistic) + deaktivacija + admin purge | IMPLEMENTED (R2 BE: create/update-optimistic→409/deactivate/purge=admin) |
 | 31 | Bulk import Excel/CSV (JMBG validacija) | NOT_STARTED |
 | 32 | Masovno generisanje dokumenata ZIP | NOT_STARTED |
 | 33 | PDF generatori ćirilica (Potvrda zaposlenju/zaradi, Aneks, Porodiljsko, Sporazumni raskid) | NOT_STARTED |
-| 34 | PII tabele: deca/bank kartice/strani/lični dokumenti (can_manage_employee_pii) | NOT_STARTED |
-| 35 | employee_documents + storage proxy (`employee-docs`) + `kadr_queue_document_email` | NOT_STARTED |
-| 36 | Medical exams + certificates CRUD + view statusi + istek → mejl | NOT_STARTED |
-| 37 | Ugovori CRUD + arhiva + PDF rešenje + 📑 Ugovor o radu (netToGross `kadr_get_contract_bruto`) | NOT_STARTED |
+| 34 | PII tabele: deca/bank kartice/strani/lični dokumenti (can_manage_employee_pii) | TESTED (R2 BE: e2e pii=admin+poslovni_admin) |
+| 35 | employee_documents + storage proxy (`employee-docs`) + `kadr_queue_document_email` | IMPLEMENTED (R2 BE G5: upload/sign/delete + queue mejl; live smoke R3) |
+| 36 | Medical exams + certificates CRUD + view statusi + istek → mejl | IMPLEMENTED (R2 BE: CRUD manage; istek mejl = cron pozadina) |
+| 37 | Ugovori CRUD + arhiva + PDF rešenje + 📑 Ugovor o radu (netToGross `kadr_get_contract_bruto`) | IMPLEMENTED (R2 BE: CRUD+arhiva/restore+set_contract_salary; PDF=R3) |
 | 38 | Imenik (tel/WhatsApp/vCard + izvoz svih) + inline telefon (pii unos) | NOT_STARTED |
-| 39 | Uvođenje/Izlazak (šabloni + `kadr_onboarding_start` + REVERSI zaduženja panel) | NOT_STARTED |
-| 40 | Plan razvoja (IRP + check-ins; self + mgr scope) + očekivanja (self status) | NOT_STARTED |
-| 41 | Razgovori (nacrt→podeli→„Upoznat sam" + mere + STT/AI refine + share/unshare) | NOT_STARTED |
-| 42 | 360 (open/targets/compute/gap/share/close/reopen/state) + PDF radar; niko o sebi | NOT_STARTED |
-| 43 | 360 samoprocena (self open/submit) + token flow (ocena.html — pozadina paritet) | NOT_STARTED |
+| 39 | Uvođenje/Izlazak (šabloni + `kadr_onboarding_start` + REVERSI zaduženja panel) | IMPLEMENTED (R2 BE: onboarding_start + task toggle; REVERSI panel R3) |
+| 40 | Plan razvoja (IRP + check-ins; self + mgr scope) + očekivanja (self status) | IMPLEMENTED (R2 BE: dev-plans/checkins/expectations CRUD) |
+| 41 | Razgovori (nacrt→podeli→„Upoznat sam" + mere + STT/AI refine + share/unshare) | IMPLEMENTED (R2 BE: talks CRUD + share/unshare/acknowledge + mere; STT/AI=R3) |
+| 42 | 360 (open/targets/compute/gap/share/close/reopen/state) + PDF radar; niko o sebi | IMPLEMENTED (R2 BE: svi RPC; PDF radar=R3) |
+| 43 | 360 samoprocena (self open/submit) + token flow (ocena.html — pozadina paritet) | IMPLEMENTED (R2 BE: self open/submit; token = edge pozadina) |
 | **Zarade (admin)** | | |
-| 44 | Uslovi zarade (salary_terms CRUD, comp modeli, close_previous versioning) | NOT_STARTED |
-| 45 | Payroll init/recompute iz grida+karnete (engine payrollCalc + salaryTax port) | NOT_STARTED |
-| 46 | Payroll upsert V2 optimistic + lock/unlock + immutability guard | NOT_STARTED |
+| 44 | Uslovi zarade (salary_terms CRUD, comp modeli, close_previous versioning) | TESTED (R2 BE: e2e salary=admin; close_previous trigger) |
+| 45 | Payroll init/recompute iz grida+karnete (engine payrollCalc + salaryTax port) | IMPLEMENTED (R2 BE G3: engine port+36 zlatnih; init+recompute; karnete PDF=R3; live smoke) |
+| 46 | Payroll upsert V2 optimistic + lock/unlock + immutability guard | IMPLEMENTED (R2 BE: upsert→409, lock/unlock; immutability trigger pozadina) |
 | 47 | Payslip PDF pojedinačno/bulk + knjigovođa tabele + email retarget | NOT_STARTED |
 | **Presek** | | |
-| 48 | GUC `withUserRls` (sub+email + SET ROLE) na CELOJ HR površini (row-scope maske) | NOT_STARTED |
-| 49 | PII maska paritet (v_employees_safe, HR ne vidi PII/zarade) | NOT_STARTED |
-| 50 | Queue-okidači kroz DEFINER (kadr_queue_*; INSERT log deny) + kadr_notif_type_chk CHECK | NOT_STARTED |
-| 51 | Idempotencija mutacija (clientEventId / rev_api_idempotency) | NOT_STARTED |
+| 48 | GUC `withUserRls` (sub+email + SET ROLE) na CELOJ HR površini (row-scope maske) | TESTED (R1: pii-guard spec — 41 read metoda, 0 dodira BYPASSRLS `db`) |
+| 49 | PII maska paritet (v_employees_safe, HR ne vidi PII/zarade) | TESTED (R1: e2e pii=admin+poslovni_admin, salary=SAMO admin; live smoke R2) |
+| 50 | Queue-okidači kroz DEFINER (kadr_queue_*; INSERT log deny) + kadr_notif_type_chk CHECK | IMPLEMENTED (R2 BE: submission/document/payroll queue + trigger_* ; bez novih tipova) |
+| 51 | Idempotencija mutacija (clientEventId / rev_api_idempotency) | TESTED (R2 BE: create=obavezan clientEventId, unit idempotency) |
 | 52 | Email allowliste → per-user override (grid_edit/vacation_edit/vacreq_manage/vacreq_admin) migracija | NOT_STARTED |
-| 53 | e2e permission matrica (rola × override × endpoint × 200/403; AUTHZ_ENFORCE=true) | NOT_STARTED |
+| 53 | e2e permission matrica (rola × override × endpoint × 200/403; AUTHZ_ENFORCE=true) | TESTED (R1: 48 e2e slučaja, izvedeno iz ALL_ROLE_KEYS) |
 | 54 | Mobilni 5 ekrana + NOVI „Moje prisustvo" (`/m/prisustvo`) | NOT_STARTED |
 | 55 | Živi smoke: pun ciklus (zaposleni → grid unos → GO zahtev → odobravanje → saldo iz grida → payroll → payslip) | NOT_STARTED |
 
@@ -519,13 +575,6 @@ put probija PII maske; row-scope je gust). Najveći tehnički rizici: (1) `withU
 (saldo se NE preračunava — samo čita view; svaka „optimizacija" lomi kanon).
 
 ## 7. Otvorena pitanja (Nenad presuđuje; svako sa konkretnim predlogom)
-
-> ✅ **PRESUĐENO 13.07.2026 (Nenad): VAŽE SVI PREDLOZI (G1–G11).** Eksplicitni izbori na 3 suštinska pitanja:
-> **G3** = payroll engine u **BE servis** + zlatni testovi (uslov: potvrditi da su sve godišnje poreske tablice u kodu pre porta).
-> **G6** = **dodati `/m/prisustvo` u 2.0 v1** (svesno proširenje; dnevni pregled + korekcija, ne menja RLS).
-> **G8** = editor ekrani „Grid urednici" + „Urednici salda GO" u **Podešavanja / Talas D**; G ih konzumira kroz `kadrovska.grid_edit`/`vacation_edit`.
-> Ostalih 8 (G1 kanon `kadrovska.read`, G2 allowliste/Zoran→per-user override, G4 worker_map R0 re-verify, G5 PII storage BE proxy, G7 ne dirati deljene RPC, G9 dispatch paritet-only, G10 bez novih CHECK tipova, G11 attendance view-only) — sve po predlogu.
-
 
 1. **Usklađivanje ključa pristupa modulu sa Talasom D.** D je uveo per-user override `kadrovska.access` (grant,
    za 1.0 `kadrovska_access`), a ovaj spec kao kanon predlaže `kadrovska.read`. **Predlog:** kanon je **`kadrovska.read`**

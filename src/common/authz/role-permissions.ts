@@ -83,6 +83,15 @@ const ODRZAVANJE_MODULE: readonly PermissionKey[] = [
  *
  * Održavanje (TALAS F): read+report+write svim aktivnim ulogama (`...ODRZAVANJE_MODULE` —
  * coarse-superset, HIGH#1; RLS/RPC presuđuje red); admin_ui = {admin, menadzment, magacioner}.
+ *
+ * Kadrovska TALAS G (MODULE_SPEC_kadrovska_30.md §2.4, presuda §7) — rola-sloj je
+ * VIDLJIVOST (paritet 1.0 auth.js/shared.js gate-ova); PII/row maska OSTAJE u sy15
+ * (RLS + v_employees_safe + DEFINER helperi kroz GUC). Ključne asimetrije (paritet,
+ * NE bug): `kadrovska.pii`/`salary` HR NEMA (admin ∨ poslovni_admin / SAMO admin);
+ * pm/leadpm imaju `edit`+`vacreq_manage`+`dev_manage` ali NE `read` (kao poslovni_admin
+ * kod Sastanaka); projektant_vodja ima `read` ali NE `edit`/`contracts_read`. Allowlist
+ * ključevi (`grid_edit`/`vacation_edit`) i named `vacreq_admin` (Zoran) NE idu nijednoj
+ * roli — samo admin (kroz ALL); ostali ih dobijaju per-user override (migracija §2.5).
  */
 const BASE_ROLE_PERMISSIONS: Partial<
   Record<RoleKey, readonly PermissionKey[]>
@@ -292,6 +301,14 @@ const BASE_ROLE_PERMISSIONS: Partial<
     P.SASTANCI_EDIT,
     P.SASTANCI_MANAGE,
     P.SASTANCI_WEEKLY_MOVE,
+    // Kadrovska (Talas G): read+edit+contracts+vacreq+prisustvo+razvoj; BEZ manage(hr krug)/pii/salary.
+    P.KADROVSKA_READ,
+    P.KADROVSKA_EDIT,
+    P.KADROVSKA_CONTRACTS_READ,
+    P.KADROVSKA_VACREQ_MANAGE,
+    P.KADROVSKA_ATTENDANCE,
+    P.KADROVSKA_ATTENDANCE_SHADOW,
+    P.KADROVSKA_DEV_MANAGE,
     P.AI_CHAT,
     // Energetika/SCADA (Talas E, MODULE_SPEC_scada_30 §2): paritet
     // `scada_is_admin_or_management()` — SAMO admin (ALL) + menadzment. SCADA nije
@@ -319,6 +336,11 @@ const BASE_ROLE_PERMISSIONS: Partial<
     // Sastanci: pm je u canAccessSastanci + has_edit_role → read + edit.
     P.SASTANCI_READ,
     P.SASTANCI_EDIT,
+    // Kadrovska (Talas G): pm ima edit (has_edit_role) + vacreq_manage + dev_manage,
+    // ali NE `read` (nije u canAccessKadrovska) — asimetrija paritet (row-scope u DB).
+    P.KADROVSKA_EDIT,
+    P.KADROVSKA_VACREQ_MANAGE,
+    P.KADROVSKA_DEV_MANAGE,
     P.AI_CHAT,
   ],
   [ROLES.LEADPM]: [
@@ -337,6 +359,10 @@ const BASE_ROLE_PERMISSIONS: Partial<
     // Sastanci: leadpm je u canAccessSastanci + has_edit_role → read + edit.
     P.SASTANCI_READ,
     P.SASTANCI_EDIT,
+    // Kadrovska (Talas G): kao pm — edit + vacreq_manage + dev_manage, BEZ read.
+    P.KADROVSKA_EDIT,
+    P.KADROVSKA_VACREQ_MANAGE,
+    P.KADROVSKA_DEV_MANAGE,
     P.AI_CHAT,
   ],
 
@@ -358,6 +384,9 @@ const BASE_ROLE_PERMISSIONS: Partial<
     ...ODRZAVANJE_MODULE, // F8: prijava kvara je opšte pravo
     P.PRIMOPREDAJE_READ,
     P.PRIMOPREDAJE_WRITE, // kreiranje/uređivanje nacrta primopredaje (§6.5.3)
+    // Kadrovska (Talas G): projektant_vodja je u canAccessKadrovska → read; ali
+    // canViewContracts ga EKSPLICITNO isključuje (bez contracts_read) i nije edit.
+    P.KADROVSKA_READ,
     P.AI_CHAT, // 1.0 /ai za sve (nije u canAccessSastanci)
   ],
   [ROLES.INZENJER]: [
@@ -377,13 +406,30 @@ const BASE_ROLE_PERMISSIONS: Partial<
     ...ODRZAVANJE_MODULE, // F8: prijava kvara je opšte pravo
     P.SASTANCI_READ,
     P.SASTANCI_EDIT,
+    // Kadrovska (Talas G): HR je nosilac modula — read+edit+manage(hr krug)+ugovori+
+    // vacreq+prisustvo+razvoj. ⚠️ HR NAMERNO NEMA pii ni salary (pravilo firme §2.6).
+    P.KADROVSKA_READ,
+    P.KADROVSKA_EDIT,
+    P.KADROVSKA_MANAGE,
+    P.KADROVSKA_CONTRACTS_READ,
+    P.KADROVSKA_VACREQ_MANAGE,
+    P.KADROVSKA_ATTENDANCE,
+    P.KADROVSKA_ATTENDANCE_SHADOW,
+    P.KADROVSKA_DEV_MANAGE,
     P.AI_CHAT,
   ],
-  // poslovni_admin: has_edit_role (edit) ali NIJE u canAccessSastanci (bez read) — §2 paritet.
+  // poslovni_admin: has_edit_role (edit, sastanci) + F8 CMMS + Kadrovska (Talas G) — JEDINA
+  // ne-admin rola sa `pii`; read+edit+manage+PII+ugovori+vacreq (BEZ prisustva/razvoja/salary).
   [ROLES.POSLOVNI_ADMIN]: [
     ...VIEWER_READ_BASELINE,
     ...ODRZAVANJE_MODULE, // F8: prijava kvara je opšte pravo
     P.SASTANCI_EDIT,
+    P.KADROVSKA_READ,
+    P.KADROVSKA_EDIT,
+    P.KADROVSKA_MANAGE,
+    P.KADROVSKA_PII,
+    P.KADROVSKA_CONTRACTS_READ,
+    P.KADROVSKA_VACREQ_MANAGE,
     P.AI_CHAT,
   ],
   // cnc_operater AKTIVIRAN uz Talas A (roles.ts tier v2) — 1.0 canPrintLocLabels()
