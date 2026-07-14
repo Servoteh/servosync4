@@ -298,11 +298,18 @@ export class EnergetikaService {
   /** SQLSTATE iz DB (RLS/politike/RPC) → HTTP semantika (spec §5 paritet Reversi). */
   private rethrowSy15(e: unknown): never {
     const meta = (e as { meta?: { code?: string; message?: string } }).meta;
+    const code = (e as { code?: string }).code;
     const message = meta?.message ?? (e as Error).message;
     if (meta?.code === "42501") throw new ForbiddenException(message);
     if (meta?.code === "P0001" || meta?.code === "P0002")
       throw new UnprocessableEntityException(message);
-    if (meta?.code === "23505") throw new ConflictException(message);
+    // Konflikt (409) stiže u DVA oblika: raw put ($queryRaw/RPC) daje P2010 sa
+    // `meta.code='23505'`, a TYPED Prisma create (`tx.scadaCommand.create` — dupli
+    // `idempotency_key` na partial unique `scada_commands_idem`) baca
+    // PrismaClientKnownRequestError sa **top-level `.code='P2002'`** (BEZ meta.code).
+    // Oba → 409 (paritet 1.0 PostgREST; bez ove grane typed create bi pao na 500).
+    if (code === "P2002" || meta?.code === "23505")
+      throw new ConflictException(message);
     if (meta?.code === "23514") throw new UnprocessableEntityException(message);
     throw e;
   }

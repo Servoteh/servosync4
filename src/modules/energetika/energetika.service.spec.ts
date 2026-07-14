@@ -1,3 +1,5 @@
+import { ConflictException } from "@nestjs/common";
+import { Prisma } from "@prisma-sy15/client";
 import {
   EnergetikaService,
   genIdempotencyKey,
@@ -113,6 +115,49 @@ describe("EnergetikaService — komande (R2)", () => {
         baseDto({ target: "RESET_VFD", value: undefined }),
       );
       expect("value" in h.created[0]).toBe(false);
+    });
+  });
+
+  describe("create — Prisma/SQLSTATE greška → HTTP semantika", () => {
+    /** Servis čiji `scadaCommand.create` odbija zadatom greškom (kroz withUserRls). */
+    function makeThrowingService(err: unknown): EnergetikaService {
+      const tx = {
+        scadaCommand: {
+          create: jest.fn(async () => {
+            throw err;
+          }),
+        },
+      };
+      const sy15 = {
+        withUserRls: jest.fn(
+          (email: string, fn: (t: typeof tx) => Promise<unknown>) => fn(tx),
+        ),
+      } as unknown as Sy15Service;
+      return new EnergetikaService(sy15);
+    }
+
+    it("dupli idempotency_key (TYPED create → P2002 top-level, BEZ meta.code) → 409 ConflictException, NE 500", async () => {
+      // Prisma za TYPED operaciju (tx.scadaCommand.create) baca ovaj oblik: `.code`
+      // je TOP-LEVEL, ne `meta.code` (za razliku od raw $queryRaw/RPC = P2010 sa
+      // meta.code='23505'). Bez P2002 grane u rethrowSy15 → sirov 500 (regresija).
+      const p2002 = new Prisma.PrismaClientKnownRequestError(
+        "Unique constraint failed on the fields: (`idempotency_key`)",
+        { code: "P2002", clientVersion: "6" },
+      );
+      const service = makeThrowingService(p2002);
+      await expect(
+        service.create("a@b.com", baseDto({ clientEventId: "ui-dup-123" })),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it("raw put (P2010 sa meta.code='23505') → i dalje 409 (ne regresirati postojeći oblik)", async () => {
+      const raw = Object.assign(new Error("duplicate key value"), {
+        meta: { code: "23505", message: "duplicate key value" },
+      });
+      const service = makeThrowingService(raw);
+      await expect(
+        service.create("a@b.com", baseDto()),
+      ).rejects.toBeInstanceOf(ConflictException);
     });
   });
 

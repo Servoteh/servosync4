@@ -7,6 +7,7 @@ import {
 import type { INestApplication } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
 import request from "supertest";
+import { Prisma } from "@prisma-sy15/client";
 import { JwtAuthGuard } from "../src/modules/auth/jwt-auth.guard";
 import { EnergetikaController } from "../src/modules/energetika/energetika.controller";
 import { EnergetikaService } from "../src/modules/energetika/energetika.service";
@@ -62,12 +63,15 @@ class FakeSy15 {
               "new row violates row-level security policy",
             );
           }
-          // scada_commands_idem: partial unique na idempotency_key.
+          // scada_commands_idem: partial unique na idempotency_key. TYPED Prisma
+          // create baca PrismaClientKnownRequestError sa TOP-LEVEL `.code='P2002'`
+          // (NE `meta.code='23505'` kao raw $queryRaw) — verni oblik da e2e dokaže
+          // da rethrowSy15 mapira P2002 → 409 (a ne sirov 500).
           const key = data.idempotencyKey as string | undefined;
           if (key && this.rows.some((r) => r.idempotencyKey === key)) {
-            throw sqlErr(
-              "23505",
-              "duplicate key value violates unique constraint scada_commands_idem",
+            throw new Prisma.PrismaClientKnownRequestError(
+              "Unique constraint failed on the fields: (`idempotency_key`)",
+              { code: "P2002", clientVersion: "6" },
             );
           }
           const row: CmdRow = {
@@ -264,6 +268,18 @@ describe("Energetika SAFETY e2e — van-allowlist → rejected BEZ dodira PLC-a"
       v: 20,
     });
     expect(fake.rows[0].status).toBe("applied");
+  });
+
+  it("dupli clientEventId (isti idempotency_key): prvi 200, drugi 409 — typed create P2002 → Conflict, NE 500", async () => {
+    const body = {
+      siteKey: "kot2",
+      target: "Zeljena_temperatura",
+      value: { v: 20 },
+      clientEventId: "ui-1751800000000-dup",
+    };
+    await postCmd("admin", body).expect(200); // upisan `pending`
+    await postCmd("admin", body).expect(409); // dupli ključ → ConflictException
+    expect(fake.rows).toHaveLength(1); // drugi upis NIJE prošao (nema dvostrukog PLC toka)
   });
 
   it("requested_by = lowercased email iz claims (RLS WITH CHECK forsira svoje ime)", async () => {
