@@ -10,8 +10,9 @@ import { ListingTab } from './listing-tab';
 import { KalendarTab } from './kalendar-tab';
 import { NadoknadaTab } from './nadoknada-tab';
 import { PlacenoTab } from './placeno-tab';
+import { OdsutniTab } from './odsutni-tab';
 
-type SubtabKey = 'pregled' | 'listing' | 'kalendar' | 'nadoknada' | 'placeno';
+type SubtabKey = 'pregled' | 'listing' | 'kalendar' | 'nadoknada' | 'placeno' | 'odsutni';
 
 const SUBTABS: TabItem<SubtabKey>[] = [
   { key: 'pregled', label: 'Pregled' },
@@ -19,6 +20,7 @@ const SUBTABS: TabItem<SubtabKey>[] = [
   { key: 'kalendar', label: 'Kalendar' },
   { key: 'nadoknada', label: 'Nadoknada sati' },
   { key: 'placeno', label: 'Plaćeno odsustvo' },
+  { key: 'odsutni', label: 'Odsutni' },
 ];
 
 /**
@@ -47,6 +49,7 @@ export function OdsustvaTab({ onNavigateGrid }: { onNavigateGrid?: (empName: str
       {subtab === 'kalendar' && <KalendarTab onNavigateGrid={onNavigateGrid} />}
       {subtab === 'nadoknada' && <NadoknadaTab />}
       {subtab === 'placeno' && <PlacenoTab />}
+      {subtab === 'odsutni' && <OdsutniTab />}
     </div>
   );
 }
