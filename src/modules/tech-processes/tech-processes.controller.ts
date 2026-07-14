@@ -23,6 +23,7 @@ import type {
   ListTechProcessesQuery,
   RnProgressQuery,
   SessionQuery,
+  StopWorkByIdBody,
   WorkerPerformanceQuery,
 } from "./tech-processes.service";
 import type { DecodeBarcodeDto } from "./dto/decode-barcode.dto";
@@ -190,6 +191,21 @@ export class TechProcessesController {
     @Body() dto: FinishTechProcessDto,
   ) {
     return this.techProcesses.finish(id, dto);
+  }
+
+  /**
+   * „Kraj rada" iz „Moji otvoreni" (kiosk): završava RAD po `tech_processes` id-ju
+   * (bez barkodova — radnik iz ID kartice ili prijavljenog naloga). Zatvara njegovu
+   * otvorenu sesiju + akumulira komade, ista logika kao `POST /work/stop`.
+   */
+  @Post(":id/stop-work")
+  @RequirePermission(PERMISSIONS.TEHNOLOGIJA_REPORT_WORK)
+  stopWorkById(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() body: StopWorkByIdBody,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.techProcesses.stopWorkById(id, body, req.user);
   }
 
   @Post("control")

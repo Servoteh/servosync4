@@ -55,12 +55,23 @@ function prismaMock() {
     project: { findUnique: jest.fn().mockResolvedValue(null) },
     customer: { findUnique: jest.fn().mockResolvedValue(null) },
     // openForWorker: otvorene sesije radnika + svež users.worker_id fallback.
-    workTimeEntry: { findMany: jest.fn().mockResolvedValue([]) },
+    // stopWorkById: nalaženje/zatvaranje moje otvorene sesije (findFirst/update).
+    workTimeEntry: {
+      findMany: jest.fn().mockResolvedValue([]),
+      findFirst: jest.fn().mockResolvedValue(null),
+      update: jest.fn(),
+      create: jest.fn(),
+    },
     user: { findUnique: jest.fn().mockResolvedValue(null) },
     drawingHandover: { findUnique: jest.fn().mockResolvedValue(null) },
     handoverDraftItem: { findFirst: jest.fn().mockResolvedValue(null) },
     handoverDraft: { findUnique: jest.fn().mockResolvedValue(null) },
-    drawing: { findUnique: jest.fn().mockResolvedValue(null) },
+    // card().drawing: crtež po (drawingNumber, revision) + hasPdf iz drawing_pdfs.
+    drawing: {
+      findUnique: jest.fn().mockResolvedValue(null),
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
+    drawingPdf: { findFirst: jest.fn().mockResolvedValue(null) },
     $transaction: jest.fn(),
     $executeRawUnsafe: jest.fn().mockResolvedValue(0),
   };
@@ -300,6 +311,114 @@ describe("TechProcessesService — card (agregat po operaciji)", () => {
 
     expect(data.routing).toEqual([]);
     expect(prisma.workOrderOperation.findMany).not.toHaveBeenCalled();
+  });
+
+  // ---------------------------------------------------------------- card().drawing (#6)
+
+  it("drawing: crtež (tačna revizija) + PDF postoji → { id, hasPdf: true }", async () => {
+    prisma.techProcess.findMany.mockResolvedValue([
+      tpRow({ operationNumber: 10, workCenterCode: "0102", pieceCount: 3 }),
+    ]);
+    prisma.workOrder.findFirst.mockResolvedValue({
+      id: 900,
+      drawingHandoverId: 0,
+      drawingNumber: "CRT-1",
+      revision: "A",
+    });
+    prisma.drawing.findFirst.mockResolvedValue({
+      id: 42,
+      drawingNumber: "CRT-1",
+      revision: "A",
+    });
+    prisma.drawingPdf.findFirst.mockResolvedValue({ drawingNumber: "CRT-1" });
+
+    const { data } = await service.card(CARD_QUERY);
+
+    expect(data.drawing).toEqual({ id: 42, hasPdf: true });
+    // Crtež se traži po tačnoj (drawingNumber, revision) sa RN-a.
+    expect(prisma.drawing.findFirst).toHaveBeenCalledWith(
+      containing({ where: containing({ drawingNumber: "CRT-1", revision: "A" }) }),
+    );
+  });
+
+  it("drawing: crtež postoji, PDF ne (pdf_binary NULL) → { id, hasPdf: false }", async () => {
+    prisma.techProcess.findMany.mockResolvedValue([tpRow({ pieceCount: 3 })]);
+    prisma.workOrder.findFirst.mockResolvedValue({
+      id: 900,
+      drawingHandoverId: 0,
+      drawingNumber: "CRT-1",
+      revision: "A",
+    });
+    prisma.drawing.findFirst.mockResolvedValue({
+      id: 42,
+      drawingNumber: "CRT-1",
+      revision: "A",
+    });
+    prisma.drawingPdf.findFirst.mockResolvedValue(null);
+
+    const { data } = await service.card(CARD_QUERY);
+
+    expect(data.drawing).toEqual({ id: 42, hasPdf: false });
+    // hasPdf filtrira na pdf_binary NOT NULL i NE učitava sam binarni sadržaj.
+    const pdfArg = prisma.drawingPdf.findFirst.mock.calls[0][0] as {
+      where: Record<string, unknown>;
+      select: Record<string, unknown>;
+    };
+    expect(pdfArg.where.pdfBinary).toEqual({ not: null });
+    expect(pdfArg.select).not.toHaveProperty("pdfBinary");
+  });
+
+  it("drawing: nema tačne revizije → uzima NAJVIŠU reviziju tog crteža, hasPdf po njoj", async () => {
+    prisma.techProcess.findMany.mockResolvedValue([tpRow({ pieceCount: 3 })]);
+    prisma.workOrder.findFirst.mockResolvedValue({
+      id: 900,
+      drawingHandoverId: 0,
+      drawingNumber: "CRT-1",
+      revision: "C", // tačna revizija ne postoji
+    });
+    prisma.drawing.findFirst
+      .mockResolvedValueOnce(null) // tačan (CRT-1, C) nema reda
+      .mockResolvedValueOnce({ id: 42, drawingNumber: "CRT-1", revision: "B" });
+    prisma.drawingPdf.findFirst.mockResolvedValue({ drawingNumber: "CRT-1" });
+
+    const { data } = await service.card(CARD_QUERY);
+
+    expect(data.drawing).toEqual({ id: 42, hasPdf: true });
+    // Fallback sortira po reviziji opadajuće; hasPdf koristi reviziju NAĐENOG reda (B).
+    const fallbackArg = prisma.drawing.findFirst.mock.calls[1][0] as {
+      orderBy: unknown;
+    };
+    expect(fallbackArg.orderBy).toEqual({ revision: "desc" });
+    const pdfArg = prisma.drawingPdf.findFirst.mock.calls[0][0] as {
+      where: { revision: string };
+    };
+    expect(pdfArg.where.revision).toBe("B");
+  });
+
+  it("drawing: null kad crtež ne postoji (ni tačna ni najviša revizija)", async () => {
+    prisma.techProcess.findMany.mockResolvedValue([tpRow({ pieceCount: 3 })]);
+    prisma.workOrder.findFirst.mockResolvedValue({
+      id: 900,
+      drawingHandoverId: 0,
+      drawingNumber: "CRT-1",
+      revision: "A",
+    });
+    prisma.drawing.findFirst.mockResolvedValue(null); // ni exact ni fallback
+
+    const { data } = await service.card(CARD_QUERY);
+
+    expect(data.drawing).toBeNull();
+    expect(prisma.drawingPdf.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("drawing: null kad RN za trojku ne postoji (nema broja crteža)", async () => {
+    prisma.techProcess.findMany.mockResolvedValue([tpRow({ pieceCount: 3 })]);
+    // workOrder.findFirst nije mock-ovan → null → nema RN → nema crteža.
+
+    const { data } = await service.card(CARD_QUERY);
+
+    expect(data.drawing).toBeNull();
+    expect(prisma.drawing.findFirst).not.toHaveBeenCalled();
   });
 });
 
@@ -1162,5 +1281,176 @@ describe("TechProcessesService — reopen zatvorene operacije (dorada)", () => {
       "Tehnološki postupak 999 ne postoji",
     );
     expect(prisma.techProcess.updateMany).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================ stop-work po ID-ju (#7)
+
+describe("TechProcessesService — stopWorkById (Kraj rada iz Moji otvoreni)", () => {
+  let service: TechProcessesService;
+  let prisma: ReturnType<typeof prismaMock>;
+
+  beforeEach(async () => {
+    prisma = prismaMock();
+    const mod: TestingModule = await Test.createTestingModule({
+      providers: [
+        TechProcessesService,
+        { provide: PrismaService, useValue: prisma },
+        {
+          provide: ScopeService,
+          useValue: {
+            workerMachineViolation: jest.fn().mockResolvedValue(null),
+            isEnforced: jest.fn().mockReturnValue(false),
+          },
+        },
+        { provide: NotificationsService, useValue: notificationsMock() },
+        { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
+      ],
+    }).compile();
+    service = mod.get(TechProcessesService);
+    // Kartica → radnik 74 (Jovica).
+    prisma.worker.findFirst.mockResolvedValue({
+      id: 74,
+      fullName: "Jovica Milosevic",
+      username: "jovica",
+      workerTypeId: 1,
+    });
+    // RN plan 50 (findWorkOrderByTriple).
+    prisma.workOrder.findFirst.mockResolvedValue({
+      id: 900,
+      projectId: 2597,
+      identNumber: "06/93-4",
+      variant: 0,
+      pieceCount: 50,
+      revision: "A",
+    });
+  });
+
+  it("zatvara MOJU otvorenu sesiju, akumulira komade, vraća reportedPieces", async () => {
+    prisma.techProcess.findUnique.mockResolvedValue(
+      tpRow({
+        id: 500,
+        pieceCount: 2,
+        operationNumber: 10,
+        workCenterCode: "0102",
+        workOrderId: 900,
+      }),
+    );
+    prisma.workTimeEntry.findFirst.mockResolvedValue({
+      id: 11,
+      startedAt: new Date("2026-07-14T08:00:00Z"),
+    });
+    prisma.workTimeEntry.update.mockResolvedValue({
+      id: 11,
+      startedAt: new Date("2026-07-14T08:00:00Z"),
+      stoppedAt: new Date("2026-07-14T08:30:00Z"),
+      pieceCount: 3,
+    });
+    prisma.techProcess.update.mockResolvedValue(
+      tpRow({ id: 500, pieceCount: 5, workerId: 74 }),
+    );
+
+    const { data } = await service.stopWorkById(
+      500,
+      { workerCard: "CARD74", pieceCount: 3 },
+      undefined,
+    );
+
+    expect(data.reportedPieces).toBe(3);
+    expect(data.operationFinished).toBe(false); // 5 < 50
+    expect(data.techProcess.pieceCount).toBe(5);
+    // Sesija se traži i zatvara po MOM workerId + tom postupku + stoppedAt:null.
+    expect(prisma.workTimeEntry.findFirst).toHaveBeenCalledWith(
+      containing({
+        where: containing({
+          workerId: 74,
+          techProcessId: 500,
+          stoppedAt: null,
+        }),
+      }),
+    );
+    const updArg = prisma.workTimeEntry.update.mock.calls[0][0] as {
+      where: { id: number };
+      data: { pieceCount: number };
+    };
+    expect(updArg.where.id).toBe(11);
+    expect(updArg.data.pieceCount).toBe(3);
+    // Akumulacija na red operacije: 2 + 3 = 5.
+    expect(prisma.techProcess.update).toHaveBeenCalledWith(
+      containing({
+        where: { id: 500 },
+        data: containing({ pieceCount: 5, workerId: 74 }),
+      }),
+    );
+  });
+
+  it("0 komada: evidentira SAMO vreme (pieceCount reda nepromenjen, sesija zatvorena)", async () => {
+    prisma.techProcess.findUnique.mockResolvedValue(
+      tpRow({ id: 500, pieceCount: 2, workCenterCode: "0102", workOrderId: 900 }),
+    );
+    prisma.workTimeEntry.findFirst.mockResolvedValue({
+      id: 11,
+      startedAt: new Date("2026-07-14T08:00:00Z"),
+    });
+    prisma.workTimeEntry.update.mockResolvedValue({
+      id: 11,
+      startedAt: new Date("2026-07-14T08:00:00Z"),
+      stoppedAt: new Date("2026-07-14T08:30:00Z"),
+      pieceCount: 0,
+    });
+    prisma.techProcess.update.mockResolvedValue(
+      tpRow({ id: 500, pieceCount: 2, workerId: 74 }),
+    );
+
+    const { data } = await service.stopWorkById(
+      500,
+      { workerCard: "CARD74", pieceCount: 0 },
+      undefined,
+    );
+
+    expect(data.reportedPieces).toBe(0);
+    const updArg = prisma.techProcess.update.mock.calls[0][0] as {
+      data: { pieceCount: number };
+    };
+    expect(updArg.data.pieceCount).toBe(2); // 2 + 0
+    expect(prisma.workTimeEntry.update).toHaveBeenCalled();
+  });
+
+  it("nema otvorene sesije za taj postupak → 422, ništa se ne knjiži", async () => {
+    prisma.techProcess.findUnique.mockResolvedValue(
+      tpRow({ id: 500, pieceCount: 2, workCenterCode: "0102", workOrderId: 900 }),
+    );
+    prisma.workTimeEntry.findFirst.mockResolvedValue(null);
+
+    await expect(
+      service.stopWorkById(500, { workerCard: "CARD74", pieceCount: 3 }, undefined),
+    ).rejects.toThrow("Nema otvorene sesije za ovaj postupak.");
+    expect(prisma.workTimeEntry.update).not.toHaveBeenCalled();
+    expect(prisma.techProcess.update).not.toHaveBeenCalled();
+  });
+
+  it("tuđa sesija se NE zatvara: upit je pinovan na moj workerId (foreign → 422)", async () => {
+    prisma.techProcess.findUnique.mockResolvedValue(
+      tpRow({ id: 500, pieceCount: 2, workCenterCode: "0102", workOrderId: 900 }),
+    );
+    // Otvorena sesija postoji, ali je tuđa → filter po workerId:74 je ne vraća.
+    prisma.workTimeEntry.findFirst.mockResolvedValue(null);
+
+    await expect(
+      service.stopWorkById(500, { workerCard: "CARD74", pieceCount: 3 }, undefined),
+    ).rejects.toThrow("Nema otvorene sesije");
+    // Dokaz izolacije: sesija se traži isključivo po mom workerId + stoppedAt:null.
+    expect(prisma.workTimeEntry.findFirst).toHaveBeenCalledWith(
+      containing({ where: containing({ workerId: 74, stoppedAt: null }) }),
+    );
+    expect(prisma.workTimeEntry.update).not.toHaveBeenCalled();
+  });
+
+  it("404 kad tehnološki postupak ne postoji", async () => {
+    prisma.techProcess.findUnique.mockResolvedValue(null);
+
+    await expect(
+      service.stopWorkById(999, { workerCard: "CARD74", pieceCount: 1 }, undefined),
+    ).rejects.toThrow("Tehnološki postupak 999 ne postoji");
   });
 });

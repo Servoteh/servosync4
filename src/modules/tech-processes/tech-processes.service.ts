@@ -147,6 +147,19 @@ export interface SessionQuery {
   pageSize?: string;
 }
 
+/**
+ * Telo za `POST /:id/stop-work` — „Kraj rada" iz „Moji otvoreni" (kiosk): završava
+ * RAD po `tech_processes` id-ju, bez barkodova (radnik je već identifikovan karticom
+ * ili prijavljenim nalogom). Ista semantika komada kao `POST /work/stop`.
+ * class-validator još nije uveden (BACKEND_RULES §6) — validacija je ručna.
+ */
+export interface StopWorkByIdBody {
+  /** ID kartica radnika (opciono — inače radnik iz prijavljenog naloga / JWT). */
+  workerCard?: string;
+  /** Broj napravljenih komada u ovoj sesiji (ceo broj ≥ 0; 0 = samo vreme). */
+  pieceCount: number;
+}
+
 // --- oblici sirovih redova iz $queryRaw upita (snake_case iz baze) ---
 
 interface CriticalRaw {
@@ -619,7 +632,12 @@ export class TechProcessesService {
     // flag (preko primopredaje) i id za routing operacija. Najstariji RN = original.
     const cardWorkOrder = await this.prisma.workOrder.findFirst({
       where: { projectId, identNumber, variant },
-      select: { id: true, drawingHandoverId: true },
+      select: {
+        id: true,
+        drawingHandoverId: true,
+        drawingNumber: true,
+        revision: true,
+      },
       orderBy: { id: "asc" },
     });
     const cardHandover =
@@ -651,11 +669,22 @@ export class TechProcessesService {
       workCenterName: routingOps.get(r.workCenterCode)?.workCenterName ?? null,
     }));
 
+    // Crtež RN-a za „Otvori PDF" dugme (Miljan t.6): id crteža + da li postoji PDF.
+    // null kad RN/crtež ne postoji. Batch-safe (skalarni upiti, bez required JOIN-a).
+    const drawing = cardWorkOrder
+      ? await this.resolveCardDrawing(
+          cardWorkOrder.drawingNumber,
+          cardWorkOrder.revision,
+        )
+      : null;
+
     const data = {
       projectId,
       identNumber,
       variant,
       isUrgent: cardHandover?.isUrgent ?? false,
+      // Crtež + hasPdf za „Otvori PDF" (null kad RN/crtež ne postoji).
+      drawing,
       // DISTINCT (operationNumber, workCenterCode) parovi — ne broj kucanja.
       operationCount: operations.length,
       // Parovi sa bar jednim zatvorenim redom — ne broj zatvorenih redova.
@@ -681,6 +710,48 @@ export class TechProcessesService {
       })),
     };
     return { data };
+  }
+
+  /**
+   * Crtež RN-a za „Otvori PDF" dugme kartice TP: nađi `drawings` red po
+   * (drawingNumber, revision) sa RN-a; ako tačna revizija ne postoji, uzmi red
+   * NAJVIŠE revizije tog `drawingNumber`. `hasPdf` = postoji `drawing_pdfs` red
+   * (drawing_number, revision NAĐENOG reda) sa `pdf_binary IS NOT NULL` (sam binarni
+   * sadržaj se NE učitava). null kad nema broja crteža ni odgovarajućeg reda.
+   * Skalarni upiti (bez required JOIN-a) — legacy orphan reference ne obara odgovor.
+   */
+  private async resolveCardDrawing(
+    drawingNumber: string | null | undefined,
+    revision: string | null | undefined,
+  ): Promise<{ id: number; hasPdf: boolean } | null> {
+    const num = (drawingNumber ?? "").trim();
+    if (!num) return null;
+    const rev = (revision ?? "").trim();
+    const select = { id: true, drawingNumber: true, revision: true };
+    // Tačna (drawingNumber, revision) prvo; fallback = najviša revizija tog broja.
+    let drawing = rev
+      ? await this.prisma.drawing.findFirst({
+          where: { drawingNumber: num, revision: rev },
+          select,
+        })
+      : null;
+    if (!drawing)
+      drawing = await this.prisma.drawing.findFirst({
+        where: { drawingNumber: num },
+        orderBy: { revision: "desc" },
+        select,
+      });
+    if (!drawing) return null;
+    const pdf = await this.prisma.drawingPdf.findFirst({
+      where: {
+        drawingNumber: drawing.drawingNumber,
+        revision: drawing.revision,
+        pdfBinary: { not: null },
+      },
+      // Ključ, ne binarni sadržaj — hasPdf je puko postojanje reda.
+      select: { drawingNumber: true },
+    });
+    return { id: drawing.id, hasPdf: !!pdf };
   }
 
   // ---------------------------------------------------------------- CRITICAL
@@ -1760,7 +1831,6 @@ export class TechProcessesService {
         identNumber,
         tp.variant,
       );
-      const planned = workOrder?.pieceCount ?? null;
       const note = dto.note?.trim() || null;
       const now = new Date();
 
@@ -1792,43 +1862,28 @@ export class TechProcessesService {
             },
           });
 
-      // AKUMULACIJA (isto kao scan()): komadi na red operacije + eventualno zatvaranje.
-      const newPieceCount = tp.pieceCount + dto.pieceCount;
-      const reachedPlan = planned !== null && newPieceCount >= planned;
-      const updated = await tx.techProcess.update({
-        where: { id: tp.id },
-        data: {
-          pieceCount: newPieceCount,
-          workerId: worker.id,
-          ...(reachedPlan ? { isProcessFinished: true, finishedAt: now } : {}),
-        },
-      });
-      const prioritized = reachedPlan
-        ? await this.setOperationDonePriority(
-            tx,
-            workOrder?.id ?? tp.workOrderId,
-            tp.operationNumber,
-            tp.workCenterCode,
-          )
-        : 0;
-      const workOrderCompleted = await this.markWorkOrderIfComplete(
+      // AKUMULACIJA (deljeni helper sa `:id/stop-work`): komadi na red operacije +
+      // eventualno zatvaranje/skidanje sa prioriteta/„RN završen" — jedna verzija ponašanja.
+      const acc = await this.accumulateStopWork(
         tx,
-        projectId,
-        identNumber,
-        tp.variant,
+        tp,
+        worker.id,
+        dto.pieceCount,
+        now,
+        workOrder,
       );
 
       return {
-        tp: updated,
+        tp: acc.tp,
         session,
         startedAt,
         stoppedAt: now,
         instant: !open,
         workOrder,
-        planned,
-        reachedPlan,
-        prioritized,
-        workOrderCompleted,
+        planned: acc.planned,
+        reachedPlan: acc.reachedPlan,
+        prioritized: acc.prioritized,
+        workOrderCompleted: acc.workOrderCompleted,
         staleWorkOrder: scannedVariant < tp.variant,
         currentVariant: tp.variant,
       };
@@ -1866,6 +1921,220 @@ export class TechProcessesService {
         machineAccessWarning,
       },
     };
+  }
+
+  /**
+   * `POST /:id/stop-work` — „Kraj rada" iz „Moji otvoreni" (kiosk, #7). Završava RAD
+   * po `tech_processes` id-ju, BEZ barkodova (radnik je već identifikovan karticom ili
+   * prijavljenim nalogom). Zatvara NJEGOVU otvorenu `work_time_entries` sesiju za taj
+   * postupak i akumulira komade na red operacije — ista logika kao `POST /work/stop`
+   * (deljeni `accumulateStopWork`). Za razliku od `work/stop` NEMA single-shot fallback:
+   * ako otvorena sesija ne postoji → 422 (dugme „Kraj rada" se nudi samo za otvorene).
+   * Machine-access provera kao u `stopWork` (enforce → 403, shadow → upozorenje).
+   */
+  async stopWorkById(id: number, body: StopWorkByIdBody, user?: AuthUser) {
+    this.validateStopWorkById(body);
+    const worker = await this.resolveWorkerFromCardOrUser(body.workerCard, user);
+
+    // Postupak + RC pre transakcije: 404 i machine-access (kao stopWork, pre mutacije).
+    const head = await this.prisma.techProcess.findUnique({
+      where: { id },
+      select: { workCenterCode: true },
+    });
+    if (!head)
+      throw new NotFoundException(`Tehnološki postupak ${id} ne postoji`);
+    const machineAccessWarning = await this.checkMachineAccess(
+      worker.id,
+      head.workCenterCode,
+    );
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      // Svež red u transakciji (istovremeni finish ne sme da zatvori dvaput).
+      const tp = await tx.techProcess.findUnique({ where: { id } });
+      if (!tp)
+        throw new NotFoundException(`Tehnološki postupak ${id} ne postoji`);
+      if (tp.isProcessFinished)
+        throw new UnprocessableEntityException(
+          `Operacija (postupak ${tp.id}) je već zatvorena — prijava rada nije moguća.`,
+        );
+
+      const workOrder = await this.findWorkOrderByTriple(
+        tx,
+        tp.projectId,
+        tp.identNumber,
+        tp.variant,
+      );
+      const now = new Date();
+
+      // MOJA otvorena sesija za taj postupak (filter po workerId → tuđa sesija se ne
+      // zatvara). Bez fallback-a: nema otvorene sesije → 422.
+      const open = await tx.workTimeEntry.findFirst({
+        where: { workerId: worker.id, techProcessId: tp.id, stoppedAt: null },
+        orderBy: { id: "desc" },
+      });
+      if (!open)
+        throw new UnprocessableEntityException(
+          "Nema otvorene sesije za ovaj postupak.",
+        );
+      const session = await tx.workTimeEntry.update({
+        where: { id: open.id },
+        data: { stoppedAt: now, pieceCount: body.pieceCount },
+      });
+
+      const acc = await this.accumulateStopWork(
+        tx,
+        tp,
+        worker.id,
+        body.pieceCount,
+        now,
+        workOrder,
+      );
+
+      return {
+        tp: acc.tp,
+        session,
+        startedAt: open.startedAt,
+        stoppedAt: now,
+        workOrder,
+        planned: acc.planned,
+        reachedPlan: acc.reachedPlan,
+        prioritized: acc.prioritized,
+        workOrderCompleted: acc.workOrderCompleted,
+      };
+    });
+
+    const workers = await this.resolveWorkers([result.tp.workerId]);
+    const elapsedSeconds = Math.max(
+      0,
+      Math.round(
+        (result.stoppedAt.getTime() - result.startedAt.getTime()) / 1000,
+      ),
+    );
+    return {
+      data: {
+        techProcess: {
+          ...result.tp,
+          worker: workers.get(result.tp.workerId) ?? null,
+        },
+        session: {
+          id: result.session.id,
+          startedAt: result.startedAt,
+          stoppedAt: result.stoppedAt,
+          elapsedSeconds,
+          instant: false,
+        },
+        reportedPieces: body.pieceCount,
+        plannedPieces: result.planned,
+        operationFinished: result.reachedPlan,
+        operationsPrioritized: result.prioritized,
+        workOrderCompleted: result.workOrderCompleted,
+        workOrder: result.workOrder,
+        machineAccessWarning,
+      },
+    };
+  }
+
+  private validateStopWorkById(body: StopWorkByIdBody): void {
+    const errors: string[] = [];
+    if (
+      body?.workerCard !== undefined &&
+      (typeof body.workerCard !== "string" || !body.workerCard.trim())
+    )
+      errors.push("Polje 'workerCard' mora biti neprazan string (ID kartica).");
+    if (
+      typeof body?.pieceCount !== "number" ||
+      !Number.isInteger(body.pieceCount) ||
+      body.pieceCount < 0
+    )
+      errors.push("Polje 'pieceCount' mora biti ceo broj ≥ 0 (0 = samo vreme).");
+    if (errors.length) throw new BadRequestException(errors);
+  }
+
+  /**
+   * Zajednička STOP akumulacija (barkod `work/stop` i id-based `:id/stop-work`):
+   * upiši komade na red operacije, zatvori operaciju kad je dostignut plan RN-a,
+   * skini je sa prioriteta i (ako su sve značajne gotove) označi „RN završen". Jedna
+   * verzija ponašanja za oba ulaza — spec traži da se STOP logika ne duplira.
+   */
+  private async accumulateStopWork(
+    tx: Prisma.TransactionClient,
+    tp: {
+      id: number;
+      pieceCount: number;
+      operationNumber: number;
+      workCenterCode: string;
+      workOrderId: number;
+      projectId: number;
+      identNumber: string;
+      variant: number;
+    },
+    workerId: number,
+    pieceCount: number,
+    now: Date,
+    workOrder: { id: number; pieceCount: number } | null,
+  ) {
+    const planned = workOrder?.pieceCount ?? null;
+    const newPieceCount = tp.pieceCount + pieceCount;
+    const reachedPlan = planned !== null && newPieceCount >= planned;
+    const updated = await tx.techProcess.update({
+      where: { id: tp.id },
+      data: {
+        pieceCount: newPieceCount,
+        workerId,
+        ...(reachedPlan ? { isProcessFinished: true, finishedAt: now } : {}),
+      },
+    });
+    const prioritized = reachedPlan
+      ? await this.setOperationDonePriority(
+          tx,
+          workOrder?.id ?? tp.workOrderId,
+          tp.operationNumber,
+          tp.workCenterCode,
+        )
+      : 0;
+    const workOrderCompleted = await this.markWorkOrderIfComplete(
+      tx,
+      tp.projectId,
+      tp.identNumber,
+      tp.variant,
+    );
+    return { tp: updated, planned, reachedPlan, prioritized, workOrderCompleted };
+  }
+
+  /**
+   * Radnik iz ID kartice (prednost) ILI iz prijavljenog naloga (`users.worker_id`,
+   * JWT) — isti izbor kao `openForWorker` / `worker/me`. Veza sa nalogom se čita
+   * SVEŽE iz baze (ne iz JWT claim-a). Neprepoznat radnik → 400.
+   */
+  private async resolveWorkerFromCardOrUser(
+    card: string | undefined,
+    user?: AuthUser,
+  ): Promise<{
+    id: number;
+    fullName: string | null;
+    username: string | null;
+    workerTypeId: number;
+  }> {
+    const trimmed = (card ?? "").trim();
+    if (trimmed) return this.resolveWorkerByCard(trimmed);
+    const account = user?.userId
+      ? await this.prisma.user.findUnique({
+          where: { id: user.userId },
+          select: { workerId: true },
+        })
+      : null;
+    if (!account?.workerId)
+      throw new BadRequestException(
+        "Radnik nije prepoznat — skenirajte ID karticu ili se prijavite ličnim nalogom vezanim za radnika.",
+      );
+    const worker = await this.prisma.worker.findFirst({
+      where: { id: account.workerId },
+      orderBy: { id: "asc" },
+      select: { id: true, fullName: true, username: true, workerTypeId: true },
+    });
+    if (!worker)
+      throw new NotFoundException(`Radnik ${account.workerId} nije nađen.`);
+    return worker;
   }
 
   /**
@@ -3114,9 +3383,15 @@ export class TechProcessesService {
   /**
    * Kanonska definicija „RN završen" (§3, migration/15 §5): sve operacije čiji je
    * radni centar `significantForFinishing=true` moraju biti završene
-   * (`isProcessFinished=true`). Ako jesu → označi RN (`work_orders.status=true`)
-   * i vrati `true`. Ako nema značajnih operacija ili nisu sve gotove → `false`,
-   * RN se ne dira.
+   * (`isProcessFinished=true`) I ukupno iskontrolisano na njima mora dostići
+   * plan RN-a (`work_orders.pieceCount`). Ako jeste → označi RN
+   * (`work_orders.status=true`) i vrati `true`. Ako nema značajnih operacija,
+   * nisu sve gotove ili kumulativ ne dostiže plan → `false`, RN se ne dira.
+   *
+   * Količinski gate dodat 2026-07-14 (odluka Nenad, sanacija „Završeni nalozi"):
+   * bez njega bi bilo koji ZAVRŠEN red kontrole (legacy import, istorijski
+   * parcijal) označio RN završenim iako kucanje nije dostiglo plan — prod je
+   * imao 9 takvih RN-ova (npr. 9000/453: kontrola 110 od 400 → „Završen").
    *
    * NAPOMENA (pretpostavka): ne postoji materijalizovana `isCompleted` kolona
    * (§3 „materijalizovati isCompleted" traži migraciju — van skopa); dok se ne
@@ -3130,7 +3405,7 @@ export class TechProcessesService {
   ): Promise<boolean> {
     const rows = await tx.techProcess.findMany({
       where: { projectId, identNumber, variant },
-      select: { workCenterCode: true, isProcessFinished: true },
+      select: { workCenterCode: true, isProcessFinished: true, pieceCount: true },
     });
     if (!rows.length) return false;
 
@@ -3151,9 +3426,19 @@ export class TechProcessesService {
     const wo = await tx.workOrder.findFirst({
       where: { projectId, identNumber, variant },
       orderBy: { id: "asc" },
-      select: { id: true, status: true },
+      select: { id: true, status: true, pieceCount: true },
     });
     if (!wo) return false;
+
+    // Količinski gate: ukupno iskontrolisano (svi kvaliteti; storno se netuje)
+    // mora dostići plan — završen red kontrole sa parcijalnom količinom
+    // (legacy import / istorijski podatak) NE završava RN.
+    const controlledTotal = significantRows.reduce(
+      (sum, r) => sum + r.pieceCount,
+      0,
+    );
+    if (controlledTotal < wo.pieceCount) return false;
+
     if (wo.status === true) return true; // već označen — idempotentno
     await tx.workOrder.update({
       where: { id: wo.id },
