@@ -349,9 +349,12 @@ export class WorkOrdersService {
   /**
    * Efektivni id crteža za „PDF crteža": kad RN NEMA `drawing_id` (legacy RN
    * nosi samo `drawing_number`, proba 14.07 — 74% CAM pozicija ima drawing_id=0),
-   * razreši crtež po BROJU (najviša revizija; prednost onoj koja IMA PDF). Vrati
-   * 0 kad crtež nije u 2.0 (dugme se tada opravdano skriva). Poređenje
-   * normalizovano (upper/btrim) — isti obrazac kao cutover rezolucija.
+   * razreši crtež po BROJU. Vrati id SAMO crteža koji ima SERVABILAN PDF po
+   * ISTOM ključu koji `PdmService.getPdfContent` koristi — tačan
+   * `(drawingNumber, revision)` + `pdfBinary` != null — inače bi dugme iskočilo
+   * pa dalo 404 (review nalaz 14.07). Ako nijedna revizija nema PDF → 0 (dugme
+   * se opravdano skriva; ne nudimo prazno). Kandidati po broju case-insensitive,
+   * najviša revizija prva.
    */
   private async resolveDrawingIdByNumber(
     drawingNumber: string | null,
@@ -360,20 +363,22 @@ export class WorkOrdersService {
     if (!num) return 0;
     const rows = await this.prisma.drawing.findMany({
       where: { drawingNumber: { equals: num, mode: "insensitive" } },
-      select: { id: true, revision: true },
+      select: { id: true, drawingNumber: true, revision: true },
       orderBy: { revision: "desc" },
     });
-    if (!rows.length) return 0;
-    // Prednost reviziji koja ima uskladišten PDF (da dugme zaista otvori nešto).
-    const pdfs = await this.prisma.drawingPdf.findMany({
-      where: { drawingNumber: { equals: num, mode: "insensitive" } },
-      select: { revision: true },
-    });
-    const pdfRevs = new Set(pdfs.map((p) => p.revision.trim().toUpperCase()));
-    const withPdf = rows.find((r) =>
-      pdfRevs.has(r.revision.trim().toUpperCase()),
-    );
-    return (withPdf ?? rows[0]).id;
+    for (const r of rows) {
+      // Tačan ključ kao getPdfContent (drawingNumber_revision), + sadržaj postoji.
+      const pdf = await this.prisma.drawingPdf.findFirst({
+        where: {
+          drawingNumber: r.drawingNumber,
+          revision: r.revision,
+          NOT: { pdfBinary: null },
+        },
+        select: { drawingNumber: true },
+      });
+      if (pdf) return r.id;
+    }
+    return 0;
   }
 
   private async resolveDraftRef(
