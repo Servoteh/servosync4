@@ -14,8 +14,9 @@ import { GridTab } from './_components/grid-tab';
 import { PrisustvoTab } from './_components/prisustvo-tab';
 import { RazvojTab } from './_components/razvoj-tab';
 import { ZaradeTab } from './_components/zarade-tab';
+import { UgovoriTab } from './_components/ugovori/ugovori-tab';
 
-type TabKey = 'zaposleni' | 'imenik' | 'odmori' | 'sati' | 'prisustvo' | 'razvoj' | 'zarade';
+type TabKey = 'zaposleni' | 'imenik' | 'ugovori' | 'odmori' | 'sati' | 'prisustvo' | 'razvoj' | 'zarade';
 
 /**
  * Kadrovska (HR) — 3.0 TALAS G (POSLEDNJI; PII + zarade).
@@ -44,10 +45,12 @@ export default function KadrovskaPage() {
   // Imenik = 1.0 canViewPhoneDirectory krug (admin/menadzment/hr/poslovni_admin);
   // GET /employees ostaje na kadrovska.read (Zaposleni tab ga legitimno koristi).
   const canImenik = can(PERMISSIONS.KADROVSKA_IMENIK);
+  const canContracts = can(PERMISSIONS.KADROVSKA_CONTRACTS_READ);
 
   const tabs: TabItem<TabKey>[] = [
     { key: 'zaposleni', label: 'Zaposleni' },
     ...(canImenik ? [{ key: 'imenik' as const, label: 'Imenik' }] : []),
+    ...(canContracts ? [{ key: 'ugovori' as const, label: 'Ugovori' }] : []),
     { key: 'odmori', label: 'Odmori' },
     { key: 'sati', label: 'Radni sati' },
     { key: 'prisustvo', label: 'Prisustvo' },
@@ -63,6 +66,7 @@ export default function KadrovskaPage() {
 
         {tab === 'zaposleni' && <ZaposleniTab />}
         {tab === 'imenik' && canImenik && <ImenikTab />}
+        {tab === 'ugovori' && canContracts && <UgovoriTab />}
         {tab === 'odmori' && <OdmoriTab />}
         {tab === 'sati' && <GridTab />}
         {tab === 'prisustvo' && <PrisustvoTab />}

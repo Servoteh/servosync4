@@ -10,6 +10,7 @@ export {
   generateAnnexPdf,
   generateMaternityDecisionPdf,
   generateMutualTerminationPdf,
+  generateEmploymentDecisionPdf,
 } from './hr-documents';
 export type {
   PdfResult,
@@ -19,9 +20,12 @@ export type {
   AnnexInput,
   MaternityInput,
   MutualTerminationInput,
+  EmploymentDecisionInput,
 } from './hr-documents';
 export { generateContractPdf } from './contract';
 export type { ContractInput } from './contract';
+export { generateJobPositionPdf } from './job-position';
+export type { JobPositionEmployee } from './job-position';
 export { generateKarnetPdf } from './karnet';
 export type { KarnetInput, KarnetEmployee, KarnetDay, KarnetRow, KarnetTotals } from './karnet';
 export { generateBadgeSheetPdf, generateBadgeToken, downloadBlob, openBlob } from './badges';
