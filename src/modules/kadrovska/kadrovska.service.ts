@@ -882,11 +882,17 @@ export class KadrovskaService {
     });
   }
 
-  /** Imenik (tel/tim/odeljenje) — iz v_employees_safe (aktivni). Unos telefona = PII/R2. */
+  /** Imenik (tel/tim/odeljenje) — iz v_employees_safe (aktivni). Unos telefona = PII/R2.
+   *  P8 dopuna 14.07: + birth_date / medical_exam_expires / work_type /
+   *  department_id / sub_department_id — kalendar 🎂/⚠ markeri, managed-scope
+   *  filter i validacija tipa rada ih čitaju. Kolone NISU pod PII maskom u
+   *  v_employees_safe (proverено na živoj — maska pokriva samo personal_id/banku/
+   *  adresu/privatni tel/kontakte); 1.0 lista ih prikazuje svima sa kadrovska.read. */
   async directory(email: string) {
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.$queryRaw(
-        Prisma.sql`SELECT id, full_name, position, department, team, phone_work, phone_private, email
+        Prisma.sql`SELECT id, full_name, position, department, team, phone_work, phone_private, email,
+            birth_date, medical_exam_expires, work_type, department_id, sub_department_id
           FROM v_employees_safe WHERE is_active = true ORDER BY full_name`,
       );
       return { data };
