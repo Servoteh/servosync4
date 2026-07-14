@@ -1514,3 +1514,59 @@ export const useNotifDispatch = () => useKadrMutation<Record<string, never>>(() 
 export function fetchNotifications(params: { status?: string; type?: string } = {}): Promise<{ data: ViewRow[] }> {
   return apiFetch<{ data: ViewRow[] }>(`${BASE}/notifications${qs({ ...params })}`);
 }
+// ============================================================================
+// P10 — Prisustvo + QR kiosk (dodato aditivno; BE ugovor C:/kb1 p1a-core).
+// ============================================================================
+
+/** Sirovi red `attendance_events` (LEFT JOIN employees) — feed „Poslednji prolazi".
+ *  `employee_id`/`employee_name` su NULL kad kartica nije spojena (nepoznata). */
+export interface AttendanceEventRow extends ViewRow {
+  id: number;
+  event_ts: string;
+  direction: string | null;
+  terminal_name: string | null;
+  source: string | null;
+  badge_code: string | null;
+  employee_id: string | null;
+  employee_name: string | null;
+}
+/** Odgovor `GET /attendance/events` — feed + brojač današnjih nepoznatih kartica. */
+export interface AttendanceEventsData {
+  events: AttendanceEventRow[];
+  unknownToday: number;
+}
+
+/** Feed poslednjih N prolaza sa kapije + brojač nepoznatih kartica danas
+ *  (gate kadrovska.attendance). Auto-refresh na 60 s (paritet /attendance/now). */
+export function useAttendanceEvents(limit = 40, enabled = true) {
+  return useQuery({
+    queryKey: [...KEYS.attendance, 'events', limit],
+    enabled,
+    retry: false,
+    refetchInterval: 60000,
+    queryFn: () => apiFetch<{ data: AttendanceEventsData }>(`${BASE}/attendance/events${qs({ limit })}`),
+  });
+}
+
+/** Dnevni drill „prisustvo vs grid" za jednog zaposlenog (gate attendance_shadow).
+ *  Vraća v_attendance_vs_grid redove (first_in/last_out/presence/grid/diff…). */
+export function useAttendanceVsGrid(params: { employeeId?: string; from?: string; to?: string } = {}, enabled = true) {
+  return useQuery({
+    queryKey: [...KEYS.attendance, 'vs-grid', params],
+    enabled: enabled && !!params.employeeId,
+    retry: false,
+    queryFn: () => apiFetch<{ data: ViewRow[] }>(`${BASE}/attendance/vs-grid${qs({ ...params })}`),
+  });
+}
+
+/** Trajni QR token (get-or-create u employee_badges, „SVK-…" format; gate
+ *  kadrovska.attendance_shadow — hr/menadzment/admin, posle P1a fixa). Vraća ISTI
+ *  token pri ponovnom pozivu — nalepnice ostaju važeće i kiosk ih razrešava.
+ *  `created` govori da li je token upravo napravljen. */
+export const useEnsureQrBadge = () =>
+  useKadrMutation<{ id: string }, TxResponse<{ code: string; created: boolean }>>(
+    (v) => post<{ code: string; created: boolean }>(`/employees/${v.id}/badges/qr`),
+    // Ne dira live/shadow keširane liste — badge upis ne menja prisustvo; usko
+    // invalidiranje sprečava buru refetch-eva pri bulk generisanju (N zaposlenih).
+    ['kadrovska', 'badges'],
+  );

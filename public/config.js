@@ -18,3 +18,13 @@
 // Postavi SAMO ako proxy sluša na drugom portu/hostu na tom terminalu:
 //
 // window.__SERVOSYNC_LABEL_PROXY_URL__ = "http://localhost:8765/print";
+
+// Kapijski QR kiosk prisustva (JAVNA ruta /kiosk-prisustvo, F2 pilot). Front NEMA
+// Supabase kredencijale u bundle-u, pa se punch endpoint podešava OVDE — po
+// tabletu na kapiji (bez rebuild-a). URL pokazuje na živu edge funkciju
+// `kiosk-punch` na sy15; APIKEY je Supabase anon (Kong gateway ga traži).
+// Device key (x-kiosk-key) se unosi na samom kiosku i čuva u localStorage.
+// (TODO(BE): kad zaživi NestJS proxy /v1/kadrovska/kiosk/punch, ovo više ne treba.)
+//
+// window.__SERVOSYNC_KIOSK_PUNCH_URL__ = "https://<sy15-supabase-host>/functions/v1/kiosk-punch";
+// window.__SERVOSYNC_KIOSK_PUNCH_APIKEY__ = "<supabase-anon-key>";

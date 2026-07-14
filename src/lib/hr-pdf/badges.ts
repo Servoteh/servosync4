@@ -4,19 +4,20 @@ import { newPdf, safeName } from './pdf-core';
 // + qrcode (dinamički import, browser build). Port 1.0 `src/ui/kadrovska/kioskQrAdmin.js`
 // (`_buildPdf`): A4 portret, mreža 2×5, QR 34mm + ime/odeljenje/token.
 //
-// ⚠️ 3.0 GAP: BE Kadrovska (R1/R2) NEMA `employee_badges` get-or-create endpoint
-// (postoji samo u 1.0). Do tada FE kodira STABILAN identifikator zaposlenog
-// (`code`, podrazumevano employee.id) — kiosk-punch to razrešava. Trajni
-// `SVK-` token po zaposlenom čeka BE rutu (vidi izveštaj).
+// `code` = TRAJAN „SVK-…" token po zaposlenom iz employee_badges (BE get-or-create
+// POST /kadrovska/employees/:id/badges/qr — vidi useEnsureQrBadge). Isti token
+// razrešava kapijski kiosk; ponovna štampa vraća isti token pa zalepljene
+// nalepnice ostaju važeće. QR VIŠE NE kodira employee.id.
 
 export interface BadgeItem {
   name: string;
   dep?: string;
-  /** Sadržaj QR-a — stabilan identifikator (employee.id ili SVK- token). */
+  /** Sadržaj QR-a — trajni „SVK-…" token zaposlenog (employee_badges). */
   code: string;
 }
 
-/** Nasumičan, čitljiv token (paritet 1.0 genToken) — za slučaj da nema stabilnog koda. */
+/** Nasumičan „SVK-…" token (paritet 1.0 genToken) — offline fallback; kanonski
+ *  token daje BE (useEnsureQrBadge). Zadržano za slučaj bez mreže/BE. */
 export function generateBadgeToken(): string {
   const rnd = new Uint8Array(9);
   (globalThis.crypto || ({} as Crypto)).getRandomValues?.(rnd);
