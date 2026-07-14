@@ -36,6 +36,20 @@ export const PERMISSIONS = {
   REVERSI_MANAGE: 'reversi.manage',
   // Rezervisano za „Moj tim" pogled (TL/šef) — UI još nije priključen; vidi TODO u api/reversi.ts.
   REVERSI_TEAM_READ: 'reversi.team_read',
+  // Talas C — Proizvodnja (Plan montaže + Plan proizvodnje + Praćenje).
+  // MODULE_SPEC_planovi_pracenje_30.md §2; mirror BE common/authz/permissions.ts.
+  MONTAZA_READ: 'montaza.read',
+  MONTAZA_EDIT: 'montaza.edit',
+  MONTAZA_IZVESTAJI: 'montaza.izvestaji',
+  MONTAZA_AI_ADMIN: 'montaza.ai_admin',
+  PLAN_PROIZVODNJE_READ: 'plan_proizvodnje.read',
+  PLAN_PROIZVODNJE_EDIT: 'plan_proizvodnje.edit',
+  PLAN_PROIZVODNJE_FORCE: 'plan_proizvodnje.force',
+  PLAN_PROIZVODNJE_KOOP_ADMIN: 'plan_proizvodnje.koop_admin',
+  PRACENJE_READ: 'pracenje.read',
+  PRACENJE_EDIT: 'pracenje.edit',
+  PRACENJE_MANAGE: 'pracenje.manage',
+  PRACENJE_PRIORITET: 'pracenje.prioritet',
 } as const;
 
 export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
