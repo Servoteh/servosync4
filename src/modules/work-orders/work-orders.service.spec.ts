@@ -32,6 +32,7 @@ function prismaMock() {
       update: jest.fn().mockResolvedValue({}),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       aggregate: jest.fn().mockResolvedValue({ _max: { variant: null } }),
+      delete: jest.fn().mockResolvedValue({}),
     },
     workOrderOperation: {
       count: jest.fn().mockResolvedValue(1),
@@ -39,22 +40,52 @@ function prismaMock() {
       findMany: jest.fn().mockResolvedValue([]),
       createMany: jest.fn().mockResolvedValue({ count: 0 }),
       update: jest.fn().mockResolvedValue({}),
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+    },
+    workOrderOperationImage: {
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
     workOrderNonstandardPart: {
       findMany: jest.fn().mockResolvedValue([]),
       createMany: jest.fn().mockResolvedValue({ count: 0 }),
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
     workOrderMachinedPart: {
       findMany: jest.fn().mockResolvedValue([]),
       createMany: jest.fn().mockResolvedValue({ count: 0 }),
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
     workOrderBlank: {
       findMany: jest.fn().mockResolvedValue([]),
       createMany: jest.fn().mockResolvedValue({ count: 0 }),
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+    },
+    workOrderComponent: {
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+    },
+    workOrderItemComponent: {
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+    },
+    techProcess: {
+      findMany: jest.fn().mockResolvedValue([]),
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+    },
+    techProcessDocument: {
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+    },
+    workTimeEntry: {
+      count: jest.fn().mockResolvedValue(0),
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
     operation: { findMany: jest.fn().mockResolvedValue([]) },
-    workOrderLaunch: { create: jest.fn().mockResolvedValue({}) },
-    workOrderApproval: { create: jest.fn().mockResolvedValue({}) },
+    workOrderLaunch: {
+      create: jest.fn().mockResolvedValue({}),
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+    },
+    workOrderApproval: {
+      create: jest.fn().mockResolvedValue({}),
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+    },
     drawingHandover: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
     $transaction: jest.fn(),
     $executeRaw: jest.fn().mockResolvedValue(0),
@@ -481,6 +512,160 @@ describe("WorkOrdersService (workflow)", () => {
       ).toBe(PERMISSIONS.TEHNOLOGIJA_WRITE);
       expect(
         Reflect.getMetadata(PERMISSION_KEY_METADATA, handler("cloneVariant")),
+      ).toBe(PERMISSIONS.RN_WRITE);
+    });
+  });
+
+  describe("remove (brisanje RN-a + placeholder guard)", () => {
+    it("briše RN kad su prijave samo placeholderi (pieceCount 0, bez vremena)", async () => {
+      prisma.workOrder.findUnique.mockResolvedValue({ id: 7, isLocked: false });
+      prisma.techProcess.findMany.mockResolvedValue([
+        { id: 55, pieceCount: 0, isProcessFinished: false },
+      ]);
+      prisma.workTimeEntry.count.mockResolvedValue(0);
+
+      const res = await service.remove(7);
+
+      // Placeholder tech_processes se brišu zajedno sa RN-om (create-on-scan).
+      expect(prisma.techProcessDocument.deleteMany).toHaveBeenCalledWith({
+        where: { techProcessId: { in: [55] } },
+      });
+      expect(prisma.workTimeEntry.deleteMany).toHaveBeenCalledWith({
+        where: { techProcessId: { in: [55] } },
+      });
+      expect(prisma.techProcess.deleteMany).toHaveBeenCalledWith({
+        where: { workOrderId: 7 },
+      });
+      expect(prisma.workOrder.delete).toHaveBeenCalledWith({
+        where: { id: 7 },
+      });
+      expect(res).toEqual({ data: { id: 7, deleted: true } });
+    });
+
+    it("briše RN i kad nema nijednog tech_process reda", async () => {
+      prisma.workOrder.findUnique.mockResolvedValue({ id: 7, isLocked: false });
+      prisma.techProcess.findMany.mockResolvedValue([]);
+
+      await service.remove(7);
+
+      // Bez tech_processes preskače se brisanje evidencije po techProcessId.
+      expect(prisma.techProcessDocument.deleteMany).not.toHaveBeenCalled();
+      expect(prisma.workTimeEntry.deleteMany).not.toHaveBeenCalled();
+      expect(prisma.workOrder.delete).toHaveBeenCalledWith({
+        where: { id: 7 },
+      });
+    });
+
+    it("422 kad postoji evidentiran rad (pieceCount>0)", async () => {
+      prisma.workOrder.findUnique.mockResolvedValue({ id: 7, isLocked: false });
+      prisma.techProcess.findMany.mockResolvedValue([
+        { id: 55, pieceCount: 3, isProcessFinished: false },
+      ]);
+
+      await expect(service.remove(7)).rejects.toBeInstanceOf(
+        UnprocessableEntityException,
+      );
+      expect(prisma.workOrder.delete).not.toHaveBeenCalled();
+    });
+
+    it("422 kad je tech_process završen (isProcessFinished)", async () => {
+      prisma.workOrder.findUnique.mockResolvedValue({ id: 7, isLocked: false });
+      prisma.techProcess.findMany.mockResolvedValue([
+        { id: 55, pieceCount: 0, isProcessFinished: true },
+      ]);
+
+      await expect(service.remove(7)).rejects.toBeInstanceOf(
+        UnprocessableEntityException,
+      );
+      expect(prisma.workOrder.delete).not.toHaveBeenCalled();
+    });
+
+    it("422 kad postoji evidentirano vreme (work_time_entries)", async () => {
+      prisma.workOrder.findUnique.mockResolvedValue({ id: 7, isLocked: false });
+      prisma.techProcess.findMany.mockResolvedValue([
+        { id: 55, pieceCount: 0, isProcessFinished: false },
+      ]);
+      prisma.workTimeEntry.count.mockResolvedValue(2);
+
+      await expect(service.remove(7)).rejects.toBeInstanceOf(
+        UnprocessableEntityException,
+      );
+      expect(prisma.workOrder.delete).not.toHaveBeenCalled();
+    });
+
+    it("422 kad je RN zaključan (guard pre provere evidencije)", async () => {
+      prisma.workOrder.findUnique.mockResolvedValue({ id: 7, isLocked: true });
+
+      await expect(service.remove(7)).rejects.toBeInstanceOf(
+        UnprocessableEntityException,
+      );
+      expect(prisma.techProcess.findMany).not.toHaveBeenCalled();
+      expect(prisma.workOrder.delete).not.toHaveBeenCalled();
+    });
+
+    it("404 kad RN ne postoji", async () => {
+      prisma.workOrder.findUnique.mockResolvedValue(null);
+
+      await expect(service.remove(999)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(prisma.workOrder.delete).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("forceRemove (admin/sef prinudno brisanje)", () => {
+    it("briše RN uz evidenciju rada, bez provere pieceCount/vremena", async () => {
+      prisma.workOrder.findUnique.mockResolvedValue({ id: 7 });
+      prisma.techProcess.findMany.mockResolvedValue([{ id: 55 }, { id: 56 }]);
+
+      const res = await service.forceRemove(7);
+
+      // Ne čita se pieceCount/finished/vreme — briše bezuslovno.
+      expect(prisma.workTimeEntry.count).not.toHaveBeenCalled();
+      expect(prisma.techProcessDocument.deleteMany).toHaveBeenCalledWith({
+        where: { techProcessId: { in: [55, 56] } },
+      });
+      expect(prisma.workTimeEntry.deleteMany).toHaveBeenCalledWith({
+        where: { techProcessId: { in: [55, 56] } },
+      });
+      expect(prisma.techProcess.deleteMany).toHaveBeenCalledWith({
+        where: { workOrderId: 7 },
+      });
+      expect(prisma.workOrder.delete).toHaveBeenCalledWith({
+        where: { id: 7 },
+      });
+      expect(res).toEqual({ data: { id: 7, deleted: true } });
+    });
+
+    it("briše i zaključan RN (zaobilazi lock guard — ne čita isLocked)", async () => {
+      prisma.workOrder.findUnique.mockResolvedValue({ id: 7 });
+      prisma.techProcess.findMany.mockResolvedValue([]);
+
+      await service.forceRemove(7);
+
+      expect(prisma.workOrder.delete).toHaveBeenCalledWith({
+        where: { id: 7 },
+      });
+    });
+
+    it("404 kad RN ne postoji", async () => {
+      prisma.workOrder.findUnique.mockResolvedValue(null);
+
+      await expect(service.forceRemove(999)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(prisma.workOrder.delete).not.toHaveBeenCalled();
+    });
+
+    it("endpoint je iza `rn.delete.force`, remove ostaje iza `rn.write`", () => {
+      const handler = (name: string): object =>
+        Object.getOwnPropertyDescriptor(WorkOrdersController.prototype, name)
+          ?.value as object;
+      expect(
+        Reflect.getMetadata(PERMISSION_KEY_METADATA, handler("forceRemove")),
+      ).toBe(PERMISSIONS.RN_DELETE_FORCE);
+      expect(
+        Reflect.getMetadata(PERMISSION_KEY_METADATA, handler("remove")),
       ).toBe(PERMISSIONS.RN_WRITE);
     });
   });

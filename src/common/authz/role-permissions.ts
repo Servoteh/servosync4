@@ -52,6 +52,9 @@ export const ROLE_PERMISSIONS: Partial<
     P.RN_WRITE,
     P.RN_APPROVE,
     P.RN_LAUNCH,
+    // Prinudno brisanje RN-a sa evidencijom rada — samo SEF (i ADMIN kroz ALL);
+    // tehnolog/menadzment/kontrolor namerno NEMAJU (odluka „Oba", 14.07.2026).
+    P.RN_DELETE_FORCE,
     P.PDM_READ,
     // Nativni XML/PDF intake (P4 cutover): AUTHZ_ENFORCE=true je ŽIV na
     // prod-u — bez ovoga bi pdm.import imao samo admin (ALL).

@@ -2047,9 +2047,27 @@ export class TechProcessesService {
         );
 
       const planned = workOrder.pieceCount ?? null;
-      if (planned !== null && dto.pieceCount > planned)
+
+      // Kumulativ SVIH kontrola te operacije (sve kvalitete: dobar+dorada+škart) —
+      // operacija se zatvara TEK kad ukupno iskontrolisano dostigne plan RN-a; do
+      // tada je parcijala, red ostaje otvoren i akumulira (odluka korisnika 2026-07-14).
+      const sumAgg = await tx.techProcess.aggregate({
+        _sum: { pieceCount: true },
+        where: {
+          projectId,
+          identNumber,
+          variant,
+          operationNumber,
+          workCenterCode,
+        },
+      });
+      const existingSum = sumAgg._sum.pieceCount ?? 0;
+      const cumulative = existingSum + dto.pieceCount;
+      const reachedPlan = planned === null || cumulative >= planned;
+
+      if (planned !== null && cumulative > planned)
         throw new UnprocessableEntityException(
-          `Iskontrolisano (${dto.pieceCount}) premašuje planirano (${planned}) — kontrola se ne može snimiti.`,
+          `Ukupno iskontrolisano (${cumulative}) premašuje planirano (${planned}) — kontrola se ne može snimiti.`,
         );
 
       // Knjiženje lokacija iskontrolisanih delova (+quantity placement, ledger §3.1/§3.7).
@@ -2089,13 +2107,14 @@ export class TechProcessesService {
         orderBy: { id: "asc" },
       });
 
+      // Zatvaranje (isProcessFinished/finishedAt) samo kad je plan dostignut; do tada
+      // je parcijala i red ostaje otvoren. pieceCount se razlikuje po grani: update =
+      // akumulacija na postojeći otvoreni red, create = ova prijava kontrole.
       const finishData = {
-        pieceCount: dto.pieceCount,
         qualityTypeId: dto.qualityTypeId,
         workerId: worker.id, // kontrolor (audit ko+kada — ODLUKE #14)
         workOrderId: workOrder.id,
-        isProcessFinished: true,
-        finishedAt: now,
+        ...(reachedPlan ? { isProcessFinished: true, finishedAt: now } : {}),
         ...(dto.note?.trim() ? { note: dto.note.trim() } : {}),
       };
 
@@ -2103,7 +2122,10 @@ export class TechProcessesService {
       if (existingOpen) {
         tp = await tx.techProcess.update({
           where: { id: existingOpen.id },
-          data: finishData,
+          data: {
+            ...finishData,
+            pieceCount: existingOpen.pieceCount + dto.pieceCount,
+          },
         });
       } else {
         // Serijska sekvenca (synced eksplicitni id-jevi) — poravnaj pre insert-a.
@@ -2116,54 +2138,68 @@ export class TechProcessesService {
             operationNumber,
             workCenterCode,
             identMark: identMark || "0",
+            pieceCount: dto.pieceCount,
             ...finishData,
           },
         });
       }
 
-      // Završna kontrola POTVRĐUJE sve ostale neotkucane/otvorene operacije RN-a
-      // (Nesa 2026-07-10): deo koji je prošao završnu kontrolu je fizički prošao i
-      // prethodne operacije — one se zatvaraju (isProcessFinished + finishedAt), a
-      // komadi/radnik im se NE diraju (0 ako nisu kucane — ne izmišljamo evidenciju).
-      // Druge ZAVRŠNE operacije (significantForFinishing) se ne potvrđuju implicitno:
-      // zapis o kvalitetu sme da nastane samo stvarnom kontrolom.
-      const significant = await tx.operation.findMany({
-        where: { significantForFinishing: true },
-        select: { workCenterCode: true },
-      });
-      const confirmedOps = await tx.techProcess.updateMany({
-        where: {
+      // Kaskada (potvrda prethodnih operacija) + skidanje celog RN-a sa prioriteta +
+      // „RN završen" idu SAMO kad je plan dostignut; parcijalna kontrola ostavlja
+      // prethodne operacije i prioritet netaknute (akumulira se do plana).
+      let confirmedOperationsCount = 0;
+      let prioritizedCount = 0;
+      let workOrderCompleted = false;
+      if (reachedPlan) {
+        // Završna kontrola POTVRĐUJE sve ostale neotkucane/otvorene operacije RN-a
+        // (Nesa 2026-07-10): deo koji je prošao završnu kontrolu je fizički prošao i
+        // prethodne operacije — one se zatvaraju (isProcessFinished + finishedAt), a
+        // komadi/radnik im se NE diraju (0 ako nisu kucane — ne izmišljamo evidenciju).
+        // Druge ZAVRŠNE operacije (significantForFinishing) se ne potvrđuju implicitno:
+        // zapis o kvalitetu sme da nastane samo stvarnom kontrolom.
+        const significant = await tx.operation.findMany({
+          where: { significantForFinishing: true },
+          select: { workCenterCode: true },
+        });
+        const confirmedOps = await tx.techProcess.updateMany({
+          where: {
+            projectId,
+            identNumber,
+            variant,
+            id: { not: tp.id },
+            isProcessFinished: { not: true },
+            workCenterCode: { notIn: significant.map((o) => o.workCenterCode) },
+          },
+          data: { isProcessFinished: true, finishedAt: now },
+        });
+        confirmedOperationsCount = confirmedOps.count;
+
+        // Ceo RN silazi sa prioriteta (ne samo kontrolna operacija) — nalog je gotov.
+        const prioritized = await tx.workOrderOperation.updateMany({
+          where: {
+            workOrderId: workOrder.id,
+            priority: { not: OPERATION_PRIORITY_DONE },
+          },
+          data: { priority: OPERATION_PRIORITY_DONE },
+        });
+        prioritizedCount = prioritized.count;
+
+        workOrderCompleted = await this.markWorkOrderIfComplete(
+          tx,
           projectId,
           identNumber,
           variant,
-          id: { not: tp.id },
-          isProcessFinished: { not: true },
-          workCenterCode: { notIn: significant.map((o) => o.workCenterCode) },
-        },
-        data: { isProcessFinished: true, finishedAt: now },
-      });
-
-      // Ceo RN silazi sa prioriteta (ne samo kontrolna operacija) — nalog je gotov.
-      const prioritized = await tx.workOrderOperation.updateMany({
-        where: {
-          workOrderId: workOrder.id,
-          priority: { not: OPERATION_PRIORITY_DONE },
-        },
-        data: { priority: OPERATION_PRIORITY_DONE },
-      });
-      const workOrderCompleted = await this.markWorkOrderIfComplete(
-        tx,
-        projectId,
-        identNumber,
-        variant,
-      );
+        );
+      }
 
       return {
         tp,
         workOrder,
         planned,
-        prioritized: prioritized.count,
-        confirmedOperations: confirmedOps.count,
+        reachedPlan,
+        cumulative,
+        prioritized: prioritizedCount,
+        confirmedOperations: confirmedOperationsCount,
         workOrderCompleted,
         opened: !existingOpen,
       };
@@ -2201,6 +2237,10 @@ export class TechProcessesService {
           },
         },
         controlledPieces: dto.pieceCount,
+        // Ukupno iskontrolisano za tu operaciju (zbir svih kontrola, sve kvalitete).
+        controlledCumulative: result.cumulative,
+        // Operacija zatvorena tek kad kumulativ dostigne plan RN-a (parcijala = false).
+        operationFinished: result.reachedPlan,
         plannedPieces: result.planned,
         qualityTypeId: dto.qualityTypeId,
         locationsBooked: dto.locations.length,
@@ -2696,6 +2736,32 @@ export class TechProcessesService {
       operationNumber,
     );
     if (existing) return { tp: existing, opened: false };
+
+    // OPŠTI NALOG (Operation.withoutProcess=true): radni centar bez tehnološkog
+    // postupka NEMA red u routingu (work_order_operations), pa bi validacija ispod
+    // uvek pala 422. Za takav RC otvori red direktno — preskoči routing lookup i 422.
+    const opDef = await tx.operation.findUnique({
+      where: { workCenterCode },
+      select: { withoutProcess: true },
+    });
+    if (opDef?.withoutProcess === true) {
+      // Serijska sekvenca (synced eksplicitni id-jevi) — poravnaj pre insert-a.
+      await this.alignTechProcessSequence(tx);
+      const tp = await tx.techProcess.create({
+        data: {
+          projectId,
+          identNumber,
+          variant: wo.variant,
+          operationNumber: operationNumber ?? 0,
+          workCenterCode,
+          identMark: identMark || "0",
+          pieceCount: 0,
+          workerId: creatorWorkerId,
+          workOrderId: wo.id,
+        },
+      });
+      return { tp, opened: true };
+    }
 
     const routingWhere: Prisma.WorkOrderOperationWhereInput = {
       workOrderId: wo.id,

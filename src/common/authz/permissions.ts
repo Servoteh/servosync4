@@ -22,6 +22,11 @@ export const PERMISSIONS = {
   RN_WRITE: "rn.write",
   RN_APPROVE: "rn.approve",
   RN_LAUNCH: "rn.launch",
+  /** Prinudno brisanje RN-a — briše RN I evidenciju rada (tech_processes,
+   *  prijave/kucanja, work_time_entries) i zaobilazi lock guard. Samo ADMIN
+   *  (kroz ALL) i SEF; NE tehnolog/menadzment/kontrolor. Endpoint:
+   *  DELETE /v1/work-orders/:id/force. */
+  RN_DELETE_FORCE: "rn.delete.force",
   // PDM / Crteži / BOM
   PDM_READ: "pdm.read",
   PDM_IMPORT: "pdm.import",

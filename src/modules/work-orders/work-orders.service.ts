@@ -836,65 +836,111 @@ export class WorkOrdersService {
   }
 
   /**
-   * Brisanje kompletnog RN-a sa kaskadom (`spObrisiKompletanNalog`, §K). Sve FK relacije
-   * su `NoAction` → brišemo eksplicitno, dubina prvo, u jednoj transakciji:
-   * slike operacija → operacije → machined/blanks/nonstandard → komponente → itemKomponente
-   * → odobravanja → lansiranja → RN. **NE dira `tech_processes`** (kao legacy).
-   * 🔴 Guard: zaključan RN (422) i „proizvodnja započeta" — postoji ijedan `tech_processes`
-   * red po trojci (422). Namerno bez varijante koja briše i evidenciju rada (legacy je to
-   * imao samo u test-formi).
+   * Kaskadno brisanje RN-a (`spObrisiKompletanNalog`, §K) unutar prosleđene
+   * transakcije. Sve FK relacije su `NoAction` → brišemo eksplicitno, dubina
+   * prvo. Redosled: PRVO evidencija rada vezana za `tech_processes` ovog RN-a
+   * (tech_process_documents → work_time_entries → tech_processes), PA postojeća
+   * RN kaskada (slike operacija → operacije → machined/blanks/nonstandard →
+   * komponente → itemKomponente → odobravanja → lansiranja → RN).
+   */
+  private async deleteWorkOrderCascade(
+    tx: Prisma.TransactionClient,
+    id: number,
+  ): Promise<void> {
+    // Evidencija rada (prijave/kucanja) vezana za tech_processes ovog RN-a.
+    const techProcesses = await tx.techProcess.findMany({
+      where: { workOrderId: id },
+      select: { id: true },
+    });
+    const tpIds = techProcesses.map((t) => t.id);
+    if (tpIds.length) {
+      await tx.techProcessDocument.deleteMany({
+        where: { techProcessId: { in: tpIds } },
+      });
+      await tx.workTimeEntry.deleteMany({
+        where: { techProcessId: { in: tpIds } },
+      });
+    }
+    await tx.techProcess.deleteMany({ where: { workOrderId: id } });
+
+    // Postojeća RN kaskada.
+    const ops = await tx.workOrderOperation.findMany({
+      where: { workOrderId: id },
+      select: { id: true },
+    });
+    if (ops.length)
+      await tx.workOrderOperationImage.deleteMany({
+        where: { workOrderOperationId: { in: ops.map((o) => o.id) } },
+      });
+    await tx.workOrderOperation.deleteMany({ where: { workOrderId: id } });
+    await tx.workOrderMachinedPart.deleteMany({ where: { workOrderId: id } });
+    await tx.workOrderBlank.deleteMany({ where: { workOrderId: id } });
+    await tx.workOrderNonstandardPart.deleteMany({
+      where: { workOrderId: id },
+    });
+    await tx.workOrderComponent.deleteMany({ where: { workOrderId: id } });
+    await tx.workOrderItemComponent.deleteMany({ where: { workOrderId: id } });
+    await tx.workOrderApproval.deleteMany({ where: { workOrderId: id } });
+    await tx.workOrderLaunch.deleteMany({ where: { workOrderId: id } });
+    await tx.workOrder.delete({ where: { id } });
+  }
+
+  /**
+   * Brisanje RN-a sa kaskadom (`spObrisiKompletanNalog`, §K). Guard:
+   *   - zaključan RN (422),
+   *   - postoji evidentiran rad — neki `tech_processes` red ima `pieceCount > 0`
+   *     ILI `isProcessFinished` ILI postoji `work_time_entries` zapis (422).
+   * Placeholder redovi od test-skena (`pieceCount 0`, create-on-scan, bez
+   * vremena) se NE računaju kao proizvodnja — brišu se zajedno sa RN-om preko
+   * `deleteWorkOrderCascade` (inače tehnolog ne bi mogao da obriše test RN).
+   * Za prinudno brisanje uz evidenciju rada postoji `forceRemove` (admin/sef).
    */
   async remove(id: number) {
     const wo = await this.prisma.workOrder.findUnique({
       where: { id },
-      select: {
-        id: true,
-        isLocked: true,
-        projectId: true,
-        identNumber: true,
-        variant: true,
-      },
+      select: { id: true, isLocked: true },
     });
     if (!wo) throw new NotFoundException(`Radni nalog ${id} ne postoji`);
     if (wo.isLocked)
       throw new UnprocessableEntityException(
         "Zaključan RN se ne može obrisati.",
       );
-    const started = await this.prisma.techProcess.count({
-      where: {
-        projectId: wo.projectId,
-        identNumber: wo.identNumber,
-        variant: wo.variant,
-      },
+
+    const techProcesses = await this.prisma.techProcess.findMany({
+      where: { workOrderId: id },
+      select: { id: true, pieceCount: true, isProcessFinished: true },
     });
-    if (started > 0)
+    const ids = techProcesses.map((t) => t.id);
+    const timeEntries = ids.length
+      ? await this.prisma.workTimeEntry.count({
+          where: { techProcessId: { in: ids } },
+        })
+      : 0;
+    const hasRealWork =
+      timeEntries > 0 ||
+      techProcesses.some((t) => t.pieceCount > 0 || t.isProcessFinished === true);
+    if (hasRealWork)
       throw new UnprocessableEntityException(
-        "Po ovom nalogu je započeta proizvodnja (postoje evidentirane operacije) — ne može se obrisati.",
+        "Po ovom nalogu postoji evidentiran rad (prijave/kucanja) — ne može se obrisati. Prinudno brisanje je dostupno administratoru/šefu.",
       );
 
-    await this.prisma.$transaction(async (tx) => {
-      const ops = await tx.workOrderOperation.findMany({
-        where: { workOrderId: id },
-        select: { id: true },
-      });
-      if (ops.length)
-        await tx.workOrderOperationImage.deleteMany({
-          where: { workOrderOperationId: { in: ops.map((o) => o.id) } },
-        });
-      await tx.workOrderOperation.deleteMany({ where: { workOrderId: id } });
-      await tx.workOrderMachinedPart.deleteMany({ where: { workOrderId: id } });
-      await tx.workOrderBlank.deleteMany({ where: { workOrderId: id } });
-      await tx.workOrderNonstandardPart.deleteMany({
-        where: { workOrderId: id },
-      });
-      await tx.workOrderComponent.deleteMany({ where: { workOrderId: id } });
-      await tx.workOrderItemComponent.deleteMany({
-        where: { workOrderId: id },
-      });
-      await tx.workOrderApproval.deleteMany({ where: { workOrderId: id } });
-      await tx.workOrderLaunch.deleteMany({ where: { workOrderId: id } });
-      await tx.workOrder.delete({ where: { id } });
+    await this.prisma.$transaction((tx) => this.deleteWorkOrderCascade(tx, id));
+    return { data: { id, deleted: true } };
+  }
+
+  /**
+   * Prinudno brisanje RN-a (admin/sef, `rn.delete.force`). Briše RN I SVU
+   * evidenciju rada (tech_processes, prijave/kucanja, work_time_entries) bez
+   * obzira na `pieceCount`/završenost/evidentirano vreme i ZAOBILAZI lock guard
+   * (ne čita `isLocked`). Audit se beleži automatski (globalni interceptor).
+   */
+  async forceRemove(id: number) {
+    const wo = await this.prisma.workOrder.findUnique({
+      where: { id },
+      select: { id: true },
     });
+    if (!wo) throw new NotFoundException(`Radni nalog ${id} ne postoji`);
+    await this.prisma.$transaction((tx) => this.deleteWorkOrderCascade(tx, id));
     return { data: { id, deleted: true } };
   }
 

@@ -12,21 +12,40 @@ function prismaMock() {
       findFirst: jest.fn().mockResolvedValue(null),
       create: jest.fn(),
       update: jest.fn(),
+      // control(): kumulativ svih kontrola te operacije + kaskada potvrde.
+      aggregate: jest.fn().mockResolvedValue({ _sum: { pieceCount: 0 } }),
+      updateMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
     worker: {
       findMany: jest.fn().mockResolvedValue([]),
       findFirst: jest.fn().mockResolvedValue(null),
     },
+    // control(): kontrolor-auth (workerType.additionalPrivileges).
+    workerType: { findUnique: jest.fn().mockResolvedValue(null) },
     partQualityType: { findMany: jest.fn().mockResolvedValue([]) },
-    operation: { findMany: jest.fn().mockResolvedValue([]) },
+    // control()/opšti nalog: findUnique (significantForFinishing / withoutProcess).
+    operation: {
+      findMany: jest.fn().mockResolvedValue([]),
+      findUnique: jest.fn().mockResolvedValue(null),
+    },
     // D8 emit: lanac RN → primopredaja → stavka nacrta → projektant
     // (+ fallback `drawings.designedBy`); scan: tekući RN po (predmet, ident).
     workOrder: {
       findUnique: jest.fn().mockResolvedValue(null),
       findFirst: jest.fn().mockResolvedValue(null),
       findMany: jest.fn().mockResolvedValue([]),
+      update: jest.fn().mockResolvedValue({}),
     },
-    workOrderOperation: { findFirst: jest.fn().mockResolvedValue(null) },
+    workOrderOperation: {
+      findFirst: jest.fn().mockResolvedValue(null),
+      updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+    },
+    // control(): knjiženje lokacija iskontrolisanih delova (part_locations).
+    position: { findUnique: jest.fn().mockResolvedValue({ id: 1 }) },
+    partLocation: { create: jest.fn().mockResolvedValue({ id: 1 }) },
+    // control(): buildLabelData (RN → predmet → komitent).
+    project: { findUnique: jest.fn().mockResolvedValue(null) },
+    customer: { findUnique: jest.fn().mockResolvedValue(null) },
     // openForWorker: otvorene sesije radnika + svež users.worker_id fallback.
     workTimeEntry: { findMany: jest.fn().mockResolvedValue([]) },
     user: { findUnique: jest.fn().mockResolvedValue(null) },
@@ -606,5 +625,227 @@ describe("TechProcessesService — create-on-scan štancuje kreatora (proba 13.0
     expect(prisma.techProcess.create).toHaveBeenCalledWith(
       containing({ data: containing({ workerId: 74 }) }),
     );
+  });
+});
+
+// ============================================================ CONTROL akumulacija do plana
+
+describe("TechProcessesService — control akumulira do plana (parcijala ne zatvara)", () => {
+  let service: TechProcessesService;
+  let prisma: ReturnType<typeof prismaMock>;
+
+  /** RN sa planom 50 kom; findWorkOrderByTriple + markWorkOrderIfComplete čitaju isti red. */
+  const CONTROL_WO = {
+    id: 900,
+    projectId: 2597,
+    identNumber: "06/93-4",
+    variant: 0,
+    partName: "Osovina",
+    drawingNumber: "CRT-1",
+    pieceCount: 50,
+    productionDeadline: null,
+    handoverStatusId: 0,
+    status: false,
+    revision: "A",
+    material: "C45",
+  };
+
+  /** Kontrola (dobar kvalitet → bez child RN / notifikacije). */
+  const CONTROL_DTO = {
+    orderBarcode: "RNZ:2597:06/93-4:0:A",
+    operationBarcode: "S:60:8.5:0:A",
+    workerCard: "CTRL1",
+    qualityTypeId: 0,
+    pieceCount: 10,
+    locations: [{ positionId: 1, quantity: 10 }],
+  };
+
+  beforeEach(async () => {
+    prisma = prismaMock();
+    const mod: TestingModule = await Test.createTestingModule({
+      providers: [
+        TechProcessesService,
+        { provide: PrismaService, useValue: prisma },
+        {
+          provide: ScopeService,
+          useValue: { isEnforced: jest.fn().mockReturnValue(false) },
+        },
+        { provide: NotificationsService, useValue: notificationsMock() },
+      ],
+    }).compile();
+    service = mod.get(TechProcessesService);
+
+    // Kontrolor sa kartice + ovlašćen tip radnika (additionalPrivileges).
+    prisma.worker.findFirst.mockResolvedValue({
+      id: 88,
+      fullName: "Pera Kontrolor",
+      username: "pera",
+      workerTypeId: 5,
+    });
+    prisma.workerType.findUnique.mockResolvedValue({
+      additionalPrivileges: true,
+    });
+    prisma.workOrder.findFirst.mockResolvedValue(CONTROL_WO);
+    prisma.workOrder.findUnique.mockResolvedValue(CONTROL_WO); // buildLabelData
+    prisma.operation.findUnique.mockResolvedValue({
+      significantForFinishing: true,
+    });
+    prisma.workOrderOperation.findFirst.mockResolvedValue({ id: 1 });
+  });
+
+  it("parcijala (10/50): red ostaje otvoren, bez kaskade i skidanja sa prioriteta", async () => {
+    prisma.techProcess.aggregate.mockResolvedValue({ _sum: { pieceCount: 0 } });
+    prisma.techProcess.findFirst.mockResolvedValue(null); // create grana
+    prisma.techProcess.create.mockResolvedValue(
+      tpRow({
+        id: 700,
+        pieceCount: 10,
+        isProcessFinished: false,
+        operationNumber: 60,
+        workCenterCode: "8.5",
+        workOrderId: 900,
+      }),
+    );
+
+    const { data } = await service.control(CONTROL_DTO);
+
+    expect(data.operationFinished).toBe(false);
+    expect(data.controlledCumulative).toBe(10);
+    expect(data.confirmedOperations).toBe(0);
+    expect(data.operationsPrioritized).toBe(0);
+
+    // Novi red se NE zatvara na parcijali; pieceCount = ova prijava.
+    const createArg = prisma.techProcess.create.mock.calls[0][0] as {
+      data: Record<string, unknown>;
+    };
+    expect(createArg.data.pieceCount).toBe(10);
+    expect(createArg.data.isProcessFinished).toBeUndefined();
+
+    // Kaskada (potvrda prethodnih) i skidanje sa prioriteta se NE pale.
+    expect(prisma.techProcess.updateMany).not.toHaveBeenCalled();
+    expect(prisma.workOrderOperation.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("akumulacija 10+40=50: zatvara red + pali kaskadu i skidanje sa prioriteta", async () => {
+    prisma.techProcess.aggregate.mockResolvedValue({ _sum: { pieceCount: 10 } });
+    prisma.techProcess.findFirst.mockResolvedValue(
+      tpRow({ id: 701, pieceCount: 10, isProcessFinished: false }),
+    ); // otvoren red → update grana (akumulacija)
+    prisma.techProcess.update.mockResolvedValue(
+      tpRow({ id: 701, pieceCount: 50, isProcessFinished: true }),
+    );
+    prisma.techProcess.updateMany.mockResolvedValue({ count: 2 });
+    prisma.workOrderOperation.updateMany.mockResolvedValue({ count: 3 });
+
+    const { data } = await service.control({
+      ...CONTROL_DTO,
+      pieceCount: 40,
+      locations: [{ positionId: 1, quantity: 40 }],
+    });
+
+    expect(data.operationFinished).toBe(true);
+    expect(data.controlledCumulative).toBe(50);
+    expect(data.confirmedOperations).toBe(2);
+    expect(data.operationsPrioritized).toBe(3);
+
+    // Akumulacija: postojeći otvoreni red (10) + ova prijava (40) = 50; zatvoren.
+    const updateArg = prisma.techProcess.update.mock.calls[0][0] as {
+      data: Record<string, unknown>;
+    };
+    expect(updateArg.data.pieceCount).toBe(50);
+    expect(updateArg.data.isProcessFinished).toBe(true);
+    expect(prisma.techProcess.updateMany).toHaveBeenCalled();
+    expect(prisma.workOrderOperation.updateMany).toHaveBeenCalled();
+  });
+
+  it("kumulativni premašaj (20+40=60 > 50): 422, ništa se ne knjiži", async () => {
+    prisma.techProcess.aggregate.mockResolvedValue({ _sum: { pieceCount: 20 } });
+
+    await expect(
+      service.control({
+        ...CONTROL_DTO,
+        pieceCount: 40,
+        locations: [{ positionId: 1, quantity: 40 }],
+      }),
+    ).rejects.toThrow("Ukupno iskontrolisano (60) premašuje planirano (50)");
+
+    // Guard je PRE knjiženja lokacija i PRE create/update reda kontrole.
+    expect(prisma.partLocation.create).not.toHaveBeenCalled();
+    expect(prisma.techProcess.create).not.toHaveBeenCalled();
+    expect(prisma.techProcess.update).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================ OPŠTI NALOG (withoutProcess)
+
+describe("TechProcessesService — opšti nalog (Operation.withoutProcess) zaobilazi routing", () => {
+  let service: TechProcessesService;
+  let prisma: ReturnType<typeof prismaMock>;
+
+  const GEN_WO = {
+    id: 900,
+    projectId: 2597,
+    identNumber: "06/93-4",
+    variant: 1,
+    pieceCount: 10,
+    revision: "A",
+  };
+
+  beforeEach(async () => {
+    prisma = prismaMock();
+    const mod: TestingModule = await Test.createTestingModule({
+      providers: [
+        TechProcessesService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: ScopeService, useValue: {} },
+        { provide: NotificationsService, useValue: notificationsMock() },
+      ],
+    }).compile();
+    service = mod.get(TechProcessesService);
+    prisma.workOrder.findFirst.mockResolvedValue(GEN_WO);
+    prisma.techProcess.findFirst.mockResolvedValue(null); // red još ne postoji
+  });
+
+  it("withoutProcess=true: otvara red BEZ routing lookup-a i BEZ 422", async () => {
+    prisma.operation.findUnique.mockResolvedValue({ withoutProcess: true });
+    prisma.techProcess.create.mockResolvedValue(
+      tpRow({ id: 555, variant: 1, pieceCount: 0, workOrderId: 900 }),
+    );
+    prisma.techProcess.update.mockResolvedValue(
+      tpRow({ id: 555, variant: 1, pieceCount: 3, workOrderId: 900 }),
+    );
+
+    await service.scan({
+      orderBarcode: "RNZ:2597:06/93-4:1:A",
+      operationBarcode: "S:10:0102:0:A",
+      pieceCount: 3,
+    });
+
+    // Red je otvoren direktno; routing (work_order_operations) se NE proverava.
+    expect(prisma.workOrderOperation.findFirst).not.toHaveBeenCalled();
+    expect(prisma.techProcess.create).toHaveBeenCalledWith(
+      containing({
+        data: containing({
+          workCenterCode: "0102",
+          workOrderId: 900,
+          pieceCount: 0,
+        }),
+      }),
+    );
+  });
+
+  it("obična operacija (withoutProcess != true) bez reda u routingu i dalje pada 422", async () => {
+    prisma.operation.findUnique.mockResolvedValue({ withoutProcess: false });
+    prisma.workOrderOperation.findFirst.mockResolvedValue(null); // nije u routingu
+
+    await expect(
+      service.scan({
+        orderBarcode: "RNZ:2597:06/93-4:1:A",
+        operationBarcode: "S:10:0102:0:A",
+        pieceCount: 3,
+      }),
+    ).rejects.toThrow("nije u tehnološkom postupku RN 06/93-4");
+
+    expect(prisma.techProcess.create).not.toHaveBeenCalled();
   });
 });

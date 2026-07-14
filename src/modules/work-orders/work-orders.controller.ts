@@ -165,12 +165,23 @@ export class WorkOrdersController {
     return this.workOrders.deleteOperation(id, opId);
   }
 
-  /** Brisanje kompletnog RN-a (cascade). Guard: zaključan / proizvodnja započeta. */
+  /** Brisanje kompletnog RN-a (cascade). Guard: zaključan / evidentiran rad. */
   @Delete(":id")
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermission(PERMISSIONS.RN_WRITE)
   remove(@Param("id", ParseIntPipe) id: number) {
     return this.workOrders.remove(id);
+  }
+
+  /**
+   * „Prinudno obriši" RN — briše RN I evidenciju rada (prijave/kucanja) i
+   * zaobilazi lock guard. Samo admin/šef (`rn.delete.force`).
+   */
+  @Delete(":id/force")
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(PERMISSIONS.RN_DELETE_FORCE)
+  forceRemove(@Param("id", ParseIntPipe) id: number) {
+    return this.workOrders.forceRemove(id);
   }
 
   /** Odobri/odbij RN. Permisija `rn.approve`; drugi gate (Worker.definesApproval) je V2 u servisu. */
