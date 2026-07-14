@@ -3,6 +3,13 @@
 import { useEffect, type ReactNode } from 'react';
 import { X } from 'lucide-react';
 
+const SIZE_CLASS = {
+  md: 'max-w-lg',
+  lg: 'max-w-2xl',
+  xl: 'max-w-4xl',
+  '2xl': 'max-w-6xl',
+} as const;
+
 /** Modalni dijalog (DESIGN_SYSTEM.md §4/§10). Esc zatvara; klik na pozadinu zatvara. */
 export function Dialog({
   open,
@@ -10,12 +17,15 @@ export function Dialog({
   title,
   children,
   footer,
+  size = 'md',
 }: {
   open: boolean;
   onClose: () => void;
   title: string;
   children: ReactNode;
   footer?: ReactNode;
+  /** Širina modala: md (≈ obrazac), lg/xl/2xl (šire tabele/zarade). */
+  size?: keyof typeof SIZE_CLASS;
 }) {
   useEffect(() => {
     if (!open) return;
@@ -34,7 +44,7 @@ export function Dialog({
       role="presentation"
     >
       <div
-        className="w-full max-w-lg rounded-panel border border-line bg-surface shadow-xl"
+        className={`w-full ${SIZE_CLASS[size]} rounded-panel border border-line bg-surface shadow-xl`}
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"

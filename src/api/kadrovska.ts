@@ -967,3 +967,21 @@ export const usePayrollRecompute = () =>
   useKadrMutation<{ year: number; month: number; employeeId?: string; persist?: boolean; clientEventId?: string }, TxResponse<{ year: number; month: number; count: number; rows: PayrollRecomputeRow[] }>>((v) => post('/salary/payroll/recompute', v), KEYS.salary);
 export const usePayrollLock = () => useKadrMutation<{ id: string; expectedUpdatedAt: string; clientEventId?: string }>((v) => post(`/salary/payroll/${v.id}/lock`, { expectedUpdatedAt: v.expectedUpdatedAt, clientEventId: v.clientEventId }), KEYS.salary);
 export const usePayrollUnlock = () => useKadrMutation<{ id: string; clientEventId?: string }>((v) => post(`/salary/payroll/${v.id}/unlock`, { clientEventId: v.clientEventId }), KEYS.salary);
+
+/** hr_upsert_salary_payroll rezultat (V2 optimistic). Na konflikt BE baca 409
+ *  (ConflictException `… (stale|locked|row_exists)`) — pozivalac hvata ApiError. */
+export interface PayrollUpsertResult {
+  applied: boolean;
+  id?: string;
+  status?: string;
+  total_rsd?: number | string;
+  ukupna_zarada?: number | string;
+  updated_at?: string;
+  reason?: string;
+}
+/** V2 upsert reda mesečnog obračuna. `row` = snake_case payload (+ id/expected_updated_at za UPDATE). */
+export const usePayrollUpsert = () =>
+  useKadrMutation<{ row: Record<string, unknown>; clientEventId?: string }, TxResponse<PayrollUpsertResult>>(
+    (v) => post('/salary/payroll/upsert', { row: v.row, clientEventId: v.clientEventId }),
+    KEYS.salary,
+  );
