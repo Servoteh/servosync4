@@ -1142,6 +1142,64 @@ export function useEmployeePii(id: string | null, enabled = true) {
 export function useHolidays(params: { from?: string; to?: string } = {}, enabled = true) {
   return useQuery({
     queryKey: ['kadrovska', 'holidays', params],
+// ============================================================================
+// P6 — GRID RADNIH SATI (inline editor). Append-only (v3.0 Talas G / P6).
+// BE ugovor: C:/kb1 (kadrovska-be/p1a-core). Sve pod /v1/kadrovska osim
+// predmeti lookup (/v1/montaza/lookups/predmeti — vidi usePredmetiLookup).
+// ============================================================================
+
+/** GET /grid + `locked` (paid mesec) + refetch (realtime zamena, 30s polling). */
+export interface GridResponseLocked extends GridResponse {
+  locked?: boolean;
+}
+export function useGridLive(
+  params: { year?: number; month?: number; employeeId?: string } = {},
+  opts: { refetchMs?: number } = {},
+) {
+  return useQuery({
+    queryKey: [...KEYS.grid, params],
+    refetchInterval: opts.refetchMs && opts.refetchMs > 0 ? opts.refetchMs : (false as const),
+    queryFn: () => apiFetch<{ data: GridResponseLocked }>(`${BASE}/grid${qs({ ...params })}`),
+  });
+}
+
+/** GET /grid/payable — Σ isplata (payableHours) + HoursAgg po radniku (gate grid_edit). */
+export interface GridPayableRow {
+  employeeId: string;
+  workType: string | null;
+  redovanRadSati: number;
+  prekovremeniSati: number;
+  praznikRadSati: number;
+  praznikPlaceniSati: number;
+  godisnjiSati: number;
+  slobodniDaniSati: number;
+  bolovanje65Sati: number;
+  bolovanje100Sati: number;
+  dveMasineSati: number;
+  neplacenoDays: number;
+  sanitized: Partial<Record<string, number>>;
+  payableHours: number;
+  warnings: { code: string; message: string; [k: string]: unknown }[];
+}
+export interface GridPayableResponse {
+  year: number;
+  month: number;
+  fondSati: number;
+  perEmployee: GridPayableRow[];
+}
+export function useGridPayable(params: { year?: number; month?: number; employeeId?: string } = {}, enabled = true) {
+  return useQuery({
+    queryKey: [...KEYS.grid, 'payable', params],
+    enabled,
+    retry: false,
+    queryFn: () => apiFetch<{ data: GridPayableResponse }>(`${BASE}/grid/payable${qs({ ...params })}`),
+  });
+}
+
+/** GET /holidays (raspon). Grid već nosi holidays; ovo za copyPrev/karnet van meseca. */
+export function useKadrHolidays(params: { from?: string; to?: string } = {}, enabled = true) {
+  return useQuery({
+    queryKey: [...KEYS.grid, 'holidays', params],
     enabled,
     queryFn: () => apiFetch<{ data: KadrHoliday[] }>(`${BASE}/holidays${qs({ ...params })}`),
   });
@@ -1251,4 +1309,79 @@ export const useDispatchNotifications = () =>
 /** Imperativni fetch PII kartona (JMBG i dr.) — za Rešenje o GO tok (van React tree-a). */
 export function fetchEmployeePii(id: string): Promise<{ data: ViewRow }> {
   return apiFetch<{ data: ViewRow }>(`${BASE}/employees/${id}/pii`);
+/** GET /grid za proizvoljan mesec (copyPrev) — jednokratni fetch, van React Query keša. */
+export function fetchGridMonth(params: { year: number; month: number }): Promise<{ data: GridResponse }> {
+  return apiFetch<{ data: GridResponse }>(`${BASE}/grid${qs({ ...params })}`);
+}
+
+/** POST /grid/batch sa predmet poljima (teren→predmet). absence/predmet null = brisanje. */
+export interface GridBatchRow {
+  employeeId: string;
+  workDate: string;
+  hours?: number;
+  overtimeHours?: number;
+  fieldHours?: number;
+  fieldSubtype?: 'domestic' | 'foreign' | null;
+  twoMachineHours?: number;
+  absenceCode?: string | null;
+  absenceSubtype?: string | null;
+  note?: string | null;
+  projectRef?: string | null;
+  fieldPredmetBroj?: string | null;
+  fieldPredmetNaziv?: string | null;
+}
+export const useGridBatchFull = () =>
+  useKadrMutation<{ rows: GridBatchRow[]; clientEventId?: string }, TxResponse<WorkHours[]>>(
+    (v) => post('/grid/batch', v),
+    KEYS.grid,
+  );
+
+/** DELETE /work-hours/:id (pojedinačni unos — Sati tab). */
+export const useDeleteWorkHours = () => useKadrMutation<{ id: string }>((v) => del(`/work-hours/${v.id}`), KEYS.grid);
+
+/** POST /requests/nop — neplaćeno predlog (non-admin → uprava odobrava). */
+export const useSubmitNop = () =>
+  useKadrMutation<{ clientEventId?: string; employeeId: string; workDate: string; reason?: string }, TxResponse<NopRequest & { deduped?: boolean }>>(
+    (v) => post('/requests/nop', v),
+    KEYS.requests,
+  );
+
+/** POST /notifications/payroll/run — mesečne notifikacije zaposlenima (kadrovska.manage). */
+export const usePayrollNotifyRun = () =>
+  useKadrMutation<{ year: number; month: number; clientEventId?: string }, TxResponse<number>>(
+    (v) => post('/notifications/payroll/run', v),
+  );
+
+/** POST /grid/audit (query params!) — istorija izmena ćelije/meseca. null = nedostupno. */
+export interface GridAuditRow {
+  id: number;
+  action: string;
+  actorEmail: string | null;
+  changedAt: string | null;
+  employeeId: string;
+  workDate: string | null;
+  oldData: Record<string, unknown> | null;
+  newData: Record<string, unknown> | null;
+  diffKeys: string[];
+}
+function mapAuditRow(r: Record<string, unknown>): GridAuditRow {
+  return {
+    id: Number(r.id ?? 0),
+    action: String(r.action ?? 'UPDATE'),
+    actorEmail: (r.actorEmail as string) ?? (r.actor_email as string) ?? null,
+    changedAt: (r.changedAt as string) ?? (r.changed_at as string) ?? null,
+    employeeId: (r.employeeId as string) ?? (r.employee_id as string) ?? '',
+    workDate: (r.workDate as string) ?? (r.work_date as string) ?? null,
+    oldData: (r.oldData as Record<string, unknown>) ?? (r.old_data as Record<string, unknown>) ?? null,
+    newData: (r.newData as Record<string, unknown>) ?? (r.new_data as Record<string, unknown>) ?? null,
+    diffKeys: (r.diffKeys as string[]) ?? (r.diff_keys as string[]) ?? [],
+  };
+}
+export async function fetchGridAudit(params: { employeeId?: string; from?: string; to?: string }): Promise<GridAuditRow[] | null> {
+  try {
+    const res = await apiFetch<{ data: Record<string, unknown>[] }>(`${BASE}/grid/audit${qs({ ...params })}`, { method: 'POST' });
+    return (res.data || []).map(mapAuditRow);
+  } catch {
+    return null;
+  }
 }
