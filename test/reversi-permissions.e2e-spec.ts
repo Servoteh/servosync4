@@ -10,6 +10,7 @@ import request from "supertest";
 import { JwtAuthGuard } from "../src/modules/auth/jwt-auth.guard";
 import { ReversiController } from "../src/modules/reversi/reversi.controller";
 import { ReversiService } from "../src/modules/reversi/reversi.service";
+import { PrismaService } from "../src/prisma/prisma.service";
 
 /**
  * e2e PERMISSION MATRICA — Reversi (MODULE_SPEC_reversi.md §8), rola × endpoint × 200/403.
@@ -63,7 +64,9 @@ describe("Reversi permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     process.env.AUTHZ_ENFORCE = "true"; // pre instanciranja PermissionsGuard-a
     const moduleRef = await Test.createTestingModule({
       controllers: [ReversiController],
-      providers: [{ provide: ReversiService, useValue: serviceMock }],
+      providers: [
+        { provide: PrismaService, useValue: { userPermissionOverride: { findUnique: async () => null } } },
+        { provide: ReversiService, useValue: serviceMock }],
     })
       .overrideGuard(JwtAuthGuard)
       .useValue({

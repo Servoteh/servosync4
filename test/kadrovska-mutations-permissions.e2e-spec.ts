@@ -13,6 +13,7 @@ import { KadrovskaMutationsService } from "../src/modules/kadrovska/kadrovska-mu
 import { ALL_ROLE_KEYS } from "../src/common/authz/roles";
 import { roleHasPermission } from "../src/common/authz/role-permissions";
 import { PERMISSIONS, type PermissionKey } from "../src/common/authz/permissions";
+import { PrismaService } from "../src/prisma/prisma.service";
 
 /**
  * e2e PERMISSION MATRICA — Kadrovska R2 MUTACIJE (MODULE_SPEC §5 t.53).
@@ -40,7 +41,9 @@ describe("Kadrovska R2 mutacije — permission matrica (e2e)", () => {
     process.env.AUTHZ_ENFORCE = "true";
     const moduleRef = await Test.createTestingModule({
       controllers: [KadrovskaMutationsController],
-      providers: [{ provide: KadrovskaMutationsService, useValue: svcMock }],
+      providers: [
+        { provide: PrismaService, useValue: { userPermissionOverride: { findUnique: async () => null } } },
+        { provide: KadrovskaMutationsService, useValue: svcMock }],
     })
       .overrideGuard(JwtAuthGuard)
       .useValue({

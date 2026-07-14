@@ -506,6 +506,7 @@ describe("TechProcessesService — openForWorker (Moji otvoreni, proba 13.07 Jov
         { provide: PrismaService, useValue: prisma },
         { provide: ScopeService, useValue: {} },
         { provide: NotificationsService, useValue: notificationsMock() },
+        { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
       ],
     }).compile();
     service = mod.get(TechProcessesService);
@@ -585,6 +586,7 @@ describe("TechProcessesService — create-on-scan štancuje kreatora (proba 13.0
           },
         },
         { provide: NotificationsService, useValue: notificationsMock() },
+        { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
       ],
     }).compile();
     service = mod.get(TechProcessesService);
@@ -675,6 +677,7 @@ describe("TechProcessesService — control akumulira do plana (parcijala ne zatv
           useValue: { isEnforced: jest.fn().mockReturnValue(false) },
         },
         { provide: NotificationsService, useValue: notificationsMock() },
+        { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
       ],
     }).compile();
     service = mod.get(TechProcessesService);
@@ -803,6 +806,7 @@ describe("TechProcessesService — opšti nalog (Operation.withoutProcess) zaobi
         { provide: PrismaService, useValue: prisma },
         { provide: ScopeService, useValue: {} },
         { provide: NotificationsService, useValue: notificationsMock() },
+        { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
       ],
     }).compile();
     service = mod.get(TechProcessesService);

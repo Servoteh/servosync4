@@ -10,6 +10,7 @@ import request from "supertest";
 import { JwtAuthGuard } from "../src/modules/auth/jwt-auth.guard";
 import { LocationsController } from "../src/modules/locations/locations.controller";
 import { LocationsService } from "../src/modules/locations/locations.service";
+import { PrismaService } from "../src/prisma/prisma.service";
 
 /**
  * e2e PERMISSION MATRICA — Lokacije (MODULE_SPEC_lokacije_30.md §2/§5), rola ×
@@ -56,7 +57,9 @@ describe("Lokacije permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     process.env.AUTHZ_ENFORCE = "true"; // pre instanciranja PermissionsGuard-a
     const moduleRef = await Test.createTestingModule({
       controllers: [LocationsController],
-      providers: [{ provide: LocationsService, useValue: serviceMock }],
+      providers: [
+        { provide: PrismaService, useValue: { userPermissionOverride: { findUnique: async () => null } } },
+        { provide: LocationsService, useValue: serviceMock }],
     })
       .overrideGuard(JwtAuthGuard)
       .useValue({

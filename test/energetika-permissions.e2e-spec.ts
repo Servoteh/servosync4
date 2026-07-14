@@ -11,6 +11,7 @@ import { JwtAuthGuard } from "../src/modules/auth/jwt-auth.guard";
 import { ALL_ROLE_KEYS } from "../src/common/authz/roles";
 import { EnergetikaController } from "../src/modules/energetika/energetika.controller";
 import { EnergetikaService } from "../src/modules/energetika/energetika.service";
+import { PrismaService } from "../src/prisma/prisma.service";
 
 /**
  * e2e PERMISSION MATRICA — Energetika/SCADA (MODULE_SPEC_scada_30.md §5 stavka 16),
@@ -47,7 +48,9 @@ describe("Energetika permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     process.env.AUTHZ_ENFORCE = "true"; // pre instanciranja PermissionsGuard-a
     const moduleRef = await Test.createTestingModule({
       controllers: [EnergetikaController],
-      providers: [{ provide: EnergetikaService, useValue: serviceMock }],
+      providers: [
+        { provide: PrismaService, useValue: { userPermissionOverride: { findUnique: async () => null } } },
+        { provide: EnergetikaService, useValue: serviceMock }],
     })
       .overrideGuard(JwtAuthGuard)
       .useValue({

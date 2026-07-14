@@ -17,6 +17,7 @@ import { PodesavanjaService } from "../src/modules/podesavanja/podesavanja.servi
 import { PodesavanjaUsersService } from "../src/modules/podesavanja/podesavanja-users.service";
 import { ALL_ROLE_KEYS } from "../src/common/authz/roles";
 import { roleHasPermission } from "../src/common/authz/role-permissions";
+import { PrismaService } from "../src/prisma/prisma.service";
 import {
   PERMISSIONS,
   type PermissionKey,
@@ -146,6 +147,8 @@ describe("Talas D permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
         PodesavanjaController,
       ],
       providers: [
+        { provide: PrismaService, useValue: { userPermissionOverride: { findUnique: async () => null } } },
+        
         { provide: ProjektniBiroService, useValue: pbMock },
         { provide: MojProfilService, useValue: profilMock },
         { provide: PodesavanjaService, useValue: settingsMock },

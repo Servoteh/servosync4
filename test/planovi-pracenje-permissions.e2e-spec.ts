@@ -16,6 +16,7 @@ import { PracenjeController } from "../src/modules/pracenje/pracenje.controller"
 import { PracenjeService } from "../src/modules/pracenje/pracenje.service";
 import { ALL_ROLE_KEYS } from "../src/common/authz/roles";
 import { roleHasPermission } from "../src/common/authz/role-permissions";
+import { PrismaService } from "../src/prisma/prisma.service";
 import {
   PERMISSIONS,
   type PermissionKey,
@@ -130,6 +131,8 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
         PracenjeController,
       ],
       providers: [
+        { provide: PrismaService, useValue: { userPermissionOverride: { findUnique: async () => null } } },
+        
         { provide: PlanMontazeService, useValue: montazaMock },
         { provide: PlanProizvodnjeService, useValue: ppMock },
         { provide: PracenjeService, useValue: pracenjeMock },

@@ -12,6 +12,7 @@ import { KadrovskaController } from "../src/modules/kadrovska/kadrovska.controll
 import { KadrovskaService } from "../src/modules/kadrovska/kadrovska.service";
 import { ALL_ROLE_KEYS } from "../src/common/authz/roles";
 import { roleHasPermission } from "../src/common/authz/role-permissions";
+import { PrismaService } from "../src/prisma/prisma.service";
 import {
   PERMISSIONS,
   type PermissionKey,
@@ -82,7 +83,9 @@ describe("Kadrovska permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     process.env.AUTHZ_ENFORCE = "true"; // pre instanciranja PermissionsGuard-a
     const moduleRef = await Test.createTestingModule({
       controllers: [KadrovskaController],
-      providers: [{ provide: KadrovskaService, useValue: svcMock }],
+      providers: [
+        { provide: PrismaService, useValue: { userPermissionOverride: { findUnique: async () => null } } },
+        { provide: KadrovskaService, useValue: svcMock }],
     })
       .overrideGuard(JwtAuthGuard)
       .useValue({

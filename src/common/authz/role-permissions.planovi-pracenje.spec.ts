@@ -38,6 +38,10 @@ describe("Talas C permission matrix (paritet živih 1.0 gate-ova)", () => {
     ROLES.POSLOVNI_ADMIN,
     ROLES.CNC_OPERATER,
     ROLES.MONTER,
+    // AKTIVIRAN Talasom F (re-integracija 14.07): tehnicar_odrzavanja je sada u
+    // ROLE_PERMISSIONS mapi → C-sloj (talasCGrants) mu daje montaza.read/izvestaji
+    // (Montaža ungated). NE dobija ai.chat/VIEWER_READ_BASELINE (F ga drži maint-only).
+    ROLES.TEHNICAR_ODRZAVANJA,
     ROLES.VIEWER,
   ];
   const PP_READ_ROLES = [

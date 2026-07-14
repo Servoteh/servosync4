@@ -14,6 +14,7 @@ import { PodesavanjaUsersService } from "../src/modules/podesavanja/podesavanja-
 import { ALL_ROLE_KEYS } from "../src/common/authz/roles";
 import { roleHasPermission } from "../src/common/authz/role-permissions";
 import { PERMISSIONS } from "../src/common/authz/permissions";
+import { PrismaService } from "../src/prisma/prisma.service";
 
 /**
  * e2e PERMISSION MATRICA — Podešavanja WRITE sloj (D1 dvostrano upravljanje nalozima), rola ×
@@ -41,6 +42,8 @@ describe("Podešavanja WRITE permisije (e2e, AUTHZ_ENFORCE=true)", () => {
     const moduleRef = await Test.createTestingModule({
       controllers: [PodesavanjaController],
       providers: [
+        { provide: PrismaService, useValue: { userPermissionOverride: { findUnique: async () => null } } },
+        
         { provide: PodesavanjaService, useValue: {} },
         { provide: PodesavanjaUsersService, useValue: usersMock },
       ],

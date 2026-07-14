@@ -12,6 +12,7 @@ import { OdrzavanjeController } from "../src/modules/odrzavanje/odrzavanje.contr
 import { OdrzavanjeService } from "../src/modules/odrzavanje/odrzavanje.service";
 import { ALL_ROLE_KEYS } from "../src/common/authz/roles";
 import { roleHasPermission } from "../src/common/authz/role-permissions";
+import { PrismaService } from "../src/prisma/prisma.service";
 import {
   PERMISSIONS,
   type PermissionKey,
@@ -177,7 +178,9 @@ describe("Održavanje permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     process.env.AUTHZ_ENFORCE = "true"; // pre instanciranja PermissionsGuard-a
     const moduleRef = await Test.createTestingModule({
       controllers: [OdrzavanjeController],
-      providers: [{ provide: OdrzavanjeService, useValue: svcMock }],
+      providers: [
+        { provide: PrismaService, useValue: { userPermissionOverride: { findUnique: async () => null } } },
+        { provide: OdrzavanjeService, useValue: svcMock }],
     })
       .overrideGuard(JwtAuthGuard)
       .useValue({

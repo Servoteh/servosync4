@@ -1,6 +1,6 @@
 import { PERMISSIONS } from "./permissions";
-import { roleHasPermission } from "./role-permissions";
-import { ALL_ROLE_KEYS, ROLES } from "./roles";
+import { roleHasPermission, ROLE_PERMISSIONS } from "./role-permissions";
+import { ALL_ROLE_KEYS, ROLES, type RoleKey } from "./roles";
 
 /**
  * TALAS D — Projektni biro + Moj profil + Podešavanja permission matrica
@@ -10,15 +10,14 @@ import { ALL_ROLE_KEYS, ROLES } from "./roles";
  * e2e/DB — ovde SAMO rola. Kompletnost nad ALL_ROLE_KEYS pinuje pogrešan budući grant.
  */
 describe("Talas D permission matrica (paritet 1.0 gate-ova)", () => {
-  // „Aktivne" 2.0 uloge = one koje se loguju (imaju ai.chat = svaka u ROLE_PERMISSIONS).
-  // pb.read/pb.reports_own/profile.self idu NA SVE njih (DB SELECT `true`/self-scope, §2.1/§0.2).
-  const ACTIVE_ROLES = ALL_ROLE_KEYS.filter((r) =>
-    roleHasPermission(r, PERMISSIONS.AI_CHAT),
-  );
-  // Deferred/rezervisane bez modula (nemaju čak ni ai.chat) — moraju biti default-deny svuda.
-  const NON_ACTIVE = ALL_ROLE_KEYS.filter(
-    (r) => !roleHasPermission(r, PERMISSIONS.AI_CHAT),
-  );
+  // „Aktivne" 2.0 uloge = one koje su U KATALOGU (`Object.keys(ROLE_PERMISSIONS)`). D-sloj
+  // (univerzalna petlja) daje pb.read/pb.reports_own/profile.self SVAKOJ takvoj (§2.1/§0.2).
+  // NB (re-integracija 14.07): tehnicar_odrzavanja je U mapi (aktivirao Talas F) ali BEZ
+  // ai.chat → „ima ai.chat" VIŠE NIJE proxy za „u mapi"; koristimo direktno ključeve mape
+  // (tačan skup koji D-petlja gađa). Deferred uloge (nabavka/kvalitet/…) NISU u mapi.
+  const ACTIVE_ROLES = Object.keys(ROLE_PERMISSIONS) as RoleKey[];
+  // Deferred/rezervisane bez modula (nisu u katalogu) — moraju biti default-deny svuda.
+  const NON_ACTIVE = ALL_ROLE_KEYS.filter((r) => !ACTIVE_ROLES.includes(r));
 
   // pb_can_edit_tasks() paritet (§2.4.1: hr/poslovni_admin OSTAJU u edit-u — D7).
   const EDIT_ROLES = [

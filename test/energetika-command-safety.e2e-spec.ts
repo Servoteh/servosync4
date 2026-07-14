@@ -12,6 +12,7 @@ import { JwtAuthGuard } from "../src/modules/auth/jwt-auth.guard";
 import { EnergetikaController } from "../src/modules/energetika/energetika.controller";
 import { EnergetikaService } from "../src/modules/energetika/energetika.service";
 import { Sy15Service } from "../src/common/sy15/sy15.service";
+import { PrismaService } from "../src/prisma/prisma.service";
 
 /**
  * SAFETY e2e — komandni lanac BEZ DODIRA PLC-a (MODULE_SPEC_scada_30.md §5 stavka 17, R2).
@@ -176,6 +177,8 @@ describe("Energetika SAFETY e2e — van-allowlist → rejected BEZ dodira PLC-a"
     const moduleRef = await Test.createTestingModule({
       controllers: [EnergetikaController],
       providers: [
+        { provide: PrismaService, useValue: { userPermissionOverride: { findUnique: async () => null } } },
+        
         EnergetikaService,
         { provide: Sy15Service, useValue: fake },
       ],

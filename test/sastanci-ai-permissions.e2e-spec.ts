@@ -16,6 +16,7 @@ import { MediaAiController } from "../src/modules/media-ai/media-ai.controller";
 import { MediaAiService } from "../src/modules/media-ai/media-ai.service";
 import { ALL_ROLE_KEYS } from "../src/common/authz/roles";
 import { roleHasPermission } from "../src/common/authz/role-permissions";
+import { PrismaService } from "../src/prisma/prisma.service";
 import {
   PERMISSIONS,
   type PermissionKey,
@@ -142,6 +143,8 @@ describe("Sastanci + AI permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     const moduleRef = await Test.createTestingModule({
       controllers: [SastanciController, AiChatController, MediaAiController],
       providers: [
+        { provide: PrismaService, useValue: { userPermissionOverride: { findUnique: async () => null } } },
+        
         { provide: SastanciService, useValue: sastanciMock },
         { provide: AiChatService, useValue: aiMock },
         { provide: MediaAiService, useValue: mediaMock },
