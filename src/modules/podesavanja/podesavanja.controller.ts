@@ -1,8 +1,13 @@
 import {
+  Body,
   Controller,
+  Delete,
   Get,
+  HttpCode,
   Param,
   ParseUUIDPipe,
+  Patch,
+  Post,
   Query,
   Req,
   UseGuards,
@@ -12,10 +17,18 @@ import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
 import { PERMISSIONS } from "../../common/authz/permissions";
 import { PodesavanjaService } from "./podesavanja.service";
+import { PodesavanjaUsersService } from "./podesavanja-users.service";
 import {
   AuditLogQueryDto,
   ListUsersQueryDto,
 } from "./dto/podesavanja-query.dto";
+import {
+  DeleteUserDto,
+  InviteUserDto,
+  ResetPasswordDto,
+  SetMustChangePasswordDto,
+  UpdateUserDto,
+} from "./dto/podesavanja-write.dto";
 
 interface AuthedRequest {
   user: { userId: number; email: string; role: string };
@@ -32,13 +45,81 @@ interface AuthedRequest {
 @RequirePermission(PERMISSIONS.SETTINGS_USERS)
 @Controller({ path: "admin", version: "1" })
 export class PodesavanjaController {
-  constructor(private readonly settings: PodesavanjaService) {}
+  constructor(
+    private readonly settings: PodesavanjaService,
+    private readonly users: PodesavanjaUsersService,
+  ) {}
 
   // ----- Korisnici i pristup (settings.users) -----
 
   @Get("users")
   listUsers(@Req() req: AuthedRequest, @Query() query: ListUsersQueryDto) {
     return this.settings.listUsers(req.user.email, query);
+  }
+
+  // ----- Dvostrano upravljanje nalozima (D1 — R2, WRITE; docs/design/D1_DUAL_ACCOUNT_WRITE.md) -----
+  // `:id` = sy15 `user_roles.id` (uuid) — isti ključ kao GET /admin/users/:id (R1 read).
+  // Literal `users/invite` je pre param-ruta; sve nasleđuju klasnu permisiju settings.users.
+
+  @Post("users/invite")
+  invite(@Req() req: AuthedRequest, @Body() dto: InviteUserDto) {
+    return this.users.invite(req.user.email, dto);
+  }
+
+  @Patch("users/:id")
+  updateUser(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: UpdateUserDto,
+  ) {
+    return this.users.update(req.user.email, id, dto);
+  }
+
+  @Post("users/:id/reset-password")
+  @HttpCode(200)
+  resetPassword(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: ResetPasswordDto,
+  ) {
+    return this.users.resetPassword(req.user.email, id, dto);
+  }
+
+  @Post("users/:id/deactivate")
+  @HttpCode(200)
+  deactivateUser(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return this.users.deactivate(req.user.email, id);
+  }
+
+  @Post("users/:id/activate")
+  @HttpCode(200)
+  activateUser(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return this.users.activate(req.user.email, id);
+  }
+
+  @Post("users/:id/must-change-password")
+  @HttpCode(200)
+  mustChangePassword(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: SetMustChangePasswordDto,
+  ) {
+    return this.users.setMustChangePassword(req.user.email, id, dto);
+  }
+
+  @Delete("users/:id")
+  softDeleteUser(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: DeleteUserDto,
+  ) {
+    return this.users.softDelete(req.user.email, id, dto);
   }
 
   @Get("roles/catalog")
