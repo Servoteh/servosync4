@@ -30,7 +30,8 @@ import { NoticeBar, ReasonDialog, useNotice } from './requests-common';
 // Tok: pending → sef_approved → approved (RPC paid_leave_approve pri finalizaciji
 // upisuje absences type='placeno'); reject sa obaveznim razlogom; brisanje
 // approved/rejected (za approved RPC čisti i absences i 'pl' kodove iz grida).
-// ⚠️ TODO(P1a): BE approve/reject ne zovu kadr_queue_paidleave_notification (mejl).
+// Mejl notifikacije statusa šalje BE (kadr_queue_paidleave_notification u
+// approve/reject putanjama) — FE ih NE duplira.
 // ============================================================================
 
 const STATUS_META: Record<string, { tone: Tone; label: string }> = {
@@ -58,7 +59,8 @@ export function PlacenoTab() {
   const meQ = useKadrMe();
   const me = meQ.data?.data;
   const isAdmin = !!me?.isAdmin;
-  const isHr = !!me?.isHrOrAdmin;
+  // USKI hr∨admin (1.0 isHR()): finalize/delete/scope-bypass — v. nadoknada-tab.
+  const isHr = !!me?.isHr || isAdmin;
   const isManagement = !!me?.isManagement;
 
   const [statusF, setStatusF] = useState('pending');
@@ -232,7 +234,9 @@ export function PlacenoTab() {
       header: '',
       render: (r) => {
         const busy = busyIds.has(r.id);
-        const showDelete = canManage && ['approved', 'rejected'].includes(r.status) && !isManagement;
+        // 1.0 paritet (paidLeaveTab:179): role !== 'menadzment' — isključi SAMO čist
+        // menadzment; admin (kome je isManagement takođe true) sme da briše.
+        const showDelete = canManage && ['approved', 'rejected'].includes(r.status) && !(isManagement && !isAdmin);
         if (!canManage) return <span className="text-xs text-ink-secondary">—</span>;
         return (
           <div className="flex flex-wrap justify-end gap-1.5">

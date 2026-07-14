@@ -981,6 +981,12 @@ export const usePayrollUnlock = () => useKadrMutation<{ id: string; clientEventI
 export const useMakeupDelete = () => useKadrMutation<{ id: string }>((v) => del(`/requests/makeup/${v.id}`));
 export const usePaidLeaveDelete = () => useKadrMutation<{ id: string }>((v) => del(`/requests/paid-leave/${v.id}`));
 
+/* Soft-delete odsustva (1.0 paritet): Arhiviraj → pogled „Arhivirana" → Vrati. */
+export const useArchiveAbsence = () =>
+  useKadrMutation<{ id: string; clientEventId?: string }>((v) => post(`/absences/${v.id}/archive`, { clientEventId: v.clientEventId }), KEYS.absences);
+export const useRestoreAbsence = () =>
+  useKadrMutation<{ id: string; clientEventId?: string }>((v) => post(`/absences/${v.id}/restore`, { clientEventId: v.clientEventId }), KEYS.absences);
+
 /* ── Odsustvo → mesečni grid (most; paritet services/absenceGrid.js) ──
    Godišnji/bolovanje/slobodan/neplaćeno/slava/plaćeno/službeno se NE pišu u
    `absences` nego u work_hours (jedan red po RADNOM danu). Koristi POST /grid/batch. */
@@ -1002,25 +1008,17 @@ export function monthsInRange(from: string, to: string): { year: number; month: 
 }
 
 /**
- * Imperativni dohvat skupa NE-radnih praznika (YMD) u opsegu [from,to].
- * ⚠️ TODO(P1a): BE nema GET /holidays?from&to (brief BE_GAP) — dovlačimo grid po
- * mesecu i skupljamo `holidays` gde `!isWorkday`. Zameniti namenskim endpointom
- * kad stigne (izbegava dohvat celog grida samo zbog praznika).
+ * Imperativni dohvat skupa NE-radnih praznika (YMD) u opsegu [from,to] —
+ * GET /kadrovska/holidays?from&to (kb1). Greška se NE guta: nepotpun holidaySet
+ * bi tiho pogrešno ekspandovao period odsustva na praznične dane.
  */
 export async function fetchHolidaySet(from: string, to: string): Promise<Set<string>> {
   const set = new Set<string>();
-  const months = monthsInRange(from, to);
-  const responses = await Promise.all(
-    months.map((mm) =>
-      apiFetch<{ data: GridResponse }>(`${BASE}/grid${qs({ year: mm.year, month: mm.month })}`).catch(() => null),
-    ),
-  );
-  for (const r of responses) {
-    for (const h of r?.data.holidays ?? []) {
-      if (!h.isWorkday) {
-        const ymd = String(h.holidayDate).slice(0, 10);
-        if (ymd >= from && ymd <= to) set.add(ymd);
-      }
+  const res = await apiFetch<{ data: KadrHoliday[] }>(`${BASE}/holidays${qs({ from, to })}`);
+  for (const h of res.data ?? []) {
+    if (!h.isWorkday) {
+      const ymd = String(h.holidayDate).slice(0, 10);
+      if (ymd >= from && ymd <= to) set.add(ymd);
     }
   }
   return set;
@@ -1038,8 +1036,8 @@ export interface GridMonthsResult {
 /**
  * Grid (work_hours + praznici) za više meseci odjednom (useQueries; deli keš sa
  * `useGrid`). Vraća spojene redove + skup praznika. Koristi ga Kalendar (1 mesec),
- * Odsutni (1–2 meseca) i Pregled (do 12 meseci). ⚠️ TODO(P1a): za duge periode
- * je ovo N punih grid dohvata — namenski report/holidays endpoint bi bio jeftiniji.
+ * Odsutni (1–2 meseca) i Pregled (do 12 meseci — redovi grida su tu legitimno
+ * potrebni; TODO(P1a): namenski report endpoint bi bio jeftiniji za duge periode).
  */
 export function useGridMonths(months: { year: number; month: number }[]): GridMonthsResult {
   const results = useQueries({

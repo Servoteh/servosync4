@@ -16,6 +16,8 @@ import {
   useCreateAbsence,
   useUpdateAbsence,
   useDeleteAbsence,
+  useArchiveAbsence,
+  useRestoreAbsence,
   useGridBatch,
   fetchHolidaySet,
   newClientEventId,
@@ -63,6 +65,8 @@ export function ListingTab() {
   const [modal, setModal] = useState<{ open: boolean; edit: Absence | null }>({ open: false, edit: null });
 
   const del = useDeleteAbsence();
+  const archive = useArchiveAbsence();
+  const restore = useRestoreAbsence();
 
   const emps: EmpRow[] = useMemo(
     () => (dirQ.data?.data ?? []).map(normEmp).sort(compareByName),
@@ -166,25 +170,44 @@ export function ListingTab() {
               Izmeni
             </Button>
           )}
-          {/* Arhiviraj/Vrati: BE archive rute stižu iz P1a — disabled stub. */}
-          <Button
-            variant="ghost"
-            className="h-7 px-2 text-xs"
-            disabled
-            title="Arhiviranje stiže sa BE P1a (POST /absences/:id/archive)"
-          >
-            {archView ? 'Vrati' : 'Arhiviraj'}
-          </Button>
-          <Button
-            variant="danger"
-            className="h-7 px-2 text-xs"
-            disabled={!canEdit}
-            onClick={() => {
-              if (window.confirm('Obrisati odsustvo? Akcija je trajna.')) del.mutate({ id: r.id });
-            }}
-          >
-            Obriši
-          </Button>
+          {archView ? (
+            <Button
+              variant="ghost"
+              className="h-7 px-2 text-xs"
+              disabled={!canEdit}
+              onClick={() => restore.mutate({ id: r.id, clientEventId: newClientEventId() })}
+            >
+              Vrati
+            </Button>
+          ) : (
+            <Button
+              variant="ghost"
+              className="h-7 px-2 text-xs"
+              disabled={!canEdit}
+              onClick={() => {
+                if (
+                  window.confirm(
+                    'Odsustvo se sklanja iz aktivne evidencije i izveštaja. Možeš ga kasnije vratiti iz pogleda „Arhivirana".',
+                  )
+                )
+                  archive.mutate({ id: r.id, clientEventId: newClientEventId() });
+              }}
+            >
+              Arhiviraj
+            </Button>
+          )}
+          {archView && (
+            <Button
+              variant="danger"
+              className="h-7 px-2 text-xs"
+              disabled={!canEdit}
+              onClick={() => {
+                if (window.confirm('Obrisati odsustvo? Akcija je trajna.')) del.mutate({ id: r.id });
+              }}
+            >
+              Obriši
+            </Button>
+          )}
         </div>
       ),
     },
@@ -265,12 +288,6 @@ export function ListingTab() {
           }
         />
       </div>
-
-      {archView && (
-        <p className="text-xs text-ink-secondary">
-          ⓘ Arhiva je prazna dok BE ne isporuči soft-delete (P1a: <code>archived_at</code> + rute archive/restore).
-        </p>
-      )}
 
       {modal.open && (
         <AbsenceModal

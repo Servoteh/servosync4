@@ -39,8 +39,8 @@ import { NoticeBar, ReasonDialog, useNotice } from './requests-common';
 // sef_approved; storno iz approved/completed (dan_odmora vraća −1 dan GO).
 // Dvostepenost + dual_control presuđuje RPC makeup_approve na sy15 (BE proxy).
 // „Dan odmora": posle FINALNOG odobrenja FE zove POST /vacation/bonus (+1 dan
-// GO, dedup already_granted). ⚠️ TODO(P1a): BE approve/reject NE zovu
-// kadr_queue_makeup_notification — mejl zaposlenom izostaje dok BE ne doda.
+// GO, dedup already_granted). Mejl notifikacije statusa šalje BE (kadr_queue_
+// makeup_notification u approve/reject putanjama) — FE ih NE duplira.
 // ============================================================================
 
 const STATUS_META: Record<string, { tone: Tone; label: string }> = {
@@ -67,8 +67,9 @@ export function NadoknadaTab() {
   const meQ = useKadrMe();
   const me = meQ.data?.data;
   const isAdmin = !!me?.isAdmin;
-  const isHr = !!me?.isHrOrAdmin;
-  const isManagement = !!me?.isManagement;
+  // USKI hr∨admin (1.0 isHR()): finalize/delete/scope-bypass. isHrOrAdmin NE —
+  // uključuje menadzment, a RPC finalizaciju gate-uje na v_is_hr OR v_is_admin.
+  const isHr = !!me?.isHr || isAdmin;
 
   const [statusF, setStatusF] = useState('pending');
   const [q, setQ] = useState('');
@@ -323,7 +324,9 @@ export function NadoknadaTab() {
         const danOdmora = s(r, 'compensationType') === 'dan_odmora';
         const busy = busyIds.has(r.id);
         const showStorno = canManage && ['approved', 'completed'].includes(r.status);
-        const showDelete = isHr && ['pending', 'sef_approved', 'rejected', 'storniran'].includes(r.status) && !isManagement;
+        // 1.0 paritet (makeupTab): brisanje = isHR() (hr∨admin) + dozvoljeni statusi;
+        // čist menadzment već otpada na uskom isHr — bez posebne isManagement klauzule.
+        const showDelete = isHr && ['pending', 'sef_approved', 'rejected', 'storniran'].includes(r.status);
         if (!canManage) return <span className="text-xs text-ink-secondary">—</span>;
         return (
           <div className="flex flex-wrap justify-end gap-1.5">
