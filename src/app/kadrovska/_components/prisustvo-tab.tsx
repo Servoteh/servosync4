@@ -82,7 +82,7 @@ function LiveView() {
         return ts ? formatDateTime(ts) : '—';
       },
     },
-    { key: 'terminal', header: 'Terminal', render: (r) => pick(r, ['terminal', 'device', 'reader']) || '—' },
+    { key: 'terminal', header: 'Terminal', render: (r) => pick(r, ['terminal_name', 'terminal', 'device', 'reader']) || '—' },
   ];
 
   return (
@@ -109,9 +109,9 @@ function ShadowView() {
   const cols: Column<ViewRow>[] = [
     { key: 'name', header: 'Zaposleni', render: (r) => pick(r, ['full_name', 'employee_name']) || '—' },
     { key: 'dep', header: 'Odeljenje', render: (r) => pick(r, ['department', 'odeljenje']) || '—' },
-    { key: 'cmp', header: 'Poredivih dana', align: 'right', numeric: true, render: (r) => pick(r, ['comparable_days', 'poredivih_dana', 'days']) || '—' },
-    { key: 'dev', header: 'Odstupanja', align: 'right', numeric: true, render: (r) => pick(r, ['deviations', 'odstupanja', 'mismatch_days']) || '—' },
-    { key: 'nogrid', header: 'Bez grida', align: 'right', numeric: true, render: (r) => pick(r, ['missing_grid_days', 'bez_grida']) || '—' },
+    { key: 'cmp', header: 'Poredivih dana', align: 'right', numeric: true, render: (r) => pick(r, ['poredivih_dana', 'comparable_days', 'days']) || '—' },
+    { key: 'dev', header: 'Odstupanja', align: 'right', numeric: true, render: (r) => pick(r, ['problem_dana', 'deviations', 'odstupanja', 'mismatch_days']) || '—' },
+    { key: 'nogrid', header: 'Bez grida', align: 'right', numeric: true, render: (r) => pick(r, ['dana_bez_grida', 'missing_grid_days', 'bez_grida']) || '—' },
   ];
 
   return (

@@ -50,22 +50,24 @@ export function OdmoriTab() {
 
   const dirQ = useDirectory();
   const nameMap = useMemo(() => {
-    const m = new Map<string, { name: string; position: string }>();
+    const m = new Map<string, { name: string; position: string; department: string }>();
     for (const r of dirQ.data?.data ?? []) {
-      m.set(sv(r, 'id'), { name: sv(r, 'full_name'), position: sv(r, 'position') });
+      m.set(sv(r, 'id'), { name: sv(r, 'full_name'), position: sv(r, 'position'), department: sv(r, 'department') });
     }
     return m;
   }, [dirQ.data]);
 
+  // v_vacation_balance NEMA name/dept → razrešava se preko directory-ja po employee_id.
+  // „do danas" = zarađeno srazmerno (days_earned); „Preostalo" = grid-kanon days_remaining_accrued.
   const balanceCols: Column<Record<string, unknown>>[] = [
-    { key: 'name', header: 'Zaposleni', render: (r) => pick(r, ['full_name', 'employee_name', 'ime']) || '—' },
-    { key: 'dep', header: 'Odeljenje', render: (r) => pick(r, ['department', 'odeljenje']) || '—' },
-    { key: 'total', header: 'Ukupno (do danas)', align: 'right', numeric: true, render: (r) => pick(r, ['total_days', 'entitled_days', 'ukupno', 'earned_to_date']) || '—' },
-    { key: 'used', header: 'Iskorišćeno', align: 'right', numeric: true, render: (r) => pick(r, ['used_days', 'iskorisceno', 'used']) || '—' },
-    { key: 'remaining', header: 'Preostalo', align: 'right', numeric: true, render: (r) => <strong>{pick(r, ['remaining_days', 'preostalo', 'remaining']) || '—'}</strong> },
+    { key: 'name', header: 'Zaposleni', render: (r) => nameMap.get(sv(r, 'employee_id'))?.name || '—' },
+    { key: 'dep', header: 'Odeljenje', render: (r) => nameMap.get(sv(r, 'employee_id'))?.department || '—' },
+    { key: 'total', header: 'Ukupno (do danas)', align: 'right', numeric: true, render: (r) => pick(r, ['days_earned', 'days_total']) || '—' },
+    { key: 'used', header: 'Iskorišćeno', align: 'right', numeric: true, render: (r) => pick(r, ['days_used']) || '—' },
+    { key: 'remaining', header: 'Preostalo', align: 'right', numeric: true, render: (r) => <strong>{pick(r, ['days_remaining_accrued', 'days_remaining']) || '—'}</strong> },
   ];
 
-  const totalRemaining = balance.reduce((a, r) => a + svNum(r, 'remaining_days') + svNum(r, 'preostalo'), 0);
+  const totalRemaining = balance.reduce((a, r) => a + svNum(r, 'days_remaining_accrued'), 0);
 
   return (
     <div className="space-y-6">
@@ -113,7 +115,7 @@ function RequestsInbox({
   vacreqAdmin,
   canDecision,
 }: {
-  nameMap: Map<string, { name: string; position: string }>;
+  nameMap: Map<string, { name: string; position: string; department: string }>;
   vacreqAdmin: boolean;
   canDecision: boolean;
 }) {
