@@ -7,12 +7,14 @@ import { Tabs, type TabItem } from '../tabs';
 import { SS_KEYS, ssGet, ssSet } from './shared';
 import { PregledTab } from './pregled-tab';
 import { ListingTab } from './listing-tab';
+import { KalendarTab } from './kalendar-tab';
 
-type SubtabKey = 'pregled' | 'listing';
+type SubtabKey = 'pregled' | 'listing' | 'kalendar';
 
 const SUBTABS: TabItem<SubtabKey>[] = [
   { key: 'pregled', label: 'Pregled' },
   { key: 'listing', label: 'Listing' },
+  { key: 'kalendar', label: 'Kalendar' },
 ];
 
 /**
@@ -38,6 +40,7 @@ export function OdsustvaTab({ onNavigateGrid }: { onNavigateGrid?: (empName: str
       <Tabs tabs={SUBTABS} value={subtab} onChange={change} ariaLabel="Odsustva — pogled" />
       {subtab === 'pregled' && <PregledTab onNavigateGrid={onNavigateGrid} />}
       {subtab === 'listing' && <ListingTab />}
+      {subtab === 'kalendar' && <KalendarTab onNavigateGrid={onNavigateGrid} />}
     </div>
   );
 }
