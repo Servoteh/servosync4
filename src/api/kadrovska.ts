@@ -471,12 +471,56 @@ export interface NotificationConfig {
   medicalEmpLeadDays: number | null;
 }
 
+/** Scope pozivaoca koji RPC vraća (kadr_dashboard_kpis.scope_kind). */
+export type DashboardScopeKind =
+  | 'admin'
+  | 'hr'
+  | 'menadzment_full'
+  | 'menadzment_scoped'
+  | 'viewer'
+  | 'no_access';
+
+/** KPI blok (RPC kadr_dashboard_kpis) — brojevi za KPI strip Pregleda. */
+export interface DashboardKpis {
+  year: number;
+  month: number;
+  scope_kind: DashboardScopeKind;
+  managed_sub_department_ids: number[] | null;
+  active_employees: number;
+  on_absence_today: number;
+  pending_vac_requests: number;
+  pending_makeup: number;
+  pending_paid_leave: number;
+  grid_fill_percent: number;
+}
+
+/** Mini izveštaji (RPC kadr_dashboard_mini_reports) — feed za kompaktne pregled-trake. */
+export interface DashboardMiniReports {
+  year: number;
+  month: number;
+  scope_kind: DashboardScopeKind;
+  employees_by_department: { department: string; count: number }[];
+  hours_per_day: { date: string; hours: number }[];
+  absences_by_type: { type: string; days: number }[];
+}
+
+/** Stavka action-steka (RPC kadr_dashboard_action_stack) — „Šta čeka mene". */
+export interface DashboardActionItem {
+  id: string;
+  type: string;
+  priority: number;
+  title: string;
+  subtitle: string;
+  deep_link_tab: string;
+  deep_link_filter?: Record<string, unknown> | null;
+}
+
 export interface DashboardResponse {
   year: number;
   month: number;
-  kpis: unknown;
-  miniReports: unknown;
-  actionStack: unknown;
+  kpis: DashboardKpis | null;
+  miniReports: DashboardMiniReports | null;
+  actionStack: DashboardActionItem[] | null;
 }
 
 // ------------------------------------------------------------------ query keys
