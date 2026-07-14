@@ -22,6 +22,8 @@ export type {
   MutualTerminationInput,
   EmploymentDecisionInput,
 } from './hr-documents';
+export { generateVacationRecordPdf } from './vacation-record';
+export type { VacationRecordInput, VacationRecordSaldo } from './vacation-record';
 export { generateContractPdf } from './contract';
 export type { ContractInput } from './contract';
 export { generateJobPositionPdf } from './job-position';

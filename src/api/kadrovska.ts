@@ -823,6 +823,7 @@ export const useMakeupApprove = () => useKadrMutation<{ id: string; clientEventI
 export const useMakeupReject = () => useKadrMutation<{ id: string; note?: string }>((v) => post(`/requests/makeup/${v.id}/reject`, { note: v.note }));
 export const useMakeupComplete = () => useKadrMutation<{ id: string; clientEventId?: string }>((v) => post(`/requests/makeup/${v.id}/complete`, { clientEventId: v.clientEventId }));
 export const useMakeupStorno = () => useKadrMutation<{ id: string; note?: string }>((v) => post(`/requests/makeup/${v.id}/storno`, { note: v.note }));
+export const useMakeupDelete = () => useKadrMutation<{ id: string }>((v) => del(`/requests/makeup/${v.id}`));
 export const usePaidLeaveApprove = () => useKadrMutation<{ id: string; clientEventId?: string }>((v) => post(`/requests/paid-leave/${v.id}/approve`, { clientEventId: v.clientEventId }));
 export const usePaidLeaveReject = () => useKadrMutation<{ id: string; note?: string }>((v) => post(`/requests/paid-leave/${v.id}/reject`, { note: v.note }));
 export const useNopApprove = () => useKadrMutation<{ id: string; clientEventId?: string }>((v) => post(`/requests/nop/${v.id}/approve`, { clientEventId: v.clientEventId }));
@@ -1135,6 +1136,19 @@ export interface ContractBruto {
 }
 
 export function useEmployeePii(id: string | null, enabled = true) {
+// ------------------------------------------------------------------ P5 GO dopune
+
+/** Praznici u rasponu (most odsustvo→grid; datum povratka na Rešenju). Baza read. */
+export function useHolidays(params: { from?: string; to?: string } = {}, enabled = true) {
+  return useQuery({
+    queryKey: ['kadrovska', 'holidays', params],
+    enabled,
+    queryFn: () => apiFetch<{ data: KadrHoliday[] }>(`${BASE}/holidays${qs({ ...params })}`),
+  });
+}
+
+/** PII karton (personal_id/JMBG i dr.) — enabled samo uz kadrovska.pii. */
+export function useEmployeePiiCard(id: string | null, enabled = true) {
   return useQuery({
     queryKey: [...KEYS.pii(id ?? 'none'), 'card'],
     enabled: !!id && enabled,
@@ -1214,9 +1228,6 @@ export function fetchOrgStructure(): Promise<{ data: OrgStructure }> {
 export function fetchEmployee(id: string): Promise<{ data: EmployeeSafe }> {
   return apiFetch<{ data: EmployeeSafe }>(`${BASE}/employees/${id}`);
 }
-export function fetchEmployeePii(id: string): Promise<{ data: EmployeePii }> {
-  return apiFetch<{ data: EmployeePii }>(`${BASE}/employees/${id}/pii`);
-}
 export function fetchContractBruto(id: string): Promise<{ data: ContractBruto }> {
   return apiFetch<{ data: ContractBruto }>(`${BASE}/employees/${id}/contract-bruto`);
 }
@@ -1228,3 +1239,16 @@ export const useDeleteContract = () =>
 /** Izmena podešavanja obaveštenja (contract_lead_days i ostalo) — manage. */
 export const useUpdateNotificationConfig = () =>
   useKadrMutation<Partial<NotificationConfig>>((v) => patch('/notification-config', v), KEYS.notifications);
+    queryFn: () => apiFetch<{ data: ViewRow }>(`${BASE}/employees/${id}/pii`),
+  });
+}
+
+/** 🔔 Ručni okidač HR dispatch-a (proxy na 1.0 edge hr-notify-dispatch). */
+export interface DispatchResult { ok?: boolean; processed?: number; sent?: number; failed?: number; error?: string }
+export const useDispatchNotifications = () =>
+  useKadrMutation<void, TxResponse<DispatchResult>>(() => post('/notifications/dispatch'));
+
+/** Imperativni fetch PII kartona (JMBG i dr.) — za Rešenje o GO tok (van React tree-a). */
+export function fetchEmployeePii(id: string): Promise<{ data: ViewRow }> {
+  return apiFetch<{ data: ViewRow }>(`${BASE}/employees/${id}/pii`);
+}
