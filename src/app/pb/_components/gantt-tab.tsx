@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { Fragment, useMemo, useState } from 'react';
 import { cn } from '@/lib/cn';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { useTasks, type PbTask } from '@/api/projektni-biro';
@@ -111,8 +111,8 @@ export function GanttTab({ filters, onOpenTask }: { filters: PlanFilters; onOpen
           <table className="w-full text-sm">
             <tbody>
               {groups.map((g) => (
-                <>
-                  <tr key={g.name} className="bg-surface-2/60">
+                <Fragment key={g.name}>
+                  <tr className="bg-surface-2/60">
                     <td colSpan={2} className="px-3 py-1.5 text-xs font-semibold text-ink">
                       {g.name}
                     </td>
@@ -150,7 +150,7 @@ export function GanttTab({ filters, onOpenTask }: { filters: PlanFilters; onOpen
                       </tr>
                     );
                   })}
-                </>
+                </Fragment>
               ))}
             </tbody>
           </table>
