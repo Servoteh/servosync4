@@ -9,11 +9,13 @@ import { formatDateTime } from '@/lib/format';
 import {
   MOVEMENT_TYPES,
   MOVEMENT_TYPE_LABEL,
+  fetchAllMovements,
   useAllLocations,
   useMovements,
   type LocMovement,
+  type MovementsParams,
 } from '@/api/lokacije';
-import { buildLocIndex, downloadCsv, movementLabel, tableEmpty } from './common';
+import { buildCsvFilename, buildLocIndex, csvTimestamp, downloadCsv, movementLabel, tableEmpty } from './common';
 import { LocationSelect } from './location-select';
 
 const INPUT = 'h-9 rounded-control border border-line bg-surface px-2.5 text-sm text-ink outline-none focus:border-accent';
@@ -38,13 +40,14 @@ export function MovementsTab() {
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [page, setPage] = useState(1);
+  const [exporting, setExporting] = useState<{ loaded: number; total: number | null } | null>(null);
   const pageSize = 100;
 
   const locs = useAllLocations('all');
   const locList = useMemo(() => locs.data ?? [], [locs.data]);
   const locIndex = useMemo(() => buildLocIndex(locList), [locList]);
 
-  const baseFilters = {
+  const baseFilters: MovementsParams = {
     search: search || undefined,
     movementType: movementType || undefined,
     orderNo: orderNo || undefined,
@@ -80,23 +83,57 @@ export function MovementsTab() {
     { key: 'note', header: 'Napomena', render: (r) => <span className="text-ink-secondary">{r.movementReason || r.note || '—'}</span> },
   ];
 
-  function exportCsv() {
-    downloadCsv(
-      `pokreti_lokacija_${new Date().toISOString().slice(0, 10)}.csv`,
-      ['Vreme', 'Tip', 'Nalog', 'Stavka', 'Crtež', 'Sa', 'Na', 'Količina', 'Korisnik', 'Razlog/Napomena'],
-      rows.map((r) => [
-        formatDateTime(r.movedAt),
-        movementLabel(r.movementType),
-        r.orderNo,
-        r.itemRefId,
-        r.drawingNo,
-        locIndex.labelOf(r.fromLocationId),
-        locIndex.labelOf(r.toLocationId),
-        String(r.quantity),
-        r.movedBy,
-        r.movementReason || r.note || '',
-      ]),
-    );
+  // CSV = CEO filtrirani skup (fetch-all), 12 kolona kao 1.0 (index.js:2785):
+  // Sa/Na razbijeni na šifru + putanju (locIndex code+path_cached) + Tabela.
+  const fmtLoc = (id: string | null | undefined): { code: string; path: string } => {
+    const l = id ? locIndex.byId.get(id) : undefined;
+    return { code: l?.locationCode ?? '', path: l?.pathCached ?? '' };
+  };
+
+  async function exportCsv() {
+    if (exporting) return;
+    setExporting({ loaded: 0, total: null });
+    try {
+      const { rows: all, total, truncated } = await fetchAllMovements(
+        { ...baseFilters, userId: userId || undefined },
+        { onProgress: (p) => setExporting(p) },
+      );
+      if (all.length === 0) {
+        window.alert('Nema zapisa koji odgovaraju trenutnim filterima.');
+        return;
+      }
+      downloadCsv(
+        buildCsvFilename('lokacije_istorija'),
+        ['Vreme', 'Korisnik', 'Tip', 'Količina', 'Sa lokacije', 'Sa putanje', 'Na lokaciju', 'Na putanju', 'Tabela', 'Crtež', 'Nalog', 'Napomena'],
+        all.map((r) => {
+          const from = fmtLoc(r.fromLocationId);
+          const to = fmtLoc(r.toLocationId);
+          return [
+            csvTimestamp(r.movedAt),
+            r.movedBy,
+            movementLabel(r.movementType),
+            r.quantity == null ? '' : String(r.quantity),
+            from.code,
+            from.path,
+            to.code,
+            to.path,
+            r.itemRefTable,
+            r.drawingNo,
+            r.orderNo,
+            r.movementReason || r.note || '',
+          ];
+        }),
+      );
+      if (truncated) {
+        window.alert(
+          `Export prekinut na 50 000 zapisa radi sigurnosti. Ukupno u bazi: ${total ?? '?'}. Suzi filtere za kompletniji izvoz.`,
+        );
+      }
+    } catch (err) {
+      window.alert(`Export neuspešan: ${(err as Error)?.message ?? String(err)}`);
+    } finally {
+      setExporting(null);
+    }
   }
 
   return (
@@ -122,8 +159,11 @@ export function MovementsTab() {
         <label className="flex items-center gap-1 text-xs text-ink-secondary">
           Do <input className={INPUT} type="date" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setPage(1); }} />
         </label>
-        <Button variant="secondary" onClick={exportCsv} disabled={rows.length === 0} className="ml-auto">
-          <Download className="h-4 w-4" /> CSV
+        <Button variant="secondary" onClick={exportCsv} disabled={rows.length === 0 || exporting != null} className="ml-auto">
+          <Download className="h-4 w-4" />
+          {exporting
+            ? `CSV… ${exporting.loaded}${exporting.total != null ? `/${exporting.total}` : ''}`
+            : 'CSV'}
         </Button>
       </div>
 

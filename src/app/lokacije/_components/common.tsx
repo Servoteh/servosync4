@@ -50,6 +50,26 @@ export function movementLabel(type: string): string {
 
 // ------------------------------------------------------------------ CSV
 
+/** ISO timestamp → „YYYY-MM-DD HH:MM:SS" za CSV ćelije (paritet 1.0 exporta). */
+export function csvTimestamp(iso: string | null | undefined): string {
+  return String(iso ?? '').replace('T', ' ').slice(0, 19);
+}
+
+/**
+ * Ime CSV fajla sa timestampom (paritet 1.0: `<prefix>_YYYY-MM-DD_HHMM[_search].csv`).
+ * @param prefix npr. `lokacije_pregled_po_lokacijama`
+ * @param search opciono — sanitizovan sufiks iz pretrage (Stavke)
+ */
+export function buildCsvFilename(prefix: string, search?: string): string {
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const ts =
+    `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}` +
+    `_${pad(now.getHours())}${pad(now.getMinutes())}`;
+  const q = (search ?? '').trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '_').slice(0, 32);
+  return `${prefix}_${ts}${q ? `_${q}` : ''}.csv`;
+}
+
 /** Preuzmi CSV (BOM + ; separator — paritet 1.0 izveštaja za Excel/sr-RS). */
 export function downloadCsv(filename: string, headers: string[], rows: (string | number | null | undefined)[][]) {
   const esc = (v: string | number | null | undefined) => {

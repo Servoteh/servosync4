@@ -152,6 +152,16 @@ export interface ReportRow {
   location_name?: string;
   hall_code?: string;
   hall_name?: string;
+  // Dodatna polja iz RPC-a `loc_report_parts_by_locations` (koristi CSV izvoz,
+  // paritet 1.0 `buildReportCsvRow` / REPORT_CSV_HEADERS — nisu u ekranu, ali su
+  // deo punog reda). Sva opciona; RPC ih uvek emituje za bigtehn_rn redove.
+  revizija?: string;
+  status_rn?: boolean;
+  location_kind?: string;
+  location_path?: string;
+  shelf_note?: string;
+  last_moved_at?: string;
+  updated_at?: string;
   [key: string]: unknown;
 }
 
@@ -451,6 +461,137 @@ export function useDefinitionsAudit(limit = 100, enabled = true) {
         `/v1/locations/definitions-audit${qs({ limit })}`,
       ),
   });
+}
+
+// ------------------------------------------------------------------ fetch-all (imperativni izvoz)
+// Paritet 1.0 `fetchAllLocReportPartsByLocations` / `fetchAllMovements` /
+// `fetchAllPlacements` (services/lokacije.js): povuci CEO filtrirani skup kroz
+// petlju po stranama (BE klampuje pageSize na 500 za sva tri endpointa), uz
+// progres i tvrdi safety cap. NISU useQuery — zovu se na klik „Export CSV".
+
+/** Napredak povlačenja (za dugme „CSV… loaded/total"). */
+export interface FetchAllProgress {
+  loaded: number;
+  total: number | null;
+}
+
+export interface FetchAllOpts {
+  onProgress?: (p: FetchAllProgress) => void;
+  signal?: AbortSignal;
+  /** Override veličine strane (default = BE max 500). */
+  pageSize?: number;
+}
+
+export interface FetchAllResult<T> {
+  rows: T[];
+  total: number | null;
+  truncated: boolean;
+}
+
+/** Tvrdi limit da neko slučajno ne obori browser (paritet 1.0 HARD_CAP). */
+const FETCH_ALL_HARD_CAP = 50_000;
+/** BE klampuje pageSize na 500 (report/movements/placements) — koristi maks. */
+const FETCH_ALL_PAGE_SIZE = 500;
+
+function clampPageSize(v: number | undefined): number {
+  return Math.max(1, Math.min(Number(v) || FETCH_ALL_PAGE_SIZE, 500));
+}
+
+/**
+ * SVE redove izveštaja „Pregled po lokacijama" (loc_report_parts_by_locations)
+ * koji odgovaraju `params` (bez page/pageSize — ovde se postavljaju po strani).
+ * RPC vraća `{ total, rows }`; petljamo dok ne pokupimo `total` (ili cap).
+ */
+export async function fetchAllReportByLocation(
+  params: ReportParams,
+  opts: FetchAllOpts = {},
+): Promise<FetchAllResult<ReportRow>> {
+  const size = clampPageSize(opts.pageSize);
+  const rows: ReportRow[] = [];
+  let total: number | null = null;
+  let truncated = false;
+
+  for (let page = 1; ; page++) {
+    if (opts.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    const res = await apiFetch<{ data: ReportResult }>(
+      `/v1/locations/reports/by-location${qs({ ...params, page, pageSize: size })}`,
+    );
+    const chunk = res.data?.rows ?? [];
+    if (typeof res.data?.total === 'number') total = res.data.total;
+    if (chunk.length === 0) break;
+    rows.push(...chunk);
+    opts.onProgress?.({ loaded: rows.length, total });
+    if (chunk.length < size) break;
+    if (total != null && rows.length >= total) break;
+    if (rows.length >= FETCH_ALL_HARD_CAP) {
+      truncated = true;
+      break;
+    }
+  }
+
+  return { rows, total, truncated };
+}
+
+/** SVE redove istorije premeštanja (movements) koji odgovaraju `params`. */
+export async function fetchAllMovements(
+  params: MovementsParams,
+  opts: FetchAllOpts = {},
+): Promise<FetchAllResult<LocMovement>> {
+  const size = clampPageSize(opts.pageSize);
+  const rows: LocMovement[] = [];
+  let total: number | null = null;
+  let truncated = false;
+
+  for (let page = 1; ; page++) {
+    if (opts.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    const res = await apiFetch<{ data: LocMovement[]; meta: PageMeta }>(
+      `/v1/locations/movements${qs({ ...params, page, pageSize: size })}`,
+    );
+    const chunk = res.data ?? [];
+    if (typeof res.meta?.pagination?.total === 'number') total = res.meta.pagination.total;
+    if (chunk.length === 0) break;
+    rows.push(...chunk);
+    opts.onProgress?.({ loaded: rows.length, total });
+    if (chunk.length < size) break;
+    if (total != null && rows.length >= total) break;
+    if (rows.length >= FETCH_ALL_HARD_CAP) {
+      truncated = true;
+      break;
+    }
+  }
+
+  return { rows, total, truncated };
+}
+
+/** SVE placements (Stavke) koji odgovaraju `params` (za CSV izvoz Stavki). */
+export async function fetchAllPlacements(
+  params: PlacementsParams,
+  opts: FetchAllOpts = {},
+): Promise<FetchAllResult<LocPlacement>> {
+  const size = clampPageSize(opts.pageSize);
+  const rows: LocPlacement[] = [];
+  let total: number | null = null;
+  let truncated = false;
+
+  for (let page = 1; ; page++) {
+    if (opts.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    const res = await apiFetch<{ data: LocPlacement[]; meta: PageMeta }>(
+      `/v1/locations/placements${qs({ ...params, page, pageSize: size })}`,
+    );
+    const chunk = res.data ?? [];
+    if (typeof res.meta?.pagination?.total === 'number') total = res.meta.pagination.total;
+    if (chunk.length === 0) break;
+    rows.push(...chunk);
+    opts.onProgress?.({ loaded: rows.length, total });
+    if (chunk.length < size) break;
+    if (total != null && rows.length >= total) break;
+    if (rows.length >= FETCH_ALL_HARD_CAP) {
+      truncated = true;
+      break;
+    }
+  }
+
+  return { rows, total, truncated };
 }
 
 // ---- Sync (admin) ----

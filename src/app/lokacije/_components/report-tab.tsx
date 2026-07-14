@@ -5,12 +5,86 @@ import { Download } from 'lucide-react';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { Pager } from '@/components/ui-kit/pager';
 import { Button } from '@/components/ui-kit/button';
-import { HALL_TYPES, useAllLocations, useReportByLocation, useReportSuggest, type LocLocation, type ReportRow } from '@/api/lokacije';
-import { downloadCsv, tableEmpty } from './common';
+import {
+  HALL_TYPES,
+  fetchAllReportByLocation,
+  useAllLocations,
+  useReportByLocation,
+  useReportSuggest,
+  type LocLocation,
+  type ReportParams,
+  type ReportRow,
+} from '@/api/lokacije';
+import { buildCsvFilename, csvTimestamp, downloadCsv, tableEmpty } from './common';
 
 const INPUT = 'h-9 rounded-control border border-line bg-surface px-2.5 text-sm text-ink outline-none focus:border-accent';
 
 const num = (v: unknown): string => (v == null || v === '' ? '—' : String(v));
+
+// ------------------------------------------------------------------ CSV izvoz (paritet 1.0)
+// Zaglavlja + red = 1.0 `REPORT_CSV_HEADERS` / `buildReportCsvRow`
+// (src/lib/lokacijeReportLocations.js). RPC `loc_report_parts_by_locations`
+// vraća sva lokaciona polja (hall_*, location_kind, location_path…) direktno u
+// redu — bez `location_id` — pa se prikaz lokacije čita iz reda (1.0 loc-index
+// fallback se nikad ne aktivira za ove redove).
+
+const REPORT_CSV_HEADERS = [
+  'Predmet kod', 'Predmet naziv', 'Kupac', 'RN', 'Crtež', 'Naziv dela',
+  'Materijal', 'Dimenzija materijala', 'Komada (RN)', 'Težina obr (kg)',
+  'Revizija', 'Status RN', 'Rok izrade', 'TP ref', 'Tabela',
+  'Hala šifra', 'Hala naziv', 'Tip lokacije', 'Polica/Kavez šifra',
+  'Polica/Kavez naziv', 'Putanja', 'Opis police', 'Kol lok', 'Ukupno bucket',
+  'Status placement', 'Poslednje',
+];
+
+function reportLocationKindLabel(kind: string): string {
+  if (kind === 'shelf') return 'POLICA';
+  if (kind === 'cage') return 'KAVEZ';
+  if (kind === 'hall') return 'HALA';
+  if (kind === 'machine') return 'MAŠINA';
+  return '';
+}
+
+function normalizeReportKind(v: unknown): '' | 'shelf' | 'cage' {
+  const s = typeof v === 'string' ? v.trim().toLowerCase() : '';
+  return s === 'shelf' || s === 'cage' ? s : '';
+}
+
+function buildReportCsvRow(r: ReportRow): (string | number)[] {
+  const hallCode = String(r.hall_code ?? '').trim();
+  const hallName = String(r.hall_name ?? '').trim();
+  const kind = normalizeReportKind(r.location_kind);
+  const shelfCode = String(r.location_code ?? '').trim();
+  const shelfName = String(r.location_name ?? '').trim();
+  return [
+    r.project_code ?? '',
+    r.project_name ?? '',
+    r.customer_name ?? '',
+    r.order_no ?? '',
+    r.drawing_no || r.wo_broj_crteza || '',
+    r.naziv_dela ?? '',
+    r.materijal ?? '',
+    r.dimenzija_materijala ?? '',
+    r.komada_rn ?? '',
+    r.tezina_obr ?? '',
+    r.revizija ?? '',
+    r.status_rn === true ? 'Zatvoren' : r.status_rn === false ? 'Otvoren' : '',
+    r.rok_izrade ? String(r.rok_izrade).slice(0, 10) : '',
+    r.item_ref_id ?? '',
+    r.item_ref_table ?? '',
+    hallCode,
+    hallName,
+    reportLocationKindLabel(kind) || kind,
+    shelfCode,
+    shelfName,
+    r.location_path ?? '',
+    r.shelf_note ?? '',
+    r.qty_on_location ?? '',
+    r.qty_total_for_bucket ?? '',
+    r.placement_status ?? '',
+    csvTimestamp(r.last_moved_at || r.updated_at),
+  ];
+}
 
 /** Pregled delova po lokacijama — loc_report_parts_by_locations (filteri + CSV). */
 export function ReportTab() {
@@ -24,6 +98,7 @@ export function ReportTab() {
   const [locationKind, setLocationKind] = useState<'' | 'shelf' | 'cage'>('');
   const [projectSearch, setProjectSearch] = useState('');
   const [page, setPage] = useState(1);
+  const [exporting, setExporting] = useState<{ loaded: number; total: number | null } | null>(null);
   const pageSize = 100;
 
   const halls = useAllLocations('true');
@@ -33,7 +108,8 @@ export function ReportTab() {
   );
   const suggest = useReportSuggest(nazivDela);
 
-  const q = useReportByLocation({
+  // Filteri deljeni ekranom i CSV izvozom (page/pageSize dodaje svaki potrošač).
+  const filters: ReportParams = {
     orderNo: orderNo || undefined,
     drawingNo: drawingNo || undefined,
     tpNo: tpNo || undefined,
@@ -42,9 +118,9 @@ export function ReportTab() {
     hallId: hallId || undefined,
     locationKind: locationKind || undefined,
     projectSearch: projectSearch || undefined,
-    page,
-    pageSize,
-  });
+  };
+
+  const q = useReportByLocation({ ...filters, page, pageSize });
 
   const rows = q.data?.data.rows ?? [];
   const total = q.data?.data.total ?? 0;
@@ -72,17 +148,27 @@ export function ReportTab() {
     { key: 'rok', header: 'Rok', render: (r) => (r.rok_izrade ? String(r.rok_izrade).slice(0, 10) : '—') },
   ];
 
-  function exportCsv() {
-    downloadCsv(
-      `pregled_po_lokacijama_${new Date().toISOString().slice(0, 10)}.csv`,
-      ['Projekat', 'Komitent', 'Nalog', 'Crtež', 'Naziv dela', 'Stavka', 'Hala', 'Polica', 'Materijal', 'Dimenzija', 'Na lokaciji', 'Ukupno', 'Rok'],
-      rows.map((r) => [
-        [r.project_code, r.project_name].filter(Boolean).join(' — '),
-        r.customer_name, r.order_no, r.drawing_no || r.wo_broj_crteza, r.naziv_dela,
-        r.item_ref_id, r.hall_code, r.location_code, r.materijal, r.dimenzija_materijala,
-        num(r.qty_on_location), num(r.qty_total_for_bucket), r.rok_izrade ? String(r.rok_izrade).slice(0, 10) : '',
-      ]),
-    );
+  // CSV = CEO filtrirani skup (fetch-all po stranama), ne samo tekuća strana.
+  async function exportCsv() {
+    if (exporting) return;
+    setExporting({ loaded: 0, total: null });
+    try {
+      const { rows: all, total, truncated } = await fetchAllReportByLocation(filters, {
+        onProgress: (p) => setExporting(p),
+      });
+      if (all.length === 0) {
+        window.alert('Nema redova za export.');
+        return;
+      }
+      downloadCsv(buildCsvFilename('lokacije_pregled_po_lokacijama'), REPORT_CSV_HEADERS, all.map(buildReportCsvRow));
+      if (truncated) {
+        window.alert(`Export prekinut na 50 000 redova. Ukupno u upitu: ${total ?? '?'}. Suzi filtere.`);
+      }
+    } catch (err) {
+      window.alert(`Export neuspešan: ${(err as Error)?.message ?? String(err)}`);
+    } finally {
+      setExporting(null);
+    }
   }
 
   const suggestions = suggest.data?.data ?? [];
@@ -132,8 +218,11 @@ export function ReportTab() {
         <input className={INPUT} placeholder="Lokacija (šifra)" value={locationQ} onChange={(e) => { setLocationQ(e.target.value); setPage(1); }} />
         <input className={INPUT} placeholder="Projekat / komitent" value={projectSearch} onChange={(e) => { setProjectSearch(e.target.value); setPage(1); }} />
         <span className="ml-auto text-sm text-ink-secondary tnums">{total} zapisa</span>
-        <Button variant="secondary" onClick={exportCsv} disabled={rows.length === 0}>
-          <Download className="h-4 w-4" /> CSV
+        <Button variant="secondary" onClick={exportCsv} disabled={rows.length === 0 || exporting != null}>
+          <Download className="h-4 w-4" />
+          {exporting
+            ? `CSV… ${exporting.loaded}${exporting.total != null ? `/${exporting.total}` : ''}`
+            : 'CSV'}
         </Button>
       </div>
 
