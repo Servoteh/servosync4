@@ -35,6 +35,7 @@ import {
 import { DosijeDialog } from './dossier';
 import { EmployeeFormDialog } from './employee-form';
 import { EmpBulkActionsDialog } from './emp-bulk-actions';
+import { EmpQuickEntryDialog } from './emp-quick-entry';
 
 // Lista zaposlenih — pun 1.0 paritet (employeesTab.js): quick-filter chips,
 // filteri odeljenje/status/vrsta-ugovora, summary chips, sort po kolonama
@@ -106,6 +107,7 @@ export function ZaposleniTab() {
   const [openId, setOpenId] = useState<string | null>(null);
   const [form, setForm] = useState<{ editId: string | null } | null>(null);
   const [bulkOpen, setBulkOpen] = useState(false);
+  const [quickEntryOpen, setQuickEntryOpen] = useState(false);
   const [deactivateFor, setDeactivateFor] = useState<EmployeeSafe | null>(null);
   const [purgeFor, setPurgeFor] = useState<EmployeeSafe | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -481,6 +483,14 @@ export function ZaposleniTab() {
           ⚙ Bulk ({selected.size})
         </Button>
         <Button
+          variant="ghost"
+          disabled={!canAdd}
+          title={canAdd ? 'Brzi unos više zaposlenih ili uvoz iz Excel/CSV' : 'Nove zaposlene mogu da dodaju samo HR i administrator'}
+          onClick={() => setQuickEntryOpen(true)}
+        >
+          ⚡ Brzi unos
+        </Button>
+        <Button
           onClick={() => setForm({ editId: null })}
           disabled={!canAdd}
           title={canAdd ? '' : 'Nove zaposlene mogu da dodaju samo HR i administrator'}
@@ -530,6 +540,10 @@ export function ZaposleniTab() {
             setSelected(new Set());
           }}
         />
+      )}
+
+      {quickEntryOpen && (
+        <EmpQuickEntryDialog canPii={canPii} onClose={() => setQuickEntryOpen(false)} onDone={setToast} />
       )}
 
       {deactivateFor && (
