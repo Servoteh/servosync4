@@ -6,6 +6,7 @@ import {
 } from "@nestjs/common";
 import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
+import type { SendCommandDto } from "./dto/send-command.dto";
 
 /**
  * Energetika / SCADA — 3.0 TALAS E, R1 read sloj (MODULE_SPEC_scada_30.md §3).
@@ -222,15 +223,60 @@ export class EnergetikaService {
     });
   }
 
-  // ============================================================
-  // R2 (control) — NAMERNO NIJE IMPLEMENTIRANO u R1 (komandna semantika je ZAMRZNUTA):
-  //   insertCommand(email, dto)        → INSERT scada_commands (pending, u svoje ime,
-  //                                       idempotency_key = clientEventId|'ui-<ts>-<rand>')
-  //   cancelCommand(email, id)         → scada_cancel_command(uuid) kroz withUserRls (DEFINER;
-  //                                       menja SAMO svoju pending → expired, vraća STVARNI status)
-  // Oba idu kroz withUserRls (INSERT politika = svoje ime + status='pending'; RPC gate-uje
-  // scada_is_admin_or_management()). rethrowSy15 (dole) već mapira SQLSTATE za taj sloj.
-  // ============================================================
+  // ---------- Komande (R2: control — semantika ZAMRZNUTA) ----------
+
+  /**
+   * Pošalji komandu = INSERT `scada_commands` (`status='pending'`) kroz **withUserRls**
+   * (paritet 1.0 `insertCommand`). SET LOCAL ROLE authenticated → RLS INSERT politika
+   * (`scada_cmd_insert`) forsira: `requested_by = lower(jwt email)`, `status='pending'`,
+   * `result/claimed_at/applied_at` NULL. **BE NE dira PLC i NE validira allowlist** —
+   * bridge (neportovan, systemd na ubuntusrv) poluje `pending`, validira protiv allowlist-a
+   * i izvršava/odbija (spec §2 t.6; van-allowlist target → `rejected` bez dodira PLC-a).
+   *
+   * `requested_by` = lowercased email iz claims (NE `sub`/uid — scada politike i 1.0
+   * upisuju EMAIL; WITH CHECK poredi `auth.jwt()->>'email'`). Idempotencija = NATIVNI
+   * `idempotency_key` (`clientEventId` ili generisan `ui-<ts>-<rand>`, partial unique u
+   * bazi); ponovljen ključ → 23505 → 409 (rethrowSy15). NE koristi rev_api_idempotency
+   * (doktrina A4 — modul ima svoj mehanizam). `status` se NE šalje (Prisma @default
+   * 'pending'), izostavljeni NULL-ovi zadovoljavaju WITH CHECK.
+   */
+  create(email: string, dto: SendCommandDto) {
+    return this.read(async () =>
+      this.sy15.withUserRls(email, (tx) => {
+        const data: Prisma.ScadaCommandUncheckedCreateInput = {
+          siteKey: dto.siteKey,
+          target: dto.target,
+          op: dto.op?.trim() || "set",
+          requestedBy: email.toLowerCase(),
+          idempotencyKey: dto.clientEventId?.trim() || genIdempotencyKey(),
+        };
+        // value je nullable (kolona) — izostavljen ostaje SQL NULL (paritet reset targeta).
+        if (dto.value !== undefined)
+          data.value = dto.value as Prisma.InputJsonValue;
+        return tx.scadaCommand.create({ data });
+      }),
+    );
+  }
+
+  /**
+   * Otkaži SVOJU pending komandu na timeout čekanja (paritet 1.0 `cancelScadaCommand`):
+   * DEFINER RPC `scada_cancel_command(uuid)` kroz withUserRls (RPC gate-uje
+   * `scada_is_admin_or_management()`; `energetika.control` guard je HTTP sloj). Semantika
+   * ZAMRZNUTA (spec §7 P3, appendix): menja SAMO svoju `pending` → `expired`; ako je bridge
+   * već stigao, vraća STVARNI status (`applied`/`claimed`/…), a stale `claimed` je već
+   * `failed` (nikad nazad u pending — to radi DB/bridge, ne dira se). Vraća `{ status }`;
+   * `'missing'` ako red ne postoji (1.0 RPC vraća taj tekst — NE 404, nije greška toka).
+   */
+  cancel(email: string, id: string) {
+    return this.read(async () =>
+      this.sy15.withUserRls(email, async (tx) => {
+        const rows = await tx.$queryRaw<{ status: string }[]>(
+          Prisma.sql`SELECT public.scada_cancel_command(${id}::uuid) AS status`,
+        );
+        return { status: rows[0]?.status ?? "missing" };
+      }),
+    );
+  }
 
   // ---------- infrastruktura ----------
 
@@ -260,6 +306,15 @@ export class EnergetikaService {
     if (meta?.code === "23514") throw new UnprocessableEntityException(message);
     throw e;
   }
+}
+
+/**
+ * NATIVNI idempotency_key (paritet 1.0 `insertCommand`: `ui-${Date.now()}-<rand>`).
+ * NIJE uuid (partial unique u bazi). Praktično uvek jedinstven — postoji da dupli
+ * klik/retry sa ISTIM `clientEventom` udari 23505 → 409, ne dupli upis na PLC.
+ */
+export function genIdempotencyKey(): string {
+  return `ui-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 /** Zaštitno parsiranje/klampovanje query brojeva (string → int u [min,max], inače def). */

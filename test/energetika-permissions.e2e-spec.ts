@@ -36,6 +36,9 @@ describe("Energetika permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     "alarmHistory",
     "recentCommands",
     "command",
+    // R2 control (POST) — mokovano; guard sloj (energetika.control) je predmet testa.
+    "create",
+    "cancel",
   ]) {
     serviceMock[m] = jest.fn().mockResolvedValue({ data: [] });
   }
@@ -84,6 +87,15 @@ describe("Energetika permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
       .get(`/api/v1/energetika${path}`)
       .set("x-test-role", role);
 
+  const post = (path: string, role: string, body: string | object) =>
+    request(app.getHttpServer())
+      .post(`/api/v1/energetika${path}`)
+      .set("x-test-role", role)
+      .send(body);
+
+  /** Validno telo komande (paritet 1.0 insertCommand payload). */
+  const CMD_BODY = { siteKey: "kot1", target: "SP_CNC", value: { v: 22 } };
+
   // read = SAMO admin + menadzment (paritet scada_is_admin_or_management).
   const READ_ROLES = ["admin", "menadzment"];
   // SVE ostale katalogisane uloge (izvedeno iz ALL_ROLE_KEYS — review nalaz 12.07:
@@ -117,6 +129,46 @@ describe("Energetika permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     }
   });
 
+  // R2 komande (POST) = energetika.control (per-metod override); ista dodela kao read
+  // (admin + menadzment), NIKO drugi (paritet 1.0 canControlScada ≡ canAccessEnergetikaScada).
+  describe("komande (POST) — energetika.control (admin + menadzment)", () => {
+    describe("POST /commands (insert)", () => {
+      it.each(READ_ROLES)("→ 200 za %s", async (role) => {
+        await post("/commands", role, CMD_BODY).expect(200);
+      });
+      it.each(DENIED_ROLES)("→ 403 za %s", async (role) => {
+        await post("/commands", role, CMD_BODY).expect(403);
+      });
+    });
+
+    describe("POST /commands/:id/cancel", () => {
+      it.each(READ_ROLES)("→ 200 za %s", async (role) => {
+        await post(`/commands/${VALID_UUID}/cancel`, role, {}).expect(200);
+      });
+      // non-admin (uklj. viewer/pm/hr baseline) NE sme da otkaže komandu.
+      it.each(DENIED_ROLES)("→ 403 za %s", async (role) => {
+        await post(`/commands/${VALID_UUID}/cancel`, role, {}).expect(403);
+      });
+      it("nevalidan UUID → 400 (ParseUUIDPipe) za admin", async () => {
+        await post("/commands/nije-uuid/cancel", "admin", {}).expect(400);
+      });
+    });
+  });
+
+  describe("DTO validacija komande (ValidationPipe, 400)", () => {
+    it.each([
+      ["bez siteKey", { target: "SP_CNC", value: { v: 22 } }],
+      ["prazan target", { siteKey: "kot1", target: "", value: { v: 22 } }],
+      ["value nije objekat", { siteKey: "kot1", target: "SP_CNC", value: "22" }],
+      [
+        "clientEventId nije string",
+        { siteKey: "kot1", target: "SP_CNC", value: {}, clientEventId: 5 },
+      ],
+    ])("POST /commands %s → 400 (admin)", async (_label, body) => {
+      await post("/commands", "admin", body).expect(400);
+    });
+  });
+
   describe("granični slučajevi", () => {
     it("bez identiteta → 403 (JwtAuthGuard stub)", async () => {
       await request(app.getHttpServer())
@@ -126,14 +178,6 @@ describe("Energetika permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
 
     it("GET /commands/:id sa nevalidnim UUID → 400 (ParseUUIDPipe) za admin", async () => {
       await get("/commands/nije-uuid", "admin").expect(400);
-    });
-
-    it("R2 komande NISU izložene u R1: POST /commands → 404 (ruta ne postoji)", async () => {
-      await request(app.getHttpServer())
-        .post("/api/v1/energetika/commands")
-        .set("x-test-role", "admin")
-        .send({ siteKey: "kot1", target: "X", value: {} })
-        .expect(404);
     });
   });
 });

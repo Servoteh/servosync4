@@ -1,8 +1,11 @@
 import {
+  Body,
   Controller,
   Get,
+  HttpCode,
   Param,
   ParseUUIDPipe,
+  Post,
   Query,
   Req,
   UseGuards,
@@ -12,6 +15,7 @@ import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
 import { PERMISSIONS } from "../../common/authz/permissions";
 import { EnergetikaService } from "./energetika.service";
+import { SendCommandDto } from "./dto/send-command.dto";
 
 interface AuthedRequest {
   user: { userId: number; email: string; role: string };
@@ -23,8 +27,8 @@ interface AuthedRequest {
  * restore-izvoru): SELECT na svih 6 tabela = `scada_is_admin_or_management()`. Zato je
  * cela klasa `energetika.read` (SAMO admin+menadzment — NE viewer baseline; spec §2).
  *
- * KOMANDE (POST /commands insert + /commands/:id/cancel) = R2 (`energetika.control`),
- * semantika ZAMRZNUTA — vidi skeleton na dnu. R1 ih NE izlaže.
+ * KOMANDE (POST /commands insert + /commands/:id/cancel) = R2 (`energetika.control`,
+ * per-metod override iznad klasnog `energetika.read`), semantika ZAMRZNUTA (spec §7).
  * Route ordering: statičke rute pre parametrizovanih, `:id`/`:siteKey` poslednje.
  */
 @UseGuards(JwtAuthGuard, PermissionsGuard)
@@ -83,19 +87,31 @@ export class EnergetikaController {
     return this.energetika.command(req.user.email, id);
   }
 
-  // ============================================================
-  // R2 (control) — komandni tok. NIJE u R1 (semantika ZAMRZNUTA: cancel-on-timeout
-  // 15 s, claimed recovery, E-stop van allowlista). Kada se implementira:
-  //
-  //   @Post("commands")
-  //   @RequirePermission(PERMISSIONS.ENERGETIKA_CONTROL)
-  //   create(@Req() req, @Body() dto: SendCommandDto) { ... insertCommand ... }
-  //
-  //   @Post("commands/:id/cancel")
-  //   @RequirePermission(PERMISSIONS.ENERGETIKA_CONTROL)
-  //   cancel(@Req() req, @Param("id", ParseUUIDPipe) id: string) { ... scada_cancel_command ... }
-  //
-  // Oba kroz withUserRls; e2e (R2): svoje-ime CHECK, non-admin 403, van-allowlist
-  // target → bridge `rejected` end-to-end (bez dodira PLC-a).
-  // ============================================================
+  // ---------- R2: komandni tok (control; semantika ZAMRZNUTA — spec §7) ----------
+
+  /**
+   * Pošalji komandu — INSERT `scada_commands` (`pending`) kroz withUserRls (RLS forsira
+   * svoje ime + pending). BE NE dira PLC; bridge poluje i izvršava/odbija (allowlist).
+   * 200 (paritet toka: FE odmah dobija red sa `id` i poll-uje status → cancel-on-timeout).
+   */
+  @Post("commands")
+  @HttpCode(200)
+  @RequirePermission(PERMISSIONS.ENERGETIKA_CONTROL)
+  createCommand(@Req() req: AuthedRequest, @Body() dto: SendCommandDto) {
+    return this.energetika.create(req.user.email, dto);
+  }
+
+  /**
+   * Otkaži SVOJU pending komandu na timeout čekanja — DEFINER RPC `scada_cancel_command`
+   * kroz withUserRls; vraća STVARNI status (`expired`/`applied`/…). 200 uvek (i „missing").
+   */
+  @Post("commands/:id/cancel")
+  @HttpCode(200)
+  @RequirePermission(PERMISSIONS.ENERGETIKA_CONTROL)
+  cancelCommand(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return this.energetika.cancel(req.user.email, id);
+  }
 }
