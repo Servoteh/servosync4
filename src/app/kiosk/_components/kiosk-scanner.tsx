@@ -129,8 +129,8 @@ export function KioskScanner() {
     : null;
   const card = useTechProcessCard(cardKey);
 
-  // Red tehnološkog postupka za skeniranu operaciju (po RC + broju operacije).
-  const matched = useMemo(() => {
+  // Svi redovi tehnološkog postupka za skeniranu operaciju (po RC + broju operacije).
+  const matchedRows = useMemo(() => {
     if (!operation || !card.data) return null;
     const rows = card.data.data.rows.filter(
       (r) =>
@@ -138,12 +138,24 @@ export function KioskScanner() {
         (operation.fields.operationNumber === null ||
           r.operationNumber === operation.fields.operationNumber),
     );
-    if (!rows.length) return null;
-    // isti izbor kao backend scan: prvo nezavršene, pa najmanji id.
-    return [...rows].sort(
+    return rows.length ? rows : null;
+  }, [operation, card.data]);
+
+  // Red tehnološkog postupka za skeniranu operaciju — isti izbor kao backend scan:
+  // prvo nezavršene, pa najmanji id.
+  const matched = useMemo(() => {
+    if (!matchedRows) return null;
+    return [...matchedRows].sort(
       (a, b) => Number(!!a.isProcessFinished) - Number(!!b.isProcessFinished) || a.id - b.id,
     )[0];
-  }, [operation, card.data]);
+  }, [matchedRows]);
+
+  // „Napravljeno" = Σ komada SVIH redova operacije (svi kvaliteti dobar+dorada+škart;
+  // storno redovi su negativni pa se netuju) — NE pieceCount jednog (matched) reda (odluka #4).
+  const groupSum = useMemo(
+    () => (matchedRows ? matchedRows.reduce((sum, r) => sum + r.pieceCount, 0) : 0),
+    [matchedRows],
+  );
 
   // Stanje vremenske sesije (A-4) — vodi START/STOP režim u WorkPanel-u.
   // Isključeno za završnu kontrolu (ta ima svoj panel/tok).
@@ -326,13 +338,16 @@ export function KioskScanner() {
         pieceCount: pieces,
         workerCard: worker.card,
       });
+      // „Napravljeno" je Σ grupe: dodaj upravo prijavljene komade na zbir PRE mutacije
+      // (backend techProcess.pieceCount je kumulativ SAMO tog reda, ne grupe).
+      const madeAfter = groupSum + data.reportedPieces;
       setOverride({
         id: data.techProcess.id,
-        made: data.techProcess.pieceCount,
+        made: madeAfter,
         finished: !!data.techProcess.isProcessFinished,
       });
       const parts = [
-        `Napravljeno ${formatNumber(data.techProcess.pieceCount)}${
+        `Napravljeno ${formatNumber(madeAfter)}${
           data.plannedPieces != null ? ' / ' + formatNumber(data.plannedPieces) : ''
         } kom`,
       ];
@@ -399,9 +414,12 @@ export function KioskScanner() {
         workerCard: worker.card,
         pieceCount: pieces,
       });
+      // „Napravljeno" je Σ grupe: zbir PRE mutacije + upravo prijavljeni komadi
+      // (backend techProcess.pieceCount je kumulativ SAMO tog reda, ne grupe).
+      const madeAfter = groupSum + data.reportedPieces;
       setOverride({
         id: data.techProcess.id,
-        made: data.techProcess.pieceCount,
+        made: madeAfter,
         finished: !!data.techProcess.isProcessFinished,
       });
       await openSession.refetch();
@@ -411,7 +429,7 @@ export function KioskScanner() {
           ? `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`
           : `${Math.floor(sec / 60)}m ${sec % 60}s`;
       const parts = [
-        `Napravljeno ${formatNumber(data.techProcess.pieceCount)}${
+        `Napravljeno ${formatNumber(madeAfter)}${
           data.plannedPieces != null ? ' / ' + formatNumber(data.plannedPieces) : ''
         } kom`,
         `Trajanje ${dur}`,
@@ -442,7 +460,8 @@ export function KioskScanner() {
     }
     try {
       const { data } = await finish.mutateAsync({ id, workerCard: worker?.card });
-      setOverride({ id: data.techProcess.id, made: data.techProcess.pieceCount, finished: true });
+      // Zatvaranje ne dodaje komade — „Napravljeno" ostaje Σ grupe.
+      setOverride({ id: data.techProcess.id, made: groupSum, finished: true });
       const parts = [`Zatvoreno sa ${formatNumber(data.finishedPieces)} kom`];
       if (data.workOrderCompleted) parts.push('Radni nalog je završen.');
       setFeedback({ tone: 'success', title: 'Operacija zatvorena', detail: parts.join(' · ') });
@@ -611,7 +630,7 @@ export function KioskScanner() {
   const stepNo = order ? (operation ? 3 : 2) : 1;
   const stepLabel = stepNo === 1 ? 'Skeniraj nalog' : stepNo === 2 ? 'Skeniraj operaciju' : operation?.finalControl ? 'Kontrola' : 'Prijava rada';
 
-  const made = override?.made ?? matched?.pieceCount ?? 0;
+  const made = override?.made ?? groupSum;
   // Operacija bez postupka (opšti nalog): zatvoreni redovi su istorija — nikad „Zatvorena", panel ostaje otvoren.
   const finished =
     override?.finished ?? (operation?.withoutProcess ? false : !!matched?.isProcessFinished);

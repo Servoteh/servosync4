@@ -172,6 +172,12 @@ export interface TechProcessCard {
    * Opciono/defanzivno: stariji backend polje ne vraća (undefined = nije hitno).
    */
   isUrgent?: boolean;
+  /**
+   * Crtež sa RN-a za dugme „PDF crteža" u zaglavlju kartice; `hasPdf` govori da
+   * li postoji uskladišten PDF (drawing_pdfs). Opciono/defanzivno: stariji
+   * backend polje ne vraća (undefined), a null kad RN nema razrešen crtež.
+   */
+  drawing?: { id: number; hasPdf: boolean } | null;
   /** Broj DISTINCT (operationNumber, workCenterCode) parova — NE broj redova/kucanja. */
   operationCount: number;
   /** Broj distinct parova sa bar jednim završenim redom — NE broj zatvorenih redova. */

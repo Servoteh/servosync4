@@ -221,6 +221,8 @@ export interface DrawingListParams {
   designedBy?: string;
   /** '' = svi, 'yes' = samo sa PDF-om, 'no' = samo bez PDF-a. */
   hasPdf?: '' | 'yes' | 'no';
+  /** '' = svi, po prefiksu broja: 'gotova' (K*), 'montazni' (M*), 'proizvodnja' (ostalo). */
+  type?: '' | 'proizvodnja' | 'gotova' | 'montazni';
 }
 
 export interface ImportLogParams {
@@ -242,6 +244,7 @@ export function useDrawings(params: DrawingListParams) {
   if (params.material) qs.set('material', params.material);
   if (params.designedBy) qs.set('designedBy', params.designedBy);
   if (params.hasPdf) qs.set('hasPdf', params.hasPdf);
+  if (params.type) qs.set('type', params.type);
   const query = qs.toString();
   return useQuery({
     queryKey: ['pdm', 'drawings', params],

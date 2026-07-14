@@ -243,6 +243,33 @@ export function useStopWork() {
   });
 }
 
+export interface StopWorkByIdInput {
+  /** tp.id iz liste „Moji otvoreni". */
+  id: number;
+  /** ID kartica radnika (audit) — opciono za lični nalog (backend čita JWT). */
+  workerCard?: string;
+  /** Broj napravljenih komada u OVOJ sesiji (ceo broj ≥ 0; 0 = samo vreme). */
+  pieceCount: number;
+}
+
+/**
+ * „Kraj rada" po tp.id — završava sesiju radnika na postupku iz liste
+ * „Moji otvoreni" (bez skena oba barkoda). Backend vraća isti oblik kao STOP
+ * skena (`operationFinished`, `reportedPieces`…). Poništava keš postupaka
+ * (lista „Moji otvoreni" deli prefiks `['tech-processes']`).
+ */
+export function useStopWorkById() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, workerCard, pieceCount }: StopWorkByIdInput) =>
+      apiFetch<{ data: StopWorkResult }>(`${BASE}/${id}/stop-work`, {
+        method: 'POST',
+        body: JSON.stringify({ workerCard, pieceCount }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['tech-processes'] }),
+  });
+}
+
 /**
  * Stanje sesije za (radnik, operacija) razrešeno iz barkodova — vodi kiosk
  * START/STOP režim. `enabled=false` isključuje upit (npr. dok nema oba barkoda).

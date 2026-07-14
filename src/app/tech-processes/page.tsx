@@ -2,6 +2,7 @@
 
 import { Fragment, useEffect, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
+import { FileText } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import {
   PART_QUALITY,
@@ -23,6 +24,7 @@ import {
   type WorkerRef,
 } from '@/api/tech-processes';
 import { ApiError } from '@/api/client';
+import { openDrawingPdf } from '@/api/pdm';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
 import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
@@ -406,6 +408,8 @@ function TechProcessCardDetail({ tp }: { tp: TechProcess }) {
   const q = useTechProcessCard(key);
   const reopen = useReopenTechProcess();
   const [reopenTarget, setReopenTarget] = useState<ReopenTarget | null>(null);
+  const [pdfOpening, setPdfOpening] = useState(false);
+  const [pdfError, setPdfError] = useState<string | null>(null);
 
   function closeReopen() {
     reopen.reset();
@@ -427,6 +431,23 @@ function TechProcessCardDetail({ tp }: { tp: TechProcess }) {
     return <span className="text-sm text-status-danger">Greška pri učitavanju kartice.</span>;
 
   const card = q.data.data;
+  const drawing = card.drawing;
+
+  // PDF crteža sa RN-a — reuse istog mehanizma kao PDM stranica (openDrawingPdf:
+  // apiBlob + window.open, JWT). Ne otvara ništa dok PDF ne postoji.
+  async function onOpenPdf() {
+    if (!drawing?.hasPdf) return;
+    setPdfOpening(true);
+    setPdfError(null);
+    try {
+      await openDrawingPdf(drawing.id);
+    } catch (e) {
+      setPdfError(e instanceof Error ? e.message : 'Greška pri otvaranju PDF-a.');
+    } finally {
+      setPdfOpening(false);
+    }
+  }
+
   const s = card.summary;
   const opByKey = new Map(
     card.operations.map((o) => [cardGroupKey(o.operationNumber, o.workCenterCode), o]),
@@ -473,7 +494,25 @@ function TechProcessCardDetail({ tp }: { tp: TechProcess }) {
         />
         {/* HITNO sa primopredaje (Paket A t.10) — kanonska mapa DESIGN_SYSTEM §7. */}
         {card.isUrgent && <StatusBadge tone="danger" label="HITNO" />}
+        {/* PDF crteža sa RN-a — vidljivo samo kad je crtež razrešen; disabled kad nema PDF-a. */}
+        {drawing && (
+          <button
+            disabled={!drawing.hasPdf || pdfOpening}
+            title={!drawing.hasPdf ? 'Crtež nema PDF' : undefined}
+            onClick={onOpenPdf}
+            className="ml-auto inline-flex items-center gap-1.5 rounded-control border border-line px-3 py-1 text-xs font-semibold text-ink-secondary hover:bg-surface disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <FileText className="h-3.5 w-3.5" aria-hidden />
+            {pdfOpening ? 'Otvaram…' : 'PDF crteža'}
+          </button>
+        )}
       </div>
+
+      {pdfError && (
+        <p className="text-sm text-status-danger" role="alert">
+          {pdfError}
+        </p>
+      )}
 
       <dl className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
         <SumTile label="Ukupno kom" value={formatNumber(s.totalPieces)} />

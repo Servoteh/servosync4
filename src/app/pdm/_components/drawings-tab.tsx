@@ -17,6 +17,14 @@ import { formatDate, formatNumber } from '@/lib/format';
 import { drawingStatusMeta, weightLabel } from './pdm-helpers';
 import { DrawingDetail } from './drawing-detail';
 
+/** Tip crteža po prefiksu broja: K → gotova roba, M → montažni, ostalo → proizvodnja. */
+function drawingTypeLabel(drawingNumber: string): string {
+  const first = drawingNumber.trim().charAt(0).toUpperCase();
+  if (first === 'K') return 'Gotova roba';
+  if (first === 'M') return 'Montažni';
+  return 'Proizvodnja';
+}
+
 const columns: Column<Drawing>[] = [
   {
     key: 'drawingNumber',
@@ -27,6 +35,13 @@ const columns: Column<Drawing>[] = [
     key: 'revision',
     header: 'Rev.',
     render: (r) => <span className="tnums text-ink-secondary">{r.revision}</span>,
+  },
+  {
+    key: 'type',
+    header: 'Tip',
+    render: (r) => (
+      <span className="text-ink-secondary">{drawingTypeLabel(r.drawingNumber)}</span>
+    ),
   },
   { key: 'name', header: 'Naziv', render: (r) => r.name || '—' },
   {
@@ -85,6 +100,7 @@ export function DrawingsTab() {
   const [material, setMaterial] = useState<string | null>(null);
   const [designedBy, setDesignedBy] = useState<string | null>(null);
   const [hasPdf, setHasPdf] = useState<'' | 'yes' | 'no'>('');
+  const [type, setType] = useState<'' | 'proizvodnja' | 'gotova' | 'montazni'>('');
   const [page, setPage] = useState(1);
   const [expanded, setExpanded] = useState<number | null>(null);
   const resetPage = () => setPage(1);
@@ -96,11 +112,12 @@ export function DrawingsTab() {
     material: material || undefined,
     designedBy: designedBy || undefined,
     hasPdf: hasPdf || undefined,
+    type: type || undefined,
   });
 
   const rows = list.data?.data ?? [];
   const meta = list.data?.meta.pagination;
-  const hasFilter = !!(q || revision || material || designedBy || hasPdf);
+  const hasFilter = !!(q || revision || material || designedBy || hasPdf || type);
 
   return (
     <div className="space-y-4">
@@ -157,6 +174,22 @@ export function DrawingsTab() {
           />
         </div>
         <label className="flex flex-col gap-1 text-xs text-ink-secondary">
+          Tip
+          <select
+            value={type}
+            onChange={(e) => {
+              setType(e.target.value as '' | 'proizvodnja' | 'gotova' | 'montazni');
+              resetPage();
+            }}
+            className={filterInput}
+          >
+            <option value="">Svi</option>
+            <option value="proizvodnja">Proizvodnja</option>
+            <option value="gotova">Gotova roba</option>
+            <option value="montazni">Montažni</option>
+          </select>
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-ink-secondary">
           PDF
           <select
             value={hasPdf}
@@ -179,6 +212,7 @@ export function DrawingsTab() {
               setMaterial(null);
               setDesignedBy(null);
               setHasPdf('');
+              setType('');
               resetPage();
             }}
             className="rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2"
