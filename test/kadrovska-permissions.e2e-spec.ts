@@ -39,6 +39,12 @@ describe("Kadrovska permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     "report",
     "notifications",
     "notificationConfig",
+    "orgStructure",
+    "holidays",
+    "gridPayable",
+    "attendanceEvents",
+    "employeePii",
+    "contractBruto",
     "vacationBalance",
     "vacationHistory",
     "vacationEntitlements",
@@ -190,6 +196,37 @@ describe("Kadrovska permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
       path: "/kadrovska/attendance/shadow",
       perm: PERMISSIONS.KADROVSKA_ATTENDANCE_SHADOW,
       label: "attendance/shadow",
+    },
+    // P1a BE-gap jezgro (14.07): novi read endpointi.
+    {
+      path: "/kadrovska/org-structure",
+      perm: PERMISSIONS.KADROVSKA_READ,
+      label: "org-structure (read)",
+    },
+    {
+      path: "/kadrovska/holidays",
+      perm: PERMISSIONS.KADROVSKA_READ,
+      label: "holidays (read)",
+    },
+    {
+      path: "/kadrovska/grid/payable",
+      perm: PERMISSIONS.KADROVSKA_GRID_EDIT,
+      label: "grid/payable (grid_edit — Σ isplata bez zarada)",
+    },
+    {
+      path: "/kadrovska/attendance/events",
+      perm: PERMISSIONS.KADROVSKA_ATTENDANCE,
+      label: "attendance/events (feed prolaza)",
+    },
+    {
+      path: `/kadrovska/employees/${VALID_UUID}/pii`,
+      perm: PERMISSIONS.KADROVSKA_PII,
+      label: "employees/:id/pii (PII karton)",
+    },
+    {
+      path: `/kadrovska/employees/${VALID_UUID}/contract-bruto`,
+      perm: PERMISSIONS.KADROVSKA_PII,
+      label: "employees/:id/contract-bruto (uska bruto)",
     },
     {
       path: "/kadrovska/dev-plans",

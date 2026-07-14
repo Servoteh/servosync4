@@ -309,6 +309,7 @@ const BASE_ROLE_PERMISSIONS: Partial<
     P.KADROVSKA_ATTENDANCE,
     P.KADROVSKA_ATTENDANCE_SHADOW,
     P.KADROVSKA_DEV_MANAGE,
+    P.KADROVSKA_IMENIK, // 1.0 canViewPhoneDirectory (menadzment JESTE u skupu)
     P.AI_CHAT,
     // Energetika/SCADA (Talas E, MODULE_SPEC_scada_30 §2): paritet
     // `scada_is_admin_or_management()` — SAMO admin (ALL) + menadzment. SCADA nije
@@ -416,6 +417,7 @@ const BASE_ROLE_PERMISSIONS: Partial<
     P.KADROVSKA_ATTENDANCE,
     P.KADROVSKA_ATTENDANCE_SHADOW,
     P.KADROVSKA_DEV_MANAGE,
+    P.KADROVSKA_IMENIK, // 1.0 canViewPhoneDirectory
     P.AI_CHAT,
   ],
   // poslovni_admin: has_edit_role (edit, sastanci) + F8 CMMS + Kadrovska (Talas G) — JEDINA
@@ -430,6 +432,7 @@ const BASE_ROLE_PERMISSIONS: Partial<
     P.KADROVSKA_PII,
     P.KADROVSKA_CONTRACTS_READ,
     P.KADROVSKA_VACREQ_MANAGE,
+    P.KADROVSKA_IMENIK, // 1.0 canViewPhoneDirectory
     P.AI_CHAT,
   ],
   // cnc_operater AKTIVIRAN uz Talas A (roles.ts tier v2) — 1.0 canPrintLocLabels()

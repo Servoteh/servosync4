@@ -208,6 +208,11 @@ export const PERMISSIONS = {
   KADROVSKA_ATTENDANCE: "kadrovska.attendance",
   KADROVSKA_ATTENDANCE_SHADOW: "kadrovska.attendance_shadow",
   KADROVSKA_DEV_MANAGE: "kadrovska.dev_manage",
+  //   imenik = 1.0 canViewPhoneDirectory: admin/menadzment/hr/poslovni_admin —
+  //   Imenik tab (telefonski imenik + bulk vCard izvoz) je iza šireg mgmt gate-a
+  //   nego kadrovska.read (fail-closed §2.6). NE gate-uje GET /employees (Zaposleni
+  //   tab ga koristi šire) — samo FE Imenik tab.
+  KADROVSKA_IMENIK: "kadrovska.imenik",
 } as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];

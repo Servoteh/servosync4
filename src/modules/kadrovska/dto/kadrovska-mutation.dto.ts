@@ -1,4 +1,4 @@
-import { Type } from "class-transformer";
+import { Transform, Type } from "class-transformer";
 import {
   ArrayMinSize,
   IsArray,
@@ -156,6 +156,10 @@ export class WorkHoursRowDto {
   @IsOptional() @IsString() absenceSubtype?: string;
   @IsOptional() @IsString() note?: string;
   @IsOptional() @IsString() projectRef?: string;
+  /** Teren→predmet vezivanje (bigtehn_items_cache broj/naziv). Batch RPC ih ne
+   *  prima → servis ih upisuje direktnim RLS UPDATE-om (grid_edit) posle batch-a. */
+  @IsOptional() @IsString() fieldPredmetBroj?: string;
+  @IsOptional() @IsString() fieldPredmetNaziv?: string;
 }
 
 export class GridBatchDto extends OptIdempotentDto {
@@ -197,22 +201,64 @@ export class ExtraRecipientDto extends IdempotentDto {
   @IsOptional() @IsString() note?: string;
 }
 
+/** Predlog neplaćenog dana (nop_requests INSERT; RLS has_edit_role∧manages_employee).
+ *  Kreiranje → kadr_queue_nop_notification('requested'). Direktan upis u grid = admin. */
+export class CreateNopDto extends OptIdempotentDto {
+  @IsUUID() employeeId!: string;
+  @IsISO8601() workDate!: string;
+  @IsOptional() @IsString() @MaxLength(2000) reason?: string;
+}
+
 /* ════════════════ ZAPOSLENI ════════════════ */
 
+/**
+ * CREATE zaposlenog — PUN 1.0 skup (CRITICAL #1, adversarni review 14.07):
+ * ValidationPipe whitelist TIHO BRIŠE ključeve kojih nema u DTO-u, pa je uži DTO
+ * gubio JMBG/rođenje/pol/lekarski/telefon/PII blok bez ikakve greške. Skup =
+ * 1.0 buildEmployeePayload (services/employees.js:97-140). PII gating NE radi
+ * guard nego ŽIVI DB trigger `employees_sensitive_guard` (INSERT sa PII bez
+ * can_manage_employee_pii → 42501 → naš 403) — upis ide pod GUC claims
+ * pozivaoca kroz runIdempotentRls, pa trigger vidi pravog korisnika.
+ */
 export class CreateEmployeeDto extends IdempotentDto {
   @IsString() @MaxLength(300) fullName!: string;
   @IsString() workType!: string;
+  @IsOptional() @IsString() @MaxLength(150) firstName?: string;
+  @IsOptional() @IsString() @MaxLength(150) lastName?: string;
   @IsOptional() @IsString() position?: string;
   @IsOptional() @IsString() department?: string;
   @IsOptional() @IsInt() departmentId?: number;
   @IsOptional() @IsInt() subDepartmentId?: number;
   @IsOptional() @IsInt() positionId?: number;
   @IsOptional() @IsString() team?: string;
+  /** 1.0 kolona je `phone` (FE šalje phoneWork) — servis mapira phoneWork→phone. */
   @IsOptional() @IsString() phone?: string;
+  @IsOptional() @IsString() phoneWork?: string;
   @IsOptional() @IsString() email?: string;
   @IsOptional() @IsISO8601() hireDate?: string;
   @IsOptional() @IsBoolean() isActive?: boolean;
   @IsOptional() @IsString() @MaxLength(2000) note?: string;
+  // Osnovni karton (nije PII-maskiran u view-u):
+  @IsOptional() @IsISO8601() birthDate?: string;
+  @IsOptional() @IsString() gender?: string;
+  @IsOptional() @IsString() slava?: string;
+  @IsOptional() @IsString() slavaDay?: string;
+  @IsOptional() @IsString() educationLevel?: string;
+  @IsOptional() @IsString() educationTitle?: string;
+  @IsOptional() @IsISO8601() medicalExamDate?: string;
+  @IsOptional() @IsISO8601() medicalExamExpires?: string;
+  // PII blok (DB trigger presuđuje — 42501 bez kadrovska.pii kruga):
+  @IsOptional() @IsString() personalId?: string;
+  @IsOptional() @IsString() address?: string;
+  @IsOptional() @IsString() city?: string;
+  @IsOptional() @IsString() postalCode?: string;
+  @IsOptional() @IsString() bankName?: string;
+  @IsOptional() @IsString() bankAccount?: string;
+  @IsOptional() @IsString() phonePrivate?: string;
+  @IsOptional() @IsString() emergencyContactName?: string;
+  @IsOptional() @IsString() emergencyContactPhone?: string;
+  @IsOptional() @IsString() emergencyContactRelation?: string;
+  @IsOptional() @IsString() emergencyContactPhoneAlt?: string;
 }
 
 /** hr_update_employee(p_id, p_patch, p_expected_updated_at) — optimistic lock. */
@@ -312,7 +358,8 @@ export class CreateContractDto extends IdempotentDto {
 export class UpdateContractDto {
   @IsOptional() @IsString() contractType?: string;
   @IsOptional() @IsISO8601() dateFrom?: string;
-  @IsOptional() @IsISO8601() dateTo?: string;
+  /** eksplicitni `null` čisti date_to (određeni→neodređeni); izostavljeno = ne diraj. */
+  @IsOptional() @IsISO8601() dateTo?: string | null;
   @IsOptional() @IsString() contractNumber?: string;
   @IsOptional() @IsString() position?: string;
   @IsOptional() @IsBoolean() probniRad?: boolean;
@@ -445,13 +492,26 @@ export class SetStateDto extends OptIdempotentDto {
   @IsBoolean() visible!: boolean;
 }
 
-/* Employee documents (storage proxy; kadrovska.pii) */
+/* Employee documents (storage proxy; kadrovska.pii) — multipart/form-data body!
+ * ⚠️ CRITICAL #1 (T2/T3 review 14.07): multipart NE prenosi native boolean — svaka
+ * vrednost stiže kao string. @IsBoolean() bez koercije 400-uje ceo auto-save+mejl
+ * tok (P4 ugovori: 'true' → „must be a boolean value"). @Transform pre @IsBoolean
+ * koeruje 'true'/true → boolean (globalni pipe NE diramo — menja semantiku svih DTO).
+ * Ostala polja su string/uuid (žica ih nosi bez problema) → nema drugih flag-ova. */
 export class DocumentMetaDto {
   @IsOptional() @IsUUID() clientEventId?: string;
+  /** ⚠️ docType MORA biti u sy15 `employee_documents_doc_type_chk` CHECK-u, inače
+   *  23514 → 422 (rethrowSy15). Poznat drift (#2, review 14.07): 'sporazumni_raskid'
+   *  fali u starijem `_chk` ograničenju na sy15 — DB migracija (van BE; Nenad ssh).
+   *  Namerno BEZ @IsIn allowlista ovde da BE ne bude STROŽI od baze (nov docType u
+   *  CHECK-u ne bi zahtevao i BE deploy). */
   @IsString() docType!: string;
   @IsOptional() @IsString() description?: string;
   /** Poslati mejl knjigovođi/primaocu nakon uploada (kadr_queue_document_email). */
-  @IsOptional() @IsBoolean() queueEmail?: boolean;
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === "true")
+  @IsBoolean()
+  queueEmail?: boolean;
   @IsOptional() @IsString() emailLabel?: string;
 }
 
@@ -469,7 +529,10 @@ export class CreateSalaryTermDto extends IdempotentDto {
 export class UpdateSalaryTermDto {
   @IsOptional() @IsString() salaryType?: string;
   @IsOptional() @IsISO8601() effectiveFrom?: string;
-  @IsOptional() @IsISO8601() effectiveTo?: string;
+  /** P9 dopuna: eksplicitni `null` VRAĆA term na „aktivno" (effective_to=NULL) —
+   *  „Ispravi u mestu" tok. `@IsOptional` preskače validaciju za null; izostavljeno
+   *  = ne diraj. */
+  @IsOptional() @IsISO8601() effectiveTo?: string | null;
   @IsOptional() @IsString() compensationModel?: string;
   @IsObject() @IsOptional() amounts?: Record<string, unknown>;
   @IsOptional() @IsString() note?: string;
@@ -521,4 +584,12 @@ export class NotificationConfigDto {
 export class PayrollNotifyDto extends OptIdempotentDto {
   @IsInt() year!: number;
   @IsInt() @Min(1) month!: number;
+}
+
+/** Preusmeravanje queued outbox reda na knjigovođu (1.0 retargetQueuedNotif) —
+ *  UPDATE recipient/subject/body WHERE status='queued' (RLS hr_or_admin). */
+export class RetargetNotifDto {
+  @IsString() recipient!: string;
+  @IsOptional() @IsString() @MaxLength(500) subject?: string;
+  @IsOptional() @IsString() body?: string;
 }

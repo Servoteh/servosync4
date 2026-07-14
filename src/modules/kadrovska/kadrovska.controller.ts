@@ -16,8 +16,10 @@ import { KadrovskaService } from "./kadrovska.service";
 import {
   AbsencesQueryDto,
   AttendanceDailyQueryDto,
+  AttendanceEventsQueryDto,
   ByEmployeeQueryDto,
   GridQueryDto,
+  HolidaysQueryDto,
   ListEmployeesQueryDto,
   MonthQueryDto,
   NotificationsQueryDto,
@@ -124,6 +126,15 @@ export class KadrovskaController {
     return this.kadrovska.notificationConfig(req.user.email);
   }
 
+  // ---------- Šifarnici / lookup (org struktura + praznici) ----------
+
+  /** Org struktura (departments + sub_departments + job_positions sa opisnim *_md
+   *  poljima) — kaskadni selekti + aneks/opis PDF/ugovor auto-popuna. Baza read. */
+  @Get("org-structure")
+  orgStructure(@Req() req: AuthedRequest) {
+    return this.kadrovska.orgStructure(req.user.email);
+  }
+
   // ---------- Odmori ----------
 
   @Get("vacation/balance")
@@ -167,9 +178,24 @@ export class KadrovskaController {
     return this.kadrovska.grid(req.user.email, q);
   }
 
+  /** Σ isplata agregat po radniku (payrollCalc hours-only; grid editor pravo, BEZ
+   *  zarada) — hrani „Σ isplata" red i zbirni blok karneta. Literal PRE `grid`? Ne;
+   *  distinktna putanja `grid/payable`. */
+  @Get("grid/payable")
+  @RequirePermission(PERMISSIONS.KADROVSKA_GRID_EDIT)
+  gridPayable(@Req() req: AuthedRequest, @Query() q: GridQueryDto) {
+    return this.kadrovska.gridPayable(req.user.email, q);
+  }
+
   @Get("work-hours")
   workHours(@Req() req: AuthedRequest, @Query() q: WorkHoursQueryDto) {
     return this.kadrovska.workHours(req.user.email, q);
+  }
+
+  /** Praznici u rasponu (most odsustvo→grid; pregled odsustava po godini). Baza read. */
+  @Get("holidays")
+  holidays(@Req() req: AuthedRequest, @Query() q: HolidaysQueryDto) {
+    return this.kadrovska.holidays(req.user.email, q);
   }
 
   @Get("attendance/now")
@@ -213,6 +239,17 @@ export class KadrovskaController {
   @RequirePermission(PERMISSIONS.KADROVSKA_MANAGE)
   attendanceExtraRecipients(@Req() req: AuthedRequest) {
     return this.kadrovska.attendanceExtraRecipients(req.user.email);
+  }
+
+  /** Feed „Poslednji prolazi" (poslednjih N sirovih attendance_events + brojač
+   *  današnjih nepoznatih kartica) — HR uživo prati kapiju, hvata nevezane bedževe. */
+  @Get("attendance/events")
+  @RequirePermission(PERMISSIONS.KADROVSKA_ATTENDANCE)
+  attendanceEvents(
+    @Req() req: AuthedRequest,
+    @Query() q: AttendanceEventsQueryDto,
+  ) {
+    return this.kadrovska.attendanceEvents(req.user.email, q);
   }
 
   // ---------- Zaposleni ----------
@@ -265,6 +302,29 @@ export class KadrovskaController {
     @Param("id", ParseUUIDPipe) id: string,
   ) {
     return this.kadrovska.employeeDocuments(req.user.email, id);
+  }
+
+  /** PII karton (JMBG/adresa/grad/rođenje/spremа/banka) — unmaskirano samo za
+   *  can_manage_employee_pii (v_employees_safe već maskira po pozivaocu). Hrani
+   *  auto-popunu Ugovora o radu. */
+  @Get("employees/:id/pii")
+  @RequirePermission(PERMISSIONS.KADROVSKA_PII)
+  employeePii(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return this.kadrovska.employeePii(req.user.email, id);
+  }
+
+  /** Uska bruto per-zaposleni (kadr_get_contract_bruto DEFINER; self-gate na PII) —
+   *  poslovni admin generiše ugovor bez otvaranja taba Zarade. */
+  @Get("employees/:id/contract-bruto")
+  @RequirePermission(PERMISSIONS.KADROVSKA_PII)
+  contractBruto(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return this.kadrovska.contractBruto(req.user.email, id);
   }
 
   @Get("employees/:id")
