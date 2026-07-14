@@ -65,12 +65,18 @@ ceo poziv i mogao da preskoči dovršavanje polu-naloga).
 
 ### EDIT (postojeći: role/scope/override/aktivnost/must_change) — 2.0 master, pa propagacija
 ```
-1. 2.0 tx (C)   ATOMARNO: users(role, fullName, active, mustChangePassword)
-                + global UserRole(role, scope) + overrides(D2)
+1. 2.0 tx (C)   ATOMARNO: users(fullName, active, mustChangePassword; role SAMO ako se stvarno menja)
+                + global UserRole(role=user.role, scope) + overrides(D2)
                 PAD → ništa se nije promenilo NIGDE (tx rollback) → čist 4xx/5xx
 2. sy15 (B)     UPDATE user_roles po :id (role/scope/flags/is_active/must_change) kroz withUserRls
                 PAD → vrati 200 sa `sy15Synced:false` (parcijalno; master primenjen) — admin ponovi
 ```
+> **ROLE-INVARIJANTA (adversarni review H1):** `users.role` je KURIRANA 2.0 rola (`ssoLogin` je NE
+> prepisuje). Menja se SAMO na stvarnoj promeni role (PATCH sa `role`, ili invite). Flag-operacije
+> (reset/deactivate/activate/must-change) NE diraju `users.role` niti global `UserRole` — inače bi
+> rutinski reset/deactivate ciklus VRATIO namerno spuštenu 2.0 rolu iz sy15 (eskalacija) ili tiho
+> spustio višu 2.0 rolu na nižu sy15 (gubitak pristupa). Global `UserRole` uvek preslikava `user.role`
+> (post-upsert = kurirana 2.0 rola), nikad sy15 rolu. 1.0 paritet: reset menja SAMO `must_change_password`.
 Za **deactivate/delete** poredak (C pre B) je bezbedan i zbog JIT-a (§1): 2.0 `active=false` se upiše
 pre nego što 1.0 strana krene, pa nema prozora u kom JIT vaskrsava nalog.
 
@@ -106,11 +112,17 @@ lozinka" tok (paritet 1.0 — privremena lozinka se NE šalje mejlom).
 
 ## 4. Kanonski override ključevi (D2) — 1.0 bool kolone → `user_permission_overrides`
 
-| 1.0 `user_roles` kolona | 2.0 override `key` | `allow` | semantika |
+| 1.0 `user_roles` kolona | 2.0 override `key` (KANONSKI, H1/H2) | `allow` | semantika |
 |---|---|---|---|
-| `plan_montaze_readonly=true` | `plan_montaze.write` | **false** (deny) | Plan montaže read-only |
-| `kadrovska_access=true` | `kadrovska.access` | **true** (grant) | pristup Kadrovskoj |
+| `plan_montaze_readonly=true` | `montaza.edit` | **false** (deny) | Plan montaže read-only |
+| `kadrovska_access=true` | `kadrovska.read` | **true** (grant) | pristup Kadrovskoj |
 | `kadrovska_hide_contracts=true` | `kadrovska.contracts_read` | **false** (deny) | sakrij ugovore |
+
+> ⚠️ **Ključevi su kanonski** (H1/H2 harmonizacija, presuda 12.07 — usklađeno sa `role-permissions.ts` /
+> MODULE_SPEC_planovi_pracenje §7-P1): `montaza.edit` (NE `plan_montaze.write`) i `kadrovska.read`
+> (NE `kadrovska.access`). Ako se override-ključ ne poklopi sa ključem koji guard čita, override nema
+> efekta (tiho). sy15 DB kolone (`plan_montaze_readonly`/`kadrovska_access`/`kadrovska_hide_contracts`)
+> OSTAJU netaknute — one su izvor override-a; menja se samo 2.0 permission-KEY na koji se mapiraju.
 
 Semantika guarda = **deny > grant > rola** (već predviđeno). Kad je 1.0 bool `false`, odgovarajući
 override red se BRIŠE (ne postoji override → pada na rolu). Potrošači (Plan montaže C, Kadrovska G)

@@ -110,15 +110,21 @@ export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
  * montaže C / Kadrovska G) nisu u 2.0 — ali potrošači čitaju baš ove ključeve kad stignu.
  * Semantika guarda: deny (allow=false) > grant (allow=true) > rola.
  *
+ * Ključevi su KANONSKI (H1/H2 harmonizacija, presuda 12.07 + MODULE_SPEC_planovi_pracenje_30 §7-P1
+ * / MODULE_SPEC_kadrovska): `montaza.edit` (NE plan_montaze.write) i `kadrovska.read` (NE
+ * kadrovska.access) — moraju se poklopiti sa ključem koji guard čita, inače override nema efekta.
+ * NAPOMENA: sy15 DB kolone (`plan_montaze_readonly`/`kadrovska_access`/`kadrovska_hide_contracts`)
+ * OSTAJU netaknute — one su IZVOR override-a; menja se samo 2.0 permission-KEY na koji se mapiraju.
+ *
  * Mapiranje 1.0 `user_roles` bool kolona → (key, allow):
- *   plan_montaze_readonly=true   → (plan_montaze.write, allow=false)   // deny write
- *   kadrovska_access=true        → (kadrovska.access, allow=true)      // grant
- *   kadrovska_hide_contracts=true→ (kadrovska.contracts_read, allow=false) // deny
+ *   plan_montaze_readonly=true   → (montaza.edit, allow=false)          // deny edit (Plan montaže)
+ *   kadrovska_access=true        → (kadrovska.read, allow=true)         // grant pristup Kadrovskoj
+ *   kadrovska_hide_contracts=true→ (kadrovska.contracts_read, allow=false) // deny ugovori
  * Kad je bool false → odgovarajući override red se BRIŠE (pada na rolu).
  */
 export const OVERRIDE_KEYS = {
-  PLAN_MONTAZE_WRITE: "plan_montaze.write",
-  KADROVSKA_ACCESS: "kadrovska.access",
+  MONTAZA_EDIT: "montaza.edit",
+  KADROVSKA_READ: "kadrovska.read",
   KADROVSKA_CONTRACTS_READ: "kadrovska.contracts_read",
 } as const;
 
@@ -131,11 +137,11 @@ export interface OverrideMapping {
 /** 1.0 bool ime → 2.0 override mapiranje (D2). Izvor istine za invite/edit i buduću #44 migraciju. */
 export const D2_OVERRIDE_MAP = {
   planMontazeReadonly: {
-    key: OVERRIDE_KEYS.PLAN_MONTAZE_WRITE,
+    key: OVERRIDE_KEYS.MONTAZA_EDIT,
     allowWhenSet: false,
   },
   kadrovskaAccess: {
-    key: OVERRIDE_KEYS.KADROVSKA_ACCESS,
+    key: OVERRIDE_KEYS.KADROVSKA_READ,
     allowWhenSet: true,
   },
   kadrovskaHideContracts: {

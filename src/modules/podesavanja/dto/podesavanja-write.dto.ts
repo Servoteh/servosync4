@@ -28,9 +28,9 @@ class UserRbacFieldsDto {
   @ArrayMaxSize(200)
   @IsInt({ each: true })
   managedSubDepartmentIds?: number[] | null;
-  /** D2: → deny `plan_montaze.write`. */
+  /** D2: → deny `montaza.edit`. */
   @IsOptional() @IsBoolean() planMontazeReadonly?: boolean;
-  /** D2: → grant `kadrovska.access`. */
+  /** D2: → grant `kadrovska.read`. */
   @IsOptional() @IsBoolean() kadrovskaAccess?: boolean;
   /** D2: → deny `kadrovska.contracts_read`. */
   @IsOptional() @IsBoolean() kadrovskaHideContracts?: boolean;

@@ -68,9 +68,9 @@ export class PodesavanjaUsersService {
       fullName: dto.fullName,
     });
 
-    // (C) 2.0 master upsert (atomarno).
+    // (C) 2.0 master upsert (atomarno). invite = stvarna dodela role → applyRole postavljen.
     const twoZeroUserId = await this.write2_0(email, {
-      role,
+      applyRole: role,
       fullName: dto.fullName,
       active: true,
       mustChangePassword: true,
@@ -118,9 +118,10 @@ export class PodesavanjaUsersService {
     const roleOrScopeChanged =
       dto.role !== undefined || dto.managedSubDepartmentIds !== undefined;
 
-    // (C) master
+    // (C) master. applyRole SAMO kad admin stvarno menja rolu (scope-only edit ne dira users.role;
+    // global UserRole se tada preslika iz postojeće kurirane user.role, ne iz sy15 role).
     await this.write2_0(row.email, {
-      role: newRole,
+      applyRole: dto.role !== undefined ? newRole : undefined,
       fullName: dto.fullName,
       active: dto.isActive,
       mustChangePassword: dto.mustChangePassword,
@@ -162,9 +163,9 @@ export class PodesavanjaUsersService {
     const newPassword = dto.password?.trim() || this.authAdmin.randomPassword();
     await this.authAdmin.resetPassword(authUserId, newPassword); // (A) stvarna akcija
 
-    // (C) flag na 2.0 users
+    // (C) flag na 2.0 users — SAMO must_change (bez applyRole: kurirana 2.0 rola se NE dira; 1.0
+    // paritet — reset menja samo must_change_password). createDefaults.role tek za INSERT novog reda.
     await this.write2_0(row.email, {
-      role: row.role,
       mustChangePassword: true,
       createDefaults: {
         role: row.role,
@@ -228,8 +229,8 @@ export class PodesavanjaUsersService {
     dto: SetMustChangePasswordDto,
   ) {
     const row = await this.resolveSy15Row(adminEmail, sy15RoleId);
+    // Flag-only: NE dira rolu (bez applyRole). createDefaults.role tek za INSERT novog 2.0 reda.
     await this.write2_0(row.email, {
-      role: row.role,
       mustChangePassword: dto.value,
       createDefaults: {
         role: row.role,
@@ -260,8 +261,8 @@ export class PodesavanjaUsersService {
     active: boolean,
   ) {
     // (C) master — upsert (create ako 2.0 red fali) da JIT-ova `!user.active` grana blokira.
+    // Flag-only (active): NE dira rolu (bez applyRole). createDefaults.role tek za INSERT novog reda.
     await this.write2_0(email, {
-      role,
       active,
       createDefaults: { role, active, mustChangePassword: false },
     });
@@ -279,11 +280,19 @@ export class PodesavanjaUsersService {
   /**
    * 2.0 master zapis (atomarno): upsert `users` (create sa SSO-only random hash ako fali) + opciono
    * reset global `UserRole` + override upsert/delete. Vraća 2.0 userId.
+   *
+   * ROLE-INVARIJANTA (adversarni review H1, D1 §2 RESET/DEACTIVATE): `users.role` je KURIRANA 2.0
+   * rola (ssoLogin je NE prepisuje). Menja se SAMO na stvarnoj promeni role (`applyRole` postavljen
+   * = PATCH sa role / invite). Flag-operacije (reset/deactivate/activate/must-change) NE prosleđuju
+   * `applyRole` → kurirani red zadrži rolu (nema eskalacije ni tihog spuštanja preko sy15 role).
+   * `createDefaults.role` je SAMO za INSERT granu novog 2.0 reda. Global `UserRole` uvek preslikava
+   * `user.role` (post-upsert) — ne uvozi sy15 rolu.
    */
   private async write2_0(
     email: string,
     opts: {
-      role?: string;
+      /** Postavi SAMO na stvarnoj promeni primarne role (PATCH role / invite); flag-ops ga NE šalju. */
+      applyRole?: string;
       fullName?: string;
       active?: boolean;
       mustChangePassword?: boolean;
@@ -311,7 +320,8 @@ export class PodesavanjaUsersService {
           emailVerifiedAt: new Date(),
         },
         update: {
-          ...(opts.role !== undefined ? { role: opts.role } : {}),
+          // SAMO na stvarnoj promeni role (flag-ops ne šalju applyRole → kurirana rola ostaje).
+          ...(opts.applyRole !== undefined ? { role: opts.applyRole } : {}),
           ...(opts.fullName !== undefined ? { fullName: opts.fullName } : {}),
           ...(opts.active !== undefined ? { active: opts.active } : {}),
           ...(opts.mustChangePassword !== undefined
@@ -320,15 +330,16 @@ export class PodesavanjaUsersService {
         },
       });
 
-      if (opts.resetGlobalRole && opts.role) {
-        // Primarna (global) dodela = jedan red. Per-projekat scope živi u sy15 (2.0 = future).
+      if (opts.resetGlobalRole) {
+        // Primarna (global) dodela = jedan red; rola = user.role (post-upsert = kurirana 2.0 rola,
+        // NE sy15 rola). Per-projekat scope živi u sy15 (2.0 = future).
         await tx.userRole.deleteMany({
           where: { userId: user.id, scopeType: "global" },
         });
         await tx.userRole.create({
           data: {
             userId: user.id,
-            role: opts.role,
+            role: user.role,
             scopeType: "global",
             scopeId: null,
             managedSubDepartmentIds: opts.managedSubDepartmentIds ?? [],

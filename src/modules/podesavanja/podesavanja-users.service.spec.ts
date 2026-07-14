@@ -179,10 +179,13 @@ describe("PodesavanjaUsersService (D1 dual-write)", () => {
       const upserts = (ovUpsert.mock.calls as Array<[OvUpsertCall]>).map(
         (c) => c[0].create,
       );
+      // Kanonski ključevi (H2): montaza.edit / kadrovska.read (NE plan_montaze.write/kadrovska.access).
+      expect(OVERRIDE_KEYS.MONTAZA_EDIT).toBe("montaza.edit");
+      expect(OVERRIDE_KEYS.KADROVSKA_READ).toBe("kadrovska.read");
       expect(upserts).toEqual(
         expect.arrayContaining([
-          { userId: 42, key: OVERRIDE_KEYS.PLAN_MONTAZE_WRITE, allow: false },
-          { userId: 42, key: OVERRIDE_KEYS.KADROVSKA_ACCESS, allow: true },
+          { userId: 42, key: OVERRIDE_KEYS.MONTAZA_EDIT, allow: false },
+          { userId: 42, key: OVERRIDE_KEYS.KADROVSKA_READ, allow: true },
         ]),
       );
       // hide_contracts=false → override red se BRIŠE (pada na rolu).
@@ -349,6 +352,78 @@ describe("PodesavanjaUsersService (D1 dual-write)", () => {
           .mustChangePassword,
       ).toBe(true);
       expect(sy15ExecuteRaw).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ============ ROLE-INVARIJANTA (adversarni review H1) ============
+  // Flag-operacije (reset/deactivate/activate/must-change) NE smeju da prepišu KURIRANU 2.0
+  // users.role sy15 rolom → nema eskalacije (viewer←menadzment) ni tihog spuštanja (leadpm→viewer).
+  // Dokaz na mock sloju: `update` payload NEMA `role` ključ (Prisma tada ostavlja users.role netaknut),
+  // i global UserRole se NE rekreira (roleCreate 0×).
+
+  describe("role-invarijanta na flag-operacijama (H1)", () => {
+    const upd = () =>
+      (userUpsert.mock.calls as Array<[UpsertCall]>)[0][0].update;
+
+    it("reset NE menja 2.0 users.role (kurirani leadpm ostaje leadpm)", async () => {
+      // sy15 rola = viewer, a 2.0 kurirana = leadpm; reset ne sme da spusti 2.0 na viewer.
+      sy15QueryRaw.mockResolvedValueOnce([
+        { email: "u@servoteh.com", role: "viewer", is_active: true },
+      ]);
+      await svc.resetPassword(ADMIN, ROLE_ID, {});
+      expect(upd()).not.toHaveProperty("role");
+      expect(roleCreate).not.toHaveBeenCalled();
+    });
+
+    it("deactivate NE menja 2.0 users.role (kurirani viewer ne dobija menadzment)", async () => {
+      // sy15 rola = menadzment; deaktivacija ne sme da eskalira 2.0 viewer→menadzment.
+      sy15QueryRaw.mockResolvedValueOnce([
+        { email: "u@servoteh.com", role: "menadzment", is_active: true },
+      ]);
+      await svc.deactivate(ADMIN, ROLE_ID);
+      expect(upd()).not.toHaveProperty("role");
+      expect(roleCreate).not.toHaveBeenCalled();
+    });
+
+    it("activate NE menja 2.0 users.role", async () => {
+      sy15QueryRaw.mockResolvedValueOnce([
+        { email: "u@servoteh.com", role: "menadzment", is_active: false },
+      ]);
+      await svc.activate(ADMIN, ROLE_ID);
+      expect(upd()).not.toHaveProperty("role");
+      expect(roleCreate).not.toHaveBeenCalled();
+    });
+
+    it("must-change NE menja 2.0 users.role", async () => {
+      sy15QueryRaw.mockResolvedValueOnce([
+        { email: "u@servoteh.com", role: "menadzment", is_active: true },
+      ]);
+      await svc.setMustChangePassword(ADMIN, ROLE_ID, { value: true });
+      expect(upd()).not.toHaveProperty("role");
+      expect(roleCreate).not.toHaveBeenCalled();
+    });
+
+    it("scope-only edit (bez dto.role) NE menja users.role, ali rekreira UserRole iz user.role", async () => {
+      sy15QueryRaw.mockResolvedValueOnce([
+        { email: "u@servoteh.com", role: "viewer", is_active: true },
+      ]);
+      // user.upsert vraća kurirani leadpm (post-upsert) → UserRole se rekreira sa leadpm, ne sy15 viewer.
+      userUpsert.mockResolvedValueOnce({ id: 42, role: "leadpm" });
+      await svc.update(ADMIN, ROLE_ID, { managedSubDepartmentIds: [3, 7] });
+      expect(upd()).not.toHaveProperty("role"); // users.role NIJE dirana
+      expect(roleCreate).toHaveBeenCalledTimes(1); // scope promena → UserRole rekreiran
+      const roleArg = (
+        roleCreate.mock.calls as Array<[{ data: { role: string } }]>
+      )[0][0].data;
+      expect(roleArg.role).toBe("leadpm"); // iz user.role, NE sy15 viewer
+    });
+
+    it("PATCH sa role DOZVOLJAVA promenu users.role (kontrola)", async () => {
+      sy15QueryRaw.mockResolvedValueOnce([
+        { email: "u@servoteh.com", role: "viewer", is_active: true },
+      ]);
+      await svc.update(ADMIN, ROLE_ID, { role: "pm" });
+      expect(upd().role).toBe("pm");
     });
   });
 });
