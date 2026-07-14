@@ -9,7 +9,7 @@ import { SearchBox } from '@/components/ui-kit/search-box';
 import { useAuth } from '@/lib/auth-context';
 import { PERMISSIONS } from '@/lib/permissions';
 import { ApiError } from '@/api/client';
-import { useEmployees, useUpdateEmployee, type EmployeeSafe } from '@/api/kadrovska';
+import { useAllEmployees, useUpdateEmployee, type EmployeeSafe } from '@/api/kadrovska';
 import { employeeVCard, isSrMobile, normalizeSrPhone, prettyPhone, telLink, waLink } from '@/lib/phone';
 import { sv } from './common';
 import { Avatar, compareEmpByLastFirst, empDisplayName, kontaktRec } from './emp-shared';
@@ -23,7 +23,9 @@ import { Avatar, compareEmpByLastFirst, empDisplayName, kontaktRec } from './emp
 // employees_sensitive_guard). Snima PATCH /employees/:id (hr_update_employee,
 // optimistic lock) — rollback + poruka na stale/permission.
 //
-// TODO(P1a): server paginacija/pretraga — do tada fetch svih (pageSize 500).
+// Podatke vuče useAllEmployees(true) (BE klampuje pageSize na 200 → loop kroz
+// strane); imenik legitimno gleda ceo skup aktivnih. Vidljivost taba je gejtovana
+// kadrovska.imenik u page.tsx (1.0 canViewPhoneDirectory krug).
 
 function downloadVcf(text: string, fileName: string) {
   const blob = new Blob([text], { type: 'text/vcard;charset=utf-8' });
@@ -64,8 +66,8 @@ export function ImenikTab() {
     return () => clearTimeout(t);
   }, [toast]);
 
-  const listQ = useEmployees({ pageSize: 500 });
-  const all = useMemo(() => listQ.data?.data ?? [], [listQ.data]);
+  const listQ = useAllEmployees(true);
+  const all = useMemo(() => listQ.data ?? [], [listQ.data]);
   const updateMut = useUpdateEmployee();
 
   const rows = useMemo(() => {

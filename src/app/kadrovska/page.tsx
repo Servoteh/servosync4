@@ -41,10 +41,13 @@ export default function KadrovskaPage() {
 
   const canSalary = can(PERMISSIONS.KADROVSKA_SALARY);
   const canDev = can(PERMISSIONS.KADROVSKA_DEV_MANAGE);
+  // Imenik = 1.0 canViewPhoneDirectory krug (admin/menadzment/hr/poslovni_admin);
+  // GET /employees ostaje na kadrovska.read (Zaposleni tab ga legitimno koristi).
+  const canImenik = can(PERMISSIONS.KADROVSKA_IMENIK);
 
   const tabs: TabItem<TabKey>[] = [
     { key: 'zaposleni', label: 'Zaposleni' },
-    { key: 'imenik', label: 'Imenik' },
+    ...(canImenik ? [{ key: 'imenik' as const, label: 'Imenik' }] : []),
     { key: 'odmori', label: 'Odmori' },
     { key: 'sati', label: 'Radni sati' },
     { key: 'prisustvo', label: 'Prisustvo' },
@@ -59,7 +62,7 @@ export default function KadrovskaPage() {
         <Tabs tabs={tabs} value={tab} onChange={setTab} ariaLabel="Kadrovska" />
 
         {tab === 'zaposleni' && <ZaposleniTab />}
-        {tab === 'imenik' && <ImenikTab />}
+        {tab === 'imenik' && canImenik && <ImenikTab />}
         {tab === 'odmori' && <OdmoriTab />}
         {tab === 'sati' && <GridTab />}
         {tab === 'prisustvo' && <PrisustvoTab />}

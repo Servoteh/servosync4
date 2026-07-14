@@ -10,6 +10,7 @@ import {
   newClientEventId,
   useCreateEmployee,
   useEmployee,
+  useOrgStructure,
   useUpdateEmployee,
   type EmployeeSafe,
 } from '@/api/kadrovska';
@@ -28,9 +29,15 @@ import { EDU_LEVEL_LABELS, EMERGENCY_RELATIONS, WORK_TYPE_OPTIONS, empDisplayNam
 // Izmena ide kroz PATCH sa `expectedUpdatedAt` (hr_update_employee optimistic
 // lock) — poruke stale / sensitive_blocked / permission_denied kao u 1.0.
 //
-// TODO(P1a): kaskadni org selekti (odeljenje→pododeljenje→pozicija) čekaju
-// org-structure endpoint — do tada odeljenje/pozicija su slobodan tekst sa
-// datalist predlozima iz postojećih zaposlenih, a pododeljenje je read-only.
+// ORG: kaskadni selekti odeljenje→pododeljenje→pozicija po ID iz GET
+// /org-structure (1.0 _deptOptions/_subDeptOptions/_positionOptions paritet);
+// payload nosi ID kolone I izvedeni tekst (department=deptObj.name,
+// position=posObj.name) kao 1.0 buildEmployeePayload — ID kolone voze šefovski
+// row-scope (current_user_manages_employee) i view JOIN-ove, tekst '' briše
+// (COALESCE grupa u hr_update_employee; null bi tiho zadržao staro).
+// FALLBACK dok ruta ne oživi (P1a merge): CREATE = slobodan tekst (nema ID-jeva
+// da divergiraju); EDIT = odeljenje/pozicija ZAKLJUČANI i NE ulaze u patch
+// (tekst-only upis bi tiho divergirao od ID kolona → pogrešan šefovski scope).
 
 const SELECT_CLS = 'h-9 w-full rounded-control border border-line bg-surface px-3 text-base text-ink focus-visible:outline-none focus-visible:border-accent focus-visible:shadow-[var(--focus-ring)] disabled:opacity-50';
 
@@ -39,6 +46,9 @@ interface FormState {
   lastName: string;
   department: string;
   position: string;
+  departmentId: number | null;
+  subDepartmentId: number | null;
+  positionId: number | null;
   team: string;
   hireDate: string;
   workType: string;
@@ -68,7 +78,8 @@ interface FormState {
 }
 
 const EMPTY: FormState = {
-  firstName: '', lastName: '', department: '', position: '', team: '',
+  firstName: '', lastName: '', department: '', position: '',
+  departmentId: null, subDepartmentId: null, positionId: null, team: '',
   hireDate: '', workType: 'ugovor', email: '', phoneWork: '', isActive: true,
   personalId: '', birthDate: '', gender: '', phonePrivate: '', slava: '', slavaDay: '',
   emergencyContactName: '', emergencyContactRelation: '', emergencyContactPhone: '', emergencyContactPhoneAlt: '',
@@ -81,6 +92,11 @@ function iso(v: unknown): string {
   return s ? s.slice(0, 10) : '';
 }
 
+function toInt(v: unknown): number | null {
+  const n = parseInt(String(v ?? ''), 10);
+  return Number.isFinite(n) ? n : null;
+}
+
 /** v_employees_safe red → stanje forme (prefill za izmenu). */
 function rowToState(r: EmployeeSafe): FormState {
   const slavaRaw = sv(r, 'slava_day'); // DB format MMDD
@@ -89,6 +105,9 @@ function rowToState(r: EmployeeSafe): FormState {
     lastName: sv(r, 'last_name'),
     department: sv(r, 'department'),
     position: sv(r, 'position'),
+    departmentId: toInt(r['department_id']),
+    subDepartmentId: toInt(r['sub_department_id']),
+    positionId: toInt(r['position_id']),
     team: sv(r, 'team'),
     hireDate: iso(r['hire_date']),
     workType: sv(r, 'work_type') || 'ugovor',
@@ -131,6 +150,11 @@ function saveErrorMessage(e: unknown): string {
   if (low.includes('permission') || (e instanceof ApiError && e.status === 403)) {
     return 'Nemate ovlašćenje za izmenu ovog zaposlenog.';
   }
+  // DB unique indeks ux_employees_email (23505) — klijentska provera pokriva samo
+  // učitanu stranu liste, pa je ovo backstop poruka.
+  if (low.includes('unique') || low.includes('23505') || low.includes('duplicate')) {
+    return 'Email već koristi drugi zaposleni (email mora biti jedinstven).';
+  }
   return e instanceof Error && e.message ? e.message : 'Greška pri čuvanju. Pokušajte ponovo.';
 }
 
@@ -167,6 +191,12 @@ export function EmployeeFormDialog({
   const empQ = useEmployee(editId);
   const createMut = useCreateEmployee();
   const updateMut = useUpdateEmployee();
+
+  /* Org struktura za kaskadne selekte; do P1a merge-a ruta može biti mrtva (404)
+     → orgReady=false aktivira fallback ponašanje (vidi zaglavlje fajla). */
+  const orgQ = useOrgStructure();
+  const org = orgQ.data?.data;
+  const orgReady = (org?.departments?.length ?? 0) > 0;
 
   const [f, setF] = useState<FormState>(EMPTY);
   const [error, setError] = useState<string | null>(null);
@@ -232,6 +262,21 @@ export function EmployeeFormDialog({
   const deptSuggestions = Array.from(new Set(employees.map((e) => sv(e, 'department')).filter(Boolean))).sort();
   const posSuggestions = Array.from(new Set(employees.map((e) => sv(e, 'position')).filter(Boolean))).sort();
 
+  /* Kaskada (1.0 paritet): pododeljenja po odeljenju; pozicije po odeljenju
+     (+ pododeljenju kad je izabrano). Promena roditelja resetuje decu. */
+  const subDeptList = (org?.subDepartments ?? []).filter((s) => s.departmentId === f.departmentId);
+  const positionList = (org?.jobPositions ?? []).filter(
+    (p) => p.departmentId === f.departmentId && (!f.subDepartmentId || p.subDepartmentId === f.subDepartmentId),
+  );
+  function onDeptId(v: string) {
+    const id = toInt(v);
+    setF((p) => ({ ...p, departmentId: id, subDepartmentId: null, positionId: null }));
+  }
+  function onSubDeptId(v: string) {
+    const id = toInt(v);
+    setF((p) => ({ ...p, subDepartmentId: id, positionId: null }));
+  }
+
   async function submit() {
     setError(null);
     const firstName = f.firstName.trim();
@@ -274,13 +319,20 @@ export function EmployeeFormDialog({
       }
     }
 
+    /* Org: izvedeni tekst iz selektovanih objekata (1.0 buildEmployeePayload) —
+       UVEK string ('' briše; COALESCE grupa u RPC-u; null bi tiho zadržao staro). */
+    const deptObj = orgReady ? (org?.departments ?? []).find((d) => d.id === f.departmentId) ?? null : null;
+    const posObj = orgReady ? (org?.jobPositions ?? []).find((p) => p.id === f.positionId) ?? null : null;
+    const departmentText = orgReady ? (deptObj?.name ?? '') : f.department.trim();
+    const positionText = orgReady ? (posObj?.name ?? '') : f.position.trim();
+
     // Zajednička (ne-PII) polja — camelCase vrednosti forme.
     const base: Record<string, unknown> = {
       firstName,
       lastName,
       fullName: [lastName, firstName].filter(Boolean).join(' '),
-      department: f.department.trim() || null,
-      position: f.position.trim() || null,
+      department: departmentText,
+      position: positionText,
       team: f.team.trim() || null,
       hireDate: f.hireDate || null,
       workType: f.workType || 'ugovor',
@@ -318,13 +370,22 @@ export function EmployeeFormDialog({
     try {
       if (isEdit && editId) {
         /* PATCH — patch ključevi su snake_case kolone (hr_update_employee ugovor).
-           Šaljemo sva polja forme (1.0 paritet: no-op UPDATE za nepromenjena). */
+           Šaljemo sva polja forme (1.0 paritet: no-op UPDATE za nepromenjena).
+           Org blok SAMO kad su selekti živi: ID kolone + izvedeni tekst zajedno
+           (tekst-only bi divergirao od ID-jeva koji voze šefovski row-scope). */
         const patch: Record<string, unknown> = {
           first_name: base.firstName,
           last_name: base.lastName,
           full_name: base.fullName,
-          department: base.department,
-          position: base.position,
+          ...(orgReady
+            ? {
+                department: departmentText,
+                position: positionText,
+                department_id: f.departmentId,
+                sub_department_id: f.subDepartmentId,
+                position_id: f.positionId,
+              }
+            : {}),
           team: base.team,
           hire_date: base.hireDate,
           work_type: base.workType,
@@ -363,6 +424,10 @@ export function EmployeeFormDialog({
         await createMut.mutateAsync({
           clientEventId: newClientEventId(),
           ...base,
+          /* CreateEmployeeDto prima departmentId/subDepartmentId/positionId (int). */
+          ...(orgReady
+            ? { departmentId: f.departmentId, subDepartmentId: f.subDepartmentId, positionId: f.positionId }
+            : {}),
           ...pii,
           fullName: String(base.fullName),
           workType: String(base.workType),
@@ -422,31 +487,64 @@ export function EmployeeFormDialog({
             <FormField label="Prezime" required>
               <Input value={f.lastName} onChange={(e) => set('lastName', e.target.value)} maxLength={60} />
             </FormField>
-            <FormField label="Odeljenje" hint="TODO(P1a): kaskadni org selekti čekaju org-structure endpoint">
+            {orgReady ? (
               <>
-                <Input value={f.department} onChange={(e) => set('department', e.target.value)} list="kadr-dept-list" maxLength={120} />
-                <datalist id="kadr-dept-list">
-                  {deptSuggestions.map((d) => (
-                    <option key={d} value={d} />
-                  ))}
-                </datalist>
+                <FormField label="Odeljenje">
+                  <select className={SELECT_CLS} value={f.departmentId ?? ''} onChange={(e) => onDeptId(e.target.value)}>
+                    <option value="">— izaberi odeljenje —</option>
+                    {(org?.departments ?? []).map((d) => (
+                      <option key={d.id} value={d.id}>{d.name}</option>
+                    ))}
+                  </select>
+                </FormField>
+                <FormField label="Pododeljenje">
+                  <select className={SELECT_CLS} value={f.subDepartmentId ?? ''} onChange={(e) => onSubDeptId(e.target.value)} disabled={!f.departmentId}>
+                    <option value="">— izaberi pododeljenje —</option>
+                    {subDeptList.map((s) => (
+                      <option key={s.id} value={s.id}>{s.name}</option>
+                    ))}
+                  </select>
+                </FormField>
+                <FormField label="Radno mesto (pozicija)">
+                  <select className={SELECT_CLS} value={f.positionId ?? ''} onChange={(e) => set('positionId', toInt(e.target.value))} disabled={!f.departmentId}>
+                    <option value="">— izaberi poziciju —</option>
+                    {positionList.map((p) => (
+                      <option key={p.id} value={p.id}>{p.name}</option>
+                    ))}
+                  </select>
+                </FormField>
               </>
-            </FormField>
-            {isEdit && (
-              <FormField label="Pododeljenje" hint="Read-only do org-structure endpointa (P1a)">
-                <Input value={subDeptName || '—'} disabled />
-              </FormField>
+            ) : (
+              /* Fallback bez org-structure rute: CREATE = slobodan tekst; EDIT =
+                 zaključano (tekst-only upis divergira od ID kolona → šefovski scope). */
+              <>
+                <FormField label="Odeljenje" hint={isEdit ? 'Izmena zaključana dok org-structure ruta ne oživi (P1a)' : undefined}>
+                  <>
+                    <Input value={f.department} onChange={(e) => set('department', e.target.value)} list="kadr-dept-list" maxLength={120} disabled={isEdit} />
+                    <datalist id="kadr-dept-list">
+                      {deptSuggestions.map((d) => (
+                        <option key={d} value={d} />
+                      ))}
+                    </datalist>
+                  </>
+                </FormField>
+                {isEdit && (
+                  <FormField label="Pododeljenje">
+                    <Input value={subDeptName || '—'} disabled />
+                  </FormField>
+                )}
+                <FormField label="Radno mesto (pozicija)" hint={isEdit ? 'Izmena zaključana dok org-structure ruta ne oživi (P1a)' : undefined}>
+                  <>
+                    <Input value={f.position} onChange={(e) => set('position', e.target.value)} list="kadr-pos-list" maxLength={120} disabled={isEdit} />
+                    <datalist id="kadr-pos-list">
+                      {posSuggestions.map((p) => (
+                        <option key={p} value={p} />
+                      ))}
+                    </datalist>
+                  </>
+                </FormField>
+              </>
             )}
-            <FormField label="Radno mesto (pozicija)">
-              <>
-                <Input value={f.position} onChange={(e) => set('position', e.target.value)} list="kadr-pos-list" maxLength={120} />
-                <datalist id="kadr-pos-list">
-                  {posSuggestions.map((p) => (
-                    <option key={p} value={p} />
-                  ))}
-                </datalist>
-              </>
-            </FormField>
             <FormField label="Tim">
               <Input value={f.team} onChange={(e) => set('team', e.target.value)} maxLength={80} />
             </FormField>

@@ -15,23 +15,16 @@ import { formatDate } from '@/lib/format';
 import { cn } from '@/lib/cn';
 import {
   newClientEventId,
-  useContracts,
   useDeactivateEmployee,
   useDeleteEmployee,
-  useEmployees,
+  useEmployeesList,
+  useOrgStructure,
   useUpdateEmployee,
+  type EmployeesListParams,
   type EmployeeSafe,
 } from '@/api/kadrovska';
 import { sv, SummaryChips } from './common';
-import {
-  CON_TYPE_OPTS,
-  birthdayInNext30,
-  compareEmpByLastFirst,
-  daysUntilBirthday,
-  ddMm,
-  empDisplayName,
-  medicalDaysLeft,
-} from './emp-shared';
+import { CON_TYPE_OPTS, daysUntilBirthday, ddMm, empDisplayName, medicalDaysLeft } from './emp-shared';
 import { DosijeDialog } from './dossier';
 import { EmployeeFormDialog } from './employee-form';
 import { EmpBulkActionsDialog } from './emp-bulk-actions';
@@ -42,9 +35,10 @@ import { EmpQuickEntryDialog } from './emp-quick-entry';
 // (persist u localStorage), bulk selekcija, CRUD (novi/izmeni/deaktiviraj/
 // aktiviraj/trajno brisanje). Red otvara Dosije (dossier.tsx).
 //
-// TODO(P1a): BE GET /employees nema sort/quick-filter parametre — do tada
-// klijentski fallback: fetch bez efektivne paginacije (pageSize 500) pa
-// filter/sort u FE. Kad P1a doda parametre, prebaciti na server-side.
+// SERVER-SIDE model (P1a ListEmployeesQueryDto): q/department/active/filter/
+// conType/sort/dir + paginacija (BE klampuje pageSize na 200) — bez klijentskog
+// „fetch-sve". Summary chips = 4 mini upita (pageSize=1, čita se meta.total).
+// ⚠️ BE `q` pretražuje SAMO full_name (ILIKE) — uže od 1.0 multi-polja pretrage.
 
 type QuickKey = 'all' | 'active' | 'med-soon' | 'bday-soon' | 'missing-jmbg' | 'no-email' | 'no-phone';
 
@@ -53,33 +47,30 @@ const QUICK_CHIPS: { key: QuickKey; label: string; title?: string }[] = [
   { key: 'active', label: '✓ Aktivni' },
   { key: 'med-soon', label: '🩺 Lekarski <30d', title: 'Lekarski ističe u narednih 30 dana' },
   { key: 'bday-soon', label: '🎂 Rođendani <30d', title: 'Rođendani u narednih 30 dana' },
-  { key: 'missing-jmbg', label: '⚠ Bez JMBG', title: 'Zaposleni bez upisanog JMBG-a' },
+  { key: 'missing-jmbg', label: '⚠ Bez JMBG', title: 'Zaposleni bez upisanog JMBG-a (vidljivo samo PII korisnicima)' },
   { key: 'no-email', label: '📧 Bez email-a', title: 'Zaposleni bez email-a — neće dobijati notifikacije' },
   { key: 'no-phone', label: '📱 Bez telefona', title: 'Zaposleni bez telefona — neće dobijati WhatsApp/SMS obaveštenja' },
 ];
 
 const SORT_KEY_LS = 'kadr_emp_sort_v1';
 
-const SORT_ACCESSORS: Record<string, (e: EmployeeSafe) => string | number> = {
-  name: (e) => ((sv(e, 'last_name') + ' ' + sv(e, 'first_name')).trim() || sv(e, 'full_name')).toLocaleLowerCase('sr'),
-  position: (e) => sv(e, 'position').toLocaleLowerCase('sr'),
-  department: (e) => sv(e, 'department').toLocaleLowerCase('sr'),
-  subDepartment: (e) => sv(e, 'sub_department_name').toLocaleLowerCase('sr'),
-  email: (e) => sv(e, 'email').toLocaleLowerCase('sr'),
-  medical: (e) => sv(e, 'medical_exam_expires'),
-  bday: (e) => daysUntilBirthday(sv(e, 'birth_date')),
-  status: (e) => (e.is_active ? '1-aktivan' : '2-neaktivan'),
-};
+/** BE whitelist sort ključeva (EMPLOYEE_SORT_KEYS) — mora 1:1 sa kb1. */
+const SORT_KEYS = ['name', 'position', 'department', 'subDepartment', 'email', 'medical', 'birthday', 'status'] as const;
+type SortKey = (typeof SORT_KEYS)[number];
 
 const SELECT_CLS = 'h-9 rounded-control border border-line bg-surface px-2.5 text-sm text-ink focus-visible:outline-none focus-visible:border-accent';
 
+/** Učitaj persistovan sort — whitelist protiv BE ključeva + legacy 'bday'→'birthday'
+    mapiranje (stariji localStorage ne sme da emituje nevažeći sort param → 400). */
 function loadSort(): SortState | null {
   if (typeof window === 'undefined') return null;
   try {
     const raw = localStorage.getItem(SORT_KEY_LS);
     if (!raw) return null;
     const p = JSON.parse(raw) as SortState;
-    return p && typeof p.key === 'string' && (p.dir === 'asc' || p.dir === 'desc') ? p : null;
+    if (!p || typeof p.key !== 'string' || (p.dir !== 'asc' && p.dir !== 'desc')) return null;
+    const key = p.key === 'bday' ? 'birthday' : p.key;
+    return (SORT_KEYS as readonly string[]).includes(key) ? { key, dir: p.dir } : null;
   } catch {
     return null;
   }
@@ -95,7 +86,6 @@ export function ZaposleniTab() {
   const canAdd = can(PERMISSIONS.KADROVSKA_MANAGE);
   const canAdmin = can(PERMISSIONS.KADROVSKA_ADMIN);
   const canPii = can(PERMISSIONS.KADROVSKA_PII);
-  const canContracts = can(PERMISSIONS.KADROVSKA_CONTRACTS_READ);
 
   const [q, setQ] = useState('');
   const [quick, setQuick] = useState<QuickKey>('all');
@@ -104,7 +94,8 @@ export function ZaposleniTab() {
   const [conType, setConType] = useState('');
   const [sort, setSort] = useState<SortState | null>(loadSort);
   const [page, setPage] = useState(1);
-  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  /* Selekcija čuva CELE redove (Map id→red) da bulk radi i preko više strana. */
+  const [selected, setSelected] = useState<ReadonlyMap<string, EmployeeSafe>>(new Map());
 
   const [openId, setOpenId] = useState<string | null>(null);
   const [form, setForm] = useState<{ editId: string | null } | null>(null);
@@ -120,102 +111,64 @@ export function ZaposleniTab() {
     return () => clearTimeout(t);
   }, [toast]);
 
-  // TODO(P1a): server-side sort/filteri/paginacija — do tada sve odjednom.
-  const listQ = useEmployees({ page, pageSize: 500 });
-  const all = useMemo(() => listQ.data?.data ?? [], [listQ.data]);
+  /* Promena bilo kog filtera/sorta vraća na prvu stranu. */
+  useEffect(() => {
+    setPage(1);
+  }, [q, quick, dept, status, conType, sort]);
+
+  /* Server parami: quick 'active' i čipovi koji u 1.0 podrazumevaju aktivne
+     (med-soon/bday-soon/no-phone) šalju active=true; inače status select. */
+  const effActive =
+    quick === 'active' || quick === 'med-soon' || quick === 'bday-soon' || quick === 'no-phone'
+      ? true
+      : status === 'active'
+        ? true
+        : status === 'inactive'
+          ? false
+          : undefined;
+  const quickFilter: EmployeesListParams['filter'] = quick === 'all' || quick === 'active' ? undefined : quick;
+
+  const listQ = useEmployeesList({
+    q: q.trim() || undefined,
+    department: dept || undefined,
+    active: effActive,
+    filter: quickFilter,
+    conType: conType || undefined,
+    sort: (sort?.key as SortKey | undefined) ?? undefined,
+    dir: sort?.dir,
+    page,
+    pageSize: 50,
+  });
+  const rows = useMemo(() => listQ.data?.data ?? [], [listQ.data]);
+  const total = listQ.data?.meta.pagination.total ?? 0;
   const totalPages = listQ.data?.meta.pagination.totalPages ?? 1;
+
+  /* Summary chips — 4 mini upita (pageSize=1, samo meta.total; 1.0 brojevi). */
+  const sumAllQ = useEmployeesList({ pageSize: 1 });
+  const sumActiveQ = useEmployeesList({ active: true, pageSize: 1 });
+  const sumMedQ = useEmployeesList({ active: true, filter: 'med-soon', pageSize: 1 });
+  const sumBdayQ = useEmployeesList({ active: true, filter: 'bday-soon', pageSize: 1 });
+  const totAll = sumAllQ.data?.meta.pagination.total ?? 0;
+  const totActive = sumActiveQ.data?.meta.pagination.total ?? 0;
+  const medExpSoon = sumMedQ.data?.meta.pagination.total ?? 0;
+  const bdaySoon = sumBdayQ.data?.meta.pagination.total ?? 0;
+
+  /* Filter „Sva odeljenja" — org struktura (kanonska imena); fallback = tekuća strana. */
+  const orgQ = useOrgStructure();
+  const departments = useMemo(() => {
+    const fromOrg = (orgQ.data?.data?.departments ?? []).map((d) => d.name);
+    if (fromOrg.length) return fromOrg;
+    return Array.from(new Set(rows.map((e) => sv(e, 'department')).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'sr'));
+  }, [orgQ.data, rows]);
 
   const deactivateMut = useDeactivateEmployee();
   const deleteMut = useDeleteEmployee();
   const updateMut = useUpdateEmployee();
 
-  /* Mapa zaposleni→vrsta aktivnog (ne-arhiviranog) ugovora — najnoviji po „od". */
-  const contractsQ = useContracts({}, canContracts);
-  const conTypeByEmp = useMemo(() => {
-    const best = new Map<string, { type: string; dateFrom: string }>();
-    for (const c of contractsQ.data?.data ?? []) {
-      if (!c.employeeId || c.archivedAt || c.isActive === false || !c.contractType) continue;
-      const prev = best.get(c.employeeId);
-      if (!prev || String(c.dateFrom || '') > prev.dateFrom) {
-        best.set(c.employeeId, { type: c.contractType, dateFrom: String(c.dateFrom || '') });
-      }
-    }
-    const out = new Map<string, string>();
-    for (const [id, v] of best) out.set(id, v.type);
-    return out;
-  }, [contractsQ.data]);
-
-  const departments = useMemo(
-    () => Array.from(new Set(all.map((e) => sv(e, 'department')).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'sr')),
-    [all],
-  );
-
-  /* Filteri — paritet 1.0 applyFilters (quick chip preglas + obični filteri). */
-  const filtered = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-    const in30 = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString().slice(0, 10);
-    return all.filter((e) => {
-      if (quick !== 'all') {
-        if (quick === 'active' && !e.is_active) return false;
-        if (quick === 'med-soon') {
-          if (!e.is_active) return false;
-          const exp = sv(e, 'medical_exam_expires');
-          if (!exp || exp.slice(0, 10) > in30) return false;
-        }
-        if (quick === 'bday-soon') {
-          if (!e.is_active || !birthdayInNext30(sv(e, 'birth_date'))) return false;
-        }
-        if (quick === 'missing-jmbg') {
-          if (/^\d{13}$/.test(sv(e, 'personal_id'))) return false;
-        }
-        if (quick === 'no-email') {
-          const em = sv(e, 'email');
-          if (em && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) return false;
-        }
-        if (quick === 'no-phone') {
-          if (!e.is_active) return false;
-          const digits = (sv(e, 'phone_work') || sv(e, 'phone')).replace(/\D/g, '');
-          if (digits.length >= 8) return false;
-        }
-      }
-      if (dept && sv(e, 'department') !== dept) return false;
-      if (status === 'active' && !e.is_active) return false;
-      if (status === 'inactive' && e.is_active) return false;
-      if (conType && conTypeByEmp.get(e.id) !== conType) return false;
-      if (needle) {
-        const hay = [
-          empDisplayName(e), sv(e, 'first_name'), sv(e, 'last_name'), sv(e, 'position'),
-          sv(e, 'department'), sv(e, 'sub_department_name'), sv(e, 'team'),
-          sv(e, 'email'), sv(e, 'phone_work') || sv(e, 'phone'), sv(e, 'note'),
-        ].join(' ').toLowerCase();
-        if (!hay.includes(needle)) return false;
-      }
-      return true;
-    });
-  }, [all, quick, dept, status, conType, conTypeByEmp, q]);
-
   const bdayView = quick === 'bday-soon';
+  const filtersActive = !!(q.trim() || dept || status || conType || quick !== 'all');
 
-  /* Sort: eksplicitni klik-sort > bday view (najbliži rođendan) > „Prezime Ime". */
-  const rows = useMemo(() => {
-    const base = [...filtered];
-    if (sort && SORT_ACCESSORS[sort.key]) {
-      const acc = SORT_ACCESSORS[sort.key];
-      const mul = sort.dir === 'asc' ? 1 : -1;
-      base.sort((a, b) => {
-        const va = acc(a);
-        const vb = acc(b);
-        if (typeof va === 'number' && typeof vb === 'number') return (va - vb) * mul;
-        return String(va).localeCompare(String(vb), 'sr') * mul;
-      });
-    } else if (bdayView) {
-      base.sort((a, b) => daysUntilBirthday(sv(a, 'birth_date')) - daysUntilBirthday(sv(b, 'birth_date')));
-    } else {
-      base.sort(compareEmpByLastFirst);
-    }
-    return base;
-  }, [filtered, sort, bdayView]);
-
+  /** Klik-sort ciklira asc → desc → none; persist u localStorage (BE whitelist). */
   function toggleSort(key: string) {
     setSort((prev) => {
       const next: SortState | null =
@@ -230,43 +183,25 @@ export function ZaposleniTab() {
     });
   }
 
-  /* Summary chips — nad CELOM listom (ne filtriranom), paritet 1.0. */
-  const summary = useMemo(() => {
-    const totAll = all.length;
-    const totActive = all.filter((e) => e.is_active).length;
-    const in30 = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString().slice(0, 10);
-    let medExpSoon = 0;
-    let bdaySoon = 0;
-    for (const e of all) {
-      if (!e.is_active) continue;
-      const exp = sv(e, 'medical_exam_expires');
-      if (exp && exp.slice(0, 10) <= in30) medExpSoon++;
-      if (birthdayInNext30(sv(e, 'birth_date'))) bdaySoon++;
-    }
-    return { totAll, totActive, totInactive: totAll - totActive, medExpSoon, bdaySoon };
-  }, [all]);
-
-  /* Selekcija — preživljava promene filtera (1.0 _empSelectedIds). */
-  const visibleIds = rows.map((r) => r.id);
-  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selected.has(id));
+  /* Selekcija — preživljava promene filtera i strana (Map id→red). */
+  const allVisibleSelected = rows.length > 0 && rows.every((r) => selected.has(r.id));
   function toggleSelectAll() {
     setSelected((prev) => {
-      const next = new Set(prev);
-      if (allVisibleSelected) visibleIds.forEach((id) => next.delete(id));
-      else visibleIds.forEach((id) => next.add(id));
+      const next = new Map(prev);
+      if (allVisibleSelected) rows.forEach((r) => next.delete(r.id));
+      else rows.forEach((r) => next.set(r.id, r));
       return next;
     });
   }
-  function toggleSelect(id: string) {
+  function toggleSelect(r: EmployeeSafe) {
     setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      const next = new Map(prev);
+      if (next.has(r.id)) next.delete(r.id);
+      else next.set(r.id, r);
       return next;
     });
   }
-
-  const selectedItems = useMemo(() => all.filter((e) => selected.has(e.id)), [all, selected]);
+  const selectedItems = useMemo(() => Array.from(selected.values()), [selected]);
 
   /* Aktiviranje = PATCH is_active (BE ugovor; deaktivacija ima svoj endpoint). */
   async function activate(e: EmployeeSafe) {
@@ -297,7 +232,7 @@ export function ZaposleniTab() {
       await deleteMut.mutateAsync({ id: e.id });
       setToast('🗑 Zaposleni trajno obrisan');
       setSelected((prev) => {
-        const next = new Set(prev);
+        const next = new Map(prev);
         next.delete(e.id);
         return next;
       });
@@ -329,7 +264,7 @@ export function ZaposleniTab() {
           checked={selected.has(r.id)}
           disabled={!canEdit}
           onClick={(e) => e.stopPropagation()}
-          onChange={() => toggleSelect(r.id)}
+          onChange={() => toggleSelect(r)}
         />
       ),
     },
@@ -364,7 +299,7 @@ export function ZaposleniTab() {
     ...(bdayView
       ? [
           {
-            key: 'bday',
+            key: 'birthday',
             header: '🎂 Rođendan',
             sortable: true,
             render: (r: EmployeeSafe) => {
@@ -431,11 +366,11 @@ export function ZaposleniTab() {
     <div className="space-y-4">
       <SummaryChips
         items={[
-          { label: 'Ukupno', value: summary.totAll, tone: 'accent' },
-          { label: 'Aktivni', value: summary.totActive },
-          { label: 'Neaktivni', value: summary.totInactive },
-          { label: 'Lekarski ističe <30d', value: summary.medExpSoon, tone: summary.medExpSoon > 0 ? 'warn' : 'default' },
-          { label: 'Rođendani <30d', value: summary.bdaySoon, tone: summary.bdaySoon > 0 ? 'accent' : 'default' },
+          { label: 'Ukupno', value: totAll, tone: 'accent' },
+          { label: 'Aktivni', value: totActive },
+          { label: 'Neaktivni', value: Math.max(0, totAll - totActive) },
+          { label: 'Lekarski ističe <30d', value: medExpSoon, tone: medExpSoon > 0 ? 'warn' : 'default' },
+          { label: 'Rođendani <30d', value: bdaySoon, tone: bdaySoon > 0 ? 'accent' : 'default' },
         ]}
       />
 
@@ -458,7 +393,7 @@ export function ZaposleniTab() {
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        <SearchBox value={q} onChange={setQ} placeholder="Pretraga po imenu, poziciji, email-u…" />
+        <SearchBox value={q} onChange={setQ} placeholder="Pretraga po imenu i prezimenu…" />
         <select className={SELECT_CLS} value={dept} onChange={(e) => setDept(e.target.value)} aria-label="Filter po odeljenju">
           <option value="">Sva odeljenja</option>
           {departments.map((d) => (
@@ -470,16 +405,14 @@ export function ZaposleniTab() {
           <option value="active">Aktivni</option>
           <option value="inactive">Neaktivni</option>
         </select>
-        {canContracts && (
-          <select className={SELECT_CLS} value={conType} onChange={(e) => setConType(e.target.value)} title="Filter po vrsti aktivnog ugovora" aria-label="Filter po vrsti ugovora">
-            <option value="">Sve vrste ugovora</option>
-            {CON_TYPE_OPTS.map((o) => (
-              <option key={o.v} value={o.v}>{o.l}</option>
-            ))}
-          </select>
-        )}
+        <select className={SELECT_CLS} value={conType} onChange={(e) => setConType(e.target.value)} title="Filter po vrsti aktivnog ugovora" aria-label="Filter po vrsti ugovora">
+          <option value="">Sve vrste ugovora</option>
+          {CON_TYPE_OPTS.map((o) => (
+            <option key={o.v} value={o.v}>{o.l}</option>
+          ))}
+        </select>
         <span className="ml-auto text-sm text-ink-secondary">
-          {rows.length === all.length ? `${all.length} zaposlenih` : `${rows.length} / ${all.length} zaposlenih`}
+          {filtersActive && total !== totAll ? `${total} / ${totAll} zaposlenih` : `${total} zaposlenih`}
         </span>
         <Button variant="ghost" disabled={!canEdit || selected.size === 0} title="Selektuj redove za bulk akcije" onClick={() => setBulkOpen(true)}>
           ⚙ Bulk ({selected.size})
@@ -511,8 +444,8 @@ export function ZaposleniTab() {
         onSortToggle={toggleSort}
         empty={
           <EmptyState
-            title={all.length === 0 ? 'Nema zaposlenih' : 'Nijedan rezultat ne odgovara filterima'}
-            hint={all.length === 0 ? 'Dodaj prvog zaposlenog.' : 'Promenite pretragu ili filtere.'}
+            title={!filtersActive && total === 0 ? 'Nema zaposlenih' : 'Nijedan rezultat ne odgovara filterima'}
+            hint={!filtersActive && total === 0 ? 'Dodaj prvog zaposlenog.' : 'Promenite pretragu ili filtere.'}
           />
         }
       />
@@ -526,7 +459,7 @@ export function ZaposleniTab() {
       {form && (
         <EmployeeFormDialog
           editId={form.editId}
-          employees={all}
+          employees={rows}
           canPii={canPii}
           onClose={() => setForm(null)}
           onSaved={setToast}
@@ -539,7 +472,7 @@ export function ZaposleniTab() {
           onClose={() => setBulkOpen(false)}
           onDone={(msg) => {
             setToast(msg);
-            setSelected(new Set());
+            setSelected(new Map());
           }}
         />
       )}
