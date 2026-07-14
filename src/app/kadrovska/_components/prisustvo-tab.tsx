@@ -22,7 +22,6 @@ export function PrisustvoTab() {
   const { can } = useAuth();
   const canLive = can(PERMISSIONS.KADROVSKA_ATTENDANCE);
   const canShadow = can(PERMISSIONS.KADROVSKA_ATTENDANCE_SHADOW);
-  const canManage = can(PERMISSIONS.KADROVSKA_MANAGE);
   const [view, setView] = useState<'live' | 'shadow'>(canLive ? 'live' : 'shadow');
   const [badgeOpen, setBadgeOpen] = useState(false);
 
@@ -47,7 +46,9 @@ export function PrisustvoTab() {
             </button>
           )}
         </div>
-        {canManage && (
+        {/* BE ruta badges/qr gejtuje kadrovska.attendance_shadow (posle P1a fixa) —
+            gejtuj afordansu istim ključem (hr/menadzment/admin), ne kadrovska.manage. */}
+        {canShadow && (
           <Button className="ml-auto" variant="secondary" onClick={() => setBadgeOpen(true)}>
             <QrCode className="h-4 w-4" aria-hidden /> QR nalepnice
           </Button>

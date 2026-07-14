@@ -1014,8 +1014,9 @@ export function useAttendanceVsGrid(params: { employeeId?: string; from?: string
 }
 
 /** Trajni QR token (get-or-create u employee_badges, „SVK-…" format; gate
- *  kadrovska.manage). Vraća ISTI token pri ponovnom pozivu — nalepnice ostaju
- *  važeće i kiosk ih razrešava. `created` govori da li je token upravo napravljen. */
+ *  kadrovska.attendance_shadow — hr/menadzment/admin, posle P1a fixa). Vraća ISTI
+ *  token pri ponovnom pozivu — nalepnice ostaju važeće i kiosk ih razrešava.
+ *  `created` govori da li je token upravo napravljen. */
 export const useEnsureQrBadge = () =>
   useKadrMutation<{ id: string }, TxResponse<{ code: string; created: boolean }>>(
     (v) => post<{ code: string; created: boolean }>(`/employees/${v.id}/badges/qr`),
