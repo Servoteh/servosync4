@@ -3,19 +3,25 @@
 import { useEffect, type ReactNode } from 'react';
 import { X } from 'lucide-react';
 
-/** Modalni dijalog (DESIGN_SYSTEM.md §4/§10). Esc zatvara; klik na pozadinu zatvara. */
+/**
+ * Modalni dijalog (DESIGN_SYSTEM.md §4/§10). Esc zatvara; klik na pozadinu zatvara.
+ * `size`: 'md' (default, kratke forme) · 'xl' (duge forme sa sekcijama — karton
+ * zaposlenog) · '2xl' (grid unosi tipa brzi/bulk unos).
+ */
 export function Dialog({
   open,
   onClose,
   title,
   children,
   footer,
+  size = 'md',
 }: {
   open: boolean;
   onClose: () => void;
   title: string;
   children: ReactNode;
   footer?: ReactNode;
+  size?: 'md' | 'xl' | '2xl';
 }) {
   useEffect(() => {
     if (!open) return;
@@ -34,7 +40,10 @@ export function Dialog({
       role="presentation"
     >
       <div
-        className="w-full max-w-lg rounded-panel border border-line bg-surface shadow-xl"
+        className={
+          'w-full rounded-panel border border-line bg-surface shadow-xl ' +
+          (size === '2xl' ? 'max-w-6xl' : size === 'xl' ? 'max-w-3xl' : 'max-w-lg')
+        }
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
