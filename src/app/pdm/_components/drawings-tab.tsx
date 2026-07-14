@@ -64,6 +64,16 @@ const columns: Column<Drawing>[] = [
       );
     },
   },
+  {
+    key: 'hasPdf',
+    header: 'PDF',
+    render: (r) =>
+      r.hasPdf ? (
+        <span className="text-status-success">Ima</span>
+      ) : (
+        <span className="text-ink-disabled">—</span>
+      ),
+  },
 ];
 
 const filterInput =
@@ -74,6 +84,7 @@ export function DrawingsTab() {
   const [revision, setRevision] = useState('');
   const [material, setMaterial] = useState<string | null>(null);
   const [designedBy, setDesignedBy] = useState<string | null>(null);
+  const [hasPdf, setHasPdf] = useState<'' | 'yes' | 'no'>('');
   const [page, setPage] = useState(1);
   const [expanded, setExpanded] = useState<number | null>(null);
   const resetPage = () => setPage(1);
@@ -84,11 +95,12 @@ export function DrawingsTab() {
     revision: revision.trim() || undefined,
     material: material || undefined,
     designedBy: designedBy || undefined,
+    hasPdf: hasPdf || undefined,
   });
 
   const rows = list.data?.data ?? [];
   const meta = list.data?.meta.pagination;
-  const hasFilter = !!(q || revision || material || designedBy);
+  const hasFilter = !!(q || revision || material || designedBy || hasPdf);
 
   return (
     <div className="space-y-4">
@@ -144,6 +156,21 @@ export function DrawingsTab() {
             placeholder="Svi projektanti…"
           />
         </div>
+        <label className="flex flex-col gap-1 text-xs text-ink-secondary">
+          PDF
+          <select
+            value={hasPdf}
+            onChange={(e) => {
+              setHasPdf(e.target.value as '' | 'yes' | 'no');
+              resetPage();
+            }}
+            className={filterInput}
+          >
+            <option value="">Svi</option>
+            <option value="yes">Ima PDF</option>
+            <option value="no">Nema PDF</option>
+          </select>
+        </label>
         {hasFilter && (
           <button
             onClick={() => {
@@ -151,6 +178,7 @@ export function DrawingsTab() {
               setRevision('');
               setMaterial(null);
               setDesignedBy(null);
+              setHasPdf('');
               resetPage();
             }}
             className="rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2"

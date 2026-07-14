@@ -45,6 +45,12 @@ export interface Drawing {
   workOrderRef: string | null;
   createdAt: string | null;
   status: DrawingStatusRef | null;
+  /**
+   * Postoji li uskladišten PDF (drawing_pdfs sa binarnim sadržajem) za ovu
+   * reviziju. GET /pdm/drawings ga uvek vraća; opciono je jer se `Drawing`
+   * oblik gradi i ručno (npr. izbor crteža u primopredaji) bez ovog podatka.
+   */
+  hasPdf?: boolean;
 }
 
 /** PDF metapodaci (bez binarnog sadržaja) — deo detalja crteža. */
@@ -213,6 +219,8 @@ export interface DrawingListParams {
   revision?: string;
   material?: string;
   designedBy?: string;
+  /** '' = svi, 'yes' = samo sa PDF-om, 'no' = samo bez PDF-a. */
+  hasPdf?: '' | 'yes' | 'no';
 }
 
 export interface ImportLogParams {
@@ -233,6 +241,7 @@ export function useDrawings(params: DrawingListParams) {
   if (params.revision) qs.set('revision', params.revision);
   if (params.material) qs.set('material', params.material);
   if (params.designedBy) qs.set('designedBy', params.designedBy);
+  if (params.hasPdf) qs.set('hasPdf', params.hasPdf);
   const query = qs.toString();
   return useQuery({
     queryKey: ['pdm', 'drawings', params],
