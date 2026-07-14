@@ -967,3 +967,8 @@ export const usePayrollRecompute = () =>
   useKadrMutation<{ year: number; month: number; employeeId?: string; persist?: boolean; clientEventId?: string }, TxResponse<{ year: number; month: number; count: number; rows: PayrollRecomputeRow[] }>>((v) => post('/salary/payroll/recompute', v), KEYS.salary);
 export const usePayrollLock = () => useKadrMutation<{ id: string; expectedUpdatedAt: string; clientEventId?: string }>((v) => post(`/salary/payroll/${v.id}/lock`, { expectedUpdatedAt: v.expectedUpdatedAt, clientEventId: v.clientEventId }), KEYS.salary);
 export const usePayrollUnlock = () => useKadrMutation<{ id: string; clientEventId?: string }>((v) => post(`/salary/payroll/${v.id}/unlock`, { clientEventId: v.clientEventId }), KEYS.salary);
+
+/* ── P2 (Zaposleni) dopune — append-only ── */
+
+/** Trajno brisanje zaposlenog (admin; DELETE /employees/:id). FK-vezani podaci → BE greška. */
+export const useDeleteEmployee = () => useKadrMutation<{ id: string }>((v) => del(`/employees/${v.id}`));

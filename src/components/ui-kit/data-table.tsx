@@ -5,10 +5,18 @@ import { cn } from '@/lib/cn';
 
 export interface Column<T> {
   key: string;
-  header: string;
+  header: ReactNode;
   align?: 'left' | 'right';
   numeric?: boolean;
+  /** Kolona je sortabilna klikom na zaglavlje (traži `sort`+`onSortToggle` na tabeli). */
+  sortable?: boolean;
   render: (row: T) => ReactNode;
+}
+
+/** Stanje sortiranja po koloni (kontrolisano spolja — persist radi pozivalac). */
+export interface SortState {
+  key: string;
+  dir: 'asc' | 'desc';
 }
 
 interface DataTableProps<T> {
@@ -24,6 +32,10 @@ interface DataTableProps<T> {
   rowDraggable?: boolean;
   /** Poziva se pri spuštanju prevučenog reda na drugi (ključevi kao stringovi). */
   onRowDrop?: (dragKey: string, overKey: string) => void;
+  /** Aktivno sortiranje (kontrolisano); indikator ▲/▼ na koloni. */
+  sort?: SortState | null;
+  /** Klik na sortabilno zaglavlje — pozivalac ciklira asc → desc → none. */
+  onSortToggle?: (key: string) => void;
 }
 
 /**
@@ -41,6 +53,8 @@ export function DataTable<T>({
   loading,
   rowDraggable,
   onRowDrop,
+  sort,
+  onSortToggle,
 }: DataTableProps<T>) {
   const [focus, setFocus] = useState(0);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
@@ -71,18 +85,41 @@ export function DataTable<T>({
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-line bg-surface-2 text-left">
-            {columns.map((c) => (
-              <th
-                key={c.key}
-                className={cn(
-                  'h-9 px-4 font-semibold uppercase tracking-[0.08em] text-ink-secondary',
-                  'text-2xs',
-                  c.align === 'right' && 'text-right',
-                )}
-              >
-                {c.header}
-              </th>
-            ))}
+            {columns.map((c) => {
+              const sortableHere = !!c.sortable && !!onSortToggle;
+              const active = sort?.key === c.key ? sort : null;
+              return (
+                <th
+                  key={c.key}
+                  aria-sort={active ? (active.dir === 'asc' ? 'ascending' : 'descending') : undefined}
+                  className={cn(
+                    'h-9 px-4 font-semibold uppercase tracking-[0.08em] text-ink-secondary',
+                    'text-2xs',
+                    c.align === 'right' && 'text-right',
+                  )}
+                >
+                  {sortableHere ? (
+                    <button
+                      type="button"
+                      onClick={() => onSortToggle(c.key)}
+                      className={cn(
+                        'inline-flex items-center gap-1 uppercase tracking-[0.08em] hover:text-ink',
+                        'focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)]',
+                        active && 'text-ink',
+                      )}
+                      title="Sortiraj po koloni"
+                    >
+                      {c.header}
+                      <span aria-hidden className="text-[9px] leading-none">
+                        {active ? (active.dir === 'asc' ? '▲' : '▼') : '↕'}
+                      </span>
+                    </button>
+                  ) : (
+                    c.header
+                  )}
+                </th>
+              );
+            })}
           </tr>
         </thead>
         <tbody
