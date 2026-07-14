@@ -1079,7 +1079,7 @@ export class KadrovskaService {
            ORDER BY d.issued_at DESC
            LIMIT 200`,
       );
-      // qty može biti numeric → Number (JSON ne serijalizuje bigint/Decimal dosledno).
+      // qty je numeric (Prisma.Decimal) → Number kroz Decimal-aware numify (review #22).
       return { data: this.numify(data) };
     });
   }
@@ -1149,23 +1149,44 @@ export class KadrovskaService {
   // ==========================================================================
 
   /**
-   * BigInt → Number za $queryRaw view-read-ove (res.json ne serijalizuje BigInt →
-   * 500). Adversarni review R1: view count-agregati su bigint (v_development_plans
-   * goals_total/goals_done, v_kadr_audit_log.id). Audit svih 14 view-ova (information_
-   * schema, 13.07): SAMO ta 2 view-a imaju bigint kolone; ostali su Int/Decimal/text/
-   * ts. Prisma model bigint polja (size_bytes, event_ids) idu kroz docOut/correctionOut.
-   * Rekurzivno (plitko po redu) — bezbedno i za buduć drift (nov count u view-u).
+   * BigInt + Prisma Decimal → Number za $queryRaw read-ove (res.json ne serijalizuje
+   * BigInt → 500; Decimal bi izašao kao JSON STRING pa FE agregacija tiho puca:
+   * `sum += r.qty` postaje '0'+'2'='02', `.toFixed()` baca — parity review #22, 14.07).
+   * Bigint: view count-agregati (v_development_plans goals_total/done, v_kadr_audit_log.id).
+   * Decimal: numeric kolone (work_hours sati, rev qty…) — duck-typed `toNumber` (bez
+   * import zavisnosti od Prisma.Decimal). Prisma model bigint polja (size_bytes,
+   * event_ids) idu kroz docOut/correctionOut. Rekurzivno (plitko po redu).
+   *
+   * ⚠️ KONVENCIJA ZA NOVAC: salary endpointi (salaryPayroll/salaryCurrent/salaryTerms)
+   * NAMERNO NE idu kroz numify — Decimal iznosi ostaju JSON stringovi (bez rizika
+   * po preciznost), FE ih koercira `n()/Number()` helperom. numify je isključivo za
+   * IZVEŠTAJNE/agregatne read-ove (sati, dani, količine, brojači, procenti).
    */
   private numify(rows: unknown): unknown {
     if (Array.isArray(rows)) return rows.map((r) => this.numify(r));
+    if (this.isDecimalLike(rows)) return rows.toNumber();
     if (rows && typeof rows === "object") {
       const out: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(rows as Record<string, unknown>)) {
-        out[k] = typeof v === "bigint" ? Number(v) : v;
+        out[k] =
+          typeof v === "bigint"
+            ? Number(v)
+            : this.isDecimalLike(v)
+              ? v.toNumber()
+              : v;
       }
       return out;
     }
     return typeof rows === "bigint" ? Number(rows) : rows;
+  }
+
+  /** Prisma.Decimal (decimal.js) duck-type — objekat sa toNumber(). */
+  private isDecimalLike(v: unknown): v is { toNumber(): number } {
+    return (
+      v !== null &&
+      typeof v === "object" &&
+      typeof (v as { toNumber?: unknown }).toNumber === "function"
+    );
   }
 
   /** size_bytes bigint → Number (BigInt ne prežive res.json). */

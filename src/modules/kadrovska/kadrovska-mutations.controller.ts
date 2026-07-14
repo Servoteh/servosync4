@@ -637,7 +637,16 @@ export class KadrovskaMutationsController {
     return this.m.assessmentSetState(this.email(req), id, dto);
   }
   /** Upis ocena po rater id (leader) — 1.0 saveScores upsert; RLS asc_write (svoj
-   *  rater ∧ collecting) presuđuje, pa tuđi rater id → 403. */
+   *  rater ∧ collecting) presuđuje, pa tuđi rater id → 403.
+   *
+   *  TODO(paket „Moj profil → Moja procena", review #25): ruta NAMERNO ostaje pod
+   *  dev_manage (rukovodilački 360 modal) i NE pokriva 1.0 SELF-assessment tok
+   *  (običan zaposleni upisuje svoje ocene/odgovore). Self tok dobija ODVOJENE rute
+   *  `POST assessments/self/scores` + `assessments/self/answers` pod PROFILE_SELF
+   *  (isti obrazac kao postojeći assessments/self i :id/self-submit) — RLS asc_write
+   *  (rater=pozivalac ∧ collecting) tada presuđuje 1.0-verno. NE labaviti guard ovde.
+   *  ⚠️ kb2 još NEMA rutu za assessment_answers (1.0 saveAnswers) — bez nje self tok
+   *  gubi odgovore na otvorena pitanja, a submit prolazi (prazna procena). */
   @Post("assessments/raters/:raterId/scores")
   @RequirePermission(PERMISSIONS.KADROVSKA_DEV_MANAGE)
   saveScores(@Req() req: AuthedRequest, @Param("raterId", ParseUUIDPipe) raterId: string, @Body() dto: D.SaveScoresDto) {

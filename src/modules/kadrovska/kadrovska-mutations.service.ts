@@ -943,6 +943,9 @@ export class KadrovskaMutationsService {
     );
   }
   createTalk(email: string, dto: D.CreateTalkDto) {
+    // Odluka o zaradi važi SAMO za tip 'godisnji' (1.0 talksSection.js:264-267 šalje
+    // null za ostale tipove) — review #24: raise_* se ignorišu na ne-godišnjem.
+    const isGodisnji = dto.talkType === "godisnji";
     return this.create(email, dto.clientEventId, "kadr.talk.create", (tx) =>
       tx.employeeTalk.create({
         data: {
@@ -953,20 +956,34 @@ export class KadrovskaMutationsService {
           zapisnikMd: dto.zapisnikMd ?? null,
           status: "nacrt",
           planId: dto.planId ?? null,
-          // Godišnji razgovor — odluka o zaradi (za druge tipove ostaje null).
-          raiseDecision: dto.raiseDecision ?? null,
-          raisePercent: dto.raisePercent ?? null,
-          raiseEffectiveFrom: dto.raiseEffectiveFrom ? this.date(dto.raiseEffectiveFrom) : null,
-          raiseNote: dto.raiseNote ?? null,
+          raiseDecision: isGodisnji ? (dto.raiseDecision ?? null) : null,
+          raisePercent: isGodisnji ? (dto.raisePercent ?? null) : null,
+          raiseEffectiveFrom:
+            isGodisnji && dto.raiseEffectiveFrom ? this.date(dto.raiseEffectiveFrom) : null,
+          raiseNote: isGodisnji ? (dto.raiseNote ?? null) : null,
           createdBy: email,
           conductedBy: email,
         },
       }),
     );
   }
+  /**
+   * Review #24: EFEKTIVNI tip (DTO ∨ tekući red) odlučuje o raise_* — promena tipa
+   * sa 'godisnji' na drugi FORSIRA sve četiri kolone na null (1.0 FE uvek šalje
+   * raise ključeve, null za ne-godišnji; bez DB trigera koji bi ih čistio — izmereno).
+   */
   updateTalk(email: string, id: string, dto: D.UpdateTalkDto) {
-    return this.mutate(email, undefined, "kadr.talk.update", (tx) =>
-      this.requireRows(
+    return this.mutate(email, undefined, "kadr.talk.update", async (tx) => {
+      let effType = dto.talkType ?? null;
+      if (effType == null) {
+        const cur = await tx.employeeTalk.findUnique({
+          where: { id },
+          select: { talkType: true },
+        });
+        effType = cur?.talkType ?? null;
+      }
+      const clearRaise = effType != null && effType !== "godisnji";
+      return this.requireRows(
         tx.employeeTalk.updateMany({
           where: { id },
           data: {
@@ -975,19 +992,28 @@ export class KadrovskaMutationsService {
             ...(dto.title !== undefined ? { title: dto.title } : {}),
             ...(dto.zapisnikMd !== undefined ? { zapisnikMd: dto.zapisnikMd } : {}),
             ...(dto.status != null ? { status: dto.status } : {}),
-            ...(dto.raiseDecision !== undefined ? { raiseDecision: dto.raiseDecision ?? null } : {}),
-            ...(dto.raisePercent !== undefined ? { raisePercent: dto.raisePercent ?? null } : {}),
-            ...(dto.raiseEffectiveFrom !== undefined
-              ? { raiseEffectiveFrom: dto.raiseEffectiveFrom ? this.date(dto.raiseEffectiveFrom) : null }
-              : {}),
-            ...(dto.raiseNote !== undefined ? { raiseNote: dto.raiseNote ?? null } : {}),
+            ...(clearRaise
+              ? {
+                  raiseDecision: null,
+                  raisePercent: null,
+                  raiseEffectiveFrom: null,
+                  raiseNote: null,
+                }
+              : {
+                  ...(dto.raiseDecision !== undefined ? { raiseDecision: dto.raiseDecision ?? null } : {}),
+                  ...(dto.raisePercent !== undefined ? { raisePercent: dto.raisePercent ?? null } : {}),
+                  ...(dto.raiseEffectiveFrom !== undefined
+                    ? { raiseEffectiveFrom: dto.raiseEffectiveFrom ? this.date(dto.raiseEffectiveFrom) : null }
+                    : {}),
+                  ...(dto.raiseNote !== undefined ? { raiseNote: dto.raiseNote ?? null } : {}),
+                }),
             updatedBy: email,
             updatedAt: new Date(),
           },
         }),
         "Razgovor",
-      ),
-    );
+      );
+    });
   }
   /** Brisanje zapisnika (1.0 deleteTalk): nacrt = autor; podeljen/potvrđen = admin.
    *  Razlikovanje presuđuje sy15 RLS (endpoint gate = dev_manage); 0 redova → 403. */
@@ -1267,6 +1293,12 @@ export class KadrovskaMutationsService {
       });
       return { cycle, assessmentIds, meta, raters };
     });
+
+    // Prazan ciklus — rani return PRE mail.configured provere (1.0 edge fn :299-301):
+    // ok:true + `message`, BEZ rezime mejla kreatoru (prazna tabela) — review #23.
+    if (!read.assessmentIds.length) {
+      return { data: { ok: true, sent: 0, skipped: [], message: "Ciklus nema procena." } };
+    }
 
     const skipped: Array<{ assessment_id: string; employee: string; kind: string; reason: string }> = [];
     const sendable: typeof read.raters = [];
