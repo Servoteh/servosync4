@@ -90,4 +90,7 @@ export class NotificationsQueryDto {
 export class ByEmployeeQueryDto {
   @IsOptional() @IsUUID() employeeId?: string;
   @IsOptional() @IsString() status?: string;
+  /** Suženje na jedan plan razvoja (samo /expectations — 1.0 loadAllExpectations({planId})
+   *  učitava razvojne ciljeve grupisane po planu u detalju plana). */
+  @IsOptional() @IsUUID() planId?: string;
 }

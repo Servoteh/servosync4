@@ -100,11 +100,22 @@ export class KadrovskaController {
     return this.kadrovska.report(req.user.email, "certs");
   }
 
-  /** Generički izveštaji (RLS-svesni ili R2 501/422). NE sme da servira 3 non-invoker
-   *  kinda — oni idu kroz namenske gore; defense-in-depth 403 ako routing ikad padne. */
+  /** Izveštaj „Deca zaposlenih" (PII) — namenska ruta (kao medical/certs); vraća sirove
+   *  redove (dete + zaposleni), FE računa starosne raspone. */
+  @Get("reports/children")
+  @RequirePermission(PERMISSIONS.KADROVSKA_PII)
+  reportChildren(@Req() req: AuthedRequest) {
+    return this.kadrovska.reportChildren(req.user.email);
+  }
+
+  /** Generički izveštaji (RLS-svesni ili R2 501/422). NE sme da servira non-invoker/PII
+   *  kindove — oni idu kroz namenske gore; defense-in-depth 403 ako routing ikad padne. */
   @Get("reports/:kind")
   report(@Req() req: AuthedRequest, @Param("kind") kind: string) {
-    if (KadrovskaController.NON_INVOKER_REPORTS.has(kind)) {
+    if (
+      KadrovskaController.NON_INVOKER_REPORTS.has(kind) ||
+      kind === "children"
+    ) {
       throw new ForbiddenException(
         `Izveštaj '${kind}' ide kroz namensku rutu sa strožom permisijom`,
       );
@@ -334,6 +345,28 @@ export class KadrovskaController {
     return this.kadrovska.talks(req.user.email, q);
   }
 
+  /* 360 read — literal rute (campaign/framework/raters/…) PRE `:id` param ruta. */
+  @Get("assessments/campaign")
+  @RequirePermission(PERMISSIONS.KADROVSKA_DEV_MANAGE)
+  assessmentCampaigns(@Req() req: AuthedRequest, @Query() q: ByEmployeeQueryDto) {
+    return this.kadrovska.assessmentCampaigns(req.user.email, q);
+  }
+
+  @Get("assessments/framework")
+  @RequirePermission(PERMISSIONS.KADROVSKA_DEV_MANAGE)
+  assessmentFramework(@Req() req: AuthedRequest) {
+    return this.kadrovska.assessmentFramework(req.user.email);
+  }
+
+  @Get("assessments/raters/:raterId/scores")
+  @RequirePermission(PERMISSIONS.KADROVSKA_DEV_MANAGE)
+  assessmentRaterScores(
+    @Req() req: AuthedRequest,
+    @Param("raterId", ParseUUIDPipe) raterId: string,
+  ) {
+    return this.kadrovska.assessmentRaterScores(req.user.email, raterId);
+  }
+
   @Get("assessments/:id/scope")
   @RequirePermission(PERMISSIONS.KADROVSKA_DEV_MANAGE)
   assessmentScope(
@@ -343,10 +376,47 @@ export class KadrovskaController {
     return this.kadrovska.assessmentScope(req.user.email, id);
   }
 
+  @Get("assessments/:id/raters")
+  @RequirePermission(PERMISSIONS.KADROVSKA_DEV_MANAGE)
+  assessmentRaters(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return this.kadrovska.assessmentRaters(req.user.email, id);
+  }
+
+  @Get("assessments/:id/results")
+  @RequirePermission(PERMISSIONS.KADROVSKA_DEV_MANAGE)
+  assessmentResults(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return this.kadrovska.assessmentResults(req.user.email, id);
+  }
+
+  @Get("assessments/:id/targets")
+  @RequirePermission(PERMISSIONS.KADROVSKA_DEV_MANAGE)
+  assessmentTargets(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return this.kadrovska.assessmentTargets(req.user.email, id);
+  }
+
   @Get("assessments")
   @RequirePermission(PERMISSIONS.KADROVSKA_DEV_MANAGE)
   assessments(@Req() req: AuthedRequest, @Query() q: ByEmployeeQueryDto) {
     return this.kadrovska.assessments(req.user.email, q);
+  }
+
+  /** Offboarding: neizmirena REVERSI zaduženja zaposlenog (panel „Zaduženja za vraćanje"). */
+  @Get("onboarding/reversi/:employeeId")
+  @RequirePermission(PERMISSIONS.KADROVSKA_MANAGE)
+  offboardingReversi(
+    @Req() req: AuthedRequest,
+    @Param("employeeId", ParseUUIDPipe) employeeId: string,
+  ) {
+    return this.kadrovska.offboardingOutstandingReversi(req.user.email, employeeId);
   }
 
   // ---------- Zarade (SAMO admin — kadrovska.salary) ----------

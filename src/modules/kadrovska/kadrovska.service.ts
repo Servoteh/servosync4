@@ -131,7 +131,9 @@ export class KadrovskaService {
     certs: "v_kadr_certificate_status",
     audit: "v_kadr_audit_log",
   };
-  /** Kindovi koji traže agregaciju iz grida / XLSX render → R2 (parity matrica #3). */
+  /** Kindovi koji traže agregaciju iz grida / XLSX render → i dalje R2 (parity matrica #3).
+   *  „children" je izdvojen u namensku PII rutu (reportChildren); ostali agregati čekaju
+   *  odluku (FE-agregacija nad postojećim read-ovima vs. kanonski sy15 agregat-view). */
   private static readonly REPORT_R2 = new Set([
     "sick",
     "demo",
@@ -139,7 +141,6 @@ export class KadrovskaService {
     "vacation",
     "overtime",
     "field",
-    "children",
     "risk",
   ]);
 
@@ -668,12 +669,14 @@ export class KadrovskaService {
     }));
   }
 
-  /** Očekivanja zaposlenog (v_employee_expectations) — self status u_toku/ispunjeno (D). */
+  /** Očekivanja zaposlenog (v_employee_expectations) — self status u_toku/ispunjeno (D).
+   *  `planId` suženje: razvojni ciljevi jednog plana (1.0 detalj plana grupiše po kategoriji). */
   async expectations(email: string, q: ByEmployeeQueryDto) {
     return this.withUserMapped(email, async (tx) => {
       const conds: Prisma.Sql[] = [];
       if (q.employeeId)
         conds.push(Prisma.sql`employee_id = ${q.employeeId}::uuid`);
+      if (q.planId) conds.push(Prisma.sql`plan_id = ${q.planId}::uuid`);
       if (q.status) conds.push(Prisma.sql`status = ${q.status}`);
       const where = conds.length
         ? Prisma.sql`WHERE ${Prisma.join(conds, " AND ")}`
@@ -733,6 +736,144 @@ export class KadrovskaService {
       const data = await tx.$queryRaw(
         Prisma.sql`SELECT * FROM v_assessment_scope WHERE assessment_id = ${assessmentId}::uuid
           ORDER BY group_sort, comp_sort`,
+      );
+      return { data };
+    });
+  }
+
+  /** Ocenjivači jedne procene + status/pozivnica (1.0 loadRaters). Rukovodilac vidi
+   *  identitete (rater_email/rater_employee_id) i invited_at za ✉ marker; RLS presuđuje. */
+  async assessmentRaters(email: string, assessmentId: string) {
+    return this.withUserMapped(email, async (tx) => ({
+      data: await tx.assessmentRater.findMany({
+        where: { assessmentId },
+        orderBy: [{ raterKind: "asc" }],
+      }),
+    }));
+  }
+
+  /** Pregled kampanja 360 (1.0 loadCampaignAssessments): procene + ciklus + rateri,
+   *  za tabelu „360° procene" (samoprocena/kolege/rukovodilac statusi + ✉ pozivnice).
+   *  Prisma nema FK relacije (1.0 šema) → sklapamo u kodu (kao onboarding runs+tasks). */
+  async assessmentCampaigns(email: string, q: ByEmployeeQueryDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const assessments = await tx.assessment.findMany({
+        where: {
+          ...(q.employeeId ? { employeeId: q.employeeId } : {}),
+          ...(q.status ? { status: q.status } : {}),
+        },
+        orderBy: [{ createdAt: "desc" }],
+        take: 200,
+      });
+      const cycleIds = [
+        ...new Set(assessments.map((a) => a.cycleId).filter((v): v is string => !!v)),
+      ];
+      const assessmentIds = assessments.map((a) => a.id);
+      const [cycles, raters] = await Promise.all([
+        cycleIds.length
+          ? tx.assessmentCycle.findMany({ where: { id: { in: cycleIds } } })
+          : Promise.resolve([]),
+        assessmentIds.length
+          ? tx.assessmentRater.findMany({
+              where: { assessmentId: { in: assessmentIds } },
+              orderBy: [{ raterKind: "asc" }],
+            })
+          : Promise.resolve([]),
+      ]);
+      const cycleById = new Map(cycles.map((c) => [c.id, c]));
+      const ratersByA = new Map<string, typeof raters>();
+      for (const r of raters) {
+        const arr = ratersByA.get(r.assessmentId) ?? [];
+        arr.push(r);
+        ratersByA.set(r.assessmentId, arr);
+      }
+      return {
+        data: assessments.map((a) => ({
+          ...a,
+          cycle: a.cycleId ? (cycleById.get(a.cycleId) ?? null) : null,
+          raters: ratersByA.get(a.id) ?? [],
+        })),
+      };
+    });
+  }
+
+  /** Agregat rezultata procene (assessment_results) — self/peer/leader/target po grupi i
+   *  kompetenciji (1.0 loadResults, radar + PDF). Decimal → JSON string (FE Number-uje). */
+  async assessmentResults(email: string, assessmentId: string) {
+    return this.withUserMapped(email, async (tx) => ({
+      data: await tx.assessmentResult.findMany({ where: { assessmentId } }),
+    }));
+  }
+
+  /** Ciljni nivoi procene (assessment_targets) — 1.0 loadTargets (0–5 „Cilj" tačke). */
+  async assessmentTargets(email: string, assessmentId: string) {
+    return this.withUserMapped(email, async (tx) => ({
+      data: await tx.assessmentTarget.findMany({
+        where: { assessmentId },
+        select: { competenceId: true, targetLevel: true },
+      }),
+    }));
+  }
+
+  /** Ocene jednog ocenjivača (1.0 loadMyScores) — rukovodilac čita svoje (leader) ocene
+   *  po rater id (RLS: ocenjivač vidi samo svoje). */
+  async assessmentRaterScores(email: string, raterId: string) {
+    return this.withUserMapped(email, async (tx) => ({
+      data: await tx.assessmentScore.findMany({
+        where: { raterId },
+        select: { competenceId: true, level: true, comment: true },
+      }),
+    }));
+  }
+
+  /** Okvir kompetencija (v_competence_framework) — grupe→kompetencije→nivoi 0–5 sa
+   *  deskriptorima (1.0 loadFramework; tooltip nivoa u 360 modalu). */
+  async assessmentFramework(email: string) {
+    return this.withUserMapped(email, async (tx) => ({
+      data: await tx.$queryRaw(
+        Prisma.sql`SELECT * FROM v_competence_framework ORDER BY group_sort, comp_sort, level`,
+      ),
+    }));
+  }
+
+  /** Offboarding: neizmirena (izdata, nevraćena) REVERSI zaduženja zaposlenog — panel
+   *  „Zaduženja za vraćanje" (1.0 loadEmployeeOutstandingReversi). Preostalo po liniji =
+   *  quantity − returned_quantity; samo ISSUED linije > 0 na OPEN/PARTIALLY_RETURNED dok.
+   *  rev_* SELECT je USING(true) za authenticated (paritet 1.0 — HR vidi za bilo koga). */
+  async offboardingOutstandingReversi(email: string, employeeId: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const data = await tx.$queryRaw(
+        Prisma.sql`
+          SELECT d.id AS doc_id, d.doc_number, d.doc_type, d.issued_at,
+                 t.oznaka, COALESCE(t.naziv, l.part_name) AS naziv,
+                 (l.quantity - COALESCE(l.returned_quantity, 0)) AS qty,
+                 COALESCE(l.unit, 'kom') AS unit, l.napomena AS pribor
+            FROM rev_documents d
+            JOIN rev_document_lines l ON l.document_id = d.id
+            LEFT JOIN rev_tools t ON t.id = l.tool_id
+           WHERE d.recipient_employee_id = ${employeeId}::uuid
+             AND d.status IN ('OPEN', 'PARTIALLY_RETURNED')
+             AND l.line_status = 'ISSUED'
+             AND (l.quantity - COALESCE(l.returned_quantity, 0)) > 0
+           ORDER BY d.issued_at DESC
+           LIMIT 200`,
+      );
+      // qty može biti numeric → Number (JSON ne serijalizuje bigint/Decimal dosledno).
+      return { data: this.numify(data) };
+    });
+  }
+
+  /** Izveštaj „Deca zaposlenih" (PII) — sva deca + ime/odeljenje zaposlenog (1.0
+   *  childrenReport, loadChildrenForEmployee bez empId). FE računa starosne raspone. */
+  async reportChildren(email: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const data = await tx.$queryRaw(
+        Prisma.sql`
+          SELECT c.id, c.employee_id, e.full_name AS employee_name, e.department,
+                 c.first_name, c.birth_date, c.note
+            FROM employee_children c
+            JOIN v_employees_safe e ON e.id = c.employee_id
+           ORDER BY e.full_name, c.birth_date`,
       );
       return { data };
     });

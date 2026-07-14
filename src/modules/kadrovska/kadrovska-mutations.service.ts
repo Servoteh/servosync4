@@ -881,6 +881,11 @@ export class KadrovskaMutationsService {
           zapisnikMd: dto.zapisnikMd ?? null,
           status: "nacrt",
           planId: dto.planId ?? null,
+          // Godišnji razgovor — odluka o zaradi (za druge tipove ostaje null).
+          raiseDecision: dto.raiseDecision ?? null,
+          raisePercent: dto.raisePercent ?? null,
+          raiseEffectiveFrom: dto.raiseEffectiveFrom ? this.date(dto.raiseEffectiveFrom) : null,
+          raiseNote: dto.raiseNote ?? null,
           createdBy: email,
           conductedBy: email,
         },
@@ -898,12 +903,25 @@ export class KadrovskaMutationsService {
             ...(dto.title !== undefined ? { title: dto.title } : {}),
             ...(dto.zapisnikMd !== undefined ? { zapisnikMd: dto.zapisnikMd } : {}),
             ...(dto.status != null ? { status: dto.status } : {}),
+            ...(dto.raiseDecision !== undefined ? { raiseDecision: dto.raiseDecision ?? null } : {}),
+            ...(dto.raisePercent !== undefined ? { raisePercent: dto.raisePercent ?? null } : {}),
+            ...(dto.raiseEffectiveFrom !== undefined
+              ? { raiseEffectiveFrom: dto.raiseEffectiveFrom ? this.date(dto.raiseEffectiveFrom) : null }
+              : {}),
+            ...(dto.raiseNote !== undefined ? { raiseNote: dto.raiseNote ?? null } : {}),
             updatedBy: email,
             updatedAt: new Date(),
           },
         }),
         "Razgovor",
       ),
+    );
+  }
+  /** Brisanje zapisnika (1.0 deleteTalk): nacrt = autor; podeljen/potvrđen = admin.
+   *  Razlikovanje presuđuje sy15 RLS (endpoint gate = dev_manage); 0 redova → 403. */
+  deleteTalk(email: string, id: string) {
+    return this.mutate(email, undefined, "kadr.talk.delete", (tx) =>
+      this.requireRows(tx.employeeTalk.deleteMany({ where: { id } }), "Razgovor"),
     );
   }
   talkShare(email: string, id: string, dto: D.OptIdempotentDto) {
@@ -922,6 +940,47 @@ export class KadrovskaMutationsService {
       this.rpcJson(tx, Prisma.sql`SELECT talk_acknowledge(${id}::uuid) AS v`),
     );
   }
+  /* Korektivni plan (1.0 saveCorrectivePlan/updateCorrectivePlan) */
+  createCorrectivePlan(email: string, dto: D.CreateCorrectivePlanDto) {
+    return this.create(email, dto.clientEventId, "kadr.cplan.create", (tx) =>
+      tx.correctivePlan.create({
+        data: {
+          employeeId: dto.employeeId,
+          talkId: dto.talkId ?? null,
+          reasonMd: dto.reasonMd ?? null,
+          // DB default 'otvoren'; FE ga ne šalje pri otvaranju iz razgovora.
+          status: dto.status ?? "otvoren",
+          followupDate: dto.followupDate ? this.date(dto.followupDate) : null,
+          // visible_to_employee prati status razgovora (1.0: t.status !== 'nacrt').
+          visibleToEmployee: dto.visibleToEmployee ?? false,
+          createdBy: email,
+        },
+      }),
+    );
+  }
+  updateCorrectivePlan(email: string, id: string, dto: D.UpdateCorrectivePlanDto) {
+    return this.mutate(email, undefined, "kadr.cplan.update", (tx) =>
+      this.requireRows(
+        tx.correctivePlan.updateMany({
+          where: { id },
+          data: {
+            ...(dto.reasonMd !== undefined ? { reasonMd: dto.reasonMd } : {}),
+            ...(dto.status != null ? { status: dto.status } : {}),
+            ...(dto.followupDate !== undefined
+              ? { followupDate: dto.followupDate ? this.date(dto.followupDate) : null }
+              : {}),
+            ...(dto.closedAt !== undefined
+              ? { closedAt: dto.closedAt ? new Date(dto.closedAt) : null }
+              : {}),
+            ...(dto.visibleToEmployee != null ? { visibleToEmployee: dto.visibleToEmployee } : {}),
+            updatedAt: new Date(),
+          },
+        }),
+        "Korektivni plan",
+      ),
+    );
+  }
+
   createMeasure(email: string, dto: D.CreateMeasureDto) {
     return this.create(email, dto.clientEventId, "kadr.measure.create", (tx) =>
       tx.correctiveMeasure.create({
@@ -930,30 +989,54 @@ export class KadrovskaMutationsService {
           descriptionMd: dto.descriptionMd,
           dueDate: dto.dueDate ? this.date(dto.dueDate) : null,
           responsibleEmployeeId: dto.responsibleEmployeeId ?? null,
-          // 1.0 domen (talks.js): u_toku → ispunjeno (NE otvorena/zavrsena).
-          status: "u_toku",
+          // 1.0 modal default = 'otvoreno' (DB default) — NE 'u_toku'; status-select šalje izbor.
+          status: dto.status ?? "otvoreno",
+          note: dto.note ?? null,
           sort: dto.sort ?? 0,
         },
       }),
     );
   }
+  /**
+   * 1.0 (talksSection.js:557): PROMENA ROKA resetuje escalated_at (nova šansa za
+   * eskalacioni mejl). FE poredi stari↔novi datum; BE nema stari u DTO-u, pa ga
+   * pročita u ISTOJ tx pre update-a i resetuje samo kad se rok stvarno promeni.
+   */
   updateMeasure(email: string, id: string, dto: D.UpdateMeasureDto) {
-    return this.mutate(email, undefined, "kadr.measure.update", (tx) =>
-      this.requireRows(
+    return this.mutate(email, undefined, "kadr.measure.update", async (tx) => {
+      let resetEscalation = false;
+      if (dto.dueDate !== undefined) {
+        const cur = await tx.correctiveMeasure.findUnique({
+          where: { id },
+          select: { dueDate: true },
+        });
+        const newIso = dto.dueDate ? dto.dueDate.slice(0, 10) : null;
+        const curIso = cur?.dueDate ? cur.dueDate.toISOString().slice(0, 10) : null;
+        resetEscalation = newIso !== curIso;
+      }
+      return this.requireRows(
         tx.correctiveMeasure.updateMany({
           where: { id },
           data: {
             ...(dto.descriptionMd != null ? { descriptionMd: dto.descriptionMd } : {}),
-            ...(dto.dueDate ? { dueDate: this.date(dto.dueDate) } : {}),
+            ...(dto.dueDate !== undefined
+              ? { dueDate: dto.dueDate ? this.date(dto.dueDate) : null }
+              : {}),
             ...(dto.responsibleEmployeeId !== undefined ? { responsibleEmployeeId: dto.responsibleEmployeeId } : {}),
             ...(dto.status != null ? { status: dto.status, ...(dto.status === "ispunjeno" ? { completedAt: new Date() } : {}) } : {}),
             ...(dto.note !== undefined ? { note: dto.note } : {}),
             ...(dto.sort != null ? { sort: dto.sort } : {}),
+            ...(resetEscalation ? { escalatedAt: null } : {}),
             updatedAt: new Date(),
           },
         }),
         "Mera",
-      ),
+      );
+    });
+  }
+  deleteMeasure(email: string, id: string) {
+    return this.mutate(email, undefined, "kadr.measure.delete", (tx) =>
+      this.requireRows(tx.correctiveMeasure.deleteMany({ where: { id } }), "Mera"),
     );
   }
 
