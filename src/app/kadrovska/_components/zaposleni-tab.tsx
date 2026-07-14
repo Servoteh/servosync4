@@ -88,8 +88,10 @@ function loadSort(): SortState | null {
 export function ZaposleniTab() {
   const { can } = useAuth();
   const canEdit = can(PERMISSIONS.KADROVSKA_EDIT);
-  // Nov slog (INSERT) sme samo admin/HR/poslovni_admin — FE afordansa preko
-  // kadrovska.manage; backend guard + sy15 RLS presuđuju (1.0 canAddEmployeeRecord).
+  // „+ Novi zaposleni" / „⚡ Brzi unos": FE gate = kadrovska.manage — NAMERNO
+  // strožiji od BE guard-a (POST /employees je na BE kadrovska.edit; verifikovano
+  // 14.07). Presuda Nenad 14.07: fail-closed afordansa ostaje na manage;
+  // sy15 RLS employees_insert svakako presuđuje red (HR/admin/poslovni_admin).
   const canAdd = can(PERMISSIONS.KADROVSKA_MANAGE);
   const canAdmin = can(PERMISSIONS.KADROVSKA_ADMIN);
   const canPii = can(PERMISSIONS.KADROVSKA_PII);
