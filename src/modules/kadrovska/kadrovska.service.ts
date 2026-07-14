@@ -9,11 +9,19 @@ import {
 import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
 import { pageMeta, parsePagination } from "../../common/pagination";
+import {
+  aggregateWorkHoursForMonth,
+  computeMonthlyFond,
+  computePayableHours,
+  sanitizeHoursForWorkType,
+} from "./payroll/payroll-calc";
 import type {
   AbsencesQueryDto,
   AttendanceDailyQueryDto,
+  AttendanceEventsQueryDto,
   ByEmployeeQueryDto,
   GridQueryDto,
+  HolidaysQueryDto,
   ListEmployeesQueryDto,
   MonthQueryDto,
   NotificationsQueryDto,
@@ -191,6 +199,48 @@ export class KadrovskaService {
   }
 
   // ==========================================================================
+  // ŠIFARNICI / LOOKUP
+  // ==========================================================================
+
+  /**
+   * Org struktura — kaskadni selekti (odeljenje→pododeljenje→pozicija) + opisna
+   * *_md polja job_positions (aneks/opis radnog mesta PDF/ugovor auto-popuna;
+   * paritet 1.0 employeesTab:607-637 + jobPositionPdf). Šifarnici su bazni read
+   * (1.0 ih čita bez maske); RLS kroz withUserRls i dalje presuđuje.
+   */
+  async orgStructure(email: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const [departments, subDepartments, jobPositions] = await Promise.all([
+        tx.department.findMany({
+          orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+        }),
+        tx.subDepartment.findMany({
+          orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+        }),
+        tx.jobPosition.findMany({
+          orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+        }),
+      ]);
+      return { data: { departments, subDepartments, jobPositions } };
+    });
+  }
+
+  /** Praznici u proizvoljnom rasponu — most odsustvo→grid preskače praznike
+   *  (1.0 absenceGrid.js), pregled odsustava računa godinu. Bez raspona = tekuća godina. */
+  async holidays(email: string, q: HolidaysQueryDto) {
+    const year = new Date().getUTCFullYear();
+    const from = this.toDbDate(q.from ?? `${year}-01-01`)!;
+    const to = this.toDbDate(q.to ?? `${year}-12-31`)!;
+    return this.withUserMapped(email, async (tx) => {
+      const data = await tx.kadrHoliday.findMany({
+        where: { holidayDate: { gte: from, lte: to } },
+        orderBy: [{ holidayDate: "asc" }],
+      });
+      return { data };
+    });
+  }
+
+  // ==========================================================================
   // ODMORI (GO saldo + zahtevi/odobravanja + odsustva)
   // ==========================================================================
 
@@ -288,12 +338,16 @@ export class KadrovskaService {
     });
   }
 
-  /** Odsustva (absences) — CRUD/apply-to-grid = R2; ovde read + filteri. */
+  /** Odsustva (absences) — CRUD/apply-to-grid = R2; ovde read + filteri.
+   *  `archived`: 'active' (podrazumevano na FE) = tekuće; 'archived' = arhiva pogled;
+   *  'all'/izostavljeno = SVE (netaknuto ponašanje). Paritet absencesTab Aktivna/Arhivirana. */
   async absences(email: string, q: AbsencesQueryDto) {
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.absence.findMany({
         where: {
           ...(q.employeeId ? { employeeId: q.employeeId } : {}),
+          ...(q.archived === "active" ? { archivedAt: null } : {}),
+          ...(q.archived === "archived" ? { NOT: { archivedAt: null } } : {}),
           ...(q.from || q.to
             ? {
                 dateFrom: {
@@ -340,7 +394,7 @@ export class KadrovskaService {
     const start = new Date(Date.UTC(year, month - 1, 1));
     const end = new Date(Date.UTC(year, month, 1));
     return this.withUserMapped(email, async (tx) => {
-      const [rows, remarks, holidays] = await Promise.all([
+      const [rows, remarks, holidays, lockRows] = await Promise.all([
         tx.workHours.findMany({
           where: {
             workDate: { gte: start, lt: end },
@@ -353,8 +407,103 @@ export class KadrovskaService {
           where: { holidayDate: { gte: start, lt: end } },
           orderBy: [{ holidayDate: "asc" }],
         }),
+        // Zaključan mesec (salary_payroll status=paid). RLS SELECT je admin-only →
+        // za NE-admin grid editora vraća 0 redova → locked=false (paritet 1.0:
+        // loadGridMonthLocked čita isti red, non-admin ionako [] jer je RLS admin).
+        tx.$queryRaw<{ n: bigint }[]>(
+          Prisma.sql`SELECT count(*) AS n FROM salary_payroll
+            WHERE period_year = ${year}::int AND period_month = ${month}::int AND status = 'paid'`,
+        ),
       ]);
-      return { data: { year, month, rows, remarks, holidays } };
+      const locked = Number(lockRows[0]?.n ?? 0) > 0;
+      return { data: { year, month, rows, remarks, holidays, locked } };
+    });
+  }
+
+  /**
+   * Σ isplata agregat po radniku (paritet 1.0 gridPayrollSum: aggregate/sanitize/
+   * computePayable) — SATI-ONLY, bez novca/uslova → sme pod `kadrovska.grid_edit`
+   * (salary ostaje admin). Hrani „Σ isplata" red grida i zbirni blok karneta
+   * (praznik rad/plaćeni, GO, slobodni, bolovanje 65/100, neplaćeni dani).
+   * Redove i dalje filtrira RLS (grid editor vidi sve; ostali svoje/tim).
+   */
+  async gridPayable(email: string, q: GridQueryDto) {
+    const now = new Date();
+    const year = q.year ?? now.getUTCFullYear();
+    const month = q.month ?? now.getUTCMonth() + 1;
+    const start = new Date(Date.UTC(year, month - 1, 1));
+    const end = new Date(Date.UTC(year, month, 1));
+    return this.withUserMapped(email, async (tx) => {
+      const [rows, holidays, employees] = await Promise.all([
+        tx.workHours.findMany({
+          where: {
+            workDate: { gte: start, lt: end },
+            ...(q.employeeId ? { employeeId: q.employeeId } : {}),
+          },
+        }),
+        tx.kadrHoliday.findMany({
+          where: { holidayDate: { gte: start, lt: end } },
+          select: { holidayDate: true },
+        }),
+        tx.employee.findMany({
+          where: {
+            isActive: true,
+            ...(q.employeeId ? { id: q.employeeId } : {}),
+          },
+          select: { id: true, workType: true, hireDate: true },
+        }),
+      ]);
+      const holSet = new Set(
+        holidays.map((h) => h.holidayDate.toISOString().slice(0, 10)),
+      );
+      const fond = computeMonthlyFond(year, month, holSet).fondSati;
+
+      const byEmp = new Map<string, Map<string, Record<string, unknown>>>();
+      for (const r of rows) {
+        const ymd = r.workDate.toISOString().slice(0, 10);
+        let m = byEmp.get(r.employeeId);
+        if (!m) byEmp.set(r.employeeId, (m = new Map()));
+        m.set(ymd, {
+          hours: r.hours,
+          overtimeHours: r.overtimeHours,
+          twoMachineHours: r.twoMachineHours,
+          absenceCode: r.absenceCode,
+          absenceSubtype: r.absenceSubtype,
+        });
+      }
+      const perEmployee = employees
+        .filter((e) => byEmp.has(e.id) || q.employeeId === e.id)
+        .map((e) => {
+          const agg = aggregateWorkHoursForMonth(
+            year,
+            month,
+            byEmp.get(e.id) ?? new Map(),
+            holSet,
+            {
+              workType: e.workType,
+              hireDate: e.hireDate
+                ? e.hireDate.toISOString().slice(0, 10)
+                : null,
+            },
+          );
+          // TAČAN 1.0 lanac (gridPayrollSum.js:12-17): aggregate → sanitize po
+          // work_type (praksa/dualno/penzioner bez GO/BO/plaćenog praznika) →
+          // computePayableHours(sanitized, 'satnica') = weighted_full jedinice.
+          const { sanitized, warnings } = sanitizeHoursForWorkType(
+            agg,
+            e.workType || "ugovor",
+          );
+          const { payableHours } = computePayableHours(sanitized, "satnica");
+          return {
+            employeeId: e.id,
+            workType: e.workType,
+            ...agg,
+            sanitized,
+            payableHours,
+            warnings,
+          };
+        });
+      return { data: { year, month, fondSati: fond, perEmployee } };
     });
   }
 
@@ -464,12 +613,80 @@ export class KadrovskaService {
     });
   }
 
+  /**
+   * Feed „Poslednji prolazi" (paritet 1.0 prisustvoTab:129-140 + prisustvo.js:50-58):
+   * poslednjih N sirovih attendance_events (uklj. employee_id NULL = nepoznata
+   * kartica, sa badge_code) + brojač današnjih nepoznatih (od ponoći Beograd).
+   * LEFT JOIN employees za ime; RLS (hr_or_admin ∨ grid_edit ∨ own) filtrira redove.
+   * `id` je bigint → Number.
+   */
+  async attendanceEvents(email: string, q: AttendanceEventsQueryDto) {
+    const limit = q.limit ?? 40;
+    const todayYmd = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Europe/Belgrade",
+    }).format(new Date());
+    return this.withUserMapped(email, async (tx) => {
+      const [events, unknownRows] = await Promise.all([
+        tx.$queryRaw<Record<string, unknown>[]>(
+          Prisma.sql`SELECT ae.id, ae.event_ts, ae.direction, ae.terminal_name,
+              ae.source, ae.badge_code, ae.employee_id, e.full_name AS employee_name
+            FROM attendance_events ae
+            LEFT JOIN employees e ON e.id = ae.employee_id
+            ORDER BY ae.event_ts DESC LIMIT ${limit}`,
+        ),
+        // Nepoznata kartica danas: ponoć po Beogradu (paritet countUnknownBadgeToday).
+        tx.$queryRaw<{ n: bigint }[]>(
+          Prisma.sql`SELECT count(*) AS n FROM attendance_events
+            WHERE employee_id IS NULL
+              AND event_ts >= (${todayYmd}::date::timestamp AT TIME ZONE 'Europe/Belgrade')`,
+        ),
+      ]);
+      return {
+        data: {
+          events: this.numify(events),
+          unknownToday: Number(unknownRows[0]?.n ?? 0),
+        },
+      };
+    });
+  }
+
   // ==========================================================================
   // ZAPOSLENI (zaposleni + PII + ugovori + medical/certs + imenik + onboarding + razvoj)
   // ==========================================================================
 
-  /** Lista zaposlenih — v_employees_safe (PII MASKA; §2.6 pravilo 4). NIKAD `employees`
-   *  tabela direktno za prikaz. PII kolone view maskira po current_user_can_manage_pii. */
+  /** Sort kolona → SQL izraz (whitelist; nema korisničkog SQL-a → nema injekcije). */
+  private static readonly EMPLOYEE_SORT_SQL: Record<string, string> = {
+    name: "full_name",
+    position: "position_name",
+    department: "department_name",
+    subDepartment: "sub_department_name",
+    email: "email",
+    medical: "medical_exam_expires",
+    birthday: "days_to_bday",
+    status: "is_active",
+  };
+
+  /** „Dana do rođendana" (0..365, wrap-around) — to_date je popustljiv na 29.02.
+   *  u ne-prestupnoj godini (→ 01.03), pa nema 22008 greške; MM-DD string poređenje
+   *  je fiksne širine (leksički ispravno). Paritet 1.0 auto-sort po najbližem. */
+  private static readonly DAYS_TO_BDAY_SQL = Prisma.raw(
+    `CASE WHEN birth_date IS NULL THEN NULL ELSE (
+       to_date(
+         (extract(year from current_date)::int
+           + (CASE WHEN to_char(birth_date,'MM-DD') >= to_char(current_date,'MM-DD') THEN 0 ELSE 1 END))::text
+         || to_char(birth_date,'-MM-DD'),
+         'YYYY-MM-DD'
+       ) - current_date
+     ) END`,
+  );
+
+  /**
+   * Lista zaposlenih — v_employees_safe (PII MASKA; §2.6 pravilo 4) + server-side
+   * sort (persist na FE) i quick-filter čipovi (med-soon/bday-soon/missing-jmbg/
+   * no-email/no-phone) — nužni uz server-paginaciju (paritet employeesTab:225-233).
+   * ⚠️ missing-jmbg filtrira nad `personal_id` VIEW-a: za NE-PII pozivaoca je uvek
+   * NULL (maskirano) → čip vraća sve (over-match, BEZ curenja); smisleno samo za PII.
+   */
   async employees(email: string, q: ListEmployeesQueryDto) {
     const { page, pageSize, skip, take } = parsePagination(q.page, q.pageSize);
     return this.withUserMapped(email, async (tx) => {
@@ -478,20 +695,49 @@ export class KadrovskaService {
       if (q.department) conds.push(Prisma.sql`department = ${q.department}`);
       if (q.active === "true") conds.push(Prisma.sql`is_active = true`);
       if (q.active === "false") conds.push(Prisma.sql`is_active = false`);
+      // Quick-filter čip (jedan aktivan).
+      if (q.filter === "med-soon")
+        conds.push(
+          Prisma.sql`medical_exam_expires IS NOT NULL AND medical_exam_expires <= current_date + INTERVAL '30 days'`,
+        );
+      if (q.filter === "bday-soon")
+        conds.push(Prisma.sql`days_to_bday IS NOT NULL AND days_to_bday <= 30`);
+      if (q.filter === "missing-jmbg")
+        conds.push(Prisma.sql`(personal_id IS NULL OR personal_id = '')`);
+      if (q.filter === "no-email")
+        conds.push(Prisma.sql`(email IS NULL OR email = '')`);
+      if (q.filter === "no-phone")
+        conds.push(Prisma.sql`(phone_work IS NULL OR phone_work = '')`);
+      // Ugovorni tip suženje (aktivan ugovor po zaposlenom).
+      if (q.conType)
+        conds.push(
+          Prisma.sql`id IN (SELECT employee_id FROM contracts WHERE contract_type = ${q.conType} AND archived_at IS NULL)`,
+        );
       const where = conds.length
         ? Prisma.sql`WHERE ${Prisma.join(conds, " AND ")}`
         : Prisma.empty;
+      const inner = Prisma.sql`SELECT vs.*, ${KadrovskaService.DAYS_TO_BDAY_SQL} AS days_to_bday FROM v_employees_safe vs`;
+
+      // Sort: whitelist kolona + smer; bday-soon čip default-sortira po najbližem.
+      const sortKey =
+        q.sort ?? (q.filter === "bday-soon" ? "birthday" : "name");
+      const col = KadrovskaService.EMPLOYEE_SORT_SQL[sortKey] ?? "full_name";
+      const dir = q.dir === "desc" ? "DESC" : "ASC";
+      const orderBy = Prisma.raw(
+        `ORDER BY ${col} ${dir} NULLS LAST, full_name ASC`,
+      );
+
       const [data, totalRows] = await Promise.all([
         tx.$queryRaw(
-          Prisma.sql`SELECT * FROM v_employees_safe ${where}
-            ORDER BY full_name OFFSET ${skip} LIMIT ${take}`,
+          Prisma.sql`SELECT * FROM (${inner}) t ${where}
+            ${orderBy} OFFSET ${skip} LIMIT ${take}`,
         ),
         tx.$queryRaw<{ n: bigint }[]>(
-          Prisma.sql`SELECT count(*) AS n FROM v_employees_safe ${where}`,
+          Prisma.sql`SELECT count(*) AS n FROM (${inner}) t ${where}`,
         ),
       ]);
       const total = Number(totalRows[0]?.n ?? 0);
-      return { data, meta: pageMeta(page, pageSize, total) };
+      return { data: this.numify(data), meta: pageMeta(page, pageSize, total) };
     });
   }
 
@@ -503,6 +749,46 @@ export class KadrovskaService {
       );
       if (!rows[0]) throw new NotFoundException(`Zaposleni ${id} ne postoji`);
       return { data: rows[0] };
+    });
+  }
+
+  /**
+   * PII karton (JMBG/adresa/grad/pošt.broj/rođenje/sprema/banka/kontakti) — hrani
+   * auto-popunu Ugovora o radu (prebivalište/SS stepen/maloletnik iz birth_date;
+   * paritet contractsTab:1116-1381). ISTI view (v_employees_safe) maskira po
+   * pozivaocu — endpoint je pod `kadrovska.pii` (guard), maska je drugi sloj:
+   * NE-PII pozivalac bi dobio NULL-ove, ne sirove podatke.
+   */
+  async employeePii(email: string, id: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const rows = await tx.$queryRaw<Record<string, unknown>[]>(
+        Prisma.sql`SELECT id, full_name, birth_date, gender,
+            education_level, education_title,
+            personal_id, bank_name, bank_account,
+            address, city, postal_code, phone_private,
+            emergency_contact_name, emergency_contact_phone,
+            emergency_contact_relation, emergency_contact_phone_alt
+          FROM v_employees_safe WHERE id = ${id}::uuid`,
+      );
+      if (!rows[0]) throw new NotFoundException(`Zaposleni ${id} ne postoji`);
+      return { data: rows[0] };
+    });
+  }
+
+  /**
+   * Uska bruto per-zaposleni — wrap `kadr_get_contract_bruto` (SECURITY DEFINER;
+   * interno vraća NULL bez can_manage_employee_pii) — poslovni admin generiše
+   * ugovor BEZ pristupa tabu Zarade (paritet contractsTab:1289-1294).
+   */
+  async contractBruto(email: string, id: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const rows = await tx.$queryRaw<{ v: unknown }[]>(
+        Prisma.sql`SELECT kadr_get_contract_bruto(${id}::uuid) AS v`,
+      );
+      const v = rows[0]?.v ?? null;
+      return {
+        data: { employeeId: id, bruto: v == null ? null : Number(v) },
+      };
     });
   }
 

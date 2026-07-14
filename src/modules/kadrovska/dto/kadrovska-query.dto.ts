@@ -1,5 +1,6 @@
 import {
   IsBooleanString,
+  IsIn,
   IsInt,
   IsISO8601,
   IsOptional,
@@ -33,10 +34,41 @@ export class GridQueryDto extends MonthQueryDto {
   @IsOptional() @IsUUID() employeeId?: string;
 }
 
+/** Sortabilne kolone liste (paritet 1.0 employeesTab header-sort). */
+export const EMPLOYEE_SORT_KEYS = [
+  "name",
+  "position",
+  "department",
+  "subDepartment",
+  "email",
+  "medical",
+  "birthday",
+  "status",
+] as const;
+
+/** Quick-filter čipovi (paritet 1.0 employeesTab:225-233): jedan klik = jedan uslov.
+ *  `active` je odvojen param (postoji). Ostali su ovde kao enum. */
+export const EMPLOYEE_QUICK_FILTERS = [
+  "med-soon",
+  "bday-soon",
+  "missing-jmbg",
+  "no-email",
+  "no-phone",
+] as const;
+
 export class ListEmployeesQueryDto {
   @IsOptional() @IsString() q?: string;
   @IsOptional() @IsBooleanString() active?: string;
   @IsOptional() @IsString() department?: string;
+  /** Ugovorni tip suženje (contracts.contract_type aktivnog ugovora). */
+  @IsOptional() @IsString() conType?: string;
+  /** Server-side sort kolona (persist na FE u localStorage). */
+  @IsOptional() @IsIn(EMPLOYEE_SORT_KEYS as unknown as string[]) sort?: string;
+  @IsOptional() @IsIn(["asc", "desc"]) dir?: string;
+  /** Quick-filter čip (jedan aktivan). */
+  @IsOptional()
+  @IsIn(EMPLOYEE_QUICK_FILTERS as unknown as string[])
+  filter?: string;
   @IsOptional() @IsString() page?: string;
   @IsOptional() @IsString() pageSize?: string;
 }
@@ -59,11 +91,30 @@ export class RequestsQueryDto {
   @IsOptional() @IsUUID() employeeId?: string;
 }
 
-/** Odsustva/kalendar — employeeId + raspon datuma. */
+/** Odsustva/kalendar — employeeId + raspon datuma + arhiva pogled (paritet
+ *  1.0 absencesTab Aktivna/Arhivirana). `archived` neizostavljen = SVE (paritet
+ *  postojećeg ponašanja); 'active' = archived_at IS NULL; 'archived' = NOT NULL. */
 export class AbsencesQueryDto {
   @IsOptional() @IsUUID() employeeId?: string;
   @IsOptional() @IsISO8601() from?: string;
   @IsOptional() @IsISO8601() to?: string;
+  @IsOptional() @IsIn(["active", "archived", "all"]) archived?: string;
+}
+
+/** Praznici u proizvoljnom rasponu (most odsustvo→grid, pregled odsustava). */
+export class HolidaysQueryDto {
+  @IsOptional() @IsISO8601() from?: string;
+  @IsOptional() @IsISO8601() to?: string;
+}
+
+/** Sirovi prolazi sa kapije (feed „Poslednji prolazi") — limit N. */
+export class AttendanceEventsQueryDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(200)
+  limit?: number;
 }
 
 /** Dnevno prisustvo / vs-grid — employeeId + raspon dana. */

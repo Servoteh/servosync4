@@ -156,6 +156,10 @@ export class WorkHoursRowDto {
   @IsOptional() @IsString() absenceSubtype?: string;
   @IsOptional() @IsString() note?: string;
   @IsOptional() @IsString() projectRef?: string;
+  /** Teren→predmet vezivanje (bigtehn_items_cache broj/naziv). Batch RPC ih ne
+   *  prima → servis ih upisuje direktnim RLS UPDATE-om (grid_edit) posle batch-a. */
+  @IsOptional() @IsString() fieldPredmetBroj?: string;
+  @IsOptional() @IsString() fieldPredmetNaziv?: string;
 }
 
 export class GridBatchDto extends OptIdempotentDto {
@@ -195,6 +199,14 @@ export class ExtraRecipientDto extends IdempotentDto {
   @IsString() email!: string;
   @IsOptional() @IsInt() subDepartmentId?: number;
   @IsOptional() @IsString() note?: string;
+}
+
+/** Predlog neplaćenog dana (nop_requests INSERT; RLS has_edit_role∧manages_employee).
+ *  Kreiranje → kadr_queue_nop_notification('requested'). Direktan upis u grid = admin. */
+export class CreateNopDto extends OptIdempotentDto {
+  @IsUUID() employeeId!: string;
+  @IsISO8601() workDate!: string;
+  @IsOptional() @IsString() @MaxLength(2000) reason?: string;
 }
 
 /* ════════════════ ZAPOSLENI ════════════════ */
@@ -521,4 +533,12 @@ export class NotificationConfigDto {
 export class PayrollNotifyDto extends OptIdempotentDto {
   @IsInt() year!: number;
   @IsInt() @Min(1) month!: number;
+}
+
+/** Preusmeravanje queued outbox reda na knjigovođu (1.0 retargetQueuedNotif) —
+ *  UPDATE recipient/subject/body WHERE status='queued' (RLS hr_or_admin). */
+export class RetargetNotifDto {
+  @IsString() recipient!: string;
+  @IsOptional() @IsString() @MaxLength(500) subject?: string;
+  @IsOptional() @IsString() body?: string;
 }
