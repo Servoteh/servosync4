@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Button } from '@/components/ui-kit/button';
 import { FormField, Input } from '@/components/ui-kit/form-field';
@@ -122,6 +122,19 @@ export function TermModal({
   const fixedLike = model === 'fiksno' || model === 'jednokratno';
   const showFirst = model === 'dva_dela' || model === 'satnica';
   const showSplit = model === 'dva_dela';
+
+  // Odluka #7 (1.0): „Prvi deo" auto = ugovoreni NETO dok ga korisnik ne prepiše
+  // ručno (override ostaje moguć). Fallback na snapshot netoRsd sa reda.
+  const firstTouched = useRef(false);
+  useEffect(() => {
+    if (!showFirst || firstTouched.current) return;
+    if (parseFloat(f.firstPartAmount) > 0) return;
+    const autoNeto = calc?.netoRsd ?? (Number(term?.netoRsd) > 0 ? Number(term?.netoRsd) : null);
+    if (autoNeto && autoNeto > 0) {
+      setF((p) => ({ ...p, firstPartAmount: String(Math.round(autoNeto * 100) / 100) }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showFirst, calc]);
 
   function onTypeChange(t: string) {
     setF((p) => ({ ...p, salaryType: t, compensationModel: deriveCompensationModel(t) || 'fiksno' }));
@@ -355,7 +368,13 @@ export function TermModal({
             )}
             {showFirst && (
               <FormField label="Prvi deo (RSD)" hint="auto = ugovoreni NETO">
-                <Input type="number" min={0} step="0.01" value={f.firstPartAmount} onChange={(e) => set('firstPartAmount', e.target.value)} />
+                <Input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={f.firstPartAmount}
+                  onChange={(e) => { firstTouched.current = true; set('firstPartAmount', e.target.value); }}
+                />
               </FormField>
             )}
             {showSplit && (
