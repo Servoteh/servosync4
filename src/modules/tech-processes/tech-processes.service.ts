@@ -962,7 +962,11 @@ export class TechProcessesService {
       // kontrola → kiosk grana u KONTROLA režim, MODULE_SPEC_kontrola §1) + naziv.
       const op = await this.prisma.operation.findUnique({
         where: { workCenterCode: decoded.fields.workCenterCode },
-        select: { workCenterName: true, significantForFinishing: true },
+        select: {
+          workCenterName: true,
+          significantForFinishing: true,
+          withoutProcess: true,
+        },
       });
       return {
         data: {
@@ -973,6 +977,9 @@ export class TechProcessesService {
             ? {
                 workCenterName: op.workCenterName,
                 significantForFinishing: op.significantForFinishing === true,
+                // Opšti nalog (bez postupka): kiosk zna da je operacija UVEK
+                // otvorena (nema „Zatvori operaciju"), scan/start/stop uvek prolaze.
+                withoutProcess: op.withoutProcess === true,
               }
             : null,
         },
@@ -1217,6 +1224,16 @@ export class TechProcessesService {
       const tp = await tx.techProcess.findUnique({ where: { id } });
       if (!tp)
         throw new NotFoundException(`Tehnološki postupak ${id} ne postoji`);
+      // OPŠTI NALOG (Operation.withoutProcess=true): uvek je otvoren za prijavu
+      // rada — zatvaranje je zabranjeno (zatvoren red bi blokirao dalje kucanje 422).
+      const opDef = await tx.operation.findUnique({
+        where: { workCenterCode: tp.workCenterCode },
+        select: { withoutProcess: true },
+      });
+      if (opDef?.withoutProcess === true)
+        throw new UnprocessableEntityException(
+          "Opšti nalog (bez postupka) se ne zatvara — uvek je otvoren za prijavu rada.",
+        );
       if (tp.isProcessFinished)
         throw new UnprocessableEntityException(
           `Postupak ${id} je već zatvoren.`,
@@ -2437,6 +2454,79 @@ export class TechProcessesService {
   }
 
   /**
+   * `POST /:id/reopen` — ponovo otvara zatvorenu operaciju (DORADA): tehnolog/šef
+   * vraća operaciju u rad kada je posle zatvaranja potrebna dorada. U jednoj
+   * transakciji: (1) skida `isProcessFinished` sa SVIH redova te operacije
+   * (ista trojka + operationNumber + workCenterCode), (2) vraća operaciju na
+   * listu prioriteta (priority 100) ako RC koristi prioritet i bila je skinuta
+   * (255), (3) skida „RN završen" (`work_orders.status`) ako je bio postavljen.
+   */
+  async reopen(id: number) {
+    const tp = await this.prisma.techProcess.findUnique({ where: { id } });
+    if (!tp)
+      throw new NotFoundException(`Tehnološki postupak ${id} ne postoji`);
+
+    const {
+      projectId,
+      identNumber,
+      variant,
+      operationNumber,
+      workCenterCode,
+      workOrderId,
+    } = tp;
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      // (a) Otvori SVE zatvorene redove te operacije (deljena po trojci + OP + RC).
+      const reopened = await tx.techProcess.updateMany({
+        where: {
+          projectId,
+          identNumber,
+          variant,
+          operationNumber,
+          workCenterCode,
+          isProcessFinished: true,
+        },
+        data: { isProcessFinished: false, finishedAt: null },
+      });
+
+      // (b) Vrati operaciju na listu prioriteta ako RC koristi prioritet i bila je
+      // skinuta (255 → 100). Ako RC ne koristi prioritet, operacija ionako nije na
+      // listi — priority se ne dira.
+      const op = await tx.operation.findUnique({
+        where: { workCenterCode },
+        select: { usesPriority: true },
+      });
+      if (op?.usesPriority === true)
+        await tx.workOrderOperation.updateMany({
+          where: {
+            workOrderId,
+            operationNumber,
+            workCenterCode,
+            priority: OPERATION_PRIORITY_DONE,
+          },
+          data: { priority: 100 },
+        });
+
+      // (c) Skini „RN završen" ako je bio postavljen — operacija se vratila u rad.
+      await tx.workOrder.updateMany({
+        where: { id: workOrderId, status: true },
+        data: { status: false },
+      });
+
+      return { reopened: reopened.count };
+    });
+
+    return {
+      data: {
+        id,
+        operationNumber,
+        workCenterCode,
+        reopened: result.reopened,
+      },
+    };
+  }
+
+  /**
    * `DELETE /:id` — audited brisanje otkucane operacije (legacy `spObrisiTP`): snapshot
    * reda (+ dokumenata) u `audit_log.beforeData`, pa brisanje. Alat za ispravku loše
    * evidentiranih kucanja (bez lock-guarda, kao legacy — potvrda je na UI-u).
@@ -2684,6 +2774,18 @@ export class TechProcessesService {
         `RN za predmet ${projectId}, ident ${identNumber} nije nađen.`,
       );
 
+    // OPŠTI NALOG (Operation.withoutProcess=true): radni centar bez tehnološkog
+    // postupka NEMA red u routingu (work_order_operations) i UVEK je otvoren za
+    // prijavu rada. Zatvoreni redovi su ISTORIJA (legacy sync / ručno „Zatvori
+    // operaciju"): preskaču se i otvara se nov red. `opDef` se zato učitava PRE
+    // korišćenja `existing`-a — inače bi zatvoren postojeći red bio vraćen i
+    // pozivalac (scan/start/stop) bi pao 422 „već zatvorena".
+    const opDef = await tx.operation.findUnique({
+      where: { workCenterCode },
+      select: { withoutProcess: true },
+    });
+    const withoutProcess = opDef?.withoutProcess === true;
+
     const existing = await this.findRoutingTp(
       tx,
       projectId,
@@ -2692,16 +2794,14 @@ export class TechProcessesService {
       workCenterCode,
       operationNumber,
     );
-    if (existing) return { tp: existing, opened: false };
+    // Obična operacija: postojeći red (otvoren ili zatvoren) je autoritet.
+    // withoutProcess: postojeći red se koristi SAMO ako je OTVOREN — zatvoren se
+    // tretira kao istorija i pada u granu kreiranja novog reda ispod.
+    if (existing && !(withoutProcess && existing.isProcessFinished === true))
+      return { tp: existing, opened: false };
 
-    // OPŠTI NALOG (Operation.withoutProcess=true): radni centar bez tehnološkog
-    // postupka NEMA red u routingu (work_order_operations), pa bi validacija ispod
-    // uvek pala 422. Za takav RC otvori red direktno — preskoči routing lookup i 422.
-    const opDef = await tx.operation.findUnique({
-      where: { workCenterCode },
-      select: { withoutProcess: true },
-    });
-    if (opDef?.withoutProcess === true) {
+    // withoutProcess: otvori red direktno — preskoči routing lookup i 422.
+    if (withoutProcess) {
       // Serijska sekvenca (synced eksplicitni id-jevi) — poravnaj pre insert-a.
       await this.alignTechProcessSequence(tx);
       const tp = await tx.techProcess.create({

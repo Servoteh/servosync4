@@ -976,6 +976,28 @@ export class HandoverDraftsService {
         `Crtež(i) ne postoje: ${missing.join(", ")}.`,
       );
 
+    // Puštanje STARE revizije dokumentacije se TVRDO blokira pri predaji (odluka
+    // Nenad 14.07): u primopredaju ide samo POSLEDNJA revizija. Do sada je
+    // ne-poslednja revizija bila samo SOFT upozorenje pri kreiranju nacrta
+    // (meta.warnings), a predaja je prolazila — ukinuto. `checkItemPreconditions`
+    // usput re-validira i PDM odobrenje (ne-odobren → 422); ovde blokiramo na
+    // `not_latest_revision`. Escape hatch: isključi stavku (excludeFromHandover)
+    // ili je zameni poslednjom revizijom — isključene stavke već nisu u `items`.
+    const preconditionWarnings = await this.checkItemPreconditions(
+      items.map((i) => i.drawingId),
+    );
+    const staleRevisions = preconditionWarnings.filter(
+      (w) => w.type === "not_latest_revision",
+    );
+    if (staleRevisions.length)
+      throw new UnprocessableEntityException(
+        `Puštanje stare revizije nije dozvoljeno — u primopredaju ide samo poslednja revizija. ${staleRevisions
+          .map((w) => w.message)
+          .join(
+            " ",
+          )} Izbacite te stavke iz nacrta (Isključi) ili ih zamenite poslednjom revizijom pre predaje.`,
+      );
+
     const createdIds = await this.prisma.$transaction(async (tx) => {
       // Serijalizuj konkurentne submit-ove istog nacrta — bez ovoga bi dva
       // paralelna poziva oba prošla proveru `isLocked` i duplirala primopredaje

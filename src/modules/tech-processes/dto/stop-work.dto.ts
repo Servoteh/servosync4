@@ -8,6 +8,10 @@ import { BadRequestException } from "@nestjs/common";
  * (`started_at = stopped_at`) — jednokratni fallback. `workerCard` obavezna (isti radnik
  * koji je započeo — legacy `ZavrsiNalogDrugogRadnika` je P2).
  *
+ * `pieceCount` sme biti 0: borverk radi danima na jednom komadu, pa „Završi rad"
+ * evidentira SAMO vreme (`work_time_entries`), komadi 0. („Evidentiraj"/scan i dalje
+ * traži ≥ 1.)
+ *
  * class-validator još nije uveden (BACKEND_RULES §6) — validacija je ručna.
  */
 export interface StopWorkDto {
@@ -17,7 +21,7 @@ export interface StopWorkDto {
   operationBarcode: string;
   /** ID kartica radnika (`workers.cardId`) — obavezno. */
   workerCard: string;
-  /** Broj napravljenih komada u ovoj sesiji (ceo broj ≥ 1). */
+  /** Broj napravljenih komada u ovoj sesiji (ceo broj ≥ 0; 0 = samo vreme). */
   pieceCount: number;
   /** Napomena (opciono). */
   note?: string;
@@ -34,9 +38,9 @@ export function validateStopWork(dto: StopWorkDto): void {
   if (
     typeof dto?.pieceCount !== "number" ||
     !Number.isInteger(dto.pieceCount) ||
-    dto.pieceCount < 1
+    dto.pieceCount < 0
   )
-    errors.push("Polje 'pieceCount' mora biti ceo broj ≥ 1.");
+    errors.push("Polje 'pieceCount' mora biti ceo broj ≥ 0 (0 = samo vreme).");
   if (
     dto?.note !== undefined &&
     (typeof dto.note !== "string" || dto.note.length > 2000)
