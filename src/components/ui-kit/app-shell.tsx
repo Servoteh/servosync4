@@ -12,6 +12,7 @@ import {
   Clock,
   Cpu,
   DraftingCompass,
+  IdCard,
   ListChecks,
   ListOrdered,
   LogOut,
@@ -97,6 +98,14 @@ const NAV_SECTIONS: NavSection[] = [
     title: 'Oprema i energija',
     items: [
       { label: 'Reversi', href: '/reversi', icon: Wrench, requires: PERMISSIONS.REVERSI_READ },
+    ],
+  },
+  {
+    // Kadrovska (HR) — 3.0 Talas G (POSLEDNJI; PII + zarade). Vidljivost = `kadrovska.read`
+    // (paritet 1.0 canAccessKadrovska). Interni tabovi/hub gejtuju stroža prava.
+    title: 'Kadrovska',
+    items: [
+      { label: 'Kadrovska', href: '/kadrovska', icon: IdCard, requires: PERMISSIONS.KADROVSKA_READ },
     ],
   },
   {
