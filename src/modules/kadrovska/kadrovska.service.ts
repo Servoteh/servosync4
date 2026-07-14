@@ -921,9 +921,13 @@ export class KadrovskaService {
       // placeno) mora razrešiti imena istorijskih redova bivših zaposlenih (inače
       // UUID umesto imena). FE filtrira e.is_active na mestu upotrebe gde 1.0 filtrira
       // (pickeri, Pregled/Kalendar/Odsutni) — paritet „load all, filter at use site".
+      // ⚠️ HIGH #4 (T2/T3 review 14.07): `hire_date` je OBAVEZAN — P6 grid iz njega
+      // računa prvi (parcijalni) mesec novozaposlenog (praznici PRE datuma
+      // zaposlenja se NE plaćaju); bez njega Karnet PDF/Excel precenjuje sate za
+      // 96 redova (ugovor, aktivni, start posle 1. u mesecu).
       const data = await tx.$queryRaw(
         Prisma.sql`SELECT id, full_name, position, department, team, phone_work, phone_private, email,
-            birth_date, medical_exam_expires, work_type, department_id, sub_department_id, is_active
+            birth_date, hire_date, medical_exam_expires, work_type, department_id, sub_department_id, is_active
           FROM v_employees_safe ORDER BY full_name`,
       );
       return { data };

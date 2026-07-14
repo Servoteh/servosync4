@@ -1,4 +1,4 @@
-import { Type } from "class-transformer";
+import { Transform, Type } from "class-transformer";
 import {
   ArrayMinSize,
   IsArray,
@@ -492,13 +492,26 @@ export class SetStateDto extends OptIdempotentDto {
   @IsBoolean() visible!: boolean;
 }
 
-/* Employee documents (storage proxy; kadrovska.pii) */
+/* Employee documents (storage proxy; kadrovska.pii) — multipart/form-data body!
+ * ⚠️ CRITICAL #1 (T2/T3 review 14.07): multipart NE prenosi native boolean — svaka
+ * vrednost stiže kao string. @IsBoolean() bez koercije 400-uje ceo auto-save+mejl
+ * tok (P4 ugovori: 'true' → „must be a boolean value"). @Transform pre @IsBoolean
+ * koeruje 'true'/true → boolean (globalni pipe NE diramo — menja semantiku svih DTO).
+ * Ostala polja su string/uuid (žica ih nosi bez problema) → nema drugih flag-ova. */
 export class DocumentMetaDto {
   @IsOptional() @IsUUID() clientEventId?: string;
+  /** ⚠️ docType MORA biti u sy15 `employee_documents_doc_type_chk` CHECK-u, inače
+   *  23514 → 422 (rethrowSy15). Poznat drift (#2, review 14.07): 'sporazumni_raskid'
+   *  fali u starijem `_chk` ograničenju na sy15 — DB migracija (van BE; Nenad ssh).
+   *  Namerno BEZ @IsIn allowlista ovde da BE ne bude STROŽI od baze (nov docType u
+   *  CHECK-u ne bi zahtevao i BE deploy). */
   @IsString() docType!: string;
   @IsOptional() @IsString() description?: string;
   /** Poslati mejl knjigovođi/primaocu nakon uploada (kadr_queue_document_email). */
-  @IsOptional() @IsBoolean() queueEmail?: boolean;
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === "true")
+  @IsBoolean()
+  queueEmail?: boolean;
   @IsOptional() @IsString() emailLabel?: string;
 }
 
