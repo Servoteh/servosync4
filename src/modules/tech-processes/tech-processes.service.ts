@@ -2480,6 +2480,79 @@ export class TechProcessesService {
   }
 
   /**
+   * `POST /:id/reopen` — ponovo otvara zatvorenu operaciju (DORADA): tehnolog/šef
+   * vraća operaciju u rad kada je posle zatvaranja potrebna dorada. U jednoj
+   * transakciji: (1) skida `isProcessFinished` sa SVIH redova te operacije
+   * (ista trojka + operationNumber + workCenterCode), (2) vraća operaciju na
+   * listu prioriteta (priority 100) ako RC koristi prioritet i bila je skinuta
+   * (255), (3) skida „RN završen" (`work_orders.status`) ako je bio postavljen.
+   */
+  async reopen(id: number) {
+    const tp = await this.prisma.techProcess.findUnique({ where: { id } });
+    if (!tp)
+      throw new NotFoundException(`Tehnološki postupak ${id} ne postoji`);
+
+    const {
+      projectId,
+      identNumber,
+      variant,
+      operationNumber,
+      workCenterCode,
+      workOrderId,
+    } = tp;
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      // (a) Otvori SVE zatvorene redove te operacije (deljena po trojci + OP + RC).
+      const reopened = await tx.techProcess.updateMany({
+        where: {
+          projectId,
+          identNumber,
+          variant,
+          operationNumber,
+          workCenterCode,
+          isProcessFinished: true,
+        },
+        data: { isProcessFinished: false, finishedAt: null },
+      });
+
+      // (b) Vrati operaciju na listu prioriteta ako RC koristi prioritet i bila je
+      // skinuta (255 → 100). Ako RC ne koristi prioritet, operacija ionako nije na
+      // listi — priority se ne dira.
+      const op = await tx.operation.findUnique({
+        where: { workCenterCode },
+        select: { usesPriority: true },
+      });
+      if (op?.usesPriority === true)
+        await tx.workOrderOperation.updateMany({
+          where: {
+            workOrderId,
+            operationNumber,
+            workCenterCode,
+            priority: OPERATION_PRIORITY_DONE,
+          },
+          data: { priority: 100 },
+        });
+
+      // (c) Skini „RN završen" ako je bio postavljen — operacija se vratila u rad.
+      await tx.workOrder.updateMany({
+        where: { id: workOrderId, status: true },
+        data: { status: false },
+      });
+
+      return { reopened: reopened.count };
+    });
+
+    return {
+      data: {
+        id,
+        operationNumber,
+        workCenterCode,
+        reopened: result.reopened,
+      },
+    };
+  }
+
+  /**
    * `DELETE /:id` — audited brisanje otkucane operacije (legacy `spObrisiTP`): snapshot
    * reda (+ dokumenata) u `audit_log.beforeData`, pa brisanje. Alat za ispravku loše
    * evidentiranih kucanja (bez lock-guarda, kao legacy — potvrda je na UI-u).

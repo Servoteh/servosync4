@@ -230,6 +230,13 @@ export class TechProcessesController {
     return this.techProcesses.storno(id, dto);
   }
 
+  /** Ponovo otvori zatvorenu operaciju (dorada) — tehnolog/šef. */
+  @Post(":id/reopen")
+  @RequirePermission(PERMISSIONS.TEHNOLOGIJA_WRITE)
+  reopen(@Param("id", ParseIntPipe) id: number) {
+    return this.techProcesses.reopen(id);
+  }
+
   /** Audited brisanje otkucane operacije (snapshot u audit_log pa brisanje). */
   @Delete(":id")
   @RequirePermission(PERMISSIONS.TEHNOLOGIJA_WRITE)

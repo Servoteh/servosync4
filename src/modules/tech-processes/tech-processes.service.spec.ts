@@ -10,6 +10,8 @@ function prismaMock() {
     techProcess: {
       findMany: jest.fn().mockResolvedValue([]),
       findFirst: jest.fn().mockResolvedValue(null),
+      // finish()/reopen(): učitavanje jednog reda po id.
+      findUnique: jest.fn().mockResolvedValue(null),
       create: jest.fn(),
       update: jest.fn(),
       // control(): kumulativ svih kontrola te operacije + kaskada potvrde.
@@ -35,6 +37,8 @@ function prismaMock() {
       findFirst: jest.fn().mockResolvedValue(null),
       findMany: jest.fn().mockResolvedValue([]),
       update: jest.fn().mockResolvedValue({}),
+      // reopen(): skidanje „RN završen" ako je bio postavljen.
+      updateMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
     workOrderOperation: {
       findFirst: jest.fn().mockResolvedValue(null),
@@ -847,5 +851,125 @@ describe("TechProcessesService — opšti nalog (Operation.withoutProcess) zaobi
     ).rejects.toThrow("nije u tehnološkom postupku RN 06/93-4");
 
     expect(prisma.techProcess.create).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================ REOPEN (dorada)
+
+describe("TechProcessesService — reopen zatvorene operacije (dorada)", () => {
+  let service: TechProcessesService;
+  let prisma: ReturnType<typeof prismaMock>;
+
+  beforeEach(async () => {
+    prisma = prismaMock();
+    const mod: TestingModule = await Test.createTestingModule({
+      providers: [
+        TechProcessesService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: ScopeService, useValue: {} },
+        { provide: NotificationsService, useValue: notificationsMock() },
+      ],
+    }).compile();
+    service = mod.get(TechProcessesService);
+  });
+
+  it("otvara SVE redove operacije: updateMany sa isProcessFinished:false, finishedAt:null", async () => {
+    prisma.techProcess.findUnique.mockResolvedValue(
+      tpRow({
+        id: 700,
+        operationNumber: 60,
+        workCenterCode: "8.5",
+        workOrderId: 900,
+        isProcessFinished: true,
+        finishedAt: new Date("2026-07-10T10:00:00Z"),
+      }),
+    );
+    prisma.operation.findUnique.mockResolvedValue({ usesPriority: false });
+    prisma.techProcess.updateMany.mockResolvedValue({ count: 2 });
+
+    const { data } = await service.reopen(700);
+
+    expect(data).toEqual({
+      id: 700,
+      operationNumber: 60,
+      workCenterCode: "8.5",
+      reopened: 2,
+    });
+    // Cilja redove te operacije (trojka + OP + RC), samo zatvorene, i ih otvara.
+    expect(prisma.techProcess.updateMany).toHaveBeenCalledWith(
+      containing({
+        where: containing({
+          projectId: 2597,
+          identNumber: "06/93-4",
+          variant: 0,
+          operationNumber: 60,
+          workCenterCode: "8.5",
+          isProcessFinished: true,
+        }),
+        data: { isProcessFinished: false, finishedAt: null },
+      }),
+    );
+    // Skidanje „RN završen" (ako je bio) — status:true → false.
+    expect(prisma.workOrder.updateMany).toHaveBeenCalledWith(
+      containing({
+        where: { id: 900, status: true },
+        data: { status: false },
+      }),
+    );
+  });
+
+  it("usesPriority=true: vraća operaciju na listu (255 → 100)", async () => {
+    prisma.techProcess.findUnique.mockResolvedValue(
+      tpRow({
+        id: 701,
+        operationNumber: 60,
+        workCenterCode: "8.5",
+        workOrderId: 900,
+        isProcessFinished: true,
+      }),
+    );
+    prisma.operation.findUnique.mockResolvedValue({ usesPriority: true });
+    prisma.techProcess.updateMany.mockResolvedValue({ count: 1 });
+
+    await service.reopen(701);
+
+    expect(prisma.workOrderOperation.updateMany).toHaveBeenCalledWith(
+      containing({
+        where: containing({
+          workOrderId: 900,
+          operationNumber: 60,
+          workCenterCode: "8.5",
+          priority: 255,
+        }),
+        data: { priority: 100 },
+      }),
+    );
+  });
+
+  it("usesPriority=false: NE dira priority (operacija ionako nije na listi)", async () => {
+    prisma.techProcess.findUnique.mockResolvedValue(
+      tpRow({
+        id: 702,
+        operationNumber: 60,
+        workCenterCode: "8.5",
+        workOrderId: 900,
+        isProcessFinished: true,
+      }),
+    );
+    prisma.operation.findUnique.mockResolvedValue({ usesPriority: false });
+    prisma.techProcess.updateMany.mockResolvedValue({ count: 1 });
+
+    await service.reopen(702);
+
+    expect(prisma.workOrderOperation.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("404 kad tehnološki postupak ne postoji", async () => {
+    prisma.techProcess.findUnique.mockResolvedValue(null);
+
+    await expect(service.reopen(999)).rejects.toThrow(
+      "Tehnološki postupak 999 ne postoji",
+    );
+    expect(prisma.techProcess.updateMany).not.toHaveBeenCalled();
   });
 });
