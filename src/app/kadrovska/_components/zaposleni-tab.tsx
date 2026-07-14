@@ -154,9 +154,11 @@ function DosijeDialog({ id, onClose }: { id: string; onClose: () => void }) {
           <Button variant="secondary" onClick={makeBadge} loading={badgeBusy}>
             <QrCode className="h-4 w-4" aria-hidden /> QR bedž
           </Button>
-          <Button onClick={() => setDocGen(true)} disabled={!emp}>
-            <FileText className="h-4 w-4" aria-hidden /> Generiši dokument
-          </Button>
+          {canPii && (
+            <Button onClick={() => setDocGen(true)} disabled={!emp}>
+              <FileText className="h-4 w-4" aria-hidden /> Generiši dokument
+            </Button>
+          )}
         </>
       }
     >
