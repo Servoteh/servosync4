@@ -967,3 +967,105 @@ export const usePayrollRecompute = () =>
   useKadrMutation<{ year: number; month: number; employeeId?: string; persist?: boolean; clientEventId?: string }, TxResponse<{ year: number; month: number; count: number; rows: PayrollRecomputeRow[] }>>((v) => post('/salary/payroll/recompute', v), KEYS.salary);
 export const usePayrollLock = () => useKadrMutation<{ id: string; expectedUpdatedAt: string; clientEventId?: string }>((v) => post(`/salary/payroll/${v.id}/lock`, { expectedUpdatedAt: v.expectedUpdatedAt, clientEventId: v.clientEventId }), KEYS.salary);
 export const usePayrollUnlock = () => useKadrMutation<{ id: string; clientEventId?: string }>((v) => post(`/salary/payroll/${v.id}/unlock`, { clientEventId: v.clientEventId }), KEYS.salary);
+
+// ============================================================================
+// P4 — UGOVORI + HR DOKUMENTA AUTO-TOK (append-only). Novi BE endpointi
+// (kb1/p1a-core): GET org-structure, GET employees/:id/pii, GET
+// employees/:id/contract-bruto, DELETE contracts/:id, PATCH notification-config.
+// Hrane: Ugovori tab (lista/forma/generator), doc-gen auto-save+mejl+prefill,
+// PDF Opis radnog mesta, lead-days podešavanje.
+// ============================================================================
+
+/** Org struktura (job_positions sa opisnim *_md poljima + reports_to_line) —
+ *  auto-popuna radnog mesta/aneksa/opisa + kaskadni selekti. camelCase (Prisma). */
+export interface JobPosition {
+  id: number;
+  departmentId: number;
+  subDepartmentId: number | null;
+  name: string;
+  sortOrder: number;
+  summaryMd: string | null;
+  expectationsMd: string | null;
+  responsibilitiesMd: string | null;
+  dutiesMd: string | null;
+  authorityMd: string | null;
+  kpiMd: string | null;
+  qualificationsMd: string | null;
+  collaborationMd: string | null;
+  reportsToLine: string | null;
+  profileUpdatedAt: string | null;
+  profileUpdatedBy: string | null;
+}
+export interface OrgStructure {
+  departments: ViewRow[];
+  subDepartments: ViewRow[];
+  jobPositions: JobPosition[];
+}
+
+/** PII karton (unmaskirano, samo kadrovska.pii) — JMBG/prebivalište/sprema za
+ *  auto-prefill Ugovora o radu i HR dokumenata. snake_case (sy15 view). */
+export interface EmployeePii {
+  id: string;
+  full_name: string;
+  birth_date: string | null;
+  gender: string | null;
+  education_level: string | null;
+  education_title: string | null;
+  personal_id: string | null;
+  bank_name: string | null;
+  bank_account: string | null;
+  address: string | null;
+  city: string | null;
+  postal_code: string | null;
+  phone_private: string | null;
+  emergency_contact_name: string | null;
+  emergency_contact_phone: string | null;
+  emergency_contact_relation: string | null;
+  emergency_contact_phone_alt: string | null;
+}
+
+/** Uska bruto per-zaposleni (kadr_get_contract_bruto DEFINER) — poslovni admin
+ *  generiše ugovor bez taba Zarade. `bruto` je null kad nema unete zarade. */
+export interface ContractBruto {
+  employeeId: string;
+  bruto: number | null;
+}
+
+export function useOrgStructure(enabled = true) {
+  return useQuery({
+    queryKey: ['kadrovska', 'org-structure'] as const,
+    enabled,
+    staleTime: 5 * 60 * 1000,
+    queryFn: () => apiFetch<{ data: OrgStructure }>(`${BASE}/org-structure`),
+  });
+}
+export function useEmployeePii(id: string | null, enabled = true) {
+  return useQuery({
+    queryKey: [...KEYS.pii(id ?? 'none'), 'card'],
+    enabled: !!id && enabled,
+    retry: false,
+    queryFn: () => apiFetch<{ data: EmployeePii }>(`${BASE}/employees/${id}/pii`),
+  });
+}
+/** Imperativni fetch-ovi (za tokove na klik dugmeta — generisanje ugovora/mass). */
+export function fetchOrgStructure(): Promise<{ data: OrgStructure }> {
+  return apiFetch<{ data: OrgStructure }>(`${BASE}/org-structure`);
+}
+/** Pun red zaposlenog (v_employees_safe — uklj. position_id + PII za PII pozivaoca). */
+export function fetchEmployee(id: string): Promise<{ data: EmployeeSafe }> {
+  return apiFetch<{ data: EmployeeSafe }>(`${BASE}/employees/${id}`);
+}
+export function fetchEmployeePii(id: string): Promise<{ data: EmployeePii }> {
+  return apiFetch<{ data: EmployeePii }>(`${BASE}/employees/${id}/pii`);
+}
+export function fetchContractBruto(id: string): Promise<{ data: ContractBruto }> {
+  return apiFetch<{ data: ContractBruto }>(`${BASE}/employees/${id}/contract-bruto`);
+}
+
+/** Trajno brisanje ugovora IZ ARHIVE (aktivan → BE 422). */
+export const useDeleteContract = () =>
+  useKadrMutation<{ id: string }>((v) => del(`/contracts/${v.id}`), KEYS.contracts);
+
+/** Izmena podešavanja obaveštenja (contract_lead_days i ostalo) — manage. */
+export const useUpdateNotificationConfig = () =>
+  useKadrMutation<Partial<NotificationConfig>>((v) => patch('/notification-config', v), KEYS.notifications);

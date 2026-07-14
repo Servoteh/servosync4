@@ -81,6 +81,79 @@ export async function generateVacationDecisionPdf(d: VacationDecisionInput): Pro
   return { blob: finalize(`Решење о годишњем одмору — ${ime}`), fileName: `Resenje_GO_${d.godina}_${safeName(d.imePrezime)}.pdf` };
 }
 
+/* ── Rešenje o zasnivanju radnog odnosa (čl. 30 ZoR) ─────────────────────── */
+
+export interface EmploymentDecisionInput {
+  imePrezime: string;
+  jmbg?: string;
+  adresa?: string;
+  radnoMesto?: string;
+  odeljenje?: string;
+  tipUgovora: string; // labela tipa (npr. "Neodređeno vreme")
+  ugovorBroj?: string;
+  datumOd?: string; // formatiran "dd.mm.gggg."
+  datumDo?: string;
+  neodredjeno?: boolean;
+  napomena?: string;
+  brojResenja?: string; // protokol (RR-YYYY-XXXX ili broj ugovora)
+  datum?: string;
+  mesto?: string;
+  potpisPoslodavac?: string;
+}
+
+/**
+ * Rešenje o zasnivanju radnog odnosa (port `printTemplates.js` — čl. 30 ZoR).
+ * Latinica (paritet 1.0 print-šablona); zajednički letterhead iz openDocument.
+ */
+export async function generateEmploymentDecisionPdf(d: EmploymentDecisionInput): Promise<PdfResult> {
+  const ctx = await openDocument({ broj: d.brojResenja, datum: d.datum, mesto: d.mesto || 'Dobanovci' });
+  const { para, signatures, finalize } = ctx;
+
+  para('REŠENJE', { bold: true, align: 'center', size: 15, gap: 1.2 });
+  para('o zasnivanju radnog odnosa', { align: 'center', size: 11.5, gap: 4 });
+
+  para(`Ime i prezime: ${d.imePrezime}`, { gap: 0.6 });
+  if (d.jmbg) para(`JMBG: ${d.jmbg}`, { gap: 0.6 });
+  if (d.adresa) para(`Adresa: ${d.adresa}`, { gap: 0.6 });
+  if (d.radnoMesto) para(`Radno mesto: ${d.radnoMesto}`, { gap: 0.6 });
+  if (d.odeljenje) para(`Odeljenje / sektor: ${d.odeljenje}`, { gap: 0.6 });
+  para(`Tip ugovora: ${d.tipUgovora}`, { gap: 0.6 });
+  if (d.ugovorBroj) para(`Broj ugovora: ${d.ugovorBroj}`, { gap: 3 });
+  else ctx.advance(2);
+
+  para(
+    'Na osnovu člana 30. Zakona o radu („Sl. glasnik RS", br. 24/2005 i dr.) i ugovora o radu '
+    + `zaključenog dana ${d.datumOd || '—'}, poslodavac donosi sledeće:`,
+    { gap: 3 },
+  );
+
+  para(
+    d.neodredjeno
+      ? `Radni odnos zasniva se na neodređeno vreme, počev od ${d.datumOd || '—'}.`
+      : `Radni odnos zasniva se na određeno vreme, od ${d.datumOd || '—'} do ${d.datumDo || '—'}.`,
+  );
+  para(
+    `Zaposleni će obavljati poslove radnog mesta ${d.radnoMesto || 'prema ugovoru'}`
+    + `${d.odeljenje ? ` u okviru organizacione celine ${d.odeljenje}` : ''}, u skladu sa opisom poslova iz `
+    + 'ugovora o radu i internim aktima poslodavca.',
+  );
+  para(
+    'Zaposleni je dužan da se pridržava radnih obaveza, pravila bezbednosti i zdravlja na radu i '
+    + 'internih akata poslodavca. Sve detaljnije obaveze i prava definisani su ugovorom o radu.',
+    { gap: 3 },
+  );
+  if (d.napomena) para(`Napomena: ${d.napomena}`, { gap: 3 });
+
+  signatures('Zaposleni', d.imePrezime, 'Direktor / ovlašćeno lice', d.potpisPoslodavac || 'Nenad Jaraković', {
+    rightMP: true,
+  });
+
+  return {
+    blob: finalize(`Rešenje o zasnivanju radnog odnosa — ${d.imePrezime}`),
+    fileName: `Resenje_radni_odnos_${safeName(d.imePrezime)}.pdf`,
+  };
+}
+
 /* ── Potvrda o zaposlenju ────────────────────────────────────────────────── */
 
 export interface EmploymentCertInput {
