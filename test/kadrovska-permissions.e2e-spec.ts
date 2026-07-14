@@ -72,6 +72,15 @@ describe("Kadrovska permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     "talks",
     "assessmentScope",
     "assessments",
+    "assessmentCampaigns",
+    "assessmentFramework",
+    "assessmentRaters",
+    "assessmentRaterScores",
+    "assessmentResults",
+    "assessmentTargets",
+    "offboardingOutstandingReversi",
+    "reportChildren",
+    "reportRisk",
     "salaryTerms",
     "salaryCurrent",
     "salaryPayroll",
@@ -201,6 +210,52 @@ describe("Kadrovska permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
       perm: PERMISSIONS.KADROVSKA_DEV_MANAGE,
       label: "talks",
     },
+    // P1b BE-GAP 360/offboarding read:
+    {
+      path: "/kadrovska/assessments/campaign",
+      perm: PERMISSIONS.KADROVSKA_DEV_MANAGE,
+      label: "assessments/campaign (dev_manage)",
+    },
+    {
+      path: "/kadrovska/assessments/framework",
+      perm: PERMISSIONS.KADROVSKA_DEV_MANAGE,
+      label: "assessments/framework (dev_manage)",
+    },
+    {
+      path: `/kadrovska/assessments/raters/${VALID_UUID}/scores`,
+      perm: PERMISSIONS.KADROVSKA_DEV_MANAGE,
+      label: "assessments/raters/:id/scores (dev_manage)",
+    },
+    {
+      path: `/kadrovska/assessments/${VALID_UUID}/raters`,
+      perm: PERMISSIONS.KADROVSKA_DEV_MANAGE,
+      label: "assessments/:id/raters (dev_manage)",
+    },
+    {
+      path: `/kadrovska/assessments/${VALID_UUID}/results`,
+      perm: PERMISSIONS.KADROVSKA_DEV_MANAGE,
+      label: "assessments/:id/results (dev_manage)",
+    },
+    {
+      path: `/kadrovska/assessments/${VALID_UUID}/targets`,
+      perm: PERMISSIONS.KADROVSKA_DEV_MANAGE,
+      label: "assessments/:id/targets (dev_manage)",
+    },
+    {
+      path: `/kadrovska/onboarding/reversi/${VALID_UUID}`,
+      perm: PERMISSIONS.KADROVSKA_MANAGE,
+      label: "onboarding/reversi/:employeeId (manage)",
+    },
+    {
+      path: "/kadrovska/reports/children",
+      perm: PERMISSIONS.KADROVSKA_PII,
+      label: "reports/children (PII)",
+    },
+    {
+      path: "/kadrovska/reports/risk",
+      perm: PERMISSIONS.KADROVSKA_PII,
+      label: "reports/risk (PII — 1.0 canViewEmployeePii)",
+    },
     {
       path: `/kadrovska/employees/${VALID_UUID}/children`,
       perm: PERMISSIONS.KADROVSKA_PII,
@@ -303,9 +358,19 @@ describe("Kadrovska permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
       }
     });
     it("reports/audit|medical|certs kroz namenske rute (literal pre :kind); generički kind read-ok", async () => {
-      // Generički R2 kind (vacation) je pod kadrovska.read — read-role prolazi guard
-      // (servis bi vratio 501 uživo; mok vraća 200 → dokaz da ruta NIJE 403-guardovana).
+      // Generički agregatni kind (vacation) je pod kadrovska.read — read-role prolazi
+      // guard (mok vraća 200 → dokaz da ruta NIJE 403-guardovana).
       await get("/kadrovska/reports/vacation", "projektant_vodja").expect(200);
+    });
+    it("reports/children + reports/risk NISU dostupni kroz kadrovska.read (PII namenske rute)", async () => {
+      // Namenske PII rute presuđuju (guard 403 za ne-PII role); defense-in-depth blok
+      // u generičkoj ruti čuva i slučaj da routing redosled ikad pukne.
+      for (const p of ["/kadrovska/reports/children", "/kadrovska/reports/risk"]) {
+        await get(p, "hr").expect(403); // ⚠️ HR NEMA PII (1.0 canViewEmployeePii)
+        await get(p, "menadzment").expect(403);
+        await get(p, "admin").expect(200);
+        await get(p, "poslovni_admin").expect(200);
+      }
     });
   });
 
@@ -329,6 +394,26 @@ describe("Kadrovska permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     });
     it("GET /kadrovska/dashboard?month=13 → 400 (van 1..12)", async () => {
       await get("/kadrovska/dashboard?month=13", "admin").expect(400);
+    });
+    // P1b:
+    it("GET reports/sick?from=nije-datum → 400; validan period → 200", async () => {
+      await get("/kadrovska/reports/sick?from=abc", "admin").expect(400);
+      await get(
+        "/kadrovska/reports/sick?from=2026-01-01&to=2026-06-30",
+        "admin",
+      ).expect(200);
+    });
+    it("GET reports/risk?months=0 → 400 (min 1)", async () => {
+      await get("/kadrovska/reports/risk?months=0", "admin").expect(400);
+    });
+    it("GET expectations?planId=nije-uuid → 400; uuid → 200", async () => {
+      await get("/kadrovska/expectations?planId=nije-uuid", "admin").expect(400);
+      await get(`/kadrovska/expectations?planId=${VALID_UUID}`, "admin").expect(200);
+    });
+    it("360 literal rute (campaign/framework) nisu progutane od :id param ruta", async () => {
+      // 'campaign'/'framework' nisu uuid — da ih hvata :id ruta, ParseUUIDPipe bi vratio 400.
+      await get("/kadrovska/assessments/campaign", "admin").expect(200);
+      await get("/kadrovska/assessments/framework", "admin").expect(200);
     });
   });
 

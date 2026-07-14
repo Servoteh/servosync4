@@ -118,6 +118,22 @@ describe("Kadrovska R2 mutacije — permission matrica (e2e)", () => {
     { method: "patch", path: "/kadrovska/notification-config", perm: PERMISSIONS.KADROVSKA_MANAGE, body: { enabled: true }, ok: 200, label: "notif config (manage)" },
     { method: "post", path: "/kadrovska/notifications/hr-reminders/run", perm: PERMISSIONS.KADROVSKA_MANAGE, body: {}, ok: 201, label: "hr-reminders run (manage)" },
     { method: "post", path: `/kadrovska/employees/${U}/contract-salary`, perm: PERMISSIONS.KADROVSKA_SALARY, body: { neto: 100000, bruto: 130000 }, ok: 201, label: "contract-salary (admin)" },
+    // P1b BE-GAP RAZVOJ/360/ONBOARDING (parity audit 14.07):
+    { method: "delete", path: `/kadrovska/dev-plans/${U}`, perm: PERMISSIONS.KADROVSKA_ADMIN, ok: 200, label: "dev-plan delete (admin — 1.0 admin dugme)" },
+    { method: "delete", path: `/kadrovska/expectations/${U}`, perm: PERMISSIONS.KADROVSKA_ADMIN, ok: 200, label: "expectation delete (admin — 1.0 admin dugme)" },
+    { method: "delete", path: `/kadrovska/checkins/${U}`, perm: PERMISSIONS.KADROVSKA_DEV_MANAGE, ok: 200, label: "checkin delete (dev_manage; RLS autor∨mgr)" },
+    { method: "delete", path: `/kadrovska/talks/${U}`, perm: PERMISSIONS.KADROVSKA_DEV_MANAGE, ok: 200, label: "talk delete (dev_manage; RLS admin∨nacrt-mgr)" },
+    { method: "post", path: "/kadrovska/corrective-plans", perm: PERMISSIONS.KADROVSKA_DEV_MANAGE, body: { clientEventId: U, employeeId: U }, ok: 201, label: "corrective-plan create (dev_manage)" },
+    { method: "patch", path: `/kadrovska/corrective-plans/${U}`, perm: PERMISSIONS.KADROVSKA_DEV_MANAGE, body: { status: "u_toku" }, ok: 200, label: "corrective-plan update (dev_manage)" },
+    { method: "delete", path: `/kadrovska/corrective-measures/${U}`, perm: PERMISSIONS.KADROVSKA_DEV_MANAGE, ok: 200, label: "measure delete (dev_manage)" },
+    { method: "patch", path: `/kadrovska/onboarding/runs/${U}`, perm: PERMISSIONS.KADROVSKA_MANAGE, body: { status: "done" }, ok: 200, label: "onboarding run status (manage)" },
+    { method: "post", path: "/kadrovska/onboarding/templates", perm: PERMISSIONS.KADROVSKA_MANAGE, body: { clientEventId: U, name: "Standardni onboarding", kind: "onboarding" }, ok: 201, label: "onboarding template create (manage)" },
+    { method: "delete", path: `/kadrovska/onboarding/templates/${U}`, perm: PERMISSIONS.KADROVSKA_MANAGE, ok: 200, label: "onboarding template delete (manage)" },
+    { method: "post", path: "/kadrovska/onboarding/template-items", perm: PERMISSIONS.KADROVSKA_MANAGE, body: { clientEventId: U, templateId: U, title: "Potpis ugovora" }, ok: 201, label: "onboarding item create (manage)" },
+    { method: "delete", path: `/kadrovska/onboarding/template-items/${U}`, perm: PERMISSIONS.KADROVSKA_MANAGE, ok: 200, label: "onboarding item delete (manage)" },
+    { method: "post", path: `/kadrovska/assessments/raters/${U}/scores`, perm: PERMISSIONS.KADROVSKA_DEV_MANAGE, body: { items: [{ competenceId: 1, level: 3 }] }, ok: 201, label: "leader scores upsert (dev_manage)" },
+    { method: "post", path: `/kadrovska/assessments/${U}/invite`, perm: PERMISSIONS.KADROVSKA_DEV_MANAGE, body: {}, ok: 201, label: "assessment invite (dev_manage)" },
+    { method: "post", path: `/kadrovska/assessments/cycles/${U}/invite`, perm: PERMISSIONS.KADROVSKA_DEV_MANAGE, body: {}, ok: 201, label: "cycle invite (dev_manage)" },
   ];
 
   describe("rola × endpoint × 2xx/403 (izvedeno iz ALL_ROLE_KEYS)", () => {
@@ -180,6 +196,32 @@ describe("Kadrovska R2 mutacije — permission matrica (e2e)", () => {
     });
     it("bez identiteta → 403 (JwtAuthGuard stub)", async () => {
       await send("post", "/kadrovska/salary/payroll/init", undefined, { year: 2026, month: 7 }).expect(403);
+    });
+    // P1b DTO granice (guard prošao → validacija, ne 500):
+    it("talk create: raiseDecision van {da,ne,odlozeno} → 400", async () => {
+      await send("post", "/kadrovska/talks", "admin", {
+        clientEventId: U, employeeId: U, talkType: "godisnji", raiseDecision: "mozda",
+      }).expect(400);
+    });
+    it("talk create sa validnom odlukom o zaradi → 201", async () => {
+      await send("post", "/kadrovska/talks", "admin", {
+        clientEventId: U, employeeId: U, talkType: "godisnji",
+        raiseDecision: "da", raisePercent: 5, raiseEffectiveFrom: "2026-08-01", raiseNote: "OK",
+      }).expect(201);
+    });
+    it("onboarding run status van {active,done,canceled} → 400", async () => {
+      await send("patch", `/kadrovska/onboarding/runs/${U}`, "admin", { status: "bilo-sta" }).expect(400);
+    });
+    it("leader scores: level van 0–5 → 400; prazan items → 400", async () => {
+      await send("post", `/kadrovska/assessments/raters/${U}/scores`, "admin", {
+        items: [{ competenceId: 1, level: 7 }],
+      }).expect(400);
+      await send("post", `/kadrovska/assessments/raters/${U}/scores`, "admin", { items: [] }).expect(400);
+    });
+    it("measure create: status van 1.0 domena → 400", async () => {
+      await send("post", "/kadrovska/corrective-measures", "admin", {
+        clientEventId: U, planId: U, descriptionMd: "X", status: "zavrsena",
+      }).expect(400);
     });
   });
 });
