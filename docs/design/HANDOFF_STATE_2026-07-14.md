@@ -57,3 +57,25 @@ Redosled: **wave-b → C → D → F → E → A → wave-g → wave-d-rbac** (+
 3. Merge na main (svaka grana) + R4 deploy odobrenje.
 
 Vidi i scratchpad `CHECKPOINT_MERGE_R4.md` (sesija) za pun merge/R4/follow-up detalj.
+
+---
+
+## 8. FINALNO STANJE (14.07 kasnije — SVI BACKEND R2 ZATVORENI, čist boundary)
+
+Svaki backend talas je R1+R2 GOTOV + adversarni review + fix, verifikovan lokalno (tsc + testovi zeleni). NIŠTA u letu. Finalni HEAD-ovi grana:
+- `wave-a/lokacije` **7cb7bd0** (R2+security fix) · fe `wave-a-fe/lokacije` **2f32c12**
+- `wave-b/sastanci-ai` **32b9b8a** (R2+8 fix) · fe `wave-b-fe/sastanci-ai` **77a5516**
+- `wave-c/planovi-pracenje` **b752e87** (R2+IDOR/predmet fix)
+- `wave-d/pb-profil-podesavanja` **cdfefda** (R2 PB+profil+3 fix)
+- `wave-d-rbac/podesavanja-write` **955fd01** (D1+2 fix)
+- `wave-e/energetika` **1b6f301** (R2 komande+P2002 fix) · fe `wave-e-fe/energetika` **9e98e19**
+- `wave-f/odrzavanje` **c175ce6** (R2+2 fix)
+- `wave-g/kadrovska` **c490c5a** (R2 payroll+fix)
+
+### Dodatne merge-klase iz poslednjeg review-kruga (uvrsti u re-integraciju + audit)
+- **P2002 vs meta.code**: typed Prisma `.create()/.upsert()` daje unique violation kao top-level `e.code='P2002'` (ne meta.code) → rethrowSy15 mora hvatati OBA (inače 500 umesto 409). Kanonizuj u sy15.service; audit sve typed create/upsert.
+- **Storage autorizacija PRE service-key upload-a**: audit SVE storage upload-e (montaza pdf/foto, PB task/tip files, employee-docs, maint-machine-files, sastanci arhiva/slike) — provera prava PRE `storage.upload` (uzor uploadPhotos), inače IDOR prepis.
+- **Dvoslojni guard-superset (F obrazac)**: gde write-vlast ima komponentu van JWT-a (npr. maint_profile_role auth.uid()), guard MORA biti coarse-superset (sve aktivne uloge), DB RLS = autoritet (42501→403). NE praviti guard uži od RLS.
+
+### SLEDEĆE (za novi allow-all agent) — počni ODMAH re-integraciju
+Sve je spremno za re-integraciju (§4 recept + gornje klase). Redosled: scratch integraciona grana → merge b→c→d→f→e→a→g→wave-d-rbac (prisma BLOK-konkat NE union; withUserRls dedup; role-perms slojevi + reconcile exact-set; override ključ reconcile) → validiraj tsc+build+testovi → merge plan Nenadu (main = njegova kapija). Pa R3 frontend-i C/D/F/G (Kadrovska R3 = PDF ćirilica + QR bedževi) + R4 živi smoke.
