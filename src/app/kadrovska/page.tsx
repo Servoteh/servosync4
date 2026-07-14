@@ -8,13 +8,14 @@ import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
 import { Tabs, type TabItem } from './_components/tabs';
 import { ZaposleniTab } from './_components/zaposleni-tab';
+import { ImenikTab } from './_components/imenik-tab';
 import { OdmoriTab } from './_components/odmori-tab';
 import { GridTab } from './_components/grid-tab';
 import { PrisustvoTab } from './_components/prisustvo-tab';
 import { RazvojTab } from './_components/razvoj-tab';
 import { ZaradeTab } from './_components/zarade-tab';
 
-type TabKey = 'zaposleni' | 'odmori' | 'sati' | 'prisustvo' | 'razvoj' | 'zarade';
+type TabKey = 'zaposleni' | 'imenik' | 'odmori' | 'sati' | 'prisustvo' | 'razvoj' | 'zarade';
 
 /**
  * Kadrovska (HR) — 3.0 TALAS G (POSLEDNJI; PII + zarade).
@@ -43,6 +44,7 @@ export default function KadrovskaPage() {
 
   const tabs: TabItem<TabKey>[] = [
     { key: 'zaposleni', label: 'Zaposleni' },
+    { key: 'imenik', label: 'Imenik' },
     { key: 'odmori', label: 'Odmori' },
     { key: 'sati', label: 'Radni sati' },
     { key: 'prisustvo', label: 'Prisustvo' },
@@ -57,6 +59,7 @@ export default function KadrovskaPage() {
         <Tabs tabs={tabs} value={tab} onChange={setTab} ariaLabel="Kadrovska" />
 
         {tab === 'zaposleni' && <ZaposleniTab />}
+        {tab === 'imenik' && <ImenikTab />}
         {tab === 'odmori' && <OdmoriTab />}
         {tab === 'sati' && <GridTab />}
         {tab === 'prisustvo' && <PrisustvoTab />}
