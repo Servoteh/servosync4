@@ -10,6 +10,7 @@ import {
   CheckCircle2,
   ClipboardList,
   Clock,
+  Cog,
   Cpu,
   DraftingCompass,
   ListChecks,
@@ -97,6 +98,7 @@ const NAV_SECTIONS: NavSection[] = [
     title: 'Oprema i energija',
     items: [
       { label: 'Reversi', href: '/reversi', icon: Wrench, requires: PERMISSIONS.REVERSI_READ },
+      { label: 'Održavanje', href: '/odrzavanje', icon: Cog, requires: PERMISSIONS.ODRZAVANJE_READ },
     ],
   },
   {
