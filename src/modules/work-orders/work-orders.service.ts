@@ -198,6 +198,13 @@ export class WorkOrdersService {
     });
     if (!wo) throw new NotFoundException(`Radni nalog ${id} ne postoji`);
 
+    // Efektivni crtež: kad RN nema drawing_id (legacy), razreši po broju (proba
+    // 14.07 — „PDF crteža" na CAM detalju/RN kartici radi i za legacy RN-ove).
+    const effectiveDrawingId =
+      wo.drawingId > 0
+        ? wo.drawingId
+        : await this.resolveDrawingIdByNumber(wo.drawingNumber);
+
     const [workers, quals, statuses, ops, parents, children, locations, draft] =
       await Promise.all([
         this.resolveWorkers([
@@ -220,12 +227,15 @@ export class WorkOrdersService {
         // t.5: neto lokacije po pozicijama.
         this.resolveLocations([wo.id]),
         // Nacrt iz kog RN potiče — za „PDF cela primopredaja" (svi crteži nacrta).
-        this.resolveDraftRef(wo.drawingId),
+        this.resolveDraftRef(effectiveDrawingId),
       ]);
     const w = (wid: number) => workers.get(wid) ?? null;
 
     const data = {
       ...wo,
+      // Override: efektivni crtež (razrešen po broju za legacy RN bez drawing_id)
+      // — FE „PDF crteža" (CAM detalj + RN kartica) čita baš `drawingId`.
+      drawingId: effectiveDrawingId,
       worker: w(wo.workerId),
       handoverWorker: w(wo.handoverWorkerId),
       qualityType: quals.get(wo.qualityTypeId) ?? null,
@@ -336,6 +346,36 @@ export class WorkOrdersService {
    * drawing→draft heuristika kao `HandoversService.resolveDraftContext` (najskorija
    * ne-isključena stavka istog crteža). `null` za ručne/dorada RN-ove bez nacrta.
    */
+  /**
+   * Efektivni id crteža za „PDF crteža": kad RN NEMA `drawing_id` (legacy RN
+   * nosi samo `drawing_number`, proba 14.07 — 74% CAM pozicija ima drawing_id=0),
+   * razreši crtež po BROJU (najviša revizija; prednost onoj koja IMA PDF). Vrati
+   * 0 kad crtež nije u 2.0 (dugme se tada opravdano skriva). Poređenje
+   * normalizovano (upper/btrim) — isti obrazac kao cutover rezolucija.
+   */
+  private async resolveDrawingIdByNumber(
+    drawingNumber: string | null,
+  ): Promise<number> {
+    const num = (drawingNumber ?? "").trim();
+    if (!num) return 0;
+    const rows = await this.prisma.drawing.findMany({
+      where: { drawingNumber: { equals: num, mode: "insensitive" } },
+      select: { id: true, revision: true },
+      orderBy: { revision: "desc" },
+    });
+    if (!rows.length) return 0;
+    // Prednost reviziji koja ima uskladišten PDF (da dugme zaista otvori nešto).
+    const pdfs = await this.prisma.drawingPdf.findMany({
+      where: { drawingNumber: { equals: num, mode: "insensitive" } },
+      select: { revision: true },
+    });
+    const pdfRevs = new Set(pdfs.map((p) => p.revision.trim().toUpperCase()));
+    const withPdf = rows.find((r) =>
+      pdfRevs.has(r.revision.trim().toUpperCase()),
+    );
+    return (withPdf ?? rows[0]).id;
+  }
+
   private async resolveDraftRef(
     drawingId: number,
   ): Promise<{ draftId: number; draftNumber: string } | null> {
