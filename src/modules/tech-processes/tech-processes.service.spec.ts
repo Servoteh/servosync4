@@ -3,6 +3,7 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { ScopeService } from "../../common/authz/scope.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { TechProcessesService } from "./tech-processes.service";
+import { validateStopWork } from "./dto/stop-work.dto";
 
 /** Mock PrismaService — modeli koje dodiruju `card()`, `scan()` i D8 emit helperi. */
 function prismaMock() {
@@ -851,6 +852,135 @@ describe("TechProcessesService — opšti nalog (Operation.withoutProcess) zaobi
     ).rejects.toThrow("nije u tehnološkom postupku RN 06/93-4");
 
     expect(prisma.techProcess.create).not.toHaveBeenCalled();
+  });
+
+  it("withoutProcess sa SVIM zatvorenim redovima: otvara NOV red (istorija se preskače, ne 422)", async () => {
+    prisma.operation.findUnique.mockResolvedValue({ withoutProcess: true });
+    // Opšti nalog: svi redovi su is_process_finished=true (legacy) — findRoutingTp
+    // vraća zatvoren red, koji se za withoutProcess tretira kao istorija.
+    prisma.techProcess.findFirst.mockResolvedValue(
+      tpRow({
+        id: 400,
+        variant: 1,
+        isProcessFinished: true,
+        finishedAt: new Date("2026-07-01T10:00:00Z"),
+        workOrderId: 900,
+      }),
+    );
+    prisma.techProcess.create.mockResolvedValue(
+      tpRow({
+        id: 555,
+        variant: 1,
+        pieceCount: 0,
+        isProcessFinished: false,
+        workOrderId: 900,
+      }),
+    );
+    prisma.techProcess.update.mockResolvedValue(
+      tpRow({
+        id: 555,
+        variant: 1,
+        pieceCount: 3,
+        isProcessFinished: false,
+        workOrderId: 900,
+      }),
+    );
+
+    const { data } = await service.scan({
+      orderBarcode: "RNZ:2597:06/93-4:1:A",
+      operationBarcode: "S:10:0102:0:A",
+      pieceCount: 3,
+    });
+
+    expect(prisma.techProcess.create).toHaveBeenCalled(); // nov otvoren red
+    expect(prisma.workOrderOperation.findFirst).not.toHaveBeenCalled();
+    expect(data.techProcess.id).toBe(555);
+  });
+
+  it("withoutProcess sa OTVORENIM redom: koristi njega (bez novog reda)", async () => {
+    prisma.operation.findUnique.mockResolvedValue({ withoutProcess: true });
+    prisma.techProcess.findFirst.mockResolvedValue(
+      tpRow({
+        id: 401,
+        variant: 1,
+        pieceCount: 2,
+        isProcessFinished: false,
+        workOrderId: 900,
+      }),
+    );
+    prisma.techProcess.update.mockResolvedValue(
+      tpRow({
+        id: 401,
+        variant: 1,
+        pieceCount: 5,
+        isProcessFinished: false,
+        workOrderId: 900,
+      }),
+    );
+
+    const { data } = await service.scan({
+      orderBarcode: "RNZ:2597:06/93-4:1:A",
+      operationBarcode: "S:10:0102:0:A",
+      pieceCount: 3,
+    });
+
+    expect(prisma.techProcess.create).not.toHaveBeenCalled();
+    expect(data.techProcess.id).toBe(401);
+  });
+
+  it("obična operacija sa svim zatvorenim redovima: i dalje 422 (već zatvorena)", async () => {
+    prisma.operation.findUnique.mockResolvedValue({ withoutProcess: false });
+    prisma.techProcess.findFirst.mockResolvedValue(
+      tpRow({
+        id: 402,
+        variant: 1,
+        isProcessFinished: true,
+        finishedAt: new Date("2026-07-01T10:00:00Z"),
+        workOrderId: 900,
+      }),
+    );
+
+    await expect(
+      service.scan({
+        orderBarcode: "RNZ:2597:06/93-4:1:A",
+        operationBarcode: "S:10:0102:0:A",
+        pieceCount: 3,
+      }),
+    ).rejects.toThrow("već zatvorena");
+
+    expect(prisma.techProcess.create).not.toHaveBeenCalled();
+  });
+
+  it("finish() na withoutProcess RC → 422 (se ne zatvara, uvek otvoren)", async () => {
+    prisma.techProcess.findUnique.mockResolvedValue(
+      tpRow({ id: 700, workCenterCode: "0102", isProcessFinished: false }),
+    );
+    prisma.operation.findUnique.mockResolvedValue({ withoutProcess: true });
+
+    await expect(service.finish(700)).rejects.toThrow("se ne zatvara");
+    expect(prisma.techProcess.update).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================ stopWork prihvata 0 komada
+
+describe("validateStopWork — 0 komada (borverk višednevni rad)", () => {
+  const base = {
+    orderBarcode: "RNZ:2597:06/93-4:1:A",
+    operationBarcode: "S:10:0102:0:A",
+    workerCard: "CARD1",
+  };
+
+  it("pieceCount 0 prolazi (evidentira se samo vreme)", () => {
+    expect(() => validateStopWork({ ...base, pieceCount: 0 })).not.toThrow();
+  });
+
+  it("pieceCount -1 pada (negativan broj komada)", () => {
+    expect(() => validateStopWork({ ...base, pieceCount: -1 })).toThrow();
+  });
+
+  it("pieceCount ≥ 1 i dalje prolazi", () => {
+    expect(() => validateStopWork({ ...base, pieceCount: 5 })).not.toThrow();
   });
 });
 
