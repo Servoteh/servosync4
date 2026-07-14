@@ -15,6 +15,8 @@ export interface GridEmployee {
   position: string;
   deptSub: string;
   workType: string;
+  /** Datum zaposlenja (YYYY-MM-DD) — gejtuje auto-priznat državni praznik pre zaposlenja. */
+  hireDate: string | null;
 }
 
 export interface DayTotals {
@@ -176,7 +178,7 @@ const EmployeeBlock = memo(
     let ffor = 0;
     for (const d of days) {
       const e = effRows.get(d.ymd)!;
-      sReg += gridRedovniUnitsOneDay(d.ymd, e, holidaySet, { workType: emp.workType });
+      sReg += gridRedovniUnitsOneDay(d.ymd, e, holidaySet, { workType: emp.workType, hireDate: emp.hireDate });
       sOt += Number(e.overtime_hours || 0);
       const fh = Number(e.field_hours || 0);
       sField += fh;
@@ -190,8 +192,8 @@ const EmployeeBlock = memo(
     const rowsForPayroll = effRows as unknown as Map<string, RowLike>;
     const hasDirty = props.editorRev > 0;
     const payable = hasDirty
-      ? gridPayableHoursForEmployee(y, mo, rowsForPayroll, holidaySet, emp.workType, null)
-      : props.payableBase ?? gridPayableHoursForEmployee(y, mo, rowsForPayroll, holidaySet, emp.workType, null);
+      ? gridPayableHoursForEmployee(y, mo, rowsForPayroll, holidaySet, emp.workType, emp.hireDate)
+      : props.payableBase ?? gridPayableHoursForEmployee(y, mo, rowsForPayroll, holidaySet, emp.workType, emp.hireDate);
 
     const lastTitle = (ymd: string) => {
       const db = props.getDbRow(emp.id, ymd);

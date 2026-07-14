@@ -146,6 +146,7 @@ export function GridTab() {
         deptSub: [department, team].filter(Boolean).join(' — '),
         department,
         workType: gridWorkType(r),
+        hireDate: sv(r, 'hire_date') || null,
       };
     });
     empNameRef.current = nm;
@@ -177,7 +178,7 @@ export function GridTab() {
       for (let di = 0; di < days.length; di++) {
         const d = days[di];
         const eff = editor.effective(emp.id, d.ymd);
-        const regUnits = gridRedovniUnitsOneDay(d.ymd, eff, holidaySet, { workType: emp.workType });
+        const regUnits = gridRedovniUnitsOneDay(d.ymd, eff, holidaySet, { workType: emp.workType, hireDate: emp.hireDate });
         const ot = Number(eff.overtime_hours || 0);
         const fh = Number(eff.field_hours || 0);
         const tm = Number(eff.two_machine_hours || 0);
@@ -426,7 +427,7 @@ export function GridTab() {
   const remarksOpen = (grid?.remarks ?? []).filter((r) => r.status !== 'resolved').length;
   const dirtyN = editor.dirtyCount();
 
-  const companyForActions = useMemo(() => visible.map((e) => ({ id: e.id, name: e.name, position: e.position, workType: e.workType })), [visible]);
+  const companyForActions = useMemo(() => visible.map((e) => ({ id: e.id, name: e.name, position: e.position, workType: e.workType, hireDate: e.hireDate })), [visible]);
 
   return (
     <div className="space-y-3">

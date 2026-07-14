@@ -11,6 +11,7 @@ interface XlsxEmp {
   deptSub: string;
   position: string;
   workType: string;
+  hireDate: string | null;
 }
 
 /** Pun mesečni obrazac .xlsx (4 reda/radnik + UKUPNO + teren/2-maš breakdown). Port _exportToXlsx. */
@@ -46,7 +47,7 @@ export function exportGridXlsx(args: {
 
     days.forEach((d, di) => {
       const eff = getEff(emp.id, d.ymd);
-      const regUnits = gridRedovniUnitsOneDay(d.ymd, eff, holidaySet, { workType: emp.workType });
+      const regUnits = gridRedovniUnitsOneDay(d.ymd, eff, holidaySet, { workType: emp.workType, hireDate: emp.hireDate });
       sR += regUnits;
       const ot = Number(eff.overtime_hours || 0);
       sO += ot;

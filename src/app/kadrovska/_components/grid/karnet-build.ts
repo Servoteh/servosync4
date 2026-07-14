@@ -9,6 +9,7 @@ interface KarnetEmpInput {
   name: string;
   position: string;
   workType: string;
+  hireDate: string | null;
 }
 
 /** Build KarnetEmployee[] (dirty-merged) sa PUNIM payrollCalc agregatom. Port buildKarnetEmployees. */
@@ -37,7 +38,7 @@ export function buildKarnetEmployees(args: {
       });
       fieldHours += Number(eff.field_hours || 0);
     }
-    const totals = aggregateWorkHoursForMonth(year, month, rows, holidaySet, { workType: emp.workType });
+    const totals = aggregateWorkHoursForMonth(year, month, rows, holidaySet, { workType: emp.workType, hireDate: emp.hireDate });
     return {
       name: emp.name,
       position: emp.position,
