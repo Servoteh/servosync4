@@ -17,6 +17,8 @@ interface WorkPanelProps {
   /** Napravljeno (akumulirano) na ovoj operaciji. */
   made: number;
   finished: boolean;
+  /** Sakrij „Zatvori operaciju" (operacija bez postupka — zatvaranje je zabranjeno). */
+  hideClose: boolean;
   /** Skenirana operacija nije nađena u tehnološkom postupku ovog naloga. */
   missing: boolean;
   loading: boolean;
@@ -91,11 +93,14 @@ function PieceStepper({
   pieces,
   setPieces,
   busy,
+  min,
   onEnter,
 }: {
   pieces: number;
   setPieces: (updater: (p: number) => number) => void;
   busy: boolean;
+  /** Najmanja dozvoljena vrednost: 1 („Evidentiraj") ili 0 (aktivna sesija — samo vreme). */
+  min: number;
   onEnter: () => void;
 }) {
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
@@ -109,8 +114,8 @@ function PieceStepper({
       <div className="flex items-stretch gap-3">
         <button
           type="button"
-          onClick={() => setPieces((p) => Math.max(1, p - 1))}
-          disabled={busy || pieces <= 1}
+          onClick={() => setPieces((p) => Math.max(min, p - 1))}
+          disabled={busy || pieces <= min}
           aria-label="Manje"
           className="grid h-20 w-20 shrink-0 place-items-center rounded-panel border-2 border-line bg-surface text-ink hover:bg-surface-2 disabled:opacity-40"
         >
@@ -118,9 +123,9 @@ function PieceStepper({
         </button>
         <input
           type="number"
-          min={1}
+          min={min}
           inputMode="numeric"
-          value={pieces || ''}
+          value={pieces === 0 && min > 0 ? '' : pieces}
           disabled={busy}
           onChange={(e) => {
             const n = Math.floor(Number(e.target.value));
@@ -150,6 +155,7 @@ export function WorkPanel({
   planned,
   made,
   finished,
+  hideClose,
   missing,
   loading,
   openSession,
@@ -167,6 +173,11 @@ export function WorkPanel({
   const [confirm, setConfirm] = useState(false);
   const busy = evidentiranje || zatvaranje || zapocinjanje || zavrsavanje;
   const remaining = planned != null ? Math.max(0, planned - made) : null;
+  // Aktivna sesija (borverk radi danima na komadu) dozvoljava 0 kom; „Evidentiraj" traži ≥ 1.
+  // Pri izlasku iz sesijskog režima podigni 0 → 1 (isti brojač služi oba režima).
+  useEffect(() => {
+    if (!openSession) setPieces((p) => Math.max(1, p));
+  }, [openSession]);
 
   if (loading) {
     return (
@@ -191,14 +202,15 @@ export function WorkPanel({
     );
   }
 
+  // Sesijski režim prihvata 0 kom (samo vreme); brza prijava traži ≥ 1.
   const stopWork = () => {
-    if (!busy && pieces >= 1) onZavrsiRad(pieces);
+    if (!busy && pieces >= 0) onZavrsiRad(pieces);
   };
   const quickReport = () => {
     if (!busy && pieces >= 1) onEvidentiraj(pieces);
   };
 
-  const zatvoriDugme = (
+  const zatvoriDugme = hideClose ? null : (
     <button
       type="button"
       disabled={busy}
@@ -250,12 +262,17 @@ export function WorkPanel({
         /* STOP režim: rad je u toku — unesi komade i završi. */
         <>
           <ElapsedBanner startedAt={openSession.startedAt} />
-          <PieceStepper pieces={pieces} setPieces={setPieces} busy={busy} onEnter={stopWork} />
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <PieceStepper pieces={pieces} setPieces={setPieces} busy={busy} min={0} onEnter={stopWork} />
+          {pieces === 0 && (
+            <p className="text-base text-ink-secondary">
+              0 kom — evidentira se samo vreme rada.
+            </p>
+          )}
+          <div className={cn('grid grid-cols-1 gap-4', !hideClose && 'sm:grid-cols-2')}>
             <Button
               variant="primary"
               loading={zavrsavanje}
-              disabled={busy || pieces < 1}
+              disabled={busy}
               onClick={stopWork}
               className="h-20 gap-3 text-2xl font-bold"
             >
@@ -285,8 +302,8 @@ export function WorkPanel({
             <span className="h-px flex-1 bg-line" />
           </div>
 
-          <PieceStepper pieces={pieces} setPieces={setPieces} busy={busy} onEnter={quickReport} />
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <PieceStepper pieces={pieces} setPieces={setPieces} busy={busy} min={1} onEnter={quickReport} />
+          <div className={cn('grid grid-cols-1 gap-4', !hideClose && 'sm:grid-cols-2')}>
             <Button
               variant="secondary"
               loading={evidentiranje}

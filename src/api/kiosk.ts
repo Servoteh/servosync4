@@ -78,7 +78,12 @@ export type DecodedBarcode =
        * operacija je ZAVRŠNA KONTROLA → kiosk grana u KONTROLA režim (MODULE_SPEC_kontrola §1).
        * `null` ako RC nije u šifarniku `operations`.
        */
-      operation: { workCenterName: string; significantForFinishing: boolean } | null;
+      operation: {
+        workCenterName: string;
+        significantForFinishing: boolean;
+        /** true = operacija bez postupka (opšti nalog / RC without_process) — uvek otvorena, nikad „Zatvorena". */
+        withoutProcess: boolean;
+      } | null;
     };
 
 export interface ScanInput {

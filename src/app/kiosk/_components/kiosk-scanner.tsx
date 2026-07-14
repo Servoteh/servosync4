@@ -45,6 +45,8 @@ interface OperationState {
   /** true = završna kontrola (operations.significantForFinishing) → KONTROLA režim. */
   finalControl: boolean;
   workCenterName: string | null;
+  /** true = operacija bez postupka (opšti nalog) — uvek otvorena; nikad „Zatvorena". */
+  withoutProcess: boolean;
 }
 type Feedback = { tone: MessageTone; title: string; detail?: string };
 
@@ -302,6 +304,7 @@ export function KioskScanner() {
         fields: data.fields,
         finalControl: data.operation?.significantForFinishing ?? false,
         workCenterName: data.operation?.workCenterName ?? null,
+        withoutProcess: data.operation?.withoutProcess ?? false,
       });
       setFeedback(
         data.operation?.significantForFinishing
@@ -609,7 +612,9 @@ export function KioskScanner() {
   const stepLabel = stepNo === 1 ? 'Skeniraj nalog' : stepNo === 2 ? 'Skeniraj operaciju' : operation?.finalControl ? 'Kontrola' : 'Prijava rada';
 
   const made = override?.made ?? matched?.pieceCount ?? 0;
-  const finished = override?.finished ?? !!matched?.isProcessFinished;
+  // Operacija bez postupka (opšti nalog): zatvoreni redovi su istorija — nikad „Zatvorena", panel ostaje otvoren.
+  const finished =
+    override?.finished ?? (operation?.withoutProcess ? false : !!matched?.isProcessFinished);
   const planned = order?.workOrder?.pieceCount ?? null;
   const opName = matched?.operation?.workCenterName ?? operation?.workCenterName ?? operation?.fields.workCenterCode ?? '';
   const operationLabel = operation
@@ -761,6 +766,7 @@ export function KioskScanner() {
             planned={planned}
             made={made}
             finished={finished}
+            hideClose={operation.withoutProcess}
             missing={missing}
             loading={cardLoading}
             openSession={session}
