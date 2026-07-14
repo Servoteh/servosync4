@@ -8,13 +8,15 @@ import { SS_KEYS, ssGet, ssSet } from './shared';
 import { PregledTab } from './pregled-tab';
 import { ListingTab } from './listing-tab';
 import { KalendarTab } from './kalendar-tab';
+import { NadoknadaTab } from './nadoknada-tab';
 
-type SubtabKey = 'pregled' | 'listing' | 'kalendar';
+type SubtabKey = 'pregled' | 'listing' | 'kalendar' | 'nadoknada';
 
 const SUBTABS: TabItem<SubtabKey>[] = [
   { key: 'pregled', label: 'Pregled' },
   { key: 'listing', label: 'Listing' },
   { key: 'kalendar', label: 'Kalendar' },
+  { key: 'nadoknada', label: 'Nadoknada sati' },
 ];
 
 /**
@@ -41,6 +43,7 @@ export function OdsustvaTab({ onNavigateGrid }: { onNavigateGrid?: (empName: str
       {subtab === 'pregled' && <PregledTab onNavigateGrid={onNavigateGrid} />}
       {subtab === 'listing' && <ListingTab />}
       {subtab === 'kalendar' && <KalendarTab onNavigateGrid={onNavigateGrid} />}
+      {subtab === 'nadoknada' && <NadoknadaTab />}
     </div>
   );
 }
