@@ -4,12 +4,15 @@ import * as bcrypt from "bcrypt";
 import { randomBytes } from "node:crypto";
 import { PrismaService } from "../../prisma/prisma.service";
 import { ROLES } from "../../common/authz/roles";
+import { isReadOnlyUserId } from "../../common/authz/read-only.interceptor";
 
 export interface PublicUser {
   id: number;
   email: string;
   fullName: string | null;
   role: string;
+  /** True za test naloge iz AUTHZ_READONLY_USER_IDS — front prikazuje baner, mutacije padaju 403. */
+  readOnly: boolean;
 }
 
 /** PublicUser + JWT-internal fields (never returned to the client). */
@@ -90,6 +93,7 @@ export class AuthService {
       email: user.email,
       fullName: user.fullName,
       role: user.role,
+      readOnly: isReadOnlyUserId(user.id),
       workerId: user.workerId,
     };
   }
@@ -116,6 +120,7 @@ export class AuthService {
       email: user.email,
       fullName: user.fullName,
       role: user.role,
+      readOnly: isReadOnlyUserId(user.id),
     };
   }
 
@@ -170,6 +175,7 @@ export class AuthService {
         email: user.email,
         fullName: user.fullName,
         role: user.role,
+        readOnly: isReadOnlyUserId(user.id),
       },
     };
   }

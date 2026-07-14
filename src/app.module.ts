@@ -7,6 +7,7 @@ import { PrismaModule } from "./prisma/prisma.module";
 import { AuthzModule } from "./common/authz/authz.module";
 import { MailModule } from "./common/mail/mail.module";
 import { AuditInterceptor } from "./common/audit/audit.interceptor";
+import { ReadOnlyInterceptor } from "./common/authz/read-only.interceptor";
 import { SyncModule } from "./modules/sync/sync.module";
 import { AuthModule } from "./modules/auth/auth.module";
 import { TechProcessesModule } from "./modules/tech-processes/tech-processes.module";
@@ -89,6 +90,9 @@ import { KadrovskaModule } from "./modules/kadrovska/kadrovska.module";
     AppService,
     // Globalni audit mutacija -> audit_log (BACKEND_RULES §8).
     { provide: APP_INTERCEPTOR, useClass: AuditInterceptor },
+    // Read-only (test) nalozi: mutacije -> 403 (AUTHZ_READONLY_USER_IDS).
+    // Registrovan POSLE audita = unutrašnji, pa blokirani pokušaj ne ulazi u audit_log.
+    { provide: APP_INTERCEPTOR, useClass: ReadOnlyInterceptor },
   ],
 })
 export class AppModule {}
