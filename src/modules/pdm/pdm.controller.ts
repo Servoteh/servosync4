@@ -32,7 +32,7 @@ import type { UploadedMultipartFile } from "./pdm-import.service";
 
 /**
  * API za PDM (Projektna dokumentacija) — katalog crteža + nativni intake.
- *   GET  /api/v1/pdm/drawings                — lista (filteri: q, revision, material, designedBy, statusId, isProcurement)
+ *   GET  /api/v1/pdm/drawings                — lista (filteri: q, revision, material, designedBy, statusId, isProcurement, hasPdf=yes|no)
  *   GET  /api/v1/pdm/drawings/:id            — detalj + PDF metapodaci + import info
  *   GET  /api/v1/pdm/drawings/:id/bom        — rekurzivna sastavnica (?depth=1..20, ?expandAll=true → samo flat)
  *   GET  /api/v1/pdm/drawings/:id/where-used — obrnuta sastavnica (?recursive=true → tranzitivni parent-i)

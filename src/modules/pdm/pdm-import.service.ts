@@ -358,28 +358,40 @@ export class PdmImportService {
     if (edges.length) await tx.drawingComponent.createMany({ data: edges });
     stats.bomEdgesCreated = edges.length;
 
-    // (5) Zamena starih revizija u BOM-u (port ZameniIDCrtezaStareRevizijeU-
-    // Komponentama l.786+; važi i za ROOT kao legacy l.121–123). Matching
-    // revizija SVUDA normalizovan prazan→"A" (svesna ispravka legacy
-    // nedoslednosti u PopuniKomponentePDMCrteza). Roditelji iz OVOG fajla su
-    // već prevezani kroz delete/recreate — ovde se hvataju SVI OSTALI.
+    // (5) Preusmeravanje starih revizija u BOM-u (port ZameniIDCrtezaStare-
+    // RevizijeUKomponentama l.786+; važi i za ROOT kao legacy l.121–123).
+    // Kad uvoz kreira NOVU NAJVIŠU reviziju parta, sve postojeće BOM veze koje
+    // pokazuju na STARIJE revizije istog broja crteža — u drawing_components I
+    // u drawing_assemblies — preusmeravaju se na novi red; revizija SKLOPA
+    // (parentDrawingId) se NE dira. Ako uvezena revizija NIJE najviša (npr.
+    // stigla je starija), ne dira se ništa. Matching revizija SVUDA
+    // normalizovan prazan→"A" (svesna ispravka legacy nedoslednosti u
+    // PopuniKomponentePDMCrteza). Roditelji iz OVOG fajla su već prevezani kroz
+    // delete/recreate — ovde se hvataju SVI OSTALI.
     for (const u of upserted) {
       const others = await tx.drawing.findMany({
         where: { drawingNumber: u.docId, id: { not: u.id } },
         select: { id: true, revision: true },
       });
-      const oldIds = others
-        .filter(
-          (o) =>
-            normalizeRevision(o.revision) !== normalizeRevision(u.revision),
-        )
-        .map((o) => o.id);
+      // Preusmeravaj samo kad je uvezena revizija strogo najviša za taj broj
+      // crteža (string poredjenje normalizovanih revizija, kao handover modul).
+      const newRev = normalizeRevision(u.revision);
+      const isHighest = others.every(
+        (o) => normalizeRevision(o.revision) < newRev,
+      );
+      if (!isHighest) continue;
+      const oldIds = others.map((o) => o.id);
       if (!oldIds.length) continue;
-      const staleEdges = await tx.drawingComponent.findMany({
+
+      // drawing_components: prevezivanje childDrawingId na novi red. Dedup po
+      // (parent, child) ručno — nema unique constrainta, pa bi slepi update
+      // napravio dupli red kad parent već ima vezu na novu reviziju.
+      let relinkedComponents = 0;
+      const staleComponents = await tx.drawingComponent.findMany({
         where: { childDrawingId: { in: oldIds } },
         select: { id: true, parentDrawingId: true },
       });
-      for (const edge of staleEdges) {
+      for (const edge of staleComponents) {
         const duplicate = await tx.drawingComponent.findFirst({
           where: {
             parentDrawingId: edge.parentDrawingId,
@@ -395,8 +407,41 @@ export class PdmImportService {
             where: { id: edge.id },
             data: { childDrawingId: u.id },
           });
-        stats.oldRevisionRelinks += 1;
+        relinkedComponents += 1;
       }
+
+      // drawing_assemblies: isti princip (childDrawingId → novi red, dedup po
+      // (parent, child)); revizija sklopa (parentDrawingId) ostaje netaknuta.
+      let relinkedAssemblies = 0;
+      const staleAssemblies = await tx.drawingAssembly.findMany({
+        where: { childDrawingId: { in: oldIds } },
+        select: { id: true, parentDrawingId: true },
+      });
+      for (const edge of staleAssemblies) {
+        const duplicate = await tx.drawingAssembly.findFirst({
+          where: {
+            parentDrawingId: edge.parentDrawingId,
+            childDrawingId: u.id,
+            id: { not: edge.id },
+          },
+          select: { id: true },
+        });
+        if (duplicate)
+          await tx.drawingAssembly.delete({ where: { id: edge.id } });
+        else
+          await tx.drawingAssembly.update({
+            where: { id: edge.id },
+            data: { childDrawingId: u.id },
+          });
+        relinkedAssemblies += 1;
+      }
+
+      stats.oldRevisionRelinks += relinkedComponents + relinkedAssemblies;
+      if (relinkedComponents || relinkedAssemblies)
+        this.logger.log(
+          `BOM repoint ${u.docId} rev ${u.revision}: ` +
+            `${relinkedComponents} komponenti, ${relinkedAssemblies} sklopova (od starijih revizija)`,
+        );
     }
   }
 

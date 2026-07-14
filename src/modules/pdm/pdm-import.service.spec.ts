@@ -143,6 +143,12 @@ function prismaMock() {
       update: jest.fn().mockResolvedValue({}),
       delete: jest.fn().mockResolvedValue({}),
     },
+    drawingAssembly: {
+      findMany: jest.fn().mockResolvedValue([]),
+      findFirst: jest.fn().mockResolvedValue(null),
+      update: jest.fn().mockResolvedValue({}),
+      delete: jest.fn().mockResolvedValue({}),
+    },
     drawingImportLog: {
       create: jest.fn().mockResolvedValue({ id: 42 }),
     },
@@ -368,6 +374,97 @@ describe("PdmImportService — XML", () => {
 
     expect(res.data.stats.oldRevisionRelinks).toBe(0);
     expect(prisma.drawingComponent.findMany).not.toHaveBeenCalled();
+  });
+
+  it("nova najviša revizija → relink i drawing_components i drawing_assemblies na novi id (sklop netaknut)", async () => {
+    // Stara revizija (1000, A) id 77; uvozi se viša (1000, B), kreira id 1000.
+    prisma.drawing.findMany.mockImplementation(
+      (args: { where: { drawingNumber?: string } }) =>
+        args.where.drawingNumber === "1000"
+          ? Promise.resolve([{ id: 77, revision: "A" }])
+          : Promise.resolve([]),
+    );
+    // Po jedna stara veza u svakoj tabeli, bez postojećeg dupla (findFirst null).
+    prisma.drawingComponent.findMany.mockResolvedValue([
+      { id: 5, parentDrawingId: 99 },
+    ]);
+    prisma.drawingAssembly.findMany.mockResolvedValue([
+      { id: 8, parentDrawingId: 70 },
+    ]);
+
+    const xml = fileXml(docXml("1000", { rev: "B" }));
+    const res = await service.importXml(makeFile(xml), undefined, user);
+
+    expect(res.data.stats.oldRevisionRelinks).toBe(2); // 1 komponenta + 1 sklop
+    // childDrawingId → novi id; parentDrawingId (revizija sklopa) se NE dira.
+    expect(prisma.drawingComponent.update).toHaveBeenCalledWith({
+      where: { id: 5 },
+      data: { childDrawingId: 1000 },
+    });
+    expect(prisma.drawingAssembly.update).toHaveBeenCalledWith({
+      where: { id: 8 },
+      data: { childDrawingId: 1000 },
+    });
+    expect(prisma.drawingAssembly.delete).not.toHaveBeenCalled();
+  });
+
+  it("uvezena revizija NIJE najviša (stigla starija) → ništa se ne preusmerava", async () => {
+    // U bazi postoji viša (1000, B) id 77; uvozi se starija (1000, A).
+    prisma.drawing.findMany.mockImplementation(
+      (args: { where: { drawingNumber?: string } }) =>
+        args.where.drawingNumber === "1000"
+          ? Promise.resolve([{ id: 77, revision: "B" }])
+          : Promise.resolve([]),
+    );
+
+    const xml = fileXml(docXml("1000", { rev: "A" }));
+    const res = await service.importXml(makeFile(xml), undefined, user);
+
+    expect(res.data.stats.oldRevisionRelinks).toBe(0);
+    expect(prisma.drawingComponent.findMany).not.toHaveBeenCalled();
+    expect(prisma.drawingAssembly.findMany).not.toHaveBeenCalled();
+  });
+
+  it("crtež bez starijih revizija → ništa se ne preusmerava", async () => {
+    // drawing.findMany default vraća [] → nema drugih revizija tog broja.
+    const xml = fileXml(docXml("1000", { rev: "B" }));
+    const res = await service.importXml(makeFile(xml), undefined, user);
+
+    expect(res.data.stats.oldRevisionRelinks).toBe(0);
+    expect(prisma.drawingComponent.findMany).not.toHaveBeenCalled();
+    expect(prisma.drawingAssembly.findMany).not.toHaveBeenCalled();
+  });
+
+  it("dupli-guard za drawing_assemblies: UPDATE kad par ne postoji, DELETE kad već postoji", async () => {
+    prisma.drawing.findMany.mockImplementation(
+      (args: { where: { drawingNumber?: string } }) =>
+        args.where.drawingNumber === "1000"
+          ? Promise.resolve([{ id: 77, revision: "A" }])
+          : Promise.resolve([]),
+    );
+    // Dva stara sklopa: parent 70 (bez dupla → UPDATE), parent 71 (par postoji → DELETE).
+    prisma.drawingAssembly.findMany.mockResolvedValue([
+      { id: 8, parentDrawingId: 70 },
+      { id: 9, parentDrawingId: 71 },
+    ]);
+    prisma.drawingAssembly.findFirst.mockImplementation(
+      (args: { where: { parentDrawingId?: number } }) =>
+        args.where.parentDrawingId === 71
+          ? Promise.resolve({ id: 61 })
+          : Promise.resolve(null),
+    );
+
+    const xml = fileXml(docXml("1000", { rev: "B" }));
+    const res = await service.importXml(makeFile(xml), undefined, user);
+
+    expect(res.data.stats.oldRevisionRelinks).toBe(2);
+    expect(prisma.drawingAssembly.update).toHaveBeenCalledWith({
+      where: { id: 8 },
+      data: { childDrawingId: 1000 },
+    });
+    expect(prisma.drawingAssembly.delete).toHaveBeenCalledWith({
+      where: { id: 9 },
+    });
   });
 
   it("validaciona greška → SVE-ILI-NIŠTA: kritičan log, bez upisa, HTTP 200 + success:false", async () => {
