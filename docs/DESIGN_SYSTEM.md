@@ -154,6 +154,12 @@ prikazom upravlja `UpdateNotifier`, montiran jednom u root layout)
 Dopune kita:
 * `DataTable` je dobio opcioni row drag-drop (`rowDraggable` + `onRowDrop`) — native HTML5 prevlačenje
   redova sa vizuelnim indikatorom drop-mete (akcentni border-top), za ručno ređanje (npr. CAM redosled).
+* `DataTable` je dobio opciono sortiranje klikom na zaglavlje (§5): `Column.sortable` + kontrolisano
+  `sort`/`onSortToggle` (pozivalac ciklira asc → desc → none i po želji čuva u localStorage) — prvi
+  potrošač Kadrovska → Zaposleni. `Column.header` je proširen na `ReactNode` (npr. checkbox
+  „selektuj sve" u zaglavlju kolone selekcije).
+* `Dialog` je dobio opcioni `size`: `'md'` (default) · `'xl'` (duge forme sa sekcijama — karton
+  zaposlenog) · `'2xl'` (grid unosi — brzi/bulk unos zaposlenih).
 
 **Pravilo kita:** ekrani se sklapaju **isključivo** od kit komponenti. Nova komponenta prvo ulazi u kit,
 `/dev/ui` katalog i ovaj spisak — pa tek onda u ekran. "Privremeni div sa stilovima" ne postoji.

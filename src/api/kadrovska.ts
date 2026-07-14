@@ -967,3 +967,87 @@ export const usePayrollRecompute = () =>
   useKadrMutation<{ year: number; month: number; employeeId?: string; persist?: boolean; clientEventId?: string }, TxResponse<{ year: number; month: number; count: number; rows: PayrollRecomputeRow[] }>>((v) => post('/salary/payroll/recompute', v), KEYS.salary);
 export const usePayrollLock = () => useKadrMutation<{ id: string; expectedUpdatedAt: string; clientEventId?: string }>((v) => post(`/salary/payroll/${v.id}/lock`, { expectedUpdatedAt: v.expectedUpdatedAt, clientEventId: v.clientEventId }), KEYS.salary);
 export const usePayrollUnlock = () => useKadrMutation<{ id: string; clientEventId?: string }>((v) => post(`/salary/payroll/${v.id}/unlock`, { clientEventId: v.clientEventId }), KEYS.salary);
+
+/* ── P2 (Zaposleni) dopune — append-only ── */
+
+/** Trajno brisanje zaposlenog (admin; DELETE /employees/:id). FK-vezani podaci → BE greška. */
+export const useDeleteEmployee = () => useKadrMutation<{ id: string }>((v) => del(`/employees/${v.id}`));
+
+/**
+ * Server-side lista zaposlenih (P1a parami — ListEmployeesQueryDto):
+ * q (full_name ILIKE) / department (tekst) / active / filter (quick čip) /
+ * conType (aktivan ugovor) / sort+dir (whitelist; 'birthday' = days_to_bday).
+ * BE klampuje pageSize na 200 (parsePagination maxSize).
+ */
+export interface EmployeesListParams extends EmployeesParams {
+  filter?: 'med-soon' | 'bday-soon' | 'missing-jmbg' | 'no-email' | 'no-phone';
+  conType?: string;
+  sort?: 'name' | 'position' | 'department' | 'subDepartment' | 'email' | 'medical' | 'birthday' | 'status';
+  dir?: 'asc' | 'desc';
+}
+export function useEmployeesList(params: EmployeesListParams = {}) {
+  return useQuery({
+    queryKey: [...KEYS.employees, 'list', params],
+    queryFn: () => apiFetch<{ data: EmployeeSafe[]; meta: PageMeta }>(`${BASE}/employees${qs({ ...params })}`),
+  });
+}
+
+/**
+ * SVI zaposleni (Imenik i sl.) — BE klampuje pageSize na 200, pa prolazi kroz
+ * strane dok ne pokupi sve (cap 10 strana = 2000; ~157 zaposlenih danas).
+ * Paritet obrasca useAllLocations (lokacije.ts).
+ */
+export function useAllEmployees(active?: boolean) {
+  return useQuery({
+    queryKey: [...KEYS.employees, 'all', active ?? null],
+    staleTime: 60_000,
+    queryFn: async () => {
+      const pageSize = 200;
+      const out: EmployeeSafe[] = [];
+      for (let page = 1; page <= 10; page++) {
+        const res = await apiFetch<{ data: EmployeeSafe[]; meta: PageMeta }>(
+          `${BASE}/employees${qs({ active, page, pageSize })}`,
+        );
+        out.push(...res.data);
+        if (out.length >= res.meta.pagination.total || res.data.length < pageSize) break;
+      }
+      return out;
+    },
+  });
+}
+
+/* Org struktura (GET /org-structure) — kaskadni selekti odeljenje→pododeljenje→
+   pozicija u kartonu; Prisma camelCase redovi (departments/sub_departments/job_positions). */
+export interface OrgDepartment {
+  id: number;
+  name: string;
+  sortOrder: number;
+}
+export interface OrgSubDepartment {
+  id: number;
+  departmentId: number;
+  name: string;
+  sortOrder: number;
+}
+export interface OrgJobPosition {
+  id: number;
+  departmentId: number;
+  subDepartmentId: number | null;
+  name: string;
+  sortOrder: number;
+  [k: string]: unknown; // summaryMd/expectationsMd/responsibilitiesMd…
+}
+export interface OrgStructure {
+  departments: OrgDepartment[];
+  subDepartments: OrgSubDepartment[];
+  jobPositions: OrgJobPosition[];
+}
+export function useOrgStructure(enabled = true) {
+  return useQuery({
+    queryKey: ['kadrovska', 'org-structure'],
+    enabled,
+    retry: false, // ruta stiže sa P1a merge-om — do tada 404 bez retry oluje
+    staleTime: 5 * 60_000,
+    queryFn: () => apiFetch<{ data: OrgStructure }>(`${BASE}/org-structure`),
+  });
+}

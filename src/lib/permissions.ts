@@ -113,6 +113,10 @@ export const PERMISSIONS = {
   KADROVSKA_ATTENDANCE: 'kadrovska.attendance',
   KADROVSKA_ATTENDANCE_SHADOW: 'kadrovska.attendance_shadow',
   KADROVSKA_DEV_MANAGE: 'kadrovska.dev_manage',
+  // Imenik (telefoni) — 1.0 canViewPhoneDirectory krug (admin/menadzment/hr/
+  // poslovni_admin); P1a dodaje ključ u BE katalog. Nijedna postojeća permisija
+  // ne poklapa taj skup (manage nema menadžment) — zato poseban ključ.
+  KADROVSKA_IMENIK: 'kadrovska.imenik',
   // Sastanci + AI asistent — 3.0 TALAS B (backend docs/design/MODULE_SPEC_sastanci_ai_30.md §2).
   // Paritet backend role-permissions: read = canAccessSastanci (admin/leadpm/pm/menadzment/hr/viewer);
   // edit = has_edit_role (+poslovni_admin); manage/weekly_move = admin/menadzment; ai_model = admin.
