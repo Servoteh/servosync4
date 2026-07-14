@@ -1,6 +1,6 @@
 'use client';
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch, apiUpload } from './client';
 
 // ============================================================================
@@ -823,7 +823,6 @@ export const useMakeupApprove = () => useKadrMutation<{ id: string; clientEventI
 export const useMakeupReject = () => useKadrMutation<{ id: string; note?: string }>((v) => post(`/requests/makeup/${v.id}/reject`, { note: v.note }));
 export const useMakeupComplete = () => useKadrMutation<{ id: string; clientEventId?: string }>((v) => post(`/requests/makeup/${v.id}/complete`, { clientEventId: v.clientEventId }));
 export const useMakeupStorno = () => useKadrMutation<{ id: string; note?: string }>((v) => post(`/requests/makeup/${v.id}/storno`, { note: v.note }));
-export const useMakeupDelete = () => useKadrMutation<{ id: string }>((v) => del(`/requests/makeup/${v.id}`));
 export const usePaidLeaveApprove = () => useKadrMutation<{ id: string; clientEventId?: string }>((v) => post(`/requests/paid-leave/${v.id}/approve`, { clientEventId: v.clientEventId }));
 export const usePaidLeaveReject = () => useKadrMutation<{ id: string; note?: string }>((v) => post(`/requests/paid-leave/${v.id}/reject`, { note: v.note }));
 export const useNopApprove = () => useKadrMutation<{ id: string; clientEventId?: string }>((v) => post(`/requests/nop/${v.id}/approve`, { clientEventId: v.clientEventId }));
@@ -1384,4 +1383,102 @@ export async function fetchGridAudit(params: { employeeId?: string; from?: strin
   } catch {
     return null;
   }
+}
+// ============================================================================
+// PAKET P8 — Odsustva / Nadoknade / Kalendar (append-only; MRG kadr-briefs).
+// Sve mutacije/čitanja koje P8 tabovi traže, a nisu ranije postojale. Oblik i
+// query-ključevi prate obrasce iznad (broad ['kadrovska'] invalidacija; snake vs
+// camel po BE ugovoru: makeup/paidLeave = camelCase Prisma redovi).
+// ============================================================================
+
+/* Brisanje zahteva (nadoknada/plaćeno) — HR/admin; BE guard + RPC guard presuđuju.
+   makeup: kadr_delete_makeup čuva must_storno_first (approved/completed → 400).
+   paidLeave: paid_leave_delete čisti i absences + 'pl' kodove iz grida za approved. */
+export const useMakeupDelete = () => useKadrMutation<{ id: string }>((v) => del(`/requests/makeup/${v.id}`));
+export const usePaidLeaveDelete = () => useKadrMutation<{ id: string }>((v) => del(`/requests/paid-leave/${v.id}`));
+
+/* Soft-delete odsustva (1.0 paritet): Arhiviraj → pogled „Arhivirana" → Vrati. */
+export const useArchiveAbsence = () =>
+  useKadrMutation<{ id: string; clientEventId?: string }>((v) => post(`/absences/${v.id}/archive`, { clientEventId: v.clientEventId }), KEYS.absences);
+export const useRestoreAbsence = () =>
+  useKadrMutation<{ id: string; clientEventId?: string }>((v) => post(`/absences/${v.id}/restore`, { clientEventId: v.clientEventId }), KEYS.absences);
+
+/* ── Odsustvo → mesečni grid (most; paritet services/absenceGrid.js) ──
+   Godišnji/bolovanje/slobodan/neplaćeno/slava/plaćeno/službeno se NE pišu u
+   `absences` nego u work_hours (jedan red po RADNOM danu). Koristi POST /grid/batch. */
+
+/** Meseci [from,to] inclusive kao {year, month} (za dohvat praznika/grida po mesecu). */
+export function monthsInRange(from: string, to: string): { year: number; month: number }[] {
+  const out: { year: number; month: number }[] = [];
+  if (!from || !to || from > to) return out;
+  let y = Number(from.slice(0, 4));
+  let m = Number(from.slice(5, 7));
+  const ey = Number(to.slice(0, 4));
+  const em = Number(to.slice(5, 7));
+  for (let guard = 0; guard < 240 && (y < ey || (y === ey && m <= em)); guard++) {
+    out.push({ year: y, month: m });
+    m++;
+    if (m > 12) { m = 1; y++; }
+  }
+  return out;
+}
+
+/**
+ * Imperativni dohvat skupa NE-radnih praznika (YMD) u opsegu [from,to] —
+ * GET /kadrovska/holidays?from&to (kb1). Greška se NE guta: nepotpun holidaySet
+ * bi tiho pogrešno ekspandovao period odsustva na praznične dane.
+ */
+export async function fetchHolidaySet(from: string, to: string): Promise<Set<string>> {
+  const set = new Set<string>();
+  const res = await apiFetch<{ data: KadrHoliday[] }>(`${BASE}/holidays${qs({ from, to })}`);
+  for (const h of res.data ?? []) {
+    if (!h.isWorkday) {
+      const ymd = String(h.holidayDate).slice(0, 10);
+      if (ymd >= from && ymd <= to) set.add(ymd);
+    }
+  }
+  return set;
+}
+
+export interface GridMonthsResult {
+  rows: WorkHours[];
+  holidays: KadrHoliday[];
+  /** Set YMD ne-radnih praznika (za preskakanje u ekspanziji perioda). */
+  holidaySet: Set<string>;
+  isLoading: boolean;
+  isFetching: boolean;
+}
+
+/**
+ * Grid (work_hours + praznici) za više meseci odjednom (useQueries; deli keš sa
+ * `useGrid`). Vraća spojene redove + skup praznika. Koristi ga Kalendar (1 mesec),
+ * Odsutni (1–2 meseca) i Pregled (do 12 meseci — redovi grida su tu legitimno
+ * potrebni; TODO(P1a): namenski report endpoint bi bio jeftiniji za duge periode).
+ */
+export function useGridMonths(months: { year: number; month: number }[]): GridMonthsResult {
+  const results = useQueries({
+    queries: months.map((mm) => ({
+      queryKey: [...KEYS.grid, { year: mm.year, month: mm.month }],
+      queryFn: () => apiFetch<{ data: GridResponse }>(`${BASE}/grid${qs({ year: mm.year, month: mm.month })}`),
+    })),
+  });
+  const rows: WorkHours[] = [];
+  const holidays: KadrHoliday[] = [];
+  const holidaySet = new Set<string>();
+  for (const r of results) {
+    const d = r.data?.data;
+    if (!d) continue;
+    for (const row of d.rows) rows.push(row);
+    for (const h of d.holidays) {
+      holidays.push(h);
+      if (!h.isWorkday) holidaySet.add(String(h.holidayDate).slice(0, 10));
+    }
+  }
+  return {
+    rows,
+    holidays,
+    holidaySet,
+    isLoading: results.some((r) => r.isLoading),
+    isFetching: results.some((r) => r.isFetching),
+  };
 }
