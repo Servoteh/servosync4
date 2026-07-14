@@ -164,7 +164,14 @@ export class KadrovskaMutationsController {
     return this.m.paidLeaveDelete(this.email(req), id, {});
   }
 
-  /* Neplaćeno (nop) — SAMO admin */
+  /* Neplaćeno (nop) — predlog kreira edit-krug (guard = coarse has_edit_role
+     paritet; RLS WITH CHECK has_edit_role∧manages_employee presuđuje red);
+     odluka SAMO admin. Literal ruta PRE :id ruta. */
+  @Post("requests/nop")
+  @RequirePermission(PERMISSIONS.KADROVSKA_EDIT)
+  nopCreate(@Req() req: AuthedRequest, @Body() dto: D.CreateNopDto) {
+    return this.m.createNop(this.email(req), dto);
+  }
   @Post("requests/nop/:id/approve")
   @RequirePermission(PERMISSIONS.KADROVSKA_ADMIN)
   nopApprove(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string, @Body() dto: D.OptIdempotentDto) {
@@ -191,6 +198,16 @@ export class KadrovskaMutationsController {
   @RequirePermission(PERMISSIONS.KADROVSKA_EDIT)
   deleteAbsence(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string) {
     return this.m.deleteAbsence(this.email(req), id);
+  }
+  @Post("absences/:id/archive")
+  @RequirePermission(PERMISSIONS.KADROVSKA_EDIT)
+  archiveAbsence(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string) {
+    return this.m.archiveAbsence(this.email(req), id, false);
+  }
+  @Post("absences/:id/restore")
+  @RequirePermission(PERMISSIONS.KADROVSKA_EDIT)
+  restoreAbsence(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string) {
+    return this.m.archiveAbsence(this.email(req), id, true);
   }
 
   // ---------- SATI ----------
@@ -229,6 +246,13 @@ export class KadrovskaMutationsController {
   @RequirePermission(PERMISSIONS.KADROVSKA_GRID_EDIT)
   resolveRemark(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string, @Body() dto: D.ResolveRemarkDto) {
     return this.m.resolveRemark(this.email(req), id, dto);
+  }
+  /** Brisanje CELOG reda sati (workHoursTab) — :id je uuid pa `remarks` literal
+   *  gore ne koliduje (ParseUUIDPipe bi ga 400-ovao). */
+  @Delete("work-hours/:id")
+  @RequirePermission(PERMISSIONS.KADROVSKA_GRID_EDIT)
+  deleteWorkHour(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string) {
+    return this.m.deleteWorkHour(this.email(req), id);
   }
 
   /* Prisustvo korekcije — own ∨ manager. Guard = coarse-superset `profile.self`
@@ -350,6 +374,14 @@ export class KadrovskaMutationsController {
     return this.m.deletePersonalDoc(this.email(req), id);
   }
 
+  /** Trajni QR token za kiosk (get-or-create u employee_badges, SVK- format) —
+   *  `kadrovska.manage` (RLS write hr_or_admin je drugi sloj). */
+  @Post("employees/:id/badges/qr")
+  @RequirePermission(PERMISSIONS.KADROVSKA_MANAGE)
+  badgeQr(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string) {
+    return this.m.ensureQrBadge(this.email(req), id);
+  }
+
   /* Zaposleni update/deactivate/purge — param rute POSLE literal `employees/*` */
   @Patch("employees/:id")
   @RequirePermission(PERMISSIONS.KADROVSKA_EDIT)
@@ -424,6 +456,12 @@ export class KadrovskaMutationsController {
   @RequirePermission(PERMISSIONS.KADROVSKA_EDIT)
   restoreContract(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string) {
     return this.m.archiveContract(this.email(req), id, true);
+  }
+  /** Trajno brisanje iz ARHIVE (aktivan ugovor → 422; servis proverava). */
+  @Delete("contracts/:id")
+  @RequirePermission(PERMISSIONS.KADROVSKA_EDIT)
+  deleteContract(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string) {
+    return this.m.deleteContract(this.email(req), id);
   }
 
   /* Uvođenje / Izlazak (manage) */
@@ -611,6 +649,12 @@ export class KadrovskaMutationsController {
   payrollUnlock(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string, @Body() dto: D.OptIdempotentDto) {
     return this.m.payrollUnlock(this.email(req), id, dto);
   }
+  /** 🗑 Obriši red obračuna — paid (zaključan) NE sme (servis → 409). */
+  @Delete("salary/payroll/:id")
+  @RequirePermission(PERMISSIONS.KADROVSKA_SALARY)
+  payrollDelete(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string) {
+    return this.m.deletePayroll(this.email(req), id);
+  }
 
   // ---------- NOTIFIKACIJE (manage) ----------
 
@@ -618,6 +662,20 @@ export class KadrovskaMutationsController {
   @RequirePermission(PERMISSIONS.KADROVSKA_MANAGE)
   notifConfig(@Req() req: AuthedRequest, @Body() dto: D.NotificationConfigDto) {
     return this.m.updateNotificationConfig(this.email(req), dto);
+  }
+  /** 🔔 „Pošalji čekaće" — sinhroni proxy na 1.0 edge hr-notify-dispatch.
+   *  Guard vacreq_manage (superskup manage kruga — dugme živi i u vacReq/makeup/
+   *  paidLeave tabovima koje vide pm/leadpm/menadzment). Literal PRE :id ruta. */
+  @Post("notifications/dispatch")
+  @RequirePermission(PERMISSIONS.KADROVSKA_VACREQ_MANAGE)
+  notifDispatch() {
+    return this.m.dispatchNotifications();
+  }
+  /** Preusmeri queued red na drugog primaoca (tok „tabele knjigovođi"). */
+  @Post("notifications/:id/retarget")
+  @RequirePermission(PERMISSIONS.KADROVSKA_MANAGE)
+  notifRetarget(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string, @Body() dto: D.RetargetNotifDto) {
+    return this.m.notificationRetarget(this.email(req), id, dto);
   }
   @Post("notifications/:id/retry")
   @RequirePermission(PERMISSIONS.KADROVSKA_MANAGE)
