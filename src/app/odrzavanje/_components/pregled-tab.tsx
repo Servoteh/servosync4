@@ -37,8 +37,8 @@ export function PregledTab({ onOpenMachine }: { onOpenMachine: (code: string) =>
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <StatCard label="Otvoreni kvarovi" value={d?.openIncidents ?? '—'} tone="danger" />
         <StatCard label="Otvoreni nalozi" value={d?.openWorkOrders ?? '—'} tone="warn" />
-        <StatCard label="Kontrole danas" value={num(summary, 'checks_today', 'kontrole_danas')} tone="info" />
-        <StatCard label="Kasne preventive" value={num(summary, 'overdue_preventive', 'preventive_overdue', 'kasni')} tone="warn" />
+        <StatCard label="Kritični kvarovi" value={num(summary, 'open_critical_incidents')} tone="danger" />
+        <StatCard label="Kasne preventive" value={num(summary, 'overdue_preventive_tasks')} tone="warn" />
       </div>
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
