@@ -127,7 +127,7 @@ describe("Kadrovska R2 mutacije — permission matrica (e2e)", () => {
     { method: "delete", path: `/kadrovska/salary/payroll/${U}`, perm: PERMISSIONS.KADROVSKA_SALARY, ok: 200, label: "payroll delete (admin; paid=409 u servisu)" },
     { method: "post", path: `/kadrovska/notifications/${U}/retarget`, perm: PERMISSIONS.KADROVSKA_MANAGE, body: { recipient: "holpen@gmail.com" }, ok: 201, label: "notif retarget (manage)" },
     { method: "post", path: "/kadrovska/notifications/dispatch", perm: PERMISSIONS.KADROVSKA_VACREQ_MANAGE, body: {}, ok: 201, label: "dispatch proxy (vacreq_manage)" },
-    { method: "post", path: `/kadrovska/employees/${U}/badges/qr`, perm: PERMISSIONS.KADROVSKA_MANAGE, body: {}, ok: 201, label: "QR bedž get-or-create (manage)" },
+    { method: "post", path: `/kadrovska/employees/${U}/badges/qr`, perm: PERMISSIONS.KADROVSKA_ATTENDANCE_SHADOW, body: {}, ok: 201, label: "QR bedž get-or-create (attendance_shadow — hr/menadzment/admin)" },
   ];
 
   describe("rola × endpoint × 2xx/403 (izvedeno iz ALL_ROLE_KEYS)", () => {

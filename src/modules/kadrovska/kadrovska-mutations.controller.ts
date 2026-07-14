@@ -374,10 +374,14 @@ export class KadrovskaMutationsController {
     return this.m.deletePersonalDoc(this.email(req), id);
   }
 
-  /** Trajni QR token za kiosk (get-or-create u employee_badges, SVK- format) —
-   *  `kadrovska.manage` (RLS write hr_or_admin je drugi sloj). */
+  /** Trajni QR token za kiosk (get-or-create u employee_badges, SVK- format).
+   *  ⚠️ #7 (review 14.07): guard = `attendance_shadow` (hr/menadzment/admin) —
+   *  TAČAN skup i za 1.0 canSeeShadow() i za živu employee_badges_write RLS
+   *  (current_user_is_hr_or_admin = admin/hr/menadzment). MANAGE je puštao
+   *  poslovni_admin-a koga DB 42501-uje (mrtvo pravo) i blokirao menadzment koga
+   *  1.0/RLS dozvoljavaju. */
   @Post("employees/:id/badges/qr")
-  @RequirePermission(PERMISSIONS.KADROVSKA_MANAGE)
+  @RequirePermission(PERMISSIONS.KADROVSKA_ATTENDANCE_SHADOW)
   badgeQr(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string) {
     return this.m.ensureQrBadge(this.email(req), id);
   }

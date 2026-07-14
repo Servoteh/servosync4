@@ -358,7 +358,8 @@ export class CreateContractDto extends IdempotentDto {
 export class UpdateContractDto {
   @IsOptional() @IsString() contractType?: string;
   @IsOptional() @IsISO8601() dateFrom?: string;
-  @IsOptional() @IsISO8601() dateTo?: string;
+  /** eksplicitni `null` čisti date_to (određeni→neodređeni); izostavljeno = ne diraj. */
+  @IsOptional() @IsISO8601() dateTo?: string | null;
   @IsOptional() @IsString() contractNumber?: string;
   @IsOptional() @IsString() position?: string;
   @IsOptional() @IsBoolean() probniRad?: boolean;

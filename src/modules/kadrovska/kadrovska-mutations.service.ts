@@ -151,7 +151,9 @@ export class KadrovskaMutationsService {
     const status = this.decisionStatus(out);
     if (status === "rescheduled") {
       await this.queueVacationDecision(email, id, out, ["rescheduled"]);
-    } else if (status === "pending") {
+    } else if (status === "pending" && !this.isReplay(out)) {
+      // #9 (review 14.07): preskoči na idempotent replay — inače duple pozivnice
+      // šef/HR + dupli dispatch (submission notifikacija je bezuslovan INSERT batch).
       await this.sy15
         .withUserRls(email, (tx) =>
           tx.$queryRaw(
@@ -267,11 +269,16 @@ export class KadrovskaMutationsService {
     const out = await this.mutate(email, dto.clientEventId, "kadr.makeup.reject", (tx) =>
       this.rpcJson(tx, Prisma.sql`SELECT makeup_reject(${id}::uuid, ${dto.note ?? null}, ${email}) AS v`),
     );
-    await this.queueBestEffort(
-      email,
-      Prisma.sql`SELECT kadr_queue_makeup_notification(${id}::uuid, 'rejected')`,
-      out,
-    );
+    // #8 (review 14.07): mejl SAMO na stvaran 'rejected' — RPC vraća
+    // 'already_processed' za već obrađen/obrisan red; kadr_queue_* sastavlja tekst
+    // iz p_status pa bi bezuslovno slao lažnu odluku (kao vacation/approve grane).
+    if (this.decisionStatus(out) === "rejected") {
+      await this.queueBestEffort(
+        email,
+        Prisma.sql`SELECT kadr_queue_makeup_notification(${id}::uuid, 'rejected')`,
+        out,
+      );
+    }
     return out;
   }
   makeupComplete(email: string, id: string, dto: D.OptIdempotentDto) {
@@ -310,11 +317,14 @@ export class KadrovskaMutationsService {
     const out = await this.mutate(email, dto.clientEventId, "kadr.paidleave.reject", (tx) =>
       this.rpcJson(tx, Prisma.sql`SELECT paid_leave_reject(${id}::uuid, ${dto.note ?? null}, ${email}) AS v`),
     );
-    await this.queueBestEffort(
-      email,
-      Prisma.sql`SELECT kadr_queue_paidleave_notification(${id}::uuid, 'rejected')`,
-      out,
-    );
+    // #8: mejl SAMO na stvaran 'rejected' (already_processed → bez mejla).
+    if (this.decisionStatus(out) === "rejected") {
+      await this.queueBestEffort(
+        email,
+        Prisma.sql`SELECT kadr_queue_paidleave_notification(${id}::uuid, 'rejected')`,
+        out,
+      );
+    }
     return out;
   }
   paidLeaveDelete(email: string, id: string, dto: D.OptIdempotentDto) {
@@ -448,24 +458,64 @@ export class KadrovskaMutationsService {
    *  can_edit_kadrovska_grid — isti gate kao RPC; 1.0 ih piše direktnim PATCH-om).
    *  Semantika 1.0 buildWorkHourPayload: undefined = ne diraj; ''/null = obriši. */
   gridBatch(email: string, dto: D.GridBatchDto) {
-    const rows = dto.rows.map((r) => ({
-      employee_id: r.employeeId,
-      work_date: r.workDate,
-      hours: r.hours ?? 0,
-      overtime_hours: r.overtimeHours ?? 0,
-      field_hours: r.fieldHours ?? 0,
-      field_subtype: r.fieldSubtype ?? null,
-      two_machine_hours: r.twoMachineHours ?? 0,
-      absence_code: r.absenceCode ?? null,
-      absence_subtype: r.absenceSubtype ?? null,
-      note: r.note ?? "",
-      project_ref: r.projectRef ?? "",
-    }));
     const predmetRows = dto.rows.filter(
       (r) =>
         r.fieldPredmetBroj !== undefined || r.fieldPredmetNaziv !== undefined,
     );
     return this.mutate(email, dto.clientEventId, "kadr.grid.batch", async (tx) => {
+      // ⚠️ #28 (review 14.07): batch RPC radi `note = EXCLUDED.note` bezuslovno na
+      // conflict, a EXCLUDED.note = COALESCE(v_row->>'note','') = '' kad ključ
+      // fali → most odsustvo→grid (koji NE nosi note/project_ref) tiho GAZI
+      // postojeće vrednosti praznim stringom. Fix bez RPC migracije: za redove koji
+      // NE nose ključ, PRE-učitaj postojeći note/project_ref i pošalji ga u payload
+      // (RPC ga onda „očuva"); r.note/r.projectRef definisan (uklj. '') = eksplicitan
+      // set/clear (1.0 buildWorkHourPayload semantika).
+      const preserveKeys = dto.rows.filter(
+        (r) => r.note === undefined || r.projectRef === undefined,
+      );
+      const preserved = new Map<string, { note: string; projectRef: string }>();
+      if (preserveKeys.length) {
+        const empIds = [...new Set(preserveKeys.map((r) => r.employeeId))];
+        const dates = preserveKeys.map((r) => this.date(r.workDate)!);
+        const minD = new Date(Math.min(...dates.map((d) => d.getTime())));
+        const maxD = new Date(Math.max(...dates.map((d) => d.getTime())));
+        const ex = await tx.workHours.findMany({
+          where: {
+            employeeId: { in: empIds },
+            workDate: { gte: minD, lte: maxD },
+          },
+          select: {
+            employeeId: true,
+            workDate: true,
+            note: true,
+            projectRef: true,
+          },
+        });
+        for (const w of ex) {
+          preserved.set(
+            `${w.employeeId}|${w.workDate.toISOString().slice(0, 10)}`,
+            { note: w.note ?? "", projectRef: w.projectRef ?? "" },
+          );
+        }
+      }
+      const rows = dto.rows.map((r) => {
+        const prev = preserved.get(`${r.employeeId}|${r.workDate.slice(0, 10)}`);
+        return {
+          employee_id: r.employeeId,
+          work_date: r.workDate,
+          hours: r.hours ?? 0,
+          overtime_hours: r.overtimeHours ?? 0,
+          field_hours: r.fieldHours ?? 0,
+          field_subtype: r.fieldSubtype ?? null,
+          two_machine_hours: r.twoMachineHours ?? 0,
+          absence_code: r.absenceCode ?? null,
+          absence_subtype: r.absenceSubtype ?? null,
+          // undefined = očuvaj postojeće (prev) / '' za nov red; definisano = set/clear.
+          note: r.note !== undefined ? r.note : (prev?.note ?? ""),
+          project_ref:
+            r.projectRef !== undefined ? r.projectRef : (prev?.projectRef ?? ""),
+        };
+      });
       const res = await this.rpcJson(
         tx,
         Prisma.sql`SELECT hr_upsert_work_hours_batch(${JSON.stringify(rows)}::jsonb) AS v`,
@@ -950,7 +1000,10 @@ export class KadrovskaMutationsService {
           data: {
             ...(dto.contractType != null ? { contractType: dto.contractType } : {}),
             ...(dto.dateFrom ? { dateFrom: this.date(dto.dateFrom)! } : {}),
-            ...(dto.dateTo ? { dateTo: this.date(dto.dateTo) } : {}),
+            // eksplicitni null ČISTI date_to (određeni→neodređeni); undefined = ne diraj.
+            ...(dto.dateTo !== undefined
+              ? { dateTo: dto.dateTo ? this.date(dto.dateTo) : null }
+              : {}),
             ...(dto.contractNumber !== undefined ? { contractNumber: dto.contractNumber } : {}),
             ...(dto.position !== undefined ? { position: dto.position } : {}),
             ...(dto.probniRad != null ? { probniRad: dto.probniRad } : {}),
@@ -1419,7 +1472,10 @@ export class KadrovskaMutationsService {
   }
 
   /** 🗑 Brisanje celog obračuna za mesec (1.0 salaryPayrollTab:735-752, danger
-   *  confirm na FE). Zaključan (paid) NE sme — prvo unlock → 409. RLS DELETE admin. */
+   *  confirm na FE). ⚠️ #21 (review 14.07): paid→409 je NAMERNO 2.0 POOŠTRENJE — 1.0
+   *  briše i zaključane redove slobodno (salaryPayroll.js:487-493; delete dugme NIJE
+   *  disable-ovano za paid). Odluka: FE payroll-delete tok radi unlock→delete
+   *  dvokorak (ili nudi unlock u 409 toastu), ne tretira 409 kao grešku. RLS DELETE admin. */
   deletePayroll(email: string, id: string) {
     return this.mutate(email, undefined, "kadr.payroll.delete", async (tx) => {
       const rows = await tx.$queryRaw<{ status: string | null }[]>(
@@ -2351,7 +2407,13 @@ export class KadrovskaMutationsService {
     if (code === "02000") throw new NotFoundException(message);
     if (code === "P0001" || code === "P0002" || code === "23514" || code === "22023" || code === "23502")
       throw new UnprocessableEntityException(message);
-    if (code === "23505") throw new ConflictException(message);
+    if (code === "23505" || code === "P2002") throw new ConflictException(message);
+    // #17 (review 14.07): exclusion violation (absences_no_overlap_per_employee) →
+    // 409 sa 1.0 porukom (FE listing-tab očekuje baš nju za preklapajuće odsustvo).
+    if (code === "23P01")
+      throw new ConflictException(
+        "Postoji preklapajuće odsustvo za ovog zaposlenog u tom periodu.",
+      );
     if (code === "P2025") throw new ForbiddenException(message);
     throw e;
   }

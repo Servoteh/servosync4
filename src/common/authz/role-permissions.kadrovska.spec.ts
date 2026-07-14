@@ -48,6 +48,13 @@ describe("Kadrovska permission matrica (paritet 1.0 auth.js/shared.js gate-ova)"
     ROLES.POSLOVNI_ADMIN,
   ];
   const ATTENDANCE = [ROLES.ADMIN, ROLES.HR, ROLES.MENADZMENT];
+  // canViewPhoneDirectory (Imenik tab + bulk vCard) — širi mgmt gate od read.
+  const IMENIK = [
+    ROLES.ADMIN,
+    ROLES.MENADZMENT,
+    ROLES.HR,
+    ROLES.POSLOVNI_ADMIN,
+  ];
   const DEV_MANAGE = [
     ROLES.ADMIN,
     ROLES.MENADZMENT,
@@ -135,6 +142,8 @@ describe("Kadrovska permission matrica (paritet 1.0 auth.js/shared.js gate-ova)"
       expectedExactly(PERMISSIONS.KADROVSKA_ATTENDANCE_SHADOW, ATTENDANCE));
     it("kadrovska.dev_manage = admin/menadzment/hr/pm/leadpm (row-scope u DB)", () =>
       expectedExactly(PERMISSIONS.KADROVSKA_DEV_MANAGE, DEV_MANAGE));
+    it("kadrovska.imenik = canViewPhoneDirectory (admin/menadzment/hr/poslovni_admin)", () =>
+      expectedExactly(PERMISSIONS.KADROVSKA_IMENIK, IMENIK));
   });
 
   // ---- Asimetrije (paritet 1.0, NE bug) ----
