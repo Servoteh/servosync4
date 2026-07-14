@@ -1,15 +1,19 @@
 /**
- * Fiksni skup „odobravača primopredaje" (odluka Nenad 13.07.2026): tačno ovih
- * 6 ljudi biraju se sa padajuće liste na nacrtu kao adresat notifikacije i oni
- * su jedini koji smeju da kreiraju primopredaju (approve). 5 od njih dobija
+ * Fiksni skup „odobravača primopredaje" (odluka Nenad 13.07.2026, dopuna
+ * 14.07): ovi ljudi biraju se sa padajuće liste na nacrtu kao adresat
+ * notifikacije i oni su jedini koji smeju da predaju/kreiraju primopredaju
+ * (uz admin izuzetak na tvrdoj kapiji u `submit()`). 5 od njih dobija
  * `primopredaje.approve` preko `user_permission_overrides` (grant); igor.vostic
- * ga ima preko `menadzment` role. Guard je taj koji stvarno odlučuje o pravu —
+ * ga ima preko `menadzment` role; zoran.jarakovic (dodat 14.07 na Nenadov
+ * zahtev) preko `admin` role. Guard je taj koji stvarno odlučuje o pravu —
  * ova lista je NAMENSKI skup za notifikaciju i „da li je projektant sam
- * odobravač" logiku, po eksplicitnoj odluci „tvrdo tih 6".
+ * odobravač" logiku.
  *
  * Ključ je `workers.id` (in-app notifikacija se šalje po worker id-u), a ovde je
  * i email (za Resend). Ako se ekipa promeni — menja se OVDE (jedan izvor).
- * Prod worker_id/email potvrđeni 13.07 (users JOIN workers).
+ * Prod worker_id/email potvrđeni 13.07 (users JOIN workers); zoran vezan
+ * 14.07 (`users.worker_id=1203` za user 10 — bez veze in-app notifikacija
+ * po worker id-u ne bi stizala do njegovog naloga).
  */
 export interface PrimopredajaApprover {
   workerId: number;
@@ -43,6 +47,11 @@ export const PRIMOPREDAJA_APPROVERS: readonly PrimopredajaApprover[] = [
     workerId: 2211,
     email: "slavisa.radosavljevic@servoteh.com",
     fullName: "Slaviša Radosavljević",
+  },
+  {
+    workerId: 1203,
+    email: "zoran.jarakovic@servoteh.com",
+    fullName: "Zoran Jaraković",
   },
 ] as const;
 

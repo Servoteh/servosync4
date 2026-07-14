@@ -228,7 +228,7 @@ describe("HandoversService", () => {
   // -------------------------------------------------------- APPROVERS
 
   describe("approvers", () => {
-    it("lista = fiksnih 6 worker id-eva, samo aktivni, po imenu", async () => {
+    it("lista = fiksnih 7 worker id-eva (6 + zoran 14.07), samo aktivni, po imenu", async () => {
       prisma.worker.findMany.mockResolvedValue([
         { id: 197, fullName: "Igor Voštić", username: "igorv" },
       ]);
@@ -236,7 +236,7 @@ describe("HandoversService", () => {
       expect(result.data).toHaveLength(1);
       expect(prisma.worker.findMany).toHaveBeenCalledWith({
         where: {
-          id: { in: [197, 2206, 2207, 2208, 2221, 2211] },
+          id: { in: [197, 2206, 2207, 2208, 2221, 2211, 1203] },
           active: true,
         },
         select: { id: true, fullName: true, username: true },
