@@ -29,6 +29,9 @@ import { MediaAiModule } from "./modules/media-ai/media-ai.module";
 import { PlanMontazeModule } from "./modules/plan-montaze/plan-montaze.module";
 import { PlanProizvodnjeModule } from "./modules/plan-proizvodnje/plan-proizvodnje.module";
 import { PracenjeModule } from "./modules/pracenje/pracenje.module";
+import { ProjektniBiroModule } from "./modules/projektni-biro/projektni-biro.module";
+import { MojProfilModule } from "./modules/moj-profil/moj-profil.module";
+import { PodesavanjaModule } from "./modules/podesavanja/podesavanja.module";
 
 @Module({
   imports: [
@@ -63,6 +66,11 @@ import { PracenjeModule } from "./modules/pracenje/pracenje.module";
     PlanMontazeModule,
     PlanProizvodnjeModule,
     PracenjeModule,
+    // 3.0 TALAS D — Projektni biro + Moj profil + Podešavanja/RBAC
+    // (MODULE_SPEC_pb_profil_podesavanja_30.md §3; R1 = read sloj).
+    ProjektniBiroModule,
+    MojProfilModule,
+    PodesavanjaModule,
   ],
   controllers: [AppController],
   providers: [

@@ -381,6 +381,81 @@ export const ROLE_PERMISSIONS: Partial<
 ) as Partial<Record<RoleKey, readonly PermissionKey[]>>;
 
 /**
+ * TALAS D — Projektni biro + Moj profil + Podešavanja (MODULE_SPEC_pb_profil_podesavanja_30.md
+ * §2.5, presuda D6/D7/D8, 13.07). Dodela se LAYER-uje nad mapom iznad (admin već ima ALL, pa
+ * ga merge ne menja). Zašto post-merge a ne inline u svaku ulogu: `pb.read`, `pb.reports_own` i
+ * `profile.self` idu na SVE aktivne uloge (DB SELECT `true`/self-scope paritet, §2.1/§0.2) — sloj
+ * to čini očiglednim i sprečava propust nove uloge. Kurirani PB/settings podskupovi = paritet
+ * ŽIVIH DB gate-ova (§2.1/§2.2). Row-odluke (work_reports self-scope, eng-tips draft/org-članstvo
+ * iz `pb_get_mechanical_projecting_engineers`, reports „Rukovodstvo inženjeringa", komentar 1h)
+ * OSTAJU u sy15 (RLS/DEFINER kroz GUC most) — NE prepisuju se u katalog (§2.4).
+ *
+ * D7: `hr`/`poslovni_admin` dobijaju `pb.edit` (živo pravilo firme `has_edit_role`, §2.4.1 — NE
+ * sužavati); `inzenjer`/`projektant_vodja` = rana aktivacija PB permisija (konfiguracija, ne nova
+ * uloga). D8: guard koristi UNION permisija svih uloga (`permissionsForRoles`) — asimetrija
+ * prioriteta rola (DB vs FE) nestaje po konstrukciji; DB fn se NE dira.
+ */
+// pb.edit „krug" = pb_can_edit_tasks() paritet (admin ide kroz ALL). comment/progress/tips_write
+// = isti krug ∪ inzenjer (§2.5: comment→edit∪inzenjer; progress→inzenjer∪edit; tips→edit∪inzenjer).
+const D_EDIT_KRUG: readonly RoleKey[] = [
+  ROLES.HR,
+  ROLES.MENADZMENT,
+  ROLES.PM,
+  ROLES.LEADPM,
+  ROLES.POSLOVNI_ADMIN,
+  ROLES.PROJEKTANT_VODJA,
+];
+const D_EDIT_PERMS: readonly PermissionKey[] = [
+  P.PB_EDIT,
+  P.PB_COMMENT,
+  P.PB_PROGRESS,
+  P.PB_TIPS_WRITE,
+];
+// inzenjer: restriktovani edit — comment/progress/tips_write ALI NE pun pb.edit (§2.5, §2.4.5).
+const D_INZENJER_PERMS: readonly PermissionKey[] = [
+  P.PB_COMMENT,
+  P.PB_PROGRESS,
+  P.PB_TIPS_WRITE,
+];
+const D_REPORTS_ALL: readonly RoleKey[] = [
+  ROLES.LEADPM,
+  ROLES.PM,
+  ROLES.MENADZMENT,
+];
+const D_ORG_PROFILE: readonly RoleKey[] = [
+  ROLES.MENADZMENT,
+  ROLES.PM,
+  ROLES.LEADPM,
+];
+const D_PREDMET_AKTIVACIJA: readonly RoleKey[] = [ROLES.MENADZMENT];
+const D_PROFILE_TEAM: readonly RoleKey[] = [
+  ROLES.HR,
+  ROLES.MENADZMENT,
+  ROLES.LEADPM,
+  ROLES.PM,
+  ROLES.POSLOVNI_ADMIN,
+];
+
+function addPerms(role: RoleKey, perms: readonly PermissionKey[]): void {
+  const base = ROLE_PERMISSIONS[role] ?? [];
+  ROLE_PERMISSIONS[role] = [...new Set([...base, ...perms])];
+}
+
+// Univerzalno: SVE uloge koje se loguju u 2.0 (svi ključevi u mapi) → pb.read/reports_own/
+// profile.self (DB SELECT `true` + self-scope paritet). admin (ALL) je uključen — no-op merge.
+for (const role of Object.keys(ROLE_PERMISSIONS) as RoleKey[]) {
+  addPerms(role, [P.PB_READ, P.PB_REPORTS_OWN, P.PROFILE_SELF]);
+}
+for (const role of D_EDIT_KRUG) addPerms(role, D_EDIT_PERMS);
+addPerms(ROLES.INZENJER, D_INZENJER_PERMS);
+for (const role of D_REPORTS_ALL) addPerms(role, [P.PB_REPORTS_ALL]);
+for (const role of D_ORG_PROFILE) addPerms(role, [P.SETTINGS_ORG_PROFILE]);
+for (const role of D_PREDMET_AKTIVACIJA)
+  addPerms(role, [P.SETTINGS_PREDMET_AKTIVACIJA]);
+for (const role of D_PROFILE_TEAM) addPerms(role, [P.PROFILE_TEAM]);
+// pb.admin / settings.users / settings.audit / settings.system = SAMO admin (već u ALL) — bez dodele.
+
+/**
  * Normalise a stored role value to the catalog key.
  * Live `users.role` data predates the lowercase convention ("ADMIN"/"USER") — without this,
  * activating the guard on prod would deny EVERYONE including admin (lockout). The V2 activation
