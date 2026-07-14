@@ -119,3 +119,42 @@ export function buildTspLabelProgram(spec: TspLabelSpec): string {
   lines.push(`PRINT ${copies},1`);
   return lines.join('\r\n') + '\r\n';
 }
+
+// --------------------------------------------------------------- Lokacije: nalepnica police
+// Port iz ServoSync 1.0 (`src/lib/tspl2.js buildTspShelfLabelProgram`) — Lokacije
+// štampa nalepnica polica (MODULE_SPEC_lokacije_30.md §3 t.12). Barkod = `LP:hallUuid:shelfUuid`
+// (kompozit koji `shelfBarcode`/backend `barcode.ts` razrešava nazad u policu+halu),
+// ili sama šifra police. Footer = čitljiva šifra police. NE šalje SIZE/GAP/DENSITY
+// (vidi vrh fajla). Backend `POST /v1/locations/labels/print` samo prosleđuje RAW.
+
+export interface ShelfLabelSpec {
+  /** String koji se koduje u barkod/QR (`LP:hall:shelf` ili šifra police). */
+  barcodeValue: string;
+  /** Čitljiva šifra police ispod koda (default = barcodeValue). */
+  footline?: string;
+  codeType?: 'barcode' | 'qr';
+  copies?: number;
+}
+
+/** Jedna nalepnica police (80.34×40.3mm) — paritet 1.0 barcode/QR layout. */
+export function buildTspShelfLabelProgram(spec: ShelfLabelSpec): string {
+  const encode = String(spec?.barcodeValue ?? '').trim();
+  if (!encode) throw new Error('buildTspShelfLabelProgram: barcodeValue je obavezan');
+  const foot = String(spec?.footline ?? spec?.barcodeValue ?? '').trim();
+  const copies = Math.max(1, Math.floor(Number(spec?.copies) || 1));
+  const codeType = spec?.codeType === 'qr' ? 'qr' : 'barcode';
+
+  const lines: string[] = ['CLS'];
+  if (codeType === 'qr') {
+    // Auto ćelija (M2) — dovoljno za LP:uuid:uuid na 80mm nalepnici.
+    lines.push(`QRCODE ${mm(2)},${mm(2)},L,6,A,0,M2,${tsplStr(encode)}`);
+  } else {
+    lines.push(`BARCODE ${mm(2)},${mm(2)},"128M",${mm(22)},0,0,2,5,${tsplStr(encode)}`);
+  }
+  if (foot) {
+    const yText = codeType === 'qr' ? mm(30.5) : mm(26.5);
+    lines.push(`TEXT ${mm(2)},${yText},"3",0,1,1,${tsplStr(truncFit(foot, 46))}`);
+  }
+  lines.push(`PRINT ${copies},1`);
+  return lines.join('\r\n') + '\r\n';
+}

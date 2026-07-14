@@ -31,6 +31,7 @@ import {
   ShoppingCart,
   SlidersHorizontal,
   Users,
+  Warehouse,
   Workflow,
   Wrench,
   Zap,
@@ -121,6 +122,15 @@ const NAV_SECTIONS: NavSection[] = [
     title: 'Lično',
     items: [
       { label: 'Moj profil', href: '/profil', icon: CircleUser, requires: PERMISSIONS.PROFILE_SELF },
+    ],
+  },
+  {
+    // Logistika (PLAN_MODULA_MES_3.0 §4 / MODULE_SPEC_lokacije_30 §4) — 1.0 fizičke
+    // lokacije (hale/police/kavezi/mašine, loc_*) seobom Talas A. ODVOJENO od
+    // „Lokacije delova" (part-locations, Proizvodnja) — QBigTehn ledger; ne stapaju se.
+    title: 'Logistika',
+    items: [
+      { label: 'Lokacije', href: '/lokacije', icon: Warehouse, requires: PERMISSIONS.LOKACIJE_READ },
     ],
   },
   {

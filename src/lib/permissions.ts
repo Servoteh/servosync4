@@ -27,6 +27,14 @@ export const PERMISSIONS = {
   PRIMOPREDAJE_APPROVE: 'primopredaje.approve',
   LOKACIJE_READ: 'lokacije.read',
   LOKACIJE_WRITE: 'lokacije.write',
+  // Lokacije delova — 3.0 Talas A (fizičke lokacije loc_*; MODULE_SPEC_lokacije_30.md §2).
+  // `lokacije.read` je DELJEN sa 2.0-native part-locations (ista SELECT baseline);
+  // move/manage/admin/labels su NOVI za fizičke lokacije (loc_can_create_movement /
+  // loc_can_manage_locations / loc_is_admin / canPrintLocLabels — row-odluka u DB fn).
+  LOKACIJE_MOVE: 'lokacije.move',
+  LOKACIJE_MANAGE: 'lokacije.manage',
+  LOKACIJE_ADMIN: 'lokacije.admin',
+  LOKACIJE_LABELS: 'lokacije.labels',
   MRP_READ: 'mrp.read',
   DIRECTORY_READ: 'directory.read',
   SYNC_RUN: 'sync.run',

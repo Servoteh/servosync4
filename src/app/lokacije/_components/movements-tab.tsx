@@ -1,0 +1,152 @@
+'use client';
+
+import { useMemo, useState } from 'react';
+import { Download } from 'lucide-react';
+import { DataTable, type Column } from '@/components/ui-kit/data-table';
+import { Pager } from '@/components/ui-kit/pager';
+import { Button } from '@/components/ui-kit/button';
+import { formatDateTime } from '@/lib/format';
+import {
+  MOVEMENT_TYPES,
+  MOVEMENT_TYPE_LABEL,
+  useAllLocations,
+  useMovements,
+  type LocMovement,
+} from '@/api/lokacije';
+import { buildLocIndex, downloadCsv, movementLabel, tableEmpty } from './common';
+import { LocationSelect } from './location-select';
+
+const INPUT = 'h-9 rounded-control border border-line bg-surface px-2.5 text-sm text-ink outline-none focus:border-accent';
+
+/**
+ * Skraćen `moved_by` (UUID → prvih 8 znakova) — paritet 1.0 fallback prikaza kada
+ * lista korisnika/imena nije dostupna (index.js:2505; nema users-by-id endpointa u
+ * 2.0 kontroleru — `moved_by` je auth.uid, ne worker id).
+ */
+function shortUser(id: string | null | undefined): string {
+  const s = String(id ?? '').trim();
+  return s ? `${s.slice(0, 8)}…` : '—';
+}
+
+/** Istorija premeštanja (movements) — filteri korisnik/lokacija/tip/nalog/datum + CSV. */
+export function MovementsTab() {
+  const [search, setSearch] = useState('');
+  const [movementType, setMovementType] = useState('');
+  const [orderNo, setOrderNo] = useState('');
+  const [locationId, setLocationId] = useState<string | null>(null);
+  const [userId, setUserId] = useState('');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [page, setPage] = useState(1);
+  const pageSize = 100;
+
+  const locs = useAllLocations('all');
+  const locList = useMemo(() => locs.data ?? [], [locs.data]);
+  const locIndex = useMemo(() => buildLocIndex(locList), [locList]);
+
+  const baseFilters = {
+    search: search || undefined,
+    movementType: movementType || undefined,
+    orderNo: orderNo || undefined,
+    locationId: locationId || undefined,
+    dateFrom: dateFrom || undefined,
+    dateTo: dateTo || undefined,
+  };
+
+  const q = useMovements({ ...baseFilters, userId: userId || undefined, page, pageSize });
+
+  // Opcije za „Korisnik" filter (paritet 1.0 „Svi" + lista): distinct moved_by iz
+  // istog skupa BEZ userId filtera (da izbor ne sruši sopstvenu listu na jednog).
+  const userSource = useMovements({ ...baseFilters, pageSize: 500 });
+  const userOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const m of userSource.data?.data ?? []) if (m.movedBy) set.add(m.movedBy);
+    return [...set].sort();
+  }, [userSource.data]);
+
+  const rows = q.data?.data ?? [];
+  const meta = q.data?.meta.pagination;
+
+  const columns: Column<LocMovement>[] = [
+    { key: 'movedAt', header: 'Vreme', render: (r) => <span className="tnums whitespace-nowrap">{formatDateTime(r.movedAt)}</span> },
+    { key: 'type', header: 'Tip', render: (r) => movementLabel(r.movementType) },
+    { key: 'order', header: 'Nalog', render: (r) => r.orderNo || '—' },
+    { key: 'item', header: 'Stavka', render: (r) => <span className="tnums">{r.itemRefId}</span> },
+    { key: 'drawing', header: 'Crtež', render: (r) => r.drawingNo || '—' },
+    { key: 'from', header: 'Sa', render: (r) => locIndex.labelOf(r.fromLocationId) },
+    { key: 'to', header: 'Na', render: (r) => locIndex.labelOf(r.toLocationId) },
+    { key: 'qty', header: 'Kol.', align: 'right', numeric: true, render: (r) => String(r.quantity) },
+    { key: 'user', header: 'Korisnik', render: (r) => <span className="tnums text-ink-secondary" title={r.movedBy}>{shortUser(r.movedBy)}</span> },
+    { key: 'note', header: 'Napomena', render: (r) => <span className="text-ink-secondary">{r.movementReason || r.note || '—'}</span> },
+  ];
+
+  function exportCsv() {
+    downloadCsv(
+      `pokreti_lokacija_${new Date().toISOString().slice(0, 10)}.csv`,
+      ['Vreme', 'Tip', 'Nalog', 'Stavka', 'Crtež', 'Sa', 'Na', 'Količina', 'Korisnik', 'Razlog/Napomena'],
+      rows.map((r) => [
+        formatDateTime(r.movedAt),
+        movementLabel(r.movementType),
+        r.orderNo,
+        r.itemRefId,
+        r.drawingNo,
+        locIndex.labelOf(r.fromLocationId),
+        locIndex.labelOf(r.toLocationId),
+        String(r.quantity),
+        r.movedBy,
+        r.movementReason || r.note || '',
+      ]),
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <input className={INPUT} placeholder="Pretraga (stavka/nalog)…" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} />
+        <input className={INPUT} placeholder="Broj naloga" value={orderNo} onChange={(e) => { setOrderNo(e.target.value); setPage(1); }} />
+        <select className={INPUT} value={movementType} onChange={(e) => { setMovementType(e.target.value); setPage(1); }}>
+          <option value="">Svi tipovi</option>
+          {MOVEMENT_TYPES.map((t) => (
+            <option key={t} value={t}>{MOVEMENT_TYPE_LABEL[t]}</option>
+          ))}
+        </select>
+        <select className={INPUT} value={userId} onChange={(e) => { setUserId(e.target.value); setPage(1); }} title="Korisnik">
+          <option value="">Svi korisnici</option>
+          {userOptions.map((u) => (
+            <option key={u} value={u}>{shortUser(u)}</option>
+          ))}
+        </select>
+        <label className="flex items-center gap-1 text-xs text-ink-secondary">
+          Od <input className={INPUT} type="date" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setPage(1); }} />
+        </label>
+        <label className="flex items-center gap-1 text-xs text-ink-secondary">
+          Do <input className={INPUT} type="date" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setPage(1); }} />
+        </label>
+        <Button variant="secondary" onClick={exportCsv} disabled={rows.length === 0} className="ml-auto">
+          <Download className="h-4 w-4" /> CSV
+        </Button>
+      </div>
+
+      <div className="max-w-md">
+        <LocationSelect
+          locations={locList}
+          value={locationId}
+          onChange={(v) => { setLocationId(v); setPage(1); }}
+          placeholder="Filter po lokaciji (polazna ILI odredišna)…"
+        />
+      </div>
+
+      <DataTable
+        columns={columns}
+        rows={rows}
+        rowKey={(r) => r.id}
+        loading={q.isLoading}
+        empty={tableEmpty(q.isError, 'Nema pokreta', 'Za izabrane filtere nema zabeleženih premeštanja.')}
+      />
+
+      {meta && meta.totalPages > 1 && (
+        <Pager page={meta.page} totalPages={meta.totalPages} onPrev={() => setPage((p) => Math.max(1, p - 1))} onNext={() => setPage((p) => p + 1)} />
+      )}
+    </div>
+  );
+}
