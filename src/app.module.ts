@@ -21,7 +21,11 @@ import { CncProgramsModule } from "./modules/cnc-programs/cnc-programs.module";
 import { MrpModule } from "./modules/mrp/mrp.module";
 import { NotificationsModule } from "./modules/notifications/notifications.module";
 import { Sy15Module } from "./common/sy15/sy15.module";
+import { AiModule } from "./common/ai/ai.module";
 import { ReversiModule } from "./modules/reversi/reversi.module";
+import { SastanciModule } from "./modules/sastanci/sastanci.module";
+import { AiChatModule } from "./modules/ai-chat/ai-chat.module";
+import { MediaAiModule } from "./modules/media-ai/media-ai.module";
 
 @Module({
   imports: [
@@ -44,7 +48,14 @@ import { ReversiModule } from "./modules/reversi/reversi.module";
     NotificationsModule,
     // 3.0 pilot — podaci u sy15 (1.0) bazi (MODULE_SPEC_reversi.md §0)
     Sy15Module,
+    // Zajednički AI provider (OpenAI/Anthropic) — Talas B; C/D/G reuse.
+    AiModule,
     ReversiModule,
+    // 3.0 TALAS B — Sastanci + AI asistent (MODULE_SPEC_sastanci_ai_30.md §0)
+    SastanciModule,
+    AiChatModule,
+    // Zajednički media/AI (STT + refine) — presuda B4; C/D/G reuse.
+    MediaAiModule,
   ],
   controllers: [AppController],
   providers: [

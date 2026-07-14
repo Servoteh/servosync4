@@ -53,6 +53,22 @@ export const PERMISSIONS = {
   REVERSI_READ: "reversi.read",
   REVERSI_MANAGE: "reversi.manage",
   REVERSI_TEAM_READ: "reversi.team_read",
+  // Sastanci + AI asistent — 3.0 TALAS B (MODULE_SPEC_sastanci_ai_30.md §2/§3).
+  // Guard = VIDLJIVOST (paritet 1.0 front gate-a); ROW-odluka OSTAJE u sy15 bazi
+  // (RLS + DEFINER RPC kroz GUC most). Zato je „read" širina 1.0 `canAccessSastanci`,
+  // a ne DB SELECT (`true` za sve authenticated).
+  //   read        = 1.0 canAccessSastanci: admin/leadpm/pm/menadzment/hr/viewer (§7 P6)
+  //   edit        = 1.0 has_edit_role paritet: admin/menadzment/hr/pm/leadpm/poslovni_admin
+  //   manage      = 1.0 current_user_is_management: admin/menadzment (invites/remind/resend/reopen)
+  //   weekly_move = VIDLJIVOST dugmadi; prava odluka je tabela `sast_weekly_movers` (§2, §7)
+  //   ai_model    = set_sastanci_ai_model: samo admin (§3)
+  SASTANCI_READ: "sastanci.read",
+  SASTANCI_EDIT: "sastanci.edit",
+  SASTANCI_MANAGE: "sastanci.manage",
+  SASTANCI_WEEKLY_MOVE: "sastanci.weekly_move",
+  SASTANCI_AI_MODEL: "sastanci.ai_model",
+  // AI asistent chat — 1.0 „/ai za sve" → sve aktivne uloge; upis istorije je server-side.
+  AI_CHAT: "ai.chat",
 } as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
