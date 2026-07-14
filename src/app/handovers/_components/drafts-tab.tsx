@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Pencil, Plus, Printer, Send, Trash2 } from 'lucide-react';
+import { Info, Pencil, Plus, Printer, Send, Trash2 } from 'lucide-react';
 import {
   DRAFT_ITEM_DECISION,
   useCreateHandoverDraft,
@@ -237,6 +237,45 @@ function newItemRow(): DraftItemDraft {
   return { key: `${Date.now()}-${Math.random()}`, drawing: null, quantityToProduce: '1', note: '' };
 }
 
+/**
+ * Ovlašćenje za PREDAJU nacrta u primopredaju (Nenad 13–14.07). Nacrt sme da
+ * KREIRA svako, ali „Predaj u primopredaju" (submit) sme SAMO fiksni odobravač
+ * (`useApprovers` — worker id ∈ skup) ILI korisnik sa rolom „admin"
+ * (npr. zoran.jarakovic, čiji je `workerId` NULL — zato uz workerId i rola,
+ * case-insensitive). `iAmApprover` (SAMO status odobravača, bez admin izuzetka)
+ * ostaje jedini kriterijum za skrivanje padajućeg „pošalji na odobrenje" u
+ * formi: admin koji NIJE odobravač i dalje mora da izabere odobravača
+ * (notifikacija ide izabranom). Dok se lista odobravača učitava → `canSubmit=false`
+ * (dugme disabled, bez treptaja). Backend 403 je krajnja istina — ovo je samo
+ * UI afordansa. `approvers` se vraća da forma reuse-uje isti upit za opcije.
+ */
+function useCanSubmitHandover(): {
+  iAmApprover: boolean;
+  canSubmit: boolean;
+  approvers: ReturnType<typeof useApprovers>;
+} {
+  const approvers = useApprovers();
+  const myWorkerId = getMyWorkerId();
+  const { user } = useAuth();
+  const iAmApprover =
+    myWorkerId != null && (approvers.data?.data ?? []).some((a) => a.id === myWorkerId);
+  const isAdmin = (user?.role ?? '').trim().toLowerCase() === 'admin';
+  const canSubmit = !approvers.isLoading && (iAmApprover || isAdmin);
+  return { iAmApprover, canSubmit, approvers };
+}
+
+/**
+ * Objašnjenje zašto je „Predaj u primopredaju" onemogućeno kad ulogovani nije
+ * odobravač/admin. Namerno OPŠTA formulacija (prezent, „dobija … pri kreiranju"):
+ * nacrt koji je kreirao sam odobravač ili nacrt od pre 13.07 NIJE okinuo
+ * notifikaciju, pa tvrdnja „on je dobio notifikaciju o OVOM nacrtu" ne bi bila
+ * tačna za svaki nacrt (backend `create()` šalje notifikaciju samo kad kreator
+ * NIJE odobravač). Ista poruka se koristi i kao vidljiv hint (ne samo `title`),
+ * da je vide i tastatura/touch korisnici.
+ */
+const SUBMIT_APPROVER_HINT =
+  'Predaju u primopredaju vrši ovlašćeni odobravač (ili admin) — izabrani odobravač dobija notifikaciju pri kreiranju nacrta.';
+
 function DraftFormDialog({
   open,
   draft,
@@ -262,11 +301,9 @@ function DraftFormDialog({
   const { user: me } = useAuth();
   // Odobravači (Nenad 13.07): projektant bira kome ide notifikacija. Ako je sam
   // ulogovani jedan od odobravača → sam kreira primopredaju, izbor nije potreban.
-  const approvers = useApprovers();
-  const myWorkerId = getMyWorkerId();
-  const iAmApprover =
-    myWorkerId != null &&
-    (approvers.data?.data ?? []).some((a) => a.id === myWorkerId);
+  // `iAmApprover` (bez admin izuzetka) ostaje jedini kriterijum za skrivanje
+  // padajućeg izbora; `approvers` reuse-ujemo za opcije menija.
+  const { iAmApprover, approvers } = useCanSubmitHandover();
   const create = useCreateHandoverDraft();
   const update = useUpdateHandoverDraft();
   const mut = isEdit ? update : create;
@@ -782,6 +819,9 @@ function DraftDetail({
   const q = useHandoverDraft(draft.id);
   const del = useDeleteHandoverDraft();
   const submit = useSubmitHandoverDraft();
+  // Predaju sme samo ovlašćeni odobravač (ili admin) — isti gate kao backend 403.
+  // `approvers` čuvamo da hint ispod ne trepne dok se lista još učitava.
+  const { canSubmit, approvers } = useCanSubmitHandover();
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [confirmingSubmit, setConfirmingSubmit] = useState(false);
   const [printOpen, setPrintOpen] = useState(false);
@@ -855,13 +895,15 @@ function DraftDetail({
           )}
           <button
             onClick={() => setConfirmingSubmit(true)}
-            disabled={d.isLocked || submit.isPending || unresolved.length > 0}
+            disabled={d.isLocked || submit.isPending || unresolved.length > 0 || !canSubmit}
             title={
               d.isLocked
                 ? 'Nacrt je već predat (zaključan).'
                 : unresolved.length > 0
                   ? 'Nacrt ima sporne stavke bez odluke projektanta — donesite odluku (kolona „Odluka”) pre predaje.'
-                  : undefined
+                  : !canSubmit
+                    ? SUBMIT_APPROVER_HINT
+                    : undefined
             }
             className="inline-flex items-center gap-1.5 rounded-control bg-accent px-2.5 py-1 text-xs font-semibold text-accent-fg hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
           >
@@ -883,6 +925,18 @@ function DraftDetail({
             .join(', ')}{' '}
           — „Predaj u primopredaju” je blokirano dok se za svaku ne donese odluka (kolona
           „Odluka” u tabeli stavki).
+        </div>
+      )}
+
+      {/* Vidljiv razlog zašto je predaja onemogućena kad ulogovani nije
+          odobravač/admin — `title` na disabled dugmetu ne vide tastatura/touch
+          korisnici. Prikazuje se samo kad bi dugme inače bilo aktivno (nije
+          zaključan, nema spornih stavki) i tek kad je lista odobravača učitana
+          (da ne trepne pri učitavanju). */}
+      {!d.isLocked && unresolved.length === 0 && !approvers.isLoading && !canSubmit && (
+        <div className="flex items-start gap-2 rounded-panel border border-line bg-surface-2 px-4 py-3 text-sm text-ink-secondary">
+          <Info className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+          <span>{SUBMIT_APPROVER_HINT}</span>
         </div>
       )}
 
