@@ -281,7 +281,7 @@ export function Assessment360Modal({ employeeId, employeeName, period, status, o
       const cid = Number(row['competence_id'] ?? row['comp_id']);
       if (!cid) continue;
       const arr = m.get(cid) ?? [];
-      arr.push({ level: svNum(row, 'level'), descriptor: sv(row, 'descriptor') });
+      arr.push({ level: svNum(row, 'level'), descriptor: sv(row, 'descriptor_sr') || sv(row, 'descriptor') });
       m.set(cid, arr);
     }
     return m;

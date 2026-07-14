@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import * as XLSX from 'xlsx';
 import { Button } from '@/components/ui-kit/button';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { EmptyState } from '@/components/ui-kit/empty-state';
@@ -32,11 +33,13 @@ const REPORTS: { kind: Kind; label: string; perm?: Permission }[] = [
   { kind: 'audit', label: '📒 Audit log', perm: PERMISSIONS.KADROVSKA_ADMIN },
 ];
 
-/* ── CSV izvoz (Excel-otvarljiv; 2.0 nema xlsx zavisnost) ── */
-function exportCsv(name: string, headers: string[], rows: (string | number)[][]) {
-  const esc = (v: string | number) => { const s = String(v ?? ''); return /[";\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
-  const csv = '﻿' + [headers.map(esc).join(';'), ...rows.map((r) => r.map(esc).join(';'))].join('\n');
-  downloadBlob(new Blob([csv], { type: 'text/csv;charset=utf-8' }), name);
+/* ── XLSX izvoz (postojeća `xlsx` zavisnost — paritet ostatka Kadrovske/Reversi) ── */
+function exportXlsx(name: string, headers: string[], rows: (string | number)[][]) {
+  const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Izveštaj');
+  const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+  downloadBlob(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), name);
 }
 
 export function IzvestajiTab() {
@@ -70,7 +73,7 @@ function PeriodBar({ from, to, setFrom, setTo, onExport }: { from: string; to: s
       <label className="flex items-center gap-1.5 text-sm text-ink-secondary">Od <div className="w-40"><DateField value={from} onChange={setFrom} /></div></label>
       <label className="flex items-center gap-1.5 text-sm text-ink-secondary">Do <div className="w-40"><DateField value={to} onChange={setTo} /></div></label>
       <div className="flex-1" />
-      {onExport && <Button variant="secondary" onClick={onExport}>⬇ Izvezi CSV</Button>}
+      {onExport && <Button variant="secondary" onClick={onExport}>⬇ Izvezi XLSX</Button>}
     </div>
   );
 }
@@ -102,7 +105,7 @@ function SickReport() {
   ];
   return (
     <div className="space-y-3">
-      <PeriodBar from={from} to={to} setFrom={setFrom} setTo={setTo} onExport={() => exportCsv('bolovanja.csv', ['Zaposleni', 'Epizoda', 'Dana'], perEmp.map((r) => [r.name, r.episodes, r.days]))} />
+      <PeriodBar from={from} to={to} setFrom={setFrom} setTo={setTo} onExport={() => exportXlsx('bolovanja.xlsx', ['Zaposleni', 'Epizoda', 'Dana'], perEmp.map((r) => [r.name, r.episodes, r.days]))} />
       <SummaryChips items={[{ label: 'Zaposlenih na BO', value: perEmp.length }, { label: 'Ukupno dana', value: totalDays }, { label: 'Epizoda', value: episodes.length }]} />
       <DataTable columns={cols} rows={perEmp} rowKey={(r) => r.name} loading={q.isLoading} empty={<EmptyState title="Nema bolovanja u periodu" />} />
     </div>
@@ -241,7 +244,7 @@ function VacationReport() {
       <div className="flex items-center gap-2">
         <label className="flex items-center gap-2 text-sm text-ink-secondary">Godina<input type="number" value={year} onChange={(e) => setYear(Number(e.target.value) || year)} className="h-8 w-24 rounded-control border border-line bg-surface px-2 text-sm" /></label>
         <div className="flex-1" />
-        <Button variant="secondary" onClick={() => exportCsv(`saldo_go_${year}.csv`, ['Zaposleni', 'Pripada', 'Iskorišćeno', 'Preostalo'], rows.map((r) => [r.name, r.entitled, r.used, r.remaining]))}>⬇ Izvezi CSV</Button>
+        <Button variant="secondary" onClick={() => exportXlsx(`saldo_go_${year}.xlsx`, ['Zaposleni', 'Pripada', 'Iskorišćeno', 'Preostalo'], rows.map((r) => [r.name, r.entitled, r.used, r.remaining]))}>⬇ Izvezi XLSX</Button>
       </div>
       <SummaryChips items={[{ label: 'Zaposlenih', value: rows.length }, { label: 'Ukupno preostalo', value: rows.reduce((s, r) => s + r.remaining, 0) }]} />
       <DataTable columns={cols} rows={rows} rowKey={(r) => r.name} loading={q.isLoading} empty={<EmptyState title="Nema podataka o GO" />} />
@@ -265,7 +268,7 @@ function OvertimeReport() {
   ];
   return (
     <div className="space-y-3">
-      <PeriodBar from={from} to={to} setFrom={setFrom} setTo={setTo} onExport={() => exportCsv('prekovremeni.csv', ['Zaposleni', 'Prekovremeni', '2 masine', 'Dana', 'Poslednji'], rows.map((r) => [r.name, r.ot, r.tm, r.days, r.last]))} />
+      <PeriodBar from={from} to={to} setFrom={setFrom} setTo={setTo} onExport={() => exportXlsx('prekovremeni.xlsx', ['Zaposleni', 'Prekovremeni', '2 masine', 'Dana', 'Poslednji'], rows.map((r) => [r.name, r.ot, r.tm, r.days, r.last]))} />
       <SummaryChips items={[{ label: 'Zaposlenih', value: rows.length }, { label: 'Ukupno prekovremenih (h)', value: rows.reduce((s, r) => s + r.ot, 0) }]} />
       <DataTable columns={cols} rows={rows} rowKey={(r) => r.name} loading={q.isLoading} empty={<EmptyState title="Nema prekovremenih u periodu" />} />
     </div>
@@ -289,7 +292,7 @@ function FieldReport() {
   ];
   return (
     <div className="space-y-3">
-      <PeriodBar from={from} to={to} setFrom={setFrom} setTo={setTo} onExport={() => exportCsv('terenski.csv', ['Zaposleni', 'Domaci dana', 'Domaci h', 'Inostrani dana', 'Inostrani h', 'Poslednji'], rows.map((r) => [r.name, r.dd, r.dh, r.fd, r.fh, r.last]))} />
+      <PeriodBar from={from} to={to} setFrom={setFrom} setTo={setTo} onExport={() => exportXlsx('terenski.xlsx', ['Zaposleni', 'Domaci dana', 'Domaci h', 'Inostrani dana', 'Inostrani h', 'Poslednji'], rows.map((r) => [r.name, r.dd, r.dh, r.fd, r.fh, r.last]))} />
       <SummaryChips items={[{ label: 'Zaposlenih na terenu', value: rows.length }, { label: 'Domaćih dana', value: rows.reduce((s, r) => s + r.dd, 0) }, { label: 'Inostranih dana', value: rows.reduce((s, r) => s + r.fd, 0) }]} />
       <DataTable columns={cols} rows={rows} rowKey={(r) => r.name} loading={q.isLoading} empty={<EmptyState title="Nema terenskog rada u periodu" />} />
     </div>
@@ -317,7 +320,7 @@ function ChildrenReport() {
     <div className="space-y-3">
       <div className="flex items-center gap-2">
         <div className="flex-1" />
-        <Button variant="secondary" onClick={() => exportCsv('deca.csv', ['Zaposleni', 'Odeljenje', 'Dete', 'Rodjendan', 'Uzrast'], withAge.map((r) => [sv(r, 'employee_name'), sv(r, 'department'), sv(r, 'first_name'), sv(r, 'birth_date'), r._age ?? '']))}>⬇ Izvezi CSV</Button>
+        <Button variant="secondary" onClick={() => exportXlsx('deca.xlsx', ['Zaposleni', 'Odeljenje', 'Dete', 'Rodjendan', 'Uzrast'], withAge.map((r) => [sv(r, 'employee_name'), sv(r, 'department'), sv(r, 'first_name'), sv(r, 'birth_date'), r._age ?? '']))}>⬇ Izvezi XLSX</Button>
       </div>
       <SummaryChips items={[{ label: 'Dece', value: rows.length }, { label: 'Predškolski (<7)', value: withAge.filter((r) => r._age != null && r._age < 7).length }]} />
       <DataTable columns={cols} rows={withAge} rowKey={(r) => sv(r, 'id') || Math.random().toString()} loading={q.isLoading} empty={<EmptyState title="Nema evidentirane dece" />} />
@@ -399,7 +402,7 @@ function ViewReport({ kind, title }: { kind: 'medical' | 'certs' | 'audit'; titl
       <div className="flex items-center gap-2">
         <h3 className="text-sm font-semibold text-ink">{title}</h3>
         <div className="flex-1" />
-        <Button variant="secondary" onClick={() => exportCsv(`${kind}.csv`, columns, rows.map((r) => columns.map((k) => fmtVal(r[k]))))}>⬇ Izvezi CSV</Button>
+        <Button variant="secondary" onClick={() => exportXlsx(`${kind}.xlsx`, columns, rows.map((r) => columns.map((k) => fmtVal(r[k]))))}>⬇ Izvezi XLSX</Button>
       </div>
       <SummaryChips items={[{ label: 'Zapisa', value: rows.length }]} />
       {cols.length === 0 ? (
