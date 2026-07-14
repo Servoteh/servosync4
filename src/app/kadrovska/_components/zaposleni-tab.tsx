@@ -11,7 +11,7 @@ import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { useAuth } from '@/lib/auth-context';
 import { PERMISSIONS } from '@/lib/permissions';
 import { formatDate } from '@/lib/format';
-import { generateBadgeSheetPdf, openBlob, downloadBlob } from '@/lib/hr-pdf';
+import { generateBadgeSheetPdf, generateJobPositionPdf, openBlob, downloadBlob } from '@/lib/hr-pdf';
 import {
   useEmployees,
   useEmployee,
@@ -21,6 +21,7 @@ import {
   useEmployeeBankCards,
   useMedicalExams,
   useCertificates,
+  useOrgStructure,
   signDocument,
   type EmployeeSafe,
 } from '@/api/kadrovska';
@@ -129,8 +130,10 @@ function DosijeDialog({ id, onClose }: { id: string; onClose: () => void }) {
   const medicalQ = useMedicalExams({ employeeId: id }, canManage);
   const certsQ = useCertificates({ employeeId: id }, canManage);
 
+  const orgQ = useOrgStructure();
   const [docGen, setDocGen] = useState(false);
   const [badgeBusy, setBadgeBusy] = useState(false);
+  const [posBusy, setPosBusy] = useState(false);
 
   async function makeBadge() {
     if (!emp) return;
@@ -144,6 +147,24 @@ function DosijeDialog({ id, onClose }: { id: string; onClose: () => void }) {
     }
   }
 
+  const positionId = Number(sv(emp as Record<string, unknown> | undefined, 'position_id')) || 0;
+  async function makePositionPdf() {
+    if (!emp) return;
+    const pos = orgQ.data?.data.jobPositions.find((p) => p.id === positionId);
+    if (!pos) {
+      alert('Zaposlenom nije dodeljeno radno mesto iz sistematizacije.');
+      return;
+    }
+    setPosBusy(true);
+    try {
+      const { blob, fileName } = await generateJobPositionPdf(pos, { fullName: emp.full_name, department: emp.department || '' });
+      openBlob(blob);
+      downloadBlob(blob, fileName);
+    } finally {
+      setPosBusy(false);
+    }
+  }
+
   return (
     <Dialog
       open
@@ -154,6 +175,11 @@ function DosijeDialog({ id, onClose }: { id: string; onClose: () => void }) {
           <Button variant="secondary" onClick={makeBadge} loading={badgeBusy}>
             <QrCode className="h-4 w-4" aria-hidden /> QR bedž
           </Button>
+          {positionId > 0 && (
+            <Button variant="secondary" onClick={makePositionPdf} loading={posBusy}>
+              <FileText className="h-4 w-4" aria-hidden /> Opis pozicije
+            </Button>
+          )}
           {canPii && (
             <Button onClick={() => setDocGen(true)} disabled={!emp}>
               <FileText className="h-4 w-4" aria-hidden /> Generiši dokument
