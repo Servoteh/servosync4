@@ -133,7 +133,7 @@ export function AssessmentsSection() {
         empty={<EmptyState title="Nema 360° procena" hint={'Kampanju otvarate dugmetom „📊 360° kampanja", a pojedinačnu iz detalja plana razvoja.'} />}
       />
       {campaignOpen && <CampaignModal onClose={() => setCampaignOpen(false)} />}
-      {detail && <Assessment360Modal employeeId={detail.employeeId} employeeName={nm(detail.employeeId)} period={detail.periodLabel ?? undefined} onClose={() => setOpenId(null)} />}
+      {detail && <Assessment360Modal employeeId={detail.employeeId} employeeName={nm(detail.employeeId)} period={detail.periodLabel ?? undefined} status={detail.status} onClose={() => setOpenId(null)} />}
     </section>
   );
 }
@@ -166,7 +166,8 @@ function CampaignModal({ onClose }: { onClose: () => void }) {
     setBusy(true);
     try {
       const res = await open.mutateAsync({ title: title.trim(), period: period.trim(), employeeIds: [...selected], clientEventId: newClientEventId() });
-      const cycleId = sv((res.data ?? null) as Record<string, unknown> | null, 'cycle_id') || sv((res.data ?? null) as Record<string, unknown> | null, 'cycleId');
+      const d = res.data;
+      const cycleId = typeof d === 'string' ? d : sv((d ?? null) as Record<string, unknown> | null, 'cycle_id') || sv((d ?? null) as Record<string, unknown> | null, 'cycleId') || sv((d ?? null) as Record<string, unknown> | null, 'id');
       if (sendInvites && cycleId) {
         const inv = await assessmentInviteCycle(cycleId, true);
         inviteToast(inv.data);
@@ -225,13 +226,14 @@ function CampaignModal({ onClose }: { onClose: () => void }) {
 }
 
 /* ── 360 detail modal (radar + scoring + participants + actions) ── */
-export function Assessment360Modal({ employeeId, employeeName, period, onClose }: { employeeId: string; employeeName: string; period?: string; onClose: () => void }) {
+export function Assessment360Modal({ employeeId, employeeName, period, status, onClose }: { employeeId: string; employeeName: string; period?: string; status?: string; onClose: () => void }) {
   const qc = useQueryClient();
   const { list } = useNameMap();
   const cevRef = useRef(newClientEventId());
   const [aid, setAid] = useState<string | null>(null);
   const [initErr, setInitErr] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
+  const [statusState, setStatusState] = useState(status ?? 'collecting');
   const seededRef = useRef(-1);
 
   useEffect(() => {
@@ -328,7 +330,7 @@ export function Assessment360Modal({ employeeId, employeeName, period, onClose }
 
   const peers = raters.filter((r) => r.raterKind === 'peer');
   const self = raters.find((r) => r.raterKind === 'self');
-  const canEdit = !!leaderRater; // leader rater postoji dok je collecting/draft
+  const canEdit = statusState === 'collecting' || statusState === 'draft';
   const [busy, setBusy] = useState(false);
 
   const closeA = useCloseAssessment();
@@ -514,9 +516,9 @@ export function Assessment360Modal({ employeeId, employeeName, period, onClose }
           <DevBlock title="⚙ Akcije">
             <div className="flex flex-wrap gap-2">
               {canEdit ? (
-                <Button variant="secondary" onClick={() => doState(() => closeA.mutateAsync({ id: aid!, clientEventId: newClientEventId() }), 'Zatvoreno')}>🔒 Zatvori prikupljanje</Button>
+                <Button variant="secondary" onClick={async () => { await doState(() => closeA.mutateAsync({ id: aid!, clientEventId: newClientEventId() }), 'Zatvoreno'); setStatusState('closed'); }}>🔒 Zatvori prikupljanje</Button>
               ) : (
-                <Button variant="secondary" onClick={() => doState(() => reopenA.mutateAsync({ id: aid!, clientEventId: newClientEventId() }), 'Ponovo otvoreno')}>↺ Ponovo otvori</Button>
+                <Button variant="secondary" onClick={async () => { await doState(() => reopenA.mutateAsync({ id: aid!, clientEventId: newClientEventId() }), 'Ponovo otvoreno'); setStatusState('collecting'); }}>↺ Ponovo otvori</Button>
               )}
               <Button variant="secondary" onClick={() => doState(() => shareA.mutateAsync({ id: aid!, clientEventId: newClientEventId() }), 'Podeljeno sa zaposlenim')}>📨 Podeli sa zaposlenim</Button>
               <Button variant="secondary" onClick={() => doState(() => unshareA.mutateAsync({ id: aid!, clientEventId: newClientEventId() }), 'Sakriveno')}>🙈 Sakrij</Button>
