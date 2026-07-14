@@ -211,20 +211,54 @@ export class CreateNopDto extends OptIdempotentDto {
 
 /* ════════════════ ZAPOSLENI ════════════════ */
 
+/**
+ * CREATE zaposlenog — PUN 1.0 skup (CRITICAL #1, adversarni review 14.07):
+ * ValidationPipe whitelist TIHO BRIŠE ključeve kojih nema u DTO-u, pa je uži DTO
+ * gubio JMBG/rođenje/pol/lekarski/telefon/PII blok bez ikakve greške. Skup =
+ * 1.0 buildEmployeePayload (services/employees.js:97-140). PII gating NE radi
+ * guard nego ŽIVI DB trigger `employees_sensitive_guard` (INSERT sa PII bez
+ * can_manage_employee_pii → 42501 → naš 403) — upis ide pod GUC claims
+ * pozivaoca kroz runIdempotentRls, pa trigger vidi pravog korisnika.
+ */
 export class CreateEmployeeDto extends IdempotentDto {
   @IsString() @MaxLength(300) fullName!: string;
   @IsString() workType!: string;
+  @IsOptional() @IsString() @MaxLength(150) firstName?: string;
+  @IsOptional() @IsString() @MaxLength(150) lastName?: string;
   @IsOptional() @IsString() position?: string;
   @IsOptional() @IsString() department?: string;
   @IsOptional() @IsInt() departmentId?: number;
   @IsOptional() @IsInt() subDepartmentId?: number;
   @IsOptional() @IsInt() positionId?: number;
   @IsOptional() @IsString() team?: string;
+  /** 1.0 kolona je `phone` (FE šalje phoneWork) — servis mapira phoneWork→phone. */
   @IsOptional() @IsString() phone?: string;
+  @IsOptional() @IsString() phoneWork?: string;
   @IsOptional() @IsString() email?: string;
   @IsOptional() @IsISO8601() hireDate?: string;
   @IsOptional() @IsBoolean() isActive?: boolean;
   @IsOptional() @IsString() @MaxLength(2000) note?: string;
+  // Osnovni karton (nije PII-maskiran u view-u):
+  @IsOptional() @IsISO8601() birthDate?: string;
+  @IsOptional() @IsString() gender?: string;
+  @IsOptional() @IsString() slava?: string;
+  @IsOptional() @IsString() slavaDay?: string;
+  @IsOptional() @IsString() educationLevel?: string;
+  @IsOptional() @IsString() educationTitle?: string;
+  @IsOptional() @IsISO8601() medicalExamDate?: string;
+  @IsOptional() @IsISO8601() medicalExamExpires?: string;
+  // PII blok (DB trigger presuđuje — 42501 bez kadrovska.pii kruga):
+  @IsOptional() @IsString() personalId?: string;
+  @IsOptional() @IsString() address?: string;
+  @IsOptional() @IsString() city?: string;
+  @IsOptional() @IsString() postalCode?: string;
+  @IsOptional() @IsString() bankName?: string;
+  @IsOptional() @IsString() bankAccount?: string;
+  @IsOptional() @IsString() phonePrivate?: string;
+  @IsOptional() @IsString() emergencyContactName?: string;
+  @IsOptional() @IsString() emergencyContactPhone?: string;
+  @IsOptional() @IsString() emergencyContactRelation?: string;
+  @IsOptional() @IsString() emergencyContactPhoneAlt?: string;
 }
 
 /** hr_update_employee(p_id, p_patch, p_expected_updated_at) — optimistic lock. */

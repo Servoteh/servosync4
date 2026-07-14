@@ -666,17 +666,37 @@ export class KadrovskaService {
     status: "is_active",
   };
 
-  /** „Dana do rođendana" (0..365, wrap-around) — to_date je popustljiv na 29.02.
-   *  u ne-prestupnoj godini (→ 01.03), pa nema 22008 greške; MM-DD string poređenje
-   *  je fiksne širine (leksički ispravno). Paritet 1.0 auto-sort po najbližem. */
+  /** „Dana do rođendana" (0..365, wrap-around).
+   *  ⚠️ HIGH #3 (adversarni review 14.07): `to_date('2027-02-29',...)` NIJE popustljiv
+   *  na PG17 (dokazano 22008 na živoj bazi), pa se koristi `make_date` + eksplicitni
+   *  CASE za 29.02 rođendan u ne-prestupnoj ciljnoj godini → 01.03 (1.0 JS Date
+   *  rollover paritet). NE day-of-year ofset (pomerio bi post-februarske rođendane
+   *  rođenih u prestupnoj godini za +1). MM-DD poređenje je fiksne širine (leksički
+   *  ispravno) za izbor ciljne godine (ova ili sledeća). */
   private static readonly DAYS_TO_BDAY_SQL = Prisma.raw(
     `CASE WHEN birth_date IS NULL THEN NULL ELSE (
-       to_date(
-         (extract(year from current_date)::int
-           + (CASE WHEN to_char(birth_date,'MM-DD') >= to_char(current_date,'MM-DD') THEN 0 ELSE 1 END))::text
-         || to_char(birth_date,'-MM-DD'),
-         'YYYY-MM-DD'
-       ) - current_date
+       (CASE
+          WHEN to_char(birth_date,'MM-DD') = '02-29'
+               AND NOT (
+                 (extract(year from current_date)::int
+                    + (CASE WHEN to_char(birth_date,'MM-DD') >= to_char(current_date,'MM-DD') THEN 0 ELSE 1 END)) % 4 = 0
+                 AND (
+                   (extract(year from current_date)::int
+                      + (CASE WHEN to_char(birth_date,'MM-DD') >= to_char(current_date,'MM-DD') THEN 0 ELSE 1 END)) % 100 <> 0
+                   OR (extract(year from current_date)::int
+                      + (CASE WHEN to_char(birth_date,'MM-DD') >= to_char(current_date,'MM-DD') THEN 0 ELSE 1 END)) % 400 = 0
+                 )
+               )
+          THEN make_date(
+                 extract(year from current_date)::int
+                   + (CASE WHEN to_char(birth_date,'MM-DD') >= to_char(current_date,'MM-DD') THEN 0 ELSE 1 END),
+                 3, 1)
+          ELSE make_date(
+                 extract(year from current_date)::int
+                   + (CASE WHEN to_char(birth_date,'MM-DD') >= to_char(current_date,'MM-DD') THEN 0 ELSE 1 END),
+                 extract(month from birth_date)::int,
+                 extract(day from birth_date)::int)
+        END) - current_date
      ) END`,
   );
 
@@ -695,19 +715,26 @@ export class KadrovskaService {
       if (q.department) conds.push(Prisma.sql`department = ${q.department}`);
       if (q.active === "true") conds.push(Prisma.sql`is_active = true`);
       if (q.active === "false") conds.push(Prisma.sql`is_active = false`);
-      // Quick-filter čip (jedan aktivan).
+      // Quick-filter čip (jedan aktivan). ⚠️ #20 (review 14.07): usklađeno sa 1.0
+      // (employeesTab:225-233) — med-soon/bday-soon/no-phone gledaju SAMO aktivne;
+      // missing-jmbg = ne-13-cifreni JMBG (ne samo prazan); no-phone = kraći od 8
+      // cifara (ne samo prazan).
       if (q.filter === "med-soon")
         conds.push(
-          Prisma.sql`medical_exam_expires IS NOT NULL AND medical_exam_expires <= current_date + INTERVAL '30 days'`,
+          Prisma.sql`is_active = true AND medical_exam_expires IS NOT NULL AND medical_exam_expires <= current_date + INTERVAL '30 days'`,
         );
       if (q.filter === "bday-soon")
-        conds.push(Prisma.sql`days_to_bday IS NOT NULL AND days_to_bday <= 30`);
+        conds.push(
+          Prisma.sql`is_active = true AND days_to_bday IS NOT NULL AND days_to_bday <= 30`,
+        );
       if (q.filter === "missing-jmbg")
-        conds.push(Prisma.sql`(personal_id IS NULL OR personal_id = '')`);
+        conds.push(Prisma.sql`(personal_id IS NULL OR personal_id !~ '^\\d{13}$')`);
       if (q.filter === "no-email")
         conds.push(Prisma.sql`(email IS NULL OR email = '')`);
       if (q.filter === "no-phone")
-        conds.push(Prisma.sql`(phone_work IS NULL OR phone_work = '')`);
+        conds.push(
+          Prisma.sql`is_active = true AND (phone_work IS NULL OR length(regexp_replace(phone_work, '\\D', '', 'g')) < 8)`,
+        );
       // Ugovorni tip suženje (aktivan ugovor po zaposlenom).
       if (q.conType)
         conds.push(
@@ -890,10 +917,14 @@ export class KadrovskaService {
    *  adresu/privatni tel/kontakte); 1.0 lista ih prikazuje svima sa kadrovska.read. */
   async directory(email: string) {
     return this.withUserMapped(email, async (tx) => {
+      // ⚠️ #30 (review 14.07): VRAĆA I NEAKTIVNE — nameMap (listing/nadoknada/
+      // placeno) mora razrešiti imena istorijskih redova bivših zaposlenih (inače
+      // UUID umesto imena). FE filtrira e.is_active na mestu upotrebe gde 1.0 filtrira
+      // (pickeri, Pregled/Kalendar/Odsutni) — paritet „load all, filter at use site".
       const data = await tx.$queryRaw(
         Prisma.sql`SELECT id, full_name, position, department, team, phone_work, phone_private, email,
-            birth_date, medical_exam_expires, work_type, department_id, sub_department_id
-          FROM v_employees_safe WHERE is_active = true ORDER BY full_name`,
+            birth_date, medical_exam_expires, work_type, department_id, sub_department_id, is_active
+          FROM v_employees_safe ORDER BY full_name`,
       );
       return { data };
     });

@@ -595,23 +595,50 @@ export class KadrovskaMutationsService {
   // ZAPOSLENI
   // ==========================================================================
 
+  /** CREATE zaposlenog — pun 1.0 skup (CRITICAL #1). PII kolone presuđuje ŽIVI
+   *  DB trigger employees_sensitive_guard (INSERT sa PII bez pii-prava → 42501→403;
+   *  claims pozivaoca su na tx kroz runIdempotentRls). full_name sync trigger na
+   *  bazi izvodi iz first/last kad su oba data (1.0 paritet). */
   createEmployee(email: string, dto: D.CreateEmployeeDto) {
     return this.create(email, dto.clientEventId, "kadr.employee.create", (tx) =>
       tx.employee.create({
         data: {
           fullName: dto.fullName,
           workType: dto.workType,
+          firstName: dto.firstName ?? null,
+          lastName: dto.lastName ?? null,
           position: dto.position ?? null,
           department: dto.department ?? null,
           departmentId: dto.departmentId ?? null,
           subDepartmentId: dto.subDepartmentId ?? null,
           positionId: dto.positionId ?? null,
           team: dto.team ?? null,
-          phone: dto.phone ?? null,
+          // 1.0 kolona `phone` (employees.js:107: phone = phoneWork || phone).
+          phone: dto.phoneWork ?? dto.phone ?? null,
           email: dto.email ?? null,
           hireDate: dto.hireDate ? this.date(dto.hireDate) : null,
           isActive: dto.isActive ?? true,
           note: dto.note ?? null,
+          birthDate: dto.birthDate ? this.date(dto.birthDate) : null,
+          gender: dto.gender ?? null,
+          slava: dto.slava ?? null,
+          slavaDay: dto.slavaDay ?? null,
+          educationLevel: dto.educationLevel ?? null,
+          educationTitle: dto.educationTitle ?? null,
+          medicalExamDate: dto.medicalExamDate ? this.date(dto.medicalExamDate) : null,
+          medicalExamExpires: dto.medicalExamExpires ? this.date(dto.medicalExamExpires) : null,
+          // PII blok — `|| null` (prazan string = NIJE PII unos; trigger gleda NOT NULL).
+          personalId: dto.personalId || null,
+          address: dto.address || null,
+          city: dto.city || null,
+          postalCode: dto.postalCode || null,
+          bankName: dto.bankName || null,
+          bankAccount: dto.bankAccount || null,
+          phonePrivate: dto.phonePrivate || null,
+          emergencyContactName: dto.emergencyContactName || null,
+          emergencyContactPhone: dto.emergencyContactPhone || null,
+          emergencyContactRelation: dto.emergencyContactRelation || null,
+          emergencyContactPhoneAlt: dto.emergencyContactPhoneAlt || null,
         },
       }),
     );
