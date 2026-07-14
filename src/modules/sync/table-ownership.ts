@@ -51,6 +51,17 @@ export const OWNED_PRODUCTION_TABLES = new Set<string>([
   // planer
   "planner_entries",
   "planner_user_groups",
+  // PDM intake (P4c) — the native XML/PDF import writes these from 2026-07-14
+  // (bridge live), so they are no longer a pure legacy cache. The 2.0-native id
+  // sequence and the legacy MSSQL id space have already diverged and COLLIDED
+  // (same ids, different drawings), so a full refresh would silently overwrite
+  // native rows with wrong-id legacy copies. Any future reconciliation must key
+  // on (drawing_number, revision), never on id — see
+  // docs/design/PLAN_bom_rupa_cutover_stash_2026-07-14.md.
+  "drawings",
+  "drawing_components",
+  "drawing_pdfs",
+  "drawing_import_log",
 ]);
 
 export function isOwnedProductionTable(entity: string): boolean {

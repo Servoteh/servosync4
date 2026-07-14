@@ -29,6 +29,19 @@ se NE gasi (odluka „QBigTehn privremen / BigBit trajan").
       tabeli, derivacija, MAX RN ordinal po predmetu, soft-FK orfani, PDF blobovi, statusna
       distribucija; exit 0 = paritet — vidi `tools/cutover-verify/README.md`).
 
+> ⚠️ **LEKCIJA 14.07 (BOM rupa — obavezno pročitati pre finalnog sync-a):** tokom paralelnog rada
+> nativna 2.0 sekvenca i legacy id prostor **KOLIDIRAJU** (isti id = različiti red u dva sistema; od
+> 14.07 to je živo za `drawings` 15920+ i dalje raste). Posledice za ovaj runbook:
+> 1. stash/wipe/restore koraci NE SMEJU brisati po golom id-ju — samo po sadržinskom ključu
+>    (npr. `(drawing_number, revision)` + signature/created_at); wipe po stash id-setu je 13.07
+>    obrisao 33 legacy crteža + 62 BOM veze + 53 reda RN lanca (reparacija:
+>    [PLAN_bom_rupa_cutover_stash_2026-07-14.md](../design/PLAN_bom_rupa_cutover_stash_2026-07-14.md));
+> 2. finalni sync za intake tabele (`drawings`, `drawing_components`, `drawing_pdfs`,
+>    `drawing_import_log` — od 14.07 u `OWNED_PRODUCTION_TABLES`) mora raditi rekonsilijaciju po
+>    sadržinskom ključu, NIKAKO delete+reinsert po id-ju;
+> 3. verifikacija posle svakog stash/wipe/restore = **pun id-diff obe strane po tabeli**
+>    (`comm` nad sortiranim id listama), ne samo COUNT/MAX kao u cutover-verify.
+
 ## 2. Dan cutover-a (redosled je NEPREGOVARAN — ponovni sync posle nativnih upisa TIHO GAZI 2.0 redove)
 
 1. **Freeze legacy** (van radnog vremena): obavestiti projektante/Miljana; revoke write za APL naloge na
