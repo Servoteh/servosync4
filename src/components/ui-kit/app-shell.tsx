@@ -17,6 +17,7 @@ import {
   Cog,
   Cpu,
   DraftingCompass,
+  Eye,
   FolderKanban,
   Hammer,
   IdCard,
@@ -396,7 +397,21 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </button>
         </div>
       </aside>
-      <div className="flex min-w-0 flex-1 flex-col">{children}</div>
+      <div className="flex min-w-0 flex-1 flex-col">
+        {user?.readOnly && (
+          <div
+            role="status"
+            className="flex items-center gap-2 border-b border-status-warn/30 bg-status-warn-bg px-4 py-2 text-sm text-status-warn"
+          >
+            <Eye className="h-4 w-4 shrink-0" aria-hidden />
+            <span>
+              <span className="font-semibold">Test nalog — samo pregled.</span>{' '}
+              Izmene i upisi nisu dozvoljeni.
+            </span>
+          </div>
+        )}
+        {children}
+      </div>
     </div>
   );
 }

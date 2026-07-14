@@ -8,6 +8,8 @@ export interface PublicUser {
   email: string;
   fullName: string | null;
   role: string;
+  /** Test nalog (backend AUTHZ_READONLY_USER_IDS): mutacije padaju 403, shell prikazuje baner. */
+  readOnly?: boolean;
 }
 
 interface LoginResponse {
