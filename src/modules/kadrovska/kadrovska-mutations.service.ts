@@ -9,6 +9,7 @@ import {
 import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
 import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
+import { MailService } from "../../common/mail/mail.service";
 import {
   aggregateWorkHoursForMonth,
   computeEarnings,
@@ -41,6 +42,7 @@ export class KadrovskaMutationsService {
   constructor(
     private readonly sy15: Sy15Service,
     private readonly storage: Sy15StorageService,
+    private readonly mail: MailService,
   ) {}
 
   // ==========================================================================
@@ -774,6 +776,56 @@ export class KadrovskaMutationsService {
       ),
     );
   }
+  /** „✓ Završi tok" / „Otkaži tok" (1.0 setOnbRunStatus) — run.status done/canceled.
+   *  RLS p_onb_runs_manage (kadr_can_manage_hr) presuđuje; 0 redova → 403. */
+  onboardingRunStatus(email: string, id: string, dto: D.OnboardingRunStatusDto) {
+    return this.mutate(email, dto.clientEventId, "kadr.onboarding.run_status", (tx) =>
+      this.requireRows(
+        tx.kadrOnboardingRun.updateMany({
+          where: { id },
+          data: { status: dto.status },
+        }),
+        "Tok",
+      ),
+    );
+  }
+  /** Šabloni CRUD (1.0 createOnbTemplate/deleteOnbTemplate) — RLS kadr_can_manage_hr. */
+  createOnbTemplate(email: string, dto: D.CreateOnbTemplateDto) {
+    return this.create(email, dto.clientEventId, "kadr.onboarding.template_create", (tx) =>
+      tx.kadrOnboardingTemplate.create({
+        data: { name: dto.name, kind: dto.kind, isActive: true, createdBy: email },
+      }),
+    );
+  }
+  /** Brisanje šablona: stavke idu CASCADE, POKRENUTI TOKOVI OSTAJU (runs.template_id
+   *  FK SET NULL — izmereno na živoj bazi; 1.0 poruka „Pokrenuti tokovi ostaju"). */
+  deleteOnbTemplate(email: string, id: string) {
+    return this.mutate(email, undefined, "kadr.onboarding.template_delete", (tx) =>
+      this.requireRows(tx.kadrOnboardingTemplate.deleteMany({ where: { id } }), "Šablon"),
+    );
+  }
+  createOnbTemplateItem(email: string, dto: D.CreateOnbTemplateItemDto) {
+    return this.create(email, dto.clientEventId, "kadr.onboarding.item_create", (tx) =>
+      tx.kadrOnboardingTemplateItem.create({
+        data: {
+          templateId: dto.templateId,
+          title: dto.title,
+          description: dto.description ?? null,
+          sortOrder: dto.sortOrder ?? 0,
+          offsetDays: dto.offsetDays ?? 0,
+          assigneeHint: dto.assigneeHint ?? null,
+        },
+      }),
+    );
+  }
+  deleteOnbTemplateItem(email: string, id: string) {
+    return this.mutate(email, undefined, "kadr.onboarding.item_delete", (tx) =>
+      this.requireRows(
+        tx.kadrOnboardingTemplateItem.deleteMany({ where: { id } }),
+        "Stavka šablona",
+      ),
+    );
+  }
 
   /* Razvoj / razgovori / 360 (kadrovska.dev_manage; self za neke) */
   createDevPlan(email: string, dto: D.CreateDevPlanDto) {
@@ -816,6 +868,14 @@ export class KadrovskaMutationsService {
       ),
     );
   }
+  /** Brisanje plana (1.0 deletePlan — admin dugme; RLS dp_delete=admin): CILJEVI OSTAJU
+   *  i odvezuju se (employee_expectations.plan_id FK SET NULL — izmereno), check-ins
+   *  se brišu (FK CASCADE). Endpoint guard = kadrovska.admin (1.0 kaže admin). */
+  deleteDevPlan(email: string, id: string) {
+    return this.mutate(email, undefined, "kadr.devplan.delete", (tx) =>
+      this.requireRows(tx.developmentPlan.deleteMany({ where: { id } }), "Plan razvoja"),
+    );
+  }
   createCheckin(email: string, planId: string, dto: D.CreateCheckinDto) {
     return this.create(email, dto.clientEventId, "kadr.checkin.create", (tx) =>
       tx.developmentCheckin.create({
@@ -828,6 +888,12 @@ export class KadrovskaMutationsService {
           noteMd: dto.noteMd ?? null,
         },
       }),
+    );
+  }
+  /** Brisanje beleške 1-na-1 (1.0 deleteCheckin) — RLS dc_delete: autor ∨ manages_dev_plan. */
+  deleteCheckin(email: string, id: string) {
+    return this.mutate(email, undefined, "kadr.checkin.delete", (tx) =>
+      this.requireRows(tx.developmentCheckin.deleteMany({ where: { id } }), "Beleška"),
     );
   }
   createExpectation(email: string, dto: D.CreateExpectationDto) {
@@ -868,6 +934,12 @@ export class KadrovskaMutationsService {
         }),
         "Očekivanje",
       ),
+    );
+  }
+  /** Brisanje razvojnog cilja (1.0 deleteExpectation — admin dugme; RLS ee_delete=admin). */
+  deleteExpectation(email: string, id: string) {
+    return this.mutate(email, undefined, "kadr.expectation.delete", (tx) =>
+      this.requireRows(tx.employeeExpectation.deleteMany({ where: { id } }), "Cilj"),
     );
   }
   createTalk(email: string, dto: D.CreateTalkDto) {
@@ -1109,6 +1181,263 @@ export class KadrovskaMutationsService {
   assessmentSetState(email: string, id: string, dto: D.SetStateDto) {
     return this.mutate(email, dto.clientEventId, "kadr.assessment.set_state", (tx) =>
       this.rpcVoid(tx, Prisma.sql`SELECT assessment_set_state(${id}::uuid, ${dto.status}, ${dto.visible}::boolean)`),
+    );
+  }
+
+  /**
+   * Upis ocena po rater id (1.0 saveScores: PostgREST upsert
+   * `assessment_scores?on_conflict=rater_id,competence_id`) — rukovodilac upisuje SVOJE
+   * leader ocene. RLS asc_write (rater = pozivalac ∧ status='collecting') presuđuje —
+   * tuđi rater id → 42501 → 403. Recompute NE zovemo ovde (1.0 FE ga zove zasebno).
+   */
+  assessmentSaveScores(email: string, raterId: string, dto: D.SaveScoresDto) {
+    return this.mutate(email, dto.clientEventId, "kadr.assessment.save_scores", async (tx) => {
+      const values = dto.items.map(
+        (it) =>
+          Prisma.sql`(${raterId}::uuid, ${it.competenceId}::int, ${it.level ?? null}::smallint, ${it.comment ?? null})`,
+      );
+      const n = await tx.$executeRaw(Prisma.sql`
+        INSERT INTO assessment_scores (rater_id, competence_id, level, comment)
+        VALUES ${Prisma.join(values)}
+        ON CONFLICT (rater_id, competence_id)
+        DO UPDATE SET level = EXCLUDED.level, comment = EXCLUDED.comment`);
+      return { upserted: n };
+    });
+  }
+
+  /**
+   * Email pozivnice ocenjivačima — PORT 1.0 edge fn `assessment-invite` (režimi:
+   * jedna procena / ceo ciklus + rezime kreatoru). 2.0 šalje kroz MailService
+   * (Resend direktno) umesto edge fn; bez RESEND_API_KEY → paritetni
+   * `{ ok:false, reason:'resend_not_configured' }` (dry-run).
+   *
+   * Scope: čitanja/`invited_at` idu kroz withUserRls — umesto 1.0 service-role
+   * gejta (admin/hr/menadzment) presuđuju RLS politike (as_select manages_dev_plan,
+   * ar_write can_manage_assessment): admin/hr/menadzment vide sve (pun paritet),
+   * pm/leadpm dobijaju svoj opseg (1.0 edge im je vraćao 401 — kontrolisani superset).
+   */
+  async assessmentInvite(
+    email: string,
+    opts: { assessmentId?: string; cycleId?: string; notifyCreator?: boolean },
+  ) {
+    const base = (process.env.ASSESSMENT_PUBLIC_BASE ?? "https://servosync.servoteh.com").replace(/\/+$/, "");
+
+    // 1) READ faza (RLS): ciklus, ciljne procene, meta (ime zaposlenog + period), rateri.
+    const read = await this.mutateRaw(email, undefined, "kadr.assessment.invite_read", async (tx) => {
+      let cycle: { title: string; periodLabel: string; createdBy: string } | null = null;
+      let assessmentIds: string[] = [];
+      if (opts.cycleId) {
+        const c = await tx.assessmentCycle.findUnique({ where: { id: opts.cycleId } });
+        if (!c) throw new NotFoundException("Ciklus ne postoji ili nemate pravo");
+        cycle = { title: c.title, periodLabel: c.periodLabel, createdBy: c.createdBy };
+        const rows = await tx.assessment.findMany({
+          where: { cycleId: opts.cycleId },
+          select: { id: true },
+        });
+        assessmentIds = rows.map((r) => r.id);
+      } else {
+        assessmentIds = [opts.assessmentId!];
+      }
+      if (!assessmentIds.length) {
+        return { cycle, assessmentIds, meta: new Map<string, { employeeName: string; period: string }>(), raters: [] as { id: string; assessmentId: string; raterKind: string; raterEmail: string | null; token: string | null }[] };
+      }
+      const metaRows = await tx.$queryRaw<
+        { id: string; period_label: string; full_name: string | null }[]
+      >(Prisma.sql`
+        SELECT a.id, a.period_label, e.full_name
+          FROM assessments a
+          LEFT JOIN v_employees_safe e ON e.id = a.employee_id
+         WHERE a.id IN (${Prisma.join(assessmentIds.map((id) => Prisma.sql`${id}::uuid`))})`);
+      const meta = new Map(
+        metaRows.map((m) => [
+          m.id,
+          {
+            employeeName: (m.full_name ?? "").trim() || "kolega/koleginica",
+            period: (m.period_label ?? "").trim(),
+          },
+        ]),
+      );
+      const raters = await tx.assessmentRater.findMany({
+        where: {
+          assessmentId: { in: assessmentIds },
+          status: "pending",
+          token: { not: null },
+        },
+        select: { id: true, assessmentId: true, raterKind: true, raterEmail: true, token: true },
+      });
+      return { cycle, assessmentIds, meta, raters };
+    });
+
+    const skipped: Array<{ assessment_id: string; employee: string; kind: string; reason: string }> = [];
+    const sendable: typeof read.raters = [];
+    for (const r of read.raters) {
+      const to = (r.raterEmail ?? "").trim();
+      if (!r.token || !to) {
+        skipped.push({
+          assessment_id: r.assessmentId,
+          employee: read.meta.get(r.assessmentId)?.employeeName ?? "?",
+          kind: r.raterKind,
+          reason: "no_email",
+        });
+        continue;
+      }
+      sendable.push(r);
+    }
+
+    if (!this.mail.configured) {
+      // Paritet 1.0: gracioznost umesto greške; kandidati vidljivi u odgovoru.
+      return { data: { ok: false, reason: "resend_not_configured", sent: 0, candidates: sendable.length, skipped } };
+    }
+
+    // 2) SLANJE (van DB tx — mejl ne sme da obori radnju; MailService nikad ne baca).
+    let sent = 0;
+    const sentIds: string[] = [];
+    const perAssessment = new Map<string, { employee: string; sent: number; skipped: string[] }>();
+    const bucket = (aid: string) => {
+      let b = perAssessment.get(aid);
+      if (!b) {
+        b = { employee: read.meta.get(aid)?.employeeName ?? "?", sent: 0, skipped: [] };
+        perAssessment.set(aid, b);
+      }
+      return b;
+    };
+    for (const s of skipped) {
+      bucket(s.assessment_id).skipped.push(s.kind === "self" ? "samoprocena (nema email)" : `${s.kind} (nema email)`);
+    }
+    for (const r of sendable) {
+      const m = read.meta.get(r.assessmentId) ?? { employeeName: "kolega/koleginica", period: "" };
+      const link = `${base}/ocena.html?token=${encodeURIComponent(r.token!)}`;
+      const isSelf = r.raterKind === "self";
+      const ok = await this.mail.send({
+        to: r.raterEmail!,
+        subject: isSelf
+          ? "Zamolba za 360° procenu — Vaša samoprocena"
+          : `Zamolba za 360° procenu — ${m.employeeName}`,
+        html: this.inviteEmailHtml({ raterKind: r.raterKind, employeeName: m.employeeName, period: m.period, link }),
+      });
+      if (ok) {
+        sent++;
+        sentIds.push(r.id);
+        bucket(r.assessmentId).sent++;
+      }
+    }
+
+    // 3) Obeleži poslate pozivnice (RLS ar_write = can_manage_assessment).
+    if (sentIds.length) {
+      await this.sy15
+        .withUserRls(email, (tx) =>
+          tx.assessmentRater.updateMany({
+            where: { id: { in: sentIds } },
+            data: { invitedAt: new Date() },
+          }),
+        )
+        .catch(() => undefined);
+    }
+
+    // 4) Rezime kreatoru kampanje (samo cycle režim; default uključeno — 1.0 paritet).
+    let creatorNotified = false;
+    if (read.cycle && opts.notifyCreator !== false) {
+      const to = (read.cycle.createdBy ?? "").trim();
+      if (to.includes("@")) {
+        const rows = read.assessmentIds.map((aid) => bucket(aid));
+        creatorNotified = await this.mail.send({
+          to,
+          subject: `360° kampanja otvorena — ${read.cycle.title || read.cycle.periodLabel || ""}`.trim(),
+          html: this.inviteSummaryHtml({
+            cycleTitle: read.cycle.title || "360° kampanja",
+            period: read.cycle.periodLabel || "",
+            base,
+            rows,
+          }),
+        });
+      }
+    }
+
+    return {
+      data: {
+        ok: true,
+        sent,
+        skipped,
+        creator_notified: creatorNotified,
+        perAssessment: Array.from(perAssessment.entries()).map(([aid, v]) => ({ assessment_id: aid, ...v })),
+      },
+    };
+  }
+
+  /** HTML-escape za email telo (port edge fn `esc`). */
+  private escHtml(s: unknown): string {
+    return String(s ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  /** Email telo pozivnice (1:1 port edge fn `emailHtml`). */
+  private inviteEmailHtml(o: { raterKind: string; employeeName: string; period: string; link: string }): string {
+    const ACCENT = "#E8523A";
+    const isSelf = o.raterKind === "self";
+    const heading = isSelf
+      ? "360° procena — Vaša samoprocena"
+      : `360° procena — ${this.escHtml(o.employeeName)}`;
+    const lead = isSelf
+      ? "<p>Pozvani ste da popunite <strong>samoprocenu kompetencija</strong>. Ocenjujete sebe na skali zrelosti 0–5.</p>"
+      : `<p>Pozvani ste da date <strong>360° procenu</strong> za kolegu/koleginicu <strong>${this.escHtml(o.employeeName)}</strong>. Ocenjujete na skali zrelosti 0–5.</p>`;
+    const periodLine = o.period
+      ? `<p style="color:#475569;font-size:.92em;margin:0 0 14px;">Period procene: <strong>${this.escHtml(o.period)}</strong></p>`
+      : "";
+    return (
+      '<div style="font-family:-apple-system,Segoe UI,Arial,sans-serif;max-width:540px;margin:0 auto;color:#111827;line-height:1.55;">' +
+      `<h2 style="color:${ACCENT};margin:0 0 6px;">${heading}</h2>` +
+      periodLine +
+      lead +
+      "<p>Popunjavanje traje par minuta. Možete da menjate odgovore i ponovo pošaljete dok je procena otvorena.</p>" +
+      `<p style="margin:22px 0;"><a href="${this.escHtml(o.link)}" style="display:inline-block;padding:13px 22px;background:${ACCENT};color:#fff;border-radius:10px;text-decoration:none;font-weight:700;font-size:15px;">Otvori upitnik</a></p>` +
+      '<p style="font-size:.85em;color:#64748b;">Ako dugme ne radi, otvorite ovaj link:<br>' +
+      `<a href="${this.escHtml(o.link)}" style="color:${ACCENT};word-break:break-all;">${this.escHtml(o.link)}</a></p>` +
+      '<hr style="border:none;border-top:1px solid #e5e7eb;margin:22px 0;">' +
+      '<p style="font-size:.8em;color:#94a3b8;"><em>Servoteh — automatsko obaveštenje. Vaši odgovori su poverljivi.</em></p>' +
+      "</div>"
+    );
+  }
+
+  /** Rezime mejl kreatoru kampanje (1:1 port edge fn `summaryHtml`). */
+  private inviteSummaryHtml(o: {
+    cycleTitle: string;
+    period: string;
+    base: string;
+    rows: Array<{ employee: string; sent: number; skipped: string[] }>;
+  }): string {
+    const ACCENT = "#E8523A";
+    const trs = o.rows
+      .map(
+        (r) =>
+          "<tr>" +
+          `<td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;">${this.escHtml(r.employee)}</td>` +
+          `<td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;text-align:center;">${r.sent ? `✅ ${r.sent}` : "—"}</td>` +
+          `<td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;color:#b45309;">${r.skipped.length ? this.escHtml(r.skipped.join(", ")) : ""}</td>` +
+          "</tr>",
+      )
+      .join("");
+    return (
+      '<div style="font-family:-apple-system,Segoe UI,Arial,sans-serif;max-width:560px;margin:0 auto;color:#111827;line-height:1.55;">' +
+      `<h2 style="color:${ACCENT};margin:0 0 6px;">📊 360° kampanja otvorena</h2>` +
+      `<p style="margin:0 0 4px;"><strong>${this.escHtml(o.cycleTitle)}</strong>${o.period ? ` · period ${this.escHtml(o.period)}` : ""}</p>` +
+      '<p style="color:#475569;font-size:.92em;">Pregled poslatih pozivnica po zaposlenom:</p>' +
+      '<table style="border-collapse:collapse;width:100%;font-size:14px;">' +
+      "<thead><tr>" +
+      '<th style="text-align:left;padding:6px 10px;border-bottom:2px solid #e5e7eb;">Zaposleni</th>' +
+      '<th style="padding:6px 10px;border-bottom:2px solid #e5e7eb;">Pozivnice</th>' +
+      '<th style="text-align:left;padding:6px 10px;border-bottom:2px solid #e5e7eb;">Preskočeno</th>' +
+      "</tr></thead>" +
+      `<tbody>${trs}</tbody></table>` +
+      '<p style="font-size:.9em;color:#475569;margin-top:14px;">Napredak pratite u aplikaciji: <a href="' +
+      `${this.escHtml(o.base)}" style="color:${ACCENT};">Kadrovska → Razvoj zaposlenih</a>. ` +
+      `Zaposleni bez emaila ne mogu dobiti pozivnicu — procenu mogu popuniti u aplikaciji („Moj profil → Moja procena kompetencija") ili im dodajte email pa ponovo pošaljite pozivnice.</p>` +
+      '<hr style="border:none;border-top:1px solid #e5e7eb;margin:22px 0;">' +
+      '<p style="font-size:.8em;color:#94a3b8;"><em>Servoteh — automatsko obaveštenje.</em></p>' +
+      "</div>"
     );
   }
 
