@@ -17,8 +17,10 @@
 // porukom. Ceo tok (insert → poll → cancel-on-timeout 15 s) je IMPLEMENTIRAN po
 // spec §3 i 1.0 semantici (ZAMRZNUTA — FE samo šalje, ne menja tok). Aktivacija =
 // PROMENA OVE JEDNE KONSTANTE na `true` kad E R2 bude živ (i verifikovan).
-// TODO(E R2/R4): flip na `true` posle deploy-a POST /commands + živog smoke-a.
-export const COMMANDS_ENABLED = false;
+// AKTIVIRANO 15.07.2026: BE POST /commands živ na main; on-prem bridge
+// (servoteh-bridge-scada.service, SCADA_CONTROL=true) aktivno poluje i izvršava
+// (scada_commands: 13 applied / 5 rejected); DC2 ugašen — ubuntu je jedini kontroler.
+export const COMMANDS_ENABLED = true;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tipovi (API vraća camelCase — Prisma modeli scada_*; vidi backend sy15.prisma).
