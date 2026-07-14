@@ -328,11 +328,11 @@ export class TechProcessesService {
       this.prisma.techProcess.count({ where }),
     ]);
 
-    const [workers, ops, quals, technologists] = await Promise.all([
+    const [workers, ops, quals, workOrderRefs] = await Promise.all([
       this.resolveWorkers(rows.map((r) => r.workerId)),
       this.resolveOperationsByCode(rows.map((r) => r.workCenterCode)),
       this.resolveQualityTypes(rows.map((r) => r.qualityTypeId)),
-      this.resolveWorkOrderTechnologists(rows.map((r) => r.workOrderId)),
+      this.resolveWorkOrderRefs(rows.map((r) => r.workOrderId)),
     ]);
     const data = rows.map((r) => ({
       ...r,
@@ -342,36 +342,40 @@ export class TechProcessesService {
       // Tehnolog autor TP-a = work_orders.worker_id (Miljan t.6a: „Tehnolog"
       // kolona je do sada prikazivala radnika koji je kucao red — `worker`
       // ostaje to, a ovo je pravi tehnolog sa RN-a; null kad RN nije razrešen).
-      technologist: technologists.get(r.workOrderId) ?? null,
+      technologist: workOrderRefs.technologists.get(r.workOrderId) ?? null,
+      // Crtež sa RN-a (work_orders.drawing_number); null kad workOrderId=0/orphan.
+      drawingNumber: workOrderRefs.drawingNumbers.get(r.workOrderId) ?? null,
     }));
 
     return { data, meta: pageMeta(page, pageSize, total) };
   }
 
   /**
-   * Batch: workOrderId → tehnolog (work_orders.worker_id). Legacy redovi često
-   * imaju workOrderId 0 (veza kroz JOIN, ne FK) — preskaču se; orphan RN/radnik
-   * → null (obrazac common/relations, bez required JOIN-a).
+   * Batch: workOrderId → { tehnolog (work_orders.worker_id), crtež
+   * (work_orders.drawing_number) }. Legacy redovi često imaju workOrderId 0 (veza
+   * kroz JOIN, ne FK) — preskaču se; orphan RN/radnik → null (obrazac
+   * common/relations, bez required JOIN-a). Jedan upit nad work_orders daje oba.
    */
-  private async resolveWorkOrderTechnologists(ids: number[]) {
+  private async resolveWorkOrderRefs(ids: number[]) {
     const uniq = uniqueIds(ids);
-    const map = new Map<
+    const technologists = new Map<
       number,
       { id: number; fullName: string | null; username: string | null }
     >();
-    if (!uniq.length) return map;
+    const drawingNumbers = new Map<number, string>();
+    if (!uniq.length) return { technologists, drawingNumbers };
     const workOrders = await this.prisma.workOrder.findMany({
       where: { id: { in: uniq } },
-      select: { id: true, workerId: true },
+      select: { id: true, workerId: true, drawingNumber: true },
     });
-    const workers = await this.resolveWorkers(
-      workOrders.map((w) => w.workerId),
-    );
+    const workers = await this.resolveWorkers(workOrders.map((w) => w.workerId));
     for (const wo of workOrders) {
       const worker = workers.get(wo.workerId);
-      if (worker) map.set(wo.id, worker);
+      if (worker) technologists.set(wo.id, worker);
+      // drawing_number je NOT NULL u šemi ali može biti "" — prazan → null u UI.
+      if (wo.drawingNumber) drawingNumbers.set(wo.id, wo.drawingNumber);
     }
-    return map;
+    return { technologists, drawingNumbers };
   }
 
   // -------------------------------------------------- MOJI OTVORENI (kiosk)
@@ -610,20 +614,42 @@ export class TechProcessesService {
       elapsedMinutes: g.hasElapsed ? Math.round(g.elapsedSeconds / 60) : null,
     }));
 
-    // HITNO (Miljan t.10): flag sa primopredaje vezane za RN ove trojke —
-    // isti put kao rok u critical() (RN po trojci → drawing_handover); najstariji
-    // RN = original (klonovi dele drawing_handover_id).
+    // HITNO (Miljan t.10) + routing kartice: RN je jedinstven po trojci (uq
+    // constraint na (project_id, ident_number, variant)), pa isti red daje i HITNO
+    // flag (preko primopredaje) i id za routing operacija. Najstariji RN = original.
     const cardWorkOrder = await this.prisma.workOrder.findFirst({
-      where: { projectId, identNumber, variant, drawingHandoverId: { gt: 0 } },
-      select: { drawingHandoverId: true },
+      where: { projectId, identNumber, variant },
+      select: { id: true, drawingHandoverId: true },
       orderBy: { id: "asc" },
     });
-    const cardHandover = cardWorkOrder
-      ? await this.prisma.drawingHandover.findUnique({
-          where: { id: cardWorkOrder.drawingHandoverId },
-          select: { isUrgent: true },
+    const cardHandover =
+      cardWorkOrder && cardWorkOrder.drawingHandoverId > 0
+        ? await this.prisma.drawingHandover.findUnique({
+            where: { id: cardWorkOrder.drawingHandoverId },
+            select: { isUrgent: true },
+          })
+        : null;
+
+    // Routing tekućeg RN-a: SVE operacije tehnološkog postupka iz
+    // work_order_operations — i one bez ijednog kucanja (paritet QBigTehn „Kartica
+    // tehnološkog postupka": npr. međufazna/završna kontrola su prazne dok se ne
+    // otkucaju). UI ih prikazuje kao prazne grupe. Naziv RC-a batch-resolve (orphan
+    // RC → null, bez required JOIN-a). Postojeća polja (rows/operations) se ne diraju.
+    const routingRows = cardWorkOrder
+      ? await this.prisma.workOrderOperation.findMany({
+          where: { workOrderId: cardWorkOrder.id },
+          orderBy: { operationNumber: "asc" },
+          select: { operationNumber: true, workCenterCode: true },
         })
-      : null;
+      : [];
+    const routingOps = await this.resolveOperationsByCode(
+      routingRows.map((r) => r.workCenterCode),
+    );
+    const routing = routingRows.map((r) => ({
+      operationNumber: r.operationNumber,
+      workCenterCode: r.workCenterCode,
+      workCenterName: routingOps.get(r.workCenterCode)?.workCenterName ?? null,
+    }));
 
     const data = {
       projectId,
@@ -645,6 +671,8 @@ export class TechProcessesService {
           : null,
       },
       operations,
+      // Routing RN-a — SVE operacije postupka (i neotkucane); UI merge-uje sa `operations`.
+      routing,
       rows: rows.map((r) => ({
         ...r,
         worker: workers.get(r.workerId) ?? null,

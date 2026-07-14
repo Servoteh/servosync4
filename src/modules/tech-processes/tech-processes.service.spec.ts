@@ -44,6 +44,8 @@ function prismaMock() {
     },
     workOrderOperation: {
       findFirst: jest.fn().mockResolvedValue(null),
+      // card(): routing tekućeg RN-a (SVE operacije postupka, i neotkucane).
+      findMany: jest.fn().mockResolvedValue([]),
       updateMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
     // control(): knjiženje lokacija iskontrolisanih delova (part_locations).
@@ -248,6 +250,56 @@ describe("TechProcessesService — card (agregat po operaciji)", () => {
     expect(data.finishedCount).toBe(1); // samo grupa A ima zatvoren red
     expect(data.summary.entryCount).toBe(3); // ukupan broj kucanja
     expect(data.operations.map((o) => o.isFinished)).toEqual([true, false]);
+  });
+
+  it("vraća routing tekućeg RN-a (SVE operacije postupka, i neotkucane); orphan RC → naziv null", async () => {
+    // Samo OP10 ima kucanje; routing ima i OP20/OP30 bez kucanja (prazne u UI).
+    prisma.techProcess.findMany.mockResolvedValue([
+      tpRow({ operationNumber: 10, workCenterCode: "0102", pieceCount: 5 }),
+    ]);
+    prisma.workOrder.findFirst.mockResolvedValue({
+      id: 900,
+      drawingHandoverId: 0,
+    });
+    prisma.workOrderOperation.findMany.mockResolvedValue([
+      { operationNumber: 10, workCenterCode: "0102" },
+      { operationNumber: 20, workCenterCode: "0205" },
+      { operationNumber: 30, workCenterCode: "8.5" }, // namerno nerazrešen RC
+    ]);
+    prisma.operation.findMany.mockResolvedValue([
+      { workCenterCode: "0102", workCenterName: "Glodalica", workUnitCode: "01" },
+      { workCenterCode: "0205", workCenterName: "Strug", workUnitCode: "02" },
+    ]);
+
+    const { data } = await service.card(CARD_QUERY);
+
+    expect(data.routing).toEqual([
+      { operationNumber: 10, workCenterCode: "0102", workCenterName: "Glodalica" },
+      { operationNumber: 20, workCenterCode: "0205", workCenterName: "Strug" },
+      { operationNumber: 30, workCenterCode: "8.5", workCenterName: null },
+    ]);
+    // Routing se traži po id-ju tekućeg RN-a, sortiran po broju operacije.
+    expect(prisma.workOrderOperation.findMany).toHaveBeenCalledWith(
+      containing({
+        where: { workOrderId: 900 },
+        orderBy: { operationNumber: "asc" },
+      }),
+    );
+    // Postojeći agregati (rows/operations) i dalje rade — routing ih ne dira.
+    expect(data.operations).toHaveLength(1);
+    expect(data.operations[0].pieces.total).toBe(5);
+  });
+
+  it("routing je prazan kad RN za trojku ne postoji (workOrder.findFirst = null)", async () => {
+    prisma.techProcess.findMany.mockResolvedValue([
+      tpRow({ operationNumber: 10, workCenterCode: "0102", pieceCount: 3 }),
+    ]);
+    // workOrder.findFirst nije mock-ovan → null; routing lookup se preskače.
+
+    const { data } = await service.card(CARD_QUERY);
+
+    expect(data.routing).toEqual([]);
+    expect(prisma.workOrderOperation.findMany).not.toHaveBeenCalled();
   });
 });
 

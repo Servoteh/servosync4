@@ -56,7 +56,7 @@ function prismaMock() {
       findUnique: jest.fn(),
       findMany: jest.fn().mockResolvedValue([]),
     },
-    project: { findUnique: jest.fn() },
+    project: { findUnique: jest.fn(), findMany: jest.fn().mockResolvedValue([]) },
     handoverDraft: { findMany: jest.fn().mockResolvedValue([]) },
     handoverDraftItem: { findMany: jest.fn().mockResolvedValue([]) },
     handoverStatus: { findMany: jest.fn().mockResolvedValue([]) },
@@ -140,6 +140,61 @@ describe("HandoversService", () => {
       customerId: 55,
     });
   }
+
+  // --------------------------------------------------------------- LIST
+
+  describe("list", () => {
+    /** Minimalan red primopredaje (samo polja koja `enrich` čita). */
+    const listRow = {
+      id: 5,
+      drawingId: 10,
+      statusId: 1,
+      handoverWorkerId: 8,
+      technologistId: 0,
+      statusChangedById: null,
+      launchedById: null,
+      technologistAssignedById: null,
+      legacyRnId: null,
+    };
+
+    it("mapira predmet (project) po redu iz draft konteksta crteža", async () => {
+      prisma.drawingHandover.findMany.mockResolvedValue([listRow]);
+      prisma.drawingHandover.count.mockResolvedValue(1);
+      // draft kontekst crteža 10 → predmet 3.
+      prisma.handoverDraftItem.findMany.mockResolvedValue([
+        { id: 1, drawingId: 10, quantityToProduce: 4, draftId: 2 },
+      ]);
+      prisma.handoverDraft.findMany.mockResolvedValue([
+        { id: 2, draftNumber: "N-1", projectId: 3 },
+      ]);
+      prisma.project.findMany.mockResolvedValue([
+        { id: 3, projectNumber: "9000" },
+      ]);
+
+      const res = await service.list({});
+
+      expect(res.data).toEqual([
+        containing({ project: { id: 3, projectNumber: "9000" } }),
+      ]);
+      expect(prisma.project.findMany).toHaveBeenCalledWith({
+        where: { id: { in: [3] } },
+        select: { id: true, projectNumber: true },
+      });
+    });
+
+    it("project = null za red bez draft konteksta (npr. legacy)", async () => {
+      prisma.drawingHandover.findMany.mockResolvedValue([
+        { ...listRow, drawingId: 99, legacyRnId: 1126 },
+      ]);
+      prisma.drawingHandover.count.mockResolvedValue(1);
+      // Nema draft stavki za crtež 99 → nema predmeta → projekti se ne traže.
+
+      const res = await service.list({});
+
+      expect(res.data).toEqual([containing({ project: null })]);
+      expect(prisma.project.findMany).not.toHaveBeenCalled();
+    });
+  });
 
   // -------------------------------------------------------- TECHNOLOGISTS
 

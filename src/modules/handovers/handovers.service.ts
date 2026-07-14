@@ -1439,26 +1439,41 @@ export class HandoversService {
         this.resolveWorkOrderRefs(rows.map((r) => r.id)),
       ]);
 
-    return rows.map((r) => ({
-      ...r,
-      // UI badge: derivirani red iz tRN (QBigTehn) — mutacije blokira
-      // HANDOVER_LEGACY_GUARD do cutover-a.
-      isLegacy: r.legacyRnId != null,
-      drawing: drawings.get(r.drawingId) ?? null,
-      status: statuses.get(r.statusId) ?? null,
-      handoverWorker: workers.get(r.handoverWorkerId) ?? null,
-      statusChangedBy: r.statusChangedById
-        ? (workers.get(r.statusChangedById) ?? null)
-        : null,
-      launchedBy: r.launchedById ? (workers.get(r.launchedById) ?? null) : null,
-      technologist:
-        r.technologistId > 0 ? (workers.get(r.technologistId) ?? null) : null,
-      technologistAssignedBy: r.technologistAssignedById
-        ? (workers.get(r.technologistAssignedById) ?? null)
-        : null,
-      workOrder: workOrders.get(r.id) ?? null,
-      draftContext: draftCtx.get(r.drawingId) ?? null,
-    }));
+    // Predmet (broj predmeta) po redu — `drawing_handovers` NEMA `project_id`;
+    // predmet se razrešava preko draft konteksta crteža (isti izvor istine kao
+    // `writingStats`), pa se projekti batch-resolvuju iz `draftCtx.projectId`.
+    const projects = await this.resolveProjects(
+      [...draftCtx.values()].map((c) => c.projectId),
+    );
+
+    return rows.map((r) => {
+      const ctx = draftCtx.get(r.drawingId) ?? null;
+      return {
+        ...r,
+        // UI badge: derivirani red iz tRN (QBigTehn) — mutacije blokira
+        // HANDOVER_LEGACY_GUARD do cutover-a.
+        isLegacy: r.legacyRnId != null,
+        drawing: drawings.get(r.drawingId) ?? null,
+        status: statuses.get(r.statusId) ?? null,
+        handoverWorker: workers.get(r.handoverWorkerId) ?? null,
+        statusChangedBy: r.statusChangedById
+          ? (workers.get(r.statusChangedById) ?? null)
+          : null,
+        launchedBy: r.launchedById
+          ? (workers.get(r.launchedById) ?? null)
+          : null,
+        technologist:
+          r.technologistId > 0 ? (workers.get(r.technologistId) ?? null) : null,
+        technologistAssignedBy: r.technologistAssignedById
+          ? (workers.get(r.technologistAssignedById) ?? null)
+          : null,
+        workOrder: workOrders.get(r.id) ?? null,
+        draftContext: ctx,
+        // Predmet po kome je crtež pušten (broj predmeta) — izveden iz draft
+        // konteksta; null za redove bez razrešenog nacrta (npr. legacy redovi).
+        project: ctx ? (projects.get(ctx.projectId) ?? null) : null,
+      };
+    });
   }
 
   /**
@@ -1500,6 +1515,18 @@ export class HandoversService {
       await this.prisma.handoverStatus.findMany({
         where: { id: { in: uniq } },
         select: { id: true, name: true },
+      }),
+    );
+  }
+
+  /** Batch predmet (broj predmeta) po id-u — za `project` kolonu u `enrich()`. */
+  private async resolveProjects(ids: number[]) {
+    const uniq = uniqueIds(ids);
+    if (!uniq.length) return new Map<number, never>();
+    return byId(
+      await this.prisma.project.findMany({
+        where: { id: { in: uniq } },
+        select: { id: true, projectNumber: true },
       }),
     );
   }
