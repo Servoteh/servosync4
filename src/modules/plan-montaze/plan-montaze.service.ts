@@ -187,12 +187,22 @@ export class PlanMontazeService {
 
   /**
    * Pretraga predmeta (bigtehn_items_cache) — paritet searchBigtehnItems (deli sa
-   * Lokacijama/Talas A): ilike po broj/naziv/ugovor/narudžbenica, onlyActive
-   * (status='U TOKU' ∧ datum_zakljucenja IS NULL), + kratki naziv komitenta.
+   * Lokacijama/Talas A): ilike po broj/naziv/ugovor/narudžbenica, + kratki naziv komitenta.
+   *
+   * ⚠️ `onlyActive` je DEFAULT `false` — paritet 1.0 montaža „Poveži predmet" picker-a
+   * (`searchBigtehnItems(q,40,{onlyActive:false})`, izvestajiView.js): serviser vezuje
+   * izveštaj na ZATVOREN predmet (servisni rad ide POSLE zatvaranja projekta). Aktivni-only
+   * filter (`status='U TOKU' ∧ datum_zakljucenja IS NULL`) se primenjuje SAMO kad se traži.
    */
-  async lookupPredmeti(email: string, q?: string) {
+  async lookupPredmeti(email: string, q?: string, onlyActiveRaw?: string) {
     const s = (q ?? "").trim();
     const like = s ? `%${s}%` : null;
+    const onlyActive = ["1", "true", "yes"].includes(
+      String(onlyActiveRaw ?? "").toLowerCase(),
+    );
+    const activeFilter = onlyActive
+      ? Prisma.sql`status = 'U TOKU' AND datum_zakljucenja IS NULL`
+      : Prisma.sql`TRUE`;
     return this.read(email, async (tx) => {
       const items = await tx.$queryRaw<
         Array<Record<string, unknown> & { id: number; customer_id: number | null }>
@@ -200,7 +210,7 @@ export class PlanMontazeService {
         Prisma.sql`SELECT id, broj_predmeta, naziv_predmeta, opis, status, department_code,
             broj_ugovora, broj_narudzbenice, rok_zavrsetka, modified_at, datum_zakljucenja, customer_id
           FROM bigtehn_items_cache
-          WHERE status = 'U TOKU' AND datum_zakljucenja IS NULL
+          WHERE ${activeFilter}
             ${like ? Prisma.sql`AND (broj_predmeta ILIKE ${like} OR naziv_predmeta ILIKE ${like} OR broj_ugovora ILIKE ${like} OR broj_narudzbenice ILIKE ${like})` : Prisma.empty}
           ORDER BY modified_at DESC NULLS LAST LIMIT 50`,
       );
@@ -622,8 +632,13 @@ export class PlanMontazeService {
 
   /**
    * Upload PDF-a izveštaja u `montaza-izvestaji` + PATCH pdf_path/pdf_naziv.
-   * Putanja 1.0-kompatibilna: `{id}/{sanitizovan-broj}.pdf`. Autorizacija = report
-   * UPDATE scope (autor∨mgmt∨admin) kroz updateMany + assertAffected.
+   * Putanja 1.0-kompatibilna: `{id}/{sanitizovan-broj}.pdf`.
+   *
+   * ⚠️ Autorizacija (autor∨mgmt∨admin) MORA PRE `storage.upload` (kao uploadPhotos):
+   * putanja je DETERMINISTIČKA (`{id}/{broj}.pdf`) a upload ide servisnim ključem
+   * (x-upsert) koji zaobilazi bucket RLS — provera POSLE upload-a bi značila da napadač
+   * (svaka rola ima `montaza.izvestaji`, `montaza_izvestaji` SELECT=true) prepiše tuđi
+   * PDF pre nego što dobije 403 (IDOR, bez rollback-a). Provera je isti EXISTS kao fotke.
    */
   async uploadPdf(email: string, id: string, file?: Express.Multer.File) {
     if (!file?.buffer?.length || file.mimetype !== "application/pdf") {
@@ -637,6 +652,14 @@ export class PlanMontazeService {
         select: { id: true, brojIzvestaja: true },
       });
       if (!r) throw new NotFoundException(`Izveštaj ${id} ne postoji`);
+      const ok = await tx.$queryRaw<{ allowed: boolean }[]>(
+        Prisma.sql`SELECT EXISTS (SELECT 1 FROM montaza_izvestaji i
+          WHERE i.id = ${id}::uuid AND (i.autor_user_id = auth.uid()
+            OR current_user_is_management() OR current_user_is_admin())) AS allowed`,
+      );
+      if (!ok[0]?.allowed) {
+        throw new ForbiddenException("Nemate pravo na ovaj izveštaj");
+      }
       return r;
     });
     const safeBroj = String(report.brojIzvestaja || "izvestaj").replace(
@@ -756,9 +779,13 @@ export class PlanMontazeService {
           customer_id: number | null;
         }[]
       >(
+        // ⚠️ NEMA `AND datum_zakljucenja IS NULL` — veran port edge-a (enrichPredmet,
+        // montaza-izvestaj-ai/index.ts): 67% keša su zatvoreni predmeti sa jedinstvenim
+        // brojem; filter bi za njih vratio 0 i ostavio predmet_item_id/naziv/klijent prazne.
+        // `ORDER datum_zakljucenja DESC NULLS FIRST` = aktivan ima prednost, ali vraća i zatvoren.
         Prisma.sql`SELECT id, broj_predmeta, naziv_predmeta, customer_id
           FROM bigtehn_items_cache
-          WHERE broj_predmeta = ${out.predmet} AND datum_zakljucenja IS NULL
+          WHERE broj_predmeta = ${out.predmet}
           ORDER BY datum_zakljucenja DESC NULLS FIRST LIMIT 1`,
       );
       const it = items[0];

@@ -17,6 +17,12 @@ export class ReportsQueryDto {
 
 export class PredmetiLookupQueryDto {
   @IsOptional() @IsString() q?: string;
+  /**
+   * `1`/`true` = samo aktivni (status='U TOKU' ∧ datum_zakljucenja IS NULL).
+   * DEFAULT (izostavljeno) = i ZATVORENI predmeti — paritet 1.0 montaža picker-a
+   * (onlyActive:false; serviser vezuje izveštaj na zatvoren predmet).
+   */
+  @IsOptional() @IsString() onlyActive?: string;
 }
 
 export class DrawingsLookupQueryDto {

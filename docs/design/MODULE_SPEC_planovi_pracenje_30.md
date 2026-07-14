@@ -234,6 +234,15 @@ Konvencije: envelope `{data, meta}`, Decimal string, GUC `withUser` na SVIM pozi
 > ⚠️ Write/bucket **grants** (`servosync2_app` INSERT/UPDATE/DELETE na 9 public tabela + EXECUTE
 > na mutacione RPC + storage) = DB migracija u 1.0 repo, primenjuje se kao supabase_admin PRE
 > R4 živog smoke-a — NIJE deo ovog BE commita (v. red 40).
+>
+> **R2 adversarni review — 3 nalaza ISPRAVLJENA (isti commit-lanac):** (#1 HIGH IDOR)
+> `uploadPdf` autorizuje (autor∨mgmt∨admin EXISTS) **PRE** `storage.upload` — deterministička
+> putanja `{id}/{broj}.pdf` + servisni ključ (x-upsert) su zaobilazili bucket RLS pa je provera
+> POSLE upload-a značila prepis tuđeg PDF-a (kao uploadPhotos sad); (#2 HIGH paritet)
+> `lookups/predmeti` dobio `onlyActive` param, DEFAULT vraća i ZATVORENE predmete (paritet 1.0
+> montaža picker `onlyActive:false` — servis ide posle zatvaranja); (#3 MEDIUM paritet) AI
+> `enrichPredmet` više NE filtrira `datum_zakljucenja IS NULL` (veran port edge-a; 67% keša su
+> zatvoreni predmeti). Testovi dodati (uploadPdf 403-bez-prepisa, lookup zatvoreni, AI enrich zatvoren).
 
 | # | Funkcija | Status |
 |---|---|---|

@@ -253,7 +253,7 @@ export class PlanMontazeController {
 
   @Get("lookups/predmeti")
   lookupPredmeti(@Req() req: AuthedRequest, @Query() q: PredmetiLookupQueryDto) {
-    return this.montaza.lookupPredmeti(req.user.email, q.q);
+    return this.montaza.lookupPredmeti(req.user.email, q.q, q.onlyActive);
   }
 
   @Get("lookups/drawings")
