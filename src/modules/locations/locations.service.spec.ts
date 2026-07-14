@@ -39,7 +39,12 @@ describe("LocationsService — R2 mutacije", () => {
   let sy15: {
     withUser: jest.Mock;
     withUserRls: jest.Mock;
-    db: { locItemPlacement: { findMany: jest.Mock; count: jest.Mock } };
+    db: {
+      locItemPlacement: { findMany: jest.Mock; count: jest.Mock };
+      locLocationMovement: { findMany: jest.Mock; count: jest.Mock };
+      userRoleSy15: { findMany: jest.Mock };
+      $queryRaw: jest.Mock;
+    };
   };
   let labelPrint: { printRawTspl: jest.Mock };
   let service: LocationsService;
@@ -58,7 +63,12 @@ describe("LocationsService — R2 mutacije", () => {
       withUser: jest.fn(runTx),
       withUserRls: jest.fn(runTx),
       // sy15.db = BYPASSRLS put; placements reads NE smeju ovuda (leak).
-      db: { locItemPlacement: { findMany: jest.fn(), count: jest.fn() } },
+      db: {
+        locItemPlacement: { findMany: jest.fn(), count: jest.fn() },
+        locLocationMovement: { findMany: jest.fn(), count: jest.fn() },
+        userRoleSy15: { findMany: jest.fn() },
+        $queryRaw: jest.fn(),
+      },
     };
     labelPrint = { printRawTspl: jest.fn() };
     service = new LocationsService(
@@ -400,5 +410,76 @@ describe("LocationsService — R2 mutacije", () => {
     expect((out.data as { kind: string }).kind).toBe("ITEM");
     expect(sy15.withUserRls).toHaveBeenCalledWith(EMAIL, expect.any(Function));
     expect(sy15.db.locItemPlacement.findMany).not.toHaveBeenCalled();
+  });
+
+  // ---------- R1 read dopune: „Korisnik" ime + Početna KPI (paritet FE) ----------
+
+  it("listMovements: dodaje movedByName (ime iz user_roles po user_id), UUID movedBy ostaje", async () => {
+    sy15.db.locLocationMovement.findMany.mockResolvedValue([
+      { id: "m1", movedBy: UUID, itemRefId: "9400/1" },
+      { id: "m2", movedBy: UUID2, itemRefId: "9400/2" },
+    ]);
+    sy15.db.locLocationMovement.count.mockResolvedValue(2);
+    sy15.db.userRoleSy15.findMany.mockResolvedValue([
+      { userId: UUID, fullName: "Marko Cvetić", email: "marko@x.com" },
+    ]);
+    sy15.db.$queryRaw.mockResolvedValue([]); // auth.users fallback za UUID2 → prazno
+
+    const res = await service.listMovements({});
+    const data = res.data as { movedBy: string; movedByName: string | null }[];
+    expect(data[0]).toMatchObject({ movedBy: UUID, movedByName: "Marko Cvetić" });
+    // UUID2 nema ni user_roles ni auth.users → null (FE zadrži UUID prefiks).
+    expect(data[1]).toMatchObject({ movedBy: UUID2, movedByName: null });
+    // Movements NISU row-scoped → čitaju se kroz sy15.db (BYPASSRLS), ne withUserRls.
+    expect(sy15.db.locLocationMovement.findMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("listMovements: full_name prazan → padne na email (user_roles), pa auth.users email", async () => {
+    sy15.db.locLocationMovement.findMany.mockResolvedValue([
+      { id: "m1", movedBy: UUID },
+      { id: "m2", movedBy: UUID2 },
+    ]);
+    sy15.db.locLocationMovement.count.mockResolvedValue(2);
+    sy15.db.userRoleSy15.findMany.mockResolvedValue([
+      { userId: UUID, fullName: "   ", email: "kontrola@x.com" },
+    ]);
+    sy15.db.$queryRaw.mockResolvedValue([{ id: UUID2, email: "legacy@x.com" }]);
+
+    const res = await service.listMovements({});
+    const data = res.data as { movedByName: string | null }[];
+    expect(data[0].movedByName).toBe("kontrola@x.com");
+    expect(data[1].movedByName).toBe("legacy@x.com");
+  });
+
+  it("summary: vraća movements24h i movements7d (count sa vremenskim prozorom)", async () => {
+    sy15.db.locLocationMovement.count
+      .mockResolvedValueOnce(3) // 24h
+      .mockResolvedValueOnce(11); // 7d
+    const res = await service.summary();
+    expect(res.data).toEqual({ movements24h: 3, movements7d: 11 });
+    // Dva odvojena count-a sa moved_at >= prozor.
+    const calls = sy15.db.locLocationMovement.count.mock.calls as [
+      { where: { movedAt: { gte: Date } } },
+    ][];
+    expect(calls[0][0].where.movedAt.gte).toBeInstanceOf(Date);
+    expect(calls[1][0].where.movedAt.gte.getTime()).toBeLessThan(
+      calls[0][0].where.movedAt.gte.getTime(),
+    );
+  });
+
+  it("definitionsAudit: dodaje actor_name (actor_uid → ime; fallback actor_email)", async () => {
+    tx.$queryRaw.mockResolvedValue([
+      { record_id: "L1", action: "UPDATE", actor_uid: UUID, actor_email: "a@x.com" },
+      { record_id: "L2", action: "INSERT", actor_uid: UUID2, actor_email: "b@x.com" },
+    ]);
+    sy15.db.userRoleSy15.findMany.mockResolvedValue([
+      { userId: UUID, fullName: "Nenad Jaraković", email: "n@x.com" },
+    ]);
+    sy15.db.$queryRaw.mockResolvedValue([]); // auth.users fallback prazan
+    const res = await service.definitionsAudit("100", EMAIL);
+    const data = res.data as { actor_name: string | null; actor_email: string }[];
+    expect(data[0].actor_name).toBe("Nenad Jaraković");
+    // Nema u user_roles/auth.users → poslednji fallback = actor_email iz fn-a.
+    expect(data[1].actor_name).toBe("b@x.com");
   });
 });

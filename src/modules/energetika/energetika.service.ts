@@ -29,42 +29,57 @@ export interface HistoryRow {
   value: number | null;
 }
 
+/** Definicija trend-metrike koju history vraća FE-u (`metrics` lista, spec §3 PIN). */
+export interface TrendMetric {
+  key: string; // ime metrike u `scada_history` (= `metric`)
+  label: string; // prikazna oznaka (iz tag definicija sajta)
+  kind: string; // temp | setpoint | series (za dinamičke sisteme)
+}
+
+/** Tačka serije po ključu (paritet 1.0 `buildHistory` `series`): t = epoch ms, v = vrednost. */
+export interface SeriesPoint {
+  t: number;
+  v: number | null;
+}
+
 /**
  * KOT1 trend metrike = temp + setpoint tagovi (paritet 1.0 `buildHistory('kot1')`
  * koji filtrira `kind === 'temp' || 'setpoint'` iz `kot1-tags.json`).
  * IZVOR ISTINE = 1.0 repo `public/scada-hmi/kot1-tags.json` (spec §7 P1: HMI statika
- * se KOPIRA, izvor u 1.0). Ovde su preslikana samo IMENA metrika za BE preset — labele/
- * zone/scale ostaju FE briga (shim ih čita iz kot1-tags.json u R3). Ako se tagovi u 1.0
- * promene (retko — ekrani stabilni od 07/2026), ažurirati ovu listu.
+ * se KOPIRA, izvor u 1.0). Ovde su preslikane DEFINICIJE trend-tagova (key/label/kind)
+ * da history može dinamički da vrati `metrics` listu (FE ne hardkoduje spisak). Ako se
+ * tagovi u 1.0 promene (retko — ekrani stabilni od 07/2026), ažurirati ovu tabelu.
  */
-const KOT1_TREND_METRICS = [
-  // kind: temp
-  "T_SPOLJA",
-  "T_SUDA",
-  "T_CNC",
-  "T_ZAVAR",
-  "T_MONTAZA1",
-  "T_MONTAZA2",
-  "T_HIDRAULIKA",
-  // kind: setpoint
-  "SP_SPOLJA",
-  "SP_SUDA_H",
-  "SP_SUDA_L",
-  "SP_MONTAZA",
-  "SP_CNC",
-  "SP_HIDRAULIKA",
-  "SP_ZAVAR",
+const KOT1_TREND_TAGS: TrendMetric[] = [
+  { key: "T_SPOLJA", label: "Spolja", kind: "temp" },
+  { key: "T_SUDA", label: "Sud", kind: "temp" },
+  { key: "T_CNC", label: "CNC radionica", kind: "temp" },
+  { key: "T_ZAVAR", label: "Zavarivanje", kind: "temp" },
+  { key: "T_MONTAZA1", label: "Montaza 1", kind: "temp" },
+  { key: "T_MONTAZA2", label: "Montaza 2", kind: "temp" },
+  { key: "T_HIDRAULIKA", label: "Hidraulika", kind: "temp" },
+  { key: "SP_SPOLJA", label: "Zadata spolja", kind: "setpoint" },
+  { key: "SP_SUDA_H", label: "Zadata sud H", kind: "setpoint" },
+  { key: "SP_SUDA_L", label: "Zadata sud L", kind: "setpoint" },
+  { key: "SP_MONTAZA", label: "Zadata montaza", kind: "setpoint" },
+  { key: "SP_CNC", label: "Zadata CNC", kind: "setpoint" },
+  { key: "SP_HIDRAULIKA", label: "Zadata hidraulika", kind: "setpoint" },
+  { key: "SP_ZAVAR", label: "Zadata zavarivanje", kind: "setpoint" },
 ];
 
 /** KOT2 trend = 6 fiksnih metrika (paritet 1.0 `buildHistory('kot2')`). */
-const KOT2_TREND_METRICS = [
-  "Temp_suda",
-  "Temp_Hala_3",
-  "Temp_Hala_4",
-  "Temp_Hala_5",
-  "Temp_spoljasnja",
-  "setpoint",
+const KOT2_TREND_TAGS: TrendMetric[] = [
+  { key: "Temp_suda", label: "Sud", kind: "temp" },
+  { key: "Temp_Hala_3", label: "Hala 3", kind: "temp" },
+  { key: "Temp_Hala_4", label: "Hala 4", kind: "temp" },
+  { key: "Temp_Hala_5", label: "Hala 5", kind: "temp" },
+  { key: "Temp_spoljasnja", label: "Spoljašnja", kind: "temp" },
+  { key: "setpoint", label: "Zadata", kind: "setpoint" },
 ];
+
+/** Imena metrika (za `metric IN (...)` predikat) — izvedena iz tag definicija (bez drifta). */
+const KOT1_TREND_METRICS = KOT1_TREND_TAGS.map((t) => t.key);
+const KOT2_TREND_METRICS = KOT2_TREND_TAGS.map((t) => t.key);
 
 /** Zaštitni okviri (bridge/PostgREST paritet): istorija do 7 dana, alarmi/komande limiti. */
 const HISTORY_MAX_HOURS = 168;
@@ -130,7 +145,11 @@ export class EnergetikaService {
     return this.read(async () => {
       const hours = clampInt(hoursRaw, 1, HISTORY_MAX_HOURS, 24);
       const pred = this.metricPredicate(siteKey, system);
-      if (!pred) return { data: [] as HistoryRow[], meta: { siteKey, hours } };
+      if (!pred)
+        return {
+          data: [] as HistoryRow[],
+          meta: { siteKey, hours, metrics: [] as TrendMetric[], series: {} },
+        };
       const since = new Date(Date.now() - hours * 3600_000);
       const rows = await this.sy15.withUserRls(email, (tx) =>
         tx.$queryRaw<HistoryRow[]>(Prisma.sql`
@@ -140,8 +159,40 @@ export class EnergetikaService {
           ORDER BY ts DESC
           LIMIT ${HISTORY_ROW_LIMIT}`),
       );
-      return { data: rows.reverse(), meta: { siteKey, hours } };
+      const data = rows.reverse();
+      // Aditivno (zero-loss): `data` = postojeći long-format redovi; `meta.metrics` +
+      // `meta.series` = FE-spremna forma (paritet 1.0 `buildHistory` {tags, series}).
+      return {
+        data,
+        meta: {
+          siteKey,
+          hours,
+          metrics: this.trendMetrics(siteKey, data),
+          series: buildSeries(data),
+        },
+      };
     });
+  }
+
+  /**
+   * Trend-metrike (key/label/kind) sistema. Fiksni sistemi (kot1/kot2) → definicije iz
+   * tagova (uvek pun spisak, i kad neka metrika trenutno nema uzoraka — paritet 1.0
+   * koji vraća sve tagove). Pattern sistemi (kot3/solar-*) su već dinamički (LIKE
+   * filteri) → metrike se izvode iz stvarno vraćenih redova (nema hardkoda).
+   */
+  private trendMetrics(siteKey: string, rows: HistoryRow[]): TrendMetric[] {
+    if (siteKey === "kot1") return KOT1_TREND_TAGS;
+    if (siteKey === "kot2") return KOT2_TREND_TAGS;
+    const seen = new Map<string, TrendMetric>();
+    for (const r of rows) {
+      if (r.metric && !seen.has(r.metric))
+        seen.set(r.metric, {
+          key: r.metric,
+          label: r.metric,
+          kind: inferKind(r.metric),
+        });
+    }
+    return [...seen.values()].sort((a, b) => a.key.localeCompare(b.key));
   }
 
   /** Metrika-filter po sistemu (paritet 1.0 `buildHistory`). null = nepoznat sistem → prazno. */
@@ -334,6 +385,28 @@ function clampInt(
   const n = Number.parseInt(raw ?? "", 10);
   if (!Number.isFinite(n)) return def;
   return Math.min(max, Math.max(min, n));
+}
+
+/**
+ * long-format redovi → serije po metric ključu (paritet 1.0 `buildHistory` `series`):
+ * `{ [metric]: [{ t: epoch ms, v }] }`. Redovi su već rastući po ts (posle `reverse`),
+ * pa su i tačke serije rastuće — FE crta bez dodatnog sortiranja.
+ */
+function buildSeries(rows: HistoryRow[]): Record<string, SeriesPoint[]> {
+  const out: Record<string, SeriesPoint[]> = {};
+  for (const r of rows) {
+    if (!r.metric) continue;
+    (out[r.metric] ??= []).push({ t: new Date(r.ts).getTime(), v: r.value });
+  }
+  return out;
+}
+
+/** Gruba klasifikacija metrike za dinamičke sisteme (kot3/solar-*) — best-effort `kind`. */
+function inferKind(metric: string): string {
+  const m = metric.toLowerCase();
+  if (m.includes("setpoint") || m.startsWith("sp")) return "setpoint";
+  if (m.includes("temp") || m.startsWith("t_")) return "temp";
+  return "series";
 }
 
 /**

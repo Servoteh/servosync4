@@ -78,6 +78,12 @@ export class LocationsController {
     return this.locations.listMovements(query);
   }
 
+  /** Početna KPI — premeštanja u poslednja 24h / 7 dana (paritet 1.0 dashboard count-ovi). */
+  @Get("summary")
+  summary() {
+    return this.locations.summary();
+  }
+
   // ---------- Izveštaji ----------
 
   @Get("reports/by-location")

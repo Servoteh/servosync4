@@ -332,7 +332,7 @@ export class LocationsService {
     }
     if (and.length) where.AND = and;
 
-    const [data, total] = await Promise.all([
+    const [rows, total] = await Promise.all([
       this.sy15.db.locLocationMovement.findMany({
         where,
         orderBy: { movedAt: "desc" },
@@ -341,6 +341,13 @@ export class LocationsService {
       }),
       this.sy15.db.locLocationMovement.count({ where }),
     ]);
+    // „Korisnik" kolona = ime umesto UUID (paritet 1.0): batch-resolve moved_by →
+    // ime, dodaj `movedByName` (UUID `movedBy` ostaje — zero-loss; null ako nerazrešiv).
+    const names = await this.resolveUserNames(rows.map((r) => r.movedBy));
+    const data = rows.map((r) => ({
+      ...r,
+      movedByName: names.get(r.movedBy) ?? null,
+    }));
     return { data, meta: pageMeta(page, pageSize, total) };
   }
 
@@ -360,6 +367,80 @@ export class LocationsService {
       filter.lt = d;
     }
     return filter.gte || filter.lt ? filter : null;
+  }
+
+  // ==========================================================================
+  // Početna KPI — vremenski prozor premeštanja (paritet 1.0 dashboard „danas/7 dana")
+  // ==========================================================================
+
+  /**
+   * KPI brojači za Početnu (paritet 1.0 `fetchMovementsCountSince`): koliko je
+   * premeštanja u poslednja 24h i poslednjih 7 dana. 1.0 je ova dva broja računao
+   * klijentski (dva zasebna count-a); 2.0 ih vraća u jednom summary pozivu. Rolling
+   * prozori (now − 24h / now − 7d) — nazivi polja su `24h`/`7d`. Count kroz `sy15.db`
+   * (BYPASSRLS): movements nisu row-scoped (za razliku od placements/rev_tools).
+   */
+  async summary() {
+    const now = Date.now();
+    const since24h = new Date(now - 24 * 3600_000);
+    const since7d = new Date(now - 7 * 24 * 3600_000);
+    const [movements24h, movements7d] = await Promise.all([
+      this.sy15.db.locLocationMovement.count({
+        where: { movedAt: { gte: since24h } },
+      }),
+      this.sy15.db.locLocationMovement.count({
+        where: { movedAt: { gte: since7d } },
+      }),
+    ]);
+    return { data: { movements24h, movements7d } };
+  }
+
+  /**
+   * Batch-resolve auth uid → prikazno ime (paritet 1.0 „Korisnik" kolone). Primarno
+   * `user_roles` po `user_id` (full_name → email); fallback `auth.users.email` za
+   * movere kojih nema u user_roles (legacy/servisni nalozi). Vraća Map(uid → ime);
+   * nerazrešeni uid-ovi se izostave (poziv-mesto zadrži UUID fallback — zero-loss).
+   * Sve kroz `sy15.db` (BYPASSRLS `servosync2_app` ima SELECT na auth.users — isti
+   * put kao `Sy15Service.setClaims`); imena movera nisu row-scoped PII.
+   */
+  private async resolveUserNames(
+    uids: (string | null | undefined)[],
+  ): Promise<Map<string, string>> {
+    const ids = [
+      ...new Set(uids.filter((x): x is string => !!x && UUID_RE.test(x))),
+    ];
+    const out = new Map<string, string>();
+    if (!ids.length) return out;
+
+    const roles = await this.sy15.db.userRoleSy15.findMany({
+      where: { userId: { in: ids } },
+      select: { userId: true, fullName: true, email: true },
+      orderBy: { createdAt: "asc" },
+    });
+    for (const r of roles) {
+      if (!r.userId || out.has(r.userId)) continue;
+      const label = (r.fullName ?? "").trim() || (r.email ?? "").trim();
+      if (label) out.set(r.userId, label);
+    }
+
+    const missing = ids.filter((id) => !out.has(id));
+    if (missing.length) {
+      try {
+        const rows = await this.sy15.db.$queryRaw<
+          { id: string; email: string | null }[]
+        >(
+          Prisma.sql`SELECT id::text AS id, email FROM auth.users
+                     WHERE id IN (${Prisma.join(missing.map((m) => Prisma.sql`${m}::uuid`))})`,
+        );
+        for (const r of rows) {
+          const email = (r.email ?? "").trim();
+          if (r.id && email && !out.has(r.id)) out.set(r.id, email);
+        }
+      } catch {
+        /* auth.users nedostupan (privilegije) → izostavi; UUID fallback na FE-u. */
+      }
+    }
+    return out;
   }
 
   // ==========================================================================
@@ -690,10 +771,26 @@ export class LocationsService {
       1,
       Math.min(Number.parseInt(limitRaw ?? "100", 10) || 100, 300),
     );
-    const data = await this.sy15.withUser(
+    const rows = await this.sy15.withUser(
       email,
-      (tx) => tx.$queryRaw`SELECT * FROM loc_locations_audit(${l}::int)`,
+      (tx) =>
+        tx.$queryRaw<
+          Record<string, unknown>[]
+        >`SELECT * FROM loc_locations_audit(${l}::int)`,
     );
+    // „Korisnik" = ime umesto UUID (paritet 1.0): actor_uid → ime; fn već vraća
+    // actor_email pa je to zadnji fallback. Dodaj `actor_name` (actor_uid/email ostaju).
+    const names = await this.resolveUserNames(
+      rows.map((r) => (typeof r.actor_uid === "string" ? r.actor_uid : null)),
+    );
+    const data = rows.map((r) => {
+      const uid = typeof r.actor_uid === "string" ? r.actor_uid : null;
+      const email2 =
+        typeof r.actor_email === "string" && r.actor_email.trim()
+          ? r.actor_email.trim()
+          : null;
+      return { ...r, actor_name: (uid && names.get(uid)) || email2 || null };
+    });
     return { data };
   }
 

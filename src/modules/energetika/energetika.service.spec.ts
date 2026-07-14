@@ -198,6 +198,75 @@ describe("EnergetikaService — komande (R2)", () => {
     });
   });
 
+  describe("history — metrics + series (paritet FE buildHistory)", () => {
+    function makeHistoryService(rows: unknown[]): EnergetikaService {
+      const tx = { $queryRaw: jest.fn(async () => rows) };
+      const sy15 = {
+        withUserRls: jest.fn(
+          (email: string, fn: (t: typeof tx) => Promise<unknown>) => fn(tx),
+        ),
+      } as unknown as Sy15Service;
+      return new EnergetikaService(sy15);
+    }
+
+    it("kot1: metrics = pun spisak trend tagova (key/label/kind), series po key + long-format data", async () => {
+      const ts = new Date("2026-07-14T10:00:00.000Z");
+      const service = makeHistoryService([
+        { metric: "T_SUDA", ts, value: 21 },
+        { metric: "SP_CNC", ts, value: 18 },
+      ]);
+      const out = (await service.history("a@b.com", "kot1", "24")) as {
+        data: unknown[];
+        meta: {
+          metrics: { key: string; label: string; kind: string }[];
+          series: Record<string, { t: number; v: number | null }[]>;
+        };
+      };
+      // Pun spisak (14 trend tagova) i kad neka metrika nema uzoraka — paritet 1.0.
+      expect(out.meta.metrics).toHaveLength(14);
+      expect(out.meta.metrics).toContainEqual({
+        key: "T_SUDA",
+        label: "Sud",
+        kind: "temp",
+      });
+      expect(out.meta.metrics).toContainEqual({
+        key: "SP_CNC",
+        label: "Zadata CNC",
+        kind: "setpoint",
+      });
+      // series po key: t = epoch ms, v = vrednost.
+      expect(out.meta.series.T_SUDA).toEqual([{ t: ts.getTime(), v: 21 }]);
+      // Zero-loss: long-format `data` i dalje tu.
+      expect(out.data).toHaveLength(2);
+    });
+
+    it("nepoznat sistem → prazno (data/metrics/series)", async () => {
+      const service = makeHistoryService([]);
+      const out = (await service.history("a@b.com", "nepostoji")) as {
+        data: unknown[];
+        meta: { metrics: unknown[]; series: Record<string, unknown> };
+      };
+      expect(out.data).toEqual([]);
+      expect(out.meta.metrics).toEqual([]);
+      expect(out.meta.series).toEqual({});
+    });
+
+    it("dinamički sistem (kot3): metrics se izvode iz stvarnih redova (nema hardkoda)", async () => {
+      const ts = new Date("2026-07-14T10:00:00.000Z");
+      const service = makeHistoryService([
+        { metric: "rooms_avg", ts, value: 22 },
+        { metric: "mix:1", ts, value: 40 },
+      ]);
+      const out = (await service.history("a@b.com", "kot3")) as {
+        meta: { metrics: { key: string }[] };
+      };
+      expect(out.meta.metrics.map((m) => m.key).sort()).toEqual([
+        "mix:1",
+        "rooms_avg",
+      ]);
+    });
+  });
+
   describe("genIdempotencyKey", () => {
     it("format `ui-<ts>-<rand>` i praktično jedinstven po pozivu", () => {
       const a = genIdempotencyKey();
