@@ -1,5 +1,19 @@
 import { OdrzavanjeService } from "./odrzavanje.service";
 import { Sy15Service } from "../../common/sy15/sy15.service";
+import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
+
+/** Storage proxy nikad ne sme da se dodirne u read sloju — svaki poziv = greška. */
+const storageStub = {
+  upload: jest.fn(() => {
+    throw new Error("storage.upload korišćen u read sloju");
+  }),
+  signUrl: jest.fn(() => {
+    throw new Error("storage.signUrl korišćen u read sloju");
+  }),
+  remove: jest.fn(() => {
+    throw new Error("storage.remove korišćen u read sloju");
+  }),
+} as unknown as Sy15StorageService;
 
 /**
  * OdrzavanjeService (TALAS F, R1) unit — dva invarijanta bez žive baze:
@@ -59,7 +73,7 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
   it("listMachines ide kroz withUserRls sa email-om pozivaoca (RLS enforce, ne db.*)", async () => {
     const tx = makeTx();
     const { sy15, withUserRls } = makeSy15(tx);
-    const svc = new OdrzavanjeService(sy15);
+    const svc = new OdrzavanjeService(sy15, storageStub);
     await svc.listMachines("monter@servoteh.com", {});
     expect(withUserRls).toHaveBeenCalledTimes(1);
     expect(withUserRls.mock.calls[0][0]).toBe("monter@servoteh.com");
@@ -72,7 +86,7 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
   it("listIncidents (prijava kvara vidljivost) takođe ide kroz withUserRls", async () => {
     const tx = makeTx();
     const { sy15, withUserRls } = makeSy15(tx);
-    const svc = new OdrzavanjeService(sy15);
+    const svc = new OdrzavanjeService(sy15, storageStub);
     await svc.listIncidents("operator@servoteh.com", {});
     expect(withUserRls).toHaveBeenCalledTimes(1);
     expect(withUserRls.mock.calls[0][0]).toBe("operator@servoteh.com");
@@ -108,7 +122,7 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
       },
     });
     const { sy15 } = makeSy15(tx);
-    const svc = new OdrzavanjeService(sy15);
+    const svc = new OdrzavanjeService(sy15, storageStub);
     const res = (await svc.me("x@servoteh.com")) as {
       data: {
         maintRole: string | null;
@@ -197,7 +211,7 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
       maintWorkOrder: { count: jest.fn().mockResolvedValue(5) },
     });
     const { sy15 } = makeSy15(tx);
-    const svc = new OdrzavanjeService(sy15);
+    const svc = new OdrzavanjeService(sy15, storageStub);
     const res = (await svc.dashboard("x@servoteh.com")) as unknown as {
       data: { dailySummary: Record<string, unknown> };
     };
@@ -228,7 +242,7 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
       },
     });
     const { sy15 } = makeSy15(tx);
-    const svc = new OdrzavanjeService(sy15);
+    const svc = new OdrzavanjeService(sy15, storageStub);
     const res = (await svc.listIncidents("x@servoteh.com", {})) as {
       data: { id: string; workOrder: { woNumber: string } | null }[];
     };
@@ -261,7 +275,7 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
       },
     });
     const { sy15 } = makeSy15(tx);
-    const svc = new OdrzavanjeService(sy15);
+    const svc = new OdrzavanjeService(sy15, storageStub);
     const res = (await svc.reportWorkOrderCosts("x@servoteh.com", "90")) as {
       data: {
         partsCost: number;

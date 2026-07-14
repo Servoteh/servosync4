@@ -85,6 +85,88 @@ describe("Održavanje permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     "reportIncidents",
     "reportWorkOrderCosts",
     "reportAttention",
+    // ---- R2 mutacije (write=WRITE gate; report=REPORT gate) ----
+    "createMachine",
+    "importMachines",
+    "updateMachine",
+    "deleteMachineHard",
+    "archiveMachine",
+    "restoreMachine",
+    "renameMachine",
+    "setStatusOverride",
+    "clearStatusOverride",
+    "createNote",
+    "updateNote",
+    "uploadMachineFile",
+    "updateMachineFile",
+    "deleteMachineFile",
+    "signMachineFile",
+    "createTask",
+    "updateTask",
+    "deleteTask",
+    "createPreventiveWorkOrder",
+    "createCheck",
+    "reportIncident",
+    "updateIncident",
+    "createIncidentEvent",
+    "attachIncidentFiles",
+    "createWorkOrder",
+    "updateWorkOrder",
+    "deleteWorkOrder",
+    "createWoEvent",
+    "createWoPart",
+    "createWoLabor",
+    "createVehicle",
+    "vehicleDeadlineCheck",
+    "archiveVehicle",
+    "restoreVehicle",
+    "upsertVehicleDetails",
+    "patchVehicleTollTag",
+    "patchVehicleShelf",
+    "createTire",
+    "updateTire",
+    "deleteTire",
+    "createVehicleServicePlan",
+    "ensureVehicleServiceWos",
+    "updateVehicleServicePlan",
+    "deleteVehicleServicePlan",
+    "linkPartToVehicle",
+    "updatePartVehicleLink",
+    "unlinkPartFromVehicle",
+    "createBooking",
+    "updateBooking",
+    "deleteBooking",
+    "createVehicleOwner",
+    "createDriver",
+    "updateDriver",
+    "archiveDriver",
+    "restoreDriver",
+    "deleteDriver",
+    "createItAsset",
+    "upsertItDetails",
+    "createFacility",
+    "upsertFacilityDetails",
+    "archiveAsset",
+    "restoreAsset",
+    "createAssetServicePlan",
+    "ensureAssetServiceWos",
+    "updateAssetServicePlan",
+    "deleteAssetServicePlan",
+    "createPart",
+    "updatePart",
+    "createStockMovement",
+    "createSupplier",
+    "updateSupplier",
+    "createLocation",
+    "updateLocation",
+    "uploadDocument",
+    "updateDocument",
+    "deleteDocument",
+    "signDocument",
+    "updateSettings",
+    "createNotificationRule",
+    "updateNotificationRule",
+    "retryNotification",
   ]) {
     svcMock[m] = jest.fn().mockResolvedValue({ data: { ok: true } });
   }
@@ -132,6 +214,42 @@ describe("Održavanje permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     const r = request(app.getHttpServer()).get(`/api/v1${path}`);
     return role ? r.set("x-test-role", role) : r;
   };
+  const body = (
+    r: request.Test,
+    role?: string,
+    payload?: Record<string, unknown>,
+  ) => {
+    if (role) r.set("x-test-role", role);
+    return payload === undefined ? r : r.send(payload);
+  };
+  const post = (
+    path: string,
+    role?: string,
+    payload?: Record<string, unknown>,
+  ) => body(request(app.getHttpServer()).post(`/api/v1${path}`), role, payload);
+  const patch = (
+    path: string,
+    role?: string,
+    payload?: Record<string, unknown>,
+  ) =>
+    body(request(app.getHttpServer()).patch(`/api/v1${path}`), role, payload);
+  const put = (
+    path: string,
+    role?: string,
+    payload?: Record<string, unknown>,
+  ) => body(request(app.getHttpServer()).put(`/api/v1${path}`), role, payload);
+  const del = (
+    path: string,
+    role?: string,
+    payload?: Record<string, unknown>,
+  ) =>
+    body(request(app.getHttpServer()).delete(`/api/v1${path}`), role, payload);
+  const incidentBody = () => ({
+    clientEventId: VALID_UUID,
+    machineCode: "M-01",
+    title: "Kvar",
+    severity: "major",
+  });
 
   // Test-hardening: liste se IZVODE iz ALL_ROLE_KEYS umesto ručno → svaka uloga dobija
   // 200/403 assertion; nova/pogrešno-grantovana uloga se NE može provući. Tačnost skupova
@@ -251,6 +369,149 @@ describe("Održavanje permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
   describe("F5 — facility-types fallback ([])", () => {
     it("GET /maintenance/facility-types → 200 (paritet FE fallback)", async () => {
       await get("/maintenance/facility-types", "viewer").expect(200);
+    });
+  });
+
+  // ======================================================================
+  // R2 — WRITE matrica (odrzavanje.write = maint chief/admin sloj coarse gate).
+  // Row-nivo (maint profil operator/technician machine-scope, chief-bez-role,
+  // magacioner, 24h, close-gate) presuđuje sy15 RLS/RPC kroz GUC — to je živi
+  // smoke (R4). Sintetički operator/technician /me-gate derivacija (F7) je u
+  // `odrzavanje.service.spec` (RLS ne može ERP-rola sloj izraziti).
+  // POST → 201, PATCH/PUT/DELETE → 200; guard (403) prethodi ValidationPipe (400).
+  // ======================================================================
+  const WRITE_ROLES = rolesWith(PERMISSIONS.ODRZAVANJE_WRITE);
+  const NO_WRITE = rolesWithout(PERMISSIONS.ODRZAVANJE_WRITE);
+  const REPORT_ROLES = rolesWith(PERMISSIONS.ODRZAVANJE_REPORT);
+  const NO_REPORT = rolesWithout(PERMISSIONS.ODRZAVANJE_REPORT);
+
+  describe("Write guard — POST (201 za write-role, 403 za bez-write)", () => {
+    it.each(WRITE_ROLES)(
+      "POST /machines/:code/archive → 201 za %s",
+      async (role) => {
+        await post("/maintenance/machines/M-01/archive", role).expect(201);
+      },
+    );
+    it.each(NO_WRITE)(
+      "POST /machines/:code/archive → 403 za %s (nema write)",
+      async (role) => {
+        await post("/maintenance/machines/M-01/archive", role).expect(403);
+      },
+    );
+    it.each(WRITE_ROLES)(
+      "POST /notifications/:id/retry → 201 za %s (dispatch mrtav; retry=paritet)",
+      async (role) => {
+        await post(
+          `/maintenance/notifications/${VALID_UUID}/retry`,
+          role,
+        ).expect(201);
+      },
+    );
+  });
+
+  describe("Write guard — PATCH/PUT/DELETE (200 za write-role, 403 za bez-write)", () => {
+    it.each(WRITE_ROLES)("PATCH /settings → 200 za %s", async (role) => {
+      await patch("/maintenance/settings", role, {}).expect(200);
+    });
+    it.each(NO_WRITE)("PATCH /settings → 403 za %s", async (role) => {
+      await patch("/maintenance/settings", role, {}).expect(403);
+    });
+    it.each(WRITE_ROLES)(
+      "PUT /vehicles/:id/details → 200 za %s",
+      async (role) => {
+        await put(`/maintenance/vehicles/${VALID_UUID}/details`, role, {
+          details: {},
+        }).expect(200);
+      },
+    );
+    it.each(WRITE_ROLES)(
+      "DELETE /work-orders/:id → 200 za %s",
+      async (role) => {
+        await del(`/maintenance/work-orders/${VALID_UUID}`, role).expect(200);
+      },
+    );
+    it.each(NO_WRITE)("DELETE /work-orders/:id → 403 za %s", async (role) => {
+      await del(`/maintenance/work-orders/${VALID_UUID}`, role).expect(403);
+    });
+  });
+
+  describe("REPORT — prijava kvara = opšte pravo (F6); PATCH incidenta = WRITE", () => {
+    it.each(REPORT_ROLES)(
+      "POST /incidents → 201 za %s (report; INSERT-bez-SELECT paritet)",
+      async (role) => {
+        await post("/maintenance/incidents", role, incidentBody()).expect(201);
+      },
+    );
+    it.each(NO_REPORT)(
+      "POST /incidents → 403 za %s (nema report)",
+      async (role) => {
+        await post("/maintenance/incidents", role, incidentBody()).expect(403);
+      },
+    );
+    it.each(REPORT_ROLES)(
+      "POST /incidents/:id/files → foto = report za %s (F3 RPC)",
+      async (role) => {
+        // FilesInterceptor prihvata prazan set; servis je mokovan → 201.
+        await post(`/maintenance/incidents/${VALID_UUID}/files`, role).expect(
+          201,
+        );
+      },
+    );
+    it("read-only rola (monter): prijava kvara 201, ali izmena incidenta (write) 403", async () => {
+      await post("/maintenance/incidents", "monter", incidentBody()).expect(
+        201,
+      );
+      await patch(`/maintenance/incidents/${VALID_UUID}`, "monter", {
+        status: "acknowledged",
+      }).expect(403);
+    });
+  });
+
+  describe("Write route ordering (novi literali pre :code/:id)", () => {
+    it("POST /machines/import → 201 (literal, ne :code)", async () => {
+      await post("/maintenance/machines/import", "admin", {
+        codes: ["M-01"],
+      }).expect(201);
+      expect(svcMock.importMachines).toHaveBeenCalled();
+    });
+    it("POST /vehicles/deadline-check → 201 (literal, ne :id → ParseUUID 400)", async () => {
+      await post("/maintenance/vehicles/deadline-check", "admin", {}).expect(
+        201,
+      );
+      expect(svcMock.vehicleDeadlineCheck).toHaveBeenCalled();
+    });
+    it("POST /vehicles/:id/service-plan/generate-wos → 201 (literal end, ne :planId)", async () => {
+      await post(
+        `/maintenance/vehicles/${VALID_UUID}/service-plan/generate-wos`,
+        "sef",
+      ).expect(201);
+      expect(svcMock.ensureVehicleServiceWos).toHaveBeenCalled();
+    });
+    it("POST /assets/:id/service-plan/generate-wos → 201 (literal end)", async () => {
+      await post(
+        `/maintenance/assets/${VALID_UUID}/service-plan/generate-wos`,
+        "sef",
+      ).expect(201);
+      expect(svcMock.ensureAssetServiceWos).toHaveBeenCalled();
+    });
+  });
+
+  describe("Mutacije: DTO/param 400 (guard prošao, telo/param nevalidno)", () => {
+    it("PATCH /work-orders/:id → 400 ne-uuid param (admin)", async () => {
+      await patch("/maintenance/work-orders/nije-uuid", "admin", {}).expect(
+        400,
+      );
+    });
+    it("POST /incidents → 400 kad fali clientEventId/severity (admin, DTO)", async () => {
+      await post("/maintenance/incidents", "admin", {
+        machineCode: "M-01",
+        title: "x",
+      }).expect(400);
+    });
+    it("POST /machines → 400 kad fali clientEventId/name (admin, DTO idempotency)", async () => {
+      await post("/maintenance/machines", "admin", {
+        machineCode: "M-99",
+      }).expect(400);
     });
   });
 });

@@ -391,8 +391,8 @@ Paritet 23 sekcije 1.0 (`/maintenance/*`), 2.0 ui-kit, responsive (bez zasebnog 
 | 43 | Foto incidenta kroz `maint_attach_incident_files` RPC (§7.3) | NOT_STARTED |
 | 44 | Storage proxy (upload/sign/delete; putanje 1.0-kompatibilne) | NOT_STARTED |
 | 45 | GUC sub+email test: operator scope, chief-bez-globalne-role, magacioner krug | **R1: SINTETIČKI unit** (operator/technician/chief/mgmt gate-derivacija + withUserRls routing; živi smoke = R4) |
-| 46 | e2e permission matrica (maint rola × ERP rola × endpoint × 200/403) | **R1: READ matrica IMPLEMENTED** (rola×endpoint×200/403, AUTHZ_ENFORCE=true; write matrica = R2) |
-| 47 | Idempotencija mutacija (clientEventId / rev_api_idempotency obrazac) | NOT_STARTED |
+| 46 | e2e permission matrica (maint rola × ERP rola × endpoint × 200/403) | **R1+R2: READ+WRITE matrica IMPLEMENTED** (rola×endpoint×200/403/201; WRITE vs REPORT gate; route ordering novih literala; DTO/param 400; AUTHZ_ENFORCE=true; 191 e2e) |
+| 47 | Idempotencija mutacija (clientEventId / rev_api_idempotency obrazac) | **R2: BE IMPLEMENTED** (`runIdempotentRls` clientEventId na svim „create" POST-ovima; PATCH/PUT/DELETE/RPC idempotentni bez ključa) |
 | 48 | Živi smoke: pun ciklus (QR sken → prijava kvara → auto-WO → dodela → delovi/rad → završen → izveštaj) | NOT_STARTED |
 
 ### 5.1 R1 (BE read sloj) — status 2026-07-13 (`src/modules/odrzavanje/`)
@@ -439,6 +439,49 @@ WHERE-ovi validni). Schema-pin test hvata ovu klasu ubuduće bez žive baze.
 RPC (create/archive/restore/ensure/import/rename/delete-hard/retry/preventive-WO/check-deadlines),
 storage-proxy (§7.4), foto incidenta kroz `maint_attach_incident_files` (§7.3), idempotencija,
 INSERT-bez-representation=201 (§7.6), write e2e matrica, verifikacija trigera (auto-WO/wo_number/audit).
+
+### 5.2 R2 (BE mutacioni sloj) — status 2026-07-14 (`src/modules/odrzavanje/`)
+
+R2 = **SVE mutacije** (BE), sve kroz `Sy15Service.withUserRls` (idempotentni PATCH/PUT/DELETE/RPC)
+ili `runIdempotentRls` (clientEventId na „create" POST-ovima) → GUC sub+email + `SET LOCAL ROLE
+authenticated` → 102 RLS politike + RPC guardovi presuđuju red **po konstrukciji** (scope se NE
+duplira u TS). RLS-filtrovan UPDATE/DELETE (0 redova) → `assertAffected` razdvaja 404 od 403.
+
+**Isporučeno (`odrzavanje.service.ts` + `odrzavanje.controller.ts` + `dto/odrzavanje-mutation.dto.ts`):**
+- **REST paritet upisi** (kroz Prisma delegat pod GUC/RLS): mašine katalog CRUD+arhiva/restore
+  (#16), status-override set/clear (#9), napomene 24h (#6), preventiva šabloni CRUD (#8) + kontrole
+  (#4), incidenti prijava (#10, **F6 INSERT-bez-RETURNING** — `auth.uid()`, app-id) + tok/events
+  (#11), WO CRUD+kanban (#13,#14) + events/parts/labor (#15), vozila details/toll-tag/shelf upsert
+  (#22) + gume (#25) + servisni plan (#24) + delovi po vozilu (#26) + carpool (#27) + vlasnici,
+  vozači CRUD/arhiva PII (#28), IT/objekti details upsert (#29,#30) + servisni plan (#31),
+  zalihe delovi/dobavljači + insert-only ledger (#35), CMMS lokacije (#20), dokumenta CRUD (#36),
+  settings singleton (#38) + notif pravila (#38).
+- **16(+1) front RPC endpointa**: import (`maint_machines_import_from_cache`), rename
+  (`maint_machine_rename`), hard-delete (`maint_machine_delete_hard` + **BE storage cleanup PRE
+  RPC-a**, #19), preventive-WO (`maint_create_preventive_work_order`), create/archive/restore
+  vozila/IT/objekata (6 RPC, #23,#29,#30), ensure vehicle/asset service WO (#24,#31), ručni
+  deadline-check (`maint_check_vehicle_deadlines`), notif retry (`maint_notification_retry` —
+  **dispatch OSTAJE MRTAV, F1**), foto incidenta (`maint_attach_incident_files`, **#43/F3**).
+- **Storage proxy F4** (§7.4): upload (meta PRE bajtova; rollback meta ako upload padne) / sign
+  (300s, RLS SELECT presuđuje PRE potpisa) / soft-delete (best-effort remove bajtova); putanje
+  1.0-kompatibilne; fajlovi mašine + dokumenta (#7,#36,#44).
+- **Idempotencija** (#47): `clientEventId` (uuid) obavezan na svim „create" POST-ovima; dupli
+  klik/retry ≠ dupli upis (dijeli `rev_api_idempotency` obrazac).
+- **Autorizacija endpointa**: klasa `odrzavanje.read`; metod-nivo eskalira → `odrzavanje.write`
+  (mutacije, coarse gate) ili → `odrzavanje.report` (prijava kvara + foto = opšte pravo, F6/F3).
+  Stvarnu row-odluku donosi sy15 RLS/RPC.
+- **Testovi**: schema-pin proširen (RPC potpisi/return, ::enum castovi, INSERT tabele, dinamički
+  Prisma.raw fn-literali — sve protiv authz-snapshot žive šeme; 10 pin testova); e2e write/report
+  matrica (rola×endpoint×200/403/201, REPORT≠WRITE, route ordering novih literala, DTO/param 400 —
+  **191 e2e**); unit servisa (constructor + storage stub). `tsc --noEmit` + `nest build` zeleni.
+- **Schema-verifikacija (adversarni, pre koda)**: svih 16 RPC potpisa + RETURNS, raw INSERT kolone
+  (`maint_incidents`/`maint_machines`), 3 enum tipa, i PK field-imena (updateMany/deleteMany where)
+  provereni protiv `authz-snapshots/talasF-fn-defs-2026-07-12.sql` + `prisma/sy15.prisma` (živa
+  information_schema) — **0 neusklađenosti** (klasa 2 CRITICAL kolone iz R1 review-a ne ponavlja se).
+
+**TODO (R3+):** sav FE (23 sekcije), profili održavanja admin mutacije (#40 — SoD guard netaknut),
+verifikacija trigera kroz živi upis (auto-WO/wo_number/auto-notify/audit, #12), mobilni + QR (#41,#42),
+živi smoke pun ciklus (#48). Trigeri se NE dupliraju u BE — samo se ponašanje verifikuje na R4.
 
 ## 6. Redosled izvođenja (R-faze za CEO talas)
 
