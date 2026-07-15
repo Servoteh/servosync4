@@ -260,4 +260,10 @@ export class PlanMontazeController {
   lookupDrawings(@Req() req: AuthedRequest, @Query() q: DrawingsLookupQueryDto) {
     return this.montaza.lookupDrawings(req.user.email, q.codes);
   }
+
+  /** Presigned URL crteža iz bigtehn keša (chip „Veza sa crtežima"; gate can_read_production_drawings). */
+  @Get("lookups/drawings/sign")
+  drawingSign(@Req() req: AuthedRequest, @Query("code") code: string) {
+    return this.montaza.drawingSignUrl(req.user.email, code ?? "");
+  }
 }

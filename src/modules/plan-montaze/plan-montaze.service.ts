@@ -1,9 +1,11 @@
 import {
+  BadRequestException,
   ForbiddenException,
   Injectable,
   NotFoundException,
   UnprocessableEntityException,
 } from "@nestjs/common";
+import { sanitizeDrawingNo } from "../../common/drawings";
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
@@ -37,6 +39,8 @@ import {
 } from "./montaza-ai";
 
 const MONTAZA_BUCKET = "montaza-izvestaji";
+const BIGTEHN_DRAWINGS_BUCKET = "bigtehn-drawings";
+const DRAWING_SIGNED_URL_TTL = 300;
 
 type ProjectRow = {
   id: string;
@@ -264,6 +268,48 @@ export class PlanMontazeService {
       }));
       return { data };
     });
+  }
+
+  /**
+   * Presigned URL crteža iz bigtehn keša (chip „Veza sa crtežima" u fazi). Isti obrazac
+   * kao plan-proizvodnje.bigtehnDrawingSignUrl (SPEC §3 „lookups/drawings + signed URL"):
+   * sanitizacija broja + revizija fallback (`{broj}_A/B`), gate `can_read_production_drawings`
+   * (SPEC §2-5 — pogon ne vidi IP crteže). Bucket `bigtehn-drawings` (deljen sa PP/Lokacije).
+   */
+  async drawingSignUrl(email: string, code: string) {
+    const clean = sanitizeDrawingNo(code);
+    if (!clean) throw new BadRequestException("Neispravan broj crteža.");
+    const path = await this.read(email, async (tx) => {
+      await this.assertCanReadDrawings(tx);
+      const exact = await tx.$queryRaw<{ storage_path: string }[]>(
+        Prisma.sql`SELECT storage_path FROM bigtehn_drawings_cache
+          WHERE drawing_no = ${clean} AND removed_at IS NULL LIMIT 1`,
+      );
+      if (exact[0]?.storage_path) return exact[0].storage_path;
+      const cands = await tx.$queryRaw<{ drawing_no: string; storage_path: string }[]>(
+        Prisma.sql`SELECT drawing_no, storage_path FROM bigtehn_drawings_cache
+          WHERE drawing_no LIKE ${clean + "%"} AND removed_at IS NULL
+          ORDER BY drawing_no DESC LIMIT 50`,
+      );
+      const hit = cands.find(
+        (c) => c.drawing_no === clean || c.drawing_no.startsWith(clean + "_"),
+      );
+      if (!hit?.storage_path) throw new NotFoundException(`Crtež ${clean} nije u kešu.`);
+      return hit.storage_path;
+    });
+    return {
+      data: await this.storage.signUrl(BIGTEHN_DRAWINGS_BUCKET, path, DRAWING_SIGNED_URL_TTL),
+    };
+  }
+
+  /** Gate za PDF crteža (storage.objects politika u DB) — proveravamo mi (service ključ zaobilazi RLS). */
+  private async assertCanReadDrawings(tx: Sy15Tx): Promise<void> {
+    const rows = await tx.$queryRaw<{ ok: boolean }[]>(
+      Prisma.sql`SELECT can_read_production_drawings() AS ok`,
+    );
+    if (!rows[0]?.ok) {
+      throw new ForbiddenException("Nemate pravo na PDF crteža.");
+    }
   }
 
   // ==========================================================================
