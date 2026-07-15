@@ -234,6 +234,10 @@ export class WorkOrderPrintService {
       head.push("Barkod");
       widths.push(140);
     }
+    // Prostor za potpis kontrolora — poslednja kolona, desno od barkoda; jedan
+    // potpisni prostor po operaciji (parity sa legacy rRN „Kontrola" kolonom, §4).
+    head.push("Kontrola");
+    widths.push(92);
     const headerCells: Content[] = head.map((t) => ({ text: t, style: "th" }));
 
     const bodyRows: Content[][] = wo.operations.map((o) => {
@@ -269,6 +273,8 @@ export class WorkOrderPrintService {
           opSvg ? { svg: opSvg, fit: [136, 30] } : { text: "—", style: "td" },
         );
       }
+      // Prazan prostor — kontrolor overava (potpisuje) svaku operaciju.
+      cells.push({ text: "", style: "td" });
       return cells;
     });
 
@@ -279,8 +285,11 @@ export class WorkOrderPrintService {
           // su se žalili da su preblizu i da omaše sken (Nenad 15.07).
           layout: {
             hLineWidth: (i: number) => (i <= 1 ? 0.8 : 0.5),
-            vLineWidth: () => 0,
+            // Vertikalna linija samo levo od kolone „Kontrola" (poslednja) —
+            // vizuelno odvaja potpisni prostor.
+            vLineWidth: (i: number) => (i === widths.length - 1 ? 0.5 : 0),
             hLineColor: () => "#cccccc",
+            vLineColor: () => "#aaaaaa",
             paddingTop: (i: number) => (i === 0 ? 2 : 7),
             paddingBottom: (i: number) => (i === 0 ? 2 : 7),
             paddingLeft: () => 4,

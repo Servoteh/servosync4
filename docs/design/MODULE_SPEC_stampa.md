@@ -74,7 +74,8 @@ tehnolog (preko `worker`). → nosi **`RNZ` barkod** (§3.1).
 **Detalj (iz `work_order_operations`, jedan red = jedna operacija):** `operationNumber`, `workCenterCode`
 (+ naziv radnog centra iz `Operation` šifarnika), `workDescription` (OpisRada), `setupTime` (Tpz), `cycleTime` (Tk),
 `Ukupno = Tpz + Tk×Komada`, alat/pribor *(proveriti kolonu u `work_order_operations`)*. → svaki red nosi **`S`
-barkod** (§3.2).
+barkod** (§3.2) i **praznu „Kontrola" kolonu** (poslednja, desno od barkoda) — jedan potpisni prostor po operaciji za
+potpis kontrolora (parity sa legacy `rRN` „Kontrola" kolonom).
 
 **Varijante (kao legacy):**
 - `rRN` (standard, sa barkodovima) — podrazumevano.
