@@ -1,23 +1,31 @@
 'use client';
 
+// Plan montaže + izveštaji montera — 3.0 TALAS C (MODULE_SPEC_planovi_pracenje_30.md §3).
+// Podaci žive u sy15 (1.0) bazi; BE vraća DVA oblika (paritet Reversi):
+//   • Prisma modeli (tree WP/faze, report detalj+fotke) → camelCase,
+//   • raw SQL (pb_list_projects, lista izveštaja, lookupi) → snake_case kolone.
+// Komponente NIKAD ne zovu apiFetch direktno — samo ovi TanStack Query hook-ovi (CLAUDE.md §8).
+
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch, apiUpload } from './client';
 
-// ============================================================================
-// Plan montaže + izveštaji montera — 3.0 TALAS C (MODULE_SPEC_planovi_pracenje_30.md §3).
-// Data sloj: TanStack Query hooks nad NestJS `/v1/montaza/*`. Podaci žive u sy15 (1.0)
-// bazi. BE vraća DVA oblika:
-//   • lista projekata iz `pb_list_projects()` (snake_case ProjectRow),
-//   • WP/faze/izveštaji-detalj/fotke = Prisma modeli (camelCase).
-// Lista izveštaja je snake_case (raw SELECT). Idempotentni POST (kreiranje izveštaja)
-// nosi klijentski UUID `id` — retry ISTE akcije nosi ISTI ključ. Row-nivo (has_edit_role
-// project-scope, autor-scope) presuđuje sy15 kroz withUserRls — FE ga NE duplira.
-// ============================================================================
+// ------------------------------------------------------------------ helpers
 
-const BASE = '/v1/montaza';
+function qs(params: Record<string, string | number | boolean | undefined>): string {
+  const sp = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== '') sp.set(k, String(v));
+  }
+  const s = sp.toString();
+  return s ? `?${s}` : '';
+}
 
-/** Idempotency/klijentski UUID (crypto.randomUUID uz fallback za ne-secure LAN). */
-export function newClientId(): string {
+/**
+ * Klijentski UUID = idempotency ključ (izveštaji POST, doktrina A4). `crypto.randomUUID`
+ * postoji SAMO u secure context-u (https/localhost); na LAN http padamo na getRandomValues.
+ * (Isti mehanizam kao api/reversi.ts newClientEventId.)
+ */
+export function newClientEventId(): string {
   const c = globalThis.crypto;
   if (typeof c?.randomUUID === 'function') return c.randomUUID();
   const b = new Uint8Array(16);
@@ -28,42 +36,17 @@ export function newClientId(): string {
   return `${h[0]}${h[1]}${h[2]}${h[3]}-${h[4]}${h[5]}-${h[6]}${h[7]}-${h[8]}${h[9]}-${h[10]}${h[11]}${h[12]}${h[13]}${h[14]}${h[15]}`;
 }
 
-function qs(params: Record<string, string | number | boolean | undefined | null>): string {
-  const sp = new URLSearchParams();
-  for (const [k, v] of Object.entries(params)) {
-    if (v !== undefined && v !== null && v !== '') sp.set(k, String(v));
-  }
-  const s = sp.toString();
-  return s ? `?${s}` : '';
-}
+const KEYS = {
+  tree: ['montaza', 'tree'] as const,
+  reports: ['montaza', 'reports'] as const,
+  aiModel: ['montaza', 'ai-model'] as const,
+  lookups: ['montaza', 'lookups'] as const,
+};
 
-export interface TxResponse<T = unknown> {
-  data: T;
-  meta?: Record<string, unknown>;
-}
-export interface SignedUrl {
-  url: string;
-  expiresIn: number;
-}
+// ------------------------------------------------------------------ tipovi (read)
 
-// ------------------------------------------------------------------ tipovi
-
-/** Red iz `pb_list_projects()` (snake_case). */
-export interface PmProjectRow {
-  id: string;
-  project_code: string;
-  project_name: string;
-  status: string | null;
-  predmet_item_id: number | null;
-  projectm: string | null;
-  project_deadline: string | null;
-  pm_email: string | null;
-  leadpm_email: string | null;
-  reminder_enabled: boolean | null;
-}
-
-/** Faza (Prisma model PmPhase — camelCase). `checks` = 8×bool; `linkedDrawings` = string[]. */
-export interface PmPhase {
+/** Faza (Prisma model → camelCase; `checks`/`linkedDrawings` su Json u bazi). */
+export interface MontazaPhase {
   id: string;
   projectId: string;
   workPackageId: string;
@@ -84,13 +67,12 @@ export interface PmPhase {
   linkedDrawings: string[] | null;
   actualStartDate: string | null;
   actualEndDate: string | null;
-  createdAt: string | null;
-  updatedAt: string | null;
   updatedBy: string | null;
+  updatedAt: string | null;
 }
 
-/** Nalog montaže (WP, Prisma PmWorkPackage — camelCase) + ugnežđene faze. */
-export interface PmWorkPackage {
+/** Nalog montaže (work package). */
+export interface MontazaWorkPackage {
   id: string;
   projectId: string;
   rnCode: string | null;
@@ -103,15 +85,26 @@ export interface PmWorkPackage {
   sortOrder: number | null;
   isActive: boolean | null;
   assemblyDrawingNo: string;
-  createdAt: string | null;
-  updatedAt: string | null;
-  phases: PmPhase[];
+  phases: MontazaPhase[];
 }
 
-export type PmProjectTree = PmProjectRow & { workPackages: PmWorkPackage[] };
+/** Projekat (pb_list_projects → snake_case) + ugnježdeni WP/faze. */
+export interface MontazaProjectNode {
+  id: string;
+  project_code: string;
+  project_name: string;
+  status: string | null;
+  predmet_item_id: number | null;
+  projectm: string | null;
+  project_deadline: string | null;
+  pm_email: string | null;
+  leadpm_email: string | null;
+  reminder_enabled: boolean | null;
+  workPackages: MontazaWorkPackage[];
+}
 
-/** Red liste izveštaja montera (raw SELECT — snake_case). */
-export interface ReportRow {
+/** Red liste izveštaja (raw SQL → snake_case). */
+export interface IzvestajRow {
   id: string;
   broj_izvestaja: string | null;
   status: string;
@@ -134,8 +127,8 @@ export interface ReportRow {
   created_at: string;
 }
 
-/** Fotka izveštaja (Prisma PmIzvestajFoto — camelCase). */
-export interface ReportFoto {
+/** Foto izveštaja (Prisma → camelCase). */
+export interface IzvestajFoto {
   id: string;
   izvestajId: string;
   redniBroj: number;
@@ -146,8 +139,8 @@ export interface ReportFoto {
   createdAt: string;
 }
 
-/** Detalj izveštaja (Prisma PmIzvestaj — camelCase) + fotke. */
-export interface ReportDetail {
+/** Detalj izveštaja (Prisma → camelCase) + fotke. */
+export interface IzvestajDetail {
   id: string;
   brojIzvestaja: string | null;
   status: string;
@@ -171,18 +164,126 @@ export interface ReportDetail {
   pdfNaziv: string | null;
   createdAt: string;
   finalizedAt: string | null;
-  updatedAt: string;
-  fotke: ReportFoto[];
+  fotke: IzvestajFoto[];
 }
 
-export interface AiModelSetting {
+export interface AiModelRow {
   id: number;
   model: string;
   updated_at: string;
   updated_by: string | null;
 }
 
-/** Red predmet-lookup-a (bigtehn_items_cache + short komitent). */
+/** Red predmet lookup-a (bigtehn_items_cache + kratki naziv komitenta). */
+export interface PredmetOption {
+  id: number;
+  broj_predmeta: string | null;
+  naziv_predmeta: string | null;
+  opis: string | null;
+  status: string | null;
+  department_code: string | null;
+  broj_ugovora: string | null;
+  broj_narudzbenice: string | null;
+  rok_zavrsetka: string | null;
+  datum_zakljucenja: string | null;
+  customer_id: number | null;
+  customer_name: string | null;
+}
+
+/** Exists-check crteža. */
+export interface DrawingExists {
+  drawing_no: string;
+  exists: boolean;
+  storage_path: string | null;
+  file_name: string | null;
+}
+
+export interface ReportsParams {
+  status?: string;
+  q?: string;
+  limit?: number;
+}
+
+// ------------------------------------------------------------------ queries
+
+/** Celo stablo projekat→WP→faze (pb_list_projects ⋈ aktivacija; jedan poziv, bez N+1). */
+export function useMontazaTree() {
+  return useQuery({
+    queryKey: KEYS.tree,
+    queryFn: () => apiFetch<{ data: MontazaProjectNode[] }>('/v1/montaza/projects?include=tree'),
+  });
+}
+
+/** Lista izveštaja montera (filter status + q pretraga po 6 polja). */
+export function useMontazaReports(params: ReportsParams) {
+  return useQuery({
+    queryKey: [...KEYS.reports, params],
+    queryFn: () => apiFetch<{ data: IzvestajRow[] }>(`/v1/montaza/reports${qs({ ...params })}`),
+  });
+}
+
+/** Detalj izveštaja + fotke (meta). */
+export function useMontazaReport(id: string | null) {
+  return useQuery({
+    queryKey: [...KEYS.reports, 'detail', id],
+    enabled: !!id,
+    queryFn: () => apiFetch<{ data: IzvestajDetail }>(`/v1/montaza/reports/${id}`),
+  });
+}
+
+/** Model za AI strukturiranje izveštaja (singleton). */
+export function useMontazaAiModel() {
+  return useQuery({
+    queryKey: KEYS.aiModel,
+    queryFn: () => apiFetch<{ data: AiModelRow | null }>('/v1/montaza/ai-model'),
+  });
+}
+
+/** Pretraga predmeta (Poveži predmet picker). onlyActive default false (paritet 1.0). */
+export function useMontazaPredmetLookup(q: string, onlyActive = false) {
+  return useQuery({
+    queryKey: [...KEYS.lookups, 'predmeti', q, onlyActive],
+    enabled: q.trim().length >= 2,
+    queryFn: () =>
+      apiFetch<{ data: PredmetOption[] }>(
+        `/v1/montaza/lookups/predmeti${qs({ q, onlyActive: onlyActive ? '1' : undefined })}`,
+      ),
+  });
+}
+
+// Imperativni GET-ovi (on-demand: signed URL-ovi + exists-check).
+
+/** Presigned URL fotke (po foto id-ju). */
+export function fetchPhotoSignedUrl(photoId: string): Promise<{ data: { url: string; expiresIn?: number } }> {
+  return apiFetch(`/v1/montaza/reports/photo/${photoId}/sign`);
+}
+
+/** Presigned URL PDF-a izveštaja. */
+export function fetchReportPdfUrl(id: string): Promise<{ data: { url: string; expiresIn?: number } }> {
+  return apiFetch(`/v1/montaza/reports/${id}/pdf`);
+}
+
+/** Exists-check + putanje za listu brojeva crteža (zarezom razdvojeni). */
+export function fetchDrawingsExists(codes: string[]): Promise<{ data: DrawingExists[] }> {
+  return apiFetch(`/v1/montaza/lookups/drawings${qs({ codes: codes.join(',') })}`);
+}
+
+/** Presigned URL PDF-a crteža iz bigtehn keša (gate can_read_production_drawings). */
+export function fetchDrawingSignedUrl(code: string): Promise<{ data: string }> {
+  return apiFetch(`/v1/montaza/lookups/drawings/sign${qs({ code })}`);
+}
+
+// ------------------------------------------------------------------ kompatibilnost
+// Spoljni potrošači montaza predmet-lookup-a (kadrovska grid picker/teren, lokacije
+// štampa) i idempotency ključa (plan-proizvodnje) uvoze ove nazive iz @/api/plan-montaze.
+// Zadržavamo ih kao aliase na kanonske (PredmetOption / newClientEventId) da objedinjavanje
+// montaže ne polomi te module.
+
+/**
+ * Predmet-lookup red za spoljne potrošače (kadrovska/lokacije). Oblik identičan ranijem
+ * montaža `PredmetLookup` — `broj_predmeta` je non-null (predmet uvek ima broj), za razliku
+ * od internog PredmetOption. Zadržava kompatibilnost sa modulima pisanim protiv tog tipa.
+ */
 export interface PredmetLookup {
   id: number;
   broj_predmeta: string;
@@ -198,138 +299,27 @@ export interface PredmetLookup {
   customer_name: string | null;
 }
 
-export interface DrawingLookup {
-  drawing_no: string;
-  exists: boolean;
-  storage_path: string | null;
-  file_name: string | null;
-}
+/** Alias idempotency ključa — koristi ga plan-proizvodnje (reassign clientEventId). */
+export const newClientId = newClientEventId;
 
-/** Rezultat AI strukturiranja (port edge montaza-izvestaj-ai). */
-export interface AiGenerateOut {
-  datum: string;
-  predmet: string;
-  naziv_projekta: string;
-  klijent: string;
-  lokacija: string;
-  pocetak_rada: string;
-  kraj_rada: string;
-  opis_radova: string;
-  problemi: string;
-  otvorene_stavke: string;
-  status: string;
-  dodatni_clanovi_tima: string[];
-  fotodokumentacija: Array<{ redni_broj: number; opis: string }>;
-  predmet_item_id: number | null;
-  nedostajuci_podaci: string[];
-}
-
-export const MONTAZA_STATUS_LABELS: Record<string, string> = {
-  zavrseno: 'Završeno',
-  delimicno: 'Delimično',
-  u_toku: 'U toku',
-  ceka_materijal: 'Čeka materijal',
-  ceka_potvrdu: 'Čeka potvrdu',
-  dodatna_intervencija: 'Dodatna intervencija',
-};
-
-export const MONTAZA_AI_MODELS = ['claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5'];
-
-// ------------------------------------------------------------------ query keys
-
-const KEYS = {
-  all: ['montaza'] as const,
-  projects: ['montaza', 'projects'] as const,
-  reports: ['montaza', 'reports'] as const,
-  report: (id: string) => ['montaza', 'reports', id] as const,
-  aiModel: ['montaza', 'ai-model'] as const,
-};
-
-// ------------------------------------------------------------------ queries
-
-export function useProjectsTree() {
-  return useQuery({
-    queryKey: KEYS.projects,
-    queryFn: () => apiFetch<{ data: PmProjectTree[] }>(`${BASE}/projects?include=tree`),
-  });
-}
-
-export interface ReportsParams {
-  status?: string;
-  q?: string;
-  limit?: number;
-}
-export function useReports(params: ReportsParams = {}) {
-  return useQuery({
-    queryKey: [...KEYS.reports, params],
-    queryFn: () => apiFetch<{ data: ReportRow[] }>(`${BASE}/reports${qs({ ...params })}`),
-  });
-}
-
-export function useReportDetail(id: string | null) {
-  return useQuery({
-    queryKey: id ? KEYS.report(id) : ['montaza', 'reports', 'none'],
-    enabled: !!id,
-    queryFn: () => apiFetch<{ data: ReportDetail }>(`${BASE}/reports/${id}`),
-  });
-}
-
-export function fetchReportPdfUrl(id: string): Promise<{ data: SignedUrl }> {
-  return apiFetch<{ data: SignedUrl }>(`${BASE}/reports/${id}/pdf`);
-}
-export function fetchPhotoUrl(photoId: string): Promise<{ data: SignedUrl }> {
-  return apiFetch<{ data: SignedUrl }>(`${BASE}/reports/photo/${photoId}/sign`);
-}
-
-export function useAiModel() {
-  return useQuery({
-    queryKey: KEYS.aiModel,
-    queryFn: () => apiFetch<{ data: AiModelSetting | null }>(`${BASE}/ai-model`),
-  });
-}
-
-/** Predmet-lookup hook za ComboBox (default vraća i zatvorene — paritet montaža picker). */
+/**
+ * Predmet-lookup bez enabled-guarda (paritet ranijeg montaža pickera; fira i za prazan/kratak
+ * upit → recent 50). Kadrovska grid/teren + lokacije štampa zavise od ovog ponašanja.
+ */
 export function usePredmetiLookup(q: string, onlyActive = false) {
   return useQuery({
-    queryKey: ['montaza', 'lookup-predmeti', q, onlyActive],
+    queryKey: [...KEYS.lookups, 'predmeti-compat', q, onlyActive],
     queryFn: () =>
       apiFetch<{ data: PredmetLookup[] }>(
-        `${BASE}/lookups/predmeti${qs({ q, onlyActive: onlyActive ? '1' : '' })}`,
+        `/v1/montaza/lookups/predmeti${qs({ q, onlyActive: onlyActive ? '1' : undefined })}`,
       ),
   });
 }
 
-/** Exists-check + storage_path za listu brojeva crteža (CSV). */
-export function fetchDrawingsLookup(codes: string[]): Promise<{ data: DrawingLookup[] }> {
-  return apiFetch<{ data: DrawingLookup[] }>(`${BASE}/lookups/drawings${qs({ codes: codes.join(',') })}`);
-}
+// ------------------------------------------------------------------ mutacije: PM CRUD
+// Upsert-po-id (paritet 1.0 buildXPayload); row-odluka has_edit_role presuđuje sy15 (403).
 
-// ------------------------------------------------------------------ mutations
-
-function useMontazaMutation<V, R = unknown>(fn: (v: V) => Promise<R>, invalidate: readonly unknown[] = KEYS.all) {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: fn,
-    onSuccess: () => void qc.invalidateQueries({ queryKey: invalidate }),
-  });
-}
-
-function post<T = unknown>(path: string, body?: object): Promise<TxResponse<T>> {
-  return apiFetch<TxResponse<T>>(`${BASE}${path}`, { method: 'POST', body: body ? JSON.stringify(body) : undefined });
-}
-function patch<T = unknown>(path: string, body: object): Promise<TxResponse<T>> {
-  return apiFetch<TxResponse<T>>(`${BASE}${path}`, { method: 'PATCH', body: JSON.stringify(body) });
-}
-function put<T = unknown>(path: string, body: object): Promise<TxResponse<T>> {
-  return apiFetch<TxResponse<T>>(`${BASE}${path}`, { method: 'PUT', body: JSON.stringify(body) });
-}
-function del<T = unknown>(path: string): Promise<TxResponse<T>> {
-  return apiFetch<TxResponse<T>>(`${BASE}${path}`, { method: 'DELETE' });
-}
-
-/* ── Projekti ── */
-
-export interface ProjectInput {
+export interface UpsertProjectVars {
   id?: string;
   projectCode: string;
   projectName: string;
@@ -339,19 +329,11 @@ export interface ProjectInput {
   leadpmEmail?: string;
   status?: string;
 }
-export const useUpsertProject = () =>
-  useMontazaMutation<ProjectInput>((v) => post('/projects', v), KEYS.projects);
-export const useUpdateProject = () =>
-  useMontazaMutation<{ id: string; patch: Partial<Omit<ProjectInput, 'id'>> }>(
-    (v) => patch(`/projects/${v.id}`, v.patch),
-    KEYS.projects,
-  );
-export const useDeleteProject = () =>
-  useMontazaMutation<{ id: string }>((v) => del(`/projects/${v.id}`), KEYS.projects);
+export interface UpdateProjectVars extends Partial<Omit<UpsertProjectVars, 'id'>> {
+  id: string;
+}
 
-/* ── Nalozi montaže (WP) ── */
-
-export interface WorkPackageInput {
+export interface UpsertWorkPackageVars {
   id?: string;
   projectId: string;
   rnCode?: string;
@@ -364,23 +346,12 @@ export interface WorkPackageInput {
   isActive?: boolean;
   assemblyDrawingNo?: string;
 }
-export const useUpsertWorkPackage = () =>
-  useMontazaMutation<WorkPackageInput>((v) => post('/work-packages', v), KEYS.projects);
-export const useUpdateWorkPackage = () =>
-  useMontazaMutation<{ id: string; patch: Partial<Omit<WorkPackageInput, 'id' | 'projectId'>> }>(
-    (v) => patch(`/work-packages/${v.id}`, v.patch),
-    KEYS.projects,
-  );
-export const useDeleteWorkPackage = () =>
-  useMontazaMutation<{ id: string }>((v) => del(`/work-packages/${v.id}`), KEYS.projects);
+export interface UpdateWorkPackageVars extends Partial<Omit<UpsertWorkPackageVars, 'id' | 'projectId'>> {
+  id: string;
+}
 
-/* ── Faze ── */
-
-export interface PhaseInput {
-  id?: string;
-  projectId: string;
-  workPackageId: string;
-  phaseName: string;
+export interface PhaseFields {
+  phaseName?: string;
   location?: string;
   startDate?: string | null;
   endDate?: string | null;
@@ -392,26 +363,100 @@ export interface PhaseInput {
   blocker?: string;
   note?: string;
   sortOrder?: number;
-  phaseType?: string;
+  phaseType?: 'mechanical' | 'electrical';
   description?: string;
   linkedDrawings?: string[];
   actualStartDate?: string | null;
   actualEndDate?: string | null;
 }
-export const useUpsertPhase = () =>
-  useMontazaMutation<PhaseInput, TxResponse<PmPhase>>((v) => post<PmPhase>('/phases', v), KEYS.projects);
-export const useUpdatePhase = () =>
-  useMontazaMutation<{ id: string; patch: Partial<Omit<PhaseInput, 'id' | 'projectId' | 'workPackageId'>> }>(
-    (v) => patch(`/phases/${v.id}`, v.patch),
-    KEYS.projects,
+export interface UpsertPhaseVars extends PhaseFields {
+  id?: string;
+  projectId: string;
+  workPackageId: string;
+  phaseName: string;
+}
+export interface UpdatePhaseVars extends PhaseFields {
+  id: string;
+}
+
+function useMontazaMutation<V, R = { data: unknown }>(
+  fn: (v: V) => Promise<R>,
+) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['montaza'] }),
+  });
+}
+
+export const useUpsertProject = () =>
+  useMontazaMutation((v: UpsertProjectVars) =>
+    apiFetch<{ data: MontazaProjectNode }>('/v1/montaza/projects', {
+      method: 'POST',
+      body: JSON.stringify(v),
+    }),
   );
+
+export const useUpdateProject = () =>
+  useMontazaMutation(({ id, ...body }: UpdateProjectVars) =>
+    apiFetch<{ data: { id: string } }>(`/v1/montaza/projects/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  );
+
+export const useDeleteProject = () =>
+  useMontazaMutation((id: string) =>
+    apiFetch<{ data: { id: string } }>(`/v1/montaza/projects/${id}`, { method: 'DELETE' }),
+  );
+
+export const useUpsertWorkPackage = () =>
+  useMontazaMutation((v: UpsertWorkPackageVars) =>
+    apiFetch<{ data: MontazaWorkPackage }>('/v1/montaza/work-packages', {
+      method: 'POST',
+      body: JSON.stringify(v),
+    }),
+  );
+
+export const useUpdateWorkPackage = () =>
+  useMontazaMutation(({ id, ...body }: UpdateWorkPackageVars) =>
+    apiFetch<{ data: { id: string } }>(`/v1/montaza/work-packages/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  );
+
+export const useDeleteWorkPackage = () =>
+  useMontazaMutation((id: string) =>
+    apiFetch<{ data: { id: string } }>(`/v1/montaza/work-packages/${id}`, { method: 'DELETE' }),
+  );
+
+export const useUpsertPhase = () =>
+  useMontazaMutation((v: UpsertPhaseVars) =>
+    apiFetch<{ data: MontazaPhase }>('/v1/montaza/phases', {
+      method: 'POST',
+      body: JSON.stringify(v),
+    }),
+  );
+
+export const useUpdatePhase = () =>
+  useMontazaMutation(({ id, ...body }: UpdatePhaseVars) =>
+    apiFetch<{ data: { id: string } }>(`/v1/montaza/phases/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  );
+
 export const useDeletePhase = () =>
-  useMontazaMutation<{ id: string }>((v) => del(`/phases/${v.id}`), KEYS.projects);
+  useMontazaMutation((id: string) =>
+    apiFetch<{ data: { id: string } }>(`/v1/montaza/phases/${id}`, { method: 'DELETE' }),
+  );
 
-/* ── Izveštaji montera ── */
+// ------------------------------------------------------------------ mutacije: izveštaji
 
+/** jsonb payload izveštaja (paritet 1.0 sacuvajIzvestaj); `id` = klijentski UUID (idempotencija). */
 export interface CreateReportVars {
-  id: string; // klijentski UUID (idempotencija)
+  id: string;
   status?: string;
   datum?: string;
   predmetItemId?: number | null;
@@ -430,8 +475,15 @@ export interface CreateReportVars {
   aiModel?: string;
   aiJson?: Record<string, unknown>;
 }
+
+/** Kreiranje izveštaja — idempotentno preko `id`. Odgovor: {data, meta:{idempotent}}. */
 export const useCreateReport = () =>
-  useMontazaMutation<CreateReportVars, TxResponse<ReportDetail>>((v) => post<ReportDetail>('/reports', v), KEYS.reports);
+  useMontazaMutation((v: CreateReportVars) =>
+    apiFetch<{ data: unknown; meta: { idempotent: boolean } }>('/v1/montaza/reports', {
+      method: 'POST',
+      body: JSON.stringify(v),
+    }),
+  );
 
 export interface LinkPredmetVars {
   id: string;
@@ -440,46 +492,157 @@ export interface LinkPredmetVars {
   nazivProjekta?: string;
   klijent?: string;
 }
-export const useLinkPredmet = () =>
-  useMontazaMutation<LinkPredmetVars>((v) => {
-    const { id, ...body } = v;
-    return patch(`/reports/${id}/predmet`, body);
-  }, KEYS.reports);
 
-/** Foto upload (multipart; ciljani retry = pošalji SAMO neuspele sa njihovim `redni`). */
-export interface UploadPhotosResult {
-  total: number;
-  uploaded: number;
-  failed: number;
-  failedRedni: number[];
-}
-export const useUploadPhotos = () =>
-  useMontazaMutation<{ id: string; files: File[]; redni?: number[]; opisi?: string[] }, TxResponse<UploadPhotosResult>>(
-    (v) => {
-      const fd = new FormData();
-      for (const f of v.files) fd.append('files', f, f.name || 'foto.jpg');
-      if (v.redni?.length) fd.append('redni', v.redni.join(','));
-      if (v.opisi?.length) fd.append('opisi', JSON.stringify(v.opisi));
-      return apiUpload<TxResponse<UploadPhotosResult>>(`${BASE}/reports/${v.id}/photos`, fd);
-    },
-    KEYS.reports,
+/** Poveži/odveži predmet (prazan payload = odveži). */
+export const useLinkPredmet = () =>
+  useMontazaMutation(({ id, ...body }: LinkPredmetVars) =>
+    apiFetch<{ data: { id: string } }>(`/v1/montaza/reports/${id}/predmet`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
   );
 
-export const useUploadReportPdf = () =>
-  useMontazaMutation<{ id: string; blob: Blob }, TxResponse<{ pdfPath: string; pdfNaziv: string }>>((v) => {
-    const fd = new FormData();
-    fd.append('file', v.blob, `${v.id}.pdf`);
-    return apiUpload<TxResponse<{ pdfPath: string; pdfNaziv: string }>>(`${BASE}/reports/${v.id}/pdf`, fd);
-  }, KEYS.reports);
+/** Strukturisan AI izlaz (BE normalizeMontazaOut; datum=DD.MM.YYYY, vreme=HH:MM). */
+export interface MontazaAiOut {
+  datum: string;
+  predmet: string;
+  naziv_projekta: string;
+  klijent: string;
+  lokacija: string;
+  pocetak_rada: string;
+  kraj_rada: string;
+  opis_radova: string;
+  problemi: string;
+  otvorene_stavke: string;
+  status: string;
+  dodatni_clanovi_tima: string[];
+  fotodokumentacija: { redni_broj: number; opis: string }[];
+  predmet_item_id: number | null;
+  nedostajuci_podaci: string[];
+}
 
-/** AI strukturiranje — imperativno (bez keša). Fotke b64 bez data: prefiksa. */
-export function aiGenerate(vars: {
+/** AI strukturiranje slobodnog teksta + fotki (port edge). Fotke: base64 bez data: prefiksa. */
+export interface AiGenerateVars {
   tekst?: string;
   slike?: { media_type: string; data: string }[];
   dopune?: string[];
-}): Promise<TxResponse<AiGenerateOut>> {
-  return post<AiGenerateOut>('/reports/ai-generate', vars);
+}
+export const useAiGenerate = () =>
+  useMutation({
+    mutationFn: (v: AiGenerateVars) =>
+      apiFetch<{ data: MontazaAiOut; meta?: { model?: string } }>('/v1/montaza/reports/ai-generate', {
+        method: 'POST',
+        body: JSON.stringify(v),
+      }),
+  });
+
+/** Postavi AI model (admin). */
+export const useSetMontazaAiModel = () =>
+  useMontazaMutation((model: string) =>
+    apiFetch<{ data: AiModelRow }>('/v1/montaza/ai-model', {
+      method: 'PUT',
+      body: JSON.stringify({ model }),
+    }),
+  );
+
+/** Upload fotki izveštaja (multipart). `redni` = CSV rednih brojeva za ciljani retry. */
+export function useUploadReportPhotos() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      files,
+      redni,
+      opisi,
+    }: {
+      id: string;
+      files: File[];
+      redni?: string;
+      opisi?: string[];
+    }) => {
+      const fd = new FormData();
+      for (const f of files) fd.append('files', f, f.name);
+      if (redni) fd.append('redni', redni);
+      if (opisi) fd.append('opisi', JSON.stringify(opisi));
+      return apiUpload<{ data: unknown }>(`/v1/montaza/reports/${id}/photos`, fd);
+    },
+    onSuccess: (_r, v) => void qc.invalidateQueries({ queryKey: [...KEYS.reports, 'detail', v.id] }),
+  });
 }
 
-export const useSetAiModel = () =>
-  useMontazaMutation<{ model: string }>((v) => put('/ai-model', { model: v.model }), KEYS.aiModel);
+/** Upload PDF-a izveštaja (multipart, generisan na FE). */
+export function useUploadReportPdf() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, blob, fileName }: { id: string; blob: Blob; fileName?: string }) => {
+      const fd = new FormData();
+      fd.append('file', blob, fileName ?? `${id}.pdf`);
+      return apiUpload<{ data: { path: string } }>(`/v1/montaza/reports/${id}/pdf`, fd);
+    },
+    onSuccess: (_r, v) => void qc.invalidateQueries({ queryKey: [...KEYS.reports, 'detail', v.id] }),
+  });
+}
+
+// ------------------------------------------------------------------ normalizacija
+
+/**
+ * Sirova faza (Prisma read) → radni oblik za UI/pravila: `checks` = tačno 8 bool,
+ * `linkedDrawings` = string[], datumi = kanonsko 'YYYY-MM-DD', nullovi → '' / 0.
+ * (phase.ts pravila očekuju ovaj normalizovan oblik.)
+ */
+export interface PhaseVM {
+  id: string;
+  projectId: string;
+  workPackageId: string;
+  phaseName: string;
+  location: string;
+  startDate: string;
+  endDate: string;
+  responsibleEngineer: string;
+  montageLead: string;
+  status: number;
+  pct: number;
+  checks: boolean[];
+  blocker: string;
+  note: string;
+  sortOrder: number;
+  phaseType: 'mechanical' | 'electrical';
+  description: string;
+  linkedDrawings: string[];
+  actualStartDate: string;
+  actualEndDate: string;
+}
+
+function ymd(v: string | null): string {
+  if (!v) return '';
+  const s = String(v);
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[1]}-${m[2]}-${m[3]}` : '';
+}
+
+export function toPhaseVM(p: MontazaPhase): PhaseVM {
+  const checks = Array.isArray(p.checks) ? p.checks.slice(0, 8) : [];
+  while (checks.length < 8) checks.push(false);
+  return {
+    id: p.id,
+    projectId: p.projectId,
+    workPackageId: p.workPackageId,
+    phaseName: p.phaseName ?? '',
+    location: p.location ?? '',
+    startDate: ymd(p.startDate),
+    endDate: ymd(p.endDate),
+    responsibleEngineer: p.responsibleEngineer ?? '',
+    montageLead: p.montageLead ?? '',
+    status: p.status ?? 0,
+    pct: p.pct ?? 0,
+    checks: checks.map(Boolean),
+    blocker: p.blocker ?? '',
+    note: p.note ?? '',
+    sortOrder: p.sortOrder ?? 0,
+    phaseType: p.phaseType === 'electrical' ? 'electrical' : 'mechanical',
+    description: p.description ?? '',
+    linkedDrawings: Array.isArray(p.linkedDrawings) ? p.linkedDrawings : [],
+    actualStartDate: ymd(p.actualStartDate),
+    actualEndDate: ymd(p.actualEndDate),
+  };
+}

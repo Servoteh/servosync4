@@ -1,11 +1,13 @@
 'use client';
 
+// Mobilni „Novi izveštaj" (/m/izvestaj) — slobodan tekst + fotke → AI → preview → snimi + PDF.
+// Reuse punog wizarda (IzvestajWizard); po zatvaranju nazad na /m/montaza. Vidljivost = montaza.read.
+
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
-import { ReportCreate } from '../../montaza/_components/report-create';
+import { IzvestajWizard } from '../../montaza/_components/izvestaj-wizard';
 
-/** Mobilni „Novi izveštaj" (/m/izvestaj) — slobodan tekst + fotke → AI → snimi. Vidljivost = montaza.read. */
 export default function MobileIzvestajPage() {
   const { user, isLoading } = useAuth();
   const router = useRouter();
@@ -19,8 +21,8 @@ export default function MobileIzvestajPage() {
   }
 
   return (
-    <main className="min-h-screen bg-app">
-      <ReportCreate open onClose={() => router.push('/m/montaza')} />
+    <main className="min-h-screen bg-app p-3">
+      <IzvestajWizard onClose={() => router.push('/m/montaza')} />
     </main>
   );
 }
