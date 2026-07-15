@@ -648,6 +648,34 @@ export function useVacationEntitlements(params: { employeeId?: string; year?: nu
     queryFn: () => apiFetch<{ data: VacationEntitlement[] }>(`${BASE}/vacation/entitlements${qs({ ...params })}`),
   });
 }
+/** Jedinstveni presek GO po godinama iz SQL fn go_ledger (grid + ranije + planirano). */
+export type GoLedgerPeriod = { od: string; do: string; dana: number };
+export type GoLedgerEntry = { days: number | null; kind: string; dates: string; comment?: string | null; approx?: boolean; fromYear?: number | null };
+export type GoLedgerBlock = {
+  godina: number;
+  izvor: 'grid' | 'istorija';
+  pravo: number | null;
+  preneto: number | null;
+  zaradjeno_do_danas: number | null;
+  srazmerno_sticanje?: boolean | null;
+  ukupno: number | null;
+  iskorisceno: number;
+  planirano: number;
+  preostalo: number | null;
+  iskorisceno_periodi: GoLedgerPeriod[];
+  planirano_periodi: GoLedgerPeriod[];
+  ranije_evidentirano: number;
+  ranije_napomena?: string | null;
+  stara_evidencija?: GoLedgerEntry[];
+  istorija_unosi?: GoLedgerEntry[];
+};
+export function useVacationLedger(params: { employeeId?: string } = {}, enabled = true) {
+  return useQuery({
+    queryKey: [...KEYS.vacation, 'ledger', params],
+    enabled,
+    queryFn: () => apiFetch<{ data: GoLedgerBlock[] }>(`${BASE}/vacation/ledger${qs({ ...params })}`),
+  });
+}
 export function useRequests(params: { status?: string; source?: string; employeeId?: string } = {}, enabled = true) {
   return useQuery({
     queryKey: [...KEYS.requests, params],

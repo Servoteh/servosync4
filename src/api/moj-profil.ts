@@ -3,6 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from './client';
 import { newClientEventId } from './projektni-biro';
+import type { GoLedgerBlock } from './kadrovska';
 
 // ============================================================================
 // Moj profil — 3.0 TALAS D (MODULE_SPEC_pb_profil_podesavanja_30.md §0.2/§3.2).
@@ -70,6 +71,8 @@ export interface VacationData {
   balance: VacationBalance | null;
   requests: VacationRequest[];
   history: VacationHistoryRow[];
+  /** Jedinstveni presek GO po godinama (grid ∪ Excel po datumu, usklađeno sa saldom). */
+  ledger?: GoLedgerBlock[];
 }
 
 export type MakeupRequest = {

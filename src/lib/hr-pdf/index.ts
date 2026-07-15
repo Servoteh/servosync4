@@ -23,7 +23,7 @@ export type {
   EmploymentDecisionInput,
 } from './hr-documents';
 export { generateVacationRecordPdf } from './vacation-record';
-export type { VacationRecordInput, VacationRecordSaldo } from './vacation-record';
+export type { VacationRecordInput, VacationLedgerBlock } from './vacation-record';
 export { generateContractPdf } from './contract';
 export type { ContractInput } from './contract';
 export { generateJobPositionPdf } from './job-position';
