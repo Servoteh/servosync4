@@ -1,7 +1,7 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiFetch } from './client';
+import { apiBlob, apiFetch, apiUpload } from './client';
 import type { Paginated } from './tech-processes';
 
 /**
@@ -79,6 +79,12 @@ export interface NonconformityReport {
   raisedBy: RaisedByRef | null;
   culpritWorkers: CulpritWorker[];
   createdAt: string;
+  /**
+   * Priloženi QC dokumenti (skenirani nalozi, kontrolna dokumentacija, fotke) —
+   * nosi ih detalj izveštaja (report detalj). Opciono: lista izveštaja ne mora
+   * da ih ugrađuje, sekcija „Dokumenti" u detalju ih dovlači i preko `useQualityDocs`.
+   */
+  documents?: QualityDoc[];
 }
 
 /**
@@ -218,4 +224,167 @@ export function useQualityMini() {
     queryFn: () => apiFetch<{ data: QualityMini }>('/v1/kvalitet/summary-mini'),
     staleTime: 60_000,
   });
+}
+
+// ───────────────────────────────────────────────── izveštaji (agregati, tab K3)
+
+/**
+ * Osnova grupisanja agregata (§6 spec). Vremenske ose (dan/nedelja/mesec/godina)
+ * i dimenzije (radnik / radna jedinica / uzrok / kupac). Izvor su NonconformityReport-i
+ * (nose uzrok/sate/izvršioce), NE tech_processes agregat.
+ */
+export type QualityGroupBy =
+  | 'day'
+  | 'week'
+  | 'month'
+  | 'year'
+  | 'worker'
+  | 'workUnit'
+  | 'cause'
+  | 'customer';
+
+/** Jedan red agregata — broj izveštaja, komada i suma sati po grupi. */
+export interface QualitySummaryRow {
+  /** Stabilan ključ grupe (period ISO / worker_id / naziv) — za React key. */
+  key: string;
+  /** Prikazni naziv grupe (npr. „Jul 2026", „CNC glodanje", ime radnika). */
+  label: string;
+  count: number;
+  pieces: number;
+  hours: number;
+}
+
+export interface QualitySummaryResponse {
+  data: QualitySummaryRow[];
+  meta: { draftCount: number };
+}
+
+export interface QualitySummaryParams {
+  /** Svi tipovi kad je izostavljen; inače samo škart (2) ili dorada (1). */
+  type?: NonconformityType;
+  /** ISO datum (yyyy-mm-dd) — period od/do po `reportDate`. */
+  from?: string;
+  to?: string;
+  groupBy: QualityGroupBy;
+}
+
+/** Agregati izveštaja o neusaglašenosti (tab „Izveštaji"). */
+export function useQualitySummary(params: QualitySummaryParams) {
+  const qs = new URLSearchParams();
+  qs.set('groupBy', params.groupBy);
+  if (params.type != null) qs.set('type', String(params.type));
+  if (params.from) qs.set('from', params.from);
+  if (params.to) qs.set('to', params.to);
+  return useQuery({
+    queryKey: ['kvalitet', 'summary', params],
+    queryFn: () => apiFetch<QualitySummaryResponse>(`/v1/kvalitet/summary?${qs.toString()}`),
+  });
+}
+
+// ─────────────────────────────────────────────── dokumenti (upload, tab K4)
+
+/**
+ * QC dokument uskladišten U BAZI (PostgreSQL bytea, presedan `drawing_pdfs`) —
+ * skenirani nalozi, kontrolna dokumentacija, fotke sa telefona. Nema share-a ni
+ * mount-a (odluka 15.07): sve ide kroz upload iz aplikacije. Meki FK-ovi na
+ * izveštaj / tech_process; slobodan `identNumber` (RN) uvek postoji.
+ */
+export interface QualityDoc {
+  id: number;
+  fileName: string;
+  contentType: string;
+  sizeKb: number;
+  identNumber: string | null;
+  reportId: number | null;
+  techProcessId: number | null;
+  createdAt: string;
+  uploadedBy: string | null;
+}
+
+export interface QualityDocListParams {
+  reportId?: number;
+  techProcessId?: number;
+  identNumber?: string;
+  q?: string;
+  /** ISO datum (yyyy-mm-dd) — period od/do po `createdAt`. */
+  from?: string;
+  to?: string;
+  page?: number;
+}
+
+/** Telo za upload — jedan fajl po pozivu + opciono meko vezivanje. */
+export interface UploadQualityDocInput {
+  file: File;
+  reportId?: number;
+  techProcessId?: number;
+  identNumber?: string;
+}
+
+/**
+ * Paginirana lista QC dokumenata (filteri veza / pretraga / period). `enabled`
+ * dozvoljava odloženo učitavanje (npr. sekcija u detalju izveštaja koja se veže
+ * na `reportId` tek kad se red raširi).
+ */
+export function useQualityDocs(params: QualityDocListParams, opts: { enabled?: boolean } = {}) {
+  const qs = new URLSearchParams();
+  if (params.reportId != null) qs.set('reportId', String(params.reportId));
+  if (params.techProcessId != null) qs.set('techProcessId', String(params.techProcessId));
+  if (params.identNumber) qs.set('identNumber', params.identNumber);
+  if (params.q) qs.set('q', params.q);
+  if (params.from) qs.set('from', params.from);
+  if (params.to) qs.set('to', params.to);
+  if (params.page && params.page > 1) qs.set('page', String(params.page));
+  const query = qs.toString();
+  return useQuery({
+    queryKey: ['kvalitet', 'docs', params],
+    queryFn: () =>
+      apiFetch<Paginated<QualityDoc>>(`/v1/kvalitet/docs${query ? `?${query}` : ''}`),
+    enabled: opts.enabled ?? true,
+  });
+}
+
+/**
+ * Upload jednog QC dokumenta (multipart `file` + opciona veza). Kao PDM uvoz,
+ * backend prima JEDAN fajl po pozivu — više fajlova pozivalac šalje sekvencijalno.
+ */
+export function useUploadQualityDoc() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: (input: UploadQualityDocInput) => {
+      const form = new FormData();
+      form.append('file', input.file, input.file.name);
+      if (input.reportId != null) form.append('reportId', String(input.reportId));
+      if (input.techProcessId != null) form.append('techProcessId', String(input.techProcessId));
+      if (input.identNumber) form.append('identNumber', input.identNumber);
+      return apiUpload<{ data: { id: number; fileName: string; sizeKb: number } }>(
+        '/v1/kvalitet/docs',
+        form,
+      );
+    },
+    onSuccess: invalidate,
+  });
+}
+
+/** Brisanje QC dokumenta (KVALITET_WRITE) — invalidira ceo `kvalitet` namespace. */
+export function useDeleteQualityDoc() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<{ data: { id: number; deleted: boolean } }>(`/v1/kvalitet/docs/${id}`, {
+        method: 'DELETE',
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/**
+ * Otvori uskladišten QC dokument u novom tabu (GET /kvalitet/docs/:id/content).
+ * Endpoint traži JWT, pa se blob povlači kroz `apiBlob` (Authorization header) i
+ * prikazuje preko `createObjectURL` (PDF u čitaču, slika u pregledaču).
+ */
+export async function openQualityDoc(id: number): Promise<void> {
+  const blob = await apiBlob(`/v1/kvalitet/docs/${id}/content`);
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank', 'noopener');
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }

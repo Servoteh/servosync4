@@ -9,6 +9,7 @@ import { useProfileMe, useProfileSummary } from '@/api/moj-profil';
 import { VacationSection } from './_components/vacation-section';
 import { MakeupSection, PaidLeaveSection } from './_components/makeup-paidleave-section';
 import { AttendanceSection } from './_components/attendance-section';
+import { NonconformitySection } from './_components/nonconformity-section';
 import {
   TalksSection,
   ExpectationsSection,
@@ -88,6 +89,8 @@ export default function ProfilPage() {
             <ColleaguesSection />
           </>
         )}
+        {/* Neusaglašenosti (K3) — scope po worker_id (server); prikaz i bez employee profila. */}
+        <NonconformitySection />
         <CompanyValuesSection />
       </div>
     </AppShell>

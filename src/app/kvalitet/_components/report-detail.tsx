@@ -16,6 +16,7 @@ import {
   type NonconformityReport,
 } from '@/api/kvalitet';
 import { ReportFields } from './report-fields';
+import { DocumentsSection } from './documents-shared';
 import {
   DetailField,
   culpritSummary,
@@ -149,6 +150,8 @@ export function ReportDetail({ report }: { report: NonconformityReport }) {
       ) : (
         <ReadOnlyDetail report={report} />
       )}
+
+      <DocumentsSection reportId={report.id} />
 
       <Dialog
         open={confirmDelete}

@@ -1,8 +1,8 @@
 'use client';
 
-import { Fragment, useEffect, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { Fragment, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
-import { FileText } from 'lucide-react';
+import { FileText, Trash2, Upload } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import {
   PART_QUALITY,
@@ -25,6 +25,14 @@ import {
 } from '@/api/tech-processes';
 import { ApiError } from '@/api/client';
 import { openDrawingPdf } from '@/api/pdm';
+// K4 — prilozi uz kucanje (QC dokumenti). Ovi simboli su vlasništvo `api/kvalitet.ts`
+// (drugi agent); ovde ih SAMO uvozimo (skenirani nalozi / fotke → PostgreSQL bytea).
+import {
+  useQualityDocs,
+  useUploadQualityDoc,
+  useDeleteQualityDoc,
+  openQualityDoc,
+} from '@/api/kvalitet';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
 import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
@@ -398,6 +406,175 @@ type CardRenderGroup =
       workCenter: string;
     };
 
+// ------------------------------------------------------------------ K4: QC dokumenti (prilozi uz kucanje)
+
+/** Najveći dozvoljeni prilog (paritet kadrovska dosije: PDF/slika, ≤25MB). */
+const QC_DOC_MAX_BYTES = 25 * 1024 * 1024;
+
+/**
+ * „QC dokumenti" u kartici kucanja (K4, MODULE_SPEC_kontrola_kvaliteta.md §8/F3b,
+ * ODLUKA Nenad 15.07): skenirani nalozi, kontrolna dokumentacija i fotke sa telefona
+ * UPLOADUJU se kroz aplikaciju i čuvaju u PostgreSQL (bytea, presedan drawing_pdfs) —
+ * NEMA share-a/mount-a. `capture="environment"` otvara kameru na tabletu/telefonu.
+ * Sekcija se prikazuje samo uz `KVALITET_READ` (gate u pozivaocu); prilaganje/brisanje
+ * dodatno iza `KVALITET_WRITE`.
+ */
+function QcDocumentsSection({ tp }: { tp: TechProcess }) {
+  const docsQ = useQualityDocs({ techProcessId: tp.id });
+  const uploadM = useUploadQualityDoc();
+  const deleteM = useDeleteQualityDoc();
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [delId, setDelId] = useState<number | null>(null);
+  const [openingId, setOpeningId] = useState<number | null>(null);
+
+  const docs = docsQ.data?.data ?? [];
+
+  async function onPick(file: File | undefined | null) {
+    if (!file) return;
+    setErr(null);
+    if (file.size > QC_DOC_MAX_BYTES) {
+      setErr('Fajl je veći od 25MB.');
+      if (fileRef.current) fileRef.current.value = '';
+      return;
+    }
+    try {
+      await uploadM.mutateAsync({ techProcessId: tp.id, identNumber: tp.identNumber, file });
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : 'Otpremanje nije uspelo.');
+    } finally {
+      if (fileRef.current) fileRef.current.value = '';
+    }
+  }
+
+  async function onOpen(id: number) {
+    setErr(null);
+    setOpeningId(id);
+    try {
+      await openQualityDoc(id);
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : 'Otvaranje nije uspelo.');
+    } finally {
+      setOpeningId(null);
+    }
+  }
+
+  async function confirmDelete() {
+    if (delId == null) return;
+    setErr(null);
+    try {
+      await deleteM.mutateAsync(delId);
+      setDelId(null);
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : 'Brisanje nije uspelo.');
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-3">
+        <SectionHeading title="QC dokumenti" count={docs.length ? formatNumber(docs.length) : undefined} />
+        <Can permission={PERMISSIONS.KVALITET_WRITE}>
+          <button
+            onClick={() => fileRef.current?.click()}
+            disabled={uploadM.isPending}
+            className="ml-auto inline-flex items-center gap-1.5 rounded-control border border-line px-3 py-1 text-xs font-semibold text-ink-secondary hover:bg-surface disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Upload className="h-3.5 w-3.5" aria-hidden />
+            {uploadM.isPending ? 'Otpremam…' : 'Priloži dokument'}
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="application/pdf,image/*"
+            capture="environment"
+            className="hidden"
+            onChange={(e) => void onPick(e.target.files?.[0])}
+          />
+        </Can>
+      </div>
+
+      {err && (
+        <p className="text-sm text-status-danger" role="alert">
+          {err}
+        </p>
+      )}
+
+      {docsQ.isLoading ? (
+        <p className="text-sm text-ink-disabled">Učitavanje…</p>
+      ) : docsQ.error ? (
+        <p className="text-sm text-status-danger">Greška pri učitavanju dokumenata.</p>
+      ) : docs.length === 0 ? (
+        <p className="text-sm text-ink-disabled">Nema priloženih dokumenata.</p>
+      ) : (
+        <ul className="space-y-1 text-sm">
+          {docs.map((d) => (
+            <li
+              key={d.id}
+              className="flex items-center justify-between gap-2 rounded-control border border-line bg-surface px-3 py-1.5"
+            >
+              <span className="flex min-w-0 items-center gap-2">
+                <FileText className="h-4 w-4 shrink-0 text-ink-secondary" aria-hidden />
+                <span className="min-w-0 truncate text-ink">
+                  {d.fileName || 'Dokument'}
+                  <span className="text-ink-secondary">
+                    {' · '}
+                    {formatDate(d.createdAt)}
+                    {d.uploadedBy ? ` · ${d.uploadedBy}` : ''}
+                  </span>
+                </span>
+              </span>
+              <span className="flex shrink-0 items-center gap-2">
+                <button
+                  onClick={() => void onOpen(d.id)}
+                  disabled={openingId === d.id}
+                  className="rounded-control border border-line px-2.5 py-1 text-xs font-semibold text-ink-secondary hover:bg-surface-2 disabled:opacity-40"
+                >
+                  {openingId === d.id ? 'Otvaram…' : 'Otvori'}
+                </button>
+                <Can permission={PERMISSIONS.KVALITET_WRITE}>
+                  <button
+                    onClick={() => setDelId(d.id)}
+                    title="Obriši"
+                    className="rounded-control border border-status-danger/40 px-2 py-1 text-status-danger hover:bg-status-danger-bg"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" aria-hidden />
+                  </button>
+                </Can>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <Dialog
+        open={delId != null}
+        onClose={() => setDelId(null)}
+        title="Obrisati dokument?"
+        footer={
+          <>
+            <button
+              onClick={() => setDelId(null)}
+              className="rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2"
+            >
+              Otkaži
+            </button>
+            <button
+              disabled={deleteM.isPending}
+              onClick={() => void confirmDelete()}
+              className="rounded-control border border-status-danger/40 bg-status-danger-bg px-3 py-1.5 text-sm font-semibold text-status-danger disabled:opacity-50"
+            >
+              {deleteM.isPending ? 'Brisanje…' : 'Obriši'}
+            </button>
+          </>
+        }
+      >
+        <p className="text-sm text-ink">Prilog će biti trajno obrisan.</p>
+      </Dialog>
+    </div>
+  );
+}
+
 /** „Kartica kucanja" — redovi + sume po kvalitetu + ukupno vreme (poziv /card). */
 function TechProcessCardDetail({ tp }: { tp: TechProcess }) {
   const key: CardKey = {
@@ -635,6 +812,11 @@ function TechProcessCardDetail({ tp }: { tp: TechProcess }) {
           )}
         </div>
       </Dialog>
+
+      {/* QC dokumenti (K4) — prilozi uz kucanje; samo uz kvalitet.read (write override na akcijama). */}
+      <Can permission={PERMISSIONS.KVALITET_READ}>
+        <QcDocumentsSection tp={tp} />
+      </Can>
     </div>
   );
 }

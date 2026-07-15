@@ -8,9 +8,11 @@ import { PageHeader } from '@/components/ui-kit/page-header';
 import { cn } from '@/lib/cn';
 import { NONCONFORMITY_TYPE, useQualityMini } from '@/api/kvalitet';
 import { EvidencijaTab } from './_components/evidencija-tab';
+import { IzvestajiTab } from './_components/izvestaji-tab';
+import { DokumentiTab } from './_components/dokumenti-tab';
 import { KontrolaPogonTab } from './_components/kontrola-pogon-tab';
 
-type TabKey = 'skart' | 'dorada' | 'pogon';
+type TabKey = 'skart' | 'dorada' | 'izvestaji' | 'dokumenti' | 'pogon';
 
 /** Broj draft-ova na tab labeli (žuti bedž) — radna lista kontrolora. */
 function DraftBadge({ count }: { count: number }) {
@@ -46,6 +48,8 @@ export default function KvalitetPage() {
   const tabs: { key: TabKey; label: string; badge?: number }[] = [
     { key: 'skart', label: 'Evidencija škarta', badge: draftScrap },
     { key: 'dorada', label: 'Evidencija dorada', badge: draftRework },
+    { key: 'izvestaji', label: 'Izveštaji' },
+    { key: 'dokumenti', label: 'Dokumenti' },
     { key: 'pogon', label: 'Kontrola pogon' },
   ];
 
@@ -83,6 +87,8 @@ export default function KvalitetPage() {
         <div className="flex-1 overflow-auto p-6">
           {tab === 'skart' && <EvidencijaTab type={NONCONFORMITY_TYPE.SCRAP} />}
           {tab === 'dorada' && <EvidencijaTab type={NONCONFORMITY_TYPE.REWORK} />}
+          {tab === 'izvestaji' && <IzvestajiTab />}
+          {tab === 'dokumenti' && <DokumentiTab />}
           {tab === 'pogon' && <KontrolaPogonTab />}
         </div>
       </div>
