@@ -20,6 +20,11 @@ export const PERMISSIONS = {
   RN_DELETE_FORCE: 'rn.delete.force',
   PDM_READ: 'pdm.read',
   PDM_IMPORT: 'pdm.import',
+  // Kontrola kvaliteta (evidencija škart/dorada) — MODULE_SPEC_kontrola_kvaliteta.md §7.
+  // read = KONTROLOR/ŠEF/MENADZMENT/ADMIN + TEHNOLOG (uvid); write = unos/izmena/potvrda
+  // izveštaja (KONTROLOR/ŠEF/MENADZMENT/ADMIN). Proizvodni radnik svoje vidi kroz Moj profil.
+  KVALITET_READ: 'kvalitet.read',
+  KVALITET_WRITE: 'kvalitet.write',
   STRUKTURE_READ: 'strukture.read',
   STRUKTURE_WRITE: 'strukture.write',
   PRIMOPREDAJE_READ: 'primopredaje.read',

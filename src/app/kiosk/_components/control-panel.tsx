@@ -1,9 +1,10 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { Check, Plus, Trash2 } from 'lucide-react';
+import { Check, Plus, StickyNote, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui-kit/button';
 import { ComboBox } from '@/components/ui-kit/combo-box';
+import { Dialog } from '@/components/ui-kit/dialog';
 import { usePositions, type Position } from '@/api/part-locations';
 import { formatNumber } from '@/lib/format';
 import { cn } from '@/lib/cn';
@@ -47,6 +48,11 @@ export function ControlPanel({
   const [pieces, setPieces] = useState(planned && planned > 0 ? planned : 1);
   const [qualityTypeId, setQualityTypeId] = useState(0);
   const [rows, setRows] = useState<LocRow[]>([{ position: null, quantity: planned && planned > 0 ? planned : 1 }]);
+  // K0.1 napomena kontrolora (opciono) — otvara se dugmetom, ide u ControlSubmit.note.
+  const [note, setNote] = useState('');
+  const [showNote, setShowNote] = useState(false);
+  // K0.2 škart potvrda — „Završi kontrolu" za škart prvo traži potvrdu (dorada bez potvrde).
+  const [confirmScrap, setConfirmScrap] = useState(false);
 
   const allocated = useMemo(
     () => rows.reduce((s, r) => s + (Number.isFinite(r.quantity) ? r.quantity : 0), 0),
@@ -62,13 +68,24 @@ export function ControlPanel({
   const addRow = () => setRows((rs) => [...rs, { position: null, quantity: Math.max(0, pieces - allocated) }]);
   const removeRow = (i: number) => setRows((rs) => (rs.length > 1 ? rs.filter((_, j) => j !== i) : rs));
 
-  const submit = () => {
+  const doSubmit = () => {
     if (!canSubmit) return;
     onSubmit({
       pieceCount: pieces,
       qualityTypeId,
       locations: rows.map((r) => ({ positionId: r.position!.id, quantity: r.quantity })),
+      note: note.trim() || undefined,
     });
+  };
+
+  // Škart traži potvrdu pre snimanja (K0.2); dobar/dorada idu direktno.
+  const onFinishClick = () => {
+    if (!canSubmit) return;
+    if (qualityTypeId === 2) {
+      setConfirmScrap(true);
+      return;
+    }
+    doSubmit();
   };
 
   return (
@@ -133,6 +150,31 @@ export function ControlPanel({
             {qualityTypeId === 1 ? 'Dorada' : 'Škart'} se evidentira i knjiži na lokaciju; automatski nalog
             za {qualityTypeId === 1 ? 'doradu' : 'škart'} (−D/−S) stiže u sledećoj fazi.
           </p>
+        )}
+      </div>
+
+      {/* Napomena kontrolora (opciono) — K0.1 */}
+      <div>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => setShowNote((v) => !v)}
+          aria-expanded={showNote}
+          className="inline-flex h-12 items-center gap-2 rounded-control border-2 border-line bg-surface px-4 text-lg font-semibold text-ink hover:bg-surface-2 disabled:opacity-50"
+        >
+          <StickyNote className="h-5 w-5" aria-hidden />
+          Napomena
+          {note.trim() && <span className="h-2.5 w-2.5 rounded-full bg-accent" aria-hidden />}
+        </button>
+        {showNote && (
+          <textarea
+            value={note}
+            disabled={busy}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="Napomena kontrolora (opciono)"
+            aria-label="Napomena kontrolora"
+            className="mt-3 h-24 w-full rounded-panel border-2 border-line bg-surface px-4 py-3 text-lg text-ink placeholder:text-ink-disabled focus-visible:border-accent focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50"
+          />
         )}
       </div>
 
@@ -205,7 +247,7 @@ export function ControlPanel({
         variant="primary"
         loading={busy}
         disabled={!canSubmit}
-        onClick={submit}
+        onClick={onFinishClick}
         className="h-20 w-full gap-3 text-2xl font-bold"
       >
         <Check className="h-7 w-7" aria-hidden />
@@ -216,6 +258,38 @@ export function ControlPanel({
           Zbir po policama ({formatNumber(allocated)}) mora biti jednak broju komada ({formatNumber(pieces)}).
         </p>
       )}
+
+      {/* Škart potvrda (K0.2) — dorada NE traži potvrdu. */}
+      <Dialog
+        open={confirmScrap}
+        onClose={() => setConfirmScrap(false)}
+        title="Da li ste sigurni da je deo škart?"
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={() => setConfirmScrap(false)}
+              className="inline-flex h-16 items-center gap-2 rounded-control border-2 border-line bg-surface px-6 text-xl font-bold text-ink hover:bg-surface-2"
+            >
+              Otkaži
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setConfirmScrap(false);
+                doSubmit();
+              }}
+              className="inline-flex h-16 items-center gap-2 rounded-control bg-status-danger px-6 text-xl font-bold text-white hover:bg-status-danger/90"
+            >
+              Da, škart je
+            </button>
+          </>
+        }
+      >
+        <p className="text-xl text-ink">
+          Škart se evidentira, tehnologija dobija obaveštenje i kreira se nalog za škart.
+        </p>
+      </Dialog>
     </div>
   );
 }

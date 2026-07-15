@@ -105,6 +105,8 @@ export interface ScanInput {
   pieceCount: number;
   /** ID kartica radnika (audit ko je radio) — opciono. */
   workerCard?: string;
+  /** Napomena radnika uz prijavu (opciono; upisuje se u tech_processes.note). */
+  note?: string;
 }
 
 export interface ScanResult {
@@ -360,6 +362,11 @@ export interface ControlInput {
   qualityTypeId: number;
   locations: ControlLocationInput[];
   note?: string;
+  /**
+   * true = kontrolor je potvrdio prekoračenje plana (ukupno iskontrolisano > lansirano).
+   * Bez ovoga backend odbija overshoot (422 „premašuje planirano"). Odluka Nenad 15.07.
+   */
+  confirmOvershoot?: boolean;
 }
 
 export interface ControlResult {
@@ -382,6 +389,11 @@ export interface ControlResult {
   label: LabelData;
   /** true = dorada/škart — child RN (-D/-S) je P2 (još se ne kreira). */
   childOrderPending: boolean;
+  /**
+   * true = kontrola sa kvalitetom dorada/škart je otvorila DRAFT izveštaj o neusaglašenosti
+   * (auto-nacrt; kontrolor ga dopunjava/potvrđuje u kartici „Kontrola kvaliteta"). MODULE_SPEC §5.
+   */
+  nonconformityDraftCreated?: boolean;
   /**
    * A-5 (shadow): upozorenja o ovlašćenju kontrolora / razdvajanju dužnosti — null ako je
    * sve u redu. Dok je AUTHZ_ENFORCE isključen, kontrola prolazi uz upozorenje (ne blokira).

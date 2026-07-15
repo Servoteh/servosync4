@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, type KeyboardEvent } from 'react';
-import { AlertTriangle, Check, Clock, FileText, Lock, Minus, Play, Plus, Square } from 'lucide-react';
+import { AlertTriangle, Check, Clock, FileText, Lock, Minus, Play, Plus, Square, StickyNote } from 'lucide-react';
 import { Button } from '@/components/ui-kit/button';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { openKioskDrawingPdf } from '@/api/kiosk';
@@ -28,10 +28,12 @@ interface WorkPanelProps {
   zapocinjanje: boolean;
   zavrsavanje: boolean;
   onZapocni: () => void;
-  onZavrsiRad: (pieces: number) => void;
+  /** `note` = opciona napomena radnika (K0.1) — prosleđuje se u STOP mutaciju. */
+  onZavrsiRad: (pieces: number, note?: string) => void;
   /** Brza prijava (scan) — bez merenja vremena. */
   evidentiranje: boolean;
-  onEvidentiraj: (pieces: number) => void;
+  /** `note` = opciona napomena radnika (K0.1) — prosleđuje se u scan mutaciju. */
+  onEvidentiraj: (pieces: number, note?: string) => void;
 }
 
 function Stat({
@@ -166,6 +168,9 @@ export function WorkPanel({
   onEvidentiraj,
 }: WorkPanelProps) {
   const [pieces, setPieces] = useState(1);
+  // K0.1 napomena radnika (opciono) — deljena između brze prijave (scan) i završetka rada (stop).
+  const [note, setNote] = useState('');
+  const [showNote, setShowNote] = useState(false);
   const busy = evidentiranje || zapocinjanje || zavrsavanje;
   const remaining = planned != null ? Math.max(0, planned - made) : null;
   // Aktivna sesija (borverk radi danima na komadu) dozvoljava 0 kom; „Evidentiraj" traži ≥ 1.
@@ -199,11 +204,38 @@ export function WorkPanel({
 
   // Sesijski režim prihvata 0 kom (samo vreme); brza prijava traži ≥ 1.
   const stopWork = () => {
-    if (!busy && pieces >= 0) onZavrsiRad(pieces);
+    if (!busy && pieces >= 0) onZavrsiRad(pieces, note.trim() || undefined);
   };
   const quickReport = () => {
-    if (!busy && pieces >= 1) onEvidentiraj(pieces);
+    if (!busy && pieces >= 1) onEvidentiraj(pieces, note.trim() || undefined);
   };
+
+  // Napomena (K0.1) — deljeni blok; renderuje se i u STOP i u START (brza prijava) režimu.
+  const noteField = (
+    <div>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => setShowNote((v) => !v)}
+        aria-expanded={showNote}
+        className="inline-flex h-12 items-center gap-2 rounded-control border-2 border-line bg-surface px-4 text-lg font-semibold text-ink hover:bg-surface-2 disabled:opacity-50"
+      >
+        <StickyNote className="h-5 w-5" aria-hidden />
+        Napomena
+        {note.trim() && <span className="h-2.5 w-2.5 rounded-full bg-accent" aria-hidden />}
+      </button>
+      {showNote && (
+        <textarea
+          value={note}
+          disabled={busy}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="Napomena radnika (opciono)"
+          aria-label="Napomena radnika"
+          className="mt-3 h-24 w-full rounded-panel border-2 border-line bg-surface px-4 py-3 text-lg text-ink placeholder:text-ink-disabled focus-visible:border-accent focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50"
+        />
+      )}
+    </div>
+  );
 
   return (
     <div className="space-y-6">
@@ -263,6 +295,7 @@ export function WorkPanel({
               0 kom — evidentira se samo vreme rada.
             </p>
           )}
+          {noteField}
           <Button
             variant="primary"
             loading={zavrsavanje}
@@ -295,6 +328,7 @@ export function WorkPanel({
           </div>
 
           <PieceStepper pieces={pieces} setPieces={setPieces} busy={busy} min={1} onEnter={quickReport} />
+          {noteField}
           <Button
             variant="secondary"
             loading={evidentiranje}

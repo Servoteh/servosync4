@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ListChecks, LogOut, RotateCcw, UserRound } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
+import { Dialog } from '@/components/ui-kit/dialog';
 import { ApiError } from '@/api/client';
 import {
   useControl,
@@ -124,6 +125,13 @@ export function KioskScanner() {
   const [controlLabel, setControlLabel] = useState<{
     label: Omit<Parameters<typeof printControlLabels>[0], 'copies'>;
     controlled: number;
+  } | null>(null);
+  // K0.3 overshoot potvrda — ukupno iskontrolisano bi premašilo lansirano; čeka
+  // potvrdu kontrolora pa retry sa confirmOvershoot. `total` = kumulativ posle, `planned` = lansirano.
+  const [overshootPrompt, setOvershootPrompt] = useState<{
+    input: ControlSubmit;
+    total: number;
+    planned: number;
   } | null>(null);
 
   const cardKey = order
@@ -336,7 +344,7 @@ export function KioskScanner() {
     }
   }
 
-  async function onEvidentiraj(pieces: number) {
+  async function onEvidentiraj(pieces: number, note?: string) {
     cancelAutoLogout();
     if (!order || !operation || !worker) return;
     try {
@@ -345,6 +353,7 @@ export function KioskScanner() {
         operationBarcode: operation.raw,
         pieceCount: pieces,
         workerCard: worker.card,
+        note,
       });
       // „Napravljeno" je Σ grupe: dodaj upravo prijavljene komade na zbir PRE mutacije
       // (backend techProcess.pieceCount je kumulativ SAMO tog reda, ne grupe).
@@ -412,7 +421,7 @@ export function KioskScanner() {
     }
   }
 
-  async function onZavrsiRad(pieces: number) {
+  async function onZavrsiRad(pieces: number, note?: string) {
     cancelAutoLogout();
     if (!order || !operation || !worker) return;
     try {
@@ -421,6 +430,7 @@ export function KioskScanner() {
         operationBarcode: operation.raw,
         workerCard: worker.card,
         pieceCount: pieces,
+        note,
       });
       // „Napravljeno" je Σ grupe: zbir PRE mutacije + upravo prijavljeni komadi
       // (backend techProcess.pieceCount je kumulativ SAMO tog reda, ne grupe).
@@ -465,6 +475,21 @@ export function KioskScanner() {
       });
       return;
     }
+    // K0.3: ukupno iskontrolisano (grupa PRE + uneto) bi premašilo lansirano →
+    // potvrdi pre slanja (kumulativ pre = made/groupSum, ista logika kao backend existingSum).
+    const plannedNow = order.workOrder?.pieceCount ?? null;
+    const madeNow = override?.made ?? groupSum;
+    if (plannedNow != null && madeNow + input.pieceCount > plannedNow) {
+      setOvershootPrompt({ input, total: madeNow + input.pieceCount, planned: plannedNow });
+      return;
+    }
+    await submitControl(input, false);
+  }
+
+  /** Snima kontrolu (create-on-scan). `confirmOvershoot` propušta prekoračenje plana (K0.3). */
+  async function submitControl(input: ControlSubmit, confirmOvershoot: boolean) {
+    cancelAutoLogout();
+    if (!order || !operation || !worker) return;
     try {
       // Create-on-scan: backend nalazi/otvara red kontrole iz barkodova (ne treba tp.id).
       const { data } = await control.mutateAsync({
@@ -472,6 +497,7 @@ export function KioskScanner() {
         operationBarcode: operation.raw,
         workerCard: worker.card,
         ...input,
+        ...(confirmOvershoot ? { confirmOvershoot: true } : {}),
       });
       setOverride({
         id: data.techProcess.id,
@@ -492,6 +518,9 @@ export function KioskScanner() {
         parts.push(`Potvrđeno ${formatNumber(data.confirmedOperations)} neotkucanih operacija.`);
       if (data.workOrderCompleted) parts.push('Radni nalog je završen.');
       if (data.childOrderPending) parts.push('Nalog za doradu/škart sledi u narednoj fazi.');
+      // K0.3: auto-nacrt izveštaja o neusaglašenosti otvoren (dorada/škart) — uputi kontrolora.
+      if (data.nonconformityDraftCreated)
+        parts.push('Otvoren nacrt izveštaja o neusaglašenosti — dopunite u Kontroli kvaliteta.');
       // A-5 (shadow): upozorenje o ovlašćenju kontrolora / razdvajanju dužnosti — istaknuto.
       const warned = !!data.controllerWarnings?.length;
       if (warned) parts.unshift(data.controllerWarnings!.join(' · '));
@@ -517,8 +546,32 @@ export function KioskScanner() {
       });
       // Auto-odjava se NE armira ovde — čeka se štampa nalepnica (onPrintControlLabels).
     } catch (e) {
+      // K0.3 fallback: backend 422 „premašuje planirano" → ponudi potvrdu pa retry sa confirmOvershoot.
+      if (
+        !confirmOvershoot &&
+        e instanceof ApiError &&
+        e.status === 422 &&
+        /prema[sš]uje/i.test(e.message)
+      ) {
+        const plannedNow = order.workOrder?.pieceCount ?? null;
+        const madeNow = override?.made ?? groupSum;
+        setOvershootPrompt({
+          input,
+          total: madeNow + input.pieceCount,
+          planned: plannedNow ?? madeNow + input.pieceCount,
+        });
+        return;
+      }
       setFeedback({ tone: 'danger', title: 'Kontrola nije uspela', detail: errMessage(e) });
     }
+  }
+
+  /** Potvrda overshoot dijaloga (K0.3) — retry kontrole sa confirmOvershoot=true. */
+  function confirmOvershootSubmit() {
+    if (!overshootPrompt) return;
+    const { input } = overshootPrompt;
+    setOvershootPrompt(null);
+    void submitControl(input, true);
   }
 
   /** Štampa nalepnica POSLE kontrole — broj bira kontrolor (default 1, Nesa 10.07). */
@@ -835,6 +888,39 @@ export function KioskScanner() {
           </>
         )}
       </div>
+
+      {/* K0.3 overshoot potvrda — ukupno iskontrolisano premašuje lansirano. */}
+      <Dialog
+        open={!!overshootPrompt}
+        onClose={() => setOvershootPrompt(null)}
+        title="Količina veća od lansiranog"
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={() => setOvershootPrompt(null)}
+              className="inline-flex h-16 items-center gap-2 rounded-control border-2 border-line bg-surface px-6 text-xl font-bold text-ink hover:bg-surface-2"
+            >
+              Ne, ispravi
+            </button>
+            <button
+              type="button"
+              onClick={confirmOvershootSubmit}
+              className="inline-flex h-16 items-center gap-2 rounded-control bg-accent px-6 text-xl font-bold text-accent-fg hover:bg-accent-hover"
+            >
+              Da, unesi
+            </button>
+          </>
+        }
+      >
+        <p className="text-xl text-ink">
+          Uneti broj komada je veći od lansiranog (
+          <span className="tnums font-bold">{overshootPrompt ? formatNumber(overshootPrompt.total) : ''}</span>
+          {' > '}
+          <span className="tnums font-bold">{overshootPrompt ? formatNumber(overshootPrompt.planned) : ''}</span>
+          ). Da li ipak želite da unesete tu količinu?
+        </p>
+      </Dialog>
     </main>
   );
 }
