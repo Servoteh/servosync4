@@ -173,6 +173,13 @@ export class KadrovskaController {
     return this.kadrovska.vacationHistory(req.user.email, q);
   }
 
+  /** Jedinstveni presek GO po godinama (go_ledger): iskorišćeni + ranije +
+   *  planirani + preostalo, usklađeno sa saldom. Bez employeeId → pozivalac. */
+  @Get("vacation/ledger")
+  vacationLedger(@Req() req: AuthedRequest, @Query() q: VacationQueryDto) {
+    return this.kadrovska.vacationLedger(req.user.email, q);
+  }
+
   @Get("vacation/entitlements")
   vacationEntitlements(
     @Req() req: AuthedRequest,

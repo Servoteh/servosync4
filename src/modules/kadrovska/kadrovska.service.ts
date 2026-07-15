@@ -498,6 +498,22 @@ export class KadrovskaService {
     });
   }
 
+  /** Jedinstveni presek GO po godinama (SQL fn go_ledger na sy15): iskorišćeni
+   *  periodi (grid ≤ danas) + „ranije evidentirano" (opening_used) + planirani
+   *  periodi (grid > danas, finalno odobreno) + preostalo — usklađeno sa saldom.
+   *  Spaja grid + vacation_entitlements + vacation_history. Row-scope (svoje ∨
+   *  manages) presuđuje RLS unutar funkcije (ai_chat_can_view_employee). */
+  async vacationLedger(email: string, q: VacationQueryDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const empId = q.employeeId ?? null;
+      const rows = await tx.$queryRaw<{ v: unknown }[]>(
+        Prisma.sql`SELECT go_ledger(${empId}::uuid) AS v`,
+      );
+      const v = rows?.[0]?.v;
+      return { data: Array.isArray(v) ? v : [] };
+    });
+  }
+
   /** Akrual/uvoz salda (vacation_entitlements) — read (uređivanje = vacation_edit, R2). */
   async vacationEntitlements(email: string, q: VacationQueryDto) {
     return this.withUserMapped(email, async (tx) => {
