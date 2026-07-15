@@ -67,7 +67,7 @@ export class MojProfilService {
     return this.withUserMapped(email, async (tx) => {
       const emp = await this.resolveEmployee(tx, email);
       if (emp == null) return this.emptyProfile();
-      const [balance, requests, history] = await Promise.all([
+      const [balance, requests, history, ledger] = await Promise.all([
         tx.$queryRaw<unknown[]>(
           Prisma.sql`SELECT * FROM v_vacation_balance WHERE employee_id = ${emp.id}::uuid AND year = ${year}`,
         ),
@@ -77,12 +77,18 @@ export class MojProfilService {
         tx.$queryRaw<unknown[]>(
           Prisma.sql`SELECT * FROM vacation_history WHERE employee_id = ${emp.id}::uuid ORDER BY year DESC`,
         ),
+        // Jedinstveni presek GO po godinama (grid ∪ Excel po datumu, usklađeno sa saldom)
+        tx.$queryRaw<{ v: unknown }[]>(
+          Prisma.sql`SELECT go_ledger(${emp.id}::uuid) AS v`,
+        ),
       ]);
+      const ledgerVal = jsonSafe(ledger)[0]?.v;
       return {
         data: {
           balance: jsonSafe(balance)[0] ?? null,
           requests: jsonSafe(requests),
           history: jsonSafe(history),
+          ledger: Array.isArray(ledgerVal) ? ledgerVal : [],
         },
       };
     });
