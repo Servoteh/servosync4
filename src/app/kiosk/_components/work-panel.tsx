@@ -3,7 +3,6 @@
 import { useEffect, useState, type KeyboardEvent } from 'react';
 import { AlertTriangle, Check, Clock, FileText, Lock, Minus, Play, Plus, Square } from 'lucide-react';
 import { Button } from '@/components/ui-kit/button';
-import { Dialog } from '@/components/ui-kit/dialog';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { openKioskDrawingPdf } from '@/api/kiosk';
 import { formatNumber } from '@/lib/format';
@@ -20,8 +19,6 @@ interface WorkPanelProps {
   /** Napravljeno (akumulirano) na ovoj operaciji. */
   made: number;
   finished: boolean;
-  /** Sakrij „Zatvori operaciju" (operacija bez postupka — zatvaranje je zabranjeno). */
-  hideClose: boolean;
   /** Skenirana operacija nije nađena u tehnološkom postupku ovog naloga. */
   missing: boolean;
   loading: boolean;
@@ -34,9 +31,7 @@ interface WorkPanelProps {
   onZavrsiRad: (pieces: number) => void;
   /** Brza prijava (scan) — bez merenja vremena. */
   evidentiranje: boolean;
-  zatvaranje: boolean;
   onEvidentiraj: (pieces: number) => void;
-  onZatvori: () => void;
 }
 
 function Stat({
@@ -159,7 +154,6 @@ export function WorkPanel({
   planned,
   made,
   finished,
-  hideClose,
   missing,
   loading,
   openSession,
@@ -169,13 +163,10 @@ export function WorkPanel({
   onZapocni,
   onZavrsiRad,
   evidentiranje,
-  zatvaranje,
   onEvidentiraj,
-  onZatvori,
 }: WorkPanelProps) {
   const [pieces, setPieces] = useState(1);
-  const [confirm, setConfirm] = useState(false);
-  const busy = evidentiranje || zatvaranje || zapocinjanje || zavrsavanje;
+  const busy = evidentiranje || zapocinjanje || zavrsavanje;
   const remaining = planned != null ? Math.max(0, planned - made) : null;
   // Aktivna sesija (borverk radi danima na komadu) dozvoljava 0 kom; „Evidentiraj" traži ≥ 1.
   // Pri izlasku iz sesijskog režima podigni 0 → 1 (isti brojač služi oba režima).
@@ -213,18 +204,6 @@ export function WorkPanel({
   const quickReport = () => {
     if (!busy && pieces >= 1) onEvidentiraj(pieces);
   };
-
-  const zatvoriDugme = hideClose ? null : (
-    <button
-      type="button"
-      disabled={busy}
-      onClick={() => setConfirm(true)}
-      className="inline-flex h-20 items-center justify-center gap-3 rounded-control border-2 border-status-danger px-4 text-2xl font-bold text-status-danger hover:bg-status-danger-bg disabled:opacity-50"
-    >
-      <Lock className="h-7 w-7" aria-hidden />
-      Zatvori operaciju
-    </button>
-  );
 
   return (
     <div className="space-y-6">
@@ -284,19 +263,16 @@ export function WorkPanel({
               0 kom — evidentira se samo vreme rada.
             </p>
           )}
-          <div className={cn('grid grid-cols-1 gap-4', !hideClose && 'sm:grid-cols-2')}>
-            <Button
-              variant="primary"
-              loading={zavrsavanje}
-              disabled={busy}
-              onClick={stopWork}
-              className="h-20 gap-3 text-2xl font-bold"
-            >
-              <Square className="h-7 w-7" aria-hidden />
-              Završi rad
-            </Button>
-            {zatvoriDugme}
-          </div>
+          <Button
+            variant="primary"
+            loading={zavrsavanje}
+            disabled={busy}
+            onClick={stopWork}
+            className="h-20 w-full gap-3 text-2xl font-bold"
+          >
+            <Square className="h-7 w-7" aria-hidden />
+            Završi rad
+          </Button>
         </>
       ) : (
         /* START režim: započni merenje vremena, ili brza prijava bez merenja. */
@@ -319,52 +295,18 @@ export function WorkPanel({
           </div>
 
           <PieceStepper pieces={pieces} setPieces={setPieces} busy={busy} min={1} onEnter={quickReport} />
-          <div className={cn('grid grid-cols-1 gap-4', !hideClose && 'sm:grid-cols-2')}>
-            <Button
-              variant="secondary"
-              loading={evidentiranje}
-              disabled={busy || pieces < 1}
-              onClick={quickReport}
-              className="h-20 gap-3 text-2xl font-bold"
-            >
-              <Check className="h-7 w-7" aria-hidden />
-              Evidentiraj
-            </Button>
-            {zatvoriDugme}
-          </div>
+          <Button
+            variant="secondary"
+            loading={evidentiranje}
+            disabled={busy || pieces < 1}
+            onClick={quickReport}
+            className="h-20 w-full gap-3 text-2xl font-bold"
+          >
+            <Check className="h-7 w-7" aria-hidden />
+            Evidentiraj
+          </Button>
         </>
       )}
-
-      <Dialog
-        open={confirm}
-        onClose={() => setConfirm(false)}
-        title="Zatvoriti operaciju?"
-        footer={
-          <>
-            <button
-              onClick={() => setConfirm(false)}
-              className="rounded-control border border-line px-4 py-2 text-base text-ink-secondary hover:bg-surface-2"
-            >
-              Otkaži
-            </button>
-            <button
-              onClick={() => {
-                setConfirm(false);
-                onZatvori();
-              }}
-              className="rounded-control bg-status-danger px-4 py-2 text-base font-semibold text-white"
-            >
-              Zatvori operaciju
-            </button>
-          </>
-        }
-      >
-        <p className="text-base text-ink">
-          Operacija <span className="font-semibold">{operationLabel}</span> će biti trajno zatvorena
-          sa <span className="tnums font-semibold">{formatNumber(made)}</span> napravljenih komada.
-          Dalja prijava rada neće biti moguća.
-        </p>
-      </Dialog>
     </div>
   );
 }

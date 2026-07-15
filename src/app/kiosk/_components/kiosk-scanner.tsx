@@ -7,7 +7,6 @@ import { ApiError } from '@/api/client';
 import {
   useControl,
   useDecodeBarcode,
-  useFinish,
   useIdentifyWorker,
   useLabelData,
   useMyOpen,
@@ -98,7 +97,6 @@ export function KioskScanner() {
   const identify = useIdentifyWorker();
   const decode = useDecodeBarcode();
   const scan = useScan();
-  const finish = useFinish();
   const control = useControl();
   const startWork = useStartWork();
   const stopWork = useStopWork();
@@ -447,30 +445,6 @@ export function KioskScanner() {
     }
   }
 
-  async function onZatvori() {
-    cancelAutoLogout();
-    const id = matched?.id ?? override?.id;
-    if (id == null) {
-      setFeedback({
-        tone: 'danger',
-        title: 'Nije moguće zatvoriti',
-        detail: 'Operacija nije pronađena u tehnološkom postupku.',
-      });
-      return;
-    }
-    try {
-      const { data } = await finish.mutateAsync({ id, workerCard: worker?.card });
-      // Zatvaranje ne dodaje komade — „Napravljeno" ostaje Σ grupe.
-      setOverride({ id: data.techProcess.id, made: groupSum, finished: true });
-      const parts = [`Zatvoreno sa ${formatNumber(data.finishedPieces)} kom`];
-      if (data.workOrderCompleted) parts.push('Radni nalog je završen.');
-      setFeedback({ tone: 'success', title: 'Operacija zatvorena', detail: parts.join(' · ') });
-      armAutoLogout();
-    } catch (e) {
-      setFeedback({ tone: 'danger', title: 'Zatvaranje nije uspelo', detail: errMessage(e) });
-    }
-  }
-
   async function onKontrola(input: ControlSubmit) {
     cancelAutoLogout();
     if (!order || !operation || !worker) {
@@ -786,7 +760,6 @@ export function KioskScanner() {
             planned={planned}
             made={made}
             finished={finished}
-            hideClose={operation.withoutProcess}
             missing={missing}
             loading={cardLoading}
             openSession={session}
@@ -796,9 +769,7 @@ export function KioskScanner() {
             onZapocni={onZapocni}
             onZavrsiRad={onZavrsiRad}
             evidentiranje={scan.isPending}
-            zatvaranje={finish.isPending}
             onEvidentiraj={onEvidentiraj}
-            onZatvori={onZatvori}
           />
         )}
           </>
