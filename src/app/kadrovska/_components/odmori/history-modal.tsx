@@ -276,7 +276,7 @@ export function HistoryModal({
         : <tr><td colSpan={colSpan} className="py-1 text-ink-disabled">nema pojedinačnih unosa</td></tr>;
     } else {
       const rows: React.ReactNode[] = (b.iskorisceno_periodi ?? []).map((p, i) => periodRow(b.godina, p, false, i));
-      if (b.ranije_evidentirano > 0) rows.push(noteRow('earlier', b.ranije_evidentirano, 'ranije evidentirano (pre evidencije po danima)'));
+      if (b.ranije_evidentirano > 0) rows.push(noteRow('earlier', b.ranije_evidentirano, 'bez preciznog datuma (ranija evidencija)'));
       usedRows = rows.length ? rows : <tr><td colSpan={colSpan} className="py-1 text-ink-disabled">nema iskorišćenih dana</td></tr>;
     }
 
@@ -332,8 +332,8 @@ export function HistoryModal({
           blocks.map(renderBlock)
         )}
         <p className="text-[0.7rem] leading-relaxed text-ink-disabled">
-          „Iskorišćeni dani" i „planirano" su iz sistemske evidencije po danima (usklađeno sa saldom);
-          „ranije" = dani evidentirani pre uvođenja evidencije po danima. Za starije godine izvor je
+          „Iskorišćeni" i „planirano" su po datumu (grid + stara Excel evidencija, usklađeno sa saldom);
+          „bez datuma" = retki dani koje saldo broji a nemamo tačan datum. Za starije godine izvor je
           ranija (Excel) evidencija. <strong>Slobodno = preostalo.</strong>
         </p>
       </div>

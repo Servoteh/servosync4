@@ -187,7 +187,7 @@ export async function generateVacationRecordPdf(d: VacationRecordInput): Promise
       if (residue > 0) usedRows.push([String(residue), 'ranije', 'bez preciznog datuma (iz stare evidencije)', '']);
     } else {
       for (const p of (b.iskorisceno_periodi ?? [])) usedRows.push([String(p.dana), 'GO', fmtPeriod(p), '']);
-      if (b.ranije_evidentirano > 0) usedRows.push([String(b.ranije_evidentirano), 'ranije', 'ranije evidentirano (pre evidencije po danima)', '']);
+      if (b.ranije_evidentirano > 0) usedRows.push([String(b.ranije_evidentirano), 'bez dat.', 'bez preciznog datuma (ranija evidencija)', '']);
     }
     sectionLabel(isHist ? 'Iskorišćeni dani (ranija evidencija)' : 'Iskorišćeni dani', [60, 60, 60]);
     drawTable(COLS, usedRows.length ? usedRows : [['', '', '— nema —', '']]);
