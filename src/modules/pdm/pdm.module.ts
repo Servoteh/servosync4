@@ -8,5 +8,7 @@ import { PdmService } from "./pdm.service";
   imports: [PrismaModule],
   controllers: [PdmController],
   providers: [PdmService, PdmImportService],
+  // PdmService se deli sa TechProcessesModule (kiosk PDF ruta pod TEHNOLOGIJA_READ).
+  exports: [PdmService],
 })
 export class PdmModule {}

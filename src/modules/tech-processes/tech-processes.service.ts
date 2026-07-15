@@ -461,25 +461,84 @@ export class TechProcessesService {
 
     // `hasOpenSession` dolazi iz već učitanog skupa otvorenih sesija (gore) —
     // bez drugog upita ka work_time_entries.
-    const [ops, planned] = await Promise.all([
+    const triples = rows.map((r) => ({
+      projectId: r.projectId,
+      identNumber: r.identNumber,
+      variant: r.variant,
+    }));
+    const [ops, planned, drawings] = await Promise.all([
       this.resolveOperationsByCode(rows.map((r) => r.workCenterCode)),
-      this.resolvePlannedByTriple(
-        rows.map((r) => ({
-          projectId: r.projectId,
-          identNumber: r.identNumber,
-          variant: r.variant,
-        })),
-      ),
+      this.resolvePlannedByTriple(triples),
+      this.resolveDrawingByTriple(triples),
     ]);
 
-    const data = rows.map((r) => ({
-      ...r,
-      operation: ops.get(r.workCenterCode) ?? null,
-      plannedPieces:
-        planned.get(`${r.projectId}|${r.identNumber}|${r.variant}`) ?? null,
-      hasOpenSession: openSessionIds.has(r.id),
-    }));
+    const data = rows.map((r) => {
+      const key = `${r.projectId}|${r.identNumber}|${r.variant}`;
+      return {
+        ...r,
+        operation: ops.get(r.workCenterCode) ?? null,
+        plannedPieces: planned.get(key) ?? null,
+        // Crtež RN-a + hasPdf za „Otvori PDF" dugme (reuse resolveCardDrawing);
+        // null kad RN/crtež ne postoji.
+        drawing: drawings.get(key) ?? null,
+        hasOpenSession: openSessionIds.has(r.id),
+      };
+    });
     return { data, meta: { workerId, workerCard } };
+  }
+
+  /**
+   * Batch: trojka → crtež RN-a (`{ id, hasPdf }`) za „Otvori PDF" dugme u „Moji
+   * otvoreni". RN je jedinstven po trojci (uq constraint na (project_id,
+   * ident_number, variant)), pa svaka trojka daje najviše jedan (drawingNumber,
+   * revision); crtež + hasPdf razrešava zajednički `resolveCardDrawing` (isti kao u
+   * `card()`), keširan po (broj, revizija) da se više trojki istog crteža ne
+   * razrešava dvaput. null kad RN/crtež ne postoji (skalarni upiti, bez required JOIN-a).
+   */
+  private async resolveDrawingByTriple(
+    triples: { projectId: number; identNumber: string; variant: number }[],
+  ): Promise<Map<string, { id: number; hasPdf: boolean } | null>> {
+    const map = new Map<string, { id: number; hasPdf: boolean } | null>();
+    const keys = new Set(
+      triples.map((t) => `${t.projectId}|${t.identNumber}|${t.variant}`),
+    );
+    if (!keys.size) return map;
+    const idents = [...new Set(triples.map((t) => t.identNumber))];
+    const wos = await this.prisma.workOrder.findMany({
+      where: { identNumber: { in: idents } },
+      select: {
+        projectId: true,
+        identNumber: true,
+        variant: true,
+        drawingNumber: true,
+        revision: true,
+      },
+    });
+    // Trojka → (drawingNumber, revision) sa RN-a; prvi red po ključu (trojka je jedinstvena).
+    const refByKey = new Map<
+      string,
+      { drawingNumber: string | null; revision: string | null }
+    >();
+    for (const wo of wos) {
+      const key = `${wo.projectId}|${wo.identNumber}|${wo.variant}`;
+      if (keys.has(key) && !refByKey.has(key))
+        refByKey.set(key, {
+          drawingNumber: wo.drawingNumber,
+          revision: wo.revision,
+        });
+    }
+    // Keš po (broj, revizija) — više trojki može deliti isti crtež.
+    const cache = new Map<string, { id: number; hasPdf: boolean } | null>();
+    for (const [key, ref] of refByKey) {
+      const cacheKey = `${ref.drawingNumber ?? ""}|${ref.revision ?? ""}`;
+      let drawing = cache.get(cacheKey);
+      if (drawing === undefined) {
+        drawing = await this.resolveCardDrawing(ref.drawingNumber, ref.revision);
+        cache.set(cacheKey, drawing);
+      }
+      map.set(key, drawing);
+    }
+    return map;
   }
 
   /** Batch: trojka → planirano (`work_orders.piece_count`), za prikaz napravljeno/plan. */
@@ -1928,8 +1987,10 @@ export class TechProcessesService {
    * po `tech_processes` id-ju, BEZ barkodova (radnik je već identifikovan karticom ili
    * prijavljenim nalogom). Zatvara NJEGOVU otvorenu `work_time_entries` sesiju za taj
    * postupak i akumulira komade na red operacije — ista logika kao `POST /work/stop`
-   * (deljeni `accumulateStopWork`). Za razliku od `work/stop` NEMA single-shot fallback:
-   * ako otvorena sesija ne postoji → 422 (dugme „Kraj rada" se nudi samo za otvorene).
+   * (deljeni `accumulateStopWork`). Redovi otvoreni u staroj aplikaciji / jednim
+   * skenom NEMAJU otvorenu sesiju: tada se zatvaranje sesije PRESKAČE (session=null,
+   * 0 sekundi), a komadi se svejedno akumuliraju — stari 0/1 red (uneto 1 = plan) se
+   * tako prirodno zatvara, a nedovršen visered ostaje otvoren.
    * Machine-access provera kao u `stopWork` (enforce → 403, shadow → upozorenje).
    */
   async stopWorkById(id: number, body: StopWorkByIdBody, user?: AuthUser) {
@@ -1967,19 +2028,18 @@ export class TechProcessesService {
       const now = new Date();
 
       // MOJA otvorena sesija za taj postupak (filter po workerId → tuđa sesija se ne
-      // zatvara). Bez fallback-a: nema otvorene sesije → 422.
+      // zatvara). Ako je nema (star red / jedan sken u staroj aplikaciji), zatvaranje
+      // sesije se PRESKAČE (session=null), a komadi se svejedno akumuliraju ispod.
       const open = await tx.workTimeEntry.findFirst({
         where: { workerId: worker.id, techProcessId: tp.id, stoppedAt: null },
         orderBy: { id: "desc" },
       });
-      if (!open)
-        throw new UnprocessableEntityException(
-          "Nema otvorene sesije za ovaj postupak.",
-        );
-      const session = await tx.workTimeEntry.update({
-        where: { id: open.id },
-        data: { stoppedAt: now, pieceCount: body.pieceCount },
-      });
+      const session = open
+        ? await tx.workTimeEntry.update({
+            where: { id: open.id },
+            data: { stoppedAt: now, pieceCount: body.pieceCount },
+          })
+        : null;
 
       const acc = await this.accumulateStopWork(
         tx,
@@ -1993,7 +2053,7 @@ export class TechProcessesService {
       return {
         tp: acc.tp,
         session,
-        startedAt: open.startedAt,
+        startedAt: open ? open.startedAt : null,
         stoppedAt: now,
         workOrder,
         planned: acc.planned,
@@ -2004,25 +2064,31 @@ export class TechProcessesService {
     });
 
     const workers = await this.resolveWorkers([result.tp.workerId]);
-    const elapsedSeconds = Math.max(
-      0,
-      Math.round(
-        (result.stoppedAt.getTime() - result.startedAt.getTime()) / 1000,
-      ),
-    );
+    // Null-safe kad nema sesije (star red / jedan sken): startedAt null → 0 sekundi.
+    const elapsedSeconds = result.startedAt
+      ? Math.max(
+          0,
+          Math.round(
+            (result.stoppedAt.getTime() - result.startedAt.getTime()) / 1000,
+          ),
+        )
+      : 0;
     return {
       data: {
         techProcess: {
           ...result.tp,
           worker: workers.get(result.tp.workerId) ?? null,
         },
-        session: {
-          id: result.session.id,
-          startedAt: result.startedAt,
-          stoppedAt: result.stoppedAt,
-          elapsedSeconds,
-          instant: false,
-        },
+        // null kad nema sesije — evidentirani su samo komadi / zatvaranje operacije.
+        session: result.session
+          ? {
+              id: result.session.id,
+              startedAt: result.startedAt,
+              stoppedAt: result.stoppedAt,
+              elapsedSeconds,
+              instant: false,
+            }
+          : null,
         reportedPieces: body.pieceCount,
         plannedPieces: result.planned,
         operationFinished: result.reachedPlan,

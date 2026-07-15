@@ -9,14 +9,18 @@ import {
   Post,
   Query,
   Req,
+  Res,
+  StreamableFile,
   UseGuards,
 } from "@nestjs/common";
+import type { Response } from "express";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import type { AuthUser } from "../auth/jwt.strategy";
 import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
 import { PERMISSIONS } from "../../common/authz/permissions";
 import { TechProcessesService } from "./tech-processes.service";
+import { PdmService } from "../pdm/pdm.service";
 import type {
   CardQuery,
   CriticalQuery,
@@ -61,7 +65,10 @@ import type { PrintLabelDto } from "./dto/print-label.dto";
 @RequirePermission(PERMISSIONS.TEHNOLOGIJA_READ)
 @Controller({ path: "tech-processes", version: "1" })
 export class TechProcessesController {
-  constructor(private readonly techProcesses: TechProcessesService) {}
+  constructor(
+    private readonly techProcesses: TechProcessesService,
+    private readonly pdm: PdmService,
+  ) {}
 
   @Get()
   list(@Query() query: ListTechProcessesQuery, @Req() req: { user: AuthUser }) {
@@ -261,6 +268,40 @@ export class TechProcessesController {
     @Body() dto?: { note?: string },
   ) {
     return this.techProcesses.deleteEntry(id, dto);
+  }
+
+  /**
+   * Uskladišten PDF crteža (stream) — KIOSK ruta. Kiosk rola (`proizvodni_radnik`)
+   * ima TEHNOLOGIJA_READ ali NE PDM_READ, pa `GET /pdm/drawings/:id/pdf/content`
+   * (PDM_READ) vraća 403 na kiosku. Ova ruta strimuje isti sadržaj pod
+   * TEHNOLOGIJA_READ (delegira na `PdmService.getPdfContent`). Putanja
+   * `drawings/:id/pdf/content` je jedinstvena (ne kolidira sa `:id`).
+   * `?download=true` → attachment; inače inline (prikaz u browseru).
+   */
+  @Get("drawings/:id/pdf/content")
+  @RequirePermission(PERMISSIONS.TEHNOLOGIJA_READ)
+  async pdfContent(
+    @Param("id", ParseIntPipe) id: number,
+    @Query("download") download: string | undefined,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<StreamableFile> {
+    const { buffer, fileName } = await this.pdm.getPdfContent(id);
+    const disposition = download === "true" ? "attachment" : "inline";
+    // `fileName` može nositi dijakritike — Node setHeader odbija znakove van latin1
+    // (ERR_INVALID_CHAR → 500). ASCII fallback u `filename=` + RFC 5987 `filename*`
+    // sa punim UTF-8 imenom (browseri biraju filename*). Isti obrazac kao pdm.controller.
+    const asciiName =
+      fileName.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_") ||
+      "crtez.pdf";
+    const utf8Name = encodeURIComponent(fileName).replace(
+      /['()*]/g,
+      (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
+    );
+    res.set({
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `${disposition}; filename="${asciiName}"; filename*=UTF-8''${utf8Name}`,
+    });
+    return new StreamableFile(buffer);
   }
 
   @Get(":id")

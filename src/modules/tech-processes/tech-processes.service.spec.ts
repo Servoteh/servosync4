@@ -730,6 +730,52 @@ describe("TechProcessesService — openForWorker (Moji otvoreni, proba 13.07 Jov
     expect(data[0].hasOpenSession).toBe(false);
   });
 
+  it("red nosi drawing { id, hasPdf } sa RN-a (reuse resolveCardDrawing)", async () => {
+    prisma.workTimeEntry.findMany.mockResolvedValue([]);
+    prisma.techProcess.findMany.mockResolvedValue([
+      tpRow({
+        id: 500,
+        workerId: 74,
+        projectId: 2597,
+        identNumber: "06/93-4",
+        variant: 0,
+      }),
+    ]);
+    // RN za trojku nosi (drawingNumber, revision) — čita ga resolveDrawingByTriple.
+    prisma.workOrder.findMany.mockResolvedValue([
+      {
+        projectId: 2597,
+        identNumber: "06/93-4",
+        variant: 0,
+        drawingNumber: "CRT-1",
+        revision: "A",
+        pieceCount: 10,
+      },
+    ]);
+    prisma.drawing.findFirst.mockResolvedValue({
+      id: 42,
+      drawingNumber: "CRT-1",
+      revision: "A",
+    });
+    prisma.drawingPdf.findFirst.mockResolvedValue({ drawingNumber: "CRT-1" });
+
+    const { data } = await service.openForWorker("CARD74", undefined);
+
+    expect(data).toHaveLength(1);
+    expect(data[0].drawing).toEqual({ id: 42, hasPdf: true });
+  });
+
+  it("drawing je null kad RN/crtež za trojku ne postoji", async () => {
+    prisma.workTimeEntry.findMany.mockResolvedValue([]);
+    prisma.techProcess.findMany.mockResolvedValue([tpRow({ workerId: 74 })]);
+    // workOrder.findMany default [] → nema (drawingNumber, revision) → drawing null.
+
+    const { data } = await service.openForWorker("CARD74", undefined);
+
+    expect(data[0].drawing).toBeNull();
+    expect(prisma.drawing.findFirst).not.toHaveBeenCalled();
+  });
+
   it("bez kartice: nalog bez vezanog radnika → 400 sa jasnom porukom", async () => {
     prisma.user.findUnique.mockResolvedValue({ workerId: null });
 
@@ -1416,34 +1462,113 @@ describe("TechProcessesService — stopWorkById (Kraj rada iz Moji otvoreni)", (
     expect(prisma.workTimeEntry.update).toHaveBeenCalled();
   });
 
-  it("nema otvorene sesije za taj postupak → 422, ništa se ne knjiži", async () => {
+  it("bez otvorene sesije (star red / jedan sken): NE baca, akumulira komade, visered ostaje otvoren", async () => {
     prisma.techProcess.findUnique.mockResolvedValue(
-      tpRow({ id: 500, pieceCount: 2, workCenterCode: "0102", workOrderId: 900 }),
+      tpRow({
+        id: 500,
+        pieceCount: 23,
+        operationNumber: 10,
+        workCenterCode: "0102",
+        workOrderId: 900,
+      }),
     );
-    prisma.workTimeEntry.findFirst.mockResolvedValue(null);
+    // RN plan 100 → 23 + 5 = 28 < 100 → operacija ostaje otvorena.
+    prisma.workOrder.findFirst.mockResolvedValue({
+      id: 900,
+      projectId: 2597,
+      identNumber: "06/93-4",
+      variant: 0,
+      pieceCount: 100,
+      revision: "A",
+    });
+    prisma.workTimeEntry.findFirst.mockResolvedValue(null); // nema sesije
+    prisma.techProcess.update.mockResolvedValue(
+      tpRow({ id: 500, pieceCount: 28, workerId: 74 }),
+    );
 
-    await expect(
-      service.stopWorkById(500, { workerCard: "CARD74", pieceCount: 3 }, undefined),
-    ).rejects.toThrow("Nema otvorene sesije za ovaj postupak.");
+    const { data } = await service.stopWorkById(
+      500,
+      { workerCard: "CARD74", pieceCount: 5 },
+      undefined,
+    );
+
+    expect(data.reportedPieces).toBe(5);
+    expect(data.operationFinished).toBe(false); // 28 < 100
+    expect(data.session).toBeNull(); // nema sesije za zatvaranje
+    expect(data.techProcess.pieceCount).toBe(28);
+    // Sesija se NE zatvara (nema je), ali se komadi akumuliraju na red operacije.
     expect(prisma.workTimeEntry.update).not.toHaveBeenCalled();
-    expect(prisma.techProcess.update).not.toHaveBeenCalled();
+    expect(prisma.techProcess.update).toHaveBeenCalledWith(
+      containing({
+        where: { id: 500 },
+        data: containing({ pieceCount: 28, workerId: 74 }),
+      }),
+    );
   });
 
-  it("tuđa sesija se NE zatvara: upit je pinovan na moj workerId (foreign → 422)", async () => {
+  it("bez sesije, stari 0/1 red (uneto 1 = plan): zatvara operaciju prirodno", async () => {
+    prisma.techProcess.findUnique.mockResolvedValue(
+      tpRow({
+        id: 501,
+        pieceCount: 0,
+        operationNumber: 10,
+        workCenterCode: "0102",
+        workOrderId: 900,
+      }),
+    );
+    // RN plan 1 → 0 + 1 = 1 >= 1 → reachedPlan → zatvara.
+    prisma.workOrder.findFirst.mockResolvedValue({
+      id: 900,
+      projectId: 2597,
+      identNumber: "06/93-4",
+      variant: 0,
+      pieceCount: 1,
+      revision: "A",
+    });
+    prisma.workTimeEntry.findFirst.mockResolvedValue(null);
+    prisma.techProcess.update.mockResolvedValue(
+      tpRow({ id: 501, pieceCount: 1, isProcessFinished: true, workerId: 74 }),
+    );
+
+    const { data } = await service.stopWorkById(
+      501,
+      { workerCard: "CARD74", pieceCount: 1 },
+      undefined,
+    );
+
+    expect(data.operationFinished).toBe(true); // dostignut plan (1/1)
+    expect(data.session).toBeNull();
+    // Red se zatvara: update sadrži isProcessFinished:true.
+    const updArg = prisma.techProcess.update.mock.calls[0][0] as {
+      data: Record<string, unknown>;
+    };
+    expect(updArg.data.isProcessFinished).toBe(true);
+  });
+
+  it("tuđa otvorena sesija se NE zatvara (izolacija po mom workerId), komadi akumulirani", async () => {
     prisma.techProcess.findUnique.mockResolvedValue(
       tpRow({ id: 500, pieceCount: 2, workCenterCode: "0102", workOrderId: 900 }),
     );
     // Otvorena sesija postoji, ali je tuđa → filter po workerId:74 je ne vraća.
     prisma.workTimeEntry.findFirst.mockResolvedValue(null);
+    prisma.techProcess.update.mockResolvedValue(
+      tpRow({ id: 500, pieceCount: 5, workerId: 74 }),
+    );
 
-    await expect(
-      service.stopWorkById(500, { workerCard: "CARD74", pieceCount: 3 }, undefined),
-    ).rejects.toThrow("Nema otvorene sesije");
+    const { data } = await service.stopWorkById(
+      500,
+      { workerCard: "CARD74", pieceCount: 3 },
+      undefined,
+    );
+
     // Dokaz izolacije: sesija se traži isključivo po mom workerId + stoppedAt:null.
     expect(prisma.workTimeEntry.findFirst).toHaveBeenCalledWith(
       containing({ where: containing({ workerId: 74, stoppedAt: null }) }),
     );
+    // Tuđa sesija se NE zatvara, ali su komadi svejedno akumulirani (5 = 2 + 3).
     expect(prisma.workTimeEntry.update).not.toHaveBeenCalled();
+    expect(data.session).toBeNull();
+    expect(data.techProcess.pieceCount).toBe(5);
   });
 
   it("404 kad tehnološki postupak ne postoji", async () => {
