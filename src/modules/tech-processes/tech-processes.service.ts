@@ -2080,6 +2080,8 @@ export class TechProcessesService {
         body.pieceCount,
         now,
         workOrder,
+        // FIX B: „Kraj rada" zatvara taj red i ispod plana (radnik ga završava).
+        true,
       );
 
       return {
@@ -2170,19 +2172,25 @@ export class TechProcessesService {
     pieceCount: number,
     now: Date,
     workOrder: { id: number; pieceCount: number } | null,
+    // FIX B (Nenad 2026-07-15): „Kraj rada" (stopWorkById) UVEK zatvara ovaj red —
+    // radnik ga ručno završava/čisti. Bezbedno je jer FIX A ponovo čini ispod-plan
+    // operaciju radnom (sledeći sken otvara NOV red). Barkod „Završi rad"
+    // (stopWork) ostaje plan-gated (forceFinish=false).
+    forceFinish = false,
   ) {
     const planned = workOrder?.pieceCount ?? null;
     const newPieceCount = tp.pieceCount + pieceCount;
     const reachedPlan = planned !== null && newPieceCount >= planned;
+    const finish = reachedPlan || forceFinish;
     const updated = await tx.techProcess.update({
       where: { id: tp.id },
       data: {
         pieceCount: newPieceCount,
         workerId,
-        ...(reachedPlan ? { isProcessFinished: true, finishedAt: now } : {}),
+        ...(finish ? { isProcessFinished: true, finishedAt: now } : {}),
       },
     });
-    const prioritized = reachedPlan
+    const prioritized = finish
       ? await this.setOperationDonePriority(
           tx,
           workOrder?.id ?? tp.workOrderId,
@@ -3059,7 +3067,8 @@ export class TechProcessesService {
     return tx.workOrder.findFirst({
       where: { projectId, identNumber },
       orderBy: { variant: "desc" },
-      select: { id: true, variant: true },
+      // `pieceCount` (plan RN-a) — FIX A poredi kumulativ operacije sa planom.
+      select: { id: true, variant: true, pieceCount: true },
     });
   }
 
@@ -3189,14 +3198,45 @@ export class TechProcessesService {
       workCenterCode,
       operationNumber,
     );
-    // Obična operacija: postojeći red (otvoren ili zatvoren) je autoritet.
-    // withoutProcess: postojeći red se koristi SAMO ako je OTVOREN — zatvoren se
-    // tretira kao istorija i pada u granu kreiranja novog reda ispod.
-    if (existing && !(withoutProcess && existing.isProcessFinished === true))
+
+    // FIX A (Nenad 2026-07-15): OBIČNA operacija čiji je KUMULATIV komada (svi
+    // kvaliteti, svi redovi te operacije) < plan RN-a je UVEK RADNA — i kad su svi
+    // njeni `tech_processes` redovi zatvoreni (`isProcessFinished`). Zatvoreni
+    // ispod-plan red se tada tretira kao ISTORIJA (kao withoutProcess): otvara se
+    // NOV red umesto greške „već zatvorena". Zatvoren tek kad kumulativ >= plan.
+    // Metrika = ukupan `pieceCount` (dosledno sa `card.made` i `control()`
+    // kumulativom). Aggregate se radi SAMO za zatvoren obično-operacijski red.
+    let belowPlan = false;
+    if (existing && existing.isProcessFinished === true && !withoutProcess) {
+      const planned = wo.pieceCount ?? null;
+      if (planned !== null) {
+        const sum = await tx.techProcess.aggregate({
+          _sum: { pieceCount: true },
+          where: {
+            projectId,
+            identNumber,
+            variant: wo.variant,
+            operationNumber: existing.operationNumber,
+            workCenterCode,
+          },
+        });
+        belowPlan = (sum._sum.pieceCount ?? 0) < planned;
+      }
+    }
+
+    // Obična operacija: postojeći red (otvoren ili zatvoren-iznad-plana) je
+    // autoritet. withoutProcess ILI zatvoren ispod-plana (belowPlan): postojeći
+    // red se koristi SAMO ako je OTVOREN — zatvoren se tretira kao istorija i pada
+    // u granu kreiranja novog reda ispod.
+    if (
+      existing &&
+      !((withoutProcess || belowPlan) && existing.isProcessFinished === true)
+    )
       return { tp: existing, opened: false };
 
-    // withoutProcess: otvori red direktno — preskoči routing lookup i 422.
-    if (withoutProcess) {
+    // withoutProcess ILI belowPlan: otvori red direktno — preskoči routing lookup
+    // i 422 (za belowPlan operacija JESTE u routingu jer `existing` postoji).
+    if (withoutProcess || belowPlan) {
       // Serijska sekvenca (synced eksplicitni id-jevi) — poravnaj pre insert-a.
       await this.alignTechProcessSequence(tx);
       const tp = await tx.techProcess.create({
@@ -3204,7 +3244,8 @@ export class TechProcessesService {
           projectId,
           identNumber,
           variant: wo.variant,
-          operationNumber: operationNumber ?? 0,
+          // belowPlan: nasledi op. broj zatvorenog reda (routing ga već ima).
+          operationNumber: operationNumber ?? existing?.operationNumber ?? 0,
           workCenterCode,
           identMark: identMark || "0",
           pieceCount: 0,
