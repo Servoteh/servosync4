@@ -18,6 +18,7 @@ import {
   Cpu,
   DraftingCompass,
   Eye,
+  FlaskConical,
   FolderKanban,
   Hammer,
   IdCard,
@@ -172,6 +173,15 @@ const NAV_SECTIONS: NavSection[] = [
       { label: 'Komitenti', href: '/customers', icon: Building2, requires: PERMISSIONS.DIRECTORY_READ },
       { label: 'Predmeti', href: '/projects', icon: Briefcase, requires: PERMISSIONS.DIRECTORY_READ },
       { label: 'Sinhronizacije', href: '/syncs', icon: RefreshCw, requires: PERMISSIONS.SYNC_READ },
+    ],
+  },
+  {
+    // Razvojna faza 2.0 — indeks WIP modula (Talasi B–G) za testiranje pre
+    // hub-integracije (odluka Nenad 15.07.2026). Vidljivost = razvoj.read
+    // (admin/menadzment/hr/poslovni_admin). Vidi src/app/razvoj/page.tsx.
+    title: 'Razvojna faza',
+    items: [
+      { label: 'Razvojna faza 2.0', href: '/razvoj', icon: FlaskConical, requires: PERMISSIONS.RAZVOJ_READ },
     ],
   },
 ];

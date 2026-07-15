@@ -134,6 +134,9 @@ export const PERMISSIONS = {
   // tok (POST /commands + cancel), read sve GET-ove. Presuda E5: `energetika.*`, ne `scada.*`.
   ENERGETIKA_READ: 'energetika.read',
   ENERGETIKA_CONTROL: 'energetika.control',
+  // Razvojna faza 2.0 — indeks-stranica WIP modula (Talasi B–G) za testiranje pre
+  // promocije u stalni 1.0 hub. Dodeljeno: admin + menadzment + hr/poslovni_admin.
+  RAZVOJ_READ: 'razvoj.read',
 } as const;
 
 export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
