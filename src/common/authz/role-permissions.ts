@@ -267,6 +267,7 @@ const BASE_ROLE_PERMISSIONS: Partial<
     P.RN_READ,
     P.RN_WRITE,
     P.PDM_READ,
+    P.PDM_IMPORT, // ručni „Uvoz PDF/XML crteža" — biro/menadžment (Igor V.), Nenad 15.07
     // Strukture: R + W — odluka Nenad 10.07.2026 (PLAN_dorade_2026-07-10 D1)
     // prevazilazi „samo R" iz matrice §3: dodavanje/izmena struktura dozvoljena
     // i MENADZMENT/TEHNOLOG rolama uz ADMIN/SEF.
