@@ -259,14 +259,14 @@ export class WorkOrderPrintService {
                 workCenterCode: o.workCenterCode,
                 revision: wo.revision,
               }),
-              { height: 7 },
+              { height: 9 },
             );
           } catch {
             opSvg = null;
           }
         }
         cells.push(
-          opSvg ? { svg: opSvg, fit: [136, 26] } : { text: "—", style: "td" },
+          opSvg ? { svg: opSvg, fit: [136, 30] } : { text: "—", style: "td" },
         );
       }
       return cells;
@@ -275,7 +275,17 @@ export class WorkOrderPrintService {
     const opsTable: Content = wo.operations.length
       ? {
           table: { headerRows: 1, widths, body: [headerCells, ...bodyRows] },
-          layout: "lightHorizontalLines",
+          // Vertikalni razmak po redu da se S-barkodovi jasno odvoje — operateri
+          // su se žalili da su preblizu i da omaše sken (Nenad 15.07).
+          layout: {
+            hLineWidth: (i: number) => (i <= 1 ? 0.8 : 0.5),
+            vLineWidth: () => 0,
+            hLineColor: () => "#cccccc",
+            paddingTop: (i: number) => (i === 0 ? 2 : 7),
+            paddingBottom: (i: number) => (i === 0 ? 2 : 7),
+            paddingLeft: () => 4,
+            paddingRight: () => 4,
+          },
         }
       : {
           text: "Nema operacija na ovom nalogu.",
@@ -283,10 +293,33 @@ export class WorkOrderPrintService {
           margin: [0, 6, 0, 0],
         };
 
+    // Zbir vremena (paritet legacy printa): Σ Tpz (pripremno-završno, jednokratno)
+    // + Σ Tk (po komadu) × planirana količina.
+    const sumTpz = wo.operations.reduce((s, o) => s + (o.setupTime ?? 0), 0);
+    const sumTk = wo.operations.reduce((s, o) => s + (o.cycleTime ?? 0), 0);
+    const totalTime = sumTpz + sumTk * wo.pieceCount;
+    const totals: Content = wo.operations.length
+      ? {
+          margin: [0, 10, 0, 0],
+          alignment: "right",
+          text: [
+            { text: "Ukupno vreme  ", bold: true },
+            {
+              text: `(Σ Tpz ${fmtTot(sumTpz)} + Σ Tk ${fmtTot(sumTk)} × ${
+                wo.pieceCount
+              } kom)  =  `,
+              fontSize: 8,
+              color: "#555",
+            },
+            { text: fmtTot(totalTime), bold: true },
+          ],
+        }
+      : { text: "" };
+
     return {
       pageSize: "A4",
       pageMargins: [28, 28, 28, 36],
-      content: [headerColumns, info, opsTable],
+      content: [headerColumns, info, opsTable, totals],
       styles: {
         title: { fontSize: 18, bold: true },
         // Digitalna zamena za crvenu HITNO nalepnicu (Miljan t.10).
@@ -321,4 +354,10 @@ function fmtDate(d: Date | null): string {
 function fmtNum(n: number | null): string {
   if (n == null || n === 0) return "";
   return String(n).replace(".", ",");
+}
+
+/** Zbir vremena — uvek prikazuje vrednost (i 0), do 4 decimale, zarez. */
+function fmtTot(n: number): string {
+  const r = Math.round(n * 10000) / 10000;
+  return String(r).replace(".", ",");
 }
