@@ -392,6 +392,22 @@ export interface ControlResult {
 // ------------------------------------------------------------------ MOJI OTVORENI (runda 2 t.3)
 
 /**
+ * Crtež sa RN-a + revizioni signal (kiosk kartica `card().drawing` i „Moji
+ * otvoreni" red). `hasPdf` = postoji uskladišten PDF (drawing_pdfs). Revizija
+ * crteža (MAX semantika kao PDM, normalizacija prazno→'A', uppercase):
+ * `revision` = revizija na koju je RN vezan, `latestRevision` = najnovija u bazi;
+ * `revisionStale = true` → RN koristi STARIJU reviziju od najnovije — UPOZORENJE
+ * (ne blokira rad, odluka Nenad 15.07).
+ */
+export interface KioskDrawingRef {
+  id: number;
+  hasPdf: boolean;
+  revision: string | null;
+  latestRevision: string | null;
+  revisionStale: boolean;
+}
+
+/**
  * Otvoren tehnološki postupak radnika — red iz GET /worker/open (runda 2 t.3).
  * Lista svih operacija koje je radnik započeo/prijavljivao a nije zatvorio, da
  * ih može zatvoriti bez ponovnog skeniranja oba barkoda.
@@ -412,11 +428,11 @@ export interface MyOpenRow {
   /** true = radnik ima OTVORENU vremensku sesiju (A-4) na ovoj operaciji. */
   hasOpenSession: boolean;
   /**
-   * Crtež sa RN-a za dugme „PDF crteža" u redu; `hasPdf` = postoji uskladišten
-   * PDF (drawing_pdfs). Opciono/defanzivno: null kad RN nema razrešen crtež,
+   * Crtež sa RN-a za dugme „PDF crteža" u redu (+ revizioni signal, v.
+   * `KioskDrawingRef`). Opciono/defanzivno: null kad RN nema razrešen crtež,
    * undefined kad stariji backend polje ne vraća.
    */
-  drawing?: { id: number; hasPdf: boolean } | null;
+  drawing?: KioskDrawingRef | null;
 }
 
 /**

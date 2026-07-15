@@ -109,6 +109,13 @@ export interface WorkOrderApprovalRow {
 export interface WorkOrderDetail extends WorkOrder {
   handoverWorker: WorkerRef | null;
   /**
+   * Revizija crteža RN-a (MAX semantika kao PDM): `current` = revizija na koju je
+   * RN vezan, `latest` = najnovija u bazi; `stale = true` → postoji novija revizija
+   * nego što RN koristi (UPOZORENJE, ne blokira — odluka Nenad 15.07). null kad RN
+   * nema razrešen crtež. Opciono/defanzivno: stariji backend polje ne vraća.
+   */
+  drawingRevision?: { current: string | null; latest: string | null; stale: boolean } | null;
+  /**
    * Nacrt iz kog RN potiče (za „PDF cela primopredaja" — svi crteži nacrta).
    * null za ručne/dorada RN-ove bez razrešivog nacrta. Opciono/defanzivno.
    */

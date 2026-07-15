@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
-import { Copy, CopyPlus, Pencil, Plus, Printer, Recycle, Trash2 } from 'lucide-react';
+import { AlertTriangle, Copy, CopyPlus, Pencil, Plus, Printer, Recycle, Trash2 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import {
   REWORK_QUALITY,
@@ -346,6 +346,16 @@ function WorkOrderDetail({
         <p className="text-sm text-status-danger" role="alert">
           {actionError.message}
         </p>
+      )}
+
+      {/* Revizija crteža zastarela — RN koristi stariju reviziju od najnovije u
+          bazi (npr. stigla nova revizija a RN nije re-izdat). Ne blokira (15.07). */}
+      {rn.drawingRevision?.stale && (
+        <div className="flex items-center gap-2 rounded-panel border border-status-warn/40 bg-status-warn-bg px-3 py-2 text-sm font-semibold text-status-warn">
+          <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden />
+          Novija revizija crteža: {rn.drawingRevision.latest ?? '—'} (RN je na{' '}
+          {rn.drawingRevision.current ?? '—'})
+        </div>
       )}
 
       <dl className="grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-4">

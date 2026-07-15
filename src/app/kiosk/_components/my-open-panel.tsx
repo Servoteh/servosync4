@@ -151,6 +151,12 @@ function MyOpenRowItem({
             Op. {row.operationNumber} · {row.operation?.workCenterName ?? row.workCenterCode}
           </span>
           {row.hasOpenSession && <StatusBadge tone="info" label="Rad u toku" />}
+          {/* Revizija crteža zastarela — mali žuti indikator (upozorenje, ne blokira). */}
+          {row.drawing?.revisionStale && (
+            <span className="inline-flex items-center rounded-full bg-status-warn-bg px-2.5 py-0.5 text-base font-semibold text-status-warn">
+              novija rev {row.drawing.latestRevision ?? '—'}
+            </span>
+          )}
         </div>
         <div className="mt-1 flex flex-wrap gap-x-6 gap-y-0.5 text-lg text-ink-secondary">
           <span>

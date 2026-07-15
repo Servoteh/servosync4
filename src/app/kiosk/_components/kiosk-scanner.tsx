@@ -15,6 +15,7 @@ import {
   useStartWork,
   useStopWork,
   useWorkerMe,
+  type KioskDrawingRef,
   type KioskWorker,
   type KioskWorkOrder,
   type OperationBarcodeFields,
@@ -638,6 +639,10 @@ export function KioskScanner() {
     ? `${operation.fields.operationNumber != null ? `Op. ${operation.fields.operationNumber} · ` : ''}${opName}`
     : '';
   const cardLoading = !!operation && card.isLoading;
+  // Revizioni signal crteža sa kartice — backend ga šalje uz `drawing`. Kartični
+  // `drawing` tip (TechProcessCard) ne nosi revizione fields, pa čitamo kroz
+  // kiosk drawing tip; `revisionStale` = RN je na starijoj reviziji od najnovije.
+  const cardDrawing = (card.data?.data.drawing ?? null) as KioskDrawingRef | null;
   // Operacija je „u nalogu" ako ima tech_processes red ILI je u routingu RN-a
   // (za RN kreiran u 2.0 red se otvara pri prvom skenu — create-on-scan).
   const inRouting =
@@ -754,6 +759,16 @@ export function KioskScanner() {
             hint="Prislonite čitač na barkod operacije (počinje sa S) sa istog naloga."
             onScan={onOperationScan}
           />
+        )}
+
+        {/* Revizija crteža zastarela (RN na starijoj reviziji od najnovije) —
+            UPOZORENJE iznad panela (work/control); ne blokira rad (odluka 15.07). */}
+        {order && operation && cardDrawing?.revisionStale && (
+          <div className="rounded-panel border-2 border-status-warn/40 bg-status-warn-bg px-5 py-4 text-lg font-semibold text-status-warn">
+            ⚠ Crtež {order.workOrder?.drawingNumber ?? '—'}: RN je na reviziji{' '}
+            {cardDrawing.revision ?? '—'}, postoji novija revizija{' '}
+            {cardDrawing.latestRevision ?? '—'} — proveri da nalog nije zastareo.
+          </div>
         )}
 
         {order && operation && showControl && (
