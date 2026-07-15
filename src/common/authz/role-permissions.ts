@@ -622,6 +622,17 @@ for (const role of D_PREDMET_AKTIVACIJA)
 for (const role of D_PROFILE_TEAM) addPerms(role, [P.PROFILE_TEAM]);
 // pb.admin / settings.users / settings.audit / settings.system = SAMO admin (već u ALL) — bez dodele.
 
+// Razvojna faza 2.0 — indeks-stranica WIP modula (Talasi B–G) za testiranje pre
+// promocije u stalni 1.0 hub (odluka Nenad 15.07.2026). SAMO admin (kroz ALL) +
+// menadzment + hr/poslovni_admin ("kadrovska-admin" ekvivalent) — namerno UŽE
+// od pojedinačnih modul-permisija (koje ostaju netaknute za svoje uloge).
+const RAZVOJ_FAZA_ROLES: readonly RoleKey[] = [
+  ROLES.MENADZMENT,
+  ROLES.HR,
+  ROLES.POSLOVNI_ADMIN,
+];
+for (const role of RAZVOJ_FAZA_ROLES) addPerms(role, [P.RAZVOJ_READ]);
+
 /**
  * Normalise a stored role value to the catalog key.
  * Live `users.role` data predates the lowercase convention ("ADMIN"/"USER") — without this,

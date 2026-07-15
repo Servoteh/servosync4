@@ -213,6 +213,14 @@ export const PERMISSIONS = {
   //   nego kadrovska.read (fail-closed §2.6). NE gate-uje GET /employees (Zaposleni
   //   tab ga koristi šire) — samo FE Imenik tab.
   KADROVSKA_IMENIK: "kadrovska.imenik",
+  // Razvojna faza 2.0 — indeks-stranica WIP modula (Talasi B–G: Sastanci, Održavanje,
+  // PB, Praćenje proizvodnje, Plan proizvodnje, Plan montaže, Podešavanja, Energetika,
+  // Lokacije) za testiranje PRE promocije u stalni 1.0 hub (odluka Nenad 15.07.2026).
+  // Namerno ODVOJENO od modul-specifičnih read permisija (koje su već šire dodeljene
+  // po ulozi) — ovo je samo kapija ka „direktorijumu" testnih modula, ne dira postojeće
+  // grantove. Dodeljeno: admin (kroz ALL) + menadzment + hr/poslovni_admin
+  // ("kadrovska-admin" ekvivalent — nema posebne role sa tim imenom u katalogu).
+  RAZVOJ_READ: "razvoj.read",
 } as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
