@@ -205,30 +205,39 @@ export class WorkOrdersService {
         ? wo.drawingId
         : await this.resolveDrawingIdByNumber(wo.drawingNumber);
 
-    const [workers, quals, statuses, ops, parents, children, locations, draft] =
-      await Promise.all([
-        this.resolveWorkers([
-          wo.workerId,
-          wo.handoverWorkerId,
-          ...wo.operations.map((o) => o.workerId),
-          ...wo.machinedParts.map((p) => p.workerId),
-          ...wo.blanks.map((p) => p.workerId),
-          ...wo.nonStandardParts.map((p) => p.workerId),
-        ]),
-        this.resolveQualityTypes([wo.qualityTypeId]),
-        this.resolveStatuses([wo.handoverStatusId]),
-        this.resolveOperationsByCode(
-          wo.operations.map((o) => o.workCenterCode),
-        ),
-        // t.2 poreklo: izvorni RN (ako je ovo dorada/škart child).
-        this.resolveParentRefs([wo.parentWorkOrderId]),
-        // t.2 reverse: dorada/škart naslednici ovog RN-a.
-        this.reworkChildren(wo.id),
-        // t.5: neto lokacije po pozicijama.
-        this.resolveLocations([wo.id]),
-        // Nacrt iz kog RN potiče — za „PDF cela primopredaja" (svi crteži nacrta).
-        this.resolveDraftRef(effectiveDrawingId),
-      ]);
+    const [
+      workers,
+      quals,
+      statuses,
+      ops,
+      parents,
+      children,
+      locations,
+      draft,
+      revisionStatus,
+    ] = await Promise.all([
+      this.resolveWorkers([
+        wo.workerId,
+        wo.handoverWorkerId,
+        ...wo.operations.map((o) => o.workerId),
+        ...wo.machinedParts.map((p) => p.workerId),
+        ...wo.blanks.map((p) => p.workerId),
+        ...wo.nonStandardParts.map((p) => p.workerId),
+      ]),
+      this.resolveQualityTypes([wo.qualityTypeId]),
+      this.resolveStatuses([wo.handoverStatusId]),
+      this.resolveOperationsByCode(wo.operations.map((o) => o.workCenterCode)),
+      // t.2 poreklo: izvorni RN (ako je ovo dorada/škart child).
+      this.resolveParentRefs([wo.parentWorkOrderId]),
+      // t.2 reverse: dorada/škart naslednici ovog RN-a.
+      this.reworkChildren(wo.id),
+      // t.5: neto lokacije po pozicijama.
+      this.resolveLocations([wo.id]),
+      // Nacrt iz kog RN potiče — za „PDF cela primopredaja" (svi crteži nacrta).
+      this.resolveDraftRef(effectiveDrawingId),
+      // Verzioni status crteža — UPOZORENJE kad RN koristi stariju reviziju (Nenad 15.07).
+      this.resolveDrawingRevisionStatus(wo.drawingNumber, wo.revision),
+    ]);
     const w = (wid: number) => workers.get(wid) ?? null;
 
     const data = {
@@ -249,6 +258,9 @@ export class WorkOrdersService {
       // Nacrt iz kog RN potiče (za „PDF cela primopredaja"); null za ručne/
       // dorada RN-ove bez razrešivog nacrta.
       draftContext: draft,
+      // Verzioni status crteža: current (RN) vs latest (najnovija u bazi);
+      // stale=true → FE prikaže UPOZORENJE (ne blokira). null kad nema crteža.
+      drawingRevision: revisionStatus,
       operations: wo.operations.map((o) => ({
         ...o,
         worker: w(o.workerId),
@@ -379,6 +391,38 @@ export class WorkOrdersService {
       if (pdf) return r.id;
     }
     return 0;
+  }
+
+  /**
+   * Verzioni status crteža RN-a: da li RN koristi STARIJU reviziju nego što je
+   * najnovija u `drawings` za taj broj (npr. stigla nova revizija XML-om/izmenom
+   * a RN nije re-izdat). `current` = RN-ova revizija; `latest` = MAX(revision) tog
+   * crteža (`findFirst orderBy revision desc` — string MAX kao PDM; broj
+   * case-insensitive kao `resolveDrawingIdByNumber`); `stale` = current ima
+   * vrednost && norm(latest) > norm(current) (norm: trim/uppercase, prazno→"A").
+   * `null` kad RN nema broj crteža ili taj crtež nema reda u `drawings`. Jedan
+   * skalarni upit (bez required JOIN-a) — UPOZORENJE, ne blokira rad (Nenad 15.07).
+   */
+  private async resolveDrawingRevisionStatus(
+    drawingNumber: string | null,
+    revision: string | null,
+  ): Promise<{
+    current: string | null;
+    latest: string | null;
+    stale: boolean;
+  } | null> {
+    const num = (drawingNumber ?? "").trim();
+    if (!num) return null;
+    const latest = await this.prisma.drawing.findFirst({
+      where: { drawingNumber: { equals: num, mode: "insensitive" } },
+      orderBy: { revision: "desc" },
+      select: { revision: true },
+    });
+    if (!latest) return null;
+    const current = (revision ?? "").trim() || null;
+    const norm = (r: string | null) => (r ?? "").trim().toUpperCase() || "A";
+    const stale = current != null && norm(latest.revision) > norm(current);
+    return { current, latest: latest.revision ?? null, stale };
   }
 
   private async resolveDraftRef(

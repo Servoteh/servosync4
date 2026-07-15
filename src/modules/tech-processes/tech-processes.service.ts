@@ -115,6 +115,23 @@ interface CardOperationAcc {
   hasElapsed: boolean;
 }
 
+/**
+ * Crtež RN-a za „Otvori PDF" dugme (kartica TP / „Moji otvoreni") + verzioni
+ * status. `revisionStale` = RN je na STARIJOJ reviziji od najnovije u `drawings`
+ * (stigla nova revizija XML-om/izmenom a RN nije re-izdat) → UPOZORENJE, ne
+ * blokira rad (odluka Nenad 15.07). Revizija = string MAX (kao PDM),
+ * normalizacija prazno→"A", uppercase.
+ */
+export interface CardDrawingRef {
+  id: number;
+  hasPdf: boolean;
+  /** RN-ova revizija (null kad RN nema reviziju). */
+  revision: string | null;
+  /** Najviša revizija tog crteža u bazi (string MAX). */
+  latestRevision: string | null;
+  revisionStale: boolean;
+}
+
 export interface CriticalQuery {
   page?: string;
   pageSize?: string;
@@ -497,8 +514,8 @@ export class TechProcessesService {
    */
   private async resolveDrawingByTriple(
     triples: { projectId: number; identNumber: string; variant: number }[],
-  ): Promise<Map<string, { id: number; hasPdf: boolean } | null>> {
-    const map = new Map<string, { id: number; hasPdf: boolean } | null>();
+  ): Promise<Map<string, CardDrawingRef | null>> {
+    const map = new Map<string, CardDrawingRef | null>();
     const keys = new Set(
       triples.map((t) => `${t.projectId}|${t.identNumber}|${t.variant}`),
     );
@@ -528,7 +545,7 @@ export class TechProcessesService {
         });
     }
     // Keš po (broj, revizija) — više trojki može deliti isti crtež.
-    const cache = new Map<string, { id: number; hasPdf: boolean } | null>();
+    const cache = new Map<string, CardDrawingRef | null>();
     for (const [key, ref] of refByKey) {
       const cacheKey = `${ref.drawingNumber ?? ""}|${ref.revision ?? ""}`;
       let drawing = cache.get(cacheKey);
@@ -782,24 +799,26 @@ export class TechProcessesService {
   private async resolveCardDrawing(
     drawingNumber: string | null | undefined,
     revision: string | null | undefined,
-  ): Promise<{ id: number; hasPdf: boolean } | null> {
+  ): Promise<CardDrawingRef | null> {
     const num = (drawingNumber ?? "").trim();
     if (!num) return null;
     const rev = (revision ?? "").trim();
     const select = { id: true, drawingNumber: true, revision: true };
-    // Tačna (drawingNumber, revision) prvo; fallback = najviša revizija tog broja.
-    let drawing = rev
+    // Najviša revizija tog broja (SQL string MAX semantika, kao PDM uvoz) — služi
+    // i kao fallback red i za poređenje „postoji novija revizija".
+    const latest = await this.prisma.drawing.findFirst({
+      where: { drawingNumber: num },
+      orderBy: { revision: "desc" },
+      select,
+    });
+    // Tačna (drawingNumber, revision) sa RN-a; ako je nema, koristi najviši red.
+    const exact = rev
       ? await this.prisma.drawing.findFirst({
           where: { drawingNumber: num, revision: rev },
           select,
         })
       : null;
-    if (!drawing)
-      drawing = await this.prisma.drawing.findFirst({
-        where: { drawingNumber: num },
-        orderBy: { revision: "desc" },
-        select,
-      });
+    const drawing = exact ?? latest;
     if (!drawing) return null;
     const pdf = await this.prisma.drawingPdf.findFirst({
       where: {
@@ -810,7 +829,20 @@ export class TechProcessesService {
       // Ključ, ne binarni sadržaj — hasPdf je puko postojanje reda.
       select: { drawingNumber: true },
     });
-    return { id: drawing.id, hasPdf: !!pdf };
+    // „Zastareo" = RN ima reviziju, postoji novija revizija tog crteža u bazi
+    // (npr. došla novim XML-om/izmenom). Normalizacija prazno→"A", uppercase.
+    const norm = (r: string | null | undefined) =>
+      ((r ?? "").trim().toUpperCase() || "A");
+    const latestRevision = latest?.revision ?? null;
+    const revisionStale =
+      !!rev && latestRevision != null && norm(latestRevision) > norm(rev);
+    return {
+      id: drawing.id,
+      hasPdf: !!pdf,
+      revision: rev || null,
+      latestRevision,
+      revisionStale,
+    };
   }
 
   // ---------------------------------------------------------------- CRITICAL

@@ -315,7 +315,7 @@ describe("TechProcessesService — card (agregat po operaciji)", () => {
 
   // ---------------------------------------------------------------- card().drawing (#6)
 
-  it("drawing: crtež (tačna revizija) + PDF postoji → { id, hasPdf: true }", async () => {
+  it("drawing: crtež (tačna revizija = najviša) + PDF → nije zastareo (revisionStale=false)", async () => {
     prisma.techProcess.findMany.mockResolvedValue([
       tpRow({ operationNumber: 10, workCenterCode: "0102", pieceCount: 3 }),
     ]);
@@ -325,6 +325,7 @@ describe("TechProcessesService — card (agregat po operaciji)", () => {
       drawingNumber: "CRT-1",
       revision: "A",
     });
+    // Najviša revizija (findFirst orderBy desc) i tačna revizija su ista → RN na najvišoj.
     prisma.drawing.findFirst.mockResolvedValue({
       id: 42,
       drawingNumber: "CRT-1",
@@ -334,8 +335,14 @@ describe("TechProcessesService — card (agregat po operaciji)", () => {
 
     const { data } = await service.card(CARD_QUERY);
 
-    expect(data.drawing).toEqual({ id: 42, hasPdf: true });
-    // Crtež se traži po tačnoj (drawingNumber, revision) sa RN-a.
+    expect(data.drawing).toEqual({
+      id: 42,
+      hasPdf: true,
+      revision: "A",
+      latestRevision: "A",
+      revisionStale: false,
+    });
+    // Tačna (drawingNumber, revision) sa RN-a je jedan od upita (drugi je najviša revizija).
     expect(prisma.drawing.findFirst).toHaveBeenCalledWith(
       containing({ where: containing({ drawingNumber: "CRT-1", revision: "A" }) }),
     );
@@ -358,7 +365,13 @@ describe("TechProcessesService — card (agregat po operaciji)", () => {
 
     const { data } = await service.card(CARD_QUERY);
 
-    expect(data.drawing).toEqual({ id: 42, hasPdf: false });
+    expect(data.drawing).toEqual({
+      id: 42,
+      hasPdf: false,
+      revision: "A",
+      latestRevision: "A",
+      revisionStale: false,
+    });
     // hasPdf filtrira na pdf_binary NOT NULL i NE učitava sam binarni sadržaj.
     const pdfArg = prisma.drawingPdf.findFirst.mock.calls[0][0] as {
       where: Record<string, unknown>;
@@ -368,27 +381,36 @@ describe("TechProcessesService — card (agregat po operaciji)", () => {
     expect(pdfArg.select).not.toHaveProperty("pdfBinary");
   });
 
-  it("drawing: nema tačne revizije → uzima NAJVIŠU reviziju tog crteža, hasPdf po njoj", async () => {
+  it("drawing: RN na starijoj reviziji od najviše u bazi → fallback na najvišu + revisionStale=true", async () => {
     prisma.techProcess.findMany.mockResolvedValue([tpRow({ pieceCount: 3 })]);
     prisma.workOrder.findFirst.mockResolvedValue({
       id: 900,
       drawingHandoverId: 0,
       drawingNumber: "CRT-1",
-      revision: "C", // tačna revizija ne postoji
+      revision: "A", // RN na "A"; najviša u bazi je "B" — tačna "A" nema reda
     });
+    // Nov redosled upita: PRVO najviša revizija (orderBy desc), PA tačna (broj+revizija).
     prisma.drawing.findFirst
-      .mockResolvedValueOnce(null) // tačan (CRT-1, C) nema reda
-      .mockResolvedValueOnce({ id: 42, drawingNumber: "CRT-1", revision: "B" });
+      .mockResolvedValueOnce({ id: 42, drawingNumber: "CRT-1", revision: "B" }) // najviša
+      .mockResolvedValueOnce(null); // tačan (CRT-1, A) nema reda
     prisma.drawingPdf.findFirst.mockResolvedValue({ drawingNumber: "CRT-1" });
 
     const { data } = await service.card(CARD_QUERY);
 
-    expect(data.drawing).toEqual({ id: 42, hasPdf: true });
-    // Fallback sortira po reviziji opadajuće; hasPdf koristi reviziju NAĐENOG reda (B).
-    const fallbackArg = prisma.drawing.findFirst.mock.calls[1][0] as {
+    // RN je na "A", najviša u bazi je "B" → zastarelo (UPOZORENJE, ne blokira rad).
+    expect(data.drawing).toEqual({
+      id: 42,
+      hasPdf: true,
+      revision: "A",
+      latestRevision: "B",
+      revisionStale: true,
+    });
+    // Najviša revizija se traži PRVA, sortirano po reviziji opadajuće.
+    const latestArg = prisma.drawing.findFirst.mock.calls[0][0] as {
       orderBy: unknown;
     };
-    expect(fallbackArg.orderBy).toEqual({ revision: "desc" });
+    expect(latestArg.orderBy).toEqual({ revision: "desc" });
+    // hasPdf koristi reviziju NAĐENOG (fallback) reda (B).
     const pdfArg = prisma.drawingPdf.findFirst.mock.calls[0][0] as {
       where: { revision: string };
     };
@@ -730,7 +752,7 @@ describe("TechProcessesService — openForWorker (Moji otvoreni, proba 13.07 Jov
     expect(data[0].hasOpenSession).toBe(false);
   });
 
-  it("red nosi drawing { id, hasPdf } sa RN-a (reuse resolveCardDrawing)", async () => {
+  it("red nosi drawing { id, hasPdf, revizioni status } sa RN-a (reuse resolveCardDrawing)", async () => {
     prisma.workTimeEntry.findMany.mockResolvedValue([]);
     prisma.techProcess.findMany.mockResolvedValue([
       tpRow({
@@ -762,7 +784,13 @@ describe("TechProcessesService — openForWorker (Moji otvoreni, proba 13.07 Jov
     const { data } = await service.openForWorker("CARD74", undefined);
 
     expect(data).toHaveLength(1);
-    expect(data[0].drawing).toEqual({ id: 42, hasPdf: true });
+    expect(data[0].drawing).toEqual({
+      id: 42,
+      hasPdf: true,
+      revision: "A",
+      latestRevision: "A",
+      revisionStale: false,
+    });
   });
 
   it("drawing je null kad RN/crtež za trojku ne postoji", async () => {

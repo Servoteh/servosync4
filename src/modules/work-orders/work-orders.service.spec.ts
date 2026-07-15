@@ -28,6 +28,8 @@ function prismaMock() {
     workOrder: {
       findUnique: jest.fn(),
       findFirst: jest.fn().mockResolvedValue(null),
+      // findOne() enrich: resolveParentRefs / reworkChildren.
+      findMany: jest.fn().mockResolvedValue([]),
       create: jest.fn().mockResolvedValue({ id: 101 }),
       update: jest.fn().mockResolvedValue({}),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -87,6 +89,21 @@ function prismaMock() {
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
     drawingHandover: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+    // findOne() enrich batch-resolveri (workflow testovi mock-uju findOne, pa im
+    // ovi modeli nisu potrebni; findOne testovi ispod ih koriste).
+    worker: { findMany: jest.fn().mockResolvedValue([]) },
+    partQualityType: { findMany: jest.fn().mockResolvedValue([]) },
+    handoverStatus: { findMany: jest.fn().mockResolvedValue([]) },
+    position: { findMany: jest.fn().mockResolvedValue([]) },
+    partLocation: { groupBy: jest.fn().mockResolvedValue([]) },
+    handoverDraftItem: { findFirst: jest.fn().mockResolvedValue(null) },
+    handoverDraft: { findUnique: jest.fn().mockResolvedValue(null) },
+    // resolveDrawingIdByNumber (findMany) + resolveDrawingRevisionStatus (findFirst).
+    drawing: {
+      findMany: jest.fn().mockResolvedValue([]),
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
+    drawingPdf: { findFirst: jest.fn().mockResolvedValue(null) },
     $transaction: jest.fn(),
     $executeRaw: jest.fn().mockResolvedValue(0),
     $executeRawUnsafe: jest.fn().mockResolvedValue(0),
@@ -668,5 +685,103 @@ describe("WorkOrdersService (workflow)", () => {
         Reflect.getMetadata(PERMISSION_KEY_METADATA, handler("remove")),
       ).toBe(PERMISSIONS.RN_WRITE);
     });
+  });
+});
+
+// ============================================================ findOne drawingRevision (verzioni status)
+
+describe("WorkOrdersService.findOne — drawingRevision (zastarela revizija crteža)", () => {
+  let service: WorkOrdersService;
+  let prisma: ReturnType<typeof prismaMock>;
+
+  /** Pun RN red koji findOne čita; include relacije = prazni nizovi (nema enrich-a). */
+  function woRow(over: Record<string, unknown> = {}) {
+    return {
+      id: 7,
+      projectId: 15,
+      identNumber: "123/4",
+      variant: 0,
+      drawingId: 0, // legacy: efektivni crtež po broju (resolveDrawingIdByNumber)
+      drawingNumber: "CRT-55",
+      revision: "A",
+      workerId: 0,
+      handoverWorkerId: 0,
+      qualityTypeId: 0,
+      handoverStatusId: 0,
+      parentWorkOrderId: 0,
+      drawingHandoverId: 0,
+      operations: [],
+      machinedParts: [],
+      blanks: [],
+      nonStandardParts: [],
+      components: [],
+      itemComponents: [],
+      approvals: [],
+      launches: [],
+      ...over,
+    };
+  }
+
+  beforeEach(async () => {
+    prisma = prismaMock();
+    const mod: TestingModule = await Test.createTestingModule({
+      providers: [
+        WorkOrdersService,
+        WorkOrderNumberingService,
+        { provide: PrismaService, useValue: prisma },
+      ],
+    }).compile();
+    service = mod.get(WorkOrdersService);
+  });
+
+  it("stale=true kad `drawings` ima noviju reviziju (RN 'A', najviša 'B')", async () => {
+    prisma.workOrder.findUnique.mockResolvedValue(woRow({ revision: "A" }));
+    prisma.drawing.findFirst.mockResolvedValue({ revision: "B" });
+
+    const { data } = await service.findOne(7);
+
+    expect(data.drawingRevision).toEqual({
+      current: "A",
+      latest: "B",
+      stale: true,
+    });
+    // Najviša revizija tog broja (case-insensitive), sortirano po reviziji opadajuće.
+    expect(prisma.drawing.findFirst).toHaveBeenCalledWith(
+      containing({
+        where: { drawingNumber: { equals: "CRT-55", mode: "insensitive" } },
+        orderBy: { revision: "desc" },
+      }),
+    );
+  });
+
+  it("stale=false kad je RN na najvišoj reviziji (RN 'B', najviša 'B')", async () => {
+    prisma.workOrder.findUnique.mockResolvedValue(woRow({ revision: "B" }));
+    prisma.drawing.findFirst.mockResolvedValue({ revision: "B" });
+
+    const { data } = await service.findOne(7);
+
+    expect(data.drawingRevision).toEqual({
+      current: "B",
+      latest: "B",
+      stale: false,
+    });
+  });
+
+  it("null kad crtež (broj) nema reda u `drawings`", async () => {
+    prisma.workOrder.findUnique.mockResolvedValue(woRow());
+    prisma.drawing.findFirst.mockResolvedValue(null);
+
+    const { data } = await service.findOne(7);
+
+    expect(data.drawingRevision).toBeNull();
+  });
+
+  it("null kad RN nema broj crteža (bez upita nad `drawings`)", async () => {
+    prisma.workOrder.findUnique.mockResolvedValue(woRow({ drawingNumber: "" }));
+
+    const { data } = await service.findOne(7);
+
+    expect(data.drawingRevision).toBeNull();
+    expect(prisma.drawing.findFirst).not.toHaveBeenCalled();
   });
 });
