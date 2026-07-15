@@ -17,6 +17,7 @@ import {
   useDeleteVacation,
   type VacationRequest,
 } from '@/api/moj-profil';
+import type { GoLedgerBlock, GoLedgerPeriod } from '@/api/kadrovska';
 import { Section, statusLabel, statusTone } from './section';
 
 const MIN_DATE = '2026-05-01';
@@ -133,17 +134,16 @@ export function VacationSection() {
             </div>
           )}
 
-          {/* Istorija */}
-          {data && data.history.length > 0 && (
+          {/* Istorija godišnjeg (go_ledger: po datumu, usklađeno sa saldom) */}
+          {data && (data.ledger?.length ?? 0) > 0 && (
             <div className="mt-4">
-              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-secondary">GO istorija (ranije godine)</h3>
-              <ul className="text-sm text-ink-secondary">
-                {data.history.map((h, i) => (
-                  <li key={i} className="tnums">
-                    {h.year}: {num(h.days_used ?? h.used)} dana
-                  </li>
-                ))}
-              </ul>
+              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-secondary">Istorija godišnjeg odmora</h3>
+              <div className="space-y-2">
+                {data.ledger!.map((b) => <LedgerYear key={b.godina} b={b} />)}
+              </div>
+              <p className="mt-1 text-2xs text-ink-disabled">
+                Iskorišćeni + planirani (odobreni) dani po datumu. Slobodno = preostalo.
+              </p>
             </div>
           )}
         </>
@@ -151,6 +151,54 @@ export function VacationSection() {
 
       {modal && <VacationModal mode={modal.mode} req={modal.req} remaining={remaining} onClose={() => setModal(null)} />}
     </Section>
+  );
+}
+
+function fmtPeriod(p: GoLedgerPeriod): string {
+  if (!p.od) return '—';
+  if (!p.do || p.od === p.do) return formatDate(p.od);
+  const a = /^(\d{4})-(\d{2})-(\d{2})$/.exec(p.od);
+  const b = /^(\d{4})-(\d{2})-(\d{2})$/.exec(p.do);
+  if (a && b && a[1] === b[1] && a[2] === b[2]) return `${a[3]}–${b[3]}.${b[2]}.${b[1]}.`;
+  return `${formatDate(p.od)} – ${formatDate(p.do)}`;
+}
+
+/** Jedna godina GO liste (self, read-only) — klik razvija dane po datumu. */
+function LedgerYear({ b }: { b: GoLedgerBlock }) {
+  const isHist = b.izvor === 'istorija';
+  const entries = b.istorija_unosi ?? b.stara_evidencija ?? [];
+  return (
+    <details className="rounded-control border border-line bg-surface-2 px-3 py-2">
+      <summary className="cursor-pointer list-none text-sm">
+        <b>{b.godina}.</b>{' '}
+        <span className="text-ink-secondary tnums">
+          iskorišćeno <b>{b.iskorisceno}</b>
+          {b.planirano > 0 ? <> · planirano <b>{b.planirano}</b></> : null}
+          {b.preostalo != null ? <> · preostalo <b>{b.preostalo}</b></> : null}
+        </span>
+      </summary>
+      <div className="mt-1.5 space-y-0.5 text-xs text-ink-secondary">
+        {isHist
+          ? entries.map((e, i) => (
+              <div key={i} className="tnums">
+                {e.days ?? '–'} · {e.kind} · {e.dates}{e.comment ? ` — ${e.comment}` : ''}
+              </div>
+            ))
+          : (
+            <>
+              {(b.iskorisceno_periodi ?? []).map((p, i) => (
+                <div key={`u${i}`} className="tnums">{fmtPeriod(p)} — {p.dana} d</div>
+              ))}
+              {b.ranije_evidentirano > 0 && (
+                <div className="tnums text-ink-disabled">bez preciznog datuma — {b.ranije_evidentirano} d</div>
+              )}
+              {(b.planirano_periodi ?? []).map((p, i) => (
+                <div key={`p${i}`} className="tnums" style={{ color: '#2563eb' }}>planirano: {fmtPeriod(p)} — {p.dana} d</div>
+              ))}
+            </>
+          )}
+      </div>
+    </details>
   );
 }
 
