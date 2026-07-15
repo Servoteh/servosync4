@@ -20,6 +20,11 @@ export interface ScanTechProcessDto {
    * (audit: ko je radio; legacy `SifraRadnika`). MODULE_SPEC_kontrola §4/§5.
    */
   workerCard?: string;
+  /**
+   * Napomena uz prijavu rada (opciono) — upisuje se na `tech_processes.note`
+   * (kumulativni red; poslednja napomena prepisuje). K0.1 (MODULE_SPEC_kvaliteta §9).
+   */
+  note?: string;
 }
 
 export function validateScan(dto: ScanTechProcessDto): void {
@@ -39,5 +44,10 @@ export function validateScan(dto: ScanTechProcessDto): void {
     (typeof dto.workerCard !== "string" || !dto.workerCard.trim())
   )
     errors.push("Polje 'workerCard' mora biti neprazan string (ID kartica).");
+  if (
+    dto?.note !== undefined &&
+    (typeof dto.note !== "string" || dto.note.trim().length > 500)
+  )
+    errors.push("Polje 'note' mora biti string do 500 karaktera.");
   if (errors.length) throw new BadRequestException(errors);
 }

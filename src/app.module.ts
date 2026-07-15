@@ -19,6 +19,7 @@ import { DirectoryModule } from "./modules/directory/directory.module";
 import { HandoversModule } from "./modules/handovers/handovers.module";
 import { PartLocationsModule } from "./modules/part-locations/part-locations.module";
 import { CncProgramsModule } from "./modules/cnc-programs/cnc-programs.module";
+import { QualityModule } from "./modules/kvalitet/kvalitet.module";
 import { MrpModule } from "./modules/mrp/mrp.module";
 import { NotificationsModule } from "./modules/notifications/notifications.module";
 import { Sy15Module } from "./common/sy15/sy15.module";
@@ -55,6 +56,8 @@ import { KadrovskaModule } from "./modules/kadrovska/kadrovska.module";
     HandoversModule,
     PartLocationsModule,
     CncProgramsModule,
+    // Kontrola kvaliteta (K1 — evidencija škart/dorada; MODULE_SPEC_kontrola_kvaliteta §4/§7).
+    QualityModule,
     MrpModule,
     NotificationsModule,
     // 3.0 pilot — podaci u sy15 (1.0) bazi (MODULE_SPEC_reversi.md §0)

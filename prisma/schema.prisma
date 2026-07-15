@@ -2036,6 +2036,68 @@ model CncProgram {
   @@map("cnc_programs")
 }
 
+/// App-owned (2.0). Izveštaj o neusaglašenosti — digitalizacija Excel evidencija
+/// „Škart"/„Dorada" (MODULE_SPEC_kontrola_kvaliteta §4). Broj (NNN/YY) se dodeljuje
+/// TEK pri potvrdi (draft: report_number = NULL) → obrisan lažni draft ne pravi rupu
+/// u sekvenci. Meki FK-ovi ka work_orders/tech_processes/workers su BEZ DB constrainta
+/// (batch-resolve, legacy orphan); jedini pravi FK je nonconformity_workers.report_id.
+/// Timestamptz kao ostale 2.0 app-owned tabele (BACKEND_RULES §11.5). NAPOMENA: partial
+/// UNIQUE (type, report_number) WHERE report_number IS NOT NULL postoji SAMO u migraciji —
+/// Prisma šema ne može izraziti partial unique (WHERE predikat), pa @@unique namerno izostaje.
+model NonconformityReport {
+  id                  Int                   @id(map: "pk_nonconformity_reports") @default(autoincrement()) @map("id")
+  /// 1 = dorada, 2 = škart (poklapa se sa part_quality REWORK/SCRAP).
+  type                Int                   @map("type") @db.SmallInt
+  /// „028/26" — dodeljuje server pri potvrdi (sekvenca po tip+godina); NULL dok je draft.
+  reportNumber        String?               @map("report_number") @db.VarChar(20)
+  reportYear          Int                   @map("report_year")
+  reportDate          DateTime              @map("report_date") @db.Timestamptz(6)
+  /// 0 = draft (auto iz kioska / ručni unos, čeka potvrdu), 1 = potvrđen.
+  status              Int                   @default(0) @map("status") @db.SmallInt
+  workOrderId         Int?                  @map("work_order_id")
+  identNumber         String?               @map("ident_number") @db.VarChar(50)
+  sourceTechProcessId Int?                  @map("source_tech_process_id")
+  drawingNumber       String?               @map("drawing_number") @db.VarChar(100)
+  partName            String?               @map("part_name") @db.VarChar(255)
+  customerName        String?               @map("customer_name") @db.VarChar(255)
+  quantity            Int                   @map("quantity")
+  defectDescription   String                @default("") @map("defect_description")
+  cause               String?               @map("cause")
+  workUnit            String?               @map("work_unit") @db.VarChar(120)
+  culpritText         String?               @map("culprit_text") @db.VarChar(255)
+  materialCostNote    String?               @map("material_cost_note") @db.VarChar(255)
+  coopCostNote        String?               @map("coop_cost_note") @db.VarChar(255)
+  spentHoursText      String?               @map("spent_hours_text") @db.VarChar(50)
+  spentHours          Decimal?              @map("spent_hours") @db.Decimal(10, 3)
+  note                String?               @map("note")
+  preventiveMeasures  String?               @map("preventive_measures")
+  extra               String?               @map("extra") @db.VarChar(255)
+  raisedByWorkerId    Int?                  @map("raised_by_worker_id")
+  createdByUserId     Int?                  @map("created_by_user_id")
+  createdAt           DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime              @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  culpritWorkers      NonconformityWorker[]
+
+  @@index([type, status], map: "idx_nonconformity_reports_type_status")
+  @@index([reportYear], map: "idx_nonconformity_reports_year")
+  @@index([workOrderId], map: "idx_nonconformity_reports_work_order")
+  @@map("nonconformity_reports")
+}
+
+/// App-owned (2.0). Izvršioci-radnici (M:N) po izveštaju — puni „Moje neusaglašenosti"
+/// u Moj profil (K3). `workerId` je meki FK (batch-resolve, kao ostatak sheme); `reportId`
+/// je PRAVI FK (obe tabele 2.0 native) sa ON DELETE CASCADE.
+model NonconformityWorker {
+  id       Int                 @id(map: "pk_nonconformity_workers") @default(autoincrement()) @map("id")
+  reportId Int                 @map("report_id")
+  workerId Int                 @map("worker_id")
+  report   NonconformityReport @relation(fields: [reportId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_nonconformity_workers_report")
+
+  @@unique([reportId, workerId], map: "uq_nonconformity_workers_report_worker")
+  @@index([workerId], map: "idx_nonconformity_workers_worker")
+  @@map("nonconformity_workers")
+}
+
 /// Incremental sync cursor per logical scope (`entity` = stable key, e.g. `customers`).
 model BbSyncState {
   entity               String     @id(map: "pk_bb_sync_state") @map("entity") @db.VarChar(100)

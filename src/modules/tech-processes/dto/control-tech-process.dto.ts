@@ -39,6 +39,12 @@ export interface ControlTechProcessDto {
   locations: ControlLocationInput[];
   /** Napomena kontrolora (opciono). */
   note?: string;
+  /**
+   * Overshoot potvrda (K0.2): kada bi kumulativ prešao plan, FE prvo pokaže dijalog
+   * pa ponovi zahtev sa `confirmOvershoot: true` — tada se dozvoljava unos preko plana
+   * (strugar naparavi 1-2 viška, Nenad 15.07). Bez flag-a premašaj = 422.
+   */
+  confirmOvershoot?: boolean;
 }
 
 const QUALITY_VALUES = new Set([0, 1, 2]);
@@ -63,6 +69,12 @@ export function validateControl(dto: ControlTechProcessDto): void {
 
   if (typeof dto?.qualityTypeId !== "number" || !QUALITY_VALUES.has(dto.qualityTypeId))
     errors.push("Polje 'qualityTypeId' mora biti 0 (dobar), 1 (dorada) ili 2 (škart).");
+
+  if (dto?.note !== undefined && (typeof dto.note !== "string" || dto.note.trim().length > 500))
+    errors.push("Polje 'note' mora biti string do 500 karaktera.");
+
+  if (dto?.confirmOvershoot !== undefined && typeof dto.confirmOvershoot !== "boolean")
+    errors.push("Polje 'confirmOvershoot' mora biti boolean.");
 
   if (!Array.isArray(dto?.locations) || dto.locations.length === 0) {
     errors.push("Polje 'locations' mora imati bar jedan raspored (pozicija + količina).");

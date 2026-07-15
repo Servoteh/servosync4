@@ -37,6 +37,12 @@ export const PERMISSIONS = {
   PRIMOPREDAJE_READ: "primopredaje.read",
   PRIMOPREDAJE_WRITE: "primopredaje.write",
   PRIMOPREDAJE_APPROVE: "primopredaje.approve",
+  // Kontrola kvaliteta — evidencija neusaglašenosti (škart/dorada),
+  // MODULE_SPEC_kontrola_kvaliteta §7. read = uvid u evidencije/izveštaje;
+  // write = unos/izmena/potvrda izveštaja (dodela broja NNN/YY).
+  // KONTROLOR/SEF/MENADZMENT: read+write; TEHNOLOG: read; ADMIN preko ALL.
+  KVALITET_READ: "kvalitet.read",
+  KVALITET_WRITE: "kvalitet.write",
   // Lokacije delova
   LOKACIJE_READ: "lokacije.read",
   LOKACIJE_WRITE: "lokacije.write",

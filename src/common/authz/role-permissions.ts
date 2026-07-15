@@ -99,6 +99,9 @@ const BASE_ROLE_PERMISSIONS: Partial<
   [ROLES.ADMIN]: ALL,
 
   [ROLES.SEF]: [
+    // Kontrola kvaliteta (K1, MODULE_SPEC_kontrola_kvaliteta §7): read + write.
+    P.KVALITET_READ,
+    P.KVALITET_WRITE,
     P.TEHNOLOGIJA_READ,
     P.TEHNOLOGIJA_WRITE,
     P.TEHNOLOGIJA_APPROVE,
@@ -137,6 +140,8 @@ const BASE_ROLE_PERMISSIONS: Partial<
   ],
 
   [ROLES.TEHNOLOG]: [
+    // Kontrola kvaliteta (K1, §7): uvid (tehnolozi ionako dobijaju D8 notifikacije).
+    P.KVALITET_READ,
     P.REVERSI_READ, // paritet 1.0: SELECT za sve prijavljene
     P.TEHNOLOGIJA_READ,
     P.TEHNOLOGIJA_WRITE,
@@ -187,6 +192,9 @@ const BASE_ROLE_PERMISSIONS: Partial<
   ],
 
   [ROLES.KONTROLOR]: [
+    // Kontrola kvaliteta (K1, §7): PRIMARNI korisnik — read + write (unos/potvrda).
+    P.KVALITET_READ,
+    P.KVALITET_WRITE,
     P.REVERSI_READ, // paritet 1.0: SELECT za sve prijavljene
     P.TEHNOLOGIJA_READ,
     P.TEHNOLOGIJA_APPROVE, // finalna kontrola: validira završen TP (uz OBAVEZAN audit zapis)
@@ -261,6 +269,9 @@ const BASE_ROLE_PERMISSIONS: Partial<
   ],
 
   [ROLES.MENADZMENT]: [
+    // Kontrola kvaliteta (K1, §7): uvid + potvrda (read + write).
+    P.KVALITET_READ,
+    P.KVALITET_WRITE,
     // Uvid + write u operativi (paritet 1.0, ODLUKE #9); validira završen TP (audit, Negovan 8.7).
     P.TEHNOLOGIJA_READ,
     P.TEHNOLOGIJA_APPROVE,

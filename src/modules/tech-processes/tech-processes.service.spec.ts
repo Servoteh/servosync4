@@ -3,6 +3,7 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { ScopeService } from "../../common/authz/scope.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { LabelPrintService } from "../../common/printing/label-print.service";
+import { QualityService } from "../kvalitet/kvalitet.service";
 import { TechProcessesService } from "./tech-processes.service";
 import { validateStopWork } from "./dto/stop-work.dto";
 
@@ -91,6 +92,11 @@ function notificationsMock() {
   };
 }
 
+/** Mock QualityService — K2 auto-draft (control() dorada/škart). Best-effort, ne baca. */
+function qualityMock() {
+  return { createDraftFromControl: jest.fn().mockResolvedValue(undefined) };
+}
+
 let nextId = 1;
 
 /** Red `tech_processes` (jedno kucanje) sa razumnim podrazumevanim vrednostima. */
@@ -137,6 +143,7 @@ describe("TechProcessesService — card (agregat po operaciji)", () => {
         { provide: ScopeService, useValue: {} },
         { provide: NotificationsService, useValue: notificationsMock() },
         { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
+        { provide: QualityService, useValue: qualityMock() },
       ],
     }).compile();
     service = mod.get(TechProcessesService);
@@ -473,6 +480,7 @@ describe("TechProcessesService — scan pinuje TEKUĆU varijantu RN-a (D5 klon =
         { provide: ScopeService, useValue: {} },
         { provide: NotificationsService, useValue: notificationsMock() },
         { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
+        { provide: QualityService, useValue: qualityMock() },
       ],
     }).compile();
     service = mod.get(TechProcessesService);
@@ -584,6 +592,7 @@ describe("TechProcessesService — D8 emit notifikacija (control dorada/škart)"
         { provide: ScopeService, useValue: {} },
         { provide: NotificationsService, useValue: notifications },
         { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
+        { provide: QualityService, useValue: qualityMock() },
       ],
     }).compile();
     emit = mod.get(TechProcessesService);
@@ -705,6 +714,7 @@ describe("TechProcessesService — openForWorker (Moji otvoreni, proba 13.07 Jov
         { provide: ScopeService, useValue: {} },
         { provide: NotificationsService, useValue: notificationsMock() },
         { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
+        { provide: QualityService, useValue: qualityMock() },
       ],
     }).compile();
     service = mod.get(TechProcessesService);
@@ -837,6 +847,7 @@ describe("TechProcessesService — create-on-scan štancuje kreatora (proba 13.0
         },
         { provide: NotificationsService, useValue: notificationsMock() },
         { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
+        { provide: QualityService, useValue: qualityMock() },
       ],
     }).compile();
     service = mod.get(TechProcessesService);
@@ -928,6 +939,7 @@ describe("TechProcessesService — control akumulira do plana (parcijala ne zatv
         },
         { provide: NotificationsService, useValue: notificationsMock() },
         { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
+        { provide: QualityService, useValue: qualityMock() },
       ],
     }).compile();
     service = mod.get(TechProcessesService);
@@ -1057,6 +1069,7 @@ describe("TechProcessesService — opšti nalog (Operation.withoutProcess) zaobi
         { provide: ScopeService, useValue: {} },
         { provide: NotificationsService, useValue: notificationsMock() },
         { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
+        { provide: QualityService, useValue: qualityMock() },
       ],
     }).compile();
     service = mod.get(TechProcessesService);
@@ -1302,6 +1315,7 @@ describe("TechProcessesService — reopen zatvorene operacije (dorada)", () => {
         { provide: ScopeService, useValue: {} },
         { provide: NotificationsService, useValue: notificationsMock() },
         { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
+        { provide: QualityService, useValue: qualityMock() },
       ],
     }).compile();
     service = mod.get(TechProcessesService);
@@ -1429,6 +1443,7 @@ describe("TechProcessesService — stopWorkById (Kraj rada iz Moji otvoreni)", (
         },
         { provide: NotificationsService, useValue: notificationsMock() },
         { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
+        { provide: QualityService, useValue: qualityMock() },
       ],
     }).compile();
     service = mod.get(TechProcessesService);
@@ -1669,5 +1684,334 @@ describe("TechProcessesService — stopWorkById (Kraj rada iz Moji otvoreni)", (
     await expect(
       service.stopWorkById(999, { workerCard: "CARD74", pieceCount: 1 }, undefined),
     ).rejects.toThrow("Tehnološki postupak 999 ne postoji");
+  });
+});
+
+// ============================================================ K0.1 napomena na prijavi rada (scan)
+
+describe("TechProcessesService — K0.1 napomena na scan (upis na tech_processes)", () => {
+  let service: TechProcessesService;
+  let prisma: ReturnType<typeof prismaMock>;
+
+  beforeEach(async () => {
+    prisma = prismaMock();
+    const mod: TestingModule = await Test.createTestingModule({
+      providers: [
+        TechProcessesService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: ScopeService, useValue: {} },
+        { provide: NotificationsService, useValue: notificationsMock() },
+        { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
+        { provide: QualityService, useValue: qualityMock() },
+      ],
+    }).compile();
+    service = mod.get(TechProcessesService);
+    prisma.workOrder.findFirst.mockResolvedValue({
+      id: 900,
+      projectId: 2597,
+      identNumber: "06/93-4",
+      variant: 1,
+      pieceCount: 10,
+      revision: "A",
+    });
+    // Opšti nalog (withoutProcess) → scan otvara red bez routing lookup-a; posle
+    // create-a scan radi update (akumulacija) na koji se upisuje napomena.
+    prisma.operation.findUnique.mockResolvedValue({ withoutProcess: true });
+    prisma.techProcess.findFirst.mockResolvedValue(null);
+    prisma.techProcess.create.mockResolvedValue(
+      tpRow({ id: 555, variant: 1, pieceCount: 0, workOrderId: 900 }),
+    );
+    prisma.techProcess.update.mockResolvedValue(
+      tpRow({ id: 555, variant: 1, pieceCount: 2, note: "ogrebotina" }),
+    );
+  });
+
+  it("scan sa note: napomena (trim) upisana na tech_processes red", async () => {
+    await service.scan({
+      orderBarcode: "RNZ:2597:06/93-4:1:A",
+      operationBarcode: "S:10:0102:0:A",
+      pieceCount: 2,
+      note: "  ogrebotina  ",
+    });
+
+    const updArg = prisma.techProcess.update.mock.calls[0][0] as {
+      data: { note?: string };
+    };
+    expect(updArg.data.note).toBe("ogrebotina");
+  });
+
+  it("scan bez note: note se NE dira (data bez note)", async () => {
+    await service.scan({
+      orderBarcode: "RNZ:2597:06/93-4:1:A",
+      operationBarcode: "S:10:0102:0:A",
+      pieceCount: 2,
+    });
+
+    const updArg = prisma.techProcess.update.mock.calls[0][0] as {
+      data: Record<string, unknown>;
+    };
+    expect(updArg.data.note).toBeUndefined();
+  });
+});
+
+// ============================================================ K0.2 overshoot uz potvrdu
+
+describe("TechProcessesService — K0.2 overshoot uz potvrdu (control/finish)", () => {
+  let service: TechProcessesService;
+  let prisma: ReturnType<typeof prismaMock>;
+
+  /** RN plan 50; kontrola/finish preko plana traži confirmOvershoot. */
+  const WO = {
+    id: 900,
+    projectId: 2597,
+    identNumber: "06/93-4",
+    variant: 0,
+    partName: "Osovina",
+    drawingNumber: "CRT-1",
+    pieceCount: 50,
+    productionDeadline: null,
+    handoverStatusId: 0,
+    status: false,
+    revision: "A",
+    material: "C45",
+  };
+
+  const CONTROL_DTO = {
+    orderBarcode: "RNZ:2597:06/93-4:0:A",
+    operationBarcode: "S:60:8.5:0:A",
+    workerCard: "CTRL1",
+    qualityTypeId: 0,
+    pieceCount: 40,
+    locations: [{ positionId: 1, quantity: 40 }],
+  };
+
+  beforeEach(async () => {
+    prisma = prismaMock();
+    const mod: TestingModule = await Test.createTestingModule({
+      providers: [
+        TechProcessesService,
+        { provide: PrismaService, useValue: prisma },
+        {
+          provide: ScopeService,
+          useValue: { isEnforced: jest.fn().mockReturnValue(false) },
+        },
+        { provide: NotificationsService, useValue: notificationsMock() },
+        { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
+        { provide: QualityService, useValue: qualityMock() },
+      ],
+    }).compile();
+    service = mod.get(TechProcessesService);
+    prisma.worker.findFirst.mockResolvedValue({
+      id: 88,
+      fullName: "Pera Kontrolor",
+      username: "pera",
+      workerTypeId: 5,
+    });
+    prisma.workerType.findUnique.mockResolvedValue({
+      additionalPrivileges: true,
+    });
+    prisma.workOrder.findFirst.mockResolvedValue(WO);
+    prisma.workOrder.findUnique.mockResolvedValue(WO);
+    prisma.operation.findUnique.mockResolvedValue({
+      significantForFinishing: true,
+    });
+    prisma.workOrderOperation.findFirst.mockResolvedValue({ id: 1 });
+    // Kumulativ 20 + 40 = 60 > plan 50.
+    prisma.techProcess.aggregate.mockResolvedValue({ _sum: { pieceCount: 20 } });
+  });
+
+  it("control: premašaj bez confirmOvershoot → 422, ništa se ne knjiži", async () => {
+    await expect(service.control(CONTROL_DTO)).rejects.toThrow(
+      "potvrdite unos preko plana",
+    );
+    expect(prisma.partLocation.create).not.toHaveBeenCalled();
+    expect(prisma.techProcess.create).not.toHaveBeenCalled();
+  });
+
+  it("control: confirmOvershoot=true → dozvoljeno, operacija zatvorena (60 > 50)", async () => {
+    prisma.techProcess.findFirst.mockResolvedValue(null);
+    prisma.techProcess.create.mockResolvedValue(
+      tpRow({
+        id: 700,
+        pieceCount: 40,
+        isProcessFinished: true,
+        operationNumber: 60,
+        workCenterCode: "8.5",
+        workOrderId: 900,
+      }),
+    );
+    prisma.techProcess.updateMany.mockResolvedValue({ count: 0 });
+    prisma.workOrderOperation.updateMany.mockResolvedValue({ count: 0 });
+
+    const { data } = await service.control({
+      ...CONTROL_DTO,
+      confirmOvershoot: true,
+    });
+
+    expect(data.operationFinished).toBe(true);
+    expect(data.controlledCumulative).toBe(60);
+    // Guard preskočen → lokacije se knjiže (dokaz da je overshoot dozvoljen).
+    expect(prisma.partLocation.create).toHaveBeenCalled();
+  });
+
+  it("finish: premašaj bez confirmOvershoot → 422, red se ne zatvara", async () => {
+    prisma.techProcess.findUnique.mockResolvedValue(
+      tpRow({ id: 700, workCenterCode: "0102", pieceCount: 0, workOrderId: 900 }),
+    );
+    prisma.operation.findUnique.mockResolvedValue({ withoutProcess: false });
+
+    await expect(service.finish(700, { pieceCount: 60 })).rejects.toThrow(
+      "potvrdite unos preko plana",
+    );
+    expect(prisma.techProcess.update).not.toHaveBeenCalled();
+  });
+
+  it("finish: confirmOvershoot=true → zatvara i preko plana", async () => {
+    prisma.techProcess.findUnique.mockResolvedValue(
+      tpRow({ id: 700, workCenterCode: "0102", pieceCount: 0, workOrderId: 900 }),
+    );
+    prisma.operation.findUnique.mockResolvedValue({ withoutProcess: false });
+    prisma.techProcess.update.mockResolvedValue(
+      tpRow({ id: 700, pieceCount: 60, isProcessFinished: true }),
+    );
+
+    const { data } = await service.finish(700, {
+      pieceCount: 60,
+      confirmOvershoot: true,
+    });
+
+    expect(data.finishedPieces).toBe(60);
+    const updArg = prisma.techProcess.update.mock.calls[0][0] as {
+      data: Record<string, unknown>;
+    };
+    expect(updArg.data.isProcessFinished).toBe(true);
+  });
+});
+
+// ============================================================ K2 auto-draft neusaglašenosti
+
+describe("TechProcessesService — K2 auto-draft neusaglašenosti (control dorada/škart)", () => {
+  let service: TechProcessesService;
+  let prisma: ReturnType<typeof prismaMock>;
+  let quality: ReturnType<typeof qualityMock>;
+
+  const WO = {
+    id: 900,
+    projectId: 2597,
+    identNumber: "06/93-4",
+    variant: 0,
+    partName: "Osovina",
+    drawingNumber: "CRT-1",
+    pieceCount: 50,
+    productionDeadline: null,
+    handoverStatusId: 0,
+    status: false,
+    revision: "A",
+    material: "C45",
+  };
+
+  const DTO = {
+    orderBarcode: "RNZ:2597:06/93-4:0:A",
+    operationBarcode: "S:60:8.5:0:A",
+    workerCard: "CTRL1",
+    pieceCount: 10,
+    locations: [{ positionId: 1, quantity: 10 }],
+  };
+
+  beforeEach(async () => {
+    prisma = prismaMock();
+    quality = qualityMock();
+    const mod: TestingModule = await Test.createTestingModule({
+      providers: [
+        TechProcessesService,
+        { provide: PrismaService, useValue: prisma },
+        {
+          provide: ScopeService,
+          useValue: { isEnforced: jest.fn().mockReturnValue(false) },
+        },
+        { provide: NotificationsService, useValue: notificationsMock() },
+        { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
+        { provide: QualityService, useValue: quality },
+      ],
+    }).compile();
+    service = mod.get(TechProcessesService);
+    prisma.worker.findFirst.mockResolvedValue({
+      id: 88,
+      fullName: "Pera Kontrolor",
+      username: "pera",
+      workerTypeId: 5,
+    });
+    prisma.workerType.findUnique.mockResolvedValue({
+      additionalPrivileges: true,
+    });
+    prisma.workOrder.findFirst.mockResolvedValue(WO);
+    prisma.workOrder.findUnique.mockResolvedValue(WO);
+    prisma.operation.findUnique.mockResolvedValue({
+      significantForFinishing: true,
+      workCenterName: "Ravno brušenje",
+    });
+    prisma.workOrderOperation.findFirst.mockResolvedValue({ id: 1 });
+    prisma.techProcess.aggregate.mockResolvedValue({ _sum: { pieceCount: 0 } });
+    prisma.techProcess.findFirst.mockResolvedValue(null);
+    prisma.techProcess.create.mockResolvedValue(
+      tpRow({
+        id: 700,
+        pieceCount: 10,
+        operationNumber: 60,
+        workCenterCode: "8.5",
+        workOrderId: 900,
+      }),
+    );
+    // Culprit predlog: distinct radnici (>0) sa postojećih redova te operacije.
+    prisma.techProcess.findMany.mockResolvedValue([
+      { workerId: 10 },
+      { workerId: 0 },
+      { workerId: 10 },
+      { workerId: 22 },
+    ]);
+  });
+
+  it("kvalitet=2 (škart): createDraftFromControl pozvan sa type=2 + prefill; nonconformityDraftCreated=true", async () => {
+    const { data } = await service.control({
+      ...DTO,
+      qualityTypeId: 2,
+      note: "  prslina  ",
+    });
+
+    expect(quality.createDraftFromControl).toHaveBeenCalledTimes(1);
+    expect(quality.createDraftFromControl).toHaveBeenCalledWith(
+      containing({
+        qualityTypeId: 2,
+        sourceTechProcessId: 700,
+        workOrderId: 900,
+        identNumber: "06/93-4",
+        drawingNumber: "CRT-1",
+        partName: "Osovina",
+        customerName: null,
+        quantity: 10,
+        workUnit: "8.5 · Ravno brušenje",
+        defectDescription: "prslina",
+        raisedByWorkerId: 88,
+        culpritWorkerIds: [10, 22],
+      }),
+    );
+    expect(data.nonconformityDraftCreated).toBe(true);
+  });
+
+  it("kvalitet=0 (dobar): draft se NE kreira, nonconformityDraftCreated=false", async () => {
+    const { data } = await service.control({ ...DTO, qualityTypeId: 0 });
+
+    expect(quality.createDraftFromControl).not.toHaveBeenCalled();
+    expect(data.nonconformityDraftCreated).toBe(false);
+  });
+
+  it("pad createDraftFromControl NE obara kontrolu (best-effort → false)", async () => {
+    quality.createDraftFromControl.mockRejectedValue(new Error("kvalitet down"));
+
+    const { data } = await service.control({ ...DTO, qualityTypeId: 1 });
+
+    expect(data.qualityTypeId).toBe(1);
+    expect(data.childOrderPending).toBe(true);
+    expect(data.nonconformityDraftCreated).toBe(false);
   });
 });

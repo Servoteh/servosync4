@@ -12,6 +12,7 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { ScopeService } from "../../common/authz/scope.service";
 import { LabelPrintService } from "../../common/printing/label-print.service";
 import { NotificationsService } from "../notifications/notifications.service";
+import { QualityService } from "../kvalitet/kvalitet.service";
 import type { AuthUser } from "../auth/jwt.strategy";
 import {
   pageMeta,
@@ -175,6 +176,8 @@ export interface StopWorkByIdBody {
   workerCard?: string;
   /** Broj napravljenih komada u ovoj sesiji (ceo broj ≥ 0; 0 = samo vreme). */
   pieceCount: number;
+  /** Napomena (opciono) — upisuje se na sesiju i na `tech_processes` red (K0.1). */
+  note?: string;
 }
 
 // --- oblici sirovih redova iz $queryRaw upita (snake_case iz baze) ---
@@ -293,6 +296,8 @@ export class TechProcessesService {
     private readonly scope: ScopeService,
     private readonly notifications: NotificationsService,
     private readonly labelPrint: LabelPrintService,
+    // K2: auto-draft neusaglašenosti iz kucanja kontrole (dorada/škart).
+    private readonly quality: QualityService,
   ) {}
 
   // ---------------------------------------------------------------- LIST
@@ -1334,6 +1339,8 @@ export class TechProcessesService {
           pieceCount: newPieceCount,
           // Audit: radnik koji je prijavio rad (ID kartica) — legacy `SifraRadnika`.
           ...(worker ? { workerId: worker.id } : {}),
+          // K0.1: napomena uz prijavu rada (kumulativni red — poslednja prepisuje).
+          ...(dto.note?.trim() ? { note: dto.note.trim() } : {}),
           ...(reachedPlan
             ? { isProcessFinished: true, finishedAt: new Date() }
             : {}),
@@ -1438,10 +1445,16 @@ export class TechProcessesService {
       const planned = workOrder?.pieceCount ?? null;
       const effectivePieces = dto?.pieceCount ?? tp.pieceCount;
 
-      // 🔴 provera količina: premašaj plana → 422 (ne zatvara).
-      if (planned !== null && effectivePieces > planned)
+      // 🔴 provera količina: premašaj plana → 422 (ne zatvara). K0.2: overshoot allowed
+      // with explicit confirmation (Nenad 15.07, strugar naparavi 1-2 viška) — FE detektuje
+      // premašaj pre slanja i ponovi sa `confirmOvershoot: true`.
+      if (
+        planned !== null &&
+        effectivePieces > planned &&
+        dto?.confirmOvershoot !== true
+      )
         throw new UnprocessableEntityException(
-          `Napravljeno (${effectivePieces}) premašuje planirano (${planned}) — postupak se ne može zatvoriti.`,
+          `Napravljeno (${effectivePieces}) premašuje planirano (${planned}) — potvrdite unos preko plana.`,
         );
 
       const updated = await tx.techProcess.update({
@@ -1955,6 +1968,7 @@ export class TechProcessesService {
 
       // AKUMULACIJA (deljeni helper sa `:id/stop-work`): komadi na red operacije +
       // eventualno zatvaranje/skidanje sa prioriteta/„RN završen" — jedna verzija ponašanja.
+      // K0.1: napomena se upisuje i na `tech_processes` red (uz sesiju gore).
       const acc = await this.accumulateStopWork(
         tx,
         tp,
@@ -1962,6 +1976,8 @@ export class TechProcessesService {
         dto.pieceCount,
         now,
         workOrder,
+        false,
+        note,
       );
 
       return {
@@ -2058,6 +2074,7 @@ export class TechProcessesService {
         tp.variant,
       );
       const now = new Date();
+      const note = body.note?.trim() || null;
 
       // MOJA otvorena sesija za taj postupak (filter po workerId → tuđa sesija se ne
       // zatvara). Ako je nema (star red / jedan sken u staroj aplikaciji), zatvaranje
@@ -2069,7 +2086,7 @@ export class TechProcessesService {
       const session = open
         ? await tx.workTimeEntry.update({
             where: { id: open.id },
-            data: { stoppedAt: now, pieceCount: body.pieceCount },
+            data: { stoppedAt: now, pieceCount: body.pieceCount, note },
           })
         : null;
 
@@ -2082,6 +2099,8 @@ export class TechProcessesService {
         workOrder,
         // FIX B: „Kraj rada" zatvara taj red i ispod plana (radnik ga završava).
         true,
+        // K0.1: napomena i na `tech_processes` red (uz sesiju gore).
+        note,
       );
 
       return {
@@ -2147,6 +2166,11 @@ export class TechProcessesService {
       body.pieceCount < 0
     )
       errors.push("Polje 'pieceCount' mora biti ceo broj ≥ 0 (0 = samo vreme).");
+    if (
+      body?.note !== undefined &&
+      (typeof body.note !== "string" || body.note.trim().length > 500)
+    )
+      errors.push("Polje 'note' mora biti string do 500 karaktera.");
     if (errors.length) throw new BadRequestException(errors);
   }
 
@@ -2177,6 +2201,8 @@ export class TechProcessesService {
     // operaciju radnom (sledeći sken otvara NOV red). Barkod „Završi rad"
     // (stopWork) ostaje plan-gated (forceFinish=false).
     forceFinish = false,
+    // K0.1: opciona napomena na `tech_processes` red (kumulativni red — prepisuje).
+    note: string | null = null,
   ) {
     const planned = workOrder?.pieceCount ?? null;
     const newPieceCount = tp.pieceCount + pieceCount;
@@ -2187,6 +2213,7 @@ export class TechProcessesService {
       data: {
         pieceCount: newPieceCount,
         workerId,
+        ...(note ? { note } : {}),
         ...(finish ? { isProcessFinished: true, finishedAt: now } : {}),
       },
     });
@@ -2459,7 +2486,8 @@ export class TechProcessesService {
         );
       const op = await tx.operation.findUnique({
         where: { workCenterCode },
-        select: { significantForFinishing: true },
+        // workCenterName: K2 draft „Radna jedinica" (RC kod + naziv, ako je dostupan).
+        select: { significantForFinishing: true, workCenterName: true },
       });
       if (op?.significantForFinishing !== true)
         throw new UnprocessableEntityException(
@@ -2483,11 +2511,19 @@ export class TechProcessesService {
       });
       const existingSum = sumAgg._sum.pieceCount ?? 0;
       const cumulative = existingSum + dto.pieceCount;
+      // reachedPlan pri overshoot-u: cumulative > plan ⇒ >= plan ⇒ operacija se zatvara.
       const reachedPlan = planned === null || cumulative >= planned;
 
-      if (planned !== null && cumulative > planned)
+      // K0.2: overshoot allowed with explicit confirmation (Nenad 15.07, strugar
+      // naparavi 1-2 viška). FE detektuje premašaj pre slanja (ima made+plan) i ponovi
+      // sa `confirmOvershoot: true` posle dijaloga; tada se guard preskače.
+      if (
+        planned !== null &&
+        cumulative > planned &&
+        dto.confirmOvershoot !== true
+      )
         throw new UnprocessableEntityException(
-          `Ukupno iskontrolisano (${cumulative}) premašuje planirano (${planned}) — kontrola se ne može snimiti.`,
+          `Ukupno iskontrolisano (${cumulative}) premašuje planirano (${planned}) — potvrdite unos preko plana.`,
         );
 
       // Knjiženje lokacija iskontrolisanih delova (+quantity placement, ledger §3.1/§3.7).
@@ -2622,6 +2658,8 @@ export class TechProcessesService {
         confirmedOperations: confirmedOperationsCount,
         workOrderCompleted,
         opened: !existingOpen,
+        // K2 draft „Radna jedinica": RC naziv iz operations (null ako nerazrešen).
+        workCenterName: op?.workCenterName ?? null,
       };
     });
 
@@ -2644,6 +2682,57 @@ export class TechProcessesService {
         pieceCount: dto.pieceCount,
         controllerName: worker.fullName || worker.username,
       });
+    }
+
+    // K2: rework/scrap control auto-creates a DRAFT nonconformity report (Nenad 15.07)
+    // — best-effort like D8. `createDraftFromControl` never throws by contract, but wrap
+    // defensively so the control itself never fails on quality-module trouble.
+    let nonconformityDraftCreated = false;
+    if (
+      dto.qualityTypeId === PART_QUALITY.REWORK ||
+      dto.qualityTypeId === PART_QUALITY.SCRAP
+    ) {
+      try {
+        // Culprit proposal: distinct workers (>0) who logged rows on this operation
+        // (trojka + op + rc); the controller confirms/corrects them in the quality card.
+        const culpritRows = await this.prisma.techProcess.findMany({
+          where: {
+            projectId,
+            identNumber,
+            variant,
+            operationNumber,
+            workCenterCode,
+          },
+          select: { workerId: true },
+        });
+        const culpritWorkerIds = [
+          ...new Set(culpritRows.map((r) => r.workerId).filter((w) => w > 0)),
+        ].slice(0, 10);
+        const workUnit = result.workCenterName
+          ? `${workCenterCode} · ${result.workCenterName}`
+          : workCenterCode;
+        await this.quality.createDraftFromControl({
+          // QualityService interface uses `qualityTypeId` (1=dorada, 2=škart).
+          qualityTypeId: dto.qualityTypeId,
+          sourceTechProcessId: result.tp.id,
+          workOrderId: result.workOrder?.id ?? null,
+          identNumber,
+          drawingNumber: result.workOrder?.drawingNumber ?? null,
+          partName: result.workOrder?.partName ?? null,
+          // Customer name is not cheaply on the RN triple lookup → null (K1 fills it).
+          customerName: null,
+          quantity: dto.pieceCount,
+          workUnit,
+          defectDescription: dto.note?.trim() ? dto.note.trim() : null,
+          raisedByWorkerId: worker.id,
+          culpritWorkerIds,
+        });
+        nonconformityDraftCreated = true;
+      } catch (e) {
+        this.logger.error(
+          `K2 auto-draft FAIL (RN ${identNumber}, kvalitet ${dto.qualityTypeId}): ${(e as Error).message}`,
+        );
+      }
     }
 
     return {
@@ -2678,6 +2767,8 @@ export class TechProcessesService {
         label,
         // Dorada/škart: child RN (-D/-S) je P2; notifikacija tehnolozima je poslata (D8).
         childOrderPending,
+        // K2: DRAFT neusaglašenosti (škart/dorada) auto-kreiran za radnu listu kontrolora.
+        nonconformityDraftCreated,
       },
       ...(childOrderPending
         ? {
