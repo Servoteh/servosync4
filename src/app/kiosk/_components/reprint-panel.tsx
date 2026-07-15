@@ -15,13 +15,19 @@ export function ReprintPanel({
   controlled,
   busy,
   onPrint,
+  heading = 'Završna kontrola je već urađena',
+  note = 'Možete samo doštampati nalepnice.',
 }: {
   /** npr. „Op. 70 · Završna Kontrola". */
   operationLabel: string;
-  /** Iskontrolisano komada (podrazumevani broj nalepnica). */
+  /** Iskontrolisano komada (info; NIJE podrazumevani broj nalepnica). */
   controlled: number;
   busy: boolean;
   onPrint: (copies: number) => void;
+  /** Naslov panela — podešava se za prvu štampu (posle kontrole) vs doštampavanje. */
+  heading?: string;
+  /** Napomena ispod naslova. */
+  note?: string;
 }) {
   // Default 1 nalepnica (Nesa 2026-07-10) — broj se po potrebi povećava; NE nudi
   // automatski celu iskontrolisanu količinu.
@@ -32,13 +38,10 @@ export function ReprintPanel({
       <div className="flex items-start gap-4 rounded-panel border border-status-success/40 bg-status-success-bg px-6 py-5 text-status-success">
         <CheckCircle2 className="h-11 w-11 shrink-0" aria-hidden />
         <div>
-          <p className="text-2xl font-bold uppercase tracking-wide">
-            Završna kontrola je već urađena
-          </p>
+          <p className="text-2xl font-bold uppercase tracking-wide">{heading}</p>
           <p className="mt-1 text-xl">
             {operationLabel} · iskontrolisano{' '}
-            <span className="tnums font-semibold">{formatNumber(controlled)}</span> kom. Možete
-            samo doštampati nalepnice.
+            <span className="tnums font-semibold">{formatNumber(controlled)}</span> kom. {note}
           </p>
         </div>
       </div>

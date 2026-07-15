@@ -117,6 +117,13 @@ export function KioskScanner() {
   const [override, setOverride] = useState<{ id: number; made: number; finished: boolean } | null>(
     null,
   );
+  // Posle završne kontrole NE štampamo automatski — nudimo panel sa brojem
+  // nalepnica (default 1, Nesa 2026-07-10). Ovde stoje podaci sveže nalepnice
+  // dok kontrolor ne izabere broj i ne odštampa.
+  const [controlLabel, setControlLabel] = useState<{
+    label: Omit<Parameters<typeof printControlLabels>[0], 'copies'>;
+    controlled: number;
+  } | null>(null);
 
   const cardKey = order
     ? {
@@ -181,6 +188,7 @@ export function KioskScanner() {
     setOrder(null);
     setOperation(null);
     setOverride(null);
+    setControlLabel(null);
     setFeedback(null);
   }, [cancelAutoLogout]);
 
@@ -309,6 +317,7 @@ export function KioskScanner() {
         return;
       }
       setOverride(null);
+      setControlLabel(null);
       setOperation({
         raw: barcode,
         fields: data.fields,
@@ -469,14 +478,15 @@ export function KioskScanner() {
         finished: data.operationFinished,
       });
 
-      // Štampa nalepnica (RNZ) — jedna po komadu (BarKodUnos2024 ekran 7).
-      const print = await printControlLabels({
-        fields: data.label.fields,
-        barcode: data.label.barcode,
-        copies: data.controlledPieces,
+      // NE štampamo automatski (Nenad 15.07): kontrola je snimljena, a broj
+      // nalepnica bira kontrolor u panelu ispod (default 1). Podatke sveže
+      // nalepnice čuvamo do štampe.
+      setControlLabel({
+        label: { fields: data.label.fields, barcode: data.label.barcode },
+        controlled: data.controlledPieces,
       });
 
-      const parts = [`Iskontrolisano ${formatNumber(data.controlledPieces)} kom`];
+      const parts: string[] = [];
       if (data.confirmedOperations > 0)
         parts.push(`Potvrđeno ${formatNumber(data.confirmedOperations)} neotkucanih operacija.`);
       if (data.workOrderCompleted) parts.push('Radni nalog je završen.');
@@ -485,41 +495,55 @@ export function KioskScanner() {
       const warned = !!data.controllerWarnings?.length;
       if (warned) parts.unshift(data.controllerWarnings!.join(' · '));
 
-      const printFailReason = `Štampa nalepnica nije uspela (${print.reason}) — proveri da je label-proxy pokrenut na OVOM računaru (start.bat, localhost:8765; frontend/tools/label-proxy).`;
-
       if (!data.operationFinished) {
         // Operacija još nije dostigla plan — kontrola snimljena delimično; prikaži ukupno/preostalo.
         const remaining =
           data.plannedPieces != null
             ? Math.max(0, data.plannedPieces - data.controlledCumulative)
             : null;
-        const progress = `Iskontrolisano ukupno ${formatNumber(data.controlledCumulative)}${
-          data.plannedPieces != null ? ' / ' + formatNumber(data.plannedPieces) : ''
-        } kom${remaining != null ? ` — preostalo ${formatNumber(remaining)}` : ''}`;
-        parts.unshift(progress);
+        parts.unshift(
+          `Iskontrolisano ukupno ${formatNumber(data.controlledCumulative)}${
+            data.plannedPieces != null ? ' / ' + formatNumber(data.plannedPieces) : ''
+          } kom${remaining != null ? ` — preostalo ${formatNumber(remaining)}` : ''}`,
+        );
+      } else {
+        parts.unshift(`Iskontrolisano ${formatNumber(data.controlledPieces)} kom`);
+      }
+      setFeedback({
+        tone: warned ? 'info' : 'success',
+        title: 'Kontrola snimljena — izaberite broj nalepnica i štampajte',
+        detail: parts.join(' · '),
+      });
+      // Auto-odjava se NE armira ovde — čeka se štampa nalepnica (onPrintControlLabels).
+    } catch (e) {
+      setFeedback({ tone: 'danger', title: 'Kontrola nije uspela', detail: errMessage(e) });
+    }
+  }
+
+  /** Štampa nalepnica POSLE kontrole — broj bira kontrolor (default 1, Nesa 10.07). */
+  async function onPrintControlLabels(copies: number) {
+    cancelAutoLogout();
+    if (!controlLabel) return;
+    setReprinting(true);
+    try {
+      const print = await printControlLabels({ ...controlLabel.label, copies });
+      if (print.ok) {
         setFeedback({
-          tone: 'info',
-          title: print.ok
-            ? 'Kontrola snimljena — operacija još otvorena'
-            : 'Kontrola snimljena — operacija još otvorena (nalepnice NISU odštampane)',
-          detail: (print.ok ? parts : [printFailReason, ...parts]).join(' · '),
-        });
-      } else if (print.ok) {
-        setFeedback({
-          tone: warned ? 'info' : 'success',
-          title: `Kontrola završena · nalepnice poslate (${formatNumber(data.controlledPieces)})`,
-          detail: parts.join(' · '),
+          tone: 'success',
+          title: `Nalepnice poslate na štampu (${formatNumber(copies)})`,
         });
       } else {
         setFeedback({
-          tone: 'info',
-          title: 'Kontrola završena — nalepnice NISU odštampane',
-          detail: [printFailReason, ...parts].join(' · '),
+          tone: 'danger',
+          title: 'Štampa nalepnica nije uspela',
+          detail: `${print.reason ?? 'nepoznata greška'} — proveri da je label-proxy pokrenut na OVOM računaru (localhost:8765; frontend/tools/label-proxy).`,
         });
       }
       armAutoLogout();
     } catch (e) {
-      setFeedback({ tone: 'danger', title: 'Kontrola nije uspela', detail: errMessage(e) });
+      setFeedback({ tone: 'danger', title: 'Štampa nije uspela', detail: errMessage(e) });
+    } finally {
+      setReprinting(false);
     }
   }
 
@@ -626,9 +650,10 @@ export function KioskScanner() {
     );
   const missing = !!operation && !!card.data && !matched && !inRouting;
   // Završna kontrola → KONTROLA panel (i kad red još ne postoji: create-on-scan).
-  const showControl = !!operation?.finalControl && !finished && !cardLoading;
+  // Panel za štampu nalepnica POSLE sveže kontrole ima prednost nad kontrolom/reprint-om.
+  const showControl = !!operation?.finalControl && !finished && !cardLoading && !controlLabel;
   // Kontrola VEĆ urađena → nudi se samo DOŠTAMPAVANJE nalepnica (Nesa 2026-07-10).
-  const showReprint = !!operation?.finalControl && finished && !cardLoading;
+  const showReprint = !!operation?.finalControl && finished && !cardLoading && !controlLabel;
 
   return (
     <main className="flex flex-1 flex-col bg-app">
@@ -738,6 +763,19 @@ export function KioskScanner() {
             planned={planned}
             busy={control.isPending}
             onSubmit={onKontrola}
+          />
+        )}
+
+        {/* Posle sveže kontrole: štampa nalepnica na zahtev (default 1, ručno povećaj). */}
+        {order && operation && controlLabel && (
+          <ReprintPanel
+            key={`ctrl-labels-${operation.raw}`}
+            operationLabel={operationLabel}
+            controlled={controlLabel.controlled}
+            busy={reprinting}
+            onPrint={onPrintControlLabels}
+            heading="Kontrola snimljena"
+            note="Izaberite broj nalepnica i štampajte (podrazumevano 1)."
           />
         )}
 

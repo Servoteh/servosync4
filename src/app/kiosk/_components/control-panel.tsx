@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { Check, Plus, Printer, Trash2 } from 'lucide-react';
+import { Check, Plus, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui-kit/button';
 import { ComboBox } from '@/components/ui-kit/combo-box';
 import { usePositions, type Position } from '@/api/part-locations';
@@ -209,8 +209,7 @@ export function ControlPanel({
         className="h-20 w-full gap-3 text-2xl font-bold"
       >
         <Check className="h-7 w-7" aria-hidden />
-        <Printer className="h-7 w-7" aria-hidden />
-        Završi kontrolu i štampaj nalepnice
+        Završi kontrolu
       </Button>
       {!sumMatches && rowsValid && (
         <p className="text-center text-lg font-semibold text-status-warn">
