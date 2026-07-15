@@ -1,21 +1,33 @@
 import { newPdf, drawLogo, safeName, MARGIN, PAGE_W, PAGE_H, CONTENT_W } from './pdf-core';
 import type { PdfResult } from './hr-documents';
-import type { RegroupedYear } from '@/lib/vacation-regroup';
 
 // „Evidencija godišnjeg odmora" po zaposlenom (A4, latinica, Roboto/UTF-8, logo).
 // Port 1.0 `src/lib/vacationRecordPdf.js` na bundlovan jsPDF (pdf-core.newPdf).
-// Sadržaj: zaglavlje + saldo kartica + upisani GO dani grida + tabela po
-// istorijskoj godini + izvor + footer paginacija.
+// Sadržaj: zaglavlje + kartica stanja + po godini iskorišćeni/planirani/ranije
+// (iz go_ledger, usklađeno sa saldom) + footer paginacija.
 
 const BODY_BOTTOM = PAGE_H - 16;
 const KIND_LABEL: Record<string, string> = { go: 'GO', slava: 'Slava', bolovanje: 'Bolovanje', praznik: 'Praznik', other: '—' };
 
-export interface VacationRecordSaldo {
-  ukupno: number;
+interface LedgerPeriod { od: string; do: string; dana: number }
+interface LedgerEntry { days: number | null; kind: string; dates: string; comment?: string | null; approx?: boolean }
+export interface VacationLedgerBlock {
+  godina: number;
+  izvor: 'grid' | 'istorija';
+  pravo: number | null;
+  preneto: number | null;
+  zaradjeno_do_danas: number | null;
+  srazmerno_sticanje?: boolean | null;
+  ukupno: number | null;
   iskorisceno: number;
-  preostalo: number;
-  preneto: number;
-  zaradjeno: number;
+  planirano: number;
+  preostalo: number | null;
+  iskorisceno_periodi: LedgerPeriod[];
+  planirano_periodi: LedgerPeriod[];
+  ranije_evidentirano: number;
+  ranije_napomena?: string | null;
+  stara_evidencija?: LedgerEntry[];
+  istorija_unosi?: LedgerEntry[];
 }
 
 export interface VacationRecordInput {
@@ -23,16 +35,22 @@ export interface VacationRecordInput {
   position?: string;
   jmbg?: string;
   year: number;
-  saldo?: VacationRecordSaldo | null;
-  history: RegroupedYear[];
-  /** YYYY-MM-DD GO ćelije tekuće godine (upisane u sistem/grid). */
-  gridDays?: string[];
+  current?: VacationLedgerBlock | null;
+  blocks: VacationLedgerBlock[];
   generatedDate: string; // „29.06.2026."
 }
 
-function fmtYmd(ymd: string): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(ymd || ''));
-  return m ? `${m[3]}.${m[2]}.` : String(ymd || '');
+function fmtIsoDay(iso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ''));
+  return m ? `${m[3]}.${m[2]}.${m[1]}.` : String(iso || '');
+}
+function fmtPeriod(p: LedgerPeriod): string {
+  if (!p.od) return '—';
+  if (!p.do || p.od === p.do) return fmtIsoDay(p.od);
+  const a = /^(\d{4})-(\d{2})-(\d{2})$/.exec(p.od);
+  const b = /^(\d{4})-(\d{2})-(\d{2})$/.exec(p.do);
+  if (a && b && a[1] === b[1] && a[2] === b[2]) return `${a[3]}–${b[3]}.${b[2]}.${b[1]}.`;
+  return `${fmtIsoDay(p.od)} – ${fmtIsoDay(p.do)}`;
 }
 
 interface TableCol { h: string; w: number }
@@ -77,30 +95,30 @@ export async function generateVacationRecordPdf(d: VacationRecordInput): Promise
   }
   y += 2;
 
-  /* ── Kartica trenutnog stanja ── */
-  if (d.saldo) {
+  /* ── Kartica trenutnog stanja (tekuća godina) ── */
+  if (d.current) {
+    const c = d.current;
     const boxH = 20;
     pageBreak(boxH + 4);
     doc.setFillColor(244, 247, 250); doc.setDrawColor(206, 216, 226);
     doc.roundedRect(MARGIN, y, CONTENT_W, boxH, 2, 2, 'FD');
-    const cellW = CONTENT_W / 3;
-    const cell = (i: number, label: string, val: number, color: [number, number, number]) => {
+    const cellW = CONTENT_W / 4;
+    const cell = (i: number, label: string, val: number | null, color: [number, number, number]) => {
       const cx = MARGIN + cellW * i + cellW / 2;
-      doc.setFont('Roboto', 'normal'); doc.setFontSize(8.5); ink(110, 110, 110);
+      doc.setFont('Roboto', 'normal'); doc.setFontSize(8); ink(110, 110, 110);
       doc.text(label, cx, y + 6, { align: 'center' });
-      doc.setFont('Roboto', 'bold'); doc.setFontSize(16); ink(color[0], color[1], color[2]);
-      doc.text(String(val), cx, y + 15, { align: 'center' });
+      doc.setFont('Roboto', 'bold'); doc.setFontSize(15); ink(color[0], color[1], color[2]);
+      doc.text(String(val == null ? '—' : val), cx, y + 15, { align: 'center' });
     };
-    const s = d.saldo;
-    cell(0, `Ukupno (do danas) ${d.year}.`, s.ukupno, [40, 90, 160]);
-    cell(1, 'Iskorišćeno', s.iskorisceno, [120, 90, 40]);
-    cell(2, 'Preostalo', s.preostalo, (Number(s.preostalo) < 0 ? [198, 83, 79] : [59, 140, 78]));
+    cell(0, `Raspoloživo ${d.year}.`, c.ukupno, [40, 90, 160]);
+    cell(1, 'Iskorišćeno', c.iskorisceno, [120, 90, 40]);
+    cell(2, 'Planirano', c.planirano, [37, 99, 235]);
+    cell(3, 'Preostalo', c.preostalo, (Number(c.preostalo) < 0 ? [198, 83, 79] : [59, 140, 78]));
     doc.setDrawColor(220, 228, 236);
-    doc.line(MARGIN + cellW, y + 3, MARGIN + cellW, y + boxH - 3);
-    doc.line(MARGIN + cellW * 2, y + 3, MARGIN + cellW * 2, y + boxH - 3);
+    for (let i = 1; i < 4; i++) doc.line(MARGIN + cellW * i, y + 3, MARGIN + cellW * i, y + boxH - 3);
     y += boxH + 2;
     doc.setFont('Roboto', 'normal'); doc.setFontSize(8); ink(130, 130, 130);
-    doc.text(`Ukupno = preneto (${s.preneto}) + zarađeno do danas (${s.zaradjeno}). Preostalo = Ukupno − Iskorišćeno − planirano.`, MARGIN, y);
+    doc.text(`Raspoloživo = preneto (${c.preneto ?? 0}) + ${c.srazmerno_sticanje ? 'zarađeno do danas' : 'godišnje pravo'} (${c.zaradjeno_do_danas ?? c.pravo ?? '—'}). Slobodno = Preostalo (Raspoloživo − Iskorišćeno − Planirano).`, MARGIN, y);
     y += 6;
   }
 
@@ -134,55 +152,51 @@ export async function generateVacationRecordPdf(d: VacationRecordInput): Promise
     y += 4;
   };
 
-  /* ── Tekuća godina: upisani GO dani u sistemu (grid) ── */
-  if (Array.isArray(d.gridDays) && d.gridDays.length) {
-    pageBreak(12);
-    doc.setFont('Roboto', 'bold'); doc.setFontSize(10.5); ink(20, 20, 20);
-    doc.text(`Korišćeni dani ${d.year}. (upisano u sistemu)`, MARGIN, y); y += 5;
-    doc.setFont('Roboto', 'normal'); doc.setFontSize(9); ink(50, 50, 50);
-    const sorted = [...d.gridDays].sort();
-    const line = `${sorted.length} dana: ` + sorted.map(fmtYmd).join(', ');
-    const lines = doc.splitTextToSize(line, CONTENT_W) as string[];
-    for (const ln of lines) { pageBreak(5); doc.text(ln, MARGIN, y); y += 4.6; }
-    y += 4;
-  }
-
-  /* ── Po godinama iz istorije ── */
-  const hist = (d.history || []).slice().sort((a, b) => (b.year || 0) - (a.year || 0));
-  if (!hist.length) {
+  /* ── Po godinama (go_ledger): iskorišćeni + planirani + ranije ── */
+  const COLS: TableCol[] = [{ h: 'Dana', w: 16 }, { h: 'Tip', w: 26 }, { h: 'Datumi', w: 74 }, { h: 'Napomena', w: CONTENT_W - 16 - 26 - 74 }];
+  const blocks = (d.blocks || []).slice().sort((a, b) => (b.godina || 0) - (a.godina || 0));
+  if (!blocks.length) {
     pageBreak(8); doc.setFont('Roboto', 'normal'); doc.setFontSize(9.5); ink(120, 120, 120);
-    doc.text('Nema istorijskih GO podataka (vacation_history) za ovog zaposlenog.', MARGIN, y); y += 6;
+    doc.text('Nema podataka o godišnjem odmoru za ovog zaposlenog.', MARGIN, y); y += 6;
   }
-  for (const r of hist) {
+  const sectionLabel = (txt: string, color: [number, number, number]) => {
+    pageBreak(8); doc.setFont('Roboto', 'bold'); doc.setFontSize(9); ink(color[0], color[1], color[2]);
+    doc.text(txt, MARGIN, y + 3); y += 5.5;
+  };
+  for (const b of blocks) {
+    const isHist = b.izvor === 'istorija';
     pageBreak(16);
     doc.setFont('Roboto', 'bold'); doc.setFontSize(11); ink(20, 20, 20);
-    doc.text(`Godina ${r.year}.`, MARGIN, y);
+    doc.text(`Godina ${b.godina}.`, MARGIN, y);
     const sum = [
-      r.entitled != null ? `pravo ${r.entitled}` : null,
-      r.used != null ? `iskorišćeno ${r.used}` : null,
-      r.remaining != null ? `preostalo ${r.remaining}` : null,
+      b.ukupno != null ? `raspoloživo ${b.ukupno}` : null,
+      `iskorišćeno ${b.iskorisceno}`,
+      b.planirano > 0 ? `planirano ${b.planirano}` : null,
+      b.preostalo != null ? `preostalo ${b.preostalo}` : null,
     ].filter(Boolean).join('   ·   ');
-    if (sum) { doc.setFont('Roboto', 'normal'); doc.setFontSize(9); ink(90, 90, 90); doc.text(sum, PAGE_W - MARGIN, y, { align: 'right' }); }
-    y += 4;
-    const entries = Array.isArray(r.entries) ? r.entries : [];
-    if (!entries.length) {
-      doc.setFont('Roboto', 'normal'); doc.setFontSize(8.5); ink(140, 140, 140);
-      doc.text('— nema pojedinačnih unosa —', MARGIN, y + 3); y += 8;
-      continue;
-    }
-    drawTable(
-      [{ h: 'Dana', w: 16 }, { h: 'Tip', w: 24 }, { h: 'Datumi', w: 76 }, { h: 'Napomena', w: CONTENT_W - 16 - 24 - 76 }],
-      entries.map((e) => [
-        e.days == null ? '' : String(e.days),
-        KIND_LABEL[e.kind] || e.kind || '—',
-        e.dates || '',
-        e.comment || '',
-      ]),
-    );
-  }
+    doc.setFont('Roboto', 'normal'); doc.setFontSize(9); ink(90, 90, 90);
+    doc.text(sum, PAGE_W - MARGIN, y, { align: 'right' });
+    y += 5;
 
-  const src = hist.find((r) => r.sourceFile)?.sourceFile;
-  if (src) { pageBreak(6); doc.setFont('Roboto', 'normal'); doc.setFontSize(7.5); ink(150, 150, 150); doc.text(`Izvor istorije: ${src} (ručna evidencija).`, MARGIN, y); y += 4; }
+    const usedRows: string[][] = [];
+    if (isHist) {
+      const entries = b.istorija_unosi ?? b.stara_evidencija ?? [];
+      for (const e of entries) usedRows.push([e.days == null ? '' : String(e.days), KIND_LABEL[e.kind] || e.kind || '—', e.dates || '', e.comment || '']);
+      const goSum = entries.filter((e) => e.kind === 'go' && typeof e.days === 'number').reduce((s, e) => s + (e.days as number), 0);
+      const residue = (b.iskorisceno || 0) - goSum;
+      if (residue > 0) usedRows.push([String(residue), 'ranije', 'bez preciznog datuma (iz stare evidencije)', '']);
+    } else {
+      for (const p of (b.iskorisceno_periodi ?? [])) usedRows.push([String(p.dana), 'GO', fmtPeriod(p), '']);
+      if (b.ranije_evidentirano > 0) usedRows.push([String(b.ranije_evidentirano), 'ranije', 'ranije evidentirano (pre evidencije po danima)', '']);
+    }
+    sectionLabel(isHist ? 'Iskorišćeni dani (ranija evidencija)' : 'Iskorišćeni dani', [60, 60, 60]);
+    drawTable(COLS, usedRows.length ? usedRows : [['', '', '— nema —', '']]);
+
+    if (!isHist && (b.planirano_periodi ?? []).length) {
+      sectionLabel('Planirani (odobreni) dani', [37, 99, 235]);
+      drawTable(COLS, b.planirano_periodi.map((p) => [String(p.dana), 'planirano', fmtPeriod(p), '']));
+    }
+  }
 
   /* ── Footer ── */
   const total = doc.getNumberOfPages();

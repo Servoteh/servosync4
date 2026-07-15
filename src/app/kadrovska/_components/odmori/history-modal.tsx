@@ -4,14 +4,14 @@ import { useState } from 'react';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Button } from '@/components/ui-kit/button';
 import {
-  useVacationHistory,
-  useVacationBalance,
-  useWorkHours,
+  useVacationLedger,
   useHolidays,
   useEmployeePii,
   useUploadDocument,
   newClientEventId,
-  type VacationHistory,
+  type GoLedgerBlock,
+  type GoLedgerPeriod,
+  type GoLedgerEntry,
 } from '@/api/kadrovska';
 import {
   generateVacationRecordPdf,
@@ -20,13 +20,7 @@ import {
   downloadBlob,
 } from '@/lib/hr-pdf';
 import { formatDate } from '@/lib/format';
-import {
-  regroupHistoryByCalendarYear,
-  entryDateRangeIso,
-  type HistoryRow,
-  type HistoryEntry,
-  type RegroupedYear,
-} from '@/lib/vacation-regroup';
+import { entryDateRangeIso } from '@/lib/vacation-regroup';
 import { sv } from '../common';
 import { useOdmoriUi } from './ui';
 import { holidaySetFromRows, nextWorkingDay } from './helpers';
@@ -39,10 +33,19 @@ const KIND_BADGE: Record<string, { label: string; color: string }> = {
   other: { label: '—', color: '#8a8a8a' },
 };
 
+function fmtPeriod(p: GoLedgerPeriod): string {
+  if (!p.od) return '—';
+  if (!p.do || p.od === p.do) return formatDate(p.od);
+  const a = /^(\d{4})-(\d{2})-(\d{2})$/.exec(p.od);
+  const b = /^(\d{4})-(\d{2})-(\d{2})$/.exec(p.do);
+  if (a && b && a[1] === b[1] && a[2] === b[2]) return `${a[3]}–${b[3]}.${b[2]}.${b[1]}.`;
+  return `${formatDate(p.od)} – ${formatDate(p.do)}`;
+}
+
 /**
- * 📜 GO istorija modal (regroup po kalendarskoj godini) + 🗂 PDF evidencija +
- * ✉ Pošalji zaposlenom + 📄 Rešenje po istorijskom unosu. Port 1.0
- * vacationHistoryView + vacationRecordDoc + vacationDecisionDoc.
+ * 📜 GO istorija modal — jedinstveni presek iz go_ledger (grid + „ranije" +
+ * planirano + preostalo, usklađeno sa saldom) + 🗂 PDF evidencija + ✉ Pošalji
+ * zaposlenom + 📄 Rešenje po periodu/unosu. Port 1.0 vacationHistoryView.
  */
 export function HistoryModal({
   employeeId,
@@ -64,52 +67,24 @@ export function HistoryModal({
   const { showToast, confirm } = useOdmoriUi();
   const year = new Date().getFullYear();
 
-  const histQ = useVacationHistory({ employeeId });
-  const balQ = useVacationBalance({ employeeId, year });
-  const whQ = useWorkHours({ employeeId, from: `${year}-01-01`, to: `${year}-12-31` });
+  const ledgerQ = useVacationLedger({ employeeId });
   const holQ = useHolidays({ from: `${year}-01-01`, to: `${year + 1}-01-31` });
   const piiQ = useEmployeePii(employeeId, canPii);
   const upload = useUploadDocument();
 
   const [busy, setBusy] = useState<string | null>(null);
 
-  // BE (Prisma) daje entitledDays/usedDays/remainingDays + entries JSON → map na regroup ulaz.
-  const rawRows: HistoryRow[] = (histQ.data?.data ?? []).map((h: VacationHistory) => ({
-    year: h.year,
-    entitled: h.entitledDays,
-    used: h.usedDays,
-    remaining: h.remainingDays,
-    entries: (Array.isArray(h.entries) ? h.entries : []) as HistoryEntry[],
-    sourceFile: h.sourceFile,
-  }));
-  const cal: RegroupedYear[] = regroupHistoryByCalendarYear(rawRows);
+  const blocks: GoLedgerBlock[] = ledgerQ.data?.data ?? [];
 
   function buildRecordData() {
-    const bal = balQ.data?.data?.[0];
-    let saldo = null;
-    if (bal) {
-      const earned = bal.days_earned == null ? Number(bal.days_total ?? 0) : Number(bal.days_earned);
-      const carried = Number(bal.days_carried_over ?? 0);
-      saldo = {
-        ukupno: earned + carried,
-        iskorisceno: Number(bal.days_used ?? 0),
-        preostalo: Number(bal.days_remaining_accrued ?? bal.days_remaining ?? 0),
-        preneto: carried,
-        zaradjeno: earned,
-      };
-    }
-    const gridDays = (whQ.data?.data ?? [])
-      .filter((r) => r.absenceCode === 'go')
-      .map((r) => String(r.workDate).slice(0, 10))
-      .filter(Boolean);
+    const current = blocks.find((b) => b.godina === year) ?? null;
     return {
       employeeName,
       position,
       jmbg: sv(piiQ.data?.data, 'personal_id') || '',
       year,
-      saldo,
-      history: cal,
-      gridDays,
+      current,
+      blocks,
       generatedDate: formatDate(new Date().toISOString().slice(0, 10)),
     };
   }
@@ -155,28 +130,27 @@ export function HistoryModal({
     }
   }
 
-  async function onRangeDecision(entryYear: number, datesText: string, days: number | null) {
+  /** Rešenje o GO za tačan opseg (fromIso/toIso). Zajedničko za grid periode i istorijske unose. */
+  async function emitDecision(entryYear: number, fromIso: string, toIso: string, days: number | null, busyKey: string) {
     if (!position) {
       showToast('⚠ Zaposlenom nije dodeljeno radno mesto (Zaposleni → Radno mesto).');
       return;
     }
-    const range = entryDateRangeIso(datesText, entryYear);
-    if (!range) { showToast('⚠ Nema preciznih datuma za rešenje.'); return; }
-    setBusy(`res-${datesText}`);
+    setBusy(busyKey);
     try {
       const holSet = holidaySetFromRows(holQ.data?.data);
-      const returnIso = nextWorkingDay(range.toIso, holSet);
+      const returnIso = nextWorkingDay(toIso, holSet);
       const { blob, fileName } = await generateVacationDecisionPdf({
-        brojResenja: `GO-${entryYear}-${String(range.fromIso).replace(/-/g, '').slice(4)}`,
+        brojResenja: `GO-${entryYear}-${String(fromIso).replace(/-/g, '').slice(4)}`,
         datumDonosenja: formatDate(new Date().toISOString().slice(0, 10)),
         mesto: 'Dobanovci',
         godina: entryYear,
         imePrezime: employeeName,
         jmbg: sv(piiQ.data?.data, 'personal_id') || '________________',
         radnoMesto: position,
-        brojDana: days ?? range.count,
-        datumOd: formatDate(range.fromIso),
-        datumDo: formatDate(range.toIso),
+        brojDana: days ?? 0,
+        datumOd: formatDate(fromIso),
+        datumDo: formatDate(toIso),
         datumPovratka: returnIso ? formatDate(returnIso) : '________',
         saldo: null,
         potpisPoslodavac: 'Nenad Jaraković',
@@ -191,11 +165,153 @@ export function HistoryModal({
     }
   }
 
+  function onPeriodDecision(entryYear: number, p: GoLedgerPeriod) {
+    emitDecision(entryYear, p.od, p.do, p.dana, `res-${p.od}`);
+  }
+  function onEntryDecision(entryYear: number, datesText: string, days: number | null) {
+    const range = entryDateRangeIso(datesText, entryYear);
+    if (!range) { showToast('⚠ Nema preciznih datuma za rešenje.'); return; }
+    emitDecision(entryYear, range.fromIso, range.toIso, days ?? range.count, `res-${datesText}`);
+  }
+
+  const colSpan = canResenje ? 5 : 4;
+
+  function periodRow(entryYear: number, p: GoLedgerPeriod, planned: boolean, idx: number) {
+    const badge = planned
+      ? { label: 'planirano', color: '#2563eb' }
+      : { label: 'GO', color: '#3B8C4E' };
+    return (
+      <tr key={`p${planned ? 'p' : 'u'}${idx}`} className="border-t border-line-soft align-top">
+        <td className="py-1 tnums font-semibold">{p.dana}</td>
+        <td><span className="rounded border px-1.5 py-0.5 text-[0.65rem]" style={{ color: badge.color, borderColor: `${badge.color}55` }}>{badge.label}</span></td>
+        <td className="whitespace-nowrap">{fmtPeriod(p)}</td>
+        <td className="text-ink-secondary" />
+        {canResenje && (
+          <td className="text-right">
+            <button
+              type="button"
+              disabled={busy === `res-${p.od}`}
+              onClick={() => onPeriodDecision(entryYear, p)}
+              className="rounded-control px-2 py-1 text-xs text-accent hover:bg-surface-2 disabled:opacity-50"
+              title="Generiši i odštampaj Rešenje o GO za ovaj period"
+            >📄 Rešenje</button>
+          </td>
+        )}
+      </tr>
+    );
+  }
+
+  function noteRow(key: string, n: number, text: string) {
+    return (
+      <tr key={key} className="border-t border-line-soft align-top">
+        <td className="py-1 tnums font-semibold">{n}</td>
+        <td><span className="rounded border px-1.5 py-0.5 text-[0.65rem]" style={{ color: '#8a8a8a', borderColor: '#8a8a8a55' }}>ranije</span></td>
+        <td colSpan={colSpan - 2} className="text-ink-secondary">{text}</td>
+      </tr>
+    );
+  }
+
+  function entryRow(entryYear: number, e: GoLedgerEntry, i: number, allowResenje: boolean) {
+    const k = KIND_BADGE[e.kind] || KIND_BADGE.other;
+    const canRes = allowResenje && canResenje && e.kind === 'go' && e.days != null && !!entryDateRangeIso(e.dates, entryYear);
+    return (
+      <tr key={`e${i}`} className="border-t border-line-soft align-top">
+        <td className="py-1 tnums font-semibold">{e.days != null ? `${e.approx ? '~' : ''}${e.days}` : '–'}</td>
+        <td><span className="rounded border px-1.5 py-0.5 text-[0.65rem]" style={{ color: k.color, borderColor: `${k.color}55` }}>{k.label}</span></td>
+        <td>
+          {e.dates || '—'}
+          {e.fromYear && (<span className="ml-1 rounded border border-line px-1 text-[0.6rem] text-ink-secondary" title={`upisano u list ${e.fromYear}. godine`}>↤ {e.fromYear}</span>)}
+        </td>
+        <td className="text-ink-secondary">{e.comment || ''}</td>
+        {canResenje && (
+          <td className="text-right">
+            {canRes && (
+              <button
+                type="button"
+                disabled={busy === `res-${e.dates}`}
+                onClick={() => onEntryDecision(entryYear, e.dates, e.days)}
+                className="rounded-control px-2 py-1 text-xs text-accent hover:bg-surface-2 disabled:opacity-50"
+                title="Generiši i odštampaj Rešenje o GO za ove dane"
+              >📄 Rešenje</button>
+            )}
+          </td>
+        )}
+      </tr>
+    );
+  }
+
+  function table(rows: React.ReactNode) {
+    return (
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="text-left text-ink-secondary">
+            <th className="w-12 py-1">Dana</th>
+            <th className="w-20">Tip</th>
+            <th>Datumi</th>
+            <th>Napomena</th>
+            {canResenje && <th className="w-24" />}
+          </tr>
+        </thead>
+        <tbody>{rows}</tbody>
+      </table>
+    );
+  }
+
+  function renderBlock(b: GoLedgerBlock) {
+    const isHistory = b.izvor === 'istorija';
+    const summary = [
+      b.ukupno != null ? `raspoloživo ${b.ukupno}` : null,
+      `iskorišćeno ${b.iskorisceno}`,
+      b.planirano > 0 ? `planirano ${b.planirano}` : null,
+      b.preostalo != null ? `preostalo ${b.preostalo}` : null,
+    ].filter(Boolean).join(' · ');
+
+    let usedRows: React.ReactNode;
+    if (isHistory) {
+      const entries = b.istorija_unosi ?? b.stara_evidencija ?? [];
+      const goSum = entries.filter((e) => e.kind === 'go' && typeof e.days === 'number').reduce((s, e) => s + (e.days as number), 0);
+      const residue = (b.iskorisceno || 0) - goSum;
+      usedRows = entries.length
+        ? [...entries.map((e, i) => entryRow(b.godina, e, i, true)), residue > 0 ? noteRow('res', residue, 'bez preciznog datuma (iz stare evidencije)') : null]
+        : <tr><td colSpan={colSpan} className="py-1 text-ink-disabled">nema pojedinačnih unosa</td></tr>;
+    } else {
+      const rows: React.ReactNode[] = (b.iskorisceno_periodi ?? []).map((p, i) => periodRow(b.godina, p, false, i));
+      if (b.ranije_evidentirano > 0) rows.push(noteRow('earlier', b.ranije_evidentirano, 'ranije evidentirano (pre evidencije po danima)'));
+      usedRows = rows.length ? rows : <tr><td colSpan={colSpan} className="py-1 text-ink-disabled">nema iskorišćenih dana</td></tr>;
+    }
+
+    const plannedPeriods = b.planirano_periodi ?? [];
+    const oldEntries = !isHistory ? (b.stara_evidencija ?? []) : [];
+
+    return (
+      <div key={b.godina} className="space-y-1.5">
+        <div className="flex items-baseline justify-between gap-2 border-b border-line pb-1">
+          <strong className="text-sm text-ink">ODMOR {b.godina}</strong>
+          <span className="text-xs text-ink-secondary">{summary}</span>
+        </div>
+        <div className="text-xs font-semibold text-ink-secondary">{isHistory ? 'Iskorišćeni dani (stara evidencija)' : 'Iskorišćeni dani'}</div>
+        {table(usedRows)}
+        {plannedPeriods.length > 0 && (
+          <>
+            <div className="text-xs font-semibold" style={{ color: '#2563eb' }}>Planirani (odobreni) dani</div>
+            {table(plannedPeriods.map((p, i) => periodRow(b.godina, p, true, i)))}
+          </>
+        )}
+        {oldEntries.length > 0 && (
+          <details className="mt-1">
+            <summary className="cursor-pointer text-[0.7rem] text-ink-disabled">Stara Excel evidencija ({b.godina}) — kontekst</summary>
+            {table(oldEntries.map((e, i) => entryRow(b.godina, e, i, false)))}
+          </details>
+        )}
+      </div>
+    );
+  }
+
   return (
     <Dialog
       open
       onClose={onClose}
-      title={`📜 GO istorija — ${employeeName}`}
+      title={`📜 Godišnji odmor — istorija — ${employeeName}`}
       footer={
         <>
           <Button variant="secondary" onClick={onPdf} loading={busy === 'pdf'}>🗂 PDF evidencija</Button>
@@ -206,81 +322,19 @@ export function HistoryModal({
     >
       <div className="space-y-4">
         <p className="text-xs text-ink-secondary">
-          Ručna evidencija iz starih Excel fajlova — ne utiče na trenutni saldo.
+          Kompletan pregled po godinama: iskorišćeni + planirani (odobreni) + preostali dani (usklađeno sa saldom).
         </p>
-        {histQ.isLoading ? (
+        {ledgerQ.isLoading ? (
           <p className="text-sm text-ink-secondary">Učitavanje…</p>
-        ) : !cal.length ? (
-          <p className="text-sm text-ink-secondary">Nema istorijskih GO podataka za ovog zaposlenog.</p>
+        ) : !blocks.length ? (
+          <p className="text-sm text-ink-secondary">Nema podataka o godišnjem odmoru za ovog zaposlenog.</p>
         ) : (
-          cal.map((r) => (
-            <div key={r.year} className="space-y-1.5">
-              <div className="flex items-baseline justify-between gap-2 border-b border-line pb-1">
-                <strong className="text-sm text-ink">ODMOR {r.year}</strong>
-                <span className="text-xs text-ink-secondary">
-                  {[
-                    r.entitled != null ? `pravo ${r.entitled}` : null,
-                    r.used != null ? `iskorišćeno ${r.used}` : null,
-                    r.remaining != null ? `preostalo ${r.remaining}` : null,
-                  ].filter(Boolean).join(' · ') || 'bez sažetka'}
-                </span>
-              </div>
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="text-left text-ink-secondary">
-                    <th className="w-12 py-1">Dana</th>
-                    <th className="w-20">Tip</th>
-                    <th>Datumi</th>
-                    <th>Napomena</th>
-                    {canResenje && <th className="w-24" />}
-                  </tr>
-                </thead>
-                <tbody>
-                  {r.entries.length === 0 ? (
-                    <tr><td colSpan={canResenje ? 5 : 4} className="py-1 text-ink-disabled">nema pojedinačnih unosa</td></tr>
-                  ) : r.entries.map((e, i) => {
-                    const k = KIND_BADGE[e.kind] || KIND_BADGE.other;
-                    const canRes = e.kind === 'go' && e.days != null && !!entryDateRangeIso(e.dates, r.year);
-                    return (
-                      <tr key={i} className="border-t border-line-soft align-top">
-                        <td className="py-1 tnums font-semibold">{e.days != null ? `${e.approx ? '~' : ''}${e.days}` : '–'}</td>
-                        <td>
-                          <span className="rounded border px-1.5 py-0.5 text-[0.65rem]" style={{ color: k.color, borderColor: `${k.color}55` }}>{k.label}</span>
-                        </td>
-                        <td>
-                          {e.dates || '—'}
-                          {e.fromYear && (
-                            <span className="ml-1 rounded border border-line px-1 text-[0.6rem] text-ink-secondary" title={`upisano u list ${e.fromYear}. godine`}>↤ {e.fromYear}</span>
-                          )}
-                        </td>
-                        <td className="text-ink-secondary">{e.comment || ''}</td>
-                        {canResenje && (
-                          <td className="text-right">
-                            {canRes && (
-                              <button
-                                type="button"
-                                disabled={busy === `res-${e.dates}`}
-                                onClick={() => onRangeDecision(r.year, e.dates, e.days)}
-                                className="rounded-control px-2 py-1 text-xs text-accent hover:bg-surface-2 disabled:opacity-50"
-                                title="Generiši i odštampaj Rešenje o GO za ove dane"
-                              >
-                                📄 Rešenje
-                              </button>
-                            )}
-                          </td>
-                        )}
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          ))
+          blocks.map(renderBlock)
         )}
         <p className="text-[0.7rem] leading-relaxed text-ink-disabled">
-          Dani su grupisani po <strong>kalendarskoj godini korišćenja</strong> (iz starih Excel listova);
-          godišnje pravo je iz originalne evidencije. „↤ NNNN" = dan je upisan u list te godine; „~" = približno.
-          Ručna evidencija — <strong>ne utiče na saldo</strong>.
+          „Iskorišćeni dani" i „planirano" su iz sistemske evidencije po danima (usklađeno sa saldom);
+          „ranije" = dani evidentirani pre uvođenja evidencije po danima. Za starije godine izvor je
+          ranija (Excel) evidencija. <strong>Slobodno = preostalo.</strong>
         </p>
       </div>
     </Dialog>
