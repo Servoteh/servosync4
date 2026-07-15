@@ -12,7 +12,9 @@ import {
   useAllLocations,
   usePrintLocLabel,
   usePredmetTps,
+  usePredmetWorkOrders,
   type LocLocation,
+  type LocWorkOrder,
   type PredmetTpRow,
 } from '@/api/lokacije';
 import { usePredmetiLookup, type PredmetLookup } from '@/api/plan-montaze';
@@ -413,6 +415,19 @@ function tpKey(predmetId: number, tp: PredmetTpRow): string {
   return `${predmetId}:${tp.work_order_id ?? tp.tp_no ?? ''}`;
 }
 
+/** Nova ruta `work-orders` (camelCase) → PredmetTpRow oblik koji Batch već troši. */
+function workOrderToTpRow(w: LocWorkOrder): PredmetTpRow {
+  return {
+    work_order_id: w.workOrderId,
+    wo_ident_broj: w.identBroj,
+    wo_broj_crteza: w.crtez,
+    naziv_dela: w.nazivDela,
+    komada_rn: w.komada,
+    materijal: w.materijal,
+    dimenzija_materijala: typeof w.dimenzijaMaterijala === 'string' ? w.dimenzijaMaterijala : undefined,
+  };
+}
+
 /**
  * Batch TP: predmet (BigTehn lookup) → tehnološki postupci → red za štampu.
  * Svaka stavka nosi količinu + TIP operacije (S/O/Z → SKLOP/OBRADA/ZAVARIVANJE).
@@ -425,8 +440,26 @@ function BatchTpLabels() {
   const predmeti = useMemo<PredmetLookup[]>(() => lookup.data?.data ?? [], [lookup.data]);
 
   const [focused, setFocused] = useState<PredmetLookup | null>(null);
-  const tps = usePredmetTps(focused ? String(focused.id) : null, { onlyOpen: false, pageSize: 500 });
-  const tpRows = useMemo<PredmetTpRow[]>(() => tps.data?.data.rows ?? [], [tps.data]);
+  const itemId = focused ? String(focused.id) : null;
+  // Batch štampa = SVI radni nalozi predmeta (paritet 1.0), ne samo MES-active:
+  // primarno nova ruta `/predmet/:id/work-orders`; dok BE grana nije spojena (404)
+  // defanzivno pada na `usePredmetTps` (MES-active RPC), deduplikovan po work_order_id
+  // (jedan red po RN — nema duplih redova/React ključeva po polici).
+  const wos = usePredmetWorkOrders(itemId, { onlyOpen: false });
+  const tpsFallback = usePredmetTps(wos.isError ? itemId : null, { onlyOpen: false, pageSize: 500 });
+  const tpRows = useMemo<PredmetTpRow[]>(() => {
+    const primary = wos.data?.data;
+    if (primary) return primary.map(workOrderToTpRow);
+    const raw = tpsFallback.data?.data.rows ?? [];
+    const byWo = new Map<string, PredmetTpRow>();
+    for (const r of raw) {
+      const k = String(r.work_order_id ?? r.tp_no ?? '');
+      if (k && !byWo.has(k)) byWo.set(k, r);
+    }
+    return [...byWo.values()];
+  }, [wos.data, tpsFallback.data]);
+  const tpsLoading = wos.isLoading || (wos.isError && tpsFallback.isLoading);
+  const tpsError = wos.isError && tpsFallback.isError;
 
   const [queue, setQueue] = useState<Map<string, QueueEntry>>(new Map());
   const [msg, setMsg] = useState<string | null>(null);
@@ -633,10 +666,10 @@ function BatchTpLabels() {
           <DataTable
             columns={tpColumns}
             rows={tpRows}
-            rowKey={(r) => `${r.work_order_id}|${r.tp_no}`}
+            rowKey={(r) => String(r.work_order_id ?? r.tp_no ?? '')}
             onRowActivate={(r) => toggleTp(r)}
-            loading={tps.isLoading}
-            empty={tableEmpty(tps.isError, 'Nema tehnoloških postupaka', 'Za ovaj predmet nema TP-ova u BigTehn kešu.')}
+            loading={tpsLoading}
+            empty={tableEmpty(tpsError, 'Nema radnih naloga', 'Za ovaj predmet nema RN u BigTehn kešu.')}
           />
         </div>
       )}

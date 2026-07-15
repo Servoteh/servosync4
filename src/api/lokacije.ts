@@ -175,6 +175,11 @@ export interface ReportRow {
   shelf_note?: string;
   last_moved_at?: string;
   updated_at?: string;
+  // `placement_id` = jedinstven ključ reda (RPC emituje pl.id) → stabilan rowKey.
+  // `location_id` = fizička lokacija reda → loc-index fallback za halu ugnježdenih
+  // mašina (RPC vraća hall_code=NULL kad je hala 2+ nivoa iznad). Vidi report-tab.
+  placement_id?: string;
+  location_id?: string;
   [key: string]: unknown;
 }
 
@@ -424,6 +429,29 @@ export function useMovements(params: MovementsParams, enabled = true) {
   });
 }
 
+/** Jedan izvršilac pokreta za „Korisnik" filter (id = moved_by UUID; name = razrešeno ime). */
+export interface LocMover {
+  id: string;
+  name?: string | null;
+}
+
+/**
+ * PUNA lista movera za „Korisnik" filter (paritet 1.0 `loadHistoryUsers`): BE ruta
+ * `GET /v1/locations/movements/movers` → DISTINCT moved_by (+ razrešeno ime) preko
+ * SVIH pokreta, bez page-clamp-a. Nova ruta grane fix/locations-energetika; `retry:false`
+ * jer dok grane nisu spojene vraća 404 — pozivalac tada defanzivno pada na distinct iz
+ * učitane strane (staro ponašanje) da filter ostane funkcionalan (zero-loss).
+ */
+export function useMovementMovers(enabled = true) {
+  return useQuery({
+    queryKey: [...KEYS.movements, 'movers'],
+    enabled,
+    retry: false,
+    staleTime: 60_000,
+    queryFn: () => apiFetch<{ data: LocMover[] }>('/v1/locations/movements/movers'),
+  });
+}
+
 export function useReportByLocation(params: ReportParams, enabled = true) {
   return useQuery({
     queryKey: [...KEYS.report, params],
@@ -460,6 +488,48 @@ export function usePredmetTps(itemId: string | null, params: PredmetTpsParams) {
     queryFn: () =>
       apiFetch<{ data: PredmetTpsResult; meta: { opStatus: unknown } }>(
         `/v1/locations/predmet/${itemId}/tps${qs({ ...params })}`,
+      ),
+  });
+}
+
+/**
+ * Radni nalog predmeta iz nove rute `GET /v1/locations/predmet/:itemId/work-orders`
+ * (grana fix/locations-energetika) — SVI RN po predmetu, JEDAN red po nalogu (bez
+ * placement-expandovanja i bez MES-active filtera). Batch TP štampa gubi 77% RN kad
+ * se hrani iz `loc_tps_for_predmet` (MES-active); ovo je zamena za tu putanju. Polja
+ * camelCase (BE model). Opciona jer PIN može evoluirati; UI ih čita defanzivno.
+ */
+export interface LocWorkOrder {
+  workOrderId: number | string;
+  identBroj?: string;
+  crtez?: string;
+  nazivDela?: string;
+  komada?: number | string;
+  materijal?: string;
+  dimenzijaMaterijala?: string;
+  statusRn?: boolean;
+  tipOperacije?: string;
+  [key: string]: unknown;
+}
+
+export interface PredmetWorkOrdersParams {
+  onlyOpen?: boolean;
+}
+
+/**
+ * SVI radni nalozi predmeta za batch-štampu (paritet 1.0 `searchBigtehnWorkOrdersForItem`
+ * bez `is_mes_active`). `retry:false` — dok BE ruta nije spojena vraća 404, pa pozivalac
+ * (BatchTpLabels) defanzivno pada na `usePredmetTps` (MES-active), deduplikovan po
+ * work_order_id, da bar nema duplih redova/ključeva. Predmet-tab NE dira ovaj hook.
+ */
+export function usePredmetWorkOrders(itemId: string | null, params: PredmetWorkOrdersParams = {}) {
+  return useQuery({
+    queryKey: [...KEYS.predmet, itemId, 'work-orders', params],
+    enabled: !!itemId,
+    retry: false,
+    queryFn: () =>
+      apiFetch<{ data: LocWorkOrder[] }>(
+        `/v1/locations/predmet/${itemId}/work-orders${qs({ ...params })}`,
       ),
   });
 }

@@ -11,6 +11,7 @@ import {
   MOVEMENT_TYPE_LABEL,
   fetchAllMovements,
   useAllLocations,
+  useMovementMovers,
   useMovements,
   type LocMovement,
   type MovementsParams,
@@ -48,12 +49,21 @@ export function MovementsTab() {
 
   const q = useMovements({ ...baseFilters, userId: userId || undefined, page, pageSize });
 
-  // Opcije za „Korisnik" filter (paritet 1.0 „Svi" + lista): distinct moved_by iz
-  // istog skupa BEZ userId filtera (da izbor ne sruši sopstvenu listu na jednog).
-  // Vrednost opcije ostaje UUID (BE `userId` filtrira po moved_by); labela = ime
-  // iz `movedByName` (fallback UUID) — paritet 1.0 „Korisnik" prikaza.
-  const userSource = useMovements({ ...baseFilters, pageSize: 500 });
+  // Opcije za „Korisnik" filter (paritet 1.0 `loadHistoryUsers` = PUNA lista movera):
+  // primarno iz nove rute `/movements/movers` (DISTINCT moved_by + ime, bez page-clamp-a
+  // — svaki mover uvek dostupan). Dok BE grana nije spojena (404) padamo na distinct iz
+  // učitane strane (staro ponašanje; extra 500-red upit se pali SAMO tada). Vrednost
+  // opcije = moved_by UUID (BE `userId` filter); labela = ime (fallback UUID).
+  const movers = useMovementMovers();
+  const userSource = useMovements({ ...baseFilters, pageSize: 500 }, movers.isError);
   const userOptions = useMemo(() => {
+    const full = movers.data?.data;
+    if (full && full.length) {
+      return full
+        .map((m) => ({ uid: m.id, label: userDisplay(m.name, m.id) }))
+        .filter((o) => o.uid)
+        .sort((a, b) => a.label.localeCompare(b.label, 'sr'));
+    }
     const map = new Map<string, string>();
     for (const m of userSource.data?.data ?? []) {
       if (m.movedBy && !map.has(m.movedBy)) map.set(m.movedBy, userDisplay(m.movedByName, m.movedBy));
@@ -61,7 +71,7 @@ export function MovementsTab() {
     return [...map.entries()]
       .map(([uid, label]) => ({ uid, label }))
       .sort((a, b) => a.label.localeCompare(b.label, 'sr'));
-  }, [userSource.data]);
+  }, [movers.data, userSource.data]);
 
   const rows = q.data?.data ?? [];
   const meta = q.data?.meta.pagination;
@@ -106,7 +116,7 @@ export function MovementsTab() {
           const to = fmtLoc(r.toLocationId);
           return [
             csvTimestamp(r.movedAt),
-            r.movedBy,
+            userDisplay(r.movedByName, r.movedBy),
             movementLabel(r.movementType),
             r.quantity == null ? '' : String(r.quantity),
             from.code,

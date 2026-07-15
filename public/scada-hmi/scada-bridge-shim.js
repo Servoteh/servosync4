@@ -26,9 +26,13 @@
     try { localStorage.setItem('theme', t); } catch (_) {}
     document.documentElement.dataset.theme = t;
   }
+  // Kanal = `?theme=` koji host (HmiHost) VEĆ prosleđuje u src iframe-a; roditeljski
+  // `data-theme` se ne cita (2.0 ljuska ga ne postavlja → ekran bi ostao trajno dark).
+  // Default light (2.0 je light-only). Uzivo promena: host reloaduje iframe (key) ILI
+  // salje 'scada-theme' (listener nize).
   try {
-    const pt = window.parent?.document?.documentElement?.dataset?.theme;
-    applyParentTheme(pt === 'light' ? 'light' : 'dark');
+    const q = new URLSearchParams(location.search).get('theme');
+    applyParentTheme(q === 'dark' ? 'dark' : 'light');
   } catch (_) {}
   window.addEventListener('message', (e) => {
     const d = e && e.data;

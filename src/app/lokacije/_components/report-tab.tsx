@@ -15,7 +15,7 @@ import {
   type ReportParams,
   type ReportRow,
 } from '@/api/lokacije';
-import { buildCsvFilename, csvTimestamp, downloadCsv, PageSizeSelect, tableEmpty } from './common';
+import { buildCsvFilename, buildLocIndex, csvTimestamp, downloadCsv, PageSizeSelect, tableEmpty, type LocIndex } from './common';
 import { LocationSelect } from './location-select';
 
 const INPUT = 'h-9 rounded-control border border-line bg-surface px-2.5 text-sm text-ink outline-none focus:border-accent';
@@ -25,9 +25,10 @@ const num = (v: unknown): string => (v == null || v === '' ? '—' : String(v));
 // ------------------------------------------------------------------ CSV izvoz (paritet 1.0)
 // Zaglavlja + red = 1.0 `REPORT_CSV_HEADERS` / `buildReportCsvRow`
 // (src/lib/lokacijeReportLocations.js). RPC `loc_report_parts_by_locations`
-// vraća sva lokaciona polja (hall_*, location_kind, location_path…) direktno u
-// redu — bez `location_id` — pa se prikaz lokacije čita iz reda (1.0 loc-index
-// fallback se nikad ne aktivira za ove redove).
+// vraća lokaciona polja (hall_*, location_kind, location_path…) direktno u redu,
+// ALI za mašinu ugnježdenu 2+ nivoa ispod hale vraća hall_code=NULL — pa se za
+// takve redove hala razrešava 1.0 loc-index fallback-om (`resolveReportHall` preko
+// `useAllLocations` indeksa, `location_id` → najbliži predak tipa HALA).
 
 const REPORT_CSV_HEADERS = [
   'Predmet kod', 'Predmet naziv', 'Kupac', 'RN', 'Crtež', 'Naziv dela',
@@ -46,15 +47,30 @@ function reportLocationKindLabel(kind: string): string {
   return '';
 }
 
-function normalizeReportKind(v: unknown): '' | 'shelf' | 'cage' {
-  const s = typeof v === 'string' ? v.trim().toLowerCase() : '';
-  return s === 'shelf' || s === 'cage' ? s : '';
+/**
+ * Hala reda (šifra + naziv). Primarno iz RPC polja `hall_code`/`hall_name`; kad su
+ * prazna (mašina 2+ nivoa ispod hale → RPC vraća NULL), fallback preko loc-indeksa:
+ * `location_id` → najbliži predak tipa HALA (paritet 1.0 resolveHallForLocation).
+ */
+function resolveReportHall(r: ReportRow, locIndex: LocIndex | null): { code: string; name: string } {
+  let code = String(r.hall_code ?? '').trim();
+  let name = String(r.hall_name ?? '').trim();
+  if (!code && locIndex) {
+    const locId = typeof r.location_id === 'string' ? r.location_id : '';
+    const hall = locId ? locIndex.hallOf(locId) : null;
+    if (hall) {
+      code = hall.locationCode;
+      name = hall.name;
+    }
+  }
+  return { code, name };
 }
 
-function buildReportCsvRow(r: ReportRow): (string | number)[] {
-  const hallCode = String(r.hall_code ?? '').trim();
-  const hallName = String(r.hall_name ?? '').trim();
-  const kind = normalizeReportKind(r.location_kind);
+function buildReportCsvRow(r: ReportRow, locIndex: LocIndex | null): (string | number)[] {
+  const { code: hallCode, name: hallName } = resolveReportHall(r, locIndex);
+  // SIROVI kind iz reda (hall/machine/shelf/cage) → labela. Ranije se hranila
+  // shelf/cage-normalizovana vrednost pa su HALA/MAŠINA redovi dobijali praznu ćeliju.
+  const rawKind = String(r.location_kind ?? '').trim().toLowerCase();
   const shelfCode = String(r.location_code ?? '').trim();
   const shelfName = String(r.location_name ?? '').trim();
   return [
@@ -75,7 +91,7 @@ function buildReportCsvRow(r: ReportRow): (string | number)[] {
     r.item_ref_table ?? '',
     hallCode,
     hallName,
-    reportLocationKindLabel(kind) || kind,
+    reportLocationKindLabel(rawKind),
     shelfCode,
     shelfName,
     r.location_path ?? '',
@@ -105,6 +121,8 @@ export function ReportTab() {
   const [exporting, setExporting] = useState<{ loaded: number; total: number | null } | null>(null);
 
   const allLocs = useAllLocations('true');
+  // Indeks (id → loc, parent-lanac) za loc-index fallback hale ugnježdenih mašina.
+  const locIndex = useMemo<LocIndex>(() => buildLocIndex(allLocs.data ?? []), [allLocs.data]);
   const hallOptions = useMemo<LocLocation[]>(
     () => (allLocs.data ?? []).filter((l) => HALL_TYPES.includes(l.locationType)).sort((a, b) => a.locationCode.localeCompare(b.locationCode)),
     [allLocs.data],
@@ -154,7 +172,7 @@ export function ReportTab() {
       ),
     },
     { key: 'item_ref_id', header: 'Stavka', sortable: true, render: (r) => <span className="tnums">{r.item_ref_id || '—'}</span> },
-    { key: 'hall_code', header: 'Hala', sortable: true, render: (r) => r.hall_code || '—' },
+    { key: 'hall_code', header: 'Hala', sortable: true, render: (r) => resolveReportHall(r, locIndex).code || '—' },
     { key: 'location_code', header: 'Polica', sortable: true, render: (r) => r.location_code || '—' },
     { key: 'material', header: 'Materijal', render: (r) => [r.materijal, r.dimenzija_materijala].filter(Boolean).join(' · ') || '—' },
     { key: 'qty_on_location', header: 'Na lok.', align: 'right', numeric: true, sortable: true, render: (r) => num(r.qty_on_location) },
@@ -173,7 +191,7 @@ export function ReportTab() {
         window.alert('Nema redova za export.');
         return;
       }
-      downloadCsv(buildCsvFilename('lokacije_pregled_po_lokacijama'), REPORT_CSV_HEADERS, all.map(buildReportCsvRow));
+      downloadCsv(buildCsvFilename('lokacije_pregled_po_lokacijama'), REPORT_CSV_HEADERS, all.map((r) => buildReportCsvRow(r, locIndex)));
       if (truncated) {
         window.alert(`Export prekinut na 50 000 redova. Ukupno u upitu: ${total ?? '?'}. Suzi filtere.`);
       }
@@ -250,7 +268,7 @@ export function ReportTab() {
       <DataTable
         columns={columns}
         rows={rows}
-        rowKey={(r) => `${r.item_ref_table}|${r.item_ref_id}|${r.order_no}|${r.location_code}`}
+        rowKey={(r) => String(r.placement_id ?? `${r.item_ref_id}|${r.order_no}|${r.location_code}`)}
         loading={q.isLoading}
         sort={sort ? { key: sort, dir: desc ? 'desc' : 'asc' } : null}
         onSortToggle={toggleSort}

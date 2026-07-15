@@ -381,9 +381,16 @@ export function ScanOverlay({
     let backCams: MediaDeviceInfo[] = [];
     let curDeviceId: string | null = null;
     let autoSwitchAttempts = 0;
+    let forcedBackDone = false; // one-shot: force-back kamera se pokušava najviše jednom
     let vvUnbind: (() => void) | null = null;
     const busyRef = { v: false };
     const lastRef = { code: '', at: 0 };
+    // Kontinuirani re-arm: isti kod se ponovo prihvata TEK kad napusti kadar (miss ili
+    // drugi kod duže od REARM_GAP_MS), ne po isteku fiksnog tajmera — stacionarni barkod
+    // se NE duplira. REPEAT_GUARD_MS = kratki anti-double gard za ručni/HID unos.
+    const REARM_GAP_MS = 900;
+    const REPEAT_GUARD_MS = 700;
+    const heldRef = { code: '', seenAt: 0 };
 
     const say = (msg: string, kind: StatusKind = 'info') => {
       setStatus(msg);
@@ -456,10 +463,13 @@ export function ScanOverlay({
       const code = normalize(raw);
       if (!code || busyRef.v) return;
       const now = Date.now();
-      const cool = continuousRef.current ? 2500 : 1500;
-      if (code === lastRef.code && now - lastRef.at < cool) return;
+      // Kratki gard protiv slučajnog dvostrukog slanja (ručni/HID); kontinuirani
+      // kamera-put re-arm rešava „napustio kadar" gejt u decode petlji (heldRef).
+      if (code === lastRef.code && now - lastRef.at < REPEAT_GUARD_MS) return;
       lastRef.code = code;
       lastRef.at = now;
+      heldRef.code = code; // latch: isti kod u kadru se ne procesira dok ne izađe
+      heldRef.seenAt = now;
       busyRef.v = true;
       setBusy(true);
       try {
@@ -502,7 +512,14 @@ export function ScanOverlay({
         try {
           if (videoRef.current.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
             const found = await detector.detect(videoRef.current);
-            if (found[0]?.rawValue) await resolve(found[0].rawValue);
+            const raw = found[0]?.rawValue ? String(found[0].rawValue) : '';
+            const nrv = raw ? normalize(raw) : '';
+            const now = Date.now();
+            // „Kod napustio kadar" gejt: dok je isti kod u kadru, ne prihvataj ga
+            // ponovo; re-arm tek kad je odsutan (miss/drugi kod) duže od REARM_GAP_MS.
+            if (nrv && nrv === heldRef.code) heldRef.seenAt = now;
+            else if (heldRef.code && now - heldRef.seenAt > REARM_GAP_MS) heldRef.code = '';
+            if (raw && nrv !== heldRef.code) await resolve(raw);
           }
         } catch {
           /* prazan frejm / prolazni decode-miss */
@@ -656,8 +673,14 @@ export function ScanOverlay({
           looksFront ? '⚠ FRONT kamera' : '✓ back kamera',
           `${s.width || '?'}×${s.height || '?'}`,
         ];
-        if (!looksFront && lens.count >= 2 && lens.idx >= 0)
-          parts.push(`objektiv ${lens.idx + 1}/${lens.count}`);
+        // Objektiv N/M iz ŽIVIH lokala efekta (backCams + track), ne iz React `lens`
+        // state-a — mount-closure bi bio zastareo pa se sufiks nikad ne bi prikazao.
+        const count = backCams.length;
+        const curId = s.deviceId || curDeviceId || '';
+        let idx = curId ? backCams.findIndex((c) => c.deviceId === curId) : -1;
+        if (idx < 0 && track.label) idx = backCams.findIndex((c) => c.label === track.label);
+        if (!looksFront && count >= 2 && idx >= 0)
+          parts.push(`objektiv ${idx + 1}/${count}`);
         say(parts.join(' · ') + ' — drži kod u centru', looksFront ? 'warn' : 'ok');
         if (looksFront) void tryForceBackCamera();
       } catch {
@@ -665,12 +688,17 @@ export function ScanOverlay({
       }
     };
     const tryForceBackCamera = async () => {
+      if (forcedBackDone) return; // one-shot — bez beskonačnog restart ciklusa
       try {
         const devs = await navigator.mediaDevices.enumerateDevices();
         const cams = devs.filter((d) => d.kind === 'videoinput');
         if (cams.length < 2) return;
-        const back = cams.find((d) => !/front|user|face/i.test(d.label)) || cams[cams.length - 1];
-        if (back?.deviceId) await startCamera(back.deviceId);
+        // Samo ako STVARNO postoji ne-front objektiv i nije već aktivan — bez
+        // fallback-a na „poslednji kandidat" (koji je i sam mogao biti front → petlja).
+        const back = cams.find((d) => !/front|user|face/i.test(d.label));
+        if (!back?.deviceId || back.deviceId === curDeviceId) return;
+        forcedBackDone = true;
+        await startCamera(back.deviceId);
       } catch {
         /* ignore */
       }
