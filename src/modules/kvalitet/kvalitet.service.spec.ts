@@ -1,10 +1,14 @@
 import { Test, TestingModule } from "@nestjs/testing";
 import {
+  BadRequestException,
   ConflictException,
+  PayloadTooLargeException,
   UnprocessableEntityException,
 } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
 import { QualityService } from "./kvalitet.service";
+import type { UploadedMultipartFile } from "./kvalitet.service";
+import type { AuthUser } from "../auth/jwt.strategy";
 import { PERMISSIONS } from "../../common/authz/permissions";
 
 /** Pun red `nonconformity_reports` za mockove (mapReport čita sva polja). */
@@ -57,7 +61,16 @@ interface PrismaMock {
     createMany: jest.Mock;
     deleteMany: jest.Mock;
   };
+  qualityDocument: {
+    findMany: jest.Mock;
+    findUnique: jest.Mock;
+    create: jest.Mock;
+    delete: jest.Mock;
+    count: jest.Mock;
+  };
+  techProcess: { findUnique: jest.Mock };
   worker: { findMany: jest.Mock };
+  user: { findUnique: jest.Mock; findMany: jest.Mock };
   $queryRaw: jest.Mock;
   $executeRaw: jest.Mock;
   $transaction: jest.Mock;
@@ -85,7 +98,19 @@ function prismaMock(): PrismaMock {
       createMany: jest.fn().mockResolvedValue({ count: 0 }),
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
+    qualityDocument: {
+      findMany: jest.fn().mockResolvedValue([]),
+      findUnique: jest.fn(),
+      create: jest.fn(),
+      delete: jest.fn().mockResolvedValue({}),
+      count: jest.fn().mockResolvedValue(0),
+    },
+    techProcess: { findUnique: jest.fn() },
     worker: { findMany: jest.fn().mockResolvedValue([]) },
+    user: {
+      findUnique: jest.fn().mockResolvedValue(null),
+      findMany: jest.fn().mockResolvedValue([]),
+    },
     $queryRaw: jest.fn().mockResolvedValue([{ next: 1 }]),
     $executeRaw: jest.fn().mockResolvedValue(0),
     $transaction: jest.fn(),
@@ -256,6 +281,165 @@ describe("QualityService", () => {
         .sort();
       expect(names).toEqual(["Radnik A", "Radnik B"]);
       expect(res.meta.pagination.total).toBe(1);
+    });
+  });
+
+  describe("summary (K3.1)", () => {
+    it("month grupisanje agregira preko $queryRaw + draftCount u meta", async () => {
+      prisma.nonconformityReport.count.mockResolvedValue(3); // draftCount
+      prisma.$queryRaw.mockResolvedValue([
+        { key: "2026-06", count: 2, pieces: 10, hours: 4.5 },
+        { key: "2026-07", count: 1, pieces: 3, hours: 0 },
+      ]);
+
+      const res = await service.summary({ groupBy: "month" });
+
+      expect(res.data).toEqual([
+        { key: "2026-06", label: "2026-06", count: 2, pieces: 10, hours: 4.5 },
+        { key: "2026-07", label: "2026-07", count: 1, pieces: 3, hours: 0 },
+      ]);
+      expect(res.meta.groupBy).toBe("month");
+      expect(res.meta.draftCount).toBe(3);
+      // draftCount se broji SAMO nad status=0.
+      const countArg = prisma.nonconformityReport.count.mock
+        .calls[0][0] as { where: { status: number } };
+      expect(countArg.where.status).toBe(0);
+    });
+
+    it("nevalidan groupBy → 400", async () => {
+      await expect(service.summary({ groupBy: "hour" })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+    });
+  });
+
+  describe("mine (K3.2)", () => {
+    it("bez worker veze → linked:false, prazne liste", async () => {
+      prisma.user.findUnique.mockResolvedValue({ workerId: null });
+      const actor: AuthUser = {
+        userId: 1,
+        email: "radnik@servoteh.com",
+        role: "proizvodni_radnik",
+        workerId: null,
+      };
+
+      const res = await service.mine(actor);
+
+      expect(res.data).toEqual({ linked: false, reports: [], monthly: [] });
+      expect(prisma.nonconformityWorker.findMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("uploadDocument (K4-UPLOAD)", () => {
+    function upload(buffer: Buffer, name = "dok"): UploadedMultipartFile {
+      return {
+        originalname: name,
+        mimetype: "application/octet-stream",
+        size: buffer.length,
+        buffer,
+      };
+    }
+
+    it("odbija txt (magic bytes ne poklapaju) → 422, bez upisa", async () => {
+      await expect(
+        service.uploadDocument(upload(Buffer.from("obican tekst")), {}),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(prisma.qualityDocument.create).not.toHaveBeenCalled();
+    });
+
+    it("> 25 MB → 413", async () => {
+      const big = Buffer.alloc(25 * 1024 * 1024 + 1);
+      await expect(
+        service.uploadDocument(upload(big, "veliki.pdf"), {}),
+      ).rejects.toBeInstanceOf(PayloadTooLargeException);
+      expect(prisma.qualityDocument.create).not.toHaveBeenCalled();
+    });
+
+    it("PDF magic → upis; content_type iz sadržaja, uploadedBy iz JWT; nevezan dozvoljen", async () => {
+      prisma.qualityDocument.create.mockResolvedValue({
+        id: 7,
+        fileName: "nalog.pdf",
+        sizeKb: 1,
+      });
+      const actor: AuthUser = {
+        userId: 9,
+        email: "kontrolor@servoteh.com",
+        role: "kontrolor",
+        workerId: null,
+      };
+
+      const res = await service.uploadDocument(
+        upload(Buffer.from("%PDF-1.7 sadrzaj"), "nalog.pdf"),
+        {},
+        actor,
+      );
+
+      expect(res.data).toEqual({
+        id: 7,
+        fileName: "nalog.pdf",
+        sizeKb: expect.any(Number),
+      });
+      const arg = prisma.qualityDocument.create.mock.calls[0][0] as {
+        data: {
+          contentType: string;
+          uploadedByUserId: number | null;
+          reportId: number | null;
+        };
+      };
+      expect(arg.data.contentType).toBe("application/pdf");
+      expect(arg.data.uploadedByUserId).toBe(9);
+      expect(arg.data.reportId).toBeNull(); // nevezan arhivski dokument
+    });
+  });
+
+  describe("listDocuments (K4-UPLOAD)", () => {
+    it("lista BEZ content polja + batch-resolve uploadedBy preko users", async () => {
+      prisma.qualityDocument.findMany.mockResolvedValue([
+        {
+          id: 1,
+          fileName: "scan.pdf",
+          contentType: "application/pdf",
+          sizeKb: 12,
+          identNumber: "9400-1/442",
+          reportId: 5,
+          techProcessId: null,
+          workOrderId: null,
+          createdAt: new Date(),
+          uploadedByUserId: 9,
+        },
+      ]);
+      prisma.qualityDocument.count.mockResolvedValue(1);
+      prisma.user.findMany.mockResolvedValue([
+        { id: 9, fullName: "Kontrolor K" },
+      ]);
+
+      const res = await service.listDocuments({});
+
+      expect(res.data).toHaveLength(1);
+      expect(res.data[0]).not.toHaveProperty("content");
+      expect(res.data[0].uploadedBy).toEqual({ fullName: "Kontrolor K" });
+      // select NE sme tražiti content (lista je bez blob-a).
+      const arg = prisma.qualityDocument.findMany.mock.calls[0][0] as {
+        select: Record<string, unknown>;
+      };
+      expect(arg.select.content).toBeUndefined();
+      expect(res.meta.pagination.total).toBe(1);
+    });
+  });
+
+  describe("getReport documents (K4 veza)", () => {
+    it("detalj izveštaja nosi documents (bez content-a)", async () => {
+      prisma.nonconformityReport.findUnique.mockResolvedValue(
+        baseReport({ id: 3 }),
+      );
+      prisma.qualityDocument.findMany.mockResolvedValue([
+        { id: 1, fileName: "scan.pdf", sizeKb: 20, createdAt: new Date() },
+      ]);
+
+      const res = await service.getReport(3);
+
+      expect(res.data.documents).toHaveLength(1);
+      expect(res.data.documents[0].fileName).toBe("scan.pdf");
     });
   });
 

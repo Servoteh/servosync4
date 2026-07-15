@@ -1,8 +1,10 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   Logger,
   NotFoundException,
+  PayloadTooLargeException,
   UnprocessableEntityException,
 } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
@@ -26,13 +28,105 @@ import {
 } from "./dto/update-nonconformity-report.dto";
 import type {
   ListNonconformityReportsQuery,
+  NonconformitySummaryQuery,
   SummaryMiniQuery,
 } from "./dto/nonconformity-report.query";
+import type { ListQualityDocsQuery } from "./dto/quality-document.query";
 
 /** Tip izveštaja — poklapa se sa part_quality (1=dorada/REWORK, 2=škart/SCRAP). */
 const NONCONFORMITY_TYPE = { DORADA: 1, SKART: 2 } as const;
 /** Status izveštaja. */
 const STATUS = { DRAFT: 0, CONFIRMED: 1 } as const;
+
+/** Maksimalna veličina QC dokumenta (25 MB) — preko toga 413 (K4-UPLOAD). */
+const MAX_DOC_BYTES = 25 * 1024 * 1024;
+
+/** Dozvoljene `groupBy` vrednosti za K3.1 summary. */
+const SUMMARY_GROUP_BY = new Set([
+  "day",
+  "week",
+  "month",
+  "year",
+  "worker",
+  "workUnit",
+  "cause",
+  "customer",
+]);
+
+/**
+ * `date_trunc` jedinica + `to_char` format po vremenskom `groupBy` (whitelist —
+ * vrednosti su fiksne, ne stižu iz korisničkog unosa → nema injekcije; svejedno
+ * se prosleđuju kao bound parametri).
+ */
+const TEMPORAL_BUCKET: Record<string, { unit: string; fmt: string }> = {
+  day: { unit: "day", fmt: "YYYY-MM-DD" },
+  week: { unit: "week", fmt: "YYYY-MM-DD" },
+  month: { unit: "month", fmt: "YYYY-MM" },
+  year: { unit: "year", fmt: "YYYY" },
+};
+
+/** Kolona `nonconformity_reports` po tekstualnom `groupBy` (whitelist identifikatora). */
+const TEXT_GROUP_COLUMN: Record<string, string> = {
+  cause: "cause",
+  workUnit: "work_unit",
+  customer: "customer_name",
+};
+
+/**
+ * Multipart fajl iz multer memory storage-a (@nestjs/platform-express).
+ * `@types/multer` namerno NE postoji u repou → lokalni interfejs. KOPIJA obrasca
+ * iz `pdm-import.service` — cross-module import se svesno izbegava (TVOJ SKUP).
+ */
+export interface UploadedMultipartFile {
+  originalname: string;
+  mimetype: string;
+  size: number;
+  buffer: Buffer;
+}
+
+/** Trim + prazno → null + isecanje na dužinu kolone (KOPIJA iz `pdm-import.service`). */
+function clip(value: string | null | undefined, max: number): string | null {
+  const v = (value ?? "").trim();
+  if (!v) return null;
+  return v.length > max ? v.slice(0, max) : v;
+}
+
+/**
+ * Multer (busboy) latin1-dekodira `originalname` bez UTF-8 flag-a → mojibake za
+ * š/đ/č. Re-dekodiranje latin1→utf8 vraća original; čist ASCII i već ispravan
+ * UTF-8 prolaze netaknuti. KOPIJA iz `pdm-import.service` (K4-UPLOAD).
+ */
+function decodeOriginalName(name: string): string {
+  if (!/[\u0080-\u00ff]/.test(name)) return name; // čist ASCII
+  for (const ch of name) if (ch.codePointAt(0)! > 0xff) return name; // već UTF-8
+  const decoded = Buffer.from(name, "latin1").toString("utf8");
+  return decoded.includes("\uFFFD") ? name : decoded;
+}
+
+/**
+ * `content_type` iz MAGIC BYTES (ne veruje se klijentskom mimetype-u): dozvoljeni
+ * su PDF (`%PDF`), PNG (`89 50 4E 47 0D 0A 1A 0A`) i JPEG (`FF D8 FF`). Ostalo →
+ * `null` (pozivalac baca 422).
+ */
+function detectDocContentType(buf: Buffer): string | null {
+  if (buf.length >= 5 && buf.subarray(0, 5).toString("latin1") === "%PDF-")
+    return "application/pdf";
+  if (
+    buf.length >= 8 &&
+    buf[0] === 0x89 &&
+    buf[1] === 0x50 &&
+    buf[2] === 0x4e &&
+    buf[3] === 0x47 &&
+    buf[4] === 0x0d &&
+    buf[5] === 0x0a &&
+    buf[6] === 0x1a &&
+    buf[7] === 0x0a
+  )
+    return "image/png";
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff)
+    return "image/jpeg";
+  return null;
+}
 
 /** Razrešeni radnik (SAFE podskup — bez lozinki). */
 interface WorkerRef {
@@ -490,6 +584,439 @@ export class QualityService {
     }
   }
 
+  // ------------------------------------------------------------------ SUMMARY (K3.1)
+
+  /**
+   * `GET /kvalitet/summary` — izveštajni agregat nad POTVRĐENIM izveštajima
+   * (status=1). `groupBy` = day|week|month|year (vremenski, sort rastuće) ILI
+   * worker|workUnit|cause|customer (sort pieces desc). `pieces` = SUM(quantity),
+   * `hours` = SUM(spent_hours) null-safe. `meta.draftCount` = broj draftova (status=0)
+   * u istom type+period filteru („na čekanju"). MODULE_SPEC_kontrola_kvaliteta §K3.1.
+   */
+  async summary(query: NonconformitySummaryQuery) {
+    const from = parseDateParam(query.from, "from");
+    const to = parseDateParam(query.to, "to");
+    const type =
+      query.type === "1"
+        ? NONCONFORMITY_TYPE.DORADA
+        : query.type === "2"
+          ? NONCONFORMITY_TYPE.SKART
+          : undefined;
+    const groupBy = query.groupBy?.trim() || "month";
+    if (!SUMMARY_GROUP_BY.has(groupBy))
+      throw new BadRequestException(
+        "Parametar 'groupBy' mora biti: day, week, month, year, worker, workUnit, cause ili customer.",
+      );
+
+    // draftCount = „na čekanju" radna lista (isti type+period filter, status=0).
+    const draftWhere: Prisma.NonconformityReportWhereInput = {
+      status: STATUS.DRAFT,
+    };
+    if (type !== undefined) draftWhere.type = type;
+    if (from || to)
+      draftWhere.reportDate = {
+        ...(from ? { gte: from } : {}),
+        ...(to ? { lte: to } : {}),
+      };
+    const draftCount = await this.prisma.nonconformityReport.count({
+      where: draftWhere,
+    });
+
+    let data: Array<{
+      key: string;
+      label: string;
+      count: number;
+      pieces: number;
+      hours: number;
+    }>;
+    if (groupBy in TEMPORAL_BUCKET)
+      data = await this.summaryTemporal(groupBy, type, from, to);
+    else if (groupBy === "worker")
+      data = await this.summaryByWorker(type, from, to);
+    else data = await this.summaryByText(TEXT_GROUP_COLUMN[groupBy], type, from, to);
+
+    return {
+      data,
+      meta: { from: from ?? null, to: to ?? null, groupBy, draftCount },
+    };
+  }
+
+  /** Vremenski agregat (date_trunc) — sort rastuće po ključu. */
+  private async summaryTemporal(
+    groupBy: string,
+    type: number | undefined,
+    from?: Date,
+    to?: Date,
+  ) {
+    const { unit, fmt } = TEMPORAL_BUCKET[groupBy];
+    const where = this.reportWhere({ status: STATUS.CONFIRMED, type, from, to });
+    const rows = await this.prisma.$queryRaw<
+      Array<{ key: string; count: number; pieces: number; hours: number }>
+    >(Prisma.sql`
+      SELECT to_char(date_trunc(${unit}, report_date), ${fmt}) AS key,
+             COUNT(*)::int AS count,
+             COALESCE(SUM(quantity), 0)::int AS pieces,
+             ROUND(COALESCE(SUM(spent_hours), 0), 3)::float8 AS hours
+      FROM nonconformity_reports
+      ${where}
+      GROUP BY key
+      ORDER BY key ASC
+    `);
+    return rows.map((r) => ({
+      key: r.key,
+      label: r.key,
+      count: Number(r.count),
+      pieces: Number(r.pieces),
+      hours: Number(r.hours),
+    }));
+  }
+
+  /** Tekstualni agregat (cause/workUnit/customer) — prazno → 'Bez unosa', sort pieces desc. */
+  private async summaryByText(
+    column: string,
+    type: number | undefined,
+    from?: Date,
+    to?: Date,
+  ) {
+    const where = this.reportWhere({ status: STATUS.CONFIRMED, type, from, to });
+    const rows = await this.prisma.$queryRaw<
+      Array<{ key: string; count: number; pieces: number; hours: number }>
+    >(Prisma.sql`
+      SELECT COALESCE(NULLIF(TRIM(${Prisma.raw(column)}), ''), 'Bez unosa') AS key,
+             COUNT(*)::int AS count,
+             COALESCE(SUM(quantity), 0)::int AS pieces,
+             ROUND(COALESCE(SUM(spent_hours), 0), 3)::float8 AS hours
+      FROM nonconformity_reports
+      ${where}
+      GROUP BY key
+      ORDER BY pieces DESC, count DESC, key ASC
+    `);
+    return rows.map((r) => ({
+      key: r.key,
+      label: r.key,
+      count: Number(r.count),
+      pieces: Number(r.pieces),
+      hours: Number(r.hours),
+    }));
+  }
+
+  /**
+   * Agregat po radniku preko `nonconformity_workers` (M:N). NAPOMENA: `count` =
+   * broj (report, worker) parova = broj izveštaja u kojima radnik učestvuje (unique
+   * (report,worker) → bez duplih); `pieces`/`hours` SUMiraju vrednost izveštaja PO
+   * radniku, pa izveštaj sa VIŠE izvršilaca doprinosi SVAKOM (namerno — „pripisani
+   * komadi po radniku", ne globalni zbir). Sort pieces desc. Imena batch-resolve.
+   */
+  private async summaryByWorker(
+    type: number | undefined,
+    from?: Date,
+    to?: Date,
+  ) {
+    const where = this.reportWhere({
+      alias: "r",
+      status: STATUS.CONFIRMED,
+      type,
+      from,
+      to,
+    });
+    const rows = await this.prisma.$queryRaw<
+      Array<{ worker_id: number; count: number; pieces: number; hours: number }>
+    >(Prisma.sql`
+      SELECT nw.worker_id AS worker_id,
+             COUNT(*)::int AS count,
+             COALESCE(SUM(r.quantity), 0)::int AS pieces,
+             ROUND(COALESCE(SUM(r.spent_hours), 0), 3)::float8 AS hours
+      FROM nonconformity_workers nw
+      JOIN nonconformity_reports r ON r.id = nw.report_id
+      ${where}
+      GROUP BY nw.worker_id
+      ORDER BY pieces DESC, count DESC, nw.worker_id ASC
+    `);
+    const workers = await this.resolveWorkers(rows.map((r) => r.worker_id));
+    return rows.map((r) => ({
+      key: String(r.worker_id),
+      label: workers.get(r.worker_id)?.fullName ?? `Radnik #${r.worker_id}`,
+      count: Number(r.count),
+      pieces: Number(r.pieces),
+      hours: Number(r.hours),
+    }));
+  }
+
+  // ------------------------------------------------------------------ MOJ PROFIL (K3.2)
+
+  /**
+   * `GET /kvalitet/mine` — „Moje neusaglašenosti" za prijavljenog radnika
+   * (@RequirePermission PROFILE_SELF na handleru — proizvodni radnik ima
+   * profile.self, ne kvalitet.read). Radnik iz JWT-a razrešava se SVEŽIM lookup-om
+   * `users.worker_id` (obrazac worker-me iz tech-processes). Bez veze →
+   * `{ linked: false, reports: [], monthly: [] }`. Inače: poslednjih 50 izveštaja
+   * (potvrđeni + draft) gde je radnik izvršilac + zbir po mesecu (12 meseci).
+   */
+  async mine(actor?: AuthUser) {
+    const account = actor?.userId
+      ? await this.prisma.user.findUnique({
+          where: { id: actor.userId },
+          select: { workerId: true },
+        })
+      : null;
+    if (!account?.workerId)
+      return { data: { linked: false, reports: [], monthly: [] } };
+    const workerId = account.workerId;
+
+    const links = await this.prisma.nonconformityWorker.findMany({
+      where: { workerId },
+      select: { reportId: true },
+    });
+    const reportIds = [...new Set(links.map((l) => l.reportId))];
+
+    const rows = reportIds.length
+      ? await this.prisma.nonconformityReport.findMany({
+          where: { id: { in: reportIds } },
+          orderBy: [{ reportDate: "desc" }, { id: "desc" }],
+          take: 50,
+          select: {
+            id: true,
+            type: true,
+            reportNumber: true,
+            reportDate: true,
+            identNumber: true,
+            drawingNumber: true,
+            partName: true,
+            quantity: true,
+            defectDescription: true,
+            status: true,
+          },
+        })
+      : [];
+
+    // Poslednjih 12 meseci: prvi dan meseca 11 meseci unazad → 12 „kanti"
+    // (UTC radi determinizma; date_trunc grupiše po DB sesijskoj zoni).
+    const now = new Date();
+    const start = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 11, 1),
+    );
+    const monthly = await this.prisma.$queryRaw<
+      Array<{ month: string; type: number; count: number; pieces: number }>
+    >(Prisma.sql`
+      SELECT to_char(date_trunc('month', r.report_date), 'YYYY-MM') AS month,
+             r.type AS type,
+             COUNT(*)::int AS count,
+             COALESCE(SUM(r.quantity), 0)::int AS pieces
+      FROM nonconformity_workers nw
+      JOIN nonconformity_reports r ON r.id = nw.report_id
+      WHERE nw.worker_id = ${workerId}
+        AND r.report_date >= ${start}
+      GROUP BY month, r.type
+      ORDER BY month ASC, r.type ASC
+    `);
+
+    return {
+      data: {
+        linked: true,
+        reports: rows.map((r) => ({
+          id: r.id,
+          type: r.type,
+          reportNumber: r.reportNumber,
+          reportDate: r.reportDate,
+          identNumber: r.identNumber,
+          drawingNumber: r.drawingNumber,
+          partName: r.partName,
+          quantity: r.quantity,
+          defectDescription: r.defectDescription,
+          status: r.status,
+        })),
+        monthly: monthly.map((m) => ({
+          month: m.month,
+          type: Number(m.type),
+          count: Number(m.count),
+          pieces: Number(m.pieces),
+        })),
+      },
+    };
+  }
+
+  // ------------------------------------------------------------------ DOKUMENTI (K4-UPLOAD)
+
+  /**
+   * `POST /kvalitet/docs` — upload QC dokumenta (skenirani nalog / kontrolna
+   * dokumentacija / foto). Validacija: fajl obavezan (400); > 25 MB (413);
+   * `content_type` iz MAGIC BYTES — PDF/PNG/JPG, ostalo 422 (klijentskom mimetype-u
+   * se NE veruje). Vezivna polja (reportId/techProcessId/workOrderId/identNumber) su
+   * SVA opciona — dokument sme biti i NEVEZAN (arhivski). `reportId`/`techProcessId`
+   * ako su zadati moraju postojati (404). MODULE_SPEC_kontrola_kvaliteta §K4-UPLOAD.
+   */
+  async uploadDocument(
+    file: UploadedMultipartFile | undefined,
+    fields: {
+      reportId?: string;
+      techProcessId?: string;
+      workOrderId?: string;
+      identNumber?: string;
+    },
+    actor?: AuthUser,
+  ) {
+    if (!file?.buffer?.length)
+      throw new BadRequestException('Nedostaje fajl (multipart polje "file").');
+    // 25 MB i na servisu (interceptor limit hvata isto na HTTP sloju; ovo pokriva
+    // direktan poziv/unit test i služi kao defanziva).
+    if (file.buffer.length > MAX_DOC_BYTES)
+      throw new PayloadTooLargeException("Dokument je veći od 25 MB.");
+    const contentType = detectDocContentType(file.buffer);
+    if (!contentType)
+      throw new UnprocessableEntityException(
+        "Dozvoljeni su PDF i slike (JPG/PNG).",
+      );
+
+    const reportId = this.parseOptId(fields.reportId, "reportId");
+    const techProcessId = this.parseOptId(fields.techProcessId, "techProcessId");
+    const workOrderId = this.parseOptId(fields.workOrderId, "workOrderId");
+    const identNumber = clip(fields.identNumber, 50);
+
+    if (reportId !== null) {
+      const report = await this.prisma.nonconformityReport.findUnique({
+        where: { id: reportId },
+        select: { id: true },
+      });
+      if (!report)
+        throw new NotFoundException(`Izveštaj ${reportId} ne postoji.`);
+    }
+    if (techProcessId !== null) {
+      const tp = await this.prisma.techProcess.findUnique({
+        where: { id: techProcessId },
+        select: { id: true },
+      });
+      if (!tp)
+        throw new NotFoundException(
+          `Tehnološki postupak ${techProcessId} ne postoji.`,
+        );
+    }
+
+    const fileName = clip(decodeOriginalName(file.originalname), 255) ?? "dokument";
+    const sizeKb = Math.round(file.buffer.length / 1024);
+    // Prisma 6 Bytes traži ArrayBuffer-backed Uint8Array (kao drawing_pdfs upload).
+    const content = new Uint8Array(file.buffer);
+
+    const created = await this.prisma.qualityDocument.create({
+      data: {
+        reportId,
+        techProcessId,
+        workOrderId,
+        identNumber,
+        fileName,
+        contentType,
+        sizeKb,
+        content,
+        uploadedByUserId: actor?.userId ?? null,
+      },
+      select: { id: true, fileName: true, sizeKb: true },
+    });
+    return {
+      data: { id: created.id, fileName: created.fileName, sizeKb: created.sizeKb },
+    };
+  }
+
+  /**
+   * `GET /kvalitet/docs` — lista dokumenata BEZ sadržaja (server-side filter +
+   * paginacija, `created_at desc`). `q` po `file_name`/`ident_number` (ILIKE).
+   * `uploadedBy` batch-resolve preko `users`.
+   */
+  async listDocuments(query: ListQualityDocsQuery) {
+    const { page, pageSize, skip, take } = parsePagination(
+      query.page,
+      query.pageSize,
+    );
+
+    const where: Prisma.QualityDocumentWhereInput = {};
+    const reportId = this.parseOptId(query.reportId, "reportId");
+    const techProcessId = this.parseOptId(query.techProcessId, "techProcessId");
+    if (reportId !== null) where.reportId = reportId;
+    if (techProcessId !== null) where.techProcessId = techProcessId;
+    const identNumber = query.identNumber?.trim();
+    if (identNumber) where.identNumber = identNumber;
+
+    const from = parseDateParam(query.from, "from");
+    const to = parseDateParam(query.to, "to");
+    if (from || to)
+      where.createdAt = {
+        ...(from ? { gte: from } : {}),
+        ...(to ? { lte: to } : {}),
+      };
+
+    const q = query.q?.trim();
+    if (q)
+      where.OR = [
+        { fileName: { contains: q, mode: "insensitive" } },
+        { identNumber: { contains: q, mode: "insensitive" } },
+      ];
+
+    const [rows, total] = await Promise.all([
+      this.prisma.qualityDocument.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        skip,
+        take,
+        select: {
+          id: true,
+          fileName: true,
+          contentType: true,
+          sizeKb: true,
+          identNumber: true,
+          reportId: true,
+          techProcessId: true,
+          workOrderId: true,
+          createdAt: true,
+          uploadedByUserId: true,
+        },
+      }),
+      this.prisma.qualityDocument.count({ where }),
+    ]);
+
+    const users = await this.resolveUsers(rows.map((r) => r.uploadedByUserId));
+    const data = rows.map((r) => ({
+      id: r.id,
+      fileName: r.fileName,
+      contentType: r.contentType,
+      sizeKb: r.sizeKb,
+      identNumber: r.identNumber,
+      reportId: r.reportId,
+      techProcessId: r.techProcessId,
+      workOrderId: r.workOrderId,
+      createdAt: r.createdAt,
+      uploadedBy: r.uploadedByUserId
+        ? { fullName: users.get(r.uploadedByUserId)?.fullName ?? null }
+        : null,
+    }));
+    return { data, meta: pageMeta(page, pageSize, total) };
+  }
+
+  /**
+   * `GET /kvalitet/docs/:id/content` — sadržaj dokumenta (stream). Kontroler
+   * postavlja Content-Disposition (inline / attachment). 404 ako ne postoji.
+   */
+  async getDocumentContent(id: number) {
+    const doc = await this.prisma.qualityDocument.findUnique({
+      where: { id },
+      select: { fileName: true, contentType: true, content: true },
+    });
+    if (!doc) throw new NotFoundException(`Dokument ${id} ne postoji.`);
+    return {
+      buffer: Buffer.from(doc.content),
+      fileName: doc.fileName,
+      contentType: doc.contentType,
+    };
+  }
+
+  /** `DELETE /kvalitet/docs/:id` — briše red (blob ide s njim). 404 ako ne postoji. */
+  async deleteDocument(id: number) {
+    const existing = await this.prisma.qualityDocument.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+    if (!existing) throw new NotFoundException(`Dokument ${id} ne postoji.`);
+    await this.prisma.qualityDocument.delete({ where: { id } });
+    return { data: { id, deleted: true } };
+  }
+
   // ------------------------------------------------------------------ HELPERI
 
   /** Batch-resolve radnika (SAFE — bez lozinki); prazna mapa za prazan ulaz. */
@@ -506,6 +1033,62 @@ export class QualityService {
     );
   }
 
+  /** Batch-resolve `users` (za „uploadedBy" QC dokumenata); prazna mapa za prazan ulaz. */
+  private async resolveUsers(
+    ids: (number | null | undefined)[],
+  ): Promise<Map<number, { id: number; fullName: string | null }>> {
+    const uniq = uniqueIds(ids);
+    if (!uniq.length)
+      return new Map<number, { id: number; fullName: string | null }>();
+    return byId(
+      await this.prisma.user.findMany({
+        where: { id: { in: uniq } },
+        select: { id: true, fullName: true },
+      }),
+    );
+  }
+
+  /**
+   * Parsiraj opcioni id (query filter ili multipart form polje): odsutan/prazan
+   * → `null`; nevalidan (ne-ceo, < 1) → 400. Bez ovoga bi `Number("x")` (NaN)
+   * ušao u Prisma filter/insert i pao goli 500 (nema globalnog exception filtera).
+   */
+  private parseOptId(value: string | undefined, name: string): number | null {
+    const v = (value ?? "").trim();
+    if (!v) return null;
+    const n = Number(v);
+    if (!Number.isInteger(n) || n < 1)
+      throw new BadRequestException(`Polje '${name}' mora biti ceo broj ≥ 1.`);
+    return n;
+  }
+
+  /**
+   * WHERE fragment za raw upite nad `nonconformity_reports` (K3.1). Kolone su
+   * fiksni literali (`col()` kroz `Prisma.raw` — nema injekcije); vrednosti idu
+   * kao bound parametri. `alias` prefiksuje kolone kad se JOIN-uje (worker grana).
+   */
+  private reportWhere(opts: {
+    alias?: string;
+    status?: number;
+    type?: number;
+    from?: Date;
+    to?: Date;
+  }): Prisma.Sql {
+    const prefix = opts.alias ? `${opts.alias}.` : "";
+    const col = (c: string) => Prisma.raw(`${prefix}${c}`);
+    const conds: Prisma.Sql[] = [];
+    if (opts.status !== undefined)
+      conds.push(Prisma.sql`${col("status")} = ${opts.status}`);
+    if (opts.type !== undefined)
+      conds.push(Prisma.sql`${col("type")} = ${opts.type}`);
+    if (opts.from)
+      conds.push(Prisma.sql`${col("report_date")} >= ${opts.from}`);
+    if (opts.to) conds.push(Prisma.sql`${col("report_date")} <= ${opts.to}`);
+    return conds.length
+      ? Prisma.sql`WHERE ${Prisma.join(conds, " AND ")}`
+      : Prisma.empty;
+  }
+
   /** Kontrolor („Neusaglašenost ističe") razrešen iz mape (id ostaje i za orphan). */
   private raisedByFrom(
     workerId: number | null,
@@ -516,12 +1099,23 @@ export class QualityService {
     return { id: workerId, fullName: w?.fullName ?? null };
   }
 
-  /** Detalj jednog izveštaja: razreši izvršioce (M:N) + kontrolora, pa mapiraj. */
+  /**
+   * Detalj jednog izveštaja: razreši izvršioce (M:N) + kontrolora, pa mapiraj.
+   * Nosi i `documents` (jeftin findMany BEZ sadržaja — K4-UPLOAD veza sa izveštajem);
+   * jednako za create/update/confirm (freshly kreiran draft → prazna lista).
+   */
   private async buildDetail(report: NonconformityReport) {
-    const culpritRows = await this.prisma.nonconformityWorker.findMany({
-      where: { reportId: report.id },
-      select: { workerId: true },
-    });
+    const [culpritRows, documents] = await Promise.all([
+      this.prisma.nonconformityWorker.findMany({
+        where: { reportId: report.id },
+        select: { workerId: true },
+      }),
+      this.prisma.qualityDocument.findMany({
+        where: { reportId: report.id },
+        orderBy: { createdAt: "desc" },
+        select: { id: true, fileName: true, sizeKb: true, createdAt: true },
+      }),
+    ]);
     const workers = await this.resolveWorkers([
       ...culpritRows.map((c) => c.workerId),
       report.raisedByWorkerId,
@@ -531,11 +1125,14 @@ export class QualityService {
       fullName: workers.get(c.workerId)?.fullName ?? null,
     }));
     return {
-      data: this.mapReport(
-        report,
-        culprits,
-        this.raisedByFrom(report.raisedByWorkerId, workers),
-      ),
+      data: {
+        ...this.mapReport(
+          report,
+          culprits,
+          this.raisedByFrom(report.raisedByWorkerId, workers),
+        ),
+        documents,
+      },
     };
   }
 

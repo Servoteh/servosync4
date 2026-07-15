@@ -2077,6 +2077,7 @@ model NonconformityReport {
   createdAt           DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt           DateTime              @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
   culpritWorkers      NonconformityWorker[]
+  documents           QualityDocument[]
 
   @@index([type, status], map: "idx_nonconformity_reports_type_status")
   @@index([reportYear], map: "idx_nonconformity_reports_year")
@@ -2096,6 +2097,33 @@ model NonconformityWorker {
   @@unique([reportId, workerId], map: "uq_nonconformity_workers_report_worker")
   @@index([workerId], map: "idx_nonconformity_workers_worker")
   @@map("nonconformity_workers")
+}
+
+/// App-owned (2.0). QC dokumenti — skenirani nalozi, kontrolna dokumentacija, foto sa
+/// tableta/telefona (MODULE_SPEC_kontrola_kvaliteta §K4-UPLOAD). ODLUKA Nenad 15.07: NEMA
+/// share/mount — sadržaj se UPLOADUJE kroz aplikaciju i čuva u `content` (bytea), presedan
+/// `drawing_pdfs`. `reportId` je PRAVI FK → nonconformity_reports (ON DELETE SET NULL: brisanje
+/// drafta ne briše arhivski dokument). `techProcessId`/`workOrderId`/`identNumber` su MEKI
+/// (bez FK — legacy lanac, batch-resolve/pretraga po RN). Dokument SME biti i nevezan (arhivski).
+model QualityDocument {
+  id               Int                  @id(map: "pk_quality_documents") @default(autoincrement()) @map("id")
+  reportId         Int?                 @map("report_id")
+  techProcessId    Int?                 @map("tech_process_id")
+  workOrderId      Int?                 @map("work_order_id")
+  identNumber      String?              @map("ident_number") @db.VarChar(50)
+  fileName         String               @map("file_name") @db.VarChar(255)
+  contentType      String               @map("content_type") @db.VarChar(100)
+  sizeKb           Int                  @map("size_kb")
+  content          Bytes                @map("content")
+  uploadedByUserId Int?                 @map("uploaded_by_user_id")
+  createdAt        DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  report           NonconformityReport? @relation(fields: [reportId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_quality_documents_report")
+
+  @@index([reportId], map: "idx_quality_documents_report")
+  @@index([techProcessId], map: "idx_quality_documents_tech_process")
+  @@index([identNumber], map: "idx_quality_documents_ident")
+  @@index([createdAt], map: "idx_quality_documents_created")
+  @@map("quality_documents")
 }
 
 /// Incremental sync cursor per logical scope (`entity` = stable key, e.g. `customers`).

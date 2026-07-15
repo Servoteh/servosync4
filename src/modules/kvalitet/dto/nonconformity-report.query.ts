@@ -23,3 +23,18 @@ export interface SummaryMiniQuery {
   from?: string;
   to?: string;
 }
+
+/**
+ * Query za `GET /kvalitet/summary` (K3.1 — izveštajni agregat nad potvrđenim
+ * izveštajima, status=1). Sve stiže kao string; parsiranje/validaciju radi servis.
+ */
+export interface NonconformitySummaryQuery {
+  /** '1' = dorada, '2' = škart; prazno = oba. */
+  type?: string;
+  /** Datum izveštaja od (ISO 8601, uključivo). */
+  from?: string;
+  /** Datum izveštaja do (ISO 8601, uključivo). */
+  to?: string;
+  /** day | week | month | year | worker | workUnit | cause | customer (default month). */
+  groupBy?: string;
+}
