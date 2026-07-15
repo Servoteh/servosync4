@@ -13,7 +13,8 @@ interface HmiHostProps {
 export function HmiHost({ screen, theme }: HmiHostProps) {
   return (
     <iframe
-      key={screen}
+      // Tema u key-u: promena teme ponovo učita ekran sa novom (`?theme=` shim čita pre skripti).
+      key={`${screen}:${theme}`}
       title="SCADA ekran"
       src={`/scada-hmi/${screen}?theme=${theme}`}
       referrerPolicy="no-referrer"

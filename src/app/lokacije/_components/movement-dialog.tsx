@@ -11,6 +11,7 @@ import {
   newClientEventUuid,
   useAllLocations,
   useCreateMovement,
+  usePlacements,
   type LocLocation,
   type LocMovementType,
 } from '@/api/lokacije';
@@ -51,6 +52,7 @@ export function MovementDialog({
   const create = useCreateMovement();
   const locs = useAllLocations('true');
   const locList = useMemo<LocLocation[]>(() => locs.data ?? [], [locs.data]);
+  const locById = useMemo(() => new Map(locList.map((l) => [l.id, l])), [locList]);
 
   const [clientEventUuid] = useState(newClientEventUuid);
   const [orderNo, setOrderNo] = useState(preset?.orderNo ?? '');
@@ -65,10 +67,29 @@ export function MovementDialog({
   const [reason, setReason] = useState('');
   const [note, setNote] = useState('');
   const [returnToUnplaced, setReturnToUnplaced] = useState(false);
+  const [showMachines, setShowMachines] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [scan, setScan] = useState<null | 'item' | 'from' | 'to'>(null);
 
   const itemRefTable = preset?.itemRefTable ?? 'bigtehn_rn';
+
+  // Trenutno stanje pre premeštanja (paritet 1.0 renderState) — stvarni placement-i stavke.
+  const trimmedItem = itemRefId.trim();
+  const placementsQ = usePlacements(
+    { itemRefId: trimmedItem, itemRefTable, orderNo: orderNo.trim() || undefined, pageSize: 50 },
+    trimmedItem.length > 0,
+  );
+  const currentPlacements = useMemo(
+    () => (placementsQ.data?.data ?? []).filter((p) => Number(p.quantity) > 0),
+    [placementsQ.data],
+  );
+  const placedTotal = currentPlacements.reduce((a, p) => a + Number(p.quantity || 0), 0);
+
+  // „Prikaži i mašine kao destinaciju" (paritet 1.0) — mašine skrivene dok se ne čekira.
+  const destLocations = useMemo(
+    () => (showMachines ? locList : locList.filter((l) => l.locationType !== 'MACHINE')),
+    [locList, showMachines],
+  );
   // „Neraspoređeno" (paritet 1.0) uvek traži polaznu lokaciju (vraća komad sa police
   // u nesmešteni pool); inače from je nepotreban za INITIAL_PLACEMENT/INVENTORY.
   const needFrom = returnToUnplaced || needsFrom(movementType);
@@ -148,6 +169,41 @@ export function MovementDialog({
             <input className={INPUT} value={drawingNo} onChange={(e) => setDrawingNo(e.target.value)} placeholder="opciono" />
           </FormField>
 
+          {/* Trenutno stanje pre premeštanja — stvarni placement-i stavke (paritet 1.0). */}
+          {trimmedItem.length > 0 && (
+            <div className="rounded-control border border-line-soft bg-surface-2 px-3 py-2">
+              {placementsQ.isLoading ? (
+                <p className="text-xs text-ink-secondary">Učitavam trenutno stanje…</p>
+              ) : currentPlacements.length === 0 ? (
+                <p className="text-xs text-ink-secondary">Nema zabeleženog smeštaja za ovu stavku — koristi „Prvo zaduženje".</p>
+              ) : (
+                <>
+                  <div className="mb-1.5 text-xs font-medium text-ink">
+                    Trenutno smešteno {orderNo.trim() ? `za nalog ${orderNo.trim()} ` : ''}(ukupno {placedTotal} kom.) — klik = polazna:
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {currentPlacements.map((p) => {
+                      const loc = locById.get(p.locationId);
+                      const lbl = loc ? `${loc.locationCode}${loc.name ? ` — ${loc.name}` : ''}` : p.locationId.slice(0, 8);
+                      const active = fromLocationId === p.locationId;
+                      return (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() => setFromLocationId(p.locationId)}
+                          className={`rounded-full border px-2 py-0.5 text-xs ${active ? 'border-accent bg-accent-subtle text-accent' : 'border-line text-ink-secondary hover:bg-surface'}`}
+                          title="Postavi kao polaznu lokaciju"
+                        >
+                          {lbl} · <strong>{String(p.quantity)}</strong>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
           <FormField label="Tip pokreta" required>
             <select
               className={INPUT}
@@ -181,12 +237,17 @@ export function MovementDialog({
               {needTo && (
                 <FormField label="Na lokaciju (odredišna)" required>
                   <LocationSelect
-                    locations={locList}
+                    locations={destLocations}
                     value={toLocationId}
                     onChange={setToLocationId}
                     onScan={() => setScan('to')}
+                    groupByHall
                     placeholder="Pretraži policu/kavez/mašinu…"
                   />
+                  <label className="mt-1.5 flex items-center gap-2 text-xs text-ink-secondary">
+                    <input type="checkbox" checked={showMachines} onChange={(e) => setShowMachines(e.target.checked)} />
+                    Prikaži i mašine kao destinaciju
+                  </label>
                 </FormField>
               )}
               <label className="flex items-center gap-2 text-sm text-ink">

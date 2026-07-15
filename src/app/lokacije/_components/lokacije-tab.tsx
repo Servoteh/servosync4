@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState, type ReactNode } from 'react';
-import { Plus } from 'lucide-react';
+import { Layers, Plus } from 'lucide-react';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { Button } from '@/components/ui-kit/button';
 import { Can, useCan } from '@/lib/can';
@@ -19,6 +19,7 @@ import {
 } from './common';
 import { LocationFormDialog } from './location-form-dialog';
 import { CageMoveDialog } from './cage-move-dialog';
+import { BulkShelvesDialog } from './bulk-shelves-dialog';
 
 const INPUT = 'h-9 rounded-control border border-line bg-surface px-2.5 text-sm text-ink outline-none focus:border-accent';
 
@@ -150,6 +151,7 @@ export function LokacijeTab() {
 
   const [form, setForm] = useState<{ edit?: LocLocation | null } | null>(null);
   const [cage, setCage] = useState<LocLocation | null>(null);
+  const [bulk, setBulk] = useState(false);
 
   const update = useUpdateLocation();
   const query = useAllLocations(showInactive ? 'all' : 'true');
@@ -251,9 +253,14 @@ export function LokacijeTab() {
         <span className="text-xs text-ink-disabled tnums">{matchHint}</span>
 
         <Can permission={PERMISSIONS.LOKACIJE_MANAGE}>
-          <Button className="ml-auto" onClick={() => setForm({ edit: null })}>
-            <Plus className="h-4 w-4" /> Nova lokacija
-          </Button>
+          <div className="ml-auto flex gap-2">
+            <Button variant="secondary" onClick={() => setBulk(true)} title="Serijsko kreiranje polica (A1…A30)">
+              <Layers className="h-4 w-4" /> Bulk police
+            </Button>
+            <Button onClick={() => setForm({ edit: null })}>
+              <Plus className="h-4 w-4" /> Nova lokacija
+            </Button>
+          </div>
         </Can>
       </div>
 
@@ -279,6 +286,7 @@ export function LokacijeTab() {
 
       {form && <LocationFormDialog edit={form.edit} onClose={() => setForm(null)} />}
       {cage && <CageMoveDialog cage={cage} onClose={() => setCage(null)} />}
+      {bulk && <BulkShelvesDialog onClose={() => setBulk(false)} />}
     </div>
   );
 }

@@ -42,10 +42,27 @@ type TabKey = 'pregled' | (typeof SITE_ORDER)[number] | 'komande';
 const STATUS_TONE: Record<SiteStatusTone, Tone> = { on: 'success', off: 'danger', stale: 'warn' };
 const STATUS_DOT: Record<SiteStatusTone, string> = { on: '🟢', off: '🔴', stale: '🟡' };
 
-/** 2.0 shell je (za sada) svetla tema; HMI ekran prima temu kroz `?theme=`. */
+/** 2.0 shell tema (`data-theme` na <html>); HMI ekran je prima kroz `?theme=`. */
 function currentTheme(): 'light' | 'dark' {
   if (typeof document === 'undefined') return 'light';
   return document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
+}
+
+/**
+ * Reaktivna tema ljuske — prati `data-theme` na <html> (MutationObserver) i prosleđuje
+ * je HMI iframe-u. Kad korisnik prebaci temu, iframe se ponovo učita sa novom (key).
+ */
+function useShellTheme(): 'light' | 'dark' {
+  const [theme, setTheme] = useState<'light' | 'dark'>(currentTheme);
+  useEffect(() => {
+    const el = document.documentElement;
+    const sync = () => setTheme(currentTheme());
+    sync();
+    const obs = new MutationObserver(sync);
+    obs.observe(el, { attributes: true, attributeFilter: ['data-theme'] });
+    return () => obs.disconnect();
+  }, []);
+  return theme;
 }
 
 /** Baner svežine (port 1.0 bannerText) — bridge offline ili per-sistem stale. */
@@ -78,6 +95,7 @@ export default function EnergetikaPage() {
 
   const readOk = can(PERMISSIONS.ENERGETIKA_READ);
   const control = can(PERMISSIONS.ENERGETIKA_CONTROL);
+  const theme = useShellTheme();
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
@@ -157,8 +175,6 @@ export default function EnergetikaPage() {
     ...SITE_ORDER.map((k) => ({ key: k, label: `${dotFor(k)} ${SITE_META[k].tabLabel}` })),
     { key: 'komande', label: '📜 Komande' },
   ];
-
-  const theme = currentTheme();
 
   return (
     <AppShell>

@@ -12,6 +12,7 @@ import { useEffect, useRef } from 'react';
 import {
   cancelScadaCommand,
   fetchAlarmHistoryRows,
+  fetchSiteHistoryFull,
   fetchSiteHistoryRows,
   fetchSnapshotRow,
   sendScadaCommandFlow,
@@ -82,13 +83,27 @@ function toSamples(rows: HistoryRow[], keyFor: (m: string) => string | null | un
 /** Port 1.0 buildHistory — BE već filtrira metrike po sistemu (spec §3). */
 async function buildHistory(siteKey: string, params?: HistoryParams): Promise<unknown> {
   if (siteKey === 'kot1') {
-    const meta = await kot1Tags();
-    const tags = (meta.tags || [])
+    // Dinamički iz BE `meta.metrics`/`meta.series` (paritet 1.0 buildHistory) — bez
+    // hardkodovanog spiska. Zone (za grupisanje na ekranu) obogaćujemo iz kot1-tags.json.
+    const full = await fetchSiteHistoryFull('kot1', 24);
+    if (full.metrics.length > 0) {
+      const local = await kot1Tags();
+      const zoneByName = new Map((local.tags || []).map((t) => [t.name, t.zone]));
+      const tags = full.metrics.map((m) => ({
+        name: m.key,
+        label: m.label,
+        kind: m.kind,
+        zone: zoneByName.get(m.key),
+      }));
+      return { tags, series: full.series };
+    }
+    // Fallback (BE meta prazan — grane nisu spojene): lokalni kot1-tags.json + long-format.
+    const local = await kot1Tags();
+    const tags = (local.tags || [])
       .filter((t) => t.kind === 'temp' || t.kind === 'setpoint')
       .map((t) => ({ name: t.name, label: t.label, kind: t.kind, zone: t.zone }));
-    const rows = await fetchSiteHistoryRows('kot1', 24);
     const series: Record<string, { t: number; v: number | null }[]> = {};
-    for (const r of rows) {
+    for (const r of full.rows) {
       (series[r.metric] ||= []).push({ t: new Date(r.ts).getTime(), v: r.value });
     }
     return { tags, series };

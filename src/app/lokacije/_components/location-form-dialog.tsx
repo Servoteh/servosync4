@@ -15,10 +15,29 @@ import {
   type LocTypeEnum,
 } from '@/api/lokacije';
 import { LocationSelect } from './location-select';
+import { locationKind } from './common';
 
 const INPUT = 'w-full rounded-control border border-line bg-surface-2 px-2.5 py-1.5 text-sm text-ink outline-none focus:border-accent';
 
 const CREATE_TYPES: LocTypeEnum[] = [...HALL_TYPES, ...SHELF_TYPES, 'CAGE', 'MACHINE', 'SERVICE', 'OFFICE', 'TRANSIT', 'OTHER'];
+
+/** Tipovi koji NISU hala (polica/kavez/mašina…) moraju imati nadređenu halu (paritet 1.0 canBeShelfParent). */
+function needsParent(type: LocTypeEnum): boolean {
+  return locationKind(type) !== 'hall';
+}
+
+/** Predloži prvi slobodan „<slovo><broj>" u hali za dati prefiks (auto-predlog šifre). */
+function suggestNextCode(all: LocLocation[], parentId: string | null, prefix: string): string | null {
+  if (!parentId) return null;
+  const re = new RegExp(`^${prefix}(\\d+)$`, 'i');
+  let max = 0;
+  for (const l of all) {
+    if (l.parentId !== parentId) continue;
+    const m = re.exec(l.locationCode.trim());
+    if (m) max = Math.max(max, Number(m[1]));
+  }
+  return `${prefix}${max + 1}`;
+}
 
 /** Nova / izmena master lokacije (paritet 1.0 createLocation/updateLocation). */
 export function LocationFormDialog({ edit, onClose }: { edit?: LocLocation | null; onClose: () => void }) {
@@ -37,9 +56,15 @@ export function LocationFormDialog({ edit, onClose }: { edit?: LocLocation | nul
   const [notes, setNotes] = useState(edit?.notes ?? '');
   const [error, setError] = useState<string | null>(null);
 
+  // Nadređena hala je obavezna za police/kaveze/mašine — i pri kreiranju i pri izmeni tipa.
+  const parentRequired = needsParent(locationType);
+
   async function submit() {
     setError(null);
     if (!name.trim()) return setError('Naziv je obavezan.');
+    if (parentRequired && !parentId) {
+      return setError('Za policu / kavez / mašinu izaberi nadređenu halu.');
+    }
     try {
       if (isEdit && edit) {
         await update.mutateAsync({
@@ -85,7 +110,16 @@ export function LocationFormDialog({ edit, onClose }: { edit?: LocLocation | nul
       <div className="space-y-3">
         <div className="grid grid-cols-2 gap-3">
           <FormField label="Šifra lokacije" required={!isEdit} hint={isEdit ? 'Šifra se ne menja' : undefined}>
-            <input className={INPUT} value={locationCode} onChange={(e) => setLocationCode(e.target.value)} disabled={isEdit} placeholder="npr. P-12" />
+            <input className={INPUT} value={locationCode} onChange={(e) => setLocationCode(e.target.value)} disabled={isEdit} placeholder="npr. A23" />
+            {!isEdit && parentRequired && parentId && !locationCode.trim() && (
+              <button
+                type="button"
+                className="mt-1 text-xs text-accent hover:underline"
+                onClick={() => { const s = suggestNextCode(locList, parentId, 'A'); if (s) setLocationCode(s); }}
+              >
+                Predloži sledeću slobodnu (npr. {suggestNextCode(locList, parentId, 'A')})
+              </button>
+            )}
           </FormField>
           <FormField label="Tip" required>
             <select className={INPUT} value={locationType} onChange={(e) => setLocationType(e.target.value as LocTypeEnum)}>
@@ -100,8 +134,12 @@ export function LocationFormDialog({ edit, onClose }: { edit?: LocLocation | nul
           <input className={INPUT} value={name} onChange={(e) => setName(e.target.value)} placeholder="npr. Polica 12 — Hala 3" />
         </FormField>
 
-        <FormField label="Nadređena lokacija (roditelj)" hint="Prazno = koren (hala bez roditelja)">
-          <LocationSelect locations={locList.filter((l) => l.id !== edit?.id)} value={parentId} onChange={setParentId} placeholder="Pretraži nadređenu…" />
+        <FormField
+          label="Nadređena lokacija (roditelj)"
+          required={parentRequired}
+          hint={parentRequired ? 'Polica / kavez / mašina mora pripadati hali' : 'Prazno = koren (hala bez roditelja)'}
+        >
+          <LocationSelect locations={locList.filter((l) => l.id !== edit?.id)} value={parentId} onChange={setParentId} placeholder="Pretraži nadređenu halu…" />
         </FormField>
 
         <div className="grid grid-cols-2 gap-3">

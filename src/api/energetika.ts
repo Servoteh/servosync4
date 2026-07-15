@@ -159,6 +159,42 @@ export async function fetchSiteHistoryRows(
   return r.data;
 }
 
+/** Definicija trend-metrike koju BE vraća u `meta.metrics` (spec §3 PIN — key/label/kind). */
+export interface TrendMetric {
+  key: string;
+  label: string;
+  kind: string;
+}
+/** Tačka serije po ključu (`meta.series`): t = epoch ms, v = vrednost. */
+export interface TrendPoint {
+  t: number;
+  v: number | null;
+}
+interface HistoryMeta {
+  siteKey?: string;
+  hours?: number;
+  metrics?: TrendMetric[];
+  series?: Record<string, TrendPoint[]>;
+}
+
+/**
+ * Istorija + FE-spremna forma iz `meta` (grana fix/locations-energetika): `metrics`
+ * (key/label/kind) i `series` ({[key]: {t,v}[]}). Trend crta metrike DINAMIČKI iz
+ * `meta.metrics` (bez hardkodovanog spiska). `data` long-format ostaje zero-loss.
+ */
+export async function fetchSiteHistoryFull(
+  siteKey: string,
+  hours = 24,
+  system?: string,
+): Promise<{ rows: HistoryRow[]; metrics: TrendMetric[]; series: Record<string, TrendPoint[]> }> {
+  const q = new URLSearchParams({ hours: String(hours) });
+  if (system) q.set('system', system);
+  const r = await apiFetch<{ data: HistoryRow[]; meta?: HistoryMeta }>(
+    `/v1/energetika/history/${siteKey}?${q.toString()}`,
+  );
+  return { rows: r.data, metrics: r.meta?.metrics ?? [], series: r.meta?.series ?? {} };
+}
+
 /** Istorija alarma jednog sistema (paritet 1.0 fetchAlarmHistory → /api/alarmmeta). */
 export async function fetchAlarmHistoryRows(
   siteKey: string,
