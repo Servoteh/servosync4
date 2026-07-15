@@ -630,10 +630,17 @@ export function KioskScanner() {
   const stepLabel = stepNo === 1 ? 'Skeniraj nalog' : stepNo === 2 ? 'Skeniraj operaciju' : operation?.finalControl ? 'Kontrola' : 'Prijava rada';
 
   const made = override?.made ?? groupSum;
-  // Operacija bez postupka (opšti nalog): zatvoreni redovi su istorija — nikad „Zatvorena", panel ostaje otvoren.
-  const finished =
-    override?.finished ?? (operation?.withoutProcess ? false : !!matched?.isProcessFinished);
   const planned = order?.workOrder?.pieceCount ?? null;
+  // Operacija bez postupka (opšti nalog): zatvoreni redovi su istorija — nikad „Zatvorena", panel ostaje otvoren.
+  // Ispod plana je UVEK radna: čak i kad su svi tech_processes redovi te operacije zatvoreni,
+  // sken otvara nov red (backend fix A). „Zatvorena" (blokira) tek kad kumulativ (made) >= plan.
+  const finished =
+    override?.finished ??
+    (operation?.withoutProcess
+      ? false
+      : planned != null
+        ? made >= planned
+        : !!matched?.isProcessFinished);
   const opName = matched?.operation?.workCenterName ?? operation?.workCenterName ?? operation?.fields.workCenterCode ?? '';
   const operationLabel = operation
     ? `${operation.fields.operationNumber != null ? `Op. ${operation.fields.operationNumber} · ` : ''}${opName}`
