@@ -451,20 +451,140 @@ describe("LocationsService — R2 mutacije", () => {
     expect(data[1].movedByName).toBe("legacy@x.com");
   });
 
-  it("summary: vraća movements24h i movements7d (count sa vremenskim prozorom)", async () => {
+  it("summary: vraća movements24h i movements7d (KALENDARSKI prozor, Belgrade ponoć)", async () => {
     sy15.db.locLocationMovement.count
-      .mockResolvedValueOnce(3) // 24h
-      .mockResolvedValueOnce(11); // 7d
+      .mockResolvedValueOnce(3) // danas (od lokalne ponoći)
+      .mockResolvedValueOnce(11); // 7 kalendarskih dana
     const res = await service.summary();
     expect(res.data).toEqual({ movements24h: 3, movements7d: 11 });
-    // Dva odvojena count-a sa moved_at >= prozor.
     const calls = sy15.db.locLocationMovement.count.mock.calls as [
       { where: { movedAt: { gte: Date } } },
     ][];
-    expect(calls[0][0].where.movedAt.gte).toBeInstanceOf(Date);
-    expect(calls[1][0].where.movedAt.gte.getTime()).toBeLessThan(
-      calls[0][0].where.movedAt.gte.getTime(),
+    const startToday = calls[0][0].where.movedAt.gte;
+    const start7d = calls[1][0].where.movedAt.gte;
+    expect(startToday).toBeInstanceOf(Date);
+    // 7d prozor je RANIJI od današnjeg (ne rolling; kalendarski pre 6 dana).
+    expect(start7d.getTime()).toBeLessThan(startToday.getTime());
+    // Oba su Belgrade lokalna ponoć (00:00:00 u Belgrade zoni) — DST-bezbedna provera.
+    const wall = (d: Date) =>
+      new Intl.DateTimeFormat("en-GB", {
+        timeZone: "Europe/Belgrade",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      }).format(d);
+    expect(wall(startToday)).toBe("00:00:00");
+    expect(wall(start7d)).toBe("00:00:00");
+    // Razmak = tačno 6 kalendarskih dana (Belgrade datum) — DST-bezbedno (bez ×24h).
+    const bgDate = (d: Date) =>
+      new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Europe/Belgrade",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).format(d);
+    const diffDays = Math.round(
+      (Date.parse(bgDate(startToday)) - Date.parse(bgDate(start7d))) /
+        (24 * 3600_000),
     );
+    expect(diffDays).toBe(6);
+  });
+
+  // ---------- #2: SVI RN po predmetu (batch nalepnice) — v_bigtehn_work_orders_with_mes_active ----------
+
+  it("predmetWorkOrders: mapira view red u camelCase PIN oblik (BEZ is_mes_active filtera)", async () => {
+    const raw = {
+      id: 8693,
+      item_id: 123,
+      ident_broj: "9400/165",
+      broj_crteza: "1091063",
+      naziv_dela: "Nosač",
+      materijal: "Č.4732",
+      dimenzija_materijala: "Ø50",
+      jedinica_mere: "kom",
+      komada: 4,
+      tezina_obr: 2.5,
+      status_rn: false,
+      revizija: "A",
+      rok_izrade: new Date("2026-07-20T00:00:00.000Z"),
+      is_mes_active: false, // MES-neaktivan RN je I DALJE u rezultatu (paritet 1.0)
+    };
+    sy15.db.$queryRaw
+      .mockResolvedValueOnce([raw]) // rows
+      .mockResolvedValueOnce([{ count: 1 }]); // count
+    const res = await service.predmetWorkOrders("123", {});
+    expect(res.data).toEqual([
+      {
+        workOrderId: 8693,
+        itemId: 123,
+        identBroj: "9400/165",
+        crtez: "1091063",
+        nazivDela: "Nosač",
+        materijal: "Č.4732",
+        dimenzijaMaterijala: "Ø50",
+        jedinicaMere: "kom",
+        komada: 4,
+        tezinaObr: 2.5,
+        statusRn: false,
+        revizija: "A",
+        rokIzrade: "2026-07-20T00:00:00.000Z",
+        isMesActive: false,
+      },
+    ]);
+    expect(res.meta.pagination.total).toBe(1);
+    // Bez onlyOpen → NEMA status_rn PREDIKATA (svi RN, ne samo otvoreni); kolona
+    // w.status_rn u SELECT listi je očekivana, ali WHERE ne sme imati filter.
+    const sqlArg = sy15.db.$queryRaw.mock.calls[0][0] as { strings: string[] };
+    expect(sqlArg.strings.join(" ")).not.toContain("status_rn IS FALSE");
+  });
+
+  it("predmetWorkOrders: onlyOpen=1 → dodaje status_rn IS FALSE predikat", async () => {
+    sy15.db.$queryRaw
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ count: 0 }]);
+    await service.predmetWorkOrders("123", { onlyOpen: "1" });
+    const sqlArg = sy15.db.$queryRaw.mock.calls[0][0] as { strings: string[] };
+    expect(sqlArg.strings.join(" ")).toContain("status_rn IS FALSE");
+  });
+
+  it("predmetWorkOrders: nevažeći itemId → prazno, NE dira bazu", async () => {
+    const res = await service.predmetWorkOrders("0", {});
+    expect(res.data).toEqual([]);
+    expect(res.meta.pagination.total).toBe(0);
+    expect(sy15.db.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  // ---------- #6: puna lista movera za „Korisnik" filter (DISTINCT moved_by + ime) ----------
+
+  it("movementMovers: DISTINCT moved_by → {id,name}, sort po imenu; svi razrešeni preko user_roles (1 upit)", async () => {
+    sy15.db.$queryRaw.mockResolvedValueOnce([
+      { moved_by: UUID2 },
+      { moved_by: UUID },
+    ]);
+    sy15.db.userRoleSy15.findMany.mockResolvedValue([
+      { userId: UUID, fullName: "Ana Anić", email: "ana@x.com" },
+      { userId: UUID2, fullName: "Zoran Zorić", email: "zoran@x.com" },
+    ]);
+    const res = await service.movementMovers();
+    expect(res.data).toEqual([
+      { id: UUID, name: "Ana Anić" },
+      { id: UUID2, name: "Zoran Zorić" },
+    ]);
+    // Nema nerazrešenih → NEMA auth.users fallback $queryRaw (samo DISTINCT upit).
+    expect(sy15.db.$queryRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it("movementMovers: nerazrešiv uid → name null (FE zadrži UUID fallback)", async () => {
+    sy15.db.$queryRaw
+      .mockResolvedValueOnce([{ moved_by: UUID }, { moved_by: UUID2 }]) // DISTINCT
+      .mockResolvedValueOnce([]); // auth.users fallback prazan
+    sy15.db.userRoleSy15.findMany.mockResolvedValue([
+      { userId: UUID, fullName: "Marko Cvetić", email: "marko@x.com" },
+    ]);
+    const res = await service.movementMovers();
+    expect(res.data.find((x) => x.id === UUID)?.name).toBe("Marko Cvetić");
+    expect(res.data).toContainEqual({ id: UUID2, name: null });
   });
 
   it("definitionsAudit: dodaje actor_name (actor_uid → ime; fallback actor_email)", async () => {

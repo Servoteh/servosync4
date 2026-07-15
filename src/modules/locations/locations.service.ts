@@ -114,6 +114,34 @@ export interface PredmetTpsQuery {
   pageSize?: string;
 }
 
+export interface PredmetWorkOrdersQuery {
+  onlyOpen?: string; // "true"/"1" → samo otvoreni RN (status_rn = false)
+  page?: string;
+  pageSize?: string;
+}
+
+/**
+ * Sirov red iz `v_bigtehn_work_orders_with_mes_active` (podskup kolona koji 1.0
+ * `searchBigtehnWorkOrdersForItem` selektuje). bigint/int stižu kao BigInt/number iz
+ * `$queryRaw` — mapiraju se u Number pre JSON serializacije (BigInt nije JSON-serializ.).
+ */
+interface WorkOrderRaw {
+  id: bigint | number;
+  item_id: bigint | number | null;
+  ident_broj: string | null;
+  broj_crteza: string | null;
+  naziv_dela: string | null;
+  materijal: string | null;
+  dimenzija_materijala: string | null;
+  jedinica_mere: string | null;
+  komada: number | null;
+  tezina_obr: number | null;
+  status_rn: boolean | null;
+  revizija: string | null;
+  rok_izrade: Date | null;
+  is_mes_active: boolean | null;
+}
+
 // ---------- Konstante pariteta 1.0 ----------
 
 /** kind → tipovi lokacije (lokacijeTypes.js HALL/SHELF/CAGE/MACHINE setovi). */
@@ -271,7 +299,10 @@ export class LocationsService {
     const { data, total } = await this.sy15.withUserRls(email, async (tx) => {
       const rows = await tx.locItemPlacement.findMany({
         where,
-        orderBy: { updatedAt: "desc" },
+        // Stabilan tiebreak (id asc) — updated_at nije jedinstven (bulk-sync grupe
+        // istog timestamp-a); bez sekundarnog ključa fetch-all izvoz može duplirati
+        // ili preskočiti red na granici offset-strane (paritet 1.0 stabilnog sorta).
+        orderBy: [{ updatedAt: "desc" }, { id: "asc" }],
         skip,
         take,
       });
@@ -335,7 +366,10 @@ export class LocationsService {
     const [rows, total] = await Promise.all([
       this.sy15.db.locLocationMovement.findMany({
         where,
-        orderBy: { movedAt: "desc" },
+        // Stabilan tiebreak (id asc) — moved_at nije jedinstven (bulk-sync grupe
+        // istog timestamp-a; živo: grupa od 84 reda); bez sekundarnog ključa fetch-all
+        // izvoz može duplirati/preskočiti red na granici offset-strane.
+        orderBy: [{ movedAt: "desc" }, { id: "asc" }],
         skip,
         take,
       }),
@@ -375,24 +409,105 @@ export class LocationsService {
 
   /**
    * KPI brojači za Početnu (paritet 1.0 `fetchMovementsCountSince`): koliko je
-   * premeštanja u poslednja 24h i poslednjih 7 dana. 1.0 je ova dva broja računao
-   * klijentski (dva zasebna count-a); 2.0 ih vraća u jednom summary pozivu. Rolling
-   * prozori (now − 24h / now − 7d) — nazivi polja su `24h`/`7d`. Count kroz `sy15.db`
-   * (BYPASSRLS): movements nisu row-scoped (za razliku od placements/rev_tools).
+   * premeštanja „danas" i u poslednjih 7 dana. 1.0 koristi KALENDARSKE granice u
+   * lokalnoj zoni (Europe/Belgrade): „danas" = od lokalne ponoći, „7 dana" = 7
+   * kalendarskih dana (danas + 6 prethodnih), a NE rolling now−24h/now−168h — inače
+   * bi „Premeštanja danas" pokazivalo i jučerašnje popodne. Belgrade ponoć se računa
+   * preko `Intl` (ne naivni UTC) da bi bila tačna i pri CET/CEST i DST prelazima.
+   * Nazivi polja ostaju `movements24h`/`movements7d` (FE ih već čita). Count kroz
+   * `sy15.db` (BYPASSRLS): movements nisu row-scoped (za razliku od placements/rev_tools).
    */
   async summary() {
-    const now = Date.now();
-    const since24h = new Date(now - 24 * 3600_000);
-    const since7d = new Date(now - 7 * 24 * 3600_000);
+    const now = new Date();
+    const startOfToday = this.belgradeStartOfDay(now, 0); // lokalna ponoć danas
+    const startOf7d = this.belgradeStartOfDay(now, 6); // ponoć pre 6 dana (7 kal. dana)
     const [movements24h, movements7d] = await Promise.all([
       this.sy15.db.locLocationMovement.count({
-        where: { movedAt: { gte: since24h } },
+        where: { movedAt: { gte: startOfToday } },
       }),
       this.sy15.db.locLocationMovement.count({
-        where: { movedAt: { gte: since7d } },
+        where: { movedAt: { gte: startOf7d } },
       }),
     ]);
     return { data: { movements24h, movements7d } };
+  }
+
+  /**
+   * UTC instant lokalne ponoći (Europe/Belgrade) za kalendarski dan `daysBack` pre
+   * `now`. Radi tačno i preko CET/CEST i DST prelaza jer offset uzima u podne tog
+   * dana (podne nikad ne pada na DST prelaz), pa ga oduzme od 00:00. Bez eksterne
+   * biblioteke — samo `Intl` (isti pristup kao 1.0 `_ymd` u lokalnoj zoni pregledača,
+   * ovde fiksiran na Belgrade jer server može biti u drugoj zoni).
+   */
+  private belgradeStartOfDay(now: Date, daysBack: number): Date {
+    const tz = "Europe/Belgrade";
+    // 1) Belgrade kalendarski YYYY-MM-DD za `now` (en-CA daje ISO oblik).
+    const [y, m, d] = new Intl.DateTimeFormat("en-CA", {
+      timeZone: tz,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    })
+      .format(now)
+      .split("-")
+      .map(Number);
+    // 2) pomeri unazad `daysBack` kalendarskih dana (UTC matematika hvata prelaze meseca/godine).
+    const shifted = new Date(Date.UTC(y, m - 1, d - daysBack));
+    const yy = shifted.getUTCFullYear();
+    const mm = shifted.getUTCMonth() + 1;
+    const dd = shifted.getUTCDate();
+    // 3) offset zone u podne tog dana → primeni na 00:00 da dobiješ UTC instant ponoći.
+    const offMin = this.tzOffsetMinutes(new Date(Date.UTC(yy, mm - 1, dd, 12)), tz);
+    return new Date(Date.UTC(yy, mm - 1, dd) - offMin * 60_000);
+  }
+
+  /** Offset zone (min) u datom UTC instantu: (lokalni zidni sat − UTC). CEST=+120, CET=+60. */
+  private tzOffsetMinutes(instant: Date, tz: string): number {
+    const p = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      hour12: false,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    }).formatToParts(instant);
+    const g = (t: string) => Number(p.find((x) => x.type === t)?.value ?? "0");
+    const asUtc = Date.UTC(
+      g("year"),
+      g("month") - 1,
+      g("day"),
+      g("hour") % 24,
+      g("minute"),
+      g("second"),
+    );
+    return (asUtc - instant.getTime()) / 60_000;
+  }
+
+  /**
+   * Puna lista movera za „Korisnik" filter u istoriji premeštanja (paritet 1.0
+   * `loadHistoryUsers`): `SELECT DISTINCT moved_by` nad CELIM `loc_location_movements`
+   * + razrešeno ime (isti put kao `movedByName`). FE je ranije punio dropdown iz
+   * učitane strane (prvih 500) pa je tiho gubio starije/ređe movere. Sort po imenu
+   * (fallback UUID). Movements NISU row-scoped → `sy15.db` (BYPASSRLS).
+   */
+  async movementMovers(): Promise<{ data: { id: string; name: string | null }[] }> {
+    const rows = await this.sy15.db.$queryRaw<{ moved_by: string }[]>(
+      Prisma.sql`SELECT DISTINCT moved_by
+                 FROM public.loc_location_movements
+                 WHERE moved_by IS NOT NULL`,
+    );
+    const ids = [...new Set(rows.map((r) => r.moved_by).filter(Boolean))];
+    const names = await this.resolveUserNames(ids);
+    const data = ids
+      .map((id) => ({ id, name: names.get(id) ?? null }))
+      .sort((a, b) =>
+        (a.name ?? a.id).localeCompare(b.name ?? b.id, "sr", {
+          sensitivity: "base",
+        }),
+      );
+    return { data };
   }
 
   /**
@@ -540,6 +655,68 @@ export class LocationsService {
       opStatus = opRows[0]?.result ?? null;
     }
     return { data, meta: { opStatus } };
+  }
+
+  /**
+   * SVI radni nalozi (RN) za jedan predmet — paritet 1.0
+   * `searchBigtehnWorkOrdersForItem` (batch nalepnice / picker koji traži CEO BigTehn
+   * spisak, ne samo MES-aktivne). Izvor: `v_bigtehn_work_orders_with_mes_active`
+   * FILTRIRAN SAMO po `item_id` — BEZ `is_mes_active` predikata (za razliku od
+   * `loc_tps_for_predmet`/`v_active_bigtehn_work_orders` koji gube ~77% RN). `status_rn`
+   * filter se primenjuje SAMO kad `onlyOpen=1` (status_rn = false = otvoren u kešu).
+   * Sort `ident_broj asc, id asc` = 1.0 (stabilna offset paginacija). WO cache NIJE
+   * row-scoped (RLS „read for authenticated USING true") → `sy15.db` (BYPASSRLS); HTTP
+   * guard `lokacije.read` je autorizacija.
+   */
+  async predmetWorkOrders(itemIdRaw: string, query: PredmetWorkOrdersQuery) {
+    const itemId = Number.parseInt(itemIdRaw, 10);
+    const { page, pageSize, skip, take } = parsePagination(
+      query.page,
+      query.pageSize,
+      1000, // paritet 1.0 hard limit po upitu (predmet 9400 ima 800+ RN)
+    );
+    if (!Number.isInteger(itemId) || itemId <= 0)
+      return { data: [], meta: pageMeta(page, pageSize, 0) };
+
+    const onlyOpen = query.onlyOpen === "true" || query.onlyOpen === "1";
+    const statusFilter = onlyOpen
+      ? Prisma.sql`AND w.status_rn IS FALSE`
+      : Prisma.empty;
+    const whereSql = Prisma.sql`WHERE w.item_id = ${itemId}::bigint ${statusFilter}`;
+
+    const [rows, totalRows] = await Promise.all([
+      this.sy15.db.$queryRaw<WorkOrderRaw[]>(Prisma.sql`
+        SELECT w.id, w.item_id, w.ident_broj, w.broj_crteza, w.naziv_dela,
+               w.materijal, w.dimenzija_materijala, w.jedinica_mere, w.komada,
+               w.tezina_obr, w.status_rn, w.revizija, w.rok_izrade, w.is_mes_active
+        FROM public.v_bigtehn_work_orders_with_mes_active w
+        ${whereSql}
+        ORDER BY w.ident_broj ASC, w.id ASC
+        LIMIT ${take}::int OFFSET ${skip}::int`),
+      this.sy15.db.$queryRaw<{ count: bigint }[]>(Prisma.sql`
+        SELECT count(*)::bigint AS count
+        FROM public.v_bigtehn_work_orders_with_mes_active w
+        ${whereSql}`),
+    ]);
+
+    const total = Number(totalRows[0]?.count ?? 0);
+    const data = rows.map((r) => ({
+      workOrderId: Number(r.id),
+      itemId: r.item_id == null ? null : Number(r.item_id),
+      identBroj: r.ident_broj,
+      crtez: r.broj_crteza,
+      nazivDela: r.naziv_dela,
+      materijal: r.materijal,
+      dimenzijaMaterijala: r.dimenzija_materijala,
+      jedinicaMere: r.jedinica_mere,
+      komada: r.komada == null ? null : Number(r.komada),
+      tezinaObr: r.tezina_obr == null ? null : Number(r.tezina_obr),
+      statusRn: r.status_rn,
+      revizija: r.revizija,
+      rokIzrade: r.rok_izrade ? r.rok_izrade.toISOString() : null,
+      isMesActive: r.is_mes_active,
+    }));
+    return { data, meta: pageMeta(page, pageSize, total) };
   }
 
   // ==========================================================================

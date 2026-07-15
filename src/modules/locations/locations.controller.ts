@@ -21,6 +21,7 @@ import type {
   ListMovementsQuery,
   ListPlacementsQuery,
   PredmetTpsQuery,
+  PredmetWorkOrdersQuery,
   ReportByLocationQuery,
 } from "./locations.service";
 import {
@@ -78,6 +79,16 @@ export class LocationsController {
     return this.locations.listMovements(query);
   }
 
+  /**
+   * Puna lista movera za „Korisnik" filter (DISTINCT moved_by + ime) — paritet 1.0
+   * loadHistoryUsers; FE više ne puni dropdown iz učitane strane (gubio movere).
+   * MORA pre `GET :id` i pre `GET movements` ne kvari (obe statičke).
+   */
+  @Get("movements/movers")
+  movementMovers() {
+    return this.locations.movementMovers();
+  }
+
   /** Početna KPI — premeštanja u poslednja 24h / 7 dana (paritet 1.0 dashboard count-ovi). */
   @Get("summary")
   summary() {
@@ -108,6 +119,20 @@ export class LocationsController {
     @Query() query: PredmetTpsQuery,
   ) {
     return this.locations.predmetTps(itemId, query, req.user.email);
+  }
+
+  /**
+   * SVI RN za predmet (batch nalepnice) — v_bigtehn_work_orders_with_mes_active po
+   * item_id BEZ is_mes_active filtera (loc_tps_for_predmet gubi ~77% RN). onlyOpen=1
+   * → samo otvoreni (status_rn=false). Guard = klasni lokacije.read (WO cache je
+   * čitljiv svim prijavljenima; nije row-scoped).
+   */
+  @Get("predmet/:itemId/work-orders")
+  predmetWorkOrders(
+    @Param("itemId") itemId: string,
+    @Query() query: PredmetWorkOrdersQuery,
+  ) {
+    return this.locations.predmetWorkOrders(itemId, query);
   }
 
   // ---------- Lookups ----------
