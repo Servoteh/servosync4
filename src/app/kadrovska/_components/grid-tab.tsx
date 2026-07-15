@@ -147,6 +147,7 @@ export function GridTab() {
         department,
         workType: gridWorkType(r),
         hireDate: sv(r, 'hire_date') || null,
+        isActive: sv(r, 'is_active') !== 'false',
       };
     });
     empNameRef.current = nm;
@@ -158,7 +159,14 @@ export function GridTab() {
 
   const departments = useMemo(() => [...new Set(companyAll.map((e) => e.department).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'sr')), [companyAll]);
 
-  const companyFiltered = useMemo(() => (dept ? companyAll.filter((e) => e.department === dept) : companyAll), [companyAll, dept]);
+  // Odjavljeni (is_active=false) se vide u gridu SAMO za mesece u kojima imaju unos
+  // (rowsByEmpDate/work_hours za učitani mesec) — poslednji radni mesec. companyAll
+  // ostaje pun (razrešavanje imena istorijskih redova); filter je na mestu prikaza.
+  const workedSet = useMemo(() => new Set((grid?.rows ?? []).map((r) => r.employeeId)), [grid?.rows]);
+  const companyFiltered = useMemo(() => {
+    const base = companyAll.filter((e) => e.isActive !== false || workedSet.has(e.id));
+    return dept ? base.filter((e) => e.department === dept) : base;
+  }, [companyAll, workedSet, dept]);
   const visible = useMemo(() => (dsearch ? companyFiltered.filter((e) => e.name.toLowerCase().includes(dsearch)) : companyFiltered), [companyFiltered, dsearch]);
 
   const totalPages = Math.max(1, Math.ceil(visible.length / PAGE));

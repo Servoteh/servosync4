@@ -17,6 +17,8 @@ export interface GridEmployee {
   workType: string;
   /** Datum zaposlenja (YYYY-MM-DD) — gejtuje auto-priznat državni praznik pre zaposlenja. */
   hireDate: string | null;
+  /** false = odjavljen; prikazuje se samo za mesece u kojima ima unos (poslednji radni mesec). */
+  isActive?: boolean;
 }
 
 export interface DayTotals {
@@ -213,6 +215,9 @@ const EmployeeBlock = memo(
           <td rowSpan={5} className={cn('sticky left-8 z-10 w-52 border-r border-line px-2 align-top', stripeBg)}>
             <div className="flex items-center gap-1">
               <span className="font-medium text-ink">{emp.name}</span>
+              {emp.isActive === false && (
+                <span className="rounded bg-status-danger-bg px-1 text-[9px] font-semibold uppercase text-status-danger" title="Odjavljen — prikazan jer ima unos u ovom mesecu (poslednji radni mesec)">odjavljen</span>
+              )}
               {emp.workType !== 'ugovor' && (
                 <span className="rounded bg-status-warn-bg px-1 text-[9px] font-semibold uppercase text-status-warn">{wtLabel}</span>
               )}
