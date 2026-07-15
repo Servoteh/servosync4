@@ -15,7 +15,8 @@ import {
   type ReportParams,
   type ReportRow,
 } from '@/api/lokacije';
-import { buildCsvFilename, csvTimestamp, downloadCsv, tableEmpty } from './common';
+import { buildCsvFilename, csvTimestamp, downloadCsv, PageSizeSelect, tableEmpty } from './common';
+import { LocationSelect } from './location-select';
 
 const INPUT = 'h-9 rounded-control border border-line bg-surface px-2.5 text-sm text-ink outline-none focus:border-accent';
 
@@ -93,18 +94,20 @@ export function ReportTab() {
   const [tpNo, setTpNo] = useState('');
   const [nazivDela, setNazivDela] = useState('');
   const [nazivFocus, setNazivFocus] = useState(false);
-  const [locationQ, setLocationQ] = useState('');
+  const [locationId, setLocationId] = useState<string | null>(null);
   const [hallId, setHallId] = useState('');
   const [locationKind, setLocationKind] = useState<'' | 'shelf' | 'cage'>('');
   const [projectSearch, setProjectSearch] = useState('');
+  const [sort, setSort] = useState('');
+  const [desc, setDesc] = useState(true);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(100);
   const [exporting, setExporting] = useState<{ loaded: number; total: number | null } | null>(null);
-  const pageSize = 100;
 
-  const halls = useAllLocations('true');
+  const allLocs = useAllLocations('true');
   const hallOptions = useMemo<LocLocation[]>(
-    () => (halls.data ?? []).filter((l) => HALL_TYPES.includes(l.locationType)).sort((a, b) => a.locationCode.localeCompare(b.locationCode)),
-    [halls.data],
+    () => (allLocs.data ?? []).filter((l) => HALL_TYPES.includes(l.locationType)).sort((a, b) => a.locationCode.localeCompare(b.locationCode)),
+    [allLocs.data],
   );
   const suggest = useReportSuggest(nazivDela);
 
@@ -114,10 +117,12 @@ export function ReportTab() {
     drawingNo: drawingNo || undefined,
     tpNo: tpNo || undefined,
     nazivDela: nazivDela || undefined,
-    locationQ: locationQ || undefined,
+    locationId: locationId || undefined,
     hallId: hallId || undefined,
     locationKind: locationKind || undefined,
     projectSearch: projectSearch || undefined,
+    sort: sort || undefined,
+    desc: sort ? desc : undefined,
   };
 
   const q = useReportByLocation({ ...filters, page, pageSize });
@@ -126,13 +131,21 @@ export function ReportTab() {
   const total = q.data?.data.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
+  // Klik na sortabilno zaglavlje: ista kolona → obrni smer; nova → opadajuće (paritet toggleReportSort).
+  function toggleSort(key: string) {
+    setPage(1);
+    if (sort === key) setDesc((d) => !d);
+    else { setSort(key); setDesc(true); }
+  }
+
   const columns: Column<ReportRow>[] = [
-    { key: 'project', header: 'Projekat', render: (r) => [r.project_code, r.project_name].filter(Boolean).join(' — ') || '—' },
-    { key: 'customer', header: 'Komitent', render: (r) => r.customer_name || '—' },
-    { key: 'order', header: 'Nalog', render: (r) => (r.order_no ? <strong>{r.order_no}</strong> : '—') },
+    { key: 'project_code', header: 'Projekat', sortable: true, render: (r) => [r.project_code, r.project_name].filter(Boolean).join(' — ') || '—' },
+    { key: 'customer_name', header: 'Komitent', sortable: true, render: (r) => r.customer_name || '—' },
+    { key: 'order_no', header: 'Nalog', sortable: true, render: (r) => (r.order_no ? <strong>{r.order_no}</strong> : '—') },
     {
-      key: 'drawing',
+      key: 'drawing_no',
       header: 'Crtež / naziv',
+      sortable: true,
       render: (r) => (
         <div>
           <span>{r.drawing_no || r.wo_broj_crteza || '—'}</span>
@@ -140,12 +153,12 @@ export function ReportTab() {
         </div>
       ),
     },
-    { key: 'item', header: 'Stavka', render: (r) => <span className="tnums">{r.item_ref_id || '—'}</span> },
-    { key: 'hall', header: 'Hala', render: (r) => r.hall_code || '—' },
-    { key: 'shelf', header: 'Polica', render: (r) => r.location_code || '—' },
+    { key: 'item_ref_id', header: 'Stavka', sortable: true, render: (r) => <span className="tnums">{r.item_ref_id || '—'}</span> },
+    { key: 'hall_code', header: 'Hala', sortable: true, render: (r) => r.hall_code || '—' },
+    { key: 'location_code', header: 'Polica', sortable: true, render: (r) => r.location_code || '—' },
     { key: 'material', header: 'Materijal', render: (r) => [r.materijal, r.dimenzija_materijala].filter(Boolean).join(' · ') || '—' },
-    { key: 'qty', header: 'Na lok.', align: 'right', numeric: true, render: (r) => num(r.qty_on_location) },
-    { key: 'rok', header: 'Rok', render: (r) => (r.rok_izrade ? String(r.rok_izrade).slice(0, 10) : '—') },
+    { key: 'qty_on_location', header: 'Na lok.', align: 'right', numeric: true, sortable: true, render: (r) => num(r.qty_on_location) },
+    { key: 'rok_izrade', header: 'Rok', sortable: true, render: (r) => (r.rok_izrade ? String(r.rok_izrade).slice(0, 10) : '—') },
   ];
 
   // CSV = CEO filtrirani skup (fetch-all po stranama), ne samo tekuća strana.
@@ -215,7 +228,15 @@ export function ReportTab() {
           <option value="shelf">Samo police</option>
           <option value="cage">Samo kavezi</option>
         </select>
-        <input className={INPUT} placeholder="Lokacija (šifra)" value={locationQ} onChange={(e) => { setLocationQ(e.target.value); setPage(1); }} />
+        <div className="min-w-56">
+          <LocationSelect
+            locations={allLocs.data ?? []}
+            value={locationId}
+            onChange={(v) => { setLocationId(v); setPage(1); }}
+            kinds={['SHELF', 'RACK', 'BIN', 'CAGE']}
+            placeholder="Polica / kavez (npr. KV 7)…"
+          />
+        </div>
         <input className={INPUT} placeholder="Projekat / komitent" value={projectSearch} onChange={(e) => { setProjectSearch(e.target.value); setPage(1); }} />
         <span className="ml-auto text-sm text-ink-secondary tnums">{total} zapisa</span>
         <Button variant="secondary" onClick={exportCsv} disabled={rows.length === 0 || exporting != null}>
@@ -231,12 +252,17 @@ export function ReportTab() {
         rows={rows}
         rowKey={(r) => `${r.item_ref_table}|${r.item_ref_id}|${r.order_no}|${r.location_code}`}
         loading={q.isLoading}
+        sort={sort ? { key: sort, dir: desc ? 'desc' : 'asc' } : null}
+        onSortToggle={toggleSort}
         empty={tableEmpty(q.isError, 'Nema rezultata', 'Suzi ili promeni filtere pregleda.')}
       />
 
-      {totalPages > 1 && (
-        <Pager page={page} totalPages={totalPages} onPrev={() => setPage((p) => Math.max(1, p - 1))} onNext={() => setPage((p) => p + 1)} />
-      )}
+      <div className="flex items-center justify-between gap-3">
+        <PageSizeSelect value={pageSize} onChange={(n) => { setPageSize(n); setPage(1); }} />
+        {totalPages > 1 && (
+          <Pager page={page} totalPages={totalPages} onPrev={() => setPage((p) => Math.max(1, p - 1))} onNext={() => setPage((p) => p + 1)} />
+        )}
+      </div>
     </div>
   );
 }

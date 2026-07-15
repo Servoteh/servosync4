@@ -1,8 +1,10 @@
 import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import {
+  HALL_TYPES,
   LOC_TYPE_LABEL,
   MOVEMENT_TYPE_LABEL,
+  SHELF_TYPES,
   type LocLocation,
 } from '@/api/lokacije';
 
@@ -120,4 +122,117 @@ export function buildLocIndex(locs: LocLocation[]): LocIndex {
     return loc.locationCode;
   };
   return { byId, hallOf, labelOf };
+}
+
+// ------------------------------------------------------------------ „Korisnik" prikaz
+
+/**
+ * „Korisnik" prikaz (paritet 1.0 kolone): prvo ime iz BE `*_name` polja
+ * (`movedByName` / `actor_name` — grana fix/locations-energetika), fallback na
+ * skraćeni UUID (prvih 8 znakova + …). Dok BE grane nisu spojene, ime je
+ * null/undefined pa se pada na UUID → zero-loss, bez praznih ćelija.
+ */
+export function userDisplay(name: string | null | undefined, uid: string | null | undefined): string {
+  const n = String(name ?? '').trim();
+  if (n) return n;
+  const id = String(uid ?? '').trim();
+  return id ? `${id.slice(0, 8)}…` : '—';
+}
+
+// ------------------------------------------------------------------ rows-per-page
+
+/** Ponuđene veličine strane (paritet 1.0 „Po stranici" — 25/50/100/250). */
+export const PAGE_SIZE_OPTIONS = [25, 50, 100, 250] as const;
+
+/** Izbor broja redova po strani (report / istorija / stavke). */
+export function PageSizeSelect({
+  value,
+  onChange,
+  className = '',
+}: {
+  value: number;
+  onChange: (n: number) => void;
+  className?: string;
+}) {
+  return (
+    <label className={`flex items-center gap-1.5 text-xs text-ink-secondary ${className}`}>
+      <span className="whitespace-nowrap">Po strani</span>
+      <select
+        className="h-8 rounded-control border border-line bg-surface px-2 text-xs text-ink outline-none focus:border-accent"
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        aria-label="Broj redova po strani"
+      >
+        {PAGE_SIZE_OPTIONS.map((n) => (
+          <option key={n} value={n}>{n}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+// ------------------------------------------------------------------ klasifikacija lokacija (paritet lib/lokacijeTypes.js)
+
+const HALL_KIND_SET = new Set<string>(HALL_TYPES);
+const SHELF_KIND_SET = new Set<string>(SHELF_TYPES);
+
+export type LocKind = 'hall' | 'shelf' | 'cage' | 'machine' | 'other';
+
+function normType(t: string | null | undefined): string {
+  return String(t ?? '').trim().toUpperCase();
+}
+
+/** Globalna šifra kaveza „KV N" (npr. „KV 7") — paritet 1.0 isKvLocationCode. */
+export function isKvLocationCode(code: string | null | undefined): boolean {
+  return /^KV \d+$/i.test(String(code ?? '').trim());
+}
+
+/** Enum → poslovni „kind" (hall/shelf/cage/machine/other) — paritet getLocationKind. */
+export function locationKind(type: string | null | undefined): LocKind {
+  const t = normType(type);
+  if (HALL_KIND_SET.has(t)) return 'hall';
+  if (SHELF_KIND_SET.has(t)) return 'shelf';
+  if (t === 'CAGE') return 'cage';
+  if (t === 'MACHINE') return 'machine';
+  return 'other';
+}
+
+/** Kavez u podacima = tip CAGE ILI legacy red sa „KV N" šifrom (paritet isCageLocation). */
+export function isCageLoc(loc: Pick<LocLocation, 'locationType' | 'locationCode'>): boolean {
+  return normType(loc.locationType) === 'CAGE' || isKvLocationCode(loc.locationCode);
+}
+
+/** Poslovni „kind" reda — koristi KV šifru, ne samo enum (paritet getLocationKindFromLoc). */
+export function locationKindFromLoc(loc: Pick<LocLocation, 'locationType' | 'locationCode'>): LocKind {
+  if (isCageLoc(loc)) return 'cage';
+  return locationKind(loc.locationType);
+}
+
+/** „kind" → labela (HALA/POLICA/KAVEZ/MAŠINA/OSTALO) — paritet getLocationKindLabel. */
+export function locationKindLabel(type: string | null | undefined): string {
+  const k = locationKind(type);
+  return k === 'hall' ? 'HALA' : k === 'shelf' ? 'POLICA' : k === 'cage' ? 'KAVEZ' : k === 'machine' ? 'MAŠINA' : 'OSTALO';
+}
+
+// ------------------------------------------------------------------ prirodni sort (paritet lib/lokacijeSort.js)
+
+/** A-Z natural sort po `locationCode` („A.10" posle „A.9"; locale sr, numeric). */
+export function compareLocationCodeNatural(a: LocLocation, b: LocLocation): number {
+  return String(a.locationCode ?? '').localeCompare(String(b.locationCode ?? ''), 'sr', {
+    numeric: true,
+    sensitivity: 'base',
+  });
+}
+
+function cageCodeNumber(code: string | null | undefined): number {
+  const m = String(code ?? '').trim().match(/^KV (\d+)$/i);
+  return m ? Number(m[1]) : Number.NaN;
+}
+
+/** „KV 1"…„KV 12" po broju, ne leksikografski (paritet compareCageCode). */
+export function compareCageCode(a: LocLocation, b: LocLocation): number {
+  const na = cageCodeNumber(a.locationCode);
+  const nb = cageCodeNumber(b.locationCode);
+  if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) return na - nb;
+  return compareLocationCodeNatural(a, b);
 }

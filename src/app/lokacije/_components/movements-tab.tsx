@@ -15,20 +15,10 @@ import {
   type LocMovement,
   type MovementsParams,
 } from '@/api/lokacije';
-import { buildCsvFilename, buildLocIndex, csvTimestamp, downloadCsv, movementLabel, tableEmpty } from './common';
+import { buildCsvFilename, buildLocIndex, csvTimestamp, downloadCsv, movementLabel, PageSizeSelect, tableEmpty, userDisplay } from './common';
 import { LocationSelect } from './location-select';
 
 const INPUT = 'h-9 rounded-control border border-line bg-surface px-2.5 text-sm text-ink outline-none focus:border-accent';
-
-/**
- * Skraćen `moved_by` (UUID → prvih 8 znakova) — paritet 1.0 fallback prikaza kada
- * lista korisnika/imena nije dostupna (index.js:2505; nema users-by-id endpointa u
- * 2.0 kontroleru — `moved_by` je auth.uid, ne worker id).
- */
-function shortUser(id: string | null | undefined): string {
-  const s = String(id ?? '').trim();
-  return s ? `${s.slice(0, 8)}…` : '—';
-}
 
 /** Istorija premeštanja (movements) — filteri korisnik/lokacija/tip/nalog/datum + CSV. */
 export function MovementsTab() {
@@ -40,8 +30,8 @@ export function MovementsTab() {
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(100);
   const [exporting, setExporting] = useState<{ loaded: number; total: number | null } | null>(null);
-  const pageSize = 100;
 
   const locs = useAllLocations('all');
   const locList = useMemo(() => locs.data ?? [], [locs.data]);
@@ -60,11 +50,17 @@ export function MovementsTab() {
 
   // Opcije za „Korisnik" filter (paritet 1.0 „Svi" + lista): distinct moved_by iz
   // istog skupa BEZ userId filtera (da izbor ne sruši sopstvenu listu na jednog).
+  // Vrednost opcije ostaje UUID (BE `userId` filtrira po moved_by); labela = ime
+  // iz `movedByName` (fallback UUID) — paritet 1.0 „Korisnik" prikaza.
   const userSource = useMovements({ ...baseFilters, pageSize: 500 });
   const userOptions = useMemo(() => {
-    const set = new Set<string>();
-    for (const m of userSource.data?.data ?? []) if (m.movedBy) set.add(m.movedBy);
-    return [...set].sort();
+    const map = new Map<string, string>();
+    for (const m of userSource.data?.data ?? []) {
+      if (m.movedBy && !map.has(m.movedBy)) map.set(m.movedBy, userDisplay(m.movedByName, m.movedBy));
+    }
+    return [...map.entries()]
+      .map(([uid, label]) => ({ uid, label }))
+      .sort((a, b) => a.label.localeCompare(b.label, 'sr'));
   }, [userSource.data]);
 
   const rows = q.data?.data ?? [];
@@ -79,7 +75,7 @@ export function MovementsTab() {
     { key: 'from', header: 'Sa', render: (r) => locIndex.labelOf(r.fromLocationId) },
     { key: 'to', header: 'Na', render: (r) => locIndex.labelOf(r.toLocationId) },
     { key: 'qty', header: 'Kol.', align: 'right', numeric: true, render: (r) => String(r.quantity) },
-    { key: 'user', header: 'Korisnik', render: (r) => <span className="tnums text-ink-secondary" title={r.movedBy}>{shortUser(r.movedBy)}</span> },
+    { key: 'user', header: 'Korisnik', render: (r) => <span className="text-ink-secondary" title={r.movedBy}>{userDisplay(r.movedByName, r.movedBy)}</span> },
     { key: 'note', header: 'Napomena', render: (r) => <span className="text-ink-secondary">{r.movementReason || r.note || '—'}</span> },
   ];
 
@@ -150,7 +146,7 @@ export function MovementsTab() {
         <select className={INPUT} value={userId} onChange={(e) => { setUserId(e.target.value); setPage(1); }} title="Korisnik">
           <option value="">Svi korisnici</option>
           {userOptions.map((u) => (
-            <option key={u} value={u}>{shortUser(u)}</option>
+            <option key={u.uid} value={u.uid}>{u.label}</option>
           ))}
         </select>
         <label className="flex items-center gap-1 text-xs text-ink-secondary">
@@ -184,9 +180,12 @@ export function MovementsTab() {
         empty={tableEmpty(q.isError, 'Nema pokreta', 'Za izabrane filtere nema zabeleženih premeštanja.')}
       />
 
-      {meta && meta.totalPages > 1 && (
-        <Pager page={meta.page} totalPages={meta.totalPages} onPrev={() => setPage((p) => Math.max(1, p - 1))} onNext={() => setPage((p) => p + 1)} />
-      )}
+      <div className="flex items-center justify-between gap-3">
+        <PageSizeSelect value={pageSize} onChange={(n) => { setPageSize(n); setPage(1); }} />
+        {meta && meta.totalPages > 1 && (
+          <Pager page={meta.page} totalPages={meta.totalPages} onPrev={() => setPage((p) => Math.max(1, p - 1))} onNext={() => setPage((p) => p + 1)} />
+        )}
+      </div>
     </div>
   );
 }

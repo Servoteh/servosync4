@@ -75,7 +75,7 @@ export default function LokacijePage() {
           <Tabs tabs={tabs} value={tab} onChange={setTab} ariaLabel="Lokacije" />
         </div>
 
-        {tab === 'pocetna' && <PocetnaTab onGoStavke={goStavke} />}
+        {tab === 'pocetna' && <PocetnaTab onGoStavke={goStavke} onGoLabels={labels ? () => setTab('stampa') : undefined} />}
         {tab === 'predmet' && <PredmetTab />}
         {tab === 'lokacije' && <LokacijeTab />}
         {tab === 'stavke' && <StavkeTab key={stavkeSearch} initialSearch={stavkeSearch} />}

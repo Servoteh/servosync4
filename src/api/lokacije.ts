@@ -37,20 +37,26 @@ export const MOVEMENT_TYPES: LocMovementType[] = [
   'SCRAP', 'CORRECTION', 'INVENTORY_ADJUSTMENT',
 ];
 
+/**
+ * Čitljive labele tipova pokreta — TERMINOLOGIJA PARITET 1.0 (index.js
+ * `MOVEMENT_TYPE_LABELS`): „Prvo zaduženje" (ne „Početni smeštaj"), „Povrat…"
+ * (ne „Povraćaj…"), „Korekcija / neraspoređeno", „Inventar". Granularni tipovi
+ * (ASSIGN/SEND/…) koje 1.0 ne razlaže dobijaju opisne srpske labele u istom duhu.
+ */
 export const MOVEMENT_TYPE_LABEL: Record<string, string> = {
-  INITIAL_PLACEMENT: 'Početni smeštaj',
+  INITIAL_PLACEMENT: 'Prvo zaduženje',
   TRANSFER: 'Premeštanje',
   ASSIGN_TO_PROJECT: 'Dodela projektu',
-  RETURN_FROM_PROJECT: 'Povraćaj sa projekta',
+  RETURN_FROM_PROJECT: 'Povrat sa projekta',
   SEND_TO_SERVICE: 'Slanje na servis',
-  RETURN_FROM_SERVICE: 'Povraćaj sa servisa',
+  RETURN_FROM_SERVICE: 'Povrat sa servisa',
   SEND_TO_FIELD: 'Slanje na teren',
-  RETURN_FROM_FIELD: 'Povraćaj sa terena',
+  RETURN_FROM_FIELD: 'Povrat sa terena',
   SCRAP: 'Otpis',
-  CORRECTION: 'Korekcija',
-  INVENTORY_ADJUSTMENT: 'Inventarska korekcija',
+  CORRECTION: 'Korekcija / neraspoređeno',
+  INVENTORY_ADJUSTMENT: 'Inventar',
   REVERSAL_ISSUE: 'Reversi izdavanje',
-  REVERSAL_RETURN: 'Reversi povraćaj',
+  REVERSAL_RETURN: 'Reversi povrat',
 };
 
 /** Tip lokacije → čitljiva labela (paritet 1.0 lokacijeTypes). */
@@ -112,6 +118,13 @@ export interface LocMovement {
   note: string | null;
   movedAt: string;
   movedBy: string;
+  /**
+   * Prikazno ime izvršioca (BE dopuna, grana fix/locations-energetika): `user_roles`
+   * full_name/email po `movedBy` uid-u; `null` ako nerazrešiv. `movedBy` (UUID) OSTAJE
+   * kao zero-loss fallback. Dok BE grane nisu spojene, polje je `undefined` na runtime-u
+   * (UI defanzivno pada na skraćeni `movedBy`). Vidi `userDisplay()` u common.tsx.
+   */
+  movedByName?: string | null;
   approvedBy: string | null;
   approvedAt: string | null;
   correctionOfMovementId: string | null;
@@ -451,15 +464,56 @@ export function usePredmetTps(itemId: string | null, params: PredmetTpsParams) {
   });
 }
 
+/**
+ * Red istorije definicija master lokacija (RPC `loc_locations_audit` — kolone iz
+ * `sql/migrations/add_loc_locations_audit.sql`). `actor_name` je BE dopuna (grana
+ * fix/locations-energetika): actor_uid → ime, fallback actor_email → `null`.
+ * Dok BE grane nisu spojene, `actor_name` je `undefined` (UI pada na email/UUID).
+ */
+export interface DefinitionAuditRow {
+  id?: number | string;
+  record_id?: string | null;
+  action?: string | null;
+  actor_email?: string | null;
+  actor_uid?: string | null;
+  actor_name?: string | null;
+  changed_at?: string | null;
+  old_data?: Record<string, unknown> | null;
+  new_data?: Record<string, unknown> | null;
+  diff_keys?: string[] | null;
+  [key: string]: unknown;
+}
+
 /** Istorija definisanja/izmena master lokacija (manage; loc_locations_audit). */
 export function useDefinitionsAudit(limit = 100, enabled = true) {
   return useQuery({
     queryKey: [...KEYS.audit, limit],
     enabled,
     queryFn: () =>
-      apiFetch<{ data: Record<string, unknown>[] }>(
+      apiFetch<{ data: DefinitionAuditRow[] }>(
         `/v1/locations/definitions-audit${qs({ limit })}`,
       ),
+  });
+}
+
+/**
+ * Početna KPI — rolling brojači premeštanja u poslednja 24h / 7 dana
+ * (BE ruta `GET /v1/locations/summary` → `{ data: { movements24h, movements7d } }`;
+ * grana fix/locations-energetika). `retry:false` jer dok BE grane nisu spojene ruta
+ * vraća 404 — pozivalac tada defanzivno pada na „ukupno" brojače (zero-loss prikaz).
+ */
+export interface LocationsSummary {
+  movements24h: number;
+  movements7d: number;
+}
+
+export function useLocationsSummary(enabled = true) {
+  return useQuery({
+    queryKey: [...KEYS.root, 'summary'],
+    enabled,
+    retry: false,
+    staleTime: 30_000,
+    queryFn: () => apiFetch<{ data: LocationsSummary }>('/v1/locations/summary'),
   });
 }
 

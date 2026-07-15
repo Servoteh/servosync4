@@ -9,7 +9,7 @@ import { Can } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
 import { formatDateTime } from '@/lib/format';
 import { fetchAllPlacements, useAllLocations, usePlacements, type LocPlacement } from '@/api/lokacije';
-import { buildCsvFilename, buildLocIndex, downloadCsv, PlacementStatusBadge, tableEmpty } from './common';
+import { buildCsvFilename, buildLocIndex, downloadCsv, PageSizeSelect, PlacementStatusBadge, tableEmpty } from './common';
 import { ItemHistoryDialog } from './item-history-dialog';
 import { MovementDialog, type MovementPreset } from './movement-dialog';
 import { ScanOverlay } from './scan-overlay';
@@ -21,7 +21,7 @@ export function StavkeTab({ initialSearch = '' }: { initialSearch?: string }) {
   const [search, setSearch] = useState(initialSearch);
   const [itemRefTable, setItemRefTable] = useState('bigtehn_rn');
   const [page, setPage] = useState(1);
-  const pageSize = 100;
+  const [pageSize, setPageSize] = useState(100);
   const [history, setHistory] = useState<{ itemRefId: string; itemRefTable: string; orderNo?: string } | null>(null);
   const [move, setMove] = useState<MovementPreset | null>(null);
   const [scan, setScan] = useState(false);
@@ -145,9 +145,12 @@ export function StavkeTab({ initialSearch = '' }: { initialSearch?: string }) {
         empty={tableEmpty(q.isError, 'Nema smeštenih stavki', 'Pretraži po broju stavke, nalogu ili crtežu.')}
       />
 
-      {meta && meta.totalPages > 1 && (
-        <Pager page={meta.page} totalPages={meta.totalPages} onPrev={() => setPage((p) => Math.max(1, p - 1))} onNext={() => setPage((p) => p + 1)} />
-      )}
+      <div className="flex items-center justify-between gap-3">
+        <PageSizeSelect value={pageSize} onChange={(n) => { setPageSize(n); setPage(1); }} />
+        {meta && meta.totalPages > 1 && (
+          <Pager page={meta.page} totalPages={meta.totalPages} onPrev={() => setPage((p) => Math.max(1, p - 1))} onNext={() => setPage((p) => p + 1)} />
+        )}
+      </div>
 
       {history && <ItemHistoryDialog {...history} onClose={() => setHistory(null)} />}
       {move && <MovementDialog preset={move} onClose={() => setMove(null)} />}
