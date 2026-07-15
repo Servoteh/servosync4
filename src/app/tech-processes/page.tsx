@@ -2,7 +2,7 @@
 
 import { Fragment, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
-import { FileText, Trash2, Upload } from 'lucide-react';
+import { FileText, PenLine, Trash2, Upload } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import {
   PART_QUALITY,
@@ -44,7 +44,12 @@ import { Dialog } from '@/components/ui-kit/dialog';
 import { Can } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
 import { formatDate, formatNumber } from '@/lib/format';
+import { toast } from '@/lib/toast';
 import { cn } from '@/lib/cn';
+// F3c — „Piši po nalogu" (tablet, S Pen): olovkom preko RN dokumenta → anotirana
+// slika (PNG) se uploaduje uz nalog. Anotator je težak (pdfjs) i renderuje se samo
+// na klijentu, pa se lazy-loaduje (ssr:false) preko lokalnog wrappera.
+import { PdfAnnotator } from './pdf-annotator-lazy';
 
 // ------------------------------------------------------------------ zajednički helperi
 
@@ -427,6 +432,11 @@ function QcDocumentsSection({ tp }: { tp: TechProcess }) {
   const [err, setErr] = useState<string | null>(null);
   const [delId, setDelId] = useState<number | null>(null);
   const [openingId, setOpeningId] = useState<number | null>(null);
+  // „Piši po nalogu" (tablet) — anotator je otvoren kad je true. RN mora biti
+  // razrešen (workOrderId > 0) da bi backend mogao da servira /print PDF.
+  const [annotate, setAnnotate] = useState(false);
+  const [savingAnnotation, setSavingAnnotation] = useState(false);
+  const hasWorkOrder = tp.workOrderId > 0;
 
   const docs = docsQ.data?.data ?? [];
 
@@ -444,6 +454,36 @@ function QcDocumentsSection({ tp }: { tp: TechProcess }) {
       setErr(e instanceof ApiError ? e.message : 'Otpremanje nije uspelo.');
     } finally {
       if (fileRef.current) fileRef.current.value = '';
+    }
+  }
+
+  // Anotacija sačuvana → PNG blob u File sa smislenim imenom, pa isti upload hook
+  // kao „Priloži dokument" (techProcessId + identNumber za mek FK na nalog).
+  // Ne zatvaramo anotator dok upload traje; posle uspeha zatvaramo (invalidacija
+  // liste je u samom hooku → svež spisak dokumenata).
+  async function onSaveAnnotation(png: Blob, pageIndex: number) {
+    setErr(null);
+    setSavingAnnotation(true);
+    const safeIdent = (tp.identNumber || 'RN').replace(/[^\w.-]+/g, '_');
+    const fileName = `RN-${safeIdent}-anotacija-${pageIndex + 1}.png`;
+    const file = new File([png], fileName, { type: 'image/png' });
+    try {
+      // NAPOMENA: useUploadQualityDoc prima {file, reportId?, techProcessId?, identNumber?}
+      // — NEMA `workOrderId` polje (vlasništvo api/kvalitet.ts, ne diramo). Veza na RN
+      // ide preko techProcessId (razrešava workOrderId na backendu) + slobodan identNumber.
+      await uploadM.mutateAsync({
+        file,
+        techProcessId: tp.id,
+        identNumber: tp.identNumber,
+      });
+      setAnnotate(false);
+      toast('Anotacija sačuvana uz nalog.');
+    } catch (e) {
+      // Prosleđujemo grešku anotatoru (on prikazuje svoj banner) i beležimo lokalno.
+      setErr(e instanceof ApiError ? e.message : 'Čuvanje anotacije nije uspelo.');
+      throw e;
+    } finally {
+      setSavingAnnotation(false);
     }
   }
 
@@ -475,10 +515,21 @@ function QcDocumentsSection({ tp }: { tp: TechProcess }) {
       <div className="flex flex-wrap items-center gap-3">
         <SectionHeading title="QC dokumenti" count={docs.length ? formatNumber(docs.length) : undefined} />
         <Can permission={PERMISSIONS.KVALITET_WRITE}>
+          {/* „Piši po nalogu" (tablet, S Pen) — otvara RN dokument za pisanje olovkom;
+              anotirana strana se snima kao PNG uz nalog. Disabled dok RN nije razrešen. */}
+          <button
+            onClick={() => setAnnotate(true)}
+            disabled={!hasWorkOrder || savingAnnotation}
+            title={!hasWorkOrder ? 'Radni nalog nije razrešen' : undefined}
+            className="ml-auto inline-flex items-center gap-1.5 rounded-control border border-line px-3 py-1 text-xs font-semibold text-ink-secondary hover:bg-surface disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <PenLine className="h-3.5 w-3.5" aria-hidden />
+            Piši po nalogu
+          </button>
           <button
             onClick={() => fileRef.current?.click()}
             disabled={uploadM.isPending}
-            className="ml-auto inline-flex items-center gap-1.5 rounded-control border border-line px-3 py-1 text-xs font-semibold text-ink-secondary hover:bg-surface disabled:cursor-not-allowed disabled:opacity-40"
+            className="inline-flex items-center gap-1.5 rounded-control border border-line px-3 py-1 text-xs font-semibold text-ink-secondary hover:bg-surface disabled:cursor-not-allowed disabled:opacity-40"
           >
             <Upload className="h-3.5 w-3.5" aria-hidden />
             {uploadM.isPending ? 'Otpremam…' : 'Priloži dokument'}
@@ -571,6 +622,18 @@ function QcDocumentsSection({ tp }: { tp: TechProcess }) {
       >
         <p className="text-sm text-ink">Prilog će biti trajno obrisan.</p>
       </Dialog>
+
+      {/* „Piši po nalogu" — anotator preko celog ekrana (tablet). Lazy (pdfjs, ssr:false).
+          Montira se tek kad je otvoren da se težak modul ne uvlači u glavni bundle. */}
+      {annotate && hasWorkOrder && (
+        <PdfAnnotator
+          source={{ kind: 'workOrder', id: tp.workOrderId, identNumber: tp.identNumber }}
+          onSave={onSaveAnnotation}
+          onClose={() => {
+            if (!savingAnnotation) setAnnotate(false);
+          }}
+        />
+      )}
     </div>
   );
 }
