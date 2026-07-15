@@ -1,7 +1,7 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiFetch } from './client';
+import { apiBlob, apiFetch } from './client';
 import type { TechProcess } from './tech-processes';
 
 /**
@@ -21,6 +21,18 @@ import type { TechProcess } from './tech-processes';
  */
 
 const BASE = '/v1/tech-processes';
+
+/**
+ * Otvori uskladišten PDF crteža sa RN-a u novom tabu — kiosk ruta
+ * (GET /tech-processes/drawings/:id/pdf/content, dostupna kiosk roli). Isti
+ * mehanizam kao `pdm.openDrawingPdf`, samo druga ruta; `apiBlob` nosi JWT terminala.
+ */
+export async function openKioskDrawingPdf(id: number): Promise<void> {
+  const blob = await apiBlob(`${BASE}/drawings/${id}/pdf/content`);
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank', 'noopener');
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
 
 /** Polja nalog-barkoda (`RNZ:projectId:identNumber:variant:revision`). */
 export interface OrderBarcodeFields {
@@ -399,6 +411,12 @@ export interface MyOpenRow {
   enteredAt: string;
   /** true = radnik ima OTVORENU vremensku sesiju (A-4) na ovoj operaciji. */
   hasOpenSession: boolean;
+  /**
+   * Crtež sa RN-a za dugme „PDF crteža" u redu; `hasPdf` = postoji uskladišten
+   * PDF (drawing_pdfs). Opciono/defanzivno: null kad RN nema razrešen crtež,
+   * undefined kad stariji backend polje ne vraća.
+   */
+  drawing?: { id: number; hasPdf: boolean } | null;
 }
 
 /**

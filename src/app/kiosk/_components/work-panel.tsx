@@ -1,10 +1,11 @@
 'use client';
 
 import { useEffect, useState, type KeyboardEvent } from 'react';
-import { AlertTriangle, Check, Clock, Lock, Minus, Play, Plus, Square } from 'lucide-react';
+import { AlertTriangle, Check, Clock, FileText, Lock, Minus, Play, Plus, Square } from 'lucide-react';
 import { Button } from '@/components/ui-kit/button';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
+import { openKioskDrawingPdf } from '@/api/kiosk';
 import { formatNumber } from '@/lib/format';
 import { cn } from '@/lib/cn';
 
@@ -12,6 +13,8 @@ interface WorkPanelProps {
   /** npr. „Op. 30 · Struganje". */
   operationLabel: string;
   identMark: string;
+  /** Crtež sa RN-a (za dugme „PDF crteža") — null/undefined kad nije razrešen ili nema PDF. */
+  drawing?: { id: number; hasPdf: boolean } | null;
   /** Planirano (potrebno) sa RN-a; null ako RN nije razrešen. */
   planned: number | null;
   /** Napravljeno (akumulirano) na ovoj operaciji. */
@@ -152,6 +155,7 @@ function PieceStepper({
 export function WorkPanel({
   operationLabel,
   identMark,
+  drawing,
   planned,
   made,
   finished,
@@ -234,7 +238,19 @@ export function WorkPanel({
             <div className="tnums mt-0.5 text-lg text-ink-secondary">Toznaka: {identMark}</div>
           )}
         </div>
-        {finished && <StatusBadge tone="success" label="Zatvorena" />}
+        <div className="flex items-center gap-3">
+          {drawing?.hasPdf && (
+            <button
+              type="button"
+              onClick={() => openKioskDrawingPdf(drawing.id)}
+              className="inline-flex h-14 items-center gap-2 rounded-control border-2 border-line bg-surface px-5 text-lg font-semibold text-ink hover:bg-surface-2"
+            >
+              <FileText className="h-5 w-5" aria-hidden />
+              PDF crteža
+            </button>
+          )}
+          {finished && <StatusBadge tone="success" label="Zatvorena" />}
+        </div>
       </div>
 
       <div className="grid grid-cols-3 gap-4">

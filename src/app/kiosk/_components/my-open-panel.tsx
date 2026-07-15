@@ -1,11 +1,11 @@
 'use client';
 
 import { useState, type KeyboardEvent } from 'react';
-import { ArrowLeft, Minus, Plus, Square } from 'lucide-react';
+import { ArrowLeft, FileText, Minus, Plus, Square } from 'lucide-react';
 import { Button } from '@/components/ui-kit/button';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { ApiError } from '@/api/client';
-import { useMyOpen, useStopWorkById, type MyOpenRow } from '@/api/kiosk';
+import { openKioskDrawingPdf, useMyOpen, useStopWorkById, type MyOpenRow } from '@/api/kiosk';
 import { formatDate, formatNumber } from '@/lib/format';
 
 /**
@@ -163,6 +163,20 @@ function MyOpenRowItem({
           </span>
           <span>Otvoreno {formatDate(row.enteredAt)}</span>
         </div>
+        {row.drawing && (
+          <div className="mt-2">
+            <button
+              type="button"
+              onClick={() => openKioskDrawingPdf(row.drawing!.id)}
+              disabled={!row.drawing.hasPdf}
+              title={row.drawing.hasPdf ? undefined : 'Crtež nema PDF'}
+              className="inline-flex h-10 items-center gap-1.5 rounded-control border border-line bg-surface px-3 text-base font-semibold text-ink hover:bg-surface-2 disabled:opacity-40"
+            >
+              <FileText className="h-4 w-4" aria-hidden />
+              PDF crteža
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="flex shrink-0 flex-col items-end gap-1.5">

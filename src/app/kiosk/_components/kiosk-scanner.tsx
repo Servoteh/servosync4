@@ -782,6 +782,7 @@ export function KioskScanner() {
             key={operation.raw}
             operationLabel={operationLabel}
             identMark={operation.fields.identMark}
+            drawing={card.data?.data.drawing ?? null}
             planned={planned}
             made={made}
             finished={finished}
