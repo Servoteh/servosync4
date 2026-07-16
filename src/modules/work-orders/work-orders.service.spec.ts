@@ -39,7 +39,10 @@ function prismaMock() {
     workOrderOperation: {
       count: jest.fn().mockResolvedValue(1),
       findUnique: jest.fn(),
+      findFirst: jest.fn().mockResolvedValue(null),
       findMany: jest.fn().mockResolvedValue([]),
+      aggregate: jest.fn().mockResolvedValue({ _max: { operationNumber: null } }),
+      create: jest.fn().mockResolvedValue({}),
       createMany: jest.fn().mockResolvedValue({ count: 0 }),
       update: jest.fn().mockResolvedValue({}),
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
@@ -79,7 +82,12 @@ function prismaMock() {
       count: jest.fn().mockResolvedValue(0),
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
-    operation: { findMany: jest.fn().mockResolvedValue([]) },
+    operation: {
+      findMany: jest.fn().mockResolvedValue([]),
+      findUnique: jest
+        .fn()
+        .mockResolvedValue({ workCenterCode: "TOK", usesPriority: true }),
+    },
     workOrderLaunch: {
       create: jest.fn().mockResolvedValue({}),
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
@@ -530,6 +538,100 @@ describe("WorkOrdersService (workflow)", () => {
       expect(
         Reflect.getMetadata(PERMISSION_KEY_METADATA, handler("cloneVariant")),
       ).toBe(PERMISSIONS.RN_WRITE);
+    });
+  });
+
+  describe("Q12 — jedinstven redni broj operacije u RN-u", () => {
+    describe("addOperation", () => {
+      beforeEach(() => {
+        prisma.workOrder.findUnique.mockResolvedValue({ id: 7, isLocked: false });
+      });
+
+      it("422 kad eksplicitan redni broj već postoji u istom RN-u", async () => {
+        prisma.workOrderOperation.findFirst.mockResolvedValue({ id: 33 });
+
+        await expect(
+          service.addOperation(
+            7,
+            { operationNumber: 20, workCenterCode: "TOK", workDescription: "Struganje" },
+            actor,
+          ),
+        ).rejects.toBeInstanceOf(UnprocessableEntityException);
+
+        expect(prisma.workOrderOperation.create).not.toHaveBeenCalled();
+        expect(prisma.workOrderOperation.findFirst).toHaveBeenCalledWith({
+          where: { workOrderId: 7, operationNumber: 20 },
+          select: { id: true },
+        });
+      });
+
+      it("prolazi sa slobodnim eksplicitnim brojem", async () => {
+        prisma.workOrderOperation.findFirst.mockResolvedValue(null);
+
+        await service.addOperation(
+          7,
+          { operationNumber: 40, workCenterCode: "TOK", workDescription: "Struganje" },
+          actor,
+        );
+
+        expect(prisma.workOrderOperation.create).toHaveBeenCalledWith(
+          containing({ data: containing({ workOrderId: 7, operationNumber: 40 }) }),
+        );
+      });
+
+      it("auto-broj (MAX+10) ne radi proveru duplikata i prolazi", async () => {
+        prisma.workOrderOperation.aggregate.mockResolvedValue({
+          _max: { operationNumber: 30 },
+        });
+
+        await service.addOperation(
+          7,
+          { workCenterCode: "TOK", workDescription: "Struganje" },
+          actor,
+        );
+
+        expect(prisma.workOrderOperation.findFirst).not.toHaveBeenCalled();
+        expect(prisma.workOrderOperation.create).toHaveBeenCalledWith(
+          containing({ data: containing({ operationNumber: 40 }) }),
+        );
+      });
+    });
+
+    describe("updateOperation", () => {
+      beforeEach(() => {
+        prisma.workOrder.findUnique.mockResolvedValue({ id: 7, isLocked: false });
+        prisma.workOrderOperation.findUnique.mockResolvedValue({
+          id: 33,
+          workOrderId: 7,
+        });
+      });
+
+      it("422 kad novi broj pripada DRUGOJ operaciji istog RN-a", async () => {
+        prisma.workOrderOperation.findFirst.mockResolvedValue({ id: 44 });
+
+        await expect(
+          service.updateOperation(7, 33, { operationNumber: 20 }),
+        ).rejects.toBeInstanceOf(UnprocessableEntityException);
+
+        expect(prisma.workOrderOperation.findFirst).toHaveBeenCalledWith({
+          where: { workOrderId: 7, operationNumber: 20, id: { not: 33 } },
+          select: { id: true },
+        });
+        expect(prisma.workOrderOperation.update).not.toHaveBeenCalled();
+      });
+
+      it("prolazi kad je novi broj slobodan", async () => {
+        prisma.workOrderOperation.findFirst.mockResolvedValue(null);
+
+        await service.updateOperation(7, 33, { operationNumber: 50 });
+
+        expect(prisma.workOrderOperation.update).toHaveBeenCalledWith(
+          containing({
+            where: { id: 33 },
+            data: containing({ operationNumber: 50 }),
+          }),
+        );
+      });
     });
   });
 

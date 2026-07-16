@@ -1669,6 +1669,10 @@ model WorkOrderOperation {
   // 2026-07-16 (migracija 20260716120000). 215k redova.
   @@index([workOrderId, operationNumber, workCenterCode], map: "idx_woo_routing")
   @@index([workOrderId], map: "idx_woo_work_order")
+  // Q12 (Nenad 16.07): redni broj operacije jedinstven unutar istog RN-a.
+  // Prod čist (0 duplih grupa na 215k), owned tabela (sync ne piše). Migracija
+  // 20260716140000_uq_work_order_operation_number.
+  @@unique([workOrderId, operationNumber], map: "uq_woo_work_order_operation_number")
   @@map("work_order_operations")
 }
 

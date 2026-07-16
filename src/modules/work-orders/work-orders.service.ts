@@ -735,6 +735,17 @@ export class WorkOrdersService {
           _max: { operationNumber: true },
         });
         operationNumber = (agg._max.operationNumber ?? 0) + 10;
+      } else {
+        // Q12: eksplicitan redni broj mora biti slobodan u ovom RN-u —
+        // jasna 422 umesto golog 500 na uq_woo_work_order_operation_number.
+        const clash = await tx.workOrderOperation.findFirst({
+          where: { workOrderId, operationNumber },
+          select: { id: true },
+        });
+        if (clash)
+          throw new UnprocessableEntityException(
+            `Operacija sa rednim brojem ${operationNumber} već postoji u ovom radnom nalogu.`,
+          );
       }
       const priority = dto.priority ?? (op.usesPriority ? 100 : 255);
       await tx.workOrderOperation.create({
@@ -780,8 +791,23 @@ export class WorkOrdersService {
       );
 
     const data: Prisma.WorkOrderOperationUncheckedUpdateInput = {};
-    if (dto.operationNumber !== undefined)
+    if (dto.operationNumber !== undefined) {
+      // Q12: novi redni broj ne sme kolidirati sa DRUGOM operacijom istog RN-a —
+      // jasna 422 umesto golog 500 na uq_woo_work_order_operation_number.
+      const clash = await this.prisma.workOrderOperation.findFirst({
+        where: {
+          workOrderId,
+          operationNumber: dto.operationNumber,
+          id: { not: operationId },
+        },
+        select: { id: true },
+      });
+      if (clash)
+        throw new UnprocessableEntityException(
+          `Operacija sa rednim brojem ${dto.operationNumber} već postoji u ovom radnom nalogu.`,
+        );
       data.operationNumber = dto.operationNumber;
+    }
     if (dto.workDescription !== undefined)
       data.workDescription = dto.workDescription.trim();
     if (dto.toolsFixtures !== undefined)
