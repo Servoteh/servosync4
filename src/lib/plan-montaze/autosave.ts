@@ -169,10 +169,18 @@ export function usePhaseAutosave(): PhaseAutosave {
     [del, recount],
   );
 
-  // Isprazni na unmount (ne gubi poslednju izmenu pri napuštanju taba).
+  // Na unmount FLUSH (ne odbaci) sve zakazane izmene — izmena unutar debounce
+  // prozora mora u bazu i kad korisnik promeni tab/pogled (1.0 D-4 ugovor:
+  // module-scope tajmeri su preživljavali teardown UI-ja). Mutacija nastavlja
+  // da živi na query klijentu posle unmount-a; setState posle unmount-a je no-op.
+  const flushAllRef = useRef(flushAll);
+  useEffect(() => {
+    flushAllRef.current = flushAll;
+  }, [flushAll]);
   useEffect(() => {
     const timersMap = timers.current;
     return () => {
+      flushAllRef.current();
       for (const t of timersMap.values()) clearTimeout(t);
     };
   }, []);

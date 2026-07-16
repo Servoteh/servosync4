@@ -5,7 +5,7 @@
 // sa dopunama + izbor predmeta → idempotentno snimanje (klijentski UUID) → PDF + upload fotki
 // → gotovo (retry fotki/PDF, otvori PDF). Deljena logika sa mobilnim (/m/izvestaj) stiže u inc.5.
 
-import { useCallback, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { ArrowLeft, Plus, X, Check, AlertTriangle, FileDown, RefreshCw, Search } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { Button } from '@/components/ui-kit/button';
@@ -36,6 +36,8 @@ interface Saved {
   pdfOk: boolean;
   photosOk: boolean;
   photoCount: number;
+  /** Redni brojevi fotki koje NISU otpremljene (osnova ciljanog retry-ja). */
+  failedRedni: number[];
 }
 
 const REQUIRED = ['datum', 'predmet', 'klijent', 'lokacija', 'pocetak_rada', 'kraj_rada'] as const;
@@ -50,6 +52,43 @@ const LABELE: Record<string, string> = {
 const DATUM_MSG = 'Datum mora biti DD.MM.GGGG (npr. 02.07.2026) ili GGGG-MM-DD.';
 /** Striktno HH:MM — sve ostalo je „loose" vreme (upozorenje, NE blokira snimanje). */
 const TIME_RE = /^\d{1,2}:\d{2}$/;
+
+// --- Nacrt (draft) — paritet 1.0 myReports.js `montaza_izv_draft_v1`: tekst/preview/
+// aiModel/broj fotki/klijentski UUID se čuvaju u localStorage na svaku izmenu, jer na
+// telefonu prelazak u kameru ili refresh ubija stranicu. Fotke se NE čuvaju (kao u 1.0 —
+// ne prežive refresh). Nacrt se briše TEK kad snimanje + PDF + fotke SVE uspeju.
+const DRAFT_KEY = 'montaza_izv_draft_v2';
+
+interface IzvDraft {
+  izvId: string | null;
+  step: 'unos' | 'preview';
+  tekst: string;
+  data: MontazaAiOut;
+  aiModel: string;
+  photoCount: number;
+  savedAt: number;
+}
+
+function readDraft(): IzvDraft | null {
+  try {
+    const raw = window.localStorage.getItem(DRAFT_KEY);
+    if (!raw) return null;
+    const d = JSON.parse(raw) as IzvDraft;
+    if (!d || typeof d !== 'object') return null;
+    if (!(d.tekst ?? '').trim() && d.step !== 'preview' && !(d.photoCount > 0)) return null;
+    return d;
+  } catch {
+    return null;
+  }
+}
+
+function clearDraft() {
+  try {
+    window.localStorage.removeItem(DRAFT_KEY);
+  } catch {
+    /* localStorage nedostupan (privatni mod) */
+  }
+}
 
 /** Diktat: dopiši prepoznati tekst na postojeću vrednost (razmak ako već ima sadržaja). */
 function appendText(cur: string, add: string): string {
@@ -109,6 +148,66 @@ export function IzvestajWizard({ onClose }: { onClose: () => void }) {
   const [progress, setProgress] = useState('');
   const izvId = useRef<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // Nacrt: postojeći se prvo PONUDI („Nastavi započeti izveštaj?"); dok korisnik ne
+  // odluči, autosave nacrta je blokiran (draftGate) da ga ne pregazi prazan state.
+  const [draftPrompt, setDraftPrompt] = useState<IzvDraft | null>(null);
+  const [notice, setNotice] = useState('');
+  const draftGate = useRef(true);
+  useEffect(() => {
+    const d = readDraft();
+    if (d) setDraftPrompt(d);
+    else draftGate.current = false;
+  }, []);
+
+  // Autosave nacrta na svaku izmenu (1.0 paritet) — samo u unos/preview koracima.
+  useEffect(() => {
+    if (draftGate.current) return;
+    if (step !== 'unos' && step !== 'preview') return;
+    try {
+      if (!tekst.trim() && !photos.length && step === 'unos') {
+        window.localStorage.removeItem(DRAFT_KEY);
+        return;
+      }
+      const d: IzvDraft = {
+        izvId: izvId.current,
+        step,
+        tekst,
+        data,
+        aiModel,
+        photoCount: photos.length,
+        savedAt: Date.now(),
+      };
+      window.localStorage.setItem(DRAFT_KEY, JSON.stringify(d));
+    } catch {
+      /* quota/privatni mod — nacrt preskočen */
+    }
+  }, [step, tekst, data, aiModel, photos.length, draftPrompt]);
+
+  // Nacrt se briše TEK kad je SVE uspelo (izveštaj + PDF + fotke) — 1.0 pravilo.
+  useEffect(() => {
+    if (saved && saved.pdfOk && saved.photosOk) clearDraft();
+  }, [saved]);
+
+  function restoreDraft() {
+    const d = draftPrompt;
+    if (!d) return;
+    draftGate.current = false;
+    setTekst(d.tekst || '');
+    setData({ ...emptyOut(), ...d.data });
+    setAiModel(d.aiModel || '');
+    izvId.current = d.izvId ?? null;
+    setStep(d.step === 'preview' ? 'preview' : 'unos');
+    if (d.photoCount > 0) {
+      setNotice(`Nacrt vraćen. Fotografije (${d.photoCount}) se ne čuvaju u nacrtu — dodaj ih ponovo.`);
+    }
+    setDraftPrompt(null);
+  }
+  function discardDraft() {
+    draftGate.current = false;
+    clearDraft();
+    setDraftPrompt(null);
+  }
 
   const setField = useCallback((k: keyof MontazaAiOut, v: unknown) => {
     setData((d) => ({ ...d, [k]: v }));
@@ -218,9 +317,9 @@ export function IzvestajWizard({ onClose }: { onClose: () => void }) {
     // 2) PDF (sa dodeljenim brojem) + 3) fotke — nezavisni retry-evi na „gotovo" ekranu.
     setProgress('Pravim PDF i otpremam fotografije…');
     const pdfOk = await savePdf(id, broj);
-    const photosOk = await savePhotos(id);
+    const ph = await savePhotos(id);
 
-    setSaved({ id, broj, pdfOk, photosOk, photoCount: photos.length });
+    setSaved({ id, broj, pdfOk, photosOk: ph.ok, photoCount: photos.length, failedRedni: ph.failedRedni });
     setStep('gotovo');
   }
 
@@ -250,17 +349,29 @@ export function IzvestajWizard({ onClose }: { onClose: () => void }) {
     }
   }
 
-  async function savePhotos(id: string): Promise<boolean> {
-    if (!photos.length) return true;
+  /**
+   * Upload fotki; `onlyRedni` = ciljani retry SAMO neuspelih (1.0 pravilo I-5 — bez duplih
+   * redova; BE bez eksplicitnog `redni` renumeriše POSLE postojećih = duplikati). Uvek se
+   * šalje eksplicitni `redni` CSV. Ishod je iskren: čita BE `failedRedni` ugovor (pravilo
+   * I-2 — parcijalni neuspeh NIJE uspeh).
+   */
+  async function savePhotos(id: string, onlyRedni?: number[]): Promise<{ ok: boolean; failedRedni: number[] }> {
+    const items = photos
+      .map((p, i) => ({ p, rb: i + 1 }))
+      .filter((x) => !onlyRedni || onlyRedni.includes(x.rb));
+    if (!items.length) return { ok: true, failedRedni: [] };
     try {
-      await uploadPhotos.mutateAsync({
+      const res = await uploadPhotos.mutateAsync({
         id,
-        files: photos.map((p, i) => new File([p.blob], `foto-${i + 1}.jpg`, { type: 'image/jpeg' })),
-        opisi: photos.map((p) => p.opis),
+        files: items.map((x) => new File([x.p.blob], `foto-${x.rb}.jpg`, { type: 'image/jpeg' })),
+        redni: items.map((x) => x.rb).join(','),
+        opisi: items.map((x) => x.p.opis),
       });
-      return true;
+      const failedRedni = res.data?.failedRedni ?? [];
+      return { ok: failedRedni.length === 0, failedRedni };
     } catch {
-      return false;
+      // HTTP pad — ishod nepoznat; retry ide sa ISTIM rednim brojevima (bez renumeracije).
+      return { ok: false, failedRedni: items.map((x) => x.rb) };
     }
   }
 
@@ -275,9 +386,10 @@ export function IzvestajWizard({ onClose }: { onClose: () => void }) {
   async function retryPhotos() {
     if (!saved) return;
     setStep('cuvanje');
-    setProgress('Ponovo otpremam fotografije…');
-    const ok = await savePhotos(saved.id);
-    setSaved((s) => (s ? { ...s, photosOk: ok } : s));
+    setProgress('Ponovo otpremam neuspele fotografije…');
+    const target = saved.failedRedni.length ? saved.failedRedni : undefined;
+    const ph = await savePhotos(saved.id, target);
+    setSaved((s) => (s ? { ...s, photosOk: ph.ok, failedRedni: ph.failedRedni } : s));
     setStep('gotovo');
   }
   async function openPdf() {
@@ -304,6 +416,24 @@ export function IzvestajWizard({ onClose }: { onClose: () => void }) {
         </button>
         <h2 className="text-md font-semibold text-ink">Novi izveštaj</h2>
       </div>
+
+      {draftPrompt && (
+        <div className="flex flex-wrap items-center gap-2 rounded-control border border-status-warn/40 bg-status-warn-bg px-3 py-2 text-sm text-status-warn">
+          <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden />
+          <span>
+            Imaš započeti izveštaj ({new Date(draftPrompt.savedAt).toLocaleString('sr-Latn-RS')}). Nastavi gde si stao?
+          </span>
+          <span className="ml-auto flex gap-2">
+            <Button variant="secondary" onClick={discardDraft}>Odbaci</Button>
+            <Button onClick={restoreDraft}>Nastavi</Button>
+          </span>
+        </div>
+      )}
+      {notice && (
+        <div className="rounded-control border border-status-warn/40 bg-status-warn-bg px-3 py-2 text-sm text-status-warn">
+          {notice}
+        </div>
+      )}
 
       {err && (
         <div className="flex items-center gap-2 rounded-control border border-status-danger/40 bg-status-danger-bg px-3 py-2 text-sm text-status-danger">
@@ -509,7 +639,11 @@ export function IzvestajWizard({ onClose }: { onClose: () => void }) {
           <div className="text-md font-semibold text-ink">{saved.pdfOk && saved.photosOk ? 'Izveštaj sačuvan' : 'Sačuvano uz upozorenje'}</div>
           <div className="tnums text-sm text-ink-secondary">{saved.broj}</div>
           {!saved.pdfOk && <div className="text-sm text-status-warn">PDF nije generisan.</div>}
-          {!saved.photosOk && <div className="text-sm text-status-warn">Fotografije nisu otpremljene.</div>}
+          {!saved.photosOk && (
+            <div className="text-sm text-status-warn">
+              Nije otpremljeno: {saved.failedRedni.length || saved.photoCount} od {saved.photoCount} fotografija.
+            </div>
+          )}
           <div className="mt-2 flex flex-wrap justify-center gap-2">
             {!saved.photosOk && saved.photoCount > 0 && (
               <Button variant="secondary" onClick={retryPhotos}><RefreshCw className="h-4 w-4" aria-hidden /> Fotografije ponovo</Button>

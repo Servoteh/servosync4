@@ -609,6 +609,14 @@ export const useSetMontazaAiModel = () =>
     }),
   );
 
+/** Ishod upload-a fotki (BE ugovor): `failedRedni` = redni brojevi koji NISU otpremljeni. */
+export interface UploadPhotosResult {
+  total: number;
+  uploaded: number;
+  failed: number;
+  failedRedni: number[];
+}
+
 /** Upload fotki izveštaja (multipart). `redni` = CSV rednih brojeva za ciljani retry. */
 export function useUploadReportPhotos() {
   const qc = useQueryClient();
@@ -628,7 +636,7 @@ export function useUploadReportPhotos() {
       for (const f of files) fd.append('files', f, f.name);
       if (redni) fd.append('redni', redni);
       if (opisi) fd.append('opisi', JSON.stringify(opisi));
-      return apiUpload<{ data: unknown }>(`/v1/montaza/reports/${id}/photos`, fd);
+      return apiUpload<{ data: UploadPhotosResult }>(`/v1/montaza/reports/${id}/photos`, fd);
     },
     onSuccess: (_r, v) => void qc.invalidateQueries({ queryKey: [...KEYS.reports, 'detail', v.id] }),
   });
