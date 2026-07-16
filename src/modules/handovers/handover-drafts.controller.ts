@@ -26,6 +26,7 @@ import type { PrintBundleQuery } from "./print-bundle.service";
 import type { CreateHandoverDraftDto } from "./dto/create-handover-draft.dto";
 import type { UpdateHandoverDraftDto } from "./dto/update-handover-draft.dto";
 import type { DecideDraftItemDto } from "./dto/decide-draft-item.dto";
+import type { AppendDraftItemsDto } from "./dto/append-draft-items.dto";
 
 /**
  * Nacrti primopredaje (`handover_drafts`) — MODULE_SPEC_nacrti_primopredaje §6.1/§6.2.
@@ -33,6 +34,8 @@ import type { DecideDraftItemDto } from "./dto/decide-draft-item.dto";
  *   GET    /api/v1/handover-drafts/:id        — detalj (zaglavlje + stavke)
  *   GET    /api/v1/handover-drafts/:id/items  — samo stavke
  *   POST   /api/v1/handover-drafts            — kreiranje (zaglavlje + stavke), broj generiše server
+ *   POST   /api/v1/handover-drafts/:id/items  — „Dodaj u nacrt iz PDM-a" (Nenad 16.07): batch append (1..50)
+ *                                               u POSTOJEĆI nezaključan nacrt; dedup preskače postojeće → meta.skipped
  *   PATCH  /api/v1/handover-drafts/:id        — izmena zaglavlja (samo dok nije zaključan)
  *   DELETE /api/v1/handover-drafts/:id        — brisanje (samo dok nije zaključan; hard delete — vidi servis)
  *   POST   /api/v1/handover-drafts/:id/submit — predaja u primopredaju (§6.3): zaključa nacrt i kreira drawing_handovers redove;
@@ -43,8 +46,9 @@ import type { DecideDraftItemDto } from "./dto/decide-draft-item.dto";
  *   GET    /api/v1/handover-drafts/:id/print-bundle     — P3: crteži za štampu (hasPdf/sizeKb/pageFormat + grupe po formatu)
  *   GET    /api/v1/handover-drafts/:id/print-bundle/pdf — P3: JEDAN spojen PDF (?format=A4 ILI ?drawingIds=1,2,3; bez oba = svi)
  *
- * BEZ BOM auto-populate wizarda i BEZ generičkog item-level POST/PATCH/DELETE
- * (van skopa; decision ruta je jedina item-level mutacija).
+ * BEZ BOM auto-populate wizarda i BEZ generičkog item-level PATCH/DELETE (van
+ * skopa). Item-level mutacije su samo: `POST :id/items` (append „Dodaj u nacrt
+ * iz PDM-a", Nenad 16.07) i `decision` ruta.
  * Traži JWT; read=PRIMOPREDAJE_READ, mutacije=PRIMOPREDAJE_WRITE (V1 no-op guard).
  */
 @UseGuards(JwtAuthGuard, PermissionsGuard)
@@ -97,6 +101,20 @@ export class HandoverDraftsController {
   create(@Body() dto: CreateHandoverDraftDto, @Req() req: { user: AuthUser }) {
     // Actor = default projektant kad designerId nije poslat (proba 13.07).
     return this.drafts.create(dto, req.user);
+  }
+
+  /**
+   * „Dodaj u nacrt iz PDM-a" (Nenad 16.07): batch append (1..50 stavki) u
+   * POSTOJEĆI nezaključan nacrt. Isti pdm_status guard kao `create()`; crtež
+   * već u nacrtu se preskače (meta.skipped, ne 409 za ceo batch).
+   */
+  @Post(":id/items")
+  @RequirePermission(PERMISSIONS.PRIMOPREDAJE_WRITE)
+  appendItems(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: AppendDraftItemsDto,
+  ) {
+    return this.drafts.appendItems(id, dto);
   }
 
   @Patch(":id")

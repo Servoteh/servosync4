@@ -9,6 +9,9 @@ import { NotificationsService } from "../notifications/notifications.service";
 import { MailService } from "../../common/mail/mail.service";
 import { DraftNumberingService } from "./draft-numbering.service";
 import { HandoverDraftsService } from "./handover-drafts.service";
+import { PERMISSIONS } from "../../common/authz/permissions";
+import { roleHasPermission } from "../../common/authz/role-permissions";
+import { ROLES } from "../../common/authz/roles";
 
 /**
  * D8 emit 2 — `submit()` šalje „Kreirana nova primopredaja…" grupi TEHNOLOG.
@@ -177,6 +180,7 @@ function fullPrismaMock(drawings: DrawingRow[]) {
       findMany: jest.fn().mockResolvedValue([]),
       findUnique: jest.fn(),
       update: jest.fn(),
+      createMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
     handoverDraftStatus: { findUnique: jest.fn().mockResolvedValue(null) },
     drawingHandover: {
@@ -877,5 +881,220 @@ describe("HandoverDraftsService — decideItem (§6.5.4 odluka projektanta)", ()
 
     expect(err).toBeInstanceOf(UnprocessableEntityException);
     expect(prisma.handoverDraftItem.update).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// „Dodaj u nacrt iz PDM-a" — appendItems (Nenad 16.07)
+// ---------------------------------------------------------------------------
+
+/** Payload createMany-a (za asertacije upisanih append stavki). */
+interface CreateManyArg {
+  data: Record<string, unknown>[];
+}
+
+describe("HandoverDraftsService — appendItems (Dodaj u nacrt iz PDM-a)", () => {
+  /** Nezaključan nacrt „na pisanju" (statusId 0) — spreman za append. */
+  async function appendSetup(
+    drawings: DrawingRow[],
+    draftOver: Record<string, unknown> = {},
+  ) {
+    const { service, prisma } = await makeFullService(drawings);
+    prisma.handoverDraft.findUnique.mockResolvedValue({
+      id: 8,
+      isLocked: false,
+      statusId: 0,
+      projectId: 4,
+      pieceCount: 3,
+      mainDrawingId: null,
+      ...draftOver,
+    });
+    return { service, prisma };
+  }
+
+  it("nepostojeći nacrt → 404, bez upisa", async () => {
+    const { service, prisma } = await appendSetup([APPROVED]);
+    prisma.handoverDraft.findUnique.mockResolvedValue(null);
+
+    const err = await errorOf(
+      service.appendItems(999, { items: [{ drawingId: 10 }] }),
+    );
+
+    expect((err as { status?: number }).status).toBe(404);
+    expect(prisma.handoverDraftItem.createMany).not.toHaveBeenCalled();
+  });
+
+  it("zaključan nacrt → 422, bez upisa", async () => {
+    const { service, prisma } = await appendSetup([APPROVED], {
+      isLocked: true,
+    });
+
+    const err = await errorOf(
+      service.appendItems(8, { items: [{ drawingId: 10 }] }),
+    );
+
+    expect(err).toBeInstanceOf(UnprocessableEntityException);
+    expect((err as Error).message).toContain("zaključan");
+    expect(prisma.handoverDraftItem.createMany).not.toHaveBeenCalled();
+  });
+
+  it("predat nacrt (statusId=2) → 422, bez upisa", async () => {
+    const { service, prisma } = await appendSetup([APPROVED], { statusId: 2 });
+
+    const err = await errorOf(
+      service.appendItems(8, { items: [{ drawingId: 10 }] }),
+    );
+
+    expect(err).toBeInstanceOf(UnprocessableEntityException);
+    expect(prisma.handoverDraftItem.createMany).not.toHaveBeenCalled();
+  });
+
+  it("nepostojeći crtež → 422 sa brojem (id-jem), bez upisa", async () => {
+    // Fixture nema crtež id=77 → drawing.findMany ga ne vrati → missing.
+    const { service, prisma } = await appendSetup([APPROVED]);
+
+    const err = await errorOf(
+      service.appendItems(8, { items: [{ drawingId: 77 }] }),
+    );
+
+    expect(err).toBeInstanceOf(UnprocessableEntityException);
+    expect((err as Error).message).toContain("77");
+    expect(prisma.handoverDraftItem.createMany).not.toHaveBeenCalled();
+  });
+
+  it("ne-odobren pdm_status → HARD 422 (isti guard kao create), bez upisa", async () => {
+    const { service, prisma } = await appendSetup([UNAPPROVED]);
+
+    const err = await errorOf(
+      service.appendItems(8, { items: [{ drawingId: 11 }] }),
+    );
+
+    expect(err).toBeInstanceOf(UnprocessableEntityException);
+    expect((err as Error).message).toContain("K00693");
+    expect(prisma.handoverDraftItem.createMany).not.toHaveBeenCalled();
+  });
+
+  it("dedup: crtež već u nacrtu se PRESKAČE (meta.skipped broj), ne 409", async () => {
+    const { service, prisma } = await appendSetup([APPROVED]);
+    // Crtež 10 (broj 1126982) je već stavka nacrta.
+    prisma.handoverDraftItem.findMany.mockResolvedValue([{ drawingId: 10 }]);
+
+    const res = await service.appendItems(8, { items: [{ drawingId: 10 }] });
+
+    expect(res.meta.added).toBe(0);
+    expect(res.meta.skipped).toEqual(["1126982"]);
+    expect(prisma.handoverDraftItem.createMany).not.toHaveBeenCalled();
+  });
+
+  it("mešano: jedan nov + jedan duplikat → dodaje nov, drugi u skipped", async () => {
+    const other = drawingRow({ id: 20, drawingNumber: "2200999" });
+    const { service, prisma } = await appendSetup([APPROVED, other]);
+    // Crtež 10 već u nacrtu; 20 je nov.
+    prisma.handoverDraftItem.findMany.mockResolvedValue([{ drawingId: 10 }]);
+
+    const res = await service.appendItems(8, {
+      items: [{ drawingId: 10 }, { drawingId: 20, quantity: 5 }],
+    });
+
+    expect(res.meta.added).toBe(1);
+    expect(res.meta.skipped).toEqual(["1126982"]);
+    expect(prisma.handoverDraftItem.createMany).toHaveBeenCalledTimes(1);
+    const arg = (
+      prisma.handoverDraftItem.createMany.mock.calls as [CreateManyArg][]
+    )[0][0];
+    expect(arg.data).toHaveLength(1);
+    expect(arg.data[0]).toEqual(
+      containing({ draftId: 8, drawingId: 20, quantityToProduce: 5 }),
+    );
+  });
+
+  it("uspešan append: količina default 1 kad nije poslata + meta.added", async () => {
+    const { service, prisma } = await appendSetup([APPROVED]);
+
+    const res = await service.appendItems(8, { items: [{ drawingId: 10 }] });
+
+    expect(res.meta.added).toBe(1);
+    expect(res.meta.skipped).toEqual([]);
+    const arg = (
+      prisma.handoverDraftItem.createMany.mock.calls as [CreateManyArg][]
+    )[0][0];
+    expect(arg.data[0]).toEqual(
+      containing({
+        draftId: 8,
+        drawingId: 10,
+        quantityToProduce: 1,
+        preCheckDuplicate: false,
+      }),
+    );
+  });
+
+  it("pre-check duplikata: raniji RN istog predmeta → preCheckDuplicate na upisu", async () => {
+    const { service, prisma } = await appendSetup([APPROVED]);
+    prisma.workOrder.findMany.mockResolvedValue([
+      { id: 900, drawingId: 10, drawingNumber: "1126982" },
+    ]);
+
+    const res = await service.appendItems(8, { items: [{ drawingId: 10 }] });
+
+    expect(res.meta.added).toBe(1);
+    const arg = (
+      prisma.handoverDraftItem.createMany.mock.calls as [CreateManyArg][]
+    )[0][0];
+    expect(arg.data[0]).toEqual(
+      containing({ preCheckDuplicate: true, preCheckWorkOrderId: 900 }),
+    );
+    expect(res.meta.warnings.some((w) => w.type === "duplicate")).toBe(true);
+  });
+
+  it("prazan niz stavki → 400 (validacija DTO), bez upisa", async () => {
+    const { service, prisma } = await appendSetup([APPROVED]);
+
+    const err = await errorOf(service.appendItems(8, { items: [] }));
+
+    expect(err).toBeInstanceOf(BadRequestException);
+    expect(prisma.handoverDraftItem.createMany).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// primopredaje.read za SVE role (Nenad 16.07) — vidljivost primopredaja
+// ---------------------------------------------------------------------------
+
+describe("primopredaje.read vidljivost (Nenad 16.07)", () => {
+  // Operativne role koje RANIJE nisu imale primopredaje.read (sad DA).
+  const NEWLY_GRANTED = [
+    ROLES.PROIZVODNI_RADNIK,
+    ROLES.MONTER,
+    ROLES.CNC_OPERATER,
+    ROLES.PM,
+    ROLES.LEADPM,
+    ROLES.HR,
+    ROLES.TIM_LIDER,
+    ROLES.VIEWER,
+  ];
+
+  it("proizvodni_radnik ima primopredaje.read", () => {
+    expect(
+      roleHasPermission(ROLES.PROIZVODNI_RADNIK, PERMISSIONS.PRIMOPREDAJE_READ),
+    ).toBe(true);
+  });
+
+  it.each(NEWLY_GRANTED)("%s ima primopredaje.read", (role) => {
+    expect(roleHasPermission(role, PERMISSIONS.PRIMOPREDAJE_READ)).toBe(true);
+  });
+
+  it("write/approve OSTAJU kurirani — proizvodni_radnik NEMA primopredaje.write", () => {
+    expect(
+      roleHasPermission(
+        ROLES.PROIZVODNI_RADNIK,
+        PERMISSIONS.PRIMOPREDAJE_WRITE,
+      ),
+    ).toBe(false);
+    expect(
+      roleHasPermission(
+        ROLES.PROIZVODNI_RADNIK,
+        PERMISSIONS.PRIMOPREDAJE_APPROVE,
+      ),
+    ).toBe(false);
   });
 });

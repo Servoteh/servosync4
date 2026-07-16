@@ -622,8 +622,19 @@ function addPerms(role: RoleKey, perms: readonly PermissionKey[]): void {
 
 // Univerzalno: SVE uloge koje se loguju u 2.0 (svi ključevi u mapi) → pb.read/reports_own/
 // profile.self (DB SELECT `true` + self-scope paritet). admin (ALL) je uključen — no-op merge.
+//
+// primopredaje.read: vidljivost primopredaja za SVE role (Nenad 16.07). Do sada
+// su je imale samo kurirane role (biro/tehnolog/kontrolor/…); operativne
+// (monter/cnc_operater/proizvodni_radnik/…) NISU → nisu videle „Sastavnicu
+// delova za sklop" / listu primopredaja. Sada je dobija svaka rola u mapi
+// (write/approve ostaju kurirani). admin (ALL) je već pokriven — no-op merge.
 for (const role of Object.keys(ROLE_PERMISSIONS) as RoleKey[]) {
-  addPerms(role, [P.PB_READ, P.PB_REPORTS_OWN, P.PROFILE_SELF]);
+  addPerms(role, [
+    P.PB_READ,
+    P.PB_REPORTS_OWN,
+    P.PROFILE_SELF,
+    P.PRIMOPREDAJE_READ,
+  ]);
 }
 for (const role of D_EDIT_KRUG) addPerms(role, D_EDIT_PERMS);
 addPerms(ROLES.INZENJER, D_INZENJER_PERMS);
