@@ -75,7 +75,7 @@ function dayCls(d: GridDay, hol: Set<string>, today: string): string {
   );
 }
 
-const DAY_W = 'w-[36px] min-w-[36px] max-w-[36px]';
+const DAY_W = 'w-[34px] min-w-[34px] max-w-[34px]';
 
 export const GridTable = memo(function GridTable(props: GridTableProps) {
   const { days, pageEmployees, dayTotals, grandTotals } = props;
