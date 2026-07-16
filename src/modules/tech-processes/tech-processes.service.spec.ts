@@ -1325,6 +1325,367 @@ describe("TechProcessesService — control akumulira do plana (parcijala ne zatv
   });
 });
 
+// ================================================ Q4 (BUG-P1-02): razdvajanje kontrole po kvalitetu
+
+describe("TechProcessesService — Q4 control razdvaja redove po kvalitetu (BUG-P1-02)", () => {
+  let service: TechProcessesService;
+  let prisma: ReturnType<typeof prismaMock>;
+
+  // RN plan 10 kom; 8 DOBAR + 2 ŠKART = 10 → plan pun preko SVIH kvaliteta.
+  const WO = {
+    id: 900,
+    projectId: 2597,
+    identNumber: "06/93-4",
+    variant: 0,
+    partName: "Osovina",
+    drawingNumber: "CRT-1",
+    pieceCount: 10,
+    productionDeadline: null,
+    handoverStatusId: 0,
+    status: false,
+    revision: "A",
+    material: "C45",
+  };
+
+  const DTO = {
+    orderBarcode: "RNZ:2597:06/93-4:0:A",
+    operationBarcode: "S:60:8.5:0:A",
+    workerCard: "CTRL1",
+    locations: [{ positionId: 1, quantity: 1 }],
+  };
+
+  beforeEach(async () => {
+    prisma = prismaMock();
+    const mod: TestingModule = await Test.createTestingModule({
+      providers: [
+        TechProcessesService,
+        { provide: PrismaService, useValue: prisma },
+        {
+          provide: ScopeService,
+          useValue: { isEnforced: jest.fn().mockReturnValue(false) },
+        },
+        { provide: NotificationsService, useValue: notificationsMock() },
+        { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
+        { provide: QualityService, useValue: qualityMock() },
+        { provide: WorkOrdersService, useValue: workOrdersMock() },
+      ],
+    }).compile();
+    service = mod.get(TechProcessesService);
+    prisma.worker.findFirst.mockResolvedValue({
+      id: 88,
+      fullName: "Pera Kontrolor",
+      username: "pera",
+      workerTypeId: 5,
+    });
+    prisma.workerType.findUnique.mockResolvedValue({
+      additionalPrivileges: true,
+    });
+    prisma.workOrder.findFirst.mockResolvedValue(WO);
+    prisma.workOrder.findUnique.mockResolvedValue(WO);
+    prisma.operation.findUnique.mockResolvedValue({
+      significantForFinishing: true,
+      workCenterName: "Ravno brušenje",
+    });
+    prisma.workOrderOperation.findFirst.mockResolvedValue({ id: 1 });
+    prisma.techProcess.updateMany.mockResolvedValue({ count: 0 });
+    prisma.workOrderOperation.updateMany.mockResolvedValue({ count: 0 });
+    // Culprit predlog (K2) — nebitno za ovaj describe, ali findMany se poziva.
+    prisma.techProcess.findMany.mockResolvedValue([]);
+  });
+
+  /**
+   * Simulira bazu sa najviše jednim OTVORENIM redom po kvalitetu: `existingOpen`
+   * findFirst vraća red SAMO ako `where.qualityTypeId` odgovara nekom od zadatih
+   * otvorenih redova. Dokaz da Q4 filter po kvalitetu bira pravi red (ili nijedan).
+   */
+  function mockOpenByQuality(open: Record<number, ReturnType<typeof tpRow>>) {
+    prisma.techProcess.findFirst.mockImplementation((args: unknown) => {
+      const where = (args as { where?: { qualityTypeId?: number } }).where ?? {};
+      const q = where.qualityTypeId;
+      return Promise.resolve(
+        typeof q === "number" && open[q] ? open[q] : null,
+      );
+    });
+  }
+
+  it("8 DOBAR pa 2 ŠKART: dobar red ostaje 8/quality=0, škart ide u NOV red 2/quality=2 (nema prepisa)", async () => {
+    // Baza: dobar red (id 700, 8 kom, quality 0) već otvoren; škart reda NEMA.
+    const goodRow = tpRow({
+      id: 700,
+      pieceCount: 8,
+      qualityTypeId: 0,
+      isProcessFinished: false,
+      operationNumber: 60,
+      workCenterCode: "8.5",
+      workOrderId: 900,
+    });
+    mockOpenByQuality({ 0: goodRow });
+    // Kumulativ SVIH kvaliteta = 8; +2 škart = 10 = plan → reachedPlan.
+    prisma.techProcess.aggregate.mockResolvedValue({ _sum: { pieceCount: 8 } });
+    prisma.techProcess.create.mockResolvedValue(
+      tpRow({
+        id: 701,
+        pieceCount: 2,
+        qualityTypeId: 2,
+        isProcessFinished: true,
+        operationNumber: 60,
+        workCenterCode: "8.5",
+        workOrderId: 900,
+      }),
+    );
+
+    const { data } = await service.control({
+      ...DTO,
+      qualityTypeId: 2,
+      pieceCount: 2,
+      locations: [{ positionId: 1, quantity: 2 }],
+    });
+
+    // existingOpen je tražen filtrirano po qualityTypeId=2 (Q4 filter).
+    const findArg = prisma.techProcess.findFirst.mock.calls[0][0] as {
+      where: Record<string, unknown>;
+    };
+    expect(findArg.where.qualityTypeId).toBe(2);
+
+    // Škart NIJE našao otvoren red tog kvaliteta → KREIRA nov red (quality 2).
+    expect(prisma.techProcess.create).toHaveBeenCalledTimes(1);
+    const createArg = prisma.techProcess.create.mock.calls[0][0] as {
+      data: Record<string, unknown>;
+    };
+    expect(createArg.data.qualityTypeId).toBe(2);
+    expect(createArg.data.pieceCount).toBe(2);
+    // Dobar red se NE dira update-om (nije prepisan škartom).
+    expect(prisma.techProcess.update).not.toHaveBeenCalled();
+
+    // Plan (svi kvaliteti) dostignut 8+2=10 → operacija zatvorena.
+    expect(data.controlledCumulative).toBe(10);
+    expect(data.operationFinished).toBe(true);
+    expect(data.qualityTypeId).toBe(2);
+  });
+
+  it("obrnut redosled — 2 ŠKART pa 8 DOBAR: dobar ide u NOV red, škart red netaknut", async () => {
+    // Baza: škart red (id 710, 2 kom, quality 2) otvoren; dobrog reda NEMA.
+    const scrapRow = tpRow({
+      id: 710,
+      pieceCount: 2,
+      qualityTypeId: 2,
+      isProcessFinished: false,
+      operationNumber: 60,
+      workCenterCode: "8.5",
+      workOrderId: 900,
+    });
+    mockOpenByQuality({ 2: scrapRow });
+    prisma.techProcess.aggregate.mockResolvedValue({ _sum: { pieceCount: 2 } });
+    prisma.techProcess.create.mockResolvedValue(
+      tpRow({
+        id: 711,
+        pieceCount: 8,
+        qualityTypeId: 0,
+        isProcessFinished: true,
+        operationNumber: 60,
+        workCenterCode: "8.5",
+        workOrderId: 900,
+      }),
+    );
+
+    const { data } = await service.control({
+      ...DTO,
+      qualityTypeId: 0,
+      pieceCount: 8,
+      locations: [{ positionId: 1, quantity: 8 }],
+    });
+
+    const findArg = prisma.techProcess.findFirst.mock.calls[0][0] as {
+      where: Record<string, unknown>;
+    };
+    expect(findArg.where.qualityTypeId).toBe(0);
+
+    // Dobar NIJE našao otvoren red kvaliteta 0 → KREIRA nov red (quality 0).
+    expect(prisma.techProcess.create).toHaveBeenCalledTimes(1);
+    const createArg = prisma.techProcess.create.mock.calls[0][0] as {
+      data: Record<string, unknown>;
+    };
+    expect(createArg.data.qualityTypeId).toBe(0);
+    expect(createArg.data.pieceCount).toBe(8);
+    // Škart red se NE prepisuje dobrim.
+    expect(prisma.techProcess.update).not.toHaveBeenCalled();
+
+    expect(data.controlledCumulative).toBe(10);
+    expect(data.operationFinished).toBe(true);
+    expect(data.qualityTypeId).toBe(0);
+  });
+
+  it("ista kvaliteta dvaput (5 ŠKART pa još 3 ŠKART): AKUMULIRA na isti red, NE pravi drugi", async () => {
+    const scrapRow = tpRow({
+      id: 720,
+      pieceCount: 5,
+      qualityTypeId: 2,
+      isProcessFinished: false,
+      operationNumber: 60,
+      workCenterCode: "8.5",
+      workOrderId: 900,
+    });
+    mockOpenByQuality({ 2: scrapRow });
+    // Kumulativ svih = 5; +3 = 8 < plan 10 → parcijala, ostaje otvoren.
+    prisma.techProcess.aggregate.mockResolvedValue({ _sum: { pieceCount: 5 } });
+    prisma.techProcess.update.mockResolvedValue(
+      tpRow({
+        id: 720,
+        pieceCount: 8,
+        qualityTypeId: 2,
+        isProcessFinished: false,
+        operationNumber: 60,
+        workCenterCode: "8.5",
+        workOrderId: 900,
+      }),
+    );
+
+    const { data } = await service.control({
+      ...DTO,
+      qualityTypeId: 2,
+      pieceCount: 3,
+      locations: [{ positionId: 1, quantity: 3 }],
+    });
+
+    // Našao otvoren red ISTOG kvaliteta → UPDATE (increment), bez create.
+    expect(prisma.techProcess.create).not.toHaveBeenCalled();
+    expect(prisma.techProcess.update).toHaveBeenCalledTimes(1);
+    const updateArg = prisma.techProcess.update.mock.calls[0][0] as {
+      where: { id: number };
+      data: Record<string, unknown>;
+    };
+    expect(updateArg.where.id).toBe(720);
+    // Atomski increment (BUG-P1-01), ne apsolutna vrednost.
+    expect(updateArg.data.pieceCount).toEqual({ increment: 3 });
+    // Ispod plana → red ostaje otvoren.
+    expect(updateArg.data.isProcessFinished).toBeUndefined();
+    expect(data.controlledCumulative).toBe(8);
+    expect(data.operationFinished).toBe(false);
+  });
+
+  it("reachedPlan iz kumulativa SVIH redova: 2 DOBAR uz postojećih 8 (bilo kog kvaliteta) → zatvara na 10", async () => {
+    // Dobrog otvorenog reda NEMA (npr. prethodnih 8 su bili škart/dorada) → nov red;
+    // ali kumulativ svih kvaliteta = 8 pa +2 = plan → operacija se svejedno zatvara.
+    mockOpenByQuality({});
+    prisma.techProcess.aggregate.mockResolvedValue({ _sum: { pieceCount: 8 } });
+    prisma.techProcess.create.mockResolvedValue(
+      tpRow({
+        id: 730,
+        pieceCount: 2,
+        qualityTypeId: 0,
+        isProcessFinished: true,
+        operationNumber: 60,
+        workCenterCode: "8.5",
+        workOrderId: 900,
+      }),
+    );
+
+    const { data } = await service.control({
+      ...DTO,
+      qualityTypeId: 0,
+      pieceCount: 2,
+      locations: [{ positionId: 1, quantity: 2 }],
+    });
+
+    expect(data.controlledCumulative).toBe(10);
+    expect(data.operationFinished).toBe(true);
+    const createArg = prisma.techProcess.create.mock.calls[0][0] as {
+      data: Record<string, unknown>;
+    };
+    expect(createArg.data.isProcessFinished).toBe(true);
+  });
+
+  /**
+   * Q4 REGRESIJA (verifikator 16.07): kad razdvajanje po kvalitetu ostavi raniji
+   * otvoren red (8 DOBAR, quality 0) a plan se dostigne DRUGIM kvalitetom (2 ŠKART),
+   * pri dostizanju plana OVA (značajna) kontrolna operacija mora zatvoriti i taj
+   * raniji red — inače `markWorkOrderIfComplete` (traži da SVI značajni redovi budu
+   * finished) vraća false i RN se NIKAD ne zavede kao „Završen". Ovaj test dokazuje
+   * da (a) postoji updateMany koji zatvara preostale otvorene redove ISTE operacije
+   * bez obzira na kvalitet i (b) da je `workOrderCompleted=true`.
+   */
+  it("8 DOBAR (otvoren) pa 2 ŠKART = plan: zatvara raniji dobar red iste operacije i zavodi RN kao Završen", async () => {
+    const goodRow = tpRow({
+      id: 700,
+      pieceCount: 8,
+      qualityTypeId: 0,
+      isProcessFinished: false,
+      operationNumber: 60,
+      workCenterCode: "8.5",
+      workOrderId: 900,
+    });
+    mockOpenByQuality({ 0: goodRow });
+    prisma.techProcess.aggregate.mockResolvedValue({ _sum: { pieceCount: 8 } });
+    prisma.techProcess.create.mockResolvedValue(
+      tpRow({
+        id: 701,
+        pieceCount: 2,
+        qualityTypeId: 2,
+        isProcessFinished: true,
+        operationNumber: 60,
+        workCenterCode: "8.5",
+        workOrderId: 900,
+      }),
+    );
+    // 8.5 je značajna kontrolna operacija (i za `significant` u control() i za
+    // `markWorkOrderIfComplete`).
+    prisma.operation.findMany.mockResolvedValue([{ workCenterCode: "8.5" }]);
+    // Stanje redova POSLE popravke: raniji dobar red je zatvoren novim updateMany-jem,
+    // pa `markWorkOrderIfComplete` vidi SVE značajne redove finished, kumulativ 8+2=10=plan.
+    prisma.techProcess.findMany.mockResolvedValue([
+      tpRow({
+        id: 700,
+        pieceCount: 8,
+        qualityTypeId: 0,
+        isProcessFinished: true,
+        operationNumber: 60,
+        workCenterCode: "8.5",
+      }),
+      tpRow({
+        id: 701,
+        pieceCount: 2,
+        qualityTypeId: 2,
+        isProcessFinished: true,
+        operationNumber: 60,
+        workCenterCode: "8.5",
+      }),
+    ]);
+
+    const { data } = await service.control({
+      ...DTO,
+      qualityTypeId: 2,
+      pieceCount: 2,
+      locations: [{ positionId: 1, quantity: 2 }],
+    });
+
+    expect(data.operationFinished).toBe(true);
+    // KLJUČNA regresija: RN je zaveden kao „Završen".
+    expect(data.workOrderCompleted).toBe(true);
+    expect(prisma.workOrder.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 900 },
+        data: { status: true },
+      }),
+    );
+
+    // Postoji updateMany koji cilja SVE otvorene redove ISTE operacije (svi kvaliteti,
+    // bez qualityTypeId filtera) da zatvori raniji dobar red.
+    const opScopedClose = prisma.techProcess.updateMany.mock.calls.find(
+      (c) => {
+        const where = (c[0] as { where?: Record<string, unknown> }).where ?? {};
+        return (
+          where.operationNumber === 60 &&
+          where.workCenterCode === "8.5" &&
+          where.qualityTypeId === undefined &&
+          (where.isProcessFinished as { not?: boolean } | undefined)?.not ===
+            true
+        );
+      },
+    );
+    expect(opScopedClose).toBeDefined();
+  });
+});
+
 // ============================================================ OPŠTI NALOG (withoutProcess)
 
 describe("TechProcessesService — opšti nalog (Operation.withoutProcess) zaobilazi routing", () => {

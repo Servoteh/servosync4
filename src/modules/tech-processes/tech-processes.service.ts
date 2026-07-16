@@ -2679,6 +2679,11 @@ export class TechProcessesService {
 
       // CREATE-ON-SCAN (legacy SacuvajRNSIzUnosaBarKoda): nađi OTVOREN red kontrole ili
       // ga OTVORI (za završnu kontrolu red obično ne postoji unapred). Otvoren → ažuriraj.
+      // Q4 (BUG-P1-02, Nenad 16.07): filter po `qualityTypeId` — kontrole različitog
+      // kvaliteta (dobar/dorada/škart) žive u ODVOJENIM redovima, svaki sa svojim
+      // qualityTypeId koji se NIKAD ne prepisuje tuđim kvalitetom. Isti kvalitet →
+      // akumulira na svoj red; nov kvalitet → kreira nov red (else grana). Kumulativ/
+      // plan (`sumAgg` gore) i dalje broji SVE kvalitete zajedno — ne dira se.
       const existingOpen = await tx.techProcess.findFirst({
         where: {
           projectId,
@@ -2686,6 +2691,7 @@ export class TechProcessesService {
           variant,
           workCenterCode,
           operationNumber,
+          qualityTypeId: dto.qualityTypeId,
           isProcessFinished: { not: true },
         },
         orderBy: { id: "asc" },
@@ -2761,6 +2767,27 @@ export class TechProcessesService {
           data: { isProcessFinished: true, finishedAt: now },
         });
         confirmedOperationsCount = confirmedOps.count;
+
+        // Q4 (BUG-P1-02): pošto se kontrola razdvaja po kvalitetu (odvojeni redovi),
+        // pri dostizanju plana OVE (značajne) kontrolne operacije treba zatvoriti i
+        // preostale otvorene redove ISTE operacije drugih kvaliteta (npr. 8 DOBAR pa
+        // 2 ŠKART = plan → i DOBAR red mora biti finished). `confirmedOps` gore ih
+        // preskače (isključuje značajne RC), a `markWorkOrderIfComplete` traži da SVI
+        // značajni redovi budu finished — bez ovog raniji red bi ostao otvoren i
+        // trajno blokirao zavođenje RN-a kao „Završen". Isti operationNumber/
+        // workCenterCode = ista operacija čiji je plan sada dostignut (svi kvaliteti).
+        await tx.techProcess.updateMany({
+          where: {
+            projectId,
+            identNumber,
+            variant,
+            operationNumber,
+            workCenterCode,
+            id: { not: tp.id },
+            isProcessFinished: { not: true },
+          },
+          data: { isProcessFinished: true, finishedAt: now },
+        });
 
         // Ceo RN silazi sa prioriteta (ne samo kontrolna operacija) — nalog je gotov.
         const prioritized = await tx.workOrderOperation.updateMany({
