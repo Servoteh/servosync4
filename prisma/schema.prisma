@@ -1664,6 +1664,11 @@ model WorkOrderOperation {
   workOrder       WorkOrder                 @relation(fields: [workOrderId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_order_operations_work_order")
   images          WorkOrderOperationImage[]
 
+  // PERF (Faza 6 analize): routing lookup (findOrOpenRoutingTp/control) i
+  // setOperationDonePriority idu po ovim kolonama. Kreirani CONCURRENTLY na prod-u
+  // 2026-07-16 (migracija 20260716120000). 215k redova.
+  @@index([workOrderId, operationNumber, workCenterCode], map: "idx_woo_routing")
+  @@index([workOrderId], map: "idx_woo_work_order")
   @@map("work_order_operations")
 }
 
@@ -1705,6 +1710,13 @@ model TechProcess {
   documents         TechProcessDocument[]
   workTimeEntries   WorkTimeEntry[]
 
+  // PERF (Faza 6 analize): sve vruće kiosk putanje filtriraju po trojci+operaciji
+  // (scan/control/kumulativ/markComplete), lista po entered_at desc, veze po
+  // work_order_id. Kreirani CONCURRENTLY na prod-u 2026-07-16 (migracija
+  // 20260716120000). 98k redova, ranije SAMO PK → seq scan na svakom skenu.
+  @@index([projectId, identNumber, variant, operationNumber, workCenterCode], map: "idx_tp_trojka_op")
+  @@index([workOrderId], map: "idx_tp_work_order")
+  @@index([enteredAt], map: "idx_tp_entered_at")
   @@map("tech_processes")
 }
 
