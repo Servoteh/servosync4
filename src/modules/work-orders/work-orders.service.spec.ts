@@ -541,6 +541,163 @@ describe("WorkOrdersService (workflow)", () => {
     });
   });
 
+  // Q3: tehnologija se zaključava na statusu LANSIRAN (3) — pogon radi po
+  // odštampanom nalogu. Gate je SAMO na LANSIRAN: SAGLASAN (1) je glavni radni
+  // tok (prepare rađa RN u SAGLASAN sa 0 operacija koji tehnolog dopunjava), a
+  // U OBRADI (0) je slobodno. setOperationPriority (CAM) NE ide kroz gate.
+  describe("Q3 — zaključavanje tehnologije na LANSIRAN", () => {
+    describe("updateHeader", () => {
+      it("422 na LANSIRANOM RN-u (izmena zaglavlja ne prolazi)", async () => {
+        prisma.workOrder.findUnique.mockResolvedValue({
+          id: 7,
+          isLocked: false,
+          handoverStatusId: 3, // LANSIRAN
+        });
+
+        await expect(
+          service.updateHeader(7, { note: "naknadna izmena" }),
+        ).rejects.toBeInstanceOf(UnprocessableEntityException);
+        expect(prisma.workOrder.update).not.toHaveBeenCalled();
+      });
+
+      it("prolazi na SAGLASAN (glavni tok — dopuna posle odobravanja)", async () => {
+        prisma.workOrder.findUnique.mockResolvedValue({
+          id: 7,
+          isLocked: false,
+          handoverStatusId: 1, // SAGLASAN
+        });
+
+        await service.updateHeader(7, { note: "dopuna" });
+
+        expect(prisma.workOrder.update).toHaveBeenCalledWith(
+          containing({ where: { id: 7 } }),
+        );
+      });
+
+      it("prolazi na U OBRADI", async () => {
+        prisma.workOrder.findUnique.mockResolvedValue({
+          id: 7,
+          isLocked: false,
+          handoverStatusId: 0, // U OBRADI
+        });
+
+        await service.updateHeader(7, { note: "izmena" });
+
+        expect(prisma.workOrder.update).toHaveBeenCalled();
+      });
+    });
+
+    describe("addOperation", () => {
+      it("422 na LANSIRANOM RN-u (nova operacija ne prolazi)", async () => {
+        prisma.workOrder.findUnique.mockResolvedValue({
+          id: 7,
+          isLocked: false,
+          handoverStatusId: 3, // LANSIRAN
+        });
+
+        await expect(
+          service.addOperation(
+            7,
+            { workCenterCode: "TOK", workDescription: "Struganje" },
+            actor,
+          ),
+        ).rejects.toBeInstanceOf(UnprocessableEntityException);
+        expect(prisma.workOrderOperation.create).not.toHaveBeenCalled();
+      });
+
+      it("PROLAZI na SAGLASAN (glavni tok — tehnolog dopunjava operacije posle odobravanja)", async () => {
+        prisma.workOrder.findUnique.mockResolvedValue({
+          id: 7,
+          isLocked: false,
+          handoverStatusId: 1, // SAGLASAN
+        });
+
+        await service.addOperation(
+          7,
+          { workCenterCode: "TOK", workDescription: "Struganje" },
+          actor,
+        );
+
+        expect(prisma.workOrderOperation.create).toHaveBeenCalledWith(
+          containing({ data: containing({ workOrderId: 7 }) }),
+        );
+      });
+    });
+
+    describe("updateOperation", () => {
+      it("422 na LANSIRANOM RN-u", async () => {
+        prisma.workOrder.findUnique.mockResolvedValue({
+          id: 7,
+          isLocked: false,
+          handoverStatusId: 3, // LANSIRAN
+        });
+
+        await expect(
+          service.updateOperation(7, 33, { workDescription: "izmena" }),
+        ).rejects.toBeInstanceOf(UnprocessableEntityException);
+        expect(prisma.workOrderOperation.update).not.toHaveBeenCalled();
+      });
+    });
+
+    describe("deleteOperation", () => {
+      it("422 na LANSIRANOM RN-u", async () => {
+        prisma.workOrder.findUnique.mockResolvedValue({
+          id: 7,
+          isLocked: false,
+          handoverStatusId: 3, // LANSIRAN
+        });
+
+        await expect(service.deleteOperation(7, 33)).rejects.toBeInstanceOf(
+          UnprocessableEntityException,
+        );
+        expect(prisma.workOrderOperation.deleteMany).not.toHaveBeenCalled();
+      });
+    });
+
+    describe("setOperationPriority (CAM — NE sme biti blokiran na LANSIRAN)", () => {
+      it("PROLAZI na LANSIRANOM RN-u (prioritet je pogonska odluka)", async () => {
+        prisma.workOrderOperation.findUnique.mockResolvedValue({
+          id: 33,
+          workOrderId: 7,
+        });
+        // setOperationPriority čita samo isLocked (ne ide kroz assertEditable);
+        // čak i da pročita handoverStatusId=3, gate ga ne dodiruje.
+        prisma.workOrder.findUnique.mockResolvedValue({
+          isLocked: false,
+          handoverStatusId: 3, // LANSIRAN
+        });
+        prisma.workOrderOperation.update.mockResolvedValue({
+          id: 33,
+          workOrderId: 7,
+          priority: 5,
+        });
+
+        const res = await service.setOperationPriority(33, 5);
+
+        expect(prisma.workOrderOperation.update).toHaveBeenCalled();
+        expect(res).toEqual({ data: { id: 33, workOrderId: 7, priority: 5 } });
+      });
+    });
+
+    describe("regresija — otključan SAGLASAN prolazi kroz sve tokove", () => {
+      it("addOperation na otključanom SAGLASAN RN-u prolazi", async () => {
+        prisma.workOrder.findUnique.mockResolvedValue({
+          id: 7,
+          isLocked: false,
+          handoverStatusId: 1, // SAGLASAN
+        });
+
+        await service.addOperation(
+          7,
+          { workCenterCode: "TOK", workDescription: "Struganje" },
+          actor,
+        );
+
+        expect(prisma.workOrderOperation.create).toHaveBeenCalled();
+      });
+    });
+  });
+
   describe("Q12 — jedinstven redni broj operacije u RN-u", () => {
     describe("addOperation", () => {
       beforeEach(() => {

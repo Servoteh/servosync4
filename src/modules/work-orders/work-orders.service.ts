@@ -647,11 +647,25 @@ export class WorkOrdersService {
   // Izmena zaglavlja RN-a i CRUD operacija (`work_order_operations`) — legacy
   // `Form_UnosRN` edit mode + `Form_UnosStavkiRN`. Guard: zaključan RN se ne menja.
 
-  /** Zaključan RN se ne sme menjati (legacy `AllowEdits/Deletions=false` kad `Zakljucano`). */
-  private assertEditable(wo: { isLocked: boolean | null }): void {
+  /**
+   * Zaključan RN se ne sme menjati (legacy `AllowEdits/Deletions=false` kad `Zakljucano`).
+   * Q3: LANSIRAN (status 3) je isto neizmenjiv — pogon radi po odštampanom nalogu,
+   * pa izmena norme/opisa/RC/količine/revizije ne sme tiho da prođe. SAGLASAN (1) se
+   * NAMERNO ne blokira (prepare-tok rađa RN u statusu SAGLASAN sa 0 operacija koji
+   * tehnolog dopunjava POSLE odobravanja — glavni radni tok). „Mogućnost dorade" =
+   * izlaz kroz setLock/otključavanje (šef otključa → menja → ponovo).
+   */
+  private assertEditable(wo: {
+    isLocked: boolean | null;
+    handoverStatusId?: number;
+  }): void {
     if (wo.isLocked)
       throw new UnprocessableEntityException(
         "Zaključan RN se ne može menjati.",
+      );
+    if (wo.handoverStatusId === WO_STATUS.LAUNCHED)
+      throw new UnprocessableEntityException(
+        "Lansiran radni nalog se ne može menjati — pogon radi po odštampanom nalogu. Za doradu otključajte RN (šef) ili napravite novu varijantu.",
       );
   }
 
@@ -660,7 +674,7 @@ export class WorkOrdersService {
     validateUpdateWorkOrder(dto);
     const wo = await this.prisma.workOrder.findUnique({
       where: { id },
-      select: { id: true, isLocked: true },
+      select: { id: true, isLocked: true, handoverStatusId: true }, // Q3: lansiran gate
     });
     if (!wo) throw new NotFoundException(`Radni nalog ${id} ne postoji`);
     this.assertEditable(wo);
@@ -710,7 +724,7 @@ export class WorkOrdersService {
     const actorWorkerId = await resolveActorWorkerId(this.prisma, actor);
     const wo = await this.prisma.workOrder.findUnique({
       where: { id: workOrderId },
-      select: { id: true, isLocked: true },
+      select: { id: true, isLocked: true, handoverStatusId: true }, // Q3: lansiran gate
     });
     if (!wo)
       throw new NotFoundException(`Radni nalog ${workOrderId} ne postoji`);
@@ -775,7 +789,7 @@ export class WorkOrdersService {
     validateUpdateOperation(dto);
     const wo = await this.prisma.workOrder.findUnique({
       where: { id: workOrderId },
-      select: { id: true, isLocked: true },
+      select: { id: true, isLocked: true, handoverStatusId: true }, // Q3: lansiran gate
     });
     if (!wo)
       throw new NotFoundException(`Radni nalog ${workOrderId} ne postoji`);
@@ -884,7 +898,7 @@ export class WorkOrdersService {
   async deleteOperation(workOrderId: number, operationId: number) {
     const wo = await this.prisma.workOrder.findUnique({
       where: { id: workOrderId },
-      select: { id: true, isLocked: true },
+      select: { id: true, isLocked: true, handoverStatusId: true }, // Q3: lansiran gate
     });
     if (!wo)
       throw new NotFoundException(`Radni nalog ${workOrderId} ne postoji`);
