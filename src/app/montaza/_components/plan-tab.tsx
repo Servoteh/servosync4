@@ -668,7 +668,7 @@ export function PlanTab() {
       {!activeWp ? (
         <EmptyState
           title="Nema pozicije (naloga montaže)"
-          hint={canEdit ? 'Dodaj nalog montaže dugmetom ＋ iznad.' : 'Ovaj projekat još nema nalog montaže.'}
+          hint={canEdit ? 'Dodaj nalog montaže dugmetom „+ Nalog" iznad.' : 'Ovaj projekat još nema nalog montaže.'}
         />
       ) : (
         <>
@@ -739,7 +739,7 @@ export function PlanTab() {
                 placeholder="Naziv nove faze…"
                 className="h-9 w-72 rounded-control border border-line bg-surface px-3 text-sm text-ink placeholder:text-ink-disabled"
               />
-              <Button onClick={addPhase} disabled={!newName.trim()}>＋ Faza</Button>
+              <Button onClick={addPhase} disabled={!newName.trim()}><Plus className="h-4 w-4" aria-hidden /> Faza</Button>
             </div>
           )}
 
@@ -1054,7 +1054,7 @@ function PhaseRow({
     setPctPreview(null);
   };
   const dur = calcDuration(p.startDate, p.endDate);
-  const durText = dur === -1 ? '⚠' : dur == null ? '—' : `${dur} d`;
+  const durText = dur === -1 ? '!' : dur == null ? '—' : `${dur} d`;
   const rd = calcReadiness(p);
   const rk = calcRisk(p);
   const dis = !canEdit;
@@ -1245,7 +1245,7 @@ function PhaseRow({
           {engineers.map((e) => (
             <option key={e} value={e}>{e}</option>
           ))}
-          {canEdit && <option value="__add__">＋ Dodaj…</option>}
+          {canEdit && <option value="__add__">+ Dodaj…</option>}
         </select>
       </td>
       <td className="px-2 py-1.5">
@@ -1262,7 +1262,7 @@ function PhaseRow({
           {leads.map((l) => (
             <option key={l} value={l}>{l}</option>
           ))}
-          {canEdit && <option value="__add__">＋ Dodaj…</option>}
+          {canEdit && <option value="__add__">+ Dodaj…</option>}
         </select>
       </td>
       <td className="px-2 py-1.5">

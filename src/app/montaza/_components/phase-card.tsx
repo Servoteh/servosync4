@@ -7,7 +7,7 @@
 // desktop red (plan-tab) uvozi — plan-tab već uvozi PhaseCard pa je smer bez ciklusa.
 
 import { useState } from 'react';
-import { ChevronUp, ChevronDown, Trash2, FileText, Link2, Loader2, Pencil } from 'lucide-react';
+import { ChevronUp, ChevronDown, Trash2, FileText, Link2, Loader2, Pencil, Check } from 'lucide-react';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { cn } from '@/lib/cn';
 import { fetchDrawingSignedUrl, type PhaseVM } from '@/api/plan-montaze';
@@ -171,7 +171,7 @@ export function PhaseCard({
           <input type="date" value={p.startDate} disabled={dis} onChange={(e) => onField(p.id, 'startDate', e.target.value)} className={cn(field, dur === -1 && 'border-status-danger')} />
         </label>
         <label className="text-2xs text-ink-secondary">
-          Kraj {dur != null && dur >= 0 ? `· ${dur} d` : dur === -1 ? '· ⚠' : ''}
+          Kraj {dur != null && dur >= 0 ? `· ${dur} d` : dur === -1 ? '· kraj pre početka' : ''}
           <input type="date" value={p.endDate} disabled={dis} onChange={(e) => onField(p.id, 'endDate', e.target.value)} className={cn(field, dur === -1 && 'border-status-danger')} />
         </label>
       </div>
@@ -195,7 +195,7 @@ export function PhaseCard({
             {engineers.map((e) => (
               <option key={e} value={e}>{e}</option>
             ))}
-            {canEdit && <option value="__add__">＋ Dodaj…</option>}
+            {canEdit && <option value="__add__">+ Dodaj…</option>}
           </select>
         </label>
         <label className="text-2xs text-ink-secondary">
@@ -206,7 +206,7 @@ export function PhaseCard({
             {leads.map((l) => (
               <option key={l} value={l}>{l}</option>
             ))}
-            {canEdit && <option value="__add__">＋ Dodaj…</option>}
+            {canEdit && <option value="__add__">+ Dodaj…</option>}
           </select>
         </label>
       </div>
@@ -227,7 +227,7 @@ export function PhaseCard({
             )}
           >
             <span>{CHECK_SHORT[ci]}</span>
-            <span className="text-[10px]">{c ? '✓' : '○'}</span>
+            {c ? <Check className="h-3 w-3" aria-hidden /> : <span className="h-3 w-3 rounded-full border border-current opacity-40" aria-hidden />}
           </button>
         ))}
       </div>

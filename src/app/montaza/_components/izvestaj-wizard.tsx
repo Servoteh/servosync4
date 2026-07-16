@@ -542,7 +542,7 @@ export function IzvestajWizard({ onClose }: { onClose: () => void }) {
               <Search className="h-4 w-4" aria-hidden /> Izaberi / ispravi predmet iz baze
             </button>
             {data.predmet_item_id ? (
-              <span className="text-xs text-status-success">✓ predmet vezan za bazu</span>
+              <span className="inline-flex items-center gap-1 text-xs text-status-success"><Check className="h-3.5 w-3.5" aria-hidden /> predmet vezan za bazu</span>
             ) : (
               <span className="text-xs text-status-warn">AI nije potvrdio predmet — izaberi ručno</span>
             )}
@@ -625,7 +625,7 @@ export function IzvestajWizard({ onClose }: { onClose: () => void }) {
           )}
 
           <div className="flex justify-between gap-2">
-            <Button variant="secondary" onClick={() => setStep('unos')}>← Izmeni unos</Button>
+            <Button variant="secondary" onClick={() => setStep('unos')}><ArrowLeft className="h-4 w-4" aria-hidden /> Izmeni unos</Button>
             <Button onClick={confirm}>Sačuvaj izveštaj</Button>
           </div>
         </div>
