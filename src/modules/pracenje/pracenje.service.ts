@@ -273,8 +273,9 @@ export class PracenjeService {
     const query = (q ?? "").trim();
     if (query.length < 2) return { data: [] };
     return this.read(email, async (tx) => {
+      // Limit 100 = paritet 1.0 UI (pretragaDelovaTab searchProizvodnjaDelovi(q, 100)).
       const data = await tx.$queryRaw(
-        Prisma.sql`SELECT search_proizvodnja_delovi(${query}::text, 50::int) AS r`,
+        Prisma.sql`SELECT search_proizvodnja_delovi(${query}::text, 100::int) AS r`,
       );
       const arr = (data as { r: unknown }[])[0]?.r ?? [];
       return { data: jsonSafe(arr) };
