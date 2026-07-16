@@ -11,7 +11,7 @@ import { useAuth } from '@/lib/auth-context';
 import { Button } from '@/components/ui-kit/button';
 import { DictateButton, RefineButton } from '@/components/voice-controls';
 import { cn } from '@/lib/cn';
-import { parseDmyToIso } from '@/lib/plan-montaze/date';
+import { formatDmy, parseDmyToIso } from '@/lib/plan-montaze/date';
 import { IZVESTAJ_STATUS, IZVESTAJ_MAX_FOTKE } from '@/lib/plan-montaze/constants';
 import { downscaleImageToJpeg, type DownscaledPhoto } from '@/lib/plan-montaze/image';
 import { generateIzvestajPdf } from '@/lib/plan-montaze/izvestaj-pdf';
@@ -88,6 +88,13 @@ function clearDraft() {
   } catch {
     /* localStorage nedostupan (privatni mod) */
   }
+}
+
+/** Vreme nacrta u kanonu prikaza: dd.MM.yyyy. HH:mm (bez sekundi). */
+function fmtDraftTime(ms: number): string {
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${formatDmy(d)} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 /** Diktat: dopiši prepoznati tekst na postojeću vrednost (razmak ako već ima sadržaja). */
@@ -421,7 +428,7 @@ export function IzvestajWizard({ onClose }: { onClose: () => void }) {
         <div className="flex flex-wrap items-center gap-2 rounded-control border border-status-warn/40 bg-status-warn-bg px-3 py-2 text-sm text-status-warn">
           <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden />
           <span>
-            Imaš započeti izveštaj ({new Date(draftPrompt.savedAt).toLocaleString('sr-Latn-RS')}). Nastavi gde si stao?
+            Imaš započeti izveštaj ({fmtDraftTime(draftPrompt.savedAt)}). Nastavi gde si stao?
           </span>
           <span className="ml-auto flex gap-2">
             <Button variant="secondary" onClick={discardDraft}>Odbaci</Button>

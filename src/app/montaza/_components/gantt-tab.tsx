@@ -15,6 +15,7 @@ import { applyBusinessRules } from '@/lib/plan-montaze/phase';
 import { buildDayRange, buildMonthsHeader, inferGanttBounds } from '@/lib/plan-montaze/gantt';
 import { generateGanttPdf } from '@/lib/plan-montaze/gantt-pdf';
 import { usePhaseAutosave } from '@/lib/plan-montaze/autosave';
+import { readActiveSelection, writeActiveSelection } from '@/lib/plan-montaze/active-selection';
 import { GanttChart, type GanttRow } from './gantt-chart';
 import { SaveStatusPanel } from './save-status';
 
@@ -51,14 +52,22 @@ export function GanttTab() {
   const [showFinished, setShowFinished] = useState(() => readLsBool(LS_SHOW_FINISHED));
   const seededWp = useRef<string | null>(null);
 
+  // Podrazumevani izbor: PRVO deljeni aktivan projekat/nalog (isti kao Plan tab), pa prvi.
   useEffect(() => {
     if (!projects.length) return;
     if (!projectId || !projects.some((p) => p.id === projectId)) {
-      const p0 = projects[0];
+      const saved = readActiveSelection();
+      const sp = projects.find((p) => p.id === saved.projectId) ?? null;
+      const p0 = sp ?? projects[0];
       setProjectId(p0.id);
-      setWpId(p0.workPackages[0]?.id ?? null);
+      const w0 = (sp && p0.workPackages.find((w) => w.id === saved.wpId)) ?? p0.workPackages[0];
+      setWpId(w0?.id ?? null);
     }
   }, [projects, projectId]);
+
+  useEffect(() => {
+    if (projectId) writeActiveSelection(projectId, wpId);
+  }, [projectId, wpId]);
 
   const activeProject = projects.find((p) => p.id === projectId) ?? null;
   const activeWp = activeProject?.workPackages.find((w) => w.id === wpId) ?? null;

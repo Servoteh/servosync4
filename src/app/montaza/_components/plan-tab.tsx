@@ -48,6 +48,7 @@ import {
   RISK_LABEL,
 } from '@/lib/plan-montaze/phase';
 import { usePhaseAutosave } from '@/lib/plan-montaze/autosave';
+import { readActiveSelection, writeActiveSelection } from '@/lib/plan-montaze/active-selection';
 import { exportPlanJson, exportPlanXlsx, parsePlanImport } from '@/lib/plan-montaze/export';
 import { SaveStatusPanel } from './save-status';
 import { PhaseCard, DrawingChip } from './phase-card';
@@ -166,15 +167,24 @@ export function PlanTab() {
     }
   }, [hideDone]);
 
-  // Podrazumevani izbor kad se stablo učita.
+  // Podrazumevani izbor kad se stablo učita: PRVO sačuvan aktivan projekat/nalog
+  // (deljen sa Gantt tabom + preživljava tab switch i reload — 1.0 activeProject), pa prvi.
   useEffect(() => {
     if (!projects.length) return;
     if (!projectId || !projects.some((p) => p.id === projectId)) {
-      const p0 = projects[0];
+      const saved = readActiveSelection();
+      const sp = projects.find((p) => p.id === saved.projectId) ?? null;
+      const p0 = sp ?? projects[0];
       setProjectId(p0.id);
-      setWpId(p0.workPackages[0]?.id ?? null);
+      const w0 = (sp && p0.workPackages.find((w) => w.id === saved.wpId)) ?? p0.workPackages[0];
+      setWpId(w0?.id ?? null);
     }
   }, [projects, projectId]);
+
+  // Svaka promena izbora se pamti (hvata i switch fn-ove i auto-select posle snimanja).
+  useEffect(() => {
+    if (projectId) writeActiveSelection(projectId, wpId);
+  }, [projectId, wpId]);
 
   const activeProject = projects.find((p) => p.id === projectId) ?? null;
   const activeWp = activeProject?.workPackages.find((w) => w.id === wpId) ?? null;
@@ -648,8 +658,8 @@ export function PlanTab() {
                     <Pencil className="h-3.5 w-3.5" aria-hidden />
                   </button>
                 )}
-                <button type="button" onClick={() => setWpDialog({ wp: null })} title="Novi nalog montaže" className="rounded-control border border-line p-1.5 text-ink-secondary hover:bg-surface-2">
-                  <Plus className="h-3.5 w-3.5" aria-hidden />
+                <button type="button" onClick={() => setWpDialog({ wp: null })} title="Novi nalog montaže" className="flex items-center gap-1 rounded-control border border-line px-2 py-1.5 text-xs text-ink-secondary hover:bg-surface-2">
+                  <Plus className="h-3.5 w-3.5" aria-hidden /> Nalog
                 </button>
               </>
             )}
