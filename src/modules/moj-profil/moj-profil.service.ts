@@ -31,6 +31,10 @@ import type {
   SubmitSelfAssessmentDto,
   SubmitVacationDto,
 } from "./dto/moj-profil-mutation.dto";
+import type {
+  CreateSelfCheckinDto,
+  UpdateMyExpectationDto,
+} from "./dto/moj-profil-profile.dto";
 
 /** Klijentski min-datum GO zahteva (§2.4 pravilo 10; server re-provera paritet 1.0). */
 const REQUEST_MIN_DATE = "2026-05-01";
@@ -51,17 +55,79 @@ const REQUEST_MIN_DATE = "2026-05-01";
 export class MojProfilService {
   constructor(private readonly sy15: Sy15Service) {}
 
-  /** Profil header + uloge/override (v_employees_safe email→red + get_my_user_roles DEFINER). */
+  /**
+   * Profil header + uloge/override (v_employees_safe email→red + get_my_user_roles DEFINER).
+   * P6.4 dopuna: slava/slava_day, hire_date, medical_exam_expires/date iz v_employees_safe
+   * (ne-osetljiva polja view-a, provereno na živoj bazi) + aktivni ugovor (contracts is_active,
+   * poslednji po date_from) kao contract:{type,dateFrom,dateTo}. RLS/PII maska view-a presuđuje.
+   */
   me(email: string) {
     return this.withUserMapped(email, async (tx) => {
       const emp = await this.resolveEmployee(tx, email);
-      const roles = await tx.$queryRaw<unknown[]>(
-        Prisma.sql`SELECT * FROM get_my_user_roles()`,
-      );
+      const [roles, safeRows] = await Promise.all([
+        tx.$queryRaw<unknown[]>(Prisma.sql`SELECT * FROM get_my_user_roles()`),
+        emp == null
+          ? Promise.resolve([])
+          : tx.$queryRaw<
+              {
+                slava: string | null;
+                slava_day: string | null;
+                hire_date: Date | string | null;
+                medical_exam_expires: Date | string | null;
+                medical_exam_date: Date | string | null;
+              }[]
+            >(
+              Prisma.sql`SELECT slava, slava_day, hire_date, medical_exam_expires, medical_exam_date
+                 FROM v_employees_safe WHERE id = ${emp.id}::uuid LIMIT 1`,
+            ),
+      ]);
+      // Aktivni ugovor: is_active, poslednji po date_from (paritet 1.0 „važeći ugovor").
+      const contractRows =
+        emp == null
+          ? []
+          : await tx.$queryRaw<
+              {
+                contract_type: string | null;
+                date_from: Date | string | null;
+                date_to: Date | string | null;
+              }[]
+            >(
+              Prisma.sql`SELECT contract_type, date_from, date_to FROM contracts
+                 WHERE employee_id = ${emp.id}::uuid AND is_active = true AND archived_at IS NULL
+                 ORDER BY date_from DESC LIMIT 1`,
+            );
+      const safe = jsonSafe(safeRows)[0] as
+        | {
+            slava: string | null;
+            slava_day: string | null;
+            hire_date: unknown;
+            medical_exam_expires: unknown;
+            medical_exam_date: unknown;
+          }
+        | undefined;
+      const c = jsonSafe(contractRows)[0] as
+        | { contract_type: string | null; date_from: unknown; date_to: unknown }
+        | undefined;
       return {
         data: {
           hasProfile: emp != null,
-          employee: emp,
+          employee:
+            emp == null
+              ? null
+              : {
+                  ...emp,
+                  slava: safe?.slava ?? null,
+                  slavaDay: safe?.slava_day ?? null,
+                  medicalExamExpires: safe?.medical_exam_expires ?? null,
+                  medicalExamDate: safe?.medical_exam_date ?? null,
+                  contract: c
+                    ? {
+                        type: c.contract_type,
+                        dateFrom: c.date_from,
+                        dateTo: c.date_to,
+                      }
+                    : null,
+                },
           roles: jsonSafe(roles),
           ...(emp == null
             ? { message: "Nismo pronašli vaš zaposlenički profil." }
@@ -894,15 +960,17 @@ export class MojProfilService {
   saveSelfScores(email: string, dto: SaveSelfScoresDto) {
     return this.withUserMapped(email, async (tx) => {
       if (!dto.items.length) return { data: { saved: 0 } };
-      const compIds = dto.items.map((i) => i.competenceId);
-      const levels = dto.items.map((i) =>
-        i.level === undefined || i.level === null ? null : Number(i.level),
+      // competence_id JE Int (Competence.id autoincrement) — kadrovska koristi ::int;
+      // raniji ::uuid[] cast je padao na živoj bazi (22P02). Per-red VALUES kao kadrovska.
+      const values = dto.items.map(
+        (i) =>
+          Prisma.sql`(${dto.raterId}::uuid, ${Number(i.competenceId)}::int, ${
+            i.level === undefined || i.level === null ? null : Number(i.level)
+          }::smallint, ${i.comment ?? null})`,
       );
-      const comments = dto.items.map((i) => i.comment ?? null);
       await tx.$executeRaw(
         Prisma.sql`INSERT INTO assessment_scores (rater_id, competence_id, level, comment)
-           SELECT ${dto.raterId}::uuid, c, l, cm
-           FROM unnest(${compIds}::uuid[], ${levels}::int[], ${comments}::text[]) AS t(c, l, cm)
+           VALUES ${Prisma.join(values)}
            ON CONFLICT (rater_id, competence_id)
            DO UPDATE SET level = EXCLUDED.level, comment = EXCLUDED.comment`,
       );
@@ -935,6 +1003,361 @@ export class MojProfilService {
         Prisma.sql`SELECT assessment_self_submit(${dto.assessmentId}::uuid)`,
       );
       return { data: { ok: true } };
+    });
+  }
+
+  // ============================================================================
+  // P3 — Razvoj self + očekivanja self-write (Drop 2). RLS (dp_update_self /
+  // ee_update_self) presuđuje scope kroz GUC; potpisi RPC-ova NETAKNUTI.
+  // ============================================================================
+
+  /**
+   * Moj plan razvoja (IRP) — aktivan ∨ najskoriji za mene + razvojni ciljevi (očekivanja sa
+   * plan_id) + check-in dnevnik (opadajuće po datumu). Paritet 1.0 mojProfil dev-plan sekcije
+   * (loadMyPlans → v_development_plans, loadAllExpectations({planId}), loadCheckins). RLS pušta
+   * SELECT samo na svoje. Bez povezanog profila / bez plana → { plan:null, goals:[], checkins:[] }.
+   */
+  devPlan(email: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const emp = await this.resolveEmployee(tx, email);
+      if (emp == null)
+        return { data: { plan: null, goals: [], checkins: [] } };
+      // Aktivan plan ima prioritet; inače najskoriji (paritet 1.0 order period_start desc).
+      const plans = await tx.$queryRaw<{ id: string; status: string }[]>(
+        Prisma.sql`SELECT * FROM v_development_plans
+           WHERE employee_id = ${emp.id}::uuid
+           ORDER BY (status = 'aktivan') DESC, period_start DESC NULLS LAST, created_at DESC
+           LIMIT 1`,
+      );
+      const plan = jsonSafe(plans)[0] ?? null;
+      if (plan == null)
+        return { data: { plan: null, goals: [], checkins: [] } };
+      const planId = (plan as { id: string }).id;
+      const [goals, checkinRows] = await Promise.all([
+        tx.employeeExpectation.findMany({
+          where: { employeeId: emp.id, planId },
+          orderBy: [{ createdAt: "desc" }],
+        }),
+        tx.developmentCheckin.findMany({
+          where: { planId },
+          orderBy: [{ checkinDate: "desc" }, { createdAt: "desc" }],
+        }),
+      ]);
+      // Serijalizuj beleške sa poljima koja FE/1.0 očekuju (kind/checkin_date/note_md) —
+      // Prisma model je camelCase (authorKind/checkinDate/noteMd), pa mapiramo eksplicitno
+      // da list-oblik bude identičan insert-obliku (RETURNING * = snake_case).
+      const checkins = checkinRows.map((c) => ({
+        id: c.id,
+        plan_id: c.planId,
+        kind: c.authorKind,
+        author_email: c.authorEmail,
+        checkin_date: c.checkinDate,
+        note_md: c.noteMd,
+        created_at: c.createdAt,
+      }));
+      return { data: { plan, goals, checkins } };
+    });
+  }
+
+  /**
+   * Radnik menja SOPSTVENU samoprocenu plana (development_plans.self_assessment_md + updated_by).
+   * RLS dp_update_self + trigger guard dozvoljavaju samo self_assessment_md za vlasnika plana
+   * (paritet 1.0 updateMySelfAssessment). 0 redova (tuđi/nepostojeći plan) → 42501/nema → 404.
+   */
+  updateSelfAssessment(email: string, id: string, selfAssessmentMd?: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const n = await tx.$executeRaw(
+        Prisma.sql`UPDATE development_plans
+           SET self_assessment_md = ${selfAssessmentMd ?? null}, updated_by = lower(${email})
+           WHERE id = ${id}::uuid`,
+      );
+      if (n === 0)
+        throw new NotFoundException(
+          "Plan razvoja ne postoji ili nije vaš.",
+        );
+      return { data: { id, updated: true } };
+    });
+  }
+
+  /**
+   * Zaposleni upisuje belešku 1-na-1 (development_checkins kind='zaposleni', author_email=ja).
+   * Paritet 1.0 addCheckin({kind:'zaposleni'}). employee_id = self (resolveEmployee). RLS dc_insert
+   * presuđuje (vlasnik plana ∨ upravljač). Prazan tekst → 422. Idempotentno po clientEventId.
+   */
+  async addSelfCheckin(email: string, planId: string, dto: CreateSelfCheckinDto) {
+    const note = (dto.noteMd ?? "").trim();
+    if (!note)
+      throw new UnprocessableEntityException("Beleška ne sme biti prazna.");
+    return this.runIdem(
+      email,
+      dto.clientEventId,
+      "profile.devplan-checkin",
+      async (tx) => {
+        const emp = await this.resolveEmployee(tx, email);
+        if (emp == null)
+          throw new UnprocessableEntityException(
+            "Nismo pronašli vaš zaposlenički profil.",
+          );
+        const rows = await tx.$queryRaw<unknown[]>(
+          Prisma.sql`INSERT INTO development_checkins
+             (plan_id, employee_id, checkin_date, author_email, author_kind, note_md)
+             VALUES (${planId}::uuid, ${emp.id}::uuid, CURRENT_DATE, lower(${email}), 'zaposleni', ${note})
+             RETURNING id, plan_id, author_kind AS kind, author_email, checkin_date, note_md, created_at`,
+        );
+        return jsonSafe(rows[0] ?? null);
+      },
+    );
+  }
+
+  /**
+   * Radnik markira SOPSTVENO očekivanje (employee_expectations). Dve grane (paritet 1.0):
+   *  - status u_toku/ispunjeno (markMyExpectationStatus): + completion_note (ako dat);
+   *    'ispunjeno' → completed_at=now, progress=100.
+   *  - progress 0–100 (markMyExpectationProgress): status→u_toku, ≥100→ispunjeno + completed_at.
+   * RLS ee_update_self + trigger presuđuju (samo te tranzicije, samo svoj red) — tuđi → 42501→403.
+   * 0 redova → 404. Ako nijedno polje nije dato → 422.
+   */
+  updateMyExpectation(email: string, id: string, dto: UpdateMyExpectationDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const sets: Prisma.Sql[] = [Prisma.sql`updated_by = lower(${email})`];
+      if (dto.status != null) {
+        if (dto.status !== "u_toku" && dto.status !== "ispunjeno")
+          throw new UnprocessableEntityException(
+            "Dozvoljeni statusi: u_toku, ispunjeno.",
+          );
+        sets.push(Prisma.sql`status = ${dto.status}`);
+        if (dto.completionNote != null)
+          sets.push(Prisma.sql`completion_note = ${dto.completionNote}`);
+        if (dto.status === "ispunjeno") {
+          sets.push(Prisma.sql`completed_at = now()`);
+          sets.push(Prisma.sql`progress = 100`);
+        }
+      } else if (dto.progress != null) {
+        const p = Math.max(0, Math.min(100, Math.round(dto.progress)));
+        sets.push(Prisma.sql`progress = ${p}`);
+        sets.push(Prisma.sql`status = ${p >= 100 ? "ispunjeno" : "u_toku"}`);
+        if (p >= 100) sets.push(Prisma.sql`completed_at = now()`);
+      } else {
+        throw new UnprocessableEntityException(
+          "Nije prosleđen ni status ni progress.",
+        );
+      }
+      const n = await tx.$executeRaw(
+        Prisma.sql`UPDATE employee_expectations SET ${Prisma.join(sets, ", ")}
+           WHERE id = ${id}::uuid`,
+      );
+      if (n === 0)
+        throw new NotFoundException(
+          "Očekivanje ne postoji ili nije vaše.",
+        );
+      return { data: { id, updated: true } };
+    });
+  }
+
+  // ============================================================================
+  // P4 — 360 READ (WRITE je iz Drop 1). Sve za self modal u JEDNOM pozivu kroz GUC.
+  // ============================================================================
+
+  /**
+   * 360 samoprocena — pun READ za self modal (paritet 1.0 myAssessment openMyAssessmentModal):
+   * assessment_open_self(period) → assessment_id, pa scope/self-rater/framework/pitanja/ocene/
+   * odgovori/rezultati u jednom pozivu (FE ne pravi 8 round-tripova). Sve kroz withUserRls; RLS
+   * presuđuje vidljivost (svoj rater; rezultati tek po `visible_to_employee`). Nepovezan profil/
+   * pozicija (RPC vraća NULL ∨ prazan scope) → jasna poruka umesto praznog modala.
+   */
+  selfAssessmentRead(email: string, period?: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const openRows = await tx.$queryRaw<{ v: unknown }[]>(
+        Prisma.sql`SELECT assessment_open_self(${period ?? null}) AS v`,
+      );
+      const assessmentId = jsonSafe(openRows[0]?.v ?? null) as string | null;
+      if (!assessmentId)
+        return {
+          data: {
+            assessmentId: null,
+            message:
+              "Vaš zaposleni profil ili pozicija nisu povezani — obratite se HR-u.",
+          },
+        };
+
+      const [assessmentRows, scope, selfRaters, framework, questions] =
+        await Promise.all([
+          tx.$queryRaw<unknown[]>(
+            Prisma.sql`SELECT * FROM assessments WHERE id = ${assessmentId}::uuid LIMIT 1`,
+          ),
+          tx.$queryRaw<unknown[]>(
+            Prisma.sql`SELECT * FROM v_assessment_scope WHERE assessment_id = ${assessmentId}::uuid
+               ORDER BY group_sort, comp_sort`,
+          ),
+          tx.$queryRaw<{ id: string }[]>(
+            Prisma.sql`SELECT * FROM assessment_raters
+               WHERE assessment_id = ${assessmentId}::uuid AND rater_kind = 'self' LIMIT 1`,
+          ),
+          tx.$queryRaw<unknown[]>(
+            Prisma.sql`SELECT * FROM v_competence_framework ORDER BY group_sort, comp_sort, level`,
+          ),
+          tx.$queryRaw<unknown[]>(
+            Prisma.sql`SELECT * FROM competence_questions
+               WHERE is_active = true ORDER BY group_id NULLS FIRST, sort_order`,
+          ),
+        ]);
+
+      const assessment = jsonSafe(assessmentRows)[0] ?? null;
+      const selfRater = jsonSafe(selfRaters)[0] ?? null;
+      const raterId = (selfRater as { id?: string } | null)?.id ?? null;
+
+      // Ocene/odgovori/rezultati zavise od self rater id (RLS pušta samo svoje).
+      const [scores, answers, results] = await Promise.all([
+        raterId
+          ? tx.$queryRaw<unknown[]>(
+              Prisma.sql`SELECT competence_id, level, comment FROM assessment_scores
+                 WHERE rater_id = ${raterId}::uuid`,
+            )
+          : Promise.resolve([]),
+        raterId
+          ? tx.$queryRaw<unknown[]>(
+              Prisma.sql`SELECT question_code, answer_text FROM assessment_answers
+                 WHERE rater_id = ${raterId}::uuid`,
+            )
+          : Promise.resolve([]),
+        tx.$queryRaw<unknown[]>(
+          Prisma.sql`SELECT * FROM assessment_results WHERE assessment_id = ${assessmentId}::uuid`,
+        ),
+      ]);
+
+      return {
+        data: {
+          assessmentId,
+          assessment,
+          scope: jsonSafe(scope),
+          selfRater,
+          framework: jsonSafe(framework),
+          questions: jsonSafe(questions),
+          scores: jsonSafe(scores),
+          answers: jsonSafe(answers),
+          results: jsonSafe(results),
+          visibleToEmployee:
+            (assessment as { visible_to_employee?: boolean } | null)
+              ?.visible_to_employee ?? false,
+          ...(scope.length
+            ? {}
+            : {
+                message:
+                  "Vaša pozicija još nema definisan profil kompetencija — obratite se HR-u.",
+              }),
+        },
+      };
+    });
+  }
+
+  // ============================================================================
+  // P6 — Profil dopune (onboarding / absences / attendance events / talk detalji).
+  // ============================================================================
+
+  /** Moje uvođenje/izlazak (kadr_onboarding_runs active + kadr_onboarding_tasks tog toka). */
+  onboarding(email: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const emp = await this.resolveEmployee(tx, email);
+      if (emp == null) return { data: { runs: [], tasks: [] } };
+      const runs = await tx.kadrOnboardingRun.findMany({
+        where: { employeeId: emp.id, status: "active" },
+        orderBy: [{ startDate: "desc" }],
+      });
+      const runIds = runs.map((r) => r.id);
+      const tasks = runIds.length
+        ? await tx.kadrOnboardingTask.findMany({
+            where: { runId: { in: runIds } },
+            orderBy: [{ sortOrder: "asc" }],
+          })
+        : [];
+      return { data: { runs, tasks } };
+    });
+  }
+
+  /** Moja odsustva (absences) — tekuća godina (preseca godinu; arhivirana izbačena). */
+  absences(email: string) {
+    const year = new Date().getFullYear();
+    const yStart = `${year}-01-01`;
+    const yEnd = `${year}-12-31`;
+    return this.withUserMapped(email, async (tx) => {
+      const emp = await this.resolveEmployee(tx, email);
+      if (emp == null) return this.emptyProfile();
+      const rows = await tx.absence.findMany({
+        where: {
+          employeeId: emp.id,
+          archivedAt: null,
+          dateFrom: { lte: new Date(yEnd) },
+          dateTo: { gte: new Date(yStart) },
+        },
+        orderBy: [{ dateFrom: "desc" }],
+      });
+      return { data: rows };
+    });
+  }
+
+  /**
+   * Sirovi događaji prisustva za jedan dan (attendance_events; VIEW-only tabela — nema Prisma
+   * modela, ide $queryRaw). Self-scope po employee_id + kalendarski dan po event_ts_local.
+   * Paritet 1.0 „terminalne evidencije" (ulaz/izlaz sa terminala) za dan. RLS presuđuje.
+   */
+  attendanceEvents(email: string, day: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const emp = await this.resolveEmployee(tx, email);
+      if (emp == null) return this.emptyProfile();
+      const rows = await tx.$queryRaw<unknown[]>(
+        Prisma.sql`SELECT id, event_ts_local, event_ts, direction, terminal_name, terminal_id, source, badge_code, raw
+           FROM attendance_events
+           WHERE employee_id = ${emp.id}::uuid AND event_ts_local::date = ${day}::date
+           ORDER BY event_ts_local ASC`,
+      );
+      return { data: { day, events: jsonSafe(rows) } };
+    });
+  }
+
+  /**
+   * Detalji jednog razgovora za modal (paritet 1.0 myTalks _openTalkView): sam razgovor
+   * (zapisnik_md + odluka o zaradi za godišnji) + povezani korektivni planovi (talk_id ∨
+   * closing_talk_id) sa merama. RLS pušta samo podeljene/potvrđene (self-scope). Bez reda → 404.
+   */
+  talkDetail(email: string, id: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const emp = await this.resolveEmployee(tx, email);
+      if (emp == null) throw new NotFoundException("Razgovor nije dostupan.");
+      // Snake_case raw (paritet 1.0 PostgREST + Drop 1 GET /talks list) — FE modal čita
+      // zapisnik_md/raise_*/reason_md/description_md; NE koristimo Prisma camelCase.
+      const talkRows = await tx.$queryRaw<Record<string, unknown>[]>(
+        Prisma.sql`SELECT * FROM employee_talks WHERE id = ${id}::uuid AND employee_id = ${emp.id}::uuid LIMIT 1`,
+      );
+      const talk = jsonSafe(talkRows)[0];
+      if (talk == null)
+        throw new NotFoundException("Razgovor ne postoji ili nije vaš.");
+      const planRows = await tx.$queryRaw<Record<string, unknown>[]>(
+        Prisma.sql`SELECT * FROM corrective_plans
+           WHERE employee_id = ${emp.id}::uuid AND (talk_id = ${id}::uuid OR closing_talk_id = ${id}::uuid)
+           ORDER BY created_at DESC`,
+      );
+      const plans = jsonSafe(planRows) as Record<string, unknown>[];
+      const planIds = plans.map((p) => p.id as string);
+      const measureRows = planIds.length
+        ? await tx.$queryRaw<Record<string, unknown>[]>(
+            Prisma.sql`SELECT * FROM corrective_measures
+               WHERE plan_id IN (${Prisma.join(planIds.map((p) => Prisma.sql`${p}::uuid`))})
+               ORDER BY sort ASC`,
+          )
+        : [];
+      const measures = jsonSafe(measureRows) as Record<string, unknown>[];
+      // Ugnjezdi mere u svaki plan (paritet 1.0 embed `measures:corrective_measures(*)`).
+      const plansWithMeasures = plans.map((p) => ({
+        ...p,
+        measures: measures.filter((m) => m.plan_id === p.id),
+      }));
+      return {
+        data: {
+          talk,
+          correctivePlans: plansWithMeasures,
+          correctiveMeasures: measures,
+        },
+      };
     });
   }
 }

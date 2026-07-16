@@ -17,6 +17,16 @@ import type {
   AuditLogQueryDto,
   ListUsersQueryDto,
 } from "./dto/podesavanja-query.dto";
+import type {
+  BulkExpectationDto,
+  CreateExpectationDto,
+  UpdateCompanyProfileDto,
+  UpdateExpectationDto,
+} from "./dto/podesavanja-org.dto";
+import type {
+  SetPredmetAktivacijaDto,
+} from "./dto/podesavanja-predmet.dto";
+import { PRIORITET_MAX_CEILING } from "./dto/podesavanja-predmet.dto";
 
 /**
  * Dozvoljeni AI modeli po potrošaču (rani 400 pre RPC-a; RPC re-validira). Sastanci allowlist
@@ -246,7 +256,7 @@ export class PodesavanjaService {
   predmetAktivacija(email: string) {
     return this.withUserMapped(email, async (tx) => {
       const rows = await tx.$queryRaw<{ data: unknown }[]>(
-        Prisma.sql`SELECT list_predmet_aktivacija_admin() AS data`,
+        Prisma.sql`SELECT public.list_predmet_aktivacija_admin() AS data`,
       );
       return { data: jsonSafe(rows[0]?.data ?? null) };
     });
@@ -320,6 +330,221 @@ export class PodesavanjaService {
     });
   }
 
+  // ============================================================================
+  // P9 — Vrednosti firme + Očekivanja admin WRITE (guard settings.org_profile;
+  // RLS presuđuje row-write kroz GUC). Paritet 1.0 companyProfileTab / employeeExpectationsTab.
+  // ============================================================================
+
+  /**
+   * Vrednosti firme (PATCH company_profile id=1 + updated_by). Paritet 1.0 updateCompanyProfile
+   * (mission/vision/values + updated_by). RLS/gate (admin/menadzment/pm/leadpm) kroz GUC; 0 redova
+   * (nema reda ∨ RLS blok) → 403 (row=1 uvek postoji, pa 0 = zabrana). Undefined polje = null (1.0).
+   */
+  updateCompanyProfile(email: string, dto: UpdateCompanyProfileDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const n = await tx.$executeRaw(
+        Prisma.sql`UPDATE company_profile
+           SET mission_md = ${dto.missionMd ?? null},
+               vision_md = ${dto.visionMd ?? null},
+               values_md = ${dto.valuesMd ?? null},
+               updated_by = lower(${email}),
+               updated_at = now()
+           WHERE id = 1`,
+      );
+      if (n === 0)
+        throw new ForbiddenException(
+          "Nemate pravo izmene vrednosti firme.",
+        );
+      const row = await tx.companyProfile.findUnique({ where: { id: 1 } });
+      return { data: row };
+    });
+  }
+
+  /** Jedno očekivanje (INSERT employee_expectations; created_by=ja). Paritet 1.0 saveExpectation. */
+  createExpectation(email: string, dto: CreateExpectationDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const row = await tx.employeeExpectation.create({
+        data: {
+          employeeId: dto.employeeId,
+          title: dto.title.trim(),
+          descriptionMd: dto.descriptionMd ?? null,
+          dueDate: dto.dueDate ? new Date(dto.dueDate) : null,
+          priority: dto.priority ?? "srednja",
+          status: dto.status ?? "aktivno",
+          category: dto.category ?? "ostalo",
+          planId: dto.planId ?? null,
+          progress: clampProgress(dto.progress),
+          createdBy: email,
+        },
+      });
+      return { data: row };
+    });
+  }
+
+  /**
+   * Isti zadatak na više zaposlenih (createMany; paritet 1.0 bulkSaveExpectation array POST).
+   * Vraća { ok, requested }. RLS/gate kroz GUC — parcijalni uspeh nije moguć (transakcija).
+   */
+  bulkCreateExpectations(email: string, dto: BulkExpectationDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const ids = [...new Set(dto.employeeIds.filter(Boolean))];
+      const res = await tx.employeeExpectation.createMany({
+        data: ids.map((employeeId) => ({
+          employeeId,
+          title: dto.title.trim(),
+          descriptionMd: dto.descriptionMd ?? null,
+          dueDate: dto.dueDate ? new Date(dto.dueDate) : null,
+          priority: dto.priority ?? "srednja",
+          status: dto.status ?? "aktivno",
+          category: dto.category ?? "ostalo",
+          planId: dto.planId ?? null,
+          createdBy: email,
+        })),
+      });
+      return { data: { ok: res.count, requested: ids.length } };
+    });
+  }
+
+  /**
+   * Izmena očekivanja (PATCH; paritet 1.0 updateExpectation — samo prosleđena polja + updated_by;
+   * status='ispunjeno' bez completed_at → auto completed_at=now). RLS/gate kroz GUC; 0 redova → 404.
+   */
+  updateExpectation(email: string, id: string, dto: UpdateExpectationDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const sets: Prisma.Sql[] = [Prisma.sql`updated_by = lower(${email})`];
+      if (dto.title !== undefined) sets.push(Prisma.sql`title = ${dto.title}`);
+      if (dto.descriptionMd !== undefined)
+        sets.push(Prisma.sql`description_md = ${dto.descriptionMd ?? null}`);
+      if (dto.dueDate !== undefined)
+        sets.push(Prisma.sql`due_date = ${dto.dueDate ?? null}::date`);
+      if (dto.priority !== undefined)
+        sets.push(Prisma.sql`priority = ${dto.priority}`);
+      if (dto.status !== undefined) sets.push(Prisma.sql`status = ${dto.status}`);
+      if (dto.category !== undefined)
+        sets.push(Prisma.sql`category = ${dto.category}`);
+      if (dto.planId !== undefined)
+        sets.push(Prisma.sql`plan_id = ${dto.planId ?? null}::uuid`);
+      if (dto.progress !== undefined)
+        sets.push(Prisma.sql`progress = ${clampProgress(dto.progress)}`);
+      if (dto.completionNote !== undefined)
+        sets.push(Prisma.sql`completion_note = ${dto.completionNote ?? null}`);
+      // completed_at: eksplicitno dato → to; inače status='ispunjeno' → now (paritet 1.0).
+      if (dto.completedAt !== undefined)
+        sets.push(Prisma.sql`completed_at = ${dto.completedAt ?? null}::timestamptz`);
+      else if (dto.status === "ispunjeno")
+        sets.push(Prisma.sql`completed_at = now()`);
+      const n = await tx.$executeRaw(
+        Prisma.sql`UPDATE employee_expectations SET ${Prisma.join(sets, ", ")}
+           WHERE id = ${id}::uuid`,
+      );
+      if (n === 0) throw new NotFoundException(`Očekivanje ${id} ne postoji`);
+      const row = await tx.employeeExpectation.findUnique({ where: { id } });
+      return { data: row };
+    });
+  }
+
+  /** Brisanje očekivanja (admin only — 1.0 pravilo; guard na ruti dodatno sužava). RLS kroz GUC. */
+  deleteExpectation(email: string, id: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const res = await tx.employeeExpectation.deleteMany({ where: { id } });
+      if (res.count === 0)
+        throw new NotFoundException(`Očekivanje ${id} ne postoji`);
+      return { data: { id, deleted: true } };
+    });
+  }
+
+  // ============================================================================
+  // P11 — Predmet-aktivacija WRITE (guard settings.predmet_aktivacija; RPC re-validira gate u DB).
+  // Paritet 1.0 predmetAktivacija.js / predmetPlanPrioritet.js. Tela RPC-ova NETAKNUTA.
+  // ============================================================================
+
+  /**
+   * Postavi aktivaciju predmeta (set_predmet_aktivacija; potpis: p_item_id/p_aktivan/p_napomena/
+   * p_projektovanje_montaza). napomena undefined = ne šalji (RPC default NULL = keep); '' = clear;
+   * projektovanjeMontaza undefined = ne šalji (RPC default NULL = keep). Named-arg poziv da
+   * neposlati param padne na DEFAULT (paritet 1.0 body-condicionalnog slanja).
+   */
+  async setPredmetAktivacija(
+    email: string,
+    itemId: number,
+    dto: SetPredmetAktivacijaDto,
+  ) {
+    const id = Number(itemId);
+    if (!Number.isFinite(id) || id <= 0)
+      throw new UnprocessableEntityException("Neispravan ID predmeta.");
+    return this.withUserMapped(email, async (tx) => {
+      const args: Prisma.Sql[] = [
+        Prisma.sql`p_item_id => ${id}::int`,
+        Prisma.sql`p_aktivan => ${dto.aktivan}::boolean`,
+      ];
+      if (dto.napomena !== undefined)
+        args.push(Prisma.sql`p_napomena => ${dto.napomena}::text`);
+      if (dto.projektovanjeMontaza !== undefined)
+        args.push(
+          Prisma.sql`p_projektovanje_montaza => ${dto.projektovanjeMontaza}::boolean`,
+        );
+      await tx.$executeRaw(
+        Prisma.sql`SELECT public.set_predmet_aktivacija(${Prisma.join(args, ", ")})`,
+      );
+      return { data: { itemId: id, aktivan: dto.aktivan } };
+    });
+  }
+
+  /** ⭐ prioritet — trenutna lista + max (get_predmet_plan_prioritet_ids + _max). */
+  predmetPrioritet(email: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const [ids, max] = await Promise.all([
+        tx.$queryRaw<{ v: unknown }[]>(
+          Prisma.sql`SELECT public.get_predmet_plan_prioritet_ids() AS v`,
+        ),
+        tx.$queryRaw<{ v: unknown }[]>(
+          Prisma.sql`SELECT public.get_predmet_plan_prioritet_max() AS v`,
+        ),
+      ]);
+      return {
+        data: {
+          itemIds: normalizeIds(jsonSafe(ids[0]?.v)),
+          max: normalizeMax(jsonSafe(max[0]?.v)),
+        },
+      };
+    });
+  }
+
+  /** Prethodna (poslednja različita) lista prioriteta (get_predmet_plan_prioritet_prev). */
+  predmetPrioritetPrev(email: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const rows = await tx.$queryRaw<{ v: unknown }[]>(
+        Prisma.sql`SELECT public.get_predmet_plan_prioritet_prev() AS v`,
+      );
+      return { data: { itemIds: normalizeIds(jsonSafe(rows[0]?.v)) } };
+    });
+  }
+
+  /** Postavi redosled ⭐ prioriteta (set_predmet_plan_prioritet p_item_ids). */
+  setPredmetPrioritet(email: string, itemIds: number[]) {
+    const clean = normalizeIds(itemIds).slice(0, PRIORITET_MAX_CEILING);
+    return this.withUserMapped(email, async (tx) => {
+      await tx.$executeRaw(
+        Prisma.sql`SELECT public.set_predmet_plan_prioritet(${clean}::int[])`,
+      );
+      return { data: { itemIds: clean } };
+    });
+  }
+
+  /** Postavi maksimum broja prioriteta (set_predmet_plan_prioritet_max p_max; 1..50). */
+  setPredmetPrioritetMax(email: string, max: number) {
+    const n = Math.max(
+      1,
+      Math.min(PRIORITET_MAX_CEILING, Math.trunc(Number(max) || 0)),
+    );
+    return this.withUserMapped(email, async (tx) => {
+      await tx.$executeRaw(
+        Prisma.sql`SELECT public.set_predmet_plan_prioritet_max(${n}::int)`,
+      );
+      return { data: { max: n } };
+    });
+  }
+
   // ---------- interno ----------
 
   private async withUserMapped<T>(
@@ -353,4 +578,26 @@ export class PodesavanjaService {
     if (code === "P2025") throw new ForbiddenException(message);
     throw e;
   }
+}
+
+/** Progress → clamp 0..100 (paritet 1.0 saveExpectation; undefined → 0). */
+function clampProgress(v: number | undefined): number {
+  if (v === undefined || !Number.isFinite(Number(v))) return 0;
+  return Math.max(0, Math.min(100, Math.round(Number(v))));
+}
+
+/** RPC jsonb/niz → clean pozitivni int[] (paritet 1.0 normalizeIds; cap na 50). */
+function normalizeIds(raw: unknown): number[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((x) => Number(x))
+    .filter((x) => Number.isFinite(x) && x > 0)
+    .slice(0, PRIORITET_MAX_CEILING);
+}
+
+/** RPC skalar → max 1..50 (paritet 1.0 pullPredmetPlanPrioritetMax; nevažeći → null). */
+function normalizeMax(raw: unknown): number | null {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 1) return null;
+  return Math.min(n, PRIORITET_MAX_CEILING);
 }

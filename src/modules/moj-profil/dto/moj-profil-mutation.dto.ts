@@ -98,7 +98,9 @@ export class OpenSelfAssessmentDto {
 }
 
 class ScoreItemDto {
-  @IsUUID() competenceId!: string;
+  // competence_id JE Int (Competence.id autoincrement) — ne uuid; raniji @IsUUID je
+  // odbijao validan numerički id na granici API-ja (360 self-scoring pao).
+  @Type(() => Number) @IsInt() competenceId!: number;
   @IsOptional() @IsInt() @Min(0) @Max(5) level?: number | null;
   @IsOptional() @IsString() @MaxLength(2000) comment?: string;
 }

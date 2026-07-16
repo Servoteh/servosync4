@@ -34,6 +34,17 @@ import {
   AddGridEditorDto,
   SetAiModelDto,
 } from "./dto/podesavanja-system.dto";
+import {
+  BulkExpectationDto,
+  CreateExpectationDto,
+  UpdateCompanyProfileDto,
+  UpdateExpectationDto,
+} from "./dto/podesavanja-org.dto";
+import {
+  SetPredmetAktivacijaDto,
+  SetPrioritetIdsDto,
+  SetPrioritetMaxDto,
+} from "./dto/podesavanja-predmet.dto";
 
 interface AuthedRequest {
   user: { userId: number; email: string; role: string };
@@ -190,12 +201,106 @@ export class PodesavanjaController {
     return this.settings.competenceFramework(req.user.email);
   }
 
+  // ----- P9: org_profile WRITE (vrednosti firme + očekivanja admin) -----
+  // Literal `expectations/bulk` MORA pre `expectations/:id` (route ordering).
+
+  @Put("company-profile")
+  @RequirePermission(PERMISSIONS.SETTINGS_ORG_PROFILE)
+  updateCompanyProfile(
+    @Req() req: AuthedRequest,
+    @Body() dto: UpdateCompanyProfileDto,
+  ) {
+    return this.settings.updateCompanyProfile(req.user.email, dto);
+  }
+
+  @Post("expectations")
+  @RequirePermission(PERMISSIONS.SETTINGS_ORG_PROFILE)
+  createExpectation(
+    @Req() req: AuthedRequest,
+    @Body() dto: CreateExpectationDto,
+  ) {
+    return this.settings.createExpectation(req.user.email, dto);
+  }
+
+  @Post("expectations/bulk")
+  @RequirePermission(PERMISSIONS.SETTINGS_ORG_PROFILE)
+  bulkCreateExpectations(
+    @Req() req: AuthedRequest,
+    @Body() dto: BulkExpectationDto,
+  ) {
+    return this.settings.bulkCreateExpectations(req.user.email, dto);
+  }
+
+  @Patch("expectations/:id")
+  @RequirePermission(PERMISSIONS.SETTINGS_ORG_PROFILE)
+  updateExpectation(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: UpdateExpectationDto,
+  ) {
+    return this.settings.updateExpectation(req.user.email, id, dto);
+  }
+
+  /** Brisanje očekivanja — admin only (1.0 pravilo). Guard = settings.users (jedini admin-scalar
+   *  ključ u settings domenu — coarse VIDLJIVOST); DB RLS DELETE=admin je autoritativan (42501→403). */
+  @Delete("expectations/:id")
+  @RequirePermission(PERMISSIONS.SETTINGS_USERS)
+  deleteExpectation(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return this.settings.deleteExpectation(req.user.email, id);
+  }
+
   // ----- Podaci / Sistem -----
 
   @Get("predmet-aktivacija")
   @RequirePermission(PERMISSIONS.SETTINGS_PREDMET_AKTIVACIJA)
   predmetAktivacija(@Req() req: AuthedRequest) {
     return this.settings.predmetAktivacija(req.user.email);
+  }
+
+  // ----- P11: predmet-aktivacija WRITE + ⭐ prioritet -----
+  // `prioritet*` rute (literali) MORAJU pre `:itemId` (route ordering). RPC re-validira gate u DB.
+
+  @Get("predmet-aktivacija/prioritet")
+  @RequirePermission(PERMISSIONS.SETTINGS_PREDMET_AKTIVACIJA)
+  predmetPrioritet(@Req() req: AuthedRequest) {
+    return this.settings.predmetPrioritet(req.user.email);
+  }
+
+  @Get("predmet-aktivacija/prioritet/prev")
+  @RequirePermission(PERMISSIONS.SETTINGS_PREDMET_AKTIVACIJA)
+  predmetPrioritetPrev(@Req() req: AuthedRequest) {
+    return this.settings.predmetPrioritetPrev(req.user.email);
+  }
+
+  @Put("predmet-aktivacija/prioritet/max")
+  @RequirePermission(PERMISSIONS.SETTINGS_PREDMET_AKTIVACIJA)
+  setPredmetPrioritetMax(
+    @Req() req: AuthedRequest,
+    @Body() dto: SetPrioritetMaxDto,
+  ) {
+    return this.settings.setPredmetPrioritetMax(req.user.email, dto.max);
+  }
+
+  @Put("predmet-aktivacija/prioritet")
+  @RequirePermission(PERMISSIONS.SETTINGS_PREDMET_AKTIVACIJA)
+  setPredmetPrioritet(
+    @Req() req: AuthedRequest,
+    @Body() dto: SetPrioritetIdsDto,
+  ) {
+    return this.settings.setPredmetPrioritet(req.user.email, dto.itemIds);
+  }
+
+  @Post("predmet-aktivacija/:itemId")
+  @RequirePermission(PERMISSIONS.SETTINGS_PREDMET_AKTIVACIJA)
+  setPredmetAktivacija(
+    @Req() req: AuthedRequest,
+    @Param("itemId") itemId: string,
+    @Body() dto: SetPredmetAktivacijaDto,
+  ) {
+    return this.settings.setPredmetAktivacija(req.user.email, Number(itemId), dto);
   }
 
   @Get("audit-log")

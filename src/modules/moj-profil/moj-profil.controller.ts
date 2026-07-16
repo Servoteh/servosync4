@@ -5,6 +5,7 @@ import {
   Get,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   Put,
   Query,
@@ -34,6 +35,13 @@ import {
   SubmitSelfAssessmentDto,
   SubmitVacationDto,
 } from "./dto/moj-profil-mutation.dto";
+import {
+  AttendanceEventsQueryDto,
+  CreateSelfCheckinDto,
+  SelfAssessmentDto,
+  SelfAssessmentReadQueryDto,
+  UpdateMyExpectationDto,
+} from "./dto/moj-profil-profile.dto";
 
 interface AuthedRequest {
   user: { userId: number; email: string; role: string };
@@ -110,6 +118,57 @@ export class MojProfilController {
   @Get("hours")
   hours(@Req() req: AuthedRequest, @Query() query: MonthlyHoursQueryDto) {
     return this.profil.monthlyHours(req.user.email, query);
+  }
+
+  // ==========================================================================
+  // Drop 2 — READ dopune (razvoj self / 360 read / onboarding / absences / prisustvo / talk detalj)
+  // Guard = profile.self (klasni); scope/row-odluka kroz GUC (RLS/DEFINER). Literali pre :id.
+  // ==========================================================================
+
+  /** Moj plan razvoja (aktivan/najskoriji) + ciljevi + check-in dnevnik ({plan,goals,checkins}). */
+  @Get("dev-plan")
+  devPlan(@Req() req: AuthedRequest) {
+    return this.profil.devPlan(req.user.email);
+  }
+
+  /** 360 samoprocena — pun READ za self modal u jednom pozivu (assessment_open_self + sve). */
+  @Get("assessment/self")
+  selfAssessmentRead(
+    @Req() req: AuthedRequest,
+    @Query() query: SelfAssessmentReadQueryDto,
+  ) {
+    return this.profil.selfAssessmentRead(req.user.email, query.period);
+  }
+
+  /** Moje uvođenje/izlazak (kadr_onboarding_runs active + tasks). */
+  @Get("onboarding")
+  onboarding(@Req() req: AuthedRequest) {
+    return this.profil.onboarding(req.user.email);
+  }
+
+  /** Moja odsustva (absences, tekuća godina). */
+  @Get("absences")
+  absences(@Req() req: AuthedRequest) {
+    return this.profil.absences(req.user.email);
+  }
+
+  /** Sirovi događaji prisustva za jedan dan (attendance_events; day=YYYY-MM-DD). */
+  @Get("attendance/events")
+  attendanceEvents(
+    @Req() req: AuthedRequest,
+    @Query() query: AttendanceEventsQueryDto,
+  ) {
+    return this.profil.attendanceEvents(req.user.email, query.day);
+  }
+
+  /** Detalji jednog razgovora (zapisnik + odluka o zaradi + korektivni planovi/mere).
+   *  Literal `talks/:id/acknowledge` je POST (druga metoda) — GET `talks/:id` ne koliduje. */
+  @Get("talks/:id")
+  talkDetail(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return this.profil.talkDetail(req.user.email, id);
   }
 
   // ==========================================================================
@@ -258,5 +317,44 @@ export class MojProfilController {
     @Body() dto: SubmitSelfAssessmentDto,
   ) {
     return this.profil.submitSelfAssessment(req.user.email, dto);
+  }
+
+  // ---------- Razvoj self (plan samoprocena + check-in) — RLS dp_update_self / dc_insert ----------
+
+  /** Radnik menja SOPSTVENU samoprocenu plana (development_plans.self_assessment_md). */
+  @Patch("dev-plan/:id/self-assessment")
+  updateSelfAssessment(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: SelfAssessmentDto,
+  ) {
+    return this.profil.updateSelfAssessment(
+      req.user.email,
+      id,
+      dto.selfAssessmentMd,
+    );
+  }
+
+  /** Zaposleni upisuje belešku 1-na-1 (development_checkins kind='zaposleni'). */
+  @Post("dev-plan/:id/checkins")
+  addSelfCheckin(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: CreateSelfCheckinDto,
+  ) {
+    return this.profil.addSelfCheckin(req.user.email, id, dto);
+  }
+
+  // ---------- Očekivanja self (status/progress) — RLS ee_update_self ----------
+
+  /** Radnik markira SOPSTVENO očekivanje (status u_toku/ispunjeno ∨ progress). Literal
+   *  `GET /expectations` (druga metoda) ne koliduje sa PATCH `expectations/:id`. */
+  @Patch("expectations/:id")
+  updateMyExpectation(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: UpdateMyExpectationDto,
+  ) {
+    return this.profil.updateMyExpectation(req.user.email, id, dto);
   }
 }

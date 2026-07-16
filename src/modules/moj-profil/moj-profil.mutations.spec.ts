@@ -255,15 +255,15 @@ describe("MojProfilService R2 mutacije", () => {
     expect(eText(s2.tx.$executeRaw)).toContain("assessment_self_submit(");
   });
 
-  it("saveSelfScores: unnest upsert (ON CONFLICT rater_id,competence_id)", async () => {
+  it("saveSelfScores: VALUES upsert (competence_id JE int; ON CONFLICT rater_id,competence_id)", async () => {
     const { svc, tx } = makeSvc();
     await svc.saveSelfScores("u@x", {
       raterId: ID,
-      items: [{ competenceId: EMP, level: 4 }],
+      items: [{ competenceId: 7, level: 4 }],
     });
     const text = eText(tx.$executeRaw);
     expect(text).toContain("INSERT INTO assessment_scores");
-    expect(text).toContain("unnest(");
+    expect(text).toContain("::int"); // competence_id je int, ne uuid (kadrovska paritet)
     expect(text).toContain("ON CONFLICT");
   });
 });
