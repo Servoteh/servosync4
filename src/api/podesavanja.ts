@@ -239,7 +239,7 @@ export function usePredmetPrioritet() {
     queryFn: () => apiFetch<{ data: PredmetPrioritet }>(`${BASE}/predmet-aktivacija/prioritet`),
   });
 }
-export function useAuditLog(params: { tableName?: string; page?: number; pageSize?: number } = {}) {
+export function useAuditLog(params: { tableName?: string; action?: string; page?: number; pageSize?: number } = {}) {
   return useQuery({
     queryKey: [...KEYS.audit, params],
     queryFn: () => apiFetch<{ data: AuditRow[]; meta: PageMeta }>(`${BASE}/audit-log${qs({ ...params })}`),
@@ -450,4 +450,196 @@ export const useDeleteExpectation = () =>
   useAdminMutation<{ id: string }, unknown>(
     (v) => apiFetch<unknown>(`${BASE}/expectations/${v.id}`, { method: 'DELETE' }),
     KEYS.expectations,
+  );
+
+// ------------------------------------------------------------------ Organizacija — struktura CRUD + opis pozicije (WRITE — P8)
+// Paritet 1.0 `podesavanja/orgStructureTab.js` + `services/orgStructure.js` + `orgProfile.js`.
+// Struktura (odeljenja/pododeljenja/radna mesta) = admin (settings.users); opis pozicije
+// (4 md polja) = settings.org_profile; bulk import = sekvencijalni PATCH kroz jedan endpoint.
+// Sve mutacije invalidiraju KEYS.orgStructure. Casing: BE prima/vraća camelCase (JobPosition).
+// 42501 → 403, 23505 → 409, 23514/P0001 → 422.
+
+// ---- Departments
+export interface CreateDepartmentVars {
+  name: string;
+  sortOrder?: number;
+}
+export const useCreateDepartment = () =>
+  useAdminMutation<CreateDepartmentVars, { data: Department }>(
+    (v) => apiFetch<{ data: Department }>(`${BASE}/org/departments`, { method: 'POST', body: JSON.stringify(v) }),
+    KEYS.orgStructure,
+  );
+export const useUpdateDepartment = () =>
+  useAdminMutation<{ id: number; name?: string; sortOrder?: number }, { data: Department }>((v) => {
+    const { id, ...body } = v;
+    return apiFetch<{ data: Department }>(`${BASE}/org/departments/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
+  }, KEYS.orgStructure);
+export const useDeleteDepartment = () =>
+  useAdminMutation<{ id: number }, unknown>(
+    (v) => apiFetch<unknown>(`${BASE}/org/departments/${v.id}`, { method: 'DELETE' }),
+    KEYS.orgStructure,
+  );
+
+// ---- Sub-departments
+export interface CreateSubDepartmentVars {
+  departmentId: number;
+  name: string;
+  sortOrder?: number;
+}
+export const useCreateSubDepartment = () =>
+  useAdminMutation<CreateSubDepartmentVars, { data: SubDepartment }>(
+    (v) => apiFetch<{ data: SubDepartment }>(`${BASE}/org/sub-departments`, { method: 'POST', body: JSON.stringify(v) }),
+    KEYS.orgStructure,
+  );
+export const useUpdateSubDepartment = () =>
+  useAdminMutation<{ id: number; name?: string; sortOrder?: number }, { data: SubDepartment }>((v) => {
+    const { id, ...body } = v;
+    return apiFetch<{ data: SubDepartment }>(`${BASE}/org/sub-departments/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
+  }, KEYS.orgStructure);
+export const useDeleteSubDepartment = () =>
+  useAdminMutation<{ id: number }, unknown>(
+    (v) => apiFetch<unknown>(`${BASE}/org/sub-departments/${v.id}`, { method: 'DELETE' }),
+    KEYS.orgStructure,
+  );
+
+// ---- Job positions (struktura)
+export interface CreateJobPositionVars {
+  departmentId: number;
+  subDepartmentId?: number | null;
+  name: string;
+  sortOrder?: number;
+}
+export const useCreateJobPosition = () =>
+  useAdminMutation<CreateJobPositionVars, { data: JobPosition }>(
+    (v) => apiFetch<{ data: JobPosition }>(`${BASE}/org/job-positions`, { method: 'POST', body: JSON.stringify(v) }),
+    KEYS.orgStructure,
+  );
+export const useUpdateJobPosition = () =>
+  useAdminMutation<{ id: number; name?: string; sortOrder?: number; subDepartmentId?: number | null }, { data: JobPosition }>((v) => {
+    const { id, ...body } = v;
+    return apiFetch<{ data: JobPosition }>(`${BASE}/org/job-positions/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
+  }, KEYS.orgStructure);
+export const useDeleteJobPosition = () =>
+  useAdminMutation<{ id: number }, unknown>(
+    (v) => apiFetch<unknown>(`${BASE}/org/job-positions/${v.id}`, { method: 'DELETE' }),
+    KEYS.orgStructure,
+  );
+
+// ---- Opis pozicije (4 md polja; settings.org_profile)
+/** Telo `PATCH /org/job-positions/:id/profile`. null=obriši sekciju, string=postavi. */
+export interface SaveJobPositionProfileVars {
+  id: number;
+  summaryMd?: string | null;
+  expectationsMd?: string | null;
+  responsibilitiesMd?: string | null;
+  dutiesMd?: string | null;
+}
+export const useSaveJobPositionProfile = () =>
+  useAdminMutation<SaveJobPositionProfileVars, { data: JobPosition }>((v) => {
+    const { id, ...body } = v;
+    return apiFetch<{ data: JobPosition }>(`${BASE}/org/job-positions/${id}/profile`, { method: 'PATCH', body: JSON.stringify(body) });
+  }, KEYS.orgStructure);
+
+// ---- Bulk import opisa (POST /org/job-positions/bulk-profile)
+export interface BulkProfileItem {
+  id: number;
+  summaryMd?: string | null;
+  expectationsMd?: string | null;
+  responsibilitiesMd?: string | null;
+  dutiesMd?: string | null;
+}
+export interface BulkProfileResult {
+  ok: number;
+  fail: number;
+  results: { id: number; ok: boolean; error?: string }[];
+}
+export const useBulkJobPositionProfiles = () =>
+  useAdminMutation<{ items: BulkProfileItem[] }, { data: BulkProfileResult }>(
+    (v) => apiFetch<{ data: BulkProfileResult }>(`${BASE}/org/job-positions/bulk-profile`, { method: 'POST', body: JSON.stringify(v) }),
+    KEYS.orgStructure,
+  );
+
+// ------------------------------------------------------------------ Okvir kompetencija — editor CRUD (WRITE — P10; admin)
+// Paritet 1.0 `ui/podesavanja/competenceFrameworkEditor.js`. GET framework (`useCompetenceFramework`)
+// vraća Prisma camelCase (nameSr/groupId/descriptorSr/textSr/sortOrder). CRUD ide na
+// `/v1/admin/competence/{groups,competences,questions}` (drugi agent BE). Sve invalidira KEYS.competence.
+// Guard = admin (current_user_is_admin u DB); 42501 → 403, 23514/P0001 → 422, 23505 → 409.
+
+/** Ulaz za grupu (osu). `sortOrder` opciono (BE auto-next kad izostane). */
+export interface CompetenceGroupInput {
+  nameSr: string;
+  descriptionSr?: string | null;
+  scope: string;
+  sortOrder?: number;
+}
+/** Jedan opis nivoa u telu kompetencije (prazan `descriptorSr` = obriši nivo). */
+export interface CompetenceLevelInput {
+  level: number;
+  descriptorSr: string;
+}
+/** Ulaz za kompetenciju (naziv + redosled + nivoi 0–5). */
+export interface CompetenceInput {
+  groupId: number;
+  nameSr: string;
+  sortOrder?: number;
+  levels: CompetenceLevelInput[];
+}
+/** Ulaz za pitanje (`groupId` null/izostavljen = opšte pitanje). */
+export interface CompetenceQuestionInput {
+  groupId?: number | null;
+  textSr: string;
+  sortOrder?: number;
+}
+
+const COMP = `${BASE}/competence`;
+
+// ---- Grupe (ose)
+export const useCreateCompetenceGroup = () =>
+  useAdminMutation<CompetenceGroupInput, unknown>(
+    (v) => apiFetch<unknown>(`${COMP}/groups`, { method: 'POST', body: JSON.stringify(v) }),
+    KEYS.competence,
+  );
+export const useUpdateCompetenceGroup = () =>
+  useAdminMutation<{ id: number } & Partial<CompetenceGroupInput>, unknown>((v) => {
+    const { id, ...body } = v;
+    return apiFetch<unknown>(`${COMP}/groups/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
+  }, KEYS.competence);
+export const useDeleteCompetenceGroup = () =>
+  useAdminMutation<{ id: number }, unknown>(
+    (v) => apiFetch<unknown>(`${COMP}/groups/${v.id}`, { method: 'DELETE' }),
+    KEYS.competence,
+  );
+
+// ---- Kompetencije (uklj. nivoe 0–5; prazan descriptorSr = obriši nivo)
+export const useCreateCompetence = () =>
+  useAdminMutation<CompetenceInput, unknown>(
+    (v) => apiFetch<unknown>(`${COMP}/competences`, { method: 'POST', body: JSON.stringify(v) }),
+    KEYS.competence,
+  );
+export const useUpdateCompetence = () =>
+  useAdminMutation<{ id: number } & Partial<CompetenceInput>, unknown>((v) => {
+    const { id, ...body } = v;
+    return apiFetch<unknown>(`${COMP}/competences/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
+  }, KEYS.competence);
+export const useDeleteCompetence = () =>
+  useAdminMutation<{ id: number }, unknown>(
+    (v) => apiFetch<unknown>(`${COMP}/competences/${v.id}`, { method: 'DELETE' }),
+    KEYS.competence,
+  );
+
+// ---- Pitanja (po grupi ili opšta — groupId null)
+export const useCreateCompetenceQuestion = () =>
+  useAdminMutation<CompetenceQuestionInput, unknown>(
+    (v) => apiFetch<unknown>(`${COMP}/questions`, { method: 'POST', body: JSON.stringify(v) }),
+    KEYS.competence,
+  );
+export const useUpdateCompetenceQuestion = () =>
+  useAdminMutation<{ id: number } & Partial<CompetenceQuestionInput>, unknown>((v) => {
+    const { id, ...body } = v;
+    return apiFetch<unknown>(`${COMP}/questions/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
+  }, KEYS.competence);
+export const useDeleteCompetenceQuestion = () =>
+  useAdminMutation<{ id: number }, unknown>(
+    (v) => apiFetch<unknown>(`${COMP}/questions/${v.id}`, { method: 'DELETE' }),
+    KEYS.competence,
   );

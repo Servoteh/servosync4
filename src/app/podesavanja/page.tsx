@@ -11,24 +11,28 @@ import { KorisniciTab } from './_components/korisnici-tab';
 import { UlogeTab } from './_components/uloge-tab';
 import { GridEditorsTab } from './_components/grid-editors-tab';
 import { SistemTab } from './_components/system-tab';
-import {
-  OrganizacijaTab,
-  KompetencijeTab,
-  AuditTab,
-} from './_components/read-tabs';
+import { AuditTab } from './_components/read-tabs';
+import { OrganizacijaTab } from './_components/organizacija-tab';
+import { KompetencijeTab } from './_components/kompetencije-tab';
 import { PredmetAktivacijaTab } from './_components/predmet-aktivacija-tab';
 import { CompanyProfileTab } from './_components/company-profile-tab';
 import { ExpectationsTab } from './_components/expectations-tab';
+import { NotifikacijeTab } from './_components/notifikacije-tab';
+import { IntegracijeTab } from './_components/integracije-tab';
+import { MastersTab } from './_components/masters-tab';
 
 type TabKey =
   | 'korisnici'
   | 'uloge'
   | 'grid'
   | 'organizacija'
+  | 'masters'
   | 'vrednosti'
   | 'ocekivanja'
   | 'kompetencije'
   | 'predmet'
+  | 'notifikacije'
+  | 'integracije'
   | 'audit'
   | 'sistem';
 
@@ -37,10 +41,13 @@ const TAB_DEFS: { key: TabKey; label: string; requires: Permission }[] = [
   { key: 'uloge', label: 'Uloge i dozvole', requires: PERMISSIONS.SETTINGS_USERS },
   { key: 'grid', label: 'Grid urednici', requires: PERMISSIONS.SETTINGS_USERS },
   { key: 'organizacija', label: 'Organizacija', requires: PERMISSIONS.SETTINGS_ORG_PROFILE },
+  { key: 'masters', label: 'Matični podaci', requires: PERMISSIONS.SETTINGS_ORG_PROFILE },
   { key: 'vrednosti', label: 'Vrednosti firme', requires: PERMISSIONS.SETTINGS_ORG_PROFILE },
   { key: 'ocekivanja', label: 'Očekivanja', requires: PERMISSIONS.SETTINGS_ORG_PROFILE },
   { key: 'kompetencije', label: 'Kompetencije', requires: PERMISSIONS.SETTINGS_ORG_PROFILE },
   { key: 'predmet', label: 'Predmeti', requires: PERMISSIONS.SETTINGS_PREDMET_AKTIVACIJA },
+  { key: 'notifikacije', label: 'Notifikacije', requires: PERMISSIONS.SETTINGS_SYSTEM },
+  { key: 'integracije', label: 'Integracije', requires: PERMISSIONS.SETTINGS_SYSTEM },
   { key: 'audit', label: 'Audit log', requires: PERMISSIONS.SETTINGS_AUDIT },
   { key: 'sistem', label: 'Sistem', requires: PERMISSIONS.SETTINGS_SYSTEM },
 ];
@@ -93,10 +100,13 @@ export default function PodesavanjaPage() {
         {tab === 'uloge' && <UlogeTab />}
         {tab === 'grid' && <GridEditorsTab />}
         {tab === 'organizacija' && <OrganizacijaTab />}
+        {tab === 'masters' && <MastersTab onNavigate={(t) => setTab(t as TabKey)} />}
         {tab === 'vrednosti' && <CompanyProfileTab />}
         {tab === 'ocekivanja' && <ExpectationsTab />}
         {tab === 'kompetencije' && <KompetencijeTab />}
         {tab === 'predmet' && <PredmetAktivacijaTab />}
+        {tab === 'notifikacije' && <NotifikacijeTab onNavigate={(t) => setTab(t as TabKey)} />}
+        {tab === 'integracije' && <IntegracijeTab />}
         {tab === 'audit' && <AuditTab />}
         {tab === 'sistem' && <SistemTab />}
       </div>

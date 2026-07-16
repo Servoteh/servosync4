@@ -261,6 +261,68 @@ export type ColleagueOnLeave = {
   department: string | null;
 } & Record<string, unknown>;
 
+// ------------------------------------------------------------- Moj tim (P5)
+// Menadžerska drill-down sekcija. BE agregira roster u opsegu (managed_sub_department_ids
+// kroz `profile.team`): v_employees_safe + v_vacation_balance + absences + get_team_issued_tools
+// (samo brojač po članu). Prazan niz / 403 → kartica se ne prikazuje. Drill učitava alat/karnet
+// po članu lazy. Casing (usklađeno sa BE kontraktom): member polja camelCase (fullName/
+// subDepartmentName/issuedToolsCount), `balance` = snake `v_vacation_balance` kolone,
+// currentAbsence/upcomingAbsence = camel wrapper sa snake `absences` unutra.
+
+/** Jedno odsustvo člana (tekuće ili nadolazeće) — oblik `absences` reda (snake). */
+export type TeamAbsence = {
+  type: string;
+  date_from?: string | null;
+  date_to?: string | null;
+  /** dana do početka (samo za nadolazeće). */
+  days?: number | null;
+  daysToStart?: number | null;
+} & Record<string, unknown>;
+
+/** GO saldo člana — sirov `v_vacation_balance` red (snake kolone). */
+export type TeamBalance = {
+  days_remaining?: number | null;
+  days_earned?: number | null;
+  days_total?: number | null;
+  days_carried_over?: number | null;
+  days_used?: number | null;
+} & Record<string, unknown>;
+
+/** Jedan član tima u rosteru (BE camelCase; balance/absence snake unutra). */
+export type TeamMember = {
+  id: string;
+  fullName: string | null;
+  position: string | null;
+  positionId?: number | null;
+  department?: string | null;
+  subDepartmentId?: number | null;
+  subDepartmentName?: string | null;
+  balance: TeamBalance | null;
+  currentAbsence?: TeamAbsence | null;
+  upcomingAbsence?: TeamAbsence | null;
+  issuedToolsCount?: number | null;
+} & Record<string, unknown>;
+
+export interface TeamData {
+  members: TeamMember[];
+}
+
+/** Zaduženje alata člana (drill) — red `get_team_issued_tools` (snake_case). */
+export type TeamToolRow = {
+  document_id: string;
+  doc_number: string | null;
+  issued_at: string | null;
+  expected_return_date: string | null;
+  document_status?: string | null;
+  oznaka: string | null;
+  naziv: string | null;
+  serijski_broj?: string | null;
+  quantity: string | number | null;
+  unit?: string | null;
+  subgroup_label?: string | null;
+  group_label?: string | null;
+} & Record<string, unknown>;
+
 // ------------------------------------------------------------- Plan razvoja (P3)
 // GET /v1/profile/dev-plan → { data: { plan, goals[], checkins[] } | null }.
 // Plan/checkin polja prate BE kontrakt (snake_case iz v_development_plans / development_checkins);
@@ -317,6 +379,9 @@ const KEYS = {
   absences: ['profile', 'absences'] as const,
   attendanceEvents: ['profile', 'attendance-events'] as const,
   talkDetail: ['profile', 'talk-detail'] as const,
+  team: ['profile', 'team'] as const,
+  teamTools: ['profile', 'team', 'tools'] as const,
+  teamHours: ['profile', 'team', 'hours'] as const,
 };
 
 // ------------------------------------------------------------------ queries
@@ -690,4 +755,58 @@ export const useDeleteHoursRemark = () =>
   useProfileMutation<{ year: number; month: number }>(
     (v) => del(`/hours/remark${qs({ year: v.year, month: v.month })}`),
     hoursKey,
+  );
+
+/* ── Moj tim (P5) — menadžerski roster + drill (alat / karnet / korekcija) ── */
+// Sve iza `profile.team`; BE vraća `{data:{members:[]}}` (prazno/403 = nema opsega).
+// Drill (alat, karnet) enabled tek kad je red otvoren (lazy). Korekcija člana koristi
+// isti `attendance_submit_correction` (allowDayPick) kao self, ali sa `employeeId`.
+
+/** Roster tima u opsegu (bez opsega → prazan `members` → kartica se ne prikazuje). */
+export function useTeam() {
+  return useQuery({
+    queryKey: KEYS.team,
+    // 403 (nema profile.team ili scope) tretiramo kao „nema tima" — bez retry šuma.
+    retry: false,
+    queryFn: () => apiFetch<{ data: TeamData | null; meta?: EnvelopeMeta }>(`${BASE}/team`),
+  });
+}
+
+/** Otvorena zaduženja alata jednog člana (lazy — enabled samo kad je red otvoren). */
+export function useTeamTools(employeeId: string | null) {
+  return useQuery({
+    queryKey: [...KEYS.teamTools, employeeId] as const,
+    enabled: !!employeeId,
+    queryFn: () => apiFetch<{ data: TeamToolRow[] | null; meta?: EnvelopeMeta }>(`${BASE}/team/${employeeId}/tools`),
+  });
+}
+
+/** queryKey + queryFn za karnet jednog člana — deljeno između hooka i `fetchQuery`
+ *  (Karnet tima učitava sve članove imperativno pa keširano deli sa drill hookom). */
+export function teamHoursQuery(employeeId: string, month: string) {
+  return {
+    queryKey: [...KEYS.teamHours, employeeId, month] as const,
+    queryFn: () => apiFetch<{ data: ProfileHours | null; meta?: EnvelopeMeta }>(`${BASE}/team/${employeeId}/hours${qs({ month })}`),
+  };
+}
+
+/** Karnet podaci jednog člana za mesec (isti oblik kao /profile/hours). Lazy. */
+export function useTeamHours(employeeId: string | null, month: string, enabled = true) {
+  return useQuery({
+    ...teamHoursQuery(employeeId ?? '', month),
+    enabled: !!employeeId && !!month && enabled,
+  });
+}
+
+/** Korekcija kucanja za člana tima (šef u ime radnika; allowDayPick, min danas-3). */
+export const useTeamCorrection = () =>
+  useProfileMutation<{ employeeId: string; clientEventId: string; day: string; timeIn?: string; timeOut?: string; reason: string }>(
+    (v) => post(`/team/${v.employeeId}/attendance-correction`, {
+      clientEventId: v.clientEventId,
+      day: v.day,
+      timeIn: v.timeIn,
+      timeOut: v.timeOut,
+      reason: v.reason,
+    }),
+    KEYS.team,
   );

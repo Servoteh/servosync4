@@ -25,6 +25,7 @@ import { AssessmentSection } from './_components/assessment-section';
 import { OnboardingSection } from './_components/onboarding-section';
 import { AbsencesSection } from './_components/absences-section';
 import { DocumentsDeadlinesSection } from './_components/documents-deadlines-section';
+import { TeamSection } from './_components/team-section';
 
 /** 'MMDD' → 'DD.MM.' (paritet 1.0 `_formatSlavaDay`). */
 function formatSlavaDay(mmdd: string | null | undefined): string {
@@ -128,6 +129,8 @@ export default function ProfilPage() {
             <DocumentsSection />
             <ReversiSection />
             <ColleaguesSection />
+            {/* Moj tim (P5) — vidljivo samo upravljačima sa opsegom (kartica se sama sakrije). */}
+            <TeamSection />
           </>
         )}
         {/* Neusaglašenosti (K3) — scope po worker_id (server); prikaz i bez employee profila. */}
