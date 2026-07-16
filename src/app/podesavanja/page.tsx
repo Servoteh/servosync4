@@ -9,15 +9,15 @@ import { PageHeader } from '@/components/ui-kit/page-header';
 import { Tabs, type TabItem } from '@/components/ui-kit/tabs';
 import { KorisniciTab } from './_components/korisnici-tab';
 import { UlogeTab } from './_components/uloge-tab';
+import { GridEditorsTab } from './_components/grid-editors-tab';
+import { SistemTab } from './_components/system-tab';
 import {
-  GridEditorsTab,
   OrganizacijaTab,
   VrednostiTab,
   OcekivanjaTab,
   KompetencijeTab,
   PredmetTab,
   AuditTab,
-  SistemTab,
 } from './_components/read-tabs';
 
 type TabKey =

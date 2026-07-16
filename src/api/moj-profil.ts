@@ -225,6 +225,18 @@ export function useColleaguesOnLeave() {
   return useQuery({ queryKey: KEYS.colleagues, queryFn: () => apiFetch<{ data: ColleagueOnLeave[] }>(`${BASE}/colleagues-on-leave`) });
 }
 
+export interface AckRow {
+  ref_type: string;
+  ref_id: string;
+  label: string | null;
+  acked_at: string | null;
+  acked_by: string | null;
+}
+/** Postojeće e-saglasnosti zaposlenog — za inicijalni „✓ Potvrđeno" status bez klika. */
+export function useAcks() {
+  return useQuery({ queryKey: ['profile', 'acks'] as const, queryFn: () => apiFetch<{ data: AckRow[] }>(`${BASE}/acks`) });
+}
+
 // ------------------------------------------------------------------ mutations
 
 function useProfileMutation<V, R = unknown>(fn: (v: V) => Promise<R>, invalidate: readonly unknown[] = KEYS.all) {
@@ -233,6 +245,9 @@ function useProfileMutation<V, R = unknown>(fn: (v: V) => Promise<R>, invalidate
 }
 function post<T = unknown>(path: string, body?: object): Promise<TxResponse<T>> {
   return apiFetch<TxResponse<T>>(`${BASE}${path}`, { method: 'POST', body: body ? JSON.stringify(body) : undefined });
+}
+function put<T = unknown>(path: string, body?: object): Promise<TxResponse<T>> {
+  return apiFetch<TxResponse<T>>(`${BASE}${path}`, { method: 'PUT', body: body ? JSON.stringify(body) : undefined });
 }
 function del<T = unknown>(path: string): Promise<TxResponse<T>> {
   return apiFetch<TxResponse<T>>(`${BASE}${path}`, { method: 'DELETE' });
@@ -311,3 +326,79 @@ export const useSaveSelfAnswers = () =>
   useProfileMutation<{ raterId: string; items: { questionCode: string; answerText?: string }[] }>((v) => post('/assessment/self/answers', v));
 export const useSubmitSelfAssessment = () =>
   useProfileMutation<{ assessmentId: string }>((v) => post('/assessment/self/submit', v));
+
+/* ── Mesečni sati (karnet self-service) — P1 ── */
+// GET /v1/profile/hours?month=YYYY-MM → dnevni redovi + praznici + karnet totali (BE agregat)
+// + prikazni chips + moja primedba za mesec. Mutacije: PUT/DELETE primedbe (upsert po
+// employee_id+year+month kroz GUC; prazan tekst = brisanje, status→'open').
+
+/** Jedan dan meseca (BE agregat iz grida). Slova + polja mapiraju 1:1 na KarnetRow (camelCase). */
+export interface ProfileHoursDay {
+  ymd: string;
+  day: number;
+  letter: string;
+  hours: number;
+  overtimeHours: number;
+  fieldHours: number;
+  twoMachineHours: number;
+  absenceCode: string | null;
+  absenceSubtype: string | null;
+}
+/** Karnet totali za mesec (isti oblik kao KarnetTotals u hr-pdf). */
+export interface ProfileHoursTotals {
+  redovanRadSati?: number;
+  prekovremeniSati?: number;
+  praznikRadSati?: number;
+  praznikPlaceniSati?: number;
+  dveMasineSati?: number;
+  godisnjiSati?: number;
+  slobodniDaniSati?: number;
+  bolovanje65Sati?: number;
+  bolovanje100Sati?: number;
+  neplacenoDays?: number;
+}
+/** Prikazni zbirovi za chips traku. */
+export interface ProfileHoursChips {
+  radnihSati: number;
+  prisustvoSati: number;
+  godisnjiDani: number;
+  spDani: number;
+  bolovanjeDani: number;
+  slobodniDani: number;
+  prekovremeniH: number;
+  terenH: number;
+}
+export interface ProfileHoursRemark {
+  text: string;
+  status: string;
+  resolvedBy: string | null;
+}
+export interface ProfileHours {
+  month: string; // YYYY-MM
+  days: ProfileHoursDay[];
+  holidays: string[]; // YMD praznika
+  totals: ProfileHoursTotals;
+  chips: ProfileHoursChips;
+  remark: ProfileHoursRemark | null;
+}
+
+export function useProfileHours(month: string) {
+  return useQuery({
+    queryKey: ['profile', 'hours', month] as const,
+    queryFn: () => apiFetch<{ data: ProfileHours | null; meta?: EnvelopeMeta }>(`${BASE}/hours${qs({ month })}`),
+    enabled: !!month,
+  });
+}
+
+const hoursKey = ['profile', 'hours'] as const;
+
+export const useSaveHoursRemark = () =>
+  useProfileMutation<{ clientEventId: string; year: number; month: number; text: string }>(
+    (v) => put('/hours/remark', v),
+    hoursKey,
+  );
+export const useDeleteHoursRemark = () =>
+  useProfileMutation<{ year: number; month: number }>(
+    (v) => del(`/hours/remark${qs({ year: v.year, month: v.month })}`),
+    hoursKey,
+  );

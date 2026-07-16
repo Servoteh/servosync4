@@ -7,53 +7,17 @@ import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { formatDate, formatDateTime } from '@/lib/format';
 import {
-  useGridEditors,
   useOrgStructure,
   useCompanyProfile,
   useAdminExpectations,
   useCompetenceFramework,
   usePredmetAktivacija,
   useAuditLog,
-  useAiModels,
 } from '@/api/podesavanja';
 
 /** Napomena: BE (R1) izlaže SAMO čitanje ovih ekrana; unos/izmena su R2 (dvostrani/RPC put). */
 function ReadOnlyNote() {
   return <p className="mb-3 text-xs text-ink-disabled">Prikaz je informativan (uređivanje stiže u sledećoj fazi — dotad kroz 1.0 Podešavanja).</p>;
-}
-
-// ------------------------------------------------------------------ Grid urednici
-
-export function GridEditorsTab() {
-  const q = useGridEditors();
-  const rows = q.data?.data ?? [];
-  return (
-    <div>
-      <ReadOnlyNote />
-      {rows.length === 0 ? (
-        <EmptyState title="Nema urednika grida" />
-      ) : (
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-line text-left text-2xs uppercase text-ink-secondary">
-              <th className="py-1.5">Email</th>
-              <th className="py-1.5">Napomena</th>
-              <th className="py-1.5">Dodato</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => (
-              <tr key={r.email} className="border-b border-line-soft">
-                <td className="py-1.5 font-mono text-xs text-ink">{r.email}</td>
-                <td className="py-1.5 text-ink-secondary">{r.note || '—'}</td>
-                <td className="py-1.5 tnums text-ink-secondary">{formatDate(r.createdAt)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </div>
-  );
 }
 
 // ------------------------------------------------------------------ Organizacija (struktura)
@@ -317,26 +281,4 @@ export function AuditTab() {
     </div>
   );
 }
-
-// ------------------------------------------------------------------ Sistem (AI modeli)
-
-export function SistemTab() {
-  const q = useAiModels();
-  const s = q.data?.data?.sastanci;
-  return (
-    <div className="space-y-3">
-      <ReadOnlyNote />
-      <div className="rounded-panel border border-line bg-surface p-4">
-        <h3 className="mb-1 text-sm font-semibold text-ink">AI model za „Sažmi zapisnik"</h3>
-        {s ? (
-          <p className="text-sm text-ink-secondary">
-            Trenutno: <span className="font-mono text-ink">{s.model}</span>
-            {s.updated_at && <span className="text-ink-disabled"> · {formatDateTime(s.updated_at)}</span>}
-          </p>
-        ) : (
-          <p className="text-sm text-ink-disabled">Model nije podešen.</p>
-        )}
-      </div>
-    </div>
-  );
-}
+// Sistem tab (AI modeli, WRITE) živi u `system-tab.tsx` — vidi `SistemTab`.

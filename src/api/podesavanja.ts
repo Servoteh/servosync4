@@ -143,6 +143,13 @@ export type AuditRow = {
   changed_fields?: string[] | null;
 } & Record<string, unknown>;
 export type AiModelSetting = { id: number; model: string; updated_at: string; updated_by: string | null } | null;
+/** Cilj (target) AI podešavanja u Sistem tabu. */
+export type AiModelTarget = 'sastanci' | 'montaza';
+/** Odgovor `GET /system/ai-models` — oba modela; svaki `null` ako još nije podešen. */
+export interface AiModelsResponse {
+  sastanci: AiModelSetting;
+  montaza: AiModelSetting;
+}
 
 /** Odgovor D1 mutacija (2.0 master + sy15 propagacija). */
 export interface DualWriteResult {
@@ -218,7 +225,17 @@ export function useAuditLog(params: { tableName?: string; page?: number; pageSiz
   });
 }
 export function useAiModels() {
-  return useQuery({ queryKey: KEYS.aiModels, queryFn: () => apiFetch<{ data: { sastanci: AiModelSetting } }>(`${BASE}/system/ai-models`) });
+  return useQuery({ queryKey: KEYS.aiModels, queryFn: () => apiFetch<{ data: AiModelsResponse }>(`${BASE}/system/ai-models`) });
+}
+
+/** Postavi AI model za jedan cilj (`sastanci`|`montaza`); 42501 → 403 (samo admin). */
+export function useSetAiModel() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { target: AiModelTarget; model: string }) =>
+      apiFetch<{ data: AiModelSetting }>(`${BASE}/system/ai-models`, { method: 'PUT', body: JSON.stringify(v) }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: KEYS.aiModels }),
+  });
 }
 
 // ------------------------------------------------------------------ mutations (D1 dvostrani tok)
@@ -285,4 +302,20 @@ export const useSetMustChangePassword = () =>
 export const useSoftDeleteUser = () =>
   useAdminMutation<{ id: string; confirmEmail: string }, { data: DualWriteResult }>((v) =>
     apiFetch<{ data: DualWriteResult }>(`${BASE}/users/${v.id}`, { method: 'DELETE', body: JSON.stringify({ confirmEmail: v.confirmEmail }) }),
+  );
+
+// ------------------------------------------------------------------ Grid urednici (allowlist CRUD)
+
+/** Dodaj urednika mesečnog grida (POST). 409 = već postoji (duplikat). */
+export const useAddGridEditor = () =>
+  useAdminMutation<{ email: string; note?: string }, { data: GridEditor }>(
+    (v) => apiFetch<{ data: GridEditor }>(`${BASE}/grid-editors`, { method: 'POST', body: JSON.stringify(v) }),
+    KEYS.gridEditors,
+  );
+
+/** Ukloni urednika mesečnog grida po email-u (DELETE). */
+export const useRemoveGridEditor = () =>
+  useAdminMutation<{ email: string }, unknown>(
+    (v) => apiFetch<unknown>(`${BASE}/grid-editors/${encodeURIComponent(v.email)}`, { method: 'DELETE' }),
+    KEYS.gridEditors,
   );

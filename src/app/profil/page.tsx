@@ -7,6 +7,7 @@ import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
 import { useProfileMe, useProfileSummary } from '@/api/moj-profil';
 import { VacationSection } from './_components/vacation-section';
+import { MonthlyHoursSection } from './_components/monthly-hours-section';
 import { MakeupSection, PaidLeaveSection } from './_components/makeup-paidleave-section';
 import { AttendanceSection } from './_components/attendance-section';
 import { NonconformitySection } from './_components/nonconformity-section';
@@ -18,6 +19,7 @@ import {
   ColleaguesSection,
   ReversiSection,
 } from './_components/misc-sections';
+import { DocumentsSection } from './_components/documents-section';
 
 /**
  * Moj profil (1.0 self-service) — 3.0 TALAS D (MODULE_SPEC_pb_profil_podesavanja_30 §0.2/§4).
@@ -79,12 +81,14 @@ export default function ProfilPage() {
         {hasProfile && (
           <>
             <VacationSection />
+            <MonthlyHoursSection employeeName={emp?.full_name ?? user.fullName ?? user.email} />
             <MakeupSection />
             <PaidLeaveSection />
             <AttendanceSection />
             <TalksSection />
             <ExpectationsSection />
             <PositionSection />
+            <DocumentsSection />
             <ReversiSection />
             <ColleaguesSection />
           </>
