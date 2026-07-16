@@ -36,6 +36,16 @@ const DRAWINGS_BUCKET = "production-drawings";
 const BIGTEHN_DRAWINGS_BUCKET = "bigtehn-drawings";
 const SIGNED_URL_TTL = 300;
 
+/** Dozvoljeni MIME tipovi za skice (port 1.0 drawingManager ALLOWED_MIMES). */
+const ALLOWED_DRAWING_MIMES = [
+  "image/jpeg",
+  "image/jpg",
+  "image/png",
+  "image/webp",
+  "image/heic",
+  "application/pdf",
+];
+
 /** Kanon otvorene operacije (§2-6). Kooperacija tab invertuje `is_cooperation_effective`. */
 const OPEN_OPS = Prisma.sql`is_done_in_bigtehn IS FALSE AND rn_zavrsen IS FALSE
   AND is_cooperation_effective IS FALSE AND overlay_archived_at IS NULL
@@ -311,7 +321,14 @@ export class PlanProizvodnjeService {
     const patch: Record<string, unknown> = {};
     if (dto.localStatus !== undefined) patch.localStatus = dto.localStatus;
     if (dto.shiftNote !== undefined) patch.shiftNote = dto.shiftNote;
-    if (dto.shiftSortOrder !== undefined)
+    // Pin-marker: klijent šalje shiftSortOrder=-1 kao „pin-to-top" signal.
+    // Kanon (1.0 pinToTop, services/planProizvodnje.js:1044): stvarna vrednost =
+    // MIN(shift_sort_order postojećih ručnih za ISTU efektivnu mašinu) − 1, tako da
+    // svaki novi pin ide IZNAD svih pinovanih. Bez ručnih redova fallback = 1.
+    // Rešava se u tx (deltu min računamo nad view-om); ostale vrednosti (redosled
+    // iz drag-a, null=unpin) prolaze doslovno.
+    const isPinMarker = dto.shiftSortOrder === -1;
+    if (dto.shiftSortOrder !== undefined && !isPinMarker)
       patch.shiftSortOrder = dto.shiftSortOrder;
     if (dto.assignedMachineCode !== undefined)
       patch.assignedMachineCode = dto.assignedMachineCode;
@@ -343,6 +360,9 @@ export class PlanProizvodnjeService {
       }
     }
     return this.mut(email, async (tx) => {
+      if (isPinMarker) {
+        patch.shiftSortOrder = await this.resolvePinOrder(tx, wo, line);
+      }
       const row = await tx.ppOverlay.upsert({
         where: { workOrderId_lineId: { workOrderId: wo, lineId: line } },
         create: {
@@ -356,6 +376,31 @@ export class PlanProizvodnjeService {
       });
       return { data: jsonSafe(row) };
     });
+  }
+
+  /**
+   * Pin-to-top kanon (1.0 pinToTop): MIN(shift_sort_order) postojećih RUČNIH
+   * (shift_sort_order NOT NULL) operacija ISTE efektivne mašine kao ciljna linija,
+   * minus 1. Bez ručnih redova → 1. Ciljna operacija se isključuje (da već-pinovan
+   * red ne uđe u sopstveni min). Efektivna mašina iz view-a (poštuje reassign).
+   */
+  private async resolvePinOrder(
+    tx: Sy15Tx,
+    wo: bigint,
+    line: bigint,
+  ): Promise<number> {
+    const rows = await tx.$queryRaw<{ min_order: number | null }[]>(
+      Prisma.sql`SELECT MIN(v.shift_sort_order)::int AS min_order
+        FROM v_production_operations_effective v
+        WHERE v.effective_machine_code = (
+            SELECT effective_machine_code FROM v_production_operations_effective
+            WHERE work_order_id = ${wo}::bigint AND line_id = ${line}::bigint LIMIT 1
+          )
+          AND v.shift_sort_order IS NOT NULL
+          AND NOT (v.work_order_id = ${wo}::bigint AND v.line_id = ${line}::bigint)`,
+    );
+    const min = rows[0]?.min_order;
+    return min != null ? min - 1 : 1;
   }
 
   /** Bulk reorder — `shift_sort_order` = 1..n u datom redosledu (jedan tx). */
@@ -523,6 +568,15 @@ export class PlanProizvodnjeService {
   ) {
     if (!file?.buffer?.length) {
       throw new UnprocessableEntityException("Očekivan fajl (multipart `file`)");
+    }
+    // MIME whitelist (port 1.0 drawingManager ALLOWED_MIMES): eksplicitna lista
+    // ILI bilo koji image/* (GAP-PM-19 BE deo). Bez ovoga bilo koji tip prolazi
+    // (fallback application/octet-stream) pa fajl završi u bucket-u van dozvole.
+    const mime = String(file.mimetype ?? "").toLowerCase();
+    if (!ALLOWED_DRAWING_MIMES.includes(mime) && !mime.startsWith("image/")) {
+      throw new UnprocessableEntityException(
+        `Nepodržan tip fajla: ${file.mimetype || "(nepoznat)"}. Dozvoljeni: JPG, PNG, WEBP, HEIC, PDF.`,
+      );
     }
     const wo = BigInt(workOrder);
     const li = BigInt(line);

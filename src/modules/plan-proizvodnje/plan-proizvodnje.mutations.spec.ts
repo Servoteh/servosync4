@@ -122,4 +122,69 @@ describe("PlanProizvodnjeService mutacije (idempotency + merge)", () => {
     expect(args.update.clearedBy).toBe(email);
     expect(args.update.clearedAt).toBeInstanceOf(Date);
   });
+
+  /**
+   * Pin-to-top kanon (GAP-PM-10): klijent šalje shiftSortOrder=-1, BE upisuje
+   * MIN(ručnih iste mašine)−1 → svaki novi pin ide IZNAD prethodnog.
+   * Mock vraća redom MIN=null (nema ručnih) pa MIN=-1 (posle prvog pina).
+   */
+  const makePinService = (mins: (number | null)[]) => {
+    const upserts: unknown[] = [];
+    let i = 0;
+    const tx = {
+      $queryRaw: jest.fn(async () => [{ min_order: mins[i++] ?? null }]),
+      ppOverlay: {
+        upsert: jest.fn(async (args: unknown) => {
+          upserts.push(args);
+          return { id: upserts.length };
+        }),
+      },
+    };
+    const withUserRls = jest.fn(
+      async (_e: string, fn: (t: unknown) => Promise<unknown>) => fn(tx),
+    );
+    const sy15 = { withUserRls } as unknown as Sy15Service;
+    const svc = new PlanProizvodnjeService(sy15, {} as Sy15StorageService);
+    return { svc, upserts };
+  };
+
+  it("pin-to-top: 2 uzastopna pina → prvi=1 (nema ručnih), drugi=−2 (min(−1)−1) — svaki iznad", async () => {
+    // 1) prazan skup ručnih → MIN=null → fallback 1
+    const { svc, upserts } = makePinService([null, -1]);
+    await svc.upsertOverlay(email, {
+      workOrderId: "40681",
+      lineId: "5",
+      shiftSortOrder: -1,
+    });
+    const first = upserts[0] as { create: Record<string, unknown> };
+    expect(first.create.shiftSortOrder).toBe(1);
+
+    // 2) sada postoji ručni red sa −1 → MIN=−1 → novi pin = −2 (iznad prethodnog)
+    await svc.upsertOverlay(email, {
+      workOrderId: "40682",
+      lineId: "9",
+      shiftSortOrder: -1,
+    });
+    const second = upserts[1] as { create: Record<string, unknown> };
+    expect(second.create.shiftSortOrder).toBe(-2);
+  });
+
+  it("pin-to-top: shiftSortOrder != -1 (drag redosled / null unpin) prolazi DOSLOVNO, bez min upita", async () => {
+    const { svc, upserts } = makePinService([]);
+    await svc.upsertOverlay(email, {
+      workOrderId: "1",
+      lineId: "1",
+      shiftSortOrder: 7,
+    });
+    const a = upserts[0] as { create: Record<string, unknown> };
+    expect(a.create.shiftSortOrder).toBe(7);
+
+    await svc.upsertOverlay(email, {
+      workOrderId: "1",
+      lineId: "1",
+      shiftSortOrder: null,
+    });
+    const b = upserts[1] as { create: Record<string, unknown> };
+    expect(b.create.shiftSortOrder).toBeNull();
+  });
 });

@@ -195,7 +195,9 @@ export class PlanProizvodnjeController {
 
   @Post("drawings")
   @RequirePermission(PERMISSIONS.PLAN_PROIZVODNJE_EDIT)
-  @UseInterceptors(FileInterceptor("file", { limits: { fileSize: 25 * MB } }))
+  // 20MB = SQL bucket limit (production-drawings) i 1.0 drawingManager MAX_BYTES;
+  // 25MB je propuštao fajlove koji padnu tek na storage-u (GAP-PM-19 BE deo).
+  @UseInterceptors(FileInterceptor("file", { limits: { fileSize: 20 * MB } }))
   uploadDrawing(
     @Req() req: AuthedRequest,
     @Body() dto: DrawingUploadDto,
