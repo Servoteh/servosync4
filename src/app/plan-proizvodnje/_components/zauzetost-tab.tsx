@@ -2,7 +2,7 @@
 
 import { useMemo } from 'react';
 import { useAllOperations } from '@/api/plan-proizvodnje';
-import { num } from './shared';
+import { plannedSeconds } from './shared';
 
 /** Zauzetost mašina — agregat broja operacija + preostalih minuta po mašini. */
 export function ZauzetostTab() {
@@ -15,8 +15,8 @@ export function ZauzetostTab() {
       const m = String(o.effective_machine_code ?? '—');
       const rec = map.get(m) ?? { machine: m, count: 0, minutes: 0 };
       rec.count += 1;
-      const remaining = Math.max(num(o.komada_total) - num(o.komada_done), 0);
-      rec.minutes += num(o.tk_min) * (remaining || 1) + num(o.tpz_min);
+      // Kanon 1.0: TPZ preskočen ako done>0, remaining=0 → 0 doprinos (plannedSeconds sekunde → minuti).
+      rec.minutes += plannedSeconds(o) / 60;
       map.set(m, rec);
     }
     return [...map.values()].sort((a, b) => b.minutes - a.minutes);

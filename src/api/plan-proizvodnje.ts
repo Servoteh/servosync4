@@ -1,8 +1,10 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { QueryClient } from '@tanstack/react-query';
 import { apiFetch, apiUpload } from './client';
 import { newClientId } from './plan-montaze';
+import { toast } from '@/lib/toast';
 
 // ============================================================================
 // Plan proizvodnje — 3.0 TALAS C (MODULE_SPEC_planovi_pracenje_30.md §3). Data sloj:
@@ -77,6 +79,45 @@ export interface OpRow {
   cooperation_partner: string | null;
   cooperation_expected_return: string | null;
   urgency_reason?: string | null;
+  // ── Kolone koje BE agent PARALELNO dodaje u /operations/all SELECT (machine/dept nose ih preko SELECT *).
+  //    Sve opciono (?:) da tsc/next build prođu nezavisno dok BE još nije živ.
+  original_machine_code?: string | null;
+  customer_short?: string | null;
+  customer_name?: string | null;
+  customer_id?: number | string | null;
+  is_rework?: boolean | null;
+  is_scrap?: boolean | null;
+  rework_pieces?: number | null;
+  scrap_pieces?: number | null;
+  has_bigtehn_drawing?: boolean | null;
+  drawings_count?: number | null;
+  is_ready_manual?: boolean | null;
+  ready_override_by?: string | null;
+  ready_override_at?: string | null;
+  previous_operation_operacija?: number | string | null;
+  // ── TP modal header/log polja (tech-procedure response — header/operations/logs):
+  materijal?: string | null;
+  dimenzija_materijala?: string | null;
+  rn_napomena?: string | null;
+  rn_zavrsen?: boolean | null;
+  rn_zakljucano?: boolean | null;
+  is_done_in_bigtehn?: boolean | null;
+  last_finished_at?: string | null;
+  [k: string]: unknown;
+}
+
+/** Jedan red prijave rada (tech-procedure `logs[]` iz bigtehn_tech_routing_cache). */
+export interface TechLog {
+  operacija: number | string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  machine_code?: string | null;
+  worker_id?: number | string | null;
+  potpis?: string | null;
+  komada?: number | null;
+  prn_timer_seconds?: number | null;
+  is_completed?: boolean | null;
+  napomena?: string | null;
   [k: string]: unknown;
 }
 
@@ -112,7 +153,7 @@ export interface PpDrawing {
 
 export interface TechProcedure {
   operations: OpRow[];
-  logs: Array<Record<string, unknown>>;
+  logs: TechLog[];
   header: OpRow | null;
 }
 
@@ -275,6 +316,68 @@ function usePpMutation<V, R = unknown>(fn: (v: V) => Promise<R>, invalidate: rea
   });
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Optimistički obrazac (GAP-PM-20): onMutate patch keširanih OpRow[] + rollback na
+// grešku (toast ⚠) + toast ✓ na uspeh. Namena — inline akcije u OpsTable (status,
+// hitno, pin, CAM, spremnost, napomena, kooperacija, redosled).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Ključ otvorene operacije za poređenje u optimističkom patch-u. */
+type OpId = { workOrderId: string; lineId: string };
+
+/** Prođi kroz sve keširane operations-liste ({rows}|OpRow[]|search) i patch-uj redove. */
+function patchCachedOps(qc: QueryClient, match: (o: OpRow) => boolean, apply: (o: OpRow) => OpRow): void {
+  const caches = qc.getQueriesData<unknown>({ queryKey: KEYS.operations });
+  for (const [key, data] of caches) {
+    if (!data || typeof data !== 'object') continue;
+    const d = data as { data?: unknown };
+    const payload = d.data;
+    if (Array.isArray(payload)) {
+      qc.setQueryData(key, { ...d, data: (payload as OpRow[]).map((o) => (match(o) ? apply(o) : o)) });
+    } else if (payload && typeof payload === 'object' && Array.isArray((payload as { rows?: unknown }).rows)) {
+      const inner = payload as { rows: OpRow[] };
+      qc.setQueryData(key, { ...d, data: { ...inner, rows: inner.rows.map((o) => (match(o) ? apply(o) : o)) } });
+    }
+  }
+}
+
+/**
+ * Optimistička mutacija sa lokalnim patch-om OpRow-a. `optimistic(v)` vraća delimičan
+ * patch koji se primenjuje na red čiji su work_order_id/line_id u `ids(v)`.
+ */
+function useOptimisticOpMutation<V, R = unknown>(
+  fn: (v: V) => Promise<R>,
+  ids: (v: V) => OpId,
+  optimistic: (v: V) => Partial<OpRow>,
+  msgs?: { ok?: string; err?: string },
+) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: fn,
+    onMutate: async (v: V) => {
+      await qc.cancelQueries({ queryKey: KEYS.operations });
+      const prev = qc.getQueriesData<unknown>({ queryKey: KEYS.operations }).map(([k, d]) => [k, d] as const);
+      const id = ids(v);
+      const patch = optimistic(v);
+      patchCachedOps(
+        qc,
+        (o) => o.work_order_id === id.workOrderId && o.line_id === id.lineId,
+        (o) => ({ ...o, ...patch }),
+      );
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => {
+      const c = ctx as { prev?: (readonly [readonly unknown[], unknown])[] } | undefined;
+      if (c?.prev) for (const [k, d] of c.prev) qc.setQueryData(k as readonly unknown[], d);
+      toast(`⚠ ${msgs?.err ?? 'Nije sačuvano — osvežavam.'}`);
+    },
+    onSuccess: () => {
+      if (msgs?.ok) toast(`✓ ${msgs.ok}`);
+    },
+    onSettled: () => void qc.invalidateQueries({ queryKey: KEYS.operations }),
+  });
+}
+
 function post<T = unknown>(path: string, body?: object): Promise<TxResponse<T>> {
   return apiFetch<TxResponse<T>>(`${BASE}${path}`, { method: 'POST', body: body ? JSON.stringify(body) : undefined });
 }
@@ -306,8 +409,64 @@ export interface OverlayPatch {
 export const useUpsertOverlay = () =>
   usePpMutation<OverlayPatch, TxResponse<PpOverlay>>((v) => post<PpOverlay>('/overlays', v));
 
+/**
+ * Optimistički overlay upsert za inline akcije u tabeli (GAP-PM-20). Patch mapira
+ * camelCase overlay polja na snake_case view kolone da lokalni prikaz odmah reaguje.
+ */
+export const useOptimisticOverlay = (msgs?: { ok?: string; err?: string }) =>
+  useOptimisticOpMutation<OverlayPatch, TxResponse<PpOverlay>>(
+    (v) => post<PpOverlay>('/overlays', v),
+    (v) => ({ workOrderId: v.workOrderId, lineId: v.lineId }),
+    (v) => {
+      const p: Partial<OpRow> = {};
+      if (v.localStatus !== undefined) p.local_status = v.localStatus;
+      if (v.shiftNote !== undefined) p.shift_note = v.shiftNote;
+      if (v.shiftSortOrder !== undefined) p.shift_sort_order = v.shiftSortOrder;
+      if (v.assignedMachineCode !== undefined) p.assigned_machine_code = v.assignedMachineCode;
+      if (v.camReady !== undefined) p.cam_ready = v.camReady;
+      if (v.readyOverride !== undefined) p.ready_override = v.readyOverride;
+      if (v.cooperationStatus !== undefined) p.cooperation_status = v.cooperationStatus;
+      if (v.cooperationPartner !== undefined) p.cooperation_partner = v.cooperationPartner;
+      if (v.cooperationExpectedReturn !== undefined) p.cooperation_expected_return = v.cooperationExpectedReturn;
+      return p;
+    },
+    msgs,
+  );
+
 export const useReorderOverlays = () =>
   usePpMutation<{ items: { workOrderId: string; lineId: string }[] }>((v) => post('/overlays/reorder', { items: v.items }));
+
+/**
+ * Optimistički reorder (drag-drop / „Idi na poziciju N"). Patch-uje red MAŠINE u kešu
+ * na novi redosled (rows), a na grešku vraća prethodno stanje + toast (GAP-PM-09/20).
+ */
+export const useOptimisticReorder = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { machine: string | null; orderedRows: OpRow[] }) =>
+      post('/overlays/reorder', { items: v.orderedRows.map((x) => ({ workOrderId: x.work_order_id, lineId: x.line_id })) }),
+    onMutate: async (v) => {
+      await qc.cancelQueries({ queryKey: KEYS.operations });
+      const prev = qc.getQueriesData<unknown>({ queryKey: KEYS.operations }).map(([k, d]) => [k, d] as const);
+      const caches = qc.getQueriesData<unknown>({ queryKey: [...KEYS.operations, 'machine', v.machine] });
+      for (const [key, data] of caches) {
+        if (!data || typeof data !== 'object') continue;
+        const d = data as { data?: { rows?: OpRow[] } };
+        if (d.data && Array.isArray(d.data.rows)) {
+          qc.setQueryData(key, { ...d, data: { ...d.data, rows: v.orderedRows } });
+        }
+      }
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => {
+      const c = ctx as { prev?: (readonly [readonly unknown[], unknown])[] } | undefined;
+      if (c?.prev) for (const [k, d] of c.prev) qc.setQueryData(k as readonly unknown[], d);
+      toast('⚠ Redosled nije sačuvan — osvežavam.');
+    },
+    onSuccess: () => toast('✓ Redosled sačuvan'),
+    onSettled: () => void qc.invalidateQueries({ queryKey: KEYS.operations }),
+  });
+};
 
 /* ── Urgency ── */
 
@@ -317,6 +476,32 @@ export const useSetUrgent = () =>
   );
 export const useClearUrgent = () =>
   usePpMutation<{ workOrderId: string }>((v) => del(`/urgency/${v.workOrderId}`));
+
+/** Optimistički HITNO toggle (urgency je po RN-u, pa patch-ujemo sve redove istog work_order_id). */
+export const useOptimisticUrgent = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { workOrderId: string; urgent: boolean; reason?: string }) =>
+      v.urgent ? put(`/urgency/${v.workOrderId}`, { reason: v.reason }) : del(`/urgency/${v.workOrderId}`),
+    onMutate: async (v) => {
+      await qc.cancelQueries({ queryKey: KEYS.operations });
+      const prev = qc.getQueriesData<unknown>({ queryKey: KEYS.operations }).map(([k, d]) => [k, d] as const);
+      patchCachedOps(
+        qc,
+        (o) => o.work_order_id === v.workOrderId,
+        (o) => ({ ...o, is_urgent: v.urgent, urgency_reason: v.urgent ? v.reason ?? o.urgency_reason ?? null : null }),
+      );
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => {
+      const c = ctx as { prev?: (readonly [readonly unknown[], unknown])[] } | undefined;
+      if (c?.prev) for (const [k, d] of c.prev) qc.setQueryData(k as readonly unknown[], d);
+      toast('⚠ HITNO nije sačuvano — osvežavam.');
+    },
+    onSuccess: (_r, v) => toast(v.urgent ? '✓ Označeno HITNO' : '✓ HITNO skinuto'),
+    onSettled: () => void qc.invalidateQueries({ queryKey: KEYS.operations }),
+  });
+};
 
 /* ── Reassign (single/bulk; clientEventId obavezan za idempotenciju) ── */
 
