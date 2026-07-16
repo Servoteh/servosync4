@@ -2252,6 +2252,82 @@ export class TechProcessesService {
     };
   }
 
+  /**
+   * `POST /:id/dismiss` — „Odustani" iz „Moji otvoreni" (Nenad 17.07). Zatvara SVOJ
+   * pogrešno otvoren red BEZ dodavanja komada (za redove otvorene greškom kroz probu
+   * kucanja koji nikad neće dostići plan). Za razliku od „Kraj rada" (stopWorkById)
+   * NE akumulira komade — samo `is_process_finished=true` + zatvori eventualnu otvorenu
+   * sesiju (da ne ostane siroče). Audit snapshot u audit_log (povratljivo). Radnik =
+   * kartica ILI prijavljeni nalog (isti izbor kao stopWorkById); machine-access kao guard.
+   */
+  async dismissEntry(id: number, body: StopWorkByIdBody, user?: AuthUser) {
+    // Dismiss NE nosi pieceCount (ne evidentira komade) — validira samo workerCard/note,
+    // ne kroz validateStopWorkById (koji zahteva pieceCount za „Kraj rada").
+    if (
+      body?.workerCard !== undefined &&
+      (typeof body.workerCard !== "string" || !body.workerCard.trim())
+    )
+      throw new BadRequestException(
+        "Polje 'workerCard' mora biti neprazan string (ID kartica).",
+      );
+    if (
+      body?.note !== undefined &&
+      (typeof body.note !== "string" || body.note.trim().length > 500)
+    )
+      throw new BadRequestException(
+        "Polje 'note' mora biti string do 500 karaktera.",
+      );
+    const worker = await this.resolveWorkerFromCardOrUser(body.workerCard, user);
+
+    const head = await this.prisma.techProcess.findUnique({
+      where: { id },
+      select: { workCenterCode: true },
+    });
+    if (!head)
+      throw new NotFoundException(`Tehnološki postupak ${id} ne postoji`);
+    const machineAccessWarning = await this.checkMachineAccess(
+      worker.id,
+      head.workCenterCode,
+    );
+
+    await this.prisma.$transaction(async (tx) => {
+      const tp = await tx.techProcess.findUnique({ where: { id } });
+      if (!tp)
+        throw new NotFoundException(`Tehnološki postupak ${id} ne postoji`);
+      if (tp.isProcessFinished)
+        throw new UnprocessableEntityException(
+          `Operacija (postupak ${tp.id}) je već zatvorena.`,
+        );
+
+      await tx.auditLog.create({
+        data: {
+          action: "DISMISS tech-processes (odustani, bez komada)",
+          entityType: "tech-processes",
+          entityId: String(id),
+          beforeData: this.snapshot(tp),
+          metadata: {
+            byWorkerId: worker.id,
+            ...(body.note?.trim() ? { note: body.note.trim() } : {}),
+          },
+        },
+      });
+
+      // Zatvori eventualnu MOJU otvorenu sesiju na tom redu (da ne ostane siroče),
+      // BEZ menjanja pieceCount (odustajanje ne evidentira ni vreme ni komade).
+      await tx.workTimeEntry.updateMany({
+        where: { workerId: worker.id, techProcessId: id, stoppedAt: null },
+        data: { stoppedAt: new Date() },
+      });
+
+      await tx.techProcess.update({
+        where: { id },
+        data: { isProcessFinished: true, finishedAt: new Date() },
+      });
+    });
+
+    return { data: { id, dismissed: true, machineAccessWarning } };
+  }
+
   private validateStopWorkById(body: StopWorkByIdBody): void {
     const errors: string[] = [];
     if (

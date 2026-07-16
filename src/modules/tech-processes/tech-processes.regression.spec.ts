@@ -76,7 +76,9 @@ function prismaMock() {
     techProcessDocument: { deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
     workTimeEntry: {
       findMany: jest.fn().mockResolvedValue([]),
+      findFirst: jest.fn().mockResolvedValue(null),
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+      updateMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
     auditLog: { create: jest.fn().mockResolvedValue({ id: 1 }) },
     worker: {
@@ -230,5 +232,58 @@ describe("REGRESSION — deleteEntry() (BUG-P1-03: ne briše work_time_entries)"
     expect(prisma.techProcessDocument.deleteMany).toHaveBeenCalledWith({
       where: { techProcessId: 601 },
     });
+  });
+});
+
+describe("PRAKSA (DEO B) — dismissEntry (Odustani iz Moji otvoreni)", () => {
+  it("zatvara red BEZ dodavanja komada + audit DISMISS + zatvori otvorenu sesiju", async () => {
+    const prisma = prismaMock();
+    // resolveWorkerByCard (karta) → worker.findFirst
+    (prisma.worker.findFirst as jest.Mock).mockResolvedValue({
+      id: 105,
+      fullName: "Miloš Cvetković",
+      username: "milos",
+      workerTypeId: 0,
+      cardId: "0001765196",
+      active: true,
+    });
+    (prisma.techProcess.findUnique as jest.Mock)
+      // 1. poziv: head (pre transakcije, samo workCenterCode)
+      .mockResolvedValueOnce({ workCenterCode: "8.4" })
+      // 2. poziv: svež red u transakciji
+      .mockResolvedValueOnce(tpRow({ id: 700, pieceCount: 24, workCenterCode: "8.4" }));
+    const svc = await buildService(prisma);
+
+    const res = await svc.dismissEntry(700, { workerCard: "0001765196" } as never);
+
+    expect(res.data.dismissed).toBe(true);
+    // Red zatvoren, pieceCount NETAKNUT (nije mu se ništa dodalo).
+    const upd = (prisma.techProcess.update as jest.Mock).mock.calls[0][0];
+    expect(upd.where).toEqual({ id: 700 });
+    expect(upd.data.isProcessFinished).toBe(true);
+    expect(upd.data).not.toHaveProperty("pieceCount");
+    // Audit DISMISS upisan pre zatvaranja.
+    const audit = (prisma.auditLog.create as jest.Mock).mock.calls[0][0].data;
+    expect(audit.action).toContain("DISMISS");
+    expect(audit.beforeData).toMatchObject({ id: 700, pieceCount: 24 });
+    // Eventualna otvorena sesija zatvorena (bez menjanja pieceCount).
+    expect(prisma.workTimeEntry.updateMany).toHaveBeenCalledWith({
+      where: { workerId: 105, techProcessId: 700, stoppedAt: null },
+      data: { stoppedAt: expect.any(Date) },
+    });
+  });
+
+  it("već zatvoren red → 422", async () => {
+    const prisma = prismaMock();
+    (prisma.worker.findFirst as jest.Mock).mockResolvedValue({
+      id: 105, fullName: "M", username: "m", workerTypeId: 0, cardId: "c", active: true,
+    });
+    (prisma.techProcess.findUnique as jest.Mock)
+      .mockResolvedValueOnce({ workCenterCode: "8.4" })
+      .mockResolvedValueOnce(tpRow({ id: 701, isProcessFinished: true }));
+    const svc = await buildService(prisma);
+    await expect(
+      svc.dismissEntry(701, { workerCard: "c" } as never),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
   });
 });

@@ -215,6 +215,21 @@ export class TechProcessesController {
     return this.techProcesses.stopWorkById(id, body, req.user);
   }
 
+  /**
+   * „Odustani" iz „Moji otvoreni" (kiosk): zatvara SVOJ pogrešno otvoren red BEZ
+   * dodavanja komada (za redove otvorene greškom kroz probu). Isti nivo dozvole kao
+   * „Kraj rada" (report_work) — kiosk operater čisti svoje redove.
+   */
+  @Post(":id/dismiss")
+  @RequirePermission(PERMISSIONS.TEHNOLOGIJA_REPORT_WORK)
+  dismissEntry(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() body: StopWorkByIdBody,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.techProcesses.dismissEntry(id, body, req.user);
+  }
+
   @Post("control")
   @RequirePermission(PERMISSIONS.TEHNOLOGIJA_APPROVE)
   control(@Body() dto: ControlTechProcessDto) {
