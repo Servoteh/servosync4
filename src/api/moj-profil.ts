@@ -35,10 +35,23 @@ export interface EnvelopeMeta {
 
 // ------------------------------------------------------------------ tipovi
 
+export interface ProfileContract {
+  type: string | null;
+  dateFrom: string | null;
+  dateTo: string | null;
+}
 export interface ProfileEmployee {
   id: string;
   full_name: string | null;
   positionId: number | null;
+  /** P6 (Drop 2) proširenje /me: header + „Dokumenti i rokovi" kartice. */
+  slava?: string | null;
+  /** 'MMDD' — dan slave (formatira se u DD.MM.). */
+  slavaDay?: string | null;
+  hireDate?: string | null;
+  medicalExamExpires?: string | null;
+  medicalExamDate?: string | null;
+  contract?: ProfileContract | null;
 }
 export interface ProfileMe {
   hasProfile: boolean;
@@ -108,6 +121,12 @@ export type AttendanceDay = {
   presence_hours?: number | null;
   time_in?: string | null;
   time_out?: string | null;
+  /** Raw kolone iz v_attendance_daily (paritet 1.0: first_in/last_out/open_intervals). */
+  first_in?: string | null;
+  last_out?: string | null;
+  open_intervals?: number | null;
+  /** Postoji korekcija za ovaj dan (✎) — ako BE red nosi flag. */
+  corrected?: boolean | null;
   status?: string | null;
 } & Record<string, unknown>;
 export interface AttendanceData {
@@ -119,10 +138,80 @@ export interface AttendanceData {
 export type TalkRow = {
   id: string;
   talk_date?: string;
+  talk_type?: string;
   title?: string | null;
   status?: string;
   shared_at?: string | null;
   acknowledged_at?: string | null;
+} & Record<string, unknown>;
+
+// ---------------------------------------------- P6 (Drop 2): onboarding / odsustva / prisustvo drill / razgovor detalji
+
+/** 🚀 Moje uvođenje — jedan onboarding/offboarding run (read-only, status vodi HR). */
+export interface OnboardingTask {
+  id: string;
+  runId: string;
+  title: string;
+  status: 'done' | 'skipped' | 'open' | string;
+  due_date: string | null;
+  assignee_hint: string | null;
+}
+export interface OnboardingRun {
+  id: string;
+  title: string;
+  status: string;
+  /** 0–100 (BE agregat po zadacima). */
+  progress: number;
+}
+export interface OnboardingData {
+  runs: OnboardingRun[];
+  tasks: OnboardingTask[];
+}
+
+/** 🗓 Moja odsustva — jedan red (tekuća godina). */
+export type AbsenceRow = {
+  type: string;
+  date_from: string;
+  date_to: string;
+  days_count: number | null;
+  note: string | null;
+} & Record<string, unknown>;
+
+/** Prisustvo drill — jedan prolaz sa terminala. */
+export type AttendanceEvent = {
+  event_ts_local: string;
+  direction: string;
+  terminal_name: string | null;
+  reason: string | null;
+} & Record<string, unknown>;
+
+/** Detalji jednog razgovora (zapisnik + odluka o zaradi + korektivne mere). */
+export interface TalkMeasure {
+  description_md: string | null;
+  status: string;
+  due_date: string | null;
+}
+export interface TalkCorrectivePlan {
+  id: string;
+  reason_md: string | null;
+  status: string;
+  followup_date: string | null;
+  measures: TalkMeasure[];
+}
+export type TalkDetail = {
+  id: string;
+  talk_type?: string;
+  title?: string | null;
+  talk_date?: string | null;
+  conducted_by?: string | null;
+  status?: string;
+  acknowledged_at?: string | null;
+  zapisnik_md?: string | null;
+  raise_decision?: string | null;
+  raise_percent?: number | null;
+  raise_effective_from?: string | null;
+  raise_note?: string | null;
+  correctivePlans?: TalkCorrectivePlan[];
 } & Record<string, unknown>;
 
 export interface Expectation {
@@ -135,6 +224,8 @@ export interface Expectation {
   status: string;
   category: string;
   progress: number;
+  /** Razvojni plan (dev-plan) čiji je cilj ovo očekivanje; null = samostalno očekivanje. */
+  planId: string | null;
   completedAt: string | null;
   completionNote: string | null;
   createdBy: string | null;
@@ -170,6 +261,43 @@ export type ColleagueOnLeave = {
   department: string | null;
 } & Record<string, unknown>;
 
+// ------------------------------------------------------------- Plan razvoja (P3)
+// GET /v1/profile/dev-plan → { data: { plan, goals[], checkins[] } | null }.
+// Plan/checkin polja prate BE kontrakt (snake_case iz v_development_plans / development_checkins);
+// goals su employee_expectations sa plan_id (isti oblik kao Expectation, camelCase Prisma model).
+// Napomena o robusnosti: čitanje plana ide kroz `devPlanField` (podnosi i camelCase alias).
+
+/** Zaglavlje razvojnog plana (paritet 1.0 v_development_plans red). */
+export interface DevPlan {
+  id: string;
+  period_label: string;
+  career_goal_md: string | null;
+  summary_md: string | null;
+  self_assessment_md: string | null;
+  /** Naziv ciljne pozicije (BE join na job_positions). */
+  target_position: string | null;
+  /** Ime mentora (BE join na v_employees_safe). */
+  mentor: string | null;
+  /** Ukupan napredak plana 0–100 (BE agregat po ciljevima). */
+  progress: number | null;
+  status?: string;
+  [k: string]: unknown;
+}
+/** Beleška 1-na-1 dnevnika (development_checkins). */
+export interface DevCheckin {
+  id: string;
+  /** 'zaposleni' | 'upravljac' (author_kind). */
+  kind: string | null;
+  note_md: string | null;
+  checkin_date: string | null;
+  [k: string]: unknown;
+}
+export interface DevPlanData {
+  plan: DevPlan;
+  goals: Expectation[];
+  checkins: DevCheckin[];
+}
+
 // ------------------------------------------------------------------ query keys
 
 const KEYS = {
@@ -181,9 +309,14 @@ const KEYS = {
   attendance: ['profile', 'attendance'] as const,
   talks: ['profile', 'talks'] as const,
   expectations: ['profile', 'expectations'] as const,
+  devPlan: ['profile', 'dev-plan'] as const,
   position: ['profile', 'position'] as const,
   companyValues: ['profile', 'company-values'] as const,
   colleagues: ['profile', 'colleagues-on-leave'] as const,
+  onboarding: ['profile', 'onboarding'] as const,
+  absences: ['profile', 'absences'] as const,
+  attendanceEvents: ['profile', 'attendance-events'] as const,
+  talkDetail: ['profile', 'talk-detail'] as const,
 };
 
 // ------------------------------------------------------------------ queries
@@ -215,6 +348,10 @@ export function useTalks() {
 export function useExpectations() {
   return useQuery({ queryKey: KEYS.expectations, queryFn: () => apiFetch<{ data: Expectation[] | null; meta?: EnvelopeMeta }>(`${BASE}/expectations`) });
 }
+/** Razvojni plan zaposlenog (plan + ciljevi + dnevnik 1-na-1). `data:null` = nema plana. */
+export function useDevPlan() {
+  return useQuery({ queryKey: KEYS.devPlan, queryFn: () => apiFetch<{ data: DevPlanData | null; meta?: EnvelopeMeta }>(`${BASE}/dev-plan`) });
+}
 export function usePosition() {
   return useQuery({ queryKey: KEYS.position, queryFn: () => apiFetch<{ data: JobPositionInfo | null; meta?: EnvelopeMeta }>(`${BASE}/position`) });
 }
@@ -223,6 +360,39 @@ export function useCompanyValues() {
 }
 export function useColleaguesOnLeave() {
   return useQuery({ queryKey: KEYS.colleagues, queryFn: () => apiFetch<{ data: ColleagueOnLeave[] }>(`${BASE}/colleagues-on-leave`) });
+}
+
+// ---------------------------------------------- P6 (Drop 2): onboarding / odsustva / prisustvo drill / razgovor detalji
+
+/** 🚀 Moje uvođenje — aktivni onboarding/offboarding tokovi + zadaci (read-only). */
+export function useOnboarding() {
+  return useQuery({
+    queryKey: KEYS.onboarding,
+    queryFn: () => apiFetch<{ data: OnboardingData | null; meta?: EnvelopeMeta }>(`${BASE}/onboarding`),
+  });
+}
+/** 🗓 Moja odsustva (tekuća godina). */
+export function useAbsences() {
+  return useQuery({
+    queryKey: KEYS.absences,
+    queryFn: () => apiFetch<{ data: AbsenceRow[] | null; meta?: EnvelopeMeta }>(`${BASE}/absences`),
+  });
+}
+/** Prolazi za jedan dan — lazy (enabled samo kad je red otvoren). */
+export function useAttendanceEvents(day: string | null) {
+  return useQuery({
+    queryKey: [...KEYS.attendanceEvents, day] as const,
+    queryFn: () => apiFetch<{ data: AttendanceEvent[] | null; meta?: EnvelopeMeta }>(`${BASE}/attendance/events${qs({ day })}`),
+    enabled: !!day,
+  });
+}
+/** Detalji jednog razgovora (zapisnik + odluka o zaradi + korektivne mere). */
+export function useTalkDetail(id: string | null) {
+  return useQuery({
+    queryKey: [...KEYS.talkDetail, id] as const,
+    queryFn: () => apiFetch<{ data: TalkDetail | null; meta?: EnvelopeMeta }>(`${BASE}/talks/${id}`),
+    enabled: !!id,
+  });
 }
 
 export interface AckRow {
@@ -316,16 +486,135 @@ export const useAcknowledgeTalk = () =>
 
 /* ── 360 samoprocena ── */
 
+// READ kontrakt (P4-BE, GET /v1/profile/assessment/self?period=): agregat scope+framework+
+// rater+moje ocene/odgovori + rezultati (radar) za samoprocenu. assessmentId=null → profil/
+// pozicija nisu povezani; prazan scope → pozicija nema profil kompetencija.
+
+export interface SelfAssessmentInfo {
+  id: string;
+  status: string; // draft | collecting | closed | shared
+  periodLabel?: string | null;
+  visibleToEmployee?: boolean;
+}
+export interface SelfRater {
+  id: string;
+  status?: string; // pending | submitted
+}
+/** Red opsega procene (v_assessment_scope): grupa→kompetencija profila pozicije. */
+export interface AssessmentScopeRow {
+  group_id: number;
+  group_name: string;
+  group_sort?: number;
+  scope: string; // core | strucna | liderska
+  competence_id: number;
+  competence_name: string;
+  comp_sort?: number;
+}
+/** Grupa okvira (v_competence_framework) sa kompetencijama i nivoima 0–5. */
+export interface FrameworkLevel {
+  level: number;
+  descriptor: string;
+}
+export interface FrameworkCompetence {
+  id: number;
+  name: string;
+  levels: FrameworkLevel[];
+}
+export interface FrameworkGroup {
+  id: number;
+  name: string;
+  scope?: string;
+  competences: FrameworkCompetence[];
+}
+export interface CompetenceQuestion {
+  code: string;
+  text_sr: string;
+  group_id: number | null;
+}
+export interface SelfScore {
+  competence_id: number;
+  level: number | null;
+  comment: string | null;
+}
+export interface SelfAnswer {
+  question_code: string;
+  answer_text: string | null;
+}
+/** Agregat rezultat (assessment_results) — po grupi/kompetenciji, za radar/tabelu. */
+export interface AssessmentResultRow {
+  scope_kind: string; // group | competence
+  ref_id: number;
+  self_avg?: number | null;
+  peer_avg?: number | null;
+  leader_val?: number | null;
+  target_val?: number | null;
+}
+export interface SelfAssessmentData {
+  assessmentId: string | null;
+  assessment: SelfAssessmentInfo | null;
+  scope: AssessmentScopeRow[];
+  selfRater: SelfRater | null;
+  framework: FrameworkGroup[];
+  questions: CompetenceQuestion[];
+  scores: SelfScore[];
+  answers: SelfAnswer[];
+  results: AssessmentResultRow[];
+  visibleToEmployee: boolean;
+}
+
+/** Samoprocena (360°) — agregat za modal na /profil. `period` opciono (default tekuća godina na BE). */
+export function useSelfAssessment(period?: string, enabled = true) {
+  return useQuery({
+    queryKey: ['profile', 'assessment', 'self', period ?? 'current'] as const,
+    enabled,
+    retry: false,
+    queryFn: () => apiFetch<{ data: SelfAssessmentData | null; meta?: EnvelopeMeta }>(`${BASE}/assessment/self${qs({ period })}`),
+  });
+}
+
 export const useOpenSelfAssessment = () =>
   useProfileMutation<{ period?: string }, TxResponse<{ assessmentId: unknown }>>((v) => post('/assessment/self/open', v));
 export const useSaveSelfScores = () =>
-  useProfileMutation<{ raterId: string; items: { competenceId: string; level?: number | null; comment?: string }[] }>((v) =>
+  useProfileMutation<{ raterId: string; items: { competenceId: number; level?: number | null; comment?: string }[] }>((v) =>
     post('/assessment/self/scores', v),
   );
 export const useSaveSelfAnswers = () =>
   useProfileMutation<{ raterId: string; items: { questionCode: string; answerText?: string }[] }>((v) => post('/assessment/self/answers', v));
 export const useSubmitSelfAssessment = () =>
   useProfileMutation<{ assessmentId: string }>((v) => post('/assessment/self/submit', v));
+
+/* ── Plan razvoja + Moja očekivanja (self-write) — P3 ── */
+// Samoprocena razvojnog plana (PATCH self_assessment_md kroz dp_update_self RLS).
+// Check-in beleške (zaposleni kind; idempotentno preko clientEventId).
+// Očekivanja: progress slider + status tranzicije (u_toku/ispunjeno) kroz ee_update_self RLS.
+
+/** Snimi „Moju samoprocenu" na razvojnom planu (PATCH /dev-plan/:id/self-assessment). */
+export const useSaveSelfAssessment = () =>
+  useProfileMutation<{ id: string; selfAssessmentMd: string | null }>(
+    (v) => apiFetch<TxResponse>(`${BASE}/dev-plan/${v.id}/self-assessment`, {
+      method: 'PATCH',
+      body: JSON.stringify({ selfAssessmentMd: v.selfAssessmentMd }),
+    }),
+    KEYS.devPlan,
+  );
+
+/** Dodaj belešku u dnevnik 1-na-1 (POST /dev-plan/:id/checkins; idempotentno). */
+export const useAddCheckin = () =>
+  useProfileMutation<{ id: string; clientEventId: string; noteMd: string }>(
+    (v) => post(`/dev-plan/${v.id}/checkins`, { clientEventId: v.clientEventId, noteMd: v.noteMd }),
+    KEYS.devPlan,
+  );
+
+/** Radnik menja SOPSTVENO očekivanje: progres i/ili status (PATCH /expectations/:id). */
+export const useUpdateMyExpectation = () =>
+  useProfileMutation<{ id: string; status?: 'u_toku' | 'ispunjeno'; progress?: number; completionNote?: string }>(
+    (v) => apiFetch<TxResponse>(`${BASE}/expectations/${v.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: v.status, progress: v.progress, completionNote: v.completionNote }),
+    }),
+    // Ciljevi žive i u dev-plan-u (goals) i u samostalnim očekivanjima — invalidiraj oba.
+    KEYS.all,
+  );
 
 /* ── Mesečni sati (karnet self-service) — P1 ── */
 // GET /v1/profile/hours?month=YYYY-MM → dnevni redovi + praznici + karnet totali (BE agregat)

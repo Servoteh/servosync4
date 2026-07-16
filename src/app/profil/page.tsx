@@ -13,13 +13,32 @@ import { AttendanceSection } from './_components/attendance-section';
 import { NonconformitySection } from './_components/nonconformity-section';
 import {
   TalksSection,
-  ExpectationsSection,
   PositionSection,
   CompanyValuesSection,
   ColleaguesSection,
   ReversiSection,
 } from './_components/misc-sections';
+import { ExpectationsSection } from './_components/expectations-section';
+import { DevelopmentSection } from './_components/development-section';
 import { DocumentsSection } from './_components/documents-section';
+import { AssessmentSection } from './_components/assessment-section';
+import { OnboardingSection } from './_components/onboarding-section';
+import { AbsencesSection } from './_components/absences-section';
+import { DocumentsDeadlinesSection } from './_components/documents-deadlines-section';
+
+/** 'MMDD' → 'DD.MM.' (paritet 1.0 `_formatSlavaDay`). */
+function formatSlavaDay(mmdd: string | null | undefined): string {
+  if (!mmdd || mmdd.length !== 4) return mmdd ?? '';
+  return `${mmdd.slice(2)}.${mmdd.slice(0, 2)}.`;
+}
+/** dd.MM.yyyy. (za header „Zaposlen od"; lokalno da ne uvozimo lib u presek imena). */
+function fmtYmd(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()}.`;
+}
 
 /**
  * Moj profil (1.0 self-service) — 3.0 TALAS D (MODULE_SPEC_pb_profil_podesavanja_30 §0.2/§4).
@@ -52,14 +71,27 @@ export default function ProfilPage() {
       <PageHeader title="Moj profil" />
       <div className="mx-auto w-full max-w-4xl flex-1 space-y-4 overflow-auto p-6">
         {/* Header */}
-        <div className="flex items-center gap-3 rounded-panel border border-line bg-surface p-4">
+        <div className="flex flex-wrap items-center gap-3 rounded-panel border border-line bg-surface p-4">
           <div className="grid h-12 w-12 place-items-center rounded-full bg-accent-subtle text-lg font-semibold text-accent">
             {(emp?.full_name ?? user.email)[0]?.toUpperCase()}
           </div>
-          <div>
+          <div className="min-w-0 flex-1">
             <div className="text-base font-semibold text-ink">{emp?.full_name ?? user.fullName ?? user.email}</div>
             <div className="text-sm text-ink-secondary">{user.email}</div>
+            {emp?.slava && (
+              <div className="mt-1 text-xs text-ink-secondary">
+                🕯 Slava: <strong className="text-ink">{emp.slava}</strong>
+                {emp.slavaDay && <span className="opacity-70"> ({formatSlavaDay(emp.slavaDay)})</span>}
+              </div>
+            )}
           </div>
+          {emp?.hireDate && (
+            <div className="text-right text-xs text-ink-secondary">
+              Zaposlen/a od
+              <br />
+              <strong className="text-ink">{fmtYmd(emp.hireDate)}</strong>
+            </div>
+          )}
         </div>
 
         {!hasProfile && (
@@ -80,14 +112,19 @@ export default function ProfilPage() {
 
         {hasProfile && (
           <>
+            <OnboardingSection />
             <VacationSection />
             <MonthlyHoursSection employeeName={emp?.full_name ?? user.fullName ?? user.email} />
             <MakeupSection />
             <PaidLeaveSection />
             <AttendanceSection />
+            <AbsencesSection />
             <TalksSection />
             <ExpectationsSection />
+            <DevelopmentSection />
+            <AssessmentSection />
             <PositionSection />
+            <DocumentsDeadlinesSection />
             <DocumentsSection />
             <ReversiSection />
             <ColleaguesSection />

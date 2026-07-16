@@ -1,13 +1,19 @@
 'use client';
 
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Button } from '@/components/ui-kit/button';
 import { Input, FormField } from '@/components/ui-kit/form-field';
 import { Textarea } from '@/components/ui-kit/textarea';
 import { ApiError } from '@/api/client';
 import { formatDate } from '@/lib/format';
-import { newClientEventId, useAttendance, useSubmitCorrection, type AttendanceDay } from '@/api/moj-profil';
+import {
+  newClientEventId,
+  useAttendance,
+  useAttendanceEvents,
+  useSubmitCorrection,
+  type AttendanceDay,
+} from '@/api/moj-profil';
 import { Section } from './section';
 
 function ym(d: Date): { from: string; to: string; label: string } {
@@ -20,6 +26,20 @@ function num(v: unknown): number {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
 }
+function hhmm(v: unknown): string {
+  const s = v == null ? '' : String(v);
+  // 'HH:MM' iz time kolone ili '…THH:MM' iz timestampa.
+  if (s.includes('T')) return s.slice(11, 16) || '—';
+  return s.slice(0, 5) || '—';
+}
+const DIR_LABEL: Record<string, string> = {
+  in: 'Ulaz',
+  out: 'Izlaz',
+  break: 'Pauza',
+  official_out: 'Služb. izlaz',
+  other: 'Ostalo',
+  unknown: '—',
+};
 
 export function AttendanceSection() {
   const [cursor, setCursor] = useState(() => {
@@ -31,6 +51,8 @@ export function AttendanceSection() {
   const q = useAttendance({ from, to });
   const days = q.data?.data?.days ?? [];
   const [corr, setCorr] = useState<AttendanceDay | null>(null);
+  const [openDay, setOpenDay] = useState<string | null>(null);
+  const today = new Date().toISOString().slice(0, 10);
 
   return (
     <Section icon="⏱" title="Moje prisustvo (ulazi/izlazi)">
@@ -48,7 +70,7 @@ export function AttendanceSection() {
         </button>
       </div>
       <p className="mb-2 text-xs text-ink-disabled">
-        Prolazi sa kapije, hala i kioska. ⚠ = izlaz nije otkucan → „Ispravi" (uz obrazloženje; važi za poslednja 3 dana).
+        Prolazi sa kapije, hala i kioska. Klik na red = prolazi tog dana. ✎ korigovano · ⚠ izlaz nije otkucan · 🌙 preko ponoći.
       </p>
       {q.isLoading ? (
         <p className="text-sm text-ink-disabled">Učitavanje…</p>
@@ -67,21 +89,56 @@ export function AttendanceSection() {
           </thead>
           <tbody>
             {days.map((d, i) => {
-              const missingOut = !!d.time_in && !d.time_out;
+              const firstIn = d.first_in ?? d.time_in;
+              const lastOut = d.last_out ?? d.time_out;
+              const overnight = !!firstIn && !!lastOut && String(lastOut) < String(firstIn);
+              const openIntervals = num(d.open_intervals);
+              const missingOut = (openIntervals > 0 || (!!firstIn && !lastOut)) && d.day.slice(0, 10) !== today && !overnight;
+              const corrected = d.corrected === true;
+              const isOpen = openDay === d.day;
               return (
-                <tr key={i} className="border-b border-line-soft">
-                  <td className="py-1.5 tnums">{formatDate(d.day)}</td>
-                  <td className="py-1.5 tnums">{(d.time_in as string)?.slice(0, 5) || '—'}</td>
-                  <td className="py-1.5 tnums">
-                    {(d.time_out as string)?.slice(0, 5) || (missingOut ? <span className="text-status-warn">⚠</span> : '—')}
-                  </td>
-                  <td className="py-1.5 tnums">{d.presence_hours != null ? num(d.presence_hours).toFixed(2) : '—'}</td>
-                  <td className="py-1.5 text-right">
-                    <button onClick={() => setCorr(d)} className="text-xs text-accent hover:underline">
-                      Ispravi
-                    </button>
-                  </td>
-                </tr>
+                <Fragment key={i}>
+                  <tr
+                    className="cursor-pointer border-b border-line-soft hover:bg-surface-2"
+                    onClick={() => setOpenDay(isOpen ? null : d.day)}
+                  >
+                    <td className="py-1.5 tnums">
+                      {formatDate(d.day)}{' '}
+                      {corrected ? (
+                        <span title="Korigovano uz obrazloženje">✎</span>
+                      ) : missingOut ? (
+                        <span className="text-status-warn" title="Izlaz nije otkucan">
+                          ⚠
+                        </span>
+                      ) : overnight ? (
+                        <span title="Smena preko ponoći">🌙</span>
+                      ) : null}
+                    </td>
+                    <td className="py-1.5 tnums">{hhmm(firstIn)}</td>
+                    <td className="py-1.5 tnums">
+                      {lastOut ? hhmm(lastOut) : missingOut ? <span className="text-status-warn">nije otkucan</span> : '—'}
+                    </td>
+                    <td className="py-1.5 tnums">{d.presence_hours != null ? num(d.presence_hours).toFixed(2) : '—'}</td>
+                    <td className="py-1.5 text-right">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setCorr(d);
+                        }}
+                        className="text-xs text-accent hover:underline"
+                      >
+                        Ispravi
+                      </button>
+                    </td>
+                  </tr>
+                  {isOpen && (
+                    <tr>
+                      <td colSpan={5} className="bg-surface-2 px-3 pb-3 pt-1">
+                        <AttendanceDrill day={d.day} />
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
               );
             })}
           </tbody>
@@ -89,6 +146,24 @@ export function AttendanceSection() {
       )}
       {corr && <CorrectionModal day={corr} onClose={() => setCorr(null)} />}
     </Section>
+  );
+}
+
+/** Prolazi jednog dana (lazy) — HH:MM · smer · terminal · razlog. */
+function AttendanceDrill({ day }: { day: string }) {
+  const q = useAttendanceEvents(day.slice(0, 10));
+  if (q.isLoading) return <p className="text-xs text-ink-disabled">Učitavam prolaze…</p>;
+  const events = q.data?.data ?? [];
+  if (events.length === 0) return <p className="text-xs text-ink-disabled">Nema prolaza.</p>;
+  return (
+    <ul className="space-y-0.5 text-xs text-ink-secondary">
+      {events.map((e, i) => (
+        <li key={i} className="tnums">
+          {hhmm(e.event_ts_local)} · {DIR_LABEL[e.direction] ?? e.direction} · {e.terminal_name ?? '—'}
+          {e.reason && <em className="text-ink-disabled"> ({e.reason})</em>}
+        </li>
+      ))}
+    </ul>
   );
 }
 

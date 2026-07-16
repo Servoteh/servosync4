@@ -1,19 +1,48 @@
 'use client';
 
+import { useState } from 'react';
 import { Button } from '@/components/ui-kit/button';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
+import { Dialog } from '@/components/ui-kit/dialog';
 import { Markdown } from '@/lib/markdown';
 import { formatDate } from '@/lib/format';
 import {
   useTalks,
+  useTalkDetail,
   useAcknowledgeTalk,
-  useExpectations,
   usePosition,
   useCompanyValues,
   useColleaguesOnLeave,
+  type TalkRow,
 } from '@/api/moj-profil';
 import { useMyIssuedTools, useMyConsumed } from '@/api/reversi';
 import { Section } from './section';
+
+// ------------------------------------------------------------------ Razgovori — labele (paritet 1.0 talks.js)
+
+const TALK_TYPE_LABEL: Record<string, string> = {
+  godisnji: 'Godišnji (učinak i zarada)',
+  korektivni: 'Korektivni',
+  jedan_na_jedan: '1-na-1',
+  ostalo: 'Ostalo',
+};
+const RAISE_DECISION_LABEL: Record<string, string> = {
+  da: 'Povećanje — DA',
+  ne: 'Bez povećanja',
+  odlozeno: 'Odloženo',
+};
+const CPLAN_STATUS_LABEL: Record<string, string> = {
+  otvoren: 'Otvoren',
+  u_toku: 'U toku',
+  zatvoren_uspesno: 'Zatvoren — uspešno',
+  zatvoren_neuspesno: 'Zatvoren — neuspešno',
+};
+const MEASURE_STATUS_LABEL: Record<string, string> = {
+  otvoreno: 'Otvoreno',
+  u_toku: 'U toku',
+  ispunjeno: 'Ispunjeno',
+  neispunjeno: 'Neispunjeno',
+};
 
 // ------------------------------------------------------------------ Razgovori
 
@@ -22,6 +51,7 @@ export function TalksSection() {
   const rows = q.data?.data ?? [];
   const ackM = useAcknowledgeTalk();
   const pending = rows.filter((t) => t.shared_at && !t.acknowledged_at).length;
+  const [openTalk, setOpenTalk] = useState<TalkRow | null>(null);
 
   return (
     <Section icon="🗣" title="Razgovori sa nadređenim" badge={pending ? <StatusBadge tone="warn" label={`${pending} čeka`} /> : undefined}>
@@ -31,12 +61,16 @@ export function TalksSection() {
         <ul className="space-y-2">
           {rows.map((t) => {
             const acked = !!t.acknowledged_at;
+            const typeLabel = (t.talk_type && TALK_TYPE_LABEL[t.talk_type]) || 'Razgovor';
             return (
               <li key={t.id} className="flex items-center justify-between rounded-control border border-line-soft bg-surface-2 px-3 py-2">
-                <div>
-                  <div className="text-sm font-medium text-ink">{t.title || 'Razgovor'}</div>
-                  <div className="text-xs text-ink-secondary">{t.talk_date ? formatDate(t.talk_date) : ''}</div>
-                </div>
+                <button type="button" onClick={() => setOpenTalk(t)} className="min-w-0 flex-1 text-left hover:opacity-80">
+                  <div className="text-sm font-medium text-ink">
+                    {typeLabel}
+                    {t.title ? ` · ${t.title}` : ''}
+                  </div>
+                  <div className="text-xs text-ink-secondary">{t.talk_date ? formatDate(t.talk_date) : ''} · otvori zapisnik</div>
+                </button>
                 <div className="flex items-center gap-2">
                   <StatusBadge tone={acked ? 'success' : 'warn'} label={acked ? '✔ potvrđeno' : '⏳ čeka potvrdu'} />
                   {!acked && t.shared_at && (
@@ -50,43 +84,104 @@ export function TalksSection() {
           })}
         </ul>
       )}
+      {openTalk && <TalkDetailModal talk={openTalk} onClose={() => setOpenTalk(null)} />}
     </Section>
   );
 }
 
-// ------------------------------------------------------------------ Očekivanja
+/** Detalji zapisnika razgovora (paritet 1.0 myTalks.js `_openTalkView`): zapisnik md +
+ *  💰 odluka o zaradi (godišnji) + ⚠ korektivne mere sa rokovima. Ack dugme u podnožju. */
+function TalkDetailModal({ talk, onClose }: { talk: TalkRow; onClose: () => void }) {
+  const q = useTalkDetail(talk.id);
+  const ackM = useAcknowledgeTalk();
+  const d = q.data?.data;
+  const typeLabel = (talk.talk_type && TALK_TYPE_LABEL[talk.talk_type]) || 'Razgovor';
+  const acked = !!(d?.acknowledged_at ?? talk.acknowledged_at);
+  const canAck = !acked && !!talk.shared_at;
 
-const EXP_STATUS_LABEL: Record<string, string> = {
-  aktivno: 'Aktivno',
-  u_toku: 'U toku',
-  ispunjeno: 'Ispunjeno',
-  otkazano: 'Otkazano',
-};
+  const plans = d?.correctivePlans ?? [];
 
-export function ExpectationsSection() {
-  const q = useExpectations();
-  const rows = q.data?.data ?? [];
-  return (
-    <Section icon="🎯" title="Moja očekivanja">
-      {rows.length === 0 ? (
-        <p className="text-sm text-ink-disabled">Nema definisanih očekivanja.</p>
-      ) : (
-        <ul className="space-y-2">
-          {rows.map((e) => (
-            <li key={e.id} className="rounded-control border border-line-soft bg-surface-2 p-3">
-              <div className="flex items-start justify-between gap-2">
-                <span className="font-medium text-ink">{e.title}</span>
-                <StatusBadge tone={e.status === 'ispunjeno' ? 'success' : e.status === 'u_toku' ? 'warn' : 'neutral'} label={EXP_STATUS_LABEL[e.status] || e.status} />
-              </div>
-              {e.descriptionMd && <Markdown source={e.descriptionMd} className="mt-1 text-sm text-ink-secondary" />}
-              <div className="mt-1 text-xs text-ink-disabled">
-                {e.dueDate ? `📅 Rok: ${formatDate(e.dueDate)}` : '📅 Bez roka'} · Definisao: {e.createdBy ?? '—'}
-              </div>
-            </li>
-          ))}
-        </ul>
+  const footer = (
+    <>
+      <Button variant="secondary" onClick={onClose}>
+        Zatvori
+      </Button>
+      {canAck && (
+        <Button
+          loading={ackM.isPending}
+          onClick={async () => {
+            await ackM.mutateAsync({ id: talk.id });
+            onClose();
+          }}
+        >
+          ✔ Upoznat/a sam sa sadržajem
+        </Button>
       )}
-    </Section>
+    </>
+  );
+
+  return (
+    <Dialog open onClose={onClose} title={`🗣 ${typeLabel}${talk.title ? ` — ${talk.title}` : ''}`} size="lg" footer={footer}>
+      {q.isLoading ? (
+        <p className="text-sm text-ink-disabled">Učitavanje…</p>
+      ) : (
+        <div className="space-y-3">
+          <p className="text-xs text-ink-secondary">
+            {d?.talk_date ? formatDate(d.talk_date) : talk.talk_date ? formatDate(talk.talk_date) : ''}
+            {d?.conducted_by ? ` · Vodio: ${d.conducted_by}` : ''}
+            {acked && d?.acknowledged_at ? ` · ✔ potvrdio/la si ${formatDate(d.acknowledged_at)}` : ''}
+          </p>
+
+          <div className="rounded-control border border-line-soft p-3">
+            <h4 className="mb-1 text-sm font-semibold text-ink">Zapisnik</h4>
+            {d?.zapisnik_md ? (
+              <Markdown source={d.zapisnik_md} className="text-sm text-ink-secondary" />
+            ) : (
+              <p className="text-sm text-ink-disabled">—</p>
+            )}
+          </div>
+
+          {talk.talk_type === 'godisnji' && d?.raise_decision && (
+            <div className="rounded-control border border-line-soft p-3">
+              <h4 className="mb-1 text-sm font-semibold text-ink">💰 Odluka o zaradi</h4>
+              <p className="text-sm text-ink">
+                <strong>{RAISE_DECISION_LABEL[d.raise_decision] ?? d.raise_decision}</strong>
+                {d.raise_percent != null ? ` · ${d.raise_percent}%` : ''}
+                {d.raise_effective_from ? ` · važi od ${formatDate(d.raise_effective_from)}` : ''}
+              </p>
+              {d.raise_note && <p className="mt-1 text-sm text-ink-secondary">{d.raise_note}</p>}
+            </div>
+          )}
+
+          {plans.length > 0 && (
+            <div className="rounded-control border border-line-soft p-3">
+              <h4 className="mb-1 text-sm font-semibold text-ink">⚠ Korektivne mere</h4>
+              {plans.map((p) => (
+                <div key={p.id} className="mb-2 last:mb-0">
+                  {p.reason_md && <Markdown source={p.reason_md} className="mb-1 text-sm text-ink-secondary" />}
+                  <p className="text-xs text-ink-secondary">
+                    Status plana: <strong>{CPLAN_STATUS_LABEL[p.status] ?? p.status}</strong>
+                    {p.followup_date ? ` · follow-up razgovor ${formatDate(p.followup_date)}` : ''}
+                  </p>
+                  <ul className="mt-1 list-disc pl-5 text-sm text-ink">
+                    {p.measures.map((m, i) => (
+                      <li key={i}>
+                        {m.description_md}
+                        <span className="text-ink-secondary">
+                          {' '}
+                          — {MEASURE_STATUS_LABEL[m.status] ?? m.status}
+                          {m.due_date ? `, rok ${formatDate(m.due_date)}` : ''}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </Dialog>
   );
 }
 

@@ -132,6 +132,19 @@ export interface CompetenceFramework {
   profilePositions: Record<string, unknown>[];
 }
 export type PredmetRow = Record<string, unknown>;
+
+/** Prioritet liste predmeta (Plan montaže / PB / Lokacije) — server istina + podesiv max. */
+export interface PredmetPrioritet {
+  ids: number[];
+  max: number;
+}
+/** Telo `POST /predmet-aktivacija/:itemId`. napomena: null/undefined=keep, ''=clear, string=postavi. */
+export interface TogglePredmetVars {
+  itemId: number;
+  aktivan?: boolean;
+  projektovanjeMontaza?: boolean;
+  napomena?: string | null;
+}
 export type AuditRow = {
   changed_at?: string;
   table_name?: string;
@@ -174,6 +187,7 @@ const KEYS = {
   expectations: ['admin', 'expectations'] as const,
   competence: ['admin', 'competence-framework'] as const,
   predmet: ['admin', 'predmet-aktivacija'] as const,
+  predmetPrioritet: ['admin', 'predmet-aktivacija', 'prioritet'] as const,
   audit: ['admin', 'audit-log'] as const,
   aiModels: ['admin', 'ai-models'] as const,
 };
@@ -217,6 +231,13 @@ export function useCompetenceFramework() {
 }
 export function usePredmetAktivacija() {
   return useQuery({ queryKey: KEYS.predmet, queryFn: () => apiFetch<{ data: PredmetRow[] | { data?: PredmetRow[] } | null }>(`${BASE}/predmet-aktivacija`) });
+}
+/** Trenutna lista prioriteta + podesiv maksimum (server istina). */
+export function usePredmetPrioritet() {
+  return useQuery({
+    queryKey: KEYS.predmetPrioritet,
+    queryFn: () => apiFetch<{ data: PredmetPrioritet }>(`${BASE}/predmet-aktivacija/prioritet`),
+  });
 }
 export function useAuditLog(params: { tableName?: string; page?: number; pageSize?: number } = {}) {
   return useQuery({
@@ -318,4 +339,115 @@ export const useRemoveGridEditor = () =>
   useAdminMutation<{ email: string }, unknown>(
     (v) => apiFetch<unknown>(`${BASE}/grid-editors/${encodeURIComponent(v.email)}`, { method: 'DELETE' }),
     KEYS.gridEditors,
+  );
+
+// ------------------------------------------------------------------ Podešavanje predmeta (WRITE — P11)
+// Paritet 1.0 `podesavanjePredmeta/*` + `services/predmetAktivacija.js` + `predmetPrioritet.js`.
+// Toggle aktivan/proj.-montaža/napomena kroz JEDAN endpoint (set_predmet_aktivacija RPC);
+// prioritet lista/max/prev su odvojeni (set_predmet_plan_prioritet_* RPC). 42501→403, 23514→422.
+
+/**
+ * Postavi aktivaciju predmeta (POST /:itemId). Aktivan/proj.-montaža/napomena su
+ * nezavisni — telo prosleđuje samo prosleđena polja (napomena null=keep, ''=clear).
+ * Invalidira listu predmeta; komponenta radi optimistic sa rollback-om na grešku.
+ */
+export const useTogglePredmet = () =>
+  useAdminMutation<TogglePredmetVars, { data?: PredmetRow } | unknown>((v) => {
+    const { itemId, ...body } = v;
+    return apiFetch<{ data?: PredmetRow } | unknown>(`${BASE}/predmet-aktivacija/${itemId}`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }, KEYS.predmet);
+
+/** Snimi celu listu prioriteta (PUT). Swap/push cele liste — telo `{ itemIds }`. */
+export const useSetPredmetPrioritet = () =>
+  useAdminMutation<{ itemIds: number[] }, { data: PredmetPrioritet }>(
+    (v) => apiFetch<{ data: PredmetPrioritet }>(`${BASE}/predmet-aktivacija/prioritet`, { method: 'PUT', body: JSON.stringify(v) }),
+    KEYS.predmetPrioritet,
+  );
+
+/** Postavi maksimalan broj prioriteta 1–50 (PUT /prioritet/max). 23514→422. */
+export const useSetPredmetPrioritetMax = () =>
+  useAdminMutation<{ max: number }, { data: PredmetPrioritet }>(
+    (v) => apiFetch<{ data: PredmetPrioritet }>(`${BASE}/predmet-aktivacija/prioritet/max`, { method: 'PUT', body: JSON.stringify(v) }),
+    KEYS.predmetPrioritet,
+  );
+
+/**
+ * Vrati prethodnu (poslednju različitu, nepraznu) listu iz audita (GET /prioritet/prev).
+ * Ne menja stanje — samo dobavlja kandidat listu; primenu radi komponenta kroz
+ * `useSetPredmetPrioritet` posle potvrde. Mutacija (ne query) jer je akcija na klik.
+ */
+export const usePredmetPrioritetPrev = () =>
+  useMutation({
+    mutationFn: () => apiFetch<{ data: { ids: number[] } }>(`${BASE}/predmet-aktivacija/prioritet/prev`),
+  });
+
+// ------------------------------------------------------------------ Vrednosti firme (WRITE — P9; settings.org_profile)
+// Paritet 1.0 `companyProfileTab.js` + `services/orgProfile.js`. Jedinstven red company_profile
+// (id=1) sa 3 markdown polja. PUT prepisuje sva 3 (null = prazno). 42501→403.
+
+/** Ulaz `PUT /company-profile` — 3 markdown polja jedinstvenog reda (company_profile id=1). */
+export interface SaveCompanyProfileVars {
+  missionMd: string | null;
+  visionMd: string | null;
+  valuesMd: string | null;
+}
+/** Snimi vrednosti firme (PUT). Invalidira companyProfile; 42501 → 403 (samo org_profile krug). */
+export const useSaveCompanyProfile = () =>
+  useAdminMutation<SaveCompanyProfileVars, { data: CompanyProfile }>(
+    (v) => apiFetch<{ data: CompanyProfile }>(`${BASE}/company-profile`, { method: 'PUT', body: JSON.stringify(v) }),
+    KEYS.companyProfile,
+  );
+
+// ------------------------------------------------------------------ Očekivanja (CRUD — P9; settings.org_profile; DELETE = admin)
+// Paritet 1.0 `employeeExpectationsTab.js` + `services/orgProfile.js`. CRUD po zaposlenom +
+// „Dodaj za više" (bulk POST). DELETE je admin-only (42501→403). Invalidira expectations.
+
+/** Zajednička polja očekivanja (paritet 1.0 employee_expectations). */
+export interface ExpectationFields {
+  title: string;
+  descriptionMd?: string | null;
+  dueDate?: string | null;
+  priority: string;
+  status: string;
+  completionNote?: string | null;
+}
+export interface CreateExpectationVars extends ExpectationFields {
+  employeeId: string;
+}
+export interface CreateExpectationsBulkVars extends ExpectationFields {
+  employeeIds: string[];
+}
+export interface UpdateExpectationVars extends Partial<ExpectationFields> {
+  id: string;
+}
+
+/** Kreiraj jedno očekivanje (POST). */
+export const useCreateExpectation = () =>
+  useAdminMutation<CreateExpectationVars, { data: AdminExpectation }>(
+    (v) => apiFetch<{ data: AdminExpectation }>(`${BASE}/expectations`, { method: 'POST', body: JSON.stringify(v) }),
+    KEYS.expectations,
+  );
+
+/** Kreiraj isto očekivanje za više zaposlenih (POST /bulk). Vraća broj kreiranih redova. */
+export const useCreateExpectationsBulk = () =>
+  useAdminMutation<CreateExpectationsBulkVars, { data: { created: number; expectations?: AdminExpectation[] } }>(
+    (v) => apiFetch<{ data: { created: number; expectations?: AdminExpectation[] } }>(`${BASE}/expectations/bulk`, { method: 'POST', body: JSON.stringify(v) }),
+    KEYS.expectations,
+  );
+
+/** Izmeni očekivanje (PATCH /:id). */
+export const useUpdateExpectation = () =>
+  useAdminMutation<UpdateExpectationVars, { data: AdminExpectation }>((v) => {
+    const { id, ...body } = v;
+    return apiFetch<{ data: AdminExpectation }>(`${BASE}/expectations/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
+  }, KEYS.expectations);
+
+/** Obriši očekivanje (DELETE /:id — samo admin; 42501 → 403). */
+export const useDeleteExpectation = () =>
+  useAdminMutation<{ id: string }, unknown>(
+    (v) => apiFetch<unknown>(`${BASE}/expectations/${v.id}`, { method: 'DELETE' }),
+    KEYS.expectations,
   );

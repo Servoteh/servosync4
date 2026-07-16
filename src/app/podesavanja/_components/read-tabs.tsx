@@ -11,7 +11,6 @@ import {
   useCompanyProfile,
   useAdminExpectations,
   useCompetenceFramework,
-  usePredmetAktivacija,
   useAuditLog,
 } from '@/api/podesavanja';
 
@@ -178,55 +177,7 @@ export function KompetencijeTab() {
   );
 }
 
-// ------------------------------------------------------------------ Podešavanje predmeta
-
-export function PredmetTab() {
-  const q = usePredmetAktivacija();
-  const raw = q.data?.data;
-  const rows: Record<string, unknown>[] = Array.isArray(raw)
-    ? (raw as Record<string, unknown>[])
-    : (((raw as { data?: unknown })?.data as Record<string, unknown>[]) ?? []);
-  const str = (o: Record<string, unknown>, ...ks: string[]) => {
-    for (const k of ks) if (o[k] != null) return String(o[k]);
-    return '';
-  };
-  return (
-    <div>
-      <ReadOnlyNote />
-      {rows.length === 0 ? (
-        <EmptyState title="Nema predmeta" />
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-line text-left text-2xs uppercase text-ink-secondary">
-                <th className="py-1.5">Šifra</th>
-                <th className="py-1.5">Naziv</th>
-                <th className="py-1.5">Komitent</th>
-                <th className="py-1.5">Aktivan</th>
-                <th className="py-1.5">Proj./montaža</th>
-                <th className="py-1.5">Napomena</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.slice(0, 300).map((r, i) => (
-                <tr key={i} className="border-b border-line-soft">
-                  <td className="py-1.5 font-mono text-xs text-ink">{str(r, 'broj_predmeta', 'sifra', 'code', 'ident_broj')}</td>
-                  <td className="py-1.5 text-ink">{str(r, 'naziv_predmeta', 'naziv', 'name')}</td>
-                  <td className="py-1.5 text-ink-secondary">{str(r, 'customer_name', 'komitent', 'customer')}</td>
-                  <td className="py-1.5">{r.aktivan || r.je_aktivan ? '✅' : '—'}</td>
-                  <td className="py-1.5">{r.je_projektovanje_montaza ? '✅' : '—'}</td>
-                  <td className="py-1.5 text-ink-secondary">{str(r, 'napomena')}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {rows.length > 300 && <p className="mt-2 text-xs text-ink-disabled">Prikazano prvih 300 od {rows.length}.</p>}
-        </div>
-      )}
-    </div>
-  );
-}
+// Podešavanje predmeta (WRITE) preseljen u `predmet-aktivacija-tab.tsx` — vidi `PredmetAktivacijaTab`.
 
 // ------------------------------------------------------------------ Audit log
 

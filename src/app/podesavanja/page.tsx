@@ -13,12 +13,12 @@ import { GridEditorsTab } from './_components/grid-editors-tab';
 import { SistemTab } from './_components/system-tab';
 import {
   OrganizacijaTab,
-  VrednostiTab,
-  OcekivanjaTab,
   KompetencijeTab,
-  PredmetTab,
   AuditTab,
 } from './_components/read-tabs';
+import { PredmetAktivacijaTab } from './_components/predmet-aktivacija-tab';
+import { CompanyProfileTab } from './_components/company-profile-tab';
+import { ExpectationsTab } from './_components/expectations-tab';
 
 type TabKey =
   | 'korisnici'
@@ -93,10 +93,10 @@ export default function PodesavanjaPage() {
         {tab === 'uloge' && <UlogeTab />}
         {tab === 'grid' && <GridEditorsTab />}
         {tab === 'organizacija' && <OrganizacijaTab />}
-        {tab === 'vrednosti' && <VrednostiTab />}
-        {tab === 'ocekivanja' && <OcekivanjaTab />}
+        {tab === 'vrednosti' && <CompanyProfileTab />}
+        {tab === 'ocekivanja' && <ExpectationsTab />}
         {tab === 'kompetencije' && <KompetencijeTab />}
-        {tab === 'predmet' && <PredmetTab />}
+        {tab === 'predmet' && <PredmetAktivacijaTab />}
         {tab === 'audit' && <AuditTab />}
         {tab === 'sistem' && <SistemTab />}
       </div>
