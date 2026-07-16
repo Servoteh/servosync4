@@ -59,7 +59,8 @@ function fmtNum(n: number | null | undefined): string {
   const v = Math.round(Number(n || 0) * 100) / 100;
   return v ? String(v) : '0';
 }
-function dowOf(ymd: string): number {
+function dowOf(ymd: string | null | undefined): number {
+  if (!ymd) return 0;
   const [y, m, d] = ymd.split('-').map(Number);
   return new Date(y, m - 1, d).getDay();
 }

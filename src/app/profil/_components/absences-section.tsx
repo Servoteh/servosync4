@@ -33,7 +33,8 @@ const ABS_TYPE_TONE: Record<string, Tone> = {
   ostalo: 'neutral',
 };
 
-function daysInclusive(from: string, to: string): number {
+function daysInclusive(from: string | null | undefined, to: string | null | undefined): number {
+  if (!from || !to) return 0;
   const a = new Date(`${from.slice(0, 10)}T00:00:00`);
   const b = new Date(`${to.slice(0, 10)}T00:00:00`);
   if (Number.isNaN(a.getTime()) || Number.isNaN(b.getTime())) return 0;

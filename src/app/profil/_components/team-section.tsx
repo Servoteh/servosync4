@@ -67,7 +67,8 @@ const MONTH_NAMES_CYR = [
 ];
 const DAY_LETTERS_CYR = ['Н', 'П', 'У', 'С', 'Ч', 'П', 'С'];
 
-function dowOf(ymd: string): number {
+function dowOf(ymd: string | null | undefined): number {
+  if (!ymd) return 0;
   const [y, m, d] = ymd.split('-').map(Number);
   return new Date(y, m - 1, d).getDay();
 }

@@ -98,7 +98,7 @@ export function AttendanceSection() {
               const lastOut = d.last_out ?? d.time_out;
               const overnight = !!firstIn && !!lastOut && String(lastOut) < String(firstIn);
               const openIntervals = num(d.open_intervals);
-              const missingOut = (openIntervals > 0 || (!!firstIn && !lastOut)) && d.day.slice(0, 10) !== today && !overnight;
+              const missingOut = (openIntervals > 0 || (!!firstIn && !lastOut)) && String(d.day ?? '').slice(0, 10) !== today && !overnight;
               const corrected = d.corrected === true;
               const isOpen = openDay === d.day;
               return (
