@@ -12,10 +12,21 @@ import { pageMeta, parsePagination } from "../../common/pagination";
 import { ROLE_CATALOG } from "../../common/authz/roles";
 import { ROLE_PERMISSIONS } from "../../common/authz/role-permissions";
 import { PERMISSIONS } from "../../common/authz/permissions";
+import { MONTAZA_AI_ALLOWED_MODELS } from "../plan-montaze/montaza-ai";
 import type {
   AuditLogQueryDto,
   ListUsersQueryDto,
 } from "./dto/podesavanja-query.dto";
+
+/**
+ * Dozvoljeni AI modeli po potrošaču (rani 400 pre RPC-a; RPC re-validira). Sastanci allowlist
+ * je 1:1 sa `set_sastanci_ai_model` CHECK-om (sql/migrations/sastanci_ai_model_setting.sql) i
+ * 1.0 `sastanciAi.js`; Montaža reuse-uje `MONTAZA_AI_ALLOWED_MODELS` (montaza-ai.ts).
+ */
+const AI_MODEL_ALLOWLIST: Record<"sastanci" | "montaza", readonly string[]> = {
+  sastanci: ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"],
+  montaza: MONTAZA_AI_ALLOWED_MODELS,
+};
 
 /**
  * Podešavanja (RBAC admin + matični + sistem) — 3.0 TALAS D, R1 READ sloj
@@ -108,6 +119,41 @@ export class PodesavanjaService {
         orderBy: [{ email: "asc" }],
       });
       return { data };
+    });
+  }
+
+  /**
+   * Dodaj grid urednika — provera duplikata PRE inserta (1.0 lekcija: PostgREST POST
+   * upsertuje pa tiho prepiše note; ovde Prisma `create`, 23505 → 409 „već postoji").
+   * email se normalizuje (trim+lower) — paritet 1.0 gridEditors.addGridEditor.
+   * Row-write (admin) sprovodi RLS kroz GUC. Guard = settings.users (klasni baseline).
+   */
+  addGridEditor(actorEmail: string, email: string, note?: string) {
+    const e = email.trim().toLowerCase();
+    return this.withUserMapped(actorEmail, async (tx) => {
+      // Eksplicitna provera duplikata pre create (jasnija poruka od gole 23505).
+      const existing = await tx.kadrGridEditorAllowlist.findUnique({
+        where: { email: e },
+      });
+      if (existing)
+        throw new ConflictException(`Urednik ${e} već postoji na listi.`);
+      const row = await tx.kadrGridEditorAllowlist.create({
+        data: { email: e, note: (note ?? "").trim() },
+      });
+      return { data: row };
+    });
+  }
+
+  /** Ukloni grid urednika po email-u (paritet 1.0 removeGridEditor; RLS DELETE=admin). */
+  removeGridEditor(actorEmail: string, email: string) {
+    const e = email.trim().toLowerCase();
+    return this.withUserMapped(actorEmail, async (tx) => {
+      const res = await tx.kadrGridEditorAllowlist.deleteMany({
+        where: { email: e },
+      });
+      if (res.count === 0)
+        throw new NotFoundException(`Urednik ${e} ne postoji na listi.`);
+      return { data: { email: e, deleted: true } };
     });
   }
 
@@ -227,14 +273,50 @@ export class PodesavanjaService {
     });
   }
 
-  /** Sistem: izbor AI modela (sastanci_ai_settings singleton; montaza AI je TODO/R2). */
+  /**
+   * Sistem: izbor AI modela za dva potrošača — Sastanci („Sažmi zapisnik") i Montaža
+   * (strukturiranje izveštaja montera). Oba singleton (id=1); SELECT je authenticated u obe
+   * tabele (paritet 1.0 systemTab prikaza trenutnog modela). Setter je odvojena PUT ruta (RPC).
+   */
   aiModels(email: string) {
     return this.withUserMapped(email, async (tx) => {
-      const sastanci = await tx.$queryRaw<unknown[]>(
-        Prisma.sql`SELECT id, model, updated_at, updated_by FROM sastanci_ai_settings WHERE id = 1`,
-      );
-      // TODO(R2): montaza AI settings tabela (naziv nepoznat u snapshotu) — dodati kad se potvrdi.
-      return { data: { sastanci: jsonSafe(sastanci)[0] ?? null } };
+      const [sastanci, montaza] = await Promise.all([
+        tx.$queryRaw<unknown[]>(
+          Prisma.sql`SELECT id, model, updated_at, updated_by FROM sastanci_ai_settings WHERE id = 1`,
+        ),
+        tx.$queryRaw<unknown[]>(
+          Prisma.sql`SELECT id, model, updated_at, updated_by FROM montaza_ai_settings WHERE id = 1`,
+        ),
+      ]);
+      return {
+        data: {
+          sastanci: jsonSafe(sastanci)[0] ?? null,
+          montaza: jsonSafe(montaza)[0] ?? null,
+        },
+      };
+    });
+  }
+
+  /**
+   * Postavi AI model za `sastanci` ili `montaza` kroz odgovarajući DEFINER RPC
+   * (set_sastanci_ai_model / set_montaza_ai_model). RPC re-validira allowlist i admin
+   * (42501→403 kroz rethrowSy15; 23514 nepoznat model→422). Allowlist se BE-strani proverava
+   * rano (400 pre RPC-a) — paritet 1.0 (systemTab + oba servisa dele iste 3 modela).
+   */
+  setAiModel(email: string, target: "sastanci" | "montaza", model: string) {
+    // Normalizuj kao RPC (lower(trim(...))) — allowlist provera ne sme da padne na
+    // razmak/velika slova dok bi RPC prihvatio ("defense-in-depth" simetrija).
+    const norm = model.trim().toLowerCase();
+    const allow = AI_MODEL_ALLOWLIST[target];
+    if (!allow.includes(norm))
+      throw new UnprocessableEntityException(`Nepoznat model: ${model}`);
+    const rpc =
+      target === "montaza"
+        ? Prisma.sql`SELECT set_montaza_ai_model(${norm}::text) AS model`
+        : Prisma.sql`SELECT set_sastanci_ai_model(${norm}::text) AS model`;
+    return this.withUserMapped(email, async (tx) => {
+      const rows = await tx.$queryRaw<{ model: string }[]>(rpc);
+      return { data: { target, model: rows[0]?.model ?? model } };
     });
   }
 

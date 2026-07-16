@@ -8,6 +8,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Put,
   Query,
   Req,
   UseGuards,
@@ -29,6 +30,10 @@ import {
   SetMustChangePasswordDto,
   UpdateUserDto,
 } from "./dto/podesavanja-write.dto";
+import {
+  AddGridEditorDto,
+  SetAiModelDto,
+} from "./dto/podesavanja-system.dto";
 
 interface AuthedRequest {
   user: { userId: number; email: string; role: string };
@@ -137,6 +142,22 @@ export class PodesavanjaController {
     return this.settings.gridEditors(req.user.email);
   }
 
+  /** Dodaj grid urednika (email + note?). Duplikat → 409. Guard = settings.users (baseline). */
+  @Post("grid-editors")
+  addGridEditor(@Req() req: AuthedRequest, @Body() dto: AddGridEditorDto) {
+    return this.settings.addGridEditor(req.user.email, dto.email, dto.note);
+  }
+
+  /** Ukloni grid urednika po email-u (nije uuid — bez ParseUUIDPipe). Literal `grid-editors`
+   *  POST iznad ne koliduje (druga metoda); param `:email` je jedina :param ruta ovog prefiksa. */
+  @Delete("grid-editors/:email")
+  removeGridEditor(
+    @Req() req: AuthedRequest,
+    @Param("email") email: string,
+  ) {
+    return this.settings.removeGridEditor(req.user.email, email);
+  }
+
   // ----- Organizacija: struktura (settings.users) -----
 
   @Get("org/structure")
@@ -187,6 +208,12 @@ export class PodesavanjaController {
   @RequirePermission(PERMISSIONS.SETTINGS_SYSTEM)
   aiModels(@Req() req: AuthedRequest) {
     return this.settings.aiModels(req.user.email);
+  }
+
+  @Put("system/ai-models")
+  @RequirePermission(PERMISSIONS.SETTINGS_SYSTEM)
+  setAiModel(@Req() req: AuthedRequest, @Body() dto: SetAiModelDto) {
+    return this.settings.setAiModel(req.user.email, dto.target, dto.model);
   }
 
   // ----- :id rute POSLEDNJE -----

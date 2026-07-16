@@ -8,11 +8,21 @@ import {
 import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
 import { jsonSafe } from "../../common/sy15/json-safe";
-import type { AttendanceRangeQueryDto } from "./dto/moj-profil-query.dto";
+import {
+  aggregateWorkHoursForMonth,
+  gridRedovniUnitsOneDay,
+  computeMonthlyFond,
+  type HoursAgg,
+} from "../kadrovska/payroll/payroll-calc";
+import type {
+  AttendanceRangeQueryDto,
+  MonthlyHoursQueryDto,
+} from "./dto/moj-profil-query.dto";
 import type {
   AckDocumentDto,
   OpenSelfAssessmentDto,
   ReviseVacationDto,
+  SaveHoursRemarkDto,
   SaveSelfAnswersDto,
   SaveSelfScoresDto,
   SubmitCorrectionDto,
@@ -189,6 +199,177 @@ export class MojProfilService {
     });
   }
 
+  /**
+   * Mesečni sati (karnet self-service) — work_hours meseca (self-scope kroz RLS) + praznici
+   * + payroll agregat (REUSE payroll-calc, ne re-derivira) + chips + postojeća primedba.
+   * Vraća oblik pogodan za FE karnet builder (per-day rows + totals + holidays).
+   * Paritet 1.0 mojProfil `_monthlyHoursBodyHtml` (chips) i karnet `buildKarnetEmployees` (totals).
+   */
+  monthlyHours(email: string, q: MonthlyHoursQueryDto) {
+    const { year, month } = parseMonth(q.month);
+    const start = new Date(Date.UTC(year, month - 1, 1));
+    const end = new Date(Date.UTC(year, month, 1));
+    return this.withUserMapped(email, async (tx) => {
+      const emp = await this.resolveEmployee(tx, email);
+      if (emp == null) return this.emptyProfile();
+      const [rows, holidays, remarks] = await Promise.all([
+        tx.workHours.findMany({
+          where: {
+            employeeId: emp.id,
+            workDate: { gte: start, lt: end },
+          },
+          orderBy: [{ workDate: "asc" }],
+        }),
+        tx.kadrHoliday.findMany({
+          where: { holidayDate: { gte: start, lt: end } },
+          select: { holidayDate: true },
+        }),
+        tx.workHoursRemark.findMany({
+          where: { employeeId: emp.id, year, month },
+          take: 1,
+        }),
+      ]);
+
+      const holidayList = holidays.map((h) =>
+        h.holidayDate.toISOString().slice(0, 10),
+      );
+      const holSet = new Set(holidayList);
+      const workOpts = {
+        workType: emp.workType,
+        hireDate: emp.hireDate,
+      };
+
+      // work_hours red po YMD (Decimal → number; camelCase iz Prisma modela).
+      const byYmd = new Map<
+        string,
+        {
+          hours: number;
+          overtimeHours: number;
+          fieldHours: number;
+          twoMachineHours: number;
+          absenceCode: string | null;
+          absenceSubtype: string | null;
+        }
+      >();
+      for (const r of rows) {
+        const ymd = r.workDate.toISOString().slice(0, 10);
+        byYmd.set(ymd, {
+          hours: num(r.hours),
+          overtimeHours: num(r.overtimeHours),
+          fieldHours: num(r.fieldHours),
+          twoMachineHours: num(r.twoMachineHours),
+          absenceCode: r.absenceCode ?? null,
+          absenceSubtype: r.absenceSubtype ?? null,
+        });
+      }
+
+      // Dnevna tabela + chips (paritet 1.0: gridRedovniUnitsOneDay za Σ prisustva).
+      const daysInMonth = new Date(year, month, 0).getDate();
+      const days: MonthlyHoursDay[] = [];
+      const chips = {
+        radnihSati: 0,
+        prisustvoSati: 0,
+        godisnjiDani: 0,
+        spDani: 0,
+        bolovanjeDani: 0,
+        slobodniDani: 0,
+        prekovremeniH: 0,
+        terenH: 0,
+      };
+      for (let d = 1; d <= daysInMonth; d++) {
+        const mm = String(month).padStart(2, "0");
+        const dd = String(d).padStart(2, "0");
+        const ymd = `${year}-${mm}-${dd}`;
+        const dow = new Date(year, month - 1, d).getDay();
+        const row = byYmd.get(ymd);
+        // Normalizuj šifru odsustva pre chip poređenja (paritet 1.0 normalizeAbsenceCode);
+        // štiti od legacy/direktnih redova sa "GO"/" go" da chips i totals ostanu usklađeni.
+        const code = row?.absenceCode ? row.absenceCode.trim().toLowerCase() : null;
+        const hours = row?.hours ?? 0;
+        const ot = row?.overtimeHours ?? 0;
+        const fh = row?.fieldHours ?? 0;
+        chips.prisustvoSati += gridRedovniUnitsOneDay(
+          ymd,
+          {
+            hours,
+            absence_code: code,
+            absence_subtype: row?.absenceSubtype ?? null,
+          },
+          holSet,
+          workOpts,
+        );
+        chips.prekovremeniH += ot;
+        chips.terenH += fh;
+        if (code === "go") chips.godisnjiDani++;
+        else if (code === "sp") chips.spDani++;
+        else if (code === "bo") chips.bolovanjeDani++;
+        else if (code === "sl" || code === "sv" || code === "pl")
+          chips.slobodniDani++;
+        else if (hours > 0) chips.radnihSati += hours;
+        days.push({
+          ymd,
+          day: d,
+          letter: GRID_DAY_LETTERS[dow],
+          hours,
+          overtimeHours: ot,
+          fieldHours: fh,
+          twoMachineHours: row?.twoMachineHours ?? 0,
+          absenceCode: code,
+          absenceSubtype: row?.absenceSubtype ?? null,
+        });
+      }
+      chips.radnihSati = round2(chips.radnihSati);
+      chips.prisustvoSati = round2(chips.prisustvoSati);
+      chips.prekovremeniH = round2(chips.prekovremeniH);
+      chips.terenH = round2(chips.terenH);
+
+      // Karnet TOTALS (REUSE aggregateWorkHoursForMonth — isti izvor kao 1.0 karnet/obračun).
+      const totals = aggregateWorkHoursForMonth(
+        year,
+        month,
+        byYmd,
+        holSet,
+        workOpts,
+      ) as HoursAgg;
+      const fond = computeMonthlyFond(year, month, holSet).fondSati;
+
+      const remarkRow = remarks[0];
+      const remark = remarkRow
+        ? {
+            id: remarkRow.id,
+            text: remarkRow.note,
+            status: remarkRow.status,
+            resolvedBy: remarkRow.resolvedBy ?? null,
+            resolvedAt: remarkRow.resolvedAt
+              ? remarkRow.resolvedAt.toISOString()
+              : null,
+            updatedAt: remarkRow.updatedAt
+              ? remarkRow.updatedAt.toISOString()
+              : null,
+          }
+        : null;
+
+      return {
+        data: {
+          month: `${year}-${String(month).padStart(2, "0")}`,
+          year,
+          monthNum: month,
+          employee: {
+            id: emp.id,
+            fullName: emp.full_name,
+            workType: emp.workType,
+          },
+          days,
+          holidays: holidayList,
+          totals,
+          fondSati: fond,
+          chips,
+          remark,
+        },
+      };
+    });
+  }
+
   /** Presek za landing (GO saldo + otvoreni zahtevi + mesečni sati prisustva + razgovori). */
   summary(email: string) {
     const year = new Date().getFullYear();
@@ -227,7 +408,8 @@ export class MojProfilService {
 
   // ---------- interno ----------
 
-  /** Aktivan employee red po email-u (v_employees_safe; null = prazan profil). */
+  /** Aktivan employee red po email-u (v_employees_safe; null = prazan profil).
+   *  work_type/hire_date su ne-osetljiva polja view-a (payroll agregat za karnet). */
   private async resolveEmployee(
     tx: Sy15Tx,
     email: string,
@@ -235,17 +417,37 @@ export class MojProfilService {
     id: string;
     full_name: string | null;
     positionId: number | null;
+    workType: string | null;
+    hireDate: string | null;
   } | null> {
     const rows = await tx.$queryRaw<
-      { id: string; full_name: string | null; position_id: number | null }[]
+      {
+        id: string;
+        full_name: string | null;
+        position_id: number | null;
+        work_type: string | null;
+        hire_date: Date | string | null;
+      }[]
     >(
-      Prisma.sql`SELECT id, full_name, position_id FROM v_employees_safe
+      Prisma.sql`SELECT id, full_name, position_id, work_type, hire_date
+         FROM v_employees_safe
          WHERE lower(email) = lower(${email}) LIMIT 1`,
     );
     const r = rows[0];
-    return r
-      ? { id: r.id, full_name: r.full_name, positionId: r.position_id }
-      : null;
+    if (!r) return null;
+    const hire =
+      r.hire_date == null
+        ? null
+        : r.hire_date instanceof Date
+          ? r.hire_date.toISOString().slice(0, 10)
+          : String(r.hire_date).slice(0, 10);
+    return {
+      id: r.id,
+      full_name: r.full_name,
+      positionId: r.position_id,
+      workType: r.work_type,
+      hireDate: hire,
+    };
   }
 
   private emptyProfile() {
@@ -582,6 +784,83 @@ export class MojProfilService {
     );
   }
 
+  /**
+   * Postojeće e-saglasnosti zaposlenog (kadr_document_ack self) — da FE prikaže „✓ Potvrđeno"
+   * status ODMAH na učitavanju, bez klika. Row-scope „samo svoje" kroz rev_current_employee_id()
+   * (RLS/DEFINER paritet). Prazan profil = prazna lista.
+   */
+  acks(email: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const emp = await this.resolveEmployee(tx, email);
+      if (emp == null) return { data: [] };
+      const rows = await tx.$queryRaw<unknown[]>(
+        Prisma.sql`SELECT id, ref_type, ref_id, label, acked_at, acked_by
+           FROM kadr_document_ack
+           WHERE employee_id = rev_current_employee_id()`,
+      );
+      return { data: jsonSafe(rows) };
+    });
+  }
+
+  // ---------- Primedba na mesečne sate (work_hours_remarks; self upsert/delete) ----------
+
+  /**
+   * Upsert primedbe za (employee_id, year, month) — paritet 1.0 gridRemarks.saveMonthRemark:
+   * prazan tekst + POSTOJEĆI red = brisanje; inače upsert on_conflict(employee_id,year,month)
+   * sa status→'open' (HR ponovo vidi izmenu) i resolved_by/at → NULL. employee_id iz
+   * resolveEmployee (self-scope kroz GUC + RLS whr_*). Idempotentno po prirodi (upsert) →
+   * runIdem sa clientEventId pinuje dupli-klik.
+   */
+  saveHoursRemark(email: string, dto: SaveHoursRemarkDto) {
+    const text = (dto.text ?? "").trim();
+    return this.runIdem(
+      email,
+      dto.clientEventId,
+      "profile.hours-remark",
+      async (tx) => {
+        const emp = await this.resolveEmployee(tx, email);
+        if (emp == null)
+          throw new UnprocessableEntityException(
+            "Nismo pronašli vaš zaposlenički profil.",
+          );
+        // Prazan tekst = brisanje postojećeg reda (paritet 1.0 _saveRemark → _delRemark).
+        if (!text) {
+          const del = await tx.$executeRaw(
+            Prisma.sql`DELETE FROM work_hours_remarks
+               WHERE employee_id = ${emp.id}::uuid AND year = ${dto.year} AND month = ${dto.month}`,
+          );
+          return { deleted: del > 0, remark: null };
+        }
+        const rows = await tx.$queryRaw<unknown[]>(
+          Prisma.sql`INSERT INTO work_hours_remarks
+             (employee_id, year, month, note, status, resolved_by, resolved_at, updated_at)
+             VALUES (${emp.id}::uuid, ${dto.year}, ${dto.month}, ${text}, 'open', NULL, NULL, now())
+             ON CONFLICT (employee_id, year, month) DO UPDATE
+               SET note = EXCLUDED.note, status = 'open',
+                   resolved_by = NULL, resolved_at = NULL, updated_at = now()
+             RETURNING id, employee_id, year, month, note, status, resolved_by, resolved_at, updated_at`,
+        );
+        return { deleted: false, remark: jsonSafe(rows[0] ?? null) };
+      },
+    );
+  }
+
+  /** Obriši svoju mesečnu primedbu (paritet 1.0 deleteMonthRemark; self-scope kroz GUC). */
+  deleteHoursRemark(email: string, year: number, month: number) {
+    return this.withUserMapped(email, async (tx) => {
+      const emp = await this.resolveEmployee(tx, email);
+      if (emp == null)
+        throw new UnprocessableEntityException(
+          "Nismo pronašli vaš zaposlenički profil.",
+        );
+      const del = await tx.$executeRaw(
+        Prisma.sql`DELETE FROM work_hours_remarks
+           WHERE employee_id = ${emp.id}::uuid AND year = ${year} AND month = ${month}`,
+      );
+      return { data: { deleted: del > 0 } };
+    });
+  }
+
   // ---------- Razgovori — „Upoznat sam" (talk_acknowledge) ----------
 
   /**
@@ -658,6 +937,49 @@ export class MojProfilService {
       return { data: { ok: true } };
     });
   }
+}
+
+/** Dnevni red mesečne tabele sati (FE karnet builder + prikaz). */
+export interface MonthlyHoursDay {
+  ymd: string;
+  day: number;
+  letter: string;
+  hours: number;
+  overtimeHours: number;
+  fieldHours: number;
+  twoMachineHours: number;
+  absenceCode: string | null;
+  absenceSubtype: string | null;
+}
+
+/** Slova dana (dow 0=Ned; paritet 1.0 GRID_DAY_LETTERS). */
+const GRID_DAY_LETTERS = ["N", "P", "U", "S", "Č", "P", "S"];
+
+/** Decimal/Prisma-num → number (bez NaN). */
+function num(v: unknown): number {
+  if (v == null) return 0;
+  const n =
+    typeof v === "object" && v !== null && "toNumber" in v
+      ? (v as { toNumber(): number }).toNumber()
+      : Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function round2(v: number): number {
+  return Math.round((Number.isFinite(v) ? v : 0) * 100) / 100;
+}
+
+/** `YYYY-MM` → {year, month} (default tekući mesec, Europe/Belgrade sidro). */
+function parseMonth(month?: string): { year: number; month: number } {
+  if (month && /^\d{4}-\d{2}$/.test(month)) {
+    const [y, m] = month.split("-").map((n) => parseInt(n, 10));
+    return { year: y, month: m };
+  }
+  const belgrade = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Belgrade",
+  }).format(new Date());
+  const [y, m] = belgrade.split("-");
+  return { year: parseInt(y, 10), month: parseInt(m, 10) };
 }
 
 /** Opseg meseca 'YYYY-MM-DD' (default: tekući mesec, Europe/Belgrade sidro). */

@@ -127,3 +127,14 @@ export class SaveSelfAnswersDto {
 export class SubmitSelfAssessmentDto {
   @IsUUID() assessmentId!: string;
 }
+
+/**
+ * Primedba na mesečne sate (work_hours_remarks; upsert po employee_id+year+month, status→'open').
+ * Paritet 1.0 gridRemarks.saveMonthRemark: prazan `text` + postojeći red = brisanje (servis
+ * odlučuje). employee_id = rev_current_employee_id() ∨ resolveEmployee (self-scope kroz GUC).
+ */
+export class SaveHoursRemarkDto extends ProfileIdempotentDto {
+  @IsInt() @Min(2000) @Max(2100) year!: number;
+  @IsInt() @Min(1) @Max(12) month!: number;
+  @IsString() @MaxLength(2000) text!: string;
+}

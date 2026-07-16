@@ -6,6 +6,7 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Put,
   Query,
   Req,
   UseGuards,
@@ -15,11 +16,16 @@ import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
 import { PERMISSIONS } from "../../common/authz/permissions";
 import { MojProfilService } from "./moj-profil.service";
-import { AttendanceRangeQueryDto } from "./dto/moj-profil-query.dto";
+import {
+  AttendanceRangeQueryDto,
+  DeleteHoursRemarkQueryDto,
+  MonthlyHoursQueryDto,
+} from "./dto/moj-profil-query.dto";
 import {
   AckDocumentDto,
   OpenSelfAssessmentDto,
   ReviseVacationDto,
+  SaveHoursRemarkDto,
   SaveSelfAnswersDto,
   SaveSelfScoresDto,
   SubmitCorrectionDto,
@@ -100,6 +106,12 @@ export class MojProfilController {
     return this.profil.colleaguesOnLeave(req.user.email);
   }
 
+  /** Mesečni sati (dnevna tabela + praznici + chips + karnet totals + postojeća primedba). */
+  @Get("hours")
+  hours(@Req() req: AuthedRequest, @Query() query: MonthlyHoursQueryDto) {
+    return this.profil.monthlyHours(req.user.email, query);
+  }
+
   // ==========================================================================
   // R2 — MUTACIJE (self-service; guard = profile.self; row-odluka = sy15 RLS/DEFINER kroz GUC)
   // Sve zove POSTOJEĆE G-RPC-ove (potpisi netaknuti — D6). Route ordering: literali pre :id.
@@ -177,7 +189,33 @@ export class MojProfilController {
     return this.profil.submitAttendanceCorrection(req.user.email, dto);
   }
 
+  // ---------- Mesečni sati — primedba (self upsert/delete) ----------
+
+  /** Upsert primedbe za mesec (prazan text + postojeći red = brisanje; status→'open'). */
+  @Put("hours/remark")
+  saveHoursRemark(@Req() req: AuthedRequest, @Body() dto: SaveHoursRemarkDto) {
+    return this.profil.saveHoursRemark(req.user.email, dto);
+  }
+
+  /** Obriši mesečnu primedbu (year+month iz query-ja). */
+  @Delete("hours/remark")
+  deleteHoursRemark(
+    @Req() req: AuthedRequest,
+    @Query() query: DeleteHoursRemarkQueryDto,
+  ) {
+    return this.profil.deleteHoursRemark(
+      req.user.email,
+      query.year,
+      query.month,
+    );
+  }
+
   // ---------- e-saglasnost / „Upoznat sam" ----------
+
+  @Get("acks")
+  acks(@Req() req: AuthedRequest) {
+    return this.profil.acks(req.user.email);
+  }
 
   @Post("acks")
   ackDocument(@Req() req: AuthedRequest, @Body() dto: AckDocumentDto) {
