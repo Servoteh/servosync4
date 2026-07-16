@@ -66,6 +66,7 @@ export interface PredmetRow {
   status?: string | null;
   rok_zavrsetka?: string | null;
   root_rn_id?: number | string | null;
+  redni_broj?: number | string | null;
   [k: string]: unknown;
 }
 
@@ -106,23 +107,99 @@ export interface IzvestajRow {
   status_override?: string | null;
   has_parent_override?: boolean;
   parent_override_rn_id?: number | string | null;
+  parent_node_id?: number | string | null;
   korisnicka_napomena?: string | null;
   sistemska_napomena?: string | null;
   datum_lansiranja_tp?: string | null;
   datum_izrade?: string | null;
-  operations?: Array<Record<string, unknown>>;
+  raspolozivo?: number | null;
+  statusi?: PracenjeStatusi;
+  operations?: PracenjeOperacija[];
+  [k: string]: unknown;
+}
+
+/** Bitovi problema po redu (get_predmet_pracenje_izvestaj → r.statusi). */
+export interface PracenjeStatusi {
+  kasni?: boolean;
+  nema_tp?: boolean;
+  nema_crtez?: boolean;
+  nema_zavrsnu_kontrolu?: boolean;
+  nije_kompletirano?: boolean;
+  nema_rn?: boolean;
+  [k: string]: unknown;
+}
+
+/** Operacija reda (podtabela expand + matrični prikaz + izvozi). */
+export interface PracenjeOperacija {
+  redosled?: number | string | null;
+  naziv?: string | null;
+  masina?: string | null;
+  opis_rada?: string | null;
+  alat_pribor?: string | null;
+  planned_qty?: number | null;
+  completed_qty?: number | null;
+  completed_at?: string | null;
+  kontrola_status?: string | null;
+  is_final_control?: boolean;
+  [k: string]: unknown;
+}
+
+export interface IzvestajPredmet {
+  broj_predmeta?: string | null;
+  naziv_predmeta?: string | null;
+  komitent?: string | null;
+  rok_zavrsetka?: string | null;
+  [k: string]: unknown;
+}
+export interface IzvestajRoot {
+  node_id?: number | string | null;
+  naziv?: string | null;
+  [k: string]: unknown;
+}
+export interface IzvestajSummary {
+  total_rows?: number | null;
+  total_lansirano?: number | null;
+  total_zavrseno?: number | null;
   [k: string]: unknown;
 }
 export interface IzvestajResult {
   rows?: IzvestajRow[];
+  predmet?: IzvestajPredmet;
+  root?: IzvestajRoot | null;
   root_rn?: number | string | null;
+  summary?: IzvestajSummary;
   lot_qty?: number;
+  generated_at?: string | null;
   [k: string]: unknown;
 }
 export function normalizeIzvestaj(data: unknown): IzvestajRow[] {
   if (Array.isArray(data)) return data as IzvestajRow[];
   if (data && typeof data === 'object' && Array.isArray((data as IzvestajResult).rows)) {
     return (data as IzvestajResult).rows!;
+  }
+  return [];
+}
+/** Pun izveštaj (rows + predmet/root/summary/generated_at) — za zaglavlje, footer i izvoze. */
+export function normalizeIzvestajResult(data: unknown): IzvestajResult {
+  if (Array.isArray(data)) return { rows: data as IzvestajRow[] };
+  if (data && typeof data === 'object') return data as IzvestajResult;
+  return { rows: [] };
+}
+
+/** Podsklopovi (stablo RN-ova predmeta) → ravna lista za Opseg select. */
+export interface PodsklopNode {
+  rn_id?: number | string | null;
+  ident_broj?: string | null;
+  naziv_dela?: string | null;
+  [k: string]: unknown;
+}
+export function normalizePodsklopovi(data: unknown): PodsklopNode[] {
+  if (Array.isArray(data)) return data as PodsklopNode[];
+  if (data && typeof data === 'object') {
+    const o = data as { podsklopovi?: unknown; nodes?: unknown; rows?: unknown };
+    for (const key of ['podsklopovi', 'nodes', 'rows'] as const) {
+      if (Array.isArray(o[key])) return o[key] as PodsklopNode[];
+    }
   }
   return [];
 }

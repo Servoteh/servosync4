@@ -6,6 +6,7 @@ import { SearchBox } from '@/components/ui-kit/search-box';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Can } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
+import { formatDate } from '@/lib/format';
 import { usePredmeti, useShiftPrioritet, usePlanPrioritet, normalizePredmeti, type PredmetRow } from '@/api/pracenje';
 
 /** Aktivni predmeti — lista + ↑↓ prioritet (admin) + ⭐ plan-prioritet oznaka. */
@@ -41,6 +42,7 @@ export function PredmetiTab({ onOpenPredmet }: { onOpenPredmet: (itemId: number,
             <thead>
               <tr className="border-b border-line bg-surface-2 text-left text-2xs uppercase tracking-wider text-ink-secondary">
                 <th className="w-8 px-2 py-1.5" />
+                <th className="w-12 px-3 py-1.5">Red. br.</th>
                 <th className="px-3 py-1.5">Predmet</th>
                 <th className="px-3 py-1.5">Komitent</th>
                 <th className="px-3 py-1.5">Rok</th>
@@ -55,12 +57,13 @@ export function PredmetiTab({ onOpenPredmet }: { onOpenPredmet: (itemId: number,
                     <td className="px-2 py-1.5">
                       {starred.has(id) && <Star className="h-3.5 w-3.5 fill-status-warn text-status-warn" aria-label="Prioritet" />}
                     </td>
+                    <td className="tnums px-3 py-1.5 text-xs text-ink-secondary">{p.redni_broj != null ? String(p.redni_broj) : '—'}</td>
                     <td className="cursor-pointer px-3 py-1.5" onClick={() => id && onOpenPredmet(id, p.root_rn_id ? String(p.root_rn_id) : undefined)}>
                       <div className="font-medium text-ink">{p.broj_predmeta ?? '—'}</div>
                       <div className="truncate text-xs text-ink-disabled">{p.naziv_predmeta ?? ''}</div>
                     </td>
                     <td className="px-3 py-1.5">{p.komitent ?? '—'}</td>
-                    <td className="px-3 py-1.5 text-xs">{p.rok_zavrsetka ? String(p.rok_zavrsetka).slice(0, 10) : '—'}</td>
+                    <td className="px-3 py-1.5 text-xs">{formatDate(p.rok_zavrsetka)}</td>
                     <td className="px-3 py-1.5 text-right">
                       <Can permission={PERMISSIONS.PRACENJE_PRIORITET}>
                         <div className="inline-flex gap-0.5">
