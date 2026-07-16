@@ -65,8 +65,8 @@ export function PredmetView({
         r.zavrsena_kolicina ?? '',
         r.required_for_lot ?? '',
         r.kompletirano_za_lot ?? '',
-        r.masinska_obrada_status ?? '',
-        r.povrsinska_zastita_status ?? '',
+        r.masinska_done_override === true ? 'DA — ručno' : r.masinska_done_override === false ? 'NE — ručno' : daNeText(r.masinska_obrada_status),
+        r.povrsinska_done_override === true ? 'DA — ručno' : r.povrsinska_done_override === false ? 'NE — ručno' : daNeText(r.povrsinska_zastita_status),
       ]
         .map((c) => `"${String(c).replace(/"/g, '""')}"`)
         .join(','),
@@ -188,11 +188,34 @@ function FragRow({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+/**
+ * DA/NE ćelija (1.0 daNeCell — tabelaPracenjaTab.js:82): BILO KOJI ne-prazan status
+ * → „DA"; zeleno ako /urađeno|zavr|gotov|100/ i NE /nije|0\//, inače žuto DA;
+ * pun tekst statusa u title tooltip. Ručni override gazi auto (⚑ oznaka).
+ */
 function daNe(auto: string | null | undefined, ovr: boolean | null | undefined): React.ReactNode {
-  const done = ovr === true || auto === 'kompletirano' || auto === 'da';
-  const na = auto == null && ovr == null;
-  if (na) return <span className="text-ink-disabled">—</span>;
-  return <span className={done ? 'text-status-success' : 'text-ink-secondary'}>{done ? 'DA' : 'NE'}{ovr != null ? ' ⚑' : ''}</span>;
+  if (ovr === true || ovr === false) {
+    return (
+      <span className={ovr ? 'text-status-success' : 'text-ink-secondary'} title="Ručno postavljeno">
+        {ovr ? 'DA' : 'NE'} ⚑
+      </span>
+    );
+  }
+  const s = String(auto ?? '').trim();
+  if (!s || s === '—') return <span className="text-ink-secondary">NE</span>;
+  const done = /urađeno|zavr|gotov|100/i.test(s) && !/nije|0\s*\//i.test(s);
+  return (
+    <span className={done ? 'text-status-success' : 'text-status-warn'} title={s}>
+      DA
+    </span>
+  );
+}
+
+/** Izvozni tekst DA/NE (1.0 daNeText — pracenjeIzvestajExport.js:30): „DA — {pun status}". */
+export function daNeText(statusStr: string | null | undefined): string {
+  const s = String(statusStr ?? '').trim();
+  if (!s || s === '—') return 'NE';
+  return `DA — ${s}`;
 }
 
 function autoLabel(r: IzvestajRow): string {
