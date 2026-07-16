@@ -43,6 +43,28 @@ interface Filters {
 }
 const EMPTY: Filters = { loc: '', lead: '', engineer: '', dateFrom: '', dateTo: '' };
 
+/** Persist toggle-ova (localStorage) — lazy init, SSR-safe. */
+const LS_SHOW_FINISHED = 'montaza.total.showFinished';
+const LS_ONLY_WITH_DATES = 'montaza.total.onlyWithDates';
+
+function readLsBool(key: string): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.localStorage.getItem(key) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeLsBool(key: string, v: boolean): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(key, v ? '1' : '0');
+  } catch {
+    /* privatni mod / puna kvota — toggle radi samo za sesiju */
+  }
+}
+
 function uniq(base: readonly string[], extra: (string | null | undefined)[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -64,8 +86,8 @@ export function TotalGanttTab() {
   const projects = useMemo(() => tree.data?.data ?? [], [tree.data]);
   const [items, setItems] = useState<TgItem[]>([]);
   const [filters, setFilters] = useState<Filters>(EMPTY);
-  const [showFinished, setShowFinished] = useState(false);
-  const [onlyWithDates, setOnlyWithDates] = useState(false);
+  const [showFinished, setShowFinished] = useState(() => readLsBool(LS_SHOW_FINISHED));
+  const [onlyWithDates, setOnlyWithDates] = useState(() => readLsBool(LS_ONLY_WITH_DATES));
   const [wpOff, setWpOff] = useState<Set<string>>(() => new Set());
   const seeded = useRef(false);
 
@@ -244,10 +266,24 @@ export function TotalGanttTab() {
           <input type="date" value={filters.dateTo} onChange={(e) => setFilters((f) => ({ ...f, dateTo: e.target.value }))} className={selCls} />
         </Field>
         <label className="flex items-center gap-1.5 text-xs text-ink-secondary">
-          <input type="checkbox" checked={showFinished} onChange={(e) => setShowFinished(e.target.checked)} /> Prikaži završene
+          <input
+            type="checkbox"
+            checked={showFinished}
+            onChange={(e) => {
+              setShowFinished(e.target.checked);
+              writeLsBool(LS_SHOW_FINISHED, e.target.checked);
+            }}
+          /> Prikaži završene
         </label>
         <label className="flex items-center gap-1.5 text-xs text-ink-secondary">
-          <input type="checkbox" checked={onlyWithDates} onChange={(e) => setOnlyWithDates(e.target.checked)} /> Samo sa datumom
+          <input
+            type="checkbox"
+            checked={onlyWithDates}
+            onChange={(e) => {
+              setOnlyWithDates(e.target.checked);
+              writeLsBool(LS_ONLY_WITH_DATES, e.target.checked);
+            }}
+          /> Samo sa datumom
         </label>
         {anyFilter && (
           <button
@@ -257,6 +293,8 @@ export function TotalGanttTab() {
               setShowFinished(false);
               setOnlyWithDates(false);
               setWpOff(new Set());
+              writeLsBool(LS_SHOW_FINISHED, false);
+              writeLsBool(LS_ONLY_WITH_DATES, false);
             }}
             className="rounded-control border border-line px-2 py-1 text-xs text-ink-secondary hover:bg-surface-2"
           >

@@ -18,6 +18,27 @@ import { usePhaseAutosave } from '@/lib/plan-montaze/autosave';
 import { GanttChart, type GanttRow } from './gantt-chart';
 import { SaveStatusPanel } from './save-status';
 
+/** Persist toggle-a (localStorage) — lazy init, SSR-safe. */
+const LS_SHOW_FINISHED = 'montaza.gantt.showFinished';
+
+function readLsBool(key: string): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.localStorage.getItem(key) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeLsBool(key: string, v: boolean): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(key, v ? '1' : '0');
+  } catch {
+    /* privatni mod / puna kvota — toggle radi samo za sesiju */
+  }
+}
+
 export function GanttTab() {
   const tree = useMontazaTree();
   const canEdit = useCan()(PERMISSIONS.MONTAZA_EDIT);
@@ -27,7 +48,7 @@ export function GanttTab() {
   const [projectId, setProjectId] = useState<string | null>(null);
   const [wpId, setWpId] = useState<string | null>(null);
   const [phases, setPhases] = useState<PhaseVM[]>([]);
-  const [showFinished, setShowFinished] = useState(false);
+  const [showFinished, setShowFinished] = useState(() => readLsBool(LS_SHOW_FINISHED));
   const seededWp = useRef<string | null>(null);
 
   useEffect(() => {
@@ -141,7 +162,14 @@ export function GanttTab() {
           </div>
         )}
         <label className="ml-auto flex items-center gap-1.5 text-xs text-ink-secondary">
-          <input type="checkbox" checked={showFinished} onChange={(e) => setShowFinished(e.target.checked)} />
+          <input
+            type="checkbox"
+            checked={showFinished}
+            onChange={(e) => {
+              setShowFinished(e.target.checked);
+              writeLsBool(LS_SHOW_FINISHED, e.target.checked);
+            }}
+          />
           Prikaži završene
         </label>
         {rows.length > 0 && (

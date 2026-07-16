@@ -204,13 +204,77 @@ export interface ReportsParams {
   limit?: number;
 }
 
+/** ⭐ plan-prioritet payload (GET /v1/pracenje/plan-prioritet). */
+export interface PlanPrioritet {
+  ids: number[];
+  max: number;
+  prev: number[];
+}
+
+// ------------------------------------------------------------------ ⭐ redosled projekata
+
+/**
+ * ⭐ redosled predmeta iz Praćenja (Podešavanja predmeta). Na grešku (403 za role
+ * bez pracenje.read, mrežni pad…) vraća [] → sort pada na project_code fallback.
+ */
+async function fetchPlanPrioritetIds(): Promise<number[]> {
+  try {
+    const r = await apiFetch<{ data: PlanPrioritet }>('/v1/pracenje/plan-prioritet');
+    const ids = r.data?.ids;
+    return Array.isArray(ids)
+      ? ids.map(Number).filter((n) => Number.isFinite(n) && n > 0)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Paritet 1.0 `sortProjectsForPredmetPrioritet` (services/projects.js →
+ * predmetPrioritet.sortByPredmetPrioritet): projekti čiji je `predmet_item_id`
+ * u ⭐ listi idu PRVI, u redosledu te liste; ostali (i ceo skup kad je lista
+ * prazna) po `project_code` localeCompare('sr'). Sort je stabilan → jednaki
+ * kodovi zadržavaju originalni red. Ne mutira ulaz.
+ */
+export function sortProjectsByPrioritet<
+  T extends { predmet_item_id: number | null; project_code: string | null },
+>(projects: T[], ids: number[]): T[] {
+  const list = Array.isArray(projects) ? [...projects] : [];
+  if (list.length <= 1) return list;
+  const byCode = (a: T, b: T) =>
+    String(a.project_code ?? '').localeCompare(String(b.project_code ?? ''), 'sr');
+  if (!ids.length) return list.sort(byCode);
+  const rank = (p: T): number => {
+    const id = Number(p.predmet_item_id);
+    return Number.isFinite(id) && id > 0 ? ids.indexOf(id) : -1;
+  };
+  return list.sort((a, b) => {
+    const ia = rank(a);
+    const ib = rank(b);
+    if (ia !== -1 && ib !== -1) return ia - ib;
+    if (ia !== -1) return -1;
+    if (ib !== -1) return 1;
+    return byCode(a, b);
+  });
+}
+
 // ------------------------------------------------------------------ queries
 
-/** Celo stablo projekat→WP→faze (pb_list_projects ⋈ aktivacija; jedan poziv, bez N+1). */
+/**
+ * Celo stablo projekat→WP→faze (pb_list_projects ⋈ aktivacija; jedan poziv, bez N+1).
+ * Projekti stižu VEĆ sortirani po ⭐ plan-prioritetu (paritet 1.0) — svi potrošači
+ * (Plan / Gantt / Ukupan Gant) dobijaju isti redosled bez sopstvenog sorta.
+ */
 export function useMontazaTree() {
   return useQuery({
     queryKey: KEYS.tree,
-    queryFn: () => apiFetch<{ data: MontazaProjectNode[] }>('/v1/montaza/projects?include=tree'),
+    queryFn: async () => {
+      const [treeRes, prioIds] = await Promise.all([
+        apiFetch<{ data: MontazaProjectNode[] }>('/v1/montaza/projects?include=tree'),
+        fetchPlanPrioritetIds(),
+      ]);
+      return { ...treeRes, data: sortProjectsByPrioritet(treeRes.data ?? [], prioIds) };
+    },
   });
 }
 
@@ -269,7 +333,7 @@ export function fetchDrawingsExists(codes: string[]): Promise<{ data: DrawingExi
 }
 
 /** Presigned URL PDF-a crteža iz bigtehn keša (gate can_read_production_drawings). */
-export function fetchDrawingSignedUrl(code: string): Promise<{ data: string }> {
+export function fetchDrawingSignedUrl(code: string): Promise<{ data: { url: string; expiresIn?: number } }> {
   return apiFetch(`/v1/montaza/lookups/drawings/sign${qs({ code })}`);
 }
 

@@ -5,10 +5,11 @@
 // sa dopunama + izbor predmeta → idempotentno snimanje (klijentski UUID) → PDF + upload fotki
 // → gotovo (retry fotki/PDF, otvori PDF). Deljena logika sa mobilnim (/m/izvestaj) stiže u inc.5.
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useRef, useState, type ReactNode } from 'react';
 import { ArrowLeft, Plus, X, Check, AlertTriangle, FileDown, RefreshCw, Search } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { Button } from '@/components/ui-kit/button';
+import { DictateButton, RefineButton } from '@/components/voice-controls';
 import { cn } from '@/lib/cn';
 import { parseDmyToIso } from '@/lib/plan-montaze/date';
 import { IZVESTAJ_STATUS, IZVESTAJ_MAX_FOTKE } from '@/lib/plan-montaze/constants';
@@ -47,6 +48,15 @@ const LABELE: Record<string, string> = {
   kraj_rada: 'Kraj rada',
 };
 const DATUM_MSG = 'Datum mora biti DD.MM.GGGG (npr. 02.07.2026) ili GGGG-MM-DD.';
+/** Striktno HH:MM — sve ostalo je „loose" vreme (upozorenje, NE blokira snimanje). */
+const TIME_RE = /^\d{1,2}:\d{2}$/;
+
+/** Diktat: dopiši prepoznati tekst na postojeću vrednost (razmak ako već ima sadržaja). */
+function appendText(cur: string, add: string): string {
+  const c = cur ?? '';
+  if (!c.trim()) return add;
+  return /\s$/.test(c) ? c + add : `${c} ${add}`;
+}
 
 function computeMissing(d: MontazaAiOut): string[] {
   return REQUIRED.filter((f) => (f === 'predmet' ? !(d.predmet || d.naziv_projekta) : !d[f]));
@@ -281,6 +291,10 @@ export function IzvestajWizard({ onClose }: { onClose: () => void }) {
   }
 
   const missing = new Set(computeMissing(data));
+  // Loose-time upozorenje (paritet 1.0 isLooseTime) — samo signal, snimanje prolazi.
+  const timeWarn: string[] = [];
+  if (data.pocetak_rada && !TIME_RE.test(data.pocetak_rada.trim())) timeWarn.push('Početak');
+  if (data.kraj_rada && !TIME_RE.test(data.kraj_rada.trim())) timeWarn.push('Kraj');
 
   return (
     <div className="space-y-4">
@@ -308,9 +322,13 @@ export function IzvestajWizard({ onClose }: { onClose: () => void }) {
       {step === 'unos' && (
         <div className="space-y-4">
           <div>
-            <label className="mb-1 block text-sm font-medium text-ink" htmlFor="wtekst">
-              Napiši šta je urađeno (kao poruka)
-            </label>
+            <div className="mb-1 flex items-center gap-1.5">
+              <label className="block text-sm font-medium text-ink" htmlFor="wtekst">
+                Napiši šta je urađeno (kao poruka)
+              </label>
+              <DictateButton context="zapisnik" onText={(t) => setTekst((cur) => appendText(cur, t))} />
+              <RefineButton profil="montaza_opis" getText={() => tekst} onText={setTekst} />
+            </div>
             <textarea
               id="wtekst"
               value={tekst}
@@ -365,6 +383,11 @@ export function IzvestajWizard({ onClose }: { onClose: () => void }) {
               Dopuni još: <strong>{[...missing].map((f) => LABELE[f] || f).join(', ')}</strong> — možeš ukucati direktno ispod.
             </div>
           )}
+          {timeWarn.length > 0 && (
+            <div className="rounded-control border border-status-warn/40 bg-status-warn-bg px-3 py-2 text-sm text-status-warn">
+              Vreme ({timeWarn.join(', ')}) nije u formatu HH:MM — proveri, ali možeš i tako sačuvati.
+            </div>
+          )}
           <div className="text-sm text-ink-secondary">
             Monter / Serviser: <strong className="text-ink">{autorIme || '—'}</strong>
           </div>
@@ -395,9 +418,51 @@ export function IzvestajWizard({ onClose }: { onClose: () => void }) {
             )}
           </div>
 
-          <WArea label="Opis izvedenih radova" value={data.opis_radova} onChange={(v) => setField('opis_radova', v)} rows={4} />
-          <WArea label="Problemi / odstupanja" value={data.problemi} onChange={(v) => setField('problemi', v)} rows={2} />
-          <WArea label="Otvorene stavke / napomena" value={data.otvorene_stavke} onChange={(v) => setField('otvorene_stavke', v)} rows={2} />
+          <WArea
+            label="Opis izvedenih radova"
+            value={data.opis_radova}
+            onChange={(v) => setField('opis_radova', v)}
+            rows={4}
+            controls={
+              <>
+                <DictateButton
+                  context="zapisnik"
+                  onText={(t) => setData((d) => ({ ...d, opis_radova: appendText(d.opis_radova, t) }))}
+                />
+                <RefineButton profil="montaza_opis" getText={() => data.opis_radova} onText={(v) => setField('opis_radova', v)} />
+              </>
+            }
+          />
+          <WArea
+            label="Problemi / odstupanja"
+            value={data.problemi}
+            onChange={(v) => setField('problemi', v)}
+            rows={2}
+            controls={
+              <>
+                <DictateButton
+                  context="zapisnik"
+                  onText={(t) => setData((d) => ({ ...d, problemi: appendText(d.problemi, t) }))}
+                />
+                <RefineButton profil="montaza_problem" getText={() => data.problemi} onText={(v) => setField('problemi', v)} />
+              </>
+            }
+          />
+          <WArea
+            label="Otvorene stavke / napomena"
+            value={data.otvorene_stavke}
+            onChange={(v) => setField('otvorene_stavke', v)}
+            rows={2}
+            controls={
+              <>
+                <DictateButton
+                  context="zapisnik"
+                  onText={(t) => setData((d) => ({ ...d, otvorene_stavke: appendText(d.otvorene_stavke, t) }))}
+                />
+                <RefineButton profil="montaza_napomena" getText={() => data.otvorene_stavke} onText={(v) => setField('otvorene_stavke', v)} />
+              </>
+            }
+          />
 
           <div className="max-w-xs">
             <label className="mb-1 block text-sm font-medium text-ink">Status</label>
@@ -493,10 +558,26 @@ function WField({ label, value, onChange, missing }: { label: string; value: str
   );
 }
 
-function WArea({ label, value, onChange, rows }: { label: string; value: string; onChange: (v: string) => void; rows: number }) {
+function WArea({
+  label,
+  value,
+  onChange,
+  rows,
+  controls,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  rows: number;
+  /** Dugmad uz labelu (diktat / AI doteraj). */
+  controls?: ReactNode;
+}) {
   return (
     <div>
-      <label className="mb-1 block text-sm font-medium text-ink">{label}</label>
+      <div className="mb-1 flex items-center gap-1.5">
+        <label className="block text-sm font-medium text-ink">{label}</label>
+        {controls}
+      </div>
       <textarea
         value={value}
         onChange={(e) => onChange(e.target.value)}

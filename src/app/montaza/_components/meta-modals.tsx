@@ -4,6 +4,9 @@
 // Dodavanje/izmena/brisanje projekta i naloga montaže (WP). Row-odluka has_edit_role
 // presuđuje sy15 (403). Napomena: projekti se obično AUTO-kreiraju iz aktivacije predmeta
 // (trigger) — ručni unos je paritet 1.0 „＋ Novi".
+// Paritet 1.0 dopune: WP „Primeni na prazne / Primeni na sve" (default inženjer/vođa na
+// faze) + projekat „Preimenuj lokaciju" (renameLocationEverywhere) — logika živi u
+// plan-tab-u (callback props), modal samo prosleđuje trenutne vrednosti polja.
 
 import { useState } from 'react';
 import { Dialog } from '@/components/ui-kit/dialog';
@@ -36,16 +39,28 @@ export function ProjectMetaDialog({
   onClose,
   project,
   onSaved,
+  locations,
+  onRenameLocation,
 }: {
   open: boolean;
   onClose: () => void;
   /** null = novi projekat. */
   project: MontazaProjectNode | null;
   onSaved?: (id: string) => void;
+  /** Postojeće lokacije projekta (za „Preimenuj lokaciju" select). */
+  locations?: string[];
+  /**
+   * Preimenuj lokaciju na SVIM fazama projekta (paritet 1.0 renameLocationEverywhere).
+   * Confirm + PATCH-evi žive u plan-tab-u; vraća broj izmenjenih faza.
+   */
+  onRenameLocation?: (oldLoc: string, newLoc: string) => Promise<number>;
 }) {
   const upsert = useUpsertProject();
   const update = useUpdateProject();
   const del = useDeleteProject();
+  const [renOld, setRenOld] = useState('');
+  const [renNew, setRenNew] = useState('');
+  const [renBusy, setRenBusy] = useState(false);
   const [f, setF] = useState(() => ({
     projectCode: project?.project_code ?? '',
     projectName: project?.project_name ?? '',
@@ -98,6 +113,24 @@ export function ProjectMetaDialog({
     }
   }
 
+  async function renameLocation() {
+    if (!onRenameLocation) return;
+    const from = renOld.trim();
+    const to = renNew.trim();
+    if (!from || !to || from === to) return;
+    setErr('');
+    setRenBusy(true);
+    try {
+      await onRenameLocation(from, to);
+      setRenOld('');
+      setRenNew('');
+    } catch (e) {
+      setErr(errText(e));
+    } finally {
+      setRenBusy(false);
+    }
+  }
+
   return (
     <Dialog
       open={open}
@@ -132,6 +165,37 @@ export function ProjectMetaDialog({
           <FormField label="PM e-mail (podsetnici)"><input className={inputCls} value={f.pmEmail} onChange={(e) => set('pmEmail', e.target.value)} /></FormField>
           <FormField label="Lead PM e-mail"><input className={inputCls} value={f.leadpmEmail} onChange={(e) => set('leadpmEmail', e.target.value)} /></FormField>
         </div>
+
+        {/* Preimenuj lokaciju na SVIM fazama projekta (samo izmena postojećeg projekta) */}
+        {project && onRenameLocation && (
+          <div className="space-y-2 border-t border-line pt-3">
+            <p className="text-sm font-medium text-ink">Lokacije (na fazama)</p>
+            <p className="text-xs text-ink-secondary">
+              Preimenovanje menja lokaciju na svim fazama ovog projekta koje je koriste.
+            </p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <FormField label="Postojeća lokacija">
+                <select className={inputCls} value={renOld} onChange={(e) => setRenOld(e.target.value)}>
+                  <option value="">—</option>
+                  {(locations ?? []).map((l) => (
+                    <option key={l} value={l}>{l}</option>
+                  ))}
+                </select>
+              </FormField>
+              <FormField label="Novo ime">
+                <input className={inputCls} value={renNew} onChange={(e) => setRenNew(e.target.value)} placeholder="npr. Dobanovci — hala 2" />
+              </FormField>
+            </div>
+            <Button
+              variant="secondary"
+              onClick={renameLocation}
+              loading={renBusy}
+              disabled={!renOld.trim() || !renNew.trim() || renOld.trim() === renNew.trim()}
+            >
+              Preimenuj
+            </Button>
+          </div>
+        )}
       </div>
     </Dialog>
   );
@@ -145,6 +209,7 @@ export function WpMetaDialog({
   projectId,
   wp,
   onSaved,
+  onApplyDefaults,
 }: {
   open: boolean;
   onClose: () => void;
@@ -152,6 +217,11 @@ export function WpMetaDialog({
   /** null = novi nalog. */
   wp: MontazaWorkPackage | null;
   onSaved?: (id: string) => void;
+  /**
+   * „Primeni na prazne / Primeni na sve" (paritet 1.0 metaModals wpApplyEmpty/wpApplyAll):
+   * prosleđuje TRENUTNE vrednosti default polja; primenu na faze radi plan-tab.
+   */
+  onApplyDefaults?: (mode: 'empty' | 'all', engineer: string, lead: string) => void;
 }) {
   const upsert = useUpsertWorkPackage();
   const update = useUpdateWorkPackage();
@@ -241,6 +311,32 @@ export function WpMetaDialog({
           <FormField label="Podr. inženjer (default)"><input className={inputCls} value={f.responsibleEngineerDefault} onChange={(e) => set('responsibleEngineerDefault', e.target.value)} /></FormField>
           <FormField label="Podr. vođa (default)"><input className={inputCls} value={f.montageLeadDefault} onChange={(e) => set('montageLeadDefault', e.target.value)} /></FormField>
         </div>
+
+        {/* Primena defaulta na postojeće faze (samo izmena postojećeg naloga) */}
+        {wp && onApplyDefaults && (
+          <div className="space-y-2 border-t border-line pt-3">
+            <p className="text-xs text-ink-secondary">
+              Primeni podrazumevanog inženjera i vođu na faze ovog naloga.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="secondary"
+                onClick={() => onApplyDefaults('empty', f.responsibleEngineerDefault, f.montageLeadDefault)}
+              >
+                Primeni na prazne
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  if (!window.confirm('Primeniti podrazumevanog inženjera i vođu na SVE faze ovog naloga? Postojeće vrednosti će biti pregažene.')) return;
+                  onApplyDefaults('all', f.responsibleEngineerDefault, f.montageLeadDefault);
+                }}
+              >
+                Primeni na sve
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
     </Dialog>
   );

@@ -9,7 +9,7 @@
 // povezani crteži dijalozi, 3D model, drag-drop reorder (up/down pokriva funkciju).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronUp, ChevronDown, Trash2, FileText, Link2, Plus, Pencil, Download, GripVertical } from 'lucide-react';
+import { ChevronUp, ChevronDown, Trash2, FileText, Link2, Plus, Pencil, Download, GripVertical, Loader2 } from 'lucide-react';
 import { useCan } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
@@ -19,6 +19,10 @@ import { Dialog } from '@/components/ui-kit/dialog';
 import { cn } from '@/lib/cn';
 import {
   useMontazaTree,
+  useUpdatePhase,
+  useUpsertProject,
+  useUpsertWorkPackage,
+  useUpsertPhase,
   newClientEventId,
   toPhaseVM,
   type PhaseVM,
@@ -44,9 +48,9 @@ import {
   RISK_LABEL,
 } from '@/lib/plan-montaze/phase';
 import { usePhaseAutosave } from '@/lib/plan-montaze/autosave';
-import { exportPlanJson, exportPlanXlsx } from '@/lib/plan-montaze/export';
+import { exportPlanJson, exportPlanXlsx, parsePlanImport } from '@/lib/plan-montaze/export';
 import { SaveStatusPanel } from './save-status';
-import { PhaseCard } from './phase-card';
+import { PhaseCard, DrawingChip } from './phase-card';
 import { ProjectMetaDialog, WpMetaDialog } from './meta-modals';
 import { PhaseDescriptionDialog, PhaseLinkedDrawingsDialog } from './phase-dialogs';
 
@@ -115,17 +119,31 @@ function uniq(base: readonly string[], extra: (string | null | undefined)[]): st
   return out;
 }
 
+const HIDE_DONE_LS_KEY = 'montaza.plan.hideDone';
+
 export function PlanTab() {
   const tree = useMontazaTree();
   const canEdit = useCan()(PERMISSIONS.MONTAZA_EDIT);
   const save = usePhaseAutosave();
+  const updatePhase = useUpdatePhase();
+  const importProject = useUpsertProject();
+  const importWp = useUpsertWorkPackage();
+  const importPhase = useUpsertPhase();
 
   const projects = useMemo(() => tree.data?.data ?? [], [tree.data]);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [wpId, setWpId] = useState<string | null>(null);
   const [phases, setPhases] = useState<PhaseVM[]>([]);
   const [filters, setFilters] = useState<FilterValues>(EMPTY_FILTERS);
-  const [hideDone, setHideDone] = useState(false);
+  // „Sakrij završene" preživljava reload (localStorage; typeof window guard za SSR).
+  const [hideDone, setHideDone] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      return window.localStorage.getItem(HIDE_DONE_LS_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
   const [newName, setNewName] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
   const [sessionEng, setSessionEng] = useState<string[]>([]);
@@ -135,8 +153,18 @@ export function PlanTab() {
   const [descId, setDescId] = useState<string | null>(null);
   const [drawingsId, setDrawingsId] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
+  const [importBusy, setImportBusy] = useState<string | null>(null);
+  const [importResult, setImportResult] = useState<string | null>(null);
   const dragId = useRef<string | null>(null);
   const seededWp = useRef<string | null>(null);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(HIDE_DONE_LS_KEY, hideDone ? '1' : '0');
+    } catch {
+      /* localStorage nedostupan (privatni mod) — preskoči persist. */
+    }
+  }, [hideDone]);
 
   // Podrazumevani izbor kad se stablo učita.
   useEffect(() => {
@@ -332,6 +360,211 @@ export function PlanTab() {
     updateField(id, field, value);
   }
 
+  // „Primeni na prazne / Primeni na sve" (paritet 1.0 metaModals): default inženjer/vođa
+  // iz WP dijaloga na faze AKTIVNOG naloga; 'empty' popunjava samo prazna polja.
+  function applyWpDefaults(mode: 'empty' | 'all', engineer: string, lead: string) {
+    if (!canEdit) return;
+    const eng = engineer.trim();
+    const led = lead.trim();
+    if (!eng && !led) {
+      flash('Nema podrazumevanih vrednosti za primenu.');
+      return;
+    }
+    const next = phases.map((p) => {
+      const setEng = !!eng && (mode === 'all' ? p.responsibleEngineer !== eng : !p.responsibleEngineer.trim());
+      const setLead = !!led && (mode === 'all' ? p.montageLead !== led : !p.montageLead.trim());
+      if (!setEng && !setLead) return p;
+      return {
+        ...p,
+        responsibleEngineer: setEng ? eng : p.responsibleEngineer,
+        montageLead: setLead ? led : p.montageLead,
+      };
+    });
+    const changed = next.filter((p, i) => p !== phases[i]);
+    if (!changed.length) {
+      flash('Nema faza za izmenu.');
+      return;
+    }
+    setPhases(next);
+    changed.forEach((p) => save.saveNow(p));
+    flash(`Primenjeno na ${changed.length} faza.`);
+  }
+
+  // Sve lokacije CELOG aktivnog projekta (tree + lokalne izmene) — za „Preimenuj lokaciju".
+  const projectLocations = useMemo(() => {
+    const extra: (string | null | undefined)[] = [];
+    if (activeProject) {
+      for (const w of activeProject.workPackages) {
+        extra.push(w.location);
+        for (const ph of w.phases) extra.push(ph.location);
+      }
+    }
+    extra.push(...phases.map((p) => p.location));
+    return uniq(DEFAULT_LOCATIONS, extra);
+  }, [activeProject, phases]);
+
+  // „Preimenuj lokaciju" (paritet 1.0 renameLocationEverywhere): PATCH svake faze CELOG
+  // aktivnog projekta sa location===old + ažuriranje lokalnog state-a aktivnog WP-a.
+  async function renameLocation(oldLoc: string, newLoc: string): Promise<number> {
+    if (!canEdit || !activeProject) return 0;
+    const from = oldLoc.trim();
+    const to = newLoc.trim();
+    if (!from || !to || from === to) return 0;
+    const ids: string[] = [];
+    for (const w of activeProject.workPackages) {
+      for (const ph of w.phases) {
+        if ((ph.location ?? '') === from) ids.push(ph.id);
+      }
+    }
+    // Lokalne (još nerefetchovane) faze aktivnog WP-a — dedupe po id-u.
+    for (const p of phases) {
+      if (p.location === from && !ids.includes(p.id)) ids.push(p.id);
+    }
+    if (!ids.length) {
+      flash(`Nema faza sa lokacijom „${from}".`);
+      return 0;
+    }
+    if (!window.confirm(`Preimenovati lokaciju '${from}' u '${to}' na ${ids.length} faza?`)) return 0;
+    let ok = 0;
+    let fail = 0;
+    for (const id of ids) {
+      try {
+        await updatePhase.mutateAsync({ id, location: to });
+        ok++;
+      } catch {
+        fail++;
+      }
+    }
+    setPhases((prev) => prev.map((p) => (p.location === from ? { ...p, location: to } : p)));
+    flash(fail ? `Preimenovano ${ok}/${ids.length} faza (${fail} grešaka).` : `Preimenovano ${ok} faza.`);
+    return ok;
+  }
+
+  // JSON uvoz (paritet 1.0 exportModal import): parse → confirm → sekvencijalni upsert
+  // po ID-u projekat→WP→faza. Invalidacija stabla ide automatski kroz mutacije.
+  async function onImportFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file || !canEdit || importBusy) return;
+    setImportResult(null);
+
+    let parsed: ReturnType<typeof parsePlanImport>;
+    try {
+      parsed = parsePlanImport(JSON.parse(await file.text()));
+    } catch (err) {
+      setImportResult(err instanceof Error ? err.message : 'Neispravan JSON fajl.');
+      return;
+    }
+    const { projects: impProjects, counts } = parsed;
+    const total = counts.projects + counts.wps + counts.phases;
+    if (!total) {
+      setImportResult('Fajl ne sadrži nijedan projekat.');
+      return;
+    }
+    if (!window.confirm(`Uvoz će upisati/pregaziti po ID-u: ${counts.projects} projekata, ${counts.wps} naloga, ${counts.phases} faza. Nastaviti?`)) {
+      return;
+    }
+
+    let done = 0;
+    let errs = 0;
+    const tick = () => setImportBusy(`Uvozim… ${done}/${total}`);
+    tick();
+
+    for (const proj of impProjects) {
+      const subtree = proj.workPackages.reduce((a, w) => a + 1 + w.phases.length, 0);
+      let projId: string;
+      try {
+        const r = await importProject.mutateAsync({
+          id: proj.id,
+          projectCode: proj.projectCode,
+          projectName: proj.projectName,
+          projectm: proj.projectm,
+          projectDeadline: proj.projectDeadline ?? null,
+          pmEmail: proj.pmEmail,
+          leadpmEmail: proj.leadpmEmail,
+          status: proj.status,
+        });
+        projId = r.data.id;
+      } catch {
+        // Projekat pao → preskoči celo podstablo (WP/faze nemaju roditelja).
+        errs += 1 + subtree;
+        done += 1 + subtree;
+        tick();
+        continue;
+      }
+      done++;
+      tick();
+
+      for (let wi = 0; wi < proj.workPackages.length; wi++) {
+        const wp = proj.workPackages[wi];
+        let wpDbId: string;
+        try {
+          const r = await importWp.mutateAsync({
+            id: wp.id,
+            projectId: projId,
+            name: wp.name,
+            rnCode: wp.rnCode,
+            rnOrder: wp.rnOrder ?? wi + 1,
+            location: wp.location,
+            responsibleEngineerDefault: wp.responsibleEngineerDefault,
+            montageLeadDefault: wp.montageLeadDefault,
+            deadline: wp.deadline ?? null,
+            assemblyDrawingNo: wp.assemblyDrawingNo,
+          });
+          wpDbId = r.data.id;
+        } catch {
+          errs += 1 + wp.phases.length;
+          done += 1 + wp.phases.length;
+          tick();
+          continue;
+        }
+        done++;
+        tick();
+
+        for (let pi = 0; pi < wp.phases.length; pi++) {
+          const ph = wp.phases[pi];
+          try {
+            await importPhase.mutateAsync({
+              id: ph.id,
+              projectId: projId,
+              workPackageId: wpDbId,
+              phaseName: ph.phaseName,
+              location: ph.location,
+              startDate: ph.startDate ?? null,
+              endDate: ph.endDate ?? null,
+              responsibleEngineer: ph.responsibleEngineer,
+              montageLead: ph.montageLead,
+              status: ph.status,
+              pct: ph.pct,
+              checks: ph.checks,
+              blocker: ph.blocker,
+              note: ph.note,
+              sortOrder: pi,
+              phaseType: ph.phaseType,
+              description: ph.description,
+              linkedDrawings: ph.linkedDrawings,
+              actualStartDate: ph.actualStartDate ?? null,
+              actualEndDate: ph.actualEndDate ?? null,
+            });
+          } catch {
+            errs++;
+          }
+          done++;
+          tick();
+        }
+      }
+    }
+
+    // Dozvoli reseed lokalnog state-a iz osveženog stabla (invalidacija kroz mutacije).
+    seededWp.current = null;
+    setImportBusy(null);
+    setImportResult(
+      errs
+        ? `Uvoz završen: ${total - errs} uspešno, ${errs} grešaka.`
+        : `Uvoz završen: svih ${total} stavki uspešno.`,
+    );
+  }
+
   function switchWp(id: string) {
     save.flushAll();
     setWpId(id);
@@ -425,10 +658,10 @@ export function PlanTab() {
         <button
           type="button"
           onClick={() => setExportOpen(true)}
-          title="Izvoz plana (JSON / XLSX)"
+          title="Izvoz / uvoz plana (JSON / XLSX)"
           className="ml-auto flex items-center gap-1 rounded-control border border-line px-2 py-1.5 text-xs text-ink-secondary hover:bg-surface-2"
         >
-          <Download className="h-3.5 w-3.5" aria-hidden /> Izvoz
+          <Download className="h-3.5 w-3.5" aria-hidden /> Izvoz / Uvoz
         </button>
       </div>
 
@@ -617,6 +850,8 @@ export function PlanTab() {
           onClose={() => setProjectDialog(null)}
           project={projectDialog.project}
           onSaved={(id) => switchProject(id)}
+          locations={projectLocations}
+          onRenameLocation={canEdit && projectDialog.project ? renameLocation : undefined}
         />
       )}
       {wpDialog && projectId && (
@@ -626,12 +861,20 @@ export function PlanTab() {
           projectId={projectId}
           wp={wpDialog.wp}
           onSaved={(id) => switchWp(id)}
+          onApplyDefaults={canEdit && wpDialog.wp ? applyWpDefaults : undefined}
         />
       )}
 
-      {/* Izvoz */}
+      {/* Izvoz / Uvoz */}
       {exportOpen && (
-        <Dialog open onClose={() => setExportOpen(false)} title="Izvoz plana montaže">
+        <Dialog
+          open
+          onClose={() => {
+            // Ne zatvaraj dok uvoz traje — sekvencijalni upserti u toku.
+            if (!importBusy) setExportOpen(false);
+          }}
+          title="Izvoz / Uvoz"
+        >
           <div className="space-y-4">
             <p className="text-sm text-ink-secondary">Izaberi format i obim izvoza.</p>
             <div className="grid gap-2 sm:grid-cols-2">
@@ -640,6 +883,31 @@ export function PlanTab() {
               <ExportBtn label="JSON — aktivni projekat" onClick={() => { if (activeProject) exportPlanJson([activeProject], activeProject.project_code || 'projekat'); setExportOpen(false); }} />
               <ExportBtn label="JSON — svi projekti (backup)" onClick={() => { exportPlanJson(projects, 'svi'); setExportOpen(false); }} />
             </div>
+            {canEdit && (
+              <div className="space-y-2 border-t border-line pt-3">
+                <p className="text-sm font-medium text-ink">Uvoz (JSON)</p>
+                <p className="text-xs text-ink-secondary">
+                  Podržani formati: izvoz ovog modula (2.0) i 1.0 JSON snapshot. Upis ide po ID-u
+                  (postojeći projekti/nalozi/faze se pregaze, novi se dodaju).
+                </p>
+                <input
+                  type="file"
+                  accept=".json,application/json"
+                  disabled={!!importBusy}
+                  onChange={onImportFile}
+                  className="block w-full text-sm text-ink-secondary file:mr-3 file:rounded-control file:border file:border-line file:bg-surface file:px-3 file:py-1.5 file:text-sm file:text-ink hover:file:bg-surface-2 disabled:opacity-60"
+                />
+                {importBusy && (
+                  <p className="flex items-center gap-2 text-sm text-ink-secondary">
+                    <Loader2 className="h-4 w-4 animate-spin text-accent" aria-hidden />
+                    <span className="tnums">{importBusy}</span>
+                  </p>
+                )}
+                {importResult && !importBusy && (
+                  <p className="text-sm text-ink-secondary">{importResult}</p>
+                )}
+              </div>
+            )}
             <p className="text-xs text-ink-disabled">PDF Gantta stiže uz html2canvas (posebna odluka o dep-u).</p>
           </div>
         </Dialog>
@@ -778,6 +1046,13 @@ function PhaseRow({
   onDropRow,
 }: PhaseRowProps) {
   const [dragOver, setDragOver] = useState<'above' | 'below' | null>(null);
+  // % slider: lokalni preview tokom prevlačenja, commit tek na otpuštanje (paritet 1.0 —
+  // business rules se ne primenjuju usred prevlačenja).
+  const [pctPreview, setPctPreview] = useState<number | null>(null);
+  const commitPct = () => {
+    if (pctPreview != null && pctPreview !== p.pct) onField(p.id, 'pct', pctPreview);
+    setPctPreview(null);
+  };
   const dur = calcDuration(p.startDate, p.endDate);
   const durText = dur === -1 ? '⚠' : dur == null ? '—' : `${dur} d`;
   const rd = calcReadiness(p);
@@ -860,7 +1135,7 @@ function PhaseRow({
           onChange={(e) => onField(p.id, 'phaseName', e.target.value)}
           className={cn(cellInput, 'font-medium')}
         />
-        <div className="mt-1 flex items-center gap-1">
+        <div className="mt-1 flex flex-wrap items-center gap-1">
           <button
             type="button"
             disabled={dis}
@@ -876,44 +1151,49 @@ function PhaseRow({
             {p.phaseType === 'electrical' ? 'E · Elektro' : 'M · Mašinska'}
           </button>
           {canEdit ? (
-            <>
-              <button
-                type="button"
-                onClick={() => onOpenDesc(p.id)}
-                title={p.description?.trim() ? 'Opis (dodeljen) — izmeni' : 'Dodaj opis faze'}
-                className={cn(
-                  'inline-flex items-center gap-0.5 rounded-control px-1 py-0.5 text-2xs hover:bg-surface-2',
-                  p.description?.trim() ? 'text-accent' : 'text-ink-disabled',
-                )}
-              >
+            <button
+              type="button"
+              onClick={() => onOpenDesc(p.id)}
+              title={p.description?.trim() ? 'Opis (dodeljen) — izmeni' : 'Dodaj opis faze'}
+              className={cn(
+                'inline-flex items-center gap-0.5 rounded-control px-1 py-0.5 text-2xs hover:bg-surface-2',
+                p.description?.trim() ? 'text-accent' : 'text-ink-disabled',
+              )}
+            >
+              <FileText className="h-3 w-3" aria-hidden /> opis
+            </button>
+          ) : (
+            p.description?.trim() && (
+              <span className="inline-flex items-center gap-0.5 text-2xs text-ink-disabled" title="Ima opis">
                 <FileText className="h-3 w-3" aria-hidden /> opis
-              </button>
+              </span>
+            )
+          )}
+          {/* Povezani crteži: chip po crtežu (klik → PDF; vidljivo i vieweru — BE gate
+              presuđuje), u edit režimu olovka otvara postojeći dijalog liste. */}
+          {p.linkedDrawings.map((no) => (
+            <DrawingChip key={no} code={no} />
+          ))}
+          {canEdit &&
+            (p.linkedDrawings.length ? (
               <button
                 type="button"
                 onClick={() => onOpenDrawings(p.id)}
-                title={p.linkedDrawings.length ? p.linkedDrawings.join(', ') : 'Poveži crteže'}
-                className={cn(
-                  'inline-flex items-center gap-0.5 rounded-control px-1 py-0.5 text-2xs hover:bg-surface-2',
-                  p.linkedDrawings.length ? 'text-accent' : 'text-ink-disabled',
-                )}
+                title="Izmeni listu povezanih crteža"
+                className="rounded-control p-0.5 text-ink-disabled hover:bg-surface-2 hover:text-ink-secondary"
               >
-                <Link2 className="h-3 w-3" aria-hidden /> {p.linkedDrawings.length || 'crteži'}
+                <Pencil className="h-3 w-3" aria-hidden />
               </button>
-            </>
-          ) : (
-            <>
-              {p.description?.trim() && (
-                <span className="inline-flex items-center gap-0.5 text-2xs text-ink-disabled" title="Ima opis">
-                  <FileText className="h-3 w-3" aria-hidden /> opis
-                </span>
-              )}
-              {p.linkedDrawings.length > 0 && (
-                <span className="inline-flex items-center gap-0.5 text-2xs text-ink-disabled" title={p.linkedDrawings.join(', ')}>
-                  <Link2 className="h-3 w-3" aria-hidden /> {p.linkedDrawings.length}
-                </span>
-              )}
-            </>
-          )}
+            ) : (
+              <button
+                type="button"
+                onClick={() => onOpenDrawings(p.id)}
+                title="Poveži crteže"
+                className="inline-flex items-center gap-0.5 rounded-control px-1 py-0.5 text-2xs text-ink-disabled hover:bg-surface-2"
+              >
+                <Link2 className="h-3 w-3" aria-hidden /> crteži
+              </button>
+            ))}
         </div>
       </td>
       <td className="px-2 py-1.5">
@@ -1004,12 +1284,15 @@ function PhaseRow({
             min={0}
             max={100}
             step={5}
-            value={p.pct}
+            value={pctPreview ?? p.pct}
             disabled={dis}
-            onChange={(e) => onField(p.id, 'pct', parseInt(e.target.value, 10))}
+            onChange={(e) => setPctPreview(parseInt(e.target.value, 10))}
+            onPointerUp={commitPct}
+            onKeyUp={commitPct}
+            onBlur={commitPct}
             className="w-16"
           />
-          <span className="tnums w-9 text-right text-xs text-ink-secondary">{p.pct}%</span>
+          <span className="tnums w-9 text-right text-xs text-ink-secondary">{pctPreview ?? p.pct}%</span>
         </div>
       </td>
       {p.checks.map((c, ci) => (

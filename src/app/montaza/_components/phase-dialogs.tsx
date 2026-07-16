@@ -76,7 +76,7 @@ export function PhaseLinkedDrawingsDialog({
     setOpening(no);
     try {
       const res = await fetchDrawingSignedUrl(no);
-      if (res.data) window.open(res.data, '_blank', 'noopener');
+      if (res.data?.url) window.open(res.data.url, '_blank', 'noopener');
     } catch {
       /* nema PDF-a u kešu / bez dozvole */
     } finally {

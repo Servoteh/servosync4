@@ -3,14 +3,61 @@
 // Plan montaže — mobilna kartica faze (increment 7, paritet 1.0 mobileCards.js).
 // Prikazuje se na uskim ekranima (< lg) umesto guste 23-kolone tabele. Koristi ISTE
 // handlere kao desktop red (onField/onCheck/onToggleType/onPerson/onMove/onDelete/…).
+// Ovde živi i DrawingChip (klikabilni chip povezanog crteža → signed URL PDF-a) koji
+// desktop red (plan-tab) uvozi — plan-tab već uvozi PhaseCard pa je smer bez ciklusa.
 
-import { ChevronUp, ChevronDown, Trash2, FileText, Link2 } from 'lucide-react';
+import { useState } from 'react';
+import { ChevronUp, ChevronDown, Trash2, FileText, Link2, Loader2, Pencil } from 'lucide-react';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { cn } from '@/lib/cn';
-import type { PhaseVM } from '@/api/plan-montaze';
+import { fetchDrawingSignedUrl, type PhaseVM } from '@/api/plan-montaze';
 import { STATUSES, CHECK_SHORT, CHECK_LABELS } from '@/lib/plan-montaze/constants';
 import { calcDuration } from '@/lib/plan-montaze/date';
 import { calcReadiness, calcRisk, riskTone, RISK_LABEL, locationColor } from '@/lib/plan-montaze/phase';
+
+/**
+ * Chip povezanog crteža (paritet 1.0 planTable.js „phase-linked-chip"): klik dohvata
+ * signed URL i otvara PDF u novom tabu. Vidljiv i vieweru — BE gate presuđuje pristup.
+ * Greška → tiho u konzolu + kratko crveno stanje na chipu.
+ */
+export function DrawingChip({ code }: { code: string }) {
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  async function openPdf() {
+    if (busy) return;
+    setBusy(true);
+    setFailed(false);
+    try {
+      const res = await fetchDrawingSignedUrl(code);
+      const url = res.data?.url;
+      if (!url) throw new Error('Prazan signed URL');
+      window.open(url, '_blank', 'noopener');
+    } catch (e) {
+      console.error('[montaza] Otvaranje PDF-a crteža nije uspelo:', code, e);
+      setFailed(true);
+      window.setTimeout(() => setFailed(false), 2500);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={openPdf}
+      disabled={busy}
+      title={failed ? 'Otvaranje PDF-a nije uspelo' : 'Otvori PDF crteža'}
+      className={cn(
+        'inline-flex items-center gap-0.5 rounded-control border px-1 py-0.5 text-2xs hover:bg-surface-2 disabled:opacity-60',
+        failed ? 'border-status-danger/60 text-status-danger' : 'border-line text-accent',
+      )}
+    >
+      {busy ? <Loader2 className="h-3 w-3 animate-spin" aria-hidden /> : <FileText className="h-3 w-3" aria-hidden />}
+      <span className="tnums">{code}</span>
+    </button>
+  );
+}
 
 interface Props {
   p: PhaseVM;
@@ -53,6 +100,14 @@ export function PhaseCard({
   const rk = calcRisk(p);
   const color = locationColor(p.location);
 
+  // % slider: tokom prevlačenja SAMO lokalni preview; commit (business rules + save)
+  // tek na otpuštanje (paritet 1.0 — pravila se ne primenjuju usred prevlačenja).
+  const [pctPreview, setPctPreview] = useState<number | null>(null);
+  const commitPct = () => {
+    if (pctPreview != null && pctPreview !== p.pct) onField(p.id, 'pct', pctPreview);
+    setPctPreview(null);
+  };
+
   return (
     <div className="rounded-panel border border-line bg-surface p-3" style={{ borderLeft: `3px solid ${color}` }}>
       {/* Header: # + naziv + tip + brisanje */}
@@ -92,8 +147,20 @@ export function PhaseCard({
           </select>
         </label>
         <label className="text-2xs text-ink-secondary">
-          Napredak: {p.pct}%
-          <input type="range" min={0} max={100} step={5} value={p.pct} disabled={dis} onChange={(e) => onField(p.id, 'pct', parseInt(e.target.value, 10))} className="mt-2 w-full" />
+          Napredak: {pctPreview ?? p.pct}%
+          <input
+            type="range"
+            min={0}
+            max={100}
+            step={5}
+            value={pctPreview ?? p.pct}
+            disabled={dis}
+            onChange={(e) => setPctPreview(parseInt(e.target.value, 10))}
+            onPointerUp={commitPct}
+            onKeyUp={commitPct}
+            onBlur={commitPct}
+            className="mt-2 w-full"
+          />
         </label>
       </div>
 
@@ -199,6 +266,25 @@ export function PhaseCard({
         />
       </div>
 
+      {/* Povezani crteži — chipovi klikabilni i za viewera (BE gate presuđuje) */}
+      {p.linkedDrawings.length > 0 && (
+        <div className="mt-2 flex flex-wrap items-center gap-1">
+          {p.linkedDrawings.map((no) => (
+            <DrawingChip key={no} code={no} />
+          ))}
+          {canEdit && (
+            <button
+              type="button"
+              onClick={() => onOpenDrawings(p.id)}
+              title="Izmeni listu povezanih crteža"
+              className="rounded-control border border-line p-1 text-ink-secondary hover:bg-surface-2"
+            >
+              <Pencil className="h-3 w-3" aria-hidden />
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Akcije */}
       <div className="mt-2 flex flex-wrap items-center gap-2">
         {canEdit && (
@@ -206,9 +292,11 @@ export function PhaseCard({
             <button type="button" onClick={() => onOpenDesc(p.id)} className={cn('flex items-center gap-1 rounded-control border border-line px-2 py-1 text-xs', p.description?.trim() ? 'text-accent' : 'text-ink-secondary')}>
               <FileText className="h-3.5 w-3.5" aria-hidden /> Opis
             </button>
-            <button type="button" onClick={() => onOpenDrawings(p.id)} className={cn('flex items-center gap-1 rounded-control border border-line px-2 py-1 text-xs', p.linkedDrawings.length ? 'text-accent' : 'text-ink-secondary')}>
-              <Link2 className="h-3.5 w-3.5" aria-hidden /> Crteži{p.linkedDrawings.length ? ` (${p.linkedDrawings.length})` : ''}
-            </button>
+            {p.linkedDrawings.length === 0 && (
+              <button type="button" onClick={() => onOpenDrawings(p.id)} title="Poveži crteže" className="flex items-center gap-1 rounded-control border border-line px-2 py-1 text-xs text-ink-secondary">
+                <Link2 className="h-3.5 w-3.5" aria-hidden /> Crteži
+              </button>
+            )}
             <div className="ml-auto flex items-center gap-1">
               <button type="button" onClick={() => onMove(p.id, -1)} className="rounded-control border border-line p-1 text-ink-secondary hover:bg-surface-2"><ChevronUp className="h-4 w-4" aria-hidden /></button>
               <button type="button" onClick={() => onMove(p.id, 1)} className="rounded-control border border-line p-1 text-ink-secondary hover:bg-surface-2"><ChevronDown className="h-4 w-4" aria-hidden /></button>
