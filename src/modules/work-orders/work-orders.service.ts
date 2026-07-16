@@ -22,6 +22,10 @@ import {
   validateReworkWorkOrder,
 } from "./dto/rework-work-order.dto";
 import {
+  QualityChildWorkOrderDto,
+  validateQualityChildWorkOrder,
+} from "./dto/quality-child-work-order.dto";
+import {
   BulkCloneWorkOrdersDto,
   validateBulkCloneWorkOrders,
 } from "./dto/bulk-clone-work-orders.dto";
@@ -1302,65 +1306,176 @@ export class WorkOrdersService {
   }
 
   /**
-   * DORADA/ŠKART child nalog (`KreirajNalogDoradeIliSkarta`, §3.4). Iz `sourceId`
-   * nastaje NOVI RN u istom predmetu: `identNumber` = izvor + sufiks `-D`n (dorada)
-   * ili `-S`n (škart), gde je `n` prvi slobodan redni broj. Kopira zaglavlje + sve
-   * 4 vrste stavki; `pieceCount` = zadata dorađena/škartirana količina;
-   * `qualityTypeId` = 1/2; status = U OBRADI, otključan. Atomično.
+   * DORADA/ŠKART child nalog — EXPORT ugovor (kvalitet.control() ga zove pri
+   * knjiženju dorade/škarta; automatska derivacija child RN-a, ODLUKE Nenad 16.07).
+   * Legacy `KreirajNalogDoradeIliSkarta` (RN_Modul.bas:607): iz `parentWorkOrderId`
+   * nastaje NOVI RN u istom predmetu — `identNumber` = parent + sufiks `-D`n (dorada,
+   * `qualityTypeId=1`) ili `-S`n (škart, `qualityTypeId=2`), `n` = prvi slobodan
+   * redni broj (legacy petlja count>0 → N+1); NOVA varijanta
+   * (`SledecaVrednostVarijante` = MAX(variant)+1 po predmetu/crtežu/reviziji);
+   * kopija zaglavlja + SVE 4 vrste stavki; `pieceCount` = zadata količina;
+   * status = U OBRADI, otključan; `parentWorkOrderId` marker (poreklo, t.2).
+   * Atomično (jedna transakcija). Vraća samo `{ id, identNumber }` (bez enrich-a) —
+   * poziva se iz DRUGE transakcije/servisa (kontrola), pa NE radi `findOne` read-back.
+   */
+  async createQualityChildOrder(input: {
+    parentWorkOrderId: number;
+    qualityTypeId: 1 | 2;
+    quantity: number;
+    note: string | null;
+    actorWorkerId: number | null;
+  }): Promise<{ id: number; identNumber: string }> {
+    return this.prisma.$transaction((tx) =>
+      this.createQualityChildInTx(tx, input),
+    );
+  }
+
+  /**
+   * Ručni endpoint `POST /work-orders/:id/quality-child` (RN_WRITE): fallback za
+   * međufazne škartove bez kioska i retroaktivni data-fix (npr. 9000/131-S1).
+   * Poziva isti `createQualityChildOrder`; autor = svež `users.worker_id`
+   * (resolveActorWorkerId; `null` ako nalog nije vezan za radnika → nasledi izvor).
+   * Vraća `{ data: { id, identNumber } }`.
+   */
+  async createQualityChild(
+    parentWorkOrderId: number,
+    dto: QualityChildWorkOrderDto,
+    actor?: AuthUser,
+  ) {
+    validateQualityChildWorkOrder(dto);
+    const actorWorkerId = await resolveActorWorkerId(this.prisma, actor);
+    const child = await this.createQualityChildOrder({
+      parentWorkOrderId,
+      qualityTypeId: dto.qualityTypeId as 1 | 2,
+      quantity: dto.quantity,
+      note: dto.note ?? null,
+      actorWorkerId,
+    });
+    return { data: child };
+  }
+
+  /**
+   * Jezgro derivacije dorada/škart child RN-a UNUTAR prosleđene transakcije
+   * (deljeno između `createQualityChildOrder` i `rework`). Advisory lock po
+   * `quality_child:<predmet>:<parentIdent>` (hashtext obrazac kao
+   * kvalitet.confirmReport) serijalizuje konkurentnu dodelu sufiksa/varijante za
+   * isti izvor. Slobodan sufiks se traži legacy petljom count>0 → N+1 po
+   * (projectId, identNumber). Nova varijanta = MAX(variant)+1 po VEĆEM od dva
+   * ključa (legacy trojka predmet/crtež/revizija ∪ (predmet, parentIdent)) —
+   * isti razlog kao `cloneVariant`: `updateHeader` sme da promeni crtež/reviziju
+   * postojećoj varijanti pa MAX samo po trojci vrati zauzetu vrednost;
+   * `uq_work_orders_project_ident_variant` je DB mreža.
+   */
+  private async createQualityChildInTx(
+    tx: Prisma.TransactionClient,
+    input: {
+      parentWorkOrderId: number;
+      qualityTypeId: 1 | 2;
+      quantity: number;
+      note: string | null;
+      actorWorkerId: number | null;
+    },
+  ): Promise<{ id: number; identNumber: string }> {
+    const source = await tx.workOrder.findUnique({
+      where: { id: input.parentWorkOrderId },
+    });
+    if (!source)
+      throw new NotFoundException(
+        `Radni nalog ${input.parentWorkOrderId} ne postoji`,
+      );
+
+    // Serijalizuj dodelu sufiksa/varijante za isti izvorni RN (hashtext obrazac
+    // kao kvalitet.confirmReport) — legacy count-petlja i MAX(variant) bez race-a.
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`quality_child:${source.projectId}:${source.identNumber}`}))`;
+
+    const letter = input.qualityTypeId === 1 ? "D" : "S";
+    const prefix = `${source.identNumber}-${letter}`;
+    // Legacy petlja: sufiks kreće od 1; dok postoji RN sa istim (predmet, ident)
+    // → N+1 (rešava S1,S2,…,Sx i D1..Dx). Sve čisto numeričke sufikse gledamo
+    // odjednom (ekvivalent uzastopnih count upita, bez race-a pod lock-om).
+    const siblings = await tx.workOrder.findMany({
+      where: {
+        projectId: source.projectId,
+        identNumber: { startsWith: prefix },
+      },
+      select: { identNumber: true },
+    });
+    const used = new Set<number>();
+    for (const s of siblings) {
+      const suffix = s.identNumber.slice(prefix.length);
+      const n = Number.parseInt(suffix, 10);
+      // Broj samo čisto numeričke sufikse (npr. `-D1`, ne `-D1-S2`).
+      if (!Number.isNaN(n) && String(n) === suffix) used.add(n);
+    }
+    let n = 1;
+    while (used.has(n)) n++;
+    const identNumber = `${prefix}${n}`;
+
+    // Nova varijanta (SledecaVrednostVarijante) = MAX(variant)+1 po VEĆEM od dva
+    // ključa (vidi docstring); child ima zaseban ident pa je `uq` trojka ionako
+    // slobodna, ali legacy paritet i staleWorkOrder guard traže napredovanje.
+    const [byDrawing, byIdent] = await Promise.all([
+      tx.workOrder.aggregate({
+        where: {
+          projectId: source.projectId,
+          drawingNumber: source.drawingNumber,
+          revision: source.revision,
+        },
+        _max: { variant: true },
+      }),
+      tx.workOrder.aggregate({
+        where: { projectId: source.projectId, identNumber },
+        _max: { variant: true },
+      }),
+    ]);
+    const variant =
+      Math.max(
+        byDrawing._max.variant ?? source.variant,
+        byIdent._max.variant ?? source.variant,
+      ) + 1;
+
+    await this.alignWorkOrderSequence(tx);
+    await this.alignItemSequences(tx);
+
+    const child = await tx.workOrder.create({
+      data: this.buildCloneHeader(source, {
+        identNumber,
+        variant,
+        qualityTypeId: input.qualityTypeId,
+        pieceCount: input.quantity,
+        note: input.note?.trim() || source.note,
+        // Autor derivacije: kontrolor/tehnolog (svež worker) ili nasledi izvor.
+        workerId: input.actorWorkerId ?? source.workerId,
+        // Strukturisano poreklo (t.2): child dorada/škart RN pamti izvorni RN.
+        parentWorkOrderId: source.id,
+      }),
+      select: { id: true, identNumber: true },
+    });
+
+    await this.cloneItems(tx, source.id, child.id, {
+      coefficient: 1,
+      recomputePriority: true,
+    });
+    return child;
+  }
+
+  /**
+   * DORADA/ŠKART child nalog (ručni RN endpoint / „Prepiši u doradu/škart").
+   * Deli jezgro sa `createQualityChildOrder` (isti legacy `KreirajNalogDoradeIliSkarta`
+   * recept); ovde je razlika samo u DTO validaciji i enrich read-back-u (`findOne`).
    */
   async rework(sourceId: number, dto: ReworkWorkOrderDto) {
     validateReworkWorkOrder(dto);
 
-    const created = await this.prisma.$transaction(async (tx) => {
-      const source = await tx.workOrder.findUnique({ where: { id: sourceId } });
-      if (!source)
-        throw new NotFoundException(`Radni nalog ${sourceId} ne postoji`);
-
-      // Serijalizuj po predmetu (kao create/numbering) — child ostaje u istom
-      // predmetu, pa je pretraga slobodnog sufiksa bez race-a.
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${source.projectId})`;
-
-      const letter = dto.qualityTypeId === 1 ? "D" : "S";
-      const prefix = `${source.identNumber}-${letter}`;
-      const siblings = await tx.workOrder.findMany({
-        where: {
-          projectId: source.projectId,
-          identNumber: { startsWith: prefix },
-        },
-        select: { identNumber: true },
-      });
-      const used = new Set<number>();
-      for (const s of siblings) {
-        const suffix = s.identNumber.slice(prefix.length);
-        const n = Number.parseInt(suffix, 10);
-        // Broj samo čisto numeričke sufikse (npr. `-D1`, ne `-D1-S2`).
-        if (!Number.isNaN(n) && String(n) === suffix) used.add(n);
-      }
-      let n = 1;
-      while (used.has(n)) n++;
-      const identNumber = `${prefix}${n}`;
-
-      await this.alignWorkOrderSequence(tx);
-      await this.alignItemSequences(tx);
-
-      const child = await tx.workOrder.create({
-        data: this.buildCloneHeader(source, {
-          identNumber,
-          qualityTypeId: dto.qualityTypeId,
-          pieceCount: dto.pieceCount,
-          note: dto.note?.trim() || source.note,
-          // Strukturisano poreklo (t.2): child dorada/škart RN pamti izvorni RN.
-          parentWorkOrderId: sourceId,
-        }),
-        select: { id: true },
-      });
-
-      await this.cloneItems(tx, sourceId, child.id, {
-        coefficient: 1,
-        recomputePriority: true,
-      });
-      return child;
-    });
+    const created = await this.prisma.$transaction((tx) =>
+      this.createQualityChildInTx(tx, {
+        parentWorkOrderId: sourceId,
+        qualityTypeId: dto.qualityTypeId as 1 | 2,
+        quantity: dto.pieceCount,
+        note: dto.note ?? null,
+        actorWorkerId: null,
+      }),
+    );
 
     return this.findOne(created.id);
   }

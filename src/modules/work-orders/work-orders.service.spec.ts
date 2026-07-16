@@ -533,6 +533,251 @@ describe("WorkOrdersService (workflow)", () => {
     });
   });
 
+  describe("createQualityChildOrder (auto dorada/škart child iz kontrole)", () => {
+    /** Izvorni (parent) RN — podskup polja koje buildCloneHeader/derivacija čita. */
+    const parent = {
+      id: 55,
+      projectId: 90,
+      identNumber: "9000/131",
+      variant: 0,
+      externalCustomerId: 9,
+      drawingNumber: "CRT-77",
+      revision: "A",
+      pieceCount: 20,
+      partName: "Osovina",
+      material: "Č4732",
+      materialDimension: "Ø40x150",
+      unit: "kom",
+      qualityTypeId: 0,
+      workerId: 3,
+      drawingHandoverId: 0,
+      drawingId: 5,
+      handoverStatusId: 3,
+      isLocked: false,
+      status: false,
+      note: "izvorna napomena",
+    };
+
+    it("sufiks S1 kad nema zauzetih (škart, qualityTypeId=2), pieceCount=quantity, poreklo=parent", async () => {
+      prisma.workOrder.findUnique.mockResolvedValue(parent);
+      // Nema postojećih -S child-ova.
+      prisma.workOrder.findMany.mockResolvedValue([]);
+      prisma.workOrder.aggregate.mockResolvedValue({ _max: { variant: 0 } });
+      prisma.workOrder.create.mockResolvedValue({
+        id: 201,
+        identNumber: "9000/131-S1",
+      });
+
+      const res = await service.createQualityChildOrder({
+        parentWorkOrderId: 55,
+        qualityTypeId: 2,
+        quantity: 3,
+        note: "škart 3 kom",
+        actorWorkerId: 88,
+      });
+
+      // Advisory lock hashtext po (predmet, parentIdent).
+      const rawCalls = prisma.$executeRaw.mock.calls as unknown[][];
+      const lock = rawCalls.find(
+        (c) =>
+          Array.isArray(c[0]) &&
+          (c[0] as string[]).join("?").includes("pg_advisory_xact_lock"),
+      );
+      expect(lock).toBeDefined();
+
+      expect(prisma.workOrder.create).toHaveBeenCalledWith(
+        containing({
+          data: containing({
+            identNumber: "9000/131-S1",
+            qualityTypeId: 2,
+            pieceCount: 3,
+            parentWorkOrderId: 55,
+            workerId: 88, // autor derivacije (kontrolor)
+            handoverStatusId: 0, // U OBRADI
+            status: false,
+            isLocked: false,
+            variant: 1, // MAX(0)+1
+          }),
+        }),
+      );
+      expect(res).toEqual({ id: 201, identNumber: "9000/131-S1" });
+    });
+
+    it("sufiks S2 kad postoji S1 (legacy count>0 → N+1)", async () => {
+      prisma.workOrder.findUnique.mockResolvedValue(parent);
+      prisma.workOrder.findMany.mockResolvedValue([
+        { identNumber: "9000/131-S1" },
+      ]);
+      prisma.workOrder.aggregate.mockResolvedValue({ _max: { variant: 1 } });
+      prisma.workOrder.create.mockResolvedValue({
+        id: 202,
+        identNumber: "9000/131-S2",
+      });
+
+      await service.createQualityChildOrder({
+        parentWorkOrderId: 55,
+        qualityTypeId: 2,
+        quantity: 1,
+        note: null,
+        actorWorkerId: null,
+      });
+
+      expect(prisma.workOrder.create).toHaveBeenCalledWith(
+        containing({
+          data: containing({
+            identNumber: "9000/131-S2",
+            // note null + actor null → nasledi izvor.
+            note: "izvorna napomena",
+            workerId: 3, // actor null → nasledi izvor
+          }),
+        }),
+      );
+    });
+
+    it("prefiks -D za qualityTypeId=1 (dorada)", async () => {
+      prisma.workOrder.findUnique.mockResolvedValue(parent);
+      prisma.workOrder.findMany.mockResolvedValue([]);
+      prisma.workOrder.aggregate.mockResolvedValue({ _max: { variant: 0 } });
+      prisma.workOrder.create.mockResolvedValue({
+        id: 203,
+        identNumber: "9000/131-D1",
+      });
+
+      await service.createQualityChildOrder({
+        parentWorkOrderId: 55,
+        qualityTypeId: 1,
+        quantity: 2,
+        note: null,
+        actorWorkerId: null,
+      });
+
+      expect(prisma.workOrder.create).toHaveBeenCalledWith(
+        containing({
+          data: containing({ identNumber: "9000/131-D1", qualityTypeId: 1 }),
+        }),
+      );
+    });
+
+    it("kopira CEO TP (createMany operacija sa parent redovima)", async () => {
+      prisma.workOrder.findUnique.mockResolvedValue(parent);
+      prisma.workOrder.findMany.mockResolvedValue([]);
+      prisma.workOrder.aggregate.mockResolvedValue({ _max: { variant: 0 } });
+      prisma.workOrder.create.mockResolvedValue({
+        id: 204,
+        identNumber: "9000/131-S1",
+      });
+      prisma.workOrderOperation.findMany.mockResolvedValue([
+        {
+          id: 900,
+          workOrderId: 55,
+          operationNumber: 10,
+          workCenterCode: "GL",
+          workDescription: "Struganje",
+          toolsFixtures: null,
+          setupTime: 1,
+          cycleTime: 0.5,
+          toolWeight: 0,
+          workerId: 3,
+          priority: 17,
+        },
+      ]);
+      prisma.operation.findMany.mockResolvedValue([
+        { workCenterCode: "GL", usesPriority: true },
+      ]);
+
+      await service.createQualityChildOrder({
+        parentWorkOrderId: 55,
+        qualityTypeId: 2,
+        quantity: 1,
+        note: null,
+        actorWorkerId: null,
+      });
+
+      expect(prisma.workOrderOperation.createMany).toHaveBeenCalledWith({
+        data: [
+          containing({
+            workOrderId: 204,
+            operationNumber: 10,
+            workCenterCode: "GL",
+            priority: 100, // usesPriority regen §3.4
+          }),
+        ],
+      });
+    });
+
+    it("404 kad izvorni (parent) RN ne postoji", async () => {
+      prisma.workOrder.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.createQualityChildOrder({
+          parentWorkOrderId: 999,
+          qualityTypeId: 2,
+          quantity: 1,
+          note: null,
+          actorWorkerId: null,
+        }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.workOrder.create).not.toHaveBeenCalled();
+    });
+
+    it("createQualityChild (endpoint): 422 kad quantity < 1", async () => {
+      await expect(
+        service.createQualityChild(
+          55,
+          { qualityTypeId: 2, quantity: 0 },
+          actor,
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.workOrder.create).not.toHaveBeenCalled();
+    });
+
+    it("createQualityChild (endpoint): 422 kad qualityTypeId nije 1/2", async () => {
+      await expect(
+        service.createQualityChild(
+          55,
+          { qualityTypeId: 0 as 1 | 2, quantity: 3 },
+          actor,
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.workOrder.create).not.toHaveBeenCalled();
+    });
+
+    it("createQualityChild (endpoint): vraća { data: { id, identNumber } }, autor iz JWT-a", async () => {
+      prisma.workOrder.findUnique.mockResolvedValue(parent);
+      prisma.workOrder.findMany.mockResolvedValue([]);
+      prisma.workOrder.aggregate.mockResolvedValue({ _max: { variant: 0 } });
+      prisma.workOrder.create.mockResolvedValue({
+        id: 205,
+        identNumber: "9000/131-S1",
+      });
+
+      const res = await service.createQualityChild(
+        55,
+        { qualityTypeId: 2, quantity: 3, note: "ručni fix" },
+        actor,
+      );
+
+      expect(res).toEqual({ data: { id: 205, identNumber: "9000/131-S1" } });
+      expect(prisma.workOrder.create).toHaveBeenCalledWith(
+        containing({
+          data: containing({ workerId: 77 }), // actor.workerId iz JWT-a
+        }),
+      );
+    });
+
+    it("endpoint createQualityChild je iza `rn.write`", () => {
+      const handler = (name: string): object =>
+        Object.getOwnPropertyDescriptor(WorkOrdersController.prototype, name)
+          ?.value as object;
+      expect(
+        Reflect.getMetadata(
+          PERMISSION_KEY_METADATA,
+          handler("createQualityChild"),
+        ),
+      ).toBe(PERMISSIONS.RN_WRITE);
+    });
+  });
+
   describe("remove (brisanje RN-a + placeholder guard)", () => {
     it("briše RN kad su prijave samo placeholderi (pieceCount 0, bez vremena)", async () => {
       prisma.workOrder.findUnique.mockResolvedValue({ id: 7, isLocked: false });

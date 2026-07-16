@@ -5,6 +5,7 @@ import { ScopeService } from "../../common/authz/scope.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { LabelPrintService } from "../../common/printing/label-print.service";
 import { QualityService } from "../kvalitet/kvalitet.service";
+import { WorkOrdersService } from "../work-orders/work-orders.service";
 import { TechProcessesService } from "./tech-processes.service";
 
 /**
@@ -121,6 +122,14 @@ async function buildService(prisma: ReturnType<typeof prismaMock>) {
       {
         provide: QualityService,
         useValue: { createDraftFromControl: jest.fn().mockResolvedValue(undefined) },
+      },
+      {
+        provide: WorkOrdersService,
+        useValue: {
+          createQualityChildOrder: jest
+            .fn()
+            .mockResolvedValue({ id: 5001, identNumber: "06/93-4-D1" }),
+        },
       },
     ],
   }).compile();

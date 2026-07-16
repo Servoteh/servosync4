@@ -28,6 +28,7 @@ import { WorkOrderPrintService } from "./work-order-print.service";
 import type { RnPrintVariant } from "./work-order-print.service";
 import type { CreateWorkOrderDto } from "./dto/create-work-order.dto";
 import type { ReworkWorkOrderDto } from "./dto/rework-work-order.dto";
+import type { QualityChildWorkOrderDto } from "./dto/quality-child-work-order.dto";
 import type { BulkCloneWorkOrdersDto } from "./dto/bulk-clone-work-orders.dto";
 import type { UpdateWorkOrderDto } from "./dto/update-work-order.dto";
 import type {
@@ -46,6 +47,7 @@ import type {
  *   POST /api/v1/work-orders/:id/copy-from/:sourceId             — kopiraj stavke u prazan cilj (RN_WRITE)
  *   POST /api/v1/work-orders/:id/clone-variant                   — „Prepiši isti postupak": klon kao sledeća varijanta (RN_WRITE)
  *   POST /api/v1/work-orders/:id/rework   { pieceCount, qualityTypeId, note? } — dorada/škart child (RN_WRITE)
+ *   POST /api/v1/work-orders/:id/quality-child { qualityTypeId, quantity, note? } — ručni dorada/škart child (RN_WRITE)
  *   POST /api/v1/work-orders/projects/:projectId/bulk-clone { targetProjectId, coefficient, workOrderIds? } — bulk-clone (RN_WRITE)
  *   PATCH /api/v1/work-orders/operations/:opId/priority { priority } — CAM prioritet (TEHNOLOGIJA_WRITE)
  *
@@ -252,6 +254,22 @@ export class WorkOrdersController {
     @Body() dto: ReworkWorkOrderDto,
   ) {
     return this.workOrders.rework(id, dto);
+  }
+
+  /**
+   * Ručni DORADA/ŠKART child RN (fallback + data-fix): isti legacy recept kao
+   * automatska derivacija iz kontrole, samo ručno pokrenut. Vraća
+   * `{ data: { id, identNumber } }`. Autor = JWT radnik (svež users.worker_id).
+   */
+  @Post(":id/quality-child")
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(PERMISSIONS.RN_WRITE)
+  createQualityChild(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: QualityChildWorkOrderDto,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.workOrders.createQualityChild(id, dto, req.user);
   }
 
   /** Bulk-clone svih (ili izabranih) naloga predmeta `projectId` u nov prazan predmet. */

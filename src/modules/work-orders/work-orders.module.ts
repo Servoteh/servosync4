@@ -10,5 +10,8 @@ import { WorkOrderPrintService } from "./work-order-print.service";
   imports: [PrismaModule, DocumentsModule],
   controllers: [WorkOrdersController],
   providers: [WorkOrdersService, WorkOrderNumberingService, WorkOrderPrintService],
+  // Exportovan za TechProcessesModule: control() kreira child RN (-S/-D) preko
+  // WorkOrdersService.createQualityChildOrder (batch5, Nenad 16.07).
+  exports: [WorkOrdersService],
 })
 export class WorkOrdersModule {}

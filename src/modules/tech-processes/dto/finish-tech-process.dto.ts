@@ -17,12 +17,6 @@ export interface FinishTechProcessDto {
    * Ako je zadata → upis na `tech_processes.workerId` (audit ko+kada). §4/§5.
    */
   workerCard?: string;
-  /**
-   * Overshoot potvrda (K0.2): kada bi napravljeno prešlo plan, FE prvo pokaže dijalog
-   * pa ponovi zahtev sa `confirmOvershoot: true` — tada se dozvoljava zatvaranje preko
-   * plana. Bez flag-a premašaj = 422.
-   */
-  confirmOvershoot?: boolean;
 }
 
 export function validateFinish(dto: FinishTechProcessDto | undefined): void {
@@ -36,12 +30,5 @@ export function validateFinish(dto: FinishTechProcessDto | undefined): void {
   )
     throw new BadRequestException(
       "Polje 'workerCard' mora biti neprazan string (ID kartica).",
-    );
-  if (
-    dto?.confirmOvershoot !== undefined &&
-    typeof dto.confirmOvershoot !== "boolean"
-  )
-    throw new BadRequestException(
-      "Polje 'confirmOvershoot' mora biti boolean.",
     );
 }

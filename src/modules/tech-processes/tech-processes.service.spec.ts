@@ -4,6 +4,7 @@ import { ScopeService } from "../../common/authz/scope.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { LabelPrintService } from "../../common/printing/label-print.service";
 import { QualityService } from "../kvalitet/kvalitet.service";
+import { WorkOrdersService } from "../work-orders/work-orders.service";
 import { TechProcessesService } from "./tech-processes.service";
 import { validateStopWork } from "./dto/stop-work.dto";
 
@@ -97,6 +98,19 @@ function qualityMock() {
   return { createDraftFromControl: jest.fn().mockResolvedValue(undefined) };
 }
 
+/**
+ * Mock WorkOrdersService — A3 child RN (-D/-S) hook. Default: uspeh
+ * (`createQualityChildOrder` vrati { id, identNumber }); testovi po potrebi
+ * `mockRejectedValue` da provere pending granu (childOrderPending=true).
+ */
+function workOrdersMock() {
+  return {
+    createQualityChildOrder: jest
+      .fn()
+      .mockResolvedValue({ id: 5001, identNumber: "06/93-4-D1" }),
+  };
+}
+
 let nextId = 1;
 
 /** Red `tech_processes` (jedno kucanje) sa razumnim podrazumevanim vrednostima. */
@@ -144,6 +158,7 @@ describe("TechProcessesService — card (agregat po operaciji)", () => {
         { provide: NotificationsService, useValue: notificationsMock() },
         { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
         { provide: QualityService, useValue: qualityMock() },
+        { provide: WorkOrdersService, useValue: workOrdersMock() },
       ],
     }).compile();
     service = mod.get(TechProcessesService);
@@ -481,6 +496,7 @@ describe("TechProcessesService — scan pinuje TEKUĆU varijantu RN-a (D5 klon =
         { provide: NotificationsService, useValue: notificationsMock() },
         { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
         { provide: QualityService, useValue: qualityMock() },
+        { provide: WorkOrdersService, useValue: workOrdersMock() },
       ],
     }).compile();
     service = mod.get(TechProcessesService);
@@ -551,6 +567,141 @@ describe("TechProcessesService — scan pinuje TEKUĆU varijantu RN-a (D5 klon =
   });
 });
 
+// ================================================================== A1 TVRDI guard kucanja preko plana
+
+describe("TechProcessesService — A1 TVRDI guard kucanja preko plana (scan/stopWork)", () => {
+  let service: TechProcessesService;
+  let prisma: ReturnType<typeof prismaMock>;
+
+  /** RN plan 5 (uzrok: OP45 6/5 prošao pre guarda). */
+  const WO = {
+    id: 900,
+    projectId: 2597,
+    identNumber: "06/93-4",
+    variant: 0,
+    pieceCount: 5,
+    revision: "A",
+  };
+
+  beforeEach(async () => {
+    prisma = prismaMock();
+    const mod: TestingModule = await Test.createTestingModule({
+      providers: [
+        TechProcessesService,
+        { provide: PrismaService, useValue: prisma },
+        {
+          provide: ScopeService,
+          useValue: {
+            isEnforced: jest.fn().mockReturnValue(false),
+            workerMachineViolation: jest.fn().mockResolvedValue(null),
+            checkMachineAccess: jest.fn().mockResolvedValue(null),
+          },
+        },
+        { provide: NotificationsService, useValue: notificationsMock() },
+        { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
+        { provide: QualityService, useValue: qualityMock() },
+        { provide: WorkOrdersService, useValue: workOrdersMock() },
+      ],
+    }).compile();
+    service = mod.get(TechProcessesService);
+    prisma.workOrder.findFirst.mockResolvedValue(WO);
+    // Radnik sa kartice (stopWork traži karticu; scan je opciona).
+    prisma.worker.findFirst.mockResolvedValue({
+      id: 10,
+      fullName: "Milan Radnik",
+      username: "milan",
+      workerTypeId: 3,
+    });
+    // Otvoren red operacije sa 4 već otkucana komada (findOrOpenRoutingTp → existing).
+    prisma.techProcess.findFirst.mockResolvedValue(
+      tpRow({ id: 700, pieceCount: 4, operationNumber: 45, workCenterCode: "0102" }),
+    );
+  });
+
+  it("scan preko plana (4+2=6 > 5) → 422, red se ne ažurira", async () => {
+    prisma.techProcess.aggregate.mockResolvedValue({ _sum: { pieceCount: 4 } });
+
+    await expect(
+      service.scan({
+        orderBarcode: "RNZ:2597:06/93-4:0:A",
+        operationBarcode: "S:45:0102:0:A",
+        pieceCount: 2,
+      }),
+    ).rejects.toThrow("kucanje preko plana nije dozvoljeno");
+    expect(prisma.techProcess.update).not.toHaveBeenCalled();
+  });
+
+  it("scan do plana (4+1=5 = 5) prolazi i zatvara operaciju", async () => {
+    prisma.techProcess.aggregate.mockResolvedValue({ _sum: { pieceCount: 4 } });
+    prisma.techProcess.update.mockResolvedValue(
+      tpRow({ id: 700, pieceCount: 5, isProcessFinished: true, operationNumber: 45 }),
+    );
+
+    const { data } = await service.scan({
+      orderBarcode: "RNZ:2597:06/93-4:0:A",
+      operationBarcode: "S:45:0102:0:A",
+      pieceCount: 1,
+    });
+
+    expect(data.operationFinished).toBe(true);
+    expect(prisma.techProcess.update).toHaveBeenCalled();
+  });
+
+  it("scan bez plana (OPŠTI NALOG withoutProcess) preskače guard i prolazi preko", async () => {
+    // withoutProcess → guard se preskače iako plan nije poznat na toj operaciji.
+    prisma.operation.findUnique.mockResolvedValue({ withoutProcess: true });
+    prisma.techProcess.aggregate.mockResolvedValue({ _sum: { pieceCount: 99 } });
+    prisma.techProcess.update.mockResolvedValue(
+      tpRow({ id: 700, pieceCount: 199, operationNumber: 45 }),
+    );
+
+    const { data } = await service.scan({
+      orderBarcode: "RNZ:2597:06/93-4:0:A",
+      operationBarcode: "S:45:0102:0:A",
+      pieceCount: 100,
+    });
+
+    expect(data.techProcess.pieceCount).toBe(199);
+    expect(prisma.techProcess.update).toHaveBeenCalled();
+  });
+
+  it("stopWork preko plana (4+2=6 > 5) → 422, red se ne akumulira", async () => {
+    prisma.techProcess.aggregate.mockResolvedValue({ _sum: { pieceCount: 4 } });
+
+    await expect(
+      service.stopWork({
+        orderBarcode: "RNZ:2597:06/93-4:0:A",
+        operationBarcode: "S:45:0102:0:A",
+        workerCard: "CARD10",
+        pieceCount: 2,
+      }),
+    ).rejects.toThrow("kucanje preko plana nije dozvoljeno");
+    expect(prisma.techProcess.update).not.toHaveBeenCalled();
+  });
+
+  it("stopWork sa 0 komada (borverk, samo vreme) prolazi i preko plana", async () => {
+    // 0 kom → guard preskače (samo vreme se evidentira).
+    prisma.techProcess.aggregate.mockResolvedValue({ _sum: { pieceCount: 5 } });
+    prisma.workTimeEntry.create.mockResolvedValue({
+      id: 1,
+      startedAt: new Date(),
+    });
+    prisma.techProcess.update.mockResolvedValue(
+      tpRow({ id: 700, pieceCount: 4, operationNumber: 45 }),
+    );
+
+    const { data } = await service.stopWork({
+      orderBarcode: "RNZ:2597:06/93-4:0:A",
+      operationBarcode: "S:45:0102:0:A",
+      workerCard: "CARD10",
+      pieceCount: 0,
+    });
+
+    expect(data.reportedPieces).toBe(0);
+    expect(prisma.techProcess.update).toHaveBeenCalled();
+  });
+});
+
 // ================================================================== D8 emit (dorada/škart)
 
 /** Privatni emit helperi — tipizirani pogled bez `any` (obrazac `as unknown as`). */
@@ -593,6 +744,7 @@ describe("TechProcessesService — D8 emit notifikacija (control dorada/škart)"
         { provide: NotificationsService, useValue: notifications },
         { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
         { provide: QualityService, useValue: qualityMock() },
+        { provide: WorkOrdersService, useValue: workOrdersMock() },
       ],
     }).compile();
     emit = mod.get(TechProcessesService);
@@ -715,6 +867,7 @@ describe("TechProcessesService — openForWorker (Moji otvoreni, proba 13.07 Jov
         { provide: NotificationsService, useValue: notificationsMock() },
         { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
         { provide: QualityService, useValue: qualityMock() },
+        { provide: WorkOrdersService, useValue: workOrdersMock() },
       ],
     }).compile();
     service = mod.get(TechProcessesService);
@@ -848,6 +1001,7 @@ describe("TechProcessesService — create-on-scan štancuje kreatora (proba 13.0
         { provide: NotificationsService, useValue: notificationsMock() },
         { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
         { provide: QualityService, useValue: qualityMock() },
+        { provide: WorkOrdersService, useValue: workOrdersMock() },
       ],
     }).compile();
     service = mod.get(TechProcessesService);
@@ -940,6 +1094,7 @@ describe("TechProcessesService — control akumulira do plana (parcijala ne zatv
         { provide: NotificationsService, useValue: notificationsMock() },
         { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
         { provide: QualityService, useValue: qualityMock() },
+        { provide: WorkOrdersService, useValue: workOrdersMock() },
       ],
     }).compile();
     service = mod.get(TechProcessesService);
@@ -1070,6 +1225,7 @@ describe("TechProcessesService — opšti nalog (Operation.withoutProcess) zaobi
         { provide: NotificationsService, useValue: notificationsMock() },
         { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
         { provide: QualityService, useValue: qualityMock() },
+        { provide: WorkOrdersService, useValue: workOrdersMock() },
       ],
     }).compile();
     service = mod.get(TechProcessesService);
@@ -1316,6 +1472,7 @@ describe("TechProcessesService — reopen zatvorene operacije (dorada)", () => {
         { provide: NotificationsService, useValue: notificationsMock() },
         { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
         { provide: QualityService, useValue: qualityMock() },
+        { provide: WorkOrdersService, useValue: workOrdersMock() },
       ],
     }).compile();
     service = mod.get(TechProcessesService);
@@ -1444,6 +1601,7 @@ describe("TechProcessesService — stopWorkById (Kraj rada iz Moji otvoreni)", (
         { provide: NotificationsService, useValue: notificationsMock() },
         { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
         { provide: QualityService, useValue: qualityMock() },
+        { provide: WorkOrdersService, useValue: workOrdersMock() },
       ],
     }).compile();
     service = mod.get(TechProcessesService);
@@ -1703,6 +1861,7 @@ describe("TechProcessesService — K0.1 napomena na scan (upis na tech_processes
         { provide: NotificationsService, useValue: notificationsMock() },
         { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
         { provide: QualityService, useValue: qualityMock() },
+        { provide: WorkOrdersService, useValue: workOrdersMock() },
       ],
     }).compile();
     service = mod.get(TechProcessesService);
@@ -1754,13 +1913,13 @@ describe("TechProcessesService — K0.1 napomena na scan (upis na tech_processes
   });
 });
 
-// ============================================================ K0.2 overshoot uz potvrdu
+// ============================================================ overshoot: control potvrda / finish TVRDO
 
-describe("TechProcessesService — K0.2 overshoot uz potvrdu (control/finish)", () => {
+describe("TechProcessesService — overshoot (control uz potvrdu, finish TVRDO)", () => {
   let service: TechProcessesService;
   let prisma: ReturnType<typeof prismaMock>;
 
-  /** RN plan 50; kontrola/finish preko plana traži confirmOvershoot. */
+  /** RN plan 50; kontrola preko plana traži confirmOvershoot, finish je TVRDO (bez bypass-a). */
   const WO = {
     id: 900,
     projectId: 2597,
@@ -1798,6 +1957,7 @@ describe("TechProcessesService — K0.2 overshoot uz potvrdu (control/finish)", 
         { provide: NotificationsService, useValue: notificationsMock() },
         { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
         { provide: QualityService, useValue: qualityMock() },
+        { provide: WorkOrdersService, useValue: workOrdersMock() },
       ],
     }).compile();
     service = mod.get(TechProcessesService);
@@ -1854,37 +2014,33 @@ describe("TechProcessesService — K0.2 overshoot uz potvrdu (control/finish)", 
     expect(prisma.partLocation.create).toHaveBeenCalled();
   });
 
-  it("finish: premašaj bez confirmOvershoot → 422, red se ne zatvara", async () => {
+  it("finish: premašaj → 422 TVRDO, red se ne zatvara (A2, bez bypass-a)", async () => {
     prisma.techProcess.findUnique.mockResolvedValue(
       tpRow({ id: 700, workCenterCode: "0102", pieceCount: 0, workOrderId: 900 }),
     );
     prisma.operation.findUnique.mockResolvedValue({ withoutProcess: false });
 
     await expect(service.finish(700, { pieceCount: 60 })).rejects.toThrow(
-      "potvrdite unos preko plana",
+      "kucanje preko plana nije dozvoljeno",
     );
     expect(prisma.techProcess.update).not.toHaveBeenCalled();
   });
 
-  it("finish: confirmOvershoot=true → zatvara i preko plana", async () => {
+  it("finish: premašaj + confirmOvershoot=true → i dalje 422 (flag uklonjen, A2)", async () => {
     prisma.techProcess.findUnique.mockResolvedValue(
       tpRow({ id: 700, workCenterCode: "0102", pieceCount: 0, workOrderId: 900 }),
     );
     prisma.operation.findUnique.mockResolvedValue({ withoutProcess: false });
-    prisma.techProcess.update.mockResolvedValue(
-      tpRow({ id: 700, pieceCount: 60, isProcessFinished: true }),
-    );
 
-    const { data } = await service.finish(700, {
-      pieceCount: 60,
-      confirmOvershoot: true,
-    });
-
-    expect(data.finishedPieces).toBe(60);
-    const updArg = prisma.techProcess.update.mock.calls[0][0] as {
-      data: Record<string, unknown>;
-    };
-    expect(updArg.data.isProcessFinished).toBe(true);
+    // `confirmOvershoot` više ne postoji u DTO-u — prosleđen kao višak polja, ignoriše se;
+    // finish je TVRDO i dalje baca 422.
+    await expect(
+      service.finish(700, {
+        pieceCount: 60,
+        ...({ confirmOvershoot: true } as Record<string, never>),
+      }),
+    ).rejects.toThrow("kucanje preko plana nije dozvoljeno");
+    expect(prisma.techProcess.update).not.toHaveBeenCalled();
   });
 });
 
@@ -1894,6 +2050,7 @@ describe("TechProcessesService — K2 auto-draft neusaglašenosti (control dorad
   let service: TechProcessesService;
   let prisma: ReturnType<typeof prismaMock>;
   let quality: ReturnType<typeof qualityMock>;
+  let workOrders: ReturnType<typeof workOrdersMock>;
 
   const WO = {
     id: 900,
@@ -1921,6 +2078,7 @@ describe("TechProcessesService — K2 auto-draft neusaglašenosti (control dorad
   beforeEach(async () => {
     prisma = prismaMock();
     quality = qualityMock();
+    workOrders = workOrdersMock();
     const mod: TestingModule = await Test.createTestingModule({
       providers: [
         TechProcessesService,
@@ -1932,6 +2090,7 @@ describe("TechProcessesService — K2 auto-draft neusaglašenosti (control dorad
         { provide: NotificationsService, useValue: notificationsMock() },
         { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
         { provide: QualityService, useValue: quality },
+        { provide: WorkOrdersService, useValue: workOrders },
       ],
     }).compile();
     service = mod.get(TechProcessesService);
@@ -2011,7 +2170,51 @@ describe("TechProcessesService — K2 auto-draft neusaglašenosti (control dorad
     const { data } = await service.control({ ...DTO, qualityTypeId: 1 });
 
     expect(data.qualityTypeId).toBe(1);
-    expect(data.childOrderPending).toBe(true);
+    // Child RN (A3) je i dalje uspešno kreiran (workOrdersMock default) → pending false;
+    // pada SAMO K2 draft (nezavisna best-effort grana).
+    expect(data.childOrderPending).toBe(false);
     expect(data.nonconformityDraftCreated).toBe(false);
+  });
+
+  it("A3: kvalitet=1 (dorada) poziva createQualityChildOrder i vraća childOrder", async () => {
+    const { data } = await service.control({
+      ...DTO,
+      qualityTypeId: 1,
+      note: "  dorada  ",
+    });
+
+    expect(workOrders.createQualityChildOrder).toHaveBeenCalledTimes(1);
+    expect(workOrders.createQualityChildOrder).toHaveBeenCalledWith(
+      containing({
+        parentWorkOrderId: 900,
+        qualityTypeId: 1,
+        quantity: 10,
+        note: "dorada",
+        actorWorkerId: 88,
+      }),
+    );
+    expect(data.childOrder).toEqual({ id: 5001, identNumber: "06/93-4-D1" });
+    expect(data.childOrderPending).toBe(false);
+  });
+
+  it("A3: pad createQualityChildOrder NE obara kontrolu (childOrderPending=true)", async () => {
+    workOrders.createQualityChildOrder.mockRejectedValue(
+      new Error("child RN down"),
+    );
+
+    const { data } = await service.control({ ...DTO, qualityTypeId: 2 });
+
+    // Kontrola i dalje uspeva; child RN pending → ručno kreiranje (endpoint Agenta B).
+    expect(data.qualityTypeId).toBe(2);
+    expect(data.childOrder).toBeNull();
+    expect(data.childOrderPending).toBe(true);
+  });
+
+  it("A3: kvalitet=0 (dobar) NE zove createQualityChildOrder, childOrder=null", async () => {
+    const { data } = await service.control({ ...DTO, qualityTypeId: 0 });
+
+    expect(workOrders.createQualityChildOrder).not.toHaveBeenCalled();
+    expect(data.childOrder).toBeNull();
+    expect(data.childOrderPending).toBe(false);
   });
 });

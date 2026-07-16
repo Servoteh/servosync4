@@ -13,6 +13,7 @@ import { ScopeService } from "../../common/authz/scope.service";
 import { LabelPrintService } from "../../common/printing/label-print.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { QualityService } from "../kvalitet/kvalitet.service";
+import { WorkOrdersService } from "../work-orders/work-orders.service";
 import type { AuthUser } from "../auth/jwt.strategy";
 import {
   pageMeta,
@@ -298,6 +299,9 @@ export class TechProcessesService {
     private readonly labelPrint: LabelPrintService,
     // K2: auto-draft neusaglašenosti iz kucanja kontrole (dorada/škart).
     private readonly quality: QualityService,
+    // A3: control() dorade/škarta AUTOMATSKI kreira child RN (-D/-S) — legacy paritet
+    // (KreirajNalogDoradeIliSkarta): kopija celog TP parenta, Komada = skart/dorada.
+    private readonly workOrders: WorkOrdersService,
   ) {}
 
   // ---------------------------------------------------------------- LIST
@@ -313,8 +317,31 @@ export class TechProcessesService {
       return Number.isNaN(n) ? undefined : n;
     };
     const filter: Prisma.TechProcessWhereInput = {};
-    const ident = query.q?.trim() || query.identNumber;
-    if (ident) filter.identNumber = { contains: ident, mode: "insensitive" };
+    // A4: `q`/`identNumber` traži po identNumber ILI crtežu (drawing_number) ILI
+    // nazivu dela (part_name). Crtež/naziv žive na work_orders (tech_processes NEMA
+    // te kolone ni Prisma relaciju) → pred-upit razreši work_order id-jeve pa OR na
+    // workOrderId IN (...). Zadržava kompatibilnost postojećeg query parametra.
+    const ident = (query.q?.trim() || query.identNumber)?.trim();
+    if (ident) {
+      const woMatches = await this.prisma.workOrder.findMany({
+        where: {
+          OR: [
+            { drawingNumber: { contains: ident, mode: "insensitive" } },
+            { partName: { contains: ident, mode: "insensitive" } },
+          ],
+        },
+        select: { id: true },
+        // Zaštita od ogromnog IN(...) — 1000 najskorijih RN-ova je više nego dovoljno
+        // za pretragu u pogonu (rezultat se dodatno stranira).
+        take: 1000,
+        orderBy: { id: "desc" },
+      });
+      const woIds = woMatches.map((w) => w.id);
+      filter.OR = [
+        { identNumber: { contains: ident, mode: "insensitive" } },
+        ...(woIds.length ? [{ workOrderId: { in: woIds } }] : []),
+      ];
+    }
     filter.projectId = intEq(query.projectId);
     filter.workerId = intEq(query.workerId);
     filter.qualityTypeId = intEq(query.qualityTypeId);
@@ -1228,6 +1255,50 @@ export class TechProcessesService {
     };
   }
 
+  /**
+   * TVRDI guard „kucanje preko plana" (Nenad 16.07): prijava rada (scan/stopWork)
+   * NE sme da premaši plan RN-a — BEZ potvrde (za razliku od kontrole, koja zadržava
+   * `confirmOvershoot`). Kumulativ se računa ISTO kao u `control()`: `_sum(pieceCount)`
+   * SVIH redova te operacije (trojka + operationNumber + workCenterCode; svi kvaliteti,
+   * svi redovi — uključuje i tekući `tp` red) + `newPieces` iz ove prijave. Kad je plan
+   * poznat (`planned > 0`) i `cumulative > planned` → 422; inače prolazi.
+   *
+   * Guard se poziva SAMO za unos komada — otvaranje redova (FIX A „ispod-plan uvek
+   * radna") ostaje netaknuto. `newPieces = 0` (borverk „Kraj rada" bez komada) uvek
+   * prolazi. OPŠTI NALOG (withoutProcess) nema plan → pozivalac preskoči guard.
+   */
+  private async assertPieceCountWithinPlan(
+    tx: Prisma.TransactionClient,
+    keys: {
+      projectId: number;
+      identNumber: string;
+      variant: number;
+      operationNumber: number;
+      workCenterCode: string;
+    },
+    planned: number | null,
+    newPieces: number,
+  ): Promise<void> {
+    // Bez plana ili 0 komada → nema šta da se premaši (0 kom = samo vreme).
+    if (planned === null || planned <= 0 || newPieces <= 0) return;
+    const sumAgg = await tx.techProcess.aggregate({
+      _sum: { pieceCount: true },
+      where: {
+        projectId: keys.projectId,
+        identNumber: keys.identNumber,
+        variant: keys.variant,
+        operationNumber: keys.operationNumber,
+        workCenterCode: keys.workCenterCode,
+      },
+    });
+    const existingSum = sumAgg._sum.pieceCount ?? 0;
+    const cumulative = existingSum + newPieces;
+    if (cumulative > planned)
+      throw new UnprocessableEntityException(
+        `Uneto (${cumulative} od toga novo ${newPieces}) premašuje planirano (${planned}) — kucanje preko plana nije dozvoljeno.`,
+      );
+  }
+
   // ---------------------------------------------------------------- SCAN (prijava rada)
 
   /**
@@ -1320,6 +1391,27 @@ export class TechProcessesService {
         tp.variant,
       );
       const planned = workOrder?.pieceCount ?? null;
+
+      // A1 TVRDI guard „kucanje preko plana" (Nenad 16.07): prijava rada ne sme da
+      // premaši plan RN-a — BEZ potvrde. OPŠTI NALOG (withoutProcess) nema plan →
+      // preskoči (uvek otvoren za prijavu; findOrOpenRoutingTp već otvara nov red).
+      const opDef = await tx.operation.findUnique({
+        where: { workCenterCode: tp.workCenterCode },
+        select: { withoutProcess: true },
+      });
+      if (opDef?.withoutProcess !== true)
+        await this.assertPieceCountWithinPlan(
+          tx,
+          {
+            projectId,
+            identNumber,
+            variant: tp.variant,
+            operationNumber: tp.operationNumber,
+            workCenterCode: tp.workCenterCode,
+          },
+          planned,
+          dto.pieceCount,
+        );
 
       // Verzioni guard (UPOZORENJE, ne blokada — MODULE_SPEC_stampa §5): posle D5
       // klona tekući RN ima veću varijantu od one na starom otisku. `tp.variant` je
@@ -1445,16 +1537,12 @@ export class TechProcessesService {
       const planned = workOrder?.pieceCount ?? null;
       const effectivePieces = dto?.pieceCount ?? tp.pieceCount;
 
-      // 🔴 provera količina: premašaj plana → 422 (ne zatvara). K0.2: overshoot allowed
-      // with explicit confirmation (Nenad 15.07, strugar naparavi 1-2 viška) — FE detektuje
-      // premašaj pre slanja i ponovi sa `confirmOvershoot: true`.
-      if (
-        planned !== null &&
-        effectivePieces > planned &&
-        dto?.confirmOvershoot !== true
-      )
+      // 🔴 A2 provera količina: premašaj plana → 422 (ne zatvara). TVRDO (Nenad 16.07):
+      // „Zatvori operaciju" (finish) više NEMA `confirmOvershoot` bypass — kucanje preko
+      // plana nije dozvoljeno. JEDINO kontrola (control) zadržava potvrdu (strugar +1-2).
+      if (planned !== null && effectivePieces > planned)
         throw new UnprocessableEntityException(
-          `Napravljeno (${effectivePieces}) premašuje planirano (${planned}) — potvrdite unos preko plana.`,
+          `Napravljeno (${effectivePieces}) premašuje planirano (${planned}) — kucanje preko plana nije dozvoljeno.`,
         );
 
       const updated = await tx.techProcess.update({
@@ -2205,6 +2293,28 @@ export class TechProcessesService {
     note: string | null = null,
   ) {
     const planned = workOrder?.pieceCount ?? null;
+
+    // A1 TVRDI guard „kucanje preko plana" (Nenad 16.07): STOP sken (stopWork /
+    // stopWorkById „Kraj rada") ne sme da premaši plan RN-a — BEZ potvrde. 0 kom
+    // (borverk, samo vreme) prolazi. OPŠTI NALOG (withoutProcess) nema plan → preskoči.
+    const opDef = await tx.operation.findUnique({
+      where: { workCenterCode: tp.workCenterCode },
+      select: { withoutProcess: true },
+    });
+    if (opDef?.withoutProcess !== true)
+      await this.assertPieceCountWithinPlan(
+        tx,
+        {
+          projectId: tp.projectId,
+          identNumber: tp.identNumber,
+          variant: tp.variant,
+          operationNumber: tp.operationNumber,
+          workCenterCode: tp.workCenterCode,
+        },
+        planned,
+        pieceCount,
+      );
+
     const newPieceCount = tp.pieceCount + pieceCount;
     const reachedPlan = planned !== null && newPieceCount >= planned;
     const finish = reachedPlan || forceFinish;
@@ -2667,12 +2777,37 @@ export class TechProcessesService {
       result.workOrder.id,
       dto.pieceCount,
     );
-    const childOrderPending = dto.qualityTypeId !== PART_QUALITY.GOOD;
+    const isQualityIssue = dto.qualityTypeId !== PART_QUALITY.GOOD;
+
+    // A3 CHILD RN (-D/-S): DORADA/ŠKART sa kontrole AUTOMATSKI otvara child RN (legacy
+    // KreirajNalogDoradeIliSkarta — kopira ceo TP parenta, Komada = kol. skarta/dorade).
+    // POSLE glavne transakcije, best-effort (kao D8): uspeh → `childOrder` u odgovoru i
+    // `childOrderPending=false`; pad → `childOrderPending=true` + logger.error (radnik/
+    // tehnolog kreira ručno preko endpointa Agenta B). Ide PRE D8 da poruka nosi broj.
+    let childOrder: { id: number; identNumber: string } | null = null;
+    let childOrderPending = isQualityIssue;
+    if (isQualityIssue) {
+      try {
+        childOrder = await this.workOrders.createQualityChildOrder({
+          parentWorkOrderId: result.workOrder.id,
+          // 1 = dorada, 2 = škart (PART_QUALITY.REWORK/SCRAP; isQualityIssue garantuje ≠0).
+          qualityTypeId: dto.qualityTypeId as 1 | 2,
+          quantity: dto.pieceCount,
+          note: dto.note?.trim() ? dto.note.trim() : null,
+          actorWorkerId: worker.id,
+        });
+        childOrderPending = false;
+      } catch (e) {
+        this.logger.error(
+          `A3 child RN (-${dto.qualityTypeId === PART_QUALITY.SCRAP ? "S" : "D"}) FAIL (RN ${identNumber}, kvalitet ${dto.qualityTypeId}): ${(e as Error).message}`,
+        );
+      }
+    }
 
     // D8 emit: DORADA i ŠKART (odluka Nenad, PLAN_dorade §D8) → in-app notifikacija
     // tehnolozima + projektantu crteža. POSLE uspešne transakcije, best-effort —
     // helper je ceo u try/catch, pad notifikacije NE obara kucanje kontrole.
-    if (childOrderPending) {
+    if (isQualityIssue) {
       await this.notifyQualityIssue({
         workOrderId: result.workOrder.id,
         identNumber: result.workOrder.identNumber,
@@ -2681,6 +2816,8 @@ export class TechProcessesService {
         qualityTypeId: dto.qualityTypeId,
         pieceCount: dto.pieceCount,
         controllerName: worker.fullName || worker.username,
+        // D8 poruka nosi broj child RN-a kad je uspešno kreiran (null ako je pending).
+        childOrderIdentNumber: childOrder?.identNumber ?? null,
       });
     }
 
@@ -2765,7 +2902,10 @@ export class TechProcessesService {
           ? controllerWarnings
           : null,
         label,
-        // Dorada/škart: child RN (-D/-S) je P2; notifikacija tehnolozima je poslata (D8).
+        // A3: automatski kreiran child RN (-D/-S) — { id, identNumber }; null kad pending.
+        childOrder,
+        // Dorada/škart: true samo ako child RN NIJE kreiran (kreator pao) → ručno preko
+        // endpointa Agenta B; false kad je child RN uspešno otvoren (childOrder popunjen).
         childOrderPending,
         // K2: DRAFT neusaglašenosti (škart/dorada) auto-kreiran za radnu listu kontrolora.
         nonconformityDraftCreated,
@@ -2773,7 +2913,7 @@ export class TechProcessesService {
       ...(childOrderPending
         ? {
             meta: {
-              note: "Kvalitet dorada/škart evidentiran; notifikacija tehnolozima poslata (D8). Kreiranje child RN-a (-D/-S) dolazi u P2 (MODULE_SPEC_kontrola §8).",
+              note: "Kvalitet dorada/škart evidentiran; notifikacija tehnolozima poslata (D8). Automatsko kreiranje child RN-a (-D/-S) NIJE uspelo — kreirajte ga ručno (MODULE_SPEC_kontrola §8).",
             },
           }
         : {}),
@@ -3397,6 +3537,8 @@ export class TechProcessesService {
     qualityTypeId: number;
     pieceCount: number;
     controllerName: string | null;
+    // A3: identNumber automatski kreiranog child RN-a (-D/-S); null kad je pending.
+    childOrderIdentNumber?: string | null;
   }): Promise<void> {
     try {
       const scrap = input.qualityTypeId === PART_QUALITY.SCRAP;
@@ -3407,9 +3549,13 @@ export class TechProcessesService {
       );
       if (designerId) recipients.push(designerId);
 
+      // A3: kad je child RN uspešno kreiran, poruka nosi njegov broj (-D/-S).
+      const childSuffix = input.childOrderIdentNumber
+        ? ` → nalog ${input.childOrderIdentNumber}`
+        : "";
       const created = await this.notifications.notifyWorkers(recipients, {
         type: scrap ? "kontrola.skart" : "kontrola.dorada",
-        message: `${scrap ? "ŠKART" : "DORADA"} na RN ${input.identNumber} op ${input.operationNumber} (${input.workCenterCode}) — kontrolor ${input.controllerName ?? "?"}, ${input.pieceCount} kom`,
+        message: `${scrap ? "ŠKART" : "DORADA"} na RN ${input.identNumber} op ${input.operationNumber} (${input.workCenterCode}) — kontrolor ${input.controllerName ?? "?"}, ${input.pieceCount} kom${childSuffix}`,
         refTable: "work_orders",
         refId: input.workOrderId,
       });
