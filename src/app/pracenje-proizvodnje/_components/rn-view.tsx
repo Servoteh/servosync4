@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { ArrowLeft, Plus, Lock, Unlock, CheckCircle2, ArrowUpRight, FileText, History } from 'lucide-react';
+import { ArrowLeft, Plus, Lock, Unlock, CheckCircle2, ArrowUpRight, FileText, History, FileSpreadsheet } from 'lucide-react';
 import { Button } from '@/components/ui-kit/button';
 import { Tabs, type TabItem } from '@/components/ui-kit/tabs';
 import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
@@ -23,6 +23,9 @@ import {
   AKTIVNOST_STATUS_LABELS,
   type AktivnostRow,
 } from '@/api/pracenje';
+import { toast } from '@/lib/toast';
+import { exportRnTab1Xlsx, exportRnTab2Xlsx } from '@/lib/pracenje-export';
+import { logExport } from '@/api/pracenje';
 import { AktivnostModal } from './aktivnost-modal';
 import { PromoteModal } from './promote-modal';
 
@@ -64,6 +67,20 @@ export function RnView({ rnId, onBack }: { rnId: string; onBack: () => void }) {
   const result = rn.data?.data;
   const pozicije = (result?.pozicije ?? []) as Array<Record<string, unknown>>;
 
+  function exportTab1() {
+    try {
+      const r = (result ?? {}) as Record<string, unknown>;
+      exportRnTab1Xlsx({
+        header: (r.header as Record<string, unknown>) ?? r,
+        positions: pozicije,
+        summary: r.summary as Record<string, unknown> | undefined,
+      });
+      logExport({ tab: 'po_pozicijama', rnId, rnBroj: result?.rn_broj ? String(result.rn_broj) : undefined }).catch(() => {});
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Excel izvoz nije uspeo.');
+    }
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
@@ -78,7 +95,7 @@ export function RnView({ rnId, onBack }: { rnId: string; onBack: () => void }) {
       </div>
 
       {tab === 'pozicije' ? (
-        <PozicijeTab pozicije={pozicije} loading={rn.isLoading} />
+        <PozicijeTab pozicije={pozicije} loading={rn.isLoading} onExport={exportTab1} />
       ) : (
         <OperativniPlanTab rnId={rnId} canEdit={canEdit} />
       )}
@@ -88,7 +105,7 @@ export function RnView({ rnId, onBack }: { rnId: string; onBack: () => void }) {
 
 // ------------------------------------------------------------------ Tab1
 
-function PozicijeTab({ pozicije, loading }: { pozicije: Array<Record<string, unknown>>; loading: boolean }) {
+function PozicijeTab({ pozicije, loading, onExport }: { pozicije: Array<Record<string, unknown>>; loading: boolean; onExport: () => void }) {
   const [sel, setSel] = useState<Record<string, unknown> | null>(null);
 
   if (loading) {
@@ -97,6 +114,12 @@ function PozicijeTab({ pozicije, loading }: { pozicije: Array<Record<string, unk
   if (pozicije.length === 0) return <EmptyState title="Nema pozicija na RN-u" />;
 
   return (
+    <div className="space-y-3">
+    <div className="flex justify-end">
+      <Button variant="secondary" onClick={onExport}>
+        <FileSpreadsheet className="h-4 w-4" /> Excel export
+      </Button>
+    </div>
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_320px]">
       <div className="overflow-x-auto rounded-panel border border-line bg-surface">
         <table className="w-full text-sm">
@@ -136,6 +159,7 @@ function PozicijeTab({ pozicije, loading }: { pozicije: Array<Record<string, unk
       </div>
 
       <PozicijaSidePanel pozicija={sel} onClose={() => setSel(null)} />
+    </div>
     </div>
   );
 }
@@ -201,6 +225,20 @@ function PozicijaSidePanel({ pozicija, onClose }: { pozicija: Record<string, unk
 function OperativniPlanTab({ rnId, canEdit }: { rnId: string; canEdit: boolean }) {
   const plan = useOperativniPlan(rnId);
   const aktivnosti = useMemo(() => normalizeAktivnosti(plan.data?.data), [plan.data]);
+
+  function exportTab2() {
+    try {
+      const d = (plan.data?.data ?? {}) as Record<string, unknown>;
+      exportRnTab2Xlsx({
+        header: (d.header as Record<string, unknown>) ?? undefined,
+        activities: aktivnosti as unknown as Array<Record<string, unknown>>,
+        dashboard: (d.dashboard as Record<string, unknown>) ?? undefined,
+      });
+      logExport({ tab: 'operativni_plan', rnId, rnBroj: (d.header as { rn_broj?: string })?.rn_broj }).catch(() => {});
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Excel izvoz nije uspeo.');
+    }
+  }
   const zatvori = useZatvoriAktivnost();
   const odblokiraj = useOdblokirajAktivnost();
   const [edit, setEdit] = useState<AktivnostRow | null | 'new'>(null);
@@ -225,16 +263,21 @@ function OperativniPlanTab({ rnId, canEdit }: { rnId: string; canEdit: boolean }
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-sm text-ink-secondary">{aktivnosti.length} aktivnosti</span>
-        {canEdit && (
-          <div className="ml-auto flex gap-2">
-            <Button variant="secondary" onClick={() => setPromote(true)}>
-              <ArrowUpRight className="h-4 w-4" /> Iz Sastanaka
-            </Button>
-            <Button onClick={() => setEdit('new')}>
-              <Plus className="h-4 w-4" /> Nova aktivnost
-            </Button>
-          </div>
-        )}
+        <div className="ml-auto flex gap-2">
+          <Button variant="secondary" onClick={exportTab2} disabled={aktivnosti.length === 0}>
+            <FileSpreadsheet className="h-4 w-4" /> Excel export
+          </Button>
+          {canEdit && (
+            <>
+              <Button variant="secondary" onClick={() => setPromote(true)}>
+                <ArrowUpRight className="h-4 w-4" /> Iz Sastanaka
+              </Button>
+              <Button onClick={() => setEdit('new')}>
+                <Plus className="h-4 w-4" /> Nova aktivnost
+              </Button>
+            </>
+          )}
+        </div>
       </div>
 
       {plan.isLoading ? (
