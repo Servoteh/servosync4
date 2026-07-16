@@ -1422,22 +1422,33 @@ export class TechProcessesService {
       const staleWorkOrder = scannedVariant < currentVariant;
 
       // Prijava rada = akumulacija napravljenih komada na redu operacije.
-      const newPieceCount = tp.pieceCount + dto.pieceCount;
-      const reachedPlan = planned !== null && newPieceCount >= planned;
-
-      const updated = await tx.techProcess.update({
+      // BUG-P1-01 Faza 1 (lost update): red je deljen po (projectId, identNumber,
+      // variant, operationNumber, workCenterCode) → dve paralelne prijave čitaju
+      // isto `tp.pieceCount` i druga pregazi prvu. Zato akumuliramo ATOMSKI preko
+      // Prisma `{ increment }`, a odluku `reachedPlan`/zatvaranje donosimo iz
+      // VRAĆENE post-inkrement vrednosti (`updated.pieceCount`), ne iz zastarelog
+      // `tp.pieceCount + n`. `assertPieceCountWithinPlan` (gore) ostaje pre inkrementa.
+      let updated = await tx.techProcess.update({
         where: { id: tp.id },
         data: {
-          pieceCount: newPieceCount,
+          pieceCount: { increment: dto.pieceCount },
           // Audit: radnik koji je prijavio rad (ID kartica) — legacy `SifraRadnika`.
           ...(worker ? { workerId: worker.id } : {}),
           // K0.1: napomena uz prijavu rada (kumulativni red — poslednja prepisuje).
           ...(dto.note?.trim() ? { note: dto.note.trim() } : {}),
-          ...(reachedPlan
-            ? { isProcessFinished: true, finishedAt: new Date() }
-            : {}),
         },
       });
+
+      // reachedPlan iz VRAĆENE vrednosti (atomski tačan post-inkrement broj).
+      const reachedPlan = planned !== null && updated.pieceCount >= planned;
+
+      // Ako je plan dostignut → drugi mali update u ISTOJ transakciji za zatvaranje.
+      // (Zadržavamo oblik odgovora: `updated` nosi finalno stanje reda.)
+      if (reachedPlan)
+        updated = await tx.techProcess.update({
+          where: { id: tp.id },
+          data: { isProcessFinished: true, finishedAt: new Date() },
+        });
 
       // Dosegnut plan → operacija „skinuta sa prioriteta" (priority=255).
       const prioritized = reachedPlan
@@ -2315,18 +2326,25 @@ export class TechProcessesService {
         pieceCount,
       );
 
-    const newPieceCount = tp.pieceCount + pieceCount;
-    const reachedPlan = planned !== null && newPieceCount >= planned;
-    const finish = reachedPlan || forceFinish;
-    const updated = await tx.techProcess.update({
+    // BUG-P1-01 Faza 1 (lost update): akumulacija komada je deljena po redu
+    // operacije → čitaj-modifikuj-piši gubi paralelne prijave. Atomski `{ increment }`,
+    // a `reachedPlan`/`finish` odluka iz VRAĆENE post-inkrement vrednosti
+    // (`updated.pieceCount`). `forceFinish` (Kraj rada) i dalje zatvara bezuslovno.
+    let updated = await tx.techProcess.update({
       where: { id: tp.id },
       data: {
-        pieceCount: newPieceCount,
+        pieceCount: { increment: pieceCount },
         workerId,
         ...(note ? { note } : {}),
-        ...(finish ? { isProcessFinished: true, finishedAt: now } : {}),
       },
     });
+    const reachedPlan = planned !== null && updated.pieceCount >= planned;
+    const finish = reachedPlan || forceFinish;
+    if (finish)
+      updated = await tx.techProcess.update({
+        where: { id: tp.id },
+        data: { isProcessFinished: true, finishedAt: now },
+      });
     const prioritized = finish
       ? await this.setOperationDonePriority(
           tx,
@@ -2686,11 +2704,15 @@ export class TechProcessesService {
 
       let tp;
       if (existingOpen) {
+        // BUG-P1-01 Faza 1 (lost update): akumulacija na otvoren red kontrole je
+        // deljena → atomski `{ increment }` umesto `existingOpen.pieceCount + n`.
+        // Odluka o zatvaranju (`reachedPlan`) se ovde donosi iz SUM-a svih redova
+        // (`cumulative`, izračunat gore), ne iz vrednosti jednog reda — pa ostaje.
         tp = await tx.techProcess.update({
           where: { id: existingOpen.id },
           data: {
             ...finishData,
-            pieceCount: existingOpen.pieceCount + dto.pieceCount,
+            pieceCount: { increment: dto.pieceCount },
           },
         });
       } else {
@@ -3187,6 +3209,10 @@ export class TechProcessesService {
         await tx.techProcessDocument.deleteMany({
           where: { techProcessId: id },
         });
+      // Faza 1 (BUG-P1-03): work_time_entries FK je NO ACTION → red sa sesijom bi
+      // srušio brisanje na P2003 (goli 500). Sesije su izveden podatak vremena, a
+      // audit snapshot reda ostaje, pa ih brišemo pre reda.
+      await tx.workTimeEntry.deleteMany({ where: { techProcessId: id } });
       await tx.techProcess.delete({ where: { id } });
     });
     return { data: { id, deleted: true, backedUpTo: "audit_log" } };
@@ -3465,9 +3491,31 @@ export class TechProcessesService {
     )
       return { tp: existing, opened: false };
 
-    // withoutProcess ILI belowPlan: otvori red direktno — preskoči routing lookup
-    // i 422 (za belowPlan operacija JESTE u routingu jer `existing` postoji).
+    // withoutProcess ILI belowPlan: otvori red direktno — preskoči puni routing
+    // lookup. withoutProcess NEMA red u routingu po dizajnu (opšti nalog).
+    // belowPlan: `existing` (zatvoren red) DOKAZUJE da je operacija NEKAD bila u
+    // routingu, ali NE i da je JOŠ uvek — tehnolog je mogao naknadno da je izbaci
+    // (BUG-P1-05: 137 fantomskih redova). Zato SAMO za belowPlan proveravamo da
+    // operacija još postoji u `work_order_operations`; ako je nema → 422 (Q2
+    // odluka, Nenad 2026-07-16), radnik se šalje nadređenom, nov red se NE kreira.
     if (withoutProcess || belowPlan) {
+      // BUG-P1-05 (Q2): belowPlan (a NE withoutProcess) mora imati živ routing red.
+      if (belowPlan && !withoutProcess) {
+        const opNum = operationNumber ?? existing?.operationNumber ?? 0;
+        const belowPlanRoutingWhere: Prisma.WorkOrderOperationWhereInput = {
+          workOrderId: wo.id,
+          workCenterCode,
+          operationNumber: opNum,
+        };
+        const belowPlanRouting = await tx.workOrderOperation.findFirst({
+          where: belowPlanRoutingWhere,
+          select: { operationNumber: true },
+        });
+        if (!belowPlanRouting)
+          throw new UnprocessableEntityException(
+            `Radni nalog je izmenjen — operacija (op. ${opNum}, RC ${workCenterCode}) više nije u tehnološkom postupku. Obrati se nadređenom za proveru.`,
+          );
+      }
       // Serijska sekvenca (synced eksplicitni id-jevi) — poravnaj pre insert-a.
       await this.alignTechProcessSequence(tx);
       const tp = await tx.techProcess.create({

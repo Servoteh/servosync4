@@ -702,6 +702,128 @@ describe("TechProcessesService — A1 TVRDI guard kucanja preko plana (scan/stop
   });
 });
 
+// ============================================== BUG-P1-01 Faza 1: atomska akumulacija (lost update)
+
+describe("TechProcessesService — BUG-P1-01 atomska akumulacija komada ({ increment })", () => {
+  let service: TechProcessesService;
+  let prisma: ReturnType<typeof prismaMock>;
+
+  /** RN plan 10 (deljen red operacije — konkurentne prijave realne). */
+  const WO = {
+    id: 900,
+    projectId: 2597,
+    identNumber: "06/93-4",
+    variant: 0,
+    pieceCount: 10,
+    revision: "A",
+  };
+
+  beforeEach(async () => {
+    prisma = prismaMock();
+    const mod: TestingModule = await Test.createTestingModule({
+      providers: [
+        TechProcessesService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: ScopeService, useValue: {} },
+        { provide: NotificationsService, useValue: notificationsMock() },
+        { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
+        { provide: QualityService, useValue: qualityMock() },
+        { provide: WorkOrdersService, useValue: workOrdersMock() },
+      ],
+    }).compile();
+    service = mod.get(TechProcessesService);
+    prisma.workOrder.findFirst.mockResolvedValue(WO);
+  });
+
+  it("scan: update piše pieceCount kao { increment: n }, NE apsolutnu vrednost", async () => {
+    // Otvoren red sa 3 komada; aggregate (guard) vraća 3 → 3+2=5 <= 10 prolazi.
+    prisma.techProcess.findFirst.mockResolvedValue(
+      tpRow({ id: 700, pieceCount: 3, operationNumber: 10, workCenterCode: "0102" }),
+    );
+    prisma.techProcess.aggregate.mockResolvedValue({ _sum: { pieceCount: 3 } });
+    prisma.techProcess.update.mockResolvedValue(
+      tpRow({ id: 700, pieceCount: 5 }),
+    );
+
+    await service.scan({
+      orderBarcode: "RNZ:2597:06/93-4:0:A",
+      operationBarcode: "S:10:0102:0:A",
+      pieceCount: 2,
+    });
+
+    // DOKAZ atomskog inkrementa: data.pieceCount je { increment: 2 }, ne 5.
+    const updArg = prisma.techProcess.update.mock.calls[0][0] as {
+      data: { pieceCount: unknown };
+    };
+    expect(updArg.data.pieceCount).toEqual({ increment: 2 });
+  });
+
+  it("scan: reachedPlan/zatvaranje se donosi iz VRAĆENE vrednosti update-a (updated.pieceCount)", async () => {
+    // Red 8 kom; prijava 2 → post-inkrement 10 = plan. VRAĆENA vrednost (10) diktira
+    // zatvaranje; drugi update postavlja isProcessFinished (u istoj transakciji).
+    prisma.techProcess.findFirst.mockResolvedValue(
+      tpRow({ id: 700, pieceCount: 8, operationNumber: 10, workCenterCode: "0102" }),
+    );
+    prisma.techProcess.aggregate.mockResolvedValue({ _sum: { pieceCount: 8 } });
+    prisma.techProcess.update.mockResolvedValue(
+      tpRow({ id: 700, pieceCount: 10, isProcessFinished: true }),
+    );
+
+    const { data } = await service.scan({
+      orderBarcode: "RNZ:2597:06/93-4:0:A",
+      operationBarcode: "S:10:0102:0:A",
+      pieceCount: 2,
+    });
+
+    expect(data.operationFinished).toBe(true);
+    // Prvi update = atomski increment (bez isProcessFinished); drugi = zatvaranje.
+    const incArg = prisma.techProcess.update.mock.calls[0][0] as {
+      data: Record<string, unknown>;
+    };
+    expect(incArg.data.pieceCount).toEqual({ increment: 2 });
+    expect(incArg.data.isProcessFinished).toBeUndefined();
+    const finArg = prisma.techProcess.update.mock.calls[1][0] as {
+      data: Record<string, unknown>;
+    };
+    expect(finArg.data.isProcessFinished).toBe(true);
+    expect(finArg.data.finishedAt).toBeInstanceOf(Date);
+  });
+
+  it("dve UZASTOPNE prijave na istom redu ne gube komade (increment je aditivan)", async () => {
+    // Stateful mock: red čuva stvarno stanje; update primenjuje { increment }.
+    // Da je akumulacija bila apsolutna (tp.pieceCount + n čitan iz starog snapshot-a),
+    // druga prijava bi pregazila prvu. Sa { increment } stanje se sabira: 0→2→5.
+    const row = tpRow({ id: 700, pieceCount: 0, operationNumber: 10, workCenterCode: "0102" });
+    prisma.techProcess.findFirst.mockImplementation(() =>
+      Promise.resolve({ ...row }),
+    );
+    prisma.techProcess.aggregate.mockImplementation(() =>
+      Promise.resolve({ _sum: { pieceCount: row.pieceCount } }),
+    );
+    prisma.techProcess.update.mockImplementation((args: unknown) => {
+      const a = args as { data: { pieceCount?: { increment: number } } };
+      if (a.data.pieceCount?.increment !== undefined)
+        row.pieceCount += a.data.pieceCount.increment;
+      return Promise.resolve({ ...row });
+    });
+
+    await service.scan({
+      orderBarcode: "RNZ:2597:06/93-4:0:A",
+      operationBarcode: "S:10:0102:0:A",
+      pieceCount: 2,
+    });
+    const second = await service.scan({
+      orderBarcode: "RNZ:2597:06/93-4:0:A",
+      operationBarcode: "S:10:0102:0:A",
+      pieceCount: 3,
+    });
+
+    // 0 + 2 + 3 = 5 — nijedna prijava nije izgubljena.
+    expect(row.pieceCount).toBe(5);
+    expect(second.data.techProcess.pieceCount).toBe(5);
+  });
+});
+
 // ================================================================== D8 emit (dorada/škart)
 
 /** Privatni emit helperi — tipizirani pogled bez `any` (obrazac `as unknown as`). */
@@ -1173,10 +1295,13 @@ describe("TechProcessesService — control akumulira do plana (parcijala ne zatv
     expect(data.operationsPrioritized).toBe(3);
 
     // Akumulacija: postojeći otvoreni red (10) + ova prijava (40) = 50; zatvoren.
+    // BUG-P1-01 Faza 1: akumulacija je sada ATOMSKA — update piše
+    // `pieceCount: { increment: 40 }` (ne apsolutnu vrednost 50). Odluka o
+    // zatvaranju (`isProcessFinished`) i dalje dolazi iz kumulativnog SUM-a.
     const updateArg = prisma.techProcess.update.mock.calls[0][0] as {
       data: Record<string, unknown>;
     };
-    expect(updateArg.data.pieceCount).toBe(50);
+    expect(updateArg.data.pieceCount).toEqual({ increment: 40 });
     expect(updateArg.data.isProcessFinished).toBe(true);
     expect(prisma.techProcess.updateMany).toHaveBeenCalled();
     expect(prisma.workOrderOperation.updateMany).toHaveBeenCalled();
@@ -1390,6 +1515,9 @@ describe("TechProcessesService — opšti nalog (Operation.withoutProcess) zaobi
     );
     // Kumulativ 4 < plan 10 → belowPlan → otvara se NOV red.
     prisma.techProcess.aggregate.mockResolvedValue({ _sum: { pieceCount: 4 } });
+    // BUG-P1-05 (Q2): belowPlan sada proverava da operacija JOŠ postoji u routingu.
+    // Ovde postoji → nov red se kreira (postojeće ponašanje očuvano).
+    prisma.workOrderOperation.findFirst.mockResolvedValue({ operationNumber: 10 });
     prisma.techProcess.create.mockResolvedValue(
       tpRow({
         id: 556,
@@ -1417,10 +1545,40 @@ describe("TechProcessesService — opšti nalog (Operation.withoutProcess) zaobi
       pieceCount: 3,
     });
 
-    // Nov otvoren red; routing lookup se preskače (operacija JESTE u routingu).
+    // Nov otvoren red; routing lookup JESTE pozvan (belowPlan guard) i našao je red.
     expect(prisma.techProcess.create).toHaveBeenCalled();
-    expect(prisma.workOrderOperation.findFirst).not.toHaveBeenCalled();
+    expect(prisma.workOrderOperation.findFirst).toHaveBeenCalled();
     expect(data.techProcess.id).toBe(556);
+  });
+
+  it("BUG-P1-05 (Q2): belowPlan a operacija VIŠE nije u routingu → 422, NE kreira red", async () => {
+    prisma.operation.findUnique.mockResolvedValue({ withoutProcess: false });
+    // Zatvoren red ispod plana → belowPlan grana; ali operacija je naknadno
+    // izbačena iz tehnološkog postupka (fantom-red scenario, 137 slučajeva).
+    prisma.techProcess.findFirst.mockResolvedValue(
+      tpRow({
+        id: 404,
+        variant: 1,
+        operationNumber: 10,
+        isProcessFinished: true,
+        finishedAt: new Date("2026-07-01T10:00:00Z"),
+        workOrderId: 900,
+      }),
+    );
+    prisma.techProcess.aggregate.mockResolvedValue({ _sum: { pieceCount: 4 } });
+    // Routing lookup vraća null → operacija više nije u postupku.
+    prisma.workOrderOperation.findFirst.mockResolvedValue(null);
+
+    await expect(
+      service.scan({
+        orderBarcode: "RNZ:2597:06/93-4:1:A",
+        operationBarcode: "S:10:0102:0:A",
+        pieceCount: 3,
+      }),
+    ).rejects.toThrow("više nije u tehnološkom postupku");
+
+    expect(prisma.workOrderOperation.findFirst).toHaveBeenCalled();
+    expect(prisma.techProcess.create).not.toHaveBeenCalled();
   });
 
   it("finish() na withoutProcess RC → 422 (se ne zatvara, uvek otvoren)", async () => {
@@ -1672,11 +1830,12 @@ describe("TechProcessesService — stopWorkById (Kraj rada iz Moji otvoreni)", (
     };
     expect(updArg.where.id).toBe(11);
     expect(updArg.data.pieceCount).toBe(3);
-    // Akumulacija na red operacije: 2 + 3 = 5.
+    // BUG-P1-01 Faza 1: akumulacija je ATOMSKA — update piše { increment: 3 }
+    // (ne apsolutnu vrednost 5). Odluka o zatvaranju ide u drugom update-u.
     expect(prisma.techProcess.update).toHaveBeenCalledWith(
       containing({
         where: { id: 500 },
-        data: containing({ pieceCount: 5, workerId: 74 }),
+        data: containing({ pieceCount: { increment: 3 }, workerId: 74 }),
       }),
     );
   });
@@ -1706,10 +1865,11 @@ describe("TechProcessesService — stopWorkById (Kraj rada iz Moji otvoreni)", (
     );
 
     expect(data.reportedPieces).toBe(0);
+    // BUG-P1-01 Faza 1: prvi update je ATOMSKI increment (0 kom → increment:0).
     const updArg = prisma.techProcess.update.mock.calls[0][0] as {
-      data: { pieceCount: number };
+      data: { pieceCount: unknown };
     };
-    expect(updArg.data.pieceCount).toBe(2); // 2 + 0
+    expect(updArg.data.pieceCount).toEqual({ increment: 0 });
     expect(prisma.workTimeEntry.update).toHaveBeenCalled();
   });
 
@@ -1759,16 +1919,23 @@ describe("TechProcessesService — stopWorkById (Kraj rada iz Moji otvoreni)", (
     expect(data.techProcess.pieceCount).toBe(28);
     // Sesija se NE zatvara (nema je), ali se komadi akumuliraju na red operacije.
     expect(prisma.workTimeEntry.update).not.toHaveBeenCalled();
-    // FIX B: red se zatvara i ispod plana — update sadrži isProcessFinished:true.
-    const updArg = prisma.techProcess.update.mock.calls[0][0] as {
+    // BUG-P1-01 Faza 1: akumulacija je sada dva update-a u istoj transakciji —
+    // (1) atomski increment komada, (2) uslovno zatvaranje reda. FIX B (forceFinish)
+    // i dalje zatvara ispod plana; samo se zatvaranje sada dešava u DRUGOM update-u.
+    const incArg = prisma.techProcess.update.mock.calls[0][0] as {
       where: { id: number };
       data: Record<string, unknown>;
     };
-    expect(updArg.where.id).toBe(500);
-    expect(updArg.data.pieceCount).toBe(28);
-    expect(updArg.data.workerId).toBe(74);
-    expect(updArg.data.isProcessFinished).toBe(true);
-    expect(updArg.data.finishedAt).toBeInstanceOf(Date);
+    expect(incArg.where.id).toBe(500);
+    expect(incArg.data.pieceCount).toEqual({ increment: 5 });
+    expect(incArg.data.workerId).toBe(74);
+    const finArg = prisma.techProcess.update.mock.calls[1][0] as {
+      where: { id: number };
+      data: Record<string, unknown>;
+    };
+    expect(finArg.where.id).toBe(500);
+    expect(finArg.data.isProcessFinished).toBe(true);
+    expect(finArg.data.finishedAt).toBeInstanceOf(Date);
   });
 
   it("bez sesije, stari 0/1 red (uneto 1 = plan): zatvara operaciju prirodno", async () => {
@@ -1803,11 +1970,11 @@ describe("TechProcessesService — stopWorkById (Kraj rada iz Moji otvoreni)", (
 
     expect(data.operationFinished).toBe(true); // dostignut plan (1/1)
     expect(data.session).toBeNull();
-    // Red se zatvara: update sadrži isProcessFinished:true.
-    const updArg = prisma.techProcess.update.mock.calls[0][0] as {
+    // BUG-P1-01 Faza 1: zatvaranje reda je u DRUGOM update-u (posle atomskog inkrementa).
+    const finArg = prisma.techProcess.update.mock.calls[1][0] as {
       data: Record<string, unknown>;
     };
-    expect(updArg.data.isProcessFinished).toBe(true);
+    expect(finArg.data.isProcessFinished).toBe(true);
   });
 
   it("tuđa otvorena sesija se NE zatvara (izolacija po mom workerId), komadi akumulirani", async () => {

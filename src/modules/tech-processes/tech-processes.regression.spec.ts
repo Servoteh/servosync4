@@ -189,9 +189,9 @@ describe("REGRESSION — storno() (BUG-P2-09: guard poredi samo izvorni red)", (
 });
 
 describe("REGRESSION — deleteEntry() (BUG-P1-03: ne briše work_time_entries)", () => {
-  it("BASELINE BUG: deleteEntry NE poziva workTimeEntry.deleteMany (FK P2003 rizik)", async () => {
-    // Danas: sesija na redu → FK violation → 500. Kad se u Fazi 1 doda brisanje
-    // sesija, ovaj test se menja (očekivan poziv workTimeEntry.deleteMany).
+  it("FAZA 1 (BUG-P1-03 popravljeno): deleteEntry briše work_time_entries pre reda", async () => {
+    // Ranije baseline bug: sesija na redu → FK NO ACTION → P2003 → 500. Popravka:
+    // pre techProcess.delete se briše workTimeEntry.deleteMany({ techProcessId }).
     const prisma = prismaMock();
     (prisma.techProcess.findUnique as jest.Mock).mockResolvedValue(
       tpRow({ id: 600, pieceCount: 5, documents: [] }),
@@ -199,7 +199,9 @@ describe("REGRESSION — deleteEntry() (BUG-P1-03: ne briše work_time_entries)"
     const svc = await buildService(prisma);
     await svc.deleteEntry(600, { note: "loše otkucano" });
 
-    expect(prisma.workTimeEntry.deleteMany).not.toHaveBeenCalled(); // ← baseline
+    expect(prisma.workTimeEntry.deleteMany).toHaveBeenCalledWith({
+      where: { techProcessId: 600 },
+    });
     expect(prisma.techProcess.delete).toHaveBeenCalledWith({ where: { id: 600 } });
   });
 
