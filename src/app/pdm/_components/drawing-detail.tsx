@@ -9,6 +9,7 @@ import { drawingStatusMeta, weightLabel } from './pdm-helpers';
 import { TabNav } from './tab-nav';
 import { BomTree } from './bom-tree';
 import { WhereUsed } from './where-used';
+import { AddToDraftButton } from './add-to-draft-dialog';
 
 function Field({ label, value }: { label: string; value: ReactNode }) {
   return (
@@ -52,6 +53,11 @@ export function DrawingDetail({ id }: { id: number }) {
         <span className="text-ink-secondary">
           {formatNumber(d.componentCount)} komponenti · koristi se u{' '}
           {formatNumber(d.whereUsedCount)}
+        </span>
+        <span className="ml-auto">
+          <AddToDraftButton
+            target={{ drawingId: d.id, drawingNumber: d.drawingNumber, name: d.name }}
+          />
         </span>
       </div>
 

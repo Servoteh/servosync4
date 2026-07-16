@@ -112,6 +112,12 @@ export interface BomTreeNode {
   depth: number;
   /** Ciklus u sastavnici — grana je presečena, `children` je prazan. */
   isCycle: boolean;
+  /**
+   * Postoji li uskladišten PDF za crtež ovog čvora (legacy „Sastavnica delova"
+   * kolona PDF ima/nema). Backend ga računa nad `drawing.id`; za čvor bez crteža
+   * (`drawing == null`, „ne postoji") uvek `false`.
+   */
+  hasPdf: boolean;
   children: BomTreeNode[];
 }
 
@@ -135,6 +141,13 @@ export interface BomResponse {
     componentRows: number;
     cyclesDetected: number;
     truncated: boolean;
+    /**
+     * Zbirni PDF pokazatelj za celo stablo (legacy „Sastavnica delova" — koliko
+     * je crteža sa PDF-om od ukupno postojećih). `withPdf < total` → sklop nije
+     * kompletiran PDF-ovima. Opciono/defanzivno: stariji backend polje ne vraća
+     * (undefined) — UI tada tiho sakrije zbirni red.
+     */
+    pdfSummary?: { total: number; withPdf: number };
   };
 }
 

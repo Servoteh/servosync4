@@ -1,11 +1,12 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { ChevronRight } from 'lucide-react';
+import { ChevronRight, FileText } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
-import { useBom, type BomTreeNode } from '@/api/pdm';
+import { useBom, openDrawingPdf, type BomTreeNode } from '@/api/pdm';
 import { formatNumber } from '@/lib/format';
+import { AddToDraftButton } from './add-to-draft-dialog';
 
 /** Korak uvlačenja po nivou dubine (px) — dinamička vrednost, inline style dozvoljen (§3). */
 const INDENT_STEP = 16;
@@ -67,6 +68,20 @@ export function BomTree({ drawingId }: { drawingId: number }) {
           {allExpanded ? 'Skupi sve' : 'Proširi sve'}
         </button>
         <span className="tnums">{formatNumber(meta?.componentRows ?? 0)} stavki</span>
+        {meta?.pdfSummary ? (
+          <span
+            className={cn(
+              'tnums font-medium',
+              meta.pdfSummary.withPdf < meta.pdfSummary.total
+                ? 'text-status-warn'
+                : 'text-status-success',
+            )}
+            title="Crteži sa uskladištenim PDF-om od ukupno postojećih u sastavnici"
+          >
+            Crteži sa PDF-om: {formatNumber(meta.pdfSummary.withPdf)}/
+            {formatNumber(meta.pdfSummary.total)}
+          </span>
+        ) : null}
         {meta?.cyclesDetected ? (
           <StatusBadge tone="warn" label={`Ciklus: ${meta.cyclesDetected}`} />
         ) : null}
@@ -116,6 +131,24 @@ function BomRow({
       ? 'text-status-info'
       : 'text-ink';
 
+  // „Otvori PDF" (isti obrazac kao detalj crteža — apiBlob kroz JWT, novi tab).
+  const [pdfOpening, setPdfOpening] = useState(false);
+  const [pdfError, setPdfError] = useState(false);
+  const canOpenPdf = node.hasPdf && d != null;
+
+  async function onOpenPdf() {
+    if (!d) return;
+    setPdfOpening(true);
+    setPdfError(false);
+    try {
+      await openDrawingPdf(d.id);
+    } catch {
+      setPdfError(true);
+    } finally {
+      setPdfOpening(false);
+    }
+  }
+
   return (
     <>
       <div
@@ -153,6 +186,24 @@ function BomRow({
         {node.isCycle && <StatusBadge tone="warn" label="ciklus" />}
         {d?.isProcurement && <StatusBadge tone="info" label="nabavno" />}
 
+        {/* PDF indikator (legacy kolona ima/nema) — samo za postojeći crtež. */}
+        {!missing &&
+          (node.hasPdf ? (
+            <span
+              className="shrink-0 rounded-full bg-status-success-bg px-1.5 py-0.5 text-2xs font-semibold text-status-success"
+              title="Postoji uskladišten PDF crteža"
+            >
+              PDF
+            </span>
+          ) : (
+            <span
+              className="shrink-0 text-2xs text-ink-disabled"
+              title="Nema uskladišten PDF crteža"
+            >
+              —
+            </span>
+          ))}
+
         <span className="ml-auto shrink-0 tnums text-ink">
           {formatNumber(node.requiredQuantity)} kom
         </span>
@@ -162,6 +213,28 @@ function BomRow({
         >
           Σ {formatNumber(node.totalQuantity)}
         </span>
+
+        {canOpenPdf && (
+          <button
+            type="button"
+            onClick={onOpenPdf}
+            disabled={pdfOpening}
+            title={pdfError ? 'Greška pri otvaranju PDF-a — pokušaj ponovo' : 'Otvori PDF crteža'}
+            aria-label="Otvori PDF"
+            className={cn(
+              'inline-flex shrink-0 items-center rounded-control p-1 hover:bg-surface-2 disabled:opacity-40',
+              pdfError ? 'text-status-danger' : 'text-ink-secondary hover:text-ink',
+            )}
+          >
+            <FileText className="h-3.5 w-3.5" aria-hidden />
+          </button>
+        )}
+        {!missing && d && (
+          <AddToDraftButton
+            target={{ drawingId: d.id, drawingNumber: d.drawingNumber, name: d.name }}
+            variant="compact"
+          />
+        )}
       </div>
 
       {hasChildren &&

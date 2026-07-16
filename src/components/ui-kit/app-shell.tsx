@@ -113,11 +113,14 @@ const NAV_SECTIONS: NavSection[] = [
       // Vidljivost = pb.read (SELECT `true` paritet = svi prijavljeni).
       { label: 'Projektni biro', href: '/pb', icon: FolderKanban, requires: PERMISSIONS.PB_READ },
       { label: 'PDM / Crteži', href: '/pdm', icon: DraftingCompass, requires: PERMISSIONS.PDM_READ },
-      // Nacrti (projektanti, gate write) i Primopredaje (tehnolozi, gate
-      // approve) su ODVOJENE rute — deljena ruta je palila obe stavke kao
-      // aktivne istovremeno (ODLUKE #33).
+      // Nacrti (projektanti, gate write) i Primopredaje su ODVOJENE rute —
+      // deljena ruta je palila obe stavke kao aktivne istovremeno (ODLUKE #33).
+      // „Nacrti" ostaje `primopredaje.write` (radni prostor projektanata).
+      // „Primopredaje" je od 16.07 vidljivo SVIM rolama (Nenad: `primopredaje.read`
+      // — čist pregled ko je pustio/šta/status; mutirajuće akcije u tabovima su
+      // svaka iza svog <Can> approve/write, pa read-only korisnik ne vidi dugmad).
       { label: 'Nacrti', href: '/nacrti', icon: PencilRuler, requires: PERMISSIONS.PRIMOPREDAJE_WRITE },
-      { label: 'Primopredaje', href: '/handovers', icon: PackageCheck, requires: PERMISSIONS.PRIMOPREDAJE_APPROVE },
+      { label: 'Primopredaje', href: '/handovers', icon: PackageCheck, requires: PERMISSIONS.PRIMOPREDAJE_READ },
     ],
   },
   {

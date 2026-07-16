@@ -16,6 +16,7 @@ import {
 import { formatDate, formatNumber } from '@/lib/format';
 import { drawingStatusMeta, weightLabel } from './pdm-helpers';
 import { DrawingDetail } from './drawing-detail';
+import { AddToDraftButton } from './add-to-draft-dialog';
 
 /** Tip crteža po prefiksu broja: K → gotova roba, M → montažni, ostalo → proizvodnja. */
 function drawingTypeLabel(drawingNumber: string): string {
@@ -88,6 +89,17 @@ const columns: Column<Drawing>[] = [
       ) : (
         <span className="text-ink-disabled">—</span>
       ),
+  },
+  {
+    key: 'actions',
+    header: '',
+    // stopRowActivate: klik na dugme ne sme da okine expand/collapse reda.
+    render: (r) => (
+      <AddToDraftButton
+        target={{ drawingId: r.id, drawingNumber: r.drawingNumber, name: r.name }}
+        stopRowActivate
+      />
+    ),
   },
 ];
 

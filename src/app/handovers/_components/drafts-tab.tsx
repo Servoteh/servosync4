@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { Info, Pencil, Plus, Printer, Send, Trash2 } from 'lucide-react';
 import {
   DRAFT_ITEM_DECISION,
@@ -9,6 +10,7 @@ import {
   useDrawingsLookup,
   useApprovers,
   getMyWorkerId,
+  useDraftDesigners,
   useHandoverDraft,
   useHandoverDrafts,
   useHandoverLookups,
@@ -22,7 +24,7 @@ import {
   type HandoverDraftDetail,
   type HandoverDraftItem,
 } from '@/api/handovers';
-import { useBom, type DrawingSummary } from '@/api/pdm';
+import { useBom, useDrawing, type DrawingSummary } from '@/api/pdm';
 import { useProjectsLookup, type ProjectLookup } from '@/api/lookups';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
@@ -279,10 +281,18 @@ const SUBMIT_APPROVER_HINT =
 function DraftFormDialog({
   open,
   draft,
+  prefillMainDrawing,
   onClose,
 }: {
   open: boolean;
   draft: HandoverDraftDetail | null;
+  /**
+   * D2 (/nacrti?noviCrtez=<drawingId>): glavni crtež sklopa unapred popunjen iz
+   * PDM sastavnice. Kad je prisutan (samo u režimu novog nacrta), forma ga
+   * postavlja u `mainDrawing` i okida isti auto-BOM tok kao ručni izbor sklopa
+   * (učita sastavnicu → izlista pozicije u stavke). null = običan novi nacrt.
+   */
+  prefillMainDrawing?: Drawing | null;
   onClose: () => void;
 }) {
   const isEdit = draft != null;
@@ -313,13 +323,18 @@ function DraftFormDialog({
 
   useEffect(() => {
     if (open) {
-      setForm(toFormState(draft));
+      const base = toFormState(draft);
+      // D2 prefill: u režimu novog nacrta glavni crtež iz PDM-a ide u zaglavlje,
+      // a `autoFillId` okida isti auto-BOM tok kao ručni izbor sklopa (potvrda
+      // za zamenu stavki nije potrebna — stavke su još prazne pri otvaranju).
+      const prefill = !isEdit && prefillMainDrawing ? prefillMainDrawing : null;
+      setForm(prefill ? { ...base, mainDrawing: prefill } : base);
       setItems([]);
       setWarnings(null);
-      setAutoFillId(null);
+      setAutoFillId(prefill ? prefill.id : null);
       setSkippedDrawings([]);
     }
-  }, [open, draft]);
+  }, [open, draft, isEdit, prefillMainDrawing]);
 
   // AUTO-BOM („U nacrtu biram samo sklop i on izlista sve pozicije u sklopu"):
   // kad stigne sastavnica izabranog sklopa, stavke = sklop kao prva (isMain) +
@@ -1013,26 +1028,53 @@ function DraftDetail({
 // ─────────────────────────────────────────────────────────────── tab
 
 export function DraftsTab({ onSubmitted }: { onSubmitted?: () => void }) {
+  const router = useRouter();
   const [q, setQ] = useState('');
   const [statusId, setStatusId] = useState<number | ''>('');
+  const [designerId, setDesignerId] = useState<number | ''>('');
   const [isLocked, setIsLocked] = useState<'' | 'true' | 'false'>('');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
   const [page, setPage] = useState(1);
   const [expanded, setExpanded] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<HandoverDraftDetail | null>(null);
   const resetPage = () => setPage(1);
 
+  // D2: /nacrti?noviCrtez=<drawingId> — glavni crtež novog nacrta iz PDM
+  // sastavnice. Param se čita JEDNOM iz `window.location.search` (isti obrazac
+  // kao work-orders/page.tsx `?open=` — NE `useSearchParams`, jer je build
+  // statički export i to bi tražilo Suspense granicu). Odmah otvara formu i
+  // čisti param (`router.replace`) da refresh/zatvaranje forme ne re-otvara isti.
+  const [prefillDrawingId, setPrefillDrawingId] = useState<number | null>(null);
+  const prefillDrawingQuery = useDrawing(prefillDrawingId);
+  const prefillMainDrawing = prefillDrawingId ? (prefillDrawingQuery.data?.data ?? null) : null;
+
+  useEffect(() => {
+    const raw = new URLSearchParams(window.location.search).get('noviCrtez');
+    const id = raw && /^\d+$/.test(raw) ? Number(raw) : NaN;
+    if (!Number.isInteger(id) || id <= 0) return;
+    setPrefillDrawingId(id);
+    setCreating(true);
+    // Očisti query param iz URL-a (zadrži rutu) — jednokratno.
+    router.replace('/nacrti');
+  }, [router]);
+
   const lookups = useHandoverLookups();
+  const designers = useDraftDesigners();
   const list = useHandoverDrafts({
     page,
     q: q.trim() || undefined,
     statusId,
+    designerId,
     isLocked,
+    from: from || undefined,
+    to: to || undefined,
   });
 
   const rows = list.data?.data ?? [];
   const meta = list.data?.meta.pagination;
-  const hasFilter = !!(q || statusId !== '' || isLocked);
+  const hasFilter = !!(q || statusId !== '' || designerId !== '' || isLocked || from || to);
 
   return (
     <div className="space-y-4">
@@ -1067,6 +1109,23 @@ export function DraftsTab({ onSubmitted }: { onSubmitted?: () => void }) {
             </NativeSelect>
           </label>
           <label className="flex flex-col gap-1 text-xs text-ink-secondary">
+            Projektant
+            <NativeSelect
+              value={designerId}
+              onChange={(e) => {
+                setDesignerId(e.target.value === '' ? '' : Number(e.target.value));
+                resetPage();
+              }}
+            >
+              <option value="">Svi</option>
+              {(designers.data ?? []).map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.fullName ?? d.username}
+                </option>
+              ))}
+            </NativeSelect>
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-ink-secondary">
             Zaključanost
             <NativeSelect
               value={isLocked}
@@ -1080,12 +1139,41 @@ export function DraftsTab({ onSubmitted }: { onSubmitted?: () => void }) {
               <option value="true">Zaključan</option>
             </NativeSelect>
           </label>
+          {/* Datumski opseg po datumu nacrta (`draft_date`) — server-side
+              (`from`/`to` u useHandoverDrafts), isti obrazac kao all-handovers-tab. */}
+          <label className="flex flex-col gap-1 text-xs text-ink-secondary">
+            Od datuma
+            <input
+              type="date"
+              value={from}
+              onChange={(e) => {
+                setFrom(e.target.value);
+                resetPage();
+              }}
+              className="rounded-control border border-line bg-surface px-2.5 py-1.5 text-sm text-ink"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-ink-secondary">
+            do
+            <input
+              type="date"
+              value={to}
+              onChange={(e) => {
+                setTo(e.target.value);
+                resetPage();
+              }}
+              className="rounded-control border border-line bg-surface px-2.5 py-1.5 text-sm text-ink"
+            />
+          </label>
           {hasFilter && (
             <button
               onClick={() => {
                 setQ('');
                 setStatusId('');
+                setDesignerId('');
                 setIsLocked('');
+                setFrom('');
+                setTo('');
                 resetPage();
               }}
               className="rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2"
@@ -1141,7 +1229,16 @@ export function DraftsTab({ onSubmitted }: { onSubmitted?: () => void }) {
         />
       )}
 
-      <DraftFormDialog open={creating} draft={null} onClose={() => setCreating(false)} />
+      <DraftFormDialog
+        open={creating}
+        draft={null}
+        prefillMainDrawing={prefillMainDrawing}
+        onClose={() => {
+          setCreating(false);
+          // Otpusti D2 prefill da naredno „Novi nacrt" krene prazno.
+          setPrefillDrawingId(null);
+        }}
+      />
       <DraftFormDialog
         open={editing != null}
         draft={editing}

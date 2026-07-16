@@ -198,6 +198,33 @@ export function useHandoverDrafts(params: HandoverDraftListParams) {
   });
 }
 
+/**
+ * Distinct projektanti (`handover_drafts.designer_id`) za filter „Projektant" u
+ * listi nacrta (D1). NAMERNO se izvode iz samih nacrta (velika strana,
+ * `pageSize=200`) umesto zasebnog lookup endpointa: BE `GET /v1/handovers/engineers`
+ * (šifarnik „Inženjeri") JOŠ NE POSTOJI (FE `useEngineers` je defanzivni 404
+ * placeholder, `retry:false`) — a i kad stigne, šifarnik bi mogao da nudi
+ * projektante koji NIKAD nisu pravili nacrt. Distinct iz nacrta daje TAČAN skup
+ * `{id, fullName}` koji se 1:1 poklapa sa BE `designerId` filterom (nema
+ * praznih/nemapiranih opcija). Vraća sortiran, dedupovan niz `WorkerRef`.
+ */
+export function useDraftDesigners() {
+  return useQuery({
+    queryKey: ['handover-drafts', 'designers'],
+    queryFn: async () => {
+      const res = await apiFetch<Paginated<HandoverDraft>>('/v1/handover-drafts?pageSize=200');
+      const byId = new Map<number, WorkerRef>();
+      for (const d of res.data ?? []) {
+        if (d.designer && !byId.has(d.designer.id)) byId.set(d.designer.id, d.designer);
+      }
+      return [...byId.values()].sort((a, b) =>
+        (a.fullName ?? a.username).localeCompare(b.fullName ?? b.username, 'sr'),
+      );
+    },
+    staleTime: 60_000,
+  });
+}
+
 /** Detalj nacrta sa stavkama (učitava se pri expand-u reda). */
 export function useHandoverDraft(id: number | null) {
   return useQuery({
@@ -339,6 +366,74 @@ export function useSubmitHandoverDraft() {
       qc.invalidateQueries({ queryKey: ['handover-drafts'] });
       qc.invalidateQueries({ queryKey: ['handovers'] });
     },
+  });
+}
+
+// ─────────────────────────────── „Dodaj u nacrt" iz PDM sastavnice (Agent C potrošač)
+
+/**
+ * Lagana stavka padajuće liste „dodaj u postojeći nacrt" — otvoreni (nezaključan,
+ * status „na pisanju") nacrti kojima potrošač (PDM BOM stablo, Agent C) može da
+ * doda crteže. `subject` je broj/naziv predmeta, `designerName` projektant.
+ */
+export interface OpenDraftLookupItem {
+  id: number;
+  draftNumber: string;
+  subject: string | null;
+  designerName: string | null;
+}
+
+/**
+ * Otvoreni nacrti za „Dodaj u nacrt" (Agent C) — GET /v1/handover-drafts filtriran
+ * na NEzaključane (`isLocked=false`). Predaja u primopredaju zaključa nacrt, pa
+ * `isLocked=false` je tačan kriterijum „može još da prima stavke" (isti signal
+ * kao gejt dugmadi Izmeni/Obriši/Predaj u DraftDetail). Lista je lagana i
+ * kratko-stale (nova stavka mora brzo da se pojavi u meniju posle kreiranja).
+ * Vraća već mapiran oblik ({ id, draftNumber, subject, designerName }) da potrošač
+ * ne zavisi od punog `HandoverDraft` tipa.
+ */
+export function useOpenDraftsLookup() {
+  return useQuery({
+    queryKey: ['handover-drafts', 'open-lookup'],
+    queryFn: async () => {
+      const res = await apiFetch<Paginated<HandoverDraft>>(
+        '/v1/handover-drafts?isLocked=false&pageSize=200',
+      );
+      return (res.data ?? []).map<OpenDraftLookupItem>((d) => ({
+        id: d.id,
+        draftNumber: d.draftNumber,
+        subject: d.project
+          ? [d.project.projectNumber, d.project.projectName].filter(Boolean).join(' · ')
+          : null,
+        designerName: d.designer?.fullName ?? null,
+      }));
+    },
+    staleTime: 15_000,
+  });
+}
+
+/** Ulazna stavka za `useAppendDraftItems` (isti oblik kao `CreateHandoverDraftItemInput`). */
+export type AppendDraftItemInput = CreateHandoverDraftItemInput;
+
+/**
+ * Dodaj stavke (crteže) u POSTOJEĆI otvoren nacrt (Agent B ugovor) — POST
+ * /v1/handover-drafts/:id/items { items }. Backend vraća `meta.added` (koliko je
+ * upisano) i `meta.skipped` (već postojeći / neodobreni preskočeni). Menja
+ * detalj nacrta i broj stavki u listi, pa invalidira ceo `handover-drafts`
+ * ključ (uklj. `open-lookup` i detalj otvorenog reda).
+ */
+export function useAppendDraftItems() {
+  const invalidate = useInvalidateDrafts();
+  return useMutation({
+    mutationFn: ({ id, items }: { id: number; items: AppendDraftItemInput[] }) =>
+      apiFetch<{ data: HandoverDraftItem[]; meta: { added: number; skipped: number } }>(
+        `/v1/handover-drafts/${id}/items`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ items }),
+        },
+      ),
+    onSuccess: invalidate,
   });
 }
 
