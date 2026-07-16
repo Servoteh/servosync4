@@ -166,7 +166,9 @@ export function PredmetAktivacijaTab() {
       return;
     }
     try {
-      await toggleM.mutateAsync({ itemId: r.item_id, projektovanjeMontaza: next });
+      // `aktivan` se MORA slati (RPC uvek prepisuje je_aktivan) — šaljemo tekuću vrednost
+      // reda; menja se samo projektovanje-flag (paritet 1.0 predmetiTable).
+      await toggleM.mutateAsync({ itemId: r.item_id, aktivan: !!r.je_aktivan, projektovanjeMontaza: next });
       toast('Sačuvano');
     } catch (e) {
       bump();
@@ -177,7 +179,9 @@ export function PredmetAktivacijaTab() {
   // ---- Napomena (modal): '' = obriši, string = postavi ----
   async function saveNapomena(id: number, text: string) {
     try {
-      await toggleM.mutateAsync({ itemId: id, napomena: text });
+      // `aktivan` obavezan (RPC prepisuje je_aktivan) — očitaj tekuću vrednost reda.
+      const cur = rows.find((x) => x.item_id === id)?.je_aktivan ?? false;
+      await toggleM.mutateAsync({ itemId: id, aktivan: !!cur, napomena: text });
       toast('Sačuvano');
       setNapModal(null);
     } catch (e) {
