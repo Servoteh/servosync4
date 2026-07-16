@@ -35,6 +35,7 @@ import type {
   CreateSelfCheckinDto,
   UpdateMyExpectationDto,
 } from "./dto/moj-profil-profile.dto";
+import type { TeamAttendanceCorrectionDto } from "./dto/moj-profil-team.dto";
 
 /** Klijentski min-datum GO zahteva (§2.4 pravilo 10; server re-provera paritet 1.0). */
 const REQUEST_MIN_DATE = "2026-05-01";
@@ -273,11 +274,32 @@ export class MojProfilService {
    */
   monthlyHours(email: string, q: MonthlyHoursQueryDto) {
     const { year, month } = parseMonth(q.month);
-    const start = new Date(Date.UTC(year, month - 1, 1));
-    const end = new Date(Date.UTC(year, month, 1));
     return this.withUserMapped(email, async (tx) => {
       const emp = await this.resolveEmployee(tx, email);
       if (emp == null) return this.emptyProfile();
+      return { data: await this.computeMonthlyHours(tx, emp, year, month) };
+    });
+  }
+
+  /**
+   * Karnet jednog zaposlenog za mesec — čist izračun nad RESOLVED employee redom (self ILI član
+   * tima kroz RLS). Vraća oblik `data.*` (bez omotača) da ga i /profile/hours i /profile/team/:id/
+   * hours dele. work_hours meseca + praznici + payroll agregat (REUSE) + chips + postojeća primedba.
+   */
+  private async computeMonthlyHours(
+    tx: Sy15Tx,
+    emp: {
+      id: string;
+      full_name: string | null;
+      workType: string | null;
+      hireDate: string | null;
+    },
+    year: number,
+    month: number,
+  ) {
+    const start = new Date(Date.UTC(year, month - 1, 1));
+    const end = new Date(Date.UTC(year, month, 1));
+    {
       const [rows, holidays, remarks] = await Promise.all([
         tx.workHours.findMany({
           where: {
@@ -416,24 +438,22 @@ export class MojProfilService {
         : null;
 
       return {
-        data: {
-          month: `${year}-${String(month).padStart(2, "0")}`,
-          year,
-          monthNum: month,
-          employee: {
-            id: emp.id,
-            fullName: emp.full_name,
-            workType: emp.workType,
-          },
-          days,
-          holidays: holidayList,
-          totals,
-          fondSati: fond,
-          chips,
-          remark,
+        month: `${year}-${String(month).padStart(2, "0")}`,
+        year,
+        monthNum: month,
+        employee: {
+          id: emp.id,
+          fullName: emp.full_name,
+          workType: emp.workType,
         },
+        days,
+        holidays: holidayList,
+        totals,
+        fondSati: fond,
+        chips,
+        remark,
       };
-    });
+    }
   }
 
   /** Presek za landing (GO saldo + otvoreni zahtevi + mesečni sati prisustva + razgovori). */
@@ -498,6 +518,48 @@ export class MojProfilService {
       Prisma.sql`SELECT id, full_name, position_id, work_type, hire_date
          FROM v_employees_safe
          WHERE lower(email) = lower(${email}) LIMIT 1`,
+    );
+    const r = rows[0];
+    if (!r) return null;
+    const hire =
+      r.hire_date == null
+        ? null
+        : r.hire_date instanceof Date
+          ? r.hire_date.toISOString().slice(0, 10)
+          : String(r.hire_date).slice(0, 10);
+    return {
+      id: r.id,
+      full_name: r.full_name,
+      positionId: r.position_id,
+      workType: r.work_type,
+      hireDate: hire,
+    };
+  }
+
+  /** Aktivan employee red po id-u (v_employees_safe; RLS presuđuje vidljivost = član tima).
+   *  Vraća null ako red ne postoji ILI RLS ne pušta (nije moj čovek). */
+  private async resolveEmployeeById(
+    tx: Sy15Tx,
+    employeeId: string,
+  ): Promise<{
+    id: string;
+    full_name: string | null;
+    positionId: number | null;
+    workType: string | null;
+    hireDate: string | null;
+  } | null> {
+    const rows = await tx.$queryRaw<
+      {
+        id: string;
+        full_name: string | null;
+        position_id: number | null;
+        work_type: string | null;
+        hire_date: Date | string | null;
+      }[]
+    >(
+      Prisma.sql`SELECT id, full_name, position_id, work_type, hire_date
+         FROM v_employees_safe
+         WHERE id = ${employeeId}::uuid LIMIT 1`,
     );
     const r = rows[0];
     if (!r) return null;
@@ -1359,6 +1421,206 @@ export class MojProfilService {
         },
       };
     });
+  }
+
+  // ============================================================================
+  // P5 — MOJ TIM (guard profile.team; row-scope kroz sy15 RLS/DEFINER preko GUC).
+  // Roster = v_employees_safe ∩ current_user_manages_employee(id) (admin/hr/pm/leadpm =
+  // svi; menadzment = managed_sub_department_ids) minus self. Po članu: GO saldo
+  // (v_vacation_balance), trenutno/nadolazeće odsustvo (absences), broj zaduženja alata
+  // (get_team_issued_tools). Drill i korekcija reuse-uju POSTOJEĆE RPC-ove — potpisi
+  // NETAKNUTI. Guard je gruba kapija; DB fn presuđuje širinu (paritet 1.0 client scope).
+  // ============================================================================
+
+  /**
+   * Roster mog tima + presek po članu (paritet 1.0 mojProfil _buildMyTeam / _loadAndRender).
+   * `current_user_manages_employee(id)` (SECURITY DEFINER) sprovodi scope u bazi — role-agnostičan
+   * (admin/hr/poslovni_admin/pm/leadpm/projektant_vodja vide sve; menadzment po pododeljenju).
+   * Isključuje self. Po članu: GO saldo (tekuća godina), trenutno/sledeće odsustvo (≤ danas ∨
+   * najbliže buduće, ne-arhivirano), broj otvorenih zaduženja alata (get_team_issued_tools).
+   */
+  team(email: string) {
+    const year = new Date().getFullYear();
+    return this.withUserMapped(email, async (tx) => {
+      const self = await this.resolveEmployee(tx, email);
+      const selfId = self?.id ?? null;
+      // Roster: samo aktivni koje caller upravlja (DB fn), bez sebe.
+      const members = await tx.$queryRaw<
+        {
+          id: string;
+          full_name: string | null;
+          position: string | null;
+          position_id: number | null;
+          department: string | null;
+          sub_department_id: number | null;
+          sub_department_name: string | null;
+        }[]
+      >(
+        Prisma.sql`SELECT id, full_name, position, position_id, department,
+             sub_department_id, sub_department_name
+           FROM v_employees_safe
+           WHERE is_active = true
+             AND public.current_user_manages_employee(id) = true
+             ${selfId ? Prisma.sql`AND id <> ${selfId}::uuid` : Prisma.empty}
+           ORDER BY full_name`,
+      );
+      if (!members.length) return { data: { members: [] } };
+      const ids = members.map((m) => m.id);
+      const idSql = Prisma.join(ids.map((i) => Prisma.sql`${i}::uuid`));
+
+      // GO saldo (tekuća godina), aktivna/nadolazeća odsustva, broj zaduženja alata — batch.
+      const [balances, absences, toolRows] = await Promise.all([
+        tx.$queryRaw<Record<string, unknown>[]>(
+          Prisma.sql`SELECT * FROM v_vacation_balance
+             WHERE employee_id IN (${idSql}) AND year = ${year}`,
+        ),
+        tx.$queryRaw<Record<string, unknown>[]>(
+          Prisma.sql`SELECT employee_id, type, date_from, date_to, absence_subtype
+             FROM absences
+             WHERE employee_id IN (${idSql}) AND archived_at IS NULL
+               AND date_to >= CURRENT_DATE
+             ORDER BY date_from ASC`,
+        ),
+        tx.$queryRaw<{ v: unknown }[]>(
+          Prisma.sql`SELECT get_team_issued_tools() AS v`,
+        ),
+      ]);
+
+      const balByEmp = new Map<string, Record<string, unknown>>();
+      for (const b of jsonSafe(balances) as Record<string, unknown>[])
+        balByEmp.set(String(b.employee_id), b);
+
+      // Trenutno (preseca DANAS) vs najbliže sledeće (date_from > danas) po članu.
+      // Nadolazeće SAMO ako počinje u narednih 14 dana (paritet 1.0 _teamAbsenceStatus).
+      const today = new Date().toISOString().slice(0, 10);
+      const horizon = new Date();
+      horizon.setDate(horizon.getDate() + 14);
+      const horizonYmd = horizon.toISOString().slice(0, 10);
+      const nowByEmp = new Map<string, Record<string, unknown>>();
+      const nextByEmp = new Map<string, Record<string, unknown>>();
+      for (const a of jsonSafe(absences) as Record<string, unknown>[]) {
+        const k = String(a.employee_id);
+        const from = String(a.date_from).slice(0, 10);
+        const to = String(a.date_to).slice(0, 10);
+        if (from <= today && to >= today) {
+          if (!nowByEmp.has(k)) nowByEmp.set(k, a);
+        } else if (from > today && from <= horizonYmd) {
+          if (!nextByEmp.has(k)) nextByEmp.set(k, a);
+        }
+      }
+
+      // Broj otvorenih zaduženja alata po članu (get_team_issued_tools → jsonb array; scope u fn).
+      const toolsVal = jsonSafe(toolRows)[0]?.v;
+      const toolCount = new Map<string, number>();
+      if (Array.isArray(toolsVal)) {
+        for (const row of toolsVal as Record<string, unknown>[]) {
+          const k = String(row.recipient_employee_id ?? "");
+          if (!k) continue;
+          toolCount.set(k, (toolCount.get(k) ?? 0) + 1);
+        }
+      }
+
+      const rows = members.map((m) => ({
+        id: m.id,
+        fullName: m.full_name,
+        position: m.position,
+        positionId: m.position_id,
+        department: m.department,
+        subDepartmentId: m.sub_department_id,
+        subDepartmentName: m.sub_department_name,
+        balance: balByEmp.get(m.id) ?? null,
+        currentAbsence: nowByEmp.get(m.id) ?? null,
+        upcomingAbsence: nextByEmp.get(m.id) ?? null,
+        issuedToolsCount: toolCount.get(m.id) ?? 0,
+      }));
+      return { data: { members: rows } };
+    });
+  }
+
+  /**
+   * Zaduženja alata jednog člana (drill; paritet 1.0 team detail tools tabela). Filtrira redove
+   * `get_team_issued_tools()` (scope u fn) na tog člana. RLS/DEFINER presuđuje da li ga vidim;
+   * ako caller ne upravlja članom → prazna lista (fn ionako ne vraća njegove redove).
+   */
+  teamMemberTools(email: string, employeeId: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const rows = await tx.$queryRaw<{ v: unknown }[]>(
+        Prisma.sql`SELECT get_team_issued_tools() AS v`,
+      );
+      const all = jsonSafe(rows)[0]?.v;
+      const tools = Array.isArray(all)
+        ? (all as Record<string, unknown>[]).filter(
+            (r) => String(r.recipient_employee_id ?? "") === employeeId,
+          )
+        : [];
+      return { data: { employeeId, tools } };
+    });
+  }
+
+  /**
+   * Karnet člana za mesec (isti izračun kao /profile/hours ali za člana kroz RLS). resolveEmployeeById
+   * vraća null ako RLS ne pušta (nije moj čovek) → 404. Guard profile.team + row-odluka DB.
+   */
+  teamMemberHours(email: string, employeeId: string, month?: string) {
+    const { year, month: m } = parseMonth(month);
+    return this.withUserMapped(email, async (tx) => {
+      // Eksplicitna scope-provera: employees/work_hours RLS je USING(true), pa se NE smemo
+      // osloniti na RLS da presudi „član mog tima". current_user_manages_employee je izvor
+      // istine (isti predikat kao roster query) — sprečava IDOR (proizvoljan employeeId).
+      if (!(await this.managesEmployee(tx, employeeId)))
+        throw new NotFoundException(
+          "Član nije pronađen ili nije u vašem timu.",
+        );
+      const emp = await this.resolveEmployeeById(tx, employeeId);
+      if (emp == null)
+        throw new NotFoundException(
+          "Član nije pronađen ili nije u vašem timu.",
+        );
+      return { data: await this.computeMonthlyHours(tx, emp, year, m) };
+    });
+  }
+
+  /** current_user_manages_employee(uuid) — autoritativni scope predikat (RLS je USING(true)). */
+  private async managesEmployee(
+    tx: Sy15Tx,
+    employeeId: string,
+  ): Promise<boolean> {
+    const rows = await tx.$queryRaw<{ ok: boolean }[]>(
+      Prisma.sql`SELECT current_user_manages_employee(${employeeId}::uuid) AS ok`,
+    );
+    return rows[0]?.ok === true;
+  }
+
+  /**
+   * Šef koriguje kucanje člana (attendance_submit_correction ZA tog člana). RPC presuđuje da li
+   * caller sme (current_user_manages_employee) + važenje 3 dana + mejl šefu. allowDayPick: BE-strani
+   * rani 422 na min granicu (danas-3) — paritet 1.0 openCorrectionDialog; RPC re-validira. Idempotentno.
+   */
+  async teamAttendanceCorrection(
+    email: string,
+    employeeId: string,
+    dto: TeamAttendanceCorrectionDto,
+  ) {
+    // Rani 422 (paritet 1.0 min = danas-3); RPC je autoritativan (može biti stroži).
+    const min = new Date();
+    min.setDate(min.getDate() - 3);
+    const minYmd = min.toISOString().slice(0, 10);
+    if (dto.day < minYmd)
+      throw new UnprocessableEntityException(
+        `Korekcija je moguća najranije od ${minYmd} (poslednja 3 dana).`,
+      );
+    return this.runIdem(
+      email,
+      dto.clientEventId,
+      "profile.team-attendance-correction",
+      async (tx) => {
+        const rows = await tx.$queryRaw<{ result: unknown }[]>(
+          Prisma.sql`SELECT attendance_submit_correction(${employeeId}::uuid, ${dto.day}::date,
+             ${dto.timeIn ?? null}::time, ${dto.timeOut ?? null}::time, ${dto.reason}) AS result`,
+        );
+        return jsonSafe(rows[0]?.result ?? null);
+      },
+    );
   }
 }
 

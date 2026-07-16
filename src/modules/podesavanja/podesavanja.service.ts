@@ -27,6 +27,24 @@ import type {
   SetPredmetAktivacijaDto,
 } from "./dto/podesavanja-predmet.dto";
 import { PRIORITET_MAX_CEILING } from "./dto/podesavanja-predmet.dto";
+import type {
+  BulkJobPositionProfileDto,
+  CreateDepartmentDto,
+  CreateJobPositionDto,
+  CreateSubDepartmentDto,
+  UpdateDepartmentDto,
+  UpdateJobPositionDto,
+  UpdateJobPositionProfileDto,
+  UpdateSubDepartmentDto,
+} from "./dto/podesavanja-org-crud.dto";
+import type {
+  CreateCompetenceDto,
+  CreateCompetenceGroupDto,
+  CreateCompetenceQuestionDto,
+  UpdateCompetenceDto,
+  UpdateCompetenceGroupDto,
+  UpdateCompetenceQuestionDto,
+} from "./dto/podesavanja-competence.dto";
 
 /**
  * Dozvoljeni AI modeli po potrošaču (rani 400 pre RPC-a; RPC re-validira). Sastanci allowlist
@@ -265,8 +283,11 @@ export class PodesavanjaService {
   /** Audit log (v_settings_audit_log: sy15 user_roles+predmet_aktivacija trigeri; SELECT=admin). */
   auditLog(email: string, q: AuditLogQueryDto) {
     const { page, pageSize, skip, take } = parsePagination(q.page, q.pageSize);
-    const where = q.tableName
-      ? Prisma.sql`WHERE table_name = ${q.tableName}`
+    const conds: Prisma.Sql[] = [];
+    if (q.tableName) conds.push(Prisma.sql`table_name = ${q.tableName}`);
+    if (q.action) conds.push(Prisma.sql`action = ${q.action}`);
+    const where = conds.length
+      ? Prisma.sql`WHERE ${Prisma.join(conds, " AND ")}`
       : Prisma.empty;
     return this.withUserMapped(email, async (tx) => {
       const [data, countRows] = await Promise.all([
@@ -545,6 +566,425 @@ export class PodesavanjaService {
     });
   }
 
+  // ============================================================================
+  // P8 — ORGANIZACIJA CRUD (struktura: departments/sub_departments/job_positions +
+  // opisi pozicija). Paritet 1.0 orgStructure.js / orgProfile.js. Struktura CRUD guard =
+  // settings.users (admin; RLS ALL=current_user_is_admin); opisi = settings.org_profile
+  // (RLS jp_update_org_profile=current_user_can_manage_org_profile). RLS autoritativan.
+  // Vraća camelCase (Prisma metode) — usklađeno sa postojećim GET org/structure.
+  // ============================================================================
+
+  // ---------- Departments ----------
+
+  createDepartment(email: string, dto: CreateDepartmentDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const row = await tx.department.create({
+        data: { name: dto.name.trim(), sortOrder: dto.sortOrder ?? 0 },
+      });
+      return { data: row };
+    });
+  }
+
+  updateDepartment(email: string, id: number, dto: UpdateDepartmentDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const patch: { name?: string; sortOrder?: number } = {};
+      if (dto.name !== undefined) patch.name = dto.name.trim();
+      if (dto.sortOrder !== undefined) patch.sortOrder = dto.sortOrder;
+      const res = await tx.department.updateMany({ where: { id }, data: patch });
+      if (res.count === 0)
+        throw new NotFoundException(`Odeljenje ${id} ne postoji.`);
+      const row = await tx.department.findUnique({ where: { id } });
+      return { data: row };
+    });
+  }
+
+  deleteDepartment(email: string, id: number) {
+    return this.withUserMapped(email, async (tx) => {
+      const res = await tx.department.deleteMany({ where: { id } });
+      if (res.count === 0)
+        throw new NotFoundException(`Odeljenje ${id} ne postoji.`);
+      return { data: { id, deleted: true } };
+    });
+  }
+
+  // ---------- Sub-departments ----------
+
+  createSubDepartment(email: string, dto: CreateSubDepartmentDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const row = await tx.subDepartment.create({
+        data: {
+          departmentId: dto.departmentId,
+          name: dto.name.trim(),
+          sortOrder: dto.sortOrder ?? 0,
+        },
+      });
+      return { data: row };
+    });
+  }
+
+  updateSubDepartment(email: string, id: number, dto: UpdateSubDepartmentDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const patch: {
+        departmentId?: number;
+        name?: string;
+        sortOrder?: number;
+      } = {};
+      if (dto.departmentId !== undefined) patch.departmentId = dto.departmentId;
+      if (dto.name !== undefined) patch.name = dto.name.trim();
+      if (dto.sortOrder !== undefined) patch.sortOrder = dto.sortOrder;
+      const res = await tx.subDepartment.updateMany({
+        where: { id },
+        data: patch,
+      });
+      if (res.count === 0)
+        throw new NotFoundException(`Pododeljenje ${id} ne postoji.`);
+      const row = await tx.subDepartment.findUnique({ where: { id } });
+      return { data: row };
+    });
+  }
+
+  deleteSubDepartment(email: string, id: number) {
+    return this.withUserMapped(email, async (tx) => {
+      const res = await tx.subDepartment.deleteMany({ where: { id } });
+      if (res.count === 0)
+        throw new NotFoundException(`Pododeljenje ${id} ne postoji.`);
+      return { data: { id, deleted: true } };
+    });
+  }
+
+  // ---------- Job positions (struktura) ----------
+
+  createJobPosition(email: string, dto: CreateJobPositionDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const row = await tx.jobPosition.create({
+        data: {
+          departmentId: dto.departmentId,
+          subDepartmentId: dto.subDepartmentId ?? null,
+          name: dto.name.trim(),
+          sortOrder: dto.sortOrder ?? 0,
+        },
+      });
+      return { data: row };
+    });
+  }
+
+  updateJobPosition(email: string, id: number, dto: UpdateJobPositionDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const patch: {
+        departmentId?: number;
+        subDepartmentId?: number | null;
+        name?: string;
+        sortOrder?: number;
+      } = {};
+      if (dto.departmentId !== undefined) patch.departmentId = dto.departmentId;
+      if (dto.subDepartmentId !== undefined)
+        patch.subDepartmentId = dto.subDepartmentId;
+      if (dto.name !== undefined) patch.name = dto.name.trim();
+      if (dto.sortOrder !== undefined) patch.sortOrder = dto.sortOrder;
+      const res = await tx.jobPosition.updateMany({ where: { id }, data: patch });
+      if (res.count === 0)
+        throw new NotFoundException(`Pozicija ${id} ne postoji.`);
+      const row = await tx.jobPosition.findUnique({ where: { id } });
+      return { data: row };
+    });
+  }
+
+  deleteJobPosition(email: string, id: number) {
+    return this.withUserMapped(email, async (tx) => {
+      const res = await tx.jobPosition.deleteMany({ where: { id } });
+      if (res.count === 0)
+        throw new NotFoundException(`Pozicija ${id} ne postoji.`);
+      return { data: { id, deleted: true } };
+    });
+  }
+
+  // ---------- Opis pozicije (org_profile domen; guard settings.org_profile) ----------
+
+  /**
+   * Opis pozicije (4 md sekcije + profile_updated_at/by). Paritet 1.0 updateJobPositionProfile:
+   * body uvek šalje sva 4 sa `?? null` (nedato = obriši sekciju). RLS jp_update_org_profile
+   * (current_user_can_manage_org_profile) presuđuje kroz GUC; 0 redova → 403 (RLS blok ∨ nema reda).
+   */
+  updateJobPositionProfile(
+    email: string,
+    id: number,
+    dto: UpdateJobPositionProfileDto,
+  ) {
+    return this.withUserMapped(email, async (tx) => {
+      // Provera postojanja pre update (RLS SELECT=true svima) da razdvojimo 404 od 403.
+      const exists = await tx.jobPosition.findUnique({
+        where: { id },
+        select: { id: true },
+      });
+      if (!exists) throw new NotFoundException(`Pozicija ${id} ne postoji.`);
+      const res = await tx.jobPosition.updateMany({
+        where: { id },
+        data: {
+          summaryMd: dto.summaryMd ?? null,
+          expectationsMd: dto.expectationsMd ?? null,
+          responsibilitiesMd: dto.responsibilitiesMd ?? null,
+          dutiesMd: dto.dutiesMd ?? null,
+          profileUpdatedAt: new Date(),
+          profileUpdatedBy: email.toLowerCase(),
+        },
+      });
+      if (res.count === 0)
+        throw new ForbiddenException("Nemate pravo izmene opisa pozicije.");
+      const row = await tx.jobPosition.findUnique({ where: { id } });
+      return { data: row };
+    });
+  }
+
+  /**
+   * Bulk import opisa pozicija — sekvencijalni update (paritet 1.0 bulkUpdateJobPositionProfiles).
+   * BE prima VEĆ isparsirane sekcije (parser je FE). Parcijalni uspeh po redu (RLS ∨ nepostojeći
+   * id → fail), vraća {ok, fail, results:[{id, ok, error?}]}. Ceo zahvat pod jednim RLS tx.
+   */
+  bulkJobPositionProfiles(email: string, dto: BulkJobPositionProfileDto) {
+    const me = email.toLowerCase();
+    return this.withUserMapped(email, async (tx) => {
+      const now = new Date();
+      let ok = 0;
+      let fail = 0;
+      const results: Array<{ id: number; ok: boolean; error?: string }> = [];
+      for (const it of dto.items) {
+        try {
+          const res = await tx.jobPosition.updateMany({
+            where: { id: it.id },
+            data: {
+              summaryMd: it.summaryMd ?? null,
+              expectationsMd: it.expectationsMd ?? null,
+              responsibilitiesMd: it.responsibilitiesMd ?? null,
+              dutiesMd: it.dutiesMd ?? null,
+              profileUpdatedAt: now,
+              profileUpdatedBy: me,
+            },
+          });
+          if (res.count > 0) {
+            ok++;
+            results.push({ id: it.id, ok: true });
+          } else {
+            fail++;
+            results.push({ id: it.id, ok: false, error: "not found" });
+          }
+        } catch (e) {
+          fail++;
+          results.push({
+            id: it.id,
+            ok: false,
+            error: (e as Error).message ?? "greška",
+          });
+        }
+      }
+      return { data: { ok, fail, results } };
+    });
+  }
+
+  // ============================================================================
+  // P10 — KOMPETENCIJE EDITOR CRUD (competence_groups / competences / competence_levels /
+  // competence_questions). Paritet 1.0 competenceFrameworkEditor.js. Sve admin (guard
+  // settings.users; DB RLS ALL=current_user_is_admin, autoritativan → 42501→403). `code`
+  // se auto-generiše (slug + sufiks, kao 1.0 _genCode). Vraća camelCase (Prisma) — usklađeno
+  // sa GET /admin/competence-framework. Insert: is_active=true.
+  // ============================================================================
+
+  // ---------- Grupe (ose) ----------
+
+  createCompetenceGroup(email: string, dto: CreateCompetenceGroupDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const row = await tx.competenceGroup.create({
+        data: {
+          code: genCode("grp", dto.nameSr),
+          nameSr: dto.nameSr.trim(),
+          descriptionSr: dto.descriptionSr?.trim() || null,
+          scope: dto.scope,
+          sortOrder: dto.sortOrder ?? 100,
+          isActive: true,
+          updatedBy: email.toLowerCase(),
+        },
+      });
+      return { data: row };
+    });
+  }
+
+  updateCompetenceGroup(
+    email: string,
+    id: number,
+    dto: UpdateCompetenceGroupDto,
+  ) {
+    return this.withUserMapped(email, async (tx) => {
+      const patch: {
+        nameSr?: string;
+        descriptionSr?: string | null;
+        scope?: string;
+        sortOrder?: number;
+        updatedBy: string;
+      } = { updatedBy: email.toLowerCase() };
+      if (dto.nameSr !== undefined) patch.nameSr = dto.nameSr.trim();
+      if (dto.descriptionSr !== undefined)
+        patch.descriptionSr = dto.descriptionSr?.trim() || null;
+      if (dto.scope !== undefined) patch.scope = dto.scope;
+      if (dto.sortOrder !== undefined) patch.sortOrder = dto.sortOrder;
+      const res = await tx.competenceGroup.updateMany({
+        where: { id },
+        data: patch,
+      });
+      if (res.count === 0)
+        throw new NotFoundException(`Grupa kompetencija ${id} ne postoji.`);
+      const row = await tx.competenceGroup.findUnique({ where: { id } });
+      return { data: row };
+    });
+  }
+
+  /** Brisanje grupe (FK ka kompetencijama/pitanjima može blokirati → 23503 propagira se). */
+  deleteCompetenceGroup(email: string, id: number) {
+    return this.withUserMapped(email, async (tx) => {
+      const res = await tx.competenceGroup.deleteMany({ where: { id } });
+      if (res.count === 0)
+        throw new NotFoundException(`Grupa kompetencija ${id} ne postoji.`);
+      return { data: { id, deleted: true } };
+    });
+  }
+
+  // ---------- Kompetencije (+ nivoi upsert/delete) ----------
+
+  /**
+   * Kreiraj kompetenciju + opciono nivoe (paritet 1.0 _editCompetenceForm create granа).
+   * Nivoi: prazan descriptor se preskače pri insertu; ispunjen → upsert on_conflict.
+   */
+  createCompetence(email: string, dto: CreateCompetenceDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const row = await tx.competence.create({
+        data: {
+          groupId: dto.groupId,
+          code: genCode("cmp", dto.nameSr),
+          nameSr: dto.nameSr.trim(),
+          sortOrder: dto.sortOrder ?? 100,
+          isActive: true,
+          updatedBy: email.toLowerCase(),
+        },
+      });
+      if (dto.levels?.length) await this.upsertLevels(tx, row.id, dto.levels);
+      const levels = await tx.competenceLevel.findMany({
+        where: { competenceId: row.id },
+        orderBy: [{ level: "asc" }],
+      });
+      return { data: { ...row, levels } };
+    });
+  }
+
+  /**
+   * Izmena kompetencije (naziv/redosled/grupa) + nivoi upsert (prazan descriptor = DELETE nivoa —
+   * paritet 1.0). 0 redova (nema reda) → 404.
+   */
+  updateCompetence(email: string, id: number, dto: UpdateCompetenceDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const patch: {
+        groupId?: number;
+        nameSr?: string;
+        sortOrder?: number;
+        updatedBy: string;
+      } = { updatedBy: email.toLowerCase() };
+      if (dto.groupId !== undefined) patch.groupId = dto.groupId;
+      if (dto.nameSr !== undefined) patch.nameSr = dto.nameSr.trim();
+      if (dto.sortOrder !== undefined) patch.sortOrder = dto.sortOrder;
+      const res = await tx.competence.updateMany({ where: { id }, data: patch });
+      if (res.count === 0)
+        throw new NotFoundException(`Kompetencija ${id} ne postoji.`);
+      if (dto.levels !== undefined) await this.upsertLevels(tx, id, dto.levels);
+      const row = await tx.competence.findUnique({ where: { id } });
+      const levels = await tx.competenceLevel.findMany({
+        where: { competenceId: id },
+        orderBy: [{ level: "asc" }],
+      });
+      return { data: { ...row, levels } };
+    });
+  }
+
+  /** Brisanje kompetencije — prvo nivoi (FK; eksplicitno kao 1.0), pa kompetencija. */
+  deleteCompetence(email: string, id: number) {
+    return this.withUserMapped(email, async (tx) => {
+      await tx.competenceLevel.deleteMany({ where: { competenceId: id } });
+      const res = await tx.competence.deleteMany({ where: { id } });
+      if (res.count === 0)
+        throw new NotFoundException(`Kompetencija ${id} ne postoji.`);
+      return { data: { id, deleted: true } };
+    });
+  }
+
+  /** Upsert/DELETE nivoa jedne kompetencije (prazan descriptorSr = brisanje tog nivoa). */
+  private async upsertLevels(
+    tx: Sy15Tx,
+    competenceId: number,
+    levels: Array<{ level: number; descriptorSr?: string }>,
+  ): Promise<void> {
+    for (const l of levels) {
+      const desc = (l.descriptorSr ?? "").trim();
+      if (desc) {
+        await tx.competenceLevel.upsert({
+          where: { competenceId_level: { competenceId, level: l.level } },
+          create: { competenceId, level: l.level, descriptorSr: desc },
+          update: { descriptorSr: desc },
+        });
+      } else {
+        await tx.competenceLevel.deleteMany({
+          where: { competenceId, level: l.level },
+        });
+      }
+    }
+  }
+
+  // ---------- Pitanja (group_id NULL = opšte) ----------
+
+  createCompetenceQuestion(email: string, dto: CreateCompetenceQuestionDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const row = await tx.competenceQuestion.create({
+        data: {
+          groupId: dto.groupId ?? null,
+          code: genCode("q", dto.textSr),
+          textSr: dto.textSr.trim(),
+          sortOrder: dto.sortOrder ?? 100,
+          isActive: true,
+        },
+      });
+      return { data: row };
+    });
+  }
+
+  updateCompetenceQuestion(
+    email: string,
+    id: number,
+    dto: UpdateCompetenceQuestionDto,
+  ) {
+    return this.withUserMapped(email, async (tx) => {
+      const patch: {
+        groupId?: number | null;
+        textSr?: string;
+        sortOrder?: number;
+      } = {};
+      if (dto.groupId !== undefined) patch.groupId = dto.groupId ?? null;
+      if (dto.textSr !== undefined) patch.textSr = dto.textSr.trim();
+      if (dto.sortOrder !== undefined) patch.sortOrder = dto.sortOrder;
+      const res = await tx.competenceQuestion.updateMany({
+        where: { id },
+        data: patch,
+      });
+      if (res.count === 0)
+        throw new NotFoundException(`Pitanje ${id} ne postoji.`);
+      const row = await tx.competenceQuestion.findUnique({ where: { id } });
+      return { data: row };
+    });
+  }
+
+  deleteCompetenceQuestion(email: string, id: number) {
+    return this.withUserMapped(email, async (tx) => {
+      const res = await tx.competenceQuestion.deleteMany({ where: { id } });
+      if (res.count === 0)
+        throw new NotFoundException(`Pitanje ${id} ne postoji.`);
+      return { data: { id, deleted: true } };
+    });
+  }
+
   // ---------- interno ----------
 
   private async withUserMapped<T>(
@@ -575,9 +1015,35 @@ export class PodesavanjaService {
     if (code === "P0001" || code === "P0002" || code === "23514")
       throw new UnprocessableEntityException(message);
     if (code === "23505") throw new ConflictException(message);
+    // FK RESTRICT (brisanje odeljenja/grupe sa decom) → 409, ne 500 (paritet 1.0 soft-fail).
+    if (code === "23503")
+      throw new ConflictException(
+        "Ne može se obrisati — postoje vezani zapisi (prvo ukloni decu).",
+      );
     if (code === "P2025") throw new ForbiddenException(message);
     throw e;
   }
+}
+
+/**
+ * Stabilan-ish `code` iz naziva (ASCII slug + vremenski sufiks) — paritet 1.0 _genCode.
+ * Baza ima UNIQUE na `code` (groups/competences/questions); sufiks smanjuje koliziju.
+ */
+function genCode(prefix: string, name: string): string {
+  const slug =
+    String(name || "")
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "")
+      .replace(/[čć]/g, "c")
+      .replace(/š/g, "s")
+      .replace(/ž/g, "z")
+      .replace(/đ/g, "dj")
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 24) || "item";
+  const suffix = Date.now().toString(36).slice(-4);
+  return `${prefix}_${slug}_${suffix}`;
 }
 
 /** Progress → clamp 0..100 (paritet 1.0 saveExpectation; undefined → 0). */

@@ -5,6 +5,7 @@ import {
   Get,
   HttpCode,
   Param,
+  ParseIntPipe,
   ParseUUIDPipe,
   Patch,
   Post,
@@ -45,6 +46,24 @@ import {
   SetPrioritetIdsDto,
   SetPrioritetMaxDto,
 } from "./dto/podesavanja-predmet.dto";
+import {
+  BulkJobPositionProfileDto,
+  CreateDepartmentDto,
+  CreateJobPositionDto,
+  CreateSubDepartmentDto,
+  UpdateDepartmentDto,
+  UpdateJobPositionDto,
+  UpdateJobPositionProfileDto,
+  UpdateSubDepartmentDto,
+} from "./dto/podesavanja-org-crud.dto";
+import {
+  CreateCompetenceDto,
+  CreateCompetenceGroupDto,
+  CreateCompetenceQuestionDto,
+  UpdateCompetenceDto,
+  UpdateCompetenceGroupDto,
+  UpdateCompetenceQuestionDto,
+} from "./dto/podesavanja-competence.dto";
 
 interface AuthedRequest {
   user: { userId: number; email: string; role: string };
@@ -138,6 +157,16 @@ export class PodesavanjaController {
     return this.users.softDelete(req.user.email, id, dto);
   }
 
+  // ----- P13 (#44): override migracija — bulk backfill sy15 user_roles → 2.0 (admin) -----
+  // Idempotentno (ponovljivo). Guard = settings.users (klasni baseline). Literal path — bez
+  // kolizije sa users/:id. Vraća {processed, overridesUpserted, scopesUpdated, skippedNoUser}.
+
+  @Post("migrations/overrides-backfill")
+  @HttpCode(200)
+  overridesBackfill(@Req() req: AuthedRequest) {
+    return this.users.backfillOverrides(req.user.email);
+  }
+
   @Get("roles/catalog")
   rolesCatalog() {
     return this.settings.rolesCatalog();
@@ -181,6 +210,107 @@ export class PodesavanjaController {
     return this.settings.holidays(req.user.email);
   }
 
+  // ----- P8: Organizacija CRUD (struktura = settings.users; opisi = settings.org_profile) -----
+  // Struktura ID-jevi su INTEGER (ParseIntPipe). Route ordering: literali (`bulk-profile`) pre
+  // `:id`; `:id/profile` je zaseban sufiks. RLS je autoritativan (admin za strukturu; org_profile
+  // za opise) — guard je gruba kapija.
+
+  @Post("org/departments")
+  createDepartment(
+    @Req() req: AuthedRequest,
+    @Body() dto: CreateDepartmentDto,
+  ) {
+    return this.settings.createDepartment(req.user.email, dto);
+  }
+
+  @Patch("org/departments/:id")
+  updateDepartment(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: UpdateDepartmentDto,
+  ) {
+    return this.settings.updateDepartment(req.user.email, id, dto);
+  }
+
+  @Delete("org/departments/:id")
+  deleteDepartment(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseIntPipe) id: number,
+  ) {
+    return this.settings.deleteDepartment(req.user.email, id);
+  }
+
+  @Post("org/sub-departments")
+  createSubDepartment(
+    @Req() req: AuthedRequest,
+    @Body() dto: CreateSubDepartmentDto,
+  ) {
+    return this.settings.createSubDepartment(req.user.email, dto);
+  }
+
+  @Patch("org/sub-departments/:id")
+  updateSubDepartment(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: UpdateSubDepartmentDto,
+  ) {
+    return this.settings.updateSubDepartment(req.user.email, id, dto);
+  }
+
+  @Delete("org/sub-departments/:id")
+  deleteSubDepartment(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseIntPipe) id: number,
+  ) {
+    return this.settings.deleteSubDepartment(req.user.email, id);
+  }
+
+  @Post("org/job-positions")
+  createJobPosition(
+    @Req() req: AuthedRequest,
+    @Body() dto: CreateJobPositionDto,
+  ) {
+    return this.settings.createJobPosition(req.user.email, dto);
+  }
+
+  /** Bulk import opisa pozicija (org_profile). Literal `bulk-profile` MORA pre `:id` param-ruta. */
+  @Post("org/job-positions/bulk-profile")
+  @RequirePermission(PERMISSIONS.SETTINGS_ORG_PROFILE)
+  bulkJobPositionProfiles(
+    @Req() req: AuthedRequest,
+    @Body() dto: BulkJobPositionProfileDto,
+  ) {
+    return this.settings.bulkJobPositionProfiles(req.user.email, dto);
+  }
+
+  /** Opis pozicije (4 md sekcije; org_profile). `:id/profile` sufiks — ne koliduje sa `:id`. */
+  @Patch("org/job-positions/:id/profile")
+  @RequirePermission(PERMISSIONS.SETTINGS_ORG_PROFILE)
+  updateJobPositionProfile(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: UpdateJobPositionProfileDto,
+  ) {
+    return this.settings.updateJobPositionProfile(req.user.email, id, dto);
+  }
+
+  @Patch("org/job-positions/:id")
+  updateJobPosition(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: UpdateJobPositionDto,
+  ) {
+    return this.settings.updateJobPosition(req.user.email, id, dto);
+  }
+
+  @Delete("org/job-positions/:id")
+  deleteJobPosition(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseIntPipe) id: number,
+  ) {
+    return this.settings.deleteJobPosition(req.user.email, id);
+  }
+
   // ----- Organizacija: org_profile domen (settings.org_profile) -----
 
   @Get("company-profile")
@@ -199,6 +329,86 @@ export class PodesavanjaController {
   @RequirePermission(PERMISSIONS.SETTINGS_ORG_PROFILE)
   competenceFramework(@Req() req: AuthedRequest) {
     return this.settings.competenceFramework(req.user.email);
+  }
+
+  // ----- P10: Kompetencije editor CRUD (admin = settings.users, klasni baseline) -----
+  // GET framework je iznad (org_profile — čitanje). WRITE je admin-only (DB RLS
+  // ALL=current_user_is_admin, autoritativan). ID-jevi INTEGER. Route ordering: `groups`/
+  // `competences`/`questions` (literali) pre `:id`. `code` auto-generisan; nivoi upsert/delete.
+
+  @Post("competence/groups")
+  createCompetenceGroup(
+    @Req() req: AuthedRequest,
+    @Body() dto: CreateCompetenceGroupDto,
+  ) {
+    return this.settings.createCompetenceGroup(req.user.email, dto);
+  }
+
+  @Patch("competence/groups/:id")
+  updateCompetenceGroup(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: UpdateCompetenceGroupDto,
+  ) {
+    return this.settings.updateCompetenceGroup(req.user.email, id, dto);
+  }
+
+  @Delete("competence/groups/:id")
+  deleteCompetenceGroup(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseIntPipe) id: number,
+  ) {
+    return this.settings.deleteCompetenceGroup(req.user.email, id);
+  }
+
+  @Post("competence/competences")
+  createCompetence(
+    @Req() req: AuthedRequest,
+    @Body() dto: CreateCompetenceDto,
+  ) {
+    return this.settings.createCompetence(req.user.email, dto);
+  }
+
+  @Patch("competence/competences/:id")
+  updateCompetence(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: UpdateCompetenceDto,
+  ) {
+    return this.settings.updateCompetence(req.user.email, id, dto);
+  }
+
+  @Delete("competence/competences/:id")
+  deleteCompetence(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseIntPipe) id: number,
+  ) {
+    return this.settings.deleteCompetence(req.user.email, id);
+  }
+
+  @Post("competence/questions")
+  createCompetenceQuestion(
+    @Req() req: AuthedRequest,
+    @Body() dto: CreateCompetenceQuestionDto,
+  ) {
+    return this.settings.createCompetenceQuestion(req.user.email, dto);
+  }
+
+  @Patch("competence/questions/:id")
+  updateCompetenceQuestion(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: UpdateCompetenceQuestionDto,
+  ) {
+    return this.settings.updateCompetenceQuestion(req.user.email, id, dto);
+  }
+
+  @Delete("competence/questions/:id")
+  deleteCompetenceQuestion(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseIntPipe) id: number,
+  ) {
+    return this.settings.deleteCompetenceQuestion(req.user.email, id);
   }
 
   // ----- P9: org_profile WRITE (vrednosti firme + očekivanja admin) -----

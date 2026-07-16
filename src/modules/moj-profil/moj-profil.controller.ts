@@ -42,6 +42,10 @@ import {
   SelfAssessmentReadQueryDto,
   UpdateMyExpectationDto,
 } from "./dto/moj-profil-profile.dto";
+import {
+  TeamAttendanceCorrectionDto,
+  TeamMonthQueryDto,
+} from "./dto/moj-profil-team.dto";
 
 interface AuthedRequest {
   user: { userId: number; email: string; role: string };
@@ -356,5 +360,55 @@ export class MojProfilController {
     @Body() dto: UpdateMyExpectationDto,
   ) {
     return this.profil.updateMyExpectation(req.user.email, id, dto);
+  }
+
+  // ==========================================================================
+  // P5 — MOJ TIM (guard profile.team; row-scope = sy15 RLS/DEFINER kroz GUC).
+  // Literal `team` prefiks; `team/:employeeId/*` su param-rute (uuid = employees.id).
+  // Guard PROFILE_TEAM override-uje klasni PROFILE_SELF. Row-odluku (koga upravljam,
+  // smem li korekciju za člana) presuđuje DB fn — guard je gruba kapija.
+  // ==========================================================================
+
+  /** Roster mog tima + presek po članu (GO saldo, trenutno/nadolazeće odsustvo, broj zaduženja). */
+  @Get("team")
+  @RequirePermission(PERMISSIONS.PROFILE_TEAM)
+  team(@Req() req: AuthedRequest) {
+    return this.profil.team(req.user.email);
+  }
+
+  /** Zaduženja alata člana (drill; get_team_issued_tools filtriran na člana). */
+  @Get("team/:employeeId/tools")
+  @RequirePermission(PERMISSIONS.PROFILE_TEAM)
+  teamMemberTools(
+    @Req() req: AuthedRequest,
+    @Param("employeeId", ParseUUIDPipe) employeeId: string,
+  ) {
+    return this.profil.teamMemberTools(req.user.email, employeeId);
+  }
+
+  /** Karnet člana za mesec (isti izračun kao /profile/hours, ali za člana kroz RLS). */
+  @Get("team/:employeeId/hours")
+  @RequirePermission(PERMISSIONS.PROFILE_TEAM)
+  teamMemberHours(
+    @Req() req: AuthedRequest,
+    @Param("employeeId", ParseUUIDPipe) employeeId: string,
+    @Query() query: TeamMonthQueryDto,
+  ) {
+    return this.profil.teamMemberHours(req.user.email, employeeId, query.month);
+  }
+
+  /** Šef koriguje kucanje člana (attendance_submit_correction za tog člana; RPC presuđuje pravo). */
+  @Post("team/:employeeId/attendance-correction")
+  @RequirePermission(PERMISSIONS.PROFILE_TEAM)
+  teamAttendanceCorrection(
+    @Req() req: AuthedRequest,
+    @Param("employeeId", ParseUUIDPipe) employeeId: string,
+    @Body() dto: TeamAttendanceCorrectionDto,
+  ) {
+    return this.profil.teamAttendanceCorrection(
+      req.user.email,
+      employeeId,
+      dto,
+    );
   }
 }

@@ -250,6 +250,136 @@ export class PodesavanjaUsersService {
     };
   }
 
+  // ==================== #44 — OVERRIDE BACKFILL (migracija; idempotentno) ====================
+
+  /**
+   * Bulk backfill sy15 `user_roles` override kolona → 2.0 `UserPermissionOverride` + scope
+   * (`UserRole.managedSubDepartmentIds`). IZVOR ISTINE = `D2_OVERRIDE_MAP` (permissions.ts) —
+   * REUSE `overridesFromDto(…, forceAll=true)` (isti mehanizam kao D1 invite/edit): bool true →
+   * (key, allow) grant/deny; bool false/izostavljen → override red se BRIŠE (pada na rolu). Time je
+   * IDEMPOTENTNO (ponovljivo bez duplikata — upsert po (userId,key), delete kad flag nije setovan).
+   *
+   * Agregacija po email-u (korisnik može imati više sy15 redova): bool = OR preko AKTIVNIH redova
+   * (bilo koji red sa flag=true → true); scope = prvi ne-NULL `managed_sub_department_ids` preko
+   * aktivnih redova (NULL = legacy pun obim za menadzment — ostaje prazan niz u 2.0). Match je
+   * email→`users.id`; bez 2.0 naloga → preskoči (skippedNoUser). Scope se piše na global UserRole
+   * (scopeType='global'); ako global red ne postoji → ne broji se u scopesUpdated (bez kreiranja
+   * — invite/edit su vlasnici kreiranja reda).
+   *
+   * Vraća {processed, overridesUpserted, scopesUpdated, skippedNoUser}.
+   */
+  async backfillOverrides(adminEmail: string) {
+    // (1) Pročitaj SVE sy15 user_roles (scalar-only da izbegne null-array deserijalizaciju kroz
+    //     Prisma model). Kroz withUserRls: RLS SELECT na user_roles = admin (autoritativan).
+    const rows = await this.mapSy15Errors(async () =>
+      this.sy15.withUserRls(adminEmail, (tx) =>
+        tx.$queryRaw<
+          {
+            email: string;
+            is_active: boolean | null;
+            plan_montaze_readonly: boolean | null;
+            kadrovska_access: boolean | null;
+            kadrovska_hide_contracts: boolean | null;
+            managed_sub_department_ids: number[] | null;
+          }[]
+        >(
+          Prisma.sql`SELECT email, is_active, plan_montaze_readonly, kadrovska_access,
+               kadrovska_hide_contracts, managed_sub_department_ids
+             FROM user_roles`,
+        ),
+      ),
+    );
+
+    // (2) Agregacija po email-u (OR bool preko aktivnih; prvi ne-NULL scope).
+    interface Agg {
+      planMontazeReadonly: boolean;
+      kadrovskaAccess: boolean;
+      kadrovskaHideContracts: boolean;
+      managedSubDepartmentIds: number[] | null;
+    }
+    const byEmail = new Map<string, Agg>();
+    for (const r of rows) {
+      const active = r.is_active !== false;
+      if (!active) continue; // paritet 1.0: flag/scope važe iz aktivne sesije
+      const email = this.normEmail(r.email);
+      if (!email) continue;
+      const cur =
+        byEmail.get(email) ??
+        ({
+          planMontazeReadonly: false,
+          kadrovskaAccess: false,
+          kadrovskaHideContracts: false,
+          managedSubDepartmentIds: null,
+        } as Agg);
+      cur.planMontazeReadonly ||= r.plan_montaze_readonly === true;
+      cur.kadrovskaAccess ||= r.kadrovska_access === true;
+      cur.kadrovskaHideContracts ||= r.kadrovska_hide_contracts === true;
+      if (
+        cur.managedSubDepartmentIds == null &&
+        Array.isArray(r.managed_sub_department_ids)
+      ) {
+        cur.managedSubDepartmentIds = r.managed_sub_department_ids
+          .map(Number)
+          .filter((n) => Number.isFinite(n));
+      }
+      byEmail.set(email, cur);
+    }
+
+    // (3) Za svaki email: match 2.0 users.id → upsert override-i (D2_OVERRIDE_MAP, forceAll) +
+    //     scope na global UserRole. Sve u JEDNOJ 2.0 tx po korisniku (atomarno; idempotentno).
+    let processed = 0;
+    let overridesUpserted = 0;
+    let scopesUpdated = 0;
+    let skippedNoUser = 0;
+    for (const [email, agg] of byEmail) {
+      processed++;
+      const overrides = this.overridesFromDto(agg, true); // forceAll → false=null=delete
+      const res = await this.prisma.$transaction(async (tx) => {
+        const user = await tx.user.findUnique({
+          where: { email },
+          select: { id: true },
+        });
+        if (!user) return { noUser: true, upserts: 0, scope: false };
+        let upserts = 0;
+        for (const o of overrides) {
+          if (o.allow === null) {
+            await tx.userPermissionOverride.deleteMany({
+              where: { userId: user.id, key: o.key },
+            });
+          } else {
+            await tx.userPermissionOverride.upsert({
+              where: { userId_key: { userId: user.id, key: o.key } },
+              create: { userId: user.id, key: o.key, allow: o.allow },
+              update: { allow: o.allow },
+            });
+            upserts++;
+          }
+        }
+        // Scope → global UserRole (ne kreira red; menja postojeći). NULL = ostaje prazno (1.0
+        // legacy pun obim za menadzment — 2.0 app_manages_sub_department presuđuje).
+        let scope = false;
+        if (agg.managedSubDepartmentIds != null) {
+          const upd = await tx.userRole.updateMany({
+            where: { userId: user.id, scopeType: "global" },
+            data: { managedSubDepartmentIds: agg.managedSubDepartmentIds },
+          });
+          scope = upd.count > 0;
+        }
+        return { noUser: false, upserts, scope };
+      });
+      if (res.noUser) {
+        skippedNoUser++;
+        continue;
+      }
+      overridesUpserted += res.upserts;
+      if (res.scope) scopesUpdated++;
+    }
+
+    return {
+      data: { processed, overridesUpserted, scopesUpdated, skippedNoUser },
+    };
+  }
+
   // ==================== interno ====================
 
   /** deactivate/activate zajedničko telo: 2.0 master (upsert active) pa sy15 is_active. */
