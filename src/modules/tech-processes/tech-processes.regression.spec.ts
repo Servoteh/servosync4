@@ -148,26 +148,32 @@ describe("REGRESSION — storno() (BUG-P2-09: guard poredi samo izvorni red)", (
     ).rejects.toBeInstanceOf(UnprocessableEntityException);
   });
 
-  it("BASELINE BUG: DVOSTRUKI storno od 10 na redu od 10 — OBA prolaze (nema neto-guarda)", async () => {
-    // Izvorni red se NE menja pri stornu (kontra-red je nov red), pa svaki poziv
-    // vidi pieceCount=10 i prolazi. Danas → neto -10. Kad se doda neto-guard u
-    // Fazi 1, DRUGI poziv mora da baci 422 i ovaj test se OBRNE (očekivan throw).
+  it("FAZA P2 (BUG-P2-09 popravljeno): DVOSTRUKI storno — prvi prolazi, drugi 422 (neto-guard)", async () => {
+    // Izvorni red se NE menja pri stornu (kontra-red je nov red), ali neto-guard
+    // sada gleda ZBIR svih redova operacije (aggregate). Prvi storno: neto=10 ≥ 10 →
+    // prolazi. Posle njega neto=0, pa drugi storno od 10 baca 422 („već storniran").
     const prisma = prismaMock();
     (prisma.techProcess.findUnique as jest.Mock).mockResolvedValue(
       tpRow({ id: 500, pieceCount: 10 }),
     );
+    // 1. poziv: neto 10; 2. poziv: neto 0 (prvi kontra-red -10 već upisan).
+    (prisma.techProcess.aggregate as jest.Mock)
+      .mockResolvedValueOnce({ _sum: { pieceCount: 10 } })
+      .mockResolvedValueOnce({ _sum: { pieceCount: 0 } });
     const svc = await buildService(prisma);
 
     const r1 = await svc.storno(500, { pieceCount: 10 } as never);
-    const r2 = await svc.storno(500, { pieceCount: 10 } as never);
-
     expect(r1.data.storniranoKomada).toBe(10);
-    expect(r2.data.storniranoKomada).toBe(10);
-    // Dva kontra-reda kreirana (svaki -10) → neto -10 na kartici operacije.
-    const created = (prisma.techProcess.create as jest.Mock).mock.calls;
-    expect(created).toHaveLength(2);
-    expect(created[0][0].data.pieceCount).toBe(-10);
-    expect(created[1][0].data.pieceCount).toBe(-10);
+    expect(
+      (prisma.techProcess.create as jest.Mock).mock.calls[0][0].data.pieceCount,
+    ).toBe(-10);
+
+    // Drugi storno mora da padne — neto stanje operacije je već 0.
+    await expect(
+      svc.storno(500, { pieceCount: 10 } as never),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    // Nijedan drugi kontra-red nije kreiran (samo onaj iz prvog storna).
+    expect((prisma.techProcess.create as jest.Mock).mock.calls).toHaveLength(1);
   });
 
   it("storno upisuje audit_log beforeData snapshot (kontra-red, ne briše izvorni)", async () => {
@@ -175,6 +181,10 @@ describe("REGRESSION — storno() (BUG-P2-09: guard poredi samo izvorni red)", (
     (prisma.techProcess.findUnique as jest.Mock).mockResolvedValue(
       tpRow({ id: 501, pieceCount: 7 }),
     );
+    // Neto stanje operacije = 7 (BUG-P2-09 guard) — storno od 3 prolazi.
+    (prisma.techProcess.aggregate as jest.Mock).mockResolvedValue({
+      _sum: { pieceCount: 7 },
+    });
     const svc = await buildService(prisma);
     await svc.storno(501, { pieceCount: 3 } as never);
 

@@ -21,8 +21,6 @@ import { BadRequestException } from "@nestjs/common";
  * `identMark`). Marker: TAČAN prvi segment (`RNZ` nalog / `S` operacija).
  */
 
-export type BarcodeType = "nalog" | "operacija";
-
 /** Polja iz nalog-barkoda (`RNZ:projectId:identNumber:variant:revision`). */
 export interface OrderBarcodeFields {
   /** IDPredmet → `work_orders.projectId` / `tech_processes.projectId`. */

@@ -36,14 +36,6 @@ export interface PdmImportStats {
   errors: string[];
 }
 
-export interface PdmImportResult {
-  importId: number;
-  fileName: string;
-  success: boolean;
-  statusMessage: string;
-  stats: PdmImportStats;
-}
-
 /**
  * Ime PDF fajla nosi (broj, reviziju): `{BrojCrteza}_{Revizija}.pdf` ili
  * `{BrojCrteza}.pdf` — legacy potvrda: PDM_PDFCommon.bas gradi temp

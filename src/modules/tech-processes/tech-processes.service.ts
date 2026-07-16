@@ -3094,6 +3094,25 @@ export class TechProcessesService {
         throw new UnprocessableEntityException(
           `Storno (${dto.pieceCount}) je veći od evidentiranog broja komada (${tp.pieceCount}).`,
         );
+      // BUG-P2-09: guard iznad poredi SAMO izvorni red, ali kontra-redovi su NOVI
+      // redovi (izvorni ostaje netaknut) — pa dva uzastopna storna od 10 na redu od
+      // 10 oba prolaze i daju NETO -10. Zato dodatni NETO guard: zbir svih redova te
+      // operacije (kucanja − dosadašnji storno kontra-redovi) ne sme pasti ispod 0.
+      const netAgg = await tx.techProcess.aggregate({
+        _sum: { pieceCount: true },
+        where: {
+          projectId: tp.projectId,
+          identNumber: tp.identNumber,
+          variant: tp.variant,
+          operationNumber: tp.operationNumber,
+          workCenterCode: tp.workCenterCode,
+        },
+      });
+      const netAvailable = netAgg._sum.pieceCount ?? 0;
+      if (dto.pieceCount > netAvailable)
+        throw new UnprocessableEntityException(
+          `Storno (${dto.pieceCount}) je veći od preostalog neto stanja operacije (${netAvailable}) — verovatno je već storniran.`,
+        );
 
       await this.alignTechProcessSequence(tx);
       const counter = await tx.techProcess.create({
