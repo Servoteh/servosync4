@@ -393,7 +393,7 @@ export function ZaposleniTab() {
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        <SearchBox value={q} onChange={setQ} placeholder="Pretraga po imenu i prezimenu…" />
+        <SearchBox value={q} onChange={setQ} placeholder="Pretraga po imenu, poziciji, email-u…" />
         <select className={SELECT_CLS} value={dept} onChange={(e) => setDept(e.target.value)} aria-label="Filter po odeljenju">
           <option value="">Sva odeljenja</option>
           {departments.map((d) => (

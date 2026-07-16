@@ -78,6 +78,72 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* ── Kadrovska — mesečni grid (vizuelni paritet 1.0) ─────────────────────────
+ * Gusta Excel-tabela: ćelija = uokvirena kutija, vikend/praznik = šrafura preko
+ * cele kolone, danas = akcentni okvir. Slojeviti repeating-linear-gradient +
+ * color-mix se ne mogu izraziti Tailwind utilitijima — zato ovde, samo tokeni.
+ */
+.kg-cell {
+  width: 100%;
+  height: 22px;
+  padding: 0 2px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--ink);
+  font-size: var(--text-xs);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  outline: none;
+  box-sizing: border-box;
+}
+.kg-cell:hover:not(:disabled) { background: var(--accent-subtle); }
+.kg-cell:focus { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); background: var(--surface); }
+.kg-cell:disabled { color: var(--ink-secondary); cursor: default; }
+
+/* Šrafure kolona — subota (siva), nedelja (crvenkasta), praznik (akcentna). */
+.kg-sat {
+  background:
+    repeating-linear-gradient(135deg, transparent 0 7px, color-mix(in srgb, var(--ink-disabled) 26%, transparent) 7px 9px),
+    var(--surface-2);
+}
+.kg-sun {
+  background:
+    repeating-linear-gradient(135deg, transparent 0 6px, color-mix(in srgb, var(--status-danger) 14%, transparent) 6px 9px),
+    color-mix(in srgb, var(--status-danger) 7%, var(--surface-2));
+}
+.kg-hol {
+  background:
+    repeating-linear-gradient(45deg, transparent 0 5px, color-mix(in srgb, var(--accent) 18%, transparent) 5px 8px),
+    color-mix(in srgb, var(--accent) 9%, var(--surface-2));
+}
+/* Unutar šrafirane kolone kutija je providna da se šara vidi — sem obojenih stanja. */
+td.kg-sat .kg-cell:not(.kg-abs):not(.kg-fd):not(.kg-ff):not(.kg-tm):not(.kg-dirty):not(.kg-err),
+td.kg-sun .kg-cell:not(.kg-abs):not(.kg-fd):not(.kg-ff):not(.kg-tm):not(.kg-dirty):not(.kg-err),
+td.kg-hol .kg-cell:not(.kg-abs):not(.kg-fd):not(.kg-ff):not(.kg-tm):not(.kg-dirty):not(.kg-err) {
+  background: transparent;
+}
+.kg-today { box-shadow: inset 0 0 0 1px var(--accent); }
+
+/* Stanja ćelije. */
+.kg-cell.kg-dirty { background: color-mix(in srgb, var(--status-warn) 18%, var(--surface)); color: var(--status-warn); border-color: var(--status-warn); font-weight: 600; }
+.kg-cell.kg-err { background: var(--status-danger-bg); color: var(--status-danger); border-color: var(--status-danger); font-weight: 600; }
+
+/* Šifre odsustva — paleta 1.0 grida preslikana na 2.0 statusne tokene. */
+.kg-abs { font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; font-size: 10px; }
+.kg-abs-go { background: color-mix(in srgb, var(--status-success) 18%, transparent); color: var(--status-success); }
+.kg-abs-bo { background: color-mix(in srgb, var(--status-danger) 16%, transparent); color: var(--status-danger); }
+.kg-abs-sp { background: color-mix(in srgb, var(--status-info) 18%, transparent); color: var(--status-info); }
+.kg-abs-sl { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+.kg-abs-np { background: color-mix(in srgb, var(--status-neutral) 28%, transparent); color: var(--status-neutral); }
+.kg-abs-pr { background: color-mix(in srgb, #9b51e0 18%, transparent); color: #9b51e0; } /* 1.0 ljubičasta — nema statusnog tokena */
+.kg-abs-nop { background: color-mix(in srgb, var(--status-neutral) 20%, transparent); color: var(--ink-secondary); }
+
+/* Teren (domaći/inostrani) i rad na 2 mašine. */
+.kg-fd { background: color-mix(in srgb, var(--status-warn) 20%, transparent); color: var(--status-warn); font-weight: 600; }
+.kg-ff { background: color-mix(in srgb, var(--status-info) 20%, transparent); color: var(--status-info); font-weight: 600; }
+.kg-tm { background: color-mix(in srgb, var(--status-warn) 22%, transparent); color: var(--status-warn); font-weight: 700; }
+
 @media (prefers-reduced-motion: reduce) {
   * {
     animation-duration: 0.01ms !important;

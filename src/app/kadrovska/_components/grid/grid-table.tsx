@@ -43,63 +43,69 @@ interface GridTableProps {
   onRowAction: (empId: string, action: string) => void;
 }
 
-/** Boje šifri odsustva (tokeni). */
+/** Boje šifri odsustva (paritet 1.0 — kg-abs-* u globals.css). */
 function absTone(code: string | null, subtype: string | null): string {
   switch (code) {
     case 'go':
-      return 'bg-status-info-bg text-status-info';
+      return 'kg-abs kg-abs-go';
     case 'bo':
-      return subtype === 'povreda_na_radu' || subtype === 'odrzavanje_trudnoce'
-        ? 'bg-status-warn-bg text-status-warn font-semibold'
-        : 'bg-status-warn-bg text-status-warn';
+      return subtype === 'povreda_na_radu' || subtype === 'odrzavanje_trudnoce' ? 'kg-abs kg-abs-bo font-semibold' : 'kg-abs kg-abs-bo';
     case 'sp':
-      return 'bg-surface-2 text-ink-secondary';
+      return 'kg-abs kg-abs-sp';
     case 'sl':
     case 'sv':
     case 'pl':
-      return 'bg-status-success-bg text-status-success';
+      return 'kg-abs kg-abs-sl';
     case 'np':
+      return 'kg-abs kg-abs-np';
     case 'pr':
-      return 'bg-status-neutral-bg text-ink-secondary';
+      return 'kg-abs kg-abs-pr';
     case 'nop':
-      return 'bg-status-danger-bg text-status-danger';
+      return 'kg-abs kg-abs-nop';
     default:
       return '';
   }
 }
 
-const cellBase =
-  'h-7 w-11 shrink-0 border-r border-line-soft bg-transparent px-1 text-center text-xs tabular-nums text-ink outline-none focus:bg-accent-subtle disabled:cursor-default disabled:text-ink-secondary';
+/** Šrafura kolone (praznik > vikend) + akcentni okvir za danas — na th i td. */
+function dayCls(d: GridDay, hol: Set<string>, today: string): string {
+  return cn(
+    hol.has(d.ymd) ? 'kg-hol' : d.dow === 6 ? 'kg-sat' : d.dow === 0 ? 'kg-sun' : '',
+    d.ymd === today && 'kg-today',
+  );
+}
+
+const DAY_W = 'w-[36px] min-w-[36px] max-w-[36px]';
 
 export const GridTable = memo(function GridTable(props: GridTableProps) {
   const { days, pageEmployees, dayTotals, grandTotals } = props;
 
   return (
-    <div className="overflow-x-auto rounded-panel border border-line bg-surface">
-      <table className="border-collapse text-xs" style={{ minWidth: 'max-content' }}>
+    <div className="max-h-[calc(100vh-320px)] overflow-auto rounded-panel border border-line bg-surface">
+      <table className="border-separate border-spacing-0 text-xs" style={{ minWidth: 'max-content' }}>
         <thead className="sticky top-0 z-10">
           <tr className="bg-surface-2">
-            <th className="sticky left-0 z-20 h-8 w-8 border-b border-r border-line bg-surface-2 text-2xs text-ink-secondary">#</th>
-            <th className="sticky left-8 z-20 h-8 w-52 border-b border-r border-line bg-surface-2 px-2 text-left text-2xs text-ink-secondary">
+            <th className="sticky left-0 z-20 h-10 w-8 border-b border-r border-line bg-surface-2 text-2xs text-ink-secondary">#</th>
+            <th className="sticky left-8 z-20 h-10 w-[200px] min-w-[200px] border-b border-r border-line bg-surface-2 px-2 text-left text-2xs text-ink-secondary">
               Ime i prezime
             </th>
-            <th className="h-8 w-16 border-b border-r border-line bg-surface-2 px-1 text-left text-2xs text-ink-secondary">Vrsta</th>
+            <th className="h-10 w-16 border-b border-r-2 border-line bg-surface-2 px-1 text-left text-2xs text-ink-secondary">Vrsta</th>
             {days.map((d) => (
               <th
                 key={d.ymd}
                 className={cn(
-                  'h-8 w-11 border-b border-r border-line-soft text-2xs font-semibold text-ink-secondary',
-                  d.isWeekend && 'bg-surface-2',
-                  props.holidaySet.has(d.ymd) && 'bg-status-danger-bg text-status-danger',
-                  d.ymd === props.todayYmd && 'ring-1 ring-inset ring-accent',
+                  'h-10 border-b border-r border-line-soft bg-surface-2 text-2xs font-semibold text-ink',
+                  DAY_W,
+                  props.holidaySet.has(d.ymd) && 'text-status-danger',
+                  dayCls(d, props.holidaySet, props.todayYmd),
                 )}
                 title={props.holidaySet.has(d.ymd) ? 'Državni praznik' : ''}
               >
                 <div>{d.day}</div>
-                <div className="font-normal opacity-70">{d.letter}</div>
+                <div className="font-normal uppercase opacity-70">{d.letter}</div>
               </th>
             ))}
-            <th className="h-8 w-14 border-b border-line bg-surface-2 px-1 text-2xs text-ink-secondary">Σ</th>
+            <th className="h-10 w-[56px] min-w-[56px] border-b border-l border-line bg-surface-2 px-1 text-2xs font-semibold text-accent">Σ</th>
           </tr>
         </thead>
         <tbody>
@@ -122,18 +128,30 @@ export const GridTable = memo(function GridTable(props: GridTableProps) {
           ))}
         </tbody>
         <tfoot className="sticky bottom-0 z-10">
-          {(['reg', 'ot', 'field', 'tm'] as const).map((kind) => (
+          {(['reg', 'ot', 'field', 'tm'] as const).map((kind, ki) => (
             <tr key={kind} className="bg-surface-2 font-semibold">
-              <td className="sticky left-0 z-20 border-t border-r border-line bg-surface-2" />
-              <td className="sticky left-8 z-20 border-t border-r border-line bg-surface-2 px-2 text-2xs uppercase text-ink-secondary" colSpan={2}>
+              <td className={cn('sticky left-0 z-20 border-r border-line bg-surface-2', ki === 0 && 'border-t-2 border-t-accent')} />
+              <td
+                className={cn('sticky left-8 z-20 border-r border-line bg-surface-2 px-2 text-2xs uppercase text-ink-secondary', ki === 0 && 'border-t-2 border-t-accent')}
+                colSpan={2}
+              >
                 {kind === 'reg' ? 'UKUPNO Redovni' : kind === 'ot' ? 'UKUPNO Prekov.' : kind === 'field' ? 'UKUPNO Teren' : 'UKUPNO 2 maš.'}
               </td>
               {days.map((d, di) => (
-                <td key={d.ymd} className={cn('border-t border-r border-line-soft text-center text-2xs tabular-nums text-ink', d.isWeekend && 'bg-surface-2')}>
+                <td
+                  key={d.ymd}
+                  className={cn(
+                    'h-6 border-r border-line-soft bg-surface-2 text-center text-2xs tabular-nums text-ink',
+                    ki === 0 && 'border-t-2 border-t-accent',
+                    dayCls(d, props.holidaySet, props.todayYmd),
+                  )}
+                >
                   {dayTotals[di] && dayTotals[di][kind] ? gridFormatSum(dayTotals[di][kind]) : ''}
                 </td>
               ))}
-              <td className="border-t border-line bg-surface-2 text-center text-2xs tabular-nums text-ink">{gridFormatSum(grandTotals[kind])}</td>
+              <td className={cn('border-l border-line bg-surface-2 text-center text-2xs font-bold tabular-nums text-accent', ki === 0 && 'border-t-2 border-t-accent')}>
+                {gridFormatSum(grandTotals[kind])}
+              </td>
             </tr>
           ))}
         </tfoot>
@@ -203,18 +221,16 @@ const EmployeeBlock = memo(
       return undefined;
     };
 
-    const stripeBg = props.serial % 2 === 0 ? 'bg-surface' : 'bg-surface-2/40';
-
     return (
       <>
         {/* Redovni */}
-        <tr className={cn('border-t border-line', stripeBg)}>
-          <td rowSpan={5} className={cn('sticky left-0 z-10 w-8 border-r border-line text-center text-2xs text-ink-secondary tabular-nums', stripeBg)}>
+        <tr>
+          <td rowSpan={5} className="sticky left-0 z-10 w-8 border-r border-t-2 border-line bg-surface-2 text-center text-2xs text-ink-secondary tabular-nums">
             {props.serial}
           </td>
-          <td rowSpan={5} className={cn('sticky left-8 z-10 w-52 border-r border-line px-2 align-top', stripeBg)}>
+          <td rowSpan={5} className="sticky left-8 z-10 w-[200px] border-r border-t-2 border-line bg-surface px-2 align-middle">
             <div className="flex items-center gap-1">
-              <span className="font-medium text-ink">{emp.name}</span>
+              <span className="font-semibold text-ink">{emp.name}</span>
               {emp.isActive === false && (
                 <span className="rounded bg-status-danger-bg px-1 text-[9px] font-semibold uppercase text-status-danger" title="Odjavljen — prikazan jer ima unos u ovom mesecu (poslednji radni mesec)">odjavljen</span>
               )}
@@ -233,7 +249,7 @@ const EmployeeBlock = memo(
               </div>
             )}
           </td>
-          <RowLabel>Redovni</RowLabel>
+          <RowLabel first>Redovni</RowLabel>
           {days.map((d) => {
             const eff = effRows.get(d.ymd)!;
             const dirty = editor.isDirty(emp.id, d.ymd);
@@ -242,16 +258,16 @@ const EmployeeBlock = memo(
             return (
               <td
                 key={d.ymd}
-                className={cn('border-r border-line-soft p-0', dayBg(d, props.holidaySet, props.todayYmd))}
+                className={cn('border-r border-t-2 border-r-line-soft border-t-line p-[1px]', DAY_W, dayCls(d, props.holidaySet, props.todayYmd))}
                 onContextMenu={(ev) => props.onCellContext(emp.id, d.ymd, 'reg', emp.name, ev)}
               >
                 <input
                   className={cn(
-                    cellBase,
+                    'kg-cell',
                     eff.absence_code && absTone(eff.absence_code, eff.absence_subtype),
                     noPay && 'italic underline decoration-dotted',
-                    dirty && 'ring-1 ring-inset ring-accent',
-                    err && 'bg-status-danger-bg text-status-danger ring-1 ring-inset ring-status-danger',
+                    dirty && 'kg-dirty',
+                    err && 'kg-err',
                   )}
                   value={editor.displayValue(emp.id, d.ymd, 'reg')}
                   disabled={!editable}
@@ -267,11 +283,11 @@ const EmployeeBlock = memo(
               </td>
             );
           })}
-          <RowSum>{gridFormatSum(sReg)}</RowSum>
+          <RowSum first>{gridFormatSum(sReg)}</RowSum>
         </tr>
 
         {/* Prekov. */}
-        <tr className={stripeBg}>
+        <tr>
           <RowLabel>Prekov.</RowLabel>
           {days.map((d) => (
             <CellInput
@@ -293,7 +309,7 @@ const EmployeeBlock = memo(
         </tr>
 
         {/* Teren */}
-        <tr className={stripeBg}>
+        <tr>
           <RowLabel>Teren</RowLabel>
           {days.map((d) => {
             const eff = effRows.get(d.ymd)!;
@@ -303,26 +319,26 @@ const EmployeeBlock = memo(
             return (
               <td
                 key={d.ymd}
-                className={cn('relative border-r border-line-soft p-0', dayBg(d, props.holidaySet, props.todayYmd))}
+                className={cn('relative border-r border-line-soft p-[1px]', DAY_W, dayCls(d, props.holidaySet, props.todayYmd))}
                 onContextMenu={(ev) => props.onCellContext(emp.id, d.ymd, 'field', emp.name, ev)}
               >
                 {fh > 0 && (
                   <span
                     className={cn(
-                      'pointer-events-none absolute left-0 top-0 h-0 w-0 border-l-[6px] border-t-[6px] border-t-transparent',
+                      'pointer-events-none absolute left-0 top-0 z-[1] h-0 w-0 border-l-[6px] border-t-[6px] border-t-transparent',
                       eff.field_predmet_broj ? 'border-l-status-success' : 'border-l-status-warn',
                     )}
                     title={eff.field_predmet_broj ? `Predmet: ${eff.field_predmet_broj} — ${eff.field_predmet_naziv || ''}` : 'Teren bez predmeta (desni klik → Veži predmet)'}
                   />
                 )}
-                <div className="flex items-center">
+                <div className="relative">
                   <input
                     className={cn(
-                      cellBase,
-                      'w-8',
-                      fh > 0 && (eff.field_subtype === 'foreign' ? 'text-status-info' : 'text-ink'),
-                      dirty && 'ring-1 ring-inset ring-accent',
-                      err && 'bg-status-danger-bg text-status-danger ring-1 ring-inset ring-status-danger',
+                      'kg-cell',
+                      fh > 0 && 'pr-[13px]',
+                      fh > 0 && (eff.field_subtype === 'foreign' ? 'kg-ff' : 'kg-fd'),
+                      dirty && 'kg-dirty',
+                      err && 'kg-err',
                     )}
                     value={editor.displayValue(emp.id, d.ymd, 'field')}
                     disabled={!editable}
@@ -341,7 +357,10 @@ const EmployeeBlock = memo(
                       tabIndex={-1}
                       disabled={!editable}
                       onClick={() => editor.toggleFieldSub(emp.id, d.ymd)}
-                      className={cn('w-3 text-[9px] font-bold', eff.field_subtype === 'foreign' ? 'text-status-info' : 'text-ink-secondary')}
+                      className={cn(
+                        'absolute right-[2px] top-1/2 w-[11px] -translate-y-1/2 text-[9px] font-bold leading-none',
+                        eff.field_subtype === 'foreign' ? 'text-status-info' : 'text-ink-secondary',
+                      )}
                       title="Domaći / Inostrani teren"
                     >
                       {eff.field_subtype === 'foreign' ? 'I' : 'D'}
@@ -355,7 +374,7 @@ const EmployeeBlock = memo(
         </tr>
 
         {/* 2 maš. */}
-        <tr className={stripeBg}>
+        <tr>
           <RowLabel>2 maš.</RowLabel>
           {days.map((d) => (
             <CellInput
@@ -377,12 +396,12 @@ const EmployeeBlock = memo(
         </tr>
 
         {/* Σ isplata */}
-        <tr className={cn('border-b border-line', stripeBg)}>
-          <td className="border-r border-line-soft bg-accent-subtle/40 px-1 text-right text-[10px] font-medium uppercase text-ink-secondary">Σ isplata</td>
+        <tr>
+          <td className="border-b border-r-2 border-b-line border-r-line px-1 text-right text-[10px] font-medium italic uppercase text-ink-secondary">Σ isplata</td>
           {days.map((d) => (
-            <td key={d.ymd} className={cn('border-r border-line-soft', dayBg(d, props.holidaySet, props.todayYmd))} />
+            <td key={d.ymd} className={cn('h-4 border-b border-r border-b-line border-r-line-soft bg-surface-2/60', DAY_W, dayCls(d, props.holidaySet, props.todayYmd))} />
           ))}
-          <td className="bg-accent-subtle text-center text-2xs font-semibold tabular-nums text-accent">{gridFormatSum(payable)}</td>
+          <td className="border-b border-l border-b-line border-l-line bg-accent-subtle text-center text-2xs font-bold tabular-nums text-accent">{gridFormatSum(payable)}</td>
         </tr>
       </>
     );
@@ -399,19 +418,19 @@ const EmployeeBlock = memo(
     a.editor.editable === b.editor.editable,
 );
 
-function dayBg(d: GridDay, hol: Set<string>, today: string): string {
-  if (hol.has(d.ymd)) return 'bg-status-danger-bg/40';
-  if (d.ymd === today) return 'bg-accent-subtle/60';
-  if (d.isWeekend) return 'bg-surface-2';
-  return '';
-}
-
-function RowLabel({ children }: { children: React.ReactNode }) {
-  return <td className="w-16 border-r border-line-soft px-1 text-[10px] font-medium uppercase text-ink-secondary">{children}</td>;
-}
-function RowSum({ children, title }: { children: React.ReactNode; title?: string }) {
+function RowLabel({ children, first }: { children: React.ReactNode; first?: boolean }) {
   return (
-    <td className="border-l border-line text-center text-2xs font-semibold tabular-nums text-ink" title={title}>
+    <td className={cn('w-16 border-r-2 border-line px-1 text-[10px] font-medium uppercase text-ink-secondary', first && 'border-t-2 border-t-line')}>
+      {children}
+    </td>
+  );
+}
+function RowSum({ children, title, first }: { children: React.ReactNode; title?: string; first?: boolean }) {
+  return (
+    <td
+      className={cn('border-l border-line bg-surface-2 text-center text-2xs font-semibold tabular-nums text-accent', first && 'border-t-2 border-t-line')}
+      title={title}
+    >
       {children}
     </td>
   );
@@ -461,14 +480,12 @@ function CellInput({ empId, ymd, kind, name, day, editor, holidaySet, todayYmd, 
   const err = editor.cellError(empId, ymd, kind);
   const val = editor.displayValue(empId, ymd, kind);
   return (
-    <td className={cn('border-r border-line-soft p-0', dayBg(day, holidaySet, todayYmd))} onContextMenu={(ev) => onCellContext(empId, ymd, kind, name, ev)}>
+    <td
+      className={cn('border-r border-line-soft p-[1px]', DAY_W, dayCls(day, holidaySet, todayYmd))}
+      onContextMenu={(ev) => onCellContext(empId, ymd, kind, name, ev)}
+    >
       <input
-        className={cn(
-          cellBase,
-          kind === 'twomach' && val && 'text-status-warn',
-          dirty && 'ring-1 ring-inset ring-accent',
-          err && 'bg-status-danger-bg text-status-danger ring-1 ring-inset ring-status-danger',
-        )}
+        className={cn('kg-cell', kind === 'twomach' && val && 'kg-tm', dirty && 'kg-dirty', err && 'kg-err')}
         value={val}
         disabled={!editable}
         maxLength={6}
