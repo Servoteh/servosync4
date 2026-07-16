@@ -75,7 +75,7 @@ export default function ProfilPage() {
         {/* Header */}
         <div className="flex flex-wrap items-center gap-3 rounded-panel border border-line bg-surface p-4">
           <div className="grid h-12 w-12 place-items-center rounded-full bg-accent-subtle text-lg font-semibold text-accent">
-            {(emp?.full_name ?? user.email)[0]?.toUpperCase()}
+            {((emp?.full_name ?? user.email) ?? '')[0]?.toUpperCase()}
           </div>
           <div className="min-w-0 flex-1">
             <div className="text-base font-semibold text-ink">{emp?.full_name ?? user.fullName ?? user.email}</div>
@@ -110,7 +110,7 @@ export default function ProfilPage() {
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <MiniStat label="Preostalo GO" value={s.vacationDaysRemaining ?? '—'} />
             <MiniStat label="Otvoreni GO zahtevi" value={s.openVacationRequests} />
-            <MiniStat label="Sati (mesec)" value={s.monthPresenceHours.toFixed(0)} />
+            <MiniStat label="Sati (mesec)" value={Number(s.monthPresenceHours ?? 0).toFixed(0)} />
             <MiniStat label="Razgovori za potvrdu" value={s.unacknowledgedTalks} tone={s.unacknowledgedTalks > 0 ? 'warn' : undefined} />
           </div>
         )}

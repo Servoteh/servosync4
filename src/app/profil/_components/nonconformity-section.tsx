@@ -37,7 +37,7 @@ function last6Months(): { key: string; label: string }[] {
 /** Zbir komada tekuće godine za dati tip (iz mesečnog agregata). */
 function yearPieces(monthly: MyNonconformityMonth[], type: number): number {
   return monthly
-    .filter((m) => m.type === type && m.month.startsWith(String(YEAR)))
+    .filter((m) => m.type === type && (m.month ?? '').startsWith(String(YEAR)))
     .reduce((sum, m) => sum + m.pieces, 0);
 }
 
