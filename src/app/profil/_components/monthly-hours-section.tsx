@@ -6,6 +6,7 @@
 // prikazni chips + moja primedba); FE renderuje i gradi karnet PDF iz gotovih totala.
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { CalendarDays, FileText, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui-kit/button';
 import { Textarea } from '@/components/ui-kit/textarea';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
@@ -126,9 +127,9 @@ export function MonthlyHoursSection({ employeeName, employeePosition }: { employ
     }
     try {
       await saveM.mutateAsync({ clientEventId: newClientEventId(), year, month, text });
-      toast('✅ Primedba sačuvana — HR će je videti.');
+      toast('Primedba sačuvana — HR će je videti.');
     } catch (e) {
-      toast(e instanceof ApiError ? `⚠ ${e.message}` : '⚠ Greška pri čuvanju primedbe.');
+      toast(e instanceof ApiError ? e.message : 'Greška pri čuvanju primedbe.');
     }
   }
 
@@ -136,15 +137,15 @@ export function MonthlyHoursSection({ employeeName, employeePosition }: { employ
     try {
       await deleteM.mutateAsync({ year, month });
       setNote('');
-      toast('🗑 Primedba obrisana.');
+      toast('Primedba obrisana.');
     } catch (e) {
-      toast(e instanceof ApiError ? `⚠ ${e.message}` : '⚠ Greška pri brisanju primedbe.');
+      toast(e instanceof ApiError ? e.message : 'Greška pri brisanju primedbe.');
     }
   }
 
   async function downloadKarnet() {
     if (!hasHours || !totals) {
-      toast('ℹ Nema unetih sati za ovaj mesec.');
+      toast('Nema unetih sati za ovaj mesec.');
       return;
     }
     try {
@@ -179,10 +180,10 @@ export function MonthlyHoursSection({ employeeName, employeePosition }: { employ
       });
       openBlob(blob);
       downloadBlob(blob, fileName);
-      toast('📄 Karnet preuzet');
+      toast('Karnet preuzet');
     } catch (e) {
       console.error('[profil] karnet', e);
-      toast('⚠ Greška pri generisanju karneta');
+      toast('Greška pri generisanju karneta');
     }
   }
 
@@ -190,7 +191,7 @@ export function MonthlyHoursSection({ employeeName, employeePosition }: { employ
 
   return (
     <Section
-      icon="🗓"
+      icon={<CalendarDays className="h-4 w-4 text-ink-secondary" />}
       title="Mesečni sati"
       defaultOpen
       actions={
@@ -201,18 +202,18 @@ export function MonthlyHoursSection({ employeeName, employeePosition }: { employ
           disabled={!hasHours}
           title={hasHours ? 'Preuzmi svoj karnet (mesečni radni list) za ovaj mesec' : 'Nema unetih sati'}
         >
-          📄 Karnet
+          <FileText className="h-4 w-4" aria-hidden /> Karnet
         </Button>
       }
     >
       {/* Navigacija po mesecima */}
       <div className="mb-3 flex items-center justify-center gap-3">
-        <button onClick={() => shiftMonth(-1)} className="rounded-control border border-line px-2 py-1 text-ink-secondary hover:bg-surface-2" title="Prethodni mesec">
-          ◀
+        <button onClick={() => shiftMonth(-1)} className="rounded-control border border-line px-2 py-1 text-ink-secondary hover:bg-surface-2" title="Prethodni mesec" aria-label="Prethodni mesec">
+          <ChevronLeft className="h-4 w-4" aria-hidden />
         </button>
         <span className="min-w-40 text-center text-sm font-medium text-ink">{MONTH_NAMES[month - 1]} {year}</span>
-        <button onClick={() => shiftMonth(1)} className="rounded-control border border-line px-2 py-1 text-ink-secondary hover:bg-surface-2" title="Sledeći mesec">
-          ▶
+        <button onClick={() => shiftMonth(1)} className="rounded-control border border-line px-2 py-1 text-ink-secondary hover:bg-surface-2" title="Sledeći mesec" aria-label="Sledeći mesec">
+          <ChevronRight className="h-4 w-4" aria-hidden />
         </button>
       </div>
 

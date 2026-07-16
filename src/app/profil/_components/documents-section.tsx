@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { BookOpen, ClipboardList, Gem, FolderArchive, FileText, Printer, Check } from 'lucide-react';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Button } from '@/components/ui-kit/button';
 import { toast } from '@/lib/toast';
@@ -18,7 +19,7 @@ import { KOMP_VREDNOSTI_HTML, KOMP_VREDNOSTI_CSS, KOMP_VREDNOSTI_ACK } from './c
  *
  * Sadržaj pravilnika/vrednosti prenet DOSLOVNO iz 1.0 (pravilnik-go-content.tsx /
  * company-values-content.tsx). Štampa/PDF = izolovani print-iframe (pun Unicode).
- * Ack ide na `POST /v1/profile/acks` (useAckDocument); inicijalni status („✓ Potvrđeno"
+ * Ack ide na `POST /v1/profile/acks` (useAckDocument); inicijalni status („Potvrđeno"
  * bez klika) čita se iz `GET /v1/profile/acks` (useAcks). Dupli ack je bezopasan
  * (ON CONFLICT DO NOTHING → alreadyAcked:true).
  */
@@ -42,23 +43,23 @@ function AckButton({ refType, refId, label }: { refType: string; refId: string; 
       const d = res?.data ?? {};
       const at = d.acked_at ?? new Date().toISOString();
       setState({ done: true, at });
-      toast(d.alreadyAcked ? '✓ Već ste potvrđeni — HR to vidi' : '✅ Potvrđeno — HR vidi');
+      toast(d.alreadyAcked ? 'Već ste potvrđeni — HR to vidi' : 'Potvrđeno — HR vidi');
     } catch {
-      toast('⚠ Potvrda nije uspela — pokušajte ponovo');
+      toast('Potvrda nije uspela — pokušajte ponovo');
     }
   }
 
   if (done) {
     return (
       <span className="inline-flex items-center gap-2 text-sm text-status-success">
-        <span className="rounded-control bg-status-success-bg px-2 py-1 font-medium">✓ Potvrđeno</span>
+        <span className="inline-flex items-center gap-1 rounded-control bg-status-success-bg px-2 py-1 font-medium"><Check className="h-3.5 w-3.5" aria-hidden /> Potvrđeno</span>
         {at && <span className="text-xs text-ink-secondary">{formatDate(at)}</span>}
       </span>
     );
   }
   return (
     <Button variant="primary" onClick={onAck} loading={ackM.isPending} className="h-8">
-      ✅ Upoznat/Saglasan sam
+      <Check className="h-4 w-4" aria-hidden /> Upoznat/Saglasan sam
     </Button>
   );
 }
@@ -93,7 +94,7 @@ function DocumentModal({
             onClick={() => printDocument({ title: printTitle, css, bodyHtml: html })}
             title="Otvara dijalog za štampu — izaberi „Sačuvaj kao PDF”"
           >
-            🖨 Štampaj / Sačuvaj PDF
+            <Printer className="h-4 w-4" aria-hidden /> Štampaj / Sačuvaj PDF
           </Button>
           <Button variant="ghost" onClick={onClose}>Zatvori</Button>
         </>
@@ -122,7 +123,7 @@ export function DocumentsSection() {
     const data = vacationQ.data?.data;
     const blocks = data?.ledger ?? [];
     if (!blocks.length) {
-      toast('ℹ Nema podataka o godišnjem odmoru za evidenciju.');
+      toast('Nema podataka o godišnjem odmoru za evidenciju.');
       return;
     }
     setGoBusy(true);
@@ -139,7 +140,7 @@ export function DocumentsSection() {
       openBlob(blob);
       downloadBlob(blob, fileName);
     } catch (e) {
-      toast('⚠ PDF nije uspeo: ' + (e instanceof Error ? e.message : ''));
+      toast('PDF nije uspeo: ' + (e instanceof Error ? e.message : ''));
     } finally {
       setGoBusy(false);
     }
@@ -148,7 +149,7 @@ export function DocumentsSection() {
   async function onOpisPozicije() {
     const p = positionQ.data?.data;
     if (!p) {
-      toast('ℹ Pozicija nije povezana sa opisom — obratite se HR-u.');
+      toast('Pozicija nije povezana sa opisom — obratite se HR-u.');
       return;
     }
     setPosBusy(true);
@@ -157,28 +158,28 @@ export function DocumentsSection() {
       openBlob(blob);
       downloadBlob(blob, fileName);
     } catch (e) {
-      toast('⚠ PDF nije uspeo: ' + (e instanceof Error ? e.message : ''));
+      toast('PDF nije uspeo: ' + (e instanceof Error ? e.message : ''));
     } finally {
       setPosBusy(false);
     }
   }
 
   return (
-    <Section icon="📚" title="Dokumenta i saglasnosti" defaultOpen>
+    <Section icon={<BookOpen className="h-4 w-4 text-ink-secondary" />} title="Dokumenta i saglasnosti" defaultOpen>
       <div className="flex flex-wrap gap-2">
-        <Button variant="secondary" onClick={() => setModal('pravilnik')}>📋 Pravilnik o GO</Button>
-        <Button variant="secondary" onClick={() => setModal('vrednosti')}>💎 Kompanijske vrednosti</Button>
-        <Button variant="secondary" onClick={onEvidencijaGo} loading={goBusy}>🗂 Evidencija GO (PDF)</Button>
-        <Button variant="secondary" onClick={onOpisPozicije} loading={posBusy}>📄 Opis pozicije (PDF)</Button>
+        <Button variant="secondary" onClick={() => setModal('pravilnik')}><ClipboardList className="h-4 w-4" aria-hidden /> Pravilnik o GO</Button>
+        <Button variant="secondary" onClick={() => setModal('vrednosti')}><Gem className="h-4 w-4" aria-hidden /> Kompanijske vrednosti</Button>
+        <Button variant="secondary" onClick={onEvidencijaGo} loading={goBusy}><FolderArchive className="h-4 w-4" aria-hidden /> Evidencija GO (PDF)</Button>
+        <Button variant="secondary" onClick={onOpisPozicije} loading={posBusy}><FileText className="h-4 w-4" aria-hidden /> Opis pozicije (PDF)</Button>
       </div>
       <p className="mt-2 text-xs text-ink-secondary">
-        Otvorite dokument da pročitate pun tekst i potvrdite da ste upoznati/saglasni („✅ Upoznat/Saglasan sam"), ili ga
+        Otvorite dokument da pročitate pun tekst i potvrdite da ste upoznati/saglasni („Upoznat/Saglasan sam"), ili ga
         odštampajte / sačuvajte kao PDF. Evidencija GO i Opis pozicije se generišu iz Vaših podataka.
       </p>
 
       {modal === 'pravilnik' && (
         <DocumentModal
-          title="📋 Pravilnik o korišćenju godišnjeg odmora"
+          title="Pravilnik o korišćenju godišnjeg odmora"
           html={PRAVILNIK_GO_HTML}
           css={PRAVILNIK_GO_CSS}
           printTitle="Pravilnik o korišćenju godišnjeg odmora — Servoteh"
@@ -188,7 +189,7 @@ export function DocumentsSection() {
       )}
       {modal === 'vrednosti' && (
         <DocumentModal
-          title="💎 Kompanijske vrednosti"
+          title="Kompanijske vrednosti"
           html={KOMP_VREDNOSTI_HTML}
           css={KOMP_VREDNOSTI_CSS}
           printTitle="Kompanijske vrednosti — Servoteh"

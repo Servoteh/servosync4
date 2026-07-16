@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { BarChart3, FileText, PenLine, Check, Save } from 'lucide-react';
 import { Button } from '@/components/ui-kit/button';
 import { toast } from '@/lib/toast';
 import {
@@ -19,7 +20,7 @@ import { Section } from './section';
 import { WideModal } from '@/app/kadrovska/_components/razvoj/shared';
 
 /**
- * Moj profil → 📊 Samoprocena kompetencija (360°) — P4-FE (paritet 1.0
+ * Moj profil → Samoprocena kompetencija (360°) — P4-FE (paritet 1.0
  * src/ui/mojProfil/myAssessment.js). Zaposleni ocenjuje sebe po kompetencijama
  * svoje pozicije (skala 0–5 sa deskriptorom nivoa), upisuje odgovore na otvorena
  * pitanja, vidi svoj radar uživo, čuva (bulk scores+answers) i podnosi. Kad
@@ -46,13 +47,13 @@ interface Group {
 export function AssessmentSection() {
   const [open, setOpen] = useState(false);
   return (
-    <Section icon="📊" title="Samoprocena kompetencija (360°)">
+    <Section icon={<BarChart3 className="h-4 w-4 text-ink-secondary" />} title="Samoprocena kompetencija (360°)">
       <p className="mb-3 text-sm text-ink-secondary">
         Oceni sebe po kompetencijama svoje pozicije (skala 0–5). Kolega iz tima i rukovodilac ocenjuju zasebno i anonimno.
         Svoj uporedni rezultat (radar) vidiš kada ga rukovodilac podeli posle razgovora.
       </p>
       <Button onClick={() => setOpen(true)} title="Samoprocena po kompetencijama">
-        📊 Otvori samoprocenu
+        <BarChart3 className="h-4 w-4" aria-hidden /> Otvori samoprocenu
       </Button>
       {open && <AssessmentModal onClose={() => setOpen(false)} />}
     </Section>
@@ -64,7 +65,7 @@ function AssessmentModal({ onClose }: { onClose: () => void }) {
   const data = q.data?.data ?? null;
 
   return (
-    <WideModal open onClose={onClose} maxWidth="980px" title="📊 Moja procena kompetencija">
+    <WideModal open onClose={onClose} maxWidth="980px" title="Moja procena kompetencija">
       {q.isLoading ? (
         <p className="py-8 text-center text-ink-secondary">Otvaram procenu…</p>
       ) : q.isError ? (
@@ -199,7 +200,7 @@ function AssessmentForm({ data, onClose }: { data: SelfAssessmentData; onClose: 
 
   async function persist(submit: boolean) {
     if (!raterId) {
-      toast('⚠ Ocenjivač nije pronađen');
+      toast('Ocenjivač nije pronađen');
       return;
     }
     setBusy(true);
@@ -217,13 +218,13 @@ function AssessmentForm({ data, onClose }: { data: SelfAssessmentData; onClose: 
       await saveAnswersM.mutateAsync({ raterId, items: answerItems });
       if (submit) {
         await submitM.mutateAsync({ assessmentId: data.assessmentId! });
-        toast('✅ Procena podneta — hvala!');
+        toast('Procena podneta — hvala!');
         onClose();
       } else {
-        toast('💾 Sačuvano');
+        toast('Sačuvano');
       }
     } catch {
-      toast(submit ? '⚠ Podnošenje nije uspelo' : '⚠ Snimanje nije uspelo');
+      toast(submit ? 'Podnošenje nije uspelo' : 'Snimanje nije uspelo');
     } finally {
       setBusy(false);
     }
@@ -245,7 +246,7 @@ function AssessmentForm({ data, onClose }: { data: SelfAssessmentData; onClose: 
       for (const g of groups) for (const c of g.comps) { const x = cRes.get(c.id); compsPdf.push({ groupName: g.name, competenceName: c.name, self: x?.self ?? null, peer: x?.peer ?? null, leader: x?.leader ?? null, target: x?.target ?? null }); }
       await exportAssessmentPdf({ employeeName: '', period: data.assessment?.periodLabel || '', groups: groupsPdf, competences: compsPdf });
     } catch (e) {
-      toast('⚠ PDF nije uspeo: ' + (e instanceof Error ? e.message : ''));
+      toast('PDF nije uspeo: ' + (e instanceof Error ? e.message : ''));
     } finally {
       setBusy(false);
     }
@@ -258,7 +259,7 @@ function AssessmentForm({ data, onClose }: { data: SelfAssessmentData; onClose: 
           <>
             Oceni sebe na skali <b>0–5</b> za svaku kompetenciju. Klikni broj — opis nivoa se prikazuje ispod. Ovo je{' '}
             <b>samoprocena</b>; tvoje ocene vidiš samo ti. „Ne znam" = bez ocene.
-            {submitted && <span className="ml-1 font-semibold text-status-success">✓ Već si predao/la — možeš dopuniti dok je procena otvorena.</span>}
+            {submitted && <span className="ml-1 inline-flex items-center gap-1 font-semibold text-status-success"><Check className="h-3.5 w-3.5" aria-hidden /> Već si predao/la — možeš dopuniti dok je procena otvorena.</span>}
           </>
         ) : (
           <>
@@ -270,7 +271,7 @@ function AssessmentForm({ data, onClose }: { data: SelfAssessmentData; onClose: 
       {/* Podeljeni 360° rezultat */}
       {showShared && (
         <div className="rounded-panel border border-accent/50 bg-accent-subtle/30 p-3">
-          <h4 className="mb-1 text-center text-sm font-semibold text-ink">📊 Tvoj 360° rezultat (podeljeno)</h4>
+          <h4 className="mb-1 flex items-center justify-center gap-1.5 text-center text-sm font-semibold text-ink"><BarChart3 className="h-4 w-4" aria-hidden /> Tvoj 360° rezultat (podeljeno)</h4>
           <div className="mx-auto max-w-[460px]">
             <Radar labels={sharedRadar.labels} datasets={sharedRadar.datasets} />
           </div>
@@ -302,7 +303,7 @@ function AssessmentForm({ data, onClose }: { data: SelfAssessmentData; onClose: 
             </table>
           </div>
           <div className="mt-2 text-center">
-            <Button variant="secondary" className="h-8 text-xs" loading={busy} onClick={doPdf}>📄 PDF izveštaj</Button>
+            <Button variant="secondary" className="h-8 text-xs" loading={busy} onClick={doPdf}><FileText className="h-4 w-4" aria-hidden /> PDF izveštaj</Button>
           </div>
         </div>
       )}
@@ -376,7 +377,7 @@ function AssessmentForm({ data, onClose }: { data: SelfAssessmentData; onClose: 
       {/* Otvorena pitanja */}
       {questions.length > 0 && (
         <div className="space-y-2">
-          <h4 className="text-sm font-semibold text-ink">✍ Otvorena pitanja</h4>
+          <h4 className="flex items-center gap-1.5 text-sm font-semibold text-ink"><PenLine className="h-4 w-4" aria-hidden /> Otvorena pitanja</h4>
           {questions.map((qq) => (
             <QuestionField key={qq.code} q={qq} value={answers.get(qq.code) ?? ''} readOnly={!canEdit} onChange={(v) => setAnswers((prev) => new Map(prev).set(qq.code, v))} />
           ))}
@@ -386,8 +387,8 @@ function AssessmentForm({ data, onClose }: { data: SelfAssessmentData; onClose: 
       {/* Footer akcije */}
       {canEdit && (
         <div className="flex flex-wrap justify-end gap-2 border-t border-line pt-3">
-          <Button variant="secondary" loading={busy} onClick={() => persist(false)}>💾 Sačuvaj</Button>
-          <Button loading={busy} onClick={() => persist(true)}>✅ Podnesi procenu</Button>
+          <Button variant="secondary" loading={busy} onClick={() => persist(false)}><Save className="h-4 w-4" aria-hidden /> Sačuvaj</Button>
+          <Button loading={busy} onClick={() => persist(true)}><Check className="h-4 w-4" aria-hidden /> Podnesi procenu</Button>
         </div>
       )}
     </div>

@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
+import { Flame } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
@@ -80,9 +81,12 @@ export default function ProfilPage() {
             <div className="text-base font-semibold text-ink">{emp?.full_name ?? user.fullName ?? user.email}</div>
             <div className="text-sm text-ink-secondary">{user.email}</div>
             {emp?.slava && (
-              <div className="mt-1 text-xs text-ink-secondary">
-                🕯 Slava: <strong className="text-ink">{emp.slava}</strong>
-                {emp.slavaDay && <span className="opacity-70"> ({formatSlavaDay(emp.slavaDay)})</span>}
+              <div className="mt-1 flex items-center gap-1 text-xs text-ink-secondary">
+                <Flame className="h-3.5 w-3.5" aria-hidden />
+                <span>
+                  Slava: <strong className="text-ink">{emp.slava}</strong>
+                  {emp.slavaDay && <span className="opacity-70"> ({formatSlavaDay(emp.slavaDay)})</span>}
+                </span>
               </div>
             )}
           </div>

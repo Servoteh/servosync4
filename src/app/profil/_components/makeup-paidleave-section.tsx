@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { Clock, NotebookPen, Trash2 } from 'lucide-react';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Button } from '@/components/ui-kit/button';
 import { Input, FormField } from '@/components/ui-kit/form-field';
@@ -26,7 +27,7 @@ export function MakeupSection() {
 
   return (
     <Section
-      icon="🕗"
+      icon={<Clock className="h-4 w-4 text-ink-secondary" />}
       title="Nadoknada sati"
       actions={
         <Button onClick={() => setOpen(true)} className="h-8">
@@ -60,8 +61,8 @@ export function MakeupSection() {
                 <td className="py-1.5 text-ink-secondary">{r.reason || r.makeup_plan || '—'}</td>
                 <td className="py-1.5 text-right">
                   {['pending', 'sef_approved', 'rejected'].includes(r.status) && (
-                    <button onClick={() => confirm('Obrisati zahtev?') && delM.mutate({ id: r.id })} className="text-status-danger hover:underline">
-                      🗑
+                    <button onClick={() => confirm('Obrisati zahtev?') && delM.mutate({ id: r.id })} className="text-status-danger hover:underline" aria-label="Obriši zahtev" title="Obriši zahtev">
+                      <Trash2 className="h-4 w-4" aria-hidden />
                     </button>
                   )}
                 </td>
@@ -166,7 +167,7 @@ export function PaidLeaveSection() {
 
   return (
     <Section
-      icon="📝"
+      icon={<NotebookPen className="h-4 w-4 text-ink-secondary" />}
       title="Plaćeno odsustvo"
       actions={
         <Button onClick={() => setOpen(true)} className="h-8">
@@ -200,8 +201,8 @@ export function PaidLeaveSection() {
                 </td>
                 <td className="py-1.5 text-right">
                   {['pending', 'sef_approved', 'rejected'].includes(r.status) && (
-                    <button onClick={() => confirm('Obrisati zahtev?') && delM.mutate({ id: r.id })} className="text-status-danger hover:underline">
-                      🗑
+                    <button onClick={() => confirm('Obrisati zahtev?') && delM.mutate({ id: r.id })} className="text-status-danger hover:underline" aria-label="Obriši zahtev" title="Obriši zahtev">
+                      <Trash2 className="h-4 w-4" aria-hidden />
                     </button>
                   )}
                 </td>

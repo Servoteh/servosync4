@@ -7,6 +7,7 @@
 // pomera status na „u toku" ili „ispunjeno" (uz opcionu napomenu).
 
 import { useState } from 'react';
+import { Target, Zap, Play, Check, AlertTriangle, Calendar, MessageSquare } from 'lucide-react';
 import { Button } from '@/components/ui-kit/button';
 import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
 import { Markdown } from '@/lib/markdown';
@@ -60,7 +61,7 @@ export function ExpectationsSection() {
   const rows = [...active, ...done];
 
   return (
-    <Section icon="🎯" title="Moja očekivanja">
+    <Section icon={<Target className="h-4 w-4 text-ink-secondary" />} title="Moja očekivanja">
       {rows.length === 0 ? (
         <p className="text-sm text-ink-disabled">Nema definisanih očekivanja.</p>
       ) : (
@@ -95,9 +96,9 @@ function ExpectationRow({ exp }: { exp: Expectation }) {
     }
     try {
       await upd.mutateAsync({ id: exp.id, status, completionNote });
-      toast(status === 'ispunjeno' ? '✅ Označeno kao ispunjeno' : '▶ Označeno kao u toku');
+      toast(status === 'ispunjeno' ? 'Označeno kao ispunjeno' : 'Označeno kao u toku');
     } catch (e) {
-      toast(e instanceof ApiError ? `⚠ ${e.message}` : '⚠ Greška pri snimanju');
+      toast(e instanceof ApiError ? e.message : 'Greška pri snimanju');
     }
   }
 
@@ -107,7 +108,7 @@ function ExpectationRow({ exp }: { exp: Expectation }) {
         <span className="font-medium text-ink">{exp.title}</span>
         <div className="flex shrink-0 items-center gap-2">
           {exp.priority && exp.priority !== 'srednja' && (
-            <span className="text-xs text-ink-secondary">⚡ {PRIO_LABEL[exp.priority] || exp.priority}</span>
+            <span className="inline-flex items-center gap-1 text-xs text-ink-secondary"><Zap className="h-3.5 w-3.5" aria-hidden /> {PRIO_LABEL[exp.priority] || exp.priority}</span>
           )}
           <StatusBadge tone={STATUS_TONE[exp.status] || 'neutral'} label={STATUS_LABEL[exp.status] || exp.status} />
         </div>
@@ -115,8 +116,9 @@ function ExpectationRow({ exp }: { exp: Expectation }) {
       {exp.descriptionMd && <Markdown source={exp.descriptionMd} className="mt-1 text-sm text-ink-secondary" />}
       <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
         <div className="text-xs text-ink-disabled">
-          <span className={overdue ? 'font-semibold text-status-danger' : undefined}>
-            {exp.dueDate ? `${overdue ? '⚠ Probijen rok: ' : '📅 Rok: '}${formatDate(exp.dueDate)}` : '📅 Bez roka'}
+          <span className={`inline-flex items-center gap-1 ${overdue ? 'font-semibold text-status-danger' : ''}`}>
+            {overdue ? <AlertTriangle className="h-3.5 w-3.5" aria-hidden /> : <Calendar className="h-3.5 w-3.5" aria-hidden />}
+            {exp.dueDate ? `${overdue ? 'Probijen rok: ' : 'Rok: '}${formatDate(exp.dueDate)}` : 'Bez roka'}
           </span>
           {exp.createdBy && <span> · Definisao: {exp.createdBy}</span>}
         </div>
@@ -124,17 +126,20 @@ function ExpectationRow({ exp }: { exp: Expectation }) {
           <div className="flex gap-2">
             {isActive && (
               <Button variant="secondary" className="h-7 text-xs" onClick={() => mark('u_toku')} loading={upd.isPending}>
-                ▶ Označi kao u toku
+                <Play className="h-3.5 w-3.5" aria-hidden /> Označi kao u toku
               </Button>
             )}
             <Button className="h-7 text-xs" onClick={() => mark('ispunjeno')} loading={upd.isPending}>
-              ✓ Označi kao ispunjeno
+              <Check className="h-3.5 w-3.5" aria-hidden /> Označi kao ispunjeno
             </Button>
           </div>
         )}
       </div>
       {isDone && exp.completionNote && (
-        <div className="mt-1.5 text-xs italic text-ink-secondary">💬 {exp.completionNote}</div>
+        <div className="mt-1.5 flex items-start gap-1 text-xs italic text-ink-secondary">
+          <MessageSquare className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+          <span>{exp.completionNote}</span>
+        </div>
       )}
     </li>
   );

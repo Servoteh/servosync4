@@ -1,6 +1,26 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
+import {
+  MessagesSquare,
+  TrendingUp,
+  Gem,
+  Users,
+  Wrench,
+  Coins,
+  AlertTriangle,
+  Check,
+  Rocket,
+  Telescope,
+  NotebookPen,
+  Shield,
+  Scale,
+  BarChart3,
+  GraduationCap,
+  Handshake,
+  Target,
+  ChevronRight,
+} from 'lucide-react';
 import { Button } from '@/components/ui-kit/button';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { Dialog } from '@/components/ui-kit/dialog';
@@ -54,7 +74,7 @@ export function TalksSection() {
   const [openTalk, setOpenTalk] = useState<TalkRow | null>(null);
 
   return (
-    <Section icon="🗣" title="Razgovori sa nadređenim" badge={pending ? <StatusBadge tone="warn" label={`${pending} čeka`} /> : undefined}>
+    <Section icon={<MessagesSquare className="h-4 w-4 text-ink-secondary" />} title="Razgovori sa nadređenim" badge={pending ? <StatusBadge tone="warn" label={`${pending} čeka`} /> : undefined}>
       {rows.length === 0 ? (
         <p className="text-sm text-ink-disabled">Još nema podeljenih zapisnika razgovora.</p>
       ) : (
@@ -72,10 +92,10 @@ export function TalksSection() {
                   <div className="text-xs text-ink-secondary">{t.talk_date ? formatDate(t.talk_date) : ''} · otvori zapisnik</div>
                 </button>
                 <div className="flex items-center gap-2">
-                  <StatusBadge tone={acked ? 'success' : 'warn'} label={acked ? '✔ potvrđeno' : '⏳ čeka potvrdu'} />
+                  <StatusBadge tone={acked ? 'success' : 'warn'} label={acked ? 'potvrđeno' : 'čeka potvrdu'} />
                   {!acked && t.shared_at && (
                     <Button variant="secondary" onClick={() => ackM.mutate({ id: t.id })} className="h-7 text-xs">
-                      ✔ Upoznat/a sam
+                      <Check className="h-3.5 w-3.5" aria-hidden /> Upoznat/a sam
                     </Button>
                   )}
                 </div>
@@ -90,7 +110,7 @@ export function TalksSection() {
 }
 
 /** Detalji zapisnika razgovora (paritet 1.0 myTalks.js `_openTalkView`): zapisnik md +
- *  💰 odluka o zaradi (godišnji) + ⚠ korektivne mere sa rokovima. Ack dugme u podnožju. */
+ *  odluka o zaradi (godišnji) + korektivne mere sa rokovima. Ack dugme u podnožju. */
 function TalkDetailModal({ talk, onClose }: { talk: TalkRow; onClose: () => void }) {
   const q = useTalkDetail(talk.id);
   const ackM = useAcknowledgeTalk();
@@ -114,14 +134,14 @@ function TalkDetailModal({ talk, onClose }: { talk: TalkRow; onClose: () => void
             onClose();
           }}
         >
-          ✔ Upoznat/a sam sa sadržajem
+          <Check className="h-4 w-4" aria-hidden /> Upoznat/a sam sa sadržajem
         </Button>
       )}
     </>
   );
 
   return (
-    <Dialog open onClose={onClose} title={`🗣 ${typeLabel}${talk.title ? ` — ${talk.title}` : ''}`} size="lg" footer={footer}>
+    <Dialog open onClose={onClose} title={`${typeLabel}${talk.title ? ` — ${talk.title}` : ''}`} size="lg" footer={footer}>
       {q.isLoading ? (
         <p className="text-sm text-ink-disabled">Učitavanje…</p>
       ) : (
@@ -129,7 +149,7 @@ function TalkDetailModal({ talk, onClose }: { talk: TalkRow; onClose: () => void
           <p className="text-xs text-ink-secondary">
             {d?.talk_date ? formatDate(d.talk_date) : talk.talk_date ? formatDate(talk.talk_date) : ''}
             {d?.conducted_by ? ` · Vodio: ${d.conducted_by}` : ''}
-            {acked && d?.acknowledged_at ? ` · ✔ potvrdio/la si ${formatDate(d.acknowledged_at)}` : ''}
+            {acked && d?.acknowledged_at ? ` · potvrdio/la si ${formatDate(d.acknowledged_at)}` : ''}
           </p>
 
           <div className="rounded-control border border-line-soft p-3">
@@ -143,7 +163,7 @@ function TalkDetailModal({ talk, onClose }: { talk: TalkRow; onClose: () => void
 
           {talk.talk_type === 'godisnji' && d?.raise_decision && (
             <div className="rounded-control border border-line-soft p-3">
-              <h4 className="mb-1 text-sm font-semibold text-ink">💰 Odluka o zaradi</h4>
+              <h4 className="mb-1 flex items-center gap-1.5 text-sm font-semibold text-ink"><Coins className="h-4 w-4" aria-hidden /> Odluka o zaradi</h4>
               <p className="text-sm text-ink">
                 <strong>{RAISE_DECISION_LABEL[d.raise_decision] ?? d.raise_decision}</strong>
                 {d.raise_percent != null ? ` · ${d.raise_percent}%` : ''}
@@ -155,7 +175,7 @@ function TalkDetailModal({ talk, onClose }: { talk: TalkRow; onClose: () => void
 
           {plans.length > 0 && (
             <div className="rounded-control border border-line-soft p-3">
-              <h4 className="mb-1 text-sm font-semibold text-ink">⚠ Korektivne mere</h4>
+              <h4 className="mb-1 flex items-center gap-1.5 text-sm font-semibold text-ink"><AlertTriangle className="h-4 w-4 text-status-warn" aria-hidden /> Korektivne mere</h4>
               {plans.map((p) => (
                 <div key={p.id} className="mb-2 last:mb-0">
                   {p.reason_md && <Markdown source={p.reason_md} className="mb-1 text-sm text-ink-secondary" />}
@@ -191,32 +211,32 @@ export function PositionSection() {
   const q = usePosition();
   const p = q.data?.data;
   return (
-    <Section icon="📈" title="Pozicija i razvoj">
+    <Section icon={<TrendingUp className="h-4 w-4 text-ink-secondary" />} title="Pozicija i razvoj">
       {!p ? (
         <p className="text-sm text-ink-disabled">Vaša pozicija nije povezana sa opisom posla — obratite se HR-u.</p>
       ) : (
         <div className="space-y-3">
           <h3 className="text-base font-semibold text-ink">{p.name}</h3>
-          {p.reportsToLine && <p className="text-sm text-ink-secondary">▸ Linijski odgovara: {p.reportsToLine}</p>}
-          <MdBlock title="📝 Svrha radnog mesta" md={p.summaryMd} />
-          <MdBlock title="🛡 Ključne odgovornosti" md={p.responsibilitiesMd} />
-          <MdBlock title="⚖ Ovlašćenja" md={p.authorityMd} />
-          <MdBlock title="✅ Obaveze" md={p.dutiesMd} />
-          <MdBlock title="📊 KPI / merila uspeha" md={p.kpiMd} />
-          <MdBlock title="🎓 Kvalifikacije" md={p.qualificationsMd} />
-          <MdBlock title="🤝 Ključna saradnja" md={p.collaborationMd} />
-          <MdBlock title="🎯 Očekivanja" md={p.expectationsMd} />
+          {p.reportsToLine && <p className="flex items-center gap-1 text-sm text-ink-secondary"><ChevronRight className="h-3.5 w-3.5" aria-hidden /> Linijski odgovara: {p.reportsToLine}</p>}
+          <MdBlock title={<><NotebookPen className="h-4 w-4 text-ink-secondary" aria-hidden /> Svrha radnog mesta</>} md={p.summaryMd} />
+          <MdBlock title={<><Shield className="h-4 w-4 text-ink-secondary" aria-hidden /> Ključne odgovornosti</>} md={p.responsibilitiesMd} />
+          <MdBlock title={<><Scale className="h-4 w-4 text-ink-secondary" aria-hidden /> Ovlašćenja</>} md={p.authorityMd} />
+          <MdBlock title={<><Check className="h-4 w-4 text-ink-secondary" aria-hidden /> Obaveze</>} md={p.dutiesMd} />
+          <MdBlock title={<><BarChart3 className="h-4 w-4 text-ink-secondary" aria-hidden /> KPI / merila uspeha</>} md={p.kpiMd} />
+          <MdBlock title={<><GraduationCap className="h-4 w-4 text-ink-secondary" aria-hidden /> Kvalifikacije</>} md={p.qualificationsMd} />
+          <MdBlock title={<><Handshake className="h-4 w-4 text-ink-secondary" aria-hidden /> Ključna saradnja</>} md={p.collaborationMd} />
+          <MdBlock title={<><Target className="h-4 w-4 text-ink-secondary" aria-hidden /> Očekivanja</>} md={p.expectationsMd} />
         </div>
       )}
     </Section>
   );
 }
 
-function MdBlock({ title, md }: { title: string; md: string | null }) {
+function MdBlock({ title, md }: { title: ReactNode; md: string | null }) {
   if (!md) return null;
   return (
     <div>
-      <h4 className="mb-1 text-sm font-semibold text-ink">{title}</h4>
+      <h4 className="mb-1 flex items-center gap-1.5 text-sm font-semibold text-ink">{title}</h4>
       <Markdown source={md} className="text-sm text-ink-secondary" />
     </div>
   );
@@ -228,14 +248,14 @@ export function CompanyValuesSection() {
   const q = useCompanyValues();
   const c = q.data?.data;
   return (
-    <Section icon="💎" title="Vrednosti firme">
+    <Section icon={<Gem className="h-4 w-4 text-ink-secondary" />} title="Vrednosti firme">
       {!c ? (
         <p className="text-sm text-ink-disabled">Nema unetih vrednosti firme.</p>
       ) : (
         <div className="space-y-3">
-          <MdBlock title="🚀 Misija" md={c.missionMd} />
-          <MdBlock title="🔭 Vizija" md={c.visionMd} />
-          <MdBlock title="💎 Vrednosti" md={c.valuesMd} />
+          <MdBlock title={<><Rocket className="h-4 w-4 text-ink-secondary" aria-hidden /> Misija</>} md={c.missionMd} />
+          <MdBlock title={<><Telescope className="h-4 w-4 text-ink-secondary" aria-hidden /> Vizija</>} md={c.visionMd} />
+          <MdBlock title={<><Gem className="h-4 w-4 text-ink-secondary" aria-hidden /> Vrednosti</>} md={c.valuesMd} />
         </div>
       )}
     </Section>
@@ -259,15 +279,16 @@ export function ColleaguesSection() {
   const q = useColleaguesOnLeave();
   const rows = q.data?.data ?? [];
   return (
-    <Section icon="👥" title="Kolege na odsustvu">
+    <Section icon={<Users className="h-4 w-4 text-ink-secondary" />} title="Kolege na odsustvu">
       {rows.length === 0 ? (
         <p className="text-sm text-ink-disabled">Niko trenutno nije na odsustvu.</p>
       ) : (
         <ul className="space-y-1.5">
           {rows.map((c, i) => (
             <li key={i} className="flex items-center justify-between text-sm">
-              <span className="text-ink">
-                🟠 {c.full_name}
+              <span className="inline-flex items-center gap-1.5 text-ink">
+                <span className="inline-block h-2 w-2 rounded-full bg-status-warn" aria-hidden />
+                {c.full_name}
                 {c.department && <span className="text-ink-secondary"> · {c.department}</span>}
               </span>
               <span className="text-ink-secondary">
@@ -291,7 +312,7 @@ export function ReversiSection() {
   if (issued.length === 0 && consumed.length === 0) return null;
 
   return (
-    <Section icon="🔧" title="Zaduženja (revers)">
+    <Section icon={<Wrench className="h-4 w-4 text-ink-secondary" />} title="Zaduženja (revers)">
       {issued.length > 0 && (
         <>
           <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-secondary">Trenutna zaduženja</h3>

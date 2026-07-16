@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { Umbrella, Pencil, X, Trash2 } from 'lucide-react';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Button } from '@/components/ui-kit/button';
 import { Input, FormField } from '@/components/ui-kit/form-field';
@@ -54,7 +55,7 @@ export function VacationSection() {
 
   return (
     <Section
-      icon="🏖"
+      icon={<Umbrella className="h-4 w-4 text-ink-secondary" />}
       title="Godišnji odmor"
       defaultOpen
       actions={
@@ -107,22 +108,24 @@ export function VacationSection() {
                           <div className="flex justify-end gap-1 text-xs">
                             {editable && (
                               <>
-                                <button onClick={() => setModal({ mode: 'edit', req: r })} className="rounded px-1.5 py-0.5 text-ink-secondary hover:bg-surface-2">
-                                  ✎ Izmeni
+                                <button onClick={() => setModal({ mode: 'edit', req: r })} className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-ink-secondary hover:bg-surface-2">
+                                  <Pencil className="h-3.5 w-3.5" aria-hidden /> Izmeni
                                 </button>
                                 <button
                                   onClick={() => confirm('Otkazati zahtev?') && cancelM.mutate({ id: r.id })}
-                                  className="rounded px-1.5 py-0.5 text-ink-secondary hover:bg-surface-2"
+                                  className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-ink-secondary hover:bg-surface-2"
                                 >
-                                  ✖ Otkaži
+                                  <X className="h-3.5 w-3.5" aria-hidden /> Otkaži
                                 </button>
                               </>
                             )}
                             <button
                               onClick={() => confirm('Trajno obrisati zahtev?') && deleteM.mutate({ id: r.id })}
                               className="rounded px-1.5 py-0.5 text-status-danger hover:bg-surface-2"
+                              aria-label="Trajno obriši zahtev"
+                              title="Trajno obriši zahtev"
                             >
-                              🗑
+                              <Trash2 className="h-4 w-4" aria-hidden />
                             </button>
                           </div>
                         </td>

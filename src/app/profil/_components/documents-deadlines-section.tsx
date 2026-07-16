@@ -1,11 +1,13 @@
 'use client';
 
+import { type ReactNode } from 'react';
+import { FileText, Stethoscope } from 'lucide-react';
 import { formatDate } from '@/lib/format';
 import { useProfileMe, type ProfileEmployee } from '@/api/moj-profil';
 import { Section } from './section';
 
 /**
- * 📄 Dokumenti i rokovi — paritet 1.0 `_myDocsStatusHtml` (mojProfil/index.js).
+ * Dokumenti i rokovi — paritet 1.0 `_myDocsStatusHtml` (mojProfil/index.js).
  * Read-only kartice: Lekarski pregled + Ugovor sa badge-om isteka. Zaposleni proveri
  * svoj status pre nego što ide kod HR-a. Podaci iz proširenog `/me` (employee).
  */
@@ -41,7 +43,7 @@ function DocCard({
   meta,
   badge,
 }: {
-  icon: string;
+  icon: ReactNode;
   title: string;
   meta: string;
   badge: { label: string; tone: DocTone } | null;
@@ -49,7 +51,7 @@ function DocCard({
   const cls = TONE_CLASS[badge?.tone ?? 'muted'];
   return (
     <div className={`flex items-start gap-3 rounded-control border ${cls.border} bg-surface-2 p-3`}>
-      <div className="text-xl" aria-hidden>
+      <div className="mt-0.5 text-ink-secondary" aria-hidden>
         {icon}
       </div>
       <div className="min-w-0 flex-1">
@@ -76,11 +78,11 @@ export function DocumentsDeadlinesSection() {
   if (!hasMedical && !hasContract) return null;
 
   return (
-    <Section icon="📄" title="Dokumenti i rokovi">
+    <Section icon={<FileText className="h-4 w-4 text-ink-secondary" />} title="Dokumenti i rokovi">
       <div className="grid gap-3 sm:grid-cols-2">
         {hasMedical && (
           <DocCard
-            icon="🩺"
+            icon={<Stethoscope className="h-5 w-5" />}
             title="Lekarski pregled"
             meta={emp.medicalExamDate ? `Obavljen: ${formatDate(emp.medicalExamDate)}` : 'Nema upisa'}
             badge={emp.medicalExamExpires ? expiryBadge(emp.medicalExamExpires) : null}
@@ -88,7 +90,7 @@ export function DocumentsDeadlinesSection() {
         )}
         {hasContract && c && (
           <DocCard
-            icon="📄"
+            icon={<FileText className="h-5 w-5" />}
             title={`Ugovor${c.type ? ` — ${c.type}` : ''}`}
             meta={
               c.dateTo

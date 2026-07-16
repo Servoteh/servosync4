@@ -6,6 +6,7 @@
 // FE piše: progres cilja (slider), samoprocenu (textarea), belešku (check-in).
 
 import { useEffect, useState } from 'react';
+import { BookOpen, Target, Handshake, Calendar, AlertTriangle, User, Briefcase } from 'lucide-react';
 import { Button } from '@/components/ui-kit/button';
 import { Textarea } from '@/components/ui-kit/textarea';
 import { Markdown } from '@/lib/markdown';
@@ -84,16 +85,16 @@ export function DevelopmentSection() {
   ];
 
   return (
-    <Section icon="📚" title="Moj plan razvoja">
+    <Section icon={<BookOpen className="h-4 w-4 text-ink-secondary" />} title="Moj plan razvoja">
       <div className="space-y-4">
         {/* Zaglavlje plana */}
         <div className="rounded-control border border-line-soft bg-surface-2 p-4">
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <div className="text-sm font-semibold text-ink">
               {period}
-              {targetPos && <span className="font-normal text-ink-secondary"> · 🎯 cilj: {targetPos}</span>}
+              {targetPos && <span className="ml-1 inline-flex items-center gap-1 font-normal text-ink-secondary">· <Target className="h-3.5 w-3.5" aria-hidden /> cilj: {targetPos}</span>}
             </div>
-            {mentor && <div className="text-xs text-ink-secondary">🤝 Mentor: {mentor}</div>}
+            {mentor && <div className="flex items-center gap-1 text-xs text-ink-secondary"><Handshake className="h-3.5 w-3.5" aria-hidden /> Mentor: {mentor}</div>}
           </div>
           <ProgressBar pct={progress} className="mt-3" />
           {careerGoal && (
@@ -173,10 +174,10 @@ function GoalRow({ goal }: { goal: Expectation }) {
   async function commit(value: number) {
     try {
       await upd.mutateAsync({ id: goal.id, progress: value });
-      toast('✅ Napredak sačuvan');
+      toast('Napredak sačuvan');
     } catch (e) {
       setProg(goal.progress ?? 0); // rollback lokalno
-      toast(e instanceof ApiError ? `⚠ ${e.message}` : '⚠ Snimanje napretka nije uspelo');
+      toast(e instanceof ApiError ? e.message : 'Snimanje napretka nije uspelo');
     }
   }
 
@@ -184,8 +185,9 @@ function GoalRow({ goal }: { goal: Expectation }) {
     <div className={`rounded-control border border-line-soft border-l-4 ${border} bg-surface-2 p-3`}>
       <div className="flex items-baseline justify-between gap-2">
         <span className="text-sm font-medium text-ink">{goal.title}</span>
-        <span className={`text-xs ${overdue ? 'text-status-danger' : 'text-ink-secondary'}`}>
-          {goal.dueDate ? `${overdue ? '⚠ ' : '📅 '}${formatDate(goal.dueDate)}` : '📅 bez roka'}
+        <span className={`inline-flex items-center gap-1 text-xs ${overdue ? 'text-status-danger' : 'text-ink-secondary'}`}>
+          {overdue ? <AlertTriangle className="h-3.5 w-3.5" aria-hidden /> : <Calendar className="h-3.5 w-3.5" aria-hidden />}
+          {goal.dueDate ? formatDate(goal.dueDate) : 'bez roka'}
         </span>
       </div>
       {goal.descriptionMd && <Markdown source={goal.descriptionMd} className="mt-1 text-sm text-ink-secondary" />}
@@ -226,9 +228,9 @@ function SelfAssessmentBlock({ planId, initial }: { planId: string; initial: str
   async function commit() {
     try {
       await save.mutateAsync({ id: planId, selfAssessmentMd: text.trim() || null });
-      toast('✅ Samoprocena sačuvana');
+      toast('Samoprocena sačuvana');
     } catch (e) {
-      toast(e instanceof ApiError ? `⚠ ${e.message}` : '⚠ Snimanje nije uspelo');
+      toast(e instanceof ApiError ? e.message : 'Snimanje nije uspelo');
     }
   }
 
@@ -263,9 +265,9 @@ function CheckinBlock({ planId, checkins }: { planId: string; checkins: DevCheck
     try {
       await add.mutateAsync({ id: planId, clientEventId: newClientEventId(), noteMd: n });
       setNote('');
-      toast('✅ Beleška dodata');
+      toast('Beleška dodata');
     } catch (e) {
-      toast(e instanceof ApiError ? `⚠ ${e.message}` : '⚠ Snimanje nije uspelo');
+      toast(e instanceof ApiError ? e.message : 'Snimanje nije uspelo');
     }
   }
 
@@ -279,7 +281,9 @@ function CheckinBlock({ planId, checkins }: { planId: string; checkins: DevCheck
           {checkins.map((c) => (
             <li key={c.id} className="rounded-control border border-line-soft bg-surface-2 p-3">
               <div className="mb-1 flex items-center justify-between text-xs text-ink-secondary">
-                <span>{c.kind === 'zaposleni' ? '👤 Ja' : '👔 Nadređeni'}</span>
+                <span className="inline-flex items-center gap-1">
+                  {c.kind === 'zaposleni' ? <><User className="h-3.5 w-3.5" aria-hidden /> Ja</> : <><Briefcase className="h-3.5 w-3.5" aria-hidden /> Nadređeni</>}
+                </span>
                 <span className="tnums">{c.checkin_date ? formatDate(c.checkin_date) : ''}</span>
               </div>
               <Markdown source={c.note_md} className="text-sm text-ink" />

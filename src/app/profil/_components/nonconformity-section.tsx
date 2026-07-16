@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo } from 'react';
+import { AlertTriangle } from 'lucide-react';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { formatDate, formatNumber } from '@/lib/format';
 import { cn } from '@/lib/cn';
@@ -61,7 +62,7 @@ export function NonconformitySection() {
 
   return (
     <Section
-      icon="⚠"
+      icon={<AlertTriangle className="h-4 w-4 text-status-warn" />}
       title="Neusaglašenosti"
       badge={
         !empty ? (

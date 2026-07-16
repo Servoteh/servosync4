@@ -1,12 +1,13 @@
 'use client';
 
+import { CalendarDays } from 'lucide-react';
 import { formatDate } from '@/lib/format';
 import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
 import { useAbsences } from '@/api/moj-profil';
 import { Section } from './section';
 
 /**
- * 🗓 Moja odsustva — paritet 1.0 `_absencesTableHtml` (mojProfil/index.js).
+ * Moja odsustva — paritet 1.0 `_absencesTableHtml` (mojProfil/index.js).
  * Tabela odsustava tekuće godine (tip badge / Od / Do / Dana / Napomena). Read-only.
  */
 
@@ -45,7 +46,7 @@ export function AbsencesSection() {
   const year = new Date().getFullYear();
 
   return (
-    <Section icon="🗓" title="Moja odsustva">
+    <Section icon={<CalendarDays className="h-4 w-4 text-ink-secondary" />} title="Moja odsustva">
       {q.isLoading ? (
         <p className="text-sm text-ink-disabled">Učitavanje…</p>
       ) : rows.length === 0 ? (

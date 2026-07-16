@@ -1,13 +1,14 @@
 'use client';
 
+import { Rocket, SquareCheck, Square, CircleSlash } from 'lucide-react';
 import { formatDate } from '@/lib/format';
 import { useOnboarding, type OnboardingTask } from '@/api/moj-profil';
 import { Section } from './section';
 
 /**
- * 🚀 Moje uvođenje — paritet 1.0 `_onboardingCardHtml` (mojProfil/index.js).
+ * Moje uvođenje — paritet 1.0 `_onboardingCardHtml` (mojProfil/index.js).
  * Aktivni onboarding/offboarding tokovi zaposlenog (read-only). Po run-u: progress bar %
- * + zadaci (☑ done / ⊘ skipped / ☐ open; rok u prošlosti = crveno). Status vodi HR.
+ * + zadaci (završeno / preskočeno / otvoreno; rok u prošlosti = crveno). Status vodi HR.
  */
 
 function today(): string {
@@ -19,14 +20,12 @@ function TaskRow({ t }: { t: OnboardingTask }) {
   const done = t.status === 'done';
   const skipped = t.status === 'skipped';
   const overdue = !done && !skipped && !!t.due_date && t.due_date < today();
-  const mark = done ? '☑' : skipped ? '⊘' : '☐';
+  const Mark = done ? SquareCheck : skipped ? CircleSlash : Square;
   return (
     <div
       className={`flex items-center gap-2 border-b border-line-soft py-1.5 text-sm ${done || skipped ? 'opacity-65' : ''}`}
     >
-      <span className="text-base text-accent" aria-hidden>
-        {mark}
-      </span>
+      <Mark className="h-4 w-4 shrink-0 text-accent" aria-hidden />
       <span className={`flex-1 ${done ? 'line-through' : ''} text-ink`}>
         {t.title}
         {t.assignee_hint && (
@@ -48,7 +47,7 @@ export function OnboardingSection() {
   if (runs.length === 0) return null;
 
   return (
-    <Section icon="🚀" title="Moje uvođenje" defaultOpen>
+    <Section icon={<Rocket className="h-4 w-4 text-ink-secondary" />} title="Moje uvođenje" defaultOpen>
       <p className="mb-2 text-xs text-ink-secondary">
         Zadaci tvog uvođenja/izlaska. Status vodi HR — ako je nešto urađeno a nije čekirano, javi HR-u.
       </p>

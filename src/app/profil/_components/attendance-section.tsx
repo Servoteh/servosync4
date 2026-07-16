@@ -1,6 +1,7 @@
 'use client';
 
 import { Fragment, useState } from 'react';
+import { Clock, Pencil, AlertTriangle, Moon, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Button } from '@/components/ui-kit/button';
 import { Input, FormField } from '@/components/ui-kit/form-field';
@@ -55,22 +56,26 @@ export function AttendanceSection() {
   const today = new Date().toISOString().slice(0, 10);
 
   return (
-    <Section icon="⏱" title="Moje prisustvo (ulazi/izlazi)">
+    <Section icon={<Clock className="h-4 w-4 text-ink-secondary" />} title="Moje prisustvo (ulazi/izlazi)">
       <div className="mb-2 flex items-center justify-between">
-        <button onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() - 1, 1))} className="rounded-control border border-line px-2 py-1 text-ink-secondary hover:bg-surface-2">
-          ‹
+        <button onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() - 1, 1))} className="rounded-control border border-line px-2 py-1 text-ink-secondary hover:bg-surface-2" aria-label="Prethodni mesec">
+          <ChevronLeft className="h-4 w-4" aria-hidden />
         </button>
         <span className="text-sm font-medium capitalize text-ink">{label}</span>
         <button
           onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1))}
           disabled={cursor.getMonth() >= new Date().getMonth() && cursor.getFullYear() >= new Date().getFullYear()}
           className="rounded-control border border-line px-2 py-1 text-ink-secondary hover:bg-surface-2 disabled:opacity-40"
+          aria-label="Sledeći mesec"
         >
-          ›
+          <ChevronRight className="h-4 w-4" aria-hidden />
         </button>
       </div>
-      <p className="mb-2 text-xs text-ink-disabled">
-        Prolazi sa kapije, hala i kioska. Klik na red = prolazi tog dana. ✎ korigovano · ⚠ izlaz nije otkucan · 🌙 preko ponoći.
+      <p className="mb-2 flex flex-wrap items-center gap-x-1 text-xs text-ink-disabled">
+        Prolazi sa kapije, hala i kioska. Klik na red = prolazi tog dana.
+        <Pencil className="inline-block h-3.5 w-3.5 align-text-bottom" aria-hidden /> korigovano ·
+        <AlertTriangle className="inline-block h-3.5 w-3.5 align-text-bottom text-status-warn" aria-hidden /> izlaz nije otkucan ·
+        <Moon className="inline-block h-3.5 w-3.5 align-text-bottom" aria-hidden /> preko ponoći.
       </p>
       {q.isLoading ? (
         <p className="text-sm text-ink-disabled">Učitavanje…</p>
@@ -105,13 +110,13 @@ export function AttendanceSection() {
                     <td className="py-1.5 tnums">
                       {formatDate(d.day)}{' '}
                       {corrected ? (
-                        <span title="Korigovano uz obrazloženje">✎</span>
+                        <span title="Korigovano uz obrazloženje"><Pencil className="inline-block h-3.5 w-3.5 align-text-bottom text-ink-secondary" aria-hidden /></span>
                       ) : missingOut ? (
                         <span className="text-status-warn" title="Izlaz nije otkucan">
-                          ⚠
+                          <AlertTriangle className="inline-block h-3.5 w-3.5 align-text-bottom" aria-hidden />
                         </span>
                       ) : overnight ? (
-                        <span title="Smena preko ponoći">🌙</span>
+                        <span title="Smena preko ponoći"><Moon className="inline-block h-3.5 w-3.5 align-text-bottom" aria-hidden /></span>
                       ) : null}
                     </td>
                     <td className="py-1.5 tnums">{hhmm(firstIn)}</td>
@@ -203,7 +208,7 @@ function CorrectionModal({ day, onClose }: { day: AttendanceDay; onClose: () => 
   );
 
   return (
-    <Dialog open onClose={onClose} title="✎ Korekcija kucanja" footer={footer}>
+    <Dialog open onClose={onClose} title="Korekcija kucanja" footer={footer}>
       <div className="space-y-3">
         <p className="text-sm text-ink-secondary">Dan: {formatDate(day.day)} — dodajete samo vreme koje NIJE otkucano.</p>
         {err && <p className="rounded-control bg-status-danger-bg px-2 py-1 text-sm text-status-danger">{err}</p>}

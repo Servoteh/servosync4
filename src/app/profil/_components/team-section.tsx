@@ -8,6 +8,7 @@
 // (`useTeamCorrection`, allowDayPick min danas-3), PDF opisa pozicije (`generateJobPositionPdf`).
 
 import { Fragment, useMemo, useState, type ReactNode } from 'react';
+import { Users, FileText, Wrench, Pencil, ChevronLeft, ChevronRight, ChevronDown } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui-kit/button';
 import { Dialog } from '@/components/ui-kit/dialog';
@@ -128,7 +129,7 @@ function TeamCard({ members }: { members: TeamMember[] }) {
   async function downloadTeamKarnet() {
     setKarnetBusy(true);
     try {
-      toast(`⏳ Pripremam karnete tima (${MONTH_NAMES[month - 1]} ${year})…`);
+      toast(`Pripremam karnete tima (${MONTH_NAMES[month - 1]} ${year})…`);
       // Učitaj karnet po članu (keširano — deli sa drill hookom).
       const results = await Promise.all(
         members.map((m) =>
@@ -176,7 +177,7 @@ function TeamCard({ members }: { members: TeamMember[] }) {
         });
       }
       if (!employees.length || !dayScaffold.length) {
-        toast('ℹ Nema podataka za tim u tom mesecu.');
+        toast('Nema podataka za tim u tom mesecu.');
         return;
       }
       const monthLabel = `${MONTH_NAMES_CYR[month - 1]} ${year}.`;
@@ -189,10 +190,10 @@ function TeamCard({ members }: { members: TeamMember[] }) {
       });
       openBlob(blob);
       downloadBlob(blob, fileName);
-      toast(`📄 Karnet tima preuzet (${employees.length})`);
+      toast(`Karnet tima preuzet (${employees.length})`);
     } catch (e) {
       console.error('[profil] team karnet', e);
-      toast('⚠ Greška pri generisanju karneta tima');
+      toast('Greška pri generisanju karneta tima');
     } finally {
       setKarnetBusy(false);
     }
@@ -208,7 +209,7 @@ function TeamCard({ members }: { members: TeamMember[] }) {
 
   return (
     <Section
-      icon="👥"
+      icon={<Users className="h-4 w-4 text-ink-secondary" />}
       title="Moj tim"
       defaultOpen
       badge={
@@ -227,18 +228,18 @@ function TeamCard({ members }: { members: TeamMember[] }) {
           type="search"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
-          placeholder="🔎 Pretraži po imenu i prezimenu…"
+          placeholder="Pretraži po imenu i prezimenu…"
           className="max-w-64"
           autoComplete="off"
         />
         {q && <span className="text-xs text-ink-secondary">{filtered.length} rezultat(a)</span>}
         <div className="ml-auto flex items-center gap-1.5">
-          <button onClick={() => shiftMonth(-1)} className="rounded-control border border-line px-1.5 py-1 text-ink-secondary hover:bg-surface-2" title="Prethodni mesec">
-            ◀
+          <button onClick={() => shiftMonth(-1)} className="rounded-control border border-line px-1.5 py-1 text-ink-secondary hover:bg-surface-2" title="Prethodni mesec" aria-label="Prethodni mesec">
+            <ChevronLeft className="h-4 w-4" aria-hidden />
           </button>
           <span className="min-w-28 text-center text-xs font-medium text-ink">{MONTH_NAMES[month - 1]} {year}</span>
-          <button onClick={() => shiftMonth(1)} className="rounded-control border border-line px-1.5 py-1 text-ink-secondary hover:bg-surface-2" title="Sledeći mesec">
-            ▶
+          <button onClick={() => shiftMonth(1)} className="rounded-control border border-line px-1.5 py-1 text-ink-secondary hover:bg-surface-2" title="Sledeći mesec" aria-label="Sledeći mesec">
+            <ChevronRight className="h-4 w-4" aria-hidden />
           </button>
           <Button
             variant="secondary"
@@ -247,7 +248,7 @@ function TeamCard({ members }: { members: TeamMember[] }) {
             loading={karnetBusy}
             title="Preuzmi karnete celog tima za izabrani mesec (jedan član po strani)"
           >
-            📄 Karnet tima
+            <FileText className="h-4 w-4" aria-hidden /> Karnet tima
           </Button>
         </div>
       </div>
@@ -307,16 +308,18 @@ function TeamRow({
   let status: ReactNode;
   if (m.currentAbsence) {
     status = (
-      <span className="text-status-warn">
-        🟠 {absLabel(m.currentAbsence.type)} do {m.currentAbsence.date_to ? formatDate(m.currentAbsence.date_to) : '—'}
+      <span className="inline-flex items-center gap-1.5 text-status-warn">
+        <span className="inline-block h-2 w-2 rounded-full bg-status-warn" aria-hidden />
+        {absLabel(m.currentAbsence.type)} do {m.currentAbsence.date_to ? formatDate(m.currentAbsence.date_to) : '—'}
       </span>
     );
   } else if (m.upcomingAbsence) {
     const d = daysToStart(m.upcomingAbsence);
     const when = d === 1 ? 'sutra' : d != null ? `za ${d} d` : '';
     status = (
-      <span className="text-accent">
-        🔵 {absLabel(m.upcomingAbsence.type)} {m.upcomingAbsence.date_from ? formatDate(m.upcomingAbsence.date_from) : ''}
+      <span className="inline-flex items-center gap-1.5 text-accent">
+        <span className="inline-block h-2 w-2 rounded-full bg-status-info" aria-hidden />
+        {absLabel(m.upcomingAbsence.type)} {m.upcomingAbsence.date_from ? formatDate(m.upcomingAbsence.date_from) : ''}
         {when ? ` (${when})` : ''}
       </span>
     );
@@ -328,11 +331,11 @@ function TeamRow({
     <Fragment>
       <tr className="cursor-pointer border-b border-line-soft hover:bg-surface-2" onClick={onToggle}>
         <td className="py-1.5 text-ink">
-          <span className="mr-1 text-ink-secondary">{open ? '▼' : '▶'}</span>
+          <span className="mr-1 inline-block align-text-bottom text-ink-secondary">{open ? <ChevronDown className="h-4 w-4" aria-hidden /> : <ChevronRight className="h-4 w-4" aria-hidden />}</span>
           {m.fullName || '—'}
           {toolCount > 0 && (
-            <span className="ml-1.5 rounded-full border border-line bg-surface-2 px-1.5 py-0.5 text-2xs text-ink-secondary" title="Zaduženja alata">
-              🔧 {toolCount}
+            <span className="ml-1.5 inline-flex items-center gap-1 rounded-full border border-line bg-surface-2 px-1.5 py-0.5 text-2xs text-ink-secondary" title="Zaduženja alata">
+              <Wrench className="h-3 w-3" aria-hidden /> {toolCount}
             </span>
           )}
         </td>
@@ -362,15 +365,21 @@ function TeamMemberDetail({ m, onCorrect }: { m: TeamMember; onCorrect: () => vo
     ? `Godišnji: ukupno ${fmtGrid(num(bal.days_earned ?? bal.days_total) + num(bal.days_carried_over))}, iskorišćeno ${fmtGrid(num(bal.days_used))}, preostalo ${fmtGrid(num(bal.days_remaining))}`
     : 'Saldo godišnjeg: nema podataka';
 
-  const absParts: string[] = [];
+  const absParts: ReactNode[] = [];
   if (m.currentAbsence) {
     absParts.push(
-      `🟠 Trenutno: ${absLabel(m.currentAbsence.type)} — ${fmtRange(m.currentAbsence)}`,
+      <span className="inline-flex items-center gap-1.5">
+        <span className="inline-block h-2 w-2 rounded-full bg-status-warn" aria-hidden />
+        Trenutno: {absLabel(m.currentAbsence.type)} — {fmtRange(m.currentAbsence)}
+      </span>,
     );
   }
   if (m.upcomingAbsence) {
     absParts.push(
-      `🔵 Sledeće: ${absLabel(m.upcomingAbsence.type)} — ${fmtRange(m.upcomingAbsence)}`,
+      <span className="inline-flex items-center gap-1.5">
+        <span className="inline-block h-2 w-2 rounded-full bg-status-info" aria-hidden />
+        Sledeće: {absLabel(m.upcomingAbsence.type)} — {fmtRange(m.upcomingAbsence)}
+      </span>,
     );
   }
   if (!absParts.length) absParts.push('Nema aktuelnih/nadolazećih odsustava (≤ 14 dana).');
@@ -397,7 +406,7 @@ function TeamMemberDetail({ m, onCorrect }: { m: TeamMember; onCorrect: () => vo
       openBlob(blob);
       downloadBlob(blob, fileName);
     } catch (e) {
-      toast(e instanceof ApiError ? `⚠ ${e.message}` : '⚠ PDF nije uspeo');
+      toast(e instanceof ApiError ? e.message : 'PDF nije uspeo');
     } finally {
       setPdfBusy(false);
     }
@@ -413,7 +422,7 @@ function TeamMemberDetail({ m, onCorrect }: { m: TeamMember; onCorrect: () => vo
       </ul>
 
       <div>
-        <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-secondary">🔧 Zaduženja (alat / oprema)</h4>
+        <h4 className="mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-ink-secondary"><Wrench className="h-3.5 w-3.5" aria-hidden /> Zaduženja (alat / oprema)</h4>
         {toolsQ.isLoading ? (
           <p className="text-xs text-ink-disabled">Učitavam zaduženja…</p>
         ) : tools.length === 0 ? (
@@ -442,11 +451,11 @@ function TeamMemberDetail({ m, onCorrect }: { m: TeamMember; onCorrect: () => vo
 
       <div className="flex flex-wrap gap-2">
         <Button variant="secondary" className="h-8" onClick={onCorrect}>
-          ✎ Korekcija kucanja
+          <Pencil className="h-4 w-4" aria-hidden /> Korekcija kucanja
         </Button>
         {m.positionId ? (
           <Button variant="secondary" className="h-8" onClick={downloadPositionPdf} loading={pdfBusy}>
-            📄 Opis pozicije (PDF A4)
+            <FileText className="h-4 w-4" aria-hidden /> Opis pozicije (PDF A4)
           </Button>
         ) : (
           <span className="self-center text-xs text-ink-disabled">Pozicija nije povezana sa opisom posla.</span>
@@ -501,7 +510,7 @@ function TeamCorrectionModal({ member, onClose }: { member: TeamMember; onClose:
         timeOut: timeOut || undefined,
         reason: reason.trim(),
       });
-      toast('✅ Korekcija uneta.');
+      toast('Korekcija uneta.');
       onClose();
     } catch (e) {
       setErr(e instanceof ApiError ? e.message : 'Slanje nije uspelo.');
@@ -520,7 +529,7 @@ function TeamCorrectionModal({ member, onClose }: { member: TeamMember; onClose:
   );
 
   return (
-    <Dialog open onClose={onClose} title={`✎ Korekcija kucanja — ${member.fullName || ''}`} footer={footer}>
+    <Dialog open onClose={onClose} title={`Korekcija kucanja — ${member.fullName || ''}`} footer={footer}>
       <div className="space-y-3">
         <p className="text-sm text-ink-secondary">Unosite korekciju u ime radnika (dodaje se samo vreme koje NIJE otkucano).</p>
         {err && <p className="rounded-control bg-status-danger-bg px-2 py-1 text-sm text-status-danger">{err}</p>}

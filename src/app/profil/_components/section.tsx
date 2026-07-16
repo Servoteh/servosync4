@@ -13,7 +13,7 @@ export function Section({
   actions,
   children,
 }: {
-  icon?: string;
+  icon?: ReactNode;
   title: string;
   badge?: ReactNode;
   defaultOpen?: boolean;
