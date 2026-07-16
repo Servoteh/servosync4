@@ -3,6 +3,7 @@
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
+import { landingRoute } from '@/lib/landing-route';
 
 export default function Home() {
   const { user, isLoading } = useAuth();
@@ -10,9 +11,9 @@ export default function Home() {
 
   useEffect(() => {
     if (isLoading) return;
-    // /work-orders (rn.read imaju SVE uloge), ne /syncs — sync.read imaju samo
-    // admin/šef/menadžment, pa bi ostale uloge sletele na 403 stranicu.
-    router.replace(user ? '/work-orders' : '/login');
+    // Kontrolori → /kvalitet, ostali → /work-orders (rn.read imaju SVE uloge, ne
+    // /syncs — sync.read imaju samo admin/šef/menadžment → 403 za ostale).
+    router.replace(landingRoute(user));
   }, [user, isLoading, router]);
 
   return (

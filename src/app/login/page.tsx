@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { useAuth } from '@/lib/auth-context';
+import { landingRoute } from '@/lib/landing-route';
 import { ApiError } from '@/api/client';
 import { Button } from '@/components/ui-kit/button';
 import { FormField, Input } from '@/components/ui-kit/form-field';
@@ -27,8 +28,8 @@ export default function LoginPage() {
   } = useForm<FormValues>({ defaultValues: { email: '', password: '' } });
 
   useEffect(() => {
-    // /work-orders (rn.read imaju SVE uloge), ne /syncs — vidi app/page.tsx.
-    if (!isLoading && user) router.replace('/work-orders');
+    // Kontrolori → /kvalitet, ostali → /work-orders (vidi landing-route.ts).
+    if (!isLoading && user) router.replace(landingRoute(user));
   }, [user, isLoading, router]);
 
   async function onSubmit(values: FormValues) {
@@ -41,7 +42,8 @@ export default function LoginPage() {
     }
     try {
       await login(values.email, values.password);
-      router.replace('/work-orders');
+      // Redirect radi useEffect gore čim se `user` (email+role) učita — tako
+      // landingRoute dobije rolu i kontrolor sleti na /kvalitet, ne /work-orders.
     } catch (err) {
       const message =
         err instanceof ApiError && err.status === 401
