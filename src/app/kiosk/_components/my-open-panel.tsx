@@ -1,11 +1,18 @@
 'use client';
 
 import { useState, type KeyboardEvent } from 'react';
-import { ArrowLeft, FileText, Minus, Plus, Square } from 'lucide-react';
+import { ArrowLeft, FileText, Minus, Plus, Square, XCircle } from 'lucide-react';
 import { Button } from '@/components/ui-kit/button';
+import { Dialog } from '@/components/ui-kit/dialog';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { ApiError } from '@/api/client';
-import { openKioskDrawingPdf, useMyOpen, useStopWorkById, type MyOpenRow } from '@/api/kiosk';
+import {
+  openKioskDrawingPdf,
+  useDismissOpen,
+  useMyOpen,
+  useStopWorkById,
+  type MyOpenRow,
+} from '@/api/kiosk';
 import { formatDate, formatNumber } from '@/lib/format';
 
 /**
@@ -27,9 +34,12 @@ export function MyOpenPanel({
 }) {
   const query = useMyOpen(card, true);
   const stopWork = useStopWorkById();
+  const dismissOpen = useDismissOpen();
   // id reda za koji mutacija upravo traje (spinner/zaključavanje samo tog reda).
   const [busyId, setBusyId] = useState<number | null>(null);
   const [feedback, setFeedback] = useState<{ ok: boolean; text: string } | null>(null);
+  // Red za koji je otvorena potvrda „Odustani" (null = zatvorena).
+  const [confirmRow, setConfirmRow] = useState<MyOpenRow | null>(null);
 
   const rows = query.data?.data ?? [];
 
@@ -57,6 +67,30 @@ export function MyOpenPanel({
     } catch (e) {
       const msg = e instanceof ApiError || e instanceof Error ? e.message : 'Nepoznata greška.';
       setFeedback({ ok: false, text: `Kraj rada nije uspeo: ${msg}` });
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  /**
+   * „Odustani" — zatvara pogrešno otvoren red BEZ evidentiranja komada
+   * (POST /:id/dismiss). Isti busyId/spinner obrazac kao onStop. Poziva se tek
+   * POSLE eksplicitne potvrde u dijalogu (komadi se NE evidentiraju).
+   */
+  async function onDismiss(row: MyOpenRow) {
+    setConfirmRow(null);
+    setFeedback(null);
+    setBusyId(row.id);
+    try {
+      await dismissOpen.mutateAsync({ id: row.id, workerCard: card ?? undefined });
+      setFeedback({
+        ok: true,
+        text: `RN ${row.identNumber} · Op. ${row.operationNumber} — operacija odbačena (bez evidentiranja komada).`,
+      });
+      await query.refetch();
+    } catch (e) {
+      const msg = e instanceof ApiError || e instanceof Error ? e.message : 'Nepoznata greška.';
+      setFeedback({ ok: false, text: `Odustajanje nije uspelo: ${msg}` });
     } finally {
       setBusyId(null);
     }
@@ -111,10 +145,45 @@ export function MyOpenPanel({
               busy={busyId === row.id}
               disabled={busyId !== null && busyId !== row.id}
               onStop={(pieces) => onStop(row, pieces)}
+              onDismiss={() => setConfirmRow(row)}
             />
           ))}
         </ul>
       )}
+
+      {/* Potvrda „Odustani" — pogrešno otvoren red se ZATVARA bez evidentiranja
+          komada. Poruka je namerno eksplicitna (ne samo Da/Ne). */}
+      <Dialog
+        open={confirmRow !== null}
+        onClose={() => setConfirmRow(null)}
+        title="Odustati od operacije?"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setConfirmRow(null)}>
+              Ne
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() => confirmRow && onDismiss(confirmRow)}
+            >
+              Da, odustani
+            </Button>
+          </>
+        }
+      >
+        {confirmRow && (
+          <div className="space-y-2 text-lg text-ink">
+            <p>
+              RN <span className="tnums font-semibold">{confirmRow.identNumber}</span> · Op.{' '}
+              <span className="tnums font-semibold">{confirmRow.operationNumber}</span> — red će biti
+              zatvoren <span className="font-semibold">BEZ evidentiranja komada</span>.
+            </p>
+            <p className="text-ink-secondary">
+              Koristi ovo samo za pogrešno otvorene redove. Napravljeni komadi se NE evidentiraju.
+            </p>
+          </div>
+        )}
+      </Dialog>
     </div>
   );
 }
@@ -128,6 +197,7 @@ function MyOpenRowItem({
   busy,
   disabled,
   onStop,
+  onDismiss,
 }: {
   row: MyOpenRow;
   /** Mutacija ovog reda je u toku (spinner na dugmetu). */
@@ -135,6 +205,8 @@ function MyOpenRowItem({
   /** Drugi red je u toku — zaključaj kontrole dok se ne završi. */
   disabled: boolean;
   onStop: (pieces: number) => void;
+  /** Otvara potvrdu „Odustani" (zatvaranje bez komada) — akcija je u panelu. */
+  onDismiss: () => void;
 }) {
   const [pieces, setPieces] = useState(1);
   const locked = busy || disabled;
@@ -233,6 +305,17 @@ function MyOpenRowItem({
         {pieces === 0 && (
           <p className="text-base text-ink-secondary">0 kom — evidentira se samo vreme rada.</p>
         )}
+        {/* „Odustani" — sekundarno/diskretno (ne meša se sa „Kraj rada"). Zatvara
+            pogrešno otvoren red BEZ komada, uz obaveznu potvrdu u dijalogu. */}
+        <button
+          type="button"
+          onClick={onDismiss}
+          disabled={locked}
+          className="inline-flex h-11 items-center gap-1.5 rounded-control border border-line bg-surface px-4 text-base font-medium text-ink-secondary hover:bg-surface-2 hover:text-ink disabled:opacity-40"
+        >
+          <XCircle className="h-4 w-4" aria-hidden />
+          Odustani
+        </button>
       </div>
     </li>
   );

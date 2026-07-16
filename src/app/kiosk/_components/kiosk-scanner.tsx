@@ -54,6 +54,14 @@ type Feedback = { tone: MessageTone; title: string; detail?: string };
 /** Deljeni terminal: posle uspešnog kucanja radnik se auto-odjavi (sledeći može da se prijavi). */
 const AUTO_LOGOUT_SECONDS = 20;
 
+/**
+ * Deljeni nalog namenjen kontroli (kontrola@servoteh.com) dobija naslove „Kontrola"
+ * umesto „prijava rada" — kontrolori su se bunili da ih zbunjuje reč „rad". Skener
+ * logika OSTAJE ista (prepozna završnu kontrolu preko significantForFinishing); menja
+ * se SAMO tekst naslova. kiosk@ i lični nalozi ostaju „prijava rada".
+ */
+const CONTROL_TERMINAL_EMAIL = 'kontrola@servoteh.com';
+
 function errMessage(e: unknown): string {
   if (e instanceof ApiError || e instanceof Error) return e.message;
   return 'Nepoznata greška — pokušajte ponovo.';
@@ -95,7 +103,10 @@ function OrderHeadline({ order }: { order: OrderState }) {
 }
 
 export function KioskScanner() {
-  const { logout } = useAuth();
+  const { user, logout } = useAuth();
+  // Naslovi terminala zavise od prijavljenog naloga: kontrola@ → „Kontrola",
+  // ostali (kiosk@, lični) → „prijava rada". Detekcija po email-u iz auth-context.
+  const controlTerminal = user?.email === CONTROL_TERMINAL_EMAIL;
   const identify = useIdentifyWorker();
   const decode = useDecodeBarcode();
   const scan = useScan();
@@ -663,7 +674,9 @@ export function KioskScanner() {
     return (
       <main className="flex flex-1 flex-col bg-app">
         <header className="flex items-center justify-between gap-4 border-b border-line bg-surface px-6 py-4">
-          <span className="text-2xl font-bold text-ink">Kiosk — prijava radom</span>
+          <span className="text-2xl font-bold text-ink">
+            {controlTerminal ? 'Kontrola' : 'Kiosk — prijava radom'}
+          </span>
           <button
             onClick={logout}
             className="inline-flex h-14 items-center gap-2 rounded-control px-4 text-lg font-medium text-ink-secondary hover:bg-surface-2"
@@ -676,7 +689,11 @@ export function KioskScanner() {
           {feedback && <BigMessage tone={feedback.tone} title={feedback.title} detail={feedback.detail} />}
           <ScanField
             key="scan-card"
-            label="Prijava za rad — skenirajte ID karticu"
+            label={
+              controlTerminal
+                ? 'Prijava za kontrolu — skenirajte ID karticu'
+                : 'Prijava za rad — skenirajte ID karticu'
+            }
             placeholder="ID kartica…"
             hint="Prislonite čitač na svoju identifikacionu karticu."
             onScan={onCardScan}
@@ -731,7 +748,9 @@ export function KioskScanner() {
     <main className="flex flex-1 flex-col bg-app">
       <header className="flex items-center justify-between gap-4 border-b border-line bg-surface px-6 py-4">
         <div className="flex flex-wrap items-center gap-3">
-          <span className="text-2xl font-bold text-ink">Kiosk — prijava rada</span>
+          <span className="text-2xl font-bold text-ink">
+            {controlTerminal ? 'Kontrola' : 'Kiosk — prijava rada'}
+          </span>
           <span className="rounded-full bg-accent-subtle px-3 py-1 text-base font-semibold text-accent">
             Korak {stepNo}/3 — {stepLabel}
           </span>

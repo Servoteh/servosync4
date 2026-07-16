@@ -284,6 +284,34 @@ export function useStopWorkById() {
   });
 }
 
+export interface DismissOpenInput {
+  /** tp.id iz liste „Moji otvoreni". */
+  id: number;
+  /** ID kartica radnika (audit ko je odbacio) — opciono za lični nalog (backend čita JWT). */
+  workerCard?: string;
+  /** Napomena uz odbacivanje (opciono; upisuje se u audit/tech_processes.note). */
+  note?: string;
+}
+
+/**
+ * „Odustani" po tp.id — ZATVARA pogrešno otvoren red BEZ evidentiranja komada
+ * (is_process_finished=true, audit). Za pogrešno otvorene redove koje kontrolori
+ * nagomilaju u „Moji otvoreni" (kucali kontrolu preko kiosk naloga): „Kraj rada"
+ * samo dodaje komade i zatvara tek na plan, pa nije rešenje. Vraća `{ id, dismissed }`.
+ * Poništava keš postupaka (lista „Moji otvoreni" deli prefiks `['tech-processes']`).
+ */
+export function useDismissOpen() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, workerCard, note }: DismissOpenInput) =>
+      apiFetch<{ data: { id: number; dismissed: true } }>(`${BASE}/${id}/dismiss`, {
+        method: 'POST',
+        body: JSON.stringify({ workerCard, note }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['tech-processes'] }),
+  });
+}
+
 /**
  * Stanje sesije za (radnik, operacija) razrešeno iz barkodova — vodi kiosk
  * START/STOP režim. `enabled=false` isključuje upit (npr. dok nema oba barkoda).
