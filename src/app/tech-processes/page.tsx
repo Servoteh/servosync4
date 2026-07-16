@@ -7,6 +7,7 @@ import { useAuth } from '@/lib/auth-context';
 import {
   PART_QUALITY,
   useCriticalTechProcesses,
+  useDeleteTechEntry,
   useReopenTechProcess,
   useRnProgress,
   useTechProcessCard,
@@ -307,6 +308,14 @@ interface ReopenTarget {
   id: number;
   operationNumber: number;
   workCenter: string;
+}
+
+/** Cilj radnje „Obriši kucanje" (jedan red kucanja + kontekst za potvrdu). */
+interface DeleteEntryTarget {
+  id: number;
+  operationNumber: number;
+  worker: string;
+  pieceCount: number;
 }
 
 /** Grupni header red kartice — agregat operacije IZ API-ja (operations[]), UI ništa ne sabira. */
@@ -647,7 +656,11 @@ function TechProcessCardDetail({ tp }: { tp: TechProcess }) {
   };
   const q = useTechProcessCard(key);
   const reopen = useReopenTechProcess();
+  const deleteEntry = useDeleteTechEntry();
   const [reopenTarget, setReopenTarget] = useState<ReopenTarget | null>(null);
+  // „Obriši kucanje" (C1) — cilj + opciona napomena; briše se tek posle potvrde.
+  const [deleteTarget, setDeleteTarget] = useState<DeleteEntryTarget | null>(null);
+  const [deleteNote, setDeleteNote] = useState('');
   const [pdfOpening, setPdfOpening] = useState(false);
   const [pdfError, setPdfError] = useState<string | null>(null);
 
@@ -663,6 +676,27 @@ function TechProcessCardDetail({ tp }: { tp: TechProcess }) {
       setReopenTarget(null);
     } catch {
       /* greška se prikazuje ispod */
+    }
+  }
+
+  function openDelete(target: DeleteEntryTarget) {
+    setDeleteNote('');
+    setDeleteTarget(target);
+  }
+
+  function closeDelete() {
+    deleteEntry.reset();
+    setDeleteTarget(null);
+  }
+
+  async function confirmDeleteEntry() {
+    if (!deleteTarget) return;
+    try {
+      await deleteEntry.mutateAsync({ id: deleteTarget.id, note: deleteNote });
+      setDeleteTarget(null);
+      toast('Kucanje obrisano.');
+    } catch {
+      /* greška se prikazuje u dijalogu */
     }
   }
 
@@ -692,7 +726,9 @@ function TechProcessCardDetail({ tp }: { tp: TechProcess }) {
   const opByKey = new Map(
     card.operations.map((o) => [cardGroupKey(o.operationNumber, o.workCenterCode), o]),
   );
-  const colCount = cardRowColumns.length;
+  // +1 za trailing kolonu akcija („Obriši kucanje") — grupni header redovi je
+  // premošćuju colSpan-om.
+  const colCount = cardRowColumns.length + 1;
 
   // Grupe sa kucanjima — iz card.rows (backend sortiran po OP, RC, id → kontiguozne).
   const kucaneGroups = new Map<string, CardRenderGroup>();
@@ -780,6 +816,8 @@ function TechProcessCardDetail({ tp }: { tp: TechProcess }) {
                   {c.header}
                 </th>
               ))}
+              {/* Trailing kolona akcija po redu kucanja („Obriši"). */}
+              <th className="h-9 w-px px-4" aria-label="Akcije" />
             </tr>
           </thead>
           <tbody>
@@ -823,6 +861,26 @@ function TechProcessCardDetail({ tp }: { tp: TechProcess }) {
                             {c.render(r)}
                           </td>
                         ))}
+                        {/* Obriši kucanje (C1) — po redu, iza tehnologija.write. */}
+                        <td className="px-4 text-right">
+                          <Can permission={PERMISSIONS.TEHNOLOGIJA_WRITE}>
+                            <button
+                              onClick={() =>
+                                openDelete({
+                                  id: r.id,
+                                  operationNumber: r.operationNumber,
+                                  worker: workerLabel(r.worker, r.workerId),
+                                  pieceCount: r.pieceCount,
+                                })
+                              }
+                              title="Obriši kucanje"
+                              aria-label={`Obriši kucanje OP ${r.operationNumber}`}
+                              className="rounded-control border border-status-danger/40 px-2 py-1 text-status-danger hover:bg-status-danger-bg"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" aria-hidden />
+                            </button>
+                          </Can>
+                        </td>
                       </tr>
                     ))}
                   </Fragment>
@@ -876,6 +934,61 @@ function TechProcessCardDetail({ tp }: { tp: TechProcess }) {
         </div>
       </Dialog>
 
+      {/* Obriši kucanje (C1) — potvrda + opciona napomena; brisanje se ne može opozvati. */}
+      <Dialog
+        open={deleteTarget != null}
+        onClose={closeDelete}
+        title="Obrisati kucanje?"
+        footer={
+          <>
+            <button
+              onClick={closeDelete}
+              className="rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2"
+            >
+              Otkaži
+            </button>
+            <button
+              disabled={deleteEntry.isPending}
+              onClick={confirmDeleteEntry}
+              className="rounded-control border border-status-danger/40 bg-status-danger-bg px-3 py-1.5 text-sm font-semibold text-status-danger disabled:opacity-50"
+            >
+              {deleteEntry.isPending ? 'Brisanje…' : 'Obriši'}
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-3 text-sm">
+          <p className="text-ink">
+            {deleteTarget && (
+              <>
+                Brisanje kucanja:{' '}
+                <span className="tnums font-semibold">OP {deleteTarget.operationNumber}</span> ·{' '}
+                {deleteTarget.worker} ·{' '}
+                <span className="tnums font-semibold">{formatNumber(deleteTarget.pieceCount)} kom</span>{' '}
+                — ovo se ne može opozvati.
+              </>
+            )}
+          </p>
+          <label className="block space-y-1">
+            <span className="text-xs text-ink-secondary">Napomena (opciono)</span>
+            <textarea
+              value={deleteNote}
+              onChange={(e) => setDeleteNote(e.target.value)}
+              rows={2}
+              className="w-full rounded-control border border-line bg-surface px-3 py-2 text-sm text-ink placeholder:text-ink-disabled focus-visible:border-accent focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+              placeholder="Razlog brisanja…"
+            />
+          </label>
+          {deleteEntry.error && (
+            <p className="text-sm text-status-danger" role="alert">
+              {deleteEntry.error instanceof ApiError
+                ? deleteEntry.error.message
+                : (deleteEntry.error as Error)?.message}
+            </p>
+          )}
+        </div>
+      </Dialog>
+
       {/* QC dokumenti (K4) — prilozi uz kucanje; samo uz kvalitet.read (write override na akcijama). */}
       <Can permission={PERMISSIONS.KVALITET_READ}>
         <QcDocumentsSection tp={tp} />
@@ -906,7 +1019,7 @@ function PostupciPanel() {
             setQ(v);
             setPage(1);
           }}
-          placeholder="Ident broj…"
+          placeholder="RN / crtež / naziv…"
         />
       </div>
 

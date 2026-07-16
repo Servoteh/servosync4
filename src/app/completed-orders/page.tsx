@@ -112,7 +112,7 @@ export default function CompletedOrdersPage() {
               setQ(v);
               resetPage();
             }}
-            placeholder="RN / ident / pozicija…"
+            placeholder="RN / ident / crtež / pozicija…"
           />
         }
       />

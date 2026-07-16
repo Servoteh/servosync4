@@ -387,7 +387,14 @@ export interface ControlResult {
   techProcessOpened: boolean;
   workOrder: KioskWorkOrder | null;
   label: LabelData;
-  /** true = dorada/škart — child RN (-D/-S) je P2 (još se ne kreira). */
+  /**
+   * Automatski kreiran child RN dorade/škarta (-D/-S) — legacy paritet
+   * KreirajNalogDoradeIliSkarta (kopija celog TP parenta, količina = škart/dorada).
+   * Opciono/defanzivno: null kad kreiranje nije uspelo (v. `childOrderPending`) ili
+   * kod kvaliteta „dobar"; undefined kad stariji backend polje ne vraća.
+   */
+  childOrder?: { id: number; identNumber: string } | null;
+  /** true = dorada/škart, a child RN (-D/-S) NIJE automatski kreiran (fallback: javi tehnologu). */
   childOrderPending: boolean;
   /**
    * true = kontrola sa kvalitetom dorada/škart je otvorila DRAFT izveštaj o neusaglašenosti

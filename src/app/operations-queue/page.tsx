@@ -228,7 +228,7 @@ export default function OperationsQueuePage() {
               setQ(v);
               resetPage();
             }}
-            placeholder="RN / ident / pozicija…"
+            placeholder="RN / ident / crtež / pozicija…"
           />
         }
       />

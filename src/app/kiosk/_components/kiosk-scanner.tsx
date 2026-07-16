@@ -517,7 +517,14 @@ export function KioskScanner() {
       if (data.confirmedOperations > 0)
         parts.push(`Potvrđeno ${formatNumber(data.confirmedOperations)} neotkucanih operacija.`);
       if (data.workOrderCompleted) parts.push('Radni nalog je završen.');
-      if (data.childOrderPending) parts.push('Nalog za doradu/škart sledi u narednoj fazi.');
+      // C2: dorada/škart → prikaži AUTOMATSKI kreiran child RN (-D/-S) istaknuto (na
+      // vrhu detalja); ako nije kreiran (childOrderPending), uputi kontrolora tehnologu.
+      const kindLabel = input.qualityTypeId === 1 ? 'doradu' : 'škart';
+      if (data.childOrder) {
+        parts.unshift(`Kreiran nalog za ${kindLabel}: ${data.childOrder.identNumber}`);
+      } else if (data.childOrderPending) {
+        parts.push('Nalog za škart/doradu nije automatski kreiran — javite tehnologu.');
+      }
       // K0.3: auto-nacrt izveštaja o neusaglašenosti otvoren (dorada/škart) — uputi kontrolora.
       if (data.nonconformityDraftCreated)
         parts.push('Otvoren nacrt izveštaja o neusaglašenosti — dopunite u Kontroli kvaliteta.');

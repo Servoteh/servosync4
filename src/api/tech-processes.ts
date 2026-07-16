@@ -73,11 +73,12 @@ interface TpListParams {
   q?: string;
 }
 
-/** Paginirana lista tehnoloških postupaka (+ filter po ident broju). */
+/** Paginirana lista tehnoloških postupaka (+ pretraga po RN / crtežu / nazivu). */
 export function useTechProcesses(params: TpListParams) {
   const qs = new URLSearchParams();
   if (params.page && params.page > 1) qs.set('page', String(params.page));
-  if (params.q) qs.set('identNumber', params.q);
+  // `q` = široka pretraga (RN / crtež / naziv) — backend gleda `q` pre `identNumber`.
+  if (params.q) qs.set('q', params.q);
   const query = qs.toString();
   return useQuery({
     queryKey: ['tech-processes', params],
@@ -244,6 +245,36 @@ export function useReopenTechProcess() {
       apiFetch<{ data: { id: number; reopened: number } }>(
         `/v1/tech-processes/${id}/reopen`,
         { method: 'POST' },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['tech-processes'] }),
+  });
+}
+
+// ------------------------------------------------------------------ OBRIŠI KUCANJE (DELETE /:id)
+
+/** Cilj brisanja jednog kucanja — id reda + opciona napomena (audit). */
+export interface DeleteTechEntryInput {
+  id: number;
+  /** Napomena uz brisanje (opciono; upisuje se u audit_log.metadata). */
+  note?: string;
+}
+
+/**
+ * AUDITED brisanje jednog kucanja (DELETE /:id) — backend snimi snapshot reda u
+ * `audit_log` pa ga obriše (ne može se opozvati). Iza `tehnologija.write`. Telo
+ * `{ note }` je opciono. Po uspehu poništava keš postupaka (lista + kartica dele
+ * prefiks `['tech-processes']`).
+ */
+export function useDeleteTechEntry() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, note }: DeleteTechEntryInput) =>
+      apiFetch<{ data: { id: number; deleted: boolean; backedUpTo: string } }>(
+        `/v1/tech-processes/${id}`,
+        {
+          method: 'DELETE',
+          body: JSON.stringify({ note: note?.trim() || undefined }),
+        },
       ),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['tech-processes'] }),
   });
