@@ -26,7 +26,11 @@ import {
   CooperationQueryDto,
   DrawingsQueryDto,
   OperationsQueryDto,
+  OpSnapshotQueryDto,
+  ResolveDrawingNoQueryDto,
+  RnByIdsQueryDto,
   SearchOpsQueryDto,
+  TpOptionsQueryDto,
 } from "./dto/plan-proizvodnje-query.dto";
 import {
   BulkReassignDto,
@@ -117,6 +121,31 @@ export class PlanProizvodnjeController {
   @Get("bridge-status")
   bridgeStatus(@Req() req: AuthedRequest) {
     return this.pp.bridgeStatus(req.user.email);
+  }
+
+  // ---------- Lookups (C2-P7, GAP-PM-26; dele se s Lokacijama) ----------
+
+  @Get("lookups/op-snapshot")
+  opSnapshot(@Req() req: AuthedRequest, @Query() q: OpSnapshotQueryDto) {
+    return this.pp.opSnapshot(req.user.email, q);
+  }
+
+  @Get("lookups/tp-options")
+  tpOptions(@Req() req: AuthedRequest, @Query() q: TpOptionsQueryDto) {
+    return this.pp.tpOptions(req.user.email, q);
+  }
+
+  @Get("lookups/resolve-drawing-no")
+  resolveDrawingNo(
+    @Req() req: AuthedRequest,
+    @Query() q: ResolveDrawingNoQueryDto,
+  ) {
+    return this.pp.resolveDrawingNo(req.user.email, q);
+  }
+
+  @Get("lookups/rn-by-ids")
+  rnByIds(@Req() req: AuthedRequest, @Query() q: RnByIdsQueryDto) {
+    return this.pp.rnByIds(req.user.email, q.ids);
   }
 
   // ---------- Overlays (edit) ----------

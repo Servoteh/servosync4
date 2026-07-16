@@ -12,6 +12,14 @@ import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
 import { mapSy15Error } from "../../common/sy15-error";
 import { jsonSafe } from "../../common/json-safe";
 import { sanitizeDrawingNo } from "../../common/drawings";
+import { normalizeLocMovementKeys } from "../locations/barcode";
+import {
+  buildIdentCandidates,
+  parseOpRef,
+  pickBestBigtehnWoRow,
+  sortTpOptions,
+  type BigtehnWoRow,
+} from "./lookups";
 import {
   NAMED_DEPARTMENTS,
   getDepartment,
@@ -21,6 +29,9 @@ import type {
   CooperationQueryDto,
   DrawingsQueryDto,
   OperationsQueryDto,
+  OpSnapshotQueryDto,
+  ResolveDrawingNoQueryDto,
+  TpOptionsQueryDto,
 } from "./dto/plan-proizvodnje-query.dto";
 import type {
   BulkReassignDto,
@@ -298,6 +309,261 @@ export class PlanProizvodnjeService {
           });
       }
       return { data: [...seen.values()] };
+    });
+  }
+
+  // ==========================================================================
+  // LOOKUPS (C2-P7, GAP-PM-26; MODULE_SPEC §3 „dele se s Lokacijama")
+  // ==========================================================================
+  // Port 1.0 planProizvodnje.js (fetchBigtehnOpSnapshotByRnAndTp / fetchTpOptions /
+  // resolveDrawingNoForPredmetTp / fetchBigtehnWorkOrdersByIds) nad sy15 bigtehn_*
+  // kešom. Read-only (withUserRls). Kanonizacija/izbor u ./lookups.ts (unit-test).
+
+  /**
+   * BigTehn snapshot za par (RN ident, TP ref). 9400 dash/slash kanonizacija
+   * kandidata → v_active_bigtehn_work_orders pa bigtehn_work_orders_cache po
+   * kandidatu (poštuje MES listu) → pickBest → komada_done iz tech routing keša
+   * (numerički TP) → kupac best-effort. Port 1.0 ~594–783.
+   */
+  async opSnapshot(email: string, q: OpSnapshotQueryDto) {
+    const ident0 = String(q.rn ?? "").trim();
+    if (!ident0) return { data: null };
+    const { ident, opForIdent, opNumRoute, opHy, opPairNoLead } = parseOpRef(
+      ident0,
+      q.tp ?? null,
+    );
+    const opRaw = (q.tp ?? "").trim();
+    let varFilter: number | null = null;
+    if (q.varijanta != null && String(q.varijanta).trim() !== "") {
+      const v = parseInt(String(q.varijanta).trim(), 10);
+      if (Number.isFinite(v)) varFilter = v;
+    }
+    const candidates = buildIdentCandidates(
+      ident,
+      opForIdent,
+      opHy,
+      opPairNoLead,
+    );
+
+    return this.read(email, async (tx) => {
+      const tryFetchWo = async (
+        table: "v_active_bigtehn_work_orders" | "bigtehn_work_orders_cache",
+        idCandidate: string,
+      ): Promise<BigtehnWoRow[]> => {
+        const varSql =
+          varFilter != null
+            ? Prisma.sql`AND varijanta = ${varFilter}`
+            : Prisma.empty;
+        const rows = await tx.$queryRaw<BigtehnWoRow[]>(
+          Prisma.sql`SELECT id, ident_broj, broj_crteza, komada, naziv_dela, materijal,
+              dimenzija_materijala, customer_id, rok_izrade, status_rn, revizija
+            FROM ${Prisma.raw(table)}
+            WHERE ident_broj = ${idCandidate} ${varSql} LIMIT 8`,
+        );
+        return Array.isArray(rows) ? rows : [];
+      };
+
+      let woRows: BigtehnWoRow[] = [];
+      for (const c of candidates) {
+        woRows = await tryFetchWo("v_active_bigtehn_work_orders", c);
+        if (woRows.length === 0)
+          woRows = await tryFetchWo("bigtehn_work_orders_cache", c);
+        if (woRows.length > 0) break;
+      }
+      if (woRows.length === 0) return { data: null };
+      const wo = pickBestBigtehnWoRow(woRows, ident, opForIdent);
+      if (!wo) return { data: null };
+      const workOrderId = wo.id != null ? Number(wo.id) : null;
+      const total = wo.komada != null ? Number(wo.komada) : null;
+
+      // komada_done iz tech routing keša (samo numerički TP).
+      let done: number | null = null;
+      if (opNumRoute != null && Number.isFinite(opNumRoute) && workOrderId != null) {
+        const rows = await tx.$queryRaw<{ komada: number | bigint | null }[]>(
+          Prisma.sql`SELECT komada FROM bigtehn_tech_routing_cache
+            WHERE work_order_id = ${workOrderId}::bigint AND operacija = ${opNumRoute}::int LIMIT 200`,
+        );
+        done = Array.isArray(rows)
+          ? rows.reduce((s, r) => s + (Number(r?.komada) || 0), 0)
+          : 0;
+      }
+
+      // Kupac (best-effort — ne blokira na grešku).
+      let customerName: string | null = null;
+      let customerShort: string | null = null;
+      if (wo.customer_id != null) {
+        try {
+          const rows = await tx.$queryRaw<
+            { name: string | null; short_name: string | null }[]
+          >(
+            Prisma.sql`SELECT name, short_name FROM bigtehn_customers_cache
+              WHERE id = ${Number(wo.customer_id)} LIMIT 1`,
+          );
+          if (rows[0]) {
+            customerName = rows[0].name ?? null;
+            customerShort = rows[0].short_name ?? null;
+          }
+        } catch {
+          /* kupac je best-effort */
+        }
+      }
+
+      return {
+        data: jsonSafe({
+          rn_ident_broj: wo.ident_broj != null ? String(wo.ident_broj) : ident,
+          broj_crteza: sanitizeDrawingNo(wo.broj_crteza ?? "") ?? "",
+          komada_total: Number.isFinite(total as number) ? total : null,
+          komada_done: done,
+          naziv_dela: wo.naziv_dela ?? null,
+          materijal: wo.materijal ?? null,
+          dimenzija_materijala: wo.dimenzija_materijala ?? null,
+          customer_id: wo.customer_id ?? null,
+          customer_name: customerName,
+          customer_short: customerShort,
+          work_order_id: workOrderId,
+          operacija:
+            opNumRoute != null && Number.isFinite(opNumRoute)
+              ? opNumRoute
+              : opRaw === ""
+                ? null
+                : opRaw,
+          revizija:
+            wo.revizija != null && String(wo.revizija).trim() !== ""
+              ? String(wo.revizija).trim()
+              : null,
+        }),
+      };
+    });
+  }
+
+  /**
+   * Distinct TP opcije za broj predmeta (prvi segment ident_broj). RN sa „/" u
+   * ident-u → TP = drugi segment; bez „/" → operacije iz tech routing keša.
+   * Port 1.0 fetchTpOptionsForPredmetOrder ~793.
+   */
+  async tpOptions(email: string, q: TpOptionsQueryDto) {
+    const ident = String(q.order ?? "").trim();
+    if (!ident) return { data: [] };
+    const variants = new Set<string>([ident]);
+    if (/^\d+$/.test(ident)) variants.add(String(parseInt(ident, 10)));
+
+    return this.read(email, async (tx) => {
+      const byWoId = new Map<number, BigtehnWoRow>();
+      for (const v of variants) {
+        if (!v) continue;
+        const rows = await tx.$queryRaw<BigtehnWoRow[]>(
+          Prisma.sql`SELECT id, ident_broj, broj_crteza, revizija
+            FROM bigtehn_work_orders_cache
+            WHERE ident_broj = ${v} OR ident_broj LIKE ${v + ".%"}
+            LIMIT 500`,
+        );
+        for (const r of rows) {
+          if (r?.id == null) continue;
+          byWoId.set(Number(r.id), r);
+        }
+      }
+
+      const out: {
+        tp: string;
+        broj_crteza: string;
+        ident_broj: string;
+        revizija: string;
+      }[] = [];
+      const seenTp = new Set<string>();
+      for (const r of byWoId.values()) {
+        const ib = String(r.ident_broj ?? "").trim();
+        const parts = ib.split("/");
+        const tail = parts.length >= 2 ? String(parts[1] ?? "").trim() : "";
+        const dr = r.broj_crteza != null ? String(r.broj_crteza).trim() : "";
+        const rv = r.revizija != null ? String(r.revizija).trim() : "";
+        if (tail) {
+          if (seenTp.has(tail)) continue;
+          seenTp.add(tail);
+          out.push({ tp: tail, broj_crteza: dr, ident_broj: ib, revizija: rv });
+          continue;
+        }
+        const wid = Number(r.id);
+        if (!Number.isFinite(wid)) continue;
+        const routes = await tx.$queryRaw<{ operacija: unknown }[]>(
+          Prisma.sql`SELECT operacija FROM bigtehn_tech_routing_cache
+            WHERE work_order_id = ${wid}::bigint ORDER BY operacija ASC LIMIT 800`,
+        );
+        for (const row of routes) {
+          if (row?.operacija == null) continue;
+          const tp = String(row.operacija).trim();
+          if (!tp || seenTp.has(tp)) continue;
+          seenTp.add(tp);
+          out.push({ tp, broj_crteza: dr, ident_broj: ib, revizija: rv });
+        }
+      }
+      return { data: jsonSafe(sortTpOptions(out)) };
+    });
+  }
+
+  /**
+   * Autofill crteža za par (nalog, TP) — Brzo premeštanje / sken u Lokacijama.
+   * Prvo tačan TP iz tpOptions, pa pun snapshot; sanitizacija placeholder tačaka
+   * (1500+ RN sa čisto-tačka crtežom). Port 1.0 resolveDrawingNoForPredmetTp ~535.
+   */
+  async resolveDrawingNo(email: string, q: ResolveDrawingNoQueryDto) {
+    const norm = normalizeLocMovementKeys(
+      String(q.order ?? "").trim(),
+      String(q.tp ?? "").trim(),
+    );
+    const order = norm.orderNo;
+    const tp = norm.itemRefId;
+    if (!order || !tp) return { data: { broj_crteza: "", revizija: "", snap: null } };
+
+    const optsRes = await this.tpOptions(email, { order });
+    const opts = (optsRes.data as { tp: string; broj_crteza: string; revizija: string }[]) ?? [];
+    const hit = opts.find((o) => String(o.tp ?? "").trim() === tp);
+    const snapRes = await this.opSnapshot(email, { rn: order, tp });
+    const snap = snapRes.data as
+      | { broj_crteza?: string; revizija?: string }
+      | null;
+
+    if (hit?.broj_crteza) {
+      const dr = sanitizeDrawingNo(hit.broj_crteza) ?? "";
+      if (dr) {
+        const rev = hit.revizija ? String(hit.revizija).trim() : "";
+        return {
+          data: {
+            broj_crteza: dr,
+            revizija: rev || (snap?.revizija ? String(snap.revizija).trim() : ""),
+            snap: snap ? { ...snap, broj_crteza: dr, revizija: rev || snap.revizija } : null,
+          },
+        };
+      }
+    }
+    return {
+      data: {
+        broj_crteza: sanitizeDrawingNo(snap?.broj_crteza ?? "") ?? "",
+        revizija: snap?.revizija ? String(snap.revizija).trim() : "",
+        snap,
+      },
+    };
+  }
+
+  /**
+   * Aktivni RN redovi po CSV id-jeva (bigtehn_work_orders_cache.id, npr. iz
+   * projekt_bigtehn_rn). Port 1.0 fetchBigtehnWorkOrdersByIds ~867.
+   */
+  async rnByIds(email: string, idsCsv: string) {
+    const uniq = [
+      ...new Set(
+        String(idsCsv ?? "")
+          .split(",")
+          .map((s) => Number(s.trim()))
+          .filter((n) => Number.isFinite(n)),
+      ),
+    ];
+    if (!uniq.length) return { data: [] };
+    return this.read(email, async (tx) => {
+      const rows = await tx.$queryRaw(
+        Prisma.sql`SELECT id, ident_broj, broj_crteza, naziv_dela, komada, is_mes_active
+          FROM v_active_bigtehn_work_orders WHERE id IN (${Prisma.join(uniq)})`,
+      );
+      return { data: jsonSafe(rows) };
     });
   }
 

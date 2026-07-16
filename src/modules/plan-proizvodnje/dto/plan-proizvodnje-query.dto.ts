@@ -28,3 +28,29 @@ export class DrawingsQueryDto {
   @Matches(DIGITS) workOrder!: string;
   @Matches(DIGITS) line!: string;
 }
+
+/* ── Lookups (C2-P7, GAP-PM-26; dele se s Lokacijama) ── */
+
+export class OpSnapshotQueryDto {
+  /** RN ident (prvi segment ident_broj, npr. „9400"). */
+  @IsString() rn!: string;
+  /** TP ref (npr. „522" ili „7-5-S1"); prazno = fallback na sam nalog. */
+  @IsOptional() @IsString() tp?: string;
+  /** Varijanta iz RNZ barkoda (segment posle TP) — filter kad je poznata. */
+  @IsOptional() @IsString() varijanta?: string;
+}
+
+export class TpOptionsQueryDto {
+  /** Broj predmeta (prvi segment ident_broj). */
+  @IsString() order!: string;
+}
+
+export class ResolveDrawingNoQueryDto {
+  @IsString() order!: string;
+  @IsString() tp!: string;
+}
+
+export class RnByIdsQueryDto {
+  /** CSV bigtehn_work_orders_cache.id (npr. „12,34,56"). */
+  @IsString() ids!: string;
+}
