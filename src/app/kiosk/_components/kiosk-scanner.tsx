@@ -843,6 +843,7 @@ export function KioskScanner() {
             key={operation.raw}
             operationLabel={operationLabel}
             planned={planned}
+            made={made}
             busy={control.isPending}
             onSubmit={onKontrola}
           />

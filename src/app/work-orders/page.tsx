@@ -150,6 +150,9 @@ function WorkOrderDetail({
     op: null,
   });
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // Potvrda brisanja pojedinačne operacije TP-a (isti obrazac kao „Obriši RN") —
+  // trash u tabeli otvara dijalog sa brojem operacije + RC pre delOp.mutate.
+  const [confirmDeleteOp, setConfirmDeleteOp] = useState<WorkOrderOperation | null>(null);
   const [printing, setPrinting] = useState(false);
   const [printError, setPrintError] = useState<string | null>(null);
   const busy =
@@ -450,15 +453,14 @@ function WorkOrderDetail({
             pieceCount={rn.pieceCount}
             canEdit={canEdit}
             onEdit={(op) => setOpDialog({ open: true, op })}
-            onDelete={(op) => delOp.mutate({ workOrderId: id, operationId: op.id })}
+            onDelete={(op) => {
+              delOp.reset();
+              setConfirmDeleteOp(op);
+            }}
             deleteDisabled={busy}
           />
         )}
-        {delOp.error && (
-          <p className="mt-1.5 text-sm text-status-danger" role="alert">
-            {(delOp.error as Error).message}
-          </p>
-        )}
+        {/* Greška brisanja operacije se prikazuje u dijalogu potvrde (BUG-P2-08). */}
       </div>
 
       <CopyFromWorkOrderDialog targetId={id} open={copyOpen} onClose={() => setCopyOpen(false)} />
@@ -569,6 +571,64 @@ function WorkOrderDetail({
                 )}
               </div>
             </Can>
+          )}
+        </div>
+      </Dialog>
+
+      {/* Potvrda brisanja operacije (BUG-P2-08) — isti obrazac kao „Obriši RN":
+          jedina destruktivna radnja koja je ranije zvala mutate bez potvrde. */}
+      <Dialog
+        open={!!confirmDeleteOp}
+        onClose={() => {
+          delOp.reset();
+          setConfirmDeleteOp(null);
+        }}
+        title="Obrisati operaciju?"
+        footer={
+          <>
+            <button
+              onClick={() => {
+                delOp.reset();
+                setConfirmDeleteOp(null);
+              }}
+              className="rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2"
+            >
+              Otkaži
+            </button>
+            <button
+              disabled={delOp.isPending}
+              onClick={async () => {
+                if (!confirmDeleteOp) return;
+                try {
+                  await delOp.mutateAsync({ workOrderId: id, operationId: confirmDeleteOp.id });
+                  setConfirmDeleteOp(null);
+                } catch {
+                  /* greška se prikazuje ispod */
+                }
+              }}
+              className="rounded-control bg-status-danger px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-50"
+            >
+              {delOp.isPending ? 'Brisanje…' : 'Obriši operaciju'}
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-3 text-sm">
+          <p className="text-ink">
+            Operacija{' '}
+            <span className="tnums font-semibold">{confirmDeleteOp?.operationNumber}</span>{' '}
+            (RC{' '}
+            <span className="font-semibold">
+              {confirmDeleteOp?.operation?.workCenterName ?? confirmDeleteOp?.workCenterCode}
+            </span>
+            ) biće obrisana iz tehnološkog postupka. Ova radnja se ne može opozvati.
+          </p>
+          {delOp.error && (
+            <p className="text-sm text-status-danger" role="alert">
+              {delOp.error instanceof ApiError
+                ? delOp.error.message
+                : (delOp.error as Error)?.message}
+            </p>
           )}
         </div>
       </Dialog>

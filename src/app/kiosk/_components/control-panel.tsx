@@ -37,17 +37,24 @@ export interface ControlSubmit {
 export function ControlPanel({
   operationLabel,
   planned,
+  made = 0,
   busy,
   onSubmit,
 }: {
   operationLabel: string;
   planned: number | null;
+  /** Već iskontrolisano (kumulativ za operaciju) — default = PREOSTALO (plan−made), ne ceo plan. */
+  made?: number;
   busy: boolean;
   onSubmit: (input: ControlSubmit) => void;
 }) {
-  const [pieces, setPieces] = useState(planned && planned > 0 ? planned : 1);
+  // Default = PREOSTALO za kontrolu (BUG-P2-12): pri delimičnoj kontroli kontrolor
+  // ne sme refleksno da potvrdi ceo plan. Bez plana (null) pada na 1.
+  const remaining = planned != null ? Math.max(0, planned - made) : null;
+  const defaultPieces = remaining && remaining > 0 ? remaining : 1;
+  const [pieces, setPieces] = useState(defaultPieces);
   const [qualityTypeId, setQualityTypeId] = useState(0);
-  const [rows, setRows] = useState<LocRow[]>([{ position: null, quantity: planned && planned > 0 ? planned : 1 }]);
+  const [rows, setRows] = useState<LocRow[]>([{ position: null, quantity: defaultPieces }]);
   // K0.1 napomena kontrolora (opciono) — otvara se dugmetom, ide u ControlSubmit.note.
   const [note, setNote] = useState('');
   const [showNote, setShowNote] = useState(false);
