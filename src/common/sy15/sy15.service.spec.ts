@@ -19,6 +19,7 @@ describe("Sy15Service GUC most", () => {
 
   function makeService() {
     const calls: string[] = [];
+    const txOptions: (unknown | undefined)[] = [];
     const tx = {
       $queryRaw: jest.fn((strings: TemplateStringsArray) => {
         calls.push(strings.join("$"));
@@ -32,10 +33,13 @@ describe("Sy15Service GUC most", () => {
     const svc = new Sy15Service();
     // Zameni realan PrismaClient stubom (nema žive baze u unit testu).
     (svc as unknown as { client: unknown }).client = {
-      $transaction: (fn: (t: unknown) => Promise<unknown>) => fn(tx),
+      $transaction: (fn: (t: unknown) => Promise<unknown>, options?: unknown) => {
+        txOptions.push(options);
+        return fn(tx);
+      },
       $disconnect: () => Promise.resolve(),
     };
-    return { svc, calls };
+    return { svc, calls, txOptions };
   }
 
   it("withUserRls: GUC claims PA SET LOCAL ROLE authenticated, u istoj tx", async () => {
@@ -52,6 +56,18 @@ describe("Sy15Service GUC most", () => {
     // authenticated nema SELECT na auth.users.
     expect(claimsIdx).toBeGreaterThanOrEqual(0);
     expect(roleIdx).toBeGreaterThan(claimsIdx);
+  });
+
+  it("withUserRls: opcioni {timeoutMs} ide u $transaction options (per-poziv, ne globalni default)", async () => {
+    const { svc, txOptions } = makeService();
+    // Bez opcije → nema options (globalni Prisma default ostaje netaknut).
+    await svc.withUserRls("test@servoteh.com", () => Promise.resolve(1));
+    expect(txOptions[0]).toBeUndefined();
+    // Sa opcijom → { timeout: N } se prosleđuje u $transaction.
+    await svc.withUserRls("test@servoteh.com", () => Promise.resolve(2), {
+      timeoutMs: 30000,
+    });
+    expect(txOptions[1]).toEqual({ timeout: 30000 });
   });
 
   it("withUser: BEZ SET ROLE (Reversi/Lokacije ponašanje netaknuto)", async () => {

@@ -87,12 +87,21 @@ export class Sy15Service implements OnModuleDestroy {
   async withUserRls<T>(
     email: string,
     fn: (tx: Sy15Tx) => Promise<T>,
+    opts?: { timeoutMs?: number },
   ): Promise<T> {
-    return this.db.$transaction(async (tx) => {
-      await this.setClaims(tx, email);
-      await tx.$executeRaw`SET LOCAL ROLE authenticated`;
-      return fn(tx);
-    });
+    return this.db.$transaction(
+      async (tx) => {
+        await this.setClaims(tx, email);
+        await tx.$executeRaw`SET LOCAL ROLE authenticated`;
+        return fn(tx);
+      },
+      // PER-POZIV timeout (default Prisma je 5000ms). Neki read-ovi skeniraju
+      // pun view (npr. plan-proizvodnje operations/all nad
+      // v_production_operations_effective ~5.3s) → interaktivna tx bi pukla sa
+      // „Transaction already closed". Prosleđuje se SAMO kad je zadat; globalni
+      // default ostaje netaknut (`withUser`/idempotent putanje se ne diraju).
+      opts?.timeoutMs != null ? { timeout: opts.timeoutMs } : undefined,
+    );
   }
 
   /**

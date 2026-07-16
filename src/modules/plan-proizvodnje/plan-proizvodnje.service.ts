@@ -50,6 +50,14 @@ const DEPT_LIMIT = 5000;
 const SEARCH_LIMIT = 500;
 const SEARCH_MIN_LEN = 2;
 
+/**
+ * PER-POZIV tx timeout za pune skenove `v_production_operations_effective`
+ * (operations/all + odeljenje bez filtera). Merena latencija ~5.3s > Prisma
+ * default 5000ms → interaktivna tx puca („Transaction already closed", 500).
+ * 30s daje širok bafer, ostali read-ovi zadržavaju default.
+ */
+const FULL_SCAN_TIMEOUT_MS = 30_000;
+
 const PP_BRIDGE_JOBS = [
   "production_work_orders",
   "production_work_order_lines",
@@ -105,44 +113,60 @@ export class PlanProizvodnjeService {
     }
     if (q.dept) {
       const cond = this.deptWhere(q.dept);
-      return this.read(email, async (tx) => {
-        const where =
-          cond === Prisma.empty
-            ? Prisma.sql`WHERE ${OPEN_OPS}`
-            : Prisma.sql`WHERE ${OPEN_OPS} AND ${cond}`;
-        const data = await tx.$queryRaw(
-          Prisma.sql`SELECT * FROM v_production_operations_effective ${where} ${OPS_SORT} LIMIT ${DEPT_LIMIT}`,
-        );
-        return { data: jsonSafe(data) };
-      });
+      return this.read(
+        email,
+        async (tx) => {
+          const where =
+            cond === Prisma.empty
+              ? Prisma.sql`WHERE ${OPEN_OPS}`
+              : Prisma.sql`WHERE ${OPEN_OPS} AND ${cond}`;
+          const data = await tx.$queryRaw(
+            Prisma.sql`SELECT * FROM v_production_operations_effective ${where} ${OPS_SORT} LIMIT ${DEPT_LIMIT}`,
+          );
+          return { data: jsonSafe(data) };
+        },
+        // Odeljenje „Sve"/„Ostalo" ne suzava po mašini → pun sken view-a.
+        { timeoutMs: FULL_SCAN_TIMEOUT_MS },
+      );
     }
     throw new BadRequestException("Zadaj ?machine= ili ?dept=.");
   }
 
   /** Sve otvorene operacije (agregatni prikazi) — min kolone, count + truncated na 10k. */
   async operationsAll(email: string) {
-    return this.read(email, async (tx) => {
-      const [rows, cnt] = await Promise.all([
-        tx.$queryRaw(
-          Prisma.sql`SELECT line_id, work_order_id, effective_machine_code, broj_crteza, naziv_dela,
+    return this.read(
+      email,
+      async (tx) => {
+        const [rows, cnt] = await Promise.all([
+          tx.$queryRaw(
+            // Kolone za FE paritet (GAP-PM-05/06/07): kupac (name/short), G2
+            // dorada/škart (is_rework/is_scrap + komadi), broj skica, bigtehn
+            // crtež flag, prethodna operacija (spremnost „čeka op. NN").
+            Prisma.sql`SELECT line_id, work_order_id, effective_machine_code, broj_crteza, naziv_dela,
               rn_ident_broj, tpz_min, tk_min, komada_total, komada_done, real_seconds, rok_izrade,
               is_non_machining, assigned_machine_code, local_status, opis_rada, operacija, cam_ready,
-              is_ready_for_machine, is_urgent, auto_sort_bucket
+              is_ready_for_machine, is_urgent, auto_sort_bucket,
+              customer_name, customer_short, drawings_count, has_bigtehn_drawing,
+              is_rework, is_scrap, rework_pieces, scrap_pieces,
+              previous_operation_operacija, previous_operation_status, previous_operation_machine_code
             FROM v_production_operations_effective
             WHERE ${OPEN_OPS} AND effective_machine_code IS NOT NULL
             ${OPS_SORT} LIMIT ${ALL_OPS_LIMIT}`,
-        ),
-        tx.$queryRaw<{ n: bigint }[]>(
-          Prisma.sql`SELECT count(*) AS n FROM v_production_operations_effective
-            WHERE ${OPEN_OPS} AND effective_machine_code IS NOT NULL`,
-        ),
-      ]);
-      const total = Number(cnt[0]?.n ?? 0);
-      return {
-        data: jsonSafe(rows),
-        meta: { total, truncated: total > ALL_OPS_LIMIT, limit: ALL_OPS_LIMIT },
-      };
-    });
+          ),
+          tx.$queryRaw<{ n: bigint }[]>(
+            Prisma.sql`SELECT count(*) AS n FROM v_production_operations_effective
+              WHERE ${OPEN_OPS} AND effective_machine_code IS NOT NULL`,
+          ),
+        ]);
+        const total = Number(cnt[0]?.n ?? 0);
+        return {
+          data: jsonSafe(rows),
+          meta: { total, truncated: total > ALL_OPS_LIMIT, limit: ALL_OPS_LIMIT },
+        };
+      },
+      // Pun sken view-a bez filtera po mašini (merena latencija ~5.3s).
+      { timeoutMs: FULL_SCAN_TIMEOUT_MS },
+    );
   }
 
   /** Pretraga operacija po crtežu/RN (paritet loadOperationsByRnOrDrawingQuery). */
@@ -670,9 +694,10 @@ export class PlanProizvodnjeService {
   private async read<T>(
     email: string,
     fn: (tx: Sy15Tx) => Promise<T>,
+    opts?: { timeoutMs?: number },
   ): Promise<T> {
     try {
-      return await this.sy15.withUserRls(email, fn);
+      return await this.sy15.withUserRls(email, fn, opts);
     } catch (e) {
       mapSy15Error(e);
     }
