@@ -1004,11 +1004,27 @@ export class PlanProizvodnjeService {
       parts.push(
         Prisma.sql`(effective_machine_code = ${p} OR effective_machine_code LIKE ${p + ".%"})`,
       );
-    if (!parts.length) return null;
-    let cond = Prisma.sql`(${Prisma.join(parts, " OR ")})`;
-    if (d.excludeMachineCodes?.length)
-      cond = Prisma.sql`(${cond} AND effective_machine_code NOT IN (${Prisma.join(d.excludeMachineCodes)}))`;
-    return cond;
+    // Kod-matching sa exclude-om (na kraju, samo nad mašinskim kodom).
+    let codeCond: Prisma.Sql | null = null;
+    if (parts.length) {
+      codeCond = Prisma.sql`(${Prisma.join(parts, " OR ")})`;
+      if (d.excludeMachineCodes?.length)
+        codeCond = Prisma.sql`(${codeCond} AND effective_machine_code NOT IN (${Prisma.join(d.excludeMachineCodes)}))`;
+    }
+    // Name-pattern grana (port 1.0 operationNamePatterns): opis_rada ILIKE '%pat%'.
+    // Nezavisna OR grana (ne podleže machine exclude-u — 1.0 je matchuje po nazivu
+    // bez obzira na mašinu). Server nema unaccent — ASCII-bazičan match (paritet 1.0).
+    const nameParts = (d.operationNamePatterns ?? [])
+      .map((p) => String(p).trim())
+      .filter(Boolean)
+      .map((p) => Prisma.sql`opis_rada ILIKE ${"%" + p + "%"}`);
+    const nameCond = nameParts.length
+      ? Prisma.sql`(${Prisma.join(nameParts, " OR ")})`
+      : null;
+
+    if (codeCond && nameCond)
+      return Prisma.sql`(${codeCond} OR ${nameCond})`;
+    return codeCond ?? nameCond;
   }
 
   private async read<T>(

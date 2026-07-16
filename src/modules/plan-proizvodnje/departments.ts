@@ -13,6 +13,14 @@ export interface DepartmentDef {
   machineCodes?: string[];
   machinePrefixes?: string[];
   excludeMachineCodes?: string[];
+  /**
+   * Dodatno hvatanje operacija po NAZIVU rada (opis_rada ILIKE '%pat%') — port
+   * 1.0 `loadOperationsForDept` operationNamePatterns (planProizvodnje.js:329-335).
+   * OR-uje se sa kod-matchingom (mašina ILI naziv). Trenutno nijedno 1.0 odeljenje
+   * ne definiše name-patterne (svi su kod-based), pa je ovo prazna grana radi
+   * mehanizamskog pariteta — popuni se samo ako 1.0 dept dobije patterne.
+   */
+  operationNamePatterns?: string[];
   isFallback?: boolean;
 }
 
