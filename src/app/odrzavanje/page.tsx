@@ -8,8 +8,10 @@ import { PERMISSIONS } from '@/lib/permissions';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
 import { useMaintMe } from '@/api/odrzavanje';
+import type { MachineListFilter } from './_components/common';
 import { Tabs, type TabItem } from './_components/tabs';
 import { PregledTab } from './_components/pregled-tab';
+import { BoardTab } from './_components/board-tab';
 import { NaloziTab } from './_components/nalozi-tab';
 import { KvaroviTab } from './_components/kvarovi-tab';
 import { MasineTab } from './_components/masine-tab';
@@ -24,7 +26,7 @@ import { PodesavanjaTab } from './_components/podesavanja-tab';
 import { NotifikacijeTab } from './_components/notifikacije-tab';
 
 type TabKey =
-  | 'pregled' | 'nalozi' | 'kvarovi' | 'masine' | 'preventiva'
+  | 'pregled' | 'board' | 'nalozi' | 'kvarovi' | 'masine' | 'preventiva'
   | 'vozila' | 'vozaci' | 'it' | 'objekti' | 'zalihe'
   | 'dokumenta' | 'izvestaji' | 'podesavanja' | 'notifikacije';
 
@@ -38,10 +40,16 @@ export default function OdrzavanjePage() {
   const { user, isLoading, can } = useAuth();
   const router = useRouter();
   const [tab, setTab] = useState<TabKey>('pregled');
+  const [machineFilter, setMachineFilter] = useState<MachineListFilter>({});
   const meQ = useMaintMe();
   const me = meQ.data?.data;
 
   const openMachine = (code: string) => router.push(`/odrzavanje/masine?code=${encodeURIComponent(code)}`);
+  /** Dashboard/board klik → prebaci tab (uz opcioni preset filtera operativne liste). */
+  const gotoTab = (key: TabKey, filter?: MachineListFilter) => {
+    setMachineFilter(filter ?? {});
+    setTab(key);
+  };
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
@@ -64,6 +72,7 @@ export default function OdrzavanjePage() {
 
   const tabs: TabItem<TabKey>[] = [
     { key: 'pregled', label: 'Pregled' },
+    { key: 'board', label: 'Tabla' },
     { key: 'nalozi', label: 'Radni nalozi' },
     { key: 'kvarovi', label: 'Kvarovi' },
     { key: 'masine', label: 'Mašine' },
@@ -92,12 +101,13 @@ export default function OdrzavanjePage() {
           </div>
         )}
 
-        <Tabs tabs={tabs} value={tab} onChange={setTab} ariaLabel="Održavanje" />
+        <Tabs tabs={tabs} value={tab} onChange={(k) => { setMachineFilter({}); setTab(k); }} ariaLabel="Održavanje" />
 
-        {tab === 'pregled' && <PregledTab onOpenMachine={openMachine} />}
+        {tab === 'pregled' && <PregledTab onOpenMachine={openMachine} onNavigate={gotoTab} me={me} canReport={canReport} />}
+        {tab === 'board' && <BoardTab onOpenMachine={openMachine} />}
         {tab === 'nalozi' && <NaloziTab me={me} />}
         {tab === 'kvarovi' && <KvaroviTab me={me} canReport={canReport} />}
-        {tab === 'masine' && <MasineTab me={me} />}
+        {tab === 'masine' && <MasineTab me={me} initFilter={machineFilter} />}
         {tab === 'preventiva' && <PreventivaTab me={me} />}
         {tab === 'vozila' && <VozilaTab me={me} />}
         {tab === 'vozaci' && <VozaciTab me={me} />}

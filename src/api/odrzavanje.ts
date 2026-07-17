@@ -238,11 +238,12 @@ export function useMachine(code: string | null) {
     queryFn: () => apiFetch<One<MachineDetail>>(`${BASE}/machines/${encodeURIComponent(code!)}`),
   });
 }
-export function useImportableMachines(enabled: boolean) {
+export function useImportableMachines(enabled: boolean, includeNoProcedure = false) {
   return useQuery({
-    queryKey: ['odr', 'machines', 'importable'],
+    queryKey: ['odr', 'machines', 'importable', includeNoProcedure],
     enabled,
-    queryFn: () => apiFetch<Rows<ViewRow>>(`${BASE}/machines/importable`),
+    queryFn: () =>
+      apiFetch<Rows<ViewRow>>(`${BASE}/machines/importable${qs({ includeNoProcedure: includeNoProcedure || undefined })}`),
   });
 }
 export interface DeletionLogRow {

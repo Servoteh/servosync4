@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Plus } from 'lucide-react';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { Button } from '@/components/ui-kit/button';
@@ -16,6 +16,8 @@ import {
   useLocations,
   useParts,
   useSuppliers,
+  useUpdateLocation,
+  type MaintLocation,
   type MaintMe,
   type Part,
   type StockMovementType,
@@ -170,37 +172,97 @@ function CreateSupplierDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
+/**
+ * Lokacije — pun CRUD sa hijerarhijom (paritet 1.0 maintLocationsTab.js): tabela
+ * naziv/šifra/tip/pod-lokacija/aktivno + create sa parent+type+active + EDIT (BE updateLocation)
+ * + aktiviraj/deaktiviraj toggle. Pisanje = šef/admin/ERP (canManageMaintCatalog); ostali čitaju.
+ */
 function LokacijeView({ me }: { me: MaintMe | undefined }) {
   const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState<MaintLocation | null>(null);
   const locations = useLocations();
-  const create = useCreateLocation();
-  const [name, setName] = useState('');
-  const [code, setCode] = useState('');
+  const update = useUpdateLocation();
   const canManage = me?.gates.canManageMaintCatalog ?? false;
   const rows = locations.data?.data ?? [];
+  const nameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const l of rows) m.set(l.locationId, l.name);
+    return m;
+  }, [rows]);
+
+  const cols: Column<MaintLocation>[] = [
+    { key: 'name', header: 'Naziv', render: (l) => <span className="font-medium text-ink">{l.name}</span> },
+    { key: 'code', header: 'Šifra', render: (l) => <span className="tnums text-ink-secondary">{l.code ?? '—'}</span> },
+    { key: 'type', header: 'Tip', render: (l) => <span className="text-ink-secondary">{l.locationType}</span> },
+    { key: 'parent', header: 'Pod-lokacija', render: (l) => <span className="text-ink-secondary">{l.parentLocationId ? (nameById.get(l.parentLocationId) ?? '—') : '—'}</span> },
+    { key: 'active', header: 'Aktivno', render: (l) => (l.active ? <StatusBadge tone="success" label="Da" /> : <StatusBadge tone="neutral" label="Neaktivno" />) },
+    ...(canManage
+      ? [{
+          key: 'act', header: '', align: 'right' as const,
+          render: (l: MaintLocation) => (
+            <div className="flex justify-end gap-1.5">
+              <Button variant="ghost" onClick={(e) => { e.stopPropagation(); setEditing(l); }}>Izmeni</Button>
+              <Button variant="ghost" onClick={(e) => { e.stopPropagation(); update.mutate({ id: l.locationId, patch: { active: !l.active } }); }}>{l.active ? 'Deaktiviraj' : 'Aktiviraj'}</Button>
+            </div>
+          ),
+        }]
+      : []),
+  ];
+
   return (
     <div className="space-y-3">
-      {canManage && <div className="flex justify-end"><Button onClick={() => setCreating(true)}><Plus className="h-4 w-4" aria-hidden /> Nova lokacija</Button></div>}
-      {rows.length === 0 && !locations.isLoading ? (
-        <p className="py-6 text-center text-sm text-ink-secondary">Nema definisanih lokacija.</p>
-      ) : (
-        <div className="space-y-1">
-          {rows.map((l) => (
-            <div key={l.locationId} className="flex items-center justify-between rounded-control border border-line p-2 text-sm">
-              <span className="text-ink">{l.name} <span className="text-ink-secondary">{l.code ? `· ${l.code}` : ''}</span></span>
-              <span className="text-2xs text-ink-secondary">{l.locationType}</span>
-            </div>
-          ))}
-        </div>
-      )}
-      {creating && (
-        <Dialog open onClose={() => setCreating(false)} title="Nova lokacija" footer={<><Button variant="ghost" onClick={() => setCreating(false)}>Otkaži</Button><Button disabled={!name.trim() || create.isPending} onClick={() => create.mutate({ name: name.trim(), code: code || undefined }, { onSuccess: () => { setName(''); setCode(''); setCreating(false); } })}>Sačuvaj</Button></>}>
-          <div className="space-y-3">
-            <FormField label="Naziv" required><Input value={name} onChange={(e) => setName(e.target.value)} /></FormField>
-            <FormField label="Šifra"><Input value={code} onChange={(e) => setCode(e.target.value)} /></FormField>
-          </div>
-        </Dialog>
-      )}
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-2xs text-ink-secondary">Hijerarhija lokacija (maint_locations) — vezuju se na sredstva.</p>
+        {canManage && <Button onClick={() => setCreating(true)}><Plus className="h-4 w-4" aria-hidden /> Nova lokacija</Button>}
+      </div>
+      <DataTable columns={cols} rows={rows} rowKey={(l) => l.locationId} loading={locations.isLoading} empty={tableEmpty(locations.isError, 'Nema lokacija', 'Nijedna lokacija nije definisana.')} />
+      {creating && <LocationDialog rows={rows} onClose={() => setCreating(false)} />}
+      {editing && <LocationDialog rows={rows} existing={editing} onClose={() => setEditing(null)} />}
     </div>
+  );
+}
+
+function LocationDialog({ rows, existing, onClose }: { rows: MaintLocation[]; existing?: MaintLocation; onClose: () => void }) {
+  const create = useCreateLocation();
+  const update = useUpdateLocation();
+  const [name, setName] = useState(existing?.name ?? '');
+  const [code, setCode] = useState(existing?.code ?? '');
+  const [locationType, setType] = useState(existing?.locationType ?? 'lokacija');
+  const [parent, setParent] = useState(existing?.parentLocationId ?? '');
+  const [active, setActive] = useState(existing?.active ?? true);
+  const [err, setErr] = useState<string | null>(null);
+  const parentOptions = rows.filter((r) => r.locationId !== existing?.locationId);
+
+  function submit() {
+    setErr(null);
+    if (!name.trim()) return setErr('Naziv je obavezan.');
+    const payload = { name: name.trim(), code: code.trim() || null, locationType: locationType.trim() || 'lokacija', parentLocationId: parent || null, active };
+    const onDone = { onSuccess: onClose, onError: (e: unknown) => setErr((e as Error).message) };
+    if (existing) update.mutate({ id: existing.locationId, patch: payload }, onDone);
+    else create.mutate(payload, onDone);
+  }
+
+  const pending = create.isPending || update.isPending;
+  return (
+    <Dialog open onClose={onClose} title={existing ? 'Izmeni lokaciju' : 'Nova lokacija'}
+      footer={<><Button variant="ghost" onClick={onClose}>Otkaži</Button><Button onClick={submit} loading={pending}>Sačuvaj</Button></>}>
+      <div className="space-y-3">
+        {err && <p className="rounded-control bg-status-danger-bg px-3 py-2 text-sm text-status-danger">{err}</p>}
+        <div className="grid grid-cols-2 gap-3">
+          <FormField label="Naziv" required><Input value={name} onChange={(e) => setName(e.target.value)} /></FormField>
+          <FormField label="Šifra"><Input value={code} onChange={(e) => setCode(e.target.value)} /></FormField>
+          <FormField label="Tip"><Input value={locationType} onChange={(e) => setType(e.target.value)} /></FormField>
+          <FormField label="Podređena (parent)">
+            <select value={parent} onChange={(e) => setParent(e.target.value)} className="h-9 w-full rounded-control border border-line bg-surface px-2 text-sm text-ink">
+              <option value="">— nema —</option>
+              {parentOptions.map((o) => <option key={o.locationId} value={o.locationId}>{o.name}</option>)}
+            </select>
+          </FormField>
+        </div>
+        <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
+          <input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} /> Aktivno
+        </label>
+      </div>
+    </Dialog>
   );
 }

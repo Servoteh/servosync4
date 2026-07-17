@@ -13,6 +13,18 @@ import type {
   WoStatus,
 } from '@/api/odrzavanje';
 
+/** Preset filtera operativne liste mašina kad dolazimo sa klik-KPI dashboarda. */
+export interface MachineListFilter {
+  status?: 'running' | 'degraded' | 'down' | 'maintenance';
+  deadline?: 'overdue' | 'danas' | '7d';
+  inc?: boolean;
+}
+
+/** Ciljni tab dashboard-navigacije (podskup TabKey iz page.tsx). */
+export type DashNavTab =
+  | 'masine' | 'nalozi' | 'izvestaji' | 'zalihe' | 'preventiva'
+  | 'vozila' | 'it' | 'objekti' | 'board';
+
 /** Razlikuje grešku učitavanja od stvarno praznog skupa (globalni retry:false). */
 export function tableEmpty(isError: boolean, title: string, hint: string) {
   if (isError) {
@@ -46,9 +58,10 @@ export function fnum(row: Record<string, unknown>, ...keys: string[]): number | 
 }
 
 // ── Statusi mašine / operativni ────────────────────────────────────
+// Labele = 1.0 kanon (maintFormatters.js STATUS_LABELS): Radi/Smetnje/Zastoj/Održavanje.
 const OP: Record<OpStatus, { tone: Tone; label: string }> = {
-  running: { tone: 'success', label: 'U radu' },
-  degraded: { tone: 'warn', label: 'Smetnja' },
+  running: { tone: 'success', label: 'Radi' },
+  degraded: { tone: 'warn', label: 'Smetnje' },
   down: { tone: 'danger', label: 'Zastoj' },
   maintenance: { tone: 'info', label: 'Održavanje' },
 };
@@ -204,6 +217,136 @@ export function StatCard({ label, value, tone = 'neutral' }: { label: string; va
       <div className="mt-1 text-xs uppercase tracking-wider text-ink-secondary">{label}</div>
     </div>
   );
+}
+
+/** Klikabilna KPI kartica (dashboard) — nav sa filterom. `value===null` = nepoznato („—"). */
+export function KpiButton({
+  label,
+  value,
+  tone = 'neutral',
+  title,
+  onClick,
+}: {
+  label: string;
+  value: number | null;
+  tone?: Tone;
+  title?: string;
+  onClick?: () => void;
+}) {
+  const unknown = value === null || value === undefined;
+  const zero = !unknown && !value;
+  const ring: Record<Tone, string> = {
+    success: 'text-status-success',
+    info: 'text-status-info',
+    warn: 'text-status-warn',
+    danger: 'text-status-danger',
+    neutral: 'text-ink',
+  };
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      aria-label={`${label}: ${unknown ? 'nepoznato' : value}`}
+      className="rounded-panel border border-line bg-surface p-4 text-left transition-colors hover:border-accent/50 hover:bg-surface-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+    >
+      <div className={`tnums text-2xl font-semibold ${zero || unknown ? 'text-ink-disabled' : ring[tone]}`}>
+        {unknown ? '—' : value}
+      </div>
+      <div className="mt-1 text-xs uppercase tracking-wider text-ink-secondary">{label}</div>
+    </button>
+  );
+}
+
+/** Kategorija-tile (dashboard) — ukupno + „zahtevaju pažnju" linija + extra metrika. */
+export function CategoryTile({
+  icon,
+  label,
+  total,
+  attention,
+  extra,
+  onClick,
+}: {
+  icon: string;
+  label: string;
+  total: number | null;
+  attention: number | null;
+  extra?: { txt: string; sev: 'down' | 'warn' | 'muted' }[];
+  onClick?: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={`Otvori ${label}`}
+      className="flex flex-col gap-1 rounded-panel border border-line bg-surface p-4 text-left transition-colors hover:border-accent/50 hover:bg-surface-2"
+    >
+      <div className="flex items-center gap-2">
+        <span className="text-lg" aria-hidden>{icon}</span>
+        <span className="text-sm font-medium text-ink">{label}</span>
+      </div>
+      <div className="tnums text-2xl font-semibold text-ink">{total ?? '—'}</div>
+      <div className="text-xs">
+        {attention === null || attention === undefined ? (
+          <span className="text-ink-secondary">—</span>
+        ) : attention > 0 ? (
+          <span className="text-status-warn">⚠ {attention} {attention === 1 ? 'zahteva pažnju' : 'zahtevaju pažnju'}</span>
+        ) : (
+          <span className="text-status-success">✓ Sve u redu</span>
+        )}
+      </div>
+      {extra && extra.length > 0 && (
+        <div className="space-y-0.5 text-2xs">
+          {extra.map((e, i) => (
+            <div key={i} className={e.sev === 'down' ? 'text-status-danger' : e.sev === 'warn' ? 'text-status-warn' : 'text-ink-secondary'}>{e.txt}</div>
+          ))}
+        </div>
+      )}
+      <span className="mt-1 text-2xs text-accent">Otvori →</span>
+    </button>
+  );
+}
+
+/** Kratki relativni datum (sr): „danas", „za 3 d", „pre 2 d", „—". */
+export function relDays(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return '—';
+  const d = Math.round((t - Date.now()) / 86_400_000);
+  if (d === 0) return 'danas';
+  if (d === 1) return 'sutra';
+  if (d === -1) return 'juče';
+  if (d < 0) return `pre ${-d} d`;
+  return `za ${d} d`;
+}
+
+/**
+ * Prioritet-rang mašine (operativni sort) — manji = hitnije (paritet 1.0
+ * priorityDescriptor, index.js:120-168): 0 Zastoj (down ili otvoreni kvar),
+ * 1 Smetnje, 2 Održavanje, 3 Kasni rok, 4 Danas, 5 ≤7d, 6 Radi, 9 Arhivirano.
+ */
+export function machinePriorityRank(info: {
+  status: string | null;
+  openInc: number;
+  overdue: number;
+  nextDueAt: string | null;
+  archived: boolean;
+}): number {
+  if (info.archived) return 9;
+  if (info.status === 'down' || info.openInc > 0) return 0;
+  if (info.status === 'degraded') return 1;
+  if (info.status === 'maintenance') return 2;
+  if (info.overdue > 0) return 3;
+  if (info.nextDueAt) {
+    const t = new Date(info.nextDueAt).getTime();
+    if (Number.isFinite(t)) {
+      const now = Date.now();
+      const eod = new Date(); eod.setHours(23, 59, 59, 999);
+      if (t <= eod.getTime()) return 4;
+      if ((t - now) / 86_400_000 <= 7) return 5;
+    }
+  }
+  return 6;
 }
 
 /** Red „ključ: vrednost" u kartonima. */
