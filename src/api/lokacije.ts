@@ -790,9 +790,75 @@ export async function fetchAllPlacements(
 
 // ---- Sync (admin) ----
 
+/**
+ * BigTehn ingest worker sample (1 red iz `loc_bigtehn_ingest_state.last_run_summary.samples`) —
+ * paritet 1.0 renderIngestSamplesHtml (index.js:2341). Sva polja opciona (worker ih puni po akciji).
+ */
+export interface IngestSample {
+  signal_id?: number | string | null;
+  ident?: string | null;
+  predmet?: string | null;
+  tp?: string | null;
+  op?: string | null;
+  machine?: string | null;
+  from_loc?: string | null;
+  from_type?: string | null;
+  transfer_qty?: number | string | null;
+  rn_total?: number | string | null;
+  action?: string | null;
+  armed_executed?: boolean;
+  armed_error?: string | null;
+  parser_fallback?: boolean;
+  started_at?: string | null;
+}
+
+/** by_action histogram (1.0 renderByActionPillsHtml) — brojači po klasi prijave. */
+export type IngestByAction = Record<string, number>;
+
+/** Sažetak poslednjeg run-a ingest worker-a (`state.last_run_summary`). */
+export interface IngestSummary {
+  by_action?: IngestByAction;
+  samples?: IngestSample[];
+  processed_total?: number | string | null;
+}
+
+/**
+ * Stanje BigTehn ingest worker-a — 2.0 `sync/status` vraća ovo pod `data.ingest`
+ * (mirror 1.0 `loc_bigtehn_ingest_state`). Polja opciona; `armed`/`is_armed` oba
+ * priznata (postojeći FE gard). `ok:false` + `error` = DB stanje nedostupno.
+ */
+export interface IngestState {
+  ok?: boolean;
+  error?: string;
+  armed?: boolean;
+  is_armed?: boolean;
+  last_run_at?: string | null;
+  watermark?: number | string | null;
+  last_run_summary?: IngestSummary;
+}
+
+/**
+ * Heartbeat ingest worker-a — 2.0 `sync/status` vraća pod `data.health`
+ * (paritet 1.0 `statusRes.heartbeat`). `is_alive` = pulsirao < 10 min.
+ */
+export interface IngestHeartbeat {
+  is_alive?: boolean;
+  age_seconds?: number | null;
+}
+
+/** 1 red outbound queue-a (MSSQL write-back) — paritet 1.0 fetchSyncOutboundEvents. */
+export interface SyncOutboundRow {
+  status?: string | null;
+  source_record_id?: string | null;
+  created_at?: string | null;
+  last_error?: string | null;
+}
+
 export interface SyncStatus {
-  ingest: unknown;
-  health: unknown;
+  /** Stanje ingest worker-a (mirror `loc_bigtehn_ingest_state`). */
+  ingest: IngestState;
+  /** Heartbeat ingest worker-a (`is_alive`, `age_seconds`). */
+  health: IngestHeartbeat;
   heartbeat: Record<string, unknown>[];
   bridge: { sync_job: string; last_finished: string | null; status: string | null }[];
 }
@@ -847,7 +913,7 @@ export function useSyncOutbound(limit = 80, enabled = true) {
     queryKey: [...KEYS.sync, 'outbound', limit],
     enabled,
     queryFn: () =>
-      apiFetch<{ data: Record<string, unknown>[] }>(
+      apiFetch<{ data: SyncOutboundRow[] }>(
         `/v1/locations/sync/outbound${qs({ limit })}`,
       ),
   });
