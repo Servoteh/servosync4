@@ -25,6 +25,7 @@ import {
   type TireSeason,
 } from '@/api/odrzavanje';
 import { BOOKING_STATUS_LABEL, deadlineTone, f, Field, OpStatusBadge } from './common';
+import { AssetWorkOrders } from './asset-work-orders';
 import { Tabs } from './tabs';
 
 type VTab = 'pregled' | 'servis' | 'gume' | 'delovi' | 'carpool';
@@ -55,7 +56,7 @@ export function VoziloCardDialog({ id, me, onClose }: { id: string | null; me: M
             ariaLabel="Karton vozila"
           />
           {tab === 'pregled' && <VPregled id={id} canManage={canManage} />}
-          {tab === 'servis' && <VServis id={id} canManage={canManage} />}
+          {tab === 'servis' && <VServis id={id} canManage={canManage} me={me} />}
           {tab === 'gume' && <VGume id={id} canManage={canManage} />}
           {tab === 'delovi' && <VDelovi id={id} />}
           {tab === 'carpool' && <VCarpool id={id} />}
@@ -109,7 +110,7 @@ function Rok({ label, date }: { label: string; date: string | null | undefined }
   );
 }
 
-function VServis({ id, canManage }: { id: string; canManage: boolean }) {
+function VServis({ id, canManage, me }: { id: string; canManage: boolean; me: MaintMe | undefined }) {
   const plans = useVehicleServicePlan(id);
   const create = useCreateVehicleServicePlan();
   const del = useDeleteVehicleServicePlan();
@@ -135,6 +136,7 @@ function VServis({ id, canManage }: { id: string; canManage: boolean }) {
           {canManage && <button onClick={() => del.mutate({ id, planId: p.planId })} className="text-ink-disabled hover:text-status-danger"><Trash2 className="h-3.5 w-3.5" aria-hidden /></button>}
         </div>
       ))}
+      <AssetWorkOrders assetId={id} me={me} title="Radni nalozi vozila" />
     </div>
   );
 }

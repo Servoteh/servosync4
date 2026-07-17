@@ -22,8 +22,8 @@ export interface MachineListFilter {
 
 /** Ciljni tab dashboard-navigacije (podskup TabKey iz page.tsx). */
 export type DashNavTab =
-  | 'masine' | 'nalozi' | 'izvestaji' | 'zalihe' | 'preventiva'
-  | 'vozila' | 'it' | 'objekti' | 'board';
+  | 'masine' | 'nalozi' | 'izvestaji' | 'zalihe' | 'preventiva' | 'kalendar'
+  | 'vozila' | 'vozaci' | 'it' | 'objekti' | 'board';
 
 /** Razlikuje grešku učitavanja od stvarno praznog skupa (globalni retry:false). */
 export function tableEmpty(isError: boolean, title: string, hint: string) {
@@ -192,6 +192,25 @@ export const ASSET_TYPE_LABEL: Record<string, string> = {
   it: 'IT oprema',
   facility: 'Objekat',
 };
+
+// ── Ozbiljnost preventivnog šablona (normal/important/critical) ─────
+// Labele = 1.0 kanon (maintPreventivePanel.js:59-69): Kritično / Važno / Normalno.
+export const PREV_SEVERITY_LABEL: Record<string, string> = {
+  critical: 'Kritično',
+  important: 'Važno',
+  normal: 'Normalno',
+};
+export function prevSeverityTone(v: string | null | undefined): Tone {
+  if (v === 'critical') return 'danger';
+  if (v === 'important') return 'warn';
+  return 'neutral';
+}
+/** Boja stavke preventive u kalendaru po ozbiljnosti (border+tekst tokeni, dark-safe). */
+export function prevSeverityCalClasses(v: string | null | undefined): string {
+  if (v === 'critical') return 'border-status-danger/50 text-status-danger';
+  if (v === 'important') return 'border-status-warn/50 text-status-warn';
+  return 'border-line text-ink-secondary';
+}
 
 /** Rok → ton po blizini isteka (crveno isteklo, žuto uskoro, zeleno ok). */
 export function deadlineTone(iso: string | null | undefined): Tone {

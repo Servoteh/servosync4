@@ -49,6 +49,7 @@ import {
   type OpStatus,
 } from '@/api/odrzavanje';
 import { Field, OpStatusBadge, SEVERITY_LABEL } from './common';
+import { AssetWorkOrders } from './asset-work-orders';
 import { Tabs } from './tabs';
 import { QrCanvas } from './qr-canvas';
 import { PrijavaKvaraDialog } from './prijava-kvara-dialog';
@@ -161,7 +162,7 @@ export function MasinaKarton({ code, me }: { code: string; me: MaintMe | undefin
 
           {tab === 'pregled' && <PregledSub code={code} canManage={canManage} canOverride={canOverride} onEdit={() => setEditOpen(true)} onOpenIncident={setIncidentId} />}
           {tab === 'zadaci' && <ZadaciSub code={code} canWrite={canWrite} />}
-          {tab === 'istorija' && <IstorijaSub code={code} onOpenIncident={setIncidentId} />}
+          {tab === 'istorija' && <IstorijaSub code={code} assetId={d.assetId} me={me} onOpenIncident={setIncidentId} />}
           {tab === 'napomene' && <NapomeneSub code={code} me={me} canWrite={canWrite} />}
           {tab === 'dokumenta' && <DokumentaSub code={code} me={me} canUpload={canWrite} />}
           {tab === 'sabloni' && canTasks && <SabloniSub code={code} />}
@@ -610,7 +611,9 @@ type TimelineItem =
   | { kind: 'incident'; at: number; id: string; title: string; severity: 'minor' | 'major' | 'critical'; woNumber: string | null }
   | { kind: 'check'; at: number; id: string; result: CheckResult; notes: string | null };
 
-function IstorijaSub({ code, onOpenIncident }: { code: string; onOpenIncident: (id: string) => void }) {
+function IstorijaSub({ code, assetId, me, onOpenIncident }: {
+  code: string; assetId: string; me: MaintMe | undefined; onOpenIncident: (id: string) => void;
+}) {
   const inc = useIncidents({ machineCode: code, pageSize: 100 });
   const checks = useMachineChecks(code);
 
@@ -621,12 +624,17 @@ function IstorijaSub({ code, onOpenIncident }: { code: string; onOpenIncident: (
     return out.sort((a, b) => b.at - a.at);
   }, [inc.data, checks.data]);
 
-  if (inc.isLoading || checks.isLoading) return <p className="py-4 text-center text-sm text-ink-secondary">Učitavanje…</p>;
-  if (items.length === 0) return <p className="py-6 text-center text-sm text-ink-secondary">Nema zabeleženih kvarova ni kontrola.</p>;
-
   return (
-    <div className="space-y-1.5">
-      {items.map((it) => it.kind === 'incident' ? (
+    <div className="space-y-4">
+      <div>
+        <h4 className="mb-1.5 text-sm font-semibold text-ink">Vremenska linija (kvarovi + kontrole)</h4>
+        {inc.isLoading || checks.isLoading ? (
+          <p className="py-4 text-center text-sm text-ink-secondary">Učitavanje…</p>
+        ) : items.length === 0 ? (
+          <p className="py-6 text-center text-sm text-ink-secondary">Nema zabeleženih kvarova ni kontrola.</p>
+        ) : (
+          <div className="space-y-1.5">
+            {items.map((it) => it.kind === 'incident' ? (
         <button key={`i${it.id}`} onClick={() => onOpenIncident(it.id)} className="flex w-full items-center justify-between gap-2 rounded-control border border-line px-3 py-2 text-left text-sm hover:bg-surface-2">
           <span className="flex items-center gap-2">
             <StatusBadge tone={it.severity === 'critical' ? 'danger' : it.severity === 'major' ? 'warn' : 'info'} label="Kvar" />
@@ -643,7 +651,11 @@ function IstorijaSub({ code, onOpenIncident }: { code: string; onOpenIncident: (
           </span>
           <span className="text-2xs text-ink-secondary">{formatDateTime(new Date(it.at).toISOString())}</span>
         </div>
-      ))}
+            ))}
+          </div>
+        )}
+      </div>
+      <AssetWorkOrders assetId={assetId} me={me} title="Radni nalozi mašine" />
     </div>
   );
 }

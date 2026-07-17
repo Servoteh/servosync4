@@ -16,6 +16,7 @@ import { NaloziTab } from './_components/nalozi-tab';
 import { KvaroviTab } from './_components/kvarovi-tab';
 import { MasineTab } from './_components/masine-tab';
 import { PreventivaTab } from './_components/preventiva-tab';
+import { KalendarTab } from './_components/kalendar-tab';
 import { VozilaTab } from './_components/vozila-tab';
 import { VozaciTab } from './_components/vozaci-tab';
 import { SredstvaTab } from './_components/sredstva-tab';
@@ -26,7 +27,7 @@ import { PodesavanjaTab } from './_components/podesavanja-tab';
 import { NotifikacijeTab } from './_components/notifikacije-tab';
 
 type TabKey =
-  | 'pregled' | 'board' | 'nalozi' | 'kvarovi' | 'masine' | 'preventiva'
+  | 'pregled' | 'board' | 'nalozi' | 'kvarovi' | 'masine' | 'preventiva' | 'kalendar'
   | 'vozila' | 'vozaci' | 'it' | 'objekti' | 'zalihe'
   | 'dokumenta' | 'izvestaji' | 'podesavanja' | 'notifikacije';
 
@@ -77,6 +78,7 @@ export default function OdrzavanjePage() {
     { key: 'kvarovi', label: 'Kvarovi' },
     { key: 'masine', label: 'Mašine' },
     { key: 'preventiva', label: 'Preventiva' },
+    { key: 'kalendar', label: 'Kalendar' },
     { key: 'vozila', label: 'Vozila' },
     { key: 'vozaci', label: 'Vozači' },
     { key: 'it', label: 'IT oprema' },
@@ -108,7 +110,8 @@ export default function OdrzavanjePage() {
         {tab === 'nalozi' && <NaloziTab me={me} />}
         {tab === 'kvarovi' && <KvaroviTab me={me} canReport={canReport} />}
         {tab === 'masine' && <MasineTab me={me} initFilter={machineFilter} />}
-        {tab === 'preventiva' && <PreventivaTab me={me} />}
+        {tab === 'preventiva' && <PreventivaTab me={me} onNavigate={gotoTab} />}
+        {tab === 'kalendar' && <KalendarTab onNavigate={gotoTab} />}
         {tab === 'vozila' && <VozilaTab me={me} />}
         {tab === 'vozaci' && <VozaciTab me={me} />}
         {tab === 'it' && <SredstvaTab kind="it" me={me} />}
