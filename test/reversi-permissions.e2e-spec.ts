@@ -57,6 +57,17 @@ describe("Reversi permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     "updateCuttingTool",
     "cuttingByMachine",
     "machineHeads",
+    // R1 — Alat i oprema (inventar) + Grupe
+    "listInventoryUnits",
+    "inventoryClassificationUsage",
+    "createTool",
+    "updateTool",
+    "addInventorySubgroup",
+    "addInventorySubsubgroup",
+    "renameClassification",
+    "deleteInventorySubgroup",
+    "deleteInventorySubsubgroup",
+    "printLabel",
   ]) {
     serviceMock[m] = jest.fn().mockResolvedValue({ data: [] });
   }
@@ -66,8 +77,14 @@ describe("Reversi permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     const moduleRef = await Test.createTestingModule({
       controllers: [ReversiController],
       providers: [
-        { provide: PrismaService, useValue: { userPermissionOverride: { findUnique: async () => null } } },
-        { provide: ReversiService, useValue: serviceMock }],
+        {
+          provide: PrismaService,
+          useValue: {
+            userPermissionOverride: { findUnique: async () => null },
+          },
+        },
+        { provide: ReversiService, useValue: serviceMock },
+      ],
     })
       .overrideGuard(JwtAuthGuard)
       .useValue({
@@ -111,6 +128,15 @@ describe("Reversi permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
       .post(`/api/v1/reversi${path}`)
       .set("x-test-role", role)
       .send(body);
+  const patch = (path: string, role: string, body: object) =>
+    request(app.getHttpServer())
+      .patch(`/api/v1/reversi${path}`)
+      .set("x-test-role", role)
+      .send(body);
+  const del = (path: string, role: string) =>
+    request(app.getHttpServer())
+      .delete(`/api/v1/reversi${path}`)
+      .set("x-test-role", role);
 
   // Paritet žive politike: SELECT za sve prijavljene → sve aktivne uloge.
   const ALL_READ_ROLES = [
@@ -244,6 +270,75 @@ describe("Reversi permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
         delta: 0,
         reason: "ADJUST",
       }).expect(400);
+    });
+  });
+
+  // ---------- R1 — Alat i oprema (inventar) + Grupe ----------
+  describe("R1 inventar + grupe", () => {
+    it("GET /inventory-units → 200 read-role; 403 default-deny", async () => {
+      await get("/inventory-units", "magacioner").expect(200);
+      await get("/inventory-units", "viewer").expect(200);
+      await get("/inventory-units", "user").expect(403);
+    });
+    it("GET /inventory-classification-usage → 200 read-role", async () => {
+      await get("/inventory-classification-usage", "kontrolor").expect(200);
+    });
+
+    it.each(MANAGE_ROLES)("POST /tools → 201 za %s", async (role) => {
+      await post("/tools", role, { oznaka: "ALAT-1", naziv: "Ključ" }).expect(
+        201,
+      );
+    });
+    it.each(NOT_MANAGE)("POST /tools → 403 za %s", async (role) => {
+      await post("/tools", role, { oznaka: "ALAT-1", naziv: "Ključ" }).expect(
+        403,
+      );
+    });
+
+    it("PATCH /tools/:id → 403 sef, 200 magacioner", async () => {
+      await patch(`/tools/${VALID_UUID}`, "sef", { naziv: "X" }).expect(403);
+      await patch(`/tools/${VALID_UUID}`, "magacioner", {
+        naziv: "X",
+      }).expect(200);
+    });
+
+    it("POST /inventory-subgroups → 403 viewer, 201 admin", async () => {
+      const body = { groupCode: "AKU", label: "Nova" };
+      await post("/inventory-subgroups", "viewer", body).expect(403);
+      await post("/inventory-subgroups", "admin", body).expect(201);
+    });
+    it("POST /inventory-subsubgroups → 201 magacioner", async () => {
+      await post("/inventory-subsubgroups", "magacioner", {
+        subgroupId: VALID_UUID,
+        label: "Nova",
+      }).expect(201);
+    });
+
+    it("PATCH /inventory-classification/:kind/:id → 403 tehnolog, 200 admin", async () => {
+      await patch(
+        `/inventory-classification/subgroup/${VALID_UUID}`,
+        "tehnolog",
+        {
+          label: "X",
+        },
+      ).expect(403);
+      await patch(`/inventory-classification/subgroup/${VALID_UUID}`, "admin", {
+        label: "X",
+      }).expect(200);
+    });
+
+    it("DELETE /inventory-subgroups/:id → 403 viewer, 200 magacioner", async () => {
+      await del(`/inventory-subgroups/${VALID_UUID}`, "viewer").expect(403);
+      await del(`/inventory-subgroups/${VALID_UUID}`, "magacioner").expect(200);
+    });
+    it("DELETE /inventory-subsubgroups/:id → 200 admin", async () => {
+      await del(`/inventory-subsubgroups/${VALID_UUID}`, "admin").expect(200);
+    });
+
+    it("POST /labels/print → 403 viewer, 201 magacioner (RA-22/RB-47)", async () => {
+      const body = { tspl2: "CLS\nPRINT 1,1\n" };
+      await post("/labels/print", "viewer", body).expect(403);
+      await post("/labels/print", "magacioner", body).expect(201);
     });
   });
 });

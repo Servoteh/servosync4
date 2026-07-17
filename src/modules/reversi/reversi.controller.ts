@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseUUIDPipe,
@@ -19,6 +20,7 @@ import { RequirePermission } from "../../common/authz/require-permission.decorat
 import { PERMISSIONS } from "../../common/authz/permissions";
 import { ReversiService } from "./reversi.service";
 import type {
+  InventoryUnitsQuery,
   LedgerQuery,
   ListDocumentsQuery,
   ListToolsQuery,
@@ -35,6 +37,14 @@ import {
   CuttingToolCreateDto,
   CuttingToolUpdateDto,
 } from "./dto/reversi-cutting.dto";
+import {
+  AddSubgroupDto,
+  AddSubsubgroupDto,
+  CreateToolDto,
+  RenameClassificationDto,
+  ReversiPrintLabelDto,
+  UpdateToolDto,
+} from "./dto/reversi-inventory.dto";
 
 interface AuthedRequest {
   user: { userId: number; email: string; role: string };
@@ -77,6 +87,22 @@ export class ReversiController {
   @Get("inventory-tree")
   inventoryTree() {
     return this.reversi.inventoryTree();
+  }
+
+  /**
+   * Lista pojedinačnih jedinica inventara (RA-14/16/17; izvor stat kartica RA-10;
+   * pageSize do 5000 za CSV izvoz RA-23). Server-side status/klasifikacija/sort/
+   * paginacija; svaki red nosi zaduženje/lokaciju.
+   */
+  @Get("inventory-units")
+  inventoryUnits(@Query() query: InventoryUnitsQuery) {
+    return this.reversi.listInventoryUnits(query);
+  }
+
+  /** Broj artikala po podgrupi/podpodgrupi (RA-25 brojači, RA-28 upozorenja). */
+  @Get("inventory-classification-usage")
+  classificationUsage() {
+    return this.reversi.inventoryClassificationUsage();
   }
 
   @Get("ledger")
@@ -186,6 +212,71 @@ export class ReversiController {
   @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
   bulkImportTools(@Body() dto: BulkImportToolsDto) {
     return this.reversi.bulkImportTools(dto.rows);
+  }
+
+  // ---------- R1: inventar (nova jedinica / izmena artikla) + klasifikacija + štampa ----------
+
+  /** Nova jedinica ručnog alata (RB-46) — INSERT rev_tools + opc. INITIAL_PLACEMENT. */
+  @Post("tools")
+  @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
+  createTool(@Req() req: AuthedRequest, @Body() dto: CreateToolDto) {
+    return this.reversi.createTool(req.user.email, dto);
+  }
+
+  /** Izmena artikla ručnog alata (RB-11) — PATCH rev_tools; P2025→404. */
+  @Patch("tools/:id")
+  @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
+  updateTool(
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: UpdateToolDto,
+  ) {
+    return this.reversi.updateTool(id, dto);
+  }
+
+  /** Dodaj user-defined podgrupu (RA-26) — rev_add_inventory_subgroup. */
+  @Post("inventory-subgroups")
+  @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
+  addSubgroup(@Req() req: AuthedRequest, @Body() dto: AddSubgroupDto) {
+    return this.reversi.addInventorySubgroup(req.user.email, dto);
+  }
+
+  /** Dodaj podpodgrupu (RA-26) — rev_add_inventory_subsubgroup. */
+  @Post("inventory-subsubgroups")
+  @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
+  addSubsubgroup(@Req() req: AuthedRequest, @Body() dto: AddSubsubgroupDto) {
+    return this.reversi.addInventorySubsubgroup(req.user.email, dto);
+  }
+
+  /** Preimenovanje nivoa klasifikacije (RA-27) — group|subgroup|subsubgroup. */
+  @Patch("inventory-classification/:kind/:id")
+  @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
+  renameClassification(
+    @Param("kind") kind: string,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: RenameClassificationDto,
+  ) {
+    return this.reversi.renameClassification(kind, id, dto.label);
+  }
+
+  /** Brisanje korisničke podgrupe (RA-28) — artikli postaju nesvrstani. */
+  @Delete("inventory-subgroups/:id")
+  @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
+  deleteSubgroup(@Param("id", ParseUUIDPipe) id: string) {
+    return this.reversi.deleteInventorySubgroup(id);
+  }
+
+  /** Brisanje korisničke podpodgrupe (RA-28). */
+  @Delete("inventory-subsubgroups/:id")
+  @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
+  deleteSubsubgroup(@Param("id", ParseUUIDPipe) id: string) {
+    return this.reversi.deleteInventorySubsubgroup(id);
+  }
+
+  /** Štampa barkod-nalepnica (RA-22 bulk / RB-47 pri dodavanju) — RAW TSPL2. */
+  @Post("labels/print")
+  @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
+  printLabel(@Body() dto: ReversiPrintLabelDto) {
+    return this.reversi.printLabel(dto);
   }
 
   // ---------- R2: transakcione akcije (sve manage; idempotency = clientEventId) ----------

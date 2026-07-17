@@ -1,7 +1,13 @@
-import { NotFoundException, UnprocessableEntityException } from "@nestjs/common";
+import {
+  ConflictException,
+  ForbiddenException,
+  NotFoundException,
+  UnprocessableEntityException,
+} from "@nestjs/common";
 import { Prisma } from "@prisma-sy15/client";
 import { ReversiService } from "./reversi.service";
 import type { Sy15Service, Sy15Tx } from "../../common/sy15/sy15.service";
+import type { LabelPrintService } from "../../common/printing/label-print.service";
 
 /**
  * Unit — Reversi R0 paritet (PLAN_PARITET_reversi_2026-07-17.md, Drop R0).
@@ -16,19 +22,23 @@ describe("ReversiService — R0 paritet", () => {
   const EMAIL = "test@servoteh.com";
   const UUID = "3b241101-e2bb-4255-8caf-4136c566a962";
 
-  let tx: { $queryRaw: jest.Mock };
+  let tx: { $queryRaw: jest.Mock; $queryRawUnsafe: jest.Mock };
   let sy15: {
     withUser: jest.Mock;
     db: {
       revCuttingToolCatalog: { findMany: jest.Mock; update: jest.Mock };
       revDocument: { findUnique: jest.Mock };
+      revTool: { create: jest.Mock; update: jest.Mock };
+      revInventorySubgroup: { findUnique: jest.Mock; delete: jest.Mock };
+      revInventorySubsubgroup: { findUnique: jest.Mock; delete: jest.Mock };
       $queryRaw: jest.Mock;
     };
   };
+  let labelPrint: { printRawTspl: jest.Mock };
   let service: ReversiService;
 
   beforeEach(() => {
-    tx = { $queryRaw: jest.fn() };
+    tx = { $queryRaw: jest.fn(), $queryRawUnsafe: jest.fn() };
     sy15 = {
       withUser: jest.fn((_email: string, fn: (t: Sy15Tx) => Promise<unknown>) =>
         fn(tx as unknown as Sy15Tx),
@@ -36,10 +46,17 @@ describe("ReversiService — R0 paritet", () => {
       db: {
         revCuttingToolCatalog: { findMany: jest.fn(), update: jest.fn() },
         revDocument: { findUnique: jest.fn() },
+        revTool: { create: jest.fn(), update: jest.fn() },
+        revInventorySubgroup: { findUnique: jest.fn(), delete: jest.fn() },
+        revInventorySubsubgroup: { findUnique: jest.fn(), delete: jest.fn() },
         $queryRaw: jest.fn(),
       },
     };
-    service = new ReversiService(sy15 as unknown as Sy15Service);
+    labelPrint = { printRawTspl: jest.fn() };
+    service = new ReversiService(
+      sy15 as unknown as Sy15Service,
+      labelPrint as unknown as LabelPrintService,
+    );
   });
 
   // ---------- RC-06: stock split ----------
@@ -211,7 +228,7 @@ describe("ReversiService — R0 paritet", () => {
       );
     });
 
-    it("storage 400 „Object not found\" → 404", async () => {
+    it('storage 400 „Object not found" → 404', async () => {
       sy15.db.revDocument.findUnique.mockResolvedValue({
         id: UUID,
         docNumber: "REV-TOOL-2026-0004",
@@ -254,6 +271,188 @@ describe("ReversiService — R0 paritet", () => {
       await expect(service.getSignaturePdfUrl(UUID)).rejects.toBeInstanceOf(
         NotFoundException,
       );
+    });
+  });
+
+  // ---------- R1: izmena artikla (RB-11) ----------
+
+  describe("updateTool (RB-11)", () => {
+    it("gradi PATCH samo iz prosleđenih polja; null briše klasifikaciju", async () => {
+      sy15.db.revTool.update.mockResolvedValue({ id: UUID, naziv: "Bušilica" });
+      await service.updateTool(UUID, {
+        naziv: " Bušilica ",
+        subgroupId: null,
+        datumKupovine: "2026-01-15",
+      });
+      expect(sy15.db.revTool.update).toHaveBeenCalledWith({
+        where: { id: UUID },
+        data: {
+          naziv: "Bušilica",
+          subgroupId: null,
+          datumKupovine: new Date("2026-01-15"),
+        },
+      });
+    });
+
+    it("P2025 (nepostojeći id) → 404", async () => {
+      sy15.db.revTool.update.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError("missing", {
+          code: "P2025",
+          clientVersion: "6.19.3",
+        }),
+      );
+      await expect(
+        service.updateTool(UUID, { naziv: "X" }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+  });
+
+  // ---------- R1: nova jedinica (RB-46) ----------
+
+  describe("createTool (RB-46)", () => {
+    it("insert vraća barkod + locItemRefId (za nalepnicu); bez placement-a bez lokacije", async () => {
+      sy15.db.revTool.create.mockResolvedValue({
+        id: UUID,
+        oznaka: "ALAT-1",
+        naziv: "Ključ",
+        barcode: "ALAT-000123",
+        locItemRefId: "ref-1",
+      });
+      const res = await service.createTool(EMAIL, {
+        oznaka: "ALAT-1",
+        naziv: "Ključ",
+      });
+      expect(res.data.barcode).toBe("ALAT-000123");
+      expect(res.data.locItemRefId).toBe("ref-1");
+      expect(res.data.placement).toBeNull();
+      expect(sy15.withUser).not.toHaveBeenCalled();
+    });
+
+    it("sa initialPlacementLocationId → INITIAL_PLACEMENT kroz loc_create_movement", async () => {
+      sy15.db.revTool.create.mockResolvedValue({
+        id: UUID,
+        oznaka: "ALAT-1",
+        naziv: "Ključ",
+        barcode: "ALAT-000123",
+        locItemRefId: "ref-1",
+      });
+      tx.$queryRawUnsafe.mockResolvedValue([{ result: { ok: true } }]);
+      const res = await service.createTool(EMAIL, {
+        oznaka: "ALAT-1",
+        naziv: "Ključ",
+        initialPlacementLocationId: UUID,
+      });
+      expect(sy15.withUser).toHaveBeenCalledWith(EMAIL, expect.any(Function));
+      const call = tx.$queryRawUnsafe.mock.calls[0] as [string, string];
+      expect(call[0]).toContain("loc_create_movement($1::jsonb)");
+      const payload = JSON.parse(call[1]) as {
+        movement_type: string;
+        item_ref_id: string;
+        to_location_id: string;
+      };
+      expect(payload.movement_type).toBe("INITIAL_PLACEMENT");
+      expect(payload.item_ref_id).toBe("ref-1");
+      expect(payload.to_location_id).toBe(UUID);
+      expect(res.data.placement).toEqual({ ok: true });
+    });
+  });
+
+  // ---------- R1: klasifikacija (RA-26/27/28) ----------
+
+  describe("addInventorySubgroup (RA-26)", () => {
+    it("zove rev_add_inventory_subgroup kroz withUser (GUC scope)", async () => {
+      tx.$queryRaw.mockResolvedValue([{ id: "sg1", label: "Nova" }]);
+      const res = await service.addInventorySubgroup(EMAIL, {
+        groupCode: "AKU",
+        label: "Nova",
+      });
+      expect(sy15.withUser).toHaveBeenCalledWith(EMAIL, expect.any(Function));
+      expect(res.data).toEqual({ id: "sg1", label: "Nova" });
+    });
+
+    it("42501 (bez prava) → 403", async () => {
+      sy15.withUser.mockRejectedValue({
+        meta: { code: "42501", message: "nem" },
+      });
+      await expect(
+        service.addInventorySubgroup(EMAIL, { groupCode: "AKU", label: "N" }),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    it("23503 (grupa ne postoji) → 422", async () => {
+      sy15.withUser.mockRejectedValue({
+        meta: { code: "23503", message: "no" },
+      });
+      await expect(
+        service.addInventorySubgroup(EMAIL, { groupCode: "X", label: "N" }),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    });
+  });
+
+  describe("deleteInventorySubgroup (RA-28)", () => {
+    it("sistemska (is_seeded) → 422 bez brisanja", async () => {
+      sy15.db.revInventorySubgroup.findUnique.mockResolvedValue({
+        isSeeded: true,
+      });
+      await expect(
+        service.deleteInventorySubgroup(UUID),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(sy15.db.revInventorySubgroup.delete).not.toHaveBeenCalled();
+    });
+
+    it("nepostojeća → 404", async () => {
+      sy15.db.revInventorySubgroup.findUnique.mockResolvedValue(null);
+      await expect(
+        service.deleteInventorySubgroup(UUID),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it("korisnička sa podpodgrupama (P2003) → 409", async () => {
+      sy15.db.revInventorySubgroup.findUnique.mockResolvedValue({
+        isSeeded: false,
+      });
+      sy15.db.revInventorySubgroup.delete.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError("fk", {
+          code: "P2003",
+          clientVersion: "6.19.3",
+        }),
+      );
+      await expect(
+        service.deleteInventorySubgroup(UUID),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it("korisnička bez dece → obrisana", async () => {
+      sy15.db.revInventorySubgroup.findUnique.mockResolvedValue({
+        isSeeded: false,
+      });
+      sy15.db.revInventorySubgroup.delete.mockResolvedValue({});
+      const res = await service.deleteInventorySubgroup(UUID);
+      expect(res.data).toEqual({ deleted: true });
+    });
+  });
+
+  describe("renameClassification (RA-27)", () => {
+    it("nevažeći kind → 422", async () => {
+      await expect(
+        service.renameClassification("bogus", UUID, "X"),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    });
+  });
+
+  // ---------- R1: štampa nalepnica (RA-22/RB-47) ----------
+
+  describe("printLabel (RA-22/RB-47)", () => {
+    it("delegira na LabelPrintService.printRawTspl (reuse transporta)", async () => {
+      labelPrint.printRawTspl.mockResolvedValue({
+        ok: true,
+        bytes: 42,
+        printer: "x",
+      });
+      const dto = { tspl2: "CLS\nPRINT 1,1\n" };
+      const res = await service.printLabel(dto);
+      expect(labelPrint.printRawTspl).toHaveBeenCalledWith(dto);
+      expect(res.data.bytes).toBe(42);
     });
   });
 });

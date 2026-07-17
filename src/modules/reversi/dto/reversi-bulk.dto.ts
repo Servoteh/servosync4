@@ -1,9 +1,11 @@
 import {
   IsArray,
   IsBoolean,
+  IsDateString,
   IsInt,
   IsOptional,
   IsString,
+  IsUUID,
   MaxLength,
   Min,
   MinLength,
@@ -50,6 +52,23 @@ export class BulkToolRowDto {
   @IsString()
   @MaxLength(200)
   napomena?: string;
+
+  /**
+   * RA-24: klasifikacija + datum kupovine iz CSV-a. 1.0 uvoz mapira
+   * subgroup_code → subgroup_id na klijentu i šalje id (i datum_kupovine);
+   * 2.0 pilot ih je gubio — ovde se mapiraju u insert (paritet).
+   */
+  @IsOptional()
+  @IsUUID()
+  subgroupId?: string;
+
+  @IsOptional()
+  @IsUUID()
+  subsubgroupId?: string;
+
+  @IsOptional()
+  @IsDateString()
+  datumKupovine?: string;
 }
 
 export class BulkImportToolsDto {

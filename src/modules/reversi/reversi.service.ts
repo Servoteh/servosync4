@@ -6,8 +6,10 @@ import {
   ServiceUnavailableException,
   UnprocessableEntityException,
 } from "@nestjs/common";
+import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
+import { LabelPrintService } from "../../common/printing/label-print.service";
 import { pageMeta, parsePagination } from "../../common/pagination";
 import type {
   JsonPayloadTxDto,
@@ -21,6 +23,13 @@ import type {
   CuttingToolCreateDto,
   CuttingToolUpdateDto,
 } from "./dto/reversi-cutting.dto";
+import type {
+  AddSubgroupDto,
+  AddSubsubgroupDto,
+  CreateToolDto,
+  ReversiPrintLabelDto,
+  UpdateToolDto,
+} from "./dto/reversi-inventory.dto";
 
 /**
  * Reversi — 3.0 PILOT, R1 read sloj (MODULE_SPEC_reversi.md §4/§9).
@@ -55,6 +64,38 @@ export interface LedgerQuery {
   pageSize?: string;
 }
 
+/**
+ * Lista pojedinačnih jedinica inventara (RA-14/16/17/13/15/18/23 — paritet 1.0
+ * `fetchTools`). Server-side status filter + kaskadni klasifikacioni filteri +
+ * sort (allowlist) + paginacija; svaki red nosi zaduženje/lokaciju.
+ */
+export interface InventoryUnitsQuery {
+  status?: string;
+  q?: string;
+  groupCode?: string;
+  subgroupId?: string;
+  subsubgroupId?: string;
+  sort?: string;
+  dir?: string;
+  page?: string;
+  pageSize?: string;
+}
+
+/** Sort allowlist za jedinice (paritet 1.0 `FETCH_TOOLS_SORTABLE`). */
+const UNIT_SORTABLE: Record<
+  string,
+  "oznaka" | "naziv" | "status" | "createdAt"
+> = {
+  oznaka: "oznaka",
+  naziv: "naziv",
+  status: "status",
+  created_at: "createdAt",
+  createdAt: "createdAt",
+};
+
+/** Dokument-statusi koji drže jedinicu „na reversu" (paritet 1.0 issuedByTool). */
+const OPEN_DOC_STATUSES = new Set(["OPEN", "PARTIALLY_RETURNED"]);
+
 /** Sirovi red iz `v_rev_my_issued_cutting_tools` ($queryRaw → snake_case + float8 qty). */
 interface CuttingOpenLineRow {
   line_id: string;
@@ -80,7 +121,10 @@ const TOOL_STATUSES = new Set(["active", "scrapped", "lost"]);
 
 @Injectable()
 export class ReversiService {
-  constructor(private readonly sy15: Sy15Service) {}
+  constructor(
+    private readonly sy15: Sy15Service,
+    private readonly labelPrint: LabelPrintService,
+  ) {}
 
   // ---------- Dokumenti (reversi) ----------
 
@@ -204,6 +248,295 @@ export class ReversiService {
     return { data: { ...tool, batteries, services } };
   }
 
+  /**
+   * Lista pojedinačnih jedinica inventara sa zaduženjem/lokacijom po jedinici
+   * (RA-14/16/17/13/15/18; izvor stat kartica RA-10; fetch-all za CSV RA-23).
+   *
+   * Paritet 1.0 `fetchTools`: `rev_tools` (status/klasifikacija/pretraga filteri,
+   * sort iz allowliste, server-side paginacija sa `total`) + ručni batch-resolve
+   * (šema bez FK relacija):
+   *   - klasifikacija: iz `inventoryTree` mapa (grupa · podgrupa · podpodgrupa),
+   *   - lokacija: `loc_item_placements` (item_ref_table=rev_tools) → `loc_locations.location_code`,
+   *   - zaduženje: otvorena ISSUED `rev_document_lines` + `rev_documents`
+   *     (status OPEN/PARTIALLY_RETURNED) → primalac + broj dokumenta.
+   * `pageSize` do 5000 (RA-23 izvozi ceo filtrirani skup).
+   */
+  async listInventoryUnits(query: InventoryUnitsQuery) {
+    const { page, pageSize, skip, take } = parsePagination(
+      query.page,
+      query.pageSize,
+      5000,
+    );
+
+    const where: Prisma.RevToolWhereInput = {};
+    const status = (query.status ?? "active").trim();
+    if (status === "active" || status === "scrapped" || status === "lost") {
+      where.status = status;
+    }
+    // 'all' → bez filtera na status (paritet 1.0 'Svi zapisi').
+
+    if (query.subsubgroupId && query.subsubgroupId !== "ALL") {
+      where.subsubgroupId = query.subsubgroupId;
+    }
+    if (query.subgroupId && query.subgroupId !== "ALL") {
+      where.subgroupId = query.subgroupId;
+    } else if (query.groupCode && query.groupCode !== "ALL") {
+      // Grupa bez izabrane podgrupe → suzi na podgrupe te grupe (nesvrstano ispada).
+      const group = await this.sy15.db.revInventoryGroup.findUnique({
+        where: { code: query.groupCode },
+        select: { id: true },
+      });
+      const subs = group
+        ? await this.sy15.db.revInventorySubgroup.findMany({
+            where: { groupId: group.id },
+            select: { id: true },
+          })
+        : [];
+      where.subgroupId = { in: subs.map((s) => s.id) };
+    }
+
+    const q = (query.q ?? "").trim();
+    if (q) {
+      where.OR = [
+        { oznaka: { contains: q, mode: "insensitive" } },
+        { naziv: { contains: q, mode: "insensitive" } },
+        { barcode: { contains: q, mode: "insensitive" } },
+      ];
+    }
+
+    const col = UNIT_SORTABLE[query.sort ?? "oznaka"] ?? "oznaka";
+    const dir: Prisma.SortOrder = query.dir === "desc" ? "desc" : "asc";
+    // Sekundarni oznaka.asc za stabilan redosled (paritet 1.0); eksplicitne grane
+    // izbegavaju računato-ključno tipovanje nad RevToolOrderByWithRelationInput.
+    const orderBy: Prisma.RevToolOrderByWithRelationInput[] =
+      col === "naziv"
+        ? [{ naziv: dir }, { oznaka: "asc" }]
+        : col === "status"
+          ? [{ status: dir }, { oznaka: "asc" }]
+          : col === "createdAt"
+            ? [{ createdAt: dir }, { oznaka: "asc" }]
+            : [{ oznaka: dir }];
+
+    const [tools, total] = await Promise.all([
+      this.sy15.db.revTool.findMany({ where, orderBy, skip, take }),
+      this.sy15.db.revTool.count({ where }),
+    ]);
+    if (tools.length === 0) {
+      return { data: [], meta: pageMeta(page, pageSize, total) };
+    }
+
+    // Klasifikacija (grupa · podgrupa · podpodgrupa) iz jednokratnih mapa.
+    const [groups, subgroups, subsubgroups] = await Promise.all([
+      this.sy15.db.revInventoryGroup.findMany({
+        select: { id: true, code: true, label: true },
+      }),
+      this.sy15.db.revInventorySubgroup.findMany({
+        select: { id: true, code: true, label: true, groupId: true },
+      }),
+      this.sy15.db.revInventorySubsubgroup.findMany({
+        select: { id: true, code: true, label: true },
+      }),
+    ]);
+    const groupById = new Map(groups.map((g) => [g.id, g]));
+    const subgroupById = new Map(subgroups.map((s) => [s.id, s]));
+    const subsubById = new Map(subsubgroups.map((s) => [s.id, s]));
+
+    // Lokacija po jedinici — loc_item_placements → loc_locations.location_code.
+    const refIds = [
+      ...new Set(
+        tools.map((t) => t.locItemRefId).filter((x): x is string => !!x),
+      ),
+    ];
+    const placements = refIds.length
+      ? await this.sy15.db.locItemPlacement.findMany({
+          where: { itemRefTable: "rev_tools", itemRefId: { in: refIds } },
+          select: { itemRefId: true, locationId: true },
+        })
+      : [];
+    const locIds = [...new Set(placements.map((p) => p.locationId))];
+    const locs = locIds.length
+      ? await this.sy15.db.locLocation.findMany({
+          where: { id: { in: locIds } },
+          select: { id: true, locationCode: true },
+        })
+      : [];
+    const locCodeById = new Map(locs.map((l) => [l.id, l.locationCode]));
+    const placeByRef = new Map(placements.map((p) => [p.itemRefId, p]));
+
+    // Zaduženje po jedinici — otvorene ISSUED linije + dokument OPEN/PARTIALLY_RETURNED.
+    const ids = tools.map((t) => t.id);
+    const lines = await this.sy15.db.revDocumentLine.findMany({
+      where: { toolId: { in: ids }, lineStatus: "ISSUED" },
+      select: { toolId: true, documentId: true },
+    });
+    const docIds = [...new Set(lines.map((l) => l.documentId))];
+    const docs = docIds.length
+      ? await this.sy15.db.revDocument.findMany({
+          where: { id: { in: docIds } },
+          select: {
+            id: true,
+            docNumber: true,
+            status: true,
+            recipientType: true,
+            recipientEmployeeName: true,
+            recipientDepartment: true,
+            recipientCompanyName: true,
+          },
+        })
+      : [];
+    const docById = new Map(docs.map((d) => [d.id, d]));
+    const issuedByTool = new Map<
+      string,
+      {
+        docNumber: string;
+        recipientType: string;
+        recipientEmployeeName: string | null;
+        recipientDepartment: string | null;
+        recipientCompanyName: string | null;
+      }
+    >();
+    for (const ln of lines) {
+      if (!ln.toolId) continue;
+      const d = docById.get(ln.documentId);
+      if (d && OPEN_DOC_STATUSES.has(d.status)) {
+        issuedByTool.set(ln.toolId, {
+          docNumber: d.docNumber,
+          recipientType: d.recipientType,
+          recipientEmployeeName: d.recipientEmployeeName,
+          recipientDepartment: d.recipientDepartment,
+          recipientCompanyName: d.recipientCompanyName,
+        });
+      }
+    }
+
+    const data = tools.map((t) => {
+      const sg = t.subgroupId ? (subgroupById.get(t.subgroupId) ?? null) : null;
+      const g = sg?.groupId ? (groupById.get(sg.groupId) ?? null) : null;
+      const ss = t.subsubgroupId
+        ? (subsubById.get(t.subsubgroupId) ?? null)
+        : null;
+      const pl = t.locItemRefId ? placeByRef.get(t.locItemRefId) : undefined;
+      const currentLocationId = pl?.locationId ?? null;
+      return {
+        ...t,
+        group: g ? { code: g.code, label: g.label } : null,
+        subgroup: sg ? { id: sg.id, code: sg.code, label: sg.label } : null,
+        subsubgroup: ss ? { id: ss.id, code: ss.code, label: ss.label } : null,
+        currentLocationId,
+        currentLocationCode: currentLocationId
+          ? (locCodeById.get(currentLocationId) ?? null)
+          : null,
+        issuedHolder: issuedByTool.get(t.id) ?? null,
+      };
+    });
+    return { data, meta: pageMeta(page, pageSize, total) };
+  }
+
+  /**
+   * Nova jedinica ručnog alata (RB-46 — modal „Nova jedinica"). INSERT rev_tools;
+   * barkod + `loc_item_ref_id` dodeljuju trigeri (vraćaju se za štampu nalepnice
+   * RB-47). Ako je zadat `initialPlacementLocationId`, alat se odmah smešta u tu
+   * lokaciju (INITIAL_PLACEMENT kroz `loc_create_movement` — paritet 1.0
+   * initialPlacementForTool); inače je i dalje upotrebljiv u Izdaj (bez placement-a).
+   */
+  async createTool(email: string, dto: CreateToolDto) {
+    const isQuantity = dto.isQuantity ?? false;
+    const isConsumable = dto.isConsumable ?? false;
+    const tool = await this.sy15.db.revTool.create({
+      data: {
+        oznaka: dto.oznaka.trim(),
+        naziv: dto.naziv.trim(),
+        serijskiBroj: dto.serijskiBroj?.trim() || null,
+        datumKupovine: dto.datumKupovine ? new Date(dto.datumKupovine) : null,
+        nabavnaVrednost: dto.nabavnaVrednost ?? null,
+        garancijaDo: dto.garancijaDo ? new Date(dto.garancijaDo) : null,
+        garancijaNapomena: dto.garancijaNapomena?.trim() || null,
+        imaPunjac: dto.imaPunjac ?? false,
+        punjacSerijski: dto.punjacSerijski?.trim() || null,
+        napomena: dto.napomena?.trim() || null,
+        subgroupId: dto.subgroupId ?? null,
+        subsubgroupId: dto.subsubgroupId ?? null,
+        isQuantity,
+        isConsumable,
+        totalQty: isQuantity || isConsumable ? (dto.totalQty ?? 0) : 1,
+        minStockQty: dto.minStockQty ?? null,
+        maxStockQty: dto.maxStockQty ?? null,
+        status: "active",
+      },
+    });
+
+    let placement: unknown = null;
+    if (dto.initialPlacementLocationId && tool.locItemRefId) {
+      placement = await this.initialPlacement(
+        email,
+        tool.locItemRefId,
+        dto.initialPlacementLocationId,
+        dto.clientEventId,
+      );
+    }
+    return {
+      data: {
+        id: tool.id,
+        oznaka: tool.oznaka,
+        naziv: tool.naziv,
+        barcode: tool.barcode,
+        locItemRefId: tool.locItemRefId,
+        placement,
+      },
+    };
+  }
+
+  /**
+   * Izmena artikla ručnog alata (RB-11 — modal „Izmena artikla"). Direktan PATCH
+   * rev_tools (konekciona rola BYPASSRLS — guard reversi.manage je granica; paritet
+   * 1.0 `updateHandTool`). `null` na klasifikaciji/serijskom/garanciji briše polje.
+   * P2025 (nepostojeći id) → 404 (isto kao updateCuttingTool / Lokacije).
+   */
+  async updateTool(id: string, dto: UpdateToolDto) {
+    const data: Prisma.RevToolUpdateInput = {};
+    if (dto.oznaka !== undefined) data.oznaka = dto.oznaka.trim();
+    if (dto.naziv !== undefined) data.naziv = dto.naziv.trim();
+    if (dto.serijskiBroj !== undefined)
+      data.serijskiBroj = dto.serijskiBroj?.trim() || null;
+    if (dto.datumKupovine !== undefined)
+      data.datumKupovine = dto.datumKupovine
+        ? new Date(dto.datumKupovine)
+        : null;
+    if (dto.nabavnaVrednost !== undefined)
+      data.nabavnaVrednost = dto.nabavnaVrednost ?? null;
+    if (dto.garancijaDo !== undefined)
+      data.garancijaDo = dto.garancijaDo ? new Date(dto.garancijaDo) : null;
+    if (dto.garancijaNapomena !== undefined)
+      data.garancijaNapomena = dto.garancijaNapomena?.trim() || null;
+    if (dto.imaPunjac !== undefined) data.imaPunjac = dto.imaPunjac;
+    if (dto.punjacSerijski !== undefined)
+      data.punjacSerijski = dto.punjacSerijski?.trim() || null;
+    if (dto.napomena !== undefined)
+      data.napomena = dto.napomena?.trim() || null;
+    if (dto.subgroupId !== undefined) data.subgroupId = dto.subgroupId ?? null;
+    if (dto.subsubgroupId !== undefined)
+      data.subsubgroupId = dto.subsubgroupId ?? null;
+    if (dto.minStockQty !== undefined)
+      data.minStockQty = dto.minStockQty ?? null;
+    if (dto.maxStockQty !== undefined)
+      data.maxStockQty = dto.maxStockQty ?? null;
+    if (dto.totalQty !== undefined) data.totalQty = dto.totalQty;
+    if (dto.status !== undefined) data.status = dto.status;
+
+    try {
+      const tool = await this.sy15.db.revTool.update({ where: { id }, data });
+      return { data: tool };
+    } catch (e) {
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === "P2025"
+      ) {
+        throw new NotFoundException(`Alat ${id} ne postoji`);
+      }
+      throw e;
+    }
+  }
+
   // ---------- Klasifikacija (inventar grupe) ----------
 
   async inventoryTree() {
@@ -219,6 +552,204 @@ export class ReversiService {
       }),
     ]);
     return { data: { groups, subgroups, subsubgroups } };
+  }
+
+  /**
+   * Broj artikala po podgrupi/podpodgrupi (RA-25 brojači u stablu; RA-28
+   * upozorenje pri brisanju „X postaje nesvrstano"). Paritet 1.0
+   * `fetchInventoryClassificationUsage` — rev_tools + rev_cutting_tool_catalog.
+   */
+  async inventoryClassificationUsage() {
+    const rows = await this.sy15.db.$queryRaw<
+      { k: string; id: string; n: number }[]
+    >(Prisma.sql`
+      SELECT 'tool_sub'::text AS k, subgroup_id::text AS id, count(*)::int AS n
+        FROM rev_tools WHERE subgroup_id IS NOT NULL GROUP BY subgroup_id
+      UNION ALL
+      SELECT 'tool_subsub', subsubgroup_id::text, count(*)::int
+        FROM rev_tools WHERE subsubgroup_id IS NOT NULL GROUP BY subsubgroup_id
+      UNION ALL
+      SELECT 'cutting_sub', subgroup_id::text, count(*)::int
+        FROM rev_cutting_tool_catalog WHERE subgroup_id IS NOT NULL GROUP BY subgroup_id`);
+    const out: {
+      tools: Record<string, number>;
+      cutting: Record<string, number>;
+      subsubs: Record<string, number>;
+    } = { tools: {}, cutting: {}, subsubs: {} };
+    for (const r of rows) {
+      const n = Number(r.n) || 0;
+      if (r.k === "tool_sub") out.tools[r.id] = n;
+      else if (r.k === "cutting_sub") out.cutting[r.id] = n;
+      else if (r.k === "tool_subsub") out.subsubs[r.id] = n;
+    }
+    return { data: out };
+  }
+
+  /**
+   * Dodaj user-defined podgrupu (RA-26) — postojeća DEFINER fn
+   * `rev_add_inventory_subgroup(p_group_code, p_label, p_napomena)` koja sama
+   * gate-uje `rev_can_manage()` iz GUC claims (drugi sloj posle guarda) i izvodi
+   * `code` iz label-a. Zato ide kroz `withUser`. Greške: 42501→403, 22023/23503→422.
+   */
+  async addInventorySubgroup(email: string, dto: AddSubgroupDto) {
+    try {
+      const rows = await this.sy15.withUser(
+        email,
+        (tx) => tx.$queryRaw<unknown[]>`
+          SELECT * FROM rev_add_inventory_subgroup(
+            ${dto.groupCode.trim()}, ${dto.label.trim()}, ${dto.napomena?.trim() || null})`,
+      );
+      return { data: rows[0] ?? null };
+    } catch (e) {
+      this.rethrowSy15(e);
+    }
+  }
+
+  /** Dodaj podpodgrupu (RA-26) — DEFINER fn `rev_add_inventory_subsubgroup`. */
+  async addInventorySubsubgroup(email: string, dto: AddSubsubgroupDto) {
+    try {
+      const rows = await this.sy15.withUser(
+        email,
+        (tx) => tx.$queryRaw<unknown[]>`
+          SELECT * FROM rev_add_inventory_subsubgroup(
+            ${dto.subgroupId}::uuid, ${dto.label.trim()}, ${dto.napomena?.trim() || null})`,
+      );
+      return { data: rows[0] ?? null };
+    } catch (e) {
+      this.rethrowSy15(e);
+    }
+  }
+
+  /**
+   * Preimenovanje nivoa klasifikacije (RA-27) — menja se samo `label` (interni
+   * `code` ostaje stabilan ključ). Dozvoljeno i za sistemske (is_seeded) redove,
+   * paritet 1.0 `renameInventoryClassification`. Direktan PATCH (BYPASSRLS + guard).
+   */
+  async renameClassification(kind: string, id: string, label: string) {
+    if (kind !== "group" && kind !== "subgroup" && kind !== "subsubgroup") {
+      throw new UnprocessableEntityException(
+        "kind mora biti group | subgroup | subsubgroup",
+      );
+    }
+    const trimmed = label.trim();
+    try {
+      if (kind === "group") {
+        const row = await this.sy15.db.revInventoryGroup.update({
+          where: { id },
+          data: { label: trimmed },
+        });
+        return { data: row };
+      }
+      if (kind === "subgroup") {
+        const row = await this.sy15.db.revInventorySubgroup.update({
+          where: { id },
+          data: { label: trimmed },
+        });
+        return { data: row };
+      }
+      const row = await this.sy15.db.revInventorySubsubgroup.update({
+        where: { id },
+        data: { label: trimmed },
+      });
+      return { data: row };
+    } catch (e) {
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === "P2025"
+      ) {
+        throw new NotFoundException(`Klasa ${kind}/${id} ne postoji`);
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * Brisanje korisničke podgrupe (RA-28). Samo `is_seeded=false` (paritet 1.0 RLS
+   * — sistemske su zaključane). Artikli: `subgroup_id → NULL` (FK ON DELETE SET
+   * NULL, „postaju nesvrstani"). FE prvo briše podpodgrupe (RESTRICT FK); ako ih
+   * ipak ima → P2003 → 409.
+   */
+  async deleteInventorySubgroup(id: string) {
+    const row = await this.sy15.db.revInventorySubgroup.findUnique({
+      where: { id },
+      select: { isSeeded: true },
+    });
+    if (!row) throw new NotFoundException(`Podgrupa ${id} ne postoji`);
+    if (row.isSeeded)
+      throw new UnprocessableEntityException(
+        "Sistemska podgrupa se ne može obrisati",
+      );
+    try {
+      await this.sy15.db.revInventorySubgroup.delete({ where: { id } });
+      return { data: { deleted: true } };
+    } catch (e) {
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === "P2003"
+      ) {
+        throw new ConflictException(
+          "Podgrupa ima podpodgrupe — prvo obriši podpodgrupe",
+        );
+      }
+      throw e;
+    }
+  }
+
+  /** Brisanje korisničke podpodgrupe (RA-28). Samo `is_seeded=false`. */
+  async deleteInventorySubsubgroup(id: string) {
+    const row = await this.sy15.db.revInventorySubsubgroup.findUnique({
+      where: { id },
+      select: { isSeeded: true },
+    });
+    if (!row) throw new NotFoundException(`Podpodgrupa ${id} ne postoji`);
+    if (row.isSeeded)
+      throw new UnprocessableEntityException(
+        "Sistemska podpodgrupa se ne može obrisati",
+      );
+    await this.sy15.db.revInventorySubsubgroup.delete({ where: { id } });
+    return { data: { deleted: true } };
+  }
+
+  /**
+   * Štampa nalepnica (RA-22 bulk + RB-47 pri dodavanju) — REUSE deljenog TSPL2
+   * transporta (`LabelPrintService`, isti koji koriste Lokacije/Tehnologija). FE
+   * gradi ceo TSPL2 program u 1.0 formatu (`reversiLabelsPrint.js`: ALAT- Code128,
+   * oznaka/naziv/podgrupa/serijski); backend samo prosleđuje RAW na TCP 9100.
+   */
+  async printLabel(dto: ReversiPrintLabelDto) {
+    return { data: await this.labelPrint.printRawTspl(dto) };
+  }
+
+  /**
+   * Početni smeštaj alata u WAREHOUSE lokaciju (INITIAL_PLACEMENT) — paritet 1.0
+   * `initialPlacementForTool` (loc_create_movement). Idempotencija = client_event_uuid.
+   */
+  private async initialPlacement(
+    email: string,
+    locItemRefId: string,
+    locationId: string,
+    clientEventId?: string,
+  ) {
+    const payload = {
+      client_event_uuid: clientEventId ?? randomUUID(),
+      item_ref_table: "rev_tools",
+      item_ref_id: locItemRefId,
+      to_location_id: locationId,
+      movement_type: "INITIAL_PLACEMENT",
+      movement_reason: "Ručni unos alata — Reversi UI",
+      quantity: 1,
+    };
+    try {
+      return await this.sy15.withUser(email, async (tx) => {
+        const rows = await tx.$queryRawUnsafe<{ result: unknown }[]>(
+          "SELECT loc_create_movement($1::jsonb) AS result",
+          JSON.stringify(payload),
+        );
+        return rows[0]?.result ?? null;
+      });
+    } catch (e) {
+      this.rethrowSy15(e);
+    }
   }
 
   // ---------- Ledger (JEDINI ne-javni read — politika rev_tool_stock_ledger_select = rev_can_manage) ----------
@@ -334,9 +865,7 @@ export class ReversiService {
     });
     if (catalog.length === 0) return { data: [] };
 
-    const ids = Prisma.join(
-      catalog.map((c) => Prisma.sql`${c.id}::uuid`),
-    );
+    const ids = Prisma.join(catalog.map((c) => Prisma.sql`${c.id}::uuid`));
     // Magacinski raspoloživo (samo WAREHOUSE lokacije) — paritet 1.0 in_warehouse_qty.
     const warehouse = await this.sy15.db.$queryRaw<
       { catalog_id: string; qty: number }[]
@@ -355,8 +884,12 @@ export class ReversiService {
       WHERE ms.catalog_id IN (${ids}) AND ms.outstanding_qty > 0
       GROUP BY ms.catalog_id`);
 
-    const whBy = new Map(warehouse.map((r) => [r.catalog_id, Number(r.qty) || 0]));
-    const machBy = new Map(machines.map((r) => [r.catalog_id, Number(r.qty) || 0]));
+    const whBy = new Map(
+      warehouse.map((r) => [r.catalog_id, Number(r.qty) || 0]),
+    );
+    const machBy = new Map(
+      machines.map((r) => [r.catalog_id, Number(r.qty) || 0]),
+    );
     const data = catalog.map((c) => {
       const inWarehouseQty = whBy.get(c.id) ?? 0;
       const onMachinesQty = machBy.get(c.id) ?? 0;
@@ -511,6 +1044,12 @@ export class ReversiService {
             oznaka,
             naziv: row.naziv.trim(),
             serijskiBroj: row.serijskiBroj?.trim() || null,
+            // RA-24: klasifikacija + datum kupovine (1.0 uvoz ih mapira; pilot ih je gubio).
+            subgroupId: row.subgroupId ?? null,
+            subsubgroupId: row.subsubgroupId ?? null,
+            datumKupovine: row.datumKupovine
+              ? new Date(row.datumKupovine)
+              : null,
             isQuantity,
             isConsumable,
             totalQty: isQuantity || isConsumable ? (row.totalQty ?? 0) : 1,
@@ -771,10 +1310,15 @@ export class ReversiService {
     const meta = (e as { meta?: { code?: string; message?: string } }).meta;
     const message = meta?.message ?? (e as Error).message;
     if (meta?.code === "42501") throw new ForbiddenException(message);
-    if (meta?.code === "P0001" || meta?.code === "P0002") throw new UnprocessableEntityException(message);
+    if (meta?.code === "P0001" || meta?.code === "P0002")
+      throw new UnprocessableEntityException(message);
     if (meta?.code === "23505") throw new ConflictException(message);
     // 23514 = check constraint (npr. negativna zaliha reznog) — poslovna greška, ne 500.
     if (meta?.code === "23514") throw new UnprocessableEntityException(message);
+    // Klasifikacija DEFINER fn (rev_add_inventory_*): 22023 = prazan naziv/grupa,
+    // 23503 = grupa/podgrupa ne postoji — poslovne validacije, ne 500.
+    if (meta?.code === "22023" || meta?.code === "23503")
+      throw new UnprocessableEntityException(message);
     throw e;
   }
 
@@ -845,7 +1389,10 @@ export class ReversiService {
       // regenerisati iz podataka (nema server-side generatora), pa je ispravan
       // odgovor čist 404 sa jasnom porukom, a ne obmanjujući 422 „potpisivanje nije uspelo".
       const bodyText = (await res.text()).slice(0, 300);
-      if (res.status === 404 || (res.status === 400 && /not.?found/i.test(bodyText))) {
+      if (
+        res.status === 404 ||
+        (res.status === 400 && /not.?found/i.test(bodyText))
+      ) {
         throw new NotFoundException(
           `Potpisnica za dokument ${doc.docNumber} ne postoji u skladištu — regeneriši i otpremi PDF (POST /reversi/documents/${id}/signature-pdf).`,
         );
