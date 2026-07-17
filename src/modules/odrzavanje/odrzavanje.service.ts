@@ -2852,6 +2852,148 @@ export class OdrzavanjeService {
     });
   }
 
+  // ---------- Foto vozila (storage proxy F2-P4a; 1.0-kompatibilne putanje) ----------
+
+  /**
+   * Upload glavne fotografije vozila (paritet 1.0 uploadVehiclePhoto → uploadMaintDocument):
+   *   1) `maint_documents` red (entity_type='asset', category='vehicle_photo') pod RLS-om,
+   *      na 1.0-kompatibilnu putanju `documents/asset/<assetId>/<uuid>_<safeName>` (meta PRE
+   *      bajtova → bez orphan-a, isto kao uploadDocument/uploadMachineFile);
+   *   2) upload bajtova u bucket `maint-machine-files`;
+   *   3) upsert `maint_vehicle_details.primary_photo_storage_path` na tu putanju.
+   * Vidljivost/pravo presuđuje sy15 RLS kroz `withUserRls` (asset SELECT + doc/details write).
+   */
+  async uploadVehiclePhoto(
+    email: string,
+    assetId: string,
+    file?: Express.Multer.File,
+  ) {
+    if (!file?.buffer?.length) {
+      throw new UnprocessableEntityException(
+        "Očekivana slika (multipart `file`)",
+      );
+    }
+    if (file.mimetype && !file.mimetype.startsWith("image/")) {
+      throw new UnprocessableEntityException(
+        "Fajl mora biti slika (image/*)",
+      );
+    }
+    const uuid = randomUUID().replace(/-/g, "").slice(0, 16);
+    const storagePath = `documents/asset/${assetId}/${uuid}_${this.safeFileName(file.originalname)}`;
+    // Meta PRE bajtova: RLS INSERT enforce + provera da je asset VIDLJIVO vozilo
+    // (findFirst assetType='vehicle' → 404 kad ne postoji/nevidljivo; paritet findVehicle).
+    const meta = await this.withUserMapped(email, async (tx) => {
+      const asset = await tx.maintAsset.findFirst({
+        where: { assetId, assetType: "vehicle" },
+        select: { assetId: true },
+      });
+      if (!asset)
+        throw new NotFoundException(
+          `Vozilo ${assetId} ne postoji ili nije vidljivo`,
+        );
+      const uid = await this.uid(tx);
+      return tx.maintDocument.create({
+        data: {
+          entityType: "asset" as never,
+          entityId: assetId,
+          assetId,
+          fileName: file.originalname,
+          storagePath,
+          mimeType: file.mimetype ?? null,
+          sizeBytes: BigInt(file.buffer.length),
+          category: "vehicle_photo",
+          description: "Glavna fotografija vozila",
+          uploadedBy: uid,
+        },
+      });
+    });
+    try {
+      await this.storage.upload(
+        MAINT_BUCKET,
+        storagePath,
+        new Uint8Array(file.buffer),
+        file.mimetype || "application/octet-stream",
+        false,
+      );
+    } catch (e) {
+      await this.withUserMapped(email, async (tx) => {
+        await tx.maintDocument.deleteMany({
+          where: { documentId: meta.documentId },
+        });
+      }).catch(() => {});
+      throw e;
+    }
+    // Postavi pointer glavne fotografije (paritet 1.0 PATCH primary_photo_storage_path).
+    // Upsert jer details red praktično uvek postoji za vozilo, ali je bezbedno i kad ne.
+    await this.withUserMapped(email, async (tx) => {
+      const uid = await this.uid(tx);
+      await tx.maintVehicleDetails.upsert({
+        where: { assetId },
+        create: {
+          assetId,
+          primaryPhotoStoragePath: storagePath,
+          updatedBy: uid,
+        },
+        update: { primaryPhotoStoragePath: storagePath, updatedBy: uid },
+      });
+    });
+    return {
+      data: { ...this.withNumSize(meta), primaryPhotoStoragePath: storagePath },
+    };
+  }
+
+  /**
+   * Presigned URL glavne fotografije vozila (paritet 1.0 getVehiclePhotoSignedUrl, 1h).
+   * 404 čisto kad vozilo nema fotografiju ili nije vidljivo (RLS SELECT presuđuje PRE potpisa).
+   */
+  async vehiclePhotoUrl(email: string, assetId: string) {
+    const path = await this.withUserMapped(email, async (tx) => {
+      const asset = await tx.maintAsset.findFirst({
+        where: { assetId, assetType: "vehicle" },
+        select: { assetId: true },
+      });
+      if (!asset)
+        throw new NotFoundException(
+          `Vozilo ${assetId} ne postoji ili nije vidljivo`,
+        );
+      const details = await tx.maintVehicleDetails.findUnique({
+        where: { assetId },
+        select: { primaryPhotoStoragePath: true },
+      });
+      const p = details?.primaryPhotoStoragePath ?? null;
+      if (!p) throw new NotFoundException("Vozilo nema fotografiju");
+      return p;
+    });
+    return { data: await this.storage.signUrl(MAINT_BUCKET, path, 3600) };
+  }
+
+  /**
+   * Ukloni glavnu fotografiju vozila: skini pointer iz details + best-effort brisanje
+   * bajtova (1.0 semantika — meta-pointer je izvor istine, blob je propratni). Idempotentno:
+   * već-prazan pointer (ili nepostojeći details red) vraća `ok` bez greške.
+   */
+  async deleteVehiclePhoto(email: string, assetId: string) {
+    const path = await this.withUserMapped(email, async (tx) => {
+      const details = await tx.maintVehicleDetails.findUnique({
+        where: { assetId },
+        select: { primaryPhotoStoragePath: true },
+      });
+      const p = details?.primaryPhotoStoragePath ?? null;
+      if (!p) return null; // nema šta da se ukloni — idempotentno ok
+      const uid = await this.uid(tx);
+      const { count } = await tx.maintVehicleDetails.updateMany({
+        where: { assetId },
+        data: { primaryPhotoStoragePath: null, updatedBy: uid },
+      });
+      // Red je vidljiv (findUnique ga vratio) ali UPDATE politika odbila → 403.
+      if (count === 0)
+        throw new ForbiddenException(`Nemate pravo nad: Foto vozila ${assetId}`);
+      return p;
+    });
+    if (path) await this.storage.remove(MAINT_BUCKET, path);
+    return { data: { ok: true } };
+  }
+
   // ---------- IT/objekti details upsert (allowlist) ----------
 
   async upsertItDetails(email: string, assetId: string, dto: DetailsUpsertDto) {

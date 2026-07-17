@@ -1,4 +1,8 @@
-import { ForbiddenException } from "@nestjs/common";
+import {
+  ForbiddenException,
+  NotFoundException,
+  UnprocessableEntityException,
+} from "@nestjs/common";
 import { OdrzavanjeService } from "./odrzavanje.service";
 import { Sy15Service } from "../../common/sy15/sy15.service";
 import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
@@ -418,6 +422,190 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
     expect(partData.partName).toBe("Zaptivka (ručno)");
     expect(Number(partData.unitCost)).toBe(7); // DTO zadržan (2.0 nadogradnja)
     expect(stockCreate).not.toHaveBeenCalled(); // bez partId → bez kretanja zaliha
+  });
+
+  // ------- Foto vozila (F2-P4a: upload/sign/delete, storage proxy, 1.0 putanje) -------
+  describe("Foto vozila (storage proxy, 1.0-kompatibilne putanje)", () => {
+    const makeStorage = () => ({
+      upload: jest.fn().mockResolvedValue(undefined),
+      signUrl: jest
+        .fn()
+        .mockResolvedValue({ url: "https://sy15/sign", expiresIn: 3600 }),
+      remove: jest.fn().mockResolvedValue(undefined),
+    });
+    const asStorage = (s: ReturnType<typeof makeStorage>) =>
+      s as unknown as Sy15StorageService;
+
+    const VEH = "3b241101-e2bb-4255-8caf-4136c566a970";
+    const imgFile = (over: Partial<Express.Multer.File> = {}) =>
+      ({
+        originalname: "vozilo.jpg",
+        mimetype: "image/jpeg",
+        buffer: Buffer.from([1, 2, 3]),
+        ...over,
+      }) as Express.Multer.File;
+
+    it("upload: maint_documents (vehicle_photo, 1.0 putanja) → bajtovi u bucket → upsert pointer", async () => {
+      const docCreate = jest
+        .fn()
+        .mockResolvedValue({ documentId: "d1", sizeBytes: 3n });
+      const detUpsert = jest.fn().mockResolvedValue({});
+      const tx = makeTx({
+        $queryRaw: jest.fn().mockResolvedValue([{ uid: "u1" }]),
+        maintAsset: {
+          findFirst: jest.fn().mockResolvedValue({ assetId: VEH }),
+        },
+        maintDocument: { create: docCreate, deleteMany: jest.fn() },
+        maintVehicleDetails: { upsert: detUpsert },
+      });
+      const { sy15, withUserRls } = makeSy15(tx);
+      const storage = makeStorage();
+      const svc = new OdrzavanjeService(sy15, asStorage(storage));
+      const res = (await svc.uploadVehiclePhoto(
+        "chief@servoteh.com",
+        VEH,
+        imgFile(),
+      )) as { data: { primaryPhotoStoragePath: string } };
+      // (1) meta PRE bajtova, 1.0-kompatibilna putanja + category
+      expect(docCreate).toHaveBeenCalledTimes(1);
+      const docData = docCreate.mock.calls[0][0].data;
+      expect(docData.category).toBe("vehicle_photo");
+      expect(docData.entityType).toBe("asset");
+      expect(String(docData.storagePath)).toMatch(
+        new RegExp(`^documents/asset/${VEH}/`),
+      );
+      // (2) bajtovi u bucket maint-machine-files na ISTU putanju
+      expect(storage.upload).toHaveBeenCalledTimes(1);
+      expect(storage.upload.mock.calls[0][0]).toBe("maint-machine-files");
+      expect(storage.upload.mock.calls[0][1]).toBe(docData.storagePath);
+      // (3) pointer upsert = ta putanja
+      expect(detUpsert).toHaveBeenCalledTimes(1);
+      expect(detUpsert.mock.calls[0][0].update.primaryPhotoStoragePath).toBe(
+        docData.storagePath,
+      );
+      expect(res.data.primaryPhotoStoragePath).toBe(docData.storagePath);
+      expect(withUserRls).toHaveBeenCalled();
+    });
+
+    it("upload: nepoznat/nije vozilo → 404, bez document.create i bez storage.upload", async () => {
+      const docCreate = jest.fn();
+      const tx = makeTx({
+        $queryRaw: jest.fn().mockResolvedValue([{ uid: "u1" }]),
+        maintAsset: { findFirst: jest.fn().mockResolvedValue(null) },
+        maintDocument: { create: docCreate, deleteMany: jest.fn() },
+        maintVehicleDetails: { upsert: jest.fn() },
+      });
+      const { sy15 } = makeSy15(tx);
+      const storage = makeStorage();
+      const svc = new OdrzavanjeService(sy15, asStorage(storage));
+      await expect(
+        svc.uploadVehiclePhoto("x@servoteh.com", VEH, imgFile()),
+      ).rejects.toThrow(NotFoundException);
+      expect(docCreate).not.toHaveBeenCalled();
+      expect(storage.upload).not.toHaveBeenCalled();
+    });
+
+    it("upload: ne-slika mimetype → 422 pre ijednog upisa/storage poziva", async () => {
+      const tx = makeTx({
+        maintAsset: { findFirst: jest.fn() },
+        maintDocument: { create: jest.fn() },
+      });
+      const { sy15 } = makeSy15(tx);
+      const storage = makeStorage();
+      const svc = new OdrzavanjeService(sy15, asStorage(storage));
+      await expect(
+        svc.uploadVehiclePhoto(
+          "x@servoteh.com",
+          VEH,
+          imgFile({ mimetype: "application/pdf" }),
+        ),
+      ).rejects.toThrow(UnprocessableEntityException);
+      expect(storage.upload).not.toHaveBeenCalled();
+    });
+
+    it("sign URL: bez foto → 404 čisto, storage.signUrl netaknut", async () => {
+      const tx = makeTx({
+        maintAsset: {
+          findFirst: jest.fn().mockResolvedValue({ assetId: VEH }),
+        },
+        maintVehicleDetails: {
+          findUnique: jest
+            .fn()
+            .mockResolvedValue({ primaryPhotoStoragePath: null }),
+        },
+      });
+      const { sy15 } = makeSy15(tx);
+      const storage = makeStorage();
+      const svc = new OdrzavanjeService(sy15, asStorage(storage));
+      await expect(
+        svc.vehiclePhotoUrl("x@servoteh.com", VEH),
+      ).rejects.toThrow(NotFoundException);
+      expect(storage.signUrl).not.toHaveBeenCalled();
+    });
+
+    it("sign URL: sa foto → signUrl(bucket, path, 3600)", async () => {
+      const path = `documents/asset/${VEH}/abc_vozilo.jpg`;
+      const tx = makeTx({
+        maintAsset: {
+          findFirst: jest.fn().mockResolvedValue({ assetId: VEH }),
+        },
+        maintVehicleDetails: {
+          findUnique: jest
+            .fn()
+            .mockResolvedValue({ primaryPhotoStoragePath: path }),
+        },
+      });
+      const { sy15 } = makeSy15(tx);
+      const storage = makeStorage();
+      const svc = new OdrzavanjeService(sy15, asStorage(storage));
+      await svc.vehiclePhotoUrl("x@servoteh.com", VEH);
+      expect(storage.signUrl).toHaveBeenCalledWith(
+        "maint-machine-files",
+        path,
+        3600,
+      );
+    });
+
+    it("delete: skida pointer (updateMany → null) + best-effort storage.remove", async () => {
+      const path = `documents/asset/${VEH}/abc_vozilo.jpg`;
+      const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const tx = makeTx({
+        $queryRaw: jest.fn().mockResolvedValue([{ uid: "u1" }]),
+        maintVehicleDetails: {
+          findUnique: jest
+            .fn()
+            .mockResolvedValue({ primaryPhotoStoragePath: path }),
+          updateMany,
+        },
+      });
+      const { sy15 } = makeSy15(tx);
+      const storage = makeStorage();
+      const svc = new OdrzavanjeService(sy15, asStorage(storage));
+      await svc.deleteVehiclePhoto("x@servoteh.com", VEH);
+      expect(updateMany.mock.calls[0][0].data.primaryPhotoStoragePath).toBeNull();
+      expect(storage.remove).toHaveBeenCalledWith("maint-machine-files", path);
+    });
+
+    it("delete: bez foto → idempotentno ok, bez updateMany i bez storage.remove", async () => {
+      const updateMany = jest.fn();
+      const tx = makeTx({
+        maintVehicleDetails: {
+          findUnique: jest
+            .fn()
+            .mockResolvedValue({ primaryPhotoStoragePath: null }),
+          updateMany,
+        },
+      });
+      const { sy15 } = makeSy15(tx);
+      const storage = makeStorage();
+      const svc = new OdrzavanjeService(sy15, asStorage(storage));
+      const res = (await svc.deleteVehiclePhoto("x@servoteh.com", VEH)) as {
+        data: { ok: boolean };
+      };
+      expect(res.data.ok).toBe(true);
+      expect(updateMany).not.toHaveBeenCalled();
+      expect(storage.remove).not.toHaveBeenCalled();
+    });
   });
 
   // ------- SoD granica profila (assertErpAdmin — H19/H20) -------

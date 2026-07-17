@@ -322,6 +322,15 @@ export class OdrzavanjeController {
     return this.odr.vehicleBookings(req.user.email, id);
   }
 
+  // Signed URL glavne fotografije (READ; 404 čisto kad nema foto).
+  @Get("vehicles/:id/photo/url")
+  vehiclePhotoUrl(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return this.odr.vehiclePhotoUrl(req.user.email, id);
+  }
+
   @Get("vehicle-owners")
   vehicleOwners(@Req() req: AuthedRequest) {
     return this.odr.vehicleOwners(req.user.email);
@@ -834,6 +843,28 @@ export class OdrzavanjeController {
     @Body() dto: ShelfDto,
   ) {
     return this.odr.patchVehicleShelf(req.user.email, id, dto);
+  }
+
+  // ---------- Foto vozila (storage proxy F2-P4a; multipart `file`) ----------
+
+  @Post("vehicles/:id/photo")
+  @RequirePermission(PERMISSIONS.ODRZAVANJE_WRITE)
+  @UseInterceptors(FileInterceptor("file", UPLOAD_LIMITS))
+  uploadVehiclePhoto(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @UploadedFile() file?: Express.Multer.File,
+  ) {
+    return this.odr.uploadVehiclePhoto(req.user.email, id, file);
+  }
+
+  @Delete("vehicles/:id/photo")
+  @RequirePermission(PERMISSIONS.ODRZAVANJE_WRITE)
+  deleteVehiclePhoto(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return this.odr.deleteVehiclePhoto(req.user.email, id);
   }
 
   @Post("vehicles/:id/tires")
