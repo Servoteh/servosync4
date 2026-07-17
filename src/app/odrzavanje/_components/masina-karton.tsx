@@ -41,6 +41,8 @@ import {
   type CheckResult,
   type IntervalUnit,
   type MachineDetail,
+  type MachineFile,
+  type MachineNote,
   type MaintCheck,
   type MaintMe,
   type MaintTask,
@@ -161,7 +163,7 @@ export function MasinaKarton({ code, me }: { code: string; me: MaintMe | undefin
           {tab === 'zadaci' && <ZadaciSub code={code} canWrite={canWrite} />}
           {tab === 'istorija' && <IstorijaSub code={code} onOpenIncident={setIncidentId} />}
           {tab === 'napomene' && <NapomeneSub code={code} me={me} canWrite={canWrite} />}
-          {tab === 'dokumenta' && <DokumentaSub code={code} canUpload={canWrite} />}
+          {tab === 'dokumenta' && <DokumentaSub code={code} me={me} canUpload={canWrite} />}
           {tab === 'sabloni' && canTasks && <SabloniSub code={code} />}
 
           {editOpen && <EditMachineModal code={code} canManage={canManage} onClose={() => setEditOpen(false)} />}
@@ -668,9 +670,11 @@ function NapomeneSub({ code, me, canWrite }: { code: string; me: MaintMe | undef
   const rows = notes.data?.data ?? [];
   const isChiefAdmin = me?.maintRole === 'chief' || me?.maintRole === 'admin' || !!me?.erpAdminOrManagement;
 
-  function canEditNote(createdAt: string) {
+  function canEditNote(note: MachineNote) {
+    // Paritet 1.0 maintNoteBodyEditable: šef/admin/ERP uvek; inače autor ≤24h.
     if (isChiefAdmin) return true;
-    return Date.now() - Date.parse(createdAt) < 24 * 3600 * 1000; // autor ≤24h (RLS ionako presuđuje)
+    if (!me?.profile?.userId || note.author !== me.profile.userId) return false;
+    return Date.now() - Date.parse(note.createdAt) < 24 * 3600 * 1000;
   }
 
   return (
@@ -702,12 +706,12 @@ function NapomeneSub({ code, me, canWrite }: { code: string; me: MaintMe | undef
                       <Pin className="h-3.5 w-3.5" aria-hidden />
                     </button>
                   )}
-                  {canWrite && canEditNote(n.createdAt) && (
+                  {canWrite && canEditNote(n) && (
                     <button title="Izmeni" onClick={() => { setEditId(n.id); setEditText(n.content); }} className="text-ink-disabled hover:text-ink">
                       <Pencil className="h-3.5 w-3.5" aria-hidden />
                     </button>
                   )}
-                  {canWrite && canEditNote(n.createdAt) && (
+                  {canWrite && canEditNote(n) && (
                     <button title="Obriši" onClick={() => update.mutate({ code, noteId: n.id, patch: { deleted: true } }, { onSuccess: () => toast('Napomena obrisana') })} className="text-ink-disabled hover:text-status-danger">
                       <Trash2 className="h-3.5 w-3.5" aria-hidden />
                     </button>
@@ -731,7 +735,7 @@ function fmtSize(bytes: number | null): string {
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
-function DokumentaSub({ code, canUpload }: { code: string; canUpload: boolean }) {
+function DokumentaSub({ code, me, canUpload }: { code: string; me: MaintMe | undefined; canUpload: boolean }) {
   const files = useMachineFiles(code);
   const upload = useUploadMachineFile();
   const del = useDeleteMachineFile();
@@ -742,6 +746,7 @@ function DokumentaSub({ code, canUpload }: { code: string; canUpload: boolean })
   const [editCat, setEditCat] = useState('');
   const [editDesc, setEditDesc] = useState('');
   const rows = files.data?.data ?? [];
+  const isChiefAdmin = me?.maintRole === 'chief' || me?.maintRole === 'admin' || !!me?.erpAdminOrManagement;
 
   async function open(id: string) {
     try { const res = await signMachineFileUrl(code, id); window.open(res.data.url, '_blank'); }
@@ -752,7 +757,12 @@ function DokumentaSub({ code, canUpload }: { code: string; canUpload: boolean })
     if (file.size > 25 * 1024 * 1024) { toast('Dokument veći od 25 MB.'); return; }
     upload.mutate({ code, file, category, description: description || undefined }, { onSuccess: () => { setDescription(''); toast('Dokument otpremljen'); } });
   }
-  function canSelfDelete(uploadedAt: string) { return Date.now() - Date.parse(uploadedAt) < 24 * 3600 * 1000; }
+  function canDeleteDoc(doc: MachineFile) {
+    // Paritet 1.0 canDeleteFile: šef/admin/ERP uvek; inače vlasnik ≤24h.
+    if (isChiefAdmin) return true;
+    if (!me?.profile?.userId || !doc.uploadedBy || doc.uploadedBy !== me.profile.userId) return false;
+    return Date.now() - Date.parse(doc.uploadedAt) < 24 * 3600 * 1000;
+  }
 
   return (
     <div className="space-y-2">
@@ -790,7 +800,7 @@ function DokumentaSub({ code, canUpload }: { code: string; canUpload: boolean })
                 {doc.category && <StatusBadge tone="neutral" label={doc.category} />}
                 <span>{fmtSize(doc.sizeBytes)}</span>
                 {canUpload && <button title="Uredi meta" onClick={() => { setEditId(doc.id); setEditCat(doc.category ?? 'ostalo'); setEditDesc(doc.description ?? ''); }} className="text-ink-disabled hover:text-ink"><Pencil className="h-3.5 w-3.5" aria-hidden /></button>}
-                {canUpload && canSelfDelete(doc.uploadedAt) && <button title="Obriši" onClick={() => del.mutate({ code, id: doc.id }, { onSuccess: () => toast('Dokument obrisan') })} className="text-ink-disabled hover:text-status-danger"><Trash2 className="h-3.5 w-3.5" aria-hidden /></button>}
+                {canUpload && canDeleteDoc(doc) && <button title="Obriši" onClick={() => del.mutate({ code, id: doc.id }, { onSuccess: () => toast('Dokument obrisan') })} className="text-ink-disabled hover:text-status-danger"><Trash2 className="h-3.5 w-3.5" aria-hidden /></button>}
               </div>
             </div>
           )}

@@ -115,19 +115,6 @@ export function useMaintMe() {
   });
 }
 
-/**
- * Lista CMMS profila (maint_user_profiles) — admin konzola (BE guard = ERP admin).
- * P1a je koristi samo kao SEKUNDARNI izvor kandidata; primarni „Odgovoran" picker je
- * `useAssignableUsers` (dostupan i chief/admin bez ERP prava). `enabled` gejtuje poziv.
- */
-export function useProfiles(enabled = true) {
-  return useQuery({
-    queryKey: ['odr', 'profiles'],
-    enabled,
-    queryFn: () => apiFetch<Rows<MaintProfile>>(`${BASE}/profiles`),
-  });
-}
-
 // ══════════════════════════════════════════════════ dashboard
 
 export interface DashboardData {
