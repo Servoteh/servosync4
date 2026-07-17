@@ -440,7 +440,14 @@ export interface WorkOrder {
   odometerKmAtService: number | null;
   externalServicerName: string | null;
 }
-export type WorkOrderRow = WorkOrder & { group: WoGroup | null };
+/** Sredstvo naloga (H4) — BE batch-resolve iz maint_assets (WO lista i detalj). */
+export interface WoAsset {
+  assetId: string;
+  assetCode: string;
+  name: string;
+  assetType: AssetType | string;
+}
+export type WorkOrderRow = WorkOrder & { group: WoGroup | null; asset: WoAsset | null };
 export interface WoEvent {
   id: string;
   woId: string;
@@ -470,7 +477,13 @@ export interface WoLabor {
   notes: string | null;
   createdAt: string;
 }
-export type WorkOrderDetail = WorkOrderRow & { events: WoEvent[]; parts: WoPart[]; labor: WoLabor[] };
+export type WorkOrderDetail = WorkOrderRow & {
+  /** source_incident_id — link „Otvori incident" u detalju (BE findWorkOrder). */
+  incidentId: string | null;
+  events: WoEvent[];
+  parts: WoPart[];
+  labor: WoLabor[];
+};
 export interface AssignableUser {
   user_id: string;
   full_name: string;
@@ -479,12 +492,18 @@ export interface AssignableUser {
 }
 
 export interface WorkOrdersParams {
+  /** Pretraga (broj/naslov/opis/šifra+naziv sredstva) — BE `q` (paritet 1.0). */
+  q?: string;
   status?: string;
   group?: string;
   priority?: string;
   type?: string;
   assetId?: string;
   mine?: boolean;
+  /** „Samo otvoreni" — BE default ON; prosledi `false` da prikažeš i zavrsen/otkazan. */
+  openOnly?: boolean;
+  /** „Kasni rok (WO)" — samo otvoreni sa due_at < now. */
+  overdue?: boolean;
   page?: number;
   pageSize?: number;
 }
