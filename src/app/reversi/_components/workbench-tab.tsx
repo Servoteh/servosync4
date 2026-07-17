@@ -134,6 +134,15 @@ export function WorkbenchTab({ onNavigate }: { onNavigate: (tab: 'dokumenti') =>
       } catch {
         /* provera nedostupna — padni na izdavanje */
       }
+      // PAR-R2-01 (svesni sign-off): 1.0 `workbenchTab.js:311-320` ima `issued_holder`
+      // prefiks-gejt pre Izdaj-a, ali ga NE repliciramo predikatom jer bi bio mrtav kod.
+      // 1.0 `issued_holder` (`fetchHandToolByBarcode`) i `fetchOpenHandLineByToolBarcode`
+      // čitaju ISTI upit (rev_document_lines line_status=ISSUED + doc OPEN/PARTIALLY_RETURNED),
+      // pa važi `issued_holder ⟺ otvorena linija` — 1.0 grana „zadužen ali bez otvorene
+      // linije → otvori Zaduženja" je strukturno nedostižna. Uz to, BE `lookupBarcode` HAND
+      // vraća sirov rev_tools red BEZ izvedenog `issued_holder` (kolone nema u šemi), pa se
+      // zaduženost ovde ni ne može očitati. Fallback na Izdaj je ispravan za sve dostižne
+      // slučajeve (BE odbija dvostruko izdavanje zauzetog serijskog alata).
       openIssue({ tool: rec });
     },
     onCutting: (r: BarcodeResult) => {
