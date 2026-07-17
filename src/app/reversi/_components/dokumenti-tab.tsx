@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Eye } from 'lucide-react';
+import { Eye, RotateCcw, FileText } from 'lucide-react';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { SearchBox } from '@/components/ui-kit/search-box';
 import { Pager } from '@/components/ui-kit/pager';
@@ -9,16 +9,19 @@ import { EmptyState } from '@/components/ui-kit/empty-state';
 import { formatDate, formatNumber } from '@/lib/format';
 import { toast } from '@/lib/toast';
 import { downloadCsv } from '@/lib/reversi-csv';
+import { generateReversiPdf } from '@/lib/reversi-pdf';
 import {
   fetchAllReversiDocuments,
+  fetchReversiDocument,
   useReversiDocument,
   useReversiDocuments,
   useReversiKpis,
+  useUploadSignaturePdf,
   type ReversiDocument,
   type ReversiDocumentsParams,
   type ReversiKpiContext,
 } from '@/api/reversi';
-import { DOC_TYPE_LABEL, DocStatusBadge, LineStatusBadge } from './common';
+import { DocStatusBadge, LineStatusBadge } from './common';
 import { Button } from '@/components/ui-kit/button';
 import { useAuth } from '@/lib/auth-context';
 import { PERMISSIONS } from '@/lib/permissions';
@@ -196,6 +199,53 @@ function DocDetail({
 }
 
 /**
+ * Per-red „Potpisnica PDF" (R4-PAR-03, paritet 1.0 `handleReversalPdfClick`):
+ * dovuče detalj dokumenta, generiše potpisnicu klijentski, otvori je u novom tabu i
+ * u pozadini je uploaduje (bucket reversal-pdf). Prozor se otvara SINHRONO u okviru
+ * klika (popup-blocker), pa mu se blob URL postavi tek posle generisanja. Manage-only
+ * (upload endpoint traži reversi.manage; sam prikaz PDF-a i dalje ide kroz proširen red).
+ */
+function RowPdfButton({ docId }: { docId: string }) {
+  const upload = useUploadSignaturePdf();
+  const [busy, setBusy] = useState(false);
+
+  async function run() {
+    if (busy) return;
+    setBusy(true);
+    const win = window.open('about:blank', '_blank');
+    if (win) win.opener = null;
+    try {
+      const detail = await fetchReversiDocument(docId);
+      const blob = await generateReversiPdf(detail);
+      const url = URL.createObjectURL(blob);
+      if (win) win.location.href = url;
+      else window.location.href = url; // popup blokiran → isti tab
+      upload.mutate({ docId, blob }); // best-effort upload (kao 1.0 fire-and-forget)
+    } catch (e) {
+      win?.close();
+      toast(e instanceof Error ? e.message : 'Generisanje potpisnice nije uspelo.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      className={ACT}
+      title="Potpisnica PDF"
+      disabled={busy}
+      onClick={(e) => {
+        e.stopPropagation();
+        void run();
+      }}
+    >
+      <FileText className="h-4 w-4" aria-hidden />
+    </button>
+  );
+}
+
+/**
  * Panel „Zaduženja" — lista revers dokumenata (paritet 1.0 `zaduzenjaPanel`).
  * Pokriva RB-15 (zaglavlje+akcije: CSV/Štampa/+Izdaj), RB-16 (5 KPI kartica),
  * RB-19 (filter meseca + „Svi", session-persist), RB-20 (statusni segmenti uklj.
@@ -288,9 +338,11 @@ export function DokumentiTab() {
     }
   }
 
+  // RB-22 / R4-PAR-03 — kolone i redosled 1.0 (`zaduzenjaPanel.paintTable`):
+  // Br. dokumenta | Datum izdavanja | Primalac | Stavki | Rok povraćaja | Status | Akcije.
   const cols: Column<ReversiDocument>[] = [
     { key: 'doc', header: 'Br. dokumenta', render: (r) => <span className="tnums font-medium">{r.docNumber}</span> },
-    { key: 'type', header: 'Tip', render: (r) => DOC_TYPE_LABEL[r.docType] ?? r.docType },
+    { key: 'issued', header: 'Datum izdavanja', render: (r) => <span className="tnums text-ink-secondary">{formatDate(r.issuedAt)}</span> },
     { key: 'recipient', header: 'Primalac', render: (r) => recipientLabel(r) },
     {
       key: 'lines',
@@ -302,7 +354,6 @@ export function DokumentiTab() {
         </span>
       ),
     },
-    { key: 'issued', header: 'Datum izdavanja', render: (r) => <span className="tnums text-ink-secondary">{formatDate(r.issuedAt)}</span> },
     {
       key: 'due',
       header: 'Rok povraćaja',
@@ -322,22 +373,43 @@ export function DokumentiTab() {
     },
     { key: 'status', header: 'Status', render: (r) => <DocStatusBadge status={r.status} /> },
     {
+      // R4-PAR-03 — per-red akcije 1.0: Detalji + (manage & OPEN/PARTIALLY) Potvrdi
+      // povraćaj (1-klik glavna dnevna akcija) + (manage) Potpisnica PDF.
       key: 'akcije',
-      header: '',
+      header: 'Akcije',
       align: 'right',
-      render: (r) => (
-        <button
-          type="button"
-          className={ACT}
-          title="Detalji dokumenta"
-          onClick={(e) => {
-            e.stopPropagation();
-            setOpenId((cur) => (cur === r.id ? null : r.id));
-          }}
-        >
-          <Eye className="h-4 w-4" aria-hidden />
-        </button>
-      ),
+      render: (r) => {
+        const canReturn = manage && (r.status === 'OPEN' || r.status === 'PARTIALLY_RETURNED');
+        return (
+          <div className="flex items-center justify-end gap-1">
+            <button
+              type="button"
+              className={ACT}
+              title="Detalji dokumenta"
+              onClick={(e) => {
+                e.stopPropagation();
+                setOpenId((cur) => (cur === r.id ? null : r.id));
+              }}
+            >
+              <Eye className="h-4 w-4" aria-hidden />
+            </button>
+            {canReturn && (
+              <button
+                type="button"
+                className={ACT}
+                title="Potvrdi povraćaj"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setReturnDocId(r.id);
+                }}
+              >
+                <RotateCcw className="h-4 w-4" aria-hidden />
+              </button>
+            )}
+            {manage && <RowPdfButton docId={r.id} />}
+          </div>
+        );
+      },
     },
   ];
 

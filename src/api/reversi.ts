@@ -36,6 +36,8 @@ export interface ReversiDocument {
   recipientEmployeeName: string | null;
   recipientDepartment: string | null;
   recipientCompanyName: string | null;
+  /** PIB eksterne firme-primaoca (kooperacija) — potpisnica „firma (PIB: …)" (R4-PAR-02). */
+  recipientCompanyPib: string | null;
   recipientMachineCode: string | null;
   issuedAt: string;
   issuedToEmployeeName: string | null;
@@ -77,7 +79,14 @@ export interface ReversiDocumentLine {
   tool: ReversiTool | null;
 }
 
-export type ReversiDocumentDetail = ReversiDocument & { lines: ReversiDocumentLine[] };
+export type ReversiDocumentDetail = ReversiDocument & {
+  lines: ReversiDocumentLine[];
+  /**
+   * Odeljenje radnika-primaoca (samo u detail odgovoru, BE `findOneDocument`) — za
+   * potpisnicu „(Radnik — …)" (R4-PAR-02, paritet 1.0 `fetchEmployeeDepartment`).
+   */
+  recipientEmployeeDepartment?: string | null;
+};
 
 /** Red view-a `v_rev_my_issued_tools` (snake_case — kolone izmerene na sy15 10.07). */
 export interface MyIssuedRow {
@@ -317,6 +326,16 @@ export async function fetchAllReversiDocuments(
     if (res.data.length === 0 || out.length >= res.meta.pagination.total) break;
   }
   return out;
+}
+
+/**
+ * Imperativni fetch jednog dokumenta sa stavkama (van React Query cache-a) — za
+ * per-red „Potpisnica PDF" akciju u tabeli Zaduženja (R4-PAR-03), gde nema montiran
+ * `useReversiDocument`. Vraća `data` telo (uklj. `lines` + `recipientEmployeeDepartment`).
+ */
+export async function fetchReversiDocument(id: string): Promise<ReversiDocumentDetail> {
+  const res = await apiFetch<{ data: ReversiDocumentDetail }>(`/v1/reversi/documents/${id}`);
+  return res.data;
 }
 
 export function useReversiTools(params: ReversiToolsParams) {

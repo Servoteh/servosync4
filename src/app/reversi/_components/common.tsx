@@ -18,13 +18,16 @@ export function tableEmpty(isError: boolean, title: string, hint: string) {
   return <EmptyState title={title} hint={hint} />;
 }
 
-/** Domenski statusi Reversi dokumenata/stavki → ton + srpska labela (paritet 1.0). */
+/**
+ * Domenski statusi Reversi dokumenata/stavki → ton + srpska labela (paritet 1.0
+ * `revDocStatusPillHtml`). R4-PAR-01 — tekst + ton usklađeni sa 1.0 (i sa CSV
+ * `CSV_STATUS_LABEL`): OPEN='Aktivno' zeleno (rev-status-pill--ok), PARTIALLY='Delimično
+ * vraćeno' žuto, RETURNED='Vraćeno' zeleno, CANCELLED='Otkazano' neutralno.
+ */
 const DOC_STATUS: Record<string, { tone: Tone; label: string }> = {
-  OPEN: { tone: 'info', label: 'Otvoren' },
-  PARTIALLY_RETURNED: { tone: 'warn', label: 'Delimično vraćen' },
-  RETURNED: { tone: 'success', label: 'Vraćen' },
-  // RB-62 — bez ovoga otkazan revers je prikazivao SIROV „CANCELLED" tekst (paritet
-  // 1.0 revDocStatusPillHtml: neutral „Otkazano").
+  OPEN: { tone: 'success', label: 'Aktivno' },
+  PARTIALLY_RETURNED: { tone: 'warn', label: 'Delimično vraćeno' },
+  RETURNED: { tone: 'success', label: 'Vraćeno' },
   CANCELLED: { tone: 'neutral', label: 'Otkazano' },
 };
 

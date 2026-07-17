@@ -460,6 +460,34 @@ export function IssueDialog({
     addHandTool(tool);
   }
 
+  // R4-PAR-04 — ručni korak-2: `useReversiTools({status:'active'})` je STATUS alata
+  // (active/scrapped/lost), NE stanje zaduženja — pa lista nudi i alat koji je na
+  // tuđem reversu. Pre dodavanja primeni ISTI open-hand-line kriterijum kao skener
+  // (`handleToolScan`): količinski/potrošni se uvek dodaju; običan alat sa otvorenim
+  // reversom se odbije (BE bi ionako odbio „duplo zaduženje" tek na submit).
+  async function addManualTool(t: ReversiTool) {
+    if (t.isQuantity) {
+      addHandTool(toLineTool(t), { silent: true });
+      setManualToolQ('');
+      return;
+    }
+    if (lines.some((l) => l.kind === 'HAND' && l.tool.id === t.id)) {
+      toast('Alat je već na listi');
+      return;
+    }
+    try {
+      const { data } = await fetchOpenHandLine(t.barcode);
+      if (data) {
+        toast(`Alat je već zadužen (revers ${data.docNumber})`);
+        return;
+      }
+    } catch {
+      /* provera nedostupna — dozvoli dodavanje, BE hvata duplo zaduženje */
+    }
+    addHandTool(toLineTool(t), { silent: true });
+    setManualToolQ('');
+  }
+
   function handleMachineScan(raw: string) {
     const code = raw.replace(/^ZADU-M-/i, '').trim();
     if (!code) {
@@ -534,6 +562,12 @@ export function IssueDialog({
         issued += hand.length;
         // Uspešno izdato ODMAH ukloni — ako naredni RPC padne, re-submit ne izda duplo.
         setLines((ls) => ls.filter((l) => l.kind !== 'HAND'));
+        // R4-REG-01 — potroši stabilni ključ ODMAH po uspehu: sledeći logički „Izdaj"
+        // u ISTOJ otvorenoj sesiji (parcijalni uspeh ne zatvara dijalog) dobija svež
+        // ključ i stvarno izda nove alate; inače runIdempotent vrati prvi dokument i
+        // fizički predat alat ostane bez reversa. NE brisati u catch — retry istog
+        // neuspešnog submita mora zadržati ključ (idempotencija).
+        eventIds.current.delete('hand');
       }
       for (const ln of cut) {
         await cuttingIssue.mutateAsync({
@@ -548,6 +582,9 @@ export function IssueDialog({
         });
         issued += 1;
         setLines((ls) => ls.filter((l) => l.key !== ln.key));
+        // R4-REG-01 — isto za svaki uspešan CUTTING: oslobodi ključ po stavci da
+        // ponovni isti catalog_id u istoj sesiji ne vrati keširan rezultat.
+        eventIds.current.delete(`cut:${ln.tool.id}`);
       }
       setPending(false);
       toast(`Izdato ${issued} stavki`);
@@ -1018,10 +1055,7 @@ export function IssueDialog({
                           key={t.id}
                           type="button"
                           className="flex w-full items-center justify-between px-2.5 py-1.5 text-left text-sm hover:bg-surface-2"
-                          onClick={() => {
-                            addHandTool(toLineTool(t), { silent: true });
-                            setManualToolQ('');
-                          }}
+                          onClick={() => void addManualTool(t)}
                         >
                           <span>
                             <span className="font-medium">{t.oznaka}</span>{' '}

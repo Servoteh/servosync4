@@ -156,10 +156,16 @@ function drawFooter(doc: jsPDF, generatedAtStr: string, pageNum: number, totalPa
   doc.setTextColor(0, 0, 0);
 }
 
+// R4-PAR-02 — za EXTERNAL_COMPANY štampa „firma (PIB: …)" (paritet 1.0): PIB je
+// identitet pravnog lica na dokumentu koji se potpisuje (kooperacioni reversi).
 function recipientText(d: ReversiDocumentDetail): string {
   if (d.recipientType === 'EMPLOYEE') return d.recipientEmployeeName ?? '—';
   if (d.recipientType === 'DEPARTMENT') return d.recipientDepartment ?? '—';
-  if (d.recipientType === 'EXTERNAL_COMPANY') return d.recipientCompanyName ?? '—';
+  if (d.recipientType === 'EXTERNAL_COMPANY') {
+    const firm = d.recipientCompanyName ?? '—';
+    const pib = d.recipientCompanyPib?.trim();
+    return pib ? `${firm} (PIB: ${pib})` : firm;
+  }
   return '—';
 }
 
@@ -192,7 +198,18 @@ export async function generateReversiPdf(d: ReversiDocumentDetail): Promise<Blob
   doc.setFont('Roboto', 'normal');
   doc.setFontSize(9);
   doc.text(recipientText(d), M + 22, y);
-  y += LINE_H + 2;
+  y += LINE_H;
+  // R4-PAR-02 — pod-linija „(Radnik — odeljenje)" za radnika-primaoca (paritet 1.0).
+  if (d.recipientType === 'EMPLOYEE') {
+    const dept = d.recipientEmployeeDepartment?.trim();
+    if (dept) {
+      doc.setTextColor(80, 80, 80);
+      doc.text(`(Radnik — ${dept})`, M + 22, y);
+      doc.setTextColor(0, 0, 0);
+      y += LINE_H;
+    }
+  }
+  y += 2;
   if (d.recipientMachineCode) {
     doc.setTextColor(80, 80, 80);
     doc.text(`Mašina: ${d.recipientMachineCode}`, M + 22, y);
