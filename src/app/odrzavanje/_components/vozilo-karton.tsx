@@ -12,6 +12,7 @@ import { formatDate, formatDateTime } from '@/lib/format';
 import { toast } from '@/lib/toast';
 import {
   useArchiveVehicle,
+  useAssets,
   useCreateBooking,
   useCreateTire,
   useCreateVehicleServicePlan,
@@ -112,7 +113,10 @@ export function VoziloKarton({ id, me }: { id: string; me: MaintMe | undefined }
     window.history.pushState(null, '', url.toString());
   }
 
-  const qrUrl = typeof window !== 'undefined' && d ? `${window.location.origin}/odrzavanje/vozila?id=${encodeURIComponent(id)}` : '';
+  /* QR nalepnica ključa se po asset_code (NE UUID) — preživljava re-seed baze i
+     poklapa se sa 1.0 formatom nalepnice; deep-link resolver (VoziloKartonByCode)
+     razrešava code→id. */
+  const qrUrl = typeof window !== 'undefined' && d ? `${window.location.origin}/odrzavanje/vozila?code=${encodeURIComponent(d.assetCode)}` : '';
 
   return (
     <div className="space-y-4">
@@ -174,6 +178,40 @@ export function VoziloKarton({ id, me }: { id: string; me: MaintMe | undefined }
       )}
     </div>
   );
+}
+
+/**
+ * Deep-link po asset_code (H22 — cutover rizik). Odštampane QR nalepnice / 1.0
+ * router prevode `/maintenance/assets/vehicles/<code>` → `/odrzavanje/vozila?code=<code>`.
+ * Ovde razrešavamo code→asset_id (GET /maintenance/assets, match `asset_code`
+ * case-insensitive) pa renderujemo karton. Po pogotku URL se čisti na `?id=` (uz
+ * očuvan `tab`) — deljenje/refresh idu direktnim putem. Bez pogotka: jasna poruka + list.
+ */
+export function VoziloKartonByCode({ code, me }: { code: string; me: MaintMe | undefined }) {
+  const router = useRouter();
+  const assets = useAssets('vehicle', false);
+  const rows = assets.data?.data ?? [];
+  const needle = code.toLowerCase().trim();
+  const match = rows.find((a) => String(a.assetCode ?? '').toLowerCase().trim() === needle) ?? null;
+
+  useEffect(() => {
+    if (!match || typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    url.searchParams.delete('code');
+    url.searchParams.set('id', match.assetId);
+    window.history.replaceState(null, '', url.toString());
+  }, [match]);
+
+  if (assets.isLoading) return <p className="py-10 text-center text-sm text-ink-secondary">Učitavanje…</p>;
+  if (!match) {
+    return (
+      <div className="space-y-3 py-10 text-center">
+        <p className="text-sm text-ink">Nije pronađeno vozilo sa šifrom „<span className="tnums">{code}</span>".</p>
+        <button onClick={() => router.push('/odrzavanje')} className="text-sm text-accent hover:underline">← Nazad na listu sredstava</button>
+      </div>
+    );
+  }
+  return <VoziloKarton id={match.assetId} me={me} />;
 }
 
 // ── Pregled ─────────────────────────────────────────────────────────

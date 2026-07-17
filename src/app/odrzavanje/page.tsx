@@ -26,10 +26,12 @@ import { IzvestajiTab } from './_components/izvestaji-tab';
 import { PodesavanjaTab } from './_components/podesavanja-tab';
 import { NotifikacijeTab } from './_components/notifikacije-tab';
 
-type TabKey =
-  | 'pregled' | 'board' | 'nalozi' | 'kvarovi' | 'masine' | 'preventiva' | 'kalendar'
-  | 'vozila' | 'vozaci' | 'it' | 'objekti' | 'zalihe'
-  | 'dokumenta' | 'izvestaji' | 'podesavanja' | 'notifikacije';
+const TAB_KEYS = [
+  'pregled', 'board', 'nalozi', 'kvarovi', 'masine', 'preventiva', 'kalendar',
+  'vozila', 'vozaci', 'it', 'objekti', 'zalihe',
+  'dokumenta', 'izvestaji', 'podesavanja', 'notifikacije',
+] as const;
+type TabKey = (typeof TAB_KEYS)[number];
 
 /**
  * Održavanje (CMMS) — 3.0 TALAS F (MODULE_SPEC_odrzavanje_30.md §4).
@@ -57,10 +59,16 @@ export default function OdrzavanjePage() {
   }, [user, isLoading, router]);
 
   // Legacy deep-link `/odrzavanje?machine=<code>` → nova ruta kartona (presuda §8.3, QR paritet).
+  // `?tab=<key>` (H23 — cutover deep-link mapa): 1.0 router prevodi sekcijske rute
+  // (/maintenance/work-orders, /preventive, /assets/vehicles…) u /odrzavanje?tab=<key>,
+  // pa sekcijski bookmark/link sleće na tačan tab (ne uvek na Pregled).
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const code = new URLSearchParams(window.location.search).get('machine');
-    if (code) router.replace(`/odrzavanje/masine?code=${encodeURIComponent(code)}`);
+    const sp = new URLSearchParams(window.location.search);
+    const code = sp.get('machine');
+    if (code) { router.replace(`/odrzavanje/masine?code=${encodeURIComponent(code)}`); return; }
+    const t = sp.get('tab');
+    if (t && (TAB_KEYS as readonly string[]).includes(t)) setTab(t as TabKey);
   }, [router]);
 
   if (isLoading || !user) {

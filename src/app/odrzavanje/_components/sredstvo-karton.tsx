@@ -9,6 +9,7 @@ import { formatDate } from '@/lib/format';
 import { toast } from '@/lib/toast';
 import {
   useArchiveAsset,
+  useAssets,
   useFacility,
   useItAsset,
   useRestoreAsset,
@@ -78,7 +79,10 @@ export function SredstvoKarton({ kind, id, me }: { kind: Kind; id: string; me: M
     window.history.pushState(null, '', url.toString());
   }
 
-  const qrUrl = typeof window !== 'undefined' && d ? `${window.location.origin}/odrzavanje/sredstva?id=${encodeURIComponent(id)}&kind=${kind}` : '';
+  /* QR nalepnica ključa se po asset_code (NE UUID) — preživljava re-seed baze i
+     poklapa se sa 1.0 formatom nalepnice; deep-link resolver (SredstvoKartonByCode)
+     razrešava code→id. */
+  const qrUrl = typeof window !== 'undefined' && d ? `${window.location.origin}/odrzavanje/sredstva?code=${encodeURIComponent(d.assetCode)}&kind=${kind}` : '';
 
   return (
     <div className="space-y-4">
@@ -138,6 +142,41 @@ export function SredstvoKarton({ kind, id, me }: { kind: Kind; id: string; me: M
       )}
     </div>
   );
+}
+
+/**
+ * Deep-link po asset_code (H22 — cutover rizik). Odštampane QR nalepnice / 1.0 router
+ * prevode `/maintenance/assets/it/<code>` → `/odrzavanje/sredstva?code=<code>&kind=it`
+ * (odn. `facilities` → `kind=facility`). Razrešavamo code→asset_id (GET /maintenance/assets,
+ * filter po tipu, match `asset_code` case-insensitive) pa renderujemo karton. Po pogotku
+ * URL se čisti na `?id=…&kind=…` (uz očuvan `tab`). Bez pogotka: jasna poruka + list.
+ */
+export function SredstvoKartonByCode({ kind, code, me }: { kind: Kind; code: string; me: MaintMe | undefined }) {
+  const router = useRouter();
+  const assets = useAssets(kind, false);
+  const rows = assets.data?.data ?? [];
+  const needle = code.toLowerCase().trim();
+  const match = rows.find((a) => String(a.assetCode ?? '').toLowerCase().trim() === needle) ?? null;
+
+  useEffect(() => {
+    if (!match || typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    url.searchParams.delete('code');
+    url.searchParams.set('id', match.assetId);
+    url.searchParams.set('kind', kind);
+    window.history.replaceState(null, '', url.toString());
+  }, [match, kind]);
+
+  if (assets.isLoading) return <p className="py-10 text-center text-sm text-ink-secondary">Učitavanje…</p>;
+  if (!match) {
+    return (
+      <div className="space-y-3 py-10 text-center">
+        <p className="text-sm text-ink">Nije pronađeno {kind === 'it' ? 'IT sredstvo' : 'objekat'} sa šifrom „<span className="tnums">{code}</span>".</p>
+        <button onClick={() => router.push('/odrzavanje')} className="text-sm text-accent hover:underline">← Nazad na listu sredstava</button>
+      </div>
+    );
+  }
+  return <SredstvoKarton kind={kind} id={match.assetId} me={me} />;
 }
 
 function subtitleOf(kind: Kind, d: AssetCardDetail): string {
