@@ -34,6 +34,20 @@ const ADMIN_ITEMS: { key: AdminKey; label: string }[] = [
   { key: 'podesavanja', label: 'Podešavanja' },
 ];
 
+// `?tab=` deep-link: podržani su i 1.0 id-jevi (sastanci/index.js MAIN/ADMIN_TABS)
+// i direktna 2.0 imena. Samo ČITANJE, i to SAMO na mount — ručna promena taba NE
+// ažurira URL (1.0 paritet), a popstate čita samo `?open=` (vidi effect).
+const TAB_DEEPLINK_ALIAS: Record<string, TabKey> = {
+  dashboard: 'pregled',
+  'akcioni-plan': 'akcioni',
+  'pregled-projekti': 'po-projektu',
+  'podesavanja-notif': 'podesavanja',
+};
+const VALID_TAB_KEYS: ReadonlySet<string> = new Set<TabKey>([
+  'pregled', 'sastanci', 'moj-rad', 'akcioni',
+  ...ADMIN_ITEMS.map((a) => a.key),
+]);
+
 /**
  * Sastanci — 3.0 TALAS B (MODULE_SPEC_sastanci_ai_30.md §4). 4 glavna taba
  * (Pregled/Sastanci/Moj rad/Akcioni plan) + 6 admin tabova iza ⚙ + komandna
@@ -53,12 +67,30 @@ export default function SastanciPage() {
   }, [user, isLoading, router]);
 
   // Detalj = stanje unutar strane (statički export nema dinamičkih ruta). Deep-link
-  // `?open=<id>` + Back dugme browsera preko history.pushState/popstate.
+  // `?open=<id>` + `?tab=<id>` (glavni/admin tab; 1.0 alias-i) + Back dugme
+  // browsera preko history.pushState/popstate.
+  //
+  // `?tab=` se primenjuje SAMO na mount: pushState za detalj ne briše query, pa
+  // bi popstate (Back iz detalja) ponovo pročitao zastareli deep-link tab i
+  // pregazio tab koji je korisnik u međuvremenu ručno izabrao. popstate zato
+  // čita samo `?open=`.
+  const tabAppliedRef = useRef(false);
   useEffect(() => {
-    const sync = () => setOpenId(new URLSearchParams(window.location.search).get('open'));
-    sync();
-    window.addEventListener('popstate', sync);
-    return () => window.removeEventListener('popstate', sync);
+    const syncOpen = () => {
+      const sp = new URLSearchParams(window.location.search);
+      setOpenId(sp.get('open'));
+    };
+    if (!tabAppliedRef.current) {
+      tabAppliedRef.current = true;
+      const rawTab = new URLSearchParams(window.location.search).get('tab');
+      if (rawTab) {
+        const mapped = TAB_DEEPLINK_ALIAS[rawTab] ?? rawTab;
+        if (VALID_TAB_KEYS.has(mapped)) setTab(mapped as TabKey);
+      }
+    }
+    syncOpen();
+    window.addEventListener('popstate', syncOpen);
+    return () => window.removeEventListener('popstate', syncOpen);
   }, []);
 
   function openDetail(id: string) {

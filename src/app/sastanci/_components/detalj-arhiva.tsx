@@ -1,15 +1,19 @@
 'use client';
 
 import { useState } from 'react';
-import { FileDown, Eye, Mail } from 'lucide-react';
+import { FileDown, Eye, Mail, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui-kit/button';
 import { useAuth } from '@/lib/auth-context';
 import { PERMISSIONS } from '@/lib/permissions';
 import { toast } from '@/lib/toast';
 import {
   fetchArhivaPdfUrl,
+  newClientEventId,
   usePredmetPrioritet,
   useResendLocked,
+  useSastanakFull,
+  useSastanakWeeklyDiff,
+  useUploadArhivaPdf,
   type SastanakFull,
   type WeeklyDiff,
 } from '@/api/sastanci';
@@ -80,6 +84,47 @@ export function DetaljArhiva({ sast, weeklyDiff }: { sast: SastanakFull; weeklyD
   const [busy, setBusy] = useState(false);
   const locked = sast.status === 'zakljucan';
 
+  // Re-generiši PDF za ZAKLJUČAN sastanak (1.0 regenerateSastanakPdf paritet):
+  // sveži podaci → generateSastanakPdf → POST /:id/arhiva/pdf (BE upiše novi
+  // zapisnik_storage_path na postojeći arhiva red; DB lock-guard pušta management).
+  // Hook-ovi dele query-key sa SastanakDetalj — refetch osvežava zajednički keš.
+  const fullQ = useSastanakFull(sast.id);
+  const diffQ = useSastanakWeeklyDiff(sast.id);
+  const uploadM = useUploadArhivaPdf();
+  const [regenBusy, setRegenBusy] = useState(false);
+
+  async function regenerate() {
+    if (!confirm('Re-generisati PDF zapisnika iz TRENUTNIH podataka i zameniti postojeći u arhivi?')) return;
+    setRegenBusy(true);
+    try {
+      // Kao zakljucaj() u sastanak-detalj: PDF ne sme na stale hook snapshotove —
+      // sveže dohvati full + weekly-diff + ⭐ prioritet; pad bilo kog = prekid.
+      const [fullRes, diffRes, prioRes] = await Promise.all([
+        fullQ.refetch(),
+        diffQ.refetch(),
+        prioQ.refetch(),
+      ]);
+      const fresh = fullRes.data?.data;
+      if (fullRes.isError || diffRes.isError || prioRes.isError || !fresh) {
+        alert('Ne mogu da učitam sveže podatke za PDF — pokušaj ponovo.');
+        return;
+      }
+      const dd = diffRes.data?.data;
+      const freshDiff: WeeklyDiff | null = dd
+        ? { novo: dd.novo, zavrsenoOveNedelje: dd.zavrsenoOveNedelje, kasni: dd.kasni, aktivnih: dd.aktivnih }
+        : null;
+      const blob = await generateSastanakPdf(buildPdfInput(fresh, freshDiff, prioRes.data?.data));
+      // requireArhiva: arhiva red MORA biti pogođen — BE vrati 403 umesto tihog 200
+      // kad RLS odbije upis (toast bi inače lagao dok arhiva drži STARI PDF).
+      await uploadM.mutateAsync({ id: sast.id, blob, clientEventId: newClientEventId(), requireArhiva: true });
+      toast('PDF zapisnika re-generisan i sačuvan u arhivi.');
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'Re-generisanje PDF-a nije uspelo.');
+    } finally {
+      setRegenBusy(false);
+    }
+  }
+
   async function preview() {
     setBusy(true);
     try {
@@ -128,6 +173,11 @@ export function DetaljArhiva({ sast, weeklyDiff }: { sast: SastanakFull; weeklyD
             {canManage && (
               <Button variant="secondary" loading={resendM.isPending} onClick={() => void resend()}>
                 <Mail className="h-4 w-4" aria-hidden /> Pošalji ponovo
+              </Button>
+            )}
+            {canManage && (
+              <Button variant="secondary" loading={regenBusy} onClick={() => void regenerate()}>
+                <RefreshCw className="h-4 w-4" aria-hidden /> Re-generiši PDF
               </Button>
             )}
             <Button variant="ghost" loading={busy} onClick={() => void preview()}>

@@ -595,11 +595,22 @@ export function useArhive() {
   });
 }
 
+/** Query key full-detalja — exportovan da imperativni fetchQuery (arhiva štampa
+ *  iz živih podataka kad je 2.0 lock snapshot okrnjen) deli keš sa useSastanakFull. */
+export function sastanakFullQueryKey(id: string) {
+  return [...KEYS.detail(id), 'full'] as const;
+}
+
+/** Imperativni fetch punog detalja (za queryClient.fetchQuery van hook-a). */
+export function fetchSastanakFull(id: string): Promise<{ data: SastanakFull }> {
+  return apiFetch<{ data: SastanakFull }>(`${BASE}/${id}/full`);
+}
+
 export function useSastanakFull(id: string | null) {
   return useQuery({
-    queryKey: id ? [...KEYS.detail(id), 'full'] : ['sastanci', 'detail', 'none', 'full'],
+    queryKey: id ? sastanakFullQueryKey(id) : ['sastanci', 'detail', 'none', 'full'],
     enabled: !!id,
-    queryFn: () => apiFetch<{ data: SastanakFull }>(`${BASE}/${id}/full`),
+    queryFn: () => fetchSastanakFull(id as string),
   });
 }
 
@@ -1016,12 +1027,19 @@ export const useDeleteSlika = () =>
 /* ── Arhiva PDF (multipart upload; path paritet {id}/{ts}_zapisnik.pdf u BE) ── */
 
 export const useUploadArhivaPdf = () =>
-  useSastanciMutation<{ id: string; blob: Blob; clientEventId?: string }, TxResponse<{ storagePath: string }>>(
+  useSastanciMutation<
+    // requireArhiva: regen tok na ZAKLJUČANOM — arhiva red MORA biti pogođen
+    // (BE: 0 redova = 403 umesto tihog 200 sa starim PDF-om). Lock tok NE šalje
+    // (red nastaje tek u lock RPC-u pa je 0 tamo legitimno).
+    { id: string; blob: Blob; clientEventId?: string; requireArhiva?: boolean },
+    TxResponse<{ storagePath: string; arhivaUpdated: boolean }>
+  >(
     (v) => {
       const fd = new FormData();
       fd.append('file', v.blob, `${v.id}_zapisnik.pdf`);
       if (v.clientEventId) fd.append('clientEventId', v.clientEventId);
-      return apiUpload<TxResponse<{ storagePath: string }>>(`${BASE}/${v.id}/arhiva/pdf`, fd);
+      if (v.requireArhiva) fd.append('requireArhiva', 'true');
+      return apiUpload<TxResponse<{ storagePath: string; arhivaUpdated: boolean }>>(`${BASE}/${v.id}/arhiva/pdf`, fd);
     },
   );
 

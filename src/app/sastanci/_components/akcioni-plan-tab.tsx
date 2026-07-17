@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { History, Pencil, Play, Check, Trash2 } from 'lucide-react';
+import { History, Pencil, Play, Check, Trash2, Printer, Download } from 'lucide-react';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { SearchBox } from '@/components/ui-kit/search-box';
 import { Button } from '@/components/ui-kit/button';
@@ -29,6 +29,9 @@ import {
   tableEmpty,
 } from './common';
 import { formatDateTime } from '@/lib/format';
+import { printAkcije } from '@/lib/sastanci-print';
+import { exportAkcijeCsv } from '@/lib/sastanci-csv';
+import { toast } from '@/lib/toast';
 import { Tabs, type TabItem } from './tabs';
 import { AkcijaModal } from './akcija-modal';
 import { AkcioniKanban } from './akcioni-kanban';
@@ -116,6 +119,24 @@ export function AkcioniPlanTab({ myEmail }: { myEmail: string }) {
     setSel(new Set());
   }
 
+  // Štampa / Export CSV — 1.0 akcijeTab printAkcije/exportCsv paritet: trenutno
+  // filtrirani redovi, RN grupe ⭐ redosledom, redovi po rb (orderedForOutput).
+  // Guard: tokom učitavanja (prazan snapshot ≠ „nema akcija") i za 0 redova
+  // toast umesto prazne štampe/CSV-a.
+  function doExport(kind: 'print' | 'csv') {
+    if (akcijeQ.isLoading || prioQ.isLoading) {
+      toast('Sačekaj učitavanje podataka.');
+      return;
+    }
+    if (!rows.length) {
+      toast('Nema redova za štampu/export.');
+      return;
+    }
+    const groups = groupAkcijeByRn(rows, prioQ.data?.data, { rowSort: 'rb' });
+    if (kind === 'print') printAkcije(groups);
+    else exportAkcijeCsv(groups);
+  }
+
   const cols: Column<AkcijaRow>[] = [
     ...(canEdit
       ? [{
@@ -200,6 +221,12 @@ export function AkcioniPlanTab({ myEmail }: { myEmail: string }) {
             <input type="checkbox" checked={prikaziZavrseno} onChange={(e) => setPrikaziZavrseno(e.target.checked)} /> Prikaži završeno
           </label>
           <SearchBox value={q} onChange={setQ} placeholder="Zadatak…" />
+          <Button variant="secondary" title="Štampaj akcioni plan" onClick={() => doExport('print')}>
+            <Printer className="h-4 w-4" aria-hidden /> Štampaj
+          </Button>
+          <Button variant="secondary" title="Export u CSV" onClick={() => doExport('csv')}>
+            <Download className="h-4 w-4" aria-hidden /> Export CSV
+          </Button>
           {canEdit && <Button onClick={() => setModalEdit(null)}>+ Nova akcija</Button>}
         </div>
       </div>
