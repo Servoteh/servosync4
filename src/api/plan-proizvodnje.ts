@@ -101,6 +101,9 @@ export interface OpRow {
   ready_override_by?: string | null;
   ready_override_at?: string | null;
   previous_operation_operacija?: number | string | null;
+  previous_operation_status?: string | null;
+  previous_operation_machine_code?: string | null;
+  is_cooperation_effective?: boolean | null;
   // ── TP modal header/log polja (tech-procedure response — header/operations/logs):
   materijal?: string | null;
   dimenzija_materijala?: string | null;

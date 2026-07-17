@@ -10,6 +10,7 @@ import {
   ChevronDown,
   FileText,
   Undo2,
+  HelpCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { Button } from '@/components/ui-kit/button';
@@ -40,6 +41,7 @@ import {
   num,
 } from './shared';
 import { PositionPopover } from './position-popover';
+import { WhyBottleneckModal } from './why-bottleneck-modal';
 import { formatDate } from '@/lib/format';
 
 const OPEN_STATUSES = new Set(['waiting', 'in_progress', 'blocked']);
@@ -83,6 +85,8 @@ export function OpsTable({
   // GAP-PM-16 — slanje u kooperaciju kroz modal (partner + očekivani datum povratka),
   // umesto window.prompt (koji je slao samo partnera, bez datuma povratka).
   const [coopSend, setCoopSend] = useState<OpRow | null>(null);
+  // GAP-PM-18 — „Zašto je ovo ovde?" bottleneck dijagnostika (dostupno i read-only).
+  const [whyOp, setWhyOp] = useState<OpRow | null>(null);
 
   function cycleStatus(o: OpRow) {
     if (!canEdit) return;
@@ -364,6 +368,9 @@ export function OpsTable({
                           )}
                         </span>
                       </IconBtn>
+                      <IconBtn title="Zašto je ovo ovde?" onClick={() => setWhyOp(o)}>
+                        <HelpCircle className="h-3.5 w-3.5" />
+                      </IconBtn>
                       <IconBtn title="Detalji" onClick={() => setExpanded(open ? null : key)}>
                         <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', open && 'rotate-180')} />
                       </IconBtn>
@@ -463,6 +470,8 @@ export function OpsTable({
           }}
         />
       )}
+
+      {whyOp && <WhyBottleneckModal op={whyOp} onClose={() => setWhyOp(null)} />}
     </div>
   );
 }
