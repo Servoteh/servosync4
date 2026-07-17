@@ -55,6 +55,7 @@ import {
 } from '@/lib/pracenje-rn';
 import { AktivnostModal } from './aktivnost-modal';
 import { PromoteModal } from './promote-modal';
+import { useOperativniFilters, filterActivities, activeFilterChips } from './operativni-filters';
 
 type RnTab = 'pozicije' | 'plan';
 const RN_TABS: TabItem<RnTab>[] = [
@@ -548,11 +549,38 @@ function prijavaDatum(r: Record<string, unknown>): string {
   return v ? formatDate(String(v)) : '—';
 }
 
-// ------------------------------------------------------------------ Tab2
+// ------------------------------------------------------------------ Tab2 (PR-07/08/09/22/24/26)
+
+const PRIORITET_TONE: Record<string, Tone> = { nizak: 'neutral', srednji: 'info', visok: 'danger' };
+const PRIORITET_LABEL: Record<string, string> = { nizak: 'Nizak', srednji: 'Srednji', visok: 'Visok' };
+
+interface DashboardData {
+  total?: {
+    ukupno?: number;
+    zavrseno?: number;
+    u_toku?: number;
+    blokirano?: number;
+    nije_krenulo?: number;
+    najkasniji_planirani_zavrsetak?: string | null;
+  };
+  po_odeljenjima?: Array<{
+    odeljenje?: string;
+    ukupno?: number;
+    zavrseno?: number;
+    u_toku?: number;
+    blokirano?: number;
+    najkasniji_planirani_zavrsetak?: string | null;
+  }>;
+}
 
 function OperativniPlanTab({ rnId, canEdit }: { rnId: string; canEdit: boolean }) {
   const plan = useOperativniPlan(rnId);
-  const aktivnosti = useMemo(() => normalizeAktivnosti(plan.data?.data), [plan.data]);
+  const allAktivnosti = useMemo(() => normalizeAktivnosti(plan.data?.data), [plan.data]);
+  const dashboard = ((plan.data?.data as { dashboard?: DashboardData } | undefined)?.dashboard ?? {}) as DashboardData;
+
+  const { filters, set, reset, toggleQuick } = useOperativniFilters(rnId);
+  const aktivnosti = useMemo(() => filterActivities(allAktivnosti, filters), [allAktivnosti, filters]);
+  const chips = activeFilterChips(filters);
 
   function exportTab2() {
     try {
@@ -571,26 +599,110 @@ function OperativniPlanTab({ rnId, canEdit }: { rnId: string; canEdit: boolean }
   const odblokiraj = useOdblokirajAktivnost();
   const [edit, setEdit] = useState<AktivnostRow | null | 'new'>(null);
   const [blokId, setBlokId] = useState<string | null>(null);
+  const [zatvoriAkt, setZatvoriAkt] = useState<AktivnostRow | null>(null);
+  const [odblokAkt, setOdblokAkt] = useState<AktivnostRow | null>(null);
   const [promote, setPromote] = useState(false);
   const [histId, setHistId] = useState<string | null>(null);
+  // GAP-PR-24 — highlight nove/izmenjene aktivnosti 2s po skoku iz sastanka/promote.
+  const [highlightId, setHighlightId] = useState<string | null>(null);
 
-  const projekatId = aktivnosti.find((a) => a.projekat_id)?.projekat_id as string | undefined;
+  const projekatId = allAktivnosti.find((a) => a.projekat_id)?.projekat_id as string | undefined;
 
-  const grouped = useMemo(() => {
-    const map = new Map<string, AktivnostRow[]>();
-    for (const a of aktivnosti) {
-      const key = a.odeljenje_naziv ?? a.odeljenje ?? '—';
-      const arr = map.get(key) ?? [];
-      arr.push(a);
-      map.set(key, arr);
+  // Kolekcija naziva odeljenja za multi-select (odeljenja iz lookup-a + iz aktivnosti).
+  const deptNames = useMemo(() => {
+    const s = new Set<string>();
+    for (const a of allAktivnosti) {
+      const n = a.odeljenje ?? a.odeljenje_naziv;
+      if (n) s.add(String(n));
     }
-    return [...map.entries()];
-  }, [aktivnosti]);
+    return [...s].sort((x, y) => x.localeCompare(y, 'sr'));
+  }, [allAktivnosti]);
+
+  const eff = (a: AktivnostRow) => String((a.efektivni_status as string | undefined) || a.status || '');
 
   return (
     <div className="space-y-3">
+      {/* Filter toolbar (PR-07) */}
+      <div className="space-y-2 rounded-panel border border-line bg-surface p-3">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6">
+          <FilterLabel text="Pretraga">
+            <input
+              type="search"
+              value={filters.search}
+              onChange={(e) => set('search', e.target.value)}
+              placeholder="Naziv, TP, odgovoran…"
+              className="h-8 w-full rounded-control border border-line bg-surface px-2 text-sm text-ink"
+            />
+          </FilterLabel>
+          <FilterLabel text="Odeljenja">
+            <MultiSelect
+              value={filters.odeljenja}
+              onChange={(v) => set('odeljenja', v)}
+              options={deptNames.map((n) => ({ v: n, label: n }))}
+            />
+          </FilterLabel>
+          <FilterLabel text="Statusi">
+            <MultiSelect
+              value={filters.statusi}
+              onChange={(v) => set('statusi', v)}
+              options={Object.entries(AKTIVNOST_STATUS_LABELS).map(([v, label]) => ({ v, label }))}
+            />
+          </FilterLabel>
+          <FilterLabel text="Prioritet">
+            <MultiSelect
+              value={filters.prioriteti}
+              onChange={(v) => set('prioriteti', v)}
+              options={[{ v: 'nizak', label: 'Nizak' }, { v: 'srednji', label: 'Srednji' }, { v: 'visok', label: 'Visok' }]}
+            />
+          </FilterLabel>
+          <FilterLabel text="Odgovoran">
+            <input
+              type="search"
+              value={filters.odgovoran}
+              onChange={(e) => set('odgovoran', e.target.value)}
+              placeholder="Ime…"
+              className="h-8 w-full rounded-control border border-line bg-surface px-2 text-sm text-ink"
+            />
+          </FilterLabel>
+          <div className="flex gap-1">
+            <FilterLabel text="Rok od">
+              <input type="date" value={filters.dateFrom} onChange={(e) => set('dateFrom', e.target.value)} className="h-8 w-full rounded-control border border-line bg-surface px-1 text-2xs text-ink" />
+            </FilterLabel>
+            <FilterLabel text="Rok do">
+              <input type="date" value={filters.dateTo} onChange={(e) => set('dateTo', e.target.value)} className="h-8 w-full rounded-control border border-line bg-surface px-1 text-2xs text-ink" />
+            </FilterLabel>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <Checkbox label="Samo kasni" checked={filters.onlyLate} onChange={(v) => set('onlyLate', v)} />
+          <Checkbox label="Samo blokirano" checked={filters.onlyBlocked} onChange={(v) => set('onlyBlocked', v)} />
+          <Checkbox label="Sakrij zatvorene" checked={filters.hideClosed} onChange={(v) => set('hideClosed', v)} />
+          <span className="ml-2 text-2xs text-ink-secondary">Quick:</span>
+          <QuickChip active={filters.quick === 'visok'} onClick={() => toggleQuick('visok')}>Visok prioritet</QuickChip>
+          <QuickChip active={filters.quick === 'kasni7'} onClick={() => toggleQuick('kasni7')}>Kasni &gt; 7 dana</QuickChip>
+          <QuickChip active={filters.quick === 'bez_odgovornog'} onClick={() => toggleQuick('bez_odgovornog')}>Bez odgovornog</QuickChip>
+          <button type="button" onClick={reset} className="ml-auto inline-flex h-8 items-center rounded-control border border-line px-2 text-xs text-ink-secondary hover:bg-surface-2">
+            Reset
+          </button>
+        </div>
+        {chips.length > 0 && (
+          <div className="flex flex-wrap gap-1 text-2xs text-ink-secondary">
+            {chips.map((c) => (
+              <span key={c} className="rounded-full bg-surface-2 px-2 py-0.5">{c}</span>
+            ))}
+          </div>
+        )}
+      </div>
+
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-sm text-ink-secondary">{aktivnosti.length} aktivnosti</span>
+        <span className="text-sm text-ink-secondary">
+          {aktivnosti.length}{allAktivnosti.length !== aktivnosti.length ? ` / ${allAktivnosti.length}` : ''} aktivnosti
+        </span>
+        {!canEdit && (
+          <span className="inline-flex items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-2xs text-ink-secondary" title="Nemate pravo izmene">
+            <Lock className="h-3 w-3" /> read-only
+          </span>
+        )}
         <div className="ml-auto flex gap-2">
           <Button variant="secondary" onClick={exportTab2} disabled={aktivnosti.length === 0}>
             <FileSpreadsheet className="h-4 w-4" /> Excel export
@@ -611,51 +723,109 @@ function OperativniPlanTab({ rnId, canEdit }: { rnId: string; canEdit: boolean }
       {plan.isLoading ? (
         <div className="rounded-panel border border-line bg-surface px-4 py-10 text-center text-sm text-ink-secondary">Učitavanje…</div>
       ) : aktivnosti.length === 0 ? (
-        <EmptyState title="Nema aktivnosti u operativnom planu" />
+        <EmptyState title={allAktivnosti.length > 0 ? 'Nema rezultata za filtere' : 'Nema aktivnosti u operativnom planu'} />
       ) : (
-        grouped.map(([odeljenje, list]) => (
-          <div key={odeljenje} className="rounded-panel border border-line bg-surface">
-            <div className="border-b border-line bg-surface-2 px-3 py-1.5 text-xs font-semibold text-ink">{odeljenje}</div>
-            <ul>
-              {list.map((a) => (
-                <li key={a.id} className={cn('flex flex-wrap items-center gap-2 border-b border-line-soft px-3 py-2', a.kasni && 'bg-status-danger-bg/30')}>
-                  <StatusBadge tone={STATUS_TONE[a.status ?? 'nije_krenulo'] ?? 'neutral'} label={AKTIVNOST_STATUS_LABELS[a.status ?? ''] ?? a.status ?? '—'} />
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-medium text-ink">{a.naziv_aktivnosti}</div>
-                    <div className="text-xs text-ink-disabled">
-                      {a.odgovoran_label ?? a.odgovoran ?? '—'}
-                      {a.planirani_zavrsetak ? ` · rok ${formatDate(a.planirani_zavrsetak)}` : ''}
-                      {a.broj_tp ? ` · TP ${a.broj_tp}` : ''}
-                    </div>
-                  </div>
-                  <button onClick={() => a.id && setHistId(a.id)} className="rounded-control p-1 text-ink-secondary hover:bg-surface-2" title="Istorija">
-                    <History className="h-3.5 w-3.5" />
-                  </button>
-                  {canEdit && (
-                    <div className="flex gap-1">
-                      <Button variant="ghost" className="h-8 px-2 text-xs" onClick={() => setEdit(a)}>Izmeni</Button>
-                      {a.status === 'blokirano' ? (
-                        <Button variant="ghost" className="h-8 px-2 text-xs" onClick={() => a.id && odblokiraj.mutate({ id: a.id })}>
-                          <Unlock className="h-3.5 w-3.5" /> Odblokiraj
-                        </Button>
-                      ) : (
-                        <Button variant="ghost" className="h-8 px-2 text-xs" onClick={() => a.id && setBlokId(a.id)}>
-                          <Lock className="h-3.5 w-3.5" /> Blokiraj
-                        </Button>
-                      )}
-                      {a.status !== 'zavrseno' && (
-                        <Button variant="ghost" className="h-8 px-2 text-xs" onClick={() => a.id && zatvori.mutate({ id: a.id })}>
-                          <CheckCircle2 className="h-3.5 w-3.5" /> Zatvori
-                        </Button>
-                      )}
-                    </div>
+        <div className="overflow-x-auto rounded-panel border border-line bg-surface">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-line bg-surface-2 text-left text-2xs uppercase tracking-wider text-ink-secondary">
+                <th className="px-2 py-1.5">RB</th>
+                <th className="px-2 py-1.5">Odeljenje</th>
+                <th className="px-2 py-1.5">Aktivnost</th>
+                <th className="px-2 py-1.5">Br. TP</th>
+                <th className="px-2 py-1.5">Količina</th>
+                <th className="px-2 py-1.5">Plan. početak</th>
+                <th className="px-2 py-1.5">Plan. završetak</th>
+                <th className="px-2 py-1.5">Odgovoran</th>
+                <th className="px-2 py-1.5">Zavisi od</th>
+                <th className="px-2 py-1.5">Status</th>
+                <th className="px-2 py-1.5">Prioritet</th>
+                <th className="px-2 py-1.5">Rizik</th>
+                <th className="px-2 py-1.5 text-right">Rezerva</th>
+                <th className="px-2 py-1.5">Kasni</th>
+                <th className="px-2 py-1.5" />
+              </tr>
+            </thead>
+            <tbody>
+              {aktivnosti.map((a) => (
+                <tr
+                  key={a.id}
+                  className={cn(
+                    'border-b border-line-soft align-top hover:bg-surface-2',
+                    a.kasni && 'bg-status-danger-bg/20',
+                    highlightId && a.id === highlightId && 'ring-2 ring-inset ring-accent',
                   )}
-                </li>
+                >
+                  <td className="tnums px-2 py-1.5">{a.rb ?? ''}</td>
+                  <td className="px-2 py-1.5 text-xs">{a.odeljenje ?? a.odeljenje_naziv ?? '—'}</td>
+                  <td className="px-2 py-1.5">
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-medium text-ink">{a.naziv_aktivnosti ?? '—'}</span>
+                      {a.izvor === 'iz_sastanka' && a.izvor_akcioni_plan_id ? (
+                        <button
+                          type="button"
+                          onClick={() => jumpToSastanak(String(a.izvor_akcioni_plan_id))}
+                          className="inline-flex items-center gap-0.5 rounded-full bg-accent-subtle px-1.5 py-0.5 text-2xs font-medium text-accent hover:underline"
+                          title="Otvori akcionu tačku u Sastancima"
+                        >
+                          ↔ Iz sastanka
+                        </button>
+                      ) : null}
+                    </div>
+                    {a.opis ? <div className="text-2xs text-ink-disabled">{a.opis}</div> : null}
+                  </td>
+                  <td className="px-2 py-1.5 text-xs">{a.broj_tp ?? '—'}</td>
+                  <td className="px-2 py-1.5 text-xs">{a.kolicina_text ?? '—'}</td>
+                  <td className="px-2 py-1.5 text-xs">{a.planirani_pocetak ? formatDate(a.planirani_pocetak) : '—'}</td>
+                  <td className="px-2 py-1.5 text-xs">{a.planirani_zavrsetak ? formatDate(a.planirani_zavrsetak) : '—'}</td>
+                  <td className="px-2 py-1.5 text-xs">{a.odgovoran ?? a.odgovoran_label ?? '—'}</td>
+                  <td className="px-2 py-1.5 text-xs">{a.zavisi_od ?? a.zavisi_od_text ?? '—'}</td>
+                  <td className="px-2 py-1.5">
+                    <StatusBadge tone={STATUS_TONE[eff(a)] ?? 'neutral'} label={AKTIVNOST_STATUS_LABELS[eff(a)] ?? eff(a) ?? '—'} />
+                  </td>
+                  <td className="px-2 py-1.5">
+                    {a.prioritet ? <StatusBadge tone={PRIORITET_TONE[a.prioritet] ?? 'neutral'} label={PRIORITET_LABEL[a.prioritet] ?? a.prioritet} /> : '—'}
+                  </td>
+                  <td className="max-w-[140px] truncate px-2 py-1.5 text-xs text-ink-secondary" title={a.rizik_napomena ?? ''}>{a.rizik_napomena ?? '—'}</td>
+                  <td className="tnums px-2 py-1.5 text-right text-xs">{a.rezerva_dani ?? '—'}</td>
+                  <td className="px-2 py-1.5 text-xs">
+                    {a.kasni ? <span className="text-status-danger">Da</span> : <span className="text-status-success">Ne</span>}
+                  </td>
+                  <td className="whitespace-nowrap px-2 py-1.5 text-right">
+                    <div className="flex items-center justify-end gap-0.5">
+                      {/* Detalji (read-only prikaz) dostupan svima (PR-26). */}
+                      <Button variant="ghost" className="h-8 px-2 text-xs" onClick={() => setEdit(a)}>
+                        {canEdit ? 'Izmeni' : 'Detalji'}
+                      </Button>
+                      <button onClick={() => a.id && setHistId(a.id)} className="rounded-control p-1 text-ink-secondary hover:bg-surface-2" title="Istorija">
+                        <History className="h-3.5 w-3.5" />
+                      </button>
+                      {canEdit && eff(a) === 'blokirano' && (
+                        <button onClick={() => setOdblokAkt(a)} className="rounded-control p-1 text-ink-secondary hover:bg-surface-2" title="Odblokiraj">
+                          <Unlock className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                      {canEdit && eff(a) !== 'blokirano' && (
+                        <button onClick={() => a.id && setBlokId(a.id)} className="rounded-control p-1 text-ink-secondary hover:bg-surface-2" title="Blokiraj">
+                          <Lock className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                      {canEdit && eff(a) !== 'zavrseno' && (
+                        <button onClick={() => setZatvoriAkt(a)} className="rounded-control p-1 text-ink-secondary hover:bg-surface-2" title="Zatvori aktivnost">
+                          <CheckCircle2 className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
               ))}
-            </ul>
-          </div>
-        ))
+            </tbody>
+          </table>
+        </div>
       )}
+
+      {/* Dashboard footer (PR-09) */}
+      {allAktivnosti.length > 0 && <DashboardFooter dashboard={dashboard} activities={allAktivnosti} />}
 
       {edit !== null && (
         <AktivnostModal
@@ -664,12 +834,243 @@ function OperativniPlanTab({ rnId, canEdit }: { rnId: string; canEdit: boolean }
           rnId={rnId}
           projekatId={projekatId}
           aktivnost={edit === 'new' ? null : edit}
+          activities={allAktivnosti}
+          canEdit={canEdit}
+          onZatvori={(a) => { setEdit(null); setZatvoriAkt(a); }}
+          onBlokiraj={(a) => { setEdit(null); if (a.id) setBlokId(a.id); }}
+          onOdblokiraj={(a) => { setEdit(null); setOdblokAkt(a); }}
         />
       )}
       {blokId && <BlokModal id={blokId} onClose={() => setBlokId(null)} />}
-      {promote && <PromoteModal rnId={rnId} projekat={projekatId} onClose={() => setPromote(false)} />}
+      {zatvoriAkt && (
+        <NapomenaModal
+          title="Zatvori aktivnost"
+          confirmLabel="Zatvori"
+          onClose={() => setZatvoriAkt(null)}
+          onSubmit={(napomena) => {
+            if (zatvoriAkt.id) zatvori.mutate({ id: zatvoriAkt.id, napomena });
+            setZatvoriAkt(null);
+          }}
+        />
+      )}
+      {odblokAkt && (
+        <NapomenaModal
+          title="Skini blokadu"
+          confirmLabel="Odblokiraj"
+          onClose={() => setOdblokAkt(null)}
+          onSubmit={(napomena) => {
+            if (odblokAkt.id) odblokiraj.mutate({ id: odblokAkt.id, napomena });
+            setOdblokAkt(null);
+          }}
+        />
+      )}
+      {promote && (
+        <PromoteModal
+          rnId={rnId}
+          projekat={projekatId}
+          onClose={() => setPromote(false)}
+          onPromoted={(id) => {
+            if (id) {
+              setHighlightId(id);
+              setTimeout(() => setHighlightId(null), 2000);
+            }
+          }}
+        />
+      )}
       {histId && <IstorijaModal id={histId} onClose={() => setHistId(null)} />}
     </div>
+  );
+}
+
+/** Skok na akcionu tačku u Sastancima (SPA client navigacija) — paritet 1.0 oaMeetingLink. */
+function jumpToSastanak(akcijaId: string) {
+  const path = `/sastanci?akcija=${encodeURIComponent(akcijaId)}`;
+  // 1.0 (aktivnostModal.js:161) radi ČIST meki SPA prelaz: pushState + popstate.
+  // Next App Router presreće popstate i mekano rutira — bez reload-a.
+  window.history.pushState(null, '', path);
+  window.dispatchEvent(new PopStateEvent('popstate'));
+  // Fallback SAMO ako meki prelaz ne uhvati modul (URL i dalje van /sastanci) —
+  // uslovno, tek po sledećem ticku, da ne obara SPA prelaz bezuslovnim reload-om.
+  window.setTimeout(() => {
+    if (!window.location.pathname.startsWith('/sastanci')) {
+      window.location.assign(path);
+    }
+  }, 0);
+}
+
+function FilterLabel({ text, children }: { text: string; children: React.ReactNode }) {
+  return (
+    <label className="flex flex-col gap-0.5">
+      <span className="text-2xs uppercase tracking-wider text-ink-secondary">{text}</span>
+      {children}
+    </label>
+  );
+}
+
+function MultiSelect({ value, onChange, options }: { value: string[]; onChange: (v: string[]) => void; options: { v: string; label: string }[] }) {
+  return (
+    <select
+      multiple
+      size={3}
+      value={value}
+      onChange={(e) => onChange(Array.from(e.target.selectedOptions).map((o) => o.value))}
+      className="w-full rounded-control border border-line bg-surface px-1 py-1 text-2xs text-ink"
+    >
+      {options.map((o) => (
+        <option key={o.v} value={o.v}>{o.label}</option>
+      ))}
+    </select>
+  );
+}
+
+function Checkbox({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <label className="flex items-center gap-1.5 text-xs text-ink">
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} /> {label}
+    </label>
+  );
+}
+
+function QuickChip({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn('h-7 rounded-control border px-2 text-2xs transition-colors', active ? 'border-accent bg-accent text-accent-fg' : 'border-line bg-surface text-ink-secondary hover:bg-surface-2')}
+    >
+      {children}
+    </button>
+  );
+}
+
+/** Dashboard footer: 6 metrika + tabela po odeljenjima + Top-5 kašnjenja (PR-09). */
+function DashboardFooter({ dashboard, activities }: { dashboard: DashboardData; activities: AktivnostRow[] }) {
+  const total = dashboard.total ?? {};
+  const poOdeljenjima = dashboard.po_odeljenjima ?? [];
+  const topLate = useMemo(
+    () =>
+      [...activities]
+        .filter((a) => a.kasni)
+        .sort((a, b) => Number(a.rezerva_dani ?? 99999) - Number(b.rezerva_dani ?? 99999))
+        .slice(0, 5),
+    [activities],
+  );
+
+  return (
+    <section className="rounded-panel border border-line bg-surface p-3">
+      <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-ink-secondary">Pregled operativnog plana</div>
+      <div className="mb-3 flex flex-wrap gap-2">
+        <Metric label="Ukupno" value={total.ukupno ?? 0} />
+        <Metric label="Završeno" value={total.zavrseno ?? 0} />
+        <Metric label="U toku" value={total.u_toku ?? 0} />
+        <Metric label="Blokirano" value={total.blokirano ?? 0} />
+        <Metric label="Nije krenulo" value={total.nije_krenulo ?? 0} />
+        <Metric label="Najkasniji plan" value={total.najkasniji_planirani_zavrsetak ? formatDate(String(total.najkasniji_planirani_zavrsetak)) : '—'} />
+      </div>
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+        <div className="overflow-x-auto rounded-control border border-line">
+          <table className="w-full text-2xs">
+            <thead>
+              <tr className="border-b border-line bg-surface-2 text-left text-ink-secondary">
+                <th className="px-2 py-1">Odeljenje</th>
+                <th className="px-2 py-1 text-right">Ukupno</th>
+                <th className="px-2 py-1 text-right">Završeno</th>
+                <th className="px-2 py-1 text-right">U toku</th>
+                <th className="px-2 py-1 text-right">Blokirano</th>
+                <th className="px-2 py-1">Najkasnije</th>
+              </tr>
+            </thead>
+            <tbody>
+              {poOdeljenjima.length === 0 ? (
+                <tr><td colSpan={6} className="px-2 py-2 text-center text-ink-disabled">Nema aktivnosti po odeljenjima.</td></tr>
+              ) : (
+                poOdeljenjima.map((r, i) => (
+                  <tr key={i} className="border-b border-line-soft">
+                    <td className="px-2 py-1 font-medium text-ink">{r.odeljenje ?? '—'}</td>
+                    <td className="tnums px-2 py-1 text-right">{r.ukupno ?? 0}</td>
+                    <td className="tnums px-2 py-1 text-right">{r.zavrseno ?? 0}</td>
+                    <td className="tnums px-2 py-1 text-right">{r.u_toku ?? 0}</td>
+                    <td className="tnums px-2 py-1 text-right">{r.blokirano ?? 0}</td>
+                    <td className="px-2 py-1">{r.najkasniji_planirani_zavrsetak ? formatDate(String(r.najkasniji_planirani_zavrsetak)) : '—'}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+        <div className="overflow-x-auto rounded-control border border-line">
+          <table className="w-full text-2xs">
+            <thead>
+              <tr className="border-b border-line bg-surface-2 text-left text-ink-secondary">
+                <th className="px-2 py-1">Top kašnjenja</th>
+                <th className="px-2 py-1">Status</th>
+                <th className="px-2 py-1 text-right">Rezerva</th>
+              </tr>
+            </thead>
+            <tbody>
+              {topLate.length === 0 ? (
+                <tr><td colSpan={3} className="px-2 py-2 text-center text-ink-disabled">Nema aktivnosti koje kasne.</td></tr>
+              ) : (
+                topLate.map((a) => (
+                  <tr key={a.id} className="border-b border-line-soft">
+                    <td className="px-2 py-1">{a.naziv_aktivnosti ?? '—'}</td>
+                    <td className="px-2 py-1">
+                      <StatusBadge tone={STATUS_TONE[String(a.efektivni_status || a.status || '')] ?? 'neutral'} label={AKTIVNOST_STATUS_LABELS[String(a.efektivni_status || a.status || '')] ?? '—'} />
+                    </td>
+                    <td className="tnums px-2 py-1 text-right">{a.rezerva_dani ?? '—'}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: number | string }) {
+  return (
+    <div className="rounded-control border border-line bg-surface-2 px-3 py-1.5">
+      <span className="text-sm font-bold text-ink">{value}</span>
+      <span className="ml-1.5 text-2xs text-ink-secondary">{label}</span>
+    </div>
+  );
+}
+
+/** Napomena prompt modal (zatvaranje / odblokada aktivnosti) — PR-22. */
+function NapomenaModal({
+  title,
+  confirmLabel,
+  onClose,
+  onSubmit,
+}: {
+  title: string;
+  confirmLabel: string;
+  onClose: () => void;
+  onSubmit: (napomena: string) => void;
+}) {
+  const [napomena, setNapomena] = useState('');
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title={title}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>Otkaži</Button>
+          <Button onClick={() => onSubmit(napomena.trim())}>{confirmLabel}</Button>
+        </>
+      }
+    >
+      <textarea
+        value={napomena}
+        onChange={(e) => setNapomena(e.target.value)}
+        rows={3}
+        placeholder="Napomena (opciono)…"
+        className="w-full rounded-control border border-line bg-surface px-3 py-2 text-base text-ink"
+      />
+    </Dialog>
   );
 }
 
@@ -714,45 +1115,89 @@ function BlokModal({ id, onClose }: { id: string; onClose: () => void }) {
   );
 }
 
+/** Istorija aktivnosti (PR-23): dve tabele Kada/Ko/Šta/Napomena — blokade + audit diff staro→novo. */
 function IstorijaModal({ id, onClose }: { id: string; onClose: () => void }) {
   const q = useAktivnostIstorija(id);
+  const blokade = q.data?.data.blokade ?? [];
+  const audit = q.data?.data.audit ?? [];
+
+  const dt = (v: unknown) => (v ? new Date(String(v)).toLocaleString('sr-RS') : '—');
+
+  const blokadeRows = blokade.map((raw) => {
+    const r = raw as Record<string, unknown>;
+    return {
+      kada: dt(r.created_at),
+      ko: String(r.changed_by_email ?? r.changed_by ?? '—'),
+      sta: `blokada: ${String(r.old_manual_override_status ?? '—')} → ${String(r.new_manual_override_status ?? '—')}`,
+      napomena: String(r.new_blokirano_razlog ?? r.napomena ?? ''),
+    };
+  });
+
+  const auditRows = audit.map((raw) => {
+    const r = raw as Record<string, unknown>;
+    const keys = (r.diff_keys as string[] | undefined) ?? [];
+    const old = (r.old_data as Record<string, unknown> | undefined) ?? {};
+    const nw = (r.new_data as Record<string, unknown> | undefined) ?? {};
+    return {
+      kada: dt(r.changed_at),
+      ko: String(r.actor_email ?? r.actor_uid ?? '—'),
+      sta: `${String(r.action ?? '')}: ${keys.join(', ')}`,
+      napomena: keys.map((k) => `${k}: ${old[k] ?? '—'} → ${nw[k] ?? '—'}`).join('; '),
+    };
+  });
+
   return (
     <Dialog open onClose={onClose} title="Istorija aktivnosti">
       {q.isLoading ? (
         <div className="py-6 text-center text-sm text-ink-secondary">Učitavanje…</div>
       ) : (
-        <div className="space-y-3">
-          <div>
-            <div className="mb-1 text-2xs uppercase tracking-wider text-ink-secondary">Blokade</div>
-            {(q.data?.data.blokade ?? []).length === 0 ? (
-              <p className="text-xs text-ink-disabled">Nema blokada.</p>
-            ) : (
-              <ul className="space-y-1 text-xs">
-                {(q.data?.data.blokade ?? []).map((b, i) => (
-                  <li key={i} className="rounded-control border border-line px-2 py-1">
-                    {String((b as Record<string, unknown>).razlog ?? (b as Record<string, unknown>).akcija ?? '—')}
-                    {(b as Record<string, unknown>).created_at ? ` · ${formatDate(String((b as Record<string, unknown>).created_at))}` : ''}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-          <div>
-            <div className="mb-1 text-2xs uppercase tracking-wider text-ink-secondary">Audit (admin)</div>
-            {(q.data?.data.audit ?? []).length === 0 ? (
-              <p className="text-xs text-ink-disabled">Nema audit zapisa (ili nemate pravo).</p>
-            ) : (
-              <ul className="space-y-1 text-xs">
-                {(q.data?.data.audit ?? []).map((a, i) => (
-                  <li key={i} className="rounded-control border border-line px-2 py-1">
-                    {String((a as Record<string, unknown>).action ?? '')} · {String((a as Record<string, unknown>).actor_email ?? '')}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+        <div className="space-y-4">
+          <HistorySection title="Istorija blokada" rows={blokadeRows} empty="Nema zapisa blokade." />
+          <HistorySection title="Audit izmene (admin)" rows={auditRows} empty="Audit log nije dostupan ili nema zapisa." />
         </div>
       )}
     </Dialog>
+  );
+}
+
+function HistorySection({
+  title,
+  rows,
+  empty,
+}: {
+  title: string;
+  rows: { kada: string; ko: string; sta: string; napomena: string }[];
+  empty: string;
+}) {
+  return (
+    <div>
+      <div className="mb-1 text-2xs uppercase tracking-wider text-ink-secondary">{title}</div>
+      {rows.length === 0 ? (
+        <p className="text-xs text-ink-disabled">{empty}</p>
+      ) : (
+        <div className="overflow-x-auto rounded-control border border-line">
+          <table className="w-full text-2xs">
+            <thead>
+              <tr className="border-b border-line bg-surface-2 text-left text-ink-secondary">
+                <th className="px-2 py-1">Kada</th>
+                <th className="px-2 py-1">Ko</th>
+                <th className="px-2 py-1">Šta</th>
+                <th className="px-2 py-1">Napomena</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => (
+                <tr key={i} className="border-b border-line-soft">
+                  <td className="px-2 py-1">{r.kada}</td>
+                  <td className="px-2 py-1">{r.ko}</td>
+                  <td className="px-2 py-1">{r.sta}</td>
+                  <td className="px-2 py-1">{r.napomena}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   );
 }

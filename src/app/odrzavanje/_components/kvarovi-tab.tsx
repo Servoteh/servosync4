@@ -65,7 +65,7 @@ export function KvaroviTab({ me, canReport }: { me: MaintMe | undefined; canRepo
         <Pager page={meta.page} totalPages={meta.totalPages} onPrev={() => setPage((p) => p - 1)} onNext={() => setPage((p) => p + 1)} />
       )}
 
-      {reporting && <PrijavaKvaraDialog onClose={() => setReporting(false)} />}
+      {reporting && <PrijavaKvaraDialog me={me} onClose={() => setReporting(false)} />}
       <IncidentDetailDialog id={openId} me={me} onClose={() => setOpenId(null)} />
     </div>
   );

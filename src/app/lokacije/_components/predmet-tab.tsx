@@ -3,7 +3,9 @@
 import { useState, type ReactNode } from 'react';
 import {
   AlertTriangle,
+  Briefcase,
   Eye,
+  FileDown,
   FileText,
   Filter,
   Hash,
@@ -12,26 +14,68 @@ import {
   Printer,
   RotateCcw,
   Search,
+  Star,
 } from 'lucide-react';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { Button } from '@/components/ui-kit/button';
-import { StatusBadge } from '@/components/ui-kit/status-badge';
+import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Can } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
 import { apiFetch } from '@/api/client';
 import { openDrawingPdf, type Drawing } from '@/api/pdm';
-import { usePredmetTps, usePrintLocLabel, type PredmetTpRow } from '@/api/lokacije';
+import {
+  fetchAllPredmetTps,
+  usePredmetPrioritetIds,
+  usePredmetTps,
+  usePrintLocLabel,
+  type PredmetTpRow,
+} from '@/api/lokacije';
+import { usePredmetiLookup, type PredmetLookup } from '@/api/plan-montaze';
 import { buildTspLabelProgram } from '@/lib/tspl2';
 import { labelDate } from '@/lib/label-print';
 import { TpProcedureModal } from '@/app/plan-proizvodnje/_components/tp-procedure-modal';
-import { tableEmpty } from './common';
+import { buildCsvFilename, downloadCsv, tableEmpty } from './common';
 import { barcodeForRow } from './label-build';
+import {
+  buildPredmetCsvRow,
+  openPredmetPrintWindow,
+  PREDMET_CSV_HEADERS,
+} from './predmet-print-window';
 
 const INPUT = 'h-9 rounded-control border border-line bg-surface px-2.5 text-sm text-ink outline-none focus:border-accent';
 const PAGE_SIZE_OPTIONS = [50, 100, 200, 500] as const;
 
 type LocationFilter = 'all' | 'with' | 'without';
+
+/**
+ * Izabrani predmet — pun objekat (ne samo id) da hero i izvoz prikažu STVARNE
+ * podatke (broj·naziv, komitent, NAR) i REALAN status badge (paritet 1.0
+ * `setPredmetSelected`, predmetTab.js:175). `status` iz BigTehn-a (npr. „U TOKU").
+ */
+interface PredmetSel {
+  id: string;
+  broj_predmeta: string;
+  naziv_predmeta: string;
+  customer_name: string;
+  broj_narudzbenice: string;
+  status: string;
+}
+
+/**
+ * BigTehn status predmeta → ton + labela za badge. „U TOKU" = uspeh (zelena, kao
+ * 1.0 zelena pilula); zatvoren/završen = neutral; nepoznat = neutral sa sirovim
+ * tekstom. Nikad hardkodovan „U TOKU" (paritet L-23 — badge prati stvaran status).
+ */
+function predmetStatusBadge(status: string): { tone: Tone; label: string } {
+  const s = String(status || '').trim().toUpperCase();
+  if (!s) return { tone: 'neutral', label: 'Nepoznat status' };
+  if (s === 'U TOKU') return { tone: 'success', label: 'U TOKU' };
+  if (s === 'ZAKLJUČEN' || s === 'ZAKLJUCEN' || s === 'ZAVRŠEN' || s === 'ZAVRSEN' || s === 'ZATVOREN') {
+    return { tone: 'neutral', label: status };
+  }
+  return { tone: 'info', label: status };
+}
 
 const toNum = (v: unknown): number | null => {
   if (v == null || v === '') return null;
@@ -250,30 +294,60 @@ function StatCard({
 
 /** Pregled predmeta — TP-ovi + placement + op-status (loc_tps_for_predmet), pun paritet 1.0. */
 export function PredmetTab() {
-  const [predmetInput, setPredmetInput] = useState('');
-  const [predmetId, setPredmetId] = useState<string | null>(null);
+  const [sel, setSel] = useState<PredmetSel | null>(null);
 
-  if (!predmetId) {
-    return <PredmetPicker input={predmetInput} setInput={setPredmetInput} onPick={setPredmetId} />;
+  if (!sel) {
+    return <PredmetPicker onPick={setSel} />;
   }
-  return <PredmetDataView predmetId={predmetId} onChange={() => { setPredmetId(null); setPredmetInput(''); }} />;
+  return <PredmetDataView sel={sel} onChange={() => setSel(null)} />;
 }
 
 // ─────────────────────────────────────────────── Ekran 1 — izbor predmeta
 
-function PredmetPicker({
-  input,
-  setInput,
-  onPick,
-}: {
-  input: string;
-  setInput: (v: string) => void;
-  onPick: (id: string) => void;
-}) {
-  const trimmed = input.trim();
-  const valid = /^\d+$/.test(trimmed);
+/**
+ * Picker = SEARCH-LISTA otvorenih predmeta (paritet 1.0 predmetTab.js:79-230):
+ * status „U TOKU", ⭐ prioritetni prvi, kartica broj·naziv + komitent + NAR broj.
+ * Zamena za raniji unos numeričkog ID-ja (L-22). Izvor je `usePredmetiLookup`
+ * (kompat alias montaza predmet-lookup-a) sa `onlyActive=true` — samo otvoreni
+ * predmeti („U TOKU", bez datuma zaključenja), 1:1 sa 1.0 `searchBigtehnItems`.
+ */
+function PredmetPicker({ onPick }: { onPick: (sel: PredmetSel) => void }) {
+  const [q, setQ] = useState('');
+  // onlyActive=true → samo otvoreni predmeti „U TOKU" (paritet 1.0 searchBigtehnItems onlyActive).
+  const lookup = usePredmetiLookup(q, true);
+  const prio = usePredmetPrioritetIds();
+  const prioIds = prio.data ?? [];
+
+  const rowsRaw = lookup.data?.data ?? [];
+  // ⭐ prioritetni predmeti uvek prvi, u redosledu ⭐ liste (paritet 1.0 rows.sort prioIds).
+  const rows = prioIds.length
+    ? [...rowsRaw].sort((a, b) => {
+        const ia = prioIds.indexOf(Number(a.id));
+        const ib = prioIds.indexOf(Number(b.id));
+        if (ia !== -1 && ib !== -1) return ia - ib;
+        if (ia !== -1) return -1;
+        if (ib !== -1) return 1;
+        return 0;
+      })
+    : rowsRaw;
+
+  function pick(r: PredmetLookup) {
+    onPick({
+      id: String(r.id),
+      broj_predmeta: r.broj_predmeta || '',
+      naziv_predmeta: r.naziv_predmeta || '',
+      customer_name: r.customer_name || '',
+      broj_narudzbenice: r.broj_narudzbenice || '',
+      status: r.status || '',
+    });
+  }
+
+  const trimmed = q.trim();
+  const showCount = !lookup.isLoading && !lookup.isError;
+
   return (
     <div className="space-y-3">
+      {/* Intro */}
       <div className="rounded-panel border border-line bg-surface p-4">
         <div className="flex items-start gap-3">
           <div className="grid h-10 w-10 shrink-0 place-items-center rounded-control bg-accent-subtle text-accent">
@@ -282,45 +356,110 @@ function PredmetPicker({
           <div>
             <h3 className="text-md font-semibold text-ink">Izaberi predmet</h3>
             <p className="mt-0.5 text-sm text-ink-secondary">
-              Unesi ID (broj) predmeta iz BigTehn-a. Posle izbora vidiš sve njegove tehnološke postupke sa
-              lokacijama, količinama i operativnim statusom.
+              Lista uključuje samo otvorene predmete iz BigTehn-a (status „U TOKU"). Posle izbora vidiš sve
+              njegove tehnološke postupke sa lokacijama, količinama i operativnim statusom.
             </p>
           </div>
         </div>
       </div>
 
-      <form
-        className="rounded-panel border border-line bg-surface p-4"
-        onSubmit={(e) => { e.preventDefault(); if (valid) onPick(trimmed); }}
-      >
-        <label className="mb-2 block text-2xs uppercase tracking-wider text-ink-secondary">ID predmeta</label>
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="relative flex-1 min-w-56">
-            <Hash className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-disabled" />
-            <input
-              className={`${INPUT} w-full pl-8`}
-              placeholder="npr. 24187"
-              value={input}
-              inputMode="numeric"
-              autoFocus
-              onChange={(e) => setInput(e.target.value.replace(/[^\d]/g, ''))}
-            />
-          </div>
-          <Button type="submit" disabled={!valid}>
-            <Search className="h-4 w-4" /> Učitaj predmet
-          </Button>
+      {/* Pretraga */}
+      <div className="rounded-panel border border-line bg-surface p-4">
+        <label className="mb-2 block text-2xs uppercase tracking-wider text-ink-secondary">Pretraga</label>
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-disabled" />
+          <input
+            type="search"
+            className={`${INPUT} w-full pl-8`}
+            placeholder="Broj predmeta, naziv, komitent ili narudžbenica…"
+            value={q}
+            autoComplete="off"
+            autoFocus
+            onChange={(e) => setQ(e.target.value)}
+          />
         </div>
-        <p className="mt-2 text-xs text-ink-disabled">
-          Prikazuju se samo radni nalozi koje je MES označio kao aktivne (nije ceo spisak RN iz BigTehn-a).
-        </p>
-      </form>
+        {showCount && (
+          <div className="mt-2 flex items-center gap-2 text-xs text-ink-secondary">
+            <span className="tnums">{rows.length} rezultata</span>
+            {trimmed && (
+              <button type="button" className="text-accent hover:underline" onClick={() => setQ('')}>
+                Resetuj pretragu
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Lista */}
+      <div className="rounded-panel border border-line bg-surface">
+        <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
+          <span className="text-sm font-semibold text-ink">Otvoreni predmeti</span>
+          <span className="text-2xs text-ink-disabled">Klikni za izbor</span>
+        </div>
+        <div className="max-h-[60vh] overflow-auto p-2">
+          {lookup.isLoading ? (
+            <p className="py-8 text-center text-sm text-ink-secondary">Učitavam predmete…</p>
+          ) : lookup.isError ? (
+            <p className="py-8 text-center text-sm text-status-danger">
+              Greška pretrage. Osveži stranicu ili pokušaj ponovo.
+            </p>
+          ) : rows.length === 0 ? (
+            <div className="py-10 text-center">
+              <Search className="mx-auto h-8 w-8 text-ink-disabled" aria-hidden />
+              <p className="mt-2 text-sm font-medium text-ink">{trimmed ? 'Nema rezultata' : 'Nema otvorenih predmeta'}</p>
+              <p className="mt-0.5 text-xs text-ink-disabled">
+                {trimmed ? 'Pokušaj sa drugačijim terminom' : 'Nema predmeta sa statusom „U TOKU"'}
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-1">
+              {rows.map((r) => {
+                const inPrio = prioIds.includes(Number(r.id));
+                return (
+                  <button
+                    key={r.id}
+                    type="button"
+                    onClick={() => pick(r)}
+                    className="flex w-full items-center gap-3 rounded-control border border-line px-3 py-2 text-left hover:bg-surface-2 hover:border-accent/40"
+                  >
+                    <span className="grid h-8 w-8 shrink-0 place-items-center rounded-control bg-surface-2 text-ink-secondary">
+                      <Hash className="h-4 w-4" />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center gap-1.5 truncate">
+                        {inPrio && <Star className="h-3.5 w-3.5 shrink-0 fill-status-warn text-status-warn" aria-label="Prioritetni predmet" />}
+                        <span className="tnums font-medium text-ink">{r.broj_predmeta || '—'}</span>
+                        {r.naziv_predmeta && <span className="truncate font-normal text-ink-secondary">· {r.naziv_predmeta}</span>}
+                      </span>
+                      <span className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-ink-secondary">
+                        {r.customer_name && (
+                          <span className="inline-flex items-center gap-1">
+                            <Briefcase className="h-3 w-3" /> {r.customer_name}
+                          </span>
+                        )}
+                        {r.broj_narudzbenice && (
+                          <span className="inline-flex items-center gap-1 tnums">
+                            <FileText className="h-3 w-3" /> NAR {r.broj_narudzbenice}
+                          </span>
+                        )}
+                      </span>
+                    </span>
+                    <StatusBadge tone="success" label="U TOKU" />
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
 
 // ─────────────────────────────────────────────── Ekran 2 — podaci predmeta
 
-function PredmetDataView({ predmetId, onChange }: { predmetId: string; onChange: () => void }) {
+function PredmetDataView({ sel, onChange }: { sel: PredmetSel; onChange: () => void }) {
+  const predmetId = sel.id;
   // Draft (u formi) vs primenjeni filteri — „Primeni" / Enter komituje draft.
   const [draft, setDraft] = useState({ tpNo: '', drawingNo: '', locationFilter: 'all' as LocationFilter, includeAssembled: false });
   const [filters, setFilters] = useState(draft);
@@ -328,6 +467,9 @@ function PredmetDataView({ predmetId, onChange }: { predmetId: string; onChange:
   const [pageSize, setPageSize] = useState<number>(100);
   const [opWoId, setOpWoId] = useState<string | null>(null);
   const [tpModalWo, setTpModalWo] = useState<string | null>(null);
+  // Izvoz/štampa CEO filtrirani spisak (ne samo tekuća strana) — paritet 1.0 fetchAllFiltered.
+  const [exportBusy, setExportBusy] = useState<null | 'csv' | 'pdf' | 'print'>(null);
+  const [exportProg, setExportProg] = useState<{ loaded: number; total: number | null } | null>(null);
 
   const baseParams = {
     onlyOpen: true,
@@ -360,6 +502,59 @@ function PredmetDataView({ predmetId, onChange }: { predmetId: string; onChange:
     setFilters(empty);
     setPage(0);
   }
+
+  // Filteri za izvoz (bez page/pageSize/workOrderId — fetchAllPredmetTps ih dodaje po strani).
+  const exportParams = {
+    onlyOpen: true,
+    includeAssembled: filters.includeAssembled,
+    tpNo: filters.tpNo || undefined,
+    drawingNo: filters.drawingNo || undefined,
+    locationFilter: filters.locationFilter,
+  };
+
+  async function runExport(mode: 'csv' | 'pdf' | 'print') {
+    if (exportBusy) return;
+    setExportBusy(mode);
+    setExportProg({ loaded: 0, total: null });
+    try {
+      const { rows: all, total: allTotal, truncated } = await fetchAllPredmetTps(predmetId, exportParams, {
+        onProgress: (p) => setExportProg(p),
+      });
+      if (all.length === 0) {
+        window.alert('Nema redova za izvoz sa trenutnim filterima.');
+        return;
+      }
+      if (mode === 'csv') {
+        downloadCsv(
+          buildCsvFilename(`lokacije_predmet_${(sel.broj_predmeta || predmetId).replace(/[^\w-]+/g, '_').slice(0, 30)}`),
+          PREDMET_CSV_HEADERS,
+          all.map(buildPredmetCsvRow),
+        );
+      } else {
+        openPredmetPrintWindow({
+          rows: all,
+          total: allTotal ?? all.length,
+          sel: { broj_predmeta: sel.broj_predmeta, naziv_predmeta: sel.naziv_predmeta, customer_name: sel.customer_name },
+          filters,
+          mode,
+        });
+      }
+      if (truncated) {
+        window.alert(`Izvoz prekinut na 50 000 redova. Ukupno u upitu: ${allTotal ?? '?'}. Suzi filtere.`);
+      }
+    } catch (err) {
+      window.alert(`Izvoz neuspešan: ${(err as Error)?.message ?? String(err)}`);
+    } finally {
+      setExportBusy(null);
+      setExportProg(null);
+    }
+  }
+
+  const exportLabel = (mode: 'csv' | 'pdf' | 'print', idle: string): string => {
+    if (exportBusy !== mode) return idle;
+    const p = exportProg;
+    return `${idle}… ${p?.loaded ?? 0}${p?.total != null ? `/${p.total}` : ''}`;
+  };
 
   async function printTp(r: PredmetTpRow) {
     const bc = barcodeForRow({
@@ -469,7 +664,7 @@ function PredmetDataView({ predmetId, onChange }: { predmetId: string; onChange:
 
   return (
     <div className="space-y-3">
-      {/* Hero */}
+      {/* Hero — STVARNI podaci predmeta + REALAN status badge (paritet 1.0 renderHeroHtml). */}
       <div className="flex items-center gap-3 rounded-panel border border-line bg-surface p-4">
         <div className="grid h-11 w-11 shrink-0 place-items-center rounded-control bg-accent-subtle text-accent">
           <Hash className="h-5 w-5" />
@@ -477,8 +672,20 @@ function PredmetDataView({ predmetId, onChange }: { predmetId: string; onChange:
         <div className="min-w-0 flex-1">
           <div className="text-2xs uppercase tracking-wider text-ink-secondary">Izabrani predmet</div>
           <div className="truncate text-md font-semibold text-ink">
-            Predmet #{predmetId}
-            <StatusBadge tone="success" label="U TOKU" />
+            {sel.broj_predmeta || `#${predmetId}`}
+            {sel.naziv_predmeta && <span className="font-normal text-ink-secondary"> · {sel.naziv_predmeta}</span>}
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-ink-secondary">
+            {sel.customer_name && (
+              <span className="inline-flex items-center gap-1"><Briefcase className="h-3 w-3" /> {sel.customer_name}</span>
+            )}
+            {sel.broj_narudzbenice && (
+              <span className="inline-flex items-center gap-1 tnums"><FileText className="h-3 w-3" /> NAR {sel.broj_narudzbenice}</span>
+            )}
+            {(() => {
+              const b = predmetStatusBadge(sel.status);
+              return <StatusBadge tone={b.tone} label={b.label} />;
+            })()}
           </div>
         </div>
         <Button variant="secondary" onClick={onChange}>
@@ -549,6 +756,18 @@ function PredmetDataView({ predmetId, onChange }: { predmetId: string; onChange:
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <Button onClick={apply}><Filter className="h-4 w-4" /> Primeni filtere</Button>
           <Button variant="secondary" onClick={reset}><RotateCcw className="h-4 w-4" /> Resetuj</Button>
+          {/* Štampa / PDF / CSV CELOG filtriranog spiska (paritet 1.0 predmetTab L-27). */}
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <Button variant="secondary" onClick={() => runExport('print')} disabled={exportBusy != null}>
+              <Printer className="h-4 w-4" /> {exportLabel('print', 'Štampa')}
+            </Button>
+            <Button variant="secondary" onClick={() => runExport('pdf')} disabled={exportBusy != null}>
+              <FileText className="h-4 w-4" /> {exportLabel('pdf', 'Export PDF')}
+            </Button>
+            <Button variant="secondary" onClick={() => runExport('csv')} disabled={exportBusy != null}>
+              <FileDown className="h-4 w-4" /> {exportLabel('csv', 'Export CSV')}
+            </Button>
+          </div>
         </div>
         <p className="mt-2 text-xs text-ink-disabled">
           TP i crtež se filtriraju od <strong>početka</strong> broja (prefiks). Isti crtež / RN može imati{' '}
@@ -559,7 +778,8 @@ function PredmetDataView({ predmetId, onChange }: { predmetId: string; onChange:
       {/* Summary bar */}
       <div className="flex flex-wrap items-center justify-between gap-2 rounded-panel border border-line bg-surface-2/50 px-3 py-2 text-sm">
         <span className="text-ink-secondary">
-          Predmet <strong className="text-ink">#{predmetId}</strong> · prikazano{' '}
+          Predmet <strong className="text-ink">{sel.broj_predmeta || `#${predmetId}`}</strong>
+          {sel.customer_name && <> · komitent <strong className="text-ink">{sel.customer_name}</strong></>} · prikazano{' '}
           <strong className="text-ink tnums">{total === 0 ? '0–0' : `${from}–${to}`}</strong> od <strong className="text-ink tnums">{total}</strong>
         </span>
         <span className="flex flex-wrap gap-1">

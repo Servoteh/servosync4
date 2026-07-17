@@ -8,12 +8,15 @@ import { PERMISSIONS } from '@/lib/permissions';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
 import { useMaintMe } from '@/api/odrzavanje';
+import type { MachineListFilter } from './_components/common';
 import { Tabs, type TabItem } from './_components/tabs';
 import { PregledTab } from './_components/pregled-tab';
+import { BoardTab } from './_components/board-tab';
 import { NaloziTab } from './_components/nalozi-tab';
 import { KvaroviTab } from './_components/kvarovi-tab';
 import { MasineTab } from './_components/masine-tab';
 import { PreventivaTab } from './_components/preventiva-tab';
+import { KalendarTab } from './_components/kalendar-tab';
 import { VozilaTab } from './_components/vozila-tab';
 import { VozaciTab } from './_components/vozaci-tab';
 import { SredstvaTab } from './_components/sredstva-tab';
@@ -22,12 +25,13 @@ import { DokumentaTab } from './_components/dokumenta-tab';
 import { IzvestajiTab } from './_components/izvestaji-tab';
 import { PodesavanjaTab } from './_components/podesavanja-tab';
 import { NotifikacijeTab } from './_components/notifikacije-tab';
-import { MasinaCardDialog } from './_components/masina-card-dialog';
 
-type TabKey =
-  | 'pregled' | 'nalozi' | 'kvarovi' | 'masine' | 'preventiva'
-  | 'vozila' | 'vozaci' | 'it' | 'objekti' | 'zalihe'
-  | 'dokumenta' | 'izvestaji' | 'podesavanja' | 'notifikacije';
+const TAB_KEYS = [
+  'pregled', 'board', 'nalozi', 'kvarovi', 'masine', 'preventiva', 'kalendar',
+  'vozila', 'vozaci', 'it', 'objekti', 'zalihe',
+  'dokumenta', 'izvestaji', 'podesavanja', 'notifikacije',
+] as const;
+type TabKey = (typeof TAB_KEYS)[number];
 
 /**
  * Održavanje (CMMS) — 3.0 TALAS F (MODULE_SPEC_odrzavanje_30.md §4).
@@ -39,18 +43,33 @@ export default function OdrzavanjePage() {
   const { user, isLoading, can } = useAuth();
   const router = useRouter();
   const [tab, setTab] = useState<TabKey>('pregled');
-  const [deepMachine, setDeepMachine] = useState<string | null>(null);
+  const [machineFilter, setMachineFilter] = useState<MachineListFilter>({});
   const meQ = useMaintMe();
   const me = meQ.data?.data;
+
+  const openMachine = (code: string) => router.push(`/odrzavanje/masine?code=${encodeURIComponent(code)}`);
+  /** Dashboard/board klik → prebaci tab (uz opcioni preset filtera operativne liste). */
+  const gotoTab = (key: TabKey, filter?: MachineListFilter) => {
+    setMachineFilter(filter ?? {});
+    setTab(key);
+  };
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
   }, [user, isLoading, router]);
 
+  // Legacy deep-link `/odrzavanje?machine=<code>` → nova ruta kartona (presuda §8.3, QR paritet).
+  // `?tab=<key>` (H23 — cutover deep-link mapa): 1.0 router prevodi sekcijske rute
+  // (/maintenance/work-orders, /preventive, /assets/vehicles…) u /odrzavanje?tab=<key>,
+  // pa sekcijski bookmark/link sleće na tačan tab (ne uvek na Pregled).
   useEffect(() => {
-    const code = new URLSearchParams(window.location.search).get('machine');
-    if (code) setDeepMachine(code);
-  }, []);
+    if (typeof window === 'undefined') return;
+    const sp = new URLSearchParams(window.location.search);
+    const code = sp.get('machine');
+    if (code) { router.replace(`/odrzavanje/masine?code=${encodeURIComponent(code)}`); return; }
+    const t = sp.get('tab');
+    if (t && (TAB_KEYS as readonly string[]).includes(t)) setTab(t as TabKey);
+  }, [router]);
 
   if (isLoading || !user) {
     return <main className="grid flex-1 place-items-center text-sm text-ink-secondary">Učitavanje…</main>;
@@ -62,10 +81,12 @@ export default function OdrzavanjePage() {
 
   const tabs: TabItem<TabKey>[] = [
     { key: 'pregled', label: 'Pregled' },
+    { key: 'board', label: 'Tabla' },
     { key: 'nalozi', label: 'Radni nalozi' },
     { key: 'kvarovi', label: 'Kvarovi' },
     { key: 'masine', label: 'Mašine' },
     { key: 'preventiva', label: 'Preventiva' },
+    { key: 'kalendar', label: 'Kalendar' },
     { key: 'vozila', label: 'Vozila' },
     { key: 'vozaci', label: 'Vozači' },
     { key: 'it', label: 'IT oprema' },
@@ -90,13 +111,15 @@ export default function OdrzavanjePage() {
           </div>
         )}
 
-        <Tabs tabs={tabs} value={tab} onChange={setTab} ariaLabel="Održavanje" />
+        <Tabs tabs={tabs} value={tab} onChange={(k) => { setMachineFilter({}); setTab(k); }} ariaLabel="Održavanje" />
 
-        {tab === 'pregled' && <PregledTab onOpenMachine={setDeepMachine} />}
+        {tab === 'pregled' && <PregledTab onOpenMachine={openMachine} onNavigate={gotoTab} me={me} canReport={canReport} />}
+        {tab === 'board' && <BoardTab onOpenMachine={openMachine} />}
         {tab === 'nalozi' && <NaloziTab me={me} />}
         {tab === 'kvarovi' && <KvaroviTab me={me} canReport={canReport} />}
-        {tab === 'masine' && <MasineTab me={me} />}
-        {tab === 'preventiva' && <PreventivaTab me={me} />}
+        {tab === 'masine' && <MasineTab me={me} initFilter={machineFilter} />}
+        {tab === 'preventiva' && <PreventivaTab me={me} onNavigate={gotoTab} />}
+        {tab === 'kalendar' && <KalendarTab onNavigate={gotoTab} />}
         {tab === 'vozila' && <VozilaTab me={me} />}
         {tab === 'vozaci' && <VozaciTab me={me} />}
         {tab === 'it' && <SredstvaTab kind="it" me={me} />}
@@ -104,12 +127,9 @@ export default function OdrzavanjePage() {
         {tab === 'zalihe' && <ZaliheTab me={me} />}
         {tab === 'dokumenta' && <DokumentaTab me={me} />}
         {tab === 'izvestaji' && <IzvestajiTab />}
-        {tab === 'podesavanja' && showAdmin && <PodesavanjaTab />}
-        {tab === 'notifikacije' && showNotifs && <NotifikacijeTab />}
+        {tab === 'podesavanja' && showAdmin && <PodesavanjaTab me={me} />}
+        {tab === 'notifikacije' && showNotifs && <NotifikacijeTab me={me} />}
       </div>
-
-      {/* Deep-link karton mašine (QR / klik iz Pregleda) — nezavisno od taba. */}
-      <MasinaCardDialog code={deepMachine} me={me} onClose={() => setDeepMachine(null)} />
     </AppShell>
   );
 }

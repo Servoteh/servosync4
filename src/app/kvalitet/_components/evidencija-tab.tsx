@@ -10,8 +10,9 @@ import { Pager } from '@/components/ui-kit/pager';
 import { Button } from '@/components/ui-kit/button';
 import { Can } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
-import { formatDate, formatNumber } from '@/lib/format';
+import { formatDate, formatDecimal, formatNumber } from '@/lib/format';
 import {
+  NONCONFORMITY_TYPE,
   useNonconformityReports,
   type NonconformityReport,
   type NonconformityType,
@@ -23,7 +24,9 @@ import { NewReportDialog } from './report-dialog';
 const filterInput =
   'rounded-control border border-line bg-surface px-2.5 py-1.5 text-sm text-ink';
 
-const columns: Column<NonconformityReport>[] = [
+/** Kolone liste; „Materijal (kg)" se dodaje samo za škart (auto vrednost). */
+function buildColumns(type: NonconformityType): Column<NonconformityReport>[] {
+  const cols: Column<NonconformityReport>[] = [
   {
     key: 'reportNumber',
     header: 'Br. izveštaja',
@@ -62,6 +65,20 @@ const columns: Column<NonconformityReport>[] = [
     numeric: true,
     render: (r) => formatNumber(r.quantity),
   },
+  // „Materijal (kg)" — auto vrednost, ima smisla samo za škart.
+  ...(type === NONCONFORMITY_TYPE.SCRAP
+    ? ([
+        {
+          key: 'materialKg',
+          header: 'Materijal (kg)',
+          align: 'right',
+          numeric: true,
+          render: (r) => (
+            <span className="tnums text-ink-secondary">{formatDecimal(r.materialKg)}</span>
+          ),
+        },
+      ] as Column<NonconformityReport>[])
+    : []),
   {
     key: 'workUnit',
     header: 'Radna jedinica',
@@ -77,7 +94,9 @@ const columns: Column<NonconformityReport>[] = [
     header: 'Ističe',
     render: (r) => <span className="text-ink-secondary">{r.raisedBy?.fullName || '—'}</span>,
   },
-];
+  ];
+  return cols;
+}
 
 /** Zajednička evidencija — `type` (1 dorada / 2 škart) određuje tab i filter. */
 export function EvidencijaTab({ type }: { type: NonconformityType }) {
@@ -102,6 +121,7 @@ export function EvidencijaTab({ type }: { type: NonconformityType }) {
   const rows = list.data?.data ?? [];
   const meta = list.data?.meta.pagination;
   const hasFilter = !!(q || status || from || to);
+  const columns = buildColumns(type);
 
   return (
     <div className="space-y-4">

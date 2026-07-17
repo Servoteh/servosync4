@@ -12,13 +12,16 @@ import {
   useLocationsSummary,
   useMovements,
   usePlacements,
+  useSyncHealth,
   useSyncStatus,
+  type SyncHealthSummary,
   type SyncStatus,
 } from '@/api/lokacije';
 import { buildLocIndex, movementLabel, userDisplay } from './common';
 import { MovementDialog, type MovementPreset } from './movement-dialog';
 import { LocationFormDialog } from './location-form-dialog';
 import { ScanOverlay } from './scan-overlay';
+import { PendingQueueBanner } from './pending-queue-banner';
 
 // ------------------------------------------------------------------ health banneri (paritet 1.0)
 
@@ -79,6 +82,26 @@ function syncWorkerAlerts(health: unknown): { down: string[]; dead: number } {
   return { down, dead };
 }
 
+/**
+ * Labele kategorija keša za NE-admin sažetak (`sync/health.cacheStale`) — verbatim
+ * 1.0 BRIDGE_LABELS (index.js:265-271). Redosled kao 1.0 (RN → linije → TP →
+ * predmeti → crteži). Ne-admin nema tačnu starost (nije u health contract-u), pa
+ * prikazuje samo koja kategorija je zastarela — poruka baner-a je ista.
+ */
+const CACHE_STALE_LABEL: [keyof SyncHealthSummary['cacheStale'], string][] = [
+  ['rn', 'Radni nalozi'],
+  ['linije', 'Linije RN'],
+  ['tp', 'Tehnološki postupci'],
+  ['predmeti', 'Predmeti'],
+  ['crtezi', 'Crteži (PDF)'],
+];
+
+/** Zastareo keš → linije baner-a iz per-kategorija boolean sažetka (ne-admin). */
+function cacheStaleLines(health: SyncHealthSummary | undefined): string[] {
+  if (!health?.cacheStale) return [];
+  return CACHE_STALE_LABEL.filter(([k]) => health.cacheStale[k] === true).map(([, label]) => `${label} — poslednji sync zastareo`);
+}
+
 function HealthBanner({ title, lines }: { title: string; lines: string[] }) {
   return (
     <div className="flex gap-2.5 rounded-panel border border-status-warn/40 bg-status-warn-bg px-4 py-2.5 text-sm text-ink" role="status" aria-live="polite">
@@ -103,9 +126,12 @@ export function PocetnaTab({ onGoStavke, onGoLabels }: { onGoStavke: (q: string)
   const locFull = useAllLocations('all');
   const locIndex = useMemo(() => buildLocIndex(locFull.data ?? []), [locFull.data]);
 
-  // Health banneri traže sync/status (LOKACIJE_ADMIN ruta) — ne fetch-uj bez prava.
+  // Health banneri: admin dobija PUN detalj (sync/status, sa starošću); ne-admin
+  // dobija read-only sažetak (sync/health) da magacioner/cnc VIDI zastareo keš i
+  // pali worker (L-06/L-07 — ranije gejtovano samo za admina).
   const isAdmin = can(PERMISSIONS.LOKACIJE_ADMIN);
   const sync = useSyncStatus(isAdmin);
+  const health = useSyncHealth(!isAdmin);
 
   const [move, setMove] = useState<MovementPreset | null>(null);
   const [scan, setScan] = useState(false);
@@ -126,12 +152,18 @@ export function PocetnaTab({ onGoStavke, onGoLabels }: { onGoStavke: (q: string)
     (locTotal ?? -1) === 0 && (placementTotal ?? -1) === 0 && !locs.isLoading && !placements.isLoading;
   const showStats = !firstRun;
 
-  const bridgeLines = bridgeStale(sync.data?.data.bridge);
+  // Admin → detaljne linije sa starošću (sync/status); ne-admin → sažetak (sync/health).
+  const hs = health.data?.data;
+  const bridgeLines = isAdmin ? bridgeStale(sync.data?.data.bridge) : cacheStaleLines(hs);
   const worker = syncWorkerAlerts(sync.data?.data.health);
-  const workerLines = [
-    ...worker.down,
-    ...(worker.dead > 0 ? [`DEAD_LETTER: ${worker.dead} sync događaja nije stiglo do MSSQL-a posle 10 pokušaja.`] : []),
-  ];
+  const workerLines = isAdmin
+    ? [
+        ...worker.down,
+        ...(worker.dead > 0 ? [`DEAD_LETTER: ${worker.dead} sync događaja nije stiglo do MSSQL-a posle 10 pokušaja.`] : []),
+      ]
+    : hs && hs.workerHealthy === false
+      ? ['Premeštanja se beleže u Supabase, ali NE idu MSSQL strani dok worker ne bude restartovan.']
+      : [];
 
   const kpis = [
     { label: 'Aktivne lokacije', value: locTotal, sub: 'definisanih mesta' },
@@ -142,6 +174,9 @@ export function PocetnaTab({ onGoStavke, onGoLabels }: { onGoStavke: (q: string)
 
   return (
     <div className="space-y-5">
+      {/* Offline queue — neposlata premeštanja (localStorage) */}
+      <PendingQueueBanner />
+
       {/* Brze akcije */}
       <div className="flex flex-wrap gap-2">
         <Can permission={PERMISSIONS.LOKACIJE_MOVE}>

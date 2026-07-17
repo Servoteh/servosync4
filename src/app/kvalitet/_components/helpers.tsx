@@ -57,6 +57,8 @@ export interface ReportFormState {
   materialCostNote: string;
   coopCostNote: string;
   spentHoursText: string;
+  /** Utrošeni materijal (kg) — ručna korekcija auto vrednosti; string sa zarezom u UI. */
+  materialKg: string;
   note: string;
   preventiveMeasures: string;
   extra: string;
@@ -79,6 +81,7 @@ export function emptyForm(): ReportFormState {
     materialCostNote: '',
     coopCostNote: '',
     spentHoursText: '',
+    materialKg: '',
     note: '',
     preventiveMeasures: '',
     extra: '',
@@ -102,6 +105,7 @@ export function formFromReport(r: NonconformityReport): ReportFormState {
     materialCostNote: r.materialCostNote ?? '',
     coopCostNote: r.coopCostNote ?? '',
     spentHoursText: r.spentHoursText ?? '',
+    materialKg: toDecimalField(r.materialKg),
     note: r.note ?? '',
     preventiveMeasures: r.preventiveMeasures ?? '',
     extra: r.extra ?? '',
@@ -113,6 +117,26 @@ export function formFromReport(r: NonconformityReport): ReportFormState {
 function nn(v: string): string | null {
   const t = v.trim();
   return t ? t : null;
+}
+
+/**
+ * Decimal-as-string / broj iz backenda → vrednost za unos: zarez kao decimalni,
+ * bez grupisanja i repova nula („8.640000" → „8,64", 14 → „14"). Prazno → ''.
+ */
+export function toDecimalField(v: string | number | null | undefined): string {
+  if (v === null || v === undefined || v === '') return '';
+  const n = Number(String(v).replace(',', '.'));
+  if (!Number.isFinite(n)) return String(v);
+  return String(n).replace('.', ',');
+}
+
+/**
+ * Unos (zarez ili tačka) → Decimal-as-string za backend („8,64" → „8.64").
+ * Prazno → null. Nenumerički unos se šalje kako jeste (backend validira → poruka).
+ */
+function toDecimalInput(v: string): string | null {
+  const t = v.trim().replace(/\s+/g, '').replace(',', '.');
+  return t === '' ? null : t;
 }
 
 /**
@@ -138,6 +162,7 @@ export function formToInput(
     materialCostNote: nn(form.materialCostNote),
     coopCostNote: nn(form.coopCostNote),
     spentHoursText: nn(form.spentHoursText),
+    materialKg: toDecimalInput(form.materialKg),
     note: nn(form.note),
     preventiveMeasures: nn(form.preventiveMeasures),
     extra: type === NONCONFORMITY_TYPE.REWORK ? nn(form.extra) : null,
@@ -145,6 +170,22 @@ export function formToInput(
   };
   if (includeType) input.type = type;
   return input;
+}
+
+/**
+ * Meko usmeravanje unosa po ulozi (nije bezbednosna granica — backend presuđuje).
+ *   'control' → kontrolor: unosi Kontrola (žuto), Tehnologija (zeleno) zaključana.
+ *   'tech'    → tehnolog: unosi Tehnologija (zeleno), Kontrola (žuto) zaključana.
+ *   'all'     → menadžment/admin/šef ILI nepoznata uloga: sve editabilno (ne blokiraj).
+ * Bela (automatska) polja nisu deo podele — ostaju editabilna svima koji pišu.
+ */
+export type FieldMode = 'control' | 'tech' | 'all';
+
+export function roleFieldMode(role: string | null | undefined): FieldMode {
+  const r = (role ?? '').trim().toLowerCase();
+  if (r === 'kontrolor') return 'control';
+  if (r === 'tehnolog') return 'tech';
+  return 'all';
 }
 
 /** Spisak izvršilaca (imena radnika + slobodan tekst) za kolonu tabele / detalj. */

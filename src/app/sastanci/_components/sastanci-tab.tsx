@@ -30,7 +30,8 @@ export function SastanciTab() {
   const [q, setQ] = useState('');
   const [tip, setTip] = useState('');
   const [status, setStatus] = useState('');
-  const [createOpen, setCreateOpen] = useState(false);
+  // null = zatvoren; tip/prenos pre-set za „Sedmični + prenos" (1.0 sstWeeklyCarry).
+  const [createOpts, setCreateOpts] = useState<{ tip?: string; prenos?: boolean } | null>(null);
   const [weeklyOpen, setWeeklyOpen] = useState(false);
 
   // Za kalendar/nedelju učitavamo širi skup (bez paginacije filtera).
@@ -76,7 +77,16 @@ export function SastanciTab() {
             <Button variant="secondary" onClick={() => setWeeklyOpen(true)}>Sedmični</Button>
           </Can>
           <Can permission={PERMISSIONS.SASTANCI_EDIT}>
-            <Button onClick={() => setCreateOpen(true)}>+ Novi sastanak</Button>
+            <Button
+              variant="secondary"
+              title="Ručno kreiraj sedmični sastanak sa prenosom otvorenih akcija i učesnika"
+              onClick={() => setCreateOpts({ tip: 'sedmicni', prenos: true })}
+            >
+              Sedmični + prenos
+            </Button>
+          </Can>
+          <Can permission={PERMISSIONS.SASTANCI_EDIT}>
+            <Button onClick={() => setCreateOpts({})}>+ Novi sastanak</Button>
           </Can>
         </div>
       </div>
@@ -94,7 +104,14 @@ export function SastanciTab() {
       {view === 'kalendar' && <CalendarView sastanci={rows} onOpen={open} />}
       {view === 'nedelja' && <WeekView sastanci={rows} onOpen={open} />}
 
-      {createOpen && <CreateSastanakModal onClose={() => setCreateOpen(false)} onCreated={(s) => open(s.id)} />}
+      {createOpts && (
+        <CreateSastanakModal
+          defaultTip={createOpts.tip ?? 'projektni'}
+          defaultPrenos={!!createOpts.prenos}
+          onClose={() => setCreateOpts(null)}
+          onCreated={(s) => open(s.id)}
+        />
+      )}
       {weeklyOpen && <WeeklyControlModal onClose={() => setWeeklyOpen(false)} />}
     </div>
   );

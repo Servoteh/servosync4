@@ -18,6 +18,17 @@ import {
 import { LocationSelect } from './location-select';
 import { normalizeLocMovementKeys } from './label-build';
 import { ScanOverlay } from './scan-overlay';
+import { enqueueMovement } from '@/lib/offlineQueue';
+import type { MovementVars } from '@/api/lokacije';
+
+/** Mrežni pad (fetch nije stigao do servera) → gurni u offline queue umesto tvrdog pada. */
+function isNetworkError(e: unknown): boolean {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return true;
+  const status = (e as { status?: number } | null)?.status;
+  if (typeof status === 'number') return false; // server je odgovorio → nije mrežni pad
+  const msg = String((e as { message?: string } | null)?.message ?? e ?? '').toLowerCase();
+  return /failed to fetch|network|load failed|timeout|ecconn|offline/.test(msg);
+}
 
 const INPUT =
   'w-full rounded-control border border-line bg-surface-2 px-2.5 py-1.5 text-sm text-ink outline-none focus:border-accent';
@@ -69,6 +80,7 @@ export function MovementDialog({
   const [returnToUnplaced, setReturnToUnplaced] = useState(false);
   const [showMachines, setShowMachines] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [queued, setQueued] = useState<string | null>(null);
   const [scan, setScan] = useState<null | 'item' | 'from' | 'to'>(null);
 
   const itemRefTable = preset?.itemRefTable ?? 'bigtehn_rn';
@@ -109,25 +121,59 @@ export function MovementDialog({
     // Neraspoređeno → CORRECTION bez odredišta, sa polaznom (modals.js:1866/1955).
     const effectiveType: LocMovementType = returnToUnplaced ? 'CORRECTION' : movementType;
 
+    // Isti clientEventUuid nosi i online POST i offline queue → idempotentan retry
+    // (DB fn vraća {idempotent:true} bez dupliranja pokreta).
+    const payload: MovementVars = {
+      clientEventUuid,
+      itemRefTable,
+      itemRefId: norm.itemRefId,
+      movementType: effectiveType,
+      orderNo: norm.orderNo || undefined,
+      drawingNo: drawingNo.trim() || undefined,
+      quantity: qty,
+      toLocationId: needTo ? toLocationId ?? undefined : undefined,
+      fromLocationId: needFrom ? fromLocationId ?? undefined : undefined,
+      movementReason: reason.trim() || undefined,
+      note: note.trim() || undefined,
+    };
+
+    // Offline: bez pokušaja mreže — direktno u queue (paritet 1.0 !navigator.onLine).
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      queueAndReport(payload);
+      return;
+    }
+
     try {
-      // Retry iste akcije nosi isti clientEventUuid → DB fn vraća {idempotent:true}
-      // bez dupliranja pokreta (native idempotencija); tok je isti — zatvori formu.
-      await create.mutateAsync({
-        clientEventUuid,
-        itemRefTable,
-        itemRefId: norm.itemRefId,
-        movementType: effectiveType,
-        orderNo: norm.orderNo || undefined,
-        drawingNo: drawingNo.trim() || undefined,
-        quantity: qty,
-        toLocationId: needTo ? toLocationId ?? undefined : undefined,
-        fromLocationId: needFrom ? fromLocationId ?? undefined : undefined,
-        movementReason: reason.trim() || undefined,
-        note: note.trim() || undefined,
-      });
+      await create.mutateAsync(payload);
       onClose();
     } catch (e) {
+      // Mreža pala u toku RPC-a → queue (payload nosi isti UUID, idempotentno).
+      if (isNetworkError(e)) {
+        queueAndReport(payload);
+        return;
+      }
       setError(e instanceof Error ? e.message : 'Premeštanje nije uspelo.');
+    }
+  }
+
+  function queueAndReport(payload: MovementVars) {
+    try {
+      enqueueMovement(payload);
+      setError(null);
+      setQueued(
+        'Zapis je sačuvan lokalno i čeka slanje kad se mreža vrati (šalje se automatski). ' +
+          'Otvori „Neposlato" na Sync tabu da proveriš / ručno pošalješ.',
+      );
+    } catch (e) {
+      // Upis u lokalni queue NIJE uspeo (quota / privatni režim / storage isključen) —
+      // zapis NIJE sačuvan. Prikaži STVARNU grešku (bez lažnog zelenog uspeha) da
+      // korisnik pokuša ponovo ili sačeka mrežu; queued baner se ne postavlja.
+      setQueued(null);
+      const detail = e instanceof Error ? e.message : String(e);
+      setError(
+        'Premeštanje NIJE sačuvano — lokalno skladište je puno ili nedostupno. ' +
+          'Poveži se na mrežu i pokušaj ponovo, ili oslobodi prostor. (' + detail + ')',
+      );
     }
   }
 
@@ -139,8 +185,10 @@ export function MovementDialog({
         title="Brzo premeštanje"
         footer={
           <div className="flex justify-end gap-2">
-            <Button variant="secondary" onClick={onClose}>Otkaži</Button>
-            <Button loading={create.isPending} onClick={() => void submit()}>Sačuvaj pokret</Button>
+            <Button variant="secondary" onClick={onClose}>{queued ? 'Zatvori' : 'Otkaži'}</Button>
+            {!queued && (
+              <Button loading={create.isPending} onClick={() => void submit()}>Sačuvaj pokret</Button>
+            )}
           </div>
         }
       >
@@ -274,6 +322,11 @@ export function MovementDialog({
             <input className={INPUT} value={note} onChange={(e) => setNote(e.target.value)} placeholder="opciono" />
           </FormField>
 
+          {queued && (
+            <div className="rounded-control border border-status-info/40 bg-status-info-bg px-3 py-2 text-sm text-status-info">
+              {queued}
+            </div>
+          )}
           {error && <p className="text-sm text-status-danger">{error}</p>}
         </div>
       </Dialog>

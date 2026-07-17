@@ -12,6 +12,11 @@ import { SearchBox } from '@/components/ui-kit/search-box';
 import { Pager } from '@/components/ui-kit/pager';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { formatDate, formatNumber } from '@/lib/format';
+// „Kartica kucanja" iz „Realizacije" — klik na red RN širi istu karticu (operacije,
+// sume, „Otvori operaciju", „Obriši kucanje", PDF crteža). „Završeni nalozi" nemaju
+// pojedinačni TP red, pa se prosleđuje samo trojka + workOrderId (id RN-a); QC
+// dokumenti se tamo vežu po RN-u (identNumber).
+import { TechProcessCardDetail } from '../tech-processes/_components/tech-process-card-detail';
 
 /**
  * „Završeni radni nalozi" (QBigTehn pregled završenih) — RN-ovi kod kojih su sve
@@ -24,6 +29,8 @@ export default function CompletedOrdersPage() {
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [page, setPage] = useState(1);
+  // Prošireni red (RN čiji je id jednak `expanded`) prikazuje „Karticu kucanja".
+  const [expanded, setExpanded] = useState<number | null>(null);
 
   const list = useWorkOrders({
     page,
@@ -169,6 +176,16 @@ export default function CompletedOrdersPage() {
           rows={rows}
           rowKey={(r) => r.id}
           loading={list.isLoading}
+          onRowActivate={(r) => setExpanded((e) => (e === r.id ? null : r.id))}
+          expandedKey={expanded}
+          renderExpanded={(r) => (
+            <TechProcessCardDetail
+              projectId={r.projectId}
+              identNumber={r.identNumber}
+              variant={r.variant}
+              workOrderId={r.id}
+            />
+          )}
           empty={
             <EmptyState
               title="Nema završenih naloga"

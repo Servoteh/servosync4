@@ -205,6 +205,14 @@ export interface PredmetTpRow {
   dimenzija_materijala?: string;
   has_pdf?: boolean;
   status?: string;
+  // Puna polja RPC-a `loc_tps_for_predmet` — nisu u ekranu, ali ulaze u
+  // Štampa/PDF/CSV izvoz punog spiska (paritet 1.0 predmetTab buildCsvText).
+  location_path?: string;
+  placement_status?: string;
+  status_rn?: boolean;
+  revizija?: string;
+  rok_izrade?: string;
+  tezina_obr?: number | string;
   [key: string]: unknown;
 }
 
@@ -289,7 +297,7 @@ function qs(params: Record<string, string | number | boolean | undefined>): stri
   return s ? `?${s}` : '';
 }
 
-const KEYS = {
+export const KEYS = {
   root: ['lokacije'] as const,
   locations: ['lokacije', 'locations'] as const,
   placements: ['lokacije', 'placements'] as const,
@@ -587,6 +595,31 @@ export function useLocationsSummary(enabled = true) {
   });
 }
 
+/**
+ * ⭐ redosled predmeta iz Praćenja (Podešavanja predmeta) — paritet 1.0
+ * `ensurePrioritetHydrated` / `getPrioritetIds`. Vraća skup `predmet_item_id`
+ * koje treba istaći/sortirati prve u picker-u „Pregled predmeta". `retry:false`
+ * + tih fallback na `[]` (403 za role bez `pracenje.read`, mrežni pad) da picker
+ * ostane upotrebljiv — prioritet je kozmetički (samo redosled).
+ */
+export function usePredmetPrioritetIds(enabled = true) {
+  return useQuery({
+    queryKey: [...KEYS.root, 'predmet-prioritet'],
+    enabled,
+    retry: false,
+    staleTime: 60_000,
+    queryFn: async (): Promise<number[]> => {
+      try {
+        const r = await apiFetch<{ data: { ids?: number[] } }>('/v1/pracenje/plan-prioritet');
+        const ids = r.data?.ids;
+        return Array.isArray(ids) ? ids.map(Number).filter((n) => Number.isFinite(n) && n > 0) : [];
+      } catch {
+        return [];
+      }
+    },
+  });
+}
+
 // ------------------------------------------------------------------ fetch-all (imperativni izvoz)
 // Paritet 1.0 `fetchAllLocReportPartsByLocations` / `fetchAllMovements` /
 // `fetchAllPlacements` (services/lokacije.js): povuci CEO filtrirani skup kroz
@@ -687,6 +720,43 @@ export async function fetchAllMovements(
   return { rows, total, truncated };
 }
 
+/**
+ * SVE redove „Pregled predmeta" (loc_tps_for_predmet) za jedan predmet koji
+ * odgovaraju `params` — paritet 1.0 `fetchAllFiltered` (predmetTab.js:919): povuci
+ * ceo filtrirani skup kroz petlju po stranama za Štampa/PDF/CSV izvoz. BE klampuje
+ * pageSize (koristi 1000 kao 1.0 PAGE). NIJE useQuery — zove se na klik izvoza.
+ */
+export async function fetchAllPredmetTps(
+  itemId: string,
+  params: Omit<PredmetTpsParams, 'page' | 'pageSize' | 'workOrderId'>,
+  opts: FetchAllOpts = {},
+): Promise<FetchAllResult<PredmetTpRow>> {
+  const size = Math.max(1, Math.min(Number(opts.pageSize) || 1000, 1000));
+  const rows: PredmetTpRow[] = [];
+  let total: number | null = null;
+  let truncated = false;
+
+  for (let page = 1; ; page++) {
+    if (opts.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    const res = await apiFetch<{ data: PredmetTpsResult }>(
+      `/v1/locations/predmet/${itemId}/tps${qs({ ...params, page, pageSize: size })}`,
+    );
+    const chunk = res.data?.rows ?? [];
+    if (typeof res.data?.total === 'number') total = res.data.total;
+    if (chunk.length === 0) break;
+    rows.push(...chunk);
+    opts.onProgress?.({ loaded: rows.length, total });
+    if (chunk.length < size) break;
+    if (total != null && rows.length >= total) break;
+    if (rows.length >= FETCH_ALL_HARD_CAP) {
+      truncated = true;
+      break;
+    }
+  }
+
+  return { rows, total, truncated };
+}
+
 /** SVE placements (Stavke) koji odgovaraju `params` (za CSV izvoz Stavki). */
 export async function fetchAllPlacements(
   params: PlacementsParams,
@@ -720,10 +790,89 @@ export async function fetchAllPlacements(
 
 // ---- Sync (admin) ----
 
+/**
+ * BigTehn ingest worker sample (1 red iz `loc_bigtehn_ingest_state.last_run_summary.samples`) —
+ * paritet 1.0 renderIngestSamplesHtml (index.js:2341). Sva polja opciona (worker ih puni po akciji).
+ */
+export interface IngestSample {
+  signal_id?: number | string | null;
+  ident?: string | null;
+  predmet?: string | null;
+  tp?: string | null;
+  op?: string | null;
+  machine?: string | null;
+  from_loc?: string | null;
+  from_type?: string | null;
+  transfer_qty?: number | string | null;
+  rn_total?: number | string | null;
+  action?: string | null;
+  armed_executed?: boolean;
+  armed_error?: string | null;
+  parser_fallback?: boolean;
+  started_at?: string | null;
+}
+
+/** by_action histogram (1.0 renderByActionPillsHtml) — brojači po klasi prijave. */
+export type IngestByAction = Record<string, number>;
+
+/** Sažetak poslednjeg run-a ingest worker-a (`state.last_run_summary`). */
+export interface IngestSummary {
+  by_action?: IngestByAction;
+  samples?: IngestSample[];
+  processed_total?: number | string | null;
+}
+
+/**
+ * Stanje BigTehn ingest worker-a — 2.0 `sync/status` vraća ovo pod `data.ingest`
+ * (mirror 1.0 `loc_bigtehn_ingest_state`). Polja opciona; `armed`/`is_armed` oba
+ * priznata (postojeći FE gard). `ok:false` + `error` = DB stanje nedostupno.
+ */
+export interface IngestState {
+  ok?: boolean;
+  error?: string;
+  armed?: boolean;
+  is_armed?: boolean;
+  last_run_at?: string | null;
+  watermark?: number | string | null;
+  last_run_summary?: IngestSummary;
+}
+
+/**
+ * Heartbeat ingest worker-a — 2.0 `sync/status` vraća pod `data.heartbeat`
+ * (paritet 1.0 `statusRes.heartbeat`, index.js:2231). `is_alive` = pulsirao < 10 min.
+ * NE meša se sa `data.health` (worker-health summary, vidi `SyncHealth`).
+ */
+export interface IngestHeartbeat {
+  is_alive?: boolean;
+  age_seconds?: number | null;
+}
+
+/**
+ * Zdravlje sync worker-a (DEAD_LETTER + per-worker heartbeat) — 2.0 `sync/status`
+ * vraća pod `data.health` (paritet 1.0 `fetchLocSyncHealthSummary` /
+ * `loc_sync_health_summary`, index.js:1521). Hrani worker-health baner u
+ * pocetna-tab (`syncWorkerAlerts`). RAZLIČITO od ingest heartbeat-a (`data.heartbeat`).
+ */
+export interface SyncHealth {
+  dead_letter_count?: number;
+  workers?: { worker_id?: string; last_seen?: string | null; age_seconds?: number; is_alive?: boolean }[];
+}
+
+/** 1 red outbound queue-a (MSSQL write-back) — paritet 1.0 fetchSyncOutboundEvents. */
+export interface SyncOutboundRow {
+  status?: string | null;
+  source_record_id?: string | null;
+  created_at?: string | null;
+  last_error?: string | null;
+}
+
 export interface SyncStatus {
-  ingest: unknown;
-  health: unknown;
-  heartbeat: Record<string, unknown>[];
+  /** Stanje ingest worker-a (mirror `loc_bigtehn_ingest_state`). */
+  ingest: IngestState;
+  /** Zdravlje sync worker-a (DEAD_LETTER + per-worker heartbeat) — hrani worker-health baner. */
+  health: SyncHealth;
+  /** Ingest heartbeat (`is_alive`, `age_seconds`) — paritet 1.0 `statusRes.heartbeat`. */
+  heartbeat: IngestHeartbeat;
   bridge: { sync_job: string; last_finished: string | null; status: string | null }[];
 }
 
@@ -736,12 +885,48 @@ export function useSyncStatus(enabled = true) {
   });
 }
 
+/**
+ * Zdravlje sinhronizacije za SVE korisnike modula (ne samo admina) — nova BE ruta
+ * `GET /v1/locations/sync/health`. Za razliku od `sync/status` (LOKACIJE_ADMIN,
+ * pun detalj), ovo je read-only sažetak dostupan baseline read ulogama: koji
+ * BigTehn keš je zastareo (pragovi 1.0 index.js:255-292 — RN/linije/TP 6h,
+ * predmeti 36h, crteži 7d, izračunato server-side) + da li sync worker radi
+ * (heartbeat >10min / DEAD_LETTER, 1.0 index.js:214-246). Hrani banere L-06/L-07
+ * za magacionera/cnc koji ranije NISU videli upozorenje (gejtovano za admina).
+ *
+ * `retry:false` + tih fallback: dok BE ruta nije spojena vraća 404, pozivalac tada
+ * ne prikazuje bAner (zero-loss — admin i dalje vidi detaljni prikaz iz sync/status).
+ */
+export interface SyncHealthSummary {
+  /** Po kategoriji keša: da li je zastareo (server primenio 1.0 pragove). */
+  cacheStale: {
+    rn: boolean;
+    linije: boolean;
+    tp: boolean;
+    predmeti: boolean;
+    crtezi: boolean;
+  };
+  /** false = neki worker bez heartbeat-a >10min ILI ima DEAD_LETTER stavki. */
+  workerHealthy: boolean;
+}
+
+export function useSyncHealth(enabled = true) {
+  return useQuery({
+    queryKey: [...KEYS.sync, 'health'],
+    enabled,
+    retry: false,
+    refetchInterval: 60_000,
+    staleTime: 30_000,
+    queryFn: () => apiFetch<{ data: SyncHealthSummary }>('/v1/locations/sync/health'),
+  });
+}
+
 export function useSyncOutbound(limit = 80, enabled = true) {
   return useQuery({
     queryKey: [...KEYS.sync, 'outbound', limit],
     enabled,
     queryFn: () =>
-      apiFetch<{ data: Record<string, unknown>[] }>(
+      apiFetch<{ data: SyncOutboundRow[] }>(
         `/v1/locations/sync/outbound${qs({ limit })}`,
       ),
   });
@@ -775,14 +960,23 @@ export interface MovementVars {
   movedAt?: string;
 }
 
+/**
+ * Plain POST pokreta (bez React Query) — koristi ga i `useCreateMovement` hook i
+ * offline-queue flusher (lib/offlineQueue.ts), koji radi van React tree-a.
+ * Idempotencija ide preko `clientEventUuid` (partial UNIQUE indeks; retry istog
+ * UUID-a vraća {idempotent:true} bez dupliranja).
+ */
+export function postMovement(v: MovementVars): Promise<EnvelopeResult> {
+  return apiFetch<EnvelopeResult>('/v1/locations/movements', {
+    method: 'POST',
+    body: JSON.stringify(v),
+  });
+}
+
 export function useCreateMovement() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (v: MovementVars) =>
-      apiFetch<EnvelopeResult>('/v1/locations/movements', {
-        method: 'POST',
-        body: JSON.stringify(v),
-      }),
+    mutationFn: (v: MovementVars) => postMovement(v),
     onSuccess: () => void qc.invalidateQueries({ queryKey: KEYS.root }),
   });
 }

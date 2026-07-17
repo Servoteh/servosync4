@@ -14,9 +14,12 @@ import type { CulpritWorker } from '@/api/kvalitet';
 export function WorkerMultiSelect({
   value,
   onChange,
+  disabled = false,
 }: {
   value: CulpritWorker[];
   onChange: (next: CulpritWorker[]) => void;
+  /** Meko usmeravanje po ulozi: zaključan prikaz (čipovi bez uklanjanja, bez pretrage). */
+  disabled?: boolean;
 }) {
   const [q, setQ] = useState('');
   const [open, setOpen] = useState(false);
@@ -44,18 +47,23 @@ export function WorkerMultiSelect({
               className="inline-flex items-center gap-1 rounded-full bg-accent-subtle px-2 py-0.5 text-xs text-ink"
             >
               {w.fullName ?? `Radnik #${w.workerId}`}
-              <button
-                type="button"
-                onClick={() => remove(w.workerId)}
-                className="rounded-full p-0.5 text-ink-secondary hover:text-status-danger"
-                aria-label="Ukloni izvršioca"
-              >
-                <X className="h-3 w-3" aria-hidden />
-              </button>
+              {!disabled && (
+                <button
+                  type="button"
+                  onClick={() => remove(w.workerId)}
+                  className="rounded-full p-0.5 text-ink-secondary hover:text-status-danger"
+                  aria-label="Ukloni izvršioca"
+                >
+                  <X className="h-3 w-3" aria-hidden />
+                </button>
+              )}
             </span>
           ))}
         </div>
       )}
+      {disabled ? (
+        value.length === 0 && <p className="text-sm text-ink-disabled">—</p>
+      ) : (
       <div className="relative">
         <input
           value={q}
@@ -98,6 +106,7 @@ export function WorkerMultiSelect({
           </div>
         )}
       </div>
+      )}
     </div>
   );
 }

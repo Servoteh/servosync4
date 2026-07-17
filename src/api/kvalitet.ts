@@ -71,6 +71,12 @@ export interface NonconformityReport {
   spentHoursText: string | null;
   /** Parsirano iz `spentHoursText` (best-effort) za izveštaje. */
   spentHours: number | null;
+  /**
+   * Utrošeni materijal u kilogramima — AUTO za škart (Decimal-as-string, kao
+   * `spentHours`; null za doradu ili dok masa nije poznata). Puni ga „Preračunaj"
+   * (recompute endpoint) iz mase crteža/RN × količina; ostaje ručno korigovljiv.
+   */
+  materialKg: string | null;
   note: string | null;
   preventiveMeasures: string | null;
   /** „Dodatno" — samo dorada (tip 1). */
@@ -107,6 +113,8 @@ export interface NonconformityReportInput {
   materialCostNote?: string | null;
   coopCostNote?: string | null;
   spentHoursText?: string | null;
+  /** Ručna korekcija utrošenog materijala (kg) — Decimal-as-string ili null. */
+  materialKg?: string | null;
   note?: string | null;
   preventiveMeasures?: string | null;
   extra?: string | null;
@@ -212,6 +220,40 @@ export function useDeleteNonconformityReport() {
     mutationFn: (id: number) =>
       apiFetch<{ data: { id: number; deleted: boolean } }>(`/v1/kvalitet/reports/${id}`, {
         method: 'DELETE',
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/**
+ * Meta „Preračunaj" odgovora — dijagnostika izračuna (izvor mase + jedinična masa
+ * i broj operacija čiji su sati sabrani). Prikazuje se diskretno uz auto vrednosti.
+ */
+export interface RecomputeMeta {
+  /** Broj operacija čiji su normirani sati ušli u `spentHours`. */
+  hoursOps: number;
+  /** Odakle je masa: crtež, radni nalog, ili null (masa nepoznata → materijal se ne računa). */
+  massSource: 'drawing' | 'workOrder' | null;
+  /** Jedinična masa (kg/kom) upotrebljena u računu — Decimal-as-string ili null. */
+  unitWeightKg: string | null;
+}
+
+export interface RecomputeResponse {
+  data: NonconformityReport;
+  meta: RecomputeMeta;
+}
+
+/**
+ * Preračun auto vrednosti (utrošeni radni sati + materijal u kg) iz proizvodnih
+ * podataka. SAMO za škart (tip 2) — za doradu backend vraća 400 (formule ne važe).
+ * Po uspehu invalidira ceo `kvalitet` namespace (report + liste se osvežavaju).
+ */
+export function useRecomputeNonconformityReport() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<RecomputeResponse>(`/v1/kvalitet/reports/${id}/recompute`, {
+        method: 'POST',
       }),
     onSuccess: invalidate,
   });

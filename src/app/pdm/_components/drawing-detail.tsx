@@ -54,7 +54,21 @@ export function DrawingDetail({ id }: { id: number }) {
           {formatNumber(d.componentCount)} komponenti · koristi se u{' '}
           {formatNumber(d.whereUsedCount)}
         </span>
-        <span className="ml-auto">
+        <span className="ml-auto flex items-center gap-2">
+          {/* Prečica: PDF sklopa (glavnog crteža) odmah u vrhu — isti onOpenPdf
+              kao donja sekcija „PDF crteža", samo kad postoji binarni sadržaj. */}
+          {d.pdf?.hasBinary && (
+            <button
+              type="button"
+              disabled={pdfOpening}
+              onClick={onOpenPdf}
+              title="Otvori PDF sklopa"
+              className="inline-flex items-center gap-1.5 rounded-control border border-line px-3 py-1 text-xs font-semibold text-ink-secondary disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <FileText className="h-3.5 w-3.5" aria-hidden />
+              {pdfOpening ? 'Otvaram…' : 'Otvori PDF'}
+            </button>
+          )}
           <AddToDraftButton
             target={{ drawingId: d.id, drawingNumber: d.drawingNumber, name: d.name }}
           />

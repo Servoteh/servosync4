@@ -17,7 +17,7 @@ export function PoCrtezuTab({
   onSkice,
   onReassign,
 }: {
-  onBulkReassign: (pairs: { workOrderId: string; lineId: string }[]) => void;
+  onBulkReassign: (rows: OpRow[]) => void;
   onTp: (o: OpRow) => void;
   onSkice: (o: OpRow) => void;
   onReassign: (o: OpRow) => void;
@@ -44,9 +44,13 @@ export function PoCrtezuTab({
     });
   }
 
-  const selectedPairs = rows
-    .filter((o) => selected.has(opKey(o)))
-    .map((o) => ({ workOrderId: o.work_order_id, lineId: o.line_id }));
+  const selectedRows = rows.filter((o) => selected.has(opKey(o)));
+
+  // Select-all nad TRENUTNO prikazanim redovima (paritet 1.0 header select-all).
+  const allSelected = rows.length > 0 && rows.every((o) => selected.has(opKey(o)));
+  function toggleAll() {
+    setSelected(() => (allSelected ? new Set() : new Set(rows.map(opKey))));
+  }
 
   return (
     <div className="space-y-3">
@@ -69,10 +73,10 @@ export function PoCrtezuTab({
             <Lock className="h-3 w-3" /> Samo za pregled
           </span>
         )}
-        {selectedPairs.length > 0 && (
+        {selectedRows.length > 0 && (
           <div className="ml-auto flex items-center gap-2">
-            <span className="text-sm text-ink">{selectedPairs.length} izabrano</span>
-            <Button onClick={() => onBulkReassign(selectedPairs)}>Premesti izabrane</Button>
+            <span className="text-sm text-ink">{selectedRows.length} izabrano</span>
+            <Button onClick={() => onBulkReassign(selectedRows)}>Premesti izabrane ({selectedRows.length})</Button>
             <Button variant="ghost" onClick={() => setSelected(new Set())}>Poništi</Button>
           </div>
         )}
@@ -95,6 +99,8 @@ export function PoCrtezuTab({
           selectable
           selected={selected}
           onToggleSelect={toggle}
+          allSelected={allSelected}
+          onToggleAll={toggleAll}
           onReassign={onReassign}
           onTp={onTp}
           onSkice={onSkice}

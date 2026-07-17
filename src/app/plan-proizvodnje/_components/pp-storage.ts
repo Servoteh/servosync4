@@ -11,7 +11,35 @@ export const LS = {
   rnFilter: (tab: string) => `plan-proizvodnje:filter-rn:${tab}`,
   reworkFilter: 'plan-proizvodnje:filter-rework:po-masini',
   crtezQuery: 'plan-proizvodnje:query:po-crtezu',
+  // GAP-PM-13/14 — sort Zauzetosti + „Samo proceduralne" toggle po tabu (paritet 1.0
+  // STORAGE_KEY_SORT/STORAGE_KEY_FILTER u zauzetostTab.js/pregledTab.js).
+  zauzetostSort: 'plan-proizvodnje:zauzetost:sort',
+  procFilter: (tab: string) => `plan-proizvodnje:${tab}:filter`, // 'all' | 'proc'
+  // GAP-PM-12 — skok iz Zauzetost/Pregled u „Po mašini" (LS handover, 1.0 jumpToPoMasini).
+  jumpMachine: 'plan-proizvodnje:jump-machine',
 } as const;
+
+/** Perzistiran sort Zauzetosti { key, dir }. */
+export interface SortState {
+  key: string;
+  dir: 'asc' | 'desc';
+}
+export function lsGetSort(fallback: SortState): SortState {
+  const raw = lsGet(LS.zauzetostSort);
+  if (!raw) return fallback;
+  try {
+    const p = JSON.parse(raw) as Partial<SortState>;
+    if (p && typeof p.key === 'string' && (p.dir === 'asc' || p.dir === 'desc')) {
+      return { key: p.key, dir: p.dir };
+    }
+  } catch {
+    /* ignore */
+  }
+  return fallback;
+}
+export function lsSetSort(s: SortState): void {
+  lsSet(LS.zauzetostSort, JSON.stringify(s));
+}
 
 export function lsGet(key: string): string | null {
   if (typeof window === 'undefined') return null;

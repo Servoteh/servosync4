@@ -183,6 +183,11 @@ export interface AkcijaRow {
   updated_at: string;
   effective_status: 'otvoren' | 'u_toku' | 'kasni' | 'zavrsen' | string;
   dana_do_roka: number | null;
+  /** Denormalizovan projekat (S-P0 ugovor, camelCase): za RN grupisanje bez extra fetch-a. */
+  projekatNaziv: string | null;
+  projekatCode: string | null;
+  /** BigTehn predmet projekta — ključ za ⭐ rang (usePredmetPrioritet). */
+  bigtehnItemId: string | null;
 }
 
 /** Red view-a `v_pm_teme_pregled` (snake_case + visual_tag). */
@@ -500,6 +505,40 @@ export function useAkcijeWeeklyDiff(params: { since?: string; projekatId?: strin
   });
 }
 
+/**
+ * „Od prošlog sastanka" za detalj/PDF — sidro = PRETHODNI ZAKLJUČANI sastanak
+ * (1.0 loadPrethodniZakljucanPre paritet). `data: null` = nema prethodnog →
+ * red se uopšte ne prikazuje (ni u headeru ni u PDF-u).
+ */
+export interface SastanakWeeklyDiff {
+  since: string;
+  novo: number;
+  zavrsenoOveNedelje: number;
+  kasni: number;
+  aktivnih: number;
+}
+
+export function useSastanakWeeklyDiff(id: string | null) {
+  return useQuery({
+    queryKey: id
+      ? [...KEYS.detail(id), 'weekly-diff']
+      : ['sastanci', 'detail', 'none', 'weekly-diff'],
+    enabled: !!id,
+    queryFn: () => apiFetch<{ data: SastanakWeeklyDiff | null }>(`${BASE}/${id}/weekly-diff`),
+  });
+}
+
+/**
+ * ⭐ Top prioritet predmeta (Podešavanja → Predmeti) — uređena lista bigtehn_item_id
+ * (1.0 pullPredmetPlanPrioritetIds paritet); index u listi = rang.
+ */
+export function usePredmetPrioritet() {
+  return useQuery({
+    queryKey: [...KEYS.all, 'predmet-prioritet'],
+    queryFn: () => apiFetch<{ data: string[] }>(`${BASE}/predmet-prioritet`),
+  });
+}
+
 export function useAkcijaIstorija(akcijaId: string | null) {
   return useQuery({
     queryKey: [...KEYS.akcije, 'istorija', akcijaId],
@@ -556,11 +595,22 @@ export function useArhive() {
   });
 }
 
+/** Query key full-detalja — exportovan da imperativni fetchQuery (arhiva štampa
+ *  iz živih podataka kad je 2.0 lock snapshot okrnjen) deli keš sa useSastanakFull. */
+export function sastanakFullQueryKey(id: string) {
+  return [...KEYS.detail(id), 'full'] as const;
+}
+
+/** Imperativni fetch punog detalja (za queryClient.fetchQuery van hook-a). */
+export function fetchSastanakFull(id: string): Promise<{ data: SastanakFull }> {
+  return apiFetch<{ data: SastanakFull }>(`${BASE}/${id}/full`);
+}
+
 export function useSastanakFull(id: string | null) {
   return useQuery({
-    queryKey: id ? [...KEYS.detail(id), 'full'] : ['sastanci', 'detail', 'none', 'full'],
+    queryKey: id ? sastanakFullQueryKey(id) : ['sastanci', 'detail', 'none', 'full'],
     enabled: !!id,
-    queryFn: () => apiFetch<{ data: SastanakFull }>(`${BASE}/${id}/full`),
+    queryFn: () => fetchSastanakFull(id as string),
   });
 }
 
@@ -655,6 +705,29 @@ export const useRemindUnprepared = () =>
 
 export const useResendLocked = () =>
   useSastanciMutation<{ id: string }>((v) => post(`/${v.id}/resend-locked`));
+
+/**
+ * Prenos sa poslednjeg sastanka u novi (1.0 prenesiUNoviSastanak paritet):
+ * kopira učesnike + premesta otvorene/u_toku akcije. Idempotentno (clientEventId).
+ * `fromSastanakId` je OPCION — bez njega BE sam bira izvor (poslednji istog tipa
+ * strogo pre datuma, server-side). `source: null` u odgovoru = nije bilo
+ * prethodnog sastanka, ništa preneto.
+ */
+export interface PrenosResult {
+  ucesnici: number;
+  akcije: number;
+  source: { id: string; naslov: string } | null;
+}
+export const usePrenos = () =>
+  useSastanciMutation<
+    { id: string; fromSastanakId?: string; clientEventId: string },
+    TxResponse<PrenosResult>
+  >((v) =>
+    post<PrenosResult>(`/${v.id}/prenos`, {
+      fromSastanakId: v.fromSastanakId,
+      clientEventId: v.clientEventId,
+    }),
+  );
 
 export const useSetMyRsvp = () =>
   useSastanciMutation<{ id: string; status?: 'dolazim' | 'ne_dolazim' | null }>((v) =>
@@ -924,10 +997,10 @@ export const useUpdateTemplate = () =>
 export const useDeleteTemplate = () =>
   useSastanciMutation<{ id: string }>((v) => del(`/templates/${v.id}`), KEYS.templates);
 
-/** Instanciraj šablon (nextOccurrence u BE) → kreira sastanak. */
+/** Instanciraj šablon (nextOccurrence u BE) → kreira sastanak (BE vraća samo id+datum). */
 export const useInstantiateTemplate = () =>
-  useSastanciMutation<{ id: string; clientEventId: string }, TxResponse<Sastanak>>((v) =>
-    post<Sastanak>(`/templates/${v.id}/instantiate`, { clientEventId: v.clientEventId }),
+  useSastanciMutation<{ id: string; clientEventId: string }, TxResponse<{ id: string; datum: string }>>(
+    (v) => post<{ id: string; datum: string }>(`/templates/${v.id}/instantiate`, { clientEventId: v.clientEventId }),
   );
 
 /* ── Slike (multipart upload / meta patch / delete) ── */
@@ -954,12 +1027,19 @@ export const useDeleteSlika = () =>
 /* ── Arhiva PDF (multipart upload; path paritet {id}/{ts}_zapisnik.pdf u BE) ── */
 
 export const useUploadArhivaPdf = () =>
-  useSastanciMutation<{ id: string; blob: Blob; clientEventId?: string }, TxResponse<{ storagePath: string }>>(
+  useSastanciMutation<
+    // requireArhiva: regen tok na ZAKLJUČANOM — arhiva red MORA biti pogođen
+    // (BE: 0 redova = 403 umesto tihog 200 sa starim PDF-om). Lock tok NE šalje
+    // (red nastaje tek u lock RPC-u pa je 0 tamo legitimno).
+    { id: string; blob: Blob; clientEventId?: string; requireArhiva?: boolean },
+    TxResponse<{ storagePath: string; arhivaUpdated: boolean }>
+  >(
     (v) => {
       const fd = new FormData();
       fd.append('file', v.blob, `${v.id}_zapisnik.pdf`);
       if (v.clientEventId) fd.append('clientEventId', v.clientEventId);
-      return apiUpload<TxResponse<{ storagePath: string }>>(`${BASE}/${v.id}/arhiva/pdf`, fd);
+      if (v.requireArhiva) fd.append('requireArhiva', 'true');
+      return apiUpload<TxResponse<{ storagePath: string; arhivaUpdated: boolean }>>(`${BASE}/${v.id}/arhiva/pdf`, fd);
     },
   );
 

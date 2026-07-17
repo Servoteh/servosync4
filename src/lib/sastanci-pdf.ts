@@ -2,8 +2,9 @@ import { jsPDF } from 'jspdf';
 
 // Zapisnik sastanka PDF — port 1.0 `lib/sastanciPdf.js` (433 LOC) na 2.0 (bundlovan
 // jsPDF + Roboto iz /public/fonts, isti origin → radi offline/LAN). Layout 1:1 sa
-// 1.0 (meta → učesnici → zapisnik → akcioni plan po projektu). Logo se ne bundluje
-// u 2.0 → tekstualni SERVOTEH fallback u zaglavlju (paritet fallback grane 1.0).
+// 1.0 (meta → učesnici → zapisnik → akcioni plan po projektu). Logo = port 1.0
+// pdfLogo.js: /logo-servoteh.jpg iz public/ u zaglavlju svake strane; tekstualni
+// SERVOTEH fallback samo ako fetch/crtanje padne (paritet fallback grane 1.0).
 
 async function fetchFontBase64(url: string): Promise<string> {
   const res = await fetch(url);
@@ -13,6 +14,75 @@ async function fetchFontBase64(url: string): Promise<string> {
   const bytes = new Uint8Array(buf);
   for (let i = 0; i < bytes.byteLength; i++) bin += String.fromCharCode(bytes[i]);
   return btoa(bin);
+}
+
+// ── Servoteh logo (port 1.0 lib/pdfLogo.js) ──────────────────────────────────
+// Keš na nivou modula: undefined = nije pokušano; null = nedostupan (fallback).
+
+interface PdfLogo {
+  dataUrl: string;
+  ratio: number;
+}
+
+const LOGO_DEFAULT_RATIO = 971 / 207; // š/v originala iz memoranduma
+
+let logoCache: PdfLogo | null | undefined;
+/** Logo tekuće generacije — postavlja se na početku generateSastanakPdf (1.0 `_logo`). */
+let currentLogo: PdfLogo | null = null;
+
+function imageRatioFromDataUrl(dataUrl: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    if (!dataUrl || typeof Image === 'undefined') return resolve(null);
+    const img = new Image();
+    img.onload = () =>
+      resolve(img.naturalWidth && img.naturalHeight ? img.naturalWidth / img.naturalHeight : null);
+    img.onerror = () => resolve(null);
+    img.src = dataUrl;
+  });
+}
+
+async function loadServotehLogo(): Promise<PdfLogo | null> {
+  if (logoCache !== undefined) return logoCache;
+  try {
+    const buf = await fetch('/logo-servoteh.jpg').then((r) => (r.ok ? r.arrayBuffer() : null));
+    if (!buf) {
+      logoCache = null;
+      return logoCache;
+    }
+    let bin = '';
+    const bytes = new Uint8Array(buf);
+    for (let i = 0; i < bytes.byteLength; i++) bin += String.fromCharCode(bytes[i]);
+    const dataUrl = `data:image/jpeg;base64,${btoa(bin)}`;
+    logoCache = { dataUrl, ratio: (await imageRatioFromDataUrl(dataUrl)) || LOGO_DEFAULT_RATIO };
+  } catch {
+    logoCache = null;
+  }
+  return logoCache;
+}
+
+/** Iscrtaj logo (gore-levo, visina targetH mm, širina ograničena maxW). true = uspeh. */
+function drawServotehLogo(
+  doc: jsPDF,
+  logo: PdfLogo | null,
+  x: number,
+  y: number,
+  targetH: number,
+  maxW = 50,
+): boolean {
+  if (!logo?.dataUrl) return false;
+  const ratio = logo.ratio || LOGO_DEFAULT_RATIO;
+  let h = targetH;
+  let w = h * ratio;
+  if (w > maxW) {
+    w = maxW;
+    h = w / ratio;
+  }
+  try {
+    doc.addImage(logo.dataUrl, 'JPEG', x, y, w, h);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function initDoc(): Promise<jsPDF> {
@@ -52,10 +122,14 @@ function drawPageNumber(doc: jsPDF, pageNum: number, totalPages: number) {
 }
 
 function drawPageHeader(doc: jsPDF, naslov: string) {
-  doc.setFont('Roboto', 'bold');
+  // Logo u zaglavlju (1.0 paritet: sastanciPdf.js drawPageHeader); tekst fallback.
+  if (!drawServotehLogo(doc, currentLogo, MARGIN, MARGIN - 2, 7, 34)) {
+    doc.setFont('Roboto', 'bold');
+    doc.setFontSize(8);
+    doc.setTextColor(37, 99, 235);
+    doc.text('SERVOTEH d.o.o.', MARGIN, MARGIN + 5);
+  }
   doc.setFontSize(8);
-  doc.setTextColor(37, 99, 235);
-  doc.text('SERVOTEH d.o.o.', MARGIN, MARGIN + 5);
   doc.setFont('Roboto', 'normal');
   doc.setTextColor(80, 80, 80);
   doc.text('ZAPISNIK SA SASTANKA', PAGE_W / 2, MARGIN + 5, { align: 'center' });
@@ -295,6 +369,7 @@ export async function generateSastanakPdf(
   options: { includeAkcije?: boolean } = {},
 ): Promise<Blob> {
   const { includeAkcije = true } = options;
+  currentLogo = await loadServotehLogo();
   const doc = await initDoc();
   const naslov = sast.naslov || 'Zapisnik';
   const pageState: PageState = { pageNum: 1 };
@@ -382,15 +457,16 @@ export async function generateSastanakPdf(
       doc.text(aktWrapped, MARGIN, y);
       y += aktWrapped.length * LINE_H + 1;
 
+      // Meta red SAMO uz odgovornog ili rok (1.0 paritet) — status tačke je uvek
+      // popunjen pa bi „Status: planiran" bio šum na svakoj tački (S-P0 nalaz).
       const odg = a.odgovoranLabel || a.odgovoranText || a.odgovoranEmail;
-      if (odg || a.rok || a.rokText || a.status) {
+      if (odg || a.rok || a.rokText) {
         doc.setFont('Roboto', 'normal');
         doc.setFontSize(8);
         doc.setTextColor(107, 114, 128);
         const metaParts: string[] = [];
         if (odg) metaParts.push(`Odgovoran: ${odg}`);
         if (a.rokText || a.rok) metaParts.push(`Rok: ${a.rokText || a.rok}`);
-        if (a.status) metaParts.push(`Status: ${a.status}`);
         doc.text(metaParts.join('   ·   '), MARGIN + 2, y);
         doc.setTextColor(0, 0, 0);
         y += LINE_H;

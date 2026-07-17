@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { History, Pencil, Play, Check, Trash2 } from 'lucide-react';
+import { History, Pencil, Play, Check, Trash2, Printer, Download } from 'lucide-react';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { SearchBox } from '@/components/ui-kit/search-box';
 import { Button } from '@/components/ui-kit/button';
@@ -15,6 +15,8 @@ import {
   useBulkStatusAkcije,
   useDeleteAkcija,
   usePatchAkcija,
+  usePredmetPrioritet,
+  useSastanci,
   type AkcijaRow,
 } from '@/api/sastanci';
 import {
@@ -22,21 +24,37 @@ import {
   AKCIJA_STATUS_LABEL,
   AkcijaStatusBadge,
   formatDatum,
+  groupAkcijeByRn,
   INPUT_CLS,
   tableEmpty,
 } from './common';
 import { formatDateTime } from '@/lib/format';
+import { printAkcije } from '@/lib/sastanci-print';
+import { exportAkcijeCsv } from '@/lib/sastanci-csv';
+import { toast } from '@/lib/toast';
 import { Tabs, type TabItem } from './tabs';
 import { AkcijaModal } from './akcija-modal';
 import { AkcioniKanban } from './akcioni-kanban';
 
 type ViewKey = 'lista' | 'kanban';
+type GroupKey = 'status' | 'rn';
+
+/** Grupisanje liste preživljava reload (1.0 view prefs obrazac; typeof window = SSR guard). */
+const GROUP_LS_KEY = 'sastanci.akcioni.groupBy';
 
 /** Akcioni plan: tabela + kanban + bulk status + weekly diff + istorija (paritet 1.0). */
 export function AkcioniPlanTab({ myEmail }: { myEmail: string }) {
   const { can } = useAuth();
   const canEdit = can(PERMISSIONS.SASTANCI_EDIT);
   const [view, setView] = useState<ViewKey>('lista');
+  const [groupBy, setGroupBy] = useState<GroupKey>(() => {
+    if (typeof window === 'undefined') return 'status';
+    try {
+      return window.localStorage.getItem(GROUP_LS_KEY) === 'rn' ? 'rn' : 'status';
+    } catch {
+      return 'status';
+    }
+  });
   const [q, setQ] = useState('');
   const [status, setStatus] = useState('');
   const [samoMoje, setSamoMoje] = useState(false);
@@ -47,13 +65,28 @@ export function AkcioniPlanTab({ myEmail }: { myEmail: string }) {
   const [istorijaFor, setIstorijaFor] = useState<string | null>(null);
 
   const akcijeQ = useAkcije(samoMoje ? { odgovoranEmail: myEmail } : {});
+  const prioQ = usePredmetPrioritet();
   const patchM = usePatchAkcija();
   const delM = useDeleteAkcija();
   const bulkM = useBulkStatusAkcije();
 
-  // Weekly diff — since = pre 7 dana (aproks. „ove nedelje"; 1.0 = od poslednjeg zaključanog).
-  const since = useMemo(() => new Date(Date.now() - 7 * 864e5).toISOString(), []);
-  const diff = useAkcijeWeeklyDiff({ since });
+  function changeGroupBy(g: GroupKey) {
+    setGroupBy(g);
+    try {
+      window.localStorage.setItem(GROUP_LS_KEY, g);
+    } catch {
+      /* localStorage nedostupan (privatni mod) — preskoči persist. */
+    }
+  }
+
+  // Weekly diff — sidro = poslednji ZAKLJUČANI sastanak (1.0 loadPrethodniZakljucan
+  // paritet; ranija aproksimacija „pre 7 dana" davala je pogrešne brojeve).
+  const lockedQ = useSastanci({ status: 'zakljucan', pageSize: 50 });
+  const lastLocked = useMemo(() => {
+    const list = (lockedQ.data?.data ?? []).filter((s) => s.zakljucanAt);
+    return list.sort((a, b) => String(b.zakljucanAt).localeCompare(String(a.zakljucanAt)))[0] ?? null;
+  }, [lockedQ.data]);
+  const diff = useAkcijeWeeklyDiff({ since: lastLocked?.zakljucanAt ?? undefined });
   const d = diff.data?.data;
 
   const rows = useMemo(() => {
@@ -64,6 +97,12 @@ export function AkcioniPlanTab({ myEmail }: { myEmail: string }) {
     if (t) list = list.filter((a) => a.naslov.toLowerCase().includes(t) || (a.opis ?? '').toLowerCase().includes(t));
     return list;
   }, [akcijeQ.data, status, prikaziZavrseno, q]);
+
+  // „Po RN-u": grupe po projektu, ⭐ prioritetni predmeti prvi, redovi po statusu (1.0).
+  const rnGroups = useMemo(
+    () => (view === 'lista' && groupBy === 'rn' ? groupAkcijeByRn(rows, prioQ.data?.data) : []),
+    [view, groupBy, rows, prioQ.data],
+  );
 
   function toggleSel(id: string) {
     setSel((s) => {
@@ -78,6 +117,24 @@ export function AkcioniPlanTab({ myEmail }: { myEmail: string }) {
     if (!sel.size) return;
     await bulkM.mutateAsync({ ids: [...sel], status: bulkStatus });
     setSel(new Set());
+  }
+
+  // Štampa / Export CSV — 1.0 akcijeTab printAkcije/exportCsv paritet: trenutno
+  // filtrirani redovi, RN grupe ⭐ redosledom, redovi po rb (orderedForOutput).
+  // Guard: tokom učitavanja (prazan snapshot ≠ „nema akcija") i za 0 redova
+  // toast umesto prazne štampe/CSV-a.
+  function doExport(kind: 'print' | 'csv') {
+    if (akcijeQ.isLoading || prioQ.isLoading) {
+      toast('Sačekaj učitavanje podataka.');
+      return;
+    }
+    if (!rows.length) {
+      toast('Nema redova za štampu/export.');
+      return;
+    }
+    const groups = groupAkcijeByRn(rows, prioQ.data?.data, { rowSort: 'rb' });
+    if (kind === 'print') printAkcije(groups);
+    else exportAkcijeCsv(groups);
   }
 
   const cols: Column<AkcijaRow>[] = [
@@ -125,19 +182,31 @@ export function AkcioniPlanTab({ myEmail }: { myEmail: string }) {
     { key: 'lista', label: 'Lista' },
     { key: 'kanban', label: 'Kanban' },
   ];
+  const groupTabs: TabItem<GroupKey>[] = [
+    { key: 'status', label: 'Po statusu' },
+    { key: 'rn', label: 'Po RN-u' },
+  ];
 
   return (
     <div className="space-y-3">
       {/* Weekly diff */}
+      <p className="text-xs text-ink-secondary">
+        {lastLocked
+          ? `Poređenje sa prethodnim zaključanim sastankom (${formatDatum(lastLocked.datum)}).`
+          : 'Još nema zaključanog sastanka — „novo" i „završeno" se prikazuju od prvog zaključavanja.'}
+      </p>
       <div className="flex gap-3 overflow-x-auto pb-1">
-        <DiffCell value={d?.novo ?? 0} label="Novo (7 dana)" />
-        <DiffCell value={d?.zavrsenoOveNedelje ?? 0} label="Završeno (7 dana)" tone="success" />
+        <DiffCell value={d?.novo ?? 0} label="Novo ove nedelje" />
+        <DiffCell value={d?.zavrsenoOveNedelje ?? 0} label="Završeno ove nedelje" tone="success" />
         <DiffCell value={d?.kasni ?? 0} label="Kasni" tone="danger" />
         <DiffCell value={d?.aktivnih ?? 0} label="Aktivnih ukupno" />
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
         <Tabs tabs={viewTabs} value={view} onChange={setView} ariaLabel="Prikaz akcija" />
+        {view === 'lista' && (
+          <Tabs tabs={groupTabs} value={groupBy} onChange={changeGroupBy} ariaLabel="Grupisanje liste" />
+        )}
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <select className={`${INPUT_CLS} w-auto`} value={status} onChange={(e) => setStatus(e.target.value)}>
             <option value="">Svi statusi</option>
@@ -152,6 +221,12 @@ export function AkcioniPlanTab({ myEmail }: { myEmail: string }) {
             <input type="checkbox" checked={prikaziZavrseno} onChange={(e) => setPrikaziZavrseno(e.target.checked)} /> Prikaži završeno
           </label>
           <SearchBox value={q} onChange={setQ} placeholder="Zadatak…" />
+          <Button variant="secondary" title="Štampaj akcioni plan" onClick={() => doExport('print')}>
+            <Printer className="h-4 w-4" aria-hidden /> Štampaj
+          </Button>
+          <Button variant="secondary" title="Export u CSV" onClick={() => doExport('csv')}>
+            <Download className="h-4 w-4" aria-hidden /> Export CSV
+          </Button>
           {canEdit && <Button onClick={() => setModalEdit(null)}>+ Nova akcija</Button>}
         </div>
       </div>
@@ -170,7 +245,32 @@ export function AkcioniPlanTab({ myEmail }: { myEmail: string }) {
         </div>
       )}
 
-      {view === 'lista' ? (
+      {view === 'kanban' ? (
+        <AkcioniKanban akcije={rows} canEdit={canEdit} onEdit={(a) => setModalEdit(a)} />
+      ) : groupBy === 'rn' && rnGroups.length > 0 ? (
+        <div className="space-y-4">
+          {rnGroups.map((g) => (
+            <section key={g.key}>
+              <div className="mb-1 flex flex-wrap items-baseline gap-2 rounded-panel border border-line bg-surface-2 px-4 py-2">
+                {g.code && <span className="text-sm font-semibold text-accent">{g.code}</span>}
+                <span className="text-sm font-medium text-ink">{g.naziv || '—'}</span>
+                <span className="tnums ml-auto text-xs text-ink-secondary">
+                  {g.rows.filter((a) => ['otvoren', 'u_toku', 'kasni'].includes(a.effective_status)).length} aktivnih
+                  {' · '}
+                  {g.rows.length} ukupno
+                </span>
+              </div>
+              <DataTable
+                columns={cols}
+                rows={g.rows}
+                rowKey={(r) => r.id}
+                onRowActivate={canEdit ? (r) => setModalEdit(r) : undefined}
+              />
+            </section>
+          ))}
+        </div>
+      ) : (
+        /* „Po statusu" (postojeće ponašanje) + prazan/loading slučaj RN grupisanja. */
         <DataTable
           columns={cols}
           rows={rows}
@@ -179,8 +279,6 @@ export function AkcioniPlanTab({ myEmail }: { myEmail: string }) {
           onRowActivate={canEdit ? (r) => setModalEdit(r) : undefined}
           empty={tableEmpty(akcijeQ.isError, 'Nema akcija', 'Nema zadataka po ovim filterima.')}
         />
-      ) : (
-        <AkcioniKanban akcije={rows} canEdit={canEdit} onEdit={(a) => setModalEdit(a)} />
       )}
 
       {modalEdit !== undefined && (

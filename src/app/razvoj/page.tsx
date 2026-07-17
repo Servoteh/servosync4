@@ -11,108 +11,48 @@
 //
 // Kad modul „diplomira" (prođe review + hub-integraciju), izlazi odavde i dobija
 // trajnu karticu u 1.0 hub-u — vidi docs/PLAN_MODULA_MES_3.0.md §4 (1.0 repo).
+//
+// F0 SIDEBAR_HUB: label/icon/requires se sada vuku iz NAV_DOMAINS po href-u (ukinut je
+// lokalni RAZVOJ_DOMAINS duplikat taksonomije; single source of truth = navigation.ts).
+// Članstvo/napomene WIP modula = RAZVOJ_WIP; grupisanje/redosled = NAV_DOMAINS; emoji
+// naslovi domena zadržani radi pariteta izgleda ove strane.
 
 import Link from 'next/link';
-import {
-  CalendarClock,
-  CalendarRange,
-  Cog,
-  FlaskConical,
-  FolderKanban,
-  Hammer,
-  IdCard,
-  Radar,
-  SlidersHorizontal,
-  Warehouse,
-  Wrench,
-  Zap,
-  type LucideIcon,
-} from 'lucide-react';
+import { FlaskConical } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
-import { PERMISSIONS, type Permission } from '@/lib/permissions';
+import { PERMISSIONS } from '@/lib/permissions';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
+import { NAV_DOMAINS, RAZVOJ_WIP, findModuleByHref, type NavModule } from '@/lib/navigation';
 
-interface RazvojItem {
-  label: string;
-  href: string;
-  icon: LucideIcon;
-  requires: Permission;
-  note?: string;
-}
-
-interface RazvojDomain {
-  title: string;
-  items: RazvojItem[];
-}
-
-// Ista domen-taksonomija kao 1.0 docs/PLAN_MODULA_MES_3.0.md §4 i app-shell.tsx
-// NAV_SECTIONS — ČISTO navigaciono grupisanje, permisije netaknute.
-const RAZVOJ_DOMAINS: RazvojDomain[] = [
-  {
-    title: '🏭 Proizvodnja',
-    items: [
-      { label: 'Planiranje (Plan proizvodnje)', href: '/plan-proizvodnje', icon: CalendarRange, requires: PERMISSIONS.PLAN_PROIZVODNJE_READ },
-      { label: 'Praćenje proizvodnje', href: '/pracenje-proizvodnje', icon: Radar, requires: PERMISSIONS.PRACENJE_READ },
-    ],
-  },
-  {
-    title: '🔧 Montaža i servis',
-    items: [
-      { label: 'Plan montaže', href: '/montaza', icon: Hammer, requires: PERMISSIONS.MONTAZA_READ },
-    ],
-  },
-  {
-    title: '📐 Projektovanje',
-    items: [
-      { label: 'Projektni biro', href: '/pb', icon: FolderKanban, requires: PERMISSIONS.PB_READ },
-    ],
-  },
-  {
-    title: '📦 Logistika',
-    items: [
-      { label: 'Lokacije delova', href: '/lokacije', icon: Warehouse, requires: PERMISSIONS.LOKACIJE_READ, note: 'poznat paritet-deficit — v. MERGE_PLAN' },
-    ],
-  },
-  {
-    title: '🛠️ Oprema i energija',
-    items: [
-      { label: 'Održavanje (CMMS)', href: '/odrzavanje', icon: Cog, requires: PERMISSIONS.ODRZAVANJE_READ },
-      { label: 'Energetika / SCADA', href: '/energetika', icon: Zap, requires: PERMISSIONS.ENERGETIKA_READ },
-    ],
-  },
-  {
-    title: '🤝 Saradnja',
-    items: [
-      { label: 'Sastanci', href: '/sastanci', icon: CalendarClock, requires: PERMISSIONS.SASTANCI_READ },
-    ],
-  },
-  {
-    title: '⚙️ Sistem',
-    items: [
-      { label: 'Podešavanja', href: '/podesavanja', icon: SlidersHorizontal, requires: PERMISSIONS.SETTINGS_ORG_PROFILE },
-    ],
-  },
-];
+// Emoji dekoracija naslova domena — /razvoj-specifično (NAV_DOMAINS nosi lucide ikone,
+// ova indeks-strana zadržava stari emoji stil da izgled ostane nepromenjen).
+const RAZVOJ_DOMAIN_EMOJI: Record<string, string> = {
+  proizvodnja: '🏭',
+  montaza: '🔧',
+  projektovanje: '📐',
+  logistika: '📦',
+  'oprema-energija': '🛠️',
+  saradnja: '🤝',
+  sistem: '⚙️',
+};
 
 // Konteksta radi — moduli koji su VEĆ prošli ovaj isti proces i imaju trajno mesto
 // u 1.0 hub-u (nisu deo testa, samo referenca da se vidi napredak).
-const VEC_ZIVO: RazvojItem[] = [
-  { label: 'Reversi', href: '/reversi', icon: Wrench, requires: PERMISSIONS.REVERSI_READ },
-  { label: 'Kadrovska', href: '/kadrovska', icon: IdCard, requires: PERMISSIONS.KADROVSKA_READ },
-];
+const VEC_ZIVO_HREFS = ['/reversi', '/kadrovska'];
 
-function ModuleCard({ item }: { item: RazvojItem }) {
-  const Icon = item.icon;
+function ModuleCard({ module, note, label }: { module: NavModule; note?: string; label?: string }) {
+  const Icon = module.icon;
   return (
     <Link
-      href={item.href}
+      href={module.href}
       className="flex items-start gap-3 rounded-panel border border-line bg-surface p-4 hover:border-accent hover:bg-surface-2"
     >
       <Icon className="mt-0.5 h-5 w-5 shrink-0 text-ink-secondary" aria-hidden />
       <div className="min-w-0">
-        <div className="text-sm font-semibold text-ink">{item.label}</div>
-        {item.note && <div className="mt-0.5 text-xs text-ink-secondary">{item.note}</div>}
+        {/* labelOverride čuva stare opisnije nazive ove strane (paritet). */}
+        <div className="text-sm font-semibold text-ink">{label ?? module.label}</div>
+        {note && <div className="mt-0.5 text-xs text-ink-secondary">{note}</div>}
       </div>
     </Link>
   );
@@ -139,11 +79,20 @@ export default function RazvojnaFazaPage() {
     );
   }
 
-  const visibleDomains = RAZVOJ_DOMAINS.map((d) => ({
-    ...d,
-    items: d.items.filter((i) => can(i.requires)),
-  })).filter((d) => d.items.length > 0);
-  const visibleZivo = VEC_ZIVO.filter((i) => can(i.requires));
+  // Napomene WIP modula (po href-u) + grupisanje po domenima iz NAV_DOMAINS (redosled
+  // domena = redosled u modelu). Modul se prikazuje samo uz `can(requires)`; prazan
+  // domen se ne prikazuje — identično današnjem ponašanju.
+  const wipByHref = new Map(RAZVOJ_WIP.map((w) => [w.href, w] as const));
+  const visibleDomains = NAV_DOMAINS.map((domain) => ({
+    domain,
+    modules: domain.modules.filter(
+      (m) => wipByHref.has(m.href) && (!m.requires || can(m.requires)),
+    ),
+  })).filter((g) => g.modules.length > 0);
+
+  const visibleZivo = VEC_ZIVO_HREFS.map((href) => findModuleByHref(href)).filter(
+    (m): m is NavModule => !!m && (!m.requires || can(m.requires)),
+  );
 
   return (
     <AppShell>
@@ -162,18 +111,26 @@ export default function RazvojnaFazaPage() {
         </div>
 
         <div className="space-y-6">
-          {visibleDomains.map((domain) => (
-            <section key={domain.title}>
-              <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-ink-secondary">
-                {domain.title}
-              </h2>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {domain.items.map((item) => (
-                  <ModuleCard key={item.href} item={item} />
-                ))}
-              </div>
-            </section>
-          ))}
+          {visibleDomains.map(({ domain, modules }) => {
+            const emoji = RAZVOJ_DOMAIN_EMOJI[domain.id];
+            return (
+              <section key={domain.id}>
+                <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-ink-secondary">
+                  {emoji ? `${emoji} ${domain.title}` : domain.title}
+                </h2>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {modules.map((module) => (
+                    <ModuleCard
+                      key={module.href}
+                      module={module}
+                      note={wipByHref.get(module.href)?.note}
+                      label={wipByHref.get(module.href)?.labelOverride}
+                    />
+                  ))}
+                </div>
+              </section>
+            );
+          })}
         </div>
 
         {visibleZivo.length > 0 && (
@@ -182,8 +139,8 @@ export default function RazvojnaFazaPage() {
               ✅ Već živo (za kontekst — nisu deo testa)
             </h2>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {visibleZivo.map((item) => (
-                <ModuleCard key={item.href} item={item} />
+              {visibleZivo.map((module) => (
+                <ModuleCard key={module.href} module={module} />
               ))}
             </div>
           </div>

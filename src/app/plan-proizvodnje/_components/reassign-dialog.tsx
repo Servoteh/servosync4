@@ -1,23 +1,31 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Button } from '@/components/ui-kit/button';
-import { Input, FormField } from '@/components/ui-kit/form-field';
+import { FormField } from '@/components/ui-kit/form-field';
 import { ApiError } from '@/api/client';
 import { useCan } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
-import { useReassign, useBulkReassign, useMachines } from '@/api/plan-proizvodnje';
+import { useReassign, useBulkReassign, useMachines, type OpRow, type PpMachine } from '@/api/plan-proizvodnje';
+import { machineGroupSlugForCode, machineGroupLabel } from './shared';
 
-/** REASSIGN dialog (single/bulk) + force (traži razlog + dozvolu plan_proizvodnje.force). */
+/**
+ * REASSIGN dijalog (single/bulk) sa logikom grupa mašina na FE (GAP-PM-24):
+ *  - prikaz izvorne grupe (mešane grupe → upozorenje + submit blokiran bez force-a),
+ *  - kandidati FILTRIRANI na istu vrstu mašine (bez force) i bez originalnih kodova,
+ *  - opcija „Naziv (kod) · Grupa",
+ *  - force razlog min 3 karaktera (paritet 1.0 reassignDialog.js).
+ * Force zahteva plan_proizvodnje.force dozvolu.
+ */
 export function ReassignDialog({
   open,
   onClose,
-  pairs,
+  rows,
 }: {
   open: boolean;
   onClose: () => void;
-  pairs: { workOrderId: string; lineId: string }[];
+  rows: OpRow[];
 }) {
   const machines = useMachines();
   const single = useReassign();
@@ -39,67 +47,139 @@ export function ReassignDialog({
     }
   }, [open]);
 
-  const isBulk = pairs.length > 1;
+  const isBulk = rows.length > 1;
+  const allMachines = machines.data?.data ?? [];
+
+  // Izvorna grupa = grupa mašine na kojoj operacija trenutno JESTE
+  // (assigned_machine_code override ili original_machine_code / effective).
+  const sourceCode = (r: OpRow) =>
+    (r.assigned_machine_code as string | null) ||
+    (r.original_machine_code as string | null) ||
+    r.effective_machine_code ||
+    '';
+
+  const { sourceGroup, mixedGroups } = useMemo(() => {
+    const groups = new Set(rows.map((r) => machineGroupSlugForCode(sourceCode(r))));
+    return {
+      sourceGroup: groups.size === 1 ? [...groups][0] : null,
+      mixedGroups: groups.size > 1,
+    };
+  }, [rows]);
+
+  // Kandidati: bez originalnih kodova; bez force-a — samo ista grupa.
+  const candidates = useMemo(() => {
+    const originalCodes = new Set(rows.map((r) => r.original_machine_code as string | null).filter(Boolean));
+    return (allMachines as PpMachine[]).filter((m) => {
+      if (!m?.rj_code || originalCodes.has(m.rj_code)) return false;
+      if (force) return true;
+      return !!sourceGroup && machineGroupSlugForCode(m.rj_code) === sourceGroup;
+    });
+  }, [allMachines, rows, force, sourceGroup]);
+
+  // Mešane grupe bez force-a → blokiraj submit (paritet 1.0).
+  const blockedMixed = mixedGroups && !force;
 
   async function submit() {
     setErr(null);
-    if (force && !reason.trim()) {
-      setErr('Za prinudni reassign razlog je obavezan.');
+    const targetMachine = target.trim() || null;
+    if (!targetMachine) {
+      setErr('Izaberi ciljnu mašinu.');
       return;
     }
-    const targetMachine = target.trim() || null;
+    if (force && reason.trim().length < 3) {
+      setErr('Razlog forsiranja je obavezan (min 3 karaktera).');
+      return;
+    }
     try {
       if (isBulk) {
-        await bulk.mutateAsync({ pairs, targetMachine, force, reason: reason || undefined });
+        await bulk.mutateAsync({
+          pairs: rows.map((r) => ({ workOrderId: r.work_order_id, lineId: r.line_id })),
+          targetMachine,
+          force,
+          reason: reason || undefined,
+        });
       } else {
-        await single.mutateAsync({ ...pairs[0], targetMachine, force, reason: reason || undefined });
+        await single.mutateAsync({
+          workOrderId: rows[0].work_order_id,
+          lineId: rows[0].line_id,
+          targetMachine,
+          force,
+          reason: reason || undefined,
+        });
       }
       onClose();
     } catch (e) {
-      setErr(e instanceof ApiError ? e.message : 'Reassign nije uspeo.');
+      setErr(e instanceof ApiError ? e.message : 'Premeštanje nije uspelo.');
     }
   }
+
+  const title = isBulk
+    ? `Premesti ${rows.length} operacija`
+    : `Premesti RN ${rows[0]?.rn_ident_broj ?? '?'} / op. ${rows[0]?.operacija ?? '?'}`;
 
   return (
     <Dialog
       open={open}
       onClose={onClose}
-      title={isBulk ? `Premesti ${pairs.length} operacija` : 'Premesti operaciju'}
+      title={title}
       footer={
         <>
           <Button variant="secondary" onClick={onClose}>Otkaži</Button>
-          <Button onClick={submit} loading={single.isPending || bulk.isPending}>Premesti</Button>
+          <Button onClick={submit} disabled={blockedMixed} loading={single.isPending || bulk.isPending}>Premesti</Button>
         </>
       }
     >
       <div className="space-y-3">
-        <FormField label="Ciljna mašina (prazno = vrati na originalnu)">
+        <p className="text-sm text-ink-secondary">
+          Izvorna grupa: <strong className="text-ink">{mixedGroups ? 'mešane grupe' : machineGroupLabel(sourceGroup ?? 'ostalo')}</strong>
+        </p>
+
+        {mixedGroups && (
+          <div className="rounded-control border border-status-warn bg-status-warn-bg/40 px-3 py-2 text-xs text-status-warn">
+            Izabrane operacije su iz različitih vrsta mašina. Standardni bulk je blokiran;
+            {canForce ? ' force (uz razlog) zaobilazi ograničenje.' : ' force mogu samo admin/menadžment.'}
+          </div>
+        )}
+
+        {canForce && (
+          <label className="flex items-center gap-2 text-sm text-ink">
+            <input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} />
+            Forsiraj drugu vrstu mašine
+          </label>
+        )}
+
+        <FormField label="Ciljna mašina">
           <select
             value={target}
             onChange={(e) => setTarget(e.target.value)}
             className="h-9 w-full rounded-control border border-line bg-surface px-3 text-base text-ink"
           >
-            <option value="">— vrati na originalnu —</option>
-            {(machines.data?.data ?? []).map((m) => (
+            <option value="">— izaberi mašinu —</option>
+            {candidates.map((m) => (
               <option key={m.rj_code} value={m.rj_code}>
-                {m.rj_code}
-                {m.naziv || m.name ? ` — ${m.naziv ?? m.name}` : ''}
+                {(m.name as string) || (m.naziv as string) || '—'} ({m.rj_code}) · {machineGroupLabel(machineGroupSlugForCode(m.rj_code))}
               </option>
             ))}
           </select>
         </FormField>
-
-        {canForce && (
-          <label className="flex items-center gap-2 text-sm text-ink">
-            <input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} />
-            Prinudno (force) — zaobiđi uslove
-          </label>
+        {!force && candidates.length === 0 && !mixedGroups && (
+          <p className="text-xs text-ink-disabled">
+            Nema drugih mašina iste vrste. Uključi force da premestiš u drugu grupu.
+          </p>
         )}
+
         {force && (
-          <FormField label="Razlog (obavezan)" required>
-            <Input value={reason} onChange={(e) => setReason(e.target.value)} />
+          <FormField label="Razlog forsiranja (min 3 karaktera)" required>
+            <textarea
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              rows={3}
+              placeholder="Npr. mašina nije dostupna, posao kompatibilan…"
+              className="w-full rounded-control border border-line bg-surface px-3 py-2 text-sm text-ink"
+            />
           </FormField>
         )}
+
         {err && <p className="text-sm text-status-danger">{err}</p>}
       </div>
     </Dialog>

@@ -9,7 +9,7 @@
 // povezani crteži dijalozi, 3D model, drag-drop reorder (up/down pokriva funkciju).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronUp, ChevronDown, Trash2, FileText, Link2, Plus, Pencil, Download, GripVertical, Loader2 } from 'lucide-react';
+import { ChevronUp, ChevronDown, Trash2, FileText, Link2, Plus, Pencil, Download, GripVertical, Loader2, Calendar } from 'lucide-react';
 import { useCan } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
@@ -20,6 +20,7 @@ import { cn } from '@/lib/cn';
 import {
   useMontazaTree,
   useUpdatePhase,
+  useUpdateWorkPackage,
   useUpsertProject,
   useUpsertWorkPackage,
   useUpsertPhase,
@@ -37,7 +38,7 @@ import {
   ENGINEERS_DEFAULT,
   VODJA_DEFAULT,
 } from '@/lib/plan-montaze/constants';
-import { calcDuration, dayDiffFromToday, todayYmd } from '@/lib/plan-montaze/date';
+import { calcDuration, dayDiffFromToday, todayYmd, formatDmy } from '@/lib/plan-montaze/date';
 import {
   applyBusinessRules,
   calcReadiness,
@@ -127,6 +128,7 @@ export function PlanTab() {
   const canEdit = useCan()(PERMISSIONS.MONTAZA_EDIT);
   const save = usePhaseAutosave();
   const updatePhase = useUpdatePhase();
+  const updateWp = useUpdateWorkPackage();
   const importProject = useUpsertProject();
   const importWp = useUpsertWorkPackage();
   const importPhase = useUpsertPhase();
@@ -421,7 +423,11 @@ export function PlanTab() {
     const to = newLoc.trim();
     if (!from || !to || from === to) return 0;
     const ids: string[] = [];
+    // WP-level lokacije (paritet 1.0 renameLocationEverywhere: menja i wp.location, ne samo
+    // faze). Bez ovoga bi WP zadržao staro ime i vratio ga u izvedenu listu lokacija.
+    const wpIds: string[] = [];
     for (const w of activeProject.workPackages) {
+      if ((w.location ?? '') === from) wpIds.push(w.id);
       for (const ph of w.phases) {
         if ((ph.location ?? '') === from) ids.push(ph.id);
       }
@@ -430,11 +436,14 @@ export function PlanTab() {
     for (const p of phases) {
       if (p.location === from && !ids.includes(p.id)) ids.push(p.id);
     }
-    if (!ids.length) {
-      flash(`Nema faza sa lokacijom „${from}".`);
+    if (!ids.length && !wpIds.length) {
+      flash(`Nema faza ni naloga sa lokacijom „${from}".`);
       return 0;
     }
-    if (!window.confirm(`Preimenovati lokaciju '${from}' u '${to}' na ${ids.length} faza?`)) return 0;
+    const totalMsg = wpIds.length
+      ? `${ids.length} faza i ${wpIds.length} naloga`
+      : `${ids.length} faza`;
+    if (!window.confirm(`Preimenovati lokaciju '${from}' u '${to}' na ${totalMsg}?`)) return 0;
     let ok = 0;
     let fail = 0;
     for (const id of ids) {
@@ -445,9 +454,84 @@ export function PlanTab() {
         fail++;
       }
     }
+    for (const id of wpIds) {
+      try {
+        await updateWp.mutateAsync({ id, location: to });
+        ok++;
+      } catch {
+        fail++;
+      }
+    }
     setPhases((prev) => prev.map((p) => (p.location === from ? { ...p, location: to } : p)));
-    flash(fail ? `Preimenovano ${ok}/${ids.length} faza (${fail} grešaka).` : `Preimenovano ${ok} faza.`);
+    const total = ids.length + wpIds.length;
+    flash(fail ? `Preimenovano ${ok}/${total} stavki (${fail} grešaka).` : `Preimenovano ${ok} stavki.`);
     return ok;
+  }
+
+  // MP-16: obriši lokaciju iz projekta (paritet 1.0 metaModals loc-del + DEFAULT fallback).
+  // Model 2.0: lokacija „postoji" dok je bar jedna faza koristi → brisanje = premeštanje tih
+  // faza na DEFAULT lokaciju (prvu koja NIJE ona koja se briše). In-use faze se prebroje i
+  // korisniku se traži potvrda; posle premeštanja lokacija nestaje iz izvedene liste.
+  async function deleteLocation(loc: string): Promise<void> {
+    if (!canEdit || !activeProject) return;
+    const target = loc.trim();
+    if (!target) return;
+    const ids: string[] = [];
+    // WP-level lokacije (paritet 1.0 isLocationInUse: wp.location JESTE upotreba). Bez ovoga
+    // bi lokacija korišćena samo na nalogu bila lažno „nije u upotrebi", nalog bi zadržao
+    // vrednost i lokacija bi se vratila u izvedenu listu — brisanje bez efekta.
+    const wpIds: string[] = [];
+    for (const w of activeProject.workPackages) {
+      if ((w.location ?? '') === target) wpIds.push(w.id);
+      for (const ph of w.phases) {
+        if ((ph.location ?? '') === target) ids.push(ph.id);
+      }
+    }
+    for (const p of phases) {
+      if (p.location === target && !ids.includes(p.id)) ids.push(p.id);
+    }
+    // DEFAULT fallback: prva default lokacija različita od one koja se briše.
+    const fallback = DEFAULT_LOCATIONS.find((l) => l !== target) ?? DEFAULT_LOCATIONS[0];
+    if (!ids.length && !wpIds.length) {
+      // Nije u upotrebi — nema šta da se premesti; samo obavesti (lista je izvedena).
+      flash(`Lokacija „${target}" nije u upotrebi ni na jednoj fazi ni nalogu.`);
+      return;
+    }
+    const usageMsg = wpIds.length
+      ? `${ids.length} faza i ${wpIds.length} naloga`
+      : `${ids.length} faza`;
+    if (
+      !window.confirm(
+        `Lokacija „${target}" je u upotrebi na ${usageMsg}. Obrisati je i te stavke premestiti na „${fallback}"?`,
+      )
+    ) {
+      return;
+    }
+    let ok = 0;
+    let fail = 0;
+    for (const id of ids) {
+      try {
+        await updatePhase.mutateAsync({ id, location: fallback });
+        ok++;
+      } catch {
+        fail++;
+      }
+    }
+    for (const id of wpIds) {
+      try {
+        await updateWp.mutateAsync({ id, location: fallback });
+        ok++;
+      } catch {
+        fail++;
+      }
+    }
+    setPhases((prev) => prev.map((p) => (p.location === target ? { ...p, location: fallback } : p)));
+    const total = ids.length + wpIds.length;
+    flash(
+      fail
+        ? `Premešteno ${ok}/${total} stavki na „${fallback}" (${fail} grešaka).`
+        : `Lokacija „${target}" obrisana — ${ok} stavki premešteno na „${fallback}".`,
+    );
   }
 
   // JSON uvoz (paritet 1.0 exportModal import): parse → confirm → sekvencijalni upsert
@@ -620,6 +704,16 @@ export function PlanTab() {
             ))}
           </select>
         </label>
+        {/* MP-04: badge krajnjeg roka projekta (Calendar ikona + dd.MM.yyyy). */}
+        {activeProject?.project_deadline && (
+          <span
+            className="inline-flex items-center gap-1.5 self-center rounded-control border border-line bg-surface-2 px-2.5 py-1.5 text-xs text-ink-secondary"
+            title="Krajnji rok projekta"
+          >
+            <Calendar className="h-3.5 w-3.5" aria-hidden />
+            <span className="tnums">{formatDmy(activeProject.project_deadline)}</span>
+          </span>
+        )}
         {canEdit && (
           <div className="flex items-center gap-1">
             {activeProject && (
@@ -861,7 +955,9 @@ export function PlanTab() {
           project={projectDialog.project}
           onSaved={(id) => switchProject(id)}
           locations={projectLocations}
+          allProjects={projects}
           onRenameLocation={canEdit && projectDialog.project ? renameLocation : undefined}
+          onDeleteLocation={canEdit && projectDialog.project ? deleteLocation : undefined}
         />
       )}
       {wpDialog && projectId && (
@@ -872,6 +968,10 @@ export function PlanTab() {
           wp={wpDialog.wp}
           onSaved={(id) => switchWp(id)}
           onApplyDefaults={canEdit && wpDialog.wp ? applyWpDefaults : undefined}
+          projectCode={activeProject?.project_code}
+          nextRnOrder={(activeProject?.workPackages.length ?? 0) + 1}
+          isLastWp={!!wpDialog.wp && (activeProject?.workPackages.length ?? 0) <= 1}
+          projectDefaultLocation={projectLocations[0]}
         />
       )}
 

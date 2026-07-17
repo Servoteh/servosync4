@@ -10,8 +10,16 @@ import {
   ZoomIn,
   Repeat,
   Check,
+  Type,
 } from 'lucide-react';
 import { lookupLocBarcode, type LocBarcodeKind, type LocBarcodeResult } from '@/api/lokacije';
+import {
+  cropTopRightLabelRegion,
+  isOcrEngineAvailable,
+  parsePredmetTpFromLabelText,
+  recognizeLabelText,
+  terminateLabelOcrWorker,
+} from '@/lib/label-ocr';
 
 /*
  * Punoekranski skener barkoda za Lokacije — pun port bogatog 1.0 scanModal-a
@@ -312,6 +320,7 @@ type BatchRow = { code: string; kind: LocBarcodeKind; at: number };
 interface ScanCtrl {
   resolve: (raw: string) => Promise<void>;
   handleFile: (file: File) => Promise<void>;
+  ocrScan: () => Promise<void>;
   cycleLens: () => Promise<void>;
   toggleTorch: () => Promise<void>;
   setZoom: (v: number) => void;
@@ -357,6 +366,7 @@ export function ScanOverlay({
   const [results, setResults] = useState<BatchRow[]>([]);
   const [focusRing, setFocusRing] = useState<{ x: number; y: number; id: number } | null>(null);
   const [busy, setBusy] = useState(false);
+  const acceptItem = accept.includes('ITEM');
 
   // Props se prosleđuju kao inline literali (nov identitet svaki render); držimo ih
   // u ref-u da kamera-efekat (mount-only) ne restartuje kameru na svaki render roditelja.
@@ -384,6 +394,7 @@ export function ScanOverlay({
     let forcedBackDone = false; // one-shot: force-back kamera se pokušava najviše jednom
     let vvUnbind: (() => void) | null = null;
     const busyRef = { v: false };
+    const cameraOnRef = { v: false };
     const lastRef = { code: '', at: 0 };
     // Kontinuirani re-arm: isti kod se ponovo prihvata TEK kad napusti kadar (miss ili
     // drugi kod duže od REARM_GAP_MS), ne po isteku fiksnog tajmera — stacionarni barkod
@@ -790,6 +801,7 @@ export function ScanOverlay({
       const track = stream.getVideoTracks()[0] ?? null;
       curDeviceId =
         deviceId ?? (track?.getSettings() as unknown as CamSettings)?.deviceId ?? null;
+      cameraOnRef.v = true;
       setCameraOn(true);
       say(acceptShelf ? 'Usmeri kameru na barkod police / naloga' : 'Usmeri kameru na barkod nalepnice');
 
@@ -848,6 +860,52 @@ export function ScanOverlay({
       }
     };
 
+    // ── OCR tekst (gornji desni ugao nalepnice → broj predmeta / TP) ─────────
+    // Paritet 1.0 applyOcrFromVideo: kad barkod ne uspe, radnik usmeri gornji
+    // desni ugao liste i pročita se „predmet/TP". Parsirani par se komponuje u
+    // „orderNo/tp" i propušta kroz isti BE lookup (resolve) kao skenirani ITEM.
+    const ocrScan = async (): Promise<void> => {
+      const v = videoRef.current;
+      if (!v || !cameraOnRef.v) {
+        say('Prvo pokreni kameru, pa probaj OCR.', 'warn');
+        return;
+      }
+      if (!isOcrEngineAvailable()) {
+        say(
+          'OCR tekst nije konfigurisan na ovoj instalaciji — koristi barkod, „Iz slike" ili ručni unos.',
+          'warn',
+        );
+        return;
+      }
+      say('Čitam tekst (OCR)… može potrajati nekoliko sekundi prvi put', 'info');
+      try {
+        const canvas = cropTopRightLabelRegion(v);
+        if (!canvas) {
+          say('Sačekaj da kamera stabilizuje kadar, pa probaj ponovo.', 'warn');
+          return;
+        }
+        const res = await recognizeLabelText(canvas);
+        if ('error' in res) {
+          say(
+            res.error === 'engine_missing'
+              ? 'OCR tekst nije konfigurisan — koristi barkod / ručni unos.'
+              : 'OCR nije uspeo — probaj zum ili ručni unos.',
+            'warn',
+          );
+          return;
+        }
+        const parsed = parsePredmetTpFromLabelText(res.text);
+        if (!parsed) {
+          say('Nije prepoznat „broj predmeta / TP". Usmeri gornji desni ugao liste ili unesi ručno.', 'warn');
+          return;
+        }
+        navigator.vibrate?.(80);
+        await resolve(parsed.raw); // „orderNo/tp" → BE lookup (isti put kao skenirani ITEM)
+      } catch (e) {
+        say('OCR greška: ' + (e instanceof Error ? e.message : String(e)), 'error');
+      }
+    };
+
     // ── Tap-to-focus ────────────────────────────────────────────────────────
     const tapFocus = async (clientX: number, clientY: number): Promise<void> => {
       const track = getTrack();
@@ -880,6 +938,7 @@ export function ScanOverlay({
     ctrlRef.current = {
       resolve,
       handleFile,
+      ocrScan,
       cycleLens: () => cycleLens(true),
       toggleTorch,
       setZoom: (v: number) => {
@@ -929,6 +988,7 @@ export function ScanOverlay({
       window.removeEventListener('pagehide', onPageHide);
       document.removeEventListener('visibilitychange', onVisibility);
       stopStream();
+      void terminateLabelOcrWorker();
       ctrlRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1077,6 +1137,16 @@ export function ScanOverlay({
           >
             <ImageIcon className="h-4 w-4" /> Iz slike
           </button>
+          {acceptItem && (
+            <button
+              type="button"
+              onClick={() => void ctrlRef.current?.ocrScan()}
+              className="flex items-center gap-1 rounded-control border border-white/20 px-2 py-1 hover:bg-white/10"
+              title="Pročitaj broj predmeta / TP iz gornjeg desnog ugla nalepnice (OCR)"
+            >
+              <Type className="h-4 w-4" /> OCR tekst
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setContinuousOn((v) => !v)}

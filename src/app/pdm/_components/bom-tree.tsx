@@ -204,16 +204,8 @@ function BomRow({
             </span>
           ))}
 
-        <span className="ml-auto shrink-0 tnums text-ink">
-          {formatNumber(node.requiredQuantity)} kom
-        </span>
-        <span
-          className="shrink-0 tnums text-xs text-ink-disabled"
-          title="Ukupno po jednom komadu korenskog sklopa"
-        >
-          Σ {formatNumber(node.totalQuantity)}
-        </span>
-
+        {/* Klik-dugme „Otvori PDF" stoji odmah uz zeleni PDF bedž (indikator),
+            a ne na kraju reda — bedž kaže ima/nema, dugme otvara sam PDF. */}
         {canOpenPdf && (
           <button
             type="button"
@@ -229,6 +221,17 @@ function BomRow({
             <FileText className="h-3.5 w-3.5" aria-hidden />
           </button>
         )}
+
+        <span className="ml-auto shrink-0 tnums text-ink">
+          {formatNumber(node.requiredQuantity)} kom
+        </span>
+        <span
+          className="shrink-0 tnums text-xs text-ink-disabled"
+          title="Ukupno po jednom komadu korenskog sklopa"
+        >
+          Σ {formatNumber(node.totalQuantity)}
+        </span>
+
         {!missing && d && (
           <AddToDraftButton
             target={{ drawingId: d.id, drawingNumber: d.drawingNumber, name: d.name }}

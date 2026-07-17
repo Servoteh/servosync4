@@ -1,22 +1,30 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { Download } from 'lucide-react';
+import { Download, Printer } from 'lucide-react';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { Pager } from '@/components/ui-kit/pager';
 import { Button } from '@/components/ui-kit/button';
+import { Can } from '@/lib/can';
+import { PERMISSIONS } from '@/lib/permissions';
+import { buildTspLabelProgram } from '@/lib/tspl2';
+import { labelDate } from '@/lib/label-print';
+import { TpProcedureModal } from '@/app/plan-proizvodnje/_components/tp-procedure-modal';
 import {
   HALL_TYPES,
   fetchAllReportByLocation,
   useAllLocations,
+  usePrintLocLabel,
   useReportByLocation,
   useReportSuggest,
   type LocLocation,
   type ReportParams,
   type ReportRow,
 } from '@/api/lokacije';
-import { buildCsvFilename, buildLocIndex, csvTimestamp, downloadCsv, PageSizeSelect, tableEmpty, type LocIndex } from './common';
+import { buildCsvFilename, buildLocIndex, csvTimestamp, downloadCsv, PageSizeSelect, PlacementStatusBadge, tableEmpty, type LocIndex } from './common';
 import { LocationSelect } from './location-select';
+import { ItemHistoryDialog } from './item-history-dialog';
+import { barcodeForRow } from './label-build';
 
 const INPUT = 'h-9 rounded-control border border-line bg-surface px-2.5 text-sm text-ink outline-none focus:border-accent';
 
@@ -119,6 +127,45 @@ export function ReportTab() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(100);
   const [exporting, setExporting] = useState<{ loaded: number; total: number | null } | null>(null);
+  // Akcije reda (paritet 1.0 index.js:969-1028): klik→istorija, RN/TP modal, TP nalepnica.
+  const [history, setHistory] = useState<{ itemRefTable: string; itemRefId: string; orderNo: string } | null>(null);
+  const [tpModalWo, setTpModalWo] = useState<string | null>(null);
+  const print = usePrintLocLabel();
+
+  /** TP nalepnica reda izveštaja (paritet 1.0 data-rep-print-tp → barcodeForPlacementRow). */
+  async function printRowTp(r: ReportRow) {
+    const bc = barcodeForRow({
+      itemRefTable: String(r.item_ref_table ?? ''),
+      orderNo: String(r.order_no ?? ''),
+      itemRefId: String(r.item_ref_id ?? ''),
+      drawingNo: String(r.drawing_no ?? r.wo_broj_crteza ?? ''),
+    });
+    if (!bc) {
+      window.alert('Za ovaj red nema prepoznatljivog barkoda (RNZ / kratki format).');
+      return;
+    }
+    const ident = r.order_no && r.item_ref_id ? `${r.order_no}/${r.item_ref_id}` : String(r.order_no ?? '');
+    const qty = r.qty_on_location != null ? String(r.qty_on_location) : '';
+    const komRn = r.komada_rn != null ? String(r.komada_rn) : '';
+    const kolicina = qty && komRn ? `${qty}/${komRn}` : qty || komRn || '';
+    const tspl2 = buildTspLabelProgram({
+      fields: {
+        brojPredmeta: ident,
+        nazivDela: String(r.naziv_dela ?? ''),
+        brojCrteza: String(r.drawing_no ?? r.wo_broj_crteza ?? ''),
+        materijal: [r.materijal, r.dimenzija_materijala].filter(Boolean).join(' '),
+        kolicina,
+        datum: labelDate(),
+      },
+      barcodeValue: bc,
+      copies: 1,
+    });
+    try {
+      await print.mutateAsync({ tspl2, copies: 1 });
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : 'Štampa nije uspela.');
+    }
+  }
 
   const allLocs = useAllLocations('true');
   // Indeks (id → loc, parent-lanac) za loc-index fallback hale ugnježdenih mašina.
@@ -176,7 +223,39 @@ export function ReportTab() {
     { key: 'location_code', header: 'Polica', sortable: true, render: (r) => r.location_code || '—' },
     { key: 'material', header: 'Materijal', render: (r) => [r.materijal, r.dimenzija_materijala].filter(Boolean).join(' · ') || '—' },
     { key: 'qty_on_location', header: 'Na lok.', align: 'right', numeric: true, sortable: true, render: (r) => num(r.qty_on_location) },
+    // „Ukupno" = qty_total_for_bucket (paritet 1.0 kolona „Ukupno", index.js:2013).
+    { key: 'qty_total_for_bucket', header: 'Ukupno', align: 'right', numeric: true, render: (r) => num(r.qty_total_for_bucket) },
+    // „Status" placement kao StatusBadge (paritet 1.0 kolona „Status" + DESIGN §5/§7).
+    { key: 'placement_status', header: 'Status', render: (r) => (r.placement_status ? <PlacementStatusBadge status={String(r.placement_status)} /> : '—') },
     { key: 'rok_izrade', header: 'Rok', sortable: true, render: (r) => (r.rok_izrade ? String(r.rok_izrade).slice(0, 10) : '—') },
+    // Akcije reda (paritet 1.0 „📋 RN/TP" + „TP" nalepnica) — stopPropagation da ne okine row-click istorije.
+    {
+      key: 'actions',
+      header: 'Akcije',
+      align: 'right',
+      render: (r) => (
+        <div className="flex items-center justify-end gap-1.5">
+          {r.work_order_id != null && (
+            <button
+              className="rounded-control border border-line px-2 py-1 text-xs text-ink-secondary hover:bg-surface-2"
+              title="Otvori tehnološki postupak (operacije + prijave)"
+              onClick={(e) => { e.stopPropagation(); setTpModalWo(String(r.work_order_id)); }}
+            >
+              RN/TP
+            </button>
+          )}
+          <Can permission={PERMISSIONS.LOKACIJE_LABELS}>
+            <button
+              className="rounded-control border border-line px-2 py-1 text-xs text-ink-secondary hover:bg-surface-2"
+              title="Nalepnica TP (barkod)"
+              onClick={(e) => { e.stopPropagation(); void printRowTp(r); }}
+            >
+              <Printer className="h-3.5 w-3.5" />
+            </button>
+          </Can>
+        </div>
+      ),
+    },
   ];
 
   // CSV = CEO filtrirani skup (fetch-all po stranama), ne samo tekuća strana.
@@ -272,6 +351,13 @@ export function ReportTab() {
         loading={q.isLoading}
         sort={sort ? { key: sort, dir: desc ? 'desc' : 'asc' } : null}
         onSortToggle={toggleSort}
+        onRowActivate={(r) =>
+          setHistory({
+            itemRefTable: String(r.item_ref_table ?? ''),
+            itemRefId: String(r.item_ref_id ?? ''),
+            orderNo: String(r.order_no ?? ''),
+          })
+        }
         empty={tableEmpty(q.isError, 'Nema rezultata', 'Suzi ili promeni filtere pregleda.')}
       />
 
@@ -281,6 +367,16 @@ export function ReportTab() {
           <Pager page={page} totalPages={totalPages} onPrev={() => setPage((p) => Math.max(1, p - 1))} onNext={() => setPage((p) => p + 1)} />
         )}
       </div>
+
+      {history && (
+        <ItemHistoryDialog
+          itemRefId={history.itemRefId}
+          itemRefTable={history.itemRefTable}
+          orderNo={history.orderNo || undefined}
+          onClose={() => setHistory(null)}
+        />
+      )}
+      {tpModalWo && <TpProcedureModal workOrderId={tpModalWo} onClose={() => setTpModalWo(null)} />}
     </div>
   );
 }

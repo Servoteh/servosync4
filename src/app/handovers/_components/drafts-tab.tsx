@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Info, Pencil, Plus, Printer, Send, Trash2 } from 'lucide-react';
+import { FileText, Info, Pencil, Plus, Printer, Send, Trash2 } from 'lucide-react';
 import {
   DRAFT_ITEM_DECISION,
   useCreateHandoverDraft,
@@ -24,7 +24,7 @@ import {
   type HandoverDraftDetail,
   type HandoverDraftItem,
 } from '@/api/handovers';
-import { useBom, useDrawing, type DrawingSummary } from '@/api/pdm';
+import { useBom, useDrawing, openDrawingPdf, type DrawingSummary } from '@/api/pdm';
 import { useProjectsLookup, type ProjectLookup } from '@/api/lookups';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
@@ -240,6 +240,54 @@ function newItemRow(): DraftItemDraft {
 }
 
 /**
+ * Vizuelni filter stavki nacrta (pretraga po broju/nazivu crteža). Prazan
+ * filter → sve stavke prolaze. Filtriranje je ISKLJUČIVO prikazno — niz `items`
+ * se ne dira, pa se brisanje/izmena i dalje rade po originalnom indeksu.
+ */
+function draftItemMatches(it: DraftItemDraft, filter: string): boolean {
+  const f = filter.trim().toLowerCase();
+  if (!f) return true;
+  const num = it.drawing?.drawingNumber?.toLowerCase() ?? '';
+  const name = it.drawing?.name?.toLowerCase() ?? '';
+  return num.includes(f) || name.includes(f);
+}
+
+/**
+ * Malo „Otvori PDF" dugme uz stavku nacrta (prikazuje se samo kad crtež ima
+ * uskladišten PDF). Isti obrazac kao bom-tree: async `openDrawingPdf`, sopstveni
+ * loading/greška state po dugmetu, PDF se otvara u novom tabu (kroz JWT).
+ */
+function DraftItemPdfButton({ drawingId }: { drawingId: number }) {
+  const [opening, setOpening] = useState(false);
+  const [error, setError] = useState(false);
+  async function open() {
+    setOpening(true);
+    setError(false);
+    try {
+      await openDrawingPdf(drawingId);
+    } catch {
+      setError(true);
+    } finally {
+      setOpening(false);
+    }
+  }
+  return (
+    <button
+      type="button"
+      onClick={open}
+      disabled={opening}
+      title={error ? 'Greška pri otvaranju PDF-a — pokušaj ponovo' : 'Otvori PDF crteža'}
+      aria-label="Otvori PDF"
+      className={`rounded-control border border-line p-1.5 hover:bg-surface-2 disabled:opacity-40 ${
+        error ? 'text-status-danger' : 'text-ink-secondary'
+      }`}
+    >
+      <FileText className="h-3.5 w-3.5" aria-hidden />
+    </button>
+  );
+}
+
+/**
  * Ovlašćenje za PREDAJU nacrta u primopredaju (Nenad 13–14.07). Nacrt sme da
  * KREIRA svako, ali „Predaj u primopredaju" (submit) sme SAMO fiksni odobravač
  * (`useApprovers` — worker id ∈ skup) ILI korisnik sa rolom „admin"
@@ -306,6 +354,8 @@ function DraftFormDialog({
   const [autoFillId, setAutoFillId] = useState<number | null>(null);
   // Neodobreni delovi preskočeni pri poslednjoj auto-popuni (brojevi crteža).
   const [skippedDrawings, setSkippedDrawings] = useState<string[]>([]);
+  // Vizuelna pretraga stavki (broj/naziv crteža) — NE dira niz `items`.
+  const [itemFilter, setItemFilter] = useState('');
   const lookups = useHandoverLookups();
   // Projektant nacrta = UVEK ulogovani korisnik (bez izbora); prikaz iz /auth/me.
   const { user: me } = useAuth();
@@ -333,6 +383,7 @@ function DraftFormDialog({
       setWarnings(null);
       setAutoFillId(prefill ? prefill.id : null);
       setSkippedDrawings([]);
+      setItemFilter('');
     }
   }, [open, draft, isEdit, prefillMainDrawing]);
 
@@ -666,47 +717,71 @@ function DraftFormDialog({
             )}
             {items.length > 0 && (
               <div className="space-y-2 rounded-control border border-line bg-surface-2/40 p-2.5">
-                {items.map((it, idx) => (
-                  <div key={it.key} className="flex items-end gap-2">
-                    <div className="flex-1">
-                      <ComboBox<Drawing>
-                        value={it.drawing}
-                        onChange={(d) =>
+                {/* Vizuelna pretraga stavki po broju/nazivu crteža — filtrira SAMO
+                    prikaz redova, niz `items` ostaje netaknut (indeksiranje čuvamo). */}
+                <SearchBox
+                  value={itemFilter}
+                  onChange={setItemFilter}
+                  placeholder="Pretraga stavki po broju/nazivu crteža…"
+                />
+                {items.map((it, idx) => {
+                  // Filter je VIZUELNI: red koji ne odgovara pretrazi se sakriva,
+                  // ali `idx` ostaje ORIGINALNI indeks stavke u nizu `items` —
+                  // onChange/Trash MORAJU da diraju tačnu stavku po njemu, ne po
+                  // filtriranom nizu.
+                  if (!draftItemMatches(it, itemFilter)) return null;
+                  return (
+                    <div key={it.key} className="flex items-end gap-2">
+                      <div className="flex-1">
+                        <ComboBox<Drawing>
+                          value={it.drawing}
+                          onChange={(d) =>
+                            setItems((prev) =>
+                              prev.map((p, i) => (i === idx ? { ...p, drawing: d } : p)),
+                            )
+                          }
+                          useSearch={useDrawingsLookup}
+                          getKey={(d) => d.id}
+                          getLabel={(d) => `${d.drawingNumber} / ${d.revision}`}
+                          getSublabel={(d) => d.name}
+                          placeholder="Broj crteža…"
+                        />
+                      </div>
+                      <Input
+                        type="number"
+                        min={1}
+                        value={it.quantityToProduce}
+                        onChange={(e) =>
                           setItems((prev) =>
-                            prev.map((p, i) => (i === idx ? { ...p, drawing: d } : p)),
+                            prev.map((p, i) =>
+                              i === idx ? { ...p, quantityToProduce: e.target.value } : p,
+                            ),
                           )
                         }
-                        useSearch={useDrawingsLookup}
-                        getKey={(d) => d.id}
-                        getLabel={(d) => `${d.drawingNumber} / ${d.revision}`}
-                        getSublabel={(d) => d.name}
-                        placeholder="Broj crteža…"
+                        className="w-20"
+                        title="Količina za izradu"
                       />
+                      {/* PDF crteža — samo kad stavka ima izabran crtež sa PDF-om. */}
+                      {it.drawing && it.drawing.hasPdf && (
+                        <DraftItemPdfButton drawingId={it.drawing.id} />
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setItems((prev) => prev.filter((_, i) => i !== idx))}
+                        className="rounded-control border border-line p-1.5 text-ink-secondary hover:bg-surface-2"
+                        aria-label="Ukloni stavku"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" aria-hidden />
+                      </button>
                     </div>
-                    <Input
-                      type="number"
-                      min={1}
-                      value={it.quantityToProduce}
-                      onChange={(e) =>
-                        setItems((prev) =>
-                          prev.map((p, i) =>
-                            i === idx ? { ...p, quantityToProduce: e.target.value } : p,
-                          ),
-                        )
-                      }
-                      className="w-20"
-                      title="Količina za izradu"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setItems((prev) => prev.filter((_, i) => i !== idx))}
-                      className="rounded-control border border-line p-1.5 text-ink-secondary hover:bg-surface-2"
-                      aria-label="Ukloni stavku"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" aria-hidden />
-                    </button>
-                  </div>
-                ))}
+                  );
+                })}
+                {/* Pretraga aktivna, a nijedna stavka ne odgovara → jasna poruka. */}
+                {itemFilter.trim() && !items.some((it) => draftItemMatches(it, itemFilter)) && (
+                  <p role="status" className="py-2 text-center text-sm text-ink-secondary">
+                    Nema u ovom nacrtu
+                  </p>
+                )}
               </div>
             )}
           </div>

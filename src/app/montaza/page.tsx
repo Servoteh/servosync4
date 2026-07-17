@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { FileText, GanttChartSquare, Layers, Table2, type LucideIcon } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
-import { AppShell } from '@/components/ui-kit/app-shell';
+import { AppShell, WideMode } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
 import { Tabs, type TabItem } from '@/app/reversi/_components/tabs';
 import { IzvestajiTab } from './_components/izvestaji-tab';
@@ -69,6 +69,9 @@ export default function MontazaPage() {
 
   return (
     <AppShell>
+      {/* Gantt pogledi su „široki": sidebar se auto-sklanja dok su aktivni (F1 shell);
+          hub/plan/izveštaji zadržavaju normalan raspored. */}
+      <WideMode active={view === 'gantt' || view === 'total'} />
       <PageHeader title="Plan montaže" />
       <div className="flex-1 space-y-4 overflow-auto p-6">
         {view === 'hub' ? (

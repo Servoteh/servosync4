@@ -78,36 +78,208 @@ function PeriodBar({ from, to, setFrom, setTo, onExport }: { from: string; to: s
   );
 }
 
-/* ── Bolovanja ── */
+/* ── Bolovanja (paritet 1.0 sickReport.js: filteri zaposleni/odeljenje/mesec/
+     godina/od-do + reset; kolone Br. evid./Σ dana/Prosek/Poslednje/Trenutno?;
+     KPI Prosek dana/radnik + Trenutno na bolovanju; XLSX 2 sheeta + CSV) ── */
+interface SickRow {
+  id: string;
+  name: string;
+  dept: string;
+  count: number;
+  days: number;
+  avg: number;
+  lastTo: string;
+  current: boolean;
+}
 function SickReport() {
+  const curYear = String(new Date().getFullYear());
+  const [emp, setEmp] = useState('');
+  const [dept, setDept] = useState('');
+  const [month, setMonth] = useState('');
+  const [year, setYear] = useState(curYear);
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
-  const { nm } = useNameMap();
-  const q = useReport<Row[]>('sick', { from: from || undefined, to: to || undefined });
+
+  /* Efektivni period (1.0 _readPeriodFor): Od/Do → Mesec → Godina → sva vremena. */
+  const period = useMemo(() => {
+    if (from || to) return { from: from || undefined, to: to || undefined };
+    if (month) {
+      const [y, m] = month.split('-').map(Number);
+      return { from: `${month}-01`, to: `${month}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}` };
+    }
+    if (year) return { from: `${year}-01-01`, to: `${year}-12-31` };
+    return {} as { from?: string; to?: string };
+  }, [from, to, month, year]);
+  const periodLabel = period.from || period.to ? `${period.from ? formatDate(period.from) : '…'} – ${period.to ? formatDate(period.to) : '…'}` : 'sva vremena';
+
+  /* Roster za dropdown-e i odeljenja — 'demo' izveštaj (kadrovska.read, kao i sick). */
+  const rosterQ = useReport<Row[]>('demo', {});
+  const roster = rosterQ.data?.data ?? [];
+  const empById = useMemo(() => new Map(roster.map((r) => [sv(r, 'id'), r])), [roster]);
+  const rosterSorted = useMemo(() => [...roster].sort((a, b) => sv(a, 'full_name').localeCompare(sv(b, 'full_name'), 'sr')), [roster]);
+  const departments = useMemo(
+    () => [...new Set(roster.map((r) => sv(r, 'department')).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'sr')),
+    [roster],
+  );
+
+  const q = useReport<Row[]>('sick', period);
   const episodes = q.data?.data ?? [];
-  const perEmp = useMemo(() => {
-    const m = new Map<string, { name: string; episodes: number; days: number }>();
+  const today = new Date().toISOString().slice(0, 10);
+
+  const { rows, kept, sumDays, currentNow } = useMemo(() => {
+    const m = new Map<string, { r: SickRow; durations: number[] }>();
+    let kept = 0;
     for (const e of episodes) {
       const id = sv(e, 'employee_id');
-      const cur = m.get(id) ?? { name: nm(id), episodes: 0, days: 0 };
-      cur.episodes += 1;
-      cur.days += svNum(e, 'days_count');
-      m.set(id, cur);
+      if (!id || (emp && id !== emp)) continue;
+      const er = empById.get(id);
+      if (dept && sv(er ?? {}, 'department') !== dept) continue;
+      kept++;
+      const df = sv(e, 'date_from').slice(0, 10);
+      const dt = sv(e, 'date_to').slice(0, 10);
+      const days = svNum(e, 'days_count');
+      let cur = m.get(id);
+      if (!cur) {
+        cur = { r: { id, name: er ? sv(er, 'full_name') : '(obrisan)', dept: sv(er ?? {}, 'department'), count: 0, days: 0, avg: 0, lastTo: '', current: false }, durations: [] };
+        m.set(id, cur);
+      }
+      cur.r.count += 1;
+      cur.r.days += days;
+      cur.durations.push(days);
+      if (df && dt && df <= today && dt >= today) cur.r.current = true;
+      if (dt && (!cur.r.lastTo || dt > cur.r.lastTo)) cur.r.lastTo = dt;
     }
-    return [...m.values()].sort((a, b) => b.days - a.days);
-  }, [episodes, nm]);
-  const totalDays = perEmp.reduce((s, r) => s + r.days, 0);
+    let sumDays = 0;
+    let currentNow = 0;
+    const rows = [...m.values()].map(({ r, durations }) => {
+      r.avg = durations.length ? Math.round((durations.reduce((a, b) => a + b, 0) / durations.length) * 10) / 10 : 0;
+      sumDays += r.days;
+      if (r.current) currentNow++;
+      return r;
+    });
+    rows.sort((a, b) => b.days - a.days || a.name.localeCompare(b.name, 'sr'));
+    return { rows, kept, sumDays, currentNow };
+  }, [episodes, emp, dept, empById, today]);
+  const avgPerEmp = rows.length ? Math.round((sumDays / rows.length) * 10) / 10 : 0;
 
-  const cols: Column<{ name: string; episodes: number; days: number }>[] = [
-    { key: 'name', header: 'Zaposleni', render: (r) => r.name },
-    { key: 'ep', header: 'Epizoda', align: 'right', render: (r) => r.episodes },
-    { key: 'days', header: 'Ukupno dana', align: 'right', render: (r) => r.days },
+  function reset() {
+    setEmp('');
+    setDept('');
+    setMonth('');
+    setYear(curYear);
+    setFrom('');
+    setTo('');
+  }
+  /* 1.0 pravila: mesec briše range; range briše mesec; godina briše mesec+range. */
+  const onMonth = (v: string) => { setMonth(v); setFrom(''); setTo(''); };
+  const onYear = (v: string) => { setYear(v); setMonth(''); setFrom(''); setTo(''); };
+  const onFrom = (v: string) => { setFrom(v); setMonth(''); };
+  const onTo = (v: string) => { setTo(v); setMonth(''); };
+
+  const detailRows = useMemo(() => {
+    const out: (string | number)[][] = [];
+    for (const e of episodes) {
+      const id = sv(e, 'employee_id');
+      if (!id || (emp && id !== emp)) continue;
+      const er = empById.get(id);
+      if (dept && sv(er ?? {}, 'department') !== dept) continue;
+      out.push([
+        er ? sv(er, 'full_name') : '(obrisan)',
+        sv(er ?? {}, 'department'),
+        sv(e, 'date_from').slice(0, 10),
+        sv(e, 'date_to').slice(0, 10),
+        svNum(e, 'days_count'),
+        sv(e, 'absence_subtype') || 'obicno',
+      ]);
+    }
+    return out.sort((a, b) => String(a[0]).localeCompare(String(b[0]), 'sr'));
+  }, [episodes, emp, dept, empById]);
+
+  function exportSickXlsx() {
+    if (!rows.length) { toast('⚠ Nema podataka za izvoz'); return; }
+    const summary: (string | number)[][] = [
+      ['IZVEŠTAJ O BOLOVANJIMA'],
+      ['Period', periodLabel],
+      ['Filter — zaposleni', emp ? sv(empById.get(emp) ?? {}, 'full_name') || emp : 'Svi'],
+      ['Filter — odeljenje', dept || 'Sva'],
+      [],
+      ['Zaposleni', 'Odeljenje', 'Broj evid.', 'Σ dana (u periodu)', 'Prosek (d) po evid.', 'Poslednje bolovanje', 'Trenutno?'],
+      ...rows.map((r) => [r.name, r.dept, r.count, r.days, r.avg, r.lastTo, r.current ? 'DA' : 'ne']),
+    ];
+    const detail: (string | number)[][] = [['Zaposleni', 'Odeljenje', 'Od', 'Do', 'Dana u periodu', 'Podtip'], ...detailRows];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summary), 'Bolovanja - sažetak');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(detail), 'Bolovanja - detalji');
+    const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+    const tag = (period.from || '') + (period.to ? '_' + period.to : '') || 'all';
+    downloadBlob(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `Bolovanja_${tag}.xlsx`);
+  }
+  function exportSickCsv() {
+    if (!detailRows.length) { toast('⚠ Nema podataka za izvoz'); return; }
+    const esc = (v: string | number) => { const s = String(v); return /[",;\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+    const csv = [['Zaposleni', 'Odeljenje', 'Od', 'Do', 'Dana u periodu', 'Podtip'], ...detailRows].map((r) => r.map(esc).join(';')).join('\r\n');
+    const tag = (period.from || '') + (period.to ? '_' + period.to : '') || 'all';
+    downloadBlob(new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' }), `Bolovanja_${tag}.csv`);
+  }
+
+  const cols: Column<SickRow>[] = [
+    { key: 'name', header: 'Zaposleni', render: (r) => <span className="font-medium text-ink">{r.name}</span> },
+    { key: 'dept', header: 'Odeljenje', render: (r) => r.dept || '—' },
+    { key: 'ep', header: 'Br. evid.', align: 'right', render: (r) => r.count },
+    { key: 'days', header: 'Σ dana (period)', align: 'right', render: (r) => <b>{r.days}</b> },
+    { key: 'avg', header: 'Prosek (d)', align: 'right', render: (r) => r.avg },
+    { key: 'last', header: 'Poslednje', render: (r) => (r.lastTo ? formatDate(r.lastTo) : '—') },
+    { key: 'cur', header: 'Trenutno?', render: (r) => <StatusBadge tone={r.current ? 'warn' : 'neutral'} label={r.current ? 'DA' : 'ne'} /> },
   ];
+
   return (
     <div className="space-y-3">
-      <PeriodBar from={from} to={to} setFrom={setFrom} setTo={setTo} onExport={() => exportXlsx('bolovanja.xlsx', ['Zaposleni', 'Epizoda', 'Dana'], perEmp.map((r) => [r.name, r.episodes, r.days]))} />
-      <SummaryChips items={[{ label: 'Zaposlenih na BO', value: perEmp.length }, { label: 'Ukupno dana', value: totalDays }, { label: 'Epizoda', value: episodes.length }]} />
-      <DataTable columns={cols} rows={perEmp} rowKey={(r) => r.name} loading={q.isLoading} empty={<EmptyState title="Nema bolovanja u periodu" />} />
+      <div className="flex flex-wrap items-end gap-2">
+        <label className="flex flex-col gap-1 text-2xs uppercase text-ink-secondary">Zaposleni
+          <Select value={emp} onChange={setEmp} className="w-52">
+            <option value="">Svi zaposleni</option>
+            {rosterSorted.map((r) => (
+              <option key={sv(r, 'id')} value={sv(r, 'id')}>{sv(r, 'full_name')}{r['is_active'] === false ? ' (neaktivan)' : ''}</option>
+            ))}
+          </Select>
+        </label>
+        <label className="flex flex-col gap-1 text-2xs uppercase text-ink-secondary">Odeljenje / firma
+          <Select value={dept} onChange={setDept} className="w-44">
+            <option value="">Sva odeljenja</option>
+            {departments.map((d) => <option key={d} value={d}>{d}</option>)}
+          </Select>
+        </label>
+        <label className="flex flex-col gap-1 text-2xs uppercase text-ink-secondary">Mesec
+          <input type="month" value={month} onChange={(e) => onMonth(e.target.value)} className="h-9 rounded-control border border-line bg-surface px-2 text-sm" />
+        </label>
+        <label className="flex flex-col gap-1 text-2xs uppercase text-ink-secondary">Godina
+          <input type="number" min={2000} max={2100} value={year} onChange={(e) => onYear(e.target.value)} className="h-9 w-24 rounded-control border border-line bg-surface px-2 text-sm" />
+        </label>
+        <label className="flex flex-col gap-1 text-2xs uppercase text-ink-secondary">Od
+          <div className="w-40"><DateField value={from} onChange={onFrom} /></div>
+        </label>
+        <label className="flex flex-col gap-1 text-2xs uppercase text-ink-secondary">Do
+          <div className="w-40"><DateField value={to} onChange={onTo} /></div>
+        </label>
+        <Button variant="ghost" onClick={reset}>Resetuj filtere</Button>
+        <div className="flex-1" />
+        <span className="text-2xs text-ink-secondary">{kept} evidencija · {rows.length} zaposlenih</span>
+        <Button variant="secondary" onClick={exportSickXlsx}>📊 Excel</Button>
+        <Button variant="secondary" onClick={exportSickCsv}>📑 CSV</Button>
+      </div>
+      <SummaryChips
+        items={[
+          { label: 'Period', value: periodLabel },
+          { label: 'Zaposlenih sa bolovanjem', value: rows.length, tone: rows.length ? 'accent' : 'default' },
+          { label: 'Σ Dana', value: sumDays, tone: sumDays ? 'warn' : 'default' },
+          { label: 'Prosek dana / radnik', value: avgPerEmp },
+          { label: 'Trenutno na bolovanju', value: currentNow, tone: currentNow ? 'warn' : 'default' },
+        ]}
+      />
+      <DataTable columns={cols} rows={rows} rowKey={(r) => r.id} loading={q.isLoading || rosterQ.isLoading} empty={<EmptyState title="Nema bolovanja u izabranom periodu" />} />
+      {rows.length > 0 && (
+        <p className="text-xs font-semibold text-ink">UKUPNO: {rows.reduce((s, r) => s + r.count, 0)} evidencija · {sumDays} dana</p>
+      )}
     </div>
   );
 }
@@ -381,28 +553,62 @@ function RiskReport() {
 
 /* ── View-bazirani izveštaji (medical/certs/audit) — dinamičke kolone ── */
 const VIEW_HIDDEN = new Set(['id', 'employee_id', 'record_id']);
+/* Redundantne kolone view-a po izveštaju (ime je već u employee_name). */
+const VIEW_KIND_HIDDEN: Record<string, Set<string>> = {
+  medical: new Set(['employee_first_name', 'employee_last_name', 'employee_active']),
+};
+/* Srpske labele kolona; nepoznati ključevi padaju na snake_case → razmaci. */
+const VIEW_LABELS: Record<string, string> = {
+  employee_name: 'Zaposleni',
+  employee_position: 'Pozicija',
+  employee_department: 'Odeljenje',
+  medical_exam_date: 'Datum pregleda',
+  medical_exam_expires: 'Važi do',
+  days_to_expiry: 'Dana do isteka',
+  status: 'Status',
+  cert_type: 'Tip',
+  cert_name: 'Sertifikat',
+  issued_on: 'Izdat',
+  expires_on: 'Važi do',
+};
+/* Prevod status vrednosti view-a (v_kadr_medical_exam_status / certificate_status). */
+const VIEW_STATUS_SR: Record<string, { label: string; tone: Tone }> = {
+  never: { label: 'nije evidentiran', tone: 'neutral' },
+  unknown_expiry: { label: 'bez datuma isteka', tone: 'warn' },
+  expired: { label: 'istekao', tone: 'danger' },
+  expiring_soon: { label: 'ističe uskoro', tone: 'warn' },
+  ok: { label: 'važi', tone: 'success' },
+};
 function ViewReport({ kind, title }: { kind: 'medical' | 'certs' | 'audit'; title: string }) {
   const q = useReport<Row[]>(kind, {});
   const rows = q.data?.data ?? [];
+  const kindHidden = VIEW_KIND_HIDDEN[kind];
   const columns = useMemo(() => {
     const keys = new Set<string>();
-    for (const r of rows.slice(0, 20)) for (const k of Object.keys(r)) if (!VIEW_HIDDEN.has(k)) keys.add(k);
+    for (const r of rows.slice(0, 20)) for (const k of Object.keys(r)) if (!VIEW_HIDDEN.has(k) && !kindHidden?.has(k)) keys.add(k);
     return [...keys];
-  }, [rows]);
+  }, [rows, kindHidden]);
   const fmtVal = (v: unknown): string => {
     if (v == null) return '—';
     const s = String(v);
     if (/^\d{4}-\d{2}-\d{2}(T|$)/.test(s)) return formatDate(s);
-    return s;
+    return VIEW_STATUS_SR[s]?.label ?? s;
   };
-  const cols: Column<Row>[] = columns.map((k) => ({ key: k, header: k.replace(/_/g, ' '), render: (r: Row) => fmtVal(r[k]) }));
+  const cols: Column<Row>[] = columns.map((k) => ({
+    key: k,
+    header: VIEW_LABELS[k] ?? k.replace(/_/g, ' '),
+    render: (r: Row) => {
+      const st = k === 'status' ? VIEW_STATUS_SR[String(r[k])] : undefined;
+      return st ? <StatusBadge tone={st.tone} label={st.label} /> : fmtVal(r[k]);
+    },
+  }));
 
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2">
         <h3 className="text-sm font-semibold text-ink">{title}</h3>
         <div className="flex-1" />
-        <Button variant="secondary" onClick={() => exportXlsx(`${kind}.xlsx`, columns, rows.map((r) => columns.map((k) => fmtVal(r[k]))))}>⬇ Izvezi XLSX</Button>
+        <Button variant="secondary" onClick={() => exportXlsx(`${kind}.xlsx`, columns.map((k) => VIEW_LABELS[k] ?? k.replace(/_/g, ' ')), rows.map((r) => columns.map((k) => fmtVal(r[k]))))}>⬇ Izvezi XLSX</Button>
       </div>
       <SummaryChips items={[{ label: 'Zapisa', value: rows.length }]} />
       {cols.length === 0 ? (

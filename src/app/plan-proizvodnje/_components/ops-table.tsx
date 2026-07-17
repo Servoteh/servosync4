@@ -10,10 +10,12 @@ import {
   ChevronDown,
   FileText,
   Undo2,
+  HelpCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { Button } from '@/components/ui-kit/button';
-import { Input } from '@/components/ui-kit/form-field';
+import { Input, FormField } from '@/components/ui-kit/form-field';
+import { Dialog } from '@/components/ui-kit/dialog';
 import { toast } from '@/lib/toast';
 import { useCan } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
@@ -39,6 +41,7 @@ import {
   num,
 } from './shared';
 import { PositionPopover } from './position-popover';
+import { WhyBottleneckModal } from './why-bottleneck-modal';
 import { formatDate } from '@/lib/format';
 
 const OPEN_STATUSES = new Set(['waiting', 'in_progress', 'blocked']);
@@ -49,6 +52,8 @@ export function OpsTable({
   selectable,
   selected,
   onToggleSelect,
+  allSelected,
+  onToggleAll,
   reorderable,
   onReassign,
   onTp,
@@ -60,6 +65,9 @@ export function OpsTable({
   selectable?: boolean;
   selected?: Set<string>;
   onToggleSelect?: (o: OpRow) => void;
+  /** Header select-all (GAP-PM-23) — samo trenutno prikazani/filtrirani redovi. */
+  allSelected?: boolean;
+  onToggleAll?: () => void;
   reorderable?: boolean;
   onReassign: (o: OpRow) => void;
   onTp: (o: OpRow) => void;
@@ -74,6 +82,11 @@ export function OpsTable({
   const [expanded, setExpanded] = useState<string | null>(null);
   const [dragKey, setDragKey] = useState<string | null>(null);
   const [posPopover, setPosPopover] = useState<{ op: OpRow; anchor: DOMRect } | null>(null);
+  // GAP-PM-16 — slanje u kooperaciju kroz modal (partner + očekivani datum povratka),
+  // umesto window.prompt (koji je slao samo partnera, bez datuma povratka).
+  const [coopSend, setCoopSend] = useState<OpRow | null>(null);
+  // GAP-PM-18 — „Zašto je ovo ovde?" bottleneck dijagnostika (dostupno i read-only).
+  const [whyOp, setWhyOp] = useState<OpRow | null>(null);
 
   function cycleStatus(o: OpRow) {
     if (!canEdit) return;
@@ -188,7 +201,19 @@ export function OpsTable({
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-line bg-surface-2 text-left text-2xs uppercase tracking-wider text-ink-secondary">
-            {selectable && <th className="w-8 px-2 py-1.5" />}
+            {selectable && (
+              <th className="w-8 px-2 py-1.5">
+                {onToggleAll && (
+                  <input
+                    type="checkbox"
+                    checked={!!allSelected}
+                    onChange={onToggleAll}
+                    aria-label="Izaberi sve prikazane"
+                    title="Izaberi/poništi sve prikazane"
+                  />
+                )}
+              </th>
+            )}
             {reorderable && <th className="w-6 px-1 py-1.5" />}
             <th className="px-2 py-1.5" title="Apsolutna pozicija u redosledu mašine — klik za unos">Redosled</th>
             <th className="px-2 py-1.5" title="Redni broj u prikazanoj listi">R.br.</th>
@@ -343,6 +368,9 @@ export function OpsTable({
                           )}
                         </span>
                       </IconBtn>
+                      <IconBtn title="Zašto je ovo ovde?" onClick={() => setWhyOp(o)}>
+                        <HelpCircle className="h-3.5 w-3.5" />
+                      </IconBtn>
                       <IconBtn title="Detalji" onClick={() => setExpanded(open ? null : key)}>
                         <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', open && 'rotate-180')} />
                       </IconBtn>
@@ -386,15 +414,7 @@ export function OpsTable({
                             <Button
                               variant="ghost"
                               className="h-8 px-2 text-xs"
-                              onClick={() => {
-                                const partner = prompt('Kooperant (partner):') ?? '';
-                                overlay.mutate({
-                                  workOrderId: o.work_order_id,
-                                  lineId: o.line_id,
-                                  cooperationStatus: 'external',
-                                  cooperationPartner: partner || null,
-                                });
-                              }}
+                              onClick={() => setCoopSend(o)}
                             >
                               Pošalji u kooperaciju
                             </Button>
@@ -433,7 +453,72 @@ export function OpsTable({
           onClose={() => setPosPopover(null)}
         />
       )}
+
+      {coopSend && (
+        <CoopSendModal
+          op={coopSend}
+          onClose={() => setCoopSend(null)}
+          onSubmit={(partner, ret) => {
+            overlay.mutate({
+              workOrderId: coopSend.work_order_id,
+              lineId: coopSend.line_id,
+              cooperationStatus: 'external',
+              cooperationPartner: partner || null,
+              cooperationExpectedReturn: ret || null,
+            });
+            setCoopSend(null);
+          }}
+        />
+      )}
+
+      {whyOp && <WhyBottleneckModal op={whyOp} onClose={() => setWhyOp(null)} />}
     </div>
+  );
+}
+
+/** Modal za slanje operacije u kooperaciju: partner + očekivani datum povratka (GAP-PM-16). */
+function CoopSendModal({
+  op,
+  onClose,
+  onSubmit,
+}: {
+  op: OpRow;
+  onClose: () => void;
+  onSubmit: (partner: string, expectedReturn: string) => void;
+}) {
+  const [partner, setPartner] = useState(op.cooperation_partner ?? '');
+  const [ret, setRet] = useState(
+    op.cooperation_expected_return ? String(op.cooperation_expected_return).slice(0, 10) : '',
+  );
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title="Pošalji u kooperaciju"
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>Otkaži</Button>
+          <Button onClick={() => onSubmit(partner.trim(), ret)}>Pošalji</Button>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        <p className="text-xs text-ink-secondary">
+          {op.broj_crteza ?? '—'} · RN {op.rn_ident_broj ?? '—'} · op. {String(op.operacija ?? '—')}
+        </p>
+        <FormField label="Kooperant (partner)">
+          <Input value={partner} onChange={(e) => setPartner(e.target.value)} placeholder="Naziv partnera…" />
+        </FormField>
+        <FormField label="Očekivani povratak">
+          <input
+            type="date"
+            value={ret}
+            onChange={(e) => setRet(e.target.value)}
+            className="h-9 w-full rounded-control border border-line bg-surface px-3 text-base text-ink"
+          />
+        </FormField>
+      </div>
+    </Dialog>
   );
 }
 

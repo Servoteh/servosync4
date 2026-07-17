@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { RefreshCw, Lock, ChevronRight, ArrowLeft, Settings2 } from 'lucide-react';
 import type { OpRow, PpMachine } from '@/api/plan-proizvodnje';
-import { useMachines, useMachineOperationsAccum, useDeptOperations } from '@/api/plan-proizvodnje';
+import { useMachines, useMachineOperationsAccum, useDeptOperations, opKey } from '@/api/plan-proizvodnje';
 import { useCan } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
 import { cn } from '@/lib/cn';
@@ -15,6 +15,7 @@ import {
   filterMachinesForDept,
   machineFitsDept,
   filterOpsByRnOrDrawing,
+  findDeptForMachineCode,
   type Dept,
 } from './shared';
 import { LS, lsGet, lsSet, lsGetBool, lsSetBool } from './pp-storage';
@@ -30,12 +31,20 @@ import { useRnFilter, RnFilterInput, FilterCounter } from './rn-filter';
  */
 export function PoMasiniTab({
   onReassign,
+  onBulkReassign,
   onTp,
   onSkice,
+  jumpTo,
+  onJumpConsumed,
 }: {
   onReassign: (o: OpRow) => void;
+  // GAP-PM-23 — bulk reassign iz „Po mašini" (multi-select + „Premesti izabrane").
+  onBulkReassign: (rows: OpRow[]) => void;
   onTp: (o: OpRow) => void;
   onSkice: (o: OpRow) => void;
+  // GAP-PM-12 — skok iz Zauzetost/Pregled: preselektuj odeljenje+mašinu i uđi u drill.
+  jumpTo?: string | null;
+  onJumpConsumed?: () => void;
 }) {
   const can = useCan();
   const canEdit = can(PERMISSIONS.PLAN_PROIZVODNJE_EDIT);
@@ -62,6 +71,18 @@ export function PoMasiniTab({
     if (!known || !machineFitsDept(machine, dept)) setMachine('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allMachines, deptSlug]);
+
+  // GAP-PM-12 — primeni skok iz Zauzetost/Pregled: odredi odeljenje mašine, uđi u drill.
+  useEffect(() => {
+    if (!jumpTo) return;
+    const slug = findDeptForMachineCode(jumpTo);
+    setDeptSlug(slug);
+    setMachine(jumpTo);
+    lsSet(LS.lastDept, slug);
+    lsSet(LS.lastMachine, jumpTo);
+    onJumpConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jumpTo]);
 
   function selectDept(slug: string) {
     if (slug === deptSlug) return;
@@ -110,6 +131,7 @@ export function PoMasiniTab({
           onToggleRework={toggleRework}
           canEdit={canEdit}
           onReassign={onReassign}
+          onBulkReassign={onBulkReassign}
           onTp={onTp}
           onSkice={onSkice}
         />
@@ -124,6 +146,7 @@ export function PoMasiniTab({
           onToggleRework={toggleRework}
           canEdit={canEdit}
           onReassign={onReassign}
+          onBulkReassign={onBulkReassign}
           onTp={onTp}
           onSkice={onSkice}
         />
@@ -248,7 +271,7 @@ interface RnHandle {
   active: boolean;
 }
 
-/** Zajednička tabela operacija po mašini sa „Još RN" + RN filter + rework. */
+/** Zajednička tabela operacija po mašini sa „Još RN" + RN filter + rework + bulk reassign. */
 function MachineOpsTable({
   machine,
   rn,
@@ -257,6 +280,7 @@ function MachineOpsTable({
   toolbar,
   canEdit,
   onReassign,
+  onBulkReassign,
   onTp,
   onSkice,
 }: {
@@ -267,10 +291,12 @@ function MachineOpsTable({
   toolbar: React.ReactNode;
   canEdit: boolean;
   onReassign: (o: OpRow) => void;
+  onBulkReassign: (rows: OpRow[]) => void;
   onTp: (o: OpRow) => void;
   onSkice: (o: OpRow) => void;
 }) {
   const q = useMachineOperationsAccum(machine || null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const filtered = useMemo(() => {
     let out = filterOpsByRnOrDrawing(q.rows, rn.applied);
@@ -278,8 +304,26 @@ function MachineOpsTable({
     return out;
   }, [q.rows, rn.applied, reworkOnly]);
 
-  // Drag isključen dok je RN filter ili rework filter aktivan (paritet 1.0 canDragInCurrentView).
-  const reorderable = !rn.active && !reworkOnly;
+  // Selekcija „prune on render": zadrži samo ključeve koji su još u prikazu (paritet 1.0).
+  const filteredKeys = useMemo(() => new Set(filtered.map(opKey)), [filtered]);
+  const selectedRows = useMemo(() => filtered.filter((o) => selected.has(opKey(o))), [filtered, selected]);
+  const allSelected = filtered.length > 0 && filtered.every((o) => selected.has(opKey(o)));
+
+  function toggle(o: OpRow) {
+    setSelected((prev) => {
+      const next = new Set([...prev].filter((k) => filteredKeys.has(k)));
+      const k = opKey(o);
+      if (next.has(k)) next.delete(k);
+      else next.add(k);
+      return next;
+    });
+  }
+  function toggleAll() {
+    setSelected(() => (allSelected ? new Set() : new Set(filtered.map(opKey))));
+  }
+
+  // Drag isključen dok je RN filter, rework filter ILI selekcija aktivna (paritet 1.0 canDragInCurrentView).
+  const reorderable = !rn.active && !reworkOnly && selected.size === 0;
 
   return (
     <div className="space-y-3">
@@ -298,6 +342,25 @@ function MachineOpsTable({
         <RnFilterInput value={rn.raw} onChange={rn.setRaw} />
         <FilterCounter shown={filtered.length} total={q.rows.length} />
         <div className="ml-auto flex items-center gap-2">
+          {canEdit && selectedRows.length > 0 && (
+            <>
+              <span className="text-sm text-ink">{selectedRows.length} izabrano</span>
+              <button
+                type="button"
+                onClick={() => onBulkReassign(selectedRows)}
+                className="inline-flex h-8 items-center rounded-control bg-accent px-3 text-xs font-medium text-accent-fg hover:opacity-90"
+              >
+                Premesti izabrane ({selectedRows.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelected(new Set())}
+                className="inline-flex h-8 items-center rounded-control border border-line px-2 text-xs text-ink-secondary hover:bg-surface-2"
+              >
+                Poništi
+              </button>
+            </>
+          )}
           <ReadonlyBadge canEdit={canEdit} />
         </div>
       </div>
@@ -320,6 +383,11 @@ function MachineOpsTable({
           <OpsTable
             ops={filtered}
             machine={machine}
+            selectable={canEdit}
+            selected={selected}
+            onToggleSelect={toggle}
+            allSelected={allSelected}
+            onToggleAll={toggleAll}
             reorderable={reorderable}
             onReassign={onReassign}
             onTp={onTp}
@@ -356,6 +424,7 @@ function DrillDownView({
   onToggleRework,
   canEdit,
   onReassign,
+  onBulkReassign,
   onTp,
   onSkice,
 }: {
@@ -368,6 +437,7 @@ function DrillDownView({
   onToggleRework: (v: boolean) => void;
   canEdit: boolean;
   onReassign: (o: OpRow) => void;
+  onBulkReassign: (rows: OpRow[]) => void;
   onTp: (o: OpRow) => void;
   onSkice: (o: OpRow) => void;
 }) {
@@ -375,12 +445,14 @@ function DrillDownView({
   const name = (m?.name as string) || (m?.naziv as string) || '';
   return (
     <MachineOpsTable
+      key={`${dept.slug}:${machine}`}
       machine={machine}
       rn={rn}
       reworkOnly={reworkOnly}
       onToggleRework={onToggleRework}
       canEdit={canEdit}
       onReassign={onReassign}
+      onBulkReassign={onBulkReassign}
       onTp={onTp}
       onSkice={onSkice}
       toolbar={
@@ -413,6 +485,7 @@ function SveView({
   onToggleRework,
   canEdit,
   onReassign,
+  onBulkReassign,
   onTp,
   onSkice,
 }: {
@@ -424,6 +497,7 @@ function SveView({
   onToggleRework: (v: boolean) => void;
   canEdit: boolean;
   onReassign: (o: OpRow) => void;
+  onBulkReassign: (rows: OpRow[]) => void;
   onTp: (o: OpRow) => void;
   onSkice: (o: OpRow) => void;
 }) {
@@ -487,12 +561,14 @@ function SveView({
 
   return (
     <MachineOpsTable
+      key={machine}
       machine={machine}
       rn={rn}
       reworkOnly={reworkOnly}
       onToggleRework={onToggleRework}
       canEdit={canEdit}
       onReassign={onReassign}
+      onBulkReassign={onBulkReassign}
       onTp={onTp}
       onSkice={onSkice}
       toolbar={dropdown}

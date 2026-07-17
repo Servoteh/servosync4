@@ -131,6 +131,38 @@ export function useDashboard() {
   });
 }
 
+// ══════════════════════════════════════════════════ board (#33)
+
+export interface BoardDue {
+  task_id: string;
+  machine_code: string;
+  title: string;
+  severity: string | null;
+  interval_value: number | null;
+  interval_unit: string | null;
+  next_due_at: string;
+  bucket: string;
+}
+export interface BoardOverride {
+  machineCode: string;
+  status: string;
+  reason: string | null;
+  validUntil: string | null;
+}
+export interface BoardData {
+  overdue: BoardDue[];
+  today: BoardDue[];
+  week: BoardDue[];
+  overrides: BoardOverride[];
+  machineNames: { machineCode: string; name: string }[];
+}
+export function useBoard() {
+  return useQuery({
+    queryKey: ['odr', 'board'],
+    queryFn: () => apiFetch<One<BoardData>>(`${BASE}/board`),
+  });
+}
+
 // ══════════════════════════════════════════════════ mašine
 
 export interface Machine {
@@ -168,6 +200,12 @@ export type MachineDetail = MachineRow & { statusOverride: StatusOverride | null
 
 export interface MachinesParams {
   q?: string;
+  /** efektivni op-status (running/degraded/down/maintenance) — 1.0 chip (P0 filter). */
+  status?: string;
+  /** rok grupa: "overdue" | "danas" | "7d" (P0 filter). */
+  deadline?: string;
+  /** tačna lokacija (maint_machines.location) — 1.0 select (P0 filter). */
+  location?: string;
   source?: string;
   archived?: boolean;
   mine?: boolean;
@@ -187,11 +225,12 @@ export function useMachine(code: string | null) {
     queryFn: () => apiFetch<One<MachineDetail>>(`${BASE}/machines/${encodeURIComponent(code!)}`),
   });
 }
-export function useImportableMachines(enabled: boolean) {
+export function useImportableMachines(enabled: boolean, includeNoProcedure = false) {
   return useQuery({
-    queryKey: ['odr', 'machines', 'importable'],
+    queryKey: ['odr', 'machines', 'importable', includeNoProcedure],
     enabled,
-    queryFn: () => apiFetch<Rows<ViewRow>>(`${BASE}/machines/importable`),
+    queryFn: () =>
+      apiFetch<Rows<ViewRow>>(`${BASE}/machines/importable${qs({ includeNoProcedure: includeNoProcedure || undefined })}`),
   });
 }
 export interface DeletionLogRow {
@@ -202,6 +241,8 @@ export interface DeletionLogRow {
   deletedAt: string;
   deletedByEmail: string | null;
   relatedCounts: Record<string, number>;
+  /** Pun snapshot obrisanog reda mašine (jsonb) — paritet 1.0 log prikaza. */
+  snapshot: Record<string, unknown> | null;
 }
 export function useDeletionLog(enabled: boolean) {
   return useQuery({
@@ -378,6 +419,8 @@ export interface WorkOrder {
   assetId: string;
   assetType: AssetType;
   sourceIncidentId: string | null;
+  /** Preventivni šablon iz kog je nalog nastao — anti-duplikat provera (paritet 1.0). */
+  sourcePreventiveTaskId: string | null;
   title: string;
   description: string | null;
   priority: WoPriority;
@@ -399,7 +442,14 @@ export interface WorkOrder {
   odometerKmAtService: number | null;
   externalServicerName: string | null;
 }
-export type WorkOrderRow = WorkOrder & { group: WoGroup | null };
+/** Sredstvo naloga (H4) — BE batch-resolve iz maint_assets (WO lista i detalj). */
+export interface WoAsset {
+  assetId: string;
+  assetCode: string;
+  name: string;
+  assetType: AssetType | string;
+}
+export type WorkOrderRow = WorkOrder & { group: WoGroup | null; asset: WoAsset | null };
 export interface WoEvent {
   id: string;
   woId: string;
@@ -429,7 +479,13 @@ export interface WoLabor {
   notes: string | null;
   createdAt: string;
 }
-export type WorkOrderDetail = WorkOrderRow & { events: WoEvent[]; parts: WoPart[]; labor: WoLabor[] };
+export type WorkOrderDetail = WorkOrderRow & {
+  /** source_incident_id — link „Otvori incident" u detalju (BE findWorkOrder). */
+  incidentId: string | null;
+  events: WoEvent[];
+  parts: WoPart[];
+  labor: WoLabor[];
+};
 export interface AssignableUser {
   user_id: string;
   full_name: string;
@@ -438,12 +494,18 @@ export interface AssignableUser {
 }
 
 export interface WorkOrdersParams {
+  /** Pretraga (broj/naslov/opis/šifra+naziv sredstva) — BE `q` (paritet 1.0). */
+  q?: string;
   status?: string;
   group?: string;
   priority?: string;
   type?: string;
   assetId?: string;
   mine?: boolean;
+  /** „Samo otvoreni" — BE default ON; prosledi `false` da prikažeš i zavrsen/otkazan. */
+  openOnly?: boolean;
+  /** „Kasni rok (WO)" — samo otvoreni sa due_at < now. */
+  overdue?: boolean;
   page?: number;
   pageSize?: number;
 }
@@ -466,6 +528,18 @@ export function useAssignableUsers(enabled: boolean) {
     enabled,
     queryFn: () => apiFetch<Rows<AssignableUser>>(`${BASE}/work-orders/assignable`),
   });
+}
+
+/**
+ * Anti-duplikat pre-provera (paritet 1.0 `fetchOpenWoForPreventiveTask`, maintenance.js:541):
+ * postoji li OTVOREN radni nalog za dati preventivni zadatak. BE due-red
+ * (`v_maint_task_due_dates`) NE nosi `has_open_wo`, a nema ni ciljanog filtera po
+ * `source_preventive_task_id`, pa — kao 1.0 — povučemo otvorene naloge (openOnly default ON)
+ * i nađemo prvi čiji je `sourcePreventiveTaskId` == taskId. Poziva se na klik (van hook-a).
+ */
+export async function fetchOpenWoForTask(taskId: string): Promise<WorkOrderRow | null> {
+  const res = await apiFetch<List<WorkOrderRow>>(`${BASE}/work-orders${qs({ pageSize: 200 })}`);
+  return res.data.find((w) => w.sourcePreventiveTaskId === taskId) ?? null;
 }
 
 // ══════════════════════════════════════════════════ vozila / vozači
@@ -590,11 +664,16 @@ export function useVehicleTires(id: string | null) {
     queryFn: () => apiFetch<Rows<Tire>>(`${BASE}/vehicles/${id}/tires`),
   });
 }
+/**
+ * Servisni plan vozila — READ vraća `v_maint_vehicle_service_plan_due` (SNAKE_CASE view sa
+ * računatim due kolonama: plan_id/name/interval_km/interval_months/last_done_at/next_due_at/
+ * due_status/days_to_due/km_to_due/has_open_wo/open_wo_id/active). Mutacije koriste camelCase DTO.
+ */
 export function useVehicleServicePlan(id: string | null) {
   return useQuery({
     queryKey: ['odr', 'vehicles', id, 'service-plan'],
     enabled: !!id,
-    queryFn: () => apiFetch<Rows<VehicleServicePlan>>(`${BASE}/vehicles/${id}/service-plan`),
+    queryFn: () => apiFetch<Rows<ViewRow>>(`${BASE}/vehicles/${id}/service-plan`),
   });
 }
 export function useVehicleParts(id: string | null) {
@@ -627,6 +706,7 @@ export interface Driver {
   driverId: string;
   fullName: string;
   isInternal: boolean;
+  authUserId: string | null;
   driversLicenseNumber: string | null;
   driversLicenseCategories: string[];
   driversLicenseValidUntil: string | null;
@@ -639,6 +719,7 @@ export interface Driver {
   notes: string | null;
   active: boolean;
   archivedAt: string | null;
+  archiveReason: string | null;
 }
 export interface DriverDoc extends MachineFile { validUntil: string | null }
 export type DriverDetail = Driver & { documents: DriverDoc[] };
@@ -653,6 +734,23 @@ export function useDriver(id: string | null) {
     queryKey: ['odr', 'drivers', 'detail', id],
     enabled: !!id,
     queryFn: () => apiFetch<One<DriverDetail>>(`${BASE}/drivers/${id}`),
+  });
+}
+
+/** Zaposleni za auto-detect vozač↔zaposleni (GET /lookups/employees, write krug). */
+export interface EmployeeLookup {
+  id: string;
+  fullName: string | null;
+  firstName: string | null;
+  lastName: string | null;
+  email: string | null;
+}
+export function useEmployeeLookup(enabled: boolean) {
+  return useQuery({
+    queryKey: ['odr', 'lookups', 'employees'],
+    enabled,
+    staleTime: 300_000,
+    queryFn: () => apiFetch<Rows<EmployeeLookup>>(`${BASE}/lookups/employees`),
   });
 }
 
@@ -787,12 +885,15 @@ export interface PartsParams {
   q?: string;
   vehicleId?: string;
   lowStock?: boolean;
+  /** „Prikaži neaktivne" — default samo aktivni; true uključuje deaktivirane (BE param). */
+  includeInactive?: boolean;
   page?: number;
   pageSize?: number;
 }
-export function useParts(params: PartsParams) {
+export function useParts(params: PartsParams, enabled = true) {
   return useQuery({
     queryKey: ['odr', 'parts', params],
+    enabled,
     queryFn: () => apiFetch<List<Part> | Rows<Part | ViewRow>>(`${BASE}/parts${qs({ ...params })}`),
   });
 }
@@ -810,10 +911,11 @@ export function usePartMovements(id: string | null) {
     queryFn: () => apiFetch<Rows<StockMovement>>(`${BASE}/parts/${id}/stock-movements`),
   });
 }
-export function useSuppliers() {
+/** Dobavljači. `active`: izostavljeno/'true' = samo aktivni; 'all' = svi; 'false' = neaktivni (BE param). */
+export function useSuppliers(active?: 'all' | 'false') {
   return useQuery({
-    queryKey: ['odr', 'suppliers'],
-    queryFn: () => apiFetch<Rows<Supplier>>(`${BASE}/suppliers`),
+    queryKey: ['odr', 'suppliers', active ?? 'active'],
+    queryFn: () => apiFetch<Rows<Supplier>>(`${BASE}/suppliers${qs({ active })}`),
   });
 }
 export function useLocations() {
@@ -913,11 +1015,19 @@ export interface NotificationLog {
   error: string | null;
   sentAt: string | null;
   createdAt: string;
+  /** Vremena pokušaja isporuke (paritet 1.0 kolone). */
+  lastAttemptAt: string | null;
+  nextAttemptAt: string | null;
   attempts: number;
+  escalationLevel: number;
+  /** Slobodni JSON (npr. severity za bedž mašine) — paritet 1.0. */
+  payload: Record<string, unknown> | null;
 }
 export interface NotificationsParams {
   status?: string;
   machineCode?: string;
+  /** Filter po incidentu (BE `related_entity_id`) — paritet 1.0 (maintenance.js:1600). */
+  incidentId?: string;
   page?: number;
   pageSize?: number;
 }
@@ -926,6 +1036,21 @@ export function useNotifications(params: NotificationsParams, enabled = true) {
     queryKey: ['odr', 'notifications', params],
     enabled,
     queryFn: () => apiFetch<List<NotificationLog>>(`${BASE}/notifications${qs({ ...params })}`),
+  });
+}
+
+// ══════════════════════════════════════════════════ maint profili (SoD; H19)
+
+/**
+ * Lista CMMS profila (maint_user_profiles) — admin konzola. BE guard = ERP admin
+ * (`assertErpAdmin`); prosledi `enabled` = me.erpAdmin da izbegneš 403 za ostale.
+ * Row = `MaintProfile` (userId je PK; PATCH ide na /profiles/:userId).
+ */
+export function useProfiles(enabled = true) {
+  return useQuery({
+    queryKey: ['odr', 'profiles'],
+    enabled,
+    queryFn: () => apiFetch<Rows<MaintProfile>>(`${BASE}/profiles`),
   });
 }
 
@@ -1030,6 +1155,9 @@ export const useUpdateNote = () =>
   useOdrMutate<{ code: string; noteId: string; patch: Record<string, unknown> }>('PATCH', (v) => `${BASE}/machines/${encodeURIComponent(v.code)}/notes/${v.noteId}`, (v) => v.patch);
 export const useDeleteMachineFile = () =>
   useOdrMutate<{ code: string; id: string }>('DELETE', (v) => `${BASE}/machines/${encodeURIComponent(v.code)}/files/${v.id}`);
+/** PATCH meta (kategorija/opis) fajla mašine — paritet 1.0 edit metapodataka (maintFilesTab.js). */
+export const useUpdateMachineFile = () =>
+  useOdrMutate<{ code: string; id: string; patch: { category?: string; description?: string } }>('PATCH', (v) => `${BASE}/machines/${encodeURIComponent(v.code)}/files/${v.id}`, (v) => v.patch);
 
 /** Upload fajla mašine (multipart). */
 export function useUploadMachineFile() {
@@ -1105,13 +1233,13 @@ export const useArchiveVehicle = () =>
 export const useRestoreVehicle = () =>
   useOdrMutate<{ id: string }>('POST', (v) => `${BASE}/vehicles/${v.id}/restore`);
 export const useCreateTire = () =>
-  useOdrCreate<{ id: string; season: TireSeason; dimension: string; count: number; status?: TireStatus; shelfCode?: string; notes?: string }>((v) => `${BASE}/vehicles/${v.id}/tires`);
+  useOdrCreate<{ id: string; season: TireSeason; dimension: string; count: number; status?: TireStatus; shelfCode?: string; installedOnVehicle?: boolean; purchasedAt?: string; notes?: string }>((v) => `${BASE}/vehicles/${v.id}/tires`);
 export const useUpdateTire = () =>
   useOdrMutate<{ id: string; tireId: string; patch: Record<string, unknown> }>('PATCH', (v) => `${BASE}/vehicles/${v.id}/tires/${v.tireId}`, (v) => v.patch);
 export const useDeleteTire = () =>
   useOdrMutate<{ id: string; tireId: string }>('DELETE', (v) => `${BASE}/vehicles/${v.id}/tires/${v.tireId}`);
 export const useCreateVehicleServicePlan = () =>
-  useOdrCreate<{ id: string; name: string; intervalKm?: number; intervalMonths?: number; priority?: WoPriority; notes?: string }>((v) => `${BASE}/vehicles/${v.id}/service-plan`);
+  useOdrCreate<{ id: string; name: string; intervalKm?: number; intervalMonths?: number; lastDoneAt?: string; lastDoneKm?: number; vehicleServiceCategory?: string; priority?: WoPriority; notes?: string; active?: boolean }>((v) => `${BASE}/vehicles/${v.id}/service-plan`);
 export const useUpdateVehicleServicePlan = () =>
   useOdrMutate<{ id: string; planId: string; patch: Record<string, unknown> }>('PATCH', (v) => `${BASE}/vehicles/${v.id}/service-plan/${v.planId}`, (v) => v.patch);
 export const useDeleteVehicleServicePlan = () =>
@@ -1126,6 +1254,8 @@ export const useDeleteBooking = () =>
   useOdrMutate<{ id: string; bookingId: string }>('DELETE', (v) => `${BASE}/vehicles/${v.id}/bookings/${v.bookingId}`);
 export const useLinkPartToVehicle = () =>
   useOdrCreate<{ id: string; partId: string; qtyMin?: number; notes?: string }>((v) => `${BASE}/vehicles/${v.id}/parts`);
+export const useUpdatePartVehicleLink = () =>
+  useOdrMutate<{ id: string; partId: string; patch: { qtyMin?: number | null; notes?: string | null } }>('PATCH', (v) => `${BASE}/vehicles/${v.id}/parts/${v.partId}`, (v) => v.patch);
 export const useUnlinkPartFromVehicle = () =>
   useOdrMutate<{ id: string; partId: string }>('DELETE', (v) => `${BASE}/vehicles/${v.id}/parts/${v.partId}`);
 export const useCreateVehicleOwner = () => useOdrCreate<Record<string, unknown>>(`${BASE}/vehicle-owners`);
@@ -1138,6 +1268,8 @@ export const useArchiveDriver = () =>
   useOdrMutate<{ id: string; reason: string }>('POST', (v) => `${BASE}/drivers/${v.id}/archive`, (v) => ({ reason: v.reason }));
 export const useRestoreDriver = () =>
   useOdrMutate<{ id: string }>('POST', (v) => `${BASE}/drivers/${v.id}/restore`);
+export const useDeleteDriver = () =>
+  useOdrMutate<{ id: string }>('DELETE', (v) => `${BASE}/drivers/${v.id}`);
 
 // ── IT / objekti / sredstva
 export const useCreateItAsset = () => useOdrCreate<Record<string, unknown>>(`${BASE}/it-assets`);
@@ -1155,7 +1287,7 @@ export const useArchiveAsset = () =>
 export const useRestoreAsset = () =>
   useOdrMutate<{ id: string }>('POST', (v) => `${BASE}/assets/${v.id}/restore`);
 export const useCreateAssetServicePlan = () =>
-  useOdrCreate<{ id: string; name: string; intervalMonths: number; priority?: WoPriority; notes?: string }>((v) => `${BASE}/assets/${v.id}/service-plan`);
+  useOdrCreate<{ id: string; name: string; intervalMonths: number; priority?: WoPriority; notes?: string; lastDoneAt?: string; active?: boolean }>((v) => `${BASE}/assets/${v.id}/service-plan`);
 export const useUpdateAssetServicePlan = () =>
   useOdrMutate<{ id: string; planId: string; patch: Record<string, unknown> }>('PATCH', (v) => `${BASE}/assets/${v.id}/service-plan/${v.planId}`, (v) => v.patch);
 export const useDeleteAssetServicePlan = () =>
@@ -1212,3 +1344,35 @@ export const useRetryNotification = () =>
   useOdrMutate<{ id: string }>('POST', (v) => `${BASE}/notifications/${v.id}/retry`);
 export const useVehicleDeadlineCheck = () =>
   useOdrMutate<{ lookaheadDays?: number }>('POST', () => `${BASE}/vehicles/deadline-check`, (v) => ({ lookaheadDays: v.lookaheadDays }));
+
+// ── Maint profili (SoD — mutacije SAMO ERP admin; BE `assertErpAdmin` + DB trigger)
+/** Novi profil — `userId` = auth.users.id (NE zaposleni!); duplikat → BE 409. Idempotentan. */
+export const useCreateProfile = () => useOdrCreate<Record<string, unknown>>(`${BASE}/profiles`);
+export const useUpdateProfile = () =>
+  useOdrMutate<{ id: string; patch: Record<string, unknown> }>('PATCH', (v) => `${BASE}/profiles/${v.id}`, (v) => v.patch);
+
+// ── Foto vozila (P4a rute; glavna fotografija = maint_documents category='vehicle_photo')
+/** Signed URL glavne fotografije (1h). 404 kad vozilo nema foto/nije vidljivo — tretiraj graceful. */
+export function useVehiclePhotoUrl(id: string | null, hasPhoto: boolean) {
+  return useQuery({
+    queryKey: ['odr', 'vehicles', id, 'photo'],
+    enabled: !!id && hasPhoto,
+    retry: false,
+    staleTime: 50 * 60_000,
+    queryFn: () => apiFetch<One<{ url: string; expiresIn: number }>>(`${BASE}/vehicles/${encodeURIComponent(id!)}/photo/url`),
+  });
+}
+/** Upload/zamena glavne fotografije (multipart, polje `file`, slika ≤25MB). */
+export function useUploadVehiclePhoto() {
+  const invalidate = useInvalidateOdr();
+  return useMutation({
+    mutationFn: ({ id, file }: { id: string; file: File }) => {
+      const fd = new FormData();
+      fd.append('file', file, file.name);
+      return apiUpload<One<{ primaryPhotoStoragePath: string }>>(`${BASE}/vehicles/${encodeURIComponent(id)}/photo`, fd);
+    },
+    onSuccess: invalidate,
+  });
+}
+export const useDeleteVehiclePhoto = () =>
+  useOdrMutate<{ id: string }>('DELETE', (v) => `${BASE}/vehicles/${encodeURIComponent(v.id)}/photo`);
