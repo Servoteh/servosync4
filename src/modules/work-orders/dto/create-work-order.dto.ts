@@ -48,7 +48,14 @@ export function validateCreateWorkOrder(dto: CreateWorkOrderDto): void {
     if (typeof v !== "string" || !v.trim()) errors.push(`${name} je obavezno.`);
   };
   reqPosInt(dto?.projectId, "Predmet");
-  reqPosInt(dto?.externalCustomerId, "Komitent");
+  // Komitent: id=0 = Servoteh d.o.o. (interni komitent) je VALIDAN — zato ceo
+  // broj ≥ 0 (undefined/negativno pada). NE `reqPosInt` (koji bi odbio 0=Servoteh).
+  if (
+    typeof dto?.externalCustomerId !== "number" ||
+    !Number.isInteger(dto.externalCustomerId) ||
+    dto.externalCustomerId < 0
+  )
+    errors.push("Komitent je obavezan.");
   reqStr(dto?.partName, "Naziv pozicije");
   reqStr(dto?.drawingNumber, "Broj crteža");
   reqStr(dto?.material, "Materijal");

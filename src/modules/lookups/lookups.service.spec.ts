@@ -22,7 +22,7 @@ describe("LookupsService (D9: komitent uz predmet)", () => {
     service = mod.get(LookupsService);
   });
 
-  it("projects() vraća `customer {id, name}` batch-resolve-om; 0/orphan → null", async () => {
+  it("projects() vraća `customer {id, name}` batch-resolve-om; id=0=Servoteh, orphan → null", async () => {
     prisma.project.findMany.mockResolvedValue([
       {
         id: 1,
@@ -54,24 +54,28 @@ describe("LookupsService (D9: komitent uz predmet)", () => {
       },
     ]);
     // customerId 77 je orphan (nema ga u cache tabeli) → null, ne 500.
-    prisma.customer.findMany.mockResolvedValue([{ id: 9, name: "Servoteh" }]);
+    // id=0 = Servoteh d.o.o. (interni komitent) — VALIDAN, uključuje se u lookup.
+    prisma.customer.findMany.mockResolvedValue([
+      { id: 9, name: "Servoteh" },
+      { id: 0, name: "Servoteh d.o.o." },
+    ]);
 
     const res = await service.projects();
 
-    // Batch upit: samo pozitivni id-jevi, bez duplikata.
+    // Batch upit: svi id-jevi ≥ 0 (uklj. 0=Servoteh), bez duplikata.
     expect(prisma.customer.findMany).toHaveBeenCalledWith({
-      where: { id: { in: [9, 77] } },
+      where: { id: { in: [9, 0, 77] } },
       select: { id: true, name: true },
     });
     expect(res.data.map((p) => p.customer)).toEqual([
       { id: 9, name: "Servoteh" },
-      null, // customerId = 0 → prazno polje na frontu (ne upisuje se 0)
-      null, // orphan FK
+      { id: 0, name: "Servoteh d.o.o." }, // customerId = 0 → Servoteh (interni)
+      null, // orphan FK (77 ne postoji)
       { id: 9, name: "Servoteh" },
     ]);
   });
 
-  it("projects() bez ijednog komitenta ne pogađa customers tabelu", async () => {
+  it("projects() sa komitentom 0 (Servoteh) ga razrešava iz customers tabele", async () => {
     prisma.project.findMany.mockResolvedValue([
       {
         id: 2,
@@ -81,10 +85,16 @@ describe("LookupsService (D9: komitent uz predmet)", () => {
         description: null,
       },
     ]);
+    prisma.customer.findMany.mockResolvedValue([
+      { id: 0, name: "Servoteh d.o.o." },
+    ]);
 
     const res = await service.projects();
 
-    expect(prisma.customer.findMany).not.toHaveBeenCalled();
-    expect(res.data[0].customer).toBeNull();
+    expect(prisma.customer.findMany).toHaveBeenCalledWith({
+      where: { id: { in: [0] } },
+      select: { id: true, name: true },
+    });
+    expect(res.data[0].customer).toEqual({ id: 0, name: "Servoteh d.o.o." });
   });
 });

@@ -32,9 +32,12 @@ export class LookupsService {
     });
 
     // Komitent uz predmet (D9: vidljiv prefill u „Novi RN") — batch-resolve
-    // umesto required-JOIN-a (orphan/0 customerId ne sme da obori lookup).
+    // umesto required-JOIN-a (orphan customerId ne sme da obori lookup).
+    // id=0 = Servoteh d.o.o. (interni komitent, legacy IDKomitent=0) — VALIDAN
+    // komitent za interne predmete (npr. Repro), NE „nema komitenta"; zato se
+    // uključuje (17.07: ~3900 postojećih RN-ova ima komitent 0).
     const customerIds = [
-      ...new Set(rows.map((r) => r.customerId).filter((id) => id > 0)),
+      ...new Set(rows.map((r) => r.customerId).filter((id) => id >= 0)),
     ];
     const customers = customerIds.length
       ? await this.prisma.customer.findMany({
