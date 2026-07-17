@@ -110,7 +110,7 @@ export default function PracenjePage() {
             onOpenRnBigtehn={openRnBigtehn}
           />
         )}
-        {screen.kind === 'rn' && <RnView rnId={screen.rnId} onBack={() => backToTab('predmeti')} />}
+        {screen.kind === 'rn' && <RnView key={screen.rnId} rnId={screen.rnId} onBack={() => backToTab('predmeti')} />}
       </main>
     </AppShell>
   );

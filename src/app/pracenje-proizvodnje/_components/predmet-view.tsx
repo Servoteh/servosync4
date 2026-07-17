@@ -147,11 +147,11 @@ async function openDrawing(code: string | null | undefined): Promise<void> {
 }
 
 /**
- * DA/NE ćelija (1.0 daNeCell — tabelaPracenjaTab.js:82): BILO KOJI ne-prazan status
- * → „DA"; zeleno ako /urađeno|zavr|gotov|100/ i NE /nije|0\//, inače žuto DA;
+ * Vizuelni prikaz DA/NE (1.0 daNeCell — tabelaPracenjaTab.js:82): BILO KOJI ne-prazan
+ * status → „DA"; zeleno ako /urađeno|zavr|gotov|100/ i NE /nije|0\//, inače žuto DA;
  * pun tekst statusa u title tooltip. Ručni override gazi auto (⚑ oznaka).
  */
-function daNe(auto: string | null | undefined, ovr: boolean | null | undefined): React.ReactNode {
+function daNeInner(auto: string | null | undefined, ovr: boolean | null | undefined): React.ReactNode {
   if (ovr === true || ovr === false) {
     return (
       <span className={ovr ? 'text-status-success' : 'text-ink-secondary'} title="Ručno postavljeno">
@@ -166,6 +166,41 @@ function daNe(auto: string | null | undefined, ovr: boolean | null | undefined):
     <span className={done ? 'text-status-success' : 'text-status-warn'} title={s}>
       DA
     </span>
+  );
+}
+
+/** Sledeća vrednost u ciklusu auto → DA → NE → auto (1.0 daNeManualCell). */
+function nextOverride(ovr: boolean | null | undefined): boolean | null {
+  if (ovr === true) return false; // DA → NE
+  if (ovr === false) return null; // NE → auto
+  return true; // auto → DA
+}
+
+/**
+ * DA/NE ćelija (1.0 daNeManualCell — tabelaPracenjaTab.js:113). Sa pravom izmene =
+ * dugme koje cikliše auto → DA → NE → auto i šalje override; bez prava = read-only prikaz.
+ */
+function DaNeCell({
+  auto,
+  ovr,
+  canManage,
+  onCycle,
+}: {
+  auto: string | null | undefined;
+  ovr: boolean | null | undefined;
+  canManage: boolean;
+  onCycle: (next: boolean | null) => void;
+}): React.ReactNode {
+  if (!canManage) return daNeInner(auto, ovr);
+  return (
+    <button
+      type="button"
+      onClick={() => onCycle(nextOverride(ovr))}
+      className="rounded-control px-1 py-0.5 hover:bg-surface-2"
+      title="Klik: auto → DA → NE → auto"
+    >
+      {daNeInner(auto, ovr)}
+    </button>
   );
 }
 
@@ -443,8 +478,38 @@ export function PredmetView({
                       </td>
                       <td className="px-3 py-1.5 text-xs">{r.datum_lansiranja_tp ?? '—'}</td>
                       <td className="px-3 py-1.5 text-xs">{r.datum_izrade ?? '—'}</td>
-                      <td className="px-3 py-1.5 text-center text-xs">{daNe(r.masinska_obrada_status, r.masinska_done_override)}</td>
-                      <td className="px-3 py-1.5 text-center text-xs">{daNe(r.povrsinska_zastita_status, r.povrsinska_done_override)}</td>
+                      <td className="px-3 py-1.5 text-center text-xs">
+                        <DaNeCell
+                          auto={r.masinska_obrada_status}
+                          ovr={r.masinska_done_override}
+                          canManage={canManage}
+                          onCycle={(next) =>
+                            override.mutate({
+                              itemId,
+                              bigtehnRnId: node,
+                              rnId: r.rn_id ?? undefined,
+                              masinska: next,
+                              povrsinska: r.povrsinska_done_override ?? null,
+                            })
+                          }
+                        />
+                      </td>
+                      <td className="px-3 py-1.5 text-center text-xs">
+                        <DaNeCell
+                          auto={r.povrsinska_zastita_status}
+                          ovr={r.povrsinska_done_override}
+                          canManage={canManage}
+                          onCycle={(next) =>
+                            override.mutate({
+                              itemId,
+                              bigtehnRnId: node,
+                              rnId: r.rn_id ?? undefined,
+                              masinska: r.masinska_done_override ?? null,
+                              povrsinska: next,
+                            })
+                          }
+                        />
+                      </td>
                       <td className="px-3 py-1.5 text-xs">{r.materijal ?? '—'}</td>
                       <td className="px-3 py-1.5 text-xs">{r.dimenzije ?? '—'}</td>
                       <td className="px-3 py-1.5 text-center">

@@ -120,6 +120,12 @@ export function RnView({ rnId, onBack }: { rnId: string; onBack: () => void }) {
   // Aktivnosti operativnog plana za metriku „Kasni aktivnosti"/„Aktivnosti" u zaglavlju.
   const plan = useOperativniPlan(rnId);
   const aktivnosti = useMemo(() => normalizeAktivnosti(plan.data?.data), [plan.data]);
+  // Ukupan broj aktivnosti: dashboard.ukupno ako postoji, inače dužina liste (1.0 pageHeader.js:31).
+  const dashUkupno = useMemo(() => {
+    const d = plan.data?.data as { dashboard?: { ukupno?: unknown } } | undefined;
+    const u = d?.dashboard?.ukupno;
+    return u == null ? null : Number(u);
+  }, [plan.data]);
 
   function exportTab1() {
     try {
@@ -148,7 +154,7 @@ export function RnView({ rnId, onBack }: { rnId: string; onBack: () => void }) {
       </div>
 
       {/* RN zaglavlje: identifikacija + 5 metrika + KK legenda (PR-03) */}
-      <RnHeaderCard header={header} summary={summary} aktivnosti={aktivnosti} canEdit={canEdit} />
+      <RnHeaderCard header={header} summary={summary} aktivnosti={aktivnosti} dashUkupno={dashUkupno} canEdit={canEdit} />
 
       {tab === 'pozicije' ? (
         <PozicijeTab positions={positions} loading={rn.isLoading} source={source} onExport={exportTab1} />
@@ -165,11 +171,13 @@ function RnHeaderCard({
   header,
   summary,
   aktivnosti,
+  dashUkupno,
   canEdit,
 }: {
   header: RnHeader;
   summary: RnSummary;
   aktivnosti: AktivnostRow[];
+  dashUkupno: number | null;
   canEdit: boolean;
 }) {
   const totalOps = Number(summary.operacija_total ?? 0);
@@ -211,7 +219,7 @@ function RnHeaderCard({
             title="Procenat završenih operacija po statusu (koliko koraka u redosledu je gotovo). NIJE isto što i gotova količina — operacija može biti „u toku”."
           />
           <HeaderMetric label="Kasni aktivnosti" value={String(late)} title="Broj aktivnosti operativnog plana koje kasne u odnosu na planirani rok." />
-          <HeaderMetric label="Aktivnosti" value={String(aktivnosti.length)} title="Ukupan broj aktivnosti operativnog plana za ovaj RN." />
+          <HeaderMetric label="Aktivnosti" value={String(dashUkupno ?? aktivnosti.length)} title="Ukupan broj aktivnosti operativnog plana za ovaj RN." />
           <HeaderMetric
             label="Pristup"
             value={canEdit ? 'edit' : 'read-only'}

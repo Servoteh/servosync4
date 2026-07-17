@@ -49,6 +49,8 @@ function statusBitsText(st: PracenjeStatusi | undefined): string {
   );
 }
 
+// NAMERNO ODSTUPANJE OD 1.0: izvoz koristi override-aware vrednost („DA — ručno" / „NE — ručno")
+// umesto 1.0 auto-only daNeText — tako je izvezena ćelija verna onome što korisnik vidi na ekranu.
 /** DA/NE za izvoz uz override (override gazi auto — kao ekran). */
 function daNeExport(auto: string | null | undefined, ovr: boolean | null | undefined): string {
   if (ovr === true) return 'DA — ručno';

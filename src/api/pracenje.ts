@@ -483,8 +483,8 @@ export const useUpsertOverride = () =>
     itemId: number;
     bigtehnRnId: string;
     status?: string;
-    masinska?: boolean;
-    povrsinska?: boolean;
+    masinska?: boolean | null;
+    povrsinska?: boolean | null;
     rnId?: string;
   }>((v) => {
     const { itemId, ...body } = v;
