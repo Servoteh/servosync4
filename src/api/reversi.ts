@@ -120,24 +120,86 @@ export interface MyConsumedRow {
   note: string | null;
 }
 
-/** Red view-a `v_rev_warehouse_unified` (objedinjeno stanje magacina). */
+/**
+ * Red view-a `v_rev_warehouse_unified` (`allLocations=false`) / `v_rev_inventory_all_locations`
+ * (`allLocations=true`, dodaje `qty_total`). Objedinjeno stanje magacina — paritet 1.0
+ * `fetchUnifiedWarehouse`. Filteri (grupa/pretraga/klasa/nulta stanja/sve lokacije) i
+ * status-boje računaju se KLIJENTSKI nad ovim redovima (RA-30/33, magacinTab.js:73-146).
+ */
 export interface WarehouseRow {
   grupa: string;
   item_id: string;
   barcode: string | null;
   oznaka: string;
   naziv: string;
+  /** Izvedena klasa (subgroup label) — dinamičan select „Klasa" + CSV (RA-30/36). */
+  klasa: string | null;
   unit: string | null;
   in_warehouse_qty: number | null;
   qty_on_hand: number | null;
+  /** Suma po SVIM lokacijama — samo `allLocations=true` varijanta (RA-33 „Kod primaoca"). */
+  qty_total?: number | null;
   location_code: string | null;
+  location_label: string | null;
   status: string | null;
   serijski_broj: string | null;
   min_stock_qty: number | null;
+  max_stock_qty: number | null;
   is_quantity: boolean | null;
+  is_consumable: boolean | null;
+  napomena: string | null;
+  subgroup_label: string | null;
+  group_label: string | null;
+}
+
+/**
+ * Red obogaćenog ledgera `v_rev_stock_ledger_detail` — izveštaj potrošnje/pokreta
+ * (RA-39/40/41, paritet 1.0 `fetchConsumptionReport`). `delta`/`balance_after` su
+ * čisti JS brojevi (BE kastuje u float8).
+ */
+export interface ConsumptionRow {
+  ledger_id: string;
+  tool_id: string | null;
+  oznaka: string | null;
+  naziv: string | null;
   is_consumable: boolean | null;
   subgroup_label: string | null;
   group_label: string | null;
+  delta: number;
+  reason: string;
+  balance_after: number;
+  ref_doc_id: string | null;
+  doc_number: string | null;
+  recipient_type: string | null;
+  recipient_employee_name: string | null;
+  recipient_department: string | null;
+  recipient_company_name: string | null;
+  note: string | null;
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface ConsumptionReportParams {
+  /** 'YYYY-MM-DD' — `created_at >=` (default = 1. tekućeg meseca). */
+  from?: string;
+  /** 'YYYY-MM-DD' — inkluzivno do 23:59:59 tog dana. */
+  to?: string;
+  /** ISSUE | WRITE_OFF | RECEIPT | RETURN | ADJUST | ALL. */
+  reason?: string;
+  /** Fetch-all u jednom pozivu (default 2000, max 5000); FE agregira + CSV. */
+  limit?: number;
+}
+
+/**
+ * Izveštaj potrošnje (RA-39/40/41) — `reversi.manage`-gejtovan (kao `/ledger`).
+ * Imperativno (poziva se iz dijaloga na „Prikaži"), fetch-all u jednom pozivu.
+ */
+export function fetchConsumptionReport(
+  params: ConsumptionReportParams,
+): Promise<{ data: ConsumptionRow[] }> {
+  return apiFetch<{ data: ConsumptionRow[] }>(
+    `/v1/reversi/reports/consumption${qs({ ...params })}`,
+  );
 }
 
 /** Red view-a `v_rev_otpisani_alat`. */
@@ -628,10 +690,18 @@ export function useMyCuttingOpenLines() {
   });
 }
 
-export function useWarehouse() {
+/**
+ * Objedinjeno stanje magacina (RA-29–36). `allLocations=true` prebacuje na
+ * `v_rev_inventory_all_locations` (dodaje `qty_total` po svim lokacijama) — prekidač
+ * „Sve lokacije" u traci filtera (RA-30). Ostali filteri su klijentski nad odgovorom.
+ */
+export function useWarehouse(allLocations = false) {
   return useQuery({
-    queryKey: [...KEYS.reports, 'warehouse'],
-    queryFn: () => apiFetch<{ data: WarehouseRow[] }>('/v1/reversi/reports/warehouse'),
+    queryKey: [...KEYS.reports, 'warehouse', allLocations],
+    queryFn: () =>
+      apiFetch<{ data: WarehouseRow[] }>(
+        `/v1/reversi/reports/warehouse${qs({ allLocations: allLocations || undefined })}`,
+      ),
   });
 }
 
@@ -958,6 +1028,32 @@ export function useCreateCuttingTool() {
         body: JSON.stringify(body),
       }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['reversi', 'cutting'] }),
+  });
+}
+
+/**
+ * Izmena šifre reznog alata (RA-34 „olovka" za CUTTING iz magacina) → PATCH
+ * /reversi/cutting-tools/:id. Menjaju se naziv/jm/min. zaliha/mašine/status/napomena
+ * (oznaka je nepromenljiva na BE). Paritet 1.0 `openAddCuttingToolModal({tool})`.
+ */
+export interface CuttingToolUpdate {
+  naziv?: string;
+  unit?: string;
+  minStockQty?: number;
+  compatibleMachineCodes?: string[];
+  status?: string;
+  napomena?: string | null;
+}
+
+export function useUpdateCuttingTool() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, patch }: { id: string; patch: CuttingToolUpdate }) =>
+      apiFetch<{ data: unknown }>(`/v1/reversi/cutting-tools/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['reversi'] }),
   });
 }
 
