@@ -433,57 +433,108 @@ export class ReversiService {
   }
 
   /**
-   * Nova jedinica ručnog alata (RB-46 — modal „Nova jedinica"). INSERT rev_tools;
-   * barkod + `loc_item_ref_id` dodeljuju trigeri (vraćaju se za štampu nalepnice
-   * RB-47). Ako je zadat `initialPlacementLocationId`, alat se odmah smešta u tu
-   * lokaciju (INITIAL_PLACEMENT kroz `loc_create_movement` — paritet 1.0
-   * initialPlacementForTool); inače je i dalje upotrebljiv u Izdaj (bez placement-a).
+   * Nova jedinica ručnog alata (RB-46 — modal „Nova jedinica"). Paritet 1.0
+   * `modals.js openAddToolModal` — ceo tok je jedna idempotentna transakcija
+   * (INSERT rev_tools + početno stanje) keširana `clientEventId`-em, pa dupli
+   * klik / retry vraća PRVU jedinicu umesto da iskuje drugi barkod:
+   *   1. INSERT jedinice; barkod + `loc_item_ref_id` dodeljuju trigeri (vraćaju
+   *      se za nalepnicu RB-47).
+   *   2. Količinska/potrošna (jedan barkod = više komada) kreće od `total_qty=0`,
+   *      pa se početna zaliha knjiži kao RECEIPT „Početno stanje" kroz
+   *      `rev_hand_tool_apply_delta` — RA-20 „Istorija zaliha" tada ima red i
+   *      invarijanta Σ ledger = total_qty važi (paritet 1.0 modals.js:395-413).
+   *   3. Ne-količinska jedinica dobija početni smeštaj u magacin
+   *      (INITIAL_PLACEMENT, podrazumevano `ALAT-MAG-01` kao 1.0
+   *      `getMagacinLocationId`; klijent sme zadati drugu lokaciju preko
+   *      `initialPlacementLocationId`) — bez toga bi u ćeliji „Zaduženje"
+   *      pokazivao „U magacinu" bez koda i ne bi bio u magacinsko-lokacijskom
+   *      praćenju (paritet 1.0 modals.js:414-428).
    */
   async createTool(email: string, dto: CreateToolDto) {
     const isQuantity = dto.isQuantity ?? false;
     const isConsumable = dto.isConsumable ?? false;
-    const tool = await this.sy15.db.revTool.create({
-      data: {
-        oznaka: dto.oznaka.trim(),
-        naziv: dto.naziv.trim(),
-        serijskiBroj: dto.serijskiBroj?.trim() || null,
-        datumKupovine: dto.datumKupovine ? new Date(dto.datumKupovine) : null,
-        nabavnaVrednost: dto.nabavnaVrednost ?? null,
-        garancijaDo: dto.garancijaDo ? new Date(dto.garancijaDo) : null,
-        garancijaNapomena: dto.garancijaNapomena?.trim() || null,
-        imaPunjac: dto.imaPunjac ?? false,
-        punjacSerijski: dto.punjacSerijski?.trim() || null,
-        napomena: dto.napomena?.trim() || null,
-        subgroupId: dto.subgroupId ?? null,
-        subsubgroupId: dto.subsubgroupId ?? null,
-        isQuantity,
-        isConsumable,
-        totalQty: isQuantity || isConsumable ? (dto.totalQty ?? 0) : 1,
-        minStockQty: dto.minStockQty ?? null,
-        maxStockQty: dto.maxStockQty ?? null,
-        status: "active",
-      },
-    });
+    // „qtyLike" = jedan barkod nosi više komada (količinska ili potrošna stavka);
+    // prati se kroz ledger/dokumente, bez jedinstvenog placementa.
+    const qtyLike = isQuantity || isConsumable;
+    const seedQty = qtyLike ? (dto.totalQty ?? 0) : 0;
+    const clientEventId = dto.clientEventId ?? randomUUID();
 
-    let placement: unknown = null;
-    if (dto.initialPlacementLocationId && tool.locItemRefId) {
-      placement = await this.initialPlacement(
+    try {
+      const outcome = await this.sy15.runIdempotent(
         email,
-        tool.locItemRefId,
-        dto.initialPlacementLocationId,
-        dto.clientEventId,
+        clientEventId,
+        "reversi.create-tool",
+        async (tx) => {
+          const tool = await tx.revTool.create({
+            data: {
+              oznaka: dto.oznaka.trim(),
+              naziv: dto.naziv.trim(),
+              serijskiBroj: dto.serijskiBroj?.trim() || null,
+              datumKupovine: dto.datumKupovine
+                ? new Date(dto.datumKupovine)
+                : null,
+              nabavnaVrednost: dto.nabavnaVrednost ?? null,
+              garancijaDo: dto.garancijaDo ? new Date(dto.garancijaDo) : null,
+              garancijaNapomena: dto.garancijaNapomena?.trim() || null,
+              imaPunjac: dto.imaPunjac ?? false,
+              punjacSerijski: dto.punjacSerijski?.trim() || null,
+              napomena: dto.napomena?.trim() || null,
+              subgroupId: dto.subgroupId ?? null,
+              subsubgroupId: dto.subsubgroupId ?? null,
+              isQuantity,
+              isConsumable,
+              // Količinska kreće od 0 (zaliha se knjiži kao RECEIPT ispod);
+              // ne-količinska = 1 komad.
+              totalQty: qtyLike ? 0 : 1,
+              minStockQty: dto.minStockQty ?? null,
+              maxStockQty: dto.maxStockQty ?? null,
+              status: "active",
+            },
+          });
+
+          // (2) Početna zaliha količinske stavke → RECEIPT u ledger (audit trag).
+          if (qtyLike && seedQty > 0) {
+            await tx.$queryRaw`
+              SELECT rev_hand_tool_apply_delta(${tool.id}::uuid, ${seedQty}::int,
+                'RECEIPT', 'Početno stanje') AS result`;
+          }
+
+          // (3) Ne-količinska jedinica → početni smeštaj u magacin.
+          let placement: unknown = null;
+          if (!qtyLike && tool.locItemRefId) {
+            let locationId = dto.initialPlacementLocationId ?? null;
+            if (!locationId) {
+              const rows = await tx.$queryRaw<{ id: string }[]>`
+                SELECT id FROM loc_locations
+                WHERE location_code = 'ALAT-MAG-01' LIMIT 1`;
+              locationId = rows[0]?.id ?? null;
+            }
+            // ALAT-MAG-01 ne postoji → alat je i dalje kreiran i upotrebljiv u
+            // Izdaj (paritet 1.0: unos bez početnog smeštaja, samo bez lokacije).
+            if (locationId) {
+              placement = await this.placeToolInWarehouse(
+                tx,
+                tool.locItemRefId,
+                locationId,
+                clientEventId,
+              );
+            }
+          }
+
+          return {
+            id: tool.id,
+            oznaka: tool.oznaka,
+            naziv: tool.naziv,
+            barcode: tool.barcode,
+            locItemRefId: tool.locItemRefId,
+            placement,
+          };
+        },
       );
+      return { data: outcome.result, meta: { idempotent: outcome.idempotent } };
+    } catch (e) {
+      this.rethrowSy15(e);
     }
-    return {
-      data: {
-        id: tool.id,
-        oznaka: tool.oznaka,
-        naziv: tool.naziv,
-        barcode: tool.barcode,
-        locItemRefId: tool.locItemRefId,
-        placement,
-      },
-    };
   }
 
   /**
@@ -721,17 +772,21 @@ export class ReversiService {
   }
 
   /**
-   * Početni smeštaj alata u WAREHOUSE lokaciju (INITIAL_PLACEMENT) — paritet 1.0
-   * `initialPlacementForTool` (loc_create_movement). Idempotencija = client_event_uuid.
+   * Početni smeštaj alata u WAREHOUSE lokaciju (INITIAL_PLACEMENT) kroz
+   * `loc_create_movement` — paritet 1.0 `initialPlacementForTool`. Radi na
+   * prosleđenom `tx` (claims su već postavljeni u `runIdempotent`), pa je deo iste
+   * atomarne transakcije kao INSERT jedinice. Baca 422 ako fn vrati `ok≠true`
+   * (paritet 1.0: neuspeo početni smeštaj se NE progutava kao uspeh —
+   * `already_placed` / `bad_to_location` ne sme proći kao 201).
    */
-  private async initialPlacement(
-    email: string,
+  private async placeToolInWarehouse(
+    tx: Sy15Tx,
     locItemRefId: string,
     locationId: string,
-    clientEventId?: string,
-  ) {
+    clientEventId: string,
+  ): Promise<{ ok?: boolean; error?: string }> {
     const payload = {
-      client_event_uuid: clientEventId ?? randomUUID(),
+      client_event_uuid: clientEventId,
       item_ref_table: "rev_tools",
       item_ref_id: locItemRefId,
       to_location_id: locationId,
@@ -739,17 +794,16 @@ export class ReversiService {
       movement_reason: "Ručni unos alata — Reversi UI",
       quantity: 1,
     };
-    try {
-      return await this.sy15.withUser(email, async (tx) => {
-        const rows = await tx.$queryRawUnsafe<{ result: unknown }[]>(
-          "SELECT loc_create_movement($1::jsonb) AS result",
-          JSON.stringify(payload),
-        );
-        return rows[0]?.result ?? null;
-      });
-    } catch (e) {
-      this.rethrowSy15(e);
+    const rows = await tx.$queryRawUnsafe<
+      { result: { ok?: boolean; error?: string } | null }[]
+    >("SELECT loc_create_movement($1::jsonb) AS result", JSON.stringify(payload));
+    const result = rows[0]?.result ?? null;
+    if (!result || result.ok !== true) {
+      throw new UnprocessableEntityException(
+        result?.error ?? "Početni smeštaj u magacin nije uspeo",
+      );
     }
+    return result;
   }
 
   // ---------- Ledger (JEDINI ne-javni read — politika rev_tool_stock_ledger_select = rev_can_manage) ----------

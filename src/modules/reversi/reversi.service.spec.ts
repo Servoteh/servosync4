@@ -22,9 +22,14 @@ describe("ReversiService — R0 paritet", () => {
   const EMAIL = "test@servoteh.com";
   const UUID = "3b241101-e2bb-4255-8caf-4136c566a962";
 
-  let tx: { $queryRaw: jest.Mock; $queryRawUnsafe: jest.Mock };
+  let tx: {
+    $queryRaw: jest.Mock;
+    $queryRawUnsafe: jest.Mock;
+    revTool: { create: jest.Mock };
+  };
   let sy15: {
     withUser: jest.Mock;
+    runIdempotent: jest.Mock;
     db: {
       revCuttingToolCatalog: { findMany: jest.Mock; update: jest.Mock };
       revDocument: { findUnique: jest.Mock };
@@ -38,10 +43,23 @@ describe("ReversiService — R0 paritet", () => {
   let service: ReversiService;
 
   beforeEach(() => {
-    tx = { $queryRaw: jest.fn(), $queryRawUnsafe: jest.fn() };
+    tx = {
+      $queryRaw: jest.fn(),
+      $queryRawUnsafe: jest.fn(),
+      revTool: { create: jest.fn() },
+    };
     sy15 = {
       withUser: jest.fn((_email: string, fn: (t: Sy15Tx) => Promise<unknown>) =>
         fn(tx as unknown as Sy15Tx),
+      ),
+      // runIdempotent izvrši akciju odmah (svež ključ) i vrati njen rezultat.
+      runIdempotent: jest.fn(
+        async (
+          _email: string,
+          _cid: string,
+          _action: string,
+          fn: (t: Sy15Tx) => Promise<unknown>,
+        ) => ({ idempotent: false, result: await fn(tx as unknown as Sy15Tx) }),
       ),
       db: {
         revCuttingToolCatalog: { findMany: jest.fn(), update: jest.fn() },
@@ -309,40 +327,33 @@ describe("ReversiService — R0 paritet", () => {
 
   // ---------- R1: nova jedinica (RB-46) ----------
 
-  describe("createTool (RB-46)", () => {
-    it("insert vraća barkod + locItemRefId (za nalepnicu); bez placement-a bez lokacije", async () => {
-      sy15.db.revTool.create.mockResolvedValue({
+  describe("createTool (RB-46 · R1-ADV-02/03 · R1-BE-IDEMP-01)", () => {
+    it("ne-količinska jedinica → default početni smeštaj u ALAT-MAG-01 (paritet 1.0)", async () => {
+      tx.revTool.create.mockResolvedValue({
         id: UUID,
         oznaka: "ALAT-1",
         naziv: "Ključ",
         barcode: "ALAT-000123",
         locItemRefId: "ref-1",
       });
-      const res = await service.createTool(EMAIL, {
-        oznaka: "ALAT-1",
-        naziv: "Ključ",
-      });
-      expect(res.data.barcode).toBe("ALAT-000123");
-      expect(res.data.locItemRefId).toBe("ref-1");
-      expect(res.data.placement).toBeNull();
-      expect(sy15.withUser).not.toHaveBeenCalled();
-    });
-
-    it("sa initialPlacementLocationId → INITIAL_PLACEMENT kroz loc_create_movement", async () => {
-      sy15.db.revTool.create.mockResolvedValue({
-        id: UUID,
-        oznaka: "ALAT-1",
-        naziv: "Ključ",
-        barcode: "ALAT-000123",
-        locItemRefId: "ref-1",
-      });
+      // (1) lookup ALAT-MAG-01, (2) loc_create_movement.
+      tx.$queryRaw.mockResolvedValue([{ id: "mag-1" }]);
       tx.$queryRawUnsafe.mockResolvedValue([{ result: { ok: true } }]);
+
       const res = await service.createTool(EMAIL, {
         oznaka: "ALAT-1",
         naziv: "Ključ",
-        initialPlacementLocationId: UUID,
       });
-      expect(sy15.withUser).toHaveBeenCalledWith(EMAIL, expect.any(Function));
+
+      // Ceo tok ide kroz runIdempotent (idempotentan create — R1-BE-IDEMP-01).
+      expect(sy15.runIdempotent).toHaveBeenCalledWith(
+        EMAIL,
+        expect.any(String),
+        "reversi.create-tool",
+        expect.any(Function),
+      );
+      // total_qty=1 za ne-količinsku; INSERT ide kroz tx (unutar idempotentne tx).
+      expect(tx.revTool.create.mock.calls[0][0].data.totalQty).toBe(1);
       const call = tx.$queryRawUnsafe.mock.calls[0] as [string, string];
       expect(call[0]).toContain("loc_create_movement($1::jsonb)");
       const payload = JSON.parse(call[1]) as {
@@ -352,8 +363,78 @@ describe("ReversiService — R0 paritet", () => {
       };
       expect(payload.movement_type).toBe("INITIAL_PLACEMENT");
       expect(payload.item_ref_id).toBe("ref-1");
-      expect(payload.to_location_id).toBe(UUID);
+      expect(payload.to_location_id).toBe("mag-1");
+      expect(res.data.barcode).toBe("ALAT-000123");
       expect(res.data.placement).toEqual({ ok: true });
+    });
+
+    it("ALAT-MAG-01 ne postoji → jedinica kreirana, placement=null (paritet 1.0 bez smeštaja)", async () => {
+      tx.revTool.create.mockResolvedValue({
+        id: UUID,
+        oznaka: "ALAT-1",
+        naziv: "Ključ",
+        barcode: "ALAT-000123",
+        locItemRefId: "ref-1",
+      });
+      tx.$queryRaw.mockResolvedValue([]); // magacin nije nađen
+
+      const res = await service.createTool(EMAIL, {
+        oznaka: "ALAT-1",
+        naziv: "Ključ",
+      });
+      expect(res.data.placement).toBeNull();
+      expect(tx.$queryRawUnsafe).not.toHaveBeenCalled();
+    });
+
+    it("neuspeo početni smeštaj (ok≠true) → 422 (ne prolazi kao uspeh — R1-BE-IDEMP-01)", async () => {
+      tx.revTool.create.mockResolvedValue({
+        id: UUID,
+        oznaka: "ALAT-1",
+        naziv: "Ključ",
+        barcode: "ALAT-000123",
+        locItemRefId: "ref-1",
+      });
+      tx.$queryRawUnsafe.mockResolvedValue([
+        { result: { ok: false, error: "already_placed" } },
+      ]);
+      await expect(
+        service.createTool(EMAIL, {
+          oznaka: "ALAT-1",
+          naziv: "Ključ",
+          initialPlacementLocationId: UUID,
+        }),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    });
+
+    it("količinska stavka → total_qty=0 + RECEIPT Početno stanje u ledger (RA-20 / R1-ADV-03)", async () => {
+      tx.revTool.create.mockResolvedValue({
+        id: UUID,
+        oznaka: "POTR-1",
+        naziv: "Burgija",
+        barcode: "ALAT-000200",
+        locItemRefId: "ref-2",
+      });
+      tx.$queryRaw.mockResolvedValue([{ result: 5 }]);
+
+      const res = await service.createTool(EMAIL, {
+        oznaka: "POTR-1",
+        naziv: "Burgija",
+        isQuantity: true,
+        totalQty: 5,
+      });
+
+      // Jedinica se kreira sa total_qty=0 (zaliha se knjiži kroz ledger).
+      expect(tx.revTool.create.mock.calls[0][0].data.totalQty).toBe(0);
+      // RECEIPT delta = 5 kroz rev_hand_tool_apply_delta.
+      const rcpt = tx.$queryRaw.mock.calls.find((c: unknown[]) =>
+        (c[0] as string[]).join(" ").includes("rev_hand_tool_apply_delta"),
+      ) as [string[], string, number] | undefined;
+      expect(rcpt).toBeTruthy();
+      expect(rcpt![1]).toBe(UUID);
+      expect(rcpt![2]).toBe(5);
+      // Količinska stavka se NE smešta pojedinačno (prati se kroz ledger/dokumente).
+      expect(tx.$queryRawUnsafe).not.toHaveBeenCalled();
+      expect(res.data.placement).toBeNull();
     });
   });
 
