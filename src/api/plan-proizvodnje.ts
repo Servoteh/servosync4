@@ -79,6 +79,11 @@ export interface OpRow {
   cooperation_status: string | null;
   cooperation_partner: string | null;
   cooperation_expected_return: string | null;
+  // ── Kooperacija — izvor/RJ grupa (view v_production_operations_effective / coop endpoint).
+  cooperation_source?: string | null; // 'auto' | 'manual' | 'auto+manual' | 'none'
+  rj_group_code?: string | null;
+  rj_group_label?: string | null;
+  original_machine_name?: string | null;
   urgency_reason?: string | null;
   // ── Kolone koje BE agent PARALELNO dodaje u /operations/all SELECT (machine/dept nose ih preko SELECT *).
   //    Sve opciono (?:) da tsc/next build prođu nezavisno dok BE još nije živ.

@@ -19,6 +19,31 @@ import {
   type OpRow,
 } from '@/api/plan-proizvodnje';
 import { useRnFilter, RnFilterInput } from './rn-filter';
+import { plannedSeconds, formatSecondsHm } from './shared';
+
+/** Izvor kooperacije → labela statusa (paritet 1.0 statusLabel). */
+function statusLabel(status: string | null | undefined): string {
+  switch (status) {
+    case 'external': return 'Eksterno';
+    case 'external_in_progress': return 'U kooperaciji';
+    case 'external_done': return 'Vraćeno';
+    default: return '—';
+  }
+}
+
+/** Badge izvora AUTO/MANUAL/oba (paritet 1.0 sourceBadge). */
+function SourceBadge({ source }: { source: string }) {
+  if (source === 'auto') return <StatusBadge tone="info" label="AUTO" />;
+  if (source === 'manual') return <StatusBadge tone="warn" label="MANUAL" />;
+  if (source === 'auto+manual')
+    return (
+      <span className="inline-flex gap-1">
+        <StatusBadge tone="info" label="AUTO" />
+        <StatusBadge tone="warn" label="MANUAL" />
+      </span>
+    );
+  return <span className="text-ink-disabled">—</span>;
+}
 
 /** Kooperacija: operacije u kooperaciji (ručno vraćanje) + auto grupe (admin CRUD bez DELETE). */
 export function KooperacijaTab() {
@@ -33,8 +58,12 @@ export function KooperacijaTab() {
   const [groupForm, setGroupForm] = useState(false);
 
   const ops = coop.data?.data ?? [];
+  const autoCount = ops.filter((o) => o.cooperation_source === 'auto').length;
+  const manualCount = ops.filter((o) => o.cooperation_source === 'manual').length;
+  const bothCount = ops.filter((o) => o.cooperation_source === 'auto+manual').length;
 
-  function vrati(o: OpRow) {
+  /** „Skini manual" — skida SAMO ručni flag (auto-kooperacija ostaje dok admin ne promeni lookup). */
+  function skiniManual(o: OpRow) {
     overlay.mutate({ workOrderId: o.work_order_id, lineId: o.line_id, cooperationStatus: 'none' });
   }
 
@@ -43,49 +72,78 @@ export function KooperacijaTab() {
       <div className="space-y-3">
         <div className="flex flex-wrap items-center gap-2">
           <RnFilterInput value={rn.raw} onChange={rn.setRaw} />
-          <span className="text-sm text-ink-secondary">{ops.length} operacija u kooperaciji</span>
+          <span className="text-sm text-ink-secondary">
+            {ops.length} operacija · auto {autoCount} · manual {manualCount}
+            {bothCount ? ` · auto+manual ${bothCount}` : ''}
+          </span>
         </div>
         <div className="overflow-x-auto rounded-panel border border-line bg-surface">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-line bg-surface-2 text-left text-2xs uppercase tracking-wider text-ink-secondary">
-                <th className="px-3 py-1.5">Crtež / deo</th>
                 <th className="px-3 py-1.5">RN</th>
+                <th className="px-3 py-1.5">Crtež</th>
+                <th className="px-3 py-1.5">Operacija</th>
+                <th className="px-3 py-1.5">RJ grupa</th>
+                <th className="px-3 py-1.5">Izvor</th>
                 <th className="px-3 py-1.5">Partner</th>
                 <th className="px-3 py-1.5">Povratak</th>
+                <th className="px-3 py-1.5 text-right">Plan</th>
                 <th className="px-3 py-1.5" />
               </tr>
             </thead>
             <tbody>
               {ops.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-4 py-8 text-center text-sm text-ink-disabled">
+                  <td colSpan={9} className="px-4 py-8 text-center text-sm text-ink-disabled">
                     {rn.active ? `Nema rezultata za filter „${rn.applied.trim()}".` : 'Nema operacija u kooperaciji.'}
                   </td>
                 </tr>
               ) : (
-                ops.map((o) => (
-                  <tr key={`${o.work_order_id}:${o.line_id}`} className="border-b border-line-soft hover:bg-surface-2">
-                    <td className="px-3 py-1.5">
-                      <div className="font-medium text-ink">{o.broj_crteza ?? '—'}</div>
-                      <div className="text-xs text-ink-disabled">{o.naziv_dela ?? ''}</div>
-                    </td>
-                    <td className="px-3 py-1.5 text-xs">{o.rn_ident_broj ?? '—'}</td>
-                    <td className="px-3 py-1.5">{o.cooperation_partner ?? '—'}</td>
-                    <td className="tnums px-3 py-1.5 text-xs">{formatDate(o.cooperation_expected_return)}</td>
-                    <td className="px-3 py-1.5 text-right">
-                      {canEdit && (
-                        <Button variant="ghost" className="h-8 px-2 text-xs" onClick={() => vrati(o)}>
-                          <RotateCcw className="h-3.5 w-3.5" /> Vrati
-                        </Button>
-                      )}
-                    </td>
-                  </tr>
-                ))
+                ops.map((o) => {
+                  const source = o.cooperation_source || 'none';
+                  const canClear = canEdit && (source === 'manual' || source === 'auto+manual');
+                  return (
+                    <tr key={`${o.work_order_id}:${o.line_id}`} className="border-b border-line-soft hover:bg-surface-2">
+                      <td className="px-3 py-1.5 font-medium text-ink">{o.rn_ident_broj ?? '—'}</td>
+                      <td className="px-3 py-1.5 text-xs text-ink-secondary">{o.broj_crteza ?? '—'}</td>
+                      <td className="px-3 py-1.5">
+                        <div className="font-medium text-ink">{String(o.operacija ?? '—')}</div>
+                        <div className="text-xs text-ink-disabled">{o.opis_rada ?? ''}</div>
+                      </td>
+                      <td className="px-3 py-1.5">
+                        <div className="font-medium text-ink">{o.rj_group_code ?? o.original_machine_code ?? '—'}</div>
+                        <div className="text-xs text-ink-disabled">{o.rj_group_label ?? o.original_machine_name ?? ''}</div>
+                      </td>
+                      <td className="px-3 py-1.5"><SourceBadge source={source} /></td>
+                      <td className="px-3 py-1.5">{o.cooperation_partner ?? '—'}</td>
+                      <td className="tnums px-3 py-1.5 text-xs">{formatDate(o.cooperation_expected_return)}</td>
+                      <td className="tnums px-3 py-1.5 text-right text-xs">{formatSecondsHm(plannedSeconds(o))}</td>
+                      <td className="px-3 py-1.5 text-right">
+                        {canClear ? (
+                          <Button variant="ghost" className="h-8 px-2 text-xs" onClick={() => skiniManual(o)}>
+                            <RotateCcw className="h-3.5 w-3.5" /> Skini manual
+                          </Button>
+                        ) : (
+                          <span
+                            className="text-xs text-ink-disabled"
+                            title={source === 'auto' ? 'Auto-grupa se menja samo kroz lookup listu' : ''}
+                          >
+                            {statusLabel(o.cooperation_status)}
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
         </div>
+        <p className="text-2xs text-ink-disabled">
+          Auto redovi dolaze iz eksplicitne liste RJ grupa. „Skini manual" skida samo ručni flag;
+          auto-kooperacija ostaje dok admin ne promeni lookup listu.
+        </p>
       </div>
 
       {/* Auto grupe (admin) */}

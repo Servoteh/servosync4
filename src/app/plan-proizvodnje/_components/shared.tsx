@@ -116,6 +116,44 @@ export function machineFitsDept(rjCode: string, dept: Dept | null): boolean {
   return false;
 }
 
+/**
+ * Grupa (vrsta) mašine za dati rj_code — DOSLOVNI port 1.0 `machineGroupSlugForCode`
+ * (services/planProizvodnje.js:145). Koristi se u REASSIGN dijalogu za filtriranje
+ * kandidata na istu vrstu mašine (GAP-PM-24). Napomena: mapiranje je isto kao odeljenja,
+ * ali je zasebna funkcija (grupa je svojstvo pojedinačne mašine, ne odeljenje-taba).
+ */
+export function machineGroupSlugForCode(rjCode: string | null | undefined): string {
+  const code = String(rjCode || '').trim();
+  if (!code) return 'ostalo';
+  if (['10.1', '10.2', '10.3', '10.4', '10.5'].includes(code)) return 'erodiranje';
+  if (code === '8.2') return 'azistiranje';
+  if (['1.10', '1.2', '1.30', '1.40', '1.50', '1.60', '1.71', '1.72'].includes(code)) return 'secenje';
+  if (['4.1', '4.11', '4.12', '4.2', '4.3', '4.4'].includes(code)) return 'bravarsko';
+  if (['5.1', '5.2', '5.3', '5.4', '5.5', '5.6', '5.7', '5.8', '5.11'].includes(code)) return 'farbanje';
+  if (['17.0', '17.1'].includes(code)) return 'cam';
+  const prefix = code.includes('.') ? code.slice(0, code.indexOf('.')) : code;
+  if (prefix === '3') return 'glodanje';
+  if (prefix === '2' && !['21.1', '21.2'].includes(code)) return 'struganje';
+  if (prefix === '6' && code !== '6.8') return 'brusenje';
+  return 'ostalo';
+}
+
+/** Labela grupe mašine — port 1.0 `machineGroupLabel` (planProizvodnje.js:161). */
+export function machineGroupLabel(slug: string): string {
+  switch (slug) {
+    case 'glodanje': return 'Glodanje';
+    case 'struganje': return 'Struganje';
+    case 'brusenje': return 'Brušenje';
+    case 'erodiranje': return 'Erodiranje';
+    case 'azistiranje': return 'Ažistiranje';
+    case 'secenje': return 'Sečenje i savijanje';
+    case 'bravarsko': return 'Bravarsko';
+    case 'farbanje': return 'Farbanje/PZ';
+    case 'cam': return 'CAM';
+    default: return 'Ostalo';
+  }
+}
+
 /** Slug `machines` taba kome mašina pripada (za skok iz Zauzetost/Pregled). */
 export function findDeptForMachineCode(rjCode: string | null | undefined): string {
   if (!rjCode) return 'sve';

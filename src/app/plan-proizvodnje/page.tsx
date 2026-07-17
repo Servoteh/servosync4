@@ -37,9 +37,17 @@ export default function PlanProizvodnjePage() {
   const router = useRouter();
   const [tab, setTab] = useState<TabKey>('po-masini');
 
-  const [reassignPairs, setReassignPairs] = useState<{ workOrderId: string; lineId: string }[] | null>(null);
+  // Reassign radi nad PUNIM redovima (GAP-PM-24 — filtriranje kandidata po grupi mašine).
+  const [reassignRows, setReassignRows] = useState<OpRow[] | null>(null);
   const [tpWo, setTpWo] = useState<string | null>(null);
   const [skice, setSkice] = useState<{ wo: string; line: string } | null>(null);
+  // GAP-PM-12 — skok iz Zauzetost/Pregled u „Po mašini" sa preselektovanom mašinom.
+  const [jumpMachine, setJumpMachine] = useState<string | null>(null);
+
+  const jumpToPoMasini = (machineCode: string) => {
+    setJumpMachine(machineCode);
+    setTab('po-masini');
+  };
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
@@ -49,7 +57,7 @@ export default function PlanProizvodnjePage() {
     return <main className="grid flex-1 place-items-center text-sm text-ink-secondary">Učitavanje…</main>;
   }
 
-  const onReassign = (o: OpRow) => setReassignPairs([{ workOrderId: o.work_order_id, lineId: o.line_id }]);
+  const onReassign = (o: OpRow) => setReassignRows([o]);
   const onTp = (o: OpRow) => setTpWo(o.work_order_id);
   const onSkice = (o: OpRow) => setSkice({ wo: o.work_order_id, line: o.line_id });
 
@@ -61,17 +69,26 @@ export default function PlanProizvodnjePage() {
       />
       <main className="flex-1 space-y-4 overflow-auto p-6">
         <BridgeBanner />
-        {tab === 'po-masini' && <PoMasiniTab onReassign={onReassign} onTp={onTp} onSkice={onSkice} />}
-        {tab === 'po-crtezu' && (
-          <PoCrtezuTab onBulkReassign={setReassignPairs} onReassign={onReassign} onTp={onTp} onSkice={onSkice} />
+        {tab === 'po-masini' && (
+          <PoMasiniTab
+            onReassign={onReassign}
+            onBulkReassign={setReassignRows}
+            onTp={onTp}
+            onSkice={onSkice}
+            jumpTo={jumpMachine}
+            onJumpConsumed={() => setJumpMachine(null)}
+          />
         )}
-        {tab === 'zauzetost' && <ZauzetostTab />}
-        {tab === 'pregled' && <PregledSvihTab />}
+        {tab === 'po-crtezu' && (
+          <PoCrtezuTab onBulkReassign={setReassignRows} onReassign={onReassign} onTp={onTp} onSkice={onSkice} />
+        )}
+        {tab === 'zauzetost' && <ZauzetostTab onJumpToPoMasini={jumpToPoMasini} />}
+        {tab === 'pregled' && <PregledSvihTab onJumpToPoMasini={jumpToPoMasini} />}
         {tab === 'kooperacija' && <KooperacijaTab />}
       </main>
 
-      {reassignPairs && (
-        <ReassignDialog open onClose={() => setReassignPairs(null)} pairs={reassignPairs} />
+      {reassignRows && (
+        <ReassignDialog open onClose={() => setReassignRows(null)} rows={reassignRows} />
       )}
       {tpWo && <TpProcedureModal workOrderId={tpWo} onClose={() => setTpWo(null)} />}
       {skice && <SkiceModal workOrder={skice.wo} line={skice.line} onClose={() => setSkice(null)} />}
