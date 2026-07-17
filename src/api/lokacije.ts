@@ -806,6 +806,42 @@ export function useSyncStatus(enabled = true) {
   });
 }
 
+/**
+ * Zdravlje sinhronizacije za SVE korisnike modula (ne samo admina) — nova BE ruta
+ * `GET /v1/locations/sync/health`. Za razliku od `sync/status` (LOKACIJE_ADMIN,
+ * pun detalj), ovo je read-only sažetak dostupan baseline read ulogama: koji
+ * BigTehn keš je zastareo (pragovi 1.0 index.js:255-292 — RN/linije/TP 6h,
+ * predmeti 36h, crteži 7d, izračunato server-side) + da li sync worker radi
+ * (heartbeat >10min / DEAD_LETTER, 1.0 index.js:214-246). Hrani banere L-06/L-07
+ * za magacionera/cnc koji ranije NISU videli upozorenje (gejtovano za admina).
+ *
+ * `retry:false` + tih fallback: dok BE ruta nije spojena vraća 404, pozivalac tada
+ * ne prikazuje bAner (zero-loss — admin i dalje vidi detaljni prikaz iz sync/status).
+ */
+export interface SyncHealthSummary {
+  /** Po kategoriji keša: da li je zastareo (server primenio 1.0 pragove). */
+  cacheStale: {
+    rn: boolean;
+    linije: boolean;
+    tp: boolean;
+    predmeti: boolean;
+    crtezi: boolean;
+  };
+  /** false = neki worker bez heartbeat-a >10min ILI ima DEAD_LETTER stavki. */
+  workerHealthy: boolean;
+}
+
+export function useSyncHealth(enabled = true) {
+  return useQuery({
+    queryKey: [...KEYS.sync, 'health'],
+    enabled,
+    retry: false,
+    refetchInterval: 60_000,
+    staleTime: 30_000,
+    queryFn: () => apiFetch<{ data: SyncHealthSummary }>('/v1/locations/sync/health'),
+  });
+}
+
 export function useSyncOutbound(limit = 80, enabled = true) {
   return useQuery({
     queryKey: [...KEYS.sync, 'outbound', limit],
