@@ -442,6 +442,14 @@ export type ReversiToolDetail = ReversiTool & {
   otpisRazlog?: string | null;
   batteries: ToolBattery[];
   services: ToolService[];
+  // RB-04 — obogaćen findOneTool (Drop R3): razrešena klasifikacija (isti oblik kao
+  // inventory-units), trenutna lokacija i otvoreno zaduženje za ćeliju „Zaduženje/lokacija".
+  group?: UnitGroupRef | null;
+  subgroup?: UnitSubRef | null;
+  subsubgroup?: UnitSubRef | null;
+  currentLocationId?: string | null;
+  currentLocationCode?: string | null;
+  issuedHolder?: IssuedHolder | null;
 };
 
 /** Kartica alata: osnovno + baterije + servisi (GET /reversi/tools/:id). */
@@ -477,6 +485,142 @@ export function useToolLedger(toolId: string | null, enabled: boolean) {
       apiFetch<{ data: ToolLedgerRow[]; meta: PageMeta }>(
         `/v1/reversi/ledger${qs({ toolId: toolId ?? undefined, pageSize: 200 })}`,
       ),
+  });
+}
+
+/**
+ * Red istorije zaduženja alata (RB-10 — GET /reversi/tools/:id/documents). Puna
+ * `rev_document_lines` (camelCase) + pripadajući dokument (`document`, batch-resolve
+ * na BE). `reversi.read`; order `createdAt desc`. FE gradi tabelu Izdato/Dokument/
+ * Primalac/Stavka[Vraćen/Zadužen]/Vraćeno iz `line` + `line.document`.
+ */
+export interface ToolDocumentDocRef {
+  id: string;
+  docNumber: string;
+  docType: string;
+  recipientType: string;
+  recipientEmployeeName: string | null;
+  recipientDepartment: string | null;
+  recipientCompanyName: string | null;
+  issuedAt: string;
+  status: string;
+  returnConfirmedAt: string | null;
+}
+
+export interface ToolDocumentLine {
+  id: string;
+  documentId: string;
+  sortOrder: number;
+  lineType: string;
+  toolId: string | null;
+  drawingNo: string | null;
+  partName: string | null;
+  quantity: string | number;
+  returnedQuantity: string | number;
+  unit: string;
+  lineStatus: 'ISSUED' | 'RETURNED' | 'CONSUMED';
+  napomena: string | null;
+  createdAt: string;
+  document: ToolDocumentDocRef | null;
+}
+
+/** Istorija zaduženja jednog alata (RB-10). `reversi.read` — vidljivo svima. */
+export function useToolDocuments(toolId: string | null) {
+  return useQuery({
+    queryKey: [...KEYS.tools, 'documents', toolId],
+    enabled: !!toolId,
+    queryFn: () =>
+      apiFetch<{ data: ToolDocumentLine[] }>(`/v1/reversi/tools/${toolId}/documents`),
+  });
+}
+
+// ---------- R3 baterije / servis alata (RB-07/09 — CRUD sub-evidencije) ----------
+// Plain mutacije (bez idempotency ključa — nisu transakcione DB fn, već typed CRUD).
+// Invalidiraju `['reversi','tools']` → osvežava karticu (findOneTool nosi batteries/services).
+
+export interface ToolBatteryInput {
+  serijskiBroj?: string | null;
+  kapacitet?: string | null;
+  /** 'YYYY-MM-DD'. */
+  datumNabavke?: string | null;
+  status?: 'active' | 'scrapped' | 'lost';
+  napomena?: string | null;
+}
+
+export function useAddToolBattery() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ toolId, body }: { toolId: string; body: ToolBatteryInput }) =>
+      apiFetch<{ data: ToolBattery }>(`/v1/reversi/tools/${toolId}/batteries`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: KEYS.tools }),
+  });
+}
+
+export function useUpdateToolBattery() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, patch }: { id: string; patch: ToolBatteryInput }) =>
+      apiFetch<{ data: ToolBattery }>(`/v1/reversi/tool-batteries/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: KEYS.tools }),
+  });
+}
+
+export function useDeleteToolBattery() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<{ data: { id: string } }>(`/v1/reversi/tool-batteries/${id}`, { method: 'DELETE' }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: KEYS.tools }),
+  });
+}
+
+export interface ToolServiceInput {
+  /** 'YYYY-MM-DD'; izostavljen → DB default = danas. */
+  datum?: string;
+  tip?: 'servis' | 'popravka' | 'zamena_baterije' | 'kalibracija' | 'ostalo';
+  opis?: string | null;
+  izvrsilac?: string | null;
+  trosak?: number | null;
+  status?: 'planiran' | 'u_toku' | 'zavrsen' | 'otkazan';
+  napomena?: string | null;
+}
+
+export function useAddToolService() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ toolId, body }: { toolId: string; body: ToolServiceInput }) =>
+      apiFetch<{ data: ToolService }>(`/v1/reversi/tools/${toolId}/services`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: KEYS.tools }),
+  });
+}
+
+export function useUpdateToolService() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, patch }: { id: string; patch: ToolServiceInput }) =>
+      apiFetch<{ data: ToolService }>(`/v1/reversi/tool-services/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: KEYS.tools }),
+  });
+}
+
+export function useDeleteToolService() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<{ data: { id: string } }>(`/v1/reversi/tool-services/${id}`, { method: 'DELETE' }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: KEYS.tools }),
   });
 }
 
@@ -917,7 +1061,13 @@ export function useBulkImportTools() {
   });
 }
 
-/** Red view-a `v_rev_machines` (nad maint_machines — Reversi kontekst mašina). */
+/**
+ * Red obogaćenog `GET /reports/machines` (v_rev_machines + agregati). BE (Drop R3
+ * RB-52/53) dodaje `cuttingToolSkus`/`cuttingToolQty` (iz v_rev_cts_by_machine) i
+ * `headsCount` (iz rev_machine_heads) uz sva polja view-a — 1.0 ih je računao iz 3
+ * poziva (`fetchMachines`+`fetchCuttingByMachine`+`fetchMachineHeadCounts`). Kartica
+ * mašine (RB-54/55) čita Osnovno iz OVOG istog reda (nema machine-by-code rute).
+ */
 export interface MachineRow {
   machine_code: string;
   name: string;
@@ -927,9 +1077,23 @@ export interface MachineRow {
   location: string | null;
   tracked: boolean | null;
   archived_at: string | null;
+  // RB-55 — dodatna polja v_rev_machines (kartica mašine „Osnovno").
+  serial_number: string | null;
+  year_of_manufacture: number | null;
+  year_commissioned: number | null;
+  power_kw: number | string | null;
+  notes: string | null;
+  department_id: string | null;
+  // RB-52/53 — agregati po mašini (kolone tabele „Rezni alat" / „Glave").
+  cuttingToolSkus: number;
+  cuttingToolQty: number;
+  headsCount: number;
 }
 
-/** Red view-a `v_rev_cts_by_machine` (rezni alat po mašini). */
+/**
+ * Red view-a `v_rev_cts_by_machine` (rezni alat po mašini). Kartica mašine (RB-56)
+ * čita `klasa` + `operator_names` (assignees PRIMARY+SECONDARY) uz `doc_count`.
+ */
 export interface CuttingByMachineRow {
   machine_code: string;
   machine_name: string | null;
@@ -937,18 +1101,48 @@ export interface CuttingByMachineRow {
   barcode: string | null;
   oznaka: string;
   naziv: string;
+  klasa: string | null;
   unit: string | null;
   remaining_qty: number | null;
+  doc_count: number | null;
   last_issued_at: string | null;
   last_issued_to_name: string | null;
-  subgroup_label: string | null;
-  group_label: string | null;
+  operator_names: string | null;
 }
 
 export function useReversiMachines() {
   return useQuery({
     queryKey: [...KEYS.reports, 'machines'],
     queryFn: () => apiFetch<{ data: MachineRow[] }>('/v1/reversi/reports/machines'),
+  });
+}
+
+/**
+ * Istorija izdavanja na mašinu (RB-58 — GET /reversi/machines/:code/documents).
+ * `rev_documents` sa `recipient_machine_code = code`, order issued_at desc, limit
+ * ≤200 (default 50). `reversi.read`. FE kolone: Izdato/Dokument/Potpisao
+ * (issuedToEmployeeName ∨ recipientEmployeeName)/Status/Rok.
+ */
+export interface MachineDocumentRow {
+  id: string;
+  docNumber: string;
+  docType: string;
+  status: string;
+  issuedAt: string;
+  expectedReturnDate: string | null;
+  issuedToEmployeeName: string | null;
+  recipientEmployeeName: string | null;
+  napomena: string | null;
+}
+
+export function useMachineDocuments(machineCode: string | null, limit = 50) {
+  return useQuery({
+    queryKey: ['reversi', 'machine-documents', machineCode, limit],
+    enabled: !!machineCode,
+    queryFn: () =>
+      apiFetch<{ data: MachineDocumentRow[] }>(
+        `/v1/reversi/machines/${machineCode}/documents${qs({ limit })}`,
+      ),
   });
 }
 
@@ -1167,6 +1361,58 @@ export function useMachineHeads(machineCode: string | null) {
     queryKey: ['reversi', 'machine-heads', machineCode],
     enabled: !!machineCode,
     queryFn: () => apiFetch<{ data: MachineHead[] }>(`/v1/reversi/machines/${machineCode}/heads`),
+  });
+}
+
+// ---------- R3 glave mašine (RB-57 — CRUD evidencije) ----------
+// Plain mutacije (bez idempotency ključa — typed CRUD, kao baterije/servis). Osvežavaju
+// glave kartice (`machine-heads`) I agregat liste mašina (`reports/machines` headsCount).
+
+export interface MachineHeadInput {
+  oznaka?: string;
+  naziv?: string;
+  tip?: string | null;
+  serijskiBroj?: string | null;
+  status?: 'ACTIVE' | 'SERVIS' | 'OTPISANA';
+  napomena?: string | null;
+}
+
+/** Zajednička invalidacija posle CRUD-a glave (kartica + brojač u listi mašina). */
+function invalidateMachineHeads(qc: ReturnType<typeof useQueryClient>) {
+  void qc.invalidateQueries({ queryKey: ['reversi', 'machine-heads'] });
+  void qc.invalidateQueries({ queryKey: [...KEYS.reports, 'machines'] });
+}
+
+export function useAddMachineHead() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ machineCode, body }: { machineCode: string; body: MachineHeadInput }) =>
+      apiFetch<{ data: MachineHead }>(`/v1/reversi/machines/${machineCode}/heads`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => invalidateMachineHeads(qc),
+  });
+}
+
+export function useUpdateMachineHead() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, patch }: { id: string; patch: MachineHeadInput }) =>
+      apiFetch<{ data: MachineHead }>(`/v1/reversi/machine-heads/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      }),
+    onSuccess: () => invalidateMachineHeads(qc),
+  });
+}
+
+export function useDeleteMachineHead() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<{ data: { id: string } }>(`/v1/reversi/machine-heads/${id}`, { method: 'DELETE' }),
+    onSuccess: () => invalidateMachineHeads(qc),
   });
 }
 

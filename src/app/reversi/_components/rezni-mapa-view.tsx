@@ -187,6 +187,15 @@ export function RezniMapaView() {
         location: null,
         tracked: null,
         archived_at: null,
+        serial_number: null,
+        year_of_manufacture: null,
+        year_commissioned: null,
+        power_kw: null,
+        notes: null,
+        department_id: null,
+        cuttingToolSkus: 0,
+        cuttingToolQty: 0,
+        headsCount: 0,
       },
     );
   }
