@@ -119,8 +119,8 @@ export default function OdrzavanjePage() {
         {tab === 'zalihe' && <ZaliheTab me={me} />}
         {tab === 'dokumenta' && <DokumentaTab me={me} />}
         {tab === 'izvestaji' && <IzvestajiTab />}
-        {tab === 'podesavanja' && showAdmin && <PodesavanjaTab />}
-        {tab === 'notifikacije' && showNotifs && <NotifikacijeTab />}
+        {tab === 'podesavanja' && showAdmin && <PodesavanjaTab me={me} />}
+        {tab === 'notifikacije' && showNotifs && <NotifikacijeTab me={me} />}
       </div>
     </AppShell>
   );

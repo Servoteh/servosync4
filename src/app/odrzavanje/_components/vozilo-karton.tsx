@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { AlertCircle, ArrowLeft, FileWarning, Pencil, Plus, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui-kit/button';
@@ -29,9 +29,12 @@ import {
   useUpdatePartVehicleLink,
   useUpdateTire,
   useUpdateVehicleServicePlan,
+  useDeleteVehiclePhoto,
+  useUploadVehiclePhoto,
   useVehicle,
   useVehicleBookings,
   useVehicleParts,
+  useVehiclePhotoUrl,
   useVehicleServicePlan,
   useVehicleTires,
   type BookingStatus,
@@ -159,7 +162,7 @@ export function VoziloKarton({ id, me }: { id: string; me: MaintMe | undefined }
             ariaLabel="Karton vozila"
           />
 
-          {tab === 'pregled' && <VPregled d={d} det={det} qrUrl={qrUrl} />}
+          {tab === 'pregled' && <VPregled d={d} det={det} qrUrl={qrUrl} id={id} canManage={canManage} />}
           {tab === 'servis' && <VServis id={id} canManage={canManage} me={me} />}
           {tab === 'gume' && <VGume id={id} canManage={canManage} />}
           {tab === 'delovi' && <VDelovi id={id} assetCode={d.assetCode} det={det} canManage={canManage} />}
@@ -174,12 +177,14 @@ export function VoziloKarton({ id, me }: { id: string; me: MaintMe | undefined }
 }
 
 // ── Pregled ─────────────────────────────────────────────────────────
-function VPregled({ d, det, qrUrl }: { d: VehicleDetail; det: Record<string, unknown> | null; qrUrl: string }) {
+function VPregled({ d, det, qrUrl, id, canManage }: { d: VehicleDetail; det: Record<string, unknown> | null; qrUrl: string; id: string; canManage: boolean }) {
   const dd = det ?? {};
   const ownerName = d.owner?.name ?? null;
   const ownerTypeLabel = d.owner?.ownerType ? OWNER_TYPE_LABEL[d.owner.ownerType] ?? d.owner.ownerType : null;
   return (
     <div className="space-y-4">
+      <VehiclePhoto id={id} hasPhoto={!!f(dd, 'primaryPhotoStoragePath')} canManage={canManage} />
+
       <div className="grid grid-cols-2 gap-3 rounded-panel border border-line bg-surface-2/40 p-3 sm:grid-cols-3">
         <Field label="Tablice">{f(dd, 'registrationPlate') ?? '—'}</Field>
         <Field label="Vrsta">{VEHICLE_KIND_LABEL[f(dd, 'vehicleKind') ?? ''] ?? f(dd, 'vehicleKind') ?? '—'}</Field>
@@ -219,6 +224,49 @@ function VPregled({ d, det, qrUrl }: { d: VehicleDetail; det: Record<string, unk
             <div className="font-medium text-ink">QR kartica vozila</div>
             <p className="mt-0.5 text-xs">Skeniranje otvara karton ovog vozila. Renderuje se lokalno — ne šalje se van mreže.</p>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+/**
+ * Glavna fotografija vozila (P4a rute). Signed URL se povlači tek kad details nose
+ * `primaryPhotoStoragePath` (izbegava 404 buku). Dok BE nije živ / foto ne postoji →
+ * graceful placeholder. Upload/uklanjanje samo za canManage.
+ */
+function VehiclePhoto({ id, hasPhoto, canManage }: { id: string; hasPhoto: boolean; canManage: boolean }) {
+  const photo = useVehiclePhotoUrl(id, hasPhoto);
+  const upload = useUploadVehiclePhoto();
+  const remove = useDeleteVehiclePhoto();
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const url = photo.data?.data.url ?? null;
+  const shown = hasPhoto && !photo.isError && url;
+
+  function pick(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) return toast('Dozvoljena je samo slika.');
+    if (file.size > 25 * 1024 * 1024) return toast('Fotografija je prevelika (max 25 MB).');
+    upload.mutate({ id, file }, { onSuccess: () => toast('Fotografija sačuvana'), onError: (err) => toast((err as Error).message) });
+  }
+
+  if (!shown && !canManage) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-4 rounded-panel border border-line bg-surface p-3">
+      <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={pick} />
+      {shown ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={url} alt="Fotografija vozila" className="max-h-40 max-w-full rounded-control border border-line object-cover" />
+      ) : (
+        <div className="grid h-28 w-40 place-items-center rounded-control border border-dashed border-line text-2xs text-ink-secondary">
+          {photo.isLoading ? 'Učitavanje…' : 'Nema fotografije'}
+        </div>
+      )}
+      {canManage && (
+        <div className="flex flex-col gap-2">
+          <Button variant="secondary" loading={upload.isPending} onClick={() => fileRef.current?.click()}>{shown ? 'Zameni fotografiju' : 'Otpremi fotografiju'}</Button>
+          {shown && <Button variant="ghost" disabled={remove.isPending} onClick={() => { if (confirm('Ukloniti glavnu fotografiju vozila?')) remove.mutate({ id }, { onSuccess: () => toast('Fotografija uklonjena') }); }}>Ukloni</Button>}
         </div>
       )}
     </div>

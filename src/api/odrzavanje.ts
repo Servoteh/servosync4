@@ -1015,11 +1015,19 @@ export interface NotificationLog {
   error: string | null;
   sentAt: string | null;
   createdAt: string;
+  /** Vremena pokušaja isporuke (paritet 1.0 kolone). */
+  lastAttemptAt: string | null;
+  nextAttemptAt: string | null;
   attempts: number;
+  escalationLevel: number;
+  /** Slobodni JSON (npr. severity za bedž mašine) — paritet 1.0. */
+  payload: Record<string, unknown> | null;
 }
 export interface NotificationsParams {
   status?: string;
   machineCode?: string;
+  /** Filter po incidentu (BE `related_entity_id`) — paritet 1.0 (maintenance.js:1600). */
+  incidentId?: string;
   page?: number;
   pageSize?: number;
 }
@@ -1028,6 +1036,21 @@ export function useNotifications(params: NotificationsParams, enabled = true) {
     queryKey: ['odr', 'notifications', params],
     enabled,
     queryFn: () => apiFetch<List<NotificationLog>>(`${BASE}/notifications${qs({ ...params })}`),
+  });
+}
+
+// ══════════════════════════════════════════════════ maint profili (SoD; H19)
+
+/**
+ * Lista CMMS profila (maint_user_profiles) — admin konzola. BE guard = ERP admin
+ * (`assertErpAdmin`); prosledi `enabled` = me.erpAdmin da izbegneš 403 za ostale.
+ * Row = `MaintProfile` (userId je PK; PATCH ide na /profiles/:userId).
+ */
+export function useProfiles(enabled = true) {
+  return useQuery({
+    queryKey: ['odr', 'profiles'],
+    enabled,
+    queryFn: () => apiFetch<Rows<MaintProfile>>(`${BASE}/profiles`),
   });
 }
 
@@ -1321,3 +1344,35 @@ export const useRetryNotification = () =>
   useOdrMutate<{ id: string }>('POST', (v) => `${BASE}/notifications/${v.id}/retry`);
 export const useVehicleDeadlineCheck = () =>
   useOdrMutate<{ lookaheadDays?: number }>('POST', () => `${BASE}/vehicles/deadline-check`, (v) => ({ lookaheadDays: v.lookaheadDays }));
+
+// ── Maint profili (SoD — mutacije SAMO ERP admin; BE `assertErpAdmin` + DB trigger)
+/** Novi profil — `userId` = auth.users.id (NE zaposleni!); duplikat → BE 409. Idempotentan. */
+export const useCreateProfile = () => useOdrCreate<Record<string, unknown>>(`${BASE}/profiles`);
+export const useUpdateProfile = () =>
+  useOdrMutate<{ id: string; patch: Record<string, unknown> }>('PATCH', (v) => `${BASE}/profiles/${v.id}`, (v) => v.patch);
+
+// ── Foto vozila (P4a rute; glavna fotografija = maint_documents category='vehicle_photo')
+/** Signed URL glavne fotografije (1h). 404 kad vozilo nema foto/nije vidljivo — tretiraj graceful. */
+export function useVehiclePhotoUrl(id: string | null, hasPhoto: boolean) {
+  return useQuery({
+    queryKey: ['odr', 'vehicles', id, 'photo'],
+    enabled: !!id && hasPhoto,
+    retry: false,
+    staleTime: 50 * 60_000,
+    queryFn: () => apiFetch<One<{ url: string; expiresIn: number }>>(`${BASE}/vehicles/${encodeURIComponent(id!)}/photo/url`),
+  });
+}
+/** Upload/zamena glavne fotografije (multipart, polje `file`, slika ≤25MB). */
+export function useUploadVehiclePhoto() {
+  const invalidate = useInvalidateOdr();
+  return useMutation({
+    mutationFn: ({ id, file }: { id: string; file: File }) => {
+      const fd = new FormData();
+      fd.append('file', file, file.name);
+      return apiUpload<One<{ primaryPhotoStoragePath: string }>>(`${BASE}/vehicles/${encodeURIComponent(id)}/photo`, fd);
+    },
+    onSuccess: invalidate,
+  });
+}
+export const useDeleteVehiclePhoto = () =>
+  useOdrMutate<{ id: string }>('DELETE', (v) => `${BASE}/vehicles/${encodeURIComponent(v.id)}/photo`);
