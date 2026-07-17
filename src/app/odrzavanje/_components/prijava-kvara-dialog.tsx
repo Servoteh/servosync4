@@ -14,6 +14,7 @@ import {
   useReportIncident,
   useSetStatusOverride,
   type AssetPickerRow,
+  type AssetType,
   type IncidentDetail,
   type IncidentSeverity,
   type MaintMe,
@@ -29,20 +30,28 @@ const MAX_PHOTO_BYTES = 25 * 1024 * 1024;
  * IT/objekat) + „Sredstvo je u zastoju" (samo mašine → override down) + auto-WO ponuda +
  * foto. Paritet 1.0 maintDialogs.js:112-387. Incidenti svih tipova ključaju se po
  * `asset_code` u koloni `machine_code` (§5.1 pravilo 24) → machineCode = assetCode.
- * `fixedMachine` fiksira mašinu (poziv iz kartona).
+ * `fixedMachine` fiksira mašinu (poziv iz kartona mašine); `fixedAsset` fiksira bilo koje
+ * sredstvo sa assetId+assetType (poziv iz kartona vozila/IT/objekta — nosi tačan assetType).
  */
 export function PrijavaKvaraDialog({
   onClose,
   me,
   fixedMachine,
+  fixedAsset,
   onReported,
 }: {
   onClose: () => void;
   me?: MaintMe | undefined;
   fixedMachine?: { code: string; name?: string };
+  fixedAsset?: { code: string; name?: string; assetId: string; assetType: AssetType };
   onReported?: (incidentId: string) => void;
 }) {
-  const [assetCode, setAssetCode] = useState<string>(fixedMachine?.code ?? '');
+  const fixed = fixedAsset
+    ? fixedAsset
+    : fixedMachine
+      ? { code: fixedMachine.code, name: fixedMachine.name, assetId: undefined as string | undefined, assetType: 'machine' as AssetType }
+      : undefined;
+  const [assetCode, setAssetCode] = useState<string>(fixed?.code ?? '');
   const [assetFilter, setAssetFilter] = useState('');
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -67,10 +76,10 @@ export function PrijavaKvaraDialog({
     return assets.filter((a) => `${a.assetCode} ${a.name} ${ASSET_TYPE_LABEL[a.assetType] ?? ''}`.toLowerCase().includes(t));
   }, [assets, assetFilter]);
 
-  const selected: AssetPickerRow | undefined = fixedMachine
+  const selected: AssetPickerRow | undefined = fixed
     ? undefined
     : assets.find((a) => a.assetCode === assetCode);
-  const isMachine = fixedMachine ? true : selected?.assetType === 'machine';
+  const isMachine = fixed ? fixed.assetType === 'machine' : selected?.assetType === 'machine';
 
   function addFiles(list: FileList | null) {
     const next: File[] = [];
@@ -89,7 +98,11 @@ export function PrijavaKvaraDialog({
     report.mutate(
       {
         machineCode: assetCode,
-        ...(selected && !fixedMachine ? { assetId: selected.assetId, assetType: selected.assetType } : {}),
+        ...(fixed?.assetId
+          ? { assetId: fixed.assetId, assetType: fixed.assetType }
+          : selected && !fixed
+            ? { assetId: selected.assetId, assetType: selected.assetType }
+            : {}),
         title: title.trim(),
         description: description || undefined,
         severity,
@@ -164,10 +177,10 @@ export function PrijavaKvaraDialog({
       <div className="space-y-3">
         {err && <p className="rounded-control bg-status-danger-bg px-3 py-2 text-sm text-status-danger">{err}</p>}
 
-        {fixedMachine ? (
+        {fixed ? (
           <FormField label="Sredstvo">
             <div className="rounded-control border border-line bg-surface-2 px-3 py-2 text-sm text-ink">
-              {fixedMachine.code}{fixedMachine.name ? ` · ${fixedMachine.name}` : ''}
+              {fixed.code}{fixed.name ? ` · ${fixed.name}` : ''}
             </div>
           </FormField>
         ) : (

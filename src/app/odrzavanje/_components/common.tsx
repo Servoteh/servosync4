@@ -170,6 +170,86 @@ export const BOOKING_STATUS_LABEL: Record<BookingStatus, string> = {
   zavrsena: 'Završena',
   otkazana: 'Otkazana',
 };
+
+// ── Vozila domen (labele = 1.0 kanon) ──────────────────────────────
+export const VEHICLE_KIND_LABEL: Record<string, string> = {
+  teretno: 'Teretno',
+  putnicko: 'Putničko',
+  kombi: 'Kombi',
+  radno: 'Radno',
+  prikolica: 'Prikolica',
+};
+export const USAGE_LABEL: Record<string, string> = {
+  posao: 'Posao',
+  posao_kuca: 'Posao-kuća',
+  licne_potrebe: 'Lič. potrebe',
+};
+export const OWNER_TYPE_LABEL: Record<string, string> = {
+  firma: 'Firma',
+  leasing: 'Leasing',
+  zaposleni: 'Zaposleni',
+  spoljni: 'Spoljni',
+};
+export const GPS_PROVIDER_LABEL: Record<string, string> = {
+  nema: 'Nema',
+  smartivo: 'Smartivo',
+  drugi: 'Drugi',
+};
+export const TIRE_SEASON_LABEL: Record<string, string> = {
+  summer: 'Letnje',
+  winter: 'Zimske',
+  all_season: 'Celogodišnje',
+};
+export const TIRE_STATUS_LABEL: Record<string, string> = {
+  nove: 'Nove',
+  koriscene: 'Korišćene',
+  dotrajale: 'Dotrajale',
+  bacene: 'Bačene',
+};
+export const VEHICLE_SVC_CATEGORY_LABEL: Record<string, string> = {
+  mali: 'Mali servis',
+  veliki: 'Veliki servis',
+  kocnice: 'Kočnice',
+  elektrika: 'Elektrika',
+  oslanjanje: 'Oslanjanje',
+  motor_transmisija: 'Motor / transmisija',
+  karoserija: 'Karoserija',
+  odluka_zamene: 'Odluka o zameni',
+  ostalo: 'Ostalo',
+};
+/** Polica rezervnih delova vozila — fiksni enum V1–V6 / U1–U6 (skriveno pravilo). */
+export const SHELF_OPTIONS = ['V1', 'V2', 'V3', 'V4', 'V5', 'V6', 'U1', 'U2', 'U3', 'U4', 'U5', 'U6'];
+/** Kategorije vozačke dozvole (1.0 LICENSE_CATEGORIES). */
+export const LICENSE_CATEGORIES = ['AM', 'A1', 'A2', 'A', 'B1', 'B', 'BE', 'C1', 'C', 'CE', 'D1', 'D', 'DE', 'F', 'M', 'T'];
+
+/**
+ * Token-normalizacija imena za auto-detect vozač↔zaposleni. MORA da prati SQL
+ * `maint_normalize_name` (lowercase, dj→d, skinute kvačice č/ć/ž/š/đ) — inače match tiho ne radi.
+ */
+export function normNameTokens(s: string | null | undefined): string[] {
+  if (!s) return [];
+  const norm = String(s).toLowerCase().trim()
+    .replace(/dj/g, 'd')
+    .replace(/č/g, 'c').replace(/ć/g, 'c').replace(/ž/g, 'z').replace(/š/g, 's').replace(/đ/g, 'd')
+    .replace(/\s+/g, ' ');
+  return [...new Set(norm.split(' ').filter(Boolean))].sort();
+}
+export function tokensEqual(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((x, i) => x === b[i]);
+}
+
+/** ISO datum (YYYY-MM-DD) iz <input type=date>; prazno → null. */
+export function dateInputToIso(v: string): string | null {
+  if (!v) return null;
+  const d = new Date(`${v}T00:00:00`);
+  return Number.isFinite(d.getTime()) ? d.toISOString() : null;
+}
+/** ISO/date → vrednost za <input type=date> (YYYY-MM-DD). */
+export function isoToDateInput(v: unknown): string {
+  if (v == null || v === '') return '';
+  return String(v).slice(0, 10);
+}
 const NOTIF_TONE: Record<NotifStatus, Tone> = {
   queued: 'info',
   sent: 'success',

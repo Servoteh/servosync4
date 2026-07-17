@@ -664,11 +664,16 @@ export function useVehicleTires(id: string | null) {
     queryFn: () => apiFetch<Rows<Tire>>(`${BASE}/vehicles/${id}/tires`),
   });
 }
+/**
+ * Servisni plan vozila — READ vraća `v_maint_vehicle_service_plan_due` (SNAKE_CASE view sa
+ * računatim due kolonama: plan_id/name/interval_km/interval_months/last_done_at/next_due_at/
+ * due_status/days_to_due/km_to_due/has_open_wo/open_wo_id/active). Mutacije koriste camelCase DTO.
+ */
 export function useVehicleServicePlan(id: string | null) {
   return useQuery({
     queryKey: ['odr', 'vehicles', id, 'service-plan'],
     enabled: !!id,
-    queryFn: () => apiFetch<Rows<VehicleServicePlan>>(`${BASE}/vehicles/${id}/service-plan`),
+    queryFn: () => apiFetch<Rows<ViewRow>>(`${BASE}/vehicles/${id}/service-plan`),
   });
 }
 export function useVehicleParts(id: string | null) {
@@ -701,6 +706,7 @@ export interface Driver {
   driverId: string;
   fullName: string;
   isInternal: boolean;
+  authUserId: string | null;
   driversLicenseNumber: string | null;
   driversLicenseCategories: string[];
   driversLicenseValidUntil: string | null;
@@ -713,6 +719,7 @@ export interface Driver {
   notes: string | null;
   active: boolean;
   archivedAt: string | null;
+  archiveReason: string | null;
 }
 export interface DriverDoc extends MachineFile { validUntil: string | null }
 export type DriverDetail = Driver & { documents: DriverDoc[] };
@@ -727,6 +734,23 @@ export function useDriver(id: string | null) {
     queryKey: ['odr', 'drivers', 'detail', id],
     enabled: !!id,
     queryFn: () => apiFetch<One<DriverDetail>>(`${BASE}/drivers/${id}`),
+  });
+}
+
+/** Zaposleni za auto-detect vozač↔zaposleni (GET /lookups/employees, write krug). */
+export interface EmployeeLookup {
+  id: string;
+  fullName: string | null;
+  firstName: string | null;
+  lastName: string | null;
+  email: string | null;
+}
+export function useEmployeeLookup(enabled: boolean) {
+  return useQuery({
+    queryKey: ['odr', 'lookups', 'employees'],
+    enabled,
+    staleTime: 300_000,
+    queryFn: () => apiFetch<Rows<EmployeeLookup>>(`${BASE}/lookups/employees`),
   });
 }
 
@@ -1182,13 +1206,13 @@ export const useArchiveVehicle = () =>
 export const useRestoreVehicle = () =>
   useOdrMutate<{ id: string }>('POST', (v) => `${BASE}/vehicles/${v.id}/restore`);
 export const useCreateTire = () =>
-  useOdrCreate<{ id: string; season: TireSeason; dimension: string; count: number; status?: TireStatus; shelfCode?: string; notes?: string }>((v) => `${BASE}/vehicles/${v.id}/tires`);
+  useOdrCreate<{ id: string; season: TireSeason; dimension: string; count: number; status?: TireStatus; shelfCode?: string; installedOnVehicle?: boolean; purchasedAt?: string; notes?: string }>((v) => `${BASE}/vehicles/${v.id}/tires`);
 export const useUpdateTire = () =>
   useOdrMutate<{ id: string; tireId: string; patch: Record<string, unknown> }>('PATCH', (v) => `${BASE}/vehicles/${v.id}/tires/${v.tireId}`, (v) => v.patch);
 export const useDeleteTire = () =>
   useOdrMutate<{ id: string; tireId: string }>('DELETE', (v) => `${BASE}/vehicles/${v.id}/tires/${v.tireId}`);
 export const useCreateVehicleServicePlan = () =>
-  useOdrCreate<{ id: string; name: string; intervalKm?: number; intervalMonths?: number; priority?: WoPriority; notes?: string }>((v) => `${BASE}/vehicles/${v.id}/service-plan`);
+  useOdrCreate<{ id: string; name: string; intervalKm?: number; intervalMonths?: number; lastDoneAt?: string; lastDoneKm?: number; vehicleServiceCategory?: string; priority?: WoPriority; notes?: string; active?: boolean }>((v) => `${BASE}/vehicles/${v.id}/service-plan`);
 export const useUpdateVehicleServicePlan = () =>
   useOdrMutate<{ id: string; planId: string; patch: Record<string, unknown> }>('PATCH', (v) => `${BASE}/vehicles/${v.id}/service-plan/${v.planId}`, (v) => v.patch);
 export const useDeleteVehicleServicePlan = () =>
@@ -1203,6 +1227,8 @@ export const useDeleteBooking = () =>
   useOdrMutate<{ id: string; bookingId: string }>('DELETE', (v) => `${BASE}/vehicles/${v.id}/bookings/${v.bookingId}`);
 export const useLinkPartToVehicle = () =>
   useOdrCreate<{ id: string; partId: string; qtyMin?: number; notes?: string }>((v) => `${BASE}/vehicles/${v.id}/parts`);
+export const useUpdatePartVehicleLink = () =>
+  useOdrMutate<{ id: string; partId: string; patch: { qtyMin?: number | null; notes?: string | null } }>('PATCH', (v) => `${BASE}/vehicles/${v.id}/parts/${v.partId}`, (v) => v.patch);
 export const useUnlinkPartFromVehicle = () =>
   useOdrMutate<{ id: string; partId: string }>('DELETE', (v) => `${BASE}/vehicles/${v.id}/parts/${v.partId}`);
 export const useCreateVehicleOwner = () => useOdrCreate<Record<string, unknown>>(`${BASE}/vehicle-owners`);
@@ -1215,6 +1241,8 @@ export const useArchiveDriver = () =>
   useOdrMutate<{ id: string; reason: string }>('POST', (v) => `${BASE}/drivers/${v.id}/archive`, (v) => ({ reason: v.reason }));
 export const useRestoreDriver = () =>
   useOdrMutate<{ id: string }>('POST', (v) => `${BASE}/drivers/${v.id}/restore`);
+export const useDeleteDriver = () =>
+  useOdrMutate<{ id: string }>('DELETE', (v) => `${BASE}/drivers/${v.id}`);
 
 // ── IT / objekti / sredstva
 export const useCreateItAsset = () => useOdrCreate<Record<string, unknown>>(`${BASE}/it-assets`);
