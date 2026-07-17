@@ -1045,6 +1045,12 @@ export interface BulkImportResult {
   created: number;
   skipped: number;
   total: number;
+  /**
+   * Broj ne-količinskih jedinica kojima je posle kreiranja uspeo početni smeštaj
+   * u magacin (RC-49 — `loc_create_movement`); neuspeli smeštaj ide u `errors`, a
+   * alat ostaje kreiran/upotrebljiv. Količinske/potrošne stavke nemaju placement.
+   */
+  placed: number;
   errors: { oznaka: string; error: string }[];
 }
 
@@ -1625,4 +1631,267 @@ export function printReversiLabel(
     '/v1/reversi/labels/print',
     { method: 'POST', body: JSON.stringify({ tspl2, copies }) },
   );
+}
+
+// ============================================================ R5c/R5d
+// Rezni alat — pregledi po mašini/zaposlenom (R5c) i bulk import reznog kataloga +
+// postojećih reversa (R5d). Pregledi su read (useQuery, KEYS.reports); import je niz
+// manage-gejtovanih POST-ova (useMutation). Oblici odgovora prate BE reversi.service.ts
+// (cuttingByMachine/cuttingByEmployee/resolveEmployees/bulkImportCuttingTools/
+// analyze|execute|rollbackReversals) — čitani 17.07 (0 drift vs kontrolera/DTO-a).
+
+/**
+ * Red view-a `v_rev_cts_by_employee` (rezni alat po zaposlenom-potpisniku) — RC-36/37
+ * „Po zaposlenima". `machine_codes` je Postgres `text[]` (šifre mašina na kojima
+ * zaposleni drži tu šifru; `null`/prazno = bez mašine — FE čita `machine_codes || []`).
+ * `remaining_qty`/`doc_count` su brojevi (view sabira `quantity − returned_quantity`).
+ */
+export interface CuttingByEmployeeRow {
+  employee_id: string | null;
+  employee_name: string | null;
+  department: string | null;
+  catalog_id: string;
+  barcode: string | null;
+  oznaka: string;
+  naziv: string;
+  klasa: string | null;
+  unit: string | null;
+  remaining_qty: number | null;
+  machine_codes: string[] | null;
+  doc_count: number | null;
+  last_issued_at: string | null;
+}
+
+export interface CuttingByMachineReportParams {
+  /** Pretraga (šifra/naziv mašine, oznaka/naziv/barkod reznog) — ILIKE na BE. */
+  q?: string;
+  /** Tačan filter po šifri mašine (kartica jedne mašine). */
+  machineCode?: string;
+}
+
+/**
+ * Rezni alat po mašini SA PRETRAGOM (RC-34/35 „Po mašinama") — GET
+ * reports/cutting-by-machine. Za razliku od `useCuttingByMachine` (samo `machineCode`,
+ * enabled kad je zadat) i `useCuttingByMachineAll` (ceo view bez filtera), ovaj prima
+ * i `q` i `machineCode` i uvek je aktivan (lista + debounced pretraga u sub-tabu).
+ * Vraća isti red kao `useCuttingByMachine` (`CuttingByMachineRow`).
+ */
+export function useCuttingByMachineReport(params: CuttingByMachineReportParams = {}) {
+  return useQuery({
+    queryKey: [...KEYS.reports, 'cutting-by-machine', params],
+    queryFn: () =>
+      apiFetch<{ data: CuttingByMachineRow[] }>(
+        `/v1/reversi/reports/cutting-by-machine${qs({ ...params })}`,
+      ),
+  });
+}
+
+export interface CuttingByEmployeeReportParams {
+  /** Pretraga (ime zaposlenog, oznaka/naziv/barkod reznog) — ILIKE na BE. */
+  q?: string;
+  /** Tačan filter po odeljenju (dropdown „Odeljenje"). */
+  department?: string;
+}
+
+/** Rezni alat po zaposlenom-potpisniku (RC-36/37) — GET reports/cutting-by-employee. */
+export function useCuttingByEmployeeReport(params: CuttingByEmployeeReportParams = {}) {
+  return useQuery({
+    queryKey: [...KEYS.reports, 'cutting-by-employee', params],
+    queryFn: () =>
+      apiFetch<{ data: CuttingByEmployeeRow[] }>(
+        `/v1/reversi/reports/cutting-by-employee${qs({ ...params })}`,
+      ),
+  });
+}
+
+/** Rezultat fuzzy razrešavanja imena (POST lookups/employees/resolve — BE `resolveEmployees`). */
+export interface ResolveEmployeesResult {
+  /** Ključ = ulazni string (tačno kako je poslat), vrednost = razrešeni radnik. */
+  resolved: Record<string, { id: string; fullName: string }>;
+  /** Imena koja fuzzy NIJE razrešio (HARD blokada uvoza dok se ne poklope). */
+  missing: string[];
+}
+
+/**
+ * Fuzzy razrešavanje liste imena radnika → employee_id (RC-52) — POST
+ * lookups/employees/resolve. Read-only lookup (NE invalidira cache); poziva se u
+ * pre-import prikazu da FE obeleži nerazrešena imena pre analize/izvršenja.
+ */
+export function useResolveEmployees() {
+  return useMutation({
+    mutationFn: (names: string[]) =>
+      apiFetch<{ data: ResolveEmployeesResult }>(
+        '/v1/reversi/lookups/employees/resolve',
+        { method: 'POST', body: JSON.stringify({ names }) },
+      ),
+  });
+}
+
+/** Jedan red uvoza reznog kataloga (RC-50 — camelCase, paritet 1.0 CUTTING_COLS). */
+export interface BulkCuttingRow {
+  oznaka: string;
+  naziv: string;
+  compatibleMachineCodes?: string[];
+  unit?: string;
+  minStockQty?: number;
+  napomena?: string;
+  /** Početna količina → seed u ALAT-MAG-01 ako > 0 (paritet 1.0 importCutting). */
+  initialQty?: number;
+}
+
+export interface BulkImportCuttingResult {
+  created: number;
+  skipped: number;
+  /** Broj šifri kojima je seedovana početna količina (initialQty>0 + magacin postoji). */
+  seeded: number;
+  errors: { oznaka: string; error: string }[];
+  /** oznaka→id novokreiranih šifri (za naknadnu štampu nalepnica / seed). */
+  createdIds: { oznaka: string; id: string }[];
+  total: number;
+}
+
+/** RC-50 — bulk uvoz reznog kataloga (+ opc. seed). Idempotentno po `oznaka` na BE. */
+export function useBulkImportCuttingTools() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (rows: BulkCuttingRow[]) =>
+      apiFetch<{ data: BulkImportCuttingResult }>(
+        '/v1/reversi/bulk-import/cutting-tools',
+        { method: 'POST', body: JSON.stringify({ rows }) },
+      ),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['reversi'] }),
+  });
+}
+
+/**
+ * Jedan red uvoza reversa (RC-51/54, camelCase — paritet 1.0 REVERS_COLS).
+ * `tip` ∈ {TOOL, COOPERATION_GOODS, CUTTING_TOOL}; `primalacTip` ∈
+ * {EMPLOYEE, DEPARTMENT, EXTERNAL_COMPANY, MACHINE}. Za CUTTING_TOOL `primalac`
+ * sme biti zarez-lista (PRIMARY + SECONDARY operateri); `masina` (rj_code) je
+ * obavezna za CUTTING_TOOL i MACHINE primaoca. `alat` = oznaka ILI barkod.
+ */
+export interface ReversalRow {
+  tip: string;
+  /** 'YYYY-MM-DD' — datum izdavanja (prazno = danas). */
+  datum?: string;
+  primalacTip: string;
+  primalac: string;
+  masina?: string;
+  alat: string;
+  kolicina?: number;
+  /** 'YYYY-MM-DD' — rok povraćaja. */
+  rokPovracaja?: string;
+  napomena?: string;
+}
+
+/** Duplikat-kandidat: aktivan CUTTING_TOOL revers na istoj mašini (MEKANA blokada). */
+export interface ReversalDuplicateDoc {
+  machine: string | null;
+  docNumber: string;
+  /** ISO — BE serijalizuje `issued_at` (Date) u string. */
+  issuedAt: string;
+  employee: string | null;
+  status: string;
+}
+
+/**
+ * Izlaz dry-run analize uvoza reversa (POST bulk-import/reversals/analyze — BE
+ * `analyzeReversals`). `blocking=true` (nedostajući radnici/alat) je HARD blokada
+ * (izvršenje pada 422); `canForce=true` = nema hard blokada ali IMA duplikata, pa
+ * izvršenje traži `force`. `resolvedEmployees`/`toolByOznaka` su SAMO za prikaz —
+ * izvršenje ih re-računa server-side (bez poverenja u klijentski payload).
+ */
+export interface ReversalAnalysis {
+  docCount: number;
+  lineCount: number;
+  machineCodes: string[];
+  existingCatalog: { oznaka: string; id: string; naziv: string }[];
+  newCatalog: { oznaka: string; naziv: string; masine: string[] }[];
+  resolvedEmployees: Record<string, { id: string; fullName: string }>;
+  /** Nerazrešeni radnici (fuzzy promašaj) — HARD blokada. */
+  missingEmployees: string[];
+  toolByOznaka: Record<string, string>;
+  /** Oznake ručnog alata bez aktivnog zapisa u bazi — HARD blokada. */
+  missingToolOznaka: string[];
+  magacinExists: boolean;
+  duplicateDocs: ReversalDuplicateDoc[];
+  /** Ljudski čitljivi opisi hard blokada (za prikaz). */
+  blockers: string[];
+  blocking: boolean;
+  hasDuplicates: boolean;
+  canForce: boolean;
+}
+
+export interface AnalyzeReversalsVars {
+  rows: ReversalRow[];
+  /** Ime izvornog fajla — ulazi u `bulk_import_legacy_key` (dedup po fajlu). */
+  sourceFileName?: string;
+}
+
+/** RC-51/53 — dry-run analiza reversa (BEZ pisanja). Read-only (NE invalidira). */
+export function useAnalyzeReversals() {
+  return useMutation({
+    mutationFn: (vars: AnalyzeReversalsVars) =>
+      apiFetch<{ data: ReversalAnalysis }>(
+        '/v1/reversi/bulk-import/reversals/analyze',
+        { method: 'POST', body: JSON.stringify(vars) },
+      ),
+  });
+}
+
+export interface ExecuteReversalsVars extends AnalyzeReversalsVars {
+  /** true = potvrđen „⚠ Ipak nastavi" (override detekcije duplikata, RC-53). */
+  force?: boolean;
+}
+
+/** Sesija izvršenog uvoza — FE je čuva u localStorage za storno (RC-55). */
+export interface ReversalSession {
+  docIds: string[];
+  newCatalogIds: string[];
+}
+
+export interface ExecuteReversalsResult {
+  session: ReversalSession;
+  /** Broj STAVKI (ne dokumenata) po ishodu grupe (ok/fail/skipped). */
+  progress: { ok: number; fail: number; skipped: number };
+}
+
+/**
+ * RC-54 — izvršenje uvoza reversa (auto-create šifri + grupisanje + issue).
+ * Idempotentno po `bulk_import_legacy_key` (SHA-256) — bezbedno ponovljivo. HARD
+ * blokade → 422, duplikati bez `force` → 409 (FE hvata i nudi „⚠ Ipak nastavi").
+ */
+export function useExecuteReversals() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: ExecuteReversalsVars) =>
+      apiFetch<{ data: ExecuteReversalsResult }>(
+        '/v1/reversi/bulk-import/reversals',
+        { method: 'POST', body: JSON.stringify(vars) },
+      ),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['reversi'] }),
+  });
+}
+
+export interface RollbackReversalsResult {
+  ok: number;
+  fail: number;
+  /** Po dokumentu: `returned` | `already-returned` | `failed` (+ `error`). */
+  details: { documentId: string; status: string; error?: string }[];
+}
+
+/**
+ * RC-55 — storno bulk-import sesije (vraća dokumente u magacin → RETURNED).
+ * Idempotentno: već vraćen dokument nema preostalih linija → status `already-returned`.
+ */
+export function useRollbackReversals() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (documentIds: string[]) =>
+      apiFetch<{ data: RollbackReversalsResult }>(
+        '/v1/reversi/bulk-import/reversals/rollback',
+        { method: 'POST', body: JSON.stringify({ documentIds }) },
+      ),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['reversi'] }),
+  });
 }
