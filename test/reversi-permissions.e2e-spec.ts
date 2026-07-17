@@ -26,6 +26,8 @@ describe("Reversi permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
   const serviceMock: Record<string, jest.Mock> = {};
   for (const m of [
     "listDocuments",
+    "recipientCardinality",
+    "openHandLineByBarcode",
     "findOneDocument",
     "listTools",
     "findOneTool",
@@ -49,6 +51,7 @@ describe("Reversi permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     "uploadSignaturePdf",
     "getSignaturePdfUrl",
     "lookupEmployees",
+    "lookupLocations",
     "lookupBarcode",
     "bulkImportTools",
     "listCuttingTools",
@@ -198,6 +201,21 @@ describe("Reversi permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     });
     it("GET /cutting-tools/open-lines → 403 za user (default deny)", async () => {
       await get("/cutting-tools/open-lines", "user").expect(403);
+    });
+    it("GET /documents/recipient-cardinality → 200 magacioner, 403 user (RB-16 KPI)", async () => {
+      await get("/documents/recipient-cardinality", "magacioner").expect(200);
+      await get("/documents/recipient-cardinality", "user").expect(403);
+    });
+    it("GET /documents/open-hand-line → 200 proizvodni_radnik (Quick Return NIJE role-gated), 403 user", async () => {
+      await get(
+        "/documents/open-hand-line?barcode=ALAT-000057",
+        "proizvodni_radnik",
+      ).expect(200);
+      await get("/documents/open-hand-line", "user").expect(403);
+    });
+    it("GET /lookups/locations → 200 magacioner (dropdown povraćaja RB-45), 403 user", async () => {
+      await get("/lookups/locations", "magacioner").expect(200);
+      await get("/lookups/locations", "user").expect(403);
     });
     it("bez identiteta → 403 (JwtAuthGuard stub)", async () => {
       await request(app.getHttpServer())

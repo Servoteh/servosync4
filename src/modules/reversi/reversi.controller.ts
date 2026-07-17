@@ -24,6 +24,7 @@ import type {
   LedgerQuery,
   ListDocumentsQuery,
   ListToolsQuery,
+  RecipientCardinalityQuery,
 } from "./reversi.service";
 import {
   JsonPayloadTxDto,
@@ -67,6 +68,26 @@ export class ReversiController {
   @Get("documents")
   listDocuments(@Query() query: ListDocumentsQuery) {
     return this.reversi.listDocuments(query);
+  }
+
+  /**
+   * KPI kartica „Primaoci (aktivno)" (RB-16) — broj različitih primalaca na
+   * aktivnim reversima uz kontekst-filtere (mesec/tip/pretraga). Statička ruta
+   * je DEKLARISANA PRE `documents/:id` (inače ParseUUIDPipe odbije putanju).
+   */
+  @Get("documents/recipient-cardinality")
+  recipientCardinality(@Query() query: RecipientCardinalityQuery) {
+    return this.reversi.recipientCardinality(query);
+  }
+
+  /**
+   * Otvorena ISSUED linija ručnog alata po barkodu — Quick Return skener (RB-43/44
+   * HAND). NIJE user-scoped (nalazi tuđi otvoren revers); `reversi.read` (otkrivanje
+   * linije nije role-gated — kao cutting open-lines). Statička pre `documents/:id`.
+   */
+  @Get("documents/open-hand-line")
+  openHandLine(@Query("barcode") barcode?: string) {
+    return this.reversi.openHandLineByBarcode(barcode);
   }
 
   @Get("documents/:id")
@@ -199,6 +220,12 @@ export class ReversiController {
   @Get("lookups/employees")
   lookupEmployees(@Query("q") q?: string) {
     return this.reversi.lookupEmployees(q);
+  }
+
+  /** Aktivne lokacije za dropdown povraćaja (RB-45) — paritet 1.0 fetchActiveLocations. */
+  @Get("lookups/locations")
+  lookupLocations() {
+    return this.reversi.lookupLocations();
   }
 
   /** Razrešavanje skeniranog barkoda (ALAT-/RZN-/card) — paritet 1.0 resolveReversiBarcode. */

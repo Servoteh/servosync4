@@ -44,10 +44,26 @@ import type {
 
 export interface ListDocumentsQuery {
   status?: string;
+  /** CSV lista statusa (paritet 1.0 `statuses[]`) — ima prednost nad `status`. */
+  statuses?: string;
+  /** `'true'` → OPEN/PARTIALLY_RETURNED sa isteklim rokom (RB-20 „Rok istekao"). */
+  overdue?: string;
   docType?: string;
+  /** ISO — `issued_at >=` (RB-19 filter meseca izdavanja, UTC početak meseca). */
+  issuedFrom?: string;
+  /** ISO — `issued_at <=` (RB-19 UTC kraj meseca). */
+  issuedTo?: string;
   q?: string;
   page?: string;
   pageSize?: string;
+}
+
+/** Kontekst-filteri za KPI karticu „Primaoci (aktivno)" (RB-16). */
+export interface RecipientCardinalityQuery {
+  docType?: string;
+  issuedFrom?: string;
+  issuedTo?: string;
+  q?: string;
 }
 
 export interface ListToolsQuery {
@@ -128,38 +144,23 @@ export class ReversiService {
 
   // ---------- Dokumenti (reversi) ----------
 
+  /**
+   * Lista revers dokumenata (RB-15/22) sa server-side filterima pariteta 1.0
+   * `fetchDocuments` + `docFetchParamsFromUi`:
+   *   - status: `overdue` > `statuses[]` (CSV) > `status` (`ALL` = bez filtera) —
+   *     RB-19/20 (segment + „Rok istekao" = OPEN/PARTIALLY sa `expected_return_date < danas`),
+   *   - `issuedFrom`/`issuedTo` (RB-19 mesec, UTC opseg), `docType` (RB-21), `q` (pretraga),
+   *   - `lineCount` po dokumentu (RB-22 kolona „Stavki" + RB-25 CSV) — jedan groupBy.
+   * KPI kartice (RB-16 Aktivna/Prekoračen/Vraćeno/Otkazano) FE računa iz `meta.total`
+   * ovih poziva (pageSize=1 po statusu/overdue); „Primaoci (aktivno)" = recipientCardinality.
+   */
   async listDocuments(query: ListDocumentsQuery) {
     const { page, pageSize, skip, take } = parsePagination(
       query.page,
       query.pageSize,
     );
-    const where: Prisma.RevDocumentWhereInput = {
-      ...(query.status ? { status: query.status } : {}),
-      ...(query.docType ? { docType: query.docType } : {}),
-      ...(query.q
-        ? {
-            OR: [
-              { docNumber: { contains: query.q, mode: "insensitive" } },
-              {
-                recipientEmployeeName: {
-                  contains: query.q,
-                  mode: "insensitive",
-                },
-              },
-              {
-                recipientDepartment: { contains: query.q, mode: "insensitive" },
-              },
-              {
-                recipientCompanyName: {
-                  contains: query.q,
-                  mode: "insensitive",
-                },
-              },
-            ],
-          }
-        : {}),
-    };
-    const [data, total] = await Promise.all([
+    const where = this.buildDocumentWhere(query);
+    const [docs, total] = await Promise.all([
       this.sy15.db.revDocument.findMany({
         where,
         orderBy: { issuedAt: "desc" },
@@ -168,7 +169,172 @@ export class ReversiService {
       }),
       this.sy15.db.revDocument.count({ where }),
     ]);
+    // RB-22/25: broj stavki po dokumentu (kolona „Stavki" + CSV) — jedan agregat.
+    const ids = docs.map((d) => d.id);
+    const counts = ids.length
+      ? await this.sy15.db.revDocumentLine.groupBy({
+          by: ["documentId"],
+          where: { documentId: { in: ids } },
+          _count: { _all: true },
+        })
+      : [];
+    const countById = new Map(counts.map((c) => [c.documentId, c._count._all]));
+    const data = docs.map((d) => ({ ...d, lineCount: countById.get(d.id) ?? 0 }));
     return { data, meta: pageMeta(page, pageSize, total) };
+  }
+
+  /** Zajednički WHERE za listu i KPI count-ove (paritet 1.0 docFetchParamsFromUi). */
+  private buildDocumentWhere(
+    query: ListDocumentsQuery,
+  ): Prisma.RevDocumentWhereInput {
+    const where: Prisma.RevDocumentWhereInput = {};
+    // Redosled prednosti (1.0): overdue → statuses[] → status (ALL = bez filtera).
+    if (query.overdue === "true") {
+      // „Rok istekao": OPEN/PARTIALLY_RETURNED sa `expected_return_date` STROGO pre
+      // današnjeg dana (dok dospeva danas NIJE prekoračen — paritet 1.0 `lt.${today}`).
+      const today = new Date(new Date().toISOString().slice(0, 10));
+      where.status = { in: ["OPEN", "PARTIALLY_RETURNED"] };
+      where.expectedReturnDate = { lt: today };
+    } else {
+      const multi = (query.statuses ?? "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (multi.length > 0) where.status = { in: multi };
+      else if (query.status && query.status !== "ALL")
+        where.status = query.status;
+    }
+    if (query.docType) where.docType = query.docType;
+    const from = query.issuedFrom?.trim();
+    const to = query.issuedTo?.trim();
+    if (from || to) {
+      where.issuedAt = {
+        ...(from ? { gte: new Date(from) } : {}),
+        ...(to ? { lte: new Date(to) } : {}),
+      };
+    }
+    if (query.q) {
+      where.OR = [
+        { docNumber: { contains: query.q, mode: "insensitive" } },
+        { recipientEmployeeName: { contains: query.q, mode: "insensitive" } },
+        { recipientDepartment: { contains: query.q, mode: "insensitive" } },
+        { recipientCompanyName: { contains: query.q, mode: "insensitive" } },
+      ];
+    }
+    return where;
+  }
+
+  /**
+   * Broj RAZLIČITIH primalaca na aktivnim (OPEN/PARTIALLY_RETURNED) dokumentima
+   * — KPI kartica „Primaoci (aktivno)" (RB-16). Paritet 1.0
+   * `fetchOpenRecipientCardinality`, ali tačan `COUNT(DISTINCT …)` u jednom upitu
+   * (bez klijentskog cap-a/uzorka → `truncated` uvek false). Ključ primaoca:
+   * EMPLOYEE→id, DEPARTMENT→naziv, inače firma, pa odeljenje (isti prioritet kao 1.0).
+   */
+  async recipientCardinality(query: RecipientCardinalityQuery) {
+    const conds: Prisma.Sql[] = [
+      Prisma.sql`status IN ('OPEN', 'PARTIALLY_RETURNED')`,
+    ];
+    const from = query.issuedFrom?.trim();
+    const to = query.issuedTo?.trim();
+    if (from) conds.push(Prisma.sql`issued_at >= ${new Date(from)}`);
+    if (to) conds.push(Prisma.sql`issued_at <= ${new Date(to)}`);
+    if (query.docType === "TOOL" || query.docType === "COOPERATION_GOODS")
+      conds.push(Prisma.sql`doc_type = ${query.docType}`);
+    const q = query.q?.trim();
+    if (q) {
+      const like = `%${q}%`;
+      conds.push(Prisma.sql`(doc_number ILIKE ${like}
+        OR recipient_employee_name ILIKE ${like}
+        OR recipient_department ILIKE ${like}
+        OR recipient_company_name ILIKE ${like})`);
+    }
+    const rows = await this.sy15.db.$queryRaw<{ count: number }[]>(Prisma.sql`
+      SELECT COUNT(DISTINCT CASE
+        WHEN recipient_type = 'EMPLOYEE' AND recipient_employee_id IS NOT NULL
+          THEN 'e:' || recipient_employee_id::text
+        WHEN recipient_type = 'DEPARTMENT' AND recipient_department IS NOT NULL
+          THEN 'd:' || recipient_department
+        WHEN recipient_company_name IS NOT NULL THEN 'c:' || recipient_company_name
+        WHEN recipient_department IS NOT NULL THEN 'd:' || recipient_department
+        ELSE 'x:' || id::text
+      END)::int AS count
+      FROM rev_documents
+      WHERE ${Prisma.join(conds, " AND ")}`);
+    return { data: { count: Number(rows[0]?.count) || 0, truncated: false } };
+  }
+
+  /**
+   * Otvorena ISSUED linija RUČNOG alata za skenirani barkod — podrška Quick Return
+   * skeneru (RB-43/44 HAND grana). Paritet 1.0 `fetchOpenHandLineByToolBarcode`:
+   * NIJE user-scoped (magacioner vraća tuđi alat) — nalazi otvoren revers BILO KOG
+   * primaoca; kad ih je više, uzima NAJSTARIJI (FIFO po `issued_at`). Vraća SVE
+   * preostalo na liniji (`remainingQty`); `null` = nema otvorenog reversa za taj alat.
+   * Klasni default `reversi.read` (kao cutting open-lines — otkrivanje linije nije
+   * role-gated; sam povraćaj `POST /return` ostaje `reversi.manage`).
+   */
+  async openHandLineByBarcode(barcodeRaw?: string) {
+    const barcode = this.normalizeBarcode(barcodeRaw);
+    if (!barcode) return { data: null };
+    const tool = await this.sy15.db.revTool.findFirst({ where: { barcode } });
+    if (!tool) return { data: null };
+    const lines = await this.sy15.db.revDocumentLine.findMany({
+      where: { toolId: tool.id, lineStatus: "ISSUED" },
+      select: {
+        id: true,
+        documentId: true,
+        quantity: true,
+        returnedQuantity: true,
+      },
+    });
+    if (lines.length === 0) return { data: null };
+    const docIds = [...new Set(lines.map((l) => l.documentId))];
+    const docs = await this.sy15.db.revDocument.findMany({
+      where: { id: { in: docIds }, status: { in: [...OPEN_DOC_STATUSES] } },
+      select: {
+        id: true,
+        docNumber: true,
+        issuedAt: true,
+        recipientEmployeeName: true,
+        recipientDepartment: true,
+        recipientCompanyName: true,
+      },
+    });
+    const docById = new Map(docs.map((d) => [d.id, d]));
+    const openLines = lines.filter((l) => docById.has(l.documentId));
+    if (openLines.length === 0) return { data: null };
+    // FIFO: najstariji otvoren revers prvi (paritet cutting open-lines).
+    openLines.sort(
+      (a, b) =>
+        docById.get(a.documentId)!.issuedAt.getTime() -
+        docById.get(b.documentId)!.issuedAt.getTime(),
+    );
+    const ln = openLines[0];
+    const d = docById.get(ln.documentId)!;
+    const issuedQty = Number(ln.quantity) || 1;
+    const returnedQty = Number(ln.returnedQuantity) || 0;
+    return {
+      data: {
+        lineId: ln.id,
+        documentId: d.id,
+        docNumber: d.docNumber,
+        recipientLabel:
+          d.recipientEmployeeName ||
+          d.recipientDepartment ||
+          d.recipientCompanyName ||
+          "—",
+        issuedQty,
+        returnedQty,
+        remainingQty: Math.max(1, issuedQty - returnedQty),
+        tool: {
+          id: tool.id,
+          oznaka: tool.oznaka,
+          naziv: tool.naziv,
+          barcode: tool.barcode,
+          serijskiBroj: tool.serijskiBroj,
+        },
+      },
+    };
   }
 
   async findOneDocument(id: string) {
@@ -1122,16 +1288,39 @@ export class ReversiService {
     return { data: { created, skipped, errors, total: rows.length } };
   }
 
-  /** Picker radnika za Izdaj modal (paritet 1.0 fetchEmployees — samo aktivni, bez PII). */
+  /**
+   * Picker radnika za Izdaj modal (RB-35 — izbor primaoca po imenu/odeljenju/poziciji).
+   * Paritet 1.0 `fetchEmployees`: vraća I NEAKTIVNE (FE ih prikazuje zasivljeno sa
+   * badžom „neaktivan" — `is_active=false`), pretraga matchuje i `position`, aktivni
+   * idu prvi. Bez PII (samo ime/odeljenje/pozicija). Izbor po kartici/bedžu ide kroz
+   * `lookupBarcode` (EMPLOYEE grana, `card_barcode`).
+   */
   async lookupEmployees(q?: string) {
-    const term = `%${(q ?? "").trim()}%`;
+    const raw = (q ?? "").trim();
+    const term = `%${raw}%`;
     const data = await this.sy15.db.$queryRaw`
-      SELECT id, full_name, department, "position"
+      SELECT id, full_name, department, "position", is_active
       FROM employees
-      WHERE is_active IS TRUE
-        AND (${(q ?? "").trim()} = '' OR full_name ILIKE ${term} OR department ILIKE ${term})
-      ORDER BY full_name ASC
+      WHERE (${raw} = '' OR full_name ILIKE ${term} OR department ILIKE ${term}
+             OR "position" ILIKE ${term})
+      ORDER BY is_active DESC, full_name ASC
       LIMIT 50`;
+    return { data };
+  }
+
+  /**
+   * Aktivne lokacije za dropdown povraćaja (RB-45 — izbor lokacije u kojoj se alat
+   * vraća) i izbor magacina pri seed-u/smestaju. Paritet 1.0 `fetchActiveLocations`.
+   * Klasni default `reversi.read`. FE prosleđuje izabrani `id` kao
+   * `return_to_location_id` u `POST /return` (bez izbora BE koristi ALAT-MAG-01).
+   */
+  async lookupLocations() {
+    const data = await this.sy15.db.$queryRaw`
+      SELECT id, location_code, name, location_type
+      FROM loc_locations
+      WHERE is_active IS TRUE
+      ORDER BY location_code ASC
+      LIMIT 500`;
     return { data };
   }
 

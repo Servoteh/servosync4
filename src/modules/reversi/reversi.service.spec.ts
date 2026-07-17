@@ -32,8 +32,13 @@ describe("ReversiService — R0 paritet", () => {
     runIdempotent: jest.Mock;
     db: {
       revCuttingToolCatalog: { findMany: jest.Mock; update: jest.Mock };
-      revDocument: { findUnique: jest.Mock };
-      revTool: { create: jest.Mock; update: jest.Mock };
+      revDocument: {
+        findUnique: jest.Mock;
+        findMany: jest.Mock;
+        count: jest.Mock;
+      };
+      revDocumentLine: { groupBy: jest.Mock; findMany: jest.Mock };
+      revTool: { create: jest.Mock; update: jest.Mock; findFirst: jest.Mock };
       revInventorySubgroup: { findUnique: jest.Mock; delete: jest.Mock };
       revInventorySubsubgroup: { findUnique: jest.Mock; delete: jest.Mock };
       $queryRaw: jest.Mock;
@@ -63,8 +68,13 @@ describe("ReversiService — R0 paritet", () => {
       ),
       db: {
         revCuttingToolCatalog: { findMany: jest.fn(), update: jest.fn() },
-        revDocument: { findUnique: jest.fn() },
-        revTool: { create: jest.fn(), update: jest.fn() },
+        revDocument: {
+          findUnique: jest.fn(),
+          findMany: jest.fn(),
+          count: jest.fn(),
+        },
+        revDocumentLine: { groupBy: jest.fn(), findMany: jest.fn() },
+        revTool: { create: jest.fn(), update: jest.fn(), findFirst: jest.fn() },
         revInventorySubgroup: { findUnique: jest.fn(), delete: jest.fn() },
         revInventorySubsubgroup: { findUnique: jest.fn(), delete: jest.fn() },
         $queryRaw: jest.fn(),
@@ -534,6 +544,187 @@ describe("ReversiService — R0 paritet", () => {
       const res = await service.printLabel(dto);
       expect(labelPrint.printRawTspl).toHaveBeenCalledWith(dto);
       expect(res.data.bytes).toBe(42);
+    });
+  });
+
+  // ---------- R4: Zaduženja lista — filteri + lineCount (RB-16/19/20/22/25) ----------
+
+  describe("listDocuments — filteri + lineCount (RB-16/19/20/22/25)", () => {
+    it("dodaje lineCount po dokumentu; 0 kad dokument nema stavki", async () => {
+      sy15.db.revDocument.findMany.mockResolvedValue([
+        { id: "d1", docNumber: "REV-1" },
+        { id: "d2", docNumber: "REV-2" },
+      ]);
+      sy15.db.revDocument.count.mockResolvedValue(2);
+      sy15.db.revDocumentLine.groupBy.mockResolvedValue([
+        { documentId: "d1", _count: { _all: 3 } },
+      ]);
+      const res = await service.listDocuments({});
+      expect(res.data.find((d) => d.id === "d1")!.lineCount).toBe(3);
+      expect(res.data.find((d) => d.id === "d2")!.lineCount).toBe(0);
+      expect(res.meta.pagination.total).toBe(2);
+    });
+
+    it("overdue=true → status IN (OPEN,PARTIALLY_RETURNED) + expectedReturnDate < danas (RB-20)", async () => {
+      sy15.db.revDocument.findMany.mockResolvedValue([]);
+      sy15.db.revDocument.count.mockResolvedValue(0);
+      await service.listDocuments({ overdue: "true", status: "RETURNED" });
+      const where = sy15.db.revDocument.findMany.mock.calls[0][0].where;
+      expect(where.status).toEqual({ in: ["OPEN", "PARTIALLY_RETURNED"] });
+      expect(where.expectedReturnDate.lt).toBeInstanceOf(Date);
+    });
+
+    it("statuses (CSV) ima prednost nad status; status=ALL → bez filtera statusa", async () => {
+      sy15.db.revDocument.findMany.mockResolvedValue([]);
+      sy15.db.revDocument.count.mockResolvedValue(0);
+      await service.listDocuments({
+        statuses: "OPEN,PARTIALLY_RETURNED",
+        status: "RETURNED",
+      });
+      expect(
+        sy15.db.revDocument.findMany.mock.calls[0][0].where.status,
+      ).toEqual({ in: ["OPEN", "PARTIALLY_RETURNED"] });
+
+      sy15.db.revDocument.findMany.mockClear();
+      await service.listDocuments({ status: "ALL" });
+      expect(
+        sy15.db.revDocument.findMany.mock.calls[0][0].where.status,
+      ).toBeUndefined();
+    });
+
+    it("issuedFrom/issuedTo → issued_at gte/lte (RB-19)", async () => {
+      sy15.db.revDocument.findMany.mockResolvedValue([]);
+      sy15.db.revDocument.count.mockResolvedValue(0);
+      await service.listDocuments({
+        issuedFrom: "2026-07-01T00:00:00.000Z",
+        issuedTo: "2026-07-31T23:59:59.999Z",
+      });
+      const where = sy15.db.revDocument.findMany.mock.calls[0][0].where;
+      expect(where.issuedAt.gte).toBeInstanceOf(Date);
+      expect(where.issuedAt.lte).toBeInstanceOf(Date);
+    });
+
+    it("prazna strana → groupBy stavki se ne poziva", async () => {
+      sy15.db.revDocument.findMany.mockResolvedValue([]);
+      sy15.db.revDocument.count.mockResolvedValue(0);
+      await service.listDocuments({});
+      expect(sy15.db.revDocumentLine.groupBy).not.toHaveBeenCalled();
+    });
+  });
+
+  // ---------- R4: recipient cardinality (RB-16 KPI „Primaoci aktivno") ----------
+
+  describe("recipientCardinality (RB-16)", () => {
+    it("mapira COUNT(DISTINCT) u { count, truncated:false }", async () => {
+      sy15.db.$queryRaw.mockResolvedValue([{ count: 7 }]);
+      const res = await service.recipientCardinality({});
+      expect(res.data).toEqual({ count: 7, truncated: false });
+      expect(sy15.db.$queryRaw).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ---------- R4: Quick Return HAND — open-line lookup (RB-43/44) ----------
+
+  describe("openHandLineByBarcode — Quick Return HAND (RB-43/44)", () => {
+    it("prazan barkod → data:null bez upita", async () => {
+      const res = await service.openHandLineByBarcode("");
+      expect(res.data).toBeNull();
+      expect(sy15.db.revTool.findFirst).not.toHaveBeenCalled();
+    });
+
+    it("alat ne postoji → null", async () => {
+      sy15.db.revTool.findFirst.mockResolvedValue(null);
+      const res = await service.openHandLineByBarcode("ALAT-000123");
+      expect(res.data).toBeNull();
+    });
+
+    it("bira NAJSTARIJI otvoren revers (FIFO) i vraća SVE preostalo (bilo koji primalac)", async () => {
+      sy15.db.revTool.findFirst.mockResolvedValue({
+        id: "t1",
+        oznaka: "ALAT-1",
+        naziv: "Ključ",
+        barcode: "ALAT-000123",
+        serijskiBroj: null,
+      });
+      sy15.db.revDocumentLine.findMany.mockResolvedValue([
+        { id: "lNew", documentId: "dNew", quantity: 2, returnedQuantity: 0 },
+        { id: "lOld", documentId: "dOld", quantity: 5, returnedQuantity: 1 },
+      ]);
+      sy15.db.revDocument.findMany.mockResolvedValue([
+        {
+          id: "dNew",
+          docNumber: "REV-9",
+          issuedAt: new Date("2026-07-10T08:00:00Z"),
+          recipientEmployeeName: "Nov",
+          recipientDepartment: null,
+          recipientCompanyName: null,
+        },
+        {
+          id: "dOld",
+          docNumber: "REV-1",
+          issuedAt: new Date("2026-07-01T08:00:00Z"),
+          recipientEmployeeName: "Stari",
+          recipientDepartment: null,
+          recipientCompanyName: null,
+        },
+      ]);
+      const res = await service.openHandLineByBarcode("*ALAT-000123*");
+      expect(res.data).toEqual({
+        lineId: "lOld",
+        documentId: "dOld",
+        docNumber: "REV-1",
+        recipientLabel: "Stari",
+        issuedQty: 5,
+        returnedQty: 1,
+        remainingQty: 4,
+        tool: {
+          id: "t1",
+          oznaka: "ALAT-1",
+          naziv: "Ključ",
+          barcode: "ALAT-000123",
+          serijskiBroj: null,
+        },
+      });
+    });
+
+    it("ISSUED linija ali nijedan dokument nije OPEN/PARTIALLY_RETURNED → null", async () => {
+      sy15.db.revTool.findFirst.mockResolvedValue({
+        id: "t1",
+        oznaka: "A",
+        naziv: "N",
+        barcode: "ALAT-000123",
+        serijskiBroj: null,
+      });
+      sy15.db.revDocumentLine.findMany.mockResolvedValue([
+        { id: "l1", documentId: "d1", quantity: 1, returnedQuantity: 0 },
+      ]);
+      sy15.db.revDocument.findMany.mockResolvedValue([]);
+      const res = await service.openHandLineByBarcode("ALAT-000123");
+      expect(res.data).toBeNull();
+    });
+  });
+
+  // ---------- R4: lookup primaoca/lokacija (RB-35/45) ----------
+
+  describe("lookupEmployees (RB-35) / lookupLocations (RB-45)", () => {
+    it("lookupEmployees vraća i is_active (neaktivni ostaju u pickeru)", async () => {
+      sy15.db.$queryRaw.mockResolvedValue([
+        { id: "e1", full_name: "Neaktivni", is_active: false },
+      ]);
+      const res = await service.lookupEmployees("nea");
+      expect(res.data).toEqual([
+        { id: "e1", full_name: "Neaktivni", is_active: false },
+      ]);
+    });
+
+    it("lookupLocations vraća aktivne lokacije za dropdown povraćaja", async () => {
+      sy15.db.$queryRaw.mockResolvedValue([
+        { id: "l1", location_code: "ALAT-MAG-01", name: "Magacin" },
+      ]);
+      const res = await service.lookupLocations();
+      expect(res.data).toEqual([
+        { id: "l1", location_code: "ALAT-MAG-01", name: "Magacin" },
+      ]);
     });
   });
 });
