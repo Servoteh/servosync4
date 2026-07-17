@@ -44,6 +44,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
   const loginMut = useLogin();
 
+  /* Ulazna putanja se pamti PRE nego što per-page guard preusmeri na /login
+     (guard je useEffect → posle prvog rendera; state inicijalizator je sinhron).
+     Login stranica je čita umesto landingRoute — deep-link iz 1.0 iframe-a
+     (npr. /energetika, /montaza) preživi SSO handoff. Konzumira se na loginu. */
+  useState(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const p = window.location.pathname + window.location.search;
+      if (p.startsWith('/') && !p.startsWith('//') && !p.startsWith('/login')) {
+        sessionStorage.setItem('ss2.entryPath', p);
+      }
+    } catch { /* sessionStorage nedostupan (npr. blokiran u iframe-u) — landingRoute fallback */ }
+  });
+
   useEffect(() => {
     setHasToken(!!getToken());
     setReady(true);

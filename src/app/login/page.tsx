@@ -28,8 +28,18 @@ export default function LoginPage() {
   } = useForm<FormValues>({ defaultValues: { email: '', password: '' } });
 
   useEffect(() => {
-    // Kontrolori → /kvalitet, ostali → /work-orders (vidi landing-route.ts).
-    if (!isLoading && user) router.replace(landingRoute(user));
+    if (isLoading || !user) return;
+    // Deep-link iz 1.0 iframe-a (zapamćen u AuthProvider-u pre guard redirecta)
+    // ima prednost; inače kontrolori → /kvalitet, ostali → /work-orders.
+    let target = landingRoute(user);
+    try {
+      const entry = sessionStorage.getItem('ss2.entryPath');
+      sessionStorage.removeItem('ss2.entryPath');
+      if (entry && entry.startsWith('/') && !entry.startsWith('//') && !entry.startsWith('/login')) {
+        target = entry;
+      }
+    } catch { /* landingRoute fallback */ }
+    router.replace(target);
   }, [user, isLoading, router]);
 
   async function onSubmit(values: FormValues) {
