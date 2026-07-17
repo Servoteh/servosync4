@@ -29,6 +29,7 @@ import {
 } from "./dto/sastanci-query.dto";
 import {
   AddUcesnikDto,
+  ArhivaPdfDto,
   BulkStatusDto,
   BulkUcesniciDto,
   CreateAkcijaDto,
@@ -691,9 +692,15 @@ export class SastanciController {
   uploadArhivaPdf(
     @Req() req: AuthedRequest,
     @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: ArhivaPdfDto,
     @UploadedFile() file?: Express.Multer.File,
   ) {
-    return this.sastanci.uploadArhivaPdf(req.user.email, id, file);
+    return this.sastanci.uploadArhivaPdf(
+      req.user.email,
+      id,
+      file,
+      dto.requireArhiva,
+    );
   }
 
   @Get(":id/arhiva/pdf")

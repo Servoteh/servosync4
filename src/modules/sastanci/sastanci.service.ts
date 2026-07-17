@@ -2015,10 +2015,23 @@ export class SastanciService {
    * Upload PDF zapisnika u `sastanci-arhiva` (paritet uploadSastanakPdf). Vraća
    * storagePath koji FE prosleđuje u `/lock` (RPC upiše path PRE meeting_locked
    * trigera — §2 p.8). Ako arhiva red već postoji (regeneriši na zaključanom),
-   * PATCH-uje path (best-effort, kroz withUserRls — RLS write-scope presuđuje).
+   * PATCH-uje path kroz withUserRls — RLS write-scope presuđuje.
    * Guard = sastanci.edit (paritet bucket INSERT = has_edit_role).
+   *
+   * Dva toka, dve semantike 0-pogodaka (review nalaz — tihi 200 sa starim PDF-om):
+   *  - LOCK (bez `requireArhiva`): arhiva red još NE postoji — nastaje tek u RPC-u
+   *    sast_zakljucaj_sastanak (INSERT … ON CONFLICT, path kroz p_pdf_storage_path).
+   *    0 pogodaka je legitimno → 200, `arhivaUpdated:false` u odgovoru.
+   *  - REGEN (`requireArhiva:true`, zaključan sastanak): red MORA biti pogođen —
+   *    0 pogodaka (RLS odbija ili red ne postoji) → 403, uz best-effort brisanje
+   *    upravo upload-ovanog fajla (niko ga nikad ne bi referencirao).
    */
-  async uploadArhivaPdf(email: string, id: string, file?: Express.Multer.File) {
+  async uploadArhivaPdf(
+    email: string,
+    id: string,
+    file?: Express.Multer.File,
+    requireArhiva?: boolean,
+  ) {
     if (!file?.buffer?.length || file.mimetype !== "application/pdf") {
       throw new UnprocessableEntityException(
         "Očekivan PDF fajl (multipart polje `file`)",
@@ -2038,8 +2051,8 @@ export class SastanciService {
       "application/pdf",
     );
     // Ako red postoji (npr. regeneriši na zaključanom) — upiši path; RLS presuđuje.
-    await this.withUserMapped(email, async (tx) => {
-      await tx.sastanakArhiva.updateMany({
+    const updated = await this.withUserMapped(email, async (tx) => {
+      const { count } = await tx.sastanakArhiva.updateMany({
         where: { sastanakId: id },
         data: {
           zapisnikStoragePath: storagePath,
@@ -2047,8 +2060,16 @@ export class SastanciService {
           zapisnikGeneratedAt: new Date(),
         },
       });
+      return count;
     });
-    return { data: { storagePath } };
+    if (requireArhiva && updated === 0) {
+      // Orphan cleanup (best-effort): path se ne vraća FE-u pa fajl niko ne referencira.
+      await this.storage.remove("sastanci-arhiva", storagePath).catch(() => {});
+      throw new ForbiddenException(
+        "Arhiva nije ažurirana — nemaš pravo izmene ovog sastanka ili arhiva ne postoji.",
+      );
+    }
+    return { data: { storagePath, arhivaUpdated: updated > 0 } };
   }
 
   /**

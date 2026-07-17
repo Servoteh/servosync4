@@ -8,6 +8,7 @@ import { validate } from "class-validator";
 import { SastanciService } from "./sastanci.service";
 import type { Sy15Service } from "../../common/sy15/sy15.service";
 import {
+  ArhivaPdfDto,
   CreateSastanakDto,
   UpdateSastanakDto,
 } from "./dto/sastanci-mutation.dto";
@@ -306,6 +307,72 @@ describe("SastanciService R2 mutacije", () => {
     expect(out.data.storagePath).toMatch(
       new RegExp(`^${ID}/.*_zapisnik\\.pdf$`),
     );
+  });
+
+  // ── Review nalaz: updateMany 0 pogodaka ≠ tihi 200 (regen bi ostavio STARI PDF) ──
+
+  it("uploadArhivaPdf LOCK tok (bez requireArhiva): arhiva red ne postoji → 200 + arhivaUpdated=false", async () => {
+    const { svc, storage } = makeSvc(); // default sastanakArhiva.updateMany → count 0
+    const out = await svc.uploadArhivaPdf("u@servoteh.com", ID, {
+      buffer: Buffer.from("%PDF-1.4"),
+      mimetype: "application/pdf",
+    } as unknown as Express.Multer.File);
+    // Red nastaje tek u RPC sast_zakljucaj_sastanak — 0 je legitimno, bez izuzetka.
+    expect(out.data.arhivaUpdated).toBe(false);
+    expect(out.data.storagePath).toMatch(
+      new RegExp(`^${ID}/.*_zapisnik\\.pdf$`),
+    );
+    expect(storage.remove).not.toHaveBeenCalled();
+  });
+
+  it("uploadArhivaPdf REGEN tok (requireArhiva=true): 0 pogodaka → 403 + orphan cleanup", async () => {
+    const { svc, tx, storage } = makeSvc(); // default updateMany → count 0
+    await expect(
+      svc.uploadArhivaPdf(
+        "u@servoteh.com",
+        ID,
+        {
+          buffer: Buffer.from("%PDF-1.4"),
+          mimetype: "application/pdf",
+        } as unknown as Express.Multer.File,
+        true,
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(tx.sastanakArhiva.updateMany).toHaveBeenCalledTimes(1);
+    // Best-effort brisanje upravo upload-ovanog fajla (path se ne vraća FE-u).
+    expect(storage.remove).toHaveBeenCalledWith(
+      "sastanci-arhiva",
+      expect.stringMatching(new RegExp(`^${ID}/.*_zapisnik\\.pdf$`)),
+    );
+  });
+
+  it("uploadArhivaPdf REGEN tok (requireArhiva=true): red pogođen → 200 + arhivaUpdated=true", async () => {
+    const { svc, tx, storage } = makeSvc();
+    tx.sastanakArhiva.updateMany.mockResolvedValueOnce({ count: 1 });
+    const out = await svc.uploadArhivaPdf(
+      "u@servoteh.com",
+      ID,
+      {
+        buffer: Buffer.from("%PDF-1.4"),
+        mimetype: "application/pdf",
+      } as unknown as Express.Multer.File,
+      true,
+    );
+    expect(out.data.arhivaUpdated).toBe(true);
+    expect(storage.remove).not.toHaveBeenCalled();
+  });
+
+  it("ArhivaPdfDto: multipart string 'true' → boolean requireArhiva (koercija pre @IsBoolean)", async () => {
+    // Žica multipart-a nosi SVE kao string — bez @Transform bi 'true' pao na 400.
+    const dto = plainToInstance(ArhivaPdfDto, { requireArhiva: "true" });
+    expect(await validate(dto)).toHaveLength(0);
+    expect(dto.requireArhiva).toBe(true);
+    const off = plainToInstance(ArhivaPdfDto, { requireArhiva: "false" });
+    expect(await validate(off)).toHaveLength(0);
+    expect(off.requireArhiva).toBe(false);
+    const none = plainToInstance(ArhivaPdfDto, {});
+    expect(await validate(none)).toHaveLength(0);
+    expect(none.requireArhiva).toBeUndefined();
   });
 
   // ── S-P0 paket 1: backdoor lock kroz status ──

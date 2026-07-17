@@ -1,4 +1,4 @@
-import { Type } from "class-transformer";
+import { Transform, Type } from "class-transformer";
 import {
   ArrayMinSize,
   IsArray,
@@ -380,6 +380,16 @@ export class UpdateSlikaDto {
 /** Idempotentni upload PDF zapisnika (multipart `file`) uz opcioni clientEventId. */
 export class ArhivaPdfDto {
   @IsOptional() @IsUUID() clientEventId?: string;
+  /** Regen tok (zaključan sastanak): true → arhiva red MORA biti pogođen; 0 redova
+   *  (RLS write-scope odbija ili red ne postoji) = 403 umesto tihog 200 sa starim
+   *  PDF-om u arhivi. Lock tok NE šalje flag — red nastaje tek u RPC-u
+   *  sast_zakljucaj_sastanak (path ide kroz p_pdf_storage_path), pa je 0 legitimno.
+   *  Multipart NE prenosi native boolean ('true' stiže kao string) → koercija pre
+   *  @IsBoolean (obrazac DocumentMetaDto, kadrovska CRITICAL #1). */
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === "true")
+  @IsBoolean()
+  requireArhiva?: boolean;
 }
 
 /* ── Prenos (Sedmični + prenos) ── */
