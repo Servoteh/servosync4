@@ -19,7 +19,7 @@ import {
 import { deadlineTone, isoToDateInput } from './common';
 
 /** Kategorije dokumenata (1.0 DOC_CATEGORIES, maintDocumentsPanel.js:17-39). */
-const DOC_CATEGORIES: { id: string; label: string; hasExpiry?: boolean }[] = [
+export const DOC_CATEGORIES: { id: string; label: string; hasExpiry?: boolean }[] = [
   /* Vozila-specifične kategorije (Sprint 2) — sa „važi do" rokom */
   { id: 'traffic_permit', label: 'Saobraćajna dozvola', hasExpiry: true },
   { id: 'insurance_policy', label: 'Polisa osiguranja', hasExpiry: true },
@@ -42,7 +42,7 @@ const DOC_CATEGORIES: { id: string; label: string; hasExpiry?: boolean }[] = [
   { id: 'inspection', label: 'Inspekcija' },
   { id: 'other', label: 'Drugo' },
 ];
-const CATEGORY_LABEL: Record<string, string> = Object.fromEntries(DOC_CATEGORIES.map((c) => [c.id, c.label]));
+export const CATEGORY_LABEL: Record<string, string> = Object.fromEntries(DOC_CATEGORIES.map((c) => [c.id, c.label]));
 const MAX_MB = 25;
 
 /**

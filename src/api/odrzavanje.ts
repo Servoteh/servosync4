@@ -885,12 +885,15 @@ export interface PartsParams {
   q?: string;
   vehicleId?: string;
   lowStock?: boolean;
+  /** „Prikaži neaktivne" — default samo aktivni; true uključuje deaktivirane (BE param). */
+  includeInactive?: boolean;
   page?: number;
   pageSize?: number;
 }
-export function useParts(params: PartsParams) {
+export function useParts(params: PartsParams, enabled = true) {
   return useQuery({
     queryKey: ['odr', 'parts', params],
+    enabled,
     queryFn: () => apiFetch<List<Part> | Rows<Part | ViewRow>>(`${BASE}/parts${qs({ ...params })}`),
   });
 }
@@ -908,10 +911,11 @@ export function usePartMovements(id: string | null) {
     queryFn: () => apiFetch<Rows<StockMovement>>(`${BASE}/parts/${id}/stock-movements`),
   });
 }
-export function useSuppliers() {
+/** Dobavljači. `active`: izostavljeno/'true' = samo aktivni; 'all' = svi; 'false' = neaktivni (BE param). */
+export function useSuppliers(active?: 'all' | 'false') {
   return useQuery({
-    queryKey: ['odr', 'suppliers'],
-    queryFn: () => apiFetch<Rows<Supplier>>(`${BASE}/suppliers`),
+    queryKey: ['odr', 'suppliers', active ?? 'active'],
+    queryFn: () => apiFetch<Rows<Supplier>>(`${BASE}/suppliers${qs({ active })}`),
   });
 }
 export function useLocations() {
