@@ -179,7 +179,10 @@ export class ReversiService {
         })
       : [];
     const countById = new Map(counts.map((c) => [c.documentId, c._count._all]));
-    const data = docs.map((d) => ({ ...d, lineCount: countById.get(d.id) ?? 0 }));
+    const data = docs.map((d) => ({
+      ...d,
+      lineCount: countById.get(d.id) ?? 0,
+    }));
     return { data, meta: pageMeta(page, pageSize, total) };
   }
 

@@ -550,6 +550,17 @@ describe("ReversiService — R0 paritet", () => {
   // ---------- R4: Zaduženja lista — filteri + lineCount (RB-16/19/20/22/25) ----------
 
   describe("listDocuments — filteri + lineCount (RB-16/19/20/22/25)", () => {
+    // Typed pogled na uhvaćeni `where` (izbegava no-unsafe-member-access na mock.calls).
+    type CapturedWhere = {
+      status?: unknown;
+      expectedReturnDate?: { lt?: Date };
+      issuedAt?: { gte?: Date; lte?: Date };
+    };
+    const lastWhere = (): CapturedWhere =>
+      (
+        sy15.db.revDocument.findMany.mock.calls as [{ where: CapturedWhere }][]
+      )[0][0].where;
+
     it("dodaje lineCount po dokumentu; 0 kad dokument nema stavki", async () => {
       sy15.db.revDocument.findMany.mockResolvedValue([
         { id: "d1", docNumber: "REV-1" },
@@ -569,9 +580,9 @@ describe("ReversiService — R0 paritet", () => {
       sy15.db.revDocument.findMany.mockResolvedValue([]);
       sy15.db.revDocument.count.mockResolvedValue(0);
       await service.listDocuments({ overdue: "true", status: "RETURNED" });
-      const where = sy15.db.revDocument.findMany.mock.calls[0][0].where;
+      const where = lastWhere();
       expect(where.status).toEqual({ in: ["OPEN", "PARTIALLY_RETURNED"] });
-      expect(where.expectedReturnDate.lt).toBeInstanceOf(Date);
+      expect(where.expectedReturnDate?.lt).toBeInstanceOf(Date);
     });
 
     it("statuses (CSV) ima prednost nad status; status=ALL → bez filtera statusa", async () => {
@@ -581,15 +592,13 @@ describe("ReversiService — R0 paritet", () => {
         statuses: "OPEN,PARTIALLY_RETURNED",
         status: "RETURNED",
       });
-      expect(
-        sy15.db.revDocument.findMany.mock.calls[0][0].where.status,
-      ).toEqual({ in: ["OPEN", "PARTIALLY_RETURNED"] });
+      expect(lastWhere().status).toEqual({
+        in: ["OPEN", "PARTIALLY_RETURNED"],
+      });
 
       sy15.db.revDocument.findMany.mockClear();
       await service.listDocuments({ status: "ALL" });
-      expect(
-        sy15.db.revDocument.findMany.mock.calls[0][0].where.status,
-      ).toBeUndefined();
+      expect(lastWhere().status).toBeUndefined();
     });
 
     it("issuedFrom/issuedTo → issued_at gte/lte (RB-19)", async () => {
@@ -599,9 +608,9 @@ describe("ReversiService — R0 paritet", () => {
         issuedFrom: "2026-07-01T00:00:00.000Z",
         issuedTo: "2026-07-31T23:59:59.999Z",
       });
-      const where = sy15.db.revDocument.findMany.mock.calls[0][0].where;
-      expect(where.issuedAt.gte).toBeInstanceOf(Date);
-      expect(where.issuedAt.lte).toBeInstanceOf(Date);
+      const where = lastWhere();
+      expect(where.issuedAt?.gte).toBeInstanceOf(Date);
+      expect(where.issuedAt?.lte).toBeInstanceOf(Date);
     });
 
     it("prazna strana → groupBy stavki se ne poziva", async () => {
