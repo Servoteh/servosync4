@@ -22,7 +22,6 @@ import { DokumentaTab } from './_components/dokumenta-tab';
 import { IzvestajiTab } from './_components/izvestaji-tab';
 import { PodesavanjaTab } from './_components/podesavanja-tab';
 import { NotifikacijeTab } from './_components/notifikacije-tab';
-import { MasinaCardDialog } from './_components/masina-card-dialog';
 
 type TabKey =
   | 'pregled' | 'nalozi' | 'kvarovi' | 'masine' | 'preventiva'
@@ -39,18 +38,21 @@ export default function OdrzavanjePage() {
   const { user, isLoading, can } = useAuth();
   const router = useRouter();
   const [tab, setTab] = useState<TabKey>('pregled');
-  const [deepMachine, setDeepMachine] = useState<string | null>(null);
   const meQ = useMaintMe();
   const me = meQ.data?.data;
+
+  const openMachine = (code: string) => router.push(`/odrzavanje/masine?code=${encodeURIComponent(code)}`);
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
   }, [user, isLoading, router]);
 
+  // Legacy deep-link `/odrzavanje?machine=<code>` → nova ruta kartona (presuda §8.3, QR paritet).
   useEffect(() => {
+    if (typeof window === 'undefined') return;
     const code = new URLSearchParams(window.location.search).get('machine');
-    if (code) setDeepMachine(code);
-  }, []);
+    if (code) router.replace(`/odrzavanje/masine?code=${encodeURIComponent(code)}`);
+  }, [router]);
 
   if (isLoading || !user) {
     return <main className="grid flex-1 place-items-center text-sm text-ink-secondary">Učitavanje…</main>;
@@ -92,7 +94,7 @@ export default function OdrzavanjePage() {
 
         <Tabs tabs={tabs} value={tab} onChange={setTab} ariaLabel="Održavanje" />
 
-        {tab === 'pregled' && <PregledTab onOpenMachine={setDeepMachine} />}
+        {tab === 'pregled' && <PregledTab onOpenMachine={openMachine} />}
         {tab === 'nalozi' && <NaloziTab me={me} />}
         {tab === 'kvarovi' && <KvaroviTab me={me} canReport={canReport} />}
         {tab === 'masine' && <MasineTab me={me} />}
@@ -107,9 +109,6 @@ export default function OdrzavanjePage() {
         {tab === 'podesavanja' && showAdmin && <PodesavanjaTab />}
         {tab === 'notifikacije' && showNotifs && <NotifikacijeTab />}
       </div>
-
-      {/* Deep-link karton mašine (QR / klik iz Pregleda) — nezavisno od taba. */}
-      <MasinaCardDialog code={deepMachine} me={me} onClose={() => setDeepMachine(null)} />
     </AppShell>
   );
 }

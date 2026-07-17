@@ -115,6 +115,19 @@ export function useMaintMe() {
   });
 }
 
+/**
+ * Lista CMMS profila (maint_user_profiles) — admin konzola (BE guard = ERP admin).
+ * P1a je koristi samo kao SEKUNDARNI izvor kandidata; primarni „Odgovoran" picker je
+ * `useAssignableUsers` (dostupan i chief/admin bez ERP prava). `enabled` gejtuje poziv.
+ */
+export function useProfiles(enabled = true) {
+  return useQuery({
+    queryKey: ['odr', 'profiles'],
+    enabled,
+    queryFn: () => apiFetch<Rows<MaintProfile>>(`${BASE}/profiles`),
+  });
+}
+
 // ══════════════════════════════════════════════════ dashboard
 
 export interface DashboardData {
@@ -128,6 +141,38 @@ export function useDashboard() {
   return useQuery({
     queryKey: ['odr', 'dashboard'],
     queryFn: () => apiFetch<One<DashboardData>>(`${BASE}/dashboard`),
+  });
+}
+
+// ══════════════════════════════════════════════════ board (#33)
+
+export interface BoardDue {
+  task_id: string;
+  machine_code: string;
+  title: string;
+  severity: string | null;
+  interval_value: number | null;
+  interval_unit: string | null;
+  next_due_at: string;
+  bucket: string;
+}
+export interface BoardOverride {
+  machineCode: string;
+  status: string;
+  reason: string | null;
+  validUntil: string | null;
+}
+export interface BoardData {
+  overdue: BoardDue[];
+  today: BoardDue[];
+  week: BoardDue[];
+  overrides: BoardOverride[];
+  machineNames: { machineCode: string; name: string }[];
+}
+export function useBoard() {
+  return useQuery({
+    queryKey: ['odr', 'board'],
+    queryFn: () => apiFetch<One<BoardData>>(`${BASE}/board`),
   });
 }
 
@@ -168,6 +213,12 @@ export type MachineDetail = MachineRow & { statusOverride: StatusOverride | null
 
 export interface MachinesParams {
   q?: string;
+  /** efektivni op-status (running/degraded/down/maintenance) — 1.0 chip (P0 filter). */
+  status?: string;
+  /** rok grupa: "overdue" | "danas" | "7d" (P0 filter). */
+  deadline?: string;
+  /** tačna lokacija (maint_machines.location) — 1.0 select (P0 filter). */
+  location?: string;
   source?: string;
   archived?: boolean;
   mine?: boolean;
@@ -202,6 +253,8 @@ export interface DeletionLogRow {
   deletedAt: string;
   deletedByEmail: string | null;
   relatedCounts: Record<string, number>;
+  /** Pun snapshot obrisanog reda mašine (jsonb) — paritet 1.0 log prikaza. */
+  snapshot: Record<string, unknown> | null;
 }
 export function useDeletionLog(enabled: boolean) {
   return useQuery({
@@ -1030,6 +1083,9 @@ export const useUpdateNote = () =>
   useOdrMutate<{ code: string; noteId: string; patch: Record<string, unknown> }>('PATCH', (v) => `${BASE}/machines/${encodeURIComponent(v.code)}/notes/${v.noteId}`, (v) => v.patch);
 export const useDeleteMachineFile = () =>
   useOdrMutate<{ code: string; id: string }>('DELETE', (v) => `${BASE}/machines/${encodeURIComponent(v.code)}/files/${v.id}`);
+/** PATCH meta (kategorija/opis) fajla mašine — paritet 1.0 edit metapodataka (maintFilesTab.js). */
+export const useUpdateMachineFile = () =>
+  useOdrMutate<{ code: string; id: string; patch: { category?: string; description?: string } }>('PATCH', (v) => `${BASE}/machines/${encodeURIComponent(v.code)}/files/${v.id}`, (v) => v.patch);
 
 /** Upload fajla mašine (multipart). */
 export function useUploadMachineFile() {

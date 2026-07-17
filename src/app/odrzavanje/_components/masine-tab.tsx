@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { Plus, Upload, History } from 'lucide-react';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { Button } from '@/components/ui-kit/button';
@@ -20,14 +21,13 @@ import {
   type MaintMe,
 } from '@/api/odrzavanje';
 import { f, OpStatusBadge, tableEmpty } from './common';
-import { MasinaCardDialog } from './masina-card-dialog';
 
-/** Mašine (registar + katalog): CRUD, arhiva toggle, uvoz iz BigTehn, deletion log, karton. */
+/** Mašine (registar + katalog): CRUD, arhiva toggle, uvoz iz BigTehn, deletion log, karton (ruta). */
 export function MasineTab({ me }: { me: MaintMe | undefined }) {
+  const router = useRouter();
   const [q, setQ] = useState('');
   const [archived, setArchived] = useState(false);
   const [page, setPage] = useState(1);
-  const [openCode, setOpenCode] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [importing, setImporting] = useState(false);
   const [showLog, setShowLog] = useState(false);
@@ -73,14 +73,13 @@ export function MasineTab({ me }: { me: MaintMe | undefined }) {
         rows={rows}
         rowKey={(r) => r.machineCode}
         loading={machines.isLoading}
-        onRowActivate={(r) => setOpenCode(r.machineCode)}
+        onRowActivate={(r) => router.push(`/odrzavanje/masine?code=${encodeURIComponent(r.machineCode)}`)}
         empty={tableEmpty(machines.isError, 'Nema mašina', 'Nijedna mašina ne odgovara pretrazi.')}
       />
       {meta && meta.totalPages > 1 && (
         <Pager page={meta.page} totalPages={meta.totalPages} onPrev={() => setPage((p) => p - 1)} onNext={() => setPage((p) => p + 1)} />
       )}
 
-      <MasinaCardDialog code={openCode} me={me} onClose={() => setOpenCode(null)} />
       {creating && <CreateMachineDialog onClose={() => setCreating(false)} />}
       {importing && <ImportDialog onClose={() => setImporting(false)} />}
       {showLog && <DeletionLogDialog onClose={() => setShowLog(false)} />}
@@ -180,16 +179,31 @@ function DeletionLogDialog({ onClose }: { onClose: () => void }) {
         <p className="py-6 text-center text-sm text-ink-secondary">Nema zapisa.</p>
       ) : (
         <div className="space-y-2">
-          {rows.map((r) => (
-            <div key={r.id} className="rounded-control border border-line p-2.5 text-sm">
-              <div className="flex items-center justify-between">
-                <span className="tnums font-medium text-ink">{r.machineCode}</span>
-                <span className="text-2xs text-ink-secondary">{formatDateTime(r.deletedAt)}</span>
+          {rows.map((r) => {
+            const counts = Object.entries(r.relatedCounts ?? {}).filter(([, v]) => Number(v) > 0);
+            const snap = r.snapshot ?? {};
+            const snapBits = ['name', 'type', 'manufacturer', 'model', 'location', 'serial_number']
+              .map((k) => (snap as Record<string, unknown>)[k])
+              .filter((v) => v != null && v !== '');
+            return (
+              <div key={r.id} className="rounded-control border border-line p-2.5 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="tnums font-medium text-ink">{r.machineCode}</span>
+                  <span className="text-2xs text-ink-secondary">{formatDateTime(r.deletedAt)}</span>
+                </div>
+                <p className="text-ink-secondary">{r.machineName ?? ''}</p>
+                {snapBits.length > 0 && <p className="mt-0.5 text-2xs text-ink-secondary">{snapBits.join(' · ')}</p>}
+                {counts.length > 0 && (
+                  <div className="mt-1 flex flex-wrap gap-1.5">
+                    {counts.map(([k, v]) => (
+                      <span key={k} className="rounded-full bg-surface-2 px-2 py-0.5 text-2xs text-ink-secondary">{k}: {v}</span>
+                    ))}
+                  </div>
+                )}
+                <p className="mt-1 text-xs text-ink-secondary">Razlog: {r.reason} · {r.deletedByEmail ?? '—'}</p>
               </div>
-              <p className="text-ink-secondary">{r.machineName ?? ''}</p>
-              <p className="mt-1 text-xs text-ink-secondary">Razlog: {r.reason} · {r.deletedByEmail ?? '—'}</p>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </Dialog>
