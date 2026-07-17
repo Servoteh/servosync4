@@ -1,7 +1,21 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { ArrowLeft, Plus, Lock, Unlock, CheckCircle2, ArrowUpRight, FileText, History, FileSpreadsheet } from 'lucide-react';
+import {
+  ArrowLeft,
+  Plus,
+  Lock,
+  Unlock,
+  CheckCircle2,
+  ArrowUpRight,
+  FileText,
+  History,
+  FileSpreadsheet,
+  ArrowRight,
+  AlertTriangle,
+  Check,
+  X,
+} from 'lucide-react';
 import { Button } from '@/components/ui-kit/button';
 import { Tabs, type TabItem } from '@/components/ui-kit/tabs';
 import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
@@ -26,6 +40,19 @@ import {
 import { toast } from '@/lib/toast';
 import { exportRnTab1Xlsx, exportRnTab2Xlsx } from '@/lib/pracenje-export';
 import { logExport } from '@/api/pracenje';
+import {
+  buildRnTree,
+  computeOpChips,
+  countLate,
+  formatKkQty,
+  shortName,
+  type OpChip,
+  type RnHeader,
+  type RnOperacija,
+  type RnPozicija,
+  type RnSummary,
+  type RnTreeNode,
+} from '@/lib/pracenje-rn';
 import { AktivnostModal } from './aktivnost-modal';
 import { PromoteModal } from './promote-modal';
 
@@ -58,6 +85,26 @@ function normalizeAktivnosti(data: unknown): AktivnostRow[] {
   return [];
 }
 
+/** Stil čipa po statusu operacije (1.0 statusFlowClass → tokeni). */
+function chipTone(status: string): { border: string; bg: string; text: string; dot: string } {
+  switch (status) {
+    case 'zavrseno':
+      return { border: 'border-status-success', bg: 'bg-status-success-bg', text: 'text-status-success', dot: 'bg-status-success' };
+    case 'u_toku':
+      return { border: 'border-status-info', bg: 'bg-status-info-bg', text: 'text-status-info', dot: 'bg-status-info' };
+    case 'blokirano':
+      return { border: 'border-status-danger', bg: 'bg-status-danger-bg', text: 'text-status-danger', dot: 'bg-status-danger' };
+    default:
+      return { border: 'border-status-neutral', bg: 'bg-status-neutral-bg', text: 'text-status-neutral', dot: 'bg-status-neutral' };
+  }
+}
+
+function fmtQty(v: unknown): string {
+  if (v == null || v === '') return '—';
+  const n = Number(v);
+  return Number.isFinite(n) ? String(n) : '—';
+}
+
 export function RnView({ rnId, onBack }: { rnId: string; onBack: () => void }) {
   const [tab, setTab] = useState<RnTab>('pozicije');
   const rn = useRn(rnId);
@@ -65,17 +112,23 @@ export function RnView({ rnId, onBack }: { rnId: string; onBack: () => void }) {
   const canEdit = canEditQ.data?.data.canEdit ?? false;
 
   const result = rn.data?.data;
-  const pozicije = (result?.pozicije ?? []) as Array<Record<string, unknown>>;
+  const positions = ((result?.positions ?? result?.pozicije ?? []) as unknown as RnPozicija[]);
+  const header = ((result?.header ?? result ?? {}) as unknown as RnHeader);
+  const summary = ((result?.summary ?? {}) as unknown as RnSummary);
+  const source = String(result?.source ?? header.source ?? 'local');
+
+  // Aktivnosti operativnog plana za metriku „Kasni aktivnosti"/„Aktivnosti" u zaglavlju.
+  const plan = useOperativniPlan(rnId);
+  const aktivnosti = useMemo(() => normalizeAktivnosti(plan.data?.data), [plan.data]);
 
   function exportTab1() {
     try {
-      const r = (result ?? {}) as Record<string, unknown>;
       exportRnTab1Xlsx({
-        header: (r.header as Record<string, unknown>) ?? r,
-        positions: pozicije,
-        summary: r.summary as Record<string, unknown> | undefined,
+        header: header as Record<string, unknown>,
+        positions: positions as unknown as Array<Record<string, unknown>>,
+        summary: summary as Record<string, unknown>,
       });
-      logExport({ tab: 'po_pozicijama', rnId, rnBroj: result?.rn_broj ? String(result.rn_broj) : undefined }).catch(() => {});
+      logExport({ tab: 'po_pozicijama', rnId, rnBroj: header.rn_broj ? String(header.rn_broj) : undefined }).catch(() => {});
     } catch (e) {
       toast(e instanceof Error ? e.message : 'Excel izvoz nije uspeo.');
     }
@@ -87,15 +140,18 @@ export function RnView({ rnId, onBack }: { rnId: string; onBack: () => void }) {
         <Button variant="ghost" onClick={onBack}>
           <ArrowLeft className="h-4 w-4" /> Nazad
         </Button>
-        <h2 className="text-md font-semibold text-ink">RN {String(result?.rn_broj ?? rnId.slice(0, 8))}</h2>
-        {result?.source && <StatusBadge tone="neutral" label={String(result.source)} />}
+        <h2 className="text-md font-semibold text-ink">RN {String(header.rn_broj ?? result?.rn_broj ?? rnId.slice(0, 8))}</h2>
+        {source && <StatusBadge tone="neutral" label={source} />}
         <div className="ml-auto">
           <Tabs tabs={RN_TABS} value={tab} onChange={setTab} ariaLabel="RN tabovi" />
         </div>
       </div>
 
+      {/* RN zaglavlje: identifikacija + 5 metrika + KK legenda (PR-03) */}
+      <RnHeaderCard header={header} summary={summary} aktivnosti={aktivnosti} canEdit={canEdit} />
+
       {tab === 'pozicije' ? (
-        <PozicijeTab pozicije={pozicije} loading={rn.isLoading} onExport={exportTab1} />
+        <PozicijeTab positions={positions} loading={rn.isLoading} source={source} onExport={exportTab1} />
       ) : (
         <OperativniPlanTab rnId={rnId} canEdit={canEdit} />
       )}
@@ -103,121 +159,385 @@ export function RnView({ rnId, onBack }: { rnId: string; onBack: () => void }) {
   );
 }
 
-// ------------------------------------------------------------------ Tab1
+// ------------------------------------------------------------------ RN zaglavlje (PR-03)
 
-function PozicijeTab({ pozicije, loading, onExport }: { pozicije: Array<Record<string, unknown>>; loading: boolean; onExport: () => void }) {
-  const [sel, setSel] = useState<Record<string, unknown> | null>(null);
-
-  if (loading) {
-    return <div className="rounded-panel border border-line bg-surface px-4 py-10 text-center text-sm text-ink-secondary">Učitavanje…</div>;
-  }
-  if (pozicije.length === 0) return <EmptyState title="Nema pozicija na RN-u" />;
+function RnHeaderCard({
+  header,
+  summary,
+  aktivnosti,
+  canEdit,
+}: {
+  header: RnHeader;
+  summary: RnSummary;
+  aktivnosti: AktivnostRow[];
+  canEdit: boolean;
+}) {
+  const totalOps = Number(summary.operacija_total ?? 0);
+  const doneOps = Number(summary.zavrseno ?? 0);
+  const pct = totalOps > 0 ? Math.round((doneOps / totalOps) * 100) : 0;
+  const late = countLate(aktivnosti);
+  const kkQty = formatKkQty(summary);
+  const rnBroj = String(header.rn_broj ?? 'RN nije učitan');
+  const masina = String(header.masina_linija ?? header.radni_nalog_naziv ?? '');
 
   return (
-    <div className="space-y-3">
-    <div className="flex justify-end">
-      <Button variant="secondary" onClick={onExport}>
-        <FileSpreadsheet className="h-4 w-4" /> Excel export
-      </Button>
-    </div>
-    <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_320px]">
-      <div className="overflow-x-auto rounded-panel border border-line bg-surface">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-line bg-surface-2 text-left text-2xs uppercase tracking-wider text-ink-secondary">
-              <th className="px-3 py-1.5">Pozicija</th>
-              <th className="px-3 py-1.5">Crtež</th>
-              <th className="px-3 py-1.5">Operacija</th>
-              <th className="px-3 py-1.5">Napredak</th>
-            </tr>
-          </thead>
-          <tbody>
-            {pozicije.map((p, i) => {
-              const done = Number(p.prijavljeno_komada ?? 0);
-              const plan = Number(p.planirano_komada ?? p.kolicina_plan ?? 0);
-              return (
-                <tr
-                  key={String(p.id ?? i)}
-                  className="cursor-pointer border-b border-line-soft hover:bg-surface-2"
-                  onClick={() => setSel(p)}
-                >
-                  <td className="px-3 py-1.5">
-                    <div className="font-medium text-ink">{String(p.naziv ?? p.sifra_pozicije ?? '—')}</div>
-                    <div className="text-xs text-ink-disabled">{String(p.sifra_pozicije ?? '')}</div>
-                  </td>
-                  <td className="px-3 py-1.5 text-xs">{String(p.drawing_no ?? '—')}</td>
-                  <td className="px-3 py-1.5 text-xs">{String(p.operacija_kod ?? p.work_center ?? '—')}</td>
-                  <td className="tnums px-3 py-1.5 text-xs">
-                    {plan ? `${done}/${plan}` : '—'}
-                    {p.progress_pct != null ? ` (${Math.round(Number(p.progress_pct))}%)` : ''}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+    <section className="rounded-panel border border-line bg-surface p-4">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="text-2xs uppercase tracking-wider text-ink-secondary">Praćenje proizvodnje</div>
+          <h3 className="mt-0.5 text-md font-semibold text-ink">
+            {rnBroj}
+            {masina ? <span className="text-ink-secondary"> · {masina}</span> : null}
+          </h3>
+          <div className="mt-1 text-xs text-ink-secondary">
+            Kupac: <strong className="text-ink">{String(header.kupac ?? '—')}</strong> · Projekat:{' '}
+            <strong className="text-ink">{String(header.projekat_naziv ?? header.projekat_id ?? '—')}</strong> · Isporuka:{' '}
+            <strong className="text-ink">{header.datum_isporuke ? formatDate(String(header.datum_isporuke)) : '—'}</strong> ·
+            Koordinator: <strong className="text-ink">{String(header.koordinator ?? '—')}</strong>
+          </div>
+          {header.napomena ? <div className="mt-1.5 text-xs text-ink-secondary">Napomena: {String(header.napomena)}</div> : null}
+        </div>
+        <div className="flex flex-wrap justify-end gap-2">
+          <HeaderMetric
+            label="Završena kol. (KK)"
+            value={kkQty}
+            sub="kom"
+            title="Završena / lansirana količina — broji se ISKLJUČIVO iz završne kontrole (KK). Ovo je „stvarno gotovo komada”."
+          />
+          <HeaderMetric
+            label="Napredak operacija"
+            value={`${pct}%`}
+            sub={`${doneOps}/${totalOps} op.`}
+            title="Procenat završenih operacija po statusu (koliko koraka u redosledu je gotovo). NIJE isto što i gotova količina — operacija može biti „u toku”."
+          />
+          <HeaderMetric label="Kasni aktivnosti" value={String(late)} title="Broj aktivnosti operativnog plana koje kasne u odnosu na planirani rok." />
+          <HeaderMetric label="Aktivnosti" value={String(aktivnosti.length)} title="Ukupan broj aktivnosti operativnog plana za ovaj RN." />
+          <HeaderMetric
+            label="Pristup"
+            value={canEdit ? 'edit' : 'read-only'}
+            title={canEdit ? 'Imate prava izmene napomena.' : 'Samo pregled.'}
+          />
+        </div>
       </div>
+      <div className="mt-3 flex flex-wrap gap-x-6 gap-y-1 border-t border-line-soft pt-2 text-2xs text-ink-secondary">
+        <span>
+          <strong className="text-ink">Završena kol. (KK)</strong> = stvarno gotova količina iz završne kontrole (komadi).
+        </span>
+        <span>
+          <strong className="text-ink">Napredak operacija</strong> = % završenih koraka u redosledu (procesni napredak, ne količina).
+        </span>
+      </div>
+    </section>
+  );
+}
 
-      <PozicijaSidePanel pozicija={sel} onClose={() => setSel(null)} />
-    </div>
+function HeaderMetric({ label, value, sub, title }: { label: string; value: string; sub?: string; title?: string }) {
+  return (
+    <div className="min-w-[116px] rounded-control border border-line bg-surface-2 px-3 py-2 text-center" title={title}>
+      <div className="text-lg font-bold text-ink">{value}</div>
+      <div className="text-2xs uppercase tracking-wider text-ink-secondary">{label}</div>
+      {sub ? <div className="mt-0.5 text-2xs text-ink-disabled">{sub}</div> : null}
     </div>
   );
 }
 
-function PozicijaSidePanel({ pozicija, onClose }: { pozicija: Record<string, unknown> | null; onClose: () => void }) {
-  const pozId = pozicija?.id ? String(pozicija.id) : undefined;
-  const prijave = usePrijave({ pozicija: pozId });
-  const rows = Array.isArray(prijave.data?.data) ? (prijave.data!.data as Array<Record<string, unknown>>) : [];
+// ------------------------------------------------------------------ Tab1 — pipeline (PR-04)
 
-  async function openCrtez() {
-    const code = pozicija?.drawing_no ? String(pozicija.drawing_no) : '';
-    if (!code) return;
-    try {
-      const res = await fetchCrtezSignUrl(code);
-      window.open(res.data.url, '_blank');
-    } catch (e) {
-      alert(e instanceof ApiError ? e.message : 'Crtež nije dostupan.');
-    }
+function PozicijeTab({
+  positions,
+  loading,
+  source,
+  onExport,
+}: {
+  positions: RnPozicija[];
+  loading: boolean;
+  source: string;
+  onExport: () => void;
+}) {
+  const [sel, setSel] = useState<{ position: RnPozicija; operation: RnOperacija } | null>(null);
+  const tree = useMemo(() => buildRnTree(positions), [positions]);
+
+  if (loading) {
+    return <div className="rounded-panel border border-line bg-surface px-4 py-10 text-center text-sm text-ink-secondary">Učitavanje toka proizvodnje…</div>;
   }
-
-  if (!pozicija) {
+  if (positions.length === 0) {
     return (
-      <div className="rounded-panel border border-line bg-surface p-4 text-sm text-ink-disabled">
-        Izaberi poziciju za prijave rada i crteže.
-      </div>
+      <EmptyState
+        title="Nema pozicija za izabrani RN"
+        hint="Kada backend vrati pozicije (Faza 2 ili BigTehn fallback), ovde se prikazuje tok proizvodnje."
+      />
     );
   }
 
   return (
-    <div className="space-y-3 rounded-panel border border-line bg-surface p-3">
-      <div className="flex items-center gap-2">
-        <h3 className="text-sm font-semibold text-ink">{String(pozicija.naziv ?? pozicija.sifra_pozicije ?? 'Pozicija')}</h3>
-        <button onClick={onClose} className="ml-auto text-xs text-ink-secondary hover:underline">Zatvori</button>
-      </div>
-      {pozicija.drawing_no ? (
-        <Button variant="secondary" onClick={openCrtez} className="h-8 w-full text-xs">
-          <FileText className="h-3.5 w-3.5" /> Crtež {String(pozicija.drawing_no)}
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-4 rounded-panel border border-line bg-surface px-3 py-2">
+        <span className="text-xs text-ink-secondary" title={source === 'bigtehn' ? 'Pozicije i prijave se čitaju direktno iz BigTehn keša (nema lokalnih Faza 2 pozicija)' : undefined}>
+          Izvor: {source === 'bigtehn' ? 'BigTehn (MES) — read-only' : 'Servosync (Faza 2)'}
+        </span>
+        <FlowLegend />
+        <Button variant="secondary" onClick={onExport} className="ml-auto">
+          <FileSpreadsheet className="h-4 w-4" /> Excel export
         </Button>
-      ) : null}
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_340px]">
+        <div className="space-y-3">
+          {tree.map((node) => (
+            <PositionCard key={String(node.item.id)} node={node} depth={0} onOpenOp={(operation) => setSel({ position: node.item, operation })} />
+          ))}
+        </div>
+        <OperacijaSidePanel sel={sel} onClose={() => setSel(null)} />
+      </div>
+    </div>
+  );
+}
+
+function FlowLegend() {
+  return (
+    <span className="flex flex-wrap items-center gap-3 text-2xs text-ink-secondary" aria-hidden>
+      <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-status-success" />Završeno</span>
+      <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-status-info" />U toku</span>
+      <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-status-neutral" />Čeka</span>
+      <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-status-warn" />Usko grlo</span>
+      <span className="inline-flex items-center gap-1"><span className="rounded bg-accent-subtle px-1 font-semibold text-accent">ZK</span>završna kontrola</span>
+    </span>
+  );
+}
+
+function PositionCard({ node, depth, onOpenOp }: { node: RnTreeNode; depth: number; onOpenOp: (op: RnOperacija) => void }) {
+  const p = node.item;
+  const chips = useMemo(() => computeOpChips(p.operations), [p.operations]);
+  const pct = Math.max(0, Math.min(100, Number(p.progress_pct ?? 0)));
+  const bottleneck = chips.find((c) => c.isBottleneck);
+  const indent = Math.min(depth * 22, 88);
+
+  return (
+    <>
+      <article className="rounded-panel border border-line bg-surface" style={{ marginLeft: indent }}>
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line-soft px-3 py-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="rounded-control bg-surface-2 px-1.5 py-0.5 text-2xs font-semibold text-ink-secondary">
+              {String(p.sifra_pozicije ?? p.id ?? '—')}
+            </span>
+            <span className="truncate text-sm font-medium text-ink">{String(p.naziv ?? '—')}</span>
+            <DrawingChip p={p} />
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="text-2xs text-ink-secondary" title="Planirana količina">
+              Kol. {fmtQty(p.kolicina_plan)}
+            </span>
+            {bottleneck ? (
+              <span className="inline-flex items-center gap-1 rounded-full bg-status-warn-bg px-2 py-0.5 text-2xs font-medium text-status-warn" title="Trenutno usko grlo">
+                <AlertTriangle className="h-3 w-3" />
+                {shortName(bottleneck.op.naziv ?? bottleneck.op.operacija_kod ?? '')}
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 rounded-full bg-status-success-bg px-2 py-0.5 text-2xs font-medium text-status-success">
+                <Check className="h-3 w-3" /> sve operacije gotove
+              </span>
+            )}
+            <div className="flex items-center gap-1.5" title={`${pct}% operacija`}>
+              <div className="h-1.5 w-24 overflow-hidden rounded-full bg-surface-2">
+                <div className="h-full rounded-full bg-accent" style={{ width: `${pct}%` }} />
+              </div>
+              <span className="text-2xs text-ink-secondary">{pct}%</span>
+            </div>
+          </div>
+        </div>
+        {chips.length ? (
+          <Pipeline chips={chips} onOpenOp={onOpenOp} />
+        ) : (
+          <div className="px-3 py-2 text-xs text-ink-disabled">Nema operacija za ovu poziciju.</div>
+        )}
+      </article>
+      {node.children.map((ch) => (
+        <PositionCard key={String(ch.item.id)} node={ch} depth={depth + 1} onOpenOp={onOpenOp} />
+      ))}
+    </>
+  );
+}
+
+function Pipeline({ chips, onOpenOp }: { chips: OpChip[]; onOpenOp: (op: RnOperacija) => void }) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 px-3 py-2" role="list">
+      {chips.map((c, i) => {
+        const t = chipTone(c.status);
+        const title = [
+          c.op.naziv ?? c.op.operacija_kod ?? 'Operacija',
+          c.op.work_center ? `RJ ${c.op.work_center}` : '',
+          `${fmtQty(c.op.prijavljeno_komada)} / ${fmtQty(c.op.planirano_komada)} (${c.pct}%)`,
+          c.isFinal ? 'Završna kontrola (ZK)' : '',
+          c.isBottleneck ? 'Usko grlo — trenutni korak' : '',
+          c.op.poslednja_prijava_at ? `Poslednja prijava: ${formatDate(String(c.op.poslednja_prijava_at))}` : '',
+        ]
+          .filter(Boolean)
+          .join(' · ');
+        return (
+          <span key={String(c.op.tp_operacija_id ?? c.idx)} className="inline-flex items-center gap-1.5" role="listitem">
+            {i > 0 && <ArrowRight className="h-3 w-3 shrink-0 text-ink-disabled" aria-hidden />}
+            <button
+              type="button"
+              onClick={() => onOpenOp(c.op)}
+              title={title}
+              className={cn(
+                'inline-flex items-center gap-1.5 rounded-control border px-2 py-1 text-left transition-colors hover:brightness-105',
+                t.border,
+                t.bg,
+                c.isBottleneck && 'ring-1 ring-status-warn',
+              )}
+            >
+              <span className={cn('flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-2xs font-semibold text-surface', t.dot)}>
+                {c.idx + 1}
+              </span>
+              <span className="flex flex-col leading-tight">
+                <span className={cn('text-2xs font-medium', t.text)}>
+                  {shortName(c.op.naziv ?? c.op.operacija_kod ?? '—')}
+                  {c.isFinal && <span className="ml-1 rounded bg-accent-subtle px-1 text-2xs font-semibold text-accent">ZK</span>}
+                </span>
+                <span className="tnums text-2xs text-ink-secondary">
+                  {fmtQty(c.op.prijavljeno_komada)} / {fmtQty(c.op.planirano_komada)}
+                </span>
+              </span>
+            </button>
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+function DrawingChip({ p }: { p: RnPozicija }) {
+  const no = String(p.drawing_no ?? '').trim();
+  if (!no) return null;
+  const hasFile = p.has_crtez_file !== false;
+  async function open() {
+    try {
+      const res = await fetchCrtezSignUrl(no);
+      if (res.data?.url) window.open(res.data.url, '_blank', 'noopener,noreferrer');
+    } catch (e) {
+      toast(e instanceof ApiError ? e.message : 'Crtež nije dostupan.');
+    }
+  }
+  if (!hasFile) {
+    return (
+      <span className="inline-flex items-center gap-1 text-2xs text-ink-disabled" title="Crtež nije u Bridge kešu">
+        <FileText className="h-3 w-3" /> {no}
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={open}
+      className="inline-flex items-center gap-1 rounded-control px-1.5 py-0.5 text-2xs text-accent hover:bg-surface-2"
+      title="Otvori crtež u novom tabu"
+    >
+      <FileText className="h-3 w-3" /> {no}
+    </button>
+  );
+}
+
+// ------------------------------------------------------------------ Side panel PO OPERACIJI (PR-05)
+
+function OperacijaSidePanel({ sel, onClose }: { sel: { position: RnPozicija; operation: RnOperacija } | null; onClose: () => void }) {
+  const op = sel?.operation;
+  const isBigtehn = op?.source === 'bigtehn';
+  // BigTehn izvor: workOrder+op+machine; lokalno: pozicija id (1.0 dvoizvorna grana).
+  const prijave = usePrijave(
+    op
+      ? isBigtehn
+        ? {
+            workOrder: op.bigtehn_work_order_id != null ? String(op.bigtehn_work_order_id) : undefined,
+            op: op.operacija_broj != null ? String(op.operacija_broj) : undefined,
+            machine: op.machine_code != null ? String(op.machine_code) : undefined,
+          }
+        : { pozicija: sel?.position.id != null ? String(sel.position.id) : undefined }
+      : {},
+  );
+  const rows = Array.isArray(prijave.data?.data) ? (prijave.data!.data as Array<Record<string, unknown>>) : [];
+
+  if (!sel || !op) {
+    return (
+      <div className="rounded-panel border border-line bg-surface p-4 text-sm text-ink-disabled">
+        Klikni na operaciju za prijave rada.
+      </div>
+    );
+  }
+
+  const statusTone: Tone = STATUS_TONE[String(op.status ?? 'nije_krenulo')] ?? 'neutral';
+  const statusLabel = AKTIVNOST_STATUS_LABELS[String(op.status ?? '')] ?? String(op.status ?? '—');
+
+  return (
+    <div className="space-y-3 rounded-panel border border-line bg-surface p-3">
+      <div className="flex items-start gap-2">
+        <div className="min-w-0">
+          <h3 className="truncate text-sm font-semibold text-ink">
+            {String(op.naziv ?? op.operacija_kod ?? 'Operacija')}
+            {op.work_center ? <span className="text-ink-secondary"> · {String(op.work_center)}</span> : null}
+          </h3>
+          <p className="truncate text-2xs text-ink-secondary">
+            {String(sel.position.sifra_pozicije ?? '')} {String(sel.position.naziv ?? '')}
+          </p>
+        </div>
+        <button onClick={onClose} className="ml-auto rounded-control p-1 text-ink-secondary hover:bg-surface-2" aria-label="Zatvori">
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="rounded-control bg-surface-2 px-2 py-1 text-2xs text-ink">
+          Planirano: <strong>{fmtQty(op.planirano_komada)}</strong>
+        </span>
+        <span className="rounded-control bg-surface-2 px-2 py-1 text-2xs text-ink">
+          Prijavljeno: <strong>{fmtQty(op.prijavljeno_komada ?? 0)}</strong>
+        </span>
+        <StatusBadge tone={statusTone} label={statusLabel} />
+        {op.is_final_control && <span className="rounded bg-accent-subtle px-1.5 py-0.5 text-2xs font-semibold text-accent">ZK</span>}
+      </div>
+
       <div>
         <div className="mb-1 text-2xs uppercase tracking-wider text-ink-secondary">Prijave rada</div>
         {prijave.isLoading ? (
-          <p className="text-xs text-ink-disabled">Učitavanje…</p>
+          <p className="text-xs text-ink-disabled">Učitavanje prijava…</p>
+        ) : prijave.isError ? (
+          <p className="text-xs text-status-danger">{prijave.error instanceof Error ? prijave.error.message : 'Greška pri učitavanju.'}</p>
         ) : rows.length === 0 ? (
-          <p className="text-xs text-ink-disabled">Nema prijava.</p>
+          <p className="text-xs text-ink-disabled">Nema prijava za ovu operaciju.</p>
         ) : (
-          <ul className="space-y-1 text-xs">
-            {rows.map((r, i) => (
-              <li key={i} className="rounded-control border border-line px-2 py-1">
-                {String(r.radnik ?? r.worker_id ?? r.ime ?? '—')} · {String(r.komada ?? r.prijavljeno_komada ?? '')} kom
-                {r.started_at ? ` · ${formatDate(String(r.started_at))}` : ''}
-              </li>
-            ))}
-          </ul>
+          <div className="overflow-x-auto rounded-control border border-line">
+            <table className="w-full text-2xs">
+              <thead>
+                <tr className="border-b border-line bg-surface-2 text-left text-ink-secondary">
+                  <th className="px-2 py-1">Datum</th>
+                  <th className="px-2 py-1">Radnik</th>
+                  <th className="px-2 py-1 text-right">Količina</th>
+                  <th className="px-2 py-1">Smena</th>
+                  <th className="px-2 py-1">Napomena</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r, i) => (
+                  <tr key={i} className="border-b border-line-soft">
+                    <td className="px-2 py-1">{prijavaDatum(r)}</td>
+                    <td className="px-2 py-1">{String(r.radnik ?? r.worker_id ?? r.ime ?? '—')}</td>
+                    <td className="tnums px-2 py-1 text-right">{String(r.kolicina ?? r.komada ?? r.prijavljeno_komada ?? '')}</td>
+                    <td className="px-2 py-1">{String(r.smena ?? '—')}</td>
+                    <td className="px-2 py-1">{String(r.napomena ?? '—')}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
     </div>
   );
+}
+
+function prijavaDatum(r: Record<string, unknown>): string {
+  const v = r.datum ?? r.started_at ?? r.finished_at;
+  return v ? formatDate(String(v)) : '—';
 }
 
 // ------------------------------------------------------------------ Tab2

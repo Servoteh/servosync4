@@ -6,7 +6,10 @@ import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
 import { Tabs, type TabItem } from '@/components/ui-kit/tabs';
-import { useEnsureRn } from '@/api/pracenje';
+import { Button } from '@/components/ui-kit/button';
+import { toast } from '@/lib/toast';
+import { ApiError } from '@/api/client';
+import { useEnsureRn, resolveRn } from '@/api/pracenje';
 import { KontrolnaTab } from './_components/kontrolna-tab';
 import { PredmetiTab } from './_components/predmeti-tab';
 import { PredmetView } from './_components/predmet-view';
@@ -93,6 +96,7 @@ export default function PracenjePage() {
         }
       />
       <main className="flex-1 overflow-auto p-6">
+        {screen.kind === 'tab' && <RnLoader onOpenRn={openRnUuid} />}
         {screen.kind === 'tab' && screen.tab === 'kontrolna' && <KontrolnaTab onOpenPredmet={openPredmet} />}
         {screen.kind === 'tab' && screen.tab === 'predmeti' && <PredmetiTab onOpenPredmet={openPredmet} />}
         {screen.kind === 'tab' && screen.tab === 'pretraga' && (
@@ -109,5 +113,53 @@ export default function PracenjePage() {
         {screen.kind === 'rn' && <RnView rnId={screen.rnId} onBack={() => backToTab('predmeti')} />}
       </main>
     </AppShell>
+  );
+}
+
+/** RN loader toolbar (PR-02): unos RN broja/UUID → resolveRn → otvori RN. */
+function RnLoader({ onOpenRn }: { onOpenRn: (rnId: string) => void }) {
+  const [ref, setRef] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  async function load() {
+    const q = ref.trim();
+    if (!q) return;
+    setLoading(true);
+    try {
+      const res = await resolveRn(q);
+      if (res.data?.id) {
+        onOpenRn(res.data.id);
+        setRef('');
+      } else {
+        toast('RN nije pronađen.');
+      }
+    } catch (e) {
+      toast(e instanceof ApiError ? e.message : 'RN nije pronađen. Proveri broj ili UUID.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="mb-4 flex flex-wrap items-end gap-2">
+      <label className="flex flex-col gap-1 text-2xs uppercase tracking-wider text-ink-secondary">
+        Direktan ulaz u RN
+        <input
+          value={ref}
+          onChange={(e) => setRef(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              void load();
+            }
+          }}
+          placeholder="RN broj ili UUID"
+          className="h-8 w-64 rounded-control border border-line bg-surface px-2 text-sm normal-case tracking-normal text-ink placeholder:text-ink-disabled"
+        />
+      </label>
+      <Button variant="secondary" onClick={() => void load()} disabled={loading || !ref.trim()}>
+        {loading ? 'Učitavam…' : 'Učitaj RN'}
+      </Button>
+    </div>
   );
 }
