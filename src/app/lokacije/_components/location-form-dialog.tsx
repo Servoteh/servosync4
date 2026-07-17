@@ -21,9 +21,13 @@ const INPUT = 'w-full rounded-control border border-line bg-surface-2 px-2.5 py-
 
 const CREATE_TYPES: LocTypeEnum[] = [...HALL_TYPES, ...SHELF_TYPES, 'CAGE', 'MACHINE', 'SERVICE', 'OFFICE', 'TRANSIT', 'OTHER'];
 
-/** Tipovi koji NISU hala (polica/kavez/mašina…) moraju imati nadređenu halu (paritet 1.0 canBeShelfParent). */
+/**
+ * Tipovi koji NISU hala (polica/mašina…) moraju imati nadređenu halu (paritet 1.0 canBeShelfParent).
+ * KAVEZ je IZUZETAK — kavez je prenosiv, hala mu je opciona (dodeli se kasnije premeštanjem),
+ * kao u 1.0 renderCageForm („— bez hale (dodeli kasnije premestajem) —").
+ */
 function needsParent(type: LocTypeEnum): boolean {
-  return locationKind(type) !== 'hall';
+  return locationKind(type) !== 'hall' && type !== 'CAGE';
 }
 
 /** Predloži prvi slobodan „<slovo><broj>" u hali za dati prefiks (auto-predlog šifre). */
