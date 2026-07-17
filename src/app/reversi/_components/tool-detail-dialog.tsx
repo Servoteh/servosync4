@@ -13,16 +13,67 @@ import {
   useReversiTool,
   useRestoreTool,
   useStockDelta,
+  useToolLedger,
   useWriteOffTool,
+  type ToolLedgerRow,
 } from '@/api/reversi';
+import { ToolEditDialog } from './tool-edit-dialog';
 
 const INPUT =
   'w-full rounded-control border border-line bg-surface-2 px-2.5 py-1.5 text-sm text-ink outline-none focus:border-accent';
+
+/** Srpske labele tipa knjiženja zaliha (paritet 1.0 LEDGER_REASON_LABEL). */
+const LEDGER_REASON_LABEL: Record<string, string> = {
+  RECEIPT: 'Prijem',
+  ISSUE: 'Izdato / potrošeno',
+  RETURN: 'Povraćaj',
+  ADJUST: 'Korekcija',
+  WRITE_OFF: 'Otpis',
+};
 
 function ToolStatusBadge({ status }: { status: string }) {
   if (status === 'active') return <StatusBadge tone="success" label="U upotrebi" />;
   if (status === 'lost') return <StatusBadge tone="warn" label="Izgubljen" />;
   return <StatusBadge tone="danger" label="Otpisan" />;
+}
+
+/** Tabela istorije pokreta zalihe (RA-20): Datum / Tip / Promena / Stanje posle / Napomena. */
+function LedgerTable({ rows, loading }: { rows: ToolLedgerRow[]; loading: boolean }) {
+  if (loading) return <p className="text-xs text-ink-secondary">Učitavanje istorije…</p>;
+  if (rows.length === 0)
+    return <p className="text-xs text-ink-secondary">Nema evidencije promene zaliha za ovaj artikal.</p>;
+  return (
+    <div className="max-h-64 overflow-auto rounded-control border border-line">
+      <table className="w-full text-xs">
+        <thead className="sticky top-0 bg-surface-2 text-ink-secondary">
+          <tr>
+            <th className="px-2 py-1 text-left font-medium">Datum</th>
+            <th className="px-2 py-1 text-left font-medium">Tip</th>
+            <th className="px-2 py-1 text-right font-medium">Promena</th>
+            <th className="px-2 py-1 text-right font-medium">Stanje posle</th>
+            <th className="px-2 py-1 text-left font-medium">Napomena</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => {
+            const d = Number(r.delta) || 0;
+            return (
+              <tr key={r.id} className="border-t border-line">
+                <td className="px-2 py-1 tnums">{String(r.createdAt ?? '').slice(0, 10)}</td>
+                <td className="px-2 py-1">{LEDGER_REASON_LABEL[r.reason] ?? r.reason}</td>
+                <td className={`px-2 py-1 text-right tnums ${d > 0 ? 'text-status-success' : 'text-status-danger'}`}>
+                  {d > 0 ? '+' : ''}
+                  {d}
+                </td>
+                <td className="px-2 py-1 text-right tnums">{r.balanceAfter}</td>
+                <td className="px-2 py-1 text-ink-secondary">{r.note ?? ''}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
 }
 
 /**
@@ -42,6 +93,7 @@ export function ToolDetailDialog({ toolId, onClose }: { toolId: string | null; o
   const [razlog, setRazlog] = useState('');
   const [woStatus, setWoStatus] = useState<'scrapped' | 'lost'>('scrapped');
   const [recQty, setRecQty] = useState(1);
+  const [editOpen, setEditOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Dijalog ostaje montiran (roditelj menja samo `toolId`); resetuj panel otpisa
@@ -52,10 +104,14 @@ export function ToolDetailDialog({ toolId, onClose }: { toolId: string | null; o
     setRazlog('');
     setWoStatus('scrapped');
     setRecQty(1);
+    setEditOpen(false);
     setError(null);
   }, [toolId]);
 
   const t = detail.data?.data;
+  // RA-19/RA-20 — istorija zaliha samo za količinske/potrošne (ledger je manage-gejtovan).
+  const isQty = !!(t && (t.isQuantity || t.isConsumable));
+  const ledger = useToolLedger(toolId, manage && isQty);
 
   async function doReceive() {
     if (!t || recQty <= 0 || stockDelta.isPending) return;
@@ -97,13 +153,19 @@ export function ToolDetailDialog({ toolId, onClose }: { toolId: string | null; o
   }
 
   return (
+    <>
     <Dialog
       open={!!toolId}
       onClose={onClose}
       title={t ? `${t.oznaka} — ${t.naziv}` : 'Kartica alata'}
       footer={
         <div className="flex items-center justify-between gap-2">
-          <div>
+          <div className="flex gap-2">
+            {manage && t?.status === 'active' && (
+              <Button variant="secondary" onClick={() => setEditOpen(true)}>
+                Izmeni
+              </Button>
+            )}
             {manage && t?.status === 'active' && !woOpen && (
               <Button variant="danger" onClick={() => setWoOpen(true)}>
                 Otpiši / Izgubljen
@@ -208,10 +270,21 @@ export function ToolDetailDialog({ toolId, onClose }: { toolId: string | null; o
             )}
           </Section>
 
+          {/* RA-19/RA-20 — istorija zaliha za količinske/potrošne (manage). */}
+          {manage && isQty && (
+            <section className="space-y-1">
+              <h3 className="text-sm font-semibold text-ink">Istorija zaliha (prijem / izdavanje / otpis)</h3>
+              <LedgerTable rows={ledger.data?.data ?? []} loading={ledger.isLoading} />
+            </section>
+          )}
+
           {error && <p className="text-sm text-status-danger" role="alert">{error}</p>}
         </div>
       )}
     </Dialog>
+
+    <ToolEditDialog open={editOpen} tool={t ?? null} onClose={() => setEditOpen(false)} />
+    </>
   );
 }
 

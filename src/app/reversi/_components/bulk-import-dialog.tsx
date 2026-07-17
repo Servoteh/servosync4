@@ -4,17 +4,25 @@ import { useState } from 'react';
 import * as XLSX from 'xlsx';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Button } from '@/components/ui-kit/button';
-import { useBulkImportTools, type BulkImportResult, type BulkToolRow } from '@/api/reversi';
+import {
+  useBulkImportTools,
+  useInventoryTree,
+  type BulkImportResult,
+  type BulkToolRow,
+} from '@/api/reversi';
 
-// Kolone se auto-mapiraju po nazivu zaglavlja (aliasi, paritet 1.0 bulkImportModal).
-const ALIASES: Record<keyof BulkToolRow, string[]> = {
+// Kolone se auto-mapiraju po nazivu zaglavlja (aliasi, paritet 1.0 bulkImportModal /
+// runToolCsvImport). Klasifikacija (subgroup) i datum se mapiraju posebno (RA-24).
+const ALIASES: Record<string, string[]> = {
   oznaka: ['oznaka', 'sifra', 'šifra', 'kod', 'code'],
   naziv: ['naziv', 'name', 'opis'],
-  serijskiBroj: ['serijski', 'serijski broj', 'serial', 's/n', 'sn'],
+  serijskiBroj: ['serijski', 'serijski broj', 'serijski_broj', 'serial', 's/n', 'sn'],
   isQuantity: ['kolicinski', 'količinski', 'quantity', 'na komad'],
   isConsumable: ['potrosni', 'potrošni', 'consumable'],
   totalQty: ['kolicina', 'količina', 'pocetna kolicina', 'početna količina', 'stanje', 'qty'],
   napomena: ['napomena', 'note', 'komentar'],
+  subgroupCode: ['subgroup_code', 'subgroup', 'podgrupa', 'podgrupa_code', 'klasa'],
+  datumKupovine: ['datum_kupovine', 'datum kupovine', 'nabavljen', 'datum nabavke'],
 };
 
 function truthy(v: unknown): boolean {
@@ -22,14 +30,27 @@ function truthy(v: unknown): boolean {
   return s === 'da' || s === 'true' || s === '1' || s === 'x' || s === 'yes';
 }
 
-function mapRows(raw: Record<string, unknown>[]): { rows: BulkToolRow[]; ignored: number } {
+/** Datum → ISO (yyyy-mm-dd) ako je prepoznat; inače undefined (BE prima IsDateString). */
+function toIsoDate(v: unknown): string | undefined {
+  const s = String(v ?? '').trim();
+  if (!s) return undefined;
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  const m = s.match(/^(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{4})/);
+  if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+  return undefined;
+}
+
+function mapRows(
+  raw: Record<string, unknown>[],
+  subgroupByCode: Map<string, string>,
+): { rows: BulkToolRow[]; ignored: number } {
   let ignored = 0;
   const rows: BulkToolRow[] = [];
   for (const r of raw) {
     // normalizuj ključeve zaglavlja
     const lower: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(r)) lower[k.trim().toLowerCase()] = v;
-    const pick = (key: keyof BulkToolRow): unknown => {
+    const pick = (key: string): unknown => {
       for (const a of ALIASES[key]) if (a in lower && String(lower[a]).trim() !== '') return lower[a];
       return undefined;
     };
@@ -40,6 +61,7 @@ function mapRows(raw: Record<string, unknown>[]): { rows: BulkToolRow[]; ignored
       continue;
     }
     const qtyRaw = pick('totalQty');
+    const subRaw = String(pick('subgroupCode') ?? '').trim().toLowerCase();
     rows.push({
       oznaka,
       naziv,
@@ -48,6 +70,9 @@ function mapRows(raw: Record<string, unknown>[]): { rows: BulkToolRow[]; ignored
       isConsumable: pick('isConsumable') !== undefined ? truthy(pick('isConsumable')) : undefined,
       totalQty: qtyRaw !== undefined && qtyRaw !== '' ? Math.max(0, Math.round(Number(qtyRaw)) || 0) : undefined,
       napomena: pick('napomena') ? String(pick('napomena')).trim() : undefined,
+      // RA-24 — subgroup_code → id (iz stabla klasifikacije); datum kupovine → ISO.
+      subgroupId: subRaw ? subgroupByCode.get(subRaw) : undefined,
+      datumKupovine: toIsoDate(pick('datumKupovine')),
     });
   }
   return { rows, ignored };
@@ -56,11 +81,22 @@ function mapRows(raw: Record<string, unknown>[]): { rows: BulkToolRow[]; ignored
 /** Bulk-import inventara ručnog alata iz XLSX/CSV (paritet 1.0 bulkImportModal tip 1). */
 export function BulkImportDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const importer = useBulkImportTools();
+  const tree = useInventoryTree();
   const [rows, setRows] = useState<BulkToolRow[]>([]);
   const [ignored, setIgnored] = useState(0);
   const [fileName, setFileName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<BulkImportResult | null>(null);
+
+  // subgroup_code → id (bez REZNI grupe — rev_tools su HAND/LZO), paritet 1.0.
+  function subgroupMap(): Map<string, string> {
+    const g = tree.data?.data.groups ?? [];
+    const s = tree.data?.data.subgroups ?? [];
+    const rezni = g.find((x) => x.code === 'REZNI')?.id ?? null;
+    const m = new Map<string, string>();
+    for (const sg of s) if (sg.groupId !== rezni) m.set(sg.code.toLowerCase(), sg.id);
+    return m;
+  }
 
   async function onFile(file: File) {
     setError(null);
@@ -71,7 +107,7 @@ export function BulkImportDialog({ open, onClose }: { open: boolean; onClose: ()
       const sheet = wb.Sheets[wb.SheetNames[0]];
       if (!sheet) throw new Error('Fajl je prazan.');
       const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' });
-      const mapped = mapRows(raw);
+      const mapped = mapRows(raw, subgroupMap());
       setRows(mapped.rows);
       setIgnored(mapped.ignored);
       setFileName(file.name);
@@ -125,7 +161,8 @@ export function BulkImportDialog({ open, onClose }: { open: boolean; onClose: ()
           <>
             <p className="text-sm text-ink-secondary">
               Prvi red = zaglavlje. Obavezne kolone: <strong>oznaka</strong>, <strong>naziv</strong>. Opcione:
-              serijski broj, količinski/potrošni, količina, napomena. Postojeći alat (ista oznaka) se preskače.
+              serijski broj, <strong>podgrupa</strong> (subgroup_code — klasifikacija), <strong>datum kupovine</strong>,
+              količinski/potrošni, količina, napomena. Postojeći alat (ista oznaka) se preskače.
             </p>
             <input
               type="file"

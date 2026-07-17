@@ -252,8 +252,15 @@ export interface ToolService {
 }
 
 export type ReversiToolDetail = ReversiTool & {
+  subsubgroupId?: string | null;
   datumKupovine?: string | null;
   nabavnaVrednost?: string | number | null;
+  garancijaDo?: string | null;
+  garancijaNapomena?: string | null;
+  imaPunjac?: boolean;
+  punjacSerijski?: string | null;
+  minStockQty?: number | null;
+  maxStockQty?: number | null;
   otpisDatum?: string | null;
   otpisRazlog?: string | null;
   batteries: ToolBattery[];
@@ -266,6 +273,33 @@ export function useReversiTool(id: string | null) {
     queryKey: [...KEYS.tools, 'detail', id],
     enabled: !!id,
     queryFn: () => apiFetch<{ data: ReversiToolDetail }>(`/v1/reversi/tools/${id}`),
+  });
+}
+
+/** Red istorije zaliha `rev_tool_stock_ledger` (RA-20 — GET /reversi/ledger?toolId=). */
+export interface ToolLedgerRow {
+  id: string;
+  toolId: string;
+  delta: number;
+  reason: string;
+  balanceAfter: number;
+  note: string | null;
+  createdAt: string;
+}
+
+/**
+ * Istorija promene zaliha za količinski/potrošni artikal (RA-19/RA-20). Ruta je
+ * `reversi.manage`-gejtovana (RLS `rev_tool_stock_ledger_select = rev_can_manage`),
+ * pa se poziva tek kad je korisnik manage i kad je artikal količinski.
+ */
+export function useToolLedger(toolId: string | null, enabled: boolean) {
+  return useQuery({
+    queryKey: [...KEYS.tools, 'ledger', toolId],
+    enabled: !!toolId && enabled,
+    queryFn: () =>
+      apiFetch<{ data: ToolLedgerRow[]; meta: PageMeta }>(
+        `/v1/reversi/ledger${qs({ toolId: toolId ?? undefined, pageSize: 200 })}`,
+      ),
   });
 }
 
@@ -395,6 +429,26 @@ export function useInventoryTree() {
     queryKey: [...KEYS.tools, 'inventory-tree'],
     queryFn: () => apiFetch<{ data: InventoryTree }>('/v1/reversi/inventory-tree'),
     staleTime: 5 * 60 * 1000,
+  });
+}
+
+/**
+ * Broj artikala po podgrupi/podpodgrupi (RA-25 brojači u stablu; RA-28 upozorenje
+ * „X postaje nesvrstano"). `tools`+`cutting` su po `subgroupId`, `subsubs` po
+ * `subsubgroupId`.
+ */
+export interface ClassificationUsage {
+  tools: Record<string, number>;
+  cutting: Record<string, number>;
+  subsubs: Record<string, number>;
+}
+
+export function useInventoryClassificationUsage() {
+  return useQuery({
+    queryKey: [...KEYS.tools, 'classification-usage'],
+    queryFn: () =>
+      apiFetch<{ data: ClassificationUsage }>('/v1/reversi/inventory-classification-usage'),
+    staleTime: 60 * 1000,
   });
 }
 
@@ -555,6 +609,11 @@ export interface BulkToolRow {
   isConsumable?: boolean;
   totalQty?: number;
   napomena?: string;
+  // RA-24 — klasifikacija + datum kupovine iz CSV-a (FE mapira subgroup_code→id iz
+  // stabla pre slanja; 2.0 pilot ih je gubio pri uvozu).
+  subgroupId?: string;
+  subsubgroupId?: string;
+  datumKupovine?: string;
 }
 
 export interface BulkImportResult {
@@ -753,3 +812,151 @@ export const useCuttingReturn = () =>
     () => '/v1/reversi/cutting-return',
     (v) => v,
   );
+
+// ---------------------------------------------- R1 inventar CRUD (RB-46 / RB-11 / RA-25–28)
+// Nova jedinica / izmena artikla + klasifikacija (podgrupa/podpodgrupa CRUD). Sve su
+// manage-gejtovane na BE. Invalidiraju ceo `['reversi']` (jedinice + stablo + usage +
+// magacin izvedeni iz istih tabela). SQLSTATE kanon je već mapiran na BE (42501→403,
+// P0001/22023/23503→422, 23505/P2002→409, P2025→404) — FE samo prikaže poruku.
+
+/** Nova jedinica ručnog alata (RB-46) → POST /reversi/tools. Vraća barcode za RB-47. */
+export interface CreateToolInput {
+  oznaka: string;
+  naziv: string;
+  subgroupId?: string | null;
+  subsubgroupId?: string | null;
+  serijskiBroj?: string | null;
+  datumKupovine?: string | null;
+  napomena?: string | null;
+  isQuantity?: boolean;
+  isConsumable?: boolean;
+  totalQty?: number;
+  minStockQty?: number | null;
+  maxStockQty?: number | null;
+}
+
+export interface CreateToolResult {
+  id: string;
+  oznaka: string;
+  naziv: string;
+  barcode: string;
+  locItemRefId: string | null;
+  placement: unknown;
+}
+
+export function useCreateTool() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: CreateToolInput) =>
+      apiFetch<{ data: CreateToolResult }>('/v1/reversi/tools', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['reversi'] }),
+  });
+}
+
+/** Izmena artikla (RB-11) → PATCH /reversi/tools/:id. `null` briše polje (klasa/serijski/…). */
+export interface UpdateToolInput {
+  oznaka?: string;
+  naziv?: string;
+  subgroupId?: string | null;
+  subsubgroupId?: string | null;
+  serijskiBroj?: string | null;
+  datumKupovine?: string | null;
+  nabavnaVrednost?: number | null;
+  garancijaDo?: string | null;
+  garancijaNapomena?: string | null;
+  imaPunjac?: boolean;
+  punjacSerijski?: string | null;
+  napomena?: string | null;
+  minStockQty?: number | null;
+  maxStockQty?: number | null;
+}
+
+export function useUpdateTool() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, patch }: { id: string; patch: UpdateToolInput }) =>
+      apiFetch<{ data: ReversiTool }>(`/v1/reversi/tools/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['reversi'] }),
+  });
+}
+
+export function useAddSubgroup() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { groupCode: string; label: string; napomena?: string }) =>
+      apiFetch<{ data: InventorySubgroup }>('/v1/reversi/inventory-subgroups', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['reversi', 'tools'] }),
+  });
+}
+
+export function useAddSubsubgroup() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { subgroupId: string; label: string; napomena?: string }) =>
+      apiFetch<{ data: InventorySubsubgroup }>('/v1/reversi/inventory-subsubgroups', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['reversi', 'tools'] }),
+  });
+}
+
+export type ClassificationKind = 'group' | 'subgroup' | 'subsubgroup';
+
+export function useRenameClassification() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ kind, id, label }: { kind: ClassificationKind; id: string; label: string }) =>
+      apiFetch<{ data: unknown }>(`/v1/reversi/inventory-classification/${kind}/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ label }),
+      }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['reversi', 'tools'] }),
+  });
+}
+
+export function useDeleteSubgroup() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<{ data: { deleted: true } }>(`/v1/reversi/inventory-subgroups/${id}`, {
+        method: 'DELETE',
+      }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['reversi', 'tools'] }),
+  });
+}
+
+export function useDeleteSubsubgroup() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<{ data: { deleted: true } }>(`/v1/reversi/inventory-subsubgroups/${id}`, {
+        method: 'DELETE',
+      }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['reversi', 'tools'] }),
+  });
+}
+
+/**
+ * Štampa barkod-nalepnica (RA-22 bulk / RB-47 pri dodavanju) — RAW TSPL2 na mrežni
+ * TSC (BE `POST /reversi/labels/print` → TCP 9100). Imperativno (poziva se iz
+ * print helpera). Baca `ApiError` na neuspeh (poziv ga hvata i pada na browser preview).
+ */
+export function printReversiLabel(
+  tspl2: string,
+  copies?: number,
+): Promise<{ data: { ok: boolean; bytes: number; printer: string } }> {
+  return apiFetch<{ data: { ok: boolean; bytes: number; printer: string } }>(
+    '/v1/reversi/labels/print',
+    { method: 'POST', body: JSON.stringify({ tspl2, copies }) },
+  );
+}

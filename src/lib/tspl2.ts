@@ -136,6 +136,43 @@ export interface ShelfLabelSpec {
   copies?: number;
 }
 
+// --------------------------------------------------------------- Reversi: nalepnica ručnog alata
+// Port iz ServoSync 1.0 (`src/lib/tspl2.js buildTspHandToolLabelProgram`) — Reversi
+// štampa ALAT- nalepnice (RA-22 bulk / RB-47 pri dodavanju). Layout 80.34×40.3mm:
+//   Red 1: oznaka (font "4"), Red 2: naziv (font "2"), Red 3: podgrupa/serijski (font "1"),
+//   Barkod CODE128 (128M) x=2mm y=22mm h=14mm. NE šalje SIZE/GAP/DENSITY (vidi vrh fajla).
+
+export interface HandToolLabelSpec {
+  barcode: string;
+  oznaka?: string;
+  naziv?: string;
+  /** Labela podgrupe (klasa) — levo od serijskog u trećem redu. */
+  assetKind?: string;
+  serial?: string;
+  copies?: number;
+}
+
+/** Jedna ALAT- nalepnica (80.34×40.3mm) — paritet 1.0 `buildTspHandToolLabelProgram`. */
+export function buildReversiHandToolLabelProgram(spec: HandToolLabelSpec): string {
+  const barcode = String(spec?.barcode ?? '').trim();
+  if (!barcode) throw new Error('buildReversiHandToolLabelProgram: barcode je obavezan');
+
+  const oznaka = String(spec?.oznaka ?? '').trim();
+  const naziv = String(spec?.naziv ?? '').trim();
+  const assetKind = String(spec?.assetKind ?? '').trim();
+  const serial = String(spec?.serial ?? '').trim();
+  const copies = Math.max(1, Math.floor(Number(spec?.copies) || 1));
+
+  const lines: string[] = ['CLS'];
+  if (oznaka) lines.push(`TEXT ${mm(2)},${mm(1)},"4",0,1,1,${tsplStr(truncFit(oznaka, 22))}`);
+  if (naziv) lines.push(`TEXT ${mm(2)},${mm(6)},"2",0,1,1,${tsplStr(truncFit(naziv, 38))}`);
+  const kindLine = [assetKind, serial].filter(Boolean).join(': ');
+  if (kindLine) lines.push(`TEXT ${mm(2)},${mm(10)},"1",0,1,1,${tsplStr(truncFit(kindLine, 42))}`);
+  lines.push(`BARCODE ${mm(2)},${mm(22)},"128M",${mm(14)},1,0,2,4,${tsplStr(barcode)}`);
+  lines.push(`PRINT ${copies},1`);
+  return lines.join('\r\n') + '\r\n';
+}
+
 /** Jedna nalepnica police (80.34×40.3mm) — paritet 1.0 barcode/QR layout. */
 export function buildTspShelfLabelProgram(spec: ShelfLabelSpec): string {
   const encode = String(spec?.barcodeValue ?? '').trim();

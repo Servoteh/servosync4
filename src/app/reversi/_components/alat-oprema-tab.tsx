@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Eye, Plus } from 'lucide-react';
+import { Eye, FolderTree, Plus, Upload } from 'lucide-react';
 import { DataTable, type Column, type SortState } from '@/components/ui-kit/data-table';
 import { SearchBox } from '@/components/ui-kit/search-box';
 import { Button } from '@/components/ui-kit/button';
@@ -12,6 +12,7 @@ import { PERMISSIONS } from '@/lib/permissions';
 import { formatNumber } from '@/lib/format';
 import { toast } from '@/lib/toast';
 import { downloadCsv } from '@/lib/reversi-csv';
+import { printReversiLabels } from '@/lib/reversi-labels';
 import {
   fetchInventoryUnits,
   useInventoryTree,
@@ -24,6 +25,9 @@ import {
 import { tableEmpty } from './common';
 import { ToolDetailDialog } from './tool-detail-dialog';
 import { IssueDialog } from './issue-dialog';
+import { ToolCreateDialog } from './tool-create-dialog';
+import { InventoryGroupsDialog } from './inventory-groups-dialog';
+import { BulkImportDialog } from './bulk-import-dialog';
 
 const PAGE_SIZE = 50;
 const CSV_LIMIT = 5000; // BE cap (RA-23 — ceo filtrirani skup)
@@ -169,13 +173,14 @@ function SelectAllBox({
 
 /**
  * „Alat i oprema" — per-jedinica katalog ručnog alata/opreme/LZO (paritet 1.0
- * `inventarUnitView.js`). Pokriva RA-08/10/12/13/14/15/16/17/18/21/23: 4 stat
- * kartice, kaskadni filteri + status, sortabilna tabela sa svim kolonama,
- * paginacija 50/str, akcije reda (pregled/izdaj), izbor redova + bulk bar (shell),
- * CSV izvoz celog filtriranog skupa.
+ * `inventarUnitView.js`). Pokriva RA-08/10/12/13/14/15/16/17/18/21/23 + toolbar
+ * akcije Nova jedinica (RB-46), Grupe (RA-25–28), Uvoz CSV (RA-24) i bulk štampu
+ * nalepnica (RA-22): 4 stat kartice, kaskadni filteri + status, sortabilna tabela
+ * sa svim kolonama, paginacija 50/str, akcije reda (pregled/izdaj), izbor redova +
+ * bulk bar, CSV izvoz celog filtriranog skupa.
  *
- * `onBulkPrint` = kuka za štampu nalepnica (RA-22, sledeći agent): prima izabrane
- * redove; bez nje je dugme „Štampa nalepnica" onemogućeno (bulk bar shell).
+ * `onBulkPrint` = opcioni override štampe (prima izabrane redove); bez njega bulk
+ * dugme štampa lokalno preko `printReversiLabels` (browser preview + mrežni TSC).
  */
 export function AlatOpremaTab({ onBulkPrint }: { onBulkPrint?: (rows: InventoryUnitRow[]) => void }) {
   const { can } = useAuth();
@@ -193,6 +198,9 @@ export function AlatOpremaTab({ onBulkPrint }: { onBulkPrint?: (rows: InventoryU
   const [detailToolId, setDetailToolId] = useState<string | null>(null);
   const [issueTool, setIssueTool] = useState<InventoryUnitRow | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [groupsOpen, setGroupsOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
 
   // Debounce pretrage (300ms — paritet 1.0), reset na prvu stranu.
   useEffect(() => {
@@ -298,6 +306,32 @@ export function AlatOpremaTab({ onBulkPrint }: { onBulkPrint?: (rows: InventoryU
       }
       return next;
     });
+  }
+
+  // RA-22 — bulk štampa nalepnica: mapiraj izabrane redove u ALAT- nalepnice i
+  // odštampaj (browser preview + mrežni TSC). `onBulkPrint` (ako je prosleđen)
+  // ima prednost — omogućava roditelju da preuzme štampu.
+  async function doBulkPrint() {
+    const rows = [...selected.values()].filter((r) => r.barcode);
+    if (rows.length === 0) {
+      toast('Nema barkodiranih jedinica u izboru');
+      return;
+    }
+    if (onBulkPrint) {
+      onBulkPrint(rows);
+      return;
+    }
+    await printReversiLabels(
+      rows.map((r) => ({
+        barcode: r.barcode,
+        oznaka: r.oznaka,
+        naziv: r.naziv,
+        subgroupLabel: r.subgroup?.label ?? r.group?.label ?? '',
+        serial: r.serijskiBroj,
+      })),
+      { copies: 1 },
+    );
+    setSelected(new Map());
   }
 
   async function exportCsv() {
@@ -521,7 +555,20 @@ export function AlatOpremaTab({ onBulkPrint }: { onBulkPrint?: (rows: InventoryU
             </option>
           ))}
         </select>
-        <div className="ml-auto">
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          {manage && (
+            <>
+              <Button variant="primary" onClick={() => setCreateOpen(true)}>
+                <Plus className="mr-1 h-4 w-4" aria-hidden /> Nova jedinica
+              </Button>
+              <Button variant="secondary" onClick={() => setGroupsOpen(true)}>
+                <FolderTree className="mr-1 h-4 w-4" aria-hidden /> Grupe
+              </Button>
+              <Button variant="secondary" onClick={() => setImportOpen(true)}>
+                <Upload className="mr-1 h-4 w-4" aria-hidden /> Uvoz CSV…
+              </Button>
+            </>
+          )}
           <Button variant="secondary" loading={exporting} onClick={() => void exportCsv()}>
             CSV
           </Button>
@@ -535,12 +582,7 @@ export function AlatOpremaTab({ onBulkPrint }: { onBulkPrint?: (rows: InventoryU
             <strong className="tnums">{selected.size}</strong> izabrano
           </span>
           <div className="ml-auto flex gap-2">
-            <Button
-              variant="primary"
-              disabled={!onBulkPrint}
-              title={onBulkPrint ? undefined : 'Štampa nalepnica — stiže sa RA-22'}
-              onClick={() => onBulkPrint?.([...selected.values()])}
-            >
+            <Button variant="primary" onClick={() => void doBulkPrint()}>
               Štampa nalepnica ({selected.size})
             </Button>
             <Button variant="secondary" onClick={() => setSelected(new Map())}>
@@ -588,6 +630,9 @@ export function AlatOpremaTab({ onBulkPrint }: { onBulkPrint?: (rows: InventoryU
         initialTool={issueTool ? toReversiTool(issueTool) : null}
         onClose={() => setIssueTool(null)}
       />
+      {manage && <ToolCreateDialog open={createOpen} onClose={() => setCreateOpen(false)} />}
+      {manage && <InventoryGroupsDialog open={groupsOpen} onClose={() => setGroupsOpen(false)} />}
+      {manage && <BulkImportDialog open={importOpen} onClose={() => setImportOpen(false)} />}
     </div>
   );
 }
