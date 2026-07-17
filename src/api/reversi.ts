@@ -1085,6 +1085,19 @@ export function useCuttingByMachine(machineCode: string | null) {
   });
 }
 
+/**
+ * Rezni alat po SVIM mašinama (bez filtera po šifri) — izvor za „Mapu (rezni)"
+ * (RA-47/50, paritet 1.0 `fetchCuttingByMachine({})`). BE `cuttingByMachine` bez
+ * `machineCode` vraća ceo `v_rev_cts_by_machine`.
+ */
+export function useCuttingByMachineAll() {
+  return useQuery({
+    queryKey: ['reversi', 'cutting', 'by-machine', 'all'],
+    queryFn: () =>
+      apiFetch<{ data: CuttingByMachineRow[] }>('/v1/reversi/reports/cutting-by-machine'),
+  });
+}
+
 /** Seed/dopuna stanja reznog po lokaciji (rev_cutting_tool_seed_stock). */
 export interface SeedStockVars {
   clientEventId: string;

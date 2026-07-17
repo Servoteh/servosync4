@@ -16,12 +16,16 @@ import {
   useSeedCuttingStock,
   type CuttingTool,
 } from '@/api/reversi';
+import { cn } from '@/lib/cn';
 import { tableEmpty } from './common';
 import { CuttingIssueDialog } from './cutting-issue-dialog';
 import { CuttingReturnDialog } from './cutting-return-dialog';
+import { RezniMapaView } from './rezni-mapa-view';
 
 const INPUT =
   'w-full rounded-control border border-line bg-surface-2 px-2.5 py-1.5 text-sm text-ink outline-none focus:border-accent';
+
+type RezniSubview = 'katalog' | 'mapa';
 
 /**
  * Semafor kolone „Ukupno" — IDENTIČAN 1.0 `ukupnoClass` (reznialat.js:109-116):
@@ -38,6 +42,7 @@ function totalTone(r: CuttingTool): string {
 export function RezniAlatTab() {
   const { can } = useAuth();
   const manage = can(PERMISSIONS.REVERSI_MANAGE);
+  const [subview, setSubview] = useState<RezniSubview>('katalog');
   const [q, setQ] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
   const [returnOpen, setReturnOpen] = useState(false);
@@ -99,27 +104,55 @@ export function RezniAlatTab() {
   ];
 
   return (
-    <div className="space-y-3">
-      <div className="flex items-center gap-2">
-        <div className="flex-1">
-          <SearchBox value={q} onChange={setQ} placeholder="Oznaka, naziv, barkod…" />
-        </div>
-        {/* Povraćaj NIJE role-gated (paritet 1.0): operater vraća svoj alat — svako sa reversi.read. */}
-        <Button variant="secondary" onClick={() => setReturnOpen(true)}>↩ Povraćaj</Button>
-        {manage && <Button onClick={() => setCreateOpen(true)}>+ Nova šifra</Button>}
+    <div className="space-y-4">
+      {/* Pod-tabovi „Katalog" ⇄ „Mapa" (paritet 1.0 reznialat: katalog + grafička Mapa). */}
+      <div role="tablist" aria-label="Rezni alat" className="inline-flex gap-1 rounded-panel border border-line bg-surface p-1">
+        {(['katalog', 'mapa'] as RezniSubview[]).map((s) => {
+          const active = s === subview;
+          return (
+            <button
+              key={s}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              onClick={() => setSubview(s)}
+              className={cn(
+                'rounded-control px-3 py-1.5 text-sm font-medium transition-colors',
+                active ? 'bg-accent text-accent-fg' : 'text-ink-secondary hover:bg-surface-2 hover:text-ink',
+              )}
+            >
+              {s === 'katalog' ? 'Katalog' : 'Mapa'}
+            </button>
+          );
+        })}
       </div>
 
-      <DataTable
-        columns={cols}
-        rows={catalog.data?.data ?? []}
-        rowKey={(r) => r.id}
-        loading={catalog.isLoading}
-        empty={tableEmpty(
-          catalog.isError,
-          'Katalog reznog alata je prazan',
-          manage ? 'Dodaj šifru dugmetom „Nova šifra“.' : 'Nema unetog reznog alata.',
-        )}
-      />
+      {subview === 'mapa' ? (
+        <RezniMapaView />
+      ) : (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <div className="flex-1">
+              <SearchBox value={q} onChange={setQ} placeholder="Oznaka, naziv, barkod…" />
+            </div>
+            {/* Povraćaj NIJE role-gated (paritet 1.0): operater vraća svoj alat — svako sa reversi.read. */}
+            <Button variant="secondary" onClick={() => setReturnOpen(true)}>↩ Povraćaj</Button>
+            {manage && <Button onClick={() => setCreateOpen(true)}>+ Nova šifra</Button>}
+          </div>
+
+          <DataTable
+            columns={cols}
+            rows={catalog.data?.data ?? []}
+            rowKey={(r) => r.id}
+            loading={catalog.isLoading}
+            empty={tableEmpty(
+              catalog.isError,
+              'Katalog reznog alata je prazan',
+              manage ? 'Dodaj šifru dugmetom „Nova šifra“.' : 'Nema unetog reznog alata.',
+            )}
+          />
+        </div>
+      )}
 
       {returnOpen && <CuttingReturnDialog onClose={() => setReturnOpen(false)} />}
       {manage && createOpen && <CreateCuttingDialog onClose={() => setCreateOpen(false)} />}

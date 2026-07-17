@@ -15,6 +15,7 @@ import {
   useScrapped,
 } from '@/api/reversi';
 import { Tabs, type TabItem } from './_components/tabs';
+import { WorkbenchTab } from './_components/workbench-tab';
 import { MojiAlatiTab } from './_components/moji-alati-tab';
 import { DokumentiTab } from './_components/dokumenti-tab';
 import { InventarView } from './_components/inventar-view';
@@ -22,9 +23,9 @@ import { RezniAlatTab } from './_components/rezni-alat-tab';
 import { MasineTab } from './_components/masine-tab';
 import { OtpisanoTab } from './_components/otpisano-tab';
 
-type TabKey = 'moji' | 'dokumenti' | 'magacin' | 'rezni' | 'masine' | 'otpisano';
+type TabKey = 'radni-sto' | 'moji' | 'dokumenti' | 'magacin' | 'rezni' | 'masine' | 'otpisano';
 
-const TAB_KEYS: TabKey[] = ['moji', 'dokumenti', 'magacin', 'rezni', 'masine', 'otpisano'];
+const TAB_KEYS: TabKey[] = ['radni-sto', 'moji', 'dokumenti', 'magacin', 'rezni', 'masine', 'otpisano'];
 const TAB_STORAGE_KEY = 'reversi:tab';
 
 /**
@@ -38,8 +39,10 @@ function migrateTab(raw: string | null): TabKey | null {
   switch (id) {
     case 'moja':
       return 'moji';
-    case 'zaduzenja':
     case 'workbench':
+    case 'radni_sto':
+      return 'radni-sto';
+    case 'zaduzenja':
       return 'dokumenti';
     case 'inventar':
     case 'unit':
@@ -74,13 +77,15 @@ export default function ReversiPage() {
   }, [user, isLoading, router]);
 
   // RA-05 — učitaj sačuvan tab posle mount-a (bez hydration mismatch-a), uz
-  // validaciju protiv vidljivih tabova (manage gejtuje „Otpisano").
+  // validaciju protiv vidljivih tabova (manage gejtuje „Otpisano"). Bez sačuvanog
+  // izbora magacioner (manage) startuje na „Radni sto" (paritet 1.0 default za magacionera).
   useEffect(() => {
     if (isLoading || !user) return;
     const saved = migrateTab(
       typeof window !== 'undefined' ? window.localStorage.getItem(TAB_STORAGE_KEY) : null,
     );
     if (saved && (saved !== 'otpisano' || manage)) setTab(saved);
+    else if (!saved && manage) setTab('radni-sto');
   }, [isLoading, user, manage]);
 
   // RA-04 — živi brojači (deljeni query-key-evi sa tabovima → bez duplog fetcha;
@@ -110,6 +115,7 @@ export default function ReversiPage() {
   }
 
   const tabs: TabItem<TabKey>[] = [
+    { key: 'radni-sto', label: 'Radni sto', count: null },
     { key: 'moji', label: 'Moji alati', count: myIssued.data?.data.length ?? null },
     { key: 'dokumenti', label: 'Izdavanje i povraćaj', count: docs.data?.meta.pagination.total ?? null },
     { key: 'magacin', label: 'Stanje magacina', count: units.data?.meta.pagination.total ?? null },
@@ -127,6 +133,7 @@ export default function ReversiPage() {
       <div className="flex-1 space-y-4 overflow-auto p-6">
         <Tabs tabs={tabs} value={tab} onChange={changeTab} ariaLabel="Reversi" />
 
+        {tab === 'radni-sto' && <WorkbenchTab onNavigate={changeTab} />}
         {tab === 'moji' && <MojiAlatiTab />}
         {tab === 'dokumenti' && <DokumentiTab />}
         {tab === 'magacin' && <InventarView />}

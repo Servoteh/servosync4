@@ -48,7 +48,16 @@ interface QuickMatch {
  * Idempotency: svaki match nosi STABILAN `clientEventId` (jedan skan = jedan dokument)
  * — retry iste potvrde ne pravi dupli povraćaj.
  */
-export function QuickReturnDialog({ onClose }: { onClose: () => void }) {
+export function QuickReturnDialog({
+  onClose,
+  initialCode,
+  initialKind,
+}: {
+  onClose: () => void;
+  /** Već skenirani barkod (RA-46 sken-do-povraćaja sa radnog stola) — razreši se odmah. */
+  initialCode?: string;
+  initialKind?: BarcodeResult['kind'];
+}) {
   const handReturn = useReversiReturn();
   const cuttingReturn = useCuttingReturn();
   const locations = useReversiLocations();
@@ -121,6 +130,17 @@ export function QuickReturnDialog({ onClose }: { onClose: () => void }) {
       setBusy(false);
     }
   }
+
+  // RA-46 — sken-do-povraćaja: kad radni sto prosledi već skenirani barkod, razreši ga
+  // odmah (jednom) tako da se stilizovana potvrda pojavi bez ponovnog skeniranja.
+  const initialRanRef = useRef(false);
+  useEffect(() => {
+    if (initialRanRef.current || !initialCode) return;
+    initialRanRef.current = true;
+    void resolveCode(initialCode, initialKind);
+    // resolveCode je stabilna u okviru mount-a; namerno pokrećemo samo jednom.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialCode, initialKind]);
 
   async function confirmReturn() {
     if (!match || confirming) return;
