@@ -691,4 +691,55 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
       ).toHaveBeenCalledTimes(1);
     });
   });
+
+  describe("RLS violacija (42501) iz Prisma poruke → 403, ne 500", () => {
+    /* Prisma vraća RLS violaciju kao PrismaClientUnknownRequestError sa 42501 SAMO u tekstu
+       poruke (bez strukturnog `code`/`meta.code`). rethrowSy15 mora to uhvatiti (soft-delete
+       napomene/fajla/dokumenta = pre-postojeći 1.0 defekt; 1.0 CUTOVER_AUDIT_odrzavanje §4.2). */
+    const noteTx = (updateMany: jest.Mock) =>
+      makeTx({
+        maintMachineNote: {
+          count: jest.fn().mockResolvedValue(1),
+          updateMany,
+        },
+      } as never);
+
+    it("updateNote soft-delete: 42501 u poruci → ForbiddenException (403)", async () => {
+      const rlsErr = new Error(
+        'Invalid `prisma.maintMachineNote.updateMany()` invocation: ConnectorError ' +
+          '(PostgresError { code: "42501", message: "new row violates row-level security ' +
+          'policy for table \\"maint_machine_notes\\"" })',
+      );
+      const tx = noteTx(jest.fn().mockRejectedValue(rlsErr));
+      const { sy15 } = makeSy15(tx);
+      const svc = new OdrzavanjeService(sy15, storageStub);
+      await expect(
+        svc.updateNote("erp@servoteh.com", "note-1", {
+          deleted: true,
+        } as never),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it("updateNote pinned (bez RLS greške) → prolazi { ok: true }", async () => {
+      const tx = noteTx(jest.fn().mockResolvedValue({ count: 1 }));
+      const { sy15 } = makeSy15(tx);
+      const svc = new OdrzavanjeService(sy15, storageStub);
+      const res = (await svc.updateNote("erp@servoteh.com", "note-1", {
+        pinned: true,
+      } as never)) as { data: { ok: boolean } };
+      expect(res).toEqual({ data: { ok: true } });
+    });
+
+    it("ne-RLS greška se NE maskira u 403 (propagira se dalje)", async () => {
+      const other = new Error("neka druga DB greška (npr. konekcija/timeout)");
+      const tx = noteTx(jest.fn().mockRejectedValue(other));
+      const { sy15 } = makeSy15(tx);
+      const svc = new OdrzavanjeService(sy15, storageStub);
+      await expect(
+        svc.updateNote("erp@servoteh.com", "note-1", {
+          deleted: true,
+        } as never),
+      ).rejects.not.toThrow(ForbiddenException);
+    });
+  });
 });

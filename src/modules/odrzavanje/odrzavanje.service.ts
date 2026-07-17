@@ -1694,7 +1694,20 @@ export class OdrzavanjeService {
     const meta = (e as { meta?: { code?: string; message?: string } }).meta;
     const code = meta?.code ?? (e as { code?: string }).code;
     const message = meta?.message ?? (e as Error).message;
-    if (code === "42501") throw new ForbiddenException(message);
+    /* ⚠️ Prisma vraća RLS violaciju kao PrismaClientUnknownRequestError (npr. iz updateMany):
+       SQLSTATE 42501 je SAMO u tekstu poruke (ConnectorError), NE u strukturnom `code`/`meta.code`.
+       Bez ovog fallback-a takav slučaj promašuje mapper i pada u `throw e` → 500. Konkretno:
+       soft-delete napomene/fajla/dokumenta (deleted_at != null) obara WITH CHECK jer red postane
+       SELECT-nevidljiv (SELECT USING traži deleted_at IS NULL) — pre-postojeći 1.0 defekt (paritet
+       §C). Mapiramo u 403. 1.0 docs/CUTOVER_AUDIT_odrzavanje_2026-07-17.md §4.2. */
+    const rlsInMessage =
+      typeof message === "string" &&
+      (message.includes("42501") ||
+        message.includes("row-level security policy"));
+    if (code === "42501" || rlsInMessage)
+      throw new ForbiddenException(
+        "Operacija nije dozvoljena postojećim RLS pravilom (npr. soft-delete čini red nevidljivim).",
+      );
     if (
       code === "P0001" ||
       code === "P0002" ||
