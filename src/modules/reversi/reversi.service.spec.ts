@@ -619,6 +619,20 @@ describe("ReversiService — R0 paritet", () => {
       await service.listDocuments({});
       expect(sy15.db.revDocumentLine.groupBy).not.toHaveBeenCalled();
     });
+
+    it("RA-47/48: pageSize do 500 dozvoljen; >500 klampovan (Mapa/workbench)", async () => {
+      const takeArg = (): number =>
+        (sy15.db.revDocument.findMany.mock.calls as [{ take: number }][])[0][0]
+          .take;
+      sy15.db.revDocument.findMany.mockResolvedValue([]);
+      sy15.db.revDocument.count.mockResolvedValue(0);
+      await service.listDocuments({ pageSize: "500" });
+      expect(takeArg()).toBe(500);
+
+      sy15.db.revDocument.findMany.mockClear();
+      await service.listDocuments({ pageSize: "999" });
+      expect(takeArg()).toBe(500);
+    });
   });
 
   // ---------- R4: recipient cardinality (RB-16 KPI „Primaoci aktivno") ----------
@@ -629,6 +643,50 @@ describe("ReversiService — R0 paritet", () => {
       const res = await service.recipientCardinality({});
       expect(res.data).toEqual({ count: 7, truncated: false });
       expect(sy15.db.$queryRaw).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ---------- R2: izveštaj potrošnje (RA-39/40/41) ----------
+
+  describe("reportConsumption — izveštaj potrošnje (RA-39/40/41)", () => {
+    // Vezani parametri iz `Prisma.sql` (redosled: from, to, reason, limit).
+    const boundValues = (): unknown[] =>
+      (sy15.db.$queryRaw.mock.calls as [{ values: unknown[] }][])[0][0].values;
+
+    it("bez filtera → samo LIMIT (default 2000) vezan; vraća redove ledgera", async () => {
+      sy15.db.$queryRaw.mockResolvedValue([{ ledger_id: "L1", delta: 3 }]);
+      const res = await service.reportConsumption({});
+      expect(sy15.db.$queryRaw).toHaveBeenCalledTimes(1);
+      expect(boundValues()).toEqual([2000]);
+      expect(res.data).toEqual([{ ledger_id: "L1", delta: 3 }]);
+    });
+
+    it("from/to/reason → svi filteri vezani redom; `to` je kraj dana", async () => {
+      sy15.db.$queryRaw.mockResolvedValue([]);
+      await service.reportConsumption({
+        from: "2026-07-01",
+        to: "2026-07-17",
+        reason: "ISSUE",
+        limit: "5000",
+      });
+      expect(boundValues()).toEqual([
+        "2026-07-01",
+        "2026-07-17T23:59:59",
+        "ISSUE",
+        5000,
+      ]);
+    });
+
+    it("reason=ALL → bez filtera tipa (samo LIMIT)", async () => {
+      sy15.db.$queryRaw.mockResolvedValue([]);
+      await service.reportConsumption({ reason: "ALL" });
+      expect(boundValues()).toEqual([2000]);
+    });
+
+    it("limit se klampuje na 1..5000 (preko max → 5000)", async () => {
+      sy15.db.$queryRaw.mockResolvedValue([]);
+      await service.reportConsumption({ limit: "99999" });
+      expect(boundValues()).toEqual([5000]);
     });
   });
 

@@ -81,6 +81,21 @@ export interface LedgerQuery {
 }
 
 /**
+ * Magacionerski izveštaj potrošnje (RA-39/40/41 — paritet 1.0 `fetchConsumptionReport`).
+ * Period + tip pokreta iz obogaćenog ledgera (`v_rev_stock_ledger_detail`).
+ */
+export interface ConsumptionReportQuery {
+  /** 'YYYY-MM-DD' — `created_at >=` (FE default = 1. tekućeg meseca). */
+  from?: string;
+  /** 'YYYY-MM-DD' — `created_at <= to 23:59:59` (uključuje ceo `to` dan). */
+  to?: string;
+  /** ISSUE | WRITE_OFF | RECEIPT | RETURN | ADJUST | ALL (ALL/prazno = bez filtera tipa). */
+  reason?: string;
+  /** Fetch-all obrazac (R1): jedan poziv do `limit` redova; FE agregira + CSV. */
+  limit?: string;
+}
+
+/**
  * Lista pojedinačnih jedinica inventara (RA-14/16/17/13/15/18/23 — paritet 1.0
  * `fetchTools`). Server-side status filter + kaskadni klasifikacioni filteri +
  * sort (allowlist) + paginacija; svaki red nosi zaduženje/lokaciju.
@@ -155,9 +170,13 @@ export class ReversiService {
    * ovih poziva (pageSize=1 po statusu/overdue); „Primaoci (aktivno)" = recipientCardinality.
    */
   async listDocuments(query: ListDocumentsQuery) {
+    // maxSize=500: Mapa (RA-47/48) i workbench povlače do 500 aktivnih dokumenata u
+    // jednom pozivu (paritet 1.0 `fetchDocuments({ limit: 500 })`) za kartice mašina
+    // i „Aging" donut. R4 Zaduženja panel traži ≤50/str → default ponašanje netaknuto.
     const { page, pageSize, skip, take } = parsePagination(
       query.page,
       query.pageSize,
+      500,
     );
     const where = this.buildDocumentWhere(query);
     const [docs, total] = await Promise.all([
@@ -1009,6 +1028,54 @@ export class ReversiService {
       this.sy15.db.revToolStockLedger.count({ where }),
     ]);
     return { data, meta: pageMeta(page, pageSize, total) };
+  }
+
+  /**
+   * Magacionerski izveštaj potrošnje/pokreta zalihe (RA-39/40/41) — paritet 1.0
+   * `fetchConsumptionReport`. Čita obogaćen ledger `v_rev_stock_ledger_detail`
+   * (oznaka/naziv/primalac/dokument uz deltu i stanje-posle), filtriran po
+   * `created_at` opsegu i tipu pokreta (`reason`). „Fetch-all" u JEDNOM pozivu
+   * (do `limit`, default 2000, max 5000) — FE gradi „Zbir po artiklu" + „Detalji"
+   * + CSV (RA-40/41) klijentski, kao 1.0.
+   *
+   * Manage-gated (kao `/ledger` — jedini ne-javni read). Direktan `db.$queryRaw`
+   * (konekciona rola je granica; view je `security_invoker`, pa pod BYPASSRLS rolom
+   * vraća sve redove — isti obrazac kao `listLedger`). `delta`/`balance_after`
+   * kastovani u float8 → čisti JS brojevi (bez BigInt serijalizacije).
+   */
+  async reportConsumption(query: ConsumptionReportQuery) {
+    const limit = Math.min(
+      5000,
+      Math.max(1, Number.parseInt(query.limit ?? "2000", 10) || 2000),
+    );
+    const conds: Prisma.Sql[] = [];
+    const from = query.from?.trim();
+    const to = query.to?.trim();
+    if (from) conds.push(Prisma.sql`created_at >= ${from}::timestamptz`);
+    // Kraj dana (paritet 1.0 `lte.${to}T23:59:59`) — uključuje ceo `to` datum.
+    if (to)
+      conds.push(Prisma.sql`created_at <= ${`${to}T23:59:59`}::timestamptz`);
+    const reason = query.reason?.trim();
+    if (reason && reason !== "ALL") conds.push(Prisma.sql`reason = ${reason}`);
+    const whereSql = conds.length
+      ? Prisma.sql`WHERE ${Prisma.join(conds, " AND ")}`
+      : Prisma.empty;
+    const data = await this.sy15.db.$queryRaw<Record<string, unknown>[]>(
+      Prisma.sql`
+        SELECT ledger_id, tool_id, oznaka, naziv, is_consumable,
+               subgroup_label, group_label,
+               delta::float8         AS delta,
+               reason,
+               balance_after::float8 AS balance_after,
+               ref_doc_id, doc_number, recipient_type,
+               recipient_employee_name, recipient_department, recipient_company_name,
+               note, created_by, created_at
+        FROM v_rev_stock_ledger_detail
+        ${whereSql}
+        ORDER BY created_at DESC
+        LIMIT ${limit}`,
+    );
+    return { data };
   }
 
   // ---------- Pregledi (postojeći sy15 view-ovi — paritet 1:1) ----------

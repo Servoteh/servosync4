@@ -20,6 +20,7 @@ import { RequirePermission } from "../../common/authz/require-permission.decorat
 import { PERMISSIONS } from "../../common/authz/permissions";
 import { ReversiService } from "./reversi.service";
 import type {
+  ConsumptionReportQuery,
   InventoryUnitsQuery,
   LedgerQuery,
   ListDocumentsQuery,
@@ -156,6 +157,17 @@ export class ReversiController {
   @Get("reports/warehouse")
   warehouse(@Query("allLocations") allLocations?: string) {
     return this.reversi.reportWarehouse(allLocations === "true");
+  }
+
+  /**
+   * Izveštaj potrošnje (RA-39/40/41) — period (from/to) + tip pokreta (reason) iz
+   * ledgera. Manage-gated kao `/ledger` (jedini ne-javni read); FE agregira + CSV
+   * (fetch-all, do `limit` redova). Statička ruta pod `reports/` — bez :id sudara.
+   */
+  @Get("reports/consumption")
+  @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
+  consumption(@Query() query: ConsumptionReportQuery) {
+    return this.reversi.reportConsumption(query);
   }
 
   @Get("reports/scrapped")

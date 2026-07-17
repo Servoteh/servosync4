@@ -38,6 +38,7 @@ describe("Reversi permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     "reportMyMachinesCutting",
     "reportTeamIssued",
     "reportWarehouse",
+    "reportConsumption",
     "reportScrapped",
     "reportMachines",
     "issue",
@@ -230,6 +231,25 @@ describe("Reversi permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     });
     it.each(NOT_MANAGE)("GET /ledger → 403 za %s", async (role) => {
       await get("/ledger", role).expect(403);
+    });
+  });
+
+  // R2 — izveštaj potrošnje (RA-39/40/41): manage-gated kao /ledger.
+  describe("reports/consumption — izveštaj potrošnje (reversi.manage)", () => {
+    it.each(MANAGE_ROLES)(
+      "GET /reports/consumption → 200 za %s",
+      async (role) => {
+        await get("/reports/consumption", role).expect(200);
+      },
+    );
+    it.each(NOT_MANAGE)(
+      "GET /reports/consumption → 403 za %s",
+      async (role) => {
+        await get("/reports/consumption", role).expect(403);
+      },
+    );
+    it("GET /reports/warehouse ostaje reversi.read (200 za viewer) — kontrast", async () => {
+      await get("/reports/warehouse", "viewer").expect(200);
     });
   });
 
