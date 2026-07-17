@@ -25,6 +25,21 @@ export function formatNumber(n: number): string {
   return nf.format(n);
 }
 
+/**
+ * Decimalni broj (broj ili Decimal-as-string iz backenda, npr. „8.640000") →
+ * srpski format sa zarezom i grupisanjem, bez repova nula: „8,64", „1.234,5".
+ * Prazno/null/neparsivo → „—". `maxFrac` ograničava broj decimala (podrazumevano 2).
+ */
+export function formatDecimal(
+  value: number | string | null | undefined,
+  maxFrac = 2,
+): string {
+  if (value === null || value === undefined || value === '') return '—';
+  const n = typeof value === 'number' ? value : Number(String(value).replace(',', '.'));
+  if (!Number.isFinite(n)) return '—';
+  return new Intl.NumberFormat('sr-RS', { maximumFractionDigits: maxFrac }).format(n);
+}
+
 /** „pre 2 h", „pre 3 min", „pre 4 dana" — relativna starost (paritet 1.0 formatRelativeAge). */
 export function formatRelativeAge(iso: string | null | undefined): string {
   if (!iso) return '—';

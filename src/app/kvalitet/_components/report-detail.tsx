@@ -1,19 +1,22 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { RefreshCw } from 'lucide-react';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Button } from '@/components/ui-kit/button';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { useCan } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
-import { formatDate } from '@/lib/format';
+import { formatDate, formatDecimal } from '@/lib/format';
 import {
   NONCONFORMITY_STATUS,
   NONCONFORMITY_TYPE,
   useConfirmNonconformityReport,
   useDeleteNonconformityReport,
+  useRecomputeNonconformityReport,
   useUpdateNonconformityReport,
   type NonconformityReport,
+  type RecomputeMeta,
 } from '@/api/kvalitet';
 import { ReportFields } from './report-fields';
 import { DocumentsSection } from './documents-shared';
@@ -30,6 +33,7 @@ import {
 /** Read-only prikaz svih polja izveštaja (za uloge bez `kvalitet.write`). */
 function ReadOnlyDetail({ report }: { report: NonconformityReport }) {
   const isRework = report.type === NONCONFORMITY_TYPE.REWORK;
+  const isScrap = report.type === NONCONFORMITY_TYPE.SCRAP;
   return (
     <dl className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3">
       <DetailField label="Datum" value={formatDate(report.reportDate)} />
@@ -41,14 +45,79 @@ function ReadOnlyDetail({ report }: { report: NonconformityReport }) {
       <DetailField label="Kupac" value={report.customerName} />
       <DetailField label="Uzrok" value={report.cause} />
       <DetailField label="Izvršioci" value={culpritSummary(report)} />
-      <DetailField label="Trošak materijala" value={report.materialCostNote} />
+      <DetailField label="Utrošeni radni sati" value={report.spentHours != null ? `${formatDecimal(report.spentHours)} h` : report.spentHoursText} />
+      {isScrap && (
+        <DetailField
+          label="Trošak materijala (kg)"
+          value={report.materialKg != null ? `${formatDecimal(report.materialKg)} kg` : null}
+        />
+      )}
+      <DetailField label="Materijal — opis" value={report.materialCostNote} />
       <DetailField label="Trošak kooperacije" value={report.coopCostNote} />
-      <DetailField label="Utrošeno sati" value={report.spentHoursText} />
       <DetailField label="Preventivne mere" value={report.preventiveMeasures} />
       <DetailField label="Napomena" value={report.note} />
       {isRework && <DetailField label="Dodatno" value={report.extra} />}
       <DetailField label="Ističe" value={report.raisedBy?.fullName} />
     </dl>
+  );
+}
+
+/** Diskretni opis izvora izračuna posle „Preračunaj". */
+function recomputeMetaLine(meta: RecomputeMeta): string {
+  const parts: string[] = [`sati iz ${meta.hoursOps} op.`];
+  if (meta.massSource === 'drawing')
+    parts.push(`masa sa crteža: ${formatDecimal(meta.unitWeightKg)} kg`);
+  else if (meta.massSource === 'workOrder')
+    parts.push(`masa sa RN: ${formatDecimal(meta.unitWeightKg)} kg`);
+  else parts.push('masa nepoznata — materijal nije izračunat');
+  return `Preračunato · ${parts.join(' · ')}`;
+}
+
+/**
+ * Auto-izračunate vrednosti (utrošeni radni sati + materijal u kg) za ŠKART, sa
+ * dugmetom „Preračunaj" (recompute endpoint). Renderuje se kao `autoExtras` na vrhu
+ * bele („Automatski podaci") sekcije. Po uspehu keš se invalidira → red se osveži i
+ * forma resinhronizuje; meta izvora mase prikazujemo diskretno.
+ */
+function AutoComputedPanel({ report }: { report: NonconformityReport }) {
+  const recompute = useRecomputeNonconformityReport();
+  const [meta, setMeta] = useState<RecomputeMeta | null>(null);
+
+  function doRecompute() {
+    recompute.mutate(report.id, { onSuccess: (res) => setMeta(res.meta) });
+  }
+
+  return (
+    <div className="rounded-control border border-line bg-surface px-3 py-2.5">
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+        <div>
+          <div className="text-xs uppercase tracking-wide text-ink-secondary">Utrošeni radni sati</div>
+          <div className="tnums text-md font-semibold text-ink">
+            {formatDecimal(report.spentHours)} <span className="text-sm font-normal text-ink-secondary">h</span>
+          </div>
+        </div>
+        <div>
+          <div className="text-xs uppercase tracking-wide text-ink-secondary">Trošak materijala</div>
+          <div className="tnums text-md font-semibold text-ink">
+            {formatDecimal(report.materialKg)} <span className="text-sm font-normal text-ink-secondary">kg</span>
+          </div>
+        </div>
+        <span className="flex-1" />
+        <Button variant="secondary" onClick={doRecompute} loading={recompute.isPending}>
+          <RefreshCw className="h-4 w-4" aria-hidden />
+          Preračunaj
+        </Button>
+      </div>
+      <p className="mt-2 text-xs text-ink-secondary">
+        Automatski iz proizvodnih podataka; vrednosti se mogu ručno korigovati ispod.
+      </p>
+      {meta && <p className="mt-1 text-xs text-ink-secondary">{recomputeMetaLine(meta)}</p>}
+      {recompute.error && (
+        <p className="mt-1 text-xs text-status-danger" role="alert">
+          {(recompute.error as Error).message}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -146,7 +215,16 @@ export function ReportDetail({ report }: { report: NonconformityReport }) {
       )}
 
       {canWrite ? (
-        <ReportFields form={form} onChange={patch} type={report.type} />
+        <ReportFields
+          form={form}
+          onChange={patch}
+          type={report.type}
+          autoExtras={
+            report.type === NONCONFORMITY_TYPE.SCRAP ? (
+              <AutoComputedPanel report={report} />
+            ) : undefined
+          }
+        />
       ) : (
         <ReadOnlyDetail report={report} />
       )}
