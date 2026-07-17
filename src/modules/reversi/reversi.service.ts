@@ -30,6 +30,14 @@ import type {
   ReversiPrintLabelDto,
   UpdateToolDto,
 } from "./dto/reversi-inventory.dto";
+import type {
+  CreateBatteryDto,
+  CreateMachineHeadDto,
+  CreateServiceDto,
+  UpdateBatteryDto,
+  UpdateMachineHeadDto,
+  UpdateServiceDto,
+} from "./dto/reversi-detail.dto";
 
 /**
  * Reversi — 3.0 PILOT, R1 read sloj (MODULE_SPEC_reversi.md §4/§9).
@@ -382,7 +390,9 @@ export class ReversiService {
     // upit po PK. `recipient_company_pib` je već u `...doc` spread-u (za eksterne firme).
     let recipientEmployeeDepartment: string | null = null;
     if (doc.recipientType === "EMPLOYEE" && doc.recipientEmployeeId) {
-      const rows = await this.sy15.db.$queryRaw<{ department: string | null }[]>(
+      const rows = await this.sy15.db.$queryRaw<
+        { department: string | null }[]
+      >(
         Prisma.sql`SELECT department FROM employees WHERE id = ${doc.recipientEmployeeId}::uuid LIMIT 1`,
       );
       recipientEmployeeDepartment = rows[0]?.department ?? null;
@@ -434,6 +444,20 @@ export class ReversiService {
     return { data, meta: pageMeta(page, pageSize, total) };
   }
 
+  /**
+   * Kartica ručnog alata (RB-01/04/05/06/08) — pun red `rev_tools` + baterije +
+   * servisi, i (RB-04, KLJUČNO) razrešena KLASIFIKACIJA, TRENUTNA LOKACIJA i
+   * OTVORENO ZADUŽENJE. Paritet 1.0 `fetchToolById`:
+   *   - `group`/`subgroup`/`subsubgroup` = isti oblik kao `inventory-units`
+   *     (RA-14, reuse `UnitGroupRef`/`UnitSubRef`) — FE gradi „Klasifikacija" put,
+   *   - `currentLocationCode` = poslednji `loc_item_placements` → `loc_locations`
+   *     (magacin „Slobodan · Magacin <kod>"),
+   *   - `issuedHolder` = otvorena ISSUED linija + dokument OPEN/PARTIALLY_RETURNED
+   *     („Na reversu <doc> · <ko>") — isti oblik kao `inventory-units` (`IssuedHolder`).
+   * Garancija (RB-05) i sva master polja (nabavna, punjač, otpis blok) su već u
+   * `...tool` spreadu — FE računa badž iz `garancijaDo`. Baterije nose status+napomena
+   * (RB-06), servisi izvršilac+status+trošak (RB-08) — sve u `...` redova.
+   */
   async findOneTool(id: string) {
     const tool = await this.sy15.db.revTool.findUnique({ where: { id } });
     if (!tool) throw new NotFoundException(`Alat ${id} ne postoji`);
@@ -444,10 +468,276 @@ export class ReversiService {
       }),
       this.sy15.db.revToolServiceLog.findMany({
         where: { toolId: id },
-        orderBy: { datum: "desc" },
+        orderBy: [{ datum: "desc" }, { createdAt: "desc" }],
       }),
     ]);
-    return { data: { ...tool, batteries, services } };
+
+    // Klasifikacija (grupa · podgrupa · podpodgrupa) — targetirani lookupi.
+    const [sg, ss] = await Promise.all([
+      tool.subgroupId
+        ? this.sy15.db.revInventorySubgroup.findUnique({
+            where: { id: tool.subgroupId },
+            select: { id: true, code: true, label: true, groupId: true },
+          })
+        : Promise.resolve(null),
+      tool.subsubgroupId
+        ? this.sy15.db.revInventorySubsubgroup.findUnique({
+            where: { id: tool.subsubgroupId },
+            select: { id: true, code: true, label: true },
+          })
+        : Promise.resolve(null),
+    ]);
+    const g = sg?.groupId
+      ? await this.sy15.db.revInventoryGroup.findUnique({
+          where: { id: sg.groupId },
+          select: { code: true, label: true },
+        })
+      : null;
+
+    // Trenutna lokacija — poslednji placement (kao 1.0 order=placed_at.desc limit 1).
+    let currentLocationId: string | null = null;
+    let currentLocationCode: string | null = null;
+    if (tool.locItemRefId) {
+      const pl = await this.sy15.db.locItemPlacement.findFirst({
+        where: { itemRefTable: "rev_tools", itemRefId: tool.locItemRefId },
+        orderBy: { placedAt: "desc" },
+        select: { locationId: true },
+      });
+      currentLocationId = pl?.locationId ?? null;
+      if (currentLocationId) {
+        const loc = await this.sy15.db.locLocation.findUnique({
+          where: { id: currentLocationId },
+          select: { locationCode: true },
+        });
+        currentLocationCode = loc?.locationCode ?? null;
+      }
+    }
+
+    // Otvoreno zaduženje — ISSUED linija + dokument OPEN/PARTIALLY_RETURNED.
+    const openLines = await this.sy15.db.revDocumentLine.findMany({
+      where: { toolId: id, lineStatus: "ISSUED" },
+      select: { documentId: true },
+    });
+    let issuedHolder: {
+      docNumber: string;
+      recipientType: string;
+      recipientEmployeeName: string | null;
+      recipientDepartment: string | null;
+      recipientCompanyName: string | null;
+    } | null = null;
+    if (openLines.length > 0) {
+      const openDoc = await this.sy15.db.revDocument.findFirst({
+        where: {
+          id: { in: [...new Set(openLines.map((l) => l.documentId))] },
+          status: { in: ["OPEN", "PARTIALLY_RETURNED"] },
+        },
+        orderBy: { issuedAt: "desc" },
+        select: {
+          docNumber: true,
+          recipientType: true,
+          recipientEmployeeName: true,
+          recipientDepartment: true,
+          recipientCompanyName: true,
+        },
+      });
+      if (openDoc) {
+        issuedHolder = {
+          docNumber: openDoc.docNumber,
+          recipientType: openDoc.recipientType,
+          recipientEmployeeName: openDoc.recipientEmployeeName,
+          recipientDepartment: openDoc.recipientDepartment,
+          recipientCompanyName: openDoc.recipientCompanyName,
+        };
+      }
+    }
+
+    return {
+      data: {
+        ...tool,
+        batteries,
+        services,
+        group: g ? { code: g.code, label: g.label } : null,
+        subgroup: sg ? { id: sg.id, code: sg.code, label: sg.label } : null,
+        subsubgroup: ss ? { id: ss.id, code: ss.code, label: ss.label } : null,
+        currentLocationId,
+        currentLocationCode,
+        issuedHolder,
+      },
+    };
+  }
+
+  /**
+   * Istorija zaduženja jednog alata (RB-10) — sve `rev_document_lines` za alat +
+   * pripadajući dokument (batch-resolve, šema bez FK). Paritet 1.0 `fetchToolDocuments`
+   * (order=created_at.desc). `reversi.read` (linija/dokument su klasni read; „Promene
+   * zaliha" ide zasebno kroz `/ledger?toolId=` koji je manage-gated). FE gradi tabelu
+   * (Izdato/Dokument/Primalac/Stavka[Vraćen/Zadužen]/Vraćeno) iz `line` + `line.document`.
+   */
+  async toolDocuments(id: string) {
+    const lines = await this.sy15.db.revDocumentLine.findMany({
+      where: { toolId: id },
+      orderBy: { createdAt: "desc" },
+    });
+    const docIds = [...new Set(lines.map((l) => l.documentId))];
+    const docs = docIds.length
+      ? await this.sy15.db.revDocument.findMany({
+          where: { id: { in: docIds } },
+          select: {
+            id: true,
+            docNumber: true,
+            docType: true,
+            recipientType: true,
+            recipientEmployeeName: true,
+            recipientDepartment: true,
+            recipientCompanyName: true,
+            issuedAt: true,
+            status: true,
+            returnConfirmedAt: true,
+          },
+        })
+      : [];
+    const byId = new Map(docs.map((d) => [d.id, d]));
+    return {
+      data: lines.map((l) => ({
+        ...l,
+        document: byId.get(l.documentId) ?? null,
+      })),
+    };
+  }
+
+  // ---------- Baterije / Servis alata (RB-07/09 — CRUD sub-evidencije) ----------
+
+  /**
+   * Dodaj bateriju (RB-07). `withUser` → `created_by` = auth.uid() iz GUC claims
+   * (paritet 1.0 INSERT pod korisničkom rolom); status default 'active' (DB CHECK).
+   */
+  async addToolBattery(email: string, toolId: string, dto: CreateBatteryDto) {
+    const row = await this.sy15.withUser(email, (tx) =>
+      tx.revToolBattery.create({
+        data: {
+          toolId,
+          serijskiBroj: dto.serijskiBroj?.trim() || null,
+          kapacitet: dto.kapacitet?.trim() || null,
+          datumNabavke: dto.datumNabavke ? new Date(dto.datumNabavke) : null,
+          ...(dto.status !== undefined ? { status: dto.status } : {}),
+          napomena: dto.napomena?.trim() || null,
+        },
+      }),
+    );
+    return { data: row };
+  }
+
+  /** Izmena baterije (RB-07) — typed PATCH; P2025 (stale id) → 404. */
+  async updateToolBattery(id: string, dto: UpdateBatteryDto) {
+    const data: Prisma.RevToolBatteryUpdateInput = {};
+    if (dto.serijskiBroj !== undefined)
+      data.serijskiBroj = dto.serijskiBroj?.trim() || null;
+    if (dto.kapacitet !== undefined)
+      data.kapacitet = dto.kapacitet?.trim() || null;
+    if (dto.datumNabavke !== undefined)
+      data.datumNabavke = dto.datumNabavke ? new Date(dto.datumNabavke) : null;
+    if (dto.status !== undefined) data.status = dto.status;
+    if (dto.napomena !== undefined)
+      data.napomena = dto.napomena?.trim() || null;
+    try {
+      const row = await this.sy15.db.revToolBattery.update({
+        where: { id },
+        data,
+      });
+      return { data: row };
+    } catch (e) {
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === "P2025"
+      ) {
+        throw new NotFoundException(`Baterija ${id} ne postoji`);
+      }
+      throw e;
+    }
+  }
+
+  /** Brisanje baterije (RB-07) — typed DELETE; P2025 → 404. */
+  async deleteToolBattery(id: string) {
+    try {
+      await this.sy15.db.revToolBattery.delete({ where: { id } });
+      return { data: { id } };
+    } catch (e) {
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === "P2025"
+      ) {
+        throw new NotFoundException(`Baterija ${id} ne postoji`);
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * Dodaj servis/popravku (RB-09). `withUser` → `created_by` = auth.uid(). `datum`/
+   * `tip`/`status` izostavljeni → DB podrazumeva (CURRENT_DATE / 'popravka' / 'zavrsen').
+   * „Isplativost" (RB-08) FE računa: Σ trošak SAMO `status='zavrsen'` / nabavna vrednost.
+   */
+  async addToolService(email: string, toolId: string, dto: CreateServiceDto) {
+    const row = await this.sy15.withUser(email, (tx) =>
+      tx.revToolServiceLog.create({
+        data: {
+          toolId,
+          ...(dto.datum ? { datum: new Date(dto.datum) } : {}),
+          ...(dto.tip !== undefined ? { tip: dto.tip } : {}),
+          opis: dto.opis?.trim() || null,
+          izvrsilac: dto.izvrsilac?.trim() || null,
+          trosak: dto.trosak ?? null,
+          ...(dto.status !== undefined ? { status: dto.status } : {}),
+          napomena: dto.napomena?.trim() || null,
+        },
+      }),
+    );
+    return { data: row };
+  }
+
+  /** Izmena servisa (RB-09) — typed PATCH; P2025 → 404. */
+  async updateToolService(id: string, dto: UpdateServiceDto) {
+    const data: Prisma.RevToolServiceLogUpdateInput = {};
+    if (dto.datum !== undefined) data.datum = new Date(dto.datum);
+    if (dto.tip !== undefined) data.tip = dto.tip;
+    if (dto.opis !== undefined) data.opis = dto.opis?.trim() || null;
+    if (dto.izvrsilac !== undefined)
+      data.izvrsilac = dto.izvrsilac?.trim() || null;
+    if (dto.trosak !== undefined) data.trosak = dto.trosak ?? null;
+    if (dto.status !== undefined) data.status = dto.status;
+    if (dto.napomena !== undefined)
+      data.napomena = dto.napomena?.trim() || null;
+    try {
+      const row = await this.sy15.db.revToolServiceLog.update({
+        where: { id },
+        data,
+      });
+      return { data: row };
+    } catch (e) {
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === "P2025"
+      ) {
+        throw new NotFoundException(`Servis ${id} ne postoji`);
+      }
+      throw e;
+    }
+  }
+
+  /** Brisanje servisa (RB-09) — typed DELETE; P2025 → 404. */
+  async deleteToolService(id: string) {
+    try {
+      await this.sy15.db.revToolServiceLog.delete({ where: { id } });
+      return { data: { id } };
+    } catch (e) {
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === "P2025"
+      ) {
+        throw new NotFoundException(`Servis ${id} ne postoji`);
+      }
+      throw e;
+    }
   }
 
   /**
@@ -998,7 +1288,10 @@ export class ReversiService {
     };
     const rows = await tx.$queryRawUnsafe<
       { result: { ok?: boolean; error?: string } | null }[]
-    >("SELECT loc_create_movement($1::jsonb) AS result", JSON.stringify(payload));
+    >(
+      "SELECT loc_create_movement($1::jsonb) AS result",
+      JSON.stringify(payload),
+    );
     const result = rows[0]?.result ?? null;
     if (!result || result.ok !== true) {
       throw new UnprocessableEntityException(
@@ -1129,10 +1422,150 @@ export class ReversiService {
     return { data };
   }
 
-  /** Mašine za Reversi kontekst (view nad maint_machines; u 1.0 REVOKE anon — ovde JWT + reversi.read). */
+  /**
+   * Mašine za Reversi kontekst (view nad maint_machines; u 1.0 REVOKE anon — ovde
+   * JWT + reversi.read). Red nosi SVA polja `v_rev_machines` (RB-55: serial_number,
+   * year_of_manufacture, year_commissioned, power_kw, notes) + `archived_at` (RB-52
+   * „Samo aktivne" — FE filtrira, badž „arhivirana" RB-53) i AGREGATE po mašini
+   * (RB-53 kolone tabele): `cuttingToolSkus`/`cuttingToolQty` iz `v_rev_cts_by_machine`
+   * (broj šifri + Σ preostalo) i `headsCount` iz `rev_machine_heads`. 1.0 ove brojeve
+   * računa klijentski iz 3 poziva (`fetchMachines`+`fetchCuttingByMachine`+
+   * `fetchMachineHeadCounts`); ovde ih vraćamo obogaćene u JEDNOM pozivu.
+   */
   async reportMachines() {
-    const data = await this.sy15.db.$queryRaw`SELECT * FROM v_rev_machines`;
+    // `machine_code` je tekst u `v_rev_machines`; tipujemo ga eksplicitno (ostala
+    // polja ostaju `unknown` i prolaze kroz spread) da bi ključ agregata bio string.
+    const machines = await this.sy15.db.$queryRaw<
+      ({ machine_code: string } & Record<string, unknown>)[]
+    >(Prisma.sql`SELECT * FROM v_rev_machines`);
+    if (machines.length === 0) return { data: [] };
+    const [cutRows, headRows] = await Promise.all([
+      this.sy15.db.$queryRaw<
+        { machine_code: string; skus: number; qty: number }[]
+      >(Prisma.sql`
+        SELECT machine_code, COUNT(*)::int AS skus,
+               COALESCE(SUM(remaining_qty), 0)::float8 AS qty
+        FROM v_rev_cts_by_machine
+        WHERE machine_code IS NOT NULL
+        GROUP BY machine_code`),
+      this.sy15.db.$queryRaw<{ machine_code: string; n: number }[]>(Prisma.sql`
+        SELECT machine_code, COUNT(*)::int AS n
+        FROM rev_machine_heads
+        GROUP BY machine_code`),
+    ]);
+    const cutBy = new Map(cutRows.map((r) => [r.machine_code, r]));
+    const headBy = new Map(
+      headRows.map((r) => [r.machine_code, Number(r.n) || 0]),
+    );
+    const data = machines.map((m) => {
+      const mc = m.machine_code;
+      const c = cutBy.get(mc);
+      return {
+        ...m,
+        cuttingToolSkus: c ? Number(c.skus) || 0 : 0,
+        cuttingToolQty: c ? Number(c.qty) || 0 : 0,
+        headsCount: headBy.get(mc) ?? 0,
+      };
+    });
     return { data };
+  }
+
+  /**
+   * Istorija izdavanja na mašinu (RB-58) — poslednji `rev_documents` sa
+   * `recipient_machine_code = code` (order issued_at desc, limit ≤200). Paritet 1.0
+   * `fetchMachineDocuments`. FE kolone: Izdato/Dokument/Potpisao(issuedToEmployeeName
+   * ∨ recipientEmployeeName)/Status/Rok. `reversi.read` (dokument je klasni read).
+   */
+  async machineDocuments(code: string, limit?: string) {
+    const take = Math.min(
+      200,
+      Math.max(1, Number.parseInt(limit ?? "50", 10) || 50),
+    );
+    const data = await this.sy15.db.revDocument.findMany({
+      where: { recipientMachineCode: code },
+      orderBy: { issuedAt: "desc" },
+      take,
+      select: {
+        id: true,
+        docNumber: true,
+        docType: true,
+        status: true,
+        issuedAt: true,
+        expectedReturnDate: true,
+        issuedToEmployeeName: true,
+        recipientEmployeeName: true,
+        napomena: true,
+      },
+    });
+    return { data };
+  }
+
+  // ---------- Glave mašine (RB-57 — CRUD evidencije) ----------
+
+  /** Dodaj glavu (RB-57). `withUser` → created_by = auth.uid(); status default 'ACTIVE'. */
+  async addMachineHead(
+    email: string,
+    machineCode: string,
+    dto: CreateMachineHeadDto,
+  ) {
+    const row = await this.sy15.withUser(email, (tx) =>
+      tx.revMachineHead.create({
+        data: {
+          machineCode,
+          oznaka: dto.oznaka.trim(),
+          naziv: dto.naziv.trim(),
+          tip: dto.tip?.trim() || null,
+          serijskiBroj: dto.serijskiBroj?.trim() || null,
+          ...(dto.status !== undefined ? { status: dto.status } : {}),
+          napomena: dto.napomena?.trim() || null,
+        },
+      }),
+    );
+    return { data: row };
+  }
+
+  /** Izmena glave (RB-57) — typed PATCH + updatedAt (paritet 1.0); P2025 → 404. */
+  async updateMachineHead(id: string, dto: UpdateMachineHeadDto) {
+    const data: Prisma.RevMachineHeadUpdateInput = { updatedAt: new Date() };
+    if (dto.oznaka !== undefined) data.oznaka = dto.oznaka.trim();
+    if (dto.naziv !== undefined) data.naziv = dto.naziv.trim();
+    if (dto.tip !== undefined) data.tip = dto.tip?.trim() || null;
+    if (dto.serijskiBroj !== undefined)
+      data.serijskiBroj = dto.serijskiBroj?.trim() || null;
+    if (dto.status !== undefined) data.status = dto.status;
+    if (dto.napomena !== undefined)
+      data.napomena = dto.napomena?.trim() || null;
+    try {
+      const row = await this.sy15.db.revMachineHead.update({
+        where: { id },
+        data,
+      });
+      return { data: row };
+    } catch (e) {
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === "P2025"
+      ) {
+        throw new NotFoundException(`Glava ${id} ne postoji`);
+      }
+      throw e;
+    }
+  }
+
+  /** Brisanje glave (RB-57) — typed DELETE; P2025 → 404. */
+  async deleteMachineHead(id: string) {
+    try {
+      await this.sy15.db.revMachineHead.delete({ where: { id } });
+      return { data: { id } };
+    } catch (e) {
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === "P2025"
+      ) {
+        throw new NotFoundException(`Glava ${id} ne postoji`);
+      }
+      throw e;
+    }
   }
 
   // ---------- Rezni alat (rev_cutting_tool_catalog) ----------

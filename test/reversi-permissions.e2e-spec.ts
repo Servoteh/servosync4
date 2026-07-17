@@ -61,6 +61,18 @@ describe("Reversi permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     "updateCuttingTool",
     "cuttingByMachine",
     "machineHeads",
+    // R3 — Kartica alata + Otpisani + Mašine
+    "toolDocuments",
+    "addToolBattery",
+    "updateToolBattery",
+    "deleteToolBattery",
+    "addToolService",
+    "updateToolService",
+    "deleteToolService",
+    "machineDocuments",
+    "addMachineHead",
+    "updateMachineHead",
+    "deleteMachineHead",
     // R1 — Alat i oprema (inventar) + Grupe
     "listInventoryUnits",
     "inventoryClassificationUsage",
@@ -394,6 +406,113 @@ describe("Reversi permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
       const body = { tspl2: "CLS\nPRINT 1,1\n" };
       await post("/labels/print", "viewer", body).expect(403);
       await post("/labels/print", "magacioner", body).expect(201);
+    });
+  });
+
+  // ---------- R3 — Kartica alata + Otpisani + Mašine ----------
+  describe("R3 kartica alata + mašine", () => {
+    const MACHINE = "M12";
+
+    // Read: istorija alata/mašine = klasni reversi.read (linija/dokument nisu manage).
+    it("GET /tools/:id/documents → 200 read-role, 403 default-deny (RB-10)", async () => {
+      await get(`/tools/${VALID_UUID}/documents`, "proizvodni_radnik").expect(
+        200,
+      );
+      await get(`/tools/${VALID_UUID}/documents`, "viewer").expect(200);
+      await get(`/tools/${VALID_UUID}/documents`, "user").expect(403);
+    });
+    it("GET /machines/:code/documents → 200 read-role, 403 default-deny (RB-58)", async () => {
+      await get(`/machines/${MACHINE}/documents`, "kontrolor").expect(200);
+      await get(`/machines/${MACHINE}/documents`, "user").expect(403);
+    });
+    it("GET /reports/machines → 200 read-role (RB-52/53 obogaćen — counts)", async () => {
+      await get("/reports/machines", "viewer").expect(200);
+    });
+
+    // Baterije (RB-07) — reversi.manage; svi optional pa {} prolazi validaciju.
+    it.each(MANAGE_ROLES)(
+      "POST /tools/:id/batteries → 201 za %s",
+      async (r) => {
+        await post(`/tools/${VALID_UUID}/batteries`, r, {}).expect(201);
+      },
+    );
+    it.each(NOT_MANAGE)("POST /tools/:id/batteries → 403 za %s", async (r) => {
+      await post(`/tools/${VALID_UUID}/batteries`, r, {}).expect(403);
+    });
+    it("PATCH /tool-batteries/:id → 403 sef, 200 magacioner", async () => {
+      await patch(`/tool-batteries/${VALID_UUID}`, "sef", {
+        status: "scrapped",
+      }).expect(403);
+      await patch(`/tool-batteries/${VALID_UUID}`, "magacioner", {
+        status: "scrapped",
+      }).expect(200);
+    });
+    it("DELETE /tool-batteries/:id → 403 viewer, 200 admin", async () => {
+      await del(`/tool-batteries/${VALID_UUID}`, "viewer").expect(403);
+      await del(`/tool-batteries/${VALID_UUID}`, "admin").expect(200);
+    });
+    it("POST /tools/:id/batteries sa nevažećim status → 400 (ValidationPipe)", async () => {
+      await post(`/tools/${VALID_UUID}/batteries`, "admin", {
+        status: "nepostoji",
+      }).expect(400);
+    });
+
+    // Servis (RB-09) — reversi.manage.
+    it.each(MANAGE_ROLES)("POST /tools/:id/services → 201 za %s", async (r) => {
+      await post(`/tools/${VALID_UUID}/services`, r, {}).expect(201);
+    });
+    it.each(NOT_MANAGE)("POST /tools/:id/services → 403 za %s", async (r) => {
+      await post(`/tools/${VALID_UUID}/services`, r, {}).expect(403);
+    });
+    it("PATCH /tool-services/:id → 403 tehnolog, 200 pm", async () => {
+      await patch(`/tool-services/${VALID_UUID}`, "tehnolog", {
+        status: "otkazan",
+      }).expect(403);
+      await patch(`/tool-services/${VALID_UUID}`, "pm", {
+        status: "otkazan",
+      }).expect(200);
+    });
+    it("DELETE /tool-services/:id → 200 leadpm", async () => {
+      await del(`/tool-services/${VALID_UUID}`, "leadpm").expect(200);
+    });
+    it("POST /tools/:id/services sa nevažećim tip → 400", async () => {
+      await post(`/tools/${VALID_UUID}/services`, "admin", {
+        tip: "nepostoji",
+      }).expect(400);
+    });
+
+    // Glave mašine (RB-57) — reversi.manage; oznaka+naziv obavezni.
+    it.each(MANAGE_ROLES)(
+      "POST /machines/:code/heads → 201 za %s",
+      async (r) => {
+        await post(`/machines/${MACHINE}/heads`, r, {
+          oznaka: "GL-1",
+          naziv: "Ugaona glava",
+        }).expect(201);
+      },
+    );
+    it.each(NOT_MANAGE)("POST /machines/:code/heads → 403 za %s", async (r) => {
+      await post(`/machines/${MACHINE}/heads`, r, {
+        oznaka: "GL-1",
+        naziv: "Ugaona glava",
+      }).expect(403);
+    });
+    it("POST /machines/:code/heads bez naziv → 400 (ValidationPipe)", async () => {
+      await post(`/machines/${MACHINE}/heads`, "admin", {
+        oznaka: "GL-1",
+      }).expect(400);
+    });
+    it("PATCH /machine-heads/:id → 403 kontrolor, 200 magacioner", async () => {
+      await patch(`/machine-heads/${VALID_UUID}`, "kontrolor", {
+        status: "SERVIS",
+      }).expect(403);
+      await patch(`/machine-heads/${VALID_UUID}`, "magacioner", {
+        status: "SERVIS",
+      }).expect(200);
+    });
+    it("DELETE /machine-heads/:id → 403 viewer, 200 menadzment", async () => {
+      await del(`/machine-heads/${VALID_UUID}`, "viewer").expect(403);
+      await del(`/machine-heads/${VALID_UUID}`, "menadzment").expect(200);
     });
   });
 });
