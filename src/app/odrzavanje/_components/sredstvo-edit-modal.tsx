@@ -7,6 +7,7 @@ import { Input, FormField } from '@/components/ui-kit/form-field';
 import { Textarea } from '@/components/ui-kit/textarea';
 import { toast } from '@/lib/toast';
 import {
+  useAssignableUsers,
   useCreateFacility,
   useCreateItAsset,
   useFacility,
@@ -44,9 +45,9 @@ function isoToDtLocal(v: unknown): string {
  * location patch; edit = patch core (name/mfr/model/serial/supplier + location + objedinjene
  * napomene) + PUT details. Objedinjene napomene: details.notes primarno, legacy asset.notes
  * čuva se samo dok je objedinjeno prazno (skriveno pravilo). Facility: service_contract i
- * last_inspection_at se preserv-uju (PUT je pun replace). Responsible (Odgovorni) NIJE
- * editabilan — 2.0 nema maint_user_profiles endpoint (#40 MISSING); Zadužen (assigned_to)
- * ostaje uz tooltip koji objašnjava razliku.
+ * last_inspection_at se preserv-uju (PUT je pun replace). „Odgovoran" (responsible_user_id)
+ * je editabilan preko useAssignableUsers → core patch (PatchAssetCoreDto.responsibleUserId);
+ * „Zadužen" (assigned_to, samo IT) ostaje uz tooltip koji objašnjava razliku.
  */
 export function SredstvoEditModal({
   kind,
@@ -94,6 +95,8 @@ function Form({
   const det = (d?.details ?? {}) as Record<string, unknown>;
   const locations = useLocations();
   const facilityTypes = useFacilityTypes();
+  const assignable = useAssignableUsers(true);
+  const users = assignable.data?.data ?? [];
 
   const createIt = useCreateItAsset();
   const createFac = useCreateFacility();
@@ -114,6 +117,7 @@ function Form({
   const [model, setModel] = useState(sval(d?.model));
   const [serialNumber, setSerial] = useState(sval(d?.serialNumber));
   const [supplier, setSupplier] = useState(sval(d?.supplier));
+  const [responsibleUserId, setResp] = useState(sval(d?.responsibleUserId));
   const [notes, setNotes] = useState(sval(det.notes) || sval(d?.notes));
 
   // ── IT-specific ──
@@ -228,8 +232,11 @@ function Form({
           onSuccess: (res) => {
             const newId = (res as { data?: { assetId?: string } }).data?.assetId;
             const done = () => { toast(isIt ? 'IT oprema dodata' : 'Objekat dodat'); onClose(); onSaved?.(newId ?? undefined); };
-            // Lokacija ide kroz core patch (create RPC je ne prima) — paritet 1.0.
-            if (locationId && newId) patchCore.mutate({ id: newId, patch: { locationId } }, { onSuccess: done, onError: done });
+            // Lokacija i Odgovoran idu kroz core patch (create RPC ih ne prima) — paritet 1.0.
+            const corePatch: Record<string, unknown> = {};
+            if (locationId) corePatch.locationId = locationId;
+            if (responsibleUserId) corePatch.responsibleUserId = responsibleUserId;
+            if (Object.keys(corePatch).length > 0 && newId) patchCore.mutate({ id: newId, patch: corePatch }, { onSuccess: done, onError: done });
             else done();
           },
           onError: (e) => setErr((e as Error).message),
@@ -252,6 +259,7 @@ function Form({
           serialNumber: serialNumber.trim() || null,
           supplier: supplier.trim() || null,
           locationId: locationId || null,
+          responsibleUserId: responsibleUserId || null,
           notes: preserveLegacy ? legacyCoreNotes : null,
         },
       },
@@ -298,6 +306,12 @@ function Form({
             <select value={locationId} onChange={(e) => setLocationId(e.target.value)} className={selCls}>
               <option value="">—</option>
               {(locations.data?.data ?? []).map((l) => <option key={l.locationId} value={l.locationId}>{l.name}</option>)}
+            </select>
+          </FormField>
+          <FormField label="Odgovoran" hint={'Interni CMMS korisnik odgovoran za sredstvo (održavanje/administracija) — razlikuje se od „Zadužen" (krajnji korisnik opreme).'}>
+            <select value={responsibleUserId} onChange={(e) => setResp(e.target.value)} className={selCls}>
+              <option value="">— bez odgovornog —</option>
+              {users.map((u) => <option key={u.user_id} value={u.user_id}>{u.full_name} ({u.maint_role})</option>)}
             </select>
           </FormField>
           {isIt ? (

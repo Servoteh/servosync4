@@ -20,11 +20,23 @@ import { deadlineTone, isoToDateInput } from './common';
 
 /** Kategorije dokumenata (1.0 DOC_CATEGORIES, maintDocumentsPanel.js:17-39). */
 const DOC_CATEGORIES: { id: string; label: string; hasExpiry?: boolean }[] = [
+  /* Vozila-specifične kategorije (Sprint 2) — sa „važi do" rokom */
+  { id: 'traffic_permit', label: 'Saobraćajna dozvola', hasExpiry: true },
+  { id: 'insurance_policy', label: 'Polisa osiguranja', hasExpiry: true },
+  { id: 'inspection_report', label: 'Tehnički pregled', hasExpiry: true },
+  { id: 'leasing_contract', label: 'Leasing ugovor', hasExpiry: true },
+  { id: 'service_invoice', label: 'Servisni račun' },
+  { id: 'purchase_invoice', label: 'Račun za kupovinu' },
+  /* Vozač-specifične kategorije (Sprint 6/8) */
+  { id: 'drivers_license_scan', label: 'Vozačka dozvola (skenirana)', hasExpiry: true },
+  { id: 'id_card_scan', label: 'Lična karta (skenirana)', hasExpiry: true },
+  { id: 'medical_check_scan', label: 'Lekarski uput (skeniran)', hasExpiry: true },
+  { id: 'driver_photo', label: 'Foto vozača' },
+  /* Generičke kategorije */
   { id: 'manual', label: 'Uputstvo' },
   { id: 'photo', label: 'Fotografija' },
   { id: 'drawing', label: 'Tehnički crtež' },
   { id: 'service_report', label: 'Servisni izveštaj' },
-  { id: 'service_invoice', label: 'Servisni račun' },
   { id: 'warranty', label: 'Garancija', hasExpiry: true },
   { id: 'invoice', label: 'Račun' },
   { id: 'inspection', label: 'Inspekcija' },

@@ -11,6 +11,7 @@ import { Dialog } from '@/components/ui-kit/dialog';
 import { formatDate, formatDateTime } from '@/lib/format';
 import { toast } from '@/lib/toast';
 import {
+  useArchiveVehicle,
   useCreateBooking,
   useCreateTire,
   useCreateVehicleServicePlan,
@@ -82,6 +83,7 @@ function readTab(): VTab {
 export function VoziloKarton({ id, me }: { id: string; me: MaintMe | undefined }) {
   const router = useRouter();
   const vehicle = useVehicle(id);
+  const archive = useArchiveVehicle();
   const restore = useRestoreVehicle();
   const d = vehicle.data?.data;
   const det = (d?.details ?? null) as Record<string, unknown> | null;
@@ -131,6 +133,7 @@ export function VoziloKarton({ id, me }: { id: string; me: MaintMe | undefined }
             <div className="flex flex-wrap gap-2">
               <Button variant="secondary" onClick={() => setShowReport(true)}><FileWarning className="h-4 w-4" aria-hidden /> Prijavi kvar</Button>
               {canManage && !d.archivedAt && <Button onClick={() => setEditOpen(true)}><Pencil className="h-4 w-4" aria-hidden /> Uredi vozilo</Button>}
+              {canManage && !d.archivedAt && <Button variant="danger" onClick={() => { const reason = prompt('Razlog arhiviranja vozila?'); if (reason?.trim()) archive.mutate({ id, reason: reason.trim() }, { onSuccess: () => toast('Vozilo arhivirano') }); }}>Arhiviraj</Button>}
             </div>
           </div>
 
