@@ -21,6 +21,7 @@ import { buildLocIndex, movementLabel, userDisplay } from './common';
 import { MovementDialog, type MovementPreset } from './movement-dialog';
 import { LocationFormDialog } from './location-form-dialog';
 import { ScanOverlay } from './scan-overlay';
+import { PendingQueueBanner } from './pending-queue-banner';
 
 // ------------------------------------------------------------------ health banneri (paritet 1.0)
 
@@ -173,6 +174,9 @@ export function PocetnaTab({ onGoStavke, onGoLabels }: { onGoStavke: (q: string)
 
   return (
     <div className="space-y-5">
+      {/* Offline queue — neposlata premeštanja (localStorage) */}
+      <PendingQueueBanner />
+
       {/* Brze akcije */}
       <div className="flex flex-wrap gap-2">
         <Can permission={PERMISSIONS.LOKACIJE_MOVE}>

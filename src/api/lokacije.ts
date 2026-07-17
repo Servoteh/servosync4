@@ -297,7 +297,7 @@ function qs(params: Record<string, string | number | boolean | undefined>): stri
   return s ? `?${s}` : '';
 }
 
-const KEYS = {
+export const KEYS = {
   root: ['lokacije'] as const,
   locations: ['lokacije', 'locations'] as const,
   placements: ['lokacije', 'placements'] as const,
@@ -947,14 +947,23 @@ export interface MovementVars {
   movedAt?: string;
 }
 
+/**
+ * Plain POST pokreta (bez React Query) — koristi ga i `useCreateMovement` hook i
+ * offline-queue flusher (lib/offlineQueue.ts), koji radi van React tree-a.
+ * Idempotencija ide preko `clientEventUuid` (partial UNIQUE indeks; retry istog
+ * UUID-a vraća {idempotent:true} bez dupliranja).
+ */
+export function postMovement(v: MovementVars): Promise<EnvelopeResult> {
+  return apiFetch<EnvelopeResult>('/v1/locations/movements', {
+    method: 'POST',
+    body: JSON.stringify(v),
+  });
+}
+
 export function useCreateMovement() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (v: MovementVars) =>
-      apiFetch<EnvelopeResult>('/v1/locations/movements', {
-        method: 'POST',
-        body: JSON.stringify(v),
-      }),
+    mutationFn: (v: MovementVars) => postMovement(v),
     onSuccess: () => void qc.invalidateQueries({ queryKey: KEYS.root }),
   });
 }
