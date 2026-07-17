@@ -2,6 +2,7 @@
 
 import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
 import { EmptyState } from '@/components/ui-kit/empty-state';
+import type { AkcijaRow } from '@/api/sastanci';
 
 // Zajednički mapiranja/labeli za Sastanci (paritet 1.0 rečnika). Domenske statuse
 // prikazujemo isključivo kroz StatusBadge (DESIGN_SYSTEM §7).
@@ -130,3 +131,81 @@ export const CADENCE_LABEL: Record<string, string> = {
 
 export const INPUT_CLS =
   'w-full rounded-control border border-line bg-surface-2 px-2.5 py-1.5 text-sm text-ink outline-none focus:border-accent';
+
+// ── RN grupisanje akcija (paritet 1.0 sastanciArhiva/buildRnGroupedRows) ──────
+// Grupa = projekat (RN); redosled grupa: ⭐ rang (index bigtehn_item_id u listi
+// usePredmetPrioritet) → šifra localeCompare sr-numeric; „Bez RN / projekta" UVEK
+// poslednja. Redovi u grupi: 'rb' (arhiva/PDF/detalj) ili 'status' (akcioni plan).
+
+export interface RnGroup {
+  /** projekat_id ili '__none__'. */
+  key: string;
+  code: string;
+  naziv: string;
+  rows: AkcijaRow[];
+}
+
+/** Redosled statusa u RN grupi (1.0 statusRank). */
+const RN_STATUS_RANK: Record<string, number> = {
+  kasni: 0,
+  u_toku: 1,
+  otvoren: 2,
+  odlozen: 3,
+  zavrsen: 4,
+  otkazan: 5,
+};
+
+const BEZ_RN_LABEL = 'Bez RN / projekta';
+
+export function groupAkcijeByRn(
+  rows: AkcijaRow[],
+  prioritet: string[] | null | undefined,
+  { rowSort = 'status' }: { rowSort?: 'rb' | 'status' } = {},
+): RnGroup[] {
+  // ⭐ rang po bigtehn_item_id — Number normalizacija (1.0 paritet), guard >0
+  // jer je Number(null)=0 pa bi prazan id lažno pogodio.
+  const idxByItem = new Map<number, number>();
+  (prioritet ?? []).forEach((it, i) => {
+    const n = Number(it);
+    if (Number.isFinite(n) && n > 0 && !idxByItem.has(n)) idxByItem.set(n, i);
+  });
+
+  const buckets = new Map<string, AkcijaRow[]>();
+  for (const a of rows) {
+    const k = a.projekat_id ?? '__none__';
+    const b = buckets.get(k);
+    if (b) b.push(a);
+    else buckets.set(k, [a]);
+  }
+
+  const first = (k: string) => buckets.get(k)![0];
+  const rankOf = (k: string): number => {
+    if (k === '__none__') return Infinity;
+    const it = Number(first(k).bigtehnItemId);
+    return Number.isFinite(it) && it > 0 && idxByItem.has(it) ? idxByItem.get(it)! : Infinity;
+  };
+  const codeOf = (k: string): string => (k === '__none__' ? '' : first(k).projekatCode ?? '');
+
+  const keys = [...buckets.keys()].sort((x, y) => {
+    const rx = rankOf(x);
+    const ry = rankOf(y);
+    if (rx !== ry) return rx - ry;
+    if (x === '__none__') return 1;
+    if (y === '__none__') return -1;
+    return codeOf(x).localeCompare(codeOf(y), 'sr', { numeric: true });
+  });
+
+  return keys.map((k) => {
+    const groupRows = buckets.get(k)!.slice().sort((a, b) =>
+      rowSort === 'rb'
+        ? (a.rb ?? 1e9) - (b.rb ?? 1e9)
+        : (RN_STATUS_RANK[a.effective_status] ?? 9) - (RN_STATUS_RANK[b.effective_status] ?? 9),
+    );
+    return {
+      key: k,
+      code: codeOf(k),
+      naziv: k === '__none__' ? BEZ_RN_LABEL : first(k).projekatNaziv ?? '',
+      rows: groupRows,
+    };
+  });
+}

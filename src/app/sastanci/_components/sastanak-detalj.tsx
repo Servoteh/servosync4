@@ -8,15 +8,17 @@ import { Can } from '@/lib/can';
 import { Button } from '@/components/ui-kit/button';
 import {
   newClientEventId,
-  useAkcijeWeeklyDiff,
   useLockSastanak,
   useMarkPrisutni,
+  usePredmetPrioritet,
   useReopenSastanak,
   useSastanakFull,
+  useSastanakWeeklyDiff,
   useSeedFromTeme,
   useSendInvites,
   useUpdateSastanak,
   useUploadArhivaPdf,
+  type WeeklyDiff,
 } from '@/api/sastanci';
 import { generateSastanakPdf } from '@/lib/sastanci-pdf';
 import { Tabs, type TabItem } from './tabs';
@@ -51,10 +53,18 @@ export function SastanakDetalj({ id, onBack }: { id: string; onBack: () => void 
   const sast = fullQ.data?.data;
   const canEdit = can(PERMISSIONS.SASTANCI_EDIT);
 
-  // Weekly diff za red „Od prošlog sastanka" (PDF/AI rezime). `since` = trenutak
-  // zaključavanja (paritet 1.0; prethodni-zaključani je R4 preciznije sidro).
-  const diffQ = useAkcijeWeeklyDiff({ since: sast?.zakljucanAt ?? undefined });
-  const weeklyDiff = diffQ.data?.data ?? null;
+  // Red „Od prošlog sastanka" (PDF/AI rezime) — sidro = PRETHODNI ZAKLJUČANI
+  // sastanak (BE weekly-diff; 1.0 paritet). Raniji `since = sopstveni zakljucanAt`
+  // je pre lock-a bio null → uvek „0 novo · 0 završeno". data === null (nema
+  // prethodnog) → red se NE prikazuje ni u headeru ni u PDF-u.
+  const diffQ = useSastanakWeeklyDiff(id);
+  const dd = diffQ.data?.data;
+  const weeklyDiff: WeeklyDiff | null = dd
+    ? { novo: dd.novo, zavrsenoOveNedelje: dd.zavrsenoOveNedelje, kasni: dd.kasni, aktivnih: dd.aktivnih }
+    : null;
+
+  // ⭐ prioritet predmeta — redosled RN grupa u zvaničnom (zaključanom) PDF-u.
+  const prioQ = usePredmetPrioritet();
 
   async function pocni() {
     if (!sast) return;
@@ -74,7 +84,24 @@ export function SastanakDetalj({ id, onBack }: { id: string; onBack: () => void 
     if (!confirm('Zaključati sastanak? Zapisnik se generiše i šalje učesnicima.')) return;
     setBusy('lock');
     try {
-      const blob = await generateSastanakPdf(buildPdfInput(sast, weeklyDiff));
+      // Zvanični (zaključani) PDF ne sme na potencijalno stale/failed hook
+      // snapshotove — sveže dohvati weekly-diff i ⭐ prioritet predmeta; ako bilo
+      // koji refetch padne, PREKINI zaključavanje (bez tihog izostavljanja).
+      const [diffRes, prioRes] = await Promise.all([diffQ.refetch(), prioQ.refetch()]);
+      if (diffRes.isError || prioRes.isError) {
+        alert('Ne mogu da učitam podatke za PDF (od prošlog sastanka / prioritet predmeta) — pokušaj ponovo.');
+        return;
+      }
+      const freshDd = diffRes.data?.data;
+      const freshDiff: WeeklyDiff | null = freshDd
+        ? {
+            novo: freshDd.novo,
+            zavrsenoOveNedelje: freshDd.zavrsenoOveNedelje,
+            kasni: freshDd.kasni,
+            aktivnih: freshDd.aktivnih,
+          }
+        : null;
+      const blob = await generateSastanakPdf(buildPdfInput(sast, freshDiff, prioRes.data?.data));
       const cid = newClientEventId();
       const up = await uploadPdf.mutateAsync({ id: sast.id, blob, clientEventId: cid });
       await lock.mutateAsync({ id: sast.id, clientEventId: cid, pdfStoragePath: up.data.storagePath });
