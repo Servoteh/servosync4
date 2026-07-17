@@ -43,23 +43,41 @@ export default function PracenjePage() {
     if (!isLoading && !user) router.replace('/login');
   }, [user, isLoading, router]);
 
-  // Deep-link init.
-  useEffect(() => {
+  // Deep-link paritet (PR-25): ?predmet=/?rn=/&root=/#tab= → ekran. URL je izvor istine za
+  // restore; popstate (browser back/forward) potpuno restaurira ekran bez napuštanja modula.
+  const screenFromUrl = useCallback((): Screen => {
     const sp = new URLSearchParams(window.location.search);
     const rn = sp.get('rn');
     const predmet = sp.get('predmet');
-    if (rn) setScreen({ kind: 'rn', rnId: rn });
-    else if (predmet) setScreen({ kind: 'predmet', itemId: Number(predmet) });
+    const root = sp.get('root') || undefined;
+    if (rn) return { kind: 'rn', rnId: rn };
+    if (predmet) return { kind: 'predmet', itemId: Number(predmet), rootRn: root };
+    const hashTab = window.location.hash.replace(/^#tab=/, '') as TabKey;
+    const tab: TabKey = (['kontrolna', 'predmeti', 'pretraga'] as const).includes(hashTab) ? hashTab : 'kontrolna';
+    return { kind: 'tab', tab };
   }, []);
+
+  // Init iz URL-a na mount + popstate/hashchange (paritet 1.0 pracenjeRouter popstate).
+  useEffect(() => {
+    setScreen(screenFromUrl());
+    const onNav = () => setScreen(screenFromUrl());
+    window.addEventListener('popstate', onNav);
+    window.addEventListener('hashchange', onNav);
+    return () => {
+      window.removeEventListener('popstate', onNav);
+      window.removeEventListener('hashchange', onNav);
+    };
+  }, [screenFromUrl]);
 
   const openPredmet = useCallback((itemId: number, rootRn?: string) => {
     setScreen({ kind: 'predmet', itemId, rootRn });
-    window.history.replaceState(null, '', `/pracenje-proizvodnje?predmet=${itemId}`);
+    const url = `/pracenje-proizvodnje?predmet=${itemId}${rootRn ? `&root=${encodeURIComponent(rootRn)}` : ''}`;
+    window.history.pushState(null, '', url);
   }, []);
 
   const openRnUuid = useCallback((rnId: string) => {
     setScreen({ kind: 'rn', rnId });
-    window.history.replaceState(null, '', `/pracenje-proizvodnje?rn=${rnId}`);
+    window.history.pushState(null, '', `/pracenje-proizvodnje?rn=${rnId}`);
   }, []);
 
   const openRnBigtehn = useCallback(
@@ -76,7 +94,8 @@ export default function PracenjePage() {
 
   const backToTab = useCallback((tab: TabKey) => {
     setScreen({ kind: 'tab', tab });
-    window.history.replaceState(null, '', '/pracenje-proizvodnje');
+    // #tab= očuvanje (paritet 1.0) — root ekran nosi hash umesto query parametara.
+    window.history.pushState(null, '', tab === 'kontrolna' ? '/pracenje-proizvodnje' : `/pracenje-proizvodnje#tab=${tab}`);
   }, []);
 
   if (isLoading || !user) {
