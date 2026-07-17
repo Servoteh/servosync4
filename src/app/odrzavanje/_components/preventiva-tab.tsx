@@ -9,6 +9,7 @@ import { cn } from '@/lib/cn';
 import { formatDateTime } from '@/lib/format';
 import { toast } from '@/lib/toast';
 import {
+  fetchOpenWoForTask,
   useBoard,
   useCreatePreventiveWo,
   useTasksDue,
@@ -122,22 +123,30 @@ export function PreventivaTab({
     router.push(`/odrzavanje/masine?code=${encodeURIComponent(code)}&tab=zadaci`);
   }
 
-  function createFor(r: ViewRow) {
+  async function createFor(r: ViewRow) {
     const taskId = f(r, 'task_id', 'id');
     if (!taskId) return;
-    // Anti-duplikat (paritet 1.0 :257-284): ako BE due-red javlja otvoren WO, pitaj korisnika.
-    const hasOpen = r['has_open_wo'] === true || r['has_open_wo'] === 'true' || r['has_open_wo'] === 't';
-    if (hasOpen) {
+    setBusyId(taskId);
+    // Anti-duplikat (paritet 1.0 maintPreventivePanel.js:261-274): BE due-red NE nosi
+    // has_open_wo, pa zasebnim upitom (fetchOpenWoForTask) proverimo postoji li već otvoren
+    // nalog za ovaj zadatak; ako da — pitaj korisnika (kao 1.0 fetchOpenWoForPreventiveTask).
+    let existing: Awaited<ReturnType<typeof fetchOpenWoForTask>> = null;
+    try {
+      existing = await fetchOpenWoForTask(taskId);
+    } catch {
+      // Pre-provera nije kritična — DB RPC svejedno dedupe-uje; nastavi na kreiranje.
+    }
+    if (existing) {
       const makeNew = window.confirm(
-        'Za ovaj zadatak već postoji otvoren radni nalog.\n\n' +
+        `Za ovaj zadatak već postoji otvoren radni nalog ${existing.woNumber ?? ''}.\n\n` +
           'OK = ipak napravi NOVI nalog\nOtkaži = otvori postojeće naloge',
       );
       if (!makeNew) {
+        setBusyId(null);
         onNavigate?.('nalozi');
         return;
       }
     }
-    setBusyId(taskId);
     createWo.mutate(
       { id: taskId },
       {
@@ -268,7 +277,7 @@ export function PreventivaTab({
                     </td>
                     <td className="px-4 py-2 text-right">
                       {canCreate && taskId && (
-                        <Button variant="secondary" disabled={createWo.isPending && busyId === taskId} onClick={() => createFor(r)}>
+                        <Button variant="secondary" disabled={busyId === taskId} onClick={() => void createFor(r)}>
                           Kreiraj nalog
                         </Button>
                       )}

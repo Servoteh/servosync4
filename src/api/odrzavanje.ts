@@ -419,6 +419,8 @@ export interface WorkOrder {
   assetId: string;
   assetType: AssetType;
   sourceIncidentId: string | null;
+  /** Preventivni šablon iz kog je nalog nastao — anti-duplikat provera (paritet 1.0). */
+  sourcePreventiveTaskId: string | null;
   title: string;
   description: string | null;
   priority: WoPriority;
@@ -526,6 +528,18 @@ export function useAssignableUsers(enabled: boolean) {
     enabled,
     queryFn: () => apiFetch<Rows<AssignableUser>>(`${BASE}/work-orders/assignable`),
   });
+}
+
+/**
+ * Anti-duplikat pre-provera (paritet 1.0 `fetchOpenWoForPreventiveTask`, maintenance.js:541):
+ * postoji li OTVOREN radni nalog za dati preventivni zadatak. BE due-red
+ * (`v_maint_task_due_dates`) NE nosi `has_open_wo`, a nema ni ciljanog filtera po
+ * `source_preventive_task_id`, pa — kao 1.0 — povučemo otvorene naloge (openOnly default ON)
+ * i nađemo prvi čiji je `sourcePreventiveTaskId` == taskId. Poziva se na klik (van hook-a).
+ */
+export async function fetchOpenWoForTask(taskId: string): Promise<WorkOrderRow | null> {
+  const res = await apiFetch<List<WorkOrderRow>>(`${BASE}/work-orders${qs({ pageSize: 200 })}`);
+  return res.data.find((w) => w.sourcePreventiveTaskId === taskId) ?? null;
 }
 
 // ══════════════════════════════════════════════════ vozila / vozači
