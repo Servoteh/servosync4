@@ -31,6 +31,29 @@ export const MONTHS_SR = [
 
 export const DEFAULT_LOCATIONS = ['Dobanovci', 'Kruševac'] as const;
 
+/**
+ * 15 standardnih faza koje se seeduju u NOVI nalog montaže (1.0 DEFAULT_PHASES,
+ * src/lib/constants.js). Redosled je ugovor sa 1.0 — sortOrder = index u nizu.
+ * Tip faze (mašinska/elektro) se izvodi iz naziva ("elektro" → electrical).
+ */
+export const DEFAULT_PHASES = [
+  'Montaža agregata',
+  'Elektro montaža agregata',
+  'Montaža postolja prese sa cilindrima',
+  'Montaža agregata na lokaciji naručioca',
+  'Povezivanje agregata sa cilindrima',
+  'Montaža na batu',
+  'Elektro montaža bata',
+  'Kompletiranje tela prese',
+  'Montaža ruke podmazivanja',
+  'Elektro montaža ruke podmazivanja',
+  'Montaža ruke podmazivanja (2)',
+  'Postavljanje robota',
+  'Postavljanje agregata podmazivanja',
+  'Postavljanje kanalica',
+  'Elektro povezivanje kompletne prese',
+] as const;
+
 /** Paleta boja lokacija (Gantt trake + akcenti). 18 boja, pa deterministički hash fallback. */
 export const LOC_PALETTE = [
   '#4da3ff', '#7ee787', '#ffa657', '#d2a8ff', '#f778ba', '#79c0ff',
