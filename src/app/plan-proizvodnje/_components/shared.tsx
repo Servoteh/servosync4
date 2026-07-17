@@ -4,20 +4,125 @@ import { cn } from '@/lib/cn';
 import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
 import type { OpRow } from '@/api/plan-proizvodnje';
 
-/** Odeljenja (slug/label) — paritet 1.0 planProizvodnje/departments.js. */
-export const DEPARTMENTS: { slug: string; label: string }[] = [
-  { slug: 'sve', label: 'Sve' },
-  { slug: 'glodanje', label: 'Glodanje' },
-  { slug: 'struganje', label: 'Struganje' },
-  { slug: 'brusenje', label: 'Brušenje' },
-  { slug: 'erodiranje', label: 'Erodiranje' },
-  { slug: 'azistiranje', label: 'Ažistiranje' },
-  { slug: 'secenje', label: 'Sečenje i savijanje' },
-  { slug: 'bravarsko', label: 'Bravarsko' },
-  { slug: 'farbanje', label: 'Farbanje i površinska zaštita' },
-  { slug: 'cam', label: 'CAM programiranje' },
-  { slug: 'ostalo', label: 'Ostalo' },
+/**
+ * Odeljenja (chip-tabovi „Po mašini"-ja) — DOSLOVNI port 1.0
+ * `planProizvodnje/departments.js`. Filter je kod-based (rj_code mašine /
+ * effective_machine_code operacije). `kind:'machines'` prvo prikazuje LISTU
+ * mašina (numerički sort) pa drill-down na operacije; `kind:'all'` = „Sve"
+ * (dropdown) ili „Ostalo" (isFallback). `row` (1|2) forsira 2 fiksna reda.
+ * Korisnik je 22.04.2026 eksplicitno tražio ovaj obrazac (lista mašina → klik).
+ */
+export interface Dept {
+  slug: string;
+  label: string;
+  row: 1 | 2;
+  kind: 'machines' | 'all';
+  machinePrefixes?: string[];
+  machineCodes?: string[];
+  excludeMachineCodes?: string[];
+  isFallback?: boolean;
+}
+
+export const DEPARTMENTS: Dept[] = [
+  /* ── Red 1 ── */
+  { slug: 'sve', label: 'Sve', row: 1, kind: 'all' },
+  { slug: 'glodanje', label: 'Glodanje', row: 1, kind: 'machines', machinePrefixes: ['3'] },
+  { slug: 'struganje', label: 'Struganje', row: 1, kind: 'machines', machinePrefixes: ['2'], excludeMachineCodes: ['21.1', '21.2'] },
+  { slug: 'brusenje', label: 'Brušenje', row: 1, kind: 'machines', machinePrefixes: ['6'], excludeMachineCodes: ['6.8'] },
+  { slug: 'erodiranje', label: 'Erodiranje', row: 1, kind: 'machines', machineCodes: ['10.1', '10.2', '10.3', '10.4', '10.5'] },
+  { slug: 'azistiranje', label: 'Ažistiranje', row: 1, kind: 'machines', machineCodes: ['8.2'] },
+  /* ── Red 2 ── */
+  { slug: 'secenje', label: 'Sečenje i savijanje', row: 2, kind: 'machines', machineCodes: ['1.10', '1.2', '1.30', '1.40', '1.50', '1.60', '1.71', '1.72'] },
+  { slug: 'bravarsko', label: 'Bravarsko', row: 2, kind: 'machines', machineCodes: ['4.1', '4.11', '4.12', '4.2', '4.3', '4.4'] },
+  { slug: 'farbanje', label: 'Farbanje i površinska zaštita', row: 2, kind: 'machines', machineCodes: ['5.1', '5.2', '5.3', '5.4', '5.5', '5.6', '5.7', '5.8', '5.11'] },
+  { slug: 'cam', label: 'CAM programiranje', row: 2, kind: 'machines', machineCodes: ['17.0', '17.1'] },
+  { slug: 'ostalo', label: 'Ostalo', row: 2, kind: 'all', isFallback: true },
 ];
+
+export const DEPARTMENTS_ROW_1 = DEPARTMENTS.filter((d) => d.row === 1);
+export const DEPARTMENTS_ROW_2 = DEPARTMENTS.filter((d) => d.row === 2);
+
+/** „3.21" → „3", „10" → „10" (prefiks pre prve tačke). */
+export function codePrefix(code: string | null | undefined): string | null {
+  if (!code) return null;
+  const s = String(code);
+  const dot = s.indexOf('.');
+  return dot < 0 ? s : s.slice(0, dot);
+}
+
+/** Numeričko poređenje kodova „X.Y.Z" segment-po-segment → „3.2" PRE „3.11". */
+export function compareCodes(a: string, b: string): number {
+  const pa = String(a || '').split('.').map((s) => parseInt(s, 10) || 0);
+  const pb = String(b || '').split('.').map((s) => parseInt(s, 10) || 0);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+
+export function getDepartment(slug: string | null | undefined): Dept | null {
+  return DEPARTMENTS.find((d) => d.slug === slug) || null;
+}
+
+/** Da li mašina (rj_code) pripada datom odeljenju (exclude → codes → prefixes). */
+export function machineMatchesDept(machine: { rj_code?: string | null }, dept: Dept | null): boolean {
+  if (!dept) return false;
+  if (dept.kind === 'all' && !dept.isFallback) return true;
+  const code = String(machine?.rj_code || '');
+  if (!code) return false;
+  if (Array.isArray(dept.excludeMachineCodes) && dept.excludeMachineCodes.includes(code)) return false;
+  if (Array.isArray(dept.machineCodes) && dept.machineCodes.includes(code)) return true;
+  if (Array.isArray(dept.machinePrefixes)) {
+    const prefix = codePrefix(code);
+    if (prefix != null && dept.machinePrefixes.includes(prefix)) return true;
+  }
+  return false;
+}
+
+/** Mašina koja ne upada ni u jedan `machines` tab → „Ostalo". */
+export function machineFallsIntoOstalo(machine: { rj_code?: string | null }): boolean {
+  const machineDepts = DEPARTMENTS.filter((d) => d.kind === 'machines');
+  return !machineDepts.some((d) => machineMatchesDept(machine, d));
+}
+
+/** Operacija (effective_machine_code) ide u „Ostalo" ako njen kod ne pripada nijednom tabu. */
+export function operationFallsIntoOstalo(op: { effective_machine_code?: string | null }): boolean {
+  const code = String(op?.effective_machine_code || '');
+  if (!code) return true;
+  return machineFallsIntoOstalo({ rj_code: code });
+}
+
+/** Filtriraj listu mašina za dato odeljenje (klijentski, sortirano numerički). */
+export function filterMachinesForDept<T extends { rj_code: string }>(allMachines: T[], dept: Dept | null): T[] {
+  if (!Array.isArray(allMachines) || !dept) return [];
+  if (dept.kind === 'all' && !dept.isFallback) return allMachines.slice();
+  if (dept.isFallback) {
+    return allMachines.filter((m) => machineFallsIntoOstalo(m)).sort((a, b) => compareCodes(a.rj_code, b.rj_code));
+  }
+  return allMachines.filter((m) => machineMatchesDept(m, dept)).sort((a, b) => compareCodes(a.rj_code, b.rj_code));
+}
+
+/**
+ * Da li mašina (rj_code) „pripada" departmentu — validacija LS restore-a
+ * (spreči drill-down u mašinu koja ne pripada trenutnom tabu).
+ */
+export function machineFitsDept(rjCode: string, dept: Dept | null): boolean {
+  if (!dept) return false;
+  if (dept.kind === 'all' && !dept.isFallback) return true;
+  if (dept.kind === 'machines') return machineMatchesDept({ rj_code: rjCode }, dept);
+  if (dept.isFallback) return machineFallsIntoOstalo({ rj_code: rjCode });
+  return false;
+}
+
+/** Slug `machines` taba kome mašina pripada (za skok iz Zauzetost/Pregled). */
+export function findDeptForMachineCode(rjCode: string | null | undefined): string {
+  if (!rjCode) return 'sve';
+  const m = { rj_code: rjCode };
+  const hit = DEPARTMENTS.find((d) => d.kind === 'machines' && machineMatchesDept(m, d));
+  return hit?.slug || 'ostalo';
+}
 
 const STATUS_TONE: Record<string, Tone> = {
   waiting: 'neutral',
@@ -156,6 +261,26 @@ export function sanitizeDrawingNo(broj: unknown): string | null {
   if (!s) return null;
   if (/^[.\s]*$/.test(s)) return null;
   return s;
+}
+
+/**
+ * Klijentski „RN ili crtež" filter — DOSLOVNI port 1.0 `operationMatchesRnOrDrawing`
+ * (services/planProizvodnje.js:1559). Case-insensitive contains preko rn_ident_broj,
+ * ident_broj i broj_crteza. Prazan upit → prolazi sve.
+ */
+export function operationMatchesRnOrDrawing(o: OpRow, query: string): boolean {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return true;
+  const haystack = [o.rn_ident_broj, (o as { ident_broj?: unknown }).ident_broj, o.broj_crteza]
+    .filter((v) => v != null && v !== '')
+    .map((v) => String(v).toLowerCase());
+  return haystack.some((v) => v.includes(q));
+}
+
+export function filterOpsByRnOrDrawing(rows: OpRow[], query: string): OpRow[] {
+  if (!Array.isArray(rows)) return [];
+  if (!String(query || '').trim()) return rows;
+  return rows.filter((o) => operationMatchesRnOrDrawing(o, query));
 }
 
 export function rowClasses(o: OpRow): string {

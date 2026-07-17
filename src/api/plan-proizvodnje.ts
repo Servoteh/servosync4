@@ -1,5 +1,6 @@
 'use client';
 
+import { useCallback, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { QueryClient } from '@tanstack/react-query';
 import { apiFetch, apiUpload } from './client';
@@ -222,6 +223,56 @@ export function useMachineOperations(machine: string | null, offset = 0, limit =
     queryFn: () =>
       apiFetch<{ data: MachineOpsResult }>(`${BASE}/operations${qs({ machine: machine ?? '', offset, limit })}`),
   });
+}
+
+/** Broj RN-a po strani za „Još RN" paginaciju (paritet 1.0 PLAN_PP_MACHINE_WO_PAGE). */
+export const MACHINE_WO_PAGE = 100;
+
+/**
+ * Red operacija po mašini SA akumulacijom stranica (GAP-PM-02 „Još RN"). Prva strana
+ * kroz TanStack Query (keš = KEYS.operations 'machine' machine — deli ga optimistički
+ * reorder/patch sloj). `loadMore()` dovlači sledećih do 100 RN i MERGE-uje ih u isti keš
+ * (append + re-sort BE-a je već primenjen po strani, pa je append dovoljan uz stabilan
+ * BE redosled prioriteta). Vraća { rows, hasMore, loadMore, loadingMore, ...query }.
+ */
+export function useMachineOperationsAccum(machine: string | null) {
+  const qc = useQueryClient();
+  const [loadingMore, setLoadingMore] = useState(false);
+  const key = [...KEYS.operations, 'machine', machine, 0, MACHINE_WO_PAGE] as const;
+
+  const query = useQuery({
+    queryKey: key,
+    enabled: !!machine,
+    queryFn: () =>
+      apiFetch<{ data: MachineOpsResult }>(
+        `${BASE}/operations${qs({ machine: machine ?? '', offset: 0, limit: MACHINE_WO_PAGE })}`,
+      ),
+  });
+
+  const result = query.data?.data;
+  const rows = result?.rows ?? [];
+  const hasMore = !!result?.has_more;
+
+  const loadMore = useCallback(async () => {
+    if (!machine || !result?.has_more || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const next = await apiFetch<{ data: MachineOpsResult }>(
+        `${BASE}/operations${qs({ machine, offset: result.next_work_order_offset, limit: MACHINE_WO_PAGE })}`,
+      );
+      const cur = qc.getQueryData<{ data: MachineOpsResult }>(key);
+      const curRows = cur?.data.rows ?? rows;
+      const seen = new Set(curRows.map((o) => `${o.work_order_id}:${o.line_id}`));
+      const merged = [...curRows, ...next.data.rows.filter((o) => !seen.has(`${o.work_order_id}:${o.line_id}`))];
+      qc.setQueryData(key, {
+        data: { rows: merged, has_more: next.data.has_more, next_work_order_offset: next.data.next_work_order_offset },
+      });
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [machine, result, rows, loadingMore, qc, key]);
+
+  return { rows, hasMore, loadMore, loadingMore, isLoading: query.isLoading, isError: query.isError, isFetching: query.isFetching, refetch: query.refetch };
 }
 
 /** Red operacija po odeljenju (view rows). */
