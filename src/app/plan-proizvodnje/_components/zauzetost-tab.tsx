@@ -2,12 +2,16 @@
 
 import { useMemo } from 'react';
 import { useAllOperations } from '@/api/plan-proizvodnje';
-import { plannedSeconds } from './shared';
+import { plannedSeconds, filterOpsByRnOrDrawing } from './shared';
+import { useRnFilter, RnFilterInput } from './rn-filter';
 
 /** Zauzetost mašina — agregat broja operacija + preostalih minuta po mašini. */
 export function ZauzetostTab() {
   const q = useAllOperations();
-  const ops = q.data?.data ?? [];
+  const rawOps = q.data?.data ?? [];
+  // RN filter (GAP-PM-04) — klijentski nad ops PRE agregacije + LS po tabu (GAP-PM-21).
+  const rn = useRnFilter('zauzetost');
+  const ops = useMemo(() => filterOpsByRnOrDrawing(rawOps, rn.applied), [rawOps, rn.applied]);
 
   const rows = useMemo(() => {
     const map = new Map<string, { machine: string; count: number; minutes: number }>();
@@ -26,11 +30,22 @@ export function ZauzetostTab() {
 
   return (
     <div className="space-y-3">
-      <div className="text-sm text-ink-secondary">
-        {q.data?.meta?.truncated ? `Prikazano ${q.data.meta.limit} (skraćeno od ${q.data.meta.total})` : `${ops.length} operacija`}
+      <div className="flex flex-wrap items-center gap-2">
+        <RnFilterInput value={rn.raw} onChange={rn.setRaw} />
+        <span className="text-sm text-ink-secondary">
+          {rn.active
+            ? `${ops.length} / ${rawOps.length} operacija`
+            : q.data?.meta?.truncated
+              ? `Prikazano ${q.data.meta.limit} (skraćeno od ${q.data.meta.total})`
+              : `${ops.length} operacija`}
+        </span>
       </div>
       {q.isLoading ? (
         <div className="rounded-panel border border-line bg-surface px-4 py-10 text-center text-sm text-ink-secondary">Učitavanje…</div>
+      ) : rn.active && ops.length === 0 ? (
+        <div className="rounded-panel border border-line bg-surface px-4 py-10 text-center text-sm text-ink-disabled">
+          Nema rezultata za filter „{rn.applied.trim()}".
+        </div>
       ) : (
         <div className="overflow-x-auto rounded-panel border border-line bg-surface">
           <table className="w-full text-sm">

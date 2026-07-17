@@ -18,10 +18,13 @@ import {
   useUpsertOverlay,
   type OpRow,
 } from '@/api/plan-proizvodnje';
+import { useRnFilter, RnFilterInput } from './rn-filter';
 
 /** Kooperacija: operacije u kooperaciji (ručno vraćanje) + auto grupe (admin CRUD bez DELETE). */
 export function KooperacijaTab() {
-  const coop = useCooperation();
+  // RN filter (GAP-PM-04) — server param `q` na useCooperation (BE ILIKE) + LS po tabu (GAP-PM-21).
+  const rn = useRnFilter('kooperacija');
+  const coop = useCooperation(rn.applied);
   const groups = useCooperationGroups();
   const overlay = useUpsertOverlay();
   const patchGroup = usePatchCoopGroup();
@@ -38,7 +41,10 @@ export function KooperacijaTab() {
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_320px]">
       <div className="space-y-3">
-        <div className="text-sm text-ink-secondary">{ops.length} operacija u kooperaciji</div>
+        <div className="flex flex-wrap items-center gap-2">
+          <RnFilterInput value={rn.raw} onChange={rn.setRaw} />
+          <span className="text-sm text-ink-secondary">{ops.length} operacija u kooperaciji</span>
+        </div>
         <div className="overflow-x-auto rounded-panel border border-line bg-surface">
           <table className="w-full text-sm">
             <thead>
@@ -53,7 +59,9 @@ export function KooperacijaTab() {
             <tbody>
               {ops.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-4 py-8 text-center text-sm text-ink-disabled">Nema operacija u kooperaciji.</td>
+                  <td colSpan={5} className="px-4 py-8 text-center text-sm text-ink-disabled">
+                    {rn.active ? `Nema rezultata za filter „${rn.applied.trim()}".` : 'Nema operacija u kooperaciji.'}
+                  </td>
                 </tr>
               ) : (
                 ops.map((o) => (
