@@ -55,6 +55,14 @@ import {
   ReversiPrintLabelDto,
   UpdateToolDto,
 } from "./dto/reversi-inventory.dto";
+import {
+  CreateBatteryDto,
+  CreateMachineHeadDto,
+  CreateServiceDto,
+  UpdateBatteryDto,
+  UpdateMachineHeadDto,
+  UpdateServiceDto,
+} from "./dto/reversi-detail.dto";
 
 interface AuthedRequest {
   user: { userId: number; email: string; role: string };
@@ -112,6 +120,12 @@ export class ReversiController {
   @Get("tools/:id")
   findTool(@Param("id", ParseUUIDPipe) id: string) {
     return this.reversi.findOneTool(id);
+  }
+
+  /** Istorija zaduženja alata (RB-10) — rev_document_lines + dokument. reversi.read. */
+  @Get("tools/:id/documents")
+  toolDocuments(@Param("id", ParseUUIDPipe) id: string) {
+    return this.reversi.toolDocuments(id);
   }
 
   @Get("inventory-tree")
@@ -208,6 +222,43 @@ export class ReversiController {
   @Get("machines/:code/heads")
   machineHeads(@Param("code") code: string) {
     return this.reversi.machineHeads(code);
+  }
+
+  /** Istorija izdavanja na mašinu (RB-58) — rev_documents po recipient_machine_code. */
+  @Get("machines/:code/documents")
+  machineDocuments(
+    @Param("code") code: string,
+    @Query("limit") limit?: string,
+  ) {
+    return this.reversi.machineDocuments(code, limit);
+  }
+
+  /** Dodaj glavu mašine (RB-57) — evidencija na kartici. reversi.manage. */
+  @Post("machines/:code/heads")
+  @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
+  addMachineHead(
+    @Req() req: AuthedRequest,
+    @Param("code") code: string,
+    @Body() dto: CreateMachineHeadDto,
+  ) {
+    return this.reversi.addMachineHead(req.user.email, code, dto);
+  }
+
+  /** Izmena glave (RB-57) — P2025→404. reversi.manage. */
+  @Patch("machine-heads/:id")
+  @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
+  updateMachineHead(
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: UpdateMachineHeadDto,
+  ) {
+    return this.reversi.updateMachineHead(id, dto);
+  }
+
+  /** Brisanje glave (RB-57) — P2025→404. reversi.manage. */
+  @Delete("machine-heads/:id")
+  @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
+  deleteMachineHead(@Param("id", ParseUUIDPipe) id: string) {
+    return this.reversi.deleteMachineHead(id);
   }
 
   // ---------- Rezni alat (katalog) ----------
@@ -451,6 +502,64 @@ export class ReversiController {
     @Body() dto: TxBaseDto,
   ) {
     return this.reversi.restore(req.user.email, id, dto);
+  }
+
+  // ---------- R3: baterije / servis alata (RB-07/09) ----------
+
+  /** Dodaj bateriju (RB-07). reversi.manage. */
+  @Post("tools/:id/batteries")
+  @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
+  addToolBattery(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: CreateBatteryDto,
+  ) {
+    return this.reversi.addToolBattery(req.user.email, id, dto);
+  }
+
+  /** Izmena baterije (RB-07) — P2025→404. reversi.manage. */
+  @Patch("tool-batteries/:id")
+  @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
+  updateToolBattery(
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: UpdateBatteryDto,
+  ) {
+    return this.reversi.updateToolBattery(id, dto);
+  }
+
+  /** Brisanje baterije (RB-07) — P2025→404. reversi.manage. */
+  @Delete("tool-batteries/:id")
+  @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
+  deleteToolBattery(@Param("id", ParseUUIDPipe) id: string) {
+    return this.reversi.deleteToolBattery(id);
+  }
+
+  /** Dodaj servis/popravku (RB-09). reversi.manage. */
+  @Post("tools/:id/services")
+  @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
+  addToolService(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: CreateServiceDto,
+  ) {
+    return this.reversi.addToolService(req.user.email, id, dto);
+  }
+
+  /** Izmena servisa (RB-09) — P2025→404. reversi.manage. */
+  @Patch("tool-services/:id")
+  @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
+  updateToolService(
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: UpdateServiceDto,
+  ) {
+    return this.reversi.updateToolService(id, dto);
+  }
+
+  /** Brisanje servisa (RB-09) — P2025→404. reversi.manage. */
+  @Delete("tool-services/:id")
+  @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
+  deleteToolService(@Param("id", ParseUUIDPipe) id: string) {
+    return this.reversi.deleteToolService(id);
   }
 
   // ---------- R2: potpisnica PDF (spec §7) ----------
