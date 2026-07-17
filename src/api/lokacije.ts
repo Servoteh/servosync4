@@ -205,6 +205,14 @@ export interface PredmetTpRow {
   dimenzija_materijala?: string;
   has_pdf?: boolean;
   status?: string;
+  // Puna polja RPC-a `loc_tps_for_predmet` — nisu u ekranu, ali ulaze u
+  // Štampa/PDF/CSV izvoz punog spiska (paritet 1.0 predmetTab buildCsvText).
+  location_path?: string;
+  placement_status?: string;
+  status_rn?: boolean;
+  revizija?: string;
+  rok_izrade?: string;
+  tezina_obr?: number | string;
   [key: string]: unknown;
 }
 
@@ -587,6 +595,31 @@ export function useLocationsSummary(enabled = true) {
   });
 }
 
+/**
+ * ⭐ redosled predmeta iz Praćenja (Podešavanja predmeta) — paritet 1.0
+ * `ensurePrioritetHydrated` / `getPrioritetIds`. Vraća skup `predmet_item_id`
+ * koje treba istaći/sortirati prve u picker-u „Pregled predmeta". `retry:false`
+ * + tih fallback na `[]` (403 za role bez `pracenje.read`, mrežni pad) da picker
+ * ostane upotrebljiv — prioritet je kozmetički (samo redosled).
+ */
+export function usePredmetPrioritetIds(enabled = true) {
+  return useQuery({
+    queryKey: [...KEYS.root, 'predmet-prioritet'],
+    enabled,
+    retry: false,
+    staleTime: 60_000,
+    queryFn: async (): Promise<number[]> => {
+      try {
+        const r = await apiFetch<{ data: { ids?: number[] } }>('/v1/pracenje/plan-prioritet');
+        const ids = r.data?.ids;
+        return Array.isArray(ids) ? ids.map(Number).filter((n) => Number.isFinite(n) && n > 0) : [];
+      } catch {
+        return [];
+      }
+    },
+  });
+}
+
 // ------------------------------------------------------------------ fetch-all (imperativni izvoz)
 // Paritet 1.0 `fetchAllLocReportPartsByLocations` / `fetchAllMovements` /
 // `fetchAllPlacements` (services/lokacije.js): povuci CEO filtrirani skup kroz
@@ -673,6 +706,43 @@ export async function fetchAllMovements(
     );
     const chunk = res.data ?? [];
     if (typeof res.meta?.pagination?.total === 'number') total = res.meta.pagination.total;
+    if (chunk.length === 0) break;
+    rows.push(...chunk);
+    opts.onProgress?.({ loaded: rows.length, total });
+    if (chunk.length < size) break;
+    if (total != null && rows.length >= total) break;
+    if (rows.length >= FETCH_ALL_HARD_CAP) {
+      truncated = true;
+      break;
+    }
+  }
+
+  return { rows, total, truncated };
+}
+
+/**
+ * SVE redove „Pregled predmeta" (loc_tps_for_predmet) za jedan predmet koji
+ * odgovaraju `params` — paritet 1.0 `fetchAllFiltered` (predmetTab.js:919): povuci
+ * ceo filtrirani skup kroz petlju po stranama za Štampa/PDF/CSV izvoz. BE klampuje
+ * pageSize (koristi 1000 kao 1.0 PAGE). NIJE useQuery — zove se na klik izvoza.
+ */
+export async function fetchAllPredmetTps(
+  itemId: string,
+  params: Omit<PredmetTpsParams, 'page' | 'pageSize' | 'workOrderId'>,
+  opts: FetchAllOpts = {},
+): Promise<FetchAllResult<PredmetTpRow>> {
+  const size = Math.max(1, Math.min(Number(opts.pageSize) || 1000, 1000));
+  const rows: PredmetTpRow[] = [];
+  let total: number | null = null;
+  let truncated = false;
+
+  for (let page = 1; ; page++) {
+    if (opts.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    const res = await apiFetch<{ data: PredmetTpsResult }>(
+      `/v1/locations/predmet/${itemId}/tps${qs({ ...params, page, pageSize: size })}`,
+    );
+    const chunk = res.data?.rows ?? [];
+    if (typeof res.data?.total === 'number') total = res.data.total;
     if (chunk.length === 0) break;
     rows.push(...chunk);
     opts.onProgress?.({ loaded: rows.length, total });
