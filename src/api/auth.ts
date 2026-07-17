@@ -1,7 +1,7 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiFetch, setToken } from './client';
+import { apiFetch, setRefreshToken, setToken } from './client';
 
 export interface PublicUser {
   id: number;
@@ -14,6 +14,8 @@ export interface PublicUser {
 
 interface LoginResponse {
   accessToken: string;
+  /** Refresh token (BACKEND_RULES §7) — čuva se uz access token za tihi auto-refresh. */
+  refreshToken: string;
   user: PublicUser;
 }
 
@@ -68,7 +70,23 @@ export function useLogin() {
       }),
     onSuccess: (data) => {
       setToken(data.accessToken);
+      setRefreshToken(data.refreshToken);
       qc.setQueryData(['me'], data.user);
     },
+  });
+}
+
+/**
+ * Best-effort revoke refresh tokena na serveru pri odjavi. Fire-and-forget:
+ * greške se gutaju (odjava mora uspeti lokalno bez obzira na mrežu/server, a
+ * `/auth/logout` je idempotentan i vraća `{ ok: true }` i za nepoznat token).
+ */
+export function logoutServer(refreshToken: string | null): void {
+  if (!refreshToken) return;
+  void apiFetch<{ ok: boolean }>('/auth/logout', {
+    method: 'POST',
+    body: JSON.stringify({ refreshToken }),
+  }).catch(() => {
+    /* best-effort — mrežna/server greška se ignoriše */
   });
 }

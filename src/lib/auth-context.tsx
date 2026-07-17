@@ -8,8 +8,15 @@ import {
   type ReactNode,
 } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { getToken, setToken } from '@/api/client';
-import { ssoExchange, useLogin, useMe, useMyPermissions, type PublicUser } from '@/api/auth';
+import { ApiError, getRefreshToken, getToken, setRefreshToken, setToken } from '@/api/client';
+import {
+  logoutServer,
+  ssoExchange,
+  useLogin,
+  useMe,
+  useMyPermissions,
+  type PublicUser,
+} from '@/api/auth';
 import type { Permission } from '@/lib/permissions';
 
 /**
@@ -86,6 +93,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       try {
         const res = await ssoExchange(data.token);
         setToken(res.accessToken);
+        setRefreshToken(res.refreshToken);
         qc.setQueryData(['me'], res.user);
         setHasToken(true);
       } catch {
@@ -104,13 +112,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const meQuery = useMe(ready && hasToken);
   const permsQuery = useMyPermissions(ready && hasToken);
 
-  // A rejected `me` (expired/invalid token) drops us back to logged-out.
+  // `me` padne SAMO kroz auth 401 (istekao/nevažeći token, refresh već iscrpljen) →
+  // nazad na odjavljeno: čistimo OBA tokena (u iframe-u hasToken=false ponovo naoružava
+  // SSO handshake). NA MREŽNU GREŠKU (server nedostupan — pogon offline) NE diramo
+  // sesiju: inače bi prolazna rupa oborila validnu 30-dnevnu sesiju. Ostali statusi
+  // (5xx) takođe ne obaraju sesiju — to nije dokaz da je token nevažeći.
   useEffect(() => {
-    if (meQuery.isError) {
+    if (!meQuery.isError) return;
+    const err = meQuery.error;
+    if (err instanceof ApiError && err.status === 401) {
       setToken(null);
+      setRefreshToken(null);
       setHasToken(false);
     }
-  }, [meQuery.isError]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [meQuery.isError, meQuery.error]);
 
   const login = async (email: string, password: string) => {
     await loginMut.mutateAsync({ email, password });
@@ -118,7 +134,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = () => {
+    logoutServer(getRefreshToken()); // best-effort revoke pre lokalnog čišćenja
     setToken(null);
+    setRefreshToken(null);
     setHasToken(false);
     qc.clear();
   };
