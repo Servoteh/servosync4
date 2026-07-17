@@ -39,6 +39,82 @@ function loadBarTone(pct: number): string {
   return 'bg-status-success';
 }
 
+// -------------------------------------------------- sortiranje kolona (paritet 1.0 sortTasks)
+type SortCol = 'naziv' | 'project' | 'engineer' | 'vrsta' | 'datumi' | 'trajanje' | 'status' | 'pct' | 'prio';
+const PRIO_ORDER: Record<string, number> = { Visok: 0, Srednji: 1, Nizak: 2 };
+function sortTasks(list: PbTask[], col: SortCol, dir: 'asc' | 'desc'): PbTask[] {
+  const m = dir === 'desc' ? -1 : 1;
+  // Trajanje se računa jednom po tasku (ne u svakom O(n log n) poređenju).
+  const durById =
+    col === 'trajanje'
+      ? new Map(list.map((t) => [t.id, workDaysBetween(t.datum_pocetka_plan, t.datum_zavrsetka_plan) ?? -1]))
+      : null;
+  const cmp = (ta: PbTask, tb: PbTask): number => {
+    switch (col) {
+      case 'naziv':
+        return m * String(ta.naziv || '').localeCompare(String(tb.naziv || ''), 'sr');
+      case 'project': {
+        const pa = `${ta.project_code || ''} ${ta.project_name || ''}`;
+        const pb = `${tb.project_code || ''} ${tb.project_name || ''}`;
+        return m * pa.localeCompare(pb, 'sr');
+      }
+      case 'engineer':
+        return m * String(ta.employee_name || '').localeCompare(String(tb.employee_name || ''), 'sr');
+      case 'vrsta':
+        return m * String(ta.vrsta || '').localeCompare(String(tb.vrsta || ''), 'sr');
+      case 'datumi':
+        return m * String(ta.datum_zavrsetka_plan || '').localeCompare(String(tb.datum_zavrsetka_plan || ''));
+      case 'trajanje':
+        return m * ((durById!.get(ta.id) ?? -1) - (durById!.get(tb.id) ?? -1));
+      case 'status':
+        return m * String(ta.status || '').localeCompare(String(tb.status || ''), 'sr');
+      case 'pct':
+        return m * ((Number(ta.procenat_zavrsenosti) || 0) - (Number(tb.procenat_zavrsenosti) || 0));
+      case 'prio':
+        return m * ((PRIO_ORDER[ta.prioritet ?? ''] ?? 9) - (PRIO_ORDER[tb.prioritet ?? ''] ?? 9));
+      default:
+        return 0;
+    }
+  };
+  return [...list].sort(cmp);
+}
+
+function SortTh({
+  col,
+  label,
+  active,
+  dir,
+  onSort,
+  align,
+  className,
+}: {
+  col: SortCol;
+  label: string;
+  active: boolean;
+  dir: 'asc' | 'desc';
+  onSort: (col: SortCol) => void;
+  align?: 'right';
+  className?: string;
+}) {
+  return (
+    <th className={cn('px-3 py-2', className)} aria-sort={active ? (dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+      <button
+        type="button"
+        onClick={() => onSort(col)}
+        className={cn(
+          'inline-flex items-center gap-1 uppercase tracking-wide hover:text-ink',
+          active ? 'text-ink' : 'text-ink-secondary',
+          align === 'right' && 'flex-row-reverse',
+        )}
+        aria-label={`Sortiraj po: ${label}`}
+      >
+        {label}
+        <span aria-hidden className="text-[0.9em]">{active ? (dir === 'asc' ? '▲' : '▼') : '↕'}</span>
+      </button>
+    </th>
+  );
+}
+
 export function PlanTab({ filters, onOpenTask }: { filters: PlanFilters; onOpenTask: (id: string | null, status?: string) => void }) {
   const { can } = useAuth();
   const canEdit = can(PERMISSIONS.PB_EDIT);
@@ -52,6 +128,8 @@ export function PlanTab({ filters, onOpenTask }: { filters: PlanFilters; onOpenT
   const [alarmsOpen, setAlarmsOpen] = useState(false);
   const [loadOpen, setLoadOpen] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [sortCol, setSortCol] = useState<SortCol>('datumi');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
 
   const tasksQ = useTasks({ ...filters, status: status || undefined, vrsta: vrsta || undefined, pageSize: 500 });
   const loadQ = useLoadStats(20);
@@ -71,17 +149,27 @@ export function PlanTab({ filters, onOpenTask }: { filters: PlanFilters; onOpenT
     });
   }, [all, prioritet, problemOnly, unassignedOnly, showDone]);
 
+  const sortedRows = useMemo(() => sortTasks(rows, sortCol, sortDir), [rows, sortCol, sortDir]);
+
   const grouped = useMemo(() => {
     const map = new Map<string, { label: string; rows: PbTask[] }>();
-    for (const t of rows) {
+    for (const t of sortedRows) {
       const key = t.project_id ?? '—';
       const label = [t.project_code, t.project_name].filter(Boolean).join(' ') || 'Bez projekta';
       if (!map.has(key)) map.set(key, { label, rows: [] });
       map.get(key)!.rows.push(t);
     }
     return [...map.values()].sort((a, b) => a.label.localeCompare(b.label, 'sr'));
-  }, [rows]);
+  }, [sortedRows]);
   const multiProject = grouped.length > 1;
+
+  function onSort(col: SortCol) {
+    if (sortCol === col) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    else {
+      setSortCol(col);
+      setSortDir('asc');
+    }
+  }
 
   const alarms = useMemo(() => buildAlarms(all, loadQ.data?.data ?? []), [all, loadQ.data]);
   const anyFilter = !!(status || prioritet || vrsta || problemOnly || unassignedOnly || showDone);
@@ -128,7 +216,7 @@ export function PlanTab({ filters, onOpenTask }: { filters: PlanFilters; onOpenT
       'Završenost %',
       'Problem',
     ];
-    const lines = rows.map((t, i) =>
+    const lines = sortedRows.map((t, i) =>
       [
         i + 1,
         t.naziv,
@@ -327,15 +415,15 @@ export function PlanTab({ filters, onOpenTask }: { filters: PlanFilters; onOpenT
                     <input type="checkbox" checked={rows.length > 0 && selected.size === rows.length} onChange={toggleAll} aria-label="Selektuj sve" />
                   </th>
                 )}
-                <th className="px-3 py-2">Naziv</th>
-                {!multiProject && <th className="px-3 py-2">Projekat</th>}
-                <th className="px-3 py-2">Inženjer</th>
-                <th className="px-3 py-2">Vrsta</th>
-                <th className="px-3 py-2">Datumi</th>
-                <th className="px-3 py-2 text-right">Trajanje</th>
-                <th className="px-3 py-2">Status</th>
-                <th className="px-3 py-2">%</th>
-                <th className="px-3 py-2">Prioritet</th>
+                <SortTh col="naziv" label="Naziv" active={sortCol === 'naziv'} dir={sortDir} onSort={onSort} />
+                {!multiProject && <SortTh col="project" label="Projekat" active={sortCol === 'project'} dir={sortDir} onSort={onSort} />}
+                <SortTh col="engineer" label="Inženjer" active={sortCol === 'engineer'} dir={sortDir} onSort={onSort} />
+                <SortTh col="vrsta" label="Vrsta" active={sortCol === 'vrsta'} dir={sortDir} onSort={onSort} />
+                <SortTh col="datumi" label="Datumi" active={sortCol === 'datumi'} dir={sortDir} onSort={onSort} />
+                <SortTh col="trajanje" label="Trajanje" active={sortCol === 'trajanje'} dir={sortDir} onSort={onSort} align="right" className="text-right" />
+                <SortTh col="status" label="Status" active={sortCol === 'status'} dir={sortDir} onSort={onSort} />
+                <SortTh col="pct" label="%" active={sortCol === 'pct'} dir={sortDir} onSort={onSort} />
+                <SortTh col="prio" label="Prioritet" active={sortCol === 'prio'} dir={sortDir} onSort={onSort} />
                 <th className="w-20 px-3 py-2" />
               </tr>
             </thead>

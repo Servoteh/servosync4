@@ -30,6 +30,12 @@ export function GanttTab({ filters, onOpenTask }: { filters: PlanFilters; onOpen
     d.setHours(0, 0, 0, 0);
     return d;
   });
+  // „danas" fiksiran na mount (izbegava hydration mismatch / re-render drift).
+  const [todayMs] = useState(() => {
+    const t = new Date();
+    t.setHours(0, 0, 0, 0);
+    return t.getTime();
+  });
 
   const months = WINDOWS.find((w) => w.key === win)!.months;
   const start = anchor;
@@ -67,12 +73,25 @@ export function GanttTab({ filters, onOpenTask }: { filters: PlanFilters; onOpen
 
   const monthLabel = start.toLocaleDateString('sr-Latn', { month: 'long', year: 'numeric' });
 
+  // Pozicija „danas" (%) u prozoru — null ako je van [start, end).
+  const todayPct = useMemo(() => {
+    if (todayMs < start.getTime() || todayMs >= end.getTime()) return null;
+    return ((todayMs - start.getTime()) / spanMs) * 100;
+  }, [todayMs, start, end, spanMs]);
+
   function shift(delta: number) {
     setAnchor((a) => {
       const n = new Date(a);
       n.setMonth(n.getMonth() + delta);
       return n;
     });
+  }
+
+  function goToday() {
+    const d = new Date();
+    d.setDate(1);
+    d.setHours(0, 0, 0, 0);
+    setAnchor(d);
   }
 
   return (
@@ -97,11 +116,14 @@ export function GanttTab({ filters, onOpenTask }: { filters: PlanFilters; onOpen
           <button onClick={() => shift(1)} className="rounded-control border border-line px-2 py-1 text-ink-secondary hover:bg-surface-2">
             →
           </button>
+          <button onClick={goToday} className="rounded-control border border-line px-2.5 py-1 text-xs font-medium text-ink-secondary hover:bg-surface-2" aria-label="Skoči na tekući mesec">
+            Danas
+          </button>
         </div>
       </div>
 
       <p className="text-xs text-ink-disabled">
-        Legenda: puna traka = plan (boja po statusu), donja traka = ostvareno. Prevlačenje datuma stiže naknadno.
+        Legenda: puna traka = plan (boja po statusu), donja traka = ostvareno, crvena vertikala = danas. Prevlačenje datuma stiže naknadno.
       </p>
 
       {groups.length === 0 ? (
@@ -145,6 +167,9 @@ export function GanttTab({ filters, onOpenTask }: { filters: PlanFilters; onOpen
                               <span className="text-2xs text-ink-disabled">van prozora</span>
                             )}
                             {real && <div className="absolute top-3.5 h-2 rounded bg-ink/40" style={real} />}
+                            {todayPct !== null && (
+                              <div className="pointer-events-none absolute inset-y-0 z-10 w-px bg-status-danger/60" style={{ left: `${todayPct}%` }} aria-hidden />
+                            )}
                           </div>
                         </td>
                       </tr>
