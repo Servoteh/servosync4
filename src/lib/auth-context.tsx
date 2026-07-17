@@ -79,6 +79,45 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setReady(true);
   }, []);
 
+  // TOP-LEVEL SSO handoff (soft-flip cutover): kad 1.0 posle logina uradi top-level
+  // redirect na 2.0 sa 1.0 GoTrue tokenom u URL FRAGMENTU (#ss_token=…&entry=…), primi
+  // ga OVDE — van iframe-a, gde postMessage most (dole) ne radi jer je window.parent ===
+  // window. Isti /auth/sso kao iframe put (backend transport-agnostičan: verifikuje HS256
+  // deljenim SY15_JWT_SECRET, JIT-provisionuje nalog). Token se ODMAH briše iz URL-a
+  // (replaceState pre await-a) da ne ostane u history-ju/logovima; `entry` deep-link se
+  // sačuva kao i inače. DORMANT: aktivira se tek kad fragment sadrži ss_token (danas ga
+  // niko ne šalje — iframe put ostaje jedini živ dok se 1.0 redirect ne uključi).
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!ready || hasToken) return;
+    if (window.location.hash.indexOf('ss_token=') === -1) return;
+
+    const params = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+    const token = params.get('ss_token');
+    const entry = params.get('entry');
+    // Očisti fragment ODMAH (pre mrežnog poziva) — token van URL-a/history-ja/ekstenzija.
+    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    if (entry && entry.startsWith('/') && !entry.startsWith('//') && !entry.startsWith('/login')) {
+      try { sessionStorage.setItem('ss2.entryPath', entry); } catch { /* blokiran storage → landingRoute */ }
+    }
+    if (!token) return;
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await ssoExchange(token);
+        if (cancelled) return;
+        setToken(res.accessToken);
+        setRefreshToken(res.refreshToken);
+        qc.setQueryData(['me'], res.user);
+        setHasToken(true);
+      } catch {
+        // nevalidan/istekao 1.0 token → ostaje 2.0 login ekran (token je već obrisan iz URL-a)
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [ready, hasToken, qc]);
+
   // SSO iz 1.0 shella: samo u iframe-u i samo DOK nema sesije. Efekat je vezan za
   // `hasToken` (ne samo mount): kad istekli token padne na /auth/me (401 → hasToken
   // false), handshake se PONOVO naoruža i zatraži svež 1.0 token od roditelja.
