@@ -42,6 +42,7 @@ import {
   CreateNotificationRuleDto,
   CreateOwnerDto,
   CreatePartDto,
+  CreateProfileDto,
   CreateSupplierDto,
   CreateTaskDto,
   CreateTireDto,
@@ -72,6 +73,7 @@ import {
   UpdateNotificationRuleDto,
   UpdatePartDto,
   UpdatePartLinkDto,
+  UpdateProfileDto,
   UpdateSettingsDto,
   UpdateSupplierDto,
   UpdateTaskDto,
@@ -437,6 +439,21 @@ export class OdrzavanjeController {
   @Get("notifications")
   notifications(@Req() req: AuthedRequest, @Query() query: NotificationsQuery) {
     return this.odr.notifications(req.user.email, query);
+  }
+
+  // ---------- Maint profili (SoD) / lookups (auto-detect) ----------
+
+  // Lista profila = admin konzola; service guard = ERP admin (RLS ionako daje svoj-red).
+  @Get("profiles")
+  profiles(@Req() req: AuthedRequest) {
+    return this.odr.listProfiles(req.user.email);
+  }
+
+  // Auto-detect zaposlenog (driver modal). Guard = write krug (kao driver mutacije).
+  @Get("lookups/employees")
+  @RequirePermission(PERMISSIONS.ODRZAVANJE_WRITE)
+  lookupEmployees(@Req() req: AuthedRequest, @Query("q") q?: string) {
+    return this.odr.lookupEmployees(req.user.email, q);
   }
 
   // ---------- Izveštaji ----------
@@ -1227,5 +1244,25 @@ export class OdrzavanjeController {
     @Param("id", ParseUUIDPipe) id: string,
   ) {
     return this.odr.retryNotification(req.user.email, id);
+  }
+
+  // ---------- Maint profili — mutacije (SAMO ERP admin; service guard) ----------
+  // Metod-nivo je coarse WRITE; SoD granicu (samo erp-admin, NE admin_ui krug) presuđuje
+  // service `assertErpAdmin` + DB trigger `maint_profiles_guard_role`.
+
+  @Post("profiles")
+  @RequirePermission(PERMISSIONS.ODRZAVANJE_WRITE)
+  createProfile(@Req() req: AuthedRequest, @Body() dto: CreateProfileDto) {
+    return this.odr.createProfile(req.user.email, dto);
+  }
+
+  @Patch("profiles/:id")
+  @RequirePermission(PERMISSIONS.ODRZAVANJE_WRITE)
+  updateProfile(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: UpdateProfileDto,
+  ) {
+    return this.odr.updateProfile(req.user.email, id, dto);
   }
 }

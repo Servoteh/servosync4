@@ -643,3 +643,35 @@ export class UpdateNotificationRuleDto {
   @IsOptional() @IsBoolean() enabled?: boolean;
   @IsOptional() @IsString() notes?: string;
 }
+
+/* ════════════════════════ Maint profili (SoD; audit H19/H20) ════════════════════════ */
+
+/**
+ * CMMS profil (maint_user_profiles) — vezan za `auth.uid()` (NE za email!). Mutacije SAMO
+ * ERP admin (service `assertErpAdmin`; DB trigger `maint_profiles_guard_role` ostaje tvrda
+ * granica za role/active). POST mora imati EKSPLICITNU proveru duplikata `userId` — 1.0
+ * `insertMaintProfile` (sbReq POST) default-uje merge-duplicates pa bi tiho pregazio profil
+ * (§5.1 pravilo 22, maintProfilesTab.js:161-167). `phone` = E.164 (koristi ga notif kanal);
+ * paritet 1.0 = slobodan tekst (bez stroge validacije, doktrina §C), pa ostaje `@IsString`.
+ */
+export class CreateProfileDto extends IdempotentDto {
+  /** auth.users.id korisnika (= maint_user_profiles.user_id, PK). */
+  @IsUUID() userId!: string;
+  @IsString() @MaxLength(300) fullName!: string;
+  @IsIn(MAINT_ROLE) role!: string;
+  @IsOptional() @IsArray() @IsString({ each: true })
+  assignedMachineCodes?: string[];
+  @IsOptional() @IsString() @MaxLength(40) phone?: string;
+  @IsOptional() @IsString() @MaxLength(120) telegramChatId?: string;
+  @IsOptional() @IsBoolean() active?: boolean;
+}
+
+export class UpdateProfileDto {
+  @IsOptional() @IsString() @MaxLength(300) fullName?: string;
+  @IsOptional() @IsIn(MAINT_ROLE) role?: string;
+  @IsOptional() @IsArray() @IsString({ each: true })
+  assignedMachineCodes?: string[];
+  @IsOptional() @IsString() @MaxLength(40) phone?: string;
+  @IsOptional() @IsString() @MaxLength(120) telegramChatId?: string;
+  @IsOptional() @IsBoolean() active?: boolean;
+}

@@ -21,6 +21,7 @@ import type {
   CreateNotificationRuleDto,
   CreateOwnerDto,
   CreatePartDto,
+  CreateProfileDto,
   CreateSupplierDto,
   CreateTaskDto,
   CreateCheckDto,
@@ -49,6 +50,7 @@ import type {
   UpdateNotificationRuleDto,
   UpdatePartDto,
   UpdatePartLinkDto,
+  UpdateProfileDto,
   UpdateSettingsDto,
   UpdateSupplierDto,
   UpdateTaskDto,
@@ -1289,6 +1291,26 @@ export class OdrzavanjeService {
       Prisma.sql`SELECT auth.uid() AS uid`,
     );
     return rows[0]?.uid ?? null;
+  }
+
+  /**
+   * Tvrda kapija za mutacije maint profila: SAMO ERP admin (`maint_is_erp_admin()` —
+   * user_roles global `admin` po email-u). NIJE admin_ui krug: menadzment/magacioner
+   * (koji imaju `odrzavanje.admin_ui`) NE smeju menjati profile — inače bi mogli sami
+   * sebi eskalirati CMMS rolu. Guard NE sme biti ni uži ni širi od žive RLS/trigger
+   * granice: `maint_user_profiles` INSERT/DELETE = erp-admin, a trigger
+   * `maint_profiles_guard_role` dozvoljava izmenu `role`/`active` ISKLJUČIVO erp-adminu
+   * (§2.5.10). Poziva se POD `authenticated` rolom (DEFINER fn čita claims->>'email').
+   */
+  private async assertErpAdmin(tx: Sy15Tx): Promise<void> {
+    const rows = await tx.$queryRaw<{ ok: boolean }[]>(
+      Prisma.sql`SELECT public.maint_is_erp_admin() AS ok`,
+    );
+    if (rows[0]?.ok !== true) {
+      throw new ForbiddenException(
+        "Samo ERP admin sme da menja profile održavanja",
+      );
+    }
   }
 
   /** Batch-resolve full_name iz maint_user_profiles (RLS: self ∨ erp-admin — best-effort). */
@@ -3496,6 +3518,145 @@ export class OdrzavanjeService {
         Prisma.sql`SELECT public.maint_notification_retry(${id}::uuid) AS ok`,
       );
       return { data: { requeued: rows[0]?.ok === true } };
+    });
+  }
+
+  // ============================================================================
+  // Maint profili (SoD; audit H19/H20 — BE strana ekrana „Profili održavanja")
+  // ============================================================================
+  // Mutacije SAMO ERP admin (assertErpAdmin) — NE admin_ui krug (menadzment/magacioner
+  // NE smeju menjati profile). DB trigger `maint_profiles_guard_role` ostaje jedina tvrda
+  // granica za role/active. Sve ide kroz withUserRls/runIdempotentRls (RLS + SET ROLE).
+
+  /**
+   * Puna lista profila (admin konzola). Guard = ERP admin; RLS profila
+   * (`auth.uid() = user_id ∨ erp-admin`) ionako ostalima daje samo svoj red, pa list
+   * bez erp-admina nema smisla → 403 (paritet 1.0 `fetchAllMaintProfiles`, ekran je
+   * u CMMS Podešavanjima, samo za administraciju).
+   */
+  async listProfiles(email: string) {
+    return this.withUserMapped(email, async (tx) => {
+      await this.assertErpAdmin(tx);
+      const data = await tx.maintUserProfile.findMany({
+        orderBy: { fullName: "asc" },
+        take: 500,
+      });
+      return { data };
+    });
+  }
+
+  /**
+   * Novi profil. Guard = ERP admin. EKSPLICITNA provera duplikata `userId` — 1.0
+   * `insertMaintProfile` (sbReq POST) default-uje merge-duplicates pa bi ponovljen
+   * user_id TIHO pregazio postojeći profil (§5.1 pravilo 22). Idempotentno po
+   * `clientEventId`.
+   */
+  createProfile(email: string, dto: CreateProfileDto) {
+    return this.runIdem(
+      email,
+      dto.clientEventId,
+      "odrzavanje.create-profile",
+      async (tx) => {
+        await this.assertErpAdmin(tx);
+        const existing = await tx.maintUserProfile.findUnique({
+          where: { userId: dto.userId },
+        });
+        if (existing) {
+          throw new ConflictException(
+            "Profil sa ovim korisničkim ID-em već postoji (koristi izmenu)",
+          );
+        }
+        return tx.maintUserProfile.create({
+          data: {
+            userId: dto.userId,
+            fullName: dto.fullName.trim(),
+            role: dto.role as never,
+            assignedMachineCodes: (dto.assignedMachineCodes ?? [])
+              .map((c) => c.trim())
+              .filter(Boolean),
+            phone: dto.phone ?? null,
+            telegramChatId: dto.telegramChatId ?? null,
+            active: dto.active !== false,
+          },
+        });
+      },
+    );
+  }
+
+  /**
+   * Izmena profila. Guard = ERP admin (SoD; menadzment/magacioner NE smeju).
+   * `role`/`active` menja ionako samo erp-admin (DB trigger). Idempotentan PATCH.
+   */
+  async updateProfile(email: string, id: string, dto: UpdateProfileDto) {
+    return this.withUserMapped(email, async (tx) => {
+      await this.assertErpAdmin(tx);
+      const exists =
+        (await tx.maintUserProfile.count({ where: { userId: id } })) > 0;
+      const { count } = await tx.maintUserProfile.updateMany({
+        where: { userId: id },
+        data: {
+          ...(dto.fullName !== undefined ? { fullName: dto.fullName } : {}),
+          ...(dto.role !== undefined ? { role: dto.role as never } : {}),
+          ...(dto.assignedMachineCodes !== undefined
+            ? {
+                assignedMachineCodes: dto.assignedMachineCodes
+                  .map((c) => c.trim())
+                  .filter(Boolean),
+              }
+            : {}),
+          ...(dto.phone !== undefined ? { phone: dto.phone } : {}),
+          ...(dto.telegramChatId !== undefined
+            ? { telegramChatId: dto.telegramChatId }
+            : {}),
+          ...(dto.active !== undefined ? { active: dto.active } : {}),
+          updatedAt: new Date(),
+        },
+      });
+      this.assertAffected(exists, count, `Profil ${id}`);
+      return {
+        data: await tx.maintUserProfile.findUnique({ where: { userId: id } }),
+      };
+    });
+  }
+
+  // ============================================================================
+  // Lookups — employees (auto-detect vozača; §5.1 pravilo 12, best-effort, uski select)
+  // ============================================================================
+
+  /**
+   * Uski select nad `employees` za auto-detect zaposlenog u driver modalu (paritet 1.0
+   * `fetchEmployeesForMatching`, maintDriversPanel.js:173-207). Vraća SAMO id + ime +
+   * email (NIKAD PII kolone — JMBG/adresa/banka). Normalizaciju imena (`maint_normalize_name`:
+   * dj→d, kvačice) radi FE nad ovim skupom. Guard = write krug (kao driver mutacije);
+   * čita se pod `authenticated` (employees RLS = isti kao 1.0 PostgREST → paritet).
+   */
+  async lookupEmployees(email: string, q?: string) {
+    const term = (q ?? "").trim();
+    return this.withUserMapped(email, async (tx) => {
+      const data = await tx.employee.findMany({
+        where: {
+          isActive: true,
+          ...(term
+            ? {
+                OR: [
+                  { fullName: { contains: term, mode: "insensitive" } },
+                  { firstName: { contains: term, mode: "insensitive" } },
+                  { lastName: { contains: term, mode: "insensitive" } },
+                ],
+              }
+            : {}),
+        },
+        select: {
+          id: true,
+          fullName: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+        },
+        orderBy: { lastName: "asc" },
+        take: 500,
+      });
+      return { data };
     });
   }
 }
