@@ -86,6 +86,10 @@
   1. **Lista** — filter bar + gusta tabela (+ opcioni KPI red iznad, max 4 pločice);
   2. **Master–detalj** — lista levo, detalj panel desno (288–320 px); selekcija reda puni panel;
   3. **Forma** — kratke forme (≤ 8 polja) u dijalogu, duge kao stranica sa sekcijama.
+* **Hub/početna** (`/pocetna`, F2 SIDEBAR_HUB) — landing stranica hub-uloga UNUTAR AppShell-a (nije
+  fullscreen): pozdrav + „Brzo" prečice (MRU `recentModules` iz `useUiPrefs`) + mreža domenskih pločica
+  (moduli-linkovi po `NAV_DOMAINS`, RBAC-filtrirano, „u razvoju" badge za WIP). Namena je agregacija ulaza
+  u module, nije lista/forma/master-detalj — ostali ekrani i dalje moraju biti jedan od gornja tri obrasca.
 * Detaljniji pregled entiteta (RN sa operacijama, materijalom, dokumentima) = **object-page**:
   zaglavlje sa šifrom/statusom + tabovi sekcija (obrazac pozajmljen od Fiori-ja).
 

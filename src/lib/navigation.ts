@@ -263,3 +263,21 @@ export const RAZVOJ_WIP: { href: string; note?: string; labelOverride?: string }
   { href: '/sastanci' },
   { href: '/podesavanja' },
 ];
+
+// Set href-ova WIP modula za O(1) proveru članstva (hub badge). RAZVOJ_WIP je jedini
+// izvor — nema `wip` polja na NavModule-u (izbegnut duplikat taksonomije).
+const RAZVOJ_WIP_HREFS: ReadonlySet<string> = new Set(RAZVOJ_WIP.map((w) => w.href));
+
+/** Da li je modul još „u razvoju" (član RAZVOJ_WIP) — hub prikazuje badge „u razvoju". */
+export function isWipModule(href: string): boolean {
+  return RAZVOJ_WIP_HREFS.has(href);
+}
+
+/**
+ * Napomena WIP modula za hub badge — SAMO `note` polje iz RAZVOJ_WIP. `labelOverride`
+ * se NAMERNO ne vraća: on je duži naslov za /razvoj stranu, ne tekst tooltipa badge-a.
+ * undefined kad modul nema `note` (ili nije WIP).
+ */
+export function wipNote(href: string): string | undefined {
+  return RAZVOJ_WIP.find((w) => w.href === href)?.note;
+}

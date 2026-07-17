@@ -37,6 +37,15 @@ interface AuthContextValue {
   logout: () => void;
   /** Permission keys granted to the current user (empty until loaded). */
   permissions: ReadonlySet<string>;
+  /**
+   * True dok se /auth/me/permissions još učitava (odvojeno od `isLoading`, koji prati
+   * SAMO /auth/me). `can()` je fail-closed dok se dozvole ne učitaju, pa ekrani koji
+   * gejtuju sadržaj preko `can()` (hub) ovim izbegavaju prolazni „nema pristupa" flash
+   * dok /auth/me već ima podatke a dozvole još stižu.
+   */
+  permissionsPending: boolean;
+  /** True ako je upit dozvola pao (retry:false → ostaje za sesiju; razlikuj od „nema modula"). */
+  permissionsError: boolean;
   /** True if the user's role grants `permission`. Fail-closed while loading. */
   can: (permission: Permission) => boolean;
   /** Backend enforcement state (false = shadow mode). Informational for the UI. */
@@ -151,6 +160,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     login,
     logout,
     permissions,
+    // Odvojeno od isLoading: /auth/me i /auth/me/permissions su dva paralelna upita, a
+    // ['me'] se pre-seed-uje (login/SSO) pa meQuery ume da NIJE pending dok permsQuery
+    // još stiže — hub tada mora da čeka dozvole, ne da prikaže „nema pristupa".
+    permissionsPending: hasToken && permsQuery.isPending,
+    permissionsError: hasToken && permsQuery.isError,
     can: (permission) => permissions.has(permission),
     enforced: permsQuery.data?.enforced ?? false,
   };

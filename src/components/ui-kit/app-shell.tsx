@@ -364,7 +364,19 @@ function FullBody(props: FullBodyProps) {
   return (
     <>
       <div className="flex h-[var(--command-bar-height)] shrink-0 items-center justify-between gap-1 px-5 text-md font-semibold text-sidebar-ink-active">
-        <span className="truncate">ServoSync</span>
+        {/* Brand vodi na hub /pocetna — dostupno SVIMA (i onima koji landuju u modul).
+            onClose zatvara off-canvas overlay čak i kad smo VEĆ na /pocetna: tada se
+            ruta ne menja pa [pathname] efekat (koji inače zatvara overlay) ne okine —
+            isto ponašanje kao modul-linkovi preko onNavigate. U punom/rail sidebaru je
+            onClose undefined (nema overlay-a) → klik samo navigira. */}
+        <Link
+          href="/pocetna"
+          title="Početna"
+          onClick={() => props.onClose?.()}
+          className={cn('min-w-0 truncate rounded-control', SB_FOCUS)}
+        >
+          ServoSync
+        </Link>
         <div className="flex items-center gap-0.5">
           <NotificationBell enabled={props.bellEnabled} />
           {props.onToggleWidePin && (
@@ -731,7 +743,24 @@ function RailBody(props: RailBodyProps) {
   const CycleIcon = MODE_ICON[props.mode];
   return (
     <>
+      {/* Brand „S" vodi na hub /pocetna — paritet sa FullBody „ServoSync". Rail je
+          uzak (52px): brand drži gornji kvadrat (poravnat s komandnom trakom), a
+          dugme režima je premešteno u telo ispod (ponašanje nepromenjeno). */}
       <div className="flex h-[var(--command-bar-height)] shrink-0 items-center justify-center">
+        <Link
+          href="/pocetna"
+          title="Početna"
+          aria-label="Početna"
+          className={cn(
+            'grid h-9 w-9 place-items-center rounded-control text-md font-semibold text-sidebar-ink-active hover:bg-sidebar-line',
+            SB_FOCUS,
+          )}
+        >
+          S
+        </Link>
+      </div>
+      {/* Bez overflow-scroll: flyout je absolute i ne sme biti odsečen (rail je kratak). */}
+      <div className="flex flex-1 flex-col items-center gap-1 py-2">
         <button
           type="button"
           onClick={props.onCycleMode}
@@ -744,9 +773,6 @@ function RailBody(props: RailBodyProps) {
         >
           <CycleIcon className="h-4 w-4" aria-hidden />
         </button>
-      </div>
-      {/* Bez overflow-scroll: flyout je absolute i ne sme biti odsečen (rail je kratak). */}
-      <div className="flex flex-1 flex-col items-center gap-1 py-2">
         <NotificationBell enabled={props.bellEnabled} variant="rail" />
         <RailNav
           domains={props.domains}

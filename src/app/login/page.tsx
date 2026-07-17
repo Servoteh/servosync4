@@ -29,9 +29,13 @@ export default function LoginPage() {
 
   useEffect(() => {
     if (isLoading || !user) return;
-    // Deep-link iz 1.0 iframe-a (zapamćen u AuthProvider-u pre guard redirecta)
-    // ima prednost; inače kontrolori → /kvalitet, ostali → /work-orders.
-    let target = landingRoute(user);
+    // Deep-link iz 1.0 iframe-a (zapamćen u AuthProvider-u pre guard redirecta) ima
+    // prednost; inače hibrid po ulozi (landing-route.ts): hub-uloge → /pocetna,
+    // kontrolori → /kvalitet, ostali → /work-orders. U iframe-u (2.0 kao modul u 1.0
+    // shell-u, koji već ima svoj HUB) hub-uloge PRESKAČU /pocetna — otud `embedded`
+    // mora da se prosledi (isto kao app/page.tsx), inače dupli hub unutar okvira.
+    const embedded = typeof window !== 'undefined' && window.parent !== window;
+    let target = landingRoute(user, { embedded });
     try {
       const entry = sessionStorage.getItem('ss2.entryPath');
       sessionStorage.removeItem('ss2.entryPath');

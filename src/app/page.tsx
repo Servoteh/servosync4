@@ -11,9 +11,12 @@ export default function Home() {
 
   useEffect(() => {
     if (isLoading) return;
-    // Kontrolori → /kvalitet, ostali → /work-orders (rn.read imaju SVE uloge, ne
-    // /syncs — sync.read imaju samo admin/šef/menadžment → 403 za ostale).
-    router.replace(landingRoute(user));
+    // Hibrid po ulozi (landing-route.ts): hub-uloge → /pocetna, kontrolor/kontrola@ →
+    // /kvalitet, ostali → /work-orders (rn.read imaju SVE uloge — nema 403). U iframe-u
+    // (2.0 kao modul „Tehnologija" u 1.0 shell-u, koji već ima svoj HUB) hub-uloge
+    // preskaču /pocetna i padaju na modul-metu — otud `embedded` = smo li unutar okvira.
+    const embedded = typeof window !== 'undefined' && window.parent !== window;
+    router.replace(landingRoute(user, { embedded }));
   }, [user, isLoading, router]);
 
   return (
