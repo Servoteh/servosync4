@@ -37,7 +37,16 @@ interface DraftLine {
  * nov ključ i prazna forma). HID barkod čitač radi kroz polje pretrage (kuca kao
  * tastatura); kamera-skener kroz ScanOverlay.
  */
-export function IssueDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function IssueDialog({
+  open,
+  onClose,
+  initialTool,
+}: {
+  open: boolean;
+  onClose: () => void;
+  /** Preselektovan alat (RA-17 „Izdaj na revers" iz reda „Alat i oprema"). */
+  initialTool?: ReversiTool | null;
+}) {
   const [docType, setDocType] = useState<DocType>('TOOL');
   const [recipientType, setRecipientType] = useState<RecipientType>('EMPLOYEE');
   const [empQ, setEmpQ] = useState('');
@@ -92,7 +101,10 @@ export function IssueDialog({ open, onClose }: { open: boolean; onClose: () => v
   const reset = useCallback(() => {
     setDocType('TOOL');
     setRecipientType('EMPLOYEE');
-    setLines([]);
+    // Preselektovan alat iz reda „Alat i oprema" (RA-17) — nacrt kreće s njim.
+    setLines(
+      initialTool ? [{ key: initialTool.id, tool: initialTool, quantity: 1, unit: 'kom' }] : [],
+    );
     setEmployee(null);
     setEmpQ('');
     setDepartment('');
@@ -106,7 +118,7 @@ export function IssueDialog({ open, onClose }: { open: boolean; onClose: () => v
     setScanOpen(false);
     setError(null);
     setClientEventId(newClientEventId());
-  }, []);
+  }, [initialTool]);
 
   useEffect(() => {
     if (open) reset();

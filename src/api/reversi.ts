@@ -1,6 +1,6 @@
 'use client';
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch, apiUpload } from './client';
 
 /** Tip razrešenog barkoda (BE /reversi/lookups/barcode — paritet 1.0 resolveReversiBarcode). */
@@ -266,6 +266,135 @@ export function useReversiTool(id: string | null) {
     queryKey: [...KEYS.tools, 'detail', id],
     enabled: !!id,
     queryFn: () => apiFetch<{ data: ReversiToolDetail }>(`/v1/reversi/tools/${id}`),
+  });
+}
+
+// ---------------------------------------------- Alat i oprema (jedinice + stablo)
+// R1 (RA-08/10/12/13/14/15/16/17/18/21/23): per-jedinica katalog ručnog alata/LZO.
+// BE: GET /reversi/inventory-units (server-side status/klasifikacija/sort/paginacija,
+// pageSize do 5000 za CSV) i GET /reversi/inventory-tree (grupe/podgrupe/podpodgrupe).
+
+/** Primalac otvorenog reversa po jedinici (issuedHolder iz inventory-units). */
+export interface IssuedHolder {
+  docNumber: string;
+  recipientType: string;
+  recipientEmployeeName: string | null;
+  recipientDepartment: string | null;
+  recipientCompanyName: string | null;
+}
+
+/** Klasifikacija u redu jedinice (grupa = bez id; pod/podpod nose id). */
+export interface UnitGroupRef {
+  code: string;
+  label: string;
+}
+export interface UnitSubRef {
+  id: string;
+  code: string;
+  label: string;
+}
+
+/**
+ * Red `GET /reversi/inventory-units` — puna rev_tools polja (camelCase) + razrešena
+ * klasifikacija, trenutna lokacija i zaduženje. (Deklarisan je podskup polja koji
+ * FE koristi; BE spreada ceo model pa dodatna polja postoje u payload-u.)
+ */
+export interface InventoryUnitRow {
+  id: string;
+  oznaka: string;
+  naziv: string;
+  barcode: string;
+  serijskiBroj: string | null;
+  datumKupovine: string | null;
+  status: string;
+  napomena: string | null;
+  isQuantity: boolean;
+  isConsumable: boolean;
+  totalQty: number;
+  minStockQty: number | null;
+  maxStockQty: number | null;
+  subgroupId: string | null;
+  subsubgroupId: string | null;
+  group: UnitGroupRef | null;
+  subgroup: UnitSubRef | null;
+  subsubgroup: UnitSubRef | null;
+  currentLocationId: string | null;
+  currentLocationCode: string | null;
+  issuedHolder: IssuedHolder | null;
+}
+
+export interface InventoryUnitsParams {
+  status?: string;
+  q?: string;
+  groupCode?: string;
+  subgroupId?: string;
+  subsubgroupId?: string;
+  sort?: string;
+  dir?: 'asc' | 'desc';
+  page?: number;
+  pageSize?: number;
+}
+
+function unitsUrl(params: InventoryUnitsParams): string {
+  return `/v1/reversi/inventory-units${qs({ ...params })}`;
+}
+
+export function useInventoryUnits(params: InventoryUnitsParams) {
+  return useQuery({
+    queryKey: [...KEYS.tools, 'inventory-units', params],
+    queryFn: () => apiFetch<{ data: InventoryUnitRow[]; meta: PageMeta }>(unitsUrl(params)),
+    // Zadrži prethodnu stranu dok se sledeća učitava — paginacija bez treptaja.
+    placeholderData: keepPreviousData,
+  });
+}
+
+/** Fetch-all (do 5000) za CSV izvoz celog filtriranog skupa (RA-23) — imperativno. */
+export function fetchInventoryUnits(
+  params: InventoryUnitsParams,
+): Promise<{ data: InventoryUnitRow[]; meta: PageMeta }> {
+  return apiFetch<{ data: InventoryUnitRow[]; meta: PageMeta }>(unitsUrl(params));
+}
+
+/** Stablo klasifikacije (grupe → podgrupe → podpodgrupe) za kaskadne filtere. */
+export interface InventoryGroup {
+  id: string;
+  code: string;
+  label: string;
+  appliesTo: string;
+  displayOrder: number;
+  icon: string | null;
+  isSeeded: boolean;
+  napomena: string | null;
+}
+export interface InventorySubgroup {
+  id: string;
+  groupId: string;
+  code: string;
+  label: string;
+  displayOrder: number;
+  isSeeded: boolean;
+  napomena: string | null;
+}
+export interface InventorySubsubgroup {
+  id: string;
+  subgroupId: string;
+  code: string;
+  label: string;
+  displayOrder: number;
+  isSeeded: boolean;
+  napomena: string | null;
+}
+export interface InventoryTree {
+  groups: InventoryGroup[];
+  subgroups: InventorySubgroup[];
+  subsubgroups: InventorySubsubgroup[];
+}
+
+export function useInventoryTree() {
+  return useQuery({
+    queryKey: [...KEYS.tools, 'inventory-tree'],
+    queryFn: () => apiFetch<{ data: InventoryTree }>('/v1/reversi/inventory-tree'),
+    staleTime: 5 * 60 * 1000,
   });
 }
 
