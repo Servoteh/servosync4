@@ -43,6 +43,7 @@ import {
   InstantiateTemplateDto,
   LockSastanakDto,
   PatchAkcijaDto,
+  PrenosDto,
   ReorderDto,
   ReorderRangDto,
   RsvpDto,
@@ -154,6 +155,13 @@ export class SastanciController {
     return this.sastanci.akcijeWeeklyDiff(req.user.email, query);
   }
 
+  /** ⭐ uređena lista bigtehn_item_id (redosled RN grupa; paritet 1.0
+   *  pullPredmetPlanPrioritetIds). Klasni guard = sastanci.read. */
+  @Get("predmet-prioritet")
+  predmetPrioritet(@Req() req: AuthedRequest) {
+    return this.sastanci.predmetPrioritet(req.user.email);
+  }
+
   @Get("akcije/:id/istorija")
   akcijaIstorija(
     @Req() req: AuthedRequest,
@@ -218,6 +226,17 @@ export class SastanciController {
   @Get(":id/arhiva")
   arhiva(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string) {
     return this.sastanci.findArhiva(req.user.email, id);
+  }
+
+  /** Red „Od prošlog sastanka" — diff sidren na PRETHODNI ZAKLJUČANI sastanak
+   *  (paritet 1.0 loadPrethodniZakljucanPre → loadWeeklyDiffStats); nema
+   *  prethodnog → data:null (red se izostavlja). */
+  @Get(":id/weekly-diff")
+  sastanakWeeklyDiff(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return this.sastanci.sastanakWeeklyDiff(req.user.email, id);
   }
 
   @Get(":id")
@@ -509,6 +528,20 @@ export class SastanciController {
   @RequirePermission(PERMISSIONS.SASTANCI_MANAGE)
   reopen(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string) {
     return this.sastanci.reopen(req.user.email, id);
+  }
+
+  /** „Sedmični + prenos": kopiraj učesnike izvora + premesti otvorene akcije
+   *  (paritet 1.0 prenesiUNoviSastanak). :id = NOVI (ciljni) sastanak;
+   *  fromSastanakId opcion — bez njega BE bira izvor (poslednji istog tipa
+   *  strogo pre datuma novog); nema izvora → {ucesnici:0, akcije:0, source:null}. */
+  @Post(":id/prenos")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  prenos(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: PrenosDto,
+  ) {
+    return this.sastanci.prenos(req.user.email, id, dto);
   }
 
   @Post(":id/invites")

@@ -49,8 +49,11 @@ export class CreateSastanakDto extends IdempotentDto {
   @IsOptional() @IsString() vodioLabel?: string;
   @IsOptional() @IsString() zapisnicarEmail?: string;
   @IsOptional() @IsString() zapisnicarLabel?: string;
+  /** BEZ 'zakljucan' — zaključavanje ide ISKLJUČIVO kroz POST /:id/lock
+   *  (RPC sast_zakljucaj_sastanak: snapshot + PDF path + meeting_locked mejlovi).
+   *  Backdoor status='zakljucan' bi zaključao bez arhive/notifikacija (S-P0). */
   @IsOptional()
-  @IsIn(["planiran", "u_toku", "zavrsen", "zakljucan", "otkazan"])
+  @IsIn(["planiran", "u_toku", "zavrsen", "otkazan"])
   status?: string;
   @IsOptional() @IsString() napomena?: string;
 }
@@ -68,8 +71,9 @@ export class UpdateSastanakDto {
   @IsOptional() @IsString() vodioLabel?: string;
   @IsOptional() @IsString() zapisnicarEmail?: string;
   @IsOptional() @IsString() zapisnicarLabel?: string;
+  /** BEZ 'zakljucan' — vidi CreateSastanakDto (lock samo kroz POST /:id/lock). */
   @IsOptional()
-  @IsIn(["planiran", "u_toku", "zavrsen", "zakljucan", "otkazan"])
+  @IsIn(["planiran", "u_toku", "zavrsen", "otkazan"])
   status?: string;
   @IsOptional() @IsString() napomena?: string;
 }
@@ -376,6 +380,16 @@ export class UpdateSlikaDto {
 /** Idempotentni upload PDF zapisnika (multipart `file`) uz opcioni clientEventId. */
 export class ArhivaPdfDto {
   @IsOptional() @IsUUID() clientEventId?: string;
+}
+
+/* ── Prenos (Sedmični + prenos) ── */
+
+/** POST /:id/prenos — paritet 1.0 prenesiUNoviSastanak (sastanci.js:258). */
+export class PrenosDto extends IdempotentDto {
+  /** Izvorni sastanak sa koga se prenose učesnici + otvorene akcije.
+   *  Izostavljen → BE auto-pick 1.0 semantikom (poslednji istog tipa
+   *  STROGO pre datuma novog). */
+  @IsOptional() @IsUUID() fromSastanakId?: string;
 }
 
 /* ── Sedmični ── */

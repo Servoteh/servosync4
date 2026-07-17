@@ -1,3 +1,4 @@
+import { NotFoundException } from "@nestjs/common";
 import { SastanciService } from "./sastanci.service";
 import type { Sy15Service } from "../../common/sy15/sy15.service";
 
@@ -12,6 +13,7 @@ describe("SastanciService — withUserRls most + BigInt out", () => {
       sastanak: {
         findMany: jest.fn().mockResolvedValue([]),
         findFirst: jest.fn().mockResolvedValue(null),
+        findUnique: jest.fn().mockResolvedValue(null),
         count: jest.fn().mockResolvedValue(0),
       },
       sastanciNotificationLog: { findMany: jest.fn().mockResolvedValue([]) },
@@ -76,6 +78,152 @@ describe("SastanciService — withUserRls most + BigInt out", () => {
       kasni: 3,
       aktivnih: 7,
     });
+  });
+
+  // ── S-P0 paket 2: projekat polja na akcijama + ⭐ predmet-prioritet ──
+
+  it("listAkcije: SELECT nosi LEFT JOIN projects + projekatNaziv/projekatCode/bigtehnItemId", async () => {
+    const { svc, tx } = makeSvc();
+    await svc.listAkcije("test@servoteh.com", {});
+    const sql = (
+      tx.$queryRaw.mock.calls[0] as unknown as { strings: string[] }[]
+    )[0].strings.join("?");
+    expect(sql).toContain("LEFT JOIN projects");
+    expect(sql).toContain(`"projekatNaziv"`);
+    expect(sql).toContain(`"projekatCode"`);
+    expect(sql).toContain(`"bigtehnItemId"`);
+    // bigtehn_item_id je integer u bazi — ugovor kaže string|null.
+    expect(sql).toContain("bigtehn_item_id::text");
+  });
+
+  it("predmetPrioritet: get_predmet_plan_prioritet_ids → uređen string[] (normalizacija 1.0)", async () => {
+    const { svc, tx } = makeSvc();
+    tx.$queryRaw.mockResolvedValueOnce([{ ids: [9400, 8069, 0, null] }]);
+    const out = await svc.predmetPrioritet("test@servoteh.com");
+    expect(out.data).toEqual(["9400", "8069"]); // 0/null otpadaju kao u 1.0 normalizeIds
+  });
+
+  it("predmetPrioritet: prazna lista → data: []", async () => {
+    const { svc, tx } = makeSvc();
+    tx.$queryRaw.mockResolvedValueOnce([{ ids: [] }]);
+    const out = await svc.predmetPrioritet("test@servoteh.com");
+    expect(out.data).toEqual([]);
+  });
+
+  // ── S-P0 paket 3: weekly-diff sa pravim sidrom ──
+
+  it("sastanakWeeklyDiff: bez prethodnog zaključanog → data:null (1.0 red se izostavlja)", async () => {
+    const { svc, tx } = makeSvc();
+    tx.sastanak.findUnique.mockResolvedValueOnce({
+      datum: new Date("2026-07-13"),
+    });
+    tx.sastanak.findFirst.mockResolvedValueOnce(null);
+    const out = await svc.sastanakWeeklyDiff(
+      "test@servoteh.com",
+      "3b241101-e2bb-4255-8caf-4136c566a962",
+    );
+    expect(out.data).toBeNull();
+  });
+
+  it("sastanakWeeklyDiff: prethodni postoji ali zakljucan_at prazan → data:null", async () => {
+    const { svc, tx } = makeSvc();
+    tx.sastanak.findUnique.mockResolvedValueOnce({
+      datum: new Date("2026-07-13"),
+    });
+    tx.sastanak.findFirst.mockResolvedValueOnce({ zakljucanAt: null });
+    const out = await svc.sastanakWeeklyDiff(
+      "test@servoteh.com",
+      "3b241101-e2bb-4255-8caf-4136c566a962",
+    );
+    expect(out.data).toBeNull();
+  });
+
+  it("sastanakWeeklyDiff: sidro = prethodni ZAKLJUČANI pre datuma (bez :id) → diff sa since", async () => {
+    const ID = "3b241101-e2bb-4255-8caf-4136c566a962";
+    const { svc, tx } = makeSvc();
+    tx.sastanak.findUnique.mockResolvedValueOnce({
+      datum: new Date("2026-07-13"),
+    });
+    const zakljucanAt = new Date("2026-07-06T10:00:00Z");
+    tx.sastanak.findFirst.mockResolvedValueOnce({ zakljucanAt });
+    tx.$queryRaw.mockResolvedValueOnce([
+      {
+        novo: BigInt(2),
+        zavrseno: BigInt(1),
+        kasni: BigInt(3),
+        aktivnih: BigInt(7),
+      },
+    ]);
+    const out = await svc.sastanakWeeklyDiff("test@servoteh.com", ID);
+    // Isti ključevi kao sestrinski akcijeWeeklyDiff (1.0 kanon: zavrsenoOveNedelje).
+    expect(out.data).toEqual({
+      since: zakljucanAt.toISOString(),
+      novo: 2,
+      zavrsenoOveNedelje: 1,
+      kasni: 3,
+      aktivnih: 7,
+    });
+    // Paritet loadPrethodniZakljucanPre: status='zakljucan', datum < datum, id != :id.
+    const arg = (
+      tx.sastanak.findFirst.mock.calls[0] as unknown as {
+        where: { status: string; id: { not: string }; datum: { lt: Date } };
+      }[]
+    )[0];
+    expect(arg.where.status).toBe("zakljucan");
+    expect(arg.where.id).toEqual({ not: ID });
+    expect(arg.where.datum).toEqual({ lt: new Date("2026-07-13") });
+  });
+
+  it("sastanakWeeklyDiff: sastanak ne postoji → 404", async () => {
+    const { svc, tx } = makeSvc();
+    tx.sastanak.findUnique.mockResolvedValueOnce(null);
+    await expect(
+      svc.sastanakWeeklyDiff(
+        "test@servoteh.com",
+        "3b241101-e2bb-4255-8caf-4136c566a962",
+      ),
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  // ── GET /prefs — camelCase ugovor (FE tip Prefs; PATCH vraća camelCase Prisma model) ──
+
+  it("myPrefs: aliasuje snake_case kolone RPC-a u camelCase (paritet FE tipa Prefs)", async () => {
+    const { svc, sy15, tx } = makeSvc();
+    const row = {
+      email: "test@servoteh.com",
+      onNewAkcija: true,
+      onChangeAkcija: false,
+      onMeetingInvite: true,
+      onMeetingLocked: true,
+      onActionReminder: false,
+      onMeetingReminder: true,
+    };
+    tx.$queryRaw.mockResolvedValueOnce([row]);
+    const out = await svc.myPrefs("test@servoteh.com");
+    expect(sy15.withUserRls).toHaveBeenCalledTimes(1);
+    expect(out.data).toEqual(row);
+    const sql = (
+      tx.$queryRaw.mock.calls[0] as unknown as { strings: string[] }[]
+    )[0].strings.join("?");
+    expect(sql).toContain("sastanci_get_or_create_my_prefs()");
+    // Tačne kolone fn-a (sastanci_notification_prefs) → tačni FE ključevi.
+    for (const [col, alias] of [
+      ["on_new_akcija", "onNewAkcija"],
+      ["on_change_akcija", "onChangeAkcija"],
+      ["on_meeting_invite", "onMeetingInvite"],
+      ["on_meeting_locked", "onMeetingLocked"],
+      ["on_action_reminder", "onActionReminder"],
+      ["on_meeting_reminder", "onMeetingReminder"],
+    ]) {
+      expect(sql).toMatch(new RegExp(`${col}\\s+AS "${alias}"`));
+    }
+  });
+
+  it("myPrefs: prazan rezultat → data:null", async () => {
+    const { svc, tx } = makeSvc();
+    tx.$queryRaw.mockResolvedValueOnce([]);
+    const out = await svc.myPrefs("test@servoteh.com");
+    expect(out.data).toBeNull();
   });
 
   it("search ispod 2 karaktera → prazno BEZ upita (paritet searchSastanciGlobal)", async () => {
