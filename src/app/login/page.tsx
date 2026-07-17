@@ -6,6 +6,7 @@ import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { useAuth } from '@/lib/auth-context';
 import { landingRoute } from '@/lib/landing-route';
+import { isSafeInternalPath } from '@/lib/safe-path';
 import { ApiError } from '@/api/client';
 import { Button } from '@/components/ui-kit/button';
 import { FormField, Input } from '@/components/ui-kit/form-field';
@@ -39,7 +40,9 @@ export default function LoginPage() {
     try {
       const entry = sessionStorage.getItem('ss2.entryPath');
       sessionStorage.removeItem('ss2.entryPath');
-      if (entry && entry.startsWith('/') && !entry.startsWith('//') && !entry.startsWith('/login')) {
+      // Stroga provera protiv open-redirect-a (entry može poticati iz sirovog SSO
+      // fragmenta) — deljeni helper, isti kao upisi u auth-context-u.
+      if (isSafeInternalPath(entry)) {
         target = entry;
       }
     } catch { /* landingRoute fallback */ }

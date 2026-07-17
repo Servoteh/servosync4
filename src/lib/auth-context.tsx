@@ -9,6 +9,7 @@ import {
 } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { ApiError, getRefreshToken, getToken, setRefreshToken, setToken } from '@/api/client';
+import { isSafeInternalPath } from '@/lib/safe-path';
 import {
   logoutServer,
   ssoExchange,
@@ -68,7 +69,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (typeof window === 'undefined') return;
     try {
       const p = window.location.pathname + window.location.search;
-      if (p.startsWith('/') && !p.startsWith('//') && !p.startsWith('/login')) {
+      if (isSafeInternalPath(p)) {
         sessionStorage.setItem('ss2.entryPath', p);
       }
     } catch { /* sessionStorage nedostupan (npr. blokiran u iframe-u) — landingRoute fallback */ }
@@ -97,7 +98,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const entry = params.get('entry');
     // Očisti fragment ODMAH (pre mrežnog poziva) — token van URL-a/history-ja/ekstenzija.
     window.history.replaceState(null, '', window.location.pathname + window.location.search);
-    if (entry && entry.startsWith('/') && !entry.startsWith('//') && !entry.startsWith('/login')) {
+    // `entry` dolazi iz SIROVOG fragmenta (browser ga NE normalizuje) → stroga provera
+    // protiv open-redirect-a (backslash/cross-origin), isti helper kao login potrošač.
+    if (isSafeInternalPath(entry)) {
       try { sessionStorage.setItem('ss2.entryPath', entry); } catch { /* blokiran storage → landingRoute */ }
     }
     if (!token) return;
