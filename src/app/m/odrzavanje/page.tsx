@@ -12,6 +12,7 @@ import {
   useMachine,
   useMaintMe,
   useVehicle,
+  useVehicles,
   type AssetPickerRow,
   type AssetType,
 } from '@/api/odrzavanje';
@@ -41,6 +42,20 @@ const CATEGORIES: { type: AssetType; ico: string; label: string }[] = [
   { type: 'it', ico: '💻', label: 'IT oprema' },
 ];
 const ASSET_ICO: Record<string, string> = { machine: '⚙️', vehicle: '🚗', it: '💻', facility: '🏢' };
+
+/**
+ * Haystack mobilne pretrage sredstava. 1.0 hub je tražio i po `manufacturer`
+ * (myMaintenance.js:89-92), a lista i po `model`. GET /maintenance/assets (AssetPickerRow)
+ * te kolone NE deklariše u tipu, pa ih čitamo defanzivno (rekord-cast): čim ih picker
+ * počne vraćati, pretraga ih odmah hvata — dok ih nema, član je prazan (no-op).
+ */
+function assetHaystack(a: AssetPickerRow): string {
+  const ext = a as unknown as Record<string, unknown>;
+  return [a.assetCode, a.name, ext.manufacturer, ext.model]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+}
 
 type View = 'hub' | 'list' | 'karton';
 type ReportTarget = { asset?: AssetPickerRow } | null;
@@ -72,23 +87,32 @@ export default function MobileOdrzavanjePage() {
     setView('karton');
   }
 
-  // Skenirani kod (bare ili URL nalepnice) → poslednji segment putanje → uparivanje
-  // po asset_code (case-insensitive). Pogodak otvara karton; promašaj puni pretragu.
+  // Skenirani kod (bare ili URL nalepnice) → uparivanje po asset_code (case-insensitive).
+  // Podržana OBA oblika QR-a: 1.0 nalepnice nose kod u POSLEDNJEM segmentu putanje
+  // (…/assets/it/<code>), a 2.0 kartoni štampaju query param (…/odrzavanje/vozila?code=BG3088TK,
+  // …/odrzavanje/sredstva?code=X&kind=it). Kandidati = [raw, poslednji-segment, ?code=].
+  // Pogodak otvara karton; promašaj puni pretragu čitljivim kodom (ne „code=…").
   function handleScanned(code: string) {
     const raw = code.trim();
     let tail = raw;
+    let codeParam: string | null = null;
+    if (raw.includes('?')) {
+      try { codeParam = new URL(raw, window.location.origin).searchParams.get('code'); } catch { /* nije validan URL */ }
+    }
     if (raw.includes('/')) {
       const segs = raw.split(/[/?#]/).filter(Boolean);
       if (segs.length) {
         try { tail = decodeURIComponent(segs[segs.length - 1]); } catch { tail = segs[segs.length - 1]; }
       }
     }
-    const cands = [raw.toLowerCase(), tail.toLowerCase()];
+    const cands = [raw, tail, codeParam]
+      .filter((c): c is string => !!c)
+      .map((c) => c.toLowerCase().trim());
     const hit = assets.find((a) => cands.includes(String(a.assetCode || '').toLowerCase().trim()));
     if (hit) {
       openAsset(hit);
     } else {
-      setQ(tail);
+      setQ(codeParam || tail);
       setCat(null);
       setView('hub');
     }
@@ -195,7 +219,7 @@ function Hub({
 }) {
   const term = q.trim().toLowerCase();
   const results = useMemo(
-    () => (term ? assets.filter((a) => `${a.assetCode} ${a.name}`.toLowerCase().includes(term)) : []),
+    () => (term ? assets.filter((a) => assetHaystack(a).includes(term)) : []),
     [assets, term],
   );
   const countOf = (t: AssetType) => assets.filter((a) => a.assetType === t).length;
@@ -278,7 +302,7 @@ function CatList({
   const term = q.trim().toLowerCase();
   const rows = useMemo(() => {
     const base = assets.filter((a) => a.assetType === cat);
-    return term ? base.filter((a) => `${a.assetCode} ${a.name}`.toLowerCase().includes(term)) : base;
+    return term ? base.filter((a) => assetHaystack(a).includes(term)) : base;
   }, [assets, cat, term]);
 
   return (
@@ -355,7 +379,7 @@ function Karton({ asset, onReport }: { asset: AssetPickerRow; onReport: () => vo
         {asset.name && <div className="mt-0.5 text-sm text-ink-secondary">{asset.name}</div>}
 
         {asset.assetType === 'machine' && <MachineDetail q={machine} />}
-        {asset.assetType === 'vehicle' && <VehicleDetail q={vehicle} />}
+        {asset.assetType === 'vehicle' && <VehicleDetail q={vehicle} assetId={asset.assetId} />}
         {asset.assetType === 'it' && <AssetDetailBlock q={itAsset} fields={IT_FIELDS} />}
         {asset.assetType === 'facility' && <AssetDetailBlock q={facility} fields={FACILITY_FIELDS} />}
       </div>
@@ -444,11 +468,21 @@ function MachineDetail({ q }: { q: ReturnType<typeof useMachine> }) {
   );
 }
 
-function VehicleDetail({ q }: { q: ReturnType<typeof useVehicle> }) {
+function VehicleDetail({ q, assetId }: { q: ReturnType<typeof useVehicle>; assetId: string }) {
   const v = q.data?.data;
   const d = v?.details ?? null;
   const km = d?.odometerKm != null ? `${Number(d.odometerKm).toLocaleString('sr-RS')} km` : null;
-  const driver = d ? f(d as Record<string, unknown>, 'primary_driver_name', 'driver_full_name', 'driverName') : null;
+  // Ime vozača: detail endpoint (VehicleDetails) nosi samo primary_driver_id (ID, ne ime).
+  // `v_maint_vehicle_overview` (GET /maintenance/vehicles → useVehicles) izlaže driver_full_name,
+  // pa ime dovlačimo iz liste vozila po asset_id — bez izmene BE detail endpointa.
+  const vehicles = useVehicles();
+  const overview = useMemo(
+    () => (vehicles.data?.data ?? []).find((r) => r.asset_id === assetId) ?? null,
+    [vehicles.data, assetId],
+  );
+  const driver =
+    (overview ? f(overview, 'driver_full_name') : null) ??
+    (d ? f(d as Record<string, unknown>, 'primary_driver_name', 'driver_full_name', 'driverName') : null);
   return (
     <DetailWrap loading={q.isLoading}>
       {v ? (
