@@ -12,6 +12,7 @@ import {
   REVERSI_BULK_FORMAT_OPTIONS,
   type ReversiLabelFormat,
   type ReversiLabelRow,
+  type ReversiTsplTemplate,
 } from '@/lib/reversi-labels';
 
 const INPUT =
@@ -35,8 +36,10 @@ export function BulkPrintLabelsDialog({
   rows: ReversiLabelRow[];
 }) {
   const [format, setFormat] = useState<ReversiLabelFormat>('a4-105x74');
+  const [template, setTemplate] = useState<ReversiTsplTemplate>('standard');
   const [copies, setCopies] = useState(1);
   const [busy, setBusy] = useState(false);
+  const isTsc = format === 'tsc';
 
   const withBarcode = useMemo(() => rows.filter((r) => r.barcode), [rows]);
   const preview = withBarcode.slice(0, PREVIEW_MAX);
@@ -46,7 +49,12 @@ export function BulkPrintLabelsDialog({
   async function run(dryRun: boolean) {
     setBusy(true);
     try {
-      const res = await printReversiLabelsMultiFormat(withBarcode, { format, copies, dryRun });
+      const res = await printReversiLabelsMultiFormat(withBarcode, {
+        format,
+        copies,
+        dryRun,
+        template,
+      });
       if (res.ok && !dryRun) {
         toast(`Pripremljeno ${formatNumber(totalLabels)} nalepnica za štampu`);
         onClose();
@@ -150,6 +158,18 @@ export function BulkPrintLabelsDialog({
               }
             />
           </FormField>
+          {isTsc && (
+            <FormField label="Šablon TSC (sadržaj)">
+              <select
+                className={INPUT}
+                value={template}
+                onChange={(e) => setTemplate(e.target.value as ReversiTsplTemplate)}
+              >
+                <option value="standard">Standard 80×40 (ručni / rezni)</option>
+                <option value="mini">Mini 30×15 (pločice — štampač podešen u admin-u)</option>
+              </select>
+            </FormField>
+          )}
         </div>
       </div>
     </Dialog>

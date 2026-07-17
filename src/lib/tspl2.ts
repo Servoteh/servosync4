@@ -173,6 +173,90 @@ export function buildReversiHandToolLabelProgram(spec: HandToolLabelSpec): strin
   return lines.join('\r\n') + '\r\n';
 }
 
+// --------------------------------------------------------------- Reversi: nalepnica reznog alata
+// Port iz ServoSync 1.0 (`src/lib/tspl2.js buildTspCuttingToolLabelProgram`, RZ-2) — Reversi
+// štampa nalepnica reznog alata (grupa CUTTING). Layout 80.34×40.3mm:
+//   Red 1: barkod string (font "5", čitljiv) | oznaka desno (ako se razlikuje),
+//   Red 2: naziv (font "3"), Red 3: „Klasa: …", Red 4: „Masine: …",
+//   Barkod CODE128 (128M) x=2mm y=19.5mm h=18mm human_readable=1.
+// NE šalje SIZE/GAP/DENSITY (vidi vrh fajla).
+
+export interface CuttingToolLabelSpec {
+  barcode: string;
+  oznaka?: string;
+  naziv?: string;
+  klasa?: string;
+  /** Kompatibilne mašine — spajaju se u red „Masine: …". */
+  compatibleMachineCodes?: string[];
+  copies?: number;
+}
+
+/** Jedna nalepnica reznog alata (80.34×40.3mm) — paritet 1.0 `buildTspCuttingToolLabelProgram`. */
+export function buildTspCuttingToolLabelProgram(spec: CuttingToolLabelSpec): string {
+  const barcode = String(spec?.barcode ?? '').trim();
+  if (!barcode) throw new Error('buildTspCuttingToolLabelProgram: barcode je obavezan');
+
+  const oznaka = String(spec?.oznaka ?? '').trim();
+  const naziv = String(spec?.naziv ?? '').trim();
+  const klasa = String(spec?.klasa ?? '').trim();
+  const machines = Array.isArray(spec?.compatibleMachineCodes)
+    ? spec.compatibleMachineCodes.filter(Boolean).join(', ')
+    : '';
+  const copies = Math.max(1, Math.floor(Number(spec?.copies) || 1));
+
+  const lines: string[] = ['CLS'];
+
+  /* Red 1: barkod string (font "5" ~16pt) — čitljiv pored barkoda. */
+  lines.push(`TEXT ${mm(2)},${mm(1.5)},"5",0,1,1,${tsplStr(truncFit(barcode, 18))}`);
+  /* Red 1 (desno): oznaka — samo ako se razlikuje od barkoda. */
+  if (oznaka && oznaka !== barcode)
+    lines.push(`TEXT ${mm(46)},${mm(2.5)},"2",0,1,1,${tsplStr(truncFit(oznaka, 16))}`);
+  /* Red 2: naziv (puna širina, font "3" ~10pt). */
+  if (naziv) lines.push(`TEXT ${mm(2)},${mm(9)},"3",0,1,1,${tsplStr(truncFit(naziv, 38))}`);
+  /* Red 3: klasa. */
+  if (klasa)
+    lines.push(`TEXT ${mm(2)},${mm(13.5)},"2",0,1,1,${tsplStr('Klasa: ' + truncFit(klasa, 26))}`);
+  /* Red 4: kompatibilne mašine. */
+  if (machines)
+    lines.push(`TEXT ${mm(2)},${mm(16.5)},"2",0,1,1,${tsplStr('Masine: ' + truncFit(machines, 50))}`);
+  /* Barkod CODE128 (128M): x=2mm, y=19.5mm, h=18mm, human_readable=1. */
+  lines.push(`BARCODE ${mm(2)},${mm(19.5)},"128M",${mm(18)},1,0,2,4,${tsplStr(barcode)}`);
+  lines.push(`PRINT ${copies},1`);
+  return lines.join('\r\n') + '\r\n';
+}
+
+// --------------------------------------------------------------- Reversi: mini nalepnica (uložak)
+// Port iz ServoSync 1.0 (`src/lib/tspl2.js buildTspMiniInsertLabelProgram`) — mini nalepnica
+// 30×15mm (glodačke pločice / ulošci). Pretpostavlja da je štampač VEĆ podešen na 30×15 u
+// TSC admin-u — NE šalje SIZE/GAP/DENSITY (kao ostali builderi; ML340P je read-only).
+// Layout: oznaka (font "2"), klasa (font "1"), barkod CODE128 x=1mm y=6mm h=8mm.
+
+export interface MiniInsertLabelSpec {
+  barcode: string;
+  oznaka?: string;
+  klasa?: string;
+  copies?: number;
+}
+
+/** Jedna mini nalepnica 30×15mm — paritet 1.0 `buildTspMiniInsertLabelProgram`. */
+export function buildTspMiniInsertLabelProgram(spec: MiniInsertLabelSpec): string {
+  const barcode = String(spec?.barcode ?? '').trim();
+  if (!barcode) throw new Error('buildTspMiniInsertLabelProgram: barcode je obavezan');
+
+  const oznaka = String(spec?.oznaka ?? '').trim();
+  const klasa = String(spec?.klasa ?? '').trim();
+  const copies = Math.max(1, Math.floor(Number(spec?.copies) || 1));
+
+  const lines: string[] = ['CLS'];
+  if (oznaka) lines.push(`TEXT ${mm(1)},${mm(0.5)},"2",0,1,1,${tsplStr(truncFit(oznaka, 14))}`);
+  if (klasa && klasa !== oznaka)
+    lines.push(`TEXT ${mm(1)},${mm(3)},"1",0,1,1,${tsplStr(truncFit(klasa, 18))}`);
+  /* Barkod CODE128 (128M): x=1mm, y=6mm, h=8mm, narrow=2, wide=3 (uže zbog 30mm širine). */
+  lines.push(`BARCODE ${mm(1)},${mm(6)},"128M",${mm(8)},0,0,2,3,${tsplStr(barcode)}`);
+  lines.push(`PRINT ${copies},1`);
+  return lines.join('\r\n') + '\r\n';
+}
+
 /** Jedna nalepnica police (80.34×40.3mm) — paritet 1.0 barcode/QR layout. */
 export function buildTspShelfLabelProgram(spec: ShelfLabelSpec): string {
   const encode = String(spec?.barcodeValue ?? '').trim();

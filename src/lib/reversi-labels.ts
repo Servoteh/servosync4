@@ -11,7 +11,11 @@
 'use client';
 
 import { printReversiLabel } from '@/api/reversi';
-import { buildReversiHandToolLabelProgram } from '@/lib/tspl2';
+import {
+  buildReversiHandToolLabelProgram,
+  buildTspCuttingToolLabelProgram,
+  buildTspMiniInsertLabelProgram,
+} from '@/lib/tspl2';
 import {
   FORMAT_DIMS,
   code128bSvg,
@@ -19,14 +23,30 @@ import {
 } from '@/app/lokacije/_components/labels-print-window';
 import { toast } from '@/lib/toast';
 
-/** Jedna nalepnica ručnog alata (paritet 1.0 bulk-print reda: HAND + barcode + meta). */
+/**
+ * TSC sadržajni šablon (RC-57): `standard` = 80×40mm (ručni HAND / rezni CUTTING),
+ * `mini` = 30×15mm uložak (glodačke pločice, štampač već podešen u TSC admin-u).
+ */
+export type ReversiTsplTemplate = 'standard' | 'mini';
+
+/**
+ * Jedan red za štampu nalepnice (paritet 1.0 bulk-print reda). Podrazumevano = HAND
+ * (ručni alat). Za rezni alat postavi `grupa: 'CUTTING'` (RC-61) + opcione `klasa` i
+ * `compatibleMachineCodes` da bi TSC put izabrao `buildTspCuttingToolLabelProgram`.
+ */
 export interface ReversiLabelRow {
   barcode: string;
   oznaka: string;
   naziv: string;
-  /** Labela podgrupe (klasa) — prikazuje se uz serijski u trećem redu. */
+  /** Labela podgrupe (klasa) — prikazuje se uz serijski u trećem redu (HAND). */
   subgroupLabel?: string | null;
   serial?: string | null;
+  /** Grupa alata — bira TSC layout: `CUTTING` → rezni, inače (default) → ručni (HAND). */
+  grupa?: 'HAND' | 'CUTTING' | null;
+  /** Klasa reznog alata — red „Klasa: …" (CUTTING) i „oznaka" mini uloška. */
+  klasa?: string | null;
+  /** Kompatibilne mašine reznog — red „Masine: …" (CUTTING). */
+  compatibleMachineCodes?: string[] | null;
 }
 
 function escHtml(s: unknown): string {
@@ -81,22 +101,52 @@ function labelHtmlBlock(row: ReversiLabelRow): string {
   </div>`;
 }
 
-/** Sastavi RAW TSPL2 za sve redove × kopije (ALAT- layout). */
-function composeTspl(rows: ReversiLabelRow[], copies: number): string {
+/**
+ * Sastavi RAW TSPL2 za sve redove × kopije, birajući layout po šablonu/grupi (paritet 1.0
+ * `composeMultiLabelTspl`): `mini` šablon → 30×15 uložak za sve redove; inače po redu
+ * `grupa === 'CUTTING'` → rezni layout (RC-61), a podrazumevano → ručni (HAND) layout.
+ */
+function composeTspl(
+  rows: ReversiLabelRow[],
+  copies: number,
+  template: ReversiTsplTemplate = 'standard',
+): string {
   const chunks: string[] = [];
   for (const r of rows) {
     if (!r.barcode) continue;
     for (let i = 0; i < copies; i += 1) {
-      chunks.push(
-        buildReversiHandToolLabelProgram({
-          barcode: r.barcode,
-          oznaka: r.oznaka,
-          naziv: r.naziv,
-          assetKind: r.subgroupLabel ?? '',
-          serial: r.serial ?? '',
-          copies: 1,
-        }),
-      );
+      if (template === 'mini') {
+        chunks.push(
+          buildTspMiniInsertLabelProgram({
+            barcode: r.barcode,
+            oznaka: r.oznaka,
+            klasa: r.klasa ?? r.subgroupLabel ?? '',
+            copies: 1,
+          }),
+        );
+      } else if (r.grupa === 'CUTTING') {
+        chunks.push(
+          buildTspCuttingToolLabelProgram({
+            barcode: r.barcode,
+            oznaka: r.oznaka,
+            naziv: r.naziv,
+            klasa: r.klasa ?? r.subgroupLabel ?? '',
+            compatibleMachineCodes: r.compatibleMachineCodes ?? [],
+            copies: 1,
+          }),
+        );
+      } else {
+        chunks.push(
+          buildReversiHandToolLabelProgram({
+            barcode: r.barcode,
+            oznaka: r.oznaka,
+            naziv: r.naziv,
+            assetKind: r.subgroupLabel ?? '',
+            serial: r.serial ?? '',
+            copies: 1,
+          }),
+        );
+      }
     }
   }
   return chunks.join('\r\n');
@@ -175,7 +225,7 @@ function reversiA4Block(row: ReversiLabelRow): string {
   const barcode = String(row.barcode ?? '').trim();
   const oznaka = String(row.oznaka ?? '').trim();
   const naziv = String(row.naziv ?? '').trim();
-  const klasa = String(row.subgroupLabel ?? '').trim();
+  const klasa = String(row.subgroupLabel ?? row.klasa ?? '').trim();
   const klasaLine = klasa ? `<div class="lbl-klasa">${escHtml(klasa)}</div>` : '';
   return `<div class="label">
     <div class="lbl-oznaka">${escHtml(oznaka)}</div>
@@ -228,7 +278,13 @@ function reversiA4Doc(count: number, format: ReversiLabelFormat, labelsHtml: str
  */
 export async function printReversiLabelsMultiFormat(
   rows: ReversiLabelRow[],
-  opts: { format?: ReversiLabelFormat; copies?: number; dryRun?: boolean } = {},
+  opts: {
+    format?: ReversiLabelFormat;
+    copies?: number;
+    dryRun?: boolean;
+    /** TSC sadržajni šablon (RC-57) — `mini` = 30×15 uložak; važi samo za `format: 'tsc'`. */
+    template?: ReversiTsplTemplate;
+  } = {},
 ): Promise<{ ok: boolean; reason?: string }> {
   const withBarcode = (Array.isArray(rows) ? rows : []).filter((r) => r?.barcode);
   if (!withBarcode.length) {
@@ -238,6 +294,7 @@ export async function printReversiLabelsMultiFormat(
   const format: ReversiLabelFormat =
     opts.format && FORMAT_DIMS[opts.format] ? opts.format : 'a4-105x74';
   const copies = Math.max(1, Math.min(50, Math.floor(Number(opts.copies) || 1)));
+  const template: ReversiTsplTemplate = opts.template === 'mini' ? 'mini' : 'standard';
   const isTsc = format === 'tsc';
 
   const flat: ReversiLabelRow[] = [];
@@ -269,7 +326,7 @@ export async function printReversiLabelsMultiFormat(
   // garancija, pa neuspeh mreže ne obara operaciju (paritet 1.0).
   if (isTsc && !opts.dryRun) {
     try {
-      const tspl2 = composeTspl(withBarcode, copies);
+      const tspl2 = composeTspl(withBarcode, copies, template);
       await printReversiLabel(tspl2, copies);
       toast(`Poslato ${flat.length} nalepnica na TSC štampač`);
     } catch {

@@ -19,6 +19,13 @@ import { ScanOverlay } from './scan-overlay';
 const INPUT =
   'w-full rounded-control border border-line bg-surface-2 px-2.5 py-1.5 text-sm text-ink outline-none focus:border-accent';
 
+/** Podrazumevani rok povraćaja = danas + 14 dana (yyyy-mm-dd), paritet 1.0 (RC-31). */
+function defaultReturnDate(): string {
+  const d = new Date();
+  d.setDate(d.getDate() + 14);
+  return d.toISOString().slice(0, 10);
+}
+
 /**
  * Izdavanje reznog alata na mašinu (rev_issue_cutting_reversal). RB-36 — mašina se
  * bira iz PUNOG spiska `v_rev_machines` (kompatibilne su na vrhu), skener ZADU-M- i
@@ -31,6 +38,7 @@ export function CuttingIssueDialog({ tool, onClose }: { tool: CuttingTool; onClo
   const [machine, setMachine] = useState(tool.compatibleMachineCodes[0] ?? '');
   const [qty, setQty] = useState(1);
   const [note, setNote] = useState('');
+  const [expectedReturnDate, setExpectedReturnDate] = useState(defaultReturnDate);
   const [empQ, setEmpQ] = useState('');
   const [employee, setEmployee] = useState<{ id: string; name: string } | null>(null);
   const [scanMachine, setScanMachine] = useState(false);
@@ -70,6 +78,7 @@ export function CuttingIssueDialog({ tool, onClose }: { tool: CuttingTool; onClo
           recipient_machine_code: machine.trim(),
           issued_to_employee_id: employee.id,
           issued_to_employee_name: employee.name,
+          expected_return_date: expectedReturnDate || null,
           napomena: note.trim() || undefined,
           lines: [{ catalog_id: tool.id, quantity: qty, sort_order: 0 }],
         },
@@ -136,6 +145,14 @@ export function CuttingIssueDialog({ tool, onClose }: { tool: CuttingTool; onClo
         </FormField>
         <FormField label="Količina">
           <input className={`${INPUT} w-32`} type="number" min={1} value={qty} onChange={(e) => setQty(Math.max(1, Number(e.target.value) || 1))} />
+        </FormField>
+        <FormField label="Rok povraćaja (opciono)">
+          <input
+            className={`${INPUT} w-48`}
+            type="date"
+            value={expectedReturnDate}
+            onChange={(e) => setExpectedReturnDate(e.target.value)}
+          />
         </FormField>
         <FormField label="Napomena">
           <input className={INPUT} value={note} onChange={(e) => setNote(e.target.value)} />

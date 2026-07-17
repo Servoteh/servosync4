@@ -33,6 +33,12 @@ import { CuttingReturnDialog } from './cutting-return-dialog';
 import { RezniMapaView } from './rezni-mapa-view';
 import { InventoryGroupsDialog } from './inventory-groups-dialog';
 import { BulkPrintLabelsDialog } from './bulk-print-labels-dialog';
+import { CuttingIssueScannerDialog } from './cutting-issue-scanner-dialog';
+import { RezniByMachineView } from './rezni-by-machine-view';
+import { RezniByEmployeeView } from './rezni-by-employee-view';
+import { BulkImportDialog } from './bulk-import-dialog';
+import { ImportRollbackDialog } from './import-rollback-dialog';
+import { RezniAlatIcon } from './rezni-icon';
 
 const INPUT =
   'w-full rounded-control border border-line bg-surface-2 px-2.5 py-1.5 text-sm text-ink outline-none focus:border-accent';
@@ -48,7 +54,14 @@ type RezniSubview = 'mapa' | 'katalog' | 'masine' | 'zaposleni';
 
 /** Šifra reznog → red za štampu nalepnice (RC-15/RC-26). Deljeno sa deo-B pod-tabovima. */
 export function cuttingToolToLabelRow(t: CuttingTool): ReversiLabelRow {
-  return { barcode: t.barcode ?? '', oznaka: t.oznaka, naziv: t.naziv };
+  // grupa CUTTING → composeTspl bira rezni TSPL2 layout (RC-61/RC-62).
+  return {
+    barcode: t.barcode ?? '',
+    oznaka: t.oznaka,
+    naziv: t.naziv,
+    grupa: 'CUTTING',
+    compatibleMachineCodes: t.compatibleMachineCodes,
+  };
 }
 
 /**
@@ -76,8 +89,23 @@ function StatusPill({ status }: { status: string }) {
  * Pregled (grafička mapa), Katalog (šifre), Po mašinama, Po zaposlenima. Podrazumevan
  * pod-tab = Katalog (1.0 `ssGet(SUB_TAB_KEY,'katalog')`).
  */
+const SUB_TAB_KEY = 'reversi:rezniSubTab';
+
+/** RC-01 — restauracija poslednjeg pod-taba (paritet 1.0 ssGet(SUB_TAB_KEY)). */
+function readSubTab(): RezniSubview {
+  if (typeof window === 'undefined') return 'katalog';
+  const s = window.sessionStorage.getItem(SUB_TAB_KEY);
+  return s === 'mapa' || s === 'katalog' || s === 'masine' || s === 'zaposleni' ? s : 'katalog';
+}
+
 export function RezniAlatTab() {
-  const [subview, setSubview] = useState<RezniSubview>('katalog');
+  const [subview, setSubviewState] = useState<RezniSubview>(readSubTab);
+
+  /** RC-01 — aktivni pod-tab se pamti u sessionStorage. */
+  function setSubview(v: RezniSubview) {
+    setSubviewState(v);
+    if (typeof window !== 'undefined') window.sessionStorage.setItem(SUB_TAB_KEY, v);
+  }
 
   const subTabs: TabItem<RezniSubview>[] = [
     { key: 'mapa', label: 'Pregled' },
@@ -88,23 +116,17 @@ export function RezniAlatTab() {
 
   return (
     <div className="space-y-4">
+      {/* RB-61 — dedicirana ikonica reznog (glodalo) + pod-tabovi. */}
+      <div className="flex items-center gap-2">
+        <RezniAlatIcon className="text-accent" size={18} />
+        <span className="text-sm font-semibold text-ink">Rezni alat</span>
+      </div>
       <Tabs tabs={subTabs} value={subview} onChange={setSubview} ariaLabel="Rezni alat" />
 
       {subview === 'mapa' && <RezniMapaView />}
       {subview === 'katalog' && <KatalogSubview />}
-      {/* RC-34/35 (Po mašinama) i RC-36/37 (Po zaposlenima) = Drop R5 deo B (sledeći agent).
-          BE spreman: GET /reports/cutting-by-machine (q?/machineCode?), /reports/cutting-by-employee
-          (q?/department?). Zameniti placeholder importom RezniByMachineView / RezniByEmployeeView. */}
-      {subview === 'masine' && <SubviewPlaceholder label="Po mašinama" />}
-      {subview === 'zaposleni' && <SubviewPlaceholder label="Po zaposlenima" />}
-    </div>
-  );
-}
-
-function SubviewPlaceholder({ label }: { label: string }) {
-  return (
-    <div className="rounded-panel border border-dashed border-line bg-surface p-8 text-center text-sm text-ink-secondary">
-      Pod-tab „{label}" — u pripremi (Drop R5 deo B).
+      {subview === 'masine' && <RezniByMachineView />}
+      {subview === 'zaposleni' && <RezniByEmployeeView />}
     </div>
   );
 }
@@ -160,6 +182,9 @@ function KatalogSubview() {
   const [issueFor, setIssueFor] = useState<CuttingTool | null>(null);
   const [returnOpen, setReturnOpen] = useState(false);
   const [groupsOpen, setGroupsOpen] = useState(false);
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [rollbackOpen, setRollbackOpen] = useState(false);
   const [bulkPrintRows, setBulkPrintRows] = useState<ReversiLabelRow[] | null>(null);
 
   useEffect(() => {
@@ -487,10 +512,25 @@ function KatalogSubview() {
         <Button variant="secondary" onClick={() => setReturnOpen(true)}>
           ↩ Povraćaj
         </Button>
+        {manage && (
+          <Button variant="secondary" onClick={() => setScannerOpen(true)}>
+            🎯 Skenirano zaduženje
+          </Button>
+        )}
         <span className="flex-1" />
         <Button variant="secondary" onClick={exportCsv}>
           📗 Izvoz CSV
         </Button>
+        {manage && (
+          <Button variant="secondary" onClick={() => setImportOpen(true)}>
+            📥 Uvoz reznog
+          </Button>
+        )}
+        {manage && (
+          <Button variant="secondary" onClick={() => setRollbackOpen(true)}>
+            ↩ Storno uvoza
+          </Button>
+        )}
         {manage && (
           <Button variant="secondary" onClick={() => setGroupsOpen(true)}>
             📂 Grupe
@@ -557,6 +597,11 @@ function KatalogSubview() {
       {manage && seedFor && <SeedDialog tool={seedFor} onClose={() => setSeedFor(null)} />}
       {manage && issueFor && <CuttingIssueDialog tool={issueFor} onClose={() => setIssueFor(null)} />}
       {manage && <InventoryGroupsDialog open={groupsOpen} onClose={() => setGroupsOpen(false)} />}
+      {scannerOpen && <CuttingIssueScannerDialog open onClose={() => setScannerOpen(false)} />}
+      {manage && (
+        <BulkImportDialog open={importOpen} onClose={() => setImportOpen(false)} initialType="cutting" />
+      )}
+      {manage && <ImportRollbackDialog open={rollbackOpen} onClose={() => setRollbackOpen(false)} />}
       {manage && (
         <BulkPrintLabelsDialog
           open={!!bulkPrintRows}
@@ -680,12 +725,23 @@ function CuttingToolDialog({ tool, onClose }: { tool?: CuttingTool; onClose: () 
         });
         const qty = Math.max(0, Math.floor(initQty));
         if (qty > 0 && initLoc && res.data?.id) {
-          await seed.mutateAsync({
-            clientEventId: newClientEventId(),
-            catalogId: res.data.id,
-            locationId: initLoc,
-            qty,
-          });
+          try {
+            await seed.mutateAsync({
+              clientEventId: newClientEventId(),
+              catalogId: res.data.id,
+              locationId: initLoc,
+              qty,
+            });
+          } catch (seedErr) {
+            // RC-23 — šifra JE kreirana; ne ostavljaj dijalog otvoren (ponovni Sačuvaj → unique violation).
+            toast(
+              `Šifra „${oz}" dodata, ali početno stanje nije upisano (${
+                seedErr instanceof Error ? seedErr.message : 'greška'
+              }). Dodaj zalihu ručno.`,
+            );
+            onClose();
+            return;
+          }
         }
       }
       onClose();
