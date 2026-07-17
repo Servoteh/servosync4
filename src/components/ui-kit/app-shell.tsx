@@ -426,7 +426,10 @@ function FullBody(props: FullBodyProps) {
         </div>
       </div>
 
-      <nav className="flex-1 overflow-y-auto px-2 py-2">
+      {/* min-h-0 je OBAVEZAN: bez njega flex-item (nav) ima default min-height:auto,
+          pa sa mnogo modula (admin vidi sve domene + 13 u Proizvodnji) NE skroluje nego
+          naraste preko okvira → footer/Odjava ispadne, sadržaj se preklapa. */}
+      <nav className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
         {props.domains.map((domain) => {
           const isActive = domain.id === props.activeDomainId;
           // Aktivni domen je UVEK otvoren (forsirano); ostali po ručnom stanju (persist).
