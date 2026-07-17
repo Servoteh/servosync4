@@ -52,6 +52,7 @@ describe("Reversi permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     "lookupBarcode",
     "bulkImportTools",
     "listCuttingTools",
+    "cuttingOpenLines",
     "createCuttingTool",
     "updateCuttingTool",
     "cuttingByMachine",
@@ -162,6 +163,15 @@ describe("Reversi permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     });
     it("GET /lookups/barcode → 200 za magacioner (skener resolver = reversi.read)", async () => {
       await get("/lookups/barcode?code=ALAT-000057", "magacioner").expect(200);
+    });
+    it("GET /cutting-tools/open-lines → 200 za proizvodni_radnik (povraćaj NIJE role-gated)", async () => {
+      await get(
+        "/cutting-tools/open-lines?barcode=RZN-000123",
+        "proizvodni_radnik",
+      ).expect(200);
+    });
+    it("GET /cutting-tools/open-lines → 403 za user (default deny)", async () => {
+      await get("/cutting-tools/open-lines", "user").expect(403);
     });
     it("bez identiteta → 403 (JwtAuthGuard stub)", async () => {
       await request(app.getHttpServer())

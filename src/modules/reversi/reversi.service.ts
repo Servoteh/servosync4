@@ -55,6 +55,26 @@ export interface LedgerQuery {
   pageSize?: string;
 }
 
+/** Sirovi red iz `v_rev_my_issued_cutting_tools` ($queryRaw → snake_case + float8 qty). */
+interface CuttingOpenLineRow {
+  line_id: string;
+  document_id: string;
+  doc_number: string;
+  catalog_id: string;
+  barcode: string | null;
+  oznaka: string;
+  naziv: string;
+  quantity: number;
+  returned_quantity: number;
+  remaining_quantity: number;
+  unit: string;
+  recipient_machine_code: string | null;
+  issued_at: Date;
+  expected_return_date: Date | null;
+  line_status: string;
+  document_status: string;
+}
+
 /** Allowlist sort/filter pariteta iz 1.0 (`FETCH_TOOLS_SORTABLE`) — proširuje se u R3 po potrebi UI-ja. */
 const TOOL_STATUSES = new Set(["active", "scrapped", "lost"]);
 
@@ -282,7 +302,20 @@ export class ReversiService {
 
   // ---------- Rezni alat (rev_cutting_tool_catalog) ----------
 
-  /** Katalog reznog alata + ukupno na stanju (suma po lokacijama). */
+  /**
+   * Katalog reznog alata sa RAZDVOJENIM stanjem (RC-06 — kraj „tihe laži").
+   *
+   * 1.0 (`src/services/reversiService.js#fetchCuttingToolCatalog` + `reznialat.js`)
+   * NE sabira sve lokacije u jedno „Na stanju"; razdvaja dva pojma:
+   *   - `inWarehouseQty` = SUM(on_hand_qty) SAMO po lokacijama `loc_locations.location_type = 'WAREHOUSE'`
+   *     (magacinski raspoloživo — po ovome okida semafor niske zalihe: `wh < min`),
+   *   - `onMachinesQty` = SUM(outstanding_qty) iz `v_rev_cts_machine_stock` (izdato-a-nevraćeno
+   *     po mašini, iz stavki dokumenata — ISTI izvor kao 1.0 front, ne ZADU-M stock red).
+   * `onHandQty` = UKUPNO = inWarehouse + onMachines (paritet 1.0 `total_on_hand`).
+   *
+   * Ranije: `onHandQty = SUM(on_hand_qty)` po SVIM lokacijama → prikazivalo je „ukupno ikad
+   * seedovano", pa je magacin izgledao pun i kad je sve izdato po mašinama (semafor nije okidao).
+   */
   async listCuttingTools(q?: string) {
     const term = (q ?? "").trim();
     const where: Prisma.RevCuttingToolCatalogWhereInput = term
@@ -299,16 +332,85 @@ export class ReversiService {
       orderBy: { oznaka: "asc" },
       take: 500,
     });
-    const stock = await this.sy15.db.revCuttingToolStock.groupBy({
-      by: ["catalogId"],
-      _sum: { onHandQty: true },
-    });
-    const onHand = new Map(
-      stock.map((s) => [s.catalogId, Number(s._sum.onHandQty ?? 0)]),
+    if (catalog.length === 0) return { data: [] };
+
+    const ids = Prisma.join(
+      catalog.map((c) => Prisma.sql`${c.id}::uuid`),
     );
-    const data = catalog.map((c) => ({
-      ...c,
-      onHandQty: onHand.get(c.id) ?? 0,
+    // Magacinski raspoloživo (samo WAREHOUSE lokacije) — paritet 1.0 in_warehouse_qty.
+    const warehouse = await this.sy15.db.$queryRaw<
+      { catalog_id: string; qty: number }[]
+    >(Prisma.sql`
+      SELECT s.catalog_id::text AS catalog_id, COALESCE(SUM(s.on_hand_qty), 0)::float8 AS qty
+      FROM rev_cutting_tool_stock s
+      JOIN loc_locations l ON l.id = s.location_id
+      WHERE s.catalog_id IN (${ids}) AND l.location_type = 'WAREHOUSE'
+      GROUP BY s.catalog_id`);
+    // Izdato po mašinama (iz stavki dokumenata) — paritet 1.0 on_machines_qty.
+    const machines = await this.sy15.db.$queryRaw<
+      { catalog_id: string; qty: number }[]
+    >(Prisma.sql`
+      SELECT ms.catalog_id::text AS catalog_id, COALESCE(SUM(ms.outstanding_qty), 0)::float8 AS qty
+      FROM v_rev_cts_machine_stock ms
+      WHERE ms.catalog_id IN (${ids}) AND ms.outstanding_qty > 0
+      GROUP BY ms.catalog_id`);
+
+    const whBy = new Map(warehouse.map((r) => [r.catalog_id, Number(r.qty) || 0]));
+    const machBy = new Map(machines.map((r) => [r.catalog_id, Number(r.qty) || 0]));
+    const data = catalog.map((c) => {
+      const inWarehouseQty = whBy.get(c.id) ?? 0;
+      const onMachinesQty = machBy.get(c.id) ?? 0;
+      return {
+        ...c,
+        inWarehouseQty,
+        onMachinesQty,
+        onHandQty: inWarehouseQty + onMachinesQty,
+      };
+    });
+    return { data };
+  }
+
+  /**
+   * Otvorene ISSUED linije reznog alata koje je PRIJAVLJENI korisnik potpisano preuzeo
+   * (podrška povraćaju — RC-17/RC-32). Izvor = `v_rev_my_issued_cutting_tools`
+   * (security_invoker view, scope po `rev_current_employee_id()` iz GUC claims — kroz
+   * `withUser`, isti most kao sibling „moji" pregledi reportMy*). Vraća SAMO linije za
+   * skenirani barkod kad je zadat (paritet 1.0 `cuttingToolScannerModal` FIFO logike),
+   * sortirano po `issuedAt` ASC (najstariji revers prvi). Dostupno svima sa `reversi.read`
+   * (1.0: povraćaj NIJE role-gated na otkrivanju linija).
+   */
+  async cuttingOpenLines(email: string, barcodeRaw?: string) {
+    const barcode = this.normalizeBarcode(barcodeRaw);
+    const rows = await this.sy15.withUser(
+      email,
+      (tx) => tx.$queryRaw<CuttingOpenLineRow[]>`
+        SELECT line_id, document_id, doc_number, catalog_id, barcode, oznaka, naziv,
+               quantity::float8            AS quantity,
+               returned_quantity::float8   AS returned_quantity,
+               remaining_quantity::float8  AS remaining_quantity,
+               unit, recipient_machine_code, issued_at, expected_return_date,
+               line_status, document_status
+        FROM v_rev_my_issued_cutting_tools
+        WHERE (${barcode} = '' OR barcode = ${barcode})
+        ORDER BY issued_at ASC, doc_number ASC`,
+    );
+    const data = rows.map((r) => ({
+      lineId: r.line_id,
+      documentId: r.document_id,
+      docNumber: r.doc_number,
+      catalogId: r.catalog_id,
+      barcode: r.barcode,
+      oznaka: r.oznaka,
+      naziv: r.naziv,
+      issuedQty: Number(r.quantity) || 0,
+      returnedQty: Number(r.returned_quantity) || 0,
+      remainingQty: Number(r.remaining_quantity) || 0,
+      unit: r.unit,
+      machineCode: r.recipient_machine_code,
+      issuedAt: r.issued_at,
+      expectedReturnDate: r.expected_return_date,
+      lineStatus: r.line_status,
+      documentStatus: r.document_status,
     }));
     return { data };
   }
@@ -330,22 +432,35 @@ export class ReversiService {
     id: string,
     dto: CuttingToolUpdateDto,
   ) {
-    const data = await this.sy15.db.revCuttingToolCatalog.update({
-      where: { id },
-      data: {
-        ...(dto.naziv !== undefined ? { naziv: dto.naziv.trim() } : {}),
-        ...(dto.unit !== undefined ? { unit: dto.unit } : {}),
-        ...(dto.minStockQty !== undefined
-          ? { minStockQty: dto.minStockQty }
-          : {}),
-        ...(dto.compatibleMachineCodes !== undefined
-          ? { compatibleMachineCodes: dto.compatibleMachineCodes }
-          : {}),
-        ...(dto.status !== undefined ? { status: dto.status } : {}),
-        ...(dto.napomena !== undefined ? { napomena: dto.napomena } : {}),
-      },
-    });
-    return { data };
+    try {
+      const data = await this.sy15.db.revCuttingToolCatalog.update({
+        where: { id },
+        data: {
+          ...(dto.naziv !== undefined ? { naziv: dto.naziv.trim() } : {}),
+          ...(dto.unit !== undefined ? { unit: dto.unit } : {}),
+          ...(dto.minStockQty !== undefined
+            ? { minStockQty: dto.minStockQty }
+            : {}),
+          ...(dto.compatibleMachineCodes !== undefined
+            ? { compatibleMachineCodes: dto.compatibleMachineCodes }
+            : {}),
+          ...(dto.status !== undefined ? { status: dto.status } : {}),
+          ...(dto.napomena !== undefined ? { napomena: dto.napomena } : {}),
+        },
+      });
+      return { data };
+    } catch (e) {
+      // PR-01: typed Prisma UPDATE nad nepostojećim id baca P2025 „record not found".
+      // Ovde je CRUD po PK (nije RLS-filtrovan 0-red slučaj), pa je semantika 404
+      // (kao Lokacije `updateLocation` — sy15-error kanon P2025→403 važi za RLS put).
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === "P2025"
+      ) {
+        throw new NotFoundException(`Rezni alat ${id} ne postoji`);
+      }
+      throw e;
+    }
   }
 
   /** Rezni alat po mašini (v_rev_cts_by_machine) — opcioni filter po šifri mašine. */
@@ -723,6 +838,18 @@ export class ReversiService {
       },
     );
     if (!res.ok) {
+      // PR-02: `pdf_storage_path` je popunjen ali objekat NE postoji u bucketu
+      // (npr. bulk-import dokument kome PDF nikad nije generisan/otpremljen, ili je
+      // obrisan). storage-api tada vraća 404 (ili 400 „Object not found"). PDF
+      // potpisnice pravi i uploaduje KLIJENT (POST varijanta) — BE ga NE može
+      // regenerisati iz podataka (nema server-side generatora), pa je ispravan
+      // odgovor čist 404 sa jasnom porukom, a ne obmanjujući 422 „potpisivanje nije uspelo".
+      const bodyText = (await res.text()).slice(0, 300);
+      if (res.status === 404 || (res.status === 400 && /not.?found/i.test(bodyText))) {
+        throw new NotFoundException(
+          `Potpisnica za dokument ${doc.docNumber} ne postoji u skladištu — regeneriši i otpremi PDF (POST /reversi/documents/${id}/signature-pdf).`,
+        );
+      }
       throw new UnprocessableEntityException(
         `Potpisivanje URL-a nije uspelo (storage ${res.status})`,
       );

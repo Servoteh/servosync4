@@ -138,6 +138,19 @@ export class ReversiController {
     return this.reversi.listCuttingTools(q);
   }
 
+  /**
+   * Otvorene ISSUED linije reznog alata prijavljenog korisnika za skenirani barkod
+   * (FIFO po issued_at) — podrška povraćaju (RC-17/32). reversi.read (klasni default);
+   * povraćaj na otkrivanju linija NIJE role-gated (paritet 1.0).
+   */
+  @Get("cutting-tools/open-lines")
+  cuttingOpenLines(
+    @Req() req: AuthedRequest,
+    @Query("barcode") barcode?: string,
+  ) {
+    return this.reversi.cuttingOpenLines(req.user.email, barcode);
+  }
+
   @Post("cutting-tools")
   @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
   createCuttingTool(
