@@ -63,10 +63,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setReady(true);
   }, []);
 
-  // SSO iz 1.0 shell-a: samo u iframe-u i samo bez postojeće sesije.
+  // SSO iz 1.0 shella: samo u iframe-u i samo DOK nema sesije. Efekat je vezan za
+  // `hasToken` (ne samo mount): kad istekli token padne na /auth/me (401 → hasToken
+  // false), handshake se PONOVO naoruža i zatraži svež 1.0 token od roditelja.
+  // Ranije je radio samo na mount-u uz `getToken()` guard, pa je ISTEKAO token
+  // (JWT_EXPIRES_IN=7d) trajno zaglavio korisnika na login formi u iframe-u —
+  // SSO-only (JIT) nalozi imaju random lozinku i ne mogu ručno da se prijave
+  // (slučaj Dragan Ristanić, 17.07.2026). 1.0 bridge drži trajan listener pa
+  // odgovara na `ss2-sso-ready` kad god stigne.
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    if (window.parent === window || getToken()) return;
+    if (!ready || hasToken) return;
+    if (window.parent === window) return;
 
     let done = false;
     const onMessage = async (event: MessageEvent) => {
@@ -91,7 +99,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     return () => window.removeEventListener('message', onMessage);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [ready, hasToken]);
 
   const meQuery = useMe(ready && hasToken);
   const permsQuery = useMyPermissions(ready && hasToken);
