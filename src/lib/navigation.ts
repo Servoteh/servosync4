@@ -1,4 +1,4 @@
-// Navigacioni model — JEDAN izvor istine za sidebar, hub i /razvoj (F0 SIDEBAR_HUB).
+// Navigacioni model — JEDAN izvor istine za sidebar, hub i Ctrl+K paletu (F0 SIDEBAR_HUB).
 // Preneto IDENTIČNO iz `NAV_SECTIONS` (app-shell.tsx) — iste stavke, iste permisije,
 // isti redosled, prekopirani komentari sa odlukama (nose istoriju). NOVO u odnosu na
 // staru listu: ikona domena (accordion header + rail), `wide` (Gantt auto-hide) i
@@ -18,7 +18,6 @@ import {
   Cpu,
   DraftingCompass,
   Factory,
-  FlaskConical,
   FolderKanban,
   Hammer,
   IdCard,
@@ -194,17 +193,9 @@ export const NAV_DOMAINS: NavDomain[] = [
       { label: 'Sinhronizacije', href: '/syncs', icon: RefreshCw, requires: PERMISSIONS.SYNC_READ, keywords: ['sync', 'sinhronizacija'] },
     ],
   },
-  {
-    // Razvojna faza 2.0 — indeks WIP modula (Talasi B–G) za testiranje pre
-    // hub-integracije (odluka Nenad 15.07.2026). Vidljivost = razvoj.read
-    // (admin/menadzment/hr/poslovni_admin). Vidi src/app/razvoj/page.tsx.
-    id: 'razvojna-faza',
-    title: 'Razvojna faza',
-    icon: FlaskConical,
-    modules: [
-      { label: 'Razvojna faza 2.0', href: '/razvoj', icon: FlaskConical, requires: PERMISSIONS.RAZVOJ_READ, keywords: ['razvoj', 'wip', 'test'] },
-    ],
-  },
+  // „Razvojna faza" domen uklonjen 17.07.2026 (Nenad): svi moduli su prešli na 2.0
+  // prikaz, pa je indeks WIP modula duplirao stavke koje već žive u svojim domenima.
+  // Sa njim je uklonjen i „u razvoju" badge (RAZVOJ_WIP prazan) i /razvoj strana.
 ];
 
 // ------------------------------------------------------------------ helperi
@@ -235,7 +226,7 @@ export function isWideRoute(pathname: string): boolean {
   return NAV_DOMAINS.some((d) => d.modules.some((m) => m.wide && matchesRoute(pathname, m.href)));
 }
 
-/** Modul po tačnom href-u (npr. /razvoj i hub vuku label/icon/requires odavde). */
+/** Modul po tačnom href-u (hub/paleta vuku label/icon/requires odavde). */
 export function findModuleByHref(href: string): NavModule | undefined {
   for (const domain of NAV_DOMAINS) {
     for (const m of domain.modules) {
@@ -243,41 +234,4 @@ export function findModuleByHref(href: string): NavModule | undefined {
     }
   }
   return undefined;
-}
-
-// ------------------------------------------------------------------ /razvoj WIP indeks
-
-// Stavke koje /razvoj strana danas prikazuje (Talasi B–G, WIP moduli). Ovde je SAMO
-// članstvo + napomena + opcioni duži label — icon/requires se vuku iz NAV_DOMAINS po
-// href-u (ukinut je RAZVOJ_DOMAINS duplikat taksonomije; single source = NAV_DOMAINS).
-// `labelOverride` čuva stare, opisnije nazive te strane (paritet: nula vizuelnih
-// promena na /razvoj) — sidebar/paleta koriste kraće nazive iz modela.
-export const RAZVOJ_WIP: { href: string; note?: string; labelOverride?: string }[] = [
-  { href: '/plan-proizvodnje', labelOverride: 'Planiranje (Plan proizvodnje)' },
-  { href: '/pracenje-proizvodnje', labelOverride: 'Praćenje proizvodnje' },
-  { href: '/montaza' },
-  { href: '/pb' },
-  { href: '/lokacije', labelOverride: 'Lokacije delova', note: 'poznat paritet-deficit — v. MERGE_PLAN' },
-  { href: '/odrzavanje', labelOverride: 'Održavanje (CMMS)' },
-  { href: '/energetika', labelOverride: 'Energetika / SCADA' },
-  { href: '/sastanci' },
-  { href: '/podesavanja' },
-];
-
-// Set href-ova WIP modula za O(1) proveru članstva (hub badge). RAZVOJ_WIP je jedini
-// izvor — nema `wip` polja na NavModule-u (izbegnut duplikat taksonomije).
-const RAZVOJ_WIP_HREFS: ReadonlySet<string> = new Set(RAZVOJ_WIP.map((w) => w.href));
-
-/** Da li je modul još „u razvoju" (član RAZVOJ_WIP) — hub prikazuje badge „u razvoju". */
-export function isWipModule(href: string): boolean {
-  return RAZVOJ_WIP_HREFS.has(href);
-}
-
-/**
- * Napomena WIP modula za hub badge — SAMO `note` polje iz RAZVOJ_WIP. `labelOverride`
- * se NAMERNO ne vraća: on je duži naslov za /razvoj stranu, ne tekst tooltipa badge-a.
- * undefined kad modul nema `note` (ili nije WIP).
- */
-export function wipNote(href: string): string | undefined {
-  return RAZVOJ_WIP.find((w) => w.href === href)?.note;
 }

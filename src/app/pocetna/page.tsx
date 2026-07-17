@@ -19,12 +19,9 @@ import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
 import { EmptyState } from '@/components/ui-kit/empty-state';
-import { StatusBadge } from '@/components/ui-kit/status-badge';
 import {
   NAV_DOMAINS,
   findModuleByHref,
-  isWipModule,
-  wipNote,
   type NavModule,
 } from '@/lib/navigation';
 import { useUiPrefs } from '@/lib/use-ui-prefs';
@@ -171,14 +168,6 @@ export default function PocetnaPage() {
                                 aria-hidden
                               />
                               <span className="min-w-0 flex-1 truncate">{m.label}</span>
-                              {isWipModule(m.href) && (
-                                // „u razvoju" badge (WIP modul) — StatusBadge neutral (DS §7,
-                                // isti mehanizam kao domenski status); title nosi napomenu ako
-                                // je ima (wipNote → SAMO /lokacije danas).
-                                <span className="shrink-0" title={wipNote(m.href)}>
-                                  <StatusBadge tone="neutral" label="u razvoju" />
-                                </span>
-                              )}
                             </Link>
                           </li>
                         );
