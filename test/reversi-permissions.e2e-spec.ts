@@ -257,6 +257,23 @@ describe("Reversi permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     it.each(NOT_MANAGE)("POST /issue → 403 za %s", async (role) => {
       await post("/issue", role, issueBody).expect(403);
     });
+
+    // R4-GATE-01 — Quick Return mutacije (POST /return, /cutting-return) su prvi put
+    // povezane iz Quick Return UI koji NIJE manage-gated (open-line lookup je read);
+    // sam povraćaj MORA ostati `reversi.manage`. Pinujemo gating testom.
+    const returnBody = { clientEventId: VALID_UUID, payload: {} };
+    it.each(MANAGE_ROLES)("POST /return → 201 za %s", async (role) => {
+      await post("/return", role, returnBody).expect(201);
+    });
+    it.each(NOT_MANAGE)("POST /return → 403 za %s", async (role) => {
+      await post("/return", role, returnBody).expect(403);
+    });
+    it.each(MANAGE_ROLES)("POST /cutting-return → 201 za %s", async (role) => {
+      await post("/cutting-return", role, returnBody).expect(201);
+    });
+    it.each(NOT_MANAGE)("POST /cutting-return → 403 za %s", async (role) => {
+      await post("/cutting-return", role, returnBody).expect(403);
+    });
     it("POST /tools/:id/write-off → 403 za sef, 201 za magacioner", async () => {
       await post(`/tools/${VALID_UUID}/write-off`, "sef", {
         clientEventId: VALID_UUID,

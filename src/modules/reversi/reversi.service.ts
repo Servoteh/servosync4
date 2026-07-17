@@ -242,8 +242,11 @@ export class ReversiService {
     const to = query.issuedTo?.trim();
     if (from) conds.push(Prisma.sql`issued_at >= ${new Date(from)}`);
     if (to) conds.push(Prisma.sql`issued_at <= ${new Date(to)}`);
-    if (query.docType === "TOOL" || query.docType === "COOPERATION_GOODS")
-      conds.push(Prisma.sql`doc_type = ${query.docType}`);
+    // R4-REG-02 — isti passthrough kao `buildDocumentWhere` (lista + 4 count-a): svaki
+    // `docType` filtrira, ne samo TOOL/COOPERATION_GOODS — inače bi pri proširenju
+    // filtera tipa (npr. CUTTING_TOOL) ova KPI kartica tiho ignorisala tip. Parametrizovan
+    // SQL (bind), pa je passthrough bezbedan i za buduće vrednosti.
+    if (query.docType) conds.push(Prisma.sql`doc_type = ${query.docType}`);
     const q = query.q?.trim();
     if (q) {
       const like = `%${q}%`;
@@ -355,9 +358,20 @@ export class ReversiService {
       ? await this.sy15.db.revTool.findMany({ where: { id: { in: toolIds } } })
       : [];
     const toolById = new Map(tools.map((t) => [t.id, t]));
+    // R4-PAR-02 — odeljenje radnika-primaoca za potpisnicu PDF „(Radnik — …)"
+    // (paritet 1.0 `fetchEmployeeDepartment`). Samo za EMPLOYEE primaoce; jedan lagan
+    // upit po PK. `recipient_company_pib` je već u `...doc` spread-u (za eksterne firme).
+    let recipientEmployeeDepartment: string | null = null;
+    if (doc.recipientType === "EMPLOYEE" && doc.recipientEmployeeId) {
+      const rows = await this.sy15.db.$queryRaw<{ department: string | null }[]>(
+        Prisma.sql`SELECT department FROM employees WHERE id = ${doc.recipientEmployeeId}::uuid LIMIT 1`,
+      );
+      recipientEmployeeDepartment = rows[0]?.department ?? null;
+    }
     return {
       data: {
         ...doc,
+        recipientEmployeeDepartment,
         lines: lines.map((l) => ({
           ...l,
           tool: l.toolId ? (toolById.get(l.toolId) ?? null) : null,
