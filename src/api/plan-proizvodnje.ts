@@ -513,9 +513,27 @@ export const useOptimisticReorder = () => {
       const c = ctx as { prev?: (readonly [readonly unknown[], unknown])[] } | undefined;
       if (c?.prev) for (const [k, d] of c.prev) qc.setQueryData(k as readonly unknown[], d);
       toast('⚠ Redosled nije sačuvan — osvežavam.');
+      // GREŠKA → rollback (gore) + refetch SVEGA (paritet 1.0 refreshOperationsForMachine
+      // na neuspeh, poMasiniTab.js:1973-1976). Ovde SME invalidacija mašinskog keša.
+      void qc.invalidateQueries({ queryKey: KEYS.operations });
     },
-    onSuccess: () => toast('✓ Redosled sačuvan'),
-    onSettled: () => void qc.invalidateQueries({ queryKey: KEYS.operations }),
+    onSuccess: (_r, v) => {
+      toast('✓ Redosled sačuvan');
+      // USPEH → NE invalidiraj akumulirani mašinski keš ([..'machine', machine, offset, limit]).
+      // 1.0 renumeriše in-place bez refetch-a (poMasiniTab.js:1978), a refetch bi obrisao
+      // „Još RN" stranice (loadMore merge u isti ključ) — optimistički patch je već upisao
+      // tačan redosled. Ostali potrošači (dept/all/search) se i dalje invalidiraju (zadržana
+      // postojeća semantika), hirurški isključena SAMO mašinska accum grana ove mašine.
+      void qc.invalidateQueries({
+        queryKey: KEYS.operations,
+        predicate: (query) => {
+          const k = query.queryKey as unknown[];
+          // k = ['pp','operations','machine', <machine>, <offset>, <limit>] → preskoči tekuću mašinu.
+          const isThisMachine = k[2] === 'machine' && k[3] === (v.machine ?? null);
+          return !isThisMachine;
+        },
+      });
+    },
   });
 };
 

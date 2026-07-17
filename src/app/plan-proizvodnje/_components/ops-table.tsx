@@ -124,15 +124,33 @@ export function OpsTable({
     }
   }
 
-  function onDrop(overO: OpRow) {
+  /**
+   * Drop reorder — paritet 1.0 (poMasiniTab.js:1956-1964). Above/below detekcija po
+   * polovini reda: e.clientY < sredina target-a → umetni PRE (before), inače POSLE.
+   * Kompenzacija `if (fromIdx < toIdx) toIdx -= 1` obavezna JER prvo uklonimo dragovani
+   * red (splice fromIdx,1) pa se svi indeksi desno od njega pomere za 1. Bez oba koraka
+   * je off-by-one (naivni splice bi umetnuo na pogrešnu stranu / promašio jedno mesto).
+   */
+  function onDrop(overO: OpRow, e: React.DragEvent<HTMLTableRowElement>) {
     if (!reorderable || !canEdit || !dragKey) return;
-    const from = ops.findIndex((x) => opKey(x) === dragKey);
-    const to = ops.findIndex((x) => opKey(x) === opKey(overO));
+    const overKey = opKey(overO);
     setDragKey(null);
-    if (from < 0 || to < 0 || from === to) return;
+    if (overKey === dragKey) return;
+
+    const fromIdx = ops.findIndex((x) => opKey(x) === dragKey);
+    let toIdx = ops.findIndex((x) => opKey(x) === overKey);
+    if (fromIdx < 0 || toIdx < 0) return;
+
+    // before = drop iznad sredine reda (1.0: klasa drop-target-above, e.clientY < mid).
+    const rect = e.currentTarget.getBoundingClientRect();
+    const before = e.clientY < rect.top + rect.height / 2;
+    if (!before) toIdx += 1;
+    if (fromIdx < toIdx) toIdx -= 1;
+    if (fromIdx === toIdx) return;
+
     const arr = [...ops];
-    const [moved] = arr.splice(from, 1);
-    arr.splice(to, 0, moved);
+    const [moved] = arr.splice(fromIdx, 1);
+    arr.splice(toIdx, 0, moved);
     reorder.mutate({ machine: machine ?? null, orderedRows: arr });
   }
 
@@ -207,7 +225,7 @@ export function OpsTable({
                   draggable={reorderable && canEdit}
                   onDragStart={() => setDragKey(key)}
                   onDragOver={(e) => reorderable && e.preventDefault()}
-                  onDrop={() => onDrop(o)}
+                  onDrop={(e) => onDrop(o, e)}
                 >
                   {selectable && (
                     <td className="px-2 py-1.5">

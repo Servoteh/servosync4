@@ -25,7 +25,12 @@ export function useRnFilter(tab: string) {
     };
   }, [raw, key]);
 
-  const active = raw.trim().length > 0;
+  // GAP-PM-04 fix: `active` mora pratiti DEBOUNCED (applied) vrednost, ne raw.
+  // Paritet 1.0 (poMasiniTab.js:729-730): drag-gating i „Nema rezultata" empty-state
+  // se preračunavaju TEK unutar 200ms debounce-a (renderTable u setTimeout), pa se
+  // vezuju za primenjeni filter. Da je vezan za raw, CLEAR bi otvorio 200ms prozor
+  // u kom je drag/reorder dozvoljen nad JOŠ-filtriranim podskupom (stale rows).
+  const active = applied.trim().length > 0;
   return { raw, setRaw, applied, active };
 }
 
