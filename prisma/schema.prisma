@@ -2085,6 +2085,11 @@ model NonconformityReport {
   coopCostNote        String?               @map("coop_cost_note") @db.VarChar(255)
   spentHoursText      String?               @map("spent_hours_text") @db.VarChar(50)
   spentHours          Decimal?              @map("spent_hours") @db.Decimal(10, 3)
+  /// Trošak materijala u kilogramima. AUTO za škart (type=2): quantity × masa jednog
+  /// dela (kg). Izvor mase = drawings.weight (PDM XML Weight, po drawing_number +
+  /// reviziji RN-a, fallback najviša revizija), fallback work_orders.unprocessed_part_weight
+  /// (masa pripremka). Masa ≤ 0 / nepoznata → NULL. Ručna korekcija dozvoljena (PATCH).
+  materialKg          Decimal?              @map("material_kg") @db.Decimal(12, 3)
   note                String?               @map("note")
   preventiveMeasures  String?               @map("preventive_measures")
   extra               String?               @map("extra") @db.VarChar(255)

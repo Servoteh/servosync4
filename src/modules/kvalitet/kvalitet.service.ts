@@ -32,6 +32,11 @@ import type {
   SummaryMiniQuery,
 } from "./dto/nonconformity-report.query";
 import type { ListQualityDocsQuery } from "./dto/quality-document.query";
+import {
+  computeScrapHours,
+  computeMaterialKg,
+  type ScrapHoursOp,
+} from "./nonconformity-calc";
 
 /** Tip izveštaja — poklapa se sa part_quality (1=dorada/REWORK, 2=škart/SCRAP). */
 const NONCONFORMITY_TYPE = { DORADA: 1, SKART: 2 } as const;
@@ -317,6 +322,7 @@ export class QualityService {
           coopCostNote: dto.coopCostNote ?? null,
           spentHoursText: dto.spentHoursText ?? null,
           spentHours: dto.spentHours ?? null,
+          materialKg: dto.materialKg ?? null,
           note: dto.note ?? null,
           preventiveMeasures: dto.preventiveMeasures ?? null,
           extra: dto.extra ?? null,
@@ -385,6 +391,7 @@ export class QualityService {
     if (dto.spentHoursText !== undefined)
       data.spentHoursText = dto.spentHoursText;
     if (dto.spentHours !== undefined) data.spentHours = dto.spentHours;
+    if (dto.materialKg !== undefined) data.materialKg = dto.materialKg;
     if (dto.note !== undefined) data.note = dto.note;
     if (dto.preventiveMeasures !== undefined)
       data.preventiveMeasures = dto.preventiveMeasures;
@@ -470,6 +477,64 @@ export class QualityService {
     return { data: { id, deleted: true } };
   }
 
+  // ------------------------------------------------------------------ RECOMPUTE (auto sati + kg)
+
+  /**
+   * `POST /kvalitet/reports/:id/recompute` — ponovo izračuna „Utrošeni radni sati" i
+   * „Trošak materijala (kg)" iz TEKUĆEG routinga/crteža i upiše ih (formula vlasnika).
+   * Vraća ceo mapirani izveštaj + `meta` sa izvorima. SAMO za ŠKART (type=2) — dorada
+   * (type=1) → 400 (formule važe samo za škart; dorada se unosi ručno).
+   *
+   * `spentHours` se prepisuje SAMO kad se može odrediti operacija škarta (tp iz
+   * `sourceTechProcessId`) I postoji `workOrderId` (izvor routinga); inače OSTAJE
+   * netaknut (računa se samo `materialKg`). `materialKg` se uvek prepisuje (null kad
+   * je masa nepoznata).
+   */
+  async recomputeReport(id: number) {
+    const report = await this.prisma.nonconformityReport.findUnique({
+      where: { id },
+    });
+    if (!report) throw new NotFoundException(`Izveštaj ${id} ne postoji.`);
+    if (report.type !== NONCONFORMITY_TYPE.SKART)
+      throw new BadRequestException(
+        "Auto-računica (utrošeni sati, kg materijala) važi samo za škart; dorada se unosi ručno.",
+      );
+
+    const scrapOperationNumber = await this.resolveScrapOperationNumber(
+      report.sourceTechProcessId,
+    );
+    const comp = await this.computeScrapMetrics({
+      workOrderId: report.workOrderId,
+      scrapOperationNumber,
+      quantity: report.quantity,
+    });
+
+    const data: Prisma.NonconformityReportUncheckedUpdateInput = {
+      materialKg: comp.materialKg,
+    };
+    // spentHours prepisujemo samo ako je zbir sati zaista pokrenut (op + routing);
+    // bez operacije/RN-a ostaje ono što je već upisano (ručno ili prethodno).
+    if (comp.hoursComputed) data.spentHours = comp.spentHours;
+
+    const updated = await this.prisma.nonconformityReport.update({
+      where: { id },
+      data,
+    });
+    const detail = await this.buildDetail(updated);
+    return {
+      data: detail.data,
+      meta: {
+        scrapOperationNumber,
+        hoursOps: comp.meta.hoursOps,
+        hoursComputed: comp.hoursComputed,
+        spentHours: comp.hoursComputed ? comp.spentHours : null,
+        massSource: comp.meta.massSource,
+        unitWeightKg: comp.meta.unitWeightKg,
+        materialKg: comp.materialKg,
+      },
+    };
+  }
+
   // ------------------------------------------------------------------ SUMMARY MINI (bedževi)
 
   /**
@@ -541,6 +606,32 @@ export class QualityService {
       const reportDate = input.reportDate ?? new Date();
       const culpritIds = uniqueIds(input.culpritWorkerIds ?? []);
 
+      // ŠKART: auto-računanje „Utrošeni radni sati" + „Trošak materijala (kg)" po
+      // formuli vlasnika. BEST-EFFORT u zasebnom try/catch — pad/nedostatak podataka
+      // NE sme oboriti kreiranje drafta (polja ostaju null). Dorada se unosi ručno.
+      let spentHours: number | null = null;
+      let materialKg: number | null = null;
+      if (type === NONCONFORMITY_TYPE.SKART) {
+        try {
+          const scrapOperationNumber = await this.resolveScrapOperationNumber(
+            input.sourceTechProcessId ?? null,
+          );
+          const comp = await this.computeScrapMetrics({
+            workOrderId: input.workOrderId ?? null,
+            scrapOperationNumber,
+            quantity: input.quantity,
+          });
+          spentHours = comp.spentHours;
+          materialKg = comp.materialKg;
+        } catch (e) {
+          this.logger.warn(
+            `Auto-računica škarta preskočena (TP ${input.sourceTechProcessId ?? "?"}): ${
+              e instanceof Error ? e.message : String(e)
+            }`,
+          );
+        }
+      }
+
       const created = await this.prisma.$transaction(async (tx) => {
         const report = await tx.nonconformityReport.create({
           data: {
@@ -558,6 +649,8 @@ export class QualityService {
             partName: input.partName ?? null,
             customerName: input.customerName ?? null,
             workUnit: input.workUnit ?? null,
+            spentHours,
+            materialKg,
             raisedByWorkerId: input.raisedByWorkerId ?? null,
             createdByUserId: input.createdByUserId ?? null,
           },
@@ -1062,6 +1155,133 @@ export class QualityService {
     return n;
   }
 
+  // --------------------------------------------------------- AUTO-RAČUNICA (helperi)
+
+  /**
+   * Redni broj operacije na kojoj je komad škartiran — iz `tech_processes` reda
+   * (`sourceTechProcessId`). Bez id-ja ili reda → null (računica sati se preskače).
+   */
+  private async resolveScrapOperationNumber(
+    sourceTechProcessId: number | null | undefined,
+  ): Promise<number | null> {
+    if (!sourceTechProcessId) return null;
+    const tp = await this.prisma.techProcess.findUnique({
+      where: { id: sourceTechProcessId },
+      select: { operationNumber: true },
+    });
+    return tp?.operationNumber ?? null;
+  }
+
+  /**
+   * Masa jednog dela (kg) za RN: crtež po `drawing_number` = RN broj — prvo revizija
+   * RN-a, pa NAJVIŠA revizija (konvencija: najviša = tekuća). `drawing.weight > 0` →
+   * koristi (izvor `drawing`); inače `unprocessed_part_weight > 0` (masa pripremka,
+   * fallback `workOrder`); inače null. Obična findFirst (bez required JOIN-a).
+   */
+  private async resolveUnitWeightKg(wo: {
+    drawingNumber: string | null;
+    revision: string | null;
+    unprocessedPartWeight: number | null;
+  }): Promise<{
+    unitWeightKg: number | null;
+    massSource: "drawing" | "workOrder" | null;
+  }> {
+    let weight: number | null = null;
+    if (wo.drawingNumber) {
+      let drawing = await this.prisma.drawing.findFirst({
+        where: {
+          drawingNumber: wo.drawingNumber,
+          ...(wo.revision ? { revision: wo.revision } : {}),
+        },
+        select: { weight: true },
+      });
+      if (!drawing)
+        drawing = await this.prisma.drawing.findFirst({
+          where: { drawingNumber: wo.drawingNumber },
+          orderBy: { revision: "desc" },
+          select: { weight: true },
+        });
+      weight = drawing?.weight ?? null;
+    }
+    if (weight != null && weight > 0)
+      return { unitWeightKg: weight, massSource: "drawing" };
+    if (wo.unprocessedPartWeight != null && wo.unprocessedPartWeight > 0)
+      return { unitWeightKg: wo.unprocessedPartWeight, massSource: "workOrder" };
+    return { unitWeightKg: null, massSource: null };
+  }
+
+  /**
+   * Objedinjena auto-računica škarta (sati + kg) za dati RN i operaciju škarta.
+   * `hoursComputed` = true kad je zbir sati zaista pokrenut (postoje i `workOrderId`
+   * i `scrapOperationNumber`) — pozivalac tada sme da prepiše `spentHours`.
+   * `materialKg` se uvek pokušava (null kad je masa nepoznata / nema RN-a).
+   */
+  private async computeScrapMetrics(args: {
+    workOrderId: number | null;
+    scrapOperationNumber: number | null;
+    quantity: number;
+  }): Promise<{
+    spentHours: number | null;
+    materialKg: number | null;
+    hoursComputed: boolean;
+    meta: {
+      hoursOps: number;
+      massSource: "drawing" | "workOrder" | null;
+      unitWeightKg: number | null;
+    };
+  }> {
+    let spentHours: number | null = null;
+    let materialKg: number | null = null;
+    let hoursComputed = false;
+    let hoursOps = 0;
+    let massSource: "drawing" | "workOrder" | null = null;
+    let unitWeightKg: number | null = null;
+
+    if (args.workOrderId) {
+      const wo = await this.prisma.workOrder.findUnique({
+        where: { id: args.workOrderId },
+        select: {
+          drawingNumber: true,
+          revision: true,
+          unprocessedPartWeight: true,
+        },
+      });
+      if (wo) {
+        const mass = await this.resolveUnitWeightKg(wo);
+        massSource = mass.massSource;
+        unitWeightKg = mass.unitWeightKg;
+        materialKg = computeMaterialKg(args.quantity, mass.unitWeightKg);
+
+        if (args.scrapOperationNumber != null) {
+          const scrapOp = args.scrapOperationNumber;
+          const ops = await this.prisma.workOrderOperation.findMany({
+            where: { workOrderId: args.workOrderId },
+            select: {
+              operationNumber: true,
+              setupTime: true,
+              cycleTime: true,
+            },
+          });
+          const rows: ScrapHoursOp[] = ops.map((o) => ({
+            operationNumber: o.operationNumber,
+            setupTime: o.setupTime,
+            cycleTime: o.cycleTime,
+          }));
+          hoursOps = rows.filter((o) => o.operationNumber <= scrapOp).length;
+          spentHours = computeScrapHours(rows, scrapOp, args.quantity);
+          hoursComputed = true;
+        }
+      }
+    }
+
+    return {
+      spentHours,
+      materialKg,
+      hoursComputed,
+      meta: { hoursOps, massSource, unitWeightKg },
+    };
+  }
+
   /**
    * WHERE fragment za raw upite nad `nonconformity_reports` (K3.1). Kolone su
    * fiksni literali (`col()` kroz `Prisma.raw` — nema injekcije); vrednosti idu
@@ -1164,6 +1384,7 @@ export class QualityService {
       coopCostNote: r.coopCostNote,
       spentHoursText: r.spentHoursText,
       spentHours: r.spentHours != null ? r.spentHours.toString() : null,
+      materialKg: r.materialKg != null ? r.materialKg.toString() : null,
       note: r.note,
       preventiveMeasures: r.preventiveMeasures,
       extra: r.extra,

@@ -24,6 +24,8 @@ export interface UpdateNonconformityReportDto {
   coopCostNote?: string | null;
   spentHoursText?: string | null;
   spentHours?: number | null;
+  /** Trošak materijala (kg) — nenegativan broj; ručna korekcija auto-vrednosti. */
+  materialKg?: number | null;
   note?: string | null;
   preventiveMeasures?: string | null;
   extra?: string | null;
@@ -80,6 +82,15 @@ export function validateUpdateNonconformityReport(
       dto.spentHours < 0)
   )
     errors.push("Polje 'spentHours' mora biti nenegativan broj.");
+
+  if (
+    dto?.materialKg !== undefined &&
+    dto.materialKg !== null &&
+    (typeof dto.materialKg !== "number" ||
+      !Number.isFinite(dto.materialKg) ||
+      dto.materialKg < 0)
+  )
+    errors.push("Polje 'materialKg' mora biti nenegativan broj.");
 
   for (const f of OPTIONAL_ID_FIELDS) {
     const v = dto?.[f];
