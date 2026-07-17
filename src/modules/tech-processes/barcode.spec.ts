@@ -3,6 +3,7 @@ import {
   parseBarcode,
   formatOrderBarcode,
   formatOperationBarcode,
+  normalizeScannerLayout,
 } from "./barcode";
 
 describe("barcode — parseBarcode", () => {
@@ -92,6 +93,80 @@ describe("barcode — parseBarcode", () => {
 
   it("baca kad operacija nema radni centar", () => {
     expect(() => parseBarcode("S:20::0:A")).toThrow(BadRequestException);
+  });
+});
+
+describe("barcode — SR raspored tastature (keyboard-wedge, pogon 2026-07-17)", () => {
+  it("normalizuje tačan izobličen sken iz produkcije (SR latinica) u nalog", () => {
+    // Očitano "RNYČ9470Č9000-236Č0Č33769" umesto "RNZ:9470:9000/236:0:33769":
+    // Z↔Y (QWERTZ), Č→':', '-'→'/'.
+    const d = parseBarcode("RNYČ9470Č9000-236Č0Č33769");
+    expect(d.type).toBe("nalog");
+    if (d.type !== "nalog") return;
+    expect(d.fields).toEqual({
+      projectId: 9470,
+      identNumber: "9000/236",
+      variant: 0,
+      revision: "33769",
+    });
+  });
+
+  it("mala slova (nestabilan CapsLock): 'č'→';'→':' preko postojeće zamene", () => {
+    const d = parseBarcode("rnyč9470č9000-236č0č33769");
+    expect(d.type).toBe("nalog");
+    if (d.type !== "nalog") return;
+    expect(d.fields).toEqual({
+      projectId: 9470,
+      identNumber: "9000/236",
+      variant: 0,
+      revision: "33769",
+    });
+  });
+
+  it("operacija na SR rasporedu", () => {
+    const d = parseBarcode("SČ5Č1.10Č0Č33769");
+    expect(d.type).toBe("operacija");
+    if (d.type !== "operacija") return;
+    expect(d.fields.operationNumber).toBe(5);
+    expect(d.fields.workCenterCode).toBe("1.10");
+    expect(d.fields.revision).toBe("33769");
+  });
+
+  it("pravi minus preživljava round-trip ('/'→'-', '-'→''')", () => {
+    // Štampano "06/93-4": '/' na SR daje '-', a '-' daje ''' — obrni oboje.
+    const d = parseBarcode("RNYČ2597Č06-93'4Č0ČA");
+    expect(d.type).toBe("nalog");
+    if (d.type !== "nalog") return;
+    expect(d.fields.identNumber).toBe("06/93-4");
+  });
+
+  it("bez SR signala NEMA izmene (y/z i minus se ne diraju)", () => {
+    const d = parseBarcode("RNZ:1:ABY-1:0:B");
+    expect(d.type).toBe("nalog");
+    if (d.type !== "nalog") return;
+    expect(d.fields.identNumber).toBe("ABY-1");
+  });
+
+  it("ćirilica: pogonski računar na SR ćirilici (Р→R, Н→N, Ѕ→Z, Ч→':')", () => {
+    const d = parseBarcode("РНЅЧ9470Ч9000-236Ч0Ч33769");
+    expect(d.type).toBe("nalog");
+    if (d.type !== "nalog") return;
+    expect(d.fields).toEqual({
+      projectId: 9470,
+      identNumber: "9000/236",
+      variant: 0,
+      revision: "33769",
+    });
+  });
+
+  it("normalizeScannerLayout: SR latinica → US po poziciji tastera", () => {
+    expect(normalizeScannerLayout("RNYČ9470Č9000-236Č0Č33769")).toBe(
+      "RNZ:9470:9000/236:0:33769",
+    );
+  });
+
+  it("normalizeScannerLayout: bez signala vraća ulaz neizmenjen", () => {
+    expect(normalizeScannerLayout("RNZ:1:ABY-1:0:B")).toBe("RNZ:1:ABY-1:0:B");
   });
 });
 
