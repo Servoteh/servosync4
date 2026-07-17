@@ -373,12 +373,18 @@ function unitsUrl(params: InventoryUnitsParams): string {
   return `/v1/reversi/inventory-units${qs({ ...params })}`;
 }
 
-export function useInventoryUnits(params: InventoryUnitsParams) {
+export function useInventoryUnits(
+  params: InventoryUnitsParams,
+  options?: { staleTime?: number },
+) {
   return useQuery({
     queryKey: [...KEYS.tools, 'inventory-units', params],
     queryFn: () => apiFetch<{ data: InventoryUnitRow[]; meta: PageMeta }>(unitsUrl(params)),
     // Zadrži prethodnu stranu dok se sledeća učitava — paginacija bez treptaja.
     placeholderData: keepPreviousData,
+    // Opc. staleTime — stat kartice (RA-10, uzorak do 2000 redova) ga postavljaju
+    // duže da se skup ne re-fetchuje na svaki fokus/mount (R1-REV-03).
+    ...(options?.staleTime != null ? { staleTime: options.staleTime } : {}),
   });
 }
 
@@ -833,6 +839,12 @@ export interface CreateToolInput {
   totalQty?: number;
   minStockQty?: number | null;
   maxStockQty?: number | null;
+  /**
+   * Idempotency ključ — stabilan po otvaranju forme, isti kroz retry ISTOG
+   * submita. Dupli klik / retry vraća PRVU kreiranu jedinicu umesto drugog
+   * barkoda (BE createTool je runIdempotent). Vidi newClientEventId.
+   */
+  clientEventId?: string;
 }
 
 export interface CreateToolResult {

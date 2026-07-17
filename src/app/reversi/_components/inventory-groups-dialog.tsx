@@ -34,6 +34,50 @@ type AddForm =
   | null;
 type RenameForm = { kind: ClassificationKind; id: string; current: string } | null;
 
+/**
+ * Inline forma za preimenovanje/dodavanje nivoa klasifikacije. MORA biti na
+ * modul-nivou (ne unutar dijaloga): deklarisana u telu komponente dobijala je nov
+ * tip-identitet na svaki keystroke (setDraft → re-render), pa je React remontirao
+ * <input> pri svakom znaku i kursor je skakao na kraj (lomilo RA-27 uređivanje
+ * sredine naziva). Kao stabilan modul-scope tip zadržava identitet i fokus/kursor.
+ */
+function ClassEditInline({
+  label,
+  actionLabel,
+  draft,
+  onDraftChange,
+  busy,
+  onSave,
+  onCancel,
+}: {
+  label: string;
+  actionLabel: string;
+  draft: string;
+  onDraftChange: (v: string) => void;
+  busy: boolean;
+  onSave: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="my-1 flex flex-wrap items-center gap-2 rounded-control border border-accent/30 bg-accent-subtle px-2 py-1.5">
+      <span className="text-xs text-ink-secondary">{label}</span>
+      <input
+        className={`${INPUT} w-56`}
+        autoFocus
+        value={draft}
+        onChange={(e) => onDraftChange(e.target.value)}
+        onKeyDown={(e) => e.key === 'Enter' && onSave()}
+      />
+      <Button variant="primary" loading={busy} onClick={onSave}>
+        {actionLabel}
+      </Button>
+      <Button variant="secondary" onClick={onCancel}>
+        Otkaži
+      </Button>
+    </div>
+  );
+}
+
 export function InventoryGroupsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const tree = useInventoryTree();
   const usage = useInventoryClassificationUsage();
@@ -198,47 +242,18 @@ export function InventoryGroupsDialog({ open, onClose }: { open: boolean; onClos
     }
   }
 
-  function RenameInline() {
-    return (
-      <div className="my-1 flex flex-wrap items-center gap-2 rounded-control border border-accent/30 bg-accent-subtle px-2 py-1.5">
-        <span className="text-xs text-ink-secondary">Novi naziv:</span>
-        <input
-          className={`${INPUT} w-56`}
-          autoFocus
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && void saveRename()}
-        />
-        <Button variant="primary" loading={busy} onClick={() => void saveRename()}>
-          Preimenuj
-        </Button>
-        <Button variant="secondary" onClick={() => setRenameForm(null)}>
-          Otkaži
-        </Button>
-      </div>
-    );
-  }
-
-  function AddInline({ label }: { label: string }) {
-    return (
-      <div className="my-1 flex flex-wrap items-center gap-2 rounded-control border border-accent/30 bg-accent-subtle px-2 py-1.5">
-        <span className="text-xs text-ink-secondary">{label}</span>
-        <input
-          className={`${INPUT} w-56`}
-          autoFocus
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && void saveAdd()}
-        />
-        <Button variant="primary" loading={busy} onClick={() => void saveAdd()}>
-          Dodaj
-        </Button>
-        <Button variant="secondary" onClick={() => setAddForm(null)}>
-          Otkaži
-        </Button>
-      </div>
-    );
-  }
+  // Preimenovanje (svi nivoi) — stabilan modul-scope input (vidi ClassEditInline).
+  const renameInline = (
+    <ClassEditInline
+      label="Novi naziv:"
+      actionLabel="Preimenuj"
+      draft={draft}
+      onDraftChange={setDraft}
+      busy={busy}
+      onSave={() => void saveRename()}
+      onCancel={() => setRenameForm(null)}
+    />
+  );
 
   return (
     <Dialog open={open} onClose={onClose} title="Grupe, podgrupe i podpodgrupe" size="lg">
@@ -300,7 +315,7 @@ export function InventoryGroupsDialog({ open, onClose }: { open: boolean; onClos
 
                   {renameForm?.kind === 'group' && renameForm.id === g.id && (
                     <div className="px-2 pb-1">
-                      <RenameInline />
+                      {renameInline}
                     </div>
                   )}
 
@@ -358,7 +373,7 @@ export function InventoryGroupsDialog({ open, onClose }: { open: boolean; onClos
 
                             {renameForm?.kind === 'subgroup' && renameForm.id === sg.id && (
                               <div className="px-2 pb-1">
-                                <RenameInline />
+                                {renameInline}
                               </div>
                             )}
 
@@ -406,15 +421,23 @@ export function InventoryGroupsDialog({ open, onClose }: { open: boolean; onClos
                                           </button>
                                         )}
                                       </div>
-                                      {renameForm?.kind === 'subsubgroup' && renameForm.id === ss.id && (
-                                        <RenameInline />
-                                      )}
+                                      {renameForm?.kind === 'subsubgroup' &&
+                                        renameForm.id === ss.id &&
+                                        renameInline}
                                     </div>
                                   );
                                 })}
 
                                 {addForm?.kind === 'subsubgroup' && addForm.subgroupId === sg.id ? (
-                                  <AddInline label={`Nova podpodgrupa u „${sg.label}":`} />
+                                  <ClassEditInline
+                                    label={`Nova podpodgrupa u „${sg.label}":`}
+                                    actionLabel="Dodaj"
+                                    draft={draft}
+                                    onDraftChange={setDraft}
+                                    busy={busy}
+                                    onSave={() => void saveAdd()}
+                                    onCancel={() => setAddForm(null)}
+                                  />
                                 ) : (
                                   <button
                                     type="button"
@@ -433,7 +456,15 @@ export function InventoryGroupsDialog({ open, onClose }: { open: boolean; onClos
                       })}
 
                       {addForm?.kind === 'subgroup' && addForm.groupCode === g.code ? (
-                        <AddInline label={`Nova podgrupa u „${g.label}":`} />
+                        <ClassEditInline
+                          label={`Nova podgrupa u „${g.label}":`}
+                          actionLabel="Dodaj"
+                          draft={draft}
+                          onDraftChange={setDraft}
+                          busy={busy}
+                          onSave={() => void saveAdd()}
+                          onCancel={() => setAddForm(null)}
+                        />
                       ) : (
                         <button
                           type="button"

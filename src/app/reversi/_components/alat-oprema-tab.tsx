@@ -12,7 +12,7 @@ import { PERMISSIONS } from '@/lib/permissions';
 import { formatNumber } from '@/lib/format';
 import { toast } from '@/lib/toast';
 import { downloadCsv } from '@/lib/reversi-csv';
-import { printReversiLabels } from '@/lib/reversi-labels';
+import type { ReversiLabelRow } from '@/lib/reversi-labels';
 import {
   fetchInventoryUnits,
   useInventoryTree,
@@ -28,6 +28,7 @@ import { IssueDialog } from './issue-dialog';
 import { ToolCreateDialog } from './tool-create-dialog';
 import { InventoryGroupsDialog } from './inventory-groups-dialog';
 import { BulkImportDialog } from './bulk-import-dialog';
+import { BulkPrintLabelsDialog } from './bulk-print-labels-dialog';
 
 const PAGE_SIZE = 50;
 const CSV_LIMIT = 5000; // BE cap (RA-23 — ceo filtrirani skup)
@@ -201,6 +202,8 @@ export function AlatOpremaTab({ onBulkPrint }: { onBulkPrint?: (rows: InventoryU
   const [createOpen, setCreateOpen] = useState(false);
   const [groupsOpen, setGroupsOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  // Snimljeni izbor za bulk-print dijalog (RA-22) — nezavisan od kasnijih promena izbora.
+  const [bulkPrintRows, setBulkPrintRows] = useState<ReversiLabelRow[] | null>(null);
 
   // Debounce pretrage (300ms — paritet 1.0), reset na prvu stranu.
   useEffect(() => {
@@ -252,9 +255,17 @@ export function AlatOpremaTab({ onBulkPrint }: { onBulkPrint?: (rows: InventoryU
   const total = unitsQ.data?.meta.pagination.total ?? 0;
   const totalPages = unitsQ.data?.meta.pagination.totalPages ?? 1;
 
-  // Stat kartice (RA-10) — uzorak aktivnih (do 2000) za slobodno/na-reversu + broj otpisanih.
-  const statsQ = useInventoryUnits({ status: 'active', page: 1, pageSize: STAT_SAMPLE });
-  const scrappedQ = useInventoryUnits({ status: 'scrapped', page: 1, pageSize: 1 });
+  // Stat kartice (RA-10) — uzorak aktivnih (do 2000) za slobodno/na-reversu + broj
+  // otpisanih. Duži staleTime (R1-REV-03): skup od 2000 redova se ne re-fetchuje na
+  // svaki fokus/mount — pločice su izvedene vrednosti, ne trebaju sveže po sekundi.
+  const statsQ = useInventoryUnits(
+    { status: 'active', page: 1, pageSize: STAT_SAMPLE },
+    { staleTime: 60_000 },
+  );
+  const scrappedQ = useInventoryUnits(
+    { status: 'scrapped', page: 1, pageSize: 1 },
+    { staleTime: 60_000 },
+  );
   const stats = useMemo(() => {
     const sample = statsQ.data?.data ?? [];
     const activeTotal = statsQ.data?.meta.pagination.total ?? 0;
@@ -268,6 +279,14 @@ export function AlatOpremaTab({ onBulkPrint }: { onBulkPrint?: (rows: InventoryU
       scrapped: scrappedQ.data?.meta.pagination.total ?? 0,
     };
   }, [statsQ.data, scrappedQ.data]);
+
+  // Preselektovan alat za Izdaj (RA-17) — memoizovan da statsQ re-render (0.5–3s
+  // posle otvaranja) ne iskuje NOV objekat i time ne resetuje već popunjeni revers
+  // (linije/primalac) + nov idempotency ključ u IssueDialog-u (R1-REV-02).
+  const issueInitialTool = useMemo(
+    () => (issueTool ? toReversiTool(issueTool) : null),
+    [issueTool],
+  );
 
   function onGroupChange(v: string) {
     setGroupCode(v);
@@ -308,10 +327,9 @@ export function AlatOpremaTab({ onBulkPrint }: { onBulkPrint?: (rows: InventoryU
     });
   }
 
-  // RA-22 — bulk štampa nalepnica: mapiraj izabrane redove u ALAT- nalepnice i
-  // odštampaj (browser preview + mrežni TSC). `onBulkPrint` (ako je prosleđen)
-  // ima prednost — omogućava roditelju da preuzme štampu.
-  async function doBulkPrint() {
+  // RA-22 — bulk štampa nalepnica: otvori dijalog (izbor formata A4/TSC + kopije +
+  // pregled). `onBulkPrint` (ako je prosleđen) ima prednost — roditelj preuzima štampu.
+  function doBulkPrint() {
     const rows = [...selected.values()].filter((r) => r.barcode);
     if (rows.length === 0) {
       toast('Nema barkodiranih jedinica u izboru');
@@ -321,7 +339,7 @@ export function AlatOpremaTab({ onBulkPrint }: { onBulkPrint?: (rows: InventoryU
       onBulkPrint(rows);
       return;
     }
-    await printReversiLabels(
+    setBulkPrintRows(
       rows.map((r) => ({
         barcode: r.barcode,
         oznaka: r.oznaka,
@@ -329,9 +347,7 @@ export function AlatOpremaTab({ onBulkPrint }: { onBulkPrint?: (rows: InventoryU
         subgroupLabel: r.subgroup?.label ?? r.group?.label ?? '',
         serial: r.serijskiBroj,
       })),
-      { copies: 1 },
     );
-    setSelected(new Map());
   }
 
   async function exportCsv() {
@@ -582,7 +598,7 @@ export function AlatOpremaTab({ onBulkPrint }: { onBulkPrint?: (rows: InventoryU
             <strong className="tnums">{selected.size}</strong> izabrano
           </span>
           <div className="ml-auto flex gap-2">
-            <Button variant="primary" onClick={() => void doBulkPrint()}>
+            <Button variant="primary" onClick={doBulkPrint}>
               Štampa nalepnica ({selected.size})
             </Button>
             <Button variant="secondary" onClick={() => setSelected(new Map())}>
@@ -627,12 +643,22 @@ export function AlatOpremaTab({ onBulkPrint }: { onBulkPrint?: (rows: InventoryU
       <ToolDetailDialog toolId={detailToolId} onClose={() => setDetailToolId(null)} />
       <IssueDialog
         open={!!issueTool}
-        initialTool={issueTool ? toReversiTool(issueTool) : null}
+        initialTool={issueInitialTool}
         onClose={() => setIssueTool(null)}
       />
       {manage && <ToolCreateDialog open={createOpen} onClose={() => setCreateOpen(false)} />}
       {manage && <InventoryGroupsDialog open={groupsOpen} onClose={() => setGroupsOpen(false)} />}
       {manage && <BulkImportDialog open={importOpen} onClose={() => setImportOpen(false)} />}
+      {manage && (
+        <BulkPrintLabelsDialog
+          open={!!bulkPrintRows}
+          rows={bulkPrintRows ?? []}
+          onClose={() => {
+            setBulkPrintRows(null);
+            setSelected(new Map());
+          }}
+        />
+      )}
     </div>
   );
 }

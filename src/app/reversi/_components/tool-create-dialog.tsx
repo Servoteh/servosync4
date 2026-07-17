@@ -7,6 +7,7 @@ import { FormField } from '@/components/ui-kit/form-field';
 import { toast } from '@/lib/toast';
 import { printReversiLabels } from '@/lib/reversi-labels';
 import {
+  newClientEventId,
   useAddSubgroup,
   useAddSubsubgroup,
   useCreateTool,
@@ -49,6 +50,9 @@ export function ToolCreateDialog({ open, onClose }: { open: boolean; onClose: ()
   const [printLbl, setPrintLbl] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Jedan idempotency ključ po otvaranju forme → retry ISTOG submita ne pravi
+  // duplu jedinicu (dva barkoda). Svako novo otvaranje = nov ključ i prazna forma.
+  const [clientEventId, setClientEventId] = useState(newClientEventId);
 
   useEffect(() => {
     if (!open) return;
@@ -69,6 +73,7 @@ export function ToolCreateDialog({ open, onClose }: { open: boolean; onClose: ()
     setMaxStock('');
     setPrintLbl(true);
     setError(null);
+    setClientEventId(newClientEventId());
   }, [open]);
 
   // rev_tools pokriva HAND + LZO; REZNI grupa se isključuje iz izbora.
@@ -156,6 +161,7 @@ export function ToolCreateDialog({ open, onClose }: { open: boolean; onClose: ()
       }
 
       const res = await create.mutateAsync({
+        clientEventId,
         oznaka: oz,
         naziv: nz,
         subgroupId,
