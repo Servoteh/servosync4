@@ -368,11 +368,21 @@ Paritet 23 sekcije 1.0 (`/maintenance/*`), 2.0 ui-kit, responsive (bez zasebnog 
 > ⚠️ **AUDIT 17.07:** stvarno stanje po stavci = `AUDIT_odrzavanje_talasF_2026-07-17.md` §3–§5
 > (OK: #4,#12,#18,#43 · MISSING: #33,#36,#40 · UNKNOWN: #48 · ostalo PARTIAL). Statusi ispod se
 > ažuriraju tokom F2 paketa; dopunska skrivena pravila (21–30+) su u audit dokumentu §5.1.
+>
+> **F2-P0b (BE temelji, 2026-07-17):** zatvoreni BE delovi stavki #2 (filteri mašina
+> status/rok/lokacija), #13 (WO q/openOnly/overdue + sredstvo na redu), #14 (WO detalj asset
+> join + `incidentId` link), #15 (deo→`maint_part_stock_movements` „out" u istoj tx + `user_note`
+> audit event za deo/rad + WoLabor `notes`), #17 (importable `includeNoProcedure`), #24/#31
+> (servisni planovi čitaju `v_maint_*_service_plan_due`), #28 (`UpdateDriverDto.authUserId` +
+> spoljni→null), #30 (`cadastral_parcels` Prisma+DTO), #33 (`GET /maintenance/board`), #35
+> (parts `lowStock`/`includeInactive`, suppliers `active` param), #39 (notif machine/incident
+> filter), #47 (`clientEventId` na `incidents/:id/events` i `work-orders/:id/events`). **FE tih
+> stavki ostaje P1–P4.**
 
 | # | Funkcija | Status |
 |---|---|---|
 | 1 | `/maintenance/me` (profil + efektivna prava; FE gating paritet) | NOT_STARTED |
-| 2 | Dashboard KPI + kategorije + prioritetna lista + filteri + „Moje" | NOT_STARTED |
+| 2 | Dashboard KPI + kategorije + prioritetna lista + filteri + „Moje" | NOT_STARTED (FE) · BE-filteri mašina status/rok(overdue/danas/7d)/lokacija F2-P0b 17.07 |
 | 3 | Karton mašine: Pregled tab (status, override prikaz, due zadaci) | NOT_STARTED |
 | 4 | Potvrda kontrole (insert maint_checks, result enum, napomena) | NOT_STARTED |
 | 5 | Istorija mašine (merged incidenti + kontrole) | NOT_STARTED |
@@ -383,33 +393,33 @@ Paritet 23 sekcije 1.0 (`/maintenance/*`), 2.0 ui-kit, responsive (bez zasebnog 
 | 10 | Prijava kvara — desktop modal (+foto, safety marker) | NOT_STARTED |
 | 11 | Incident detalj: status tok, dodela, events, close-gate (chief/admin) | NOT_STARTED |
 | 12 | Verifikacija auto-WO + auto-notify trigera kroz 2.0 upis (paritet ponašanja) | NOT_STARTED |
-| 13 | WO kanban (10 statusa / 4 grupe) + drag&drop + filteri | NOT_STARTED |
-| 14 | WO detalj: dodela (assignable RPC), prioritet, due, closure | NOT_STARTED |
-| 15 | WO delovi + rad (labor) + events audit | NOT_STARTED |
+| 13 | WO kanban (10 statusa / 4 grupe) + drag&drop + filteri | NOT_STARTED (FE) · BE q/openOnly/overdue + sredstvo (asset) na WO redu F2-P0b 17.07 |
+| 14 | WO detalj: dodela (assignable RPC), prioritet, due, closure | NOT_STARTED (FE) · BE asset join + `incidentId` (link „Otvori incident") + pečat started/completed F2-P0b 17.07 |
+| 15 | WO delovi + rad (labor) + events audit | NOT_STARTED (FE) · BE deo→zaliha „out" (ista tx) + `user_note` audit event za deo/rad + WoLabor notes F2-P0b 17.07 |
 | 16 | Katalog mašina CRUD + arhiva/restore | NOT_STARTED |
-| 17 | Uvoz mašina iz BigTehn cache (importable view + RPC) | NOT_STARTED |
+| 17 | Uvoz mašina iz BigTehn cache (importable view + RPC) | NOT_STARTED (FE) · BE `includeNoProcedure` param (default sakriva no_procedure=true) F2-P0b 17.07 |
 | 18 | Rename mašine (RPC, atomski kroz 6 tabela) | NOT_STARTED |
 | 19 | Hard delete mašine (storage cleanup u BE + RPC + deletion log ekran) | NOT_STARTED |
 | 20 | CMMS lokacije (maint_locations CRUD) | NOT_STARTED |
 | 21 | Vozila lista + filteri + arhiva toggle | NOT_STARTED |
 | 22 | Karton vozila (details upsert, rokovi, TAG/ENP, foto, parts shelf) | NOT_STARTED |
 | 23 | Kreiranje vozila / arhiviranje / vraćanje (3 RPC-a, razlog obavezan) | NOT_STARTED |
-| 24 | Servisni plan vozila + „Generiši WO" (`ensure_vehicle_service_wos`) | NOT_STARTED |
+| 24 | Servisni plan vozila + „Generiši WO" (`ensure_vehicle_service_wos`) | NOT_STARTED (FE) · BE čita `v_maint_vehicle_service_plan_due` (računat due) F2-P0b 17.07 |
 | 25 | Gume (CRUD setova) | NOT_STARTED |
 | 26 | Delovi po vozilu (link/unlink/qty_min + pregled) | NOT_STARTED |
 | 27 | Carpool rezervacije (CRUD; kreator menja svoju; overlap poruka) | NOT_STARTED |
-| 28 | Vozači: lista/karton/CRUD/arhiva + dokumenta + employees auto-detect | NOT_STARTED |
+| 28 | Vozači: lista/karton/CRUD/arhiva + dokumenta + employees auto-detect | NOT_STARTED (FE) · BE `UpdateDriverDto.authUserId` (spoljni→null, DB CHECK) F2-P0b 17.07; `lookups/employees` F2-P0a |
 | 29 | IT oprema: lista/karton/create RPC/details/arhiva | NOT_STARTED |
-| 30 | Objekti: lista/karton/create RPC/details/arhiva + facility-type fallback | NOT_STARTED |
-| 31 | Servisni plan IT/objekti + „Generiši WO" (`ensure_asset_service_wos`) | NOT_STARTED |
+| 30 | Objekti: lista/karton/create RPC/details/arhiva + facility-type fallback | NOT_STARTED (FE) · BE `cadastral_parcels` (Prisma + upsertFacilityDetails) F2-P0b 17.07 |
+| 31 | Servisni plan IT/objekti + „Generiši WO" (`ensure_asset_service_wos`) | NOT_STARTED (FE) · BE čita `v_maint_asset_service_plan_due` (računat due) F2-P0b 17.07 |
 | 32 | Preventiva panel (due lista + kreiraj WO + anti-duplikat) | NOT_STARTED |
-| 33 | Board (statusne kolone mašina) | NOT_STARTED |
+| 33 | Board (statusne kolone mašina) | NOT_STARTED (FE) · BE `GET /maintenance/board` (Prekoračeno/Danas/7d + override „PAUZA" + imena) F2-P0b 17.07 |
 | 34 | Kalendar rokova (IT/objekti/planovi → linkovi na kartone) | NOT_STARTED |
-| 35 | Zalihe: delovi + dobavljači CRUD + stock ledger (insert-only) | NOT_STARTED |
+| 35 | Zalihe: delovi + dobavljači CRUD + stock ledger (insert-only) | NOT_STARTED (FE) · BE parts `lowStock`/`includeInactive`, suppliers `active` param F2-P0b 17.07 |
 | 36 | Dokumenta globalno (5 entiteta, valid_until, filteri) + Dokumenta vozila | NOT_STARTED |
 | 37 | Izveštaji (4 perioda; incidenti/WO troškovi/pažnja) + CSV | NOT_STARTED |
 | 38 | Podešavanja (settings singleton + notification rules) | NOT_STARTED |
-| 39 | Notifikacije tab (log + filteri + retry RPC) | NOT_STARTED |
+| 39 | Notifikacije tab (log + filteri + retry RPC) | NOT_STARTED (FE) · BE machineCode + incidentId (related_entity_id) filter F2-P0b 17.07 |
 | 40 | Profili održavanja admin (ERP-admin mutacije; SoD guard netaknut) | IMPLEMENTED (BE, 2026-07-17 F2-P0a): `GET/POST /maintenance/profiles`, `PATCH /profiles/:id` + `GET /lookups/employees`; mutacije guard = ERP admin (`assertErpAdmin`, NE admin_ui krug), POST eksplicitna duplikat-provera `userId`; DB trigger `maint_profiles_guard_role` netaknut. FE ekran = F2-P4. |
 | 41 | QR kartica sredstva (render) + mobilni QR sken → karton | NOT_STARTED |
 | 42 | Mobilni tok /m/odrzavanje (hub→lista→karton→prijava kvara+foto) | NOT_STARTED |
@@ -417,7 +427,7 @@ Paritet 23 sekcije 1.0 (`/maintenance/*`), 2.0 ui-kit, responsive (bez zasebnog 
 | 44 | Storage proxy (upload/sign/delete; putanje 1.0-kompatibilne) | NOT_STARTED |
 | 45 | GUC sub+email test: operator scope, chief-bez-globalne-role, magacioner krug | NOT_STARTED |
 | 46 | e2e permission matrica (maint rola × ERP rola × endpoint × 200/403) | NOT_STARTED |
-| 47 | Idempotencija mutacija (clientEventId / rev_api_idempotency obrazac) | NOT_STARTED |
+| 47 | Idempotencija mutacija (clientEventId / rev_api_idempotency obrazac) | PARTIAL · BE `clientEventId` dodat i na event rute (incidents/wo events) F2-P0b 17.07 |
 | 48 | Živi smoke: pun ciklus (QR sken → prijava kvara → auto-WO → dodela → delovi/rad → završen → izveštaj) | NOT_STARTED |
 
 ## 6. Redosled izvođenja (R-faze za CEO talas)

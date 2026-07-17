@@ -84,7 +84,9 @@ import type {
 
 export interface MachinesQuery {
   q?: string;
-  status?: string;
+  status?: string; // efektivni op-status (running/degraded/down/maintenance) — 1.0 chip
+  deadline?: string; // "overdue" | "danas" | "7d" — rok grupa (index.js:724-735)
+  location?: string; // tačna lokacija (maint_machines.location) — 1.0 select
   source?: string;
   archived?: string; // "true" = uklj. arhivirane; default samo aktivne (tracked)
   mine?: string; // "true" = responsible_user_id = ja
@@ -98,6 +100,9 @@ export interface WorkOrdersQuery {
   type?: string;
   assetId?: string;
   mine?: string; // assigned_to = ja
+  q?: string; // pretraga: wo_number/naslov/opis/sredstvo (index.js:168-174)
+  openOnly?: string; // "true" = sakrij zavrsen/otkazan (default ON u 1.0)
+  overdue?: string; // "true" = samo otvoreni sa due_at < now
   page?: string;
   pageSize?: string;
 }
@@ -120,13 +125,15 @@ export interface DocumentsQuery {
 export interface NotificationsQuery {
   status?: string;
   machineCode?: string;
+  incidentId?: string; // related_entity_id filter (maintenance.js:1600)
   page?: string;
   pageSize?: string;
 }
 export interface PartsQuery {
   q?: string;
   vehicleId?: string;
-  lowStock?: string;
+  lowStock?: string; // "true" = samo current_stock < min_stock
+  includeInactive?: string; // "true" = uklj. neaktivne delove (default samo active)
   page?: string;
   pageSize?: string;
 }
@@ -304,6 +311,69 @@ export class OdrzavanjeService {
     });
   }
 
+  /**
+   * Board (#33): preventivni taskovi grupisani u kolone Prekoračeno/Danas/Narednih 7 dana
+   * (bucket iz `v_maint_task_due_dates` po DB clock-u — kalendarski dan, paritet 1.0
+   * bucketTaskDueDates index.js:494-513) + aktivni override-i po mašini (za „PAUZA" izdvajanje
+   * na dno kolone, splitByOverride index.js:1349-1357) + imena mašina. FE renderuje/izdvaja.
+   */
+  async board(email: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const [dues, statuses, machines] = await Promise.all([
+        tx.$queryRaw<
+          {
+            task_id: string;
+            machine_code: string;
+            title: string;
+            severity: string | null;
+            interval_value: number | null;
+            interval_unit: string | null;
+            next_due_at: Date | string;
+            bucket: string;
+          }[]
+        >(
+          Prisma.sql`SELECT task_id, machine_code, title, severity,
+              interval_value, interval_unit, next_due_at,
+              CASE
+                WHEN next_due_at < date_trunc('day', now()) THEN 'overdue'
+                WHEN next_due_at < date_trunc('day', now()) + interval '1 day' THEN 'today'
+                WHEN next_due_at < date_trunc('day', now()) + interval '8 days' THEN 'week'
+                ELSE 'later'
+              END AS bucket
+            FROM v_maint_task_due_dates
+            WHERE next_due_at IS NOT NULL
+            ORDER BY next_due_at ASC`,
+        ),
+        tx.$queryRaw<
+          {
+            machine_code: string;
+            status: string;
+            override_reason: string | null;
+            override_valid_until: Date | string | null;
+          }[]
+        >(
+          Prisma.sql`SELECT machine_code, status, override_reason, override_valid_until
+            FROM v_maint_machine_current_status WHERE override_reason IS NOT NULL`,
+        ),
+        tx.maintMachine.findMany({ select: { machineCode: true, name: true } }),
+      ]);
+      const overdue = dues.filter((d) => d.bucket === "overdue");
+      const today = dues.filter((d) => d.bucket === "today");
+      const week = dues.filter((d) => d.bucket === "week");
+      const overrides = statuses.map((s) => ({
+        machineCode: s.machine_code,
+        status: s.status,
+        reason: s.override_reason,
+        validUntil: s.override_valid_until,
+      }));
+      const machineNames = machines.map((m) => ({
+        machineCode: m.machineCode,
+        name: m.name,
+      }));
+      return { data: { overdue, today, week, overrides, machineNames } };
+    });
+  }
+
   // ==========================================================================
   // Mašine (spec §4.2/§4.4)
   // ==========================================================================
@@ -314,9 +384,16 @@ export class OdrzavanjeService {
       query.pageSize,
     );
     return this.withUserMapped(email, async (tx) => {
+      // Rok/status filteri se izvode iz view-ova (v_maint_machine_current_status,
+      // v_maint_task_due_dates) → prvo razrešimo dozvoljeni skup machine_code-ova pa
+      // ga intersektujemo u where (`machineCode in`), da DB paginacija ostane tačna
+      // (paritet 1.0 filterRows, index.js:716-735 — status/rok grupe AND-uju se).
+      const codeFilter = await this.machineCodeFilter(tx, query);
       const where: Prisma.MaintMachineWhereInput = {
         ...(query.archived === "true" ? {} : { archivedAt: null }),
         ...(query.source ? { source: query.source } : {}),
+        ...(query.location ? { location: query.location } : {}),
+        ...(codeFilter ? { machineCode: { in: codeFilter } } : {}),
         ...(query.mine === "true"
           ? { responsibleUserId: await this.uid(tx) }
           : {}),
@@ -370,11 +447,19 @@ export class OdrzavanjeService {
     });
   }
 
-  /** Kandidati za uvoz iz BigTehn cache (view). */
-  async importableMachines(email: string) {
+  /**
+   * Kandidati za uvoz iz BigTehn cache (view). Skriveno pravilo 6: default SAKRIVA
+   * pomoćne operacije (`no_procedure=true`: Kontrola/Kooperacija… nisu mašine) —
+   * paritet 1.0 `no_procedure=is.false` (maintenance.js:1431-1432). `includeNoProcedure=true`
+   * prikazuje sve.
+   */
+  async importableMachines(email: string, includeNoProcedure?: boolean) {
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.$queryRaw(
-        Prisma.sql`SELECT * FROM v_maint_machines_importable`,
+        includeNoProcedure
+          ? Prisma.sql`SELECT * FROM v_maint_machines_importable ORDER BY machine_code ASC`
+          : Prisma.sql`SELECT * FROM v_maint_machines_importable
+              WHERE no_procedure IS FALSE ORDER BY machine_code ASC`,
       );
       return { data };
     });
@@ -596,8 +681,36 @@ export class OdrzavanjeService {
           ? [query.status]
           : undefined;
     return this.withUserMapped(email, async (tx) => {
+      // Pretraga (q) uključuje sredstvo (asset_code/name) koje je u maint_assets, ne u
+      // maint_work_orders → prvo razrešimo asset_id-eve koji matchuju pa OR-ujemo
+      // (paritet 1.0 index.js:168-174; DB paginacija ostaje tačna).
+      const qTerm = query.q?.trim();
+      let assetIdMatches: string[] | undefined;
+      if (qTerm) {
+        const assets = await tx.maintAsset.findMany({
+          where: {
+            OR: [
+              { assetCode: { contains: qTerm, mode: "insensitive" } },
+              { name: { contains: qTerm, mode: "insensitive" } },
+            ],
+          },
+          select: { assetId: true },
+          take: 500,
+        });
+        assetIdMatches = assets.map((a) => a.assetId);
+      }
+      const openOnly = query.openOnly === "true";
+      const overdue = query.overdue === "true";
+      // `status` se javlja u DVE nezavisne dimenzije (group/status filter = `in`, a
+      // openOnly/overdue = `notIn`) → AND array, da druga NE pregazi prvu (obe AND-uju,
+      // paritet 1.0 gde su filteri nezavisni; kontradikcija = prazan skup).
+      const statusConds: Prisma.MaintWorkOrderWhereInput[] = [];
+      if (statusFilter)
+        statusConds.push({ status: { in: statusFilter as never[] } });
+      if (openOnly || overdue)
+        statusConds.push({ status: { notIn: ["zavrsen", "otkazan"] as never[] } });
       const where: Prisma.MaintWorkOrderWhereInput = {
-        ...(statusFilter ? { status: { in: statusFilter as never[] } } : {}),
+        ...(statusConds.length ? { AND: statusConds } : {}),
         ...(query.priority && WO_PRIORITIES.has(query.priority)
           ? { priority: query.priority as never }
           : {}),
@@ -606,6 +719,20 @@ export class OdrzavanjeService {
           : {}),
         ...(query.assetId ? { assetId: query.assetId } : {}),
         ...(query.mine === "true" ? { assignedTo: await this.uid(tx) } : {}),
+        // overdue traži i due_at < now (index.js:162-167).
+        ...(overdue ? { dueAt: { lt: new Date() } } : {}),
+        ...(qTerm
+          ? {
+              OR: [
+                { woNumber: { contains: qTerm, mode: "insensitive" } },
+                { title: { contains: qTerm, mode: "insensitive" } },
+                { description: { contains: qTerm, mode: "insensitive" } },
+                ...(assetIdMatches && assetIdMatches.length
+                  ? [{ assetId: { in: assetIdMatches } }]
+                  : []),
+              ],
+            }
+          : {}),
       };
       const [rows, total] = await Promise.all([
         tx.maintWorkOrder.findMany({
@@ -616,9 +743,16 @@ export class OdrzavanjeService {
         }),
         tx.maintWorkOrder.count({ where }),
       ]);
+      // WO ↔ sredstvo (H4): kanban/lista mora znati za koje je sredstvo nalog
+      // (šifra · naziv; maintWorkOrdersPanel.js:206-220). Batch-resolve iz maint_assets.
+      const assetMap = await this.resolveAssets(
+        tx,
+        rows.map((w) => w.assetId),
+      );
       const data = rows.map((w) => ({
         ...w,
         group: WO_GROUP[w.status] ?? null,
+        asset: assetMap.get(w.assetId) ?? null,
       }));
       return { data, meta: pageMeta(page, pageSize, total) };
     });
@@ -641,7 +775,7 @@ export class OdrzavanjeService {
         throw new NotFoundException(
           `Radni nalog ${id} ne postoji ili nije vidljiv`,
         );
-      const [events, parts, labor] = await Promise.all([
+      const [events, parts, labor, assetMap] = await Promise.all([
         tx.maintWoEvent.findMany({
           where: { woId: id },
           orderBy: { at: "asc" },
@@ -654,11 +788,17 @@ export class OdrzavanjeService {
           where: { woId: id },
           orderBy: { createdAt: "asc" },
         }),
+        this.resolveAssets(tx, [wo.assetId]),
       ]);
+      // Detalj prikazuje „šifra · naziv" sredstva + linkove „Otvori mašinu/incident"
+      // (maintWorkOrdersPanel.js:513-525). `sourceIncidentId` je već na wo redu (link
+      // „Otvori incident"); `asset.assetCode` == machine_code za mašine (link „Otvori mašinu").
       return {
         data: {
           ...wo,
           group: WO_GROUP[wo.status] ?? null,
+          asset: assetMap.get(wo.assetId) ?? null,
+          incidentId: wo.sourceIncidentId ?? null,
           events,
           parts,
           labor,
@@ -741,13 +881,20 @@ export class OdrzavanjeService {
     });
   }
 
+  /**
+   * Servisni plan vozila sa RAČUNATIM „due" kolonama (next_due_at/due_status/km_to_due/
+   * has_open_wo/open_wo_id) — čita `v_maint_vehicle_service_plan_due` umesto sirove tabele
+   * (paritet 1.0 fetchMaintVehicleServicePlan, maintenance.js:2606-2611; sortiran po
+   * due_status pa next_due_at nulls last). View je security_invoker → RLS pozivaoca važi.
+   */
   async vehicleServicePlan(email: string, assetId: string) {
     return this.withUserMapped(email, async (tx) => {
-      const data = await tx.maintVehicleServicePlan.findMany({
-        where: { assetId },
-        orderBy: { createdAt: "asc" },
-      });
-      return { data };
+      const data = await tx.$queryRaw(
+        Prisma.sql`SELECT * FROM v_maint_vehicle_service_plan_due
+          WHERE asset_id = ${assetId}::uuid
+          ORDER BY due_status ASC, next_due_at ASC NULLS LAST`,
+      );
+      return { data: this.numRows(data) };
     });
   }
 
@@ -892,13 +1039,19 @@ export class OdrzavanjeService {
     });
   }
 
+  /**
+   * Servisni plan IT/objekta sa RAČUNATIM „due" kolonama — čita
+   * `v_maint_asset_service_plan_due` umesto sirove tabele (paritet 1.0
+   * fetchMaintAssetServicePlan, maintenance.js:2696-2701). View je security_invoker.
+   */
   async assetServicePlan(email: string, assetId: string) {
     return this.withUserMapped(email, async (tx) => {
-      const data = await tx.maintAssetServicePlan.findMany({
-        where: { assetId },
-        orderBy: { createdAt: "asc" },
-      });
-      return { data };
+      const data = await tx.$queryRaw(
+        Prisma.sql`SELECT * FROM v_maint_asset_service_plan_due
+          WHERE asset_id = ${assetId}::uuid
+          ORDER BY due_status ASC, next_due_at ASC NULLS LAST`,
+      );
+      return { data: this.numRows(data) };
     });
   }
 
@@ -980,8 +1133,21 @@ export class OdrzavanjeService {
       });
     }
     return this.withUserMapped(email, async (tx) => {
+      // „Ispod minimuma" = current_stock <= min_stock (kolona-na-kolonu; Prisma where to
+      // ne može) → razreši part_id-eve raw upitom pa `in` (paritet 1.0 lowOnly,
+      // maintInventoryPanel.js:308 — `<=`, ne `<`; paginacija ostaje tačna).
+      let lowIds: string[] | undefined;
+      if (query.lowStock === "true") {
+        const rows = await tx.$queryRaw<{ part_id: string }[]>(
+          Prisma.sql`SELECT part_id FROM maint_parts WHERE current_stock <= min_stock`,
+        );
+        lowIds = rows.map((r) => r.part_id);
+      }
       const where: Prisma.MaintPartWhereInput = {
-        active: true,
+        // Default samo aktivni; includeInactive=true prikazuje i deaktivirane (paritet
+        // 1.0 „prikaži neaktivne"). Neaktivan deo inače zauvek nevidljiv (audit §5).
+        ...(query.includeInactive === "true" ? {} : { active: true }),
+        ...(lowIds ? { partId: { in: lowIds } } : {}),
         ...(query.q
           ? {
               OR: [
@@ -1024,10 +1190,21 @@ export class OdrzavanjeService {
     });
   }
 
-  async listSuppliers(email: string) {
+  /**
+   * Dobavljači. `active` param (ne hardkodovano true — audit §5): izostavljeno/'true' =
+   * samo aktivni (default, paritet 1.0); 'all' = svi; 'false' = samo neaktivni. Bez ovoga
+   * su deaktivirani dobavljači zauvek nevidljivi.
+   */
+  async listSuppliers(email: string, active?: string) {
     return this.withUserMapped(email, async (tx) => {
+      const where: Prisma.MaintSupplierWhereInput =
+        active === "all"
+          ? {}
+          : active === "false"
+            ? { active: false }
+            : { active: true };
       const data = await tx.maintSupplier.findMany({
-        where: { active: true },
+        where,
         orderBy: { name: "asc" },
       });
       return { data };
@@ -1127,6 +1304,8 @@ export class OdrzavanjeService {
           ? { status: query.status as never }
           : {}),
         ...(query.machineCode ? { machineCode: query.machineCode } : {}),
+        // Filter po incidentu = related_entity_id (paritet 1.0 maintenance.js:1600).
+        ...(query.incidentId ? { relatedEntityId: query.incidentId } : {}),
       };
       const [data, total] = await Promise.all([
         tx.maintNotificationLog.findMany({
@@ -1294,6 +1473,78 @@ export class OdrzavanjeService {
   }
 
   /**
+   * 1.0 chip → efektivni op-status (index.js:717-722). Prima i raw enum (running…)
+   * i srpski chip (radi/smetnje/zastoj/odrzavanje); nepoznato = null (ignoriši filter).
+   */
+  private normalizeOpStatus(s?: string): string | null {
+    if (!s) return null;
+    const map: Record<string, string> = {
+      running: "running",
+      degraded: "degraded",
+      down: "down",
+      maintenance: "maintenance",
+      radi: "running",
+      smetnje: "degraded",
+      zastoj: "down",
+      odrzavanje: "maintenance",
+    };
+    return map[s] ?? null;
+  }
+
+  /**
+   * Skup machine_code-ova koji zadovoljavaju status/rok filter (view-derived), da DB
+   * paginacija ostane tačna. Vraća `undefined` kad nema takvog filtera (bez `in` klauzule).
+   * Semantika 1.0 (index.js:716-735): status = efektivni op-status; rok:
+   *   overdue = `overdue_checks_count > 0`; danas = min(next_due) danas (DB clock);
+   *   7d = min(next_due) unutar 8 dana (uklj. prekoračene, kao `nextDueAt <= weekEnd`).
+   * Više filtera se AND-uje (intersekcija skupova).
+   */
+  private async machineCodeFilter(
+    tx: Sy15Tx,
+    query: MachinesQuery,
+  ): Promise<string[] | undefined> {
+    const statusVal = this.normalizeOpStatus(query.status);
+    const dl = query.deadline;
+    const needDeadline = dl === "overdue" || dl === "danas" || dl === "7d";
+    if (!statusVal && !needDeadline) return undefined;
+    const sets: Set<string>[] = [];
+    if (statusVal) {
+      const rows = await tx.$queryRaw<{ machine_code: string }[]>(
+        Prisma.sql`SELECT machine_code FROM v_maint_machine_current_status
+          WHERE status = ${statusVal}`,
+      );
+      sets.push(new Set(rows.map((r) => r.machine_code)));
+    }
+    if (dl === "overdue") {
+      const rows = await tx.$queryRaw<{ machine_code: string }[]>(
+        Prisma.sql`SELECT machine_code FROM v_maint_machine_current_status
+          WHERE overdue_checks_count > 0`,
+      );
+      sets.push(new Set(rows.map((r) => r.machine_code)));
+    } else if (dl === "danas") {
+      const rows = await tx.$queryRaw<{ machine_code: string }[]>(
+        Prisma.sql`SELECT machine_code FROM v_maint_task_due_dates
+          GROUP BY machine_code
+          HAVING min(next_due_at) >= date_trunc('day', now())
+             AND min(next_due_at) < date_trunc('day', now()) + interval '1 day'`,
+      );
+      sets.push(new Set(rows.map((r) => r.machine_code)));
+    } else if (dl === "7d") {
+      const rows = await tx.$queryRaw<{ machine_code: string }[]>(
+        Prisma.sql`SELECT machine_code FROM v_maint_task_due_dates
+          GROUP BY machine_code
+          HAVING min(next_due_at) < date_trunc('day', now()) + interval '8 days'`,
+      );
+      sets.push(new Set(rows.map((r) => r.machine_code)));
+    }
+    let acc = sets[0] ?? new Set<string>();
+    for (let i = 1; i < sets.length; i++) {
+      acc = new Set([...acc].filter((x) => sets[i].has(x)));
+    }
+    return [...acc];
+  }
+
+  /**
    * Tvrda kapija za mutacije maint profila: SAMO ERP admin (`maint_is_erp_admin()` —
    * user_roles global `admin` po email-u). NIJE admin_ui krug: menadzment/magacioner
    * (koji imaju `odrzavanje.admin_ui`) NE smeju menjati profile — inače bi mogli sami
@@ -1325,6 +1576,36 @@ export class OdrzavanjeService {
       select: { userId: true, fullName: true },
     });
     return new Map(rows.map((r) => [r.userId, r.fullName]));
+  }
+
+  /**
+   * Batch-resolve sredstva (maint_assets) za WO listu/detalj (H4). RLS SELECT na
+   * maint_assets presuđuje vidljivost (isti krug kao sam WO). Vraća `assetCode`/`name`/
+   * `assetType` po asset_id (1.0 ugnježđuje `maint_assets(asset_code,name,asset_type)`).
+   */
+  private async resolveAssets(
+    tx: Sy15Tx,
+    assetIds: (string | null)[],
+  ): Promise<
+    Map<string, { assetId: string; assetCode: string; name: string; assetType: string }>
+  > {
+    const ids = [...new Set(assetIds.filter((x): x is string => !!x))];
+    if (!ids.length) return new Map();
+    const rows = await tx.maintAsset.findMany({
+      where: { assetId: { in: ids } },
+      select: { assetId: true, assetCode: true, name: true, assetType: true },
+    });
+    return new Map(
+      rows.map((r) => [
+        r.assetId,
+        {
+          assetId: r.assetId,
+          assetCode: r.assetCode,
+          name: r.name,
+          assetType: r.assetType as unknown as string,
+        },
+      ]),
+    );
   }
 
   /** BigInt (size_bytes) ne prežive res.json → Number (kao sastanci slikaOut). */
@@ -1999,21 +2280,26 @@ export class OdrzavanjeService {
     });
   }
 
+  /** Ručni komentar/tok incidenta. Idempotentan po clientEventId (dupli-klik ≠ dupli event). */
   createIncidentEvent(email: string, id: string, dto: IncidentEventDto) {
-    return this.withUserMapped(email, async (tx) => {
-      const uid = await this.uid(tx);
-      const row = await tx.maintIncidentEvent.create({
-        data: {
-          incidentId: id,
-          actor: uid,
-          eventType: dto.eventType,
-          comment: dto.comment ?? null,
-          fromValue: dto.fromValue ?? null,
-          toValue: dto.toValue ?? null,
-        },
-      });
-      return { data: row };
-    });
+    return this.runIdem(
+      email,
+      dto.clientEventId,
+      "odrzavanje.create-incident-event",
+      async (tx) => {
+        const uid = await this.uid(tx);
+        return tx.maintIncidentEvent.create({
+          data: {
+            incidentId: id,
+            actor: uid,
+            eventType: dto.eventType,
+            comment: dto.comment ?? null,
+            fromValue: dto.fromValue ?? null,
+            toValue: dto.toValue ?? null,
+          },
+        });
+      },
+    );
   }
 
   /**
@@ -2112,9 +2398,21 @@ export class OdrzavanjeService {
   /** Kanban status/dodela/prioritet/rok/closure. wo_events piše trigger — NE dupliramo. */
   async updateWorkOrder(email: string, id: string, dto: UpdateWorkOrderDto) {
     return this.withUserMapped(email, async (tx) => {
-      const exists =
-        (await tx.maintWorkOrder.count({ where: { woId: id } })) > 0;
+      const current = await tx.maintWorkOrder.findUnique({
+        where: { woId: id },
+        select: { startedAt: true },
+      });
+      const exists = current !== null;
       const uid = await this.uid(tx);
+      // Pečatiranje prelaza statusa (audit MEDIUM; 1.0 pečatira KLIJENT — skriveno pravilo 9,
+      // maintWorkOrdersPanel.js:367-368): u_radu → started_at (samo ako DTO ga ne nosi i još
+      // nije pečatiran), zavrsen → completed_at (ako DTO ga ne nosi). BE preuzima pečat.
+      const stampStarted =
+        dto.status === "u_radu" &&
+        dto.startedAt === undefined &&
+        !current?.startedAt;
+      const stampCompleted =
+        dto.status === "zavrsen" && dto.completedAt === undefined;
       const { count } = await tx.maintWorkOrder.updateMany({
         where: { woId: id },
         data: {
@@ -2164,6 +2462,8 @@ export class OdrzavanjeService {
           ...(dto.externalServicerName !== undefined
             ? { externalServicerName: dto.externalServicerName }
             : {}),
+          ...(stampStarted ? { startedAt: new Date() } : {}),
+          ...(stampCompleted ? { completedAt: new Date() } : {}),
           updatedBy: uid,
           updatedAt: new Date(),
         },
@@ -2188,43 +2488,87 @@ export class OdrzavanjeService {
     });
   }
 
+  /** Ručni WO komentar/prelaz. Idempotentan po clientEventId (dupli-klik ≠ dupli event). */
   createWoEvent(email: string, id: string, dto: WorkOrderEventDto) {
-    return this.withUserMapped(email, async (tx) => {
-      const uid = await this.uid(tx);
-      const row = await tx.maintWoEvent.create({
-        data: {
-          woId: id,
-          actor: uid,
-          eventType: dto.eventType,
-          comment: dto.comment ?? null,
-          fromValue: dto.fromValue ?? null,
-          toValue: dto.toValue ?? null,
-        },
-      });
-      return { data: row };
-    });
+    return this.runIdem(
+      email,
+      dto.clientEventId,
+      "odrzavanje.create-wo-event",
+      async (tx) => {
+        const uid = await this.uid(tx);
+        return tx.maintWoEvent.create({
+          data: {
+            woId: id,
+            actor: uid,
+            eventType: dto.eventType,
+            comment: dto.comment ?? null,
+            fromValue: dto.fromValue ?? null,
+            toValue: dto.toValue ?? null,
+          },
+        });
+      },
+    );
   }
 
+  /**
+   * Dodaj deo na WO (H5). Kad je zadat kataloški `partId` I `quantity > 0`, u ISTOJ
+   * transakciji se upisuje i „out" kretanje zaliha (`maint_part_stock_movements`,
+   * created_by=auth.uid(), wo_id, quantity) — paritet 1.0 klijentske sprege
+   * (maintWorkOrdersPanel.js:677-705). Ledger je INSERT-only, zaliha SME u minus
+   * (skriveno pravilo 16 — bez donje granice). Dodatno se piše `user_note` audit event.
+   * Sve atomarno: ako RLS odbije kretanje/event, ceo unos se poništi (za razliku od 1.0
+   * gde su bili 3 nezavisna zahteva) — svesno pojačanje (H5 = pouzdana potrošnja delova).
+   */
   createWoPart(email: string, id: string, dto: WorkOrderPartDto) {
     return this.runIdem(
       email,
       dto.clientEventId,
       "odrzavanje.create-wo-part",
-      async (tx) =>
-        tx.maintWoPart.create({
+      async (tx) => {
+        const uid = await this.uid(tx);
+        const partName = dto.partName.trim();
+        const row = await tx.maintWoPart.create({
           data: {
             woId: id,
-            partName: dto.partName.trim(),
+            partName,
             partId: dto.partId ?? null,
             quantity: dto.quantity ?? null,
             unit: dto.unit ?? null,
             unitCost: dto.unitCost ?? null,
             supplier: dto.supplier ?? null,
           },
-        }),
+        });
+        if (dto.partId && dto.quantity != null && dto.quantity > 0) {
+          const wo = await tx.maintWorkOrder.findUnique({
+            where: { woId: id },
+            select: { woNumber: true },
+          });
+          await tx.maintPartStockMovement.create({
+            data: {
+              partId: dto.partId,
+              woId: id,
+              movementType: "out" as never,
+              quantity: dto.quantity,
+              unitCost: dto.unitCost ?? null,
+              note: `WO ${wo?.woNumber ?? id}: ${partName}`,
+              createdBy: uid,
+            },
+          });
+        }
+        await tx.maintWoEvent.create({
+          data: {
+            woId: id,
+            actor: uid,
+            eventType: "user_note",
+            comment: `Dodat deo: ${partName}`,
+          },
+        });
+        return row;
+      },
     );
   }
 
+  /** Dodaj vreme rada (labor) na WO + `user_note` audit event (paritet 1.0 :729-735). */
   createWoLabor(email: string, id: string, dto: WorkOrderLaborDto) {
     if (!Number.isFinite(dto.minutes) || dto.minutes <= 0) {
       throw new UnprocessableEntityException("Minuti rada moraju biti > 0");
@@ -2235,14 +2579,26 @@ export class OdrzavanjeService {
       "odrzavanje.create-wo-labor",
       async (tx) => {
         const uid = await this.uid(tx);
-        return tx.maintWoLabor.create({
+        const minutes = Math.round(dto.minutes);
+        const row = await tx.maintWoLabor.create({
           data: {
             woId: id,
             technicianId: uid,
-            minutes: Math.round(dto.minutes),
+            minutes,
             notes: dto.notes ?? null,
           },
         });
+        await tx.maintWoEvent.create({
+          data: {
+            woId: id,
+            actor: uid,
+            eventType: "user_note",
+            comment: `Dodato vreme rada: ${minutes} min${
+              dto.notes ? ` — ${dto.notes}` : ""
+            }`,
+          },
+        });
+        return row;
       },
     );
   }
@@ -2525,6 +2881,7 @@ export class OdrzavanjeService {
         serviceContract: s("service_contract"),
         serviceProvider: s("service_provider"),
         lastInspectionAt: this.toDbDate(s("last_inspection_at")) ?? null,
+        cadastralParcels: s("cadastral_parcels"),
         notes: s("notes"),
         updatedBy: uid,
       };
@@ -2909,6 +3266,15 @@ export class OdrzavanjeService {
       const exists =
         (await tx.maintDriver.count({ where: { driverId: id } })) > 0;
       const uid = await this.uid(tx);
+      // Skriveno pravilo 11 (DB CHECK): spoljni vozač NE sme imati auth_user_id.
+      // Kad payload nosi is_internal=false → auth_user_id se forsira na null (paritet
+      // insertMaintDriver, maintenance.js:2836); inače se postavlja ako je zadat (null = odveži).
+      const authUserIdPatch =
+        dto.isInternal === false
+          ? { authUserId: null }
+          : dto.authUserId !== undefined
+            ? { authUserId: dto.authUserId }
+            : {};
       const { count } = await tx.maintDriver.updateMany({
         where: { driverId: id },
         data: {
@@ -2916,6 +3282,7 @@ export class OdrzavanjeService {
           ...(dto.isInternal !== undefined
             ? { isInternal: dto.isInternal }
             : {}),
+          ...authUserIdPatch,
           ...(dto.driversLicenseNumber !== undefined
             ? { driversLicenseNumber: dto.driversLicenseNumber }
             : {}),

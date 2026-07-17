@@ -1433,6 +1433,7 @@ model MaintFacilityDetails {
   serviceContract String? @map("service_contract")
   serviceProvider String? @map("service_provider")
   lastInspectionAt DateTime? @db.Date @map("last_inspection_at")
+  cadastralParcels String? @map("cadastral_parcels")
   notes String?
   createdAt DateTime @db.Timestamptz(6) @default(now()) @map("created_at")
   updatedAt DateTime @db.Timestamptz(6) @default(now()) @map("updated_at")

@@ -127,6 +127,12 @@ export class OdrzavanjeController {
     return this.odr.dashboard(req.user.email);
   }
 
+  // Board (#33): kolone Prekoračeno/Danas/Narednih 7 dana + override „PAUZA" izdvajanje.
+  @Get("board")
+  board(@Req() req: AuthedRequest) {
+    return this.odr.board(req.user.email);
+  }
+
   @Get("facility-types")
   facilityTypes() {
     return this.odr.facilityTypes();
@@ -140,8 +146,14 @@ export class OdrzavanjeController {
   }
 
   @Get("machines/importable")
-  importable(@Req() req: AuthedRequest) {
-    return this.odr.importableMachines(req.user.email);
+  importable(
+    @Req() req: AuthedRequest,
+    @Query("includeNoProcedure") includeNoProcedure?: string,
+  ) {
+    return this.odr.importableMachines(
+      req.user.email,
+      includeNoProcedure === "true",
+    );
   }
 
   @Get("machines/deletion-log")
@@ -397,8 +409,8 @@ export class OdrzavanjeController {
   }
 
   @Get("suppliers")
-  suppliers(@Req() req: AuthedRequest) {
-    return this.odr.listSuppliers(req.user.email);
+  suppliers(@Req() req: AuthedRequest, @Query("active") active?: string) {
+    return this.odr.listSuppliers(req.user.email, active);
   }
 
   @Get("locations")

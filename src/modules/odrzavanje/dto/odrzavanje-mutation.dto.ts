@@ -237,7 +237,11 @@ export class UpdateIncidentDto {
   @IsOptional() @IsBoolean() safetyMarker?: boolean;
 }
 
-export class IncidentEventDto {
+/**
+ * Ručni komentar/tok incidenta. `clientEventId` sprečava dupli-klik → dupli komentar
+ * (audit §5 „event rute bez clientEventId"). Idempotentno kroz runIdempotentRls.
+ */
+export class IncidentEventDto extends IdempotentDto {
   @IsString() @MaxLength(60) eventType!: string;
   @IsOptional() @IsString() @MaxLength(4000) comment?: string;
   @IsOptional() @IsString() fromValue?: string;
@@ -279,7 +283,12 @@ export class UpdateWorkOrderDto {
   @IsOptional() @IsString() externalServicerName?: string;
 }
 
-export class WorkOrderEventDto {
+/**
+ * Ručni komentar/prelaz statusa WO. `clientEventId` sprečava dupli-klik → dupli komentar
+ * (audit §5). Idempotentno kroz runIdempotentRls. (Automatski status_change event i dalje
+ * piše DB trigger — ovaj je za ručni user_note/komentar iz drawera.)
+ */
+export class WorkOrderEventDto extends IdempotentDto {
   @IsString() @MaxLength(60) eventType!: string;
   @IsOptional() @IsString() @MaxLength(4000) comment?: string;
   @IsOptional() @IsString() fromValue?: string;
@@ -475,6 +484,14 @@ export class CreateDriverDto extends IdempotentDto {
 export class UpdateDriverDto {
   @IsOptional() @IsString() @MaxLength(300) fullName?: string;
   @IsOptional() @IsBoolean() isInternal?: boolean;
+  /**
+   * ERP nalog vozača (auth.users.id) ILI null (raskini vezu). Skriveno pravilo 11:
+   * spoljni vozač (is_internal=false) NE sme imati auth_user_id (DB CHECK) — service
+   * forsira null (maintenance.js:2836). `null` = eksplicitno odveži.
+   */
+  @IsOptional() @ValidateIf((_o, v) => v !== null) @IsUUID() authUserId?:
+    | string
+    | null;
   @IsOptional() @IsString() driversLicenseNumber?: string;
   @IsOptional()
   @IsArray()
