@@ -36,6 +36,8 @@ interface DataTableProps<T> {
   sort?: SortState | null;
   /** Klik na sortabilno zaglavlje — pozivalac ciklira asc → desc → none. */
   onSortToggle?: (key: string) => void;
+  /** Opcione dodatne klase po redu (npr. isticanje prekoračenih rokova — RB-22). */
+  rowClassName?: (row: T) => string | undefined;
 }
 
 /**
@@ -55,6 +57,7 @@ export function DataTable<T>({
   onRowDrop,
   sort,
   onSortToggle,
+  rowClassName,
 }: DataTableProps<T>) {
   const [focus, setFocus] = useState(0);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
@@ -193,6 +196,7 @@ export function DataTable<T>({
                       'hover:bg-surface-2',
                       isFocused && 'bg-accent-subtle shadow-[inset_3px_0_0_var(--accent)]',
                       dnd && dropTarget === String(key) && 'border-t-2 border-t-accent',
+                      rowClassName?.(row),
                     )}
                   >
                     {columns.map((c) => (

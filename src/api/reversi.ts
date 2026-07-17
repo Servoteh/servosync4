@@ -30,7 +30,7 @@ export interface ReversiDocument {
   id: string;
   docNumber: string;
   docType: 'TOOL' | 'COOPERATION_GOODS' | 'CUTTING_TOOL';
-  status: 'OPEN' | 'PARTIALLY_RETURNED' | 'RETURNED';
+  status: 'OPEN' | 'PARTIALLY_RETURNED' | 'RETURNED' | 'CANCELLED';
   recipientType: 'EMPLOYEE' | 'DEPARTMENT' | 'EXTERNAL_COMPANY';
   recipientEmployeeId: string | null;
   recipientEmployeeName: string | null;
@@ -43,6 +43,8 @@ export interface ReversiDocument {
   returnConfirmedAt: string | null;
   pdfStoragePath: string | null;
   napomena: string | null;
+  /** Broj stavki (rev_document_lines) — kolona „Stavki" (RB-22) + CSV (RB-25). */
+  lineCount: number;
 }
 
 export interface ReversiTool {
@@ -151,10 +153,26 @@ export interface PageMeta {
 
 export interface ReversiDocumentsParams {
   status?: string;
+  /** CSV lista statusa (npr. `OPEN,PARTIALLY_RETURNED`); prednost nad `status` (RB-20). */
+  statuses?: string;
+  /** `true` → OPEN/PARTIALLY_RETURNED sa istekim rokom; prednost nad `statuses`/`status` (RB-20). */
+  overdue?: boolean;
   docType?: string;
+  /** ISO — `issued_at` gte (RB-19 mesec, UTC početak). */
+  issuedFrom?: string;
+  /** ISO — `issued_at` lte (RB-19 mesec, UTC kraj). */
+  issuedTo?: string;
   q?: string;
   page?: number;
   pageSize?: number;
+}
+
+/** Kontekst-filteri koji ulaze u SVE KPI count-ove i cardinality (RB-16, paritet 1.0). */
+export interface ReversiKpiContext {
+  q?: string;
+  docType?: string;
+  issuedFrom?: string;
+  issuedTo?: string;
 }
 
 export interface ReversiToolsParams {
@@ -187,7 +205,7 @@ export function newClientEventId(): string {
   return `${h[0]}${h[1]}${h[2]}${h[3]}-${h[4]}${h[5]}-${h[6]}${h[7]}-${h[8]}${h[9]}-${h[10]}${h[11]}${h[12]}${h[13]}${h[14]}${h[15]}`;
 }
 
-function qs(params: Record<string, string | number | undefined>): string {
+function qs(params: Record<string, string | number | boolean | undefined>): string {
   const sp = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined && v !== '') sp.set(k, String(v));
@@ -221,6 +239,84 @@ export function useReversiDocument(id: string | null) {
     queryFn: () =>
       apiFetch<{ data: ReversiDocumentDetail }>(`/v1/reversi/documents/${id}`),
   });
+}
+
+/** Broj RAZLIČITIH primalaca na aktivnim reversima — KPI „Primaoci (aktivno)" (RB-16). */
+export interface RecipientCardinality {
+  count: number;
+  /** Uvek `false` u 2.0 (tačan COUNT(DISTINCT), nije uzorak kao 1.0). */
+  truncated: boolean;
+}
+
+export function useReversiRecipientCardinality(ctx: ReversiKpiContext) {
+  return useQuery({
+    queryKey: [...KEYS.documents, 'recipient-cardinality', ctx],
+    queryFn: () =>
+      apiFetch<{ data: RecipientCardinality }>(
+        `/v1/reversi/documents/recipient-cardinality${qs({ ...ctx })}`,
+      ),
+  });
+}
+
+export interface ReversiKpis {
+  /** OPEN + PARTIALLY_RETURNED. */
+  nAkt: number;
+  /** overdue = aktivni sa istekim rokom. */
+  nOver: number;
+  /** RETURNED. */
+  nRet: number;
+  /** CANCELLED. */
+  nCan: number;
+  /** Broj različitih primalaca na aktivnim reversima. */
+  nRecip: number;
+  nRecipTrunc: boolean;
+}
+
+/**
+ * 5 KPI kartica Zaduženja (RB-16, paritet 1.0 `renderZaduzenjaPanel` count blok):
+ * 4 count-a iz `meta.pagination.total` (pageSize=1, prednost overdue > statuses >
+ * status) + „Primaoci (aktivno)" iz `recipient-cardinality`. Kontekst-filteri
+ * (mesec/tip/pretraga) ulaze u SVAKI count.
+ */
+export function useReversiKpis(ctx: ReversiKpiContext): ReversiKpis {
+  const active = useReversiDocuments({
+    ...ctx,
+    statuses: 'OPEN,PARTIALLY_RETURNED',
+    page: 1,
+    pageSize: 1,
+  });
+  const returned = useReversiDocuments({ ...ctx, status: 'RETURNED', page: 1, pageSize: 1 });
+  const cancelled = useReversiDocuments({ ...ctx, status: 'CANCELLED', page: 1, pageSize: 1 });
+  const overdue = useReversiDocuments({ ...ctx, overdue: true, page: 1, pageSize: 1 });
+  const recip = useReversiRecipientCardinality(ctx);
+  return {
+    nAkt: active.data?.meta.pagination.total ?? 0,
+    nOver: overdue.data?.meta.pagination.total ?? 0,
+    nRet: returned.data?.meta.pagination.total ?? 0,
+    nCan: cancelled.data?.meta.pagination.total ?? 0,
+    nRecip: recip.data?.data.count ?? 0,
+    nRecipTrunc: recip.data?.data.truncated ?? false,
+  };
+}
+
+/**
+ * Fetch-all filtriranog skupa dokumenata za CSV izvoz (RB-25). Prolazi kroz strane
+ * (BE cap 200/req) do `meta.total`; plafon 100 strana (≈20k) čuva od runaway petlje
+ * na pogrešnom total-u. 1.0 je izvozio samo učitane redove — 2.0 izvozi ceo skup.
+ */
+export async function fetchAllReversiDocuments(
+  params: ReversiDocumentsParams,
+): Promise<ReversiDocument[]> {
+  const pageSize = 200;
+  const out: ReversiDocument[] = [];
+  for (let page = 1; page <= 100; page += 1) {
+    const res = await apiFetch<{ data: ReversiDocument[]; meta: PageMeta }>(
+      `/v1/reversi/documents${qs({ ...params, page, pageSize })}`,
+    );
+    out.push(...res.data);
+    if (res.data.length === 0 || out.length >= res.meta.pagination.total) break;
+  }
+  return out;
 }
 
 export function useReversiTools(params: ReversiToolsParams) {
@@ -469,6 +565,47 @@ export function useMyConsumed() {
   return useQuery({
     queryKey: [...KEYS.reports, 'my-consumed'],
     queryFn: () => apiFetch<{ data: MyConsumedRow[] }>('/v1/reversi/reports/my-consumed'),
+  });
+}
+
+/**
+ * Red view-a `v_rev_my_machines_cutting_tools` (rezni alat na mašinama prijavljenog
+ * korisnika) — RB-27 3. izvor. Kolone su nullable jer 1.0 `cuttingCard` čita uz
+ * fallback-e (`remaining_quantity ?? quantity`, opciono `klasa`/`issued_to_employee_name`).
+ */
+export interface MyMachineCuttingRow {
+  line_id: string;
+  recipient_machine_code: string | null;
+  barcode: string | null;
+  oznaka: string | null;
+  naziv: string | null;
+  klasa: string | null;
+  quantity: string | number | null;
+  remaining_quantity: string | number | null;
+  returned_quantity: string | number | null;
+  unit: string | null;
+  issued_to_employee_name: string | null;
+  issued_at: string | null;
+  doc_number: string | null;
+}
+
+/** Rezni alat na MOJIM mašinama (RB-27 3. izvor — endpoint živ, FE ga do sada nije koristio). */
+export function useMyMachinesCutting() {
+  return useQuery({
+    queryKey: [...KEYS.reports, 'my-machines-cutting'],
+    queryFn: () =>
+      apiFetch<{ data: MyMachineCuttingRow[] }>('/v1/reversi/reports/my-machines-cutting'),
+  });
+}
+
+/**
+ * Sve MOJE otvorene rezne linije (RB-27 4. izvor — rezni koji sam potpisao). Isti
+ * endpoint kao Quick Return skener ali BEZ barkoda (user-scoped, sve otvorene linije).
+ */
+export function useMyCuttingOpenLines() {
+  return useQuery({
+    queryKey: ['reversi', 'cutting', 'my-open-lines'],
+    queryFn: () => fetchCuttingOpenLines(),
   });
 }
 

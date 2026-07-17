@@ -23,6 +23,9 @@ const DOC_STATUS: Record<string, { tone: Tone; label: string }> = {
   OPEN: { tone: 'info', label: 'Otvoren' },
   PARTIALLY_RETURNED: { tone: 'warn', label: 'Delimično vraćen' },
   RETURNED: { tone: 'success', label: 'Vraćen' },
+  // RB-62 — bez ovoga otkazan revers je prikazivao SIROV „CANCELLED" tekst (paritet
+  // 1.0 revDocStatusPillHtml: neutral „Otkazano").
+  CANCELLED: { tone: 'neutral', label: 'Otkazano' },
 };
 
 const LINE_STATUS: Record<string, { tone: Tone; label: string }> = {
