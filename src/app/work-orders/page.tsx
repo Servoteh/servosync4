@@ -1303,7 +1303,9 @@ function NewWorkOrderDialog({ open, onClose }: { open: boolean; onClose: () => v
           <Button
             onClick={submit}
             loading={create.isPending}
-            disabled={!form.projectId || !form.externalCustomerId}
+            // Komitent je izabran kad postoji `customer` objekat — NE `externalCustomerId`
+            // (id=0 = Servoteh d.o.o., validan interni komitent, ali falsy → lažno blokira).
+            disabled={!form.projectId || !customer}
           >
             Snimi
           </Button>
