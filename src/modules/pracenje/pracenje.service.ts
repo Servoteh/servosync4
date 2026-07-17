@@ -375,7 +375,8 @@ export class PracenjeService {
     const razlog = dto.razlog.trim();
     if (!razlog) throw new BadRequestException("Razlog blokade je obavezan.");
     return this.mut(email, async (tx) => {
-      await tx.$queryRaw(
+      // set_blokirano je RETURNS void — $queryRaw ne ume da deserializuje void kolonu (500).
+      await tx.$executeRaw(
         Prisma.sql`SELECT set_blokirano(${id}::uuid, ${razlog}::text)`,
       );
       return { data: { id } };
@@ -462,7 +463,8 @@ export class PracenjeService {
   /** ↑↓ prioritet praćenja (shift_predmet_prioritet; admin — RPC sam štiti). */
   async shiftPrioritet(email: string, itemId: number, direction: string) {
     return this.mut(email, async (tx) => {
-      await tx.$queryRaw(
+      // shift_predmet_prioritet je RETURNS void — mora $executeRaw (bez deserializacije).
+      await tx.$executeRaw(
         Prisma.sql`SELECT shift_predmet_prioritet(${itemId}::int, ${direction}::text)`,
       );
       return { data: { itemId, direction } };
