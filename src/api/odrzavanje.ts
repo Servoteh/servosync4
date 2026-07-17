@@ -1260,7 +1260,7 @@ export const useArchiveAsset = () =>
 export const useRestoreAsset = () =>
   useOdrMutate<{ id: string }>('POST', (v) => `${BASE}/assets/${v.id}/restore`);
 export const useCreateAssetServicePlan = () =>
-  useOdrCreate<{ id: string; name: string; intervalMonths: number; priority?: WoPriority; notes?: string }>((v) => `${BASE}/assets/${v.id}/service-plan`);
+  useOdrCreate<{ id: string; name: string; intervalMonths: number; priority?: WoPriority; notes?: string; lastDoneAt?: string; active?: boolean }>((v) => `${BASE}/assets/${v.id}/service-plan`);
 export const useUpdateAssetServicePlan = () =>
   useOdrMutate<{ id: string; planId: string; patch: Record<string, unknown> }>('PATCH', (v) => `${BASE}/assets/${v.id}/service-plan/${v.planId}`, (v) => v.patch);
 export const useDeleteAssetServicePlan = () =>

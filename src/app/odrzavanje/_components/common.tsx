@@ -273,6 +273,52 @@ export const ASSET_TYPE_LABEL: Record<string, string> = {
   facility: 'Objekat',
 };
 
+// ── IT oprema / objekti domen (labele = 1.0 kanon) ─────────────────
+/** Predlozi za tip uređaja (1.0 DEVICE_TYPE_SUGGESTIONS, maintItAssetsPanel.js:24). */
+export const DEVICE_TYPE_SUGGESTIONS = [
+  'laptop', 'desktop', 'server', 'printer', 'switch', 'router', 'access point',
+  'UPS', 'monitor', 'telefon', 'tablet', 'NAS', 'firewall',
+];
+/** Fallback lista tipova objekata kad lookup padne (1.0 FACILITY_TYPE_SUGGESTIONS). */
+export const FACILITY_TYPE_SUGGESTIONS = [
+  'hala', 'zgrada', 'instalacija', 'HVAC', 'elektro orman', 'kompresorska',
+  'kotlovnica', 'magacin', 'rampe', 'lift', 'PP instalacija', 'solarni sistem',
+];
+/** Tipovi objekata za koje se skrivaju proizvođač/model/serijski (skriveno pravilo). */
+export const FACILITY_TYPES_HIDE_TECH = new Set(['hala', 'zgrada', 'magacin', 'ostalo_objekat']);
+export const CRITICALITY_LABEL: Record<string, string> = {
+  low: 'Niska',
+  medium: 'Srednja',
+  high: 'Visoka',
+  critical: 'Kritična',
+};
+export function criticalityTone(v: string | null | undefined): Tone {
+  if (v === 'critical') return 'danger';
+  if (v === 'high') return 'warn';
+  if (v === 'medium') return 'info';
+  if (v === 'low') return 'success';
+  return 'neutral';
+}
+
+/** Broj dana do datuma (YYYY-MM-DD/ISO) u odnosu na danas (ponoć). null = bez datuma. */
+export function daysUntil(v: unknown): number | null {
+  if (!v) return null;
+  const d = new Date(`${String(v).slice(0, 10)}T00:00:00`);
+  if (!Number.isFinite(d.getTime())) return null;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return Math.round((d.getTime() - today.getTime()) / 86_400_000);
+}
+/** Rok kao kratka srpska labela (1.0 dueLabel): „kasni X d" / „danas" / „sutra" / „za X d". */
+export function dueDaysLabel(v: unknown): string {
+  const days = daysUntil(v);
+  if (days === null) return '—';
+  if (days < 0) return `kasni ${-days} d`;
+  if (days === 0) return 'danas';
+  if (days === 1) return 'sutra';
+  return `za ${days} d`;
+}
+
 // ── Ozbiljnost preventivnog šablona (normal/important/critical) ─────
 // Labele = 1.0 kanon (maintPreventivePanel.js:59-69): Kritično / Važno / Normalno.
 export const PREV_SEVERITY_LABEL: Record<string, string> = {
