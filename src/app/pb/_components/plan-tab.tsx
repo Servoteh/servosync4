@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, ChevronDown, ChevronRight, Download, Pencil, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui-kit/button';
 import { EmptyState } from '@/components/ui-kit/empty-state';
@@ -79,6 +79,61 @@ function sortTasks(list: PbTask[], col: SortCol, dir: 'asc' | 'desc'): PbTask[] 
   return [...list].sort(cmp);
 }
 
+// -------------------------------------------------- sačuvani pregledi / preseti filtera (PB-F3)
+/** Preset obuhvata SVA filter/sort polja ovog taba. */
+interface SavedView {
+  status: string;
+  prioritet: string;
+  vrsta: string;
+  problemOnly: boolean;
+  unassignedOnly: boolean;
+  showDone: boolean;
+  sortCol: SortCol;
+  sortDir: 'asc' | 'desc';
+}
+interface SavedViewEntry {
+  name: string;
+  filters: SavedView;
+}
+
+/** Ugrađeni pregledi (ne mogu se brisati) — paritet 1.0 PB_BUILTIN_VIEWS. */
+const PB_BUILTIN_VIEWS: ReadonlyArray<{ name: string; filters: Partial<SavedView> }> = [
+  { name: 'Aktivni', filters: { showDone: false } },
+  { name: 'Rokovi', filters: { sortCol: 'datumi', sortDir: 'asc', showDone: false } },
+  { name: 'Problemi', filters: { problemOnly: true } },
+  { name: 'Bez inženjera', filters: { unassignedOnly: true } },
+  { name: 'Visok prioritet', filters: { prioritet: 'Visok' } },
+];
+
+const PB_SAVED_VIEWS_KEY = 'pb_saved_views_v1';
+
+/** Čitaj korisničke preglede iz localStorage (guard: quota / privacy / SSR). */
+function loadSavedViews(): SavedViewEntry[] {
+  try {
+    const raw = localStorage.getItem(PB_SAVED_VIEWS_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return [];
+    const valid = arr.filter((v: unknown): v is SavedViewEntry => {
+      const o = v as { name?: unknown; filters?: unknown } | null;
+      return !!o && typeof o.name === 'string' && !!o.filters && typeof o.filters === 'object';
+    });
+    // Dedup po imenu (case-insensitive), zadrži poslednji — jednoznačan React key + brisanje.
+    const seen = new Map<string, SavedViewEntry>();
+    for (const v of valid) seen.set(v.name.toLowerCase(), { name: v.name, filters: v.filters });
+    return [...seen.values()];
+  } catch {
+    return [];
+  }
+}
+function persistSavedViews(list: SavedViewEntry[]): void {
+  try {
+    localStorage.setItem(PB_SAVED_VIEWS_KEY, JSON.stringify(list));
+  } catch {
+    /* quota / privacy mode — tiho */
+  }
+}
+
 function SortTh({
   col,
   label,
@@ -130,6 +185,10 @@ export function PlanTab({ filters, onOpenTask }: { filters: PlanFilters; onOpenT
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [sortCol, setSortCol] = useState<SortCol>('datumi');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+  const [userViews, setUserViews] = useState<SavedViewEntry[]>([]);
+
+  // localStorage se čita tek na klijentu (izbegavamo SSR/hydration nesklad).
+  useEffect(() => setUserViews(loadSavedViews()), []);
 
   const tasksQ = useTasks({ ...filters, status: status || undefined, vrsta: vrsta || undefined, pageSize: 500 });
   const loadQ = useLoadStats(20);
@@ -169,6 +228,32 @@ export function PlanTab({ filters, onOpenTask }: { filters: PlanFilters; onOpenT
       setSortCol(col);
       setSortDir('asc');
     }
+  }
+
+  // Preseti filtera (PB-F3): primena kreće od default-a pa prekrije snapshot-om.
+  function applyView(v: Partial<SavedView>) {
+    setStatus(v.status ?? '');
+    setPrioritet(v.prioritet ?? '');
+    setVrsta(v.vrsta ?? '');
+    setProblemOnly(v.problemOnly ?? false);
+    setUnassignedOnly(v.unassignedOnly ?? false);
+    setShowDone(v.showDone ?? false);
+    setSortCol(v.sortCol ?? 'datumi');
+    setSortDir(v.sortDir ?? 'asc');
+  }
+  function saveCurrentView() {
+    const name = (prompt('Naziv pregleda:') || '').trim();
+    if (!name) return;
+    const snapshot: SavedView = { status, prioritet, vrsta, problemOnly, unassignedOnly, showDone, sortCol, sortDir };
+    // Brisanje ide po imenu — duplikate spajamo (case-insensitive) da ostane jednoznačno.
+    const next = [...userViews.filter((v) => v.name.toLowerCase() !== name.toLowerCase()), { name, filters: snapshot }];
+    setUserViews(next);
+    persistSavedViews(next);
+  }
+  function deleteUserView(name: string) {
+    const next = userViews.filter((v) => v.name !== name);
+    setUserViews(next);
+    persistSavedViews(next);
   }
 
   const alarms = useMemo(() => buildAlarms(all, loadQ.data?.data ?? []), [all, loadQ.data]);
@@ -252,6 +337,24 @@ export function PlanTab({ filters, onOpenTask }: { filters: PlanFilters; onOpenT
 
   return (
     <div className="space-y-4">
+      {/* Pregledi — sačuvani preseti filtera (PB-F3) */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="mr-1 text-2xs font-semibold uppercase tracking-wide text-ink-secondary">Pregledi</span>
+        {PB_BUILTIN_VIEWS.map((v) => (
+          <ViewChip key={`b-${v.name}`} label={v.name} onApply={() => applyView(v.filters)} />
+        ))}
+        {userViews.map((v) => (
+          <ViewChip key={`u-${v.name}`} label={v.name} onApply={() => applyView(v.filters)} onDelete={() => deleteUserView(v.name)} />
+        ))}
+        <button
+          type="button"
+          onClick={saveCurrentView}
+          className="h-7 rounded-control border border-line bg-surface px-2 text-xs text-ink-secondary hover:bg-surface-2 hover:text-ink"
+        >
+          ＋ Sačuvaj pregled
+        </button>
+      </div>
+
       {/* Filter traka */}
       <div className="flex flex-wrap items-center gap-2">
         <select value={status} onChange={(e) => setStatus(e.target.value)} className={selCls} aria-label="Status">
@@ -403,6 +506,8 @@ export function PlanTab({ filters, onOpenTask }: { filters: PlanFilters; onOpenT
       {/* Tabela */}
       {tasksQ.isLoading ? (
         <p className="py-10 text-center text-sm text-ink-disabled">Učitavanje…</p>
+      ) : tasksQ.isError ? (
+        <EmptyState title="Greška pri učitavanju" hint="Osveži stranicu ili pokušaj ponovo." />
       ) : rows.length === 0 ? (
         <EmptyState title="Nema zadataka za prikaz" hint="Promeni filtere ili dodaj novi zadatak." />
       ) : (
@@ -549,6 +654,27 @@ function ToggleBtn({ active, onClick, children }: { active: boolean; onClick: ()
     >
       {children}
     </button>
+  );
+}
+
+function ViewChip({ label, onApply, onDelete }: { label: string; onApply: () => void; onDelete?: () => void }) {
+  return (
+    <span className="inline-flex items-center overflow-hidden rounded-control border border-line bg-surface text-xs text-ink-secondary">
+      <button type="button" onClick={onApply} className="px-2 py-1 hover:bg-surface-2 hover:text-ink" title={`Primeni pregled: ${label}`}>
+        {label}
+      </button>
+      {onDelete && (
+        <button
+          type="button"
+          onClick={onDelete}
+          className="border-l border-line px-1.5 py-1 text-ink-disabled hover:bg-surface-2 hover:text-status-danger"
+          aria-label={`Obriši pregled: ${label}`}
+          title="Obriši pregled"
+        >
+          ×
+        </button>
+      )}
+    </span>
   );
 }
 

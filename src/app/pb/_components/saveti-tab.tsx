@@ -1,7 +1,7 @@
 'use client';
 
-import { useState } from 'react';
-import { ThumbsUp, Trash2 } from 'lucide-react';
+import { useState, useRef } from 'react';
+import { ThumbsUp, Trash2, Paperclip } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Button } from '@/components/ui-kit/button';
@@ -22,8 +22,21 @@ import {
   useSaveTip,
   useToggleTipLike,
   useSoftDeleteTip,
+  useUploadTipFile,
+  useDeleteTipFile,
+  signTipFile,
   type PbTipRow,
 } from '@/api/projektni-biro';
+
+/** Prilog saveta — oblik iz `pb_get_eng_tip` RPC (`files` polje, snake_case). */
+type TipFile = {
+  id: string;
+  file_name: string;
+  mime_type?: string | null;
+  is_image?: boolean;
+  size_bytes?: number | string | null;
+  storage_path?: string;
+};
 
 export function SavetiTab() {
   const { can } = useAuth();
@@ -120,6 +133,8 @@ export function SavetiTab() {
 
       {tipsQ.isLoading ? (
         <p className="py-8 text-center text-sm text-ink-disabled">Učitavanje…</p>
+      ) : tipsQ.isError ? (
+        <EmptyState title="Greška pri učitavanju" hint="Osveži stranicu ili pokušaj ponovo." />
       ) : tips.length === 0 ? (
         <EmptyState title="Nema saveta" hint="Promeni pretragu ili dodaj prvi savet." />
       ) : (
@@ -248,6 +263,7 @@ function TipEditor({ tipId, onClose }: { tipId: string | null; onClose: () => vo
   const categoriesQ = useTipCategories();
   const projectsQ = useProjects();
   const existing = detail.data?.data;
+  const files = (existing?.files as TipFile[] | undefined) ?? [];
 
   const [naslov, setNaslov] = useState('');
   const [telo, setTelo] = useState('');
@@ -376,7 +392,85 @@ function TipEditor({ tipId, onClose }: { tipId: string | null; onClose: () => vo
             </label>
           </div>
         </FormField>
+
+        {tipId ? (
+          <TipFilesSection tipId={tipId} files={files} />
+        ) : (
+          <div className="border-t border-line pt-4">
+            <h3 className="mb-1 text-sm font-semibold text-ink">📎 Prilozi</h3>
+            <p className="text-xs text-ink-disabled">Sačuvajte savet da biste mogli da dodate priloge.</p>
+          </div>
+        )}
       </div>
     </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------- Prilozi saveta
+
+function TipFilesSection({ tipId, files }: { tipId: string; files: TipFile[] }) {
+  const upM = useUploadTipFile();
+  const delM = useDeleteTipFile();
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function onPick(list: FileList | null) {
+    if (!list?.length) return;
+    setErr(null);
+    try {
+      for (const f of Array.from(list)) {
+        await upM.mutateAsync({ tipId, file: f, clientEventId: newClientEventId() });
+      }
+    } catch {
+      setErr('Otpremanje priloga nije uspelo.');
+    }
+    if (inputRef.current) inputRef.current.value = '';
+  }
+  async function open(fileId: string) {
+    setErr(null);
+    try {
+      const res = await signTipFile(fileId);
+      window.open(res.data.url, '_blank', 'noopener');
+    } catch {
+      setErr('Otvaranje priloga nije uspelo.');
+    }
+  }
+  async function remove(fileId: string) {
+    if (!confirm('Obrisati prilog?')) return;
+    setErr(null);
+    try {
+      await delM.mutateAsync({ fileId });
+    } catch {
+      setErr('Brisanje priloga nije uspelo.');
+    }
+  }
+
+  return (
+    <section className="border-t border-line pt-4">
+      <div className="mb-2 flex items-center justify-between">
+        <h3 className="text-sm font-semibold text-ink">📎 Prilozi</h3>
+        <>
+          <input ref={inputRef} type="file" multiple className="hidden" onChange={(e) => onPick(e.target.files)} />
+          <Button variant="ghost" onClick={() => inputRef.current?.click()} loading={upM.isPending} className="h-7 px-2 text-xs">
+            ＋ Dodaj fajl
+          </Button>
+        </>
+      </div>
+      {err && <p className="mb-1 text-xs text-status-danger">{err}</p>}
+      <div className="space-y-1">
+        {files.map((f) => (
+          <div key={f.id} className="flex items-center justify-between rounded-control border border-line-soft bg-surface-2 px-3 py-1.5">
+            <button onClick={() => open(f.id)} className="flex min-w-0 items-center gap-2 text-left">
+              <Paperclip className="h-3.5 w-3.5 shrink-0 text-ink-disabled" aria-hidden />
+              <span className="truncate text-sm text-ink hover:underline">{f.file_name}</span>
+            </button>
+            <button onClick={() => remove(f.id)} className="text-ink-disabled hover:text-status-danger" aria-label="Obriši prilog">
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        ))}
+        {files.length === 0 && <p className="text-xs text-ink-disabled">Nema priloga.</p>}
+      </div>
+    </section>
   );
 }

@@ -42,6 +42,7 @@ export function AnalizaTab({ onOpenTask }: { onOpenTask: (id: string | null) => 
   const elapsed = minD ? Math.max(0, Math.round((Date.now() - minD.getTime()) / 86400000)) : 0;
   const elapsedPct = totalDays ? Math.min(100, Math.round((elapsed / totalDays) * 100)) : 0;
 
+  if (tasksQ.isError) return <EmptyState title="Greška pri učitavanju" hint="Osveži stranicu ili pokušaj ponovo." />;
   if (projects.length === 0) return <EmptyState title="Nema projekata sa zadacima" />;
 
   return (
@@ -61,7 +62,7 @@ export function AnalizaTab({ onOpenTask }: { onOpenTask: (id: string | null) => 
         </select>
       </div>
 
-      {minD && maxD && (
+      {minD && maxD && Number.isFinite(minD.getTime()) && Number.isFinite(maxD.getTime()) && (
         <div className="rounded-panel border border-line bg-surface p-4">
           <h3 className="mb-2 text-sm font-semibold text-ink">Timeline projekta</h3>
           <div className="relative h-2 w-full overflow-hidden rounded-full bg-surface-2">

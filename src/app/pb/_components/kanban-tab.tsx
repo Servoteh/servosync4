@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react';
 import { cn } from '@/lib/cn';
 import { Button } from '@/components/ui-kit/button';
+import { EmptyState } from '@/components/ui-kit/empty-state';
 import { useAuth } from '@/lib/auth-context';
 import { PERMISSIONS } from '@/lib/permissions';
 import { useTasks, useBulkUpdateTasks, type PbTask } from '@/api/projektni-biro';
@@ -64,6 +65,11 @@ export function KanbanTab({ filters, onOpenTask }: { filters: PlanFilters; onOpe
 
   function quick(id: string, to: string) {
     bulkM.mutate({ ids: [id], status: to });
+  }
+
+  // PB-F9: greška glavnog upita ≠ prazan rezultat — razlikuj 500 od stvarno praznog stanja.
+  if (tasksQ.isError) {
+    return <EmptyState title="Greška pri učitavanju" hint="Osveži stranicu ili pokušaj ponovo." />;
   }
 
   return (

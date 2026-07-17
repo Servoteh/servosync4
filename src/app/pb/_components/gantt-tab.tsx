@@ -1,9 +1,12 @@
 'use client';
 
-import { Fragment, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { cn } from '@/lib/cn';
 import { EmptyState } from '@/components/ui-kit/empty-state';
-import { useTasks, type PbTask } from '@/api/projektni-biro';
+import { useTasks, useUpdateTask, type PbTask } from '@/api/projektni-biro';
+import { ApiError } from '@/api/client';
+import { useAuth } from '@/lib/auth-context';
+import { PERMISSIONS } from '@/lib/permissions';
 import { statusTone, shortDate, workDaysBetween } from './shared';
 import type { PlanFilters } from './plan-tab';
 
@@ -21,8 +24,34 @@ const WINDOWS = [
   { key: '6', label: '6 meseci', months: 6 },
 ] as const;
 
+const MS_PER_DAY = 86_400_000;
+/** Prag (px) da razlikuje pravi drag od klika. */
+const DRAG_THRESHOLD_PX = 4;
+
+/** YYYY-MM-DD pomeren za `n` dana (paritet 1.0 addDays; UTC-podne → TZ-neutralno). */
+function shiftYmd(iso: string, n: number): string | null {
+  const d = new Date(String(iso).slice(0, 10) + 'T12:00:00');
+  if (Number.isNaN(d.getTime())) return null;
+  d.setDate(d.getDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+/** Interno stanje jednog drag-a plan-trake (živi u ref-u, van React re-rendera). */
+type GanttDragState = {
+  id: string;
+  startX: number;
+  pxPerDay: number;
+  moved: boolean;
+  origStart: string;
+  origEnd: string;
+  updatedAt: string;
+};
+
 export function GanttTab({ filters, onOpenTask }: { filters: PlanFilters; onOpenTask: (id: string | null) => void }) {
+  const { can } = useAuth();
+  const canEdit = can(PERMISSIONS.PB_EDIT);
   const tasksQ = useTasks({ ...filters, pageSize: 500 });
+  const updateM = useUpdateTask();
   const [win, setWin] = useState<'1' | '3' | '6'>('3');
   const [anchor, setAnchor] = useState(() => {
     const d = new Date();
@@ -79,6 +108,91 @@ export function GanttTab({ filters, onOpenTask }: { filters: PlanFilters; onOpen
     return ((todayMs - start.getTime()) / spanMs) * 100;
   }, [todayMs, start, end, spanMs]);
 
+  // ── Drag plan-trake (PB_EDIT): pomeri OBA plan-datuma za isti broj dana ─────
+  // Stanje drag-a živi u ref-u (bez re-rendera po pikselu); preview je jedina
+  // React state promena i menja se tek kad delta pređe granicu dana.
+  const dragRef = useRef<GanttDragState | null>(null);
+  const [dragPreview, setDragPreview] = useState<{ id: string; deltaDays: number } | null>(null);
+  const [dragErr, setDragErr] = useState<string | null>(null);
+
+  // Stabilni delegati na document-u (referentna stabilnost za removeEventListener),
+  // logika im se osvežava svakim renderom preko *Handler ref-ova.
+  const moveHandler = useRef<(e: MouseEvent) => void>(() => {});
+  const upHandler = useRef<(e: MouseEvent) => void>(() => {});
+  const moveListener = useRef((e: MouseEvent) => moveHandler.current(e)).current;
+  const upListener = useRef((e: MouseEvent) => upHandler.current(e)).current;
+
+  useEffect(() => {
+    moveHandler.current = (ev) => {
+      const st = dragRef.current;
+      if (!st) return;
+      const dx = ev.clientX - st.startX;
+      if (!st.moved && Math.abs(dx) < DRAG_THRESHOLD_PX) return;
+      st.moved = true;
+      const deltaDays = Math.round(dx / st.pxPerDay);
+      setDragPreview((p) => (p && p.id === st.id && p.deltaDays === deltaDays ? p : { id: st.id, deltaDays }));
+    };
+    upHandler.current = (ev) => {
+      document.removeEventListener('mousemove', moveListener);
+      document.removeEventListener('mouseup', upListener);
+      const st = dragRef.current;
+      dragRef.current = null;
+      if (!st || !st.moved) return setDragPreview(null);
+      const deltaDays = Math.round((ev.clientX - st.startX) / st.pxPerDay);
+      if (deltaDays === 0) return setDragPreview(null);
+      const newStart = shiftYmd(st.origStart, deltaDays);
+      const newEnd = shiftYmd(st.origEnd, deltaDays);
+      if (!newStart || !newEnd) return setDragPreview(null);
+      setDragErr(null);
+      // Preview OSTAJE dok mutacija ne završi (bez „rubber-band" skoka); čisti se u onSettled.
+      updateM.mutate(
+        { id: st.id, patch: { datumPocetkaPlan: newStart, datumZavrsetkaPlan: newEnd, expectedUpdatedAt: st.updatedAt } },
+        {
+          onError: (e) =>
+            setDragErr(
+              e instanceof ApiError && e.status === 409
+                ? 'Zadatak je u međuvremenu izmenjen — osveži pregled.'
+                : e instanceof ApiError && e.status === 403
+                  ? 'Nemate pravo za pomeranje datuma.'
+                  : 'Greška pri pomeranju datuma.',
+            ),
+          onSettled: () => setDragPreview(null),
+        },
+      );
+    };
+  });
+
+  // Skini eventualne visece listenere pri unmount-u (bez akumulacije).
+  useEffect(
+    () => () => {
+      document.removeEventListener('mousemove', moveListener);
+      document.removeEventListener('mouseup', upListener);
+    },
+    [moveListener, upListener],
+  );
+
+  function startPlanDrag(e: React.MouseEvent<HTMLDivElement>, t: PbTask) {
+    if (!canEdit || e.button !== 0) return;
+    if (!t.datum_pocetka_plan || !t.datum_zavrsetka_plan) return;
+    const cell = e.currentTarget.parentElement; // .relative.h-6 = pun prozor (spanMs = 100%)
+    if (!cell) return;
+    const cellWidth = cell.getBoundingClientRect().width;
+    if (cellWidth <= 0) return;
+    e.preventDefault(); // spreči selekciju teksta / native drag
+    const daysInWindow = spanMs / MS_PER_DAY;
+    dragRef.current = {
+      id: t.id,
+      startX: e.clientX,
+      pxPerDay: cellWidth / daysInWindow,
+      moved: false,
+      origStart: t.datum_pocetka_plan,
+      origEnd: t.datum_zavrsetka_plan,
+      updatedAt: t.updated_at,
+    };
+    document.addEventListener('mousemove', moveListener);
+    document.addEventListener('mouseup', upListener);
+  }
+
   function shift(delta: number) {
     setAnchor((a) => {
       const n = new Date(a);
@@ -123,10 +237,22 @@ export function GanttTab({ filters, onOpenTask }: { filters: PlanFilters; onOpen
       </div>
 
       <p className="text-xs text-ink-disabled">
-        Legenda: puna traka = plan (boja po statusu), donja traka = ostvareno, crvena vertikala = danas. Prevlačenje datuma stiže naknadno.
+        Legenda: puna traka = plan (boja po statusu), donja traka = ostvareno, crvena vertikala = danas.
+        {canEdit ? ' Prevuci plan-traku za pomeranje datuma.' : ''}
       </p>
 
-      {groups.length === 0 ? (
+      {dragErr && (
+        <div className="flex items-center justify-between rounded-control border border-status-danger/40 bg-status-danger/10 px-3 py-1.5 text-xs text-status-danger">
+          <span>{dragErr}</span>
+          <button onClick={() => setDragErr(null)} className="ml-2 shrink-0 hover:underline" aria-label="Zatvori">
+            ✕
+          </button>
+        </div>
+      )}
+
+      {tasksQ.isError ? (
+        <EmptyState title="Greška pri učitavanju" hint="Osveži stranicu ili pokušaj ponovo." />
+      ) : groups.length === 0 ? (
         <EmptyState title="Nema zadataka za prikaz" />
       ) : (
         <div className="overflow-x-auto rounded-panel border border-line bg-surface">
@@ -140,7 +266,11 @@ export function GanttTab({ filters, onOpenTask }: { filters: PlanFilters; onOpen
                     </td>
                   </tr>
                   {g.rows.map((t) => {
-                    const plan = barStyle(t.datum_pocetka_plan, t.datum_zavrsetka_plan);
+                    // Tokom drag-a preview pomera plan-traku na buduću poziciju (cele dane).
+                    const previewDelta = dragPreview?.id === t.id ? dragPreview.deltaDays : 0;
+                    const planFrom = previewDelta !== 0 ? shiftYmd(t.datum_pocetka_plan ?? '', previewDelta) : t.datum_pocetka_plan;
+                    const planTo = previewDelta !== 0 ? shiftYmd(t.datum_zavrsetka_plan ?? '', previewDelta) : t.datum_zavrsetka_plan;
+                    const plan = barStyle(planFrom, planTo);
                     const real = barStyle(t.datum_pocetka_real, t.datum_zavrsetka_real);
                     const tone = TONE_BG[statusTone(t.status)];
                     return (
@@ -160,7 +290,11 @@ export function GanttTab({ filters, onOpenTask }: { filters: PlanFilters; onOpen
                             } · ${t.procenat_zavrsenosti ?? 0}%`}
                           >
                             {plan ? (
-                              <div className={cn('absolute top-0 h-3 rounded', tone)} style={plan}>
+                              <div
+                                className={cn('absolute top-0 h-3 rounded', tone, canEdit && 'cursor-grab select-none active:cursor-grabbing')}
+                                style={plan}
+                                onMouseDown={canEdit ? (e) => startPlanDrag(e, t) : undefined}
+                              >
                                 <div className="h-full rounded bg-black/20" style={{ width: `${t.procenat_zavrsenosti ?? 0}%` }} />
                               </div>
                             ) : (

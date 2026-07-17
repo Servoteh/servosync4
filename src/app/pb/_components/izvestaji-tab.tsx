@@ -1,9 +1,10 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Trash2 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { Button } from '@/components/ui-kit/button';
+import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Input, FormField } from '@/components/ui-kit/form-field';
 import { Textarea } from '@/components/ui-kit/textarea';
 import { useAuth } from '@/lib/auth-context';
@@ -19,6 +20,38 @@ import {
 import { formatDate } from '@/lib/format';
 
 const WEEKDAYS = ['Pon', 'Uto', 'Sre', 'Čet', 'Pet', 'Sub', 'Ned'];
+
+// PB-F4: minimalni lokalni tipovi za Web Speech API (bez biblioteka).
+interface SpeechRecognitionAlternativeLike {
+  transcript: string;
+}
+interface SpeechRecognitionResultLike {
+  0: SpeechRecognitionAlternativeLike;
+}
+interface SpeechRecognitionEventLike {
+  resultIndex: number;
+  results: ArrayLike<SpeechRecognitionResultLike>;
+}
+interface SpeechRecognitionLike {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  onresult: ((ev: SpeechRecognitionEventLike) => void) | null;
+  onend: (() => void) | null;
+  onerror: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+}
+type SpeechRecognitionCtor = new () => SpeechRecognitionLike;
+
+function getSpeechRecognitionCtor(): SpeechRecognitionCtor | null {
+  if (typeof window === 'undefined') return null;
+  const w = window as unknown as {
+    SpeechRecognition?: SpeechRecognitionCtor;
+    webkitSpeechRecognition?: SpeechRecognitionCtor;
+  };
+  return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
+}
 
 function ymd(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -73,6 +106,66 @@ export function IzvestajiTab() {
   const [err, setErr] = useState<string | null>(null);
   const createM = useCreateWorkReport();
   const delM = useDeleteWorkReport();
+
+  // PB-F4: glasovni unos (STT) za polje "Opis rada".
+  const [sttSupported, setSttSupported] = useState(false);
+  const [listening, setListening] = useState(false);
+  const recogRef = useRef<SpeechRecognitionLike | null>(null);
+
+  useEffect(() => {
+    // Detekcija u efektu izbegava hydration mismatch (server uvek false).
+    setSttSupported(getSpeechRecognitionCtor() != null);
+    return () => {
+      try {
+        recogRef.current?.stop();
+      } catch {
+        /* ignore */
+      }
+      recogRef.current = null;
+    };
+  }, []);
+
+  function toggleDictation() {
+    if (recogRef.current) {
+      try {
+        recogRef.current.stop();
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+    const Ctor = getSpeechRecognitionCtor();
+    if (!Ctor) return;
+    const recog = new Ctor();
+    recog.lang = 'sr-RS';
+    recog.continuous = false;
+    recog.interimResults = false;
+    recog.onresult = (ev) => {
+      let text = '';
+      for (let i = ev.resultIndex; i < ev.results.length; i++) {
+        text += ev.results[i][0].transcript;
+      }
+      text = text.trim();
+      if (text) setOpis((prev) => (prev ? `${prev} ${text}` : text));
+    };
+    recog.onend = () => {
+      recogRef.current = null;
+      setListening(false);
+    };
+    recog.onerror = () => {
+      recogRef.current = null;
+      setListening(false);
+      setErr('Glasovni unos nije uspeo — proveri dozvolu za mikrofon.');
+    };
+    recogRef.current = recog;
+    setListening(true);
+    try {
+      recog.start();
+    } catch {
+      recogRef.current = null;
+      setListening(false);
+    }
+  }
 
   async function save() {
     setErr(null);
@@ -175,7 +268,23 @@ export function IzvestajiTab() {
               <input type="range" min={0.5} max={12} step={0.5} value={sati} onChange={(e) => setSati(Number(e.target.value))} className="w-full" />
             </FormField>
             <FormField label="Opis rada">
-              <Textarea value={opis} onChange={(e) => setOpis(e.target.value)} rows={3} placeholder="Kratki opis šta je urađeno tog dana…" />
+              <div className="space-y-2">
+                <Textarea value={opis} onChange={(e) => setOpis(e.target.value)} rows={3} placeholder="Kratki opis šta je urađeno tog dana…" />
+                {sttSupported && (
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      variant={listening ? 'danger' : 'secondary'}
+                      onClick={toggleDictation}
+                      aria-pressed={listening}
+                      className={cn('h-8 px-3 text-sm', listening && 'animate-pulse')}
+                    >
+                      {listening ? '⏺ Slušam… (stop)' : '🎙 Glasovni unos'}
+                    </Button>
+                    {listening && <span className="text-xs text-status-danger">Diktiranje aktivno…</span>}
+                  </div>
+                )}
+              </div>
             </FormField>
             <Button onClick={save} loading={createM.isPending} className="w-full">
               Sačuvaj
@@ -184,7 +293,9 @@ export function IzvestajiTab() {
         )}
         <div className="mt-3 border-t border-line pt-3">
           <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-secondary">Unosi za dan</h4>
-          {dayEntries.length === 0 ? (
+          {monthQ.isError ? (
+            <EmptyState title="Greška pri učitavanju" hint="Osveži stranicu ili pokušaj ponovo." />
+          ) : dayEntries.length === 0 ? (
             <p className="text-xs text-ink-disabled">Nema unosa.</p>
           ) : (
             <ul className="space-y-1">
@@ -231,23 +342,29 @@ export function IzvestajiTab() {
         </div>
         {summaryReq && (
           <div className="mt-3 border-t border-line pt-3">
-            <div className="mb-2 flex items-center justify-between text-sm">
-              <span className="text-ink-secondary">
-                {totalCount} izveštaja · {pFrom} — {pTo}
-              </span>
-              <span className="font-semibold text-ink">{totalHours.toFixed(1)}h ukupno</span>
-            </div>
-            <ul className="space-y-1">
-              {summaryRows.map((r, i) => (
-                <li key={i} className="flex items-center justify-between text-sm">
-                  <span className="text-ink">{(r.full_name ?? r.employee_name ?? '—') as string}</span>
-                  <span className="tnums text-ink-secondary">
-                    {num(r.report_count ?? r.count ?? r.n)} izv. · {num(r.total_hours ?? r.sati ?? r.hours).toFixed(1)}h
+            {summaryQ.isError ? (
+              <EmptyState title="Greška pri učitavanju" hint="Osveži stranicu ili pokušaj ponovo." />
+            ) : (
+              <>
+                <div className="mb-2 flex items-center justify-between text-sm">
+                  <span className="text-ink-secondary">
+                    {totalCount} izveštaja · {pFrom} — {pTo}
                   </span>
-                </li>
-              ))}
-              {summaryRows.length === 0 && <li className="text-xs text-ink-disabled">Nema izveštaja u periodu.</li>}
-            </ul>
+                  <span className="font-semibold text-ink">{totalHours.toFixed(1)}h ukupno</span>
+                </div>
+                <ul className="space-y-1">
+                  {summaryRows.map((r, i) => (
+                    <li key={i} className="flex items-center justify-between text-sm">
+                      <span className="text-ink">{(r.full_name ?? r.employee_name ?? '—') as string}</span>
+                      <span className="tnums text-ink-secondary">
+                        {num(r.report_count ?? r.count ?? r.n)} izv. · {num(r.total_hours ?? r.sati ?? r.hours).toFixed(1)}h
+                      </span>
+                    </li>
+                  ))}
+                  {summaryRows.length === 0 && <li className="text-xs text-ink-disabled">Nema izveštaja u periodu.</li>}
+                </ul>
+              </>
+            )}
           </div>
         )}
       </div>
