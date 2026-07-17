@@ -445,6 +445,7 @@ function DrillDownView({
   const name = (m?.name as string) || (m?.naziv as string) || '';
   return (
     <MachineOpsTable
+      key={`${dept.slug}:${machine}`}
       machine={machine}
       rn={rn}
       reworkOnly={reworkOnly}
@@ -560,6 +561,7 @@ function SveView({
 
   return (
     <MachineOpsTable
+      key={machine}
       machine={machine}
       rn={rn}
       reworkOnly={reworkOnly}

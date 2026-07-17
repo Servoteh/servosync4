@@ -885,10 +885,17 @@ function OperativniPlanTab({ rnId, canEdit }: { rnId: string; canEdit: boolean }
 /** Skok na akcionu tačku u Sastancima (SPA client navigacija) — paritet 1.0 oaMeetingLink. */
 function jumpToSastanak(akcijaId: string) {
   const path = `/sastanci?akcija=${encodeURIComponent(akcijaId)}`;
+  // 1.0 (aktivnostModal.js:161) radi ČIST meki SPA prelaz: pushState + popstate.
+  // Next App Router presreće popstate i mekano rutira — bez reload-a.
   window.history.pushState(null, '', path);
   window.dispatchEvent(new PopStateEvent('popstate'));
-  // Next App Router: hard-navigacija ako popstate ne uhvati modul.
-  window.location.assign(path);
+  // Fallback SAMO ako meki prelaz ne uhvati modul (URL i dalje van /sastanci) —
+  // uslovno, tek po sledećem ticku, da ne obara SPA prelaz bezuslovnim reload-om.
+  window.setTimeout(() => {
+    if (!window.location.pathname.startsWith('/sastanci')) {
+      window.location.assign(path);
+    }
+  }, 0);
 }
 
 function FilterLabel({ text, children }: { text: string; children: React.ReactNode }) {

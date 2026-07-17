@@ -77,7 +77,9 @@ export function AktivnostModal({
       id: aktivnost?.id,
       radniNalogId: rnId,
       projekatId,
-      odeljenjeId: aktivnost?.odeljenje_id ?? deptIdByName(aktivnost?.odeljenje ?? aktivnost?.odeljenje_naziv),
+      // Init SAMO iz direktnog id-a; naziv→id fallback se rešava lazy u save()
+      // (deptIdByName), da kasni odeljenja.data NE okine ovaj reset i pregazi unos.
+      odeljenjeId: aktivnost?.odeljenje_id ?? '',
       nazivAktivnosti: aktivnost?.naziv_aktivnosti ?? '',
       status: aktivnost?.status ?? 'nije_krenulo',
       statusMode: aktivnost?.status_mode ?? 'manual',
@@ -96,8 +98,10 @@ export function AktivnostModal({
       planiraniPocetak: aktivnost?.planirani_pocetak?.slice(0, 10) ?? undefined,
       planiraniZavrsetak: aktivnost?.planirani_zavrsetak?.slice(0, 10) ?? undefined,
     });
+    // Namerno BEZ odeljenja.data: reset forme se okida samo na otvaranje/aktivnost,
+    // inače kasno stigla odeljenja.data pregazi korisnikov unos (naziv→id ide lazy u save()).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, aktivnost, rnId, projekatId, odeljenja.data]);
+  }, [open, aktivnost, rnId, projekatId]);
 
   function set<K extends keyof AktivnostInput>(k: K, v: AktivnostInput[K]) {
     setD((prev) => ({ ...prev, [k]: v }));
@@ -105,10 +109,14 @@ export function AktivnostModal({
 
   async function save() {
     setErr(null);
-    if (!d.odeljenjeId) return setErr('Odeljenje je obavezno.');
+    // Lazy naziv→id fallback (1.0 findDeptIdByName): rešava se tek u submit-u,
+    // kad su odeljenja sigurno učitana, a bez reset-effect-a koji gazi unos.
+    const odeljenjeId =
+      d.odeljenjeId || deptIdByName(aktivnost?.odeljenje ?? aktivnost?.odeljenje_naziv);
+    if (!odeljenjeId) return setErr('Odeljenje je obavezno.');
     if (!d.nazivAktivnosti.trim()) return setErr('Naziv aktivnosti je obavezan.');
     try {
-      await upsert.mutateAsync({ ...d, nazivAktivnosti: d.nazivAktivnosti.trim() });
+      await upsert.mutateAsync({ ...d, odeljenjeId, nazivAktivnosti: d.nazivAktivnosti.trim() });
       onClose();
     } catch (e) {
       setErr(e instanceof ApiError ? e.message : 'Greška pri čuvanju aktivnosti.');
