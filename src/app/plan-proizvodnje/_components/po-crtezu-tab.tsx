@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { RefreshCw, Lock } from 'lucide-react';
 import { Button } from '@/components/ui-kit/button';
 import { SearchBox } from '@/components/ui-kit/search-box';
@@ -8,6 +8,7 @@ import { useCan } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
 import { useOperationsSearch, opKey, type OpRow } from '@/api/plan-proizvodnje';
 import { OpsTable } from './ops-table';
+import { LS, lsGet, lsSet } from './pp-storage';
 
 /** Po crtežu: pretraga svih operacija + bulk premeštanje (JEDAN client_event_uuid u BE). */
 export function PoCrtezuTab({
@@ -23,8 +24,13 @@ export function PoCrtezuTab({
 }) {
   const can = useCan();
   const canEdit = can(PERMISSIONS.PLAN_PROIZVODNJE_EDIT);
-  const [q, setQ] = useState('');
+  // Persistiran upit + AUTO-pretraga na mount (GAP-PM-21/PM-22): SSR-safe init iz LS.
+  const [q, setQ] = useState<string>(() => lsGet(LS.crtezQuery) ?? '');
   const search = useOperationsSearch(q);
+
+  useEffect(() => {
+    lsSet(LS.crtezQuery, q);
+  }, [q]);
   const rows = search.data?.data ?? [];
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
