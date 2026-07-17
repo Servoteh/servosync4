@@ -9,7 +9,7 @@
 // povezani crteži dijalozi, 3D model, drag-drop reorder (up/down pokriva funkciju).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronUp, ChevronDown, Trash2, FileText, Link2, Plus, Pencil, Download, GripVertical, Loader2 } from 'lucide-react';
+import { ChevronUp, ChevronDown, Trash2, FileText, Link2, Plus, Pencil, Download, GripVertical, Loader2, Calendar } from 'lucide-react';
 import { useCan } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
@@ -37,7 +37,7 @@ import {
   ENGINEERS_DEFAULT,
   VODJA_DEFAULT,
 } from '@/lib/plan-montaze/constants';
-import { calcDuration, dayDiffFromToday, todayYmd } from '@/lib/plan-montaze/date';
+import { calcDuration, dayDiffFromToday, todayYmd, formatDmy } from '@/lib/plan-montaze/date';
 import {
   applyBusinessRules,
   calcReadiness,
@@ -450,6 +450,55 @@ export function PlanTab() {
     return ok;
   }
 
+  // MP-16: obriši lokaciju iz projekta (paritet 1.0 metaModals loc-del + DEFAULT fallback).
+  // Model 2.0: lokacija „postoji" dok je bar jedna faza koristi → brisanje = premeštanje tih
+  // faza na DEFAULT lokaciju (prvu koja NIJE ona koja se briše). In-use faze se prebroje i
+  // korisniku se traži potvrda; posle premeštanja lokacija nestaje iz izvedene liste.
+  async function deleteLocation(loc: string): Promise<void> {
+    if (!canEdit || !activeProject) return;
+    const target = loc.trim();
+    if (!target) return;
+    const ids: string[] = [];
+    for (const w of activeProject.workPackages) {
+      for (const ph of w.phases) {
+        if ((ph.location ?? '') === target) ids.push(ph.id);
+      }
+    }
+    for (const p of phases) {
+      if (p.location === target && !ids.includes(p.id)) ids.push(p.id);
+    }
+    // DEFAULT fallback: prva default lokacija različita od one koja se briše.
+    const fallback = DEFAULT_LOCATIONS.find((l) => l !== target) ?? DEFAULT_LOCATIONS[0];
+    if (!ids.length) {
+      // Nije u upotrebi — nema faza za premeštanje; samo obavesti (lista je izvedena).
+      flash(`Lokacija „${target}" nije u upotrebi ni na jednoj fazi.`);
+      return;
+    }
+    if (
+      !window.confirm(
+        `Lokacija „${target}" je u upotrebi na ${ids.length} faza. Obrisati je i te faze premestiti na „${fallback}"?`,
+      )
+    ) {
+      return;
+    }
+    let ok = 0;
+    let fail = 0;
+    for (const id of ids) {
+      try {
+        await updatePhase.mutateAsync({ id, location: fallback });
+        ok++;
+      } catch {
+        fail++;
+      }
+    }
+    setPhases((prev) => prev.map((p) => (p.location === target ? { ...p, location: fallback } : p)));
+    flash(
+      fail
+        ? `Premešteno ${ok}/${ids.length} faza na „${fallback}" (${fail} grešaka).`
+        : `Lokacija „${target}" obrisana — ${ok} faza premešteno na „${fallback}".`,
+    );
+  }
+
   // JSON uvoz (paritet 1.0 exportModal import): parse → confirm → sekvencijalni upsert
   // po ID-u projekat→WP→faza. Invalidacija stabla ide automatski kroz mutacije.
   async function onImportFile(e: React.ChangeEvent<HTMLInputElement>) {
@@ -620,6 +669,16 @@ export function PlanTab() {
             ))}
           </select>
         </label>
+        {/* MP-04: badge krajnjeg roka projekta (Calendar ikona + dd.MM.yyyy). */}
+        {activeProject?.project_deadline && (
+          <span
+            className="inline-flex items-center gap-1.5 self-center rounded-control border border-line bg-surface-2 px-2.5 py-1.5 text-xs text-ink-secondary"
+            title="Krajnji rok projekta"
+          >
+            <Calendar className="h-3.5 w-3.5" aria-hidden />
+            <span className="tnums">{formatDmy(activeProject.project_deadline)}</span>
+          </span>
+        )}
         {canEdit && (
           <div className="flex items-center gap-1">
             {activeProject && (
@@ -861,7 +920,9 @@ export function PlanTab() {
           project={projectDialog.project}
           onSaved={(id) => switchProject(id)}
           locations={projectLocations}
+          allProjects={projects}
           onRenameLocation={canEdit && projectDialog.project ? renameLocation : undefined}
+          onDeleteLocation={canEdit && projectDialog.project ? deleteLocation : undefined}
         />
       )}
       {wpDialog && projectId && (
@@ -872,6 +933,9 @@ export function PlanTab() {
           wp={wpDialog.wp}
           onSaved={(id) => switchWp(id)}
           onApplyDefaults={canEdit && wpDialog.wp ? applyWpDefaults : undefined}
+          projectCode={activeProject?.project_code}
+          nextRnOrder={(activeProject?.workPackages.length ?? 0) + 1}
+          isLastWp={!!wpDialog.wp && (activeProject?.workPackages.length ?? 0) <= 1}
         />
       )}
 
