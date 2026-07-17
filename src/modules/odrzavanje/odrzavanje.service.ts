@@ -101,7 +101,7 @@ export interface WorkOrdersQuery {
   assetId?: string;
   mine?: string; // assigned_to = ja
   q?: string; // pretraga: wo_number/naslov/opis/sredstvo (index.js:168-174)
-  openOnly?: string; // "true" = sakrij zavrsen/otkazan (default ON u 1.0)
+  openOnly?: string; // default ON (sakrij zavrsen/otkazan); "false" = prikaži sve — paritet 1.0 `open!=='0'`
   overdue?: string; // "true" = samo otvoreni sa due_at < now
   page?: string;
   pageSize?: string;
@@ -699,7 +699,11 @@ export class OdrzavanjeService {
         });
         assetIdMatches = assets.map((a) => a.assetId);
       }
-      const openOnly = query.openOnly === "true";
+      // Skriveno pravilo #8: „Samo otvoreni" je ON po defaultu (1.0
+      // maintWorkOrdersPanel.js:128 `open !== '0'`) → BE default ON, isključuje se
+      // eksplicitno `openOnly=false`. Bez ovoga bi kanban po defaultu prikazao i
+      // zavrsen/otkazan (regresija pariteta).
+      const openOnly = query.openOnly !== "false";
       const overdue = query.overdue === "true";
       // `status` se javlja u DVE nezavisne dimenzije (group/status filter = `in`, a
       // openOnly/overdue = `notIn`) → AND array, da druga NE pregazi prvu (obe AND-uju,
@@ -2400,19 +2404,24 @@ export class OdrzavanjeService {
     return this.withUserMapped(email, async (tx) => {
       const current = await tx.maintWorkOrder.findUnique({
         where: { woId: id },
-        select: { startedAt: true },
+        select: { startedAt: true, completedAt: true },
       });
       const exists = current !== null;
       const uid = await this.uid(tx);
       // Pečatiranje prelaza statusa (audit MEDIUM; 1.0 pečatira KLIJENT — skriveno pravilo 9,
-      // maintWorkOrdersPanel.js:367-368): u_radu → started_at (samo ako DTO ga ne nosi i još
-      // nije pečatiran), zavrsen → completed_at (ako DTO ga ne nosi). BE preuzima pečat.
+      // maintWorkOrdersPanel.js:367-368/754): u_radu → started_at (samo ako DTO ga ne nosi i
+      // još nije pečatiran), zavrsen → completed_at (samo ako DTO ga ne nosi I još nije
+      // pečatiran — 1.0 `st==='zavrsen' && !wo.completed_at`). Bez `!current?.completedAt`
+      // čuvara ponovljeni „zavrsen" PATCH bi pregazio originalni završetak (kvari
+      // downtime/trošak/kompletiranje izveštaje) — simetrično sa stampStarted.
       const stampStarted =
         dto.status === "u_radu" &&
         dto.startedAt === undefined &&
         !current?.startedAt;
       const stampCompleted =
-        dto.status === "zavrsen" && dto.completedAt === undefined;
+        dto.status === "zavrsen" &&
+        dto.completedAt === undefined &&
+        !current?.completedAt;
       const { count } = await tx.maintWorkOrder.updateMany({
         where: { woId: id },
         data: {
@@ -2526,15 +2535,31 @@ export class OdrzavanjeService {
       "odrzavanje.create-wo-part",
       async (tx) => {
         const uid = await this.uid(tx);
-        const partName = dto.partName.trim();
+        // Kad je izabran KATALOŠKI deo (partId), katalog je AUTORITATIVAN za naziv i
+        // jed.cenu (paritet 1.0 :686 `selectedPart?.name || partName`, :689/:702
+        // `selectedPart.unit_cost` — 1.0 NEMA ručni unit_cost za kataloški deo). BE
+        // razrešava maint_parts server-side umesto da veruje DTO vrednostima → tačna
+        // „Vrednost zaliha" (insert-only ledger) i sačuvani naziv bez obzira na FE.
+        // Slobodan unos (bez partId) zadržava DTO polja (unit_cost = 2.0 nadogradnja).
+        const catalog = dto.partId
+          ? await tx.maintPart.findUnique({
+              where: { partId: dto.partId },
+              select: { name: true, unit: true, unitCost: true },
+            })
+          : null;
+        const partName = (catalog?.name ?? dto.partName).trim();
+        const unit = dto.unit?.trim() || catalog?.unit || null; // 1.0 :680 typed || katalog
+        const unitCost = catalog
+          ? (catalog.unitCost ?? null)
+          : (dto.unitCost ?? null);
         const row = await tx.maintWoPart.create({
           data: {
             woId: id,
             partName,
             partId: dto.partId ?? null,
             quantity: dto.quantity ?? null,
-            unit: dto.unit ?? null,
-            unitCost: dto.unitCost ?? null,
+            unit,
+            unitCost,
             supplier: dto.supplier ?? null,
           },
         });
@@ -2549,7 +2574,7 @@ export class OdrzavanjeService {
               woId: id,
               movementType: "out" as never,
               quantity: dto.quantity,
-              unitCost: dto.unitCost ?? null,
+              unitCost,
               note: `WO ${wo?.woNumber ?? id}: ${partName}`,
               createdBy: uid,
             },
