@@ -105,9 +105,9 @@ export function BulkPrintLabelsDialog({
               {moreN > 0 ? ` od ${formatNumber(withBarcode.length)}` : ''})
             </div>
             <ul className="space-y-1">
-              {preview.map((r) => (
+              {preview.map((r, i) => (
                 <li
-                  key={r.barcode}
+                  key={`${r.barcode}-${i}`}
                   className="flex items-center gap-3 rounded-control border border-line px-2 py-1"
                 >
                   <span

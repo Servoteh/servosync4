@@ -286,6 +286,9 @@ export function MagacinTab() {
         naziv: r.naziv,
         subgroupLabel: r.klasa ?? r.subgroup_label ?? r.group_label ?? '',
         serial: r.serijski_broj,
+        // grupa/klasa → composeTspl bira rezni (CUTTING) TSPL2 layout umesto HAND (paritet 1.0).
+        grupa: r.grupa as 'HAND' | 'CUTTING',
+        klasa: r.klasa,
       })),
     );
   }

@@ -205,6 +205,14 @@ export function validateRow(r: ImportRow, type: ImportType): string[] {
     if (tip === 'CUTTING_TOOL' && !str('masina')) {
       errs.push('mašina obavezna za CUTTING_TOOL');
     }
+    // RC-56 — količina mora biti ceo broj ≥ 1 (BE ReversalRowDto.kolicina @IsInt @Min(1));
+    // frakcioni red se obeleži i isključi, umesto da 400-om obori ceo batch.
+    const kolRaw = str('kolicina');
+    if (kolRaw) {
+      const kx = Number(kolRaw.replace(/\s/g, '').replace(',', '.'));
+      if (!Number.isFinite(kx) || kx < 1) errs.push('količina mora biti ceo broj ≥ 1');
+      else if (Math.floor(kx) !== kx) errs.push('količina mora biti ceo broj (kom)');
+    }
   }
   if (type === 'cutting') {
     if (str('pocetna_kolicina') && Number(r.pocetna_kolicina) < 0) {

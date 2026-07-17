@@ -52,15 +52,18 @@ function lineFromCatalog(t: CuttingTool): Line {
   };
 }
 
-/** Skenirani CUTTING zapis je `ReversiTool` (bez `unit`/`compatible_machine_codes`). */
-function lineFromScanned(t: ReversiTool): Line {
+/**
+ * Skenirani CUTTING zapis = pun red `rev_cutting_tool_catalog` (BE lookupBarcode CUTTING),
+ * pa nosi `compatibleMachineCodes` i `unit` — RC-29 paritet: upozorenje kompatibilnosti radi i za skenirane.
+ */
+function lineFromScanned(t: ReversiTool & { compatibleMachineCodes?: string[]; unit?: string }): Line {
   return {
     catalogId: t.id,
     barcode: t.barcode,
     oznaka: t.oznaka,
     naziv: t.naziv,
-    unit: 'kom',
-    compatible: [],
+    unit: t.unit ?? 'kom',
+    compatible: t.compatibleMachineCodes ?? [],
     quantity: 1,
   };
 }

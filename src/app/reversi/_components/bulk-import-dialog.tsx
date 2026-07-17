@@ -42,7 +42,7 @@ const ALIASES: Record<string, string[]> = {
   isConsumable: ['potrosni', 'potrošni', 'consumable'],
   totalQty: ['kolicina', 'količina', 'pocetna kolicina', 'početna količina', 'stanje', 'qty'],
   napomena: ['napomena', 'note', 'komentar'],
-  subgroupCode: ['subgroup_code', 'subgroup', 'podgrupa', 'podgrupa_code', 'klasa'],
+  subgroupCode: ['subgroup_code', 'subgroup', 'podgrupa', 'podgrupa_code', 'klasa', 'kategorija', 'category', 'vrsta'],
   datumKupovine: ['datum_kupovine', 'datum kupovine', 'nabavljen', 'datum nabavke'],
 };
 
