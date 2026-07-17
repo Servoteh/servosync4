@@ -1,8 +1,12 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
+import { ScanLine, PackagePlus } from 'lucide-react';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
+import { Button } from '@/components/ui-kit/button';
 import { formatDate, formatNumber } from '@/lib/format';
+import { useAuth } from '@/lib/auth-context';
+import { PERMISSIONS } from '@/lib/permissions';
 import {
   useMyConsumed,
   useMyCuttingOpenLines,
@@ -14,6 +18,9 @@ import {
   type MyMachineCuttingRow,
 } from '@/api/reversi';
 import { DocStatusBadge, tableEmpty } from './common';
+import { QuickReturnDialog } from './quick-return-dialog';
+import { CuttingReturnDialog } from './cutting-return-dialog';
+import { IssueDialog } from './issue-dialog';
 
 /** Prekoračen rok (RB-29) — `expected_return_date < danas`. */
 function isOverdue(iso: string | null): boolean {
@@ -103,10 +110,18 @@ function CuttingCard({ r }: { r: CuttingCardRow }) {
  *  - Potrošeno (potrošni materijal).
  */
 export function MojiAlatiTab() {
+  const { can } = useAuth();
+  const manage = can(PERMISSIONS.REVERSI_MANAGE);
   const issued = useMyIssuedTools();
   const consumed = useMyConsumed();
   const machinesCutting = useMyMachinesCutting();
   const openLines = useMyCuttingOpenLines();
+
+  // RB-43/44 — FAB dugmad (paritet 1.0 mojaZaduzenja): brzi povraćaj (sken→vrati) svima,
+  // povraćaj reznog i „Izdaj alat" po pravu.
+  const [quickReturnOpen, setQuickReturnOpen] = useState(false);
+  const [cuttingReturnOpen, setCuttingReturnOpen] = useState(false);
+  const [issueOpen, setIssueOpen] = useState(false);
 
   // RB-27 — spoj 2 rezna izvora (mašine + potpisano), dedup po line_id, grupa/mašina.
   const cuttingByMachine = useMemo(() => {
@@ -178,6 +193,20 @@ export function MojiAlatiTab() {
 
   return (
     <div className="space-y-6">
+      <div className="flex flex-wrap items-center gap-2">
+        <Button onClick={() => setQuickReturnOpen(true)}>
+          <ScanLine className="mr-1 h-4 w-4" aria-hidden /> Brzi povraćaj
+        </Button>
+        <Button variant="secondary" onClick={() => setCuttingReturnOpen(true)}>
+          <ScanLine className="mr-1 h-4 w-4" aria-hidden /> Vrati rezni alat
+        </Button>
+        {manage && (
+          <Button variant="secondary" onClick={() => setIssueOpen(true)}>
+            <PackagePlus className="mr-1 h-4 w-4" aria-hidden /> Izdaj alat
+          </Button>
+        )}
+      </div>
+
       <section className="space-y-2">
         <div className="flex items-center gap-2">
           <h2 className="text-sm font-semibold text-ink">Rezni alat na mašinama</h2>
@@ -241,6 +270,10 @@ export function MojiAlatiTab() {
           empty={tableEmpty(consumed.isError, 'Nema potrošnje', 'Nema evidentirane potrošnje na tvoje ime.')}
         />
       </section>
+
+      {quickReturnOpen && <QuickReturnDialog onClose={() => setQuickReturnOpen(false)} />}
+      {cuttingReturnOpen && <CuttingReturnDialog onClose={() => setCuttingReturnOpen(false)} />}
+      {manage && <IssueDialog open={issueOpen} onClose={() => setIssueOpen(false)} />}
     </div>
   );
 }

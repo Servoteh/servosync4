@@ -8,6 +8,7 @@ import { formatNumber } from '@/lib/format';
 import {
   newClientEventId,
   useReversiDocument,
+  useReversiLocations,
   useReversiReturn,
 } from '@/api/reversi';
 
@@ -16,8 +17,9 @@ const INPUT =
 
 /**
  * Potvrda povraćaja (rev_confirm_return preko POST /reversi/return).
- * Prikazuje ISSUED stavke dokumenta sa preostalom količinom (default = sve);
- * `return_to_location_id` popunjava backend (magacin ALAT-MAG-01).
+ * Prikazuje ISSUED stavke dokumenta sa preostalom količinom (default = sve).
+ * RB-45 — izbor lokacije povraćaja (`return_to_location_id`); bez izbora BE koristi
+ * magacin ALAT-MAG-01.
  */
 export function ReturnDialog({
   docId,
@@ -28,7 +30,9 @@ export function ReturnDialog({
 }) {
   const detail = useReversiDocument(docId);
   const ret = useReversiReturn();
+  const locations = useReversiLocations();
   const [qty, setQty] = useState<Record<string, number>>({});
+  const [locationId, setLocationId] = useState(''); // '' = magacin (BE default)
   const [notes, setNotes] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [clientEventId, setClientEventId] = useState(newClientEventId);
@@ -38,6 +42,7 @@ export function ReturnDialog({
   // napomena/količine i ključ „procure" sa prethodnog dokumenta.
   useEffect(() => {
     setQty({});
+    setLocationId('');
     setNotes('');
     setError(null);
     setClientEventId(newClientEventId());
@@ -63,11 +68,13 @@ export function ReturnDialog({
         clientEventId,
         payload: {
           doc_id: docId,
+          return_to_location_id: locationId || null,
           returned_lines: returned,
           return_notes: notes.trim() || undefined,
         },
       });
       setQty({});
+      setLocationId('');
       setNotes('');
       setClientEventId(newClientEventId());
       onClose();
@@ -123,6 +130,18 @@ export function ReturnDialog({
             ))}
           </div>
         )}
+
+        <FormField label="Lokacija povraćaja" hint="Bez izbora: magacin (ALAT-MAG-01).">
+          <select className={INPUT} value={locationId} onChange={(e) => setLocationId(e.target.value)}>
+            <option value="">Magacin (podrazumevano)</option>
+            {(locations.data?.data ?? []).map((l) => (
+              <option key={l.id} value={l.id}>
+                {l.location_code}
+                {l.name ? ` · ${l.name}` : ''}
+              </option>
+            ))}
+          </select>
+        </FormField>
 
         <FormField label="Napomena povraćaja">
           <input className={INPUT} value={notes} onChange={(e) => setNotes(e.target.value)} />

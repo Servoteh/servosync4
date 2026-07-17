@@ -628,15 +628,64 @@ export interface EmployeeOption {
   full_name: string;
   department: string | null;
   position: string | null;
+  /**
+   * RB-35 — BE vraća I NEAKTIVNE (FE ih sivi + badž „neaktivan"); pretraga matchuje
+   * i `position`. Aktivni su prvi u odgovoru (ORDER BY is_active DESC).
+   */
+  is_active: boolean;
 }
 
-/** Picker radnika za Izdaj (BE /reversi/lookups/employees — aktivni, bez PII). */
+/** Picker radnika za Izdaj (BE /reversi/lookups/employees — uklj. neaktivne, bez PII). */
 export function useEmployeeLookup(q: string) {
   return useQuery({
     queryKey: ['reversi', 'lookups', 'employees', q],
     queryFn: () =>
       apiFetch<{ data: EmployeeOption[] }>(`/v1/reversi/lookups/employees${qs({ q })}`),
   });
+}
+
+/** Aktivna lokacija (RB-45 — dropdown lokacije povraćaja; BE /reversi/lookups/locations). */
+export interface ReversiLocation {
+  id: string;
+  location_code: string;
+  name: string | null;
+  location_type: string | null;
+}
+
+/**
+ * Aktivne `loc_locations` za izbor lokacije povraćaja (RB-45). FE šalje izabrani
+ * `id` kao `return_to_location_id` u `POST /return` (bez izbora → BE ALAT-MAG-01).
+ * Dugi staleTime — lokacije se retko menjaju, a modal povraćaja se često otvara.
+ */
+export function useReversiLocations() {
+  return useQuery({
+    queryKey: ['reversi', 'lookups', 'locations'],
+    queryFn: () => apiFetch<{ data: ReversiLocation[] }>('/v1/reversi/lookups/locations'),
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
+/**
+ * Otvorena ISSUED linija RUČNOG alata po barkodu — Quick Return HAND (RB-43/44).
+ * NIJE user-scoped (nalazi otvoren revers BILO KOG primaoca — paritet 1.0
+ * `fetchOpenHandLineByToolBarcode`); FIFO najstariji; `remainingQty = max(1, izdato−vraćeno)`.
+ * `data:null` = nema otvorenog reversa za taj alat. Imperativno (on-demand po skenu).
+ */
+export interface OpenHandLine {
+  lineId: string;
+  documentId: string;
+  docNumber: string;
+  recipientLabel: string;
+  issuedQty: number;
+  returnedQty: number;
+  remainingQty: number;
+  tool: { id: string; oznaka: string; naziv: string; barcode: string; serijskiBroj: string | null };
+}
+
+export function fetchOpenHandLine(barcode: string): Promise<{ data: OpenHandLine | null }> {
+  return apiFetch<{ data: OpenHandLine | null }>(
+    `/v1/reversi/documents/open-hand-line${qs({ barcode })}`,
+  );
 }
 
 // TODO(reversi): „Moj tim" pogled (TL/šef vidi zaduženja svog tima) — spec §6/§8,
