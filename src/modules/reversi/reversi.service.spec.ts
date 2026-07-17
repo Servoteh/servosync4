@@ -31,14 +31,28 @@ describe("ReversiService — R0 paritet", () => {
     withUser: jest.Mock;
     runIdempotent: jest.Mock;
     db: {
-      revCuttingToolCatalog: { findMany: jest.Mock; update: jest.Mock };
+      revCuttingToolCatalog: {
+        findMany: jest.Mock;
+        findUnique: jest.Mock;
+        findFirst: jest.Mock;
+        update: jest.Mock;
+        count: jest.Mock;
+      };
       revDocument: {
         findUnique: jest.Mock;
         findMany: jest.Mock;
         count: jest.Mock;
       };
-      revDocumentLine: { groupBy: jest.Mock; findMany: jest.Mock };
-      revTool: { create: jest.Mock; update: jest.Mock; findFirst: jest.Mock };
+      revDocumentLine: {
+        groupBy: jest.Mock;
+        findMany: jest.Mock;
+      };
+      revTool: {
+        create: jest.Mock;
+        update: jest.Mock;
+        findFirst: jest.Mock;
+        findMany: jest.Mock;
+      };
       revInventorySubgroup: { findUnique: jest.Mock; delete: jest.Mock };
       revInventorySubsubgroup: { findUnique: jest.Mock; delete: jest.Mock };
       $queryRaw: jest.Mock;
@@ -67,14 +81,25 @@ describe("ReversiService — R0 paritet", () => {
         ) => ({ idempotent: false, result: await fn(tx as unknown as Sy15Tx) }),
       ),
       db: {
-        revCuttingToolCatalog: { findMany: jest.fn(), update: jest.fn() },
+        revCuttingToolCatalog: {
+          findMany: jest.fn(),
+          findUnique: jest.fn(),
+          findFirst: jest.fn(),
+          update: jest.fn(),
+          count: jest.fn().mockResolvedValue(0),
+        },
         revDocument: {
           findUnique: jest.fn(),
           findMany: jest.fn(),
           count: jest.fn(),
         },
         revDocumentLine: { groupBy: jest.fn(), findMany: jest.fn() },
-        revTool: { create: jest.fn(), update: jest.fn(), findFirst: jest.fn() },
+        revTool: {
+          create: jest.fn(),
+          update: jest.fn(),
+          findFirst: jest.fn(),
+          findMany: jest.fn(),
+        },
         revInventorySubgroup: { findUnique: jest.fn(), delete: jest.fn() },
         revInventorySubsubgroup: { findUnique: jest.fn(), delete: jest.fn() },
         $queryRaw: jest.fn(),
@@ -95,10 +120,14 @@ describe("ReversiService — R0 paritet", () => {
         { id: "c1", oznaka: "RZN-1", naziv: "Glodalo" },
         { id: "c2", oznaka: "RZN-2", naziv: "Burgija" },
       ]);
-      // 1. poziv = magacin (WAREHOUSE), 2. poziv = mašine (v_rev_cts_machine_stock)
+      // 1. poziv = magacin (WAREHOUSE), 2. poziv = mašine (v_rev_cts_machine_stock,
+      // DETALJNO po machine_code → izvodi se i zbir i machineBreakdown RC-10).
       sy15.db.$queryRaw
         .mockResolvedValueOnce([{ catalog_id: "c1", qty: 5 }])
-        .mockResolvedValueOnce([{ catalog_id: "c1", qty: 3 }]);
+        .mockResolvedValueOnce([
+          { catalog_id: "c1", machine_code: "M-07", qty: 2 },
+          { catalog_id: "c1", machine_code: "M-03", qty: 1 },
+        ]);
 
       const res = await service.listCuttingTools();
 
@@ -107,11 +136,17 @@ describe("ReversiService — R0 paritet", () => {
       expect(c1.inWarehouseQty).toBe(5);
       expect(c1.onMachinesQty).toBe(3);
       expect(c1.onHandQty).toBe(8);
+      // RC-10: breakdown po mašini, sortiran po šifri (M-03 pre M-07).
+      expect(c1.machineBreakdown).toEqual([
+        { machineCode: "M-03", qty: 1 },
+        { machineCode: "M-07", qty: 2 },
+      ]);
       // c2 nema stanje ni u magacinu ni na mašinama → 0/0/0 (nije „tiho pun").
       const c2 = res.data.find((d) => d.id === "c2")!;
       expect(c2.inWarehouseQty).toBe(0);
       expect(c2.onMachinesQty).toBe(0);
       expect(c2.onHandQty).toBe(0);
+      expect(c2.machineBreakdown).toEqual([]);
     });
 
     it("magacin prazan a alat izdat po mašinama → inWarehouseQty=0 (semafor okida)", async () => {
@@ -120,7 +155,9 @@ describe("ReversiService — R0 paritet", () => {
       ]);
       sy15.db.$queryRaw
         .mockResolvedValueOnce([]) // magacin prazan
-        .mockResolvedValueOnce([{ catalog_id: "c1", qty: 10 }]); // sve na mašinama
+        .mockResolvedValueOnce([
+          { catalog_id: "c1", machine_code: "M-1", qty: 10 },
+        ]); // sve na mašinama
 
       const res = await service.listCuttingTools();
       const c1 = res.data[0];
@@ -131,9 +168,30 @@ describe("ReversiService — R0 paritet", () => {
 
     it("prazan katalog → prazna lista bez agregacionih upita", async () => {
       sy15.db.revCuttingToolCatalog.findMany.mockResolvedValue([]);
-      const res = await service.listCuttingTools("nema");
+      const res = await service.listCuttingTools({ q: "nema" });
       expect(res.data).toEqual([]);
       expect(sy15.db.$queryRaw).not.toHaveBeenCalled();
+    });
+
+    it("machine + status filter grade WHERE (compatible_machine_codes.has + status)", async () => {
+      sy15.db.revCuttingToolCatalog.findMany.mockResolvedValue([]);
+      await service.listCuttingTools({
+        machine: "8.3",
+        status: "active",
+        q: "glod",
+      });
+      const call = sy15.db.revCuttingToolCatalog.findMany.mock.calls[0] as [
+        {
+          where: {
+            status?: string;
+            compatibleMachineCodes?: { has: string };
+            OR?: unknown[];
+          };
+        },
+      ];
+      expect(call[0].where.status).toBe("active");
+      expect(call[0].where.compatibleMachineCodes).toEqual({ has: "8.3" });
+      expect(call[0].where.OR).toHaveLength(3);
     });
   });
 
@@ -792,6 +850,386 @@ describe("ReversiService — R0 paritet", () => {
       expect(res.data).toEqual([
         { id: "l1", location_code: "ALAT-MAG-01", name: "Magacin" },
       ]);
+    });
+  });
+
+  // ---------- R5a: getCuttingTool (RC-25) ----------
+
+  describe("getCuttingTool — detalj + stanje po lokacijama (RC-25)", () => {
+    it("nepostojeći id → 404", async () => {
+      sy15.db.revCuttingToolCatalog.findUnique.mockResolvedValue(null);
+      await expect(service.getCuttingTool(UUID)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
+
+    it("vraća meta + stock redove (join loc_locations)", async () => {
+      sy15.db.revCuttingToolCatalog.findUnique.mockResolvedValue({
+        id: "c1",
+        oznaka: "RZN-1",
+        naziv: "Glodalo",
+      });
+      sy15.db.$queryRaw.mockResolvedValue([
+        {
+          location_id: "l1",
+          location_code: "ALAT-MAG-01",
+          name: "Magacin",
+          location_type: "WAREHOUSE",
+          on_hand_qty: 5,
+        },
+      ]);
+      const res = await service.getCuttingTool("c1");
+      expect(res.data.oznaka).toBe("RZN-1");
+      expect(res.data.stock).toHaveLength(1);
+      expect(res.data.stock[0].location_code).toBe("ALAT-MAG-01");
+    });
+  });
+
+  // ---------- R5b: lookupBarcode ZADU-M- → MACHINE (RC-29) ----------
+
+  describe("lookupBarcode — ZADU-M- machine routing (RC-29)", () => {
+    it("ZADU-M-8_3 → MACHINE (podvlaka→tačka, resolve v_rev_machines)", async () => {
+      sy15.db.$queryRaw.mockResolvedValue([{ rj_code: "8.3", name: "CNC 3" }]);
+      const res = await service.lookupBarcode("ZADU-M-8_3");
+      expect(res.data.kind).toBe("MACHINE");
+      expect(res.data.record).toEqual({ rj_code: "8.3", name: "CNC 3" });
+      // Proveri da je upit tražio kod sa tačkom (ne podvlakom).
+      const call = sy15.db.$queryRaw.mock.calls[0] as [{ values: unknown[] }];
+      expect(call[0].values).toContain("8.3");
+    });
+
+    it("nepoznata mašina → MACHINE sa record:null", async () => {
+      sy15.db.$queryRaw.mockResolvedValue([]);
+      const res = await service.lookupBarcode("ZADU-M-99_9");
+      expect(res.data.kind).toBe("MACHINE");
+      expect(res.data.record).toBeNull();
+    });
+  });
+
+  // ---------- R5c: cuttingByEmployee (RC-36/37) + fuzzy resolve (RC-52) ----------
+
+  describe("cuttingByEmployee (RC-36/37)", () => {
+    it("gradi WHERE iz q + department i vraća redove view-a", async () => {
+      sy15.db.$queryRaw.mockResolvedValue([{ employee_name: "Petar" }]);
+      const res = await service.cuttingByEmployee("pet", "CNC");
+      expect(res.data).toEqual([{ employee_name: "Petar" }]);
+      const call = sy15.db.$queryRaw.mock.calls[0] as [{ sql: string }];
+      expect(call[0].sql).toContain("v_rev_cts_by_employee");
+    });
+  });
+
+  describe("resolveEmployees — fuzzy match (RC-52)", () => {
+    const EMPS = [
+      { id: "e1", full_name: "Petrović Petar", is_active: true },
+      { id: "e2", full_name: "Marko M. Jovanović", is_active: false },
+      { id: "e3", full_name: "Đorđe Ćirović", is_active: true },
+    ];
+
+    it("obrnut redosled reči + srednje slovo + dijakritici + missing", async () => {
+      sy15.db.$queryRaw.mockResolvedValue(EMPS);
+      const res = await service.resolveEmployees([
+        "Petar Petrović", // obrnut redosled → e1
+        "Marko Jovanović", // srednje slovo u bazi → e2 (superset)
+        "Djordje Cirovic", // bez dijakritika → e3
+        "Nepostojeći Radnik", // → missing
+      ]);
+      expect(res.data.resolved["Petar Petrović"]).toEqual({
+        id: "e1",
+        fullName: "Petrović Petar",
+      });
+      expect(res.data.resolved["Marko Jovanović"].id).toBe("e2");
+      expect(res.data.resolved["Djordje Cirovic"].id).toBe("e3");
+      expect(res.data.missing).toEqual(["Nepostojeći Radnik"]);
+    });
+
+    it("prazna lista → bez upita nad employees", async () => {
+      const res = await service.resolveEmployees([]);
+      expect(res.data).toEqual({ resolved: {}, missing: [] });
+      expect(sy15.db.$queryRaw).not.toHaveBeenCalled();
+    });
+  });
+
+  // ---------- R5d: bulkImportCuttingTools (RC-50) ----------
+
+  describe("bulkImportCuttingTools (RC-50)", () => {
+    it("idempotentno po oznaci: postojeći skip, novi insert + seed", async () => {
+      // magacin resolve (1. db.$queryRaw), pa per-red findFirst.
+      sy15.db.$queryRaw.mockResolvedValueOnce([{ id: "mag" }]); // resolveMagacinId
+      sy15.db.revCuttingToolCatalog.findFirst
+        .mockResolvedValueOnce({ id: "exists" }) // red 1 postoji → skip
+        .mockResolvedValueOnce(null); // red 2 nov
+      // withUser callback koristi tx.$queryRaw: 1) INSERT RETURNING id, 2) seed.
+      tx.$queryRaw
+        .mockResolvedValueOnce([{ id: "new1" }]) // insert
+        .mockResolvedValueOnce([{ result: {} }]); // seed
+
+      const res = await service.bulkImportCuttingTools(EMAIL, [
+        { oznaka: "RZN-A", naziv: "A" },
+        { oznaka: "RZN-B", naziv: "B", initialQty: 10 },
+      ]);
+      expect(res.data.skipped).toBe(1);
+      expect(res.data.created).toBe(1);
+      expect(res.data.seeded).toBe(1);
+      expect(res.data.createdIds).toEqual([{ oznaka: "RZN-B", id: "new1" }]);
+    });
+  });
+
+  // ---------- R5d: analyzeReversals (RC-51/53/56) ----------
+
+  describe("analyzeReversals — dry-run (RC-51/53)", () => {
+    function stubReads(opts: {
+      magacin?: boolean;
+      emps?: { id: string; full_name: string; is_active: boolean }[];
+    }) {
+      sy15.db.$queryRaw.mockImplementation((...args: unknown[]) => {
+        const head = args[0] as { strings?: string[] } | string[];
+        const text = Array.isArray(head)
+          ? head.join(" ")
+          : (head?.strings ?? []).join(" ");
+        if (/loc_locations/.test(text))
+          return Promise.resolve(opts.magacin === false ? [] : [{ id: "mag" }]);
+        if (/FROM employees/.test(text))
+          return Promise.resolve(opts.emps ?? []);
+        return Promise.resolve([]);
+      });
+    }
+
+    it("resolve postojeći/novi katalog, missing radnik → blocking, duplikat → canForce", async () => {
+      stubReads({
+        emps: [{ id: "e1", full_name: "Petar Petrović", is_active: true }],
+      });
+      // katalog: RZN-EXISTS postoji, RZN-NEW ne.
+      sy15.db.revCuttingToolCatalog.findMany.mockResolvedValue([
+        {
+          id: "cx",
+          oznaka: "RZN-EXISTS",
+          barcode: "RZN-000001",
+          naziv: "Postoji",
+        },
+      ]);
+      sy15.db.revTool.findMany.mockResolvedValue([]);
+      // duplikat aktivan revers na mašini 8.3.
+      sy15.db.revDocument.findMany.mockResolvedValue([
+        {
+          docNumber: "REV-CT-1",
+          recipientMachineCode: "8.3",
+          issuedAt: new Date("2026-07-01"),
+          issuedToEmployeeName: "Petar",
+          status: "OPEN",
+        },
+      ]);
+
+      const res = await service.analyzeReversals({
+        rows: [
+          {
+            tip: "CUTTING_TOOL",
+            primalacTip: "EMPLOYEE",
+            primalac: "Petar Petrović",
+            masina: "8.3",
+            alat: "RZN-EXISTS",
+            kolicina: 2,
+          },
+          {
+            tip: "CUTTING_TOOL",
+            primalacTip: "EMPLOYEE",
+            primalac: "Nepoznati Radnik",
+            masina: "8.3",
+            alat: "RZN-NEW",
+          },
+        ],
+      });
+      expect(res.data.existingCatalog).toHaveLength(1);
+      expect(res.data.newCatalog[0].oznaka).toBe("RZN-NEW");
+      expect(res.data.missingEmployees).toContain("Nepoznati Radnik");
+      expect(res.data.blocking).toBe(true); // missing radnik = hard blok
+      expect(res.data.duplicateDocs).toHaveLength(1);
+      // canForce je false jer POSTOJI hard blok (missing radnik).
+      expect(res.data.canForce).toBe(false);
+    });
+
+    it("čist import sa duplikatom → blocking=false, canForce=true", async () => {
+      stubReads({
+        emps: [{ id: "e1", full_name: "Petar Petrović", is_active: true }],
+      });
+      sy15.db.revCuttingToolCatalog.findMany.mockResolvedValue([
+        { id: "cx", oznaka: "RZN-X", barcode: null, naziv: "X" },
+      ]);
+      sy15.db.revTool.findMany.mockResolvedValue([]);
+      sy15.db.revDocument.findMany.mockResolvedValue([
+        {
+          docNumber: "REV-CT-2",
+          recipientMachineCode: "8.3",
+          issuedAt: new Date(),
+          issuedToEmployeeName: "P",
+          status: "PARTIALLY_RETURNED",
+        },
+      ]);
+      const res = await service.analyzeReversals({
+        rows: [
+          {
+            tip: "CUTTING_TOOL",
+            primalacTip: "EMPLOYEE",
+            primalac: "Petar Petrović",
+            masina: "8.3",
+            alat: "RZN-X",
+            kolicina: 1,
+          },
+        ],
+      });
+      expect(res.data.blocking).toBe(false);
+      expect(res.data.hasDuplicates).toBe(true);
+      expect(res.data.canForce).toBe(true);
+    });
+  });
+
+  // ---------- R5d: executeReversals (RC-54) ----------
+
+  describe("executeReversals — izvršenje (RC-54)", () => {
+    function stubAnalysis(opts: {
+      magacin?: boolean;
+      emps?: { id: string; full_name: string; is_active: boolean }[];
+    }) {
+      sy15.db.$queryRaw.mockImplementation((...args: unknown[]) => {
+        const head = args[0] as { strings?: string[] } | string[];
+        const text = Array.isArray(head)
+          ? head.join(" ")
+          : (head?.strings ?? []).join(" ");
+        if (/loc_locations/.test(text))
+          return Promise.resolve(opts.magacin === false ? [] : [{ id: "mag" }]);
+        if (/FROM employees/.test(text))
+          return Promise.resolve(opts.emps ?? []);
+        return Promise.resolve([]);
+      });
+    }
+
+    it("missing radnik → 422 (blokada pre bilo kog write-a)", async () => {
+      stubAnalysis({ emps: [] });
+      sy15.db.revCuttingToolCatalog.findMany.mockResolvedValue([]);
+      sy15.db.revTool.findMany.mockResolvedValue([]);
+      sy15.db.revDocument.findMany.mockResolvedValue([]);
+      await expect(
+        service.executeReversals(EMAIL, {
+          rows: [
+            {
+              tip: "CUTTING_TOOL",
+              primalacTip: "EMPLOYEE",
+              primalac: "Nema Ga",
+              masina: "8.3",
+              alat: "RZN-1",
+            },
+          ],
+        }),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(sy15.withUser).not.toHaveBeenCalled();
+    });
+
+    it("duplikat bez force → 409; sa force prolazi i izdaje", async () => {
+      stubAnalysis({
+        emps: [{ id: "e1", full_name: "Petar Petrović", is_active: true }],
+      });
+      sy15.db.revCuttingToolCatalog.findMany.mockResolvedValue([
+        { id: "cx", oznaka: "RZN-X", barcode: null, naziv: "X" },
+      ]);
+      sy15.db.revTool.findMany.mockResolvedValue([]);
+      sy15.db.revDocument.findMany.mockResolvedValue([
+        {
+          docNumber: "REV-CT-DUP",
+          recipientMachineCode: "8.3",
+          issuedAt: new Date(),
+          issuedToEmployeeName: "P",
+          status: "OPEN",
+        },
+      ]);
+      const rows = [
+        {
+          tip: "CUTTING_TOOL",
+          primalacTip: "EMPLOYEE",
+          primalac: "Petar Petrović",
+          masina: "8.3",
+          alat: "RZN-X",
+          kolicina: 2,
+        },
+      ];
+      await expect(
+        service.executeReversals(EMAIL, { rows }),
+      ).rejects.toBeInstanceOf(ConflictException);
+
+      // force=true → izdaje (RPC vraća doc_id preko tx.$queryRawUnsafe).
+      tx.$queryRawUnsafe.mockResolvedValue([
+        { result: { doc_id: "d1", doc_number: "REV-CT-9", idempotent: false } },
+      ]);
+      const res = await service.executeReversals(EMAIL, { rows, force: true });
+      expect(res.data.progress.ok).toBe(1);
+      expect(res.data.session.docIds).toEqual(["d1"]);
+    });
+
+    it("RPC vrati idempotent:true → skipped (nema dupliranja)", async () => {
+      stubAnalysis({
+        emps: [{ id: "e1", full_name: "Petar Petrović", is_active: true }],
+      });
+      sy15.db.revCuttingToolCatalog.findMany.mockResolvedValue([
+        { id: "cx", oznaka: "RZN-X", barcode: null, naziv: "X" },
+      ]);
+      sy15.db.revTool.findMany.mockResolvedValue([]);
+      sy15.db.revDocument.findMany.mockResolvedValue([]);
+      tx.$queryRawUnsafe.mockResolvedValue([
+        { result: { doc_number: "REV-CT-5", idempotent: true } },
+      ]);
+      const res = await service.executeReversals(EMAIL, {
+        rows: [
+          {
+            tip: "CUTTING_TOOL",
+            primalacTip: "EMPLOYEE",
+            primalac: "Petar Petrović",
+            masina: "8.3",
+            alat: "RZN-X",
+            kolicina: 1,
+          },
+        ],
+      });
+      expect(res.data.progress.skipped).toBe(1);
+      expect(res.data.progress.ok).toBe(0);
+      expect(res.data.session.docIds).toEqual([]);
+    });
+  });
+
+  // ---------- R5d: rollbackReversals (RC-55) ----------
+
+  describe("rollbackReversals — storno sesije (RC-55)", () => {
+    it("vraća preostalo po dokumentu (cutting → rev_confirm_cutting_return)", async () => {
+      sy15.db.$queryRaw.mockResolvedValue([{ id: "mag" }]); // resolveMagacinId
+      sy15.db.revDocumentLine.findMany.mockResolvedValue([
+        {
+          id: "ln1",
+          quantity: 5,
+          returnedQuantity: 2,
+          lineType: "CUTTING_TOOL",
+        },
+      ]);
+      tx.$queryRawUnsafe.mockResolvedValue([{ result: { ok: true } }]);
+      const res = await service.rollbackReversals(EMAIL, ["d1"]);
+      expect(res.data.ok).toBe(1);
+      expect(res.data.fail).toBe(0);
+      // Poziv je rev_confirm_cutting_return sa preostalih 3.
+      const call = tx.$queryRawUnsafe.mock.calls[0] as [string, string];
+      expect(call[0]).toContain("rev_confirm_cutting_return");
+      const payload = JSON.parse(call[1]) as {
+        returned_lines: { line_id: string; returned_quantity: number }[];
+      };
+      expect(payload.returned_lines).toEqual([
+        { line_id: "ln1", returned_quantity: 3 },
+      ]);
+    });
+
+    it("dokument bez preostalog → already-returned (ok, bez RPC)", async () => {
+      sy15.db.$queryRaw.mockResolvedValue([{ id: "mag" }]);
+      sy15.db.revDocumentLine.findMany.mockResolvedValue([
+        { id: "ln1", quantity: 3, returnedQuantity: 3, lineType: "TOOL" },
+      ]);
+      const res = await service.rollbackReversals(EMAIL, ["d1"]);
+      expect(res.data.ok).toBe(1);
+      expect(res.data.details[0].status).toBe("already-returned");
+      expect(tx.$queryRawUnsafe).not.toHaveBeenCalled();
     });
   });
 });

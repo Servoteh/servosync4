@@ -57,10 +57,18 @@ describe("Reversi permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     "bulkImportTools",
     "listCuttingTools",
     "cuttingOpenLines",
+    "getCuttingTool",
     "createCuttingTool",
     "updateCuttingTool",
     "cuttingByMachine",
+    "cuttingByEmployee",
     "machineHeads",
+    // R5d — bulk import reznog kataloga + reversa
+    "resolveEmployees",
+    "bulkImportCuttingTools",
+    "analyzeReversals",
+    "executeReversals",
+    "rollbackReversals",
     // R1 — Alat i oprema (inventar) + Grupe
     "listInventoryUnits",
     "inventoryClassificationUsage",
@@ -394,6 +402,84 @@ describe("Reversi permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
       const body = { tspl2: "CLS\nPRINT 1,1\n" };
       await post("/labels/print", "viewer", body).expect(403);
       await post("/labels/print", "magacioner", body).expect(201);
+    });
+  });
+
+  // ---------- R5 — rezni alat (katalog / pod-tabovi / bulk import) ----------
+  describe("R5 rezni alat", () => {
+    it("GET /cutting-tools/:id → 200 read-role, 403 default-deny (RC-25)", async () => {
+      await get(`/cutting-tools/${VALID_UUID}`, "viewer").expect(200);
+      await get(`/cutting-tools/${VALID_UUID}`, "user").expect(403);
+    });
+    it("GET /cutting-tools/:id sa nevalidnim UUID → 400 (ParseUUIDPipe)", async () => {
+      await get("/cutting-tools/nije-uuid", "magacioner").expect(400);
+    });
+    it("GET /reports/cutting-by-employee → 200 read-role (RC-36/37)", async () => {
+      await get("/reports/cutting-by-employee", "kontrolor").expect(200);
+      await get("/reports/cutting-by-employee", "user").expect(403);
+    });
+    it("POST /lookups/employees/resolve → 200 read-role, 403 default-deny (RC-52)", async () => {
+      const body = { names: ["Petar Petrović"] };
+      await post(
+        "/lookups/employees/resolve",
+        "proizvodni_radnik",
+        body,
+      ).expect(201);
+      await post("/lookups/employees/resolve", "user", body).expect(403);
+    });
+
+    it("POST /bulk-import/cutting-tools → 403 viewer, 201 magacioner (RC-50)", async () => {
+      const body = { rows: [{ oznaka: "RZN-1", naziv: "Glodalo" }] };
+      await post("/bulk-import/cutting-tools", "viewer", body).expect(403);
+      await post("/bulk-import/cutting-tools", "magacioner", body).expect(201);
+    });
+    it("POST /bulk-import/reversals/analyze → 403 sef, 201 magacioner (RC-51)", async () => {
+      const body = {
+        rows: [
+          {
+            tip: "TOOL",
+            primalacTip: "EMPLOYEE",
+            primalac: "Petar",
+            alat: "AL-1",
+          },
+        ],
+      };
+      await post("/bulk-import/reversals/analyze", "sef", body).expect(403);
+      await post("/bulk-import/reversals/analyze", "magacioner", body).expect(
+        201,
+      );
+    });
+    it("POST /bulk-import/reversals → 403 viewer, 201 admin (RC-54)", async () => {
+      const body = {
+        rows: [
+          {
+            tip: "TOOL",
+            primalacTip: "EMPLOYEE",
+            primalac: "Petar",
+            alat: "AL-1",
+          },
+        ],
+      };
+      await post("/bulk-import/reversals", "viewer", body).expect(403);
+      await post("/bulk-import/reversals", "admin", body).expect(201);
+    });
+    it("POST /bulk-import/reversals/rollback → 403 tehnolog, 201 magacioner (RC-55)", async () => {
+      const body = { documentIds: [VALID_UUID] };
+      await post("/bulk-import/reversals/rollback", "tehnolog", body).expect(
+        403,
+      );
+      await post("/bulk-import/reversals/rollback", "magacioner", body).expect(
+        201,
+      );
+    });
+    it("POST /bulk-import/reversals sa praznim rows → 201 (validacija dopušta [])", async () => {
+      // Guard/DTO granica; poslovnu logiku (blokade) pokriva unit spec.
+      await post("/bulk-import/reversals", "admin", { rows: [] }).expect(201);
+    });
+    it("POST /bulk-import/reversals/rollback sa ne-UUID id → 400 (validacija)", async () => {
+      await post("/bulk-import/reversals/rollback", "admin", {
+        documentIds: ["nije-uuid"],
+      }).expect(400);
     });
   });
 });

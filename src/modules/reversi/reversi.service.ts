@@ -6,7 +6,7 @@ import {
   ServiceUnavailableException,
   UnprocessableEntityException,
 } from "@nestjs/common";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
 import { LabelPrintService } from "../../common/printing/label-print.service";
@@ -19,6 +19,12 @@ import type {
   WriteOffDto,
 } from "./dto/reversi-tx.dto";
 import type { BulkToolRowDto } from "./dto/reversi-bulk.dto";
+import type {
+  AnalyzeReversalsDto,
+  BulkCuttingRowDto,
+  ExecuteReversalsDto,
+  ReversalRowDto,
+} from "./dto/reversi-bulk-revers.dto";
 import type {
   CuttingToolCreateDto,
   CuttingToolUpdateDto,
@@ -72,6 +78,49 @@ export interface ListToolsQuery {
   q?: string;
   page?: string;
   pageSize?: string;
+}
+
+/**
+ * Katalog reznog alata (RC-04/05/10/13/14 — paritet 1.0 `fetchCuttingToolCatalog`):
+ *  - `q` pretraga (oznaka/naziv/barkod), `status` (active|scrapped|all),
+ *  - `machine` = filter po `compatible_machine_codes` (cs kontejnment),
+ *  - `page`/`pageSize` (do 15000 za CSV izvoz RC-14; `meta.total` za „Učitaj još" RC-13).
+ * Svaki red nosi razdvojeno stanje (in/on-machines/on-hand) + `machineBreakdown` (RC-10).
+ */
+export interface ListCuttingToolsQuery {
+  q?: string;
+  status?: string;
+  machine?: string;
+  page?: string;
+  pageSize?: string;
+}
+
+/**
+ * Rezultat pre-import analize reversa (RC-51 — paritet 1.0 `analyzeRevers`).
+ * `analyzeReversalsCore` je zajednički za dry-run (RC-51/53) i izvršenje (RC-54):
+ * izvršenje re-koristi `catalogByOznaka`/`resolvedEmployees`/`toolByOznaka` kao
+ * jedini izvor razrešenja (bez poverenja u klijentski payload).
+ */
+interface ReversalAnalysisCore {
+  docCount: number;
+  lineCount: number;
+  machineCodes: string[];
+  existingCatalog: { oznaka: string; id: string; naziv: string }[];
+  newCatalog: { oznaka: string; naziv: string; masine: string[] }[];
+  catalogByOznaka: Record<string, string | null>;
+  resolvedEmployees: Record<string, { id: string; fullName: string }>;
+  missingEmployees: string[];
+  toolByOznaka: Record<string, string>;
+  missingToolOznaka: string[];
+  magacinExists: boolean;
+  duplicateDocs: {
+    machine: string | null;
+    docNumber: string;
+    issuedAt: Date;
+    employee: string | null;
+    status: string;
+  }[];
+  blockers: string[];
 }
 
 export interface LedgerQuery {
@@ -382,7 +431,9 @@ export class ReversiService {
     // upit po PK. `recipient_company_pib` je već u `...doc` spread-u (za eksterne firme).
     let recipientEmployeeDepartment: string | null = null;
     if (doc.recipientType === "EMPLOYEE" && doc.recipientEmployeeId) {
-      const rows = await this.sy15.db.$queryRaw<{ department: string | null }[]>(
+      const rows = await this.sy15.db.$queryRaw<
+        { department: string | null }[]
+      >(
         Prisma.sql`SELECT department FROM employees WHERE id = ${doc.recipientEmployeeId}::uuid LIMIT 1`,
       );
       recipientEmployeeDepartment = rows[0]?.department ?? null;
@@ -998,7 +1049,10 @@ export class ReversiService {
     };
     const rows = await tx.$queryRawUnsafe<
       { result: { ok?: boolean; error?: string } | null }[]
-    >("SELECT loc_create_movement($1::jsonb) AS result", JSON.stringify(payload));
+    >(
+      "SELECT loc_create_movement($1::jsonb) AS result",
+      JSON.stringify(payload),
+    );
     const result = rows[0]?.result ?? null;
     if (!result || result.ok !== true) {
       throw new UnprocessableEntityException(
@@ -1151,23 +1205,42 @@ export class ReversiService {
    * Ranije: `onHandQty = SUM(on_hand_qty)` po SVIM lokacijama → prikazivalo je „ukupno ikad
    * seedovano", pa je magacin izgledao pun i kad je sve izdato po mašinama (semafor nije okidao).
    */
-  async listCuttingTools(q?: string) {
-    const term = (q ?? "").trim();
-    const where: Prisma.RevCuttingToolCatalogWhereInput = term
-      ? {
-          OR: [
-            { oznaka: { contains: term, mode: "insensitive" } },
-            { naziv: { contains: term, mode: "insensitive" } },
-            { barcode: { contains: term, mode: "insensitive" } },
-          ],
-        }
-      : {};
-    const catalog = await this.sy15.db.revCuttingToolCatalog.findMany({
-      where,
-      orderBy: { oznaka: "asc" },
-      take: 500,
-    });
-    if (catalog.length === 0) return { data: [] };
+  async listCuttingTools(query: ListCuttingToolsQuery = {}) {
+    // pageSize do 15000 (RC-14 CSV izvoz ceo katalog); default 500 = paritet ranijeg
+    // ponašanja (Mapa/workbench povlače do 500 u jednom pozivu).
+    const { page, pageSize, skip, take } = parsePagination(
+      query.page,
+      query.pageSize,
+      15000,
+    );
+    const term = (query.q ?? "").trim();
+    const status = (query.status ?? "").trim();
+    const machine = (query.machine ?? "").trim();
+    const where: Prisma.RevCuttingToolCatalogWhereInput = {};
+    if (term) {
+      where.OR = [
+        { oznaka: { contains: term, mode: "insensitive" } },
+        { naziv: { contains: term, mode: "insensitive" } },
+        { barcode: { contains: term, mode: "insensitive" } },
+      ];
+    }
+    // RC-05: status filter (Aktivne/Povučene/Sve). Nepoznat/„all"/prazno = bez filtera.
+    if (status === "active" || status === "scrapped") where.status = status;
+    // RC-04: filter po mašini — `compatible_machine_codes` sadrži šifru (cs kontejnment).
+    if (machine) where.compatibleMachineCodes = { has: machine };
+
+    const [catalog, total] = await Promise.all([
+      this.sy15.db.revCuttingToolCatalog.findMany({
+        where,
+        orderBy: { oznaka: "asc" },
+        skip,
+        take,
+      }),
+      this.sy15.db.revCuttingToolCatalog.count({ where }),
+    ]);
+    if (catalog.length === 0) {
+      return { data: [], meta: pageMeta(page, pageSize, total) };
+    }
 
     const ids = Prisma.join(catalog.map((c) => Prisma.sql`${c.id}::uuid`));
     // Magacinski raspoloživo (samo WAREHOUSE lokacije) — paritet 1.0 in_warehouse_qty.
@@ -1179,32 +1252,77 @@ export class ReversiService {
       JOIN loc_locations l ON l.id = s.location_id
       WHERE s.catalog_id IN (${ids}) AND l.location_type = 'WAREHOUSE'
       GROUP BY s.catalog_id`);
-    // Izdato po mašinama (iz stavki dokumenata) — paritet 1.0 on_machines_qty.
-    const machines = await this.sy15.db.$queryRaw<
-      { catalog_id: string; qty: number }[]
+    // Izdato po mašinama — DETALJNO (catalog_id, machine_code) da bi se u JS izveo i
+    // zbir (`onMachinesQty`, paritet 1.0 on_machines_qty) i `machineBreakdown` (RC-10
+    // „raspored po mašinama") u JEDNOM upitu (ista logika kao 1.0 front, bez 3. round-tripa).
+    const machineRows = await this.sy15.db.$queryRaw<
+      { catalog_id: string; machine_code: string | null; qty: number }[]
     >(Prisma.sql`
-      SELECT ms.catalog_id::text AS catalog_id, COALESCE(SUM(ms.outstanding_qty), 0)::float8 AS qty
+      SELECT ms.catalog_id::text AS catalog_id, ms.machine_code,
+             ms.outstanding_qty::float8 AS qty
       FROM v_rev_cts_machine_stock ms
-      WHERE ms.catalog_id IN (${ids}) AND ms.outstanding_qty > 0
-      GROUP BY ms.catalog_id`);
+      WHERE ms.catalog_id IN (${ids}) AND ms.outstanding_qty > 0`);
 
     const whBy = new Map(
       warehouse.map((r) => [r.catalog_id, Number(r.qty) || 0]),
     );
-    const machBy = new Map(
-      machines.map((r) => [r.catalog_id, Number(r.qty) || 0]),
-    );
+    const machBy = new Map<
+      string,
+      { total: number; breakdown: { machineCode: string; qty: number }[] }
+    >();
+    for (const r of machineRows) {
+      const qty = Number(r.qty) || 0;
+      if (qty <= 0) continue;
+      const entry = machBy.get(r.catalog_id) ?? { total: 0, breakdown: [] };
+      entry.total += qty;
+      entry.breakdown.push({ machineCode: r.machine_code ?? "", qty });
+      machBy.set(r.catalog_id, entry);
+    }
+
     const data = catalog.map((c) => {
       const inWarehouseQty = whBy.get(c.id) ?? 0;
-      const onMachinesQty = machBy.get(c.id) ?? 0;
+      const mach = machBy.get(c.id) ?? { total: 0, breakdown: [] };
+      const machineBreakdown = [...mach.breakdown].sort((a, b) =>
+        a.machineCode.localeCompare(b.machineCode, "sr"),
+      );
       return {
         ...c,
         inWarehouseQty,
-        onMachinesQty,
-        onHandQty: inWarehouseQty + onMachinesQty,
+        onMachinesQty: mach.total,
+        onHandQty: inWarehouseQty + mach.total,
+        machineBreakdown,
       };
     });
-    return { data };
+    return { data, meta: pageMeta(page, pageSize, total) };
+  }
+
+  /**
+   * Detalj jedne šifre reznog alata + stanje po lokacijama (RC-25 — paritet 1.0
+   * `fetchCuttingToolById` + `fetchCuttingToolStockDetails`). Meta iz kataloga,
+   * `stock` iz `rev_cutting_tool_stock` (join `loc_locations`: kod/naziv/tip),
+   * sortirano po količini opadajuće. Nepostojeći id → 404.
+   */
+  async getCuttingTool(id: string) {
+    const catalog = await this.sy15.db.revCuttingToolCatalog.findUnique({
+      where: { id },
+    });
+    if (!catalog) throw new NotFoundException(`Rezni alat ${id} ne postoji`);
+    const stock = await this.sy15.db.$queryRaw<
+      {
+        location_id: string;
+        location_code: string;
+        name: string | null;
+        location_type: string | null;
+        on_hand_qty: number;
+      }[]
+    >(Prisma.sql`
+      SELECT s.location_id::text AS location_id, l.location_code, l.name,
+             l.location_type, s.on_hand_qty::float8 AS on_hand_qty
+      FROM rev_cutting_tool_stock s
+      JOIN loc_locations l ON l.id = s.location_id
+      WHERE s.catalog_id = ${id}::uuid
+      ORDER BY s.on_hand_qty DESC`);
+    return { data: { ...catalog, stock } };
   }
 
   /**
@@ -1300,12 +1418,56 @@ export class ReversiService {
     }
   }
 
-  /** Rezni alat po mašini (v_rev_cts_by_machine) — opcioni filter po šifri mašine. */
-  async cuttingByMachine(machineCode?: string) {
-    const data = machineCode
-      ? await this.sy15.db
-          .$queryRaw`SELECT * FROM v_rev_cts_by_machine WHERE machine_code = ${machineCode}`
-      : await this.sy15.db.$queryRaw`SELECT * FROM v_rev_cts_by_machine`;
+  /**
+   * Rezni alat po mašini (RC-34/35 — pod-tab „Po mašinama" + kartica mašine).
+   * `v_rev_cts_by_machine` (agregat po machine_code × catalog_id sa preostalom
+   * količinom). `machineCode` = tačan filter (kartica jedne mašine); `q` = pretraga
+   * (šifra/naziv mašine/oznaka/naziv/barkod, paritet 1.0 `fetchCuttingByMachine`).
+   */
+  async cuttingByMachine(machineCode?: string, q?: string) {
+    const conds: Prisma.Sql[] = [];
+    if (machineCode) conds.push(Prisma.sql`machine_code = ${machineCode}`);
+    const term = (q ?? "").trim();
+    if (term) {
+      const like = `%${term}%`;
+      conds.push(Prisma.sql`(machine_code ILIKE ${like} OR machine_name ILIKE ${like}
+        OR oznaka ILIKE ${like} OR naziv ILIKE ${like} OR barcode ILIKE ${like})`);
+    }
+    const whereSql = conds.length
+      ? Prisma.sql`WHERE ${Prisma.join(conds, " AND ")}`
+      : Prisma.empty;
+    const data = await this.sy15.db.$queryRaw(Prisma.sql`
+      SELECT * FROM v_rev_cts_by_machine
+      ${whereSql}
+      ORDER BY machine_code ASC, oznaka ASC
+      LIMIT 1000`);
+    return { data };
+  }
+
+  /**
+   * Rezni alat po zaposlenom-potpisniku (RC-36/37 — pod-tab „Po zaposlenima" +
+   * modal detalja). `v_rev_cts_by_employee` (agregat po zaposlenom sa preostalom
+   * količinom). `q` = pretraga (ime/oznaka/naziv/barkod), `department` = tačan
+   * filter odeljenja (paritet 1.0 `fetchCuttingByEmployee`).
+   */
+  async cuttingByEmployee(q?: string, department?: string) {
+    const conds: Prisma.Sql[] = [];
+    const term = (q ?? "").trim();
+    if (term) {
+      const like = `%${term}%`;
+      conds.push(Prisma.sql`(employee_name ILIKE ${like} OR oznaka ILIKE ${like}
+        OR naziv ILIKE ${like} OR barcode ILIKE ${like})`);
+    }
+    const dep = (department ?? "").trim();
+    if (dep) conds.push(Prisma.sql`department = ${dep}`);
+    const whereSql = conds.length
+      ? Prisma.sql`WHERE ${Prisma.join(conds, " AND ")}`
+      : Prisma.empty;
+    const data = await this.sy15.db.$queryRaw(Prisma.sql`
+      SELECT * FROM v_rev_cts_by_employee
+      ${whereSql}
+      ORDER BY employee_name ASC, oznaka ASC
+      LIMIT 1000`);
     return { data };
   }
 
@@ -1319,16 +1481,24 @@ export class ReversiService {
   }
 
   /**
-   * Bulk-import inventara ručnog alata (paritet 1.0 bulkImportModal tip 1).
-   * Idempotentno po `oznaka` (postojeći alat = skip). Barkod/loc_item_ref_id
-   * dodeljuju trigeri. Vraća zbir kreiranih/preskočenih + greške po redu.
-   * Alat je odmah upotrebljiv u Izdaj (početno smeštanje u magacin je opcioni
-   * follow-up — izdavanje uzima iz null lokacije bez problema).
+   * Bulk-import inventara ručnog alata (paritet 1.0 `importHand`). Idempotentno po
+   * `oznaka` (postojeći alat = skip). Barkod/loc_item_ref_id dodeljuju trigeri.
+   *
+   * RC-49: ne-količinski alat dobija POČETNI SMEŠTAJ u magacin (ALAT-MAG-01 ili
+   * `initialPlacementLocationId`) kao 1.0 (pilot ga je preskakao — alat bez lokacije).
+   * Smeštaj ide kroz `loc_create_movement` (traži claims → `withUser`) i BEST-EFFORT
+   * je: neuspeh se beleži u `errors`, ali kreiran alat OSTAJE (upotrebljiv u Izdaj —
+   * re-run preskače po `oznaka`). Količinska/potrošna stavka nema jedinstveni placement.
    */
-  async bulkImportTools(rows: BulkToolRowDto[]) {
+  async bulkImportTools(email: string, rows: BulkToolRowDto[]) {
     let created = 0;
     let skipped = 0;
+    let placed = 0;
     const errors: { oznaka: string; error: string }[] = [];
+
+    // Magacin razreši jednom (paritet 1.0 `getMagacinLocationId` cache); ako fali,
+    // uvoz i dalje radi (alat bez početne lokacije — kao pilot dosad).
+    const magacinId = await this.resolveMagacinId();
 
     for (const row of rows) {
       const oznaka = row.oznaka.trim();
@@ -1343,7 +1513,8 @@ export class ReversiService {
         }
         const isQuantity = row.isQuantity ?? false;
         const isConsumable = row.isConsumable ?? false;
-        await this.sy15.db.revTool.create({
+        const qtyLike = isQuantity || isConsumable;
+        const tool = await this.sy15.db.revTool.create({
           data: {
             oznaka,
             naziv: row.naziv.trim(),
@@ -1356,12 +1527,36 @@ export class ReversiService {
               : null,
             isQuantity,
             isConsumable,
-            totalQty: isQuantity || isConsumable ? (row.totalQty ?? 0) : 1,
+            totalQty: qtyLike ? (row.totalQty ?? 0) : 1,
             napomena: row.napomena?.trim() || null,
             status: "active",
           },
+          select: { locItemRefId: true },
         });
         created++;
+
+        // RC-49: početni smeštaj ne-količinskog alata u magacin.
+        const locationId = row.initialPlacementLocationId ?? magacinId;
+        if (!qtyLike && tool.locItemRefId && locationId) {
+          try {
+            await this.sy15.withUser(email, (tx) =>
+              this.placeToolInWarehouse(
+                tx,
+                tool.locItemRefId!,
+                locationId,
+                randomUUID(),
+              ),
+            );
+            placed++;
+          } catch (e) {
+            errors.push({
+              oznaka,
+              error: `alat kreiran, smeštaj u magacin nije uspeo: ${
+                e instanceof Error ? e.message : "greška"
+              }`,
+            });
+          }
+        }
       } catch (e) {
         errors.push({
           oznaka,
@@ -1369,7 +1564,813 @@ export class ReversiService {
         });
       }
     }
-    return { data: { created, skipped, errors, total: rows.length } };
+    return {
+      data: { created, skipped, placed, errors, total: rows.length },
+    };
+  }
+
+  /** ALAT-MAG-01 lokacija (paritet 1.0 `getMagacinLocationId`) — null ako ne postoji. */
+  private async resolveMagacinId(): Promise<string | null> {
+    const rows = await this.sy15.db.$queryRaw<{ id: string }[]>`
+      SELECT id FROM loc_locations WHERE location_code = 'ALAT-MAG-01' LIMIT 1`;
+    return rows[0]?.id ?? null;
+  }
+
+  // ---------- R5d: bulk import reznog kataloga + reversa ----------
+
+  /**
+   * NFD skidanje dijakritika (paritet 1.0 `normalizeName`/`stripped`) + srpsko
+   * đ/Đ → dj/Dj (NFD ih NE dekomponuje jer su precomponovana slova sa crtom —
+   * 1.0 fuzzy ovo promašuje; ovde je pokriveno, „1:1 ili bolje").
+   */
+  private stripDiacritics(s: string): string {
+    return String(s ?? "")
+      .replace(/đ/g, "dj")
+      .replace(/Đ/g, "Dj")
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "");
+  }
+
+  /** Normalizacija imena za fuzzy match (dijakritici skinuti, lower, collapse). */
+  private normalizeName(s: string): string {
+    return this.stripDiacritics(s).toLowerCase().trim().replace(/\s+/g, " ");
+  }
+
+  /** Lista primalaca iz zarez-odvojenog stringa — trim + dedupe (paritet 1.0). */
+  private parseRecipientList(raw?: string): string[] {
+    return [
+      ...new Set(
+        String(raw ?? "")
+          .split(/\s*,\s*/)
+          .map((x) => x.trim())
+          .filter(Boolean),
+      ),
+    ];
+  }
+
+  /** Izvuci „Naziv: …" iz strukturisane napomene (paritet 1.0 `parseCuttingMetaFromNote`). */
+  private parseNoteNaziv(note?: string): string {
+    if (!note) return "";
+    for (const part of String(note).split(/\s*;\s*/)) {
+      const m = part.match(/^([^:]+)\s*:\s*(.+)$/);
+      if (!m) continue;
+      if (this.stripDiacritics(m[1].trim().toLowerCase()) === "naziv")
+        return m[2].trim();
+    }
+    return "";
+  }
+
+  private sha256Hex(text: string): string {
+    return createHash("sha256").update(text, "utf8").digest("hex");
+  }
+
+  /**
+   * Fuzzy razrešavanje imena radnika → employee_id (RC-52 — paritet 1.0
+   * `resolveEmployeeFuzzy`). Tolerantno na dijakritike, OBRNUT redosled reči i
+   * srednje slovo/inicijal (token-set), uključuje NEAKTIVNE. Umesto 1.0 tri-prolaza
+   * ILIKE upita, učita ceo (mali) `employees` skup jednom i matchuje u memoriji
+   * (isti ishod, bez N round-tripova).
+   */
+  private async resolveEmployeesFuzzy(names: string[]): Promise<{
+    resolved: Map<string, { id: string; fullName: string }>;
+    missing: string[];
+  }> {
+    const resolved = new Map<string, { id: string; fullName: string }>();
+    const missing: string[] = [];
+    const unique = [
+      ...new Set(names.map((n) => String(n ?? "").trim()).filter(Boolean)),
+    ];
+    if (unique.length === 0) return { resolved, missing };
+
+    const emps = await this.sy15.db.$queryRaw<
+      { id: string; full_name: string; is_active: boolean }[]
+    >`SELECT id, full_name, is_active FROM employees`;
+    const indexed = emps.map((e) => ({
+      id: e.id,
+      fullName: e.full_name,
+      tokens: this.normalizeName(e.full_name).split(" ").filter(Boolean),
+    }));
+
+    for (const name of unique) {
+      const targetTokens = this.normalizeName(name)
+        .split(" ")
+        .filter(Boolean)
+        .sort();
+      const hit = this.findTokenMatch(indexed, targetTokens);
+      if (hit) resolved.set(name, { id: hit.id, fullName: hit.fullName });
+      else missing.push(name);
+    }
+    return { resolved, missing };
+  }
+
+  /** Token-set match: tačan (isti set) ili superset (srednje slovo) — paritet 1.0. */
+  private findTokenMatch(
+    list: { id: string; fullName: string; tokens: string[] }[],
+    targetTokens: string[],
+  ): { id: string; fullName: string } | null {
+    const targetJoined = targetTokens.join(" ");
+    let hit = list.find((e) => {
+      const t = [...e.tokens].sort();
+      return t.length === targetTokens.length && t.join(" ") === targetJoined;
+    });
+    if (hit) return hit;
+    if (targetTokens.length >= 2) {
+      hit = list.find((e) => {
+        const set = new Set(e.tokens);
+        return targetTokens.every((t) => set.has(t));
+      });
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  /** RC-52 endpoint — fuzzy razrešavanje liste imena (za pre-import prikaz FE-a). */
+  async resolveEmployees(names: string[]) {
+    const { resolved, missing } = await this.resolveEmployeesFuzzy(names);
+    return {
+      data: {
+        resolved: Object.fromEntries(resolved),
+        missing,
+      },
+    };
+  }
+
+  /**
+   * RC-50 — bulk uvoz reznog kataloga (paritet 1.0 `importCutting`). Idempotentno po
+   * `oznaka` (postojeći = skip). Insert `rev_cutting_tool_catalog` (barkod dodaje
+   * trigger) + opciono seed početne količine u magacin (ALAT-MAG-01) ako `initialQty>0`.
+   * Insert ide kroz `withUser` (za `created_by = auth.uid()`); seed je u istoj tx (atomarno).
+   */
+  async bulkImportCuttingTools(email: string, rows: BulkCuttingRowDto[]) {
+    let created = 0;
+    let skipped = 0;
+    let seeded = 0;
+    const errors: { oznaka: string; error: string }[] = [];
+    const createdIds: { oznaka: string; id: string }[] = [];
+    const magacinId = await this.resolveMagacinId();
+
+    for (const row of rows) {
+      const oznaka = row.oznaka.trim();
+      try {
+        const existing = await this.sy15.db.revCuttingToolCatalog.findFirst({
+          where: { oznaka },
+          select: { id: true },
+        });
+        if (existing) {
+          skipped++;
+          continue;
+        }
+        const machines = (row.compatibleMachineCodes ?? [])
+          .map((s) => s.trim())
+          .filter(Boolean);
+        const unit = row.unit?.trim() || "kom";
+        const minStock = Math.max(0, Math.floor(row.minStockQty ?? 0));
+        const initialQty = Math.max(0, Math.floor(row.initialQty ?? 0));
+        const outcome = await this.sy15.withUser(email, async (tx) => {
+          const ins = await tx.$queryRaw<{ id: string }[]>`
+            INSERT INTO rev_cutting_tool_catalog
+              (oznaka, naziv, compatible_machine_codes, unit, min_stock_qty, napomena, status, created_by)
+            VALUES (${oznaka}, ${row.naziv.trim()}, ${machines}::text[], ${unit},
+              ${minStock}, ${row.napomena?.trim() || null}, 'active', auth.uid())
+            RETURNING id`;
+          const newId = ins[0]?.id ?? null;
+          let didSeed = false;
+          if (newId && initialQty > 0 && magacinId) {
+            await tx.$queryRaw`
+              SELECT rev_cutting_tool_seed_stock(${newId}::uuid, ${magacinId}::uuid,
+                ${initialQty}::numeric) AS result`;
+            didSeed = true;
+          }
+          return { id: newId, didSeed };
+        });
+        if (outcome.id) {
+          created++;
+          createdIds.push({ oznaka, id: outcome.id });
+          if (outcome.didSeed) seeded++;
+        }
+      } catch (e) {
+        errors.push({
+          oznaka,
+          error: e instanceof Error ? e.message : "greška",
+        });
+      }
+    }
+    return {
+      data: {
+        created,
+        skipped,
+        seeded,
+        errors,
+        createdIds,
+        total: rows.length,
+      },
+    };
+  }
+
+  /**
+   * Pre-import analiza reversa (RC-51/53/56 — dry-run, paritet 1.0 `analyzeRevers`):
+   * resolve reznog kataloga (postojeće vs auto-kreirati), rev_tools za TOOL/COOP,
+   * fuzzy radnika, magacin ALAT-MAG-01, detekcija duplikat-reversa po mašini, broj
+   * dokumenata. BEZ pisanja. Blokade: nedostajući radnici / nema aktivnog alata
+   * (hard); duplikati (mekano — „⚠ Ipak nastavi" u izvršenju).
+   */
+  private async analyzeReversalsCore(
+    rows: ReversalRowDto[],
+  ): Promise<ReversalAnalysisCore> {
+    const magacinExists = (await this.resolveMagacinId()) !== null;
+
+    // 1. CUTTING_TOOL oznake + meta; TOOL/COOP oznake.
+    const cuttingMeta = new Map<
+      string,
+      { naziv: string; masine: Set<string> }
+    >();
+    const toolOznake = new Set<string>();
+    for (const r of rows) {
+      const tip = (r.tip || "TOOL").toUpperCase();
+      const oznaka = (r.alat || "").trim();
+      if (!oznaka) continue;
+      if (tip === "CUTTING_TOOL") {
+        if (!cuttingMeta.has(oznaka)) {
+          cuttingMeta.set(oznaka, {
+            naziv: this.parseNoteNaziv(r.napomena) || oznaka,
+            masine: new Set(),
+          });
+        }
+        const m = (r.masina || "").trim();
+        if (m) cuttingMeta.get(oznaka)!.masine.add(m);
+      } else if (tip === "TOOL" || tip === "COOPERATION_GOODS") {
+        toolOznake.add(oznaka);
+      }
+    }
+
+    // 2. Resolve rezni katalog (batch po oznaci ILI barkodu za RZN-).
+    const cuttingOznake = [...cuttingMeta.keys()];
+    const existingCatalog: { oznaka: string; id: string; naziv: string }[] = [];
+    const newCatalog: { oznaka: string; naziv: string; masine: string[] }[] =
+      [];
+    const catalogByOznaka: Record<string, string | null> = {};
+    if (cuttingOznake.length > 0) {
+      const found = await this.sy15.db.revCuttingToolCatalog.findMany({
+        where: {
+          OR: [
+            { oznaka: { in: cuttingOznake } },
+            { barcode: { in: cuttingOznake } },
+          ],
+        },
+        select: { id: true, oznaka: true, barcode: true, naziv: true },
+      });
+      for (const oznaka of cuttingOznake) {
+        const meta = cuttingMeta.get(oznaka)!;
+        const hit =
+          found.find((f) => f.oznaka === oznaka) ??
+          (/^RZN-/i.test(oznaka)
+            ? found.find((f) => f.barcode === oznaka)
+            : undefined);
+        if (hit) {
+          existingCatalog.push({ oznaka, id: hit.id, naziv: hit.naziv });
+          catalogByOznaka[oznaka] = hit.id;
+        } else {
+          newCatalog.push({
+            oznaka,
+            naziv: meta.naziv,
+            masine: [...meta.masine],
+          });
+          catalogByOznaka[oznaka] = null;
+        }
+      }
+    }
+
+    // 3. Unique mašine.
+    const machineSet = new Set<string>();
+    for (const r of rows) {
+      const m = (r.masina || "").trim();
+      if (m) machineSet.add(m);
+    }
+    const machineCodes = [...machineSet];
+
+    // 4. Fuzzy resolve radnika (CUTTING_TOOL i EMPLOYEE/MACHINE primaoci).
+    const namesNeeding = new Set<string>();
+    for (const r of rows) {
+      const tip = (r.tip || "TOOL").toUpperCase();
+      const primTip = (r.primalacTip || "EMPLOYEE").toUpperCase();
+      if (
+        tip === "CUTTING_TOOL" ||
+        primTip === "EMPLOYEE" ||
+        primTip === "MACHINE"
+      ) {
+        for (const nm of this.parseRecipientList(r.primalac))
+          namesNeeding.add(nm);
+      }
+    }
+    const { resolved, missing } = await this.resolveEmployeesFuzzy([
+      ...namesNeeding,
+    ]);
+    const resolvedEmployees = Object.fromEntries(resolved);
+    const missingEmployees = missing;
+
+    // 5. Resolve rev_tools po oznaci za TOOL/COOP (RPC traži tool_id; latest active).
+    const toolByOznaka: Record<string, string> = {};
+    const missingToolOznaka: string[] = [];
+    const toolList = [...toolOznake];
+    if (toolList.length > 0) {
+      const trows = await this.sy15.db.revTool.findMany({
+        where: { oznaka: { in: toolList }, status: "active" },
+        select: { id: true, oznaka: true },
+        orderBy: { createdAt: "desc" },
+      });
+      const byOznaka = new Map<string, string>();
+      for (const t of trows)
+        if (!byOznaka.has(t.oznaka)) byOznaka.set(t.oznaka, t.id);
+      for (const oz of toolList) {
+        const id = byOznaka.get(oz);
+        if (id) toolByOznaka[oz] = id;
+        else missingToolOznaka.push(oz);
+      }
+    }
+
+    // 6. Broj dokumenata = unique (tip, tip primaoca, primalac(i), mašina, datum).
+    const docKeys = new Set<string>();
+    for (const r of rows) {
+      const tip = (r.tip || "TOOL").toUpperCase();
+      const primTip = (r.primalacTip || "EMPLOYEE").toUpperCase();
+      let primKey = String(r.primalac || "")
+        .split(/\s*,\s*/)[0]
+        .trim();
+      if (tip === "CUTTING_TOOL") {
+        primKey = this.parseRecipientList(r.primalac)
+          .slice()
+          .sort((a, b) =>
+            this.normalizeName(a).localeCompare(this.normalizeName(b)),
+          )
+          .join("|");
+      }
+      docKeys.add(
+        [tip, primTip, primKey, r.masina || "", r.datum || ""].join("|"),
+      );
+    }
+
+    // 7. Duplikat-import: aktivan CUTTING_TOOL revers za iste mašine (heuristika).
+    const duplicateDocs: ReversalAnalysisCore["duplicateDocs"] = [];
+    if (machineCodes.length > 0) {
+      const dup = await this.sy15.db.revDocument.findMany({
+        where: {
+          docType: "CUTTING_TOOL",
+          status: { in: ["OPEN", "PARTIALLY_RETURNED"] },
+          recipientMachineCode: { in: machineCodes },
+        },
+        select: {
+          docNumber: true,
+          recipientMachineCode: true,
+          issuedAt: true,
+          issuedToEmployeeName: true,
+          status: true,
+        },
+        orderBy: { issuedAt: "desc" },
+      });
+      for (const d of dup) {
+        duplicateDocs.push({
+          machine: d.recipientMachineCode,
+          docNumber: d.docNumber,
+          issuedAt: d.issuedAt,
+          employee: d.issuedToEmployeeName,
+          status: d.status,
+        });
+      }
+    }
+
+    const blockers: string[] = [];
+    if (missingEmployees.length > 0)
+      blockers.push(
+        `${missingEmployees.length} radnika nedostaje u Kadrovskoj`,
+      );
+    if (missingToolOznaka.length > 0)
+      blockers.push(
+        `${missingToolOznaka.length} oznaka ručnog alata nije u bazi (aktivno)`,
+      );
+
+    return {
+      docCount: docKeys.size,
+      lineCount: rows.length,
+      machineCodes,
+      existingCatalog,
+      newCatalog,
+      catalogByOznaka,
+      resolvedEmployees,
+      missingEmployees,
+      toolByOznaka,
+      missingToolOznaka,
+      magacinExists,
+      duplicateDocs,
+      blockers,
+    };
+  }
+
+  /** RC-51/53 endpoint — dry-run analiza + izračunata blocking/canForce zastavica. */
+  async analyzeReversals(dto: AnalyzeReversalsDto) {
+    const a = await this.analyzeReversalsCore(dto.rows);
+    const blocking =
+      a.missingEmployees.length > 0 || a.missingToolOznaka.length > 0;
+    return {
+      data: {
+        docCount: a.docCount,
+        lineCount: a.lineCount,
+        machineCodes: a.machineCodes,
+        existingCatalog: a.existingCatalog,
+        newCatalog: a.newCatalog,
+        resolvedEmployees: a.resolvedEmployees,
+        missingEmployees: a.missingEmployees,
+        toolByOznaka: a.toolByOznaka,
+        missingToolOznaka: a.missingToolOznaka,
+        magacinExists: a.magacinExists,
+        duplicateDocs: a.duplicateDocs,
+        blockers: a.blockers,
+        blocking,
+        hasDuplicates: a.duplicateDocs.length > 0,
+        // Duplikati su jedina „mekana" blokada — izvršenje ih prolazi uz force.
+        canForce: !blocking && a.duplicateDocs.length > 0,
+      },
+    };
+  }
+
+  /**
+   * RC-54 — izvršenje uvoza reversa (paritet 1.0 `importRevers`). Re-računa analizu
+   * server-side (jedini izvor razrešenja), sprovodi hard-blokade (nedostajući
+   * radnici/alat → 422) i duplikate (bez `force` → 409), pa:
+   *   1. auto-kreira nedostajuće šifre kataloga (`newCatalog`),
+   *   2. grupiše redove u dokumente (tip, primalac(i), mašina, datum),
+   *   3. poziva `rev_issue_cutting_reversal` / `rev_issue_reversal` sa
+   *      `bulk_import_legacy_key` (SHA-256) — RPC dedupuje po ključu (`idempotent`),
+   *      pa je endpoint bezbedno ponovljiv (idempotencija po logičkoj operaciji =
+   *      dokument). Vraća `session` (docIds, newCatalogIds — za FE localStorage sesije
+   *      RC-55) + `progress` (ok/fail/skipped po stavkama).
+   */
+  async executeReversals(email: string, dto: ExecuteReversalsDto) {
+    const analysis = await this.analyzeReversalsCore(dto.rows);
+    if (analysis.missingEmployees.length > 0) {
+      throw new UnprocessableEntityException(
+        `Import blokiran: ${analysis.missingEmployees.length} radnika nedostaje u Kadrovskoj (${analysis.missingEmployees.slice(0, 20).join(", ")})`,
+      );
+    }
+    if (analysis.missingToolOznaka.length > 0) {
+      throw new UnprocessableEntityException(
+        `Import blokiran: nema aktivnog ručnog alata za ${analysis.missingToolOznaka.length} oznaka(a) — prvo „Ručni alat" (${analysis.missingToolOznaka.slice(0, 20).join(", ")})`,
+      );
+    }
+    if (analysis.duplicateDocs.length > 0 && !dto.force) {
+      throw new ConflictException(
+        `Import blokiran: ${analysis.duplicateDocs.length} mašina već ima aktivan revers (verovatno duplikat) — potvrdi „force" za nastavak`,
+      );
+    }
+
+    const progress = { ok: 0, fail: 0, skipped: 0 };
+    const session = { docIds: [] as string[], newCatalogIds: [] as string[] };
+    const catalogByOznaka = { ...analysis.catalogByOznaka };
+    const sourceFileName = dto.sourceFileName || "na";
+
+    // 1. Auto-create nedostajuće šifre kataloga (bez seed-a — alat je „na mašini").
+    for (const nc of analysis.newCatalog) {
+      try {
+        const newId = await this.sy15.withUser(email, async (tx) => {
+          const ins = await tx.$queryRaw<{ id: string }[]>`
+            INSERT INTO rev_cutting_tool_catalog
+              (oznaka, naziv, compatible_machine_codes, unit, status, created_by)
+            VALUES (${nc.oznaka}, ${nc.naziv}, ${nc.masine}::text[], 'kom', 'active', auth.uid())
+            RETURNING id`;
+          return ins[0]?.id ?? null;
+        });
+        catalogByOznaka[nc.oznaka] = newId;
+        if (newId) session.newCatalogIds.push(newId);
+      } catch {
+        catalogByOznaka[nc.oznaka] = null;
+      }
+    }
+
+    // 2. Grupiši redove u dokumente (paritet 1.0 byDoc).
+    const today = new Date().toISOString().slice(0, 10);
+    const byDoc = new Map<
+      string,
+      {
+        meta: ReversalRowDto & {
+          datum: string;
+          primalacList: string[];
+          primalacPrimary: string;
+        };
+        lines: ReversalRowDto[];
+        primalacRaw: string;
+      }
+    >();
+    for (const r of dto.rows) {
+      const tip = (r.tip || "TOOL").toUpperCase();
+      const datum = r.datum || today;
+      let key: string;
+      let people: string[];
+      let primary: string;
+      if (tip === "CUTTING_TOOL") {
+        people = this.parseRecipientList(r.primalac);
+        const sorted = [...people].sort((a, b) =>
+          this.normalizeName(a).localeCompare(this.normalizeName(b)),
+        );
+        key = [
+          tip,
+          r.primalacTip,
+          sorted.join("|"),
+          r.masina || "",
+          datum,
+        ].join("|");
+        primary = people[0] || "";
+      } else {
+        primary = String(r.primalac || "")
+          .split(/\s*,\s*/)[0]
+          .trim();
+        people = primary ? [primary] : [];
+        key = [tip, r.primalacTip, primary, r.masina || "", datum].join("|");
+      }
+      if (!byDoc.has(key)) {
+        byDoc.set(key, {
+          meta: {
+            ...r,
+            datum,
+            primalacList: people,
+            primalacPrimary: primary,
+          },
+          lines: [],
+          primalacRaw: r.primalac,
+        });
+      }
+      byDoc.get(key)!.lines.push(r);
+    }
+
+    // 3. Izdaj po dokumentu.
+    for (const grp of byDoc.values()) {
+      const m = grp.meta;
+      const tip = (m.tip || "TOOL").toUpperCase();
+      const primTip = (m.primalacTip || "EMPLOYEE").toUpperCase();
+      const lineCount = grp.lines.length;
+      try {
+        if (tip === "CUTTING_TOOL") {
+          const outcome = await this.executeCuttingGroup(
+            email,
+            m,
+            grp,
+            analysis,
+            catalogByOznaka,
+            sourceFileName,
+          );
+          this.tallyGroup(progress, session, outcome, lineCount);
+        } else {
+          const outcome = await this.executeToolGroup(
+            email,
+            m,
+            grp,
+            primTip,
+            tip,
+            analysis,
+            sourceFileName,
+          );
+          this.tallyGroup(progress, session, outcome, lineCount);
+        }
+      } catch {
+        progress.fail += lineCount;
+      }
+    }
+
+    return { data: { session, progress } };
+  }
+
+  /** Rezultat jedne doc-grupe u izvršenju uvoza. */
+  private tallyGroup(
+    progress: { ok: number; fail: number; skipped: number },
+    session: { docIds: string[]; newCatalogIds: string[] },
+    outcome: { status: "ok" | "skipped" | "fail"; docId?: string },
+    lineCount: number,
+  ): void {
+    if (outcome.status === "skipped") progress.skipped += lineCount;
+    else if (outcome.status === "ok") {
+      progress.ok += lineCount;
+      if (outcome.docId) session.docIds.push(outcome.docId);
+    } else progress.fail += lineCount;
+  }
+
+  private async executeCuttingGroup(
+    email: string,
+    m: ReversalRowDto & { datum: string; primalacList: string[] },
+    grp: { lines: ReversalRowDto[]; primalacRaw: string },
+    analysis: ReversalAnalysisCore,
+    catalogByOznaka: Record<string, string | null>,
+    sourceFileName: string,
+  ): Promise<{ status: "ok" | "skipped" | "fail"; docId?: string }> {
+    if (!m.masina) return { status: "fail" };
+    const people =
+      m.primalacList.length > 0
+        ? m.primalacList
+        : this.parseRecipientList(grp.primalacRaw);
+    const primaryName = people[0];
+    const primaryEmp = primaryName
+      ? analysis.resolvedEmployees[primaryName]
+      : undefined;
+    if (!primaryName || !primaryEmp) return { status: "fail" };
+
+    const assignees: { employee_id: string; role: string }[] = [];
+    people.forEach((pnm, pi) => {
+      const e = analysis.resolvedEmployees[pnm];
+      if (e)
+        assignees.push({
+          employee_id: e.id,
+          role: pi === 0 ? "PRIMARY" : "SECONDARY",
+        });
+    });
+    if (!assignees.some((a) => a.role === "PRIMARY")) return { status: "fail" };
+
+    const lines: { catalog_id: string; quantity: number }[] = [];
+    for (const ln of grp.lines) {
+      const catId = catalogByOznaka[(ln.alat || "").trim()];
+      if (!catId) continue;
+      lines.push({ catalog_id: catId, quantity: Number(ln.kolicina) || 1 });
+    }
+    if (lines.length === 0) return { status: "fail" };
+
+    let napomena = m.napomena || null;
+    if (people.length > 1) {
+      napomena = `${napomena ? `${napomena} | ` : ""}Drugi potpisnik(i): ${people.slice(1).join(", ")}`;
+    }
+    const lineSig = grp.lines
+      .map((ln) => `${(ln.alat || "").trim()}:${Number(ln.kolicina) || 1}`)
+      .sort()
+      .join(";");
+    const legacyKey = this.sha256Hex(
+      `REVERSI|${sourceFileName}|${m.masina}|${m.datum || ""}|${people.join(">")}|${lineSig}`,
+    );
+    const payload: Record<string, unknown> = {
+      recipient_machine_code: m.masina,
+      issued_to_employee_id: primaryEmp.id,
+      issued_to_employee_name: primaryEmp.fullName,
+      expected_return_date: m.rokPovracaja || null,
+      napomena,
+      lines,
+      legacy_skip_source_decrement: true,
+      bulk_import_legacy_key: legacyKey,
+    };
+    if (assignees.length > 1) payload.assignees = assignees;
+    const res = await this.callBulkIssue(
+      email,
+      "rev_issue_cutting_reversal",
+      payload,
+    );
+    if (!res) return { status: "fail" };
+    if (res.idempotent) return { status: "skipped" };
+    return { status: "ok", docId: res.doc_id };
+  }
+
+  private async executeToolGroup(
+    email: string,
+    m: ReversalRowDto & { datum: string; primalacPrimary: string },
+    grp: { lines: ReversalRowDto[] },
+    primTip: string,
+    tip: string,
+    analysis: ReversalAnalysisCore,
+    sourceFileName: string,
+  ): Promise<{ status: "ok" | "skipped" | "fail"; docId?: string }> {
+    const payload: Record<string, unknown> = {
+      doc_type: tip,
+      recipient_type: primTip,
+      recipient_employee_id: null,
+      recipient_employee_name: null,
+      recipient_department: null,
+      recipient_company_name: null,
+      expected_return_date: m.rokPovracaja || null,
+      napomena: m.napomena || null,
+    };
+    if (primTip === "EMPLOYEE") {
+      const e = analysis.resolvedEmployees[m.primalacPrimary];
+      if (!e) return { status: "fail" };
+      payload.recipient_employee_id = e.id;
+      payload.recipient_employee_name = e.fullName;
+    } else if (primTip === "DEPARTMENT") {
+      payload.recipient_department = m.primalacPrimary;
+    } else if (primTip === "EXTERNAL_COMPANY") {
+      payload.recipient_company_name = m.primalacPrimary;
+    }
+    const lines: Record<string, unknown>[] = [];
+    for (const ln of grp.lines) {
+      const oz = (ln.alat || "").trim();
+      const toolUuid = analysis.toolByOznaka[oz];
+      if (!toolUuid) continue;
+      lines.push({
+        line_type: "TOOL",
+        tool_id: toolUuid,
+        part_name: oz,
+        drawing_no: "",
+        quantity: Number(ln.kolicina) || 1,
+        unit: "kom",
+        napomena: ln.napomena || "",
+      });
+    }
+    if (lines.length === 0) return { status: "fail" };
+    payload.lines = lines;
+    const lineSig = grp.lines
+      .map((ln) => `${(ln.alat || "").trim()}:${Number(ln.kolicina) || 1}`)
+      .sort()
+      .join(";");
+    payload.bulk_import_legacy_key = this.sha256Hex(
+      `REVERSI|${tip}|${sourceFileName}|${m.primalacPrimary || ""}|${m.datum || ""}|${lineSig}`,
+    );
+    const res = await this.callBulkIssue(email, "rev_issue_reversal", payload);
+    if (!res) return { status: "fail" };
+    if (res.idempotent) return { status: "skipped" };
+    return { status: "ok", docId: res.doc_id };
+  }
+
+  /** Poziv izdavačke/povratne RPC-a sa jsonb payloadom (bulk put — bez runIdempotent). */
+  private async callBulkIssue(
+    email: string,
+    fnName: string,
+    payload: Record<string, unknown>,
+  ): Promise<{
+    doc_id?: string;
+    doc_number?: string;
+    idempotent?: boolean;
+  } | null> {
+    // fnName je iz zatvorenog skupa (rev_issue_*/rev_confirm_*), nije korisnički unos.
+    return this.sy15.withUser(email, async (tx) => {
+      const rows = await tx.$queryRawUnsafe<
+        {
+          result: {
+            doc_id?: string;
+            doc_number?: string;
+            idempotent?: boolean;
+          } | null;
+        }[]
+      >(`SELECT ${fnName}($1::jsonb) AS result`, JSON.stringify(payload));
+      return rows[0]?.result ?? null;
+    });
+  }
+
+  /**
+   * RC-55 — storno bulk-import sesije (paritet 1.0 `openImportRollbackModal`).
+   * Za svaki dokument: dovuci linije, vrati SVE preostalo (`quantity − returned`)
+   * kroz `rev_confirm_cutting_return` (ima CUTTING_TOOL liniju) ili `rev_confirm_return`
+   * (default povratna lokacija ALAT-MAG-01) → status RETURNED, stock nazad u magacin.
+   * Sesije se čuvaju u FE localStorage; ovde je samo izvršenje storna (idempotentno —
+   * već vraćen dokument nema preostalih linija → „ok").
+   */
+  async rollbackReversals(email: string, documentIds: string[]) {
+    let ok = 0;
+    let fail = 0;
+    const details: {
+      documentId: string;
+      status: string;
+      error?: string;
+    }[] = [];
+    const magacinId = await this.resolveMagacinId();
+
+    for (const docId of documentIds) {
+      try {
+        const lines = await this.sy15.db.revDocumentLine.findMany({
+          where: { documentId: docId },
+          select: {
+            id: true,
+            quantity: true,
+            returnedQuantity: true,
+            lineType: true,
+          },
+        });
+        const returnedLines = lines
+          .filter((l) => Number(l.quantity) > Number(l.returnedQuantity ?? 0))
+          .map((l) => ({
+            line_id: l.id,
+            returned_quantity:
+              Number(l.quantity) - Number(l.returnedQuantity ?? 0),
+          }));
+        if (returnedLines.length === 0) {
+          ok++;
+          details.push({ documentId: docId, status: "already-returned" });
+          continue;
+        }
+        const isCutting = lines.some((l) => l.lineType === "CUTTING_TOOL");
+        const payload: Record<string, unknown> = {
+          doc_id: docId,
+          returned_lines: returnedLines,
+        };
+        let fnName: string;
+        if (isCutting) {
+          fnName = "rev_confirm_cutting_return";
+        } else {
+          fnName = "rev_confirm_return";
+          if (magacinId) payload.return_to_location_id = magacinId;
+        }
+        await this.callBulkIssue(email, fnName, payload);
+        ok++;
+        details.push({ documentId: docId, status: "returned" });
+      } catch (e) {
+        fail++;
+        details.push({
+          documentId: docId,
+          status: "failed",
+          error: e instanceof Error ? e.message : "greška",
+        });
+      }
+    }
+    return { data: { ok, fail, details } };
   }
 
   /**
@@ -1413,12 +2414,13 @@ export class ReversiService {
    * `resolveReversiBarcode` + `normalizeBarcodeText`):
    *   ALAT-NNNNNN → HAND (rev_tools.barcode),
    *   RZN-NNNNNN  → CUTTING (rev_cutting_tool_catalog.barcode),
+   *   ZADU-M-…    → MACHINE (v_rev_machines.rj_code; podvlaka→tačka — RC-29),
    *   inače 4–16 alnum → EMPLOYEE (employees.card_barcode).
    * `data:null` = format prepoznat ali nema zapisa; `kind:UNKNOWN` = nepoznat format.
    */
   async lookupBarcode(raw?: string): Promise<{
     data: {
-      kind: "HAND" | "CUTTING" | "EMPLOYEE" | "UNKNOWN";
+      kind: "HAND" | "CUTTING" | "MACHINE" | "EMPLOYEE" | "UNKNOWN";
       barcode: string;
       record: unknown;
     };
@@ -1440,6 +2442,16 @@ export class ReversiService {
         take: 1,
       });
       return { data: { kind: "CUTTING", barcode, record: rows[0] ?? null } };
+    }
+    // RC-29: nalepnica mašinske lokacije „ZADU-M-<kod>" → rj_code (podvlaka→tačka).
+    // Podržava globalni HID skener (RC-38) da rutira mašinu bez preučitane liste.
+    if (/^ZADU-M-/i.test(barcode)) {
+      const code = barcode.replace(/^ZADU-M-/i, "").replace(/_/g, ".");
+      const rows = await this.sy15.db.$queryRaw<
+        { rj_code: string; name: string | null }[]
+      >(Prisma.sql`
+        SELECT rj_code, name FROM v_rev_machines WHERE rj_code = ${code} LIMIT 1`);
+      return { data: { kind: "MACHINE", barcode, record: rows[0] ?? null } };
     }
     if (/^[A-Z0-9]{4,16}$/i.test(barcode)) {
       const rows = await this.sy15.db.$queryRaw<

@@ -23,6 +23,7 @@ import type {
   ConsumptionReportQuery,
   InventoryUnitsQuery,
   LedgerQuery,
+  ListCuttingToolsQuery,
   ListDocumentsQuery,
   ListToolsQuery,
   RecipientCardinalityQuery,
@@ -35,6 +36,13 @@ import {
   WriteOffDto,
 } from "./dto/reversi-tx.dto";
 import { BulkImportToolsDto } from "./dto/reversi-bulk.dto";
+import {
+  AnalyzeReversalsDto,
+  BulkImportCuttingDto,
+  ExecuteReversalsDto,
+  ResolveEmployeesDto,
+  RollbackReversalsDto,
+} from "./dto/reversi-bulk-revers.dto";
 import {
   CuttingToolCreateDto,
   CuttingToolUpdateDto,
@@ -181,8 +189,20 @@ export class ReversiController {
   }
 
   @Get("reports/cutting-by-machine")
-  cuttingByMachine(@Query("machineCode") machineCode?: string) {
-    return this.reversi.cuttingByMachine(machineCode);
+  cuttingByMachine(
+    @Query("machineCode") machineCode?: string,
+    @Query("q") q?: string,
+  ) {
+    return this.reversi.cuttingByMachine(machineCode, q);
+  }
+
+  /** Rezni alat po zaposlenom-potpisniku (RC-36/37) — pretraga + filter odeljenja. */
+  @Get("reports/cutting-by-employee")
+  cuttingByEmployee(
+    @Query("q") q?: string,
+    @Query("department") department?: string,
+  ) {
+    return this.reversi.cuttingByEmployee(q, department);
   }
 
   @Get("machines/:code/heads")
@@ -193,14 +213,14 @@ export class ReversiController {
   // ---------- Rezni alat (katalog) ----------
 
   @Get("cutting-tools")
-  listCuttingTools(@Query("q") q?: string) {
-    return this.reversi.listCuttingTools(q);
+  listCuttingTools(@Query() query: ListCuttingToolsQuery) {
+    return this.reversi.listCuttingTools(query);
   }
 
   /**
    * Otvorene ISSUED linije reznog alata prijavljenog korisnika za skenirani barkod
    * (FIFO po issued_at) — podrška povraćaju (RC-17/32). reversi.read (klasni default);
-   * povraćaj na otkrivanju linija NIJE role-gated (paritet 1.0).
+   * povraćaj na otkrivanju linija NIJE role-gated (paritet 1.0). Statička PRE `:id`.
    */
   @Get("cutting-tools/open-lines")
   cuttingOpenLines(
@@ -208,6 +228,12 @@ export class ReversiController {
     @Query("barcode") barcode?: string,
   ) {
     return this.reversi.cuttingOpenLines(req.user.email, barcode);
+  }
+
+  /** Detalj šifre reznog + stanje po lokacijama (RC-25). Posle statičke `open-lines`. */
+  @Get("cutting-tools/:id")
+  getCuttingTool(@Param("id", ParseUUIDPipe) id: string) {
+    return this.reversi.getCuttingTool(id);
   }
 
   @Post("cutting-tools")
@@ -240,17 +266,60 @@ export class ReversiController {
     return this.reversi.lookupLocations();
   }
 
-  /** Razrešavanje skeniranog barkoda (ALAT-/RZN-/card) — paritet 1.0 resolveReversiBarcode. */
+  /** Razrešavanje skeniranog barkoda (ALAT-/RZN-/ZADU-M-/card) — paritet 1.0 resolveReversiBarcode. */
   @Get("lookups/barcode")
   lookupBarcode(@Query("code") code?: string) {
     return this.reversi.lookupBarcode(code);
   }
 
+  /** Fuzzy razrešavanje liste imena radnika → employee_id (RC-52) — lookup (read). */
+  @Post("lookups/employees/resolve")
+  resolveEmployees(@Body() dto: ResolveEmployeesDto) {
+    return this.reversi.resolveEmployees(dto.names);
+  }
+
   /** Bulk-import inventara ručnog alata (XLSX/CSV parsira klijent, šalje redove). */
   @Post("bulk-import/tools")
   @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
-  bulkImportTools(@Body() dto: BulkImportToolsDto) {
-    return this.reversi.bulkImportTools(dto.rows);
+  bulkImportTools(@Req() req: AuthedRequest, @Body() dto: BulkImportToolsDto) {
+    return this.reversi.bulkImportTools(req.user.email, dto.rows);
+  }
+
+  /** RC-50 — bulk uvoz reznog kataloga (+ opciono seed početne količine). */
+  @Post("bulk-import/cutting-tools")
+  @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
+  bulkImportCuttingTools(
+    @Req() req: AuthedRequest,
+    @Body() dto: BulkImportCuttingDto,
+  ) {
+    return this.reversi.bulkImportCuttingTools(req.user.email, dto.rows);
+  }
+
+  /** RC-51/53 — pre-import analiza reversa (dry-run: resolve + blokade). */
+  @Post("bulk-import/reversals/analyze")
+  @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
+  analyzeReversals(@Body() dto: AnalyzeReversalsDto) {
+    return this.reversi.analyzeReversals(dto);
+  }
+
+  /** RC-55 — storno bulk-import sesije (vraća dokumente u magacin → RETURNED). */
+  @Post("bulk-import/reversals/rollback")
+  @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
+  rollbackReversals(
+    @Req() req: AuthedRequest,
+    @Body() dto: RollbackReversalsDto,
+  ) {
+    return this.reversi.rollbackReversals(req.user.email, dto.documentIds);
+  }
+
+  /** RC-54 — izvršenje uvoza reversa (auto-create + grupisanje + issue, idempotent). */
+  @Post("bulk-import/reversals")
+  @RequirePermission(PERMISSIONS.REVERSI_MANAGE)
+  executeReversals(
+    @Req() req: AuthedRequest,
+    @Body() dto: ExecuteReversalsDto,
+  ) {
+    return this.reversi.executeReversals(req.user.email, dto);
   }
 
   // ---------- R1: inventar (nova jedinica / izmena artikla) + klasifikacija + štampa ----------

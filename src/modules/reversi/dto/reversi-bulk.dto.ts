@@ -69,6 +69,11 @@ export class BulkToolRowDto {
   @IsOptional()
   @IsDateString()
   datumKupovine?: string;
+
+  /** RC-49: lokacija početnog smeštaja (default ALAT-MAG-01 na backendu). */
+  @IsOptional()
+  @IsUUID()
+  initialPlacementLocationId?: string;
 }
 
 export class BulkImportToolsDto {
