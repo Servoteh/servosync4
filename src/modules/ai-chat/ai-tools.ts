@@ -1,10 +1,11 @@
 import type { ToolDef } from "../../common/ai/ai-provider.service";
 
 /**
- * AI asistent — sistem prompt + 18 alata (port edge `ai-chat`, VERBATIM tekst iz
- * supabase/functions/ai-chat/index.ts:76-352,624-630). NETAKNUTA semantika: alati
- * zovu `ai_chat_*` RPC-ove SA identitetom korisnika (scope presuđuje baza). U
- * DELJENOJ projektnoj niti lični/HR alati su ISKLJUČENI (§2 pravilo 11).
+ * AI asistent — sistem prompt + 20 alata (port edge `ai-chat`, VERBATIM tekst iz
+ * supabase/functions/ai-chat/index.ts). NETAKNUTA semantika: alati zovu
+ * `ai_chat_*` RPC-ove (go_istorija → `go_ledger`) SA identitetom korisnika
+ * (scope presuđuje baza). U DELJENOJ projektnoj niti lični/HR alati su
+ * ISKLJUČENI (§2 pravilo 11).
  * (Backtick literali — da se sačuvaju svi navodnici/dijakritika 1:1 sa 1.0, §C.)
  */
 
@@ -30,7 +31,9 @@ export const SYSTEM_PROMPT =
   `PODACI IZ APLIKACIJE (Faza 2): imaš ALATE — trazi_zaposlenog, go_saldo, go_pregled ` +
   `(KOMPLETAN status godišnjeg u jednom pozivu: preneto, zarađeno/pravo, iskorišćeni i ` +
   `planirani periodi, preostalo — koristi za „status/pregled godišnjeg sa danima koje sam ` +
-  `koristio"), sati_mesec, ` +
+  `koristio"), go_istorija (istorija GO PO SVIM GODINAMA — iskorišćeni/planirani/ranije dani ` +
+  `po godini + stara evidencija za starije godine; za „koje dane sam koristio prošle godine", ` +
+  `„istorija mog godišnjeg"), sati_mesec, ` +
   `moj_tim, odsustva_lista (konkretni dani/periodi odmora i odsustava), go_zahtevi, ` +
   `pretrazi_uputstva (baza uputstava, pravilnika i organizacije firme — OBAVEZNO za ` +
   `pitanja „kako da…", „gde je…", „koja su pravila…"; odgovaraj po koracima iz ` +
@@ -165,6 +168,20 @@ export const TOOL_DEFS: ToolDef[] = [
       type: "object",
       properties: {
         employee_id: { type: "string", description: `UUID; izostavi za sebe` },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "go_istorija",
+    description: `ISTORIJA godišnjeg odmora PO SVIM GODINAMA (ne samo tekućoj) — usklađeno sa saldom: za svaku godinu iskorišćeni periodi (konkretni datumi od–do), „ranije evidentirano" (dani pre evidencije po danima), PLANIRANI (odobreni budući) periodi i preostalo. Za starije godine vraća staru evidenciju (datumi + napomene). Koristi za „koje dane sam koristio 2025/ove godine", „istorija mog godišnjeg", „od čega se sastoji iskorišćeno". Bez employee_id → pozivalac.`,
+    input: {
+      type: "object",
+      properties: {
+        employee_id: {
+          type: "string",
+          description: `UUID iz trazi_zaposlenog; izostavi za sebe`,
+        },
       },
       required: [],
     },

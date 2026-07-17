@@ -19,6 +19,16 @@ import { BadRequestException } from "@nestjs/common";
  * od ponoći) kao verzioni pečat — 2.0 to menja u `revision` (logičnije, bez reseta
  * i sudara). Polje 4 operacije = literal `0` (verno legacy `rRN`; skener ga čita kao
  * `identMark`). Marker: TAČAN prvi segment (`RNZ` nalog / `S` operacija).
+ *
+ * Keyboard-wedge tolerancija (pogon): skener „kuca" kao tastatura, pa raspored i
+ * modifikatori OS-a izobličavaju znakove pre nego što stignu do `parseBarcode`.
+ * Normalizujemo ih pre parsiranja:
+ *   1. 2026-07-10 — `;`→`:` (propušten Shift) + marker/revizija case-insensitive
+ *      (nestabilan CapsLock/brzina); npr. "rnz;10350;9400/3/120;0;44474".
+ *   2. 2026-07-17 — SR raspored tastature (`normalizeScannerLayout`): skener je
+ *      programiran za US raspored, a pogonski OS je na SR latinici/ćirilici, pa
+ *      svaki taster daje znak SR pozicije — npr. očitano "RNYČ9470Č9000-236Č0Č33769"
+ *      umesto "RNZ:9470:9000/236:0:33769". Inverzno mapiramo po poziciji tastera.
  */
 
 /** Polja iz nalog-barkoda (`RNZ:projectId:identNumber:variant:revision`). */
@@ -85,17 +95,162 @@ function parseRevision(value: string): string {
 }
 
 /**
+ * Inverzna mapa SR LATINICA (Windows „Serbian (Latin)", QWERTZ) → US raspored,
+ * po POZICIJI tastera. Skener šalje keystroke za US znak, a OS na SR latinici
+ * vrati znak sa te iste pozicije; ovde vraćamo original. Jedan prolaz (bez
+ * lančanja) — svaki izvorni znak ima tačno jedan cilj, pa se `ć`→`'` i `'`→`-`
+ * ne primenjuju dvaput. `;` NAMERNO nije u mapi (ostaje `;` → hvata ga postojeća
+ * `;`→`:` zamena; tako i mala `č`→`;`→`:`).
+ */
+const SR_LATIN_TO_US: Record<string, string> = {
+  // dijakritici → interpunkcija (pozicija tastera)
+  č: ";",
+  Č: ":",
+  ć: "'",
+  Ć: '"',
+  š: "[",
+  Š: "{",
+  đ: "]",
+  Đ: "}",
+  ž: "\\",
+  Ž: "|",
+  // QWERTZ zamena slova (bijekcija, čuva velika/mala)
+  y: "z",
+  z: "y",
+  Y: "Z",
+  Z: "Y",
+  // interpunkcija po poziciji tastera
+  "-": "/",
+  "'": "-",
+  _: "?",
+  "?": "_",
+  "+": "=",
+  "*": "+",
+};
+
+/**
+ * Inverzna mapa SR ĆIRILICA (Windows „Serbian (Cyrillic)") → US raspored, po
+ * poziciji tastera — za pogonske računare na ćirilici. Slova mapiraju na US
+ * poziciju; interpunkcija na istim pozicijama kao latinica. Neizvestan znak
+ * radije izostavljen nego pogrešno zamenjen.
+ */
+const SR_CYRILLIC_TO_US: Record<string, string> = {
+  // red Q (QWERTY)
+  љ: "q",
+  њ: "w",
+  е: "e",
+  р: "r",
+  т: "t",
+  з: "y",
+  у: "u",
+  и: "i",
+  о: "o",
+  п: "p",
+  ш: "[",
+  ђ: "]",
+  // red A
+  а: "a",
+  с: "s",
+  д: "d",
+  ф: "f",
+  г: "g",
+  х: "h",
+  ј: "j",
+  к: "k",
+  л: "l",
+  ч: ";",
+  ћ: "'",
+  ж: "\\",
+  // red Z
+  ѕ: "z",
+  џ: "x",
+  ц: "c",
+  в: "v",
+  б: "b",
+  н: "n",
+  м: "m",
+  // velika slova (shift verzije istih pozicija)
+  Љ: "Q",
+  Њ: "W",
+  Е: "E",
+  Р: "R",
+  Т: "T",
+  З: "Y",
+  У: "U",
+  И: "I",
+  О: "O",
+  П: "P",
+  Ш: "{",
+  Ђ: "}",
+  А: "A",
+  С: "S",
+  Д: "D",
+  Ф: "F",
+  Г: "G",
+  Х: "H",
+  Ј: "J",
+  К: "K",
+  Л: "L",
+  Ч: ":",
+  Ћ: '"',
+  Ж: "|",
+  Ѕ: "Z",
+  Џ: "X",
+  Ц: "C",
+  В: "V",
+  Б: "B",
+  Н: "N",
+  М: "M",
+  // interpunkcija po poziciji tastera (iste pozicije kao latinica)
+  "-": "/",
+  "'": "-",
+  _: "?",
+  "?": "_",
+  "+": "=",
+  "*": "+",
+};
+
+/** Prisustvo bilo kog SR-latiničnog dijakritika = nedvosmislen signal izobličenja. */
+const SR_LATIN_SIGNAL = /[čćšđžČĆŠĐŽ]/;
+/** Prisustvo bilo kog ćiriličnog znaka = nedvosmislen signal izobličenja. */
+const SR_CYRILLIC_SIGNAL = /[Ѐ-ӿ]/;
+
+function remapByPosition(input: string, map: Record<string, string>): string {
+  return Array.from(input, (ch) => map[ch] ?? ch).join("");
+}
+
+/**
+ * Normalizuje sken sa pogonskog računara koji je na SR rasporedu tastature nazad
+ * u US raspored (za koji je skener programiran). Primenjuje se SAMO kad postoji
+ * nedvosmislen signal izobličenja (SR dijakritik ili ćirilica) — bez signala se
+ * ulaz vraća NEIZMENJEN, da legitiman sadržaj sa `y`/`z`/`-` (npr. „ABY-1") ne
+ * bi bio pogrešno preslikan. Ćirilica ima prednost (specifičniji signal).
+ * Pogon 2026-07-17: očitano "RNYČ9470Č…" umesto "RNZ:9470:…".
+ */
+export function normalizeScannerLayout(input: string): string {
+  if (SR_CYRILLIC_SIGNAL.test(input))
+    return remapByPosition(input, SR_CYRILLIC_TO_US);
+  if (SR_LATIN_SIGNAL.test(input))
+    return remapByPosition(input, SR_LATIN_TO_US);
+  return input;
+}
+
+/**
  * Parsira i validira JEDAN barkod (nalog ili operacija). Baca `BadRequestException`
  * (→ 400) na svaki nevalidan ulaz. Ne dodiruje bazu.
  */
 export function parseBarcode(input: string): DecodedBarcode {
   if (typeof input !== "string")
     throw new BadRequestException("Barkod mora biti string.");
-  // Keyboard-wedge tolerancija (pogon 2026-07-10, prod logovi): skener na nekim
-  // računarima šalje ';' umesto ':' (ne stigne da „drži" Shift) i obrće velika/mala
-  // slova (CapsLock/brzina) — npr. "rnz;10350;9400/3/120;0;44474". Normalizujemo pre
-  // parsiranja: ';'→':' (identi ne sadrže ';') + marker case-insensitive.
-  const raw = input.trim().replace(/;/g, ":");
+  // Keyboard-wedge tolerancija (pogon, prod logovi). Redosled je bitan:
+  //   1. SR raspored tastature (2026-07-17): skener programiran za US, OS na SR
+  //      latinici/ćirilici → znak SR pozicije; inverzno mapiramo PRE svega, jer
+  //      SR-latinično malo 'č' daje ';' koje tek sledeći korak pretvara u ':'.
+  //      Bez SR signala (dijakritik/ćirilica) ostaje neizmenjeno.
+  //   2. ';'→':' (2026-07-10): skener ne stigne da „drži" Shift (identi ne sadrže
+  //      ';'). Marker i revizija su case-insensitive (nestabilan CapsLock/brzina).
+  //   npr. "RNYČ9470Č9000-236Č0Č33769" → "RNZ:9470:9000/236:0:33769".
+  const raw = normalizeScannerLayout(input).trim().replace(/;/g, ":");
   if (!raw) throw new BadRequestException("Barkod je prazan.");
 
   // 🔴 Struktura: tačno 4 separatora → 5 polja. Greška PRIKAZUJE očitani sadržaj

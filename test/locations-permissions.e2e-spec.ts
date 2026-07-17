@@ -41,6 +41,7 @@ describe("Lokacije permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     "definitionsAudit",
     "syncStatus",
     "syncOutbound",
+    "syncHealth",
     // R2 mutacije
     "createMovement",
     "moveCage",
@@ -269,6 +270,14 @@ describe("Lokacije permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     });
   });
 
+  // LOK-P3: sync/health je klasni lokacije.read (bez admin override-a) — SVE
+  // uloge modula (uklj. magacioner/cnc) vide read-only zdravlje sync-a.
+  describe("GET /sync/health — lokacije.read (svi, LOK-P3)", () => {
+    it.each(ALL_READ_ROLES)("→ 200 za %s", async (role) => {
+      await get("/sync/health", role).expect(200);
+    });
+  });
+
   // ==================== R2: MUTACIJE ====================
 
   describe("POST /movements — lokacije.move (loc_can_create_movement)", () => {
@@ -349,10 +358,17 @@ describe("Lokacije permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     it("POST /sync/arm armed nije boolean → 400 (admin)", async () => {
       await post("/sync/arm", "admin", { armed: "da" }).expect(400);
     });
+    // PLK-02: run-now traži { confirm: true } (400 bez nje čak i za admina).
     it.each(ADMIN_ROLES)("POST /sync/run-now → 201 za %s", async (role) => {
-      await post("/sync/run-now", role, {}).expect(201);
+      await post("/sync/run-now", role, { confirm: true }).expect(201);
     });
-    it.each(NOT_ADMIN)("POST /sync/run-now → 403 za %s", async (role) => {
+    it("POST /sync/run-now bez confirm → 400 (admin) — PLK-02 brana", async () => {
+      await post("/sync/run-now", "admin", {}).expect(400);
+    });
+    it("POST /sync/run-now confirm:false → 400 (admin) — PLK-02 brana", async () => {
+      await post("/sync/run-now", "admin", { confirm: false }).expect(400);
+    });
+    it.each(NOT_ADMIN)("POST /sync/run-now → 403 za %s (guard pre validacije)", async (role) => {
       await post("/sync/run-now", role, {}).expect(403);
     });
   });

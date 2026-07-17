@@ -155,3 +155,13 @@ export class SyncArmDto {
   @IsBoolean()
   armed!: boolean;
 }
+
+/**
+ * PLK-02: potvrdna brana za ručno okidanje ingest-a. `confirm` MORA biti `true`
+ * (bilo šta drugo / izostanak → 400) da slučajan/dupli POST ne okine `loc_bigtehn_ingest_run_now`.
+ */
+export class SyncRunNowDto {
+  @IsBoolean()
+  @IsIn([true], { message: "confirm mora biti true za ručno okidanje ingest-a" })
+  confirm!: boolean;
+}

@@ -237,7 +237,11 @@ export class UpdateIncidentDto {
   @IsOptional() @IsBoolean() safetyMarker?: boolean;
 }
 
-export class IncidentEventDto {
+/**
+ * Ručni komentar/tok incidenta. `clientEventId` sprečava dupli-klik → dupli komentar
+ * (audit §5 „event rute bez clientEventId"). Idempotentno kroz runIdempotentRls.
+ */
+export class IncidentEventDto extends IdempotentDto {
   @IsString() @MaxLength(60) eventType!: string;
   @IsOptional() @IsString() @MaxLength(4000) comment?: string;
   @IsOptional() @IsString() fromValue?: string;
@@ -279,7 +283,12 @@ export class UpdateWorkOrderDto {
   @IsOptional() @IsString() externalServicerName?: string;
 }
 
-export class WorkOrderEventDto {
+/**
+ * Ručni komentar/prelaz statusa WO. `clientEventId` sprečava dupli-klik → dupli komentar
+ * (audit §5). Idempotentno kroz runIdempotentRls. (Automatski status_change event i dalje
+ * piše DB trigger — ovaj je za ručni user_note/komentar iz drawera.)
+ */
+export class WorkOrderEventDto extends IdempotentDto {
   @IsString() @MaxLength(60) eventType!: string;
   @IsOptional() @IsString() @MaxLength(4000) comment?: string;
   @IsOptional() @IsString() fromValue?: string;
@@ -475,6 +484,14 @@ export class CreateDriverDto extends IdempotentDto {
 export class UpdateDriverDto {
   @IsOptional() @IsString() @MaxLength(300) fullName?: string;
   @IsOptional() @IsBoolean() isInternal?: boolean;
+  /**
+   * ERP nalog vozača (auth.users.id) ILI null (raskini vezu). Skriveno pravilo 11:
+   * spoljni vozač (is_internal=false) NE sme imati auth_user_id (DB CHECK) — service
+   * forsira null (maintenance.js:2836). `null` = eksplicitno odveži.
+   */
+  @IsOptional() @ValidateIf((_o, v) => v !== null) @IsUUID() authUserId?:
+    | string
+    | null;
   @IsOptional() @IsString() driversLicenseNumber?: string;
   @IsOptional()
   @IsArray()
@@ -642,4 +659,36 @@ export class UpdateNotificationRuleDto {
   @IsOptional() @IsInt() escalationLevel?: number;
   @IsOptional() @IsBoolean() enabled?: boolean;
   @IsOptional() @IsString() notes?: string;
+}
+
+/* ════════════════════════ Maint profili (SoD; audit H19/H20) ════════════════════════ */
+
+/**
+ * CMMS profil (maint_user_profiles) — vezan za `auth.uid()` (NE za email!). Mutacije SAMO
+ * ERP admin (service `assertErpAdmin`; DB trigger `maint_profiles_guard_role` ostaje tvrda
+ * granica za role/active). POST mora imati EKSPLICITNU proveru duplikata `userId` — 1.0
+ * `insertMaintProfile` (sbReq POST) default-uje merge-duplicates pa bi tiho pregazio profil
+ * (§5.1 pravilo 22, maintProfilesTab.js:161-167). `phone` = E.164 (koristi ga notif kanal);
+ * paritet 1.0 = slobodan tekst (bez stroge validacije, doktrina §C), pa ostaje `@IsString`.
+ */
+export class CreateProfileDto extends IdempotentDto {
+  /** auth.users.id korisnika (= maint_user_profiles.user_id, PK). */
+  @IsUUID() userId!: string;
+  @IsString() @MaxLength(300) fullName!: string;
+  @IsIn(MAINT_ROLE) role!: string;
+  @IsOptional() @IsArray() @IsString({ each: true })
+  assignedMachineCodes?: string[];
+  @IsOptional() @IsString() @MaxLength(40) phone?: string;
+  @IsOptional() @IsString() @MaxLength(120) telegramChatId?: string;
+  @IsOptional() @IsBoolean() active?: boolean;
+}
+
+export class UpdateProfileDto {
+  @IsOptional() @IsString() @MaxLength(300) fullName?: string;
+  @IsOptional() @IsIn(MAINT_ROLE) role?: string;
+  @IsOptional() @IsArray() @IsString({ each: true })
+  assignedMachineCodes?: string[];
+  @IsOptional() @IsString() @MaxLength(40) phone?: string;
+  @IsOptional() @IsString() @MaxLength(120) telegramChatId?: string;
+  @IsOptional() @IsBoolean() active?: boolean;
 }

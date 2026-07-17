@@ -182,7 +182,9 @@ export class ProjektniBiroService {
     const win = clampWindow(query.windowDays);
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.$queryRaw<unknown[]>(
-        Prisma.sql`SELECT * FROM pb_get_load_stats(${win})`,
+        // ::int — Prisma bind-uje JS number kao int8/bigint; fn potpis je (integer)
+        // → bez casta PG baca 42883 "function pb_get_load_stats(bigint) does not exist".
+        Prisma.sql`SELECT * FROM pb_get_load_stats(${win}::int)`,
       );
       return { data: jsonSafe(data) };
     });
@@ -193,7 +195,8 @@ export class ProjektniBiroService {
     const win = clampWindow(query.windowDays);
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.$queryRaw<unknown[]>(
-        Prisma.sql`SELECT * FROM pb_get_team_load_stats(${win})`,
+        // ::int — v. loadStats: fn potpis (integer), Prisma šalje bigint bez casta.
+        Prisma.sql`SELECT * FROM pb_get_team_load_stats(${win}::int)`,
       );
       return { data: jsonSafe(data) };
     });

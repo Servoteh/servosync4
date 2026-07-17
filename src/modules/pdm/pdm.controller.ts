@@ -21,6 +21,7 @@ import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
 import { PERMISSIONS } from "../../common/authz/permissions";
 import { PdmService } from "./pdm.service";
+import { PrismaService } from "../../prisma/prisma.service";
 import type {
   BomQuery,
   ImportLogQuery,
@@ -53,6 +54,8 @@ export class PdmController {
   constructor(
     private readonly pdm: PdmService,
     private readonly pdmImport: PdmImportService,
+    // SEC-02: audit pristupa PDF-u crteža (traceability, best-effort).
+    private readonly prisma: PrismaService,
   ) {}
 
   /**
@@ -109,7 +112,24 @@ export class PdmController {
     @Param("id", ParseIntPipe) id: number,
     @Query("download") download: string | undefined,
     @Res({ passthrough: true }) res: Response,
+    @Req() req: { user: AuthUser },
   ): Promise<StreamableFile> {
+    // SEC-02: traceability pristupa PDF-u crteža (ko, kada, koji crtež). Ruta iza
+    // samo PDM_READ vraća PDF po sirovom id-ju → audit ostavlja trag pristupa.
+    // BEST-EFFORT: pad audita NE sme da obori strim.
+    void this.prisma.auditLog
+      .create({
+        data: {
+          action: "DRAWING-PDF-ACCESS",
+          entityType: "drawing",
+          entityId: String(id),
+          actorUserId: req.user?.userId ?? null,
+          actorUsername: req.user?.email ?? null,
+          metadata: { route: "pdm", download: download === "true" },
+        },
+      })
+      .catch(() => {});
+
     const { buffer, fileName } = await this.pdm.getPdfContent(id);
     const disposition = download === "true" ? "attachment" : "inline";
     // `fileName` može nositi dijakritike (decodeOriginalName pri uvozu ih

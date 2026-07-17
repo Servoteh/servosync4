@@ -34,6 +34,9 @@ describe("Održavanje permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
   for (const m of [
     "me",
     "dashboard",
+    "board",
+    "listProfiles",
+    "lookupEmployees",
     "facilityTypes",
     "listMachines",
     "importableMachines",
@@ -169,6 +172,8 @@ describe("Održavanje permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     "createNotificationRule",
     "updateNotificationRule",
     "retryNotification",
+    "createProfile",
+    "updateProfile",
   ]) {
     svcMock[m] = jest.fn().mockResolvedValue({ data: { ok: true } });
   }
@@ -599,6 +604,80 @@ describe("Održavanje permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
       expect(svcMock.patchVehicleTollTag).toHaveBeenCalled();
       expect(svcMock.patchVehicleShelf).toHaveBeenCalled();
       expect(svcMock.patchAssetCore).not.toHaveBeenCalled();
+    });
+  });
+
+  // ======================================================================
+  // Maint profili (SoD) + lookups/employees — nova F2-P0 površina (H19/H20).
+  // ⚠️ Guard je COARSE: GET profiles = READ; POST/PATCH profiles i
+  // lookups/employees = WRITE. Prava SoD granica (mutacije SAMO erp-admin, NE
+  // admin_ui krug menadzment/magacioner) je APP-nivo `assertErpAdmin` u SERVISU
+  // (ovde mokovan) → verifikuje je `odrzavanje.service.spec` (erp-admin false→403,
+  // true→prolaz). Ovaj sloj dokazuje samo da coarse guard postoji na novim rutama.
+  // ======================================================================
+  const profileBody = () => ({
+    clientEventId: VALID_UUID,
+    userId: VALID_UUID,
+    fullName: "Test Profil",
+    role: "technician",
+  });
+  describe("Maint profili (SoD) + lookups/employees — coarse guard nove površine", () => {
+    it.each(READ_ROLES)(
+      "GET /maintenance/profiles → 200 za %s (READ; erp-admin sud je u servisu)",
+      async (role) => {
+        await get("/maintenance/profiles", role).expect(200);
+      },
+    );
+    it.each(NO_READ)(
+      "GET /maintenance/profiles → 403 za %s (nema read)",
+      async (role) => {
+        await get("/maintenance/profiles", role).expect(403);
+      },
+    );
+    it.each(WRITE_ROLES)(
+      "GET /maintenance/lookups/employees → 200 za %s (WRITE krug)",
+      async (role) => {
+        await get("/maintenance/lookups/employees", role).expect(200);
+      },
+    );
+    it.each(NO_WRITE)(
+      "GET /maintenance/lookups/employees → 403 za %s (nema write)",
+      async (role) => {
+        await get("/maintenance/lookups/employees", role).expect(403);
+      },
+    );
+    it.each(WRITE_ROLES)(
+      "POST /maintenance/profiles → 201 za %s (coarse WRITE prolazi; SoD u servisu)",
+      async (role) => {
+        await post("/maintenance/profiles", role, profileBody()).expect(201);
+      },
+    );
+    it.each(NO_WRITE)(
+      "POST /maintenance/profiles → 403 za %s (nema write — privilege-escalation blok)",
+      async (role) => {
+        await post("/maintenance/profiles", role, profileBody()).expect(403);
+      },
+    );
+    it.each(WRITE_ROLES)(
+      "PATCH /maintenance/profiles/:id → 200 za %s (coarse WRITE prolazi)",
+      async (role) => {
+        await patch(`/maintenance/profiles/${VALID_UUID}`, role, {
+          fullName: "X",
+        }).expect(200);
+      },
+    );
+    it.each(NO_WRITE)(
+      "PATCH /maintenance/profiles/:id → 403 za %s (nema write)",
+      async (role) => {
+        await patch(`/maintenance/profiles/${VALID_UUID}`, role, {
+          fullName: "X",
+        }).expect(403);
+      },
+    );
+    it("PATCH /maintenance/profiles/:id → 400 ne-uuid param (guard prošao, ParseUUID)", async () => {
+      await patch("/maintenance/profiles/nije-uuid", "admin", {
+        fullName: "X",
+      }).expect(400);
     });
   });
 });

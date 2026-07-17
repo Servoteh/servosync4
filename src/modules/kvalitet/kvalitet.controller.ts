@@ -44,6 +44,7 @@ import type { ListQualityDocsQuery } from "./dto/quality-document.query";
  *   POST   /api/v1/kvalitet/reports             — ručni draft (status=0, bez broja)
  *   PATCH  /api/v1/kvalitet/reports/:id         — izmena polja + izvršilaca
  *   POST   /api/v1/kvalitet/reports/:id/confirm — dodela broja NNN/YY (status=1)
+ *   POST   /api/v1/kvalitet/reports/:id/recompute — auto sati + kg (SAMO škart) [KVALITET_WRITE]
  *   DELETE /api/v1/kvalitet/reports/:id         — SAMO draft (potvrđen → 422)
  *   POST   /api/v1/kvalitet/docs                — upload QC dokumenta (multipart) [KVALITET_WRITE]
  *   GET    /api/v1/kvalitet/docs                — lista dokumenata (bez sadržaja)
@@ -113,6 +114,17 @@ export class QualityController {
   @RequirePermission(PERMISSIONS.KVALITET_WRITE)
   confirm(@Param("id", ParseIntPipe) id: number) {
     return this.quality.confirmReport(id);
+  }
+
+  /**
+   * Ponovo izračuna „Utrošeni radni sati" + „Trošak materijala (kg)" iz tekućeg
+   * routinga/crteža i upiše ih (SAMO škart; dorada → 400). Vraća izveštaj + `meta`
+   * sa izvorima (hoursOps, massSource, unitWeightKg).
+   */
+  @Post("reports/:id/recompute")
+  @RequirePermission(PERMISSIONS.KVALITET_WRITE)
+  recompute(@Param("id", ParseIntPipe) id: number) {
+    return this.quality.recomputeReport(id);
   }
 
   @Delete("reports/:id")

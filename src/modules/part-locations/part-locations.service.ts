@@ -88,69 +88,99 @@ export class PartLocationsService {
       query.pageSize,
     );
 
-    const where: Prisma.PartLocationWhereInput = {
-      workOrderId: intEq(query.workOrderId),
-      projectId: intEq(query.projectId),
-      positionId: intEq(query.positionId),
-      workerId: intEq(query.workerId),
-      qualityTypeId: intEq(query.qualityTypeId),
-    };
+    // 🔴 PL-01: pretraga se filtrira U SQL-u (EXISTS podupiti nad work_orders /
+    // projects / positions), a NE tako što se najpre sakupe ogromni nizovi
+    // id-jeva pa proslede kao `{ in: [...] }` bind-parametri. Za širok `q`
+    // (npr. "a") ti nizovi su prelazili PG bind-limit (65535) i obarali upit
+    // (500). EXISTS ostaje u bazi — iz baze izlaze samo id-jevi jedne strane
+    // (≤ pageSize). Egzaktni filteri i orderBy/wire-format su nepromenjeni.
+    const filterSql = this.buildListFilterSql(query);
 
-    if (query.q) {
-      const q = query.q;
-      const [woMatches, projMatches, posMatches] = await Promise.all([
-        this.prisma.workOrder.findMany({
-          where: {
-            OR: [
-              { identNumber: { contains: q, mode: "insensitive" } },
-              { partName: { contains: q, mode: "insensitive" } },
-              { drawingNumber: { contains: q, mode: "insensitive" } },
-            ],
-          },
-          select: { id: true },
-        }),
-        this.prisma.project.findMany({
-          where: {
-            OR: [
-              { projectNumber: { contains: q, mode: "insensitive" } },
-              { projectName: { contains: q, mode: "insensitive" } },
-            ],
-          },
-          select: { id: true },
-        }),
-        this.prisma.position.findMany({
-          where: {
-            OR: [
-              { positionCode: { contains: q, mode: "insensitive" } },
-              { description: { contains: q, mode: "insensitive" } },
-            ],
-          },
-          select: { id: true },
-        }),
-      ]);
-      const orClauses: Prisma.PartLocationWhereInput[] = [];
-      if (woMatches.length)
-        orClauses.push({ workOrderId: { in: woMatches.map((r) => r.id) } });
-      if (projMatches.length)
-        orClauses.push({ projectId: { in: projMatches.map((r) => r.id) } });
-      if (posMatches.length)
-        orClauses.push({ positionId: { in: posMatches.map((r) => r.id) } });
-      // q je zadat, ali ništa nigde ne odgovara -> prazan rezultat (id: -1 nikad ne postoji).
-      where.OR = orClauses.length ? orClauses : [{ id: -1 }];
-    }
-
-    const [rows, total] = await this.prisma.$transaction([
-      this.prisma.partLocation.findMany({
-        where,
-        orderBy: [{ recordDate: "desc" }, { id: "desc" }],
-        skip,
-        take,
-      }),
-      this.prisma.partLocation.count({ where }),
+    const [idRows, countRows] = await this.prisma.$transaction([
+      this.prisma.$queryRaw<{ id: number }[]>(Prisma.sql`
+        SELECT id
+        FROM part_locations
+        WHERE ${filterSql}
+        ORDER BY record_date DESC, id DESC
+        LIMIT ${take} OFFSET ${skip}
+      `),
+      this.prisma.$queryRaw<{ total: bigint }[]>(Prisma.sql`
+        SELECT COUNT(*)::bigint AS total
+        FROM part_locations
+        WHERE ${filterSql}
+      `),
     ]);
+
+    const total = Number(countRows[0]?.total ?? 0);
+    const pageIds = idRows.map((r) => r.id);
+
+    // Hidracija punih redova ide kroz Prisma (očuvan wire-format), a `{ in }`
+    // ovde nosi SAMO id-jeve tekuće stranice (≤ pageSize) — nema overflow-a.
+    const rows = pageIds.length
+      ? await this.prisma.partLocation.findMany({
+          where: { id: { in: pageIds } },
+          orderBy: [{ recordDate: "desc" }, { id: "desc" }],
+        })
+      : [];
 
     const data = await this.attachRelations(rows);
     return { data, meta: pageMeta(page, pageSize, total) };
+  }
+
+  /**
+   * WHERE fragment za `list()`: egzaktni skalarni filteri + (opciono) `q`
+   * pretraga kao EXISTS podupiti nad work_orders / projects / positions.
+   * Sve ostaje u SQL-u — nema materijalizacije id-nizova (PL-01).
+   */
+  private buildListFilterSql(query: ListPartLocationsQuery): Prisma.Sql {
+    const clauses: Prisma.Sql[] = [];
+
+    const exact: [string, number | undefined][] = [
+      ["work_order_id", intEq(query.workOrderId)],
+      ["project_id", intEq(query.projectId)],
+      ["position_id", intEq(query.positionId)],
+      ["worker_id", intEq(query.workerId)],
+      ["quality_type_id", intEq(query.qualityTypeId)],
+    ];
+    for (const [col, val] of exact) {
+      if (val !== undefined) {
+        clauses.push(
+          Prisma.sql`${Prisma.raw(col)} = ${val}`,
+        );
+      }
+    }
+
+    if (query.q) {
+      const like = `%${query.q}%`;
+      // OR preko tri izvora — svaki kao EXISTS (join u SQL-u, bez id-nizova).
+      // `part_locations` nema FK ka work_orders (orphan-safe), pa je i WO grana
+      // korelisan EXISTS podupit, isto kao project/position.
+      clauses.push(Prisma.sql`(
+        EXISTS (
+          SELECT 1 FROM work_orders wo
+          WHERE wo.id = part_locations.work_order_id
+            AND (wo.ident_number ILIKE ${like}
+              OR wo.part_name ILIKE ${like}
+              OR wo.drawing_number ILIKE ${like})
+        )
+        OR EXISTS (
+          SELECT 1 FROM projects pr
+          WHERE pr.id = part_locations.project_id
+            AND (pr.project_number ILIKE ${like}
+              OR pr.project_name ILIKE ${like})
+        )
+        OR EXISTS (
+          SELECT 1 FROM positions po
+          WHERE po.id = part_locations.position_id
+            AND (po.position_code ILIKE ${like}
+              OR po.description ILIKE ${like})
+        )
+      )`);
+    }
+
+    return clauses.length
+      ? Prisma.join(clauses, " AND ")
+      : Prisma.sql`TRUE`;
   }
 
   /**
@@ -211,6 +241,16 @@ export class PartLocationsService {
   }
 
   // ---------------------------------------------------------------- WRITE
+  //
+  // 🟡 PL-02 (SVESTAN DEFER, NISKO — audit CUTOVER 17.07): atribucija IZVRŠIOCA
+  // ledger zapisa (`workerId`) je namerno = radnik sa RN-a, NE prijavljeni
+  // korisnik koji je pokrenuo akciju. Razlog: ne postoji User↔Worker veza
+  // (2.0 `users` ↔ 1.0 `workers`), a `part_locations.worker_id` je FK ka
+  // `workers` → moramo upisati FK-validan id. Kad se uspostavi User↔Worker
+  // mapiranje (isti registar kao worker_employee_map badge sync), zameniti
+  // `workOrder.workerId` fallback stvarnim izvršiocem iz sesije na tri mesta
+  // označena `TODO(auth)` (transfer from/to, requisition). Ograničenje
+  // verodostojnosti „ko je uneo", NE kvar — do tada ostaje FK-safe fallback.
 
   /**
    * Unos lokacije — placement (+quantity) iskontrolisanog dela (§3.7: definiše se

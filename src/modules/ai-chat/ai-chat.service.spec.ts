@@ -140,16 +140,16 @@ describe("AiChatService.signImage (path traversal)", () => {
 });
 
 /**
- * R2.3 execTool dispatch — „18 alata → ai_chat_* RPC imena" (§0). Mokujemo sy15 da
+ * R2.3 execTool dispatch — „20 alata → RPC imena" (§0). Mokujemo sy15 da
  * uhvati SQL i AiProviderService.embed; NE zovemo živu bazu ni AI API.
  */
 describe("AiChatService.execTool dispatch (alat → RPC ime)", () => {
-  function make() {
+  function make(result: unknown = { ok: true }) {
     const captured: string[] = [];
     const tx = {
       $queryRaw: jest.fn((sql: { strings?: string[] }) => {
         captured.push((sql.strings ?? []).join("?"));
-        return Promise.resolve([{ result: { ok: true } }]);
+        return Promise.resolve([{ result }]);
       }),
     };
     const sy15 = {
@@ -203,6 +203,53 @@ describe("AiChatService.execTool dispatch (alat → RPC ime)", () => {
     const { exec } = make();
     await expect(exec("nema_me", {})).resolves.toEqual({
       error: "nepoznat_alat",
+    });
+  });
+
+  // ── S-P0 paket 5: go_istorija (20. alat) ──
+
+  it("go_istorija → go_ledger RPC + reshape u kompaktan DD.MM.YYYY oblik", async () => {
+    const { exec, captured } = make([
+      {
+        godina: 2026,
+        pravo: 20,
+        iskorisceno: 6,
+        planirano: 3,
+        preostalo: 11,
+        preneto: 2,
+        iskorisceno_periodi: [
+          { od: "2026-03-02", do: "2026-03-06", dana: 5 },
+          { od: "2026-04-10", do: "2026-04-10", dana: 1 },
+        ],
+        planirano_periodi: [{ od: "2026-08-03", do: "2026-08-05", dana: 3 }],
+        istorija_unosi: [
+          { days: 4, kind: "go", dates: "01.07.-04.07.2024", comment: "" },
+          { days: 2, kind: "go", dates: null }, // bez dates → otpada (1.0 filter)
+        ],
+      },
+    ]);
+    const out = (await exec("go_istorija", {})) as Record<string, unknown>[];
+    expect(captured.join(" ")).toContain("go_ledger");
+    expect(out[0]).toMatchObject({
+      godina: 2026,
+      pravo: 20,
+      preostalo: 11,
+      preneto: 2,
+      iskorisceni_dani: [
+        "02.03.2026.–06.03.2026. (5 d)",
+        "10.04.2026. (1 d)", // od==do → jedan dan, bez opsega
+      ],
+      planirani_odobreni_dani: ["03.08.2026.–05.08.2026. (3 d)"],
+    });
+    expect(out[0].stara_evidencija).toEqual([
+      { dana: 4, tip: "go", datumi: "01.07.-04.07.2024", napomena: undefined },
+    ]);
+  });
+
+  it("go_istorija: ne-niz izlaz (npr. {error}) prolazi netaknut (reshape ne baca)", async () => {
+    const { exec } = make({ error: "nema_prava" });
+    await expect(exec("go_istorija", {})).resolves.toEqual({
+      error: "nema_prava",
     });
   });
 });

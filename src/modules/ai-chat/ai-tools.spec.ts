@@ -57,6 +57,30 @@ describe("ai-tools — verbatim 1.0 prompt/opisi (anti-truncation)", () => {
     expect(d).toContain("periodi_planirano");
   });
 
+  it("go_istorija (20. alat): u SYSTEM_PROMPT-u + VERBATIM opis + pozicija posle go_pregled", () => {
+    expect(SYSTEM_PROMPT).toContain(
+      "go_istorija (istorija GO PO SVIM GODINAMA",
+    );
+    expect(SYSTEM_PROMPT).toContain("stara evidencija za starije godine");
+    const d = desc("go_istorija");
+    for (const frag of [
+      "ISTORIJA godišnjeg odmora PO SVIM GODINAMA",
+      "ranije evidentirano",
+      "PLANIRANI (odobreni budući) periodi",
+      "staru evidenciju",
+      "Bez employee_id → pozivalac",
+    ]) {
+      expect(d).toContain(frag);
+    }
+    // Ista pozicija u nizu kao 1.0 edge: odmah posle go_pregled, pre projekat_info.
+    const names = TOOL_DEFS.map((t) => t.name);
+    expect(names.indexOf("go_istorija")).toBe(names.indexOf("go_pregled") + 1);
+    expect(names.indexOf("projekat_info")).toBe(
+      names.indexOf("go_istorija") + 1,
+    );
+    expect(TOOL_DEFS).toHaveLength(20);
+  });
+
   it("prijavi_kvar: potvrda pre poziva + nema_prava", () => {
     const d = desc("prijavi_kvar");
     expect(d).toContain("nema_prava");
@@ -78,6 +102,7 @@ describe("ai-tools — verbatim 1.0 prompt/opisi (anti-truncation)", () => {
     );
     expect(proj).not.toContain("go_saldo");
     expect(proj).not.toContain("sql_upit");
+    expect(proj).not.toContain("go_istorija"); // lični alat — NIJE u deljenoj niti
     expect(toolsForScope("personal")).toHaveLength(TOOL_DEFS.length);
   });
 });

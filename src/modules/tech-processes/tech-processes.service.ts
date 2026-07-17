@@ -2558,11 +2558,13 @@ export class TechProcessesService {
   }
 
   /**
-   * `POST /work/auto-close` — zatvori sesije ostavljene otvorene (npr. preko noći).
-   * Poziva ga EKSTERNI cron/systemd (bez nove zavisnosti, ODLUKE #A4-autoclose).
-   * Sve `stopped_at IS NULL` starije od `olderThanHours` (default 12h) → `stopped_at = now`,
-   * `auto_closed = true`; komadi ostaju (0 ako nije bilo STOP-a). Ostaju flag-ovane u
-   * „Loše evidentirani". NE dira `tech_processes`.
+   * ⚠️ SUPERSEDED (Q11, 17.07): endpoint `POST /work/auto-close` sada zove
+   * `SessionAutoCloseService.run` (zatvaranje preko evidencije kapije). Ovaj metod
+   * (prosto `stopped_at = now`) ostaje kao rezervna/interna varijanta — više nije zakačen.
+   *
+   * Zatvori sesije ostavljene otvorene (npr. preko noći). Sve `stopped_at IS NULL`
+   * starije od `olderThanHours` (default 12h) → `stopped_at = now`, `auto_closed = true`;
+   * komadi ostaju (0 ako nije bilo STOP-a). NE dira `tech_processes`.
    */
   async autoCloseOpenSessions(olderThanHours = 12) {
     const hours =

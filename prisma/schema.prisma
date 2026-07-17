@@ -1627,6 +1627,23 @@ model Worker {
   @@map("workers")
 }
 
+/// Q11 (17.07): veza 2.0 radnik → 1.0 osoba (sy15 employees.id UUID). Temelj za
+/// auto-close visećih sesija preko attendance_events (kapija). HIKVISION-READY: ključ je
+/// employee_id (osoba), ne kartica/metod — kad se uključi Face ID/otisak/QR, događaji ulaze
+/// sa istim employee_id. Soft-link (bez cross-DB FK), kao 1.0 katze_employee_map.
+model WorkerEmployeeMap {
+  workerId     Int       @id(map: "pk_worker_employee_map") @map("worker_id")
+  employeeId   String    @map("employee_id") @db.Uuid
+  matchMethod  String    @default("card") @map("match_method") @db.VarChar(20)
+  confirmedBy  Int?      @map("confirmed_by")
+  confirmedAt  DateTime? @map("confirmed_at") @db.Timestamp(6)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt    DateTime  @default(now()) @map("updated_at") @db.Timestamp(6)
+
+  @@index([employeeId], map: "idx_worker_employee_map_employee")
+  @@map("worker_employee_map")
+}
+
 /// Was: tSaglasanRN
 model WorkOrderApproval {
   id                 Int       @id(map: "pk_work_order_approvals") @default(autoincrement()) @map("id")
@@ -2085,6 +2102,11 @@ model NonconformityReport {
   coopCostNote        String?               @map("coop_cost_note") @db.VarChar(255)
   spentHoursText      String?               @map("spent_hours_text") @db.VarChar(50)
   spentHours          Decimal?              @map("spent_hours") @db.Decimal(10, 3)
+  /// Trošak materijala u kilogramima. AUTO za škart (type=2): quantity × masa jednog
+  /// dela (kg). Izvor mase = drawings.weight (PDM XML Weight, po drawing_number +
+  /// reviziji RN-a, fallback najviša revizija), fallback work_orders.unprocessed_part_weight
+  /// (masa pripremka). Masa ≤ 0 / nepoznata → NULL. Ručna korekcija dozvoljena (PATCH).
+  materialKg          Decimal?              @map("material_kg") @db.Decimal(12, 3)
   note                String?               @map("note")
   preventiveMeasures  String?               @map("preventive_measures")
   extra               String?               @map("extra") @db.VarChar(255)

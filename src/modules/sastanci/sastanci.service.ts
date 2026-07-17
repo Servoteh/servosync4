@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
@@ -39,6 +40,7 @@ import type {
   InstantiateTemplateDto,
   LockSastanakDto,
   PatchAkcijaDto,
+  PrenosDto,
   ReorderDto,
   ReorderRangDto,
   RsvpDto,
@@ -94,8 +96,24 @@ const UCESNIK_SELECT = {
   rsvpAt: true,
 } as const;
 
-/** Sort akcija — paritet 1.0 loadAkcije (akcioniPlan.js): rb, rok, prioritet, created_at. */
-const AKCIJE_ORDER = Prisma.sql`ORDER BY rb ASC NULLS LAST, rok ASC NULLS LAST, prioritet ASC, created_at DESC`;
+/** Sort akcija — paritet 1.0 loadAkcije (akcioniPlan.js): rb, rok, prioritet, created_at.
+ *  Kvalifikovano `a.` — koristi se uz AKCIJE_SELECT join (projects ima svoj created_at). */
+const AKCIJE_ORDER = Prisma.sql`ORDER BY a.rb ASC NULLS LAST, a.rok ASC NULLS LAST, a.prioritet ASC, a.created_at DESC`;
+
+/**
+ * Redovi akcija + projekat polja za grupisanje po RN-u (S-P0 paket 2): 1.0 view
+ * v_akcioni_plan NEMA projekat kolone — 1.0 ih spaja u JS-u (loadProjektiLite →
+ * projects.project_code/project_name/bigtehn_item_id, sastanciArhiva.js:19-49).
+ * Ovde isti izvor kroz LEFT JOIN; camelCase aliasi su DODATA polja uz sirove
+ * view kolone (FE header grupe = „projekatCode — projekatNaziv", rank po
+ * bigtehnItemId u ⭐ listi). bigtehn_item_id → text (ugovor: string|null).
+ */
+const AKCIJE_SELECT = Prisma.sql`SELECT a.*,
+    p.project_name AS "projekatNaziv",
+    p.project_code AS "projekatCode",
+    p.bigtehn_item_id::text AS "bigtehnItemId"
+  FROM v_akcioni_plan a
+  LEFT JOIN projects p ON p.id = a.projekat_id`;
 
 @Injectable()
 export class SastanciService {
@@ -255,7 +273,7 @@ export class SastanciService {
             ],
           }),
           tx.$queryRaw(
-            Prisma.sql`SELECT * FROM v_akcioni_plan WHERE sastanak_id = ${id}::uuid ${AKCIJE_ORDER}`,
+            Prisma.sql`${AKCIJE_SELECT} WHERE a.sastanak_id = ${id}::uuid ${AKCIJE_ORDER}`,
           ),
           tx.sastanakArhiva.findUnique({ where: { sastanakId: id } }),
         ]);
@@ -346,19 +364,19 @@ export class SastanciService {
     return this.withUserMapped(email, async (tx) => {
       const conds: Prisma.Sql[] = [];
       if (q.sastanakId)
-        conds.push(Prisma.sql`sastanak_id = ${q.sastanakId}::uuid`);
+        conds.push(Prisma.sql`a.sastanak_id = ${q.sastanakId}::uuid`);
       if (q.projekatId)
-        conds.push(Prisma.sql`projekat_id = ${q.projekatId}::uuid`);
-      if (q.status) conds.push(Prisma.sql`effective_status = ${q.status}`);
+        conds.push(Prisma.sql`a.projekat_id = ${q.projekatId}::uuid`);
+      if (q.status) conds.push(Prisma.sql`a.effective_status = ${q.status}`);
       if (q.odgovoranEmail)
         conds.push(
-          Prisma.sql`lower(odgovoran_email) = lower(${q.odgovoranEmail})`,
+          Prisma.sql`lower(a.odgovoran_email) = lower(${q.odgovoranEmail})`,
         );
       const where = conds.length
         ? Prisma.sql`WHERE ${Prisma.join(conds, " AND ")}`
         : Prisma.empty;
       const data = await tx.$queryRaw(
-        Prisma.sql`SELECT * FROM v_akcioni_plan ${where} ${AKCIJE_ORDER}`,
+        Prisma.sql`${AKCIJE_SELECT} ${where} ${AKCIJE_ORDER}`,
       );
       return { data };
     });
@@ -385,30 +403,113 @@ export class SastanciService {
    * Opcioni `projekatId` sužava na jedan projekat/RN.
    */
   async akcijeWeeklyDiff(email: string, q: WeeklyDiffQueryDto) {
-    const since = q.since ?? null;
     return this.withUserMapped(email, async (tx) => {
-      const where = q.projekatId
-        ? Prisma.sql`WHERE projekat_id = ${q.projekatId}::uuid`
-        : Prisma.empty;
-      const rows = await tx.$queryRaw<
-        { novo: bigint; zavrseno: bigint; kasni: bigint; aktivnih: bigint }[]
-      >(
-        Prisma.sql`SELECT
-            count(*) FILTER (WHERE ${since}::timestamptz IS NOT NULL AND created_at > ${since}::timestamptz) AS novo,
-            count(*) FILTER (WHERE ${since}::timestamptz IS NOT NULL AND status = 'zavrsen' AND zatvoren_at > ${since}::timestamptz) AS zavrseno,
-            count(*) FILTER (WHERE effective_status = 'kasni') AS kasni,
-            count(*) FILTER (WHERE effective_status IN ('otvoren', 'u_toku', 'kasni')) AS aktivnih
-          FROM v_akcioni_plan ${where}`,
+      const d = await this.weeklyDiffCounts(
+        tx,
+        q.since ?? null,
+        q.projekatId ?? null,
       );
-      const r = rows[0];
       return {
         data: {
-          novo: Number(r?.novo ?? 0),
-          zavrsenoOveNedelje: Number(r?.zavrseno ?? 0),
-          kasni: Number(r?.kasni ?? 0),
-          aktivnih: Number(r?.aktivnih ?? 0),
+          novo: d.novo,
+          zavrsenoOveNedelje: d.zavrseno,
+          kasni: d.kasni,
+          aktivnih: d.aktivnih,
         },
       };
+    });
+  }
+
+  /**
+   * Weekly-diff SA PRAVIM SIDROM (S-P0 paket 3) — red „Od prošlog sastanka":
+   * paritet 1.0 getSastanakFullSaAkcijama (sastanciArhiva.js:53-57) →
+   * loadPrethodniZakljucanPre(datum, id) (sastanci.js): poslednji sastanak sa
+   * status='zakljucan' i datum < datum OVOG sastanka (isključen sam :id; sort
+   * datum desc, zakljucan_at desc nulls last), pa loadWeeklyDiffStats(prev.
+   * zakljucan_at). Nema prethodnog ILI prev.zakljucan_at prazan → data:null
+   * (1.0 red se izostavlja). Diff je GLOBALAN (bez projekat filtera — kao 1.0).
+   */
+  async sastanakWeeklyDiff(email: string, id: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const sastanak = await tx.sastanak.findUnique({
+        where: { id },
+        select: { datum: true },
+      });
+      if (!sastanak) throw new NotFoundException(`Sastanak ${id} ne postoji`);
+      const prev = await tx.sastanak.findFirst({
+        where: {
+          status: "zakljucan",
+          id: { not: id },
+          datum: { lt: sastanak.datum },
+        },
+        orderBy: [
+          { datum: "desc" },
+          { zakljucanAt: { sort: "desc", nulls: "last" } },
+        ],
+        select: { zakljucanAt: true },
+      });
+      if (!prev?.zakljucanAt) return { data: null };
+      const since = prev.zakljucanAt.toISOString();
+      const d = await this.weeklyDiffCounts(tx, since, null);
+      return {
+        data: {
+          since,
+          novo: d.novo,
+          zavrsenoOveNedelje: d.zavrseno,
+          kasni: d.kasni,
+          aktivnih: d.aktivnih,
+        },
+      };
+    });
+  }
+
+  /** Brojke diff-a nad v_akcioni_plan (paritet 1.0 loadWeeklyDiffStats, akcioniPlan.js:135). */
+  private async weeklyDiffCounts(
+    tx: Sy15Tx,
+    since: string | null,
+    projekatId: string | null,
+  ): Promise<{ novo: number; zavrseno: number; kasni: number; aktivnih: number }> {
+    const where = projekatId
+      ? Prisma.sql`WHERE projekat_id = ${projekatId}::uuid`
+      : Prisma.empty;
+    const rows = await tx.$queryRaw<
+      { novo: bigint; zavrseno: bigint; kasni: bigint; aktivnih: bigint }[]
+    >(
+      Prisma.sql`SELECT
+          count(*) FILTER (WHERE ${since}::timestamptz IS NOT NULL AND created_at > ${since}::timestamptz) AS novo,
+          count(*) FILTER (WHERE ${since}::timestamptz IS NOT NULL AND status = 'zavrsen' AND zatvoren_at > ${since}::timestamptz) AS zavrseno,
+          count(*) FILTER (WHERE effective_status = 'kasni') AS kasni,
+          count(*) FILTER (WHERE effective_status IN ('otvoren', 'u_toku', 'kasni')) AS aktivnih
+        FROM v_akcioni_plan ${where}`,
+    );
+    const r = rows[0];
+    return {
+      novo: Number(r?.novo ?? 0),
+      zavrseno: Number(r?.zavrseno ?? 0),
+      kasni: Number(r?.kasni ?? 0),
+      aktivnih: Number(r?.aktivnih ?? 0),
+    };
+  }
+
+  /**
+   * ⭐ lista prioritetnih predmeta (S-P0 paket 2b) — paritet 1.0
+   * pullPredmetPlanPrioritetIds (predmetPlanPrioritet.js): DEFINER RPC
+   * get_predmet_plan_prioritet_ids() → production.predmet_plan_prioritet
+   * predmet_item_id redom slot 0..n-1 (max 10). Ista normalizacija kao 1.0
+   * (Number, konačan, >0, cap 50); izlaz string[] (ID-jevi su bigtehn item id).
+   */
+  async predmetPrioritet(email: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const rows = await tx.$queryRaw<{ ids: unknown }[]>(
+        Prisma.sql`SELECT get_predmet_plan_prioritet_ids() AS ids`,
+      );
+      const raw = rows[0]?.ids;
+      const ids = (Array.isArray(raw) ? raw : [])
+        .map(Number)
+        .filter((x) => Number.isFinite(x) && x > 0)
+        .slice(0, 50)
+        .map(String);
+      return { data: ids };
     });
   }
 
@@ -510,11 +611,21 @@ export class SastanciService {
 
   // ---------- RPC read-ovi (GUC most) ----------
 
-  /** Podešavanja notifikacija pozivaoca (sastanci_get_or_create_my_prefs). */
+  /** Podešavanja notifikacija pozivaoca (sastanci_get_or_create_my_prefs).
+   *  Fn vraća snake_case red tabele sastanci_notification_prefs — aliasuje se u
+   *  camelCase da GET /prefs bude identičan FE tipu `Prefs` i PATCH /prefs
+   *  (camelCase Prisma model). */
   async myPrefs(email: string) {
     return this.withUserMapped(email, async (tx) => {
       const rows = await tx.$queryRaw<unknown[]>(
-        Prisma.sql`SELECT * FROM sastanci_get_or_create_my_prefs()`,
+        Prisma.sql`SELECT email,
+            on_new_akcija       AS "onNewAkcija",
+            on_change_akcija    AS "onChangeAkcija",
+            on_meeting_invite   AS "onMeetingInvite",
+            on_meeting_locked   AS "onMeetingLocked",
+            on_action_reminder  AS "onActionReminder",
+            on_meeting_reminder AS "onMeetingReminder"
+          FROM sastanci_get_or_create_my_prefs()`,
       );
       return { data: rows[0] ?? null };
     });
@@ -682,8 +793,20 @@ export class SastanciService {
 
   // ---------- Sastanci CRUD ----------
 
+  /** Backdoor guard (S-P0 paket 1): status='zakljucan' NE ide kroz create/update
+   *  — isključivo POST /:id/lock (RPC sast_zakljucaj_sastanak). DTO whitelist ovo
+   *  već odbija na validaciji; servisni guard je pojas-i-tregeri za interne pozive. */
+  private assertNotLockViaStatus(status?: string): void {
+    if (status === "zakljucan") {
+      throw new BadRequestException(
+        "Status 'zakljucan' se ne postavlja direktno — koristite POST /sastanci/:id/lock.",
+      );
+    }
+  }
+
   /** Kreiraj sastanak (paritet saveSastanak; RLS INSERT = has_edit_role). */
-  createSastanak(email: string, dto: CreateSastanakDto) {
+  async createSastanak(email: string, dto: CreateSastanakDto) {
+    this.assertNotLockViaStatus(dto.status);
     return this.runIdem(
       email,
       dto.clientEventId,
@@ -713,6 +836,7 @@ export class SastanciService {
 
   /** Izmena sastanka (paritet saveSastanak/updateStatus; RLS UPDATE = mgmt∨trio). */
   async updateSastanak(email: string, id: string, dto: UpdateSastanakDto) {
+    this.assertNotLockViaStatus(dto.status);
     return this.withUserMapped(email, async (tx) => {
       const exists = (await tx.sastanak.count({ where: { id } })) > 0;
       const data: Prisma.SastanakUpdateInput = {
@@ -782,6 +906,97 @@ export class SastanciService {
       this.assertAffected(exists, count, `Sastanak ${id}`);
       return { data: await tx.sastanak.findUnique({ where: { id } }) };
     });
+  }
+
+  /**
+   * „Sedmični + prenos" (S-P0 paket 4) — paritet 1.0 prenesiUNoviSastanak
+   * (sastanci.js:258-290). Izvor je EKSPLICITAN (fromSastanakId) ili, kad
+   * izostane, BE ga bira 1.0 semantikom UNUTAR iste transakcije: poslednji
+   * sastanak ISTOG tipa kao novi, datum STROGO < datum novog (novi ima budući
+   * datum pa bi „najnoviji" uhvatio sam novi red), id != novi, order datum
+   * desc + created_at desc, limit 1. Nema kandidata → {ucesnici:0, akcije:0,
+   * source:null} BEZ greške (1.0 vraća preneto/ucesnika 0). Odgovor uvek nosi
+   * `source: { id, naslov } | null` (paritet 1.0 sourceNaslov).
+   *  - učesnici: 1.0 saveUcesnici = bulk REPLACE na NOVOM sastanku učesnicima
+   *    izvora (pozvan=true, prisutan=false); izvor bez učesnika → novi netaknut;
+   *  - akcije: UPDATE akcioni_plan SET sastanak_id=novi za status IN
+   *    ('otvoren','u_toku') — TAČAN 1.0 filter `status=in.(otvoren,u_toku)`
+   *    (NE „!= zavrsen": zavrsen/odlozen/otkazan ostaju na starom).
+   * Zaključan IZVOR prolazi kao u 1.0: lock-trigger (sast_check_not_locked) za
+   * UPDATE child reda proverava NEW.sastanak_id — tj. status NOVOG (nezaključanog)
+   * parenta; učesnici izvora se samo ČITAJU. Zaključan CILJNI sastanak pada na
+   * trigeru (23514 → 422 „Nije moguće menjati podatke zaključanog sastanka").
+   */
+  async prenos(email: string, id: string, dto: PrenosDto) {
+    if (dto.fromSastanakId === id) {
+      throw new BadRequestException(
+        "Izvorni i ciljni sastanak su isti — prenos nema šta da premesti.",
+      );
+    }
+    return this.runIdem(
+      email,
+      dto.clientEventId,
+      "sastanci.prenos",
+      async (tx) => {
+        const novi = await tx.sastanak.findUnique({
+          where: { id },
+          select: { datum: true, tip: true },
+        });
+        if (!novi) throw new NotFoundException(`Sastanak ${id} ne postoji`);
+        let source: { id: string; naslov: string | null } | null;
+        if (dto.fromSastanakId) {
+          const izvor = await tx.sastanak.findUnique({
+            where: { id: dto.fromSastanakId },
+            select: { id: true, naslov: true },
+          });
+          if (!izvor) {
+            throw new NotFoundException(
+              `Izvorni sastanak ${dto.fromSastanakId} ne postoji`,
+            );
+          }
+          source = izvor;
+        } else {
+          source = await tx.sastanak.findFirst({
+            where: {
+              id: { not: id },
+              tip: novi.tip,
+              datum: { lt: novi.datum },
+            },
+            orderBy: [{ datum: "desc" }, { createdAt: "desc" }],
+            select: { id: true, naslov: true },
+          });
+          if (!source) return { ucesnici: 0, akcije: 0, source: null };
+        }
+        const uce = await tx.sastanakUcesnik.findMany({
+          where: { sastanakId: source.id },
+          select: { email: true, label: true },
+        });
+        if (uce.length) {
+          await tx.sastanakUcesnik.deleteMany({ where: { sastanakId: id } });
+          await tx.sastanakUcesnik.createMany({
+            data: uce.map((u) => ({
+              sastanakId: id,
+              email: u.email.toLowerCase().trim(),
+              label: u.label ?? null,
+              pozvan: true,
+              prisutan: false,
+            })),
+          });
+        }
+        const { count } = await tx.akcioniPlan.updateMany({
+          where: {
+            sastanakId: source.id,
+            status: { in: ["otvoren", "u_toku"] },
+          },
+          data: { sastanakId: id, updatedAt: new Date() },
+        });
+        return {
+          ucesnici: uce.length,
+          akcije: count,
+          source: { id: source.id, naslov: source.naslov ?? null },
+        };
+      },
+    );
   }
 
   // ---------- Pozivnice / podsetnici (delete-pa-enqueue RPC — re-send semantika) ----------
@@ -1800,10 +2015,23 @@ export class SastanciService {
    * Upload PDF zapisnika u `sastanci-arhiva` (paritet uploadSastanakPdf). Vraća
    * storagePath koji FE prosleđuje u `/lock` (RPC upiše path PRE meeting_locked
    * trigera — §2 p.8). Ako arhiva red već postoji (regeneriši na zaključanom),
-   * PATCH-uje path (best-effort, kroz withUserRls — RLS write-scope presuđuje).
+   * PATCH-uje path kroz withUserRls — RLS write-scope presuđuje.
    * Guard = sastanci.edit (paritet bucket INSERT = has_edit_role).
+   *
+   * Dva toka, dve semantike 0-pogodaka (review nalaz — tihi 200 sa starim PDF-om):
+   *  - LOCK (bez `requireArhiva`): arhiva red još NE postoji — nastaje tek u RPC-u
+   *    sast_zakljucaj_sastanak (INSERT … ON CONFLICT, path kroz p_pdf_storage_path).
+   *    0 pogodaka je legitimno → 200, `arhivaUpdated:false` u odgovoru.
+   *  - REGEN (`requireArhiva:true`, zaključan sastanak): red MORA biti pogođen —
+   *    0 pogodaka (RLS odbija ili red ne postoji) → 403, uz best-effort brisanje
+   *    upravo upload-ovanog fajla (niko ga nikad ne bi referencirao).
    */
-  async uploadArhivaPdf(email: string, id: string, file?: Express.Multer.File) {
+  async uploadArhivaPdf(
+    email: string,
+    id: string,
+    file?: Express.Multer.File,
+    requireArhiva?: boolean,
+  ) {
     if (!file?.buffer?.length || file.mimetype !== "application/pdf") {
       throw new UnprocessableEntityException(
         "Očekivan PDF fajl (multipart polje `file`)",
@@ -1823,8 +2051,8 @@ export class SastanciService {
       "application/pdf",
     );
     // Ako red postoji (npr. regeneriši na zaključanom) — upiši path; RLS presuđuje.
-    await this.withUserMapped(email, async (tx) => {
-      await tx.sastanakArhiva.updateMany({
+    const updated = await this.withUserMapped(email, async (tx) => {
+      const { count } = await tx.sastanakArhiva.updateMany({
         where: { sastanakId: id },
         data: {
           zapisnikStoragePath: storagePath,
@@ -1832,8 +2060,16 @@ export class SastanciService {
           zapisnikGeneratedAt: new Date(),
         },
       });
+      return count;
     });
-    return { data: { storagePath } };
+    if (requireArhiva && updated === 0) {
+      // Orphan cleanup (best-effort): path se ne vraća FE-u pa fajl niko ne referencira.
+      await this.storage.remove("sastanci-arhiva", storagePath).catch(() => {});
+      throw new ForbiddenException(
+        "Arhiva nije ažurirana — nemaš pravo izmene ovog sastanka ili arhiva ne postoji.",
+      );
+    }
+    return { data: { storagePath, arhivaUpdated: updated > 0 } };
   }
 
   /**

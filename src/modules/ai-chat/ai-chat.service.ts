@@ -36,7 +36,7 @@ import type { ChatDto } from "./dto/ai-chat.dto";
  * ── R2 (NIJE ovde) ────────────────────────────────────────────────────────
  * Port edge `ai-chat` u NestJS (§7 P1): POST `/ai/chat` sa tool-use petljom.
  *   * 4 engine-a (ChatGPT/Claude/Gemini/Kimi) — ključevi u BE env.
- *   * 18 alata → 22 `ai_chat_*` RPC-a se NE prepisuju; zovu se kroz withUserRls SA
+ *   * 20 alata → `ai_chat_*`/`go_ledger` RPC-i se NE prepisuju; zovu se kroz withUserRls SA
  *     identitetom korisnika (auth.uid()+email) — scope presuđuje baza (Kadrovska/
  *     Održavanje/PB/Plan), a SECURITY INVOKER alati (ai_chat_sql, ai_chat_prijavi_kvar)
  *     rade kao u 1.0 jer se izvršavaju kao authenticated. U DELJENOJ projektnoj niti
@@ -605,6 +605,15 @@ export class AiChatService {
     args: Record<string, unknown>,
   ): Promise<unknown> {
     try {
+      if (name === "go_istorija") {
+        // Paritet edge: rpcAsUser('go_ledger', {p_employee_id}) pa kompaktor.
+        // go_ledger VRAĆA jsonb → $queryRaw (void RPC bi išao kroz $executeRaw).
+        const out = await this.rpc(
+          email,
+          Prisma.sql`SELECT go_ledger(${this.uuidOrNull(args.employee_id)}::uuid) AS result`,
+        );
+        return reshapeGoLedger(out);
+      }
       if (name === "pretrazi_uputstva") {
         const upit = this.str(args.upit);
         const emb = await this.ai.embed(upit);
@@ -753,4 +762,73 @@ export class AiChatService {
     const n = Number(v);
     return Number.isFinite(n) ? Math.trunc(n) : null;
   }
+}
+
+/* ── go_istorija: sažmi go_ledger izlaz u kompaktan, DD.MM.YYYY oblik za model
+   (VERBATIM port edge goDay/goPer/reshapeGoLedger, index.ts:470-500). ── */
+
+type GoPeriod = { od?: string; do?: string; dana?: number };
+type GoLedgerBlock = {
+  godina?: number;
+  pravo?: number;
+  iskorisceno?: number;
+  planirano?: number;
+  preostalo?: number;
+  preneto?: number | null;
+  zaradjeno_do_danas?: number | null;
+  iskorisceno_periodi?: GoPeriod[];
+  ranije_evidentirano?: number;
+  planirano_periodi?: GoPeriod[];
+  istorija_unosi?: {
+    days?: number;
+    kind?: string;
+    dates?: string;
+    comment?: string | null;
+  }[];
+};
+
+function goDay(iso: unknown): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ""));
+  return m ? `${m[3]}.${m[2]}.${m[1]}.` : String(iso || "");
+}
+
+function goPer(p: GoPeriod): string {
+  const od = goDay(p?.od);
+  const do_ = goDay(p?.do);
+  const lab = !p?.do || p.od === p.do ? od : `${od}–${do_}`;
+  return `${lab} (${p?.dana} d)`;
+}
+
+function reshapeGoLedger(blocks: unknown): unknown {
+  if (!Array.isArray(blocks)) return blocks;
+  return (blocks as GoLedgerBlock[]).map((b) => {
+    const o: Record<string, unknown> = {
+      godina: b.godina,
+      pravo: b.pravo,
+      iskorisceno: b.iskorisceno,
+      planirano: b.planirano,
+      preostalo: b.preostalo,
+    };
+    if (b.preneto != null) o.preneto = b.preneto;
+    if (b.zaradjeno_do_danas != null)
+      o.zaradjeno_do_danas = b.zaradjeno_do_danas;
+    if (Array.isArray(b.iskorisceno_periodi) && b.iskorisceno_periodi.length)
+      o.iskorisceni_dani = b.iskorisceno_periodi.map(goPer);
+    if (b.ranije_evidentirano)
+      o.ranije_evidentirano_dana = b.ranije_evidentirano;
+    if (Array.isArray(b.planirano_periodi) && b.planirano_periodi.length)
+      o.planirani_odobreni_dani = b.planirano_periodi.map(goPer);
+    const stari = Array.isArray(b.istorija_unosi) ? b.istorija_unosi : [];
+    if (stari.length) {
+      o.stara_evidencija = stari
+        .filter((e) => e?.dates)
+        .map((e) => ({
+          dana: e.days,
+          tip: e.kind,
+          datumi: e.dates,
+          napomena: e.comment || undefined,
+        }));
+    }
+    return o;
+  });
 }

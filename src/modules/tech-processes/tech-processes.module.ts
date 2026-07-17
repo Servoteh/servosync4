@@ -7,6 +7,7 @@ import { QualityModule } from "../kvalitet/kvalitet.module";
 import { WorkOrdersModule } from "../work-orders/work-orders.module";
 import { TechProcessesController } from "./tech-processes.controller";
 import { TechProcessesService } from "./tech-processes.service";
+import { SessionAutoCloseService } from "./session-auto-close.service";
 
 @Module({
   // NotificationsModule: D8 emit — control() šalje in-app notifikaciju za doradu/škart.
@@ -25,6 +26,9 @@ import { TechProcessesService } from "./tech-processes.service";
     WorkOrdersModule,
   ],
   controllers: [TechProcessesController],
-  providers: [TechProcessesService],
+  // SessionAutoCloseService (Q11): auto-zatvaranje visećih sesija preko kapije.
+  // Sy15Service (kapija/sistematizacija READ) i MailService (e-mail šefu) dolaze iz
+  // @Global modula (Sy15Module / MailModule) — ne treba ih importovati ovde.
+  providers: [TechProcessesService, SessionAutoCloseService],
 })
 export class TechProcessesModule {}

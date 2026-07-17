@@ -1,6 +1,17 @@
-import { ForbiddenException, NotFoundException } from "@nestjs/common";
+import {
+  BadRequestException,
+  ForbiddenException,
+  NotFoundException,
+} from "@nestjs/common";
+import { plainToInstance } from "class-transformer";
+import { validate } from "class-validator";
 import { SastanciService } from "./sastanci.service";
 import type { Sy15Service } from "../../common/sy15/sy15.service";
+import {
+  ArhivaPdfDto,
+  CreateSastanakDto,
+  UpdateSastanakDto,
+} from "./dto/sastanci-mutation.dto";
 
 /**
  * R2 mutacije — jedinični testovi (bez žive baze): pinuju da se write-ovi voze
@@ -37,6 +48,7 @@ function makeSvc() {
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
       findUnique: jest.fn().mockResolvedValue({ id: ID }),
+      findFirst: jest.fn().mockResolvedValue(null),
     },
     sastanakUcesnik: {
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
@@ -44,6 +56,7 @@ function makeSvc() {
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       count: jest.fn().mockResolvedValue(1),
       create: jest.fn().mockResolvedValue({}),
+      findMany: jest.fn().mockResolvedValue([]),
     },
     presekAktivnost: {
       aggregate: jest.fn().mockResolvedValue({ _max: { rb: 2 } }),
@@ -294,5 +307,286 @@ describe("SastanciService R2 mutacije", () => {
     expect(out.data.storagePath).toMatch(
       new RegExp(`^${ID}/.*_zapisnik\\.pdf$`),
     );
+  });
+
+  // ── Review nalaz: updateMany 0 pogodaka ≠ tihi 200 (regen bi ostavio STARI PDF) ──
+
+  it("uploadArhivaPdf LOCK tok (bez requireArhiva): arhiva red ne postoji → 200 + arhivaUpdated=false", async () => {
+    const { svc, storage } = makeSvc(); // default sastanakArhiva.updateMany → count 0
+    const out = await svc.uploadArhivaPdf("u@servoteh.com", ID, {
+      buffer: Buffer.from("%PDF-1.4"),
+      mimetype: "application/pdf",
+    } as unknown as Express.Multer.File);
+    // Red nastaje tek u RPC sast_zakljucaj_sastanak — 0 je legitimno, bez izuzetka.
+    expect(out.data.arhivaUpdated).toBe(false);
+    expect(out.data.storagePath).toMatch(
+      new RegExp(`^${ID}/.*_zapisnik\\.pdf$`),
+    );
+    expect(storage.remove).not.toHaveBeenCalled();
+  });
+
+  it("uploadArhivaPdf REGEN tok (requireArhiva=true): 0 pogodaka → 403 + orphan cleanup", async () => {
+    const { svc, tx, storage } = makeSvc(); // default updateMany → count 0
+    await expect(
+      svc.uploadArhivaPdf(
+        "u@servoteh.com",
+        ID,
+        {
+          buffer: Buffer.from("%PDF-1.4"),
+          mimetype: "application/pdf",
+        } as unknown as Express.Multer.File,
+        true,
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(tx.sastanakArhiva.updateMany).toHaveBeenCalledTimes(1);
+    // Best-effort brisanje upravo upload-ovanog fajla (path se ne vraća FE-u).
+    expect(storage.remove).toHaveBeenCalledWith(
+      "sastanci-arhiva",
+      expect.stringMatching(new RegExp(`^${ID}/.*_zapisnik\\.pdf$`)),
+    );
+  });
+
+  it("uploadArhivaPdf REGEN tok (requireArhiva=true): red pogođen → 200 + arhivaUpdated=true", async () => {
+    const { svc, tx, storage } = makeSvc();
+    tx.sastanakArhiva.updateMany.mockResolvedValueOnce({ count: 1 });
+    const out = await svc.uploadArhivaPdf(
+      "u@servoteh.com",
+      ID,
+      {
+        buffer: Buffer.from("%PDF-1.4"),
+        mimetype: "application/pdf",
+      } as unknown as Express.Multer.File,
+      true,
+    );
+    expect(out.data.arhivaUpdated).toBe(true);
+    expect(storage.remove).not.toHaveBeenCalled();
+  });
+
+  it("ArhivaPdfDto: multipart string 'true' → boolean requireArhiva (koercija pre @IsBoolean)", async () => {
+    // Žica multipart-a nosi SVE kao string — bez @Transform bi 'true' pao na 400.
+    const dto = plainToInstance(ArhivaPdfDto, { requireArhiva: "true" });
+    expect(await validate(dto)).toHaveLength(0);
+    expect(dto.requireArhiva).toBe(true);
+    const off = plainToInstance(ArhivaPdfDto, { requireArhiva: "false" });
+    expect(await validate(off)).toHaveLength(0);
+    expect(off.requireArhiva).toBe(false);
+    const none = plainToInstance(ArhivaPdfDto, {});
+    expect(await validate(none)).toHaveLength(0);
+    expect(none.requireArhiva).toBeUndefined();
+  });
+
+  // ── S-P0 paket 1: backdoor lock kroz status ──
+
+  it("updateSastanak: status='zakljucan' → 400 BEZ odlaska u bazu (lock samo /lock)", async () => {
+    const { svc, sy15 } = makeSvc();
+    await expect(
+      svc.updateSastanak("u@servoteh.com", ID, { status: "zakljucan" }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(sy15.withUserRls).not.toHaveBeenCalled();
+  });
+
+  it("createSastanak: status='zakljucan' → 400 BEZ idempotentnog upisa", async () => {
+    const { svc, sy15 } = makeSvc();
+    await expect(
+      svc.createSastanak("u@servoteh.com", {
+        clientEventId: CID,
+        naslov: "X",
+        datum: "2026-07-20",
+        status: "zakljucan",
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(sy15.runIdempotentRls).not.toHaveBeenCalled();
+  });
+
+  // ── S-P0 paket 4: POST /:id/prenos (Sedmični + prenos) ──
+
+  const SRC = "99999999-8888-7777-6666-555555555555";
+
+  it("prenos: replace učesnika izvora (pozvan=true, prisutan=false) + premešta SAMO otvoren/u_toku", async () => {
+    const { svc, sy15, tx } = makeSvc();
+    tx.sastanak.findUnique
+      .mockResolvedValueOnce({ datum: new Date("2026-07-20"), tip: "sedmicni" }) // novi (ciljni)
+      .mockResolvedValueOnce({ id: SRC, naslov: "Sedmični 13.07." }); // eksplicitni izvor
+    tx.sastanakUcesnik.findMany.mockResolvedValueOnce([
+      { email: "A@servoteh.com", label: "A" },
+    ]);
+    tx.akcioniPlan.updateMany.mockResolvedValueOnce({ count: 4 });
+    const out = await svc.prenos("u@servoteh.com", ID, {
+      clientEventId: CID,
+      fromSastanakId: SRC,
+    });
+    expect(sy15.runIdempotentRls).toHaveBeenCalledWith(
+      "u@servoteh.com",
+      CID,
+      "sastanci.prenos",
+      expect.any(Function),
+    );
+    // Eksplicitni izvor i dalje radi; odgovor nosi i source {id, naslov}.
+    expect(out.data).toEqual({
+      ucesnici: 1,
+      akcije: 4,
+      source: { id: SRC, naslov: "Sedmični 13.07." },
+    });
+    // Eksplicitan izvor → BEZ auto-pick upita.
+    expect(tx.sastanak.findFirst).not.toHaveBeenCalled();
+    // 1.0 saveUcesnici = bulk REPLACE na NOVOM (ciljnom) sastanku.
+    expect(tx.sastanakUcesnik.deleteMany).toHaveBeenCalledWith({
+      where: { sastanakId: ID },
+    });
+    const created = argData(tx.sastanakUcesnik.createMany) as unknown as {
+      email: string;
+      pozvan: boolean;
+      prisutan: boolean;
+    }[];
+    expect(created[0]).toMatchObject({
+      email: "a@servoteh.com",
+      pozvan: true,
+      prisutan: false,
+    });
+    // TAČAN 1.0 filter: status=in.(otvoren,u_toku) — NE "!= zavrsen".
+    const upd = callArg(tx.akcioniPlan.updateMany) as {
+      where: { sastanakId: string; status: { in: string[] } };
+      data: { sastanakId: string };
+    };
+    expect(upd.where.status).toEqual({ in: ["otvoren", "u_toku"] });
+    expect(upd.where.sastanakId).toBe(SRC);
+    expect(upd.data.sastanakId).toBe(ID);
+  });
+
+  it("prenos: izvor bez učesnika → postojeći na novom OSTAJU (bez delete/insert)", async () => {
+    const { svc, tx } = makeSvc();
+    tx.sastanak.findUnique
+      .mockResolvedValueOnce({ datum: new Date("2026-07-20"), tip: "sedmicni" })
+      .mockResolvedValueOnce({ id: SRC, naslov: null });
+    tx.sastanakUcesnik.findMany.mockResolvedValueOnce([]);
+    const out = await svc.prenos("u@servoteh.com", ID, {
+      clientEventId: CID,
+      fromSastanakId: SRC,
+    });
+    expect(tx.sastanakUcesnik.deleteMany).not.toHaveBeenCalled();
+    expect(tx.sastanakUcesnik.createMany).not.toHaveBeenCalled();
+    expect(out.data).toMatchObject({ ucesnici: 0 });
+  });
+
+  it("prenos BEZ fromSastanakId: auto-pick 1.0 filterom (isti tip, datum < novi, bez :id, datum desc + created_at desc)", async () => {
+    const { svc, tx } = makeSvc();
+    const datumNovog = new Date("2026-07-20");
+    tx.sastanak.findUnique.mockResolvedValueOnce({
+      datum: datumNovog,
+      tip: "sedmicni",
+    }); // novi (ciljni)
+    tx.sastanak.findFirst.mockResolvedValueOnce({
+      id: SRC,
+      naslov: "Sedmični 13.07.",
+    });
+    tx.sastanakUcesnik.findMany.mockResolvedValueOnce([
+      { email: "A@servoteh.com", label: "A" },
+    ]);
+    tx.akcioniPlan.updateMany.mockResolvedValueOnce({ count: 2 });
+    const out = await svc.prenos("u@servoteh.com", ID, { clientEventId: CID });
+    // 1.0 prenesiUNoviSastanak (sastanci.js:258-290): id != novi, tip = tip
+    // novog, datum STROGO < datum novog, order datum desc + created_at desc.
+    const pick = callArg(tx.sastanak.findFirst) as {
+      where: { id: { not: string }; tip: string; datum: { lt: Date } };
+      orderBy: Record<string, unknown>[];
+    };
+    expect(pick.where.id).toEqual({ not: ID });
+    expect(pick.where.tip).toBe("sedmicni");
+    expect(pick.where.datum).toEqual({ lt: datumNovog });
+    expect(pick.orderBy).toEqual([{ datum: "desc" }, { createdAt: "desc" }]);
+    // Prenos ide sa auto-izabranog izvora.
+    const upd = callArg(tx.akcioniPlan.updateMany) as {
+      where: { sastanakId: string };
+      data: { sastanakId: string };
+    };
+    expect(upd.where.sastanakId).toBe(SRC);
+    expect(upd.data.sastanakId).toBe(ID);
+    expect(out.data).toEqual({
+      ucesnici: 1,
+      akcije: 2,
+      source: { id: SRC, naslov: "Sedmični 13.07." },
+    });
+  });
+
+  it("prenos BEZ fromSastanakId: nema kandidata → {ucesnici:0, akcije:0, source:null} BEZ greške i BEZ write-ova", async () => {
+    const { svc, tx } = makeSvc();
+    tx.sastanak.findUnique.mockResolvedValueOnce({
+      datum: new Date("2026-07-20"),
+      tip: "sedmicni",
+    });
+    tx.sastanak.findFirst.mockResolvedValueOnce(null);
+    const out = await svc.prenos("u@servoteh.com", ID, { clientEventId: CID });
+    expect(out.data).toEqual({ ucesnici: 0, akcije: 0, source: null });
+    expect(tx.sastanakUcesnik.findMany).not.toHaveBeenCalled();
+    expect(tx.sastanakUcesnik.deleteMany).not.toHaveBeenCalled();
+    expect(tx.sastanakUcesnik.createMany).not.toHaveBeenCalled();
+    expect(tx.akcioniPlan.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("prenos: izvor == cilj → 400 (nema šta da se premesti)", async () => {
+    const { svc, sy15 } = makeSvc();
+    await expect(
+      svc.prenos("u@servoteh.com", ID, {
+        clientEventId: CID,
+        fromSastanakId: ID,
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(sy15.runIdempotentRls).not.toHaveBeenCalled();
+  });
+
+  it("prenos: izvorni sastanak ne postoji → 404", async () => {
+    const { svc, tx } = makeSvc();
+    tx.sastanak.findUnique
+      .mockResolvedValueOnce({ datum: new Date("2026-07-20"), tip: "sedmicni" }) // novi (ciljni) postoji
+      .mockResolvedValueOnce(null); // eksplicitni izvor ne postoji
+    await expect(
+      svc.prenos("u@servoteh.com", ID, {
+        clientEventId: CID,
+        fromSastanakId: SRC,
+      }),
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it("prenos: ciljni sastanak ne postoji → 404", async () => {
+    const { svc, tx } = makeSvc();
+    tx.sastanak.findUnique.mockResolvedValueOnce(null); // novi (ciljni) ne postoji
+    await expect(
+      svc.prenos("u@servoteh.com", ID, { clientEventId: CID }),
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+});
+
+/**
+ * S-P0 paket 1 — DTO whitelist: 'zakljucan' je IZBAČEN iz status @IsIn na
+ * Create/Update (zaključavanje isključivo kroz POST /:id/lock → RPC
+ * sast_zakljucaj_sastanak sa arhivom/PDF/notifikacijama).
+ */
+describe("Sastanci DTO — status backdoor lock (validacija)", () => {
+  it("UpdateSastanakDto: status='zakljucan' pada na validaciji", async () => {
+    const errors = await validate(
+      plainToInstance(UpdateSastanakDto, { status: "zakljucan" }),
+    );
+    expect(errors.some((e) => e.property === "status")).toBe(true);
+  });
+
+  it("CreateSastanakDto: status='zakljucan' pada na validaciji", async () => {
+    const errors = await validate(
+      plainToInstance(CreateSastanakDto, {
+        clientEventId: CID,
+        naslov: "X",
+        datum: "2026-07-20",
+        status: "zakljucan",
+      }),
+    );
+    expect(errors.some((e) => e.property === "status")).toBe(true);
+  });
+
+  it("legitimni statusi (planiran/u_toku/zavrsen/otkazan) i dalje prolaze", async () => {
+    for (const status of ["planiran", "u_toku", "zavrsen", "otkazan"]) {
+      const errors = await validate(
+        plainToInstance(UpdateSastanakDto, { status }),
+      );
+      expect(errors).toHaveLength(0);
+    }
   });
 });

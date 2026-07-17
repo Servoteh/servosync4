@@ -14,6 +14,7 @@ import {
   Prisma,
 } from "@prisma-sy15/client";
 import { Sy15Service } from "../../common/sy15/sy15.service";
+import type { Sy15Tx } from "../../common/sy15/sy15.service";
 import { LabelPrintService } from "../../common/printing/label-print.service";
 import type { PrintLabelDto } from "../../common/printing/print-label.dto";
 import { pageMeta, parsePagination } from "../../common/pagination";
@@ -896,35 +897,105 @@ export class LocationsService {
         SELECT loc_sync_health_summary() AS result`;
       const heartbeat =
         await tx.$queryRaw`SELECT * FROM loc_sync_worker_heartbeat`;
-      const bridgeRows = await tx.$queryRaw<
-        { sync_job: string; finished_at: Date | null; status: string | null }[]
-      >`SELECT sync_job, finished_at, status FROM bridge_sync_log
-        ORDER BY finished_at DESC LIMIT 200`;
-
-      // Poslednji red po sync_job-u (bridge_sync_log nema GROUP BY kroz PostgREST u
-      // 1.0 — agregacija na aplikaciji; ovde je isti pristup radi 1:1 semantike).
-      const seen = new Map<
-        string,
-        { sync_job: string; last_finished: Date | null; status: string | null }
-      >();
-      for (const r of bridgeRows) {
-        if (!r?.sync_job || seen.has(r.sync_job)) continue;
-        seen.set(r.sync_job, {
-          sync_job: r.sync_job,
-          last_finished: r.finished_at,
-          status: r.status,
-        });
-      }
+      const bridge = await this.loadBridgeLatest(tx);
 
       return {
         data: {
           ingest: ingest[0]?.result ?? null,
           health: health[0]?.result ?? null,
           heartbeat,
-          bridge: [...seen.values()],
+          bridge,
         },
       };
     });
+  }
+
+  /**
+   * LOK-P3: READ-ONLY sažetak zdravlja sync-a za SVE uloge modula (`lokacije.read`)
+   * — BEZ admin detalja (watermark/samples/heartbeat payload). Vraća samo boolove:
+   *   - `cacheStale.{rn,linije,tp,predmeti,crtezi}` — po pragovima 1.0
+   *     (renderBridgeStaleBanner, index.js:255-292): RN/linije/TP 6h, predmeti 36h,
+   *     crteži 7d; `true` = zastareo (ili nikad završen sync).
+   *   - `workerHealthy` — 1.0 renderSyncWorkerBanner logika: nijedan worker
+   *     `is_alive=false` (heartbeat <10min) I `dead_letter_count=0`.
+   * Cilj: ne-admin (magacioner/cnc) da VIDI upozorenja iz bannera (audit L-06/L-07),
+   * a da mu se ne otkrivaju admin interne (Sync tab). Reuse istih upita kao syncStatus.
+   */
+  async syncHealth(email: string) {
+    return this.sy15.withUser(email, async (tx) => {
+      const health = await tx.$queryRaw<{ result: unknown }[]>`
+        SELECT loc_sync_health_summary() AS result`;
+      const bridge = await this.loadBridgeLatest(tx);
+
+      // cacheStale po sync_job pragovima (paritet 1.0 renderBridgeStaleBanner).
+      const STALE_MS: Record<string, number> = {
+        production_work_orders: 6 * 3600 * 1000,
+        production_work_order_lines: 6 * 3600 * 1000,
+        production_tech_routing: 6 * 3600 * 1000,
+        catalog_items: 36 * 3600 * 1000,
+        production_bigtehn_drawings: 7 * 24 * 3600 * 1000,
+      };
+      const now = Date.now();
+      const lastFinished = new Map(
+        bridge.map((b) => [b.sync_job, b.last_finished]),
+      );
+      // `true` = zastareo: nema uspešnog sync-a ili je stariji od praga (fail-safe:
+      // odsustvo reda tretiramo kao zastarelost, kao što 1.0 baner „ne vidi svež").
+      const isStale = (job: string): boolean => {
+        const finished = lastFinished.get(job);
+        const t = finished ? new Date(finished).getTime() : NaN;
+        if (!Number.isFinite(t)) return true;
+        return now - t > STALE_MS[job];
+      };
+      const cacheStale = {
+        rn: isStale("production_work_orders"),
+        linije: isStale("production_work_order_lines"),
+        tp: isStale("production_tech_routing"),
+        predmeti: isStale("catalog_items"),
+        crtezi: isStale("production_bigtehn_drawings"),
+      };
+
+      // workerHealthy — paritet 1.0 renderSyncWorkerBanner: down = is_alive===false.
+      const summary = (health[0]?.result ?? null) as {
+        workers?: { is_alive?: boolean }[];
+        dead_letter_count?: number | string | null;
+      } | null;
+      const workers = Array.isArray(summary?.workers) ? summary!.workers : [];
+      const anyDown = workers.some((w) => w && w.is_alive === false);
+      const deadCount = Number(summary?.dead_letter_count) || 0;
+      const workerHealthy = !anyDown && deadCount === 0;
+
+      return { data: { cacheStale, workerHealthy } };
+    });
+  }
+
+  /**
+   * Poslednji red `bridge_sync_log` po `sync_job`-u (bridge_sync_log nema GROUP BY
+   * kroz PostgREST u 1.0 — agregacija na aplikaciji; isti pristup radi 1:1 semantike).
+   * Deljeno između `syncStatus` (admin) i `syncHealth` (svi).
+   */
+  private async loadBridgeLatest(
+    tx: Sy15Tx,
+  ): Promise<
+    { sync_job: string; last_finished: Date | null; status: string | null }[]
+  > {
+    const bridgeRows = await tx.$queryRaw<
+      { sync_job: string; finished_at: Date | null; status: string | null }[]
+    >`SELECT sync_job, finished_at, status FROM bridge_sync_log
+      ORDER BY finished_at DESC LIMIT 200`;
+    const seen = new Map<
+      string,
+      { sync_job: string; last_finished: Date | null; status: string | null }
+    >();
+    for (const r of bridgeRows) {
+      if (!r?.sync_job || seen.has(r.sync_job)) continue;
+      seen.set(r.sync_job, {
+        sync_job: r.sync_job,
+        last_finished: r.finished_at,
+        status: r.status,
+      });
+    }
+    return [...seen.values()];
   }
 
   /** Admin — outbound MSSQL write-back queue (RLS admin-only → GUC obavezan). */
@@ -948,27 +1019,55 @@ export class LocationsService {
       1,
       Math.min(Number.parseInt(limitRaw ?? "100", 10) || 100, 300),
     );
-    const rows = await this.sy15.withUser(
-      email,
-      (tx) =>
-        tx.$queryRaw<
-          Record<string, unknown>[]
-        >`SELECT * FROM loc_locations_audit(${l}::int)`,
-    );
-    // „Korisnik" = ime umesto UUID (paritet 1.0): actor_uid → ime; fn već vraća
-    // actor_email pa je to zadnji fallback. Dodaj `actor_name` (actor_uid/email ostaju).
-    const names = await this.resolveUserNames(
-      rows.map((r) => (typeof r.actor_uid === "string" ? r.actor_uid : null)),
-    );
-    const data = rows.map((r) => {
-      const uid = typeof r.actor_uid === "string" ? r.actor_uid : null;
-      const email2 =
-        typeof r.actor_email === "string" && r.actor_email.trim()
-          ? r.actor_email.trim()
-          : null;
-      return { ...r, actor_name: (uid && names.get(uid)) || email2 || null };
-    });
-    return { data };
+    // 🔴 PLK-01: `loc_locations_audit` RETURNS `id bigint` → Prisma $queryRaw
+    // vraća BigInt, koji NestJS ne ume da serijalizuje (BigInt nije JSON-serializ.)
+    // → svaki poziv sa realnim redovima obarao je response u 500 (a ne DB-drift:
+    // fn i audit_log su usklađeni). Konvertujemo BigInt → Number pre serijalizacije
+    // (isti obrazac kao WorkOrderRaw §125) i, kao mutacije, obmotavamo try/catch-em
+    // (rethrowMutation) da DB/kontekst greška postane čist 4xx umesto 500.
+    try {
+      const rows = await this.sy15.withUser(
+        email,
+        (tx) =>
+          tx.$queryRaw<
+            Record<string, unknown>[]
+          >`SELECT * FROM loc_locations_audit(${l}::int)`,
+      );
+      // „Korisnik" = ime umesto UUID (paritet 1.0): actor_uid → ime; fn već vraća
+      // actor_email pa je to zadnji fallback. Dodaj `actor_name` (actor_uid/email ostaju).
+      const names = await this.resolveUserNames(
+        rows.map((r) => (typeof r.actor_uid === "string" ? r.actor_uid : null)),
+      );
+      const data = rows.map((r) => {
+        const uid = typeof r.actor_uid === "string" ? r.actor_uid : null;
+        const email2 =
+          typeof r.actor_email === "string" && r.actor_email.trim()
+            ? r.actor_email.trim()
+            : null;
+        return {
+          ...this.jsonSafe(r),
+          actor_name: (uid && names.get(uid)) || email2 || null,
+        };
+      });
+      return { data };
+    } catch (e) {
+      this.rethrowMutation(e);
+    }
+  }
+
+  /**
+   * BigInt → Number u plitkom redu iz `$queryRaw` (BigInt nije JSON-serializ.,
+   * PLK-01). Vrednosti su ID-jevi u sigurnom Number opsegu; jsonb/text[]/Date
+   * ostaju netaknuti. Isti razlog kao napomena uz `WorkOrderRaw`.
+   */
+  private jsonSafe(
+    row: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(row)) {
+      out[k] = typeof v === "bigint" ? Number(v) : v;
+    }
+    return out;
   }
 
   // ==========================================================================

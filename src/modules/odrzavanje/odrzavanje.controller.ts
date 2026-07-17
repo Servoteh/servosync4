@@ -42,6 +42,7 @@ import {
   CreateNotificationRuleDto,
   CreateOwnerDto,
   CreatePartDto,
+  CreateProfileDto,
   CreateSupplierDto,
   CreateTaskDto,
   CreateTireDto,
@@ -72,6 +73,7 @@ import {
   UpdateNotificationRuleDto,
   UpdatePartDto,
   UpdatePartLinkDto,
+  UpdateProfileDto,
   UpdateSettingsDto,
   UpdateSupplierDto,
   UpdateTaskDto,
@@ -125,6 +127,12 @@ export class OdrzavanjeController {
     return this.odr.dashboard(req.user.email);
   }
 
+  // Board (#33): kolone Prekoračeno/Danas/Narednih 7 dana + override „PAUZA" izdvajanje.
+  @Get("board")
+  board(@Req() req: AuthedRequest) {
+    return this.odr.board(req.user.email);
+  }
+
   @Get("facility-types")
   facilityTypes() {
     return this.odr.facilityTypes();
@@ -138,8 +146,14 @@ export class OdrzavanjeController {
   }
 
   @Get("machines/importable")
-  importable(@Req() req: AuthedRequest) {
-    return this.odr.importableMachines(req.user.email);
+  importable(
+    @Req() req: AuthedRequest,
+    @Query("includeNoProcedure") includeNoProcedure?: string,
+  ) {
+    return this.odr.importableMachines(
+      req.user.email,
+      includeNoProcedure === "true",
+    );
   }
 
   @Get("machines/deletion-log")
@@ -308,6 +322,15 @@ export class OdrzavanjeController {
     return this.odr.vehicleBookings(req.user.email, id);
   }
 
+  // Signed URL glavne fotografije (READ; 404 čisto kad nema foto).
+  @Get("vehicles/:id/photo/url")
+  vehiclePhotoUrl(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return this.odr.vehiclePhotoUrl(req.user.email, id);
+  }
+
   @Get("vehicle-owners")
   vehicleOwners(@Req() req: AuthedRequest) {
     return this.odr.vehicleOwners(req.user.email);
@@ -395,8 +418,8 @@ export class OdrzavanjeController {
   }
 
   @Get("suppliers")
-  suppliers(@Req() req: AuthedRequest) {
-    return this.odr.listSuppliers(req.user.email);
+  suppliers(@Req() req: AuthedRequest, @Query("active") active?: string) {
+    return this.odr.listSuppliers(req.user.email, active);
   }
 
   @Get("locations")
@@ -437,6 +460,21 @@ export class OdrzavanjeController {
   @Get("notifications")
   notifications(@Req() req: AuthedRequest, @Query() query: NotificationsQuery) {
     return this.odr.notifications(req.user.email, query);
+  }
+
+  // ---------- Maint profili (SoD) / lookups (auto-detect) ----------
+
+  // Lista profila = admin konzola; service guard = ERP admin (RLS ionako daje svoj-red).
+  @Get("profiles")
+  profiles(@Req() req: AuthedRequest) {
+    return this.odr.listProfiles(req.user.email);
+  }
+
+  // Auto-detect zaposlenog (driver modal). Guard = write krug (kao driver mutacije).
+  @Get("lookups/employees")
+  @RequirePermission(PERMISSIONS.ODRZAVANJE_WRITE)
+  lookupEmployees(@Req() req: AuthedRequest, @Query("q") q?: string) {
+    return this.odr.lookupEmployees(req.user.email, q);
   }
 
   // ---------- Izveštaji ----------
@@ -805,6 +843,28 @@ export class OdrzavanjeController {
     @Body() dto: ShelfDto,
   ) {
     return this.odr.patchVehicleShelf(req.user.email, id, dto);
+  }
+
+  // ---------- Foto vozila (storage proxy F2-P4a; multipart `file`) ----------
+
+  @Post("vehicles/:id/photo")
+  @RequirePermission(PERMISSIONS.ODRZAVANJE_WRITE)
+  @UseInterceptors(FileInterceptor("file", UPLOAD_LIMITS))
+  uploadVehiclePhoto(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @UploadedFile() file?: Express.Multer.File,
+  ) {
+    return this.odr.uploadVehiclePhoto(req.user.email, id, file);
+  }
+
+  @Delete("vehicles/:id/photo")
+  @RequirePermission(PERMISSIONS.ODRZAVANJE_WRITE)
+  deleteVehiclePhoto(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return this.odr.deleteVehiclePhoto(req.user.email, id);
   }
 
   @Post("vehicles/:id/tires")
@@ -1227,5 +1287,25 @@ export class OdrzavanjeController {
     @Param("id", ParseUUIDPipe) id: string,
   ) {
     return this.odr.retryNotification(req.user.email, id);
+  }
+
+  // ---------- Maint profili — mutacije (SAMO ERP admin; service guard) ----------
+  // Metod-nivo je coarse WRITE; SoD granicu (samo erp-admin, NE admin_ui krug) presuđuje
+  // service `assertErpAdmin` + DB trigger `maint_profiles_guard_role`.
+
+  @Post("profiles")
+  @RequirePermission(PERMISSIONS.ODRZAVANJE_WRITE)
+  createProfile(@Req() req: AuthedRequest, @Body() dto: CreateProfileDto) {
+    return this.odr.createProfile(req.user.email, dto);
+  }
+
+  @Patch("profiles/:id")
+  @RequirePermission(PERMISSIONS.ODRZAVANJE_WRITE)
+  updateProfile(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: UpdateProfileDto,
+  ) {
+    return this.odr.updateProfile(req.user.email, id, dto);
   }
 }

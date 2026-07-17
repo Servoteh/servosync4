@@ -35,6 +35,7 @@ function baseReport(over: Record<string, unknown> = {}) {
     coopCostNote: null,
     spentHoursText: null,
     spentHours: null,
+    materialKg: null,
     note: null,
     preventiveMeasures: null,
     extra: null,
@@ -69,6 +70,9 @@ interface PrismaMock {
     count: jest.Mock;
   };
   techProcess: { findUnique: jest.Mock };
+  workOrder: { findUnique: jest.Mock };
+  workOrderOperation: { findMany: jest.Mock };
+  drawing: { findFirst: jest.Mock };
   worker: { findMany: jest.Mock };
   user: { findUnique: jest.Mock; findMany: jest.Mock };
   $queryRaw: jest.Mock;
@@ -105,7 +109,10 @@ function prismaMock(): PrismaMock {
       delete: jest.fn().mockResolvedValue({}),
       count: jest.fn().mockResolvedValue(0),
     },
-    techProcess: { findUnique: jest.fn() },
+    techProcess: { findUnique: jest.fn().mockResolvedValue(null) },
+    workOrder: { findUnique: jest.fn().mockResolvedValue(null) },
+    workOrderOperation: { findMany: jest.fn().mockResolvedValue([]) },
+    drawing: { findFirst: jest.fn().mockResolvedValue(null) },
     worker: { findMany: jest.fn().mockResolvedValue([]) },
     user: {
       findUnique: jest.fn().mockResolvedValue(null),
@@ -254,6 +261,152 @@ describe("QualityService", () => {
           ],
         }),
       );
+    });
+
+    it("škart: auto-popunjava spentHours + materialKg iz routinga/crteža", async () => {
+      prisma.techProcess.findUnique.mockResolvedValue({ operationNumber: 20 });
+      prisma.workOrder.findUnique.mockResolvedValue({
+        drawingNumber: "9000-1",
+        revision: "A",
+        unprocessedPartWeight: 0,
+      });
+      prisma.drawing.findFirst.mockResolvedValue({ weight: 2.5 });
+      prisma.workOrderOperation.findMany.mockResolvedValue([
+        { operationNumber: 10, setupTime: 1, cycleTime: 0.5 },
+        { operationNumber: 20, setupTime: 2, cycleTime: 0.25 },
+        { operationNumber: 30, setupTime: 4, cycleTime: 1 },
+      ]);
+      prisma.nonconformityReport.create.mockResolvedValue(
+        baseReport({ id: 7, type: 2 }),
+      );
+
+      const res = await service.createDraftFromControl({
+        qualityTypeId: 2,
+        quantity: 3,
+        workOrderId: 100,
+        sourceTechProcessId: 50,
+      });
+
+      expect(res).toEqual({ id: 7 });
+      const arg = prisma.nonconformityReport.create.mock.calls[0][0] as {
+        data: { spentHours: number | null; materialKg: number | null };
+      };
+      // Σ do op 20 (uključivo): (1 + 0.5*3) + (2 + 0.25*3) = 5.25
+      expect(arg.data.spentHours).toBe(5.25);
+      // 3 kom × 2.5 kg = 7.5
+      expect(arg.data.materialKg).toBe(7.5);
+    });
+
+    it("škart bez mase/operacije: draft nastaje, spentHours i materialKg null", async () => {
+      prisma.workOrder.findUnique.mockResolvedValue({
+        drawingNumber: "NEMA",
+        revision: "A",
+        unprocessedPartWeight: 0,
+      });
+      prisma.drawing.findFirst.mockResolvedValue(null); // crtež nepoznat
+      prisma.nonconformityReport.create.mockResolvedValue(
+        baseReport({ id: 8, type: 2 }),
+      );
+
+      const res = await service.createDraftFromControl({
+        qualityTypeId: 2,
+        quantity: 5,
+        workOrderId: 100,
+        sourceTechProcessId: null, // nema operacije → sati se ne računaju
+      });
+
+      expect(res).toEqual({ id: 8 });
+      const arg = prisma.nonconformityReport.create.mock.calls[0][0] as {
+        data: { spentHours: number | null; materialKg: number | null };
+      };
+      expect(arg.data.spentHours).toBeNull();
+      expect(arg.data.materialKg).toBeNull();
+    });
+  });
+
+  describe("recomputeReport (auto sati + kg)", () => {
+    it("škart: prepisuje spentHours + materialKg, meta nosi izvore", async () => {
+      prisma.nonconformityReport.findUnique.mockResolvedValue(
+        baseReport({
+          id: 10,
+          type: 2,
+          workOrderId: 100,
+          sourceTechProcessId: 50,
+          quantity: 4,
+        }),
+      );
+      prisma.techProcess.findUnique.mockResolvedValue({ operationNumber: 20 });
+      prisma.workOrder.findUnique.mockResolvedValue({
+        drawingNumber: "9000-1",
+        revision: "A",
+        unprocessedPartWeight: 0,
+      });
+      prisma.drawing.findFirst.mockResolvedValue({ weight: 2 });
+      prisma.workOrderOperation.findMany.mockResolvedValue([
+        { operationNumber: 10, setupTime: 1, cycleTime: 0.5 },
+        { operationNumber: 20, setupTime: 2, cycleTime: 0.25 },
+        { operationNumber: 30, setupTime: 4, cycleTime: 1 },
+      ]);
+      prisma.nonconformityReport.update.mockResolvedValue(
+        baseReport({ id: 10, type: 2, spentHours: "6", materialKg: "8" }),
+      );
+
+      const res = await service.recomputeReport(10);
+
+      const arg = prisma.nonconformityReport.update.mock.calls[0][0] as {
+        data: { spentHours?: number | null; materialKg?: number | null };
+      };
+      // Σ do op 20: (1 + 0.5*4) + (2 + 0.25*4) = 3 + 3 = 6
+      expect(arg.data.spentHours).toBe(6);
+      // 4 × 2 = 8
+      expect(arg.data.materialKg).toBe(8);
+      expect(res.meta.massSource).toBe("drawing");
+      expect(res.meta.unitWeightKg).toBe(2);
+      expect(res.meta.hoursOps).toBe(2); // op 10 i 20
+      expect(res.meta.hoursComputed).toBe(true);
+    });
+
+    it("dorada (type=1) → 400, bez izmene", async () => {
+      prisma.nonconformityReport.findUnique.mockResolvedValue(
+        baseReport({ id: 11, type: 1 }),
+      );
+      await expect(service.recomputeReport(11)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(prisma.nonconformityReport.update).not.toHaveBeenCalled();
+    });
+
+    it("škart bez operacije: spentHours netaknut, materialKg iz fallbacka pripremka", async () => {
+      prisma.nonconformityReport.findUnique.mockResolvedValue(
+        baseReport({
+          id: 12,
+          type: 2,
+          workOrderId: 100,
+          sourceTechProcessId: null, // operacija se ne može odrediti
+          quantity: 2,
+        }),
+      );
+      prisma.workOrder.findUnique.mockResolvedValue({
+        drawingNumber: "9000-2",
+        revision: "A",
+        unprocessedPartWeight: 3, // fallback masa pripremka
+      });
+      prisma.drawing.findFirst.mockResolvedValue(null);
+      prisma.nonconformityReport.update.mockResolvedValue(
+        baseReport({ id: 12, type: 2 }),
+      );
+
+      const res = await service.recomputeReport(12);
+
+      const arg = prisma.nonconformityReport.update.mock.calls[0][0] as {
+        data: { spentHours?: number | null; materialKg?: number | null };
+      };
+      // spentHours se NE dira (nema operacije)
+      expect(arg.data.spentHours).toBeUndefined();
+      // 2 × 3 = 6 iz unprocessed_part_weight
+      expect(arg.data.materialKg).toBe(6);
+      expect(res.meta.massSource).toBe("workOrder");
+      expect(res.meta.hoursComputed).toBe(false);
     });
   });
 
