@@ -20,7 +20,9 @@ import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
 import { PERMISSIONS } from "../../common/authz/permissions";
 import { TechProcessesService } from "./tech-processes.service";
+import { SessionAutoCloseService } from "./session-auto-close.service";
 import { PdmService } from "../pdm/pdm.service";
+import { PrismaService } from "../../prisma/prisma.service";
 import type {
   CardQuery,
   CriticalQuery,
@@ -67,7 +69,11 @@ import type { PrintLabelDto } from "./dto/print-label.dto";
 export class TechProcessesController {
   constructor(
     private readonly techProcesses: TechProcessesService,
+    // Q11: auto-close visećih sesija preko kapije (odvojen servis, ne bloatati God-service).
+    private readonly sessionAutoClose: SessionAutoCloseService,
     private readonly pdm: PdmService,
+    // SEC-02: audit pristupa PDF-u crteža (traceability, best-effort).
+    private readonly prisma: PrismaService,
   ) {}
 
   @Get()
@@ -250,12 +256,16 @@ export class TechProcessesController {
     return this.techProcesses.stopWork(dto);
   }
 
-  /** Auto-close otvorenih sesija (poziva eksterni cron). Gate: `tehnologija.write`. */
+  /**
+   * Auto-close otvorenih sesija (poziva eksterni cron). Gate: `tehnologija.write`.
+   * Q11: zatvaranje ide preko evidencije kapije (izlaz → vreme izlaska; bez izlaza →
+   * neispravno kucanje + e-mail šefu; nemapiran/bez kapije → 0 trajanje).
+   */
   @Post("work/auto-close")
   @HttpCode(200)
   @RequirePermission(PERMISSIONS.TEHNOLOGIJA_WRITE)
   autoClose(@Body() body?: { olderThanHours?: number }) {
-    return this.techProcesses.autoCloseOpenSessions(body?.olderThanHours);
+    return this.sessionAutoClose.run(body?.olderThanHours);
   }
 
   /** STORNO otkucane operacije (kontra-red, ne briše). */
@@ -299,7 +309,24 @@ export class TechProcessesController {
     @Param("id", ParseIntPipe) id: number,
     @Query("download") download: string | undefined,
     @Res({ passthrough: true }) res: Response,
+    @Req() req: { user: AuthUser },
   ): Promise<StreamableFile> {
+    // SEC-02: traceability pristupa PDF-u crteža (ko, kada, koji crtež). Deljeni
+    // kiosk terminal + samo TEHNOLOGIJA_READ omogućava enumeraciju id-eva; audit
+    // ostavlja trag da se to VIDI. BEST-EFFORT: pad audita NE sme da obori strim.
+    void this.prisma.auditLog
+      .create({
+        data: {
+          action: "DRAWING-PDF-ACCESS",
+          entityType: "drawing",
+          entityId: String(id),
+          actorUserId: req.user?.userId ?? null,
+          actorUsername: req.user?.email ?? null,
+          metadata: { route: "kiosk", download: download === "true" },
+        },
+      })
+      .catch(() => {});
+
     const { buffer, fileName } = await this.pdm.getPdfContent(id);
     const disposition = download === "true" ? "attachment" : "inline";
     // `fileName` može nositi dijakritike — Node setHeader odbija znakove van latin1
