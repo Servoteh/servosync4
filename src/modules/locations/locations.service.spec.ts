@@ -602,4 +602,124 @@ describe("LocationsService — R2 mutacije", () => {
     // Nema u user_roles/auth.users → poslednji fallback = actor_email iz fn-a.
     expect(data[1].actor_name).toBe("b@x.com");
   });
+
+  it("definitionsAudit: PLK-01 — bigint `id` iz fn postaje serijalizabilan Number (bez 500)", async () => {
+    // loc_locations_audit RETURNS `id bigint` → $queryRaw vraća BigInt.
+    tx.$queryRaw.mockResolvedValue([
+      { id: 91234567890n, record_id: "L1", action: "UPDATE", actor_uid: UUID, actor_email: "a@x.com" },
+    ]);
+    sy15.db.userRoleSy15.findMany.mockResolvedValue([]);
+    sy15.db.$queryRaw.mockResolvedValue([]);
+
+    const res = await service.definitionsAudit("100", EMAIL);
+    const row = (res.data as unknown as { id: unknown }[])[0];
+    expect(typeof row.id).toBe("number");
+    expect(row.id).toBe(91234567890);
+    // Ključni dokaz PLK-01: odgovor je JSON-serijalizabilan (BigInt bi bacio).
+    expect(() => JSON.stringify(res.data)).not.toThrow();
+  });
+
+  it("definitionsAudit: PLK-01 — greška iz DB/konteksta se mapira u 4xx, ne pušta 500", async () => {
+    // withUser baca (npr. RAISE EXCEPTION / kontekst) → rethrowMutation → 422 (P0001).
+    (sy15.withUser as jest.Mock).mockRejectedValueOnce(
+      Object.assign(new Error("hijerarhija"), { meta: { code: "P0001" } }),
+    );
+    await expect(service.definitionsAudit("100", EMAIL)).rejects.toBeInstanceOf(
+      UnprocessableEntityException,
+    );
+  });
+
+  // ---------- syncHealth (LOK-P3): read-only boolovi za sve uloge ----------
+
+  const FRESH = () => new Date(Date.now() - 60 * 1000).toISOString(); // pre 1 min
+  const OLD = (h: number) =>
+    new Date(Date.now() - h * 3600 * 1000).toISOString();
+
+  it("syncHealth: sve sveže + worker živ + 0 dead-letter → cacheStale sve false, workerHealthy true", async () => {
+    tx.$queryRaw
+      .mockResolvedValueOnce([
+        { result: { workers: [{ is_alive: true }], dead_letter_count: 0 } },
+      ]) // health summary
+      .mockResolvedValueOnce([
+        { sync_job: "production_work_orders", finished_at: FRESH(), status: "ok" },
+        { sync_job: "production_work_order_lines", finished_at: FRESH(), status: "ok" },
+        { sync_job: "production_tech_routing", finished_at: FRESH(), status: "ok" },
+        { sync_job: "catalog_items", finished_at: FRESH(), status: "ok" },
+        { sync_job: "production_bigtehn_drawings", finished_at: FRESH(), status: "ok" },
+      ]); // bridge rows
+
+    const res = await service.syncHealth(EMAIL);
+    expect(res.data.cacheStale).toEqual({
+      rn: false,
+      linije: false,
+      tp: false,
+      predmeti: false,
+      crtezi: false,
+    });
+    expect(res.data.workerHealthy).toBe(true);
+    // ne curi admin detalj (nema ingest/heartbeat/samples).
+    expect(Object.keys(res.data)).toEqual(["cacheStale", "workerHealthy"]);
+  });
+
+  it("syncHealth: pragovi po jobu (RN 6h, predmeti 36h, crteži 7d) — parity 1.0", async () => {
+    tx.$queryRaw
+      .mockResolvedValueOnce([
+        { result: { workers: [], dead_letter_count: 0 } },
+      ])
+      .mockResolvedValueOnce([
+        // RN pre 7h > 6h → stale
+        { sync_job: "production_work_orders", finished_at: OLD(7), status: "ok" },
+        // linije pre 3h < 6h → svež
+        { sync_job: "production_work_order_lines", finished_at: OLD(3), status: "ok" },
+        // TP pre 5h < 6h → svež
+        { sync_job: "production_tech_routing", finished_at: OLD(5), status: "ok" },
+        // predmeti pre 30h < 36h → svež
+        { sync_job: "catalog_items", finished_at: OLD(30), status: "ok" },
+        // crteži pre 8 dana > 7d → stale
+        { sync_job: "production_bigtehn_drawings", finished_at: OLD(24 * 8), status: "ok" },
+      ]);
+
+    const res = await service.syncHealth(EMAIL);
+    expect(res.data.cacheStale).toEqual({
+      rn: true,
+      linije: false,
+      tp: false,
+      predmeti: false,
+      crtezi: true,
+    });
+  });
+
+  it("syncHealth: nedostatak bridge reda = zastareo (fail-safe); worker is_alive=false ILI dead_letter>0 → workerHealthy false", async () => {
+    tx.$queryRaw
+      .mockResolvedValueOnce([
+        {
+          result: {
+            workers: [{ is_alive: false }],
+            dead_letter_count: 0,
+          },
+        },
+      ])
+      .mockResolvedValueOnce([]); // nijedan bridge job → sve stale
+
+    const res = await service.syncHealth(EMAIL);
+    expect(res.data.cacheStale).toEqual({
+      rn: true,
+      linije: true,
+      tp: true,
+      predmeti: true,
+      crtezi: true,
+    });
+    expect(res.data.workerHealthy).toBe(false); // worker down
+  });
+
+  it("syncHealth: dead_letter_count>0 obara workerHealthy iako su workeri živi", async () => {
+    tx.$queryRaw
+      .mockResolvedValueOnce([
+        { result: { workers: [{ is_alive: true }], dead_letter_count: 3 } },
+      ])
+      .mockResolvedValueOnce([]);
+
+    const res = await service.syncHealth(EMAIL);
+    expect(res.data.workerHealthy).toBe(false);
+  });
 });
