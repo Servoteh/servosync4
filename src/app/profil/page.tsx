@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect } from 'react';
-import { Flame } from 'lucide-react';
+import { ChevronRight, Flame, Palette } from 'lucide-react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
@@ -98,6 +99,19 @@ export default function ProfilPage() {
             </div>
           )}
         </div>
+
+        {/* Izgled aplikacije (tema + raspored menija) — lične UI preference. Ulaz je OVDE
+            jer „Podešavanja" u nav-u traži SETTINGS_ORG_PROFILE (nevidljivo operaterima/
+            tehnolozima), a Izgled tab je za svakog prijavljenog (PROFILE_SELF). Deep-link
+            na tačan tab (SIDEBAR_THEME_SPEC §5). */}
+        <Link
+          href="/podesavanja?tab=izgled"
+          className="flex items-center gap-2.5 rounded-panel border border-line bg-surface px-4 py-3 text-sm text-ink transition-colors hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)]"
+        >
+          <Palette className="h-4 w-4 shrink-0 text-ink-secondary" aria-hidden />
+          <span className="min-w-0 flex-1">Izgled aplikacije — tema i raspored menija</span>
+          <ChevronRight className="h-4 w-4 shrink-0 text-ink-secondary" aria-hidden />
+        </Link>
 
         {!hasProfile && (
           <div className="rounded-panel border border-status-warn/40 bg-status-warn-bg/40 p-4 text-sm text-ink">

@@ -42,15 +42,25 @@ type TabKey = 'pregled' | (typeof SITE_ORDER)[number] | 'komande';
 const STATUS_TONE: Record<SiteStatusTone, Tone> = { on: 'success', off: 'danger', stale: 'warn' };
 const STATUS_DOT: Record<SiteStatusTone, string> = { on: '🟢', off: '🔴', stale: '🟡' };
 
-/** 2.0 shell tema (`data-theme` na <html>); HMI ekran je prima kroz `?theme=`. */
+/**
+ * 2.0 shell tema (`data-theme` na <html>); HMI ekran je prima kroz `?theme=`. Kad je tema
+ * „system" (nema `data-theme`), @media prefers-color-scheme vodi celu app u dark — zato i
+ * ovde padamo na matchMedia, da HMI ne ostane svetao ispod tamne ljuske.
+ */
 function currentTheme(): 'light' | 'dark' {
   if (typeof document === 'undefined') return 'light';
-  return document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
+  const forced = document.documentElement.dataset.theme;
+  if (forced === 'dark' || forced === 'light') return forced;
+  return typeof window !== 'undefined' &&
+    window.matchMedia('(prefers-color-scheme: dark)').matches
+    ? 'dark'
+    : 'light';
 }
 
 /**
- * Reaktivna tema ljuske — prati `data-theme` na <html> (MutationObserver) i prosleđuje
- * je HMI iframe-u. Kad korisnik prebaci temu, iframe se ponovo učita sa novom (key).
+ * Reaktivna tema ljuske — prati `data-theme` na <html> (MutationObserver) I OS preferencu
+ * (matchMedia, za „system" režim) pa prosleđuje HMI iframe-u. Kad korisnik prebaci temu ili
+ * OS pređe u dark, iframe se ponovo učita sa novom (key).
  */
 function useShellTheme(): 'light' | 'dark' {
   const [theme, setTheme] = useState<'light' | 'dark'>(currentTheme);
@@ -60,7 +70,12 @@ function useShellTheme(): 'light' | 'dark' {
     sync();
     const obs = new MutationObserver(sync);
     obs.observe(el, { attributes: true, attributeFilter: ['data-theme'] });
-    return () => obs.disconnect();
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    mq.addEventListener('change', sync);
+    return () => {
+      obs.disconnect();
+      mq.removeEventListener('change', sync);
+    };
   }, []);
   return theme;
 }

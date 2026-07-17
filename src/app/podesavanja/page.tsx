@@ -20,6 +20,7 @@ import { ExpectationsTab } from './_components/expectations-tab';
 import { NotifikacijeTab } from './_components/notifikacije-tab';
 import { IntegracijeTab } from './_components/integracije-tab';
 import { MastersTab } from './_components/masters-tab';
+import { IzgledTab } from './_components/izgled-tab';
 
 type TabKey =
   | 'korisnici'
@@ -34,7 +35,8 @@ type TabKey =
   | 'notifikacije'
   | 'integracije'
   | 'audit'
-  | 'sistem';
+  | 'sistem'
+  | 'izgled';
 
 const TAB_DEFS: { key: TabKey; label: string; requires: Permission }[] = [
   { key: 'korisnici', label: 'Korisnici', requires: PERMISSIONS.SETTINGS_USERS },
@@ -50,6 +52,9 @@ const TAB_DEFS: { key: TabKey; label: string; requires: Permission }[] = [
   { key: 'integracije', label: 'Integracije', requires: PERMISSIONS.SETTINGS_SYSTEM },
   { key: 'audit', label: 'Audit log', requires: PERMISSIONS.SETTINGS_AUDIT },
   { key: 'sistem', label: 'Sistem', requires: PERMISSIONS.SETTINGS_SYSTEM },
+  // „Izgled" = lične UI preference (layout + tema) — vidljivo SVAKOM prijavljenom
+  // (profile.self), nije admin-only (SIDEBAR_THEME_SPEC §5).
+  { key: 'izgled', label: 'Izgled', requires: PERMISSIONS.PROFILE_SELF },
 ];
 
 /**
@@ -69,6 +74,16 @@ export default function PodesavanjaPage() {
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
   }, [user, isLoading, router]);
+
+  // Deep-link na tab (npr. /podesavanja?tab=izgled iz „Moj profil" — jedini ulaz u
+  // Izgled za korisnike bez SETTINGS_ORG_PROFILE, koji ne vide Podešavanja u nav-u).
+  // Klijentski (window), static-export-safe; guard efekat ispod koriguje ako tab nije
+  // dostupan ovoj ulozi.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const requested = new URLSearchParams(window.location.search).get('tab');
+    if (requested && TAB_DEFS.some((t) => t.key === requested)) setTab(requested as TabKey);
+  }, []);
 
   useEffect(() => {
     if (visibleTabs.length && !visibleTabs.some((t) => t.key === tab)) setTab(visibleTabs[0].key);
@@ -109,6 +124,7 @@ export default function PodesavanjaPage() {
         {tab === 'integracije' && <IntegracijeTab />}
         {tab === 'audit' && <AuditTab />}
         {tab === 'sistem' && <SistemTab />}
+        {tab === 'izgled' && <IzgledTab />}
       </div>
     </AppShell>
   );

@@ -16,11 +16,18 @@ type BarKind = 'pending' | 'approved' | 'used' | 'over';
 interface Seg { from: string; to: string; days: number; kind: BarKind; label: string }
 export type GridSeg = { from: string; to: string; days: number };
 
+// Statusne trake preko tokena (tema-svesno, radi u dark-u). pending=warn (šrafura),
+// approved=info, used=success, over=danger — usklađeno sa kanonskom mapom statusa.
 const BAR_STYLE: Record<BarKind, string> = {
-  pending: 'repeating-linear-gradient(45deg,#E8A83855,#E8A83855 4px,#E8A83833 4px,#E8A83833 8px)',
-  approved: '#4F86C6',
-  used: '#6BBF5A',
-  over: '#C6534F',
+  pending:
+    'repeating-linear-gradient(45deg,' +
+    'color-mix(in srgb,var(--status-warn) 55%,transparent),' +
+    'color-mix(in srgb,var(--status-warn) 55%,transparent) 4px,' +
+    'color-mix(in srgb,var(--status-warn) 30%,transparent) 4px,' +
+    'color-mix(in srgb,var(--status-warn) 30%,transparent) 8px)',
+  approved: 'var(--status-info)',
+  used: 'var(--status-success)',
+  over: 'var(--status-danger)',
 };
 
 function segsForEmp(vac: VacationRequest[], gridSegs: GridSeg[], isOver: boolean): Seg[] {

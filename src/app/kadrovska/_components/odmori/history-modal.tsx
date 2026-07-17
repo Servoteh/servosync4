@@ -25,12 +25,13 @@ import { sv } from '../common';
 import { useOdmoriUi } from './ui';
 import { holidaySetFromRows, nextWorkingDay } from './helpers';
 
+// Boje su tokeni (tema-svesno, radi u dark-u); ivica bedža se izvodi color-mix-om.
 const KIND_BADGE: Record<string, { label: string; color: string }> = {
-  go: { label: 'GO', color: '#3B8C4E' },
-  slava: { label: 'slava', color: '#2563eb' },
-  bolovanje: { label: 'bolovanje', color: '#C6534F' },
-  praznik: { label: 'praznik', color: '#8a8a8a' },
-  other: { label: '—', color: '#8a8a8a' },
+  go: { label: 'GO', color: 'var(--status-success)' },
+  slava: { label: 'slava', color: 'var(--status-info)' },
+  bolovanje: { label: 'bolovanje', color: 'var(--status-danger)' },
+  praznik: { label: 'praznik', color: 'var(--status-neutral)' },
+  other: { label: '—', color: 'var(--status-neutral)' },
 };
 
 function fmtPeriod(p: GoLedgerPeriod): string {
@@ -178,12 +179,12 @@ export function HistoryModal({
 
   function periodRow(entryYear: number, p: GoLedgerPeriod, planned: boolean, idx: number) {
     const badge = planned
-      ? { label: 'planirano', color: '#2563eb' }
-      : { label: 'GO', color: '#3B8C4E' };
+      ? { label: 'planirano', color: 'var(--status-info)' }
+      : { label: 'GO', color: 'var(--status-success)' };
     return (
       <tr key={`p${planned ? 'p' : 'u'}${idx}`} className="border-t border-line-soft align-top">
         <td className="py-1 tnums font-semibold">{p.dana}</td>
-        <td><span className="rounded border px-1.5 py-0.5 text-[0.65rem]" style={{ color: badge.color, borderColor: `${badge.color}55` }}>{badge.label}</span></td>
+        <td><span className="rounded border px-1.5 py-0.5 text-[0.65rem]" style={{ color: badge.color, borderColor: `color-mix(in srgb, ${badge.color} 40%, transparent)` }}>{badge.label}</span></td>
         <td className="whitespace-nowrap">{fmtPeriod(p)}</td>
         <td className="text-ink-secondary" />
         {canResenje && (
@@ -205,7 +206,7 @@ export function HistoryModal({
     return (
       <tr key={key} className="border-t border-line-soft align-top">
         <td className="py-1 tnums font-semibold">{n}</td>
-        <td><span className="rounded border px-1.5 py-0.5 text-[0.65rem]" style={{ color: '#8a8a8a', borderColor: '#8a8a8a55' }}>ranije</span></td>
+        <td><span className="rounded border px-1.5 py-0.5 text-[0.65rem]" style={{ color: 'var(--status-neutral)', borderColor: 'color-mix(in srgb, var(--status-neutral) 40%, transparent)' }}>ranije</span></td>
         <td colSpan={colSpan - 2} className="text-ink-secondary">{text}</td>
       </tr>
     );
@@ -217,7 +218,7 @@ export function HistoryModal({
     return (
       <tr key={`e${i}`} className="border-t border-line-soft align-top">
         <td className="py-1 tnums font-semibold">{e.days != null ? `${e.approx ? '~' : ''}${e.days}` : '–'}</td>
-        <td><span className="rounded border px-1.5 py-0.5 text-[0.65rem]" style={{ color: k.color, borderColor: `${k.color}55` }}>{k.label}</span></td>
+        <td><span className="rounded border px-1.5 py-0.5 text-[0.65rem]" style={{ color: k.color, borderColor: `color-mix(in srgb, ${k.color} 40%, transparent)` }}>{k.label}</span></td>
         <td>
           {e.dates || '—'}
           {e.fromYear && (<span className="ml-1 rounded border border-line px-1 text-[0.6rem] text-ink-secondary" title={`upisano u list ${e.fromYear}. godine`}>↤ {e.fromYear}</span>)}
@@ -293,7 +294,7 @@ export function HistoryModal({
         {table(usedRows)}
         {plannedPeriods.length > 0 && (
           <>
-            <div className="text-xs font-semibold" style={{ color: '#2563eb' }}>Planirani (odobreni) dani</div>
+            <div className="text-xs font-semibold text-status-info">Planirani (odobreni) dani</div>
             {table(plannedPeriods.map((p, i) => periodRow(b.godina, p, true, i)))}
           </>
         )}

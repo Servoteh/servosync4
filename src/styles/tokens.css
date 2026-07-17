@@ -7,6 +7,10 @@
  */
 
 :root {
+  /* UA šema (scrollbar, native select/date/number, autofill) prati temu — bez ovoga
+     ostaju svetli preko tamnog UI-ja (SIDEBAR_THEME_SPEC §3/§4). */
+  color-scheme: light;
+
   /* ---------- akcenat (primarne akcije, aktivna navigacija, selekcija, fokus) ---------- */
   --accent: #0d9488;
   --accent-hover: #0b7d73;
@@ -42,6 +46,9 @@
   --status-danger-bg: #fbe9e8;
   --status-neutral: #8b9aa0;     /* u pripremi */
   --status-neutral-bg: #eef1f2;
+  /* PR odsustvo (Kadrovska mesečni grid) — nije §7 kanonski status, samo tema-svesna
+     boja umesto sirovog 1.0 hex-a; ne izlaže se kao Tailwind utili (globals.css koristi var). */
+  --status-plan: #9b51e0;
 
   /* ---------- tipografija ---------- */
   --font-sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
@@ -78,6 +85,146 @@
 }
 
 /*
- * Tamna tema: NE isporučuje se u 2.0 V1 (DESIGN_SYSTEM.md §3).
- * Kada odluka padne (3.0), ovde se redefinišu SAMO tokeni — komponente se ne diraju.
+ * ---------------------------------------------------------------------------
+ * TAMNA TEMA (cela aplikacija — SIDEBAR_THEME_SPEC §3, 18.07.2026).
+ * ---------------------------------------------------------------------------
+ * Obrazac (artifact-design): sve vrednosti su definisane na `:root` (svetla,
+ * gore). Ovde se OVERRIDE-uju SAMO tokeni čija se vrednost menja u tamnom režimu.
+ * Tri sloja, tačno kao u spec-u:
+ *   1. `@media (prefers-color-scheme: dark) :root` — sistemski dark (kad korisnik
+ *      nije eksplicitno izabrao temu → nema `data-theme` atributa).
+ *   2. `:root[data-theme="dark"]` — korisnik forsirao tamnu (toggle nadjačava media).
+ *   3. `:root[data-theme="light"]` — korisnik forsirao svetlu; RE-ASSERT svetlih
+ *      vrednosti da pobede sistemski dark (viša specifičnost od `:root`).
+ * `--focus-ring` / `--focus-ring-sidebar` NISU ovde: definisani su preko var(--bg)/
+ * var(--accent)/… koji se razrešavaju pri upotrebi → automatski prate temu.
+ * Dark paleta: near-black petrolej pozadina usklađena sa sidebar-om, svetli ink,
+ * svetliji teal akcenat (#2dd4bf), statusne boje posvetljene za AA na tamnom.
  */
+
+/* Zajednički dark override — držati IDENTIČNO u oba dark selektora ispod. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+
+    /* akcenat — svetliji teal; tekst na akcentu je TAMAN (akcenat je svetao) */
+    --accent: #2dd4bf;
+    --accent-hover: #5eead4;
+    --accent-active: #14b8a6;
+    --accent-fg: #04231e;
+    --accent-subtle: #0f2f2e;
+
+    /* neutrale / površine — near-black petrolej */
+    --bg: #0a1116;
+    --surface: #111c22;
+    --surface-2: #16242c;
+    --ink: #e6eef1;
+    --ink-secondary: #93a4ac;
+    --ink-disabled: #5f7079;
+    --line: #24343d;
+    --line-soft: #1a2831;
+
+    /* sidebar — ostaje tamni petrolej, blago usklađen sa near-black pozadinom */
+    --sidebar-bg: #0e1b22;
+    --sidebar-ink: #9fb2bc;
+    --sidebar-ink-active: #ffffff;
+    --sidebar-line: #203039;
+    --sidebar-accent: #2dd4bf;
+
+    /* semantičke boje — posvetljene za AA na tamnim površinama */
+    --status-info: #4da3e8;
+    --status-info-bg: #122a3b;
+    --status-warn: #f0a03c;
+    --status-warn-bg: #33260f;
+    --status-success: #52c46a;
+    --status-success-bg: #14291b;
+    --status-danger: #ef5f57;
+    --status-danger-bg: #331917;
+    --status-neutral: #7f8e95;
+    --status-neutral-bg: #1a2731;
+    --status-plan: #c084fc;      /* posvetljena ljubičasta za AA na tamnom */
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* akcenat */
+  --accent: #2dd4bf;
+  --accent-hover: #5eead4;
+  --accent-active: #14b8a6;
+  --accent-fg: #04231e;
+  --accent-subtle: #0f2f2e;
+
+  /* neutrale / površine */
+  --bg: #0a1116;
+  --surface: #111c22;
+  --surface-2: #16242c;
+  --ink: #e6eef1;
+  --ink-secondary: #93a4ac;
+  --ink-disabled: #5f7079;
+  --line: #24343d;
+  --line-soft: #1a2831;
+
+  /* sidebar */
+  --sidebar-bg: #0e1b22;
+  --sidebar-ink: #9fb2bc;
+  --sidebar-ink-active: #ffffff;
+  --sidebar-line: #203039;
+  --sidebar-accent: #2dd4bf;
+
+  /* semantičke boje */
+  --status-info: #4da3e8;
+  --status-info-bg: #122a3b;
+  --status-warn: #f0a03c;
+  --status-warn-bg: #33260f;
+  --status-success: #52c46a;
+  --status-success-bg: #14291b;
+  --status-danger: #ef5f57;
+  --status-danger-bg: #331917;
+  --status-neutral: #7f8e95;
+  --status-neutral-bg: #1a2731;
+  --status-plan: #c084fc;        /* posvetljena ljubičasta za AA na tamnom */
+}
+
+/*
+ * Eksplicitno SVETLA — korisnik je izabrao „Svetla" iako je OS u dark režimu.
+ * Re-asserta svetle vrednosti (viša specifičnost od `:root` unutar @media dark).
+ * Vrednosti su IDENTIČNE `:root` bloku na vrhu fajla.
+ */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --accent: #0d9488;
+  --accent-hover: #0b7d73;
+  --accent-active: #0a6b62;
+  --accent-fg: #ffffff;
+  --accent-subtle: #f0faf8;
+
+  --bg: #f7f9f9;
+  --surface: #ffffff;
+  --surface-2: #fbfcfc;
+  --ink: #22282c;
+  --ink-secondary: #79878e;
+  --ink-disabled: #a8b3b8;
+  --line: #e3e8e8;
+  --line-soft: #eef2f2;
+
+  --sidebar-bg: #16232a;
+  --sidebar-ink: #b9c6cc;
+  --sidebar-ink-active: #ffffff;
+  --sidebar-line: #24343d;
+  --sidebar-accent: #2dd4bf;
+
+  --status-info: #1971c2;
+  --status-info-bg: #e7f0fb;
+  --status-warn: #e8890c;
+  --status-warn-bg: #fdf0e0;
+  --status-success: #2f9e44;
+  --status-success-bg: #e6f5e9;
+  --status-danger: #d6453d;
+  --status-danger-bg: #fbe9e8;
+  --status-neutral: #8b9aa0;
+  --status-neutral-bg: #eef1f2;
+  --status-plan: #9b51e0;
+}

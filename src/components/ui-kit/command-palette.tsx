@@ -15,7 +15,7 @@ import { useRouter } from 'next/navigation';
 import { Search } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { useAuth } from '@/lib/auth-context';
-import { NAV_DOMAINS, type NavModule } from '@/lib/navigation';
+import { NAV_DOMAINS, allModules, canAccessNavModule, type NavModule } from '@/lib/navigation';
 import { useUiPrefs } from '@/lib/use-ui-prefs';
 import { fuzzyScore } from '@/lib/fuzzy';
 
@@ -95,11 +95,18 @@ export function CommandPalette({ open, onOpenChange, hotkey = true }: CommandPal
   }, [activeIndex]);
 
   // --- izgradnja liste (jeftino; ~30 modula — bez memoizacije) --------------
-  // Vidljivi moduli = isti RBAC filter kao sidebar (stavka uz can(requires)).
+  // Vidljivi moduli = isti RBAC filter kao sidebar (canAccessNavModule: requiresAny OR
+  // ima prednost — npr. pogonski /kiosk uz KVALITET_READ ILI TEHNOLOGIJA_READ). Iteriraju
+  // se i moduli iz pod-grupa (allModules: direktne stavke + „Tehnologija" i sl.). Paleta
+  // je RAVNA globalna lista pa se `crosslisted` href (npr. „Lokacije delova" u Tehnologiji
+  // i Logistici) dedup-uje: prva pojava po redosledu modela pobeđuje (seenHref).
   const visible: Entry[] = [];
+  const seenHref = new Set<string>();
   for (const d of NAV_DOMAINS) {
-    for (const m of d.modules) {
-      if (!m.requires || can(m.requires)) visible.push({ module: m, domainTitle: d.title });
+    for (const m of allModules(d)) {
+      if (!canAccessNavModule(m, can) || seenHref.has(m.href)) continue;
+      seenHref.add(m.href);
+      visible.push({ module: m, domainTitle: d.title });
     }
   }
 
@@ -125,13 +132,18 @@ export function CommandPalette({ open, onOpenChange, hotkey = true }: CommandPal
       rows.push({ kind: 'header', key: 'h-recent', title: 'Nedavno' });
       for (const e of recent) pushItem(e);
     }
+    // `shown` nosi već prikazane href-ove (prvo „Nedavno", pa domeni redom) da se
+    // `crosslisted` modul (isti href u dva domena) ne pojavi dvaput u paleti —
+    // prvi domen po redosledu modela ga „preuzima".
+    const shown = new Set(recentHrefs);
     for (const d of NAV_DOMAINS) {
-      const mods = d.modules.filter(
-        (m) => (!m.requires || can(m.requires)) && !recentHrefs.has(m.href),
-      );
+      const mods = allModules(d).filter((m) => canAccessNavModule(m, can) && !shown.has(m.href));
       if (!mods.length) continue;
       rows.push({ kind: 'header', key: `h-${d.id}`, title: d.title });
-      for (const m of mods) pushItem({ module: m, domainTitle: d.title });
+      for (const m of mods) {
+        shown.add(m.href);
+        pushItem({ module: m, domainTitle: d.title });
+      }
     }
   } else {
     // Upit: ravna rang-lista (fuzzy). Stabilan sort čuva redosled modela pri

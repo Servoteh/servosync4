@@ -196,7 +196,7 @@ function LedgerYear({ b }: { b: GoLedgerBlock }) {
                 <div className="tnums text-ink-disabled">bez preciznog datuma — {b.ranije_evidentirano} d</div>
               )}
               {(b.planirano_periodi ?? []).map((p, i) => (
-                <div key={`p${i}`} className="tnums" style={{ color: '#2563eb' }}>planirano: {fmtPeriod(p)} — {p.dana} d</div>
+                <div key={`p${i}`} className="tnums text-status-info">planirano: {fmtPeriod(p)} — {p.dana} d</div>
               ))}
             </>
           )}

@@ -53,12 +53,13 @@ const PAID_LEAVE_LABEL: Record<string, string> = {
 };
 
 function stepBadge(step: Step) {
-  if (step === 'sef') return <Badge color="#B07A1E" title="Prvi nivo — operativna saglasnost">1. nivo (šef)</Badge>;
-  if (step === 'hr') return <Badge color="#3B8C4E" title="Drugi nivo — finalno odobrenje">finalno (HR/uprava)</Badge>;
-  return <Badge color="#2563eb" title="Odluka uprave">odluka (admin)</Badge>;
+  if (step === 'sef') return <Badge color="var(--status-warn)" title="Prvi nivo — operativna saglasnost">1. nivo (šef)</Badge>;
+  if (step === 'hr') return <Badge color="var(--status-success)" title="Drugi nivo — finalno odobrenje">finalno (HR/uprava)</Badge>;
+  return <Badge color="var(--status-info)" title="Odluka uprave">odluka (admin)</Badge>;
 }
+// color = token var (npr. var(--status-warn)); ivica = poluprovidna varijanta preko color-mix (tema-svesno).
 function Badge({ children, color, title }: { children: React.ReactNode; color: string; title?: string }) {
-  return <span className="rounded border px-1.5 py-0.5 text-[0.65rem]" style={{ color, borderColor: `${color}55` }} title={title}>{children}</span>;
+  return <span className="rounded border px-1.5 py-0.5 text-[0.65rem]" style={{ color, borderColor: `color-mix(in srgb, ${color} 40%, transparent)` }} title={title}>{children}</span>;
 }
 function initials(name: string) {
   return name.split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0]?.toUpperCase() || '').join('') || '?';
@@ -255,8 +256,8 @@ export function OdobravanjeTab({ onCount }: { onCount?: (n: number) => void }) {
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-1.5">
                     <span className="font-medium text-ink">{nm}</span>
-                    <Badge color="#64748b">{TYPE_LABEL[it.type]}</Badge>
-                    {isDanOdmora && <Badge color="#3B8C4E">🏖 Dan odmora</Badge>}
+                    <Badge color="var(--status-neutral)">{TYPE_LABEL[it.type]}</Badge>
+                    {isDanOdmora && <Badge color="var(--status-success)">🏖 Dan odmora</Badge>}
                     {stepBadge(it.step)}
                   </div>
                   <div className="mt-0.5 text-sm text-ink-secondary">{describe(it)}</div>

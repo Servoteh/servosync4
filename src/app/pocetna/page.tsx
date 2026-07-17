@@ -15,13 +15,17 @@
 import { useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { ArrowUpRight } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import {
   NAV_DOMAINS,
+  allModules,
+  canAccessNavModule,
   findModuleByHref,
+  navModuleMarkerTitle,
   type NavModule,
 } from '@/lib/navigation';
 import { useUiPrefs } from '@/lib/use-ui-prefs';
@@ -56,20 +60,52 @@ export default function PocetnaPage() {
   }
 
   // Vidljivi domeni/moduli po ulozi — RBAC filter IDENTIČAN sidebaru (app-shell):
-  // stavka uz can(requires), prazan domen se ne prikazuje.
+  // stavka uz canAccessNavModule (requiresAny OR ima prednost), prazna pod-grupa i
+  // prazan domen se preskaču. Iteriraju se i direktne stavke i pod-grupe („Tehnologija").
   const visibleDomains = NAV_DOMAINS.map((domain) => ({
     ...domain,
-    modules: domain.modules.filter((m) => !m.requires || can(m.requires)),
-  })).filter((domain) => domain.modules.length > 0);
+    modules: domain.modules.filter((m) => canAccessNavModule(m, can)),
+    groups: domain.groups
+      ?.map((g) => ({ ...g, modules: g.modules.filter((m) => canAccessNavModule(m, can)) }))
+      .filter((g) => g.modules.length > 0),
+  })).filter((domain) => domain.modules.length > 0 || (domain.groups?.length ?? 0) > 0);
 
   // „Brzo" = MRU (recentModules) razrešen na nav model + RBAC; fallback na fiksne
   // prečice kad je MRU prazan ili sve odsečeno pravima.
-  const canSee = (m: NavModule | undefined): m is NavModule => !!m && (!m.requires || can(m.requires));
+  const canSee = (m: NavModule | undefined): m is NavModule => !!m && canAccessNavModule(m, can);
   const recentResolved = recentModules.map((href) => findModuleByHref(href)).filter(canSee);
   const quickModules =
     recentResolved.length > 0
       ? recentResolved
       : QUICK_FALLBACK_HREFS.map((href) => findModuleByHref(href)).filter(canSee);
+
+  // Jedan modul kao red u pločici — deljeno između direktnih stavki domena i stavki
+  // pod-grupa. `external`/`crosslisted` (npr. pogonski /kiosk, „Lokacije delova" na dva
+  // mesta) nose diskretnu „↗" oznaku, isto kao u sidebaru.
+  const renderModule = (m: NavModule) => {
+    const MIcon = m.icon;
+    const marker = !!(m.external || m.crosslisted);
+    const markerTitle = navModuleMarkerTitle(m);
+    return (
+      <li key={m.href}>
+        <Link
+          href={m.href}
+          onClick={() => pushRecentModule(m.href)}
+          title={markerTitle}
+          // Touch-meta min 44×44px na tablet/telefon (DS §11) — isti bump kao sidebar
+          // (app-shell max-lg:py-2.5); min-h-11 garant.
+          className="group flex items-center gap-2.5 rounded-control px-2 py-1.5 text-base text-ink hover:bg-accent-subtle hover:text-accent focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)] max-lg:min-h-11 max-lg:py-2.5"
+        >
+          <MIcon
+            className="h-4 w-4 shrink-0 text-ink-secondary group-hover:text-accent"
+            aria-hidden
+          />
+          <span className="min-w-0 flex-1 truncate">{m.label}</span>
+          {marker && <ArrowUpRight className="h-3 w-3 shrink-0 text-ink-disabled" aria-hidden />}
+        </Link>
+      </li>
+    );
+  };
 
   return (
     <AppShell>
@@ -147,32 +183,28 @@ export default function PocetnaPage() {
                       <div className="min-w-0">
                         <h3 className="truncate text-md font-semibold text-ink">{domain.title}</h3>
                         <p className="tnums text-xs text-ink-secondary">
-                          {moduliLabel(domain.modules.length)}
+                          {/* Broji i direktne stavke i module pod-grupa (allModules). */}
+                          {moduliLabel(allModules(domain).length)}
                         </p>
                       </div>
                     </div>
-                    <ul className="space-y-0.5">
-                      {domain.modules.map((m) => {
-                        const MIcon = m.icon;
-                        return (
-                          <li key={m.href}>
-                            <Link
-                              href={m.href}
-                              onClick={() => pushRecentModule(m.href)}
-                              // Touch-meta min 44×44px na tablet/telefon (DS §11) — isti
-                              // bump kao sidebar (app-shell max-lg:py-2.5); min-h-11 garant.
-                              className="group flex items-center gap-2.5 rounded-control px-2 py-1.5 text-base text-ink hover:bg-accent-subtle hover:text-accent focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)] max-lg:min-h-11 max-lg:py-2.5"
-                            >
-                              <MIcon
-                                className="h-4 w-4 shrink-0 text-ink-secondary group-hover:text-accent"
-                                aria-hidden
-                              />
-                              <span className="min-w-0 flex-1 truncate">{m.label}</span>
-                            </Link>
-                          </li>
-                        );
-                      })}
-                    </ul>
+                    {domain.modules.length > 0 && (
+                      <ul className="space-y-0.5">{domain.modules.map(renderModule)}</ul>
+                    )}
+                    {/* Imenovane pod-grupe (npr. „Tehnologija") kao odeljci sa verzalnim
+                        naslovom — vizuelni paritet sa izdvojenom grupom u sidebaru. */}
+                    {domain.groups?.map((g) => {
+                      const GIcon = g.icon;
+                      return (
+                        <div key={g.id} className="mt-2">
+                          <div className="mb-1 flex items-center gap-1.5 px-2 text-2xs font-semibold uppercase tracking-wider text-ink-secondary">
+                            <GIcon className="h-3 w-3 shrink-0" aria-hidden />
+                            <span className="min-w-0 flex-1 truncate">{g.title}</span>
+                          </div>
+                          <ul className="space-y-0.5">{g.modules.map(renderModule)}</ul>
+                        </div>
+                      );
+                    })}
                   </section>
                 );
               })}

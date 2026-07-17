@@ -19,6 +19,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
 import {
+  ArrowUpRight,
   Bell,
   ChevronRight,
   Eye,
@@ -36,10 +37,14 @@ import { cn } from '@/lib/cn';
 import { useAuth } from '@/lib/auth-context';
 import {
   NAV_DOMAINS,
+  canAccessNavModule,
   findDomainByPath,
+  isNavModuleActive,
   isWideRoute,
+  navModuleMarkerTitle,
   type NavDomain,
   type NavModule,
+  type NavSubGroup,
 } from '@/lib/navigation';
 import {
   useUiPrefs,
@@ -48,6 +53,7 @@ import {
   toggleDomain,
   pushRecentModule,
   type SidebarMode,
+  type SidebarLayout,
 } from '@/lib/use-ui-prefs';
 import {
   useMarkAllNotificationsRead,
@@ -306,35 +312,126 @@ function NotificationBell({ enabled, variant = 'sidebar' }: { enabled: boolean; 
   );
 }
 
-// ------------------------------------------------------------------ nav stavke
+// ------------------------------------------------------------------ nav stavke (full)
 
-/** Modul kao stavka u accordion-u (full režim). Klik navigira + upisuje u MRU (recent). */
-function ModuleLink({
+/**
+ * Modul kao stavka u punom sidebaru. Izgled zavisi od izabranog `layout` (A/B/C) i od
+ * toga da li je stavka unutar imenovane pod-grupe (`inSubGroup` → dublja uvučenost).
+ * Klik navigira + upisuje u MRU (recent). `external`/`crosslisted` moduli nose diskretnu
+ * „↗" oznaku; external (pogonski /kiosk) se ne označava aktivnim — findDomainByPath ga
+ * preskače, pa `active` za njega uvek dolazi kao false. Aktivno stanje: A/B = akcentna
+ * pozadina + traka levo; C = „kartica" (akcentna pozadina + inset ring), bez trake.
+ */
+function SidebarModuleRow({
   module,
   active,
+  layout,
+  inSubGroup,
   onNavigate,
 }: {
   module: NavModule;
   active: boolean;
+  layout: SidebarLayout;
+  inSubGroup: boolean;
   onNavigate: (href: string) => void;
 }) {
   const Icon = module.icon;
+  const marker = !!(module.external || module.crosslisted);
+  const markerTitle = navModuleMarkerTitle(module);
+
+  // Uvučenost: direktne stavke poravnate ispod naslova domena; stavke pod-grupe dublje.
+  // C je „prostorniji", B najgušći.
+  const indent = inSubGroup
+    ? layout === 'C'
+      ? 'pl-6'
+      : 'pl-5'
+    : layout === 'B'
+      ? 'pl-8'
+      : layout === 'C'
+        ? 'pl-10'
+        : 'pl-9';
+
   return (
     <Link
       href={module.href}
       onClick={() => onNavigate(module.href)}
       aria-current={active ? 'page' : undefined}
+      title={markerTitle}
       className={cn(
-        'flex items-center gap-2.5 rounded-control px-3 py-2 text-base max-lg:py-2.5',
+        // max-lg:min-h-11 = touch-meta ≥44px na <1024px (DS §11; paritet sa hub redovima
+        // u pocetna/page.tsx — off-canvas je primarna mobilna navigacija).
+        'relative flex items-center gap-2.5 rounded-control pr-2.5 text-base max-lg:min-h-11 max-lg:py-2.5',
+        indent,
+        layout === 'C' ? 'py-2' : 'py-1.5',
         active
-          ? 'bg-sidebar-line text-sidebar-ink-active'
+          ? layout === 'C'
+            ? 'bg-sidebar-accent/10 font-medium text-sidebar-ink-active ring-1 ring-inset ring-sidebar-accent/25'
+            : 'bg-sidebar-accent/10 font-medium text-sidebar-ink-active'
           : 'text-sidebar-ink hover:bg-sidebar-line/60 hover:text-sidebar-ink-active',
         SB_FOCUS,
       )}
     >
+      {/* Akcenat-traka aktivne stavke (A/B) — u C ulogu preuzima inset ring „kartice". */}
+      {active && layout !== 'C' && (
+        <span
+          className="absolute left-2.5 top-1/2 h-4 w-1 -translate-y-1/2 rounded-full bg-sidebar-accent"
+          aria-hidden
+        />
+      )}
       <Icon className={cn('h-4 w-4 shrink-0', active && 'text-sidebar-accent')} aria-hidden />
       <span className="min-w-0 flex-1 truncate">{module.label}</span>
+      {marker && <ArrowUpRight className="h-3 w-3 shrink-0 text-sidebar-ink/50" aria-hidden />}
     </Link>
+  );
+}
+
+/**
+ * Imenovana pod-grupa (npr. „Tehnologija" ispod „Proizvodnje") u punom sidebaru — uvek
+ * razgranata (bez zasebnog collapse stanja: AppShell se montira per-page pa lokalno
+ * stanje ne bi preživelo navigaciju), sa akcentnim verzalnim naslovom i uvučenim
+ * modulima. Leva traka: akcentna u C (premium), neutralna u A/B — pod-grupa je time
+ * „jasno izdvojena" u sva tri layouta.
+ */
+function SidebarSubGroup({
+  group,
+  ownerDomainId,
+  layout,
+  pathname,
+  onNavigate,
+}: {
+  group: NavSubGroup;
+  /** Domen kome pod-grupa pripada — za disambiguaciju aktivne crosslisted stavke. */
+  ownerDomainId: string;
+  layout: SidebarLayout;
+  pathname: string;
+  onNavigate: (href: string) => void;
+}) {
+  const GIcon = group.icon;
+  return (
+    <div
+      className={cn(
+        'my-1 border-l',
+        layout === 'B' ? 'ml-3' : 'ml-4',
+        layout === 'C' ? 'border-l-2 border-sidebar-accent/30' : 'border-sidebar-line',
+      )}
+    >
+      <div className="flex items-center gap-1.5 py-1 pl-3 pr-2 text-2xs font-bold uppercase tracking-wide text-sidebar-accent">
+        <GIcon className="h-3.5 w-3.5 shrink-0" aria-hidden />
+        <span className="min-w-0 flex-1 truncate">{group.title}</span>
+      </div>
+      <div className="space-y-0.5 pb-1">
+        {group.modules.map((m) => (
+          <SidebarModuleRow
+            key={m.href}
+            module={m}
+            active={isNavModuleActive(pathname, m, ownerDomainId)}
+            layout={layout}
+            inSubGroup
+            onNavigate={onNavigate}
+          />
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -345,6 +442,8 @@ interface FullBodyProps {
   pathname: string;
   activeDomainId?: string;
   openDomains: string[];
+  /** Vizuelni layout punog sidebara (A hijerarhija / B sekcije / C premium). */
+  layout: SidebarLayout;
   onNavigate: (href: string) => void;
   bellEnabled: boolean;
   userEmail?: string;
@@ -432,9 +531,58 @@ function FullBody(props: FullBodyProps) {
       <nav className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
         {props.domains.map((domain) => {
           const isActive = domain.id === props.activeDomainId;
-          // Aktivni domen je UVEK otvoren (forsirano); ostali po ručnom stanju (persist).
-          const open = isActive || props.openDomains.includes(domain.id);
           const DIcon = domain.icon;
+          // Layout B (Sekcije): svaki domen je UVEK razgranat (statičan naslov, bez
+          // toggle-a). A/C (accordion): aktivni domen je forsiran otvoren, ostali po
+          // ručnom stanju (persist).
+          const open =
+            props.layout === 'B' || isActive || props.openDomains.includes(domain.id);
+
+          // Telo domena: direktne stavke + imenovane pod-grupe (npr. „Tehnologija").
+          const body = open ? (
+            <div className="space-y-0.5 pb-1">
+              {domain.modules.map((m) => (
+                <SidebarModuleRow
+                  key={m.href}
+                  module={m}
+                  active={isNavModuleActive(props.pathname, m, domain.id)}
+                  layout={props.layout}
+                  inSubGroup={false}
+                  onNavigate={props.onNavigate}
+                />
+              ))}
+              {domain.groups?.map((g) => (
+                <SidebarSubGroup
+                  key={g.id}
+                  group={g}
+                  ownerDomainId={domain.id}
+                  layout={props.layout}
+                  pathname={props.pathname}
+                  onNavigate={props.onNavigate}
+                />
+              ))}
+            </div>
+          ) : null;
+
+          // Layout B: naslov domena je statična verzalna sekcija (bez dugmeta/chevrona).
+          if (props.layout === 'B') {
+            return (
+              <div key={domain.id} className="mb-1">
+                <div className="flex items-center gap-2.5 px-3 pb-1 pt-3 text-2xs font-bold uppercase tracking-wider text-sidebar-ink/70">
+                  <DIcon
+                    className={cn('h-3.5 w-3.5 shrink-0', isActive && 'text-sidebar-accent')}
+                    aria-hidden
+                  />
+                  <span className="min-w-0 flex-1 truncate">{domain.title}</span>
+                </div>
+                {body}
+              </div>
+            );
+          }
+
+          // Layout A i C: accordion (kao dosad). C = krupnija ikona domena, prostornije,
+          // aktivni domen sa suptilnim akcentnim gradijentom.
+          const premium = props.layout === 'C';
           return (
             <div key={domain.id}>
               <button
@@ -445,15 +593,24 @@ function FullBody(props: FullBodyProps) {
                 }}
                 aria-expanded={open}
                 className={cn(
-                  'flex w-full items-center gap-2.5 rounded-control px-3 py-2 text-base max-lg:py-2.5',
+                  // max-lg:min-h-11 = touch-meta ≥44px na <1024px (DS §11; paritet sa
+                  // modul-redovima i hub-om).
+                  'flex w-full items-center gap-2.5 rounded-control px-3 text-base max-lg:min-h-11 max-lg:py-2.5',
+                  premium ? 'py-2.5' : 'py-2',
                   isActive
-                    ? 'text-sidebar-ink-active'
+                    ? premium
+                      ? 'bg-gradient-to-r from-sidebar-accent/10 to-transparent text-sidebar-ink-active'
+                      : 'text-sidebar-ink-active'
                     : 'text-sidebar-ink hover:bg-sidebar-line/40 hover:text-sidebar-ink-active',
                   SB_FOCUS,
                 )}
               >
                 <DIcon
-                  className={cn('h-4 w-4 shrink-0', isActive && 'text-sidebar-accent')}
+                  className={cn(
+                    premium ? 'h-5 w-5' : 'h-4 w-4',
+                    'shrink-0',
+                    isActive && 'text-sidebar-accent',
+                  )}
                   aria-hidden
                 />
                 <span className="min-w-0 flex-1 truncate text-left font-medium">{domain.title}</span>
@@ -466,18 +623,7 @@ function FullBody(props: FullBodyProps) {
                   aria-hidden
                 />
               </button>
-              {open && (
-                <div className="space-y-0.5 pb-1">
-                  {domain.modules.map((m) => (
-                    <ModuleLink
-                      key={m.href}
-                      module={m}
-                      active={props.pathname === m.href}
-                      onNavigate={props.onNavigate}
-                    />
-                  ))}
-                </div>
-              )}
+              {body}
             </div>
           );
         })}
@@ -505,7 +651,46 @@ function FullBody(props: FullBodyProps) {
 
 // ------------------------------------------------------------------ RailBody (ikone + flyout)
 
-/** Flyout panel jednog domena (rail režim): naslov + pin + moduli. */
+/**
+ * Stavka modula unutar rail flyout-a (menuitem). Isti vizuelni jezik kao dosad
+ * (rail je nedirano) + diskretna „↗" oznaka za external/crosslisted module. Deljena
+ * između direktnih stavki domena i stavki pod-grupa u flyout-u.
+ */
+function FlyoutModuleLink({
+  module,
+  active,
+  onNavigate,
+}: {
+  module: NavModule;
+  active: boolean;
+  onNavigate: (href: string) => void;
+}) {
+  const MIcon = module.icon;
+  const marker = !!(module.external || module.crosslisted);
+  const markerTitle = navModuleMarkerTitle(module);
+  return (
+    <Link
+      href={module.href}
+      role="menuitem"
+      onClick={() => onNavigate(module.href)}
+      aria-current={active ? 'page' : undefined}
+      title={markerTitle}
+      className={cn(
+        'flex items-center gap-2.5 rounded-control px-2.5 py-2 text-base',
+        active
+          ? 'bg-sidebar-line text-sidebar-ink-active'
+          : 'text-sidebar-ink hover:bg-sidebar-line/60 hover:text-sidebar-ink-active',
+        SB_FOCUS,
+      )}
+    >
+      <MIcon className={cn('h-4 w-4 shrink-0', active && 'text-sidebar-accent')} aria-hidden />
+      <span className="min-w-0 flex-1 truncate">{module.label}</span>
+      {marker && <ArrowUpRight className="h-3 w-3 shrink-0 text-sidebar-ink/50" aria-hidden />}
+    </Link>
+  );
+}
+
+/** Flyout panel jednog domena (rail režim): naslov + pin + moduli + pod-grupe. */
 function RailFlyout({
   domain,
   pathname,
@@ -576,27 +761,31 @@ function RailFlyout({
         </button>
       </div>
       <div className="max-h-[70vh] space-y-0.5 overflow-y-auto p-1.5">
-        {domain.modules.map((m) => {
-          const active = pathname === m.href;
-          const MIcon = m.icon;
+        {domain.modules.map((m) => (
+          <FlyoutModuleLink
+            key={m.href}
+            module={m}
+            active={isNavModuleActive(pathname, m, domain.id)}
+            onNavigate={onNavigate}
+          />
+        ))}
+        {domain.groups?.map((g) => {
+          const GIcon = g.icon;
           return (
-            <Link
-              key={m.href}
-              href={m.href}
-              role="menuitem"
-              onClick={() => onNavigate(m.href)}
-              aria-current={active ? 'page' : undefined}
-              className={cn(
-                'flex items-center gap-2.5 rounded-control px-2.5 py-2 text-base',
-                active
-                  ? 'bg-sidebar-line text-sidebar-ink-active'
-                  : 'text-sidebar-ink hover:bg-sidebar-line/60 hover:text-sidebar-ink-active',
-                SB_FOCUS,
-              )}
-            >
-              <MIcon className={cn('h-4 w-4 shrink-0', active && 'text-sidebar-accent')} aria-hidden />
-              <span className="min-w-0 flex-1 truncate">{m.label}</span>
-            </Link>
+            <div key={g.id} className="mt-1 border-t border-sidebar-line pt-1">
+              <div className="flex items-center gap-1.5 px-2.5 pb-0.5 pt-0.5 text-2xs font-bold uppercase tracking-wide text-sidebar-accent">
+                <GIcon className="h-3 w-3 shrink-0" aria-hidden />
+                <span className="min-w-0 flex-1 truncate">{g.title}</span>
+              </div>
+              {g.modules.map((m) => (
+                <FlyoutModuleLink
+                  key={m.href}
+                  module={m}
+                  active={isNavModuleActive(pathname, m, domain.id)}
+                  onNavigate={onNavigate}
+                />
+              ))}
+            </div>
           );
         })}
       </div>
@@ -807,16 +996,21 @@ function RailBody(props: RailBodyProps) {
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { user, logout, can } = useAuth();
-  const { sidebar: sidebarMode, openDomains, hydrated } = useUiPrefs();
+  const { sidebar: sidebarMode, sidebarLayout, openDomains, hydrated } = useUiPrefs();
   const [paletteOpen, setPaletteOpen] = useState(false);
 
-  // Vidljivi domeni/moduli po ulozi — RBAC filter IDENTIČAN današnjem: stavka uz
-  // can(requires), prazan domen se ne prikazuje. (Backend je izvor istine; ovo krije
-  // afordanse, guard i dalje čuva rute.)
-  const visibleDomains = NAV_DOMAINS.map((domain) => ({
+  // Vidljivi domeni/moduli po ulozi — RBAC filter kroz JEDAN izvor istine
+  // (`canAccessNavModule`: `requiresAny` OR ima prednost nad `requires`; npr. pogonski
+  // /kiosk je vidljiv uz KVALITET_READ ILI TEHNOLOGIJA_READ). Filtriraju se i direktne
+  // stavke i stavke pod-grupa; prazna pod-grupa i prazan domen se preskaču. (Backend je
+  // izvor istine; ovo krije afordanse, guard i dalje čuva rute.)
+  const visibleDomains: NavDomain[] = NAV_DOMAINS.map((domain) => ({
     ...domain,
-    modules: domain.modules.filter((m) => !m.requires || can(m.requires)),
-  })).filter((domain) => domain.modules.length > 0);
+    modules: domain.modules.filter((m) => canAccessNavModule(m, can)),
+    groups: domain.groups
+      ?.map((g) => ({ ...g, modules: g.modules.filter((m) => canAccessNavModule(m, can)) }))
+      .filter((g) => g.modules.length > 0),
+  })).filter((domain) => domain.modules.length > 0 || (domain.groups?.length ?? 0) > 0);
 
   const activeDomainId = findDomainByPath(pathname)?.id;
 
@@ -986,6 +1180,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               pathname={pathname}
               activeDomainId={activeDomainId}
               openDomains={openDomains}
+              layout={sidebarLayout}
               onNavigate={onNavigate}
               bellEnabled={!!user}
               userEmail={user?.email}
@@ -1092,6 +1287,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               pathname={pathname}
               activeDomainId={activeDomainId}
               openDomains={openDomains}
+              layout={sidebarLayout}
               onNavigate={onNavigate}
               bellEnabled={!!user}
               userEmail={user?.email}

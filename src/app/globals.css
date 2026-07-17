@@ -5,7 +5,10 @@
  * Tokeni (src/styles/tokens.css) su JEDINI izvor istine. Ovde ih samo izlažemo
  * kao Tailwind utilitije (bg-accent, text-ink, border-line, bg-status-*, ...).
  * Bez hex vrednosti i "magičnih px" u komponentama — DESIGN_SYSTEM.md §3.
- * Dark tema se NE isporučuje u 2.0 V1 (§3).
+ * `@theme inline` mapira --color-* na CSS var-ove iz tokens.css koji se menjaju sa
+ * <html data-theme> → svi Tailwind utilitiji automatski prate svetlu/tamnu temu
+ * (SIDEBAR_THEME_SPEC §3, 18.07.2026). Tokeni koji NISU boje (razmaci/tipografija) su
+ * temo-neutralni.
  */
 @theme inline {
   /* neutrale / površine */
@@ -136,7 +139,7 @@ td.kg-hol .kg-cell:not(.kg-abs):not(.kg-fd):not(.kg-ff):not(.kg-tm):not(.kg-dirt
 .kg-abs-sp { background: color-mix(in srgb, var(--status-info) 18%, transparent); color: var(--status-info); }
 .kg-abs-sl { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
 .kg-abs-np { background: color-mix(in srgb, var(--status-neutral) 28%, transparent); color: var(--status-neutral); }
-.kg-abs-pr { background: color-mix(in srgb, #9b51e0 18%, transparent); color: #9b51e0; } /* 1.0 ljubičasta — nema statusnog tokena */
+.kg-abs-pr { background: color-mix(in srgb, var(--status-plan) 18%, transparent); color: var(--status-plan); } /* 1.0 ljubičasta — token --status-plan (prati temu) */
 .kg-abs-nop { background: color-mix(in srgb, var(--status-neutral) 20%, transparent); color: var(--ink-secondary); }
 
 /* Teren (domaći/inostrani) i rad na 2 mašine. */

@@ -212,11 +212,11 @@ export function SaldoTab() {
             </span>
           )}
           {r.advanceApproved ? (
-            <span className="rounded border px-1 text-[0.65rem]" style={{ color: '#3B8C4E', borderColor: '#3B8C4E66' }} title={`Avans ODOBREN (CEO/CFO).${r.advanceApprovedBy ? ' Odobrio: ' + r.advanceApprovedBy + '.' : ''}${r.advanceNote ? ' Napomena: ' + r.advanceNote : ''}`}>
+            <span className="rounded border px-1 text-[0.65rem]" style={{ color: 'var(--status-success)', borderColor: 'color-mix(in srgb, var(--status-success) 45%, transparent)' }} title={`Avans ODOBREN (CEO/CFO).${r.advanceApprovedBy ? ' Odobrio: ' + r.advanceApprovedBy + '.' : ''}${r.advanceNote ? ' Napomena: ' + r.advanceNote : ''}`}>
               🛫 avans ✓ odobren
             </span>
           ) : r.isAdvance ? (
-            <span className="rounded border px-1 text-[0.65rem]" style={{ color: '#C6534F', borderColor: '#C6534F66' }} title="Uzeto/planirano više od zarađenog do danas — avans čeka odobrenje CEO/CFO.">
+            <span className="rounded border px-1 text-[0.65rem]" style={{ color: 'var(--status-danger)', borderColor: 'color-mix(in srgb, var(--status-danger) 45%, transparent)' }} title="Uzeto/planirano više od zarađenog do danas — avans čeka odobrenje CEO/CFO.">
               🛫 avans — čeka odobrenje
             </span>
           ) : null}
@@ -270,7 +270,7 @@ export function SaldoTab() {
       align: 'right',
       numeric: true,
       render: (r) => (
-        <span className={cn('font-semibold', r.daysPlanned > 0 ? 'text-[#2563eb]' : 'text-ink-disabled')} title="Planirano — budući odobreni GO (rezerviše saldo)">
+        <span className={cn('font-semibold', r.daysPlanned > 0 ? 'text-status-info' : 'text-ink-disabled')} title="Planirano — budući odobreni GO (rezerviše saldo)">
           {r.daysPlanned || 0}
         </span>
       ),
