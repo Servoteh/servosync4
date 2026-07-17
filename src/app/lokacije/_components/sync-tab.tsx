@@ -11,6 +11,7 @@ import {
   useSyncRunNow,
   useSyncStatus,
   type IngestByAction,
+  type IngestHeartbeat,
   type IngestSample,
   type SyncOutboundRow,
 } from '@/api/lokacije';
@@ -31,7 +32,8 @@ export function SyncTab() {
 
   const data = status.data?.data;
   const ingest = data?.ingest ?? {};
-  const health = data?.health ?? {};
+  // Ingest heartbeat je zaseban field (`data.heartbeat`), NE worker-health (`data.health`).
+  const heartbeat = data?.heartbeat ?? {};
   const armed = ingest.armed === true || ingest.is_armed === true;
   const ingestError = ingest.ok === false ? String(ingest.error ?? 'unknown') : null;
 
@@ -82,7 +84,7 @@ export function SyncTab() {
               label={armed ? 'ARMED — auto TRANSFER aktivan' : 'DRY-RUN — samo loguje'}
             />
           )}
-          <HeartbeatDot health={health} />
+          <HeartbeatDot heartbeat={heartbeat} />
           <div className="ml-auto flex gap-2">
             <Button variant="secondary" onClick={() => void status.refetch()} title="Osveži status worker-a">
               <RefreshCw className="h-4 w-4" /> Osveži
@@ -218,13 +220,17 @@ function StatCard({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
-/** Heartbeat indikator: tačka + „pre N min" (paritet 1.0 hbDot). */
-function HeartbeatDot({ health }: { health: { is_alive?: boolean; age_seconds?: number | null } }) {
-  if (health.age_seconds == null && health.is_alive == null) {
+/**
+ * Heartbeat indikator: tačka + „pre N min" (paritet 1.0 hbDot, index.js:2241).
+ * Čita INGEST heartbeat (`data.heartbeat`), ne worker-health summary. Prazan `{}`
+ * (BE još nije spojio rutu / nema pulsa) → „heartbeat: —" kao 1.0 `if (!hb)`.
+ */
+function HeartbeatDot({ heartbeat }: { heartbeat: IngestHeartbeat }) {
+  if (heartbeat.age_seconds == null && heartbeat.is_alive == null) {
     return <span className="text-xs text-ink-secondary">heartbeat: —</span>;
   }
-  const ageMin = Math.max(0, Math.round(Number(health.age_seconds ?? 0) / 60));
-  const alive = health.is_alive === true;
+  const ageMin = Math.max(0, Math.round(Number(heartbeat.age_seconds ?? 0) / 60));
+  const alive = heartbeat.is_alive === true;
   return (
     <span className="inline-flex items-center gap-1.5 text-xs text-ink-secondary">
       <span

@@ -165,7 +165,15 @@ export function MovementDialog({
           'Otvori „Neposlato" na Sync tabu da proveriš / ručno pošalješ.',
       );
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Ne mogu da upišem u lokalni queue.');
+      // Upis u lokalni queue NIJE uspeo (quota / privatni režim / storage isključen) —
+      // zapis NIJE sačuvan. Prikaži STVARNU grešku (bez lažnog zelenog uspeha) da
+      // korisnik pokuša ponovo ili sačeka mrežu; queued baner se ne postavlja.
+      setQueued(null);
+      const detail = e instanceof Error ? e.message : String(e);
+      setError(
+        'Premeštanje NIJE sačuvano — lokalno skladište je puno ili nedostupno. ' +
+          'Poveži se na mrežu i pokušaj ponovo, ili oslobodi prostor. (' + detail + ')',
+      );
     }
   }
 

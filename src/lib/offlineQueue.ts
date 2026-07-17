@@ -49,13 +49,21 @@ function readQueue(): QueueEntry[] {
   }
 }
 
+/**
+ * Upiši queue u localStorage. Pri neuspehu (quota / privatni režim / iskljucen
+ * storage) MORA da RETHROW-uje — u suprotnom enqueueMovement lažno vrati uspeh a
+ * red je izgubljen (tiho gubljenje podatka). Pozivalac (movement-dialog) na ovu
+ * grešku prikaže STVARNU poruku umesto lažnog „sačuvano lokalno".
+ */
 function writeQueue(queue: QueueEntry[]): void {
-  if (typeof localStorage === 'undefined') return;
+  if (typeof localStorage === 'undefined') {
+    throw new Error('Lokalno skladište nije dostupno na ovom uređaju.');
+  }
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(queue));
   } catch (e) {
-    // Quota — u najgorem slučaju gubimo NOVI unos, ne stare.
     console.error('[offlineQueue] write failed', e);
+    throw e instanceof Error ? e : new Error(String(e));
   }
   notify();
 }
@@ -119,6 +127,27 @@ function persistEntry(entry: QueueEntry): void {
 }
 
 /**
+ * Best-effort verzije za FLUSH petlju — mid-flush storage greška (npr. removeEntry
+ * posle uspešnog POST-a) ne sme da obori ceo batch. Zapis ostaje; sledeći flush ga
+ * ponovo šalje idempotentno (isti clientEventUuid → DB fn vrati {idempotent:true}).
+ * enqueueMovement NE koristi ovo — tamo greška MORA da se propagira.
+ */
+function removeEntrySafe(id: string): void {
+  try {
+    removeEntry(id);
+  } catch (e) {
+    console.error('[offlineQueue] removeEntry failed (flush)', e);
+  }
+}
+function persistEntrySafe(entry: QueueEntry): void {
+  try {
+    persistEntry(entry);
+  } catch (e) {
+    console.error('[offlineQueue] persistEntry failed (flush)', e);
+  }
+}
+
+/**
  * Fatalna greška = retry ne pomaže (validacija / dozvole / neaktivan roditelj).
  * 2.0 BE javlja greške kao HTTP status + poruku (apiFetch baca) — klasifikujemo
  * po statusu/kodu iz poruke. Mrežni pad (fetch throw bez statusa) je transientan.
@@ -159,23 +188,23 @@ async function flushInner(): Promise<FlushResult> {
   for (const entry of queue) {
     if (entry.attempts >= MAX_ATTEMPTS) {
       console.error('[offlineQueue] dropping entry (max attempts)', entry);
-      removeEntry(entry.id);
+      removeEntrySafe(entry.id);
       dropped += 1;
       continue;
     }
     entry.attempts += 1;
     try {
       await postMovement(entry.payload); // uspeh (uklj. idempotent replay) → ukloni
-      removeEntry(entry.id);
+      removeEntrySafe(entry.id);
       ok += 1;
     } catch (e) {
       entry.lastError = e instanceof Error ? e.message : String(e);
       if (isFatalError(e)) {
         console.warn('[offlineQueue] dropping due to fatal error', entry.lastError);
-        removeEntry(entry.id);
+        removeEntrySafe(entry.id);
         dropped += 1;
       } else {
-        persistEntry(entry);
+        persistEntrySafe(entry);
         failed += 1;
       }
     }

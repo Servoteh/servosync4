@@ -838,12 +838,24 @@ export interface IngestState {
 }
 
 /**
- * Heartbeat ingest worker-a — 2.0 `sync/status` vraća pod `data.health`
- * (paritet 1.0 `statusRes.heartbeat`). `is_alive` = pulsirao < 10 min.
+ * Heartbeat ingest worker-a — 2.0 `sync/status` vraća pod `data.heartbeat`
+ * (paritet 1.0 `statusRes.heartbeat`, index.js:2231). `is_alive` = pulsirao < 10 min.
+ * NE meša se sa `data.health` (worker-health summary, vidi `SyncHealth`).
  */
 export interface IngestHeartbeat {
   is_alive?: boolean;
   age_seconds?: number | null;
+}
+
+/**
+ * Zdravlje sync worker-a (DEAD_LETTER + per-worker heartbeat) — 2.0 `sync/status`
+ * vraća pod `data.health` (paritet 1.0 `fetchLocSyncHealthSummary` /
+ * `loc_sync_health_summary`, index.js:1521). Hrani worker-health baner u
+ * pocetna-tab (`syncWorkerAlerts`). RAZLIČITO od ingest heartbeat-a (`data.heartbeat`).
+ */
+export interface SyncHealth {
+  dead_letter_count?: number;
+  workers?: { worker_id?: string; last_seen?: string | null; age_seconds?: number; is_alive?: boolean }[];
 }
 
 /** 1 red outbound queue-a (MSSQL write-back) — paritet 1.0 fetchSyncOutboundEvents. */
@@ -857,9 +869,10 @@ export interface SyncOutboundRow {
 export interface SyncStatus {
   /** Stanje ingest worker-a (mirror `loc_bigtehn_ingest_state`). */
   ingest: IngestState;
-  /** Heartbeat ingest worker-a (`is_alive`, `age_seconds`). */
-  health: IngestHeartbeat;
-  heartbeat: Record<string, unknown>[];
+  /** Zdravlje sync worker-a (DEAD_LETTER + per-worker heartbeat) — hrani worker-health baner. */
+  health: SyncHealth;
+  /** Ingest heartbeat (`is_alive`, `age_seconds`) — paritet 1.0 `statusRes.heartbeat`. */
+  heartbeat: IngestHeartbeat;
   bridge: { sync_job: string; last_finished: string | null; status: string | null }[];
 }
 
