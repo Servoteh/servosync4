@@ -495,6 +495,11 @@ export interface CuttingTool {
   minStockQty: number;
   compatibleMachineCodes: string[];
   napomena: string | null;
+  /** Magacinski raspoloživo (SUM samo po lokacijama location_type='WAREHOUSE'). */
+  inWarehouseQty: number;
+  /** Izdato po mašinama (SUM v_rev_cts_machine_stock.outstanding_qty). */
+  onMachinesQty: number;
+  /** UKUPNO = inWarehouseQty + onMachinesQty (paritet 1.0 total_on_hand). */
   onHandQty: number;
 }
 
@@ -503,6 +508,37 @@ export function useCuttingTools(q: string) {
     queryKey: ['reversi', 'cutting', 'catalog', q],
     queryFn: () => apiFetch<{ data: CuttingTool[] }>(`/v1/reversi/cutting-tools${qs({ q })}`),
   });
+}
+
+/** Otvorena ISSUED linija reznog alata prijavljenog korisnika (open-lines, FIFO). */
+export interface CuttingOpenLine {
+  lineId: string;
+  documentId: string;
+  docNumber: string;
+  catalogId: string;
+  barcode: string | null;
+  oznaka: string;
+  naziv: string;
+  issuedQty: number;
+  returnedQty: number;
+  remainingQty: number;
+  unit: string;
+  machineCode: string | null;
+  issuedAt: string;
+  expectedReturnDate: string | null;
+  lineStatus: string;
+  documentStatus: string;
+}
+
+/**
+ * Otvorene ISSUED linije reznog alata prijavljenog korisnika za skenirani barkod
+ * (FIFO po issuedAt ASC). Imperativno (kao lookupBarcode) — poziva se on-demand po
+ * skenu/unosu u modalu povraćaja. `barcode` prazan → sve otvorene linije korisnika.
+ */
+export function fetchCuttingOpenLines(barcode?: string): Promise<{ data: CuttingOpenLine[] }> {
+  return apiFetch<{ data: CuttingOpenLine[] }>(
+    `/v1/reversi/cutting-tools/open-lines${qs({ barcode })}`,
+  );
 }
 
 export interface CuttingToolCreate {
@@ -573,5 +609,18 @@ export const useSeedCuttingStock = () =>
 export const useCuttingIssue = () =>
   useReversiTx<IssueVars>(
     () => '/v1/reversi/cutting-issue',
+    (v) => v,
+  );
+
+/**
+ * Povraćaj reznog u magacin (rev_confirm_cutting_return jsonb pass-through). Jedan
+ * poziv = jedan dokument (grupiši stavke po documentId). return_to_location_id=null
+ * → BE/DB fn koristi ALAT-MAG-01. Idempotency: STABILAN clientEventId PO DOKUMENTU
+ * (isti na retry) — jer bi jedan ključ za više dokumenata (deljena akcija
+ * "reversi.cutting-return") tiho vratio keširani rezultat prvog i preskočio ostale.
+ */
+export const useCuttingReturn = () =>
+  useReversiTx<IssueVars>(
+    () => '/v1/reversi/cutting-return',
     (v) => v,
   );

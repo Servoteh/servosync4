@@ -18,9 +18,21 @@ import {
 } from '@/api/reversi';
 import { tableEmpty } from './common';
 import { CuttingIssueDialog } from './cutting-issue-dialog';
+import { CuttingReturnDialog } from './cutting-return-dialog';
 
 const INPUT =
   'w-full rounded-control border border-line bg-surface-2 px-2.5 py-1.5 text-sm text-ink outline-none focus:border-accent';
+
+/**
+ * Semafor kolone „Ukupno" — IDENTIČAN 1.0 `ukupnoClass` (reznialat.js:109-116):
+ * ukupno===0 → crveno (danger); min>0 && u magacinu<min → žuto (warn); inače zeleno (ok).
+ * VAŽNO: warn ide protiv `inWarehouseQty` (magacinski), NE protiv `onHandQty`.
+ */
+function totalTone(r: CuttingTool): string {
+  if (r.onHandQty === 0) return 'text-status-danger';
+  if (r.minStockQty > 0 && r.inWarehouseQty < r.minStockQty) return 'text-status-warn';
+  return 'text-status-success';
+}
 
 /** Rezni alat — katalog + Nova šifra + Zaliha (seed) + Izdaj na mašinu (paritet 1.0 reznialat). */
 export function RezniAlatTab() {
@@ -28,6 +40,7 @@ export function RezniAlatTab() {
   const manage = can(PERMISSIONS.REVERSI_MANAGE);
   const [q, setQ] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
+  const [returnOpen, setReturnOpen] = useState(false);
   const [seedFor, setSeedFor] = useState<CuttingTool | null>(null);
   const [issueFor, setIssueFor] = useState<CuttingTool | null>(null);
   const catalog = useCuttingTools(q);
@@ -37,14 +50,38 @@ export function RezniAlatTab() {
     { key: 'naziv', header: 'Naziv', render: (r) => r.naziv },
     { key: 'barcode', header: 'Barkod', render: (r) => <span className="tnums text-ink-secondary">{r.barcode ?? '—'}</span> },
     {
-      key: 'stock',
-      header: 'Na stanju',
+      key: 'inWarehouse',
+      header: 'U magacinu',
       align: 'right',
       numeric: true,
-      render: (r) => {
-        const low = r.minStockQty > 0 && r.onHandQty < r.minStockQty;
-        return <span className={low ? 'font-semibold text-status-danger' : undefined}>{formatNumber(r.onHandQty)} {r.unit}</span>;
-      },
+      render: (r) => (
+        <span>{formatNumber(r.inWarehouseQty)} <span className="text-ink-secondary">{r.unit}</span></span>
+      ),
+    },
+    {
+      key: 'onMachines',
+      header: 'Na mašinama',
+      align: 'right',
+      numeric: true,
+      render: (r) => (
+        <span className={r.onMachinesQty > 0 ? undefined : 'text-ink-secondary'}>{formatNumber(r.onMachinesQty)}</span>
+      ),
+    },
+    {
+      key: 'total',
+      header: 'Ukupno (min)',
+      align: 'right',
+      numeric: true,
+      render: (r) => (
+        <div className="flex flex-col items-end leading-tight">
+          <span className={`font-semibold ${totalTone(r)}`}>
+            {formatNumber(r.onHandQty)} <span className="font-normal text-ink-secondary">{r.unit}</span>
+          </span>
+          {r.minStockQty > 0 && (
+            <span className="text-2xs text-ink-secondary">min. {formatNumber(r.minStockQty)}</span>
+          )}
+        </div>
+      ),
     },
     { key: 'mach', header: 'Mašine', render: (r) => <span className="text-ink-secondary">{r.compatibleMachineCodes.join(', ') || '—'}</span> },
     ...(manage
@@ -67,6 +104,8 @@ export function RezniAlatTab() {
         <div className="flex-1">
           <SearchBox value={q} onChange={setQ} placeholder="Oznaka, naziv, barkod…" />
         </div>
+        {/* Povraćaj NIJE role-gated (paritet 1.0): operater vraća svoj alat — svako sa reversi.read. */}
+        <Button variant="secondary" onClick={() => setReturnOpen(true)}>↩ Povraćaj</Button>
         {manage && <Button onClick={() => setCreateOpen(true)}>+ Nova šifra</Button>}
       </div>
 
@@ -82,6 +121,7 @@ export function RezniAlatTab() {
         )}
       />
 
+      {returnOpen && <CuttingReturnDialog onClose={() => setReturnOpen(false)} />}
       {manage && createOpen && <CreateCuttingDialog onClose={() => setCreateOpen(false)} />}
       {manage && seedFor && <SeedDialog tool={seedFor} onClose={() => setSeedFor(null)} />}
       {manage && issueFor && <CuttingIssueDialog tool={issueFor} onClose={() => setIssueFor(null)} />}
