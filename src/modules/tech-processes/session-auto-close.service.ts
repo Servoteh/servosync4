@@ -37,6 +37,33 @@ export interface SessionAutoCloseSummary {
   olderThanHours: number;
 }
 
+/** Način zatvaranja jedne sesije (za izveštaj). */
+type CloseOutcome = "gate" | "neispravno" | "unmapped";
+
+/** Jedan red izveštaja o prolazu (jedna zatvorena sesija). */
+interface AutoCloseReportRow {
+  worker: string;
+  rn: string;
+  op: number;
+  rc: string;
+  started: Date;
+  stopped: Date;
+  outcome: CloseOutcome;
+}
+
+/**
+ * Primaoci izveštaja o prolazu (mejl). `AUTOCLOSE_REPORT_EMAIL` = zarezom
+ * razdvojena lista; ako nije podešen → podrazumevano vlasnik procesa (Nenad),
+ * da izveštaj radi odmah bez env izmene.
+ */
+function reportRecipients(): string[] {
+  const raw = process.env.AUTOCLOSE_REPORT_EMAIL?.trim();
+  const list = (raw ? raw.split(",") : ["nenad.jarakovic@servoteh.com"])
+    .map((e) => e.trim())
+    .filter(Boolean);
+  return [...new Set(list)];
+}
+
 /**
  * Q11 (Nenad 17.07) — AUTO-ZATVARANJE VISEĆIH RADNIH SESIJA preko evidencije kapije.
  *
@@ -107,6 +134,22 @@ export class SessionAutoCloseService {
     };
     if (!sessions.length) return { data: summary };
 
+    // Redovi izveštaja o prolazu (mejl na kraju) — jedan po zatvorenoj sesiji.
+    const rows: AutoCloseReportRow[] = [];
+    const rowOf = (
+      s: HangingSession,
+      stopped: Date,
+      outcome: CloseOutcome,
+    ): AutoCloseReportRow => ({
+      worker: s.worker?.fullName?.trim() || `radnik #${s.workerId}`,
+      rn: s.identNumber,
+      op: s.operationNumber,
+      rc: s.workCenterCode,
+      started: s.startedAt,
+      stopped,
+      outcome,
+    });
+
     // Mapiranje radnik → osoba (kapija) — jedan upit za sve radnike u paketu.
     const workerIds = [...new Set(sessions.map((s) => s.workerId))];
     const maps = await this.prisma.workerEmployeeMap.findMany({
@@ -133,6 +176,7 @@ export class SessionAutoCloseService {
           : "auto-close: kapija nedostupna (sy15 nekonfigurisan)";
         await this.closeSession(s.id, s.startedAt, note);
         summary.unmapped++;
+        rows.push(rowOf(s, s.startedAt, "unmapped"));
         continue;
       }
 
@@ -143,6 +187,7 @@ export class SessionAutoCloseService {
         // (c) uredan izlaz → zatvori vremenom izlaska.
         await this.closeSession(s.id, lastExit, "auto-close: izlaz na kapiji");
         summary.closedByGate++;
+        rows.push(rowOf(s, lastExit, "gate"));
       } else {
         // (d) nema izlaza → NEISPRAVNO KUCANJE: zatvori 0-trajanje + e-mail šefu (best-effort).
         await this.closeSession(
@@ -151,6 +196,7 @@ export class SessionAutoCloseService {
           "NEISPRAVNO KUCANJE: sesija bez izlaza na kapiji",
         );
         summary.closedNeispravno++;
+        rows.push(rowOf(s, s.startedAt, "neispravno"));
         await this.notifyBoss(sy15Db, employeeId, s).catch((e: unknown) => {
           // Pad e-maila/razrešavanja šefa NE sme da obori zatvaranje (već je zatvoreno gore).
           this.logger.error(
@@ -166,6 +212,16 @@ export class SessionAutoCloseService {
       `Q11 auto-close (>${hours}h): ukupno ${summary.total}, izlaz-kapija ${summary.closedByGate}, ` +
         `neispravno ${summary.closedNeispravno}, bez-kapije/nemapiran ${summary.unmapped}`,
     );
+
+    // Zbirni izveštaj o prolazu (mejl) — best-effort, pad NE menja rezultat.
+    await this.sendRunReport(summary, rows).catch((e: unknown) => {
+      this.logger.error(
+        `Q11 auto-close: slanje izveštaja palo: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+    });
+
     return { data: summary };
   }
 
@@ -296,6 +352,74 @@ export class SessionAutoCloseService {
       position = superior;
     }
     return null;
+  }
+
+  /**
+   * Zbirni izveštaj o prolazu — jedan mejl vlasniku procesa (i svima iz
+   * AUTOCLOSE_REPORT_EMAIL) sa tabelom zatvorenih sesija. Best-effort (MailService
+   * nikad ne baca; ako ništa nije zatvoreno → ne šalje).
+   */
+  private async sendRunReport(
+    summary: SessionAutoCloseSummary,
+    rows: AutoCloseReportRow[],
+  ): Promise<void> {
+    if (!rows.length) return;
+    const to = reportRecipients();
+    if (!to.length) return;
+
+    const label: Record<CloseOutcome, string> = {
+      gate: "izlaz na kapiji",
+      neispravno: "NEISPRAVNO (bez izlaza)",
+      unmapped: "nemapiran / bez kapije",
+    };
+    const color: Record<CloseOutcome, string> = {
+      gate: "#0a7d33",
+      neispravno: "#b3261e",
+      unmapped: "#8a6d00",
+    };
+
+    const body = rows
+      .map((r) => {
+        const dur = Math.max(
+          0,
+          (r.stopped.getTime() - r.started.getTime()) / 3_600_000,
+        );
+        return (
+          `<tr>` +
+          `<td style="padding:4px 8px;border:1px solid #ddd">${r.worker}</td>` +
+          `<td style="padding:4px 8px;border:1px solid #ddd">${r.rn}</td>` +
+          `<td style="padding:4px 8px;border:1px solid #ddd">op ${r.op} / ${r.rc}</td>` +
+          `<td style="padding:4px 8px;border:1px solid #ddd">${this.fmt(r.started)}</td>` +
+          `<td style="padding:4px 8px;border:1px solid #ddd">${this.fmt(r.stopped)}</td>` +
+          `<td style="padding:4px 8px;border:1px solid #ddd;text-align:right">${dur.toFixed(2)} h</td>` +
+          `<td style="padding:4px 8px;border:1px solid #ddd;color:${color[r.outcome]};font-weight:600">${label[r.outcome]}</td>` +
+          `</tr>`
+        );
+      })
+      .join("");
+
+    const subject =
+      `Auto-close sesija — ${summary.closedByGate} po kapiji, ` +
+      `${summary.closedNeispravno} neispravno, ${summary.unmapped} bez kapije`;
+    const html =
+      `<p>Automatsko zatvaranje visećih radnih sesija (starijih od ${summary.olderThanHours}h) — izveštaj o prolazu.</p>` +
+      `<p><b>Ukupno zatvoreno:</b> ${summary.total} — ` +
+      `<b style="color:${color.gate}">${summary.closedByGate}</b> po izlasku na kapiji, ` +
+      `<b style="color:${color.neispravno}">${summary.closedNeispravno}</b> neispravno (bez izlaza), ` +
+      `<b style="color:${color.unmapped}">${summary.unmapped}</b> nemapiran/bez kapije.</p>` +
+      `<table style="border-collapse:collapse;font-family:sans-serif;font-size:13px">` +
+      `<thead><tr style="background:#f3f3f3">` +
+      `<th style="padding:4px 8px;border:1px solid #ddd;text-align:left">Radnik</th>` +
+      `<th style="padding:4px 8px;border:1px solid #ddd;text-align:left">RN / ident</th>` +
+      `<th style="padding:4px 8px;border:1px solid #ddd;text-align:left">Operacija</th>` +
+      `<th style="padding:4px 8px;border:1px solid #ddd;text-align:left">Početak</th>` +
+      `<th style="padding:4px 8px;border:1px solid #ddd;text-align:left">Zatvoreno</th>` +
+      `<th style="padding:4px 8px;border:1px solid #ddd;text-align:right">Trajanje</th>` +
+      `<th style="padding:4px 8px;border:1px solid #ddd;text-align:left">Način</th>` +
+      `</tr></thead><tbody>${body}</tbody></table>` +
+      `<p style="color:#666;font-size:12px">„Neispravno" sesije su zatvorene bez utrošenog vremena i njihovim šefovima je zasebno poslato obaveštenje. Automatska poruka ServoSync.</p>`;
+
+    await this.mail.send({ to, subject, html });
   }
 
   /** Lokalni prikaz vremena za e-mail (pogonska zona). */

@@ -90,6 +90,19 @@ function mailMock() {
   return { send: jest.fn().mockResolvedValue(true) };
 }
 
+/** Poziv slanja BOSS-notifikacije (neispravno kucanje) — po subject-u. */
+function bossCalls(mail: ReturnType<typeof mailMock>) {
+  return mail.send.mock.calls.filter((c) =>
+    String(c[0].subject).includes("Neispravno kucanje"),
+  );
+}
+/** Poziv slanja ZBIRNOG izveštaja o prolazu — po subject-u. */
+function reportCalls(mail: ReturnType<typeof mailMock>) {
+  return mail.send.mock.calls.filter((c) =>
+    String(c[0].subject).includes("Auto-close sesija"),
+  );
+}
+
 function make(
   prisma: ReturnType<typeof prismaMock>,
   sy15: ReturnType<typeof sy15Mock>,
@@ -124,7 +137,10 @@ describe("SessionAutoCloseService.run", () => {
         note: "auto-close: izlaz na kapiji",
       },
     });
-    expect(mail.send).not.toHaveBeenCalled();
+    // Izlaz na kapiji → šef se NE obaveštava (nema neispravnog kucanja)...
+    expect(bossCalls(mail)).toHaveLength(0);
+    // ...ali zbirni izveštaj o prolazu ide.
+    expect(reportCalls(mail)).toHaveLength(1);
     expect(res.data).toMatchObject({
       total: 1,
       closedByGate: 1,
@@ -161,10 +177,12 @@ describe("SessionAutoCloseService.run", () => {
         note: "NEISPRAVNO KUCANJE: sesija bez izlaza na kapiji",
       },
     });
-    expect(mail.send).toHaveBeenCalledTimes(1);
-    const arg = mail.send.mock.calls[0][0];
-    expect(arg.to).toBe("sef@servoteh.com");
-    expect(arg.subject).toContain("Neispravno kucanje");
+    const boss = bossCalls(mail);
+    expect(boss).toHaveLength(1);
+    expect(boss[0][0].to).toBe("sef@servoteh.com");
+    expect(boss[0][0].subject).toContain("Neispravno kucanje");
+    // Zbirni izveštaj o prolazu takođe ide.
+    expect(reportCalls(mail)).toHaveLength(1);
     expect(res.data).toMatchObject({
       total: 1,
       closedByGate: 0,
@@ -173,7 +191,7 @@ describe("SessionAutoCloseService.run", () => {
     });
   });
 
-  it("bez izlaza a šef nerazrešen → sesija svejedno zatvorena, e-mail preskočen", async () => {
+  it("bez izlaza a šef nerazrešen → sesija svejedno zatvorena, e-mail šefu preskočen", async () => {
     const prisma = prismaMock({
       sessions: [session({ id: 11, workerId: 100 })],
       maps: [{ workerId: 100, employeeId: EMP }],
@@ -188,7 +206,9 @@ describe("SessionAutoCloseService.run", () => {
     const res = await svc.run(12);
 
     expect(prisma.workTimeEntry.update).toHaveBeenCalledTimes(1);
-    expect(mail.send).not.toHaveBeenCalled();
+    // Šef nerazrešen → boss-mejl preskočen; izveštaj o prolazu i dalje ide.
+    expect(bossCalls(mail)).toHaveLength(0);
+    expect(reportCalls(mail)).toHaveLength(1);
     expect(res.data).toMatchObject({ closedNeispravno: 1 });
   });
 
@@ -214,7 +234,9 @@ describe("SessionAutoCloseService.run", () => {
     });
     // Nemapiran → kapija se ne pita.
     expect(sy15.__queryRawUnsafe).not.toHaveBeenCalled();
-    expect(mail.send).not.toHaveBeenCalled();
+    // Nemapiran → nema boss-mejla; izveštaj o prolazu i dalje ide.
+    expect(bossCalls(mail)).toHaveLength(0);
+    expect(reportCalls(mail)).toHaveLength(1);
     expect(res.data).toMatchObject({ total: 1, unmapped: 1, closedByGate: 0 });
   });
 
@@ -240,11 +262,13 @@ describe("SessionAutoCloseService.run", () => {
       expect(call[0].data.stoppedAt).toEqual(startedAt);
       expect(call[0].data.note).toContain("kapija nedostupna");
     }
-    expect(mail.send).not.toHaveBeenCalled();
+    // Bez kapije → nema boss-mejlova; jedan zbirni izveštaj o prolazu.
+    expect(bossCalls(mail)).toHaveLength(0);
+    expect(reportCalls(mail)).toHaveLength(1);
     expect(res.data).toMatchObject({ total: 2, unmapped: 2, closedByGate: 0 });
   });
 
-  it("nema visećih sesija → prazan sažetak, ništa se ne zatvara", async () => {
+  it("nema visećih sesija → prazan sažetak, ništa se ne zatvara, izveštaj se NE šalje", async () => {
     const prisma = prismaMock({ sessions: [], maps: [] });
     const mail = mailMock();
     const svc = make(prisma, sy15Mock({}), mail);
@@ -252,6 +276,7 @@ describe("SessionAutoCloseService.run", () => {
     const res = await svc.run(12);
 
     expect(prisma.workTimeEntry.update).not.toHaveBeenCalled();
+    expect(mail.send).not.toHaveBeenCalled();
     expect(res.data).toMatchObject({ total: 0 });
   });
 
@@ -297,7 +322,35 @@ describe("SessionAutoCloseService.run", () => {
 
     await svc.run(12);
 
-    expect(mail.send).toHaveBeenCalledTimes(1);
-    expect(mail.send.mock.calls[0][0].to).toBe("direktor@servoteh.com");
+    const boss = bossCalls(mail);
+    expect(boss).toHaveLength(1);
+    expect(boss[0][0].to).toBe("direktor@servoteh.com");
+  });
+
+  it("zbirni izveštaj: primalac iz AUTOCLOSE_REPORT_EMAIL, subject i tabela sa radnikom", async () => {
+    const prev = process.env.AUTOCLOSE_REPORT_EMAIL;
+    process.env.AUTOCLOSE_REPORT_EMAIL = "izvestaj@servoteh.com, sef2@servoteh.com";
+    try {
+      const out = new Date("2026-07-16T14:03:00.000Z");
+      const prisma = prismaMock({
+        sessions: [session({ id: 7, workerId: 100, fullName: "Marko Vasić" })],
+        maps: [{ workerId: 100, employeeId: EMP }],
+      });
+      const mail = mailMock();
+      const svc = make(prisma, sy15Mock({ lastOut: out }), mail);
+
+      await svc.run(12);
+
+      const rep = reportCalls(mail);
+      expect(rep).toHaveLength(1);
+      const arg = rep[0][0];
+      expect(arg.to).toEqual(["izvestaj@servoteh.com", "sef2@servoteh.com"]);
+      expect(arg.subject).toContain("Auto-close sesija");
+      expect(arg.html).toContain("Marko Vasić");
+      expect(arg.html).toContain("izlaz na kapiji");
+    } finally {
+      if (prev === undefined) delete process.env.AUTOCLOSE_REPORT_EMAIL;
+      else process.env.AUTOCLOSE_REPORT_EMAIL = prev;
+    }
   });
 });
