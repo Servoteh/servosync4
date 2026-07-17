@@ -29,6 +29,7 @@ import {
   CreateLocationDto,
   CreateMovementDto,
   SyncArmDto,
+  SyncRunNowDto,
   UpdateLocationDto,
 } from "./dto/locations-tx.dto";
 
@@ -171,6 +172,17 @@ export class LocationsController {
     return this.locations.syncOutbound(limit, req.user.email);
   }
 
+  /**
+   * LOK-P3: READ-ONLY zdravlje sync-a za SVE uloge modula (klasni `lokacije.read`,
+   * BEZ admin override-a) — samo boolovi (cacheStale + workerHealthy), bez admin
+   * detalja. Omogućava ne-adminu (magacioner/cnc) da vidi upozorenja iz 1.0 bannera
+   * (audit L-06/L-07) koja su do sada bila gejtovana pod `sync/status` (ADMIN).
+   */
+  @Get("sync/health")
+  syncHealth(@Req() req: AuthedRequest) {
+    return this.locations.syncHealth(req.user.email);
+  }
+
   // ==================== R2: MUTACIJE ====================
 
   /** Pokret (SVE tipove) — loc_create_movement(jsonb); idempotencija = client_event_uuid. */
@@ -208,10 +220,14 @@ export class LocationsController {
     return this.locations.syncArm(req.user.email, dto.armed);
   }
 
-  /** Sync: ručno okidanje ingest-a — loc_bigtehn_ingest_run_now (admin). */
+  /**
+   * Sync: ručno okidanje ingest-a — loc_bigtehn_ingest_run_now (admin).
+   * PLK-02: traži `{ confirm: true }` u telu (400 bez nje) da slučajan/dupli POST
+   * ne okine realan ingest posao.
+   */
   @Post("sync/run-now")
   @RequirePermission(PERMISSIONS.LOKACIJE_ADMIN)
-  syncRunNow(@Req() req: AuthedRequest) {
+  syncRunNow(@Req() req: AuthedRequest, @Body() _dto: SyncRunNowDto) {
     return this.locations.syncRunNow(req.user.email);
   }
 
