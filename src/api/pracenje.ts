@@ -245,9 +245,20 @@ export interface AktivnostRow {
   planirani_zavrsetak?: string | null;
   zavisi_od?: string | null;
   zavisi_od_text?: string | null;
+  zavisi_od_aktivnost_id?: string | null;
   rizik_napomena?: string | null;
   rezerva_dani?: number | null;
   kasni?: boolean;
+  // ── Puna polja aktivnosti (upsert_operativna_aktivnost izlaz) za modal/filtere/badge:
+  efektivni_status?: string | null;
+  status_mode?: string | null;
+  odgovoran_radnik_id?: string | null;
+  odgovoran_user_id?: string | null;
+  projekat_id?: string | null;
+  izvor?: string | null;
+  izvor_akcioni_plan_id?: string | null;
+  blokirano_razlog?: string | null;
+  manual_override_status?: string | null;
   [k: string]: unknown;
 }
 
@@ -534,7 +545,9 @@ export const useBlokirajAktivnost = () =>
 export const useOdblokirajAktivnost = () =>
   usePracenjeMutation<{ id: string; napomena?: string }>((v) => post(`/aktivnosti/${v.id}/odblokiraj`, { napomena: v.napomena }));
 export const usePromoteAkcionaTacka = () =>
-  usePracenjeMutation<{ akcioniPlanId: string; odeljenjeId: string; rnId: string }>((v) => post('/aktivnosti/promote', v));
+  usePracenjeMutation<{ akcioniPlanId: string; odeljenjeId: string; rnId: string }, TxResponse<{ id: string | null }>>(
+    (v) => post('/aktivnosti/promote', v),
+  );
 
 /* ── RN ensure (drill-down; DEFINER, svaki korisnik) ── */
 export const useEnsureRn = () =>
