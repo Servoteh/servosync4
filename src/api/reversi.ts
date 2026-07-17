@@ -954,6 +954,12 @@ export function useReversiMachines() {
 
 // ------------------------------------------------------------------ rezni alat
 
+/** Raspored izdatog reznog po mašinama (RC-10 expand reda) — BE `machineBreakdown`. */
+export interface CuttingMachineBreakdown {
+  machineCode: string;
+  qty: number;
+}
+
 export interface CuttingTool {
   id: string;
   barcode: string | null;
@@ -970,12 +976,100 @@ export interface CuttingTool {
   onMachinesQty: number;
   /** UKUPNO = inWarehouseQty + onMachinesQty (paritet 1.0 total_on_hand). */
   onHandQty: number;
+  /** Izdato razloženo po mašini (RC-10 „Raspored po mašinama"), sortirano po šifri. */
+  machineBreakdown: CuttingMachineBreakdown[];
 }
 
+/**
+ * Ceo (nefiltrirani) katalog reznog za mapu/workbench/pickere i tab-brojače.
+ * `pageSize=15000` je OBAVEZAN: R5 BE `listCuttingTools` bez `pageSize` pada na
+ * podrazumevanih 50 (parsePagination default), pa bi mapa/workbench/izdavanje tiho
+ * dobili samo prvih 50 šifri. Vraća do 15000 (BE `maxSize`) — dovoljno za realni
+ * katalog reznog (prod je trenutno prazan; puni se domenskom odlukom o source-lokaciji).
+ */
 export function useCuttingTools(q: string) {
   return useQuery({
     queryKey: ['reversi', 'cutting', 'catalog', q],
-    queryFn: () => apiFetch<{ data: CuttingTool[] }>(`/v1/reversi/cutting-tools${qs({ q })}`),
+    queryFn: () =>
+      apiFetch<{ data: CuttingTool[]; meta?: PageMeta }>(
+        `/v1/reversi/cutting-tools${qs({ q, pageSize: 15000 })}`,
+      ),
+  });
+}
+
+/** Filteri Katalog pod-taba (RC-04 mašina, RC-05 status, RC-13/14 paginacija). */
+export interface CuttingCatalogParams {
+  q?: string;
+  /** `active`|`scrapped`|`all`/prazno = svi (BE tretira „all"/nepoznato bez filtera). */
+  status?: string;
+  /** `machine_code` (rj_code) — BE filtrira `compatible_machine_codes` sadrži šifru. */
+  machine?: string;
+  page?: number;
+  pageSize?: number;
+}
+
+/**
+ * Katalog reznog za Katalog pod-tab (RC-04/05/13/14): filter po mašini + statusu,
+ * paginacija sa `meta.total` (za „Učitaj još" i „Ukupno šifri"). `status='all'` /
+ * prazno → bez statusnog filtera (BE ga ignoriše). `keepPreviousData` da tabela ne
+ * treperi pri „Učitaj još"/promeni filtera.
+ */
+export function useCuttingCatalog(params: CuttingCatalogParams) {
+  const { q, status, machine, page, pageSize } = params;
+  return useQuery({
+    queryKey: [
+      'reversi',
+      'cutting',
+      'catalog-list',
+      q ?? '',
+      status ?? '',
+      machine ?? '',
+      page ?? 1,
+      pageSize ?? 0,
+    ],
+    placeholderData: keepPreviousData,
+    queryFn: () =>
+      apiFetch<{ data: CuttingTool[]; meta: PageMeta }>(
+        `/v1/reversi/cutting-tools${qs({
+          q,
+          status: status && status !== 'all' ? status : undefined,
+          machine,
+          page,
+          pageSize,
+        })}`,
+      ),
+  });
+}
+
+/** Stanje jedne šifre po lokaciji (RC-25 detalj) — `GET /cutting-tools/:id` → `stock[]`. */
+export interface CuttingStockLocation {
+  location_id: string;
+  location_code: string;
+  name: string | null;
+  location_type: string | null;
+  on_hand_qty: number;
+}
+
+/** Detalj šifre reznog + stanje po lokacijama (RC-25). `stock` sortiran količinom opadajuće. */
+export interface CuttingToolDetail {
+  id: string;
+  barcode: string | null;
+  oznaka: string;
+  naziv: string;
+  unit: string;
+  status: string;
+  minStockQty: number;
+  compatibleMachineCodes: string[];
+  napomena: string | null;
+  stock: CuttingStockLocation[];
+}
+
+export function useCuttingToolDetail(id: string | null) {
+  return useQuery({
+    queryKey: ['reversi', 'cutting', 'detail', id],
+    enabled: !!id,
+    queryFn: () =>
+      apiFetch<{ data: CuttingToolDetail }>(`/v1/reversi/cutting-tools/${id}`),
   });
 }
 
