@@ -37,15 +37,24 @@ export interface SignedUrl {
 
 export interface PortfolioItem {
   predmet_item_id?: number;
+  /** 1.0 payload koristi `item_id` za drill (get_pracenje_portfolio.items[].item_id). */
+  item_id?: number;
   broj_predmeta?: string;
   naziv_predmeta?: string;
   komitent?: string | null;
   status?: string | null;
   op_pct?: number | null;
+  /** Napredak završne kontrole (KK) — dualni bar op%/KK% (može biti NULL sa BE). */
+  kk_pct?: number | null;
   dani_do_roka?: number | null;
   count_kasni?: number | null;
-  usko_grlo?: string | null;
-  problemi?: string | null;
+  /** Usko grlo: objekt { naziv, pct } ili string (verno 1.0 jsonb izlazu). */
+  usko_grlo?: { naziv?: string | null; pct?: number | null } | string | null;
+  /** Ukupan broj problema reda; raščlamba u count_* poljima. */
+  problemi?: number | string | null;
+  count_nema_tp?: number | null;
+  count_nema_crtez?: number | null;
+  count_nema_zavrsnu_kontrolu?: number | null;
   bez_podataka?: boolean;
   sort_priority?: number | null;
   [k: string]: unknown;
@@ -209,6 +218,11 @@ export interface RnResult {
   rn_id?: string | null;
   rn_broj?: string | null;
   naziv?: string | null;
+  /** get_pracenje_rn wire format: header/summary/positions (BE prosleđuje sirov jsonb). */
+  header?: Record<string, unknown>;
+  summary?: Record<string, unknown>;
+  positions?: Array<Record<string, unknown>>;
+  /** Neki BE mapiraju positions→pozicije — čitamo oba. */
   pozicije?: Array<Record<string, unknown>>;
   [k: string]: unknown;
 }
