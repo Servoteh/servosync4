@@ -183,7 +183,7 @@ ostalo uuid. Modeli se DODAJU u postojeći `prisma/sy15.prisma`; za tabele koje 
 | 1.0 gate | Ko | Kontroliše |
 |---|---|---|
 | `canManageMaintCatalog` | erp adm/mgmt/magacioner ∨ chief/admin | katalog, vozila/IT/objekti/vozači CRUD, servisni planovi, settings, dokumenta-delete |
-| `canManageMaintTasks` | chief/admin (⚠ BEZ erp kruga!) | šabloni kontrola |
+| `canManageMaintTasks` | erp adm/mgmt/magacioner ∨ chief/admin (⚠ ispravka 17.07 — audit oborio raniju tvrdnju „bez erp kruga"; 1.0 maintTasksTab.js:32-35) | šabloni kontrola |
 | `canEditWorkOrder` | erp ∨ technician/chief/admin | WO kanban drag, dodela, statusi |
 | `canManageMaintOverride` | erp ∨ chief/admin | ručni status mašine |
 | `canAccessMaintNotifications` | erp ∨ chief/management/admin | tab Notifikacije |

@@ -187,7 +187,7 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
     expect(d.gates.canManageMaintCatalog).toBe(true);
   });
 
-  it("MANAGEMENT/magacioner (erp adm/mgmt), bez maint profila: katalog+notifikacije, WO edit, ali NE tasks (chief/admin-only)", async () => {
+  it("MANAGEMENT/magacioner (erp adm/mgmt), bez maint profila: katalog+notifikacije, WO edit, I tasks (1.0 paritet)", async () => {
     const d = await meFor({
       uid: null,
       maint_role: null,
@@ -197,7 +197,7 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
     expect(d.gates.canManageMaintCatalog).toBe(true);
     expect(d.gates.canEditWorkOrder).toBe(true);
     expect(d.gates.canAccessMaintNotifications).toBe(true);
-    expect(d.gates.canManageMaintTasks).toBe(false); // ⚠ BEZ erp kruga (§2.4)
+    expect(d.gates.canManageMaintTasks).toBe(true); // 1.0 maintTasksTab.js:32-35 — erp krug UKLJUČEN (audit 17.07 oborio spec §2.4)
   });
 
   it("korisnik bez ijednog sloja (ni profil ni floor-read): sva gate-a false (ali read/report guard opšte pravo)", async () => {

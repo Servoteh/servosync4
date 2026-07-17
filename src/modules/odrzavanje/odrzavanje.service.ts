@@ -251,7 +251,7 @@ export class OdrzavanjeService {
       // FE gate-ovi (paritet 1.0 §2.4). Guard/RLS su autoritativni; ovo je za PRIKAZ.
       const gates = {
         canManageMaintCatalog: erpMgmt || isChiefAdmin,
-        canManageMaintTasks: isChiefAdmin, // ⚠ BEZ erp kruga (§2.4)
+        canManageMaintTasks: erpMgmt || isChiefAdmin, // 1.0 maintTasksTab.js:32-35 — erp adm/mgmt/magacioner ∨ chief/admin (spec §2.4 „bez erp kruga" oboren auditom 17.07; RLS ostaje autoritativan)
         canEditWorkOrder: erpMgmt || role === "technician" || isChiefAdmin,
         canManageMaintOverride: erpMgmt || isChiefAdmin,
         canAccessMaintNotifications:
