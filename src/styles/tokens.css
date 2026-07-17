@@ -65,13 +65,16 @@
   --radius-panel: 9px;           /* kartice, tabele, paneli */
 
   /* ---------- dimenzije rasporeda ---------- */
-  --sidebar-width: 208px;
+  --sidebar-width: 232px;        /* accordion: ikona+chevron traže prostor (DS §4: 188–240) */
+  --sidebar-rail-width: 52px;    /* režim „rail" — samo ikone domena (F1) */
   --detail-panel-width: 300px;
   --table-row-height: 35px;
   --command-bar-height: 52px;
 
   /* ---------- fokus ---------- */
   --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
+  /* varijanta za tamni sidebar — isti obrazac, sidebar boje (F1) */
+  --focus-ring-sidebar: 0 0 0 2px var(--sidebar-bg), 0 0 0 4px var(--sidebar-accent);
 }
 
 /*

@@ -73,6 +73,15 @@
   Nacrti, Primopredaje, Lokacije delova, MRP/Nabavka, Komitenti) + komandna traka gore
   (naslov, broj zapisa, globalna pretraga `Ctrl+K`, **zvonce notifikacija** (D8: badge nepročitanih +
   panel inbox-a; vidljivo samo nalogu sa vezanim radnikom), primarna akcija desno).
+* **Sidebar v2 „Harmonika"** (PLAN_SIDEBAR_HUB, 17.07.2026): moduli grupisani u **domene**
+  (accordion — aktivni domen otvoren po ruti, ručna stanja se pamte). **Tri režima kao
+  korisničko podešavanje** (localStorage `servosync.ui.*`): `full` (token `--sidebar-width`
+  232 px) · `rail` (token `--sidebar-rail-width` 52 px — ikone domena + flyout na
+  hover/klik, pin za sidrenje) · `hidden` (off-canvas; vraća se hover-om na levu ivicu,
+  hamburgerom u komandnoj traci ili `Ctrl+B`). Ispod 1024 px uvek off-canvas (§11).
+  **„Wide" ekrani** (Gantt): auto-sklanjanje sidebara uz pin — cela ruta preko `wide` flaga
+  u nav modelu (`src/lib/navigation.ts`) ili pogled kroz `<WideMode/>`. Zvonce se pri
+  sklonjenom sidebaru seli u komandnu traku (`HeaderBell`) — ne sme nestati sa ekrana.
 * **Tri obrasca ekrana** — svaki novi ekran je jedan od ovih, ništa četvrto bez izmene ovog dokumenta:
   1. **Lista** — filter bar + gusta tabela (+ opcioni KPI red iznad, max 4 pločice);
   2. **Master–detalj** — lista levo, detalj panel desno (288–320 px); selekcija reda puni panel;
@@ -128,7 +137,10 @@ Novi status = nova vrsta u ovoj tabeli **pre** upotrebe u kodu.
 
 ## 8. Tastatura
 
-Globalno: `Ctrl+K` pretraga · `Alt+N` novi zapis u aktivnom modulu · `Esc` zatvori panel/dijalog.
+Globalno: `Ctrl+K` pretraga (komandna paleta — skok na modul; radi i iz input polja) ·
+`Ctrl+B` prikaz navigacije (full/rail/hidden toggle; na mobilnom/wide otvara overlay;
+NE radi iz input polja) · `Alt+N` novi zapis u aktivnom modulu · `Esc` zatvori panel/dijalog
+(slojevito — zatvara samo najviši sloj: paleta → panel → overlay).
 U tabeli: `↑/↓` kretanje · `Enter` otvori · `Ctrl+F` fokus na filter.
 U formi: `Enter` sledeće polje · `Ctrl+S` snimi · `Esc` otkaži.
 **F-tasteri se ne koriste** (browser ih otima — F5 refresh); Access/Pantheon navike se mapiraju na Ctrl/Alt.
@@ -160,6 +172,13 @@ Dopune kita:
   „selektuj sve" u zaglavlju kolone selekcije).
 * `Dialog` je dobio opcioni `size`: `'md'` (default) · `'xl'` (duge forme sa sekcijama — karton
   zaposlenog) · `'2xl'` (grid unosi — brzi/bulk unos zaposlenih).
+* **`CommandPalette`** (F3 SIDEBAR_HUB): `Ctrl+K` skok na modul — fuzzy pretraga
+  (dijakritika-neosetljiva, `src/lib/fuzzy.ts`), „Nedavno" MRU na praznom upitu, pun
+  tastaturni combobox/listbox obrazac. Jedna instanca, montira je `AppShell`; vidljiva
+  afordansa = Search dugme u `PageHeader`-u. Izvor stavki = nav model + RBAC `can()`.
+* `PageHeader` uz F1 shell nosi: hamburger (kad je sidebar sklonjen), Search dugme
+  (Ctrl+K) i `HeaderBell` (zvonce kad sidebar nema kolonu). Van AppShell-a se sve tri
+  afordanse preskaču (kontekst je null).
 
 **Pravilo kita:** ekrani se sklapaju **isključivo** od kit komponenti. Nova komponenta prvo ulazi u kit,
 `/dev/ui` katalog i ovaj spisak — pa tek onda u ekran. "Privremeni div sa stilovima" ne postoji.
