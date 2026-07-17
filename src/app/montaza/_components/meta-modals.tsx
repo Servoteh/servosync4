@@ -29,7 +29,7 @@ import {
   type MontazaWorkPackage,
 } from '@/api/plan-montaze';
 import { apiDateToYmd } from '@/lib/plan-montaze/date';
-import { DEFAULT_PHASES } from '@/lib/plan-montaze/constants';
+import { DEFAULT_PHASES, DEFAULT_LOCATIONS } from '@/lib/plan-montaze/constants';
 import { locationColor } from '@/lib/plan-montaze/phase';
 
 function errText(e: unknown): string {
@@ -37,9 +37,11 @@ function errText(e: unknown): string {
   return 'Greška pri snimanju.';
 }
 
-/** MP-05: brisanje projekta je dozvoljeno samo LeadPM-u (1.0 isLeadPM), admin kao superuser. */
+/** MP-05: brisanje projekta je dozvoljeno samo LeadPM-u (1.0 isLeadPM), admin kao superuser.
+ *  Rolu normalizujemo kao ostatak koda — BE može vratiti "Admin"/" leadpm" (case/razmaci). */
 function canDeleteProject(role: string | undefined): boolean {
-  return role === 'leadpm' || role === 'admin';
+  const r = (role ?? '').trim().toLowerCase();
+  return r === 'leadpm' || r === 'admin';
 }
 
 const inputCls = 'h-9 w-full rounded-control border border-line bg-surface px-3 text-sm text-ink';
@@ -318,6 +320,7 @@ export function WpMetaDialog({
   projectCode,
   nextRnOrder,
   isLastWp,
+  projectDefaultLocation,
 }: {
   open: boolean;
   onClose: () => void;
@@ -336,6 +339,12 @@ export function WpMetaDialog({
   nextRnOrder?: number;
   /** MP-08: true ako je ovo poslednji nalog projekta — brisanje se zabranjuje. */
   isLastWp?: boolean;
+  /**
+   * MP-07: fallback lokacija za seed faze kad WP nema lokaciju (paritet 1.0
+   * createBlankPhase → wp.location || prva lokacija projekta || „Dobanovci"). Bez ovoga
+   * seed faze bi dobile null lokaciju umesto podrazumevane.
+   */
+  projectDefaultLocation?: string;
 }) {
   const upsert = useUpsertWorkPackage();
   const update = useUpdateWorkPackage();
@@ -361,6 +370,10 @@ export function WpMetaDialog({
   // DEFAULT_PHASES + queueCurrentWpSync). Sekvencijalno, sortOrder = index; tip iz naziva.
   async function seedDefaultPhases(newWpId: string) {
     setSeeding(true);
+    // Paritet 1.0 createBlankPhase (planMontaze.js:426): loc = wp.location || prva lokacija
+    // projekta || „Dobanovci". Nikad null/undefined — inače faze uđu bez lokacije.
+    const seedLocation =
+      f.location.trim() || projectDefaultLocation?.trim() || DEFAULT_LOCATIONS[0];
     try {
       for (let i = 0; i < DEFAULT_PHASES.length; i++) {
         const name = DEFAULT_PHASES[i];
@@ -369,7 +382,7 @@ export function WpMetaDialog({
           projectId,
           workPackageId: newWpId,
           phaseName: name,
-          location: f.location || undefined,
+          location: seedLocation,
           responsibleEngineer: f.responsibleEngineerDefault || undefined,
           montageLead: f.montageLeadDefault || undefined,
           sortOrder: i,
