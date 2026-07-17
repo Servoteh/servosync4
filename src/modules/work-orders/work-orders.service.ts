@@ -655,17 +655,16 @@ export class WorkOrdersService {
    * tehnolog dopunjava POSLE odobravanja — glavni radni tok). „Mogućnost dorade" =
    * izlaz kroz setLock/otključavanje (šef otključa → menja → ponovo).
    */
-  private assertEditable(wo: {
-    isLocked: boolean | null;
-    handoverStatusId?: number;
-  }): void {
+  private assertEditable(wo: { isLocked: boolean | null }): void {
+    // Q3 (17.07 revizija): jedini gate je `isLocked`. Lansiranje sada ZAKLJUČA RN
+    // (launch → isLocked=true), pa je lansiran RN zaštićen kroz isLocked, a NE kroz
+    // poseban LANSIRAN check (koji je pravio ćorsokak: FE je prikazivao izmenu jer
+    // RN nije bio locked, a BE odbijao — bez radnog „Otključaj"). Sada: lansiran =
+    // zaključan → FE prikaže „Otključaj"; svaka tehnologija-rola (rn.write:
+    // admin/šef/tehnolog/kontrolor) otključa → menja (dorada). Poruka bez „(šef)".
     if (wo.isLocked)
       throw new UnprocessableEntityException(
-        "Zaključan RN se ne može menjati.",
-      );
-    if (wo.handoverStatusId === WO_STATUS.LAUNCHED)
-      throw new UnprocessableEntityException(
-        "Lansiran radni nalog se ne može menjati — pogon radi po odštampanom nalogu. Za doradu otključajte RN (šef) ili napravite novu varijantu.",
+        'Zaključan radni nalog se ne može menjati — otključajte ga (dugme „Otključaj") za doradu.',
       );
   }
 
@@ -1139,7 +1138,10 @@ export class WorkOrdersService {
           handoverStatusId: WO_STATUS.APPROVED,
           OR: [{ isLocked: false }, { isLocked: null }],
         },
-        data: { handoverStatusId: WO_STATUS.LAUNCHED },
+        // Q3 (17.07): lansiranje ZAKLJUČA RN (isLocked=true) — pogon radi po
+        // odštampanom nalogu, izmena tek posle otključavanja (dugme „Otključaj",
+        // svaka rn.write rola). Zamenjuje nekadašnji LANSIRAN gate u assertEditable.
+        data: { handoverStatusId: WO_STATUS.LAUNCHED, isLocked: true },
       });
       if (updated.count === 0)
         throw new ConflictException(

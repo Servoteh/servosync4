@@ -181,7 +181,8 @@ describe("WorkOrdersService (workflow)", () => {
           handoverStatusId: 1,
           OR: [{ isLocked: false }, { isLocked: null }],
         },
-        data: { handoverStatusId: 3 },
+        // Q3 (17.07): lansiranje ZAKLJUČA RN — isLocked=true uz status LANSIRAN.
+        data: { handoverStatusId: 3, isLocked: true },
       });
       expect(prisma.workOrderLaunch.create).toHaveBeenCalledWith({
         data: containing({
@@ -541,16 +542,16 @@ describe("WorkOrdersService (workflow)", () => {
     });
   });
 
-  // Q3: tehnologija se zaključava na statusu LANSIRAN (3) — pogon radi po
-  // odštampanom nalogu. Gate je SAMO na LANSIRAN: SAGLASAN (1) je glavni radni
-  // tok (prepare rađa RN u SAGLASAN sa 0 operacija koji tehnolog dopunjava), a
-  // U OBRADI (0) je slobodno. setOperationPriority (CAM) NE ide kroz gate.
-  describe("Q3 — zaključavanje tehnologije na LANSIRAN", () => {
+  // Q3 (17.07 revizija): lansiranje ZAKLJUČA RN (launch → isLocked=true), a gate je
+  // SAMO isLocked. Lansiran = zaključan → zaštićen; otključavanjem (dugme „Otključaj",
+  // svaka rn.write rola) postaje editabilan (dorada). SAGLASAN (1) i U OBRADI (0) su
+  // otključani → slobodni (glavni tok). setOperationPriority (CAM) NE ide kroz gate.
+  describe("Q3 — zaključavanje tehnologije (lansiran = zaključan)", () => {
     describe("updateHeader", () => {
-      it("422 na LANSIRANOM RN-u (izmena zaglavlja ne prolazi)", async () => {
+      it("422 na ZAKLJUČANOM (lansiranom) RN-u — izmena zaglavlja ne prolazi", async () => {
         prisma.workOrder.findUnique.mockResolvedValue({
           id: 7,
-          isLocked: false,
+          isLocked: true, // lansiranje zaključava
           handoverStatusId: 3, // LANSIRAN
         });
 
@@ -558,6 +559,20 @@ describe("WorkOrdersService (workflow)", () => {
           service.updateHeader(7, { note: "naknadna izmena" }),
         ).rejects.toBeInstanceOf(UnprocessableEntityException);
         expect(prisma.workOrder.update).not.toHaveBeenCalled();
+      });
+
+      it("PROLAZI na OTKLJUČANOM lansiranom RN-u (dorada — otključao tehnolog)", async () => {
+        prisma.workOrder.findUnique.mockResolvedValue({
+          id: 7,
+          isLocked: false, // otključan za doradu, iako je LANSIRAN
+          handoverStatusId: 3,
+        });
+
+        await service.updateHeader(7, { note: "dorada" });
+
+        expect(prisma.workOrder.update).toHaveBeenCalledWith(
+          containing({ where: { id: 7 } }),
+        );
       });
 
       it("prolazi na SAGLASAN (glavni tok — dopuna posle odobravanja)", async () => {
@@ -588,10 +603,10 @@ describe("WorkOrdersService (workflow)", () => {
     });
 
     describe("addOperation", () => {
-      it("422 na LANSIRANOM RN-u (nova operacija ne prolazi)", async () => {
+      it("422 na ZAKLJUČANOM (lansiranom) RN-u — nova operacija ne prolazi", async () => {
         prisma.workOrder.findUnique.mockResolvedValue({
           id: 7,
-          isLocked: false,
+          isLocked: true, // lansiranje zaključava
           handoverStatusId: 3, // LANSIRAN
         });
 
@@ -625,10 +640,10 @@ describe("WorkOrdersService (workflow)", () => {
     });
 
     describe("updateOperation", () => {
-      it("422 na LANSIRANOM RN-u", async () => {
+      it("422 na ZAKLJUČANOM (lansiranom) RN-u", async () => {
         prisma.workOrder.findUnique.mockResolvedValue({
           id: 7,
-          isLocked: false,
+          isLocked: true, // lansiranje zaključava
           handoverStatusId: 3, // LANSIRAN
         });
 
@@ -640,10 +655,10 @@ describe("WorkOrdersService (workflow)", () => {
     });
 
     describe("deleteOperation", () => {
-      it("422 na LANSIRANOM RN-u", async () => {
+      it("422 na ZAKLJUČANOM (lansiranom) RN-u", async () => {
         prisma.workOrder.findUnique.mockResolvedValue({
           id: 7,
-          isLocked: false,
+          isLocked: true, // lansiranje zaključava
           handoverStatusId: 3, // LANSIRAN
         });
 
