@@ -241,6 +241,16 @@ export class PartLocationsService {
   }
 
   // ---------------------------------------------------------------- WRITE
+  //
+  // 🟡 PL-02 (SVESTAN DEFER, NISKO — audit CUTOVER 17.07): atribucija IZVRŠIOCA
+  // ledger zapisa (`workerId`) je namerno = radnik sa RN-a, NE prijavljeni
+  // korisnik koji je pokrenuo akciju. Razlog: ne postoji User↔Worker veza
+  // (2.0 `users` ↔ 1.0 `workers`), a `part_locations.worker_id` je FK ka
+  // `workers` → moramo upisati FK-validan id. Kad se uspostavi User↔Worker
+  // mapiranje (isti registar kao worker_employee_map badge sync), zameniti
+  // `workOrder.workerId` fallback stvarnim izvršiocem iz sesije na tri mesta
+  // označena `TODO(auth)` (transfer from/to, requisition). Ograničenje
+  // verodostojnosti „ko je uneo", NE kvar — do tada ostaje FK-safe fallback.
 
   /**
    * Unos lokacije — placement (+quantity) iskontrolisanog dela (§3.7: definiše se
