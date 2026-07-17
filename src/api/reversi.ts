@@ -442,6 +442,14 @@ export type ReversiToolDetail = ReversiTool & {
   otpisRazlog?: string | null;
   batteries: ToolBattery[];
   services: ToolService[];
+  // RB-04 — obogaćen findOneTool (Drop R3): razrešena klasifikacija (isti oblik kao
+  // inventory-units), trenutna lokacija i otvoreno zaduženje za ćeliju „Zaduženje/lokacija".
+  group?: UnitGroupRef | null;
+  subgroup?: UnitSubRef | null;
+  subsubgroup?: UnitSubRef | null;
+  currentLocationId?: string | null;
+  currentLocationCode?: string | null;
+  issuedHolder?: IssuedHolder | null;
 };
 
 /** Kartica alata: osnovno + baterije + servisi (GET /reversi/tools/:id). */
@@ -477,6 +485,142 @@ export function useToolLedger(toolId: string | null, enabled: boolean) {
       apiFetch<{ data: ToolLedgerRow[]; meta: PageMeta }>(
         `/v1/reversi/ledger${qs({ toolId: toolId ?? undefined, pageSize: 200 })}`,
       ),
+  });
+}
+
+/**
+ * Red istorije zaduženja alata (RB-10 — GET /reversi/tools/:id/documents). Puna
+ * `rev_document_lines` (camelCase) + pripadajući dokument (`document`, batch-resolve
+ * na BE). `reversi.read`; order `createdAt desc`. FE gradi tabelu Izdato/Dokument/
+ * Primalac/Stavka[Vraćen/Zadužen]/Vraćeno iz `line` + `line.document`.
+ */
+export interface ToolDocumentDocRef {
+  id: string;
+  docNumber: string;
+  docType: string;
+  recipientType: string;
+  recipientEmployeeName: string | null;
+  recipientDepartment: string | null;
+  recipientCompanyName: string | null;
+  issuedAt: string;
+  status: string;
+  returnConfirmedAt: string | null;
+}
+
+export interface ToolDocumentLine {
+  id: string;
+  documentId: string;
+  sortOrder: number;
+  lineType: string;
+  toolId: string | null;
+  drawingNo: string | null;
+  partName: string | null;
+  quantity: string | number;
+  returnedQuantity: string | number;
+  unit: string;
+  lineStatus: 'ISSUED' | 'RETURNED' | 'CONSUMED';
+  napomena: string | null;
+  createdAt: string;
+  document: ToolDocumentDocRef | null;
+}
+
+/** Istorija zaduženja jednog alata (RB-10). `reversi.read` — vidljivo svima. */
+export function useToolDocuments(toolId: string | null) {
+  return useQuery({
+    queryKey: [...KEYS.tools, 'documents', toolId],
+    enabled: !!toolId,
+    queryFn: () =>
+      apiFetch<{ data: ToolDocumentLine[] }>(`/v1/reversi/tools/${toolId}/documents`),
+  });
+}
+
+// ---------- R3 baterije / servis alata (RB-07/09 — CRUD sub-evidencije) ----------
+// Plain mutacije (bez idempotency ključa — nisu transakcione DB fn, već typed CRUD).
+// Invalidiraju `['reversi','tools']` → osvežava karticu (findOneTool nosi batteries/services).
+
+export interface ToolBatteryInput {
+  serijskiBroj?: string | null;
+  kapacitet?: string | null;
+  /** 'YYYY-MM-DD'. */
+  datumNabavke?: string | null;
+  status?: 'active' | 'scrapped' | 'lost';
+  napomena?: string | null;
+}
+
+export function useAddToolBattery() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ toolId, body }: { toolId: string; body: ToolBatteryInput }) =>
+      apiFetch<{ data: ToolBattery }>(`/v1/reversi/tools/${toolId}/batteries`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: KEYS.tools }),
+  });
+}
+
+export function useUpdateToolBattery() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, patch }: { id: string; patch: ToolBatteryInput }) =>
+      apiFetch<{ data: ToolBattery }>(`/v1/reversi/tool-batteries/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: KEYS.tools }),
+  });
+}
+
+export function useDeleteToolBattery() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<{ data: { id: string } }>(`/v1/reversi/tool-batteries/${id}`, { method: 'DELETE' }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: KEYS.tools }),
+  });
+}
+
+export interface ToolServiceInput {
+  /** 'YYYY-MM-DD'; izostavljen → DB default = danas. */
+  datum?: string;
+  tip?: 'servis' | 'popravka' | 'zamena_baterije' | 'kalibracija' | 'ostalo';
+  opis?: string | null;
+  izvrsilac?: string | null;
+  trosak?: number | null;
+  status?: 'planiran' | 'u_toku' | 'zavrsen' | 'otkazan';
+  napomena?: string | null;
+}
+
+export function useAddToolService() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ toolId, body }: { toolId: string; body: ToolServiceInput }) =>
+      apiFetch<{ data: ToolService }>(`/v1/reversi/tools/${toolId}/services`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: KEYS.tools }),
+  });
+}
+
+export function useUpdateToolService() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, patch }: { id: string; patch: ToolServiceInput }) =>
+      apiFetch<{ data: ToolService }>(`/v1/reversi/tool-services/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: KEYS.tools }),
+  });
+}
+
+export function useDeleteToolService() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<{ data: { id: string } }>(`/v1/reversi/tool-services/${id}`, { method: 'DELETE' }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: KEYS.tools }),
   });
 }
 

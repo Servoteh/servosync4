@@ -21,6 +21,7 @@ import { tableEmpty } from './common';
 import { CuttingIssueDialog } from './cutting-issue-dialog';
 import { CuttingReturnDialog } from './cutting-return-dialog';
 import { RezniMapaView } from './rezni-mapa-view';
+import { RezniAlatIcon } from './rezni-icon';
 
 const INPUT =
   'w-full rounded-control border border-line bg-surface-2 px-2.5 py-1.5 text-sm text-ink outline-none focus:border-accent';
@@ -106,7 +107,13 @@ export function RezniAlatTab() {
   return (
     <div className="space-y-4">
       {/* Pod-tabovi „Katalog" ⇄ „Mapa" (paritet 1.0 reznialat: katalog + grafička Mapa). */}
-      <div role="tablist" aria-label="Rezni alat" className="inline-flex gap-1 rounded-panel border border-line bg-surface p-1">
+      <div className="flex items-center gap-3">
+        {/* RB-61 — dedicirana SVG ikonica reznog (glodalo, ne makaze). */}
+        <span className="inline-flex items-center gap-1.5 text-sm font-semibold text-ink">
+          <RezniAlatIcon className="text-accent" size={18} />
+          Rezni alat
+        </span>
+        <div role="tablist" aria-label="Rezni alat" className="inline-flex gap-1 rounded-panel border border-line bg-surface p-1">
         {(['katalog', 'mapa'] as RezniSubview[]).map((s) => {
           const active = s === subview;
           return (
@@ -125,6 +132,7 @@ export function RezniAlatTab() {
             </button>
           );
         })}
+        </div>
       </div>
 
       {subview === 'mapa' ? (
