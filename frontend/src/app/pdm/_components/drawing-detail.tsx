@@ -20,6 +20,30 @@ function Field({ label, value }: { label: string; value: ReactNode }) {
   );
 }
 
+/**
+ * Puni spisak vezanih RN-ova (isti izvor/pravilo poklapanja kao kolona „RN" u
+ * listi). Backend vraća do 5 RN-ova + ukupan `workOrderCount`; „+N još" kad ih
+ * ima više od prikazanih. „—" kad nema nijednog.
+ */
+function RnFieldValue({
+  workOrders,
+  workOrderCount,
+}: {
+  workOrders?: { id: number; identNumber: string }[];
+  workOrderCount?: number;
+}) {
+  const wos = workOrders ?? [];
+  if (wos.length === 0) return <span className="text-ink-disabled">—</span>;
+  const total = workOrderCount ?? wos.length;
+  const extra = total - wos.length;
+  return (
+    <span className="tnums">
+      {wos.map((w) => w.identNumber).join(', ')}
+      {extra > 0 && <span className="text-ink-disabled"> +{extra} još</span>}
+    </span>
+  );
+}
+
 export function DrawingDetail({ id }: { id: number }) {
   const q = useDrawing(id);
   const [tab, setTab] = useState('bom');
@@ -87,6 +111,12 @@ export function DrawingDetail({ id }: { id: number }) {
         <Field label="Odobrio" value={d.approvedBy || '—'} />
         <Field label="Odobreno" value={formatDate(d.approvedDate)} />
         <Field label="Predmet" value={d.projectName || '—'} />
+        <Field
+          label="RN"
+          value={
+            <RnFieldValue workOrders={d.workOrders} workOrderCount={d.workOrderCount} />
+          }
+        />
         <Field label="RN ref" value={d.workOrderRef || '—'} />
       </dl>
 

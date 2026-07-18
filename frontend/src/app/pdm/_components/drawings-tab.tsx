@@ -26,6 +26,29 @@ function drawingTypeLabel(drawingNumber: string): string {
   return 'Proizvodnja';
 }
 
+/**
+ * Kolona „RN": vezani radni nalozi crteža. Nema RN-ova → legacy `workOrderRef`
+ * izbledeo ili „—"; 1–2 → nabroji; više → prva 2 + „+N" (N iz `workOrderCount`,
+ * ukupan broj distinct RN-ova). Brojevi RN-a su `tnums`.
+ */
+function rnCell(r: Drawing) {
+  const wos = r.workOrders ?? [];
+  const total = r.workOrderCount ?? wos.length;
+  if (wos.length === 0) {
+    return <span className="text-ink-disabled">{r.workOrderRef || '—'}</span>;
+  }
+  const idents = wos.map((w) => w.identNumber);
+  if (total <= 2) {
+    return <span className="tnums text-ink-secondary">{idents.join(', ')}</span>;
+  }
+  return (
+    <span className="tnums text-ink-secondary">
+      {idents.slice(0, 2).join(', ')}
+      <span className="text-ink-disabled"> +{total - 2}</span>
+    </span>
+  );
+}
+
 const columns: Column<Drawing>[] = [
   {
     key: 'drawingNumber',
@@ -45,6 +68,11 @@ const columns: Column<Drawing>[] = [
     ),
   },
   { key: 'name', header: 'Naziv', render: (r) => r.name || '—' },
+  {
+    key: 'rn',
+    header: 'RN',
+    render: (r) => rnCell(r),
+  },
   {
     key: 'material',
     header: 'Materijal',
@@ -109,6 +137,7 @@ const filterInput =
 export function DrawingsTab() {
   const [q, setQ] = useState('');
   const [revision, setRevision] = useState('');
+  const [rn, setRn] = useState('');
   const [material, setMaterial] = useState<string | null>(null);
   const [designedBy, setDesignedBy] = useState<string | null>(null);
   const [hasPdf, setHasPdf] = useState<'' | 'yes' | 'no'>('');
@@ -121,6 +150,7 @@ export function DrawingsTab() {
     page,
     q: q.trim() || undefined,
     revision: revision.trim() || undefined,
+    rn: rn.trim() || undefined,
     material: material || undefined,
     designedBy: designedBy || undefined,
     hasPdf: hasPdf || undefined,
@@ -129,7 +159,7 @@ export function DrawingsTab() {
 
   const rows = list.data?.data ?? [];
   const meta = list.data?.meta.pagination;
-  const hasFilter = !!(q || revision || material || designedBy || hasPdf || type);
+  const hasFilter = !!(q || revision || rn || material || designedBy || hasPdf || type);
 
   return (
     <div className="space-y-4">
@@ -155,6 +185,18 @@ export function DrawingsTab() {
             }}
             placeholder="npr. A"
             className={`${filterInput} w-24`}
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-ink-secondary">
+          RN
+          <input
+            value={rn}
+            onChange={(e) => {
+              setRn(e.target.value);
+              resetPage();
+            }}
+            placeholder="npr. 9400/3"
+            className={`${filterInput} w-28`}
           />
         </label>
         <div className="flex w-52 flex-col gap-1 text-xs text-ink-secondary">
@@ -221,6 +263,7 @@ export function DrawingsTab() {
             onClick={() => {
               setQ('');
               setRevision('');
+              setRn('');
               setMaterial(null);
               setDesignedBy(null);
               setHasPdf('');

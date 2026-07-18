@@ -51,6 +51,14 @@ export interface Drawing {
    * oblik gradi i ručno (npr. izbor crteža u primopredaji) bez ovog podatka.
    */
   hasPdf?: boolean;
+  /**
+   * RN-ovi (radni nalozi) vezani za crtež (kolona „RN"): dedupe po broju RN-a,
+   * najviše 5. `workOrderCount` je ukupan broj distinct RN-ova (za prikaz „+N").
+   * Opciono/defanzivno: `Drawing` oblik se gradi i ručno (bez ovih polja), a
+   * stariji backend ih ne vraća — UI tada pada na `workOrderRef` / „—".
+   */
+  workOrders?: { id: number; identNumber: string }[];
+  workOrderCount?: number;
 }
 
 /** PDF metapodaci (bez binarnog sadržaja) — deo detalja crteža. */
@@ -232,6 +240,8 @@ export interface DrawingListParams {
   revision?: string;
   material?: string;
   designedBy?: string;
+  /** Broj RN-a (radnog naloga) — pretraga crteža po vezanom RN-u (ident_number). */
+  rn?: string;
   /** '' = svi, 'yes' = samo sa PDF-om, 'no' = samo bez PDF-a. */
   hasPdf?: '' | 'yes' | 'no';
   /** '' = svi, po prefiksu broja: 'gotova' (K*), 'montazni' (M*), 'proizvodnja' (ostalo). */
@@ -256,6 +266,7 @@ export function useDrawings(params: DrawingListParams) {
   if (params.revision) qs.set('revision', params.revision);
   if (params.material) qs.set('material', params.material);
   if (params.designedBy) qs.set('designedBy', params.designedBy);
+  if (params.rn) qs.set('rn', params.rn);
   if (params.hasPdf) qs.set('hasPdf', params.hasPdf);
   if (params.type) qs.set('type', params.type);
   const query = qs.toString();
