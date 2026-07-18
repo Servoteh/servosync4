@@ -1,0 +1,22 @@
+# --- ServoSync4 monorepo — root ignore ---
+# backend/ i frontend/ imaju SVOJE .gitignore (dolaze sa istorijom); ovde su
+# samo stvari na nivou monorepoa.
+
+# Legacy referentni materijal — NIKAD se ne verzioniše (~2 GB binarnih izvoza:
+# BigBit .mdb/.mdw, Izvoz, _analiza, _tools, APL, QBigTehn_APL, PDF/docx, sačuvani patch-evi).
+# Stoji na disku pored koda kao referenca (npr. za paritet kontrole), ali van gita.
+/_legacy/
+
+# Node (pojas i tregeri — podmoduli već ignorišu svoje)
+**/node_modules/
+
+# e2e artefakti (e2e/ ima svoj .gitignore; ovo je dodatna zaštita da tajne/izveštaji ne uđu)
+/e2e/node_modules/
+/e2e/.auth/
+/e2e/report/
+/e2e/test-results/
+
+# OS / editor
+Thumbs.db
+.DS_Store
+*.swp

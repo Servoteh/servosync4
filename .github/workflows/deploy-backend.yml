@@ -1,0 +1,63 @@
+name: deploy-backend
+
+# Monorepo verzija (servosync4). Adaptirano iz nekadašnjeg servosync/backend deploy.yml:
+#  - jedan checkout (frontend je sad u istom repou pod frontend/ — nema zasebnog checkout-a
+#    servosync/frontend ni FRONTEND_REPO_TOKEN secret-a),
+#  - trigger samo na backend/** da FE-only push ne rebuild-uje backend (isto ponašanje kao pre;
+#    :3000 bake se osvežava pri sledećem backend deploju — ako zatreba, dodaj "frontend/**" ispod).
+# Frontend (glavni prod front) deployuje Cloudflare Git-integracija zasebno (root dir frontend/).
+#
+# Runner mora biti registrovan na servosync4 (ili org-level) — vidi docs/MONOREPO_MIGRACIJA.md, Faza 3.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/deploy-backend.yml"
+
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, servosync]
+    steps:
+      - name: Checkout monorepo
+        uses: actions/checkout@v4
+
+      - name: Build, migrate, restart
+        working-directory: backend
+        run: |
+          set -euo pipefail
+          # Bake the frontend static export into the backend image for same-origin :3000 serving.
+          # In the monorepo the frontend lives at ../frontend (no separate checkout / token needed).
+          # Best-effort: if the frontend build fails, ship an empty dir → backend stays API-only.
+          # .gitkeep guarantees a non-empty dir so `COPY frontend-static` never fails.
+          rm -rf frontend-static && mkdir -p frontend-static && touch frontend-static/.gitkeep
+          if [ -f ../frontend/package.json ] \
+             && docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -e npm_config_cache=/tmp/.npm \
+                  -v "$PWD/../frontend":/work -w /work node:22-bookworm-slim \
+                  sh -c "npm ci && npm run build" \
+             && [ -d ../frontend/out ]; then
+            cp -a ../frontend/out/. frontend-static/
+            echo "frontend baked into image"
+          else
+            echo "no/failed frontend build → API-only"
+          fi
+          # Ship backend source (incl. frontend-static) into the compose deploy dir (build context ./backend).
+          rsync -a --delete \
+            --exclude .git --exclude node_modules --exclude dist \
+            ./ "$HOME/servosync/backend/"
+          cd "$HOME/servosync"
+          docker compose build backend
+          # Apply any new migrations (idempotent — no-op when none pending).
+          docker compose run --rm backend npx prisma migrate deploy
+          docker compose up -d backend
+
+      - name: Health check
+        run: |
+          sleep 5
+          curl -fsS http://localhost:3000/api > /dev/null && echo "backend healthy"
+          code=$(curl -fsS -o /dev/null -w '%{http_code}' http://localhost:3000/login || true)
+          echo "front /login -> $code (200 = front baked, 404 = API-only)"
