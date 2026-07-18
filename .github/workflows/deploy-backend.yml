@@ -12,8 +12,14 @@ on:
   push:
     branches: [main]
     paths:
+      # Deploy okida SAMO stvarna backend izmena. test/docs se NE rebuild-uju u prod
+      # (pokriva ih ci-backend.yml, ubuntu-hosted) — negativni obrasci ih izbacuju iz backend/**.
       - "backend/**"
-      - ".github/workflows/deploy-backend.yml"
+      - "!backend/test/**"
+      - "!backend/docs/**"
+  # Ručni okidač: kad se menja sam deploy proces (ovaj workflow) NE želimo auto-restart prod-a,
+  # pa self-referenca više nije u paths; deploy workflow-izmene se voze ručno ili uz stvarni kod.
+  workflow_dispatch:
 
 concurrency:
   group: deploy-backend
