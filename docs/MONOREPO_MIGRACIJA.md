@@ -30,18 +30,25 @@ Istorija se čita normalno: `git log -- backend/...` / `git log --follow backend
 | frontend (glavni prod) | Cloudflare Git-integracija na `servosync/frontend` | Cloudflare Git-integracija na `servosync4`, **root dir `frontend/`** |
 | runner | registrovan na `servosync/backend` | mora na `servosync4` (ili org-level) |
 
-## Faza 2 — napraviti GitHub repo (RADI NENAD/LUKA)
+## Faza 2 — GitHub repo ✅ URAĐENO 18.07
 
-1. Napravi prazan **privatan** repo `servosync/servosync4` (bez README/gitignore — push-uje se sve).
-2. Daj Luki pristup (write/maintain), isto kao na backend/frontend repoima.
-3. Javi — ja dodam `origin` i `git push -u origin main` (+ push `feat/montaza-fe` grane ako je zadržavamo).
+Repo: **`Servoteh/servosync4`** (org `Servoteh`, ne `servosync`). `git push -u origin main` prošao —
+635 commit-a, `main` = `041b60c`.
+
+> ⚠️ ZAMKA: `Servoteh/servosync` (bez „4") je **ServoSync 1.0** (`plan-montaze`, 152 grane, živa iframe kapija) —
+> NE gurati ništa tamo. Monorepo je `Servoteh/servosync4`.
+
+Preostalo iz Faze 2: **Lukin pristup** (write/maintain) na `Servoteh/servosync4` — Nenad daje naknadno.
+Napomena: backend/frontend izvorni repoi su pod `servosync` org, monorepo i 1.0 pod `Servoteh` org (dva orga).
 
 ## Faza 3 — prebacivanje deploya (RADI NENAD/LUKA, uz mene)
 
 Sve dole je u dashboard-u / na serveru — ja to ne mogu odavde:
 
-1. **Self-hosted runner** → registruj ga na `servosync4` (ili prebaci na org-level da važi za sve repoe).
-   Labela ostaje `self-hosted, servosync`.
+1. **Self-hosted runner** (na `.28`) → registruj instancu na `Servoteh/servosync4` ili na **Servoteh org-level**.
+   Postojeći runner je na `servosync/backend` (drugi org) — ne deli se automatski; dodaj nov config na .28:
+   `./config.sh --url https://github.com/Servoteh/servosync4 --token <RUNNER_TOKEN>` (labela ostaje `self-hosted, servosync`).
+   Runneri su lagani — može ih više na istoj mašini dok stari repo još deployuje (nula downtime).
 2. **Cloudflare** → u Git-integraciji front projekta: promeni repo na `servosync4`, postavi
    **root/build direktorijum = `frontend/`** (da CF bilduje podfolder). Build/deploy komande ostaju iste.
 3. **Secrets** → na servosync4 nisu potrebni `FRONTEND_REPO_TOKEN` (izbačen). Provera da li deploy-backend
