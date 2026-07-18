@@ -47,12 +47,12 @@ Detalji: [MONOREPO_MIGRACIJA.md](MONOREPO_MIGRACIJA.md). Sažetak:
 | 3 | Deploj: backend runner `servosync4-onprem` (.28) + frontend `wrangler` iz Actions — test-deploj Succeeded | ✅ |
 | 4 | **Zatvaranje:** diskonektuj staru CF Git-integraciju, ugasi stari runner, arhiviraj stare repoe, `feat/montaza-fe` merge, očisti grane | ⬜ |
 
-**⚠️ SYNC STATUS servosync4 ↔ stari repoi (mereno 18.07, `diff -rq` origin/main):**
-- **backend/src:** ✅ **current** (uklj. PB `date_trunc` fix + authz izvor). Zaostaje samo na: `docs/` (ovaj gejt + ROADMAP checkpoint), `test/*-permissions.e2e-spec.ts` (permission matrica), `ci.yml`.
-- **frontend/src:** ⚠️ **zaostaje za JEDNIM fix-om** — attendance-drill (`277306f`: `src/api/moj-profil.ts` attendance tip + `src/app/profil/_components/attendance-section.tsx` `data?.events`). **MORA da uđe pre nego servosync4 postane jedini deploy** — inače se `/profil` „Prisustvo" crash vraća.
+**✅ SYNC STATUS servosync4 ↔ stari repoi — ZATVOREN 18.07 popodne:**
+- **backend:** ✅ **potpuno current** — src + docs (gejt + ROADMAP checkpoint) + permission matrica 10 specova (`b712319`) + CI kapija (`ci-backend.yml`, GitHub-hosted, kapije: typecheck + 1025 unit + permission matrice/coverage audit).
+- **frontend/src:** ✅ **potpuno current** — attendance-drill fix portovan (`277306f` → port `1320abf`); ceo `frontend/src` verifikovan diff-om protiv starog repoa (preostale razlike samo CRLF/LF, sadržinski identično).
 
-**Deploy okidači (`.github/workflows`):** backend deploj na push `backend/**`; frontend na push `frontend/**`.
-→ **push koda u ove foldere OKIDA prod deploj monorepoa** — sinhronizuj `frontend/src` (attendance fix) i potvrdi da je backend current PRE nego što se pređe na servosync4 kao jedini izvor. *(Ovaj dokument je u `docs/` → NE okida deploj.)*
+**Deploy okidači (`.github/workflows`):** backend deploj na push `backend/**` **osim** `backend/test/**` i `backend/docs/**` (`1796892`; ručni ventil `workflow_dispatch`); frontend na push `frontend/**`.
+→ **push koda u ove foldere OKIDA prod deploj monorepoa.** *(Ovaj dokument je u `docs/` → NE okida deploj.)*
 
 ---
 
@@ -82,7 +82,7 @@ QBigTehn **lanac** sync već ugašen 14.07 (`62a1e81`). Ostaje redom (tvrde zavi
 - [ ] GoTrue `SITE_URL` (reset lozinke) · `servosync2` front pao · Lokacije BigTehn search/OCR · Štampa ulazna tačka iz Praćenja.
 
 ### Monorepo — Faza 4 (paralelni migracioni tok)
-- [ ] Sinhronizuj `frontend/src` attendance fix (`277306f`) u servosync4.
+- [x] Sinhronizuj `frontend/src` attendance fix (`277306f` → port `1320abf`) — ✅ 18.07, sync ZATVOREN (vidi §2).
 - [ ] Diskonektuj staru CF Git-integraciju (`servosync/frontend`) · ugasi stari `servosync-backend` runner · arhiviraj stare repoe · `feat/montaza-fe` merge · očisti mrtve grane.
 
 ---
