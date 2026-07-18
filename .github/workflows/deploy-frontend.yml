@@ -1,0 +1,41 @@
+name: deploy-frontend
+
+# Monorepo frontend deploy (servosync4). Deployuje Cloudflare Worker `servosync2`
+# (static assets iz out/) direktno iz servosync4 preko `wrangler deploy` — BEZ oslanjanja
+# na Cloudflare Git-integraciju / GitHub App pristup org-u. Radi na istom self-hosted runneru
+# kao backend deploy (docker + node container).
+#
+# Zahteva repo secret: CLOUDFLARE_API_TOKEN  (scope: Account > Workers Scripts > Edit;
+# najlakše preko šablona "Edit Cloudflare Workers"). Account ID nije tajna → dole u env.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/deploy-frontend.yml"
+
+concurrency:
+  group: deploy-frontend
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, servosync]
+    steps:
+      - name: Checkout monorepo
+        uses: actions/checkout@v4
+
+      - name: Build & deploy (Cloudflare Worker servosync2)
+        working-directory: frontend
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: e2f616e00cb68d6485f93a6be4dfb14b
+        run: |
+          set -euo pipefail
+          # Build (static export → out/) i deploy u node containeru — runner ima docker.
+          # `npm run deploy` = `next build && wrangler deploy`; ovde eksplicitno da vidimo korake.
+          docker run --rm \
+            -u "$(id -u):$(id -g)" -e HOME=/tmp -e npm_config_cache=/tmp/.npm \
+            -e CLOUDFLARE_API_TOKEN -e CLOUDFLARE_ACCOUNT_ID \
+            -v "$PWD":/work -w /work node:22-bookworm-slim \
+            sh -c "npm ci && npx next build && [ -d out ] && npx wrangler deploy"
