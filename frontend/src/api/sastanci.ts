@@ -262,6 +262,18 @@ export interface Template {
 }
 export type TemplateDetail = Template & { ucesnici: TemplateUcesnik[] };
 
+/**
+ * Red liste šablona — `Template` + dve izvedene kolone koje računa BE (S5).
+ * Nisu na `TemplateDetail` (GET /templates/:id ih ne vraća).
+ */
+export interface TemplateRow extends Template {
+  /** Sledeći termin po ritmu (`nextOccurrence`, YYYY-MM-DD); null za neaktivan / `cadence='none'`. */
+  sledeciTermin: string | null;
+  /** Poslednji ODRŽAN termin serije (YYYY-MM-DD) — dok nema `template_id`, heuristika po naslovu. */
+  poslednjiSastanak: string | null;
+  poslednjiSastanakId: string | null;
+}
+
 export interface AkcijaIstorija {
   id: string;
   akcijaId: string;
@@ -576,7 +588,7 @@ export function useDraftTeme(projektId: string | null) {
 export function useTemplates() {
   return useQuery({
     queryKey: KEYS.templates,
-    queryFn: () => apiFetch<{ data: Template[] }>(`${BASE}/templates`),
+    queryFn: () => apiFetch<{ data: TemplateRow[] }>(`${BASE}/templates`),
   });
 }
 
@@ -692,6 +704,26 @@ export const useDeleteSastanak = () =>
 export const useLockSastanak = () =>
   useSastanciMutation<{ id: string; clientEventId: string; pdfStoragePath?: string }>((v) =>
     post(`/${v.id}/lock`, { clientEventId: v.clientEventId, pdfStoragePath: v.pdfStoragePath }),
+  );
+
+/**
+ * Otkaži sastanak + obavesti pozvane učesnike (RPC sastanci_cancel_sastanak →
+ * 'meeting_cancel' mejl svakom `pozvan=true`). Idempotentno (clientEventId) —
+ * dupli klik ne šalje mejlove dvaput. Ključevi odgovora su snake_case jer je to
+ * sirov jsonb iz sy15 RPC-a (isto kao weekly-status). `ok:false` NIJE greška:
+ * `reason='locked'` (zaključan) / `'already_cancelled'` (već otkazan).
+ */
+export interface CancelResult {
+  ok: boolean;
+  reason?: 'locked' | 'already_cancelled';
+  sastanak_id: string;
+  otkazan_at?: string;
+  /** Broj učesnika kojima je mejl stavljen u red za slanje. */
+  obavesteno?: number;
+}
+export const useCancelSastanak = () =>
+  useSastanciMutation<{ id: string; clientEventId: string }, TxResponse<CancelResult>>((v) =>
+    post<CancelResult>(`/${v.id}/cancel`, { clientEventId: v.clientEventId }),
   );
 
 export const useReopenSastanak = () =>

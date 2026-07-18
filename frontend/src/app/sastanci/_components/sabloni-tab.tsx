@@ -15,8 +15,9 @@ import {
   useTemplates,
   useUpdateTemplate,
   type Template,
+  type TemplateRow,
 } from '@/api/sastanci';
-import { CADENCE_LABEL, INPUT_CLS, SASTANAK_TIP_LABEL, tableEmpty } from './common';
+import { CADENCE_LABEL, formatDatum, INPUT_CLS, SASTANAK_TIP_LABEL, tableEmpty } from './common';
 import { useDetailNav } from './detail-nav';
 
 /** Šabloni sastanaka + instanciranje (paritet 1.0 sabloni/templatesModal). */
@@ -29,10 +30,48 @@ export function SabloniTab() {
 
   const rows = tplQ.data?.data ?? [];
 
-  const cols: Column<Template>[] = [
+  const cols: Column<TemplateRow>[] = [
     { key: 'naziv', header: 'Naziv', render: (r) => <span className="font-medium">{r.naziv}</span> },
     { key: 'tip', header: 'Tip', render: (r) => <span className="text-ink-secondary">{SASTANAK_TIP_LABEL[r.tip] ?? r.tip}</span> },
     { key: 'cad', header: 'Ponavljanje', render: (r) => <span className="text-ink-secondary">{CADENCE_LABEL[r.cadence] ?? r.cadence}</span> },
+    {
+      key: 'poslednji',
+      header: (
+        <span title="Poslednji već održan termin ove serije (otkazani se ne računaju). Prepoznaje se po naslovu koji je jednak nazivu šablona.">
+          Poslednji sastanak
+        </span>
+      ),
+      render: (r) =>
+        r.poslednjiSastanak ? (
+          <button
+            type="button"
+            className="tnums text-accent hover:underline"
+            title="Otvori sastanak"
+            onClick={(e) => {
+              e.stopPropagation();
+              if (r.poslednjiSastanakId) nav.open(r.poslednjiSastanakId);
+            }}
+          >
+            {formatDatum(r.poslednjiSastanak)}
+          </button>
+        ) : (
+          <span className="text-ink-disabled">—</span>
+        ),
+    },
+    {
+      key: 'sledeci',
+      header: (
+        <span title="Sledeći termin po ritmu šablona — isti datum koji dodeljuje dugme „Zakaži po šablonu“. Neaktivan šablon i ritam „Bez ponavljanja“ nemaju sledeći termin.">
+          Sledeći termin
+        </span>
+      ),
+      render: (r) =>
+        r.sledeciTermin ? (
+          <span className="tnums text-ink-secondary">{formatDatum(r.sledeciTermin)}</span>
+        ) : (
+          <span className="text-ink-disabled">—</span>
+        ),
+    },
     { key: 'active', header: 'Aktivan', render: (r) => <StatusBadge tone={r.isActive ? 'success' : 'neutral'} label={r.isActive ? 'Aktivan' : 'Neaktivan'} /> },
     {
       key: 'akcije',

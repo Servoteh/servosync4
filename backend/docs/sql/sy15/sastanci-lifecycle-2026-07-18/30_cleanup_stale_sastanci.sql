@@ -1,0 +1,101 @@
+-- Sastanci S1 — KORAK 3: JEDNOKRATNO čišćenje zastarelih sastanaka (sy15).
+--
+-- ZAŠTO: zatečeno stanje pre uvođenja automatike (korak 20) — sastanci stariji od
+-- 7 dana koji su ostali `planiran`/`u_toku`. Bez tvrdog brisanja: red ostaje,
+-- menja se samo status (odluka #1 — „bez tvrdog brisanja, zastareli → otkazan").
+--
+-- ODOBRIO: Nenad, 18.07.2026 — docs/PLAN_IZMENE_KORISNIKA_2026-07.md, odluka #1
+-- + paket S1.
+--
+-- ⚠️ PRVO PRENOS AKCIJA, PA OVO. Otvorene akcije (`akcioni_plan.status IN
+-- ('otvoren','u_toku')`) koje vise na ovim sastancima moraju se preneti na tekući
+-- sedmični PRE čišćenja — kroz postojeći UI/endpoint `POST /v1/sastanci/:id/prenos`
+-- (:id = tekući sedmični, `fromSastanakId` = zastareli sastanak). Otkazan sastanak
+-- se u listama ne gleda, pa bi akcije ostale nevidljive. Korak 00 tačka (D) daje
+-- tačan spisak sastanaka i broj otvorenih akcija po njima.
+--
+-- ⚠️ BEZ MEJLOVA. Direktan UPDATE ne poziva `sast_enqueue_cancel` (za razliku od
+-- `sastanci_cancel_sastanak`, korak 10) — namerno: reč je o sastancima koji su
+-- prošli pre više od nedelju dana, obaveštenje o otkazivanju bi bilo spam.
+--
+-- TRIGERI: `sast_check_not_locked` puca samo za redove sa OLD.status='zakljucan';
+-- WHERE ispod ih ne dodiruje. Nema drugih trigera na `sastanci` koji bi reagovali.
+--
+-- ⚠️ NE POKRETATI OVAJ FAJL KROZ `psql -f` / „Run file". UPDATE na dnu NIJE
+-- zakomentarisan i NIJE umotan u transakciju — kroz `-f` bi se izvršio odmah, u
+-- autocommit-u, bez koraka provere. Namena je: otvoriti fajl, pustiti PREGLED,
+-- pa RUČNO iskopirati UPDATE u BEGIN/COMMIT blok kako je opisano dole.
+--
+-- KAKO SE PRIMENJUJE (ručno, vlasnik, nad ŽIVOM sy15):
+--   1) pokrenuti PREGLED (zakomentarisan SELECT ispod) i pogledati spisak;
+--   2) uraditi prenos otvorenih akcija kroz UI za sastanke iz spiska;
+--   3) tek onda pustiti UPDATE — u eksplicitnoj transakciji, uz proveru broja
+--      pogođenih redova pre COMMIT-a:
+--         BEGIN;
+--         <UPDATE ispod>
+--         -- proveriti da je broj isti kao u pregledu; ako nije → ROLLBACK;
+--         COMMIT;
+--   4) posle toga pustiti korak 20 (cron), da se stanje više ne nakuplja.
+--
+-- Skripta se pušta JEDNOM. Ponovno puštanje je bezopasno (drugi put pogađa 0
+-- redova), ali nema svrhe kad cron iz koraka 20 radi.
+-- ============================================================================
+
+-- ── PREGLED (KORAK 1 — pustiti PRVO, ručno; read-only) ──────────────────────
+--
+--   -- (a) šta će biti otkazano, sa brojem otvorenih akcija po sastanku:
+--   SELECT s.id, s.datum, s.tip, s.naslov, s.status,
+--          count(a.id) FILTER (WHERE a.status IN ('otvoren','u_toku')) AS otvorenih_akcija
+--   FROM   public.sastanci s
+--   LEFT   JOIN public.akcioni_plan a ON a.sastanak_id = s.id
+--   WHERE  s.status IN ('planiran','u_toku')
+--     AND  s.datum < current_date - INTERVAL '7 days'
+--   GROUP  BY s.id, s.datum, s.tip, s.naslov, s.status
+--   ORDER  BY s.datum;
+--
+--   -- (b) ukupan broj redova koje UPDATE mora da pogodi (uporediti sa izlazom UPDATE-a):
+--   SELECT count(*) AS za_otkazivanje
+--   FROM   public.sastanci
+--   WHERE  status IN ('planiran','u_toku')
+--     AND  datum < current_date - INTERVAL '7 days';
+--
+--   -- (c) kontrola da je prenos akcija odrađen — mora vratiti 0 redova:
+--   SELECT a.id, a.naslov, a.status, a.sastanak_id
+--   FROM   public.akcioni_plan a
+--   JOIN   public.sastanci s ON s.id = a.sastanak_id
+--   WHERE  a.status IN ('otvoren','u_toku')
+--     AND  s.status IN ('planiran','u_toku')
+--     AND  s.datum < current_date - INTERVAL '7 days';
+-- ────────────────────────────────────────────────────────────────────────────
+
+-- ── ČIŠĆENJE (KORAK 3 — tek posle pregleda i prenosa akcija) ────────────────
+UPDATE public.sastanci
+   SET status = 'otkazan',
+       updated_at = now()
+ WHERE status IN ('planiran', 'u_toku')
+   AND datum < current_date - INTERVAL '7 days';
+
+-- ---------------------------------------------------------------------------
+-- VERIFIKACIJA (posle primene; read-only):
+--
+--   -- mora biti 0:
+--   SELECT count(*) FROM public.sastanci
+--    WHERE status IN ('planiran','u_toku') AND datum < current_date - INTERVAL '7 days';
+--
+--   -- ništa nije obrisano ni zaključano, samo prebačeno u 'otkazan':
+--   SELECT status, count(*) FROM public.sastanci GROUP BY status ORDER BY status;
+--
+--   -- nijedan mejl nije otišao ovim putem (broj ostaje isti kao pre skripte):
+--   SELECT count(*) FROM public.sastanci_notification_log WHERE kind = 'meeting_cancel';
+--
+-- ROLLBACK (samo unutar iste sesije pre COMMIT-a: ROLLBACK;).
+-- Posle COMMIT-a — vraćanje po `updated_at` prozoru čišćenja:
+--   -- UPDATE public.sastanci SET status = 'planiran'
+--   --  WHERE status = 'otkazan'
+--   --    AND updated_at BETWEEN '<ts pocetka>' AND '<ts kraja>';
+--   -- ⚠️ ovo NE razlikuje sastanke koji su bili 'planiran' od onih 'u_toku' —
+--   -- ako je razlika bitna, PRE čišćenja snimiti stanje:
+--   --   CREATE TABLE public.sast_cleanup_backup_2026_07_18 AS
+--   --   SELECT id, status, updated_at FROM public.sastanci
+--   --    WHERE status IN ('planiran','u_toku') AND datum < current_date - INTERVAL '7 days';
+-- ---------------------------------------------------------------------------

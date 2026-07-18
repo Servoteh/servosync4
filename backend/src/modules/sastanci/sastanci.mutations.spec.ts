@@ -182,6 +182,33 @@ describe("SastanciService R2 mutacije", () => {
     expect(sqlText(tx.$queryRaw)).toContain("sast_zakljucaj_sastanak");
   });
 
+  /* S2 — otkazivanje ide kroz DEFINER RPC (mejlovi 'meeting_cancel' se ne smeju
+   * slati iz BE-a) i mora biti idempotentno da dupli klik ne pošalje dva mejla. */
+  it("cancel: idempotentno + poziva sastanci_cancel_sastanak (ne UPDATE status)", async () => {
+    const { svc, sy15, tx } = makeSvc();
+    await svc.cancel("u@servoteh.com", ID, { clientEventId: CID });
+    expect(sy15.runIdempotentRls).toHaveBeenCalledWith(
+      "u@servoteh.com",
+      CID,
+      "sastanci.cancel",
+      expect.any(Function),
+    );
+    expect(sqlText(tx.$queryRaw)).toContain("sastanci_cancel_sastanak");
+    expect(tx.sastanak.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("cancel: RPC {ok:false, reason} prolazi kao podatak (nije greška)", async () => {
+    const { svc, tx } = makeSvc();
+    tx.$queryRaw.mockResolvedValueOnce([
+      { result: { ok: false, reason: "already_cancelled", sastanak_id: ID } },
+    ]);
+    const out = await svc.cancel("u@servoteh.com", ID, { clientEventId: CID });
+    expect(out).toEqual({
+      data: { ok: false, reason: "already_cancelled", sastanak_id: ID },
+      meta: { idempotent: false },
+    });
+  });
+
   it("bulkUcesnici: DELETE pa INSERT (regeneracija tokena/RSVP — §2 p.6)", async () => {
     const { svc, tx } = makeSvc();
     await svc.bulkUcesnici("u@servoteh.com", ID, {

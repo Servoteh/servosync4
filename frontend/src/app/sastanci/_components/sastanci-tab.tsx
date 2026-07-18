@@ -44,7 +44,13 @@ export function SastanciTab() {
     { key: 'naslov', header: 'Naslov', render: (r) => <span className="font-medium">{r.naslov}</span> },
     { key: 'tip', header: 'Tip', render: (r) => <span className="text-ink-secondary">{SASTANAK_TIP_LABEL[r.tip] ?? r.tip}</span> },
     { key: 'datum', header: 'Datum', render: (r) => <span className="tnums text-ink-secondary">{formatDatum(r.datum)}</span> },
-    { key: 'vreme', header: 'Vreme', render: (r) => <span className="tnums text-ink-secondary">{formatVreme(r.vreme)}</span> },
+    {
+      key: 'vreme',
+      // Kolona prikazuje PLANIRANO vreme (`sastanci.vreme`) — nije izvedeno iz vremena
+      // kreiranja/izmene/zaključavanja. Tooltip je tu da to bude nedvosmisleno.
+      header: <span title="Planirano vreme">Vreme</span>,
+      render: (r) => <span className="tnums text-ink-secondary">{formatVreme(r.vreme)}</span>,
+    },
     { key: 'mesto', header: 'Mesto', render: (r) => <span className="text-ink-secondary">{r.mesto || '—'}</span> },
     { key: 'status', header: 'Status', render: (r) => <SastanakStatusBadge status={r.status} /> },
   ];
@@ -70,7 +76,9 @@ export function SastanciTab() {
             <option value="">Svi statusi</option>
             <option value="planiran">Planiran</option>
             <option value="u_toku">U toku</option>
+            <option value="zavrsen">Završen</option>
             <option value="zakljucan">Zaključan</option>
+            <option value="otkazan">Otkazan</option>
           </select>
           <SearchBox value={q} onChange={setQ} placeholder="Naslov, mesto…" />
           <Can permission={PERMISSIONS.SASTANCI_WEEKLY_MOVE}>

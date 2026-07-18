@@ -85,7 +85,7 @@ export function PregledTab({
     <div className="space-y-6">
       {/* KPI red */}
       <div className="flex gap-3 overflow-x-auto pb-1">
-        <KpiTile value={s?.sastanc_upcoming ?? 0} label="Sast. 14 dana" title="Sastanaka u 14 dana" onClick={() => onJump('sastanci')} />
+        <KpiTile value={s?.sastanc_upcoming ?? 0} label="Predstoji (14 d)" title="Zakazani (planirani) sastanci u narednih 14 dana, računajući i danas. Ne uključuje sastanke u toku, završene ni otkazane." onClick={() => onJump('sastanci')} />
         <KpiTile value={s?.sastanc_u_toku ?? 0} label="U toku" tone="info" title="Sastanci u toku" onClick={() => onJump('sastanci')} />
         <KpiTile value={s?.akcije_otvoreno ?? 0} label="Akcija otv." title="Otvorenih akcija" onClick={() => onJump('akcioni')} />
         <KpiTile value={s?.akcije_kasni ?? 0} label="Kasne" tone="danger" title="Akcija koje kasne" onClick={() => onJump('akcioni')} />

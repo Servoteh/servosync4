@@ -1,13 +1,16 @@
 'use client';
 
 import { useState } from 'react';
-import { ArrowLeft, Play, Lock, Unlock, Send } from 'lucide-react';
+import { ArrowLeft, Play, Lock, Unlock, Send, Pencil, CalendarX } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { PERMISSIONS } from '@/lib/permissions';
 import { Can } from '@/lib/can';
 import { Button } from '@/components/ui-kit/button';
+import { Dialog } from '@/components/ui-kit/dialog';
+import { FormField } from '@/components/ui-kit/form-field';
 import {
   newClientEventId,
+  useCancelSastanak,
   useLockSastanak,
   useMarkPrisutni,
   usePredmetPrioritet,
@@ -18,11 +21,12 @@ import {
   useSendInvites,
   useUpdateSastanak,
   useUploadArhivaPdf,
+  type SastanakFull,
   type WeeklyDiff,
 } from '@/api/sastanci';
 import { generateSastanakPdf } from '@/lib/sastanci-pdf';
 import { Tabs, type TabItem } from './tabs';
-import { formatDatum, formatVreme, SASTANAK_TIP_LABEL, SastanakStatusBadge } from './common';
+import { formatDatum, formatVreme, INPUT_CLS, SASTANAK_TIP_LABEL, SastanakStatusBadge } from './common';
 import { DetaljZapisnik } from './detalj-zapisnik';
 import { DetaljAkcije } from './detalj-akcije';
 import { DetaljPriprema } from './detalj-priprema';
@@ -40,6 +44,12 @@ export function SastanakDetalj({ id, onBack }: { id: string; onBack: () => void 
   const { can } = useAuth();
   const [tab, setTab] = useState<DetailTab>('zapisnik');
   const [busy, setBusy] = useState<string | null>(null);
+  const [editOpen, setEditOpen] = useState(false);
+  const [cancelOpen, setCancelOpen] = useState(false);
+  // Ponuda „Pošalji ponovo" posle promene termina — NIKAD auto-slanje (odluka
+  // vlasnika): pozivnica sa novim .ics ostaje svestan klik. Traka je neblokirajuća
+  // i sama nestaje tek na akciju ili „Ne sada".
+  const [terminChanged, setTerminChanged] = useState(false);
 
   const fullQ = useSastanakFull(id);
   const updateS = useUpdateSastanak();
@@ -142,6 +152,24 @@ export function SastanakDetalj({ id, onBack }: { id: string; onBack: () => void 
             </div>
             <SastanakStatusBadge status={sast.status} />
             <div className="flex flex-wrap items-center gap-2">
+              {/* Meta-izmena termina (paritet 1.0 pripremiTab). Zaključan sastanak se
+                  ne dira — prvo „Otvori ponovo" (mgmt), kao i kod ostalih izmena. */}
+              {sast.status !== 'zakljucan' && (
+                <Can permission={PERMISSIONS.SASTANCI_EDIT}>
+                  <Button variant="secondary" onClick={() => setEditOpen(true)}>
+                    <Pencil className="h-4 w-4" aria-hidden /> Uredi
+                  </Button>
+                </Can>
+              )}
+              {/* Otkazivanje (S2) — samo dok sastanak nije održan/zatvoren. Šalje
+                  mejlove, pa ide preko confirm dijaloga, ne odmah na klik. */}
+              {(sast.status === 'planiran' || sast.status === 'u_toku') && (
+                <Can permission={PERMISSIONS.SASTANCI_EDIT}>
+                  <Button variant="danger" onClick={() => setCancelOpen(true)}>
+                    <CalendarX className="h-4 w-4" aria-hidden /> Otkaži sastanak
+                  </Button>
+                </Can>
+              )}
               {sast.status === 'planiran' && (
                 <>
                   <Can permission={PERMISSIONS.SASTANCI_MANAGE}>
@@ -177,6 +205,37 @@ export function SastanakDetalj({ id, onBack }: { id: string; onBack: () => void 
 
       {sast && (
         <div className="flex-1 space-y-4 overflow-auto p-6">
+          {terminChanged && sast.status === 'planiran' && (
+            <div
+              role="status"
+              aria-live="polite"
+              className="flex flex-wrap items-center gap-3 rounded-panel border border-status-warn/40 bg-status-warn-bg px-4 py-3"
+            >
+              <p className="min-w-0 flex-1 basis-64 text-sm text-ink">
+                Termin je promenjen. Učesnici imaju staru pozivnicu — pošalji pozivnice ponovo da
+                dobiju novi termin u kalendaru (.ics).
+              </p>
+              <div className="flex shrink-0 gap-2">
+                <Button variant="secondary" onClick={() => setTerminChanged(false)}>
+                  Ne sada
+                </Button>
+                <Can permission={PERMISSIONS.SASTANCI_MANAGE}>
+                  <Button
+                    loading={invites.isPending}
+                    onClick={() =>
+                      invites.mutate(
+                        { id: sast.id },
+                        { onSuccess: () => setTerminChanged(false) },
+                      )
+                    }
+                  >
+                    <Send className="h-4 w-4" aria-hidden /> Pošalji ponovo
+                  </Button>
+                </Can>
+              </div>
+            </div>
+          )}
+
           <div className="flex flex-wrap gap-2 text-xs text-ink-secondary">
             <Chip label={`Učesnici ${sast.overview.prisutni}/${sast.overview.ucesnici}`} />
             <Chip label={`Tačke ${sast.overview.aktivnosti}`} />
@@ -193,10 +252,201 @@ export function SastanakDetalj({ id, onBack }: { id: string; onBack: () => void 
           {tab === 'arhiva' && <DetaljArhiva sast={sast} weeklyDiff={weeklyDiff} />}
         </div>
       )}
+
+      {sast && cancelOpen && (
+        <OtkaziSastanakDialog
+          sast={sast}
+          onClose={() => setCancelOpen(false)}
+          onDone={() => {
+            setCancelOpen(false);
+            void fullQ.refetch();
+          }}
+        />
+      )}
+
+      {sast && editOpen && (
+        <UrediSastanakModal
+          sast={sast}
+          onClose={() => setEditOpen(false)}
+          onSaved={(changedTermin) => {
+            setEditOpen(false);
+            if (changedTermin) setTerminChanged(true);
+            void fullQ.refetch();
+          }}
+        />
+      )}
     </>
   );
 }
 
 function Chip({ label }: { label: string }) {
   return <span className="rounded-full border border-line bg-surface px-2.5 py-1">{label}</span>;
+}
+
+/**
+ * Potvrda otkazivanja (S2). Radnja je destruktivna I šalje mejlove, pa mora biti
+ * eksplicitna — zato dijalog, a ne `confirm()`: tekst mora da kaže koliko ljudi
+ * dobija obaveštenje, a greška sa servera se prikazuje u dijalogu (kod `confirm()`
+ * bi završila u `alert`-u).
+ *
+ * `dismissable` ostaje podrazumevano `true` — ovde nema unosa, pa su Escape i klik
+ * na pozadinu ispravan „odustani" (za razliku od obrasca „Uredi", B1).
+ *
+ * BE/RPC može vratiti `ok:false` (zaključan / već otkazan) — to NIJE greška nego
+ * poruka; dijalog je prikaže i osveži detalj.
+ */
+function OtkaziSastanakDialog({
+  sast,
+  onClose,
+  onDone,
+}: {
+  sast: SastanakFull;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const cancelM = useCancelSastanak();
+  const [error, setError] = useState<string | null>(null);
+  const pozvanih = sast.ucesnici.filter((u) => u.pozvan).length;
+
+  async function submit() {
+    setError(null);
+    try {
+      const res = await cancelM.mutateAsync({ id: sast.id, clientEventId: newClientEventId() });
+      if (res.data?.ok === false) {
+        setError(
+          res.data.reason === 'locked'
+            ? 'Sastanak je zaključan — prvo ga otvori ponovo, pa otkaži.'
+            : 'Sastanak je već otkazan.',
+        );
+        return;
+      }
+      onDone();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Otkazivanje nije uspelo.');
+    }
+  }
+
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title="Otkaži sastanak"
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose}>Odustani</Button>
+          <Button variant="danger" loading={cancelM.isPending} onClick={() => void submit()}>
+            <CalendarX className="h-4 w-4" aria-hidden /> Otkaži i obavesti
+          </Button>
+        </div>
+      }
+    >
+      <div className="space-y-3 text-sm text-ink">
+        <p>
+          Sastanak <strong>{sast.naslov}</strong> ({formatDatum(sast.datum)}
+          {sast.vreme ? `, ${formatVreme(sast.vreme)}` : ''}) dobija status <strong>Otkazan</strong>.
+        </p>
+        <p className="rounded-panel border border-status-warn/40 bg-status-warn-bg px-3 py-2">
+          {pozvanih > 0 ? (
+            <>
+              Svim pozvanim učesnicima (<strong className="tnums">{pozvanih}</strong>) biće{' '}
+              <strong>poslat mejl o otkazivanju</strong>. Slanje se ne može opozvati.
+            </>
+          ) : (
+            <>Nema pozvanih učesnika — mejl neće biti poslat nikome.</>
+          )}
+        </p>
+        <p className="text-xs text-ink-secondary">
+          Sastanak se ne briše: zapisnik, akcije i odluke ostaju. Otvorene akcije prebaci na
+          naredni sastanak pre otkazivanja („Sedmični + prenos“).
+        </p>
+        {error && <p className="text-sm text-status-danger">{error}</p>}
+      </div>
+    </Dialog>
+  );
+}
+
+/**
+ * „Uredi" — meta podaci već zakazanog termina (naslov/datum/vreme/mesto), paritet 1.0
+ * pripremiTab meta-edit. Serija se i dalje menja u tabu Šabloni (važi za BUDUĆE
+ * instance); ovde se menja SAMO ovaj termin.
+ *
+ * `dismissable={false}` — obrazac sa unosom se ne sme zatvoriti klikom na pozadinu
+ * ni Escape-om (B1), samo X / Otkaži.
+ */
+function UrediSastanakModal({
+  sast,
+  onClose,
+  onSaved,
+}: {
+  sast: SastanakFull;
+  onClose: () => void;
+  /** `changedTermin` = datum i/ili vreme su stvarno promenjeni (→ ponuda re-send pozivnica). */
+  onSaved: (changedTermin: boolean) => void;
+}) {
+  const update = useUpdateSastanak();
+  const datum0 = String(sast.datum ?? '').slice(0, 10);
+  const vreme0 = sast.vreme ? formatVreme(sast.vreme) : '';
+  const [naslov, setNaslov] = useState(sast.naslov ?? '');
+  const [datum, setDatum] = useState(datum0);
+  const [vreme, setVreme] = useState(vreme0);
+  const [mesto, setMesto] = useState(sast.mesto ?? '');
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit() {
+    setError(null);
+    if (!naslov.trim()) return setError('Naslov je obavezan.');
+    if (!datum) return setError('Datum je obavezan.');
+    try {
+      await update.mutateAsync({
+        id: sast.id,
+        patch: {
+          naslov: naslov.trim(),
+          datum,
+          // '' → BE tretira kao brisanje vremena (toDbTime); ne šalje se undefined
+          // jer bi tada „obriši vreme" bilo nemoguće.
+          vreme,
+          mesto: mesto.trim(),
+        },
+      });
+      onSaved(datum !== datum0 || vreme !== vreme0);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Snimanje nije uspelo.');
+    }
+  }
+
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      dismissable={false}
+      title="Uredi sastanak"
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose}>Otkaži</Button>
+          <Button loading={update.isPending} onClick={() => void submit()}>Sačuvaj</Button>
+        </div>
+      }
+    >
+      <div className="space-y-3">
+        <FormField label="Naslov" required>
+          <input className={INPUT_CLS} value={naslov} onChange={(e) => setNaslov(e.target.value)} autoFocus />
+        </FormField>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <FormField label="Datum" required>
+            <input className={INPUT_CLS} type="date" value={datum} onChange={(e) => setDatum(e.target.value)} />
+          </FormField>
+          <FormField label="Vreme">
+            <input className={INPUT_CLS} type="time" value={vreme} onChange={(e) => setVreme(e.target.value)} />
+          </FormField>
+        </div>
+        <FormField label="Mesto">
+          <input className={INPUT_CLS} value={mesto} onChange={(e) => setMesto(e.target.value)} />
+        </FormField>
+        <p className="text-xs text-ink-secondary">
+          Menja se samo ovaj termin. Ritam serije (svi budući termini) se menja u tabu „Šabloni“.
+        </p>
+        {error && <p className="text-sm text-status-danger">{error}</p>}
+      </div>
+    </Dialog>
+  );
 }

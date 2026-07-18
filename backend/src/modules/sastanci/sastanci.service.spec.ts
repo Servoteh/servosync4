@@ -22,6 +22,7 @@ describe("SastanciService — withUserRls most + BigInt out", () => {
         findMany: jest.fn().mockResolvedValue([]),
         findUnique: jest.fn().mockResolvedValue(null),
       },
+      sastanciTemplate: { findMany: jest.fn().mockResolvedValue([]) },
       $queryRaw: jest.fn().mockResolvedValue([]),
     };
     const sy15 = {
@@ -245,6 +246,99 @@ describe("SastanciService — withUserRls most + BigInt out", () => {
     );
     expect(out.data[0].sizeBytes).toBe(123456);
     expect(out.data[1].sizeBytes).toBeNull();
+  });
+
+  // ── S5: izvedene kolone „Sledeći termin" / „Poslednji sastanak" u listTemplates ──
+
+  const TPL = {
+    id: "t1",
+    naziv: "Sedmični pregled",
+    tip: "sedmicni",
+    cadence: "weekly",
+    cadenceDow: 1,
+    cadenceDom: null,
+    isActive: true,
+    createdAt: new Date("2026-01-05T08:00:00Z"),
+  };
+
+  it("listTemplates: sledeciTermin = nextOccurrence (isti datum koji dodeljuje instantiate)", async () => {
+    const { svc, tx } = makeSvc();
+    tx.sastanciTemplate.findMany.mockResolvedValueOnce([TPL]);
+    const out = (await svc.listTemplates("test@servoteh.com")) as {
+      data: { sledeciTermin: string | null }[];
+    };
+    // weekly + dow=1 → prvi ponedeljak od danas (lokalni kalendar, bez TZ drift-a).
+    const d = out.data[0].sledeciTermin as string;
+    expect(d).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(new Date(`${d}T00:00:00`).getDay()).toBe(1);
+  });
+
+  it("listTemplates: neaktivan šablon i cadence='none' nemaju sledeći termin", async () => {
+    const { svc, tx } = makeSvc();
+    tx.sastanciTemplate.findMany.mockResolvedValueOnce([
+      { ...TPL, id: "t2", naziv: "Neaktivan", isActive: false },
+      { ...TPL, id: "t3", naziv: "Bez ritma", cadence: "none" },
+    ]);
+    const out = (await svc.listTemplates("test@servoteh.com")) as {
+      data: { sledeciTermin: string | null }[];
+    };
+    expect(out.data.map((t) => t.sledeciTermin)).toEqual([null, null]);
+  });
+
+  it("listTemplates: poslednji sastanak = JEDAN batch upit za sve šablone (bez N+1)", async () => {
+    const { svc, tx } = makeSvc();
+    tx.sastanciTemplate.findMany.mockResolvedValueOnce([
+      TPL,
+      { ...TPL, id: "t2", naziv: "  Kolegijum  " },
+      { ...TPL, id: "t3", naziv: "Bez instanci" },
+    ]);
+    tx.$queryRaw.mockResolvedValueOnce([
+      {
+        key: "sedmični pregled",
+        id: "s1",
+        datum: new Date("2026-07-13T00:00:00Z"),
+        status: "zakljucan",
+      },
+      {
+        key: "kolegijum",
+        id: "s2",
+        datum: new Date("2026-07-10T00:00:00Z"),
+        status: "zavrsen",
+      },
+    ]);
+    const out = (await svc.listTemplates("test@servoteh.com")) as {
+      data: {
+        poslednjiSastanak: string | null;
+        poslednjiSastanakId: string | null;
+      }[];
+    };
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(out.data.map((t) => t.poslednjiSastanak)).toEqual([
+      "2026-07-13",
+      "2026-07-10",
+      null,
+    ]);
+    // Naziv se normalizuje (trim + lower) na obe strane poklapanja.
+    expect(out.data[1].poslednjiSastanakId).toBe("s2");
+    expect(out.data[2].poslednjiSastanakId).toBeNull();
+
+    const sql = (
+      tx.$queryRaw.mock.calls[0] as unknown as { strings: string[] }[]
+    )[0].strings.join("?");
+    // Heuristika po naslovu + „već održan": otkazani i budući termini otpadaju.
+    expect(sql).toContain("lower(btrim(naslov))");
+    expect(sql).toContain("status <> 'otkazan'");
+    expect(sql).toContain("datum <= CURRENT_DATE");
+  });
+
+  it("listTemplates: bez šablona → nema upita za poslednji sastanak", async () => {
+    const { svc, tx } = makeSvc();
+    tx.sastanciTemplate.findMany.mockResolvedValueOnce([]);
+    const out = (await svc.listTemplates("test@servoteh.com")) as {
+      data: unknown[];
+    };
+    expect(out.data).toEqual([]);
+    expect(tx.$queryRaw).not.toHaveBeenCalled();
   });
 
   it("listArhive: zapisnikSizeBytes BigInt → Number", async () => {

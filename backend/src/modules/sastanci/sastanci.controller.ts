@@ -32,6 +32,7 @@ import {
   ArhivaPdfDto,
   BulkStatusDto,
   BulkUcesniciDto,
+  CancelSastanakDto,
   CreateAkcijaDto,
   CreateAktivnostDto,
   CreateDraftTemaDto,
@@ -523,6 +524,19 @@ export class SastanciController {
     @Body() dto: LockSastanakDto,
   ) {
     return this.sastanci.lock(req.user.email, id, dto);
+  }
+
+  /** Otkaži sastanak + obavesti pozvane učesnike ('meeting_cancel'). Guard je isti
+   *  kao na /lock — `sastanci.edit` ovde, row-odluka (mgmt ∨ organizator-trio) u
+   *  sy15 DEFINER fn `sastanci_cancel_sastanak`. */
+  @Post(":id/cancel")
+  @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
+  cancel(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: CancelSastanakDto,
+  ) {
+    return this.sastanci.cancel(req.user.email, id, dto);
   }
 
   @Post(":id/reopen")

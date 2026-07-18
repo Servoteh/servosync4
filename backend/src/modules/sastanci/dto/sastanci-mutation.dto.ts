@@ -31,6 +31,9 @@ export class IdempotentDto {
 }
 
 const TIME_RE = /^\d{2}:\d{2}(:\d{2})?$/;
+/** Kao TIME_RE, ali dozvoljava '' = OBRIŠI vreme (service `toDbTime('')` → null).
+ *  Samo na PATCH-u termina (S4 „Uredi") — create/šabloni ostaju strogi. */
+const TIME_OR_CLEAR_RE = /^$|^\d{2}:\d{2}(:\d{2})?$/;
 
 export class CreateSastanakDto extends IdempotentDto {
   @IsOptional()
@@ -64,7 +67,7 @@ export class UpdateSastanakDto {
   tip?: string;
   @IsOptional() @IsString() @MaxLength(300) naslov?: string;
   @IsOptional() @IsISO8601() datum?: string;
-  @IsOptional() @Matches(TIME_RE) vreme?: string;
+  @IsOptional() @Matches(TIME_OR_CLEAR_RE) vreme?: string;
   @IsOptional() @IsString() mesto?: string;
   @IsOptional() @IsUUID() projekatId?: string;
   @IsOptional() @IsString() vodioEmail?: string;
@@ -83,6 +86,10 @@ export class LockSastanakDto extends IdempotentDto {
    *  PRE meeting_locked trigera (§2 pravilo 8). Opcioni (zaključavanje bez PDF-a). */
   @IsOptional() @IsString() pdfStoragePath?: string;
 }
+
+/** Otkazivanje (S2) — nosi samo idempotency ključ; RPC šalje `meeting_cancel`
+ *  mejlove pozvanim učesnicima, pa dupli POST NE sme da ih pošalje dvaput. */
+export class CancelSastanakDto extends IdempotentDto {}
 
 export class RsvpDto {
   /** dolazim | ne_dolazim | null(clear). */

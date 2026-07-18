@@ -28,6 +28,7 @@ import type {
   AddUcesnikDto,
   BulkStatusDto,
   BulkUcesniciDto,
+  CancelSastanakDto,
   CreateAkcijaDto,
   CreateAktivnostDto,
   CreateDraftTemaDto,
@@ -554,13 +555,73 @@ export class SastanciService {
 
   // ---------- Šabloni ----------
 
+  /**
+   * Šabloni + dve izvedene kolone (S5):
+   *  - `sledeciTermin` — čist compute kroz postojeći `nextOccurrence` (isti port koji
+   *    koristi `instantiate`, pa je „Sledeći termin" tačno ono što će dugme „Zakaži po
+   *    šablonu" napraviti). `null` za neaktivan šablon i za `cadence='none'` (nema
+   *    ponavljanja → nema sledećeg termina). Bez DB izmene.
+   *  - `poslednjiSastanak` — poslednji ODRŽAN termin serije.
+   *
+   * TODO(sy15 template_id): veza instanca→šablon u 1.0 šemi NE POSTOJI, pa se poslednji
+   * termin razrešava HEURISTIKOM `lower(btrim(naslov)) = lower(btrim(tpl.naziv))`
+   * (instantiate upisuje `naslov := tpl.naziv`). Heuristika promašuje kad korisnik
+   * ručno preimenuje instancu (S4 „Uredi") ili kad dva šablona imaju isti naziv.
+   * Kad se primeni `backend/docs/sql/sy15/sastanci-lifecycle-2026-07-18/40_sastanci_template_id.sql`
+   * (aditivna kolona + backfill) i re-introspektuje `prisma/sy15.prisma`, zameniti ceo
+   * blok pravim JOIN-om po `template_id` — upit ostaje jedan (DISTINCT ON template_id).
+   */
   async listTemplates(email: string) {
     return this.withUserMapped(email, async (tx) => {
       const templates = await tx.sastanciTemplate.findMany({
         orderBy: [{ naziv: "asc" }],
       });
-      return { data: templates };
+      const keys = [
+        ...new Set(templates.map((t) => t.naziv.trim().toLowerCase())),
+      ].filter(Boolean);
+
+      // Jedan batch upit za SVE šablone (nikad N+1). „Poslednji" = najskoriji termin
+      // koji je već (bar nominalno) održan: datum <= danas i status <> 'otkazan'
+      // (otkazan se nije desio; budući planiran je „sledeći", ne „poslednji").
+      const last = keys.length
+        ? await tx.$queryRaw<
+            { key: string; id: string; datum: Date; status: string }[]
+          >(
+            Prisma.sql`SELECT DISTINCT ON (lower(btrim(naslov)))
+                lower(btrim(naslov)) AS key, id, datum, status
+              FROM sastanci
+              WHERE lower(btrim(naslov)) = ANY(${keys}::text[])
+                AND status <> 'otkazan'
+                AND datum <= CURRENT_DATE
+              ORDER BY lower(btrim(naslov)), datum DESC, created_at DESC`,
+          )
+        : [];
+      const byKey = new Map(last.map((r) => [r.key, r]));
+
+      const data = templates.map((t) => {
+        const hit = byKey.get(t.naziv.trim().toLowerCase());
+        return {
+          ...t,
+          sledeciTermin:
+            t.isActive && t.cadence !== "none"
+              ? nextOccurrence({
+                  cadence: t.cadence,
+                  cadenceDow: t.cadenceDow,
+                  cadenceDom: t.cadenceDom,
+                  createdAt: t.createdAt,
+                })
+              : null,
+          poslednjiSastanak: hit ? this.ymdOut(hit.datum) : null,
+          poslednjiSastanakId: hit?.id ?? null,
+        };
+      });
+      return { data };
     });
+  }
+
+  /** @db.Date kolona (UTC ponoć) → 'YYYY-MM-DD' bez TZ drift-a. */
+  private ymdOut(d: Date): string {
+    return d.toISOString().slice(0, 10);
   }
 
   async findTemplate(email: string, id: string) {
@@ -884,6 +945,30 @@ export class SastanciService {
       async (tx) => {
         const rows = await tx.$queryRaw<{ result: unknown }[]>(
           Prisma.sql`SELECT sast_zakljucaj_sastanak(${id}::uuid, NULL, ${dto.pdfStoragePath ?? null}) AS result`,
+        );
+        return rows[0]?.result ?? null;
+      },
+    );
+  }
+
+  /**
+   * Otkaži sastanak sa obaveštenjem učesnicima (S2) — RPC `sastanci_cancel_sastanak`
+   * (sy15 DEFINER; guard `has_edit_role ∧ (mgmt ∨ organizator-trio)` kao kod lock-a,
+   * `status='otkazan'` + `sast_enqueue_cancel` → 'meeting_cancel' svim `pozvan=true`).
+   * Ide kroz RPC, a NE kroz `updateSastanak`, jer je enqueue mejlova rezervisan za
+   * DEFINER fn (INSERT u `sastanci_notification_log` iz BE-a je zabranjen — presuda
+   * B10). Idempotentno (clientEventId) — dupli POST ne šalje mejlove dvaput.
+   * RPC vraća `{ ok:false, reason:'locked'|'already_cancelled' }` bez greške; to je
+   * legitiman 200 (kao `already_locked` kod lock-a) i FE ga prikazuje kao poruku.
+   */
+  cancel(email: string, id: string, dto: CancelSastanakDto) {
+    return this.runIdem(
+      email,
+      dto.clientEventId,
+      "sastanci.cancel",
+      async (tx) => {
+        const rows = await tx.$queryRaw<{ result: unknown }[]>(
+          Prisma.sql`SELECT sastanci_cancel_sastanak(${id}::uuid) AS result`,
         );
         return rows[0]?.result ?? null;
       },
