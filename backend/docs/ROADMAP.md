@@ -12,7 +12,7 @@
 |---|---|---|---|---|
 | **1.0** | Web moduli koje Nesa razvija (kadrovska, lokacije, održavanje, sastanci, reversi, plan montaže…) | Vite + vanilla JS · **Supabase** (PG cloud) → **self-host on-prem (međukorak)** | **Živ, u produkciji** (razvoj zaključan ~1.5.2026); **međukorak odobren 4.7.2026** | Operativna MES-nadgradnja preko BigTehn-a |
 | **2.0** | 1:1 (minimum) prerada **QBigTehn** (Access + MS SQL, Negovanov sistem) — proizvodnja/tehnologija | **NestJS + Prisma + PostgreSQL** on-prem | **Praktično završen (12.7.2026):** modul „Tehnologija" živ, spojen u 1.5 na `servosync.servoteh.com/tehnologija`; tehnolog tok (P0–P5), auto-uvoz PDM XML, RBAC enforced. Ostaje kozmetika. | Proizvodni core: RN, TP, PDM/BOM, MRP, primopredaje, lokacije |
-| **3.0** | Prebacivanje **1.0 → stack 2.0** (Postgres + NestJS + Next) i integracija u **jednu aplikaciju** | isti kao 2.0 | Planirano | Objedinjen MES: proizvodnja (2.0) + operativni moduli (1.0) |
+| **3.0** | Prebacivanje **1.0 → stack 2.0** (Postgres + NestJS + Next) i integracija u **jednu aplikaciju** | isti kao 2.0 | **UNIFIKACIJA IZVRŠENA (17–18.07.2026):** svi 1.0 moduli cutover-ovani na 2.0, hard-flip domena + native auth. Ostaje FINALNI cutover (dekomisija) + gejti kvaliteta. Gejt: [DEFINICIJA_3.0_ZAVRSEN.md](DEFINICIJA_3.0_ZAVRSEN.md); stanje: „Checkpoint 2026-07-18" u §3.0 | Objedinjen MES: proizvodnja (2.0) + operativni moduli (1.0) |
 | **4.0** | Integracija **BigBit ERP** (Access/VBA, komercijala: GK/PDV/fakture/magacin) u 3.0 | isti kao 2.0 | Planirano | **Kompletan ERP + MES** — jedna platforma za ceo Servoteh |
 
 **Vodeći princip kroz sve faze:** on-prem PostgreSQL, jedan izvor istine po tabeli, `legacy_*` mapping sloj, **overlay-never-touch-cache** (sync sme da menja samo cache tabele; lokalna polja su u overlay-u). Front na Cloudflare, backend on-prem — spolja dostupan **isključivo kroz Cloudflare Tunnel** (odluka 4.7.2026, umesto WireGuard VPN-a: javna adresa aplikacije ostaje **ista kao postojeća**, server se ne izlaže direktno, bez VPN aplikacija na uređajima).
@@ -259,6 +259,23 @@ sa BigBit noćnog izvoza). Nije potreban ni SQL Server upsizing ni XML ugovor; U
 
 **Cilj:** prebaciti ServoSync 1.0 (Supabase moduli) na **PostgreSQL + NestJS backend + Next.js front** aplikacije 2.0, i sve spojiti u **jednu aplikaciju**. Rezultat: jedan MES koji pokriva i proizvodnju/tehnologiju (iz 2.0) i operativne module (iz 1.0: kadrovska, lokacije, održavanje, sastanci, reversi…).
 
+### 🎯 Checkpoint 2026-07-18 — UNIFIKACIJA IZVRŠENA + formalni gejt
+
+> Ground-truth `origin/main` (sva tri repoa) + sesije 17–18.07. Autoritativna kontrolna lista za zvanično
+> zatvaranje 3.0: **[DEFINICIJA_3.0_ZAVRSEN.md](DEFINICIJA_3.0_ZAVRSEN.md)** (komitovana na main da je reset ne briše).
+
+**3.0-PRODUKT („sve u jednu app") — DOSTIGNUTO:** svi 1.0 moduli cutover-ovani na 2.0 (FE `759eeae` uklonio
+„Razvojna faza"), shell v2 (sidebar + HUB + Ctrl+K + dark/light), **hard-flip** `servosync.servoteh.com`→2.0
++ **native auth** (58 lozinki), refresh-rotacija. Per-modul cutover-auditi 17.07 svi GO.
+
+**Ostaje za 3.0-ZAVRŠEN** (gejt: DEFINICIJA §B + §C):
+- **B — dekomisija (ovo formalno zatvara 3.0):** QBigTehn lanac ugašen 14.07; ostaje redom **loc-most repoint
+  → bigbit-bridge (master read sa vasa-SQL) → konsolidacija dve PG baze → gašenje PostgREST/GoTrue + 1.0 Vite fronta**.
+- **C — kvalitet+sigurnost (aktivan blok, izbor Nenada):** e2e harness (`Servosync 2.0/e2e/`) — smoke 34/34,
+  native core read-only 5/5, net-zero write probe 4 modula; **preventivni sweep našao+popravio 3 realna prod
+  buga** (2× shape objekat-vs-niz crash: /profil `e1ffcd8`+`277306f`; 1× PB µs/ms lažni 409 `f852a75`).
+  Preostaje: permission matrica (samo Reversi), write probe TP/kiosk/MRP, part-locations izvršilac fix, RBAC gate (business).
+
 ### Šta se radi (i zašto je najveći obim, vidi [03-planmontaze](migration/03-planmontaze-complexity-profile.md))
 - **Frontend:** UI logika 1.0 se prenosi (ostaje na Cloudflare); data-access sloj (83 servisa, ~753 poziva) se **repointuje** sa Supabase REST-a na NestJS API. UI izgled uglavnom preživljava; menja se svaki poziv podataka.
 - **Autorizacija (najteži deo):** 293 RLS politike + 238 SECURITY DEFINER funkcije → **NestJS guardovi + eksplicitno query-scoping** (Prisma nema nativni RLS). Bezbednosno kritičan rewrite; model je rola × per-projekat × managed_departments × override flagovi.
@@ -490,7 +507,9 @@ Detalji i procena: postojeća analiza „Supabase↔PG sync" (dani do par nedelj
 
 ---
 
-*Poslednji update: 2026-07-12 — **modul „Tehnologija" (2.0) praktično završen**: tehnolog tok P0–P5,
+*Poslednji update: 2026-07-18 — **UNIFIKACIJA IZVRŠENA + zabetoniran gejt.** Dodat „Checkpoint 2026-07-18" u §3.0 + [DEFINICIJA_3.0_ZAVRSEN.md](DEFINICIJA_3.0_ZAVRSEN.md) (komitovana na main): svi 1.0 moduli cutover na 2.0, hard-flip + native auth; ostaje Blok B dekomisija (loc-most→bigbit-bridge→PG konsolidacija→gašenje PostgREST/GoTrue) + Blok C kvalitet (e2e harness: smoke 34/34, core read-only 5/5, write probe 4 modula, sweep našao 3 prod buga; ostaje permission matrica + write probe TP/kiosk/MRP + part-locations fix). Summary red 3.0 ažuriran.*
+
+*Ranije 2026-07-12 — **modul „Tehnologija" (2.0) praktično završen**: tehnolog tok P0–P5,
 auto-uvoz PDM XML (bridge na ubuntu), RBAC enforced, spojen u 1.5 na `servosync.servoteh.com/tehnologija`;
 ostaje kozmetika. **Otvorena BigBit → 2.0 sync radna linija** (Faza 1 živa, Faza 2 gated do cutover-a);
 izvor Sync-a B rešen = ubuntu + `mdb-tools` (drop share), NE XML — vidi [PREOSTALE_FAZE.md](PREOSTALE_FAZE.md).*
