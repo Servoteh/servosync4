@@ -8,7 +8,7 @@
 import { useState, type ReactNode } from 'react';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { EmptyState } from '@/components/ui-kit/empty-state';
-import { formatNumber } from '@/lib/format';
+import { formatDecimal, formatNumber } from '@/lib/format';
 import { cn } from '@/lib/cn';
 import {
   NONCONFORMITY_TYPE,
@@ -84,22 +84,16 @@ export function IzvestajiTab() {
   const rows = summary.data?.data ?? [];
   const draftCount = summary.data?.meta.draftCount ?? 0;
 
-  const totals = rows.reduce(
-    (acc, r) => {
-      acc.count += r.count;
-      acc.pieces += r.pieces;
-      acc.hours += r.hours;
-      return acc;
-    },
-    { count: 0, pieces: 0, hours: 0 },
-  );
+  // Kartice čitaju serverski negrupisan zbir — klijentska redukcija redova bi se
+  // naduvala kod grupisanja po radniku (izveštaj se pripisuje SVAKOM krivcu).
+  const totals = summary.data?.meta.totals ?? { count: 0, pieces: 0, hours: 0 };
   const maxPieces = Math.max(1, ...rows.map((r) => r.pieces));
 
   const columns: Column<QualitySummaryRow>[] = [
     { key: 'label', header: 'Grupa', render: (r) => <span className="text-ink">{r.label}</span> },
     {
       key: 'count',
-      header: 'Izveštaja',
+      header: 'Broj neusaglašenosti',
       align: 'right',
       numeric: true,
       render: (r) => formatNumber(r.count),
@@ -121,15 +115,24 @@ export function IzvestajiTab() {
     },
     {
       key: 'hours',
-      header: 'Sati',
+      header: 'Utrošeno sati',
       align: 'right',
       numeric: true,
-      render: (r) => formatNumber(r.hours),
+      render: (r) => `${formatDecimal(r.hours, 2)} h`,
     },
   ];
 
   return (
     <div className="space-y-4">
+      <div className="space-y-1">
+        <h2 className="text-lg font-semibold text-ink">
+          Izveštaj o broju neusaglašenosti
+        </h2>
+        {type === '' && (
+          <p className="text-xs text-ink-secondary">Uključuje škart i doradu</p>
+        )}
+      </div>
+
       <div className="flex flex-wrap items-end gap-3">
         <label className="flex flex-col gap-1 text-xs text-ink-secondary">
           Period od
@@ -184,9 +187,9 @@ export function IzvestajiTab() {
       )}
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <StatCard label="Izveštaja" value={formatNumber(totals.count)} />
+        <StatCard label="Broj neusaglašenosti" value={formatNumber(totals.count)} />
         <StatCard label="Komada" value={formatNumber(totals.pieces)} tone="accent" />
-        <StatCard label="Sati" value={formatNumber(totals.hours)} tone="info" />
+        <StatCard label="Utrošeno sati" value={`${formatDecimal(totals.hours, 2)} h`} tone="info" />
         <StatCard label="Nacrta na čekanju" value={formatNumber(draftCount)} tone="warn" />
       </div>
 

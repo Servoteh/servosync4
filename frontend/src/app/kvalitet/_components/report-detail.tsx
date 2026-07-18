@@ -25,6 +25,7 @@ import {
   culpritSummary,
   formFromReport,
   formToInput,
+  responsiblePartyLabel,
   statusMeta,
   typeLabel,
   type ReportFormState,
@@ -45,6 +46,10 @@ function ReadOnlyDetail({ report }: { report: NonconformityReport }) {
       <DetailField label="Kupac" value={report.customerName} />
       <DetailField label="Uzrok" value={report.cause} />
       <DetailField label="Izvršioci" value={culpritSummary(report)} />
+      <DetailField
+        label="Odgovoran"
+        value={responsiblePartyLabel(report.responsibleParty)}
+      />
       <DetailField label="Utrošeni radni sati" value={report.spentHours != null ? `${formatDecimal(report.spentHours)} h` : report.spentHoursText} />
       {isScrap && (
         <DetailField
@@ -57,7 +62,7 @@ function ReadOnlyDetail({ report }: { report: NonconformityReport }) {
       <DetailField label="Preventivne mere" value={report.preventiveMeasures} />
       <DetailField label="Napomena" value={report.note} />
       {isRework && <DetailField label="Dodatno" value={report.extra} />}
-      <DetailField label="Ističe" value={report.raisedBy?.fullName} />
+      <DetailField label="Ističe" value={report.raisedByWorker?.fullName} />
     </dl>
   );
 }

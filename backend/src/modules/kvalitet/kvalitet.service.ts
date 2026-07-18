@@ -318,6 +318,7 @@ export class QualityService {
           cause: dto.cause ?? null,
           workUnit: dto.workUnit ?? null,
           culpritText: dto.culpritText ?? null,
+          responsibleParty: dto.responsibleParty ?? null,
           materialCostNote: dto.materialCostNote ?? null,
           coopCostNote: dto.coopCostNote ?? null,
           spentHoursText: dto.spentHoursText ?? null,
@@ -385,6 +386,8 @@ export class QualityService {
     if (dto.cause !== undefined) data.cause = dto.cause;
     if (dto.workUnit !== undefined) data.workUnit = dto.workUnit;
     if (dto.culpritText !== undefined) data.culpritText = dto.culpritText;
+    if (dto.responsibleParty !== undefined)
+      data.responsibleParty = dto.responsibleParty;
     if (dto.materialCostNote !== undefined)
       data.materialCostNote = dto.materialCostNote;
     if (dto.coopCostNote !== undefined) data.coopCostNote = dto.coopCostNote;
@@ -684,7 +687,8 @@ export class QualityService {
    * (status=1). `groupBy` = day|week|month|year (vremenski, sort rastuće) ILI
    * worker|workUnit|cause|customer (sort pieces desc). `pieces` = SUM(quantity),
    * `hours` = SUM(spent_hours) null-safe. `meta.draftCount` = broj draftova (status=0)
-   * u istom type+period filteru („na čekanju"). MODULE_SPEC_kontrola_kvaliteta §K3.1.
+   * u istom type+period filteru („na čekanju"). `meta.totals` = negrupisan ukupan
+   * zbir (kartice ne sabiraju grupe). MODULE_SPEC_kontrola_kvaliteta §K3.1.
    */
   async summary(query: NonconformitySummaryQuery) {
     const from = parseDateParam(query.from, "from");
@@ -728,9 +732,44 @@ export class QualityService {
       data = await this.summaryByWorker(type, from, to);
     else data = await this.summaryByText(TEXT_GROUP_COLUMN[groupBy], type, from, to);
 
+    // Negrupisan ukupan zbir (isti reportWhere kao redovi): kartice ga čitaju
+    // umesto sabiranja grupa — groupBy=worker pripisuje izveštaj SVAKOM krivcu,
+    // pa bi klijentska redukcija naduvala komade/sate i „izgubila" izveštaje bez
+    // krivca. `totals` je stvarni COUNT/SUM nad potvrđenim izveštajima.
+    const totals = await this.summaryTotals(type, from, to);
+
     return {
       data,
-      meta: { from: from ?? null, to: to ?? null, groupBy, draftCount },
+      meta: { from: from ?? null, to: to ?? null, groupBy, draftCount, totals },
+    };
+  }
+
+  /** Negrupisan COUNT/SUM nad potvrđenim izveštajima (kartice u tabu „Izveštaji"). */
+  private async summaryTotals(
+    type: number | undefined,
+    from?: Date,
+    to?: Date,
+  ): Promise<{ count: number; pieces: number; hours: number }> {
+    const where = this.reportWhere({
+      status: STATUS.CONFIRMED,
+      type,
+      from,
+      to,
+    });
+    const rows = await this.prisma.$queryRaw<
+      Array<{ count: number; pieces: number; hours: number }>
+    >(Prisma.sql`
+      SELECT COUNT(*)::int AS count,
+             COALESCE(SUM(quantity), 0)::int AS pieces,
+             ROUND(COALESCE(SUM(spent_hours), 0), 3)::float8 AS hours
+      FROM nonconformity_reports
+      ${where}
+    `);
+    const row = rows[0];
+    return {
+      count: Number(row?.count ?? 0),
+      pieces: Number(row?.pieces ?? 0),
+      hours: Number(row?.hours ?? 0),
     };
   }
 
@@ -1380,6 +1419,7 @@ export class QualityService {
       cause: r.cause,
       workUnit: r.workUnit,
       culpritText: r.culpritText,
+      responsibleParty: r.responsibleParty,
       materialCostNote: r.materialCostNote,
       coopCostNote: r.coopCostNote,
       spentHoursText: r.spentHoursText,

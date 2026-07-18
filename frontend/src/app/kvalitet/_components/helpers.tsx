@@ -23,6 +23,33 @@ export function statusMeta(status: number): { tone: Tone; label: string } {
     : { tone: 'warn', label: 'Nacrt' };
 }
 
+/**
+ * „Odgovoran" — KO/ŠTA je odgovorno za neusaglašenost (fiksna lista, jedan izbor;
+ * odluka vlasnika, jul 2026). Različito od Izvršioca (radnik na operaciji).
+ * Redosled je i redosled opcija u `<select>`-u; vrednosti prate backend whitelist-u.
+ */
+export const RESPONSIBLE_PARTY_OPTIONS: { value: string; label: string }[] = [
+  { value: 'izvrsilac', label: 'Izvršilac' },
+  { value: 'kontrolor', label: 'Kontrolor' },
+  { value: 'masina', label: 'Mašina' },
+  { value: 'materijal', label: 'Materijal' },
+  { value: 'tehnologija', label: 'Tehnologija' },
+  { value: 'ostalo', label: 'Ostalo' },
+];
+
+const RESPONSIBLE_PARTY_LABELS: Record<string, string> = Object.fromEntries(
+  RESPONSIBLE_PARTY_OPTIONS.map((o) => [o.value, o.label]),
+);
+
+/**
+ * Vrednost „Odgovoran" → srpska labela za prikaz. Nepoznata (npr. starija ili
+ * ručno upisana vrednost) se vraća kako jeste; prazno → '' (pozivalac stavlja „—").
+ */
+export function responsiblePartyLabel(v: string | null | undefined): string {
+  if (!v) return '';
+  return RESPONSIBLE_PARTY_LABELS[v] ?? v;
+}
+
 /** ISO datum → vrednost za `<input type="date">` (yyyy-MM-dd), '' ako nema. */
 export function toDateInput(iso: string | null | undefined): string {
   if (!iso) return '';
@@ -54,6 +81,8 @@ export interface ReportFormState {
   partName: string;
   customerName: string;
   culpritText: string;
+  /** „Odgovoran" — vrednost iz `RESPONSIBLE_PARTY_OPTIONS`; '' = nije izabrano. */
+  responsibleParty: string;
   materialCostNote: string;
   coopCostNote: string;
   spentHoursText: string;
@@ -78,6 +107,7 @@ export function emptyForm(): ReportFormState {
     partName: '',
     customerName: '',
     culpritText: '',
+    responsibleParty: '',
     materialCostNote: '',
     coopCostNote: '',
     spentHoursText: '',
@@ -102,6 +132,7 @@ export function formFromReport(r: NonconformityReport): ReportFormState {
     partName: r.partName ?? '',
     customerName: r.customerName ?? '',
     culpritText: r.culpritText ?? '',
+    responsibleParty: r.responsibleParty ?? '',
     materialCostNote: r.materialCostNote ?? '',
     coopCostNote: r.coopCostNote ?? '',
     spentHoursText: r.spentHoursText ?? '',
@@ -159,6 +190,7 @@ export function formToInput(
     partName: nn(form.partName),
     customerName: nn(form.customerName),
     culpritText: nn(form.culpritText),
+    responsibleParty: nn(form.responsibleParty),
     materialCostNote: nn(form.materialCostNote),
     coopCostNote: nn(form.coopCostNote),
     spentHoursText: nn(form.spentHoursText),
@@ -188,13 +220,27 @@ export function roleFieldMode(role: string | null | undefined): FieldMode {
   return 'all';
 }
 
-/** Spisak izvršilaca (imena radnika + slobodan tekst) za kolonu tabele / detalj. */
+/**
+ * Spisak izvršilaca (imena radnika + slobodan tekst) za kolonu tabele / detalj.
+ * `culpritText` često ponovi ista imena iz M:N veze — dedupe: dodaj samo delove
+ * (split po zarezu) čiji trim/lowercase oblik nije već prisutan.
+ */
 export function culpritSummary(r: NonconformityReport): string {
   const names = (r.culpritWorkers ?? [])
     .map((w) => w.fullName)
     .filter((n): n is string => !!n);
   const parts = [...names];
-  if (r.culpritText && r.culpritText.trim()) parts.push(r.culpritText.trim());
+  const seen = new Set(names.map((n) => n.trim().toLowerCase()));
+  if (r.culpritText && r.culpritText.trim()) {
+    for (const raw of r.culpritText.split(',')) {
+      const part = raw.trim();
+      if (!part) continue;
+      const key = part.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      parts.push(part);
+    }
+  }
   return parts.join(', ');
 }
 

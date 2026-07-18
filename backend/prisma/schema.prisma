@@ -1546,6 +1546,11 @@ model WorkOrder {
   /// RNZ barcode bind to it). D5 clone-variant relies on this as the DB net for
   /// MAX(variant)+1 races/collisions (prod verified duplicate-free 2026-07-11).
   @@unique([projectId, identNumber, variant], map: "uq_work_orders_project_ident_variant")
+  /// R1 (PDM crtež↔RN): brzo poklapanje po drawing_id (EXISTS filter + batch
+  /// resolveWorkOrderRefs `drawingId IN`). Grana poklapanja po broju koristi
+  /// funkcionalni indeks lower(drawing_number) — raw-only u migraciji (Prisma
+  /// ne ume izraz-indeks u @@index).
+  @@index([drawingId], map: "idx_work_orders_drawing_id")
   @@map("work_orders")
 }
 
@@ -2098,6 +2103,11 @@ model NonconformityReport {
   cause               String?               @map("cause")
   workUnit            String?               @map("work_unit") @db.VarChar(120)
   culpritText         String?               @map("culprit_text") @db.VarChar(255)
+  /// „Odgovoran" — KO/ŠTA je odgovorno za neusaglašenost (odluka vlasnika, jul 2026).
+  /// Različito od Izvršioca (radnik na operaciji). Fiksna lista, jedan izbor; String
+  /// a ne Prisma enum (BACKEND_RULES §2). Dozvoljene vrednosti:
+  /// izvrsilac | kontrolor | masina | materijal | tehnologija | ostalo. NULL = neizjašnjeno.
+  responsibleParty    String?               @map("responsible_party") @db.VarChar(50)
   materialCostNote    String?               @map("material_cost_note") @db.VarChar(255)
   coopCostNote        String?               @map("coop_cost_note") @db.VarChar(255)
   spentHoursText      String?               @map("spent_hours_text") @db.VarChar(50)

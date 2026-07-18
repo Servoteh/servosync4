@@ -1,4 +1,5 @@
 import { BadRequestException } from "@nestjs/common";
+import { validateResponsibleParty } from "./create-nonconformity-report.dto";
 
 /**
  * `PATCH /kvalitet/reports/:id` — izmena poslovnih polja izveštaja + izvršilaca
@@ -20,6 +21,8 @@ export interface UpdateNonconformityReportDto {
   cause?: string | null;
   workUnit?: string | null;
   culpritText?: string | null;
+  /** „Odgovoran" — jedna od `RESPONSIBLE_PARTIES`; null briše vrednost. */
+  responsibleParty?: string | null;
   materialCostNote?: string | null;
   coopCostNote?: string | null;
   spentHoursText?: string | null;
@@ -97,6 +100,8 @@ export function validateUpdateNonconformityReport(
     if (v !== undefined && v !== null && (!Number.isInteger(v) || v < 1))
       errors.push(`Polje '${f}' mora biti ceo broj ≥ 1.`);
   }
+
+  validateResponsibleParty(dto?.responsibleParty, errors);
 
   if (errors.length) throw new BadRequestException(errors);
 }

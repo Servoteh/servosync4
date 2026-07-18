@@ -5,9 +5,14 @@ import { cn } from '@/lib/cn';
 import { useAuth } from '@/lib/auth-context';
 import { FormField, Input } from '@/components/ui-kit/form-field';
 import { Textarea } from '@/components/ui-kit/textarea';
+import { Select } from '@/components/ui-kit/select';
 import { NONCONFORMITY_TYPE, type NonconformityType } from '@/api/kvalitet';
 import { WorkerMultiSelect } from './worker-multi-select';
-import { roleFieldMode, type ReportFormState } from './helpers';
+import {
+  RESPONSIBLE_PARTY_OPTIONS,
+  roleFieldMode,
+  type ReportFormState,
+} from './helpers';
 
 /**
  * Zajednička polja izveštaja o neusaglašenosti — koristi se i u dijalogu „Novi
@@ -247,15 +252,29 @@ export function ReportFields({
           />
         </FormField>
 
-        <FormField label="Izvršilac (slobodan tekst)">
-          <Input
-            className={lockedField}
-            disabled={controlLocked}
-            value={form.culpritText}
-            onChange={(e) => onChange({ culpritText: e.target.value })}
-            placeholder="npr. Magacin alata, RN 9000…"
-          />
-        </FormField>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <FormField label="Izvršilac (slobodan tekst)">
+            <Input
+              className={lockedField}
+              disabled={controlLocked}
+              value={form.culpritText}
+              onChange={(e) => onChange({ culpritText: e.target.value })}
+              placeholder="npr. Magacin alata, RN 9000…"
+            />
+          </FormField>
+          <FormField
+            label="Odgovoran"
+            hint="Ko/šta je odgovorno za neusaglašenost — nije isto što i izvršilac."
+          >
+            <Select
+              options={RESPONSIBLE_PARTY_OPTIONS}
+              placeholder="—"
+              disabled={controlLocked}
+              value={form.responsibleParty}
+              onChange={(e) => onChange({ responsibleParty: e.target.value })}
+            />
+          </FormField>
+        </div>
       </Section>
 
       {/* ── ZELENA: tehnologija ─────────────────────────────────────────── */}

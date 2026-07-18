@@ -17,7 +17,7 @@ import {
   type NonconformityReport,
   type NonconformityType,
 } from '@/api/kvalitet';
-import { culpritSummary } from './helpers';
+import { culpritSummary, responsiblePartyLabel } from './helpers';
 import { ReportDetail } from './report-detail';
 import { NewReportDialog } from './report-dialog';
 
@@ -54,11 +54,6 @@ function buildColumns(type: NonconformityType): Column<NonconformityReport>[] {
   },
   { key: 'partName', header: 'Naziv pozicije', render: (r) => r.partName || '—' },
   {
-    key: 'customerName',
-    header: 'Kupac',
-    render: (r) => <span className="text-ink-secondary">{r.customerName || '—'}</span>,
-  },
-  {
     key: 'quantity',
     header: 'Kom',
     align: 'right',
@@ -90,9 +85,20 @@ function buildColumns(type: NonconformityType): Column<NonconformityReport>[] {
     render: (r) => culpritSummary(r) || '—',
   },
   {
-    key: 'raisedBy',
+    key: 'responsibleParty',
+    header: 'Odgovoran',
+    render: (r) => (
+      <span className="text-ink-secondary">
+        {responsiblePartyLabel(r.responsibleParty) || '—'}
+      </span>
+    ),
+  },
+  {
+    key: 'raisedByWorker',
     header: 'Ističe',
-    render: (r) => <span className="text-ink-secondary">{r.raisedBy?.fullName || '—'}</span>,
+    render: (r) => (
+      <span className="text-ink-secondary">{r.raisedByWorker?.fullName || '—'}</span>
+    ),
   },
   ];
   return cols;
@@ -101,7 +107,6 @@ function buildColumns(type: NonconformityType): Column<NonconformityReport>[] {
 /** Zajednička evidencija — `type` (1 dorada / 2 škart) određuje tab i filter. */
 export function EvidencijaTab({ type }: { type: NonconformityType }) {
   const [q, setQ] = useState('');
-  const [status, setStatus] = useState<'' | '0' | '1'>('');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [page, setPage] = useState(1);
@@ -113,14 +118,13 @@ export function EvidencijaTab({ type }: { type: NonconformityType }) {
     type,
     page,
     q: q.trim() || undefined,
-    status: status || undefined,
     from: from || undefined,
     to: to || undefined,
   });
 
   const rows = list.data?.data ?? [];
   const meta = list.data?.meta.pagination;
-  const hasFilter = !!(q || status || from || to);
+  const hasFilter = !!(q || from || to);
   const columns = buildColumns(type);
 
   return (
@@ -134,7 +138,7 @@ export function EvidencijaTab({ type }: { type: NonconformityType }) {
               setQ(v);
               resetPage();
             }}
-            placeholder="RN, crtež, pozicija, kupac…"
+            placeholder="RN, crtež, pozicija…"
           />
         </div>
         <label className="flex flex-col gap-1 text-xs text-ink-secondary">
@@ -161,26 +165,10 @@ export function EvidencijaTab({ type }: { type: NonconformityType }) {
             className={filterInput}
           />
         </label>
-        <label className="flex flex-col gap-1 text-xs text-ink-secondary">
-          Status
-          <select
-            value={status}
-            onChange={(e) => {
-              setStatus(e.target.value as '' | '0' | '1');
-              resetPage();
-            }}
-            className={filterInput}
-          >
-            <option value="">Svi</option>
-            <option value="0">Nacrti</option>
-            <option value="1">Potvrđeni</option>
-          </select>
-        </label>
         {hasFilter && (
           <button
             onClick={() => {
               setQ('');
-              setStatus('');
               setFrom('');
               setTo('');
               resetPage();

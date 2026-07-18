@@ -42,8 +42,8 @@ export default function KvalitetPage() {
     );
   }
 
-  const draftScrap = mini.data?.data.draftScrap ?? 0;
-  const draftRework = mini.data?.data.draftRework ?? 0;
+  const draftScrap = mini.data?.data.skart.drafts ?? 0;
+  const draftRework = mini.data?.data.dorada.drafts ?? 0;
 
   const tabs: { key: TabKey; label: string; badge?: number }[] = [
     { key: 'skart', label: 'Evidencija škarta', badge: draftScrap },

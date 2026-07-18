@@ -31,6 +31,7 @@ function baseReport(over: Record<string, unknown> = {}) {
     cause: null,
     workUnit: null,
     culpritText: null,
+    responsibleParty: null,
     materialCostNote: null,
     coopCostNote: null,
     spentHoursText: null,
@@ -324,6 +325,89 @@ describe("QualityService", () => {
     });
   });
 
+  describe("responsibleParty — Odgovoran (K1)", () => {
+    it("createReport upisuje vrednost iz whitelist-e i mapReport je vraća", async () => {
+      prisma.nonconformityReport.create.mockResolvedValue(
+        baseReport({ id: 20, responsibleParty: "masina" }),
+      );
+
+      const res = await service.createReport({
+        type: 2,
+        quantity: 1,
+        defectDescription: "Prekoračena tolerancija",
+        responsibleParty: "masina",
+      });
+
+      const arg = prisma.nonconformityReport.create.mock.calls[0][0] as {
+        data: { responsibleParty?: string | null };
+      };
+      expect(arg.data.responsibleParty).toBe("masina");
+      expect(res.data.responsibleParty).toBe("masina");
+    });
+
+    it("createReport bez polja upisuje null", async () => {
+      prisma.nonconformityReport.create.mockResolvedValue(
+        baseReport({ id: 21 }),
+      );
+
+      const res = await service.createReport({
+        type: 2,
+        quantity: 1,
+        defectDescription: "Bez odgovornog",
+      });
+
+      const arg = prisma.nonconformityReport.create.mock.calls[0][0] as {
+        data: { responsibleParty?: string | null };
+      };
+      expect(arg.data.responsibleParty).toBeNull();
+      expect(res.data.responsibleParty).toBeNull();
+    });
+
+    it("createReport odbija vrednost van whitelist-e (400)", async () => {
+      await expect(
+        service.createReport({
+          type: 2,
+          quantity: 1,
+          defectDescription: "Loša vrednost",
+          responsibleParty: "sef_smene",
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.nonconformityReport.create).not.toHaveBeenCalled();
+    });
+
+    it("updateReport upisuje vrednost; null briše, undefined ne dira polje", async () => {
+      prisma.nonconformityReport.findUnique.mockResolvedValue(
+        baseReport({ id: 22, responsibleParty: "masina" }),
+      );
+      prisma.nonconformityReport.update.mockResolvedValue(
+        baseReport({ id: 22, responsibleParty: "tehnologija" }),
+      );
+
+      await service.updateReport(22, { responsibleParty: "tehnologija" });
+      await service.updateReport(22, { responsibleParty: null });
+      await service.updateReport(22, { quantity: 3 });
+
+      const data = (
+        prisma.nonconformityReport.update.mock.calls as {
+          data: { responsibleParty?: string | null };
+        }[][]
+      ).map((c) => c[0].data);
+      expect(data[0].responsibleParty).toBe("tehnologija");
+      expect(data[1].responsibleParty).toBeNull();
+      expect(data[2]).not.toHaveProperty("responsibleParty");
+    });
+
+    it("updateReport odbija vrednost van whitelist-e (400), bez upisa", async () => {
+      prisma.nonconformityReport.findUnique.mockResolvedValue(
+        baseReport({ id: 23 }),
+      );
+      await expect(
+        service.updateReport(23, { responsibleParty: "IZVRSILAC" }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.nonconformityReport.update).not.toHaveBeenCalled();
+    });
+  });
+
   describe("recomputeReport (auto sati + kg)", () => {
     it("škart: prepisuje spentHours + materialKg, meta nosi izvore", async () => {
       prisma.nonconformityReport.findUnique.mockResolvedValue(
@@ -463,6 +547,27 @@ describe("QualityService", () => {
       await expect(service.summary({ groupBy: "hour" })).rejects.toBeInstanceOf(
         BadRequestException,
       );
+    });
+
+    it("meta.totals = negrupisan ukupan zbir (ne sabira grupe krivaca)", async () => {
+      prisma.nonconformityReport.count.mockResolvedValue(0);
+      // 1. poziv: grupisani redovi po radniku (isti izveštaj pripisan svakom
+      // krivcu → 20 kom u zbiru redova). 2. poziv: negrupisan totals = 10 kom.
+      prisma.$queryRaw
+        .mockResolvedValueOnce([
+          { worker_id: 1, count: 1, pieces: 10, hours: 5 },
+          { worker_id: 2, count: 1, pieces: 10, hours: 5 },
+        ])
+        .mockResolvedValueOnce([{ count: 1, pieces: 10, hours: 5 }]);
+      prisma.worker.findMany.mockResolvedValue([
+        { id: 1, fullName: "Radnik A" },
+        { id: 2, fullName: "Radnik B" },
+      ]);
+
+      const res = await service.summary({ groupBy: "worker" });
+
+      // Redovi bi klijentski dali 20 komada; meta.totals nosi stvarnih 10.
+      expect(res.meta.totals).toEqual({ count: 1, pieces: 10, hours: 5 });
     });
   });
 

@@ -7,6 +7,37 @@ import { BadRequestException } from "@nestjs/common";
  * (paritet Excel evidencije). Draft se kreira sa `status=0`, `reportNumber=NULL`
  * (broj dodeljuje tek potvrda). class-validator još nije uveden (BACKEND_RULES §6) — ručno.
  */
+/**
+ * „Odgovoran" — KO/ŠTA je odgovorno za neusaglašenost (fiksna lista, jedan izbor).
+ * Različito od izvršioca (`culpritWorkerIds` / `culpritText` = radnik na operaciji).
+ * String a ne Prisma enum (BACKEND_RULES §2) — jedini čuvar je ova whitelist.
+ */
+export const RESPONSIBLE_PARTIES = [
+  "izvrsilac",
+  "kontrolor",
+  "masina",
+  "materijal",
+  "tehnologija",
+  "ostalo",
+] as const;
+
+export type ResponsibleParty = (typeof RESPONSIBLE_PARTIES)[number];
+
+/** Zajednička provera za POST i PATCH; `null` (brisanje vrednosti) je dozvoljeno. */
+export function validateResponsibleParty(
+  value: unknown,
+  errors: string[],
+): void {
+  if (value === undefined || value === null) return;
+  if (
+    typeof value !== "string" ||
+    !(RESPONSIBLE_PARTIES as readonly string[]).includes(value)
+  )
+    errors.push(
+      `Polje 'responsibleParty' mora biti jedna od vrednosti: ${RESPONSIBLE_PARTIES.join(", ")}.`,
+    );
+}
+
 export interface CreateNonconformityReportDto {
   /** 1 = dorada, 2 = škart. */
   type: number;
@@ -25,6 +56,8 @@ export interface CreateNonconformityReportDto {
   cause?: string | null;
   workUnit?: string | null;
   culpritText?: string | null;
+  /** „Odgovoran" — jedna od `RESPONSIBLE_PARTIES`; null/izostavljeno = neizjašnjeno. */
+  responsibleParty?: string | null;
   materialCostNote?: string | null;
   coopCostNote?: string | null;
   spentHoursText?: string | null;
@@ -104,6 +137,8 @@ export function validateCreateNonconformityReport(
     if (v !== undefined && v !== null && (!Number.isInteger(v) || v < 1))
       errors.push(`Polje '${f}' mora biti ceo broj ≥ 1.`);
   }
+
+  validateResponsibleParty(dto?.responsibleParty, errors);
 
   if (errors.length) throw new BadRequestException(errors);
 }

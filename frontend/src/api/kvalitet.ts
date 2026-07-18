@@ -35,6 +35,7 @@ export type NonconformityStatus =
 
 /** Kontrolor koji je istakao neusaglašenost („Neusaglašenost ističe"). */
 export interface RaisedByRef {
+  id: number;
   fullName: string | null;
 }
 
@@ -66,6 +67,12 @@ export interface NonconformityReport {
   workUnit: string | null;
   /** Izvršilac — slobodan tekst (org jedinice / spoljni), dopuna M:N vezi. */
   culpritText: string | null;
+  /**
+   * „Odgovoran" — KO/ŠTA je odgovorno za neusaglašenost (fiksna lista, jedan izbor:
+   * izvrsilac | kontrolor | masina | materijal | tehnologija | ostalo). Različito od
+   * izvršioca (radnik na operaciji); labele za prikaz su u `helpers.tsx`.
+   */
+  responsibleParty?: string | null;
   materialCostNote: string | null;
   coopCostNote: string | null;
   spentHoursText: string | null;
@@ -82,7 +89,7 @@ export interface NonconformityReport {
   /** „Dodatno" — samo dorada (tip 1). */
   extra: string | null;
   raisedByWorkerId: number | null;
-  raisedBy: RaisedByRef | null;
+  raisedByWorker: RaisedByRef | null;
   culpritWorkers: CulpritWorker[];
   createdAt: string;
   /**
@@ -110,6 +117,8 @@ export interface NonconformityReportInput {
   partName?: string | null;
   customerName?: string | null;
   culpritText?: string | null;
+  /** „Odgovoran" — jedna od dozvoljenih vrednosti (backend validira) ili null. */
+  responsibleParty?: string | null;
   materialCostNote?: string | null;
   coopCostNote?: string | null;
   spentHoursText?: string | null;
@@ -121,10 +130,17 @@ export interface NonconformityReportInput {
   culpritWorkerIds?: number[];
 }
 
-/** Brojači draft-ova po tipu — bedž „na čekanju" na tabovima evidencija. */
+/** Brojači po tipu (draft + potvrđeni + komadi) — bedž „na čekanju" na tabovima. */
+export interface QualityMiniBucket {
+  drafts: number;
+  confirmed: number;
+  pieces: number;
+}
+
+/** `GET /v1/kvalitet/summary-mini` — brojači po tipu (škart / dorada). */
 export interface QualityMini {
-  draftRework: number;
-  draftScrap: number;
+  skart: QualityMiniBucket;
+  dorada: QualityMiniBucket;
 }
 
 export interface NonconformityListParams {
@@ -296,9 +312,16 @@ export interface QualitySummaryRow {
   hours: number;
 }
 
+/** Negrupisan ukupan zbir — kartice ga čitaju umesto sabiranja grupa. */
+export interface QualitySummaryTotals {
+  count: number;
+  pieces: number;
+  hours: number;
+}
+
 export interface QualitySummaryResponse {
   data: QualitySummaryRow[];
-  meta: { draftCount: number };
+  meta: { draftCount: number; totals: QualitySummaryTotals };
 }
 
 export interface QualitySummaryParams {
