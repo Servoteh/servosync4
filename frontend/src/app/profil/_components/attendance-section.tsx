@@ -158,7 +158,7 @@ export function AttendanceSection() {
 function AttendanceDrill({ day }: { day: string }) {
   const q = useAttendanceEvents(day.slice(0, 10));
   if (q.isLoading) return <p className="text-xs text-ink-disabled">Učitavam prolaze…</p>;
-  const events = q.data?.data ?? [];
+  const events = q.data?.data?.events ?? [];
   if (events.length === 0) return <p className="text-xs text-ink-disabled">Nema prolaza.</p>;
   return (
     <ul className="space-y-0.5 text-xs text-ink-secondary">

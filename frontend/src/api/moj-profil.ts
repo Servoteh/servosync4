@@ -447,7 +447,10 @@ export function useAbsences() {
 export function useAttendanceEvents(day: string | null) {
   return useQuery({
     queryKey: [...KEYS.attendanceEvents, day] as const,
-    queryFn: () => apiFetch<{ data: AttendanceEvent[] | null; meta?: EnvelopeMeta }>(`${BASE}/attendance/events${qs({ day })}`),
+    queryFn: () =>
+      apiFetch<{ data: { day: string; events: AttendanceEvent[] } | null; meta?: EnvelopeMeta }>(
+        `${BASE}/attendance/events${qs({ day })}`,
+      ),
     enabled: !!day,
   });
 }
