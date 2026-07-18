@@ -62,7 +62,13 @@ Detalji: [MONOREPO_MIGRACIJA.md](MONOREPO_MIGRACIJA.md). Sažetak:
 
 ### Blok B — dekomisija legacy sloja (ovo FORMALNO zatvara 3.0)
 QBigTehn **lanac** sync već ugašen 14.07 (`62a1e81`). Ostaje redom (tvrde zavisnosti):
-- [ ] **(1) Loc-most repoint** — 1.0 `loc_*` ingest: QBigTehn cache → 2.0 `tech_processes`; outbound `sp_ApplyLocationEvent` gasi. ⚠️ **blokira gašenje QBigTehn-a.**
+- [~] **(1) Loc-most repoint** — 🟡 **KOD SLETIO 18.07**, živa sekvenca čeka prozor. ⚠️ **blokira gašenje QBigTehn-a.**
+  Feeder `LocTpFeedService` (2.0 `tech_processes` → iste `bigtehn_*_cache` tabele) + `POST /locations/sync/feed-run`;
+  ingest motor i placement trigger NETAKNUTI (1.0 i mobilni `/m/*` ne vide promenu). SQL za sy15 + kompletna
+  sekvenca/rollback: **[backend/docs/RUNBOOK_LOC_MOST_REPOINT.md](../backend/docs/RUNBOOK_LOC_MOST_REPOINT.md)**.
+  Adversarijalna verifikacija našla i zatvorila 2 blokera (`skip_zero_qty` bi gutao transfere · deljeni watermark
+  bi progutao backlog od 14.07). **Čeka 4 odluke** (runbook §4): auth za feed cron · backfill (A) ili start „od sada" (B)
+  · granularnost legacy signala · potvrda da niko ne čita ServoTehERP lokacije.
 - [ ] **(2) Aktiviraj `tools/bigbit-bridge/`** — master read (33 šifarnika) sa `Vasa-SQL:5765` → direktan BigBit mdb. *(Sync B trajan do 4.0, samo menja izvor.)*
 - [ ] **(3) Konsolidacija dve PG baze** (sy15 + 2.0) — Reversi+auth još čitaju `sy15` preko 2. Prisma datasource-a.
 - [ ] **(4) Gašenje PostgREST + GoTrue** (`sy15-*`) + potpuna dekomisija 1.0 Vite fronta (SSO kapija + `/m/*`).

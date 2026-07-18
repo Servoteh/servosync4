@@ -933,7 +933,6 @@ export class LocationsService {
         production_work_order_lines: 6 * 3600 * 1000,
         production_tech_routing: 6 * 3600 * 1000,
         catalog_items: 36 * 3600 * 1000,
-        production_bigtehn_drawings: 7 * 24 * 3600 * 1000,
       };
       const now = Date.now();
       const lastFinished = new Map(
@@ -952,16 +951,22 @@ export class LocationsService {
         linije: isStale("production_work_order_lines"),
         tp: isStale("production_tech_routing"),
         predmeti: isStale("catalog_items"),
-        crtezi: isStale("production_bigtehn_drawings"),
+        // B1 loc-most: drawings sync je penzionisan (2.0 drawing_pdfs je vlasnik
+        // crteža) — prag bi bio večno „stale" i pravio lažni baner.
+        crtezi: false,
       };
 
       // workerHealthy — paritet 1.0 renderSyncWorkerBanner: down = is_alive===false.
+      // B1 loc-most: outbound MSSQL worker (`loc-sync-mssql`) je penzionisan — ako mu
+      // heartbeat red još postoji, ne sme da obara zdravlje; broji se samo ingest.
       const summary = (health[0]?.result ?? null) as {
-        workers?: { is_alive?: boolean }[];
+        workers?: { worker_id?: string; is_alive?: boolean }[];
         dead_letter_count?: number | string | null;
       } | null;
       const workers = Array.isArray(summary?.workers) ? summary!.workers : [];
-      const anyDown = workers.some((w) => w && w.is_alive === false);
+      const anyDown = workers.some(
+        (w) => w && w.worker_id !== "loc-sync-mssql" && w.is_alive === false,
+      );
       const deadCount = Number(summary?.dead_letter_count) || 0;
       const workerHealthy = !anyDown && deadCount === 0;
 

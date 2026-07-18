@@ -16,6 +16,7 @@ import { RequirePermission } from "../../common/authz/require-permission.decorat
 import { PERMISSIONS } from "../../common/authz/permissions";
 import type { PrintLabelDto } from "../../common/printing/print-label.dto";
 import { LocationsService } from "./locations.service";
+import { LocTpFeedService } from "./loc-tp-feed.service";
 import type {
   ListLocationsQuery,
   ListMovementsQuery,
@@ -55,7 +56,10 @@ interface AuthedRequest {
 @RequirePermission(PERMISSIONS.LOKACIJE_READ)
 @Controller({ path: "locations", version: "1" })
 export class LocationsController {
-  constructor(private readonly locations: LocationsService) {}
+  constructor(
+    private readonly locations: LocationsService,
+    private readonly feed: LocTpFeedService,
+  ) {}
 
   // ---------- Lokacije (šifarnik + hijerarhija) ----------
 
@@ -172,6 +176,13 @@ export class LocationsController {
     return this.locations.syncOutbound(limit, req.user.email);
   }
 
+  /** B1 loc-most: stanje feed watermarka (loc_tp_feed_state) — runbook verifikacija. */
+  @Get("sync/feed-status")
+  @RequirePermission(PERMISSIONS.LOKACIJE_ADMIN)
+  syncFeedStatus() {
+    return this.feed.status();
+  }
+
   /**
    * LOK-P3: READ-ONLY zdravlje sync-a za SVE uloge modula (klasni `lokacije.read`,
    * BEZ admin override-a) — samo boolovi (cacheStale + workerHealthy), bez admin
@@ -229,6 +240,17 @@ export class LocationsController {
   @RequirePermission(PERMISSIONS.LOKACIJE_ADMIN)
   syncRunNow(@Req() req: AuthedRequest, @Body() _dto: SyncRunNowDto) {
     return this.locations.syncRunNow(req.user.email);
+  }
+
+  /**
+   * B1 loc-most: feed 2.0 → sy15 bigtehn cache (zamena bridge PRODUCTION job-a;
+   * RUNBOOK_LOC_MOST_REPOINT.md). `{ confirm: true }` obavezan (PLK-02 obrazac,
+   * kao run-now) — feed pomera watermark, slučajan POST ne sme da ga okine.
+   */
+  @Post("sync/feed-run")
+  @RequirePermission(PERMISSIONS.LOKACIJE_ADMIN)
+  syncFeedRun(@Body() _dto: SyncRunNowDto) {
+    return this.feed.run();
   }
 
   // ---------- Parametarske rute (:id) — MORA posle statičkih ----------

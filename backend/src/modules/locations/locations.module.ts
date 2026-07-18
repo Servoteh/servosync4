@@ -2,6 +2,7 @@ import { Module } from "@nestjs/common";
 import { PrintingModule } from "../../common/printing/printing.module";
 import { LocationsController } from "./locations.controller";
 import { LocationsService } from "./locations.service";
+import { LocTpFeedService } from "./loc-tp-feed.service";
 
 /**
  * Lokacije delova — 3.0 Talas A (fizičke lokacije loc_*; podaci u sy15 bazi —
@@ -11,6 +12,6 @@ import { LocationsService } from "./locations.service";
 @Module({
   imports: [PrintingModule],
   controllers: [LocationsController],
-  providers: [LocationsService],
+  providers: [LocationsService, LocTpFeedService],
 })
 export class LocationsModule {}

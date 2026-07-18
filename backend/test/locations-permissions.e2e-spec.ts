@@ -10,6 +10,7 @@ import request from "supertest";
 import { JwtAuthGuard } from "../src/modules/auth/jwt-auth.guard";
 import { LocationsController } from "../src/modules/locations/locations.controller";
 import { LocationsService } from "../src/modules/locations/locations.service";
+import { LocTpFeedService } from "../src/modules/locations/loc-tp-feed.service";
 import { PrismaService } from "../src/prisma/prisma.service";
 
 /**
@@ -54,13 +55,27 @@ describe("Lokacije permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     serviceMock[m] = jest.fn().mockResolvedValue({ data: [] });
   }
 
+  // B1 loc-most feeder (RUNBOOK_LOC_MOST_REPOINT.md) — zaseban provider iza
+  // `sync/feed-run` i `sync/feed-status`; oba su `lokacije.admin`.
+  const feedMock: Record<string, jest.Mock> = {
+    run: jest.fn().mockResolvedValue({ data: {} }),
+    status: jest.fn().mockResolvedValue({ data: {} }),
+  };
+
   beforeAll(async () => {
     process.env.AUTHZ_ENFORCE = "true"; // pre instanciranja PermissionsGuard-a
     const moduleRef = await Test.createTestingModule({
       controllers: [LocationsController],
       providers: [
-        { provide: PrismaService, useValue: { userPermissionOverride: { findUnique: async () => null } } },
-        { provide: LocationsService, useValue: serviceMock }],
+        {
+          provide: PrismaService,
+          useValue: {
+            userPermissionOverride: { findUnique: async () => null },
+          },
+        },
+        { provide: LocationsService, useValue: serviceMock },
+        { provide: LocTpFeedService, useValue: feedMock },
+      ],
     })
       .overrideGuard(JwtAuthGuard)
       .useValue({
@@ -268,6 +283,13 @@ describe("Lokacije permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     it.each(NOT_ADMIN)("GET /sync/outbound → 403 za %s", async (role) => {
       await get("/sync/outbound", role).expect(403);
     });
+    // B1 loc-most: feed 2.0 → sy15 cache je admin operacija kao i ostatak Sync taba.
+    it.each(ADMIN_ROLES)("GET /sync/feed-status → 200 za %s", async (role) => {
+      await get("/sync/feed-status", role).expect(200);
+    });
+    it.each(NOT_ADMIN)("GET /sync/feed-status → 403 za %s", async (role) => {
+      await get("/sync/feed-status", role).expect(403);
+    });
   });
 
   // LOK-P3: sync/health je klasni lokacije.read (bez admin override-a) — SVE
@@ -368,9 +390,23 @@ describe("Lokacije permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     it("POST /sync/run-now confirm:false → 400 (admin) — PLK-02 brana", async () => {
       await post("/sync/run-now", "admin", { confirm: false }).expect(400);
     });
-    it.each(NOT_ADMIN)("POST /sync/run-now → 403 za %s (guard pre validacije)", async (role) => {
-      await post("/sync/run-now", role, {}).expect(403);
+    // B1 loc-most: feed-run nosi isti PLK-02 confirm gate (pomera watermark).
+    it.each(ADMIN_ROLES)("POST /sync/feed-run → 201 za %s", async (role) => {
+      await post("/sync/feed-run", role, { confirm: true }).expect(201);
     });
+    it("POST /sync/feed-run bez confirm → 400 (admin) — PLK-02 brana", async () => {
+      await post("/sync/feed-run", "admin", {}).expect(400);
+    });
+    it.each(NOT_ADMIN)("POST /sync/feed-run → 403 za %s", async (role) => {
+      await post("/sync/feed-run", role, { confirm: true }).expect(403);
+    });
+
+    it.each(NOT_ADMIN)(
+      "POST /sync/run-now → 403 za %s (guard pre validacije)",
+      async (role) => {
+        await post("/sync/run-now", role, {}).expect(403);
+      },
+    );
   });
 
   describe("POST /labels/print — lokacije.labels (1.0 canPrintLocLabels)", () => {

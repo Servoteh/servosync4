@@ -117,6 +117,13 @@ Kad se QBigTehn ugasi, 1.0 loc ingest se mora **repointovati sa QBigTehn cache-a
 (iste prijave sa mašina, novi izvor), a outbound (`sp_ApplyLocationEvent`) se gasi (nema više MSSQL cilja) ili
 preusmerava na 2.0. Ovo je jedan od **mostova iz „Sync tokom tranzicije"** ([ROADMAP](../ROADMAP.md)) — sunset kad 3.0 objedini.
 
+> **Status 18.07.2026 — B1 kod sletio.** Repoint je izveden kao **zamena hranilice, ne motora**:
+> `LocTpFeedService` (2.0 backend, oba datasource-a) puni ISTE `bigtehn_*_cache` tabele iz
+> `tech_processes`/`work_orders`/`work_order_operations`, pa `loc_bigtehn_ingest_run`, parser,
+> placement trigger i watermark ostaju netaknuti — 1.0 potrošači (uklj. mobilni `/m/*`) ne vide
+> promenu. Outbound enqueue grana se uklanja (queue ostaje kao zamrznuta istorija do B3).
+> Sekvenca, rizici i rollback: **[RUNBOOK_LOC_MOST_REPOINT.md](../RUNBOOK_LOC_MOST_REPOINT.md)**.
+
 ### 8.4 Predlog za 3.0 unifikaciju (jedan model)
 Kad se 1.0 i 2.0 spoje u 3.0, **preporuka: 1.0 `loc_*` model je 3.0 cilj** (bogatiji: hijerarhija, MACHINE/CAGE,
 barkod, health), a 2.0 doprinosi:

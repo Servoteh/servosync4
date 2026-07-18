@@ -661,7 +661,9 @@ describe("LocationsService — R2 mutacije", () => {
     expect(Object.keys(res.data)).toEqual(["cacheStale", "workerHealthy"]);
   });
 
-  it("syncHealth: pragovi po jobu (RN 6h, predmeti 36h, crteži 7d) — parity 1.0", async () => {
+  // B1 loc-most: `crtezi` je od repointa UVEK false — drawings sync je penzionisan
+  // (2.0 `drawing_pdfs` je vlasnik crteža), pa bi prag pravio večni lažni baner.
+  it("syncHealth: pragovi po jobu (RN 6h, predmeti 36h; crteži penzionisani)", async () => {
     tx.$queryRaw
       .mockResolvedValueOnce([
         { result: { workers: [], dead_letter_count: 0 } },
@@ -675,7 +677,7 @@ describe("LocationsService — R2 mutacije", () => {
         { sync_job: "production_tech_routing", finished_at: OLD(5), status: "ok" },
         // predmeti pre 30h < 36h → svež
         { sync_job: "catalog_items", finished_at: OLD(30), status: "ok" },
-        // crteži pre 8 dana > 7d → stale
+        // crteži pre 8 dana — nekad stale, sada penzionisan prag → uvek false
         { sync_job: "production_bigtehn_drawings", finished_at: OLD(24 * 8), status: "ok" },
       ]);
 
@@ -685,7 +687,7 @@ describe("LocationsService — R2 mutacije", () => {
       linije: false,
       tp: false,
       predmeti: false,
-      crtezi: true,
+      crtezi: false,
     });
   });
 
@@ -707,9 +709,40 @@ describe("LocationsService — R2 mutacije", () => {
       linije: true,
       tp: true,
       predmeti: true,
-      crtezi: true,
+      crtezi: false, // penzionisan prag (vidi test iznad)
     });
     expect(res.data.workerHealthy).toBe(false); // worker down
+  });
+
+  // B1 loc-most: outbound MSSQL worker je penzionisan — njegov (mrtav) heartbeat red
+  // ne sme da obara zdravlje modula; ingest worker i dalje presuđuje.
+  it("syncHealth: mrtav `loc-sync-mssql` se IGNORIŠE, mrtav ingest i dalje obara", async () => {
+    tx.$queryRaw
+      .mockResolvedValueOnce([
+        {
+          result: {
+            workers: [{ worker_id: "loc-sync-mssql", is_alive: false }],
+            dead_letter_count: 0,
+          },
+        },
+      ])
+      .mockResolvedValueOnce([]);
+    expect((await service.syncHealth(EMAIL)).data.workerHealthy).toBe(true);
+
+    tx.$queryRaw
+      .mockResolvedValueOnce([
+        {
+          result: {
+            workers: [
+              { worker_id: "loc-sync-mssql", is_alive: false },
+              { worker_id: "loc-bigtehn-ingest", is_alive: false },
+            ],
+            dead_letter_count: 0,
+          },
+        },
+      ])
+      .mockResolvedValueOnce([]);
+    expect((await service.syncHealth(EMAIL)).data.workerHealthy).toBe(false);
   });
 
   it("syncHealth: dead_letter_count>0 obara workerHealthy iako su workeri živi", async () => {

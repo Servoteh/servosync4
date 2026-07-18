@@ -42,11 +42,13 @@ Verifikovano stanje 18.07 (ground-truth `origin/main` oba repoa):
 | 1b | QBigTehn **master** read (33 šifarnika, `Vasa-SQL:5765`) | 🟡 **ŽIVO** (on-demand) | `tools/bigbit-bridge/` napisan ali **NEAKTIVAN** |
 | 2 | Konsolidacija dve PG baze (sy15 + 2.0) | ⬜ **NIJE** | `prisma/sy15.prisma` = 2. datasource; Reversi + auth čitaju sy15 |
 | 3 | PostgREST + GoTrue (Supabase-native) | 🟡 **ŽIVO** on-prem (od 1.5, 10.07) | `sy15-*` kontejneri; koriste ih 2.0 auth + Reversi + 1.0 front |
-| 4 | Loc-most repoint (§4.2) | ⬜ **PENDING** (svesno odloženo) | još čita QBigTehn cache + piše MSSQL `sp_ApplyLocationEvent` |
+| 4 | Loc-most repoint (§4.2) | 🟡 **KOD SPREMAN** 18.07, živa sekvenca čeka prozor | `LocTpFeedService` + SQL skripte + [RUNBOOK_LOC_MOST_REPOINT.md](RUNBOOK_LOC_MOST_REPOINT.md) |
 | 5 | 1.0 Vite front dekomisija | 🟡 **ŽIVO** (SSO kapija + iframe host + mobil `/m/*`) | `ss2Cutover.js` enabled |
 
 **Redosled (tvrde zavisnosti):**
-- [ ] **(1) Loc-most repoint** — 1.0 `loc_*` ingest: QBigTehn cache → 2.0 `tech_processes`; outbound `sp_ApplyLocationEvent` gasi/preusmeri. ⚠️ **blokira gašenje QBigTehn-a.**
+- [ ] **(1) Loc-most repoint** — 1.0 `loc_*` ingest: QBigTehn cache → 2.0 `tech_processes`; outbound `sp_ApplyLocationEvent` gasi. ⚠️ **blokira gašenje QBigTehn-a.**
+  **Kod sletio 18.07** (feeder `LocTpFeedService` puni iste cache tabele iz 2.0 → ingest motor netaknut; outbound enqueue skripta spremna). Ostaje **živa sekvenca po
+  [RUNBOOK_LOC_MOST_REPOINT.md](RUNBOOK_LOC_MOST_REPOINT.md)** (koraci 0–11) + 4 otvorena pitanja iz runbook §4 (auth za feed cron · backfill A/B · granularnost signala · ServoTehERP potvrda).
 - [ ] **(2) Aktiviraj `bigbit-bridge`** → master read (33 tab.) sa `Vasa-SQL:5765` na direktan BigBit mdb → QBigTehn zavisnost pada na nulu. *(Sync B ostaje trajan do 4.0.)*
 - [ ] **(3) Konsolidacija baza** — sy15 moduli lift-and-shift u jedinstvenu 2.0 bazu; ukloni 2. datasource.
 - [ ] **(4) Gašenje PostgREST + GoTrue** (`sy15-*`) + potpuna dekomisija 1.0 Vite fronta — kad ni 2.0 auth ni mobilni `/m/*` ne gađaju sy15.
