@@ -89,7 +89,7 @@ export function MasinaKarton({ code, me }: { code: string; me: MaintMe | undefin
   const d = machine.data?.data;
   const [tab, setTabState] = useState<CardTab>('pregled');
   const [editOpen, setEditOpen] = useState(false);
-  const [showReport, setShowReport] = useState(false);
+  const [reportFor, setReportFor] = useState<{ code: string; name: string } | null>(null);
   const [incidentId, setIncidentId] = useState<string | null>(null);
 
   const restore = useRestoreMachine();
@@ -144,7 +144,7 @@ export function MasinaKarton({ code, me }: { code: string; me: MaintMe | undefin
               {d.location && <p className="mt-0.5 text-sm text-ink-secondary">{d.location}</p>}
             </div>
             <div className="flex flex-wrap gap-2">
-              <Button variant="secondary" onClick={() => setShowReport(true)}><FileWarning className="h-4 w-4" aria-hidden /> Prijavi kvar</Button>
+              <Button variant="secondary" onClick={() => setReportFor({ code: d.machineCode, name: d.name })}><FileWarning className="h-4 w-4" aria-hidden /> Prijavi kvar</Button>
               <Button variant="secondary" onClick={() => setTab('zadaci')}><Wrench className="h-4 w-4" aria-hidden /> Potvrdi kontrolu</Button>
               {canOverride && <Button variant="secondary" onClick={() => setTab('pregled')}>Postavi status</Button>}
               {canManage && <Button onClick={() => setEditOpen(true)}><Pencil className="h-4 w-4" aria-hidden /> Uredi mašinu</Button>}
@@ -171,7 +171,7 @@ export function MasinaKarton({ code, me }: { code: string; me: MaintMe | undefin
         </>
       )}
 
-      {showReport && d && <PrijavaKvaraDialog me={me} fixedMachine={{ code: d.machineCode, name: d.name }} onClose={() => setShowReport(false)} />}
+      {reportFor && <PrijavaKvaraDialog me={me} fixedMachine={reportFor} onClose={() => setReportFor(null)} />}
       <IncidentDetailDialog id={incidentId} me={me} onClose={() => setIncidentId(null)} />
     </div>
   );
@@ -512,7 +512,7 @@ function EditMachineModal({ code, canManage, onClose }: { code: string; canManag
   }
 
   return (
-    <Dialog open onClose={onClose} title="Uredi mašinu" size="lg"
+    <Dialog open onClose={onClose} dismissable={false} title="Uredi mašinu" size="lg"
       footer={<><Button variant="ghost" onClick={onClose}>Otkaži</Button><Button loading={update.isPending} onClick={save}>Sačuvaj</Button></>}>
       <div className="space-y-3">
         {err && <p className="rounded-control bg-status-danger-bg px-3 py-2 text-sm text-status-danger">{err}</p>}

@@ -93,7 +93,7 @@ export function VoziloKarton({ id, me }: { id: string; me: MaintMe | undefined }
   const det = (d?.details ?? null) as Record<string, unknown> | null;
   const [tab, setTabState] = useState<VTab>('pregled');
   const [editOpen, setEditOpen] = useState(false);
-  const [showReport, setShowReport] = useState(false);
+  const [reportFor, setReportFor] = useState<{ code: string; name: string; assetId: string; assetType: 'vehicle' } | null>(null);
 
   const canManage = me?.gates.canManageMaintCatalog ?? false;
   const carpoolCanEdit = canManage || me?.maintRole === 'technician' || me?.maintRole === 'operator';
@@ -138,7 +138,7 @@ export function VoziloKarton({ id, me }: { id: string; me: MaintMe | undefined }
               {f(det ?? {}, 'registrationPlate') && <p className="mt-0.5 text-sm text-ink-secondary">{f(det ?? {}, 'registrationPlate')}</p>}
             </div>
             <div className="flex flex-wrap gap-2">
-              <Button variant="secondary" onClick={() => setShowReport(true)}><FileWarning className="h-4 w-4" aria-hidden /> Prijavi kvar</Button>
+              <Button variant="secondary" onClick={() => setReportFor({ code: d.assetCode, name: d.name, assetId: id, assetType: 'vehicle' })}><FileWarning className="h-4 w-4" aria-hidden /> Prijavi kvar</Button>
               {canManage && !d.archivedAt && <Button onClick={() => setEditOpen(true)}><Pencil className="h-4 w-4" aria-hidden /> Uredi vozilo</Button>}
               {canManage && !d.archivedAt && <Button variant="danger" onClick={() => { const reason = prompt('Razlog arhiviranja vozila?'); if (reason?.trim()) archive.mutate({ id, reason: reason.trim() }, { onSuccess: () => toast('Vozilo arhivirano') }); }}>Arhiviraj</Button>}
             </div>
@@ -173,9 +173,9 @@ export function VoziloKarton({ id, me }: { id: string; me: MaintMe | undefined }
           {tab === 'carpool' && <VCarpool id={id} canEdit={carpoolCanEdit} />}
 
           {editOpen && <VoziloEditModal vehicleId={id} onClose={() => setEditOpen(false)} />}
-          {showReport && <PrijavaKvaraDialog me={me} fixedAsset={{ code: d.assetCode, name: d.name, assetId: id, assetType: 'vehicle' }} onClose={() => setShowReport(false)} />}
         </>
       )}
+      {reportFor && <PrijavaKvaraDialog me={me} fixedAsset={reportFor} onClose={() => setReportFor(null)} />}
     </div>
   );
 }

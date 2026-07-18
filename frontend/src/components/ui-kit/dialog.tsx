@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import { X } from 'lucide-react';
 
 const SIZE_CLASS = {
@@ -20,6 +20,7 @@ export function Dialog({
   children,
   footer,
   size = 'md',
+  dismissable = true,
 }: {
   open: boolean;
   onClose: () => void;
@@ -28,21 +29,29 @@ export function Dialog({
   footer?: ReactNode;
   /** Širina modala: md (≈ obrazac), lg/xl/2xl (šire tabele/zarade). */
   size?: keyof typeof SIZE_CLASS;
+  /** false = zatvara samo eksplicitno (X / Otkaži); Esc i klik na pozadinu ne zatvaraju (obrasci sa unosom). */
+  dismissable?: boolean;
 }) {
+  // Press-origin dismissal: pozadina zatvara samo ako su i mousedown i mouseup na
+  // scrim-u. Drag-selekcija teksta iz polja koja se otpusti van panela NE sme da
+  // zatvori dijalog (inače bi se click dispatch-ovao na scrim kao zajedničkog pretka).
+  const downOnBackdrop = useRef(false);
+
   useEffect(() => {
-    if (!open) return;
+    if (!open || !dismissable) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
+  }, [open, onClose, dismissable]);
 
   if (!open) return null;
   return (
     <div
       className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4"
-      onClick={onClose}
+      onMouseDown={(e) => { downOnBackdrop.current = e.target === e.currentTarget; }}
+      onClick={(e) => { if (dismissable && downOnBackdrop.current && e.target === e.currentTarget) onClose(); }}
       role="presentation"
     >
       <div

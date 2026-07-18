@@ -59,7 +59,7 @@ export function SredstvoKarton({ kind, id, me }: { kind: Kind; id: string; me: M
   const restore = useRestoreAsset();
   const [tab, setTabState] = useState<STab>('pregled');
   const [editOpen, setEditOpen] = useState(false);
-  const [showReport, setShowReport] = useState(false);
+  const [reportFor, setReportFor] = useState<{ code: string; name: string; assetId: string; assetType: Kind } | null>(null);
 
   const canManage = me?.gates.canManageMaintCatalog ?? false;
   const canUpload = canManage || me?.maintRole === 'technician' || me?.maintRole === 'operator';
@@ -104,7 +104,7 @@ export function SredstvoKarton({ kind, id, me }: { kind: Kind; id: string; me: M
               <p className="mt-0.5 text-sm text-ink-secondary">{subtitleOf(kind, d)}</p>
             </div>
             <div className="flex flex-wrap gap-2">
-              {!d.archivedAt && <Button variant="secondary" onClick={() => setShowReport(true)}><FileWarning className="h-4 w-4" aria-hidden /> Prijavi kvar</Button>}
+              {!d.archivedAt && <Button variant="secondary" onClick={() => setReportFor({ code: d.assetCode, name: d.name, assetId: id, assetType: kind })}><FileWarning className="h-4 w-4" aria-hidden /> Prijavi kvar</Button>}
               {canManage && !d.archivedAt && <Button onClick={() => setEditOpen(true)}><Pencil className="h-4 w-4" aria-hidden /> Uredi</Button>}
               {canManage && !d.archivedAt && <Button variant="danger" onClick={() => { const reason = prompt('Razlog arhiviranja?'); if (reason?.trim()) archive.mutate({ id, reason: reason.trim() }, { onSuccess: () => toast(kind === 'it' ? 'IT oprema arhivirana' : 'Objekat arhiviran') }); }}>Arhiviraj</Button>}
             </div>
@@ -137,9 +137,9 @@ export function SredstvoKarton({ kind, id, me }: { kind: Kind; id: string; me: M
           {tab === 'dokumenta' && <AssetDocuments assetId={id} canUpload={canUpload} />}
 
           {editOpen && <SredstvoEditModal kind={kind} assetId={id} onClose={() => setEditOpen(false)} />}
-          {showReport && <PrijavaKvaraDialog me={me} fixedAsset={{ code: d.assetCode, name: d.name, assetId: id, assetType: kind }} onClose={() => setShowReport(false)} />}
         </>
       )}
+      {reportFor && <PrijavaKvaraDialog me={me} fixedAsset={reportFor} onClose={() => setReportFor(null)} />}
     </div>
   );
 }

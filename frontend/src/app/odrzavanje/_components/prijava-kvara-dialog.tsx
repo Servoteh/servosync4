@@ -166,6 +166,7 @@ export function PrijavaKvaraDialog({
     <Dialog
       open
       onClose={onClose}
+      dismissable={false}
       title="Prijava kvara"
       footer={
         <>
