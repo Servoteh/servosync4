@@ -777,7 +777,10 @@ export function useTeamTools(employeeId: string | null) {
   return useQuery({
     queryKey: [...KEYS.teamTools, employeeId] as const,
     enabled: !!employeeId,
-    queryFn: () => apiFetch<{ data: TeamToolRow[] | null; meta?: EnvelopeMeta }>(`${BASE}/team/${employeeId}/tools`),
+    queryFn: () =>
+      apiFetch<{ data: { employeeId: string; tools: TeamToolRow[] } | null; meta?: EnvelopeMeta }>(
+        `${BASE}/team/${employeeId}/tools`,
+      ),
   });
 }
 

@@ -168,8 +168,11 @@ export function TaskEditor({
       onClose();
     } catch (e) {
       if (e instanceof ApiError) {
-        if (e.status === 409) setErr('Zadatak je u međuvremenu izmenjen. Osveži pregled i pokušaj ponovo.');
-        else if (e.status === 403) setErr('Nemate pravo za ovu izmenu.');
+        if (e.status === 409) {
+          // Osveži token izmene (updated_at) pre ponovnog pokušaja — inače retry šalje isti stale token.
+          await taskQ.refetch();
+          setErr('Zadatak je bio izmenjen u međuvremenu — osvežili smo pregled, pokušaj ponovo.');
+        } else if (e.status === 403) setErr('Nemate pravo za ovu izmenu.');
         else setErr(e.message);
       } else setErr('Greška pri čuvanju.');
     }

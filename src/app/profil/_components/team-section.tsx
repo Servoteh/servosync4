@@ -358,7 +358,7 @@ function TeamRow({
 
 function TeamMemberDetail({ m, onCorrect }: { m: TeamMember; onCorrect: () => void }) {
   const toolsQ = useTeamTools(m.id);
-  const tools = toolsQ.data?.data ?? [];
+  const tools = toolsQ.data?.data?.tools ?? [];
   const [pdfBusy, setPdfBusy] = useState(false);
 
   const bal = m.balance;
