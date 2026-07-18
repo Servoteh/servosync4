@@ -1,0 +1,16 @@
+/version.json
+  Cache-Control: no-store
+
+# Energetika / SCADA — HP-HMI ekrani se učitavaju kao <iframe> UNUTAR modula
+# /energetika (isti origin). Kopija 1.0 statike (public/scada-hmi/) — izvor istine
+# je 1.0 repo (ispravke se rade tamo pa kopiraju). Presuda E1 (MODULE_SPEC_scada_30 §7).
+#
+# - X-Frame-Options: SAMEORIGIN + CSP frame-ancestors 'self' → dozvoli uokvirivanje
+#   samo sa našeg origina (van origina „refused to connect").
+# - no-cache/revalidacija: imena su FIKSNA (bez content-hash-a), pa ispravke shim-a/
+#   ekrana moraju odmah da stignu klijentu (⚠ shim `*/`-u-komentaru zamka — posle
+#   svake izmene `node --check public/scada-hmi/scada-bridge-shim.js`).
+/scada-hmi/*
+  X-Frame-Options: SAMEORIGIN
+  Content-Security-Policy: frame-ancestors 'self'
+  Cache-Control: no-cache, must-revalidate

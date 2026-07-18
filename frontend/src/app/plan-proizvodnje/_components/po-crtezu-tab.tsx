@@ -1,0 +1,111 @@
+'use client';
+
+import { useEffect, useState } from 'react';
+import { RefreshCw, Lock } from 'lucide-react';
+import { Button } from '@/components/ui-kit/button';
+import { SearchBox } from '@/components/ui-kit/search-box';
+import { useCan } from '@/lib/can';
+import { PERMISSIONS } from '@/lib/permissions';
+import { useOperationsSearch, opKey, type OpRow } from '@/api/plan-proizvodnje';
+import { OpsTable } from './ops-table';
+import { LS, lsGet, lsSet } from './pp-storage';
+
+/** Po crtežu: pretraga svih operacija + bulk premeštanje (JEDAN client_event_uuid u BE). */
+export function PoCrtezuTab({
+  onBulkReassign,
+  onTp,
+  onSkice,
+  onReassign,
+}: {
+  onBulkReassign: (rows: OpRow[]) => void;
+  onTp: (o: OpRow) => void;
+  onSkice: (o: OpRow) => void;
+  onReassign: (o: OpRow) => void;
+}) {
+  const can = useCan();
+  const canEdit = can(PERMISSIONS.PLAN_PROIZVODNJE_EDIT);
+  // Persistiran upit + AUTO-pretraga na mount (GAP-PM-21/PM-22): SSR-safe init iz LS.
+  const [q, setQ] = useState<string>(() => lsGet(LS.crtezQuery) ?? '');
+  const search = useOperationsSearch(q);
+
+  useEffect(() => {
+    lsSet(LS.crtezQuery, q);
+  }, [q]);
+  const rows = search.data?.data ?? [];
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  function toggle(o: OpRow) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      const k = opKey(o);
+      if (next.has(k)) next.delete(k);
+      else next.add(k);
+      return next;
+    });
+  }
+
+  const selectedRows = rows.filter((o) => selected.has(opKey(o)));
+
+  // Select-all nad TRENUTNO prikazanim redovima (paritet 1.0 header select-all).
+  const allSelected = rows.length > 0 && rows.every((o) => selected.has(opKey(o)));
+  function toggleAll() {
+    setSelected(() => (allSelected ? new Set() : new Set(rows.map(opKey))));
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <SearchBox value={q} onChange={setQ} placeholder="Crtež / RN / naziv dela…" />
+        <span className="text-sm text-ink-secondary">{rows.length} rezultata</span>
+        {q.trim().length >= 2 && (
+          <button
+            type="button"
+            onClick={() => search.refetch()}
+            disabled={search.isFetching}
+            title="Osveži"
+            className="inline-flex h-8 items-center gap-1 rounded-control border border-line px-2 text-xs text-ink-secondary hover:bg-surface-2 disabled:opacity-50"
+          >
+            <RefreshCw className={search.isFetching ? 'h-3.5 w-3.5 animate-spin' : 'h-3.5 w-3.5'} /> Osveži
+          </button>
+        )}
+        {!canEdit && (
+          <span className="inline-flex items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-2xs text-ink-secondary" title="Nemate pravo izmene">
+            <Lock className="h-3 w-3" /> Samo za pregled
+          </span>
+        )}
+        {selectedRows.length > 0 && (
+          <div className="ml-auto flex items-center gap-2">
+            <span className="text-sm text-ink">{selectedRows.length} izabrano</span>
+            <Button onClick={() => onBulkReassign(selectedRows)}>Premesti izabrane ({selectedRows.length})</Button>
+            <Button variant="ghost" onClick={() => setSelected(new Set())}>Poništi</Button>
+          </div>
+        )}
+      </div>
+
+      {q.trim().length < 2 ? (
+        <div className="rounded-panel border border-line bg-surface px-4 py-10 text-center text-sm text-ink-disabled">
+          Ukucaj bar 2 znaka za pretragu. Pretraga pokriva broj crteža, RN i naziv dela.
+        </div>
+      ) : search.isError ? (
+        <div className="rounded-panel border border-line bg-surface px-4 py-10 text-center text-sm text-status-danger">
+          Greška pri pretrazi.{' '}
+          <button type="button" onClick={() => search.refetch()} className="underline">Pokušaj ponovo</button>
+        </div>
+      ) : search.isLoading ? (
+        <div className="rounded-panel border border-line bg-surface px-4 py-10 text-center text-sm text-ink-secondary">Pretraga…</div>
+      ) : (
+        <OpsTable
+          ops={rows}
+          selectable
+          selected={selected}
+          onToggleSelect={toggle}
+          allSelected={allSelected}
+          onToggleAll={toggleAll}
+          onReassign={onReassign}
+          onTp={onTp}
+          onSkice={onSkice}
+        />
+      )}
+    </div>
+  );
+}

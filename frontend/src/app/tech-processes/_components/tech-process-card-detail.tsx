@@ -1,0 +1,901 @@
+'use client';
+
+// „Kartica kucanja" — deljena komponenta (ekstrahovana iz tech-processes/page.tsx).
+// Koriste je: „Realizacija" (tech-processes, tab Kucanja) i „Završeni radni nalozi"
+// (completed-orders). Ponašanje u Realizaciji je NEPROMENJENO — samo je premešteno.
+//
+// Kontrakt: kartica se identifikuje trojkom (projectId + identNumber + variant), što
+// je i CardKey za /card poziv. Dodatno prima OPCIONI kontekst za „QC dokumenti"
+// (techProcessId + workOrderId): u Realizaciji dolazi iz konkretnog otkucanog reda
+// (tp.id / tp.workOrderId) pa se veza dokumenata i „Piši po nalogu" ponašaju identično;
+// „Završeni nalozi" nemaju pojedinačni TP red (imaju RN), pa QC sekcija tamo pada na
+// vezu preko identNumber-a, a annotator koristi prosleđeni workOrderId (id RN-a).
+
+import { Fragment, useRef, useState, type ReactNode } from 'react';
+import { FileText, PenLine, Trash2, Upload } from 'lucide-react';
+import {
+  PART_QUALITY,
+  useDeleteTechEntry,
+  useReopenTechProcess,
+  useTechProcessCard,
+  type CardKey,
+  type CardOperation,
+  type OperationRef,
+  type TechProcessCardRow,
+  type WorkerRef,
+} from '@/api/tech-processes';
+import { ApiError } from '@/api/client';
+import { openDrawingPdf } from '@/api/pdm';
+// K4 — prilozi uz kucanje (QC dokumenti). Ovi simboli su vlasništvo `api/kvalitet.ts`
+// (drugi agent); ovde ih SAMO uvozimo (skenirani nalozi / fotke → PostgreSQL bytea).
+import {
+  useQualityDocs,
+  useUploadQualityDoc,
+  useDeleteQualityDoc,
+  openQualityDoc,
+} from '@/api/kvalitet';
+import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
+import { type Column } from '@/components/ui-kit/data-table';
+import { EmptyState } from '@/components/ui-kit/empty-state';
+import { Dialog } from '@/components/ui-kit/dialog';
+import { Can } from '@/lib/can';
+import { PERMISSIONS } from '@/lib/permissions';
+import { formatDate, formatNumber } from '@/lib/format';
+import { toast } from '@/lib/toast';
+import { cn } from '@/lib/cn';
+// F3c — „Piši po nalogu" (tablet, S Pen): olovkom preko RN dokumenta → anotirana
+// slika (PNG) se uploaduje uz nalog. Anotator je težak (pdfjs) i renderuje se samo
+// na klijentu, pa se lazy-loaduje (ssr:false) preko lokalnog wrappera.
+import { PdfAnnotator } from '../pdf-annotator-lazy';
+
+// ------------------------------------------------------------------ zajednički helperi
+// (deljeni sa tech-processes/page.tsx — page.tsx ih uvozi iz ovog fajla da se izbegne
+//  duplikat/ciklična zavisnost)
+
+/** Ime radnika iz bezbednog podskupa (fallback na `#id`). */
+export function workerLabel(w: WorkerRef | null, id: number): string {
+  return w?.fullName || w?.username || `#${id}`;
+}
+
+/** Naziv radnog centra iz razrešene operacije (fallback na šifru / „—"). */
+export function centerLabel(op: OperationRef | null, code: string): string {
+  return op?.workCenterName || code || '—';
+}
+
+const QUALITY_LABEL: Record<number, string> = {
+  [PART_QUALITY.GOOD]: 'Dobar',
+  [PART_QUALITY.REWORK]: 'Dorada',
+  [PART_QUALITY.SCRAP]: 'Škart',
+};
+function qualityLabel(id: number, name?: string | null): string {
+  return name || QUALITY_LABEL[id] || `#${id}`;
+}
+
+/** Minuti → „12 h 30 min" / „45 min"; 0/prazno → „—". */
+export function formatMinutes(min: number | null): string {
+  if (!min) return '—';
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return h === 0 ? `${m} min` : `${h} h ${m} min`;
+}
+
+export function SectionHeading({ title, count }: { title: string; count?: ReactNode }) {
+  return (
+    <div className="flex items-baseline gap-3">
+      <h2 className="text-md font-semibold text-ink">{title}</h2>
+      {count != null && <span className="text-sm text-ink-secondary">{count}</span>}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ redovi + sume kartice
+
+const cardRowColumns: Column<TechProcessCardRow>[] = [
+  {
+    key: 'operationNumber',
+    header: 'Op.',
+    numeric: true,
+    render: (r) => <span className="tnums text-ink-secondary">{r.operationNumber}</span>,
+  },
+  {
+    key: 'workCenter',
+    header: 'RC',
+    render: (r) => <span className="text-ink">{centerLabel(r.operation, r.workCenterCode)}</span>,
+  },
+  {
+    key: 'quality',
+    header: 'Kvalitet',
+    render: (r) => qualityLabel(r.qualityTypeId, r.qualityType?.name),
+  },
+  {
+    key: 'pieceCount',
+    header: 'Kom',
+    align: 'right',
+    numeric: true,
+    render: (r) => formatNumber(r.pieceCount),
+  },
+  {
+    key: 'status',
+    header: 'Status',
+    render: (r) =>
+      r.isProcessFinished ? (
+        <StatusBadge tone="success" label="Završen" />
+      ) : (
+        <StatusBadge tone="info" label="U izradi" />
+      ),
+  },
+  {
+    key: 'worker',
+    header: 'Radnik',
+    render: (r) => <span className="text-ink-secondary">{workerLabel(r.worker, r.workerId)}</span>,
+  },
+  {
+    key: 'enteredAt',
+    header: 'Unet',
+    render: (r) => <span className="text-ink-secondary">{formatDate(r.enteredAt)}</span>,
+  },
+  {
+    key: 'finishedAt',
+    header: 'Završen',
+    render: (r) => <span className="text-ink-secondary">{formatDate(r.finishedAt)}</span>,
+  },
+];
+
+function SumTile({ label, value, tone }: { label: string; value: ReactNode; tone?: Tone }) {
+  const color =
+    tone === 'success'
+      ? 'text-status-success'
+      : tone === 'warn'
+        ? 'text-status-warn'
+        : tone === 'danger'
+          ? 'text-status-danger'
+          : 'text-ink';
+  return (
+    <div className="rounded-control border border-line bg-surface px-3 py-2">
+      <dt className="text-2xs uppercase tracking-[0.08em] text-ink-disabled">{label}</dt>
+      <dd className={cn('tnums text-md font-semibold', color)}>{value}</dd>
+    </div>
+  );
+}
+
+/**
+ * Ključ grupe kucanja — backend sortira redove kartice po
+ * (operationNumber, workCenterCode, id), pa su grupe garantovano kontiguozne.
+ */
+function cardGroupKey(operationNumber: number, workCenterCode: string): string {
+  return `${operationNumber}|${workCenterCode}`;
+}
+
+/** Cilj radnje „Otvori operaciju" (jedan red operacije + kontekst za potvrdu). */
+interface ReopenTarget {
+  id: number;
+  operationNumber: number;
+  workCenter: string;
+}
+
+/** Cilj radnje „Obriši kucanje" (jedan red kucanja + kontekst za potvrdu). */
+interface DeleteEntryTarget {
+  id: number;
+  operationNumber: number;
+  worker: string;
+  pieceCount: number;
+}
+
+/** Grupni header red kartice — agregat operacije IZ API-ja (operations[]), UI ništa ne sabira. */
+function CardGroupHeaderRow({
+  group,
+  row,
+  colCount,
+  onReopen,
+}: {
+  group: CardOperation | undefined;
+  row: TechProcessCardRow;
+  colCount: number;
+  /** Klik na „Otvori operaciju" (samo za završene operacije, iza tehnologija.write). */
+  onReopen: (target: ReopenTarget) => void;
+}) {
+  const center = centerLabel(group?.operation ?? row.operation, row.workCenterCode);
+  return (
+    <tr className="border-b border-line bg-surface-2">
+      <td colSpan={colCount} className="px-4 py-2">
+        <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+          <span className="font-semibold text-ink">
+            OP <span className="tnums">{row.operationNumber}</span> · {center}
+          </span>
+          <div className="flex flex-wrap items-center gap-3">
+            {group && (
+              <span className="tnums text-xs text-ink-secondary">
+                Σ {formatNumber(group.pieces.total)} kom (
+                <span className="text-status-success">{formatNumber(group.pieces.good)} dobar</span>
+                {' · '}
+                <span className="text-status-warn">{formatNumber(group.pieces.rework)} dorada</span>
+                {' · '}
+                <span className="text-status-danger">{formatNumber(group.pieces.scrap)} škart</span>
+                ) · {formatNumber(group.entryCount)} kucanja
+              </span>
+            )}
+            {/* Ponovo otvori završenu operaciju za doradu — iza tehnologija.write. */}
+            {group?.isFinished && (
+              <Can permission={PERMISSIONS.TEHNOLOGIJA_WRITE}>
+                <button
+                  onClick={() =>
+                    onReopen({ id: row.id, operationNumber: row.operationNumber, workCenter: center })
+                  }
+                  className="rounded-control border border-line px-2.5 py-1 text-xs font-semibold text-ink-secondary hover:bg-surface"
+                >
+                  Otvori operaciju
+                </button>
+              </Can>
+            )}
+          </div>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+/**
+ * Grupni header za operaciju IZ ROUTINGA koja NEMA nijedno kucanje (paritet
+ * QBigTehn „Kartica tehnološkog postupka": npr. međufazna/završna kontrola prazne
+ * dok se ne otkucaju). Isti stil kao `CardGroupHeaderRow`, ali bez agregata i bez
+ * „Otvori operaciju" dugmeta (nema šta da se otvara).
+ */
+function EmptyGroupHeaderRow({
+  operationNumber,
+  workCenter,
+  colCount,
+}: {
+  operationNumber: number;
+  workCenter: string;
+  colCount: number;
+}) {
+  return (
+    <tr className="border-b border-line bg-surface-2">
+      <td colSpan={colCount} className="px-4 py-2">
+        <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+          <span className="font-semibold text-ink">
+            OP <span className="tnums">{operationNumber}</span> · {workCenter}
+          </span>
+          <span className="text-xs text-ink-secondary">Nema kucanja</span>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+/**
+ * Grupa reda kartice za render — otkucana (sa redovima) ili prazna (iz routinga,
+ * bez kucanja). Sortira se po broju operacije, pa po RC-u.
+ */
+type CardRenderGroup =
+  | {
+      kind: 'kucano';
+      key: string;
+      operationNumber: number;
+      workCenterCode: string;
+      rows: TechProcessCardRow[];
+    }
+  | {
+      kind: 'prazno';
+      key: string;
+      operationNumber: number;
+      workCenterCode: string;
+      workCenter: string;
+    };
+
+// ------------------------------------------------------------------ K4: QC dokumenti (prilozi uz kucanje)
+
+/** Najveći dozvoljeni prilog (paritet kadrovska dosije: PDF/slika, ≤25MB). */
+const QC_DOC_MAX_BYTES = 25 * 1024 * 1024;
+
+/**
+ * „QC dokumenti" u kartici kucanja (K4, MODULE_SPEC_kontrola_kvaliteta.md §8/F3b,
+ * ODLUKA Nenad 15.07): skenirani nalozi, kontrolna dokumentacija i fotke sa telefona
+ * UPLOADUJU se kroz aplikaciju i čuvaju u PostgreSQL (bytea, presedan drawing_pdfs) —
+ * NEMA share-a/mount-a. `capture="environment"` otvara kameru na tabletu/telefonu.
+ * Sekcija se prikazuje samo uz `KVALITET_READ` (gate u pozivaocu); prilaganje/brisanje
+ * dodatno iza `KVALITET_WRITE`.
+ *
+ * Kontekst: u „Realizaciji" dolazi `techProcessId` (konkretan otkucan red) pa se
+ * dokumenti vežu i listaju po njemu — IDENTIČNO ranijem ponašanju. Kad `techProcessId`
+ * izostane („Završeni nalozi" nemaju pojedinačni TP red), lista/veza padaju na RN
+ * (`identNumber`). `workOrderId` gejtuje „Piši po nalogu" (0 = RN nije razrešen).
+ */
+function QcDocumentsSection({
+  techProcessId,
+  identNumber,
+  workOrderId,
+}: {
+  techProcessId?: number;
+  identNumber: string;
+  workOrderId: number;
+}) {
+  // Realizacija: veza po konkretnom kucanju (techProcessId). Bez njega (Završeni
+  // nalozi) → veza po RN-u (identNumber). Params se grade pre poziva hooka jer se
+  // hook mora zvati bezuslovno (pravila hookova).
+  const docsQ = useQualityDocs(
+    techProcessId != null ? { techProcessId } : { identNumber },
+  );
+  const uploadM = useUploadQualityDoc();
+  const deleteM = useDeleteQualityDoc();
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [delId, setDelId] = useState<number | null>(null);
+  const [openingId, setOpeningId] = useState<number | null>(null);
+  // „Piši po nalogu" (tablet) — anotator je otvoren kad je true. RN mora biti
+  // razrešen (workOrderId > 0) da bi backend mogao da servira /print PDF.
+  const [annotate, setAnnotate] = useState(false);
+  const [savingAnnotation, setSavingAnnotation] = useState(false);
+  const hasWorkOrder = workOrderId > 0;
+
+  const docs = docsQ.data?.data ?? [];
+
+  async function onPick(file: File | undefined | null) {
+    if (!file) return;
+    setErr(null);
+    if (file.size > QC_DOC_MAX_BYTES) {
+      setErr('Fajl je veći od 25MB.');
+      if (fileRef.current) fileRef.current.value = '';
+      return;
+    }
+    try {
+      await uploadM.mutateAsync({ techProcessId, identNumber, file });
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : 'Otpremanje nije uspelo.');
+    } finally {
+      if (fileRef.current) fileRef.current.value = '';
+    }
+  }
+
+  // Anotacija sačuvana → PNG blob u File sa smislenim imenom, pa isti upload hook
+  // kao „Priloži dokument" (techProcessId + identNumber za mek FK na nalog).
+  // Ne zatvaramo anotator dok upload traje; posle uspeha zatvaramo (invalidacija
+  // liste je u samom hooku → svež spisak dokumenata).
+  async function onSaveAnnotation(png: Blob, pageIndex: number) {
+    setErr(null);
+    setSavingAnnotation(true);
+    const safeIdent = (identNumber || 'RN').replace(/[^\w.-]+/g, '_');
+    const fileName = `RN-${safeIdent}-anotacija-${pageIndex + 1}.png`;
+    const file = new File([png], fileName, { type: 'image/png' });
+    try {
+      // NAPOMENA: useUploadQualityDoc prima {file, reportId?, techProcessId?, identNumber?}
+      // — NEMA `workOrderId` polje (vlasništvo api/kvalitet.ts, ne diramo). Veza na RN
+      // ide preko techProcessId (razrešava workOrderId na backendu) + slobodan identNumber.
+      await uploadM.mutateAsync({
+        file,
+        techProcessId,
+        identNumber,
+      });
+      setAnnotate(false);
+      toast('Anotacija sačuvana uz nalog.');
+    } catch (e) {
+      // Prosleđujemo grešku anotatoru (on prikazuje svoj banner) i beležimo lokalno.
+      setErr(e instanceof ApiError ? e.message : 'Čuvanje anotacije nije uspelo.');
+      throw e;
+    } finally {
+      setSavingAnnotation(false);
+    }
+  }
+
+  async function onOpen(id: number) {
+    setErr(null);
+    setOpeningId(id);
+    try {
+      await openQualityDoc(id);
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : 'Otvaranje nije uspelo.');
+    } finally {
+      setOpeningId(null);
+    }
+  }
+
+  async function confirmDelete() {
+    if (delId == null) return;
+    setErr(null);
+    try {
+      await deleteM.mutateAsync(delId);
+      setDelId(null);
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : 'Brisanje nije uspelo.');
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-3">
+        <SectionHeading title="QC dokumenti" count={docs.length ? formatNumber(docs.length) : undefined} />
+        <Can permission={PERMISSIONS.KVALITET_WRITE}>
+          {/* „Piši po nalogu" (tablet, S Pen) — otvara RN dokument za pisanje olovkom;
+              anotirana strana se snima kao PNG uz nalog. Disabled dok RN nije razrešen. */}
+          <button
+            onClick={() => setAnnotate(true)}
+            disabled={!hasWorkOrder || savingAnnotation}
+            title={!hasWorkOrder ? 'Radni nalog nije razrešen' : undefined}
+            className="ml-auto inline-flex items-center gap-1.5 rounded-control border border-line px-3 py-1 text-xs font-semibold text-ink-secondary hover:bg-surface disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <PenLine className="h-3.5 w-3.5" aria-hidden />
+            Piši po nalogu
+          </button>
+          <button
+            onClick={() => fileRef.current?.click()}
+            disabled={uploadM.isPending}
+            className="inline-flex items-center gap-1.5 rounded-control border border-line px-3 py-1 text-xs font-semibold text-ink-secondary hover:bg-surface disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Upload className="h-3.5 w-3.5" aria-hidden />
+            {uploadM.isPending ? 'Otpremam…' : 'Priloži dokument'}
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="application/pdf,image/*"
+            capture="environment"
+            className="hidden"
+            onChange={(e) => void onPick(e.target.files?.[0])}
+          />
+        </Can>
+      </div>
+
+      {err && (
+        <p className="text-sm text-status-danger" role="alert">
+          {err}
+        </p>
+      )}
+
+      {docsQ.isLoading ? (
+        <p className="text-sm text-ink-disabled">Učitavanje…</p>
+      ) : docsQ.error ? (
+        <p className="text-sm text-status-danger">Greška pri učitavanju dokumenata.</p>
+      ) : docs.length === 0 ? (
+        <p className="text-sm text-ink-disabled">Nema priloženih dokumenata.</p>
+      ) : (
+        <ul className="space-y-1 text-sm">
+          {docs.map((d) => (
+            <li
+              key={d.id}
+              className="flex items-center justify-between gap-2 rounded-control border border-line bg-surface px-3 py-1.5"
+            >
+              <span className="flex min-w-0 items-center gap-2">
+                <FileText className="h-4 w-4 shrink-0 text-ink-secondary" aria-hidden />
+                <span className="min-w-0 truncate text-ink">
+                  {d.fileName || 'Dokument'}
+                  <span className="text-ink-secondary">
+                    {' · '}
+                    {formatDate(d.createdAt)}
+                    {d.uploadedBy ? ` · ${d.uploadedBy}` : ''}
+                  </span>
+                </span>
+              </span>
+              <span className="flex shrink-0 items-center gap-2">
+                <button
+                  onClick={() => void onOpen(d.id)}
+                  disabled={openingId === d.id}
+                  className="rounded-control border border-line px-2.5 py-1 text-xs font-semibold text-ink-secondary hover:bg-surface-2 disabled:opacity-40"
+                >
+                  {openingId === d.id ? 'Otvaram…' : 'Otvori'}
+                </button>
+                <Can permission={PERMISSIONS.KVALITET_WRITE}>
+                  <button
+                    onClick={() => setDelId(d.id)}
+                    title="Obriši"
+                    className="rounded-control border border-status-danger/40 px-2 py-1 text-status-danger hover:bg-status-danger-bg"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" aria-hidden />
+                  </button>
+                </Can>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <Dialog
+        open={delId != null}
+        onClose={() => setDelId(null)}
+        title="Obrisati dokument?"
+        footer={
+          <>
+            <button
+              onClick={() => setDelId(null)}
+              className="rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2"
+            >
+              Otkaži
+            </button>
+            <button
+              disabled={deleteM.isPending}
+              onClick={() => void confirmDelete()}
+              className="rounded-control border border-status-danger/40 bg-status-danger-bg px-3 py-1.5 text-sm font-semibold text-status-danger disabled:opacity-50"
+            >
+              {deleteM.isPending ? 'Brisanje…' : 'Obriši'}
+            </button>
+          </>
+        }
+      >
+        <p className="text-sm text-ink">Prilog će biti trajno obrisan.</p>
+      </Dialog>
+
+      {/* „Piši po nalogu" — anotator preko celog ekrana (tablet). Lazy (pdfjs, ssr:false).
+          Montira se tek kad je otvoren da se težak modul ne uvlači u glavni bundle. */}
+      {annotate && hasWorkOrder && (
+        <PdfAnnotator
+          source={{ kind: 'workOrder', id: workOrderId, identNumber }}
+          onSave={onSaveAnnotation}
+          onClose={() => {
+            if (!savingAnnotation) setAnnotate(false);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * „Kartica kucanja" — redovi + sume po kvalitetu + ukupno vreme (poziv /card).
+ * Identifikacija je trojka (projectId + identNumber + variant). `techProcessId` i
+ * `workOrderId` su opcioni kontekst za „QC dokumenti" (v. QcDocumentsSection).
+ */
+export function TechProcessCardDetail({
+  projectId,
+  identNumber,
+  variant,
+  techProcessId,
+  workOrderId,
+}: {
+  projectId: number;
+  identNumber: string;
+  variant: number;
+  /** Konkretno otkucano (Realizacija) — veže QC dokumente po kucanju. Izostaje u „Završenim nalozima". */
+  techProcessId?: number;
+  /** RN iz kog kartica potiče — gejtuje „Piši po nalogu" i izvor je annotator-a (0/undefined = nema RN-a). */
+  workOrderId?: number;
+}) {
+  const key: CardKey = {
+    projectId,
+    identNumber,
+    variant,
+  };
+  const q = useTechProcessCard(key);
+  const reopen = useReopenTechProcess();
+  const deleteEntry = useDeleteTechEntry();
+  const [reopenTarget, setReopenTarget] = useState<ReopenTarget | null>(null);
+  // „Obriši kucanje" (C1) — cilj + opciona napomena; briše se tek posle potvrde.
+  const [deleteTarget, setDeleteTarget] = useState<DeleteEntryTarget | null>(null);
+  const [deleteNote, setDeleteNote] = useState('');
+  const [pdfOpening, setPdfOpening] = useState(false);
+  const [pdfError, setPdfError] = useState<string | null>(null);
+
+  function closeReopen() {
+    reopen.reset();
+    setReopenTarget(null);
+  }
+
+  async function confirmReopen() {
+    if (!reopenTarget) return;
+    try {
+      await reopen.mutateAsync(reopenTarget.id);
+      setReopenTarget(null);
+    } catch {
+      /* greška se prikazuje ispod */
+    }
+  }
+
+  function openDelete(target: DeleteEntryTarget) {
+    setDeleteNote('');
+    setDeleteTarget(target);
+  }
+
+  function closeDelete() {
+    deleteEntry.reset();
+    setDeleteTarget(null);
+  }
+
+  async function confirmDeleteEntry() {
+    if (!deleteTarget) return;
+    try {
+      await deleteEntry.mutateAsync({ id: deleteTarget.id, note: deleteNote });
+      setDeleteTarget(null);
+      toast('Kucanje obrisano.');
+    } catch {
+      /* greška se prikazuje u dijalogu */
+    }
+  }
+
+  if (q.isLoading) return <span className="text-sm text-ink-disabled">Učitavanje…</span>;
+  if (q.error || !q.data)
+    return <span className="text-sm text-status-danger">Greška pri učitavanju kartice.</span>;
+
+  const card = q.data.data;
+  const drawing = card.drawing;
+
+  // PDF crteža sa RN-a — reuse istog mehanizma kao PDM stranica (openDrawingPdf:
+  // apiBlob + window.open, JWT). Ne otvara ništa dok PDF ne postoji.
+  async function onOpenPdf() {
+    if (!drawing?.hasPdf) return;
+    setPdfOpening(true);
+    setPdfError(null);
+    try {
+      await openDrawingPdf(drawing.id);
+    } catch (e) {
+      setPdfError(e instanceof Error ? e.message : 'Greška pri otvaranju PDF-a.');
+    } finally {
+      setPdfOpening(false);
+    }
+  }
+
+  const s = card.summary;
+  const opByKey = new Map(
+    card.operations.map((o) => [cardGroupKey(o.operationNumber, o.workCenterCode), o]),
+  );
+  // +1 za trailing kolonu akcija („Obriši kucanje") — grupni header redovi je
+  // premošćuju colSpan-om.
+  const colCount = cardRowColumns.length + 1;
+
+  // Grupe sa kucanjima — iz card.rows (backend sortiran po OP, RC, id → kontiguozne).
+  const kucaneGroups = new Map<string, CardRenderGroup>();
+  for (const r of card.rows) {
+    const gkey = cardGroupKey(r.operationNumber, r.workCenterCode);
+    const g = kucaneGroups.get(gkey);
+    if (g && g.kind === 'kucano') g.rows.push(r);
+    else
+      kucaneGroups.set(gkey, {
+        kind: 'kucano',
+        key: gkey,
+        operationNumber: r.operationNumber,
+        workCenterCode: r.workCenterCode,
+        rows: [r],
+      });
+  }
+  // Routing operacije BEZ ijednog kucanja → prazne grupe (paritet QBigTehn kartice).
+  const prazneGroups: CardRenderGroup[] = (card.routing ?? [])
+    .filter((op) => !kucaneGroups.has(cardGroupKey(op.operationNumber, op.workCenterCode)))
+    .map((op) => ({
+      kind: 'prazno',
+      key: cardGroupKey(op.operationNumber, op.workCenterCode),
+      operationNumber: op.operationNumber,
+      workCenterCode: op.workCenterCode,
+      workCenter: op.workCenterName || op.workCenterCode || '—',
+    }));
+  // Otkucane + neotkucane, sortirane po broju operacije rastuće (pa po RC-u).
+  const groups: CardRenderGroup[] = [...kucaneGroups.values(), ...prazneGroups].sort(
+    (a, b) =>
+      a.operationNumber - b.operationNumber ||
+      a.workCenterCode.localeCompare(b.workCenterCode),
+  );
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-3">
+        <SectionHeading
+          title="Kartica kucanja"
+          count={`${formatNumber(card.operationCount)} operacija · ${formatNumber(card.finishedCount)} završeno · ${formatNumber(s.entryCount)} kucanja`}
+        />
+        {/* HITNO sa primopredaje (Paket A t.10) — kanonska mapa DESIGN_SYSTEM §7. */}
+        {card.isUrgent && <StatusBadge tone="danger" label="HITNO" />}
+        {/* PDF crteža sa RN-a — vidljivo samo kad je crtež razrešen; disabled kad nema PDF-a. */}
+        {drawing && (
+          <button
+            disabled={!drawing.hasPdf || pdfOpening}
+            title={!drawing.hasPdf ? 'Crtež nema PDF' : undefined}
+            onClick={onOpenPdf}
+            className="ml-auto inline-flex items-center gap-1.5 rounded-control border border-line px-3 py-1 text-xs font-semibold text-ink-secondary hover:bg-surface disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <FileText className="h-3.5 w-3.5" aria-hidden />
+            {pdfOpening ? 'Otvaram…' : 'PDF crteža'}
+          </button>
+        )}
+      </div>
+
+      {pdfError && (
+        <p className="text-sm text-status-danger" role="alert">
+          {pdfError}
+        </p>
+      )}
+
+      <dl className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+        <SumTile label="Ukupno kom" value={formatNumber(s.totalPieces)} />
+        <SumTile label="Dobar" value={formatNumber(s.piecesByQuality.good)} tone="success" />
+        <SumTile label="Dorada" value={formatNumber(s.piecesByQuality.rework)} tone="warn" />
+        <SumTile label="Škart" value={formatNumber(s.piecesByQuality.scrap)} tone="danger" />
+        <SumTile label="Ukupno vreme" value={formatMinutes(s.totalElapsedMinutes)} />
+        <SumTile label="Varijanta" value={String(card.variant)} />
+      </dl>
+
+      {/* Kucanja grupisana po operaciji — DataTable nema grouping, pa raw tabela u DataTable
+          stilu sa injektovanim grupnim header redovima (obrazac kao operacije RN u work-orders). */}
+      <div className="overflow-x-auto rounded-panel border border-line bg-surface">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-line bg-surface-2 text-left">
+              {cardRowColumns.map((c) => (
+                <th
+                  key={c.key}
+                  className={cn(
+                    'h-9 px-4 text-2xs font-semibold uppercase tracking-[0.08em] text-ink-secondary',
+                    c.align === 'right' && 'text-right',
+                  )}
+                >
+                  {c.header}
+                </th>
+              ))}
+              {/* Trailing kolona akcija po redu kucanja („Obriši"). */}
+              <th className="h-9 w-px px-4" aria-label="Akcije" />
+            </tr>
+          </thead>
+          <tbody>
+            {groups.length === 0 ? (
+              <tr>
+                <td colSpan={colCount} className="p-0">
+                  <EmptyState title="Kartica nema operacija" />
+                </td>
+              </tr>
+            ) : (
+              groups.map((g) =>
+                g.kind === 'prazno' ? (
+                  <EmptyGroupHeaderRow
+                    key={g.key}
+                    operationNumber={g.operationNumber}
+                    workCenter={g.workCenter}
+                    colCount={colCount}
+                  />
+                ) : (
+                  <Fragment key={g.key}>
+                    <CardGroupHeaderRow
+                      group={opByKey.get(g.key)}
+                      row={g.rows[0]}
+                      colCount={colCount}
+                      onReopen={setReopenTarget}
+                    />
+                    {g.rows.map((r) => (
+                      <tr
+                        key={r.id}
+                        className="h-[var(--table-row-height)] border-b border-line-soft"
+                      >
+                        {cardRowColumns.map((c) => (
+                          <td
+                            key={c.key}
+                            className={cn(
+                              'px-4 text-ink',
+                              c.align === 'right' && 'text-right',
+                              c.numeric && 'tnums',
+                            )}
+                          >
+                            {c.render(r)}
+                          </td>
+                        ))}
+                        {/* Obriši kucanje (C1) — po redu, iza tehnologija.write. */}
+                        <td className="px-4 text-right">
+                          <Can permission={PERMISSIONS.TEHNOLOGIJA_WRITE}>
+                            <button
+                              onClick={() =>
+                                openDelete({
+                                  id: r.id,
+                                  operationNumber: r.operationNumber,
+                                  worker: workerLabel(r.worker, r.workerId),
+                                  pieceCount: r.pieceCount,
+                                })
+                              }
+                              title="Obriši kucanje"
+                              aria-label={`Obriši kucanje OP ${r.operationNumber}`}
+                              className="rounded-control border border-status-danger/40 px-2 py-1 text-status-danger hover:bg-status-danger-bg"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" aria-hidden />
+                            </button>
+                          </Can>
+                        </td>
+                      </tr>
+                    ))}
+                  </Fragment>
+                ),
+              )
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <Dialog
+        open={reopenTarget != null}
+        onClose={closeReopen}
+        title="Otvoriti operaciju?"
+        footer={
+          <>
+            <button
+              onClick={closeReopen}
+              className="rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2"
+            >
+              Otkaži
+            </button>
+            <button
+              disabled={reopen.isPending}
+              onClick={confirmReopen}
+              className="rounded-control bg-accent px-3 py-1.5 text-sm font-semibold text-accent-fg disabled:opacity-50"
+            >
+              {reopen.isPending ? 'Otvaranje…' : 'Otvori operaciju'}
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-3 text-sm">
+          <p className="text-ink">
+            {reopenTarget && (
+              <>
+                Operacija{' '}
+                <span className="tnums font-semibold">OP {reopenTarget.operationNumber}</span> ·{' '}
+                {reopenTarget.workCenter} će ponovo biti otvorena za doradu — prijava rada na
+                kiosku će ponovo biti moguća.
+              </>
+            )}
+          </p>
+          {reopen.error && (
+            <p className="text-sm text-status-danger" role="alert">
+              {reopen.error instanceof ApiError
+                ? reopen.error.message
+                : (reopen.error as Error)?.message}
+            </p>
+          )}
+        </div>
+      </Dialog>
+
+      {/* Obriši kucanje (C1) — potvrda + opciona napomena; brisanje se ne može opozvati. */}
+      <Dialog
+        open={deleteTarget != null}
+        onClose={closeDelete}
+        title="Obrisati kucanje?"
+        footer={
+          <>
+            <button
+              onClick={closeDelete}
+              className="rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2"
+            >
+              Otkaži
+            </button>
+            <button
+              disabled={deleteEntry.isPending}
+              onClick={confirmDeleteEntry}
+              className="rounded-control border border-status-danger/40 bg-status-danger-bg px-3 py-1.5 text-sm font-semibold text-status-danger disabled:opacity-50"
+            >
+              {deleteEntry.isPending ? 'Brisanje…' : 'Obriši'}
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-3 text-sm">
+          <p className="text-ink">
+            {deleteTarget && (
+              <>
+                Brisanje kucanja:{' '}
+                <span className="tnums font-semibold">OP {deleteTarget.operationNumber}</span> ·{' '}
+                {deleteTarget.worker} ·{' '}
+                <span className="tnums font-semibold">{formatNumber(deleteTarget.pieceCount)} kom</span>{' '}
+                — ovo se ne može opozvati.
+              </>
+            )}
+          </p>
+          <label className="block space-y-1">
+            <span className="text-xs text-ink-secondary">Napomena (opciono)</span>
+            <textarea
+              value={deleteNote}
+              onChange={(e) => setDeleteNote(e.target.value)}
+              rows={2}
+              className="w-full rounded-control border border-line bg-surface px-3 py-2 text-sm text-ink placeholder:text-ink-disabled focus-visible:border-accent focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+              placeholder="Razlog brisanja…"
+            />
+          </label>
+          {deleteEntry.error && (
+            <p className="text-sm text-status-danger" role="alert">
+              {deleteEntry.error instanceof ApiError
+                ? deleteEntry.error.message
+                : (deleteEntry.error as Error)?.message}
+            </p>
+          )}
+        </div>
+      </Dialog>
+
+      {/* QC dokumenti (K4) — prilozi uz kucanje; samo uz kvalitet.read (write override na akcijama). */}
+      <Can permission={PERMISSIONS.KVALITET_READ}>
+        <QcDocumentsSection
+          techProcessId={techProcessId}
+          identNumber={identNumber}
+          workOrderId={workOrderId ?? 0}
+        />
+      </Can>
+    </div>
+  );
+}
