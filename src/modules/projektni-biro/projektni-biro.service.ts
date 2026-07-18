@@ -405,8 +405,11 @@ export class ProjektniBiroService {
       );
       sets.push(Prisma.sql`updated_by = ${email}`);
       sets.push(Prisma.sql`updated_at = now()`);
+      // Optimistic lock tolerira ms-echo: klijent dobije updated_at zaokružen na
+      // milisekunde (JS Date → JSON gubi µs), a kolona je Timestamptz(6). Bez trunc-a
+      // egzaktno poređenje µs-vs-ms skoro uvek promaši → lažni 409 na svaki „Snimi".
       const lock = dto.expectedUpdatedAt
-        ? Prisma.sql` AND updated_at = ${dto.expectedUpdatedAt}::timestamptz`
+        ? Prisma.sql` AND date_trunc('milliseconds', updated_at) = date_trunc('milliseconds', ${dto.expectedUpdatedAt}::timestamptz)`
         : Prisma.empty;
       const existsRows = await tx.$queryRaw<{ id: string }[]>(
         Prisma.sql`SELECT id FROM pb_tasks WHERE id = ${id}::uuid AND deleted_at IS NULL`,
