@@ -162,7 +162,7 @@ Svaka prečica se prikazuje u tooltip-u odgovarajuće kontrole.
 ## 10. UI kit (v1 spisak)
 
 `AppShell` · `DataTable` · `FilterBar` · `KpiTile` · `StatusBadge` · `ProgressCell` · `DetailPanel` ·
-`FormField` (+ `DateField`, `NumberField`, `SelectField`, `ComboBox`) · `Input` · `Textarea`
+`FormField` (+ `DateField`, `NumberField`, `ComboBox`) · `Input` · `Select` · `Textarea`
 (višelinijski unos; Enter = novi red, `rows` podrazumevano 3) · `Dialog` · `ConfirmDialog` ·
 `Toast` · `EmptyState` · `PageHeader` · `Tabs` · `UpdateBanner` (globalna traka "nova verzija — osvežite";
 prikazom upravlja `UpdateNotifier`, montiran jednom u root layout)
@@ -183,6 +183,36 @@ Dopune kita:
 * `PageHeader` uz F1 shell nosi: hamburger (kad je sidebar sklonjen), Search dugme
   (Ctrl+K) i `HeaderBell` (zvonce kad sidebar nema kolonu). Van AppShell-a se sve tri
   afordanse preskaču (kontekst je null).
+* **`Select`** (`ui-kit/select.tsx`) — biranje iz kratke **fiksne** liste. Omotava native
+  `<select>` (tastatura, touch, čitači ekrana i sistemski točkić na telefonu rade bez našeg
+  koda); strelica je `ChevronDown` preko `appearance-none` da izgled bude isti na svim
+  platformama. Tokeni su isti kao kod `Input`-a, pa i tamna tema radi sama.
+
+  | Prop | Tip | Opis |
+  | --- | --- | --- |
+  | `options` | `SelectOption[]` | `{ value, label, disabled? }` — `disabled` je opcija koja se vidi ali se ne bira (ukinuta šifra). |
+  | `placeholder` | `string` | Tekst prazne opcije (`value=""`). Bez njega nema prazne opcije. |
+  | `className` | `string` | Prosleđuje se `<select>`-u (ne omotaču). |
+  | *ostalo* | `SelectHTMLAttributes` | `value` · `onChange` · `disabled` · `required` · `id` · `name` … — isto kao `Input`. |
+
+  ```tsx
+  <FormField label="Odgovoran" hint="Ko je odgovoran za neusaglašenost.">
+    <Select
+      options={RESPONSIBLE_PARTY_OPTIONS}
+      placeholder="—"
+      disabled={controlLocked}
+      value={form.responsibleParty}
+      onChange={(e) => onChange({ responsibleParty: e.target.value })}
+    />
+  </FormField>
+  ```
+
+  **`Select` ili `ComboBox`?** `Select` kad je lista kratka (do ~15), fiksna i poznata u kodu
+  (statusi, smene, radne jedinice). `ComboBox` kad lista dolazi sa servera ili je velika i
+  traži kucanje (predmeti, komitenti, radnici). Greška se i dalje prikazuje kroz `FormField`
+  (`error`) — `Select` nema sopstveno `invalid` stanje, isto kao `Input`.
+  *Seoba:* u aplikaciji je ostalo ~290 sirovih `<select>` elemenata u ~125 fajlova iz ranijih faza;
+  **ne migriraju se masovno** — svaki prelazi na kit `Select` kad se taj ekran ionako dira.
 
 **Pravilo kita:** ekrani se sklapaju **isključivo** od kit komponenti. Nova komponenta prvo ulazi u kit,
 `/dev/ui` katalog i ovaj spisak — pa tek onda u ekran. "Privremeni div sa stilovima" ne postoji.
