@@ -27,8 +27,8 @@ Istorija se čita normalno: `git log -- backend/...` / `git log --follow backend
 |--|--|--|
 | backend | `servosync/backend` deploy.yml, push→main | `servosync4` deploy-backend.yml, push→main paths `backend/**` |
 | frontend bake za `:3000` | zaseban checkout `servosync/frontend` + `FRONTEND_REPO_TOKEN` | `../frontend` u istom checkout-u — **token više ne treba** |
-| frontend (glavni prod) | Cloudflare Git-integracija na `servosync/frontend` | Cloudflare Git-integracija na `servosync4`, **root dir `frontend/`** |
-| runner | registrovan na `servosync/backend` | mora na `servosync4` (ili org-level) |
+| frontend (glavni prod) | Cloudflare Git-integracija na `servosync/frontend` | **GitHub Actions `deploy-frontend.yml` + `wrangler deploy`** iz servosync4 (bez CF Git-integracije) |
+| runner | registrovan na `servosync/backend` | drugi runner `servosync4-onprem` na .28 (paralelno) |
 
 ## Faza 2 — GitHub repo ✅ URAĐENO 18.07
 
@@ -41,27 +41,35 @@ Repo: **`Servoteh/servosync4`** (org `Servoteh`, ne `servosync`). `git push -u o
 Preostalo iz Faze 2: **Lukin pristup** (write/maintain) na `Servoteh/servosync4` — Nenad daje naknadno.
 Napomena: backend/frontend izvorni repoi su pod `servosync` org, monorepo i 1.0 pod `Servoteh` org (dva orga).
 
-## Faza 3 — prebacivanje deploya (RADI NENAD/LUKA, uz mene)
+## Faza 3 — prebacivanje deploya ✅ URAĐENO 18.07
 
-Sve dole je u dashboard-u / na serveru — ja to ne mogu odavde:
+**3A — Backend runner + deploj.** Drugi self-hosted runner `servosync4-onprem` na `.28`
+(`/home/admluka/actions-runner-servosync4`, radi kao admluka, labela `servosync`), **paralelno** sa
+starim `servosync-backend` runnerom → nula downtime. Test-deploj backend iz servosync4 = **Succeeded**
+(health `api:200 login:200`). Adaptiran `deploy-backend.yml` radi (bake iz `../frontend`, bez `FRONTEND_REPO_TOKEN`).
+- Setup runnera: skripta `/tmp/setup-runner-servosync4.sh <token>` (jer paste dugačke komande u PowerShell
+  puca na `&&` i seče linije; admnenad nema passwordless sudo → korisnik kuca lozinku u SVOM terminalu).
 
-1. **Self-hosted runner** (na `.28`) → registruj instancu na `Servoteh/servosync4` ili na **Servoteh org-level**.
-   Postojeći runner je na `servosync/backend` (drugi org) — ne deli se automatski; dodaj nov config na .28:
-   `./config.sh --url https://github.com/Servoteh/servosync4 --token <RUNNER_TOKEN>` (labela ostaje `self-hosted, servosync`).
-   Runneri su lagani — može ih više na istoj mašini dok stari repo još deployuje (nula downtime).
-2. **Cloudflare** → u Git-integraciji front projekta: promeni repo na `servosync4`, postavi
-   **root/build direktorijum = `frontend/`** (da CF bilduje podfolder). Build/deploy komande ostaju iste.
-3. **Secrets** → na servosync4 nisu potrebni `FRONTEND_REPO_TOKEN` (izbačen). Provera da li deploy-backend
-   traži još neki secret koji je bio na backend repou.
-4. **Test-deploj**: gurni sitnu izmenu u `backend/**` i `frontend/**` → potvrdi da oba dižu
-   (backend health-check + CF build zeleni; `:3000/login` = 200 znači front baked).
+**3B — Frontend deploj (bez CF Git-integracije).** Umesto re-pointa Cloudflare Git-integracije (koja je
+zapinjala na GitHub App pristupu `Servoteh` org-u), front se deployuje iz monorepoa preko
+`.github/workflows/deploy-frontend.yml` → `npm ci && next build && wrangler deploy` u node containeru na
+istom runneru. Deployuje isti Worker **`servosync2`** (isti domeni). Test-deploj = **Succeeded**, sajt živ.
+- Zahteva repo secret **`CLOUDFLARE_API_TOKEN`** (Account > Workers Scripts > Edit). Account ID
+  `e2f616e00cb68d6485f93a6be4dfb14b` je u workflow-u (nije tajna).
+- **Dugoročno bolje** od CF Git-integracije: sve u jednom repou, bez zavisnosti od CF↔GitHub app pristupa.
+
+> Napomena: stara CF Git-integracija na `servosync/frontend` je i dalje povezana (deployovala bi `servosync2`
+> na push tamo). Od sad se front gura na **servosync4**; staru vezu diskonektovati u Fazi 4.
 
 ## Faza 4 — zatvaranje (posle uspešnog test-deploja)
 
-1. Arhiviraj (read-only) `servosync/backend` i `servosync/frontend` na GitHub-u.
-2. Očisti mrtve lokalne grane (40+ po repou) — kreni čist od `main` na servosync4.
-3. Fizički prebaci ~2 GB legacy materijala u `servosync4/_legacy/` (ostaje van gita).
-4. `servosync4/` postaje glavni radni checkout; stari `Servosync 2.0/` folder ostaje kao backup dok se
+1. **Diskonektuj CF Git-integraciju** na `servosync/frontend` (Worker `servosync2` → Settings → Build →
+   Disconnect) da ne bi imali dva izvora deploya za isti worker.
+2. Ugasi stari runner `servosync-backend` na `.28` (`sudo ./svc.sh stop && uninstall`) kad backend ide samo iz servosync4.
+3. Arhiviraj (read-only) `servosync/backend` i `servosync/frontend` na GitHub-u.
+4. Očisti mrtve lokalne grane (40+ po repou) — kreni čist od `main` na servosync4.
+5. Fizički prebaci ~2 GB legacy materijala u `servosync4/_legacy/` (ostaje van gita).
+6. `servosync4/` postaje glavni radni checkout; stari `Servosync 2.0/` folder ostaje kao backup dok se
    sve ne potvrdi, pa se briše.
 
 ## Sačuvano iz starog checkout-a (Faza 0)
