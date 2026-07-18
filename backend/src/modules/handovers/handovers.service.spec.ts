@@ -194,6 +194,38 @@ describe("HandoversService", () => {
       expect(res.data).toEqual([containing({ project: null })]);
       expect(prisma.project.findMany).not.toHaveBeenCalled();
     });
+
+    it("filtrira po RN-u: workOrder.findMany contains-insensitive → where.id.in razrešenih (dedup) primopredaja", async () => {
+      // RN se razrešava u primopredaje preko soft FK-a work_orders.drawing_handover_id.
+      prisma.workOrder.findMany.mockResolvedValue([
+        { drawingHandoverId: 5 },
+        { drawingHandoverId: 7 },
+        { drawingHandoverId: 5 }, // klon deli FK — dedup na jedinstven skup
+      ]);
+
+      await service.list({ rn: "P100" });
+
+      expect(prisma.workOrder.findMany).toHaveBeenCalledWith({
+        where: {
+          identNumber: { contains: "P100", mode: "insensitive" },
+          drawingHandoverId: { gt: 0 },
+        },
+        select: { drawingHandoverId: true },
+      });
+      expect(prisma.drawingHandover.findMany).toHaveBeenCalledWith(
+        containing({ where: containing({ id: { in: [5, 7] } }) }),
+      );
+    });
+
+    it("RN bez pogotka → prazan skup id-jeva (prazna strana je tačno)", async () => {
+      prisma.workOrder.findMany.mockResolvedValue([]);
+
+      await service.list({ rn: "NEMA" });
+
+      expect(prisma.drawingHandover.findMany).toHaveBeenCalledWith(
+        containing({ where: containing({ id: { in: [] } }) }),
+      );
+    });
   });
 
   // -------------------------------------------------------- TECHNOLOGISTS

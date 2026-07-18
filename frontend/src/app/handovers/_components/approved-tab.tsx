@@ -36,6 +36,7 @@ const rowBtn =
 export function ApprovedTab() {
   const router = useRouter();
   const [q, setQ] = useState('');
+  const [rn, setRn] = useState('');
   const [technologist, setTechnologist] = useState<WorkerRef | null>(null);
   const [page, setPage] = useState(1);
   const [expanded, setExpanded] = useState<number | null>(null);
@@ -48,6 +49,7 @@ export function ApprovedTab() {
     page,
     statusId: HANDOVER_STATUS.APPROVED,
     drawingNumber: q.trim() || undefined,
+    rn: rn.trim() || undefined,
     technologistId: technologist?.id ?? '',
   });
 
@@ -199,6 +201,17 @@ export function ApprovedTab() {
             placeholder="Broj crteža…"
           />
         </div>
+        <div className="flex flex-col gap-1 text-xs text-ink-secondary">
+          RN
+          <SearchBox
+            value={rn}
+            onChange={(v) => {
+              setRn(v);
+              resetPage();
+            }}
+            placeholder="Broj RN…"
+          />
+        </div>
         <div className="flex w-56 flex-col gap-1 text-xs text-ink-secondary">
           Za tehnologa
           <ComboBox<WorkerRef>
@@ -214,10 +227,11 @@ export function ApprovedTab() {
             placeholder="Svi tehnolozi…"
           />
         </div>
-        {(q || technologist) && (
+        {(q || rn || technologist) && (
           <button
             onClick={() => {
               setQ('');
+              setRn('');
               setTechnologist(null);
               resetPage();
             }}

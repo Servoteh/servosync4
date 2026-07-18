@@ -99,6 +99,7 @@ const columns: Column<Handover>[] = [
 /** Tab "Sve primopredaje" — lista + filter po statusu (§6.4), expand = isti detalj/dugmad kao "Na čekanju". */
 export function AllHandoversTab() {
   const [q, setQ] = useState('');
+  const [rn, setRn] = useState('');
   const [statusId, setStatusId] = useState<number | ''>('');
   const [technologistId, setTechnologistId] = useState<number | ''>('');
   const [from, setFrom] = useState('');
@@ -111,6 +112,7 @@ export function AllHandoversTab() {
   const list = useHandovers({
     page,
     drawingNumber: q.trim() || undefined,
+    rn: rn.trim() || undefined,
     statusId,
     technologistId,
     from: from || undefined,
@@ -119,7 +121,7 @@ export function AllHandoversTab() {
 
   const rows = list.data?.data ?? [];
   const meta = list.data?.meta.pagination;
-  const hasFilter = !!(q || statusId !== '' || technologistId !== '' || from || to);
+  const hasFilter = !!(q || rn || statusId !== '' || technologistId !== '' || from || to);
 
   return (
     <div className="space-y-4">
@@ -133,6 +135,17 @@ export function AllHandoversTab() {
               resetPage();
             }}
             placeholder="Broj crteža…"
+          />
+        </div>
+        <div className="flex flex-col gap-1 text-xs text-ink-secondary">
+          RN
+          <SearchBox
+            value={rn}
+            onChange={(v) => {
+              setRn(v);
+              resetPage();
+            }}
+            placeholder="Broj RN…"
           />
         </div>
         <label className="flex flex-col gap-1 text-xs text-ink-secondary">
@@ -197,6 +210,7 @@ export function AllHandoversTab() {
           <button
             onClick={() => {
               setQ('');
+              setRn('');
               setStatusId('');
               setTechnologistId('');
               setFrom('');

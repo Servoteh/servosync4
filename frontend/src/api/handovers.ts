@@ -519,6 +519,8 @@ export interface HandoverListParams {
   pageSize?: number;
   statusId?: number | '';
   drawingNumber?: string;
+  /** Broj RN (`work_orders.ident_number`) — contains, case-insensitive; razrešava se u primopredaje preko soft FK-a. */
+  rn?: string;
   projectId?: number | '';
   handoverWorkerId?: number | '';
   technologistId?: number | '';
@@ -532,6 +534,7 @@ function buildHandoverQuery(params: HandoverListParams): string {
     pageSize: params.pageSize,
     statusId: params.statusId === '' ? undefined : params.statusId,
     drawingNumber: params.drawingNumber,
+    rn: params.rn,
     projectId: params.projectId === '' ? undefined : params.projectId,
     handoverWorkerId: params.handoverWorkerId === '' ? undefined : params.handoverWorkerId,
     technologistId: params.technologistId === '' ? undefined : params.technologistId,

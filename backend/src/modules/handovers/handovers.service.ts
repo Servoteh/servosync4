@@ -140,6 +140,12 @@ export interface ListHandoversQuery {
   handoverWorkerId?: string;
   /** Dodeljeni tehnolog (piše TP) — `drawing_handovers.technologist_id`. */
   technologistId?: string;
+  /**
+   * Broj RN — matches `work_orders.ident_number` otkucanog/lansiranog RN-a
+   * (contains, case-insensitive). Razrešava se u `drawing_handovers.id` preko
+   * soft FK-a `work_orders.drawing_handover_id` (bez Prisma relacije, default 0).
+   */
+  rn?: string;
   /** Opseg po `handoverDate` (ISO). */
   from?: string;
   to?: string;
@@ -212,6 +218,22 @@ export class HandoversService {
         first,
       );
       where.drawingId = { in: intersected };
+    }
+
+    // Filter po broju RN-a: `drawing_handovers` nema RN (RN je vidljiv samo u
+    // prelaznom stanju „otkucan a nelansiran"), pa se razrešava preko soft FK-a
+    // `work_orders.drawing_handover_id`. Prazan skup → prazna strana (tačno).
+    if (query.rn) {
+      const workOrders = await this.prisma.workOrder.findMany({
+        where: {
+          identNumber: { contains: query.rn, mode: "insensitive" },
+          drawingHandoverId: { gt: 0 },
+        },
+        select: { drawingHandoverId: true },
+      });
+      where.id = {
+        in: [...new Set(workOrders.map((w) => w.drawingHandoverId))],
+      };
     }
 
     const [rows, total] = await this.prisma.$transaction([

@@ -32,7 +32,7 @@ import type { LaunchHandoverDto } from "./dto/launch-handover.dto";
 
 /**
  * Primopredaje crteža (`drawing_handovers`) — MODULE_SPEC_nacrti_primopredaje §6.4/§6.5.
- *   GET  /api/v1/handovers                  — lista (statusId, drawingNumber, projectId, technologistId, from, to)
+ *   GET  /api/v1/handovers                  — lista (statusId, drawingNumber, projectId, technologistId, rn, from, to)
  *   GET  /api/v1/handovers/lookups          — draft statusi + handover statusi
  *   GET  /api/v1/handovers/technologists    — aktivni radnici vrste "Tehnolog" (id/fullName/username; P4 §6.3)
  *   GET  /api/v1/handovers/pending-approval — tehnolog inbox (status U OBRADI / na čekanju)
