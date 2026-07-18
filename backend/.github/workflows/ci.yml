@@ -1,0 +1,79 @@
+name: ci-backend
+
+# Kvalitetna kapija PRE produkcije (Faza 0 analize modula „Tehnologija").
+# Namerno ODVOJEN workflow od deploy.yml — CI NE blokira deploy dok se 2.0 gura
+# direktno na main (do 3.0). Kada tim odluči (analiza §14 Q9), dovoljno je dodati
+# `needs: [ci]` u deploy.yml da deploy zavisi od zelene kapije.
+#
+# Zašto GitHub-hosted (ubuntu-latest): self-hosted `servosync` runner je zauzet
+# deploy-om na on-prem serveru; CI ne sme da se takmiči s deploy-om za taj slot.
+# Unit testovi su Prisma-MOCK (ne diraju bazu), pa je dovoljan `prisma generate`
+# za obe šeme (tipovi), bez servisa PostgreSQL.
+#
+# GRANICE KAPIJE (svesno, na osnovu analize stanja repoa 2026-07-16):
+#  * TYPECHECK se radi nad PRODUKCIONIM kodom (tsconfig.build.json — isti skup
+#    koji `nest build` u Dockerfile-u kompajlira). Ceo-projekat `tsc --noEmit`
+#    trenutno pada na JEDNOM spec fajlu (role-permissions.pb-...spec.ts) — to je
+#    greška u testu, ne u proizvodnji, i nije predmet Faze 0. Testovi se ionako
+#    izvršavaju kroz jest ispod, pa je pokrivenost potpuna.
+#  * LINT je za sada NE-BLOKIRAJUĆI (continue-on-error): repo nema `.gitattributes`
+#    pa prettier prijavljuje ~1400 CRLF/LF grešaka koje bi zahtevale `--fix` nad
+#    60+ fajlova (zabranjeni masovni cleanup). Kapija prikazuje lint izveštaj ali
+#    ne ruši build dok se formatiranje ne sredi zasebnom, namernom izmenom.
+#    Kada se .gitattributes doda i format poravna, skinuti `continue-on-error`.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "prisma/**"
+      - "test/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig*.json"
+      - "eslint.config.*"
+      - ".github/workflows/ci.yml"
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-backend-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install deps
+        run: npm ci
+
+      # Obe šeme — sy15 klijent (@prisma-sy15/client) je potreban da se kadrovska/
+      # sastanci/energetika suite uopšte kompajliraju (bez njega ~18 suita padne).
+      - name: Prisma generate (obe šeme)
+        run: |
+          npx prisma generate
+          npx prisma generate --schema prisma/sy15.prisma
+
+      # Tvrda kapija #1: produkcioni kod mora da se tipizira (isti obuhvat kao nest build).
+      - name: Typecheck (produkcioni kod)
+        run: npx tsc --noEmit -p tsconfig.build.json
+
+      # Ne-blokirajući izveštaj (vidi GRANICE gore). BEZ --fix (`npm run lint` ima --fix!).
+      - name: Lint (izveštaj, ne blokira)
+        continue-on-error: true
+        run: npx eslint "src/**/*.ts" "test/**/*.ts"
+
+      # Tvrda kapija #2: ceo test-korpus (1025 testova) mora da prođe.
+      - name: Unit testovi
+        run: npx jest --ci --runInBand

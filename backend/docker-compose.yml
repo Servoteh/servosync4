@@ -1,0 +1,39 @@
+name: servosync
+
+services:
+  db:
+    image: postgres:18
+    container_name: servosync-pg
+    environment:
+      POSTGRES_USER: servosync
+      POSTGRES_PASSWORD: servosync_dev
+      POSTGRES_DB: servosync
+    ports:
+      # host:container — avoids clashing with local 5432/5434
+      - "5435:5432"
+    volumes:
+      # PG 18+: mount full /var/lib/postgresql (not only .../data) — see Postgres image docs
+      - servosync_pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U servosync -d servosync"]
+      interval: 3s
+      timeout: 5s
+      retries: 15
+
+  # Optional: apply prisma/migrations inside the compose network
+  migrate:
+    image: node:22-bookworm-slim
+    working_dir: /work
+    volumes:
+      - .:/work
+    environment:
+      DATABASE_URL: postgresql://servosync:servosync_dev@db:5432/servosync?schema=public
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["sh", "-c", "npx --yes prisma@6.19.3 migrate deploy"]
+    profiles:
+      - migrate
+
+volumes:
+  servosync_pgdata:

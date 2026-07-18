@@ -1,0 +1,36 @@
+# BigBit bridge allow-list (KEEP-SYNC). One line per table:
+#   AccessTable | pg_target | sql_file (in sql/)
+# The deny-list (EXCLUDE-TVRDO in F3) is enforced by simply NOT listing tables
+# here - the script never mdb-export-s anything outside this manifest.
+#
+# Column order in each sql/*.sql staging table MUST match the Access table's
+# storage order (mdb-export emits all columns in that order; \copy loads
+# positionally after skipping the header).
+#
+# --- v0 pilot: 3 item classifier tables (models existed in 2.0 but were never
+#     synced - items had group/subgroup/origin CODES without NAMES, F1 gap) ---
+R_Grupa    | item_groups    | item_groups.sql
+R_Podgrupa | item_subgroups | item_subgroups.sql
+R_Poreklo  | item_origins   | item_origins.sql
+#
+# --- phase 2 (ID-space RESOLVED, plan 7.6 = option A). Order matters: masters
+#     before Cenovnik (Cenovnik remaps item via items.external_item_id).
+#
+# Magacini fills warehouses (empty, NOT owned by the live MSSQL sync) -> ACTIVE.
+Magacini   | warehouses     | warehouses.sql
+#
+# !! DEACTIVATED UNTIL CUTOVER (Nenad 2026-07-12): the 4 tables below are OWNED
+#    by the live MSSQL (QBigTehn) sync. Do NOT overwrite them from BigBit while
+#    that sync runs. sql/ files are authored + dry-run-clean; uncomment ONLY at
+#    cutover, after the MSSQL sync is switched off (plan 7.6 "jedan pisac").
+#    NOTE: dry-run shows ~all rows would "update" because BigBit carries fields
+#    the MSSQL sync leaves empty (code_type_code, salesperson_id...) -> before
+#    cutover activation, do a field-level diff so the guard flags only real diffs
+#    (esp. items: 90984 would-update with no FK reason -> representation check).
+# Komitenti  | customers          | customers.sql          (dry-run: read=6669 ins=5 upd=6230 miss=14)
+# Predmeti   | projects           | projects.sql           (dry-run: read=7736 ins=6 upd=7600 miss=2)
+# R_Artikli  | items              | items.sql              (UPDATE-only via external_item_id; dry-run upd=90984)
+# Cenovnik   | price_list_entries | price_list_entries.sql (TODO: author; needs ple business-key unique + item remap)
+#     (Prodavci: NEVER expose [Password] - plain-text; needs a projection since
+#      mdb-export dumps the whole table).
+# --- phase 3: the rest of KEEP-SYNC from BB_T_26-analiza-F3-inventar-207-tabela.md

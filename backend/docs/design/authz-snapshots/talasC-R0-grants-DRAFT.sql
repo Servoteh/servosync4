@@ -1,0 +1,73 @@
+-- ============================================================================
+-- TALAS C — R0 GRANTS DRAFT (Plan montaže + Plan proizvodnje + Praćenje)
+-- Autor: R1 izvršni agent · 2026-07-13 · Status: NACRT (NE primenjeno)
+-- ============================================================================
+-- Doktrina §A.2a: 2.0 backend čita sy15 kroz `withUserRls` = GUC claims +
+--   `SET LOCAL ROLE authenticated`. Znači: R1 READ sloj radi pod ISTOM rolom
+--   (`authenticated`) i ISTIM privilegijama kao 1.0 PostgREST front. Za READ su
+--   grantovi VEĆ NASLEĐENI (1.0 front čita iste tabele/RPC-ove kao authenticated).
+--
+-- VERIFIKACIJA (živa cloud=restore-izvor sy15, Management API read-only, 2026-07-13):
+--   node scripts/sb-exec-sql.mjs --sql "select has_table_privilege('authenticated', ...)"
+--   node scripts/sb-exec-sql.mjs --sql "select has_function_privilege('authenticated', ...)"
+--
+--   • 35/35 READ tabela+view-ova: authenticated ima SELECT  → 0 rupa
+--   • 21/21 READ RPC-ova:         authenticated ima EXECUTE → 0 rupa
+--
+--   ⇒ ZAKLJUČAK: R1 READ sloj NE zahteva NIJEDAN novi grant. Nema R0 rupa.
+--   (Re-verifikovati na ŽIVOJ sy15 pre R2 — cloud je restore-izvor, ne prod.)
+-- ============================================================================
+
+-- ---------------------------------------------------------------------------
+-- (A) READ objekti — SVI verifikovani da authenticated ima SELECT (0 rupa)
+-- ---------------------------------------------------------------------------
+-- Public tabele koje BE čita direktno / kroz view:
+--   projects, work_packages, phases, projekt_bigtehn_rn,
+--   montaza_izvestaji, montaza_izvestaj_fotke, montaza_izvestaj_brojaci, montaza_ai_settings,
+--   production_overlays, production_overlays_history, production_urgency_overrides,
+--   production_drawings, production_reassign_audit, production_auto_cooperation_groups,
+--   production_active_work_orders, predmet_plan_prioritet_settings, bridge_sync_log
+-- BigTehn keš (MOST — repoint na tech_processes = QBigTehn cutover, NE ovaj talas):
+--   bigtehn_machines_cache, bigtehn_items_cache, bigtehn_work_orders_cache,
+--   bigtehn_work_order_lines_cache, bigtehn_tech_routing_cache, bigtehn_drawings_cache,
+--   bigtehn_customers_cache, bigtehn_rework_scrap_cache
+-- Public bridge view-ovi (security_invoker) + view lanac:
+--   odeljenje, radnik, radni_nalog, prijava_rada, v_operativna_aktivnost,
+--   operativna_aktivnost_blok_istorija, v_active_bigtehn_work_orders,
+--   v_production_operations, v_production_operations_effective, v_production_operations_pre_g4
+-- → SVI: has_table_privilege('authenticated', obj, 'SELECT') = true. NIŠTA za dodati.
+
+-- ---------------------------------------------------------------------------
+-- (B) READ RPC-ovi — SVI verifikovani da authenticated ima EXECUTE (0 rupa)
+-- ---------------------------------------------------------------------------
+--   pb_list_projects(), plan_pp_open_ops_for_machine(text,int,int),
+--   get_pracenje_portfolio(int), get_aktivni_predmeti(), get_podsklopovi_predmeta(int),
+--   get_predmet_pracenje_izvestaj(int,bigint,int), get_pracenje_rn(uuid),
+--   get_operativni_plan(uuid,uuid), get_bigtehn_prijave_za_operaciju(bigint,int,text),
+--   search_proizvodnja_delovi(text,int), ensure_radni_nalog_iz_bigtehn(bigint),
+--   can_edit_pracenje(uuid,uuid), has_edit_role(uuid), can_edit_plan_proizvodnje(),
+--   can_read_production_drawings(), can_force_plan_reassign(), can_manage_predmet_aktivacija(),
+--   get_predmet_plan_prioritet_ids()/_max()/_prev(), list_predmet_aktivacija_admin()
+-- → SVI: has_function_privilege('authenticated', sig, 'EXECUTE') = true. NIŠTA za dodati.
+
+-- ---------------------------------------------------------------------------
+-- (C) R2 (WRITE) — FORWARD-LOOKING (NE deo R1; primeniti uz R2 mutacije)
+-- ---------------------------------------------------------------------------
+-- Doktrina §A.6: grantovi ISKLJUČIVO kao `supabase_admin` (sy15 `postgres` NIJE superuser).
+-- 1.0 front VEĆ piše ove tabele/RPC-ove kao authenticated pa su grantovi verovatno
+-- nasleđeni i za WRITE — RE-VERIFIKOVATI na ŽIVOJ sy15 pre R2 (INSERT/UPDATE/DELETE +
+-- EXECUTE na write RPC-ove). Ako 1.0 negde piše kroz DEFINER RPC (a ne direktno), tabela
+-- može biti bez direktnog write-grant-a za authenticated — TADA je to jedina stvarna R2 rupa.
+-- Kandidati za re-proveru u R2:
+--   INSERT/UPDATE: projects, work_packages, phases, projekt_bigtehn_rn (has_edit_role),
+--     montaza_izvestaji (+_fotke), production_overlays, production_urgency_overrides,
+--     production_drawings
+--   EXECUTE (write): reassign_production_line(+client_event_uuid), bulk_reassign_production_lines,
+--     upsert_operativna_aktivnost, zatvori_aktivnost, set_blokirano, skini_blokadu,
+--     promovisi_akcionu_tacku, upsert_pracenje_manual_override/parent_override/proizvodnje_napomena,
+--     set_predmet_aktivacija, set_predmet_prioritet, shift_predmet_prioritet,
+--     set_predmet_plan_prioritet(+_max), set_montaza_ai_model
+--   rev_api_idempotency: već RLS-zaključan (piše ga BYPASSRLS konekciona rola, kao Talas B).
+-- Primer (NE izvršavati u R1):
+--   -- GRANT INSERT, UPDATE ON public.production_overlays TO authenticated;  -- ako rupa u R2
+--   -- (izvršiti kao supabase_admin + NOTIFY pgrst, 'reload schema')

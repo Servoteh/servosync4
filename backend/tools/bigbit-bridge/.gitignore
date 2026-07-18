@@ -1,0 +1,4 @@
+# Local config and runtime artifacts — never in git.
+bigbit-bridge.env
+bigbit-bridge.log
+run-*/

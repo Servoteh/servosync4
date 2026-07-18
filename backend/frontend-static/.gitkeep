@@ -1,0 +1,3 @@
+# Placeholder — build kontekst za frontend static export.
+# Deploy workflow ovde ubaci build servosync/frontend (out/); sadržaj se NE commit-uje.
+# Ovaj fajl samo garantuje da `COPY frontend-static` u Dockerfile-u nikad ne pukne.

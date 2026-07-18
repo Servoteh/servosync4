@@ -1,0 +1,75 @@
+name: deploy-backend
+
+# Auto-redeploy on merge to main. Runs on the self-hosted runner that lives on
+# the on-prem server (192.168.64.28) — outbound-only, nothing is exposed.
+# Docs-only pushes are ignored (paths filter) so we don't rebuild for nothing.
+# workflow_dispatch: manual trigger for frontend-only refreshes — the bake pulls
+# frontend main at deploy time, so a FE-only change needs no backend push.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "prisma/**"
+      - "package.json"
+      - "package-lock.json"
+      - "Dockerfile"
+      - ".dockerignore"
+      - ".github/workflows/deploy.yml"
+
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, servosync]
+    steps:
+      - name: Checkout backend
+        uses: actions/checkout@v4
+
+      # Frontend source for same-origin static serving (front on :3000). Tolerant:
+      # if FRONTEND_REPO_TOKEN is unset/invalid this is skipped → we deploy API-only.
+      - name: Checkout frontend
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: servosync/frontend
+          ref: main
+          path: frontend-src
+          token: ${{ secrets.FRONTEND_REPO_TOKEN }}
+
+      - name: Build, migrate, restart
+        run: |
+          set -euo pipefail
+          # Build the frontend static export into the backend build context. Best-effort:
+          # if the frontend checkout was skipped, ship an empty dir → backend stays API-only.
+          # .gitkeep guarantees a non-empty dir so `COPY frontend-static` never fails.
+          rm -rf frontend-static && mkdir -p frontend-static && touch frontend-static/.gitkeep
+          if [ -f frontend-src/package.json ] \
+             && docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -e npm_config_cache=/tmp/.npm \
+                  -v "$PWD/frontend-src":/work -w /work node:22-bookworm-slim \
+                  sh -c "npm ci && npm run build" \
+             && [ -d frontend-src/out ]; then
+            cp -a frontend-src/out/. frontend-static/
+            echo "frontend baked into image"
+          else
+            echo "no/failed frontend build (missing FRONTEND_REPO_TOKEN or build error) → API-only"
+          fi
+          # Ship source (incl. frontend-static) into the compose deploy dir (build context ./backend).
+          rsync -a --delete \
+            --exclude .git --exclude node_modules --exclude dist --exclude frontend-src \
+            ./ "$HOME/servosync/backend/"
+          cd "$HOME/servosync"
+          docker compose build backend
+          # Apply any new migrations (idempotent — no-op when none pending).
+          docker compose run --rm backend npx prisma migrate deploy
+          docker compose up -d backend
+
+      - name: Health check
+        run: |
+          sleep 5
+          curl -fsS http://localhost:3000/api > /dev/null && echo "backend healthy"
+          code=$(curl -fsS -o /dev/null -w '%{http_code}' http://localhost:3000/login || true)
+          echo "front /login -> $code (200 = front baked, 404 = API-only)"

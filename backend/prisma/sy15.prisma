@@ -1,0 +1,2905 @@
+// ServoSync 3.0 — sy15 (1.0) baza: Reversi pilot (MODULE_SPEC_reversi.md).
+// GENERISANO iz zive sy15 information_schema 2026-07-10 — NE menjaj rucno bez re-verifikacije.
+// Tabele OSTAJU u sy15 bazi (spec §0): ovo je drugi datasource, NE deo glavne 2.0 seme.
+// Uuid PK se ZADRZAVA (1.0 poreklo; BACKEND_RULES §2 "id nije uuid" vazi za QBigTehn legacy port).
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../node_modules/@prisma-sy15/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("SY15_DATABASE_URL")
+}
+
+model RevTool {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  oznaka String
+  naziv String
+  serijskiBroj String? @map("serijski_broj")
+  datumKupovine DateTime? @map("datum_kupovine") @db.Date
+  status String @default("active")
+  napomena String?
+  locItemRefId String? @map("loc_item_ref_id")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String? @map("created_by") @db.Uuid
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  bigtehnSifraArtikla Int? @map("bigtehn_sifra_artikla")
+  /// NOT NULL in DB, assigned by the rev_tools_before_insert_barcode trigger —
+  /// dbgenerated() makes it optional on create (bulkImportTools inserts without it).
+  barcode String @default(dbgenerated())
+  subgroupId String? @map("subgroup_id") @db.Uuid
+  isQuantity Boolean @default(false) @map("is_quantity")
+  totalQty Int @default(1) @map("total_qty")
+  isConsumable Boolean @default(false) @map("is_consumable")
+  minStockQty Int? @map("min_stock_qty")
+  maxStockQty Int? @map("max_stock_qty")
+  subsubgroupId String? @map("subsubgroup_id") @db.Uuid
+  garancijaDo DateTime? @map("garancija_do") @db.Date
+  garancijaNapomena String? @map("garancija_napomena")
+  imaPunjac Boolean @default(false) @map("ima_punjac")
+  punjacSerijski String? @map("punjac_serijski")
+  otpisDatum DateTime? @map("otpis_datum") @db.Date
+  otpisRazlog String? @map("otpis_razlog")
+  otpisBy String? @map("otpis_by") @db.Uuid
+  nabavnaVrednost Decimal? @map("nabavna_vrednost") @db.Decimal
+  @@unique([locItemRefId], map: "rev_tools_loc_item_ref_id_key")
+  @@map("rev_tools")
+}
+
+model RevDocument {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  docNumber String @map("doc_number")
+  docType String @map("doc_type")
+  recipientType String @map("recipient_type")
+  recipientEmployeeId String? @map("recipient_employee_id") @db.Uuid
+  recipientEmployeeName String? @map("recipient_employee_name")
+  recipientDepartment String? @map("recipient_department")
+  recipientCompanyName String? @map("recipient_company_name")
+  recipientCompanyPib String? @map("recipient_company_pib")
+  recipientLocId String? @map("recipient_loc_id") @db.Uuid
+  expectedReturnDate DateTime? @map("expected_return_date") @db.Date
+  issuedAt DateTime @default(now()) @map("issued_at") @db.Timestamptz(6)
+  issuedBy String @map("issued_by") @db.Uuid
+  status String @default("OPEN")
+  returnConfirmedBy String? @map("return_confirmed_by") @db.Uuid
+  returnConfirmedAt DateTime? @map("return_confirmed_at") @db.Timestamptz(6)
+  returnNotes String? @map("return_notes")
+  pdfStoragePath String? @map("pdf_storage_path")
+  pdfGeneratedAt DateTime? @map("pdf_generated_at") @db.Timestamptz(6)
+  napomena String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  recipientMachineCode String? @map("recipient_machine_code")
+  issuedToEmployeeId String? @map("issued_to_employee_id") @db.Uuid
+  issuedToEmployeeName String? @map("issued_to_employee_name")
+  bulkImportLegacyKey String? @map("bulk_import_legacy_key")
+  @@unique([docNumber], map: "rev_documents_doc_number_key")
+  @@map("rev_documents")
+}
+
+model RevDocumentLine {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  documentId String @map("document_id") @db.Uuid
+  sortOrder Int @default(0) @map("sort_order")
+  lineType String @map("line_type")
+  toolId String? @map("tool_id") @db.Uuid
+  drawingNo String? @map("drawing_no")
+  workOrderId String? @map("work_order_id") @db.Uuid
+  partName String? @map("part_name")
+  quantity Decimal @default(1) @db.Decimal
+  unit String @default("kom")
+  napomena String?
+  issueMovementId String? @map("issue_movement_id") @db.Uuid
+  returnedQuantity Decimal @default(0) @map("returned_quantity") @db.Decimal
+  returnMovementId String? @map("return_movement_id") @db.Uuid
+  lineStatus String @default("ISSUED") @map("line_status")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  cuttingToolCatalogId String? @map("cutting_tool_catalog_id") @db.Uuid
+  @@map("rev_document_lines")
+}
+
+model RevRecipientLocation {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  recipientType String @map("recipient_type")
+  recipientKey String @map("recipient_key")
+  recipientLabel String @map("recipient_label")
+  locLocationId String @map("loc_location_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  @@unique([recipientType, recipientKey], map: "rev_recipient_locations_recipient_type_recipient_key_key")
+  @@map("rev_recipient_locations")
+}
+
+model RevCuttingToolCatalog {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  barcode String?
+  oznaka String
+  naziv String
+  compatibleMachineCodes String[] @default(dbgenerated("ARRAY[]::text[]")) @map("compatible_machine_codes")
+  unit String @default("kom")
+  status String @default("active")
+  napomena String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String? @map("created_by") @db.Uuid
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  bigtehnSifraArtikla Int? @map("bigtehn_sifra_artikla")
+  minStockQty Int @default(0) @map("min_stock_qty")
+  subgroupId String? @map("subgroup_id") @db.Uuid
+  maxStockQty Int? @map("max_stock_qty")
+  @@unique([barcode], map: "rev_cutting_tool_catalog_barcode_key")
+  @@map("rev_cutting_tool_catalog")
+}
+
+model RevCuttingToolStock {
+  catalogId String @map("catalog_id") @db.Uuid
+  locationId String @map("location_id") @db.Uuid
+  onHandQty Decimal @default(0) @map("on_hand_qty") @db.Decimal
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@id([catalogId, locationId])
+  @@map("rev_cutting_tool_stock")
+}
+
+model RevDocumentCuttingAssignee {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  documentId String @map("document_id") @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  role String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  @@unique([documentId, employeeId], map: "rev_document_cutting_assignees_document_id_employee_id_key")
+  @@map("rev_document_cutting_assignees")
+}
+
+model RevInventoryGroup {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code String
+  label String
+  appliesTo String @map("applies_to")
+  displayOrder Int @default(100) @map("display_order")
+  icon String?
+  isSeeded Boolean @default(true) @map("is_seeded")
+  napomena String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@unique([code], map: "rev_inventory_groups_code_key")
+  @@map("rev_inventory_groups")
+}
+
+model RevInventorySubgroup {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  groupId String @map("group_id") @db.Uuid
+  code String
+  label String
+  displayOrder Int @default(100) @map("display_order")
+  isSeeded Boolean @default(true) @map("is_seeded")
+  napomena String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@unique([groupId, code], map: "rev_inventory_subgroups_group_id_code_key")
+  @@map("rev_inventory_subgroups")
+}
+
+model RevInventorySubsubgroup {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  subgroupId String @map("subgroup_id") @db.Uuid
+  code String
+  label String
+  displayOrder Int @default(100) @map("display_order")
+  isSeeded Boolean @default(false) @map("is_seeded")
+  napomena String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@unique([subgroupId, code], map: "rev_inventory_subsubgroups_subgroup_id_code_key")
+  @@map("rev_inventory_subsubgroups")
+}
+
+model RevMachineHead {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  machineCode String @map("machine_code")
+  oznaka String
+  naziv String
+  tip String?
+  serijskiBroj String? @map("serijski_broj")
+  status String @default("ACTIVE")
+  napomena String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String? @default(dbgenerated("auth.uid()")) @map("created_by") @db.Uuid
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("rev_machine_heads")
+}
+
+model RevToolBattery {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  toolId String @map("tool_id") @db.Uuid
+  serijskiBroj String? @map("serijski_broj")
+  kapacitet String?
+  datumNabavke DateTime? @map("datum_nabavke") @db.Date
+  status String @default("active")
+  napomena String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String? @default(dbgenerated("auth.uid()")) @map("created_by") @db.Uuid
+  @@map("rev_tool_batteries")
+}
+
+model RevToolServiceLog {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  toolId String @map("tool_id") @db.Uuid
+  datum DateTime @default(dbgenerated("CURRENT_DATE")) @db.Date
+  tip String @default("popravka")
+  opis String?
+  izvrsilac String?
+  trosak Decimal? @db.Decimal
+  status String @default("zavrsen")
+  napomena String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String? @default(dbgenerated("auth.uid()")) @map("created_by") @db.Uuid
+  @@map("rev_tool_service_log")
+}
+
+model RevToolStockLedger {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  toolId String @map("tool_id") @db.Uuid
+  delta Int
+  reason String
+  balanceAfter Int @map("balance_after")
+  refDocId String? @map("ref_doc_id") @db.Uuid
+  refLineId String? @map("ref_line_id") @db.Uuid
+  note String?
+  createdBy String? @default(dbgenerated("auth.uid()")) @map("created_by") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  @@map("rev_tool_stock_ledger")
+}
+
+// ============================================================================
+// TALAS B — Sastanci + AI asistent (MODULE_SPEC_sastanci_ai_30.md §1).
+// GENERISANO iz zive sy15 information_schema 2026-07-12 (Management API, read-only).
+// Ista pravila kao rev_*: uuid PK se ZADRZAVA, camelCase @map, BEZ FK relacija
+// (spajanja su rucni batch-resolve). NE mapiraju se (RPC-only / $queryRaw, spec §1):
+//   sastanci_ai_settings, sast_weekly_movers, sast_weekly_skip, ai_uputstva,
+//   ai_project_notes, ai_masina_docs. `embedding` (pgvector) kolone se NE mapiraju.
+// ============================================================================
+
+model Sastanak {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tip String @default("sedmicni")
+  naslov String
+  datum DateTime @db.Date
+  vreme DateTime? @db.Time(6)
+  mesto String? @default("")
+  projekatId String? @map("projekat_id") @db.Uuid
+  vodioEmail String? @map("vodio_email")
+  vodioLabel String? @map("vodio_label")
+  zapisnicarEmail String? @map("zapisnicar_email")
+  zapisnicarLabel String? @map("zapisnicar_label")
+  status String @default("planiran")
+  zakljucanAt DateTime? @map("zakljucan_at") @db.Timestamptz(6)
+  zakljucanByEmail String? @map("zakljucan_by_email")
+  napomena String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdByEmail String? @map("created_by_email")
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  pozivnicePoslateAt DateTime? @map("pozivnice_poslate_at") @db.Timestamptz(6)
+  @@map("sastanci")
+}
+
+model SastanakUcesnik {
+  sastanakId String @map("sastanak_id") @db.Uuid
+  email String
+  label String?
+  prisutan Boolean @default(true)
+  pozvan Boolean @default(true)
+  napomena String?
+  pripremljen Boolean @default(false)
+  priprema String?
+  rsvpStatus String? @map("rsvp_status")
+  rsvpAt DateTime? @map("rsvp_at") @db.Timestamptz(6)
+  /// TAJNA magic-linka — NIKAD ne izlagati kroz API (servisi biraju kolone eksplicitno).
+  rsvpToken String @default(dbgenerated("gen_random_uuid()")) @map("rsvp_token") @db.Uuid
+  @@id([sastanakId, email])
+  @@map("sastanak_ucesnici")
+}
+
+model PresekAktivnost {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sastanakId String @map("sastanak_id") @db.Uuid
+  rb Int
+  redosled Int @default(0)
+  naslov String
+  podRn String? @map("pod_rn")
+  sadrzajHtml String? @map("sadrzaj_html")
+  sadrzajText String? @map("sadrzaj_text")
+  odgovoranEmail String? @map("odgovoran_email")
+  odgovoranLabel String? @map("odgovoran_label")
+  odgovoranText String? @map("odgovoran_text")
+  rok DateTime? @db.Date
+  rokText String? @map("rok_text")
+  status String @default("u_toku")
+  napomena String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  temaId String? @map("tema_id") @db.Uuid
+  @@map("presek_aktivnosti")
+}
+
+model PresekSlika {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sastanakId String @map("sastanak_id") @db.Uuid
+  aktivnostId String? @map("aktivnost_id") @db.Uuid
+  storagePath String @map("storage_path")
+  fileName String? @map("file_name")
+  mimeType String? @map("mime_type")
+  sizeBytes BigInt? @map("size_bytes")
+  caption String?
+  redosled Int @default(0)
+  uploadedByEmail String? @map("uploaded_by_email")
+  uploadedAt DateTime @default(now()) @map("uploaded_at") @db.Timestamptz(6)
+  @@map("presek_slike")
+}
+
+model SastanakArhiva {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sastanakId String @unique @map("sastanak_id") @db.Uuid
+  snapshot Json @db.JsonB
+  zapisnikStoragePath String? @map("zapisnik_storage_path")
+  zapisnikSizeBytes BigInt? @map("zapisnik_size_bytes")
+  zapisnikGeneratedAt DateTime? @map("zapisnik_generated_at") @db.Timestamptz(6)
+  arhiviraoEmail String? @map("arhivirao_email")
+  arhiviraoLabel String? @map("arhivirao_label")
+  arhiviranoAt DateTime @default(now()) @map("arhivirano_at") @db.Timestamptz(6)
+  @@map("sastanak_arhiva")
+}
+
+model SastanakOdluka {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sastanakId String @map("sastanak_id") @db.Uuid
+  rb Int?
+  naslov String
+  opis String?
+  odlucioEmail String? @map("odlucio_email")
+  odlucioLabel String? @map("odlucio_label")
+  odlukaDatum DateTime? @map("odluka_datum") @db.Date
+  uticaj String?
+  vezaTemaId String? @map("veza_tema_id") @db.Uuid
+  vezaAkcijaId String? @map("veza_akcija_id") @db.Uuid
+  status String @default("na_snazi")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("sastanak_odluke")
+}
+
+model AkcioniPlan {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sastanakId String? @map("sastanak_id") @db.Uuid
+  temaId String? @map("tema_id") @db.Uuid
+  projekatId String? @map("projekat_id") @db.Uuid
+  rb Int?
+  naslov String
+  opis String?
+  odgovoranEmail String? @map("odgovoran_email")
+  odgovoranLabel String? @map("odgovoran_label")
+  odgovoranText String? @map("odgovoran_text")
+  rok DateTime? @db.Date
+  rokText String? @map("rok_text")
+  status String @default("otvoren")
+  prioritet Int @default(2)
+  zatvorenAt DateTime? @map("zatvoren_at") @db.Timestamptz(6)
+  zatvorenByEmail String? @map("zatvoren_by_email")
+  zatvorenNapomena String? @map("zatvoren_napomena")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdByEmail String? @map("created_by_email")
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("akcioni_plan")
+}
+
+model AkcioniPlanIstorija {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  akcijaId String @map("akcija_id") @db.Uuid
+  polje String
+  staro String?
+  novo String?
+  izmenioEmail String? @map("izmenio_email")
+  izmenjenoAt DateTime @default(now()) @map("izmenjeno_at") @db.Timestamptz(6)
+  @@map("akcioni_plan_istorija")
+}
+
+model PmTema {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  vrsta String @default("tema")
+  oblast String @default("opste")
+  naslov String
+  opis String?
+  projekatId String? @map("projekat_id") @db.Uuid
+  status String @default("predlog")
+  prioritet Int @default(2)
+  sastanakId String? @map("sastanak_id") @db.Uuid
+  predlozioEmail String @map("predlozio_email")
+  predlozioLabel String? @map("predlozio_label")
+  predlozioAt DateTime @default(now()) @map("predlozio_at") @db.Timestamptz(6)
+  resioEmail String? @map("resio_email")
+  resioLabel String? @map("resio_label")
+  resioAt DateTime? @map("resio_at") @db.Timestamptz(6)
+  resioNapomena String? @map("resio_napomena")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  hitno Boolean @default(false)
+  zaRazmatranje Boolean @default(false) @map("za_razmatranje")
+  adminRang Int? @map("admin_rang")
+  adminRangByEmail String? @map("admin_rang_by_email")
+  adminRangAt DateTime? @map("admin_rang_at") @db.Timestamptz(6)
+  @@map("pm_teme")
+}
+
+model SastanciTemplate {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  naziv String
+  tip String
+  mesto String?
+  vodioEmail String? @map("vodio_email")
+  zapisnicarEmail String? @map("zapisnicar_email")
+  cadence String
+  cadenceDow Int? @map("cadence_dow")
+  cadenceDom Int? @map("cadence_dom")
+  vreme DateTime? @db.Time(6)
+  napomena String?
+  isActive Boolean @default(true) @map("is_active")
+  createdByEmail String? @map("created_by_email")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("sastanci_templates")
+}
+
+model SastanciTemplateUcesnik {
+  templateId String @map("template_id") @db.Uuid
+  email String
+  label String?
+  @@id([templateId, email])
+  @@map("sastanci_template_ucesnici")
+}
+
+model SastanciNotificationPref {
+  email String @id
+  onNewAkcija Boolean @default(true) @map("on_new_akcija")
+  onChangeAkcija Boolean @default(true) @map("on_change_akcija")
+  onMeetingInvite Boolean @default(true) @map("on_meeting_invite")
+  onMeetingLocked Boolean @default(true) @map("on_meeting_locked")
+  onActionReminder Boolean @default(true) @map("on_action_reminder")
+  onMeetingReminder Boolean @default(true) @map("on_meeting_reminder")
+  emailAddress String? @map("email_address")
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("sastanci_notification_prefs")
+}
+
+model SastanciNotificationLog {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  kind String
+  channel String @default("email")
+  recipientEmail String @map("recipient_email")
+  recipientLabel String? @map("recipient_label")
+  subject String
+  bodyHtml String? @map("body_html")
+  bodyText String? @map("body_text")
+  relatedSastanakId String? @map("related_sastanak_id") @db.Uuid
+  relatedAkcijaId String? @map("related_akcija_id") @db.Uuid
+  status String @default("queued")
+  scheduledAt DateTime @default(now()) @map("scheduled_at") @db.Timestamptz(6)
+  nextAttemptAt DateTime @default(now()) @map("next_attempt_at") @db.Timestamptz(6)
+  lastAttemptAt DateTime? @map("last_attempt_at") @db.Timestamptz(6)
+  attempts Int @default(0)
+  maxAttempts Int @default(5) @map("max_attempts")
+  error String?
+  payload Json? @db.JsonB
+  createdByEmail String? @map("created_by_email")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  sentAt DateTime? @map("sent_at") @db.Timestamptz(6)
+  @@map("sastanci_notification_log")
+}
+
+model AiChatConversation {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId String? @map("user_id") @db.Uuid
+  title String @default("Razgovor")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  scope String @default("personal")
+  projectRef String? @map("project_ref")
+  @@map("ai_chat_conversations")
+}
+
+model AiChatMessage {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  conversationId String @map("conversation_id") @db.Uuid
+  userId String @map("user_id") @db.Uuid
+  role String
+  content String
+  tokensIn Int? @map("tokens_in")
+  tokensOut Int? @map("tokens_out")
+  model String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  authorName String? @map("author_name")
+  imagePath String? @map("image_path")
+  @@map("ai_chat_messages")
+}
+
+// ============================================================================
+// TALAS C — Plan montaže + Plan proizvodnje + Praćenje (MODULE_SPEC_planovi_pracenje_30.md §1)
+// SAMO public tabele koje 2.0 BE čita/piše DIREKTNO. Non-public šeme (production/
+// core/pdm) se NE introspektuju: front im prilazi kroz public bridge view-ove +
+// wrapper RPC-ove ($queryRaw kroz withUserRls). Kolone snimljene sa žive sy15
+// (information_schema 2026-07-13). Uuid/bigint PK se ZADRŽAVA (1.0 poreklo).
+// ============================================================================
+
+/// Plan montaže — projekat (lista = pb_list_projects ⋈ predmet_aktivacija; red AUTO-kreira trigger pri aktivaciji predmeta).
+model PmProject {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  projectCode String @map("project_code")
+  projectName String @map("project_name")
+  projectm String? @default("")
+  projectDeadline DateTime? @map("project_deadline") @db.Date
+  pmEmail String? @default("") @map("pm_email")
+  leadpmEmail String? @default("") @map("leadpm_email")
+  reminderEnabled Boolean? @default(false) @map("reminder_enabled")
+  status String? @default("active")
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  bigtehnItemId Int? @map("bigtehn_item_id")
+  @@map("projects")
+}
+
+/// Plan montaže — WP (nalog montaže, rn_code); glavni crtež sklopa = assembly_drawing_no.
+model PmWorkPackage {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  projectId String @map("project_id") @db.Uuid
+  rnCode String? @default("") @map("rn_code")
+  rnOrder Int? @default(1) @map("rn_order")
+  name String
+  location String? @default("Dobanovci")
+  responsibleEngineerDefault String? @default("") @map("responsible_engineer_default")
+  montageLeadDefault String? @default("") @map("montage_lead_default")
+  deadline DateTime? @db.Date
+  sortOrder Int? @default(0) @map("sort_order")
+  isActive Boolean? @default(true) @map("is_active")
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  assemblyDrawingNo String @default("") @map("assembly_drawing_no")
+  @@map("work_packages")
+}
+
+/// Plan montaže — faza (checks jsonb = 8×bool spremnosti; linked_drawings jsonb; actual_*_date).
+model PmPhase {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  projectId String @map("project_id") @db.Uuid
+  workPackageId String @map("work_package_id") @db.Uuid
+  phaseName String @map("phase_name")
+  location String? @default("Dobanovci")
+  startDate DateTime? @map("start_date") @db.Date
+  endDate DateTime? @map("end_date") @db.Date
+  responsibleEngineer String? @default("") @map("responsible_engineer")
+  montageLead String? @default("") @map("montage_lead")
+  status Int? @default(0)
+  pct Int? @default(0)
+  checks Json?
+  blocker String? @default("")
+  note String? @default("")
+  sortOrder Int? @default(0) @map("sort_order")
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy String? @default("") @map("updated_by")
+  phaseType String? @default("mechanical") @map("phase_type")
+  description String?
+  linkedDrawings Json @map("linked_drawings")
+  actualStartDate DateTime? @map("actual_start_date") @db.Date
+  actualEndDate DateTime? @map("actual_end_date") @db.Date
+  @@map("phases")
+}
+
+/// Izveštaj montera (klijentski UUID id = idempotencija; broj puni BEFORE INSERT trigger; autor = auth.uid()).
+model PmIzvestaj {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  brojIzvestaja String? @map("broj_izvestaja")
+  status String @default("u_toku")
+  datumRada DateTime? @map("datum_rada") @db.Date
+  predmetItemId Int? @map("predmet_item_id")
+  predmetBroj String? @map("predmet_broj")
+  nazivProjekta String? @map("naziv_projekta")
+  klijent String?
+  lokacija String?
+  pocetakRada String? @map("pocetak_rada")
+  krajRada String? @map("kraj_rada")
+  opisRadova String? @map("opis_radova")
+  problemi String?
+  otvoreneStavke String? @map("otvorene_stavke")
+  dodatniClanovi Json @map("dodatni_clanovi")
+  autorUserId String @default(dbgenerated("auth.uid()")) @map("autor_user_id") @db.Uuid
+  autorIme String? @map("autor_ime")
+  siroviTekst String? @map("sirovi_tekst")
+  aiModel String? @map("ai_model")
+  aiJson Json? @map("ai_json")
+  pdfPath String? @map("pdf_path")
+  pdfNaziv String? @map("pdf_naziv")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  finalizedAt DateTime? @map("finalized_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("montaza_izvestaji")
+}
+
+/// Fotke izveštaja montera (storage bucket montaza-izvestaji; max 16 po izveštaju).
+model PmIzvestajFoto {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  izvestajId String @map("izvestaj_id") @db.Uuid
+  redniBroj Int @default(1) @map("redni_broj")
+  storagePath String @map("storage_path")
+  opis String?
+  mimeType String? @map("mime_type")
+  sizeBytes BigInt? @map("size_bytes")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  @@map("montaza_izvestaj_fotke")
+}
+
+/// Plan proizvodnje — overlay (UNIQUE work_order_id+line_id; history = append-only trigger; DELETE nikad).
+model PpOverlay {
+  id BigInt @id @default(autoincrement())
+  workOrderId BigInt @map("work_order_id")
+  lineId BigInt @map("line_id")
+  shiftSortOrder Int? @map("shift_sort_order")
+  localStatus String @default("waiting") @map("local_status")
+  shiftNote String? @map("shift_note")
+  assignedMachineCode String? @map("assigned_machine_code")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  createdBy String? @map("created_by")
+  updatedBy String? @map("updated_by")
+  archivedAt DateTime? @map("archived_at") @db.Timestamptz(6)
+  archivedReason String? @map("archived_reason")
+  camReady Boolean @default(false) @map("cam_ready")
+  camReadyAt DateTime? @map("cam_ready_at") @db.Timestamptz(6)
+  camReadyBy String? @map("cam_ready_by")
+  cooperationStatus String @default("none") @map("cooperation_status")
+  cooperationPartner String? @map("cooperation_partner")
+  cooperationSetBy String? @map("cooperation_set_by")
+  cooperationSetAt DateTime? @map("cooperation_set_at") @db.Timestamptz(6)
+  cooperationExpectedReturn DateTime? @map("cooperation_expected_return") @db.Date
+  readyOverride Boolean @default(false) @map("ready_override")
+  readyOverrideAt DateTime? @map("ready_override_at") @db.Timestamptz(6)
+  readyOverrideBy String? @map("ready_override_by")
+  @@unique([workOrderId, lineId])
+  @@map("production_overlays")
+}
+
+/// Plan proizvodnje — HITNO flag (PK work_order_id; DELETE nikad — samo set/clear preko cleared_at).
+model PpUrgency {
+  workOrderId BigInt @id @map("work_order_id")
+  isUrgent Boolean @default(true) @map("is_urgent")
+  reason String?
+  setBy String? @map("set_by")
+  setAt DateTime @default(now()) @map("set_at") @db.Timestamptz(6)
+  clearedAt DateTime? @map("cleared_at") @db.Timestamptz(6)
+  clearedBy String? @map("cleared_by")
+  @@map("production_urgency_overrides")
+}
+
+/// Plan proizvodnje — skice (soft-delete deleted_at; storage bucket production-drawings).
+model PpDrawing {
+  id BigInt @id @default(autoincrement())
+  workOrderId BigInt @map("work_order_id")
+  lineId BigInt @map("line_id")
+  storagePath String @map("storage_path")
+  fileName String @map("file_name")
+  mimeType String? @map("mime_type")
+  sizeBytes BigInt? @map("size_bytes")
+  uploadedAt DateTime @default(now()) @map("uploaded_at") @db.Timestamptz(6)
+  uploadedBy String? @map("uploaded_by")
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+  deletedBy String? @map("deleted_by")
+  @@map("production_drawings")
+}
+
+// ============================================================================
+// TALAS D — Projektni biro + Podešavanja (RBAC/matični) (MODULE_SPEC_pb_profil_podesavanja_30.md §1).
+// GENERISANO iz zive baze (Management API information_schema, read-only, 2026-07-13).
+// Ista pravila kao rev_*/sastanci: uuid PK se ZADRZAVA, camelCase @map, BEZ FK relacija
+// (spajanja su rucni batch-resolve; 1.0 sema ih nema). Enum kolone se mapiraju kroz
+// Prisma enum + @map na clanovima (cirilica/spejsovi u DB labelama).
+// NE mapira se (RPC-only / drugi izvor — spec §1/§2):
+//   predmet_aktivacija (zivi u `production` semi, pristup samo kroz
+//     list_predmet_aktivacija_admin()/set_predmet_aktivacija()),
+//   audit_log (read kroz view v_settings_audit_log $queryRaw),
+//   `search_tsv` (tsvector) kolona pb_eng_tips se NE mapira (kao embedding).
+// MOJ PROFIL nema svoje modele (agregator kroz GUC nad tudjim tabelama/RPC — spec §0.2).
+// ============================================================================
+
+enum PbTaskVrsta {
+  Projektovanje3D @map("Projektovanje 3D")
+  Dokumentacija   @map("Dokumentacija")
+  Nabavka         @map("Nabavka")
+  Algoritam       @map("Algoritam")
+  Montaza         @map("Montaža")
+  @@map("pb_task_vrsta")
+}
+
+enum PbPrioritet {
+  Visok   @map("Visok")
+  Srednji @map("Srednji")
+  Nizak   @map("Nizak")
+  @@map("pb_prioritet")
+}
+
+enum PbTaskStatus {
+  NijePocelo @map("Nije počelo")
+  UToku      @map("U toku")
+  Pregled    @map("Pregled")
+  Zavrseno   @map("Završeno")
+  Blokirano  @map("Blokirano")
+  @@map("pb_task_status")
+}
+
+enum PbEngTipStatus {
+  draft
+  published
+  @@map("pb_eng_tip_status")
+}
+
+model PbTask {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  naziv String
+  opis String?
+  problem String?
+  projectId String? @map("project_id") @db.Uuid
+  employeeId String? @map("employee_id") @db.Uuid
+  vrsta PbTaskVrsta @default(Projektovanje3D)
+  prioritet PbPrioritet @default(Srednji)
+  status PbTaskStatus @default(NijePocelo)
+  datumPocetkaPlan DateTime? @map("datum_pocetka_plan") @db.Date
+  datumZavrsetkaPlan DateTime? @map("datum_zavrsetka_plan") @db.Date
+  datumPocetkaReal DateTime? @map("datum_pocetka_real") @db.Date
+  datumZavrsetkaReal DateTime? @map("datum_zavrsetka_real") @db.Date
+  procenatZavrsenosti Int @default(0) @map("procenat_zavrsenosti")
+  normaSatiDan Int @default(4) @map("norma_sati_dan")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  createdBy String? @map("created_by")
+  updatedBy String? @map("updated_by")
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+  @@map("pb_tasks")
+}
+
+model PbWorkReport {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String? @map("employee_id") @db.Uuid
+  datum DateTime @db.Date
+  sati Decimal @db.Decimal
+  opis String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String? @map("created_by")
+  @@map("pb_work_reports")
+}
+
+model PbTaskComment {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  taskId String @map("task_id") @db.Uuid
+  body String
+  mentions String[] @default([])
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  createdBy String? @map("created_by")
+  createdByUserId String? @map("created_by_user_id") @db.Uuid
+  editedAt DateTime? @map("edited_at") @db.Timestamptz(6)
+  @@map("pb_task_comments")
+}
+
+model PbTaskDep {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  taskId String @map("task_id") @db.Uuid
+  dependsOnTaskId String @map("depends_on_task_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String? @map("created_by")
+  @@unique([taskId, dependsOnTaskId])
+  @@map("pb_task_deps")
+}
+
+model PbTaskFile {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  taskId String @map("task_id") @db.Uuid
+  fileName String @map("file_name")
+  storagePath String @unique @map("storage_path")
+  mimeType String? @map("mime_type")
+  sizeBytes BigInt? @map("size_bytes")
+  category String?
+  description String?
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+  uploadedAt DateTime @default(now()) @map("uploaded_at") @db.Timestamptz(6)
+  uploadedBy String? @map("uploaded_by") @db.Uuid
+  uploadedByEmail String? @map("uploaded_by_email")
+  @@map("pb_task_files")
+}
+
+model PbEngTip {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  naslov String
+  telo String
+  categoryId String? @map("category_id") @db.Uuid
+  tags String[] @default([])
+  vendor String?
+  url String?
+  projectId String? @map("project_id") @db.Uuid
+  status PbEngTipStatus @default(draft)
+  authorId String? @map("author_id") @db.Uuid
+  authorEmail String? @map("author_email")
+  likesCount Int @default(0) @map("likes_count")
+  viewsCount Int @default(0) @map("views_count")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  createdBy String? @map("created_by")
+  updatedBy String? @map("updated_by")
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+  @@map("pb_eng_tips")
+}
+
+model PbEngTipCategory {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  naziv String @unique
+  slug String @unique
+  ikona String?
+  boja String?
+  redosled Int @default(0)
+  jeAktivna Boolean @default(true) @map("je_aktivna")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("pb_eng_tip_categories")
+}
+
+model PbEngTipLike {
+  tipId String @map("tip_id") @db.Uuid
+  userId String @map("user_id") @db.Uuid
+  userEmail String? @map("user_email")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  @@id([tipId, userId])
+  @@map("pb_eng_tip_likes")
+}
+
+model PbEngTipFile {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tipId String @map("tip_id") @db.Uuid
+  storagePath String @map("storage_path")
+  fileName String @map("file_name")
+  mimeType String? @map("mime_type")
+  sizeBytes BigInt? @map("size_bytes")
+  isImage Boolean? @map("is_image")
+  uploadedBy String? @map("uploaded_by")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  @@map("pb_eng_tip_files")
+}
+
+model PbNotificationConfig {
+  id Int @id @default(1)
+  enabled Boolean @default(true)
+  deadlineWarningDays Int @default(3) @map("deadline_warning_days")
+  overloadThresholdPct Int @default(100) @map("overload_threshold_pct")
+  emailRecipients String[] @default([]) @map("email_recipients")
+  notifyOnBlocked Boolean @default(true) @map("notify_on_blocked")
+  notifyOnOverload Boolean @default(true) @map("notify_on_overload")
+  notifyOnDeadlineWarning Boolean @default(true) @map("notify_on_deadline_warning")
+  notifyOnDeadlineOverdue Boolean @default(true) @map("notify_on_deadline_overdue")
+  notifyOnNoEngineer Boolean @default(false) @map("notify_on_no_engineer")
+  updatedAt DateTime? @map("updated_at") @db.Timestamptz(6)
+  updatedBy String? @map("updated_by")
+  quietHoursStart DateTime? @map("quiet_hours_start") @db.Time(6)
+  quietHoursEnd DateTime? @map("quiet_hours_end") @db.Time(6)
+  quietHoursTz String @default("Europe/Belgrade") @map("quiet_hours_tz")
+  digestMode Boolean @default(false) @map("digest_mode")
+  @@map("pb_notification_config")
+}
+
+model PbNotificationLog {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  channel String
+  recipient String
+  recipientUserId String? @map("recipient_user_id") @db.Uuid
+  subject String?
+  body String
+  triggerType String @map("trigger_type")
+  relatedTaskId String? @map("related_task_id") @db.Uuid
+  relatedEmployeeId String? @map("related_employee_id") @db.Uuid
+  status String @default("pending")
+  error String?
+  attempts Int @default(0)
+  scheduledAt DateTime @default(now()) @map("scheduled_at") @db.Timestamptz(6)
+  nextAttemptAt DateTime @default(now()) @map("next_attempt_at") @db.Timestamptz(6)
+  lastAttemptAt DateTime? @map("last_attempt_at") @db.Timestamptz(6)
+  sentAt DateTime? @map("sent_at") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  payload Json? @db.JsonB
+  @@map("pb_notification_log")
+}
+
+// ---- Podešavanja: RBAC + matični (spec §1/§2.2/§2.3) ----
+
+/// 1.0 email-based user_roles (razlicito od 2.0 `UserRole` u schema.prisma — FK-based).
+/// Nullable niz-kolone `managed_departments`/`managed_sub_department_ids` se NE citaju
+/// kroz `tx.userRoleSy15.findMany` (Prisma ne podrzava nullable scalar-liste — NULL red bi
+/// pao pri deserijalizaciji); Podešavanja ih cita kroz $queryRaw (row_to_json). Kolone su
+/// deklarisane radi tacnosti seme; citaju se raw. Scope (managedSubDepartmentIds) i
+/// override-kolone (plan_montaze_readonly/kadrovska_access/kadrovska_hide_contracts) su
+/// data-migracija u R2 (matrica #44) — R1 samo cita.
+model UserRoleSy15 {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email String
+  role String
+  projectId String? @map("project_id") @db.Uuid
+  isActive Boolean? @default(true) @map("is_active")
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  fullName String? @map("full_name")
+  team String?
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  createdBy String? @map("created_by")
+  mustChangePassword Boolean? @default(false) @map("must_change_password")
+  userId String? @map("user_id") @db.Uuid
+  managedDepartments String[] @map("managed_departments")
+  managedSubDepartmentIds Int[] @map("managed_sub_department_ids")
+  planMontazeReadonly Boolean @default(false) @map("plan_montaze_readonly")
+  kadrovskaAccess Boolean @default(false) @map("kadrovska_access")
+  kadrovskaHideContracts Boolean @default(false) @map("kadrovska_hide_contracts")
+  @@map("user_roles")
+}
+
+model Department {
+  id Int @id @default(autoincrement())
+  name String
+  sortOrder Int @default(0) @map("sort_order") @db.SmallInt
+  @@map("departments")
+}
+
+model SubDepartment {
+  id Int @id @default(autoincrement())
+  departmentId Int @map("department_id")
+  name String
+  sortOrder Int @default(0) @map("sort_order") @db.SmallInt
+  @@map("sub_departments")
+}
+
+model JobPosition {
+  id Int @id @default(autoincrement())
+  departmentId Int @map("department_id")
+  subDepartmentId Int? @map("sub_department_id")
+  name String
+  sortOrder Int @default(0) @map("sort_order") @db.SmallInt
+  summaryMd String? @map("summary_md")
+  expectationsMd String? @map("expectations_md")
+  responsibilitiesMd String? @map("responsibilities_md")
+  dutiesMd String? @map("duties_md")
+  profileUpdatedAt DateTime? @map("profile_updated_at") @db.Timestamptz(6)
+  profileUpdatedBy String? @map("profile_updated_by")
+  reportsToLine String? @map("reports_to_line")
+  authorityMd String? @map("authority_md")
+  kpiMd String? @map("kpi_md")
+  qualificationsMd String? @map("qualifications_md")
+  collaborationMd String? @map("collaboration_md")
+  @@map("job_positions")
+}
+
+model CompanyProfile {
+  id Int @id @default(1)
+  missionMd String? @map("mission_md")
+  visionMd String? @map("vision_md")
+  valuesMd String? @map("values_md")
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy String? @map("updated_by")
+  @@map("company_profile")
+}
+
+model KadrGridEditorAllowlist {
+  email String @id
+  note String @default("")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  @@map("kadr_grid_editor_allowlist")
+}
+
+model KadrHoliday {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  holidayDate DateTime @unique @map("holiday_date") @db.Date
+  name String
+  isWorkday Boolean @default(false) @map("is_workday")
+  note String? @default("")
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("kadr_holidays")
+}
+
+model EmployeeExpectation {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  title String
+  descriptionMd String? @map("description_md")
+  dueDate DateTime? @map("due_date") @db.Date
+  priority String @default("srednja")
+  status String @default("aktivno")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String @map("created_by")
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy String? @map("updated_by")
+  completedAt DateTime? @map("completed_at") @db.Timestamptz(6)
+  completionNote String? @map("completion_note")
+  planId String? @map("plan_id") @db.Uuid
+  category String @default("ostalo")
+  progress Int @default(0) @db.SmallInt
+  @@map("employee_expectations")
+}
+
+model CompetenceGroup {
+  id Int @id @default(autoincrement())
+  code String @unique
+  nameSr String @map("name_sr")
+  descriptionSr String? @map("description_sr")
+  scope String @default("strucna")
+  sortOrder Int @default(100) @map("sort_order")
+  isActive Boolean @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy String? @map("updated_by")
+  @@map("competence_groups")
+}
+
+model Competence {
+  id Int @id @default(autoincrement())
+  groupId Int @map("group_id")
+  code String @unique
+  nameSr String @map("name_sr")
+  descriptionSr String? @map("description_sr")
+  sortOrder Int @default(100) @map("sort_order")
+  isActive Boolean @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy String? @map("updated_by")
+  @@map("competences")
+}
+
+model CompetenceLevel {
+  id Int @id @default(autoincrement())
+  competenceId Int @map("competence_id")
+  level Int @db.SmallInt
+  descriptorSr String @map("descriptor_sr")
+  @@unique([competenceId, level])
+  @@map("competence_levels")
+}
+
+model CompetenceProfile {
+  id Int @id @default(autoincrement())
+  code String @unique
+  nameSr String @map("name_sr")
+  descriptionSr String? @map("description_sr")
+  sortOrder Int @default(100) @map("sort_order")
+  isActive Boolean @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy String? @map("updated_by")
+  @@map("competence_profiles")
+}
+
+model CompetenceQuestion {
+  id Int @id @default(autoincrement())
+  groupId Int? @map("group_id")
+  code String @unique
+  textSr String @map("text_sr")
+  sortOrder Int @default(100) @map("sort_order")
+  isActive Boolean @default(true) @map("is_active")
+  @@map("competence_questions")
+}
+
+model ProfilePosition {
+  id Int @id @default(autoincrement())
+  profileId Int @map("profile_id")
+  positionId Int @unique @map("position_id")
+  @@map("profile_positions")
+}
+
+// ============================================================================
+// TALAS F — Održavanje (CMMS). Generisano iz žive sy15 information_schema 2026-07-13.
+// Tabele OSTAJU u sy15 bazi (doktrina A.1); modeli bez FK relacija (spajanja ručna).
+// Enumi = native pg enumi (Prisma cast-uje filtere na enum tip — bitno za status filtere).
+// maint_wo_number_counter NAMERNO izostavljen (deny-all RLS; dodela SAMO kroz trigger).
+// ============================================================================
+
+enum MaintAssetType {
+  machine
+  vehicle
+  it
+  facility
+
+  @@map("maint_asset_type")
+}
+
+enum MaintBookingStatus {
+  planirana
+  u_toku
+  zavrsena
+  otkazana
+
+  @@map("maint_booking_status")
+}
+
+enum MaintCheckResult {
+  ok
+  warning
+  fail
+  skipped
+
+  @@map("maint_check_result")
+}
+
+enum MaintDocumentEntityType {
+  asset
+  work_order
+  incident
+  preventive_task
+  driver
+
+  @@map("maint_document_entity_type")
+}
+
+enum MaintIncidentSeverity {
+  minor
+  major
+  critical
+
+  @@map("maint_incident_severity")
+}
+
+enum MaintIncidentStatus {
+  open
+  acknowledged
+  in_progress
+  awaiting_parts
+  resolved
+  closed
+
+  @@map("maint_incident_status")
+}
+
+enum MaintIntervalUnit {
+  hours
+  days
+  weeks
+  months
+
+  @@map("maint_interval_unit")
+}
+
+enum MaintMaintRole {
+  operator
+  technician
+  chief
+  management
+  admin
+
+  @@map("maint_maint_role")
+}
+
+enum MaintNotificationChannel {
+  telegram
+  email
+  in_app
+  whatsapp
+
+  @@map("maint_notification_channel")
+}
+
+enum MaintNotificationStatus {
+  queued
+  sent
+  failed
+
+  @@map("maint_notification_status")
+}
+
+enum MaintOperationalStatus {
+  running
+  degraded
+  down
+  maintenance
+
+  @@map("maint_operational_status")
+}
+
+enum MaintStockMovementType {
+  in
+  out
+  adjustment
+  return
+
+  @@map("maint_stock_movement_type")
+}
+
+enum MaintTaskSeverity {
+  normal
+  important
+  critical
+
+  @@map("maint_task_severity")
+}
+
+enum MaintTireSeason {
+  summer
+  winter
+  all_season
+
+  @@map("maint_tire_season")
+}
+
+enum MaintTireStatus {
+  nove
+  koriscene
+  dotrajale
+  bacene
+
+  @@map("maint_tire_status")
+}
+
+enum MaintVehicleGpsProvider {
+  nema
+  smartivo
+  drugi
+
+  @@map("maint_vehicle_gps_provider")
+}
+
+enum MaintVehicleKind {
+  teretno
+  putnicko
+  kombi
+  radno
+  prikolica
+
+  @@map("maint_vehicle_kind")
+}
+
+enum MaintVehicleOwnerType {
+  firma
+  leasing
+  zaposleni
+  spoljni
+
+  @@map("maint_vehicle_owner_type")
+}
+
+enum MaintVehicleServiceCategory {
+  mali
+  veliki
+  kocnice
+  elektrika
+  oslanjanje
+  motor_transmisija
+  karoserija
+  odluka_o_zameni
+  ostalo
+
+  @@map("maint_vehicle_service_category")
+}
+
+enum MaintVehicleUsageType {
+  posao
+  posao_kuca
+  licne_potrebe
+
+  @@map("maint_vehicle_usage_type")
+}
+
+enum MaintWoPriority {
+  p1_zastoj
+  p2_smetnja
+  p3_manje
+  p4_planirano
+
+  @@map("maint_wo_priority")
+}
+
+enum MaintWoStatus {
+  novi
+  potvrden
+  dodeljen
+  u_radu
+  ceka_deo
+  ceka_dobavljaca
+  ceka_korisnika
+  kontrola
+  zavrsen
+  otkazan
+
+  @@map("maint_wo_status")
+}
+
+enum MaintWoType {
+  kvar
+  preventiva
+  inspekcija
+  servis
+  administrativni
+  incident
+  preventive
+
+  @@map("maint_wo_type")
+}
+
+model MaintAssetServicePlan {
+  planId String @id @db.Uuid @default(dbgenerated("gen_random_uuid()")) @map("plan_id")
+  assetId String @db.Uuid @map("asset_id")
+  name String
+  intervalMonths Int @map("interval_months")
+  lastDoneAt DateTime? @db.Date @map("last_done_at")
+  notes String?
+  priority MaintWoPriority @default(p4_planirano)
+  active Boolean @default(true)
+  createdAt DateTime @db.Timestamptz(6) @default(now()) @map("created_at")
+  createdBy String? @db.Uuid @map("created_by")
+  updatedAt DateTime @db.Timestamptz(6) @default(now()) @map("updated_at")
+  updatedBy String? @db.Uuid @map("updated_by")
+  @@map("maint_asset_service_plan")
+}
+
+model MaintAsset {
+  assetId String @id @db.Uuid @default(dbgenerated("gen_random_uuid()")) @map("asset_id")
+  assetCode String @map("asset_code")
+  assetType MaintAssetType @map("asset_type")
+  name String
+  status MaintOperationalStatus @default(running)
+  locationId String? @db.Uuid @map("location_id")
+  responsibleUserId String? @db.Uuid @map("responsible_user_id")
+  manufacturer String?
+  model String?
+  serialNumber String? @map("serial_number")
+  dateOfPurchase DateTime? @db.Date @map("date_of_purchase")
+  warrantyUntil DateTime? @db.Date @map("warranty_until")
+  supplier String?
+  qrToken String @default(dbgenerated("(gen_random_uuid())::text")) @map("qr_token")
+  active Boolean @default(true)
+  archivedAt DateTime? @db.Timestamptz(6) @map("archived_at")
+  createdAt DateTime @db.Timestamptz(6) @default(now()) @map("created_at")
+  updatedAt DateTime @db.Timestamptz(6) @default(now()) @map("updated_at")
+  updatedBy String? @db.Uuid @map("updated_by")
+  notes String?
+  archiveReason String? @map("archive_reason")
+  archivedBy String? @db.Uuid @map("archived_by")
+  @@map("maint_assets")
+}
+
+model MaintCheck {
+  id String @id @db.Uuid @default(dbgenerated("gen_random_uuid()"))
+  taskId String @db.Uuid @map("task_id")
+  machineCode String @map("machine_code")
+  performedBy String @db.Uuid @map("performed_by")
+  performedAt DateTime @db.Timestamptz(6) @default(now()) @map("performed_at")
+  result MaintCheckResult
+  notes String?
+  attachmentUrls String[] @default([]) @map("attachment_urls")
+  createdAt DateTime @db.Timestamptz(6) @default(now()) @map("created_at")
+  updatedAt DateTime @db.Timestamptz(6) @default(now()) @map("updated_at")
+  updatedBy String? @db.Uuid @map("updated_by")
+  @@map("maint_checks")
+}
+
+model MaintDocument {
+  documentId String @id @db.Uuid @default(dbgenerated("gen_random_uuid()")) @map("document_id")
+  entityType MaintDocumentEntityType @map("entity_type")
+  entityId String @db.Uuid @map("entity_id")
+  assetId String? @db.Uuid @map("asset_id")
+  woId String? @db.Uuid @map("wo_id")
+  incidentId String? @db.Uuid @map("incident_id")
+  preventiveTaskId String? @db.Uuid @map("preventive_task_id")
+  fileName String @map("file_name")
+  storagePath String @map("storage_path")
+  mimeType String? @map("mime_type")
+  sizeBytes BigInt? @map("size_bytes")
+  category String?
+  description String?
+  uploadedAt DateTime @db.Timestamptz(6) @default(now()) @map("uploaded_at")
+  uploadedBy String? @db.Uuid @map("uploaded_by")
+  deletedAt DateTime? @db.Timestamptz(6) @map("deleted_at")
+  validUntil DateTime? @db.Date @map("valid_until")
+  driverId String? @db.Uuid @map("driver_id")
+  @@map("maint_documents")
+}
+
+model MaintDriver {
+  driverId String @id @db.Uuid @default(dbgenerated("gen_random_uuid()")) @map("driver_id")
+  fullName String @map("full_name")
+  isInternal Boolean @default(true) @map("is_internal")
+  authUserId String? @db.Uuid @map("auth_user_id")
+  driversLicenseNumber String? @map("drivers_license_number")
+  driversLicenseCategories String[] @map("drivers_license_categories")
+  driversLicenseValidUntil DateTime? @db.Date @map("drivers_license_valid_until")
+  idCardNumber String? @map("id_card_number")
+  idCardValidUntil DateTime? @db.Date @map("id_card_valid_until")
+  medicalCheckValidUntil DateTime? @db.Date @map("medical_check_valid_until")
+  phone String?
+  jmbg String?
+  address String?
+  notes String?
+  active Boolean @default(true)
+  archivedAt DateTime? @db.Timestamptz(6) @map("archived_at")
+  archiveReason String? @map("archive_reason")
+  createdAt DateTime @db.Timestamptz(6) @default(now()) @map("created_at")
+  createdBy String? @db.Uuid @map("created_by")
+  updatedAt DateTime @db.Timestamptz(6) @default(now()) @map("updated_at")
+  updatedBy String? @db.Uuid @map("updated_by")
+  @@map("maint_drivers")
+}
+
+model MaintFacilityDetails {
+  assetId String @id @db.Uuid @map("asset_id")
+  facilityType String? @map("facility_type")
+  floorAreaM2 Decimal? @db.Decimal(12, 2) @map("floor_area_m2")
+  floorOrZone String? @map("floor_or_zone")
+  criticality String?
+  inspectionDueAt DateTime? @db.Date @map("inspection_due_at")
+  fireSafetyDueAt DateTime? @db.Date @map("fire_safety_due_at")
+  serviceContract String? @map("service_contract")
+  serviceProvider String? @map("service_provider")
+  lastInspectionAt DateTime? @db.Date @map("last_inspection_at")
+  cadastralParcels String? @map("cadastral_parcels")
+  notes String?
+  createdAt DateTime @db.Timestamptz(6) @default(now()) @map("created_at")
+  updatedAt DateTime @db.Timestamptz(6) @default(now()) @map("updated_at")
+  updatedBy String? @db.Uuid @map("updated_by")
+  @@map("maint_facility_details")
+}
+
+model MaintIncidentEvent {
+  id String @id @db.Uuid @default(dbgenerated("gen_random_uuid()"))
+  incidentId String @db.Uuid @map("incident_id")
+  actor String? @db.Uuid
+  at DateTime @db.Timestamptz(6) @default(now())
+  eventType String @map("event_type")
+  fromValue String? @map("from_value")
+  toValue String? @map("to_value")
+  comment String?
+  @@map("maint_incident_events")
+}
+
+model MaintIncident {
+  id String @id @db.Uuid @default(dbgenerated("gen_random_uuid()"))
+  machineCode String @map("machine_code")
+  reportedBy String @db.Uuid @map("reported_by")
+  reportedAt DateTime @db.Timestamptz(6) @default(now()) @map("reported_at")
+  title String
+  description String?
+  severity MaintIncidentSeverity @default(minor)
+  status MaintIncidentStatus @default(open)
+  assignedTo String? @db.Uuid @map("assigned_to")
+  resolvedAt DateTime? @db.Timestamptz(6) @map("resolved_at")
+  closedAt DateTime? @db.Timestamptz(6) @map("closed_at")
+  resolutionNotes String? @map("resolution_notes")
+  downtimeMinutes Int? @map("downtime_minutes")
+  attachmentUrls String[] @default([]) @map("attachment_urls")
+  createdAt DateTime @db.Timestamptz(6) @default(now()) @map("created_at")
+  updatedAt DateTime @db.Timestamptz(6) @default(now()) @map("updated_at")
+  updatedBy String? @db.Uuid @map("updated_by")
+  workOrderId String? @db.Uuid @map("work_order_id")
+  assetId String? @db.Uuid @map("asset_id")
+  assetType MaintAssetType? @map("asset_type")
+  safetyMarker Boolean @default(false) @map("safety_marker")
+  @@map("maint_incidents")
+}
+
+model MaintItAssetDetails {
+  assetId String @id @db.Uuid @map("asset_id")
+  deviceType String? @map("device_type")
+  hostname String?
+  ipAddress String? @db.Inet @map("ip_address")
+  macAddress String? @map("mac_address")
+  operatingSystem String? @map("operating_system")
+  assignedTo String? @map("assigned_to")
+  licenseKey String? @map("license_key")
+  licenseExpiresAt DateTime? @db.Date @map("license_expires_at")
+  warrantyExpiresAt DateTime? @db.Date @map("warranty_expires_at")
+  backupRequired Boolean @default(false) @map("backup_required")
+  lastBackupAt DateTime? @db.Timestamptz(6) @map("last_backup_at")
+  notes String?
+  createdAt DateTime @db.Timestamptz(6) @default(now()) @map("created_at")
+  updatedAt DateTime @db.Timestamptz(6) @default(now()) @map("updated_at")
+  updatedBy String? @db.Uuid @map("updated_by")
+  @@map("maint_it_asset_details")
+}
+
+model MaintLocation {
+  locationId String @id @db.Uuid @default(dbgenerated("gen_random_uuid()")) @map("location_id")
+  parentLocationId String? @db.Uuid @map("parent_location_id")
+  locationType String @default("lokacija") @map("location_type")
+  code String?
+  name String
+  active Boolean @default(true)
+  createdAt DateTime @db.Timestamptz(6) @default(now()) @map("created_at")
+  updatedAt DateTime @db.Timestamptz(6) @default(now()) @map("updated_at")
+  @@map("maint_locations")
+}
+
+model MaintMachineFile {
+  id String @id @db.Uuid @default(dbgenerated("gen_random_uuid()"))
+  machineCode String @map("machine_code")
+  fileName String @map("file_name")
+  storagePath String @map("storage_path")
+  mimeType String? @map("mime_type")
+  sizeBytes BigInt? @map("size_bytes")
+  category String?
+  description String?
+  deletedAt DateTime? @db.Timestamptz(6) @map("deleted_at")
+  uploadedAt DateTime @db.Timestamptz(6) @default(now()) @map("uploaded_at")
+  uploadedBy String? @db.Uuid @map("uploaded_by")
+  @@map("maint_machine_files")
+}
+
+model MaintMachineNote {
+  id String @id @db.Uuid @default(dbgenerated("gen_random_uuid()"))
+  machineCode String @map("machine_code")
+  author String @db.Uuid
+  content String
+  pinned Boolean @default(false)
+  createdAt DateTime @db.Timestamptz(6) @default(now()) @map("created_at")
+  updatedAt DateTime @db.Timestamptz(6) @default(now()) @map("updated_at")
+  deletedAt DateTime? @db.Timestamptz(6) @map("deleted_at")
+  @@map("maint_machine_notes")
+}
+
+model MaintMachineStatusOverride {
+  machineCode String @id @map("machine_code")
+  status MaintOperationalStatus
+  reason String
+  setBy String @db.Uuid @map("set_by")
+  setAt DateTime @db.Timestamptz(6) @default(now()) @map("set_at")
+  validUntil DateTime? @db.Timestamptz(6) @map("valid_until")
+  @@map("maint_machine_status_override")
+}
+
+model MaintMachine {
+  machineCode String @id @map("machine_code")
+  name String
+  type String?
+  manufacturer String?
+  model String?
+  serialNumber String? @map("serial_number")
+  yearOfManufacture Int? @map("year_of_manufacture")
+  yearCommissioned Int? @map("year_commissioned")
+  location String?
+  departmentId String? @map("department_id")
+  powerKw Decimal? @db.Decimal(6, 2) @map("power_kw")
+  weightKg Decimal? @db.Decimal(10, 2) @map("weight_kg")
+  notes String?
+  tracked Boolean @default(true)
+  archivedAt DateTime? @db.Timestamptz(6) @map("archived_at")
+  source String @default("manual")
+  createdAt DateTime @db.Timestamptz(6) @default(now()) @map("created_at")
+  updatedAt DateTime @db.Timestamptz(6) @default(now()) @map("updated_at")
+  updatedBy String? @db.Uuid @map("updated_by")
+  responsibleUserId String? @db.Uuid @map("responsible_user_id")
+  assetId String @db.Uuid @map("asset_id")
+  @@map("maint_machines")
+}
+
+model MaintMachineDeletionLog {
+  id String @id @db.Uuid @default(dbgenerated("gen_random_uuid()"))
+  machineCode String @map("machine_code")
+  machineName String? @map("machine_name")
+  snapshot Json
+  relatedCounts Json @map("related_counts")
+  reason String
+  deletedAt DateTime @db.Timestamptz(6) @default(now()) @map("deleted_at")
+  deletedBy String? @db.Uuid @map("deleted_by")
+  deletedByEmail String? @map("deleted_by_email")
+  @@map("maint_machines_deletion_log")
+}
+
+model MaintNotificationLog {
+  id String @id @db.Uuid @default(dbgenerated("gen_random_uuid()"))
+  channel MaintNotificationChannel
+  recipient String
+  recipientUserId String? @db.Uuid @map("recipient_user_id")
+  subject String?
+  body String
+  relatedEntityType String? @map("related_entity_type")
+  relatedEntityId String? @db.Uuid @map("related_entity_id")
+  machineCode String? @map("machine_code")
+  escalationLevel Int @default(0) @map("escalation_level")
+  status MaintNotificationStatus @default(queued)
+  error String?
+  sentAt DateTime? @db.Timestamptz(6) @map("sent_at")
+  createdAt DateTime @db.Timestamptz(6) @default(now()) @map("created_at")
+  scheduledAt DateTime @db.Timestamptz(6) @default(now()) @map("scheduled_at")
+  nextAttemptAt DateTime @db.Timestamptz(6) @default(now()) @map("next_attempt_at")
+  lastAttemptAt DateTime? @db.Timestamptz(6) @map("last_attempt_at")
+  attempts Int @default(0)
+  payload Json?
+  @@map("maint_notification_log")
+}
+
+model MaintNotificationRule {
+  ruleId String @id @db.Uuid @default(dbgenerated("gen_random_uuid()")) @map("rule_id")
+  eventType String @map("event_type")
+  severity String?
+  assetType MaintAssetType? @map("asset_type")
+  targetRole MaintMaintRole? @map("target_role")
+  channel MaintNotificationChannel
+  delayMinutes Int @default(0) @map("delay_minutes")
+  escalationLevel Int @default(0) @map("escalation_level")
+  enabled Boolean @default(true)
+  notes String?
+  createdAt DateTime @db.Timestamptz(6) @default(now()) @map("created_at")
+  updatedAt DateTime @db.Timestamptz(6) @default(now()) @map("updated_at")
+  updatedBy String? @db.Uuid @map("updated_by")
+  @@map("maint_notification_rules")
+}
+
+model MaintPartStockMovement {
+  movementId String @id @db.Uuid @default(dbgenerated("gen_random_uuid()")) @map("movement_id")
+  partId String @db.Uuid @map("part_id")
+  woId String? @db.Uuid @map("wo_id")
+  movementType MaintStockMovementType @map("movement_type")
+  quantity Decimal @db.Decimal(12, 4)
+  unitCost Decimal? @db.Decimal(12, 2) @map("unit_cost")
+  note String?
+  createdAt DateTime @db.Timestamptz(6) @default(now()) @map("created_at")
+  createdBy String? @db.Uuid @map("created_by")
+  @@map("maint_part_stock_movements")
+}
+
+model MaintPartVehicle {
+  assetId String @db.Uuid @map("asset_id")
+  partId String @db.Uuid @map("part_id")
+  qtyMin Decimal? @db.Decimal(12, 4) @map("qty_min")
+  notes String?
+  createdAt DateTime @db.Timestamptz(6) @default(now()) @map("created_at")
+  createdBy String? @db.Uuid @map("created_by")
+  updatedAt DateTime @db.Timestamptz(6) @default(now()) @map("updated_at")
+  updatedBy String? @db.Uuid @map("updated_by")
+
+  @@id([assetId, partId])
+  @@map("maint_part_vehicles")
+}
+
+model MaintPart {
+  partId String @id @db.Uuid @default(dbgenerated("gen_random_uuid()")) @map("part_id")
+  partCode String @map("part_code")
+  name String
+  description String?
+  unit String @default("kom")
+  supplierId String? @db.Uuid @map("supplier_id")
+  manufacturer String?
+  model String?
+  minStock Decimal @db.Decimal(12, 4) @default(0) @map("min_stock")
+  currentStock Decimal @db.Decimal(12, 4) @default(0) @map("current_stock")
+  unitCost Decimal? @db.Decimal(12, 2) @map("unit_cost")
+  active Boolean @default(true)
+  createdAt DateTime @db.Timestamptz(6) @default(now()) @map("created_at")
+  updatedAt DateTime @db.Timestamptz(6) @default(now()) @map("updated_at")
+  updatedBy String? @db.Uuid @map("updated_by")
+  @@map("maint_parts")
+}
+
+model MaintSettings {
+  id Int @id @default(1)
+  autoCreateWoMajor Boolean @default(true) @map("auto_create_wo_major")
+  autoCreateWoCritical Boolean @default(true) @map("auto_create_wo_critical")
+  safetyMarkerRequiresWo Boolean @default(true) @map("safety_marker_requires_wo")
+  defaultWoPriority MaintWoPriority @default(p4_planirano) @map("default_wo_priority")
+  majorWoDueHours Int @default(48) @map("major_wo_due_hours")
+  criticalWoDueHours Int @default(8) @map("critical_wo_due_hours")
+  preventiveDueWarningDays Int @default(7) @map("preventive_due_warning_days")
+  notificationEnabled Boolean @default(true) @map("notification_enabled")
+  notifyOnMajorIncident Boolean @default(true) @map("notify_on_major_incident")
+  notifyOnCriticalIncident Boolean @default(true) @map("notify_on_critical_incident")
+  notifyOnOverduePreventive Boolean @default(true) @map("notify_on_overdue_preventive")
+  notificationChannels MaintNotificationChannel[] @default([in_app]) @map("notification_channels")
+  statusLabels Json @map("status_labels")
+  woStatusLabels Json @map("wo_status_labels")
+  notes String?
+  createdAt DateTime @db.Timestamptz(6) @default(now()) @map("created_at")
+  updatedAt DateTime @db.Timestamptz(6) @default(now()) @map("updated_at")
+  updatedBy String? @db.Uuid @map("updated_by")
+  @@map("maint_settings")
+}
+
+model MaintSupplier {
+  supplierId String @id @db.Uuid @default(dbgenerated("gen_random_uuid()")) @map("supplier_id")
+  name String
+  contact String?
+  email String?
+  phone String?
+  notes String?
+  active Boolean @default(true)
+  createdAt DateTime @db.Timestamptz(6) @default(now()) @map("created_at")
+  updatedAt DateTime @db.Timestamptz(6) @default(now()) @map("updated_at")
+  updatedBy String? @db.Uuid @map("updated_by")
+  @@map("maint_suppliers")
+}
+
+model MaintTask {
+  id String @id @db.Uuid @default(dbgenerated("gen_random_uuid()"))
+  machineCode String @map("machine_code")
+  title String
+  description String?
+  instructions String?
+  intervalValue Int @map("interval_value")
+  intervalUnit MaintIntervalUnit @map("interval_unit")
+  severity MaintTaskSeverity @default(normal)
+  requiredRole MaintMaintRole @default(operator) @map("required_role")
+  gracePeriodDays Int @default(3) @map("grace_period_days")
+  active Boolean @default(true)
+  createdAt DateTime @db.Timestamptz(6) @default(now()) @map("created_at")
+  createdBy String? @db.Uuid @map("created_by")
+  updatedAt DateTime @db.Timestamptz(6) @default(now()) @map("updated_at")
+  updatedBy String? @db.Uuid @map("updated_by")
+  checklistTemplate Json @map("checklist_template")
+  assetId String? @db.Uuid @map("asset_id")
+  @@map("maint_tasks")
+}
+
+model MaintUserProfile {
+  userId String @id @db.Uuid @map("user_id")
+  fullName String @map("full_name")
+  role MaintMaintRole @default(operator)
+  telegramChatId String? @map("telegram_chat_id")
+  assignedMachineCodes String[] @default([]) @map("assigned_machine_codes")
+  active Boolean @default(true)
+  createdAt DateTime @db.Timestamptz(6) @default(now()) @map("created_at")
+  updatedAt DateTime @db.Timestamptz(6) @default(now()) @map("updated_at")
+  phone String?
+  @@map("maint_user_profiles")
+}
+
+model MaintVehicleBooking {
+  bookingId String @id @db.Uuid @default(dbgenerated("gen_random_uuid()")) @map("booking_id")
+  assetId String @db.Uuid @map("asset_id")
+  driverId String? @db.Uuid @map("driver_id")
+  startAt DateTime @db.Timestamptz(6) @map("start_at")
+  endAt DateTime @db.Timestamptz(6) @map("end_at")
+  purpose String?
+  status MaintBookingStatus @default(planirana)
+  notes String?
+  createdAt DateTime @db.Timestamptz(6) @default(now()) @map("created_at")
+  createdBy String? @db.Uuid @map("created_by")
+  updatedAt DateTime @db.Timestamptz(6) @default(now()) @map("updated_at")
+  updatedBy String? @db.Uuid @map("updated_by")
+  @@map("maint_vehicle_bookings")
+}
+
+model MaintVehicleDetails {
+  assetId String @id @db.Uuid @map("asset_id")
+  registrationPlate String? @map("registration_plate")
+  vin String?
+  odometerKm Int? @map("odometer_km")
+  fuelType String? @map("fuel_type")
+  registrationExpiresAt DateTime? @db.Date @map("registration_expires_at")
+  insuranceExpiresAt DateTime? @db.Date @map("insurance_expires_at")
+  serviceDueAt DateTime? @db.Date @map("service_due_at")
+  serviceIntervalKm Int? @map("service_interval_km")
+  nextServiceMileageKm Int? @map("next_service_mileage_km")
+  notes String?
+  createdAt DateTime @db.Timestamptz(6) @default(now()) @map("created_at")
+  updatedAt DateTime @db.Timestamptz(6) @default(now()) @map("updated_at")
+  updatedBy String? @db.Uuid @map("updated_by")
+  yearOfManufacture Int? @db.SmallInt @map("year_of_manufacture")
+  vehicleKind MaintVehicleKind? @map("vehicle_kind")
+  payloadKg Int? @map("payload_kg")
+  passengerSeats Int? @db.SmallInt @map("passenger_seats")
+  usageType MaintVehicleUsageType? @map("usage_type")
+  gpsProvider MaintVehicleGpsProvider @default(nema) @map("gps_provider")
+  gpsDeviceId String? @map("gps_device_id")
+  firstAidKitExpiresAt DateTime? @db.Date @map("first_aid_kit_expires_at")
+  isPrivateVehicle Boolean @default(false) @map("is_private_vehicle")
+  ownerId String? @db.Uuid @map("owner_id")
+  primaryDriverId String? @db.Uuid @map("primary_driver_id")
+  partsShelf String? @map("parts_shelf")
+  hasPartsSet Boolean @default(false) @map("has_parts_set")
+  partsNotes String? @map("parts_notes")
+  primaryPhotoStoragePath String? @map("primary_photo_storage_path")
+  tollTagSerial String? @map("toll_tag_serial")
+  tollTagProvider String? @map("toll_tag_provider")
+  tollTagNotes String? @map("toll_tag_notes")
+  @@map("maint_vehicle_details")
+}
+
+model MaintVehicleOwner {
+  ownerId String @id @db.Uuid @default(dbgenerated("gen_random_uuid()")) @map("owner_id")
+  name String
+  ownerType MaintVehicleOwnerType @map("owner_type")
+  contact String?
+  notes String?
+  active Boolean @default(true)
+  createdAt DateTime @db.Timestamptz(6) @default(now()) @map("created_at")
+  updatedAt DateTime @db.Timestamptz(6) @default(now()) @map("updated_at")
+  updatedBy String? @db.Uuid @map("updated_by")
+  @@map("maint_vehicle_owners")
+}
+
+model MaintVehicleServicePlan {
+  planId String @id @db.Uuid @default(dbgenerated("gen_random_uuid()")) @map("plan_id")
+  assetId String @db.Uuid @map("asset_id")
+  name String
+  vehicleServiceCategory MaintVehicleServiceCategory? @map("vehicle_service_category")
+  intervalKm Int? @map("interval_km")
+  intervalMonths Int? @map("interval_months")
+  lastDoneAt DateTime? @db.Date @map("last_done_at")
+  lastDoneKm Int? @map("last_done_km")
+  notes String?
+  priority MaintWoPriority @default(p4_planirano)
+  active Boolean @default(true)
+  createdAt DateTime @db.Timestamptz(6) @default(now()) @map("created_at")
+  createdBy String? @db.Uuid @map("created_by")
+  updatedAt DateTime @db.Timestamptz(6) @default(now()) @map("updated_at")
+  updatedBy String? @db.Uuid @map("updated_by")
+  @@map("maint_vehicle_service_plan")
+}
+
+model MaintVehicleTire {
+  tireSetId String @id @db.Uuid @default(dbgenerated("gen_random_uuid()")) @map("tire_set_id")
+  assetId String @db.Uuid @map("asset_id")
+  season MaintTireSeason
+  dimension String
+  count Int @db.SmallInt
+  status MaintTireStatus @default(koriscene)
+  shelfCode String? @map("shelf_code")
+  installedOnVehicle Boolean @default(false) @map("installed_on_vehicle")
+  purchasedAt DateTime? @db.Date @map("purchased_at")
+  notes String?
+  createdAt DateTime @db.Timestamptz(6) @default(now()) @map("created_at")
+  updatedAt DateTime @db.Timestamptz(6) @default(now()) @map("updated_at")
+  updatedBy String? @db.Uuid @map("updated_by")
+  @@map("maint_vehicle_tires")
+}
+
+model MaintWoEvent {
+  id String @id @db.Uuid @default(dbgenerated("gen_random_uuid()"))
+  woId String @db.Uuid @map("wo_id")
+  actor String? @db.Uuid
+  at DateTime @db.Timestamptz(6) @default(now())
+  eventType String @map("event_type")
+  fromValue String? @map("from_value")
+  toValue String? @map("to_value")
+  comment String?
+  @@map("maint_wo_events")
+}
+
+model MaintWoLabor {
+  id String @id @db.Uuid @default(dbgenerated("gen_random_uuid()"))
+  woId String @db.Uuid @map("wo_id")
+  technicianId String? @db.Uuid @map("technician_id")
+  startedAt DateTime? @db.Timestamptz(6) @map("started_at")
+  endedAt DateTime? @db.Timestamptz(6) @map("ended_at")
+  minutes Int?
+  notes String?
+  createdAt DateTime @db.Timestamptz(6) @default(now()) @map("created_at")
+  @@map("maint_wo_labor")
+}
+
+model MaintWoPart {
+  id String @id @db.Uuid @default(dbgenerated("gen_random_uuid()"))
+  woId String @db.Uuid @map("wo_id")
+  partName String @map("part_name")
+  quantity Decimal? @db.Decimal(12, 4)
+  unit String?
+  unitCost Decimal? @db.Decimal(10, 2) @map("unit_cost")
+  supplier String?
+  createdAt DateTime @db.Timestamptz(6) @default(now()) @map("created_at")
+  partId String? @db.Uuid @map("part_id")
+  @@map("maint_wo_parts")
+}
+
+model MaintWorkOrder {
+  woId String @id @db.Uuid @default(dbgenerated("gen_random_uuid()")) @map("wo_id")
+  woNumber String? @map("wo_number")
+  type MaintWoType
+  assetId String @db.Uuid @map("asset_id")
+  assetType MaintAssetType @map("asset_type")
+  sourceIncidentId String? @db.Uuid @map("source_incident_id")
+  sourcePreventiveTaskId String? @db.Uuid @map("source_preventive_task_id")
+  title String
+  description String?
+  priority MaintWoPriority
+  safetyMarker Boolean @default(false) @map("safety_marker")
+  status MaintWoStatus @default(novi)
+  reportedBy String @db.Uuid @map("reported_by")
+  assignedTo String? @db.Uuid @map("assigned_to")
+  dueAt DateTime? @db.Timestamptz(6) @map("due_at")
+  createdAt DateTime @db.Timestamptz(6) @default(now()) @map("created_at")
+  startedAt DateTime? @db.Timestamptz(6) @map("started_at")
+  completedAt DateTime? @db.Timestamptz(6) @map("completed_at")
+  downtimeFrom DateTime? @db.Timestamptz(6) @map("downtime_from")
+  downtimeTo DateTime? @db.Timestamptz(6) @map("downtime_to")
+  laborMinutes Int? @map("labor_minutes")
+  costTotal Decimal? @db.Decimal(10, 2) @map("cost_total")
+  closureComment String? @map("closure_comment")
+  updatedAt DateTime @db.Timestamptz(6) @default(now()) @map("updated_at")
+  updatedBy String? @db.Uuid @map("updated_by")
+  vehicleServiceCategory MaintVehicleServiceCategory? @map("vehicle_service_category")
+  odometerKmAtService Int? @map("odometer_km_at_service")
+  triggerOdometerKm Int? @map("trigger_odometer_km")
+  estimatedCost Decimal? @db.Decimal(10, 2) @map("estimated_cost")
+  externalServicerName String? @map("external_servicer_name")
+  servicePlanId String? @db.Uuid @map("service_plan_id")
+  assetServicePlanId String? @db.Uuid @map("asset_service_plan_id")
+  @@map("maint_work_orders")
+}
+
+
+// =====================================================================
+// TALAS E — Energetika / SCADA (scada_*). MODULE_SPEC_scada_30.md §1.
+// GENERISANO iz zive sy15 information_schema 2026-07-12 (cloud restore-izvor;
+// poznat drift = SAMO scada_alarm_push_trg URL, ne dira sheme tabela).
+// PK se ZADRZAVA (text key / uuid / composite (site,metric,ts)). Bez relation
+// POLJA (konvencija fajla, spec §5a) — ali FK-ovi POSTOJE u bazi: site_key →
+// scada_sites(key) sa ON DELETE CASCADE na snapshots/history/alarms (commands
+// bez CASCADE); DELETE scada_sites reda tiho brise celu istoriju tog sistema!
+// Upisuje ISKLJUCIVO bridge (service_role) — 2.0 BE u R1 samo
+// CITA (kroz withUserRls: scada_* politike su scada_is_admin_or_management()-scope,
+// a servosync2_app ima BYPASSRLS — doktrina A.2a). scada_notify_prefs NEMA model:
+// v2, cita se $queryRaw kad dobije UI (spec §2/§7 P6).
+// =====================================================================
+
+model ScadaSite {
+  key String @id
+  name String
+  kind String
+  protocol String?
+  online Boolean @default(false)
+  lastSeen DateTime? @map("last_seen") @db.Timestamptz(6)
+  sortOrder Int @default(0) @map("sort_order")
+  meta Json @default("{}")
+  @@map("scada_sites")
+}
+
+model ScadaSnapshot {
+  siteKey String @id @map("site_key")
+  payload Json
+  online Boolean @default(false)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("scada_snapshots")
+}
+
+model ScadaHistory {
+  siteKey String @map("site_key")
+  metric String
+  ts DateTime @db.Timestamptz(6)
+  value Float?
+  @@id([siteKey, metric, ts])
+  @@map("scada_history")
+}
+
+model ScadaAlarm {
+  // id = bigint identity; ZADUZEN service_role (bridge). Cita se; BE ga preslikava
+  // u Number pre JSON odgovora (BigInt nije JSON-serializabilan) — vidi service.
+  id BigInt @id @default(autoincrement())
+  siteKey String @map("site_key")
+  code String
+  severity Int @default(3) @db.SmallInt
+  text String?
+  active Boolean @default(true)
+  raisedAt DateTime @default(now()) @map("raised_at") @db.Timestamptz(6)
+  clearedAt DateTime? @map("cleared_at") @db.Timestamptz(6)
+  @@map("scada_alarms")
+}
+
+model ScadaCommand {
+  // outbox + audit u jednom (NIKAD se ne brise — spec §1). status: pending/claimed/
+  // applied/failed/rejected/expired. idempotency_key = 1.0 'ui-<ts>-<rand>' (partial
+  // unique u bazi). R1 samo CITA (audit tab + poll); INSERT + cancel su R2 (control).
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  siteKey String @map("site_key")
+  target String
+  op String @default("set")
+  value Json?
+  status String @default("pending")
+  requestedBy String @map("requested_by")
+  requestedAt DateTime @default(now()) @map("requested_at") @db.Timestamptz(6)
+  claimedAt DateTime? @map("claimed_at") @db.Timestamptz(6)
+  appliedAt DateTime? @map("applied_at") @db.Timestamptz(6)
+  expiresAt DateTime @default(dbgenerated("(now() + '00:02:00'::interval)")) @map("expires_at") @db.Timestamptz(6)
+  idempotencyKey String? @map("idempotency_key")
+  result Json?
+  @@map("scada_commands")
+}
+
+// ============================================================================
+// Lokacije delova (Talas A — MODULE_SPEC_lokacije_30.md §1, snapshot žive sy15
+// 2026-07-12). Fizičke lokacije: HALA→POLICA + MAŠINA + KAVEZ. Kao rev_* modeli:
+// BEZ FK relacija (1.0 šema ih nema — spajanja su ručna batch-resolve), uuid PK
+// se ZADRŽAVA, camelCase + @map. Native PG enumi se mapiraju na Prisma enume
+// (@@map na DB tip) da `where` filteri po movement_type/placement_status rade.
+// ============================================================================
+
+/// loc_locations.location_type — poslovna klasifikacija (lokacijeTypes.js).
+enum LocTypeEnum {
+  WAREHOUSE
+  RACK
+  SHELF
+  BIN
+  PROJECT
+  PRODUCTION
+  ASSEMBLY
+  SERVICE
+  FIELD
+  TRANSIT
+  OFFICE
+  TEMP
+  SCRAPPED
+  OTHER
+  MACHINE
+  CAGE
+
+  @@map("loc_type_enum")
+}
+
+/// loc_item_placements.placement_status — stanje smeštaja stavke.
+enum LocPlacementStatusEnum {
+  ACTIVE
+  IN_TRANSIT
+  PENDING_CONFIRMATION
+  UNKNOWN
+
+  @@map("loc_placement_status_enum")
+}
+
+/// loc_location_movements.movement_type — tipovi pokreta (append-only ledger).
+enum LocMovementTypeEnum {
+  INITIAL_PLACEMENT
+  TRANSFER
+  ASSIGN_TO_PROJECT
+  RETURN_FROM_PROJECT
+  SEND_TO_SERVICE
+  RETURN_FROM_SERVICE
+  SEND_TO_FIELD
+  RETURN_FROM_FIELD
+  SCRAP
+  CORRECTION
+  INVENTORY_ADJUSTMENT
+  REVERSAL_ISSUE
+  REVERSAL_RETURN
+
+  @@map("loc_movement_type_enum")
+}
+
+/// loc_location_movements.sync_status — status MSSQL write-back-a (worker).
+enum LocSyncStatusEnum {
+  PENDING
+  IN_PROGRESS
+  SYNCED
+  FAILED
+  DEAD_LETTER
+
+  @@map("loc_sync_status_enum")
+}
+
+model LocLocation {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  locationCode String @map("location_code")
+  name String
+  locationType LocTypeEnum @map("location_type")
+  parentId String? @map("parent_id") @db.Uuid
+  /// NOT NULL u DB, održava ga trigger hijerarhije — default '' za paritet.
+  pathCached String @default("") @map("path_cached")
+  depth Int @default(0) @db.SmallInt
+  isActive Boolean @default(true) @map("is_active")
+  capacityNote String? @map("capacity_note")
+  notes String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String? @map("created_by") @db.Uuid
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy String? @map("updated_by") @db.Uuid
+  @@map("loc_locations")
+}
+
+model LocItemPlacement {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  itemRefTable String @map("item_ref_table")
+  itemRefId String @map("item_ref_id")
+  locationId String @map("location_id") @db.Uuid
+  placementStatus LocPlacementStatusEnum @default(ACTIVE) @map("placement_status")
+  lastMovementId String? @map("last_movement_id") @db.Uuid
+  placedAt DateTime @default(now()) @map("placed_at") @db.Timestamptz(6)
+  placedBy String? @map("placed_by") @db.Uuid
+  notes String?
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  quantity Decimal @default(1) @db.Decimal
+  orderNo String @default("") @map("order_no")
+  drawingNo String @default("") @map("drawing_no")
+  @@unique([itemRefTable, itemRefId, orderNo, locationId], map: "loc_item_placements_item_order_loc_uq")
+  @@map("loc_item_placements")
+}
+
+model LocLocationMovement {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  itemRefTable String @map("item_ref_table")
+  itemRefId String @map("item_ref_id")
+  fromLocationId String? @map("from_location_id") @db.Uuid
+  toLocationId String? @map("to_location_id") @db.Uuid
+  movementType LocMovementTypeEnum @map("movement_type")
+  movementReason String? @map("movement_reason")
+  note String?
+  movedAt DateTime @default(now()) @map("moved_at") @db.Timestamptz(6)
+  movedBy String @map("moved_by") @db.Uuid
+  approvedBy String? @map("approved_by") @db.Uuid
+  approvedAt DateTime? @map("approved_at") @db.Timestamptz(6)
+  correctionOfMovementId String? @map("correction_of_movement_id") @db.Uuid
+  syncStatus LocSyncStatusEnum @default(PENDING) @map("sync_status")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  quantity Decimal @default(1) @db.Decimal
+  orderNo String @default("") @map("order_no")
+  drawingNo String @default("") @map("drawing_no")
+  source String @default("manual")
+  /// idempotencija pokreta VEĆ postoji u 1.0 (loc_create_movement) — R2 koristi NJU.
+  clientEventUuid String? @map("client_event_uuid") @db.Uuid
+  @@map("loc_location_movements")
+}
+
+// ============================================================================
+// TALAS G — KADROVSKA (HR). MODULE_SPEC_kadrovska_30.md §1 (šema: živa sy15/cloud
+// kroz Management API, 13.07). camelCase @map, @@map, BEZ FK relacija (1.0 šema ih
+// na app-nivou ne koristi — spajanja su ručni batch-resolve, kao Sastanci/Reversi).
+// KRITIČNO (doktrina A.2a): PII maska (v_employees_safe / current_user_can_manage_
+// employee_pii) i zarade (admin-only) su ROW/ROLE-scoped u sy15 RLS. Ovi modeli su
+// SAMO mapiranje kolona — BE ih čita ISKLJUČIVO kroz `withUserRls` (SET LOCAL ROLE
+// authenticated); BYPASSRLS put (this.sy15.db) bi PROBIO maske. Read employees ide
+// kroz VIEW `v_employees_safe` ($queryRaw), NE kroz Employee.findMany default-select.
+// attendance_events (480.885 redova) = VIEW-ONLY (v_attendance_*); NEMA write modela
+// (G11 — jednosmerni tok: bridge Katze + kiosk pune events, front samo čita).
+// ============================================================================
+
+// ---------- Jezgro ----------
+model Employee {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  fullName String @map("full_name")
+  position String?
+  department String?
+  phone String?
+  email String?
+  hireDate DateTime? @map("hire_date") @db.Date
+  isActive Boolean? @map("is_active")
+  note String?
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  // PII polja (kroz v_employees_safe / current_user_can_manage_employee_pii):
+  firstName String? @map("first_name")
+  lastName String? @map("last_name")
+  personalId String? @map("personal_id")
+  birthDate DateTime? @map("birth_date") @db.Date
+  gender String?
+  address String?
+  city String?
+  postalCode String? @map("postal_code")
+  bankName String? @map("bank_name")
+  bankAccount String? @map("bank_account")
+  phonePrivate String? @map("phone_private")
+  emergencyContactName String? @map("emergency_contact_name")
+  emergencyContactPhone String? @map("emergency_contact_phone")
+  slava String?
+  slavaDay String? @map("slava_day")
+  educationLevel String? @map("education_level")
+  educationTitle String? @map("education_title")
+  medicalExamDate DateTime? @map("medical_exam_date") @db.Date
+  medicalExamExpires DateTime? @map("medical_exam_expires") @db.Date
+  team String?
+  workType String @map("work_type")
+  departmentId Int? @map("department_id")
+  subDepartmentId Int? @map("sub_department_id")
+  positionId Int? @map("position_id")
+  emergencyContactRelation String? @map("emergency_contact_relation")
+  emergencyContactPhoneAlt String? @map("emergency_contact_phone_alt")
+  cardBarcode String? @map("card_barcode")
+  @@map("employees")
+}
+
+model Contract {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  contractType String @map("contract_type")
+  contractNumber String? @map("contract_number")
+  position String?
+  dateFrom DateTime @map("date_from") @db.Date
+  dateTo DateTime? @map("date_to") @db.Date
+  isActive Boolean? @map("is_active")
+  note String?
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  archivedAt DateTime? @map("archived_at") @db.Timestamptz(6)
+  archivedBy String? @map("archived_by") @db.Uuid
+  probniRad Boolean @map("probni_rad")
+  probniMeseci Int? @map("probni_meseci")
+  @@map("contracts")
+}
+
+// ---------- Zaposleni: PII tabele (current_user_can_manage_employee_pii) ----------
+model EmployeeChild {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  firstName String @map("first_name")
+  birthDate DateTime? @map("birth_date") @db.Date
+  note String?
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("employee_children")
+}
+
+model EmployeeBankCard {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  bank String
+  cardNumber String? @map("card_number")
+  validThru DateTime? @map("valid_thru") @db.Date
+  isActive Boolean @map("is_active")
+  note String?
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("employee_bank_cards")
+}
+
+model EmployeeForeignDoc {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  passportNumber String? @map("passport_number")
+  passportExpiry DateTime? @map("passport_expiry") @db.Date
+  visaNumber String? @map("visa_number")
+  visaExpiry DateTime? @map("visa_expiry") @db.Date
+  workPermitNumber String? @map("work_permit_number")
+  workPermitExpiry DateTime? @map("work_permit_expiry") @db.Date
+  residencePermitNumber String? @map("residence_permit_number")
+  residencePermitExpiry DateTime? @map("residence_permit_expiry") @db.Date
+  residenceAddress String? @map("residence_address")
+  bankAccount String? @map("bank_account")
+  foreignIdNumber String? @map("foreign_id_number")
+  note String?
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("employee_foreign_docs")
+}
+
+model EmployeePersonalDoc {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  lkNumber String? @map("lk_number")
+  lkExpiry DateTime? @map("lk_expiry") @db.Date
+  passportNumber String? @map("passport_number")
+  passportExpiry DateTime? @map("passport_expiry") @db.Date
+  driverLicenseNumber String? @map("driver_license_number")
+  driverLicenseExpiry DateTime? @map("driver_license_expiry") @db.Date
+  driverLicenseCategories String? @map("driver_license_categories")
+  note String?
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("employee_personal_docs")
+}
+
+model EmployeeDocument {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  docType String @map("doc_type")
+  fileName String @map("file_name")
+  storagePath String @map("storage_path")
+  mimeType String? @map("mime_type")
+  sizeBytes BigInt? @map("size_bytes")
+  description String?
+  uploadedAt DateTime @default(now()) @map("uploaded_at") @db.Timestamptz(6)
+  uploadedBy String? @map("uploaded_by") @db.Uuid
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+  @@map("employee_documents")
+}
+
+model KadrCertificate {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  certType String @map("cert_type")
+  certName String @map("cert_name")
+  issuer String?
+  documentNo String? @map("document_no")
+  issuedOn DateTime @map("issued_on") @db.Date
+  expiresOn DateTime? @map("expires_on") @db.Date
+  costRsd Decimal @map("cost_rsd") @db.Decimal
+  documentUrl String? @map("document_url")
+  note String?
+  createdBy String? @map("created_by") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("kadr_certificates")
+}
+
+model KadrMedicalExam {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  examDate DateTime @map("exam_date") @db.Date
+  validUntil DateTime? @map("valid_until") @db.Date
+  examType String @map("exam_type")
+  institution String?
+  costRsd Decimal @map("cost_rsd") @db.Decimal
+  documentUrl String? @map("document_url")
+  note String?
+  createdBy String? @map("created_by") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("kadr_medical_exams")
+}
+
+model EmployeeBadge {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  badgeType String @map("badge_type")
+  code String
+  codeShort String? @map("code_short")
+  validFrom DateTime @default(now()) @map("valid_from") @db.Timestamptz(6)
+  validTo DateTime? @map("valid_to") @db.Timestamptz(6)
+  isActive Boolean @map("is_active")
+  source String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("employee_badges")
+}
+
+// ---------- Odmori ----------
+model VacationRequest {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  year Int
+  dateFrom DateTime @map("date_from") @db.Date
+  dateTo DateTime @map("date_to") @db.Date
+  daysCount Int @map("days_count")
+  note String
+  status String
+  reviewedBy String? @map("reviewed_by")
+  reviewedAt DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  rejectionNote String? @map("rejection_note")
+  submittedBy String @map("submitted_by")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  level1By String? @map("level1_by")
+  level1At DateTime? @map("level1_at") @db.Timestamptz(6)
+  @@map("vacation_requests")
+}
+
+model VacationEntitlement {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  year Int
+  daysTotal Int @map("days_total")
+  daysCarriedOver Int @map("days_carried_over")
+  note String?
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  reviewFlag String? @map("review_flag")
+  source String?
+  openingUsed Int @map("opening_used")
+  accrualModel Boolean @map("accrual_model")
+  accrualBase Int @map("accrual_base")
+  accrualStart DateTime? @map("accrual_start") @db.Date
+  advanceApproved Boolean @map("advance_approved")
+  advanceApprovedBy String? @map("advance_approved_by")
+  advanceApprovedAt DateTime? @map("advance_approved_at") @db.Timestamptz(6)
+  advanceNote String? @map("advance_note")
+  @@map("vacation_entitlements")
+}
+
+model VacationHistory {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  year Int
+  entitledDays Int? @map("entitled_days")
+  usedDays Int? @map("used_days")
+  remainingDays Int? @map("remaining_days")
+  entries Json @map("entries") @db.JsonB
+  rawBlock String? @map("raw_block")
+  source String
+  sourceFile String? @map("source_file")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("vacation_history")
+}
+
+model VacationBonusDay {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  year Int
+  days Decimal @db.Decimal
+  workDate DateTime? @map("work_date") @db.Date
+  reason String
+  makeupRequestId String? @map("makeup_request_id") @db.Uuid
+  addedBy String? @map("added_by")
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  @@map("vacation_bonus_days")
+}
+
+model Absence {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  type String
+  dateFrom DateTime @map("date_from") @db.Date
+  dateTo DateTime @map("date_to") @db.Date
+  daysCount Int? @map("days_count")
+  note String?
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  paidReason String? @map("paid_reason")
+  absenceSubtype String? @map("absence_subtype")
+  slobodanReason String? @map("slobodan_reason")
+  archivedAt DateTime? @map("archived_at") @db.Timestamptz(6)
+  archivedBy String? @map("archived_by") @db.Uuid
+  @@map("absences")
+}
+
+model MakeupRequest {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  absenceDate DateTime @map("absence_date") @db.Date
+  absenceHours Decimal @map("absence_hours") @db.Decimal
+  reason String
+  makeupPlan String @map("makeup_plan")
+  makeupDeadline DateTime? @map("makeup_deadline") @db.Date
+  status String
+  level1By String? @map("level1_by")
+  level1At DateTime? @map("level1_at") @db.Timestamptz(6)
+  reviewedBy String? @map("reviewed_by")
+  reviewedAt DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  completedBy String? @map("completed_by")
+  completedAt DateTime? @map("completed_at") @db.Timestamptz(6)
+  rejectionNote String? @map("rejection_note")
+  submittedBy String @map("submitted_by")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  compensationType String @map("compensation_type")
+  weekendWorkDate DateTime? @map("weekend_work_date") @db.Date
+  stornoBy String? @map("storno_by")
+  stornoAt DateTime? @map("storno_at") @db.Timestamptz(6)
+  stornoNote String? @map("storno_note")
+  @@map("makeup_requests")
+}
+
+model PaidLeaveRequest {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  leaveType String @map("leave_type")
+  dateFrom DateTime @map("date_from") @db.Date
+  dateTo DateTime @map("date_to") @db.Date
+  daysCount Int @map("days_count")
+  reason String
+  proofNote String @map("proof_note")
+  status String
+  level1By String? @map("level1_by")
+  level1At DateTime? @map("level1_at") @db.Timestamptz(6)
+  reviewedBy String? @map("reviewed_by")
+  reviewedAt DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  rejectionNote String? @map("rejection_note")
+  submittedBy String @map("submitted_by")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("paid_leave_requests")
+}
+
+model NopRequest {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  workDate DateTime @map("work_date") @db.Date
+  reason String?
+  status String
+  requestedBy String? @map("requested_by")
+  reviewedBy String? @map("reviewed_by")
+  reviewedAt DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  reviewNote String? @map("review_note")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("nop_requests")
+}
+
+// ---------- Sati ----------
+model WorkHours {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  workDate DateTime @map("work_date") @db.Date
+  hours Decimal @db.Decimal
+  overtimeHours Decimal @map("overtime_hours") @db.Decimal
+  projectRef String? @map("project_ref")
+  note String?
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  fieldHours Decimal @map("field_hours") @db.Decimal
+  absenceCode String? @map("absence_code")
+  twoMachineHours Decimal @map("two_machine_hours") @db.Decimal
+  fieldSubtype String? @map("field_subtype")
+  absenceSubtype String? @map("absence_subtype")
+  lastEditedBy String? @map("last_edited_by")
+  fieldPredmetBroj String? @map("field_predmet_broj")
+  fieldPredmetNaziv String? @map("field_predmet_naziv")
+  @@map("work_hours")
+}
+
+model WorkHoursRemark {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  year Int
+  month Int
+  note String
+  status String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  resolvedBy String? @map("resolved_by")
+  resolvedAt DateTime? @map("resolved_at") @db.Timestamptz(6)
+  @@map("work_hours_remarks")
+}
+
+model AttendanceCorrection {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  day DateTime @db.Date
+  correctedIn DateTime? @map("corrected_in") @db.Time(6)
+  correctedOut DateTime? @map("corrected_out") @db.Time(6)
+  reason String
+  status String
+  createdBy String @map("created_by")
+  createdForSelf Boolean @map("created_for_self")
+  eventIds BigInt[] @map("event_ids")
+  cancelledBy String? @map("cancelled_by")
+  cancelledAt DateTime? @map("cancelled_at") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("attendance_corrections")
+}
+
+model AttendanceNotifyExtra {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  subDepartmentId Int? @map("sub_department_id")
+  email String
+  note String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  @@map("attendance_notify_extra")
+}
+
+// ---------- Zarade (admin-only; immutability trigger) ----------
+model SalaryTerm {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  salaryType String @map("salary_type")
+  effectiveFrom DateTime @map("effective_from") @db.Date
+  effectiveTo DateTime? @map("effective_to") @db.Date
+  amount Decimal @db.Decimal
+  amountType String @map("amount_type")
+  currency String
+  hourlyRate Decimal? @map("hourly_rate") @db.Decimal
+  contractRef String? @map("contract_ref")
+  note String?
+  createdBy String? @map("created_by")
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  transportAllowanceRsd Decimal @map("transport_allowance_rsd") @db.Decimal
+  perDiemRsd Decimal @map("per_diem_rsd") @db.Decimal
+  perDiemEur Decimal @map("per_diem_eur") @db.Decimal
+  compensationModel String? @map("compensation_model")
+  fixedAmount Decimal @map("fixed_amount") @db.Decimal
+  fixedTransportComponent Decimal @map("fixed_transport_component") @db.Decimal
+  fixedExtraHourRate Decimal @map("fixed_extra_hour_rate") @db.Decimal
+  firstPartAmount Decimal @map("first_part_amount") @db.Decimal
+  splitHourRate Decimal @map("split_hour_rate") @db.Decimal
+  splitTransportAmount Decimal @map("split_transport_amount") @db.Decimal
+  hourlyTransportAmount Decimal @map("hourly_transport_amount") @db.Decimal
+  terrainDomesticRate Decimal @map("terrain_domestic_rate") @db.Decimal
+  terrainForeignRate Decimal @map("terrain_foreign_rate") @db.Decimal
+  netoRsd Decimal? @map("neto_rsd") @db.Decimal
+  brutoRsd Decimal? @map("bruto_rsd") @db.Decimal
+  approvedBy String? @map("approved_by")
+  approvedAt DateTime? @map("approved_at") @db.Date
+  fixedNoExtraHours Boolean @map("fixed_no_extra_hours")
+  paymentWindowOverride String? @map("payment_window_override")
+  payrollGroup String @map("payroll_group")
+  cashAllowanceRsd Decimal @map("cash_allowance_rsd") @db.Decimal
+  @@map("salary_terms")
+}
+
+model SalaryPayroll {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  periodYear Int @map("period_year")
+  periodMonth Int @map("period_month")
+  salaryType String @map("salary_type")
+  advanceAmount Decimal @map("advance_amount") @db.Decimal
+  advancePaidOn DateTime? @map("advance_paid_on") @db.Date
+  advanceNote String? @map("advance_note")
+  fixedSalary Decimal @map("fixed_salary") @db.Decimal
+  hoursWorked Decimal @map("hours_worked") @db.Decimal
+  hourlyRate Decimal @map("hourly_rate") @db.Decimal
+  transportRsd Decimal @map("transport_rsd") @db.Decimal
+  domesticDays Int @map("domestic_days")
+  perDiemRsd Decimal @map("per_diem_rsd") @db.Decimal
+  foreignDays Int @map("foreign_days")
+  perDiemEur Decimal @map("per_diem_eur") @db.Decimal
+  totalRsd Decimal @map("total_rsd") @db.Decimal
+  totalEur Decimal @map("total_eur") @db.Decimal
+  secondPartRsd Decimal @map("second_part_rsd") @db.Decimal
+  finalPaidOn DateTime? @map("final_paid_on") @db.Date
+  status String
+  note String?
+  createdBy String? @map("created_by")
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  compensationModel String? @map("compensation_model")
+  fondSatiMeseca Decimal @map("fond_sati_meseca") @db.Decimal
+  redovanRadSati Decimal @map("redovan_rad_sati") @db.Decimal
+  prekovremeniSati Decimal @map("prekovremeni_sati") @db.Decimal
+  praznikPlaceniSati Decimal @map("praznik_placeni_sati") @db.Decimal
+  praznikRadSati Decimal @map("praznik_rad_sati") @db.Decimal
+  godisnjiSati Decimal @map("godisnji_sati") @db.Decimal
+  slobodniDaniSati Decimal @map("slobodni_dani_sati") @db.Decimal
+  bolovanje65Sati Decimal @map("bolovanje_65_sati") @db.Decimal
+  bolovanje100Sati Decimal @map("bolovanje_100_sati") @db.Decimal
+  dveMasineSati Decimal @map("dve_masine_sati") @db.Decimal
+  terenUZemljiCount Int @map("teren_u_zemlji_count")
+  terenUInostranstvuCount Int @map("teren_u_inostranstvu_count")
+  payableHours Decimal @map("payable_hours") @db.Decimal
+  ukupnaZarada Decimal @map("ukupna_zarada") @db.Decimal
+  prviDeo Decimal @map("prvi_deo") @db.Decimal
+  preostaloZaIsplatu Decimal @map("preostalo_za_isplatu") @db.Decimal
+  warnings Json @db.JsonB
+  @@map("salary_payroll")
+}
+
+// ---------- Razvoj / 360 / razgovori ----------
+model Assessment {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  cycleId String? @map("cycle_id") @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  planId String? @map("plan_id") @db.Uuid
+  profileId Int? @map("profile_id")
+  periodLabel String @map("period_label")
+  status String
+  visibleToEmployee Boolean @map("visible_to_employee")
+  openedBy String @map("opened_by")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("assessments")
+}
+
+model AssessmentCycle {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  title String
+  periodLabel String @map("period_label")
+  status String
+  openedAt DateTime? @default(now()) @map("opened_at") @db.Timestamptz(6)
+  closedAt DateTime? @map("closed_at") @db.Timestamptz(6)
+  createdBy String @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  @@map("assessment_cycles")
+}
+
+model AssessmentRater {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  assessmentId String @map("assessment_id") @db.Uuid
+  raterKind String @map("rater_kind")
+  raterEmployeeId String? @map("rater_employee_id") @db.Uuid
+  raterEmail String? @map("rater_email")
+  token String?
+  status String
+  invitedAt DateTime? @default(now()) @map("invited_at") @db.Timestamptz(6)
+  submittedAt DateTime? @map("submitted_at") @db.Timestamptz(6)
+  @@map("assessment_raters")
+}
+
+model AssessmentScore {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  raterId String @map("rater_id") @db.Uuid
+  competenceId Int @map("competence_id")
+  level Int? @db.SmallInt
+  comment String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  @@map("assessment_scores")
+}
+
+model AssessmentAnswer {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  raterId String @map("rater_id") @db.Uuid
+  questionCode String @map("question_code")
+  answerText String? @map("answer_text")
+  @@map("assessment_answers")
+}
+
+model AssessmentTarget {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  assessmentId String @map("assessment_id") @db.Uuid
+  competenceId Int @map("competence_id")
+  targetLevel Int? @map("target_level") @db.SmallInt
+  @@map("assessment_targets")
+}
+
+model AssessmentResult {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  assessmentId String @map("assessment_id") @db.Uuid
+  scopeKind String @map("scope_kind")
+  refId Int @map("ref_id")
+  selfAvg Decimal? @map("self_avg") @db.Decimal
+  peerAvg Decimal? @map("peer_avg") @db.Decimal
+  peerCount Int @map("peer_count")
+  leaderVal Decimal? @map("leader_val") @db.Decimal
+  targetVal Decimal? @map("target_val") @db.Decimal
+  @@map("assessment_results")
+}
+
+model DevelopmentPlan {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  periodLabel String @map("period_label")
+  periodStart DateTime? @map("period_start") @db.Date
+  periodEnd DateTime? @map("period_end") @db.Date
+  careerGoalMd String? @map("career_goal_md")
+  targetPositionId Int? @map("target_position_id")
+  mentorEmployeeId String? @map("mentor_employee_id") @db.Uuid
+  summaryMd String? @map("summary_md")
+  selfAssessmentMd String? @map("self_assessment_md")
+  status String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String @map("created_by")
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy String? @map("updated_by")
+  @@map("development_plans")
+}
+
+model DevelopmentCheckin {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  planId String @map("plan_id") @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  checkinDate DateTime @map("checkin_date") @db.Date
+  authorEmail String? @map("author_email")
+  authorKind String? @map("author_kind")
+  noteMd String? @map("note_md")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  @@map("development_checkins")
+}
+
+
+model EmployeeTalk {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  talkType String @map("talk_type")
+  talkDate DateTime @default(now()) @map("talk_date") @db.Date
+  title String?
+  zapisnikMd String? @map("zapisnik_md")
+  status String
+  conductedBy String? @map("conducted_by")
+  planId String? @map("plan_id") @db.Uuid
+  raiseDecision String? @map("raise_decision")
+  raisePercent Decimal? @map("raise_percent") @db.Decimal
+  raiseEffectiveFrom DateTime? @map("raise_effective_from") @db.Date
+  raiseNote String? @map("raise_note")
+  sharedAt DateTime? @map("shared_at") @db.Timestamptz(6)
+  acknowledgedAt DateTime? @map("acknowledged_at") @db.Timestamptz(6)
+  createdBy String? @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedBy String? @map("updated_by")
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("employee_talks")
+}
+
+model CorrectivePlan {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  talkId String? @map("talk_id") @db.Uuid
+  closingTalkId String? @map("closing_talk_id") @db.Uuid
+  reasonMd String? @map("reason_md")
+  status String
+  followupDate DateTime? @map("followup_date") @db.Date
+  followupNotifiedAt DateTime? @map("followup_notified_at") @db.Timestamptz(6)
+  visibleToEmployee Boolean @map("visible_to_employee")
+  createdBy String? @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  closedAt DateTime? @map("closed_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("corrective_plans")
+}
+
+model CorrectiveMeasure {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  planId String @map("plan_id") @db.Uuid
+  descriptionMd String @map("description_md")
+  dueDate DateTime? @map("due_date") @db.Date
+  responsibleEmployeeId String? @map("responsible_employee_id") @db.Uuid
+  status String
+  completedAt DateTime? @map("completed_at") @db.Timestamptz(6)
+  note String?
+  sort Int
+  escalatedAt DateTime? @map("escalated_at") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("corrective_measures")
+}
+
+// ---------- Uvođenje / Izlazak ----------
+model KadrOnboardingRun {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  templateId String? @map("template_id") @db.Uuid
+  kind String
+  startDate DateTime @default(now()) @map("start_date") @db.Date
+  status String
+  note String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String? @map("created_by")
+  @@map("kadr_onboarding_runs")
+}
+
+model KadrOnboardingTask {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  runId String @map("run_id") @db.Uuid
+  title String
+  description String?
+  sortOrder Int @map("sort_order")
+  dueDate DateTime? @map("due_date") @db.Date
+  assigneeHint String? @map("assignee_hint")
+  status String
+  doneAt DateTime? @map("done_at") @db.Timestamptz(6)
+  doneBy String? @map("done_by")
+  note String?
+  @@map("kadr_onboarding_tasks")
+}
+
+model KadrOnboardingTemplate {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name String
+  kind String
+  isActive Boolean @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String? @map("created_by")
+  @@map("kadr_onboarding_templates")
+}
+
+model KadrOnboardingTemplateItem {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  templateId String @map("template_id") @db.Uuid
+  title String
+  description String?
+  sortOrder Int @map("sort_order")
+  offsetDays Int @map("offset_days")
+  assigneeHint String? @map("assignee_hint")
+  @@map("kadr_onboarding_template_items")
+}
+
+// ---------- Sistem ----------
+model KadrNotificationConfig {
+  id Int @id
+  enabled Boolean
+  medicalLeadDays Int @map("medical_lead_days")
+  contractLeadDays Int @map("contract_lead_days")
+  birthdayEnabled Boolean @map("birthday_enabled")
+  workAnniversaryEnabled Boolean @map("work_anniversary_enabled")
+  whatsappRecipients String[] @map("whatsapp_recipients")
+  emailRecipients String[] @map("email_recipients")
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy String? @map("updated_by")
+  childBirthdayEnabled Boolean @map("child_birthday_enabled")
+  birthdayOversightEnabled Boolean @map("birthday_oversight_enabled")
+  birthdayDigestEnabled Boolean @map("birthday_digest_enabled")
+  lkLeadDays Int @map("lk_lead_days")
+  passportLeadDays Int @map("passport_lead_days")
+  driverLicenseLeadDays Int @map("driver_license_lead_days")
+  medicalEmpLeadDays Int @map("medical_emp_lead_days")
+  @@map("kadr_notification_config")
+}
+
+model KadrDocumentAck {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  refType String @map("ref_type")
+  refId String @map("ref_id")
+  label String?
+  ackedAt DateTime @default(now()) @map("acked_at") @db.Timestamptz(6)
+  ackedBy String? @map("acked_by")
+  @@map("kadr_document_ack")
+}
+
+
+model DevicePushToken {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId String @map("user_id") @db.Uuid
+  platform String
+  endpoint String?
+  p256dh String?
+  auth String?
+  token String?
+  userAgent String? @map("user_agent")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  lastSeen DateTime @default(now()) @map("last_seen") @db.Timestamptz(6)
+  @@map("device_push_tokens")
+}
+
+
+model KadrVacationEditorAllowlist {
+  email String @id
+  note String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  @@map("kadr_vacation_editor_allowlist")
+}
