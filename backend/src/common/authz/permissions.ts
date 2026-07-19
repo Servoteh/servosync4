@@ -63,6 +63,27 @@ export const PERMISSIONS = {
   NABAVKA_READ: "nabavka.read",
   NABAVKA_WRITE: "nabavka.write",
   NABAVKA_APPROVE: "nabavka.approve",
+  // Priprema plaćanja / virmani — 4.0 Faza 4 §C (dospele obaveze iz GK →
+  // PaymentOrder → FX TXT export). read = uvid u dospele obaveze + naloge;
+  // prepare = kreiranje/potpis naloga (DEDUP protiv dvostrukog plaćanja);
+  // export = izvoz u banku (FX TXT) + oznaka exportedAt. Row-politika u pravu
+  // dolazi uz auth roljne (finansije/knjigovodstvo + admin).
+  PLACANJA_READ: "placanja.read",
+  PLACANJA_PREPARE: "placanja.prepare",
+  PLACANJA_EXPORT: "placanja.export",
+  // Izvodi (bankovni izvodi) — 4.0 Faza 4 §B (uvoz TXT fiksne kolone → uparivanje → auto-knjiženje).
+  // read = uvid u izvode i stavke; import = upload/parse TXT + preview + uparivanje;
+  // post = auto-knjiženje u GK (banka↔analitika) + označavanje POSTED. Row-politika uz auth roljne.
+  IZVODI_READ: "izvodi.read",
+  IZVODI_IMPORT: "izvodi.import",
+  IZVODI_POST: "izvodi.post",
+  // Saldakonti / plaćanja — 4.0 Faza 4 (otvorene stavke, aging, uparivanje, kompenzacija).
+  // Izveden pogled nad glavnom knjigom (ledger_entries) + oznaka zatvaranja na redovima.
+  //   read      = pregled otvorenih stavki / aging (naplata, finansije)
+  //   reconcile = uparivanje/razvezivanje + kreiranje kompenzacije (write nad zatvaranjem GK)
+  // Konkretne role se dodeljuju u role-permissions pri aktivaciji (finansije/knjigovodstvo/admin).
+  SALDAKONTI_READ: "saldakonti.read",
+  SALDAKONTI_RECONCILE: "saldakonti.reconcile",
   // Šifarnici / pregledi (komitenti, predmeti)
   DIRECTORY_READ: "directory.read",
   // Predmeti write-path + RFQ kupca — 4.0 Traka B (2.0 postaje master za predmete).

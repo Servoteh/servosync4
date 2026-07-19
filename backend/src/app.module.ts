@@ -42,6 +42,9 @@ import { NabavkaModule } from "./modules/nabavka/nabavka.module";
 import { ProjectsWriteModule } from "./modules/projects-write/projects-write.module";
 import { PostingModule } from "./modules/gl/posting/posting.module";
 import { RobnoModule } from "./modules/robno/robno.module";
+import { SaldakontiModule } from "./modules/saldakonti/saldakonti.module";
+import { IzvodiModule } from "./modules/izvodi/izvodi.module";
+import { PlacanjaModule } from "./modules/placanja/placanja.module";
 
 @Module({
   imports: [
@@ -99,6 +102,11 @@ import { RobnoModule } from "./modules/robno/robno.module";
     RobnoModule,
     // 4.0 Faza 2/3 — GL auto-kontiranje robnog dokumenta (StockDocument → nalog GK).
     PostingModule,
+    // 4.0 Faza 4 — Saldakonti (otvorene stavke/aging/reconcile/kompenzacija),
+    // Izvodi (TXT import → auto-knjiženje), Priprema plaćanja (virmani + FX TXT export).
+    SaldakontiModule,
+    IzvodiModule,
+    PlacanjaModule,
   ],
   controllers: [AppController],
   providers: [
