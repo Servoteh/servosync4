@@ -3134,6 +3134,20 @@ model VatAccountMap {
   @@map("vat_account_map")
 }
 
+/// Registar: koji konto puni koju POPDV AOP kolonu i kojim izrazom (D/P saldo).
+model PopdvAccountMap {
+  id          Int    @id(map: "pk_popdv_account_map") @default(autoincrement()) @map("id")
+  account     String @map("account") @db.VarChar(10) // Konto (meki ref Account.code)
+  popdvMark   String @map("popdv_mark") @db.VarChar(20) // PDVOznaka (npr. "8а.2DA", "3.2"); + columnIndex → popdv_definitions.aop
+  columnDef   String @map("column_def") @db.VarChar(20) // KxDef izraz nad D/P saldom (npr. "D/0.2", "D", "P")
+  columnIndex Int    @map("column_index") // 1..4 — koja K kolona AOP-a (aop = popdvMark + "K" + columnIndex)
+
+  @@unique([account, popdvMark, columnIndex], map: "uq_popdv_account_map_acc_mark_col")
+  @@index([popdvMark, columnIndex], map: "idx_popdv_account_map_mark_col")
+  @@index([account], map: "idx_popdv_account_map_account")
+  @@map("popdv_account_map")
+}
+
 // -----------------------------------------------------------------------------
 // PopdvDefinition — deklarativna definicija POPDV obrasca (POPDV_DEF, 164 reda)
 // -----------------------------------------------------------------------------
