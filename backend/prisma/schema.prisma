@@ -2941,3 +2941,180 @@ model CompensationOrderLine {
   @@index([compensationId], map: "idx_compensation_order_lines_compensation")
   @@map("compensation_order_lines")
 }
+
+// ── Faza 5: Fakturisanje (izlazni računi) + SEF ───────────────────────────
+/// Was: izlazni GoodsDocument (level 0 = knjižen račun / level 250 = draft-predračun).
+/// NOVA app-owned tabela — GoodsDocument je prazna sync-cache, ne piše se više.
+/// Vrste kroz documentType + level; račun nastaje iz predračuna kroz
+/// DocumentCarryOverService (PROF → IFR/…, dedupKey=copiedFromItemId).
+model Invoice {
+  id Int @id(map: "pk_invoices") @default(autoincrement()) @map("id")
+
+  /// PON | PROF | IFR | IFGP | IFUSL | IZVRO | IZVGP | IZVUS | AVR | REV
+  /// PON/PROF = draft (level 250); IFR/IFGP/IFUSL = domaći (level 0);
+  /// IZVRO/IZVGP/IZVUS = izvoz (level 0); AVR = avansni; REV = revers.
+  documentType   String @map("document_type") @db.VarChar(10)
+  documentNumber String @map("document_number") @db.VarChar(30) // format = prefix + seq + '/' + year (DocumentNumberSequence)
+  /// 250 = draft / predračun; 0 = knjižen račun (broj se rezerviše tek pri knjiženju)
+  level          Int    @default(250) @map("level")
+
+  companyId  Int  @default(0) @map("company_id") // firma izdavalac (multi-firma numeracija)
+  customerId Int? @map("customer_id") // meki ref customers.id (kupac)
+
+  documentDate DateTime  @map("document_date") @db.Timestamptz(6) // datum izdavanja / as-of ključ
+  dueDate      DateTime? @map("due_date") @db.Timestamptz(6) // valuta / rok plaćanja
+
+  // — Valuta / kursevi (izvoz: currency='EUR' + kursevi; domaći: RSD, kurs=1) —
+  currency               String  @default("RSD") @map("currency") @db.VarChar(3)
+  exchangeRate           Decimal @default(1) @map("exchange_rate") @db.Decimal(19, 6) // kurs na dan izdavanja
+  accountingExchangeRate Decimal @default(1) @map("accounting_exchange_rate") @db.Decimal(19, 6) // ObrKurs (knjigovodstveni)
+  fxInvoiceValue         Decimal @default(0) @map("fx_invoice_value") @db.Decimal(19, 4) // DevVredFak (devizna vrednost fakture)
+
+  // — Zbirni iznosi (denormalizovano iz stavki, sve Decimal) —
+  netTotal   Decimal @default(0) @map("net_total") @db.Decimal(19, 4) // osnovica (posle rabata/kase)
+  vatTotal   Decimal @default(0) @map("vat_total") @db.Decimal(19, 4) // ukupan PDV
+  grossTotal Decimal @default(0) @map("gross_total") @db.Decimal(19, 4) // za plaćanje
+
+  // — Carry-over / prepis (anti-duplo + traceback prepisa) —
+  linkedInvoiceDocId Int? @map("linked_invoice_doc_id") // IDDokIF: PROF → IFR par; >0 blokira ponovni prepis (anti-duplo guard)
+  copiedFromDocId    Int? @map("copied_from_doc_id") // izvorni dokument prepisa (Invoice.id — meki ref u istoj tabeli)
+
+  /// DRAFT | POSTED | SENT | PAID | CANCELLED
+  status   String  @default("DRAFT") @map("status") @db.VarChar(20)
+  isExport Boolean @default(false) @map("is_export") // izvoz (ExportInvoicePolicy: konto 2050, PDV Z/čl.24, van domaćeg SEF-a)
+
+  // — Okidači pri knjiženju (meki ref-ovi, bez @relation na cross-modul) —
+  journalEntryId  Int? @map("journal_entry_id") // Faza 2 nalog (journal_entries.id)
+  stockDocumentId Int? @map("stock_document_id") // Faza 3 razduženje / izlaz robe (stock_documents.id)
+  salespersonId   Int? @map("salesperson_id") // meki ref salespeople.id
+  workOrderId     Int? @map("work_order_id") // IFUSL iz servisnih RN (meki ref work_orders.id) — otvorena odluka N5
+
+  note String? @map("note") @db.Text // napomena / memo (npr. JCI referenca kod izvoza)
+
+  // — Audit —
+  createdByUserId Int?     @map("created_by_user_id")
+  updatedByUserId Int?     @map("updated_by_user_id")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  items InvoiceItem[]
+
+  @@unique([documentType, documentNumber], map: "uq_invoices_type_number")
+  @@index([customerId], map: "idx_invoices_customer")
+  @@index([documentType, level, status], map: "idx_invoices_type_level_status")
+  @@index([documentDate], map: "idx_invoices_date")
+  @@index([linkedInvoiceDocId], map: "idx_invoices_linked")
+  @@index([journalEntryId], map: "idx_invoices_journal")
+  @@map("invoices")
+}
+
+// -----------------------------------------------------------------------------
+// InvoiceItem — stavka izlaznog računa
+// -----------------------------------------------------------------------------
+/// Was: izlazna GoodsDocumentItem — stavka računa/predračuna. copiedFromItemId
+/// (=IDPrepisaneStavke) je dedup ključ za carry-over (par PROF → IFR).
+model InvoiceItem {
+  id        Int @id(map: "pk_invoice_items") @default(autoincrement()) @map("id")
+  invoiceId Int @map("invoice_id")
+  lineNo    Int @default(0) @map("line_no")
+
+  itemId      Int?    @map("item_id") // meki ref items.id (artikal; null za slobodnu uslužnu stavku)
+  description String? @map("description") @db.VarChar(255) // opis stavke (naziv artikla / usluge)
+
+  quantity  Decimal @map("quantity") @db.Decimal(19, 6) // količina
+  unitPrice Decimal @default(0) @map("unit_price") @db.Decimal(19, 4) // actualWholesalePrice (transakciona VP iz PricingService)
+
+  discountPercent     Decimal @default(0) @map("discount_percent") @db.Decimal(19, 4) // Rabat %
+  cashDiscountPercent Decimal @default(0) @map("cash_discount_percent") @db.Decimal(19, 4) // Kasa %
+
+  vatRateCode String  @default("3") @map("vat_rate_code") @db.VarChar(5) // šifra poreske stope (meki ref tax_rates)
+  vatBase     Decimal @default(0) @map("vat_base") @db.Decimal(19, 4) // poreska osnovica (posle rabata/kase)
+  vatAmount   Decimal @default(0) @map("vat_amount") @db.Decimal(19, 4) // iznos PDV-a
+  lineTotal   Decimal @default(0) @map("line_total") @db.Decimal(19, 4) // za plaćanje (osnovica + PDV)
+
+  copiedFromItemId Int? @map("copied_from_item_id") // IDPrepisaneStavke — dedup ključ carry-over (meki ref InvoiceItem.id)
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade, map: "fk_invoice_items_invoice")
+
+  @@index([invoiceId], map: "idx_invoice_items_invoice")
+  @@index([itemId], map: "idx_invoice_items_item")
+  @@index([copiedFromItemId], map: "idx_invoice_items_copied_from")
+  @@map("invoice_items")
+}
+
+// -----------------------------------------------------------------------------
+// DocumentNumberSequence — numeracija dokumenata (jedna DB sekvenca)
+// -----------------------------------------------------------------------------
+/// Was: WorkParameter numeracija (per-username, „crvena sveska") — ZAMENA.
+/// Jedna app tabela: increment kroz SELECT … FOR UPDATE / upsert u transakciji
+/// knjiženja (bez rupa, bez konkurentnog dupliranja). Rezervacija tek pri
+/// knjiženju (level 0); rollback numeracije ako knjiženje padne.
+model DocumentNumberSequence {
+  id Int @id(map: "pk_document_number_sequences") @default(autoincrement()) @map("id")
+
+  documentType String @map("document_type") @db.VarChar(10) // PON | PROF | IFR | … (isti skup kao Invoice.documentType)
+  year         Int    @map("year")
+  companyId    Int    @default(0) @map("company_id") // firma (multi-firma niz)
+  lastNumber   Int    @default(0) @map("last_number") // poslednji dodeljeni seq (sledeći = lastNumber + 1)
+
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([documentType, year, companyId], map: "uq_document_number_sequences_key")
+  @@map("document_number_sequences")
+}
+
+// -----------------------------------------------------------------------------
+// CustomerDiscount — rabatna politika (za PricingService)
+// -----------------------------------------------------------------------------
+/// Was: rabatna politika (fallback Customer.customerDiscount). Rabat po kupcu i
+/// opciono po grupi artikala (itemGroupCode). PricingService: PriceListEntry →
+/// CustomerDiscount → kap Item.maxDiscountPercent → kasa → actualWholesalePrice.
+/// Otvorena odluka: matrica (rabat po grupi) vs flat — preporuka graditi + fallback.
+model CustomerDiscount {
+  id         Int @id(map: "pk_customer_discounts") @default(autoincrement()) @map("id")
+  customerId Int @map("customer_id") // meki ref customers.id
+
+  itemGroupCode   String?   @map("item_group_code") @db.VarChar(20) // null = rabat važi za sve grupe (flat)
+  discountPercent Decimal   @default(0) @map("discount_percent") @db.Decimal(19, 4)
+  validFrom       DateTime  @map("valid_from") @db.Timestamptz(6)
+  validTo         DateTime? @map("valid_to") @db.Timestamptz(6) // null = i dalje važi
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([customerId, itemGroupCode], map: "idx_customer_discounts_customer_group")
+  @@map("customer_discounts")
+}
+
+// -----------------------------------------------------------------------------
+// SefOutbox — SEF e-faktura outbox (izlazne fakture ka SEF-u)
+// -----------------------------------------------------------------------------
+/// SEF e-faktura outbox (doc 07 §8). Tok: UBL 2.1 builder iz Invoice →
+/// POST /sales-invoice/ubl?requestId= (idempotencija) → status polling /changes
+/// → storno/cancel sa guard-om. Izvoz (isExport) NIJE na domaćem SEF-u.
+model SefOutbox {
+  id        Int @id(map: "pk_sef_outbox") @default(autoincrement()) @map("id")
+  invoiceId Int @map("invoice_id") // meki ref invoices.id (dokument koji se šalje)
+
+  requestId String @map("request_id") @db.VarChar(64) // UBL RequestID — idempotencija slanja (@@unique)
+
+  ublXml String? @map("ubl_xml") @db.Text // generisan UBL 2.1 XML (telo POST-a)
+
+  /// PENDING | SENT | DELIVERED | REJECTED | CANCELLED
+  /// (SEF statusi: Draft/New/Sent/Seen/Approved/Rejected/Cancelled/Storno → mapirano)
+  status String @default("PENDING") @map("status") @db.VarChar(20)
+
+  sefInvoiceId String? @map("sef_invoice_id") @db.VarChar(64) // SalesInvoiceId vraćen od SEF-a
+
+  pdfAttachmentBase64 String? @map("pdf_attachment_base64") @db.Text // cac:Attachment → EmbeddedDocumentBinaryObject (PDF prilog)
+  errorMessage        String? @map("error_message") @db.Text // ResponseText / greška poslednjeg poziva
+
+  sentAt         DateTime? @map("sent_at") @db.Timestamptz(6)
+  statusPolledAt DateTime? @map("status_polled_at") @db.Timestamptz(6) // watermark poslednjeg /changes poll-a
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([requestId], map: "uq_sef_outbox_request_id")
+  @@index([invoiceId], map: "idx_sef_outbox_invoice")
+  @@index([status], map: "idx_sef_outbox_status")
+  @@map("sef_outbox")
+}
