@@ -40,6 +40,7 @@ import {
   Workflow,
   Wrench,
   Zap,
+  FileText,
   type LucideIcon,
 } from 'lucide-react';
 import { PERMISSIONS, type Permission } from '@/lib/permissions';
@@ -271,7 +272,9 @@ export const NAV_DOMAINS: NavDomain[] = [
     icon: SlidersHorizontal,
     modules: [
       // Faza 2: Glavna knjiga
-      // { label: 'Glavna knjiga', href: '/glavna-knjiga', icon: ListChecks, requires: PERMISSIONS.GL_READ, keywords: ['gk', 'nalozi', 'kontni plan', 'dnevnik', 'bruto bilans'] },
+      { label: 'Glavna knjiga', href: '/glavna-knjiga', icon: ListChecks, requires: PERMISSIONS.GL_READ, keywords: ['gk', 'nalozi', 'kontni plan', 'dnevnik', 'bruto bilans'] },
+      // Faza 4: Izvodi (bankovni, TXT uvoz)
+      { label: 'Izvodi', href: '/izvodi', icon: FileText, requires: PERMISSIONS.IZVODI_READ, keywords: ['izvod', 'banka', 'txt', 'uparivanje'] },
       // Faza 4: Saldakonti (otvorene stavke, IOS, kompenzacija)
       { label: 'Saldakonti', href: '/saldakonti', icon: Users, requires: PERMISSIONS.SALDAKONTI_READ, keywords: ['otvorene stavke', 'ios', 'aging', 'kompenzacija'] },
       // Faza 4: Banka & plaćanja (izvodi, priprema plaćanja, virmani)

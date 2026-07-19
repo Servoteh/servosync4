@@ -150,6 +150,12 @@
 | SEF — e-faktura | Isporučeno (`DELIVERED`) | zelena | `--status-success` |
 | SEF — e-faktura | Odbijeno (`REJECTED`) | crvena | `--status-danger` |
 | SEF — e-faktura | Stornirano (`CANCELLED`) | neutralna | `--status-neutral` |
+| Izvodi — izvod | U pripremi (`DRAFT`) | neutralna | `--status-neutral` |
+| Izvodi — izvod | Uvezen (`IMPORTED`) | info plava | `--status-info` |
+| Izvodi — izvod | Proknjižen (`POSTED`) | zelena | `--status-success` |
+| Izvodi — stavka | Neupareno (`UNMATCHED`) | narandžasta | `--status-warn` |
+| Izvodi — stavka | Upareno (`MATCHED`) | info plava | `--status-info` |
+| Izvodi — stavka | Proknjiženo (`POSTED`) | zelena | `--status-success` |
 | Sync (bb_sync) | Greška sinhronizacije | crvena | `--status-danger` |
 | Notifikacija (D8) | Škart (`kontrola.skart`) | crvena | `--status-danger` |
 | Notifikacija (D8) | Dorada (`kontrola.dorada`) | narandžasta | `--status-warn` |
