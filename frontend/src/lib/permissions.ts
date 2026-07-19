@@ -46,6 +46,10 @@ export const PERMISSIONS = {
   NABAVKA_WRITE: 'nabavka.write',
   NABAVKA_APPROVE: 'nabavka.approve',
   DIRECTORY_READ: 'directory.read',
+  // Predmeti write-path + RFQ kupca — 4.0 Traka B (mirror backend kataloga)
+  PROJECTS_WRITE: 'projects.write',
+  RFQ_READ: 'rfq.read',
+  RFQ_WRITE: 'rfq.write',
   SYNC_RUN: 'sync.run',
   SYNC_READ: 'sync.read',
   // Reversi — 3.0 pilot (2.0 backend docs/design/MODULE_SPEC_reversi.md §3)

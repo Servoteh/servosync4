@@ -2508,3 +2508,29 @@ model LedgerEntry {
 // Ovo su jedine izmene ŽIVIH modela — dodaju se u istom PR-u kad modeli uđu u
 // schema.prisma. Ovde zapisano da se ne zaboravi (Prisma traži obe strane relacije).
 // -----------------------------------------------------------------------------
+
+// ── Traka B: RFQ kupca (predmeti write-path) ─────────────────────────────
+/// Was: ZahteviZaPonude  — zahtev kupca za ponudu; postaje predmet (write-back projectId).
+model CustomerRfq {
+  id              Int       @id(map: "pk_customer_rfqs") @default(autoincrement()) @map("id")
+  requestDate     DateTime  @default(now()) @map("request_date") @db.Timestamptz(6) // datum prijema zahteva
+  quoteDeadline   DateTime? @map("quote_deadline") @db.Timestamptz(6) // rok za ponudu (Sporni ako istekne bez fakture)
+  customerId      Int       @map("customer_id") // kupac — meki ref (šifarnik komitenata)
+  projectId       Int?      @map("project_id") // null dok se ne napravi predmet; write-back posle
+  origin          String?   @map("origin") @db.VarChar(30) /// PHONE | EMAIL | WEB | WALK_IN | OTHER
+  salespersonId   Int?      @map("salesperson_id") // prodavac — meki ref (salespeople.id)
+  proformaDocId   Int?      @map("proforma_doc_id") // ponuda kupcu (profaktura) — meki ref na dokument
+  description     String?   @map("description") @db.VarChar(255) // opis potrebe (postaje description predmeta)
+  status          String    @default("DRAFT") @map("status") @db.VarChar(20) /// DRAFT | OPEN | QUOTED | WON | LOST
+  note            String?   @map("note")
+  createdByUserId Int?      @map("created_by_user_id")
+  updatedByUserId Int?      @map("updated_by_user_id")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([projectId], map: "uq_customer_rfqs_project") // najviše jedan zahtev veže jedan predmet (write-back je 1:1)
+  @@index([customerId], map: "idx_customer_rfqs_customer")
+  @@index([status], map: "idx_customer_rfqs_status")
+  @@index([quoteDeadline], map: "idx_customer_rfqs_deadline")
+  @@map("customer_rfqs")
+}

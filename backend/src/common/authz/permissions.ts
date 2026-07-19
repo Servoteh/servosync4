@@ -65,6 +65,11 @@ export const PERMISSIONS = {
   NABAVKA_APPROVE: "nabavka.approve",
   // Šifarnici / pregledi (komitenti, predmeti)
   DIRECTORY_READ: "directory.read",
+  // Predmeti write-path + RFQ kupca — 4.0 Traka B (2.0 postaje master za predmete).
+  // write = poslovni administrator kreira/menja predmet; rfq read/write = prodaja.
+  PROJECTS_WRITE: "projects.write",
+  RFQ_READ: "rfq.read",
+  RFQ_WRITE: "rfq.write",
   // Sync administracija
   SYNC_RUN: "sync.run",
   SYNC_READ: "sync.read",

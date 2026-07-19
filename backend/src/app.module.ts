@@ -39,6 +39,7 @@ import { EnergetikaModule } from "./modules/energetika/energetika.module";
 import { LocationsModule } from "./modules/locations/locations.module";
 import { KadrovskaModule } from "./modules/kadrovska/kadrovska.module";
 import { NabavkaModule } from "./modules/nabavka/nabavka.module";
+import { ProjectsWriteModule } from "./modules/projects-write/projects-write.module";
 
 @Module({
   imports: [
@@ -57,6 +58,8 @@ import { NabavkaModule } from "./modules/nabavka/nabavka.module";
     HandoversModule,
     // Nabavka (4.0 Traka B — zahtev → upit dobavljaču → narudžbenica → prijem)
     NabavkaModule,
+    // Predmeti write-path + RFQ kupca (4.0 Traka B — 2.0 master za predmete)
+    ProjectsWriteModule,
     PartLocationsModule,
     CncProgramsModule,
     // Kontrola kvaliteta (K1 — evidencija škart/dorada; MODULE_SPEC_kontrola_kvaliteta §4/§7).
