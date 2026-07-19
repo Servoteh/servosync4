@@ -1,0 +1,89 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// NACRT — Faza 1 (4.0): kontni plan, šeme za kontiranje, autoritativni konto registri
+// ─────────────────────────────────────────────────────────────────────────────
+// STATUS: PREDLOG za pregled — NIJE u schema.prisma i NIJE migrirano.
+// Kad Nenad/Nesa potvrde konto mape i kad dev baza bude dostupna:
+//   1) rebazovati nakon tuđeg `pracenje` commita (da nema konflikta na schema.prisma)
+//   2) prepisati ove modele u backend/prisma/schema.prisma
+//   3) upisati /// Was: redove u docs/schema-rename-map.md
+//   4) `npm run migrate:dev` na dev bazi → testirati → PR → merge (deploy radi migrate deploy)
+//
+// Konvencije (BACKEND_RULES §1/§2): legacy ključ = id Int (ne UUID); novac Decimal (nikad Float);
+// statusi String sa dozvoljenim vrednostima u /// komentaru; eksplicitni pk_/fk_/uq_/idx_ nazivi;
+// @map snake_case, @@map plural. Ovi su NOVI 4.0 vlasnički modeli (ne sync-cache).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Was: Kontni plan  — kontni plan (1389 konta, seed iz bigbit_raw.kontni_plan na cutover)
+model Account {
+  code             String   @id(map: "pk_accounts") @map("code") @db.VarChar(10) // Konto
+  name             String   @map("name") @db.VarChar(255)                         // Opis
+  longDescription  String?  @map("long_description")                             // Dugacki opis
+  accountClass     Int      @map("account_class")                                // izvedeno iz prve cifre (0-9)
+  allowsAnalytics  Boolean  @default(false) @map("allows_analytics")            // Dozvoljen unos analitike
+  codebookFile     String?  @map("codebook_file") @db.VarChar(64)               // Fajl sifara
+  foreignAccount   String?  @map("foreign_account") @db.VarChar(10)             // InoKonto
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  schemeLines      AccountingSchemeLine[]
+  saldakonto       SaldakontoAccount?
+
+  @@index([accountClass], map: "idx_accounts_class")
+  @@map("accounts")
+}
+
+/// Was: Sema za kontiranje  — zaglavlje šeme knjiženja, vezano za vrstu naloga
+model AccountingScheme {
+  id           Int      @id(map: "pk_accounting_schemes") @default(autoincrement()) @map("id") // IDSeme
+  orderType    String   @map("order_type") @db.VarChar(5)   // Vrsta naloga (npr. UFROB, IFR)
+  description  String?  @map("description") @db.VarChar(255) // Opis
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  lines        AccountingSchemeLine[]
+
+  @@map("accounting_schemes")
+}
+
+/// Was: Stavke seme za kontiranje  — linija šeme: konto + DefDug/DefPot izraz (A-Z), analitika
+model AccountingSchemeLine {
+  id           Int              @id(map: "pk_accounting_scheme_lines") @default(autoincrement()) @map("id")
+  schemeId     Int              @map("scheme_id")
+  accountCode  String           @map("account_code") @db.VarChar(10)  // Konto (FK Account)
+  description  String?          @map("description") @db.VarChar(255)
+  defDebit     String?          @map("def_debit") @db.VarChar(255)    // DefDug — izraz nad slovima A-Z (safe parser, NE eval)
+  defCredit    String?          @map("def_credit") @db.VarChar(255)   // DefPot
+  postsAnalytics Boolean        @default(false) @map("posts_analytics") // Analitika (nosi li šifru komitenta)
+  origin       String?          @map("origin") @db.VarChar(5)         // Poreklo
+  itemCodebook String?          @map("item_codebook") @db.VarChar(10) // KngSifra_2 (alt konto po grupi artikla)
+  lineNo       Int              @default(0) @map("line_no")
+
+  scheme       AccountingScheme @relation(fields: [schemeId], references: [id], onDelete: Cascade, map: "fk_scheme_lines_scheme")
+  account      Account          @relation(fields: [accountCode], references: [code], onDelete: NoAction, map: "fk_scheme_lines_account")
+
+  @@index([schemeId], map: "idx_scheme_lines_scheme")
+  @@index([accountCode], map: "idx_scheme_lines_account")
+  @@map("accounting_scheme_lines")
+}
+
+/// Was: PSF_AnalitickaKonta_T  — AUTORITATIVAN registar saldakonto konta (review VISOK).
+/// Rešava BigBit ograničenje "jedan kontrolni konto": lista, sa stranom i kontrolnim kontom.
+/// SVE faze čitaju OVAJ registar (posting F2, saldakonti F4, PS prenos FN), ne hardkod klase.
+/// Nesa potvrđuje spisak pod-konta pre Faze 2.
+model SaldakontoAccount {
+  account         String   @id(map: "pk_saldakonto_accounts") @map("account") @db.VarChar(10) // FK Account.code
+  side            String   @map("side") @db.VarChar(10)   /// receivable | payable
+  controlAccount  String   @map("control_account") @db.VarChar(10) // sintetički kontrolni (2040->202, 4351->435)
+  tracksOpenItems Boolean  @default(true) @map("tracks_open_items")  // OTST
+  holdsDinBalance Boolean  @default(true) @map("holds_din_balance")  // DinSaldo
+  holdsFxBalance  Boolean  @default(false) @map("holds_fx_balance")  // DevSaldo (izvozne/devizne 2050/4360)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  accountRef      Account  @relation(fields: [account], references: [code], onDelete: Cascade, map: "fk_saldakonto_account")
+
+  @@index([controlAccount], map: "idx_saldakonto_control")
+  @@map("saldakonto_accounts")
+}
+
+// NAPOMENA: PDV konto mapa (47x izlazni po stopi, 27x ulazni, 2740 carinski, 2790 transit) —
+// modelovati kao VatAccountMap u Fazi 6 (ili proširiti Account sa vat_role poljem). Ostavljeno
+// za Fazu 6 da se ne preteže Faza 1; registar SaldakontoAccount je dovoljan za GL/saldakonti.
