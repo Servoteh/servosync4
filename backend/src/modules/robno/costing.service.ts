@@ -41,8 +41,18 @@ export class CostingService {
     itemId: number,
     warehouseId: number,
     asOf: Date,
+    opts?: { excludeDocId?: number; tx?: Prisma.TransactionClient },
   ): Promise<Prisma.Decimal> {
-    const rows = await this.prisma.$queryRaw<{ state: Prisma.Decimal | null }[]>(
+    // `excludeDocId`: stanje PRE tekućeg ulaza. Nivelacija računa zatečeno stanje
+    // pre nego što ovaj UL zaduži magacin; bez ovoga bi `document_date <= asOf`
+    // uračunao i sam tekući (već upisan) dokument → lažno stanje → pogrešna
+    // nivelacija (INIT umesto LEVELED). `tx`: čitaj kroz istu transakciju kao pisac.
+    const client = opts?.tx ?? this.prisma;
+    const exclude =
+      opts?.excludeDocId != null
+        ? Prisma.sql`AND sd.id <> ${opts.excludeDocId}`
+        : Prisma.empty;
+    const rows = await client.$queryRaw<{ state: Prisma.Decimal | null }[]>(
       Prisma.sql`
         SELECT COALESCE(SUM(
                  CASE WHEN dt.is_inbound THEN sdi.quantity ELSE -sdi.quantity END
@@ -55,6 +65,7 @@ export class CostingService {
           AND sd.document_date <= ${asOf}
           AND sd.document_type_code <> 'KODJ'
           AND COALESCE(dt.affects_stock, TRUE) = TRUE
+          ${exclude}
       `,
     );
     return new Prisma.Decimal(rows[0]?.state ?? 0);

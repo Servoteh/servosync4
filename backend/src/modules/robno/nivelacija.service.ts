@@ -115,12 +115,16 @@ export const COSTING_SERVICE = Symbol("COSTING_SERVICE");
 
 /** Ugovor koji `NivelacijaService` očekuje od costing sloja (podskup `CostingService`). */
 export interface StateProvider {
-  /** As-of stanje `Σ(±Kol)` po (artikal, magacin) do `asOf` (KODJ izuzet) — doc 39 §C. */
+  /**
+   * As-of stanje `Σ(±Kol)` po (artikal, magacin) do `asOf` (KODJ izuzet) — doc 39 §C.
+   * `opts.excludeDocId` isključuje tekući ulazni dokument (stanje PRE ovog ulaza — nivelacija);
+   * `opts.tx` čita kroz istu transakciju kao pisac.
+   */
   stateAsOf(
     itemId: number,
     warehouseId: number,
     asOf: Date,
-    tx?: Prisma.TransactionClient,
+    opts?: { excludeDocId?: number; tx?: Prisma.TransactionClient },
   ): Promise<Prisma.Decimal>;
 }
 
@@ -181,7 +185,7 @@ export class NivelacijaService implements NivelacijaHook {
         line.itemId,
         line.warehouseId,
         documentDate,
-        tx,
+        { excludeDocId: inboundDocId, tx },
       );
       await this.applyLeveling(tx, line, stanjeKol, staraValuacija, {
         documentDate,
@@ -383,7 +387,7 @@ export class NivelacijaService implements NivelacijaHook {
       inboundItem.itemId,
       inboundItem.warehouseId,
       asOf,
-      tx,
+      { excludeDocId: opts.linkedInboundDocId, tx },
     );
     return this.applyLeveling(tx, inboundItem, stanjeKol, staraValuacija, opts);
   }
