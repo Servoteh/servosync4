@@ -45,6 +45,19 @@ export const PERMISSIONS = {
   NABAVKA_READ: 'nabavka.read',
   NABAVKA_WRITE: 'nabavka.write',
   NABAVKA_APPROVE: 'nabavka.approve',
+  // Robno / magacin — 4.0 Faza 3 (robni dokumenti, kalkulacija landed cost, knjiženje).
+  // read = uvid; write = kreiranje/kalkulacija; post = knjiženje u GK. Mirror BE kataloga.
+  ROBNO_READ: 'robno.read',
+  ROBNO_WRITE: 'robno.write',
+  ROBNO_POST: 'robno.post',
+  // Saldakonti — 4.0 Faza 4 (otvorene stavke/aging, uparivanje). Mirror BE kataloga.
+  SALDAKONTI_READ: 'saldakonti.read',
+  SALDAKONTI_RECONCILE: 'saldakonti.reconcile',
+  // Priprema plaćanja / virmani — 4.0 Faza 4 §C (dospele obaveze → nalog → FX TXT).
+  // read = uvid; prepare = kreiranje/potpis; export = izvoz u banku. Mirror BE kataloga.
+  PLACANJA_READ: 'placanja.read',
+  PLACANJA_PREPARE: 'placanja.prepare',
+  PLACANJA_EXPORT: 'placanja.export',
   DIRECTORY_READ: 'directory.read',
   // Predmeti write-path + RFQ kupca — 4.0 Traka B (mirror backend kataloga)
   PROJECTS_WRITE: 'projects.write',

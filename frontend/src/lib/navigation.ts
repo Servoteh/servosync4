@@ -262,7 +262,7 @@ export const NAV_DOMAINS: NavDomain[] = [
       // Faza 5: e-Fakture (SEF)
       // { label: 'e-Fakture (SEF)', href: '/sef', icon: RefreshCw, requires: PERMISSIONS.SEF_READ, keywords: ['sef', 'efaktura', 'ubl'] },
       // Faza 3: Zalihe & kalkulacija (crosslisted u Logistiku)
-      // { label: 'Zalihe & kalkulacija', href: '/robno', icon: Warehouse, requires: PERMISSIONS.ROBNO_READ, keywords: ['zalihe', 'lager', 'kalkulacija', 'primka', 'popis', 'nivelacija'], crosslisted: true },
+      { label: 'Zalihe & kalkulacija', href: '/robno', icon: Warehouse, requires: PERMISSIONS.ROBNO_READ, keywords: ['zalihe', 'lager', 'kalkulacija', 'primka', 'popis', 'nivelacija'], crosslisted: true },
     ],
   },
   {
@@ -273,9 +273,9 @@ export const NAV_DOMAINS: NavDomain[] = [
       // Faza 2: Glavna knjiga
       // { label: 'Glavna knjiga', href: '/glavna-knjiga', icon: ListChecks, requires: PERMISSIONS.GL_READ, keywords: ['gk', 'nalozi', 'kontni plan', 'dnevnik', 'bruto bilans'] },
       // Faza 4: Saldakonti (otvorene stavke, IOS, kompenzacija)
-      // { label: 'Saldakonti', href: '/saldakonti', icon: Users, requires: PERMISSIONS.SALDAKONTI_READ, keywords: ['otvorene stavke', 'ios', 'aging', 'kompenzacija'] },
+      { label: 'Saldakonti', href: '/saldakonti', icon: Users, requires: PERMISSIONS.SALDAKONTI_READ, keywords: ['otvorene stavke', 'ios', 'aging', 'kompenzacija'] },
       // Faza 4: Banka & plaćanja (izvodi, priprema plaćanja, virmani)
-      // { label: 'Banka & plaćanja', href: '/placanja', icon: Building2, requires: PERMISSIONS.PLACANJA_READ, keywords: ['banka', 'izvod', 'virman', 'nalog za placanje', 'priprema placanja'] },
+      { label: 'Banka & plaćanja', href: '/placanja', icon: Building2, requires: PERMISSIONS.PLACANJA_READ, keywords: ['banka', 'izvod', 'virman', 'nalog za placanje', 'priprema placanja'] },
       // Faza 6: PDV & POPDV
       // { label: 'PDV & POPDV', href: '/pdv', icon: ShieldCheck, requires: PERMISSIONS.PDV_READ, keywords: ['pdv', 'popdv', 'pppdv', 'kif', 'kuf'] },
       // Faza 7: Završni račun (bilansi, APR)

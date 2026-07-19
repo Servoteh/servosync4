@@ -136,6 +136,10 @@
 | Nabavka — zahtev | Odobren (`APPROVED`) | zelena | `--status-success` |
 | Nabavka — upit | Poslat dobavljaču (`SENT`) | info plava | `--status-info` |
 | Nabavka — narudžbenica | Primljeno (`RECEIVED`) | zelena | `--status-success` |
+| Robno — dokument | U pripremi (`DRAFT`) | neutralna | `--status-neutral` |
+| Robno — dokument | Kalkulisan (`CALCULATED`) | info plava | `--status-info` |
+| Robno — dokument | Proknjižen (`POSTED`) | zelena | `--status-success` |
+| Robno — dokument | Zaključan (`LOCKED`) | neutralna | `--status-neutral` |
 | Sync (bb_sync) | Greška sinhronizacije | crvena | `--status-danger` |
 | Notifikacija (D8) | Škart (`kontrola.skart`) | crvena | `--status-danger` |
 | Notifikacija (D8) | Dorada (`kontrola.dorada`) | narandžasta | `--status-warn` |
