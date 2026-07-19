@@ -42,6 +42,9 @@ const VIEWER_READ_BASELINE: readonly PermissionKey[] = [
   // `loc_can_create_movement()` kroz GUC (spec §2; širina OSTAJE u bazi).
   P.LOKACIJE_READ,
   P.LOKACIJE_MOVE,
+  // Nabavka (4.0 Traka B): read = svi prijavljeni (radna lista vidljiva). WRITE/APPROVE
+  // NISU ovde — dok se ne kurira nabavka/prodaja rola, drži ih samo `admin` (ALL). V1 guard je no-op.
+  P.NABAVKA_READ,
 ];
 
 /**

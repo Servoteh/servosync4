@@ -40,6 +40,37 @@
   **Frontend NE okida backend deploy** — bezbedno za nav izmene.
 - **bigbit-bridge:** systemd timer 05:30, `mdb-tools` → `docker exec ... psql` u `servosync-pg`.
 
+## ✅ DEV BAZA — POSTAVLJENA 19.07 (servosync-dev)
+- **Kontejner `servosync-dev`** na Ubuntu (`192.168.64.28`), `postgres:18`, mreža `servosync_default`,
+  volume `servosync-dev-data`, mount `/var/lib/postgresql` (PG18 konvencija, isto kao prod).
+- **Port `0.0.0.0:5437` — DOSTUPAN sa Nenadovog PC-a preko LAN-a** ✅ (5435=prod, 5436=sy15, 5437=dev).
+- **Klon prod-a (19.07):** `pg_dump --format=custom` prod → `pg_restore` dev. 100 tabela, 24 primenjene
+  Prisma migracije, projects=7602. Verno stanje prod-a → `migrate dev` vidi sinhronizovano.
+- **DEV URL** (u `backend/.env.dev`, van gita):
+  `postgresql://servosync:servosync_dev@192.168.64.28:5437/servosync?schema=public`
+- **Kako migrirati na DEV** (Windows PowerShell / bash):
+  `DATABASE_URL="postgresql://servosync:servosync_dev@192.168.64.28:5437/servosync?schema=public" npx prisma migrate dev`
+  (ili `dotenv -e .env.dev -- npx prisma migrate dev` ako se doda dotenv-cli). **Nikad `.env` prod URL za dev migraciju.**
+- **Re-klon** (osveži dev iz prod-a): `docker exec servosync-pg pg_dump ... | docker cp ... | pg_restore --clean --if-exists`.
+- **⚠️ NAUČENO 19.07:** `prisma migrate dev` u ne-interaktivnom shell-u (Bash tool) **NE čeka potvrdu** i
+  RESETUJE bazu ako detektuje drift (klon prod-a IMA drift: `_pwhash_backup_*` tabele + 2 FK van migracija).
+  Zato: (1) `.env` sada pokazuje na DEV (5437), ne prod; (2) za 4.0 migracije koristi `prisma migrate diff`
+  → izoluj samo nove `CREATE TABLE` (odseci `DROP INDEX idx_work_orders_parent` + `bb_sync_state DROP DEFAULT`
+  drift redove) → `psql -f` direktno → `migrate resolve --applied`. NE `migrate dev` na kloniranoj bazi.
+- **PROD DRIFT (nalaz):** prod je u drift-u sa schema.prisma već sada — `idx_work_orders_parent` i
+  `bb_sync_state.updated_at` default postoje na bazi ali ne u migracijama. Bezopasno, ali očistiti u zasebnoj migraciji.
+- **Napomena:** dev je 24 migracije; repo ima 25 (`20260719120000_pracenje_native_f1` = tuđi „Pracenje",
+  još nije na prod). Kad taj ode na main + prod, dev re-klonirati.
+
+## ⚠️ 4.0 gradnja — stvarno stanje (provereno 19.07 sa Nenadovog PC-a)
+- **Nenadov PC:** NEMA Docker, NEMA lokalnu dev bazu (`localhost:5435` zatvoren). **Koristi se `servosync-dev` na Ubuntu (gore).**
+- **PROD baza `192.168.64.28:5435` je DOSTUPNA sa PC-a preko LAN-a** ✅ (ali `.env` pogrešno kaže
+  `@localhost:5435` — za direktan pristup treba `@192.168.64.28:5435`).
+- **NE migrirati direktno na prod** (živa firmina baza). Tok: `migrate dev` na **`servosync-dev`** → PR → merge →
+  CI radi `migrate deploy` na prod. `pg_dump` snapshot prod-a pre svake netrivijalne migracije.
+- **Konto mape (2040/2050/4350/4360/2740/47x…):** potvrđene iz BigBit analize (docs 30/39) — NE čeka se Nesa
+  za osnovni registar; Nesa validira tek regulatorni izlaz (PDV/bilansi) paralelnim vođenjem.
+
 ## 5. Bezbedan dev-tok za 4.0 (preporuka)
 1. **Feature grana** (`feat/4.0-...`) od `main` HEAD — NIKAD direktno na `main` (main ima tuđe izmene + deploy trigger).
 2. **Lokalna dev baza** (`docker compose up -d db`, port 5435, `servosync_dev`) — jedini način da migraciju testiraš

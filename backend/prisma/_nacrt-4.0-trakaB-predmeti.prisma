@@ -1,0 +1,62 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// NACRT — Traka B (4.0) §A: Predmeti write-path + CustomerRfq (zahtev za ponudu)
+// ─────────────────────────────────────────────────────────────────────────────
+// STATUS: PREDLOG za pregled — NIJE u schema.prisma i NIJE migrirano.
+// Ne zavisi od GL/konto mapa. Komercijala — kreće posle Faze 1 (PLAN_TRAKA_B §A).
+//
+// Konvencije verifikovane iz koda:
+//   • app-owned tabela: id Int @default(autoincrement()); meki ref = customerId/projectId Int (BEZ @relation)
+//   • audit: createdByUserId Int? / updatedByUserId Int? (meki ref na users.id, bez @relation)
+//   • timestamp NOVE tabele: @db.Timestamptz(6) (Timestamp(6) je samo legacy)
+//   • statusi String sa dozvoljenim vrednostima u /// ; količine/novac Decimal (nikad Float)
+//   • eksplicitni pk_/fk_/uq_/idx_ nazivi; @map snake_case; @@map snake plural
+//   • presedan app-owned: PracenjeNote (schema:2261), PredmetAktivacija (schema:2280)
+//
+// N3 (BACKEND_RULES §11.1): predmeti — 2.0 MASTER (write direktno u `projects`);
+//   CustomerRfq visi na projects mekim ref-om (projectId), kao PracenjeNote/PredmetAktivacija.
+//   Model `Project` se NE menja (write-path piše u postojeća polja).
+//
+// Merge korak (kad baza + N3 potvrda budu spremni):
+//   1) rebaza nakon tuđeg `pracenje` commita   2) prepiši u schema.prisma
+//   3) docs/schema-rename-map.md   4) npm run migrate:dev na dev bazi → test → PR
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Was: ZahteviZaPonude  — zahtev kupca za ponudu (pre nego što nastane predmet).
+/// App-owned (2.0, Traka B §A). Meki ref-ovi → customers, projects, salespeople, documents.
+/// „Napravi predmet iz zahteva" (createProjectFromRfq): projects.create → write-back projectId.
+model CustomerRfq {
+  id              Int       @id(map: "pk_customer_rfqs") @default(autoincrement()) @map("id")
+  requestDate     DateTime  @default(now()) @map("request_date") @db.Timestamptz(6)  // datum prijema zahteva
+  quoteDeadline   DateTime? @map("quote_deadline") @db.Timestamptz(6)                 // rok za ponudu (Sporni ako istekne bez fakture)
+  customerId      Int       @map("customer_id")                                       // kupac — meki ref (šifarnik komitenata)
+  projectId       Int?      @map("project_id")                                        // null dok se ne napravi predmet; write-back posle
+  origin          String?   @map("origin") @db.VarChar(30)                            /// PHONE | EMAIL | WEB | WALK_IN | OTHER
+  salespersonId   Int?      @map("salesperson_id")                                    // prodavac — meki ref (salespeople.id)
+  proformaDocId   Int?      @map("proforma_doc_id")                                   // ponuda kupcu (profaktura) — meki ref na dokument
+  description     String?   @map("description") @db.VarChar(255)                      // opis potrebe (postaje description predmeta)
+  status          String    @default("DRAFT") @map("status") @db.VarChar(20)          /// DRAFT | OPEN | QUOTED | WON | LOST
+  note            String?   @map("note")
+  createdByUserId Int?      @map("created_by_user_id")
+  updatedByUserId Int?      @map("updated_by_user_id")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([projectId], map: "uq_customer_rfqs_project")   // najviše jedan zahtev veže jedan predmet (write-back je 1:1)
+  @@index([customerId], map: "idx_customer_rfqs_customer")
+  @@index([status], map: "idx_customer_rfqs_status")
+  @@index([quoteDeadline], map: "idx_customer_rfqs_deadline")
+  @@map("customer_rfqs")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NAPOMENE (za merge):
+//  • customerId / salespersonId / proformaDocId su MEKI ref-ovi (validacija u servisu, bez DB FK).
+//  • projectId je MEKI ref → projects (BigBit keš / 2.0 master, meki ref bez FK — kao PracenjeNote/
+//    PredmetAktivacija). @@unique(projectId) → PG tretira NULL kao različit, pa VIŠE RFQ-ova može
+//    imati projectId=null (očekivano: nespojeni zahtevi); jedinstvenost važi samo za spojene.
+//  • Model `Project` se NE menja u ovom nacrtu — write-path (createProject/updateProject) piše u
+//    postojeća polja: projectNumber (MAX+1, advisory lock), openedAt=CURRENT_DATE (default),
+//    salespersonId (JWT), status, customerId, workTypeId (≠0 obavezno), description.
+//  • „Sporni" (PredmetiPoDokumentima §A.3): quoteDeadline < danas AND NOT hasFaktura — READ view,
+//    van ovog nacrta (dolazi kad faktura modeli budu spremni).
+// ─────────────────────────────────────────────────────────────────────────────

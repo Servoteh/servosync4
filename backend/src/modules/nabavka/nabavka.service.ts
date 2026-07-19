@@ -57,8 +57,8 @@ export class NabavkaService {
           requestNumber,
           projectId: dto.projectId,
           workOrderId: dto.workOrderId ?? null,
-          initiatorUserId: actor.id,
-          createdByUserId: actor.id,
+          initiatorUserId: actor.userId,
+          createdByUserId: actor.userId,
           status: "DRAFT",
           note: dto.note ?? null,
           items: {
@@ -84,7 +84,7 @@ export class NabavkaService {
     this.assertStatus(req.status, ["DRAFT"], "predaju");
     return this.prisma.purchaseRequest.update({
       where: { id },
-      data: { status: "SUBMITTED", updatedByUserId: actor.id },
+      data: { status: "SUBMITTED", updatedByUserId: actor.userId },
     });
   }
 
@@ -94,7 +94,7 @@ export class NabavkaService {
     this.assertStatus(req.status, ["SUBMITTED"], "odobravanje");
     return this.prisma.purchaseRequest.update({
       where: { id },
-      data: { status: "APPROVED", updatedByUserId: actor.id },
+      data: { status: "APPROVED", updatedByUserId: actor.userId },
     });
   }
 
@@ -143,7 +143,7 @@ export class NabavkaService {
           requestId: req.id,
           supplierId,
           status: "DRAFT",
-          createdByUserId: actor.id,
+          createdByUserId: actor.userId,
           items: {
             create: req.items.map((it, idx) => ({
               requestItemId: it.id,
@@ -215,7 +215,7 @@ export class NabavkaService {
       }
       return tx.purchaseOrder.update({
         where: { id: orderId },
-        data: { status: "RECEIVED", updatedByUserId: actor.id },
+        data: { status: "RECEIVED", updatedByUserId: actor.userId },
       });
     });
   }

@@ -38,6 +38,7 @@ import { OdrzavanjeModule } from "./modules/odrzavanje/odrzavanje.module";
 import { EnergetikaModule } from "./modules/energetika/energetika.module";
 import { LocationsModule } from "./modules/locations/locations.module";
 import { KadrovskaModule } from "./modules/kadrovska/kadrovska.module";
+import { NabavkaModule } from "./modules/nabavka/nabavka.module";
 
 @Module({
   imports: [
@@ -54,6 +55,8 @@ import { KadrovskaModule } from "./modules/kadrovska/kadrovska.module";
     PdmModule,
     DirectoryModule,
     HandoversModule,
+    // Nabavka (4.0 Traka B — zahtev → upit dobavljaču → narudžbenica → prijem)
+    NabavkaModule,
     PartLocationsModule,
     CncProgramsModule,
     // Kontrola kvaliteta (K1 — evidencija škart/dorada; MODULE_SPEC_kontrola_kvaliteta §4/§7).

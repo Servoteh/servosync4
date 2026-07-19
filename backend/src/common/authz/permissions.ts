@@ -57,6 +57,12 @@ export const PERMISSIONS = {
   LOKACIJE_LABELS: "lokacije.labels",
   // MRP / Nabavka
   MRP_READ: "mrp.read",
+  // Nabavka — 4.0 Traka B (zahtev → upit dobavljaču → narudžbenica → prijem).
+  // read = svi prijavljeni; write = administratori nabavke/prodaje + šefovi + admin;
+  // approve = nabavka odobrava zahtev (operativni tok). Row-politika u pravu dolazi uz auth roljne.
+  NABAVKA_READ: "nabavka.read",
+  NABAVKA_WRITE: "nabavka.write",
+  NABAVKA_APPROVE: "nabavka.approve",
   // Šifarnici / pregledi (komitenti, predmeti)
   DIRECTORY_READ: "directory.read",
   // Sync administracija

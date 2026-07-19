@@ -2189,3 +2189,222 @@ model BbSyncState {
 
   @@map("bb_sync_state")
 }
+
+/// Was: Kontni plan  — kontni plan (1389 konta, seed iz bigbit_raw.kontni_plan na cutover)
+model Account {
+  code            String   @id(map: "pk_accounts") @map("code") @db.VarChar(10) // Konto
+  name            String   @map("name") @db.VarChar(255) // Opis
+  longDescription String?  @map("long_description") // Dugacki opis
+  accountClass    Int      @map("account_class") // izvedeno iz prve cifre (0-9)
+  allowsAnalytics Boolean  @default(false) @map("allows_analytics") // Dozvoljen unos analitike
+  codebookFile    String?  @map("codebook_file") @db.VarChar(64) // Fajl sifara
+  foreignAccount  String?  @map("foreign_account") @db.VarChar(10) // InoKonto
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  schemeLines AccountingSchemeLine[]
+  saldakonto  SaldakontoAccount?
+
+  @@index([accountClass], map: "idx_accounts_class")
+  @@map("accounts")
+}
+
+/// Was: Sema za kontiranje  — zaglavlje šeme knjiženja, vezano za vrstu naloga
+model AccountingScheme {
+  id          Int      @id(map: "pk_accounting_schemes") @default(autoincrement()) @map("id") // IDSeme
+  orderType   String   @map("order_type") @db.VarChar(5) // Vrsta naloga (npr. UFROB, IFR)
+  description String?  @map("description") @db.VarChar(255) // Opis
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  lines AccountingSchemeLine[]
+
+  @@map("accounting_schemes")
+}
+
+/// Was: Stavke seme za kontiranje  — linija šeme: konto + DefDug/DefPot izraz (A-Z), analitika
+model AccountingSchemeLine {
+  id             Int     @id(map: "pk_accounting_scheme_lines") @default(autoincrement()) @map("id")
+  schemeId       Int     @map("scheme_id")
+  accountCode    String  @map("account_code") @db.VarChar(10) // Konto (FK Account)
+  description    String? @map("description") @db.VarChar(255)
+  defDebit       String? @map("def_debit") @db.VarChar(255) // DefDug — izraz nad slovima A-Z (safe parser, NE eval)
+  defCredit      String? @map("def_credit") @db.VarChar(255) // DefPot
+  postsAnalytics Boolean @default(false) @map("posts_analytics") // Analitika (nosi li šifru komitenta)
+  origin         String? @map("origin") @db.VarChar(5) // Poreklo
+  itemCodebook   String? @map("item_codebook") @db.VarChar(10) // KngSifra_2 (alt konto po grupi artikla)
+  lineNo         Int     @default(0) @map("line_no")
+
+  scheme  AccountingScheme @relation(fields: [schemeId], references: [id], onDelete: Cascade, map: "fk_scheme_lines_scheme")
+  account Account          @relation(fields: [accountCode], references: [code], onDelete: NoAction, map: "fk_scheme_lines_account")
+
+  @@index([schemeId], map: "idx_scheme_lines_scheme")
+  @@index([accountCode], map: "idx_scheme_lines_account")
+  @@map("accounting_scheme_lines")
+}
+
+/// Was: PSF_AnalitickaKonta_T  — AUTORITATIVAN registar saldakonto konta (review VISOK).
+/// Rešava BigBit ograničenje "jedan kontrolni konto": lista, sa stranom i kontrolnim kontom.
+/// SVE faze čitaju OVAJ registar (posting F2, saldakonti F4, PS prenos FN), ne hardkod klase.
+/// Nesa potvrđuje spisak pod-konta pre Faze 2.
+model SaldakontoAccount {
+  account         String   @id(map: "pk_saldakonto_accounts") @map("account") @db.VarChar(10) // FK Account.code
+  side            String   @map("side") @db.VarChar(10) /// receivable | payable
+  controlAccount  String   @map("control_account") @db.VarChar(10) // sintetički kontrolni (2040->202, 4351->435)
+  tracksOpenItems Boolean  @default(true) @map("tracks_open_items") // OTST
+  holdsDinBalance Boolean  @default(true) @map("holds_din_balance") // DinSaldo
+  holdsFxBalance  Boolean  @default(false) @map("holds_fx_balance") // DevSaldo (izvozne/devizne 2050/4360)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  accountRef Account @relation(fields: [account], references: [code], onDelete: Cascade, map: "fk_saldakonto_account")
+
+  @@index([controlAccount], map: "idx_saldakonto_control")
+  @@map("saldakonto_accounts")
+}
+
+// NAPOMENA: PDV konto mapa (47x izlazni po stopi, 27x ulazni, 2740 carinski, 2790 transit) —
+// modelovati kao VatAccountMap u Fazi 6 (ili proširiti Account sa vat_role poljem). Ostavljeno
+// za Fazu 6 da se ne preteže Faza 1; registar SaldakontoAccount je dovoljan za GL/saldakonti.
+
+// ── Traka B: Nabavka (aktivirano 19.07) ──────────────────────────────────
+/// Was: ZahteviZaNabavku  — zahtev za nabavku (inicira inženjer, CTRL+J/K u BigBit-u).
+/// App-owned (2.0, Traka B §B). Meki ref → projects (project_id NOT NULL, kičma), work_orders.
+model PurchaseRequest {
+  id              Int      @id(map: "pk_purchase_requests") @default(autoincrement()) @map("id")
+  requestNumber   String   @map("request_number") @db.VarChar(20) // NNNN/god (BigBit broj zahteva)
+  projectId       Int      @map("project_id") // IDPredmetDok — meki ref, NOT NULL (doc 24)
+  workOrderId     Int?     @map("work_order_id") // IDRadniNalog — meki ref (opciono)
+  initiatorUserId Int?     @map("initiator_user_id") // inicijator (inženjer) — meki ref users.id
+  status          String   @default("DRAFT") @map("status") @db.VarChar(20) /// DRAFT | SUBMITTED | APPROVED | REJECTED | CLOSED
+  note            String?  @map("note")
+  createdByUserId Int?     @map("created_by_user_id")
+  updatedByUserId Int?     @map("updated_by_user_id")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  items PurchaseRequestItem[]
+
+  @@unique([requestNumber], map: "uq_purchase_requests_number")
+  @@index([projectId], map: "idx_purchase_requests_project")
+  @@index([status], map: "idx_purchase_requests_status")
+  @@map("purchase_requests")
+}
+
+/// Was: SpecifikacijaZahtevaNabavke  — stavka zahteva; KreirajUpit flag pokreće upit dobavljaču.
+model PurchaseRequestItem {
+  id                  Int     @id(map: "pk_purchase_request_items") @default(autoincrement()) @map("id")
+  requestId           Int     @map("request_id")
+  articleId           Int?    @map("article_id") // meki ref na artikal (šifarnik robe)
+  description         String? @map("description") @db.VarChar(255) // slobodan opis ako artikal nije u šifarniku
+  quantity            Decimal @map("quantity") @db.Decimal(18, 4) // količina (nikad Float)
+  unit                String? @map("unit") @db.VarChar(10)
+  createRfq           Boolean @default(false) @map("create_rfq") // KreirajUpit — ide li ova stavka u upit
+  suggestedSupplierId Int?    @map("suggested_supplier_id") // predloženi dobavljač — meki ref
+  lineNo              Int     @default(0) @map("line_no")
+
+  request PurchaseRequest @relation(fields: [requestId], references: [id], onDelete: Cascade, map: "fk_pr_items_request")
+
+  @@index([requestId], map: "idx_pr_items_request")
+  @@map("purchase_request_items")
+}
+
+/// Was: T_UpitDobavljacu  — upit (RFQ) poslat dobavljaču; broj = prefiks predmeta + N.
+/// Auto-mail preko Faza-0 Resend (PDF prilog); log sentAt umesto BigBit Poslato=True.
+model SupplierRfq {
+  id              Int       @id(map: "pk_supplier_rfqs") @default(autoincrement()) @map("id")
+  rfqNumber       String    @map("rfq_number") @db.VarChar(30) // prefiks=predmet-N
+  requestId       Int?      @map("request_id") // IDTrebVeza — veza na zahtev (meki ref)
+  supplierId      Int       @map("supplier_id") // dobavljač — meki ref (šifarnik komitenata)
+  status          String    @default("DRAFT") @map("status") @db.VarChar(20) /// DRAFT | SENT | QUOTED | CLOSED
+  sentAt          DateTime? @map("sent_at") @db.Timestamptz(6) // BigBit Poslato → timestamp slanja
+  emailMessageId  String?   @map("email_message_id") @db.VarChar(128) // Resend message id (audit auto-maila)
+  note            String?   @map("note")
+  createdByUserId Int?      @map("created_by_user_id")
+  updatedByUserId Int?      @map("updated_by_user_id")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  items SupplierRfqItem[]
+
+  @@unique([rfqNumber], map: "uq_supplier_rfqs_number")
+  @@index([supplierId], map: "idx_supplier_rfqs_supplier")
+  @@index([requestId], map: "idx_supplier_rfqs_request")
+  @@map("supplier_rfqs")
+}
+
+/// Was: (stavke T_UpitDobavljacu)  — stavka upita; ponuda dobavljača (rok, prihvaćeno).
+/// CENA se NE drži ovde — cena tek u narudžbenici (BigBit pravilo, doc 24).
+model SupplierRfqItem {
+  id                  Int     @id(map: "pk_supplier_rfq_items") @default(autoincrement()) @map("id")
+  rfqId               Int     @map("rfq_id")
+  requestItemId       Int?    @map("request_item_id") // veza na stavku zahteva (meki ref)
+  articleId           Int?    @map("article_id")
+  description         String? @map("description") @db.VarChar(255)
+  quantity            Decimal @map("quantity") @db.Decimal(18, 4)
+  unit                String? @map("unit") @db.VarChar(10)
+  offeredLeadTimeDays Int?    @map("offered_lead_time_days") // rok isporuke iz ponude
+  isAccepted          Boolean @default(false) @map("is_accepted") // PrihvacenaPonuda
+  lineNo              Int     @default(0) @map("line_no")
+
+  rfq SupplierRfq @relation(fields: [rfqId], references: [id], onDelete: Cascade, map: "fk_rfq_items_rfq")
+
+  @@index([rfqId], map: "idx_rfq_items_rfq")
+  @@map("supplier_rfq_items")
+}
+
+/// Was: T_Trebovanja  — narudžbenica dobavljaču (nastaje iz prihvaćene ponude).
+/// Cena se drži OVDE (stavke). Status-mašina: DRAFT→ORDERED→SIGNED→LOCKED→CLOSED.
+model PurchaseOrder {
+  id              Int       @id(map: "pk_purchase_orders") @default(autoincrement()) @map("id")
+  orderNumber     String    @map("order_number") @db.VarChar(20)
+  rfqId           Int?      @map("rfq_id") // IDUpita — veza na upit (meki ref)
+  supplierId      Int       @map("supplier_id")
+  projectId       Int?      @map("project_id") // meki ref (nasledi iz zahteva)
+  status          String    @default("DRAFT") @map("status") @db.VarChar(20) /// DRAFT | ORDERED | SIGNED | LOCKED | RECEIVED | CLOSED
+  orderedAt       DateTime? @map("ordered_at") @db.Timestamptz(6) // Poruceno
+  currency        String    @default("RSD") @map("currency") @db.VarChar(3)
+  note            String?   @map("note")
+  createdByUserId Int?      @map("created_by_user_id")
+  updatedByUserId Int?      @map("updated_by_user_id")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  items PurchaseOrderItem[]
+
+  @@unique([orderNumber], map: "uq_purchase_orders_number")
+  @@index([supplierId], map: "idx_purchase_orders_supplier")
+  @@index([rfqId], map: "idx_purchase_orders_rfq")
+  @@index([status], map: "idx_purchase_orders_status")
+  @@map("purchase_orders")
+}
+
+/// Was: (stavke T_Trebovanja)  — stavka narudžbenice; naručeno vs primljeno (3-way match).
+/// receivedQuantity default = orderedQuantity pri prijemu (BigBit IsporucenaKolicina).
+model PurchaseOrderItem {
+  id               Int      @id(map: "pk_purchase_order_items") @default(autoincrement()) @map("id")
+  orderId          Int      @map("order_id")
+  rfqItemId        Int?     @map("rfq_item_id") // IDStavkeUpita (meki ref)
+  requestItemId    Int?     @map("request_item_id") // IDZahtevaZaNabavku (meki ref)
+  articleId        Int?     @map("article_id")
+  description      String?  @map("description") @db.VarChar(255)
+  orderedQuantity  Decimal  @map("ordered_quantity") @db.Decimal(18, 4) // TrebKol
+  receivedQuantity Decimal  @default(0) @map("received_quantity") @db.Decimal(18, 4) // IsporucenaKolicina
+  unitPrice        Decimal? @map("unit_price") @db.Decimal(18, 4) // cena (tek ovde, ne u upitu)
+  unit             String?  @map("unit") @db.VarChar(10)
+  lineNo           Int      @default(0) @map("line_no")
+
+  order PurchaseOrder @relation(fields: [orderId], references: [id], onDelete: Cascade, map: "fk_po_items_order")
+
+  @@index([orderId], map: "idx_po_items_order")
+  @@map("purchase_order_items")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NAPOMENE (za merge):
+//  • articleId / supplierId / customerId su MEKI ref na sync-kеš šifarnike (artikli, komitenti)
+//    — bez @relation jer su te tabele sync-cache (BACKEND_RULES §4). Validacija postojanja u servisu.
+//  • 3-way match (naručeno/primljeno/fakturisano) — polje "fakturisano" dolazi iz Faze 5 (ulazna
+//    faktura); anti-duplo guard "IDStavkeTrebovanja Is Null" se preslikava u servisnu logiku prijema.
+//  • Veza sa Fazom 3 (robni ulaz) i Fazom 5 (ulazna faktura) — meki ref-ovi, dodaju se kad ti modeli dođu.
+//  • Numeracija: obrazac iz draft-numbering.service.ts (pg_advisory_xact_lock(hashtext(prefix)) UNUTAR
+//    $transaction; MAX se računa u JS-u, ne SQL MAX). Format zahteva NNNN/god; upit prefiks=predmet-N.
+// ─────────────────────────────────────────────────────────────────────────────
