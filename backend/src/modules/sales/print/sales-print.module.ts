@@ -1,5 +1,6 @@
 import { Module } from "@nestjs/common";
 import { DocumentsModule } from "../../documents/documents.module";
+import { MailModule } from "../../../common/mail/mail.module";
 import { InvoicePdfService } from "./invoice-pdf.service";
 import { InvoiceMailService } from "./invoice-mail.service";
 
@@ -14,7 +15,7 @@ import { InvoiceMailService } from "./invoice-mail.service";
  * (Faza 5 wiring), zajedno sa sales controller-om koji izlaže endpointe.
  */
 @Module({
-  imports: [DocumentsModule],
+  imports: [DocumentsModule, MailModule],
   providers: [InvoicePdfService, InvoiceMailService],
   exports: [InvoicePdfService, InvoiceMailService],
 })
