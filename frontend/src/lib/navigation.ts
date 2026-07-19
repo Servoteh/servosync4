@@ -258,9 +258,9 @@ export const NAV_DOMAINS: NavDomain[] = [
       // Traka B: RFQ kupca → predmet
       // { label: 'Upiti kupaca', href: '/rfqs', icon: ClipboardList, requires: PERMISSIONS.SALES_READ, keywords: ['rfq', 'zahtev za ponudu', 'upit kupca'] },
       // Faza 5: Predračuni & računi (izlazni, dom+izvoz)
-      // { label: 'Predračuni & računi', href: '/fakturisanje', icon: ListOrdered, requires: PERMISSIONS.SALES_READ, keywords: ['faktura', 'racun', 'predracun', 'profaktura', 'izvoz'] },
+      { label: 'Predračuni & računi', href: '/fakturisanje', icon: ListOrdered, requires: PERMISSIONS.SALES_READ, keywords: ['faktura', 'racun', 'predracun', 'profaktura', 'izvoz'] },
       // Faza 5: e-Fakture (SEF)
-      // { label: 'e-Fakture (SEF)', href: '/sef', icon: RefreshCw, requires: PERMISSIONS.SEF_READ, keywords: ['sef', 'efaktura', 'ubl'] },
+      { label: 'e-Fakture (SEF)', href: '/sef', icon: RefreshCw, requires: PERMISSIONS.SEF_READ, keywords: ['sef', 'efaktura', 'ubl'] },
       // Faza 3: Zalihe & kalkulacija (crosslisted u Logistiku)
       { label: 'Zalihe & kalkulacija', href: '/robno', icon: Warehouse, requires: PERMISSIONS.ROBNO_READ, keywords: ['zalihe', 'lager', 'kalkulacija', 'primka', 'popis', 'nivelacija'], crosslisted: true },
     ],
@@ -277,9 +277,9 @@ export const NAV_DOMAINS: NavDomain[] = [
       // Faza 4: Banka & plaćanja (izvodi, priprema plaćanja, virmani)
       { label: 'Banka & plaćanja', href: '/placanja', icon: Building2, requires: PERMISSIONS.PLACANJA_READ, keywords: ['banka', 'izvod', 'virman', 'nalog za placanje', 'priprema placanja'] },
       // Faza 6: PDV & POPDV
-      // { label: 'PDV & POPDV', href: '/pdv', icon: ShieldCheck, requires: PERMISSIONS.PDV_READ, keywords: ['pdv', 'popdv', 'pppdv', 'kif', 'kuf'] },
+      { label: 'PDV & POPDV', href: '/pdv', icon: ShieldCheck, requires: PERMISSIONS.PDV_READ, keywords: ['pdv', 'popdv', 'pppdv', 'kif', 'kuf'] },
       // Faza 7: Završni račun (bilansi, APR)
-      // { label: 'Završni račun', href: '/zavrsni-racun', icon: CheckCircle2, requires: PERMISSIONS.ZR_READ, keywords: ['bilans', 'zavrsni racun', 'apr', 'popdv'] },
+      { label: 'Završni račun', href: '/zavrsni-racun', icon: CheckCircle2, requires: PERMISSIONS.ZR_READ, keywords: ['bilans', 'zavrsni racun', 'apr', 'popdv'] },
     ],
   },
   {

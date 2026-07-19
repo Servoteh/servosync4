@@ -140,6 +140,16 @@
 | Robno — dokument | Kalkulisan (`CALCULATED`) | info plava | `--status-info` |
 | Robno — dokument | Proknjižen (`POSTED`) | zelena | `--status-success` |
 | Robno — dokument | Zaključan (`LOCKED`) | neutralna | `--status-neutral` |
+| Fakturisanje — račun | U pripremi (`DRAFT`) | neutralna | `--status-neutral` |
+| Fakturisanje — račun | Proknjižen (`POSTED`) | zelena | `--status-success` |
+| Fakturisanje — račun | Poslat (`SENT`) | info plava | `--status-info` |
+| Fakturisanje — račun | Plaćen (`PAID`) | zelena | `--status-success` |
+| Fakturisanje — račun | Storniran (`CANCELLED`) | crvena | `--status-danger` |
+| SEF — e-faktura | U redu (`PENDING`) | narandžasta | `--status-warn` |
+| SEF — e-faktura | Poslato (`SENT`) | info plava | `--status-info` |
+| SEF — e-faktura | Isporučeno (`DELIVERED`) | zelena | `--status-success` |
+| SEF — e-faktura | Odbijeno (`REJECTED`) | crvena | `--status-danger` |
+| SEF — e-faktura | Stornirano (`CANCELLED`) | neutralna | `--status-neutral` |
 | Sync (bb_sync) | Greška sinhronizacije | crvena | `--status-danger` |
 | Notifikacija (D8) | Škart (`kontrola.skart`) | crvena | `--status-danger` |
 | Notifikacija (D8) | Dorada (`kontrola.dorada`) | narandžasta | `--status-warn` |

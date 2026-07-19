@@ -50,6 +50,11 @@ export const PERMISSIONS = {
   ROBNO_READ: 'robno.read',
   ROBNO_WRITE: 'robno.write',
   ROBNO_POST: 'robno.post',
+  // Izvodi (bankovni izvodi) — 4.0 Faza 4 §B (uvoz TXT → uparivanje → auto-knjiženje).
+  // read = uvid; import = upload/parse + uparivanje; post = auto-knjiženje u GK. Mirror BE kataloga.
+  IZVODI_READ: 'izvodi.read',
+  IZVODI_IMPORT: 'izvodi.import',
+  IZVODI_POST: 'izvodi.post',
   // Saldakonti — 4.0 Faza 4 (otvorene stavke/aging, uparivanje). Mirror BE kataloga.
   SALDAKONTI_READ: 'saldakonti.read',
   SALDAKONTI_RECONCILE: 'saldakonti.reconcile',
@@ -58,6 +63,25 @@ export const PERMISSIONS = {
   PLACANJA_READ: 'placanja.read',
   PLACANJA_PREPARE: 'placanja.prepare',
   PLACANJA_EXPORT: 'placanja.export',
+  // Fakturisanje / prodaja — 4.0 Faza 5 §A (izlazni računi: predračun → carry-over → knjiženje).
+  // read = uvid; write = predračun + prepis PROF→IFR; post = knjiženje u GK; approve = odobrenje.
+  SALES_READ: 'sales.read',
+  SALES_WRITE: 'sales.write',
+  SALES_POST: 'sales.post',
+  SALES_APPROVE: 'sales.approve',
+  // SEF e-fakture (izlazne) — 4.0 Faza 5 §B. read = uvid u outbox; send = slanje UBL-a na SEF;
+  // cancel = storno/otkazivanje na SEF-u. Mirror BE kataloga.
+  SEF_READ: 'sef.read',
+  SEF_SEND: 'sef.send',
+  SEF_CANCEL: 'sef.cancel',
+  // PDV / POPDV — 4.0 Faza 6 (KIF/KUF knjige, POPDV obračun, PPDV prijava).
+  // read = uvid u KIF/KUF + PDV obračune; compute = pokretanje POPDV obračuna. Mirror BE kataloga.
+  PDV_READ: 'pdv.read',
+  PDV_COMPUTE: 'pdv.compute',
+  // Završni račun / bilansi — 4.0 Faza 7 (bruto bilans, bilans stanja/uspeha, APR).
+  // read = uvid u bruto bilans i sačuvane obračune; compute = pokretanje obračuna. Mirror BE kataloga.
+  ZR_READ: 'zr.read',
+  ZR_COMPUTE: 'zr.compute',
   DIRECTORY_READ: 'directory.read',
   // Predmeti write-path + RFQ kupca — 4.0 Traka B (mirror backend kataloga)
   PROJECTS_WRITE: 'projects.write',
