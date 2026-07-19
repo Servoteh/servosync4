@@ -106,6 +106,20 @@ export const PERMISSIONS = {
   SEF_READ: "sef.read",
   SEF_SEND: "sef.send",
   SEF_CANCEL: "sef.cancel",
+  // Završni račun / bilansi — 4.0 Faza 7 (bruto bilans, bilans stanja/uspeha, APR).
+  // Izveden pogled nad glavnom knjigom (ledger_entries) preko GKEval formula-engine-a.
+  //   read    = uvid u bruto bilans i sačuvane obračune (finansije/knjigovodstvo)
+  //   compute = pokretanje obračuna bilansa stanja/uspeha (kreira FinancialStatement)
+  // Row-politika dolazi uz auth roljne (finansije/knjigovodstvo + admin).
+  ZR_READ: "zr.read",
+  ZR_COMPUTE: "zr.compute",
+  // PDV / POPDV — 4.0 Faza 6 (KIF/KUF knjige, POPDV obračun, PPDV prijava).
+  // Izvedena PDV evidencija iz glavne knjige (ledger_entries) preko VatAccountMap.
+  //   read    = uvid u KIF/KUF knjige + PDV obračune (knjigovodstvo/finansije)
+  //   compute = pokretanje POPDV obračuna za period (kreira VatReturn + linije)
+  // Konkretne role se dodeljuju u role-permissions pri aktivaciji (knjigovodstvo/admin).
+  PDV_READ: "pdv.read",
+  PDV_COMPUTE: "pdv.compute",
   // Šifarnici / pregledi (komitenti, predmeti)
   DIRECTORY_READ: "directory.read",
   // Predmeti write-path + RFQ kupca — 4.0 Traka B (2.0 postaje master za predmete).

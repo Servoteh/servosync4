@@ -48,6 +48,8 @@ import { PlacanjaModule } from "./modules/placanja/placanja.module";
 import { SalesModule } from "./modules/sales/sales.module";
 import { SefModule } from "./modules/sales/sef/sef.module";
 import { SalesPrintModule } from "./modules/sales/print/sales-print.module";
+import { PdvModule } from "./modules/pdv/pdv.module";
+import { ZavrsniModule } from "./modules/zavrsni/zavrsni.module";
 
 @Module({
   imports: [
@@ -114,6 +116,10 @@ import { SalesPrintModule } from "./modules/sales/print/sales-print.module";
     SalesModule,
     SefModule,
     SalesPrintModule,
+    // 4.0 Faza 6 — PDV / POPDV / KEPU (obračun iz glavne knjige, KIF/KUF).
+    PdvModule,
+    // 4.0 Faza 7 — Završni račun / bilansi (GKEval formule nad saldima konta).
+    ZavrsniModule,
   ],
   controllers: [AppController],
   providers: [
