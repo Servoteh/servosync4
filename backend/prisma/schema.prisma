@@ -2915,6 +2915,7 @@ model CompensationOrder {
   date               DateTime @map("date") @db.Timestamptz(6) // datum kompenzacije
   status             String   @default("DRAFT") @map("status") @db.VarChar(20) /// DRAFT | CONFIRMED | POSTED
   totalAmount        Decimal  @default(0) @map("total_amount") @db.Decimal(19, 4) // ukupan prebijeni iznos (bilateralni min)
+  journalEntryId     Int?     @map("journal_entry_id") // KMP nalog GK (meki ref journal_entries.id) po knjiženju
   createdByUserId    Int?     @map("created_by_user_id") // meki ref users.id
   createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt          DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)

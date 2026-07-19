@@ -171,6 +171,85 @@ export class PostingEngineService {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
+   * Generički ručni nalog GK iz proizvoljnih linija (konto/komitent/dug/pot).
+   * Za tokove koji NE prolaze kroz šemu za kontiranje: kompenzacija (KMP), izvodi,
+   * ručna knjiženja. Balans-kontrola ΣDug=ΣPot (baca `LedgerNotBalancedException`).
+   * Poziva se UNUTAR postojeće `$transaction` (prima `tx`) da se veže za izvorni entitet.
+   */
+  async postManualEntry(
+    tx: Prisma.TransactionClient,
+    params: {
+      orderType: string;
+      documentDate: Date;
+      companyId?: number;
+      description?: string;
+      createdByUserId?: number;
+      lines: Array<{
+        accountCode: string;
+        analyticalCode?: number | null;
+        debit?: number | string;
+        credit?: number | string;
+        description?: string;
+        documentNumber?: string | null;
+        dueDate?: Date | null;
+        currency?: string | null;
+      }>;
+    },
+  ): Promise<{ journalEntryId: number; number: string; lineCount: number }> {
+    const D = Prisma.Decimal;
+    const companyId = params.companyId ?? 0;
+    const year = params.documentDate.getFullYear();
+
+    // Balans-kontrola (Decimal je egzaktan → tolerancija 0).
+    let totalDebit = new D(0);
+    let totalCredit = new D(0);
+    for (const l of params.lines) {
+      totalDebit = totalDebit.plus(new D(l.debit ?? 0));
+      totalCredit = totalCredit.plus(new D(l.credit ?? 0));
+    }
+    if (!totalDebit.equals(totalCredit)) {
+      throw new LedgerNotBalancedException(totalDebit, totalCredit);
+    }
+
+    const number = await this.nextJournalNumber(
+      tx,
+      companyId,
+      params.orderType,
+      year,
+    );
+
+    const journal = await tx.journalEntry.create({
+      data: {
+        number,
+        orderTypeCode: params.orderType,
+        year,
+        companyId,
+        documentDate: params.documentDate,
+        postingDate: params.documentDate,
+        status: "posted",
+        createdByUserId: params.createdByUserId ?? null,
+        lines: {
+          create: params.lines.map((l) => ({
+            accountCode: l.accountCode,
+            analyticalCode: l.analyticalCode ?? null,
+            debit: new D(l.debit ?? 0),
+            credit: new D(l.credit ?? 0),
+            description: l.description ?? params.description ?? null,
+            documentNumber: l.documentNumber ?? null,
+            dueDate: l.dueDate ?? null,
+            currency: l.currency ?? null,
+          })),
+        },
+      },
+    });
+    return {
+      journalEntryId: journal.id,
+      number,
+      lineCount: params.lines.length,
+    };
+  }
+
+  /**
    * Proknjiži jedan ROBNI dokument (StockDocument) u nalog GK. In-transaction,
    * idempotentno. @returns kreirane LedgerEntry linije (Dnevnik / Kartica konta).
    */

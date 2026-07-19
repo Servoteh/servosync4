@@ -25,6 +25,7 @@ import {
 } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
+import { PostingEngineService } from "../gl/posting/posting.service";
 import { OpenItemsService, type OpenItem } from "./open-items.service";
 import { ReconciliationService } from "./reconciliation.service";
 import {
@@ -58,6 +59,7 @@ export class CompensationService {
     private readonly prisma: PrismaService,
     private readonly openItems: OpenItemsService,
     private readonly reconciliation: ReconciliationService,
+    private readonly posting: PostingEngineService,
   ) {}
 
   /**
@@ -144,6 +146,11 @@ export class CompensationService {
 
       if (dto.post) {
         await this.postCompensation(tx, order.id, dto.partnerId);
+        // Re-fetch: postCompensation je ažurirao status=POSTED + journalEntryId.
+        return tx.compensationOrder.findUniqueOrThrow({
+          where: { id: order.id },
+          include: { lines: true },
+        });
       }
 
       return order;
@@ -197,13 +204,69 @@ export class CompensationService {
    *   postCompensation(tx, compensationId: number, partnerId: number): Promise<void>
    */
   private async postCompensation(
-    _tx: Prisma.TransactionClient,
-    _compensationId: number,
-    _partnerId: number,
+    tx: Prisma.TransactionClient,
+    compensationId: number,
+    partnerId: number,
   ): Promise<void> {
-    // Namerno bez implementacije — v. TODO iznad. Ne bacamo grešku da kreiranje
-    // (DRAFT) prođe; knjiženje se aktivira kad PostingEngine dobije generički ulaz.
-    return;
+    const order = await tx.compensationOrder.findUniqueOrThrow({
+      where: { id: compensationId },
+      include: { lines: true },
+    });
+
+    // Kompenzacioni nalog (vrsta KMP): prebijamo potraživanje protiv obaveze.
+    // receivable strana (npr. 2040 kupac) se ZATVARA → potražuje (credit);
+    // payable strana (npr. 4350 dobavljač) se ZATVARA → duguje (debit).
+    // Za svaku liniju treba konto stavke; čitamo iz uparene ledger stavke.
+    const glLines: Array<{
+      accountCode: string;
+      analyticalCode: number;
+      debit: number;
+      credit: number;
+      description: string;
+    }> = [];
+    for (const line of order.lines) {
+      let accountCode: string | null = null;
+      if (line.ledgerEntryId != null) {
+        const le = await tx.ledgerEntry.findUnique({
+          where: { id: line.ledgerEntryId },
+          select: { accountCode: true },
+        });
+        accountCode = le?.accountCode ?? null;
+      }
+      if (!accountCode) continue; // grupisane stavke bez per-red ID-a se preskaču
+      const amount = Number(line.amount);
+      glLines.push({
+        accountCode,
+        analyticalCode: partnerId,
+        debit: line.side === "payable" ? amount : 0,
+        credit: line.side === "receivable" ? amount : 0,
+        description: `Kompenzacija ${order.compensationNumber}`,
+      });
+    }
+
+    if (glLines.length === 0) return; // nema knjiživih linija (npr. grupisane stavke)
+
+    const posted = await this.posting.postManualEntry(tx, {
+      orderType: "KMP",
+      documentDate: order.date ?? new Date(),
+      description: `Kompenzacija ${order.compensationNumber} (komitent ${partnerId})`,
+      lines: glLines,
+    });
+
+    // Zatvori uparene otvorene stavke (reconciledAt) + status POSTED.
+    const entryIds = order.lines
+      .map((l) => l.ledgerEntryId)
+      .filter((id): id is number => id != null);
+    if (entryIds.length > 0) {
+      await tx.ledgerEntry.updateMany({
+        where: { id: { in: entryIds } },
+        data: { reconciledAt: new Date() },
+      });
+    }
+    await tx.compensationOrder.update({
+      where: { id: compensationId },
+      data: { status: "POSTED", journalEntryId: posted.journalEntryId },
+    });
   }
 
   // ── privatni helperi ────────────────────────────────────────────────────────

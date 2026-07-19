@@ -1,5 +1,6 @@
 import { Module } from "@nestjs/common";
 import { PrismaModule } from "../../prisma/prisma.module";
+import { PostingModule } from "../gl/posting/posting.module";
 import { SaldakontiController } from "./saldakonti.controller";
 import { OpenItemsService } from "./open-items.service";
 import { ReconciliationService } from "./reconciliation.service";
@@ -19,7 +20,7 @@ import { CompensationService } from "./compensation.service";
  * registraciju radi integrator pri aktivaciji Faze 4.
  */
 @Module({
-  imports: [PrismaModule],
+  imports: [PrismaModule, PostingModule],
   controllers: [SaldakontiController],
   providers: [OpenItemsService, ReconciliationService, CompensationService],
   exports: [OpenItemsService, ReconciliationService, CompensationService],
