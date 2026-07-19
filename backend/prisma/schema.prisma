@@ -2189,3 +2189,260 @@ model BbSyncState {
 
   @@map("bb_sync_state")
 }
+
+// ============================================================================
+// PRAĆENJE PROIZVODNJE — 2.0-native app-owned tabele (F1)
+// ----------------------------------------------------------------------------
+// Zamena za sy15 (1.0) most: praćenje sedi direktno na 2.0 work_orders / projects /
+// tech_processes (BACKEND_RULES §3 — vlasništvo ServoSync-a). Ove tabele drže SAMO
+// aplikativni podatak koga NEMA u izvornim tabelama: ručni override-i, napomene,
+// operativni plan, aktivacije predmeta i kooperacija. Plan + presuđene odluke O1–O8:
+// docs/PLAN_PRACENJE_PROIZVODNJE_2026-07.md §3.2 / §6.
+//
+// Reference ka work_orders / projects (2.0) i customers (BigBit keš) su MEKI ref-ovi
+// (bez DB FK) — kućni obrazac šeme za work_orders (CncProgram / NonconformityReport /
+// WorkTimeEntry: „batch-resolve, legacy orphan") i nema presedana hard-FK ka BigBit
+// kešu (WorkOrder.externalCustomerId je isto meki). Pravi FK-ovi postoje SAMO među
+// ovim novim app-owned tabelama (odeljenja / operativne_aktivnosti / koop_otpremnice).
+// Sva vremena Timestamptz(6) (BACKEND_RULES §11.5); statusi String sa /// katalogom
+// dozvoljenih vrednosti (BACKEND_RULES §2). createdBy/updatedBy = users.id (Int, meki),
+// presedan NonconformityReport.createdByUserId.
+// ============================================================================
+
+/// App-owned (2.0, plan §3.2-1). Ručni override praćenja po RN-u (1 red / work_orders.id).
+/// Zamena za sy15 `pracenje_manual_overrides` (podaci se migriraju). null `manualStatus` =
+/// auto (izvedeno iz kucanja). „Kompletirano" auto-postavlja mašinsku+površinsku i 100% u
+/// servisu (docx §4.7). `workOrderId` meki ref → work_orders (bez DB FK).
+model PracenjeOverride {
+  id              Int      @id(map: "pk_pracenje_overrides") @default(autoincrement()) @map("id")
+  workOrderId     Int      @map("work_order_id")
+  /// Ručni status; null = auto. Dozvoljeno: 'u_radu' | 'kompletirano' | 'nije_zapoceto'.
+  manualStatus    String?  @map("manual_status") @db.VarChar(20)
+  /// Ručna mašinska obrada DA/NE; null = auto iz rutinga.
+  manualMachining Boolean? @map("manual_machining")
+  /// Ručna površinska zaštita DA/NE; null = auto iz rutinga.
+  manualSurface   Boolean? @map("manual_surface")
+  /// Ručna „fizički urađeno a nije otkucano" količina (komadi); null = bez korekcije (docx §4.6).
+  manualQty       Int?     @map("manual_qty")
+  reason          String?  @map("reason")
+  createdByUserId Int?     @map("created_by_user_id")
+  updatedByUserId Int?     @map("updated_by_user_id")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([workOrderId], map: "uq_pracenje_overrides_work_order")
+  @@map("pracenje_overrides")
+}
+
+/// App-owned (2.0, plan §3.2-2). Ručni re-parent pozicije/podsklopa u stablu praćenja
+/// (RN → parent RN). `parentWorkOrderId` null = koren (odlepljeno od auto-sastavnice).
+/// Zamena za sy15 `pracenje_parent_override`. Meki ref-ovi → work_orders (bez DB FK).
+model PracenjeStructureOverride {
+  id                Int      @id(map: "pk_pracenje_structure_overrides") @default(autoincrement()) @map("id")
+  workOrderId       Int      @map("work_order_id")
+  /// Ručno postavljen roditelj (work_orders.id); null = koren / odlepi od auto-hijerarhije.
+  parentWorkOrderId Int?     @map("parent_work_order_id")
+  createdByUserId   Int?     @map("created_by_user_id")
+  updatedByUserId   Int?     @map("updated_by_user_id")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([workOrderId], map: "uq_pracenje_structure_overrides_work_order")
+  @@index([parentWorkOrderId], map: "idx_pracenje_structure_overrides_parent")
+  @@map("pracenje_structure_overrides")
+}
+
+/// App-owned (2.0, plan §3.2-3). Korisnička napomena po predmetu (projectId) i opciono po
+/// RN-u (workOrderId; null = napomena na nivou predmeta). Zamena za sy15
+/// `pracenje_proizvodnje_napomene`. Meki ref-ovi → projects / work_orders (bez DB FK).
+/// NAPOMENA: PG tretira NULL kao različit, pa @@unique(projectId, workOrderId) NE garantuje
+/// jedinstvenost napomena na nivou predmeta (workOrderId NULL) — servis to dodatno enforce-uje
+/// (isti caveat kao partial-unique kod NonconformityReport-a).
+model PracenjeNote {
+  id              Int      @id(map: "pk_pracenje_notes") @default(autoincrement()) @map("id")
+  projectId       Int      @map("project_id")
+  workOrderId     Int?     @map("work_order_id")
+  note            String   @map("note")
+  createdByUserId Int?     @map("created_by_user_id")
+  updatedByUserId Int?     @map("updated_by_user_id")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([projectId, workOrderId], map: "uq_pracenje_notes_project_work_order")
+  @@index([projectId], map: "idx_pracenje_notes_project")
+  @@map("pracenje_notes")
+}
+
+/// App-owned (2.0, plan §3.2-4, odluka O1). Aktivan predmet + redosled liste (↑↓) + ⭐
+/// plan-prioritet (top-lista). Spaja sy15 `predmet_aktivacija` / `predmet_prioritet` /
+/// `predmet_plan_prioritet`. `projectId` = projects.id (BigBit keš, meki ref bez FK — O1).
+/// Istorijski audit ide u 2.0 `audit_log` (append-only).
+model PredmetAktivacija {
+  id              Int      @id(map: "pk_predmet_aktivacije") @default(autoincrement()) @map("id")
+  projectId       Int      @map("project_id")
+  isActive        Boolean  @default(true) @map("is_active")
+  /// Redosled u listi aktivnih predmeta (↑↓); null = nerangiran.
+  sortPriority    Int?     @map("sort_priority")
+  /// ⭐ Slot u „top-listi" plana (max je app-konfiguracija); null = nije na top-listi.
+  planPriority    Int?     @map("plan_priority")
+  createdByUserId Int?     @map("created_by_user_id")
+  updatedByUserId Int?     @map("updated_by_user_id")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([projectId], map: "uq_predmet_aktivacije_project")
+  @@index([planPriority], map: "idx_predmet_aktivacije_plan_priority")
+  @@index([sortPriority], map: "idx_predmet_aktivacije_sort_priority")
+  @@map("predmet_aktivacije")
+}
+
+/// App-owned (2.0, plan §3.2-6, odluka O3). Šifarnik odeljenja (7 redova iz sy15
+/// `core.odeljenje`); nose boju i vođu — semantika drugačija od `work_units` / `workers`.
+/// `leadUserId` / `leadWorkerId` meki ref-ovi (users / workers, bez DB FK). Referencira ga
+/// `operativne_aktivnosti` pravim FK-om.
+model Odeljenje {
+  id           Int                   @id(map: "pk_odeljenja") @default(autoincrement()) @map("id")
+  code         String                @map("code") @db.VarChar(20)
+  name         String                @map("name") @db.VarChar(100)
+  /// UI boja reda (hex ili token), npr. „#2E7D32" / „green".
+  color        String?               @map("color") @db.VarChar(20)
+  sortOrder    Int                   @default(0) @map("sort_order")
+  active       Boolean               @default(true) @map("active")
+  /// Vođa odeljenja — meki ref → users.id (bez DB FK).
+  leadUserId   Int?                  @map("lead_user_id")
+  /// Vođa odeljenja — meki ref → workers.id (bez DB FK).
+  leadWorkerId Int?                  @map("lead_worker_id")
+  createdAt    DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime              @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  aktivnosti   OperativnaAktivnost[]
+
+  @@unique([code], map: "uq_odeljenja_code")
+  @@index([sortOrder], map: "idx_odeljenja_sort_order")
+  @@map("odeljenja")
+}
+
+/// App-owned (2.0, plan §3.2-5). Operativni plan (Tab2) — aktivnosti po odeljenjima sa
+/// zavisnostima i blokadama. Migracija iz sy15 `production.operativna_aktivnost` uz remap
+/// RN veza (odluka O4). `odeljenjeId` = pravi FK → odeljenja; ostali ref-ovi (work_orders /
+/// projects / zavisi-od / izvor*) su meki (bez DB FK). Polja prate 24-param upsert iz 1.0
+/// (dto/pracenje-mutation.dto.ts UpsertAktivnostDto).
+model OperativnaAktivnost {
+  id                  Int                          @id(map: "pk_operativne_aktivnosti") @default(autoincrement()) @map("id")
+  /// sy15 provenance uuid (production.operativna_aktivnost.id) — EXACT idempotency key for the
+  /// one-time import (migrate-pracenje-sy15.ts upserts by it). NULL for rows created natively in 2.0.
+  legacySy15Id        String?                      @unique(map: "uq_operativne_aktivnosti_legacy_sy15") @map("legacy_sy15_id") @db.Uuid
+  workOrderId         Int?                         @map("work_order_id")
+  projectId           Int?                         @map("project_id")
+  odeljenjeId         Int                          @map("odeljenje_id")
+  nazivAktivnosti     String                       @map("naziv_aktivnosti") @db.VarChar(500)
+  planiraniPocetak    DateTime?                    @map("planirani_pocetak") @db.Date
+  planiraniZavrsetak  DateTime?                    @map("planirani_zavrsetak") @db.Date
+  odgovoranUserId     Int?                         @map("odgovoran_user_id")
+  odgovoranWorkerId   Int?                         @map("odgovoran_worker_id")
+  odgovoranLabel      String?                      @map("odgovoran_label") @db.VarChar(255)
+  /// Dozvoljeno: 'nije_krenulo' | 'u_toku' | 'zavrseno' | 'blokirano'.
+  status              String                       @default("nije_krenulo") @map("status") @db.VarChar(20)
+  /// Dozvoljeno: 'nizak' | 'srednji' | 'visok'.
+  prioritet           String                       @default("srednji") @map("prioritet") @db.VarChar(20)
+  rb                  Int                          @default(0) @map("rb")
+  opis                String?                      @map("opis")
+  brojTp              String?                      @map("broj_tp") @db.VarChar(50)
+  kolicinaText        String?                      @map("kolicina_text") @db.VarChar(100)
+  /// Meki self-ref → operativne_aktivnosti.id (zavisnost); null kad je slobodan tekst.
+  zavisiOdAktivnostId Int?                         @map("zavisi_od_aktivnost_id")
+  zavisiOdText        String?                      @map("zavisi_od_text") @db.VarChar(500)
+  /// Izvor statusa. Dozvoljeno: 'manual' | 'auto_from_pozicija' | 'auto_from_operacije' (sažeto: auto|manual).
+  statusMode          String                       @default("manual") @map("status_mode") @db.VarChar(30)
+  rizikNapomena       String?                      @map("rizik_napomena")
+  /// Poreklo aktivnosti. Dozvoljeno: 'rucno' | 'iz_sastanka' | 'akcioni_plan'.
+  izvor               String                       @default("rucno") @map("izvor") @db.VarChar(30)
+  /// Meki ref-ovi na izvorne entitete (akcioni plan / pozicija-RN / TP operacija); bez DB FK.
+  izvorAkcioniPlanId  Int?                         @map("izvor_akcioni_plan_id")
+  izvorPozicijaId     Int?                         @map("izvor_pozicija_id")
+  izvorTpOperacijaId  Int?                         @map("izvor_tp_operacija_id")
+  createdByUserId     Int?                         @map("created_by_user_id")
+  updatedByUserId     Int?                         @map("updated_by_user_id")
+  createdAt           DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime                     @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  odeljenje           Odeljenje                    @relation(fields: [odeljenjeId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_operativne_aktivnosti_odeljenje")
+  blokade             OperativnaAktivnostBlokada[]
+
+  @@index([workOrderId], map: "idx_operativne_aktivnosti_work_order")
+  @@index([projectId], map: "idx_operativne_aktivnosti_project")
+  @@index([odeljenjeId], map: "idx_operativne_aktivnosti_odeljenje")
+  @@map("operativne_aktivnosti")
+}
+
+/// App-owned (2.0, plan §3.2-5). Append-only istorija blokada aktivnosti (razlog obavezan;
+/// ko/kada blokirao/odblokirao). Pravi FK → operativne_aktivnosti (ON DELETE CASCADE).
+model OperativnaAktivnostBlokada {
+  id                Int                 @id(map: "pk_operativne_aktivnosti_blokade") @default(autoincrement()) @map("id")
+  /// sy15 provenance uuid (production.operativna_aktivnost_blok_istorija.id) — EXACT idempotency
+  /// key for the block-history import (upsert by it; fixes created_at-NULL duplication). NULL for
+  /// blokade created natively in 2.0.
+  legacySy15Id      String?             @unique(map: "uq_operativne_aktivnosti_blokade_legacy_sy15") @map("legacy_sy15_id") @db.Uuid
+  aktivnostId       Int                 @map("aktivnost_id")
+  razlog            String              @map("razlog")
+  blockedAt         DateTime            @default(now()) @map("blocked_at") @db.Timestamptz(6)
+  blockedByUserId   Int?                @map("blocked_by_user_id")
+  unblockedAt       DateTime?           @map("unblocked_at") @db.Timestamptz(6)
+  unblockedByUserId Int?                @map("unblocked_by_user_id")
+  napomena          String?             @map("napomena")
+  aktivnost         OperativnaAktivnost @relation(fields: [aktivnostId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_operativne_aktivnosti_blokade_aktivnost")
+
+  @@index([aktivnostId], map: "idx_operativne_aktivnosti_blokade_aktivnost")
+  @@map("operativne_aktivnosti_blokade")
+}
+
+/// App-owned (2.0, plan §3.2-7, docx §4.11). Otpremnica ka kooperantu (galvanska / termička /
+/// mašinska). `customerId` = customers.id (BigBit keš) — MEKI ref (nema presedana hard-FK ka
+/// kešu; WorkOrder.externalCustomerId je isto meki). Auto-„vraćeno" preko međufazne kontrole
+/// (odluka O6). Otpremnica se kuca kroz aplikaciju i štampa po obrascu (work-order-print).
+model KoopOtpremnica {
+  id              Int                    @id(map: "pk_koop_otpremnice") @default(autoincrement()) @map("id")
+  customerId      Int                    @map("customer_id")
+  /// Vrsta kooperacije. Dozvoljeno: 'galvanska' | 'termicka' | 'masinska'.
+  vrsta           String                 @map("vrsta") @db.VarChar(20)
+  /// Broj otpremnice (poslovni broj dokumenta).
+  broj            String                 @map("broj") @db.VarChar(50)
+  datumSlanja     DateTime               @map("datum_slanja") @db.Date
+  /// Ukupna kilaža pošiljke (kg); razlomljivo → Decimal.
+  kilazaKg        Decimal?               @map("kilaza_kg") @db.Decimal(12, 3)
+  napomena        String?                @map("napomena")
+  /// Status vraćanja. Dozvoljeno: 'poslato' | 'delimicno_vraceno' | 'vraceno'.
+  status          String                 @default("poslato") @map("status") @db.VarChar(20)
+  createdByUserId Int?                   @map("created_by_user_id")
+  updatedByUserId Int?                   @map("updated_by_user_id")
+  createdAt       DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime               @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  stavke          KoopOtpremnicaStavka[]
+
+  @@index([customerId], map: "idx_koop_otpremnice_customer")
+  @@index([status], map: "idx_koop_otpremnice_status")
+  @@index([datumSlanja], map: "idx_koop_otpremnice_datum_slanja")
+  @@map("koop_otpremnice")
+}
+
+/// App-owned (2.0, plan §3.2-7). Stavka otpremnice — pozicija (RN) poslata kooperantu. Pravi
+/// FK → koop_otpremnice (ON DELETE CASCADE); `workOrderId` meki ref → work_orders (bez DB FK).
+/// `returnedAt` / `vracenoKolicina` puni auto-„vraćeno" (O6, prvo kucanje MK posle slanja) ili
+/// ručna korekcija; delimična količina = delimično vraćeno.
+model KoopOtpremnicaStavka {
+  id              Int            @id(map: "pk_koop_otpremnica_stavke") @default(autoincrement()) @map("id")
+  otpremnicaId    Int            @map("otpremnica_id")
+  workOrderId     Int            @map("work_order_id")
+  drawingNumber   String?        @map("drawing_number") @db.VarChar(100)
+  nazivPozicije   String?        @map("naziv_pozicije") @db.VarChar(250)
+  kolicina        Int            @map("kolicina")
+  vracenoKolicina Int            @default(0) @map("vraceno_kolicina")
+  tipPresvlake    String?        @map("tip_presvlake") @db.VarChar(100)
+  jedinstvenBroj  String?        @map("jedinstven_broj") @db.VarChar(100)
+  napomena        String?        @map("napomena")
+  returnedAt      DateTime?      @map("returned_at") @db.Timestamptz(6)
+  otpremnica      KoopOtpremnica @relation(fields: [otpremnicaId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_koop_otpremnica_stavke_otpremnica")
+
+  @@index([otpremnicaId], map: "idx_koop_otpremnica_stavke_otpremnica")
+  @@index([workOrderId], map: "idx_koop_otpremnica_stavke_work_order")
+  @@map("koop_otpremnica_stavke")
+}
+

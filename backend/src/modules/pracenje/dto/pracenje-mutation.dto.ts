@@ -1,3 +1,4 @@
+import { Type } from "class-transformer";
 import {
   IsBoolean,
   IsIn,
@@ -9,50 +10,67 @@ import {
   IsUUID,
   Matches,
   MaxLength,
+  Min,
 } from "class-validator";
 
 /**
- * Mutacioni DTO-i za Praćenje R2 (MODULE_SPEC_planovi_pracenje_30.md §3). Sve mutacije
- * su DEFINER/wrapper RPC-ovi kroz `withUserRls` (jsonb ulaz/izlaz); row/scope odluka
- * (can_edit_pracenje / can_manage_predmet_aktivacija / admin) presuđuje sy15.
+ * Mutation DTOs for Praćenje (F1, plan docs/PLAN_PRACENJE_PROIZVODNJE_2026-07.md §3.2).
+ * All writes now hit the ORIGINAL 2.0 tables through `PracenjeService` (Prisma), NOT
+ * sy15 RPCs. RN id == `work_orders.id` (Int) == legacy `bigtehn_rn_id`; the FE still
+ * sends it as `bigtehnRnId` (digits string). Activity refs (odeljenje, RN, project,
+ * responsible, source) are 2.0 Int ids — the legacy 1.0 uuids are gone.
  *
- * ⚠️ BigInt polja (bigtehn_rn_id, parent_rn_id, work_order_id) MORAJU biti SAMO cifre
- * (`^\d+$`) — decimalni string → 400 (ne 500 iz BigInt SyntaxError; C-fix obrazac).
+ * ⚠️ `bigtehnRnId` MUST be digits only (`^\d+$`) — a decimal string would make
+ * `Number(...)` produce a non-integer id; `@Matches(/^\d+$/)` rejects it at the pipe
+ * (400, not a downstream 500).
+ *
+ * ⚠️ EVERY Int field carries `@Type(() => Number)`. The global `ValidationPipe`
+ * (src/main.ts) runs with `transform: true` but WITHOUT `enableImplicitConversion`,
+ * so a JSON string ("5" from an HTML `<select>.value`) would NOT coerce to a number
+ * and `@IsInt()` would reject it (POST /aktivnosti → 400). `@Type(() => Number)`
+ * coerces at the transform step; class-transformer keeps `null`/`undefined` as-is
+ * (no null→0), so `@IsOptional()` still short-circuits. Boolean fields deliberately
+ * get NO `@Type(() => Boolean)` — `Boolean("false")` is `true`, so a string→bool
+ * coercion would be wrong; booleans must arrive as real JSON booleans.
  */
 const DIGITS = /^\d+$/;
 
-/* ── Operativni plan — aktivnost (upsert_operativna_aktivnost, 24 param) ── */
+/* ── Operativni plan — aktivnost (→ operativne_aktivnosti) ── */
 
 export class UpsertAktivnostDto {
-  /** null na kreiranju (server PK), postojeći id na izmeni (NIJE idempotency ključ — 1.0 nema). */
-  @IsOptional() @IsUUID() id?: string;
-  @IsOptional() @IsUUID() radniNalogId?: string;
-  @IsOptional() @IsUUID() projekatId?: string;
-  @IsUUID() odeljenjeId!: string;
+  /** null on create (server assigns Int PK); existing Int id on edit. */
+  @IsOptional() @Type(() => Number) @IsInt() id?: number;
+  /** → work_orders.id (Int, meki ref). */
+  @IsOptional() @Type(() => Number) @IsInt() radniNalogId?: number;
+  /** → projects.id (Int, meki ref). */
+  @IsOptional() @Type(() => Number) @IsInt() projekatId?: number;
+  /** → odeljenja.id (Int, real FK). */
+  @Type(() => Number) @IsInt() odeljenjeId!: number;
   @IsString() @MaxLength(500) nazivAktivnosti!: string;
   @IsOptional() @IsISO8601() planiraniPocetak?: string;
   @IsOptional() @IsISO8601() planiraniZavrsetak?: string;
-  @IsOptional() @IsUUID() odgovoranUserId?: string;
-  @IsOptional() @IsUUID() odgovoranRadnikId?: string;
+  @IsOptional() @Type(() => Number) @IsInt() odgovoranUserId?: number;
+  /** → operativne_aktivnosti.odgovoran_worker_id (workers.id, meki ref). */
+  @IsOptional() @Type(() => Number) @IsInt() odgovoranRadnikId?: number;
   @IsOptional()
   @IsIn(["nije_krenulo", "u_toku", "blokirano", "zavrseno"])
   status?: string;
   @IsOptional() @IsIn(["nizak", "srednji", "visok"]) prioritet?: string;
-  @IsOptional() @IsInt() rb?: number;
+  @IsOptional() @Type(() => Number) @IsInt() rb?: number;
   @IsOptional() @IsString() opis?: string;
   @IsOptional() @IsString() brojTp?: string;
   @IsOptional() @IsString() kolicinaText?: string;
   @IsOptional() @IsString() odgovoranLabel?: string;
-  @IsOptional() @IsUUID() zavisiOdAktivnostId?: string;
+  @IsOptional() @Type(() => Number) @IsInt() zavisiOdAktivnostId?: number;
   @IsOptional() @IsString() zavisiOdText?: string;
   @IsOptional()
   @IsIn(["manual", "auto_from_pozicija", "auto_from_operacije"])
   statusMode?: string;
   @IsOptional() @IsString() rizikNapomena?: string;
-  @IsOptional() @IsIn(["rucno", "iz_sastanka"]) izvor?: string;
-  @IsOptional() @IsUUID() izvorAkcioniPlanId?: string;
-  @IsOptional() @IsUUID() izvorPozicijaId?: string;
-  @IsOptional() @IsUUID() izvorTpOperacijaId?: string;
+  @IsOptional() @IsIn(["rucno", "iz_sastanka", "akcioni_plan"]) izvor?: string;
+  @IsOptional() @Type(() => Number) @IsInt() izvorAkcioniPlanId?: number;
+  @IsOptional() @Type(() => Number) @IsInt() izvorPozicijaId?: number;
+  @IsOptional() @Type(() => Number) @IsInt() izvorTpOperacijaId?: number;
 }
 
 export class ZatvoriAktivnostDto {
@@ -61,9 +79,9 @@ export class ZatvoriAktivnostDto {
 
 export class BlokirajAktivnostDto {
   /**
-   * Razlog blokade je OBAVEZAN (1.0 UI + servis enforce). `@Matches(/\S/)` odbija
-   * prazan/whitespace-only string na pipe-u → 400 (nezavisno od servisnog guarda,
-   * koji ostaje kao defense-in-depth).
+   * Razlog blokade is REQUIRED (1.0 UI + service enforce). `@Matches(/\S/)` rejects
+   * an empty/whitespace-only string at the pipe → 400 (the service guard stays as
+   * defense-in-depth).
    */
   @IsString() @Matches(/\S/) @MaxLength(1000) razlog!: string;
 }
@@ -72,32 +90,43 @@ export class OdblokirajAktivnostDto {
   @IsOptional() @IsString() napomena?: string;
 }
 
+/**
+ * Promote an action point into an activity. Kept as 1.0-shaped uuids because the
+ * akcioni-plan/sastanci source is still sy15 — the service returns 501 (NOT_IMPLEMENTED)
+ * until that module is ported to 2.0 (see PracenjeService.promoteAkcionaTacka).
+ */
 export class PromoteAkcionaTackaDto {
   @IsUUID() akcioniPlanId!: string;
   @IsUUID() odeljenjeId!: string;
   @IsUUID() rnId!: string;
 }
 
-/* ── Praćenje overrides / napomena (itemId iz putanje) ── */
+/* ── Praćenje overrides / napomena (projectId from the route :itemId) ── */
 
 export class PracenjeNapomenaDto {
+  /** RN id (== work_orders.id == legacy bigtehn_rn_id). */
   @Matches(DIGITS) bigtehnRnId!: string;
   @IsString() note!: string;
-  @IsOptional() @IsUUID() rnId?: string;
 }
 
 export class PracenjeManualOverrideDto {
+  /** RN id (== work_orders.id). */
   @Matches(DIGITS) bigtehnRnId!: string;
-  /** '' /izostavljeno → auto (null); inače jedan od kodova. */
+  /** ''/omitted → auto (null). 'kompletirano' auto-forces machining+surface DA (docx §4.7). */
   @IsOptional() @IsIn(["u_radu", "kompletirano", "nije_zapoceto"]) status?: string;
   @IsOptional() @IsBoolean() masinska?: boolean;
   @IsOptional() @IsBoolean() povrsinska?: boolean;
-  @IsOptional() @IsUUID() rnId?: string;
+  /** "Physically done but not clocked" manual quantity (pieces) — docx §4.6. */
+  @IsOptional() @Type(() => Number) @IsInt() @Min(0) manualQty?: number;
+  @IsOptional() @IsString() @MaxLength(500) reason?: string;
 }
 
 export class PracenjeParentOverrideDto {
+  /** RN id (== work_orders.id). */
   @Matches(DIGITS) bigtehnRnId!: string;
+  /** New parent RN id; null/omitted = detach to root. */
   @IsOptional() @Matches(DIGITS) parentRnId?: string | null;
+  /** true = revert to the auto (BOM) structure (delete the override). */
   @IsOptional() @IsBoolean() clear?: boolean;
 }
 
@@ -111,12 +140,13 @@ export class EnsureRnDto {
   @Matches(DIGITS) workOrderId!: string;
 }
 
-/* ── Export-log (server-side; presuda P4 — prvi put PRORADI) ── */
+/* ── Export-log (server-side → 2.0 audit_log) ── */
 
 export class ExportLogDto {
-  @IsOptional() @IsUUID() rnId?: string | null;
+  /** RN id — accepts a 2.0 Int-string or a legacy uuid (stored verbatim as entity id). */
+  @IsOptional() @IsString() @MaxLength(100) rnId?: string | null;
   @IsString() @MaxLength(80) tab!: string;
   @IsOptional() @IsString() rnBroj?: string;
-  @IsOptional() @IsInt() predmetItemId?: number;
+  @IsOptional() @Type(() => Number) @IsInt() predmetItemId?: number;
   @IsOptional() @IsObject() extra?: Record<string, unknown>;
 }

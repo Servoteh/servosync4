@@ -1,25 +1,14 @@
 import {
   BadRequestException,
-  ForbiddenException,
   Injectable,
   NotFoundException,
+  NotImplementedException,
+  UnprocessableEntityException,
 } from "@nestjs/common";
-import { Prisma } from "@prisma-sy15/client";
-import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
-import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
-import { mapSy15Error } from "../../common/sy15-error";
-import { jsonSafe } from "../../common/json-safe";
-import { sanitizeDrawingNo } from "../../common/drawings";
-import type {
-  AkcioneTackeQueryDto,
-  IzvestajQueryDto,
-  OperativniPlanQueryDto,
-  PortfolioQueryDto,
-  PrijaveQueryDto,
-} from "./dto/pracenje-query.dto";
+import { Prisma } from "@prisma/client";
+import { PrismaService } from "../../prisma/prisma.service";
 import type {
   BlokirajAktivnostDto,
-  EnsureRnDto,
   ExportLogDto,
   OdblokirajAktivnostDto,
   PracenjeManualOverrideDto,
@@ -30,469 +19,428 @@ import type {
   ZatvoriAktivnostDto,
 } from "./dto/pracenje-mutation.dto";
 
-const BIGTEHN_DRAWINGS_BUCKET = "bigtehn-drawings";
-
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/** Lot clamp — paritet 1.0 fetchPracenjePortfolio (1..100000, default 12). */
-function clampLot(raw?: string): number {
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), 100000) : 12;
-}
+/** Actor identity carried from the JWT (controller `req.user`). */
+type Actor = { userId: number; email: string };
 
 /**
- * Praćenje proizvodnje — 3.0 TALAS C, R1 read sloj (MODULE_SPEC_planovi_pracenje_30.md §3).
- * Podaci žive u sy15 (production/core/pdm šeme); front im prilazi kroz public wrapper
- * RPC-ove (jsonb) i public bridge view-ove (security_invoker). SVE kroz `withUserRls`
- * (GUC claims + SET LOCAL ROLE authenticated) — DEFINER RPC-ovi (get_pracenje_*,
- * can_edit_pracenje…) i RLS „moji" view-ovi rade netaknuti (paritet po konstrukciji,
- * doktrina §A.2a). Mutacije (upsert aktivnost/override/napomena/prioritet) su R2.
+ * Max steps when walking the parent chain to detect a structure-override cycle
+ * (mirrors `PracenjeReadService.MAX_DEPTH`). A visited set is the real safety net;
+ * this only bounds work when pre-existing data is already cyclic.
+ */
+const CYCLE_MAX_DEPTH = 50;
+
+/** entityType the aktivnost-istorija audit filter reads (PracenjeReadService.aktivnostIstorija). */
+const AKTIVNOST_ENTITY_TYPE = "operativna_aktivnost";
+
+/**
+ * Praćenje proizvodnje — MUTATION layer on the ORIGINAL 2.0 tables (F1, plan
+ * docs/PLAN_PRACENJE_PROIZVODNJE_2026-07.md §3.2). Replaces the sy15 DEFINER/wrapper
+ * RPCs (`upsert_pracenje_manual_override`, `upsert_operativna_aktivnost`, …) with
+ * plain Prisma writes into the new app-owned tables:
+ *   napomena        → `pracenje_notes`            (upsert by project+RN)
+ *   override        → `pracenje_overrides`        (upsert by RN; auto-rule docx §4.7)
+ *   parent-override → `pracenje_structure_overrides` (upsert / clear)
+ *   prioritet ↑↓    → `predmet_aktivacije.sort_priority`
+ *   aktivnosti      → `operativne_aktivnosti` (+ `operativne_aktivnosti_blokade`)
+ *   export-log      → 2.0 `audit_log` (structured export event)
+ *
+ * This service is 100% sy15-free. The one lookup that must still hit sy15
+ * (`akcione-tacke`, feeding the promote picker) lives in the quarantined
+ * `PracenjeAkcijeSy15Service`. Permissions are enforced by the controller guard
+ * (pracenje.edit / .manage / .prioritet) — no in-service scope checks.
+ *
+ * RN id = `work_orders.id` (Int) == the legacy `bigtehn_rn_id` the FE still sends
+ * as `bigtehnRnId` (digits string) — the module's key migration fact. The legacy
+ * `rnId` (1.0 uuid) is gone; any value the FE still sends is ignored.
  */
 @Injectable()
 export class PracenjeService {
-  constructor(
-    private readonly sy15: Sy15Service,
-    private readonly storage: Sy15StorageService,
-  ) {}
+  constructor(private readonly prisma: PrismaService) {}
 
-  // ---------- Portfolio / predmeti ----------
+  // ==========================================================================
+  // Tabela praćenja — napomena / override-i (manage)
+  // ==========================================================================
 
-  /** Kontrolna tabla — rollup po aktivnom predmetu (get_pracenje_portfolio). */
-  async portfolio(email: string, q: PortfolioQueryDto) {
-    const lot = clampLot(q.lotQty);
-    return this.read(email, async (tx) => {
-      const rows = await tx.$queryRaw<{ get_pracenje_portfolio: unknown }[]>(
-        Prisma.sql`SELECT get_pracenje_portfolio(${lot}::int) AS get_pracenje_portfolio`,
-      );
-      return { data: rows[0]?.get_pracenje_portfolio ?? null };
+  /** User note per predmet (projectId) + RN (workOrderId) → `pracenje_notes` upsert. */
+  async upsertNapomena(actor: Actor, projectId: number, dto: PracenjeNapomenaDto) {
+    const workOrderId = Number(dto.bigtehnRnId);
+    const note = String(dto.note ?? "");
+    const row = await this.prisma.pracenjeNote.upsert({
+      where: { projectId_workOrderId: { projectId, workOrderId } },
+      create: {
+        projectId,
+        workOrderId,
+        note,
+        createdByUserId: actor.userId,
+        updatedByUserId: actor.userId,
+      },
+      update: { note, updatedByUserId: actor.userId },
+      select: { id: true },
     });
+    return { data: { id: row.id } };
   }
-
-  /** Aktivni predmeti (ekran 1) — jsonb niz (get_aktivni_predmeti). */
-  async predmeti(email: string) {
-    return this.read(email, async (tx) => {
-      const rows = await tx.$queryRaw<{ get_aktivni_predmeti: unknown }[]>(
-        Prisma.sql`SELECT get_aktivni_predmeti() AS get_aktivni_predmeti`,
-      );
-      return { data: rows[0]?.get_aktivni_predmeti ?? null };
-    });
-  }
-
-  /** Stablo podsklopova predmeta (get_podsklopovi_predmeta). */
-  async podsklopovi(email: string, itemId: number) {
-    return this.read(email, async (tx) => {
-      const rows = await tx.$queryRaw<{ get_podsklopovi_predmeta: unknown }[]>(
-        Prisma.sql`SELECT get_podsklopovi_predmeta(${itemId}::int) AS get_podsklopovi_predmeta`,
-      );
-      return { data: rows[0]?.get_podsklopovi_predmeta ?? null };
-    });
-  }
-
-  /** Tabela praćenja predmeta (get_predmet_pracenje_izvestaj + root_rn, lot). */
-  async izvestaj(email: string, itemId: number, q: IzvestajQueryDto) {
-    const lot = clampLot(q.lotQty);
-    const rootRn = q.rootRn ? BigInt(q.rootRn) : null;
-    return this.read(email, async (tx) => {
-      const rows = await tx.$queryRaw<
-        { get_predmet_pracenje_izvestaj: unknown }[]
-      >(
-        Prisma.sql`SELECT get_predmet_pracenje_izvestaj(${itemId}::int, ${rootRn}::bigint, ${lot}::int) AS get_predmet_pracenje_izvestaj`,
-      );
-      return { data: rows[0]?.get_predmet_pracenje_izvestaj ?? null };
-    });
-  }
-
-  // ---------- RN ----------
 
   /**
-   * Razrešavanje RN reference (broj/legacy_idrn/uuid → uuid) — paritet resolveRnId
-   * (pracenjeProizvodnje.js:34): uuid → direktno; inače ILIKE po rn_broj (+ legacy_idrn
-   * ako je numerički). 0 → 404-semantika (422), >1 → 409-semantika (409).
+   * Manual override of status / machining / surface per RN → `pracenje_overrides`
+   * upsert. AUTO-RULE (docx §4.7): setting `manualStatus = 'kompletirano'` forces
+   * machining + surface to DA — the single source of truth lives here, NOT in the FE.
+   * `null`/omitted status reverts that field to auto. `manualQty`/`reason` are the
+   * "physically done but not clocked" correction (docx §4.6).
    */
-  async rnResolve(email: string, ref: string) {
-    const qv = (ref ?? "").trim();
-    if (!qv) throw new BadRequestException("Unesi RN broj ili RN UUID.");
-    if (UUID_RE.test(qv)) return { data: { id: qv } };
-    const like = `%${qv}%`;
-    // `legacy_idrn` je INTEGER, a Prisma vezuje ${qv} kao TEXT param → poređenje
-    // `integer = text` pada na 42883 („operator does not exist") bez ::int cast-a
-    // (za SVAKI čisto-numerički ref, npr. „9400" kojim počinju svi RN brojevi).
-    // Ograniči na int4 opseg da ::int ne baci 22003; van opsega rn_broj ILIKE i dalje radi.
-    const numeric = /^\d+$/.test(qv) && Number(qv) <= 2147483647;
-    return this.read(email, async (tx) => {
-      const rows = await tx.$queryRaw<{ id: string; rn_broj: string }[]>(
-        Prisma.sql`SELECT id, rn_broj FROM radni_nalog
-          WHERE rn_broj = ${qv} OR rn_broj ILIKE ${like}
-            ${numeric ? Prisma.sql`OR legacy_idrn = ${qv}::int` : Prisma.empty}
-          ORDER BY rn_broj ASC LIMIT 5`,
-      );
-      if (rows.length === 1) return { data: { id: rows[0].id } };
-      if (rows.length > 1)
-        throw new BadRequestException(
-          `Nađeno je više RN-ova za "${qv}". Unesi tačan RN broj ili UUID.`,
+  async upsertManualOverride(actor: Actor, dto: PracenjeManualOverrideDto) {
+    const workOrderId = Number(dto.bigtehnRnId);
+    const status = dto.status ?? null;
+    const completed = status === "kompletirano";
+    // Auto-rule: kompletirano ⇒ machining + surface DA (override anything the client sent).
+    let machining = typeof dto.masinska === "boolean" ? dto.masinska : null;
+    let surface = typeof dto.povrsinska === "boolean" ? dto.povrsinska : null;
+    if (completed) {
+      machining = true;
+      surface = true;
+    }
+    const manualQty = typeof dto.manualQty === "number" ? dto.manualQty : null;
+    const reason = dto.reason?.trim() ? dto.reason.trim() : null;
+
+    const row = await this.prisma.pracenjeOverride.upsert({
+      where: { workOrderId },
+      create: {
+        workOrderId,
+        manualStatus: status,
+        manualMachining: machining,
+        manualSurface: surface,
+        manualQty,
+        reason,
+        createdByUserId: actor.userId,
+        updatedByUserId: actor.userId,
+      },
+      update: {
+        manualStatus: status,
+        manualMachining: machining,
+        manualSurface: surface,
+        manualQty,
+        reason,
+        updatedByUserId: actor.userId,
+      },
+      select: { id: true },
+    });
+    return { data: { id: row.id } };
+  }
+
+  /**
+   * Manual re-parent of a position/sub-assembly → `pracenje_structure_overrides`.
+   * `clear` = revert to the auto (BOM/components) structure → delete the override row.
+   * Otherwise upsert with `parentWorkOrderId` (null = detach to root).
+   */
+  async upsertParentOverride(actor: Actor, dto: PracenjeParentOverrideDto) {
+    const workOrderId = Number(dto.bigtehnRnId);
+
+    if (dto.clear) {
+      await this.prisma.pracenjeStructureOverride.deleteMany({
+        where: { workOrderId },
+      });
+      return { data: { id: null, cleared: true } };
+    }
+
+    const parentWorkOrderId =
+      dto.parentRnId != null && dto.parentRnId !== ""
+        ? Number(dto.parentRnId)
+        : null;
+    if (parentWorkOrderId != null) {
+      if (parentWorkOrderId <= 0) {
+        throw new UnprocessableEntityException(
+          "Roditelj mora biti postojeći RN (id > 0).",
         );
+      }
+      if (parentWorkOrderId === workOrderId) {
+        throw new UnprocessableEntityException(
+          "Pozicija ne može biti sama sebi roditelj.",
+        );
+      }
+      // A->B->A guard: reject if `workOrderId` is already an ancestor of the new parent.
+      if (await this.wouldCreateParentCycle(workOrderId, parentWorkOrderId)) {
+        throw new UnprocessableEntityException(
+          `Roditelj ${parentWorkOrderId} bi napravio ciklus u stablu praćenja (pozicija ${workOrderId} mu je predak).`,
+        );
+      }
+    }
+
+    const row = await this.prisma.pracenjeStructureOverride.upsert({
+      where: { workOrderId },
+      create: {
+        workOrderId,
+        parentWorkOrderId,
+        createdByUserId: actor.userId,
+        updatedByUserId: actor.userId,
+      },
+      update: { parentWorkOrderId, updatedByUserId: actor.userId },
+      select: { id: true },
+    });
+    return { data: { id: row.id } };
+  }
+
+  /**
+   * ↑↓ priority of an active predmet → `predmet_aktivacije.sort_priority`. Swaps the
+   * predmet with its neighbour in the active list and rewrites the affected rows to a
+   * dense 1..N order (so pre-existing NULL priorities normalise deterministically).
+   */
+  async shiftPrioritet(actor: Actor, projectId: number, direction: string) {
+    if (direction !== "up" && direction !== "down") {
+      throw new BadRequestException("Smer mora biti 'up' ili 'down'.");
+    }
+    return this.prisma.$transaction(async (tx) => {
+      const rows = await tx.predmetAktivacija.findMany({
+        where: { isActive: true },
+        orderBy: [
+          { sortPriority: { sort: "asc", nulls: "last" } },
+          { projectId: "asc" },
+        ],
+        select: { id: true, projectId: true, sortPriority: true },
+      });
+      const idx = rows.findIndex((r) => r.projectId === projectId);
+      if (idx === -1) {
+        throw new NotFoundException(
+          `Predmet ${projectId} nije u listi aktivnih predmeta.`,
+        );
+      }
+      const swapWith = direction === "up" ? idx - 1 : idx + 1;
+      if (swapWith < 0 || swapWith >= rows.length) {
+        return { data: { itemId: projectId, direction, moved: false } };
+      }
+      const ordered = [...rows];
+      const tmp = ordered[idx];
+      ordered[idx] = ordered[swapWith];
+      ordered[swapWith] = tmp;
+
+      // Rewrite only rows whose dense position actually changed.
+      for (let i = 0; i < ordered.length; i++) {
+        const desired = i + 1;
+        if (ordered[i].sortPriority !== desired) {
+          await tx.predmetAktivacija.update({
+            where: { id: ordered[i].id },
+            data: { sortPriority: desired, updatedByUserId: actor.userId },
+          });
+        }
+      }
+      return { data: { itemId: projectId, direction, moved: true } };
+    });
+  }
+
+  // ==========================================================================
+  // Operativni plan — aktivnosti (Tab2, edit)
+  // ==========================================================================
+
+  /**
+   * Upsert operativna aktivnost → `operativne_aktivnosti` (create when `id` is null,
+   * else update). `odeljenjeId` is a real FK; a non-existent one yields a clean 400
+   * instead of a raw FK 500. Returns the (Int) activity id.
+   */
+  async upsertAktivnost(actor: Actor, dto: UpsertAktivnostDto) {
+    const data = {
+      workOrderId: dto.radniNalogId ?? null,
+      projectId: dto.projekatId ?? null,
+      odeljenjeId: dto.odeljenjeId,
+      nazivAktivnosti: dto.nazivAktivnosti,
+      planiraniPocetak: this.toDbDate(dto.planiraniPocetak),
+      planiraniZavrsetak: this.toDbDate(dto.planiraniZavrsetak),
+      odgovoranUserId: dto.odgovoranUserId ?? null,
+      odgovoranWorkerId: dto.odgovoranRadnikId ?? null,
+      odgovoranLabel: dto.odgovoranLabel ?? null,
+      status: dto.status ?? "nije_krenulo",
+      prioritet: dto.prioritet ?? "srednji",
+      rb: Number.isFinite(Number(dto.rb)) ? Number(dto.rb) : 0,
+      opis: dto.opis ?? null,
+      brojTp: dto.brojTp ?? null,
+      kolicinaText: dto.kolicinaText ?? null,
+      zavisiOdAktivnostId: dto.zavisiOdAktivnostId ?? null,
+      zavisiOdText: dto.zavisiOdText ?? null,
+      statusMode: dto.statusMode ?? "manual",
+      rizikNapomena: dto.rizikNapomena ?? null,
+      izvor: dto.izvor ?? "rucno",
+      izvorAkcioniPlanId: dto.izvorAkcioniPlanId ?? null,
+      izvorPozicijaId: dto.izvorPozicijaId ?? null,
+      izvorTpOperacijaId: dto.izvorTpOperacijaId ?? null,
+    };
+
+    const odeljenje = await this.prisma.odeljenje.findUnique({
+      where: { id: data.odeljenjeId },
+      select: { id: true },
+    });
+    if (!odeljenje) {
       throw new BadRequestException(
-        `RN "${qv}" nije pronađen u proizvodnji. Proveri RN broj ili prvo importuj/lansiraj RN.`,
+        `Odeljenje ${data.odeljenjeId} ne postoji.`,
       );
-    });
-  }
+    }
 
-  /** RN pregled (Tab1 pozicije, source local/bigtehn fallback) — get_pracenje_rn. */
-  async rn(email: string, rnId: string) {
-    return this.read(email, async (tx) => {
-      const rows = await tx.$queryRaw<{ get_pracenje_rn: unknown }[]>(
-        Prisma.sql`SELECT get_pracenje_rn(${rnId}::uuid) AS get_pracenje_rn`,
-      );
-      return { data: rows[0]?.get_pracenje_rn ?? null };
-    });
-  }
+    if (dto.id != null) {
+      const before = await this.prisma.operativnaAktivnost.findUnique({
+        where: { id: dto.id },
+      });
+      if (!before) throw new NotFoundException(`Aktivnost ${dto.id} ne postoji.`);
+      const row = await this.prisma.$transaction(async (tx) => {
+        const updated = await tx.operativnaAktivnost.update({
+          where: { id: dto.id },
+          data: { ...data, updatedByUserId: actor.userId },
+        });
+        await tx.auditLog.create({
+          data: this.aktivnostAuditData(
+            actor,
+            updated.id,
+            "UPDATE aktivnost",
+            this.aktivnostSnapshot(before),
+            this.aktivnostSnapshot(updated),
+          ),
+        });
+        return updated;
+      });
+      return { data: { id: row.id } };
+    }
 
-  /** Operativni plan RN-a (Tab2 aktivnosti po odeljenjima) — get_operativni_plan. */
-  async operativniPlan(email: string, rnId: string, q: OperativniPlanQueryDto) {
-    const projekat = q.projekat ?? null;
-    return this.read(email, async (tx) => {
-      const rows = await tx.$queryRaw<{ get_operativni_plan: unknown }[]>(
-        Prisma.sql`SELECT get_operativni_plan(${rnId}::uuid, ${projekat}::uuid) AS get_operativni_plan`,
-      );
-      return { data: rows[0]?.get_operativni_plan ?? null };
+    const row = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.operativnaAktivnost.create({
+        data: {
+          ...data,
+          createdByUserId: actor.userId,
+          updatedByUserId: actor.userId,
+        },
+      });
+      await tx.auditLog.create({
+        data: this.aktivnostAuditData(
+          actor,
+          created.id,
+          "CREATE aktivnost",
+          null,
+          this.aktivnostSnapshot(created),
+        ),
+      });
+      return created;
     });
-  }
-
-  /** FE gate paritet — can_edit_pracenje(projekat, rn) kao flag (row-odluka u DB). */
-  async canEdit(email: string, rnId: string, projekat?: string) {
-    const proj = projekat ?? null;
-    return this.read(email, async (tx) => {
-      const rows = await tx.$queryRaw<{ can_edit: boolean }[]>(
-        Prisma.sql`SELECT can_edit_pracenje(${proj}::uuid, ${rnId}::uuid) AS can_edit`,
-      );
-      return { data: { canEdit: rows[0]?.can_edit ?? false } };
-    });
+    return { data: { id: row.id } };
   }
 
   /**
-   * Istorija aktivnosti — blokade svima (blok_istorija view), audit deo SAMO adminu
-   * (presuda C5). Audit sekciju NE filtriramo u TS: `audit_log` SELECT politika je
-   * `current_user_is_admin()` pa kroz `withUserRls` ne-admin dobije 0 redova (paritet §2-11).
+   * Close activity → status 'zavrseno'. Also writes the STRUCTURED audit row the
+   * istorija reads (the global interceptor's URL-derived row does not match the
+   * `entityType='operativna_aktivnost'` filter).
    */
-  async aktivnostIstorija(email: string, id: string) {
-    return this.read(email, async (tx) => {
-      const [blokade, audit] = await Promise.all([
-        tx.$queryRaw(
-          Prisma.sql`SELECT * FROM operativna_aktivnost_blok_istorija
-            WHERE aktivnost_id = ${id}::uuid ORDER BY created_at DESC`,
+  async zatvoriAktivnost(actor: Actor, id: number, dto: ZatvoriAktivnostDto) {
+    const beforeStatus = await this.requireAktivnostStatus(id);
+    await this.prisma.$transaction(async (tx) => {
+      await tx.operativnaAktivnost.update({
+        where: { id },
+        data: { status: "zavrseno", updatedByUserId: actor.userId },
+      });
+      await tx.auditLog.create({
+        data: this.aktivnostAuditData(
+          actor,
+          id,
+          "CLOSE aktivnost",
+          { status: beforeStatus },
+          { status: "zavrseno", napomena: dto.napomena?.trim() || null },
         ),
-        tx.$queryRaw(
-          Prisma.sql`SELECT id, table_name, action, actor_email, changed_at, old_data, new_data, diff_keys
-            FROM audit_log WHERE record_id = ${id} ORDER BY changed_at DESC LIMIT 500`,
-        ),
-      ]);
-      return { data: { blokade: jsonSafe(blokade), audit: jsonSafe(audit) } };
+      });
     });
+    return { data: { id } };
   }
 
-  // ---------- Prijave rada ----------
+  /**
+   * Block activity (razlog REQUIRED → 400) → status 'blokirano' + append a blocking
+   * row to `operativne_aktivnosti_blokade` (append-only history) + structured audit,
+   * all in one transaction.
+   */
+  async blokirajAktivnost(actor: Actor, id: number, dto: BlokirajAktivnostDto) {
+    const razlog = dto.razlog?.trim();
+    if (!razlog) throw new BadRequestException("Razlog blokade je obavezan.");
+    const beforeStatus = await this.requireAktivnostStatus(id);
+    await this.prisma.$transaction(async (tx) => {
+      await tx.operativnaAktivnost.update({
+        where: { id },
+        data: { status: "blokirano", updatedByUserId: actor.userId },
+      });
+      await tx.operativnaAktivnostBlokada.create({
+        data: { aktivnostId: id, razlog, blockedByUserId: actor.userId },
+      });
+      await tx.auditLog.create({
+        data: this.aktivnostAuditData(
+          actor,
+          id,
+          "BLOCK aktivnost",
+          { status: beforeStatus },
+          { status: "blokirano", razlog },
+        ),
+      });
+    });
+    return { data: { id } };
+  }
 
   /**
-   * Prijave rada za operaciju: BigTehn varijanta (get_bigtehn_prijave_za_operaciju)
-   * ili lokalna (prijava_rada view po Faza-2 poziciji). Paritet side-panel-a RN Tab1.
+   * Unblock activity → close the latest open blocking row (unblockedAt/By + note),
+   * return the activity to 'nije_krenulo', and write the structured audit row. Note:
+   * the pre-block status is not restored (no column for it in the append-only history)
+   * — a deliberate F1 simplification.
    */
-  async prijave(email: string, q: PrijaveQueryDto) {
-    if (q.workOrder && q.op) {
-      const wo = BigInt(q.workOrder);
-      const op = Number(q.op);
-      const machine = q.machine ?? null;
-      return this.read(email, async (tx) => {
-        const rows = await tx.$queryRaw<
-          { get_bigtehn_prijave_za_operaciju: unknown }[]
-        >(
-          Prisma.sql`SELECT get_bigtehn_prijave_za_operaciju(${wo}::bigint, ${op}::int, ${machine}::text) AS get_bigtehn_prijave_za_operaciju`,
-        );
-        return {
-          data: rows[0]?.get_bigtehn_prijave_za_operaciju ?? null,
-          meta: { source: "bigtehn" },
-        };
+  async odblokirajAktivnost(
+    actor: Actor,
+    id: number,
+    dto: OdblokirajAktivnostDto,
+  ) {
+    const beforeStatus = await this.requireAktivnostStatus(id);
+    const napomena = dto.napomena?.trim() ? dto.napomena.trim() : null;
+    await this.prisma.$transaction(async (tx) => {
+      const open = await tx.operativnaAktivnostBlokada.findFirst({
+        where: { aktivnostId: id, unblockedAt: null },
+        orderBy: { blockedAt: "desc" },
+        select: { id: true },
       });
-    }
-    if (q.pozicija) {
-      return this.read(email, async (tx) => {
-        const rows = await tx.$queryRaw(
-          Prisma.sql`SELECT * FROM prijava_rada
-            WHERE radni_nalog_pozicija_id = ${q.pozicija}::uuid
-            ORDER BY started_at ASC NULLS LAST`,
-        );
-        return { data: jsonSafe(rows), meta: { source: "local" } };
+      if (open) {
+        await tx.operativnaAktivnostBlokada.update({
+          where: { id: open.id },
+          data: {
+            unblockedAt: new Date(),
+            unblockedByUserId: actor.userId,
+            napomena,
+          },
+        });
+      }
+      await tx.operativnaAktivnost.update({
+        where: { id },
+        data: { status: "nije_krenulo", updatedByUserId: actor.userId },
       });
-    }
-    throw new BadRequestException(
-      "Zadaj workOrder+op (BigTehn) ili pozicija (lokalno).",
+      await tx.auditLog.create({
+        data: this.aktivnostAuditData(
+          actor,
+          id,
+          "UNBLOCK aktivnost",
+          { status: beforeStatus },
+          { status: "nije_krenulo", napomena },
+        ),
+      });
+    });
+    return { data: { id } };
+  }
+
+  /**
+   * Promote an action point (Sastanci) into an activity. NOT IMPLEMENTED (501): the
+   * akcioni-plan/sastanci module still lives in sy15 and its ids are uuids, while 2.0
+   * `operativne_aktivnosti` refs are Int — there is no resolvable bridge until sastanci
+   * is ported to 2.0 (plan F1 note; task "vezi na 2.0 sastanci ako postoji; inače 501").
+   */
+  async promoteAkcionaTacka(_actor: Actor, _dto: PromoteAkcionaTackaDto) {
+    throw new NotImplementedException(
+      "Promocija akcione tačke u aktivnost nije podržana dok se Sastanci/akcioni-plan " +
+        "ne preseli na 2.0 (sy15 uuid ↔ 2.0 Int veze nisu razrešive). TODO(pracenje).",
     );
   }
 
-  // ---------- Lookups / pretraga ----------
-
-  /** Šifarnik odeljenja (bridge view core.odeljenje). */
-  async odeljenja(email: string) {
-    return this.read(email, async (tx) => {
-      const data = await tx.$queryRaw(
-        Prisma.sql`SELECT id, kod, naziv, boja, sort_order, aktivan, vodja_user_id, vodja_radnik_id
-          FROM odeljenje WHERE aktivan IS TRUE ORDER BY sort_order ASC NULLS LAST, kod ASC`,
-      );
-      return { data: jsonSafe(data) };
-    });
-  }
-
-  /** Šifarnik radnika (bridge view core.radnik). */
-  async radnici(email: string) {
-    return this.read(email, async (tx) => {
-      const data = await tx.$queryRaw(
-        Prisma.sql`SELECT id, employee_id, odeljenje_id, sifra_radnika, ime, puno_ime, email, aktivan
-          FROM radnik WHERE aktivan IS TRUE ORDER BY puno_ime ASC NULLS LAST, ime ASC`,
-      );
-      return { data: jsonSafe(data) };
-    });
-  }
-
-  /** Otvorene akcione tačke projekta (v_akcioni_plan) — za promociju u aktivnost (most Sastanci). */
-  async akcioneTacke(email: string, q: AkcioneTackeQueryDto) {
-    const projekat = q.projekat ?? null;
-    return this.read(email, async (tx) => {
-      const data = await tx.$queryRaw(
-        Prisma.sql`SELECT id, naslov, opis, projekat_id, sastanak_id, effective_status, rok, rok_text, odgovoran_label, odgovoran_text
-          FROM v_akcioni_plan
-          WHERE ${projekat ? Prisma.sql`projekat_id = ${projekat}::uuid` : Prisma.sql`projekat_id IS NOT NULL`}
-            AND effective_status IN ('otvoren','u_toku','kasni')
-          ORDER BY rok ASC NULLS LAST, created_at DESC`,
-      );
-      return { data: jsonSafe(data) };
-    });
-  }
-
-  /** Pretraga delova/pozicija (search_proizvodnja_delovi) — min 2 znaka. */
-  async searchDelovi(email: string, q?: string) {
-    const query = (q ?? "").trim();
-    if (query.length < 2) return { data: [] };
-    return this.read(email, async (tx) => {
-      // Limit 100 = paritet 1.0 UI (pretragaDelovaTab searchProizvodnjaDelovi(q, 100)).
-      const data = await tx.$queryRaw(
-        Prisma.sql`SELECT search_proizvodnja_delovi(${query}::text, 100::int) AS r`,
-      );
-      const arr = (data as { r: unknown }[])[0]?.r ?? [];
-      return { data: jsonSafe(arr) };
-    });
-  }
-
-  /** ⭐ plan-prioritet (get_predmet_plan_prioritet_ids/max/prev) — čita za ⭐ top-listu. */
-  async planPrioritet(email: string) {
-    return this.read(email, async (tx) => {
-      const rows = await tx.$queryRaw<
-        {
-          ids: number[] | null;
-          max: number | null;
-          prev: number[] | null;
-        }[]
-      >(
-        Prisma.sql`SELECT get_predmet_plan_prioritet_ids() AS ids,
-                          get_predmet_plan_prioritet_max() AS max,
-                          get_predmet_plan_prioritet_prev() AS prev`,
-      );
-      const r = rows[0];
-      return {
-        data: {
-          ids: r?.ids ?? [],
-          max: r?.max ?? null,
-          prev: r?.prev ?? null,
-        },
-      };
-    });
-  }
-
   // ==========================================================================
-  // R2 — MUTACIJE (DEFINER/wrapper RPC kroz withUserRls; scope odluka u DB)
+  // Export-log (server-side; structured export event → 2.0 audit_log)
   // ==========================================================================
-  // Sve pod SET LOCAL ROLE authenticated → can_edit_pracenje / can_manage_predmet_aktivacija
-  // / admin presuđuju (42501→403, 23514→422). Enumi (aktivnost_status…) su u `production`
-  // šemi (authenticated ima USAGE — verifikovano); castujemo `::production.<enum>`.
-
-  // ---------- Operativni plan — aktivnosti (Tab2, edit) ----------
 
   /**
-   * Upsert operativne aktivnosti (24 param; p_id null=create, postojeći=edit). NIJE
-   * idempotentno preko klijentskog UUID-a (1.0 nema — p_id je server PK ili edit-id).
-   * Vraća uuid aktivnosti.
+   * Log a data export into 2.0 `audit_log`. The global AuditInterceptor already logs
+   * the raw POST, but this writes a structured event (rn/predmet/tab) for reporting.
    */
-  async upsertAktivnost(email: string, dto: UpsertAktivnostDto) {
-    const status = dto.status ?? "nije_krenulo";
-    const prioritet = dto.prioritet ?? "srednji";
-    const statusMode = dto.statusMode ?? "manual";
-    const izvor = dto.izvor ?? "rucno";
-    const rb = Number.isFinite(Number(dto.rb)) ? Number(dto.rb) : 100;
-    return this.mut(email, async (tx) => {
-      const rows = await tx.$queryRaw<{ r: string }[]>(
-        Prisma.sql`SELECT upsert_operativna_aktivnost(
-          ${dto.id ?? null}::uuid,
-          ${dto.radniNalogId ?? null}::uuid,
-          ${dto.projekatId ?? null}::uuid,
-          ${dto.odeljenjeId}::uuid,
-          ${dto.nazivAktivnosti}::text,
-          ${this.toDbDate(dto.planiraniPocetak)}::date,
-          ${this.toDbDate(dto.planiraniZavrsetak)}::date,
-          ${dto.odgovoranUserId ?? null}::uuid,
-          ${dto.odgovoranRadnikId ?? null}::uuid,
-          ${status}::production.aktivnost_status,
-          ${prioritet}::production.aktivnost_prioritet,
-          ${rb}::int,
-          ${dto.opis ?? null}::text,
-          ${dto.brojTp ?? null}::text,
-          ${dto.kolicinaText ?? null}::text,
-          ${dto.odgovoranLabel ?? null}::text,
-          ${dto.zavisiOdAktivnostId ?? null}::uuid,
-          ${dto.zavisiOdText ?? null}::text,
-          ${statusMode}::production.aktivnost_status_mode,
-          ${dto.rizikNapomena ?? null}::text,
-          ${izvor}::production.aktivnost_izvor,
-          ${dto.izvorAkcioniPlanId ?? null}::uuid,
-          ${dto.izvorPozicijaId ?? null}::uuid,
-          ${dto.izvorTpOperacijaId ?? null}::uuid
-        ) AS r`,
-      );
-      return { data: { id: rows[0]?.r ?? null } };
-    });
-  }
-
-  /** Zatvori aktivnost (napomena opciona). */
-  async zatvoriAktivnost(email: string, id: string, dto: ZatvoriAktivnostDto) {
-    return this.mut(email, async (tx) => {
-      await tx.$queryRaw(
-        Prisma.sql`SELECT zatvori_aktivnost(${id}::uuid, ${dto.napomena ?? ""}::text)`,
-      );
-      return { data: { id } };
-    });
-  }
-
-  /** Blokiraj aktivnost (razlog OBAVEZAN — DTO enforce). */
-  async blokirajAktivnost(email: string, id: string, dto: BlokirajAktivnostDto) {
-    const razlog = dto.razlog.trim();
-    if (!razlog) throw new BadRequestException("Razlog blokade je obavezan.");
-    return this.mut(email, async (tx) => {
-      // set_blokirano je RETURNS void — $queryRaw ne ume da deserializuje void kolonu (500).
-      await tx.$executeRaw(
-        Prisma.sql`SELECT set_blokirano(${id}::uuid, ${razlog}::text)`,
-      );
-      return { data: { id } };
-    });
-  }
-
-  /** Skini blokadu (napomena opciona). */
-  async odblokirajAktivnost(
-    email: string,
-    id: string,
-    dto: OdblokirajAktivnostDto,
-  ) {
-    return this.mut(email, async (tx) => {
-      await tx.$queryRaw(
-        Prisma.sql`SELECT skini_blokadu(${id}::uuid, ${dto.napomena ?? ""}::text)`,
-      );
-      return { data: { id } };
-    });
-  }
-
-  /** Promocija akcione tačke iz Sastanaka u aktivnost (vraća novi aktivnost uuid). */
-  async promoteAkcionaTacka(email: string, dto: PromoteAkcionaTackaDto) {
-    return this.mut(email, async (tx) => {
-      const rows = await tx.$queryRaw<{ r: string }[]>(
-        Prisma.sql`SELECT promovisi_akcionu_tacku(${dto.akcioniPlanId}::uuid,
-          ${dto.odeljenjeId}::uuid, ${dto.rnId}::uuid) AS r`,
-      );
-      return { data: { id: rows[0]?.r ?? null } };
-    });
-  }
-
-  // ---------- Tabela praćenja — napomena / override-i (manage) ----------
-
-  /** Korisnička napomena praćenja (upsert_pracenje_proizvodnje_napomena). */
-  async upsertNapomena(email: string, itemId: number, dto: PracenjeNapomenaDto) {
-    return this.mut(email, async (tx) => {
-      const rows = await tx.$queryRaw<{ r: string }[]>(
-        Prisma.sql`SELECT upsert_pracenje_proizvodnje_napomena(${itemId}::int,
-          ${BigInt(dto.bigtehnRnId)}::bigint, ${String(dto.note ?? "")}::text,
-          ${dto.rnId ?? null}::uuid) AS r`,
-      );
-      return { data: { id: rows[0]?.r ?? null } };
-    });
-  }
-
-  /** Ručni override statusa/mašinske/površinske (null polje = revert na auto). */
-  async upsertManualOverride(
-    email: string,
-    itemId: number,
-    dto: PracenjeManualOverrideDto,
-  ) {
-    const masinska = typeof dto.masinska === "boolean" ? dto.masinska : null;
-    const povrsinska = typeof dto.povrsinska === "boolean" ? dto.povrsinska : null;
-    return this.mut(email, async (tx) => {
-      const rows = await tx.$queryRaw<{ r: string }[]>(
-        Prisma.sql`SELECT upsert_pracenje_manual_override(${itemId}::int,
-          ${BigInt(dto.bigtehnRnId)}::bigint, ${dto.status ?? null}::text,
-          ${masinska}::boolean, ${povrsinska}::boolean, ${dto.rnId ?? null}::uuid) AS r`,
-      );
-      return { data: { id: rows[0]?.r ?? null } };
-    });
-  }
-
-  /** Parent override (re-parent podsklopa) ili clear (nazad na BigTehn strukturu). */
-  async upsertParentOverride(
-    email: string,
-    itemId: number,
-    dto: PracenjeParentOverrideDto,
-  ) {
-    const parent =
-      dto.parentRnId != null && dto.parentRnId !== ""
-        ? BigInt(dto.parentRnId)
-        : null;
-    return this.mut(email, async (tx) => {
-      const rows = await tx.$queryRaw<{ r: string }[]>(
-        Prisma.sql`SELECT upsert_pracenje_parent_override(${itemId}::int,
-          ${BigInt(dto.bigtehnRnId)}::bigint, ${parent}::bigint,
-          ${!!dto.clear}::boolean) AS r`,
-      );
-      return { data: { id: rows[0]?.r ?? null } };
-    });
-  }
-
-  /** ↑↓ prioritet praćenja (shift_predmet_prioritet; admin — RPC sam štiti). */
-  async shiftPrioritet(email: string, itemId: number, direction: string) {
-    return this.mut(email, async (tx) => {
-      // shift_predmet_prioritet je RETURNS void — mora $executeRaw (bez deserializacije).
-      await tx.$executeRaw(
-        Prisma.sql`SELECT shift_predmet_prioritet(${itemId}::int, ${direction}::text)`,
-      );
-      return { data: { itemId, direction } };
-    });
-  }
-
-  // ---------- RN ensure (drill-down; DEFINER, svaki korisnik) ----------
-
-  /** Materijalizuj Faza-2 RN iz BigTehn work_order-a (vraća rn uuid). */
-  async ensureRnFromBigtehn(email: string, dto: EnsureRnDto) {
-    return this.mut(email, async (tx) => {
-      const rows = await tx.$queryRaw<{ r: string }[]>(
-        Prisma.sql`SELECT ensure_radni_nalog_iz_bigtehn(${BigInt(dto.workOrderId)}::bigint) AS r`,
-      );
-      return { data: { id: rows[0]?.r ?? null } };
-    });
-  }
-
-  // ---------- Export-log (server-side; presuda P4 — prvi put PRORADI) ----------
-
-  /**
-   * Loguj izvoz u `audit_log` (presuda P4). 1.0 write je bio MRTAV (audit_log ima
-   * no-client-write RLS za authenticated). Ovde upisujemo kroz `withUser` (konekciona
-   * rola je BYPASSRLS = „servisni nalog") pa RLS ne koči; identitet iz GUC claims
-   * (auth.uid()). Isti `new_data` oblik kao 1.0 logPracenjeExport.
-   */
-  async logExport(email: string, dto: ExportLogDto) {
-    const newData = {
+  async logExport(actor: Actor, dto: ExportLogDto) {
+    const afterData: Prisma.InputJsonValue = {
       rn_id: dto.rnId ?? null,
       rn_broj: dto.rnBroj ?? null,
       predmet_item_id: dto.predmetItemId ?? null,
@@ -500,86 +448,146 @@ export class PracenjeService {
       exported_at: new Date().toISOString(),
       ...(dto.extra && typeof dto.extra === "object" ? dto.extra : {}),
     };
-    try {
-      await this.sy15.withUser(email, async (tx) => {
-        await tx.$executeRaw(
-          Prisma.sql`INSERT INTO audit_log
-              (table_name, record_id, action, actor_email, actor_uid, new_data)
-            VALUES ('pracenje_proizvodnje_export', ${dto.rnId ?? null}, 'INSERT',
-              ${email}, auth.uid(), ${JSON.stringify(newData)}::jsonb)`,
-        );
-      });
-    } catch (e) {
-      mapSy15Error(e);
-    }
+    await this.prisma.auditLog.create({
+      data: {
+        actorUserId: actor.userId ?? null,
+        actorUsername: actor.email ?? null,
+        action: "EXPORT pracenje",
+        entityType: "pracenje_export",
+        entityId:
+          dto.rnId ??
+          (dto.predmetItemId != null ? String(dto.predmetItemId) : null),
+        afterData,
+      },
+    });
     return { data: { logged: true } };
   }
 
-  // ---------- Crteži (bigtehn) presigned — gate can_read_production_drawings (C3) ----------
+  // ==========================================================================
+  // interno
+  // ==========================================================================
 
-  /**
-   * Presigned URL crteža iz bigtehn keša za RN side-panel (paritet 1.0). Sanitizacija +
-   * revizija fallback (`{broj}_A/B`). Gate `can_read_production_drawings` — pogon
-   * (cnc_operater/tim_lider/monter…) NE može otvoriti PDF (presuda C3 strogi paritet).
-   */
-  async crtezSignUrl(email: string, code: string) {
-    const clean = sanitizeDrawingNo(code);
-    if (!clean) throw new BadRequestException("Neispravan broj crteža.");
-    const path = await this.mut(email, async (tx) => {
-      const gate = await tx.$queryRaw<{ ok: boolean }[]>(
-        Prisma.sql`SELECT can_read_production_drawings() AS ok`,
-      );
-      if (!gate[0]?.ok)
-        throw new ForbiddenException("Nemate pravo na PDF crteža.");
-      const exact = await tx.$queryRaw<{ storage_path: string }[]>(
-        Prisma.sql`SELECT storage_path FROM bigtehn_drawings_cache
-          WHERE drawing_no = ${clean} AND removed_at IS NULL LIMIT 1`,
-      );
-      if (exact[0]?.storage_path) return exact[0].storage_path;
-      const cands = await tx.$queryRaw<
-        { drawing_no: string; storage_path: string }[]
-      >(
-        Prisma.sql`SELECT drawing_no, storage_path FROM bigtehn_drawings_cache
-          WHERE drawing_no LIKE ${clean + "%"} AND removed_at IS NULL
-          ORDER BY drawing_no DESC LIMIT 50`,
-      );
-      const hit = cands.find(
-        (c) => c.drawing_no === clean || c.drawing_no.startsWith(clean + "_"),
-      );
-      if (!hit?.storage_path)
-        throw new NotFoundException(`Crtež ${clean} nije u kešu.`);
-      return hit.storage_path;
+  /** Guard: activity must exist (clean 404) → returns current status for the audit before-state. */
+  private async requireAktivnostStatus(id: number): Promise<string> {
+    const row = await this.prisma.operativnaAktivnost.findUnique({
+      where: { id },
+      select: { status: true },
     });
-    return { data: await this.storage.signUrl(BIGTEHN_DRAWINGS_BUCKET, path, 300) };
+    if (!row) throw new NotFoundException(`Aktivnost ${id} ne postoji.`);
+    return row.status;
   }
 
-  // ---------- interno ----------
+  /**
+   * Structure-override cycle guard. Setting `child`'s parent to `newParent` closes a
+   * loop iff `child` is already an ANCESTOR of `newParent`. Walk UP from `newParent`
+   * following each node's EFFECTIVE parent: a structure override (single parent; null =
+   * root → stop) wins over the auto BOM parents (`work_order_components`, which can
+   * branch, so BFS). `visited` prevents spinning on already-cyclic data; `depth` caps work.
+   */
+  private async wouldCreateParentCycle(
+    child: number,
+    newParent: number,
+  ): Promise<boolean> {
+    const visited = new Set<number>();
+    let frontier: number[] = [newParent];
+    for (let depth = 0; depth < CYCLE_MAX_DEPTH && frontier.length > 0; depth++) {
+      const next: number[] = [];
+      for (const node of frontier) {
+        if (node === child) return true;
+        if (visited.has(node)) continue;
+        visited.add(node);
+        const override = await this.prisma.pracenjeStructureOverride.findUnique({
+          where: { workOrderId: node },
+          select: { parentWorkOrderId: true },
+        });
+        if (override) {
+          // Override is authoritative for this node — no BOM fallback.
+          if (override.parentWorkOrderId != null) {
+            next.push(override.parentWorkOrderId);
+          }
+          continue;
+        }
+        const parents = await this.prisma.workOrderComponent.findMany({
+          where: { componentWorkOrderId: node },
+          select: { workOrderId: true },
+        });
+        for (const p of parents) next.push(p.workOrderId);
+      }
+      frontier = next;
+    }
+    return false;
+  }
 
-  /** 'YYYY-MM-DD' → Date za @db.Date (null = obriši). */
+  /**
+   * Structured audit row for an activity mutation → 2.0 `audit_log`. The GLOBAL
+   * AuditInterceptor logs a generic row whose entityType/entityId are mis-derived from
+   * the URL (`pracenje` / `aktivnosti`), so `PracenjeReadService.aktivnostIstorija`
+   * (filter entityType='operativna_aktivnost', entityId=String(id)) would never match.
+   * This writes the row that filter actually reads. `before`/`after` omitted when null.
+   */
+  private aktivnostAuditData(
+    actor: Actor,
+    id: number,
+    action: string,
+    before: Prisma.InputJsonValue | null,
+    after: Prisma.InputJsonValue | null,
+  ): Prisma.AuditLogUncheckedCreateInput {
+    return {
+      actorUserId: actor.userId ?? null,
+      actorUsername: actor.email ?? null,
+      action,
+      entityType: AKTIVNOST_ENTITY_TYPE,
+      entityId: String(id),
+      ...(before !== null ? { beforeData: before } : {}),
+      ...(after !== null ? { afterData: after } : {}),
+    };
+  }
+
+  /** JSON-safe snapshot of an activity for the audit before/after (Dates → 'YYYY-MM-DD'). */
+  private aktivnostSnapshot(row: {
+    id: number;
+    workOrderId: number | null;
+    projectId: number | null;
+    odeljenjeId: number;
+    nazivAktivnosti: string;
+    status: string;
+    prioritet: string;
+    rb: number;
+    odgovoranUserId: number | null;
+    odgovoranWorkerId: number | null;
+    odgovoranLabel: string | null;
+    planiraniPocetak: Date | null;
+    planiraniZavrsetak: Date | null;
+    statusMode: string;
+    izvor: string;
+  }): Prisma.InputJsonValue {
+    return {
+      id: row.id,
+      work_order_id: row.workOrderId,
+      project_id: row.projectId,
+      odeljenje_id: row.odeljenjeId,
+      naziv_aktivnosti: row.nazivAktivnosti,
+      status: row.status,
+      prioritet: row.prioritet,
+      rb: row.rb,
+      odgovoran_user_id: row.odgovoranUserId,
+      odgovoran_worker_id: row.odgovoranWorkerId,
+      odgovoran_label: row.odgovoranLabel,
+      planirani_pocetak: this.dateOnly(row.planiraniPocetak),
+      planirani_zavrsetak: this.dateOnly(row.planiraniZavrsetak),
+      status_mode: row.statusMode,
+      izvor: row.izvor,
+    };
+  }
+
+  /** Date → 'YYYY-MM-DD' (null-safe) for JSON snapshots. */
+  private dateOnly(d: Date | null): string | null {
+    return d ? d.toISOString().slice(0, 10) : null;
+  }
+
+  /** 'YYYY-MM-DD' → Date for @db.Date (null = clear). */
   private toDbDate(v?: string | null): Date | null {
     if (v == null || v === "") return null;
     return new Date(`${v.slice(0, 10)}T00:00:00Z`);
-  }
-
-  private async mut<T>(
-    email: string,
-    fn: (tx: Sy15Tx) => Promise<T>,
-  ): Promise<T> {
-    try {
-      return await this.sy15.withUserRls(email, fn);
-    } catch (e) {
-      mapSy15Error(e);
-    }
-  }
-
-  private async read<T>(
-    email: string,
-    fn: (tx: Sy15Tx) => Promise<T>,
-  ): Promise<T> {
-    try {
-      return await this.sy15.withUserRls(email, fn);
-    } catch (e) {
-      mapSy15Error(e);
-    }
   }
 }
