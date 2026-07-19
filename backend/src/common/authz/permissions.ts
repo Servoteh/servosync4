@@ -63,6 +63,14 @@ export const PERMISSIONS = {
   NABAVKA_READ: "nabavka.read",
   NABAVKA_WRITE: "nabavka.write",
   NABAVKA_APPROVE: "nabavka.approve",
+  // Fakturisanje / prodaja — 4.0 Faza 5 §A (izlazni računi: predračun → carry-over → knjiženje).
+  // read = uvid u račune/predračune; write = kreiranje predračuna + prepis PROF→IFR (prodaja);
+  // post = knjiženje računa u GK (rezervacija broja + nalog); approve = odobrenje pre slanja.
+  // Row-politika u pravu dolazi uz auth roljne (prodaja/finansije + admin).
+  SALES_READ: "sales.read",
+  SALES_WRITE: "sales.write",
+  SALES_POST: "sales.post",
+  SALES_APPROVE: "sales.approve",
   // Priprema plaćanja / virmani — 4.0 Faza 4 §C (dospele obaveze iz GK →
   // PaymentOrder → FX TXT export). read = uvid u dospele obaveze + naloge;
   // prepare = kreiranje/potpis naloga (DEDUP protiv dvostrukog plaćanja);
@@ -89,6 +97,15 @@ export const PERMISSIONS = {
   // Konkretne role se dodeljuju u role-permissions pri aktivaciji (finansije/knjigovodstvo/admin).
   SALDAKONTI_READ: "saldakonti.read",
   SALDAKONTI_RECONCILE: "saldakonti.reconcile",
+  // SEF e-fakture (izlazne) — 4.0 Faza 5 §B (doc 07 §8/§9.1).
+  // Operativni tok (Nenad 18.07): slanje/storno izlaznih = prodaja (administratori
+  // + šef); pregled outbox-a = admin nabavke/prodaje + šefovi; admin sve.
+  //   read = uvid u outbox (lista + status polling GET)
+  //   send = enqueue + slanje UBL-a na SEF (prodaja)
+  //   cancel = storno/otkazivanje na SEF-u sa guard-om (prodaja)
+  SEF_READ: "sef.read",
+  SEF_SEND: "sef.send",
+  SEF_CANCEL: "sef.cancel",
   // Šifarnici / pregledi (komitenti, predmeti)
   DIRECTORY_READ: "directory.read",
   // Predmeti write-path + RFQ kupca — 4.0 Traka B (2.0 postaje master za predmete).

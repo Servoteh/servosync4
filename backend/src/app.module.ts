@@ -45,6 +45,9 @@ import { RobnoModule } from "./modules/robno/robno.module";
 import { SaldakontiModule } from "./modules/saldakonti/saldakonti.module";
 import { IzvodiModule } from "./modules/izvodi/izvodi.module";
 import { PlacanjaModule } from "./modules/placanja/placanja.module";
+import { SalesModule } from "./modules/sales/sales.module";
+import { SefModule } from "./modules/sales/sef/sef.module";
+import { SalesPrintModule } from "./modules/sales/print/sales-print.module";
 
 @Module({
   imports: [
@@ -107,6 +110,10 @@ import { PlacanjaModule } from "./modules/placanja/placanja.module";
     SaldakontiModule,
     IzvodiModule,
     PlacanjaModule,
+    // 4.0 Faza 5 — Fakturisanje (izlazni računi PROF→IFR + knjiženje), SEF e-fakture (UBL), štampa/mail.
+    SalesModule,
+    SefModule,
+    SalesPrintModule,
   ],
   controllers: [AppController],
   providers: [
