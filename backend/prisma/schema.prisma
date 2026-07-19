@@ -2486,8 +2486,13 @@ model LedgerEntry {
   sourceProjectId    Int? @map("source_project_id")
   sourceWorkOrderId  Int? @map("source_work_order_id")
 
-  // Otvorene stavke / auto-zatvaranje (SHOULD, Faza 4 saldakonti — Povezan/reconciledWith)
-  reconciledWithId Int? @map("reconciled_with_id")
+  // Otvorene stavke / auto-zatvaranje (Faza 4 saldakonti):
+  reconciledWithId      Int?      @map("reconciled_with_id") // Povezan (1:1 par uparivanja)
+  documentNumber        String?   @map("document_number") @db.VarChar(30) // broj dokumenta (grupa otvorene stavke po konto+komitent+broj)
+  dueDate               DateTime? @map("due_date") @db.Timestamptz(6) // Valuta/dospeće (dospelost — priprema plaćanja)
+  currency              String?   @map("currency") @db.VarChar(3) // valuta stavke (devizni saldakonti)
+  reconciledAt          DateTime? @map("reconciled_at") @db.Timestamptz(6) // NULL = otvorena stavka
+  reconciliationGroupId Int?      @map("reconciliation_group_id") // grupa uparivanja (uplata↔faktura, kompenzacija)
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
@@ -2498,6 +2503,9 @@ model LedgerEntry {
   // Kartica analitike / saldakonto po (konto + komitent) — doc 30 §E izveštaji.
   @@index([accountCode, analyticalCode], map: "idx_ledger_entries_account_analytical")
   @@index([sourceGoodsDocId], map: "idx_ledger_entries_source_goods_doc")
+  // Otvorene stavke: konto + komitent + reconciledAt IS NULL; dospelost po dueDate.
+  @@index([accountCode, analyticalCode, reconciledAt], map: "idx_ledger_entries_open_items")
+  @@index([reconciliationGroupId], map: "idx_ledger_entries_recon_group")
   @@map("ledger_entries")
 }
 
@@ -2792,3 +2800,144 @@ model ItemValuation {
 //    i izbačena iz sync-a → NEMA UNION-a sa njom (raniji dizajn je pretpostavljao da je aktivna cache;
 //    QBigTehn→PG je poluprazna nekorišćena kopija). Costing čita SAMO native stock_documents.
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ── Faza 4: Saldakonti + plaćanja ─────────────────────────────────────────
+/// Was: grupa uparivanja  — batch zatvaranja otvorenih stavki; okuplja uparene LedgerEntry redove.
+model ReconciliationGroup {
+  id              Int      @id(map: "pk_reconciliation_groups") @default(autoincrement()) @map("id")
+  kind            String   @map("kind") @db.VarChar(20) /// AUTO_STATEMENT | MANUAL | COMPENSATION
+  createdByUserId Int?     @map("created_by_user_id") // meki ref users.id (autor uparivanja)
+  note            String?  @map("note")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  // NAPOMENA: LedgerEntry.reconciliationGroupId je MEKI ref na ovaj model (bez @relation) —
+  // inverzna strana se NE dodaje da se ne dira živi LedgerEntry; veza se validira u servisu.
+
+  @@index([kind], map: "idx_reconciliation_groups_kind")
+  @@map("reconciliation_groups")
+}
+
+// -----------------------------------------------------------------------------
+// 2) BankStatement — zaglavlje izvoda (naš žiro račun); import TXT (FX/LHB fiksne kolone).
+// -----------------------------------------------------------------------------
+/// Was: izvod  — zaglavlje bankovnog izvoda (nema zasebne legacy tabele; BigBit koristi temp *_Imported_Izvod).
+model BankStatement {
+  id               Int      @id(map: "pk_bank_statements") @default(autoincrement()) @map("id")
+  bankAccount      String   @map("bank_account") @db.VarChar(50) // naš žiro račun (PaymentAccount.accountNumber)
+  statementNumber  String   @map("statement_number") @db.VarChar(30) // broj izvoda
+  statementDate    DateTime @map("statement_date") @db.Timestamptz(6) // datum izvoda
+  importedFileName String?  @map("imported_file_name") @db.VarChar(255) // originalni TXT fajl (audit importa)
+  status           String   @default("DRAFT") @map("status") @db.VarChar(20) /// DRAFT | IMPORTED | POSTED
+  openingBalance   Decimal  @default(0) @map("opening_balance") @db.Decimal(19, 4) // početno stanje
+  closingBalance   Decimal  @default(0) @map("closing_balance") @db.Decimal(19, 4) // krajnje stanje
+  currency         String   @default("RSD") @map("currency") @db.VarChar(3)
+  createdByUserId  Int?     @map("created_by_user_id") // meki ref users.id
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  lines BankStatementLine[]
+
+  @@unique([bankAccount, statementNumber], map: "uq_bank_statements_account_number") // idempotencija importa istog izvoda
+  @@index([status], map: "idx_bank_statements_status")
+  @@index([statementDate], map: "idx_bank_statements_date")
+  @@map("bank_statements")
+}
+
+// -----------------------------------------------------------------------------
+// 3) BankStatementLine — stavka izvoda (FX Import spec: TRKomitenta/DugPotInd/PozivNaBroj/DatumDok).
+// -----------------------------------------------------------------------------
+/// Was: stavka izvoda  — pojedinačna promena na izvodu; uparuje se sa komitentom i otvorenom stavkom.
+model BankStatementLine {
+  id                   Int       @id(map: "pk_bank_statement_lines") @default(autoincrement()) @map("id")
+  statementId          Int       @map("statement_id") // FK BankStatement
+  lineNo               Int       @default(0) @map("line_no") // redni broj stavke u izvodu
+  partnerAccount       String?   @map("partner_account") @db.VarChar(50) // žiro komitenta (FX: TRKomitenta 149/18)
+  partnerName          String?   @map("partner_name") @db.VarChar(255) // NazivKomitenta (FX 19/35)
+  amount               Decimal   @default(0) @map("amount") @db.Decimal(19, 4) // Iznos (FX 135/13, /100)
+  direction            String    @map("direction") @db.VarChar(10) /// DEBIT | CREDIT  (FX DugPotInd 148/1)
+  referenceNumber      String?   @map("reference_number") @db.VarChar(30) // PozivNaBroj/PNB (FX 169/20)
+  documentDate         DateTime? @map("document_date") @db.Timestamptz(6) // DatumDok (FX 189/8)
+  matchedCustomerId    Int?      @map("matched_customer_id") // meki ref customers.id (uparen po žiro računu)
+  matchedLedgerEntryId Int?      @map("matched_ledger_entry_id") // meki ref ledger_entries.id (uparena otvorena stavka)
+  status               String    @default("UNMATCHED") @map("status") @db.VarChar(20) /// UNMATCHED | MATCHED | POSTED
+
+  statement BankStatement @relation(fields: [statementId], references: [id], onDelete: Cascade, map: "fk_bank_statement_lines_statement")
+
+  @@index([statementId], map: "idx_bank_statement_lines_statement")
+  @@index([partnerAccount], map: "idx_bank_statement_lines_partner_account") // uparivanje po žiro računu komitenta
+  @@index([status], map: "idx_bank_statement_lines_status")
+  @@map("bank_statement_lines")
+}
+
+// -----------------------------------------------------------------------------
+// 4) PaymentOrder — nalog za plaćanje / virman (priprema plaćanja, FX export).
+//    Dedup po (referenceNumberCredit=PNBOdobBroj, supplierId) — sprečava dvostruko plaćanje.
+// -----------------------------------------------------------------------------
+/// Was: Virmani  — nalog za plaćanje dobavljaču; status-mašina 0→1→2 + Zakljucano lock.
+model PaymentOrder {
+  id                    Int       @id(map: "pk_payment_orders") @default(autoincrement()) @map("id") // IDVirman
+  orderNumber           String    @map("order_number") @db.VarChar(20) // RedniBrojSerije / broj naloga
+  supplierId            Int       @map("supplier_id") // IDUKorist — meki ref customers.id (primalac/dobavljač)
+  supplierAccount       String?   @map("supplier_account") @db.VarChar(50) // UKoristZiroRacun — žiro dobavljača
+  amount                Decimal   @default(0) @map("amount") @db.Decimal(19, 4) // Iznos
+  currency              String    @default("RSD") @map("currency") @db.VarChar(3) // Valuta
+  referenceNumberDebit  String?   @map("reference_number_debit") @db.VarChar(20) // PNBZaduzBroj (platilac/na teret)
+  referenceNumberCredit String?   @map("reference_number_credit") @db.VarChar(20) // PNBOdobBroj (primalac; DEDUP ključ)
+  purpose               String?   @map("purpose") @db.VarChar(255) // SvrhaDoznake (default "UPLATA ZA ROBU")
+  dueDate               DateTime? @map("due_date") @db.Timestamptz(6) // DatumValute (dospeće)
+  status                String    @default("CREATED") @map("status") @db.VarChar(20) /// CREATED(0) | SIGNED(1) | PAID(2)
+  isLocked              Boolean   @default(false) @map("is_locked") // Zakljucano (Faza-0 lock; ortogonalno statusu)
+  sourceLedgerEntryId   Int?      @map("source_ledger_entry_id") // meki ref ledger_entries.id (otvorena stavka dobavljača)
+  exportedAt            DateTime? @map("exported_at") @db.Timestamptz(6) // trenutak izvoza u banku (posle OznaciPlaceneVirmane)
+  createdByUserId       Int?      @map("created_by_user_id") // meki ref users.id
+  updatedByUserId       Int?      @map("updated_by_user_id")
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  // DEDUP: sprečava dvostruko plaćanje iste fakture istom dobavljaču
+  // (BigBit ProveraPozivaNaBroj po (PNBOdobBroj, IDUKorist) — doc 25 §C).
+  @@unique([referenceNumberCredit, supplierId], map: "uq_payment_orders_dedup")
+  @@index([supplierId], map: "idx_payment_orders_supplier")
+  @@index([status], map: "idx_payment_orders_status")
+  @@index([dueDate], map: "idx_payment_orders_due_date")
+  @@map("payment_orders")
+}
+
+// -----------------------------------------------------------------------------
+// 5) CompensationOrder (+ CompensationOrderLine) — bilateralna/multilateralna kompenzacija.
+//    post() → Faza-2 nalog vrste KMP; stavke referišu otvorene LedgerEntry redove (meki ref).
+// -----------------------------------------------------------------------------
+/// Was: kompenzacija  — zaglavlje kompenzacije (GRKZag): prebijanje potraživanja i obaveza sa partnerom.
+model CompensationOrder {
+  id                 Int      @id(map: "pk_compensation_orders") @default(autoincrement()) @map("id")
+  partnerId          Int      @map("partner_id") // meki ref customers.id (druga strana prebijanja)
+  compensationNumber String   @map("compensation_number") @db.VarChar(20) // broj kompenzacije
+  date               DateTime @map("date") @db.Timestamptz(6) // datum kompenzacije
+  status             String   @default("DRAFT") @map("status") @db.VarChar(20) /// DRAFT | CONFIRMED | POSTED
+  totalAmount        Decimal  @default(0) @map("total_amount") @db.Decimal(19, 4) // ukupan prebijeni iznos (bilateralni min)
+  createdByUserId    Int?     @map("created_by_user_id") // meki ref users.id
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  lines CompensationOrderLine[]
+
+  @@unique([compensationNumber], map: "uq_compensation_orders_number")
+  @@index([partnerId], map: "idx_compensation_orders_partner")
+  @@index([status], map: "idx_compensation_orders_status")
+  @@map("compensation_orders")
+}
+
+/// Was: kompenzacija (stavke)  — stavka kompenzacije: jedna otvorena stavka (LedgerEntry) sa iznosom prebijanja.
+model CompensationOrderLine {
+  id             Int     @id(map: "pk_compensation_order_lines") @default(autoincrement()) @map("id")
+  compensationId Int     @map("compensation_id") // FK CompensationOrder
+  ledgerEntryId  Int?    @map("ledger_entry_id") // meki ref ledger_entries.id (otvorena stavka koja se prebija)
+  side           String  @map("side") @db.VarChar(10) /// receivable | payable (strana koja se zatvara)
+  amount         Decimal @default(0) @map("amount") @db.Decimal(19, 4) // prebijeni iznos (≤ otvoreni saldo stavke)
+  lineNo         Int     @default(0) @map("line_no")
+
+  compensation CompensationOrder @relation(fields: [compensationId], references: [id], onDelete: Cascade, map: "fk_compensation_order_lines_compensation")
+
+  @@index([compensationId], map: "idx_compensation_order_lines_compensation")
+  @@map("compensation_order_lines")
+}
