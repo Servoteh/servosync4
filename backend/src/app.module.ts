@@ -40,6 +40,8 @@ import { LocationsModule } from "./modules/locations/locations.module";
 import { KadrovskaModule } from "./modules/kadrovska/kadrovska.module";
 import { NabavkaModule } from "./modules/nabavka/nabavka.module";
 import { ProjectsWriteModule } from "./modules/projects-write/projects-write.module";
+import { PostingModule } from "./modules/gl/posting/posting.module";
+import { RobnoModule } from "./modules/robno/robno.module";
 
 @Module({
   imports: [
@@ -93,6 +95,10 @@ import { ProjectsWriteModule } from "./modules/projects-write/projects-write.mod
     LocationsModule,
     // 3.0 TALAS G — Kadrovska/HR (MODULE_SPEC_kadrovska_30.md §0); PII + zarade.
     KadrovskaModule,
+    // 4.0 Faza 3 — Robno/magacin (kalkulacija landed cost + nivelacija/uprosečavanje, doc 39).
+    RobnoModule,
+    // 4.0 Faza 2/3 — GL auto-kontiranje robnog dokumenta (StockDocument → nalog GK).
+    PostingModule,
   ],
   controllers: [AppController],
   providers: [
