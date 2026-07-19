@@ -20,3 +20,19 @@ Kandidat-tabele (`T_GK_IZV_Stavke`, `T_Izvestaj`, `PDV_Kolone`) su k tome i **ru
 `.mdw` credentials na PC-u sa Access-om — vidi kako je rađen `rule_tables/BB_T_26/*.csv`). To je posao na
 Nenadovom PC-u, ne mdb-tools na Linux-u. Bilans i dalje radi na rekonstrukciji (bruto bilans + osnovne AOP);
 zameniti pravim formulama kad se DAO izvoz uradi. Do tada: NE za regulatorni izlaz, DA za pregled/kontrolu.
+
+### Ažuriranje (20.07 #2): motor DEKODIRAN iz VBA, mdb-tools čita APL ali ne glavnu bazu
+
+Nenad je izvezao ZR VBA kod (Module ZR + ZRXML + Form_ZR_*). Motor je 100% dekodiran (doc 44):
+DSL D/P/PSD/PSP/A/AB/AC + wildcard + samo +/-. GkEval usklađen (AB/AC prefiksi, clamp hipoteza),
+APR eFI XML exporter napisan (FiForma BS/BU/SI, ruta /zavrsni/statements/:id/apr-xml, ZR_EXPORT).
+
+**Pristup .mdb (novo saznanje):** mdb-tools RADI kroz docker (bez sudo) i ČITA nezaključane baze —
+izvučen `CTGK_Vrste_Konta` (613 red) iz `BigBit_APL_2010.MDB`. ALI: (a) `ZR_AOP_Modla` NIJE u APL/OnLine
+bazama (samo CTGK, koji je testni: IDCTGK=1 Opis="ssss"); (b) prave `ZR_*` tabele su u glavnoj `BB_T_26.mdb`
+koja JE ULS-zaključana → mdb-tools vidi katalog ali ne čita sadržaj (ni Kontni plan sa 1389 redova).
+
+**Za pun bilans seed treba `ZR_AOP_Modla` (kolone: AOP, Definicija=formula, Obrazac BS/BU/SI, StartnaKolona,
+BrojKolona, Velicina) iz zaključane BB_T_26.mdb.** Načini: (1) Access na PC-u sa .mdw (Nenad ne može otvoriti);
+(2) otključati BB_T_26 kopiju (ukloniti .mdw vezu) pa mdb-export; (3) izvoz iz žive BigBit instalacije koja ima
+pristup. Motor + XML čekaju samo taj CSV — sve ostalo radi (bruto bilans na rekonstrukciji).
