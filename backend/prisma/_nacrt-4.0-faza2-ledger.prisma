@@ -1,0 +1,121 @@
+// =============================================================================
+// NACRT — Faza 2 GL jezgro: JournalEntry + LedgerEntry (glavna knjiga)
+// =============================================================================
+// STATUS: NACRT. NIJE u schema.prisma, NIJE migrirano. Ovo je TEKST-predlog
+// modela — kopira se u backend/prisma/schema.prisma tek kad Nesa/knjigovođa
+// potvrde kontni plan + DefDug/DefPot formule (Kapija 0, doc PLAN_FAZA_2 §Odluke).
+//
+// Izvori (verifikovano nad kodom + dokumentima):
+//   - docs/PLAN_FAZA_2_gl-jezgro.md  (dizajn Prisma modela §Prisma modeli)
+//   - backend/docs/migration/30-glavna-knjiga-modul-dubinski.md §D (T_Nalozi, T_Glavna knjiga DDL)
+//   - backend/docs/migration/18 §2.1 (poreklo dokumenta, traceback kolone)
+//   - ŽIVI modeli: Account, AccountingScheme, AccountingSchemeLine, SaldakontoAccount
+//     (schema.prisma:2450-2518) — na njih se ovi modeli oslanjaju, NE dupliraju.
+//
+// PRAVILA (backend/CLAUDE.md, BACKEND_RULES §2): modeli PascalCase singular,
+// tabele snake_case plural, constraints pk_/fk_/uq_/idx_ eksplicitno; novac =
+// Decimal(19,4) NIKAD Float; statusi = String sa /// dozvoljene vrednosti (ne enum);
+// `/// Was:` na legacy-poreklu; schema-rename-map.md se ažurira pri aktivaciji.
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// JournalEntry — temeljnica naloga (zaglavlje). Was: T_Nalozi (schema:1548)
+// -----------------------------------------------------------------------------
+// NAPOMENA: ime `Journal` je ZAUZETO (schema:1213 = app-event-log id/message/
+// createdAt, NIJE knjigovodstveni dnevnik). Zato JournalEntry / LedgerEntry.
+/// Was: T_Nalozi  — zaglavlje naloga glavne knjige (temeljnica).
+model JournalEntry {
+  id             Int      @id(map: "pk_journal_entries") @default(autoincrement()) @map("id") // IDNaloga
+  number         String   @map("number") @db.VarChar(10) // Broj naloga — zero-pad 4 po (company, vrsta, godina)
+  orderTypeCode  String   @map("order_type_code") @db.VarChar(5) // Vrsta naloga (FK OrderType.code); "AUTO-ROBA" ekvivalent
+  year           Int      @map("year") // Godina
+  companyId      Int      @default(0) @map("company_id")
+  documentDate   DateTime @map("document_date") @db.Timestamptz(6) // Datum dokumenta
+  postingDate    DateTime @map("posting_date") @db.Timestamptz(6) // Datum knjizenja
+
+  /// draft | posted | locked  — životni ciklus (Level/Zakljucano iz doc 30 §D)
+  status         String   @default("draft") @map("status") @db.VarChar(10)
+  version        Int      @default(0) @map("version") // optimistic lock (edit samo dok draft)
+
+  // Storno = protiv-nalog, nikad edit (doc 30 §D, PLAN_FAZA_2 §Storno). Self-FK par.
+  reversesEntryId  Int?   @map("reverses_entry_id")   // ja storniram ovaj nalog
+  reversedByEntryId Int?  @map("reversed_by_entry_id") // mene stornira ovaj nalog
+
+  // Poreklo knjiženja
+  postingSchemeId Int?    @map("posting_scheme_id") // AccountingScheme.id; null = ručni nalog (bez šeme)
+  sourceGoodsDocId Int?   @map("source_goods_doc_id") // GoodsDocument.id — IDEMPOTENCIJA ključ (§idempotencija)
+
+  // Audit / potpis (veza Faza 0 audit+lock, doc 30 §D: Potpis + DatumIVreme)
+  signature      String?  @map("signature") @db.VarChar(50)
+  signedAt       DateTime? @map("signed_at") @db.Timestamptz(6)
+  createdByUserId Int?    @map("created_by_user_id")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  lines        LedgerEntry[]
+  reverses     JournalEntry?  @relation("JournalEntryStorno", fields: [reversesEntryId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_journal_entries_reverses")
+  reversedBy   JournalEntry?  @relation("JournalEntryStorno")
+  scheme       AccountingScheme? @relation(fields: [postingSchemeId], references: [id], onDelete: NoAction, map: "fk_journal_entries_scheme")
+
+  // Jedinstvenost naloga = (company, vrsta, godina, broj) — doc 30 §D numeracija.
+  @@unique([companyId, orderTypeCode, year, number], map: "uq_journal_entries_number")
+  // Idempotencija: najviše jedan nalog po izvornom robnom dokumentu (parcijalni
+  // unique se NE može izraziti Prisma-om; ovo je nalog nakon dodatnog WHERE u
+  // servisu. Puni unique bi blokirao storno lanac istog dokumenta — zato index.)
+  @@index([sourceGoodsDocId], map: "idx_journal_entries_source_goods_doc")
+  @@index([status], map: "idx_journal_entries_status")
+  @@map("journal_entries")
+}
+
+// -----------------------------------------------------------------------------
+// LedgerEntry — stavka glavne knjige. Was: T_Glavna knjiga (schema:1350)
+// -----------------------------------------------------------------------------
+/// Was: T_Glavna knjiga  — knjižna stavka: konto, analitika(komitent), dug/pot + traceback.
+model LedgerEntry {
+  id             Int      @id(map: "pk_ledger_entries") @default(autoincrement()) @map("id")
+  journalEntryId Int      @map("journal_entry_id") // IDNaloga (FK JournalEntry)
+
+  accountCode    String   @map("account_code") @db.VarChar(10) // Konto (FK Account.code)
+  analyticalCode Int?     @map("analytical_code") // Analiticka sifra = komitent; null = sintetika (line.postsAnalytics=false)
+
+  // Novac — Decimal(19,4), NIKAD Float (BACKEND_RULES §2). Float izvor u
+  // GoodsDocumentItem se konvertuje u Decimal NA POSTING GRANICI (PLAN_FAZA_2 §2).
+  debit          Decimal  @default(0) @map("debit") @db.Decimal(19, 4)  // Duguje
+  credit         Decimal  @default(0) @map("credit") @db.Decimal(19, 4) // Potrazuje
+
+  // Devizni par (SHOULD, doc 30 §D: DevDuguje/DevPotrazuje/DevValuta)
+  fxDebit        Decimal? @map("fx_debit") @db.Decimal(19, 4)
+  fxCredit       Decimal? @map("fx_credit") @db.Decimal(19, 4)
+  fxCurrency     String?  @map("fx_currency") @db.VarChar(3)
+
+  description    String?  @map("description") @db.VarChar(255) // Opis stavke (iz šeme/dokumenta)
+  costCenter     String?  @map("cost_center") @db.VarChar(20) // Pozicija (mesto troška, doc 18 §2.1)
+
+  // Traceback ka izvoru (doc 30 §D, doc 18 §2.1: IDDokIzRobnog/IzUsluga/IDRadniNalog/IDPredmet)
+  sourceGoodsDocId  Int?  @map("source_goods_doc_id")
+  sourceServiceDocId Int? @map("source_service_doc_id")
+  sourceProjectId   Int?  @map("source_project_id")
+  sourceWorkOrderId Int?  @map("source_work_order_id")
+
+  // Otvorene stavke / auto-zatvaranje (SHOULD, Faza 4 saldakonti — Povezan/reconciledWith)
+  reconciledWithId Int?  @map("reconciled_with_id")
+
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  journalEntry   JournalEntry @relation(fields: [journalEntryId], references: [id], onDelete: Cascade, map: "fk_ledger_entries_journal")
+  account        Account      @relation(fields: [accountCode], references: [code], onDelete: NoAction, map: "fk_ledger_entries_account")
+
+  @@index([journalEntryId], map: "idx_ledger_entries_journal")
+  // Kartica analitike / saldakonto po (konto + komitent) — doc 30 §E izveštaji.
+  @@index([accountCode, analyticalCode], map: "idx_ledger_entries_account_analytical")
+  @@index([sourceGoodsDocId], map: "idx_ledger_entries_source_goods_doc")
+  @@map("ledger_entries")
+}
+
+// -----------------------------------------------------------------------------
+// DOPUNA POSTOJEĆIH ŽIVIH MODELA pri aktivaciji (NE dira se sada):
+//   - Account: dodati `ledgerEntries LedgerEntry[]` (inverzna strana FK).
+//   - AccountingScheme: dodati `journalEntries JournalEntry[]` (inverzna strana).
+// Ovo su jedine izmene ŽIVIH modela — dodaju se u istom PR-u kad modeli uđu u
+// schema.prisma. Ovde zapisano da se ne zaboravi (Prisma traži obe strane relacije).
+// -----------------------------------------------------------------------------

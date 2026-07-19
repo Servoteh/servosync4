@@ -1,0 +1,321 @@
+/**
+ * POSTING SERVICE — GL auto-kontiranje dokumenta u nalog (Faza 2) — NACRT.
+ * =========================================================================
+ * `.nacrt` jer JournalEntry/LedgerEntry Prisma modeli JOŠ NISU u schema.prisma
+ * (vidi backend/prisma/_nacrt-4.0-faza2-ledger.prisma). Logika je PRAVA — koristi
+ * ŽIVI `evaluateExpression` parser i ŽIVE registre Account/AccountingScheme/
+ * AccountingSchemeLine/SaldakontoAccount. Aktivacija: kad modeli uđu u schema
+ * (rename `.nacrt` → `.ts`, dodaj prisma-decimal-arith.ts, poveži u GL modul).
+ *
+ * TOK (verifikovano nad doc 18 §2.2 i doc 30 §B):
+ *   DocumentType.postingTemplate (=IDSeme legacy)  ──►  AccountingScheme (orderType)
+ *     ──►  AccountingSchemeLine[] (Konto + DefDug/DefPot izraz nad A–Z)
+ *       ──►  za svaku liniju: evaluateExpression(defDebit/defCredit, varMap)
+ *              gde je varMap = iznosi sa dokumenta po AUTORITATIVNOM mapiranju
+ *              slova A–Z (doc 30 §B / doc 18 §2.2 — NE VBA komentari)
+ *         ──►  GROUP BY (konto + komitent), Σ, odbaci nula-redove (legacy 2Korak)
+ *           ──►  BALANS: ΣDug == ΣPot, inače LedgerNotBalancedException (rollback)
+ *             ──►  INSERT JournalEntry(draft) + LedgerEntry[] (NSK_ProknjiziStavkeIzRobnog)
+ *
+ * IDEMPOTENCIJA (doc 18 §2.2 t.5: „proknjižen = IZVEDEN, ne flag"):
+ *   pre knjiženja proveri postoji li JournalEntry sa sourceGoodsDocId=docId.
+ *   Ako je posted/locked → NE diraj (baci AlreadyPostedException). Ako je draft
+ *   → obriši stare linije i re-post (ne dupliraj nalog).
+ */
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
+import { Injectable } from "@nestjs/common";
+import { Prisma, PrismaClient } from "@prisma/client";
+import { PrismaService } from "../../../prisma/prisma.service"; // prilagoditi putanju pri aktivaciji
+import { evaluateExpression } from "./expression-parser";
+import { prismaDecimalArith } from "./prisma-decimal-arith"; // adapter iznad Prisma.Decimal (README §Decimal)
+
+const D = Prisma.Decimal;
+const ZERO = new D(0);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tipizirane domenske greške (BACKEND_RULES §7 — nikad 500 za poslovnu grešku)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** ΣDug ≠ ΣPot — nalog ne balansira. Cela transakcija se odbija. */
+export class LedgerNotBalancedException extends Error {
+  readonly code = "GL_NOT_BALANCED";
+  constructor(public readonly totalDebit: Prisma.Decimal, public readonly totalCredit: Prisma.Decimal) {
+    super(`Nalog ne balansira: ΣDug=${totalDebit.toFixed(4)} ≠ ΣPot=${totalCredit.toFixed(4)}`);
+    this.name = "LedgerNotBalancedException";
+  }
+}
+
+/** Dokument nema posting šablon (postingTemplate 0/null) — nije za auto-knjiženje. */
+export class NoPostingSchemeException extends Error {
+  readonly code = "GL_NO_SCHEME";
+  constructor(public readonly docId: number) {
+    super(`Dokument ${docId}: DocumentType nema posting šablon (postingTemplate 0/null).`);
+    this.name = "NoPostingSchemeException";
+  }
+}
+
+/** Dokument je već proknjižen i nalog je posted/locked — re-post nije dozvoljen. */
+export class AlreadyPostedException extends Error {
+  readonly code = "GL_ALREADY_POSTED";
+  constructor(public readonly docId: number, public readonly journalEntryId: number) {
+    super(`Dokument ${docId} je već proknjižen (nalog ${journalEntryId}, posted/locked).`);
+    this.name = "AlreadyPostedException";
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mapiranje slova A–Z → kolone dokumenta (AUTORITATIVNO iz doc 30 §B / doc 18)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Izvor: `SKStavkeZaKnjizenjeAnalitika1Korak.sql` (doc 30 §B, doc 18 §2.2).
+// ⚠️ NE koristiti VBA komentare (A=nabavna neto, B/C=zavisni trošak...) — to je
+// STARIJI šablon (doc 30 §B upozorenje). Autoritativno je mapiranje iz UPITA:
+//
+//   A = NabNetoVred   (nabavna neto vrednost)
+//   B = ZTS           (zavisni trošak sopstveni)
+//   C = ZTD           (zavisni trošak dobavljača)
+//   D = PPDOsn        (osnovica PDV 20%)
+//   E = PPDZel        (osnovica PDV 10% — „Zeleznica" kolona, doc 18 §3.1)
+//   O = StvarnaVP     (stvarna veleprodajna vrednost = osnovica izlaza)
+//   P = PDV po višoj stopi (20%)
+//   Q = PDV po nižoj stopi (10%)
+//   X, Y, Z = avans   (avansne komponente)
+//
+// Ovo su AGREGATI po dokumentu (Σ preko stavki), ne per-item. Slova koja šema
+// ne koristi ostaju 0 (parser baca na nepoznatu promenljivu SAMO ako je izraz
+// referiše — zato punimo ceo A–Z nulama pa prepišemo poznate).
+//
+// NAPOMENA: kolone A/B/C/O nisu 1:1 skalarna polja na GoodsDocument — računaju
+// se iz GoodsDocumentItem[] (npr. A = Σ quantity*purchasePriceNet). PDV (D/E/P/Q)
+// zavisi od poreske stope po stavci (R_Tarife, doc 18 §3.1). Ova skica daje
+// SKELET agregacije; TAČNE formule po koloni potvrđuje knjigovođa (Kapija 0).
+// Dok se ne potvrde — ovde su eksplicitni TODO(kapija-0) markeri, ne izmišljene brojke.
+
+type DocVarMap = Record<string, Prisma.Decimal>;
+
+/** Sirovi (Float) iznosi sa dokumenta pre konverzije u Decimal. */
+interface DocAmounts {
+  nabNetoVred: number; // A
+  zts: number;         // B
+  ztd: number;         // C
+  pdvOsn20: number;    // D
+  pdvOsn10: number;    // E
+  stvarnaVp: number;   // O
+  pdvVisa: number;     // P
+  pdvNiza: number;     // Q
+  avansX: number;      // X
+  avansY: number;      // Y
+  avansZ: number;      // Z
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Servis
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface LedgerLineDraft {
+  accountCode: string;
+  analyticalCode: number | null;
+  debit: Prisma.Decimal;
+  credit: Prisma.Decimal;
+  description: string | null;
+}
+
+@Injectable()
+export class PostingService {
+  constructor(private readonly prisma: PrismaService) {}
+
+  /**
+   * Proknjiži jedan robni dokument u nalog GK. In-transaction, idempotentno.
+   * @returns kreirane LedgerEntry linije (za prikaz u Dnevniku/Kartici konta).
+   */
+  async postDocument(docId: number): Promise<LedgerLineDraft[]> {
+    return this.prisma.$transaction(async (tx) => {
+      // 1) Učitaj dokument + stavke + tip dokumenta
+      const doc = await tx.goodsDocument.findUniqueOrThrow({ where: { id: docId } });
+      const items = await tx.goodsDocumentItem.findMany({ where: { documentId: docId } });
+      const docType = await tx.documentType.findFirstOrThrow({ where: { code: doc.documentType } });
+
+      // schemeId = postingTemplate (=legacy IDSeme). 0/null → dokument nije za auto-knjiženje.
+      const schemeId = docType.postingTemplate ?? 0;
+      if (schemeId === 0) throw new NoPostingSchemeException(docId);
+
+      // 2) IDEMPOTENCIJA — status „proknjižen" je IZVEDEN (doc 18 §2.2 t.5).
+      const existing = await tx.journalEntry.findFirst({ where: { sourceGoodsDocId: docId } });
+      if (existing) {
+        if (existing.status !== "draft") throw new AlreadyPostedException(docId, existing.id);
+        // draft → re-post: obriši stare linije, ponovo izvedi (cascade briše LedgerEntry)
+        await tx.journalEntry.delete({ where: { id: existing.id } });
+      }
+
+      // 3) Učitaj šemu (AccountingScheme + linije). Vezano preko id = postingTemplate.
+      const scheme = await tx.accountingScheme.findUniqueOrThrow({
+        where: { id: schemeId },
+        include: { lines: { orderBy: { lineNo: "asc" } } },
+      });
+
+      // 4) varMap A–Z iz iznosa dokumenta (Float→Decimal NA GRANICI, zaokruži 4 dec.)
+      const amounts = this.aggregateDocAmounts(doc, items);
+      const varMap = this.buildDocVarMap(amounts);
+
+      // 5) Za svaku liniju šeme evaluiraj DefDug/DefPot ŽIVIM parserom
+      const analyticalCode = doc.customerId || null; // komitent (line.postsAnalytics odlučuje po liniji)
+      const rawLines: LedgerLineDraft[] = [];
+      for (const line of scheme.lines) {
+        // Prazna formula = ta strana ne postoji za ovaj red → 0 (README §Kako poziva).
+        const debit = line.defDebit
+          ? evaluateExpression<Prisma.Decimal>(line.defDebit, varMap, prismaDecimalArith)
+          : ZERO;
+        const credit = line.defCredit
+          ? evaluateExpression<Prisma.Decimal>(line.defCredit, varMap, prismaDecimalArith)
+          : ZERO;
+
+        rawLines.push({
+          accountCode: line.accountCode,
+          analyticalCode: line.postsAnalytics ? analyticalCode : null,
+          debit,
+          credit,
+          description: line.description ?? doc.description ?? null,
+        });
+      }
+
+      // 6) GROUP BY (konto + komitent), Σ, odbaci nula-redove (legacy 2Korak)
+      const grouped = this.groupByAccountAndPartner(rawLines);
+
+      // 7) BALANS-KONTROLA: ΣDug == ΣPot (Decimal je egzaktan → tolerancija 0)
+      let totalDebit = ZERO;
+      let totalCredit = ZERO;
+      for (const l of grouped) {
+        totalDebit = totalDebit.add(l.debit);
+        totalCredit = totalCredit.add(l.credit);
+      }
+      if (!totalDebit.equals(totalCredit)) {
+        throw new LedgerNotBalancedException(totalDebit, totalCredit); // rollback cele tx
+      }
+
+      // 8) Kreiraj JournalEntry(draft) + LedgerEntry[] (NSK_ProknjiziStavkeIzRobnog)
+      const number = await this.nextJournalNumber(tx, doc.companyId, scheme.orderType, doc.year ?? doc.postingDate.getFullYear());
+      const entry = await tx.journalEntry.create({
+        data: {
+          number,
+          orderTypeCode: scheme.orderType,
+          year: doc.year ?? doc.postingDate.getFullYear(),
+          companyId: doc.companyId,
+          documentDate: doc.documentDate,
+          postingDate: doc.postingDate,
+          status: "draft",
+          postingSchemeId: scheme.id,
+          sourceGoodsDocId: docId,
+          lines: {
+            create: grouped.map((l) => ({
+              accountCode: l.accountCode,
+              analyticalCode: l.analyticalCode,
+              debit: l.debit,
+              credit: l.credit,
+              description: l.description,
+              sourceGoodsDocId: docId,
+              sourceWorkOrderId: doc.workOrderId || null,
+              sourceProjectId: doc.projectId || null,
+            })),
+          },
+        },
+        include: { lines: true },
+      });
+
+      return grouped;
+    });
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // A–Z varMap (doc 30 §B) — SKELET; tačne formule po koloni = Kapija 0.
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Agregira iznose dokumenta u polja A–Z. Float izvor (GoodsDocumentItem) —
+   * konverzija u Decimal je u `buildDocVarMap`, ovde još Float radi legacy formula.
+   * TAČNE formule (npr. PDV po stopi iz R_Tarife) potvrđuje knjigovođa (Kapija 0);
+   * ovde su placeholder agregacije nad postojećim kolonama, sa TODO markerima.
+   */
+  private aggregateDocAmounts(doc: any, items: any[]): DocAmounts {
+    let nabNetoVred = 0; // A = Σ quantity * purchasePriceNet
+    let zts = 0;         // B = Σ dependentCostOwn
+    let ztd = 0;         // C = Σ dependentCostSupplier
+    let stvarnaVp = 0;   // O = Σ quantity * actualWholesalePrice
+    for (const it of items) {
+      nabNetoVred += (it.quantity ?? 0) * (it.purchasePriceNet ?? 0);
+      zts += it.dependentCostOwn ?? 0;
+      ztd += it.dependentCostSupplier ?? 0;
+      stvarnaVp += (it.quantity ?? 0) * (it.actualWholesalePrice ?? 0);
+    }
+    // TODO(kapija-0): PDV osnovice/iznosi (D/E/P/Q) po stopi iz R_Tarife (doc 18 §3.1)
+    //   i avansi (X/Y/Z) — knjigovođa potvrđuje formulu pre produkcije. Do tada 0.
+    const pdvOsn20 = 0; // D
+    const pdvOsn10 = 0; // E
+    const pdvVisa = 0;  // P
+    const pdvNiza = 0;  // Q
+    return { nabNetoVred, zts, ztd, pdvOsn20, pdvOsn10, stvarnaVp, pdvVisa, pdvNiza, avansX: 0, avansY: 0, avansZ: 0 };
+  }
+
+  /** Float→Decimal na granici (zaokruži 4 dec.), mapiraj u slova A–Z (doc 30 §B). */
+  private buildDocVarMap(a: DocAmounts): DocVarMap {
+    const dec = (n: number) => new D(n.toFixed(4)); // izoluj gubitak preciznosti Float izvora
+    return {
+      A: dec(a.nabNetoVred),
+      B: dec(a.zts),
+      C: dec(a.ztd),
+      D: dec(a.pdvOsn20),
+      E: dec(a.pdvOsn10),
+      O: dec(a.stvarnaVp),
+      P: dec(a.pdvVisa),
+      Q: dec(a.pdvNiza),
+      X: dec(a.avansX),
+      Y: dec(a.avansY),
+      Z: dec(a.avansZ),
+      // Slova koja nijedna trenutna šema ne koristi — nula da parser ne pukne ako ih izraz referiše.
+      F: ZERO, G: ZERO, H: ZERO, I: ZERO, J: ZERO, K: ZERO, L: ZERO, M: ZERO,
+      N: ZERO, R: ZERO, S: ZERO, T: ZERO, U: ZERO, V: ZERO, W: ZERO,
+    };
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // GROUP BY (konto + komitent) → Σ, odbaci nula-redove (legacy 2Korak, doc 30 §B)
+  // ───────────────────────────────────────────────────────────────────────────
+  private groupByAccountAndPartner(lines: LedgerLineDraft[]): LedgerLineDraft[] {
+    const map = new Map<string, LedgerLineDraft>();
+    for (const l of lines) {
+      const key = `${l.accountCode}|${l.analyticalCode ?? ""}`;
+      const cur = map.get(key);
+      if (cur) {
+        cur.debit = cur.debit.add(l.debit);
+        cur.credit = cur.credit.add(l.credit);
+      } else {
+        map.set(key, { ...l });
+      }
+    }
+    // odbaci redove gde su i dug i pot nula (legacy 2Korak „odbaci nula-redove")
+    return [...map.values()].filter((l) => !(l.debit.isZero() && l.credit.isZero()));
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Numeracija naloga: 1 + MAX po (company, vrsta, godina), zero-pad 4.
+  // Obrazac WorkOrderNumberingService + pg_advisory_xact_lock (doc 30 §D).
+  // ───────────────────────────────────────────────────────────────────────────
+  private async nextJournalNumber(
+    tx: Prisma.TransactionClient,
+    companyId: number,
+    orderType: string,
+    year: number,
+  ): Promise<string> {
+    // advisory lock po (company, vrsta, godina) da paralelni post ne dobiju isti broj
+    const lockKey = `${companyId}:${orderType}:${year}`;
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
+    const last = await tx.journalEntry.findFirst({
+      where: { companyId, orderTypeCode: orderType, year },
+      orderBy: { number: "desc" },
+      select: { number: true },
+    });
+    const next = (last ? parseInt(last.number, 10) : 0) + 1;
+    return String(next).padStart(4, "0");
+  }
+}
