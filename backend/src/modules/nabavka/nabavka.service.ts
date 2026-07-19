@@ -7,6 +7,9 @@ import {
 import { PrismaService } from "../../prisma/prisma.service";
 import { MailService } from "../../common/mail/mail.service";
 import { PurchaseNumberingService } from "./purchase-numbering.service";
+import { RobnoService } from "../robno/robno.service";
+import { CalculationService } from "../robno/calculation.service";
+import { PostingEngineService } from "../gl/posting/posting.service";
 import type { AuthUser } from "../auth/jwt.strategy";
 import {
   type CreatePurchaseRequestDto,
@@ -34,6 +37,9 @@ export class NabavkaService {
     private readonly prisma: PrismaService,
     private readonly mail: MailService,
     private readonly numbering: PurchaseNumberingService,
+    private readonly robno: RobnoService,
+    private readonly calculation: CalculationService,
+    private readonly posting: PostingEngineService,
   ) {}
 
   // ── ZAHTEV ────────────────────────────────────────────────────────────────
@@ -188,6 +194,7 @@ export class NabavkaService {
     orderId: number,
     lines: Array<{ itemId: number; receivedQuantity?: number }>,
     actor: AuthUser,
+    opts?: { warehouseId?: number; documentTypeCode?: string; post?: boolean },
   ) {
     const order = await this.prisma.purchaseOrder.findUnique({
       where: { id: orderId },
@@ -202,8 +209,21 @@ export class NabavkaService {
         "Prijem je moguć tek kada je narudžbenica poručena.",
       );
 
+    // Anti-duplo (3-way match, BigBit „IDStavkeTrebovanja Is Null"): jedna narudžbenica
+    // sme da napravi najviše JEDAN robni ulaz. Ako već postoji StockDocument sa ovim
+    // purchaseOrderId — prijem je već izveden, odbij ponovno knjiženje.
+    const existingInbound = await this.prisma.stockDocument.findFirst({
+      where: { purchaseOrderId: orderId },
+      select: { id: true, documentNumber: true },
+    });
+    if (existingInbound)
+      throw new ConflictException(
+        `Robni ulaz ${existingInbound.documentNumber} je već napravljen za ovu narudžbenicu.`,
+      );
+
+    // 1) Upiši primljene količine + status RECEIVED (Nabavka strana).
     const byId = new Map(lines.map((l) => [l.itemId, l]));
-    return this.prisma.$transaction(async (tx) => {
+    await this.prisma.$transaction(async (tx) => {
       for (const item of order.items) {
         const line = byId.get(item.id);
         // default = naručena količina (BigBit); eksplicitno prosleđena ima prednost
@@ -213,11 +233,53 @@ export class NabavkaService {
           data: { receivedQuantity: qty },
         });
       }
-      return tx.purchaseOrder.update({
+      await tx.purchaseOrder.update({
         where: { id: orderId },
         data: { status: "RECEIVED", updatedByUserId: actor.userId },
       });
     });
+
+    // 2) Napravi robni ulaz (Faza 3) iz primljenih stavki (receivedQuantity > 0).
+    //    Cena iz narudžbenice (unitPrice = fakturna). Magacin: eksplicitan ili default 1.
+    const received = await this.prisma.purchaseOrderItem.findMany({
+      where: { orderId, receivedQuantity: { gt: 0 }, articleId: { not: null } },
+    });
+    if (received.length === 0) {
+      return { order: { id: orderId, status: "RECEIVED" }, stockDocument: null };
+    }
+    const warehouseId = opts?.warehouseId ?? 1;
+    const documentTypeCode = opts?.documentTypeCode ?? "UFROB";
+    const inboundRes = await this.robno.createStockDocument("UL", {
+      documentTypeCode,
+      warehouseId,
+      supplierId: order.supplierId,
+      purchaseOrderId: orderId,
+      projectId: order.projectId ?? undefined,
+      createdByUserId: actor.userId,
+      items: received.map((it, idx) => ({
+        itemId: it.articleId as number,
+        warehouseId,
+        quantity: Number(it.receivedQuantity),
+        invoicePrice: it.unitPrice != null ? Number(it.unitPrice) : 0,
+        lineNo: idx + 1,
+      })),
+    });
+    const stockDoc = (inboundRes as { data?: { id: number } }).data ?? inboundRes;
+    const stockDocId = (stockDoc as { id: number }).id;
+
+    // 3) Kalkulacija (landed) → okida nivelaciju. Zatim (opciono) knjiženje u GK.
+    await this.calculation.calculate(stockDocId);
+    let journalEntry: unknown = null;
+    if (opts?.post !== false) {
+      // postFromStockDocument je idempotentan (guard po sourceGoodsDocId) — bezbedno.
+      journalEntry = await this.posting.postFromStockDocument(stockDocId);
+    }
+
+    return {
+      order: { id: orderId, status: "RECEIVED" },
+      stockDocument: stockDoc,
+      posted: journalEntry != null,
+    };
   }
 
   // ── LISTE (radna lista nabavke) ────────────────────────────────────────────

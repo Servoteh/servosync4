@@ -1,22 +1,20 @@
 import { Module } from "@nestjs/common";
 import { PrismaModule } from "../../prisma/prisma.module";
 import { MailModule } from "../../common/mail/mail.module";
+import { RobnoModule } from "../robno/robno.module";
+import { PostingModule } from "../gl/posting/posting.module";
 import { NabavkaController } from "./nabavka.controller";
 import { NabavkaService } from "./nabavka.service";
 import { PurchaseNumberingService } from "./purchase-numbering.service";
 
 /**
- * NACRT — modul Nabavka (Traka B §B). Zavisnosti:
- *   PrismaModule (baza), MailModule (auto-mail RFQ preko Resend — već exportuje MailService).
- *
- * Aktivacija (kad modeli budu u schema.prisma i baza dostupna):
- *   1) preimenuj sve `*.ts.nacrt` → `*.ts`
- *   2) dodaj `NabavkaModule` u app.module.ts imports
- *   3) dodaj NABAVKA_READ/WRITE/APPROVE u src/common/authz/permissions.ts + role mapiranje
- *      + mirror u frontend/src/lib/permissions.ts
+ * Modul Nabavka (Traka B §B). Zavisnosti:
+ *   PrismaModule (baza), MailModule (auto-mail RFQ preko Resend),
+ *   RobnoModule (prijem → robni ulaz + kalkulacija) i PostingModule (robni ulaz → GL nalog) —
+ *   `receiveOrder` posle prijema automatski pravi UL StockDocument, kalkuliše i knjiži (Faza 3 veza).
  */
 @Module({
-  imports: [PrismaModule, MailModule],
+  imports: [PrismaModule, MailModule, RobnoModule, PostingModule],
   controllers: [NabavkaController],
   providers: [NabavkaService, PurchaseNumberingService],
 })
