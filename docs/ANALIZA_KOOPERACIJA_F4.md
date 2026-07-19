@@ -1,10 +1,17 @@
 # Analiza i predlog: F4 — Kooperacija (praćenje proizvodnje)
 
+> **STATUS (19.07.2026, Nenad): IZVOĐENJE ODLOŽENO ZA 4.0** — modul se gradi zajedno sa 4.0
+> talasom (koji ide paralelno na `feat/4.0-faza1`); ova analiza je pripremljena podloga.
+> **Presuđeno odmah:** K1 = tri nivoa vezivanja stavke (RN + operacija opciono + sklop-koren) ✅;
+> K2 = auto-razlaganje sklopa u stavke + ručni override ✅; K3 = vrsta na zaglavlju dokumenta +
+> `vrsta` na auto-koop RJ grupi ✅. **K4–K8 čekaju 4.0** (K4 kooperant-registar se prirodno
+> rešava kad 4.0 preuzme komitente od BigBit-a). F1 tabele `koop_otpremnice`/`koop_otpremnica_stavke`
+> ostaju u šemi neaktivne do tada; izmene sheme po K1–K3 uraditi na početku izvođenja.
+>
 > **Šta je ovaj dokument:** analiza kako se kooperacija (slanje delova napolje na galvansku,
 > termičku i mašinsku uslugu) danas vodi u sistemu i **predlog** kako da izgleda F4 modul —
-> tabela pored praćenja + otpremnica koja se kuca kroz aplikaciju. **Ništa nije implementirano;
-> ovo je podloga za odluku.** Vezuje se na plan `docs/PLAN_PRACENJE_PROIZVODNJE_2026-07.md`
-> (zahtev korisnika §4 #13, faza **F4**, odluka **O6**).
+> tabela pored praćenja + otpremnica koja se kuca kroz aplikaciju. Vezuje se na plan
+> `docs/PLAN_PRACENJE_PROIZVODNJE_2026-07.md` (zahtev korisnika §4 #13, faza **F4**, odluka **O6**).
 >
 > **Ključni pojmovi (da se čita bez tehničkog žargona):**
 > - **RN** = radni nalog = jedna pozicija/deo u proizvodnji (jedan crtež + količina). U bazi red u tabeli `work_orders`.
