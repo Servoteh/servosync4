@@ -131,6 +131,11 @@
 | Primopredaja | Lansiran | info plava | `--status-info` |
 | Primopredaja | Legacy (iz QBigTehn, do cutover-a) | neutralna | `--status-neutral` |
 | Nacrt / stavka | Sporna (pre-check duplikat bez odluke) | narandžasta | `--status-warn` |
+| Nabavka — zahtev | Nacrt (`DRAFT`) | neutralna | `--status-neutral` |
+| Nabavka — zahtev | Poslat na odobrenje (`SUBMITTED`) | narandžasta | `--status-warn` |
+| Nabavka — zahtev | Odobren (`APPROVED`) | zelena | `--status-success` |
+| Nabavka — upit | Poslat dobavljaču (`SENT`) | info plava | `--status-info` |
+| Nabavka — narudžbenica | Primljeno (`RECEIVED`) | zelena | `--status-success` |
 | Sync (bb_sync) | Greška sinhronizacije | crvena | `--status-danger` |
 | Notifikacija (D8) | Škart (`kontrola.skart`) | crvena | `--status-danger` |
 | Notifikacija (D8) | Dorada (`kontrola.dorada`) | narandžasta | `--status-warn` |

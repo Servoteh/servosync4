@@ -254,7 +254,7 @@ export const NAV_DOMAINS: NavDomain[] = [
     modules: [
       // Postepeno (Faza po faza) — otkomentarisati modul kad je ruta+permisija spremna:
       // Traka B (SPRINT — prvi): Nabavka
-      // { label: 'Nabavka', href: '/nabavka', icon: PackageCheck, requires: PERMISSIONS.NABAVKA_READ, keywords: ['nabavka', 'upit', 'narudzbenica', 'dobavljac'] },
+      { label: 'Nabavka', href: '/nabavka', icon: PackageCheck, requires: PERMISSIONS.NABAVKA_READ, keywords: ['nabavka', 'upit', 'narudzbenica', 'dobavljac'] },
       // Traka B: RFQ kupca → predmet
       // { label: 'Upiti kupaca', href: '/rfqs', icon: ClipboardList, requires: PERMISSIONS.SALES_READ, keywords: ['rfq', 'zahtev za ponudu', 'upit kupca'] },
       // Faza 5: Predračuni & računi (izlazni, dom+izvoz)

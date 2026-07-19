@@ -41,6 +41,10 @@ export const PERMISSIONS = {
   LOKACIJE_ADMIN: 'lokacije.admin',
   LOKACIJE_LABELS: 'lokacije.labels',
   MRP_READ: 'mrp.read',
+  // Nabavka — 4.0 Traka B (mirror backend kataloga)
+  NABAVKA_READ: 'nabavka.read',
+  NABAVKA_WRITE: 'nabavka.write',
+  NABAVKA_APPROVE: 'nabavka.approve',
   DIRECTORY_READ: 'directory.read',
   SYNC_RUN: 'sync.run',
   SYNC_READ: 'sync.read',

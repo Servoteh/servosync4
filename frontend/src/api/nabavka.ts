@@ -1,0 +1,246 @@
+'use client';
+
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { apiFetch } from './client';
+
+/**
+ * NACRT — data sloj modula Nabavka (Traka B §B). TanStack Query hooks nad NestJS
+ * `/api/v1/nabavka/*`. Tipovi 1:1 sa backend nacrtom:
+ *   backend/src/modules/nabavka/nabavka.controller.ts.nacrt (rute)
+ *   backend/src/modules/nabavka/nabavka.service.ts.nacrt      (status-mašina, envelope)
+ *   backend/src/modules/nabavka/dto/create-purchase-request.dto.ts.nacrt (create ulaz)
+ *
+ * `*.ts.nacrt` = van TypeScript kompilacije (kao i backend nacrt), da referentna
+ * skela ne obori build dok Prisma modeli / permisije nisu aktivirani. Aktivacija:
+ * vidi src/app/nabavka/README.nacrt.md.
+ *
+ * VAŽNO (envelope): backend `listRequests` vraća `{ data, meta: { total } }` i
+ * paginira preko `skip`/`take` (NE `page`/`meta.pagination` kao tech-processes/
+ * handovers). Ovaj sloj to verno prati; UI računa strane iz `total` + `take`.
+ * Komponente NE zovu API direktno — samo kroz ove hook-ove (frontend/CLAUDE.md §8).
+ */
+
+const BASE = '/v1/nabavka';
+
+// ─────────────────────────────────────────────────────────────── status-mašina
+
+/**
+ * Status zahteva za nabavku (`purchase_requests.status`) — 1:1 sa backend
+ * servisom (DRAFT→SUBMITTED→APPROVED). SENT/RECEIVED su statusi NAREDNIH entiteta
+ * (upit/narudžbenica) u istoj status-mašini modula; ulaze u kanonsku mapu statusa
+ * (DESIGN_SYSTEM §7) kao NABAVKA domen. Vrednosti su stringovi (BACKEND_RULES §2).
+ */
+export const NABAVKA_REQUEST_STATUS = {
+  DRAFT: 'DRAFT', // U pripremi — inženjer još sastavlja zahtev
+  SUBMITTED: 'SUBMITTED', // Predat — čeka odobrenje nabavke
+  APPROVED: 'APPROVED', // Odobren — može upit dobavljaču
+  SENT: 'SENT', // Upit poslat dobavljaču (RFQ sentAt)
+  RECEIVED: 'RECEIVED', // Roba primljena (narudžbenica → prijem)
+} as const;
+
+export type NabavkaStatus =
+  (typeof NABAVKA_REQUEST_STATUS)[keyof typeof NABAVKA_REQUEST_STATUS];
+
+// ─────────────────────────────────────────────────────────────── tipovi (envelope)
+
+/** Ne-paginirani odgovor domenskog endpointa (`{ data }` ili `{ data, meta }`). */
+export interface Envelope<T> {
+  data: T;
+  meta?: Record<string, unknown>;
+}
+
+/** Paginirani odgovor `listRequests` — backend šalje `meta.total` (skip/take model). */
+export interface PaginatedTotal<T> {
+  data: T[];
+  meta: { total: number };
+}
+
+/** Stavka zahteva (`purchase_request_items`) — 1:1 sa Prisma create u servisu. */
+export interface PurchaseRequestItem {
+  id: number;
+  lineNo: number;
+  articleId: number | null;
+  description: string | null;
+  /** Decimal-as-string u JSON-u (BACKEND_RULES §6) — formatDecimal na prikazu. */
+  quantity: string;
+  unit: string | null;
+  /** Označena za auto-mail upit dobavljaču (KreirajUpit). */
+  createRfq: boolean;
+  suggestedSupplierId: number | null;
+}
+
+/** Red radne liste zahteva — GET /nabavka/requests (include: { items }). */
+export interface PurchaseRequest {
+  id: number;
+  /** Broj zahteva „NNNN/god" (server generiše). */
+  requestNumber: string;
+  projectId: number;
+  workOrderId: number | null;
+  /** Inicijator (radnik/korisnik koji je preuzeo i uneo zahtev). */
+  initiatorUserId: number;
+  createdByUserId: number;
+  updatedByUserId: number | null;
+  status: NabavkaStatus;
+  note: string | null;
+  createdAt: string;
+  updatedAt: string | null;
+  items: PurchaseRequestItem[];
+}
+
+// ─────────────────────────────────────────────────────────────── query keys
+
+const KEYS = {
+  all: ['nabavka'] as const,
+  requests: ['nabavka', 'requests'] as const,
+};
+
+// ─────────────────────────────────────────────────────────────── ulazni tipovi
+
+export interface CreatePurchaseRequestItemInput {
+  articleId?: number;
+  description?: string;
+  quantity: number;
+  unit?: string;
+  createRfq?: boolean;
+  suggestedSupplierId?: number;
+}
+
+/** Telo POST /nabavka/requests — 1:1 sa create-purchase-request.dto.ts.nacrt. */
+export interface CreatePurchaseRequestInput {
+  projectId: number; // kičma — obavezno
+  workOrderId?: number;
+  note?: string;
+  items: CreatePurchaseRequestItemInput[];
+}
+
+export interface NabavkaRequestFilters {
+  /** 1-bazna strana (UI); prevodi se u `skip = (page-1)*take`. */
+  page?: number;
+  /** Veličina strane (backend default 50). */
+  take?: number;
+  status?: NabavkaStatus | '';
+  projectId?: number | '';
+}
+
+function buildQuery(params: Record<string, string | number | undefined>): string {
+  const qs = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === '') continue;
+    qs.set(key, String(value));
+  }
+  const query = qs.toString();
+  return query ? `?${query}` : '';
+}
+
+// ─────────────────────────────────────────────────────────────── queries
+
+/**
+ * Radna lista zahteva za nabavku (+ filter po statusu i predmetu, server-side
+ * paginacija). Backend paginira preko `skip`/`take` i vraća `{ data, meta:{total} }`
+ * — page (1-bazan) se ovde prevodi u `skip`. `take` podrazumevano 50.
+ */
+export function useNabavkaRequests(filters: NabavkaRequestFilters = {}) {
+  const take = filters.take && filters.take > 0 ? filters.take : 50;
+  const page = filters.page && filters.page > 0 ? filters.page : 1;
+  const query = buildQuery({
+    status: filters.status === '' ? undefined : filters.status,
+    projectId: filters.projectId === '' ? undefined : filters.projectId,
+    skip: page > 1 ? (page - 1) * take : undefined,
+    take: take !== 50 ? take : undefined,
+  });
+  return useQuery({
+    queryKey: [...KEYS.requests, filters],
+    queryFn: () => apiFetch<PaginatedTotal<PurchaseRequest>>(`${BASE}/requests${query}`),
+  });
+}
+
+// ─────────────────────────────────────────────────────────────── mutations
+
+function useInvalidateRequests() {
+  const qc = useQueryClient();
+  return () => qc.invalidateQueries({ queryKey: KEYS.all });
+}
+
+/**
+ * Kreiraj zahtev za nabavku (zaglavlje + stavke) — POST /nabavka/requests.
+ * Broj „NNNN/god" generiše server; status kreće od DRAFT. Backend validira ulaz
+ * (400 sa srpskim porukama iz `validateCreatePurchaseRequest`) i predmet (404 ako
+ * ne postoji). Permisija NABAVKA_WRITE.
+ */
+export function useCreateRequest() {
+  const invalidate = useInvalidateRequests();
+  return useMutation({
+    mutationFn: (input: CreatePurchaseRequestInput) =>
+      apiFetch<Envelope<PurchaseRequest>>(`${BASE}/requests`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/**
+ * Predaj zahtev na odobrenje (DRAFT → SUBMITTED) — POST /nabavka/requests/:id/submit.
+ * Backend vraća 422 za nedozvoljen tekući status. Permisija NABAVKA_WRITE.
+ */
+export function useSubmitRequest() {
+  const invalidate = useInvalidateRequests();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<Envelope<PurchaseRequest>>(`${BASE}/requests/${id}/submit`, {
+        method: 'POST',
+        body: '{}',
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/**
+ * Odobri zahtev (SUBMITTED → APPROVED) — POST /nabavka/requests/:id/approve.
+ * Odobrava nabavka → posebna permisija NABAVKA_APPROVE (operativni tok, Nenad).
+ * 422 za nedozvoljen tekući status.
+ */
+export function useApproveRequest() {
+  const invalidate = useInvalidateRequests();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<Envelope<PurchaseRequest>>(`${BASE}/requests/${id}/approve`, {
+        method: 'POST',
+        body: '{}',
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/** Rezultat slanja upita — upit + da li je auto-mail stvarno poslat (DRY-RUN bez ključa). */
+export interface SendRfqResult {
+  rfq: { id: number; rfqNumber: string; status: string; sentAt: string | null };
+  emailSent: boolean;
+}
+
+/**
+ * Napravi upit dobavljaču iz odobrenog zahteva i pošalji auto-mail — POST
+ * /nabavka/requests/:id/send-rfq { supplierId, supplierEmail }. Uzima samo stavke
+ * sa `createRfq=true` (KreirajUpit). Slanje NIKAD ne obara radnju: bez
+ * RESEND_API_KEY je DRY-RUN (upit ostaje DRAFT, `emailSent=false`). 422 ako zahtev
+ * nije APPROVED ili nema stavki za upit. Permisija NABAVKA_WRITE.
+ */
+export function useSendRfq() {
+  const invalidate = useInvalidateRequests();
+  return useMutation({
+    mutationFn: ({
+      id,
+      supplierId,
+      supplierEmail,
+    }: {
+      id: number;
+      supplierId: number;
+      supplierEmail: string;
+    }) =>
+      apiFetch<Envelope<SendRfqResult>>(`${BASE}/requests/${id}/send-rfq`, {
+        method: 'POST',
+        body: JSON.stringify({ supplierId, supplierEmail }),
+      }),
+    onSuccess: invalidate,
+  });
+}
