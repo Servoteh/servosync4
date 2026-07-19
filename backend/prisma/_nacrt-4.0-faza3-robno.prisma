@@ -297,5 +297,7 @@ model ItemValuation {
 //  • DocumentType/Warehouse/Item ostaju kakvi jesu (sync-cache); NIV/UL/IZ/PRENOS DocumentType redovi
 //    se SEED-uju (affectsStock, KODJ izuzeće flag) — ne dodaje se kolona ako već postoji affectsStock.
 //  • Costing NEMA perzistentnu tabelu stanja: StockLevel je opcioni keš. Izvor istine = as-of SQL
-//    (UNION legacy goods_documents/items + native stock_documents/items), doc 39 §C.
+//    nad stock_documents/items. NAPOMENA (19.07): goods_documents je PRAZNA (0 redova prod, 0 čitalaca)
+//    i izbačena iz sync-a → NEMA UNION-a sa njom (raniji dizajn je pretpostavljao da je aktivna cache;
+//    QBigTehn→PG je poluprazna nekorišćena kopija). Costing čita SAMO native stock_documents.
 // ─────────────────────────────────────────────────────────────────────────────

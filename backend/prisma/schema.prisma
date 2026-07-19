@@ -2534,3 +2534,261 @@ model CustomerRfq {
   @@index([quoteDeadline], map: "idx_customer_rfqs_deadline")
   @@map("customer_rfqs")
 }
+
+// ── Faza 3: Robno / costing + nivelacija ──────────────────────────────────
+/// Was: T_Robna_dokumenta (2.0-native pandan; legacy goods_documents ostaje sync-cache).
+/// Jedan model za sve robne tokove; smer (zaduženje/razduženje) izveden iz DocumentType.affectsStock +
+/// isInbound (isto vozilo kao legacy R_Vrste_dokumenata). Header uvoza nosi kurseve i doc-level ZT.
+model StockDocument {
+  id        Int @id(map: "pk_stock_documents") @default(autoincrement()) @map("id")
+  companyId Int @default(0) @map("company_id")
+
+  /// UL(prijem/ulaz) | IZ(izdavanje/izlaz) | NIV(nivelacija/revalorizacija) | PRENOS(međuskladišnica) |
+  /// VISAK | MANJAK (iz popisa). Vozi znak zalihe + GK šemu preko documentTypeCode/DocumentType.
+  kind             String @map("kind") @db.VarChar(10)
+  documentTypeCode String @map("document_type_code") @db.VarChar(5) // → DocumentType.code (šema + affectsStock + KODJ flag)
+  documentNumber   String @map("document_number") @db.VarChar(20) // NNNN/god
+  year             Int    @map("year")
+
+  warehouseId       Int  @map("warehouse_id") // izvorni/glavni magacin — meki ref warehouses.id
+  targetWarehouseId Int? @map("target_warehouse_id") // odredišni magacin (samo PRENOS) — meki ref
+  supplierId        Int? @map("supplier_id") // dobavljač (UL/UVOZ) — meki ref customers
+  customerId        Int? @map("customer_id") // kupac (IZ) — meki ref customers
+
+  documentDate DateTime @map("document_date") @db.Timestamptz(6) // as-of ključ za costing (Datum)
+  postingDate  DateTime @map("posting_date") @db.Timestamptz(6)
+
+  /// Uvoz — kursevi (razlika CarKurs vs accountingExchangeRate → ZTsop, doc 39 §A)
+  isImport               Boolean @default(false) @map("is_import")
+  customsExchangeRate    Decimal @default(1) @map("customs_exchange_rate") @db.Decimal(19, 6) // CarKurs (carinska osnovica)
+  accountingExchangeRate Decimal @default(1) @map("accounting_exchange_rate") @db.Decimal(19, 6) // ObrKurs (knjigovodstvena nabavna)
+  fxInvoiceValue         Decimal @default(0) @map("fx_invoice_value") @db.Decimal(19, 4) // DevVredFak (imenilac raspodele)
+  customs                Decimal @default(0) @map("customs") @db.Decimal(19, 4) // doc-level carina
+  forwarding             Decimal @default(0) @map("forwarding") @db.Decimal(19, 4) // doc-level špedicija
+  otherDependentCosts    Decimal @default(0) @map("other_dependent_costs") @db.Decimal(19, 4)
+  customsRefundBase      Decimal @default(0) @map("customs_refund_base") @db.Decimal(19, 4) // PovCarOsn
+
+  /// Traceback (meki ref-ovi — bez @relation na sync-cache / cross-modul):
+  purchaseOrderId    Int? @map("purchase_order_id") // Nabavka prijem → robni ulaz (Faza B)
+  projectId          Int? @map("project_id")
+  workOrderId        Int? @map("work_order_id")
+  linkedInboundDocId Int? @map("linked_inbound_doc_id") // NIV → izvorni UL; PRENOS parni dok.
+  inventoryCountId   Int? @map("inventory_count_id") // VISAK/MANJAK → popis
+
+  /// Životni ciklus (poravnato sa Faza 2): draft sme edit; posted/locked = immutable (Faza 0 lock).
+  status         String  @default("DRAFT") @map("status") @db.VarChar(20) /// DRAFT | CALCULATED | POSTED | LOCKED
+  isCalculated   Boolean @default(false) @map("is_calculated") // kalkulacija (landed) izvedena
+  journalEntryId Int?    @map("journal_entry_id") // Faza 2 nalog (meki ref → journal_entries.id)
+
+  createdByUserId Int?     @map("created_by_user_id")
+  updatedByUserId Int?     @map("updated_by_user_id")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  items              StockDocumentItem[]
+  stockLevelingItems StockLevelingItem[]
+
+  @@unique([companyId, documentTypeCode, year, documentNumber], map: "uq_stock_documents_number")
+  @@index([documentDate, warehouseId, documentTypeCode], map: "idx_stock_documents_date_wh")
+  @@index([documentTypeCode], map: "idx_stock_documents_type")
+  @@index([purchaseOrderId], map: "idx_stock_documents_po")
+  @@map("stock_documents")
+}
+
+/// Was: T_Robne_stavke (2.0-native). Landed-cost slog po stavci, SVE Decimal od starta (za razliku od
+/// legacy goods_document_items koje su Float). Kolone prate doc 39 §A + Module__UVOZ raspodelu.
+model StockDocumentItem {
+  id          Int @id(map: "pk_stock_document_items") @default(autoincrement()) @map("id")
+  documentId  Int @map("document_id")
+  itemId      Int @map("item_id") // meki ref items.id
+  warehouseId Int @map("warehouse_id") // redundantno sa headerom (kao legacy), za as-of upit
+  lineNo      Int @default(0) @map("line_no")
+
+  quantity   Decimal @map("quantity") @db.Decimal(19, 6) // Kolicina (znak izlaza se izvodi iz DocumentType, čuva se pozitivno)
+  kgQuantity Decimal @default(0) @map("kg_quantity") @db.Decimal(19, 6)
+
+  // — Domaća kaskada (doc 39 §A: SracunajKalkulaciju) —
+  invoicePrice             Decimal @default(0) @map("invoice_price") @db.Decimal(19, 4) // Fakturna cena/JM
+  discountPercent          Decimal @default(0) @map("discount_percent") @db.Decimal(19, 4) // Rabat %
+  cashDiscountPercent      Decimal @default(0) @map("cash_discount_percent") @db.Decimal(19, 4) // Kasa %
+  purchasePriceNet         Decimal @default(0) @map("purchase_price_net") @db.Decimal(19, 4) // Nabavna neto = A (posle rabata+kase)
+  dependentCostOwn         Decimal @default(0) @map("dependent_cost_own") @db.Decimal(19, 4) // ZTsop = B
+  dependentCostSupplier    Decimal @default(0) @map("dependent_cost_supplier") @db.Decimal(19, 4) // ZTdob = C
+  calculatedWholesalePrice Decimal @default(0) @map("calculated_wholesale_price") @db.Decimal(19, 4) // KalkVP
+  calculatedRetailPrice    Decimal @default(0) @map("calculated_retail_price") @db.Decimal(19, 4) // KalkMP
+  actualWholesalePrice     Decimal @default(0) @map("actual_wholesale_price") @db.Decimal(19, 4) // Stvarna VP (transakciona)
+  actualRetailPrice        Decimal @default(0) @map("actual_retail_price") @db.Decimal(19, 4) // Stvarna MP
+  markupAmount             Decimal @default(0) @map("markup_amount") @db.Decimal(19, 4) // RuC = KalkVP−A−B−C−Akciza (=0 kad Mag.VP=Nab)
+  excise                   Decimal @default(0) @map("excise") @db.Decimal(19, 4) // Akciza
+  fee                      Decimal @default(0) @map("fee") @db.Decimal(19, 4) // Taksa
+  fixedTax                 Decimal @default(0) @map("fixed_tax") @db.Decimal(19, 4) // FiksniPorez
+
+  // — Uvoz (doc 39 §A: Module__UVOZ ZT raspodela po JM) —
+  fxPurchasePrice Decimal @default(0) @map("fx_purchase_price") @db.Decimal(19, 4) // DevNabCena (ključ raspodele)
+  customsRate     Decimal @default(0) @map("customs_rate") @db.Decimal(19, 4) // CarStopa %
+
+  // — Porez (za GK/KEPU, prati legacy flagove) —
+  goodsTaxRateCode String @default("3") @map("goods_tax_rate_code") @db.VarChar(5)
+
+  document StockDocument @relation(fields: [documentId], references: [id], onDelete: Cascade, map: "fk_stock_document_items_document")
+
+  @@index([documentId], map: "idx_stock_document_items_document")
+  @@index([itemId, warehouseId], map: "idx_stock_document_items_item_wh") // costing as-of ključ
+  @@map("stock_document_items")
+}
+
+// B) COSTING — valuaciona cena po artiklu + StockLevel snapshot (opcioni keš)
+// NAPOMENA: costing je PONDERISANI PROSEK "u letu" (as-of iz kretanja), NE FIFO i NEMA
+// perzistentnu tabelu stanja (BigBit princip, doc 39 §C, odluka Nenad). StockLevel ispod je
+// SAMO opcioni denormalizovani snapshot za brzu lager listu — izvor istine je as-of upit.
+// Valuaciona (jedna) cena po artiklu živi na Item-u (nivelacija je ovde održava) — v. §C.
+
+/// Denormalizovani snapshot stanja po (magacin, artikal). OPCIONO / keš — NE izvor istine.
+/// freeStock = onHand − reserved. Prazna tabela = fallback na as-of upit (doc 39 §C).
+model StockLevel {
+  id          Int     @id(map: "pk_stock_levels") @default(autoincrement()) @map("id")
+  itemId      Int     @map("item_id") // meki ref items.id
+  warehouseId Int     @map("warehouse_id") // meki ref warehouses.id
+  onHand      Decimal @default(0) @map("on_hand") @db.Decimal(19, 6) // Σ(±Kol) as-of, KODJ izuzet
+  reserved    Decimal @default(0) @map("reserved") @db.Decimal(19, 6)
+
+  // Ponderisane prosečne cene (doc 39 §C) — snapshot poslednjeg obračuna:
+  avgPurchaseNet     Decimal  @default(0) @map("avg_purchase_net") @db.Decimal(19, 4) // ProsecnaNab = Σ(±Kol*(A+B+C))/Σ(±Kol)
+  avgWholesalePrice  Decimal  @default(0) @map("avg_wholesale_price") @db.Decimal(19, 4) // ProsecnaKalkVP = Σ(±Kol*KalkVP)/Σ(±Kol)
+  lastPurchaseNet    Decimal  @default(0) @map("last_purchase_net") @db.Decimal(19, 4) // fallback kad Σ(±Kol)=0
+  lastWholesalePrice Decimal  @default(0) @map("last_wholesale_price") @db.Decimal(19, 4)
+  asOf               DateTime @map("as_of") @db.Timestamptz(6) // datum do kog je snapshot važeći
+  updatedAt          DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([itemId, warehouseId], map: "uq_stock_levels_item_wh")
+  @@index([warehouseId], map: "idx_stock_levels_warehouse")
+  @@map("stock_levels")
+}
+
+// C) NIVELACIJA — parovi stara/nova cena (uprosečavanje kao BigBit, MUST)
+// Formula uprosečavanja (doc 39 §F + PLAN_FAZA_3_IMPL §b/c) — ponderisana prosečna, ista kao §C costing:
+//   novaVP = (stanjeKol * staraVP + ulazKol * ulaznaVP) / (stanjeKol + ulazKol)
+// (analogno za NabNeto/ZTsop/ZTdob/MP). Prag |Stara − Nova| ≥ 0.01. NIV StockDocument revalorizuje
+// zatečeno stanje: valueAdjustment = stanjeKol * (novaVP − staraVP) → GK knjiženje razlike.
+
+/// Was: Stavke_nivelacije (StavkeNivelacije). Par (stara→nova) valuacione cene po artiklu/magacinu.
+/// Header = StockDocument sa kind='NIV'. isPosted vozi GK knjiženje razlike (doc 39 §F).
+model StockLevelingItem {
+  id               Int     @id(map: "pk_stock_leveling_items") @default(autoincrement()) @map("id")
+  documentId       Int     @map("document_id") // NIV StockDocument
+  itemId           Int     @map("item_id") // meki ref items.id
+  warehouseId      Int     @map("warehouse_id") // meki ref warehouses.id
+  quantityRevalued Decimal @map("quantity_revalued") @db.Decimal(19, 6) // zatečeno stanje koje se revalorizuje (stanjeKol)
+
+  // — Par stara/nova (osnov za valueAdjustment i update Item valuacije) —
+  oldPurchaseNet       Decimal @default(0) @map("old_purchase_net") @db.Decimal(19, 4)
+  newPurchaseNet       Decimal @default(0) @map("new_purchase_net") @db.Decimal(19, 4)
+  oldDependentOwn      Decimal @default(0) @map("old_dependent_own") @db.Decimal(19, 4)
+  newDependentOwn      Decimal @default(0) @map("new_dependent_own") @db.Decimal(19, 4)
+  oldDependentSupplier Decimal @default(0) @map("old_dependent_supplier") @db.Decimal(19, 4)
+  newDependentSupplier Decimal @default(0) @map("new_dependent_supplier") @db.Decimal(19, 4)
+  oldWholesalePrice    Decimal @default(0) @map("old_wholesale_price") @db.Decimal(19, 4) // staraVP
+  newWholesalePrice    Decimal @default(0) @map("new_wholesale_price") @db.Decimal(19, 4) // novaVP (uprosečena)
+  oldRetailPrice       Decimal @default(0) @map("old_retail_price") @db.Decimal(19, 4)
+  newRetailPrice       Decimal @default(0) @map("new_retail_price") @db.Decimal(19, 4)
+
+  valueAdjustment Decimal @map("value_adjustment") @db.Decimal(19, 4) // = quantityRevalued * (newWholesalePrice − oldWholesalePrice)
+  isPosted        Boolean @default(false) @map("is_posted") // razlika proknjižena u GK
+
+  document StockDocument @relation(fields: [documentId], references: [id], onDelete: Cascade, map: "fk_stock_leveling_items_document")
+
+  @@index([documentId], map: "idx_stock_leveling_items_document")
+  @@index([itemId, warehouseId], map: "idx_stock_leveling_items_item_wh")
+  @@map("stock_leveling_items")
+}
+
+// D) POPIS / inventura (za knjiženje viška/manjka → robni ulaz + Faza 2 GL)
+
+/// Was: T_Popis_zaglavlja. Header popisa po magacinu (doc 39 §D).
+model InventoryCount {
+  id              Int      @id(map: "pk_inventory_counts") @default(autoincrement()) @map("id")
+  companyId       Int      @default(0) @map("company_id")
+  warehouseId     Int      @map("warehouse_id") // meki ref warehouses.id
+  countNumber     String   @map("count_number") @db.VarChar(20)
+  year            Int      @map("year")
+  countDate       DateTime @map("count_date") @db.Timestamptz(6)
+  status          String   @default("DRAFT") @map("status") @db.VarChar(20) /// DRAFT | COUNTING | POSTED
+  note            String?  @map("note")
+  createdByUserId Int?     @map("created_by_user_id")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  items InventoryCountItem[]
+
+  @@unique([companyId, year, countNumber], map: "uq_inventory_counts_number")
+  @@index([warehouseId], map: "idx_inventory_counts_warehouse")
+  @@map("inventory_counts")
+}
+
+/// Was: T_Popis_stavke. KolKng (knjigovodstveno, predpunjeno) vs KolPop (popisano); razlika → višak/manjak.
+model InventoryCountItem {
+  id              Int     @id(map: "pk_inventory_count_items") @default(autoincrement()) @map("id")
+  countId         Int     @map("count_id")
+  itemId          Int     @map("item_id") // meki ref items.id
+  bookQuantity    Decimal @default(0) @map("book_quantity") @db.Decimal(19, 6) // KolKng
+  countedQuantity Decimal @default(0) @map("counted_quantity") @db.Decimal(19, 6) // KolPop
+  price           Decimal @default(0) @map("price") @db.Decimal(19, 4) // CenaZaUpisUPopis (prosečna/poslednja)
+
+  count InventoryCount @relation(fields: [countId], references: [id], onDelete: Cascade, map: "fk_inventory_count_items_count")
+
+  @@index([countId], map: "idx_inventory_count_items_count")
+  @@index([itemId], map: "idx_inventory_count_items_item")
+  @@map("inventory_count_items")
+}
+
+// E) KEPU (regulatorno — puni se iz robnih dokumenata)
+
+/// Was: KEPU knjiga. Zaduženje/razduženje po magacinu (doc 39 §E). Puni KepuService iz StockDocument
+/// preko DocumentType.kepuDefaultCharge/Discharge. MagUlaz=Kol*(KalkVP+Taksa); MagStvarniIzlaz=Kol*(StvarnaVP+Taksa).
+model KepuBookEntry {
+  id          Int      @id(map: "pk_kepu_book_entries") @default(autoincrement()) @map("id")
+  companyId   Int      @default(0) @map("company_id")
+  warehouseId Int      @map("warehouse_id") // meki ref warehouses.id
+  documentId  Int?     @map("document_id") // izvorni StockDocument (meki ref)
+  entryDate   DateTime @map("entry_date") @db.Timestamptz(6)
+  charge      Decimal  @default(0) @map("charge") @db.Decimal(19, 4) // zaduženje (MagUlaz)
+  discharge   Decimal  @default(0) @map("discharge") @db.Decimal(19, 4) // razduženje (MagStvarniIzlaz)
+  description String?  @map("description") @db.VarChar(255)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([warehouseId, entryDate], map: "idx_kepu_book_entries_wh_date")
+  @@index([documentId], map: "idx_kepu_book_entries_document")
+  @@map("kepu_book_entries")
+}
+
+// F) OVERLAY na Item (valuaciona cena — osnov nivelacionih parova)
+// Item je sync-cache (BACKEND_RULES §4) → NE dodaju se app polja direktno u njega (otvorena
+// odluka o overlay-u, §11.1). Zato valuaciona cena po artiklu ide u 2.0-owned overlay tabelu,
+// a NE u items. Ovo je jedina valuaciona cena po artiklu (BigBit R_Artikli.VP/MP) koju nivelacija
+// održava. Ako Kapija 0 odluči da se overlay polja smeju dodati na Item — ovo se spaja u items.
+
+/// 2.0-owned valuaciona cena po artiklu (jedna cena, održava je nivelacija/uprosečavanje).
+/// Osnov za StockLevelingItem.old* pri sledećem ulazu. NE dira sync-cache Item.
+model ItemValuation {
+  itemId                     Int      @id(map: "pk_item_valuations") @map("item_id") // meki ref items.id (1:1)
+  valuationPurchaseNet       Decimal  @default(0) @map("valuation_purchase_net") @db.Decimal(19, 4) // A
+  valuationDependentOwn      Decimal  @default(0) @map("valuation_dependent_own") @db.Decimal(19, 4) // B
+  valuationDependentSupplier Decimal  @default(0) @map("valuation_dependent_supplier") @db.Decimal(19, 4) // C
+  valuationWholesalePrice    Decimal  @default(0) @map("valuation_wholesale_price") @db.Decimal(19, 4) // VP (staraVP pri ulazu)
+  valuationRetailPrice       Decimal  @default(0) @map("valuation_retail_price") @db.Decimal(19, 4) // MP
+  updatedAt                  DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("item_valuations")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NAPOMENE (za merge):
+//  • Svi cross-modul FK-ovi (journalEntryId, purchaseOrderId, itemId, warehouseId, supplierId) su MEKI
+//    ref-ovi bez @relation — validacija postojanja u servisu (BACKEND_RULES §4 / §6).
+//  • DocumentType/Warehouse/Item ostaju kakvi jesu (sync-cache); NIV/UL/IZ/PRENOS DocumentType redovi
+//    se SEED-uju (affectsStock, KODJ izuzeće flag) — ne dodaje se kolona ako već postoji affectsStock.
+//  • Costing NEMA perzistentnu tabelu stanja: StockLevel je opcioni keš. Izvor istine = as-of SQL
+//    nad stock_documents/items. NAPOMENA (19.07): goods_documents je PRAZNA (0 redova prod, 0 čitalaca)
+//    i izbačena iz sync-a → NEMA UNION-a sa njom (raniji dizajn je pretpostavljao da je aktivna cache;
+//    QBigTehn→PG je poluprazna nekorišćena kopija). Costing čita SAMO native stock_documents.
+// ─────────────────────────────────────────────────────────────────────────────
