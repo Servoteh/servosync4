@@ -5,15 +5,23 @@
  * računa vrednost jedne bilansne pozicije iz salda glavne knjige (ledger_entries)
  * na osnovu formule sa prefiksima nad kontima + wildcard maskom.
  *
- * SINTAKSA (doc 37 §F):
- *   D<konto>*   = Σ dugovni promet (SUM debit)   konta koja LIKE '<konto>%'
- *   P<konto>*   = Σ potražni promet (SUM credit)  konta koja LIKE '<konto>%'
- *   PSD<konto>* = početno stanje dugovno  (Σ debit  gde je nalog vrste PS)
- *   PSP<konto>* = početno stanje potražno (Σ credit gde je nalog vrste PS)
- *   A<aop>      = vrednost druge AOP pozicije (referenca; rešava BalanceSheetService)
+ * SINTAKSA (doc 44 §2.4, verbatim iz `ZR.ZRVrednostClanaIzrazaTG`):
+ *   D<konto>*   = Σ dugovni promet (SUM debit)   konta koja LIKE '<konto>%'  (ZR_BrutoStanje_TG.[Duguje])
+ *   P<konto>*   = Σ potražni promet (SUM credit)  konta koja LIKE '<konto>%'  (…[Potrazuje])
+ *   PSD<konto>* = početno stanje dugovno  (Σ PSDuguje;    kod nas Σ debit  naloga vrste PS)
+ *   PSP<konto>* = početno stanje potražno (Σ PSPotrazuje; kod nas Σ credit naloga vrste PS)
+ *   A<aop>      = vrednost druge AOP pozicije, KOLONA 1 (Iznos_1)  — rešava BalanceSheetService
+ *   AB<aop>     = vrednost druge AOP pozicije, KOLONA 2 (Iznos_2)
+ *   AC<aop>     = vrednost druge AOP pozicije, KOLONA 3 (Iznos_3)
  *   konstanta   = decimalni literal
  * Operatori: `+ - ( )` (aritmetika nad Decimal). `*` iza konta = Like-wildcard,
  * NIKAD množenje (legacy DSL). `?` = jedan znak (SQL `_`).
+ *
+ * PREFIKS-ČITANJE 3→2→1 znak (BigBit `ZRVrednostClanaIzrazaTG`, doc 44 §2.4):
+ *   1) Left(3) == PSD | PSP        → prefiks 3 znaka, ostatak = maska konta
+ *   2) inače Left(2) == AB | AC    → prefiks 2 znaka, ostatak = oznaka AOP
+ *   3) inače Left(1) == D | P | A  → prefiks 1 znak,  ostatak = maska konta / AOP
+ * Bez ovog redosleda bi se `AB0002` pogrešno čitalo kao `A` + operand `B0002`.
  *
  * ⚠️ RAZLIKA OD `expression-parser.ts` (GL posting): tamo su promenljive JEDNA
  * slova A–Z i `*` JESTE množenje. Ovde su „promenljive" celi atomi `D200*` i `*`
@@ -23,8 +31,11 @@
  * nad `Decimal(19,4)` kolonama; rezultat je `Prisma.Decimal`. Aritmetika izraza
  * takođe nad `Prisma.Decimal`.
  *
- * A<aop> reference se NE rešavaju ovde (GkEval ne zna za druge pozicije) — vraća
- * se preko `resolveAop` callback-a koji prosleđuje pozivalac (BalanceSheetService).
+ * A/AB/AC<aop> reference se NE rešavaju ovde (GkEval ne zna za druge pozicije) —
+ * vraćaju se preko `resolveAop(aop, column)` callback-a koji prosleđuje pozivalac
+ * (BalanceSheetService). `column` ∈ {1,2,3}: A→1 (Iznos_1), AB→2 (Iznos_2),
+ * AC→3 (Iznos_3). Za prethodnu godinu (PG grana, doc 44 §2.4) pozivalac u
+ * `resolveAop` mapira A(col 1) → Iznos_3; to je odluka pozivaoca, ne ovog motora.
  */
 
 import { Injectable } from "@nestjs/common";
@@ -157,31 +168,53 @@ function tokenize(input: string): Tok[] {
 
 type AtomKind = "D" | "P" | "PSD" | "PSP" | "AOP";
 
+/** AOP kolona iznosa (BigBit Iznos_1/2/3): A→1, AB→2, AC→3. */
+export type AopColumn = 1 | 2 | 3;
+
 interface ParsedAtom {
   kind: AtomKind;
   /** Za D/P/PSD/PSP: LIKE maska konta (wildcard * → %, ? → _). Za AOP: oznaka pozicije. */
   operand: string;
+  /** Samo za kind=AOP: koja kolona iznosa (A→1, AB→2, AC→3). */
+  column?: AopColumn;
 }
 
-/** Razdvoji prefiks (3→2→1 znak, doc 37 §F redosled) od tela atoma. */
+/**
+ * Razdvoji prefiks od tela atoma čitajući TAČNO 3→2→1 znak (BigBit
+ * `ZRVrednostClanaIzrazaTG`, doc 44 §2.4). Redosled je bitan: PSD/PSP (3) pre
+ * AB/AC (2) pre D/P/A (1), inače bi `AB0002` palo na `A`+`B0002`.
+ */
 function parseAtom(raw: string, pos: number): ParsedAtom {
   const upper = raw.toUpperCase();
-  if (upper.startsWith("PSD")) {
+
+  // 1) tri znaka: PSD / PSP
+  const p3 = upper.slice(0, 3);
+  if (p3 === "PSD") {
     return { kind: "PSD", operand: raw.slice(3) };
   }
-  if (upper.startsWith("PSP")) {
+  if (p3 === "PSP") {
     return { kind: "PSP", operand: raw.slice(3) };
   }
-  // Jednoslovni prefiksi D/P/A (AB/AC iz legacy = kolona; ovde A<aop> generalno).
-  const p = upper[0];
-  if (p === "D") {
+
+  // 2) dva znaka: AB / AC (druga AOP pozicija, kolona 2 / 3)
+  const p2 = upper.slice(0, 2);
+  if (p2 === "AB") {
+    return { kind: "AOP", operand: raw.slice(2), column: 2 };
+  }
+  if (p2 === "AC") {
+    return { kind: "AOP", operand: raw.slice(2), column: 3 };
+  }
+
+  // 3) jedan znak: D / P / A (A = druga AOP pozicija, kolona 1)
+  const p1 = upper[0];
+  if (p1 === "D") {
     return { kind: "D", operand: raw.slice(1) };
   }
-  if (p === "P") {
+  if (p1 === "P") {
     return { kind: "P", operand: raw.slice(1) };
   }
-  if (p === "A") {
-    return { kind: "AOP", operand: raw.slice(1) };
+  if (p1 === "A") {
+    return { kind: "AOP", operand: raw.slice(1), column: 1 };
   }
   throw new GkEvalError(`Nepoznat prefiks u atomu "${raw}"`, pos);
 }
@@ -219,16 +252,22 @@ export class GkEvalService {
   /**
    * Izračunaj vrednost bilansne formule na dan `asOf` (uključivo).
    *
-   * @param formula   npr. "D200* + P433* - PSD021*", "D202*+D203*", "A0071"
+   * @param formula   npr. "D200* + P433* - PSD021*", "D202*+D203*", "A0071", "AB0002-AC0002"
    * @param asOf       gornja granica posting datuma (Date); stavke sa postingDate <= asOf
-   * @param resolveAop callback za `A<aop>` reference (druge pozicije istog obrasca).
-   *                   Ako izostane a formula sadrži A<aop> → GkEvalError.
+   * @param resolveAop callback za `A/AB/AC<aop>` reference (druge pozicije istog obrasca).
+   *                   Prima `(aop, column)` gde je `column` ∈ {1,2,3} (A→1, AB→2, AC→3;
+   *                   doc 44 §2.4). Ako izostane a formula sadrži A/AB/AC<aop> → GkEvalError.
+   *                   Radi kompatibilnosti unazad, callback koji ignoriše drugi argument
+   *                   (`(aop) => …`) i dalje radi za čist `A<aop>` (column=1).
    * @returns Prisma.Decimal (novac, nikad Float)
    */
   async evalFormula(
     formula: string,
     asOf: Date,
-    resolveAop?: (aop: string) => Promise<Prisma.Decimal> | Prisma.Decimal,
+    resolveAop?: (
+      aop: string,
+      column: AopColumn,
+    ) => Promise<Prisma.Decimal> | Prisma.Decimal,
   ): Promise<Prisma.Decimal> {
     const tokens = tokenize(formula);
     if (tokens.length === 0) {
@@ -297,7 +336,10 @@ export class GkEvalService {
     raw: string,
     asOf: Date,
     resolveAop:
-      | ((aop: string) => Promise<Prisma.Decimal> | Prisma.Decimal)
+      | ((
+          aop: string,
+          column: AopColumn,
+        ) => Promise<Prisma.Decimal> | Prisma.Decimal)
       | undefined,
     cache: Map<string, Prisma.Decimal>,
   ): Promise<Prisma.Decimal> {
@@ -314,7 +356,8 @@ export class GkEvalService {
           `Formula referiše AOP "${parsed.operand}" ali resolver nije prosleđen`,
         );
       }
-      const v = await resolveAop(parsed.operand);
+      // column je uvek postavljen za kind=AOP (parseAtom); default 1 iz opreza.
+      const v = await resolveAop(parsed.operand, parsed.column ?? 1);
       const dec = v instanceof D ? v : new D(v);
       cache.set(raw, dec);
       return dec;

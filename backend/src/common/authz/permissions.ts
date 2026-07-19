@@ -112,9 +112,11 @@ export const PERMISSIONS = {
   // Izveden pogled nad glavnom knjigom (ledger_entries) preko GKEval formula-engine-a.
   //   read    = uvid u bruto bilans i sačuvane obračune (finansije/knjigovodstvo)
   //   compute = pokretanje obračuna bilansa stanja/uspeha (kreira FinancialStatement)
+  //   export  = generisanje APR eFI XML (FiForma BS/BU/SI) iz sačuvanog obračuna
   // Row-politika dolazi uz auth roljne (finansije/knjigovodstvo + admin).
   ZR_READ: "zr.read",
   ZR_COMPUTE: "zr.compute",
+  ZR_EXPORT: "zr.export",
   // PDV / POPDV — 4.0 Faza 6 (KIF/KUF knjige, POPDV obračun, PPDV prijava).
   // Izvedena PDV evidencija iz glavne knjige (ledger_entries) preko VatAccountMap.
   //   read    = uvid u KIF/KUF knjige + PDV obračune (knjigovodstvo/finansije)

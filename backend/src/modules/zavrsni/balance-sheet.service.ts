@@ -189,10 +189,15 @@ export class BalanceSheetService {
     let note: string | undefined;
 
     if (seeded) {
-      // Kešuj izračunate AOP vrednosti radi A<aop> referenci (isti obrazac).
+      // Kešuj izračunate AOP vrednosti radi A/AB/AC<aop> referenci (isti obrazac).
+      // BalanceSheetService trenutno drži JEDNU vrednost po AOP-u (kolona 1 =
+      // `amount`); kolone 2/3 (AB/AC → Iznos_2/Iznos_3) nisu još modelovane u
+      // financial_statement_lines, pa ih tretiramo kao 0 dok se ne dodaju (doc 44 §8 t.1).
+      // Callback prima `column` (A→1, AB→2, AC→3) da bi motor mogao da razlikuje
+      // AB/AC atome; ovde koristimo samo kolonu 1.
       const aopValues = new Map<string, Prisma.Decimal>();
-      const resolveAop = (aop: string): Prisma.Decimal =>
-        aopValues.get(aop) ?? new D(0);
+      const resolveAop = (aop: string, column: 1 | 2 | 3): Prisma.Decimal =>
+        column === 1 ? (aopValues.get(aop) ?? new D(0)) : new D(0);
 
       for (const def of definitions) {
         const trimmed = def.formula.trim();

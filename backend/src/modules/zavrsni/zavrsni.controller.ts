@@ -2,16 +2,22 @@ import {
   Body,
   Controller,
   Get,
+  Param,
+  ParseIntPipe,
   Post,
   Query,
   Req,
+  Res,
+  StreamableFile,
   UseGuards,
 } from "@nestjs/common";
+import type { Response } from "express";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
 import { PERMISSIONS } from "../../common/authz/permissions";
 import { BalanceSheetService } from "./balance-sheet.service";
+import { AprXmlService } from "./apr-xml.service";
 import type { AuthUser } from "../auth/jwt.strategy";
 
 /**
@@ -21,14 +27,18 @@ import type { AuthUser } from "../auth/jwt.strategy";
  *   POST /api/v1/zavrsni/bilans-stanja  {year}    — generiši bilans stanja (BS)
  *   POST /api/v1/zavrsni/bilans-uspeha  {year}    — generiši bilans uspeha (BU)
  *   GET  /api/v1/zavrsni/statements?type=&year=   — lista sačuvanih obračuna
+ *   GET  /api/v1/zavrsni/statements/:id/apr-xml   — APR eFI FiForma XML (download)
  *
- * Permisije: read = ZR_READ, generisanje = ZR_COMPUTE.
+ * Permisije: read = ZR_READ, generisanje = ZR_COMPUTE, APR export = ZR_EXPORT.
  */
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 @RequirePermission(PERMISSIONS.ZR_READ)
 @Controller({ path: "zavrsni", version: "1" })
 export class ZavrsniController {
-  constructor(private readonly balanceSheet: BalanceSheetService) {}
+  constructor(
+    private readonly balanceSheet: BalanceSheetService,
+    private readonly aprXml: AprXmlService,
+  ) {}
 
   @Get("bruto-bilans")
   grossTrialBalance(@Query("year") year?: string) {
@@ -68,6 +78,25 @@ export class ZavrsniController {
       resolveYear(body?.year),
       req.user?.userId,
     );
+  }
+
+  /**
+   * APR eFI FiForma XML za sačuvani obračun (BS/BU/SI) — attachment download.
+   * Format verbatim po BigBit ZR_EksportXML_BS/BU/SI (doc 37 §F).
+   */
+  @Get("statements/:id/apr-xml")
+  @RequirePermission(PERMISSIONS.ZR_EXPORT)
+  async exportAprXml(
+    @Param("id", ParseIntPipe) id: number,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<StreamableFile> {
+    const { xml, fileName, contentType } =
+      await this.aprXml.exportFiForma(id);
+    res.set({
+      "Content-Type": contentType,
+      "Content-Disposition": `attachment; filename="${fileName}"`,
+    });
+    return new StreamableFile(Buffer.from(xml, "utf-8"), { type: contentType });
   }
 }
 
