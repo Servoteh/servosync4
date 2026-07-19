@@ -14,15 +14,35 @@ Ovaj repo je **jedinstven monorepo** — nastao spajanjem ranijih `servosync/bac
 
 ## Aktivni cilj vs referenca
 
-- **ServoSync 2.0 (ovaj repo) = jedini aktivni sistem.** Sve izmene idu ovde, na svež `main`.
-- **ServoSync 1.0 (`servoteh-plan-montaze`) = read-only referenca** — služi da se vidi „šta nam
-  fali" (npr. kod kontrole); ne razvija se, ne briše se.
+- **ServoSync 3.0 (ovaj repo) = jedini aktivni sistem.** Sve izmene idu ovde, na svež `main`.
+  Terminologija i istorijat verzija (šta znače „2.0", „sy15", „glavna baza"…):
+  **[docs/VERZIJE.md](docs/VERZIJE.md)** — stariji dokumenti koji kažu „2.0" misle na ovaj repo.
+- **ServoSync 1.0 (`servoteh-plan-montaze`) = read-only referenca koja se prazni** — moduli se
+  sele ovamo, podaci migriraju, pa se gasi; ne razvija se, ne briše se.
 
 ## Legacy / referentni materijal
 
 Folder `_legacy/` drži legacy izvoze i alate za analizu (BigBit `.mdb`/`.mdw`, `Izvoz`, `_analiza`,
 `_tools`, `APL`, `QBigTehn_APL`, PDF/docx uputstva, sačuvani git patch-evi). To je **referentni
 materijal — ne dira se, ne refaktoriše, i NIJE u gitu** (`.gitignore`, ~2 GB binarnih fajlova).
+
+## Higijena repoa — gde šta ide (pravilo)
+
+**Koren repoa sadrži samo:** `CLAUDE.md`, `README.md`, `.gitignore` i foldere
+(`backend/`, `frontend/`, `e2e/`, `docs/`, `_legacy/`, `.github/`, `.claude/`).
+Nikakvi radni/doneseni fajlovi ne stoje u korenu. Kad se pojavi novi fajl, odmah ga smesti:
+
+- **Korisnički zahtevi / doneseni dokumenti** (docx, pdf, skice sa sastanaka) →
+  [docs/zahtevi/](docs/zahtevi/) — verzionišu se, jer su izvor za planove rada.
+- **Legacy binarni materijal** (Access `.mdb`/`.mdw`, izvozi, stari alati) → `_legacy/`
+  (van gita). Npr. `_legacy/BigBit26/` — BigBit produkcijski dump iz 2026.
+- **Generisani izveštaji/analize** (output skripti, coverage, ad-hoc auditi) →
+  `backend/reports/` (gitignored) ili scratchpad — nikad u git.
+- **Planovi i analize (markdown)** → `docs/` (monorepo nivo) ili `backend/docs/`
+  (backend-specifično; `backend/docs/migration/` za BigBit rekonstrukcije).
+
+Isto pravilo važi i za AI-asistente: fajl zatečen na pogrešnom mestu se premešta po
+ovoj šemi (uz `git mv` ako je verzionisan i ažuriranje referenci u docs).
 
 ## Deploy (ukratko — detalji u docs/MONOREPO_MIGRACIJA.md)
 

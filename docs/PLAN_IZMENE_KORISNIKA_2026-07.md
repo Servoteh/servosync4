@@ -1,6 +1,6 @@
-# Plan rada — izmene korisnika (jul 2026)
+﻿# Plan rada — izmene korisnika (jul 2026)
 
-Izvor: `Servosync izmene korisnika.docx` (koren repoa) + prijava baga „Prijavi kvar" (forma se
+Izvor: `docs/zahtevi/Servosync izmene korisnika.docx` + prijava baga „Prijavi kvar" (forma se
 sama zatvara). Analiza: Fable multi-agent (8 agenata, potvrđeni uzroci sa file:line dokazima).
 Izvođenje: Opus, po radnim paketima ispod — paketi unutar iste faze mogu paralelno (multi-agent),
 faze redom. Svaki paket nosi svoje testove.
