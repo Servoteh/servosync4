@@ -50,6 +50,7 @@ import { SefModule } from "./modules/sales/sef/sef.module";
 import { SalesPrintModule } from "./modules/sales/print/sales-print.module";
 import { PdvModule } from "./modules/pdv/pdv.module";
 import { ZavrsniModule } from "./modules/zavrsni/zavrsni.module";
+import { GlModule } from "./modules/gl/gl.module";
 
 @Module({
   imports: [
@@ -116,6 +117,8 @@ import { ZavrsniModule } from "./modules/zavrsni/zavrsni.module";
     SalesModule,
     SefModule,
     SalesPrintModule,
+    // 4.0 Faza 2 — Glavna knjiga READ (dnevnik naloga + kartica konta).
+    GlModule,
     // 4.0 Faza 6 — PDV / POPDV / KEPU (obračun iz glavne knjige, KIF/KUF).
     PdvModule,
     // 4.0 Faza 7 — Završni račun / bilansi (GKEval formule nad saldima konta).
