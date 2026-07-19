@@ -1472,11 +1472,14 @@ export class PracenjeReadService {
           ) x
         ) fc ON true
         LEFT JOIN LATERAL (
-          -- op_pct = prosečan operativni napredak; piece_count=0 RN daje NULL imenilac
-          -- (NULLIF) → izbaci ga i iz brojioca i iz imenioca (FILTER), inače razblažuje % (finding #3).
-          SELECT sum(LEAST(d2.done::numeric / NULLIF(w.piece_count, 0), 1))
-                   FILTER (WHERE w.piece_count > 0) AS op_ratio_sum,
-                 count(*) FILTER (WHERE w.piece_count > 0) AS op_count
+          -- op_pct = prosečan operativni napredak; piece_count=0 RN se isključuje i iz
+          -- brojioca i iz imenioca (finding #3) — guard je u WHERE, NE u FILTER-u agregata:
+          -- outer-only referenca (w.piece_count) u agregatu/FILTER-u diže PG 42803
+          -- „aggregate functions are not allowed in FROM clause of their own query level"
+          -- (prod incident 19.07.2026 — portfolio 500). WHERE garantuje piece_count > 0,
+          -- pa je i deljenje bezbedno; prazan skup → op_count = 0, op_ratio_sum = NULL.
+          SELECT sum(LEAST(d2.done::numeric / w.piece_count, 1)) AS op_ratio_sum,
+                 count(*) AS op_count
           FROM work_order_operations op2
           LEFT JOIN LATERAL (
             SELECT COALESCE(
@@ -1488,6 +1491,7 @@ export class PracenjeReadService {
                AND t.work_center_code IS NOT DISTINCT FROM op2.work_center_code
           ) d2 ON true
          WHERE op2.work_order_id = w.id
+           AND w.piece_count > 0
         ) opr ON true`);
   }
 
