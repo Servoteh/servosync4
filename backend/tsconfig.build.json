@@ -1,4 +1,8 @@
 {
   "extends": "./tsconfig.json",
-  "exclude": ["node_modules", "test", "dist", "**/*spec.ts"]
+  // "scripts" MUST stay excluded: a .ts file outside src/ shifts tsc's inferred
+  // rootDir to backend/ and the entrypoint moves to dist/src/main.js — the Docker
+  // CMD `node dist/main` then crash-loops (prod incident 2026-07-19). Standalone
+  // scripts run via ts-node, they are not part of the nest build.
+  "exclude": ["node_modules", "test", "dist", "scripts", "**/*spec.ts"]
 }
