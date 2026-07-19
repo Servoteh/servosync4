@@ -87,11 +87,102 @@ export interface PurchaseRequest {
   items: PurchaseRequestItem[];
 }
 
+// ─────────────────────────────────────────────────────────────── upit (RFQ)
+
+/**
+ * Upit dobavljaču (`supplier_rfqs`) — 1:1 sa Prisma modelom `SupplierRfq`.
+ * Nastaje iz odobrenog zahteva (`createAndSendRfq`); `sentAt` je log slanja
+ * auto-maila (BigBit „Poslato" → timestamp). CENA se NE drži ovde (tek u
+ * narudžbenici — BigBit pravilo, doc 24).
+ */
+export interface SupplierRfq {
+  id: number;
+  /** Broj upita „predmet-N" (server generiše). */
+  rfqNumber: string;
+  requestId: number | null;
+  supplierId: number;
+  status: string; // DRAFT | SENT | QUOTED | CLOSED
+  /** ISO timestamp slanja auto-maila; null dok nije poslato (DRY-RUN). */
+  sentAt: string | null;
+  emailMessageId: string | null;
+  note: string | null;
+  createdByUserId: number | null;
+  updatedByUserId: number | null;
+  createdAt: string;
+  updatedAt: string | null;
+  items?: SupplierRfqItem[];
+}
+
+/** Stavka upita (`supplier_rfq_items`) — bez cene (cena tek u narudžbenici). */
+export interface SupplierRfqItem {
+  id: number;
+  rfqId: number;
+  requestItemId: number | null;
+  articleId: number | null;
+  description: string | null;
+  /** Decimal-as-string u JSON-u (BACKEND_RULES §6) — formatDecimal na prikazu. */
+  quantity: string;
+  unit: string | null;
+  offeredLeadTimeDays: number | null;
+  isAccepted: boolean;
+  lineNo: number;
+}
+
+// ─────────────────────────────────────────────────────────────── narudžbenica
+
+/**
+ * Narudžbenica dobavljaču (`purchase_orders`) — 1:1 sa Prisma modelom
+ * `PurchaseOrder`. Nastaje iz prihvaćene ponude; cena se drži na stavkama.
+ * Status-mašina: DRAFT→ORDERED→SIGNED→LOCKED→RECEIVED→CLOSED. Prijem (3-way
+ * match) je moguć tek od ORDERED/SIGNED/LOCKED (backend guard).
+ */
+export interface PurchaseOrder {
+  id: number;
+  /** Broj narudžbenice „NNNN/god" (server generiše). */
+  orderNumber: string;
+  rfqId: number | null;
+  supplierId: number;
+  projectId: number | null;
+  status: string; // DRAFT | ORDERED | SIGNED | LOCKED | RECEIVED | CLOSED
+  /** ISO timestamp poručivanja (BigBit „Poruceno"); null u DRAFT-u. */
+  orderedAt: string | null;
+  currency: string;
+  note: string | null;
+  createdByUserId: number | null;
+  updatedByUserId: number | null;
+  createdAt: string;
+  updatedAt: string | null;
+  items: PurchaseOrderItem[];
+}
+
+/**
+ * Stavka narudžbenice (`purchase_order_items`) — naručeno vs primljeno (3-way
+ * match). `receivedQuantity` default = `orderedQuantity` pri prijemu (BigBit
+ * „IsporucenaKolicina"). Cena (`unitPrice`) se drži OVDE, ne u upitu.
+ */
+export interface PurchaseOrderItem {
+  id: number;
+  orderId: number;
+  rfqItemId: number | null;
+  requestItemId: number | null;
+  articleId: number | null;
+  description: string | null;
+  /** Decimal-as-string u JSON-u (BACKEND_RULES §6). */
+  orderedQuantity: string;
+  /** Decimal-as-string; 0 dok prijem nije proknjižen. */
+  receivedQuantity: string;
+  /** Cena po jedinici (Decimal-as-string) — null dok nije uneta. */
+  unitPrice: string | null;
+  unit: string | null;
+  lineNo: number;
+}
+
 // ─────────────────────────────────────────────────────────────── query keys
 
 const KEYS = {
   all: ['nabavka'] as const,
   requests: ['nabavka', 'requests'] as const,
+  orders: ['nabavka', 'orders'] as const,
 };
 
 // ─────────────────────────────────────────────────────────────── ulazni tipovi
@@ -152,6 +243,32 @@ export function useNabavkaRequests(filters: NabavkaRequestFilters = {}) {
     queryKey: [...KEYS.requests, filters],
     queryFn: () => apiFetch<PaginatedTotal<PurchaseRequest>>(`${BASE}/requests${query}`),
   });
+}
+
+/**
+ * Detalj jednog zahteva (zaglavlje + stavke) — izveden iz radne liste. Backend
+ * (nabavka.controller.ts) NEMA `GET /nabavka/requests/:id`; lista već vraća pune
+ * zahteve sa stavkama (`include: { items }`), pa detalj čitamo iz iste liste
+ * (velika strana, `take=500`) i biramo po `id`. `enabled` gasi upit dok id nije
+ * poznat. Isti izbor kao `usePendingHandoversByDraft` (klijentski filter nad
+ * širokom stranom kad nema zasebnog detalj-endpointa).
+ */
+export function useNabavkaRequest(id: number | null) {
+  const query = useQuery({
+    queryKey: [...KEYS.requests, 'detail-source'],
+    queryFn: () =>
+      apiFetch<PaginatedTotal<PurchaseRequest>>(`${BASE}/requests?take=500`),
+    enabled: id != null,
+    staleTime: 15_000,
+  });
+  const request = id != null ? (query.data?.data.find((r) => r.id === id) ?? null) : null;
+  return {
+    request,
+    isLoading: query.isLoading,
+    error: query.error as Error | null,
+    /** true kad je lista učitana ali zahtev sa tim id-em ne postoji. */
+    notFound: id != null && !query.isLoading && !query.error && request === null,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────── mutations
@@ -242,5 +359,33 @@ export function useSendRfq() {
         body: JSON.stringify({ supplierId, supplierEmail }),
       }),
     onSuccess: invalidate,
+  });
+}
+
+// ─────────────────────────────────────────────────────────────── prijem robe
+
+/** Jedna linija prijema — `receivedQuantity` opciono (default = naručeno na backendu). */
+export interface ReceiveOrderLineInput {
+  itemId: number;
+  receivedQuantity?: number;
+}
+
+/**
+ * Prijem robe po narudžbenici (3-way match) — POST /nabavka/orders/:id/receive
+ * { lines: [{ itemId, receivedQuantity? }] }. Za svaku stavku bez eksplicitne
+ * količine backend uzima naručenu (`orderedQuantity`, BigBit „IsporucenaKolicina").
+ * Narudžbenica prelazi u RECEIVED. Backend vraća 409 ako je već primljena/zatvorena,
+ * 422 ako još nije poručena. Menja narudžbenice (status/količine), pa invalidira
+ * ceo `nabavka` ključ. Permisija NABAVKA_WRITE.
+ */
+export function useReceiveOrder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ orderId, lines }: { orderId: number; lines: ReceiveOrderLineInput[] }) =>
+      apiFetch<Envelope<PurchaseOrder>>(`${BASE}/orders/${orderId}/receive`, {
+        method: 'POST',
+        body: JSON.stringify({ lines }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: KEYS.all }),
   });
 }

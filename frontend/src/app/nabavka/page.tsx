@@ -173,6 +173,7 @@ export default function NabavkaPage() {
           columns={columns}
           rows={rows}
           rowKey={(r) => r.id}
+          onRowActivate={(r) => router.push(`/nabavka/${r.id}`)}
           loading={list.isLoading}
           empty={
             <EmptyState
