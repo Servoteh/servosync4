@@ -1,5 +1,7 @@
 import { Module } from "@nestjs/common";
 import { PrismaModule } from "../../prisma/prisma.module";
+import { PostingModule } from "../gl/posting/posting.module";
+import { RobnoController } from "./robno.controller";
 import { RobnoService } from "./robno.service";
 import { CalculationService } from "./calculation.service";
 import { StockDocumentNumberingService } from "./stock-document-numbering.service";
@@ -22,7 +24,8 @@ import { NIVELACIJA_HOOK } from "./nivelacija.hook";
  * Registracija u `app.module.ts` je posao integratora (dodati `RobnoModule` u `imports`).
  */
 @Module({
-  imports: [PrismaModule],
+  imports: [PrismaModule, PostingModule],
+  controllers: [RobnoController],
   providers: [
     RobnoService,
     CalculationService,

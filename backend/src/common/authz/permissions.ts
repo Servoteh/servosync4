@@ -71,6 +71,11 @@ export const PERMISSIONS = {
   PLACANJA_READ: "placanja.read",
   PLACANJA_PREPARE: "placanja.prepare",
   PLACANJA_EXPORT: "placanja.export",
+  // Robno / magacin — 4.0 Faza 3 (robni dokumenti, kalkulacija landed cost, nivelacija, lager).
+  // read = uvid u robne dokumente/lager; write = kreiranje/kalkulacija; post = knjiženje u GK.
+  ROBNO_READ: "robno.read",
+  ROBNO_WRITE: "robno.write",
+  ROBNO_POST: "robno.post",
   // Izvodi (bankovni izvodi) — 4.0 Faza 4 §B (uvoz TXT fiksne kolone → uparivanje → auto-knjiženje).
   // read = uvid u izvode i stavke; import = upload/parse TXT + preview + uparivanje;
   // post = auto-knjiženje u GK (banka↔analitika) + označavanje POSTED. Row-politika uz auth roljne.
