@@ -14,8 +14,6 @@ import {
   portfolioKomitenti,
   portfolioStatusMeta,
   sortPortfolioItems,
-  uskoGrloNaziv,
-  uskoGrloPct,
   type PortfolioFilters,
   type PortfolioSortKey,
   type SortDir,
@@ -155,7 +153,7 @@ export function KontrolnaTab({ onOpenPredmet }: { onOpenPredmet: (itemId: number
           <SearchBox
             value={filters.search ?? ''}
             onChange={(v) => setF('search', v)}
-            placeholder="Broj, naziv, komitent, usko grlo…"
+            placeholder="Broj, naziv, komitent…"
           />
         </div>
         <label className="flex flex-col gap-1 text-2xs uppercase tracking-wider text-ink-secondary">
@@ -220,7 +218,6 @@ export function KontrolnaTab({ onOpenPredmet }: { onOpenPredmet: (itemId: number
                 <SortTh col={SORT_COLS[2]} active={sortKey} dir={sortDir} onSort={toggleSort} />
                 <th className="px-3 py-1.5">Status</th>
                 <SortTh col={SORT_COLS[3]} active={sortKey} dir={sortDir} onSort={toggleSort} />
-                <th className="px-3 py-1.5">Usko grlo</th>
                 <SortTh col={SORT_COLS[5]} active={sortKey} dir={sortDir} onSort={toggleSort} />
               </tr>
             </thead>
@@ -251,9 +248,6 @@ export function KontrolnaTab({ onOpenPredmet }: { onOpenPredmet: (itemId: number
                     </td>
                     <td className="px-3 py-1.5">
                       <ProblemiBadge it={it} />
-                    </td>
-                    <td className="max-w-[200px] px-3 py-1.5 text-xs text-ink-secondary">
-                      <UskoGrlo it={it} />
                     </td>
                     <td className="px-3 py-1.5 text-xs">
                       <Rok dani={it.dani_do_roka} />
@@ -347,18 +341,6 @@ function ProblemiBadge({ it }: { it: PortfolioItem }) {
       title={title}
     >
       {n}
-    </span>
-  );
-}
-
-function UskoGrlo({ it }: { it: PortfolioItem }) {
-  const naziv = uskoGrloNaziv(it.usko_grlo);
-  if (!naziv) return <span className="text-ink-secondary">—</span>;
-  const short = naziv.length > 28 ? `${naziv.slice(0, 28)}…` : naziv;
-  const pct = uskoGrloPct(it.usko_grlo);
-  return (
-    <span title={`${naziv}${pct == null ? '' : ` (${pct}%)`}`}>
-      {short} {pct == null ? '' : <span className="text-ink-disabled">{pct}%</span>}
     </span>
   );
 }

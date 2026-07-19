@@ -41,6 +41,7 @@ import {
   PracenjeParentOverrideDto,
   PrioritetShiftDto,
   PromoteAkcionaTackaDto,
+  SetPlanPrioritetDto,
   UpsertAktivnostDto,
   ZatvoriAktivnostDto,
 } from "./dto/pracenje-mutation.dto";
@@ -265,6 +266,16 @@ export class PracenjeController {
   @Get("plan-prioritet")
   planPrioritet(@Req() req: AuthedRequest) {
     return this.read.planPrioritet(req.user.email);
+  }
+
+  // ⭐ plan-prioritet setter (spec §7-P10): replace the whole list. `pracenje.manage`.
+  @Put("plan-prioritet")
+  @RequirePermission(PERMISSIONS.PRACENJE_MANAGE)
+  setPlanPrioritet(
+    @Req() req: AuthedRequest,
+    @Body() dto: SetPlanPrioritetDto,
+  ) {
+    return this.pracenje.setPlanPrioritet(req.user, dto);
   }
 
   // Crtež PDF (RN side-panel) — 2.0 drawings/drawing_pdfs; BEZ gate-a (odluka O7).

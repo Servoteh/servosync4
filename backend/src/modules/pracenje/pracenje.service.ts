@@ -15,6 +15,7 @@ import type {
   PracenjeNapomenaDto,
   PracenjeParentOverrideDto,
   PromoteAkcionaTackaDto,
+  SetPlanPrioritetDto,
   UpsertAktivnostDto,
   ZatvoriAktivnostDto,
 } from "./dto/pracenje-mutation.dto";
@@ -98,8 +99,21 @@ export class PracenjeService {
       machining = true;
       surface = true;
     }
-    const manualQty = typeof dto.manualQty === "number" ? dto.manualQty : null;
-    const reason = dto.reason?.trim() ? dto.reason.trim() : null;
+    // undefined = KEEP the stored value (the mobile OverrideSheet omits these fields
+    // entirely — a status toggle there must not wipe a desktop-entered manual quantity);
+    // explicit null = clear back to auto. Desktop sends the full state either way.
+    const manualQty =
+      dto.manualQty === undefined
+        ? undefined
+        : typeof dto.manualQty === "number"
+          ? dto.manualQty
+          : null;
+    const reason =
+      dto.reason === undefined
+        ? undefined
+        : dto.reason?.trim()
+          ? dto.reason.trim()
+          : null;
 
     const row = await this.prisma.pracenjeOverride.upsert({
       where: { workOrderId },
@@ -108,8 +122,8 @@ export class PracenjeService {
         manualStatus: status,
         manualMachining: machining,
         manualSurface: surface,
-        manualQty,
-        reason,
+        manualQty: manualQty ?? null,
+        reason: reason ?? null,
         createdByUserId: actor.userId,
         updatedByUserId: actor.userId,
       },
@@ -117,6 +131,7 @@ export class PracenjeService {
         manualStatus: status,
         manualMachining: machining,
         manualSurface: surface,
+        // Prisma skips undefined fields — that is exactly the keep semantics.
         manualQty,
         reason,
         updatedByUserId: actor.userId,
@@ -222,6 +237,66 @@ export class PracenjeService {
         }
       }
       return { data: { itemId: projectId, direction, moved: true } };
+    });
+  }
+
+  /**
+   * ⭐ Set the plan-priority list (spec §7-P10 / MODULE_SPEC §2.15). The whole list is
+   * REPLACED in one transaction: clear `plan_priority` on every row, then write 1..N in
+   * the given order over `predmet_aktivacije.plan_priority`. Guards (DTO already enforces
+   * ≤50 + `@ArrayUnique` + Int≥1; kept defensively here): every `projectId` must exist in
+   * `predmet_aktivacije` (→ 422). Writes ONE structured `audit_log` row (export-log shape).
+   * The GET (`PracenjeReadService.planPrioritet`) is unchanged.
+   */
+  async setPlanPrioritet(actor: Actor, dto: SetPlanPrioritetDto) {
+    const projectIds = dto.projectIds ?? [];
+    // Defense-in-depth (DTO @ArrayUnique already rejects dupes → 400).
+    if (new Set(projectIds).size !== projectIds.length) {
+      throw new BadRequestException("Lista plan-prioriteta sadrži duplikate.");
+    }
+    return this.prisma.$transaction(async (tx) => {
+      if (projectIds.length > 0) {
+        // isActive filter: GET plan-prioritet čita samo aktivne — upis na deaktiviran
+        // predmet bi bio tihi no-op (review nalaz), zato 422 i ovde.
+        const existing = await tx.predmetAktivacija.findMany({
+          where: { projectId: { in: projectIds }, isActive: true },
+          select: { projectId: true },
+        });
+        const found = new Set(existing.map((r) => r.projectId));
+        const missing = projectIds.filter((id) => !found.has(id));
+        if (missing.length > 0) {
+          throw new UnprocessableEntityException(
+            `Predmeti ne postoje u listi aktivnih (predmet_aktivacije): ${missing.join(", ")}.`,
+          );
+        }
+      }
+      // 1) Clear the whole star list (only rows that carry a priority).
+      await tx.predmetAktivacija.updateMany({
+        where: { planPriority: { not: null } },
+        data: { planPriority: null, updatedByUserId: actor.userId },
+      });
+      // 2) Write 1..N in the given order (updateMany by the unique projectId — no throw).
+      for (let i = 0; i < projectIds.length; i++) {
+        await tx.predmetAktivacija.updateMany({
+          where: { projectId: projectIds[i] },
+          data: { planPriority: i + 1, updatedByUserId: actor.userId },
+        });
+      }
+      await tx.auditLog.create({
+        data: {
+          actorUserId: actor.userId ?? null,
+          actorUsername: actor.email ?? null,
+          action: "SET plan-prioritet",
+          entityType: "pracenje_plan_prioritet",
+          entityId: null,
+          afterData: {
+            project_ids: projectIds,
+            count: projectIds.length,
+            set_at: new Date().toISOString(),
+          },
+        },
+      });
+      return { data: { ids: projectIds, count: projectIds.length } };
     });
   }
 

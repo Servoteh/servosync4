@@ -2354,7 +2354,8 @@ model OperativnaAktivnost {
   /// Izvor statusa. Dozvoljeno: 'manual' | 'auto_from_pozicija' | 'auto_from_operacije' (sažeto: auto|manual).
   statusMode          String                       @default("manual") @map("status_mode") @db.VarChar(30)
   rizikNapomena       String?                      @map("rizik_napomena")
-  /// Poreklo aktivnosti. Dozvoljeno: 'rucno' | 'iz_sastanka' | 'akcioni_plan'.
+  /// Poreklo aktivnosti. Dozvoljeno: 'rucno' | 'iz_sastanka' | 'akcioni_plan' | 'iz_tp'.
+  /// 'iz_tp' = aktivnost izvedena iz TP-a (nose je uvezene 1.0 aktivnosti); edit ne sme na 400.
   izvor               String                       @default("rucno") @map("izvor") @db.VarChar(30)
   /// Meki ref-ovi na izvorne entitete (akcioni plan / pozicija-RN / TP operacija); bez DB FK.
   izvorAkcioniPlanId  Int?                         @map("izvor_akcioni_plan_id")

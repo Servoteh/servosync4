@@ -88,6 +88,13 @@ export function normalizePredmeti(data: unknown): PredmetRow[] {
   return [];
 }
 
+/** Dokument primopredaje po RN-u (docx §4.10) — null kad ga nema (drawing_handover_id=0). */
+export interface Primopredaja {
+  id: number;
+  status: string | null;
+  oznaka: string | null;
+}
+
 export interface IzvestajRow {
   node_id?: string;
   rn_id?: string | null;
@@ -113,6 +120,11 @@ export interface IzvestajRow {
   povrsinska_zastita_status?: string | null;
   masinska_done_override?: boolean | null;
   povrsinska_done_override?: boolean | null;
+  /** docx §4.4: sirovi brojioci % mašinske obrade (FE računa % = done/total i rollup). */
+  masinska_done?: number | null;
+  masinska_total?: number | null;
+  /** docx §4.10: dokument primopredaje (null = nema). */
+  primopredaja?: Primopredaja | null;
   status_override?: string | null;
   has_parent_override?: boolean;
   parent_override_rn_id?: number | string | null;
@@ -480,6 +492,13 @@ export const useShiftPrioritet = () =>
   usePracenjeMutation<{ itemId: number; direction: 'up' | 'down' }>(
     (v) => put(`/predmeti/${v.itemId}/prioritet`, { direction: v.direction }),
     KEYS.predmeti,
+  );
+
+/* ── ⭐ plan-prioritet setter (spec §7-P10; pracenje.manage) — zameni celu listu ── */
+export const useSetPlanPrioritet = () =>
+  usePracenjeMutation<{ projectIds: number[] }, TxResponse<{ ids: number[]; count: number }>>(
+    (v) => put('/plan-prioritet', { projectIds: v.projectIds }),
+    KEYS.planPrioritet,
   );
 
 /* ── Tabela praćenja — napomena / override (manage) ── */

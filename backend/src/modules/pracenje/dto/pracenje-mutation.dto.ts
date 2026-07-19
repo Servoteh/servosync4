@@ -1,5 +1,8 @@
 import { Type } from "class-transformer";
 import {
+  ArrayMaxSize,
+  ArrayUnique,
+  IsArray,
   IsBoolean,
   IsIn,
   IsInt,
@@ -67,7 +70,10 @@ export class UpsertAktivnostDto {
   @IsIn(["manual", "auto_from_pozicija", "auto_from_operacije"])
   statusMode?: string;
   @IsOptional() @IsString() rizikNapomena?: string;
-  @IsOptional() @IsIn(["rucno", "iz_sastanka", "akcioni_plan"]) izvor?: string;
+  // 'iz_tp' carried by 1.0-imported activities (source = tech process); edit must NOT 400.
+  @IsOptional()
+  @IsIn(["rucno", "iz_sastanka", "akcioni_plan", "iz_tp"])
+  izvor?: string;
   @IsOptional() @Type(() => Number) @IsInt() izvorAkcioniPlanId?: number;
   @IsOptional() @Type(() => Number) @IsInt() izvorPozicijaId?: number;
   @IsOptional() @Type(() => Number) @IsInt() izvorTpOperacijaId?: number;
@@ -138,6 +144,26 @@ export class PrioritetShiftDto {
 
 export class EnsureRnDto {
   @Matches(DIGITS) workOrderId!: string;
+}
+
+/* ── ⭐ plan-prioritet setter (spec §7-P10) ── */
+
+/**
+ * Set the ⭐ plan-priority list (spec §7-P10 / MODULE_SPEC §2.15): the whole list is
+ * replaced — clear all, then write 1..N in the given order. `projectIds` are 2.0
+ * `predmet_aktivacije.project_id` values in the desired order. Guards: ≤50 slots,
+ * no duplicates (`@ArrayUnique`), each id ≥1 (a positive Int). Existence in
+ * `predmet_aktivacije` is verified server-side (→ 422). `@Type(() => Number)` coerces
+ * JSON string elements (the global ValidationPipe has no implicit conversion).
+ */
+export class SetPlanPrioritetDto {
+  @IsArray()
+  @ArrayMaxSize(50)
+  @ArrayUnique()
+  @Type(() => Number)
+  @IsInt({ each: true })
+  @Min(1, { each: true })
+  projectIds!: number[];
 }
 
 /* ── Export-log (server-side → 2.0 audit_log) ── */

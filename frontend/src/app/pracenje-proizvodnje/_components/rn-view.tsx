@@ -36,17 +36,24 @@ import {
   fetchCrtezSignUrl,
   AKTIVNOST_STATUS_LABELS,
   type AktivnostRow,
+  type Primopredaja,
 } from '@/api/pracenje';
 import { toast } from '@/lib/toast';
+import { openPracenjeDrawingPdf } from '@/lib/pracenje-pdf';
 import { exportRnTab1Xlsx, exportRnTab2Xlsx } from '@/lib/pracenje-export';
 import { logExport } from '@/api/pracenje';
 import {
   buildRnTree,
   computeOpChips,
   countLate,
+  filterRnPositions,
   formatKkQty,
+  isPozicijeFilterActive,
   shortName,
+  EMPTY_POZICIJE_FILTER,
   type OpChip,
+  type PozicijeDaNe,
+  type PozicijeFilter,
   type RnHeader,
   type RnOperacija,
   type RnPozicija,
@@ -106,6 +113,32 @@ function fmtQty(v: unknown): string {
   return Number.isFinite(n) ? String(n) : '—';
 }
 
+/** Prikaz dokumenta primopredaje (docx §4.10): „oznaka · status" ili „—" ako ga nema. */
+function formatPrimopredaja(pp: Primopredaja | null | undefined): string {
+  if (!pp) return '—';
+  const parts = [pp.oznaka, pp.status].filter((s): s is string => s != null && String(s).trim() !== '');
+  return parts.length ? parts.join(' · ') : '—';
+}
+
+/**
+ * Otvori PDF crteža pozicije (docx §4.12, odluka O7 — svi prijavljeni vide crtež). get_pracenje_rn
+ * nosi BROJ crteža (`drawing_no`), a stream ruta traži numerički `drawing.id`, pa se broj prvo
+ * razreši kroz `crtez/sign` (vraća auth-gated content URL sa id-om), pa se bajtovi povuku deljenim
+ * `openPracenjeDrawingPdf` (nosi JWT — `window.open` na tu rutu bi pao bez Authorization header-a).
+ */
+async function openPositionDrawing(drawingNo: string | null | undefined): Promise<void> {
+  const clean = String(drawingNo ?? '').trim();
+  if (!clean) return;
+  try {
+    const res = await fetchCrtezSignUrl(clean);
+    const m = /\/crtez\/(\d+)\/pdf/.exec(res.data?.url ?? '');
+    if (!m) throw new ApiError(404, `Crtež ${clean} nije pronađen.`);
+    await openPracenjeDrawingPdf(Number(m[1]));
+  } catch (e) {
+    toast(e instanceof Error ? e.message : 'Crtež nije dostupan.');
+  }
+}
+
 export function RnView({ rnId, onBack }: { rnId: string; onBack: () => void }) {
   const [tab, setTab] = useState<RnTab>('pozicije');
   const rn = useRn(rnId);
@@ -117,6 +150,22 @@ export function RnView({ rnId, onBack }: { rnId: string; onBack: () => void }) {
   const header = ((result?.header ?? result ?? {}) as unknown as RnHeader);
   const summary = ((result?.summary ?? {}) as unknown as RnSummary);
   const source = String(result?.source ?? header.source ?? 'local');
+
+  // „Nazad" u tabelu praćenja predmeta (docx §4.10). RN header nosi projekat_id (== `?predmet=`
+  // itemId, O1). Vraćamo se na tabelu predmeta istim SPA ruter obrascem kao page.tsx openPredmet
+  // (pushState `?predmet=` + popstate koji page.tsx presreće) — čime se očuva deep-link kontekst.
+  // Ako RN nema predmet (direktan ulaz), fallback na prosleđeni onBack (lista aktivnih predmeta).
+  const predmetId =
+    header.projekat_id != null && String(header.projekat_id).trim() !== '' ? String(header.projekat_id) : null;
+  const predmetNaziv = header.projekat_naziv ? String(header.projekat_naziv) : null;
+  function handleBack() {
+    if (predmetId) {
+      window.history.pushState(null, '', `/pracenje-proizvodnje?predmet=${encodeURIComponent(predmetId)}`);
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    } else {
+      onBack();
+    }
+  }
 
   // Aktivnosti operativnog plana za metriku „Kasni aktivnosti"/„Aktivnosti" u zaglavlju.
   const plan = useOperativniPlan(rnId);
@@ -144,8 +193,16 @@ export function RnView({ rnId, onBack }: { rnId: string; onBack: () => void }) {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="ghost" onClick={onBack}>
-          <ArrowLeft className="h-4 w-4" /> Nazad
+        <Button
+          variant="secondary"
+          onClick={handleBack}
+          title={
+            predmetId
+              ? `Nazad na tabelu praćenja${predmetNaziv ? `: ${predmetNaziv}` : ''}`
+              : 'Nazad na aktivne predmete'
+          }
+        >
+          <ArrowLeft className="h-4 w-4" /> {predmetId ? 'Nazad na tabelu praćenja' : 'Nazad'}
         </Button>
         <h2 className="text-md font-semibold text-ink">RN {String(header.rn_broj ?? result?.rn_broj ?? rnId.slice(0, 8))}</h2>
         {source && <StatusBadge tone="neutral" label={source} />}
@@ -200,9 +257,10 @@ function RnHeaderCard({
           </h3>
           <div className="mt-1 text-xs text-ink-secondary">
             Kupac: <strong className="text-ink">{String(header.kupac ?? '—')}</strong> · Projekat:{' '}
-            <strong className="text-ink">{String(header.projekat_naziv ?? header.projekat_id ?? '—')}</strong> · Isporuka:{' '}
-            <strong className="text-ink">{header.datum_isporuke ? formatDate(String(header.datum_isporuke)) : '—'}</strong> ·
-            Koordinator: <strong className="text-ink">{String(header.koordinator ?? '—')}</strong>
+            <strong className="text-ink">{String(header.projekat_naziv ?? header.projekat_id ?? '—')}</strong> ·{' '}
+            {/* docx §4.10: „rok izrade" izbačen iz RN zaglavlja → dokument primopredaje (ako postoji). */}
+            Primopredaja: <strong className="text-ink">{formatPrimopredaja(header.primopredaja)}</strong> · Koordinator:{' '}
+            <strong className="text-ink">{String(header.koordinator ?? '—')}</strong>
           </div>
           {header.napomena ? <div className="mt-1.5 text-xs text-ink-secondary">Napomena: {String(header.napomena)}</div> : null}
         </div>
@@ -264,7 +322,10 @@ function PozicijeTab({
   onExport: () => void;
 }) {
   const [sel, setSel] = useState<{ position: RnPozicija; operation: RnOperacija } | null>(null);
-  const tree = useMemo(() => buildRnTree(positions), [positions]);
+  const [pf, setPf] = useState<PozicijeFilter>(EMPTY_POZICIJE_FILTER);
+  const filtered = useMemo(() => filterRnPositions(positions, pf), [positions, pf]);
+  const tree = useMemo(() => buildRnTree(filtered), [filtered]);
+  const filterActive = isPozicijeFilterActive(pf);
 
   if (loading) {
     return <div className="rounded-panel border border-line bg-surface px-4 py-10 text-center text-sm text-ink-secondary">Učitavanje toka proizvodnje…</div>;
@@ -290,15 +351,64 @@ function PozicijeTab({
         </Button>
       </div>
 
+      {/* Filteri pozicija (docx §4.10): pretraga · mašinska obrada · površinska zaštita. */}
+      <div className="flex flex-wrap items-center gap-2 rounded-panel border border-line bg-surface px-3 py-2">
+        <input
+          type="search"
+          value={pf.search}
+          onChange={(e) => setPf((s) => ({ ...s, search: e.target.value }))}
+          placeholder="Pretraga pozicije (šifra / naziv / crtež)…"
+          className="h-8 w-64 rounded-control border border-line bg-surface px-2 text-sm text-ink placeholder:text-ink-disabled"
+        />
+        <DaNeFilter label="Maš. obrada" value={pf.masinska} onChange={(v) => setPf((s) => ({ ...s, masinska: v }))} />
+        <DaNeFilter label="Površ. zaštita" value={pf.povrsinska} onChange={(v) => setPf((s) => ({ ...s, povrsinska: v }))} />
+        {filterActive && (
+          <>
+            <span className="tnums text-2xs text-ink-secondary">
+              {filtered.length} / {positions.length} pozicija
+            </span>
+            <button
+              type="button"
+              onClick={() => setPf(EMPTY_POZICIJE_FILTER)}
+              className="inline-flex h-8 items-center rounded-control border border-line px-2 text-xs text-ink-secondary hover:bg-surface-2"
+            >
+              Reset
+            </button>
+          </>
+        )}
+      </div>
+
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_340px]">
         <div className="space-y-3">
-          {tree.map((node) => (
-            <PositionCard key={String(node.item.id)} node={node} depth={0} onOpenOp={(operation) => setSel({ position: node.item, operation })} />
-          ))}
+          {tree.length === 0 ? (
+            <EmptyState title="Nema pozicija za izabrane filtere" hint="Ublaži pretragu ili DA/NE filtere." />
+          ) : (
+            tree.map((node) => (
+              <PositionCard key={String(node.item.id)} node={node} depth={0} onOpenOp={(operation) => setSel({ position: node.item, operation })} />
+            ))
+          )}
         </div>
         <OperacijaSidePanel sel={sel} onClose={() => setSel(null)} />
       </div>
     </div>
+  );
+}
+
+/** Tri-stanje DA/NE filter (Sve / DA / NE) — docx §4.10 filteri pozicija. */
+function DaNeFilter({ label, value, onChange }: { label: string; value: PozicijeDaNe; onChange: (v: PozicijeDaNe) => void }) {
+  return (
+    <label className="flex items-center gap-1.5 text-2xs uppercase tracking-wider text-ink-secondary">
+      {label}
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value as PozicijeDaNe)}
+        className="h-8 rounded-control border border-line bg-surface px-1.5 text-xs normal-case tracking-normal text-ink"
+      >
+        <option value="all">Sve</option>
+        <option value="da">DA</option>
+        <option value="ne">NE</option>
+      </select>
+    </label>
   );
 }
 
@@ -378,6 +488,7 @@ function Pipeline({ chips, onOpenOp }: { chips: OpChip[]; onOpenOp: (op: RnOpera
           `${fmtQty(c.op.prijavljeno_komada)} / ${fmtQty(c.op.planirano_komada)} (${c.pct}%)`,
           c.isFinal ? 'Završna kontrola (ZK)' : '',
           c.isBottleneck ? 'Usko grlo — trenutni korak' : '',
+          c.op.completed_at ? `Datum završetka: ${formatDate(String(c.op.completed_at))}` : '',
           c.op.poslednja_prijava_at ? `Poslednja prijava: ${formatDate(String(c.op.poslednja_prijava_at))}` : '',
         ]
           .filter(Boolean)
@@ -407,6 +518,10 @@ function Pipeline({ chips, onOpenOp }: { chips: OpChip[]; onOpenOp: (op: RnOpera
                 <span className="tnums text-2xs text-ink-secondary">
                   {fmtQty(c.op.prijavljeno_komada)} / {fmtQty(c.op.planirano_komada)}
                 </span>
+                {/* docx §4.9: datum završetka operacije uz količinu. */}
+                {c.op.completed_at ? (
+                  <span className="tnums text-2xs text-ink-disabled">{formatDate(String(c.op.completed_at))}</span>
+                ) : null}
               </span>
             </button>
           </span>
@@ -420,17 +535,9 @@ function DrawingChip({ p }: { p: RnPozicija }) {
   const no = String(p.drawing_no ?? '').trim();
   if (!no) return null;
   const hasFile = p.has_crtez_file !== false;
-  async function open() {
-    try {
-      const res = await fetchCrtezSignUrl(no);
-      if (res.data?.url) window.open(res.data.url, '_blank', 'noopener,noreferrer');
-    } catch (e) {
-      toast(e instanceof ApiError ? e.message : 'Crtež nije dostupan.');
-    }
-  }
   if (!hasFile) {
     return (
-      <span className="inline-flex items-center gap-1 text-2xs text-ink-disabled" title="Crtež nije u Bridge kešu">
+      <span className="inline-flex items-center gap-1 text-2xs text-ink-disabled" title="PDF crteža nije dostupan">
         <FileText className="h-3 w-3" /> {no}
       </span>
     );
@@ -438,9 +545,9 @@ function DrawingChip({ p }: { p: RnPozicija }) {
   return (
     <button
       type="button"
-      onClick={open}
+      onClick={() => openPositionDrawing(no)}
       className="inline-flex items-center gap-1 rounded-control px-1.5 py-0.5 text-2xs text-accent hover:bg-surface-2"
-      title="Otvori crtež u novom tabu"
+      title="Otvori crtež (PDF) u novom tabu"
     >
       <FileText className="h-3 w-3" /> {no}
     </button>
@@ -476,6 +583,8 @@ function OperacijaSidePanel({ sel, onClose }: { sel: { position: RnPozicija; ope
 
   const statusTone: Tone = STATUS_TONE[String(op.status ?? 'nije_krenulo')] ?? 'neutral';
   const statusLabel = AKTIVNOST_STATUS_LABELS[String(op.status ?? '')] ?? String(op.status ?? '—');
+  const drawingNo = String(sel.position.drawing_no ?? '').trim();
+  const hasFile = sel.position.has_crtez_file !== false;
 
   return (
     <div className="space-y-3 rounded-panel border border-line bg-surface p-3">
@@ -494,6 +603,19 @@ function OperacijaSidePanel({ sel, onClose }: { sel: { position: RnPozicija; ope
         </button>
       </div>
 
+      {/* docx §4.12: PDF crteža na klik u side panelu (odluka O7 — svi prijavljeni vide crtež). */}
+      {drawingNo ? (
+        <button
+          type="button"
+          onClick={() => openPositionDrawing(drawingNo)}
+          disabled={!hasFile}
+          className="inline-flex items-center gap-1.5 rounded-control border border-line px-2 py-1 text-2xs text-accent hover:bg-surface-2 disabled:cursor-not-allowed disabled:text-ink-disabled disabled:hover:bg-transparent"
+          title={hasFile ? 'Otvori crtež (PDF) u novom tabu' : 'PDF crteža nije dostupan'}
+        >
+          <FileText className="h-3.5 w-3.5" /> Crtež {drawingNo}
+        </button>
+      ) : null}
+
       <div className="flex flex-wrap items-center gap-2">
         <span className="rounded-control bg-surface-2 px-2 py-1 text-2xs text-ink">
           Planirano: <strong>{fmtQty(op.planirano_komada)}</strong>
@@ -501,6 +623,12 @@ function OperacijaSidePanel({ sel, onClose }: { sel: { position: RnPozicija; ope
         <span className="rounded-control bg-surface-2 px-2 py-1 text-2xs text-ink">
           Prijavljeno: <strong>{fmtQty(op.prijavljeno_komada ?? 0)}</strong>
         </span>
+        {/* docx §4.9: datum završetka operacije uz količinu. */}
+        {op.completed_at ? (
+          <span className="rounded-control bg-surface-2 px-2 py-1 text-2xs text-ink">
+            Završeno: <strong>{formatDate(String(op.completed_at))}</strong>
+          </span>
+        ) : null}
         <StatusBadge tone={statusTone} label={statusLabel} />
         {op.is_final_control && <span className="rounded bg-accent-subtle px-1.5 py-0.5 text-2xs font-semibold text-accent">ZK</span>}
       </div>

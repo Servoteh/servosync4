@@ -70,6 +70,26 @@ function toDateStr(d: Date | null | undefined): string | null {
 }
 
 /**
+ * Date → puni ISO timestamp (docx §4.9 „datum završetka operacije"). Za razliku od
+ * `toDateStr` (samo datum) čuva vreme — završetak operacije je informativan timestamp.
+ * null-safe; NaN → null.
+ */
+function toIso(d: Date | null | undefined): string | null {
+  if (!d) return null;
+  const t = d instanceof Date ? d : new Date(d);
+  return Number.isNaN(t.getTime()) ? null : t.toISOString();
+}
+
+/**
+ * „Kontrolne" operacije za % mašinske obrade (docx §4.4). Mašinska operacija = NIJE
+ * kontrola: `significant_for_finishing=false` (is_final_control) I naziv NE ~* 'kontrol'.
+ * Ovaj regex hvata i MEĐUFAZNU kontrolu ("8.4 Međufazna Kontrola") koja je
+ * significant_for_finishing=false ali je ipak kontrola — pa se ne broji kao mašinska.
+ * Case-insensitive; poklapa "Kontrola" / "kontrol" (paritet PG `~* 'kontrol'`).
+ */
+const CONTROL_NAME_RE = /kontrol/i;
+
+/**
  * Lokalni „danas" (YYYY-MM-DD) u zoni Europe/Belgrade za poređenje rokova (kasni).
  * NE `new Date().toISOString()` (UTC, finding #4): posle ponoći po CET-u UTC još pokazuje
  * jučerašnji datum, pa bi rok koji ističe danas lažno ispao „kasni" (ili obrnuto uveče).
@@ -153,6 +173,14 @@ export interface ProjectNodeRow {
   manual_qty: number | null;
   has_parent_override: boolean;
   parent_override_rn_id: number | null;
+  /** Dokument primopredaje (docx §4.10): `work_orders.drawing_handover_id` (0→null). */
+  drawing_handover_id: number | null;
+  /** `work_orders.handover_status_id` (default 3 = N/A) — čitki naziv u `handover_status_name`. */
+  handover_status_id: number | null;
+  /** Čitki status primopredaje (join `handover_statuses.name` po `handover_status_id`). */
+  handover_status_name: string | null;
+  /** Oznaka dokumenta primopredaje = `drawing_handovers.signature` (nema posebne „broj" kolone). */
+  handover_oznaka: string | null;
   sort_order: number;
 }
 
@@ -679,6 +707,29 @@ export class PracenjeReadService {
         )
         .join("; ");
 
+      // % mašinske obrade (docx §4.4, odluka O5): GOOD kucanja (o.done — isti izvor kao op
+      // napredak, ne zahteva is_process_finished) klampovana na lansirano, SAMO nad MAŠINSKIM
+      // operacijama = NIJE kontrola (is_final_control=false I naziv NE ~* 'kontrol') I NIJE
+      // površinska zaštita (`without_process` — isti kriterijum kojim se gore dele „Maš."/„Površ."
+      // DA-NE kolone; bez ovoga bi galvanika/plastifikacija razblažile % mašinske — review nalaz).
+      // masinska_total = broj mašinskih operacija × lansirano (svaka op treba da obradi ceo lot);
+      // masinska_done = zbir klampovanih GOOD kucanja. FE računa % = done/total i rollup po stablu.
+      // null total kad nema lansirano ILI nema mašinskih operacija (FE prikazuje „—", ne 0%).
+      const machiningOps = ops.filter(
+        (o) =>
+          !o.is_final_control &&
+          o.without_process !== true &&
+          !CONTROL_NAME_RE.test(o.work_center_name ?? o.work_center_code ?? ""),
+      );
+      let masinskaDone = 0;
+      for (const o of machiningOps) {
+        masinskaDone += komada != null ? Math.min(o.done, komada) : o.done;
+      }
+      const masinskaTotal =
+        komada != null && machiningOps.length > 0
+          ? machiningOps.length * komada
+          : null;
+
       return {
         row_id: `${projectId}:${n.rn_id}`,
         node_id: n.rn_id,
@@ -730,6 +781,18 @@ export class PracenjeReadService {
         povrsinska_done_efektivno: povrsinskaDoneEff,
         // docx §4.6 (nova kolona 2.0): ručno „fizički urađeno a nije otkucano".
         manual_qty: n.manual_qty,
+        // docx §4.4: sirovi brojioci za % mašinske obrade (FE računa % i rollup).
+        masinska_done: masinskaDone,
+        masinska_total: masinskaTotal,
+        // docx §4.10: dokument primopredaje po RN-u (null = nema, drawing_handover_id=0).
+        primopredaja:
+          n.drawing_handover_id != null
+            ? {
+                id: n.drawing_handover_id,
+                status: n.handover_status_name,
+                oznaka: n.handover_oznaka,
+              }
+            : null,
         has_parent_override: n.has_parent_override,
         parent_override_rn_id: n.parent_override_rn_id,
         statusi: {
@@ -831,6 +894,10 @@ export class PracenjeReadService {
         datum_isporuke: Date | null;
         napomena: string | null;
         naziv: string | null;
+        drawing_handover_id: number | null;
+        handover_status_id: number | null;
+        handover_status_name: string | null;
+        handover_oznaka: string | null;
       }[]
     >(Prisma.sql`
       SELECT w.id::int AS radni_nalog_id,
@@ -840,10 +907,17 @@ export class PracenjeReadService {
              COALESCE(NULLIF(BTRIM(c.name), ''), NULLIF(BTRIM(w.external_project_name), '')) AS kupac,
              w.production_deadline AS datum_isporuke,
              NULLIF(BTRIM(w.note), '') AS napomena,
-             COALESCE(NULLIF(BTRIM(w.part_name), ''), w.ident_number) AS naziv
+             COALESCE(NULLIF(BTRIM(w.part_name), ''), w.ident_number) AS naziv,
+             -- Dokument primopredaje (docx §4.10, zamena za „rok izrade" u RN pogledu).
+             NULLIF(w.drawing_handover_id, 0)::int AS drawing_handover_id,
+             w.handover_status_id::int AS handover_status_id,
+             NULLIF(BTRIM(hs.name), '') AS handover_status_name,
+             NULLIF(BTRIM(dh.signature), '') AS handover_oznaka
         FROM work_orders w
         LEFT JOIN projects p ON p.id = w.project_id
         LEFT JOIN customers c ON c.id = w.external_customer_id
+        LEFT JOIN handover_statuses hs ON hs.id = w.handover_status_id
+        LEFT JOIN drawing_handovers dh ON dh.id = NULLIF(w.drawing_handover_id, 0)
        WHERE w.id = ${rnId}`);
     if (head.length === 0) {
       throw new NotFoundException(`Radni nalog ${rnId} ne postoji.`);
@@ -937,6 +1011,15 @@ export class PracenjeReadService {
           napomena: h.napomena,
           masina_linija: h.naziv,
           radni_nalog_naziv: h.naziv,
+          // docx §4.10: dokument primopredaje (ako postoji; null = drawing_handover_id=0).
+          primopredaja:
+            h.drawing_handover_id != null
+              ? {
+                  id: h.drawing_handover_id,
+                  status: h.handover_status_name,
+                  oznaka: h.handover_oznaka,
+                }
+              : null,
         },
         source: "local",
         summary: {
@@ -1400,6 +1483,13 @@ export class PracenjeReadService {
              ovr.manual_qty::int AS manual_qty,
              (po.work_order_id IS NOT NULL) AS has_parent_override,
              po.parent_work_order_id::int AS parent_override_rn_id,
+             -- Dokument primopredaje (docx §4.10): id iz work_orders.drawing_handover_id
+             -- (0 → NULL = nema), status iz work_orders.handover_status_id ⋈ handover_statuses,
+             -- oznaka = drawing_handovers.signature (tabela nema posebnu „broj" kolonu).
+             NULLIF(w.drawing_handover_id, 0)::int AS drawing_handover_id,
+             w.handover_status_id::int AS handover_status_id,
+             NULLIF(BTRIM(hs.name), '') AS handover_status_name,
+             NULLIF(BTRIM(dh.signature), '') AS handover_oznaka,
              row_number() OVER (
                PARTITION BY d.parent_rn_id, d.root_rn_id
                ORDER BY w.ident_number ASC NULLS LAST
@@ -1410,6 +1500,8 @@ export class PracenjeReadService {
         LEFT JOIN pracenje_notes nap ON nap.project_id = ${projectId} AND nap.work_order_id = d.rn_id
         LEFT JOIN pracenje_overrides ovr ON ovr.work_order_id = d.rn_id
         LEFT JOIN pracenje_structure_overrides po ON po.work_order_id = d.rn_id
+        LEFT JOIN handover_statuses hs ON hs.id = w.handover_status_id
+        LEFT JOIN drawing_handovers dh ON dh.id = NULLIF(w.drawing_handover_id, 0)
        ORDER BY d.root_rn_id, d.path_idrn`);
   }
 
@@ -1555,7 +1647,11 @@ export class PracenjeReadService {
       alat_pribor: o.tools_fixtures ?? "",
       planned_qty: komada,
       completed_qty: o.done,
-      completed_at: o.last_completed_at,
+      // docx §4.9 „datum završetka operacije": poslednji DOBAR (GOOD) završetak =
+      // max(tech_processes.finished_at) FILTER (is_process_finished AND GOOD). Reuse of the
+      // `last_completed_at` aggregate `fetchOperations` already computes (no new query/source).
+      // ISO timestamp (ne samo datum) / null.
+      completed_at: toIso(o.last_completed_at),
       is_final_control: o.is_final_control,
       kontrola_status: o.is_final_control
         ? o.done_completed > 0
@@ -1587,6 +1683,10 @@ export class PracenjeReadService {
       prijavljeno_komada: o.done,
       status,
       poslednja_prijava_at: o.last_at,
+      // docx §4.9: datum završetka operacije = poslednji DOBAR završetak (isti
+      // `last_completed_at` agregat kao izvestaj — max(tech_processes.finished_at) GOOD/finished).
+      // ISO / null (razlikuje se od `poslednja_prijava_at` koji je poslednja aktivnost bilo kog kvaliteta).
+      completed_at: toIso(o.last_completed_at),
       is_final_control: o.is_final_control,
       source: "mes",
       bigtehn_work_order_id: woId,

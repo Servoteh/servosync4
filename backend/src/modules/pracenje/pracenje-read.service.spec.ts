@@ -41,6 +41,10 @@ function node(p: Partial<ProjectNodeRow> & { rn_id: number }): ProjectNodeRow {
     manual_qty: p.manual_qty ?? null,
     has_parent_override: p.has_parent_override ?? false,
     parent_override_rn_id: p.parent_override_rn_id ?? null,
+    drawing_handover_id: p.drawing_handover_id ?? null,
+    handover_status_id: p.handover_status_id ?? null,
+    handover_status_name: p.handover_status_name ?? null,
+    handover_oznaka: p.handover_oznaka ?? null,
     sort_order: p.sort_order ?? 1,
   };
 }
