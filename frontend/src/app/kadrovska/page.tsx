@@ -1,12 +1,14 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
 import { PERMISSIONS } from '@/lib/permissions';
 import { cn } from '@/lib/cn';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
+import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Tabs, type TabItem } from './_components/tabs';
 import { PregledTab } from './_components/pregled/pregled-tab';
 import { ZaposleniTab } from './_components/zaposleni-tab';
@@ -76,12 +78,12 @@ export default function KadrovskaPage() {
   const canAttendance = can(PERMISSIONS.KADROVSKA_ATTENDANCE);
   const canAttendanceShadow = can(PERMISSIONS.KADROVSKA_ATTENDANCE_SHADOW);
 
-  // Redirect: neprijavljen → /login; prijavljen bez kadrovska.read → / (paritet 1.0
-  // renderKadrovskaModule guard-a; efekat + hard-guard u renderu = defense-in-depth).
+  // Redirect: samo neprijavljen → /login. Prijavljen BEZ kadrovska.read se NE preusmerava
+  // tiho (ranije `router.replace('/')` → korisnik bi „pao" na Radne naloge bez objašnjenja);
+  // umesto toga render ispod prikazuje jasnu poruku „nemate pristup" sa ručnim izlazom.
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
-    else if (!isLoading && user && !canRead) router.replace('/');
-  }, [user, isLoading, router, canRead]);
+  }, [user, isLoading, router]);
 
   // Vidljivost taba (postojeći permisijski uslovi; zaposleni/odmori/odsustva/sati/prisustvo = read-baseline).
   const tabVisible: Record<TabKey, boolean> = useMemo(
@@ -130,10 +132,30 @@ export default function KadrovskaPage() {
     return <main className="grid flex-1 place-items-center text-sm text-ink-secondary">Učitavanje…</main>;
   }
 
-  // Hard-guard (paritet 1.0): korisnik bez kadrovska.read NE renderuje modul.
+  // Hard-guard (paritet 1.0): korisnik bez kadrovska.read NE renderuje modul. Umesto tihog
+  // preusmeravanja (koje je izgledalo kao „otvorio mi se pogrešan tab — Radni nalozi"),
+  // prikaži jasnu poruku sa ručnim izlazom. Backend ostaje krajnji autoritet (403 na rutama).
   if (!canRead) {
-    router.replace('/');
-    return <main className="grid flex-1 place-items-center text-sm text-ink-secondary">Preusmeravanje…</main>;
+    return (
+      <AppShell>
+        <PageHeader title="Kadrovska" />
+        <div className="grid flex-1 place-items-center p-6">
+          <EmptyState
+            title="Nemate pristup Kadrovskoj"
+            hint={
+              <span>
+                Vaš nalog nema pravo pristupa ovom modulu. Ako mislite da je to greška, obratite se
+                administratoru.{' '}
+                <Link href="/" className="text-accent hover:underline">
+                  Nazad na početnu
+                </Link>
+                .
+              </span>
+            }
+          />
+        </div>
+      </AppShell>
+    );
   }
 
   const firstTabOf = (gid: GroupKey): TabKey => groups.find((g) => g.id === gid)?.tabs[0] ?? 'pregled';
