@@ -126,7 +126,9 @@ gasi feed ili je feed već mrtav pa se samo čisti.
 zamrznutim 14–15.07** — svaka operacija kucana od tada NE postoji u planu mašina. F5d je
 „čišćenje" (nema šta da se gasi osim praznog pg_cron-a), ali **F5b/F5c postaju hitni** —
 ili se kao privremeni most aktivira B1 sekvenca iz RUNBOOK-a (odmrzava odmah), ili se ide
-pravo na native repoint (par dana rada). Odluka M11 (Nenad).
+pravo na native repoint (par dana rada). **M11 PRESUĐENO 20.07.2026 (Nenad): PRAVO NA
+F5b NATIVE, bez aktiviranja feed-a** — ni sat u most koji se ubija; Plan proizvodnje
+ostaje na zamrznutom kešu dok native repoint ne legne → **F5b je hitan i kreće odmah**.
 
 ### 3.2 O8 — redirect 1.0 ekrana praćenja — ⚠️ SEKCIJA NEVAŽEĆA (verifikacija 20.07.2026)
 
@@ -143,6 +145,12 @@ pravo na native repoint (par dana rada). Odluka M11 (Nenad).
   3.0) i **koordinaciju sa sesijom koja drži granu `cutover/front-repoint`** u 1.0 repou
   (aktivna, sa nekomitovanim izmenama van praćenja).
 - §3.3 DROP ostaje blokiran dok pravi O8 ne legne (1.0 živi kod i dalje zove te RPC-ove).
+
+**✅ M12 PRESUĐENO 20.07.2026 (Nenad): „ja dizajniram, cutover sesija izvodi."** Pravi
+mehanizam NAĐEN: Tehnologija HUB pločica = iframe + postMessage SSO (`SSO_TEHNOLOGIJA.md`,
+živo od 10.07) — recept za kloniranje na desktop i mobilno praćenje sa PROVERENIM
+referencama: **[RECEPT_M12_REDIRECT_PRACENJE_1.0.md](RECEPT_M12_REDIRECT_PRACENJE_1.0.md)**
+(predaje se cutover sesiji u 1.0 repou).
 
 ### 3.3 Posle O8: DROP sy15 `pracenje_*` objekata
 
@@ -422,10 +430,16 @@ Sy15 posle F5 i dalje nosi (uslovi gašenja — redosled iz analize ostatka):
    (`_pracenje_line_is_final_control`) vs native flag `operations.significant_for_finishing`.
    **Preporuka: native flag** (jedan kanon za praćenje i PP) + obavezan diff skupa redova u
    F5b verifikaciji; odstupanja presuditi pojedinačno.
-7. **M7 — Native definicija „MES aktivan RN"**: kandidat `predmet_aktivacije` (je_aktivan po
-   predmetu) + status RN — ali sy15 whitelist `production_active_work_orders` je finiji (po
-   RN-u). **Preporuka: presuditi POSLE F5b-0 izviđanja**; ako whitelist nosi ručne izuzetke,
-   uvesti app-owned `rn_mes_izuzeci` tabelu, inače aktivacija po predmetu.
+7. **M7 — ✅ PRESUĐENO 20.07.2026 (Nenad): AKTIVACIJA PO PREDMETU.** Nenadovo poslovno
+   pravilo (izvorno iz 1.0 Podešavanja → Predmeti): predmet ima checkbox **AKTIVAN** — prati
+   se SAMO čekiran (uvedeno jer je „hiljade starih aktivnih" zagađivalo liste); native filter
+   = `predmet_aktivacije.is_active` ∧ RN nije završen/zaključan. Uz to postoji i checkbox
+   **PROJEKTOVANJE I MONTAŽA** (`je_projektovanje_montaza`) — SAMO za te predmete se kreiraju
+   Projektovanje/Plan montaže praćenja (pb_list_projects ⋈ je_aktivan ∧ je_projektovanje_montaza).
+   ⚠️ **GAP NAĐEN**: 3.0 `predmet_aktivacije` NEMA `je_projektovanje_montaza` kolonu (F1 uvoz
+   je preneo samo aktivan/prioritete) → F5b-1 dodaje kolonu + proširuje import + re-run na
+   glavnoj bazi, da flag bude spreman za B3/Plan montaže. Ako F5b-0 izviđanje pokaže ručne
+   RN-izuzetke u whitelist-u, dodaje se `rn_mes_izuzeci` tabela (bez nove odluke).
 8. **M8 — `production_overlays_history` (112)**: u glavnu `audit_log` (obrazac praćenje O2)
    ili zasebna history tabela + trigger. **Preporuka: jednokratni uvoz u `audit_log`** +
    novi zapisi kroz postojeći `withUser` GUC audit — bez novog trigger mehanizma.
