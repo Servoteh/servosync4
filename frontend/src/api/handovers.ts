@@ -42,6 +42,13 @@ export interface DrawingRef {
   material: string | null;
   dimensions: string | null;
   weight?: number | null;
+  /**
+   * Postoji li uskladišten PDF za crtež ove stavke — backend ga vraća na STAVKAMA
+   * detalja nacrta (`GET /v1/handover-drafts/:id`, batch upit nad `drawing_pdfs`,
+   * bez učitavanja bloba). Za PDF dugme uz naziv stavke. Opciono/defanzivno:
+   * `DrawingRef` se gradi i drugde (lista, štampa) bez ovog podatka (undefined).
+   */
+  hasPdf?: boolean;
 }
 
 // ─────────────────────────────────────────────── moj radnik (workerId iz JWT-a)
@@ -385,19 +392,20 @@ export interface OpenDraftLookupItem {
 
 /**
  * Otvoreni nacrti za „Dodaj u nacrt" (Agent C) — GET /v1/handover-drafts filtriran
- * na NEzaključane (`isLocked=false`). Predaja u primopredaju zaključa nacrt, pa
- * `isLocked=false` je tačan kriterijum „može još da prima stavke" (isti signal
- * kao gejt dugmadi Izmeni/Obriši/Predaj u DraftDetail). Lista je lagana i
- * kratko-stale (nova stavka mora brzo da se pojavi u meniju posle kreiranja).
- * Vraća već mapiran oblik ({ id, draftNumber, subject, designerName }) da potrošač
- * ne zavisi od punog `HandoverDraft` tipa.
+ * na NEzaključane (`isLocked=false`) i na nacrte ULOGOVANOG projektanta (`mine=true`
+ * — server ga razrešava preko workerId-a, FE ga namerno ne nosi). Predaja u
+ * primopredaju zaključa nacrt, pa `isLocked=false` je tačan kriterijum „može još
+ * da prima stavke" (isti signal kao gejt dugmadi Izmeni/Obriši/Predaj u
+ * DraftDetail). Lista je lagana i kratko-stale (nova stavka mora brzo da se
+ * pojavi u meniju posle kreiranja). Vraća već mapiran oblik ({ id, draftNumber,
+ * subject, designerName }) da potrošač ne zavisi od punog `HandoverDraft` tipa.
  */
 export function useOpenDraftsLookup() {
   return useQuery({
-    queryKey: ['handover-drafts', 'open-lookup'],
+    queryKey: ['handover-drafts', 'open-lookup', 'mine'],
     queryFn: async () => {
       const res = await apiFetch<Paginated<HandoverDraft>>(
-        '/v1/handover-drafts?isLocked=false&pageSize=200',
+        '/v1/handover-drafts?isLocked=false&mine=true&pageSize=200',
       );
       return (res.data ?? []).map<OpenDraftLookupItem>((d) => ({
         id: d.id,

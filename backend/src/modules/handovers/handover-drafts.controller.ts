@@ -61,8 +61,13 @@ export class HandoverDraftsController {
   ) {}
 
   @Get()
-  list(@Query() query: ListHandoverDraftsQuery) {
-    return this.drafts.list(query);
+  list(
+    @Query() query: ListHandoverDraftsQuery,
+    @Req() req: { user: AuthUser },
+  ) {
+    // `mine=true` filtrira na ulogovanog projektanta — actor ide servisu (FE
+    // nema workerId; razrešava se server-side preko resolveActorWorkerId).
+    return this.drafts.list(query, req.user);
   }
 
   @Get(":id")

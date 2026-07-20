@@ -103,6 +103,14 @@ export interface ListHandoverDraftsQuery {
   projectId?: string;
   /** `true` | `false` — filter po zaključanosti. */
   isLocked?: string;
+  /**
+   * `true` — samo nacrti ULOGOVANOG projektanta (`designer_id` = akterov worker).
+   * FE nema workerId (`PublicUser` ga namerno ne nosi), pa se filtar razrešava
+   * server-side preko `resolveActorWorkerId`. Ima prioritet nad `designerId`
+   * paramom (postavlja `where.designerId` poslednji). Nalog bez povezanog radnika
+   * ⇒ prazna lista (`designerId = -1`), „Novi nacrt" u dijalogu i dalje radi.
+   */
+  mine?: string;
   /** Opseg po `draftDate` (ISO). */
   from?: string;
   to?: string;
@@ -145,7 +153,7 @@ export class HandoverDraftsService {
 
   // ---------------------------------------------------------------- READ
 
-  async list(query: ListHandoverDraftsQuery) {
+  async list(query: ListHandoverDraftsQuery, actor?: AuthUser) {
     const { page, pageSize, skip, take } = parsePagination(
       query.page,
       query.pageSize,
@@ -167,6 +175,15 @@ export class HandoverDraftsService {
     where.projectId = intEq(query.projectId);
     if (query.isLocked === "true") where.isLocked = true;
     else if (query.isLocked === "false") where.isLocked = false;
+
+    // `mine=true` (dropdown „Izaberi nacrt…" u PDM → Dodaj u nacrt): samo nacrti
+    // ulogovanog projektanta. FE nema workerId, pa se razrešava server-side.
+    // Ima prioritet nad `designerId` paramom (postavlja se poslednji); nalog bez
+    // povezanog radnika ⇒ `-1` = prazna lista (nijedan `designer_id` nije -1).
+    if (query.mine === "true") {
+      const wid = await resolveActorWorkerId(this.prisma, actor);
+      where.designerId = wid ?? -1;
+    }
     const from = parseDateParam(query.from, "from");
     const to = parseDateParam(query.to, "to");
     if (from || to) {
@@ -248,6 +265,17 @@ export class HandoverDraftsService {
       }),
     ]);
 
+    // PDF pokazatelj po STAVCI (PDF dugme uz naziv u detalju nacrta): batch
+    // provera nad `drawing_pdfs` po parovima (broj, revizija) samih stavki —
+    // BEZ učitavanja bloba (isti razlog kao loadPdfMeta/checkItemPreconditions).
+    const itemDrawings = items
+      .map((i) => drawings.get(i.drawingId))
+      .filter((d): d is NonNullable<typeof d> => d != null);
+    const drawingIdsWithPdf = await this.resolveDrawingIdsWithPdf(itemDrawings);
+
+    const withHasPdf = (d: ReturnType<(typeof drawings)["get"]> | null) =>
+      d ? { ...d, hasPdf: drawingIdsWithPdf.has(d.id) } : null;
+
     const data = {
       ...draft,
       designer: designer ?? null,
@@ -258,13 +286,43 @@ export class HandoverDraftsService {
       status: status ?? null,
       items: items.map((i) => ({
         ...i,
-        drawing: drawings.get(i.drawingId) ?? null,
+        drawing: withHasPdf(drawings.get(i.drawingId) ?? null),
         mainDrawing: i.mainDrawingId
           ? (drawings.get(i.mainDrawingId) ?? null)
           : null,
       })),
     };
     return { data };
+  }
+
+  /**
+   * Skup crteža (id) koji imaju USKLADIŠTEN PDF (`drawing_pdfs.pdf_binary` nije
+   * null) — JEDAN batch upit po parovima (broj, revizija), NIKAD se ne selektuje
+   * `pdf_binary` (blob, ume da bude više MB). Za PDF dugme uz stavku nacrta.
+   */
+  private async resolveDrawingIdsWithPdf(
+    drawings: { id: number; drawingNumber: string; revision: string }[],
+  ): Promise<Set<number>> {
+    const result = new Set<number>();
+    if (!drawings.length) return result;
+
+    const pdfKey = (n: string, r: string) => `${n} ${r}`;
+    const pdfs = await this.prisma.drawingPdf.findMany({
+      where: {
+        pdfBinary: { not: null },
+        OR: drawings.map((d) => ({
+          drawingNumber: d.drawingNumber,
+          revision: d.revision,
+        })),
+      },
+      select: { drawingNumber: true, revision: true },
+    });
+    const pdfKeys = new Set(
+      pdfs.map((p) => pdfKey(p.drawingNumber, p.revision)),
+    );
+    for (const d of drawings)
+      if (pdfKeys.has(pdfKey(d.drawingNumber, d.revision))) result.add(d.id);
+    return result;
   }
 
   async listItems(draftId: number) {
