@@ -8,7 +8,10 @@ import {
   SyncStrategy,
   TableMapping,
 } from './sync.types';
-import { isOwnedProductionTable } from './table-ownership';
+import {
+  isAdditiveRefreshTable,
+  isOwnedProductionTable,
+} from './table-ownership';
 
 /**
  * Data-driven syncer for one QBigTehn table -> one Prisma model.
@@ -20,6 +23,9 @@ import { isOwnedProductionTable } from './table-ownership';
  * - full_refresh: `deleteMany` + chunked `createMany`, wrapped in a transaction
  *   with `session_replication_role = replica` so FK constraints don't block the
  *   bulk load (order-independent; the source is the single source of truth).
+ *   For ADDITIVE_REFRESH_TABLES (e.g. `projects`) the wipe is narrowed to only
+ *   the ids the source returned, so 2.0-native rows the source never sends are
+ *   preserved (see `isAdditiveRefreshTable`).
  * - incremental: per-row `upsert` filtered by `PoslednjaIzmena > cursor`.
  */
 export class GenericSyncer implements EntitySyncer {
@@ -119,13 +125,28 @@ export class GenericSyncer implements EntitySyncer {
             1,
             Math.min(5000, Math.floor(60000 / Math.max(1, this.mapping.columns.length))),
           );
+      // Additive refresh (e.g. projects): the source (BigBit) still owns and
+      // updates its rows, but 2.0 also creates NATIVE rows in the same table.
+      // A blind deleteMany({}) would wipe those native rows on every run, so we
+      // delete ONLY the ids the source returned and re-insert them — an upsert
+      // of the whole source set that never touches ids the source didn't send.
+      const additive = isAdditiveRefreshTable(this.entity);
+      const sourceIds = additive ? this.collectSourceIds(data) : null;
       await this.prisma.$transaction(
         async (tx) => {
           await tx.$executeRawUnsafe(
             "SET LOCAL session_replication_role = 'replica'",
           );
           const del = (tx as Record<string, any>)[this.delegateName];
-          await del.deleteMany({});
+          if (additive) {
+            // Empty source set -> nothing to delete (and Prisma `in: []` matches
+            // nothing anyway); never fall back to wiping everything.
+            if (sourceIds!.length > 0) {
+              await del.deleteMany({ where: { id: { in: sourceIds } } });
+            }
+          } else {
+            await del.deleteMany({});
+          }
           for (let i = 0; i < data.length; i += chunkSize) {
             await del.createMany({ data: data.slice(i, i + chunkSize) });
           }
@@ -151,6 +172,27 @@ export class GenericSyncer implements EntitySyncer {
 
   private delegate(): any {
     return (this.prisma as unknown as Record<string, any>)[this.delegateName];
+  }
+
+  /**
+   * Ids the source returned, for the additive full-refresh delete. The additive
+   * path assumes a single-field `id` PK (an `id: { in: [...] }` delete); guard
+   * against a config mistake that would otherwise silently wipe or under-delete.
+   */
+  private collectSourceIds(data: Record<string, unknown>[]): number[] {
+    const pk = this.mapping.pk;
+    if (!pk || pk.kind !== 'single' || pk.field !== 'id') {
+      throw new Error(
+        `Additive refresh for ${this.entity} requires a single-field "id" PK`,
+      );
+    }
+    const ids: number[] = [];
+    for (const d of data) {
+      const v = d.id;
+      if (typeof v === 'number') ids.push(v);
+      else if (v != null) ids.push(Number(v));
+    }
+    return ids;
   }
 
   /** Build the Prisma `where` for an upsert from the mapped row's PK field(s). */

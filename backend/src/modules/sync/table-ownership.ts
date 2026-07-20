@@ -62,6 +62,17 @@ export const OWNED_PRODUCTION_TABLES = new Set<string>([
   "drawing_components",
   "drawing_pdfs",
   "drawing_import_log",
+  // Robni tok (Faza 3) — `goods_documents` (T_Robna dokumenta) i
+  // `goods_document_items` (T_Robne stavke) postaju 2.0-owned. Na produkciji je
+  // ova kopija bila MRTVA (0 redova, 0 čitalaca u kodu), pa je njeno mapiranje
+  // IZBAČENO iz `sync-map.generated.ts` (ODLUKA Nenad, jul 2026) — isto kao
+  // QBigTehn lanac. Ostaju ovde kao zaštita: ako se mapiranje ikad vrati u
+  // generisanu mapu, generički syncer i dalje odbija destruktivan full-refresh
+  // dok tabela ima redova. (NAPOMENA: `goods_documents_mirror` /
+  // `goods_document_items_mirror` su ZASEBAN, lagani BigBit keš —
+  // source `RobnaDokumentaMirror`/`RobneStavkeMirror` — i OSTAJU u syncu.)
+  "goods_documents",
+  "goods_document_items",
 ]);
 
 export function isOwnedProductionTable(entity: string): boolean {
@@ -145,4 +156,37 @@ export const QBIGTEHN_CHAIN_ENTITIES = new Set<string>([
 
 export function isQbigtehnChainEntity(entity: string): boolean {
   return QBIGTEHN_CHAIN_ENTITIES.has(entity);
+}
+
+/**
+ * ADITIVNI full-refresh — tabele koje BigBit i dalje puni, ali 2.0 sada
+ * pravi i SVOJE, native redove u istoj tabeli (mešani vlasnik).
+ *
+ * ODLUKA (Nenad, jul 2026) za `projects` (Predmeti): BigBit na produkciji
+ * aktivno puni ~7.600 predmeta i mora nastaviti da AŽURIRA postojeće; od sada
+ * 2.0 pravi NOVE predmete koje BigBit ne poznaje. Klasičan full_refresh radi
+ * `deleteMany({})` (BRIŠE SVE) + `createMany`, pa bi na svakom sync-u obrisao
+ * svaki 2.0-native predmet — to je zabranjeno.
+ *
+ * Zašto NE incremental (upsert po watermark-u): izvorna tabela `Predmeti` NEMA
+ * `PoslednjaIzmena` (ni bilo koju „last modified" kolonu — samo datume
+ * otvaranja/zaključenja/ugovora/narudžbenice), pa se watermark-driven
+ * incremental ne može aktivirati. Zato mapiranje ostaje `watermark: null`
+ * (default `full_refresh`), a ovde menjamo SAMO korak brisanja.
+ *
+ * Ponašanje za ove tabele (vidi `GenericSyncer`): umesto `deleteMany({})`,
+ * full-refresh briše SAMO redove čiji `id` izvor vraća u ovom prolazu
+ * (`deleteMany({ where: { id: { in: sourceIds } } })`), pa reinsertuje te iste
+ * izvorne redove. Efekat = upsert celog BigBit skupa (postojeći se ažuriraju,
+ * novi ubacuju) BEZ diranja 2.0-native redova (id koji izvor ne vraća).
+ *
+ * NAPOMENA: pošto `id` koji izvor ne vraća nikad ne diramo, red obrisan u
+ * BigBit-u ostaje kao siroče u 2.0 (svesno — bezbednije je zadržati predmet
+ * nego rizikovati brisanje 2.0-native reda; predmeti se u praksi ne brišu).
+ * Zahtev: PK mora biti jednostavan `id` (proverava se u syncer-u).
+ */
+export const ADDITIVE_REFRESH_TABLES = new Set<string>(["projects"]);
+
+export function isAdditiveRefreshTable(entity: string): boolean {
+  return ADDITIVE_REFRESH_TABLES.has(entity);
 }

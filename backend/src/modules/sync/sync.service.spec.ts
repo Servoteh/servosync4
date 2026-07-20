@@ -37,4 +37,21 @@ describe("SyncService — posle cutover-a (trajni BigBit sync)", () => {
     const leaked = entities.filter((e) => QBIGTEHN_CHAIN_ENTITIES.has(e));
     expect(leaked).toEqual([]);
   });
+
+  // Robni tok (Faza 3): `goods_documents` (T_Robna dokumenta) + `goods_document_items`
+  // (T_Robne stavke) su izbačeni iz sync-map.generated.ts jer postaju 2.0-owned
+  // (prod kopija bila mrtva: 0 redova, 0 čitalaca). Njihov lagani BigBit keš —
+  // `goods_documents_mirror` / `goods_document_items_mirror` (zaseban source) —
+  // OSTAJE u syncu.
+  it("NE registruje goods_documents ni goods_document_items (2.0-owned)", () => {
+    const entities = buildService().availableEntities;
+    expect(entities).not.toContain("goods_documents");
+    expect(entities).not.toContain("goods_document_items");
+  });
+
+  it("i dalje registruje goods_documents_mirror (zaseban BigBit keš)", () => {
+    const entities = buildService().availableEntities;
+    expect(entities).toContain("goods_documents_mirror");
+    expect(entities).toContain("goods_document_items_mirror");
+  });
 });

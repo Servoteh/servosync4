@@ -42,6 +42,9 @@ const VIEWER_READ_BASELINE: readonly PermissionKey[] = [
   // `loc_can_create_movement()` kroz GUC (spec §2; širina OSTAJE u bazi).
   P.LOKACIJE_READ,
   P.LOKACIJE_MOVE,
+  // Nabavka (4.0 Traka B): read = svi prijavljeni (radna lista vidljiva). WRITE/APPROVE
+  // NISU ovde — dok se ne kurira nabavka/prodaja rola, drži ih samo `admin` (ALL). V1 guard je no-op.
+  P.NABAVKA_READ,
 ];
 
 /**
@@ -266,6 +269,16 @@ const BASE_ROLE_PERMISSIONS: Partial<
     P.AI_CHAT, // 1.0 /ai za sve
     P.LOKACIJE_READ, // Talas A: read = svi prijavljeni
     P.LOKACIJE_MOVE, // Talas A: move (row-odluka u DB fn)
+    // 4.0 komercijala (Nenad: nabavka klikće/preuzima, odobrava). Nabavka pun tok +
+    // robno/predmeti uvid; NE finansijske (GL/saldakonti/PDV su za finansije/admin).
+    P.NABAVKA_READ,
+    P.NABAVKA_WRITE,
+    P.NABAVKA_APPROVE,
+    P.ROBNO_READ,
+    P.PROJECTS_WRITE,
+    P.RFQ_READ,
+    P.RFQ_WRITE,
+    P.SALES_READ, // uvid u izlazne račune (prodaja deli tok sa nabavkom, Nenad)
   ],
 
   [ROLES.MENADZMENT]: [
@@ -328,6 +341,37 @@ const BASE_ROLE_PERMISSIONS: Partial<
     // za sve → BEZ viewer read-baseline; nijedna druga rola (ni sef/tehnolog).
     P.ENERGETIKA_READ,
     P.ENERGETIKA_CONTROL,
+    // 4.0 komercijala + finansije — MENADZMENT ima pun uvid + operativni write.
+    // (Row-politika/finija podela ide uz auth roljne; admin sve kroz ALL.)
+    P.NABAVKA_READ,
+    P.NABAVKA_WRITE,
+    P.NABAVKA_APPROVE,
+    P.PROJECTS_WRITE,
+    P.RFQ_READ,
+    P.RFQ_WRITE,
+    P.ROBNO_READ,
+    P.ROBNO_WRITE,
+    P.ROBNO_POST,
+    P.GL_READ,
+    P.SALDAKONTI_READ,
+    P.SALDAKONTI_RECONCILE,
+    P.PLACANJA_READ,
+    P.PLACANJA_PREPARE,
+    P.PLACANJA_EXPORT,
+    P.IZVODI_READ,
+    P.IZVODI_IMPORT,
+    P.IZVODI_POST,
+    P.SALES_READ,
+    P.SALES_WRITE,
+    P.SALES_POST,
+    P.SALES_APPROVE,
+    P.SEF_READ,
+    P.SEF_SEND,
+    P.SEF_CANCEL,
+    P.PDV_READ,
+    P.PDV_COMPUTE,
+    P.ZR_READ,
+    P.ZR_COMPUTE,
   ],
 
   // AKTIVIRANE 10.07.2026 uz 3.0-pilot Reversi (Nenad) — paritet rev_can_manage().

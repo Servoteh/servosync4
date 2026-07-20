@@ -1,0 +1,103 @@
+// =============================================================================
+// NACRT (DRAFT) — Faza 7: Završni račun / bilansi (BS/BU/SI, APR eFI XML)
+// =============================================================================
+// STATUS: NACRT — samo tekst modela za pregled. NIJE deo schema.prisma, NIJE
+//         migrirano. Ne kopira se u schema.prisma bez potvrde (Nesa/knjigovođa,
+//         K3: OS brojevi + potvrda bilansa — PLAN_FAZA_7 §Odluke/§Rizici).
+//
+// Izvor:
+//   - docs/PLAN_FAZA_7_zavrsni-racun.md  (4 sloja: definicija → snapshot → evaluator → obračun)
+//   - backend/docs/migration/37-zavrsni-racun-os-bilansi.md
+//       §C/D BS/BU (ZR_Zaglavlje/ZR_Stavke), §F GKEval sintaksa (D/P/PSD/PSP/A + wildcard)
+//
+// Kontekst (odluke iz gradnje 4.0):
+//   - Faza 2 GL (LedgerEntry) + izraz-parser ŽIVI — bruto stanje = izvor svega;
+//     bilansne pozicije se IZVODE iz ledger_entries preko GKEval formula.
+//   - ⚠️ OS (osnovna sredstva) se vode KOD KNJIGOVOĐE (Nenad, 18.07). Mi NE vodimo
+//     OS registar/amortizaciju — samo UPISUJEMO OS-pozicije u ZR (AOP klase 0 =
+//     ručni unos / spoljni ulaz). Zato NEMA OS modela ovde (izvan scope-a).
+//   - BalanceFormulaDefinition = deklarativna definicija bilansa (kao POPDV_DEF za
+//     PDV): formule žive kao PODATAK, seed iz .MDB (ZR_AOP_Modla/T_GK_IZV_Stavke).
+//
+// Konvencije (BACKEND_RULES §1/§2):
+//   - id Int @default(autoincrement()) (app-owned; legacy-poreklo dobija /// Was:).
+//   - Novac/iznosi = Decimal, NIKAD Float. @db.Decimal(19,4). Zaokruživanje na
+//     hiljade (APR obrasci u 000 din) se radi u SERVISU na AOP nivou, NE u šemi.
+//   - Statusi/tipovi = String sa /// dozvoljenim vrednostima (ne Prisma enum).
+//   - Meki ref (cross-modul: users) = Int? BEZ @relation. Prava @relation samo
+//     unutar modula (FinancialStatement → FinancialStatementLine).
+//   - Vremena = @db.Timestamptz(6) (app-owned, §2.3).
+//   - Constraints eksplicitno: pk_ / fk_ / uq_ / idx_.
+//
+// @@map imena (nema kolizije sa schema.prisma — provereno grep-om, videti izveštaj):
+//   financial_statements · financial_statement_lines · balance_formula_definitions
+// =============================================================================
+
+
+// -----------------------------------------------------------------------------
+// FinancialStatement — završni račun / bilans (zaglavlje obračuna)
+// -----------------------------------------------------------------------------
+// Godišnji obračun jednog obrasca (bilans stanja / uspeha / statistički izveštaj).
+// periodYear = poslovna godina; amount3 (prethodna godina) živi na liniji.
+/// Was: ZR_Zaglavlje (zaglavlje završnog računa / bilansa za godinu).
+model FinancialStatement {
+  id              Int       @id(map: "pk_financial_statements") @default(autoincrement()) @map("id")
+  statementType   String    @map("statement_type") @db.VarChar(20) /// BALANCE_SHEET (BS/bilans stanja) | INCOME_STATEMENT (BU/bilans uspeha) | POPDV_ANNUAL (SI/statistički)
+  periodYear      Int       @map("period_year") // poslovna godina obračuna
+  status          String    @default("DRAFT") @map("status") @db.VarChar(20) /// DRAFT | FINALIZED
+  createdByUserId Int?      @map("created_by_user_id") // meki ref users.id
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  finalizedAt     DateTime? @map("finalized_at") @db.Timestamptz(6) // popuni se pri FINALIZED (immutable posle predaje)
+
+  lines FinancialStatementLine[]
+
+  // Najviše jedan obračun po (tip obrasca, godina).
+  @@unique([statementType, periodYear], map: "uq_financial_statements_type_year")
+  @@index([status], map: "idx_financial_statements_status")
+  @@map("financial_statements")
+}
+
+// -----------------------------------------------------------------------------
+// FinancialStatementLine — AOP pozicija bilansa (izračunata / ručno uneta)
+// -----------------------------------------------------------------------------
+// amount = izračunato GKEval-om iz bruto stanja, ILI ručni unos za MANUAL/OS
+// pozicije (klasa 0 — OS kod knjigovođe, formula=null). formula = izraz nad
+// kontima (D/P/PSD/PSP + wildcard) ili referencama na druge AOP (A<aop>).
+/// Was: ZR_Stavke (AOP pozicija bilansa: oznaka, iznos, formula, redosled).
+model FinancialStatementLine {
+  id          Int      @id(map: "pk_financial_statement_lines") @default(autoincrement()) @map("id")
+  statementId Int      @map("statement_id") // FK FinancialStatement
+  aop         String   @map("aop") @db.VarChar(20) // AOP oznaka (npr. "0071", "0401")
+  label       String?  @map("label") @db.VarChar(255) // naziv pozicije
+  amount      Decimal  @default(0) @map("amount") @db.Decimal(19, 4) // izračunato GKEval / ručni unos (MANUAL/OS)
+  formula     String?  @map("formula") // GKEval izraz nad kontima/AOP; null = MANUAL/OS (ručni unos)
+  ordinal     Int      @default(0) @map("ordinal") // redosled u obrascu
+
+  statement FinancialStatement @relation(fields: [statementId], references: [id], onDelete: Cascade, map: "fk_financial_statement_lines_statement")
+
+  @@unique([statementId, aop], map: "uq_financial_statement_lines_statement_aop")
+  @@index([statementId], map: "idx_financial_statement_lines_statement")
+  @@map("financial_statement_lines")
+}
+
+// -----------------------------------------------------------------------------
+// BalanceFormulaDefinition — GKEval definicija bilansnih pozicija (deklarativno)
+// -----------------------------------------------------------------------------
+// Kao POPDV_DEF za PDV, samo za bilanse: seed iz .MDB (ZR_AOP_Modla +
+// T_GK_IZV_Stavke, formule su binarne u MDB — dump pre seed-a, doc 37 §F).
+// formula sintaksa (doc 37 §F): D<konto>* / P<konto>* = promet dug/pot,
+// PSD<konto>* / PSP<konto>* = početno stanje, A<aop> = referenca na drugu AOP,
+// `*`/`?` = Like-wildcard nad kontom (NIKAD aritmetika). Evaluira Faza-7 GKEval.
+/// Was: ZR_AOP_Modla + T_GK_IZV_Stavke.Formula (deklarativna definicija bilansnih pozicija / GKEval formule).
+model BalanceFormulaDefinition {
+  id            Int    @id(map: "pk_balance_formula_definitions") @default(autoincrement()) @map("id")
+  statementType String @map("statement_type") @db.VarChar(20) /// BALANCE_SHEET | INCOME_STATEMENT | POPDV_ANNUAL (obrazac BS/BU/SI)
+  aop           String @map("aop") @db.VarChar(20) // AOP oznaka pozicije
+  label         String @map("label") @db.VarChar(255) // naziv pozicije
+  formula       String @map("formula") // GKEval izraz (D/P/PSD/PSP/A prefiksi + wildcard konta)
+  ordinal       Int    @default(0) @map("ordinal") // redosled u obrascu
+
+  @@unique([statementType, aop], map: "uq_balance_formula_definitions_type_aop")
+  @@index([statementType], map: "idx_balance_formula_definitions_type")
+  @@map("balance_formula_definitions")
+}

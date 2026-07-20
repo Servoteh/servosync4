@@ -1,0 +1,159 @@
+// =============================================================================
+// NACRT (DRAFT) — Faza 6: PDV / POPDV / KEPU (mesečni ciklus)
+// =============================================================================
+// STATUS: NACRT — samo tekst modela za pregled. NIJE deo schema.prisma, NIJE
+//         migrirano. Ne kopira se u schema.prisma bez potvrde (Negovan/Nesa) i
+//         acceptance gejta (K1: PDV prijava = BigBit do dinara, knjigovođa
+//         validira paralelno ≥1 pun period — PLAN_FAZA_6 §Odluke/§Rizici).
+//
+// Izvor:
+//   - docs/PLAN_FAZA_6_pdv-popdv-kepu.md  (§A KIF/KUF, §B POPDV engine, §C mesečni ciklus)
+//   - backend/docs/migration/18-gl-pdv-kontiranje-rekonstrukcija.md
+//       §3.1 R_Tarife (effective dating), §3.2 KIF/KUF punjenje (PDV_Uknjizi*),
+//       §3.3 POPDV_DEF (164 reda, deklarativni obrazac), §3.7 PDV_SemeKontaZaKnjizenje
+//
+// Kontekst (odluke iz gradnje 4.0):
+//   - Faza 2 GL (JournalEntry/LedgerEntry) ŽIVI — PDV se IZVODI iz ledger_entries
+//     (PDV konta 2700/2710/4700/4710/2740/2790…). VatLedgerEntry = izvedena
+//     evidencija (KIF/KUF), NE nov izvor istine.
+//   - TaxRate (/// Was: R_Tarife) ŽIVI (schema:126) — effective-dated skelet
+//     (5 kolona koje se SABIRAJU + validFrom/validTo + vatGroup) — treba resolver,
+//     NE dupliramo taj model ovde.
+//   - VatAccountMap NE postoji u schema.prisma (grep 19.07: samo komentar
+//     schema:2522 + seed _nacrt-4.0-konto-seed.ts vatAccountMapSeed). → uvodi se
+//     OVDE (Faza 6), seed je već spreman.
+//   - POPDV = deklarativni POPDV_DEF (164 reda) + safe formula eval (Faza-1 parser)
+//     + AOP agregacija. NULA reverse-inženjeringa — 1:1 iz podatka (doc 18 §3.3).
+//
+// Konvencije (BACKEND_RULES §1/§2):
+//   - id Int @default(autoincrement()) (app-owned; legacy-poreklo dobija /// Was:).
+//   - Novac/osnovice/PDV = Decimal, NIKAD Float. Novac @db.Decimal(19,4).
+//   - Statusi/direction/role = String sa /// dozvoljenim vrednostima (ne Prisma enum).
+//   - Meki ref (cross-modul / sync-cache: customers, journal_entries, users,
+//     accounts) = Int?/String? BEZ @relation. Prava @relation samo unutar modula
+//     (VatReturn → VatReturnLine).
+//   - Vremena = @db.Timestamptz(6) (app-owned, §2.3).
+//   - Constraints eksplicitno: pk_ / fk_ / uq_ / idx_.
+//
+// @@map imena (nema kolizije sa schema.prisma — provereno grep-om, videti izveštaj):
+//   vat_account_map · popdv_definitions · vat_returns · vat_return_lines · vat_ledger_entries
+// =============================================================================
+
+
+// -----------------------------------------------------------------------------
+// VatAccountMap — mapa PDV konta (koji je konto ulazni/izlazni PDV, po stopi/ulozi)
+// -----------------------------------------------------------------------------
+// NAPOMENA: NE postoji u schema.prisma (grep 19.07). Seed je već pripremljen u
+// _nacrt-4.0-konto-seed.ts (vatAccountMapSeed, 23 reda). `account` je meki ref na
+// Account.code (schema:accounts) — BEZ @relation (Account je ŽIV, dodaje se
+// inverzna strana pri aktivaciji ako se poželi, ali meki ref je dovoljan).
+/// Was: PDV_SemeKontaZaKnjizenje (konto → PDV smer/uloga; doc 18 §3.7).
+/// Registar: koji konto nosi ulazni (pretporez) / izlazni (obaveza) PDV, po stopi i ulozi.
+/// Osnov za izvođenje KIF/KUF i POPDV iz ledger_entries.
+model VatAccountMap {
+  account   String  @id(map: "pk_vat_account_map") @map("account") @db.VarChar(10) // Konto (meki ref Account.code)
+  name      String? @map("name") @db.VarChar(255) // opis konta (radi provere; autoritet je Account.description)
+  direction String  @map("direction") @db.VarChar(10) /// input | output  — pretporez (ulazni) / obaveza (izlazni)
+  rate      Int?    @map("rate") // nominalna stopa (20/10); null za transit/uplatni konto (2790/4790)
+  role      String  @map("role") @db.VarChar(20) /// standard | avans | carinski | transit | ne-koristi-se
+
+  @@index([direction], map: "idx_vat_account_map_direction")
+  @@map("vat_account_map")
+}
+
+// -----------------------------------------------------------------------------
+// PopdvDefinition — deklarativna definicija POPDV obrasca (POPDV_DEF, 164 reda)
+// -----------------------------------------------------------------------------
+// Seed = 164 reda izvučena iz BB_POPDV_T.mdb ("Novi POPDV" 1.0.0, doc 18 §3.3).
+// Engine: učitaj definiciju → Eval formula preko Faza-1 safe parsera (rekurzivno
+// nad iznosima drugih AOP/oznaka, npr. 1.5=[1.1K1]+[1.2K1]+…) → agregacija po AOP.
+// NAPOMENA polje: legacy red ima do 4 kolone (K1..K4), svaka svoj Def/AOP.
+// Ovaj model je POJEDNOSTAVLJEN u zadatku (jedan aop/formula/vatSection/ordinal po
+// redu). Ako se seeduje ceo 4-kolonski oblik, K1..K4 se razbijaju na 4 reda
+// (aop = "<PDVOznaka>K<n>"). NESIGURNO — videti izveštaj (kolone K1..K4).
+/// Was: POPDV_DEF (deklarativna definicija POPDV obrasca, 164 reda).
+model PopdvDefinition {
+  id         Int     @id(map: "pk_popdv_definitions") @default(autoincrement()) @map("id") // Rbr
+  aop        String  @map("aop") @db.VarChar(20) // AOP oznaka POPDV polja (PDVOznaka, npr. "3.1", "8а.2", "10.")
+  rowLabel   String? @map("row_label") @db.VarChar(255) // Opis/Header reda
+  formula    String? @map("formula") // KxDef — izraz nad kontima/drugim AOP; null = direktna vrednost
+  vatSection String  @map("vat_section") @db.VarChar(10) // Sekcija (23 sekcije: "3", "8а", "9а"…)
+  ordinal    Int     @default(0) @map("ordinal") // redosled u obrascu (Rbr)
+
+  @@index([vatSection], map: "idx_popdv_definitions_section")
+  @@index([aop], map: "idx_popdv_definitions_aop")
+  @@map("popdv_definitions")
+}
+
+// -----------------------------------------------------------------------------
+// VatReturn — PDV obračun za period (PPPDV / POPDV zaglavlje obračuna)
+// -----------------------------------------------------------------------------
+// Period = mesec ILI kvartal (obveznik bira; jedan od periodMonth/periodQuarter
+// je popunjen, drugi null). vatLiability = outputVat − inputVat (obaveza / povraćaj).
+/// Was: PDV_PPPDV / POPDV obračun (zaglavlje PDV obračuna za period).
+model VatReturn {
+  id              Int      @id(map: "pk_vat_returns") @default(autoincrement()) @map("id")
+  periodYear      Int      @map("period_year") // godina obračuna
+  periodMonth     Int?     @map("period_month") @db.SmallInt // 1..12 (mesečni obveznik); null ako kvartalni
+  periodQuarter   Int?     @map("period_quarter") @db.SmallInt // 1..4 (kvartalni obveznik); null ako mesečni
+  status          String   @default("DRAFT") @map("status") @db.VarChar(20) /// DRAFT | CALCULATED | SUBMITTED
+  outputVat       Decimal  @default(0) @map("output_vat") @db.Decimal(19, 4) // obaveza (izlazni PDV, 47x)
+  inputVat        Decimal  @default(0) @map("input_vat") @db.Decimal(19, 4)  // pretporez (ulazni PDV, 27x)
+  vatLiability    Decimal  @default(0) @map("vat_liability") @db.Decimal(19, 4) // outputVat − inputVat (za uplatu / povraćaj)
+  createdByUserId Int?     @map("created_by_user_id") // meki ref users.id
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  lines VatReturnLine[]
+
+  // Najviše jedan obračun po (godina, mesec, kvartal). NULL u Postgres unique ne
+  // sudara pa mesečni i kvartalni ne kolidiraju; poravnava se u servisu.
+  @@unique([periodYear, periodMonth, periodQuarter], map: "uq_vat_returns_period")
+  @@index([status], map: "idx_vat_returns_status")
+  @@map("vat_returns")
+}
+
+// -----------------------------------------------------------------------------
+// VatReturnLine — stavka PDV obračuna (rezultat eval POPDV formule po AOP)
+// -----------------------------------------------------------------------------
+/// Was: POPDV stavka obračuna (izračunata vrednost jednog AOP polja za period).
+model VatReturnLine {
+  id          Int      @id(map: "pk_vat_return_lines") @default(autoincrement()) @map("id")
+  vatReturnId Int      @map("vat_return_id") // FK VatReturn
+  aop         String   @map("aop") @db.VarChar(20) // AOP oznaka (PopdvDefinition.aop)
+  amount      Decimal  @default(0) @map("amount") @db.Decimal(19, 4) // rezultat eval formule za period
+  computedAt  DateTime @default(now()) @map("computed_at") @db.Timestamptz(6)
+
+  vatReturn VatReturn @relation(fields: [vatReturnId], references: [id], onDelete: Cascade, map: "fk_vat_return_lines_return")
+
+  @@unique([vatReturnId, aop], map: "uq_vat_return_lines_return_aop")
+  @@index([vatReturnId], map: "idx_vat_return_lines_return")
+  @@map("vat_return_lines")
+}
+
+// -----------------------------------------------------------------------------
+// VatLedgerEntry — KIF/KUF stavka (knjiga izlaznih/ulaznih faktura)
+// -----------------------------------------------------------------------------
+// Izvedena evidencija iz ledger_entries preko VatAccountMap; sourceJournalEntryId
+// je meki ref (idempotencija punjenja = servis + parcijalni WHERE, kao u Fazi 2).
+// direction diskriminira knjigu: input = KUF (ulazne), output = KIF (izlazne).
+/// Was: T_PDV_IF + T_PDV_UF (KIF/KUF — knjiga izlaznih/ulaznih faktura, spojene direction diskriminatorom).
+model VatLedgerEntry {
+  id                  Int      @id(map: "pk_vat_ledger_entries") @default(autoincrement()) @map("id")
+  direction           String   @map("direction") @db.VarChar(10) /// input (KUF) | output (KIF)
+  documentNumber      String   @map("document_number") @db.VarChar(30) // broj fakture/dokumenta
+  partnerId           Int?     @map("partner_id") // meki ref customers.id (komitent)
+  documentDate        DateTime @map("document_date") @db.Timestamptz(6) // datum dokumenta
+  taxPeriodYear       Int      @map("tax_period_year") // period kome PDV pripada (DatPorPerioda ≠ datum dok)
+  taxPeriodMonth      Int      @map("tax_period_month") @db.SmallInt // 1..12
+  vatBase             Decimal  @default(0) @map("vat_base") @db.Decimal(19, 4) // osnovica
+  vatAmount           Decimal  @default(0) @map("vat_amount") @db.Decimal(19, 4) // iznos PDV
+  vatRateCode         String?  @map("vat_rate_code") @db.VarChar(5) // meki ref TaxRate.code (stopa)
+  sourceJournalEntryId Int?    @map("source_journal_entry_id") // meki ref journal_entries.id (poreklo, idempotencija)
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  // Izveštaj/izvoz KIF/KUF po periodu (§A Quick win: suma osnovica/PDV po grupi).
+  @@index([taxPeriodYear, taxPeriodMonth, direction], map: "idx_vat_ledger_entries_period")
+  @@index([partnerId], map: "idx_vat_ledger_entries_partner")
+  @@index([sourceJournalEntryId], map: "idx_vat_ledger_entries_source")
+  @@map("vat_ledger_entries")
+}

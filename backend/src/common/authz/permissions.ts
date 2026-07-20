@@ -57,8 +57,80 @@ export const PERMISSIONS = {
   LOKACIJE_LABELS: "lokacije.labels",
   // MRP / Nabavka
   MRP_READ: "mrp.read",
+  // Nabavka — 4.0 Traka B (zahtev → upit dobavljaču → narudžbenica → prijem).
+  // read = svi prijavljeni; write = administratori nabavke/prodaje + šefovi + admin;
+  // approve = nabavka odobrava zahtev (operativni tok). Row-politika u pravu dolazi uz auth roljne.
+  NABAVKA_READ: "nabavka.read",
+  NABAVKA_WRITE: "nabavka.write",
+  NABAVKA_APPROVE: "nabavka.approve",
+  // Fakturisanje / prodaja — 4.0 Faza 5 §A (izlazni računi: predračun → carry-over → knjiženje).
+  // read = uvid u račune/predračune; write = kreiranje predračuna + prepis PROF→IFR (prodaja);
+  // post = knjiženje računa u GK (rezervacija broja + nalog); approve = odobrenje pre slanja.
+  // Row-politika u pravu dolazi uz auth roljne (prodaja/finansije + admin).
+  SALES_READ: "sales.read",
+  SALES_WRITE: "sales.write",
+  SALES_POST: "sales.post",
+  SALES_APPROVE: "sales.approve",
+  // Priprema plaćanja / virmani — 4.0 Faza 4 §C (dospele obaveze iz GK →
+  // PaymentOrder → FX TXT export). read = uvid u dospele obaveze + naloge;
+  // prepare = kreiranje/potpis naloga (DEDUP protiv dvostrukog plaćanja);
+  // export = izvoz u banku (FX TXT) + oznaka exportedAt. Row-politika u pravu
+  // dolazi uz auth roljne (finansije/knjigovodstvo + admin).
+  PLACANJA_READ: "placanja.read",
+  PLACANJA_PREPARE: "placanja.prepare",
+  PLACANJA_EXPORT: "placanja.export",
+  // Glavna knjiga — 4.0 Faza 2 (dnevnik naloga + kartica konta; knjiženje radi posting engine).
+  GL_READ: "gl.read",
+  // Robno / magacin — 4.0 Faza 3 (robni dokumenti, kalkulacija landed cost, nivelacija, lager).
+  // read = uvid u robne dokumente/lager; write = kreiranje/kalkulacija; post = knjiženje u GK.
+  ROBNO_READ: "robno.read",
+  ROBNO_WRITE: "robno.write",
+  ROBNO_POST: "robno.post",
+  // Izvodi (bankovni izvodi) — 4.0 Faza 4 §B (uvoz TXT fiksne kolone → uparivanje → auto-knjiženje).
+  // read = uvid u izvode i stavke; import = upload/parse TXT + preview + uparivanje;
+  // post = auto-knjiženje u GK (banka↔analitika) + označavanje POSTED. Row-politika uz auth roljne.
+  IZVODI_READ: "izvodi.read",
+  IZVODI_IMPORT: "izvodi.import",
+  IZVODI_POST: "izvodi.post",
+  // Saldakonti / plaćanja — 4.0 Faza 4 (otvorene stavke, aging, uparivanje, kompenzacija).
+  // Izveden pogled nad glavnom knjigom (ledger_entries) + oznaka zatvaranja na redovima.
+  //   read      = pregled otvorenih stavki / aging (naplata, finansije)
+  //   reconcile = uparivanje/razvezivanje + kreiranje kompenzacije (write nad zatvaranjem GK)
+  // Konkretne role se dodeljuju u role-permissions pri aktivaciji (finansije/knjigovodstvo/admin).
+  SALDAKONTI_READ: "saldakonti.read",
+  SALDAKONTI_RECONCILE: "saldakonti.reconcile",
+  // SEF e-fakture (izlazne) — 4.0 Faza 5 §B (doc 07 §8/§9.1).
+  // Operativni tok (Nenad 18.07): slanje/storno izlaznih = prodaja (administratori
+  // + šef); pregled outbox-a = admin nabavke/prodaje + šefovi; admin sve.
+  //   read = uvid u outbox (lista + status polling GET)
+  //   send = enqueue + slanje UBL-a na SEF (prodaja)
+  //   cancel = storno/otkazivanje na SEF-u sa guard-om (prodaja)
+  SEF_READ: "sef.read",
+  SEF_SEND: "sef.send",
+  SEF_CANCEL: "sef.cancel",
+  // Završni račun / bilansi — 4.0 Faza 7 (bruto bilans, bilans stanja/uspeha, APR).
+  // Izveden pogled nad glavnom knjigom (ledger_entries) preko GKEval formula-engine-a.
+  //   read    = uvid u bruto bilans i sačuvane obračune (finansije/knjigovodstvo)
+  //   compute = pokretanje obračuna bilansa stanja/uspeha (kreira FinancialStatement)
+  //   export  = generisanje APR eFI XML (FiForma BS/BU/SI) iz sačuvanog obračuna
+  // Row-politika dolazi uz auth roljne (finansije/knjigovodstvo + admin).
+  ZR_READ: "zr.read",
+  ZR_COMPUTE: "zr.compute",
+  ZR_EXPORT: "zr.export",
+  // PDV / POPDV — 4.0 Faza 6 (KIF/KUF knjige, POPDV obračun, PPDV prijava).
+  // Izvedena PDV evidencija iz glavne knjige (ledger_entries) preko VatAccountMap.
+  //   read    = uvid u KIF/KUF knjige + PDV obračune (knjigovodstvo/finansije)
+  //   compute = pokretanje POPDV obračuna za period (kreira VatReturn + linije)
+  // Konkretne role se dodeljuju u role-permissions pri aktivaciji (knjigovodstvo/admin).
+  PDV_READ: "pdv.read",
+  PDV_COMPUTE: "pdv.compute",
   // Šifarnici / pregledi (komitenti, predmeti)
   DIRECTORY_READ: "directory.read",
+  // Predmeti write-path + RFQ kupca — 4.0 Traka B (2.0 postaje master za predmete).
+  // write = poslovni administrator kreira/menja predmet; rfq read/write = prodaja.
+  PROJECTS_WRITE: "projects.write",
+  RFQ_READ: "rfq.read",
+  RFQ_WRITE: "rfq.write",
   // Sync administracija
   SYNC_RUN: "sync.run",
   SYNC_READ: "sync.read",

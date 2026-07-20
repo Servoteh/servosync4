@@ -38,6 +38,19 @@ import { OdrzavanjeModule } from "./modules/odrzavanje/odrzavanje.module";
 import { EnergetikaModule } from "./modules/energetika/energetika.module";
 import { LocationsModule } from "./modules/locations/locations.module";
 import { KadrovskaModule } from "./modules/kadrovska/kadrovska.module";
+import { NabavkaModule } from "./modules/nabavka/nabavka.module";
+import { ProjectsWriteModule } from "./modules/projects-write/projects-write.module";
+import { PostingModule } from "./modules/gl/posting/posting.module";
+import { RobnoModule } from "./modules/robno/robno.module";
+import { SaldakontiModule } from "./modules/saldakonti/saldakonti.module";
+import { IzvodiModule } from "./modules/izvodi/izvodi.module";
+import { PlacanjaModule } from "./modules/placanja/placanja.module";
+import { SalesModule } from "./modules/sales/sales.module";
+import { SefModule } from "./modules/sales/sef/sef.module";
+import { SalesPrintModule } from "./modules/sales/print/sales-print.module";
+import { PdvModule } from "./modules/pdv/pdv.module";
+import { ZavrsniModule } from "./modules/zavrsni/zavrsni.module";
+import { GlModule } from "./modules/gl/gl.module";
 
 @Module({
   imports: [
@@ -54,6 +67,10 @@ import { KadrovskaModule } from "./modules/kadrovska/kadrovska.module";
     PdmModule,
     DirectoryModule,
     HandoversModule,
+    // Nabavka (4.0 Traka B — zahtev → upit dobavljaču → narudžbenica → prijem)
+    NabavkaModule,
+    // Predmeti write-path + RFQ kupca (4.0 Traka B — 2.0 master za predmete)
+    ProjectsWriteModule,
     PartLocationsModule,
     CncProgramsModule,
     // Kontrola kvaliteta (K1 — evidencija škart/dorada; MODULE_SPEC_kontrola_kvaliteta §4/§7).
@@ -87,6 +104,25 @@ import { KadrovskaModule } from "./modules/kadrovska/kadrovska.module";
     LocationsModule,
     // 3.0 TALAS G — Kadrovska/HR (MODULE_SPEC_kadrovska_30.md §0); PII + zarade.
     KadrovskaModule,
+    // 4.0 Faza 3 — Robno/magacin (kalkulacija landed cost + nivelacija/uprosečavanje, doc 39).
+    RobnoModule,
+    // 4.0 Faza 2/3 — GL auto-kontiranje robnog dokumenta (StockDocument → nalog GK).
+    PostingModule,
+    // 4.0 Faza 4 — Saldakonti (otvorene stavke/aging/reconcile/kompenzacija),
+    // Izvodi (TXT import → auto-knjiženje), Priprema plaćanja (virmani + FX TXT export).
+    SaldakontiModule,
+    IzvodiModule,
+    PlacanjaModule,
+    // 4.0 Faza 5 — Fakturisanje (izlazni računi PROF→IFR + knjiženje), SEF e-fakture (UBL), štampa/mail.
+    SalesModule,
+    SefModule,
+    SalesPrintModule,
+    // 4.0 Faza 2 — Glavna knjiga READ (dnevnik naloga + kartica konta).
+    GlModule,
+    // 4.0 Faza 6 — PDV / POPDV / KEPU (obračun iz glavne knjige, KIF/KUF).
+    PdvModule,
+    // 4.0 Faza 7 — Završni račun / bilansi (GKEval formule nad saldima konta).
+    ZavrsniModule,
   ],
   controllers: [AppController],
   providers: [

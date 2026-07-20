@@ -12,6 +12,7 @@ import { PlanMontazeController } from "../src/modules/plan-montaze/plan-montaze.
 import { PlanMontazeService } from "../src/modules/plan-montaze/plan-montaze.service";
 import { PlanProizvodnjeController } from "../src/modules/plan-proizvodnje/plan-proizvodnje.controller";
 import { PlanProizvodnjeService } from "../src/modules/plan-proizvodnje/plan-proizvodnje.service";
+import { PlanProizvodnjeReadService } from "../src/modules/plan-proizvodnje/plan-proizvodnje-read.service";
 import { PracenjeController } from "../src/modules/pracenje/pracenje.controller";
 import { PracenjeService } from "../src/modules/pracenje/pracenje.service";
 import { PracenjeReadService } from "../src/modules/pracenje/pracenje-read.service";
@@ -94,6 +95,23 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     "drawingSignUrl",
     "bigtehnDrawingSignUrl",
   ]);
+  // F5b: read sloj plan-proizvodnje preseljen u `PlanProizvodnjeReadService`
+  // (2.0 core PG tabele umesto sy15 mosta). Kontroler ga inject-uje kao 2. arg.
+  const ppReadMock = mk([
+    "machines",
+    "operations",
+    "operationsAll",
+    "operationsSearch",
+    "cooperation",
+    "cooperationGroups",
+    "reassignAudit",
+    "drawings",
+    "techProcedure",
+    "drawingSignUrl",
+    "bigtehnDrawingSignUrl",
+    "streamDrawing",
+    "streamBigtehnDrawing",
+  ]);
   // READ sloj (F1) — 2.0 tabele, `PracenjeReadService`.
   const pracenjeReadMock = mk([
     "portfolio",
@@ -138,10 +156,16 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
         PracenjeController,
       ],
       providers: [
-        { provide: PrismaService, useValue: { userPermissionOverride: { findUnique: async () => null } } },
-        
+        {
+          provide: PrismaService,
+          useValue: {
+            userPermissionOverride: { findUnique: async () => null },
+          },
+        },
+
         { provide: PlanMontazeService, useValue: montazaMock },
         { provide: PlanProizvodnjeService, useValue: ppMock },
+        { provide: PlanProizvodnjeReadService, useValue: ppReadMock },
         { provide: PracenjeService, useValue: pracenjeMock },
         { provide: PracenjeReadService, useValue: pracenjeReadMock },
         { provide: PracenjeAkcijeSy15Service, useValue: pracenjeAkcijeMock },
@@ -254,9 +278,12 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
   // ---------- Plan proizvodnje — plan_proizvodnje.read (gated) ----------
 
   describe("Plan proizvodnje read — plan_proizvodnje.read (canAccessPlanProizvodnje)", () => {
-    it.each(PP_READ)("GET /plan-proizvodnje/machines → 200 za %s", async (role) => {
-      await get("/plan-proizvodnje/machines", role).expect(200);
-    });
+    it.each(PP_READ)(
+      "GET /plan-proizvodnje/machines → 200 za %s",
+      async (role) => {
+        await get("/plan-proizvodnje/machines", role).expect(200);
+      },
+    );
     it.each(PP_NO_READ)(
       "GET /plan-proizvodnje/machines → 403 za %s",
       async (role) => {
@@ -301,9 +328,12 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
   // ---------- Praćenje — pracenje.read (gated) ----------
 
   describe("Praćenje read — pracenje.read (canAccessPlanProizvodnje)", () => {
-    it.each(PRACENJE_READ)("GET /pracenje/portfolio → 200 za %s", async (role) => {
-      await get("/pracenje/portfolio", role).expect(200);
-    });
+    it.each(PRACENJE_READ)(
+      "GET /pracenje/portfolio → 200 za %s",
+      async (role) => {
+        await get("/pracenje/portfolio", role).expect(200);
+      },
+    );
     it.each(PRACENJE_NO_READ)(
       "GET /pracenje/portfolio → 403 za %s",
       async (role) => {
@@ -371,10 +401,9 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
       ).expect(200);
     });
     it("GET /pracenje/predmeti/7602/izvestaj?rootRn=1.5 → 400", async () => {
-      await get(
-        "/pracenje/predmeti/7602/izvestaj?rootRn=1.5",
-        "admin",
-      ).expect(400);
+      await get("/pracenje/predmeti/7602/izvestaj?rootRn=1.5", "admin").expect(
+        400,
+      );
     });
     it("GET /pracenje/prijave?workOrder=1.5&op=2 → 400; ?op=2.5 → 400", async () => {
       await get("/pracenje/prijave?workOrder=1.5&op=2", "admin").expect(400);
@@ -408,9 +437,12 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
 
   describe("Plan montaže PM CRUD — montaza.edit (C1 tim_lider; C2 hr/poslovni_admin NEMAJU)", () => {
     const body = { projectCode: "X", projectName: "Y" };
-    it.each(MONTAZA_EDIT)("POST /montaza/projects → 200 za %s", async (role) => {
-      await send("post", "/montaza/projects", role, body).expect(201);
-    });
+    it.each(MONTAZA_EDIT)(
+      "POST /montaza/projects → 200 za %s",
+      async (role) => {
+        await send("post", "/montaza/projects", role, body).expect(201);
+      },
+    );
     it.each(MONTAZA_NO_EDIT)(
       "POST /montaza/projects → 403 za %s",
       async (role) => {
@@ -420,11 +452,15 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     it("C1: tim_lider IMA edit (POST projects 201); C2: hr/poslovni_admin/viewer 403", async () => {
       await send("post", "/montaza/projects", "tim_lider", body).expect(201);
       await send("post", "/montaza/projects", "hr", body).expect(403);
-      await send("post", "/montaza/projects", "poslovni_admin", body).expect(403);
+      await send("post", "/montaza/projects", "poslovni_admin", body).expect(
+        403,
+      );
       await send("post", "/montaza/projects", "viewer", body).expect(403);
     });
     it("PATCH/DELETE projects + work-packages + phases → montaza.edit (tim_lider 200, viewer 403)", async () => {
-      await send("patch", `/montaza/projects/${UUID}`, "tim_lider", {}).expect(200);
+      await send("patch", `/montaza/projects/${UUID}`, "tim_lider", {}).expect(
+        200,
+      );
       await send("delete", `/montaza/projects/${UUID}`, "viewer").expect(403);
       await send("post", "/montaza/work-packages", "tim_lider", {
         projectId: UUID,
@@ -454,7 +490,9 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
       },
     );
     it("monter (pogon) kreira izveštaj (201) i AI-generate (201); user 403", async () => {
-      await send("post", "/montaza/reports", "monter", { id: UUID }).expect(201);
+      await send("post", "/montaza/reports", "monter", { id: UUID }).expect(
+        201,
+      );
       await send("post", "/montaza/reports/ai-generate", "monter", {
         tekst: "x",
       }).expect(201);
@@ -463,7 +501,12 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
       }).expect(403);
     });
     it("PATCH /montaza/reports/:id/predmet → 200 monter (autor-scope u DB)", async () => {
-      await send("patch", `/montaza/reports/${UUID}/predmet`, "monter", {}).expect(200);
+      await send(
+        "patch",
+        `/montaza/reports/${UUID}/predmet`,
+        "monter",
+        {},
+      ).expect(200);
     });
   });
 
@@ -490,9 +533,12 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
 
   describe("Plan proizvodnje write — plan_proizvodnje.edit", () => {
     const ov = { workOrderId: "1", lineId: "1" };
-    it.each(PP_EDIT)("POST /plan-proizvodnje/overlays → 201 za %s", async (role) => {
-      await send("post", "/plan-proizvodnje/overlays", role, ov).expect(201);
-    });
+    it.each(PP_EDIT)(
+      "POST /plan-proizvodnje/overlays → 201 za %s",
+      async (role) => {
+        await send("post", "/plan-proizvodnje/overlays", role, ov).expect(201);
+      },
+    );
     it.each(PP_NO_EDIT)(
       "POST /plan-proizvodnje/overlays → 403 za %s",
       async (role) => {
@@ -501,11 +547,15 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     );
     it("urgency PUT/DELETE + drawings POST/DELETE + reorder → edit (pm 200, viewer 403)", async () => {
       await send("put", "/plan-proizvodnje/urgency/9400", "pm", {}).expect(200);
-      await send("delete", "/plan-proizvodnje/urgency/9400", "viewer").expect(403);
+      await send("delete", "/plan-proizvodnje/urgency/9400", "viewer").expect(
+        403,
+      );
       await send("post", "/plan-proizvodnje/overlays/reorder", "pm", {
         items: [{ workOrderId: "1", lineId: "1" }],
       }).expect(201);
-      await send("delete", "/plan-proizvodnje/drawings/5", "viewer").expect(403);
+      await send("delete", "/plan-proizvodnje/drawings/5", "viewer").expect(
+        403,
+      );
     });
     it("overlays validacija: workOrderId '1.5' → 400 (digits), '1' → 201 (pm)", async () => {
       await send("post", "/plan-proizvodnje/overlays", "pm", {
@@ -549,18 +599,38 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     it.each(PP_KOOP)(
       "POST /plan-proizvodnje/cooperation/groups → 201 za %s",
       async (role) => {
-        await send("post", "/plan-proizvodnje/cooperation/groups", role, g).expect(201);
+        await send(
+          "post",
+          "/plan-proizvodnje/cooperation/groups",
+          role,
+          g,
+        ).expect(201);
       },
     );
     it.each(PP_NO_KOOP)(
       "POST /plan-proizvodnje/cooperation/groups → 403 za %s",
       async (role) => {
-        await send("post", "/plan-proizvodnje/cooperation/groups", role, g).expect(403);
+        await send(
+          "post",
+          "/plan-proizvodnje/cooperation/groups",
+          role,
+          g,
+        ).expect(403);
       },
     );
     it("pm/menadzment imaju edit ali NE koop_admin → grupe 403", async () => {
-      await send("post", "/plan-proizvodnje/cooperation/groups", "pm", g).expect(403);
-      await send("post", "/plan-proizvodnje/cooperation/groups", "menadzment", g).expect(403);
+      await send(
+        "post",
+        "/plan-proizvodnje/cooperation/groups",
+        "pm",
+        g,
+      ).expect(403);
+      await send(
+        "post",
+        "/plan-proizvodnje/cooperation/groups",
+        "menadzment",
+        g,
+      ).expect(403);
     });
   });
 
@@ -601,13 +671,17 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     it.each(PR_MANAGE)(
       "PUT /pracenje/predmeti/:id/override → 200 za %s",
       async (role) => {
-        await send("put", "/pracenje/predmeti/7602/override", role, ov).expect(200);
+        await send("put", "/pracenje/predmeti/7602/override", role, ov).expect(
+          200,
+        );
       },
     );
     it.each(PR_NO_MANAGE)(
       "PUT /pracenje/predmeti/:id/override → 403 za %s",
       async (role) => {
-        await send("put", "/pracenje/predmeti/7602/override", role, ov).expect(403);
+        await send("put", "/pracenje/predmeti/7602/override", role, ov).expect(
+          403,
+        );
       },
     );
     it("pm ima pracenje.edit ali NE manage → override 403, aktivnost 201", async () => {
@@ -651,14 +725,19 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
 
   describe("Route ordering + validacija (R2 literali)", () => {
     it("GET /plan-proizvodnje/drawings/bigtehn/sign?code=X → 200 (NIJE drawings/:id/sign)", async () => {
-      await get("/plan-proizvodnje/drawings/bigtehn/sign?code=1061228", "admin").expect(200);
+      await get(
+        "/plan-proizvodnje/drawings/bigtehn/sign?code=1061228",
+        "admin",
+      ).expect(200);
     });
     it("GET /plan-proizvodnje/drawings/5/sign → 200 (ParseIntPipe), /abc/sign → 400", async () => {
       await get("/plan-proizvodnje/drawings/5/sign", "viewer").expect(200);
       await get("/plan-proizvodnje/drawings/abc/sign", "viewer").expect(400);
     });
     it("GET /pracenje/crtez/sign?code=X → 200 (read); export-log POST → 200 (read)", async () => {
-      await get("/pracenje/crtez/sign?code=1061228", "cnc_operater").expect(200);
+      await get("/pracenje/crtez/sign?code=1061228", "cnc_operater").expect(
+        200,
+      );
       await send("post", "/pracenje/export-log", "viewer", {
         tab: "operativni_plan",
       }).expect(201);
