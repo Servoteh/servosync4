@@ -130,9 +130,16 @@ Napomene:
 
 | Osoba | Naziv u sistematizaciji | Kanonska rola 2.0 | Scope / dodatno |
 |---|---|---|---|
-| **Miljan Nikodijević** | Rukovodilac proizvodnih operacija i tehnologije | **`SEF`** | proizvodnja + tehnologija (glavni ŠEF proizvodnog toka) |
+| **Miljan Nikodijević** | Rukovodilac proizvodnih operacija i tehnologije | **`MENADZMENT`** | proizvodnja + tehnologija; scope = pododseci koje vodi (`managed_sub_department_ids`) |
 | **Nikola Ninković** | Šef mašinske obrade | **`MENADZMENT`** | šef CELE mašinske obrade; nema poseban scope (potvrda Nenad 8.7) |
 | **Milorad Jerotić** | Gl. mašinski inž. + Rukovodilac inženjeringa; **finalni potpisnik** | **`PROJEKTANT_VODJA`** + flag **`finalni_potpisnik`** | finalno odobrenje nacrta/primopredaje |
+
+> **Revizija 2026-07-20 (Nenad):** Miljan prebačen `SEF` → **`MENADZMENT`** (sa dodeljenim
+> `managed_sub_department_ids`). Razlog: rukovodilac treba da odobrava GO SVOM timu (paritet 1.0),
+> a cela skop-mašinerija (`current_user_can_manage_vacreq` / `current_user_manages_employee` /
+> `hr_vacreq_approve` dvostepeno) prepoznaje `menadzment` + pododseke, a NE `sef`. Time je usklađen
+> sa Nikolom (isti profil „scoped šef") i sa V1 pojednostavljenjem ispod. Prethodna dodela (`SEF`)
+> nije davala nikakva `kadrovska.*` prava → Miljan nije mogao da priđe odobravanju GO.
 
 > **V1 pojednostavljenje:** u ServoSync 1.0 su sva trojica `menadzment`. Prihvatljivo je da u 2.0 V1
 > ostanu `MENADZMENT` (uvid+write), a granularizacija na `SEF`/`PROJEKTANT_VODJA` + `finalni_potpisnik`
@@ -292,8 +299,10 @@ kanal pristupa bazi (BI alati, drugi servisi). → otvoreno pitanje §7.4.
 4. **PG RLS** → ✅ **NE sada** — samo NestJS guardovi + query-scoping (pravi PG RLS eventualno u 3.0).
 5. **`MENADZMENT`** → ✅ **Uvid + write** (paritet sa 1.0), ne samo read.
 6. **Imenovanje/mapiranje ljudi** → ✅ **iz sistematizacije 2026** (§2 dopunjen):
-   - **Miljan Nikodijević** (*Rukovodilac proizvodnih operacija i tehnologije*) → **`SEF`** (proizvodnja/tehnologija).
-   - **Nikola Ninković** (*Šef mašinske obrade*) → **`SEF`** (isti rola, scope = mašinska obrada / radna jedinica).
+   - **Miljan Nikodijević** (*Rukovodilac proizvodnih operacija i tehnologije*) → **`MENADZMENT`**
+     (proizvodnja/tehnologija; scope = pododseci koje vodi). *Rev. 2026-07-20: prebačen sa `SEF` da bi
+     mogao da odobrava GO svom timu — vidi belešku uz tabelu §2.1.*
+   - **Nikola Ninković** (*Šef mašinske obrade*) → **`MENADZMENT`** (scope = mašinska obrada / radna jedinica).
    - **Milorad Jerotić** (*Gl. mašinski inž. + Rukovodilac inženjeringa; **finalni potpisnik***) → **`PROJEKTANT_VODJA`**
      + **`finalni potpisnik` flag** (finalno odobrenje nacrta/primopredaje).
    - U 1.0 su svi **`MENADZMENT`** → prihvatljivo za V1 (svi MENADZMENT sa uvid+write), granularizacija (SEF/PROJEKTANT_VODJA) u V2.
