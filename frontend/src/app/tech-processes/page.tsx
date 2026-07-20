@@ -197,7 +197,7 @@ function PostupciPanel() {
             setQ(v);
             setPage(1);
           }}
-          placeholder="RN / crtež / naziv…"
+          placeholder="RN / crtež / naziv / nacrt / sklop…"
         />
       </div>
 
@@ -547,7 +547,7 @@ function GotovostPanel() {
             setQ(v);
             setPage(1);
           }}
-          placeholder="Ident, naziv, crtež…"
+          placeholder="RN / crtež / naziv / nacrt / sklop…"
         />
       </div>
 

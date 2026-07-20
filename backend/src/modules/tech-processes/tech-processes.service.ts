@@ -67,6 +67,24 @@ const CRITICAL_ORANGE_MAX_DAYS = 2;
  */
 const SHOP_TZ = "Europe/Belgrade";
 
+/**
+ * Status primopredaje RN-a „LANSIRAN" (`work_orders.handover_status_id = 3`) = deo je
+ * PUŠTEN u proizvodnju. Vrednost 1:1 iz `handovers.service.ts` `HANDOVER_STATUS.LAUNCHED`
+ * — lokalna kopija (bez cross-module importa, BACKEND_RULES §5). Koristi je pretraga
+ * po sklopu (A4): delovi sklopa ulaze u rezultat samo ako su pušteni.
+ */
+const HANDOVER_STATUS_LAUNCHED = 3;
+
+/**
+ * Guard-ovi za ekspanziju pretrage po nacrtu/sklopu (`expandSearchWorkOrderIds`):
+ * minimalna dužina `q`, cap crteža/RN-ova i čvorova BOM rekurzije. Držani nisko jer
+ * su to 3–4 mala indeksirana upita koja teku SINHRONO uz svaku pretragu.
+ */
+const SEARCH_EXPAND_MIN_LENGTH = 3;
+const SEARCH_EXPAND_DRAFT_LIMIT = 10;
+const SEARCH_EXPAND_WORK_ORDER_LIMIT = 1000;
+const SEARCH_EXPAND_BOM_NODE_CAP = 500;
+
 export interface ListTechProcessesQuery {
   page?: string;
   pageSize?: string;
@@ -323,20 +341,27 @@ export class TechProcessesService {
     // workOrderId IN (...). Zadržava kompatibilnost postojećeg query parametra.
     const ident = (query.q?.trim() || query.identNumber)?.trim();
     if (ident) {
-      const woMatches = await this.prisma.workOrder.findMany({
-        where: {
-          OR: [
-            { drawingNumber: { contains: ident, mode: "insensitive" } },
-            { partName: { contains: ident, mode: "insensitive" } },
-          ],
-        },
-        select: { id: true },
-        // Zaštita od ogromnog IN(...) — 1000 najskorijih RN-ova je više nego dovoljno
-        // za pretragu u pogonu (rezultat se dodatno stranira).
-        take: 1000,
-        orderBy: { id: "desc" },
-      });
-      const woIds = woMatches.map((w) => w.id);
+      // Dva izvora dodatnih work_order id-jeva: (1) crtež/naziv dela na RN-u (contains);
+      // (2) A4 ekspanzija po NACRTU primopredaje i po SKLOPU (nacrt-broj → crteži stavki
+      // → RN-ovi; sklop-broj → pušteni delovi kroz BOM). Oba pred-upita → OR na
+      // workOrderId IN (...). Zadržava kompatibilnost postojećeg query parametra.
+      const [woMatches, extraIds] = await Promise.all([
+        this.prisma.workOrder.findMany({
+          where: {
+            OR: [
+              { drawingNumber: { contains: ident, mode: "insensitive" } },
+              { partName: { contains: ident, mode: "insensitive" } },
+            ],
+          },
+          select: { id: true },
+          // Zaštita od ogromnog IN(...) — 1000 najskorijih RN-ova je više nego dovoljno
+          // za pretragu u pogonu (rezultat se dodatno stranira).
+          take: 1000,
+          orderBy: { id: "desc" },
+        }),
+        this.expandSearchWorkOrderIds(ident),
+      ]);
+      const woIds = [...new Set([...woMatches.map((w) => w.id), ...extraIds])];
       filter.OR = [
         { identNumber: { contains: ident, mode: "insensitive" } },
         ...(woIds.length ? [{ workOrderId: { in: woIds } }] : []),
@@ -412,6 +437,187 @@ export class TechProcessesService {
     return { data, meta: pageMeta(page, pageSize, total) };
   }
 
+  // ------------------------------------------------- A4 SEARCH EXPANSION
+
+  /**
+   * A4 pretraga „praćenja delova": za tekst `q` vraća DODATNE `work_orders.id`-jeve
+   * koje treba uključiti u rezultat (uz postojeći ident/crtež/naziv match), iz dva
+   * izvora — spaja ih i dedup-uje:
+   *
+   *  (a) NACRT primopredaje: `handover_drafts.draft_number ILIKE %q%` (npr.
+   *      G-yymmdd-nnn / D-...) → `handover_draft_items.drawing_id` → `drawings`
+   *      (id + broj) → RN-ovi tih crteža (`drawingId IN` ILI `drawingNumber IN`,
+   *      insensitive). Nacrt time postaje dostižan iz kucanja/RN-a.
+   *
+   *  (b) SKLOP: `drawings.drawing_number = q` (exact, insensitive, trim) → SVA deca
+   *      rekurzivno kroz `drawing_components` (ISTI izvor kao PDM BOM — `drawing_assemblies`
+   *      je namerno prazan/ignorisan, MODULE_SPEC_pdm Q1) sa cycle-guard-om (Set) i
+   *      cap-om čvorova → RN-ovi te dece FILTRIRANI na PUŠTENE (`handover_status_id = 3`).
+   *      Sam sklop je već pokriven postojećim `drawing_number` contains matchom.
+   *
+   * Prazno za `q.trim().length < 3` (kratki upiti su no-op — čuva performanse). Sve
+   * su 3–4 mala indeksirana upita; ne baca (best-effort proširenje pretrage).
+   */
+  private async expandSearchWorkOrderIds(q: string): Promise<number[]> {
+    const term = q.trim();
+    if (term.length < SEARCH_EXPAND_MIN_LENGTH) return [];
+
+    const [draftDrawings, assemblyChildIds] = await Promise.all([
+      this.searchDraftDrawings(term),
+      this.searchAssemblyChildDrawingIds(term),
+    ]);
+
+    // (a) NACRT → RN-ovi crteža stavki (bilo koji status). Poklapanje po drawingId
+    // ILI po broju crteža (insensitive) — legacy RN-ovi nemaju uvek popunjen drawingId.
+    const draftDrawingIds = uniqueIds(draftDrawings.map((d) => d.id));
+    const draftDrawingNumbers = [
+      ...new Set(
+        draftDrawings
+          .map((d) => d.drawingNumber.trim())
+          .filter((n) => n.length),
+      ),
+    ];
+    const draftWos =
+      draftDrawingIds.length || draftDrawingNumbers.length
+        ? await this.prisma.workOrder.findMany({
+            where: {
+              OR: [
+                ...(draftDrawingIds.length
+                  ? [{ drawingId: { in: draftDrawingIds } }]
+                  : []),
+                ...(draftDrawingNumbers.length
+                  ? [
+                      {
+                        drawingNumber: {
+                          in: draftDrawingNumbers,
+                          mode: Prisma.QueryMode.insensitive,
+                        },
+                      },
+                    ]
+                  : []),
+              ],
+            },
+            select: { id: true },
+            take: SEARCH_EXPAND_WORK_ORDER_LIMIT,
+            orderBy: { id: "desc" },
+          })
+        : [];
+
+    // (b) SKLOP → RN-ovi PUŠTENE dece (handover_status_id = 3). Deca su crteži
+    // (id-jevi); RN se poklapa po drawingId ILI po broju crteža (kao gore).
+    let assemblyWos: { id: number }[] = [];
+    if (assemblyChildIds.length) {
+      const childDrawings = await this.prisma.drawing.findMany({
+        where: { id: { in: assemblyChildIds } },
+        select: { id: true, drawingNumber: true },
+      });
+      const childNumbers = [
+        ...new Set(
+          childDrawings
+            .map((d) => d.drawingNumber.trim())
+            .filter((n) => n.length),
+        ),
+      ];
+      assemblyWos = await this.prisma.workOrder.findMany({
+        where: {
+          handoverStatusId: HANDOVER_STATUS_LAUNCHED,
+          OR: [
+            { drawingId: { in: assemblyChildIds } },
+            ...(childNumbers.length
+              ? [
+                  {
+                    drawingNumber: {
+                      in: childNumbers,
+                      mode: Prisma.QueryMode.insensitive,
+                    },
+                  },
+                ]
+              : []),
+          ],
+        },
+        select: { id: true },
+        take: SEARCH_EXPAND_WORK_ORDER_LIMIT,
+        orderBy: { id: "desc" },
+      });
+    }
+
+    return [
+      ...new Set([
+        ...draftWos.map((w) => w.id),
+        ...assemblyWos.map((w) => w.id),
+      ]),
+    ];
+  }
+
+  /**
+   * A4 (a): crteži stavki nacrta čiji `draft_number` sadrži `term` (ILIKE, cap na
+   * ~10 nacrta) — `handover_drafts` → `handover_draft_items.drawing_id` → `drawings`.
+   * Vraća (id, drawingNumber) parove za dalje poklapanje na RN-ove.
+   */
+  private async searchDraftDrawings(
+    term: string,
+  ): Promise<{ id: number; drawingNumber: string }[]> {
+    const drafts = await this.prisma.handoverDraft.findMany({
+      where: { draftNumber: { contains: term, mode: "insensitive" } },
+      select: { id: true },
+      take: SEARCH_EXPAND_DRAFT_LIMIT,
+      orderBy: { id: "desc" },
+    });
+    if (!drafts.length) return [];
+    const items = await this.prisma.handoverDraftItem.findMany({
+      where: { draftId: { in: drafts.map((d) => d.id) } },
+      select: { drawingId: true },
+    });
+    const drawingIds = uniqueIds(items.map((i) => i.drawingId));
+    if (!drawingIds.length) return [];
+    return this.prisma.drawing.findMany({
+      where: { id: { in: drawingIds } },
+      select: { id: true, drawingNumber: true },
+    });
+  }
+
+  /**
+   * A4 (b): SVA deca sklopa čiji je broj crteža tačno `term` (exact, insensitive) —
+   * rekurzivno kroz `drawing_components` (isti izvor kao PDM BOM). Cycle-guard je Set
+   * posećenih parent-a; cap čvorova (`SEARCH_EXPAND_BOM_NODE_CAP`) štiti od preduboke/
+   * široke sastavnice. Vraća id-jeve crteža-dece (bez samog sklopa). Prazno kad broj
+   * ne pogodi nijedan crtež ili sklop nema komponenti.
+   */
+  private async searchAssemblyChildDrawingIds(term: string): Promise<number[]> {
+    const roots = await this.prisma.drawing.findMany({
+      where: { drawingNumber: { equals: term, mode: "insensitive" } },
+      select: { id: true },
+    });
+    if (!roots.length) return [];
+
+    const visited = new Set<number>();
+    const children = new Set<number>();
+    let frontier = uniqueIds(roots.map((d) => d.id));
+    for (const id of frontier) visited.add(id);
+
+    while (
+      frontier.length &&
+      visited.size + children.size < SEARCH_EXPAND_BOM_NODE_CAP
+    ) {
+      const edges = await this.prisma.drawingComponent.findMany({
+        where: { parentDrawingId: { in: frontier } },
+        select: { childDrawingId: true },
+      });
+      const next: number[] = [];
+      for (const e of edges) {
+        const child = e.childDrawingId;
+        if (child <= 0 || visited.has(child)) continue; // cycle-guard
+        visited.add(child);
+        children.add(child);
+        next.push(child);
+        if (visited.size + children.size >= SEARCH_EXPAND_BOM_NODE_CAP) break;
+      }
+      frontier = next;
+    }
+
+    return [...children];
+  }
+
   /**
    * Batch: workOrderId → { tehnolog (work_orders.worker_id), crtež
    * (work_orders.drawing_number) }. Legacy redovi često imaju workOrderId 0 (veza
@@ -430,7 +636,9 @@ export class TechProcessesService {
       where: { id: { in: uniq } },
       select: { id: true, workerId: true, drawingNumber: true },
     });
-    const workers = await this.resolveWorkers(workOrders.map((w) => w.workerId));
+    const workers = await this.resolveWorkers(
+      workOrders.map((w) => w.workerId),
+    );
     for (const wo of workOrders) {
       const worker = workers.get(wo.workerId);
       if (worker) technologists.set(wo.id, worker);
@@ -582,7 +790,10 @@ export class TechProcessesService {
       const cacheKey = `${ref.drawingNumber ?? ""}|${ref.revision ?? ""}`;
       let drawing = cache.get(cacheKey);
       if (drawing === undefined) {
-        drawing = await this.resolveCardDrawing(ref.drawingNumber, ref.revision);
+        drawing = await this.resolveCardDrawing(
+          ref.drawingNumber,
+          ref.revision,
+        );
         cache.set(cacheKey, drawing);
       }
       map.set(key, drawing);
@@ -864,7 +1075,7 @@ export class TechProcessesService {
     // „Zastareo" = RN ima reviziju, postoji novija revizija tog crteža u bazi
     // (npr. došla novim XML-om/izmenom). Normalizacija prazno→"A", uppercase.
     const norm = (r: string | null | undefined) =>
-      ((r ?? "").trim().toUpperCase() || "A");
+      (r ?? "").trim().toUpperCase() || "A";
     const latestRevision = latest?.revision ?? null;
     const revisionStale =
       !!rev && latestRevision != null && norm(latestRevision) > norm(rev);
@@ -1055,11 +1266,19 @@ export class TechProcessesService {
     const projectId = Number.parseInt(query.projectId ?? "", 10);
     if (!Number.isNaN(projectId))
       conds.push(Prisma.sql`wo.project_id = ${projectId}`);
-    if (query.q) {
-      const like = `%${query.q}%`;
-      conds.push(
-        Prisma.sql`(wo.ident_number ILIKE ${like} OR wo.part_name ILIKE ${like} OR wo.drawing_number ILIKE ${like})`,
-      );
+    if (query.q?.trim()) {
+      const like = `%${query.q.trim()}%`;
+      // A4: uz ident/naziv/crtež contains, uključi i RN-ove iz NACRTA i puštene
+      // DELOVE SKLOPA (ista ekspanzija kao `list()`) preko `wo.id = ANY(...)`.
+      const extraIds = await this.expandSearchWorkOrderIds(query.q.trim());
+      const orParts: Prisma.Sql[] = [
+        Prisma.sql`wo.ident_number ILIKE ${like}`,
+        Prisma.sql`wo.part_name ILIKE ${like}`,
+        Prisma.sql`wo.drawing_number ILIKE ${like}`,
+      ];
+      if (extraIds.length)
+        orParts.push(Prisma.sql`wo.id = ANY(${extraIds}::int[])`);
+      conds.push(Prisma.sql`(${Prisma.join(orParts, " OR ")})`);
     }
     const whereSql = conds.length
       ? Prisma.sql`WHERE ${Prisma.join(conds, " AND ")}`
@@ -2142,7 +2361,10 @@ export class TechProcessesService {
    */
   async stopWorkById(id: number, body: StopWorkByIdBody, user?: AuthUser) {
     this.validateStopWorkById(body);
-    const worker = await this.resolveWorkerFromCardOrUser(body.workerCard, user);
+    const worker = await this.resolveWorkerFromCardOrUser(
+      body.workerCard,
+      user,
+    );
 
     // Postupak + RC pre transakcije: 404 i machine-access (kao stopWork, pre mutacije).
     const head = await this.prisma.techProcess.findUnique({
@@ -2277,7 +2499,10 @@ export class TechProcessesService {
       throw new BadRequestException(
         "Polje 'note' mora biti string do 500 karaktera.",
       );
-    const worker = await this.resolveWorkerFromCardOrUser(body.workerCard, user);
+    const worker = await this.resolveWorkerFromCardOrUser(
+      body.workerCard,
+      user,
+    );
 
     const head = await this.prisma.techProcess.findUnique({
       where: { id },
@@ -2340,7 +2565,9 @@ export class TechProcessesService {
       !Number.isInteger(body.pieceCount) ||
       body.pieceCount < 0
     )
-      errors.push("Polje 'pieceCount' mora biti ceo broj ≥ 0 (0 = samo vreme).");
+      errors.push(
+        "Polje 'pieceCount' mora biti ceo broj ≥ 0 (0 = samo vreme).",
+      );
     if (
       body?.note !== undefined &&
       (typeof body.note !== "string" || body.note.trim().length > 500)
@@ -2435,7 +2662,13 @@ export class TechProcessesService {
       tp.identNumber,
       tp.variant,
     );
-    return { tp: updated, planned, reachedPlan, prioritized, workOrderCompleted };
+    return {
+      tp: updated,
+      planned,
+      reachedPlan,
+      prioritized,
+      workOrderCompleted,
+    };
   }
 
   /**
@@ -3953,7 +4186,11 @@ export class TechProcessesService {
   ): Promise<boolean> {
     const rows = await tx.techProcess.findMany({
       where: { projectId, identNumber, variant },
-      select: { workCenterCode: true, isProcessFinished: true, pieceCount: true },
+      select: {
+        workCenterCode: true,
+        isProcessFinished: true,
+        pieceCount: true,
+      },
     });
     if (!rows.length) return false;
 

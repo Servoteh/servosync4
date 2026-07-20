@@ -253,11 +253,13 @@ function draftItemMatches(it: DraftItemDraft, filter: string): boolean {
 }
 
 /**
- * Malo „Otvori PDF" dugme uz stavku nacrta (prikazuje se samo kad crtež ima
- * uskladišten PDF). Isti obrazac kao bom-tree: async `openDrawingPdf`, sopstveni
- * loading/greška state po dugmetu, PDF se otvara u novom tabu (kroz JWT).
+ * Malo „Otvori PDF" dugme uz stavku nacrta. Isti obrazac kao bom-tree: async
+ * `openDrawingPdf`, sopstveni loading/greška state po dugmetu, PDF se otvara u
+ * novom tabu (kroz JWT). U formi se prikazuje samo kad crtež ima PDF; u detalju
+ * nacrta uvek stoji uz naziv, a `noPdf` ga onemogući (title „Nema PDF") kad
+ * backend javi da PDF ne postoji za tu reviziju.
  */
-function DraftItemPdfButton({ drawingId }: { drawingId: number }) {
+function DraftItemPdfButton({ drawingId, noPdf }: { drawingId: number; noPdf?: boolean }) {
   const [opening, setOpening] = useState(false);
   const [error, setError] = useState(false);
   async function open() {
@@ -275,10 +277,16 @@ function DraftItemPdfButton({ drawingId }: { drawingId: number }) {
     <button
       type="button"
       onClick={open}
-      disabled={opening}
-      title={error ? 'Greška pri otvaranju PDF-a — pokušaj ponovo' : 'Otvori PDF crteža'}
+      disabled={opening || noPdf}
+      title={
+        noPdf
+          ? 'Nema PDF'
+          : error
+            ? 'Greška pri otvaranju PDF-a — pokušaj ponovo'
+            : 'Otvori PDF crteža'
+      }
       aria-label="Otvori PDF"
-      className={`rounded-control border border-line p-1.5 hover:bg-surface-2 disabled:opacity-40 ${
+      className={`rounded-control border border-line p-1.5 hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent ${
         error ? 'text-status-danger' : 'text-ink-secondary'
       }`}
     >
@@ -815,7 +823,20 @@ function buildItemColumns(opts: {
         </span>
       ),
     },
-    { key: 'name', header: 'Naziv', render: (r) => r.drawing?.name || '—' },
+    {
+      key: 'name',
+      header: 'Naziv',
+      render: (r) => (
+        <span className="inline-flex items-center gap-1.5">
+          <span>{r.drawing?.name || '—'}</span>
+          {/* PDF crteža uz naziv (detalj nacrta): aktivno kad crtež ima PDF,
+              onemogućeno („Nema PDF") kad ga nema; skriveno bez razrešenog crteža. */}
+          {r.drawing && (
+            <DraftItemPdfButton drawingId={r.drawing.id} noPdf={r.drawing.hasPdf !== true} />
+          )}
+        </span>
+      ),
+    },
     {
       key: 'quantityDefined',
       header: 'Kol. definisana',

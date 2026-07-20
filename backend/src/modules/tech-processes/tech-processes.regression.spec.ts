@@ -56,7 +56,7 @@ function tpRow(over: Record<string, unknown> = {}) {
  * `$executeRaw` koje storno()/deleteEntry() koriste (nisu u osnovnom spec mock-u).
  */
 function prismaMock() {
-  const m: Record<string, unknown> = {
+  const m = {
     techProcess: {
       findUnique: jest.fn().mockResolvedValue(null),
       findFirst: jest.fn().mockResolvedValue(null),

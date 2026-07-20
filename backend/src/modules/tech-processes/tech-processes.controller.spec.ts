@@ -29,7 +29,7 @@ function makeController(opts: {
   createImpl?: () => Promise<unknown>;
   pdf?: { buffer: Buffer; fileName: string };
 }) {
-  const create = jest.fn(
+  const create = jest.fn<Promise<unknown>, [unknown]>(
     opts.createImpl ?? (() => Promise.resolve({ id: 1 })),
   );
   const getPdfContent = jest.fn().mockResolvedValue(
