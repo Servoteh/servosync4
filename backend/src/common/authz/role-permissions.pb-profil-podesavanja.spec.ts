@@ -17,7 +17,9 @@ describe("Talas D permission matrica (paritet 1.0 gate-ova)", () => {
   // (tačan skup koji D-petlja gađa). Deferred uloge (nabavka/kvalitet/…) NISU u mapi.
   const ACTIVE_ROLES = Object.keys(ROLE_PERMISSIONS) as RoleKey[];
   // Deferred/rezervisane bez modula (nisu u katalogu) — moraju biti default-deny svuda.
-  const NON_ACTIVE = ALL_ROLE_KEYS.filter((r) => !ACTIVE_ROLES.includes(r));
+  const NON_ACTIVE = ALL_ROLE_KEYS.filter(
+    (r) => !(ACTIVE_ROLES as string[]).includes(r),
+  );
 
   // pb_can_edit_tasks() paritet (§2.4.1: hr/poslovni_admin OSTAJU u edit-u — D7).
   const EDIT_ROLES = [

@@ -2565,7 +2565,7 @@ describe("TechProcessesService — overshoot (control uz potvrdu, finish TVRDO)"
     await expect(
       service.finish(700, {
         pieceCount: 60,
-        ...({ confirmOvershoot: true } as Record<string, never>),
+        ...({ confirmOvershoot: true } as unknown as Record<string, never>),
       }),
     ).rejects.toThrow("kucanje preko plana nije dozvoljeno");
     expect(prisma.techProcess.update).not.toHaveBeenCalled();
