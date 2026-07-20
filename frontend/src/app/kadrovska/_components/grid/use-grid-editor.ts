@@ -64,6 +64,13 @@ export interface GridEditor {
   applyTerenEntries: (
     entries: { empId: string; ymd: string; hours: number; sub: 'domestic' | 'foreign'; predmetBroj: string | null; predmetNaziv: string | null }[],
   ) => { applied: number; skipped: number };
+  /** Auto-unos iz kapije: upiše `hours` SAMO za potpuno prazne dane (dirty + AUTO
+   *  marker), preskoči dan sa bilo kojim postojećim unosom. Nikola verifikuje pa snima. */
+  applyAutoFill: (
+    entries: { empId: string; ymd: string; hours: number }[],
+  ) => { applied: number; skipped: number };
+  /** Da li je (empId,ymd) predložen auto-unosom (žuta AUTO oznaka dok se ne izmeni/snimi). */
+  isAuto: (empId: string, ymd: string) => boolean;
   applyCopyPrev: (empId: string, prevRowsByYmd: Map<string, WorkHours>) => void;
   applyPaste: (startEmpId: string, startYmd: string, startKind: CellKind, matrix: string[][], visibleEmpIds: string[]) => number;
   restore: (empId: string, ymd: string, vals: GridDelta) => void;
@@ -80,6 +87,7 @@ export function useGridEditor({ days, getDbRow, editable, isAdmin, onNopAttempt 
   const dirtyRef = useRef(new Map<string, GridDelta>());
   const rawRef = useRef(new Map<string, string>()); // `${empId}|${ymd}|${kind}` → tekst u toku unosa
   const errRef = useRef(new Set<string>()); // cellKey sa greškom
+  const autoRef = useRef(new Set<string>()); // gridDirtyKey → predloženo auto-unosom iz kapije
   const [version, setVersion] = useState(0);
   const [structRev, setStructRev] = useState(0);
   const revsRef = useRef<Record<string, number>>({});
@@ -208,6 +216,8 @@ export function useGridEditor({ days, getDbRow, editable, isAdmin, onNopAttempt 
     (empId: string, ymd: string, kind: CellKind, raw: string) => {
       const ck = `${empId}|${ymd}|${kind}`;
       rawRef.current.set(ck, raw);
+      // Ručna izmena skida AUTO oznaku — od tog trenutka je urednikov unos, ne predlog.
+      autoRef.current.delete(gridDirtyKey(empId, ymd));
       const parsed = gridParseCellText(raw);
       // nop guard za non-admin (reg ćelija)
       if (kind === 'reg' && parsed.kind === 'abs' && parsed.code === 'nop' && !isAdmin) {
@@ -322,6 +332,37 @@ export function useGridEditor({ days, getDbRow, editable, isAdmin, onNopAttempt 
     [effective, applyEdit, bumpStruct],
   );
 
+  const applyAutoFill = useCallback(
+    (entries: { empId: string; ymd: string; hours: number }[]) => {
+      let applied = 0;
+      let skipped = 0;
+      for (const en of entries) {
+        // „Samo prazni dani" (odluka): preskoči ako dan ima BILO šta — redovne/
+        // prekovremene/teren/2-mašine sate, odsustvo, ili već izmenjenu (dirty)
+        // ćeliju. Auto NIKAD ne gazi ručni rad ni raniji predlog.
+        const eff = effective(en.empId, en.ymd);
+        const nonEmpty =
+          eff.hours > 0 ||
+          eff.overtime_hours > 0 ||
+          eff.field_hours > 0 ||
+          eff.two_machine_hours > 0 ||
+          !!eff.absence_code;
+        // Preskoči i ako je urednik već dirao ćeliju (dirty red postoji) — čitamo
+        // ref direktno (isDirty je deklarisan niže; ista provera).
+        if (nonEmpty || dirtyRef.current.has(gridDirtyKey(en.empId, en.ymd))) {
+          skipped++;
+          continue;
+        }
+        applyEdit(en.empId, en.ymd, 'reg', { kind: 'num', value: en.hours });
+        autoRef.current.add(gridDirtyKey(en.empId, en.ymd));
+        applied++;
+      }
+      bumpStruct();
+      return { applied, skipped };
+    },
+    [effective, applyEdit, bumpStruct],
+  );
+
   const applyCopyPrev = useCallback(
     (empId: string, prevRowsByYmd: Map<string, WorkHours>) => {
       for (const d of days) {
@@ -389,6 +430,7 @@ export function useGridEditor({ days, getDbRow, editable, isAdmin, onNopAttempt 
   const refresh = useCallback(() => bumpStruct(), [bumpStruct]);
 
   const isDirty = useCallback((empId: string, ymd: string) => dirtyRef.current.has(gridDirtyKey(empId, ymd)), []);
+  const isAuto = useCallback((empId: string, ymd: string) => autoRef.current.has(gridDirtyKey(empId, ymd)), []);
   const cellError = useCallback((empId: string, ymd: string, kind: CellKind) => errRef.current.has(`${empId}|${ymd}|${kind}`), []);
   const hasErrors = useCallback(() => errRef.current.size > 0, []);
   const dirtyCount = useCallback(() => dirtyRef.current.size, []);
@@ -439,6 +481,7 @@ export function useGridEditor({ days, getDbRow, editable, isAdmin, onNopAttempt 
     dirtyRef.current.clear();
     rawRef.current.clear();
     errRef.current.clear();
+    autoRef.current.clear();
     revsRef.current = {};
     setRevs({});
     bumpStruct();
@@ -453,6 +496,7 @@ export function useGridEditor({ days, getDbRow, editable, isAdmin, onNopAttempt 
       dirty: dirtyRef.current,
       effective,
       isDirty,
+      isAuto,
       cellError,
       displayValue,
       onCellChange,
@@ -462,6 +506,7 @@ export function useGridEditor({ days, getDbRow, editable, isAdmin, onNopAttempt 
       fill8,
       clearRow,
       applyTerenEntries,
+      applyAutoFill,
       applyCopyPrev,
       applyPaste,
       restore,
@@ -480,6 +525,7 @@ export function useGridEditor({ days, getDbRow, editable, isAdmin, onNopAttempt 
       revs,
       effective,
       isDirty,
+      isAuto,
       cellError,
       displayValue,
       onCellChange,
@@ -489,6 +535,7 @@ export function useGridEditor({ days, getDbRow, editable, isAdmin, onNopAttempt 
       fill8,
       clearRow,
       applyTerenEntries,
+      applyAutoFill,
       applyCopyPrev,
       applyPaste,
       restore,

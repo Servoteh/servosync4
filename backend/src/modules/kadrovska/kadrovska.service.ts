@@ -185,7 +185,8 @@ export class KadrovskaService {
   private async reportSick(email: string, q: ReportQueryDto) {
     return this.withUserMapped(email, async (tx) => {
       const conds: Prisma.Sql[] = [Prisma.sql`absence_code = 'bo'`];
-      if (q.from) conds.push(Prisma.sql`work_date >= ${q.from.slice(0, 10)}::date`);
+      if (q.from)
+        conds.push(Prisma.sql`work_date >= ${q.from.slice(0, 10)}::date`);
       if (q.to) conds.push(Prisma.sql`work_date <= ${q.to.slice(0, 10)}::date`);
       const data = await tx.$queryRaw(Prisma.sql`
         WITH bo AS (
@@ -223,20 +224,21 @@ export class KadrovskaService {
    *  job_positions) + zaposleni sa grupišućim poljima; stablo sklapa FE. */
   private async reportOrg(email: string) {
     return this.withUserMapped(email, async (tx) => {
-      const [departments, subDepartments, jobPositions, employees] = await Promise.all([
-        tx.$queryRaw(
-          Prisma.sql`SELECT id, name, sort_order FROM departments ORDER BY sort_order, name`,
-        ),
-        tx.$queryRaw(
-          Prisma.sql`SELECT id, department_id, name, sort_order FROM sub_departments ORDER BY sort_order, name`,
-        ),
-        tx.$queryRaw(
-          Prisma.sql`SELECT id, department_id, sub_department_id, name, sort_order FROM job_positions ORDER BY sort_order, name`,
-        ),
-        tx.$queryRaw(Prisma.sql`
+      const [departments, subDepartments, jobPositions, employees] =
+        await Promise.all([
+          tx.$queryRaw(
+            Prisma.sql`SELECT id, name, sort_order FROM departments ORDER BY sort_order, name`,
+          ),
+          tx.$queryRaw(
+            Prisma.sql`SELECT id, department_id, name, sort_order FROM sub_departments ORDER BY sort_order, name`,
+          ),
+          tx.$queryRaw(
+            Prisma.sql`SELECT id, department_id, sub_department_id, name, sort_order FROM job_positions ORDER BY sort_order, name`,
+          ),
+          tx.$queryRaw(Prisma.sql`
           SELECT id, full_name, position, position_id, sub_department_id, department_id, is_active
             FROM v_employees_safe ORDER BY full_name`),
-      ]);
+        ]);
       return { data: { departments, subDepartments, jobPositions, employees } };
     });
   }
@@ -279,7 +281,8 @@ export class KadrovskaService {
    */
   private async reportOvertime(email: string, q: ReportQueryDto) {
     const period: Prisma.Sql[] = [];
-    if (q.from) period.push(Prisma.sql`work_date >= ${q.from.slice(0, 10)}::date`);
+    if (q.from)
+      period.push(Prisma.sql`work_date >= ${q.from.slice(0, 10)}::date`);
     if (q.to) period.push(Prisma.sql`work_date <= ${q.to.slice(0, 10)}::date`);
     const and = period.length
       ? Prisma.sql`AND ${Prisma.join(period, " AND ")}`
@@ -316,7 +319,8 @@ export class KadrovskaService {
    *  (subtype ≠ 'foreign') vs inostrani; dan = red sa field_hours > 0. */
   private async reportField(email: string, q: ReportQueryDto) {
     const conds: Prisma.Sql[] = [Prisma.sql`coalesce(field_hours, 0) > 0`];
-    if (q.from) conds.push(Prisma.sql`work_date >= ${q.from.slice(0, 10)}::date`);
+    if (q.from)
+      conds.push(Prisma.sql`work_date >= ${q.from.slice(0, 10)}::date`);
     if (q.to) conds.push(Prisma.sql`work_date <= ${q.to.slice(0, 10)}::date`);
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.$queryRaw(Prisma.sql`
@@ -389,7 +393,14 @@ export class KadrovskaService {
           LEFT JOIN agg a ON a.employee_id = e.id
           LEFT JOIN con c ON c.employee_id = e.id
          ORDER BY e.full_name`);
-      return { data: { months, periodStart, periodEnd: today, rows: this.numify(data) } };
+      return {
+        data: {
+          months,
+          periodStart,
+          periodEnd: today,
+          rows: this.numify(data),
+        },
+      };
     });
   }
 
@@ -745,6 +756,112 @@ export class KadrovskaService {
     });
   }
 
+  /**
+   * Predlozi auto-unosa iz kapije (kucanje → mesečni grid). READ-ONLY: NE piše
+   * ništa; vraća predlog redovnih sati za „regularne" PRAZNE dane koje urednik
+   * (Nikola) verifikuje pa snima kroz `grid/batch`.
+   *
+   * Izvor je `v_attendance_vs_grid` (kucanje već izvedeno u `v_attendance_daily`:
+   * dedup <60s, službeni izlaz = radno vreme, deterministički). „Regularan" dan =
+   *   - grid PRAZAN za taj dan (grid_covered=false, absence_code IS NULL) — odluka
+   *     „samo prazni dani": auto NIKAD ne dira ručni unos/odsustvo/raniji auto;
+   *   - ima ulaz I izlaz, bez zaboravljenog izlaza (first_in/last_out NOT NULL,
+   *     open_intervals=0);
+   *   - bez terena (grid_field_hours=0 — teren badge ≠ sati);
+   *   - prisustvo u opsegu [MIN,MAX] (parametri) → predlog = REGULAR_HOURS (8).
+   * Vikendi/praznici se preskaču (kucanje van rasporeda nije redovan rad — ide ručno).
+   *
+   * Zašto view a ne sirovi events: `v_attendance_vs_grid` je već SECURITY INVOKER
+   * (RLS „svoje ∨ attendance"); ide kroz withUserMapped (SET LOCAL ROLE
+   * authenticated) → isti row-scope kao ostali prisustvo endpointi.
+   */
+  async gridAutoFillSuggestions(email: string, q: GridQueryDto) {
+    const now = new Date();
+    const year = q.year ?? now.getUTCFullYear();
+    const month = q.month ?? now.getUTCMonth() + 1;
+    const start = `${year}-${String(month).padStart(2, "0")}-01`;
+    const endExcl = `${month === 12 ? year + 1 : year}-${String(month === 12 ? 1 : month + 1).padStart(2, "0")}-01`;
+    // Parametri „regularnog" dana (odluka: standardan ~8h ±tolerancija).
+    const REGULAR_HOURS = 8;
+    const PRESENCE_MIN = 7.6;
+    const PRESENCE_MAX = 8.4;
+
+    return this.withUserMapped(email, async (tx) => {
+      const holidays = await tx.kadrHoliday.findMany({
+        where: {
+          holidayDate: {
+            gte: new Date(`${start}T00:00:00Z`),
+            lt: new Date(`${endExcl}T00:00:00Z`),
+          },
+        },
+        select: { holidayDate: true },
+      });
+      const holSet = new Set(
+        holidays.map((h) => h.holidayDate.toISOString().slice(0, 10)),
+      );
+
+      // Regularni prazni dani iz shadow view-a. Filtriranje „praznog" i signala
+      // radi SQL (indeksni raspon po danu); vikend/praznik izbacujemo u JS-u
+      // (holSet je iz baze, a EXTRACT(dow) bi zavisio od TZ).
+      const rows = await tx.$queryRaw<
+        {
+          employee_id: string;
+          full_name: string | null;
+          day: Date;
+          presence_hours: unknown;
+          first_in: Date | null;
+          last_out: Date | null;
+        }[]
+      >(Prisma.sql`
+        SELECT employee_id, full_name, day, presence_hours, first_in, last_out
+        FROM v_attendance_vs_grid
+        WHERE day >= ${start}::date AND day < ${endExcl}::date
+          AND grid_covered = false
+          AND absence_code IS NULL
+          AND COALESCE(grid_field_hours, 0) = 0
+          AND open_intervals = 0
+          AND first_in IS NOT NULL
+          AND last_out IS NOT NULL
+          AND presence_hours IS NOT NULL
+          AND presence_hours >= ${PRESENCE_MIN}
+          AND presence_hours <= ${PRESENCE_MAX}
+          ${q.employeeId ? Prisma.sql`AND employee_id = ${q.employeeId}::uuid` : Prisma.empty}
+        ORDER BY employee_id, day
+      `);
+
+      const suggestions = rows
+        .filter((r) => {
+          const ymd = r.day.toISOString().slice(0, 10);
+          const dow = r.day.getUTCDay(); // 0=ned, 6=sub
+          return dow !== 0 && dow !== 6 && !holSet.has(ymd);
+        })
+        .map((r) => ({
+          employeeId: r.employee_id,
+          fullName: r.full_name,
+          workDate: r.day.toISOString().slice(0, 10),
+          hours: REGULAR_HOURS,
+          presenceHours:
+            r.presence_hours == null ? null : Number(r.presence_hours),
+          firstIn: r.first_in ? r.first_in.toISOString() : null,
+          lastOut: r.last_out ? r.last_out.toISOString() : null,
+        }));
+
+      return {
+        data: {
+          year,
+          month,
+          rule: {
+            regularHours: REGULAR_HOURS,
+            presenceMin: PRESENCE_MIN,
+            presenceMax: PRESENCE_MAX,
+            note: "Samo regularni prazni dani (ulaz+izlaz, bez zaboravljenog izlaza/terena/odsustva); vikend/praznik preskočeni.",
+          },
+          suggestions,
+        },
+      };
+    });
+  }
+
   /** Sati pojedinačno (workHoursTab) — read + filteri; CRUD = R2. */
   async workHours(email: string, q: WorkHoursQueryDto) {
     return this.withUserMapped(email, async (tx) => {
@@ -975,7 +1092,9 @@ export class KadrovskaService {
           Prisma.sql`is_active = true AND days_to_bday IS NOT NULL AND days_to_bday <= 30`,
         );
       if (q.filter === "missing-jmbg")
-        conds.push(Prisma.sql`(personal_id IS NULL OR personal_id !~ '^\\d{13}$')`);
+        conds.push(
+          Prisma.sql`(personal_id IS NULL OR personal_id !~ '^\\d{13}$')`,
+        );
       if (q.filter === "no-email")
         conds.push(Prisma.sql`(email IS NULL OR email = '')`);
       if (q.filter === "no-phone")
@@ -1368,7 +1487,9 @@ export class KadrovskaService {
         take: 200,
       });
       const cycleIds = [
-        ...new Set(assessments.map((a) => a.cycleId).filter((v): v is string => !!v)),
+        ...new Set(
+          assessments.map((a) => a.cycleId).filter((v): v is string => !!v),
+        ),
       ];
       const assessmentIds = assessments.map((a) => a.id);
       const [cycles, raters] = await Promise.all([

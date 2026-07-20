@@ -220,6 +220,17 @@ export class KadrovskaController {
     return this.kadrovska.gridPayable(req.user.email, q);
   }
 
+  /** Predlozi auto-unosa iz kapije (kucanje → grid). READ-ONLY: vraća predlog
+   *  redovnih sati SAMO za „regularne" prazne dane (ulaz+izlaz, bez zaboravljenog
+   *  izlaza, bez terena/odsustva, prisustvo u opsegu ~8h). Upis ide postojećim
+   *  `grid/batch` posle verifikacije urednika (Nikola). Gate = grid_edit; distinktna
+   *  putanja `grid/auto-fill` (ne koliduje sa `grid`/`grid/payable`). */
+  @Get("grid/auto-fill")
+  @RequirePermission(PERMISSIONS.KADROVSKA_GRID_EDIT)
+  gridAutoFill(@Req() req: AuthedRequest, @Query() q: GridQueryDto) {
+    return this.kadrovska.gridAutoFillSuggestions(req.user.email, q);
+  }
+
   @Get("work-hours")
   workHours(@Req() req: AuthedRequest, @Query() q: WorkHoursQueryDto) {
     return this.kadrovska.workHours(req.user.email, q);
@@ -443,7 +454,10 @@ export class KadrovskaController {
   /* 360 read — literal rute (campaign/framework/raters/…) PRE `:id` param ruta. */
   @Get("assessments/campaign")
   @RequirePermission(PERMISSIONS.KADROVSKA_DEV_MANAGE)
-  assessmentCampaigns(@Req() req: AuthedRequest, @Query() q: ByEmployeeQueryDto) {
+  assessmentCampaigns(
+    @Req() req: AuthedRequest,
+    @Query() q: ByEmployeeQueryDto,
+  ) {
     return this.kadrovska.assessmentCampaigns(req.user.email, q);
   }
 
@@ -511,7 +525,10 @@ export class KadrovskaController {
     @Req() req: AuthedRequest,
     @Param("employeeId", ParseUUIDPipe) employeeId: string,
   ) {
-    return this.kadrovska.offboardingOutstandingReversi(req.user.email, employeeId);
+    return this.kadrovska.offboardingOutstandingReversi(
+      req.user.email,
+      employeeId,
+    );
   }
 
   // ---------- Zarade (SAMO admin — kadrovska.salary) ----------
