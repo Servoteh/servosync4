@@ -5,6 +5,7 @@ import { FileText, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { toast } from '@/lib/toast';
+import { fetchDrawingObjectUrl } from '@/lib/plan-proizvodnje-pdf';
 import {
   useTechProcedure,
   fetchBigtehnDrawingSignUrl,
@@ -49,7 +50,9 @@ export function TpProcedureModal({ workOrderId, onClose }: { workOrderId: string
         toast('⚠ PDF nije pronađen.');
         return;
       }
-      tab.location.href = res.data.url;
+      const objectUrl = await fetchDrawingObjectUrl(res.data.url);
+      tab.location.href = objectUrl;
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
     } catch {
       tab.close();
       toast('⚠ Greška pri otvaranju PDF-a.');

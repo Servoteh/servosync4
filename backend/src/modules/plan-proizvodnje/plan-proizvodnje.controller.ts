@@ -11,10 +11,13 @@ import {
   Put,
   Query,
   Req,
+  Res,
+  StreamableFile,
   UploadedFile,
   UseGuards,
   UseInterceptors,
 } from "@nestjs/common";
+import type { Response } from "express";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { PermissionsGuard } from "../../common/authz/permissions.guard";
@@ -22,15 +25,12 @@ import { RequirePermission } from "../../common/authz/require-permission.decorat
 import { PERMISSIONS } from "../../common/authz/permissions";
 import { roleHasPermission } from "../../common/authz/role-permissions";
 import { PlanProizvodnjeService } from "./plan-proizvodnje.service";
+import { PlanProizvodnjeReadService } from "./plan-proizvodnje-read.service";
 import {
   CooperationQueryDto,
   DrawingsQueryDto,
   OperationsQueryDto,
-  OpSnapshotQueryDto,
-  ResolveDrawingNoQueryDto,
-  RnByIdsQueryDto,
   SearchOpsQueryDto,
-  TpOptionsQueryDto,
 } from "./dto/plan-proizvodnje-query.dto";
 import {
   BulkReassignDto,
@@ -51,63 +51,69 @@ interface AuthedRequest {
 const MB = 1024 * 1024;
 
 /**
- * Plan proizvodnje — 3.0 TALAS C (MODULE_SPEC_planovi_pracenje_30.md §3).
- * Klasa: `plan_proizvodnje.read` (paritet 1.0 router gate `canAccessPlanProizvodnje`).
- * Write eskalira per-metod na `plan_proizvodnje.edit`; reassign sa `force=true` traži i
- * `plan_proizvodnje.force` (dinamička provera — mirror guard enforce/shadow); auto-koop
- * grupe = `plan_proizvodnje.koop_admin`; reassign audit = `plan_proizvodnje.force`.
- * Row/force odluka dodatno presuđuje sy15 (can_edit/can_force) kroz `withUserRls`.
+ * Plan proizvodnje — 3.0 TALAS C, F5b (native na glavnoj bazi — bez sy15 mosta).
+ * Read (`PlanProizvodnjeReadService`) reimplementira sy15 view lanac nad
+ * work_order_operations/work_orders/tech_processes/operations; write
+ * (`PlanProizvodnjeService`) piše `plan_proizvodnje_*` app tabele.
+ *
+ * Klasa: `plan_proizvodnje.read`. Write eskalira na `plan_proizvodnje.edit`; reassign
+ * `force=true` traži `plan_proizvodnje.force` (BE je KONAČNI gate — `assertForce` +
+ * servis force gate); auto-koop grupe = `plan_proizvodnje.koop_admin`; reassign audit =
+ * `plan_proizvodnje.force`.
  *
  * ⚠️ Route ordering: literali (`operations/all|search`, `cooperation/groups`,
- * `reassign/bulk|audit`, `overlays/reorder`, `drawings/bigtehn/sign`) pre bare/`:param`.
+ * `reassign/bulk|audit`, `overlays/reorder`, `drawings/bigtehn/…`) pre bare/`:param`.
  */
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 @RequirePermission(PERMISSIONS.PLAN_PROIZVODNJE_READ)
 @Controller({ path: "plan-proizvodnje", version: "1" })
 export class PlanProizvodnjeController {
-  constructor(private readonly pp: PlanProizvodnjeService) {}
+  constructor(
+    private readonly pp: PlanProizvodnjeService,
+    private readonly read: PlanProizvodnjeReadService,
+  ) {}
 
   // ---------- Read ----------
 
   @Get("machines")
   machines(@Req() req: AuthedRequest) {
-    return this.pp.machines(req.user.email);
+    return this.read.machines(req.user.email);
   }
 
   @Get("operations/all")
   operationsAll(@Req() req: AuthedRequest) {
-    return this.pp.operationsAll(req.user.email);
+    return this.read.operationsAll(req.user.email);
   }
 
   @Get("operations/search")
   operationsSearch(@Req() req: AuthedRequest, @Query() q: SearchOpsQueryDto) {
-    return this.pp.operationsSearch(req.user.email, q.q);
+    return this.read.operationsSearch(req.user.email, q.q);
   }
 
   @Get("operations")
   operations(@Req() req: AuthedRequest, @Query() q: OperationsQueryDto) {
-    return this.pp.operations(req.user.email, q);
+    return this.read.operations(req.user.email, q);
   }
 
   @Get("cooperation/groups")
   cooperationGroups(@Req() req: AuthedRequest) {
-    return this.pp.cooperationGroups(req.user.email);
+    return this.read.cooperationGroups(req.user.email);
   }
 
   @Get("cooperation")
   cooperation(@Req() req: AuthedRequest, @Query() q: CooperationQueryDto) {
-    return this.pp.cooperation(req.user.email, q);
+    return this.read.cooperation(req.user.email, q);
   }
 
   @Get("reassign/audit")
   @RequirePermission(PERMISSIONS.PLAN_PROIZVODNJE_FORCE)
   reassignAudit(@Req() req: AuthedRequest) {
-    return this.pp.reassignAudit(req.user.email);
+    return this.read.reassignAudit(req.user.email);
   }
 
   @Get("drawings")
   drawings(@Req() req: AuthedRequest, @Query() q: DrawingsQueryDto) {
-    return this.pp.drawings(req.user.email, q);
+    return this.read.drawings(req.user.email, q);
   }
 
   @Get("tech-procedure/:workOrderId")
@@ -115,37 +121,7 @@ export class PlanProizvodnjeController {
     @Req() req: AuthedRequest,
     @Param("workOrderId", ParseIntPipe) workOrderId: number,
   ) {
-    return this.pp.techProcedure(req.user.email, workOrderId);
-  }
-
-  @Get("bridge-status")
-  bridgeStatus(@Req() req: AuthedRequest) {
-    return this.pp.bridgeStatus(req.user.email);
-  }
-
-  // ---------- Lookups (C2-P7, GAP-PM-26; dele se s Lokacijama) ----------
-
-  @Get("lookups/op-snapshot")
-  opSnapshot(@Req() req: AuthedRequest, @Query() q: OpSnapshotQueryDto) {
-    return this.pp.opSnapshot(req.user.email, q);
-  }
-
-  @Get("lookups/tp-options")
-  tpOptions(@Req() req: AuthedRequest, @Query() q: TpOptionsQueryDto) {
-    return this.pp.tpOptions(req.user.email, q);
-  }
-
-  @Get("lookups/resolve-drawing-no")
-  resolveDrawingNo(
-    @Req() req: AuthedRequest,
-    @Query() q: ResolveDrawingNoQueryDto,
-  ) {
-    return this.pp.resolveDrawingNo(req.user.email, q);
-  }
-
-  @Get("lookups/rn-by-ids")
-  rnByIds(@Req() req: AuthedRequest, @Query() q: RnByIdsQueryDto) {
-    return this.pp.rnByIds(req.user.email, q.ids);
+    return this.read.techProcedure(req.user.email, workOrderId);
   }
 
   // ---------- Overlays (edit) ----------
@@ -189,14 +165,18 @@ export class PlanProizvodnjeController {
   @RequirePermission(PERMISSIONS.PLAN_PROIZVODNJE_EDIT)
   bulkReassign(@Req() req: AuthedRequest, @Body() dto: BulkReassignDto) {
     this.assertForce(req.user.role, dto.force);
-    return this.pp.bulkReassign(req.user.email, dto);
+    return this.pp.bulkReassign(
+      req.user.email,
+      dto,
+      this.canForce(req.user.role),
+    );
   }
 
   @Post("reassign")
   @RequirePermission(PERMISSIONS.PLAN_PROIZVODNJE_EDIT)
   reassign(@Req() req: AuthedRequest, @Body() dto: ReassignDto) {
     this.assertForce(req.user.role, dto.force);
-    return this.pp.reassign(req.user.email, dto);
+    return this.pp.reassign(req.user.email, dto, this.canForce(req.user.role));
   }
 
   // ---------- Kooperacija — auto grupe (koop_admin) ----------
@@ -220,12 +200,11 @@ export class PlanProizvodnjeController {
     return this.pp.patchCooperationGroup(req.user.email, code, dto);
   }
 
-  // ---------- Skice (edit) + bigtehn crteži (read + gate) ----------
+  // ---------- Skice (edit) + crteži (read + content strim) ----------
 
   @Post("drawings")
   @RequirePermission(PERMISSIONS.PLAN_PROIZVODNJE_EDIT)
-  // 20MB = SQL bucket limit (production-drawings) i 1.0 drawingManager MAX_BYTES;
-  // 25MB je propuštao fajlove koji padnu tek na storage-u (GAP-PM-19 BE deo).
+  // 20MB = 1.0 drawingManager MAX_BYTES (GAP-PM-19 BE deo).
   @UseInterceptors(FileInterceptor("file", { limits: { fileSize: 20 * MB } }))
   uploadDrawing(
     @Req() req: AuthedRequest,
@@ -235,21 +214,36 @@ export class PlanProizvodnjeController {
     return this.pp.uploadDrawing(req.user.email, dto.workOrder, dto.line, file);
   }
 
-  // literal `drawings/bigtehn/sign` pre `drawings/:id/sign` (inače „bigtehn" → :id).
+  // literali `drawings/bigtehn/*` pre `drawings/:id/*` (inače „bigtehn" → :id).
   @Get("drawings/bigtehn/sign")
   bigtehnDrawingSign(
     @Req() req: AuthedRequest,
     @Query() q: BigtehnDrawingSignQueryDto,
   ) {
-    return this.pp.bigtehnDrawingSignUrl(req.user.email, q.code);
+    return this.read.bigtehnDrawingSignUrl(req.user.email, q.code);
+  }
+
+  @Get("drawings/bigtehn/:drawingId/pdf/content")
+  bigtehnDrawingPdf(
+    @Param("drawingId", ParseIntPipe) drawingId: number,
+    @Res({ passthrough: true }) res: Response,
+    @Req() req: AuthedRequest,
+  ): Promise<StreamableFile> {
+    return this.read.streamBigtehnDrawing(drawingId, res, req.user);
   }
 
   @Get("drawings/:id/sign")
-  drawingSign(
-    @Req() req: AuthedRequest,
+  drawingSign(@Req() req: AuthedRequest, @Param("id", ParseIntPipe) id: number) {
+    return this.read.drawingSignUrl(req.user.email, String(id));
+  }
+
+  @Get("drawings/:id/pdf/content")
+  drawingPdf(
     @Param("id", ParseIntPipe) id: number,
-  ) {
-    return this.pp.drawingSignUrl(req.user.email, String(id));
+    @Res({ passthrough: true }) res: Response,
+    @Req() req: AuthedRequest,
+  ): Promise<StreamableFile> {
+    return this.read.streamDrawing(id, res, req.user);
   }
 
   @Delete("drawings/:id")
@@ -262,9 +256,11 @@ export class PlanProizvodnjeController {
   }
 
   /**
-   * `force=true` reassign traži `plan_proizvodnje.force` (mirror guard enforce/shadow;
-   * DB `can_force_plan_reassign()` je konačni gate). U shadow modu (AUTHZ_ENFORCE≠true)
-   * DB i dalje presuđuje — paritet.
+   * `force=true` reassign traži `plan_proizvodnje.force` (mirror guard enforce/shadow).
+   * BE servis je KONAČNI gate (nema više DB DEFINER-a): u shadow modu (AUTHZ_ENFORCE≠true)
+   * kontroler propušta, ali servis i dalje presuđuje group-mismatch/force_reason. Zato se
+   * `canForce` prosleđuje servisu (force bez prava → 403 čak i u shadow-u kad je grupa
+   * različita — B/E paritet sy15 `can_force_plan_reassign`).
    */
   private assertForce(role: string, force?: boolean): void {
     if (!force) return;
@@ -274,5 +270,9 @@ export class PlanProizvodnjeController {
         "Za prinudni reassign (force) potrebna je dozvola plan_proizvodnje.force.",
       );
     }
+  }
+
+  private canForce(role: string): boolean {
+    return roleHasPermission(role, PERMISSIONS.PLAN_PROIZVODNJE_FORCE);
   }
 }

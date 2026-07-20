@@ -34,6 +34,8 @@ export class MailService {
     to: string | string[];
     subject: string;
     html: string;
+    /** Opcioni prilozi (npr. PDF računa). `content` je Buffer — kodira se u base64 za Resend. */
+    attachments?: Array<{ filename: string; content: Buffer }>;
   }): Promise<boolean> {
     const to = Array.isArray(params.to) ? params.to : [params.to];
     if (!to.length) return false;
@@ -57,6 +59,14 @@ export class MailService {
           to,
           subject: params.subject,
           html: params.html,
+          ...(params.attachments?.length
+            ? {
+                attachments: params.attachments.map((a) => ({
+                  filename: a.filename,
+                  content: a.content.toString("base64"),
+                })),
+              }
+            : {}),
         }),
         signal: AbortSignal.timeout(8000),
       });

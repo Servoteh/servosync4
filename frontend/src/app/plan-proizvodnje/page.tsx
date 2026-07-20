@@ -7,7 +7,6 @@ import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
 import { Tabs, type TabItem } from '@/components/ui-kit/tabs';
 import type { OpRow } from '@/api/plan-proizvodnje';
-import { BridgeBanner } from './_components/bridge-banner';
 import { PoMasiniTab } from './_components/po-masini-tab';
 import { PoCrtezuTab } from './_components/po-crtezu-tab';
 import { ZauzetostTab } from './_components/zauzetost-tab';
@@ -68,7 +67,6 @@ export default function PlanProizvodnjePage() {
         actions={<Tabs tabs={TABS} value={tab} onChange={setTab} ariaLabel="Tabovi Plana proizvodnje" />}
       />
       <main className="flex-1 space-y-4 overflow-auto p-6">
-        <BridgeBanner />
         {tab === 'po-masini' && (
           <PoMasiniTab
             onReassign={onReassign}

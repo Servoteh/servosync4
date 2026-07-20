@@ -5,6 +5,9 @@ coverage/
 *.log
 .DS_Store
 
+# Generisani ad-hoc izveštaji/analize (npr. route-permission coverage) — ne verzionišu se.
+/reports/
+
 # Frontend build baked by the deploy workflow — keep the dir, ignore its contents.
 /frontend-static/*
 !/frontend-static/.gitkeep

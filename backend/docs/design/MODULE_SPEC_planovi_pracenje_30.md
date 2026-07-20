@@ -318,6 +318,8 @@ Plan proizvodnje (view čitanja + overlay write) → Plan montaže (Gantt FE + A
 7. **STT (`stt-transcribe`) + `ai-refine`**: deljena infra sa Sastancima (Talas B). **Predlog:** Talas C ih NE seli — 2.0 FE zove postojeće edge funkcije (isti URL/JWT) dok ih Talas B/pozadinska konsolidacija ne portuje; samo omotati u deljenu FE komponentu.
 8. **N+1 load Plana montaže** (po projektu WP-ovi, po WP-u faze — 23 projekta ≈ 35+ upita). **Predlog:** 2.0 GET vraća celo stablo jednim upitom (BE join); čisto perf poboljšanje, semantika/redosled isti — dozvoljeno odstupanje uz zabelešku.
 9. **`bigtehn_*` MOST — potvrda obima**: v1 čita ISTE keš tabele iz sy15 (kao Lokacije odluka #1); repoint Plan proizvodnje/Praćenja na 2.0 `tech_processes` = zaseban most uz QBigTehn cutover (playbook §4.2), NE deo ovog talasa. **Predlog:** potvrditi (bridge, `production_active_work_orders`, view lanac i pg_cron ostaju netaknuti).
+   → **AŽURIRANO 19.07.2026:** taj „zaseban most" je sada isplaniran — Praćenje prelazi na
+   2.0-native tabele i sy15 lanac se za njega GASI: [docs/PLAN_PRACENJE_PROIZVODNJE_2026-07.md](../../../docs/PLAN_PRACENJE_PROIZVODNJE_2026-07.md).
 10. **Podešavanje predmeta + ⭐ plan-prioritet**: DB objekti su talас-C domen, a admin UI živi u Podešavanjima (Talas D). **Predlog:** BE endpointi za `list/set_predmet_aktivacija` + `get/set_predmet_plan_prioritet(_max/_prev)` idu u Talas C (`pracenje.manage` permisija), UI ekran ostaje u Talasu D i samo se veže na gotove endpointe.
 11. **Pretraga delova** — mesto u 2.0 navigaciji: 1.0 je treći pod-meni „Proizvodnje". **Predlog:** tab unutar `/pracenje-proizvodnje` (otvara RN drill-down), bez svoje rute; stara ruta redirect.
 

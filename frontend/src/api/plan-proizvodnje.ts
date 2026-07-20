@@ -166,12 +166,6 @@ export interface TechProcedure {
   header: OpRow | null;
 }
 
-export interface BridgeStatusRow {
-  sync_job: string;
-  last_finished: string | null;
-  status: string | null;
-}
-
 /** Overlay (Prisma PpOverlay — camelCase; BigInt-i kao string). */
 export interface PpOverlay {
   id: string;
@@ -210,7 +204,6 @@ const KEYS = {
   cooperation: ['pp', 'cooperation'] as const,
   coopGroups: ['pp', 'coop-groups'] as const,
   drawings: ['pp', 'drawings'] as const,
-  bridge: ['pp', 'bridge'] as const,
   audit: ['pp', 'audit'] as const,
 };
 
@@ -348,13 +341,6 @@ export function useTechProcedure(workOrderId: string | null) {
     queryKey: ['pp', 'tech-procedure', workOrderId],
     enabled: !!workOrderId,
     queryFn: () => apiFetch<{ data: TechProcedure }>(`${BASE}/tech-procedure/${workOrderId}`),
-  });
-}
-
-export function useBridgeStatus() {
-  return useQuery({
-    queryKey: KEYS.bridge,
-    queryFn: () => apiFetch<{ data: BridgeStatusRow[] }>(`${BASE}/bridge-status`),
   });
 }
 

@@ -14,6 +14,9 @@ import { PlanProizvodnjeController } from "../src/modules/plan-proizvodnje/plan-
 import { PlanProizvodnjeService } from "../src/modules/plan-proizvodnje/plan-proizvodnje.service";
 import { PracenjeController } from "../src/modules/pracenje/pracenje.controller";
 import { PracenjeService } from "../src/modules/pracenje/pracenje.service";
+import { PracenjeReadService } from "../src/modules/pracenje/pracenje-read.service";
+import { PracenjeAkcijeSy15Service } from "../src/modules/pracenje/pracenje-akcije-sy15.service";
+import { PracenjePdfService } from "../src/modules/pracenje/pracenje-pdf.service";
 import { ALL_ROLE_KEYS } from "../src/common/authz/roles";
 import { roleHasPermission } from "../src/common/authz/role-permissions";
 import { PrismaService } from "../src/prisma/prisma.service";
@@ -91,7 +94,8 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     "drawingSignUrl",
     "bigtehnDrawingSignUrl",
   ]);
-  const pracenjeMock = mk([
+  // READ sloj (F1) — 2.0 tabele, `PracenjeReadService`.
+  const pracenjeReadMock = mk([
     "portfolio",
     "predmeti",
     "podsklopovi",
@@ -104,10 +108,15 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     "prijave",
     "odeljenja",
     "radnici",
-    "akcioneTacke",
     "searchDelovi",
     "planPrioritet",
-    // R2 mutacije
+    "ensureRnFromBigtehn",
+    "crtezSignUrl",
+  ]);
+  // Izolovani sy15 lookup (akcione-tacke) — `PracenjeAkcijeSy15Service`.
+  const pracenjeAkcijeMock = mk(["akcioneTacke"]);
+  // MUTACIJE (F1) — 2.0 tabele, `PracenjeService` (sy15-free).
+  const pracenjeMock = mk([
     "upsertAktivnost",
     "zatvoriAktivnost",
     "blokirajAktivnost",
@@ -117,9 +126,7 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     "upsertManualOverride",
     "upsertParentOverride",
     "shiftPrioritet",
-    "ensureRnFromBigtehn",
     "logExport",
-    "crtezSignUrl",
   ]);
 
   beforeAll(async () => {
@@ -136,6 +143,11 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
         { provide: PlanMontazeService, useValue: montazaMock },
         { provide: PlanProizvodnjeService, useValue: ppMock },
         { provide: PracenjeService, useValue: pracenjeMock },
+        { provide: PracenjeReadService, useValue: pracenjeReadMock },
+        { provide: PracenjeAkcijeSy15Service, useValue: pracenjeAkcijeMock },
+        // PDF strim ruta (crtez/:drawingId/pdf/content) gejtuje samo pracenje.read
+        // (odluka O7) — nije zasebno asertovana ovde; prazan stub zadovoljava DI.
+        { provide: PracenjePdfService, useValue: {} },
       ],
     })
       .overrideGuard(JwtAuthGuard)
@@ -298,9 +310,11 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
         await get("/pracenje/portfolio", role).expect(403);
       },
     );
-    it("route ordering: /pracenje/rn/resolve literal (200) NIJE rn/:rnId uuid-pipe", async () => {
+    it("route ordering: /pracenje/rn/resolve literal (200) NIJE rn/:rnId int-pipe", async () => {
       await get("/pracenje/rn/resolve?ref=RN-1", "admin").expect(200);
-      await get(`/pracenje/rn/${UUID}`, "admin").expect(200);
+      // 2.0: rn/:rnId je Int (work_orders.id) — validan int 200, uuid/tekst 400.
+      await get("/pracenje/rn/40681", "admin").expect(200);
+      await get(`/pracenje/rn/${UUID}`, "admin").expect(400);
       await get("/pracenje/rn/nije-uuid", "admin").expect(400);
     });
     it("GET /pracenje/predmeti/:itemId/podsklopovi → 200 int, 400 ne-int (viewer)", async () => {
@@ -551,7 +565,8 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
   });
 
   describe("Praćenje operativni plan — pracenje.edit", () => {
-    const akt = { odeljenjeId: UUID, nazivAktivnosti: "A" };
+    // 2.0: odeljenjeId je Int (odeljenja.id), NE uuid; aktivnost :id je Int.
+    const akt = { odeljenjeId: 1, nazivAktivnosti: "A" };
     it.each(PR_EDIT)("POST /pracenje/aktivnosti → 201 za %s", async (role) => {
       await send("post", "/pracenje/aktivnosti", role, akt).expect(201);
     });
@@ -562,10 +577,10 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
       },
     );
     it("blokiraj (razlog obavezan): validan 201, prazan razlog 400 (pm)", async () => {
-      await send("post", `/pracenje/aktivnosti/${UUID}/blokiraj`, "pm", {
+      await send("post", "/pracenje/aktivnosti/123/blokiraj", "pm", {
         razlog: "kvar",
       }).expect(201);
-      await send("post", `/pracenje/aktivnosti/${UUID}/blokiraj`, "pm", {
+      await send("post", "/pracenje/aktivnosti/123/blokiraj", "pm", {
         razlog: "",
       }).expect(400);
     });
@@ -601,7 +616,7 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
         note: "x",
       }).expect(403);
       await send("post", "/pracenje/aktivnosti", "pm", {
-        odeljenjeId: UUID,
+        odeljenjeId: 1,
         nazivAktivnosti: "A",
       }).expect(201);
     });
@@ -651,6 +666,65 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     it("GET /montaza/reports/photo/:photoId/sign → 200 uuid, 400 ne-uuid (NIJE reports/:id)", async () => {
       await get(`/montaza/reports/photo/${UUID}/sign`, "monter").expect(200);
       await get("/montaza/reports/photo/nije-uuid/sign", "monter").expect(400);
+    });
+  });
+
+  // ==========================================================================
+  // Popravni krug F1 — DTO Int coercion (@Type(() => Number))
+  // ==========================================================================
+  // FE (aktivnost-modal.tsx / HTML <select>.value) šalje Int polja kao STRINGOVE ("5").
+  // Globalni ValidationPipe je transform:true ali BEZ enableImplicitConversion, pa je
+  // @IsInt bez @Type(() => Number) odbijao string → 400 na svakom POST-u. @Type coerce-uje
+  // string→broj u transform koraku (null/undefined ostaju netaknuti). Ovaj pipe je
+  // konfigurisan identično prod-u (main.ts), pa je test veran regresiji.
+  describe("Popravni F1 — aktivnosti/override/export Int coercion (FE stringovi)", () => {
+    it("POST /pracenje/aktivnosti sa string Int-ovima ('5') → 201 (pm)", async () => {
+      await send("post", "/pracenje/aktivnosti", "pm", {
+        odeljenjeId: "5",
+        nazivAktivnosti: "A",
+        radniNalogId: "40681",
+        projekatId: "7602",
+        odgovoranRadnikId: "12",
+        rb: "3",
+        zavisiOdAktivnostId: "9",
+        izvorPozicijaId: "1",
+      }).expect(201);
+    });
+    it("POST /pracenje/aktivnosti odeljenjeId 'abc' → 400 (NaN nije Int)", async () => {
+      await send("post", "/pracenje/aktivnosti", "pm", {
+        odeljenjeId: "abc",
+        nazivAktivnosti: "A",
+      }).expect(400);
+    });
+    it("POST /pracenje/aktivnosti bez odeljenjeId → 400 (obavezan)", async () => {
+      await send("post", "/pracenje/aktivnosti", "pm", {
+        nazivAktivnosti: "A",
+      }).expect(400);
+    });
+    it("null/izostavljeni opcioni Int ne pucaju (ne postaju 0) → 201", async () => {
+      // @IsOptional() kratko-spaja pre @IsInt; @Type(() => Number) NE pretvara null u 0.
+      await send("post", "/pracenje/aktivnosti", "pm", {
+        odeljenjeId: 1,
+        nazivAktivnosti: "A",
+        radniNalogId: null,
+        odgovoranRadnikId: null,
+      }).expect(201);
+    });
+    it("PUT override manualQty string '3' → 200 (admin); 'abc' → 400", async () => {
+      await send("put", "/pracenje/predmeti/7602/override", "admin", {
+        bigtehnRnId: "9400",
+        manualQty: "3",
+      }).expect(200);
+      await send("put", "/pracenje/predmeti/7602/override", "admin", {
+        bigtehnRnId: "9400",
+        manualQty: "abc",
+      }).expect(400);
+    });
+    it("POST /pracenje/export-log predmetItemId string '7' → 201 (viewer)", async () => {
+      await send("post", "/pracenje/export-log", "viewer", {
+        tab: "operativni_plan",
+        predmetItemId: "7",
+      }).expect(201);
     });
   });
 });

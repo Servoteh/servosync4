@@ -5,6 +5,8 @@
 // „Usko grlo" = prva nezavršena operacija u redosledu (samo jedna).
 // ============================================================================
 
+import type { Primopredaja } from '@/api/pracenje';
+
 /** Sirova operacija iz get_pracenje_rn positions[].operations[]. */
 export interface RnOperacija {
   tp_operacija_id?: string | number | null;
@@ -15,6 +17,8 @@ export interface RnOperacija {
   prijavljeno_komada?: number | string | null;
   status?: string | null;
   poslednja_prijava_at?: string | null;
+  /** docx §4.9: datum završetka operacije (poslednji DOBAR/završen ZK) — ISO / null. */
+  completed_at?: string | null;
   is_final_control?: boolean;
   source?: string | null;
   bigtehn_work_order_id?: number | string | null;
@@ -43,12 +47,15 @@ export interface RnHeader {
   rn_broj?: string | null;
   masina_linija?: string | null;
   radni_nalog_naziv?: string | null;
-  projekat_id?: string | null;
+  /** = projects.id (== `?predmet=` itemId; O1 predmet_aktivacije.project_id) — za „Nazad" u tabelu. */
+  projekat_id?: number | string | null;
   projekat_naziv?: string | null;
   kupac?: string | null;
   datum_isporuke?: string | null;
   koordinator?: string | null;
   napomena?: string | null;
+  /** docx §4.10: dokument primopredaje (zamena za „rok izrade" u RN pogledu; null = nema). */
+  primopredaja?: Primopredaja | null;
   [k: string]: unknown;
 }
 
@@ -139,4 +146,96 @@ export function buildRnTree(positions: RnPozicija[]): RnTreeNode[] {
 export function shortName(name: unknown, len = 22): string {
   const s = String(name ?? '');
   return s.length > len ? `${s.slice(0, len)}…` : s;
+}
+
+// ---------------------------------------------------------------- Filteri pozicija (docx §4.10)
+
+/** Tri-stanje DA/NE filter: sve · samo DA · samo NE. */
+export type PozicijeDaNe = 'all' | 'da' | 'ne';
+
+export interface PozicijeFilter {
+  /** Pretraga po poziciji: šifra / naziv / broj crteža. */
+  search: string;
+  /** Mašinska obrada DA/NE. */
+  masinska: PozicijeDaNe;
+  /** Površinska zaštita DA/NE. */
+  povrsinska: PozicijeDaNe;
+}
+
+export const EMPTY_POZICIJE_FILTER: PozicijeFilter = { search: '', masinska: 'all', povrsinska: 'all' };
+
+export function isPozicijeFilterActive(f: PozicijeFilter): boolean {
+  return f.search.trim() !== '' || f.masinska !== 'all' || f.povrsinska !== 'all';
+}
+
+// Klasifikacija operacija za DA/NE filtere. NAPOMENA: get_pracenje_rn op_payload NE nosi
+// `without_process` (za razliku od izvestaj redova koji njime dele mašinsku/površinsku), pa je
+// klasifikacija ovde IMENSKA heuristika nad nazivom radnog centra (best-effort, prati duh O5):
+// kontrola se isključuje, površinska zaštita se prepoznaje po ključnim rečima presvlake/premaza,
+// a mašinska = svaka preostala (ne-kontrolna, ne-površinska) operacija.
+const CONTROL_RE = /kontrol/i;
+const SURFACE_RE =
+  /galvan|cink|pocink|plastif|eloks|anodiz|hrom|nikl|farb|bojen|lakir|praškas|praskas|prašen|prasen|premaz|presvlač|presvlac|fosfat|brunir|termičk|termick|zaštit|zastit/i;
+
+function opText(o: RnOperacija): string {
+  return `${o.naziv ?? ''} ${o.work_center ?? ''} ${o.operacija_kod ?? ''}`;
+}
+function isControlOp(o: RnOperacija): boolean {
+  return o.is_final_control === true || CONTROL_RE.test(opText(o));
+}
+function isSurfaceOp(o: RnOperacija): boolean {
+  return o.is_final_control !== true && SURFACE_RE.test(opText(o));
+}
+function isMachiningOp(o: RnOperacija): boolean {
+  return !isControlOp(o) && !isSurfaceOp(o);
+}
+
+export function positionHasMachining(p: RnPozicija): boolean {
+  return (p.operations ?? []).some(isMachiningOp);
+}
+export function positionHasSurface(p: RnPozicija): boolean {
+  return (p.operations ?? []).some(isSurfaceOp);
+}
+
+function positionSearchText(p: RnPozicija): string {
+  return `${p.sifra_pozicije ?? ''} ${p.naziv ?? ''} ${p.drawing_no ?? ''}`.toLowerCase();
+}
+function matchesDaNe(has: boolean, want: PozicijeDaNe): boolean {
+  return want === 'all' || (want === 'da' ? has : !has);
+}
+
+/**
+ * Filtriraj pozicije po pretrazi / mašinskoj / površinskoj. Da bi stablo (`buildRnTree`)
+ * ostalo koherentno, zadržava se i CEO lanac predaka svakog pogotka (predak se prikazuje kao
+ * kontekst i kad sam ne zadovoljava filter). Bez aktivnog filtera vraća ulaz netaknut.
+ */
+export function filterRnPositions(positions: RnPozicija[], f: PozicijeFilter): RnPozicija[] {
+  if (!isPozicijeFilterActive(f)) return positions;
+  const q = f.search.trim().toLowerCase();
+  const byId = new Map<string, RnPozicija>();
+  for (const p of positions) byId.set(String(p.id), p);
+
+  const matches = (p: RnPozicija): boolean => {
+    if (q && !positionSearchText(p).includes(q)) return false;
+    if (!matchesDaNe(positionHasMachining(p), f.masinska)) return false;
+    if (!matchesDaNe(positionHasSurface(p), f.povrsinska)) return false;
+    return true;
+  };
+
+  const keep = new Set<string>();
+  for (const p of positions) {
+    if (!matches(p)) continue;
+    // Popni se uz lanac predaka (guard od ciklusa kroz lokalni `seen`).
+    let cur: RnPozicija | undefined = p;
+    const seen = new Set<string>();
+    while (cur) {
+      const id = String(cur.id);
+      if (seen.has(id)) break;
+      seen.add(id);
+      keep.add(id);
+      const pid: string | null = cur.parent_id == null ? null : String(cur.parent_id);
+      cur = pid ? byId.get(pid) : undefined;
+    }
+  }
+  return positions.filter((p) => keep.has(String(p.id)));
 }

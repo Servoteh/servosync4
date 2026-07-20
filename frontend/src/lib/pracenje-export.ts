@@ -7,6 +7,7 @@
 import * as XLSX from 'xlsx';
 import { jsPDF } from 'jspdf';
 import { ensureRoboto } from './plan-montaze/pdf-font';
+import type { NodeRollup } from './pracenje-tree';
 import { fetchCrtezSignUrl, type IzvestajResult, type IzvestajRow, type PracenjeStatusi, type PracenjeOperacija } from '@/api/pracenje';
 
 /** Izvozni tekst DA/NE (1.0 daNeText — pracenjeIzvestajExport.js:30): „DA — {pun status}". */
@@ -118,8 +119,17 @@ function download(blob: Blob, name: string): void {
 export interface IzvestajExportInput {
   result: IzvestajResult;
   rows: IzvestajRow[]; // već re-parentovani + filtrirani (kao ekran)
+  /** Rollup % gotovosti / % mašinske po node_id (docx §4.4) — računat na PUNOM stablu. */
+  rollups?: Map<string, NodeRollup>;
   filter: string;
   lot: number;
+}
+
+/** Tekst „% gotov." iz rollup mape (prazno kad nema podataka). */
+function pctText(rollups: Map<string, NodeRollup> | undefined, nodeId: unknown, key: 'pct' | 'masPct'): string {
+  const roll = rollups?.get(String(nodeId ?? ''));
+  const v = roll ? roll[key] : null;
+  return v != null ? `${v}%` : '';
 }
 
 /**
@@ -127,7 +137,7 @@ export interface IzvestajExportInput {
  * Operacija N/Kol. N, Excel hiperlinkovi na signed URL crteža (radni + sklopni),
  * „Završna kol." iz poslednje ZK operacije. Ime fajla 1:1 sa 1.0.
  */
-export async function exportIzvestajXlsx({ result, rows, filter, lot }: IzvestajExportInput): Promise<void> {
+export async function exportIzvestajXlsx({ result, rows, rollups, filter, lot }: IzvestajExportInput): Promise<void> {
   if (!rows.length) throw new Error('Nema redova za izvoz.');
   const nSlots = maxOpSlots(rows);
   const urlMap = await resolveDrawingUrls(rows);
@@ -148,7 +158,7 @@ export async function exportIzvestajXlsx({ result, rows, filter, lot }: Izvestaj
   const opHeaders: string[] = [];
   for (let i = 0; i < nSlots; i += 1) opHeaders.push(`Operacija ${i + 1}`, `Kol. ${i + 1}`);
   const headers = [
-    'Nivo', 'Naziv', 'Broj crteža', 'Sklopni crtež', 'RN', 'Lansirano', 'Završeno', 'Za lot',
+    'Nivo', 'Naziv', 'Broj crteža', 'Sklopni crtež', 'RN', 'Lansirano', 'Završeno', '% gotov.', '% maš.', 'Za lot',
     'Datum lans. TP', 'Datum izrade', 'Maš. obrada', 'Površ. zaštita', 'Materijal', 'Dimenzije',
     'Napomena', 'Status', 'Završna kol.', ...opHeaders,
   ];
@@ -157,14 +167,18 @@ export async function exportIzvestajXlsx({ result, rows, filter, lot }: Izvestaj
 
   for (const r of rows) {
     const note = [r.sistemska_napomena, r.korisnicka_napomena].filter(Boolean).join(' | ');
+    const lvl = Number(r.level ?? 0);
     const row: (string | number)[] = [
-      Number(r.level ?? 0),
-      r.naziv_pozicije || '',
+      lvl,
+      // Indentacija naziva prati hijerarhiju (docx §10) — uz „Nivo" kolonu.
+      `${'  '.repeat(lvl)}${r.naziv_pozicije || ''}`,
       r.broj_crteza || '',
       r.broj_sklopnog_crteza || '',
       r.rn_broj || '',
       r.lansirana_kolicina ?? '',
       r.zavrsena_kolicina ?? '',
+      pctText(rollups, r.node_id, 'pct'),
+      pctText(rollups, r.node_id, 'masPct'),
       r.required_for_lot ?? 'N/A',
       r.datum_lansiranja_tp || '',
       r.datum_izrade || '',
@@ -218,7 +232,7 @@ export async function exportIzvestajXlsx({ result, rows, filter, lot }: Izvestaj
  * jsPDF A3 landscape (PR-19): meta zaglavlje, 10 kolona sa truncation, klikabilan
  * doc.link na crtež, druga sekcija „Detalj operacija po pozicijama", page-break.
  */
-export async function exportIzvestajPdf({ result, rows, lot }: IzvestajExportInput): Promise<void> {
+export async function exportIzvestajPdf({ result, rows, rollups, lot }: IzvestajExportInput): Promise<void> {
   if (!rows.length) throw new Error('Nema redova za izvoz.');
   const urlMap = await resolveDrawingUrls(rows);
   const pred = result.predmet ?? {};
@@ -258,7 +272,11 @@ export async function exportIzvestajPdf({ result, rows, lot }: IzvestajExportInp
       y = m;
     }
     const drawL = r.crtez_drawing_no ? urlMap.get(String(r.crtez_drawing_no)) : null;
-    const poz = `${'  '.repeat(Number(r.level || 0))}${(r.naziv_pozicije || '').slice(0, 42)}`;
+    // % gotovosti (+ % mašinske) uz naziv (docx §4.4/§10); indentacija prati stablo.
+    const roll = rollups?.get(String(r.node_id ?? ''));
+    const pctSuffix =
+      roll && roll.pct != null ? ` ${roll.pct}%${roll.masPct != null ? `·m${roll.masPct}%` : ''}` : '';
+    const poz = `${'  '.repeat(Number(r.level || 0))}${(r.naziv_pozicije || '').slice(0, 30)}${pctSuffix}`;
     doc.text(poz, m, y);
     doc.text(String(r.broj_crteza || '—').slice(0, 14), m + colW, y);
     doc.text(String(r.rn_broj || '').slice(0, 12), m + 2 * colW, y);
