@@ -2,9 +2,11 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "servosync2",
   "compatibility_date": "2025-06-01",
+  "main": "worker/index.ts",
   // Static assets Worker: služi Next.js static export (`out/`).
   // Nema `main` — ovo je samo statika, bez server koda.
   "assets": {
+    "binding": "ASSETS",
     "directory": "./out",
     // /login -> login.html (auto), nepoznate rute -> 404.html
     "html_handling": "auto-trailing-slash",
