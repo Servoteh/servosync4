@@ -208,6 +208,30 @@ sa native kanonom `operations.significant_for_finishing` (pracenje-read.service.
 — presuda M6. I proveriti svežinu `bigtehn_rework_scrap_cache` (nema hranilicu u novom kodu,
 frozen od 14.07 → G4 dorada/škart oznake u PP su verovatno već ustajale; native port ovo leči).
 
+**✅ F5b-0 IZVRŠENO 20.07.2026 (Nenad, psql na sy15-db) — pune definicije dobijene:**
+
+1. **`public.production_machine_group_slug(p_rj_code)`** — čist CASE po RJ kodu:
+   `10.1–10.5`→erodiranje · `8.2`→azistiranje · `1.10/1.2/1.30/1.40/1.50/1.60/1.71/1.72`→secenje ·
+   `4.1/4.11/4.12/4.2/4.3/4.4`→bravarsko · `5.1–5.8/5.11`→farbanje · `17.0/17.1`→cam ·
+   prefix `3`→glodanje · prefix `2` (sem 21.1/21.2)→struganje · prefix `6` (sem 6.8)→brusenje ·
+   inače `ostalo` (null/prazno→ostalo). Komentar u fn: ogledalo `departments.js` → **pri portu
+   SPOJITI sa `plan-proizvodnje/departments.ts` u jedan TS izvor istine** (plan §4.1-1).
+2. **`public.plan_tech_routing_real_seconds(wo, operacija)`** — `Σ EPOCH(finished−started)`
+   nad keš redovima gde je `finished > started`, inače 0; native ekvivalent = ista suma nad
+   izvornim kucanjima (inverzija feed mapiranja tech_processes → keš).
+3. **`v_bigtehn_work_orders_with_mes_active`** — `is_mes_active = COALESCE(awo.is_active,false)`
+   LEFT JOIN whitelist; **default je NEAKTIVAN** (RN van whitelist-a ne postoji za plan).
+   Whitelist sastav: `initial_business_list` t=9150 / f=261 + **1** ručni red
+   (`migration_mes_active_9400_7_5_s1`) — praktično jednokratni seed → M7 zamena
+   (aktivan predmet ∧ RN otvoren) je bezbedna; obavezan diff skupa RN-ova pre preklopa
+   (261 ručno ugašenih iz seed-a = očekivana razlika za pregled).
+4. **`production._pracenje_line_is_final_control(code,name,no_procedure)`** —
+   `code ~ '^8\.3'` OR (`no_procedure` AND `name ~* '(zavr|final|zav\.\s*kontr|zavrsna|kontrol)'`)
+   — ulaz za M6 diff prema `significant_for_finishing`.
+5. **`bigtehn_rework_scrap_cache` max(synced_at) = 26.04.2026** — G4 dorada/škart oznake u PP
+   su ustajale ~3 meseca (i pre cutover-a); native port (quality_type_id + parent_work_order_id)
+   ovo leči usput.
+
 ### 4.2 F5b-1 — BE native sloj + migracija (obrazac pracenje-read)
 
 **(a) Read sloj** — inverzija hranilice, mapiranje keš→native je već dokumentovano
