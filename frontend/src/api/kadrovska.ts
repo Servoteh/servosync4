@@ -711,6 +711,27 @@ export function useWorkHours(params: { employeeId?: string; from?: string; to?: 
   });
 }
 
+/* Auto-unos iz kapije (kucanje → grid): READ-ONLY predlog za regularne prazne dane. */
+export interface GridAutoFillSuggestion {
+  employeeId: string;
+  fullName: string | null;
+  workDate: string;
+  hours: number;
+  presenceHours: number | null;
+  firstIn: string | null;
+  lastOut: string | null;
+}
+export interface GridAutoFillResponse {
+  year: number;
+  month: number;
+  rule: { regularHours: number; presenceMin: number; presenceMax: number; note: string };
+  suggestions: GridAutoFillSuggestion[];
+}
+/** Imperativni fetch (okida ga dugme „Popuni iz kapije", ne stalni query). */
+export function fetchGridAutoFill(params: { year: number; month: number; employeeId?: string }) {
+  return apiFetch<{ data: GridAutoFillResponse }>(`${BASE}/grid/auto-fill${qs({ ...params })}`);
+}
+
 /* Prisustvo */
 export function useAttendanceNow(enabled = true) {
   return useQuery({

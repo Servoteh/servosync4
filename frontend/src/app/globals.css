@@ -130,6 +130,10 @@ td.kg-hol .kg-cell:not(.kg-abs):not(.kg-fd):not(.kg-ff):not(.kg-tm):not(.kg-dirt
 
 /* Stanja ćelije. */
 .kg-cell.kg-dirty { background: color-mix(in srgb, var(--status-warn) 18%, var(--surface)); color: var(--status-warn); border-color: var(--status-warn); font-weight: 600; }
+/* Auto-predlog iz kapije: AUTO ćelija je UVEK i dirty (grid-table dodaje obe klase),
+ * pa warn boju daje .kg-dirty iznad; .kg-auto dodaje SAMO plavi levi rub kao znak
+ * „predlog za proveru" (ručna izmena skida .kg-auto → ostaje običan dirty unos). */
+.kg-cell.kg-auto { border-left: 3px solid var(--accent); }
 .kg-cell.kg-err { background: var(--status-danger-bg); color: var(--status-danger); border-color: var(--status-danger); font-weight: 600; }
 
 /* Šifre odsustva — paleta 1.0 grida preslikana na 2.0 statusne tokene. */

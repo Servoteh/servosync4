@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
-import { FileText, FileSpreadsheet, History, RefreshCw, MessageSquare, FileSignature, Save, Undo2 } from 'lucide-react';
+import { FileText, FileSpreadsheet, History, RefreshCw, MessageSquare, FileSignature, Save, Undo2, DoorOpen } from 'lucide-react';
 import { Button } from '@/components/ui-kit/button';
 import { SearchBox } from '@/components/ui-kit/search-box';
 import { Pager } from '@/components/ui-kit/pager';
@@ -14,6 +14,7 @@ import {
   useDirectory,
   useGridBatchFull,
   fetchGridMonth,
+  fetchGridAutoFill,
   newClientEventId,
   type WorkHours,
 } from '@/api/kadrovska';
@@ -236,6 +237,7 @@ export function GridTab() {
   const [teren, setTeren] = useState<{ preselect: string | null } | null>(null);
   const [remarks, setRemarks] = useState(false);
   const [nopApprovals, setNopApprovals] = useState(false);
+  const [autoFillBusy, setAutoFillBusy] = useState(false);
   const [menu, setMenu] = useState<CellMenuState | null>(null);
 
   const batch = useGridBatchFull();
@@ -311,6 +313,35 @@ export function GridTab() {
     }
     changes.sort((a, b) => a.empName.localeCompare(b.empName, 'sr') || a.ymd.localeCompare(b.ymd));
     setSaveConfirm({ changes, warnings: warnings.map((w) => w.message), unchangedCount, totalCells: editor.dirtyCount() });
+  }
+
+  // ── Auto-unos iz kapije (kucanje → grid) ────────────────────────────
+  // READ-ONLY predlog za regularne PRAZNE dane; upisuje kao dirty (AUTO) da
+  // Nikola pregleda pa snimi. Poštuje trenutni filter (samo vidljivi radnici).
+  async function runAutoFill() {
+    if (!editable || autoFillBusy) return;
+    setAutoFillBusy(true);
+    try {
+      const res = await fetchGridAutoFill({ year, month });
+      const visibleIds = new Set(visible.map((e) => e.id));
+      const entries = res.data.suggestions
+        .filter((s) => visibleIds.has(s.employeeId))
+        .map((s) => ({ empId: s.employeeId, ymd: s.workDate, hours: s.hours }));
+      if (entries.length === 0) {
+        showToast('Nema regularnih praznih dana iz kapije za ovaj filter');
+        return;
+      }
+      const { applied, skipped } = editor.applyAutoFill(entries);
+      showToast(
+        applied > 0
+          ? `Predloženo ${applied} dana iz kapije (AUTO) — pregledaj i sačuvaj${skipped ? `; ${skipped} preskočeno (već popunjeno)` : ''}`
+          : 'Svi predloženi dani su već popunjeni — ništa novo',
+      );
+    } catch {
+      showToast('⚠ Auto-unos iz kapije nije uspeo');
+    } finally {
+      setAutoFillBusy(false);
+    }
   }
 
   function doSave() {
@@ -487,6 +518,14 @@ export function GridTab() {
                   </Button>
                   <Button variant="secondary" disabled={dirtyN === 0} onClick={discard}>
                     <Undo2 className="h-4 w-4" aria-hidden /> Odbaci
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    loading={autoFillBusy}
+                    onClick={runAutoFill}
+                    title="Popuni prazne regularne dane redovnim satima iz kucanja na kapiji (predlog za pregled — snima se tek na Sačuvaj)"
+                  >
+                    <DoorOpen className="h-4 w-4" aria-hidden /> Popuni iz kapije
                   </Button>
                 </>
               )}
