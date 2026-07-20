@@ -24,6 +24,26 @@ export type EffectivePermissionDb = Pick<
 
 export type PermissionDecision = "allow" | "deny";
 
+/**
+ * Apply ALL of a user's overrides to the role-derived permission list — the
+ * bulk sibling of `resolvePermissionDecision` for `GET /auth/me/permissions`.
+ * Same precedence (deny > grant > rola): a deny row removes a role grant, a
+ * grant row adds a key the role lacks. One row per key (`uq` on (userId,key))
+ * so iteration order cannot flip a decision. Keeping this next to the guard's
+ * resolver guarantees the FE `can()` and the backend 403 can never disagree.
+ */
+export function applyOverrides(
+  rolePermissions: readonly string[],
+  overrides: readonly { key: string; allow: boolean }[],
+): string[] {
+  const set = new Set<string>(rolePermissions);
+  for (const o of overrides) {
+    if (o.allow) set.add(o.key);
+    else set.delete(o.key);
+  }
+  return [...set];
+}
+
 export async function resolvePermissionDecision(
   db: EffectivePermissionDb,
   userId: number,

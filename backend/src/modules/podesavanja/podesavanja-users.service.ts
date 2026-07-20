@@ -14,7 +14,7 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
 import { Sy15AuthAdminService } from "../../common/sy15/sy15-auth-admin.service";
 import { isKnownRole } from "../../common/authz/roles";
-import { D2_OVERRIDE_MAP } from "../../common/authz/permissions";
+import { D2_OVERRIDE_MAP, OVERRIDE_KEYS } from "../../common/authz/permissions";
 import type {
   DeleteUserDto,
   InviteUserDto,
@@ -303,14 +303,12 @@ export class PodesavanjaUsersService {
       if (!active) continue; // paritet 1.0: flag/scope važe iz aktivne sesije
       const email = this.normEmail(r.email);
       if (!email) continue;
-      const cur =
-        byEmail.get(email) ??
-        ({
-          planMontazeReadonly: false,
-          kadrovskaAccess: false,
-          kadrovskaHideContracts: false,
-          managedSubDepartmentIds: null,
-        } as Agg);
+      const cur = byEmail.get(email) ?? {
+        planMontazeReadonly: false,
+        kadrovskaAccess: false,
+        kadrovskaHideContracts: false,
+        managedSubDepartmentIds: null,
+      };
       cur.planMontazeReadonly ||= r.plan_montaze_readonly === true;
       cur.kadrovskaAccess ||= r.kadrovska_access === true;
       cur.kadrovskaHideContracts ||= r.kadrovska_hide_contracts === true;
@@ -378,6 +376,102 @@ export class PodesavanjaUsersService {
     return {
       data: { processed, overridesUpserted, scopesUpdated, skippedNoUser },
     };
+  }
+
+  // ============ #52 — ALLOWLIST → OVERRIDE BACKFILL (migracija; idempotentno) ============
+
+  /**
+   * Sy15 email-allowliste → 2.0 `UserPermissionOverride` ogledalo (spec kadrovska §2.5,
+   * matrica #52 — uzrok zaključanog grida za HR posle Talasa G):
+   *   `kadr_grid_editor_allowlist`     → grant `kadrovska.grid_edit`
+   *   `kadr_vacation_editor_allowlist` → grant `kadrovska.vacation_edit`
+   * IZVOR ISTINE OSTAJE sy15 allowlist (RPC-ovi je proveravaju kroz GUC besplatno) — override
+   * postoji da `PermissionsGuard` i `/auth/me/permissions` vide isto pravo bez žive sy15
+   * provere (allowlist ključevi NAMERNO ne idu nijednoj roli — role-permissions.ts §G).
+   *
+   * MIRROR semantika (idempotentno + konvergentno): upsert grant za svaki email SA liste,
+   * DELETE override reda za svaki 2.0 nalog VAN nje — ponovljen poziv konvergira i čisti
+   * ručne dodele mimo allowliste (za ova dva ključa je allowlist jedini legitiman izvor;
+   * admin radi kroz ALL pa mu brisanje granta ništa ne oduzima). Email bez 2.0 naloga →
+   * preskoči (skippedNoUser) — kao #44; naredni backfill ga pokupi kad nalog nastane.
+   *
+   * PER-KEY IZOLACIJA (adversarni review 20.07, CRITICAL): sy15 read ide u ZASEBNOJ
+   * withUserRls tx po ključu i pad JEDNE liste NE obara drugu — konkretno,
+   * `kadr_vacation_editor_allowlist` NEMA `GRANT SELECT ... TO authenticated`
+   * (1.0 migracija 2026-06-21 REVOKE, GRANT odložen na R0 — talasG-R0-grants-DRAFT
+   * drift [1]) pa taj SELECT pod `SET LOCAL ROLE authenticated` pada sa 42501.
+   * Bez izolacije bi ceo endpoint 403-ovao i grid_edit remedijacija (incident
+   * Mrkajić) se nikad ne bi izvršila. Pad read-a → entry sa `error`, ključ se
+   * preskače (mirror NETAKNUT — pad čitanja ne sme da obriše postojeće grantove).
+   */
+  async backfillAllowlistOverrides(adminEmail: string) {
+    const entries = [];
+    for (const { key, read } of [
+      {
+        key: OVERRIDE_KEYS.KADROVSKA_GRID_EDIT,
+        read: (tx: Sy15Tx) =>
+          tx.$queryRaw<{ email: string }[]>(
+            Prisma.sql`SELECT email FROM kadr_grid_editor_allowlist`,
+          ),
+      },
+      {
+        key: OVERRIDE_KEYS.KADROVSKA_VACATION_EDIT,
+        read: (tx: Sy15Tx) =>
+          tx.$queryRaw<{ email: string }[]>(
+            Prisma.sql`SELECT email FROM kadr_vacation_editor_allowlist`,
+          ),
+      },
+    ] as const) {
+      let rows: { email: string }[];
+      try {
+        rows = await this.sy15.withUserRls(adminEmail, read);
+      } catch (e) {
+        const code = this.sqlstate(e);
+        this.logger.warn(
+          `allowlist backfill: sy15 read za ${key} pao (${code ?? String(e)}) — ključ preskočen`,
+        );
+        entries.push({
+          key,
+          listed: 0,
+          granted: 0,
+          removed: 0,
+          skippedNoUser: 0,
+          error:
+            code === "42501"
+              ? "sy15 SELECT odbijen (42501) — nedostaje GRANT SELECT ... TO authenticated (R0 odluka)"
+              : `sy15 read pao${code ? ` (${code})` : ""}`,
+        });
+        continue;
+      }
+      const emails = [
+        ...new Set(rows.map((r) => this.normEmail(r.email)).filter(Boolean)),
+      ];
+      const res = await this.prisma.$transaction(async (tx) => {
+        const users = await tx.user.findMany({
+          where: { email: { in: emails } },
+          select: { id: true, email: true },
+        });
+        for (const u of users) {
+          await tx.userPermissionOverride.upsert({
+            where: { userId_key: { userId: u.id, key } },
+            create: { userId: u.id, key, allow: true },
+            update: { allow: true },
+          });
+        }
+        // Mirror: skini override sa naloga koji nisu (više) na listi. Prazna lista
+        // → briše SVE redove ključa (niko nije urednik) — namerno, ne bag.
+        const removed = await tx.userPermissionOverride.deleteMany({
+          where: { key, userId: { notIn: users.map((u) => u.id) } },
+        });
+        return {
+          granted: users.length,
+          removed: removed.count,
+          skippedNoUser: emails.length - users.length,
+        };
+      });
+      entries.push({ key, listed: emails.length, ...res });
+    }
+    return { data: { entries } };
   }
 
   // ==================== interno ====================

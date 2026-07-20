@@ -31,10 +31,7 @@ import {
   SetMustChangePasswordDto,
   UpdateUserDto,
 } from "./dto/podesavanja-write.dto";
-import {
-  AddGridEditorDto,
-  SetAiModelDto,
-} from "./dto/podesavanja-system.dto";
+import { AddGridEditorDto, SetAiModelDto } from "./dto/podesavanja-system.dto";
 import {
   BulkExpectationDto,
   CreateExpectationDto,
@@ -167,6 +164,14 @@ export class PodesavanjaController {
     return this.users.backfillOverrides(req.user.email);
   }
 
+  /** #52: sy15 email-allowliste (grid/GO urednici) → 2.0 override ogledalo (mirror;
+   *  idempotentno — ponovljiv poziv konvergira). Guard = settings.users (baseline). */
+  @Post("migrations/allowlist-overrides-backfill")
+  @HttpCode(200)
+  allowlistOverridesBackfill(@Req() req: AuthedRequest) {
+    return this.users.backfillAllowlistOverrides(req.user.email);
+  }
+
   @Get("roles/catalog")
   rolesCatalog() {
     return this.settings.rolesCatalog();
@@ -191,10 +196,7 @@ export class PodesavanjaController {
   /** Ukloni grid urednika po email-u (nije uuid — bez ParseUUIDPipe). Literal `grid-editors`
    *  POST iznad ne koliduje (druga metoda); param `:email` je jedina :param ruta ovog prefiksa. */
   @Delete("grid-editors/:email")
-  removeGridEditor(
-    @Req() req: AuthedRequest,
-    @Param("email") email: string,
-  ) {
+  removeGridEditor(@Req() req: AuthedRequest, @Param("email") email: string) {
     return this.settings.removeGridEditor(req.user.email, email);
   }
 
@@ -510,7 +512,11 @@ export class PodesavanjaController {
     @Param("itemId") itemId: string,
     @Body() dto: SetPredmetAktivacijaDto,
   ) {
-    return this.settings.setPredmetAktivacija(req.user.email, Number(itemId), dto);
+    return this.settings.setPredmetAktivacija(
+      req.user.email,
+      Number(itemId),
+      dto,
+    );
   }
 
   @Get("audit-log")

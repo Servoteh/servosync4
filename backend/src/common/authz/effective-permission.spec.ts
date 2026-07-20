@@ -1,9 +1,11 @@
 import {
+  applyOverrides,
   resolvePermissionDecision,
   type EffectivePermissionDb,
 } from "./effective-permission";
 import { PERMISSIONS as P } from "./permissions";
 import { ROLES } from "./roles";
+import { permissionsForRoles } from "./role-permissions";
 
 /** Mock db — samo userPermissionOverride.findUnique koji helper dira. */
 function dbMock(override: { allow: boolean } | null = null) {
@@ -81,5 +83,47 @@ describe("resolvePermissionDecision (deny > grant > rola)", () => {
     const { m } = dbMock({ allow: true });
     const d = await resolvePermissionDecision(asDb(m), 9, "user", APPROVE);
     expect(d).toBe("allow");
+  });
+});
+
+/**
+ * Bulk merge za /auth/me/permissions — MORA da se slaže sa resolvePermissionDecision
+ * (deny > grant > rola) da FE `can()` i backend 403 nikad ne divergiraju. Kanonski
+ * slučaj: `kadrovska.grid_edit` ne ide nijednoj roli (allowlist ključ, spec §2.5) —
+ * HR sa override grantom ga MORA videti (incident: zaključan mesečni grid 20.07.2026).
+ */
+describe("applyOverrides (bulk /me/permissions merge)", () => {
+  const GRID_EDIT = P.KADROVSKA_GRID_EDIT;
+
+  it("bez override-a → rola-set netaknut", () => {
+    const rolePerms = permissionsForRoles([ROLES.HR]);
+    expect(applyOverrides(rolePerms, [])).toEqual([...rolePerms]);
+  });
+
+  it("GRANT dodaje ključ koji rola nema (hr + grid_edit override → vidi grid_edit)", () => {
+    const rolePerms = permissionsForRoles([ROLES.HR]);
+    expect(rolePerms).not.toContain(GRID_EDIT); // pretpostavka: allowlist ključ nije u roli
+    const out = applyOverrides(rolePerms, [{ key: GRID_EDIT, allow: true }]);
+    expect(out).toContain(GRID_EDIT);
+  });
+
+  it("DENY skida ključ koji rola daje (deny beat rola)", () => {
+    const rolePerms = permissionsForRoles([ROLES.HR]);
+    expect(rolePerms).toContain(P.KADROVSKA_EDIT);
+    const out = applyOverrides(rolePerms, [
+      { key: P.KADROVSKA_EDIT, allow: false },
+    ]);
+    expect(out).not.toContain(P.KADROVSKA_EDIT);
+  });
+
+  it("mešano: grant + deny u istom pozivu, ostatak seta netaknut", () => {
+    const rolePerms = permissionsForRoles([ROLES.HR]);
+    const out = applyOverrides(rolePerms, [
+      { key: GRID_EDIT, allow: true },
+      { key: P.KADROVSKA_EDIT, allow: false },
+    ]);
+    expect(out).toContain(GRID_EDIT);
+    expect(out).not.toContain(P.KADROVSKA_EDIT);
+    expect(out).toContain(P.KADROVSKA_READ); // netaknut rola-grant
   });
 });
