@@ -108,21 +108,21 @@ gašenja mora se znati da li se gasi **radna** hranilica ili se B1 sekvenca **te
 Ishod preflight-a upisati u ovaj dokument (dopuna §3.1) — od njega zavisi da li F5d
 gasi feed ili je feed već mrtav pa se samo čisti.
 
-### 3.2 O8 — redirect 1.0 mobilnog ekrana praćenja (3 dodira u 1.0 repou)
+### 3.2 O8 — redirect 1.0 ekrana praćenja — ⚠️ SEKCIJA NEVAŽEĆA (verifikacija 20.07.2026)
 
-Desktop praćenje je već cutover-ovano 17.07 (1.0 `src/ui/router.js:175-178,655-664` renderuje
-3.0 iframe). Jedini živi 1.0 klijent sy15 `pracenje_*` RPC-ova je **mobilni /m/pracenje**.
-Izmene (1.0 repo, obrazac `ss2Cutover.js`; NAPOMENA: `ss2Cutover` namerno preskače `/m/*`
-(:15-16), pa redirect ide u router granu):
-
-1. `src/ui/router.js:1115-1116` — granu `screen === 'pracenje'` zameniti redirect-om na
-   `SS2_ORIGIN + '/m/pracenje' + '#ss_token=' + encodeURIComponent(token)` (obrazac
-   ss2Cutover.js:56; 3.0 ruta postoji: `frontend/src/app/m/pracenje`); ukloniti import
-   `renderMyPracenje`.
-2. `src/ui/mobile/mobileAppShell.js:58` — pločica ostaje (router presreće); opciono v2 čip
-   po obrascu `hub/moduleHub.js:43-44`.
-3. `src/lib/appPaths.js:87-88` — mapiranje OSTAJE (deep-linkovi). Fajlovi
-   `myPracenje.js`/`pracenjeProizvodnje.js` se NE brišu (konvencija cutovera, router.js:39).
+**Živa provera 1.0 repoa (grana `cutover/front-repoint`) OBORILA je premise ove sekcije:**
+- `ss2Cutover.js` i `SS2_ORIGIN` **ne postoje** u 1.0 `src/` (grep = 0 pogodaka) — recept
+  „obrazac ss2Cutover:56" je bio nevažeća referenca analize.
+- Tvrdnja „desktop je već cutover-ovan (iframe)" je **netačna**: desktop modul
+  `pracenjeProizvodnje` je ŽIV (`router.js:145-147` teardown grana, `:914-915` mobilna
+  grana `renderMyPracenje` — pun render, ne redirect).
+- **Posledica koja VEĆ VAŽI**: 1.0 praćenje (desktop + mobilni) čita sy15 `pracenje_*`
+  podatke u koje 3.0 od F2 (19.07.) više NE piše → 1.0 ekran pokazuje zamrznuto stanje, a
+  unosi u 1.0 idu u tabele koje niko ne čita. O8 je zato HITNIJI nego što je plan mislio,
+  ali traži **stvarni mini-dizajn** (redirect i za desktop i za mobilni, prenos tokena u
+  3.0) i **koordinaciju sa sesijom koja drži granu `cutover/front-repoint`** u 1.0 repou
+  (aktivna, sa nekomitovanim izmenama van praćenja).
+- §3.3 DROP ostaje blokiran dok pravi O8 ne legne (1.0 živi kod i dalje zove te RPC-ove).
 
 ### 3.3 Posle O8: DROP sy15 `pracenje_*` objekata
 
@@ -134,9 +134,12 @@ Pre DROP-a: `pg_dump` tih objekata u arhivu (obrazac „zamrzni pa obriši", §6
 
 ### 3.4 Sitni quick-wins (nezavisni)
 
-- **Brisanje mrtvog QBigTehn sync koda**: `backend/src/modules/sync/` (mssql.client.ts,
-  generic.syncer.ts, customer.syncer.ts, `QBIGTEHN_CHAIN_ENTITIES`) — lanac ugašen 14.07;
-  `sync.service.spec.ts:35` već čuva da nijedan chain entitet nije registrovan.
+- ~~Brisanje mrtvog QBigTehn sync koda~~ — ⚠️ **STAVKA NEVAŽEĆA (verifikacija 20.07.2026)**:
+  `mssql.client.ts` + `customer.syncer.ts` + `generic.syncer.ts` + `SYNC_MAP` su **ŽIVO
+  jezgro BigBit matičnog sync-a** (`sync.service.ts:9-12,34-42` — registruje CustomerSyncer
+  + 34 generička syncera; radi do 4.0). Brisanje bi oborilo prod sync. Jedino stvarno mrtvo
+  je istorijska lista `QBIGTEHN_CHAIN_ENTITIES` u `table-ownership.ts` — a i ona služi kao
+  zaštita owned tabela od re-importa. **Ne dirati ništa od ovoga do 4.0/B2.**
 - **Dokumentaciona ispravka** `docs/VERZIJE.md`: sekcija „Šta gde piše u kodu" — potrošača je
   15+ (tabela §2.2); formulacija „bigtehn_* nestaju sa F5" važi samo za 3 feed keša,
   kataloški imaju uslov B2.
@@ -376,6 +379,7 @@ Sy15 posle F5 i dalje nosi (uslovi gašenja — redosled iz analize ostatka):
 > uvoz istorije u `audit_log` · M9 = penzionisati pragove u F5c · M10 = 1.0 mobilni
 > Lokacije ostaje do B3. **M7 se presuđuje posle F5b-0 izviđanja** (kako je i predloženo).
 > F5a je time potpuno deblokiran; F5b čeka samo F5b-0 nalaze.
+> **F5a izvođenje ODOBRENO I POKRENUTO 20.07.2026 (Nenad: „kreni").**
 
 1. **M1 — Skladište PP skica** (`production_drawings` zamena; meta 0 redova → trivijalno):
    (a) **bytea u glavnoj bazi** — obrazac `drawing_pdfs.pdf_binary` (schema.prisma:302-313) +

@@ -18,11 +18,12 @@
 ## Šta gde piše u kodu (nasleđena imena koja OSTAJU dok se ne isprazne)
 
 - `@prisma-sy15` / `Sy15Service` / `backend/prisma/sy15.prisma` — klijent ka bazi stare
-  aplikacije. Posle F1 praćenja koristi ga još: `pracenje-akcije-sy15.service.ts` (karantin,
-  akcione tačke), `plan-proizvodnje`, `plan-montaze`, `locations` (+ `loc-tp-feed` hranilica).
-  Gase se modul po modul; poslednji korak je F5 plana praćenja.
+  aplikacije. Potrošača je **15+** (puna mapa: `PLAN_F5_GASENJE_MOSTA.md` §2.2) — među njima
+  `pracenje-akcije-sy15.service.ts` (karantin, akcione tačke), `plan-proizvodnje`,
+  `plan-montaze`, `locations` (+ `loc-tp-feed` hranilica), sastanci… Gase se modul po modul.
 - `bigtehn_*` imena u SQL-u stare baze — keš tabele koje je nekad punio QBigTehn most, a
-  danas `loc-tp-feed` iz glavne baze. Nestaju sa F5.
+  danas `loc-tp-feed` iz glavne baze. **Sa F5 nestaju samo 3 feed keša** (RN / linije / TP);
+  kataloški keševi (artikli, komitenti…) padaju tek uz B2 (BigBit most).
 - Dokumenti pisani pre 19.07.2026 slobodno govore „2.0" — čitaj kao „3.0 / glavna baza".
 
 ## Istorijat verzija (ukratko)
