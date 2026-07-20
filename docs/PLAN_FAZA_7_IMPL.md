@@ -60,3 +60,14 @@ regulativa (APR pravilnik AOP pozicija), Slavišina tabela je samo njegov zapis 
 uporediti izlaz našeg motora sa zvaničnim 2023 PDF-ovima (ZR_validacija/) kad budemo imali bruto stanje
 te godine; (c) ako se ipak želi Slavišina tabela — tražiti od Slaviše `ZR_MOD.mdb` ili CSV izvoz (1 mejl).
 Motor (GkEval) + APR XML su gotovi i ne zavise od ovoga.
+
+### Dopuna (20.07 #4): statutarni ZR radi KNJIGOVOĐA u svom softveru — potvrđeno
+
+Nenadova hipoteza potvrđena dokazima: (1) bilans za 2014 je generisan „**iz Holpen programa**"
+(knjigovodstveni softver — fajl u S:\Servoteh\ZAVRSNI RACUNI\staro); (2) `T_OS_Sredstva` i `T_OS_Stavke`
+u BB_T_26 imaju **0 redova** — OS modul BigBit-a se ne koristi; (3) BigBit **nema tabele za plate**
+(samo `tRadnici`, 123 zaposlena, operativna evidencija). Dakle **plate, porezi na zarade, OS amortizacija
+i statutarni završni račun žive kod knjigovođe** — BigBit (i time 4.0 zamena) pokriva robno/GL/saldakonti/
+PDV/fakturisanje. Naš `zavrsni` modul je pregled + kontrola za menadžment i priprema podloge (bruto
+bilans / zaključni list) za knjigovođu — NIJE kanal za predaju APR-u. Obračun plata i OS amortizaciju
+NE graditi u 4.0 bez izričite odluke (van scope-a, kod knjigovođe).
