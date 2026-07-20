@@ -37,7 +37,11 @@ function makeSvc() {
       fn(tx),
     ),
   };
-  const svc = new PodesavanjaService(sy15 as unknown as Sy15Service);
+  // 2.0 prisma se u ovim testovima ne dira (mirror je samo za grid urednike) — prazan stub.
+  const svc = new PodesavanjaService(
+    sy15 as unknown as Sy15Service,
+    {} as import("../../prisma/prisma.service").PrismaService,
+  );
   return { svc, sy15, tx };
 }
 
@@ -80,7 +84,7 @@ describe("PodesavanjaService P9 — vrednosti firme + očekivanja admin", () => 
     });
     const arg = tx.employeeExpectation.createMany.mock.calls[0][0];
     expect(arg.data).toHaveLength(2); // dedup
-    expect((out.data as { ok: number; requested: number })).toEqual({
+    expect(out.data).toEqual({
       ok: 2,
       requested: 2,
     });

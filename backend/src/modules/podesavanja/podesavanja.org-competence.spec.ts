@@ -16,13 +16,17 @@ function makeTx() {
     $queryRaw: jest.fn().mockResolvedValue([]),
     $executeRaw: jest.fn().mockResolvedValue(1),
     department: {
-      create: jest.fn().mockResolvedValue({ id: 1, name: "Proizvodnja", sortOrder: 0 }),
+      create: jest
+        .fn()
+        .mockResolvedValue({ id: 1, name: "Proizvodnja", sortOrder: 0 }),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
       findUnique: jest.fn().mockResolvedValue({ id: 1, name: "Proizvodnja" }),
     },
     subDepartment: {
-      create: jest.fn().mockResolvedValue({ id: 5, departmentId: 1, name: "CNC" }),
+      create: jest
+        .fn()
+        .mockResolvedValue({ id: 5, departmentId: 1, name: "CNC" }),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
       findUnique: jest.fn().mockResolvedValue({ id: 5 }),
@@ -34,13 +38,17 @@ function makeTx() {
       findUnique: jest.fn().mockResolvedValue({ id: 9, name: "Operater" }),
     },
     competenceGroup: {
-      create: jest.fn().mockResolvedValue({ id: 2, code: "grp_x", nameSr: "Osa" }),
+      create: jest
+        .fn()
+        .mockResolvedValue({ id: 2, code: "grp_x", nameSr: "Osa" }),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
       findUnique: jest.fn().mockResolvedValue({ id: 2 }),
     },
     competence: {
-      create: jest.fn().mockResolvedValue({ id: 7, code: "cmp_x", nameSr: "Komp" }),
+      create: jest
+        .fn()
+        .mockResolvedValue({ id: 7, code: "cmp_x", nameSr: "Komp" }),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
       findUnique: jest.fn().mockResolvedValue({ id: 7 }),
@@ -66,7 +74,11 @@ function makeSvc() {
       fn(tx),
     ),
   };
-  const svc = new PodesavanjaService(sy15 as unknown as Sy15Service);
+  // 2.0 prisma se u ovim testovima ne dira (mirror je samo za grid urednike) — prazan stub.
+  const svc = new PodesavanjaService(
+    sy15 as unknown as Sy15Service,
+    {} as import("../../prisma/prisma.service").PrismaService,
+  );
   return { svc, tx };
 }
 
@@ -104,7 +116,9 @@ describe("PodesavanjaService P8 — org struktura CRUD", () => {
   it("createJobPosition: subDepartmentId undefined → null", async () => {
     const { svc, tx } = makeSvc();
     await svc.createJobPosition("a@x", { departmentId: 1, name: "Operater" });
-    expect(tx.jobPosition.create.mock.calls[0][0].data.subDepartmentId).toBeNull();
+    expect(
+      tx.jobPosition.create.mock.calls[0][0].data.subDepartmentId,
+    ).toBeNull();
   });
 
   it("updateJobPosition: samo prosleđena polja (name izostavljen)", async () => {

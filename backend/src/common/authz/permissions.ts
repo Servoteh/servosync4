@@ -325,6 +325,14 @@ export const OVERRIDE_KEYS = {
   MONTAZA_EDIT: "montaza.edit",
   KADROVSKA_READ: "kadrovska.read",
   KADROVSKA_CONTRACTS_READ: "kadrovska.contracts_read",
+  // Allowlist ključevi (MODULE_SPEC_kadrovska_30 §2.5, matrica #52): sy15 email-allowliste
+  // (`kadr_grid_editor_allowlist` / `kadr_vacation_editor_allowlist`) su IZVOR ISTINE (GUC
+  // čuva can_edit_kadrovska_grid() u RPC-ovima besplatno); 2.0 override je OGLEDALO koje
+  // sinhronizuju backfillAllowlistOverrides (migracija) i dual-write „Grid urednici" ekrana —
+  // bez njega guard/FE `can()` vide samo rola-sloj (allowlist ključevi ne idu nijednoj roli)
+  // pa je i HR sa allowliste zaključan iz grida (incident Mrkajić 20.07.2026).
+  KADROVSKA_GRID_EDIT: "kadrovska.grid_edit",
+  KADROVSKA_VACATION_EDIT: "kadrovska.vacation_edit",
 } as const;
 
 /** Jedan D2 override: 1.0 bool kolona → 2.0 (key, allow) kad je bool true (false = brisanje reda). */

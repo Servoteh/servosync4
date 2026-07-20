@@ -2,16 +2,18 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
   UnprocessableEntityException,
 } from "@nestjs/common";
 import { Prisma } from "@prisma-sy15/client";
+import { PrismaService } from "../../prisma/prisma.service";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
 import { jsonSafe } from "../../common/sy15/json-safe";
 import { pageMeta, parsePagination } from "../../common/pagination";
 import { ROLE_CATALOG } from "../../common/authz/roles";
 import { ROLE_PERMISSIONS } from "../../common/authz/role-permissions";
-import { PERMISSIONS } from "../../common/authz/permissions";
+import { OVERRIDE_KEYS, PERMISSIONS } from "../../common/authz/permissions";
 import { MONTAZA_AI_ALLOWED_MODELS } from "../plan-montaze/montaza-ai";
 import type {
   AuditLogQueryDto,
@@ -23,9 +25,7 @@ import type {
   UpdateCompanyProfileDto,
   UpdateExpectationDto,
 } from "./dto/podesavanja-org.dto";
-import type {
-  SetPredmetAktivacijaDto,
-} from "./dto/podesavanja-predmet.dto";
+import type { SetPredmetAktivacijaDto } from "./dto/podesavanja-predmet.dto";
 import { PRIORITET_MAX_CEILING } from "./dto/podesavanja-predmet.dto";
 import type {
   BulkJobPositionProfileDto,
@@ -70,7 +70,12 @@ const AI_MODEL_ALLOWLIST: Record<"sastanci" | "montaza", readonly string[]> = {
  */
 @Injectable()
 export class PodesavanjaService {
-  constructor(private readonly sy15: Sy15Service) {}
+  private readonly logger = new Logger(PodesavanjaService.name);
+
+  constructor(
+    private readonly sy15: Sy15Service,
+    private readonly prisma: PrismaService,
+  ) {}
 
   // ---------- Korisnici i pristup (user_roles — ALL=admin) ----------
 
@@ -155,34 +160,78 @@ export class PodesavanjaService {
    * upsertuje pa tiho prepiše note; ovde Prisma `create`, 23505 → 409 „već postoji").
    * email se normalizuje (trim+lower) — paritet 1.0 gridEditors.addGridEditor.
    * Row-write (admin) sprovodi RLS kroz GUC. Guard = settings.users (klasni baseline).
+   * DUAL-WRITE (spec kadrovska §2.5): posle sy15 commit-a ogleda se i 2.0 override
+   * `kadrovska.grid_edit` — bez njega guard/FE `can()` ne vide pravo (allowlist
+   * ključevi ne idu nijednoj roli) pa je urednik sa liste i dalje zaključan.
    */
-  addGridEditor(actorEmail: string, email: string, note?: string) {
+  async addGridEditor(actorEmail: string, email: string, note?: string) {
     const e = email.trim().toLowerCase();
-    return this.withUserMapped(actorEmail, async (tx) => {
+    const row = await this.withUserMapped(actorEmail, async (tx) => {
       // Eksplicitna provera duplikata pre create (jasnija poruka od gole 23505).
       const existing = await tx.kadrGridEditorAllowlist.findUnique({
         where: { email: e },
       });
       if (existing)
         throw new ConflictException(`Urednik ${e} već postoji na listi.`);
-      const row = await tx.kadrGridEditorAllowlist.create({
+      return tx.kadrGridEditorAllowlist.create({
         data: { email: e, note: (note ?? "").trim() },
       });
-      return { data: row };
     });
+    const overrideSynced = await this.mirrorGridEditorOverride(e, true);
+    return { data: { ...row, overrideSynced } };
   }
 
-  /** Ukloni grid urednika po email-u (paritet 1.0 removeGridEditor; RLS DELETE=admin). */
-  removeGridEditor(actorEmail: string, email: string) {
+  /** Ukloni grid urednika po email-u (paritet 1.0 removeGridEditor; RLS DELETE=admin).
+   *  DUAL-WRITE kao kod add: skida i 2.0 override `kadrovska.grid_edit` (§2.5). */
+  async removeGridEditor(actorEmail: string, email: string) {
     const e = email.trim().toLowerCase();
-    return this.withUserMapped(actorEmail, async (tx) => {
+    await this.withUserMapped(actorEmail, async (tx) => {
       const res = await tx.kadrGridEditorAllowlist.deleteMany({
         where: { email: e },
       });
       if (res.count === 0)
         throw new NotFoundException(`Urednik ${e} ne postoji na listi.`);
-      return { data: { email: e, deleted: true } };
     });
+    const overrideSynced = await this.mirrorGridEditorOverride(e, false);
+    return { data: { email: e, deleted: true, overrideSynced } };
+  }
+
+  /**
+   * 2.0 override ogledalo allowliste (spec §2.5: „ekran piše OBA"). Best-effort POSLE
+   * sy15 commit-a (različite baze — nema distribuirane tx): pad NE ruši odgovor
+   * (allowlist je izvor istine) — vraća false, a admin re-konvergira kroz
+   * `POST admin/migrations/allowlist-overrides-backfill` (idempotentan mirror).
+   * Grant bez 2.0 naloga = no-op true (nije greška; backfill pokupi kad nalog nastane).
+   */
+  private async mirrorGridEditorOverride(
+    email: string,
+    grant: boolean,
+  ): Promise<boolean> {
+    const key = OVERRIDE_KEYS.KADROVSKA_GRID_EDIT;
+    try {
+      if (grant) {
+        const user = await this.prisma.user.findUnique({
+          where: { email },
+          select: { id: true },
+        });
+        if (!user) return true;
+        await this.prisma.userPermissionOverride.upsert({
+          where: { userId_key: { userId: user.id, key } },
+          create: { userId: user.id, key, allow: true },
+          update: { allow: true },
+        });
+      } else {
+        await this.prisma.userPermissionOverride.deleteMany({
+          where: { key, user: { email } },
+        });
+      }
+      return true;
+    } catch (err) {
+      this.logger.warn(
+        `grid-editor override mirror (${email}, grant=${grant}) failed: ${String(err)}`,
+      );
+      return false;
+    }
   }
 
   // ---------- Organizacija (matični — struktura) ----------
@@ -373,9 +422,7 @@ export class PodesavanjaService {
            WHERE id = 1`,
       );
       if (n === 0)
-        throw new ForbiddenException(
-          "Nemate pravo izmene vrednosti firme.",
-        );
+        throw new ForbiddenException("Nemate pravo izmene vrednosti firme.");
       const row = await tx.companyProfile.findUnique({ where: { id: 1 } });
       return { data: row };
     });
@@ -440,7 +487,8 @@ export class PodesavanjaService {
         sets.push(Prisma.sql`due_date = ${dto.dueDate ?? null}::date`);
       if (dto.priority !== undefined)
         sets.push(Prisma.sql`priority = ${dto.priority}`);
-      if (dto.status !== undefined) sets.push(Prisma.sql`status = ${dto.status}`);
+      if (dto.status !== undefined)
+        sets.push(Prisma.sql`status = ${dto.status}`);
       if (dto.category !== undefined)
         sets.push(Prisma.sql`category = ${dto.category}`);
       if (dto.planId !== undefined)
@@ -451,7 +499,9 @@ export class PodesavanjaService {
         sets.push(Prisma.sql`completion_note = ${dto.completionNote ?? null}`);
       // completed_at: eksplicitno dato → to; inače status='ispunjeno' → now (paritet 1.0).
       if (dto.completedAt !== undefined)
-        sets.push(Prisma.sql`completed_at = ${dto.completedAt ?? null}::timestamptz`);
+        sets.push(
+          Prisma.sql`completed_at = ${dto.completedAt ?? null}::timestamptz`,
+        );
       else if (dto.status === "ispunjeno")
         sets.push(Prisma.sql`completed_at = now()`);
       const n = await tx.$executeRaw(
@@ -590,7 +640,10 @@ export class PodesavanjaService {
       const patch: { name?: string; sortOrder?: number } = {};
       if (dto.name !== undefined) patch.name = dto.name.trim();
       if (dto.sortOrder !== undefined) patch.sortOrder = dto.sortOrder;
-      const res = await tx.department.updateMany({ where: { id }, data: patch });
+      const res = await tx.department.updateMany({
+        where: { id },
+        data: patch,
+      });
       if (res.count === 0)
         throw new NotFoundException(`Odeljenje ${id} ne postoji.`);
       const row = await tx.department.findUnique({ where: { id } });
@@ -681,7 +734,10 @@ export class PodesavanjaService {
         patch.subDepartmentId = dto.subDepartmentId;
       if (dto.name !== undefined) patch.name = dto.name.trim();
       if (dto.sortOrder !== undefined) patch.sortOrder = dto.sortOrder;
-      const res = await tx.jobPosition.updateMany({ where: { id }, data: patch });
+      const res = await tx.jobPosition.updateMany({
+        where: { id },
+        data: patch,
+      });
       if (res.count === 0)
         throw new NotFoundException(`Pozicija ${id} ne postoji.`);
       const row = await tx.jobPosition.findUnique({ where: { id } });
@@ -888,7 +944,10 @@ export class PodesavanjaService {
       if (dto.groupId !== undefined) patch.groupId = dto.groupId;
       if (dto.nameSr !== undefined) patch.nameSr = dto.nameSr.trim();
       if (dto.sortOrder !== undefined) patch.sortOrder = dto.sortOrder;
-      const res = await tx.competence.updateMany({ where: { id }, data: patch });
+      const res = await tx.competence.updateMany({
+        where: { id },
+        data: patch,
+      });
       if (res.count === 0)
         throw new NotFoundException(`Kompetencija ${id} ne postoji.`);
       if (dto.levels !== undefined) await this.upsertLevels(tx, id, dto.levels);

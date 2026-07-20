@@ -42,13 +42,15 @@ describe("Kadrovska R2 mutacije — write-path guard + idempotencija", () => {
 
   beforeEach(() => {
     dbAccessed = false;
-    withUserRls = jest.fn(async (_e: string, fn: (tx: unknown) => Promise<unknown>) =>
-      fn(mkTx()),
+    withUserRls = jest.fn(
+      async (_e: string, fn: (tx: unknown) => Promise<unknown>) => fn(mkTx()),
     );
-    runIdempotentRls = jest.fn(async (_e, _cid, _a, fn: (tx: unknown) => Promise<unknown>) => ({
-      idempotent: false,
-      result: await fn(mkTx()),
-    }));
+    runIdempotentRls = jest.fn(
+      async (_e, _cid, _a, fn: (tx: unknown) => Promise<unknown>) => ({
+        idempotent: false,
+        result: await fn(mkTx()),
+      }),
+    );
     const sy15 = {
       withUserRls,
       runIdempotentRls,
@@ -58,13 +60,23 @@ describe("Kadrovska R2 mutacije — write-path guard + idempotencija", () => {
     Object.defineProperty(sy15, "db", {
       get() {
         dbAccessed = true;
-        throw new Error("PII LEAK: this.sy15.db (BYPASSRLS) dodirnut u write putanji");
+        throw new Error(
+          "PII LEAK: this.sy15.db (BYPASSRLS) dodirnut u write putanji",
+        );
       },
     });
-    const storage = { upload: jest.fn(), signUrl: jest.fn(), remove: jest.fn() };
+    const storage = {
+      upload: jest.fn(),
+      signUrl: jest.fn(),
+      remove: jest.fn(),
+    };
     mailSend = jest.fn().mockResolvedValue(true);
     const mail = { configured: true, send: mailSend };
-    service = new KadrovskaMutationsService(sy15 as never, storage as never, mail as never);
+    service = new KadrovskaMutationsService(
+      sy15 as never,
+      storage as never,
+      mail as never,
+    );
   });
 
   it("kreiranje (create) ide kroz runIdempotentRls sa clientEventId + email", async () => {
@@ -74,7 +86,7 @@ describe("Kadrovska R2 mutacije — write-path guard + idempotencija", () => {
       type: "godisnji",
       dateFrom: "2026-07-01",
       dateTo: "2026-07-05",
-    } as never);
+    });
     expect(runIdempotentRls).toHaveBeenCalledTimes(1);
     expect(runIdempotentRls.mock.calls[0][0]).toBe(EMAIL);
     expect(runIdempotentRls.mock.calls[0][1]).toBe(UUID);
@@ -95,20 +107,108 @@ describe("Kadrovska R2 mutacije — write-path guard + idempotencija", () => {
 
   it("nijedna mutacija ne dodiruje this.sy15.db (BYPASSRLS sentinel)", async () => {
     await Promise.allSettled([
-      service.submitVacation(EMAIL, { clientEventId: UUID, year: 2026, dateFrom: "2026-07-01", dateTo: "2026-07-02", daysCount: 2 } as never),
+      service.submitVacation(EMAIL, {
+        clientEventId: UUID,
+        year: 2026,
+        dateFrom: "2026-07-01",
+        dateTo: "2026-07-02",
+        daysCount: 2,
+      }),
       service.vacationReject(EMAIL, UUID, { note: "x" }),
-      service.gridBatch(EMAIL, { rows: [{ employeeId: UUID, workDate: "2026-07-01", hours: 8 }] } as never),
-      service.gridSetGo(EMAIL, { employeeId: UUID, dateFrom: "2026-07-01", dateTo: "2026-07-02" }),
-      service.createEmployee(EMAIL, { clientEventId: UUID, fullName: "X", workType: "ugovor" } as never),
-      service.createChild(EMAIL, UUID, { clientEventId: UUID, firstName: "A" } as never),
-      service.createBankCard(EMAIL, UUID, { clientEventId: UUID, bank: "B" } as never),
-      service.createMedical(EMAIL, UUID, { clientEventId: UUID, examDate: "2026-07-01", examType: "sistematski" } as never),
-      service.createSalaryTerm(EMAIL, { clientEventId: UUID, employeeId: UUID, salaryType: "ugovor", effectiveFrom: "2026-07-01" } as never),
+      service.gridBatch(EMAIL, {
+        rows: [{ employeeId: UUID, workDate: "2026-07-01", hours: 8 }],
+      }),
+      service.gridSetGo(EMAIL, {
+        employeeId: UUID,
+        dateFrom: "2026-07-01",
+        dateTo: "2026-07-02",
+      }),
+      service.createEmployee(EMAIL, {
+        clientEventId: UUID,
+        fullName: "X",
+        workType: "ugovor",
+      }),
+      service.createChild(EMAIL, UUID, {
+        clientEventId: UUID,
+        firstName: "A",
+      }),
+      service.createBankCard(EMAIL, UUID, {
+        clientEventId: UUID,
+        bank: "B",
+      }),
+      service.createMedical(EMAIL, UUID, {
+        clientEventId: UUID,
+        examDate: "2026-07-01",
+        examType: "sistematski",
+      }),
+      service.createSalaryTerm(EMAIL, {
+        clientEventId: UUID,
+        employeeId: UUID,
+        salaryType: "ugovor",
+        effectiveFrom: "2026-07-01",
+      }),
       service.payrollInit(EMAIL, { year: 2026, month: 7 }),
       service.updateNotificationConfig(EMAIL, { enabled: true }),
       service.triggerWeeklyRisk(EMAIL),
     ]);
     expect(dbAccessed).toBe(false);
+  });
+
+  it("gridSetGo/gridUnsetGo: sy15 backstop — can_edit_kadrovska_grid()=false → 403, RPC se NE zove", async () => {
+    const queryRaw = jest.fn().mockResolvedValueOnce([{ v: false }]); // samo assert
+    withUserRls = jest.fn(async (_e, fn: (tx: unknown) => Promise<unknown>) =>
+      fn(
+        new Proxy(
+          {},
+          {
+            get(_t, prop) {
+              if (prop === "$queryRaw") return queryRaw;
+              return modelStub;
+            },
+          },
+        ),
+      ),
+    );
+    (
+      service as unknown as { sy15: { withUserRls: unknown } }
+    ).sy15.withUserRls = withUserRls;
+    await expect(
+      service.gridSetGo(EMAIL, {
+        employeeId: UUID,
+        dateFrom: "2026-07-01",
+        dateTo: "2026-07-02",
+      }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(queryRaw).toHaveBeenCalledTimes(1); // RPC posle assert-a NIJE pozvan
+  });
+
+  it("gridSetGo: allowlist=true → assert pa RPC u ISTOJ tx (2 upita)", async () => {
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([{ v: true }]) // assert
+      .mockResolvedValueOnce([{ v: 3 }]); // kadr_grid_set_go
+    withUserRls = jest.fn(async (_e, fn: (tx: unknown) => Promise<unknown>) =>
+      fn(
+        new Proxy(
+          {},
+          {
+            get(_t, prop) {
+              if (prop === "$queryRaw") return queryRaw;
+              return modelStub;
+            },
+          },
+        ),
+      ),
+    );
+    (
+      service as unknown as { sy15: { withUserRls: unknown } }
+    ).sy15.withUserRls = withUserRls;
+    await service.gridSetGo(EMAIL, {
+      employeeId: UUID,
+      dateFrom: "2026-07-01",
+      dateTo: "2026-07-02",
+    });
+    expect(queryRaw).toHaveBeenCalledTimes(2);
   });
 
   it("optimistic-lock: {applied:false, reason:'stale'} → 409 Conflict", async () => {
@@ -121,27 +221,33 @@ describe("Kadrovska R2 mutacije — write-path guard + idempotencija", () => {
               if (prop === "$queryRaw")
                 return jest
                   .fn()
-                  .mockResolvedValue([{ v: { applied: false, reason: "stale" } }]);
+                  .mockResolvedValue([
+                    { v: { applied: false, reason: "stale" } },
+                  ]);
               return modelStub;
             },
           },
         ),
       ),
     );
-    (service as unknown as { sy15: { withUserRls: unknown } }).sy15.withUserRls = withUserRls;
+    (
+      service as unknown as { sy15: { withUserRls: unknown } }
+    ).sy15.withUserRls = withUserRls;
     await expect(
       service.updateEmployee(EMAIL, UUID, { patch: { note: "x" } }),
     ).rejects.toBeInstanceOf(ConflictException);
   });
 
   it("SQLSTATE 42501 (RLS/DEFINER guard) → 403 Forbidden", async () => {
-    const err = Object.assign(new Error("permission_denied"), { code: "42501" });
-    (service as unknown as { sy15: { withUserRls: unknown } }).sy15.withUserRls = jest
-      .fn()
-      .mockRejectedValue(err);
-    await expect(service.vacationApprove(EMAIL, UUID, {})).rejects.toBeInstanceOf(
-      ForbiddenException,
-    );
+    const err = Object.assign(new Error("permission_denied"), {
+      code: "42501",
+    });
+    (
+      service as unknown as { sy15: { withUserRls: unknown } }
+    ).sy15.withUserRls = jest.fn().mockRejectedValue(err);
+    await expect(
+      service.vacationApprove(EMAIL, UUID, {}),
+    ).rejects.toBeInstanceOf(ForbiddenException);
   });
 
   // ── Review #24: raise_* odluka o zaradi vezana za tip 'godisnji' ──────────
@@ -152,26 +258,49 @@ describe("Kadrovska R2 mutacije — write-path guard + idempotencija", () => {
       {
         get(_t, prop) {
           if (prop === "employeeTalk")
-            return { create: jest.fn(async (a: { data: Record<string, unknown> }) => (created.push(a.data), { id: UUID })) };
+            return {
+              create: jest.fn(
+                async (a: { data: Record<string, unknown> }) => (
+                  created.push(a.data),
+                  { id: UUID }
+                ),
+              ),
+            };
           if (prop === "$executeRaw") return jest.fn().mockResolvedValue(1);
           return modelStub;
         },
       },
     );
-    (service as unknown as { sy15: { runIdempotentRls: unknown } }).sy15.runIdempotentRls = jest.fn(
-      async (_e, _c, _a, fn: (t: unknown) => Promise<unknown>) => ({ idempotent: false, result: await fn(tx) }),
+    (
+      service as unknown as { sy15: { runIdempotentRls: unknown } }
+    ).sy15.runIdempotentRls = jest.fn(
+      async (_e, _c, _a, fn: (t: unknown) => Promise<unknown>) => ({
+        idempotent: false,
+        result: await fn(tx),
+      }),
     );
     await service.createTalk(EMAIL, {
-      clientEventId: UUID, employeeId: UUID, talkType: "jedan_na_jedan",
-      raiseDecision: "da", raisePercent: 5, raiseEffectiveFrom: "2026-08-01", raiseNote: "x",
-    } as never);
+      clientEventId: UUID,
+      employeeId: UUID,
+      talkType: "jedan_na_jedan",
+      raiseDecision: "da",
+      raisePercent: 5,
+      raiseEffectiveFrom: "2026-08-01",
+      raiseNote: "x",
+    });
     expect(created[0]).toMatchObject({
-      raiseDecision: null, raisePercent: null, raiseEffectiveFrom: null, raiseNote: null,
+      raiseDecision: null,
+      raisePercent: null,
+      raiseEffectiveFrom: null,
+      raiseNote: null,
     });
     await service.createTalk(EMAIL, {
-      clientEventId: UUID, employeeId: UUID, talkType: "godisnji",
-      raiseDecision: "da", raisePercent: 5,
-    } as never);
+      clientEventId: UUID,
+      employeeId: UUID,
+      talkType: "godisnji",
+      raiseDecision: "da",
+      raisePercent: 5,
+    });
     expect(created[1]).toMatchObject({ raiseDecision: "da", raisePercent: 5 });
   });
 
@@ -184,19 +313,29 @@ describe("Kadrovska R2 mutacije — write-path guard + idempotencija", () => {
           if (prop === "employeeTalk")
             return {
               findUnique: jest.fn().mockResolvedValue({ talkType: "godisnji" }),
-              updateMany: jest.fn(async (a: { data: Record<string, unknown> }) => (updates.push(a.data), { count: 1 })),
+              updateMany: jest.fn(
+                async (a: { data: Record<string, unknown> }) => (
+                  updates.push(a.data),
+                  { count: 1 }
+                ),
+              ),
             };
           return modelStub;
         },
       },
     );
-    (service as unknown as { sy15: { withUserRls: unknown } }).sy15.withUserRls = jest.fn(
+    (
+      service as unknown as { sy15: { withUserRls: unknown } }
+    ).sy15.withUserRls = jest.fn(
       async (_e: string, fn: (t: unknown) => Promise<unknown>) => fn(tx),
     );
     // Menja tip u 'korektivni' bez slanja raise ključeva → sve 4 kolone eksplicitno null.
-    await service.updateTalk(EMAIL, UUID, { talkType: "korektivni" } as never);
+    await service.updateTalk(EMAIL, UUID, { talkType: "korektivni" });
     expect(updates[0]).toMatchObject({
-      raiseDecision: null, raisePercent: null, raiseEffectiveFrom: null, raiseNote: null,
+      raiseDecision: null,
+      raisePercent: null,
+      raiseEffectiveFrom: null,
+      raiseNote: null,
     });
   });
 
@@ -207,18 +346,29 @@ describe("Kadrovska R2 mutacije — write-path guard + idempotencija", () => {
       {
         get(_t, prop) {
           if (prop === "assessmentCycle")
-            return { findUnique: jest.fn().mockResolvedValue({ title: "C", periodLabel: "2026", createdBy: "boss@x.com" }) };
-          if (prop === "assessment") return { findMany: jest.fn().mockResolvedValue([]) };
+            return {
+              findUnique: jest.fn().mockResolvedValue({
+                title: "C",
+                periodLabel: "2026",
+                createdBy: "boss@x.com",
+              }),
+            };
+          if (prop === "assessment")
+            return { findMany: jest.fn().mockResolvedValue([]) };
           if (prop === "$queryRaw") return jest.fn().mockResolvedValue([]);
           return modelStub;
         },
       },
     );
-    (service as unknown as { sy15: { withUserRls: unknown } }).sy15.withUserRls = jest.fn(
+    (
+      service as unknown as { sy15: { withUserRls: unknown } }
+    ).sy15.withUserRls = jest.fn(
       async (_e: string, fn: (t: unknown) => Promise<unknown>) => fn(tx),
     );
     const res = await service.assessmentInvite(EMAIL, { cycleId: UUID });
-    expect(res).toEqual({ data: { ok: true, sent: 0, skipped: [], message: "Ciklus nema procena." } });
+    expect(res).toEqual({
+      data: { ok: true, sent: 0, skipped: [], message: "Ciklus nema procena." },
+    });
     expect(mailSend).not.toHaveBeenCalled();
   });
 });
@@ -237,7 +387,9 @@ describe("payrollRecompute — integracija (mapTerm/fond wiring, novac)", () => 
 
   function makeService(tx: unknown) {
     const sy15 = {
-      withUserRls: jest.fn(async (_e: string, fn: (t: unknown) => Promise<unknown>) => fn(tx)),
+      withUserRls: jest.fn(
+        async (_e: string, fn: (t: unknown) => Promise<unknown>) => fn(tx),
+      ),
       runIdempotentRls: jest.fn(),
       withUser: jest.fn(),
       runIdempotent: jest.fn(),
@@ -247,9 +399,17 @@ describe("payrollRecompute — integracija (mapTerm/fond wiring, novac)", () => 
         throw new Error("BYPASSRLS dodirnut u recompute");
       },
     });
-    const storage = { upload: jest.fn(), signUrl: jest.fn(), remove: jest.fn() };
+    const storage = {
+      upload: jest.fn(),
+      signUrl: jest.fn(),
+      remove: jest.fn(),
+    };
     const mail = { configured: true, send: jest.fn().mockResolvedValue(true) };
-    return new KadrovskaMutationsService(sy15 as never, storage as never, mail as never);
+    return new KadrovskaMutationsService(
+      sy15 as never,
+      storage as never,
+      mail as never,
+    );
   }
 
   // tx sa: bez praznika, jedan zaposleni, zadatim work_hours + term redom.
@@ -262,11 +422,14 @@ describe("payrollRecompute — integracija (mapTerm/fond wiring, novac)", () => 
     return {
       kadrHoliday: { findMany: jest.fn().mockResolvedValue([]) },
       employee: {
-        findMany: jest
-          .fn()
-          .mockResolvedValue([
-            { id: EMP, workType: opts.workType ?? "ugovor", hireDate: null, fullName: "Test Radnik" },
-          ]),
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: EMP,
+            workType: opts.workType ?? "ugovor",
+            hireDate: null,
+            fullName: "Test Radnik",
+          },
+        ]),
       },
       workHours: { findMany: jest.fn().mockResolvedValue(opts.workHours) },
       salaryPayroll: { findFirst: jest.fn().mockResolvedValue(null) },
@@ -309,8 +472,13 @@ describe("payrollRecompute — integracija (mapTerm/fond wiring, novac)", () => 
       },
     });
     const svc = makeService(tx);
-    const out = (await svc.payrollRecompute(EMAIL, { year: 2026, month: 7 })) as {
-      data: { rows: Array<{ ukupna_zarada: number; compensation_model: string }> };
+    const out = (await svc.payrollRecompute(EMAIL, {
+      year: 2026,
+      month: 7,
+    })) as {
+      data: {
+        rows: Array<{ ukupna_zarada: number; compensation_model: string }>;
+      };
     };
     expect(out.data.rows[0].compensation_model).toBe("fiksno");
     expect(out.data.rows[0].ukupna_zarada).toBe(70000);
@@ -356,7 +524,9 @@ describe("payrollRecompute — integracija (mapTerm/fond wiring, novac)", () => 
       employee: {
         findMany: jest
           .fn()
-          .mockResolvedValue([{ id: EMP, workType: "ugovor", hireDate: null, fullName: "Test" }]),
+          .mockResolvedValue([
+            { id: EMP, workType: "ugovor", hireDate: null, fullName: "Test" },
+          ]),
       },
       workHours: { findMany: jest.fn().mockResolvedValue([]) },
       $queryRaw: jest
@@ -376,7 +546,12 @@ describe("payrollRecompute — integracija (mapTerm/fond wiring, novac)", () => 
         ])
         // (2) salary_terms
         .mockResolvedValueOnce([
-          { salary_type: "ugovor", compensation_model: "fiksno", fixed_amount: 100000, amount: 0 },
+          {
+            salary_type: "ugovor",
+            compensation_model: "fiksno",
+            fixed_amount: 100000,
+            amount: 0,
+          },
         ])
         // (3) hr_upsert_salary_payroll — uhvati JSON row
         .mockImplementationOnce((sql: { values: unknown[] }) => {
@@ -385,9 +560,17 @@ describe("payrollRecompute — integracija (mapTerm/fond wiring, novac)", () => 
         }),
     };
     const svc = makeService(tx);
-    await svc.payrollRecompute(EMAIL, { year: y, month: m, employeeId: EMP, persist: true });
+    await svc.payrollRecompute(EMAIL, {
+      year: y,
+      month: m,
+      employeeId: EMP,
+      persist: true,
+    });
     expect(captured).toHaveLength(1);
-    const row = JSON.parse(String(captured[0].values[0])) as Record<string, unknown>;
+    const row = JSON.parse(String(captured[0].values[0])) as Record<
+      string,
+      unknown
+    >;
     expect(row.advance_paid_on).toBe("2026-07-10");
     expect(row.final_paid_on).toBe("2026-08-05");
     expect(row.expected_updated_at).toBe("2026-07-31 10:00:00+00");
@@ -399,7 +582,11 @@ describe("payrollRecompute — integracija (mapTerm/fond wiring, novac)", () => 
       $queryRaw: jest
         .fn()
         .mockResolvedValueOnce([
-          { u: "2026-07-31 10:00:00.123456+00", apo: "2026-07-10", fpo: "2026-08-05" },
+          {
+            u: "2026-07-31 10:00:00.123456+00",
+            apo: "2026-07-10",
+            fpo: "2026-08-05",
+          },
         ])
         .mockImplementationOnce((sql: { values: unknown[] }) => {
           captured.push(sql);
@@ -407,8 +594,13 @@ describe("payrollRecompute — integracija (mapTerm/fond wiring, novac)", () => 
         }),
     };
     const svc = makeService(tx);
-    await svc.payrollLock(EMAIL, EMP, { expectedUpdatedAt: "2026-07-31T10:00:00.123Z" });
-    const row = JSON.parse(String(captured[0].values[0])) as Record<string, unknown>;
+    await svc.payrollLock(EMAIL, EMP, {
+      expectedUpdatedAt: "2026-07-31T10:00:00.123Z",
+    });
+    const row = JSON.parse(String(captured[0].values[0])) as Record<
+      string,
+      unknown
+    >;
     expect(row.status).toBe("paid");
     expect(row.advance_paid_on).toBe("2026-07-10");
     expect(row.final_paid_on).toBe("2026-08-05");
@@ -422,7 +614,11 @@ describe("payrollRecompute — integracija (mapTerm/fond wiring, novac)", () => 
     const captured: Array<{ values: unknown[] }> = [];
     const tx = {
       kadrHoliday: { findMany: jest.fn().mockResolvedValue([]) },
-      employee: { findFirst: jest.fn().mockResolvedValue({ workType: "ugovor", hireDate: null }) },
+      employee: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ workType: "ugovor", hireDate: null }),
+      },
       workHours: { findMany: jest.fn().mockResolvedValue([]) },
       $queryRaw: jest
         .fn()
@@ -446,7 +642,12 @@ describe("payrollRecompute — integracija (mapTerm/fond wiring, novac)", () => 
         ])
         // (2) salary_terms (K3.3 fiksno)
         .mockResolvedValueOnce([
-          { salary_type: "ugovor", compensation_model: "fiksno", fixed_amount: 100000, amount: 0 },
+          {
+            salary_type: "ugovor",
+            compensation_model: "fiksno",
+            fixed_amount: 100000,
+            amount: 0,
+          },
         ])
         // (3) RPC — uhvati row
         .mockImplementationOnce((sql: { values: unknown[] }) => {
@@ -462,7 +663,10 @@ describe("payrollRecompute — integracija (mapTerm/fond wiring, novac)", () => 
         advance_amount: 20000,
       },
     });
-    const row = JSON.parse(String(captured[0].values[0])) as Record<string, unknown>;
+    const row = JSON.parse(String(captured[0].values[0])) as Record<
+      string,
+      unknown
+    >;
     // Fiksno 100000, bez neplaćenih → sveža ukupna_zarada 100000 (NE stara iz baze).
     expect(row.ukupna_zarada).toBe(100000);
     expect(row.compensation_model).toBe("fiksno");
@@ -476,7 +680,11 @@ describe("payrollRecompute — integracija (mapTerm/fond wiring, novac)", () => 
   it("#2 fiksno 100000 + 5 neplaćenih (22-radna meseca) → 77272.73 + fond 176 (NE 70588.24/136)", async () => {
     const y = 2026;
     let m = 0;
-    for (let mm = 1; mm <= 12; mm++) if (weekdaysInMonth(y, mm) === 22) { m = mm; break; }
+    for (let mm = 1; mm <= 12; mm++)
+      if (weekdaysInMonth(y, mm) === 22) {
+        m = mm;
+        break;
+      }
     expect(m).toBeGreaterThan(0); // postoji 22-radni mesec u 2026
     const npDays = firstNWeekdayUtcDates(y, m, 5).map((wd) => ({
       workDate: wd,
@@ -489,11 +697,18 @@ describe("payrollRecompute — integracija (mapTerm/fond wiring, novac)", () => 
     }));
     const tx = makeTx({
       workHours: npDays,
-      term: { salary_type: "ugovor", compensation_model: "fiksno", fixed_amount: 100000, amount: 0 },
+      term: {
+        salary_type: "ugovor",
+        compensation_model: "fiksno",
+        fixed_amount: 100000,
+        amount: 0,
+      },
     });
     const svc = makeService(tx);
     const out = (await svc.payrollRecompute(EMAIL, { year: y, month: m })) as {
-      data: { rows: Array<{ ukupna_zarada: number; fond_sati_meseca: number }> };
+      data: {
+        rows: Array<{ ukupna_zarada: number; fond_sati_meseca: number }>;
+      };
     };
     // PUN fond (22×8=176) — NE umanjen (136); jedna proporcionalna redukcija 17/22.
     expect(out.data.rows[0].fond_sati_meseca).toBe(176);
