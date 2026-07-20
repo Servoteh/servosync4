@@ -36,3 +36,27 @@ koja JE ULS-zaključana → mdb-tools vidi katalog ali ne čita sadržaj (ni Kon
 BrojKolona, Velicina) iz zaključane BB_T_26.mdb.** Načini: (1) Access na PC-u sa .mdw (Nenad ne može otvoriti);
 (2) otključati BB_T_26 kopiju (ukloniti .mdw vezu) pa mdb-export; (3) izvoz iz žive BigBit instalacije koja ima
 pristup. Motor + XML čekaju samo taj CSV — sve ostalo radi (bruto bilans na rekonstrukciji).
+
+### ZAKLJUČAK (20.07 #3): `ZR_AOP_Modla` NE POSTOJI kod Servoteha — vendorska je
+
+Iscrpna pretraga (mdb-tools kroz docker image `mdbtools:local` na ubuntusrv; stabilan — flaky apt rešen
+build-om trajnog image-a) SVIH dostupnih baza: `_legacy/BigBit26/*` (= kopija P:\SERVOTEH\BigBit26),
+`BigbitRaznoNenad/*` (BB_T_25, MojaBIgBitBaza 201 tab., OnLine APL), TG/PG, EXTENDED, Desktop\BigBit26
+(ŽIVA radna kopija, OnLine APL 12.07.2026 — 285 razrešenih linkova u MSysObjects Type=6), share-ovi
+`\\BigBit` (192.168.64.14) i `S:\BigBit`:
+
+- **`ZR_AOP_Modla` nema NI U JEDNOJ bazi** — ni fizički ni kao link (285 živih linkova → sve na
+  P:\Servoteh\BigBit26\{STH26,SHUTTLE,CFG...}, nula ZR).
+- **Arhitektura (iz `BazeITabele_APL` + `Baze_Tipovi_APL` u APL bazi):** ZR je ZASEBNA aplikacija —
+  IDBaze 9000=`ZR_APL`, **9010=`ZR_MOD`** (ZR_AOP_Modla, ZR_AOP_Pravila, ZR_VelicinaPreduzeca — FORMULE),
+  9020=`ZR_POD` (ZR_BrutoStanje, ZR_Stavke, ZR_Zaglavlje — podaci). Ti .mdb fajlovi **nisu instalirani
+  kod Servoteha** (nema ih na P:, u profilima, na share-ovima).
+- **`Form_ZR_Start.Form_Close`: `If CurrentUser <> "Slavisa" Then DoCmd.Quit`** — ZR modul koristi samo
+  Slaviša (autor BigBit-a). Završni račun je vendorski servis; Servoteh dobija gotove PDF-ove
+  (S:\Servoteh\ZAVRSNI RACUNI\2023 — ćirilični APR obrasci, kopirano u `_legacy/BigBit26/ZR_validacija/`).
+
+**Posledice za 4.0:** (a) rekonstruisani seed (`balance-formulas.sql`) OSTAJE — formule su ionako javna
+regulativa (APR pravilnik AOP pozicija), Slavišina tabela je samo njegov zapis istog; (b) validacija:
+uporediti izlaz našeg motora sa zvaničnim 2023 PDF-ovima (ZR_validacija/) kad budemo imali bruto stanje
+te godine; (c) ako se ipak želi Slavišina tabela — tražiti od Slaviše `ZR_MOD.mdb` ili CSV izvoz (1 mejl).
+Motor (GkEval) + APR XML su gotovi i ne zavise od ovoga.
