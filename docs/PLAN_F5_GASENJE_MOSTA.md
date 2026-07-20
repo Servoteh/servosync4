@@ -367,7 +367,15 @@ Sy15 posle F5 i dalje nosi (uslovi gašenja — redosled iz analize ostatka):
 | D1 dual-write + `Sy15AuthAdminService` + SSO `SY15_JWT_SECRET` | penzija 1.0 logina (ss2 soft-flip) | POSLEDNJE |
 | `Sy15StorageService` + bucketi (reversal-pdf, sastanci-*, pb-*, maint-*, employee-docs, montaza-izvestaji, bigtehn-drawings) | posle SVIH seoba fasada | tek tada: brisanje `Sy15Module`, `sy15.prisma`, prebuild koraka, SY15_* env |
 
-## 8. Otvorene odluke M1–M10 (za Nenada; obrazac O/K odluka)
+## 8. Odluke M1–M10 — ✅ PRESUĐENO 20.07.2026 (Nenad)
+
+> **Sve odluke M1–M6 i M8–M10 presuđene PO PREPORUCI** (20.07.2026): M1 skice = bytea u
+> glavnoj bazi · M2 Lokacije = minimalni repoint (A) · M3 = string id-jevi ostaju · M4 =
+> bridge-status/baner se uklanja · M5 = lookups rute se gase (TS kanonizacija se čuva) ·
+> M6 = native `significant_for_finishing` kanon + obavezan diff skupa · M8 = jednokratni
+> uvoz istorije u `audit_log` · M9 = penzionisati pragove u F5c · M10 = 1.0 mobilni
+> Lokacije ostaje do B3. **M7 se presuđuje posle F5b-0 izviđanja** (kako je i predloženo).
+> F5a je time potpuno deblokiran; F5b čeka samo F5b-0 nalaze.
 
 1. **M1 — Skladište PP skica** (`production_drawings` zamena; meta 0 redova → trivijalno):
    (a) **bytea u glavnoj bazi** — obrazac `drawing_pdfs.pdf_binary` (schema.prisma:302-313) +
