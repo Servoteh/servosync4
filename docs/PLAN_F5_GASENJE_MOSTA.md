@@ -108,6 +108,26 @@ gašenja mora se znati da li se gasi **radna** hranilica ili se B1 sekvenca **te
 Ishod preflight-a upisati u ovaj dokument (dopuna §3.1) — od njega zavisi da li F5d
 gasi feed ili je feed već mrtav pa se samo čisti.
 
+**✅ PREFLIGHT IZVRŠEN 20.07.2026 (Nenad, SSH na ubuntusrv → sy15-db kontejner) — NALAZI:**
+
+1. **Hranilica (loc-tp-feed B1) NIKAD NIJE PUŠTENA U RAD** — `loc_tp_feed_state` tabela
+   **ne postoji** u sy15 (seed `10_feed_state_init.sql` nikad izvršen). RUNBOOK (18.07,
+   „sekvenca neizvršena") je bio TAČAN; VERZIJE.md tvrdnja da feed puni keš je bila netačna.
+2. **Keš je ZAMRZNUT od gašenja QBigTehn sync-a**: `max(synced_at)` = RN **14.07 11:30**,
+   linije **13.07 15:00**, tech_routing **15.07 16:15** (provera 20.07 06:26 — staro 5–7 dana).
+3. `loc_bigtehn_ingest_5min` pg_cron u sy15 **jeste aktivan** (*/5) ali prazan hod — troši
+   keš koji niko ne puni. Aktivni su i `loc_purge_synced_daily`, `loc_sync_health_check_hourly`,
+   `po_cleanup_orphaned_machines` (za F5d listu).
+4. `sy15-scheduler` (dispatch-loop.sh) okida SAMO notifikacione fn (sastanci/hr/loc-monitor/
+   maint/pb) — nema veze sa proizvodnim feed-om.
+5. `bridge_sync_log` ima drugačija imena kolona od plana (nije bitno — istorija, ne živi tok).
+
+**POSLEDICA (bitnija od F5 samog): 3.0 Plan proizvodnje i 1.0 Lokacije rade nad podacima
+zamrznutim 14–15.07** — svaka operacija kucana od tada NE postoji u planu mašina. F5d je
+„čišćenje" (nema šta da se gasi osim praznog pg_cron-a), ali **F5b/F5c postaju hitni** —
+ili se kao privremeni most aktivira B1 sekvenca iz RUNBOOK-a (odmrzava odmah), ili se ide
+pravo na native repoint (par dana rada). Odluka M11 (Nenad).
+
 ### 3.2 O8 — redirect 1.0 ekrana praćenja — ⚠️ SEKCIJA NEVAŽEĆA (verifikacija 20.07.2026)
 
 **Živa provera 1.0 repoa (grana `cutover/front-repoint`) OBORILA je premise ove sekcije:**

@@ -21,9 +21,10 @@
   aplikacije. Potrošača je **15+** (puna mapa: `PLAN_F5_GASENJE_MOSTA.md` §2.2) — među njima
   `pracenje-akcije-sy15.service.ts` (karantin, akcione tačke), `plan-proizvodnje`,
   `plan-montaze`, `locations` (+ `loc-tp-feed` hranilica), sastanci… Gase se modul po modul.
-- `bigtehn_*` imena u SQL-u stare baze — keš tabele koje je nekad punio QBigTehn most, a
-  danas `loc-tp-feed` iz glavne baze. **Sa F5 nestaju samo 3 feed keša** (RN / linije / TP);
-  kataloški keševi (artikli, komitenti…) padaju tek uz B2 (BigBit most).
+- `bigtehn_*` imena u SQL-u stare baze — keš tabele koje je punio QBigTehn most do gašenja
+  14.07. Planirana zamena (`loc-tp-feed` iz glavne baze) **nikad nije puštena u rad**
+  (preflight 20.07: `loc_tp_feed_state` ne postoji, keš zamrznut 14–15.07). **Sa F5 nestaju
+  samo 3 feed keša** (RN / linije / TP); kataloški keševi padaju tek uz B2 (BigBit most).
 - Dokumenti pisani pre 19.07.2026 slobodno govore „2.0" — čitaj kao „3.0 / glavna baza".
 
 ## Istorijat verzija (ukratko)
