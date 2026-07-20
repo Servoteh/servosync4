@@ -3,6 +3,7 @@ import {
   IsISO8601,
   IsOptional,
   IsString,
+  MaxLength,
   IsUUID,
 } from "class-validator";
 
@@ -51,4 +52,9 @@ export class TemeQueryDto {
 
 export class NotificationsQueryDto {
   @IsOptional() @IsUUID() sastanakId?: string;
+}
+
+export class ProjektiQueryDto {
+  /** RN picker pretraga (S5): ILIKE po šifri/nazivu projekta; opciono. */
+  @IsOptional() @IsString() @MaxLength(100) q?: string;
 }

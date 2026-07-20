@@ -28,10 +28,19 @@ preživljavaju auto-deploy; backup compose-a: `~admnenad/compose-backup-*.yml`).
 **(a) `backend.env` — dodato:**
 ```
 SY15_DATABASE_URL=postgresql://servosync2_app:<pw>@sy15-db:5432/postgres   # iz ~/servosync15/sy15-app-role.env
-SY15_STORAGE_URL=http://sy15-storage:5000/storage/v1
+SY15_STORAGE_URL=https://api.servosync.servoteh.com/storage/v1
 SY15_SERVICE_KEY=<SERVICE_ROLE_KEY iz ~/servosync15/.env>
 # + IZMENJENO: DATABASE_URL host db → servosync-pg (vidi KRITIČNU LEKCIJU gore)
 ```
+
+> ⚠️ **Lekcija (20.07.2026):** `SY15_STORAGE_URL` MORA biti **javni gateway URL**
+> (`https://api.servosync.servoteh.com/storage/v1`), NE interni docker host
+> (`http://sy15-storage:5000/storage/v1`, kako je ovaj dokument ranije nalagao).
+> Interni host je 20.07. oborio **sve** BE storage tokove (upload + potpisani URL-ovi,
+> 8 modula): (a) `/storage/v1` prefiks skida Caddy gateway — storage-api (Fastify) ga
+> ne poznaje pa direktan pogodak vraća 404; (b) `signUrl()` vraća `${base}${signedURL}`
+> koji otvara **browser**, pa base mora biti javno dostupan. Detalji:
+> [PLAN_SASTANCI_PRIMEDBE_2026-07-20.md §S0](../../../docs/PLAN_SASTANCI_PRIMEDBE_2026-07-20.md).
 
 **(b) `docker-compose.yml` — backend na obe mreže:**
 ```yaml

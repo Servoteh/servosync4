@@ -24,6 +24,7 @@ import {
   AkcijeQueryDto,
   ListSastanciQueryDto,
   NotificationsQueryDto,
+  ProjektiQueryDto,
   TemeQueryDto,
   WeeklyDiffQueryDto,
 } from "./dto/sastanci-query.dto";
@@ -162,6 +163,13 @@ export class SastanciController {
   @Get("predmet-prioritet")
   predmetPrioritet(@Req() req: AuthedRequest) {
     return this.sastanci.predmetPrioritet(req.user.email);
+  }
+
+  /** Lista projekata za RN picker (S5, „Projekat / RN" combobox u AkcijaModal):
+   *  ILIKE po šifri/nazivu, ORDER BY šifra, LIMIT 20. Klasni guard = sastanci.read. */
+  @Get("projekti")
+  projekti(@Req() req: AuthedRequest, @Query() query: ProjektiQueryDto) {
+    return this.sastanci.listProjekti(req.user.email, query.q);
   }
 
   @Get("akcije/:id/istorija")

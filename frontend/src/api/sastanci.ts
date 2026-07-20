@@ -528,6 +528,14 @@ export interface SastanakWeeklyDiff {
   zavrsenoOveNedelje: number;
   kasni: number;
   aktivnih: number;
+  /**
+   * Identitet prethodnog ZAKLJUČANOG sastanka (S1) — za dugme „Prethodni zapisnik".
+   * Aditivno; polja su opciona jer se FE mora ponašati graciozno i dok ih BE još
+   * ne vraća (dugme se tada prosto ne prikazuje). `null` = nema prethodnog.
+   */
+  prethodniSastanakId?: string | null;
+  prethodniNaslov?: string | null;
+  prethodniDatum?: string | null;
 }
 
 export function useSastanakWeeklyDiff(id: string | null) {
@@ -577,6 +585,27 @@ export function useTeme(params: TemeParams = {}) {
   });
 }
 
+/** Red liste projekata/RN za picker akcije (S5): `code — naziv`. */
+export interface SastanciProjekat {
+  id: string;
+  code: string | null;
+  naziv: string | null;
+}
+
+/**
+ * Pretraga aktivnih projekata/RN za AkcijaModal picker (S5). BE `GET /sastanci/
+ * projekti?q=` (ILIKE po code/naziv, limit 20). Query je `enabled` tek na ≥1 znak
+ * kucanog upita — bez upita picker ne šalje ništa (obrazac DirectoryPicker/debounce).
+ */
+export function useSastanciProjekti(q: string) {
+  const t = q.trim();
+  return useQuery({
+    queryKey: [...KEYS.all, 'projekti', t],
+    enabled: t.length >= 1,
+    queryFn: () => apiFetch<{ data: SastanciProjekat[] }>(`${BASE}/projekti${qs({ q: t })}`),
+  });
+}
+
 export function useDraftTeme(projektId: string | null) {
   return useQuery({
     queryKey: [...KEYS.teme, 'draft', projektId],
@@ -606,6 +635,11 @@ export function useArhive() {
     queryFn: () => apiFetch<{ data: Arhiva[] }>(`${BASE}/arhive`),
   });
 }
+
+/** Ključ arhiva liste — exportovan za NE-pretplaćeno čitanje keša
+ *  (`qc.getQueryData`) iz detalja: odgovor nosi pune snapshot jsonb-ove pa se
+ *  van arhiva taba ne sme držati aktivan query (refetch na svaku mutaciju). */
+export const arhiveQueryKey = KEYS.arhive;
 
 /** Query key full-detalja — exportovan da imperativni fetchQuery (arhiva štampa
  *  iz živih podataka kad je 2.0 lock snapshot okrnjen) deli keš sa useSastanakFull. */
@@ -788,12 +822,64 @@ export const useAddUcesnik = () =>
     post(`/${v.id}/ucesnici`, { email: v.email, label: v.label }),
   );
 
-export const useUpdateUcesnik = () =>
-  useSastanciMutation<{
-    id: string;
-    email: string;
-    patch: { pozvan?: boolean; prisutan?: boolean; pripremljen?: boolean; priprema?: string };
-  }>((v) => patch(`/${v.id}/ucesnici/${encodeURIComponent(v.email)}`, v.patch));
+/**
+ * Izmena polja učesnika (Pozvan/Prisutan/Pripremljen + tekst pripreme).
+ *
+ * S7: kontrolisani checkbox-i u pripremi (`checked={u.prisutan}`) inače „ne
+ * reaguju" — prosti invalidate-on-success ostavlja checkbox nepomeren dok
+ * mutacija + refetch `full` ne prođu (sekunda+ na sporoj vezi). Zato optimistički
+ * update: `onMutate` odmah patch-uje učesnika (po email-u) u kešu punog detalja,
+ * `onError` vrati snapshot, `onSettled` invalidira (server ostaje izvor istine).
+ * Potpis hooka je nepromenjen — pozivaoci i dalje rade `.mutate({ id, email, patch })`.
+ */
+const UCESNIK_MUT_KEY = ['sastanci', 'ucesnik-patch'] as const;
+
+export const useUpdateUcesnik = () => {
+  const qc = useQueryClient();
+  return useMutation<
+    unknown,
+    Error,
+    {
+      id: string;
+      email: string;
+      patch: { pozvan?: boolean; prisutan?: boolean; pripremljen?: boolean; priprema?: string };
+    },
+    { key: readonly unknown[]; prev: { data: SastanakFull } | undefined }
+  >({
+    mutationKey: UCESNIK_MUT_KEY,
+    mutationFn: (v) => patch(`/${v.id}/ucesnici/${encodeURIComponent(v.email)}`, v.patch),
+    onMutate: async (v) => {
+      const key = sastanakFullQueryKey(v.id);
+      // Otkaži tekuće refetch-ove da ne pregaze optimistički upis.
+      await qc.cancelQueries({ queryKey: key });
+      const prev = qc.getQueryData<{ data: SastanakFull }>(key);
+      if (prev) {
+        qc.setQueryData<{ data: SastanakFull }>(key, {
+          ...prev,
+          data: {
+            ...prev.data,
+            ucesnici: prev.data.ucesnici.map((u) =>
+              u.email === v.email ? { ...u, ...v.patch } : u,
+            ),
+          },
+        });
+      }
+      return { key, prev };
+    },
+    onError: (_e, _v, ctx) => {
+      // Rollback na snapshot pre optimističkog upisa.
+      if (ctx?.prev) qc.setQueryData(ctx.key, ctx.prev);
+    },
+    onSettled: () => {
+      // Preklopljene mutacije (brzo štrikliranje niz listu učesnika): invalidate
+      // tek kad se poslednja slegne — inače refetch pokrenut od ranije mutacije
+      // pregazi optimistički upis onih još u letu (vidljiv revert checkbox-a).
+      if (qc.isMutating({ mutationKey: UCESNIK_MUT_KEY }) <= 1) {
+        void qc.invalidateQueries({ queryKey: KEYS.all });
+      }
+    },
+  });
+};
 
 export const useRemoveUcesnik = () =>
   useSastanciMutation<{ id: string; email: string }>((v) =>
@@ -893,7 +979,8 @@ export const useCreateAkcija = () =>
 export interface AkcijaPatch {
   naslov?: string;
   sastanakId?: string;
-  projekatId?: string;
+  /** `null` briše vezu sa projektom/RN (S5) — akcija pada u „Bez RN / projekta". */
+  projekatId?: string | null;
   rb?: number;
   opis?: string;
   odgovoranEmail?: string;

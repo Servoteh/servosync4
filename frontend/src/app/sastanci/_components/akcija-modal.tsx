@@ -11,16 +11,20 @@ import {
   type AkcijaRow,
 } from '@/api/sastanci';
 import { DirectoryPicker } from './directory-picker';
+import { ProjekatPicker, type ProjekatIzbor } from './projekat-picker';
 import { AKCIJA_SETTABLE_STATUSI, AKCIJA_STATUS_LABEL, INPUT_CLS, PRIORITET_LABEL } from './common';
 
 /** Nova/izmena akcije (paritet 1.0 akcioni plan modal). */
 export function AkcijaModal({
   edit,
   sastanakId,
+  initialProjekat,
   onClose,
 }: {
   edit?: AkcijaRow | null;
   sastanakId?: string;
+  /** S6 — prefill projekta/RN kad se otvara iz zaglavlja grupe („+ Zadatak"). */
+  initialProjekat?: ProjekatIzbor | null;
   onClose: () => void;
 }) {
   const create = useCreateAkcija();
@@ -35,6 +39,13 @@ export function AkcijaModal({
   const [rokText, setRokText] = useState(edit?.rok_text ?? '');
   const [prioritet, setPrioritet] = useState(edit?.prioritet ?? 2);
   const [status, setStatus] = useState(edit?.status ?? 'otvoren');
+  // S5/S6 — izbor projekta/RN. Kod izmene se seed-uje iz denormalizovanih polja
+  // reda (projekat_id + projekatCode/projekatNaziv); kod nove akcije iz S6 prefill-a.
+  const [projekat, setProjekat] = useState<ProjekatIzbor | null>(
+    edit?.projekat_id
+      ? { id: edit.projekat_id, code: edit.projekatCode, naziv: edit.projekatNaziv }
+      : (initialProjekat ?? null),
+  );
   const [error, setError] = useState<string | null>(null);
 
   async function submit() {
@@ -53,9 +64,15 @@ export function AkcijaModal({
     };
     try {
       if (edit) {
-        await patchM.mutateAsync({ id: edit.id, patch: common });
+        // `projekatId: null` (bez izbora) → BE patch briše vezu; string → menja je.
+        await patchM.mutateAsync({ id: edit.id, patch: { ...common, projekatId: projekat?.id ?? null } });
       } else {
-        await create.mutateAsync({ clientEventId: newClientEventId(), sastanakId, ...common });
+        await create.mutateAsync({
+          clientEventId: newClientEventId(),
+          sastanakId,
+          projekatId: projekat?.id,
+          ...common,
+        });
       }
       onClose();
     } catch (e) {
@@ -67,6 +84,7 @@ export function AkcijaModal({
     <Dialog
       open
       onClose={onClose}
+      size="lg"
       title={edit ? 'Izmena akcije' : 'Nova akcija'}
       footer={
         <div className="flex justify-end gap-2">
@@ -80,7 +98,11 @@ export function AkcijaModal({
           <input className={INPUT_CLS} value={naslov} onChange={(e) => setNaslov(e.target.value)} autoFocus />
         </FormField>
         <FormField label="Opis">
-          <textarea className={INPUT_CLS} rows={2} value={opis} onChange={(e) => setOpis(e.target.value)} />
+          {/* S4 — veći unos: 6 redova + vertikalni resize (Zoran je stalno razvlačio 2 reda). */}
+          <textarea className={`${INPUT_CLS} resize-y`} rows={6} value={opis} onChange={(e) => setOpis(e.target.value)} />
+        </FormField>
+        <FormField label="Projekat / RN" hint="Grupiše zadatak pod radni nalog. Prazno = bez RN / projekta.">
+          <ProjekatPicker value={projekat} onChange={setProjekat} />
         </FormField>
         <div className="grid gap-3 sm:grid-cols-2">
           <FormField label="Odgovoran (iz direktorijuma)">

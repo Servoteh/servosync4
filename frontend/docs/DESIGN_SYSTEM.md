@@ -131,6 +131,31 @@
 | Primopredaja | Lansiran | info plava | `--status-info` |
 | Primopredaja | Legacy (iz QBigTehn, do cutover-a) | neutralna | `--status-neutral` |
 | Nacrt / stavka | Sporna (pre-check duplikat bez odluke) | narandžasta | `--status-warn` |
+| Nabavka — zahtev | Nacrt (`DRAFT`) | neutralna | `--status-neutral` |
+| Nabavka — zahtev | Poslat na odobrenje (`SUBMITTED`) | narandžasta | `--status-warn` |
+| Nabavka — zahtev | Odobren (`APPROVED`) | zelena | `--status-success` |
+| Nabavka — upit | Poslat dobavljaču (`SENT`) | info plava | `--status-info` |
+| Nabavka — narudžbenica | Primljeno (`RECEIVED`) | zelena | `--status-success` |
+| Robno — dokument | U pripremi (`DRAFT`) | neutralna | `--status-neutral` |
+| Robno — dokument | Kalkulisan (`CALCULATED`) | info plava | `--status-info` |
+| Robno — dokument | Proknjižen (`POSTED`) | zelena | `--status-success` |
+| Robno — dokument | Zaključan (`LOCKED`) | neutralna | `--status-neutral` |
+| Fakturisanje — račun | U pripremi (`DRAFT`) | neutralna | `--status-neutral` |
+| Fakturisanje — račun | Proknjižen (`POSTED`) | zelena | `--status-success` |
+| Fakturisanje — račun | Poslat (`SENT`) | info plava | `--status-info` |
+| Fakturisanje — račun | Plaćen (`PAID`) | zelena | `--status-success` |
+| Fakturisanje — račun | Storniran (`CANCELLED`) | crvena | `--status-danger` |
+| SEF — e-faktura | U redu (`PENDING`) | narandžasta | `--status-warn` |
+| SEF — e-faktura | Poslato (`SENT`) | info plava | `--status-info` |
+| SEF — e-faktura | Isporučeno (`DELIVERED`) | zelena | `--status-success` |
+| SEF — e-faktura | Odbijeno (`REJECTED`) | crvena | `--status-danger` |
+| SEF — e-faktura | Stornirano (`CANCELLED`) | neutralna | `--status-neutral` |
+| Izvodi — izvod | U pripremi (`DRAFT`) | neutralna | `--status-neutral` |
+| Izvodi — izvod | Uvezen (`IMPORTED`) | info plava | `--status-info` |
+| Izvodi — izvod | Proknjižen (`POSTED`) | zelena | `--status-success` |
+| Izvodi — stavka | Neupareno (`UNMATCHED`) | narandžasta | `--status-warn` |
+| Izvodi — stavka | Upareno (`MATCHED`) | info plava | `--status-info` |
+| Izvodi — stavka | Proknjiženo (`POSTED`) | zelena | `--status-success` |
 | Sync (bb_sync) | Greška sinhronizacije | crvena | `--status-danger` |
 | Notifikacija (D8) | Škart (`kontrola.skart`) | crvena | `--status-danger` |
 | Notifikacija (D8) | Dorada (`kontrola.dorada`) | narandžasta | `--status-warn` |
@@ -174,8 +199,9 @@ Dopune kita:
   `sort`/`onSortToggle` (pozivalac ciklira asc → desc → none i po želji čuva u localStorage) — prvi
   potrošač Kadrovska → Zaposleni. `Column.header` je proširen na `ReactNode` (npr. checkbox
   „selektuj sve" u zaglavlju kolone selekcije).
-* `Dialog` je dobio opcioni `size`: `'md'` (default) · `'xl'` (duge forme sa sekcijama — karton
-  zaposlenog) · `'2xl'` (grid unosi — brzi/bulk unos zaposlenih).
+* `Dialog` je dobio opcioni `size`: `'md'` (default) · `'lg'` (forme sa više polja — npr. akcija
+  sastanka sa opisom/projektom) · `'xl'` (duge forme sa sekcijama — karton zaposlenog) ·
+  `'xl2'` (guste tabele — Istorija zarada) · `'2xl'` (grid unosi — brzi/bulk unos zaposlenih).
 * **`CommandPalette`** (F3 SIDEBAR_HUB): `Ctrl+K` skok na modul — fuzzy pretraga
   (dijakritika-neosetljiva, `src/lib/fuzzy.ts`), „Nedavno" MRU na praznom upitu, pun
   tastaturni combobox/listbox obrazac. Jedna instanca, montira je `AppShell`; vidljiva

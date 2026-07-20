@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react';
 import { Check, Pencil, Play, Trash2 } from 'lucide-react';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { Button } from '@/components/ui-kit/button';
-import { cn } from '@/lib/cn';
+import { StatusBadge } from '@/components/ui-kit/status-badge';
 import {
   useAkcije,
   useDeleteAkcija,
@@ -21,11 +21,12 @@ import {
   tableEmpty,
 } from './common';
 import { AkcijaModal } from './akcija-modal';
+import type { ProjekatIzbor } from './projekat-picker';
 
 /**
  * Akcije jednog sastanka — grupisane po RN-u/projektu (paritet 1.0 sastanakDetalj/
  * akcijeTab): ⭐ prioritetni predmeti prvi, pa šifra; „Bez RN / projekta" poslednja;
- * redovi u grupi po rb (ručni redosled).
+ * redovi u grupi po prioritetu pa rb (S2; zvanični PDF/print i dalje ređaju po rb).
  */
 export function DetaljAkcije({ sastanakId, canEdit }: { sastanakId: string; canEdit: boolean }) {
   const akcijeQ = useAkcije({ sastanakId });
@@ -33,10 +34,17 @@ export function DetaljAkcije({ sastanakId, canEdit }: { sastanakId: string; canE
   const patchM = usePatchAkcija();
   const delM = useDeleteAkcija();
   const [modal, setModal] = useState<AkcijaRow | null | undefined>(undefined);
+  // S6 — prefill projekta kad se „+ Zadatak" otvori iz zaglavlja grupe.
+  const [prefill, setPrefill] = useState<ProjekatIzbor | null>(null);
+
+  function openNova(projekat: ProjekatIzbor | null) {
+    setPrefill(projekat);
+    setModal(null);
+  }
 
   const rows = useMemo(() => akcijeQ.data?.data ?? [], [akcijeQ.data]);
   const groups = useMemo(
-    () => groupAkcijeByRn(rows, prioQ.data?.data, { rowSort: 'rb' }),
+    () => groupAkcijeByRn(rows, prioQ.data?.data, { rowSort: 'prioritet' }),
     [rows, prioQ.data],
   );
 
@@ -46,18 +54,11 @@ export function DetaljAkcije({ sastanakId, canEdit }: { sastanakId: string; canE
       key: 'naslov',
       header: 'Zadatak',
       render: (r) => (
-        <span className="flex items-start gap-1.5">
-          {/* Prioritet akcije — boja tačke kao kanban (PRIORITET_TONE). */}
-          <span
-            className={cn(
-              'mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full',
-              PRIORITET_TONE[r.prioritet] === 'danger'
-                ? 'bg-status-danger'
-                : PRIORITET_TONE[r.prioritet] === 'warn'
-                  ? 'bg-status-warn'
-                  : 'bg-status-neutral',
-            )}
-            title={`Prioritet: ${PRIORITET_LABEL[r.prioritet] ?? r.prioritet}`}
+        <span className="flex items-center gap-2">
+          {/* Prioritet akcije — StatusBadge (S2): tone + labela iz kanonske mape. */}
+          <StatusBadge
+            tone={PRIORITET_TONE[r.prioritet] ?? 'neutral'}
+            label={PRIORITET_LABEL[r.prioritet] ?? String(r.prioritet)}
           />
           <span className="font-medium">{r.naslov}</span>
         </span>
@@ -70,12 +71,18 @@ export function DetaljAkcije({ sastanakId, canEdit }: { sastanakId: string; canE
           key: 'akcije',
           header: '',
           render: (r: AkcijaRow) => (
-            <div className="flex justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+            <div className="flex flex-wrap justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+              {/* S3 — vidljiv tekst umesto golog ▷/✓. „Započni" se ne nudi ako je
+                  akcija već u toku (redundantno). */}
+              {r.effective_status !== 'zavrsen' && r.effective_status !== 'u_toku' && (
+                <button title="Započni zadatak" className="flex items-center gap-1 rounded-control border border-line px-2 py-1 text-xs text-ink-secondary hover:bg-surface-2" onClick={() => patchM.mutate({ id: r.id, patch: { status: 'u_toku' } })}>
+                  <Play className="h-3.5 w-3.5" aria-hidden /> Započni
+                </button>
+              )}
               {r.effective_status !== 'zavrsen' && (
-                <>
-                  <button title="Započni" className="rounded-control border border-line p-1 text-ink-secondary hover:bg-surface-2" onClick={() => patchM.mutate({ id: r.id, patch: { status: 'u_toku' } })}><Play className="h-3.5 w-3.5" /></button>
-                  <button title="Završi" className="rounded-control border border-line p-1 text-status-success hover:bg-surface-2" onClick={() => patchM.mutate({ id: r.id, patch: { status: 'zavrsen' } })}><Check className="h-3.5 w-3.5" /></button>
-                </>
+                <button title="Završi zadatak" className="flex items-center gap-1 rounded-control border border-line px-2 py-1 text-xs text-status-success hover:bg-surface-2" onClick={() => patchM.mutate({ id: r.id, patch: { status: 'zavrsen' } })}>
+                  <Check className="h-3.5 w-3.5" aria-hidden /> Završi
+                </button>
               )}
               <button title="Izmeni" className="rounded-control border border-line p-1 text-ink-secondary hover:bg-surface-2" onClick={() => setModal(r)}><Pencil className="h-3.5 w-3.5" /></button>
               <button title="Obriši" className="rounded-control border border-line p-1 text-status-danger hover:bg-surface-2" onClick={() => { if (confirm('Obrisati akciju?')) delM.mutate({ id: r.id }); }}><Trash2 className="h-3.5 w-3.5" /></button>
@@ -89,7 +96,7 @@ export function DetaljAkcije({ sastanakId, canEdit }: { sastanakId: string; canE
     <div className="space-y-3">
       {canEdit && (
         <div className="flex justify-end">
-          <Button onClick={() => setModal(null)}>+ Nova akcija</Button>
+          <Button onClick={() => openNova(null)}>+ Nova akcija</Button>
         </div>
       )}
       {groups.length > 0 ? (
@@ -104,6 +111,18 @@ export function DetaljAkcije({ sastanakId, canEdit }: { sastanakId: string; canE
                   {' · '}
                   {g.rows.length} ukupno
                 </span>
+                {/* S6 — „+ Zadatak" po grupi, prefill projektom te grupe („Bez RN /
+                    projekta" → bez prefill-a). Paritet 1.0 „dodaj zadatak" u grupi. */}
+                {canEdit && (
+                  <button
+                    type="button"
+                    title="Dodaj zadatak u ovaj RN / projekat"
+                    className="flex items-center gap-1 rounded-control border border-line px-2 py-1 text-xs text-ink-secondary hover:bg-surface-2"
+                    onClick={() => openNova(g.key === '__none__' ? null : { id: g.key, code: g.code || null, naziv: g.naziv || null })}
+                  >
+                    + Zadatak
+                  </button>
+                )}
               </div>
               <DataTable
                 columns={cols}
@@ -123,7 +142,14 @@ export function DetaljAkcije({ sastanakId, canEdit }: { sastanakId: string; canE
           empty={tableEmpty(akcijeQ.isError, 'Nema akcija', 'Zadaci sa ovog sastanka pojaviće se ovde.')}
         />
       )}
-      {modal !== undefined && <AkcijaModal edit={modal} sastanakId={sastanakId} onClose={() => setModal(undefined)} />}
+      {modal !== undefined && (
+        <AkcijaModal
+          edit={modal}
+          sastanakId={sastanakId}
+          initialProjekat={modal === null ? prefill : null}
+          onClose={() => { setModal(undefined); setPrefill(null); }}
+        />
+      )}
     </div>
   );
 }
