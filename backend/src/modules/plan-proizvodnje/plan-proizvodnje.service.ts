@@ -6,33 +6,10 @@ import {
   UnprocessableEntityException,
 } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
-import { Prisma } from "@prisma-sy15/client";
-import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
-import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
-import { mapSy15Error } from "../../common/sy15-error";
+import { Prisma } from "@prisma/client";
+import { PrismaService } from "../../prisma/prisma.service";
 import { jsonSafe } from "../../common/json-safe";
-import { sanitizeDrawingNo } from "../../common/drawings";
-import { normalizeLocMovementKeys } from "../locations/barcode";
-import {
-  buildIdentCandidates,
-  parseOpRef,
-  pickBestBigtehnWoRow,
-  sortTpOptions,
-  type BigtehnWoRow,
-} from "./lookups";
-import {
-  NAMED_DEPARTMENTS,
-  getDepartment,
-  type DepartmentDef,
-} from "./departments";
-import type {
-  CooperationQueryDto,
-  DrawingsQueryDto,
-  OperationsQueryDto,
-  OpSnapshotQueryDto,
-  ResolveDrawingNoQueryDto,
-  TpOptionsQueryDto,
-} from "./dto/plan-proizvodnje-query.dto";
+import { machineGroupSlug } from "./departments";
 import type {
   BulkReassignDto,
   CooperationGroupPatchDto,
@@ -43,9 +20,7 @@ import type {
   SetUrgentDto,
 } from "./dto/plan-proizvodnje-mutation.dto";
 
-const DRAWINGS_BUCKET = "production-drawings";
-const BIGTEHN_DRAWINGS_BUCKET = "bigtehn-drawings";
-const SIGNED_URL_TTL = 300;
+type Tx = Prisma.TransactionClient;
 
 /** Dozvoljeni MIME tipovi za skice (port 1.0 drawingManager ALLOWED_MIMES). */
 const ALLOWED_DRAWING_MIMES = [
@@ -57,523 +32,29 @@ const ALLOWED_DRAWING_MIMES = [
   "application/pdf",
 ];
 
-/** Kanon otvorene operacije (§2-6). Kooperacija tab invertuje `is_cooperation_effective`. */
-const OPEN_OPS = Prisma.sql`is_done_in_bigtehn IS FALSE AND rn_zavrsen IS FALSE
-  AND is_cooperation_effective IS FALSE AND overlay_archived_at IS NULL
-  AND (local_status IS NULL OR local_status <> 'completed')`;
-
-/** Sort kanon PP (§2-7): ručni/pin pre DB spremnosti/hitnosti. */
-const OPS_SORT = Prisma.sql`ORDER BY shift_sort_order ASC NULLS LAST, auto_sort_bucket ASC,
-  rok_izrade ASC NULLS LAST, prioritet_bigtehn ASC, rn_ident_broj ASC, operacija ASC`;
-
-const ALL_OPS_LIMIT = 10000;
-const DEPT_LIMIT = 5000;
-const SEARCH_LIMIT = 500;
-const SEARCH_MIN_LEN = 2;
-
 /**
- * PER-POZIV tx timeout za pune skenove `v_production_operations_effective`
- * (operations/all + odeljenje bez filtera). Merena latencija ~5.3s > Prisma
- * default 5000ms → interaktivna tx puca („Transaction already closed", 500).
- * 30s daje širok bafer, ostali read-ovi zadržavaju default.
- */
-const FULL_SCAN_TIMEOUT_MS = 30_000;
-
-const PP_BRIDGE_JOBS = [
-  "production_work_orders",
-  "production_work_order_lines",
-  "production_tech_routing",
-];
-
-/**
- * Plan proizvodnje — 3.0 TALAS C, R1 read sloj (MODULE_SPEC_planovi_pracenje_30.md §3).
- * Sva čitanja idu iz view lanca `v_production_operations_effective` (bigtehn_* keš +
- * overlay + urgency + auto-koop + spremnost + G4; predmet aktivan ∧ završna kontrola NIJE
- * kucana — filtrira sam view lanac) i public keš/bridge tabela ($queryRaw), sve kroz
- * `withUserRls`. `bigtehn_*` keš je MOST (doktrina; repoint na tech_processes = QBigTehn
- * cutover, NE ovaj talas). Mutacije (overlays/urgency/reassign/drawings) su R2.
+ * Plan proizvodnje — WRITE (mutacioni) sloj nad 2.0 app-owned `plan_proizvodnje_*`
+ * tabelama (F5b, plan §4.2 (b)/(c)/(e)). Zamena za sy15 DEFINER RPC-ove
+ * (`reassign_production_line`, overlay/urgency/koop upsert-e) i storage bucket —
+ * sve sada kroz `PrismaService` (glavna baza). Autorizacija: kontroler gejtuje
+ * `plan_proizvodnje.edit` (+ `.force` za forsirani reassign, `.koop_admin` za grupe);
+ * sy15 RLS (`can_edit_plan_proizvodnje`) više NE presuđuje (ugašen most).
+ *
+ * `reassign` je verni port sy15 RPC-a (snapshot:3313-3437): group-mismatch gate
+ * (`machine_group_mismatch` → 422), force gate (`force_reason` ≥3 + `plan_proizvodnje.force`
+ * → 403), idempotencija audita `ON CONFLICT (client_event_uuid, line_id) DO NOTHING`.
+ * BE je sada KONAČNI gate (nema DB DEFINER-a) — pokriveno testom.
+ *
+ * id-jevi (`work_order_id`/`line_id`) su Int u native tabelama (ISTI id prostor kao
+ * work_orders/work_order_operations); FE šalje stringove (M3) → `Number(...)`.
  */
 @Injectable()
 export class PlanProizvodnjeService {
-  constructor(
-    private readonly sy15: Sy15Service,
-    private readonly storage: Sy15StorageService,
-  ) {}
-
-  // ---------- Mašine ----------
-
-  /** Mašine (bigtehn_machines_cache) — izbor mašine / odeljenja. */
-  async machines(email: string) {
-    return this.read(email, async (tx) => {
-      const data = await tx.$queryRaw(
-        Prisma.sql`SELECT * FROM bigtehn_machines_cache ORDER BY rj_code ASC`,
-      );
-      return { data: jsonSafe(data) };
-    });
-  }
-
-  // ---------- Operacije ----------
-
-  /**
-   * Red operacija: `?machine=` → RPC plan_pp_open_ops_for_machine (paginacija po RN),
-   * `?dept=` → view filter po effective_machine_code (odeljenje). Bez oba → 400.
-   */
-  async operations(email: string, q: OperationsQueryDto) {
-    if (q.machine) {
-      const machine = q.machine.trim();
-      const limit = clampInt(q.limit, 100, 1, 250);
-      const offset = clampInt(q.offset, 0, 0, Number.MAX_SAFE_INTEGER);
-      return this.read(email, async (tx) => {
-        const rows = await tx.$queryRaw<
-          { plan_pp_open_ops_for_machine: unknown }[]
-        >(
-          Prisma.sql`SELECT plan_pp_open_ops_for_machine(${machine}::text, ${limit}::int, ${offset}::int) AS plan_pp_open_ops_for_machine`,
-        );
-        return { data: rows[0]?.plan_pp_open_ops_for_machine ?? null };
-      });
-    }
-    if (q.dept) {
-      const cond = this.deptWhere(q.dept);
-      return this.read(
-        email,
-        async (tx) => {
-          const where =
-            cond === Prisma.empty
-              ? Prisma.sql`WHERE ${OPEN_OPS}`
-              : Prisma.sql`WHERE ${OPEN_OPS} AND ${cond}`;
-          const data = await tx.$queryRaw(
-            Prisma.sql`SELECT * FROM v_production_operations_effective ${where} ${OPS_SORT} LIMIT ${DEPT_LIMIT}`,
-          );
-          return { data: jsonSafe(data) };
-        },
-        // Odeljenje „Sve"/„Ostalo" ne suzava po mašini → pun sken view-a.
-        { timeoutMs: FULL_SCAN_TIMEOUT_MS },
-      );
-    }
-    throw new BadRequestException("Zadaj ?machine= ili ?dept=.");
-  }
-
-  /** Sve otvorene operacije (agregatni prikazi) — min kolone, count + truncated na 10k. */
-  async operationsAll(email: string) {
-    return this.read(
-      email,
-      async (tx) => {
-        const [rows, cnt] = await Promise.all([
-          tx.$queryRaw(
-            // Kolone za FE paritet (GAP-PM-05/06/07): kupac (name/short), G2
-            // dorada/škart (is_rework/is_scrap + komadi), broj skica, bigtehn
-            // crtež flag, prethodna operacija (spremnost „čeka op. NN").
-            Prisma.sql`SELECT line_id, work_order_id, effective_machine_code, broj_crteza, naziv_dela,
-              rn_ident_broj, tpz_min, tk_min, komada_total, komada_done, real_seconds, rok_izrade,
-              is_non_machining, assigned_machine_code, local_status, opis_rada, operacija, cam_ready,
-              is_ready_for_machine, is_urgent, auto_sort_bucket,
-              customer_name, customer_short, drawings_count, has_bigtehn_drawing,
-              is_rework, is_scrap, rework_pieces, scrap_pieces,
-              previous_operation_operacija, previous_operation_status, previous_operation_machine_code
-            FROM v_production_operations_effective
-            WHERE ${OPEN_OPS} AND effective_machine_code IS NOT NULL
-            ${OPS_SORT} LIMIT ${ALL_OPS_LIMIT}`,
-          ),
-          tx.$queryRaw<{ n: bigint }[]>(
-            Prisma.sql`SELECT count(*) AS n FROM v_production_operations_effective
-              WHERE ${OPEN_OPS} AND effective_machine_code IS NOT NULL`,
-          ),
-        ]);
-        const total = Number(cnt[0]?.n ?? 0);
-        return {
-          data: jsonSafe(rows),
-          meta: { total, truncated: total > ALL_OPS_LIMIT, limit: ALL_OPS_LIMIT },
-        };
-      },
-      // Pun sken view-a bez filtera po mašini (merena latencija ~5.3s).
-      { timeoutMs: FULL_SCAN_TIMEOUT_MS },
-    );
-  }
-
-  /** Pretraga operacija po crtežu/RN (paritet loadOperationsByRnOrDrawingQuery). */
-  async operationsSearch(email: string, q?: string) {
-    const term = (q ?? "").trim();
-    if (term.length < SEARCH_MIN_LEN) return { data: [] };
-    const like = `%${term}%`;
-    return this.read(email, async (tx) => {
-      const data = await tx.$queryRaw(
-        Prisma.sql`SELECT * FROM v_production_operations_effective
-          WHERE ${OPEN_OPS}
-            AND (broj_crteza ILIKE ${like} OR rn_ident_broj ILIKE ${like} OR naziv_dela ILIKE ${like})
-          ORDER BY effective_machine_code ASC NULLS LAST, broj_crteza ASC, rn_ident_broj ASC, operacija ASC
-          LIMIT ${SEARCH_LIMIT}`,
-      );
-      return { data: jsonSafe(data) };
-    });
-  }
-
-  // ---------- Kooperacija ----------
-
-  /** Operacije efektivno u kooperaciji (is_cooperation_effective=true) + opciona pretraga. */
-  async cooperation(email: string, q: CooperationQueryDto) {
-    const term = (q.q ?? "").trim();
-    const like = term ? `%${term}%` : null;
-    return this.read(email, async (tx) => {
-      const search = like
-        ? Prisma.sql`AND (broj_crteza ILIKE ${like} OR rn_ident_broj ILIKE ${like} OR naziv_dela ILIKE ${like})`
-        : Prisma.empty;
-      const data = await tx.$queryRaw(
-        Prisma.sql`SELECT * FROM v_production_operations_effective
-          WHERE is_done_in_bigtehn IS FALSE AND rn_zavrsen IS FALSE
-            AND is_cooperation_effective IS TRUE AND overlay_archived_at IS NULL
-            AND (local_status IS NULL OR local_status <> 'completed') ${search}
-          ORDER BY rok_izrade ASC NULLS LAST, rn_ident_broj ASC, operacija ASC
-          LIMIT ${DEPT_LIMIT}`,
-      );
-      return { data: jsonSafe(data) };
-    });
-  }
-
-  /** Auto-koop grupe (production_auto_cooperation_groups) — admin CRUD je R2. */
-  async cooperationGroups(email: string) {
-    return this.read(email, async (tx) => {
-      const data = await tx.$queryRaw(
-        Prisma.sql`SELECT rj_group_code, group_label, added_at, added_by, removed_at, removed_by, notes
-          FROM production_auto_cooperation_groups ORDER BY rj_group_code ASC`,
-      );
-      return { data: jsonSafe(data) };
-    });
-  }
-
-  // ---------- Reassign audit (force) ----------
-
-  /** Audit reassign-ova (production_reassign_audit) — SELECT admin/menadzment (RLS + guard force). */
-  async reassignAudit(email: string) {
-    return this.read(email, async (tx) => {
-      const data = await tx.$queryRaw(
-        Prisma.sql`SELECT * FROM production_reassign_audit ORDER BY created_at DESC LIMIT 500`,
-      );
-      return { data: jsonSafe(data) };
-    });
-  }
-
-  // ---------- Skice / TP / bridge ----------
-
-  /** Skice operacije (production_drawings, bez soft-obrisanih). Signed URL = R2 (storage). */
-  async drawings(email: string, q: DrawingsQueryDto) {
-    const wo = BigInt(q.workOrder);
-    const line = BigInt(q.line);
-    return this.read(email, async (tx) => {
-      const rows = await tx.ppDrawing.findMany({
-        where: { workOrderId: wo, lineId: line, deletedAt: null },
-        orderBy: [{ uploadedAt: "asc" }],
-      });
-      return { data: jsonSafe(rows) };
-    });
-  }
-
-  /** Ceo tehnološki postupak RN-a (TP procedura modal): operacije (bazni view) + logovi (keš). */
-  async techProcedure(email: string, workOrderId: number) {
-    const wo = BigInt(workOrderId);
-    return this.read(email, async (tx) => {
-      const [operations, logs] = await Promise.all([
-        tx.$queryRaw(
-          Prisma.sql`SELECT * FROM v_production_operations WHERE work_order_id = ${wo}::bigint
-            ORDER BY operacija ASC LIMIT 500`,
-        ),
-        tx.$queryRaw(
-          Prisma.sql`SELECT id, operacija, machine_code, worker_id, komada, prn_timer_seconds,
-              started_at, finished_at, is_completed, napomena, potpis
-            FROM bigtehn_tech_routing_cache WHERE work_order_id = ${wo}::bigint
-            ORDER BY operacija ASC, started_at ASC LIMIT 2000`,
-        ),
-      ]);
-      const ops = jsonSafe(operations) as unknown[];
-      return {
-        data: { operations: ops, logs: jsonSafe(logs), header: ops[0] ?? null },
-      };
-    });
-  }
-
-  /** Bridge sync health banner — poslednji status 3 job-а (bridge_sync_log). */
-  async bridgeStatus(email: string) {
-    return this.read(email, async (tx) => {
-      const rows = await tx.$queryRaw<
-        { sync_job: string; finished_at: Date | null; status: string | null }[]
-      >(
-        Prisma.sql`SELECT sync_job, finished_at, status FROM bridge_sync_log
-          WHERE sync_job = ANY(${PP_BRIDGE_JOBS}) ORDER BY finished_at DESC NULLS LAST LIMIT 200`,
-      );
-      const seen = new Map<string, unknown>();
-      for (const r of rows) {
-        if (!seen.has(r.sync_job))
-          seen.set(r.sync_job, {
-            sync_job: r.sync_job,
-            last_finished: r.finished_at,
-            status: r.status,
-          });
-      }
-      return { data: [...seen.values()] };
-    });
-  }
+  constructor(private readonly prisma: PrismaService) {}
 
   // ==========================================================================
-  // LOOKUPS (C2-P7, GAP-PM-26; MODULE_SPEC §3 „dele se s Lokacijama")
+  // Overlays (merge upsert)
   // ==========================================================================
-  // Port 1.0 planProizvodnje.js (fetchBigtehnOpSnapshotByRnAndTp / fetchTpOptions /
-  // resolveDrawingNoForPredmetTp / fetchBigtehnWorkOrdersByIds) nad sy15 bigtehn_*
-  // kešom. Read-only (withUserRls). Kanonizacija/izbor u ./lookups.ts (unit-test).
-
-  /**
-   * BigTehn snapshot za par (RN ident, TP ref). 9400 dash/slash kanonizacija
-   * kandidata → v_active_bigtehn_work_orders pa bigtehn_work_orders_cache po
-   * kandidatu (poštuje MES listu) → pickBest → komada_done iz tech routing keša
-   * (numerički TP) → kupac best-effort. Port 1.0 ~594–783.
-   */
-  async opSnapshot(email: string, q: OpSnapshotQueryDto) {
-    const ident0 = String(q.rn ?? "").trim();
-    if (!ident0) return { data: null };
-    const { ident, opForIdent, opNumRoute, opHy, opPairNoLead } = parseOpRef(
-      ident0,
-      q.tp ?? null,
-    );
-    const opRaw = (q.tp ?? "").trim();
-    let varFilter: number | null = null;
-    if (q.varijanta != null && String(q.varijanta).trim() !== "") {
-      const v = parseInt(String(q.varijanta).trim(), 10);
-      if (Number.isFinite(v)) varFilter = v;
-    }
-    const candidates = buildIdentCandidates(
-      ident,
-      opForIdent,
-      opHy,
-      opPairNoLead,
-    );
-
-    return this.read(email, async (tx) => {
-      const tryFetchWo = async (
-        table: "v_active_bigtehn_work_orders" | "bigtehn_work_orders_cache",
-        idCandidate: string,
-      ): Promise<BigtehnWoRow[]> => {
-        const varSql =
-          varFilter != null
-            ? Prisma.sql`AND varijanta = ${varFilter}`
-            : Prisma.empty;
-        const rows = await tx.$queryRaw<BigtehnWoRow[]>(
-          Prisma.sql`SELECT id, ident_broj, broj_crteza, komada, naziv_dela, materijal,
-              dimenzija_materijala, customer_id, rok_izrade, status_rn, revizija
-            FROM ${Prisma.raw(table)}
-            WHERE ident_broj = ${idCandidate} ${varSql} LIMIT 8`,
-        );
-        return Array.isArray(rows) ? rows : [];
-      };
-
-      let woRows: BigtehnWoRow[] = [];
-      for (const c of candidates) {
-        woRows = await tryFetchWo("v_active_bigtehn_work_orders", c);
-        if (woRows.length === 0)
-          woRows = await tryFetchWo("bigtehn_work_orders_cache", c);
-        if (woRows.length > 0) break;
-      }
-      if (woRows.length === 0) return { data: null };
-      const wo = pickBestBigtehnWoRow(woRows, ident, opForIdent);
-      if (!wo) return { data: null };
-      const workOrderId = wo.id != null ? Number(wo.id) : null;
-      const total = wo.komada != null ? Number(wo.komada) : null;
-
-      // komada_done iz tech routing keša (samo numerički TP).
-      let done: number | null = null;
-      if (opNumRoute != null && Number.isFinite(opNumRoute) && workOrderId != null) {
-        const rows = await tx.$queryRaw<{ komada: number | bigint | null }[]>(
-          Prisma.sql`SELECT komada FROM bigtehn_tech_routing_cache
-            WHERE work_order_id = ${workOrderId}::bigint AND operacija = ${opNumRoute}::int LIMIT 200`,
-        );
-        done = Array.isArray(rows)
-          ? rows.reduce((s, r) => s + (Number(r?.komada) || 0), 0)
-          : 0;
-      }
-
-      // Kupac (best-effort — ne blokira na grešku).
-      let customerName: string | null = null;
-      let customerShort: string | null = null;
-      if (wo.customer_id != null) {
-        try {
-          const rows = await tx.$queryRaw<
-            { name: string | null; short_name: string | null }[]
-          >(
-            Prisma.sql`SELECT name, short_name FROM bigtehn_customers_cache
-              WHERE id = ${Number(wo.customer_id)} LIMIT 1`,
-          );
-          if (rows[0]) {
-            customerName = rows[0].name ?? null;
-            customerShort = rows[0].short_name ?? null;
-          }
-        } catch {
-          /* kupac je best-effort */
-        }
-      }
-
-      return {
-        data: jsonSafe({
-          rn_ident_broj: wo.ident_broj != null ? String(wo.ident_broj) : ident,
-          broj_crteza: sanitizeDrawingNo(wo.broj_crteza ?? "") ?? "",
-          komada_total: Number.isFinite(total as number) ? total : null,
-          komada_done: done,
-          naziv_dela: wo.naziv_dela ?? null,
-          materijal: wo.materijal ?? null,
-          dimenzija_materijala: wo.dimenzija_materijala ?? null,
-          customer_id: wo.customer_id ?? null,
-          customer_name: customerName,
-          customer_short: customerShort,
-          work_order_id: workOrderId,
-          operacija:
-            opNumRoute != null && Number.isFinite(opNumRoute)
-              ? opNumRoute
-              : opRaw === ""
-                ? null
-                : opRaw,
-          revizija:
-            wo.revizija != null && String(wo.revizija).trim() !== ""
-              ? String(wo.revizija).trim()
-              : null,
-        }),
-      };
-    });
-  }
-
-  /**
-   * Distinct TP opcije za broj predmeta (prvi segment ident_broj). RN sa „/" u
-   * ident-u → TP = drugi segment; bez „/" → operacije iz tech routing keša.
-   * Port 1.0 fetchTpOptionsForPredmetOrder ~793.
-   */
-  async tpOptions(email: string, q: TpOptionsQueryDto) {
-    const ident = String(q.order ?? "").trim();
-    if (!ident) return { data: [] };
-    const variants = new Set<string>([ident]);
-    if (/^\d+$/.test(ident)) variants.add(String(parseInt(ident, 10)));
-
-    return this.read(email, async (tx) => {
-      const byWoId = new Map<number, BigtehnWoRow>();
-      for (const v of variants) {
-        if (!v) continue;
-        const rows = await tx.$queryRaw<BigtehnWoRow[]>(
-          Prisma.sql`SELECT id, ident_broj, broj_crteza, revizija
-            FROM bigtehn_work_orders_cache
-            WHERE ident_broj = ${v} OR ident_broj LIKE ${v + ".%"}
-            LIMIT 500`,
-        );
-        for (const r of rows) {
-          if (r?.id == null) continue;
-          byWoId.set(Number(r.id), r);
-        }
-      }
-
-      const out: {
-        tp: string;
-        broj_crteza: string;
-        ident_broj: string;
-        revizija: string;
-      }[] = [];
-      const seenTp = new Set<string>();
-      for (const r of byWoId.values()) {
-        const ib = String(r.ident_broj ?? "").trim();
-        const parts = ib.split("/");
-        const tail = parts.length >= 2 ? String(parts[1] ?? "").trim() : "";
-        const dr = r.broj_crteza != null ? String(r.broj_crteza).trim() : "";
-        const rv = r.revizija != null ? String(r.revizija).trim() : "";
-        if (tail) {
-          if (seenTp.has(tail)) continue;
-          seenTp.add(tail);
-          out.push({ tp: tail, broj_crteza: dr, ident_broj: ib, revizija: rv });
-          continue;
-        }
-        const wid = Number(r.id);
-        if (!Number.isFinite(wid)) continue;
-        const routes = await tx.$queryRaw<{ operacija: unknown }[]>(
-          Prisma.sql`SELECT operacija FROM bigtehn_tech_routing_cache
-            WHERE work_order_id = ${wid}::bigint ORDER BY operacija ASC LIMIT 800`,
-        );
-        for (const row of routes) {
-          if (row?.operacija == null) continue;
-          const tp = String(row.operacija).trim();
-          if (!tp || seenTp.has(tp)) continue;
-          seenTp.add(tp);
-          out.push({ tp, broj_crteza: dr, ident_broj: ib, revizija: rv });
-        }
-      }
-      return { data: jsonSafe(sortTpOptions(out)) };
-    });
-  }
-
-  /**
-   * Autofill crteža za par (nalog, TP) — Brzo premeštanje / sken u Lokacijama.
-   * Prvo tačan TP iz tpOptions, pa pun snapshot; sanitizacija placeholder tačaka
-   * (1500+ RN sa čisto-tačka crtežom). Port 1.0 resolveDrawingNoForPredmetTp ~535.
-   */
-  async resolveDrawingNo(email: string, q: ResolveDrawingNoQueryDto) {
-    const norm = normalizeLocMovementKeys(
-      String(q.order ?? "").trim(),
-      String(q.tp ?? "").trim(),
-    );
-    const order = norm.orderNo;
-    const tp = norm.itemRefId;
-    if (!order || !tp) return { data: { broj_crteza: "", revizija: "", snap: null } };
-
-    const optsRes = await this.tpOptions(email, { order });
-    const opts = (optsRes.data as { tp: string; broj_crteza: string; revizija: string }[]) ?? [];
-    const hit = opts.find((o) => String(o.tp ?? "").trim() === tp);
-    const snapRes = await this.opSnapshot(email, { rn: order, tp });
-    const snap = snapRes.data as
-      | { broj_crteza?: string; revizija?: string }
-      | null;
-
-    if (hit?.broj_crteza) {
-      const dr = sanitizeDrawingNo(hit.broj_crteza) ?? "";
-      if (dr) {
-        const rev = hit.revizija ? String(hit.revizija).trim() : "";
-        return {
-          data: {
-            broj_crteza: dr,
-            revizija: rev || (snap?.revizija ? String(snap.revizija).trim() : ""),
-            snap: snap ? { ...snap, broj_crteza: dr, revizija: rev || snap.revizija } : null,
-          },
-        };
-      }
-    }
-    return {
-      data: {
-        broj_crteza: sanitizeDrawingNo(snap?.broj_crteza ?? "") ?? "",
-        revizija: snap?.revizija ? String(snap.revizija).trim() : "",
-        snap,
-      },
-    };
-  }
-
-  /**
-   * Aktivni RN redovi po CSV id-jeva (bigtehn_work_orders_cache.id, npr. iz
-   * projekt_bigtehn_rn). Port 1.0 fetchBigtehnWorkOrdersByIds ~867.
-   */
-  async rnByIds(email: string, idsCsv: string) {
-    const uniq = [
-      ...new Set(
-        String(idsCsv ?? "")
-          .split(",")
-          .map((s) => Number(s.trim()))
-          .filter((n) => Number.isFinite(n)),
-      ),
-    ];
-    if (!uniq.length) return { data: [] };
-    return this.read(email, async (tx) => {
-      const rows = await tx.$queryRaw(
-        Prisma.sql`SELECT id, ident_broj, broj_crteza, naziv_dela, komada, is_mes_active
-          FROM v_active_bigtehn_work_orders WHERE id IN (${Prisma.join(uniq)})`,
-      );
-      return { data: jsonSafe(rows) };
-    });
-  }
-
-  // ==========================================================================
-  // R2 — MUTACIJE (overlays/urgency/drawings = merge-upsert; reassign = DEFINER RPC)
-  // ==========================================================================
-  // Sve pod SET LOCAL ROLE authenticated (withUserRls) → RLS `can_edit_plan_proizvodnje()`
-  // presuđuje (42501→403). Overlay/urgency stamp `updated_by`/`set_by`=email; DELETE
-  // urgency NIKAD (samo cleared_at flag). Reassign idempotencija = `p_client_event_uuid`
-  // (audit ON CONFLICT (client_event_uuid, line_id) DO NOTHING).
 
   /**
    * Overlay UPSERT (patch, merge — samo poslata polja se menjaju; ON CONFLICT
@@ -581,18 +62,16 @@ export class PlanProizvodnjeService {
    * cooperation_set_at/by) stampuje server. `updated_by`/`created_by` = email.
    */
   async upsertOverlay(email: string, dto: OverlayUpsertDto) {
-    const wo = BigInt(dto.workOrderId);
-    const line = BigInt(dto.lineId);
+    const wo = Number(dto.workOrderId);
+    const line = Number(dto.lineId);
     const now = new Date();
     const patch: Record<string, unknown> = {};
     if (dto.localStatus !== undefined) patch.localStatus = dto.localStatus;
     if (dto.shiftNote !== undefined) patch.shiftNote = dto.shiftNote;
     // Pin-marker: klijent šalje shiftSortOrder=-1 kao „pin-to-top" signal.
-    // Kanon (1.0 pinToTop, services/planProizvodnje.js:1044): stvarna vrednost =
-    // MIN(shift_sort_order postojećih ručnih za ISTU efektivnu mašinu) − 1, tako da
-    // svaki novi pin ide IZNAD svih pinovanih. Bez ručnih redova fallback = 1.
-    // Rešava se u tx (deltu min računamo nad view-om); ostale vrednosti (redosled
-    // iz drag-a, null=unpin) prolaze doslovno.
+    // Kanon (1.0 pinToTop): vrednost = MIN(shift_sort_order ručnih iste efektivne
+    // mašine) − 1 (bez ručnih → 1). Ostale vrednosti (drag redosled, null=unpin) prolaze
+    // doslovno. Računa se u tx (delta min nad overlay ⋈ linija).
     const isPinMarker = dto.shiftSortOrder === -1;
     if (dto.shiftSortOrder !== undefined && !isPinMarker)
       patch.shiftSortOrder = dto.shiftSortOrder;
@@ -625,11 +104,11 @@ export class PlanProizvodnjeService {
         patch.cooperationSetAt = now;
       }
     }
-    return this.mut(email, async (tx) => {
+    return this.prisma.$transaction(async (tx) => {
       if (isPinMarker) {
         patch.shiftSortOrder = await this.resolvePinOrder(tx, wo, line);
       }
-      const row = await tx.ppOverlay.upsert({
+      const row = await tx.planProizvodnjeOverlay.upsert({
         where: { workOrderId_lineId: { workOrderId: wo, lineId: line } },
         create: {
           workOrderId: wo,
@@ -646,25 +125,28 @@ export class PlanProizvodnjeService {
 
   /**
    * Pin-to-top kanon (1.0 pinToTop): MIN(shift_sort_order) postojećih RUČNIH
-   * (shift_sort_order NOT NULL) operacija ISTE efektivne mašine kao ciljna linija,
-   * minus 1. Bez ručnih redova → 1. Ciljna operacija se isključuje (da već-pinovan
-   * red ne uđe u sopstveni min). Efektivna mašina iz view-a (poštuje reassign).
+   * (NOT NULL) operacija ISTE efektivne mašine kao ciljna linija, minus 1. Bez ručnih
+   * redova → 1. Ciljna operacija se isključuje. Efektivna mašina = COALESCE(overlay
+   * assigned, work_order_operations.work_center_code) — poštuje reassign.
    */
   private async resolvePinOrder(
-    tx: Sy15Tx,
-    wo: bigint,
-    line: bigint,
+    tx: Tx,
+    wo: number,
+    line: number,
   ): Promise<number> {
-    const rows = await tx.$queryRaw<{ min_order: number | null }[]>(
-      Prisma.sql`SELECT MIN(v.shift_sort_order)::int AS min_order
-        FROM v_production_operations_effective v
-        WHERE v.effective_machine_code = (
-            SELECT effective_machine_code FROM v_production_operations_effective
-            WHERE work_order_id = ${wo}::bigint AND line_id = ${line}::bigint LIMIT 1
-          )
-          AND v.shift_sort_order IS NOT NULL
-          AND NOT (v.work_order_id = ${wo}::bigint AND v.line_id = ${line}::bigint)`,
-    );
+    const rows = await tx.$queryRaw<{ min_order: number | null }[]>(Prisma.sql`
+      SELECT MIN(o.shift_sort_order)::int AS min_order
+        FROM plan_proizvodnje_overlays o
+        JOIN work_order_operations l ON l.work_order_id = o.work_order_id AND l.id = o.line_id
+       WHERE COALESCE(o.assigned_machine_code, NULLIF(BTRIM(l.work_center_code), '')) = (
+               SELECT COALESCE(o2.assigned_machine_code, NULLIF(BTRIM(l2.work_center_code), ''))
+                 FROM work_order_operations l2
+                 LEFT JOIN plan_proizvodnje_overlays o2
+                   ON o2.work_order_id = l2.work_order_id AND o2.line_id = l2.id
+                WHERE l2.work_order_id = ${wo} AND l2.id = ${line} LIMIT 1
+             )
+         AND o.shift_sort_order IS NOT NULL
+         AND NOT (o.work_order_id = ${wo} AND o.line_id = ${line})`);
     const min = rows[0]?.min_order;
     return min != null ? min - 1 : 1;
   }
@@ -672,12 +154,12 @@ export class PlanProizvodnjeService {
   /** Bulk reorder — `shift_sort_order` = 1..n u datom redosledu (jedan tx). */
   async reorderOverlays(email: string, dto: OverlayReorderDto) {
     const now = new Date();
-    return this.mut(email, async (tx) => {
+    return this.prisma.$transaction(async (tx) => {
       for (let i = 0; i < dto.items.length; i++) {
         const it = dto.items[i];
-        const wo = BigInt(it.workOrderId);
-        const line = BigInt(it.lineId);
-        await tx.ppOverlay.upsert({
+        const wo = Number(it.workOrderId);
+        const line = Number(it.lineId);
+        await tx.planProizvodnjeOverlay.upsert({
           where: { workOrderId_lineId: { workOrderId: wo, lineId: line } },
           create: {
             workOrderId: wo,
@@ -693,101 +175,209 @@ export class PlanProizvodnjeService {
     });
   }
 
-  /** HITNO set (merge upsert; reset cleared_*). PK work_order_id, DELETE nikad. */
+  // ==========================================================================
+  // Urgency (HITNO) — set/clear, DELETE nikad
+  // ==========================================================================
+
+  /** HITNO set (merge upsert; reset cleared_*). Unique work_order_id, DELETE nikad. */
   async setUrgent(email: string, workOrderId: string, dto: SetUrgentDto) {
-    const wo = BigInt(workOrderId);
+    const wo = Number(workOrderId);
     const reason = (dto.reason ?? "").trim() || null;
-    return this.mut(email, async (tx) => {
-      const row = await tx.ppUrgency.upsert({
-        where: { workOrderId: wo },
-        create: { workOrderId: wo, isUrgent: true, reason, setBy: email },
-        update: {
-          isUrgent: true,
-          reason,
-          setBy: email,
-          setAt: new Date(),
-          clearedAt: null,
-          clearedBy: null,
-        },
-      });
-      return { data: jsonSafe(row) };
+    const row = await this.prisma.planProizvodnjeUrgency.upsert({
+      where: { workOrderId: wo },
+      create: { workOrderId: wo, isUrgent: true, reason, setBy: email },
+      update: {
+        isUrgent: true,
+        reason,
+        setBy: email,
+        setAt: new Date(),
+        clearedAt: null,
+        clearedBy: null,
+      },
     });
+    return { data: jsonSafe(row) };
   }
 
   /** HITNO clear = flag off + cleared_* (NE briše red; paritet 1.0 clearUrgent). */
   async clearUrgent(email: string, workOrderId: string) {
-    const wo = BigInt(workOrderId);
-    return this.mut(email, async (tx) => {
-      const row = await tx.ppUrgency.upsert({
-        where: { workOrderId: wo },
-        create: {
-          workOrderId: wo,
-          isUrgent: false,
-          clearedAt: new Date(),
-          clearedBy: email,
-        },
-        update: { isUrgent: false, clearedAt: new Date(), clearedBy: email },
-      });
-      return { data: jsonSafe(row) };
+    const wo = Number(workOrderId);
+    const row = await this.prisma.planProizvodnjeUrgency.upsert({
+      where: { workOrderId: wo },
+      create: {
+        workOrderId: wo,
+        isUrgent: false,
+        clearedAt: new Date(),
+        clearedBy: email,
+      },
+      update: { isUrgent: false, clearedAt: new Date(), clearedBy: email },
     });
+    return { data: jsonSafe(row) };
   }
 
-  /** Reassign jedne linije (RPC; group-mismatch bez force → 422; force bez prava → 403). */
-  async reassign(email: string, dto: ReassignDto) {
-    const wo = BigInt(dto.workOrderId);
-    const line = BigInt(dto.lineId);
-    const target = dto.targetMachine ?? null;
-    const force = !!dto.force;
-    const reason = dto.reason ?? null;
+  // ==========================================================================
+  // Reassign (port sy15 reassign_production_line)
+  // ==========================================================================
+
+  /**
+   * Reassign jedne linije (verni port RPC-a). `canForce` = da li korisnik ima
+   * `plan_proizvodnje.force` (kontroler računa iz role) — BE je konačni gate.
+   * group-mismatch bez force → 422; force bez prava → 403; force_reason<3 → 422.
+   */
+  async reassign(email: string, dto: ReassignDto, canForce: boolean) {
     const cev = dto.clientEventId ?? randomUUID();
-    return this.mut(email, async (tx) => {
-      const rows = await tx.$queryRaw<{ r: unknown }[]>(
-        Prisma.sql`SELECT reassign_production_line(${wo}::bigint, ${line}::bigint,
-          ${target}::text, ${force}::boolean, ${reason}::text, ${cev}::uuid) AS r`,
-      );
-      return { data: rows[0]?.r ?? null };
-    });
+    return this.prisma.$transaction((tx) =>
+      this.reassignOne(
+        tx,
+        email,
+        canForce,
+        Number(dto.workOrderId),
+        Number(dto.lineId),
+        dto.targetMachine ?? null,
+        !!dto.force,
+        dto.reason ?? null,
+        cev,
+      ),
+    );
   }
 
-  /** Bulk reassign (RPC; JEDAN client_event_uuid; p_pairs = [{wo,line}]). */
-  async bulkReassign(email: string, dto: BulkReassignDto) {
-    const pairs = dto.pairs.map((p) => ({
-      wo: Number(p.workOrderId),
-      line: Number(p.lineId),
-    }));
-    const target = dto.targetMachine ?? null;
-    const force = !!dto.force;
-    const reason = dto.reason ?? null;
+  /** Bulk reassign (JEDAN client_event_uuid za ceo bulk; paritet 1.0). */
+  async bulkReassign(email: string, dto: BulkReassignDto, canForce: boolean) {
     const cev = dto.clientEventId ?? randomUUID();
-    return this.mut(email, async (tx) => {
-      const rows = await tx.$queryRaw<{ r: unknown }[]>(
-        Prisma.sql`SELECT bulk_reassign_production_lines(${JSON.stringify(pairs)}::jsonb,
-          ${target}::text, ${force}::boolean, ${reason}::text, ${cev}::uuid) AS r`,
-      );
-      return { data: rows[0]?.r ?? null };
+    return this.prisma.$transaction(async (tx) => {
+      let count = 0;
+      for (const p of dto.pairs) {
+        await this.reassignOne(
+          tx,
+          email,
+          canForce,
+          Number(p.workOrderId),
+          Number(p.lineId),
+          dto.targetMachine ?? null,
+          !!dto.force,
+          dto.reason ?? null,
+          cev,
+        );
+        count += 1;
+      }
+      return { data: { updated_count: count } };
     });
   }
 
-  // ---------- Kooperacija — auto grupe (admin; DELETE nikad, soft removed_at) ----------
+  /** Jedan reassign u tx — overlay upsert + (ako forsiran) audit ON CONFLICT DO NOTHING. */
+  private async reassignOne(
+    tx: Tx,
+    email: string,
+    canForce: boolean,
+    wo: number,
+    line: number,
+    targetRaw: string | null,
+    force: boolean,
+    reason: string | null,
+    cev: string,
+  ) {
+    const rows = await tx.$queryRaw<
+      { original_machine: string | null; source_machine: string | null }[]
+    >(Prisma.sql`
+      SELECT NULLIF(BTRIM(l.work_center_code), '') AS original_machine,
+             COALESCE(o.assigned_machine_code, NULLIF(BTRIM(l.work_center_code), '')) AS source_machine
+        FROM work_order_operations l
+        LEFT JOIN plan_proizvodnje_overlays o
+          ON o.work_order_id = l.work_order_id AND o.line_id = l.id
+       WHERE l.work_order_id = ${wo} AND l.id = ${line} LIMIT 1`);
+    const original = rows[0]?.original_machine ?? null;
+    const source = rows[0]?.source_machine ?? null;
+    if (original === null) {
+      throw new UnprocessableEntityException("operation_not_found");
+    }
 
-  /** Upsert auto-koop grupe (ON CONFLICT rj_group_code; RLS current_user_is_admin → 403). */
+    let target: string | null = (targetRaw ?? "").trim() || null;
+    // Izbor originalne mašine = „vrati na original" = NULL overlay.
+    if (target !== null && target === original) target = null;
+
+    let sourceGroup: string;
+    let targetGroup: string;
+    let forced = false;
+
+    if (target !== null) {
+      const exists = await tx.$queryRaw<{ ok: boolean }[]>(Prisma.sql`
+        SELECT EXISTS (SELECT 1 FROM operations m WHERE m.work_center_code = ${target}) AS ok`);
+      if (!exists[0]?.ok) {
+        throw new UnprocessableEntityException("target_machine_not_found");
+      }
+      sourceGroup = machineGroupSlug(source);
+      targetGroup = machineGroupSlug(target);
+      if (sourceGroup !== targetGroup) {
+        if (!force) {
+          throw new UnprocessableEntityException("machine_group_mismatch");
+        }
+        if (!canForce) {
+          throw new ForbiddenException("force_reassign_forbidden");
+        }
+        if (reason === null || reason.trim().length < 3) {
+          throw new UnprocessableEntityException("force_reason_required");
+        }
+        forced = true;
+      }
+    } else {
+      sourceGroup = machineGroupSlug(source);
+      targetGroup = machineGroupSlug(original);
+    }
+
+    await tx.planProizvodnjeOverlay.upsert({
+      where: { workOrderId_lineId: { workOrderId: wo, lineId: line } },
+      create: {
+        workOrderId: wo,
+        lineId: line,
+        assignedMachineCode: target,
+        createdBy: email,
+        updatedBy: email,
+      },
+      update: { assignedMachineCode: target, updatedBy: email },
+    });
+
+    if (forced) {
+      // Idempotencija po (client_event_uuid, line_id) — paritet sy15
+      // `ON CONFLICT (client_event_uuid, line_id) DO NOTHING`.
+      await tx.$executeRaw(Prisma.sql`
+        INSERT INTO plan_proizvodnje_reassign_audit
+          (work_order_id, line_id, actor_email, from_machine_code, to_machine_code,
+           source_group, target_group, forced, force_reason, client_event_uuid)
+        VALUES (${wo}, ${line}, ${email}, ${source}, ${target},
+                ${sourceGroup}, ${targetGroup}, true, ${reason!.trim()}, ${cev}::uuid)
+        ON CONFLICT (client_event_uuid, line_id) DO NOTHING`);
+    }
+
+    return {
+      data: {
+        work_order_id: String(wo),
+        line_id: String(line),
+        assigned_machine_code: target,
+        source_group: sourceGroup,
+        target_group: targetGroup,
+        forced,
+      },
+    };
+  }
+
+  // ==========================================================================
+  // Kooperacija — auto grupe (admin; DELETE nikad, soft removed_at)
+  // ==========================================================================
+
+  /** Upsert auto-koop grupe (ON CONFLICT rj_group_code; restore = removed_at→NULL). */
   async upsertCooperationGroup(email: string, dto: CooperationGroupUpsertDto) {
-    return this.mut(email, async (tx) => {
-      const rows = await tx.$queryRaw(
-        Prisma.sql`INSERT INTO production_auto_cooperation_groups
-            (rj_group_code, group_label, notes, added_by, added_at)
-          VALUES (${dto.rjGroupCode}, ${dto.groupLabel}, ${dto.notes ?? null}, ${email}, now())
-          ON CONFLICT (rj_group_code) DO UPDATE SET
-            group_label = EXCLUDED.group_label,
-            notes = EXCLUDED.notes,
-            removed_at = NULL, removed_by = NULL
-          RETURNING rj_group_code, group_label, notes, added_at, added_by, removed_at, removed_by`,
-      );
-      return { data: jsonSafe((rows as unknown[])[0] ?? null) };
-    });
+    const rows = await this.prisma.$queryRaw(Prisma.sql`
+      INSERT INTO plan_proizvodnje_auto_cooperation_groups
+          (rj_group_code, group_label, notes, added_by, added_at)
+        VALUES (${dto.rjGroupCode}, ${dto.groupLabel}, ${dto.notes ?? null}, ${email}, now())
+        ON CONFLICT (rj_group_code) DO UPDATE SET
+          group_label = EXCLUDED.group_label,
+          notes = EXCLUDED.notes,
+          removed_at = NULL, removed_by = NULL
+        RETURNING rj_group_code, group_label, notes, added_at, added_by, removed_at, removed_by`);
+    return { data: jsonSafe((rows as unknown[])[0] ?? null) };
   }
 
-  /** Izmena/soft-remove/restore auto-koop grupe (RLS current_user_is_admin → 403). */
+  /** Izmena/soft-remove/restore auto-koop grupe. */
   async patchCooperationGroup(
     email: string,
     code: string,
@@ -806,25 +396,24 @@ export class PlanProizvodnjeService {
     }
     if (!sets.length)
       throw new BadRequestException("Nema polja za izmenu grupe.");
-    return this.mut(email, async (tx) => {
-      const rows = await tx.$queryRaw<unknown[]>(
-        Prisma.sql`UPDATE production_auto_cooperation_groups
-          SET ${Prisma.join(sets, ", ")}
-          WHERE rj_group_code = ${code}
-          RETURNING rj_group_code, group_label, notes, added_at, added_by, removed_at, removed_by`,
-      );
-      if (!rows.length)
-        throw new NotFoundException(`Koop grupa ${code} ne postoji`);
-      return { data: jsonSafe(rows[0]) };
-    });
+    const rows = await this.prisma.$queryRaw<unknown[]>(Prisma.sql`
+      UPDATE plan_proizvodnje_auto_cooperation_groups
+        SET ${Prisma.join(sets, ", ")}
+        WHERE rj_group_code = ${code}
+        RETURNING rj_group_code, group_label, notes, added_at, added_by, removed_at, removed_by`);
+    if (!rows.length)
+      throw new NotFoundException(`Koop grupa ${code} ne postoji`);
+    return { data: jsonSafe(rows[0]) };
   }
 
-  // ---------- Skice (production-drawings) + bigtehn crteži ----------
+  // ==========================================================================
+  // Skice (plan_proizvodnje_drawings) — bytea (M1)
+  // ==========================================================================
 
   /**
-   * Upload skice u `production-drawings` + meta u production_drawings. Putanja
-   * 1.0-kompatibilna: `{wo}/{line}/{12hex}_{safeName}`. Autorizacija = can_edit
-   * (RLS pri INSERT-u). Upload pre meta-insert-a (paritet 1.0 uploadDrawing).
+   * Upload skice (bytea u bazi, M1 — nema object storage). MIME whitelist (port 1.0
+   * drawingManager ALLOWED_MIMES) ili bilo koji image/*. Autorizacija = kontroler
+   * `plan_proizvodnje.edit`. Vraća meta bez binarnog sadržaja.
    */
   async uploadDrawing(
     email: string,
@@ -835,129 +424,64 @@ export class PlanProizvodnjeService {
     if (!file?.buffer?.length) {
       throw new UnprocessableEntityException("Očekivan fajl (multipart `file`)");
     }
-    // MIME whitelist (port 1.0 drawingManager ALLOWED_MIMES): eksplicitna lista
-    // ILI bilo koji image/* (GAP-PM-19 BE deo). Bez ovoga bilo koji tip prolazi
-    // (fallback application/octet-stream) pa fajl završi u bucket-u van dozvole.
     const mime = String(file.mimetype ?? "").toLowerCase();
     if (!ALLOWED_DRAWING_MIMES.includes(mime) && !mime.startsWith("image/")) {
       throw new UnprocessableEntityException(
         `Nepodržan tip fajla: ${file.mimetype || "(nepoznat)"}. Dozvoljeni: JPG, PNG, WEBP, HEIC, PDF.`,
       );
     }
-    const wo = BigInt(workOrder);
-    const li = BigInt(line);
-    const safeName =
-      String(file.originalname)
-        .normalize("NFKD")
-        .replace(/[^\w.\-]+/g, "_")
-        .replace(/_+/g, "_")
-        .replace(/^_+|_+$/g, "")
-        .slice(0, 80) || "file";
-    const uuid = randomUUID().replace(/-/g, "").slice(0, 12);
-    const storagePath = `${workOrder}/${line}/${uuid}_${safeName}`;
-    await this.storage.upload(
-      DRAWINGS_BUCKET,
-      storagePath,
-      new Uint8Array(file.buffer),
-      file.mimetype || "application/octet-stream",
-    );
-    return this.mut(email, async (tx) => {
-      const row = await tx.ppDrawing.create({
-        data: {
-          workOrderId: wo,
-          lineId: li,
-          storagePath,
-          fileName: file.originalname,
-          mimeType: file.mimetype || null,
-          sizeBytes: file.size ? BigInt(file.size) : null,
-          uploadedBy: email,
-        },
-      });
-      return { data: jsonSafe(row) };
-    });
-  }
-
-  /** Soft-delete skice (deleted_at/by) + best-effort brisanje fajla. */
-  async deleteDrawing(email: string, id: string) {
-    const idBig = BigInt(id);
-    const path = await this.mut(email, async (tx) => {
-      const d = await tx.ppDrawing.findUnique({
-        where: { id: idBig },
-        select: { storagePath: true, deletedAt: true },
-      });
-      if (!d) throw new NotFoundException(`Skica ${id} ne postoji`);
-      const r = await tx.ppDrawing.updateMany({
-        where: { id: idBig, deletedAt: null },
-        data: { deletedAt: new Date(), deletedBy: email },
-      });
-      if (r.count === 0 && d.deletedAt) return null; // već obrisano — idempotentno
-      return d.storagePath;
-    });
-    if (path) await this.storage.remove(DRAWINGS_BUCKET, path);
-    return { data: { id } };
-  }
-
-  /** Presigned URL skice (gate can_read_production_drawings — presuda C3 strogi paritet). */
-  async drawingSignUrl(email: string, id: string) {
-    const idBig = BigInt(id);
-    const path = await this.mut(email, async (tx) => {
-      await this.assertCanReadDrawings(tx);
-      const d = await tx.ppDrawing.findFirst({
-        where: { id: idBig, deletedAt: null },
-        select: { storagePath: true },
-      });
-      if (!d) throw new NotFoundException(`Skica ${id} ne postoji`);
-      return d.storagePath;
-    });
-    return { data: await this.storage.signUrl(DRAWINGS_BUCKET, path, SIGNED_URL_TTL) };
-  }
-
-  /**
-   * Presigned URL crteža iz bigtehn keša (TP procedura PDF). Sanitizacija broja +
-   * revizija fallback (`{broj}_A/B`) — paritet 1.0 resolveBigtehnDrawing. Gate
-   * can_read_production_drawings (presuda C3).
-   */
-  async bigtehnDrawingSignUrl(email: string, code: string) {
-    const clean = sanitizeDrawingNo(code);
-    if (!clean) throw new BadRequestException("Neispravan broj crteža.");
-    const path = await this.mut(email, async (tx) => {
-      await this.assertCanReadDrawings(tx);
-      const exact = await tx.$queryRaw<{ storage_path: string }[]>(
-        Prisma.sql`SELECT storage_path FROM bigtehn_drawings_cache
-          WHERE drawing_no = ${clean} AND removed_at IS NULL LIMIT 1`,
-      );
-      if (exact[0]?.storage_path) return exact[0].storage_path;
-      // Revizija fallback: {broj}_A/B — najviši sufiks.
-      const cands = await tx.$queryRaw<{ drawing_no: string; storage_path: string }[]>(
-        Prisma.sql`SELECT drawing_no, storage_path FROM bigtehn_drawings_cache
-          WHERE drawing_no LIKE ${clean + "%"} AND removed_at IS NULL
-          ORDER BY drawing_no DESC LIMIT 50`,
-      );
-      const hit = cands.find(
-        (c) => c.drawing_no === clean || c.drawing_no.startsWith(clean + "_"),
-      );
-      if (!hit?.storage_path)
-        throw new NotFoundException(`Crtež ${clean} nije u kešu.`);
-      return hit.storage_path;
+    const row = await this.prisma.planProizvodnjeDrawing.create({
+      data: {
+        workOrderId: Number(workOrder),
+        lineId: Number(line),
+        fileName: file.originalname,
+        contentType: file.mimetype || null,
+        pdfBinary: new Uint8Array(file.buffer),
+        sizeBytes: file.size ? BigInt(file.size) : null,
+        uploadedBy: email,
+      },
+      select: {
+        id: true,
+        workOrderId: true,
+        lineId: true,
+        fileName: true,
+        contentType: true,
+        sizeBytes: true,
+        uploadedAt: true,
+        uploadedBy: true,
+      },
     });
     return {
-      data: await this.storage.signUrl(
-        BIGTEHN_DRAWINGS_BUCKET,
-        path,
-        SIGNED_URL_TTL,
-      ),
+      data: jsonSafe({
+        id: String(row.id),
+        workOrderId: String(row.workOrderId),
+        lineId: row.lineId != null ? String(row.lineId) : null,
+        storagePath: null,
+        fileName: row.fileName,
+        mimeType: row.contentType,
+        sizeBytes: row.sizeBytes != null ? Number(row.sizeBytes) : null,
+        uploadedAt: row.uploadedAt,
+        uploadedBy: row.uploadedBy,
+      }),
     };
   }
 
-  /** Gate za crteže (storage.objects politika u DB) — proveravamo mi (service ključ zaobilazi RLS). */
-  private async assertCanReadDrawings(tx: Sy15Tx): Promise<void> {
-    const rows = await tx.$queryRaw<{ ok: boolean }[]>(
-      Prisma.sql`SELECT can_read_production_drawings() AS ok`,
-    );
-    if (!rows[0]?.ok) {
-      throw new ForbiddenException("Nemate pravo na PDF crteža.");
-    }
+  /** Soft-delete skice (deleted_at/by). Idempotentno (već obrisano → 200). */
+  async deleteDrawing(email: string, id: string) {
+    const idNum = Number(id);
+    const d = await this.prisma.planProizvodnjeDrawing.findUnique({
+      where: { id: idNum },
+      select: { deletedAt: true },
+    });
+    if (!d) throw new NotFoundException(`Skica ${id} ne postoji`);
+    await this.prisma.planProizvodnjeDrawing.updateMany({
+      where: { id: idNum, deletedAt: null },
+      data: { deletedAt: new Date(), deletedBy: email },
+    });
+    return { data: { id } };
   }
+
+  // ---------- interno ----------
 
   /** 'YYYY-MM-DD' → Date za @db.Date (undefined = ne diraj, null = obriši). */
   private toDbDate(v?: string | null): Date | null | undefined {
@@ -965,89 +489,4 @@ export class PlanProizvodnjeService {
     if (v === null || v === "") return null;
     return new Date(`${v.slice(0, 10)}T00:00:00Z`);
   }
-
-  private async mut<T>(
-    email: string,
-    fn: (tx: Sy15Tx) => Promise<T>,
-  ): Promise<T> {
-    try {
-      return await this.sy15.withUserRls(email, fn);
-    } catch (e) {
-      mapSy15Error(e);
-    }
-  }
-
-  // ---------- interno ----------
-
-  /** effective_machine_code WHERE fragment za odeljenje (port departments.js). */
-  private deptWhere(slug: string): Prisma.Sql {
-    const d = getDepartment(slug);
-    if (!d || d.slug === "sve") return Prisma.empty; // Sve = bez dodatnog machine filtera
-    if (d.isFallback) {
-      // Ostalo = ne upada ni u jedan imenovani tab (operacije bez mašine SU u Ostalo).
-      const named = NAMED_DEPARTMENTS.map((nd) => this.machineMatch(nd)).filter(
-        (c): c is Prisma.Sql => c !== null,
-      );
-      if (!named.length) return Prisma.empty;
-      return Prisma.sql`NOT COALESCE((${Prisma.join(named, " OR ")}), false)`;
-    }
-    return this.machineMatch(d) ?? Prisma.sql`false`;
-  }
-
-  private machineMatch(d: DepartmentDef): Prisma.Sql | null {
-    const parts: Prisma.Sql[] = [];
-    if (d.machineCodes?.length)
-      parts.push(
-        Prisma.sql`effective_machine_code IN (${Prisma.join(d.machineCodes)})`,
-      );
-    for (const p of d.machinePrefixes ?? [])
-      parts.push(
-        Prisma.sql`(effective_machine_code = ${p} OR effective_machine_code LIKE ${p + ".%"})`,
-      );
-    // Kod-matching sa exclude-om (na kraju, samo nad mašinskim kodom).
-    let codeCond: Prisma.Sql | null = null;
-    if (parts.length) {
-      codeCond = Prisma.sql`(${Prisma.join(parts, " OR ")})`;
-      if (d.excludeMachineCodes?.length)
-        codeCond = Prisma.sql`(${codeCond} AND effective_machine_code NOT IN (${Prisma.join(d.excludeMachineCodes)}))`;
-    }
-    // Name-pattern grana (port 1.0 operationNamePatterns): opis_rada ILIKE '%pat%'.
-    // Nezavisna OR grana (ne podleže machine exclude-u — 1.0 je matchuje po nazivu
-    // bez obzira na mašinu). Server nema unaccent — ASCII-bazičan match (paritet 1.0).
-    const nameParts = (d.operationNamePatterns ?? [])
-      .map((p) => String(p).trim())
-      .filter(Boolean)
-      .map((p) => Prisma.sql`opis_rada ILIKE ${"%" + p + "%"}`);
-    const nameCond = nameParts.length
-      ? Prisma.sql`(${Prisma.join(nameParts, " OR ")})`
-      : null;
-
-    if (codeCond && nameCond)
-      return Prisma.sql`(${codeCond} OR ${nameCond})`;
-    return codeCond ?? nameCond;
-  }
-
-  private async read<T>(
-    email: string,
-    fn: (tx: Sy15Tx) => Promise<T>,
-    opts?: { timeoutMs?: number },
-  ): Promise<T> {
-    try {
-      return await this.sy15.withUserRls(email, fn, opts);
-    } catch (e) {
-      mapSy15Error(e);
-    }
-  }
-}
-
-/** Clamp query-int (default/min/max). */
-function clampInt(
-  raw: string | undefined,
-  def: number,
-  min: number,
-  max: number,
-): number {
-  const n = Number(raw);
-  if (!Number.isFinite(n)) return def;
-  return Math.min(Math.max(Math.floor(n), min), max);
 }

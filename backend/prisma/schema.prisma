@@ -1637,13 +1637,13 @@ model Worker {
 /// employee_id (osoba), ne kartica/metod — kad se uključi Face ID/otisak/QR, događaji ulaze
 /// sa istim employee_id. Soft-link (bez cross-DB FK), kao 1.0 katze_employee_map.
 model WorkerEmployeeMap {
-  workerId     Int       @id(map: "pk_worker_employee_map") @map("worker_id")
-  employeeId   String    @map("employee_id") @db.Uuid
-  matchMethod  String    @default("card") @map("match_method") @db.VarChar(20)
-  confirmedBy  Int?      @map("confirmed_by")
-  confirmedAt  DateTime? @map("confirmed_at") @db.Timestamp(6)
-  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamp(6)
-  updatedAt    DateTime  @default(now()) @map("updated_at") @db.Timestamp(6)
+  workerId    Int       @id(map: "pk_worker_employee_map") @map("worker_id")
+  employeeId  String    @map("employee_id") @db.Uuid
+  matchMethod String    @default("card") @map("match_method") @db.VarChar(20)
+  confirmedBy Int?      @map("confirmed_by")
+  confirmedAt DateTime? @map("confirmed_at") @db.Timestamp(6)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt   DateTime  @default(now()) @map("updated_at") @db.Timestamp(6)
 
   @@index([employeeId], map: "idx_worker_employee_map_employee")
   @@map("worker_employee_map")
@@ -1686,15 +1686,15 @@ model WorkOrderOperation {
   workOrder       WorkOrder                 @relation(fields: [workOrderId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_order_operations_work_order")
   images          WorkOrderOperationImage[]
 
+  // Q12 (Nenad 16.07): redni broj operacije jedinstven unutar istog RN-a.
+  // Prod čist (0 duplih grupa na 215k), owned tabela (sync ne piše). Migracija
+  // 20260716140000_uq_work_order_operation_number.
+  @@unique([workOrderId, operationNumber], map: "uq_woo_work_order_operation_number")
   // PERF (Faza 6 analize): routing lookup (findOrOpenRoutingTp/control) i
   // setOperationDonePriority idu po ovim kolonama. Kreirani CONCURRENTLY na prod-u
   // 2026-07-16 (migracija 20260716120000). 215k redova.
   @@index([workOrderId, operationNumber, workCenterCode], map: "idx_woo_routing")
   @@index([workOrderId], map: "idx_woo_work_order")
-  // Q12 (Nenad 16.07): redni broj operacije jedinstven unutar istog RN-a.
-  // Prod čist (0 duplih grupa na 215k), owned tabela (sync ne piše). Migracija
-  // 20260716140000_uq_work_order_operation_number.
-  @@unique([workOrderId, operationNumber], map: "uq_woo_work_order_operation_number")
   @@map("work_order_operations")
 }
 
@@ -2281,6 +2281,10 @@ model PredmetAktivacija {
   id              Int      @id(map: "pk_predmet_aktivacije") @default(autoincrement()) @map("id")
   projectId       Int      @map("project_id")
   isActive        Boolean  @default(true) @map("is_active")
+  /// Drugi checkbox iz Podešavanja predmeta (M7, Nenad 20.07.2026): SAMO za predmete sa
+  /// ovim flagom se kreiraju Projektovanje (PB) i Plan montaže praćenja (sy15
+  /// `je_projektovanje_montaza`; pb_list_projects = aktivan ∧ ovaj flag).
+  isProjektovanjeMontaza Boolean @default(false) @map("is_projektovanje_montaza")
   /// Redosled u listi aktivnih predmeta (↑↓); null = nerangiran.
   sortPriority    Int?     @map("sort_priority")
   /// ⭐ Slot u „top-listi" plana (max je app-konfiguracija); null = nije na top-listi.
@@ -2447,3 +2451,153 @@ model KoopOtpremnicaStavka {
   @@map("koop_otpremnica_stavke")
 }
 
+// ============================================================================
+// PLAN PROIZVODNJE — 2.0-native app-owned tabele (F5b, plan §4.2, odluke M1/M3/M8)
+// ----------------------------------------------------------------------------
+// Gašenje sy15 (1.0) mosta za Plan proizvodnje: aplikativni overlay/urgency/koop/skice/
+// reassign-audit koje 1.0 drži u `production_*` tabelama sele u glavnu bazu (BACKEND_RULES §3
+// vlasništvo). Ovaj korak (F5b-1a) uvodi SAMO app-owned tabele + migracioni skript — read sloj
+// (view lanac → native) čeka F5b-0 izviđanje. Plan: docs/PLAN_F5_GASENJE_MOSTA.md §4.
+//
+// Reference ka work_orders (2.0) i work_order_operations su MEKI ref-ovi (BEZ DB FK) — kućni
+// obrazac praćenja (PracenjeOverride/OperativnaAktivnost). `lineId` == work_order_operations.id
+// deli ISTI id prostor kao sy15 `line` (dokazano feed-om: op.id AS id) → migracija je COPY bez
+// remape. `workOrderId` == work_orders.id (isto meki). Nijedna od 5 tabela nema pravi FK ka
+// drugoj. Legacy audit kolone (created_by/updated_by/…) su sy15 tekst (email/uid) i prenose se
+// VERBATIM — bez remape na users.id (za razliku od praćenja) da COPY ostane 1:1.
+// Timestamptz(6) (BACKEND_RULES §11.5); statusi String sa /// katalogom (BACKEND_RULES §2).
+// ============================================================================
+
+/// App-owned (2.0, plan §4.2 (b), F5b). Overlay Plana proizvodnje po operaciji (1 red /
+/// work_order + line). Zamena za sy15 `production_overlays` (podaci se migriraju 1:1 COPY-jem —
+/// id prostori isti). `workOrderId` = work_orders.id (meki ref); `lineId` = work_order_operations.id
+/// (meki ref, ISTI id prostor kao sy15 line). Istorija (production_overlays_history, 112) ide
+/// jednokratno u 2.0 `audit_log` (M8), ne u zasebnu tabelu. Bez DB FK.
+model PlanProizvodnjeOverlay {
+  id                        Int       @id(map: "pk_plan_proizvodnje_overlays") @default(autoincrement()) @map("id")
+  /// sy15 provenance (production_overlays.id — bigint autoincrement, NIJE uuid): veza ka history
+  /// redovima (overlay_id) i idempotentan re-import. NULL za native 2.0 redove.
+  legacySy15Id              BigInt?   @unique(map: "uq_plan_proizvodnje_overlays_legacy_sy15") @map("legacy_sy15_id")
+  /// Meki ref → work_orders.id.
+  workOrderId               Int       @map("work_order_id")
+  /// Meki ref → work_order_operations.id (ISTI id prostor kao sy15 line).
+  lineId                    Int       @map("line_id")
+  shiftSortOrder            Int?      @map("shift_sort_order")
+  /// Lokalni status smene; null = auto (izvedeno iz kucanja). Dozvoljeno: 'waiting' | 'in_progress' | 'blocked'.
+  localStatus               String?   @map("local_status") @db.VarChar(20)
+  shiftNote                 String?   @map("shift_note")
+  assignedMachineCode       String?   @map("assigned_machine_code") @db.VarChar(50)
+  camReady                  Boolean   @default(false) @map("cam_ready")
+  camReadyAt                DateTime? @map("cam_ready_at") @db.Timestamptz(6)
+  camReadyBy                String?   @map("cam_ready_by")
+  readyOverride             Boolean   @default(false) @map("ready_override")
+  readyOverrideAt           DateTime? @map("ready_override_at") @db.Timestamptz(6)
+  readyOverrideBy           String?   @map("ready_override_by")
+  /// Status kooperacije. Dozvoljeno: 'none' | 'external' | 'external_in_progress' | 'external_done'.
+  cooperationStatus         String?   @map("cooperation_status") @db.VarChar(30)
+  cooperationPartner        String?   @map("cooperation_partner")
+  cooperationSetBy          String?   @map("cooperation_set_by")
+  cooperationSetAt          DateTime? @map("cooperation_set_at") @db.Timestamptz(6)
+  cooperationExpectedReturn DateTime? @map("cooperation_expected_return") @db.Date
+  archivedAt                DateTime? @map("archived_at") @db.Timestamptz(6)
+  archivedReason            String?   @map("archived_reason")
+  /// Legacy audit — sy15 tekst (email/uid), preneseno verbatim (COPY bez remape).
+  createdBy                 String?   @map("created_by")
+  updatedBy                 String?   @map("updated_by")
+  createdAt                 DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                 DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([workOrderId, lineId], map: "uq_plan_proizvodnje_overlays_wo_line")
+  @@map("plan_proizvodnje_overlays")
+}
+
+/// App-owned (2.0, plan §4.2 (b), F5b). HITNO flag Plana proizvodnje po RN-u (1 red /
+/// work_orders.id). Zamena za sy15 `production_urgency_overrides` (COPY 1:1). DELETE nikad —
+/// samo set/clear preko `clearedAt`. `workOrderId` meki ref → work_orders (bez DB FK).
+model PlanProizvodnjeUrgency {
+  id          Int       @id(map: "pk_plan_proizvodnje_urgency_overrides") @default(autoincrement()) @map("id")
+  workOrderId Int       @map("work_order_id")
+  isUrgent    Boolean   @default(true) @map("is_urgent")
+  reason      String?   @map("reason")
+  setBy       String?   @map("set_by")
+  setAt       DateTime  @default(now()) @map("set_at") @db.Timestamptz(6)
+  clearedAt   DateTime? @map("cleared_at") @db.Timestamptz(6)
+  clearedBy   String?   @map("cleared_by")
+
+  @@unique([workOrderId], map: "uq_plan_proizvodnje_urgency_work_order")
+  @@map("plan_proizvodnje_urgency_overrides")
+}
+
+/// App-owned (2.0, plan §4.2 (b), F5b). Auto-kooperacija: RJ grupa mašina koje se tretiraju kao
+/// kooperacija (admin CRUD je R2). Zamena za sy15 `production_auto_cooperation_groups` (COPY 1:1).
+/// Soft-delete preko `removedAt` (DELETE nikad). Kolona `vrsta` NIJE uvedena — kooperacija F4 je
+/// odložena za 4.0 (plan zadatak §3).
+model PlanProizvodnjeAutoKoopGroup {
+  id          Int       @id(map: "pk_plan_proizvodnje_auto_cooperation_groups") @default(autoincrement()) @map("id")
+  rjGroupCode String    @map("rj_group_code") @db.VarChar(50)
+  groupLabel  String?   @map("group_label")
+  notes       String?   @map("notes")
+  /// Legacy audit — sy15 tekst (email), verbatim.
+  addedBy     String?   @map("added_by")
+  addedAt     DateTime  @default(now()) @map("added_at") @db.Timestamptz(6)
+  removedAt   DateTime? @map("removed_at") @db.Timestamptz(6)
+  removedBy   String?   @map("removed_by")
+
+  @@unique([rjGroupCode], map: "uq_plan_proizvodnje_auto_koop_rj_group_code")
+  @@map("plan_proizvodnje_auto_cooperation_groups")
+}
+
+/// App-owned (2.0, plan §4.2 (e), F5b, odluka M1). Skica planera uz operaciju — PDF u bazi (bytea,
+/// obrazac `drawing_pdfs.pdf_binary`; glavna baza nema object storage). Zamena za sy15
+/// `production_drawings` (koja je koristila storage bucket) — `storagePath` je zamenjen `pdfBinary`.
+/// Soft-delete preko `deletedAt`. Meki ref-ovi → work_orders / work_order_operations (bez DB FK).
+model PlanProizvodnjeDrawing {
+  id           Int       @id(map: "pk_plan_proizvodnje_drawings") @default(autoincrement()) @map("id")
+  /// sy15 provenance (production_drawings.id — bigint): idempotentan re-import. NULL za native 2.0.
+  legacySy15Id BigInt?   @unique(map: "uq_plan_proizvodnje_drawings_legacy_sy15") @map("legacy_sy15_id")
+  workOrderId  Int       @map("work_order_id")
+  /// Meki ref → work_order_operations.id; null = skica na nivou RN-a.
+  lineId       Int?      @map("line_id")
+  fileName     String    @map("file_name") @db.VarChar(255)
+  contentType  String?   @map("content_type") @db.VarChar(100)
+  /// PDF sadržaj (bytea, M1). Null dozvoljen radi meta-only / lenivog uvoza.
+  pdfBinary    Bytes?    @map("pdf_binary")
+  sizeBytes    BigInt?   @map("size_bytes")
+  uploadedBy   String?   @map("uploaded_by")
+  uploadedAt   DateTime  @default(now()) @map("uploaded_at") @db.Timestamptz(6)
+  deletedAt    DateTime? @map("deleted_at") @db.Timestamptz(6)
+  deletedBy    String?   @map("deleted_by")
+
+  @@index([workOrderId], map: "idx_plan_proizvodnje_drawings_work_order")
+  @@map("plan_proizvodnje_drawings")
+}
+
+/// App-owned (2.0, plan §4.2 (c), F5b). Audit premeštaja operacije na drugu mašinu (samo forsirani
+/// premeštaji — group-mismatch koji je admin/menadžment probio). Zamena za sy15
+/// `production_reassign_audit` (COPY 1:1). Idempotencija po (client_event_uuid, line_id) — ISTA
+/// semantika kao sy15 `ON CONFLICT (client_event_uuid, line_id) DO NOTHING`. No-client-write u sy15;
+/// u 2.0 upisuje BE reassign servis (F5b-1c). Meki ref-ovi → work_orders / work_order_operations.
+model PlanProizvodnjeReassignAudit {
+  id              Int      @id(map: "pk_plan_proizvodnje_reassign_audit") @default(autoincrement()) @map("id")
+  workOrderId     Int      @map("work_order_id")
+  lineId          Int      @map("line_id")
+  /// Ko je forsirao (sy15 `actor_email` = current_user_email()); tekst, verbatim.
+  actorEmail      String?  @map("actor_email")
+  /// sy15 `source_machine`.
+  fromMachineCode String?  @map("from_machine_code") @db.VarChar(50)
+  /// sy15 `target_machine`.
+  toMachineCode   String?  @map("to_machine_code") @db.VarChar(50)
+  sourceGroup     String?  @map("source_group") @db.VarChar(50)
+  targetGroup     String?  @map("target_group") @db.VarChar(50)
+  /// True = forsiran premeštaj. sy15 audit red postoji SAMO za forsirane → default true.
+  forced          Boolean  @default(true) @map("forced")
+  forceReason     String?  @map("force_reason")
+  /// Klijentski event uuid (idempotencija dupliranog submita); null dozvoljen (stariji sy15 poziv
+  /// bez uuid-a). PG tretira NULL kao različit → jedinstvenost se ne enforce-uje za null (kao sy15).
+  clientEventUuid String?  @map("client_event_uuid") @db.Uuid
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([clientEventUuid, lineId], map: "uq_plan_proizvodnje_reassign_client_event_line")
+  @@index([workOrderId], map: "idx_plan_proizvodnje_reassign_work_order")
+  @@map("plan_proizvodnje_reassign_audit")
+}

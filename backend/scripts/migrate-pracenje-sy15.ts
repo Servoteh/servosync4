@@ -167,6 +167,7 @@ interface NapomenaRow {
 interface AktivacijaRow {
   predmet_item_id: number;
   je_aktivan: boolean | null;
+  je_projektovanje_montaza: boolean | null;
   azurirao_email: string | null;
   azurirano_at: Date | null;
 }
@@ -707,7 +708,8 @@ async function main(): Promise<void> {
     const s4 = step("4_predmet_aktivacije");
     const aktRows = await sy15.$queryRaw<AktivacijaRow[]>(
       Sy15Prisma.sql`
-        SELECT a.predmet_item_id, a.je_aktivan, u.email AS azurirao_email, a.azurirano_at
+        SELECT a.predmet_item_id, a.je_aktivan, a.je_projektovanje_montaza,
+               u.email AS azurirao_email, a.azurirano_at
           FROM production.predmet_aktivacija a
           LEFT JOIN auth.users u ON u.id = a.azurirao_user_id`,
     );
@@ -724,6 +726,7 @@ async function main(): Promise<void> {
 
     interface Merged {
       isActive: boolean;
+      isProjektovanjeMontaza: boolean;
       sortPriority: number | null;
       planPriority: number | null;
       updatedByEmail: string | null;
@@ -736,6 +739,7 @@ async function main(): Promise<void> {
       if (!m) {
         m = {
           isActive: true,
+          isProjektovanjeMontaza: false,
           sortPriority: null,
           planPriority: null,
           updatedByEmail: null,
@@ -749,6 +753,7 @@ async function main(): Promise<void> {
     for (const a of aktRows) {
       const m = ensure(a.predmet_item_id);
       m.isActive = a.je_aktivan ?? true;
+      m.isProjektovanjeMontaza = a.je_projektovanje_montaza ?? false;
       m.updatedByEmail = a.azurirao_email;
       m.azuriranoAt = a.azurirano_at;
       m.fromAktivacija = true;
@@ -784,6 +789,7 @@ async function main(): Promise<void> {
           create: {
             projectId,
             isActive: m.isActive,
+            isProjektovanjeMontaza: m.isProjektovanjeMontaza,
             sortPriority: m.sortPriority,
             planPriority: m.planPriority,
             createdByUserId: updatedByUserId,
@@ -792,6 +798,7 @@ async function main(): Promise<void> {
           },
           update: {
             isActive: m.isActive,
+            isProjektovanjeMontaza: m.isProjektovanjeMontaza,
             sortPriority: m.sortPriority,
             planPriority: m.planPriority,
             updatedByUserId,

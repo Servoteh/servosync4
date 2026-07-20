@@ -8,6 +8,7 @@ import { toast } from '@/lib/toast';
 import { useCan } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
 import { formatDate } from '@/lib/format';
+import { fetchDrawingObjectUrl, openDrawingInTab } from '@/lib/plan-proizvodnje-pdf';
 import {
   useDrawings,
   useUploadDrawing,
@@ -89,7 +90,7 @@ export function SkiceModal({
     setErr(null);
     try {
       const res = await fetchDrawingSignUrl(d.id);
-      window.open(res.data.url, '_blank');
+      await openDrawingInTab(res.data.url);
     } catch (e) {
       setErr(e instanceof ApiError ? e.message : 'Nemate pravo na crtež ili nije dostupan.');
     }
@@ -169,15 +170,20 @@ function DrawingCard({
 
   useEffect(() => {
     let alive = true;
+    let objectUrl: string | null = null;
     if (isImage) {
       fetchDrawingSignUrl(d.id)
-        .then((res) => {
-          if (alive) setThumb(res.data.url);
+        .then((res) => fetchDrawingObjectUrl(res.data.url))
+        .then((url) => {
+          objectUrl = url;
+          if (alive) setThumb(url);
+          else URL.revokeObjectURL(url);
         })
         .catch(() => {});
     }
     return () => {
       alive = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [d.id, isImage]);
 

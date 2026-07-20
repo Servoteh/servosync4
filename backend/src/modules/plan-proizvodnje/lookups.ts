@@ -1,4 +1,12 @@
 /**
+ * ⚠️ M5 (plan §8, F5b): LOOKUP RUTE SU UGAŠENE. `op-snapshot`/`tp-options`/
+ * `resolve-drawing-no`/`rn-by-ids` su imale 0 FE poziva (grep frontend/src) i oslanjale
+ * su se na sy15 bigtehn keš — pale su sa gašenjem mosta. Ovaj fajl (ČISTA, bez-DB
+ * kanonizacija 9400 dash/slash + izbor RN reda + TP sort) SE ČUVA namerno: ako
+ * Lokacije-native (F5c) zatraže isti lookup nad glavnom bazom, port je jeftin
+ * (kanonizacija je nezavisna od izvora). Trenutno se NE importuje nigde u živom kodu —
+ * pokriveno `lookups.spec.ts` (pure-funkcija testovi ostaju zeleni).
+ *
  * Plan proizvodnje — LOOKUP servisi (C2-P7, GAP-PM-26; MODULE_SPEC §3 „dele se s
  * Lokacijama"). Port 1.0 `src/services/planProizvodnje.js`:
  *   - fetchBigtehnOpSnapshotByRnAndTp (~505–720): 9400 dash/slash kanonizacija
