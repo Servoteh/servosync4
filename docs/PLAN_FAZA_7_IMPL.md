@@ -71,3 +71,19 @@ i statutarni završni račun žive kod knjigovođe** — BigBit (i time 4.0 zame
 PDV/fakturisanje. Naš `zavrsni` modul je pregled + kontrola za menadžment i priprema podloge (bruto
 bilans / zaključni list) za knjigovođu — NIJE kanal za predaju APR-u. Obračun plata i OS amortizaciju
 NE graditi u 4.0 bez izričite odluke (van scope-a, kod knjigovođe).
+
+### Definitivan dokaz (20.07 #5): Access COM sa Slavišinim kredencijalima — tabele nema
+
+Poslednji mogući nivo provere: otvorena **živa radna baza** `Desktop\BigBit26\OnLine_BigBit_APL.MDB`
+(modifikovana 12.07.2026, svi linkovi razrešeni kroz `.mdw`) preko **Access COM automatizacije** sa
+BigBit kredencijalima (`/wrkgrp BIGBIT.MDW /user Slavisa /pwd kalendar`) — isti mehanizam kojim su
+izvučeni `_extracted/rule_tables/*` CSV-ovi. Rezultat (`_legacy/_tools/access-com-extract/zr_probe.ps1`):
+
+```
+CurrentProject: OnLine_BigBit_APL.MDB
+TableDefs matching ZR/AOP/Modla:  PDV_PPPDV_SviAOP   (jedina — i to za PDV prijavu, ne ZR)
+OPEN FAIL [ZR_AOP_Modla] :: cannot find the input table or query 'ZR_AOP_Modla'
+```
+
+Sam Access engine, sa punim pravima, potvrđuje da tabela ne postoji nigde u sistemu. Istraga zatvorena.
+Alat za buduća vađenja iz zaključanih `.mdb` sačuvan u `_legacy/_tools/access-com-extract/` (gitignored).
