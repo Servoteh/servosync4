@@ -111,6 +111,45 @@ describe("SastanciService — withUserRls most + BigInt out", () => {
     expect(out.data).toEqual([]);
   });
 
+  // ── S5: lista projekata za RN picker (GET /sastanci/projekti) ──
+
+  it("listProjekti (RLS read) ide kroz withUserRls; SELECT nad projects, aliasi code/naziv, ORDER BY šifra + LIMIT 20", async () => {
+    const { svc, sy15, tx } = makeSvc();
+    const rows = [
+      { id: "p1", code: "RN-001", naziv: "Projekat A" },
+      { id: "p2", code: "RN-002", naziv: "Projekat B" },
+    ];
+    tx.$queryRaw.mockResolvedValueOnce(rows);
+    const out = await svc.listProjekti("test@servoteh.com");
+    expect(sy15.withUserRls).toHaveBeenCalledTimes(1);
+    expect(sy15.withUser).not.toHaveBeenCalled();
+    expect(out.data).toEqual(rows);
+    const sql = (
+      tx.$queryRaw.mock.calls[0] as unknown as { strings: string[] }[]
+    )[0].strings.join("?");
+    expect(sql).toContain("FROM projects");
+    expect(sql).toContain(`project_code AS "code"`);
+    expect(sql).toContain(`project_name AS "naziv"`);
+    expect(sql).toContain("ORDER BY project_code ASC");
+    expect(sql).toContain("LIMIT 20");
+    // Bez `q` → nema ILIKE filtera (prazna WHERE grana).
+    expect(sql).not.toContain("ILIKE");
+  });
+
+  it("listProjekti: `q` → ILIKE %q% po šifri ILI nazivu (jedan bind na obe strane)", async () => {
+    const { svc, tx } = makeSvc();
+    tx.$queryRaw.mockResolvedValueOnce([]);
+    await svc.listProjekti("test@servoteh.com", "  most  ");
+    const call = tx.$queryRaw.mock.calls[0] as unknown as [
+      { strings: string[]; values: unknown[] },
+    ];
+    const sql = call[0].strings.join("?");
+    expect(sql).toContain("project_code ILIKE");
+    expect(sql).toContain("project_name ILIKE");
+    // term je trim-ovan i uokviren u %...% (isti bind za obe kolone).
+    expect(call[0].values).toContain("%most%");
+  });
+
   // ── S-P0 paket 3: weekly-diff sa pravim sidrom ──
 
   it("sastanakWeeklyDiff: bez prethodnog zaključanog → data:null (1.0 red se izostavlja)", async () => {
@@ -146,7 +185,13 @@ describe("SastanciService — withUserRls most + BigInt out", () => {
       datum: new Date("2026-07-13"),
     });
     const zakljucanAt = new Date("2026-07-06T10:00:00Z");
-    tx.sastanak.findFirst.mockResolvedValueOnce({ zakljucanAt });
+    const PREV_ID = "9f8e7d6c-5b4a-4938-8271-6f5e4d3c2b1a";
+    tx.sastanak.findFirst.mockResolvedValueOnce({
+      id: PREV_ID,
+      naslov: "Sedmični pregled — 06.07.",
+      datum: new Date("2026-07-06"),
+      zakljucanAt,
+    });
     tx.$queryRaw.mockResolvedValueOnce([
       {
         novo: BigInt(2),
@@ -156,13 +201,29 @@ describe("SastanciService — withUserRls most + BigInt out", () => {
       },
     ]);
     const out = await svc.sastanakWeeklyDiff("test@servoteh.com", ID);
-    // Isti ključevi kao sestrinski akcijeWeeklyDiff (1.0 kanon: zavrsenoOveNedelje).
+    // Isti ključevi kao sestrinski akcijeWeeklyDiff (1.0 kanon: zavrsenoOveNedelje)
+    // + aditivni identitet prethodnog sastanka (S1 „Prethodni zapisnik").
     expect(out.data).toEqual({
       since: zakljucanAt.toISOString(),
       novo: 2,
       zavrsenoOveNedelje: 1,
       kasni: 3,
       aktivnih: 7,
+      prethodniSastanakId: PREV_ID,
+      prethodniNaslov: "Sedmični pregled — 06.07.",
+      prethodniDatum: "2026-07-06", // @db.Date → 'YYYY-MM-DD' (ymdOut, isto kao drugde)
+    });
+    // Select uz zakljucanAt čita i id/naslov/datum (za FE prečicu).
+    const selArg = (
+      tx.sastanak.findFirst.mock.calls[0] as unknown as {
+        select: Record<string, boolean>;
+      }[]
+    )[0];
+    expect(selArg.select).toEqual({
+      id: true,
+      naslov: true,
+      datum: true,
+      zakljucanAt: true,
     });
     // Paritet loadPrethodniZakljucanPre: status='zakljucan', datum < datum, id != :id.
     const arg = (

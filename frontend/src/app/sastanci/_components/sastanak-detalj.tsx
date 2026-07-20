@@ -1,7 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { ArrowLeft, Play, Lock, Unlock, Send, Pencil, CalendarX } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
+import { ArrowLeft, Play, Lock, Unlock, Send, Pencil, CalendarX, Printer } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { PERMISSIONS } from '@/lib/permissions';
 import { Can } from '@/lib/can';
@@ -9,6 +10,7 @@ import { Button } from '@/components/ui-kit/button';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { FormField } from '@/components/ui-kit/form-field';
 import {
+  arhiveQueryKey,
   newClientEventId,
   useCancelSastanak,
   useLockSastanak,
@@ -21,12 +23,14 @@ import {
   useSendInvites,
   useUpdateSastanak,
   useUploadArhivaPdf,
+  type Arhiva,
   type SastanakFull,
   type WeeklyDiff,
 } from '@/api/sastanci';
 import { generateSastanakPdf } from '@/lib/sastanci-pdf';
 import { Tabs, type TabItem } from './tabs';
 import { formatDatum, formatVreme, INPUT_CLS, SASTANAK_TIP_LABEL, SastanakStatusBadge } from './common';
+import { stampajZapisnik } from './print-zapisnik';
 import { DetaljZapisnik } from './detalj-zapisnik';
 import { DetaljAkcije } from './detalj-akcije';
 import { DetaljPriprema } from './detalj-priprema';
@@ -42,6 +46,7 @@ type DetailTab = 'zapisnik' | 'akcije' | 'priprema' | 'odluke' | 'arhiva';
  */
 export function SastanakDetalj({ id, onBack }: { id: string; onBack: () => void }) {
   const { can } = useAuth();
+  const qc = useQueryClient();
   const [tab, setTab] = useState<DetailTab>('zapisnik');
   const [busy, setBusy] = useState<string | null>(null);
   const [editOpen, setEditOpen] = useState(false);
@@ -72,6 +77,29 @@ export function SastanakDetalj({ id, onBack }: { id: string; onBack: () => void 
   const weeklyDiff: WeeklyDiff | null = dd
     ? { novo: dd.novo, zavrsenoOveNedelje: dd.zavrsenoOveNedelje, kasni: dd.kasni, aktivnih: dd.aktivnih }
     : null;
+
+  // S1 — „Prethodni zapisnik": id prethodnog ZAKLJUČANOG sastanka dolazi iz istog
+  // weekly-diff odgovora (aditivno). `?? null` je graciozno dok BE polje još ne
+  // vraća — dugme se tada prosto ne prikazuje.
+  const prethodniSastanakId = dd?.prethodniSastanakId ?? null;
+  // Snapshot prethodnog SAMO iz već postojećeg keša, bez subscribe-a: aktivan
+  // useArhive ovde bi na svako otvaranje detalja (i na svaku mutaciju, jer sve
+  // invalidiraju širok ['sastanci'] ključ) skidao CELU arhivu sa punim snapshot
+  // jsonb-ovima. Ako keša nema, helper štampa živim putem (sam fetch-uje detalj).
+  const [printBusy, setPrintBusy] = useState(false);
+
+  async function stampajPrethodni() {
+    if (!prethodniSastanakId || printBusy) return;
+    setPrintBusy(true);
+    try {
+      const arh = qc
+        .getQueryData<{ data: Arhiva[] }>(arhiveQueryKey)
+        ?.data.find((a) => a.sastanakId === prethodniSastanakId);
+      await stampajZapisnik(qc, prethodniSastanakId, arh?.snapshot);
+    } finally {
+      setPrintBusy(false);
+    }
+  }
 
   // ⭐ prioritet predmeta — redosled RN grupa u zvaničnom (zaključanom) PDF-u.
   const prioQ = usePredmetPrioritet();
@@ -152,6 +180,14 @@ export function SastanakDetalj({ id, onBack }: { id: string; onBack: () => void 
             </div>
             <SastanakStatusBadge status={sast.status} />
             <div className="flex flex-wrap items-center gap-2">
+              {/* S1 — štampa zapisnika PRETHODNOG (zaključanog) sastanka: čita se na
+                  početku tekućeg sastanka. Prikaz samo dok sastanak još traje
+                  (planiran/u_toku) i samo ako prethodni postoji. */}
+              {(sast.status === 'planiran' || sast.status === 'u_toku') && prethodniSastanakId && (
+                <Button variant="secondary" loading={printBusy} onClick={() => void stampajPrethodni()}>
+                  <Printer className="h-4 w-4" aria-hidden /> Prethodni zapisnik
+                </Button>
+              )}
               {/* Meta-izmena termina (paritet 1.0 pripremiTab). Zaključan sastanak se
                   ne dira — prvo „Otvori ponovo" (mgmt), kao i kod ostalih izmena. */}
               {sast.status !== 'zakljucan' && (

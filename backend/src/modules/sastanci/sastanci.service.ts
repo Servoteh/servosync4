@@ -429,6 +429,9 @@ export class SastanciService {
    * datum desc, zakljucan_at desc nulls last), pa loadWeeklyDiffStats(prev.
    * zakljucan_at). Nema prethodnog ILI prev.zakljucan_at prazan → data:null
    * (1.0 red se izostavlja). Diff je GLOBALAN (bez projekat filtera — kao 1.0).
+   * Odgovor uz diff nosi i identitet prethodnog sastanka
+   * (`prethodniSastanakId`/`prethodniNaslov`/`prethodniDatum`) za FE prečicu
+   * „Prethodni zapisnik" (S1) — aditivno, postojeća polja se ne diraju.
    */
   async sastanakWeeklyDiff(email: string, id: string) {
     return this.withUserMapped(email, async (tx) => {
@@ -447,7 +450,9 @@ export class SastanciService {
           { datum: "desc" },
           { zakljucanAt: { sort: "desc", nulls: "last" } },
         ],
-        select: { zakljucanAt: true },
+        // Uz `zakljucanAt` (sidro diff-a) čitamo i id/naslov/datum prethodnog
+        // sastanka — FE „Prethodni zapisnik" prečica (S1) štampa taj zapisnik.
+        select: { id: true, naslov: true, datum: true, zakljucanAt: true },
       });
       if (!prev?.zakljucanAt) return { data: null };
       const since = prev.zakljucanAt.toISOString();
@@ -459,6 +464,11 @@ export class SastanciService {
           zavrsenoOveNedelje: d.zavrseno,
           kasni: d.kasni,
           aktivnih: d.aktivnih,
+          // Backward-kompatibilna dopuna (S1): identitet prethodnog zaključanog
+          // sastanka za „Prethodni zapisnik" dugme. `datum` je @db.Date → ymdOut.
+          prethodniSastanakId: prev.id,
+          prethodniNaslov: prev.naslov,
+          prethodniDatum: this.ymdOut(prev.datum),
         },
       };
     });
@@ -511,6 +521,30 @@ export class SastanciService {
         .slice(0, 50)
         .map(String);
       return { data: ids };
+    });
+  }
+
+  /**
+   * Lista projekata za RN picker (S5) — combobox „Projekat / RN" u AkcijaModal.
+   * Čita sy15 tabelu `projects` (iste kolone kao AKCIJE_SELECT / seedFromTeme
+   * codeByProj: id, project_code, project_name). Opcioni `q` = ILIKE po šifri ILI
+   * nazivu (`%q%`); ORDER BY šifra; LIMIT 20 (dovoljno za autocomplete). Kroz
+   * withUserMapped (RLS read pod `authenticated`, kao ostali čitajući endpointi).
+   * Izlaz: camelCase ugovor `{ id, code, naziv }` (FE RN picker).
+   */
+  async listProjekti(email: string, q?: string) {
+    const term = (q ?? "").trim();
+    return this.withUserMapped(email, async (tx) => {
+      const where = term
+        ? Prisma.sql`WHERE project_code ILIKE ${`%${term}%`} OR project_name ILIKE ${`%${term}%`}`
+        : Prisma.empty;
+      const data = await tx.$queryRaw(
+        Prisma.sql`SELECT id, project_code AS "code", project_name AS "naziv"
+          FROM projects ${where}
+          ORDER BY project_code ASC
+          LIMIT 20`,
+      );
+      return { data };
     });
   }
 

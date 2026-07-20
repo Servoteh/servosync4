@@ -199,8 +199,9 @@ Dopune kita:
   `sort`/`onSortToggle` (pozivalac ciklira asc → desc → none i po želji čuva u localStorage) — prvi
   potrošač Kadrovska → Zaposleni. `Column.header` je proširen na `ReactNode` (npr. checkbox
   „selektuj sve" u zaglavlju kolone selekcije).
-* `Dialog` je dobio opcioni `size`: `'md'` (default) · `'xl'` (duge forme sa sekcijama — karton
-  zaposlenog) · `'2xl'` (grid unosi — brzi/bulk unos zaposlenih).
+* `Dialog` je dobio opcioni `size`: `'md'` (default) · `'lg'` (forme sa više polja — npr. akcija
+  sastanka sa opisom/projektom) · `'xl'` (duge forme sa sekcijama — karton zaposlenog) ·
+  `'xl2'` (guste tabele — Istorija zarada) · `'2xl'` (grid unosi — brzi/bulk unos zaposlenih).
 * **`CommandPalette`** (F3 SIDEBAR_HUB): `Ctrl+K` skok na modul — fuzzy pretraga
   (dijakritika-neosetljiva, `src/lib/fuzzy.ts`), „Nedavno" MRU na praznom upitu, pun
   tastaturni combobox/listbox obrazac. Jedna instanca, montira je `AppShell`; vidljiva

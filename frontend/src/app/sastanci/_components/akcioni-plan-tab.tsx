@@ -34,6 +34,7 @@ import { exportAkcijeCsv } from '@/lib/sastanci-csv';
 import { toast } from '@/lib/toast';
 import { Tabs, type TabItem } from './tabs';
 import { AkcijaModal } from './akcija-modal';
+import type { ProjekatIzbor } from './projekat-picker';
 import { AkcioniKanban } from './akcioni-kanban';
 
 type ViewKey = 'lista' | 'kanban';
@@ -62,7 +63,14 @@ export function AkcioniPlanTab({ myEmail }: { myEmail: string }) {
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [bulkStatus, setBulkStatus] = useState('u_toku');
   const [modalEdit, setModalEdit] = useState<AkcijaRow | null | undefined>(undefined);
+  // S6 — prefill projekta kad se „+ Zadatak" otvori iz zaglavlja RN grupe.
+  const [prefill, setPrefill] = useState<ProjekatIzbor | null>(null);
   const [istorijaFor, setIstorijaFor] = useState<string | null>(null);
+
+  function openNova(projekat: ProjekatIzbor | null) {
+    setPrefill(projekat);
+    setModalEdit(null);
+  }
 
   const akcijeQ = useAkcije(samoMoje ? { odgovoranEmail: myEmail } : {});
   const prioQ = usePredmetPrioritet();
@@ -162,12 +170,18 @@ export function AkcioniPlanTab({ myEmail }: { myEmail: string }) {
           key: 'akcije',
           header: '',
           render: (r: AkcijaRow) => (
-            <div className="flex justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+            <div className="flex flex-wrap justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+              {/* S3 — vidljiv tekst umesto golog ▷/✓. „Započni" se ne nudi ako je
+                  akcija već u toku (redundantno). */}
+              {r.effective_status !== 'zavrsen' && r.effective_status !== 'u_toku' && (
+                <button type="button" title="Započni zadatak" className="flex items-center gap-1 rounded-control border border-line px-2 py-1 text-xs text-ink-secondary hover:bg-surface-2" onClick={() => patchM.mutate({ id: r.id, patch: { status: 'u_toku' } })}>
+                  <Play className="h-3.5 w-3.5" aria-hidden /> Započni
+                </button>
+              )}
               {r.effective_status !== 'zavrsen' && (
-                <>
-                  <IconBtn title="Započni" onClick={() => patchM.mutate({ id: r.id, patch: { status: 'u_toku' } })}><Play className="h-3.5 w-3.5" /></IconBtn>
-                  <IconBtn title="Završi" onClick={() => patchM.mutate({ id: r.id, patch: { status: 'zavrsen' } })}><Check className="h-3.5 w-3.5" /></IconBtn>
-                </>
+                <button type="button" title="Završi zadatak" className="flex items-center gap-1 rounded-control border border-line px-2 py-1 text-xs text-status-success hover:bg-surface-2" onClick={() => patchM.mutate({ id: r.id, patch: { status: 'zavrsen' } })}>
+                  <Check className="h-3.5 w-3.5" aria-hidden /> Završi
+                </button>
               )}
               <IconBtn title="Istorija" onClick={() => setIstorijaFor(r.id)}><History className="h-3.5 w-3.5" /></IconBtn>
               <IconBtn title="Izmeni" onClick={() => setModalEdit(r)}><Pencil className="h-3.5 w-3.5" /></IconBtn>
@@ -227,7 +241,7 @@ export function AkcioniPlanTab({ myEmail }: { myEmail: string }) {
           <Button variant="secondary" title="Export u CSV" onClick={() => doExport('csv')}>
             <Download className="h-4 w-4" aria-hidden /> Export CSV
           </Button>
-          {canEdit && <Button onClick={() => setModalEdit(null)}>+ Nova akcija</Button>}
+          {canEdit && <Button onClick={() => openNova(null)}>+ Nova akcija</Button>}
         </div>
       </div>
 
@@ -259,6 +273,17 @@ export function AkcioniPlanTab({ myEmail }: { myEmail: string }) {
                   {' · '}
                   {g.rows.length} ukupno
                 </span>
+                {/* S6 — „+ Zadatak" po RN grupi, prefill projektom te grupe. */}
+                {canEdit && (
+                  <button
+                    type="button"
+                    title="Dodaj zadatak u ovaj RN / projekat"
+                    className="flex items-center gap-1 rounded-control border border-line px-2 py-1 text-xs text-ink-secondary hover:bg-surface-2"
+                    onClick={() => openNova(g.key === '__none__' ? null : { id: g.key, code: g.code || null, naziv: g.naziv || null })}
+                  >
+                    + Zadatak
+                  </button>
+                )}
               </div>
               <DataTable
                 columns={cols}
@@ -282,7 +307,11 @@ export function AkcioniPlanTab({ myEmail }: { myEmail: string }) {
       )}
 
       {modalEdit !== undefined && (
-        <AkcijaModal edit={modalEdit} onClose={() => setModalEdit(undefined)} />
+        <AkcijaModal
+          edit={modalEdit}
+          initialProjekat={modalEdit === null ? prefill : null}
+          onClose={() => { setModalEdit(undefined); setPrefill(null); }}
+        />
       )}
       {istorijaFor && <IstorijaModal akcijaId={istorijaFor} onClose={() => setIstorijaFor(null)} />}
     </div>

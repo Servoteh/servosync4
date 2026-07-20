@@ -135,7 +135,9 @@ export const INPUT_CLS =
 // ── RN grupisanje akcija (paritet 1.0 sastanciArhiva/buildRnGroupedRows) ──────
 // Grupa = projekat (RN); redosled grupa: ⭐ rang (index bigtehn_item_id u listi
 // usePredmetPrioritet) → šifra localeCompare sr-numeric; „Bez RN / projekta" UVEK
-// poslednja. Redovi u grupi: 'rb' (arhiva/PDF/detalj) ili 'status' (akcioni plan).
+// poslednja. Redovi u grupi: 'prioritet' (detalj, S2), 'rb' (arhiva/PDF) ili
+// 'status' (akcioni plan). Zvanični PDF/print namerno ostaju na rb dok se
+// redosled štampe ne potvrdi sa vlasnikom modula (v. plan §S2).
 
 export interface RnGroup {
   /** projekat_id ili '__none__'. */
@@ -160,7 +162,7 @@ const BEZ_RN_LABEL = 'Bez RN / projekta';
 export function groupAkcijeByRn(
   rows: AkcijaRow[],
   prioritet: string[] | null | undefined,
-  { rowSort = 'status' }: { rowSort?: 'rb' | 'status' } = {},
+  { rowSort = 'status' }: { rowSort?: 'rb' | 'status' | 'prioritet' } = {},
 ): RnGroup[] {
   // ⭐ rang po bigtehn_item_id — Number normalizacija (1.0 paritet), guard >0
   // jer je Number(null)=0 pa bi prazan id lažno pogodio.
@@ -195,12 +197,21 @@ export function groupAkcijeByRn(
     return codeOf(x).localeCompare(codeOf(y), 'sr', { numeric: true });
   });
 
+  // Tie-break redosled unutar grupe (S2). `prioritet` ASC (1=Visok prvi) pa rb;
+  // `rb` samo rb; `status` status-rang pa prioritet pa rb (akcioni plan).
+  const prioAsc = (a: AkcijaRow, b: AkcijaRow) => (a.prioritet ?? 9) - (b.prioritet ?? 9);
+  const rbAsc = (a: AkcijaRow, b: AkcijaRow) => (a.rb ?? 1e9) - (b.rb ?? 1e9);
+  const statusRank = (a: AkcijaRow, b: AkcijaRow) =>
+    (RN_STATUS_RANK[a.effective_status] ?? 9) - (RN_STATUS_RANK[b.effective_status] ?? 9);
+  const cmp = (a: AkcijaRow, b: AkcijaRow): number => {
+    if (rowSort === 'rb') return rbAsc(a, b);
+    if (rowSort === 'prioritet') return prioAsc(a, b) || rbAsc(a, b);
+    // 'status': status rang, pa prioritet, pa rb (S2 tie-break).
+    return statusRank(a, b) || prioAsc(a, b) || rbAsc(a, b);
+  };
+
   return keys.map((k) => {
-    const groupRows = buckets.get(k)!.slice().sort((a, b) =>
-      rowSort === 'rb'
-        ? (a.rb ?? 1e9) - (b.rb ?? 1e9)
-        : (RN_STATUS_RANK[a.effective_status] ?? 9) - (RN_STATUS_RANK[b.effective_status] ?? 9),
-    );
+    const groupRows = buckets.get(k)!.slice().sort(cmp);
     return {
       key: k,
       code: codeOf(k),
