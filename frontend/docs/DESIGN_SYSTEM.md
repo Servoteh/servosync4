@@ -156,6 +156,21 @@
 | Izvodi — stavka | Neupareno (`UNMATCHED`) | narandžasta | `--status-warn` |
 | Izvodi — stavka | Upareno (`MATCHED`) | info plava | `--status-info` |
 | Izvodi — stavka | Proknjiženo (`POSTED`) | zelena | `--status-success` |
+| Zahtevi — zahtev | Nacrt (`DRAFT`) | neutralna | `--status-neutral` |
+| Zahtevi — zahtev | Podnet (`SUBMITTED`) | narandžasta | `--status-warn` |
+| Zahtevi — zahtev | Vraćen na dopunu (`NEEDS_INFO`) | narandžasta | `--status-warn` |
+| Zahtevi — zahtev | Odobrena AI analiza (`ANALYSIS_APPROVED`) | info plava | `--status-info` |
+| Zahtevi — zahtev | AI obrađen — čeka odluku (`ANALYZED`) | narandžasta | `--status-warn` |
+| Zahtevi — zahtev | Odobren za realizaciju (`APPROVED`) | zelena | `--status-success` |
+| Zahtevi — zahtev | Planiran (`PLANNED`) | info plava | `--status-info` |
+| Zahtevi — zahtev | U realizaciji (`IN_PROGRESS`) | info plava | `--status-info` |
+| Zahtevi — zahtev | Spreman za test (`READY_FOR_TEST`) | info plava | `--status-info` |
+| Zahtevi — zahtev | Na testiranju (`TESTING`) | narandžasta | `--status-warn` |
+| Zahtevi — zahtev | Završen (`DONE`) | zelena | `--status-success` |
+| Zahtevi — zahtev | Odbijen (`REJECTED`) | crvena | `--status-danger` |
+| Zahtevi — zahtev | Spojen (`MERGED`) | neutralna | `--status-neutral` |
+| Zahtevi — zahtev | Backlog / buduća verzija (`DEFERRED`) | neutralna | `--status-neutral` |
+| Zahtevi — zahtev | Arhiviran (`ARCHIVED`) | neutralna | `--status-neutral` |
 | Sync (bb_sync) | Greška sinhronizacije | crvena | `--status-danger` |
 | Notifikacija (D8) | Škart (`kontrola.skart`) | crvena | `--status-danger` |
 | Notifikacija (D8) | Dorada (`kontrola.dorada`) | narandžasta | `--status-warn` |

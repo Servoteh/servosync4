@@ -189,6 +189,16 @@ export const PERMISSIONS = {
   // Razvojna faza 2.0 — indeks-stranica WIP modula (Talasi B–G) za testiranje pre
   // promocije u stalni 1.0 hub. Dodeljeno: admin + menadzment + hr/poslovni_admin.
   RAZVOJ_READ: 'razvoj.read',
+  // Zahtevi — AI PM modul (bug/dorada/nova funkcija + Decision Log + nagrađivanje).
+  // MODULE_SPEC_zahtevi.md §2; mirror BE common/authz/permissions.ts. ROW-SCOPE u servisu:
+  // read = pristup modulu (ne-admin vidi SAMO svoje); write = kreiranje/submit/withdraw/prilozi/
+  // komentari na svojima; admin = inbox svih + oba odobrenja + statusi + nagrade + spajanje;
+  // decisions.read = Decision Log (admin + menadzment); decisions.write = unos/izmena (admin).
+  ZAHTEVI_READ: 'zahtevi.read',
+  ZAHTEVI_WRITE: 'zahtevi.write',
+  ZAHTEVI_ADMIN: 'zahtevi.admin',
+  ZAHTEVI_DECISIONS_READ: 'zahtevi.decisions.read',
+  ZAHTEVI_DECISIONS_WRITE: 'zahtevi.decisions.write',
 } as const;
 
 export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];

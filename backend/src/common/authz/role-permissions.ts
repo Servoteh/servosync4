@@ -45,6 +45,11 @@ const VIEWER_READ_BASELINE: readonly PermissionKey[] = [
   // Nabavka (4.0 Traka B): read = svi prijavljeni (radna lista vidljiva). WRITE/APPROVE
   // NISU ovde — dok se ne kurira nabavka/prodaja rola, drži ih samo `admin` (ALL). V1 guard je no-op.
   P.NABAVKA_READ,
+  // Zahtevi (AI PM modul, MODULE_SPEC_zahtevi §2): read = pristup modulu svim SSO ulogama
+  // (row-scope u servisu → ne-admin vidi SAMO svoje zahteve). `write` NIJE ovde — ide kroz
+  // post-merge addPerms sloj SVIM ulogama (svako sme da PODNESE zahtev); `admin`/`decisions.*`
+  // drži samo admin (ALL) + menadzment (decisions.read, presuda §13.2).
+  P.ZAHTEVI_READ,
 ];
 
 /**
@@ -672,14 +677,25 @@ function addPerms(role: RoleKey, perms: readonly PermissionKey[]): void {
 // (monter/cnc_operater/proizvodni_radnik/…) NISU → nisu videle „Sastavnicu
 // delova za sklop" / listu primopredaja. Sada je dobija svaka rola u mapi
 // (write/approve ostaju kurirani). admin (ALL) je već pokriven — no-op merge.
+//
+// zahtevi.read + zahtevi.write: AI PM modul (MODULE_SPEC_zahtevi §2) — SVE SSO uloge
+// smeju da PODNESU zahtev. `read` je i u VIEWER_READ_BASELINE (dokument-kanon), ali ga
+// ovde dodajemo i eksplicitno da svaka rola u mapi (i one bez baseline-a: sef/tehnolog/
+// menadzment/…) dobije i read i write; dedup čini merge no-op za baseline uloge. `admin`
+// i `decisions.write` NE idu ovde — samo admin (ALL); `decisions.read` = admin + menadzment.
 for (const role of Object.keys(ROLE_PERMISSIONS) as RoleKey[]) {
   addPerms(role, [
     P.PB_READ,
     P.PB_REPORTS_OWN,
     P.PROFILE_SELF,
     P.PRIMOPREDAJE_READ,
+    P.ZAHTEVI_READ,
+    P.ZAHTEVI_WRITE,
   ]);
 }
+// Decision Log čitanje: admin (ALL) + menadzment (presuda §13.2). Upis (decisions.write)
+// i inbox/oba odobrenja (admin) su SAMO admin — kroz ALL, bez dodele ovde.
+addPerms(ROLES.MENADZMENT, [P.ZAHTEVI_DECISIONS_READ]);
 for (const role of D_EDIT_KRUG) addPerms(role, D_EDIT_PERMS);
 addPerms(ROLES.INZENJER, D_INZENJER_PERMS);
 for (const role of D_REPORTS_ALL) addPerms(role, [P.PB_REPORTS_ALL]);
