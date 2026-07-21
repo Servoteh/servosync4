@@ -5,6 +5,7 @@ import { Umbrella, Pencil, X, Trash2 } from 'lucide-react';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Button } from '@/components/ui-kit/button';
 import { Input, FormField } from '@/components/ui-kit/form-field';
+import { Select } from '@/components/ui-kit/select';
 import { Textarea } from '@/components/ui-kit/textarea';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { ApiError } from '@/api/client';
@@ -16,6 +17,7 @@ import {
   useReviseVacation,
   useCancelVacation,
   useDeleteVacation,
+  useTeam,
   type VacationRequest,
 } from '@/api/moj-profil';
 import type { GoLedgerBlock, GoLedgerPeriod } from '@/api/kadrovska';
@@ -229,10 +231,18 @@ function VacationModal({
   const [dateFrom, setDateFrom] = useState(req?.date_from?.slice(0, 10) ?? '');
   const [dateTo, setDateTo] = useState(req?.date_to?.slice(0, 10) ?? '');
   const [note, setNote] = useState(req?.note ?? '');
+  const [forEmp, setForEmp] = useState(''); // '' = za sebe; inače employeeId člana tima
   const [err, setErr] = useState<string | null>(null);
   const submitM = useSubmitVacation();
   const reviseM = useReviseVacation();
   const days = dateFrom && dateTo ? workDays(dateFrom, dateTo) : 0;
+
+  // „Za koga" (paritet 1.0): samo pri NOVOM zahtevu i samo upravljačima sa opsegom
+  // (useTeam vraća prazno/403 → nema pickera → zahtev samo za sebe). Izmena je uvek
+  // nad postojećim zahtevom, pa se picker tu ne prikazuje.
+  const teamQ = useTeam();
+  const team = mode === 'new' ? (teamQ.data?.data?.members ?? []) : [];
+  const teamOpts = team.map((m) => ({ value: m.id, label: m.fullName ?? '—' }));
 
   async function save() {
     setErr(null);
@@ -243,7 +253,14 @@ function VacationModal({
       if (mode === 'edit' && req) {
         await reviseM.mutateAsync({ id: req.id, dateFrom, dateTo, daysCount: days, note: note || undefined });
       } else {
-        await submitM.mutateAsync({ clientEventId: newClientEventId(), dateFrom, dateTo, daysCount: days, note: note || undefined });
+        await submitM.mutateAsync({
+          clientEventId: newClientEventId(),
+          dateFrom,
+          dateTo,
+          daysCount: days,
+          note: note || undefined,
+          employeeId: forEmp || undefined, // '' → za sebe (server presuđuje)
+        });
       }
       onClose();
     } catch (e) {
@@ -266,6 +283,16 @@ function VacationModal({
     <Dialog open onClose={onClose} title={mode === 'edit' ? 'Izmena zahteva za godišnji' : 'Zahtev za godišnji odmor'} footer={footer}>
       <div className="space-y-3">
         {err && <p className="rounded-control bg-status-danger-bg px-2 py-1 text-sm text-status-danger">{err}</p>}
+        {teamOpts.length > 0 && (
+          <FormField label="Za koga">
+            <Select
+              value={forEmp}
+              onChange={(e) => setForEmp(e.target.value)}
+              placeholder="Ja (moj zahtev)"
+              options={teamOpts}
+            />
+          </FormField>
+        )}
         <div className="grid grid-cols-2 gap-3">
           <FormField label="Od datuma" required>
             <Input type="date" min={MIN_DATE} value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />

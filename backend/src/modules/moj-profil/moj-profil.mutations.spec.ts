@@ -1,5 +1,6 @@
 import {
   ConflictException,
+  ForbiddenException,
   UnprocessableEntityException,
 } from "@nestjs/common";
 import { MojProfilService } from "./moj-profil.service";
@@ -14,7 +15,8 @@ import type { Sy15Service } from "../../common/sy15/sy15.service";
  */
 const CID = "3b241101-e2bb-4255-8caf-4136c566a962";
 const ID = "11111111-2222-3333-4444-555555555555";
-const EMP = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+const EMP = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"; // self
+const CLAN = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"; // član tima (≠ self)
 
 type SqlLike = { strings: string[]; values: unknown[] };
 const qText = (m: jest.Mock, n = 0): string =>
@@ -60,16 +62,21 @@ describe("MojProfilService R2 mutacije", () => {
     ).rejects.toBeInstanceOf(UnprocessableEntityException);
   });
 
+  // Napomena: submitVacation sada PRVO razrešava self employee_id (jedan $queryRaw),
+  // pa (ako je employeeId zadat i ≠ self) proverava manages, pa balance/overlap/insert.
+  // Testovi za SEBE ne šalju employeeId → prvi mock = self-resolve [{ id: EMP }].
+
   it("submitVacation: preko preostalog salda → 422", async () => {
     const { svc, tx } = makeSvc();
-    tx.$queryRaw.mockResolvedValueOnce([{ days_remaining: 3 }]); // balance
+    tx.$queryRaw
+      .mockResolvedValueOnce([{ id: EMP }]) // self-resolve
+      .mockResolvedValueOnce([{ days_remaining: 3 }]); // balance
     await expect(
       svc.submitVacation("u@x", {
         clientEventId: CID,
         dateFrom: "2026-08-01",
         dateTo: "2026-08-10",
         daysCount: 8,
-        employeeId: EMP,
       }),
     ).rejects.toBeInstanceOf(UnprocessableEntityException);
   });
@@ -77,6 +84,7 @@ describe("MojProfilService R2 mutacije", () => {
   it("submitVacation: preklapanje aktivnog zahteva → 409", async () => {
     const { svc, tx } = makeSvc();
     tx.$queryRaw
+      .mockResolvedValueOnce([{ id: EMP }]) // self-resolve
       .mockResolvedValueOnce([{ days_remaining: 20 }]) // balance
       .mockResolvedValueOnce([{ id: "x" }]); // overlap
     await expect(
@@ -85,14 +93,14 @@ describe("MojProfilService R2 mutacije", () => {
         dateFrom: "2026-08-01",
         dateTo: "2026-08-05",
         daysCount: 5,
-        employeeId: EMP,
       }),
     ).rejects.toBeInstanceOf(ConflictException);
   });
 
-  it("submitVacation: OK → runIdem('profile.vacation-submit') + INSERT submitted_by + queue RPC", async () => {
+  it("submitVacation (za sebe): OK → runIdem + INSERT submitted_by + queue RPC", async () => {
     const { svc, sy15, tx } = makeSvc();
     tx.$queryRaw
+      .mockResolvedValueOnce([{ id: EMP }]) // self-resolve
       .mockResolvedValueOnce([{ days_remaining: 20 }]) // balance
       .mockResolvedValueOnce([]) // overlap (nema)
       .mockResolvedValueOnce([{ id: "req1" }]); // INSERT RETURNING
@@ -101,7 +109,6 @@ describe("MojProfilService R2 mutacije", () => {
       dateFrom: "2026-08-01",
       dateTo: "2026-08-05",
       daysCount: 5,
-      employeeId: EMP,
     });
     expect(sy15.runIdempotentRls).toHaveBeenCalledWith(
       "u@x",
@@ -109,11 +116,48 @@ describe("MojProfilService R2 mutacije", () => {
       "profile.vacation-submit",
       expect.any(Function),
     );
-    expect(qText(tx.$queryRaw, 2)).toContain("INSERT INTO vacation_requests");
-    expect(qText(tx.$queryRaw, 2)).toContain("submitted_by");
+    expect(qText(tx.$queryRaw, 3)).toContain("INSERT INTO vacation_requests");
+    expect(qText(tx.$queryRaw, 3)).toContain("submitted_by");
     expect(eText(tx.$executeRaw)).toContain(
       "kadr_queue_vacation_submission_notification",
     );
+  });
+
+  it("submitVacation ZA ČLANA TIMA: manages=true → INSERT za tuđi employee_id (submitted_by=ja)", async () => {
+    const { svc, tx } = makeSvc();
+    tx.$queryRaw
+      .mockResolvedValueOnce([{ id: EMP }]) // self-resolve (ja)
+      .mockResolvedValueOnce([{ ok: true }]) // current_user_manages_employee(clan)
+      .mockResolvedValueOnce([{ days_remaining: 20 }]) // balance (clana)
+      .mockResolvedValueOnce([]) // overlap
+      .mockResolvedValueOnce([{ id: "req1" }]); // INSERT
+    await svc.submitVacation("u@x", {
+      clientEventId: CID,
+      dateFrom: "2026-08-01",
+      dateTo: "2026-08-05",
+      daysCount: 5,
+      employeeId: CLAN, // ≠ self
+    });
+    expect(qText(tx.$queryRaw, 1)).toContain("current_user_manages_employee");
+    expect(qText(tx.$queryRaw, 4)).toContain("INSERT INTO vacation_requests");
+  });
+
+  it("submitVacation ZA TUĐEG (nije moj tim): manages=false → 403, BEZ insert-a (IDOR guard)", async () => {
+    const { svc, tx } = makeSvc();
+    tx.$queryRaw
+      .mockResolvedValueOnce([{ id: EMP }]) // self-resolve (ja)
+      .mockResolvedValueOnce([{ ok: false }]); // manages(tudji) = false
+    await expect(
+      svc.submitVacation("u@x", {
+        clientEventId: CID,
+        dateFrom: "2026-08-01",
+        dateTo: "2026-08-05",
+        daysCount: 5,
+        employeeId: CLAN,
+      }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    // samo 2 upita (self + manages) — insert se NIKAD ne desi
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(2);
   });
 
   // ---------- GO revise/cancel/delete (hr_* RPC — tela netaknuta) ----------
@@ -180,7 +224,9 @@ describe("MojProfilService R2 mutacije", () => {
       employeeId: EMP,
     });
     expect(qText(tx.$queryRaw)).toContain("INSERT INTO paid_leave_requests");
-    expect(eText(tx.$executeRaw)).toContain("kadr_queue_paidleave_notification");
+    expect(eText(tx.$executeRaw)).toContain(
+      "kadr_queue_paidleave_notification",
+    );
   });
 
   it("deletePaidLeave: paid_leave_delete RPC", async () => {
@@ -224,7 +270,7 @@ describe("MojProfilService R2 mutacije", () => {
     expect(text).toContain("INSERT INTO kadr_document_ack");
     expect(text).toContain("rev_current_employee_id()");
     expect(text).toContain("ON CONFLICT");
-    expect((out.data as { alreadyAcked: boolean }).alreadyAcked).toBe(false);
+    expect(out.data.alreadyAcked).toBe(false);
   });
 
   // ---------- Razgovori „Upoznat sam" (talk_acknowledge) ----------
@@ -249,7 +295,9 @@ describe("MojProfilService R2 mutacije", () => {
     tx.$queryRaw.mockResolvedValueOnce([{ result: "assess-1" }]);
     const out = await svc.openSelfAssessment("u@x", {});
     expect(qText(tx.$queryRaw)).toContain("assessment_open_self(");
-    expect((out.data as { assessmentId: unknown }).assessmentId).toBe("assess-1");
+    expect((out.data as { assessmentId: unknown }).assessmentId).toBe(
+      "assess-1",
+    );
     const s2 = makeSvc();
     await s2.svc.submitSelfAssessment("u@x", { assessmentId: ID });
     expect(eText(s2.tx.$executeRaw)).toContain("assessment_self_submit(");

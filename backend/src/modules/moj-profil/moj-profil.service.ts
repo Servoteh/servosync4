@@ -372,7 +372,9 @@ export class MojProfilService {
         const row = byYmd.get(ymd);
         // Normalizuj šifru odsustva pre chip poređenja (paritet 1.0 normalizeAbsenceCode);
         // štiti od legacy/direktnih redova sa "GO"/" go" da chips i totals ostanu usklađeni.
-        const code = row?.absenceCode ? row.absenceCode.trim().toLowerCase() : null;
+        const code = row?.absenceCode
+          ? row.absenceCode.trim().toLowerCase()
+          : null;
         const hours = row?.hours ?? 0;
         const ot = row?.overtimeHours ?? 0;
         const fh = row?.fieldHours ?? 0;
@@ -678,11 +680,25 @@ export class MojProfilService {
       dto.clientEventId,
       "profile.vacation-submit",
       async (tx) => {
-        const empId = dto.employeeId ?? (await this.resolveEmployee(tx, email))?.id;
+        const selfId = (await this.resolveEmployee(tx, email))?.id ?? null;
+        const empId = dto.employeeId ?? selfId;
         if (!empId)
           throw new UnprocessableEntityException(
             "Nismo pronašli vaš zaposlenički profil.",
           );
+        // Podnošenje ZA DRUGOG (paritet 1.0 canManageEmployee): samo za člana kojim
+        // upravljam. RLS `vr_insert` prva klauzula (submitted_by=ja) propušta bilo
+        // koji employee_id, pa je serverska provera JEDINA brana protiv IDOR-a —
+        // ista fn `current_user_manages_employee` koju koristi `GET /profile/team`.
+        if (dto.employeeId && dto.employeeId !== selfId) {
+          const mgd = await tx.$queryRaw<{ ok: boolean }[]>(
+            Prisma.sql`SELECT current_user_manages_employee(${dto.employeeId}::uuid) AS ok`,
+          );
+          if (mgd[0]?.ok !== true)
+            throw new ForbiddenException(
+              "Zahtev možete podneti samo za člana svog tima.",
+            );
+        }
         const balRows = await tx.$queryRaw<{ days_remaining: number | null }[]>(
           Prisma.sql`SELECT days_remaining FROM v_vacation_balance
              WHERE employee_id = ${empId}::uuid AND year = ${year} LIMIT 1`,
@@ -907,7 +923,10 @@ export class MojProfilService {
              WHERE employee_id = rev_current_employee_id()
                AND ref_type = ${dto.refType} AND ref_id = ${dto.refId} LIMIT 1`,
         );
-        return { ...(jsonSafe(existing[0] ?? {}) as object), alreadyAcked: true };
+        return {
+          ...jsonSafe(existing[0] ?? {}),
+          alreadyAcked: true,
+        };
       },
     );
   }
@@ -1082,8 +1101,7 @@ export class MojProfilService {
   devPlan(email: string) {
     return this.withUserMapped(email, async (tx) => {
       const emp = await this.resolveEmployee(tx, email);
-      if (emp == null)
-        return { data: { plan: null, goals: [], checkins: [] } };
+      if (emp == null) return { data: { plan: null, goals: [], checkins: [] } };
       // Aktivan plan ima prioritet; inače najskoriji (paritet 1.0 order period_start desc).
       const plans = await tx.$queryRaw<{ id: string; status: string }[]>(
         Prisma.sql`SELECT * FROM v_development_plans
@@ -1134,9 +1152,7 @@ export class MojProfilService {
            WHERE id = ${id}::uuid`,
       );
       if (n === 0)
-        throw new NotFoundException(
-          "Plan razvoja ne postoji ili nije vaš.",
-        );
+        throw new NotFoundException("Plan razvoja ne postoji ili nije vaš.");
       return { data: { id, updated: true } };
     });
   }
@@ -1146,7 +1162,11 @@ export class MojProfilService {
    * Paritet 1.0 addCheckin({kind:'zaposleni'}). employee_id = self (resolveEmployee). RLS dc_insert
    * presuđuje (vlasnik plana ∨ upravljač). Prazan tekst → 422. Idempotentno po clientEventId.
    */
-  async addSelfCheckin(email: string, planId: string, dto: CreateSelfCheckinDto) {
+  async addSelfCheckin(
+    email: string,
+    planId: string,
+    dto: CreateSelfCheckinDto,
+  ) {
     const note = (dto.noteMd ?? "").trim();
     if (!note)
       throw new UnprocessableEntityException("Beleška ne sme biti prazna.");
@@ -1209,9 +1229,7 @@ export class MojProfilService {
            WHERE id = ${id}::uuid`,
       );
       if (n === 0)
-        throw new NotFoundException(
-          "Očekivanje ne postoji ili nije vaše.",
-        );
+        throw new NotFoundException("Očekivanje ne postoji ili nije vaše.");
       return { data: { id, updated: true } };
     });
   }
@@ -1398,7 +1416,7 @@ export class MojProfilService {
            WHERE employee_id = ${emp.id}::uuid AND (talk_id = ${id}::uuid OR closing_talk_id = ${id}::uuid)
            ORDER BY created_at DESC`,
       );
-      const plans = jsonSafe(planRows) as Record<string, unknown>[];
+      const plans = jsonSafe(planRows);
       const planIds = plans.map((p) => p.id as string);
       const measureRows = planIds.length
         ? await tx.$queryRaw<Record<string, unknown>[]>(
@@ -1407,7 +1425,7 @@ export class MojProfilService {
                ORDER BY sort ASC`,
           )
         : [];
-      const measures = jsonSafe(measureRows) as Record<string, unknown>[];
+      const measures = jsonSafe(measureRows);
       // Ugnjezdi mere u svaki plan (paritet 1.0 embed `measures:corrective_measures(*)`).
       const plansWithMeasures = plans.map((p) => ({
         ...p,
@@ -1487,7 +1505,7 @@ export class MojProfilService {
       ]);
 
       const balByEmp = new Map<string, Record<string, unknown>>();
-      for (const b of jsonSafe(balances) as Record<string, unknown>[])
+      for (const b of jsonSafe(balances))
         balByEmp.set(String(b.employee_id), b);
 
       // Trenutno (preseca DANAS) vs najbliže sledeće (date_from > danas) po članu.
@@ -1498,7 +1516,7 @@ export class MojProfilService {
       const horizonYmd = horizon.toISOString().slice(0, 10);
       const nowByEmp = new Map<string, Record<string, unknown>>();
       const nextByEmp = new Map<string, Record<string, unknown>>();
-      for (const a of jsonSafe(absences) as Record<string, unknown>[]) {
+      for (const a of jsonSafe(absences)) {
         const k = String(a.employee_id);
         const from = String(a.date_from).slice(0, 10);
         const to = String(a.date_to).slice(0, 10);

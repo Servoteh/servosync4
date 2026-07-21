@@ -250,6 +250,45 @@ describe("Kadrovska R2 mutacije — write-path guard + idempotencija", () => {
     ).rejects.toBeInstanceOf(ForbiddenException);
   });
 
+  it("submitVacation ZA TUĐEG (nije moj tim): current_user_manages_employee=false → 403, BEZ insert-a (IDOR guard)", async () => {
+    const create = jest.fn();
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([{ v: "self-emp-id" }]) // current_user_employee_id (self)
+      .mockResolvedValueOnce([{ ok: false }]); // current_user_manages_employee(tudji)=false
+    const tx = new Proxy(
+      {},
+      {
+        get(_t, prop) {
+          if (prop === "$queryRaw") return queryRaw;
+          if (prop === "vacationRequest") return { create };
+          return modelStub;
+        },
+      },
+    );
+    (
+      service as unknown as {
+        sy15: { runIdempotentRls: unknown };
+      }
+    ).sy15.runIdempotentRls = jest.fn(
+      async (_e, _cid, _a, fn: (t: unknown) => Promise<unknown>) => ({
+        idempotent: false,
+        result: await fn(tx),
+      }),
+    );
+    await expect(
+      service.submitVacation(EMAIL, {
+        clientEventId: UUID,
+        year: 2026,
+        dateFrom: "2026-08-01",
+        dateTo: "2026-08-05",
+        daysCount: 5,
+        employeeId: "11111111-1111-1111-1111-111111111111", // ≠ self
+      }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(create).not.toHaveBeenCalled(); // insert se NIKAD ne desi
+  });
+
   // ── Review #24: raise_* odluka o zaradi vezana za tip 'godisnji' ──────────
   it("createTalk: raise_* upisani samo za 'godisnji'; za drugi tip forsiran null", async () => {
     const created: Record<string, unknown>[] = [];

@@ -85,10 +85,23 @@ export class KadrovskaMutationsService {
       dto.clientEventId,
       "kadr.vacation.submit",
       async (tx) => {
+        const selfId = await this.selfEmployeeId(tx, email, true);
+        const empId = dto.employeeId ?? selfId;
+        // Podnošenje ZA DRUGOG (paritet 1.0 canManageEmployee): samo za člana kojim
+        // upravljam. RLS `vr_insert` prva klauzula (submitted_by=ja) propušta bilo
+        // koji employee_id, pa je serverska provera JEDINA brana protiv IDOR-a.
+        if (dto.employeeId && dto.employeeId !== selfId) {
+          const mgd = await tx.$queryRaw<{ ok: boolean }[]>(
+            Prisma.sql`SELECT current_user_manages_employee(${dto.employeeId}::uuid) AS ok`,
+          );
+          if (mgd[0]?.ok !== true)
+            throw new ForbiddenException(
+              "Zahtev možete podneti samo za člana svog tima.",
+            );
+        }
         const created = await tx.vacationRequest.create({
           data: {
-            employeeId:
-              dto.employeeId ?? (await this.selfEmployeeId(tx, email, true)),
+            employeeId: empId,
             year: dto.year,
             dateFrom: this.date(dto.dateFrom)!,
             dateTo: this.date(dto.dateTo)!,
