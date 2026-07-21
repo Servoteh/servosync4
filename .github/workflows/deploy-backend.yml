@@ -17,6 +17,9 @@ on:
       - "backend/**"
       - "!backend/test/**"
       - "!backend/docs/**"
+      # scripts/ NIJE runtime kod (ts-node/bash alati, van nest build-a) — ne rebuild-uj
+      # prod zbog njih; usklađeno sa tsconfig.build.json exclude.
+      - "!backend/scripts/**"
   # Ručni okidač: kad se menja sam deploy proces (ovaj workflow) NE želimo auto-restart prod-a,
   # pa self-referenca više nije u paths; deploy workflow-izmene se voze ručno ili uz stvarni kod.
   workflow_dispatch:
@@ -49,6 +52,10 @@ jobs:
             cp -a ../frontend/out/. frontend-static/
             echo "frontend baked into image"
           else
+            # Namerno best-effort (backend ostaje deployabilan), ALI glasno — tihi API-only
+            # je 21.07.2026 ostavio LAN/offline bez logina 1h. Health-check korak niže
+            # tvrdo padne na /login != 200, pa ovaj warning + taj fail zajedno hvataju otkaz.
+            echo "::warning::frontend build PAO → API-only image. LAN/offline login NEĆE raditi. Health-check će pasti. Uzrok obično: [id] ruta bez generateStaticParams (output:export)."
             echo "no/failed frontend build → API-only"
           fi
           # Ship backend source (incl. frontend-static) into the compose deploy dir (build context ./backend).
@@ -61,9 +68,32 @@ jobs:
           docker compose run --rm backend npx prisma migrate deploy
           docker compose up -d backend
 
-      - name: Health check
+      # Health check MORA da padne glasno na defektan deploy (incident 21.07.2026:
+      # backend crash-loop + prazan frontend prošli su "tiho", firma 1h bez logina).
+      # Daj kontejneru vremena da se stabilizuje pa proveri i WEB (API) i LAN (frontend).
+      - name: Health check (backend boot + frontend baked)
         run: |
-          sleep 5
-          curl -fsS http://localhost:3000/api > /dev/null && echo "backend healthy"
-          code=$(curl -fsS -o /dev/null -w '%{http_code}' http://localhost:3000/login || true)
-          echo "front /login -> $code (200 = front baked, 404 = API-only)"
+          set -euo pipefail
+          # Sačekaj da backend stvarno digne /api (do 60s) — ne fiksni sleep.
+          for i in $(seq 1 20); do
+            if curl -fsS http://localhost:3000/api > /dev/null 2>&1; then break; fi
+            if [ "$i" = "20" ]; then
+              echo "::error::backend /api ne odgovara ni posle 60s — crash-loop? (dist/main.js?)"
+              docker logs --tail 20 servosync-backend 2>&1 || true
+              exit 1
+            fi
+            sleep 3
+          done
+          echo "backend healthy (/api 200)"
+          # Kontejner NE SME biti u restart-petlji.
+          st=$(docker inspect -f '{{.State.Status}}:{{.State.Restarting}}' servosync-backend 2>/dev/null || echo "unknown:true")
+          echo "container state: $st"
+          case "$st" in *:true) echo "::error::kontejner u restart-petlji"; docker logs --tail 20 servosync-backend; exit 1 ;; esac
+          # LAN/offline: /login MORA vratiti 200 (frontend baked). 404 = API-only = LAN mrtav.
+          code=$(curl -fsS -o /dev/null -w '%{http_code}' http://localhost:3000/login 2>/dev/null || echo 000)
+          echo "front /login -> $code"
+          if [ "$code" != "200" ]; then
+            echo "::error::/login=$code — frontend NIJE baked (LAN/offline login bi bio mrtav). Static export pao? (generateStaticParams za [id] rute)"
+            exit 1
+          fi
+          echo "OK — backend + frontend (LAN) oba živa."
