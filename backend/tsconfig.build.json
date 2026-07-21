@@ -1,8 +1,16 @@
 {
   "extends": "./tsconfig.json",
-  // "scripts" MUST stay excluded: a .ts file outside src/ shifts tsc's inferred
-  // rootDir to backend/ and the entrypoint moves to dist/src/main.js — the Docker
-  // CMD `node dist/main` then crash-loops (prod incident 2026-07-19). Standalone
-  // scripts run via ts-node, they are not part of the nest build.
-  "exclude": ["node_modules", "test", "dist", "scripts", "**/*spec.ts"]
+  // "scripts" AND "prisma" MUST stay excluded: ANY .ts file outside src/ shifts
+  // tsc's inferred rootDir to backend/ and the entrypoint moves to dist/src/main.js
+  // — the Docker CMD `node dist/main` then crash-loops (prod incidents 2026-07-19
+  // and again 2026-07-21, that time from prisma/_nacrt-*.ts seed drafts). Standalone
+  // scripts and prisma seeds run via ts-node; they are not part of the nest build.
+  "exclude": [
+    "node_modules",
+    "test",
+    "dist",
+    "scripts",
+    "prisma",
+    "**/*spec.ts"
+  ]
 }
