@@ -3,14 +3,19 @@
   "name": "servosync2",
   "compatibility_date": "2025-06-01",
   "main": "worker/index.ts",
-  // Static assets Worker: služi Next.js static export (`out/`).
-  // Nema `main` — ovo je samo statika, bez server koda.
+  // Worker (worker/index.ts) proksira 1.0 mobilnu (/m, /m/*, /assets, /icons,
+  // manifest) sa pages.dev; sve ostalo pada na ASSETS (3.0 static export).
   "assets": {
     "binding": "ASSETS",
     "directory": "./out",
     // /login -> login.html (auto), nepoznate rute -> 404.html
     "html_handling": "auto-trailing-slash",
-    "not_found_handling": "404-page"
+    "not_found_handling": "404-page",
+    // KRITIČNO (incident 21.07.2026): bez ovoga se ASSETS/404-page proveravaju
+    // PRE worker-a, pa /m/montaza (postoji kao out/m/montaza.html 3.0 stranica)
+    // presretne 3.0 asset i vrati Next 404 umesto 1.0 mobilne. Worker MORA prvi
+    // da odluči šta je /m/* (1.0) a šta 3.0. Korisnici su na 1.0 APK ljusci.
+    "run_worker_first": true
   },
   "observability": {
     "enabled": true
