@@ -17,6 +17,9 @@ on:
       - "backend/**"
       - "!backend/test/**"
       - "!backend/docs/**"
+      # scripts/ NIJE runtime kod (ts-node/bash alati, van nest build-a) — ne rebuild-uj
+      # prod zbog njih; usklađeno sa tsconfig.build.json exclude.
+      - "!backend/scripts/**"
   # Ručni okidač: kad se menja sam deploy proces (ovaj workflow) NE želimo auto-restart prod-a,
   # pa self-referenca više nije u paths; deploy workflow-izmene se voze ručno ili uz stvarni kod.
   workflow_dispatch:
