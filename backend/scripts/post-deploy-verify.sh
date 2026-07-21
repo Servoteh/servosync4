@@ -82,6 +82,18 @@ FECOUNT=$(docker exec "$CONTAINER" sh -c 'ls /app/frontend-static/ 2>/dev/null |
 if [ "${FECOUNT:-0}" -gt 1 ]; then ok "frontend-static ima $FECOUNT fajlova (login.html uklj.)"
 else bad "frontend-static PRAZAN ($FECOUNT) → deploy je pao na API-only (static export fail?)"; fi
 
+# 6) MOBILNA 1.0 (/m/*) — worker proxy mora servirati 1.0, ne 3.0 Next 404.
+# Incident 21.07: /m/<modul> je vraćao Next 404 (run_worker_first falio). Golo /m
+# je radilo pa je otkaz bio nevidljiv dok se ne proveri PODRUTA.
+say "6) Mobilna 1.0 (/m/*)"
+MOBHOST="${MOBHOST:-https://servosync.servoteh.com}"
+for mp in /m /m/montaza /m/odrzavanje; do
+  BODY=$(curl -sS --max-time 12 -A "Mozilla/5.0 (Android)" "${MOBHOST}${mp}" 2>/dev/null || echo "")
+  if printf '%s' "$BODY" | grep -q "Servosync V1.0"; then ok "$mp → 1.0 mobilna"
+  elif printf '%s' "$BODY" | grep -qi "could not be found"; then bad "$mp → Next 404 (worker proxy ne hvata — run_worker_first u wrangler.jsonc?)"
+  else bad "$mp → neočekivano (${BODY:0:40})"; fi
+done
+
 say ""
 if [ "$FAIL" = "0" ]; then
   say "🟢 DEPLOY OK — web + LAN + boot svi zeleni."
