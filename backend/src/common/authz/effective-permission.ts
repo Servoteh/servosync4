@@ -1,6 +1,44 @@
 import { Prisma } from "@prisma/client";
 import { roleHasPermission } from "./role-permissions";
-import type { PermissionKey } from "./permissions";
+import { PERMISSIONS, type PermissionKey } from "./permissions";
+
+/**
+ * TVRDA BRAVA NA ZARADE (odluka vlasnika 21.07): vidljivost/izmena plata
+ * (`kadrovska.salary`) sme ISKLJUČIVO na eksplicitnu email-allowlistu —
+ * NEZAVISNO od role i override-a. Ovo je pojas-i-tregeri iznad sy15 RLS
+ * (`current_user_is_admin` = 1.0 admin) i iznad 3.0 role: čak i da neko dobije
+ * `admin` rolu (rola-sync ili ručno) ili grant override, plate ostaju samo
+ * allowlisti. Deny na `kadrovska.salary` za sve ostale nadjačava sve.
+ *
+ * Izvor allowliste: env `KADROVSKA_SALARY_ALLOWLIST` (zarezom razdvojeni
+ * mejlovi, podesivo bez deploya — restart dovoljan); default = Nenad + Nevena.
+ * Prazan/nepostavljen env → default (NIKAD prazna lista koja bi zaključala i njih).
+ */
+const SALARY_ALLOWLIST_DEFAULT = [
+  "nenad.jarakovic@servoteh.com",
+  "nevena.knezevic@servoteh.com",
+];
+
+function salaryAllowlist(): Set<string> {
+  const raw = (process.env.KADROVSKA_SALARY_ALLOWLIST ?? "").trim();
+  const parsed = raw
+    ? raw
+        .split(",")
+        .map((e) => e.trim().toLowerCase())
+        .filter(Boolean)
+    : [];
+  const list = parsed.length ? parsed : SALARY_ALLOWLIST_DEFAULT;
+  return new Set(list.map((e) => e.toLowerCase()));
+}
+
+/**
+ * Sme li `email` da vidi/menja zarade? True SAMO ako je na allowlisti.
+ * Poziva se u SVAKOJ tački odluke o `kadrovska.salary` (guard + /me/permissions).
+ */
+export function salaryEmailAllowed(email: string | undefined | null): boolean {
+  if (!email) return false;
+  return salaryAllowlist().has(email.trim().toLowerCase());
+}
 
 /**
  * Effective permission decision for one (user, permission): combines the role
@@ -35,12 +73,16 @@ export type PermissionDecision = "allow" | "deny";
 export function applyOverrides(
   rolePermissions: readonly string[],
   overrides: readonly { key: string; allow: boolean }[],
+  email?: string,
 ): string[] {
   const set = new Set<string>(rolePermissions);
   for (const o of overrides) {
     if (o.allow) set.add(o.key);
     else set.delete(o.key);
   }
+  // Tvrda brava na zarade: nezavisno od role/override, `kadrovska.salary` ostaje
+  // SAMO allowlisti (Nenad+Nevena). Poslednji korak → nadjačava sve prethodno.
+  if (!salaryEmailAllowed(email)) set.delete(PERMISSIONS.KADROVSKA_SALARY);
   return [...set];
 }
 
@@ -49,7 +91,14 @@ export async function resolvePermissionDecision(
   userId: number,
   role: string,
   key: PermissionKey,
+  email?: string,
 ): Promise<PermissionDecision> {
+  // Tvrda brava na zarade: `kadrovska.salary` sme SAMO allowlisti — presuđuje PRE
+  // role/override, tako da ni `admin` rola ni grant override ne otvaraju plate.
+  if (key === PERMISSIONS.KADROVSKA_SALARY && !salaryEmailAllowed(email)) {
+    return "deny";
+  }
+
   const override = await db.userPermissionOverride.findUnique({
     where: { userId_key: { userId, key } },
     select: { allow: true },

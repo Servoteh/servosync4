@@ -131,6 +131,7 @@ export class AuthController {
       permissions: applyOverrides(
         permissionsForRoles([req.user.role]),
         overrides,
+        req.user.email, // tvrda brava: kadrovska.salary samo allowlisti
       ),
       enforced: process.env.AUTHZ_ENFORCE === "true",
     };

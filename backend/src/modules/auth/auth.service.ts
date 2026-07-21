@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException } from "@nestjs/common";
+import { Injectable, Logger, UnauthorizedException } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import * as bcrypt from "bcrypt";
 import { randomBytes } from "node:crypto";
@@ -104,6 +104,8 @@ const SY15_ROLE_PRIORITY: string[] = [
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
@@ -242,7 +244,17 @@ export class AuthService {
     /* Deaktiviran nalog ostaje blokiran — JIT ga ne vaskrsava. */
     if (user && !user.active)
       throw new UnauthorizedException("Nalog je deaktiviran");
-    if (!user) user = await this.jitProvisionFromSy15(ssToken, email, payload);
+    if (!user) {
+      user = await this.jitProvisionFromSy15(ssToken, email, payload);
+    } else {
+      /* ROLA-SYNC (odluka vlasnika 21.07): postojeći nalog na SVAKOM SSO login-u
+       * poravna `users.role` sa ŽIVOM 1.0 rolom (get_my_user_roles), da svako u
+       * 3.0 ima tačno svoja 1.0 prava — a ne rolu zamrznutu pri prvom login-u.
+       * ⚠️ Ručne 2.0 izmene role se time GUBE (svesno; 1.0 = izvor istine).
+       * Fail-safe: pad čitanja 1.0 role NE obara login (zadrži zatečenu rolu).
+       * Zarade su nezavisno zaključane (salaryEmailAllowed) — rola-sync ih ne otvara. */
+      user = await this.syncRoleFromSy15(ssToken, user);
+    }
 
     await this.prisma.user.update({
       where: { id: user.id },
@@ -250,6 +262,31 @@ export class AuthService {
     });
 
     return this.issueSession(user, req);
+  }
+
+  /**
+   * Poravna `users.role` postojećeg naloga sa živom 1.0 rolom. Ako se rola nije
+   * promenila ILI čitanje 1.0 role padne → vraća nalog netaknut (login ne pada).
+   */
+  private async syncRoleFromSy15<
+    T extends { id: number; email: string; role: string },
+  >(ssToken: string, user: T): Promise<T> {
+    let liveRole: string;
+    try {
+      liveRole = await this.fetchSy15EffectiveRole(ssToken);
+    } catch {
+      /* Pad čitanja 1.0 role NE obara login — zadrži zatečenu rolu. */
+      return user;
+    }
+    if (liveRole === user.role) return user;
+    this.logger.log(
+      `SSO rola-sync: ${user.email} ${user.role} → ${liveRole}`,
+    );
+    const updated = await this.prisma.user.update({
+      where: { id: user.id },
+      data: { role: liveRole },
+    });
+    return updated as unknown as T;
   }
 
   /**
