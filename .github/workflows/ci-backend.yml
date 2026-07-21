@@ -76,6 +76,20 @@ jobs:
       - name: Typecheck (produkcioni kod)
         run: npx tsc --noEmit -p tsconfig.build.json
 
+      # Tvrda kapija #1b: entrypoint MORA završiti u dist/main.js (Docker CMD `node dist/main`).
+      # Bilo koji .ts van src/ (scripts/, prisma/*.ts) pomeri tsc rootDir na backend/ i entry
+      # ode u dist/src/main.js → prod crash-loop. Incidenti 19.07 (scripts) i 21.07 (prisma).
+      - name: Entrypoint sanity (dist/main.js)
+        run: |
+          set -euo pipefail
+          npx nest build
+          if [ ! -f dist/main.js ]; then
+            echo "::error::dist/main.js NE POSTOJI — entrypoint drift ($(find dist -name main.js))."
+            echo "::error::Neki .ts je van src/ (scripts/ ili prisma/*.ts). Dodaj ga u tsconfig.build.json exclude."
+            exit 1
+          fi
+          echo "OK — entrypoint na dist/main.js"
+
       # Ne-blokirajući izveštaj (vidi GRANICE gore). BEZ --fix (`npm run lint` ima --fix!).
       - name: Lint (izveštaj, ne blokira)
         continue-on-error: true
