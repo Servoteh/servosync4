@@ -57,6 +57,7 @@ export class PermissionsGuard implements CanActivate {
       user.userId,
       user.role,
       required,
+      user.email,
     );
     if (decision === "allow") return true;
 

@@ -8,6 +8,7 @@ import {
 } from "@nestjs/common";
 import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
+import { salaryEmailAllowed } from "../../common/authz/effective-permission";
 import { pageMeta, parsePagination } from "../../common/pagination";
 import {
   aggregateWorkHoursForMonth,
@@ -85,8 +86,10 @@ export class KadrovskaService {
           isHrOrAdmin: r.is_hr_or_admin ?? false,
           poslovniAdmin: r.poslovni_admin ?? false,
           isManagement: r.is_management ?? false,
-          // canSalary = SAMO admin (HR namerno nema — §2.6); vezano za current_user_is_admin.
-          canSalary: r.is_admin ?? false,
+          // canSalary = tvrda salary-brava (allowlist: Nenad+Nevena), NE 1.0-admin.
+          // Ranije = current_user_is_admin(); vezano za email-allowlist (odluka 21.07)
+          // da polje ne može zaobići `kadrovska.salary` guard u budućem FE kodu.
+          canSalary: salaryEmailAllowed(email),
           canPii: r.can_pii ?? false,
           gridEditor: r.grid_editor ?? false,
           vacationEditor: r.vacation_editor ?? false,
