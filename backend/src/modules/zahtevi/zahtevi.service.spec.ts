@@ -9,6 +9,7 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
 import { AiProviderService } from "../../common/ai/ai-provider.service";
 import { ZahteviService, STATUS_TRANSITIONS } from "./zahtevi.service";
+import { ZahteviAiService } from "./zahtevi-ai.service";
 import { RequestNumberingService } from "./request-numbering.service";
 import type { AuthUser } from "../auth/jwt.strategy";
 
@@ -178,6 +179,23 @@ function aiMock(): jest.Mocked<Pick<AiProviderService, "transcribe">> {
   };
 }
 
+/**
+ * Mock ZahteviAiService (F3) — ZahteviService injektuje ga, ali njegov puni AI put
+ * ima svoj spec. Ovde su bitne samo grane koje ZahteviService okida:
+ *  - scheduleTriage (fire-and-forget na submit; ne sme obarati submit),
+ *  - retryTranscribe (delegacija transcribeAttachment).
+ */
+function zahteviAiMock(): jest.Mocked<
+  Pick<ZahteviAiService, "scheduleTriage" | "retryTranscribe">
+> {
+  return {
+    scheduleTriage: jest.fn(),
+    retryTranscribe: jest
+      .fn()
+      .mockResolvedValue({ data: { id: 5, transcript: "prepis" } }),
+  };
+}
+
 function fakeFile(
   over: Partial<Express.Multer.File> = {},
 ): Express.Multer.File {
@@ -204,11 +222,13 @@ describe("ZahteviService", () => {
   let prisma: PrismaMock;
   let storage: ReturnType<typeof storageMock>;
   let ai: ReturnType<typeof aiMock>;
+  let zahteviAi: ReturnType<typeof zahteviAiMock>;
 
   beforeEach(async () => {
     prisma = prismaMock();
     storage = storageMock();
     ai = aiMock();
+    zahteviAi = zahteviAiMock();
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ZahteviService,
@@ -216,6 +236,7 @@ describe("ZahteviService", () => {
         { provide: PrismaService, useValue: prisma },
         { provide: Sy15StorageService, useValue: storage },
         { provide: AiProviderService, useValue: ai },
+        { provide: ZahteviAiService, useValue: zahteviAi },
       ],
     }).compile();
     service = module.get(ZahteviService);

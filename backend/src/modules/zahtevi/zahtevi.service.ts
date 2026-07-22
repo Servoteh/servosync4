@@ -16,6 +16,7 @@ import { roleHasPermission } from "../../common/authz/role-permissions";
 import { parsePagination, pageMeta } from "../../common/pagination";
 import type { AuthUser } from "../auth/jwt.strategy";
 import { RequestNumberingService } from "./request-numbering.service";
+import { ZahteviAiService } from "./zahtevi-ai.service";
 import {
   type CreateChangeRequestDto,
   validateCreateChangeRequest,
@@ -116,6 +117,7 @@ export class ZahteviService {
     private readonly numbering: RequestNumberingService,
     private readonly storage: Sy15StorageService,
     private readonly ai: AiProviderService,
+    private readonly zahteviAi: ZahteviAiService,
   ) {}
 
   // ── ROW-SCOPE / AUTHZ ──────────────────────────────────────────────────────
@@ -451,12 +453,11 @@ export class ZahteviService {
       return u;
     });
 
-    // TODO(F3): ovde ide AI trijaža (§4.1) — fire-and-forget na submit:
-    //   1) upiši ChangeRequestAiAnalysis {kind:TRIAGE, status:PENDING}
-    //   2) pokreni try/catch AiProviderService poziv (klasifikacija + duplikati + ocena 0–5)
-    //   3) DONE → upiši aiScore/rewardStatus=PROPOSED + event TRIAGED (ocena 0 → auto REJECTED)
-    //      FAILED → event TRIAGE_FAILED, zahtev ostaje SUBMITTED (admin „Ponovi trijažu")
-    // Submit ODMAH odgovara — AI nikad ne obara radnju (doktrina §10.4).
+    // AI trijaža (§4.1) — FIRE-AND-FORGET (nije await): upiše PENDING red analize i
+    // pokrene AI klasifikaciju/duplikate/ocenu 0–5 u pozadini. Sav rad je u try/catch
+    // unutar ZahteviAiService — submit ODMAH odgovara, AI nikad ne obara radnju (§10.4).
+    // Trijaža je automatska (startedByUserId = null).
+    this.zahteviAi.scheduleTriage(id, null);
     return updated;
   }
 
@@ -762,15 +763,16 @@ export class ZahteviService {
       throw new UnprocessableEntityException(
         "Transkripcija je moguća samo za audio prilog.",
       );
-    if (att.transcript)
-      throw new UnprocessableEntityException(
-        "Prilog već ima transkript (immutable od nastanka).",
-      );
-    // Fajl treba dohvatiti iz storage-a i ponovo poslati STT-u — u F1 vraćamo 422
-    // (re-fetch bajtova iz bucket-a je F3 posao uz pun AI cevovod). Poruka je jasna.
-    throw new UnprocessableEntityException(
-      "Ponovna transkripcija stiže sa AI cevovodom (F3).",
-    );
+    // F3: pun retry — dohvati bajtove iz bucket-a, pozovi STT, upiši transcript.
+    // Immutable guard (postojeći ne-null transcript) je i u AI servisu, ali proveravamo
+    // rano radi jasne poruke. NE pregazuje postojeći transkript.
+    return this.zahteviAi.retryTranscribe({
+      id: att.id,
+      bucket: att.bucket,
+      storagePath: att.storagePath,
+      contentType: att.contentType,
+      transcript: att.transcript,
+    });
   }
 
   // ── helpers (prilozi) ──────────────────────────────────────────────────────

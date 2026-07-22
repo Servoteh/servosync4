@@ -20,6 +20,7 @@ import { RequirePermission } from "../../common/authz/require-permission.decorat
 import { PERMISSIONS } from "../../common/authz/permissions";
 import type { AuthUser } from "../auth/jwt.strategy";
 import { ZahteviService } from "./zahtevi.service";
+import { ZahteviAiService } from "./zahtevi-ai.service";
 import type { CreateChangeRequestDto } from "./dto/create-change-request.dto";
 import type { UpdateChangeRequestDto } from "./dto/update-change-request.dto";
 import type { DecisionDto } from "./dto/decision.dto";
@@ -31,14 +32,17 @@ import type { StatusDto } from "./dto/status.dto";
  * vidi SAMO svoje) sprovodi SERVIS kroz prosleđen AuthUser.
  *
  * F1 obim: CRUD, status mašina, prilozi (STT), komentari, events, decision/status, slicni.
- * F3 (AI): retriage / approve-analysis / PATCH analyses. F4: nagrade (score/restore/tarife/
+ * F3 (AI): retriage / approve-analysis / PATCH analyses / restore. F4: nagrade (score/tarife/
  * obracun) + Decision Log (odluke). Ti endpointi NISU ovde.
  */
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 @RequirePermission(PERMISSIONS.ZAHTEVI_READ)
 @Controller({ path: "zahtevi", version: "1" })
 export class ZahteviController {
-  constructor(private readonly zahtevi: ZahteviService) {}
+  constructor(
+    private readonly zahtevi: ZahteviService,
+    private readonly zahteviAi: ZahteviAiService,
+  ) {}
 
   // ── LISTE ──────────────────────────────────────────────────────────────────
 
@@ -208,5 +212,49 @@ export class ZahteviController {
     @Req() req: { user: AuthUser },
   ) {
     return this.zahtevi.setStatus(id, dto, req.user);
+  }
+
+  // ── AI CEVOVOD (F3, §4) ───────────────────────────────────────────────────
+
+  /** Ponovi trijažu (admin) — nov red analize; radi i kad je trijaža pala. */
+  @Post(":id/retriage")
+  @RequirePermission(PERMISSIONS.ZAHTEVI_ADMIN)
+  retriage(
+    @Param("id", ParseIntPipe) id: number,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.zahteviAi.retriage(id, req.user);
+  }
+
+  /** Odobrenje #1 (admin): SUBMITTED→ANALYSIS_APPROVED + fire-and-forget detaljna analiza. */
+  @Post(":id/approve-analysis")
+  @RequirePermission(PERMISSIONS.ZAHTEVI_ADMIN)
+  approveAnalysis(
+    @Param("id", ParseIntPipe) id: number,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.zahteviAi.approveAnalysis(id, req.user);
+  }
+
+  /** Dorada Claude paketa (admin) na redu detaljne analize. */
+  @Patch(":id/analyses/:analysisId")
+  @RequirePermission(PERMISSIONS.ZAHTEVI_ADMIN)
+  patchAnalysis(
+    @Param("id", ParseIntPipe) id: number,
+    @Param("analysisId", ParseIntPipe) analysisId: number,
+    @Body() body: { claudePackage?: string },
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.zahteviAi.patchAnalysis(id, analysisId, body, req.user);
+  }
+
+  /** Vrati AI-odbačen (ocena 0) zahtev u obradu (admin) — sigurnosni ventil auto-reject-a. */
+  @Post(":id/restore")
+  @RequirePermission(PERMISSIONS.ZAHTEVI_ADMIN)
+  restore(
+    @Param("id", ParseIntPipe) id: number,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.zahteviAi.restore(id, req.user);
   }
 }
