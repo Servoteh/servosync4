@@ -17,6 +17,8 @@ import { parsePagination, pageMeta } from "../../common/pagination";
 import type { AuthUser } from "../auth/jwt.strategy";
 import { RequestNumberingService } from "./request-numbering.service";
 import { ZahteviAiService } from "./zahtevi-ai.service";
+import { ZahteviDecisionsService } from "./zahtevi-decisions.service";
+import { ZahteviMailService } from "./zahtevi-mail.service";
 import {
   type CreateChangeRequestDto,
   validateCreateChangeRequest,
@@ -118,6 +120,8 @@ export class ZahteviService {
     private readonly storage: Sy15StorageService,
     private readonly ai: AiProviderService,
     private readonly zahteviAi: ZahteviAiService,
+    private readonly decisions: ZahteviDecisionsService,
+    private readonly mail: ZahteviMailService,
   ) {}
 
   // ── ROW-SCOPE / AUTHZ ──────────────────────────────────────────────────────
@@ -582,9 +586,43 @@ export class ZahteviService {
         ...(dto.note ? { note: dto.note } : {}),
         ...(dto.action === "merge" ? { mergeIntoId: dto.mergeIntoId } : {}),
       });
+      // logDecision prečica (§6): uz approve/reject → prefilovan zapis u Decision Log.
+      // Best-effort UNUTAR iste transakcije — pad ne obara odluku (catch loguje).
+      if (
+        dto.logDecision === true &&
+        (dto.action === "approve" || dto.action === "reject")
+      ) {
+        try {
+          await this.decisions.createFromRequest(tx, {
+            requestId: id,
+            reqNo: req.reqNo,
+            requestTitle: req.title,
+            requestDescription: req.description,
+            action: dto.action,
+            note: dto.note,
+            actorUserId: actor.userId,
+          });
+        } catch (err) {
+          this.logger.warn(
+            `Decision Log prečica za zahtev ${id} nije upisana: ${(err as Error).message}`,
+          );
+        }
+      }
       return u;
     });
-    // TODO(F4): logDecision === true → prečica ka Decision Log-u (prefil iz zahteva).
+
+    // Mejl podnosiocu (§9) — approve/reject/needs-info. NIKAD ne obara radnju (§10.4).
+    if (
+      dto.action === "approve" ||
+      dto.action === "reject" ||
+      dto.action === "needs-info"
+    ) {
+      void this.mail.notifySubmitter({
+        requestId: id,
+        outcome: dto.action,
+        note: dto.note ?? null,
+      });
+    }
     return { data: updated };
   }
 
@@ -638,6 +676,10 @@ export class ZahteviService {
       if (linkAdded) await this.writeEvent(tx, id, "LINK_ADDED", actor.userId);
       return u;
     });
+    // Mejl podnosiocu na završetak (§9) — best-effort, nikad ne obara radnju (§10.4).
+    if (next === "DONE") {
+      void this.mail.notifySubmitter({ requestId: id, outcome: "done" });
+    }
     return { data: updated };
   }
 

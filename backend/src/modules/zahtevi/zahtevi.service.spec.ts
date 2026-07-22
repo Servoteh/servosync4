@@ -10,6 +10,8 @@ import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
 import { AiProviderService } from "../../common/ai/ai-provider.service";
 import { ZahteviService, STATUS_TRANSITIONS } from "./zahtevi.service";
 import { ZahteviAiService } from "./zahtevi-ai.service";
+import { ZahteviDecisionsService } from "./zahtevi-decisions.service";
+import { ZahteviMailService } from "./zahtevi-mail.service";
 import { RequestNumberingService } from "./request-numbering.service";
 import type { AuthUser } from "../auth/jwt.strategy";
 
@@ -196,6 +198,18 @@ function zahteviAiMock(): jest.Mocked<
   };
 }
 
+/** Decision Log servis — u decision-toku se zove SAMO createFromRequest (logDecision prečica). */
+function decisionsMock(): jest.Mocked<
+  Pick<ZahteviDecisionsService, "createFromRequest">
+> {
+  return { createFromRequest: jest.fn().mockResolvedValue(undefined) };
+}
+
+/** Mail servis — decision/DONE fire-and-forget; nikad ne baca (vraća boolean). */
+function mailMock(): jest.Mocked<Pick<ZahteviMailService, "notifySubmitter">> {
+  return { notifySubmitter: jest.fn().mockResolvedValue(true) };
+}
+
 function fakeFile(
   over: Partial<Express.Multer.File> = {},
 ): Express.Multer.File {
@@ -223,12 +237,16 @@ describe("ZahteviService", () => {
   let storage: ReturnType<typeof storageMock>;
   let ai: ReturnType<typeof aiMock>;
   let zahteviAi: ReturnType<typeof zahteviAiMock>;
+  let decisions: ReturnType<typeof decisionsMock>;
+  let mail: ReturnType<typeof mailMock>;
 
   beforeEach(async () => {
     prisma = prismaMock();
     storage = storageMock();
     ai = aiMock();
     zahteviAi = zahteviAiMock();
+    decisions = decisionsMock();
+    mail = mailMock();
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ZahteviService,
@@ -237,6 +255,8 @@ describe("ZahteviService", () => {
         { provide: Sy15StorageService, useValue: storage },
         { provide: AiProviderService, useValue: ai },
         { provide: ZahteviAiService, useValue: zahteviAi },
+        { provide: ZahteviDecisionsService, useValue: decisions },
+        { provide: ZahteviMailService, useValue: mail },
       ],
     }).compile();
     service = module.get(ZahteviService);
@@ -408,6 +428,84 @@ describe("ZahteviService", () => {
           service.decision(10, { action: "merge", mergeIntoId: 77 }, ADMIN),
         ).rejects.toBeInstanceOf(NotFoundException);
       });
+
+      it("logDecision:true uz approve → prečica u Decision Log (§6)", async () => {
+        prisma.changeRequest.findUnique.mockResolvedValue(
+          baseReq({ status: "ANALYZED" }),
+        );
+        prisma.changeRequest.update.mockResolvedValue(
+          baseReq({ status: "APPROVED" }),
+        );
+        await service.decision(
+          10,
+          { action: "approve", logDecision: true },
+          ADMIN,
+        );
+        expect(decisions.createFromRequest).toHaveBeenCalledTimes(1);
+        const arg = calls(decisions.createFromRequest as unknown as jest.Mock)[0][1] as {
+          action: string;
+          requestId: number;
+        };
+        expect(arg.action).toBe("approve");
+        expect(arg.requestId).toBe(10);
+      });
+
+      it("bez logDecision → NEMA prečice u Decision Log", async () => {
+        prisma.changeRequest.findUnique.mockResolvedValue(
+          baseReq({ status: "ANALYZED" }),
+        );
+        prisma.changeRequest.update.mockResolvedValue(
+          baseReq({ status: "APPROVED" }),
+        );
+        await service.decision(10, { action: "approve" }, ADMIN);
+        expect(decisions.createFromRequest).not.toHaveBeenCalled();
+      });
+
+      it("pad Decision Log prečice NE obara odluku (best-effort §6)", async () => {
+        prisma.changeRequest.findUnique.mockResolvedValue(
+          baseReq({ status: "ANALYZED" }),
+        );
+        prisma.changeRequest.update.mockResolvedValue(
+          baseReq({ status: "APPROVED" }),
+        );
+        decisions.createFromRequest.mockRejectedValue(new Error("db"));
+        const res = await service.decision(
+          10,
+          { action: "approve", logDecision: true },
+          ADMIN,
+        );
+        expect(row(res).status).toBe("APPROVED");
+      });
+
+      it("mejl podnosiocu na reject (§9) — poziv sa outcome reject + note", async () => {
+        prisma.changeRequest.findUnique.mockResolvedValue(
+          baseReq({ status: "ANALYZED" }),
+        );
+        prisma.changeRequest.update.mockResolvedValue(
+          baseReq({ status: "REJECTED" }),
+        );
+        await service.decision(
+          10,
+          { action: "reject", note: "nije jasno" },
+          ADMIN,
+        );
+        expect(mail.notifySubmitter).toHaveBeenCalledWith({
+          requestId: 10,
+          outcome: "reject",
+          note: "nije jasno",
+        });
+      });
+
+      it("mejl NE ide na defer/archive/merge (samo approve/reject/needs-info)", async () => {
+        prisma.changeRequest.findUnique.mockResolvedValue(
+          baseReq({ status: "ANALYZED" }),
+        );
+        prisma.changeRequest.update.mockResolvedValue(
+          baseReq({ status: "DEFERRED" }),
+        );
+        await service.decision(10, { action: "defer" }, ADMIN);
+        expect(mail.notifySubmitter).not.toHaveBeenCalled();
+      });
     });
 
     describe("realizacioni status", () => {
@@ -436,6 +534,31 @@ describe("ZahteviService", () => {
         await expect(
           service.setStatus(10, { action: "done" }, ADMIN),
         ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      });
+
+      it("done iz TESTING → mejl podnosiocu outcome=done (§9)", async () => {
+        prisma.changeRequest.findUnique.mockResolvedValue(
+          baseReq({ status: "TESTING" }),
+        );
+        prisma.changeRequest.update.mockResolvedValue(
+          baseReq({ status: "DONE" }),
+        );
+        await service.setStatus(10, { action: "done" }, ADMIN);
+        expect(mail.notifySubmitter).toHaveBeenCalledWith({
+          requestId: 10,
+          outcome: "done",
+        });
+      });
+
+      it("in-progress NE šalje mejl (samo DONE)", async () => {
+        prisma.changeRequest.findUnique.mockResolvedValue(
+          baseReq({ status: "APPROVED" }),
+        );
+        prisma.changeRequest.update.mockResolvedValue(
+          baseReq({ status: "IN_PROGRESS" }),
+        );
+        await service.setStatus(10, { action: "in-progress" }, ADMIN);
+        expect(mail.notifySubmitter).not.toHaveBeenCalled();
       });
     });
   });
