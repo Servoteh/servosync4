@@ -22,7 +22,7 @@ import {
 } from "../../common/pagination";
 import { byId, uniqueIds } from "../../common/relations";
 import { parseDateParam } from "../../common/date-params";
-import { parseBarcode, formatOrderBarcode } from "./barcode";
+import { parseBarcode, formatLabelBarcode } from "./barcode";
 import {
   type ScanTechProcessDto,
   validateScan,
@@ -1457,7 +1457,22 @@ export class TechProcessesService {
     }
 
     // nalog → razreši RN + broj operacija u tehnološkom postupku + routing.
-    const { projectId, identNumber, variant } = decoded.fields;
+    // Nalepnica/legacy barkod (IDPredmet=0) → predmet po identu (22.07); kiosk
+    // dobija NORMALIZOVANA polja (realan projectId) da nastavak toka radi.
+    const { identNumber, variant } = decoded.fields;
+    let projectId: number;
+    try {
+      projectId = await this.resolveScanProjectId(
+        this.prisma,
+        decoded.fields.projectId,
+        identNumber,
+      );
+    } catch {
+      // Decode je PREVIEW ruta — nepoznat/dvosmislen ident ne baca (kiosk i za
+      // pun barkod prikazuje „Nalog nije nađen" i dozvoljava nastavak).
+      projectId = decoded.fields.projectId;
+    }
+    decoded.fields.projectId = projectId;
     const [workOrder, operationCount] = await Promise.all([
       this.prisma.workOrder.findFirst({
         where: { projectId, identNumber, variant },
@@ -1589,7 +1604,13 @@ export class TechProcessesService {
         `Revizija se ne poklapa: nalog=${order.fields.revision}, operacija=${operation.fields.revision} — barkodovi ne pripadaju istom otisku.`,
       );
 
-    const { projectId, identNumber } = order.fields;
+    const { identNumber } = order.fields;
+    // Nalepnica/legacy barkod (IDPredmet=0) → predmet po identu (22.07).
+    const projectId = await this.resolveScanProjectId(
+      this.prisma,
+      order.fields.projectId,
+      identNumber,
+    );
     const scannedVariant = order.fields.variant;
     const { operationNumber, workCenterCode, identMark } = operation.fields;
 
@@ -2149,7 +2170,13 @@ export class TechProcessesService {
       dto.orderBarcode,
       dto.operationBarcode,
     );
-    const { projectId, identNumber } = order.fields;
+    const { identNumber } = order.fields;
+    // Nalepnica/legacy barkod (IDPredmet=0) → predmet po identu (22.07).
+    const projectId = await this.resolveScanProjectId(
+      this.prisma,
+      order.fields.projectId,
+      identNumber,
+    );
     const scannedVariant = order.fields.variant;
     const { operationNumber, workCenterCode, identMark } = operation.fields;
     const machineAccessWarning = await this.checkMachineAccess(
@@ -2262,7 +2289,13 @@ export class TechProcessesService {
       dto.orderBarcode,
       dto.operationBarcode,
     );
-    const { projectId, identNumber } = order.fields;
+    const { identNumber } = order.fields;
+    // Nalepnica/legacy barkod (IDPredmet=0) → predmet po identu (22.07).
+    const projectId = await this.resolveScanProjectId(
+      this.prisma,
+      order.fields.projectId,
+      identNumber,
+    );
     const scannedVariant = order.fields.variant;
     const { operationNumber, workCenterCode, identMark } = operation.fields;
     const machineAccessWarning = await this.checkMachineAccess(
@@ -2841,7 +2874,13 @@ export class TechProcessesService {
       query.orderBarcode ?? "",
       query.operationBarcode ?? "",
     );
-    const { projectId, identNumber } = order.fields;
+    const { identNumber } = order.fields;
+    // Nalepnica/legacy barkod (IDPredmet=0) → predmet po identu (22.07).
+    const projectId = await this.resolveScanProjectId(
+      this.prisma,
+      order.fields.projectId,
+      identNumber,
+    );
     const { operationNumber, workCenterCode } = operation.fields;
 
     // Tekući RN (najviša varijanta — D5 klon otvara novi red); operacija se traži
@@ -2980,7 +3019,13 @@ export class TechProcessesService {
         "Operacija-barkod nema numerički broj operacije — kontrola nije moguća.",
       );
 
-    const { projectId, identNumber, variant } = order.fields;
+    const { identNumber, variant } = order.fields;
+    // Nalepnica/legacy barkod (IDPredmet=0) → predmet po identu (22.07).
+    const projectId = await this.resolveScanProjectId(
+      this.prisma,
+      order.fields.projectId,
+      identNumber,
+    );
     const { operationNumber, workCenterCode, identMark } = operation.fields;
 
     // A-5: (1) osoba mora biti OVLAŠĆEN kontrolor (sistematizacija „Kontrola" =
@@ -3479,7 +3524,8 @@ export class TechProcessesService {
 
   /**
    * `GET /label?workOrderId=…&quantity=…` — podaci za termalnu nalepnicu (§6):
-   * polja `Nalepnice` reporta + RNZ barkod (`formatOrderBarcode`, kiosk-dekodabilan).
+   * polja `Nalepnice` reporta + RNZ barkod (`formatLabelBarcode` — KRATKI oblik
+   * `RNZ:0:{ident}:0:0`, 22.07; kiosk/lokacije ga dekodiraju preko ident-fallback-a).
    * Front gradi TSPL (`tspl2`) i štampa preko proxy-ja. Reuse: štampa na kontroli i reprint.
    */
   async label(query: { workOrderId?: string; quantity?: string }) {
@@ -3804,6 +3850,33 @@ export class TechProcessesService {
       // `pieceCount` (plan RN-a) — FIX A poredi kumulativ operacije sa planom.
       select: { id: true, variant: true, pieceCount: true },
     });
+  }
+
+  /**
+   * KRATKI barkod nalepnice / legacy 1.0 nalepnica: polje IDPredmet je 0
+   * (`RNZ:0:{ident}:0:0` — `formatLabelBarcode`, 22.07). Predmet se tada
+   * razrešava po identu: nepostojeći → 404 (ista poruka kao ostatak toka),
+   * ident u VIŠE predmeta → 422 (ne pogađati — radnik skenira RN papir).
+   * Pun barkod (projectId > 0) prolazi netaknut, bez upita.
+   */
+  private async resolveScanProjectId(
+    tx: Prisma.TransactionClient,
+    projectId: number,
+    identNumber: string,
+  ): Promise<number> {
+    if (projectId > 0) return projectId;
+    const rows = await tx.workOrder.findMany({
+      where: { identNumber },
+      select: { projectId: true },
+      distinct: ["projectId"],
+    });
+    if (!rows.length)
+      throw new NotFoundException(`RN za ident ${identNumber} nije nađen.`);
+    if (rows.length > 1)
+      throw new UnprocessableEntityException(
+        `Ident ${identNumber} postoji u više predmeta — skenirajte barkod naloga sa RN papira (nalepnica nije dovoljna).`,
+      );
+    return rows[0].projectId;
   }
 
   /**
@@ -4217,12 +4290,11 @@ export class TechProcessesService {
 
     return {
       workOrderId: wo.id,
-      barcode: formatOrderBarcode({
-        projectId: wo.projectId,
-        identNumber: wo.identNumber,
-        variant: wo.variant,
-        revision: wo.revision,
-      }),
+      // KRATKI oblik (RNZ:0:{ident}:0:0, 22.07): pun barkod sa projectId +
+      // revizijom je predugačak za čitljiv Code128 na 80mm termalnoj nalepnici
+      // (pogon: „novi izgled neće da čita"). Predmet se pri skenu razrešava po
+      // identu (resolveScanProjectId); RN A4 papir zadržava pun oblik.
+      barcode: formatLabelBarcode(wo.identNumber),
       plannedPieces: wo.pieceCount,
       quantity,
       fields: {

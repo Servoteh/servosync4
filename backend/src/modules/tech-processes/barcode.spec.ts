@@ -3,6 +3,7 @@ import {
   parseBarcode,
   formatOrderBarcode,
   formatOperationBarcode,
+  formatLabelBarcode,
   normalizeScannerLayout,
 } from "./barcode";
 
@@ -82,8 +83,16 @@ describe("barcode — parseBarcode", () => {
     expect(() => parseBarcode("X:1:2:3:4")).toThrow(BadRequestException);
   });
 
-  it("baca kad je IDPredmet ≤ 0 ili revizija prazna", () => {
-    expect(() => parseBarcode("RNZ:0:06/93-4:0:A")).toThrow(
+  it("IDPredmet=0 je LEGALAN (kratki barkod nalepnice / legacy 1.0, 22.07) — negativan i prazna revizija bacaju", () => {
+    const d = parseBarcode("RNZ:0:06/93-4:0:0");
+    expect(d.type).toBe("nalog");
+    expect(d.fields).toEqual({
+      projectId: 0,
+      identNumber: "06/93-4",
+      variant: 0,
+      revision: "0",
+    });
+    expect(() => parseBarcode("RNZ:-1:06/93-4:0:A")).toThrow(
       BadRequestException,
     );
     expect(() => parseBarcode("RNZ:2597:06/93-4:0:")).toThrow(
@@ -268,6 +277,17 @@ describe("barcode — round-trip (format → parse)", () => {
     expect(d.fields.workCenterCode).toBe("RC99");
     expect(d.fields.identMark).toBe("0");
     expect(d.fields.revision).toBe("C");
+  });
+
+  it("nalepnica (formatLabelBarcode): kratki oblik RNZ:0:{ident}:0:0 i round-trip", () => {
+    const s = formatLabelBarcode("9811-17/158");
+    expect(s).toBe("RNZ:0:9811-17/158:0:0");
+    const d = parseBarcode(s);
+    if (d.type !== "nalog") throw new Error("očekivan nalog");
+    expect(d.fields.projectId).toBe(0); // servis razrešava predmet po identu
+    expect(d.fields.identNumber).toBe("9811-17/158");
+    expect(() => formatLabelBarcode("")).toThrow();
+    expect(() => formatLabelBarcode("a:b")).toThrow();
   });
 
   it("nalog i operacija istog otiska dele istu reviziju (isti otisak)", () => {

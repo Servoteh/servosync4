@@ -274,9 +274,12 @@ export function parseBarcode(input: string): DecodedBarcode {
       variant: parseIntStrict(parts[3], "Varijanta"),
       revision: parseRevision(parts[4]),
     };
-    if (fields.projectId <= 0)
+    // IDPredmet=0 je LEGALAN: kratki barkod NALEPNICE (`formatLabelBarcode`,
+    // 22.07 — Code128 gustina) i legacy 1.0 nalepnice (`RNZ:0:{ident}:0:0`).
+    // Servis tada razrešava predmet po identu (resolveScanProjectId).
+    if (fields.projectId < 0)
       throw new BadRequestException(
-        "Barkod polje 'IDPredmet' mora biti pozitivan ceo broj.",
+        "Barkod polje 'IDPredmet' ne sme biti negativno.",
       );
     if (!fields.identNumber)
       throw new BadRequestException("Barkod polje 'IdentBroj' je obavezno.");
@@ -346,6 +349,22 @@ export function formatOrderBarcode(fields: {
   assertNoSeparator(ident, "identNumber");
   assertNoSeparator(rev, "revision");
   return `RNZ:${projectId}:${ident}:${variant}:${rev}`;
+}
+
+/**
+ * KRATKI nalog-barkod za NALEPNICU dela: `RNZ:0:{identNumber}:0:0` (legacy 1.0
+ * oblik). Nalepnica se štampa termalno (TSPL2, fiksna širina modula) — pun oblik
+ * sa projectId + revizijom je predugačak da bi Code128 stao na 80mm sa modulom
+ * koji pogonski skeneri čitaju (incident 22.07: „novi izgled neće da čita").
+ * `parseBarcode` prihvata IDPredmet=0, a servis razrešava predmet po identu;
+ * lokacijski `parseBigTehnBarcode` ovaj oblik podržava oduvek (1.0 paritet).
+ * RN A4 papir ZADRŽAVA pun `formatOrderBarcode` (laserska štampa, veći barkod).
+ */
+export function formatLabelBarcode(identNumber: string): string {
+  const ident = String(identNumber ?? "").trim();
+  if (!ident) throw new Error("formatLabelBarcode: identNumber je obavezan.");
+  assertNoSeparator(ident, "identNumber");
+  return `RNZ:0:${ident}:0:0`;
 }
 
 /**
