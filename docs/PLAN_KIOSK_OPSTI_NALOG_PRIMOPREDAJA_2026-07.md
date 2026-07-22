@@ -8,7 +8,7 @@
 | Stavka | Status |
 |--------|--------|
 | 1 — kiosk više radnika | ✅ IMPLEMENTIRANO (grana `fix/pogon-primedbe`): guard u `accumulateStopWork`, `finishForAll` DTO+dijalog, dismiss guard, higijena sesija u finish/reachedPlan, `othersOpenCount` u „Moji otvoreni"; 7 novih testova, 1610/1610 zeleno |
-| 2 — opšti nalog nosač-RN | ⏳ operativno na produ (runbook ispod); kod-provera `markWorkOrderIfComplete` ✅ (RN bez `significantForFinishing` operacija se ne završava, `:4326`) |
+| 2 — opšti nalog nosač-RN | ✅ RAZREŠENO proverom na produ 22.07: nosač-RN **VEĆ POSTOJI** (`work_orders` id=4698, predmet 4521, ident `0000.0`, rev A, op. 5 · RC `0.0`, plan 100000) i **kucanje RADI** (9043 reda u `tech_processes`, poslednje 22.07 05:00). „Ne vidi se" = simptom baga iz stavke 1 (završen deljeni red nestane svima iz „Mojih otvorenih"; nov START sken otvara nov red). U praćenju ga nema jer predmet 4521 NIJE aktiviran (`predmet_aktivacije.is_active=f`) — namerno, odluka 5. Kod-provera `markWorkOrderIfComplete` ✅ (`0.0` ima `significant_for_finishing=f` na produ → RN se ne može auto-završiti). Runbook ispod je BEZPREDMETAN osim ako se traži nova štampa barkoda. |
 | 3 — mail odbijenice | ✅ IMPLEMENTIRANO (ista grana): `notifyRejected` u HandoversService (1 mail+in-app po generatoru), `batchTransition` vraća stvarno prebačene, `.env.example` RESEND_*; testovi zeleni |
 | 4 — barkod nalepnica (HITNO) | 🔴 ZA OPUSA — analiza gotova, ispravka specificirana ispod (sadržaj + narrow + ident-fallback) |
 
