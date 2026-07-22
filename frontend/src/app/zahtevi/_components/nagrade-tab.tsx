@@ -170,7 +170,7 @@ function PayoutUserBlock({ user }: { user: PayoutUserRow }) {
         </span>
       </button>
       {open && (
-        <div className="bg-surface-2/50 px-4 pb-3">
+        <div className="overflow-x-auto bg-surface-2/50 px-4 pb-3">
           <table className="w-full text-sm">
             <thead>
               <tr className="text-2xs uppercase tracking-[0.08em] text-ink-secondary">

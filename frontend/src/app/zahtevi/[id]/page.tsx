@@ -1,11 +1,12 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, RefreshCw } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { useCan } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
+import { formatDecimal } from '@/lib/format';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
@@ -68,13 +69,49 @@ export default function ZahtevDetailPage() {
   const req = detailQuery.data?.data ?? null;
 
   // Poll dok je AI korak „u letu" (F3): ANALYSIS_APPROVED ili bilo koja PENDING analiza.
-  const shouldPoll = useMemo(() => {
+  const aiInFlight = useMemo(() => {
     if (!req) return false;
     if (req.status === 'ANALYSIS_APPROVED') return true;
     return req.analyses?.some((a) => a.status === 'PENDING') ?? false;
   }, [req]);
+
+  // F8b: polling se GASI posle ~5 min (zombie-PENDING zaštita) — inače bi FE polovao beskrajno
+  // ako AI red nikad ne pređe iz PENDING (npr. proces pao pre nego upiše FAILED). Po isteku:
+  // banner + „Pokušaj ponovo" (re-armuje tajmer + refetch). MAX_POLL_MS = 5 min, interval 4s.
+  const MAX_POLL_MS = 5 * 60 * 1000;
+  const pollStartRef = useRef<number | null>(null);
+  const [pollTimedOut, setPollTimedOut] = useState(false);
+
+  useEffect(() => {
+    if (aiInFlight) {
+      if (pollStartRef.current == null) pollStartRef.current = Date.now();
+    } else {
+      // AI više nije „u letu" → resetuj tajmer i banner za sledeći ciklus.
+      pollStartRef.current = null;
+      setPollTimedOut(false);
+    }
+  }, [aiInFlight]);
+
+  const shouldPoll = aiInFlight && !pollTimedOut;
   const polledQuery = useZahtev(validId, { refetchInterval: shouldPoll ? 4000 : false });
   const detail = polledQuery.data?.data ?? req;
+
+  // Kad polling traje duže od MAX_POLL_MS a AI je i dalje „u letu" → prekini i pokaži banner.
+  useEffect(() => {
+    if (!shouldPoll) return;
+    const started = pollStartRef.current;
+    if (started == null) return;
+    const elapsed = Date.now() - started;
+    const remaining = Math.max(0, MAX_POLL_MS - elapsed);
+    const t = setTimeout(() => setPollTimedOut(true), remaining);
+    return () => clearTimeout(t);
+  }, [shouldPoll, polledQuery.dataUpdatedAt, MAX_POLL_MS]);
+
+  const retryPoll = () => {
+    pollStartRef.current = Date.now();
+    setPollTimedOut(false);
+    void polledQuery.refetch();
+  };
 
   const goBack = () => router.push('/zahtevi');
 
@@ -137,6 +174,20 @@ export default function ZahtevDetailPage() {
           <>
             <ZahtevHeader detail={detail} />
 
+            {/* F8b: AI korak predugo „u letu" (polling istekao) → poruka + Pokušaj ponovo. */}
+            {pollTimedOut && (
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-panel border border-status-warn/40 bg-status-warn-bg px-4 py-3 text-sm text-status-warn">
+                <span>
+                  AI obrada traje neuobičajeno dugo. Osvežavanje je zaustavljeno. Pokušajte
+                  ponovo ili pokrenite ponovnu obradu u tabu „AI analiza".
+                </span>
+                <Button variant="ghost" onClick={retryPoll}>
+                  <RefreshCw className="h-4 w-4" aria-hidden />
+                  Pokušaj ponovo
+                </Button>
+              </div>
+            )}
+
             {/* Akcije: owner (submit/withdraw/edit/delete/dopuna) + admin action-bar. */}
             <div className="space-y-3">
               {isOwner && <OwnerActions detail={detail} />}
@@ -190,7 +241,7 @@ function ZahtevHeader({ detail }: { detail: ChangeRequestDetail }) {
             `Ocena: ${score}★${detail.finalScore == null ? ' (AI predlog)' : ''}`,
           )}
         {detail.rewardAmount &&
-          chip(`Nagrada: ${detail.rewardAmount} RSD`)}
+          chip(`Nagrada: ${formatDecimal(detail.rewardAmount)} RSD`)}
       </div>
       {detail.aiScoreReason && detail.status === 'REJECTED' && (
         <p className="mt-3 rounded-control bg-status-danger-bg px-3 py-2 text-sm text-status-danger">

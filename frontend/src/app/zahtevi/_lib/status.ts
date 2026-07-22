@@ -74,6 +74,9 @@ export function eventLabel(type: string): string {
     STATUS_CHANGED: 'Promena statusa',
     LINK_ADDED: 'Dodat link realizacije',
     META_CHANGED: 'Izmena meta podataka',
+    SCORE_CONFIRMED: 'Ocena potvrđena',
+    REWARD_EXCLUDED: 'Nagrada isključena',
+    REWARD_PAID: 'Nagrada isplaćena',
   };
   return map[type] ?? type;
 }

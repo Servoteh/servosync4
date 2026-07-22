@@ -749,6 +749,8 @@ export function useMyRewards(month: string) {
     queryKey: ['zahtevi', 'nagrade', 'moje', month] as const,
     queryFn: () =>
       apiFetch<One<MyRewards>>(`${BASE}/nagrade/moje${qs({ month })}`),
+    // F9: ne šalji upit za nevalidan mesec (npr. prazan input) — očekivano YYYY-MM.
+    enabled: /^\d{4}-\d{2}$/.test(month),
   });
 }
 
