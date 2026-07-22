@@ -365,6 +365,14 @@ Paritet 23 sekcije 1.0 (`/maintenance/*`), 2.0 ui-kit, responsive (bez zasebnog 
 
 ## 5. Parity matrica (doktrina B — status se ažurira TOKOM rada)
 
+> ✅ **CUTOVER 17.07 + FOLLOW-UP 20.07:** modul je ŽIV na 3.0 produkciji (cutover `c533b56`).
+> F2 P0–P5 su izvedeni i deployovani — svih 104 gapa / 24 HIGH zatvoreno (GO-uz-uslove,
+> `CUTOVER_AUDIT_odrzavanje_2026-07-17.md` u 1.0 repou). **Statusi NOT_STARTED u tabeli ispod su
+> ZASTARELI** — stvarno stanje = `CUTOVER_FOLLOWUP_odrzavanje_2026-07-20.md`. Preostalo (nije blokada
+> rada): živi smoke #48 (deo→zaliha put; ostalo dokazano živim podacima), live-RLS matrica (čeka
+> odluku o test-profilima), note soft-delete (paritet, higijena živa). Tabela se NE prepisuje red-po-red
+> (istorijski trag F2 planiranja) — autoritet za „šta radi danas" je follow-up dokument.
+
 > ⚠️ **AUDIT 17.07:** stvarno stanje po stavci = `AUDIT_odrzavanje_talasF_2026-07-17.md` §3–§5
 > (OK: #4,#12,#18,#43 · MISSING: #33,#36,#40 · UNKNOWN: #48 · ostalo PARTIAL). Statusi ispod se
 > ažuriraju tokom F2 paketa; dopunska skrivena pravila (21–30+) su u audit dokumentu §5.1.
