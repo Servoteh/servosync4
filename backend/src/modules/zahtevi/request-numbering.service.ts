@@ -22,7 +22,9 @@ export class RequestNumberingService {
     const suffix = `/${yy}`;
 
     // F10: dvo-argumentni advisory lock — (hashtext('zahtevi:reqNo'), godina).
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('zahtevi:reqNo'), ${year})`;
+    // ::int cast OBAVEZAN: Prisma binduje JS number kao bigint, a dvo-argumentna
+    // forma postoji samo kao (int4, int4) → bez cast-a 42883 na prod-u (incident 22.07).
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('zahtevi:reqNo'), ${year}::int)`;
 
     // Numerički MAX preko svih redova godine (ne string sort).
     const rows = await tx.changeRequest.findMany({
