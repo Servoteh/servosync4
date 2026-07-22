@@ -9,6 +9,7 @@ import {
   TableMapping,
 } from './sync.types';
 import {
+  additiveDedupFieldFor,
   isAdditiveRefreshTable,
   isOwnedProductionTable,
 } from './table-ownership';
@@ -132,6 +133,52 @@ export class GenericSyncer implements EntitySyncer {
       // of the whole source set that never touches ids the source didn't send.
       const additive = isAdditiveRefreshTable(this.entity);
       const sourceIds = additive ? this.collectSourceIds(data) : null;
+
+      // Number-parity guard (Nenad 2026-07-22, projects): the same predmet is
+      // entered manually in BOTH systems with the SAME number. Skip any source
+      // row whose dedup-field value already lives on a row the source does NOT
+      // own (id not in the source set = a 3.0-native row) — inserting it would
+      // create a duplicate number. The source id still gets deleted above, so a
+      // previously-inserted duplicate self-heals on the next run.
+      let insertData = data;
+      const dedupField = additive ? additiveDedupFieldFor(this.entity) : null;
+      if (dedupField && data.length) {
+        const values = [
+          ...new Set(
+            data
+              .map((d) => String(d[dedupField] ?? "").trim())
+              .filter(Boolean),
+          ),
+        ];
+        const existing: { id: number; [k: string]: unknown }[] = values.length
+          ? await this.delegate().findMany({
+              where: { [dedupField]: { in: values } },
+              select: { id: true, [dedupField]: true },
+            })
+          : [];
+        const sourceIdSet = new Set(sourceIds!);
+        const nativeByValue = new Map<string, number>();
+        for (const e of existing) {
+          if (!sourceIdSet.has(e.id))
+            nativeByValue.set(String(e[dedupField] ?? "").trim(), e.id);
+        }
+        if (nativeByValue.size) {
+          insertData = [];
+          for (const d of data) {
+            const nativeId = nativeByValue.get(
+              String(d[dedupField] ?? "").trim(),
+            );
+            if (nativeId !== undefined) {
+              rowsSkipped++;
+              if (errors.length < 20)
+                errors.push(
+                  `${this.pkLabel(d)}: ${dedupField}=${String(d[dedupField])} već postoji na 3.0-native redu id=${nativeId} — BigBit kopija preskočena (paritet brojeva, 22.07)`,
+                );
+            } else insertData.push(d);
+          }
+        }
+      }
+
       await this.prisma.$transaction(
         async (tx) => {
           await tx.$executeRawUnsafe(
@@ -147,13 +194,13 @@ export class GenericSyncer implements EntitySyncer {
           } else {
             await del.deleteMany({});
           }
-          for (let i = 0; i < data.length; i += chunkSize) {
-            await del.createMany({ data: data.slice(i, i + chunkSize) });
+          for (let i = 0; i < insertData.length; i += chunkSize) {
+            await del.createMany({ data: insertData.slice(i, i + chunkSize) });
           }
         },
         { timeout: 20 * 60 * 1000, maxWait: 30 * 1000 },
       );
-      rowsUpserted = data.length;
+      rowsUpserted = insertData.length;
     }
 
     const newCursor: SyncCursor = this.mapping.watermark

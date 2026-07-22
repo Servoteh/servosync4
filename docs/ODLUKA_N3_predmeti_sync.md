@@ -3,6 +3,26 @@
 > **Datum:** 2026-07-19. Blokira aktivaciju `projects-write` modula (Predmeti write-path + RFQ kupca).
 > Traži Nenad/Negovan potvrdu **baš ovog rizika**, ne samo načelnog „2.0 = master".
 
+## ✅ PRESUĐENO 22.07.2026 (Nenad) — varijanta C′ „dual unos sa paritetom brojeva"
+
+Prelazni režim do gašenja BigBit fakturisanja (faza 5):
+
+1. **Nov predmet se otvara PRVO u 3.0** (`POST /api/v1/projects` / „Napravi predmet iz
+   zahteva"; 3.0 dodeljuje broj — trenutno od 10001 naviše). Otvara komercijala/menadžment
+   (role sa `projects.write`: NABAVKA, MENADZMENT, admin).
+2. **Isti broj se RUČNO prekuca u BigBit** (BigBit ostaje nosilac fakturisanja) — paritet
+   brojeva se održava disciplinom, redosled „prvo 3.0" je obavezan da dva sistema ne bi
+   nezavisno dodelila isti broj različitim predmetima.
+3. **Sync guard** (implementiran 22.07, `generic.syncer.ts` + `ADDITIVE_DEDUP_FIELDS` u
+   `table-ownership.ts`): BigBit kopija predmeta (svoj id, isti `project_number`) se pri
+   sync-u PRESKAČE uz upozorenje u sync logu — 3.0-native red je istina u 3.0 (RN-ovi i
+   aktivacije pokazuju na njega). Ranije ušla kopija se na sledećem sync-u počisti (self-heal).
+   Aditivni refresh iz ranije odluke ostaje (BigBit ažurira svojih ~7.600, ne dira native).
+4. **Komitenti nepromenjeno**: otvaraju se SAMO u BigBit-u (ODLUKE #23), u 3.0 stižu ručnim
+   pokretanjem sync-a (`/syncs` stranica, admin).
+
+Tekst ispod je istorijat analize (19.07) — zadržan radi konteksta.
+
 ## Šta je nađeno u kodu
 
 - `Project`/`projects` je **aktivno sync-ovana** iz BigBit-a: `sync-map.generated.ts:1302` (`source: "Predmeti"`).
