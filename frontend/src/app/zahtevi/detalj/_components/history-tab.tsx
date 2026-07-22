@@ -1,5 +1,6 @@
 'use client';
 
+import { HelpSpot } from '@/components/ui-kit/help-spot';
 import type { ChangeRequestDetail, ChangeRequestEvent } from '@/api/zahtevi';
 import { formatDateTime } from '@/lib/format';
 import { eventLabel, statusMeta } from '../../_lib/status';
@@ -17,6 +18,7 @@ export function HistoryTab({ detail }: { detail: ChangeRequestDetail }) {
   return (
     <section className="space-y-4">
       {hasLinks && (
+        <HelpSpot id="zahtevi.detalj.realizacija">
         <div className="rounded-panel border border-line bg-surface p-5">
           <h2 className="text-2xs font-semibold uppercase tracking-[0.08em] text-ink-secondary">
             Realizacija
@@ -56,6 +58,7 @@ export function HistoryTab({ detail }: { detail: ChangeRequestDetail }) {
             )}
           </dl>
         </div>
+        </HelpSpot>
       )}
 
       <div className="rounded-panel border border-line bg-surface p-5">

@@ -7,6 +7,7 @@ import { Button } from '@/components/ui-kit/button';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Input, FormField } from '@/components/ui-kit/form-field';
 import { EmptyState } from '@/components/ui-kit/empty-state';
+import { HelpSpot } from '@/components/ui-kit/help-spot';
 import { toast } from '@/lib/toast';
 import { formatDecimal } from '@/lib/format';
 import {
@@ -51,6 +52,7 @@ function MonthlyPayout() {
 
   return (
     <section className="space-y-3">
+      <HelpSpot id="zahtevi.admin.nagrade.zakljuci">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="flex flex-wrap items-end gap-3">
           <label className="flex flex-col gap-1 text-xs text-ink-secondary">
@@ -89,6 +91,7 @@ function MonthlyPayout() {
           {closed ? 'Zaključen' : 'Zaključi mesec'}
         </Button>
       </div>
+      </HelpSpot>
 
       {report.error && (
         <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">
@@ -254,14 +257,16 @@ function TariffEditor() {
 
   return (
     <section className="space-y-3 rounded-panel border border-line bg-surface p-4">
-      <div className="flex items-center justify-between">
-        <h3 className="text-md font-semibold text-ink">Tarifa nagrada</h3>
-        {!editing && (
-          <Button variant="secondary" onClick={startEdit}>
-            Izmeni tarifu
-          </Button>
-        )}
-      </div>
+      <HelpSpot id="zahtevi.admin.nagrade.tarifa">
+        <div className="flex items-center justify-between">
+          <h3 className="text-md font-semibold text-ink">Tarifa nagrada</h3>
+          {!editing && (
+            <Button variant="secondary" onClick={startEdit}>
+              Izmeni tarifu
+            </Button>
+          )}
+        </div>
+      </HelpSpot>
       <p className="text-2xs text-ink-secondary">
         Iznos po oceni (RSD). Izmena kreira nov red koji važi od danas — raniji obračuni
         ostaju po staroj tarifi.

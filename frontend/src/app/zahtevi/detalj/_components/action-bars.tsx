@@ -6,6 +6,7 @@ import { Button } from '@/components/ui-kit/button';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Input, FormField } from '@/components/ui-kit/form-field';
 import { Textarea } from '@/components/ui-kit/textarea';
+import { HelpSpot } from '@/components/ui-kit/help-spot';
 import { toast } from '@/lib/toast';
 import { formatDecimal } from '@/lib/format';
 import {
@@ -50,6 +51,7 @@ export function OwnerActions({ detail }: { detail: ChangeRequestDetail }) {
   if (!canSubmit && !canWithdraw && !canEdit && !canDelete) return null;
 
   return (
+    <HelpSpot id="zahtevi.detalj.owner.akcije">
     <div className="flex flex-wrap gap-2 rounded-panel border border-line bg-surface p-3">
       {canSubmit && (
         <Button
@@ -120,6 +122,7 @@ export function OwnerActions({ detail }: { detail: ChangeRequestDetail }) {
         }
       />
     </div>
+    </HelpSpot>
   );
 }
 
@@ -315,56 +318,66 @@ export function AdminActions({ detail }: { detail: ChangeRequestDetail }) {
       <p className="text-2xs font-semibold uppercase tracking-[0.08em] text-ink-secondary">
         Administracija
       </p>
-      <RewardBar detail={detail} />
-      <div className="flex flex-wrap gap-2">
-        {canApproveAnalysis && (
-          <Button
-            variant="primary"
-            loading={approveAnalysis.isPending}
-            onClick={() =>
-              approveAnalysis.mutate(detail.id, {
-                onSuccess: () => toast('AI analiza odobrena — analiza je pokrenuta.'),
-                onError: (e) => toast((e as Error).message),
-              })
-            }
-          >
-            Odobri AI analizu
-          </Button>
-        )}
-        {canRetriage && (
-          <Button
-            variant="secondary"
-            loading={retriage.isPending}
-            onClick={() =>
-              retriage.mutate(detail.id, {
-                onSuccess: () => toast('Trijaža pokrenuta.'),
-                onError: (e) => toast((e as Error).message),
-              })
-            }
-          >
-            Ponovi trijažu
-          </Button>
-        )}
-        {wasAiRejected && (
-          <Button variant="secondary" onClick={() => setConfirmRestore(true)}>
-            Vrati u obradu
-          </Button>
-        )}
-        {decisions.map((a) => (
-          <Button
-            key={a}
-            variant={a === 'approve' ? 'primary' : a === 'reject' ? 'danger' : 'secondary'}
-            onClick={() => setDecision(a)}
-          >
-            {DECISION_LABEL[a]}
-          </Button>
-        ))}
-        {realizations.map((a) => (
-          <Button key={a} variant="secondary" onClick={() => setRealization(a)}>
-            {REALIZATION_LABEL[a]}
-          </Button>
-        ))}
-      </div>
+      <HelpSpot id="zahtevi.detalj.admin.ocena">
+        <RewardBar detail={detail} />
+      </HelpSpot>
+      {(canApproveAnalysis ||
+        canRetriage ||
+        wasAiRejected ||
+        decisions.length > 0 ||
+        realizations.length > 0) && (
+        <HelpSpot id="zahtevi.detalj.admin.odluka">
+          <div className="flex flex-wrap gap-2">
+            {canApproveAnalysis && (
+              <Button
+                variant="primary"
+                loading={approveAnalysis.isPending}
+                onClick={() =>
+                  approveAnalysis.mutate(detail.id, {
+                    onSuccess: () => toast('AI analiza odobrena — analiza je pokrenuta.'),
+                    onError: (e) => toast((e as Error).message),
+                  })
+                }
+              >
+                Odobri AI analizu
+              </Button>
+            )}
+            {canRetriage && (
+              <Button
+                variant="secondary"
+                loading={retriage.isPending}
+                onClick={() =>
+                  retriage.mutate(detail.id, {
+                    onSuccess: () => toast('Trijaža pokrenuta.'),
+                    onError: (e) => toast((e as Error).message),
+                  })
+                }
+              >
+                Ponovi trijažu
+              </Button>
+            )}
+            {wasAiRejected && (
+              <Button variant="secondary" onClick={() => setConfirmRestore(true)}>
+                Vrati u obradu
+              </Button>
+            )}
+            {decisions.map((a) => (
+              <Button
+                key={a}
+                variant={a === 'approve' ? 'primary' : a === 'reject' ? 'danger' : 'secondary'}
+                onClick={() => setDecision(a)}
+              >
+                {DECISION_LABEL[a]}
+              </Button>
+            ))}
+            {realizations.map((a) => (
+              <Button key={a} variant="secondary" onClick={() => setRealization(a)}>
+                {REALIZATION_LABEL[a]}
+              </Button>
+            ))}
+          </div>
+        </HelpSpot>
+      )}
 
       <ConfirmDialog
         open={confirmRestore}

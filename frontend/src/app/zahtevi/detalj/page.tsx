@@ -21,7 +21,11 @@ import {
   type RequestKind,
   type RequestPriority,
 } from '@/api/zahtevi';
+import { HelpProvider, HelpToggleButton, HelpBanner } from '@/components/ui-kit/help-mode';
+import { HelpSpot } from '@/components/ui-kit/help-spot';
+import { HelpTour } from '@/components/ui-kit/help-tour';
 import { statusMeta } from '../_lib/status';
+import { HELP, ADMIN_TOUR } from '../_lib/help';
 import { OwnerActions, AdminActions } from './_components/action-bars';
 import { RequestTab } from './_components/request-tab';
 import { QuestionsTab } from './_components/questions-tab';
@@ -151,20 +155,27 @@ export default function ZahtevDetailPage() {
 
   const isOwner = detail != null && detail.createdByUserId === user.id;
 
+  const startTourOnNovi = () => router.push('/zahtevi/novi?tour=1');
+
   return (
+    <HelpProvider moduleKey="zahtevi" registry={HELP}>
     <AppShell>
       <PageHeader
         title={detail ? `Zahtev ${detail.reqNo}` : 'Zahtev'}
         count={s?.label}
         actions={
-          <Button variant="ghost" onClick={goBack}>
-            <ArrowLeft className="h-4 w-4" aria-hidden />
-            Nazad
-          </Button>
+          <div className="flex items-center gap-2">
+            <HelpToggleButton onStartTour={isAdmin ? undefined : startTourOnNovi} />
+            <Button variant="ghost" onClick={goBack}>
+              <ArrowLeft className="h-4 w-4" aria-hidden />
+              Nazad
+            </Button>
+          </div>
         }
       />
 
       <div className="flex-1 space-y-4 overflow-auto p-4 sm:p-6">
+        <HelpBanner onStartTour={isAdmin ? undefined : startTourOnNovi} />
         {detailQuery.error && (
           <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">
             {(detailQuery.error as Error).message}
@@ -204,17 +215,19 @@ export default function ZahtevDetailPage() {
               {isAdmin && <AdminActions detail={detail} />}
             </div>
 
-            <Tabs<Tab>
-              ariaLabel="Sekcije zahteva"
-              value={tab}
-              onChange={setTab}
-              tabs={[
-                { key: 'zahtev', label: 'Zahtev' },
-                { key: 'ai', label: `AI analiza${detail.analyses.length ? ` (${detail.analyses.length})` : ''}` },
-                { key: 'pitanja', label: `Pitanja${detail.comments.length ? ` (${detail.comments.length})` : ''}` },
-                { key: 'istorija', label: 'Istorija' },
-              ]}
-            />
+            <HelpSpot id="zahtevi.detalj.tabovi" variant="inline">
+              <Tabs<Tab>
+                ariaLabel="Sekcije zahteva"
+                value={tab}
+                onChange={setTab}
+                tabs={[
+                  { key: 'zahtev', label: 'Zahtev' },
+                  { key: 'ai', label: `AI analiza${detail.analyses.length ? ` (${detail.analyses.length})` : ''}` },
+                  { key: 'pitanja', label: `Pitanja${detail.comments.length ? ` (${detail.comments.length})` : ''}` },
+                  { key: 'istorija', label: 'Istorija' },
+                ]}
+              />
+            </HelpSpot>
 
             {tab === 'zahtev' && <RequestTab detail={detail} />}
             {tab === 'ai' && <AiTab detail={detail} isAdmin={isAdmin} />}
@@ -223,7 +236,9 @@ export default function ZahtevDetailPage() {
           </>
         )}
       </div>
+      <HelpTour steps={isAdmin ? ADMIN_TOUR : []} />
     </AppShell>
+    </HelpProvider>
   );
 }
 
@@ -239,7 +254,9 @@ function ZahtevHeader({ detail }: { detail: ChangeRequestDetail }) {
           <h1 className="text-lg font-semibold text-ink">{detail.title}</h1>
           <p className="mt-1 tnums text-sm text-ink-secondary">{detail.reqNo}</p>
         </div>
-        <StatusBadge tone={s.tone} label={s.label} />
+        <HelpSpot id="zahtevi.detalj.status" variant="inline">
+          <StatusBadge tone={s.tone} label={s.label} />
+        </HelpSpot>
       </div>
       <div className="mt-3 flex flex-wrap gap-2">
         {detail.module && chip(`Modul: ${detail.module}`)}

@@ -25,7 +25,11 @@ import {
   type ChangeRequest,
   type RequestKind,
 } from '@/api/zahtevi';
+import { HelpProvider, HelpToggleButton, HelpBanner } from '@/components/ui-kit/help-mode';
+import { HelpSpot } from '@/components/ui-kit/help-spot';
+import { HelpTour } from '@/components/ui-kit/help-tour';
 import { statusMeta } from './_lib/status';
+import { HELP, ADMIN_TOUR } from './_lib/help';
 import { moduleOptions, kindOptions } from './_lib/form';
 import { NagradeTab } from './_components/nagrade-tab';
 import { OdlukeTab } from './_components/odluke-tab';
@@ -151,21 +155,30 @@ export default function ZahteviPage() {
     );
   }
 
+  const startTourOnNovi = () => router.push('/zahtevi/novi?tour=1');
+
   return (
+    <HelpProvider moduleKey="zahtevi" registry={HELP}>
     <AppShell>
       <PageHeader
         title="Zahtevi"
         actions={
-          <Button onClick={() => router.push('/zahtevi/novi')}>
-            <Plus className="h-4 w-4" aria-hidden />
-            Novi zahtev
-          </Button>
+          <div className="flex items-center gap-2">
+            <HelpToggleButton onStartTour={isAdmin ? undefined : startTourOnNovi} />
+            <Button onClick={() => router.push('/zahtevi/novi')}>
+              <Plus className="h-4 w-4" aria-hidden />
+              Novi zahtev
+            </Button>
+          </div>
         }
       />
       <div className="flex-1 space-y-4 overflow-auto p-6">
+        <HelpBanner onStartTour={isAdmin ? undefined : startTourOnNovi} />
         {isAdmin ? <AdminView /> : <MyRequestsView />}
       </div>
+      <HelpTour steps={isAdmin ? ADMIN_TOUR : []} />
     </AppShell>
+    </HelpProvider>
   );
 }
 
@@ -190,18 +203,20 @@ function MyRequestsView() {
   return (
     <>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <div className="rounded-panel border border-line bg-surface px-4 py-3">
-          <p className="text-2xs font-semibold uppercase tracking-[0.08em] text-ink-secondary">
-            Moje nagrade ovog meseca
-          </p>
-          <p className="mt-1 tnums text-2xl font-semibold text-ink">
-            {formatDecimal(mySum)} <span className="text-sm text-ink-secondary">RSD</span>
-          </p>
-          <p className="mt-0.5 text-2xs text-ink-secondary">
-            {myCount} potvrđen{myCount === 1 ? '' : 'ih'} za {month}. Konačan obračun radi
-            administrator.
-          </p>
-        </div>
+        <HelpSpot id="zahtevi.lista.nagrade">
+          <div className="rounded-panel border border-line bg-surface px-4 py-3">
+            <p className="text-2xs font-semibold uppercase tracking-[0.08em] text-ink-secondary">
+              Moje nagrade ovog meseca
+            </p>
+            <p className="mt-1 tnums text-2xl font-semibold text-ink">
+              {formatDecimal(mySum)} <span className="text-sm text-ink-secondary">RSD</span>
+            </p>
+            <p className="mt-0.5 text-2xs text-ink-secondary">
+              {myCount} potvrđen{myCount === 1 ? '' : 'ih'} za {month}. Konačan obračun radi
+              administrator.
+            </p>
+          </div>
+        </HelpSpot>
       </div>
 
       {list.error && (
@@ -210,19 +225,21 @@ function MyRequestsView() {
         </div>
       )}
 
-      <DataTable
-        columns={baseColumns}
-        rows={rows}
-        rowKey={(r) => r.id}
-        onRowActivate={(r) => router.push(`/zahtevi/detalj?id=${r.id}`)}
-        loading={list.isLoading}
-        empty={
-          <EmptyState
-            title="Nemate zahteva"
-            hint={'Podnesite prvi zahtev — bug, dorada ili nova funkcija. Dugme „Novi zahtev" je gore desno.'}
-          />
-        }
-      />
+      <HelpSpot id="zahtevi.lista.kolone">
+        <DataTable
+          columns={baseColumns}
+          rows={rows}
+          rowKey={(r) => r.id}
+          onRowActivate={(r) => router.push(`/zahtevi/detalj?id=${r.id}`)}
+          loading={list.isLoading}
+          empty={
+            <EmptyState
+              title="Nemate zahteva"
+              hint={'Podnesite prvi zahtev — bug, dorada ili nova funkcija. Dugme „Novi zahtev" je gore desno.'}
+            />
+          }
+        />
+      </HelpSpot>
 
       {totalPages > 1 && (
         <Pager
@@ -308,23 +325,25 @@ function AdminView() {
 
   return (
     <>
-      <Tabs<AdminTab>
-        ariaLabel="Prikaz zahteva"
-        value={tab}
-        onChange={(t) => {
-          setTab(t);
-          clearFilters();
-        }}
-        tabs={[
-          { key: 'inbox', label: `Inbox${inboxTotal ? ` (${inboxTotal})` : ''}` },
-          { key: 'all', label: 'Svi zahtevi' },
-          { key: 'nagrade', label: 'Nagrade' },
-          ...(canDecisionsRead
-            ? ([{ key: 'odluke', label: 'Odluke' }] as const)
-            : []),
-          { key: 'archive', label: 'Arhiva' },
-        ]}
-      />
+      <HelpSpot id="zahtevi.admin.tabovi" variant="inline">
+        <Tabs<AdminTab>
+          ariaLabel="Prikaz zahteva"
+          value={tab}
+          onChange={(t) => {
+            setTab(t);
+            clearFilters();
+          }}
+          tabs={[
+            { key: 'inbox', label: `Inbox${inboxTotal ? ` (${inboxTotal})` : ''}` },
+            { key: 'all', label: 'Svi zahtevi' },
+            { key: 'nagrade', label: 'Nagrade' },
+            ...(canDecisionsRead
+              ? ([{ key: 'odluke', label: 'Odluke' }] as const)
+              : []),
+            { key: 'archive', label: 'Arhiva' },
+          ]}
+        />
+      </HelpSpot>
 
       {tab === 'nagrade' && <NagradeTab />}
       {tab === 'odluke' && canDecisionsRead && (
@@ -332,6 +351,7 @@ function AdminView() {
       )}
 
       {tab === 'inbox' && (
+        <HelpSpot id="zahtevi.admin.inbox.kpi">
         <div className="flex flex-wrap gap-3">
           <KpiTile
             value={counts.SUBMITTED ?? 0}
@@ -375,6 +395,7 @@ function AdminView() {
             </button>
           )}
         </div>
+        </HelpSpot>
       )}
 
       {tab === 'all' && (
@@ -451,6 +472,7 @@ function AdminView() {
       )}
 
       {isListTab && (
+        <HelpSpot id="zahtevi.admin.tabela">
         <DataTable
           columns={adminColumns}
           rows={rows}
@@ -468,6 +490,7 @@ function AdminView() {
             />
           }
         />
+        </HelpSpot>
       )}
 
       {isListTab && totalPages > 1 && tab !== 'inbox' && (

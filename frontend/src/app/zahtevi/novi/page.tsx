@@ -20,7 +20,11 @@ import {
   fetchSlicni,
   type SimilarRequest,
 } from '@/api/zahtevi';
+import { HelpProvider, HelpToggleButton, HelpBanner } from '@/components/ui-kit/help-mode';
+import { HelpSpot } from '@/components/ui-kit/help-spot';
+import { HelpTour } from '@/components/ui-kit/help-tour';
 import { statusMeta } from '../_lib/status';
+import { HELP, NOVI_TOUR } from '../_lib/help';
 import {
   zahtevFormSchema,
   kindOptions,
@@ -183,24 +187,30 @@ export default function NoviZahtevPage() {
   }
 
   return (
+    <HelpProvider moduleKey="zahtevi" registry={HELP}>
     <AppShell>
       <PageHeader
         title="Novi zahtev"
         actions={
-          <Button variant="ghost" onClick={() => router.push('/zahtevi')}>
-            <ArrowLeft className="h-4 w-4" aria-hidden />
-            Nazad
-          </Button>
+          <div className="flex items-center gap-2">
+            <HelpToggleButton />
+            <Button variant="ghost" onClick={() => router.push('/zahtevi')}>
+              <ArrowLeft className="h-4 w-4" aria-hidden />
+              Nazad
+            </Button>
+          </div>
         }
       />
 
       <div className="flex-1 overflow-auto p-4 sm:p-6">
+        <div className="mx-auto max-w-2xl space-y-5">
+        <HelpBanner />
         <form
           onSubmit={(e) => {
             e.preventDefault();
             void save(true);
           }}
-          className="mx-auto max-w-2xl space-y-5"
+          className="space-y-5"
         >
           {submitErr && (
             <p className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">
@@ -209,17 +219,20 @@ export default function NoviZahtevPage() {
           )}
 
           {/* Naslov + živa provera sličnih */}
-          <FormField label="Naslov" required error={errors.title}>
-            <Input
-              value={values.title}
-              onChange={(e) => set('title', e.target.value)}
-              placeholder="Kratko: šta ne radi ili šta treba dodati"
-              autoFocus
-              maxLength={200}
-            />
-          </FormField>
+          <HelpSpot id="zahtevi.novi.naslov">
+            <FormField label="Naslov" required error={errors.title}>
+              <Input
+                value={values.title}
+                onChange={(e) => set('title', e.target.value)}
+                placeholder="Kratko: šta ne radi ili šta treba dodati"
+                autoFocus
+                maxLength={200}
+              />
+            </FormField>
+          </HelpSpot>
 
           {slicni.length > 0 && (
+            <HelpSpot id="zahtevi.novi.slicni">
             <div className="rounded-panel border border-status-warn/40 bg-status-warn-bg px-4 py-3">
               <p className="text-sm font-medium text-ink">Ovo možda već postoji</p>
               <ul className="mt-2 space-y-1.5">
@@ -244,61 +257,71 @@ export default function NoviZahtevPage() {
                 ))}
               </ul>
             </div>
+            </HelpSpot>
           )}
 
           {/* Opis + diktat + doterivanje */}
-          <FormField label="Opis" required error={errors.description} hint="Diktirajte 🎤 ili doterajte tekst ✨ (dostupno pre podnošenja).">
-            <div className="relative">
-              <Textarea
-                value={values.description}
-                onChange={(e) => set('description', e.target.value)}
-                rows={5}
-                placeholder="Detaljno opišite problem ili ideju…"
-              />
-              <div className="absolute right-2 top-2 flex gap-1">
-                <DictateButton
-                  onText={(t) =>
-                    set('description', values.description ? `${values.description} ${t}` : t)
-                  }
+          <HelpSpot id="zahtevi.novi.opis">
+            <FormField label="Opis" required error={errors.description} hint="Diktirajte 🎤 ili doterajte tekst ✨ (dostupno pre podnošenja).">
+              <div className="relative">
+                <Textarea
+                  value={values.description}
+                  onChange={(e) => set('description', e.target.value)}
+                  rows={5}
+                  placeholder="Detaljno opišite problem ili ideju…"
                 />
-                <RefineButton
-                  getText={() => values.description}
-                  onText={(t) => set('description', t)}
-                />
+                <div className="absolute right-2 top-2 flex gap-1">
+                  <DictateButton
+                    onText={(t) =>
+                      set('description', values.description ? `${values.description} ${t}` : t)
+                    }
+                  />
+                  <RefineButton
+                    getText={() => values.description}
+                    onText={(t) => set('description', t)}
+                  />
+                </div>
               </div>
-            </div>
-          </FormField>
+            </FormField>
+          </HelpSpot>
 
           {/* Tip / modul / prioritet */}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-            <FormField label="Tip" hint="AI će predložiti ako izostavite.">
-              <Select
-                placeholder="— AI predlaže —"
-                value={values.kind ?? ''}
-                onChange={(e) => set('kind', e.target.value)}
-                options={kindOptions}
-              />
-            </FormField>
-            <FormField label="Modul">
-              <Select
-                placeholder="—"
-                value={values.module ?? ''}
-                onChange={(e) => set('module', e.target.value)}
-                options={moduleOptions()}
-              />
-            </FormField>
-            <FormField label="Prioritet (vaše mišljenje)">
-              <Select
-                placeholder="—"
-                value={values.priorityUser ?? ''}
-                onChange={(e) => set('priorityUser', e.target.value)}
-                options={priorityOptions}
-              />
-            </FormField>
+            <HelpSpot id="zahtevi.novi.tip">
+              <FormField label="Tip" hint="AI će predložiti ako izostavite.">
+                <Select
+                  placeholder="— AI predlaže —"
+                  value={values.kind ?? ''}
+                  onChange={(e) => set('kind', e.target.value)}
+                  options={kindOptions}
+                />
+              </FormField>
+            </HelpSpot>
+            <HelpSpot id="zahtevi.novi.modul">
+              <FormField label="Modul">
+                <Select
+                  placeholder="—"
+                  value={values.module ?? ''}
+                  onChange={(e) => set('module', e.target.value)}
+                  options={moduleOptions()}
+                />
+              </FormField>
+            </HelpSpot>
+            <HelpSpot id="zahtevi.novi.prioritet">
+              <FormField label="Prioritet (vaše mišljenje)">
+                <Select
+                  placeholder="—"
+                  value={values.priorityUser ?? ''}
+                  onChange={(e) => set('priorityUser', e.target.value)}
+                  options={priorityOptions}
+                />
+              </FormField>
+            </HelpSpot>
           </div>
 
           {/* Očekivano / trenutno ponašanje (BUG ili prazno) */}
           {showBehaviorFields && (
+            <HelpSpot id="zahtevi.novi.ponasanje">
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <FormField label="Očekivano ponašanje" hint="Šta bi trebalo da se desi.">
                 <Textarea
@@ -317,39 +340,49 @@ export default function NoviZahtevPage() {
                 />
               </FormField>
             </div>
+            </HelpSpot>
           )}
 
           {/* Prilozi */}
-          <FormField label="Prilozi (slike, PDF)" hint="Slikajte ekran ili priložite fajl. Do 10 priloga.">
-            <AttachmentInput
-              value={files}
-              onChange={setFiles}
-              onReject={(m) => {
-                setRejectMsg(m);
-                toast(m);
-              }}
-              max={10}
-            />
-            {rejectMsg && <p className="mt-1 text-xs text-status-danger">{rejectMsg}</p>}
-          </FormField>
+          <HelpSpot id="zahtevi.novi.prilozi">
+            <FormField label="Prilozi (slike, PDF)" hint="Slikajte ekran ili priložite fajl. Do 10 priloga.">
+              <AttachmentInput
+                value={files}
+                onChange={setFiles}
+                onReject={(m) => {
+                  setRejectMsg(m);
+                  toast(m);
+                }}
+                max={10}
+              />
+              {rejectMsg && <p className="mt-1 text-xs text-status-danger">{rejectMsg}</p>}
+            </FormField>
+          </HelpSpot>
 
           {/* Glasovna poruka */}
-          <FormField label="Glasovna poruka" hint="Snimak se čuva uz zahtev i biće transkribovan (best-effort).">
-            <AudioRecorder value={audio} onChange={setAudio} />
-          </FormField>
+          <HelpSpot id="zahtevi.novi.glas">
+            <FormField label="Glasovna poruka" hint="Snimak se čuva uz zahtev i biće transkribovan (best-effort).">
+              <AudioRecorder value={audio} onChange={setAudio} />
+            </FormField>
+          </HelpSpot>
 
           {/* Akcije */}
-          <div className="flex flex-wrap items-center gap-2 border-t border-line pt-4">
-            <Button type="submit" loading={busy}>
-              Podnesi
-            </Button>
-            <Button type="button" variant="secondary" onClick={() => void save(false)} disabled={busy}>
-              Sačuvaj nacrt
-            </Button>
-            <span className="ml-auto text-2xs text-ink-secondary">Ctrl+S podnosi · Esc nazad</span>
-          </div>
+          <HelpSpot id="zahtevi.novi.akcije">
+            <div className="flex flex-wrap items-center gap-2 border-t border-line pt-4">
+              <Button type="submit" loading={busy}>
+                Podnesi
+              </Button>
+              <Button type="button" variant="secondary" onClick={() => void save(false)} disabled={busy}>
+                Sačuvaj nacrt
+              </Button>
+              <span className="ml-auto text-2xs text-ink-secondary">Ctrl+S podnosi · Esc nazad</span>
+            </div>
+          </HelpSpot>
         </form>
+        </div>
       </div>
+      <HelpTour steps={NOVI_TOUR} />
     </AppShell>
+    </HelpProvider>
   );
 }
