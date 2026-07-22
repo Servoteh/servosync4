@@ -7,6 +7,7 @@ import { Dialog } from '@/components/ui-kit/dialog';
 import { Input, FormField } from '@/components/ui-kit/form-field';
 import { Textarea } from '@/components/ui-kit/textarea';
 import { toast } from '@/lib/toast';
+import { formatDecimal } from '@/lib/format';
 import {
   useSubmitZahtev,
   useWithdrawZahtev,
@@ -17,6 +18,8 @@ import {
   useApproveAnalysis,
   useRestore,
   useRetriage,
+  useScore,
+  useExcludeReward,
   type ChangeRequestDetail,
   type DecisionAction,
   type RealizationAction,
@@ -293,12 +296,17 @@ export function AdminActions({ detail }: { detail: ChangeRequestDetail }) {
     detail.events.some((e) => e.type === 'AI_REJECTED') &&
     detail.mergedIntoId == null;
 
+  // Nagrada (§12.2): potvrda/korekcija ocene + isključivanje vidljivi dok mesec nije
+  // zaključen (PAID). Prikaz statusa/iznosa uvek (informativno).
+  const showReward = detail.rewardStatus !== 'PAID';
+
   if (
     decisions.length === 0 &&
     realizations.length === 0 &&
     !canApproveAnalysis &&
     !canRetriage &&
-    !wasAiRejected
+    !wasAiRejected &&
+    !showReward
   )
     return null;
 
@@ -307,6 +315,7 @@ export function AdminActions({ detail }: { detail: ChangeRequestDetail }) {
       <p className="text-2xs font-semibold uppercase tracking-[0.08em] text-ink-secondary">
         Administracija
       </p>
+      <RewardBar detail={detail} />
       <div className="flex flex-wrap gap-2">
         {canApproveAnalysis && (
           <Button
@@ -391,6 +400,215 @@ export function AdminActions({ detail }: { detail: ChangeRequestDetail }) {
         />
       )}
     </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════ NAGRADA */
+
+const REWARD_STATUS_LABEL: Record<string, string> = {
+  NONE: 'Bez nagrade',
+  PROPOSED: 'AI predlog (nepotvrđen)',
+  CONFIRMED: 'Potvrđena',
+  PAID: 'Isplaćena',
+  EXCLUDED: 'Isključena',
+};
+
+/**
+ * Traka nagrade (§12.2/§12.3): prikaz statusa/iznosa + „Potvrdi ocenu" (0–5, korekcija
+ * dozvoljena; predlog = AI ocena) i „Isključi" (EXCLUDED sa razlogom). Sakriveno kad je
+ * isplaćena (PAID — mesec zaključen, immutable). Novac nastaje TEK ovom potvrdom (§10.1).
+ */
+function RewardBar({ detail }: { detail: ChangeRequestDetail }) {
+  const [scoreOpen, setScoreOpen] = useState(false);
+  const [excludeOpen, setExcludeOpen] = useState(false);
+
+  if (detail.rewardStatus === 'PAID') {
+    return (
+      <div className="rounded-control bg-surface-2 px-3 py-2 text-2xs text-ink-secondary">
+        Nagrada isplaćena{detail.rewardAmount ? ` (${formatDecimal(detail.rewardAmount)} RSD)` : ''} —
+        mesec {detail.rewardMonth} je zaključen.
+      </div>
+    );
+  }
+
+  const proposedScore = detail.finalScore ?? detail.aiScore ?? null;
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 rounded-control bg-surface-2 px-3 py-2">
+      <span className="text-2xs uppercase tracking-[0.08em] text-ink-secondary">Nagrada</span>
+      <span className="text-sm text-ink">
+        {REWARD_STATUS_LABEL[detail.rewardStatus] ?? detail.rewardStatus}
+        {detail.rewardAmount ? ` · ${formatDecimal(detail.rewardAmount)} RSD` : ''}
+        {detail.rewardMonth ? ` · ${detail.rewardMonth}` : ''}
+      </span>
+      <div className="ml-auto flex gap-2">
+        <Button variant="secondary" onClick={() => setScoreOpen(true)}>
+          {detail.rewardStatus === 'CONFIRMED' ? 'Koriguj ocenu' : 'Potvrdi ocenu'}
+        </Button>
+        {detail.rewardStatus !== 'EXCLUDED' && (
+          <Button variant="ghost" onClick={() => setExcludeOpen(true)}>
+            Isključi
+          </Button>
+        )}
+      </div>
+
+      {scoreOpen && (
+        <ScoreDialog
+          detail={detail}
+          initialScore={proposedScore}
+          onClose={() => setScoreOpen(false)}
+        />
+      )}
+      {excludeOpen && (
+        <ExcludeDialog detail={detail} onClose={() => setExcludeOpen(false)} />
+      )}
+    </div>
+  );
+}
+
+/** Potvrda/korekcija ocene 0–5 (§12.2). Predlog = AI ocena; 0 = odbij bez nagrade. */
+function ScoreDialog({
+  detail,
+  initialScore,
+  onClose,
+}: {
+  detail: ChangeRequestDetail;
+  initialScore: number | null;
+  onClose: () => void;
+}) {
+  const score = useScore();
+  const [value, setValue] = useState<number>(initialScore ?? 3);
+  const [err, setErr] = useState<string | null>(null);
+
+  function confirm() {
+    setErr(null);
+    score.mutate(
+      { id: detail.id, score: value },
+      {
+        onSuccess: () => {
+          toast(value === 0 ? 'Zahtev odbijen (ocena 0).' : 'Ocena potvrđena.');
+          onClose();
+        },
+        onError: (e) => setErr((e as Error).message),
+      },
+    );
+  }
+
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      dismissable={false}
+      title="Potvrda ocene"
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Otkaži
+          </Button>
+          <Button
+            variant={value === 0 ? 'danger' : 'primary'}
+            onClick={confirm}
+            loading={score.isPending}
+          >
+            {value === 0 ? 'Odbij (0)' : 'Potvrdi'}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        {err && (
+          <p className="rounded-control bg-status-danger-bg px-3 py-2 text-sm text-status-danger">
+            {err}
+          </p>
+        )}
+        {detail.aiScore != null && (
+          <p className="text-2xs text-ink-secondary">
+            AI predlog: <strong>{detail.aiScore}★</strong>
+            {detail.aiScoreReason ? ` — ${detail.aiScoreReason}` : ''}
+          </p>
+        )}
+        <div className="flex flex-wrap gap-2">
+          {[0, 1, 2, 3, 4, 5].map((n) => (
+            <button
+              key={n}
+              onClick={() => setValue(n)}
+              className={`h-10 w-10 rounded-control border text-sm font-semibold tnums ${
+                value === n
+                  ? 'border-accent bg-accent text-white'
+                  : 'border-line bg-surface text-ink hover:bg-surface-2'
+              }`}
+            >
+              {n}
+            </button>
+          ))}
+        </div>
+        <p className="text-2xs text-ink-secondary">
+          0 = odbij bez nagrade. 1–5 = potvrđuje nagradu po važećoj tarifi (iznos se snima u
+          trenutku potvrde). Korekcija je moguća dok mesec nije zaključen.
+        </p>
+      </div>
+    </Dialog>
+  );
+}
+
+/** Isključi predlog iz nagrađivanja (§12.3) — validan, ali bez novca; razlog opciono. */
+function ExcludeDialog({
+  detail,
+  onClose,
+}: {
+  detail: ChangeRequestDetail;
+  onClose: () => void;
+}) {
+  const exclude = useExcludeReward();
+  const [reason, setReason] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+
+  function confirm() {
+    setErr(null);
+    exclude.mutate(
+      { id: detail.id, reason: reason.trim() || undefined },
+      {
+        onSuccess: () => {
+          toast('Predlog isključen iz nagrađivanja.');
+          onClose();
+        },
+        onError: (e) => setErr((e as Error).message),
+      },
+    );
+  }
+
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      dismissable={false}
+      title="Isključivanje iz nagrađivanja"
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Otkaži
+          </Button>
+          <Button onClick={confirm} loading={exclude.isPending}>
+            Isključi
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        {err && (
+          <p className="rounded-control bg-status-danger-bg px-3 py-2 text-sm text-status-danger">
+            {err}
+          </p>
+        )}
+        <p className="text-sm text-ink">
+          Predlog ostaje validan, ali ne nosi novčanu nagradu (npr. proistekao iz redovnog
+          radnog zadatka). Ponovnom potvrdom ocene se vraća u nagrađivanje.
+        </p>
+        <FormField label="Razlog (opciono)">
+          <Textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={2} />
+        </FormField>
+      </div>
+    </Dialog>
   );
 }
 

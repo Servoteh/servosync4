@@ -606,3 +606,268 @@ export function usePatchAnalysis() {
     onSuccess: invalidate,
   });
 }
+
+// ── F4: NAGRADE (§12) ────────────────────────────────────────────────────────
+
+/** Potvrdi/koriguj ocenu 0–5 (admin): 0→REJECTED; ≥1→snapshot iznosa + CONFIRMED. */
+export function useScore() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: ({ id, score }: { id: number; score: number }) =>
+      apiFetch<One<ChangeRequest>>(`${BASE}/${id}/score`, {
+        method: 'POST',
+        body: JSON.stringify({ score }),
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/** Isključi predlog iz nagrađivanja (admin) — rewardStatus=EXCLUDED. */
+export function useExcludeReward() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: ({ id, reason }: { id: number; reason?: string }) =>
+      apiFetch<One<ChangeRequest>>(`${BASE}/${id}/exclude`, {
+        method: 'POST',
+        body: JSON.stringify({ reason }),
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/** Jedan red tarife (ocena→iznos, važeći / istorijski). Decimal-as-string. */
+export interface TariffRow {
+  score: number;
+  amount: string;
+  validFrom: string;
+}
+export interface TariffHistoryRow extends TariffRow {
+  id: number;
+  currency: string;
+  createdByUserId: number;
+  createdAt: string;
+}
+export interface TariffsResponse {
+  current: TariffRow[];
+  history: TariffHistoryRow[];
+}
+
+/** GET /zahtevi/nagrade/tarife (admin) — aktuelna tarifa + istorija. */
+export function useTariffs(enabled = true) {
+  return useQuery({
+    queryKey: ['zahtevi', 'nagrade', 'tarife'] as const,
+    enabled,
+    queryFn: () => apiFetch<One<TariffsResponse>>(`${BASE}/nagrade/tarife`),
+  });
+}
+
+/** PUT /zahtevi/nagrade/tarife (admin) — 5 iznosa (nov red od danas). */
+export function usePutTariffs() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (amounts: Record<string, number>) =>
+      apiFetch<One<TariffRow[]>>(`${BASE}/nagrade/tarife`, {
+        method: 'PUT',
+        body: JSON.stringify({ amounts }),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['zahtevi', 'nagrade'] });
+    },
+  });
+}
+
+/** Stavka obračuna po korisniku. */
+export interface PayoutItem {
+  id: number;
+  reqNo: string;
+  title: string;
+  score: number | null;
+  amount: string | null;
+  rewardStatus: RewardStatus;
+}
+export interface PayoutUserRow {
+  userId: number;
+  userName: string;
+  countByScore: Record<string, number>;
+  count: number;
+  total: string;
+  items: PayoutItem[];
+}
+export interface PayoutReport {
+  month: string;
+  closed: boolean;
+  total: string;
+  userCount: number;
+  itemCount: number;
+  users: PayoutUserRow[];
+}
+
+/** GET /zahtevi/nagrade/obracun?month= (admin) — mesečni obračun. */
+export function usePayoutReport(month: string, enabled = true) {
+  return useQuery({
+    queryKey: ['zahtevi', 'nagrade', 'obracun', month] as const,
+    enabled: enabled && /^\d{4}-\d{2}$/.test(month),
+    queryFn: () =>
+      apiFetch<One<PayoutReport>>(`${BASE}/nagrade/obracun${qs({ month })}`),
+  });
+}
+
+/** POST /zahtevi/nagrade/obracun/:month/zakljuci (admin) — CONFIRMED→PAID. */
+export function useCloseMonth() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (month: string) =>
+      apiFetch<One<{ month: string; paidCount: number; total: string }>>(
+        `${BASE}/nagrade/obracun/${month}/zakljuci`,
+        { method: 'POST', body: '{}' },
+      ),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['zahtevi'] });
+    },
+  });
+}
+
+/** Stavka „Moje nagrade". */
+export interface MyRewardItem {
+  id: number;
+  reqNo: string;
+  title: string;
+  score: number | null;
+  amount: string | null;
+  rewardStatus: RewardStatus;
+}
+export interface MyRewards {
+  month: string;
+  total: string;
+  count: number;
+  items: MyRewardItem[];
+}
+
+/** GET /zahtevi/nagrade/moje?month= — SVOJE nagrade za mesec (row-scope, tačan zbir). */
+export function useMyRewards(month: string) {
+  return useQuery({
+    queryKey: ['zahtevi', 'nagrade', 'moje', month] as const,
+    queryFn: () =>
+      apiFetch<One<MyRewards>>(`${BASE}/nagrade/moje${qs({ month })}`),
+  });
+}
+
+// ── F4: DECISION LOG (§6) ────────────────────────────────────────────────────
+
+export interface DecisionLogEntry {
+  id: number;
+  title: string;
+  decision: string;
+  context: string | null;
+  consequences: string | null;
+  tags: string[];
+  relatedRequestId: number | null;
+  status: 'ACTIVE' | 'SUPERSEDED';
+  supersededById: number | null;
+  decidedOn: string;
+  createdByUserId: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DecisionFilters {
+  q?: string;
+  tag?: string;
+  status?: string;
+  page?: number;
+  pageSize?: number;
+}
+
+export interface CreateDecisionInput {
+  title: string;
+  decision: string;
+  context?: string;
+  consequences?: string;
+  tags?: string[];
+  relatedRequestId?: number;
+  decidedOn?: string;
+}
+export interface UpdateDecisionInput {
+  title?: string;
+  decision?: string;
+  context?: string | null;
+  consequences?: string | null;
+  tags?: string[];
+  relatedRequestId?: number | null;
+  decidedOn?: string;
+}
+
+const DEC_KEYS = {
+  all: ['zahtevi', 'odluke'] as const,
+  list: (f: unknown) => ['zahtevi', 'odluke', 'list', f] as const,
+  detail: (id: number | null) => ['zahtevi', 'odluke', 'detail', id] as const,
+};
+
+/** GET /zahtevi/odluke — lista (decisions.read). */
+export function useDecisions(filters: DecisionFilters = {}, enabled = true) {
+  const query = qs({
+    q: filters.q,
+    tag: filters.tag,
+    status: filters.status,
+    page: filters.page,
+    pageSize: filters.pageSize,
+  });
+  return useQuery({
+    queryKey: DEC_KEYS.list(filters),
+    enabled,
+    queryFn: () => apiFetch<List<DecisionLogEntry>>(`${BASE}/odluke${query}`),
+  });
+}
+
+/** GET /zahtevi/odluke/:id — detalj. */
+export function useDecisionEntry(id: number | null) {
+  return useQuery({
+    queryKey: DEC_KEYS.detail(id),
+    enabled: id != null,
+    queryFn: () => apiFetch<One<DecisionLogEntry>>(`${BASE}/odluke/${id}`),
+  });
+}
+
+function useInvalidateDecisions() {
+  const qc = useQueryClient();
+  return () => void qc.invalidateQueries({ queryKey: DEC_KEYS.all });
+}
+
+/** POST /zahtevi/odluke (decisions.write) — nova odluka. */
+export function useCreateDecision() {
+  const invalidate = useInvalidateDecisions();
+  return useMutation({
+    mutationFn: (input: CreateDecisionInput) =>
+      apiFetch<One<DecisionLogEntry>>(`${BASE}/odluke`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/** PATCH /zahtevi/odluke/:id (decisions.write) — sitne ispravke. */
+export function useUpdateDecision() {
+  const invalidate = useInvalidateDecisions();
+  return useMutation({
+    mutationFn: ({ id, patch }: { id: number; patch: UpdateDecisionInput }) =>
+      apiFetch<One<DecisionLogEntry>>(`${BASE}/odluke/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/** POST /zahtevi/odluke/:id/supersede (decisions.write) — nova odluka zamenjuje staru. */
+export function useSupersedeDecision() {
+  const invalidate = useInvalidateDecisions();
+  return useMutation({
+    mutationFn: ({ id, ...input }: { id: number } & CreateDecisionInput) =>
+      apiFetch<One<{ created: DecisionLogEntry; superseded: DecisionLogEntry }>>(
+        `${BASE}/odluke/${id}/supersede`,
+        { method: 'POST', body: JSON.stringify(input) },
+      ),
+    onSuccess: invalidate,
+  });
+}

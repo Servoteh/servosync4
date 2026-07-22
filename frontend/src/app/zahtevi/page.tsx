@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Plus, Star } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
@@ -19,6 +19,7 @@ import { formatDate, formatDecimal, formatNumber } from '@/lib/format';
 import {
   useZahtevi,
   useInboxMeta,
+  useMyRewards,
   ZAHTEV_STATUS,
   REQUEST_KIND_LABEL,
   type ChangeRequest,
@@ -26,6 +27,8 @@ import {
 } from '@/api/zahtevi';
 import { statusMeta } from './_lib/status';
 import { moduleOptions, kindOptions } from './_lib/form';
+import { NagradeTab } from './_components/nagrade-tab';
+import { OdlukeTab } from './_components/odluke-tab';
 
 const TAKE = 50;
 
@@ -123,7 +126,7 @@ const adminColumns: Column<ChangeRequest>[] = [
   ...baseColumns.slice(5),
 ];
 
-type AdminTab = 'inbox' | 'all' | 'archive';
+type AdminTab = 'inbox' | 'all' | 'nagrade' | 'odluke' | 'archive';
 
 const STATUS_FILTER_OPTIONS = ZAHTEV_STATUS.map((s) => ({
   value: s,
@@ -160,7 +163,7 @@ export default function ZahteviPage() {
         }
       />
       <div className="flex-1 space-y-4 overflow-auto p-6">
-        {isAdmin ? <AdminView /> : <MyRequestsView userId={user.id} />}
+        {isAdmin ? <AdminView /> : <MyRequestsView />}
       </div>
     </AppShell>
   );
@@ -168,7 +171,7 @@ export default function ZahteviPage() {
 
 /* ────────────────────────────────────────────────────── korisnik: „Moji zahtevi" */
 
-function MyRequestsView({ userId }: { userId: number }) {
+function MyRequestsView() {
   const router = useRouter();
   const [page, setPage] = useState(1);
   // „Sve svoje" — bez filtera po statusu (korisnik ima malo zahteva); jednostavno.
@@ -177,20 +180,12 @@ function MyRequestsView({ userId }: { userId: number }) {
   const total = list.data?.meta.pagination.total ?? 0;
   const totalPages = list.data?.meta.pagination.totalPages ?? 1;
 
-  // „Moje nagrade ovog meseca" — suma iz CONFIRMED/PAID redova tekućeg meseca.
-  // BE lista nosi rewardAmount/rewardStatus/rewardMonth po redu, pa računamo klijentski.
-  // Napomena: računa nad TRENUTNOM stranom — dovoljno za V1 (korisnik retko ima >50).
+  // „Moje nagrade ovog meseca" — tačan zbir iz BE mini-endpointa (row-scope: SAMO svoje;
+  // ne zavisi od paginacije liste). Potvrđene (CONFIRMED) + isplaćene (PAID) tog meseca.
   const month = currentMonth();
-  const mySum = useMemo(() => {
-    return rows
-      .filter(
-        (r) =>
-          r.rewardMonth === month &&
-          (r.rewardStatus === 'CONFIRMED' || r.rewardStatus === 'PAID') &&
-          r.rewardAmount != null,
-      )
-      .reduce((sum, r) => sum + Number(r.rewardAmount), 0);
-  }, [rows, month]);
+  const myRewards = useMyRewards(month);
+  const mySum = myRewards.data?.data.total ?? '0';
+  const myCount = myRewards.data?.data.count ?? 0;
 
   return (
     <>
@@ -203,7 +198,8 @@ function MyRequestsView({ userId }: { userId: number }) {
             {formatDecimal(mySum)} <span className="text-sm text-ink-secondary">RSD</span>
           </p>
           <p className="mt-0.5 text-2xs text-ink-secondary">
-            Potvrđene nagrade za {month}. Konačan obračun radi administrator.
+            {myCount} potvrđen{myCount === 1 ? '' : 'ih'} za {month}. Konačan obračun radi
+            administrator.
           </p>
         </div>
       </div>
@@ -249,6 +245,9 @@ const INBOX_STATUSES = ['SUBMITTED', 'ANALYZED', 'TESTING'] as const;
 
 function AdminView() {
   const router = useRouter();
+  const can = useCan();
+  const canDecisionsRead = can(PERMISSIONS.ZAHTEVI_DECISIONS_READ);
+  const canDecisionsWrite = can(PERMISSIONS.ZAHTEVI_DECISIONS_WRITE);
   const [tab, setTab] = useState<AdminTab>('inbox');
   const [page, setPage] = useState(1);
   const [status, setStatus] = useState('');
@@ -291,6 +290,9 @@ function AdminView() {
   const counts = inboxMeta.data?.data.byStatus ?? {};
   const inboxTotal = inboxMeta.data?.data.total ?? 0;
 
+  // Tabovi koji prikazuju listu zahteva (nagrade/odluke imaju svoj sadržaj).
+  const isListTab = tab === 'inbox' || tab === 'all' || tab === 'archive';
+
   function applySearch() {
     setQ(qInput.trim());
     resetPage();
@@ -316,9 +318,18 @@ function AdminView() {
         tabs={[
           { key: 'inbox', label: `Inbox${inboxTotal ? ` (${inboxTotal})` : ''}` },
           { key: 'all', label: 'Svi zahtevi' },
+          { key: 'nagrade', label: 'Nagrade' },
+          ...(canDecisionsRead
+            ? ([{ key: 'odluke', label: 'Odluke' }] as const)
+            : []),
           { key: 'archive', label: 'Arhiva' },
         ]}
       />
+
+      {tab === 'nagrade' && <NagradeTab />}
+      {tab === 'odluke' && canDecisionsRead && (
+        <OdlukeTab canWrite={canDecisionsWrite} />
+      )}
 
       {tab === 'inbox' && (
         <div className="flex flex-wrap gap-3">
@@ -433,31 +444,33 @@ function AdminView() {
         </div>
       )}
 
-      {list.error && (
+      {isListTab && list.error && (
         <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">
           {(list.error as Error).message}
         </div>
       )}
 
-      <DataTable
-        columns={adminColumns}
-        rows={rows}
-        rowKey={(r) => r.id}
-        onRowActivate={(r) => router.push(`/zahtevi/${r.id}`)}
-        loading={list.isLoading}
-        empty={
-          <EmptyState
-            title={tab === 'inbox' ? 'Inbox je prazan' : tab === 'archive' ? 'Arhiva je prazna' : 'Nema zahteva'}
-            hint={
-              tab === 'inbox'
-                ? 'Nema zahteva koji čekaju vašu odluku.'
-                : 'Promenite filtere ili sačekajte nove zahteve.'
-            }
-          />
-        }
-      />
+      {isListTab && (
+        <DataTable
+          columns={adminColumns}
+          rows={rows}
+          rowKey={(r) => r.id}
+          onRowActivate={(r) => router.push(`/zahtevi/${r.id}`)}
+          loading={list.isLoading}
+          empty={
+            <EmptyState
+              title={tab === 'inbox' ? 'Inbox je prazan' : tab === 'archive' ? 'Arhiva je prazna' : 'Nema zahteva'}
+              hint={
+                tab === 'inbox'
+                  ? 'Nema zahteva koji čekaju vašu odluku.'
+                  : 'Promenite filtere ili sačekajte nove zahteve.'
+              }
+            />
+          }
+        />
+      )}
 
-      {totalPages > 1 && tab !== 'inbox' && (
+      {isListTab && totalPages > 1 && tab !== 'inbox' && (
         <Pager
           page={page}
           totalPages={totalPages}
@@ -465,7 +478,7 @@ function AdminView() {
           onNext={() => setPage((p) => Math.min(totalPages, p + 1))}
         />
       )}
-      {tab !== 'inbox' && (
+      {isListTab && tab !== 'inbox' && (
         <p className="text-2xs text-ink-secondary">Ukupno {formatNumber(total)} zahteva.</p>
       )}
     </>
