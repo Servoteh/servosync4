@@ -3,6 +3,8 @@
 import { useState, type ReactNode } from 'react';
 import { FormField } from '@/components/ui-kit/form-field';
 import { Select, type SelectOption } from '@/components/ui-kit/select';
+import { AttachmentInput } from '@/components/ui-kit/attachment-input';
+import { AudioRecorder } from '@/components/ui-kit/audio-recorder';
 
 /**
  * `/dev/ui` — interni katalog kit komponenti u svim stanjima (DESIGN_SYSTEM.md §12).
@@ -61,6 +63,9 @@ export default function DevUiPage() {
   const [jedinica, setJedinica] = useState('cnc-glodanje');
   const [prazno, setPrazno] = useState('');
   const [smena, setSmena] = useState('prva');
+  const [prilozi, setPrilozi] = useState<File[]>([]);
+  const [odbaceno, setOdbaceno] = useState<string | null>(null);
+  const [snimak, setSnimak] = useState<Blob | null>(null);
 
   return (
     <main className="mx-auto max-w-5xl space-y-4 p-4 sm:p-6">
@@ -129,6 +134,43 @@ export default function DevUiPage() {
           <FormField label="Radna jedinica" required error="Izaberi radnu jedinicu.">
             <Select options={RADNA_JEDINICA} placeholder="—" defaultValue="" />
           </FormField>
+        </Demo>
+      </Section>
+
+      <Section
+        title="AttachmentInput"
+        note="Dropzone + kamera + lista pending fajlova (Zahtevi §5). Slike se resize-uju pre dodavanja; audio ≤ 15 MB; do 10 priloga."
+      >
+        <Demo title="Prazno / sa fajlovima">
+          <AttachmentInput
+            value={prilozi}
+            onChange={setPrilozi}
+            onReject={setOdbaceno}
+            max={10}
+          />
+          {odbaceno && <p className="mt-1 text-xs text-status-danger">{odbaceno}</p>}
+        </Demo>
+
+        <Demo title="Zaključano (disabled)">
+          <AttachmentInput value={[]} onChange={() => {}} disabled />
+        </Demo>
+      </Section>
+
+      <Section
+        title="AudioRecorder"
+        note="Snimanje glasovne poruke kao priloga (Zahtevi §5). MediaRecorder → Blob; preview + trajanje; graceful bez mikrofona."
+      >
+        <Demo title="Snimanje / preview">
+          <AudioRecorder value={snimak} onChange={setSnimak} />
+          {snimak && (
+            <p className="mt-1 text-2xs text-ink-secondary">
+              Snimak: {(snimak.size / 1024).toFixed(0)} KB
+            </p>
+          )}
+        </Demo>
+
+        <Demo title="Zaključano (disabled)">
+          <AudioRecorder value={null} onChange={() => {}} disabled />
         </Demo>
       </Section>
     </main>

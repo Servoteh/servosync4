@@ -254,6 +254,16 @@ Dopune kita:
   (`error`) — `Select` nema sopstveno `invalid` stanje, isto kao `Input`.
   *Seoba:* u aplikaciji je ostalo ~290 sirovih `<select>` elemenata u ~125 fajlova iz ranijih faza;
   **ne migriraju se masovno** — svaki prelazi na kit `Select` kad se taj ekran ionako dira.
+* **`AttachmentInput`** (`ui-kit/attachment-input.tsx`, modul Zahtevi §5) — dashed dropzone +
+  native kamera (`accept="image/*" capture="environment"`) + audio/PDF, lista pending fajlova sa
+  uklanjanjem, klijentska validacija tipa/veličine (slike kroz `resizeImageFile` pre dodavanja,
+  audio ≤ 15 MB, ostalo ≤ 25 MB, ukupno ≤ `max`). Kontrolisan (`value: File[]` / `onChange`);
+  odbačene fajlove prijavljuje kroz `onReject(poruka)` (roditelj prikazuje toast/grešku — kit je
+  bez zavisnosti na toast). Generalizacija ponovljenog upload obrasca (odrzavanje/kvalitet/kadrovska).
+* **`AudioRecorder`** (`ui-kit/audio-recorder.tsx`, modul Zahtevi §5) — snimanje glasovne poruke kao
+  PRILOGA (razlika od `DictateButton` iz `voice-controls`, koji diktira u polje i ne čuva audio).
+  MediaRecorder → `Blob` (webm), preview kroz `<audio controls>`, prikaz trajanja. Kontrolisan
+  (`value: Blob | null` / `onChange`); graceful kad `getUserMedia` nije dostupan (poruka umesto pada).
 
 **Pravilo kita:** ekrani se sklapaju **isključivo** od kit komponenti. Nova komponenta prvo ulazi u kit,
 `/dev/ui` katalog i ovaj spisak — pa tek onda u ekran. "Privremeni div sa stilovima" ne postoji.
