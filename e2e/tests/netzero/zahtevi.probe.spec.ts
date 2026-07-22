@@ -47,8 +47,8 @@ test('Zahtevi: draft→submit→arhiviraj/povuci (net-zero)', async ({ page }) =
       .fill('Automatski net-zero E2E zahtev. Biće arhiviran odmah po podnošenju.');
     await page.getByRole('button', { name: 'Podnesi' }).click();
 
-    // Uspeh submit-a = odlazak na detalj (/zahtevi/<id>) + POST /submit (ili create submit:true).
-    await page.waitForURL(/\/zahtevi\/\d+$/, { timeout: 20_000 });
+    // Uspeh submit-a = odlazak na detalj (/zahtevi/detalj?id=<id>) + POST /submit (ili create submit:true).
+    await page.waitForURL(/\/zahtevi\/detalj\?id=\d+$/, { timeout: 20_000 });
     await page.waitForTimeout(800);
     submitted = writes.some((w) => /POST .*\/zahtevi(\/\d+\/submit|\?|$|\/)/.test(w));
     notes.push(`detalj: ${new URL(page.url()).pathname}`);

@@ -214,7 +214,7 @@ function MyRequestsView() {
         columns={baseColumns}
         rows={rows}
         rowKey={(r) => r.id}
-        onRowActivate={(r) => router.push(`/zahtevi/${r.id}`)}
+        onRowActivate={(r) => router.push(`/zahtevi/detalj?id=${r.id}`)}
         loading={list.isLoading}
         empty={
           <EmptyState
@@ -455,7 +455,7 @@ function AdminView() {
           columns={adminColumns}
           rows={rows}
           rowKey={(r) => r.id}
-          onRowActivate={(r) => router.push(`/zahtevi/${r.id}`)}
+          onRowActivate={(r) => router.push(`/zahtevi/detalj?id=${r.id}`)}
           loading={list.isLoading}
           empty={
             <EmptyState

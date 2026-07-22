@@ -281,7 +281,7 @@ function DecisionDetailDialog({
         {entry.relatedRequestId && (
           <p className="text-2xs">
             <Link
-              href={`/zahtevi/${entry.relatedRequestId}`}
+              href={`/zahtevi/detalj?id=${entry.relatedRequestId}`}
               className="text-accent hover:underline"
               onClick={onClose}
             >

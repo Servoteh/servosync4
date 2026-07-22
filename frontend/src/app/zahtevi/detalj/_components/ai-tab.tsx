@@ -134,7 +134,7 @@ function TriageCard({
                 {result.duplicates.map((d) => (
                   <li key={d.requestId} className="text-sm text-ink">
                     <Link
-                      href={`/zahtevi/${d.requestId}`}
+                      href={`/zahtevi/detalj?id=${d.requestId}`}
                       className="text-accent hover:underline"
                     >
                       Zahtev #{d.requestId}

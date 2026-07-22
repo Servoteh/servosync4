@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import { ArrowLeft, RefreshCw } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { useCan } from '@/lib/can';
@@ -52,12 +52,21 @@ function chip(label: string) {
 export default function ZahtevDetailPage() {
   const { user, isLoading } = useAuth();
   const router = useRouter();
-  const params = useParams<{ id: string }>();
   const can = useCan();
   const isAdmin = can(PERMISSIONS.ZAHTEVI_ADMIN);
 
-  const id = Number(params.id);
-  const validId = Number.isInteger(id) && id > 0 ? id : null;
+  // Statička ruta `?id=N` umesto `[id]` segmenta: dinamički segmenti NE rade na
+  // static exportu — klijentska navigacija traži neizvezen prerender pa hard-404
+  // (incident 22.07; [id] obrazac ostaje samo za 4.0 module na dev serveru).
+  // Bez useSearchParams — on bi u output:export tražio Suspense oko cele stranice.
+  const [validId, setValidId] = useState<number | null>(null);
+  const [idResolved, setIdResolved] = useState(false);
+  useEffect(() => {
+    const raw = new URLSearchParams(window.location.search).get('id');
+    const n = raw ? Number(raw) : NaN;
+    setValidId(Number.isInteger(n) && n > 0 ? n : null);
+    setIdResolved(true);
+  }, []);
 
   const [tab, setTab] = useState<Tab>('zahtev');
 
@@ -136,7 +145,8 @@ export default function ZahtevDetailPage() {
   }
 
   const notFound =
-    validId != null && !detailQuery.isLoading && !detailQuery.error && detail === null;
+    (idResolved && validId == null) ||
+    (validId != null && !detailQuery.isLoading && !detailQuery.error && detail === null);
   const s = detail ? statusMeta(detail.status) : null;
 
   const isOwner = detail != null && detail.createdByUserId === user.id;
@@ -161,7 +171,7 @@ export default function ZahtevDetailPage() {
           </div>
         )}
 
-        {detailQuery.isLoading ? (
+        {!idResolved || detailQuery.isLoading ? (
           <div className="grid place-items-center py-16 text-sm text-ink-secondary">
             Učitavanje…
           </div>

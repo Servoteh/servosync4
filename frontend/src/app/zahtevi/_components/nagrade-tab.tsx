@@ -186,7 +186,7 @@ function PayoutUserBlock({ user }: { user: PayoutUserRow }) {
                 <tr
                   key={it.id}
                   className="cursor-pointer border-t border-line/60 hover:bg-surface"
-                  onClick={() => router.push(`/zahtevi/${it.id}`)}
+                  onClick={() => router.push(`/zahtevi/detalj?id=${it.id}`)}
                 >
                   <td className="tnums py-1.5 text-ink-secondary">{it.reqNo}</td>
                   <td className="py-1.5 text-ink">{it.title}</td>

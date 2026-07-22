@@ -141,13 +141,16 @@ export default function NoviZahtevPage() {
           try {
             await upload.mutateAsync({ id, files: toUpload });
           } catch (e) {
-            toast('Zahtev je sačuvan, ali deo priloga nije otpremljen.');
-            // Ne obaramo tok — korisnik može dodati priloge na detalju.
-            void e;
+            // Ne obaramo tok, ali razlog MORA biti vidljiv (incident 22.07: nemi
+            // toast je sakrio zašto glasovna poruka nije otpremljena).
+            console.error('[zahtevi] upload priloga pao:', e);
+            toast(
+              `Zahtev je sačuvan, ali prilozi nisu otpremljeni: ${(e as Error).message}`,
+            );
           }
         }
         toast(submit ? 'Zahtev je podnet.' : 'Nacrt je sačuvan.');
-        router.push(`/zahtevi/${id}`);
+        router.push(`/zahtevi/detalj?id=${id}`);
       } catch (e) {
         setSubmitErr((e as Error).message);
       }
@@ -223,10 +226,10 @@ export default function NoviZahtevPage() {
                 {slicni.map((s) => (
                   <li key={s.id}>
                     <a
-                      href={`/zahtevi/${s.id}`}
+                      href={`/zahtevi/detalj?id=${s.id}`}
                       onClick={(e) => {
                         e.preventDefault();
-                        router.push(`/zahtevi/${s.id}`);
+                        router.push(`/zahtevi/detalj?id=${s.id}`);
                       }}
                       className="inline-flex items-center gap-1.5 text-sm text-accent hover:underline"
                     >
