@@ -14,6 +14,9 @@ import {
   useUpdateZahtev,
   useDecision,
   useSetRealizationStatus,
+  useApproveAnalysis,
+  useRestore,
+  useRetriage,
   type ChangeRequestDetail,
   type DecisionAction,
   type RealizationAction,
@@ -263,10 +266,41 @@ function realizationsFor(status: string): RealizationAction[] {
 export function AdminActions({ detail }: { detail: ChangeRequestDetail }) {
   const [decision, setDecision] = useState<DecisionAction | null>(null);
   const [realization, setRealization] = useState<RealizationAction | null>(null);
+  const [confirmRestore, setConfirmRestore] = useState(false);
+
+  const approveAnalysis = useApproveAnalysis();
+  const restore = useRestore();
+  const retriage = useRetriage();
 
   const decisions = decisionsFor(detail.status);
   const realizations = realizationsFor(detail.status);
-  if (decisions.length === 0 && realizations.length === 0) return null;
+
+  // AI admin akcije (§8.4):
+  //  - „Odobri AI analizu" (odobrenje #1) na SUBMITTED — pokreće detaljnu analizu.
+  //  - „Ponovi trijažu" kad trijaža nije uspela (FAILED) ili je nema, a status je SUBMITTED.
+  //  - „Vrati u obradu" (restore) na AI-odbačenom (REJECTED sa event AI_REJECTED).
+  const hasDoneTriage = detail.analyses.some(
+    (a) => a.kind === 'TRIAGE' && a.status === 'DONE',
+  );
+  const triageFailed = detail.analyses.some(
+    (a) => a.kind === 'TRIAGE' && a.status === 'FAILED',
+  );
+  const canApproveAnalysis = detail.status === 'SUBMITTED';
+  const canRetriage =
+    detail.status === 'SUBMITTED' && (triageFailed || !hasDoneTriage);
+  const wasAiRejected =
+    detail.status === 'REJECTED' &&
+    detail.events.some((e) => e.type === 'AI_REJECTED') &&
+    detail.mergedIntoId == null;
+
+  if (
+    decisions.length === 0 &&
+    realizations.length === 0 &&
+    !canApproveAnalysis &&
+    !canRetriage &&
+    !wasAiRejected
+  )
+    return null;
 
   return (
     <div className="space-y-2 rounded-panel border border-accent/30 bg-accent-subtle p-3">
@@ -274,6 +308,39 @@ export function AdminActions({ detail }: { detail: ChangeRequestDetail }) {
         Administracija
       </p>
       <div className="flex flex-wrap gap-2">
+        {canApproveAnalysis && (
+          <Button
+            variant="primary"
+            loading={approveAnalysis.isPending}
+            onClick={() =>
+              approveAnalysis.mutate(detail.id, {
+                onSuccess: () => toast('AI analiza odobrena — analiza je pokrenuta.'),
+                onError: (e) => toast((e as Error).message),
+              })
+            }
+          >
+            Odobri AI analizu
+          </Button>
+        )}
+        {canRetriage && (
+          <Button
+            variant="secondary"
+            loading={retriage.isPending}
+            onClick={() =>
+              retriage.mutate(detail.id, {
+                onSuccess: () => toast('Trijaža pokrenuta.'),
+                onError: (e) => toast((e as Error).message),
+              })
+            }
+          >
+            Ponovi trijažu
+          </Button>
+        )}
+        {wasAiRejected && (
+          <Button variant="secondary" onClick={() => setConfirmRestore(true)}>
+            Vrati u obradu
+          </Button>
+        )}
         {decisions.map((a) => (
           <Button
             key={a}
@@ -289,6 +356,25 @@ export function AdminActions({ detail }: { detail: ChangeRequestDetail }) {
           </Button>
         ))}
       </div>
+
+      <ConfirmDialog
+        open={confirmRestore}
+        title="Vraćanje u obradu"
+        message="AI je automatski odbio ovaj zahtev (ocena 0). Vraćanjem se vraća u status Podnet i admin ga ponovo procenjuje. Nastaviti?"
+        confirmLabel="Vrati u obradu"
+        loading={restore.isPending}
+        onCancel={() => setConfirmRestore(false)}
+        onConfirm={() =>
+          restore.mutate(detail.id, {
+            onSuccess: () => {
+              setConfirmRestore(false);
+              toast('Zahtev je vraćen u obradu.');
+            },
+            onError: (e) => toast((e as Error).message),
+          })
+        }
+      />
+
 
       {decision && (
         <DecisionDialog

@@ -25,20 +25,20 @@ import { OwnerActions, AdminActions } from './_components/action-bars';
 import { RequestTab } from './_components/request-tab';
 import { QuestionsTab } from './_components/questions-tab';
 import { HistoryTab } from './_components/history-tab';
-import { AiTeaser } from './_components/ai-teaser';
+import { AiTab } from './_components/ai-tab';
 
 /**
  * Zahtev — detalj (MODULE_SPEC §8). Header (reqNo + naslov + StatusBadge + meta
  * čipovi) + akcije po statusu i ulozi (owner / admin action-bar). Tabovi: Zahtev
  * (immutable original + prilozi), Pitanja (komentari), Istorija (events timeline).
- * AI tab stiže u F3 — ako detalj već vraća `analyses`, prikaže se samo minimalni
- * teaser (bez punog AI prikaza). Data isključivo kroz @/api/zahtevi.
+ * Tab „AI analiza" (F3): trijaža/detaljna/duplikati/Claude paket/pitanja. Data
+ * isključivo kroz @/api/zahtevi.
  *
  * Detalj se refetch-uje na 4s DOK je AI korak u toku (ANALYSIS_APPROVED) ili dok
- * ima PENDING analize — front polluje trijažu/analizu (F3 obrazac §8), inače miruje.
+ * ima PENDING analize — front polluje trijažu/analizu (§8), inače miruje.
  */
 
-type Tab = 'zahtev' | 'pitanja' | 'istorija';
+type Tab = 'zahtev' | 'ai' | 'pitanja' | 'istorija';
 
 function chip(label: string) {
   return (
@@ -143,21 +143,20 @@ export default function ZahtevDetailPage() {
               {isAdmin && <AdminActions detail={detail} />}
             </div>
 
-            {/* AI teaser — SAMO ako detalj već ima analize (inače ništa; pun AI tab je F3). */}
-            {detail.analyses.length > 0 && <AiTeaser count={detail.analyses.length} />}
-
             <Tabs<Tab>
               ariaLabel="Sekcije zahteva"
               value={tab}
               onChange={setTab}
               tabs={[
                 { key: 'zahtev', label: 'Zahtev' },
+                { key: 'ai', label: `AI analiza${detail.analyses.length ? ` (${detail.analyses.length})` : ''}` },
                 { key: 'pitanja', label: `Pitanja${detail.comments.length ? ` (${detail.comments.length})` : ''}` },
                 { key: 'istorija', label: 'Istorija' },
               ]}
             />
 
             {tab === 'zahtev' && <RequestTab detail={detail} />}
+            {tab === 'ai' && <AiTab detail={detail} isAdmin={isAdmin} />}
             {tab === 'pitanja' && <QuestionsTab detail={detail} isAdmin={isAdmin} />}
             {tab === 'istorija' && <HistoryTab detail={detail} />}
           </>

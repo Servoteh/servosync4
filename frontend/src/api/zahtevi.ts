@@ -520,13 +520,89 @@ export function useRetryTranscribe() {
   });
 }
 
-// ── F3 (AI) — hookovi spremni; AI tabovi/prikaz dolaze u F3.
+// ── F3 (AI) ────────────────────────────────────────────────────────────────
+
+/** Strukturisan izlaz trijaže (`result` na TRIAGE redu) — 1:1 sa BE normalizeTriage. */
+export interface TriageResult {
+  summary: string;
+  module: string | null;
+  kind: string | null;
+  areas: string[];
+  priorityProposal: string | null;
+  duplicates: { requestId: number; confidence: 'HIGH' | 'MEDIUM'; reason: string }[];
+  score: number | null;
+  scoreReason: string | null;
+  questions: string[];
+}
+
+/** Strukturisan izlaz detaljne analize (`result` na DETAILED redu) — 1:1 sa BE normalizeAnalysis. */
+export interface AnalysisResult {
+  understanding: string;
+  affectedModules: string[];
+  impact: string;
+  risks: string[];
+  conflicts: string[];
+  openQuestions: string[];
+  acceptanceCriteria: string[];
+  testScenarios: string[];
+  estimate: string | null;
+  priorityProposal: string | null;
+  claudePackage: string;
+}
+
 /** Ponovi trijažu (admin). */
 export function useRetriage() {
   const invalidate = useInvalidate();
   return useMutation({
     mutationFn: (id: number) =>
-      apiFetch<One<ChangeRequest>>(`${BASE}/${id}/retriage`, { method: 'POST', body: '{}' }),
+      apiFetch<One<{ id: number; triage: string }>>(`${BASE}/${id}/retriage`, {
+        method: 'POST',
+        body: '{}',
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/** Odobri AI analizu (admin, odobrenje #1): SUBMITTED→ANALYSIS_APPROVED + detaljna analiza. */
+export function useApproveAnalysis() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<One<ChangeRequest>>(`${BASE}/${id}/approve-analysis`, {
+        method: 'POST',
+        body: '{}',
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/** Vrati AI-odbačen (ocena 0) zahtev u obradu (admin) — sigurnosni ventil auto-reject-a. */
+export function useRestore() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<One<ChangeRequest>>(`${BASE}/${id}/restore`, { method: 'POST', body: '{}' }),
+    onSuccess: invalidate,
+  });
+}
+
+/** Dorada Claude paketa (admin) na redu detaljne analize. */
+export function usePatchAnalysis() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: ({
+      id,
+      analysisId,
+      claudePackage,
+    }: {
+      id: number;
+      analysisId: number;
+      claudePackage: string;
+    }) =>
+      apiFetch<One<ChangeRequestAiAnalysis>>(`${BASE}/${id}/analyses/${analysisId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ claudePackage }),
+      }),
     onSuccess: invalidate,
   });
 }
