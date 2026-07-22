@@ -2,7 +2,6 @@ import { Test, TestingModule } from "@nestjs/testing";
 import {
   BadRequestException,
   ForbiddenException,
-  NotFoundException,
   UnprocessableEntityException,
 } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
@@ -205,18 +204,35 @@ describe("ZahteviRewardsService", () => {
       ).rejects.toBeInstanceOf(UnprocessableEntityException);
     });
 
-    it("korekcija posle zaključenja rewardMonth-a → prelazi u naredni otvoreni mesec", async () => {
+    it("F4: korekcija nagrade koja PRIPADA zaključenom mesecu → 422 (ne dira zaključen obračun)", async () => {
       // Zahtev je CONFIRMED za 2026-07, ali 2026-07 je u međuvremenu zaključen (PAID postoji).
+      // F4: izmena postojeće nagrade u zaključenom mesecu je zabranjena — menjala bi njegov total.
       prisma.changeRequest.findUnique.mockResolvedValue(
         baseReq({ rewardStatus: "CONFIRMED", rewardMonth: "2026-07" }),
+      );
+      // isMonthClosed(2026-07): PAID postoji → count>0.
+      prisma.changeRequest.count.mockResolvedValue(1);
+      await expect(
+        service.score(10, { score: 2 }, ADMIN),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(prisma.changeRequest.update).not.toHaveBeenCalled();
+    });
+
+    it("F4: NOVA potvrda (rewardMonth null) kad je tekući mesec zaključen → prelazi u naredni otvoreni", async () => {
+      // rewardMonth još null (nikad potvrđeno) → nextOpenMonth: tekući zaključen, naredni otvoren.
+      const now = new Date();
+      const cur = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+      const next = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+      const nextKey = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, "0")}`;
+      prisma.changeRequest.findUnique.mockResolvedValue(
+        baseReq({ rewardStatus: "PROPOSED", rewardMonth: null }),
       );
       prisma.changeRequestRewardTariff.findFirst.mockResolvedValue(
         tariff(2, 1000),
       );
-      // isMonthClosed: 2026-07 zaključen (count>0), 2026-08 otvoren (count 0).
       prisma.changeRequest.count.mockImplementation(
         (a: { where: { rewardMonth: string } }) =>
-          Promise.resolve(a.where.rewardMonth === "2026-07" ? 1 : 0),
+          Promise.resolve(a.where.rewardMonth === cur ? 1 : 0),
       );
       prisma.changeRequest.update.mockImplementation((a: { data: unknown }) =>
         Promise.resolve({ ...baseReq(), ...(a.data as object) }),
@@ -225,7 +241,7 @@ describe("ZahteviRewardsService", () => {
       const arg = firstArg<{ data: { rewardMonth: string } }>(
         prisma.changeRequest.update,
       );
-      expect(arg.data.rewardMonth).toBe("2026-08");
+      expect(arg.data.rewardMonth).toBe(nextKey);
     });
   });
 
@@ -275,6 +291,18 @@ describe("ZahteviRewardsService", () => {
         UnprocessableEntityException,
       );
     });
+
+    it("F4: exclude nagrade koja PRIPADA zaključenom mesecu (CONFIRMED, mesec zaključen) → 422", async () => {
+      // Zaostali CONFIRMED (status nije PAID) u zaključenom mesecu — isključivanje bi promenilo total.
+      prisma.changeRequest.findUnique.mockResolvedValue(
+        baseReq({ rewardStatus: "CONFIRMED", rewardMonth: "2026-07" }),
+      );
+      prisma.changeRequest.count.mockResolvedValue(1); // 2026-07 zaključen (PAID postoji)
+      await expect(
+        service.exclude(10, { reason: "greška" }, ADMIN),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(prisma.changeRequest.update).not.toHaveBeenCalled();
+    });
   });
 
   // ── TARIFA ────────────────────────────────────────────────────────────────
@@ -307,7 +335,11 @@ describe("ZahteviRewardsService", () => {
       });
       prisma.changeRequestRewardTariff.update.mockImplementation(
         (a: { data: unknown }) =>
-          Promise.resolve({ id: 99, validFrom: new Date(), ...(a.data as object) }),
+          Promise.resolve({
+            id: 99,
+            validFrom: new Date(),
+            ...(a.data as object),
+          }),
       );
       await service.putTariffs(
         { amounts: { "1": 700, "2": 700, "3": 700, "4": 700, "5": 700 } },
@@ -396,17 +428,17 @@ describe("ZahteviRewardsService", () => {
   describe("zakljuci mesec (CONFIRMED→PAID, immutable)", () => {
     it("već zaključen (postoji PAID) → 422", async () => {
       prisma.changeRequest.count.mockResolvedValue(2); // PAID postoji
-      await expect(
-        service.closeMonth("2026-08", ADMIN),
-      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      await expect(service.closeMonth("2026-08", ADMIN)).rejects.toBeInstanceOf(
+        UnprocessableEntityException,
+      );
     });
 
     it("nema CONFIRMED → 422 (nema šta da se zaključi)", async () => {
       prisma.changeRequest.count.mockResolvedValue(0);
       prisma.changeRequest.findMany.mockResolvedValue([]);
-      await expect(
-        service.closeMonth("2026-08", ADMIN),
-      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      await expect(service.closeMonth("2026-08", ADMIN)).rejects.toBeInstanceOf(
+        UnprocessableEntityException,
+      );
     });
 
     it("zaključi → updateMany CONFIRMED→PAID + event po zahtevu + suma", async () => {
@@ -427,6 +459,22 @@ describe("ZahteviRewardsService", () => {
         (c) => (c[0] as { data: { type: string } }).data.type,
       );
       expect(types.filter((t) => t === "REWARD_PAID").length).toBe(2);
+    });
+
+    it("F5: confirmed se čita UNUTAR tx — paralelni drugi poziv vidi 0 CONFIRMED → 422, bez duplih REWARD_PAID", async () => {
+      // Simulacija: prvi poziv je „ispraznио" CONFIRMED (drugi poziv sada vidi 0 unutar tx).
+      // isMonthClosed još 0 (PAID event tek treba da se vidi u drugom procesu) → prolazi prvu proveru,
+      // ali tx-čitanje CONFIRMED vraća prazno → 422 i nijedan REWARD_PAID se ne piše.
+      prisma.changeRequest.count.mockResolvedValue(0);
+      prisma.changeRequest.findMany.mockResolvedValue([]); // unutar tx: nema CONFIRMED
+      await expect(service.closeMonth("2026-08", ADMIN)).rejects.toBeInstanceOf(
+        UnprocessableEntityException,
+      );
+      expect(prisma.changeRequest.updateMany).not.toHaveBeenCalled();
+      const types = calls(prisma.changeRequestEvent.create).map(
+        (c) => (c[0] as { data: { type: string } }).data.type,
+      );
+      expect(types).not.toContain("REWARD_PAID");
     });
   });
 

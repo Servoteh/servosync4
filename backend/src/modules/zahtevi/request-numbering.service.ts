@@ -5,7 +5,11 @@ import { Prisma } from "@prisma/client";
  * Numeracija zahteva (MODULE_SPEC_zahtevi §3) — format `NNN/YY` (npr. "023/26"),
  * brojač po godini. Obrazac 1:1 iz `nabavka/purchase-numbering.service.ts`:
  *   • poziva se UNUTAR $transaction (prima tx)
- *   • pg_advisory_xact_lock(hashtext(lockKey)) serijalizuje konkurentno kreiranje
+ *   • pg_advisory_xact_lock(hashtext('zahtevi:reqNo'), godina) serijalizuje konkurentno
+ *     kreiranje. F10: DVO-argumentni oblik (namespace, godina) — hashtext samo nad fiksnim
+ *     modul-ključem, godina kao drugi ključ. Time se izbegava kolizija u jedinstvenom
+ *     hashtext prostoru sa jedno-argumentnim lock-ovima drugih modula (koji bi slučajno
+ *     mogli hešovati na istu int vrednost i uzajamno se blokirati).
  *   • MAX se računa u JS-u (ne SQL MAX, ne string orderBy) da "099" < "100" ne pravi
  *     tihe duplikate; padding na 3 cifre (0..999 → "001".."999", preko toga bez pada).
  */
@@ -16,9 +20,9 @@ export class RequestNumberingService {
     const year = new Date().getFullYear();
     const yy = String(year).slice(-2); // "26"
     const suffix = `/${yy}`;
-    const lockKey = `zahtevi:reqNo:${year}`;
 
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
+    // F10: dvo-argumentni advisory lock — (hashtext('zahtevi:reqNo'), godina).
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('zahtevi:reqNo'), ${year})`;
 
     // Numerički MAX preko svih redova godine (ne string sort).
     const rows = await tx.changeRequest.findMany({

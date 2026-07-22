@@ -1,6 +1,7 @@
 import { Test, TestingModule } from "@nestjs/testing";
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   NotFoundException,
   UnprocessableEntityException,
@@ -116,6 +117,7 @@ interface PrismaMock {
     count: jest.Mock;
     create: jest.Mock;
     update: jest.Mock;
+    updateMany: jest.Mock;
     delete: jest.Mock;
     groupBy: jest.Mock;
   };
@@ -139,6 +141,9 @@ function prismaMock(): PrismaMock {
       count: jest.fn().mockResolvedValue(0),
       create: jest.fn(),
       update: jest.fn(),
+      // F1 (TOCTOU): status-prelazi rade compare-and-set kroz updateMany({where:{id,status}}).
+      // Default count:1 (prelaz uspeva). Test konkurentnog prelaza: mockResolvedValue({count:0}) → 409.
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       delete: jest.fn().mockResolvedValue({}),
       groupBy: jest.fn().mockResolvedValue([]),
     },
@@ -336,6 +341,21 @@ describe("ZahteviService", () => {
       );
       expect(where.createdByUserId).toBeUndefined();
     });
+
+    it("F7: admin createdBy validan broj → filter po createdByUserId", async () => {
+      await service.list(ADMIN, { createdBy: "42" });
+      const { where } = firstArg<{ where: { createdByUserId?: number } }>(
+        prisma.changeRequest.findMany,
+      );
+      expect(where.createdByUserId).toBe(42);
+    });
+
+    it("F7: admin createdBy nevalidan (NaN/abc) → 400, ne 500 (ne stiže do baze)", async () => {
+      await expect(
+        service.list(ADMIN, { createdBy: "abc" }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.changeRequest.findMany).not.toHaveBeenCalled();
+    });
     it("signed URL tuđeg priloga → 404 za ne-admina", async () => {
       prisma.changeRequest.findUnique.mockResolvedValue(
         baseReq({ createdByUserId: OTHER.userId }),
@@ -399,9 +419,12 @@ describe("ZahteviService", () => {
         );
         const res = await service.decision(10, { action: "approve" }, ADMIN);
         expect(row(res).status).toBe("APPROVED");
-        const arg = firstArg<{ data: { decidedByUserId?: number } }>(
-          prisma.changeRequest.update,
-        );
+        // F1: status-prelaz ide kroz uslovni updateMany({where:{id,status}}).
+        const arg = firstArg<{
+          where: { status?: string };
+          data: { decidedByUserId?: number };
+        }>(prisma.changeRequest.updateMany);
+        expect(arg.where.status).toBe("SUBMITTED");
         expect(arg.data.decidedByUserId).toBe(ADMIN.userId);
       });
 
@@ -429,6 +452,62 @@ describe("ZahteviService", () => {
         ).rejects.toBeInstanceOf(NotFoundException);
       });
 
+      it("F6: merge na ARHIVIRAN kanonski cilj → 422 (nema lanaca)", async () => {
+        prisma.changeRequest.findUnique
+          .mockResolvedValueOnce(baseReq({ status: "SUBMITTED" })) // sam zahtev
+          .mockResolvedValueOnce({
+            id: 77,
+            status: "ARCHIVED",
+            mergedIntoId: null,
+          }); // cilj
+        await expect(
+          service.decision(10, { action: "merge", mergeIntoId: 77 }, ADMIN),
+        ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      });
+
+      it("F6: merge na cilj koji je i sam SPOJEN (mergedIntoId set) → 422 (nema ciklusa)", async () => {
+        prisma.changeRequest.findUnique
+          .mockResolvedValueOnce(baseReq({ status: "SUBMITTED" })) // sam zahtev
+          .mockResolvedValueOnce({
+            id: 77,
+            status: "SUBMITTED",
+            mergedIntoId: 5,
+          }); // cilj već spojen
+        await expect(
+          service.decision(10, { action: "merge", mergeIntoId: 77 }, ADMIN),
+        ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      });
+
+      it("F6: merge na MERGED cilj → 422", async () => {
+        prisma.changeRequest.findUnique
+          .mockResolvedValueOnce(baseReq({ status: "SUBMITTED" })) // sam zahtev
+          .mockResolvedValueOnce({
+            id: 77,
+            status: "MERGED",
+            mergedIntoId: null,
+          }); // cilj već MERGED
+        await expect(
+          service.decision(10, { action: "merge", mergeIntoId: 77 }, ADMIN),
+        ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      });
+
+      it("F6: merge na aktivan cilj → prolazi (MERGED status, event MERGED)", async () => {
+        prisma.changeRequest.findUnique
+          .mockResolvedValueOnce(baseReq({ status: "SUBMITTED" })) // sam zahtev
+          .mockResolvedValueOnce({
+            id: 77,
+            status: "APPROVED",
+            mergedIntoId: null,
+          }); // aktivan cilj
+        const res = await service.decision(
+          10,
+          { action: "merge", mergeIntoId: 77 },
+          ADMIN,
+        );
+        expect(row(res).status).toBe("MERGED");
+        expect(eventTypes(prisma)).toContain("MERGED");
+      });
+
       it("logDecision:true uz approve → prečica u Decision Log (§6)", async () => {
         prisma.changeRequest.findUnique.mockResolvedValue(
           baseReq({ status: "ANALYZED" }),
@@ -442,7 +521,9 @@ describe("ZahteviService", () => {
           ADMIN,
         );
         expect(decisions.createFromRequest).toHaveBeenCalledTimes(1);
-        const arg = calls(decisions.createFromRequest as unknown as jest.Mock)[0][1] as {
+        const arg = calls(
+          decisions.createFromRequest as unknown as jest.Mock,
+        )[0][1] as {
           action: string;
           requestId: number;
         };
@@ -521,9 +602,12 @@ describe("ZahteviService", () => {
           { action: "in-progress", branchName: "feat/x" },
           ADMIN,
         );
+        // F1: status-prelaz ide kroz uslovni updateMany({where:{id,status}}).
         const arg = firstArg<{
+          where: { status?: string };
           data: { status?: string; branchName?: string };
-        }>(prisma.changeRequest.update);
+        }>(prisma.changeRequest.updateMany);
+        expect(arg.where.status).toBe("APPROVED");
         expect(arg.data.status).toBe("IN_PROGRESS");
         expect(arg.data.branchName).toBe("feat/x");
       });
@@ -559,6 +643,57 @@ describe("ZahteviService", () => {
         );
         await service.setStatus(10, { action: "in-progress" }, ADMIN);
         expect(mail.notifySubmitter).not.toHaveBeenCalled();
+      });
+    });
+
+    // ── F1: TOCTOU (compare-and-set) ────────────────────────────────────────────
+    describe("TOCTOU guard (F1) — konkurentni prelaz → 409, bez duplih efekata", () => {
+      it("decision: red promenio status između čitanja i upisa (updateMany count 0) → 409, bez eventa/mejla", async () => {
+        prisma.changeRequest.findUnique.mockResolvedValue(
+          baseReq({ status: "ANALYZED" }),
+        );
+        // Drugi klik: kad stigne updateMany, red više nije ANALYZED → count 0.
+        prisma.changeRequest.updateMany.mockResolvedValue({ count: 0 });
+        await expect(
+          service.decision(10, { action: "approve" }, ADMIN),
+        ).rejects.toBeInstanceOf(ConflictException);
+        expect(eventTypes(prisma)).not.toContain("APPROVED");
+        expect(mail.notifySubmitter).not.toHaveBeenCalled();
+      });
+
+      it("submit: dupli klik (updateMany count 0) → 409, bez SUBMITTED eventa i bez trijaže", async () => {
+        prisma.changeRequest.findUnique.mockResolvedValue(
+          baseReq({ status: "DRAFT" }),
+        );
+        prisma.changeRequest.updateMany.mockResolvedValue({ count: 0 });
+        await expect(service.submit(10, USER)).rejects.toBeInstanceOf(
+          ConflictException,
+        );
+        expect(eventTypes(prisma)).not.toContain("SUBMITTED");
+        expect(zahteviAi.scheduleTriage).not.toHaveBeenCalled();
+      });
+
+      it("setStatus: konkurentni prelaz (updateMany count 0) → 409, bez eventa i mejla", async () => {
+        prisma.changeRequest.findUnique.mockResolvedValue(
+          baseReq({ status: "TESTING" }),
+        );
+        prisma.changeRequest.updateMany.mockResolvedValue({ count: 0 });
+        await expect(
+          service.setStatus(10, { action: "done" }, ADMIN),
+        ).rejects.toBeInstanceOf(ConflictException);
+        expect(eventTypes(prisma)).not.toContain("STATUS_CHANGED");
+        expect(mail.notifySubmitter).not.toHaveBeenCalled();
+      });
+
+      it("withdraw: konkurentno arhiviranje (updateMany count 0) → 409, bez WITHDRAWN eventa", async () => {
+        prisma.changeRequest.findUnique.mockResolvedValue(
+          baseReq({ status: "SUBMITTED" }),
+        );
+        prisma.changeRequest.updateMany.mockResolvedValue({ count: 0 });
+        await expect(service.withdraw(10, USER)).rejects.toBeInstanceOf(
+          ConflictException,
+        );
+        expect(eventTypes(prisma)).not.toContain("WITHDRAWN");
       });
     });
   });

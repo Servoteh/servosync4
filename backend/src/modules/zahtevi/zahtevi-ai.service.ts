@@ -1,4 +1,5 @@
 import {
+  ConflictException,
   ForbiddenException,
   Injectable,
   Logger,
@@ -157,7 +158,7 @@ export class ZahteviAiService {
 
     const candidates = await this.duplicateCandidates(requestId, req.title);
 
-    const textBlock = [
+    const innerBlock = [
       `NASLOV: ${req.title}`,
       `OPIS:\n${req.description.slice(0, TRIAGE_MAX_DESC_CHARS)}`,
       req.expectedBehavior
@@ -180,6 +181,10 @@ export class ZahteviAiService {
     ]
       .filter(Boolean)
       .join("\n\n");
+
+    // F3: obmotaj sav korisnički (nepouzdan) unos jasnim markerima. System prompt nalaže
+    // modelu da instrukcije unutar markera tretira kao podatke, nikad kao naredbe.
+    const textBlock = `<<<KORISNICKI_UNOS>>>\n${innerBlock}\n<<<KRAJ_UNOSA>>>`;
 
     const content: unknown[] = [{ type: "text", text: textBlock }];
 
@@ -370,6 +375,30 @@ export class ZahteviAiService {
       this.logger.error(
         `Ne mogu da upišem TRIAGE_FAILED za ${requestId}: ${(dbErr as Error).message}`,
       );
+      // F8a: ako i tx padne, red analize bi ostao zombie-PENDING. Poslednji best-effort:
+      // ne-transakcioni update reda na FAILED (event može izostati; makar se ne poluje beskrajno).
+      await this.markAnalysisFailedBestEffort(analysisId, errorCode);
+    }
+  }
+
+  /**
+   * F8a: poslednja odbrana od zombie-PENDING reda analize — ne-transakcioni update na FAILED.
+   * Poziva se SAMO kad glavni (transakcioni) upis FAILED-a padne. Sopstveni try/catch: ako i
+   * ovo padne, samo se loguje (red ostaje PENDING, ali FE polling ima svoj tajmaut — F8b).
+   */
+  private async markAnalysisFailedBestEffort(
+    analysisId: number,
+    errorCode: string,
+  ): Promise<void> {
+    try {
+      await this.prisma.changeRequestAiAnalysis.update({
+        where: { id: analysisId },
+        data: { status: "FAILED", errorCode, finishedAt: new Date() },
+      });
+    } catch (err2) {
+      this.logger.error(
+        `Best-effort FAILED update reda analize ${analysisId} pao: ${(err2 as Error).message}`,
+      );
     }
   }
 
@@ -391,10 +420,17 @@ export class ZahteviAiService {
       );
 
     const updated = await this.prisma.$transaction(async (tx) => {
-      const u = await tx.changeRequest.update({
-        where: { id },
+      // F1 (TOCTOU): compare-and-set na SUBMITTED — dupli klik „odobri analizu"
+      // ne sme upisati dupli event niti pokrenuti dva AI run-a.
+      const res = await tx.changeRequest.updateMany({
+        where: { id, status: "SUBMITTED" },
         data: { status: "ANALYSIS_APPROVED" },
       });
+      if (res.count === 0)
+        throw new ConflictException(
+          "Zahtev je u međuvremenu promenio status — osveži stranicu.",
+        );
+      const u = { ...req, status: "ANALYSIS_APPROVED" };
       await this.writeEvent(tx, id, "ANALYSIS_APPROVED", actor.userId, {
         from: req.status,
       });
@@ -465,7 +501,7 @@ export class ZahteviAiService {
       orderBy: { createdAt: "desc" },
     });
 
-    const extra = [
+    const extraInner = [
       `REQ_NO: ${req.reqNo}`,
       comments.length
         ? `KOMENTARI / ODGOVORI:\n${comments
@@ -482,6 +518,8 @@ export class ZahteviAiService {
       .filter(Boolean)
       .join("\n\n");
 
+    // F3: komentari i trijažni JSON su takođe nepouzdan unos → markeri.
+    const extra = `<<<KORISNICKI_UNOS>>>\n${extraInner}\n<<<KRAJ_UNOSA>>>`;
     content.push({ type: "text", text: extra });
     return content;
   }
@@ -556,6 +594,8 @@ export class ZahteviAiService {
       this.logger.error(
         `Ne mogu da upišem ANALYSIS_FAILED za ${requestId}: ${(dbErr as Error).message}`,
       );
+      // F8a: best-effort ne-transakcioni FAILED update (izbegava zombie-PENDING red).
+      await this.markAnalysisFailedBestEffort(analysisId, errorCode);
     }
   }
 
@@ -620,7 +660,16 @@ export class ZahteviAiService {
     const updated = await this.prisma.$transaction(async (tx) => {
       const u = await tx.changeRequest.update({
         where: { id },
-        data: { status: "SUBMITTED", rewardStatus: "NONE" },
+        // F2: očisti AI ocenu pri restore-u. Inače bi jedan klik „potvrdi ocenu" bez
+        // izmene ponovo video aiScore=0 i auto-odbacio zahtev. Trag ostaje netaknut u
+        // redu analize i AI_REJECTED event-u — ništa se ne gubi, samo se ventil resetuje.
+        data: {
+          status: "SUBMITTED",
+          rewardStatus: "NONE",
+          aiScore: null,
+          aiScoreReason: null,
+          finalScore: null,
+        },
       });
       await this.writeEvent(tx, id, "STATUS_CHANGED", actor.userId, {
         from: "REJECTED",

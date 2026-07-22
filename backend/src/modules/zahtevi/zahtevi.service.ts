@@ -3,6 +3,7 @@ import {
   Injectable,
   Logger,
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   NotFoundException,
   UnprocessableEntityException,
@@ -170,6 +171,28 @@ export class ZahteviService {
       );
   }
 
+  /**
+   * F1 (TOCTOU): uslovni status-update UNUTAR transakcije. Status je pročitan van
+   * tx (za validaciju prelaza), ali sam upis mora biti atomsko „compare-and-set":
+   * `updateMany({ where: { id, status: expected } })`. Ako je red u međuvremenu promenio
+   * status (dupli klik, dva admina) → count === 0 → 409 i eventi/mejl/AI se NE okidaju.
+   */
+  private async updateStatusGuarded(
+    tx: Prisma.TransactionClient,
+    id: number,
+    expectedStatus: string,
+    data: Prisma.ChangeRequestUpdateInput,
+  ): Promise<void> {
+    const res = await tx.changeRequest.updateMany({
+      where: { id, status: expectedStatus },
+      data,
+    });
+    if (res.count === 0)
+      throw new ConflictException(
+        "Zahtev je u međuvremenu promenio status — osveži stranicu.",
+      );
+  }
+
   /** Upiši event u insert-only timeline (§3). */
   private async writeEvent(
     tx: Prisma.TransactionClient,
@@ -207,6 +230,17 @@ export class ZahteviService {
       query.page,
       query.pageSize,
     );
+    // F7: createdBy je numerički filter — nevalidan („NaN", "abc") ne sme završiti kao
+    // Number(...) → NaN u WHERE (Prisma bi bacio 500). Parsiramo i tražimo ceo broj → 400.
+    let createdByFilter: number | undefined;
+    if (this.isAdmin(actor) && query.createdBy) {
+      const n = Number.parseInt(query.createdBy, 10);
+      if (!Number.isInteger(n) || String(n) !== query.createdBy.trim())
+        throw new BadRequestException(
+          "Parametar createdBy mora biti ceo broj (ID korisnika).",
+        );
+      createdByFilter = n;
+    }
     const where: Prisma.ChangeRequestWhereInput = {
       ...this.scopeWhere(actor),
       ...(query.status ? { status: query.status } : {}),
@@ -222,8 +256,8 @@ export class ZahteviService {
           }
         : {}),
       // createdBy filter — samo admin (ne-admin je već sužen na svoje).
-      ...(this.isAdmin(actor) && query.createdBy
-        ? { createdByUserId: Number(query.createdBy) }
+      ...(createdByFilter !== undefined
+        ? { createdByUserId: createdByFilter }
         : {}),
     };
     const [data, total] = await this.prisma.$transaction([
@@ -440,13 +474,12 @@ export class ZahteviService {
     const isResubmit = req.status === "NEEDS_INFO";
     this.assertTransition(req.status, "SUBMITTED");
 
+    const submittedAt = req.submittedAt ?? new Date();
     const updated = await this.prisma.$transaction(async (tx) => {
-      const u = await tx.changeRequest.update({
-        where: { id },
-        data: {
-          status: "SUBMITTED",
-          submittedAt: req.submittedAt ?? new Date(),
-        },
+      // F1 (TOCTOU): compare-and-set na pročitani status — dupli submit ne pravi dupli event/trijažu.
+      await this.updateStatusGuarded(tx, id, req.status, {
+        status: "SUBMITTED",
+        submittedAt,
       });
       await this.writeEvent(
         tx,
@@ -454,7 +487,7 @@ export class ZahteviService {
         isResubmit ? "RESUBMITTED" : "SUBMITTED",
         actor.userId,
       );
-      return u;
+      return { ...req, status: "SUBMITTED", submittedAt };
     });
 
     // AI trijaža (§4.1) — FIRE-AND-FORGET (nije await): upiše PENDING red analize i
@@ -472,14 +505,14 @@ export class ZahteviService {
       throw new ForbiddenException("Zahtev povlači njegov podnosilac.");
     this.assertStatus(req.status, OWNER_WITHDRAW_STATUSES, "povlačenje");
     const updated = await this.prisma.$transaction(async (tx) => {
-      const u = await tx.changeRequest.update({
-        where: { id },
-        data: { status: "ARCHIVED" },
+      // F1 (TOCTOU): compare-and-set — dupli withdraw ne piše dupli WITHDRAWN event.
+      await this.updateStatusGuarded(tx, id, req.status, {
+        status: "ARCHIVED",
       });
       await this.writeEvent(tx, id, "WITHDRAWN", actor.userId, {
         from: req.status,
       });
-      return u;
+      return { ...req, status: "ARCHIVED" };
     });
     return { data: updated };
   }
@@ -550,7 +583,7 @@ export class ZahteviService {
     if (dto.action === "merge") {
       const target = await this.prisma.changeRequest.findUnique({
         where: { id: dto.mergeIntoId! },
-        select: { id: true },
+        select: { id: true, status: true, mergedIntoId: true },
       });
       if (!target)
         throw new NotFoundException(
@@ -559,6 +592,16 @@ export class ZahteviService {
       if (dto.mergeIntoId === id)
         throw new BadRequestException(
           "Zahtev se ne može spojiti sam sa sobom.",
+        );
+      // F6: kanonski cilj mora biti „živ" — ne MERGED/ARCHIVED i sam ne spojen u drugi.
+      // Time se sprečavaju lanci/ciklusi spajanja (A→B→C ili A→B, B→A).
+      if (
+        target.status === "MERGED" ||
+        target.status === "ARCHIVED" ||
+        target.mergedIntoId != null
+      )
+        throw new UnprocessableEntityException(
+          `Kanonski zahtev ${dto.mergeIntoId} nije važeći cilj spajanja (arhiviran/spojen). Izaberite aktivan zahtev.`,
         );
     }
 
@@ -579,7 +622,10 @@ export class ZahteviService {
         data.decidedByUserId = actor.userId;
       }
       if (dto.action === "merge") data.mergedIntoId = dto.mergeIntoId!;
-      const u = await tx.changeRequest.update({ where: { id }, data });
+      // F1 (TOCTOU): compare-and-set na pročitani status — dupli klik / dva admina
+      // ne prave dupli event/mejl niti duplu Decision Log prečicu.
+      await this.updateStatusGuarded(tx, id, req.status, data);
+      const u = { ...req, ...(data as Record<string, unknown>) };
       await this.writeEvent(tx, id, eventByAction[dto.action], actor.userId, {
         from: req.status,
         to: next,
@@ -665,10 +711,12 @@ export class ZahteviService {
     }
 
     const updated = await this.prisma.$transaction(async (tx) => {
-      const u = await tx.changeRequest.update({
-        where: { id },
-        data: { status: next, ...link },
+      // F1 (TOCTOU): compare-and-set na pročitani status — dupli prelaz ne piše dupli event/mejl.
+      await this.updateStatusGuarded(tx, id, req.status, {
+        status: next,
+        ...link,
       });
+      const u = { ...req, status: next, ...(link as Record<string, unknown>) };
       await this.writeEvent(tx, id, "STATUS_CHANGED", actor.userId, {
         from: req.status,
         to: next,

@@ -68,6 +68,11 @@ export class ZahteviRewardsService {
   /**
    * Da li je dati mesec zaključen: postoji BAR jedan PAID red sa tim rewardMonth
    * (deterministička provera — zaključivanje meseca prevodi CONFIRMED→PAID).
+   *
+   * ⚠️ UPOZORENJE (V1): zaključenje je OVDE DERIVED iz postojanja PAID reda — nema
+   * eksplicitne month-closure tabele. Buduća payroll ruta (kad novac zaista izlazi)
+   * MORA uvesti eksplicitno zaključavanje meseca (npr. red u posebnoj tabeli + lock),
+   * jer se na derived signal ne može osloniti kad zaključenje postane pravni događaj.
    */
   private async isMonthClosed(month: string): Promise<boolean> {
     const paid = await this.prisma.changeRequest.count({
@@ -76,7 +81,15 @@ export class ZahteviRewardsService {
     return paid > 0;
   }
 
-  /** Prvi neзаključen mesec počev od `start` (traži napred dok ne nađe otvoren). */
+  /**
+   * Prvi neзаključen mesec počev od `start` (traži napred dok ne nađe otvoren).
+   *
+   * NAPOMENA: rezultujući rewardMonth + rewardAmount su SNAPSHOT iz trenutka potvrde ocene
+   * (namerno — v. currentAmountFor). Ako se tarifa promeni kasnije ili potvrda „preskoči"
+   * preko granice godine, iznos i mesec ostaju onakvi kakvi su bili u trenutku potvrde;
+   * granica-godina tarife se NE reevaluira. To je svesna V1 odluka (isplata = ono što je
+   * potvrđeno), ne bug.
+   */
   private async nextOpenMonth(start: string): Promise<string> {
     let [y, m] = start.split("-").map(Number);
     // Zaštita od beskonačne petlje (praktično nikad — max nekoliko iteracija).
@@ -123,6 +136,14 @@ export class ZahteviRewardsService {
       throw new UnprocessableEntityException(
         "Nagrada je već isplaćena (mesec zaključen) — ne može se menjati.",
       );
+    // F4: IZMENA postojeće nagrade koja PRIPADA zaključenom mesecu je zabranjena (422).
+    // Nova potvrda (rewardMonth još null) NIJE pogođena — ta i dalje ide u tekući/naredni
+    // otvoreni mesec kroz nextOpenMonth. Ovim se štiti već zaključen/prijavljen obračun od
+    // naknadne korekcije ocene (koja bi promenila njegov ukupan iznos).
+    if (req.rewardMonth && (await this.isMonthClosed(req.rewardMonth)))
+      throw new UnprocessableEntityException(
+        `Nagrada pripada zaključenom mesecu (${req.rewardMonth}) — ocena se više ne menja.`,
+      );
 
     const now = new Date();
 
@@ -164,8 +185,10 @@ export class ZahteviRewardsService {
         `Nema važeće tarife za ocenu ${dto.score}. Podesite tarifu u tabu Nagrade.`,
       );
 
-    // Mesec obračuna: postojeći rewardMonth se čuva pri korekciji (ista isplata),
-    // sem ako je taj mesec u međuvremenu zaključen ILI reda još nema — tada tekući/naredni otvoren.
+    // Mesec obračuna: postojeći rewardMonth se čuva pri korekciji (ista isplata).
+    // Nakon F4 guard-a iznad, `req.rewardMonth` ovde više NIKAD nije zaključen (taj slučaj
+    // je već 422). isMonthClosed provera ostaje samo za NOVU potvrdu (rewardMonth null →
+    // tekući mesec), gde nextOpenMonth pronalazi prvi otvoren ako je tekući zaključen.
     let month = req.rewardMonth;
     if (!month || (await this.isMonthClosed(month))) {
       month = await this.nextOpenMonth(monthKey(now));
@@ -204,6 +227,12 @@ export class ZahteviRewardsService {
       throw new UnprocessableEntityException(
         "Isplaćena nagrada se ne može isključiti (mesec zaključen).",
       );
+    // F4: isključivanje bi izvuklo nagradu iz meseca i promenilo njegov ukupan iznos —
+    // za već zaključen mesec je zabranjeno (422), i kad status nije PAID (npr. zaostali CONFIRMED).
+    if (req.rewardMonth && (await this.isMonthClosed(req.rewardMonth)))
+      throw new UnprocessableEntityException(
+        `Nagrada pripada zaključenom mesecu (${req.rewardMonth}) — ne može se isključiti.`,
+      );
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const u = await tx.changeRequest.update({
@@ -233,9 +262,7 @@ export class ZahteviRewardsService {
     });
     const current: { score: number; amount: string; validFrom: string }[] = [];
     for (const score of TARIFF_SCORES) {
-      const row = all.find(
-        (r) => r.score === score && r.validFrom <= now,
-      );
+      const row = all.find((r) => r.score === score && r.validFrom <= now);
       current.push({
         score,
         amount: row ? row.amount.toString() : "0",
@@ -427,16 +454,19 @@ export class ZahteviRewardsService {
         `Mesec ${month} je već zaključen.`,
       );
 
-    const confirmed = await this.prisma.changeRequest.findMany({
-      where: { rewardMonth: month, rewardStatus: "CONFIRMED" },
-      select: { id: true, rewardAmount: true },
-    });
-    if (confirmed.length === 0)
-      throw new UnprocessableEntityException(
-        `Nema potvrđenih nagrada za ${month} — nema šta da se zaključi.`,
-      );
-
+    // F5: CONFIRMED redovi se čitaju UNUTAR transakcije (pre updateMany, ista tx) da bi se
+    // total/eventi/paidCount slagali i da paralelni poziv NE bi upisao duple REWARD_PAID.
+    // Drugi poziv, koji uđe u tx posle prvog commit-a, vidi 0 CONFIRMED → 422 (nema šta).
     const result = await this.prisma.$transaction(async (tx) => {
+      const confirmed = await tx.changeRequest.findMany({
+        where: { rewardMonth: month, rewardStatus: "CONFIRMED" },
+        select: { id: true, rewardAmount: true },
+      });
+      if (confirmed.length === 0)
+        throw new UnprocessableEntityException(
+          `Nema potvrđenih nagrada za ${month} — nema šta da se zaključi.`,
+        );
+
       const upd = await tx.changeRequest.updateMany({
         where: { rewardMonth: month, rewardStatus: "CONFIRMED" },
         data: { rewardStatus: "PAID" },
@@ -447,15 +477,15 @@ export class ZahteviRewardsService {
           amount: r.rewardAmount ? r.rewardAmount.toString() : null,
         });
       }
-      return upd;
+      const total = confirmed.reduce(
+        (sum, r) => sum.plus(r.rewardAmount ?? new Prisma.Decimal(0)),
+        new Prisma.Decimal(0),
+      );
+      return { paidCount: upd.count, total: total.toString() };
     });
 
-    const total = confirmed.reduce(
-      (sum, r) => sum.plus(r.rewardAmount ?? new Prisma.Decimal(0)),
-      new Prisma.Decimal(0),
-    );
     return {
-      data: { month, paidCount: result.count, total: total.toString() },
+      data: { month, paidCount: result.paidCount, total: result.total },
     };
   }
 
