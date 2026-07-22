@@ -7,6 +7,7 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Put,
   Query,
   Req,
   UploadedFiles,
@@ -21,10 +22,19 @@ import { PERMISSIONS } from "../../common/authz/permissions";
 import type { AuthUser } from "../auth/jwt.strategy";
 import { ZahteviService } from "./zahtevi.service";
 import { ZahteviAiService } from "./zahtevi-ai.service";
+import { ZahteviRewardsService } from "./zahtevi-rewards.service";
+import { ZahteviDecisionsService } from "./zahtevi-decisions.service";
 import type { CreateChangeRequestDto } from "./dto/create-change-request.dto";
 import type { UpdateChangeRequestDto } from "./dto/update-change-request.dto";
 import type { DecisionDto } from "./dto/decision.dto";
 import type { StatusDto } from "./dto/status.dto";
+import type { ScoreDto, ExcludeDto } from "./dto/score.dto";
+import type { TariffPutDto } from "./dto/tariff.dto";
+import type {
+  CreateDecisionLogDto,
+  UpdateDecisionLogDto,
+  SupersedeDecisionLogDto,
+} from "./dto/decision-log.dto";
 
 /**
  * Zahtevi — AI PM modul (MODULE_SPEC_zahtevi §7). Guard = JwtAuthGuard + PermissionsGuard;
@@ -42,6 +52,8 @@ export class ZahteviController {
   constructor(
     private readonly zahtevi: ZahteviService,
     private readonly zahteviAi: ZahteviAiService,
+    private readonly rewards: ZahteviRewardsService,
+    private readonly decisions: ZahteviDecisionsService,
   ) {}
 
   // ── LISTE ──────────────────────────────────────────────────────────────────
@@ -78,6 +90,106 @@ export class ZahteviController {
   @RequirePermission(PERMISSIONS.ZAHTEVI_WRITE)
   slicni(@Query("q") q?: string) {
     return this.zahtevi.slicni(q);
+  }
+
+  // ── NAGRADE (§12) — literalne rute PRE :id (izbegava wildcard shadowing) ──────
+
+  /** GET /zahtevi/nagrade/tarife (admin) — aktuelna tarifa + istorija. */
+  @Get("nagrade/tarife")
+  @RequirePermission(PERMISSIONS.ZAHTEVI_ADMIN)
+  getTariffs(@Req() req: { user: AuthUser }) {
+    return this.rewards.getTariffs(req.user);
+  }
+
+  /** PUT /zahtevi/nagrade/tarife (admin) — 5 iznosa; upis = novi redovi (validFrom danas). */
+  @Put("nagrade/tarife")
+  @RequirePermission(PERMISSIONS.ZAHTEVI_ADMIN)
+  putTariffs(@Body() dto: TariffPutDto, @Req() req: { user: AuthUser }) {
+    return this.rewards.putTariffs(dto, req.user);
+  }
+
+  /** GET /zahtevi/nagrade/obracun?month=YYYY-MM (admin) — mesečni obračun po korisniku. */
+  @Get("nagrade/obracun")
+  @RequirePermission(PERMISSIONS.ZAHTEVI_ADMIN)
+  payoutReport(
+    @Query("month") month: string,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.rewards.payoutReport(month, req.user);
+  }
+
+  /** POST /zahtevi/nagrade/obracun/:month/zakljuci (admin) — CONFIRMED→PAID (immutable). */
+  @Post("nagrade/obracun/:month/zakljuci")
+  @RequirePermission(PERMISSIONS.ZAHTEVI_ADMIN)
+  closeMonth(
+    @Param("month") month: string,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.rewards.closeMonth(month, req.user);
+  }
+
+  /** GET /zahtevi/nagrade/moje?month=YYYY-MM (write) — SVOJE nagrade za mesec (row-scope). */
+  @Get("nagrade/moje")
+  @RequirePermission(PERMISSIONS.ZAHTEVI_WRITE)
+  myRewards(
+    @Query("month") month: string | undefined,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.rewards.myRewards(month, req.user);
+  }
+
+  // ── DECISION LOG (§6) — literalne rute PRE :id ───────────────────────────────
+
+  /** GET /zahtevi/odluke (decisions.read = admin+menadzment) — lista sa filterima. */
+  @Get("odluke")
+  @RequirePermission(PERMISSIONS.ZAHTEVI_DECISIONS_READ)
+  listDecisions(
+    @Query("q") q?: string,
+    @Query("tag") tag?: string,
+    @Query("status") status?: string,
+    @Query("page") page?: string,
+    @Query("pageSize") pageSize?: string,
+  ) {
+    return this.decisions.list({ q, tag, status, page, pageSize });
+  }
+
+  /** POST /zahtevi/odluke (decisions.write = admin) — nova odluka. */
+  @Post("odluke")
+  @RequirePermission(PERMISSIONS.ZAHTEVI_DECISIONS_WRITE)
+  createDecision(
+    @Body() dto: CreateDecisionLogDto,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.decisions.create(dto, req.user);
+  }
+
+  /** GET /zahtevi/odluke/:id (decisions.read) — detalj. */
+  @Get("odluke/:id")
+  @RequirePermission(PERMISSIONS.ZAHTEVI_DECISIONS_READ)
+  getDecision(@Param("id", ParseIntPipe) id: number) {
+    return this.decisions.getOne(id);
+  }
+
+  /** PATCH /zahtevi/odluke/:id (decisions.write) — sitne ispravke. */
+  @Patch("odluke/:id")
+  @RequirePermission(PERMISSIONS.ZAHTEVI_DECISIONS_WRITE)
+  updateDecision(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: UpdateDecisionLogDto,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.decisions.update(id, dto, req.user);
+  }
+
+  /** POST /zahtevi/odluke/:id/supersede (decisions.write) — nova odluka zamenjuje staru. */
+  @Post("odluke/:id/supersede")
+  @RequirePermission(PERMISSIONS.ZAHTEVI_DECISIONS_WRITE)
+  supersedeDecision(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: SupersedeDecisionLogDto,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.decisions.supersede(id, dto, req.user);
   }
 
   // ── CRUD ───────────────────────────────────────────────────────────────────
@@ -256,5 +368,29 @@ export class ZahteviController {
     @Req() req: { user: AuthUser },
   ) {
     return this.zahteviAi.restore(id, req.user);
+  }
+
+  // ── NAGRADE po zahtevu (§12.2/§12.3) ─────────────────────────────────────────
+
+  /** Potvrdi/koriguj ocenu 0–5 (admin): 0→REJECTED; ≥1→snapshot iznosa + CONFIRMED. */
+  @Post(":id/score")
+  @RequirePermission(PERMISSIONS.ZAHTEVI_ADMIN)
+  score(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: ScoreDto,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.rewards.score(id, dto, req.user);
+  }
+
+  /** Isključi predlog iz nagrađivanja (admin) — rewardStatus=EXCLUDED (+ razlog). */
+  @Post(":id/exclude")
+  @RequirePermission(PERMISSIONS.ZAHTEVI_ADMIN)
+  exclude(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: ExcludeDto,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.rewards.exclude(id, dto, req.user);
   }
 }

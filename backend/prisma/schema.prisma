@@ -3843,7 +3843,7 @@ model ChangeRequestComment {
 model ChangeRequestEvent {
   id          Int      @id(map: "pk_change_request_events") @default(autoincrement()) @map("id")
   requestId   Int      @map("request_id")
-  type        String   @map("type") @db.VarChar(30) /// CREATED|SUBMITTED|TRIAGED|TRIAGE_FAILED|ANALYSIS_APPROVED|ANALYZED|ANALYSIS_FAILED|AI_REJECTED|COMMENT|NEEDS_INFO|RESUBMITTED|APPROVED|REJECTED|MERGED|DEFERRED|WITHDRAWN|STATUS_CHANGED|LINK_ADDED|META_CHANGED
+  type        String   @map("type") @db.VarChar(30) /// CREATED|SUBMITTED|TRIAGED|TRIAGE_FAILED|ANALYSIS_APPROVED|ANALYZED|ANALYSIS_FAILED|AI_REJECTED|COMMENT|NEEDS_INFO|RESUBMITTED|APPROVED|REJECTED|MERGED|DEFERRED|WITHDRAWN|STATUS_CHANGED|LINK_ADDED|META_CHANGED|SCORE_CONFIRMED|REWARD_EXCLUDED|REWARD_PAID
   actorUserId Int?     @map("actor_user_id") /// null = sistem/AI
   data        Json?    @map("data") /// npr. {from,to} za STATUS_CHANGED, {field,old,new} za META_CHANGED
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
