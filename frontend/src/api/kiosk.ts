@@ -222,6 +222,16 @@ export interface StopWorkResult extends ScanResult {
   };
 }
 
+/** „Kraj rada" po tp.id — STOP + info o deljenom redu (više radnika na operaciji). */
+export interface StopWorkByIdResult extends Omit<StopWorkResult, 'session'> {
+  /** null kad nema sesije (star red / jedan sken) — evidentirani samo komadi. */
+  session: StopWorkResult['session'] | null;
+  /** Gašenje reda preskočeno — drugi radnici još imaju otvorene sesije. */
+  finishSkipped?: boolean;
+  /** Radnici koji su imali otvorenu sesiju na redu u trenutku „Kraja rada". */
+  otherOpenWorkers?: { id: number; fullName: string | null }[];
+}
+
 export interface OpenSessionResult {
   /** null = red operacije još ne postoji (otvoriće ga START skena — create-on-scan). */
   techProcessId: number | null;
@@ -264,6 +274,11 @@ export interface StopWorkByIdInput {
   workerCard?: string;
   /** Broj napravljenih komada u OVOJ sesiji (ceo broj ≥ 0; 0 = samo vreme). */
   pieceCount: number;
+  /**
+   * Deljeni red sa više radnika: bez ovoga „Kraj rada" zatvara SAMO svoju sesiju
+   * kad drugi imaju otvorene sesije; `true` = izbor „Zatvori za sve" iz dijaloga.
+   */
+  finishForAll?: boolean;
 }
 
 /**
@@ -275,10 +290,10 @@ export interface StopWorkByIdInput {
 export function useStopWorkById() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, workerCard, pieceCount }: StopWorkByIdInput) =>
-      apiFetch<{ data: StopWorkResult }>(`${BASE}/${id}/stop-work`, {
+    mutationFn: ({ id, workerCard, pieceCount, finishForAll }: StopWorkByIdInput) =>
+      apiFetch<{ data: StopWorkByIdResult }>(`${BASE}/${id}/stop-work`, {
         method: 'POST',
-        body: JSON.stringify({ workerCard, pieceCount }),
+        body: JSON.stringify({ workerCard, pieceCount, ...(finishForAll ? { finishForAll } : {}) }),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['tech-processes'] }),
   });
@@ -304,7 +319,10 @@ export function useDismissOpen() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, workerCard, note }: DismissOpenInput) =>
-      apiFetch<{ data: { id: number; dismissed: true } }>(`${BASE}/${id}/dismiss`, {
+      apiFetch<{
+        // finishSkipped: red NIJE ugašen (drugi radnici rade) — zatvoreno samo svoje učešće.
+        data: { id: number; dismissed: true; finishSkipped?: boolean };
+      }>(`${BASE}/${id}/dismiss`, {
         method: 'POST',
         body: JSON.stringify({ workerCard, note }),
       }),
@@ -474,6 +492,11 @@ export interface MyOpenRow {
   enteredAt: string;
   /** true = radnik ima OTVORENU vremensku sesiju (A-4) na ovoj operaciji. */
   hasOpenSession: boolean;
+  /**
+   * Broj DRUGIH radnika sa otvorenom sesijom na ovom (deljenom) redu — kiosk
+   * tada na „Kraj rada" pita „samo moj rad / za sve". Opciono (stariji backend).
+   */
+  othersOpenCount?: number;
   /**
    * Crtež sa RN-a za dugme „PDF crteža" u redu (+ revizioni signal, v.
    * `KioskDrawingRef`). Opciono/defanzivno: null kad RN nema razrešen crtež,
