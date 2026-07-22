@@ -264,6 +264,19 @@ Dopune kita:
   PRILOGA (razlika od `DictateButton` iz `voice-controls`, koji diktira u polje i ne čuva audio).
   MediaRecorder → `Blob` (webm), preview kroz `<audio controls>`, prikaz trajanja. Kontrolisan
   (`value: Blob | null` / `onChange`); graceful kad `getUserMedia` nije dostupan (poruka umesto pada).
+* **Info režim + Vođena tura** (`ui-kit/help-mode.tsx` + `help-spot.tsx` + `help-tour.tsx`,
+  PLAN_INFO_VODIC_2026-07; pilot modul Zahtevi) — ugrađeni vodič za nove korisnike, BEZ novih
+  zavisnosti. `HelpProvider` (montira se PO MODULU u `page.tsx`) drži stanje režima + `useHelpMode()`;
+  pamti izbor u localStorage (`servosync.help.enabled` + `servosync.help.seen.<modul>`), auto-on
+  pri prvom ulasku uz nenametljiv baner (`HelpBanner`), `Shift+?` toggle (mrtvo u
+  input/textarea/contenteditable), `Esc` slojevito gasi (ne dira modalne dijaloge). `HelpToggleButton`
+  je dugme „?" za `PageHeader` akcije (+ „▶ Provedi me" u režimu). `<HelpSpot id>` je omotač oko
+  polja/akcije: van režima čist passthrough (nula omotača), u režimu apsolutna „i" oznaka
+  (ne pomera layout, ne krade fokus) + oblačić na klik/tap/hover/fokus (`aria-describedby`, klampovan
+  u ekran na 360px). `<HelpTour steps>` je ručno pisana tura: overlay + reflektor oko cilja
+  (`getBoundingClientRect` + `scrollIntoView`) + koraci Nazad/Dalje/Preskoči; koraci ciljaju
+  `HelpSpot` id-jeve (`data-help-id`) i preskaču se ako cilj nije u DOM-u. Tekstovi pomoći žive po
+  modulu u `app/<modul>/_lib/help.ts` (`HelpRegistry` + definicije tura), ne u kitu.
 
 **Pravilo kita:** ekrani se sklapaju **isključivo** od kit komponenti. Nova komponenta prvo ulazi u kit,
 `/dev/ui` katalog i ovaj spisak — pa tek onda u ekran. "Privremeni div sa stilovima" ne postoji.
