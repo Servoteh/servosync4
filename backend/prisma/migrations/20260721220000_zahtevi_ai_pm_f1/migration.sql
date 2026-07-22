@@ -190,4 +190,4 @@ VALUES
   (3, 1500, 'RSD', CURRENT_DATE, 0),
   (4, 2000, 'RSD', CURRENT_DATE, 0),
   (5, 3000, 'RSD', CURRENT_DATE, 0)
-ON CONFLICT ON CONSTRAINT "uq_cr_reward_tariffs_score_valid_from" DO NOTHING;
+ON CONFLICT ("score", "valid_from") DO NOTHING;
