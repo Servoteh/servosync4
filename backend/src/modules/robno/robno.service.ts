@@ -9,6 +9,7 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { pageMeta, parsePagination } from "../../common/pagination";
 import { parseDateParam } from "../../common/date-params";
 import { StockDocumentNumberingService } from "./stock-document-numbering.service";
+import { CostingService } from "./costing.service";
 import { toDec } from "./decimal.util";
 import {
   CreateStockDocumentDto,
@@ -54,6 +55,7 @@ export class RobnoService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly numbering: StockDocumentNumberingService,
+    private readonly costing: CostingService,
   ) {}
 
   // ---------------------------------------------------------------- READ
@@ -286,6 +288,10 @@ export class RobnoService {
     const year = documentDate.getFullYear();
 
     const created = await this.prisma.$transaction(async (tx) => {
+      // Guard raspoloživog stanja za IZLAZ (IZ/MANJAK) — nedovoljno stanje → 422 (doc 39 §C).
+      // Costing (stateAsOf) namerno dozvoljava negativno interno; provera je ovde, na granici upisa.
+      await this.assertSufficientStock(tx, kind, dto, documentDate);
+
       const { documentNumber } = await this.numbering.next(
         tx,
         companyId,
@@ -336,6 +342,99 @@ export class RobnoService {
       `Kreiran robni dokument ${created.documentNumber} (kind=${kind}, id=${created.id}, ${created.items.length} stavki).`,
     );
     return { data: created };
+  }
+
+  /**
+   * Guard negativnog stanja pri IZLAZU (kind IZ/MANJAK) — C11 (doc 39 §C / #21).
+   *
+   * Za svaku (artikal, magacin) kombinaciju agregira traženu količinu iz stavki i poredi je sa
+   * raspoloživim stanjem `CostingService.stateAsOf(itemId, warehouseId, documentDate)` (as-of
+   * do datuma dokumenta, KODJ izuzet). Ako je traženo > raspoloživo → `UnprocessableEntityException`
+   * sa listom (artikal, traženo, raspoloživo). Čita kroz istu `tx` (dosledno sa upisom).
+   *
+   * NE dira `CostingService` (namerno dozvoljava negativno interno) — guard je isključivo na
+   * granici kreiranja izlaznog dokumenta. UL/UVOZ/NIV/PRENOS/VISAK ne prolaze kroz guard.
+   */
+  private async assertSufficientStock(
+    tx: Prisma.TransactionClient,
+    kind: StockDocumentKind,
+    dto: CreateStockDocumentDto,
+    documentDate: Date,
+  ): Promise<void> {
+    if (kind !== "IZ" && kind !== "MANJAK") return;
+
+    // Agregiraj traženu (pozitivnu) količinu po (artikal, magacin) — više stavki istog artikla se sabira.
+    const requested = new Map<
+      string,
+      { itemId: number; warehouseId: number; qty: Prisma.Decimal }
+    >();
+    for (const it of dto.items) {
+      const warehouseId = it.warehouseId ?? dto.warehouseId;
+      const key = `${it.itemId}:${warehouseId}`;
+      const qty = toDec(it.quantity).abs();
+      const cur = requested.get(key);
+      if (cur) cur.qty = cur.qty.add(qty);
+      else requested.set(key, { itemId: it.itemId, warehouseId, qty });
+    }
+
+    const shortages: Array<{
+      itemId: number;
+      warehouseId: number;
+      requested: Prisma.Decimal;
+      available: Prisma.Decimal;
+    }> = [];
+    for (const r of requested.values()) {
+      const available = await this.costing.stateAsOf(
+        r.itemId,
+        r.warehouseId,
+        documentDate,
+        { tx },
+      );
+      if (available.lessThan(r.qty)) {
+        shortages.push({
+          itemId: r.itemId,
+          warehouseId: r.warehouseId,
+          requested: r.qty,
+          available,
+        });
+      }
+    }
+    if (shortages.length === 0) return;
+
+    // Nazivi artikala za čitljivu poruku (meki ref items.id).
+    const items = await tx.item.findMany({
+      where: { id: { in: shortages.map((s) => s.itemId) } },
+      select: { id: true, name: true, catalogNumber: true },
+    });
+    const itemById = new Map(items.map((i) => [i.id, i]));
+
+    const detail = shortages.map((s) => {
+      const it = itemById.get(s.itemId);
+      const label = it
+        ? `${it.name}${it.catalogNumber ? ` (${it.catalogNumber})` : ""}`
+        : `artikal ${s.itemId}`;
+      return {
+        itemId: s.itemId,
+        itemName: it?.name ?? null,
+        itemCode: it?.catalogNumber ?? null,
+        warehouseId: s.warehouseId,
+        requested: s.requested.toFixed(3),
+        available: s.available.toFixed(3),
+        label,
+      };
+    });
+    const human = detail
+      .map(
+        (d) =>
+          `${d.label} — traženo ${d.requested}, raspoloživo ${d.available}`,
+      )
+      .join("; ");
+
+    throw new UnprocessableEntityException({
+      code: "STOCK_INSUFFICIENT",
+      message: `Nedovoljno stanje za izlaz (${kind}): ${human}.`,
+      shortages: detail,
+    });
   }
 
   /** Mapiraj DTO stavku → Prisma create input (sirovi iznosi; landed popunjava kalkulacija). */

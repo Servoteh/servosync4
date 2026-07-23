@@ -261,12 +261,28 @@ export class FakturisanjeService {
         // Rešenje: prvo posting (svoja tx), pa tek onda rezervacija broja ovde bi
         // razbila atomiku. Zadržavamo redosled: broj u ovoj tx, posting posle commit-a.
         // (Za auto-robno, robni dokument je već proknjižen kroz Fazu 3 tok — ovde
-        // samo preuzimamo journalEntryId ako postoji, inače ostaje null.)
+        // preuzimamo journalEntryId ako postoji, inače ostaje null.)
         const existing = await tx.journalEntry.findFirst({
           where: { sourceGoodsDocId: invoice.stockDocumentId },
-          select: { id: true },
+          select: { id: true, status: true },
         });
-        journalEntryId = existing?.id ?? null;
+        if (existing) {
+          journalEntryId = existing.id;
+          // Robni auto-nalog nastaje kao `draft` (posting.service.ts:358), a kartica
+          // konta / saldakonti / bilans čitaju SAMO status IN ('posted','locked') —
+          // draft nalog je nevidljiv. Zato preuzeti nalog promovišemo u `posted` u istoj
+          // tx (odluka O4 default, kao izvod u PR #8). markPosted idiom = status guard:
+          // CAS `where status='draft'` menja SAMO draft; posted/locked ostaje netaknut
+          // (idempotentno — račun čiji je robni nalog već proknjižen/zaključan se ne dira).
+          if (existing.status === "draft") {
+            await tx.journalEntry.updateMany({
+              where: { id: existing.id, status: "draft" },
+              data: { status: "posted" },
+            });
+          }
+        } else {
+          journalEntryId = null;
+        }
       } else {
         // 3) RUČNI nalog (IFUSL/uslužni ili račun bez robnog izlaza) — direktan GL.
         journalEntryId = await this.postManualLedger(
@@ -418,7 +434,12 @@ export class FakturisanjeService {
         companyId: invoice.companyId,
         documentDate: invoice.documentDate,
         postingDate: new Date(),
-        status: "draft",
+        // POSTED (ne draft): proknjižena faktura MORA odmah biti vidljiva saldakontima /
+        // kartici konta / bilansu, koji čitaju SAMO status IN ('posted','locked') (kartica)
+        // odn. status = 'posted' (open-items). Draft nalog = proknjižen račun bez ijedne
+        // otvorene stavke (kupac tiho van saldakonta). Isti obrazac kao izvod (PR #8) i
+        // PostingEngine.postManualEntry (posting.service.ts:229). Odluka O4 default.
+        status: "posted",
         createdByUserId: actor.userId,
         lines: {
           create: grouped.map((l) => ({

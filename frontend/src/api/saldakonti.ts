@@ -56,6 +56,8 @@ export interface OpenItem {
   daysOverdue: number | null;
   currency: string | null;
   side: string; // receivable | payable
+  /** Svi ledger_entries.id koji čine ovaj red — za uparivanje (reconcile) i kompenzaciju. */
+  ledgerEntryIds: number[];
 }
 
 /** Aging red po komitentu — saldo raspoređen po dospelosti (Decimal-as-string). */

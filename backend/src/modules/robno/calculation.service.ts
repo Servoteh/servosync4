@@ -7,8 +7,10 @@ import {
   Optional,
   UnprocessableEntityException,
 } from "@nestjs/common";
+import type { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { Dec, ZERO, dec, round, safeDiv } from "./decimal.util";
+import { VAT_RATE_BY_CODE } from "../gl/posting/vat-rates";
 import { NIVELACIJA_HOOK } from "./nivelacija.hook";
 import type {
   NivelacijaHook,
@@ -82,6 +84,9 @@ export class CalculationService {
 
       const nivLines: NivelacijaInboundLine[] = [];
 
+      // Keš poreske stope po kodu (ΣStopa %) — jedan `tax_rates` lookup po kodu za ceo dokument.
+      const taxRateCache = new Map<string, Dec>();
+
       for (const it of doc.items) {
         const quantity: Dec = it.quantity;
 
@@ -151,7 +156,15 @@ export class CalculationService {
           .add(excise);
 
         // KalkMP = Taksa + FiksniPorez + KalkVP*(1 + ΣStopa/100) (doc 39 §A)
-        const taxRatePct = this.taxRateOf(it.goodsTaxRateCode);
+        let taxRatePct = taxRateCache.get(it.goodsTaxRateCode);
+        if (taxRatePct === undefined) {
+          taxRatePct = await this.taxRateOf(
+            tx,
+            it.goodsTaxRateCode,
+            doc.documentDate,
+          );
+          taxRateCache.set(it.goodsTaxRateCode, taxRatePct);
+        }
         const kalkMP = fee
           .add(fixedTax)
           .add(kalkVP.mul(dec(1).add(taxRatePct.div(100))));
@@ -220,13 +233,38 @@ export class CalculationService {
   }
 
   /**
-   * Zbir poreskih stopa (%) za `KalkMP` (`ΣStopa/100`, doc 39 §A).
-   * `TaxRate` lookup nije obavezan za ovaj sloj (PDV se često vodi van KalkMP); dok se ne veže na
-   * pravi `tax_rates` lookup, vraća 0 (KalkMP = Taksa + FiksniPorez + KalkVP). Ostavljeno kao jedna
-   * tačka izmene — kad se doda TaxRate provera, ovde se mapira `goodsTaxRateCode` → stopa.
+   * Zbir poreskih stopa (%) za `KalkMP` (`ΣStopa/100`, doc 39 §A) po `goodsTaxRateCode` i datumu
+   * dokumenta (C8). Prioritet:
+   *   1) `tax_rates` (model `TaxRate`) — red gde je kod jednak i datum u opsegu `validFrom..validTo`
+   *      (null = otvoreno). `ΣStopa` = baseRate+railwayRate+cityRate+warRate+specialRate (procenti);
+   *      najnoviji `validFrom` pobeđuje kad ima više redova.
+   *   2) Fallback (nema reda) — deljena mapa `VAT_RATE_BY_CODE` (razlomak 0.20/0.10/0.08) × 100
+   *      → procenat (20/10/8). Jedan izvor stope sa GL kontiranjem (posting.service, C8).
+   * Vraća PROCENAT (npr. 20 za PDV 20%), jer `KalkMP` formula deli sa 100.
    */
-  private taxRateOf(_goodsTaxRateCode: string): Dec {
-    // TODO(tax): mapiraj goodsTaxRateCode → tax_rates.rate (lookup) kad se veže poreski registar.
-    return ZERO;
+  private async taxRateOf(
+    tx: Prisma.TransactionClient,
+    goodsTaxRateCode: string,
+    asOf: Date,
+  ): Promise<Dec> {
+    const row = await tx.taxRate.findFirst({
+      where: {
+        code: goodsTaxRateCode,
+        OR: [{ validFrom: null }, { validFrom: { lte: asOf } }],
+        AND: [{ OR: [{ validTo: null }, { validTo: { gte: asOf } }] }],
+      },
+      orderBy: [{ validFrom: "desc" }],
+    });
+    if (row) {
+      // ΣStopa (%) — zbir svih poreskih komponenti tarife (legacy R_Tarife, doc 39 §A / 43 §4).
+      return dec(row.baseRate ?? 0)
+        .add(row.railwayRate ?? 0)
+        .add(row.cityRate ?? 0)
+        .add(row.warRate ?? 0)
+        .add(row.specialRate ?? 0);
+    }
+    // Fallback: deljena mapa (razlomak) → procenat. Nepoznat kod → 0 (bez PDV u KalkMP).
+    const fraction = VAT_RATE_BY_CODE[goodsTaxRateCode] ?? ZERO;
+    return dec(fraction).mul(100);
   }
 }

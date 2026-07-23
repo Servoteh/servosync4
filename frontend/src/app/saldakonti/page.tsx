@@ -17,6 +17,7 @@ import {
   useOpenItems,
   useAging,
   useReconcile,
+  useUnreconcile,
   type OpenItem,
   type AgingByPartnerRow,
 } from '@/api/saldakonti';
@@ -99,7 +100,41 @@ export default function SaldakontiPage() {
     [rows, selected],
   );
 
+  // Uparivanje radi nad pojedinačnim ledger stavkama — izveden pogled sada izlaže
+  // `ledgerEntryIds` po redu (C3/C4 koren). Skupimo id-eve svih selektovanih redova.
+  const selectedEntryIds = useMemo(
+    () =>
+      rows.filter((_, i) => selected.has(i)).flatMap((r) => r.ledgerEntryIds ?? []),
+    [rows, selected],
+  );
+  // Balans selekcije: Σ(saldo) ≈ 0 → auto uparivanje (bez ostatka); inače je
+  // potrebno ručno zatvaranje sa ostatkom (kursna razlika/otpis).
+  const balancedSelection = Math.abs(selectedBalance) < 0.01;
+
   const reconcile = useReconcile();
+  const unreconcile = useUnreconcile();
+  // Posle uspešnog uparivanja pamtimo grupu radi neposredne akcije Razveži
+  // (open-items pogled prikazuje samo otvorene stavke pa uparena grupa nestane
+  // iz liste — undo je smislen tačno ovde, odmah po uparivanju).
+  const [lastGroup, setLastGroup] = useState<{ groupId: number; count: number } | null>(null);
+
+  function runReconcile(mode: 'auto' | 'manual') {
+    if (selectedEntryIds.length < 2) return;
+    reconcile.mutate(
+      { entryIds: selectedEntryIds, mode },
+      {
+        onSuccess: (res) => {
+          setSelected(new Set());
+          setLastGroup({ groupId: res.data.groupId, count: res.data.entryIds.length });
+        },
+      },
+    );
+  }
+
+  function runUnreconcile() {
+    if (!lastGroup) return;
+    unreconcile.mutate(lastGroup.groupId, { onSuccess: () => setLastGroup(null) });
+  }
 
   function toggleRow(index: number) {
     setSelected((prev) => {
@@ -126,9 +161,9 @@ export default function SaldakontiPage() {
     setSelected(new Set());
   }
 
-  // Uparivanje traži ledgerEntry id-eve; izveden pogled ih ne izlaže po redu →
-  // afordansa je vidljiva (paritet toka), akcija je onemogućena dok backend ne
-  // vrati id-eve stavki. Poruka objašnjava zašto (DESIGN_SYSTEM §9).
+  // Broj selektovanih redova (za prikaz i gate dugmeta Upari); id-evi stavki
+  // koje idu na reconcile su u `selectedEntryIds` (izveden pogled sada izlaže
+  // ledgerEntryIds po redu).
   const selectedCount = selected.size;
 
   const openColumns: Column<OpenItem>[] = [
@@ -349,28 +384,62 @@ export default function SaldakontiPage() {
               </div>
 
               {canReconcile && (
-                <Button
-                  type="button"
-                  disabled={selectedCount < 2}
-                  loading={reconcile.isPending}
-                  title={
-                    selectedCount < 2
-                      ? 'Za uparivanje selektuj bar dve stavke'
-                      : 'Upari selektovane stavke'
-                  }
-                  onClick={() => {
-                    // Izveden pogled ne izlaže ledgerEntry id-eve po redu; dok ih
-                    // backend ne vrati, akcija je bezbedno onemogućena (paritet §A).
-                  }}
-                >
-                  Upari ({selectedCount})
-                </Button>
+                <div className="flex items-center gap-2">
+                  {selectedCount >= 2 && !balancedSelection && (
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      loading={reconcile.isPending}
+                      title="Zatvori selektovane stavke sa ostatkom (kursna razlika/otpis)"
+                      onClick={() => runReconcile('manual')}
+                    >
+                      Zatvori sa ostatkom
+                    </Button>
+                  )}
+                  <Button
+                    type="button"
+                    disabled={selectedCount < 2}
+                    loading={reconcile.isPending}
+                    title={
+                      selectedCount < 2
+                        ? 'Za uparivanje selektuj bar dve stavke'
+                        : balancedSelection
+                          ? 'Upari selektovane stavke'
+                          : 'Selekcija ne balansira — koristi Zatvori sa ostatkom'
+                    }
+                    onClick={() => runReconcile('auto')}
+                  >
+                    Upari ({selectedCount})
+                  </Button>
+                </div>
               )}
             </div>
+
+            {lastGroup && (
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-panel border border-status-success/40 bg-status-success-bg px-4 py-3 text-sm text-status-success">
+                <span>
+                  Upareno {lastGroup.count} stavki (grupa #{lastGroup.groupId}).
+                </span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  loading={unreconcile.isPending}
+                  onClick={runUnreconcile}
+                >
+                  Razveži
+                </Button>
+              </div>
+            )}
 
             {reconcile.error && (
               <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">
                 {(reconcile.error as Error).message}
+              </div>
+            )}
+
+            {unreconcile.error && (
+              <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">
+                {(unreconcile.error as Error).message}
               </div>
             )}
 

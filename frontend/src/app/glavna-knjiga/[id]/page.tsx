@@ -11,8 +11,12 @@ import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Button } from '@/components/ui-kit/button';
 import { formatDate, formatDecimal } from '@/lib/format';
+import { toast } from '@/lib/toast';
 import {
   useJournalEntry,
+  usePostJournalEntry,
+  useLockJournalEntry,
+  useReverseJournalEntry,
   GL_STATUS,
   type GlStatus,
   type JournalEntryDetail,
@@ -99,18 +103,77 @@ export default function GlavnaKnjigaDetailPage() {
   const notFound =
     validId != null && !query.isLoading && !query.error && query.data == null;
 
+  // Status-mašina naloga (BigBit paritet): draft→posted→locked + storno.
+  // Invalidacija (detalj + dnevnik + kartica) ide kroz zajednički onSuccess hooka.
+  const post = usePostJournalEntry();
+  const lock = useLockJournalEntry();
+  const reverse = useReverseJournalEntry();
+
+  const onPost = useCallback(() => {
+    if (!doc) return;
+    if (
+      !window.confirm(
+        `Proknjižiti nalog ${doc.number}? Stavke ulaze u glavnu knjigu (kartica konta i bruto bilans).`,
+      )
+    )
+      return;
+    post.mutate(doc.id, { onSuccess: () => toast('Nalog proknjižen.') });
+  }, [doc, post]);
+
+  const onLock = useCallback(() => {
+    if (!doc) return;
+    if (
+      !window.confirm(
+        `Zaključati nalog ${doc.number}? Zaključavanje označava kraj knjiženja u periodu — nalog prelazi u pregled.`,
+      )
+    )
+      return;
+    lock.mutate(doc.id, { onSuccess: () => toast('Nalog zaključan.') });
+  }, [doc, lock]);
+
+  const onReverse = useCallback(() => {
+    if (!doc) return;
+    // Razlog storna stoji u tekstu potvrde: kreira se kontra-nalog sa obrnutim stranama.
+    if (
+      !window.confirm(
+        `Storniraj nalog ${doc.number}? Kreira se novi kontra-nalog sa obrnutim stranama (Duguje/Potražuje) koji poništava efekat ovog naloga. Radnja se ne poništava.`,
+      )
+    )
+      return;
+    reverse.mutate(doc.id, {
+      onSuccess: (res) => toast(`Nalog storniran — kreiran kontra-nalog ${res.number}.`),
+    });
+  }, [doc, reverse]);
+
   const goBack = useCallback(() => router.push('/glavna-knjiga'), [router]);
+
+  // Ctrl+S = primarna nedestruktivna akcija tekućeg statusa (draft→proknjiži,
+  // posted→zaključaj). Storno je destruktivan i namerno NIJE na prečici.
+  const primaryAction = useCallback(() => {
+    if (!doc) return;
+    if (doc.status === GL_STATUS.DRAFT) onPost();
+    else if (doc.status === GL_STATUS.POSTED) onLock();
+  }, [doc, onPost, onLock]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
         goBack();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        primaryAction();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [goBack]);
+  }, [goBack, primaryAction]);
+
+  const actionError =
+    (post.error as Error | null)?.message ??
+    (lock.error as Error | null)?.message ??
+    (reverse.error as Error | null)?.message ??
+    null;
 
   if (isLoading || !user) {
     return (
@@ -126,10 +189,23 @@ export default function GlavnaKnjigaDetailPage() {
         title={doc ? `Nalog ${doc.number}` : 'Nalog glavne knjige'}
         count={doc ? statusMeta(doc.status).label : undefined}
         actions={
-          <Button variant="ghost" onClick={goBack}>
-            <ArrowLeft className="h-4 w-4" aria-hidden />
-            Nazad
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" onClick={goBack}>
+              <ArrowLeft className="h-4 w-4" aria-hidden />
+              Nazad
+            </Button>
+            {doc && (
+              <JournalActions
+                doc={doc}
+                onPost={onPost}
+                onLock={onLock}
+                onReverse={onReverse}
+                posting={post.isPending}
+                locking={lock.isPending}
+                reversing={reverse.isPending}
+              />
+            )}
+          </div>
         }
       />
 
@@ -137,6 +213,11 @@ export default function GlavnaKnjigaDetailPage() {
         {error && (
           <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">
             {error.message}
+          </div>
+        )}
+        {actionError && (
+          <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">
+            {actionError}
           </div>
         )}
 
@@ -199,8 +280,67 @@ function JournalHeader({ doc }: { doc: JournalEntryDetail }) {
         <Field label="Broj stavki">
           <span className="tnums text-ink">{doc.lines.length}</span>
         </Field>
+        {doc.reversedByEntryId != null && (
+          <Field label="Storniran">
+            <StatusBadge tone="danger" label={`Kontra-nalog #${doc.reversedByEntryId}`} />
+          </Field>
+        )}
+        {doc.reversesEntryId != null && (
+          <Field label="Storno">
+            <span className="text-ink-secondary">stornira nalog #{doc.reversesEntryId}</span>
+          </Field>
+        )}
       </dl>
     </section>
+  );
+}
+
+/**
+ * Status-uslovljena dugmad (BigBit paritet, gap-audit #9/#46):
+ *   • draft  → „Proknjiži" (post) — stavke ulaze u glavnu knjigu
+ *   • posted → „Zaključaj" (lock) + „Storno" (reverse)
+ *   • locked → samo „Storno" (backend reverse() dozvoljava storno i za locked;
+ *              odbija samo draft i već storniran — gl-write.service.ts:97-102)
+ * Već storniran nalog (reversedByEntryId != null) nema „Storno" (izbegava 409).
+ */
+function JournalActions({
+  doc,
+  onPost,
+  onLock,
+  onReverse,
+  posting,
+  locking,
+  reversing,
+}: {
+  doc: JournalEntryDetail;
+  onPost: () => void;
+  onLock: () => void;
+  onReverse: () => void;
+  posting: boolean;
+  locking: boolean;
+  reversing: boolean;
+}) {
+  const canReverse =
+    (doc.status === GL_STATUS.POSTED || doc.status === GL_STATUS.LOCKED) &&
+    doc.reversedByEntryId == null;
+  return (
+    <>
+      {doc.status === GL_STATUS.DRAFT && (
+        <Button onClick={onPost} loading={posting}>
+          Proknjiži
+        </Button>
+      )}
+      {doc.status === GL_STATUS.POSTED && (
+        <Button variant="secondary" onClick={onLock} loading={locking}>
+          Zaključaj
+        </Button>
+      )}
+      {canReverse && (
+        <Button variant="danger" onClick={onReverse} loading={reversing}>
+          Storno
+        </Button>
+      )}
+    </>
   );
 }
 

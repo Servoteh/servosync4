@@ -25,12 +25,14 @@
  */
 
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
+import { isValidAccountNumber } from "./mod97.util";
 
 const D = Prisma.Decimal;
 
@@ -69,6 +71,21 @@ export class PaymentExportService {
       throw new ConflictException(
         `Izvoz dozvoljen samo za potpisane naloge (SIGNED). Nisu potpisani: ` +
           notSigned.map((o) => `${o.orderNumber}(${o.status})`).join(", "),
+      );
+    }
+
+    // Odbrana u dubini (DobarTR): iako se TR validira pri kreiranju, nalog je mogao biti unet
+    // drugim putem — pre gradnje sloga ponovo proveri žiro račun (banka(3)-partija-KK(2)+MOD97).
+    // Validiramo samo prisutan račun (prazan = poseban tok). Sporne agregiramo u jednu poruku.
+    const badAccounts = orders
+      .filter((o) => {
+        const acct = o.supplierAccount?.trim();
+        return acct != null && acct !== "" && !isValidAccountNumber(acct);
+      })
+      .map((o) => `${o.orderNumber}: žiro račun ${o.supplierAccount}`);
+    if (badAccounts.length > 0) {
+      throw new BadRequestException(
+        `Izvoz prekinut — neispravan tekući račun (DobarTR): ${badAccounts.join("; ")}.`,
       );
     }
 
