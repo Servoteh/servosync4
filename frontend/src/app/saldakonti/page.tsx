@@ -20,6 +20,7 @@ import {
   type OpenItem,
   type AgingByPartnerRow,
 } from '@/api/saldakonti';
+import { CompensationPanel } from './compensation-panel';
 
 /**
  * Saldakonti (Faza 4 §A). Obrazac „Lista" (DESIGN_SYSTEM §4.1): filter bar + gusta
@@ -32,11 +33,12 @@ import {
  * NE uvodi — mapiranje `dueTone` koristi postojeće tonove semantikom toka.
  */
 
-type View = 'open' | 'aging';
+type View = 'open' | 'aging' | 'compensation';
 
 const TABS = [
   { key: 'open' as const, label: 'Otvorene stavke' },
   { key: 'aging' as const, label: 'Aging' },
+  { key: 'compensation' as const, label: 'Kompenzacije' },
 ];
 
 /** Zbir Decimal-as-string salda (za prikaz; knjiženje presuđuje backend). */
@@ -324,7 +326,9 @@ export default function SaldakontiPage() {
           </div>
         )}
 
-        {view === 'open' ? (
+        {view === 'compensation' ? (
+          <CompensationPanel />
+        ) : view === 'open' ? (
           <>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">

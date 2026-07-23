@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { Plus } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
@@ -10,6 +11,7 @@ import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Pager } from '@/components/ui-kit/pager';
 import { Select } from '@/components/ui-kit/select';
+import { Button } from '@/components/ui-kit/button';
 import { formatDate, formatNumber } from '@/lib/format';
 import {
   useStockDocuments,
@@ -20,6 +22,7 @@ import {
   type StockDocument,
 } from '@/api/robno';
 import { LagerPanel } from './lager-panel';
+import { NewDocumentDialog } from './new-document-dialog';
 
 /**
  * Robno / magacin: radna lista robnih dokumenata (Faza 3). Obrazac „Lista"
@@ -125,6 +128,7 @@ export default function RobnoPage() {
   const [kind, setKind] = useState<RobnoKind | ''>('');
   const [status, setStatus] = useState<RobnoStatus | ''>('');
   const [page, setPage] = useState(1);
+  const [newOpen, setNewOpen] = useState(false);
   const resetPage = () => setPage(1);
 
   useEffect(() => {
@@ -151,6 +155,18 @@ export default function RobnoPage() {
       <PageHeader
         title="Robno / magacin"
         count={list.data ? `${formatNumber(total)} dokumenata` : undefined}
+        actions={
+          <Button onClick={() => setNewOpen(true)}>
+            <Plus className="h-4 w-4" aria-hidden />
+            Novi dokument
+          </Button>
+        }
+      />
+
+      <NewDocumentDialog
+        open={newOpen}
+        onClose={() => setNewOpen(false)}
+        onCreated={(id) => router.push(`/robno/${id}`)}
       />
 
       <div className="flex-1 space-y-4 overflow-auto p-6">

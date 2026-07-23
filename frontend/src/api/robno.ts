@@ -297,3 +297,36 @@ export function useLager(filters: { warehouseId?: number; onlyInStock?: boolean;
     queryFn: () => apiFetch<LagerResponse>(`${BASE}/lager${query}`),
   });
 }
+
+// ─────────────────────────────────── kreiranje robnog dokumenta (BigBit paritet)
+
+/** Stavka novog robnog dokumenta (osnovni skup — napredna polja opciona). */
+export interface CreateStockItemInput {
+  itemId: number;
+  quantity: number;
+  invoicePrice?: number;
+}
+
+/** Telo POST /robno/documents — kind + zaglavlje + stavke (1:1 sa backend DTO, osnovni skup). */
+export interface CreateStockDocumentInput {
+  kind: RobnoKind;
+  documentTypeCode: string;
+  warehouseId: number;
+  supplierId?: number;
+  customerId?: number;
+  documentDate?: string;
+  items: CreateStockItemInput[];
+}
+
+/** Kreiraj robni dokument (POST /robno/documents) — status DRAFT. */
+export function useCreateStockDocument() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateStockDocumentInput) =>
+      apiFetch<Envelope<StockDocumentDetail>>(`${BASE}/documents`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['robno'] }),
+  });
+}
