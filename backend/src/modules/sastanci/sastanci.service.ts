@@ -899,9 +899,29 @@ export class SastanciService {
     }
   }
 
-  /** Kreiraj sastanak (paritet saveSastanak; RLS INSERT = has_edit_role). */
+  /** Dedup učesnika po lower(email) — PK je (sastanak_id,email), dupli unos = 23505.
+   *  Prazan email se izbacuje (validacija je @IsString, ne @IsEmail — meki filter). */
+  private dedupeUcesnici<T extends { email: string }>(list?: T[]): T[] {
+    const seen = new Set<string>();
+    const out: T[] = [];
+    for (const u of list ?? []) {
+      const key = (u.email ?? "").toLowerCase().trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(u);
+    }
+    return out;
+  }
+
+  /** Kreiraj sastanak (paritet saveSastanak; RLS INSERT = has_edit_role).
+   *  Zahtev 005/26: opcioni `dto.ucesnici` se umeću u istoj transakciji — umetanje
+   *  reda u `sastanak_ucesnici` za planiran sastanak auto-okida sy15 trigger
+   *  `sast_trg_ucesnik_invite` → 'meeting_invite' mejl (tema/termin/mesto). Isti
+   *  put kao dodavanje učesnika (addUcesnik/bulk); enqueue radi DEFINER trigger,
+   *  BE ne dira notification_log (B10). Atomično: pad unosa učesnika vrati i sastanak. */
   async createSastanak(email: string, dto: CreateSastanakDto) {
     this.assertNotLockViaStatus(dto.status);
+    const ucesnici = this.dedupeUcesnici(dto.ucesnici);
     return this.runIdem(
       email,
       dto.clientEventId,
@@ -924,6 +944,20 @@ export class SastanciService {
             createdByEmail: email,
           },
         });
+        if (ucesnici.length) {
+          // pozvan default true, prisutan default false (paritet addUcesnik/prenos:
+          // pozvan = kandidat za mejl, prisutan tek na „▶ Počni"). Trigger šalje mejl.
+          await tx.sastanakUcesnik.createMany({
+            data: ucesnici.map((u) => ({
+              sastanakId: row.id,
+              email: u.email.toLowerCase().trim(),
+              label: u.label ?? null,
+              pozvan: u.pozvan !== false,
+              prisutan: u.prisutan === true,
+              napomena: u.napomena ?? null,
+            })),
+          });
+        }
         return row;
       },
     );

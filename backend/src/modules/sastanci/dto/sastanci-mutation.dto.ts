@@ -59,6 +59,21 @@ export class CreateSastanakDto extends IdempotentDto {
   @IsIn(["planiran", "u_toku", "zavrsen", "otkazan"])
   status?: string;
   @IsOptional() @IsString() napomena?: string;
+
+  /**
+   * Zahtev 005/26 — pozivanje učesnika iz „prve forme" (Zoran Jaraković, 23.07).
+   * Opcioni; prazno = sastanak bez poziva. Svaki umetnut red u `sastanak_ucesnici`
+   * (za planiran sastanak) AUTO-okida sy15 DEFINER trigger `sast_trg_ucesnik_invite`
+   * → 'meeting_invite' mejl (tema=naslov / termin=datum+vreme / mesto) svakom
+   * učesniku, isporuka postojećim `sast_notify_dispatch` cron → edge-om. Doktrina
+   * B10: BE NIKAD ne INSERT-uje u `sastanci_notification_log` — enqueue radi trigger
+   * (isti put kao dodavanje učesnika kroz PUT/POST /:id/ucesnici). `UcesnikInputDto`
+   * je deklarisan niže; `@Type(() => …)` ga razrešava lenjo (bez TDZ). */
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => UcesnikInputDto)
+  ucesnici?: UcesnikInputDto[];
 }
 
 export class UpdateSastanakDto {

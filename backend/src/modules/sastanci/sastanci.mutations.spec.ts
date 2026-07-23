@@ -149,6 +149,62 @@ describe("SastanciService R2 mutacije", () => {
     expect(arg.createdByEmail).toBe("u@servoteh.com");
   });
 
+  it("createSastanak BEZ učesnika: ne dira sastanak_ucesnici (nema poziva)", async () => {
+    const { svc, tx } = makeSvc();
+    await svc.createSastanak("u@servoteh.com", {
+      clientEventId: CID,
+      naslov: "Test",
+      datum: "2026-07-15",
+    });
+    expect(tx.sastanakUcesnik.createMany).not.toHaveBeenCalled();
+  });
+
+  /* Zahtev 005/26 — pozivanje iz „prve forme": učesnici se umeću u ISTOJ create
+   * transakciji; umetanje reda auto-okida sy15 trigger sast_trg_ucesnik_invite →
+   * 'meeting_invite' mejl. BE ne dira notification_log (B10) — samo ubaci red. */
+  it("createSastanak SA učesnicima: createMany (lowercase email, pozvan=true, prisutan=false)", async () => {
+    const { svc, tx } = makeSvc();
+    await svc.createSastanak("u@servoteh.com", {
+      clientEventId: CID,
+      naslov: "Test",
+      datum: "2026-07-15",
+      ucesnici: [{ email: "A@servoteh.com", label: "A. Test" }],
+    });
+    const rows = argData(tx.sastanakUcesnik.createMany) as unknown as {
+      sastanakId: string;
+      email: string;
+      pozvan: boolean;
+      prisutan: boolean;
+    }[];
+    expect(rows[0]).toMatchObject({
+      sastanakId: ID,
+      email: "a@servoteh.com",
+      pozvan: true,
+      prisutan: false,
+    });
+  });
+
+  it("createSastanak: dedup dupliranih učesnika po lower(email) (PK (sastanak,email) → 23505)", async () => {
+    const { svc, tx } = makeSvc();
+    await svc.createSastanak("u@servoteh.com", {
+      clientEventId: CID,
+      naslov: "Test",
+      datum: "2026-07-15",
+      ucesnici: [
+        { email: "A@servoteh.com" },
+        { email: "a@servoteh.com" },
+        { email: "b@servoteh.com" },
+      ],
+    });
+    const rows = argData(tx.sastanakUcesnik.createMany) as unknown as {
+      email: string;
+    }[];
+    expect(rows.map((r) => r.email)).toEqual([
+      "a@servoteh.com",
+      "b@servoteh.com",
+    ]);
+  });
+
   it("updateSastanak: 0 pogodaka a red postoji → 403", async () => {
     const { svc, tx } = makeSvc();
     tx.sastanak.count.mockResolvedValueOnce(1);
