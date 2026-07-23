@@ -89,6 +89,7 @@ export const PERMISSIONS = {
   // read = uvid u bruto bilans i sačuvane obračune; compute = pokretanje obračuna. Mirror BE kataloga.
   ZR_READ: 'zr.read',
   ZR_COMPUTE: 'zr.compute',
+  ZR_EXPORT: 'zr.export',
   DIRECTORY_READ: 'directory.read',
   // Predmeti write-path + RFQ kupca — 4.0 Traka B (mirror backend kataloga)
   PROJECTS_WRITE: 'projects.write',

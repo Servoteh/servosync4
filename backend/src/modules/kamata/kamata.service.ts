@@ -108,12 +108,13 @@ export class KamataService {
         `Nema definisane ${kind} stope na dan ${calcDate.toISOString().slice(0, 10)} (dodaj stopu u registar).`,
       );
 
-    // Otvorene DOSPELE stavke komitenta: nezatvorene, sa dospećem pre dana obračuna.
+    // Otvorene stavke komitenta (nezatvorene). Uzimamo SVE redove (i uplate bez dueDate)
+    // da bismo NETIRALI osnovicu po dokumentu — inače se kamata računa na već plaćeni deo
+    // fakture (review VISOK). Grupišemo po document_number kao open-items.service.
     const entries = await this.prisma.ledgerEntry.findMany({
       where: {
         analyticalCode: dto.partnerId,
         reconciledAt: null,
-        dueDate: { not: null, lt: calcDate },
       },
       select: {
         id: true,
@@ -123,6 +124,24 @@ export class KamataService {
         dueDate: true,
       },
     });
+
+    // Neto saldo + najranije dospeće po dokumentu (grupa = document_number; null → svoj ključ po id).
+    const groups = new Map<
+      string,
+      { principal: Prisma.Decimal; dueDate: Date | null; anyLedgerId: number; docNo: string | null }
+    >();
+    for (const e of entries) {
+      const key = e.documentNumber ?? `__id:${e.id}`;
+      const g = groups.get(key) ?? {
+        principal: ZERO,
+        dueDate: null,
+        anyLedgerId: e.id,
+        docNo: e.documentNumber,
+      };
+      g.principal = g.principal.add(e.debit).sub(e.credit);
+      if (e.dueDate && (!g.dueDate || e.dueDate < g.dueDate)) g.dueDate = e.dueDate;
+      groups.set(key, g);
+    }
 
     const rateFraction = ratePct.div(100);
     const lines: {
@@ -138,35 +157,31 @@ export class KamataService {
     let totalPrincipal = ZERO;
     let totalInterest = ZERO;
 
-    for (const e of entries) {
-      // Osnovica = otvoreni saldo potraživanja (duguje − potražuje); samo pozitivan.
-      const principal = e.debit.sub(e.credit);
-      if (principal.lte(0) || !e.dueDate) continue;
+    for (const g of groups.values()) {
+      // Osnovica = NETO otvoreni saldo dokumenta (Σduguje − Σpotražuje); samo dospelo pozitivno.
+      if (g.principal.lte(0) || !g.dueDate || g.dueDate >= calcDate) continue;
 
       const days = Math.floor(
-        (calcDate.getTime() - e.dueDate.getTime()) / 86_400_000,
+        (calcDate.getTime() - g.dueDate.getTime()) / 86_400_000,
       );
       if (days <= 0) continue;
 
       let interest: Prisma.Decimal;
       if (method === "konformni") {
-        // osnovica × ((1 + r)^(dani/365) − 1)
-        const factor =
-          Math.pow(1 + rateFraction.toNumber(), days / 365) - 1;
-        interest = principal.mul(new D(factor));
+        const factor = Math.pow(1 + rateFraction.toNumber(), days / 365) - 1;
+        interest = g.principal.mul(new D(factor));
       } else {
-        // osnovica × dani × r / 365
-        interest = principal.mul(days).mul(rateFraction).div(365);
+        interest = g.principal.mul(days).mul(rateFraction).div(365);
       }
       interest = interest.toDecimalPlaces(4);
 
-      totalPrincipal = totalPrincipal.add(principal);
+      totalPrincipal = totalPrincipal.add(g.principal);
       totalInterest = totalInterest.add(interest);
       lines.push({
-        ledgerEntryId: e.id,
-        documentNumber: e.documentNumber,
-        principal,
-        dueDate: e.dueDate,
+        ledgerEntryId: g.anyLedgerId,
+        documentNumber: g.docNo,
+        principal: g.principal,
+        dueDate: g.dueDate,
         daysOverdue: days,
         ratePct,
         interest,

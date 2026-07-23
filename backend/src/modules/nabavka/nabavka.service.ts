@@ -347,7 +347,9 @@ export class NabavkaService {
         `Robni ulaz ${existingInbound.documentNumber} je već napravljen za ovu narudžbenicu.`,
       );
 
-    // 1) Upiši primljene količine + status RECEIVED (Nabavka strana).
+    // 1) Upiši primljene količine (BEZ statusa RECEIVED). Status se postavlja TEK na kraju,
+    // posle uspešnog robnog ulaza + knjiženja (review VISOK — inače PO ostaje trajno
+    // „primljen" bez ulaza ako korak 2/3 padne, a prijem se ne može ponoviti).
     const byId = new Map(lines.map((l) => [l.itemId, l]));
     await this.prisma.$transaction(async (tx) => {
       for (const item of order.items) {
@@ -359,10 +361,6 @@ export class NabavkaService {
           data: { receivedQuantity: qty },
         });
       }
-      await tx.purchaseOrder.update({
-        where: { id: orderId },
-        data: { status: "RECEIVED", updatedByUserId: actor.userId },
-      });
     });
 
     // 2) Napravi robni ulaz (Faza 3) iz primljenih stavki (receivedQuantity > 0).
@@ -371,6 +369,11 @@ export class NabavkaService {
       where: { orderId, receivedQuantity: { gt: 0 }, articleId: { not: null } },
     });
     if (received.length === 0) {
+      // Nema robnih stavki za ulaz — svejedno zaključi prijem (usluge/bez artikla).
+      await this.prisma.purchaseOrder.update({
+        where: { id: orderId },
+        data: { status: "RECEIVED", updatedByUserId: actor.userId },
+      });
       return { order: { id: orderId, status: "RECEIVED" }, stockDocument: null };
     }
     const warehouseId = opts?.warehouseId ?? 1;
@@ -400,6 +403,14 @@ export class NabavkaService {
       // postFromStockDocument je idempotentan (guard po sourceGoodsDocId) — bezbedno.
       journalEntry = await this.posting.postFromStockDocument(stockDocId);
     }
+
+    // 4) TEK SADA (posle uspešnog ulaza + kalkulacije + knjiženja) → RECEIVED. Ako je bilo
+    // šta gore palo, PO ostaje ORDERED/SIGNED i prijem se može ponoviti (anti-duplo guard
+    // + uq_stock_documents_po sprečavaju dupli ulaz ako je prvi uspeo).
+    await this.prisma.purchaseOrder.update({
+      where: { id: orderId },
+      data: { status: "RECEIVED", updatedByUserId: actor.userId },
+    });
 
     return {
       order: { id: orderId, status: "RECEIVED" },

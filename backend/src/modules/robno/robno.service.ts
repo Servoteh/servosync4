@@ -154,7 +154,11 @@ export class RobnoService {
         reserved: l.reserved.toFixed(3),
         avgPurchaseNet: l.avgPurchaseNet.toFixed(2),
         avgWholesalePrice: l.avgWholesalePrice.toFixed(2),
-        stockValue: l.onHand.mul(l.avgPurchaseNet).toFixed(2),
+        // Vrednost iz ISTE zaokružene cene koja se prikazuje (review NIZAK) — da ručna
+        // kontrola „stanje × cena = vrednost" štima; puna preciznost pravila lažne razlike.
+        stockValue: l.onHand
+          .mul(l.avgPurchaseNet.toDecimalPlaces(2))
+          .toFixed(2),
       };
     });
 
