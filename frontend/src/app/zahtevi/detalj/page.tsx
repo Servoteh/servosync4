@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowLeft, RefreshCw, HelpCircle } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
@@ -24,7 +24,7 @@ import {
 import { HelpProvider, HelpToggleButton, HelpBanner } from '@/components/ui-kit/help-mode';
 import { HelpSpot } from '@/components/ui-kit/help-spot';
 import { HelpTour } from '@/components/ui-kit/help-tour';
-import { statusMeta } from '../_lib/status';
+import { statusMeta, lastEventTime } from '../_lib/status';
 import { HELP, ADMIN_TOUR } from '../_lib/help';
 import { OwnerActions, AdminActions } from './_components/action-bars';
 import { RequestTab } from './_components/request-tab';
@@ -74,11 +74,14 @@ export default function ZahtevDetailPage() {
 
   const [tab, setTab] = useState<Tab>('zahtev');
   // Baner „Odgovori" (owner, NEEDS_INFO) → prebaci na tab Pitanja i fokusiraj polje.
+  // Signal se resetuje čim QuestionsTab potroši fokus (da ručni povratak na tab ne
+  // fokusira/skroluje ponovo). consumeFocus je stabilan (useCallback) — bez re-run petlje.
   const [focusAnswer, setFocusAnswer] = useState(0);
   const answerQuestions = () => {
     setTab('pitanja');
     setFocusAnswer((n) => n + 1);
   };
+  const consumeFocus = useCallback(() => setFocusAnswer(0), []);
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
@@ -243,7 +246,12 @@ export default function ZahtevDetailPage() {
             {tab === 'zahtev' && <RequestTab detail={detail} isOwner={isOwner} />}
             {tab === 'ai' && <AiTab detail={detail} isAdmin={isAdmin} />}
             {tab === 'pitanja' && (
-              <QuestionsTab detail={detail} isAdmin={isAdmin} focusSignal={focusAnswer} />
+              <QuestionsTab
+                detail={detail}
+                isAdmin={isAdmin}
+                focusSignal={focusAnswer}
+                onFocusConsumed={consumeFocus}
+              />
             )}
             {tab === 'istorija' && <HistoryTab detail={detail} />}
           </>
@@ -295,20 +303,22 @@ function ZahtevHeader({ detail }: { detail: ChangeRequestDetail }) {
 }
 
 /**
- * Razlog/napomena poslednje admin odluke na zahtevu (`decisionNote`). NEEDS_INFO se
- * prikazuje u DopunaBanner-u (owner) pa se ovde preskače da se ne dupliraju pitanja.
- * REJECTED = danger, APPROVED = success, ostalo (defer/merge/archive) = neutralno.
+ * Razlog/napomena poslednje admin odluke (`decisionNote`) — SAMO za terminalne/odlučene
+ * statuse (REJECTED/APPROVED/DEFERRED/MERGED/ARCHIVED). NEEDS_INFO ide u DopunaBanner;
+ * SUBMITTED/ANALYZED namerno preskačemo (tu je decisionNote već očišćen resubmit-om ili
+ * nije relevantan). Sprečava prikaz zastarele napomene u međustatusima (23.07 review §3b).
  */
+const DECISION_NOTE_STATUSES: Record<string, { label: string; cls: string }> = {
+  REJECTED: { label: 'Razlog odbijanja', cls: 'bg-status-danger-bg text-status-danger' },
+  APPROVED: { label: 'Napomena odluke', cls: 'bg-status-success-bg text-status-success' },
+  DEFERRED: { label: 'Napomena odluke', cls: 'bg-surface-2 text-ink-secondary' },
+  MERGED: { label: 'Napomena odluke', cls: 'bg-surface-2 text-ink-secondary' },
+  ARCHIVED: { label: 'Napomena odluke', cls: 'bg-surface-2 text-ink-secondary' },
+};
+
 function DecisionNoteRow({ detail }: { detail: ChangeRequestDetail }) {
-  if (!detail.decisionNote || detail.status === 'NEEDS_INFO') return null;
-  const map: Record<string, { label: string; cls: string }> = {
-    REJECTED: { label: 'Razlog odbijanja', cls: 'bg-status-danger-bg text-status-danger' },
-    APPROVED: { label: 'Napomena odluke', cls: 'bg-status-success-bg text-status-success' },
-  };
-  const meta = map[detail.status] ?? {
-    label: 'Napomena odluke',
-    cls: 'bg-surface-2 text-ink-secondary',
-  };
+  const meta = DECISION_NOTE_STATUSES[detail.status];
+  if (!detail.decisionNote || !meta) return null;
   return (
     <div className={`mt-3 rounded-control px-3 py-2 text-sm ${meta.cls}`}>
       <span className="text-2xs font-semibold uppercase tracking-[0.08em] opacity-80">
@@ -332,7 +342,14 @@ function DopunaBanner({
   detail: ChangeRequestDetail;
   onAnswer: () => void;
 }) {
-  const questions = detail.comments.filter((c) => c.isQuestion);
+  // Round-scope: prikaži SAMO pitanja tekuće runde — ona nastala od poslednjeg
+  // NEEDS_INFO event-a (ista tx, isti transaction_timestamp → `>=`). Odgovorena
+  // pitanja iz ranijih rundi se ne ponavljaju (23.07 review §2).
+  const lastReturnAt = lastEventTime(detail.events, 'NEEDS_INFO');
+  const questions = detail.comments.filter(
+    (c) => c.isQuestion && (lastReturnAt == null || c.createdAt >= lastReturnAt),
+  );
+  const hasNote = !!detail.decisionNote;
   return (
     <HelpSpot id="zahtevi.detalj.dopuna" variant="inline">
       <section className="rounded-panel border border-status-warn/40 bg-status-warn-bg p-5">
@@ -347,7 +364,7 @@ function DopunaBanner({
               a kad završite kliknite „Ponovo podnesi" da se zahtev vrati administratoru.
             </p>
 
-            {questions.length > 0 ? (
+            {questions.length > 0 && (
               <ul className="mt-3 list-disc space-y-1 pl-5">
                 {questions.map((q) => (
                   <li key={q.id} className="whitespace-pre-wrap text-sm text-ink">
@@ -355,11 +372,16 @@ function DopunaBanner({
                   </li>
                 ))}
               </ul>
-            ) : detail.decisionNote ? (
+            )}
+
+            {/* Napomena (decisionNote) — uz pitanja ako postoje, ili kao jedini sadržaj. */}
+            {hasNote && (
               <p className="mt-3 whitespace-pre-wrap rounded-control bg-surface px-3 py-2 text-sm text-ink">
                 {detail.decisionNote}
               </p>
-            ) : (
+            )}
+
+            {questions.length === 0 && !hasNote && (
               <p className="mt-3 text-sm text-ink-secondary">
                 Administrator nije naveo konkretna pitanja — dopunite zahtev dodatnim
                 informacijama ili prilozima.

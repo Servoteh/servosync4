@@ -9,6 +9,7 @@ import { Textarea } from '@/components/ui-kit/textarea';
 import { HelpSpot } from '@/components/ui-kit/help-spot';
 import { toast } from '@/lib/toast';
 import { formatDecimal } from '@/lib/format';
+import { lastEventTime } from '../../_lib/status';
 import {
   useSubmitZahtev,
   useWithdrawZahtev,
@@ -48,11 +49,18 @@ export function OwnerActions({ detail }: { detail: ChangeRequestDetail }) {
   const canEdit = detail.status === 'DRAFT';
   const canDelete = detail.status === 'DRAFT';
 
-  // Podsetnik posle poslatog odgovora (owner, NEEDS_INFO): podnosilac je već ostavio
-  // komentar/odgovor pa ga usmeravamo da klikne „Ponovo podnesi" (§A.1).
+  // Podsetnik posle poslatog odgovora (owner, NEEDS_INFO): podnosilac je u TEKUĆOJ rundi
+  // (posle poslednjeg NEEDS_INFO event-a) ostavio odgovor → usmeri ga na „Ponovo podnesi".
+  // Round-scope da stari odgovori iz ranijih rundi ne pale podsetnik (23.07 review §2).
+  const lastReturnAt = lastEventTime(detail.events, 'NEEDS_INFO');
   const hasOwnReply =
     detail.status === 'NEEDS_INFO' &&
-    detail.comments.some((c) => c.authorUserId === detail.createdByUserId);
+    detail.comments.some(
+      (c) =>
+        c.authorUserId === detail.createdByUserId &&
+        !c.isQuestion &&
+        (lastReturnAt == null || c.createdAt >= lastReturnAt),
+    );
 
   if (!canSubmit && !canWithdraw && !canEdit && !canDelete) return null;
 

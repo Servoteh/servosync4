@@ -471,6 +471,23 @@ export function useDecision() {
   });
 }
 
+/**
+ * Atomsko vraćanje na dopunu (admin) — N pitanja + prelaz NEEDS_INFO + mejl u JEDNOM
+ * pozivu. Zamena za krhki dvokorak (addComment pa decision): server garantuje da se
+ * pitanja ne upišu bez prelaza (23.07 review). Koriste ga oba FE toka.
+ */
+export function useReturnForInfo() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: ({ id, questions, note }: { id: number; questions: string[]; note?: string }) =>
+      apiFetch<One<ChangeRequest>>(`${BASE}/${id}/return-for-info`, {
+        method: 'POST',
+        body: JSON.stringify({ questions, note }),
+      }),
+    onSuccess: invalidate,
+  });
+}
+
 /** Realizacioni prelazi + link polja (admin). */
 export function useSetRealizationStatus() {
   const invalidate = useInvalidate();

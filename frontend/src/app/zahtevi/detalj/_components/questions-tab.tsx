@@ -7,7 +7,7 @@ import { Textarea } from '@/components/ui-kit/textarea';
 import { toast } from '@/lib/toast';
 import {
   useAddComment,
-  useDecision,
+  useReturnForInfo,
   type ChangeRequestComment,
   type ChangeRequestDetail,
 } from '@/api/zahtevi';
@@ -17,54 +17,56 @@ import { formatDateTime } from '@/lib/format';
  * Tab „Pitanja" — komentari (admin ↔ podnosilac). Dopune u NEEDS_INFO idu ovuda
  * (§10.3: original se ne prepisuje).
  *
- * Admin „Pitanje podnosiocu": komentar se snima kao isQuestion=true (vizuelno
- * označen + banner podnosiocu), a status se prebacuje u NEEDS_INFO ODVOJENIM
- * pozivom (decision needs-info) SAMO kad je prelaz moguć (SUBMITTED/ANALYZED).
- * Kad prelaz nije moguć (npr. već NEEDS_INFO) → samo komentar, label „Označi kao
- * pitanje". Komentar više nikad sam ne menja status (BE revizija 23.07).
+ * Admin „Pitanje podnosiocu" kad je prelaz moguć (SUBMITTED/ANALYZED) ide ATOMSKI
+ * kroz `return-for-info` (komentar isQuestion=true + prelaz NEEDS_INFO + mejl — jedan
+ * poziv, bez krhkog dvokoraka). Kad prelaz NIJE moguć (npr. već NEEDS_INFO) → običan
+ * komentar isQuestion=true, label „Označi kao pitanje".
  *
- * `focusSignal` (iz banera „Odgovori") — svaka promena fokusira textarea.
+ * `focusSignal` (iz banera „Odgovori") — svaka promena fokusira polje; `onFocusConsumed`
+ * javlja roditelju da resetuje signal (da ručni povratak na tab ne fokusira ponovo).
  */
 export function QuestionsTab({
   detail,
   isAdmin,
   focusSignal,
+  onFocusConsumed,
 }: {
   detail: ChangeRequestDetail;
   isAdmin: boolean;
   focusSignal?: number;
+  onFocusConsumed?: () => void;
 }) {
   const [body, setBody] = useState('');
   const [isQuestion, setIsQuestion] = useState(false);
   const add = useAddComment();
-  const decide = useDecision();
+  const returnForInfo = useReturnForInfo();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   // Prelaz u „Vraćen na dopunu" je moguć samo iz Podnet / AI obrađen.
   const canReturn = detail.status === 'SUBMITTED' || detail.status === 'ANALYZED';
-  const busy = add.isPending || decide.isPending;
+  const busy = add.isPending || returnForInfo.isPending;
 
-  // Baner „Odgovori" (owner, NEEDS_INFO) fokusira polje za odgovor.
+  // Baner „Odgovori" (owner, NEEDS_INFO) fokusira polje za odgovor; posle fokusa
+  // javljamo roditelju da resetuje signal (bez ponovnog fokusa na sledeći render).
   useEffect(() => {
     if (focusSignal && focusSignal > 0) {
       textareaRef.current?.focus();
       textareaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      onFocusConsumed?.();
     }
-  }, [focusSignal]);
+  }, [focusSignal, onFocusConsumed]);
 
   async function submit() {
+    if (busy) return; // re-entrancy: dupli klik ne šalje dvaput
     const text = body.trim();
     if (!text) return;
     const asQuestion = isAdmin && isQuestion;
     try {
-      await add.mutateAsync({ id: detail.id, body: text, isQuestion: asQuestion || undefined });
-      // Pitanje adminu vraća zahtev na dopunu — ali samo kad je prelaz moguć.
       if (asQuestion && canReturn) {
-        await decide.mutateAsync({
-          id: detail.id,
-          action: 'needs-info',
-          note: 'Pitanja su u tabu „Pitanja".',
-        });
+        // Atomski: pitanje kao komentar + prelaz NEEDS_INFO + mejl (jedan poziv).
+        await returnForInfo.mutateAsync({ id: detail.id, questions: [text] });
+      } else {
+        await add.mutateAsync({ id: detail.id, body: text, isQuestion: asQuestion || undefined });
       }
       setBody('');
       setIsQuestion(false);

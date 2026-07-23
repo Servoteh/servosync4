@@ -21,8 +21,7 @@ import {
   useRetriage,
   useApproveAnalysis,
   usePatchAnalysis,
-  useAddComment,
-  useDecision,
+  useReturnForInfo,
   type ChangeRequestAiAnalysis,
   type ChangeRequestDetail,
   type TriageResult,
@@ -384,25 +383,17 @@ function OpenQuestions({
   heading: string;
 }) {
   const [confirm, setConfirm] = useState(false);
-  const addComment = useAddComment();
-  const decide = useDecision();
+  const returnForInfo = useReturnForInfo();
   const canForward =
     isAdmin && (detail.status === 'SUBMITTED' || detail.status === 'ANALYZED');
 
   async function forward() {
+    // Re-entrancy: dupli klik ne sme dvaput POST-ovati SVA pitanja.
+    if (returnForInfo.isPending) return;
     try {
-      // Svako pitanje → komentar isQuestion:true (vizuelno označeno kao pitanje u tabu
-      // „Pitanja" + banner podnosiocu). Komentar NE menja status (BE revizija 23.07);
-      // prelaz u NEEDS_INFO radi needs-info odluka ispod, jednom. Note je kratak —
-      // pitanja žive kao komentari, ne dupliramo ih u razlog odluke.
-      for (const q of questions) {
-        await addComment.mutateAsync({ id: detail.id, body: q, isQuestion: true });
-      }
-      await decide.mutateAsync({
-        id: detail.id,
-        action: 'needs-info',
-        note: 'Pitanja su u tabu „Pitanja".',
-      });
+      // JEDAN atomski poziv: sva pitanja (isQuestion:true) + prelaz NEEDS_INFO + mejl.
+      // Bez note (decisionNote ostaje null) — pitanja žive kao komentari (23.07 review).
+      await returnForInfo.mutateAsync({ id: detail.id, questions });
       toast('Pitanja prosleđena podnosiocu (zahtev vraćen na dopunu).');
       setConfirm(false);
     } catch (e) {
@@ -440,7 +431,7 @@ function OpenQuestions({
               </Button>
               <Button
                 onClick={() => void forward()}
-                loading={addComment.isPending || decide.isPending}
+                loading={returnForInfo.isPending}
               >
                 Prosledi
               </Button>

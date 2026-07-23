@@ -1,5 +1,5 @@
 import type { Tone } from '@/components/ui-kit/status-badge';
-import type { ZahtevStatus } from '@/api/zahtevi';
+import type { ChangeRequestEvent, ZahtevStatus } from '@/api/zahtevi';
 
 /**
  * Zahtev status → { tone, label } nad kanonskom mapom (DESIGN_SYSTEM §7, domen
@@ -47,6 +47,20 @@ export function statusMeta(status: string): { tone: Tone; label: string } {
 /** Labela statusa (bez tona) — za Select filtere/čipove. */
 export function statusLabel(status: string): string {
   return statusMeta(status).label;
+}
+
+/**
+ * createdAt poslednjeg event-a datog tipa (ISO string) ili null. Events dolaze
+ * sortirani asc po createdAt; poredimo leksikografski (isti format = ispravno).
+ * Koristi se za „round-scope" dopune: pitanja/odgovori nastali POSLE poslednjeg
+ * NEEDS_INFO event-a (tekuća runda), da se ne prikazuju odgovorena iz ranijih rundi.
+ */
+export function lastEventTime(events: ChangeRequestEvent[], type: string): string | null {
+  let t: string | null = null;
+  for (const e of events) {
+    if (e.type === type && (t == null || e.createdAt > t)) t = e.createdAt;
+  }
+  return t;
 }
 
 /**
