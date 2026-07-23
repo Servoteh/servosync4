@@ -3933,3 +3933,61 @@ model CashEntry {
   @@index([status], map: "idx_cash_entries_status")
   @@map("cash_entries")
 }
+
+// ============================================================================
+// KAMATA (obračun zatezne kamate) — 4.0 XL (SAP interest calc, BigBit Kamate.bas).
+// Registar stopa (zatezna NBS / ugovorna, effective-dated) + obračun nad otvorenim
+// dospelim stavkama (LedgerEntry, daysOverdue>0). Metod: proporcionalni (dani×stopa/365)
+// ili konformni. Sačuvan obračun = kamatni list (zaglavlje + linije po stavci/periodu).
+// App-owned 2.0-native. Novac Decimal, stope Decimal (procenat godišnje).
+// ============================================================================
+model InterestRate {
+  id         Int       @id(map: "pk_interest_rates") @default(autoincrement()) @map("id")
+  kind       String    @map("kind") @db.VarChar(20) /// zatezna | ugovorna | eskontna
+  ratePct    Decimal   @map("rate_pct") @db.Decimal(9, 4) // godišnja stopa u procentima (npr. 9.5000)
+  validFrom  DateTime  @map("valid_from") @db.Timestamptz(6)
+  validTo    DateTime? @map("valid_to") @db.Timestamptz(6) // null = važi do daljeg
+  note       String?   @map("note") @db.VarChar(255)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([kind, validFrom], map: "idx_interest_rates_kind_from")
+  @@map("interest_rates")
+}
+
+/// Zaglavlje obračuna kamate (kamatni list) za komitenta na dan obračuna.
+model InterestCalculation {
+  id             Int      @id(map: "pk_interest_calculations") @default(autoincrement()) @map("id")
+  partnerId      Int      @map("partner_id") // komitent (meki ref customers.id)
+  kind           String   @map("kind") @db.VarChar(20) /// zatezna | ugovorna
+  method         String   @default("proporcionalni") @map("method") @db.VarChar(20) /// proporcionalni | konformni
+  calcDate       DateTime @map("calc_date") @db.Timestamptz(6) // dan obračuna (do kog se računa kašnjenje)
+  totalPrincipal Decimal  @default(0) @map("total_principal") @db.Decimal(19, 4) // Σ osnovica
+  totalInterest  Decimal  @default(0) @map("total_interest") @db.Decimal(19, 4) // Σ kamata
+  status         String   @default("DRAFT") @map("status") @db.VarChar(10) /// DRAFT | POSTED
+  journalEntryId Int?     @map("journal_entry_id") // meki ref journal_entries.id
+  createdByUserId Int?    @map("created_by_user_id")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  lines InterestCalcLine[]
+
+  @@index([partnerId], map: "idx_interest_calc_partner")
+  @@map("interest_calculations")
+}
+
+/// Linija kamatnog lista: jedna otvorena stavka × period × stopa → kamata.
+model InterestCalcLine {
+  id             Int      @id(map: "pk_interest_calc_lines") @default(autoincrement()) @map("id")
+  calculationId  Int      @map("calculation_id")
+  ledgerEntryId  Int?     @map("ledger_entry_id") // otvorena stavka (meki ref)
+  documentNumber String?  @map("document_number") @db.VarChar(30)
+  principal      Decimal  @map("principal") @db.Decimal(19, 4) // osnovica (otvoreni saldo)
+  dueDate        DateTime @map("due_date") @db.Timestamptz(6) // od kad teče kašnjenje
+  daysOverdue    Int      @map("days_overdue") // broj dana kašnjenja
+  ratePct        Decimal  @map("rate_pct") @db.Decimal(9, 4) // primenjena godišnja stopa
+  interest       Decimal  @map("interest") @db.Decimal(19, 4) // obračunata kamata
+
+  calculation InterestCalculation @relation(fields: [calculationId], references: [id], onDelete: Cascade, map: "fk_interest_calc_lines_calc")
+
+  @@index([calculationId], map: "idx_interest_calc_lines_calc")
+  @@map("interest_calc_lines")
+}

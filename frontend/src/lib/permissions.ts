@@ -50,6 +50,8 @@ export const PERMISSIONS = {
   GL_WRITE: 'gl.write',
   BLAGAJNA_READ: 'blagajna.read',
   BLAGAJNA_WRITE: 'blagajna.write',
+  KAMATA_READ: 'kamata.read',
+  KAMATA_WRITE: 'kamata.write',
   // Robno / magacin — 4.0 Faza 3 (robni dokumenti, kalkulacija landed cost, knjiženje).
   // read = uvid; write = kreiranje/kalkulacija; post = knjiženje u GK. Mirror BE kataloga.
   ROBNO_READ: 'robno.read',

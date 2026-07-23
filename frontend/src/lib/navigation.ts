@@ -44,6 +44,7 @@ import {
   FileText,
   type LucideIcon,
   Wallet,
+  Percent,
 } from 'lucide-react';
 import { PERMISSIONS, type Permission } from '@/lib/permissions';
 
@@ -283,6 +284,8 @@ export const NAV_DOMAINS: NavDomain[] = [
       { label: 'Banka & plaćanja', href: '/placanja', icon: Building2, requires: PERMISSIONS.PLACANJA_READ, keywords: ['banka', 'izvod', 'virman', 'nalog za placanje', 'priprema placanja'] },
       // XL: Blagajna (gotovinski dnevnik — uplatnice/isplatnice)
       { label: 'Blagajna', href: '/blagajna', icon: Wallet, requires: PERMISSIONS.BLAGAJNA_READ, keywords: ['blagajna', 'gotovina', 'uplatnica', 'isplatnica', 'kasa'] },
+      // XL: Obračun kamate (zatezna/ugovorna)
+      { label: 'Kamata', href: '/kamata', icon: Percent, requires: PERMISSIONS.KAMATA_READ, keywords: ['kamata', 'zatezna', 'kamatni list', 'obracun kamate'] },
       // Faza 6: PDV & POPDV
       { label: 'PDV & POPDV', href: '/pdv', icon: ShieldCheck, requires: PERMISSIONS.PDV_READ, keywords: ['pdv', 'popdv', 'pppdv', 'kif', 'kuf'] },
       // Faza 7: Završni račun (bilansi, APR)
