@@ -22,6 +22,7 @@ import {
   type JournalEntry,
   type AccountCardLine,
 } from '@/api/glavna-knjiga';
+import { ManualEntryDialog } from './manual-entry-dialog';
 
 /**
  * Glavna knjiga: obrazac „Lista" (DESIGN_SYSTEM §4.1) sa dva pogleda kroz Tabs:
@@ -69,6 +70,7 @@ export default function GlavnaKnjigaPage() {
   const router = useRouter();
 
   const [view, setView] = useState<View>('dnevnik');
+  const [newEntryOpen, setNewEntryOpen] = useState(false);
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
@@ -84,7 +86,18 @@ export default function GlavnaKnjigaPage() {
 
   return (
     <AppShell>
-      <PageHeader title="Glavna knjiga" />
+      <PageHeader
+        title="Glavna knjiga"
+        actions={
+          <Button onClick={() => setNewEntryOpen(true)}>Novi nalog</Button>
+        }
+      />
+
+      <ManualEntryDialog
+        open={newEntryOpen}
+        onClose={() => setNewEntryOpen(false)}
+        onCreated={() => setView('dnevnik')}
+      />
 
       <div className="flex-1 space-y-4 overflow-auto p-6">
         <Tabs tabs={VIEW_TABS} value={view} onChange={setView} ariaLabel="Pogled glavne knjige" />
