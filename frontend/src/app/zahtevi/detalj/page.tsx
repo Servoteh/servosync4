@@ -249,6 +249,7 @@ export default function ZahtevDetailPage() {
               <QuestionsTab
                 detail={detail}
                 isAdmin={isAdmin}
+                isOwner={isOwner}
                 focusSignal={focusAnswer}
                 onFocusConsumed={consumeFocus}
               />
@@ -360,8 +361,9 @@ function DopunaBanner({
               Administrator traži dopunu
             </h2>
             <p className="mt-1 text-sm text-ink">
-              Da bi obrada nastavila, odgovorite na sledeće. Odgovor upišite u tabu „Pitanja",
-              a kad završite kliknite „Ponovo podnesi" da se zahtev vrati administratoru.
+              Da bi obrada nastavila, odgovorite na sledeće. Odgovor upišite u tabu „Pitanja"
+              (tamo možete dodati i priloge — sliku ili dokument), a kad završite kliknite
+              „Ponovo podnesi" da se zahtev vrati administratoru.
             </p>
 
             {questions.length > 0 && (

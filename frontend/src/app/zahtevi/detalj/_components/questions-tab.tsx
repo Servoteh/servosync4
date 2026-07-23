@@ -12,6 +12,7 @@ import {
   type ChangeRequestDetail,
 } from '@/api/zahtevi';
 import { formatDateTime } from '@/lib/format';
+import { AddAttachments, OWNER_ATTACH_STATUSES } from './request-tab';
 
 /**
  * Tab „Pitanja" — komentari (admin ↔ podnosilac). Dopune u NEEDS_INFO idu ovuda
@@ -28,11 +29,13 @@ import { formatDateTime } from '@/lib/format';
 export function QuestionsTab({
   detail,
   isAdmin,
+  isOwner = false,
   focusSignal,
   onFocusConsumed,
 }: {
   detail: ChangeRequestDetail;
   isAdmin: boolean;
+  isOwner?: boolean;
   focusSignal?: number;
   onFocusConsumed?: () => void;
 }) {
@@ -119,6 +122,12 @@ export function QuestionsTab({
           </Button>
         </div>
       </div>
+
+      {/* Odgovor na dopunu često traži i dokaz (slika ekrana, dokument) — prilozi
+          dostupni i OVDE, ne samo u tabu „Zahtev" (primedba 23.07: „nema opcije"). */}
+      {isOwner && OWNER_ATTACH_STATUSES.includes(detail.status) && (
+        <AddAttachments requestId={detail.id} existing={detail.attachments.length} />
+      )}
     </section>
   );
 }

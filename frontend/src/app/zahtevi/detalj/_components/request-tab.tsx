@@ -14,7 +14,7 @@ import {
 import { formatDateTime } from '@/lib/format';
 
 /** Statusi u kojima owner sme da dodaje priloge (BE assertAttachMutationAllowed). */
-const OWNER_ATTACH_STATUSES = ['DRAFT', 'SUBMITTED', 'NEEDS_INFO'];
+export const OWNER_ATTACH_STATUSES = ['DRAFT', 'SUBMITTED', 'NEEDS_INFO'];
 const MAX_ATTACHMENTS = 10;
 
 /**
@@ -120,8 +120,9 @@ export function RequestTab({
   );
 }
 
-/** Owner dopuna priloga (DRAFT/SUBMITTED/NEEDS_INFO) — bira fajlove pa otprema (§5). */
-function AddAttachments({ requestId, existing }: { requestId: number; existing: number }) {
+/** Owner dopuna priloga (DRAFT/SUBMITTED/NEEDS_INFO) — bira fajlove pa otprema (§5).
+ *  Koristi se i u tabu „Pitanja" (odgovor na dopunu često traži sliku/dokument). */
+export function AddAttachments({ requestId, existing }: { requestId: number; existing: number }) {
   const [files, setFiles] = useState<File[]>([]);
   const upload = useUploadAttachments();
   const remaining = MAX_ATTACHMENTS - existing;
