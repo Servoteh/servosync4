@@ -176,6 +176,12 @@
 | Notifikacija (D8) | Dorada (`kontrola.dorada`) | narandžasta | `--status-warn` |
 | Notifikacija (D8) | Primopredaja (`primopredaja.nova`) | info plava | `--status-info` |
 | Notifikacija (D8) | Preuzeta izrada (`primopredaja.preuzeta`) | info plava | `--status-info` |
+| Montaža — neusaglašenost | Čeka analizu (`CEKA_ANALIZU`) | narandžasta | `--status-warn` |
+| Montaža — neusaglašenost | U toku (`U_TOKU`) | info plava | `--status-info` |
+| Montaža — neusaglašenost | Završeno (`ZAVRSENO`) | zelena | `--status-success` |
+| Montaža — neusaglašenost (ozbiljnost) | Mala (`MALA`) | info plava | `--status-info` |
+| Montaža — neusaglašenost (ozbiljnost) | Srednja (`SREDNJA`) | narandžasta | `--status-warn` |
+| Montaža — neusaglašenost (ozbiljnost) | Visoka (`VISOKA`) | crvena | `--status-danger` |
 
 Novi status = nova vrsta u ovoj tabeli **pre** upotrebe u kodu.
 
