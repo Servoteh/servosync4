@@ -2,7 +2,8 @@
 // Reorg 18.07.2026 (Nenad, SIDEBAR_THEME_SPEC §1): domeni dobijaju POD-GRUPE.
 // „Tehnologija" je imenovana pod-grupa unutar „Proizvodnje"; „Kontrola kvaliteta" je
 // svoj domen (+ diskretan spoljašnji link ka pogonskom /kiosk-u); Reversi je prešao u
-// „Logistiku"; PDM/Nacrti/Primopredaje su u „Projektovanju"; „Lokacije delova" je
+// „Logistiku"; PDM/Nacrti su u „Projektovanju", a „Primopredaje" u „Proizvodnji/
+// Tehnologiji" (UX 008/26); „Lokacije delova" je
 // UNAKRSNO navedena (crosslisted) na dva mesta — Tehnologija (praćenje kroz
 // proizvodnju) i Logistika (fizičko skladištenje). RUTE I PERMISIJE su NETAKNUTE u
 // odnosu na prethodni model — menja se samo grupisanje/redosled i vizuelni raspored.
@@ -124,6 +125,10 @@ export const NAV_DOMAINS: NavDomain[] = [
         modules: [
           { label: 'Radni nalozi', href: '/work-orders', icon: ClipboardList, requires: PERMISSIONS.RN_READ, keywords: ['rn', 'nalozi'] },
           { label: 'Realizacija', href: '/tech-processes', icon: Workflow, requires: PERMISSIONS.TEHNOLOGIJA_READ, keywords: ['tp', 'kucanje', 'tehnoloski postupak'] },
+          // Premešteno iz „Projektovanja" u „Proizvodnju/Tehnologiju" (UX 008/26, Jovica
+          // 23.07): tehnolog odavde kuca TP i lansira, pa stavka pripada proizvodnom toku
+          // uz Radne naloge/Realizaciju. Ruta i permisija (primopredaje.read) NETAKNUTE.
+          { label: 'Primopredaje', href: '/handovers', icon: PackageCheck, requires: PERMISSIONS.PRIMOPREDAJE_READ, keywords: ['primopredaja', 'predaja'] },
           { label: 'Operacije po prioritetu', href: '/operations-queue', icon: ListOrdered, requires: PERMISSIONS.RN_READ, keywords: ['operacije', 'prioritet', 'red'] },
           { label: 'CAM programiranje', href: '/cnc-programs', icon: Cpu, requires: PERMISSIONS.TEHNOLOGIJA_READ, keywords: ['cam', 'cnc', 'program'] },
           { label: 'Završeni nalozi', href: '/completed-orders', icon: CheckCircle2, requires: PERMISSIONS.RN_READ, keywords: ['zavrseni', 'arhiva'] },
@@ -170,14 +175,10 @@ export const NAV_DOMAINS: NavDomain[] = [
       // Vidljivost = pb.read (SELECT `true` paritet = svi prijavljeni).
       { label: 'Projektni biro', href: '/pb', icon: FolderKanban, requires: PERMISSIONS.PB_READ, keywords: ['pb', 'projekti', 'kanban'] },
       { label: 'PDM / Crteži', href: '/pdm', icon: DraftingCompass, requires: PERMISSIONS.PDM_READ, keywords: ['crtez', 'bom', 'pdm', 'nacrt'] },
-      // Nacrti (projektanti, gate write) i Primopredaje su ODVOJENE rute —
-      // deljena ruta je palila obe stavke kao aktivne istovremeno (ODLUKE #33).
-      // „Nacrti" ostaje `primopredaje.write` (radni prostor projektanata).
-      // „Primopredaje" je od 16.07 vidljivo SVIM rolama (Nenad: `primopredaje.read`
-      // — čist pregled ko je pustio/šta/status; mutirajuće akcije u tabovima su
-      // svaka iza svog <Can> approve/write, pa read-only korisnik ne vidi dugmad).
+      // „Nacrti" (projektanti, gate write) ostaje ovde na `primopredaje.write` (radni
+      // prostor projektanata). „Primopredaje" (/handovers) je preseljeno u
+      // „Proizvodnju/Tehnologiju" (UX 008/26) — tehnološki tok, ne projektovanje.
       { label: 'Nacrti', href: '/nacrti', icon: PencilRuler, requires: PERMISSIONS.PRIMOPREDAJE_WRITE, keywords: ['nacrti', 'projektanti'] },
-      { label: 'Primopredaje', href: '/handovers', icon: PackageCheck, requires: PERMISSIONS.PRIMOPREDAJE_READ, keywords: ['primopredaja', 'predaja'] },
     ],
   },
   {

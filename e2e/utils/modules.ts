@@ -17,10 +17,10 @@ export const MODULES: ModuleDef[] = [
   { key: 'plan-proizvodnje', name: 'Plan proizvodnje', route: '/plan-proizvodnje', group: 'Proizvodnja' },
   { key: 'pracenje-proizvodnje', name: 'Praćenje proizvodnje', route: '/pracenje-proizvodnje', group: 'Proizvodnja' },
   { key: 'montaza', name: 'Plan montaže', route: '/montaza', group: 'Proizvodnja' },
+  { key: 'handovers', name: 'Primopredaje', route: '/handovers', group: 'Proizvodnja' },
   // Projektovanje
   { key: 'pdm', name: 'PDM / Crteži', route: '/pdm', group: 'Projektovanje' },
   { key: 'nacrti', name: 'Nacrti', route: '/nacrti', group: 'Projektovanje' },
-  { key: 'handovers', name: 'Primopredaje', route: '/handovers', group: 'Projektovanje' },
   { key: 'pb', name: 'Projektni biro', route: '/pb', group: 'Projektovanje' },
   { key: 'cnc-programs', name: 'CNC programi', route: '/cnc-programs', group: 'Projektovanje' },
   // Logistika
