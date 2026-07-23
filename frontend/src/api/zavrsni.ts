@@ -67,9 +67,37 @@ export interface GrossTrialBalance {
 export interface StatementLine {
   aop: string;
   label: string | null;
+  /** Iznos_1 — tekuća godina. */
   amount: string;
+  /** Iznos_2 — prethodna godina (year-1); lookup, ne pun re-eval (D9). */
+  amount2: string;
+  /** Iznos_3 — pretprethodna godina (year-2). */
+  amount3: string;
   /** null = ručni/sirovi red (OS pozicija ili fallback po kontu); inače GKEval formula. */
   formula: string | null;
+}
+
+/** Rezultat jednog kontrolnog pravila — GET /statements/:id/controls. */
+export interface ControlResult {
+  name: string;
+  /** Leva strana pravila (Decimal-string). */
+  left: string;
+  /** Desna strana pravila (Decimal-string). */
+  right: string;
+  /** true = pravilo prolazi (leva ≈ desna). */
+  passed: boolean;
+}
+
+/** Odgovor finalizacije — POST /statements/:id/finalize. */
+export interface FinalizeResult {
+  id: number;
+  statementType: string;
+  periodYear: number;
+  status: string;
+  finalizedAt: string;
+  /** true = finalizovano uprkos padu kontrolnih pravila (force=true). */
+  forced: boolean;
+  controls: ControlResult[];
 }
 
 /** Sačuvan obračun (`financial_statements`) sa linijama — BS/BU/SI. */
@@ -91,6 +119,7 @@ const KEYS = {
   all: ['zavrsni'] as const,
   grossTrialBalance: (year: number) => ['zavrsni', 'bruto-bilans', year] as const,
   statements: (filter: StatementsFilter) => ['zavrsni', 'statements', filter] as const,
+  controls: (id: number) => ['zavrsni', 'controls', id] as const,
 };
 
 // ─────────────────────────────────────────────────────────────── queries
@@ -126,6 +155,19 @@ export function useStatements(filter: StatementsFilter = {}) {
     queryKey: KEYS.statements(filter),
     queryFn: () =>
       apiFetch<FinancialStatement[]>(`${BASE}/statements${query ? `?${query}` : ''}`),
+  });
+}
+
+/**
+ * Kontrolna pravila za obračun — GET /zavrsni/statements/:id/controls (sirov niz).
+ * Vraća [{name, left, right, passed}]; prazan niz ako obrazac nema pravila (npr. SI).
+ * `enabled` gasi upit dok nema id-a. Permisija ZR_READ.
+ */
+export function useStatementControls(id: number | null | undefined) {
+  return useQuery({
+    queryKey: KEYS.controls(id ?? 0),
+    queryFn: () => apiFetch<ControlResult[]>(`${BASE}/statements/${id}/controls`),
+    enabled: id != null,
   });
 }
 
@@ -165,6 +207,23 @@ export function useComputeIncomeStatement() {
       apiFetch<FinancialStatement>(`${BASE}/bilans-uspeha`, {
         method: 'POST',
         body: JSON.stringify({ year }),
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/**
+ * Finalizuj obračun — POST /zavrsni/statements/:id/finalize. Prelazi DRAFT → FINALIZED.
+ * Kontrolna pravila blokiraju finalizaciju (backend baca grešku) osim uz `force: true`.
+ * Invalidira ceo `zavrsni` ključ (status/badge). Permisija ZR_COMPUTE.
+ */
+export function useFinalizeStatement() {
+  const invalidate = useInvalidateZavrsni();
+  return useMutation({
+    mutationFn: ({ id, force }: { id: number; force?: boolean }) =>
+      apiFetch<FinalizeResult>(`${BASE}/statements/${id}/finalize`, {
+        method: 'POST',
+        body: JSON.stringify({ force: force === true }),
       }),
     onSuccess: invalidate,
   });

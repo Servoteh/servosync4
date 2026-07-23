@@ -159,6 +159,7 @@ export class FakturisanjeService {
           vatTotal,
           grossTotal,
           status: "DRAFT",
+          poNumber: dto.poNumber?.trim() || null,
           note: dto.note ?? null,
           createdByUserId: actor.userId,
           updatedByUserId: actor.userId,
@@ -220,6 +221,10 @@ export class FakturisanjeService {
     });
     if (!invoice) throw new NotFoundException(`Račun ${id} ne postoji.`);
 
+    // D8: zaključan (proknjižen) dokument se ne knjiži ponovo / ne menja bez storna.
+    if (invoice.isLocked) {
+      throw new ConflictException("Dokument je zaključan (proknjižen).");
+    }
     if (invoice.status !== "DRAFT") {
       throw new ConflictException(
         `Račun ${id} je već proknjižen (status ${invoice.status}).`,
@@ -239,6 +244,20 @@ export class FakturisanjeService {
     const year = invoice.documentDate.getFullYear();
 
     return this.prisma.$transaction(async (tx) => {
+      // 0) ATOMSKI CLAIM (review 1D nalaz): invoice se čita findUnique VAN tx, pa su
+      //    rani guardovi (isLocked/status DRAFT) nad snapshot-om — dva paralelna posta
+      //    bi oba prošla i ručna grana (postManualLedger) bi kreirala DVA posted naloga
+      //    (dupli prihod+PDV). CAS updateMany je JEDINI izvor ekskluzivnosti: samo jedna
+      //    tx prelama DRAFT & !isLocked → POSTED & locked; ostale dobiju count 0 → 409.
+      //    Rani guardovi ostaju kao fast-fail sa specifičnijim porukama (customer/stavke).
+      const claimed = await tx.invoice.updateMany({
+        where: { id, status: "DRAFT", isLocked: false },
+        data: { status: "POSTED", isLocked: true },
+      });
+      if (claimed.count !== 1) {
+        throw new ConflictException("Račun je već proknjižen ili zaključan.");
+      }
+
       // 1) Rezerviši definitivan broj (level 0). Rollback numeracije ide sa tx.
       const documentNumber = await this.numbering.next(
         tx,
@@ -293,7 +312,10 @@ export class FakturisanjeService {
         );
       }
 
-      // 4) Ažuriraj račun: definitivan broj, level 0, POSTED, veza na nalog.
+      // 4) Ažuriraj račun: definitivan broj, level 0, veza na nalog. `where {id}` je
+      //    bezbedan jer je CLAIM (korak 0) već obezbedio ekskluzivnost i postavio
+      //    status=POSTED & isLocked=true; ovde ih samo re-afirmišemo (D8: proknjižen
+      //    dokument je tehnički zaključan — mutacije/storno idu odvojenim putem).
       const posted = await tx.invoice.update({
         where: { id },
         data: {
@@ -301,6 +323,7 @@ export class FakturisanjeService {
           level: 0,
           status: "POSTED",
           journalEntryId,
+          isLocked: true,
           updatedByUserId: actor.userId,
         },
         include: { items: { orderBy: { lineNo: "asc" } } },

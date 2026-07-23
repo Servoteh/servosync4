@@ -26,6 +26,8 @@ export interface CreateProformaDto {
   dueDate?: string; // valuta / rok plaćanja (ISO)
   currency?: string; // RSD (domaći) | EUR (izvoz)
   isExport?: boolean; // izvoz (ExportInvoicePolicy)
+  /** Broj narudžbenice kupca → UBL cac:OrderReference (SEF javni sektor, D6). Max 50. */
+  poNumber?: string;
   note?: string;
   items: CreateProformaItemInput[];
 }
@@ -55,6 +57,14 @@ export function validateCreateProforma(dto: CreateProformaDto): void {
   }
   if (dto.dueDate !== undefined && Number.isNaN(Date.parse(dto.dueDate))) {
     errors.push("Valuta (rok plaćanja) nije ispravna.");
+  }
+
+  if (dto.poNumber !== undefined) {
+    if (typeof dto.poNumber !== "string") {
+      errors.push("Broj narudžbenice mora biti tekst.");
+    } else if (dto.poNumber.trim().length > 50) {
+      errors.push("Broj narudžbenice sme imati najviše 50 karaktera.");
+    }
   }
 
   if (!Array.isArray(dto.items) || dto.items.length === 0) {

@@ -1,7 +1,7 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiFetch } from './client';
+import { apiBlob, apiFetch } from './client';
 
 /**
  * PDV / POPDV — data sloj (Faza 6). TanStack Query hooks nad NestJS
@@ -111,6 +111,23 @@ export interface PopdvResult {
   note: string;
 }
 
+/**
+ * KEPU red (`kepu_book_entries`) — veleprodajna knjiga evidencije prometa.
+ * Punjenje iz robnog toka radi robno modul (#25); FE ovde samo prikazuje red:
+ * rbr, datum, dokument, opis, zaduženje (charge), razduženje (discharge), saldo
+ * (kumulativni). Decimal polja kao string (BACKEND_RULES §6).
+ */
+export interface KepuRow {
+  id: number;
+  rbr: number | null; // redni broj u knjizi (numeracija — robno)
+  entryDate: string; // datum
+  documentNumber: string | null; // dokument
+  description: string | null; // opis prometa
+  charge: string; // zaduženje (MagUlaz)
+  discharge: string; // razduženje (MagStvarniIzlaz)
+  balance: string; // saldo (kumulativni)
+}
+
 // ─────────────────────────────────────────────────────────────── query keys
 
 const KEYS = {
@@ -118,6 +135,7 @@ const KEYS = {
   kif: (p: VatPeriod) => ['pdv', 'kif', p.year, p.month] as const,
   kuf: (p: VatPeriod) => ['pdv', 'kuf', p.year, p.month] as const,
   returns: (year: number) => ['pdv', 'returns', year] as const,
+  kepu: (p: VatPeriod) => ['pdv', 'kepu', p.year, p.month] as const,
 };
 
 // ─────────────────────────────────────────────────────────────── queries
@@ -159,6 +177,20 @@ export function useVatReturns(year: number) {
     queryKey: KEYS.returns(year),
     queryFn: () =>
       apiFetch<CountEnvelope<VatReturn>>(`${BASE}/returns?year=${year}`),
+  });
+}
+
+/**
+ * KEPU knjiga za period — GET /pdv/kepu?year=&month=. Vraća `{ data, meta: { count } }`.
+ * Punjenje knjige radi robno modul; ovde je samo prikaz. read = PDV_READ.
+ */
+export function useKepu(period: VatPeriod) {
+  return useQuery({
+    queryKey: KEYS.kepu(period),
+    queryFn: () =>
+      apiFetch<CountEnvelope<KepuRow>>(
+        `${BASE}/kepu?year=${period.year}&month=${period.month}`,
+      ),
   });
 }
 
@@ -208,4 +240,101 @@ export function useComputePopdv() {
       }),
     onSuccess: invalidate,
   });
+}
+
+/**
+ * Zaključaj (proknjiži) PDV obračun — POST /pdv/returns/:id/post (D3). Status
+ * CALCULATED → POSTED; posle ovoga je period zaključan (build/compute/ručne
+ * izmene se odbijaju). Permisija PDV_COMPUTE.
+ */
+export function usePostVatReturn() {
+  const invalidate = useInvalidatePdv();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<Envelope<VatReturn>>(`${BASE}/returns/${id}/post`, {
+        method: 'POST',
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+// ─────────────────────────────────── ručne KIF/KUF stavke (D4)
+
+/** Novi ručni KIF/KUF red (`source = manual`). direction: output=KIF, input=KUF. */
+export interface CreateManualVatEntryInput {
+  direction: 'input' | 'output';
+  documentNumber: string;
+  partnerId?: number | null;
+  documentDate: string; // ISO
+  taxPeriodYear: number;
+  taxPeriodMonth: number;
+  vatBase: number;
+  vatAmount: number;
+  vatRateCode?: string | null;
+}
+
+/** Izmena ručnog reda (parcijalno). */
+export type UpdateManualVatEntryInput = Partial<CreateManualVatEntryInput>;
+
+/** Kreiraj ručnu KIF/KUF stavku — POST /pdv/kif-kuf/entries. PDV_COMPUTE. */
+export function useCreateManualVatEntry() {
+  const invalidate = useInvalidatePdv();
+  return useMutation({
+    mutationFn: (input: CreateManualVatEntryInput) =>
+      apiFetch<Envelope<VatLedgerRow>>(`${BASE}/kif-kuf/entries`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/** Izmeni ručnu KIF/KUF stavku — PATCH /pdv/kif-kuf/entries/:id. PDV_COMPUTE. */
+export function useUpdateManualVatEntry() {
+  const invalidate = useInvalidatePdv();
+  return useMutation({
+    mutationFn: (args: { id: number; input: UpdateManualVatEntryInput }) =>
+      apiFetch<Envelope<VatLedgerRow>>(`${BASE}/kif-kuf/entries/${args.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(args.input),
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/** Obriši ručnu KIF/KUF stavku — DELETE /pdv/kif-kuf/entries/:id. PDV_COMPUTE. */
+export function useDeleteManualVatEntry() {
+  const invalidate = useInvalidatePdv();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<Envelope<{ id: number }>>(`${BASE}/kif-kuf/entries/${id}`, {
+        method: 'DELETE',
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+// ─────────────────────────────────── PDF štampa (D2)
+
+/** Preuzmi PP-PDV obrazac (GET /pdv/print/pp-pdv?period=YYYY-MM|YYYY-Qn). read=PDV_READ. */
+export function usePpPdvPdf() {
+  return useMutation({
+    mutationFn: (period: string) =>
+      apiBlob(`${BASE}/print/pp-pdv?period=${encodeURIComponent(period)}`),
+  });
+}
+
+/** Preuzmi KIF/KUF specifikaciju (GET /pdv/print/kif|kuf?year=&month=). read=PDV_READ. */
+export function useLedgerSpecPdf() {
+  return useMutation({
+    mutationFn: (args: { book: 'kif' | 'kuf'; year: number; month: number }) =>
+      apiBlob(`${BASE}/print/${args.book}?year=${args.year}&month=${args.month}`),
+  });
+}
+
+/** Otvori PDF Blob u novom tabu (browser preview + download). */
+export function openPdf(blob: Blob): void {
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank', 'noopener');
+  setTimeout(() => URL.revokeObjectURL(url), 30_000);
 }

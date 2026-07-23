@@ -114,6 +114,10 @@ export interface Invoice {
   grossTotal: string;
   status: SalesStatus | string;
   isExport: boolean;
+  /** Broj narudžbenice kupca → UBL cac:OrderReference (SEF javni sektor, D6). */
+  poNumber: string | null;
+  /** Tehnička brava proknjiženog dokumenta (D8): true → izmene/storno blokirani. */
+  isLocked: boolean;
   journalEntryId: number | null;
   stockDocumentId: number | null;
   salespersonId: number | null;
@@ -230,6 +234,8 @@ export interface CreateProformaInput {
   dueDate?: string;
   currency?: string;
   isExport?: boolean;
+  /** Broj narudžbenice kupca (opciono, max 50) → UBL OrderReference (D6). */
+  poNumber?: string;
   note?: string;
   items: CreateProformaItemInput[];
 }

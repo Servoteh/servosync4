@@ -16,6 +16,7 @@ import type {
   NivelacijaHook,
   NivelacijaInboundLine,
 } from "./nivelacija.hook";
+import { computeKepuEntries, writeKepuEntries } from "./kepu-book.util";
 
 /**
  * Kalkulacija landed cost robnog ULAZA (doc 39 §A: `SracunajKalkulaciju`).
@@ -226,6 +227,22 @@ export class CalculationService {
               `ItemValuation NIJE uprosečen. Registruj NivelacijaService pod NIVELACIJA_HOOK.`,
           );
         }
+
+        // ── KEPU zaduženje (maloprodajna knjiga) — SAMO za ULAZ (doc 39 §E, task D5be) ──
+        // MagUlaz = Σ Kol × KalkMP (maloprodajna/prodajna vrednost — v. kepu-book.util za izbor MP vs VP).
+        // Smer se čita iz DocumentType.kepuDefault* (default po tipu), fallback na kind (UL → zaduženje).
+        // Idempotentno po documentId (delete+insert) — ponovni calculate ne duplira KEPU red.
+        const kepuDocType = await tx.documentType.findFirst({
+          where: { code: doc.documentTypeCode },
+          select: { kepuDefaultCharge: true, kepuDefaultDischarge: true },
+        });
+        const kepuEntries = computeKepuEntries(
+          updated,
+          updated.items,
+          [],
+          kepuDocType,
+        );
+        await writeKepuEntries(tx, docId, kepuEntries);
       }
 
       return updated;

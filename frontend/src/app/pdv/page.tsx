@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { Pencil, Plus, Printer, Trash2 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
@@ -9,18 +10,30 @@ import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Select } from '@/components/ui-kit/select';
 import { Button } from '@/components/ui-kit/button';
+import { Dialog } from '@/components/ui-kit/dialog';
+import { FormField, Input } from '@/components/ui-kit/form-field';
 import { Tabs, type TabItem } from '@/components/ui-kit/tabs';
 import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
 import { formatDate, formatDecimal, formatNumber } from '@/lib/format';
 import {
   useKif,
   useKuf,
+  useKepu,
   useVatReturns,
   useBuildKifKuf,
   useComputePopdv,
+  usePostVatReturn,
+  useCreateManualVatEntry,
+  useUpdateManualVatEntry,
+  useDeleteManualVatEntry,
+  usePpPdvPdf,
+  useLedgerSpecPdf,
+  openPdf,
   type VatLedgerRow,
   type VatReturn,
   type VatReturnLine,
+  type KepuRow,
+  type CreateManualVatEntryInput,
 } from '@/api/pdv';
 
 /**
@@ -33,12 +46,13 @@ import {
  * PDV obračuna: CALCULATED = info (kanonska mapa §7, isto kao Robno kalkulisan).
  */
 
-type View = 'kif' | 'kuf' | 'popdv';
+type View = 'kif' | 'kuf' | 'popdv' | 'kepu';
 
 const TABS: TabItem<View>[] = [
   { key: 'kif', label: 'KIF (izlazni)' },
   { key: 'kuf', label: 'KUF (ulazni)' },
   { key: 'popdv', label: 'POPDV obračun' },
+  { key: 'kepu', label: 'KEPU' },
 ];
 
 const CURRENT_YEAR = new Date().getFullYear();
@@ -153,6 +167,108 @@ const lineColumns: Column<VatReturnLine>[] = [
   },
 ];
 
+/** Kolone KEPU knjige (rbr, datum, dokument, opis, zaduženje, razduženje, saldo). */
+const kepuColumns: Column<KepuRow>[] = [
+  {
+    key: 'rbr',
+    header: 'Rbr',
+    align: 'right',
+    numeric: true,
+    render: (r) => <span className="tnums text-ink-secondary">{r.rbr ?? '—'}</span>,
+  },
+  {
+    key: 'entryDate',
+    header: 'Datum',
+    render: (r) => <span className="text-ink-secondary">{formatDate(r.entryDate)}</span>,
+  },
+  {
+    key: 'documentNumber',
+    header: 'Dokument',
+    render: (r) => (
+      <span className="tnums font-semibold text-ink">{r.documentNumber ?? '—'}</span>
+    ),
+  },
+  {
+    key: 'description',
+    header: 'Opis',
+    render: (r) => <span className="text-ink-secondary">{r.description ?? '—'}</span>,
+  },
+  {
+    key: 'charge',
+    header: 'Zaduženje',
+    align: 'right',
+    numeric: true,
+    render: (r) => <span className="tnums text-ink">{formatDecimal(r.charge)}</span>,
+  },
+  {
+    key: 'discharge',
+    header: 'Razduženje',
+    align: 'right',
+    numeric: true,
+    render: (r) => <span className="tnums text-ink">{formatDecimal(r.discharge)}</span>,
+  },
+  {
+    key: 'balance',
+    header: 'Saldo',
+    align: 'right',
+    numeric: true,
+    render: (r) => (
+      <span className="tnums font-semibold text-ink">{formatDecimal(r.balance)}</span>
+    ),
+  },
+];
+
+/**
+ * KIF/KUF kolone + akciona kolona: izmena/brisanje SAMO za ručne redove
+ * (`sourceJournalEntryId == null`); GK-izvedeni redovi su read-only (oznaka GK).
+ */
+function ledgerColumnsWithActions(
+  onEdit: (row: VatLedgerRow) => void,
+  onDelete: (row: VatLedgerRow) => void,
+): Column<VatLedgerRow>[] {
+  return [
+    ...ledgerColumns,
+    {
+      key: 'actions',
+      header: '',
+      align: 'right',
+      render: (r) =>
+        r.sourceJournalEntryId == null ? (
+          <div className="flex justify-end gap-1">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onEdit(r);
+              }}
+              className="rounded-control p-1 text-ink-secondary hover:bg-surface-2 hover:text-ink"
+              aria-label="Izmeni stavku"
+              title="Izmeni ručnu stavku"
+            >
+              <Pencil className="h-4 w-4" aria-hidden />
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onDelete(r);
+              }}
+              className="rounded-control p-1 text-status-danger hover:bg-status-danger/10"
+              aria-label="Obriši stavku"
+              title="Obriši ručnu stavku"
+            >
+              <Trash2 className="h-4 w-4" aria-hidden />
+            </button>
+          </div>
+        ) : (
+          <span className="text-2xs uppercase tracking-wide text-ink-disabled" title="Izvedeno iz glavne knjige">
+            GK
+          </span>
+        ),
+    },
+  ];
+}
+
 export default function PdvPage() {
   const { user, isLoading } = useAuth();
   const router = useRouter();
@@ -170,15 +286,37 @@ export default function PdvPage() {
   const kif = useKif(period);
   const kuf = useKuf(period);
   const returns = useVatReturns(year);
+  const kepu = useKepu(period);
 
   const buildKifKuf = useBuildKifKuf();
   const computePopdv = useComputePopdv();
+  const postReturn = usePostVatReturn();
+  const createEntry = useCreateManualVatEntry();
+  const updateEntry = useUpdateManualVatEntry();
+  const deleteEntry = useDeleteManualVatEntry();
+  const ppPdvPdf = usePpPdvPdf();
+  const ledgerPdf = useLedgerSpecPdf();
+
+  // Dijalog ručne KIF/KUF stavke: null = zatvoren; {row:null} = nova; {row} = izmena.
+  const [entryDialog, setEntryDialog] = useState<{ row: VatLedgerRow | null } | null>(
+    null,
+  );
 
   // POPDV obračun za izabrani (godina, mesec) iz sačuvanih obračuna godine.
   const currentReturn: VatReturn | undefined = useMemo(
     () => returns.data?.data.find((r) => r.periodMonth === month),
     [returns.data, month],
   );
+
+  const isLedgerView = view === 'kif' || view === 'kuf';
+  const ledgerDirection: 'input' | 'output' = view === 'kuf' ? 'input' : 'output';
+
+  function handleDeleteEntry(row: VatLedgerRow): void {
+    const ok = window.confirm(
+      `Obrisati ručnu stavku ${row.documentNumber}? Ova radnja se ne može opozvati.`,
+    );
+    if (ok) deleteEntry.mutate(row.id);
+  }
 
   if (isLoading || !user) {
     return (
@@ -190,10 +328,24 @@ export default function PdvPage() {
 
   const kifRows = kif.data?.data ?? [];
   const kufRows = kuf.data?.data ?? [];
+  const kepuRows = kepu.data?.data ?? [];
 
-  const activeQuery = view === 'kif' ? kif : view === 'kuf' ? kuf : returns;
-  const buildErr = buildKifKuf.error as Error | null;
-  const computeErr = computePopdv.error as Error | null;
+  const activeQuery =
+    view === 'kif' ? kif : view === 'kuf' ? kuf : view === 'kepu' ? kepu : returns;
+  const mutationErr =
+    (buildKifKuf.error as Error | null) ||
+    (computePopdv.error as Error | null) ||
+    (postReturn.error as Error | null) ||
+    (createEntry.error as Error | null) ||
+    (updateEntry.error as Error | null) ||
+    (deleteEntry.error as Error | null) ||
+    (ppPdvPdf.error as Error | null) ||
+    (ledgerPdf.error as Error | null);
+
+  const ledgerColumnsActive = ledgerColumnsWithActions(
+    (row) => setEntryDialog({ row }),
+    handleDeleteEntry,
+  );
 
   return (
     <AppShell>
@@ -208,25 +360,76 @@ export default function PdvPage() {
               ? kuf.data
                 ? `${formatNumber(kuf.data.meta.count)} stavki`
                 : undefined
-              : undefined
+              : view === 'kepu'
+                ? kepu.data
+                  ? `${formatNumber(kepu.data.meta.count)} stavki`
+                  : undefined
+                : undefined
         }
         actions={
           view === 'popdv' ? (
-            <Button
-              onClick={() => computePopdv.mutate({ year, month })}
-              loading={computePopdv.isPending}
-            >
-              Obračunaj
-            </Button>
-          ) : (
-            <Button
-              variant="secondary"
-              onClick={() => buildKifKuf.mutate({ year, month })}
-              loading={buildKifKuf.isPending}
-            >
-              Napuni iz GK
-            </Button>
-          )
+            <div className="flex items-center gap-2">
+              {currentReturn?.status === 'CALCULATED' && (
+                <Button
+                  variant="secondary"
+                  onClick={() => postReturn.mutate(currentReturn.id)}
+                  loading={postReturn.isPending}
+                >
+                  Zaključaj (POSTED)
+                </Button>
+              )}
+              {currentReturn && (
+                <Button
+                  variant="secondary"
+                  onClick={() =>
+                    ppPdvPdf.mutate(
+                      `${year}-${String(month).padStart(2, '0')}`,
+                      { onSuccess: openPdf },
+                    )
+                  }
+                  loading={ppPdvPdf.isPending}
+                >
+                  <Printer className="h-4 w-4" aria-hidden />
+                  PP-PDV
+                </Button>
+              )}
+              <Button
+                onClick={() => computePopdv.mutate({ year, month })}
+                loading={computePopdv.isPending}
+              >
+                Obračunaj
+              </Button>
+            </div>
+          ) : isLedgerView ? (
+            <div className="flex items-center gap-2">
+              <Button
+                variant="secondary"
+                onClick={() =>
+                  ledgerPdf.mutate(
+                    { book: view === 'kuf' ? 'kuf' : 'kif', year, month },
+                    { onSuccess: openPdf },
+                  )
+                }
+                loading={ledgerPdf.isPending}
+              >
+                <Printer className="h-4 w-4" aria-hidden />
+                Štampa
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => setEntryDialog({ row: null })}
+              >
+                <Plus className="h-4 w-4" aria-hidden />
+                Nova stavka
+              </Button>
+              <Button
+                onClick={() => buildKifKuf.mutate({ year, month })}
+                loading={buildKifKuf.isPending}
+              >
+                Napuni iz GK
+              </Button>
+            </div>
+          ) : undefined
         }
       />
 
@@ -265,29 +468,23 @@ export default function PdvPage() {
           </div>
         </div>
 
-        {(activeQuery.error || buildErr || computeErr) && (
+        {(activeQuery.error || mutationErr) && (
           <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">
-            {
-              (
-                (activeQuery.error as Error) ||
-                buildErr ||
-                computeErr
-              )?.message
-            }
+            {((activeQuery.error as Error) || mutationErr)?.message}
           </div>
         )}
 
         {/* KIF / KUF */}
         {view === 'kif' && (
           <DataTable
-            columns={ledgerColumns}
+            columns={ledgerColumnsActive}
             rows={kifRows}
             rowKey={(r) => r.id}
             loading={kif.isLoading}
             empty={
               <EmptyState
                 title="Nema KIF stavki"
-                hint={'Napuni evidenciju iz glavne knjige za izabrani period (dugme „Napuni iz GK“).'}
+                hint={'Napuni evidenciju iz glavne knjige ili dodaj rucnu stavku za izabrani period.'}
               />
             }
           />
@@ -295,14 +492,14 @@ export default function PdvPage() {
 
         {view === 'kuf' && (
           <DataTable
-            columns={ledgerColumns}
+            columns={ledgerColumnsActive}
             rows={kufRows}
             rowKey={(r) => r.id}
             loading={kuf.isLoading}
             empty={
               <EmptyState
                 title="Nema KUF stavki"
-                hint={'Napuni evidenciju iz glavne knjige za izabrani period (dugme „Napuni iz GK“).'}
+                hint={'Napuni evidenciju iz glavne knjige ili dodaj rucnu stavku za izabrani period.'}
               />
             }
           />
@@ -317,7 +514,43 @@ export default function PdvPage() {
             month={month}
           />
         )}
+
+        {/* KEPU knjiga (punjenje radi robno modul; ovde prikaz) */}
+        {view === 'kepu' && (
+          <DataTable
+            columns={kepuColumns}
+            rows={kepuRows}
+            rowKey={(r) => r.id}
+            loading={kepu.isLoading}
+            empty={
+              <EmptyState
+                title="Nema KEPU stavki"
+                hint={'KEPU knjiga se puni iz robnog toka; za izabrani period nema evidencije.'}
+              />
+            }
+          />
+        )}
       </div>
+
+      {entryDialog && (
+        <ManualEntryDialog
+          direction={ledgerDirection}
+          year={year}
+          month={month}
+          row={entryDialog.row}
+          onClose={() => setEntryDialog(null)}
+          onCreate={(input) =>
+            createEntry.mutate(input, { onSuccess: () => setEntryDialog(null) })
+          }
+          onUpdate={(id, input) =>
+            updateEntry.mutate(
+              { id, input },
+              { onSuccess: () => setEntryDialog(null) },
+            )
+          }
+          saving={createEntry.isPending || updateEntry.isPending}
+        />
+      )}
     </AppShell>
   );
 }
@@ -405,5 +638,161 @@ function SummaryTile({
         {formatDecimal(value)}
       </span>
     </div>
+  );
+}
+
+/** Danasnji datum kao yyyy-MM-dd (za default vrednost date inputa). */
+function todayIso(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/**
+ * Dijalog za ručnu KIF/KUF stavku (D4). `row=null` = nova stavka (smer + period
+ * iz izabranog taba/perioda); `row` popunjen = izmena postojeće ručne stavke
+ * (smer i period se ne menjaju — samo dokument/partner/iznosi). GK-izvedene
+ * stavke se ne otvaraju kroz ovaj dijalog (akcija je skrivena u tabeli).
+ */
+function ManualEntryDialog({
+  direction,
+  year,
+  month,
+  row,
+  onClose,
+  onCreate,
+  onUpdate,
+  saving,
+}: {
+  direction: 'input' | 'output';
+  year: number;
+  month: number;
+  row: VatLedgerRow | null;
+  onClose: () => void;
+  onCreate: (input: CreateManualVatEntryInput) => void;
+  onUpdate: (id: number, input: Partial<CreateManualVatEntryInput>) => void;
+  saving: boolean;
+}) {
+  const isEdit = row != null;
+  const [documentNumber, setDocumentNumber] = useState(row?.documentNumber ?? '');
+  const [documentDate, setDocumentDate] = useState(
+    row?.documentDate ? row.documentDate.slice(0, 10) : todayIso(),
+  );
+  const [partnerId, setPartnerId] = useState(
+    row?.partnerId != null ? String(row.partnerId) : '',
+  );
+  const [vatRateCode, setVatRateCode] = useState(row?.vatRateCode ?? '');
+  const [vatBase, setVatBase] = useState(row?.vatBase ?? '');
+  const [vatAmount, setVatAmount] = useState(row?.vatAmount ?? '');
+
+  const bookLabel = direction === 'output' ? 'KIF (izlazna)' : 'KUF (ulazna)';
+  const title = isEdit ? 'Izmena ručne stavke' : 'Nova ručna stavka';
+
+  const canSave =
+    documentNumber.trim().length > 0 &&
+    documentDate.length > 0 &&
+    vatBase.trim().length > 0 &&
+    vatAmount.trim().length > 0 &&
+    !Number.isNaN(Number(vatBase)) &&
+    !Number.isNaN(Number(vatAmount));
+
+  function submit(): void {
+    if (!canSave) return;
+    const partner = partnerId.trim() === '' ? null : Number(partnerId);
+    const rate = vatRateCode.trim() === '' ? null : vatRateCode.trim();
+    if (isEdit && row) {
+      onUpdate(row.id, {
+        documentNumber: documentNumber.trim(),
+        documentDate,
+        partnerId: partner,
+        vatRateCode: rate,
+        vatBase: Number(vatBase),
+        vatAmount: Number(vatAmount),
+      });
+    } else {
+      onCreate({
+        direction,
+        documentNumber: documentNumber.trim(),
+        documentDate,
+        partnerId: partner,
+        taxPeriodYear: year,
+        taxPeriodMonth: month,
+        vatBase: Number(vatBase),
+        vatAmount: Number(vatAmount),
+        vatRateCode: rate,
+      });
+    }
+  }
+
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title={title}
+      dismissable={false}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>
+            Otkaži
+          </Button>
+          <Button onClick={submit} loading={saving} disabled={!canSave}>
+            Sačuvaj
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        <p className="text-xs text-ink-secondary">
+          Knjiga: {bookLabel} · period {String(month).padStart(2, '0')}/{year}
+        </p>
+        <FormField label="Broj dokumenta" required>
+          <Input
+            value={documentNumber}
+            onChange={(e) => setDocumentNumber(e.target.value)}
+            placeholder="npr. 2026-0042"
+          />
+        </FormField>
+        <div className="grid grid-cols-2 gap-3">
+          <FormField label="Datum dokumenta" required>
+            <Input
+              type="date"
+              value={documentDate}
+              onChange={(e) => setDocumentDate(e.target.value)}
+            />
+          </FormField>
+          <FormField label="Komitent (ID)" hint="opciono">
+            <Input
+              type="number"
+              value={partnerId}
+              onChange={(e) => setPartnerId(e.target.value)}
+              placeholder="npr. 1234"
+            />
+          </FormField>
+        </div>
+        <div className="grid grid-cols-3 gap-3">
+          <FormField label="Stopa %" hint="opciono">
+            <Input
+              value={vatRateCode}
+              onChange={(e) => setVatRateCode(e.target.value)}
+              placeholder="20"
+            />
+          </FormField>
+          <FormField label="Osnovica" required>
+            <Input
+              type="number"
+              value={vatBase}
+              onChange={(e) => setVatBase(e.target.value)}
+              placeholder="0.00"
+            />
+          </FormField>
+          <FormField label="Iznos PDV" required>
+            <Input
+              type="number"
+              value={vatAmount}
+              onChange={(e) => setVatAmount(e.target.value)}
+              placeholder="0.00"
+            />
+          </FormField>
+        </div>
+      </div>
+    </Dialog>
   );
 }

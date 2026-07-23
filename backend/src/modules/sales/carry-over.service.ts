@@ -73,6 +73,11 @@ export class DocumentCarryOverService {
         );
       }
 
+      // ── D8: zaključan izvor se ne prepisuje (mutira mu se linkedInvoiceDocId) ──
+      if (proforma.isLocked) {
+        throw new ConflictException("Dokument je zaključan (proknjižen).");
+      }
+
       const isExport = EXPORT_TYPES.has(targetType) || proforma.isExport;
 
       // ── Kreiraj cilj (DRAFT, level 0, privremeni broj) ──
@@ -98,6 +103,7 @@ export class DocumentCarryOverService {
           copiedFromDocId: proforma.id,
           status: "DRAFT",
           isExport,
+          poNumber: proforma.poNumber, // D6: broj narudžbenice se prenosi PROF → račun (UBL OrderReference)
           note: proforma.note,
           items: {
             create: proforma.items.map((it) => ({

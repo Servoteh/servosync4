@@ -62,6 +62,22 @@ const NS_APPDEF = "http://schemas.datacontract.org/2004/07/AppDef";
 const DEFAULT_START_COLUMN = 3;
 
 /**
+ * Veličina obveznika (Zakon o računovodstvu: MIKRO/MALO/SREDNJE/VELIKO) — NIJE u
+ * Company modelu. Do dodavanja polja u Podešavanja čita se iz env-a ili konstante.
+ * TODO(podesavanja): dodati `company_size` u Company/Podešavanja i čitati odatle.
+ */
+const OBVEZNIK_VELICINA = process.env.ZR_OBVEZNIK_VELICINA ?? "MALO";
+
+/** Identifikacija obveznika za APR eFI zaglavlje (izvor: companies + konstanta). */
+interface Obveznik {
+  naziv: string;
+  pib: string | null; // poreski identifikacioni broj (Company.taxId)
+  maticniBroj: string | null; // matični broj (Company.registrationNumber)
+  sifraDelatnosti: string | null; // šifra delatnosti (Company.businessActivityCode)
+  velicina: string; // veličina obveznika (konstanta/env — TODO Podešavanja)
+}
+
+/**
  * Statički opis obrasca (Naziv + broj kolona) po statementType.
  * Naziv-evi su verbatim iz VBA (`<Naziv>Bilans stanja|Bilans uspeha|Statistički izveštaj</Naziv>`).
  * `emptyTextFields` = SI piše prazno self-closed <TekstualnaPoljaForme/> (VBA), BS/BU pun blok.
@@ -137,14 +153,23 @@ export class AprXmlService {
       throw new AprXmlUnsupportedFormException(statement.statementType);
     }
 
+    const obveznik = await this.loadObveznik();
+
     const lines = statement.lines.map((l) => ({
       aop: l.aop,
-      amount: l.amount instanceof D ? l.amount : new D(l.amount),
+      // Iznos_1/2/3 po koloni (D9): amount = tekuća, amount2 = prethodna, amount3 =
+      // pretprethodna. Ranije se `amount` kopirao u sve kolone — sada svaka kolona nosi
+      // svoju vrednost. columnCount po obrascu bira koliko ih se emituje (BS 3, BU 2).
+      columnAmounts: [
+        l.amount instanceof D ? l.amount : new D(l.amount),
+        l.amount2 instanceof D ? l.amount2 : new D(l.amount2),
+        l.amount3 instanceof D ? l.amount3 : new D(l.amount3),
+      ] as Prisma.Decimal[],
       // TODO(zr-aop-modla): kada model dobije startColumn, čitaj `l.startColumn ?? DEFAULT_START_COLUMN`.
       startColumn: DEFAULT_START_COLUMN,
     }));
 
-    const xml = this.buildFiForma(spec, lines);
+    const xml = this.buildFiForma(spec, lines, obveznik);
 
     // BS_2025.xml / BU_2025.xml / SI_2025.xml
     const shortCode = FORM_SHORT_CODE[statement.statementType] ?? "ZR";
@@ -156,33 +181,46 @@ export class AprXmlService {
   // ── interno: sastavljanje XML-a ─────────────────────────────────────────────
 
   /**
-   * FiForma dokument: zaglavlje + NumerickaPoljaForme (jedno NumerickoPolje po
-   * (linija × kolona)) + TekstualnaPoljaForme (BS/BU pun, SI prazan).
-   * Struktura i redosled tačno po VBA `ZR_EksportXML_*`.
+   * FiForma dokument: zaglavlje + identifikacija obveznika + NumerickaPoljaForme
+   * (jedno NumerickoPolje po (linija × kolona)) + TekstualnaPoljaForme (BS/BU pun,
+   * SI prazan). Struktura i redosled tačno po VBA `ZR_EksportXML_*`.
    */
   private buildFiForma(
     spec: FormSpec,
-    lines: Array<{ aop: string; amount: Prisma.Decimal; startColumn: number }>,
+    lines: Array<{
+      aop: string;
+      columnAmounts: Prisma.Decimal[];
+      startColumn: number;
+    }>,
+    obveznik: Obveznik,
   ): string {
     const parts: string[] = [];
 
     parts.push(
       `<FiForma xmlns="${NS_DOMAIN}" xmlns:i="${NS_XSI}">` +
-        `<Naziv>${escapeXml(spec.naziv)}</Naziv>` +
-        `<NumerickaPoljaForme xmlns:a="${NS_APPDEF}">`,
+        `<Naziv>${escapeXml(spec.naziv)}</Naziv>`,
     );
 
-    // Numerička polja: za svaku liniju emituj `columnCount` NumerickoPolje-a.
-    // VBA emituje 1 iznos po koloni (Iznos_1/2/3); ovde je (rekonstruisano) jedan
-    // `amount` po liniji → kolone iznad prve dobijaju istu vrednost. TODO kad model
-    // dobije po-kolonu iznose, indeksiraj njih.
+    // Identifikacija obveznika (PIB, matični broj, naziv, veličina, šifra delatnosti).
+    // ⚠️ REKONSTRUKCIJA: tačni nazivi FiForma elemenata za identitet obveznika nisu
+    // verbatim poznati (ZR_AOP_Modla / APR eFI XSD binaran u .MDB, doc 44 §7). Blok je
+    // dodat KONZERVATIVNO odmah posle <Naziv> (gde APR šema drži identitet forme).
+    // TODO(zr-aop-modla): uskladiti nazive elemenata sa pravom APR eFI FiForma šemom
+    // pre produkcije; do tada služi kao nosilac podataka o obvezniku.
+    parts.push(this.buildObveznik(obveznik));
+
+    parts.push(`<NumerickaPoljaForme xmlns:a="${NS_APPDEF}">`);
+
+    // Numerička polja: za svaku liniju emituj `columnCount` NumerickoPolje-a, svaka
+    // kolona sa SVOJIM iznosom (Iznos_1=amount, Iznos_2=amount2, Iznos_3=amount3).
     for (const line of lines) {
       for (let n = 0; n < spec.columnCount; n++) {
         const naziv = `aop-${line.aop}-${line.startColumn + n}`;
+        const value = line.columnAmounts[n] ?? new D(0);
         parts.push(
           `<a:NumerickoPolje>` +
             `<a:Naziv>${escapeXml(naziv)}</a:Naziv>` +
-            xmlTag("a:Vrednosti", line.amount) +
+            xmlTag("a:Vrednosti", value) +
             `</a:NumerickoPolje>`,
         );
       }
@@ -211,6 +249,55 @@ export class AprXmlService {
 
     return `<?xml version="1.0" encoding="utf-8"?>\n` + parts.join("\n");
   }
+
+  /**
+   * Identifikacija obveznika iz `companies` tabele (primarna firma = najmanji id;
+   * isti idiom kao rfq-pdf/invoice-pdf loadIssuer). PIB = Company.taxId, matični broj =
+   * Company.registrationNumber, šifra delatnosti = Company.businessActivityCode.
+   * Veličina obveznika nije u modelu → konstanta/env (OBVEZNIK_VELICINA, TODO Podešavanja).
+   */
+  private async loadObveznik(): Promise<Obveznik> {
+    const company = await this.prisma.company.findFirst({
+      orderBy: { id: "asc" },
+      select: {
+        companyName: true,
+        taxId: true,
+        registrationNumber: true,
+        businessActivityCode: true,
+      },
+    });
+    return {
+      naziv: company?.companyName ?? "Servoteh d.o.o.",
+      pib: company?.taxId ?? null,
+      maticniBroj: company?.registrationNumber ?? null,
+      sifraDelatnosti: company?.businessActivityCode ?? null,
+      velicina: OBVEZNIK_VELICINA,
+    };
+  }
+
+  /**
+   * XML blok identifikacije obveznika. Nazivi elemenata su KONZERVATIVNA rekonstrukcija
+   * (vidi napomenu u buildFiForma); prazna polja se emituju kao self-closed `i:nil="true"`.
+   */
+  private buildObveznik(o: Obveznik): string {
+    return (
+      `<Obveznik>` +
+      textEl("Naziv", o.naziv) +
+      textEl("PIB", o.pib) +
+      textEl("MaticniBroj", o.maticniBroj) +
+      textEl("SifraDelatnosti", o.sifraDelatnosti) +
+      textEl("Velicina", o.velicina) +
+      `</Obveznik>`
+    );
+  }
+}
+
+/** Tekstualni element: prazno/null → self-closed i:nil="true", inače escape-ovan sadržaj. */
+function textEl(tag: string, value: string | null | undefined): string {
+  if (value == null || value === "") {
+    return `<${tag} i:nil="true"/>`;
+  }
+  return `<${tag}>${escapeXml(value)}</${tag}>`;
 }
 
 /** Kratke oznake obrasca za ime fajla. */

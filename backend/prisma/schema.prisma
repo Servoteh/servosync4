@@ -3400,6 +3400,11 @@ model Invoice {
   status   String  @default("DRAFT") @map("status") @db.VarChar(20)
   isExport Boolean @default(false) @map("is_export") // izvoz (ExportInvoicePolicy: konto 2050, PDV Z/čl.24, van domaćeg SEF-a)
 
+  // — SEF / javni sektor (Talas 1D) —
+  poNumber String? @map("po_number") @db.VarChar(50) // broj narudžbenice kupca → UBL cac:OrderReference (SEF javni sektor, D6)
+  /// Tehnička brava proknjiženog/prihvaćenog dokumenta (D8): true blokira izmene i storno bez otključavanja.
+  isLocked Boolean @default(false) @map("is_locked")
+
   // — Okidači pri knjiženju (meki ref-ovi, bez @relation na cross-modul) —
   journalEntryId  Int? @map("journal_entry_id") // Faza 2 nalog (journal_entries.id)
   stockDocumentId Int? @map("stock_document_id") // Faza 3 razduženje / izlaz robe (stock_documents.id)
@@ -3692,7 +3697,9 @@ model FinancialStatementLine {
   statementId Int     @map("statement_id") // FK FinancialStatement
   aop         String  @map("aop") @db.VarChar(20) // AOP oznaka (npr. "0071", "0401")
   label       String? @map("label") @db.VarChar(255) // naziv pozicije
-  amount      Decimal @default(0) @map("amount") @db.Decimal(19, 4) // izračunato GKEval / ručni unos (MANUAL/OS)
+  amount      Decimal @default(0) @map("amount") @db.Decimal(19, 4) // izračunato GKEval / ručni unos (MANUAL/OS) — kolona 1 (tekuća godina)
+  amount2     Decimal @default(0) @map("amount_2") @db.Decimal(19, 4) // Iznos_2 (AB atomi — prethodna godina / PG), D9
+  amount3     Decimal @default(0) @map("amount_3") @db.Decimal(19, 4) // Iznos_3 (AC atomi — pretprethodna / PS), D9
   formula     String? @map("formula") // GKEval izraz nad kontima/AOP; null = MANUAL/OS (ručni unos)
   ordinal     Int     @default(0) @map("ordinal") // redosled u obrascu
 

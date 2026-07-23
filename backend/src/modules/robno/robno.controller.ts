@@ -83,7 +83,24 @@ export class RobnoController {
   @RequirePermission(PERMISSIONS.ROBNO_POST)
   async post(@Param("id", ParseIntPipe) id: number) {
     const lines = await this.posting.postFromStockDocument(id);
+    // KEPU (maloprodajna knjiga) — razduženje/zaduženje po proknjiženom dokumentu (IZ/NIV/…),
+    // idempotentno po documentId. Van posting transakcije: posting baca na grešku pa se KEPU ne izvrši.
+    const kepuEntries = await this.robno.writeKepuForDocument(id);
     // Ne vraćamo interni LedgerLineDraft[] tip direktno (nije eksportovan) — sažetak.
-    return { data: { docId: id, ledgerLines: lines.length, posted: true } };
+    return {
+      data: { docId: id, ledgerLines: lines.length, kepuEntries, posted: true },
+    };
+  }
+
+  /**
+   * Retro-punjenje KEPU knjige za postojeće dokumente (task D5be). Idempotentno — može se
+   * pozvati više puta. Opcioni filter po godini. Piše `kepu_book_entries` iz robnog toka.
+   */
+  @Post("kepu/rebuild")
+  @RequirePermission(PERMISSIONS.ROBNO_WRITE)
+  async rebuildKepu(@Query("year") year?: string) {
+    const y = year != null && year.trim() !== "" ? Number(year) : undefined;
+    const result = await this.robno.rebuildKepu({ year: y });
+    return { data: result };
   }
 }

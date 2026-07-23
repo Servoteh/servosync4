@@ -26,19 +26,22 @@
  * DECIMAL, NIKAD FLOAT (BACKEND_RULES §2). Svi iznosi Prisma.Decimal.
  */
 
-import { Injectable, NotFoundException } from "@nestjs/common";
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { GkEvalService } from "./gkeval.service";
+import { ControlRulesService, ControlResult } from "./control-rules.service";
 
 const D = Prisma.Decimal;
 
-/** Tipovi obrazaca (schema.prisma FinancialStatement.statementType). */
-export const STATEMENT_TYPE = {
-  BALANCE_SHEET: "BALANCE_SHEET", // BS / bilans stanja
-  INCOME_STATEMENT: "INCOME_STATEMENT", // BU / bilans uspeha
-  POPDV_ANNUAL: "POPDV_ANNUAL", // SI / statistički
-} as const;
+// STATEMENT_TYPE je izdvojen u ./statement-type.ts (prekid kružnog importa sa
+// control-rules); re-export radi kompatibilnosti postojećih potrošača (apr-xml…).
+export { STATEMENT_TYPE } from "./statement-type";
+import { STATEMENT_TYPE } from "./statement-type";
 
 /** Ručni-unos marker u BalanceFormulaDefinition.formula (OS pozicije kod knjigovođe). */
 const MANUAL_FORMULA_MARKERS = new Set(["", "MANUAL", "OS", "RUCNO"]);
@@ -46,7 +49,9 @@ const MANUAL_FORMULA_MARKERS = new Set(["", "MANUAL", "OS", "RUCNO"]);
 export interface StatementLineResult {
   aop: string;
   label: string | null;
-  amount: string; // Decimal → string (BACKEND_RULES §6)
+  amount: string; // Decimal → string (BACKEND_RULES §6) — kolona 1 (tekuća godina)
+  amount2: string; // Iznos_2 (prethodna godina / AB) — D9
+  amount3: string; // Iznos_3 (pretprethodna godina / AC) — D9
   formula: string | null;
 }
 
@@ -60,11 +65,23 @@ export interface StatementResult {
   lines: StatementLineResult[];
 }
 
+/** Rezultat finalizacije obračuna (POST /statements/:id/finalize). */
+export interface FinalizeResult {
+  id: number;
+  statementType: string;
+  periodYear: number;
+  status: string;
+  finalizedAt: string; // ISO
+  forced: boolean; // true = finalizovano uprkos padu kontrolnih pravila (force=true)
+  controls: ControlResult[];
+}
+
 @Injectable()
 export class BalanceSheetService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly gkEval: GkEvalService,
+    private readonly controlRules: ControlRulesService,
   ) {}
 
   /**
@@ -151,6 +168,8 @@ export class BalanceSheetService {
         aop: l.aop,
         label: l.label,
         amount: l.amount.toFixed(4),
+        amount2: l.amount2.toFixed(4),
+        amount3: l.amount3.toFixed(4),
         formula: l.formula,
       })),
     }));
@@ -177,11 +196,25 @@ export class BalanceSheetService {
 
     const seeded = definitions.length > 0;
 
-    // Linije koje ćemo upisati: (aop, label, amount, formula, ordinal)
+    // Iznos_2 / Iznos_3 (kolone 2/3): PRETHODNA (year-1) i PRETPRETHODNA (year-2)
+    // godina. POJEDNOSTAVLJENJE (D9, doc 44 §8 t.1): amount2/amount3 su LOOKUP već
+    // sačuvanih `amount` vrednosti istog AOP-a iz obračuna za year-1 / year-2, a NE
+    // pun re-eval formule sa bruto stanjem te godine. Isti map služi i AB/AC<aop>
+    // referencama u formuli (resolveAop kolona 2→year-1, 3→year-2). Pun AB/AC eval
+    // (ponovni GKEval prolaz nad prošlogodišnjim saldima) ide u Talas 2.
+    const prevYearAmounts = await this.loadPriorYearAmounts(statementType, year - 1);
+    const prevPrevYearAmounts = await this.loadPriorYearAmounts(
+      statementType,
+      year - 2,
+    );
+
+    // Linije koje ćemo upisati: (aop, label, amount, amount2, amount3, formula, ordinal)
     const linesToWrite: Array<{
       aop: string;
       label: string | null;
       amount: Prisma.Decimal;
+      amount2: Prisma.Decimal;
+      amount3: Prisma.Decimal;
       formula: string | null;
       ordinal: number;
     }> = [];
@@ -190,14 +223,20 @@ export class BalanceSheetService {
 
     if (seeded) {
       // Kešuj izračunate AOP vrednosti radi A/AB/AC<aop> referenci (isti obrazac).
-      // BalanceSheetService trenutno drži JEDNU vrednost po AOP-u (kolona 1 =
-      // `amount`); kolone 2/3 (AB/AC → Iznos_2/Iznos_3) nisu još modelovane u
-      // financial_statement_lines, pa ih tretiramo kao 0 dok se ne dodaju (doc 44 §8 t.1).
-      // Callback prima `column` (A→1, AB→2, AC→3) da bi motor mogao da razlikuje
-      // AB/AC atome; ovde koristimo samo kolonu 1.
+      // Kolona 1 (A) = tekuća godina (aopValues, iterativno). Kolona 2 (AB) = Iznos_2
+      // = vrednost AOP-a iz obračuna za PRETHODNU godinu (year-1). Kolona 3 (AC) =
+      // Iznos_3 = PRETPRETHODNA (year-2). Vrednosti kolona 2/3 su LOOKUP prošlogodišnjih
+      // `amount`-a (pojednostavljenje D9; vidi gore), pa su konstantne kroz iteracije.
       const aopValues = new Map<string, Prisma.Decimal>();
-      const resolveAop = (aop: string, column: 1 | 2 | 3): Prisma.Decimal =>
-        column === 1 ? (aopValues.get(aop) ?? new D(0)) : new D(0);
+      const resolveAop = (aop: string, column: 1 | 2 | 3): Prisma.Decimal => {
+        if (column === 2) {
+          return prevYearAmounts.get(aop) ?? new D(0);
+        }
+        if (column === 3) {
+          return prevPrevYearAmounts.get(aop) ?? new D(0);
+        }
+        return aopValues.get(aop) ?? new D(0);
+      };
 
       // ── ITERATIVNA KONVERGENCIJA (fixed-point) ──────────────────────────────
       // AOP formule sadrže FORWARD reference: npr. UKUPNA AKTIVA (0001 = A0002+A0044)
@@ -247,6 +286,8 @@ export class BalanceSheetService {
           aop: def.aop,
           label: def.label,
           amount: aopValues.get(def.aop) ?? new D(0),
+          amount2: prevYearAmounts.get(def.aop) ?? new D(0),
+          amount3: prevPrevYearAmounts.get(def.aop) ?? new D(0),
           formula: isManual ? null : def.formula,
           ordinal: def.ordinal,
         });
@@ -263,6 +304,10 @@ export class BalanceSheetService {
           aop: r.accountCode, // AOP = konto u sirovom modu
           label: r.accountName,
           amount: r.balance,
+          // U sirovom modu AOP = konto; prošlogodišnja kolona = saldo istog konta
+          // iz obračuna za year-1 / year-2 (ako je tada takođe generisan sirovi mod).
+          amount2: prevYearAmounts.get(r.accountCode) ?? new D(0),
+          amount3: prevPrevYearAmounts.get(r.accountCode) ?? new D(0),
           formula: null,
           ordinal: ordinal++,
         });
@@ -306,6 +351,8 @@ export class BalanceSheetService {
             aop: l.aop,
             label: l.label,
             amount: l.amount,
+            amount2: l.amount2,
+            amount3: l.amount3,
             formula: l.formula,
             ordinal: l.ordinal,
           })),
@@ -329,8 +376,93 @@ export class BalanceSheetService {
         aop: l.aop,
         label: l.label,
         amount: l.amount.toFixed(4),
+        amount2: l.amount2.toFixed(4),
+        amount3: l.amount3.toFixed(4),
         formula: l.formula,
       })),
+    };
+  }
+
+  /**
+   * Učitaj mapu aop → amount (kolona 1) iz sačuvanog obračuna za dati tip/godinu.
+   * Vraća praznu mapu ako obračun ne postoji (npr. prva godina korišćenja) — tada su
+   * Iznos_2/Iznos_3 nule. Koristi se za popunu prethodne (year-1) i pretprethodne
+   * (year-2) kolone (D9 pojednostavljenje, doc 44 §8 t.1).
+   */
+  private async loadPriorYearAmounts(
+    statementType: string,
+    year: number,
+  ): Promise<Map<string, Prisma.Decimal>> {
+    const map = new Map<string, Prisma.Decimal>();
+    if (year < 1990) {
+      return map;
+    }
+    const prior = await this.prisma.financialStatement.findUnique({
+      where: {
+        statementType_periodYear: { statementType, periodYear: year },
+      },
+      include: { lines: true },
+    });
+    if (!prior) {
+      return map;
+    }
+    for (const l of prior.lines) {
+      map.set(l.aop, l.amount instanceof D ? l.amount : new D(l.amount));
+    }
+    return map;
+  }
+
+  /**
+   * FINALIZE obračuna (D9): DRAFT → FINALIZED + finalizedAt. Pre prelaska proverava
+   * KONTROLNA PRAVILA (ControlRulesService) — ako ijedno pada, finalizacija se ODBIJA
+   * (StatementControlsFailedException) OSIM ako je `force=true` (dokumentovani escape
+   * hatch, npr. dok su OS pozicije ručne pa aktiva≠pasiva privremeno).
+   *
+   * ATOMIČNOST: prelaz radi `updateMany` CAS guard-om (WHERE status<>FINALIZED) — ako
+   * je između čitanja i upisa neko drugi već finalizovao (count=0), baca Conflict
+   * umesto tihog gaženja. Regenerate guard već postoji u computeStatement (FINALIZED
+   * se ne dira).
+   */
+  async finalizeStatement(
+    id: number,
+    opts: { force?: boolean; userId?: number } = {},
+  ): Promise<FinalizeResult> {
+    const statement = await this.prisma.financialStatement.findUnique({
+      where: { id },
+    });
+    if (!statement) {
+      throw new StatementNotFoundException(id);
+    }
+    if (statement.status === "FINALIZED") {
+      throw new StatementAlreadyFinalizedException(id);
+    }
+
+    // Kontrolna pravila — blokiraju finalizaciju osim uz force=true.
+    const controls = await this.controlRules.evaluateControls(id);
+    const failed = controls.filter((c) => !c.passed);
+    const forced = failed.length > 0 && opts.force === true;
+    if (failed.length > 0 && !opts.force) {
+      throw new StatementControlsFailedException(failed.map((f) => f.name));
+    }
+
+    // CAS: samo iz ne-FINALIZED stanja (sprečava dvostruki finalize u trci).
+    const finalizedAt = new Date();
+    const res = await this.prisma.financialStatement.updateMany({
+      where: { id, status: { not: "FINALIZED" } },
+      data: { status: "FINALIZED", finalizedAt },
+    });
+    if (res.count === 0) {
+      throw new StatementAlreadyFinalizedException(id);
+    }
+
+    return {
+      id: statement.id,
+      statementType: statement.statementType,
+      periodYear: statement.periodYear,
+      status: "FINALIZED",
+      finalizedAt: finalizedAt.toISOString(),
+      forced,
+      controls,
     };
   }
 }
@@ -343,6 +475,36 @@ export class StatementFinalizedException extends NotFoundException {
       `Obračun ${statementType} za ${year} je FINALIZED (predat) — ponovno generisanje nije dozvoljeno.`,
     );
     this.name = "StatementFinalizedException";
+  }
+}
+
+/** Obračun tražen za finalizaciju ne postoji. */
+export class StatementNotFoundException extends NotFoundException {
+  readonly code = "ZR_STATEMENT_NOT_FOUND";
+  constructor(statementId: number) {
+    super(`FinancialStatement ${statementId} ne postoji.`);
+    this.name = "StatementNotFoundException";
+  }
+}
+
+/** Obračun je već FINALIZED — finalizacija je idempotentno odbijena (Conflict). */
+export class StatementAlreadyFinalizedException extends ConflictException {
+  readonly code = "ZR_STATEMENT_ALREADY_FINALIZED";
+  constructor(statementId: number) {
+    super(`Obračun ${statementId} je već finalizovan (predat).`);
+    this.name = "StatementAlreadyFinalizedException";
+  }
+}
+
+/** Kontrolna pravila padaju — finalizacija odbijena (osim uz force=true). */
+export class StatementControlsFailedException extends ConflictException {
+  readonly code = "ZR_STATEMENT_CONTROLS_FAILED";
+  constructor(failedRuleNames: string[]) {
+    super(
+      `Finalizacija odbijena — kontrolna pravila ne prolaze: ${failedRuleNames.join("; ")}. ` +
+        `Za finalizaciju uprkos tome pošalji force=true.`,
+    );
+    this.name = "StatementControlsFailedException";
   }
 }
 

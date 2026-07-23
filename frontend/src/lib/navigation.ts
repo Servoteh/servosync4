@@ -288,7 +288,9 @@ export const NAV_DOMAINS: NavDomain[] = [
       // XL: Obračun kamate (zatezna/ugovorna)
       { label: 'Kamata', href: '/kamata', icon: Percent, requires: PERMISSIONS.KAMATA_READ, keywords: ['kamata', 'zatezna', 'kamatni list', 'obracun kamate'] },
       // Faza 6: PDV & POPDV
-      { label: 'PDV & POPDV', href: '/pdv', icon: ShieldCheck, requires: PERMISSIONS.PDV_READ, keywords: ['pdv', 'popdv', 'pppdv', 'kif', 'kuf'] },
+      { label: 'PDV & POPDV', href: '/pdv', icon: ShieldCheck, requires: PERMISSIONS.PDV_READ, keywords: ['pdv', 'popdv', 'pppdv', 'kif', 'kuf', 'kepu'] },
+      // Talas 1D: registar poreskih stopa (efektivno datiranje)
+      { label: 'Poreske stope', href: '/pdv/stope', icon: ShieldCheck, requires: PERMISSIONS.PDV_READ, keywords: ['poreske stope', 'tarife', 'pdv stopa', 'stopa'] },
       // Faza 7: Završni račun (bilansi, APR)
       { label: 'Završni račun', href: '/zavrsni-racun', icon: CheckCircle2, requires: PERMISSIONS.ZR_READ, keywords: ['bilans', 'zavrsni racun', 'apr', 'popdv'] },
     ],

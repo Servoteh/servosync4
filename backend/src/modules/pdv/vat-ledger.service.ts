@@ -23,9 +23,20 @@
  * registar PDV konta — Decimal se vraća egzaktno (BACKEND_RULES §2: nikad Float).
  */
 
-import { Injectable } from "@nestjs/common";
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
+import { assertVatPeriodNotLocked } from "./vat-period-lock";
+import {
+  type CreateManualVatEntryDto,
+  type UpdateManualVatEntryDto,
+  validateCreateManualVatEntry,
+  validateUpdateManualVatEntry,
+} from "./dto/manual-vat-entry.dto";
 
 const D = Prisma.Decimal;
 const ZERO = new D(0);
@@ -82,10 +93,20 @@ export class VatLedgerService {
   async buildKifKuf(year: number, month: number): Promise<BuildKifKufResult> {
     this.assertPeriod(year, month);
 
+    // D3: reknjiženje zaključanog (POSTED) perioda nije dozvoljeno — inače bi
+    // deleteMany tiho pregazio predat obrazac.
+    await assertVatPeriodNotLocked(this.prisma, year, [month]);
+
     return this.prisma.$transaction(async (tx) => {
       // 1) Čist period — obriši prethodno punjenje (idempotentnost).
+      //    D4: briše SAMO GK-izvedene stavke (sourceJournalEntryId != null);
+      //    ručne stavke (source = null) opstaju kroz reknjiženje iz GK.
       await tx.vatLedgerEntry.deleteMany({
-        where: { taxPeriodYear: year, taxPeriodMonth: month },
+        where: {
+          taxPeriodYear: year,
+          taxPeriodMonth: month,
+          sourceJournalEntryId: { not: null },
+        },
       });
 
       // 2) Agregacija PDV konta iz GK po (nalog, partner, konto) za period.
@@ -173,7 +194,142 @@ export class VatLedgerService {
     return this.list("input", year, month);
   }
 
+  // ── ručne KIF/KUF stavke (D4) ────────────────────────────────────────────
+
+  /**
+   * Kreiraj RUČNU KIF/KUF stavku (`sourceJournalEntryId = null` — poreklo
+   * „manual"). Poštuje D3 period-lock: ne sme se dodavati u zaključan period.
+   */
+  async createManualEntry(dto: CreateManualVatEntryDto): Promise<VatLedgerRow> {
+    validateCreateManualVatEntry(dto);
+    await assertVatPeriodNotLocked(this.prisma, dto.taxPeriodYear, [
+      dto.taxPeriodMonth,
+    ]);
+
+    const created = await this.prisma.vatLedgerEntry.create({
+      data: {
+        direction: dto.direction,
+        documentNumber: dto.documentNumber.trim(),
+        partnerId: dto.partnerId ?? null,
+        documentDate: new Date(dto.documentDate),
+        taxPeriodYear: dto.taxPeriodYear,
+        taxPeriodMonth: dto.taxPeriodMonth,
+        vatBase: new D(dto.vatBase),
+        vatAmount: new D(dto.vatAmount),
+        vatRateCode: dto.vatRateCode ?? null,
+        sourceJournalEntryId: null, // marker ručne stavke
+      },
+    });
+    return this.toRow(created);
+  }
+
+  /**
+   * Izmeni RUČNU KIF/KUF stavku. Odbija GK-izvedene (`sourceJournalEntryId != null`)
+   * — one se menjaju samo reknjiženjem iz GK. Poštuje D3 lock za STARI i NOVI
+   * period (premeštanje stavke iz/u zaključan period nije dozvoljeno).
+   */
+  async updateManualEntry(
+    id: number,
+    dto: UpdateManualVatEntryDto,
+  ): Promise<VatLedgerRow> {
+    validateUpdateManualVatEntry(dto);
+    const existing = await this.loadManualOrThrow(id);
+
+    const newYear = dto.taxPeriodYear ?? existing.taxPeriodYear;
+    const newMonth = dto.taxPeriodMonth ?? existing.taxPeriodMonth;
+    // Lock provera za sve pogođene periode (stari i novi).
+    await assertVatPeriodNotLocked(this.prisma, existing.taxPeriodYear, [
+      existing.taxPeriodMonth,
+    ]);
+    if (newYear !== existing.taxPeriodYear || newMonth !== existing.taxPeriodMonth) {
+      await assertVatPeriodNotLocked(this.prisma, newYear, [newMonth]);
+    }
+
+    const updated = await this.prisma.vatLedgerEntry.update({
+      where: { id },
+      data: {
+        ...(dto.direction !== undefined ? { direction: dto.direction } : {}),
+        ...(dto.documentNumber !== undefined
+          ? { documentNumber: dto.documentNumber.trim() }
+          : {}),
+        ...(dto.partnerId !== undefined ? { partnerId: dto.partnerId ?? null } : {}),
+        ...(dto.documentDate !== undefined
+          ? { documentDate: new Date(dto.documentDate) }
+          : {}),
+        ...(dto.taxPeriodYear !== undefined ? { taxPeriodYear: dto.taxPeriodYear } : {}),
+        ...(dto.taxPeriodMonth !== undefined
+          ? { taxPeriodMonth: dto.taxPeriodMonth }
+          : {}),
+        ...(dto.vatBase !== undefined ? { vatBase: new D(dto.vatBase) } : {}),
+        ...(dto.vatAmount !== undefined ? { vatAmount: new D(dto.vatAmount) } : {}),
+        ...(dto.vatRateCode !== undefined
+          ? { vatRateCode: dto.vatRateCode ?? null }
+          : {}),
+      },
+    });
+    return this.toRow(updated);
+  }
+
+  /**
+   * Obriši RUČNU KIF/KUF stavku. Odbija GK-izvedene i zaključan (POSTED) period.
+   */
+  async deleteManualEntry(id: number): Promise<{ id: number }> {
+    const existing = await this.loadManualOrThrow(id);
+    await assertVatPeriodNotLocked(this.prisma, existing.taxPeriodYear, [
+      existing.taxPeriodMonth,
+    ]);
+    await this.prisma.vatLedgerEntry.delete({ where: { id } });
+    return { id };
+  }
+
   // ── interno ────────────────────────────────────────────────────────────────
+
+  /**
+   * Učitaj stavku i potvrdi da je RUČNA (source = null). GK-izvedene stavke
+   * (`sourceJournalEntryId != null`) su read-only kroz ovaj put.
+   */
+  private async loadManualOrThrow(id: number) {
+    const entry = await this.prisma.vatLedgerEntry.findUnique({ where: { id } });
+    if (!entry) {
+      throw new NotFoundException(`KIF/KUF stavka #${id} ne postoji.`);
+    }
+    if (entry.sourceJournalEntryId != null) {
+      throw new ConflictException(
+        `KIF/KUF stavka #${id} je izvedena iz glavne knjige (nalog #${entry.sourceJournalEntryId}) ` +
+          `i ne može se ručno menjati ni brisati; izmeni izvorni nalog pa reknjiži period.`,
+      );
+    }
+    return entry;
+  }
+
+  /** Prisma red → VatLedgerRow (isti oblik kao list metode). */
+  private toRow(r: {
+    id: number;
+    direction: string;
+    documentNumber: string;
+    partnerId: number | null;
+    documentDate: Date;
+    taxPeriodYear: number;
+    taxPeriodMonth: number;
+    vatBase: Prisma.Decimal;
+    vatAmount: Prisma.Decimal;
+    vatRateCode: string | null;
+    sourceJournalEntryId: number | null;
+  }): VatLedgerRow {
+    return {
+      id: r.id,
+      direction: r.direction,
+      documentNumber: r.documentNumber,
+      partnerId: r.partnerId,
+      documentDate: r.documentDate,
+      taxPeriodYear: r.taxPeriodYear,
+      taxPeriodMonth: r.taxPeriodMonth,
+      vatBase: r.vatBase,
+      vatAmount: r.vatAmount,
+      vatRateCode: r.vatRateCode,
+      sourceJournalEntryId: r.sourceJournalEntryId,
+    };
+  }
 
   private async list(
     direction: "input" | "output",
