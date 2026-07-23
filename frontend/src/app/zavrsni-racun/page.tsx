@@ -17,6 +17,8 @@ import {
   useStatements,
   useComputeBalanceSheet,
   useComputeIncomeStatement,
+  useAprXmlDownload,
+  downloadXml,
   STATEMENT_TYPE,
   STATEMENT_STATUS,
   type GrossTrialBalanceRow,
@@ -164,6 +166,7 @@ export default function ZavrsniRacunPage() {
   const statements = useStatements({ year });
   const computeBS = useComputeBalanceSheet();
   const computeBU = useComputeIncomeStatement();
+  const aprXml = useAprXmlDownload();
 
   // Sačuvani obračuni za tekuću godinu, po tipu.
   const byType = useMemo(() => {
@@ -200,9 +203,28 @@ export default function ZavrsniRacunPage() {
         count={`Godina ${year}`}
         actions={
           tab !== 'bruto' ? (
-            <Button onClick={onCompute} loading={computing.isPending}>
-              Izračunaj
-            </Button>
+            <div className="flex items-center gap-2">
+              {activeStatement && (
+                <Button
+                  variant="secondary"
+                  loading={aprXml.isPending}
+                  onClick={() =>
+                    aprXml.mutate(activeStatement.id, {
+                      onSuccess: (blob) =>
+                        downloadXml(
+                          blob,
+                          `APR_${activeStatement.statementType}_${year}.xml`,
+                        ),
+                    })
+                  }
+                >
+                  APR XML
+                </Button>
+              )}
+              <Button onClick={onCompute} loading={computing.isPending}>
+                Izračunaj
+              </Button>
+            </div>
           ) : undefined
         }
       />

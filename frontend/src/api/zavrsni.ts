@@ -1,7 +1,7 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiFetch } from './client';
+import { apiFetch, apiBlob } from './client';
 
 /**
  * Završni račun / bilansi (Faza 7) — data sloj. TanStack Query hooks nad NestJS
@@ -168,4 +168,29 @@ export function useComputeIncomeStatement() {
       }),
     onSuccess: invalidate,
   });
+}
+
+// ─────────────────────────────────── APR eFI XML export (BigBit paritet)
+
+/**
+ * Skini APR eFI FiForma XML za sačuvan obračun (GET /zavrsni/statements/:id/apr-xml).
+ * Endpoint vraća text/xml; povlači se kao Blob (Authorization header) i skida kao fajl.
+ * BigBit paritet: bez ovoga se bilans ne može predati APR-u.
+ */
+export function useAprXmlDownload() {
+  return useMutation({
+    mutationFn: (id: number) => apiBlob(`${BASE}/statements/${id}/apr-xml`),
+  });
+}
+
+/** Pokreni download Blob-a kao .xml fajl (isti obrazac kao FX TXT izvoz). */
+export function downloadXml(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
