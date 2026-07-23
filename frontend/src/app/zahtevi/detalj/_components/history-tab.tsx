@@ -116,8 +116,10 @@ function EventRow({ ev }: { ev: ChangeRequestEvent }) {
         </p>
         {note && <p className="mt-0.5 text-2xs text-ink-secondary">„{note}"</p>}
         <p className="mt-0.5 text-2xs text-ink-secondary">
-          {ev.actorUserId != null ? `Korisnik #${ev.actorUserId}` : 'Sistem / AI'} ·{' '}
-          {formatDateTime(ev.createdAt)}
+          {ev.actorUserId != null
+            ? (ev.actorName ?? `Korisnik #${ev.actorUserId}`)
+            : 'Sistem / AI'}{' '}
+          · {formatDateTime(ev.createdAt)}
         </p>
       </div>
     </li>

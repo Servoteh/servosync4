@@ -48,11 +48,23 @@ export function OwnerActions({ detail }: { detail: ChangeRequestDetail }) {
   const canEdit = detail.status === 'DRAFT';
   const canDelete = detail.status === 'DRAFT';
 
+  // Podsetnik posle poslatog odgovora (owner, NEEDS_INFO): podnosilac je već ostavio
+  // komentar/odgovor pa ga usmeravamo da klikne „Ponovo podnesi" (§A.1).
+  const hasOwnReply =
+    detail.status === 'NEEDS_INFO' &&
+    detail.comments.some((c) => c.authorUserId === detail.createdByUserId);
+
   if (!canSubmit && !canWithdraw && !canEdit && !canDelete) return null;
 
   return (
     <HelpSpot id="zahtevi.detalj.owner.akcije">
-    <div className="flex flex-wrap gap-2 rounded-panel border border-line bg-surface p-3">
+    <div className="flex flex-col gap-3 rounded-panel border border-line bg-surface p-3">
+    {hasOwnReply && (
+      <p className="rounded-control bg-status-info-bg px-3 py-2 text-2xs text-status-info">
+        Kad završite dopunu, kliknite „Ponovo podnesi" da se zahtev vrati administratoru.
+      </p>
+    )}
+    <div className="flex flex-wrap gap-2">
       {canSubmit && (
         <Button
           loading={submit.isPending}
@@ -81,6 +93,7 @@ export function OwnerActions({ detail }: { detail: ChangeRequestDetail }) {
           Obriši nacrt
         </Button>
       )}
+    </div>
 
       {editOpen && (
         <EditDraftDialog detail={detail} onClose={() => setEditOpen(false)} />

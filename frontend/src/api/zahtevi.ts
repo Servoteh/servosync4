@@ -203,22 +203,25 @@ export interface ChangeRequestAiAnalysis {
   finishedAt: string | null;
 }
 
-/** Komentar/pitanje — `change_request_comments`. */
+/** Komentar/pitanje — `change_request_comments`. `authorName` je meki ref na users (GET detalj). */
 export interface ChangeRequestComment {
   id: number;
   requestId: number;
   authorUserId: number;
+  authorName?: string | null;
   body: string;
   isQuestion: boolean;
   createdAt: string;
 }
 
-/** Event (insert-only timeline) — `change_request_events`. `data` je slobodan JSON. */
+/** Event (insert-only timeline) — `change_request_events`. `data` je slobodan JSON.
+ *  `actorName` je meki ref na users (GET detalj); null za sistem/AI ili nepoznatog. */
 export interface ChangeRequestEvent {
   id: number;
   requestId: number;
   type: string;
   actorUserId: number | null;
+  actorName?: string | null;
   data: Record<string, unknown> | null;
   createdAt: string;
 }

@@ -2,21 +2,39 @@
 
 import { useEffect, useState } from 'react';
 import { FileText, X } from 'lucide-react';
+import { Button } from '@/components/ui-kit/button';
+import { AttachmentInput } from '@/components/ui-kit/attachment-input';
+import { toast } from '@/lib/toast';
 import {
   signAttachmentUrl,
+  useUploadAttachments,
   type ChangeRequestAttachment,
   type ChangeRequestDetail,
 } from '@/api/zahtevi';
 import { formatDateTime } from '@/lib/format';
+
+/** Statusi u kojima owner sme da dodaje priloge (BE assertAttachMutationAllowed). */
+const OWNER_ATTACH_STATUSES = ['DRAFT', 'SUBMITTED', 'NEEDS_INFO'];
+const MAX_ATTACHMENTS = 10;
 
 /**
  * Tab „Zahtev" — IMMUTABLE original podnosioca (opis + očekivano/trenutno) + prilozi.
  * Slike: thumbnail preko signed URL → klik = lightbox. Audio: `<audio controls>` +
  * transkript ispod. PDF/fajl: link (otvara signed URL). Signed URL se dohvata
  * on-demand po prilogu (1h; row-scope u servisu — tuđ zahtev je već 404 na detalju).
+ *
+ * Owner u DRAFT/SUBMITTED/NEEDS_INFO sme da DOPUNI priloge (§5, §A.D) — npr. slika
+ * ekrana tražena u dopuni. Original opis se ne menja; prilozi se samo dodaju.
  */
-export function RequestTab({ detail }: { detail: ChangeRequestDetail }) {
+export function RequestTab({
+  detail,
+  isOwner = false,
+}: {
+  detail: ChangeRequestDetail;
+  isOwner?: boolean;
+}) {
   const [lightbox, setLightbox] = useState<string | null>(null);
+  const canAddAttachments = isOwner && OWNER_ATTACH_STATUSES.includes(detail.status);
 
   return (
     <section className="space-y-4">
@@ -70,6 +88,10 @@ export function RequestTab({ detail }: { detail: ChangeRequestDetail }) {
             ))}
           </div>
         )}
+
+        {canAddAttachments && (
+          <AddAttachments requestId={detail.id} existing={detail.attachments.length} />
+        )}
       </div>
 
       {lightbox && (
@@ -95,6 +117,55 @@ export function RequestTab({ detail }: { detail: ChangeRequestDetail }) {
         </div>
       )}
     </section>
+  );
+}
+
+/** Owner dopuna priloga (DRAFT/SUBMITTED/NEEDS_INFO) — bira fajlove pa otprema (§5). */
+function AddAttachments({ requestId, existing }: { requestId: number; existing: number }) {
+  const [files, setFiles] = useState<File[]>([]);
+  const upload = useUploadAttachments();
+  const remaining = MAX_ATTACHMENTS - existing;
+
+  if (remaining <= 0) {
+    return (
+      <p className="mt-3 text-2xs text-ink-secondary">
+        Dostignut je maksimum priloga ({MAX_ATTACHMENTS}).
+      </p>
+    );
+  }
+
+  function send() {
+    if (files.length === 0) return;
+    upload.mutate(
+      { id: requestId, files },
+      {
+        onSuccess: () => {
+          setFiles([]);
+          toast('Prilozi su dodati.');
+        },
+        onError: (e) => toast((e as Error).message),
+      },
+    );
+  }
+
+  return (
+    <div className="mt-4 rounded-panel border border-line bg-surface p-4">
+      <p className="mb-2 text-2xs font-semibold uppercase tracking-[0.08em] text-ink-secondary">
+        Dodaj prilog
+      </p>
+      <AttachmentInput
+        value={files}
+        onChange={setFiles}
+        onReject={(m) => toast(m)}
+        max={remaining}
+        disabled={upload.isPending}
+      />
+      {files.length > 0 && (
+        <Button className="mt-3" onClick={send} loading={upload.isPending}>
+          Otpremi {files.length} {files.length === 1 ? 'prilog' : 'priloga'}
+        </Button>
+      )}
+    </div>
   );
 }
 

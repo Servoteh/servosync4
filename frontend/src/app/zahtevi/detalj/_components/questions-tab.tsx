@@ -1,44 +1,87 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { HelpCircle, MessageSquare } from 'lucide-react';
 import { Button } from '@/components/ui-kit/button';
 import { Textarea } from '@/components/ui-kit/textarea';
 import { toast } from '@/lib/toast';
-import { useAddComment, type ChangeRequestComment, type ChangeRequestDetail } from '@/api/zahtevi';
+import {
+  useAddComment,
+  useDecision,
+  type ChangeRequestComment,
+  type ChangeRequestDetail,
+} from '@/api/zahtevi';
 import { formatDateTime } from '@/lib/format';
 
 /**
  * Tab „Pitanja" — komentari (admin ↔ podnosilac). Dopune u NEEDS_INFO idu ovuda
- * (§10.3: original se ne prepisuje). Admin sme da čekira „Pitanje podnosiocu"
- * (isQuestion → BE prebacuje zahtev u NEEDS_INFO ako je prelaz dozvoljen).
+ * (§10.3: original se ne prepisuje).
+ *
+ * Admin „Pitanje podnosiocu": komentar se snima kao isQuestion=true (vizuelno
+ * označen + banner podnosiocu), a status se prebacuje u NEEDS_INFO ODVOJENIM
+ * pozivom (decision needs-info) SAMO kad je prelaz moguć (SUBMITTED/ANALYZED).
+ * Kad prelaz nije moguć (npr. već NEEDS_INFO) → samo komentar, label „Označi kao
+ * pitanje". Komentar više nikad sam ne menja status (BE revizija 23.07).
+ *
+ * `focusSignal` (iz banera „Odgovori") — svaka promena fokusira textarea.
  */
 export function QuestionsTab({
   detail,
   isAdmin,
+  focusSignal,
 }: {
   detail: ChangeRequestDetail;
   isAdmin: boolean;
+  focusSignal?: number;
 }) {
   const [body, setBody] = useState('');
   const [isQuestion, setIsQuestion] = useState(false);
   const add = useAddComment();
+  const decide = useDecision();
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
-  function submit() {
+  // Prelaz u „Vraćen na dopunu" je moguć samo iz Podnet / AI obrađen.
+  const canReturn = detail.status === 'SUBMITTED' || detail.status === 'ANALYZED';
+  const busy = add.isPending || decide.isPending;
+
+  // Baner „Odgovori" (owner, NEEDS_INFO) fokusira polje za odgovor.
+  useEffect(() => {
+    if (focusSignal && focusSignal > 0) {
+      textareaRef.current?.focus();
+      textareaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [focusSignal]);
+
+  async function submit() {
     const text = body.trim();
     if (!text) return;
-    add.mutate(
-      { id: detail.id, body: text, isQuestion: isAdmin ? isQuestion : undefined },
-      {
-        onSuccess: () => {
-          setBody('');
-          setIsQuestion(false);
-          toast(isQuestion ? 'Pitanje poslato podnosiocu.' : 'Komentar dodat.');
-        },
-        onError: (e) => toast((e as Error).message),
-      },
-    );
+    const asQuestion = isAdmin && isQuestion;
+    try {
+      await add.mutateAsync({ id: detail.id, body: text, isQuestion: asQuestion || undefined });
+      // Pitanje adminu vraća zahtev na dopunu — ali samo kad je prelaz moguć.
+      if (asQuestion && canReturn) {
+        await decide.mutateAsync({
+          id: detail.id,
+          action: 'needs-info',
+          note: 'Pitanja su u tabu „Pitanja".',
+        });
+      }
+      setBody('');
+      setIsQuestion(false);
+      toast(
+        asQuestion
+          ? canReturn
+            ? 'Pitanje poslato — zahtev vraćen podnosiocu na dopunu.'
+            : 'Komentar označen kao pitanje.'
+          : 'Komentar dodat.',
+      );
+    } catch (e) {
+      toast((e as Error).message);
+    }
   }
+
+  const questionLabel = canReturn ? 'Pitanje podnosiocu (vraća na dopunu)' : 'Označi kao pitanje';
+  const submitLabel = isAdmin && isQuestion ? (canReturn ? 'Pošalji pitanje' : 'Označi kao pitanje') : 'Dodaj komentar';
 
   return (
     <section className="space-y-4">
@@ -52,6 +95,7 @@ export function QuestionsTab({
 
       <div className="rounded-panel border border-line bg-surface p-4">
         <Textarea
+          ref={textareaRef}
           value={body}
           onChange={(e) => setBody(e.target.value)}
           rows={3}
@@ -65,11 +109,11 @@ export function QuestionsTab({
                 checked={isQuestion}
                 onChange={(e) => setIsQuestion(e.target.checked)}
               />
-              Pitanje podnosiocu (vraća na dopunu)
+              {questionLabel}
             </label>
           )}
-          <Button className="ml-auto" onClick={submit} loading={add.isPending} disabled={!body.trim()}>
-            {isQuestion ? 'Pošalji pitanje' : 'Dodaj komentar'}
+          <Button className="ml-auto" onClick={submit} loading={busy} disabled={!body.trim()}>
+            {submitLabel}
           </Button>
         </div>
       </div>
@@ -79,6 +123,7 @@ export function QuestionsTab({
 
 function CommentRow({ c }: { c: ChangeRequestComment }) {
   const Icon = c.isQuestion ? HelpCircle : MessageSquare;
+  const author = c.authorName ?? `Korisnik #${c.authorUserId}`;
   return (
     <div
       className={`rounded-panel border px-4 py-3 ${
@@ -90,7 +135,7 @@ function CommentRow({ c }: { c: ChangeRequestComment }) {
           className={`h-3.5 w-3.5 ${c.isQuestion ? 'text-status-warn' : 'text-ink-secondary'}`}
           aria-hidden
         />
-        <span className="tnums">Korisnik #{c.authorUserId}</span>
+        <span>{author}</span>
         <span>·</span>
         <span>{formatDateTime(c.createdAt)}</span>
         {c.isQuestion && <span className="font-medium text-status-warn">Pitanje</span>}

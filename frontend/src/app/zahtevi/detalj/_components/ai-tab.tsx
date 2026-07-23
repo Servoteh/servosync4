@@ -391,15 +391,17 @@ function OpenQuestions({
 
   async function forward() {
     try {
-      // Svako pitanje → komentar isQuestion:true (bez prelaza statusa po komentaru;
-      // status u NEEDS_INFO postavlja needs-info odluka ispod, jednom).
+      // Svako pitanje → komentar isQuestion:true (vizuelno označeno kao pitanje u tabu
+      // „Pitanja" + banner podnosiocu). Komentar NE menja status (BE revizija 23.07);
+      // prelaz u NEEDS_INFO radi needs-info odluka ispod, jednom. Note je kratak —
+      // pitanja žive kao komentari, ne dupliramo ih u razlog odluke.
       for (const q of questions) {
-        await addComment.mutateAsync({ id: detail.id, body: q, isQuestion: false });
+        await addComment.mutateAsync({ id: detail.id, body: q, isQuestion: true });
       }
       await decide.mutateAsync({
         id: detail.id,
         action: 'needs-info',
-        note: `Pitanja podnosiocu:\n- ${questions.join('\n- ')}`,
+        note: 'Pitanja su u tabu „Pitanja".',
       });
       toast('Pitanja prosleđena podnosiocu (zahtev vraćen na dopunu).');
       setConfirm(false);

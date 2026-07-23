@@ -89,11 +89,15 @@ export const HELP: HelpRegistry = {
   },
   'zahtevi.detalj.tabovi': {
     title: 'Sekcije zahteva',
-    text: '„Zahtev" = originalni opis i prilozi (posle podnošenja se ne menjaju). „AI analiza" = trijaža, procena i predlozi. „Pitanja" = prepiska sa administratorom (tu dopunjujete kad je vraćeno na dopunu). „Istorija" = svi događaji i podaci o realizaciji.',
+    text: '„Zahtev" = originalni opis i prilozi (posle podnošenja se ne menjaju; možete samo da dodate nov prilog). „AI analiza" = trijaža, procena i predlozi. „Pitanja" = prepiska sa administratorom (tu dopunjujete kad je vraćeno na dopunu). „Istorija" = svi događaji i podaci o realizaciji.',
+  },
+  'zahtevi.detalj.dopuna': {
+    title: 'Vraćen na dopunu',
+    text: 'Administrator je zahtev vratio da biste dopunili nešto. U okviru piše šta se traži (pitanja). Kliknite „Odgovori" — otvara se tab „Pitanja" gde upišete odgovor (a možete i dodati prilog u tabu „Zahtev"). Kad završite, kliknite „Ponovo podnesi" da se zahtev vrati administratoru. Dok to ne uradite, obrada stoji.',
   },
   'zahtevi.detalj.owner.akcije': {
     title: 'Vaše akcije',
-    text: 'Dok je nacrt možete da menjate sadržaj, podnesete ili obrišete. Podnet ili vraćen zahtev možete da povučete (arhivira se). Original opis se posle podnošenja ne menja — dopune šaljete kroz tab „Pitanja".',
+    text: 'Dok je nacrt možete da menjate sadržaj, podnesete ili obrišete. Podnet ili vraćen zahtev možete da povučete (arhivira se). Original opis se posle podnošenja ne menja — dopune (odgovore i nove priloge) šaljete kroz tabove „Pitanja" i „Zahtev". Kad je zahtev „Vraćen na dopunu", posle odgovora kliknite „Ponovo podnesi" da se vrati administratoru.',
   },
   'zahtevi.detalj.admin.ocena': {
     title: 'Nagrada i ocena',

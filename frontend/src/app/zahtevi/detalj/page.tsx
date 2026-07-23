@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, RefreshCw } from 'lucide-react';
+import { ArrowLeft, RefreshCw, HelpCircle } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { useCan } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
@@ -73,6 +73,12 @@ export default function ZahtevDetailPage() {
   }, []);
 
   const [tab, setTab] = useState<Tab>('zahtev');
+  // Baner „Odgovori" (owner, NEEDS_INFO) → prebaci na tab Pitanja i fokusiraj polje.
+  const [focusAnswer, setFocusAnswer] = useState(0);
+  const answerQuestions = () => {
+    setTab('pitanja');
+    setFocusAnswer((n) => n + 1);
+  };
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
@@ -195,6 +201,11 @@ export default function ZahtevDetailPage() {
           <>
             <ZahtevHeader detail={detail} />
 
+            {/* Dopuna (owner, NEEDS_INFO): istaknut poziv da odgovori — pitanja + „Odgovori". */}
+            {isOwner && detail.status === 'NEEDS_INFO' && (
+              <DopunaBanner detail={detail} onAnswer={answerQuestions} />
+            )}
+
             {/* F8b: AI korak predugo „u letu" (polling istekao) → poruka + Pokušaj ponovo. */}
             {pollTimedOut && (
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-panel border border-status-warn/40 bg-status-warn-bg px-4 py-3 text-sm text-status-warn">
@@ -229,9 +240,11 @@ export default function ZahtevDetailPage() {
               />
             </HelpSpot>
 
-            {tab === 'zahtev' && <RequestTab detail={detail} />}
+            {tab === 'zahtev' && <RequestTab detail={detail} isOwner={isOwner} />}
             {tab === 'ai' && <AiTab detail={detail} isAdmin={isAdmin} />}
-            {tab === 'pitanja' && <QuestionsTab detail={detail} isAdmin={isAdmin} />}
+            {tab === 'pitanja' && (
+              <QuestionsTab detail={detail} isAdmin={isAdmin} focusSignal={focusAnswer} />
+            )}
             {tab === 'istorija' && <HistoryTab detail={detail} />}
           </>
         )}
@@ -275,6 +288,90 @@ function ZahtevHeader({ detail }: { detail: ChangeRequestDetail }) {
           {detail.aiScoreReason}
         </p>
       )}
+      {/* Poslednja odluka/razlog (§A.2) — NEEDS_INFO ide u baner, ovde REJECTED/APPROVED/ostalo. */}
+      <DecisionNoteRow detail={detail} />
     </section>
+  );
+}
+
+/**
+ * Razlog/napomena poslednje admin odluke na zahtevu (`decisionNote`). NEEDS_INFO se
+ * prikazuje u DopunaBanner-u (owner) pa se ovde preskače da se ne dupliraju pitanja.
+ * REJECTED = danger, APPROVED = success, ostalo (defer/merge/archive) = neutralno.
+ */
+function DecisionNoteRow({ detail }: { detail: ChangeRequestDetail }) {
+  if (!detail.decisionNote || detail.status === 'NEEDS_INFO') return null;
+  const map: Record<string, { label: string; cls: string }> = {
+    REJECTED: { label: 'Razlog odbijanja', cls: 'bg-status-danger-bg text-status-danger' },
+    APPROVED: { label: 'Napomena odluke', cls: 'bg-status-success-bg text-status-success' },
+  };
+  const meta = map[detail.status] ?? {
+    label: 'Napomena odluke',
+    cls: 'bg-surface-2 text-ink-secondary',
+  };
+  return (
+    <div className={`mt-3 rounded-control px-3 py-2 text-sm ${meta.cls}`}>
+      <span className="text-2xs font-semibold uppercase tracking-[0.08em] opacity-80">
+        {meta.label}
+      </span>
+      <p className="mt-0.5 whitespace-pre-wrap">{detail.decisionNote}</p>
+    </div>
+  );
+}
+
+/**
+ * Baner dopune (owner, NEEDS_INFO, §A.1): istaknut poziv da podnosilac odgovori.
+ * Prikazuje prosleđena pitanja (komentari isQuestion=true; fallback decisionNote)
+ * + „Odgovori" (prebaci na tab Pitanja i fokusiraj polje). Bez ovoga podnosilac
+ * nije ni znao da se od njega nešto traži (incident 23.07).
+ */
+function DopunaBanner({
+  detail,
+  onAnswer,
+}: {
+  detail: ChangeRequestDetail;
+  onAnswer: () => void;
+}) {
+  const questions = detail.comments.filter((c) => c.isQuestion);
+  return (
+    <HelpSpot id="zahtevi.detalj.dopuna" variant="inline">
+      <section className="rounded-panel border border-status-warn/40 bg-status-warn-bg p-5">
+        <div className="flex items-start gap-3">
+          <HelpCircle className="mt-0.5 h-5 w-5 shrink-0 text-status-warn" aria-hidden />
+          <div className="min-w-0 flex-1">
+            <h2 className="text-md font-semibold text-status-warn">
+              Administrator traži dopunu
+            </h2>
+            <p className="mt-1 text-sm text-ink">
+              Da bi obrada nastavila, odgovorite na sledeće. Odgovor upišite u tabu „Pitanja",
+              a kad završite kliknite „Ponovo podnesi" da se zahtev vrati administratoru.
+            </p>
+
+            {questions.length > 0 ? (
+              <ul className="mt-3 list-disc space-y-1 pl-5">
+                {questions.map((q) => (
+                  <li key={q.id} className="whitespace-pre-wrap text-sm text-ink">
+                    {q.body}
+                  </li>
+                ))}
+              </ul>
+            ) : detail.decisionNote ? (
+              <p className="mt-3 whitespace-pre-wrap rounded-control bg-surface px-3 py-2 text-sm text-ink">
+                {detail.decisionNote}
+              </p>
+            ) : (
+              <p className="mt-3 text-sm text-ink-secondary">
+                Administrator nije naveo konkretna pitanja — dopunite zahtev dodatnim
+                informacijama ili prilozima.
+              </p>
+            )}
+
+            <Button className="mt-4" onClick={onAnswer}>
+              Odgovori
+            </Button>
+          </div>
+        </div>
+      </section>
+    </HelpSpot>
   );
 }
