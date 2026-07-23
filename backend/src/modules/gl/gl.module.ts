@@ -1,16 +1,19 @@
 import { Module } from "@nestjs/common";
 import { PrismaModule } from "../../prisma/prisma.module";
+import { PostingModule } from "./posting/posting.module";
 import { GlController } from "./gl.controller";
 import { GlReadService } from "./gl-read.service";
+import { GlWriteService } from "./gl-write.service";
 
 /**
- * Glavna knjiga (Faza 2) — READ sloj: dnevnik naloga + kartica konta.
- * Knjiženje je u PostingModule (gl/posting); ovaj modul samo čita ledger_entries.
+ * Glavna knjiga (Faza 2) — READ (dnevnik/kartica konta/kontni plan) + WRITE
+ * (ručni unos naloga/temeljnica, proknjiži/zaključaj/storno). Knjižni motor je
+ * PostingModule (postManualEntry, numeracija); ovaj modul ga koristi za write.
  */
 @Module({
-  imports: [PrismaModule],
+  imports: [PrismaModule, PostingModule],
   controllers: [GlController],
-  providers: [GlReadService],
-  exports: [GlReadService],
+  providers: [GlReadService, GlWriteService],
+  exports: [GlReadService, GlWriteService],
 })
 export class GlModule {}

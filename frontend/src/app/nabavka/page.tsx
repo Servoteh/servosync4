@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { Plus } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
@@ -10,6 +11,7 @@ import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Pager } from '@/components/ui-kit/pager';
 import { Select } from '@/components/ui-kit/select';
+import { Button } from '@/components/ui-kit/button';
 import { formatDate, formatNumber } from '@/lib/format';
 import {
   useNabavkaRequests,
@@ -17,6 +19,7 @@ import {
   type NabavkaStatus,
   type PurchaseRequest,
 } from '@/api/nabavka';
+import { NewRequestDialog } from './new-request-dialog';
 
 /**
  * Nabavka: radna lista zahteva (Traka B §B). Obrazac „Lista"
@@ -107,6 +110,7 @@ export default function NabavkaPage() {
 
   const [status, setStatus] = useState<NabavkaStatus | ''>('');
   const [page, setPage] = useState(1);
+  const [newOpen, setNewOpen] = useState(false);
   const resetPage = () => setPage(1);
 
   useEffect(() => {
@@ -131,6 +135,18 @@ export default function NabavkaPage() {
       <PageHeader
         title="Nabavka"
         count={list.data ? `${formatNumber(total)} zahteva` : undefined}
+        actions={
+          <Button onClick={() => setNewOpen(true)}>
+            <Plus className="h-4 w-4" aria-hidden />
+            Novi zahtev
+          </Button>
+        }
+      />
+
+      <NewRequestDialog
+        open={newOpen}
+        onClose={() => setNewOpen(false)}
+        onCreated={(id) => router.push(`/nabavka/${id}`)}
       />
 
       <div className="flex-1 space-y-4 overflow-auto p-6">

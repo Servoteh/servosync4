@@ -16,6 +16,7 @@ import { PERMISSIONS } from "../../common/authz/permissions";
 import { NabavkaService } from "./nabavka.service";
 import type { AuthUser } from "../auth/jwt.strategy";
 import type { CreatePurchaseRequestDto } from "./dto/create-purchase-request.dto";
+import type { CreatePurchaseOrderDto } from "./dto/create-purchase-order.dto";
 
 /**
  * NACRT — Nabavka (Traka B §B). Operativni tok (Nenad):
@@ -93,6 +94,54 @@ export class NabavkaController {
       body.supplierEmail,
       req.user,
     );
+  }
+
+  // ── Narudžbenice (PO) ─────────────────────────────────────────────────────
+  @Get("orders")
+  listOrders(
+    @Query("status") status?: string,
+    @Query("supplierId") supplierId?: string,
+    @Query("skip") skip?: string,
+    @Query("take") take?: string,
+  ) {
+    return this.nabavka.listOrders({
+      status,
+      supplierId: supplierId ? Number(supplierId) : undefined,
+      skip: skip ? Number(skip) : undefined,
+      take: take ? Number(take) : undefined,
+    });
+  }
+
+  @Get("orders/:id")
+  getOrder(@Param("id", ParseIntPipe) id: number) {
+    return this.nabavka.getOrder(id);
+  }
+
+  @Post("orders")
+  @RequirePermission(PERMISSIONS.NABAVKA_WRITE)
+  createOrder(
+    @Body() dto: CreatePurchaseOrderDto,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.nabavka.createOrder(dto, req.user);
+  }
+
+  @Post("orders/:id/sign")
+  @RequirePermission(PERMISSIONS.NABAVKA_WRITE)
+  signOrder(
+    @Param("id", ParseIntPipe) id: number,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.nabavka.markOrderSigned(id, req.user);
+  }
+
+  @Post("orders/:id/lock")
+  @RequirePermission(PERMISSIONS.NABAVKA_WRITE)
+  lockOrder(
+    @Param("id", ParseIntPipe) id: number,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.nabavka.markOrderLocked(id, req.user);
   }
 
   @Post("orders/:id/receive")

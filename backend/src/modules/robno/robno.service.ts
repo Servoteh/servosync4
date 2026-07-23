@@ -103,6 +103,74 @@ export class RobnoService {
     return { data: rows, meta: pageMeta(page, pageSize, total) };
   }
 
+  /**
+   * Lager lista (BigBit paritet — stanje zaliha po magacinu + prosečne cene).
+   * Čita StockLevel snapshot (onHand + avgPurchaseNet/avgWholesalePrice) i
+   * pridružuje naziv artikla. Filter: magacin, samo-sa-stanjem, pretraga po nazivu.
+   */
+  async listLager(query: {
+    warehouseId?: number;
+    onlyInStock?: boolean;
+    q?: string;
+    skip?: number;
+    take?: number;
+  }) {
+    const where: Prisma.StockLevelWhereInput = {};
+    if (query.warehouseId != null) where.warehouseId = query.warehouseId;
+    if (query.onlyInStock) where.onHand = { gt: 0 };
+
+    const take = Math.min(query.take ?? 100, 500);
+    const skip = query.skip ?? 0;
+
+    const [levels, total] = await this.prisma.$transaction([
+      this.prisma.stockLevel.findMany({
+        where,
+        orderBy: [{ warehouseId: "asc" }, { itemId: "asc" }],
+        skip,
+        take,
+      }),
+      this.prisma.stockLevel.count({ where }),
+    ]);
+
+    // Pridruži naziv/šifru artikla (meki ref items.id) — jedan upit po skupu id-jeva.
+    const itemIds = [...new Set(levels.map((l) => l.itemId))];
+    const items = itemIds.length
+      ? await this.prisma.item.findMany({
+          where: { id: { in: itemIds } },
+          select: { id: true, name: true, catalogNumber: true, unit: true },
+        })
+      : [];
+    const itemById = new Map(items.map((i) => [i.id, i]));
+
+    let data = levels.map((l) => {
+      const it = itemById.get(l.itemId);
+      return {
+        itemId: l.itemId,
+        warehouseId: l.warehouseId,
+        itemName: it?.name ?? null,
+        itemCode: it?.catalogNumber ?? null,
+        unit: it?.unit ?? null,
+        onHand: l.onHand.toFixed(3),
+        reserved: l.reserved.toFixed(3),
+        avgPurchaseNet: l.avgPurchaseNet.toFixed(2),
+        avgWholesalePrice: l.avgWholesalePrice.toFixed(2),
+        stockValue: l.onHand.mul(l.avgPurchaseNet).toFixed(2),
+      };
+    });
+
+    // Pretraga po nazivu/šifri (posle join-a — mali skup po strani).
+    if (query.q && query.q.trim() !== "") {
+      const term = query.q.trim().toLowerCase();
+      data = data.filter(
+        (r) =>
+          (r.itemName ?? "").toLowerCase().includes(term) ||
+          (r.itemCode ?? "").toLowerCase().includes(term),
+      );
+    }
+
+    return { data, meta: { total, skip, take } };
+  }
+
   async getStockDocument(id: number) {
     const doc = await this.prisma.stockDocument.findUnique({
       where: { id },

@@ -20,6 +20,12 @@ import {
   type PostStatementDto,
   validatePostStatement,
 } from "./dto/post-statement.dto";
+import {
+  type CreateStatementLineDto,
+  type UpdateStatementLineDto,
+  validateCreateStatementLine,
+  validateUpdateStatementLine,
+} from "./dto/statement-line.dto";
 
 const D = Prisma.Decimal;
 const ZERO = new D(0);
@@ -262,6 +268,149 @@ export class BankStatementService {
       select: { id: true },
     });
     return byAmount?.id ?? null;
+  }
+
+  // ── RUČNI UNOS / KOREKCIJA STAVKE (BigBit paritet) ────────────────────────
+
+  /**
+   * Ručno dodaj stavku izvoda (BigBit „Unos naloga glavne knjige" — kucanje pored TXT importa).
+   * Dozvoljeno samo dok izvod NIJE proknjižen (POSTED je zaključan). lineNo = MAX+1.
+   * Ako je matchedCustomerId zadat → status MATCHED, inače UNMATCHED.
+   */
+  async addLine(statementId: number, dto: CreateStatementLineDto) {
+    validateCreateStatementLine(dto);
+    const statement = await this.getStatementOrThrow(statementId);
+    this.assertNotPosted(statement.status, statementId);
+
+    const maxLineNo = statement.lines.reduce(
+      (m, l) => (l.lineNo > m ? l.lineNo : m),
+      0,
+    );
+
+    await this.prisma.bankStatementLine.create({
+      data: {
+        statementId,
+        lineNo: maxLineNo + 1,
+        partnerAccount: dto.partnerAccount ?? null,
+        partnerName: dto.partnerName ?? null,
+        amount: new D(dto.amount),
+        direction: dto.direction,
+        referenceNumber: dto.referenceNumber ?? null,
+        documentDate: dto.documentDate ? new Date(dto.documentDate) : null,
+        matchedCustomerId: dto.matchedCustomerId ?? null,
+        status: dto.matchedCustomerId != null ? "MATCHED" : "UNMATCHED",
+      },
+    });
+
+    return this.getStatement(statementId);
+  }
+
+  /**
+   * Izmeni postojeću stavku (korekcija posle TXT importa: analitika, PNB, iznos, smer).
+   * Dozvoljeno samo dok izvod nije proknjižen. Setovanje matchedCustomerId ručno = MATCHED;
+   * čišćenje (null) vraća na UNMATCHED (osim ako je već imao ledger match).
+   */
+  async updateLine(
+    statementId: number,
+    lineId: number,
+    dto: UpdateStatementLineDto,
+  ) {
+    validateUpdateStatementLine(dto);
+    const statement = await this.getStatementOrThrow(statementId);
+    this.assertNotPosted(statement.status, statementId);
+
+    const line = statement.lines.find((l) => l.id === lineId);
+    if (!line)
+      throw new NotFoundException(
+        `Stavka ${lineId} ne pripada izvodu ${statementId}.`,
+      );
+
+    const data: Prisma.BankStatementLineUpdateInput = {};
+    if (dto.partnerAccount !== undefined) data.partnerAccount = dto.partnerAccount;
+    if (dto.partnerName !== undefined) data.partnerName = dto.partnerName;
+    if (dto.amount !== undefined) data.amount = new D(dto.amount);
+    if (dto.direction !== undefined) data.direction = dto.direction;
+    if (dto.referenceNumber !== undefined)
+      data.referenceNumber = dto.referenceNumber;
+    if (dto.documentDate !== undefined)
+      data.documentDate = dto.documentDate ? new Date(dto.documentDate) : null;
+    if (dto.matchedCustomerId !== undefined) {
+      data.matchedCustomerId = dto.matchedCustomerId;
+      // Ručno postavljen komitent → MATCHED; skinut → UNMATCHED (ledger match otpada).
+      data.status = dto.matchedCustomerId != null ? "MATCHED" : "UNMATCHED";
+      if (dto.matchedCustomerId == null) data.matchedLedgerEntryId = null;
+    }
+
+    await this.prisma.bankStatementLine.update({
+      where: { id: lineId },
+      data,
+    });
+
+    return this.getStatement(statementId);
+  }
+
+  /** Obriši ručno/pogrešno unetu stavku. Zabranjeno na proknjiženom izvodu. */
+  async deleteLine(statementId: number, lineId: number) {
+    const statement = await this.getStatementOrThrow(statementId);
+    this.assertNotPosted(statement.status, statementId);
+
+    const line = statement.lines.find((l) => l.id === lineId);
+    if (!line)
+      throw new NotFoundException(
+        `Stavka ${lineId} ne pripada izvodu ${statementId}.`,
+      );
+
+    await this.prisma.bankStatementLine.delete({ where: { id: lineId } });
+    return this.getStatement(statementId);
+  }
+
+  /**
+   * Ručno per-stavka uparivanje („Poveži po BrDok" fallback dugme, doc 21): korisnik bira
+   * konkretnu otvorenu stavku (LedgerEntry) za datu liniju. Postavlja matchedCustomerId
+   * (iz ledger analitike) + matchedLedgerEntryId + referenceNumber (documentNumber) → MATCHED.
+   */
+  async linkLineToLedger(
+    statementId: number,
+    lineId: number,
+    ledgerEntryId: number,
+  ) {
+    const statement = await this.getStatementOrThrow(statementId);
+    this.assertNotPosted(statement.status, statementId);
+
+    const line = statement.lines.find((l) => l.id === lineId);
+    if (!line)
+      throw new NotFoundException(
+        `Stavka ${lineId} ne pripada izvodu ${statementId}.`,
+      );
+
+    const ledger = await this.prisma.ledgerEntry.findUnique({
+      where: { id: ledgerEntryId },
+      select: { id: true, analyticalCode: true, documentNumber: true },
+    });
+    if (!ledger)
+      throw new NotFoundException(
+        `Otvorena stavka (nalog) ${ledgerEntryId} ne postoji.`,
+      );
+
+    await this.prisma.bankStatementLine.update({
+      where: { id: lineId },
+      data: {
+        matchedCustomerId: ledger.analyticalCode,
+        matchedLedgerEntryId: ledger.id,
+        referenceNumber: ledger.documentNumber ?? line.referenceNumber,
+        status: "MATCHED",
+      },
+    });
+
+    return this.getStatement(statementId);
+  }
+
+  /** Guard: mutacija stavke nije dozvoljena na proknjiženom izvodu. */
+  private assertNotPosted(status: string, statementId: number): void {
+    if (status === "POSTED")
+      throw new ConflictException(
+        `Izvod ${statementId} je proknjižen — izmena stavki nije dozvoljena.`,
+      );
   }
 
   // ── AUTO-KNJIŽENJE ──────────────────────────────────────────────────────

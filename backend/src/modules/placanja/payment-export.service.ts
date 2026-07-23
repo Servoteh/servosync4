@@ -24,7 +24,11 @@
  *   + datum(ddmmyyyy,8) + " " + "3" + "1"
  */
 
-import { Injectable, NotFoundException } from "@nestjs/common";
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 
@@ -57,6 +61,15 @@ export class PaymentExportService {
     });
     if (orders.length === 0) {
       throw new NotFoundException("Nijedan nalog nije pronađen za izvoz.");
+    }
+
+    // Guard: izvoze se SAMO potpisani nalozi (BigBit — nepotpisan virman ne ide u banku).
+    const notSigned = orders.filter((o) => o.status !== "SIGNED");
+    if (notSigned.length > 0) {
+      throw new ConflictException(
+        `Izvoz dozvoljen samo za potpisane naloge (SIGNED). Nisu potpisani: ` +
+          notSigned.map((o) => `${o.orderNumber}(${o.status})`).join(", "),
+      );
     }
 
     const orderDate = leader.orderDate ?? new Date();
@@ -122,10 +135,11 @@ export class PaymentExportService {
     // Access `Print #` završava svaki red CRLF-om.
     const txt = lines.join("\r\n") + "\r\n";
 
-    // Označi izvezene naloge (OznaciPlaceneVirmane) — exportedAt.
+    // Označi izvezene naloge (OznaciPlaceneVirmane) — exportedAt + SIGNED→PAID
+    // (izvoz u banku = plaćanje izvršeno; nalog prelazi u konačan status).
     await this.prisma.paymentOrder.updateMany({
       where: { id: { in: orders.map((o) => o.id) } },
-      data: { exportedAt: new Date() },
+      data: { exportedAt: new Date(), status: "PAID" },
     });
 
     return { txt, exportedCount: orders.length };

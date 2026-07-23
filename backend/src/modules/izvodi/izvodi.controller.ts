@@ -1,9 +1,11 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseIntPipe,
+  Patch,
   Post,
   Query,
   Req,
@@ -17,6 +19,10 @@ import type { AuthUser } from "../auth/jwt.strategy";
 import { BankStatementService } from "./bank-statement.service";
 import type { ImportStatementDto } from "./dto/import-statement.dto";
 import type { PostStatementDto } from "./dto/post-statement.dto";
+import type {
+  CreateStatementLineDto,
+  UpdateStatementLineDto,
+} from "./dto/statement-line.dto";
 
 /**
  * IZVODI — bankovni izvodi (Faza 4 §B). Tok:
@@ -71,6 +77,45 @@ export class IzvodiController {
   @RequirePermission(PERMISSIONS.IZVODI_IMPORT)
   match(@Param("id", ParseIntPipe) id: number) {
     return this.statements.matchLines(id);
+  }
+
+  // ── Ručni unos / korekcija stavke (BigBit paritet) ──────────────────────
+  @Post(":id/lines")
+  @RequirePermission(PERMISSIONS.IZVODI_IMPORT)
+  addLine(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: CreateStatementLineDto,
+  ) {
+    return this.statements.addLine(id, dto);
+  }
+
+  @Patch(":id/lines/:lineId")
+  @RequirePermission(PERMISSIONS.IZVODI_IMPORT)
+  updateLine(
+    @Param("id", ParseIntPipe) id: number,
+    @Param("lineId", ParseIntPipe) lineId: number,
+    @Body() dto: UpdateStatementLineDto,
+  ) {
+    return this.statements.updateLine(id, lineId, dto);
+  }
+
+  @Delete(":id/lines/:lineId")
+  @RequirePermission(PERMISSIONS.IZVODI_IMPORT)
+  deleteLine(
+    @Param("id", ParseIntPipe) id: number,
+    @Param("lineId", ParseIntPipe) lineId: number,
+  ) {
+    return this.statements.deleteLine(id, lineId);
+  }
+
+  @Post(":id/lines/:lineId/link")
+  @RequirePermission(PERMISSIONS.IZVODI_IMPORT)
+  linkLine(
+    @Param("id", ParseIntPipe) id: number,
+    @Param("lineId", ParseIntPipe) lineId: number,
+    @Body() body: { ledgerEntryId: number },
+  ) {
+    return this.statements.linkLineToLedger(id, lineId, body?.ledgerEntryId);
   }
 
   @Post(":id/post")

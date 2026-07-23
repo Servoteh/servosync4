@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Printer } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
@@ -15,6 +15,8 @@ import { PERMISSIONS } from '@/lib/permissions';
 import { formatDate, formatDecimal } from '@/lib/format';
 import {
   useInvoice,
+  useInvoicePdf,
+  openPdf,
   useCreateInvoiceFromProforma,
   usePostInvoice,
   SALES_STATUS,
@@ -130,6 +132,7 @@ export default function FakturisanjeDetailPage() {
 
   const fromProforma = useCreateInvoiceFromProforma();
   const post = usePostInvoice();
+  const pdf = useInvoicePdf();
 
   const canWrite = can(PERMISSIONS.SALES_WRITE);
   const canPost = can(PERMISSIONS.SALES_POST);
@@ -201,6 +204,19 @@ export default function FakturisanjeDetailPage() {
               <ArrowLeft className="h-4 w-4" aria-hidden />
               Nazad
             </Button>
+
+            {doc && (
+              <Button
+                variant="secondary"
+                loading={pdf.isPending}
+                onClick={() =>
+                  pdf.mutate({ id: doc.id }, { onSuccess: (blob) => openPdf(blob) })
+                }
+              >
+                <Printer className="h-4 w-4" aria-hidden />
+                Štampaj
+              </Button>
+            )}
 
             {isProformaDraft && canWrite && (
               <div className="flex items-center gap-2">

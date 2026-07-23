@@ -389,3 +389,65 @@ export function useReceiveOrder() {
     onSuccess: () => qc.invalidateQueries({ queryKey: KEYS.all }),
   });
 }
+
+// ─────────────────────────────────── narudžbenice: kreiranje + status (BigBit paritet)
+
+/** Stavka nove narudžbenice — 1:1 sa backend create-purchase-order.dto. */
+export interface CreateOrderItemInput {
+  articleId?: number | null;
+  description?: string | null;
+  orderedQuantity: number;
+  unitPrice?: number | null;
+  unit?: string | null;
+  rfqItemId?: number | null;
+  requestItemId?: number | null;
+}
+
+export interface CreateOrderInput {
+  supplierId: number;
+  rfqId?: number | null;
+  projectId?: number | null;
+  currency?: string;
+  note?: string | null;
+  items: CreateOrderItemInput[];
+}
+
+/** Pregled narudžbenica (GET /nabavka/orders). */
+export function usePurchaseOrders(filters: { status?: string; supplierId?: number; skip?: number; take?: number } = {}) {
+  const params = new URLSearchParams();
+  if (filters.status) params.set('status', filters.status);
+  if (filters.supplierId != null) params.set('supplierId', String(filters.supplierId));
+  if (filters.skip != null) params.set('skip', String(filters.skip));
+  if (filters.take != null) params.set('take', String(filters.take));
+  const query = params.toString() ? `?${params.toString()}` : '';
+  return useQuery({
+    queryKey: ['nabavka', 'orders', filters],
+    queryFn: () => apiFetch<PaginatedTotal<PurchaseOrder>>(`${BASE}/orders${query}`),
+  });
+}
+
+/** Kreiraj narudžbenicu (POST /nabavka/orders) — status ORDERED, broj NNNN/god. */
+export function useCreateOrder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateOrderInput) =>
+      apiFetch<Envelope<PurchaseOrder>>(`${BASE}/orders`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: KEYS.all }),
+  });
+}
+
+/** Status prelaz narudžbenice: sign (ORDERED→SIGNED) ili lock (→LOCKED). */
+export function usePurchaseOrderTransition() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, action }: { id: number; action: 'sign' | 'lock' }) =>
+      apiFetch<Envelope<PurchaseOrder>>(`${BASE}/orders/${id}/${action}`, {
+        method: 'POST',
+        body: '{}',
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: KEYS.all }),
+  });
+}

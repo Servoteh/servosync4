@@ -19,6 +19,7 @@ import {
   type RobnoKind,
   type StockDocument,
 } from '@/api/robno';
+import { LagerPanel } from './lager-panel';
 
 /**
  * Robno / magacin: radna lista robnih dokumenata (Faza 3). Obrazac „Lista"
@@ -226,6 +227,8 @@ export default function RobnoPage() {
             onNext={() => setPage((p) => Math.min(totalPages, p + 1))}
           />
         )}
+
+        <LagerPanel />
       </div>
     </AppShell>
   );

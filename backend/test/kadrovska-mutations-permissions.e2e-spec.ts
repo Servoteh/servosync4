@@ -39,6 +39,12 @@ describe("Kadrovska R2 mutacije — permission matrica (e2e)", () => {
 
   beforeAll(async () => {
     process.env.AUTHZ_ENFORCE = "true";
+    // Salary-brava (effective-permission.ts) dozvoljava kadrovska.salary SAMO
+    // email-allowlisti (default Nenad+Nevena), NEZAVISNO od role. Ovaj spec testira
+    // ROLA-sloj matrice, pa test-korisnikov email (test@servoteh.com) stavljamo na
+    // allowlistu da brava propusti — inače bi i admin dobio 403 na salary rutama.
+    // Samu bravu (email-nezavisno-od-role) pokriva effective-permission.spec.ts.
+    process.env.KADROVSKA_SALARY_ALLOWLIST = "test@servoteh.com";
     const moduleRef = await Test.createTestingModule({
       controllers: [KadrovskaMutationsController],
       providers: [
@@ -69,6 +75,7 @@ describe("Kadrovska R2 mutacije — permission matrica (e2e)", () => {
   afterAll(async () => {
     await app.close();
     delete process.env.AUTHZ_ENFORCE;
+    delete process.env.KADROVSKA_SALARY_ALLOWLIST;
   });
 
   const send = (method: "post" | "patch" | "delete", path: string, role?: string, body?: object) => {

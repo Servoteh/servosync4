@@ -1,6 +1,6 @@
 'use client';
 
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from './client';
 
 /**
@@ -206,5 +206,96 @@ export function useAccountCard(accountCode: string, filters: AccountCardFilters 
     queryKey: [...KEYS.accountCard, code, filters],
     queryFn: () => apiFetch<AccountCardResult>(`${BASE}/account-card${query}`),
     enabled: code.length > 0,
+  });
+}
+
+// ─────────────────────────────────── ručni unos + status naloga (BigBit paritet)
+
+/** Stavka ručnog naloga — 1:1 sa backend create-journal-entry.dto. */
+export interface JournalLineInput {
+  accountCode: string;
+  analyticalCode?: number | null;
+  debit?: number;
+  credit?: number;
+  description?: string;
+  documentNumber?: string | null;
+}
+
+export interface CreateJournalInput {
+  orderType: string;
+  documentDate: string;
+  description?: string;
+  lines: JournalLineInput[];
+}
+
+/** Kontni plan — pretraga (picker konta). */
+export function useAccountSearch(q: string, allowsAnalytics?: boolean) {
+  const query = buildQuery({
+    q: q.trim() || undefined,
+    allowsAnalytics: allowsAnalytics == null ? undefined : String(allowsAnalytics),
+  });
+  return useQuery({
+    queryKey: ['gl', 'accounts', q, allowsAnalytics],
+    queryFn: () =>
+      apiFetch<{ data: Array<{ code: string; name: string; accountClass: number; allowsAnalytics: boolean }> }>(
+        `${BASE}/accounts${query}`,
+      ),
+  });
+}
+
+function useInvalidateGl() {
+  const qc = useQueryClient();
+  return () => qc.invalidateQueries({ queryKey: KEYS.all });
+}
+
+/** Ručni unos naloga (temeljnica) — POST /gl/journal. */
+export function useCreateJournalEntry() {
+  const invalidate = useInvalidateGl();
+  return useMutation({
+    mutationFn: (input: CreateJournalInput) =>
+      apiFetch<Envelope<{ journalEntryId: number; number: string; lineCount: number }>>(
+        `${BASE}/journal`,
+        { method: 'POST', body: JSON.stringify(input) },
+      ),
+    onSuccess: invalidate,
+  });
+}
+
+/** Proknjiži nalog (draft→posted) — POST /gl/journal/:id/post. */
+export function usePostJournalEntry() {
+  const invalidate = useInvalidateGl();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<Envelope<{ id: number; status: string }>>(`${BASE}/journal/${id}/post`, {
+        method: 'POST',
+        body: '{}',
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/** Zaključaj nalog (posted→locked) — POST /gl/journal/:id/lock. */
+export function useLockJournalEntry() {
+  const invalidate = useInvalidateGl();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<Envelope<{ id: number; status: string }>>(`${BASE}/journal/${id}/lock`, {
+        method: 'POST',
+        body: '{}',
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/** Storno naloga — POST /gl/journal/:id/reverse. */
+export function useReverseJournalEntry() {
+  const invalidate = useInvalidateGl();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<Envelope<{ stornoEntryId: number; number: string }>>(`${BASE}/journal/${id}/reverse`, {
+        method: 'POST',
+        body: '{}',
+      }),
+    onSuccess: invalidate,
   });
 }
