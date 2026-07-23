@@ -139,6 +139,14 @@ describe("ZahteviMailService", () => {
       expect(mail.send).not.toHaveBeenCalled();
     });
 
+    it("resubmit (isResubmit=true) → subject Dopunjen zahtev + telo o odgovoru na dopunu", async () => {
+      delete process.env.ZAHTEVI_MAIL_NOTIFY;
+      await service.notifyAdminsNewRequest(10, true);
+      const arg = mail.send.mock.calls[0][0] as { subject: string; html: string };
+      expect(arg.subject).toBe("Dopunjen zahtev Z-001/26: Bug u nabavci");
+      expect(arg.html).toContain("odgovorio na dopunu");
+    });
+
     it("bez admina u bazi → fallback ZAHTEVI_ADMIN_MAILS (CSV)", async () => {
       prisma.user.findMany.mockResolvedValue([]);
       process.env.ZAHTEVI_ADMIN_MAILS = "a@servoteh.com, b@servoteh.com";

@@ -101,12 +101,17 @@ export class ZahteviMailService {
   }
 
   /**
-   * Obaveštenje administratorima o NOVOJ IDEJI (MODULE_SPEC §9) — na svaki submit
-   * (submitInternal, posle commita, fire-and-forget). Primaoci: korisnici sa rolom
-   * `admin` (users.role = 'admin', aktivni); fallback env `ZAHTEVI_ADMIN_MAILS` (CSV)
-   * kad u bazi nema admina sa email-om. Poštuje `ZAHTEVI_MAIL_NOTIFY`; nikad ne baca.
+   * Obaveštenje administratorima (MODULE_SPEC §9) — na svaki submit (submitInternal,
+   * posle commita, fire-and-forget). `isResubmit` (dopuna vraćena) menja subject/telo:
+   * „Dopunjen zahtev Z-…" (podnosilac odgovorio na dopunu) umesto „Nova ideja Z-…".
+   * Primaoci: korisnici sa rolom `admin` (users.role='admin', aktivni); fallback env
+   * `ZAHTEVI_ADMIN_MAILS` (CSV) kad u bazi nema admina sa email-om. Poštuje
+   * `ZAHTEVI_MAIL_NOTIFY`; nikad ne baca.
    */
-  async notifyAdminsNewRequest(requestId: number): Promise<boolean> {
+  async notifyAdminsNewRequest(
+    requestId: number,
+    isResubmit = false,
+  ): Promise<boolean> {
     if (!this.enabled) return false;
     try {
       const req = await this.prisma.changeRequest.findUnique({
@@ -123,7 +128,7 @@ export class ZahteviMailService {
       const recipients = await this.adminEmails();
       if (recipients.length === 0) {
         this.logger.warn(
-          `Zahtev ${req.reqNo}: nema administratorskih email-ova — obaveštenje o novoj ideji preskočeno.`,
+          `Zahtev ${req.reqNo}: nema administratorskih email-ova — obaveštenje preskočeno.`,
         );
         return false;
       }
@@ -137,13 +142,16 @@ export class ZahteviMailService {
         submitter?.email ||
         `korisnik #${req.createdByUserId}`;
 
-      const subject = `Nova ideja Z-${req.reqNo}: ${req.title}`;
+      const subject = isResubmit
+        ? `Dopunjen zahtev Z-${req.reqNo}: ${req.title}`
+        : `Nova ideja Z-${req.reqNo}: ${req.title}`;
       const html = this.buildAdminHtml({
         reqNo: req.reqNo,
         title: req.title,
         description: req.description,
         submitterName,
         link: this.detailLink(requestId),
+        isResubmit,
       });
       return await this.mail.send({ to: recipients, subject, html });
     } catch (err) {
@@ -188,6 +196,7 @@ export class ZahteviMailService {
     description: string;
     submitterName: string;
     link: string;
+    isResubmit: boolean;
   }): string {
     const esc = (s: string) =>
       s
@@ -196,8 +205,11 @@ export class ZahteviMailService {
         .replace(/>/g, "&gt;");
     const desc = p.description.slice(0, 600);
     const truncated = p.description.length > 600 ? "…" : "";
+    const lead = p.isResubmit
+      ? "Podnosilac je odgovorio na dopunu — zahtev je ponovo podnet. Odgovori su u tabu Pitanja:"
+      : "Nova ideja / zahtev je podnet u modulu Zahtevi:";
     return `
-      <p>Nova ideja / zahtev je podnet u modulu Zahtevi:</p>
+      <p>${esc(lead)}</p>
       <p style="margin:12px 0"><strong>Z-${esc(p.reqNo)}</strong> — ${esc(
         p.title,
       )}</p>

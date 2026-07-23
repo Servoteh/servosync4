@@ -30,6 +30,10 @@ import {
 } from "./dto/update-change-request.dto";
 import { type DecisionDto, validateDecision } from "./dto/decision.dto";
 import { type StatusDto, validateStatus } from "./dto/status.dto";
+import {
+  type ReturnForInfoDto,
+  validateReturnForInfo,
+} from "./dto/return-for-info.dto";
 
 /**
  * Status mašina (MODULE_SPEC_zahtevi §1.3) — dozvoljeni ciljni statusi po trenutnom.
@@ -519,9 +523,12 @@ export class ZahteviService {
     const submittedAt = req.submittedAt ?? new Date();
     const updated = await this.prisma.$transaction(async (tx) => {
       // F1 (TOCTOU): compare-and-set na pročitani status — dupli submit ne pravi dupli event/trijažu.
+      // Resubmit iz NEEDS_INFO čisti stari decisionNote (razlog prethodnog vraćanja) — inače bi
+      // se u headeru/baneru zadržala zastarela napomena posle dopune (23.07 review §3a).
       await this.updateStatusGuarded(tx, id, req.status, {
         status: "SUBMITTED",
         submittedAt,
+        ...(isResubmit ? { decisionNote: null } : {}),
       });
       await this.writeEvent(
         tx,
@@ -529,7 +536,12 @@ export class ZahteviService {
         isResubmit ? "RESUBMITTED" : "SUBMITTED",
         actor.userId,
       );
-      return { ...req, status: "SUBMITTED", submittedAt };
+      return {
+        ...req,
+        status: "SUBMITTED",
+        submittedAt,
+        ...(isResubmit ? { decisionNote: null } : {}),
+      };
     });
 
     // AI trijaža (§4.1) — FIRE-AND-FORGET (nije await): upiše PENDING red analize i
@@ -538,9 +550,10 @@ export class ZahteviService {
     // Trijaža je automatska (startedByUserId = null).
     this.zahteviAi.scheduleTriage(id, null);
 
-    // Obaveštenje administratorima o novoj ideji (MODULE_SPEC §9) — POSLE commita,
-    // FIRE-AND-FORGET, u try/catch unutar servisa; nikad ne obara submit (§10.4).
-    void this.mail.notifyAdminsNewRequest(id);
+    // Obaveštenje administratorima (MODULE_SPEC §9) — POSLE commita, FIRE-AND-FORGET,
+    // u try/catch unutar servisa; nikad ne obara submit (§10.4). isResubmit menja
+    // subject/telo („Dopunjen zahtev" umesto „Nova ideja").
+    void this.mail.notifyAdminsNewRequest(id, isResubmit);
     return updated;
   }
 
@@ -597,6 +610,57 @@ export class ZahteviService {
       return comment;
     });
     return { data: result };
+  }
+
+  /**
+   * POST /zahtevi/:id/return-for-info — ATOMSKO vraćanje na dopunu (admin). U JEDNOJ
+   * transakciji: N pitanja (komentari isQuestion=true) + CAS prelaz u NEEDS_INFO +
+   * event + decisionNote (stvarna napomena ili null). Zamena za krhki dvokorak
+   * (komentar pa decision): ako CAS padne (dupli klik / AI auto-reject u pozadini),
+   * ROLLBACK — nijedno pitanje se ne upiše, podnosilac ne dobija pola-toka (23.07 review).
+   * Mejl podnosiocu (needs-info) ide POSLE commita, fire-and-forget (§10.4).
+   *
+   * Event NEEDS_INFO se piše PRE komentara: PostgreSQL `now()` je transaction_timestamp
+   * (isti za sve redove u tx) pa banner filter „komentari >= poslednji NEEDS_INFO event"
+   * (round-scope) pouzdano hvata pitanja ove runde.
+   */
+  async returnForInfo(id: number, dto: ReturnForInfoDto, actor: AuthUser) {
+    validateReturnForInfo(dto);
+    const req = await this.prisma.changeRequest.findUnique({ where: { id } });
+    if (!req) throw new NotFoundException(`Zahtev ${id} ne postoji.`);
+    this.assertTransition(req.status, "NEEDS_INFO");
+
+    const note = dto.note?.trim() || null;
+    const questions = dto.questions.map((q) => q.trim()).filter(Boolean);
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      // F1 (TOCTOU): compare-and-set na pročitani status — dupli klik / dva admina /
+      // AI auto-reject u međuvremenu → count 0 → 409 i CELA tx (pitanja) se poništi.
+      await this.updateStatusGuarded(tx, id, req.status, {
+        status: "NEEDS_INFO",
+        decisionNote: note,
+      });
+      await this.writeEvent(tx, id, "NEEDS_INFO", actor.userId, {
+        from: req.status,
+        to: "NEEDS_INFO",
+        questionCount: questions.length,
+        ...(note ? { note } : {}),
+      });
+      for (const body of questions) {
+        await tx.changeRequestComment.create({
+          data: { requestId: id, authorUserId: actor.userId, body, isQuestion: true },
+        });
+      }
+      return { ...req, status: "NEEDS_INFO", decisionNote: note };
+    });
+
+    // Mejl podnosiocu (§9) — kao decision needs-info. NIKAD ne obara radnju (§10.4).
+    void this.mail.notifySubmitter({
+      requestId: id,
+      outcome: "needs-info",
+      note,
+    });
+    return { data: updated };
   }
 
   // ── ADMIN DECISION (odobrenje #2 i ostale presude) ──────────────────────────

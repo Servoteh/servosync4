@@ -390,20 +390,31 @@ describe("ZahteviService", () => {
       const res = await service.submit(10, USER);
       expect(row(res).status).toBe("SUBMITTED");
       expect(eventTypes(prisma)).toContain("SUBMITTED");
-      // Fire-and-forget: trijaža + mejl administratorima o novoj ideji (§9).
+      // Fire-and-forget: trijaža + mejl administratorima o novoj ideji (§9, prvi submit).
       expect(zahteviAi.scheduleTriage).toHaveBeenCalledWith(10, null);
-      expect(mail.notifyAdminsNewRequest).toHaveBeenCalledWith(10);
+      expect(mail.notifyAdminsNewRequest).toHaveBeenCalledWith(10, false);
     });
 
-    it("submit iz NEEDS_INFO → SUBMITTED (event RESUBMITTED)", async () => {
+    it("submit iz NEEDS_INFO → SUBMITTED (event RESUBMITTED, čisti decisionNote)", async () => {
       prisma.changeRequest.findUnique.mockResolvedValue(
-        baseReq({ status: "NEEDS_INFO", submittedAt: new Date() }),
+        baseReq({
+          status: "NEEDS_INFO",
+          submittedAt: new Date(),
+          decisionNote: "Pitanja iz prethodne runde",
+        }),
       );
       prisma.changeRequest.update.mockResolvedValue(
         baseReq({ status: "SUBMITTED" }),
       );
       await service.submit(10, USER);
       expect(eventTypes(prisma)).toContain("RESUBMITTED");
+      // §3a: resubmit briše zastareli razlog prethodnog vraćanja (CAS data).
+      const arg = firstArg<{ data: { decisionNote?: string | null } }>(
+        prisma.changeRequest.updateMany,
+      );
+      expect(arg.data.decisionNote).toBeNull();
+      // Mejl adminima ide sa isResubmit=true (Dopunjen zahtev).
+      expect(mail.notifyAdminsNewRequest).toHaveBeenCalledWith(10, true);
     });
 
     it("submit iz APPROVED → 422 (nedozvoljen status)", async () => {
@@ -955,6 +966,84 @@ describe("ZahteviService", () => {
         prisma.changeRequestComment.create,
       );
       expect(arg.data.isQuestion).toBe(false);
+    });
+  });
+
+  // ── RETURN-FOR-INFO (atomsko vraćanje na dopunu, 23.07 review) ───────────────
+  describe("returnForInfo (atomsko: pitanja + NEEDS_INFO)", () => {
+    it("SUBMITTED: N pitanja (isQuestion:true) + prelaz NEEDS_INFO + decisionNote + mejl", async () => {
+      prisma.changeRequest.findUnique.mockResolvedValue(
+        baseReq({ status: "SUBMITTED" }),
+      );
+      prisma.changeRequestComment.create.mockResolvedValue({ id: 1 });
+      const res = await service.returnForInfo(
+        10,
+        { questions: ["Koji modul?", "  ", "Koja verzija?"], note: "hitno" },
+        ADMIN,
+      );
+      // Dva neprazna pitanja → dva komentara isQuestion:true.
+      const created = calls(prisma.changeRequestComment.create).map(
+        (c) => (c[0] as { data: { isQuestion: boolean } }).data,
+      );
+      expect(created).toHaveLength(2);
+      expect(created.every((d) => d.isQuestion === true)).toBe(true);
+      // Prelaz preko CAS-a + NEEDS_INFO event + decisionNote.
+      expect(prisma.changeRequest.updateMany).toHaveBeenCalledWith({
+        where: { id: 10, status: "SUBMITTED" },
+        data: { status: "NEEDS_INFO", decisionNote: "hitno" },
+      });
+      expect(eventTypes(prisma)).toContain("NEEDS_INFO");
+      expect(row(res).status).toBe("NEEDS_INFO");
+      // Mejl podnosiocu (needs-info) — fire-and-forget.
+      expect(mail.notifySubmitter).toHaveBeenCalledWith({
+        requestId: 10,
+        outcome: "needs-info",
+        note: "hitno",
+      });
+    });
+
+    it("bez napomene → decisionNote null (bez placeholdera)", async () => {
+      prisma.changeRequest.findUnique.mockResolvedValue(
+        baseReq({ status: "ANALYZED" }),
+      );
+      prisma.changeRequestComment.create.mockResolvedValue({ id: 1 });
+      await service.returnForInfo(10, { questions: ["Pitanje?"] }, ADMIN);
+      const arg = firstArg<{ data: { decisionNote: string | null } }>(
+        prisma.changeRequest.updateMany,
+      );
+      expect(arg.data.decisionNote).toBeNull();
+    });
+
+    it("prazna pitanja → 400", async () => {
+      prisma.changeRequest.findUnique.mockResolvedValue(
+        baseReq({ status: "SUBMITTED" }),
+      );
+      await expect(
+        service.returnForInfo(10, { questions: ["  ", ""] }, ADMIN),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it("nedozvoljen status (APPROVED) → 422, ništa se ne upiše", async () => {
+      prisma.changeRequest.findUnique.mockResolvedValue(
+        baseReq({ status: "APPROVED" }),
+      );
+      await expect(
+        service.returnForInfo(10, { questions: ["Q"] }, ADMIN),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(prisma.changeRequestComment.create).not.toHaveBeenCalled();
+    });
+
+    it("ATOMIKA: CAS pad (status promenjen u pozadini) → 409 i NIJEDNO pitanje nije upisano", async () => {
+      prisma.changeRequest.findUnique.mockResolvedValue(
+        baseReq({ status: "SUBMITTED" }),
+      );
+      // Prelaz je dozvoljen (SUBMITTED→NEEDS_INFO), ali CAS ne pogađa red (count 0)
+      // jer je AI auto-reject u međuvremenu prebacio status → cela tx puca pre komentara.
+      prisma.changeRequest.updateMany.mockResolvedValue({ count: 0 });
+      await expect(
+        service.returnForInfo(10, { questions: ["Q1", "Q2"] }, ADMIN),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(prisma.changeRequestComment.create).not.toHaveBeenCalled();
     });
   });
 

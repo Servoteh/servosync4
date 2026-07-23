@@ -28,6 +28,7 @@ import type { CreateChangeRequestDto } from "./dto/create-change-request.dto";
 import type { UpdateChangeRequestDto } from "./dto/update-change-request.dto";
 import type { DecisionDto } from "./dto/decision.dto";
 import type { StatusDto } from "./dto/status.dto";
+import type { ReturnForInfoDto } from "./dto/return-for-info.dto";
 import type { ScoreDto, ExcludeDto } from "./dto/score.dto";
 import type { TariffPutDto } from "./dto/tariff.dto";
 import type {
@@ -324,6 +325,17 @@ export class ZahteviController {
     @Req() req: { user: AuthUser },
   ) {
     return this.zahtevi.setStatus(id, dto, req.user);
+  }
+
+  /** Vrati na dopunu sa pitanjima (admin) — ATOMSKI: N pitanja + prelaz NEEDS_INFO + mejl. */
+  @Post(":id/return-for-info")
+  @RequirePermission(PERMISSIONS.ZAHTEVI_ADMIN)
+  returnForInfo(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: ReturnForInfoDto,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.zahtevi.returnForInfo(id, dto, req.user);
   }
 
   // ── AI CEVOVOD (F3, §4) ───────────────────────────────────────────────────
