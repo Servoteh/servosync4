@@ -272,3 +272,70 @@ export function usePostStatement() {
     onSuccess: invalidate,
   });
 }
+
+// ── Ručni unos / korekcija stavke (BigBit paritet) ────────────────────────
+
+/** Telo za ručni unos/izmenu stavke izvoda — 1:1 sa backend statement-line.dto. */
+export interface StatementLineInput {
+  partnerAccount?: string | null;
+  partnerName?: string | null;
+  amount?: number;
+  direction?: string; // DEBIT | CREDIT
+  referenceNumber?: string | null;
+  documentDate?: string | null;
+  matchedCustomerId?: number | null;
+}
+
+/** Ručno dodaj stavku izvoda (POST /izvodi/:id/lines). Vraća ceo izvod sa stavkama. */
+export function useAddStatementLine() {
+  const invalidate = useInvalidateIzvodi();
+  return useMutation({
+    mutationFn: (vars: { id: number; input: StatementLineInput }) =>
+      apiFetch<BankStatementDetail>(`${BASE}/${vars.id}/lines`, {
+        method: 'POST',
+        body: JSON.stringify(vars.input),
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/** Izmeni stavku (PATCH /izvodi/:id/lines/:lineId) — korekcija analitike/PNB/iznosa. */
+export function useUpdateStatementLine() {
+  const invalidate = useInvalidateIzvodi();
+  return useMutation({
+    mutationFn: (vars: { id: number; lineId: number; input: StatementLineInput }) =>
+      apiFetch<BankStatementDetail>(`${BASE}/${vars.id}/lines/${vars.lineId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(vars.input),
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/** Obriši ručno/pogrešno unetu stavku (DELETE /izvodi/:id/lines/:lineId). */
+export function useDeleteStatementLine() {
+  const invalidate = useInvalidateIzvodi();
+  return useMutation({
+    mutationFn: (vars: { id: number; lineId: number }) =>
+      apiFetch<BankStatementDetail>(`${BASE}/${vars.id}/lines/${vars.lineId}`, {
+        method: 'DELETE',
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/** Ručno poveži stavku sa otvorenom stavkom naloga (POST /izvodi/:id/lines/:lineId/link). */
+export function useLinkStatementLine() {
+  const invalidate = useInvalidateIzvodi();
+  return useMutation({
+    mutationFn: (vars: { id: number; lineId: number; ledgerEntryId: number }) =>
+      apiFetch<BankStatementDetail>(
+        `${BASE}/${vars.id}/lines/${vars.lineId}/link`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ ledgerEntryId: vars.ledgerEntryId }),
+        },
+      ),
+    onSuccess: invalidate,
+  });
+}

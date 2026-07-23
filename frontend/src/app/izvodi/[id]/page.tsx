@@ -1,8 +1,8 @@
 'use client';
 
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Plus, Pencil, Trash2 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
@@ -15,6 +15,7 @@ import {
   useStatement,
   useMatchLines,
   usePostStatement,
+  useDeleteStatementLine,
   STATEMENT_STATUS,
   LINE_STATUS,
   LINE_DIRECTION,
@@ -24,6 +25,7 @@ import {
   type BankStatementDetail,
   type BankStatementLine,
 } from '@/api/izvodi';
+import { StatementLineEditor } from './statement-line-editor';
 
 /**
  * Izvodi — detalj izvoda (DESIGN_SYSTEM §4 obrazac „Master–detalj"): zaglavlje
@@ -139,6 +141,19 @@ export default function IzvodDetailPage() {
 
   const match = useMatchLines();
   const post = usePostStatement();
+  const deleteLine = useDeleteStatementLine();
+
+  // Ručni unos/izmena stavke (BigBit paritet). editorLine=null → dodavanje.
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editorLine, setEditorLine] = useState<BankStatementLine | null>(null);
+  const openAdd = useCallback(() => {
+    setEditorLine(null);
+    setEditorOpen(true);
+  }, []);
+  const openEdit = useCallback((l: BankStatementLine) => {
+    setEditorLine(l);
+    setEditorOpen(true);
+  }, []);
 
   const goBack = useCallback(() => router.push('/izvodi'), [router]);
 
@@ -217,19 +232,72 @@ export default function IzvodDetailPage() {
             <StatementHeader doc={doc} />
 
             <section className="space-y-2">
-              <h2 className="text-md font-semibold text-ink">Stavke</h2>
+              <div className="flex items-center justify-between">
+                <h2 className="text-md font-semibold text-ink">Stavke</h2>
+                {doc.status !== STATEMENT_STATUS.POSTED && (
+                  <Button variant="secondary" onClick={openAdd}>
+                    <Plus className="h-4 w-4" aria-hidden />
+                    Dodaj stavku
+                  </Button>
+                )}
+              </div>
               <DataTable
-                columns={itemColumns}
+                columns={
+                  doc.status === STATEMENT_STATUS.POSTED
+                    ? itemColumns
+                    : [
+                        ...itemColumns,
+                        {
+                          key: 'akcije',
+                          header: '',
+                          align: 'right',
+                          render: (l: BankStatementLine) => (
+                            <div className="flex justify-end gap-1">
+                              <Button
+                                variant="ghost"
+                               
+                                onClick={() => openEdit(l)}
+                                aria-label="Izmeni stavku"
+                              >
+                                <Pencil className="h-4 w-4" aria-hidden />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                               
+                                onClick={() => {
+                                  if (
+                                    window.confirm(
+                                      `Obrisati stavku ${l.lineNo} (${formatDecimal(l.amount)})?`,
+                                    )
+                                  )
+                                    deleteLine.mutate({ id: doc.id, lineId: l.id });
+                                }}
+                                aria-label="Obriši stavku"
+                              >
+                                <Trash2 className="h-4 w-4" aria-hidden />
+                              </Button>
+                            </div>
+                          ),
+                        } as Column<BankStatementLine>,
+                      ]
+                }
                 rows={doc.lines}
                 rowKey={(l) => l.id}
                 empty={
                   <EmptyState
                     title="Izvod nema stavki"
-                    hint="Stavke se pune parsiranjem TXT-a pri uvozu."
+                    hint="Stavke se pune parsiranjem TXT-a pri uvozu ili ručnim unosom stavke."
                   />
                 }
               />
             </section>
+
+            <StatementLineEditor
+              statementId={doc.id}
+              line={editorLine}
+              open={editorOpen}
+              onClose={() => setEditorOpen(false)}
+            />
           </>
         )}
       </div>
