@@ -717,6 +717,12 @@ export interface CreateSastanakVars {
   zapisnicarLabel?: string;
   status?: string;
   napomena?: string;
+  /**
+   * Zahtev 005/26 — pozivanje učesnika iz „prve forme". Umetanje reda auto-šalje
+   * 'meeting_invite' mejl (tema/termin/mesto) svakom učesniku (sy15 trigger).
+   * Prazno/izostavljeno = sastanak bez poziva.
+   */
+  ucesnici?: { email: string; label?: string; pozvan?: boolean; prisutan?: boolean }[];
 }
 export const useCreateSastanak = () =>
   useSastanciMutation<CreateSastanakVars, TxResponse<Sastanak>>((v) => post<Sastanak>('', v));

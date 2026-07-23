@@ -12,6 +12,7 @@ import {
   type Sastanak,
 } from '@/api/sastanci';
 import { DirectoryPicker } from './directory-picker';
+import { DirectoryMultiPicker, type PickedUser } from './directory-multi-picker';
 import { INPUT_CLS, SASTANAK_TIP_LABEL } from './common';
 
 /**
@@ -22,6 +23,12 @@ import { INPUT_CLS, SASTANAK_TIP_LABEL } from './common';
  * tiho promaši kad lista nije učitana). `source: null` u odgovoru = server-verified
  * „nema prethodnog". Default isključen; „Sedmični + prenos" dugme ga pre-setuje
  * (1.0 carryover opcija).
+ *
+ * Zahtev 005/26 (Zoran Jaraković, 23.07): „Pozovi učesnike" u prvoj formi.
+ * Izabrani učesnici idu uz create — BE ih umeće u istoj transakciji, a sy15 trigger
+ * automatski šalje pozivnicu (tema/termin/mesto) mejlom. Kad je „prenos" uključen
+ * (sedmični), učesnici se prenose sa prethodnog sastanka pa se ručni izbor sakriva
+ * da se dva izvora ne sudare (prenos radi bulk-replace učesnika).
  */
 export function CreateSastanakModal({
   onClose,
@@ -45,12 +52,22 @@ export function CreateSastanakModal({
   const [zapisnicar, setZapisnicar] = useState<{ email: string; label?: string } | null>(null);
   const [napomena, setNapomena] = useState('');
   const [prenos, setPrenos] = useState(defaultPrenos);
+  const [ucesnici, setUcesnici] = useState<PickedUser[]>([]);
   const [error, setError] = useState<string | null>(null);
+
+  // „Prenos" (sedmični) sam kopira učesnike sa prethodnog sastanka → ručni izbor
+  // se tada sakriva da bulk-replace prenosa ne pregazi ručno izabrane (i obrnuto).
+  const prenosActive = tip === 'sedmicni' && prenos;
 
   async function submit() {
     setError(null);
     if (!naslov.trim()) return setError('Naslov je obavezan.');
     if (!datum) return setError('Datum je obavezan.');
+    // Poziv iz „prve forme" (005/26): šalje se samo kad prenos NIJE aktivan.
+    const pozvani =
+      !prenosActive && ucesnici.length
+        ? ucesnici.map((u) => ({ email: u.email, label: u.label, pozvan: true, prisutan: false }))
+        : undefined;
     try {
       const res = await create.mutateAsync({
         clientEventId: newClientEventId(),
@@ -64,6 +81,7 @@ export function CreateSastanakModal({
         zapisnicarEmail: zapisnicar?.email,
         zapisnicarLabel: zapisnicar?.label,
         napomena: napomena.trim() || undefined,
+        ucesnici: pozvani,
       });
       const created = res.data;
       if (tip === 'sedmicni' && prenos) {
@@ -83,6 +101,8 @@ export function CreateSastanakModal({
         } catch {
           toast('Sastanak kreiran, ali prenos nije uspeo.');
         }
+      } else if (pozvani) {
+        toast(`Sastanak zakazan — pozvano ${pozvani.length} učesnika (pozivnice u redu za slanje).`);
       }
       onCreated?.(created);
       onClose();
@@ -138,6 +158,22 @@ export function CreateSastanakModal({
         <FormField label="Napomena">
           <textarea className={INPUT_CLS} rows={2} value={napomena} onChange={(e) => setNapomena(e.target.value)} />
         </FormField>
+        {/* Zahtev 005/26 — poziv učesnika iz prve forme. Sakriveno kad je prenos
+            aktivan (učesnici se tada prenose sa prethodnog sedmičnog sastanka). */}
+        {prenosActive ? (
+          <p className="text-xs text-ink-secondary">
+            Učesnici se prenose sa poslednjeg sedmičnog sastanka.
+          </p>
+        ) : (
+          <FormField label="Pozovi učesnike">
+            <DirectoryMultiPicker value={ucesnici} onChange={setUcesnici} />
+            {ucesnici.length > 0 && (
+              <p className="mt-1 text-xs text-ink-secondary">
+                Pozvanima stiže mejl sa temom, terminom i mestom sastanka.
+              </p>
+            )}
+          </FormField>
+        )}
         {tip === 'sedmicni' && (
           <label className="flex items-center gap-2 text-sm text-ink">
             <input type="checkbox" checked={prenos} onChange={(e) => setPrenos(e.target.checked)} />
