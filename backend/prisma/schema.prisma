@@ -3887,3 +3887,49 @@ model ChangeRequestRewardTariff {
   @@unique([score, validFrom], map: "uq_cr_reward_tariffs_score_valid_from")
   @@map("change_request_reward_tariffs")
 }
+
+// ============================================================================
+// BLAGAJNA (gotovinski dnevnik) — 4.0 XL (SAP Cash Journal, BigBit KASE).
+// Uplatnica (IN) / isplatnica (OUT) sa auto-knjiženjem na konto blagajne ↔ protivkonto
+// kroz PostingEngine. Dnevno stanje = Σ(IN)−Σ(OUT) as-of; zaključavanje dana kroz status.
+// App-owned 2.0-native (nema legacy Was — KASE je prazna). Novac Decimal, statusi String /// katalog.
+// ============================================================================
+model CashJournal {
+  id          Int      @id(map: "pk_cash_journals") @default(autoincrement()) @map("id")
+  companyId   Int      @default(0) @map("company_id")
+  name        String   @map("name") @db.VarChar(100) // naziv blagajne (npr. „Glavna blagajna")
+  accountCode String   @map("account_code") @db.VarChar(10) // konto blagajne (npr. 2430) — meki ref Account.code
+  currency    String   @default("RSD") @map("currency") @db.VarChar(3)
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  entries CashEntry[]
+
+  @@index([companyId], map: "idx_cash_journals_company")
+  @@map("cash_journals")
+}
+
+/// Uplatnica/isplatnica blagajne. direction: IN (uplata u blagajnu) | OUT (isplata iz blagajne).
+/// journalEntryId = meki ref na GK nalog kreiran auto-knjiženjem (blagajna ↔ protivkonto).
+model CashEntry {
+  id             Int       @id(map: "pk_cash_entries") @default(autoincrement()) @map("id")
+  cashJournalId  Int       @map("cash_journal_id")
+  entryNumber    String    @map("entry_number") @db.VarChar(20) // NNNN/god po blagajni+smeru
+  direction      String    @map("direction") @db.VarChar(3) /// IN (uplatnica) | OUT (isplatnica)
+  amount         Decimal   @map("amount") @db.Decimal(19, 4)
+  entryDate      DateTime  @map("entry_date") @db.Timestamptz(6)
+  partnerId      Int?      @map("partner_id") // komitent (meki ref customers.id) — od koga/kome
+  contraAccount  String    @map("contra_account") @db.VarChar(10) // protivkonto (npr. 2040 kupci, 5xx trošak)
+  description    String?   @map("description")
+  status         String    @default("DRAFT") @map("status") @db.VarChar(10) /// DRAFT | POSTED
+  journalEntryId Int?      @map("journal_entry_id") // meki ref journal_entries.id (GK nalog)
+  createdByUserId Int?     @map("created_by_user_id")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  journal CashJournal @relation(fields: [cashJournalId], references: [id], onDelete: Cascade, map: "fk_cash_entries_journal")
+
+  @@unique([cashJournalId, direction, entryNumber], map: "uq_cash_entries_number")
+  @@index([cashJournalId, entryDate], map: "idx_cash_entries_journal_date")
+  @@index([status], map: "idx_cash_entries_status")
+  @@map("cash_entries")
+}
