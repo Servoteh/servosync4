@@ -20,6 +20,7 @@ import {
   type PurchaseRequest,
 } from '@/api/nabavka';
 import { NewRequestDialog } from './new-request-dialog';
+import { PurchaseOrdersPanel } from './purchase-orders-panel';
 
 /**
  * Nabavka: radna lista zahteva (Traka B §B). Obrazac „Lista"
@@ -207,6 +208,8 @@ export default function NabavkaPage() {
             onNext={() => setPage((p) => Math.min(totalPages, p + 1))}
           />
         )}
+
+        <PurchaseOrdersPanel />
       </div>
     </AppShell>
   );
