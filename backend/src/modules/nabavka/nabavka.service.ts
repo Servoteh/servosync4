@@ -15,6 +15,10 @@ import {
   type CreatePurchaseRequestDto,
   validateCreatePurchaseRequest,
 } from "./dto/create-purchase-request.dto";
+import {
+  type CreatePurchaseOrderDto,
+  validateCreatePurchaseOrder,
+} from "./dto/create-purchase-order.dto";
 
 /**
  * NACRT — servis modula Nabavka (Traka B §B). Status-mašina:
@@ -181,6 +185,128 @@ export class NabavkaService {
     });
 
     return { rfq, emailSent: sent };
+  }
+
+  // ── NARUDŽBENICA (kreiranje + status) ──────────────────────────────────────
+
+  /**
+   * Kreiraj narudžbenicu (BigBit „Naručivanje robe"): broj NNNN/god, status ORDERED
+   * (kreiranje = poručeno), stavke sa cenom (unitPrice tek ovde). Iz upita (rfqId) ili
+   * direktno. Dobavljač je meki ref — validacija postojanja u kešu komitenata.
+   */
+  async createOrder(dto: CreatePurchaseOrderDto, actor: AuthUser) {
+    validateCreatePurchaseOrder(dto);
+
+    const supplier = await this.prisma.customer.findUnique({
+      where: { id: dto.supplierId },
+      select: { id: true },
+    });
+    if (!supplier)
+      throw new NotFoundException(`Dobavljač ${dto.supplierId} ne postoji.`);
+
+    return this.prisma.$transaction(async (tx) => {
+      const orderNumber = await this.numbering.nextYearlyOrder(tx);
+      return tx.purchaseOrder.create({
+        data: {
+          orderNumber,
+          rfqId: dto.rfqId ?? null,
+          supplierId: dto.supplierId,
+          projectId: dto.projectId ?? null,
+          status: "ORDERED",
+          orderedAt: new Date(),
+          currency: dto.currency ?? "RSD",
+          note: dto.note ?? null,
+          createdByUserId: actor.userId,
+          items: {
+            create: dto.items.map((it, idx) => ({
+              articleId: it.articleId ?? null,
+              description: it.description ?? null,
+              orderedQuantity: it.orderedQuantity,
+              unitPrice: it.unitPrice ?? null,
+              unit: it.unit ?? null,
+              rfqItemId: it.rfqItemId ?? null,
+              requestItemId: it.requestItemId ?? null,
+              lineNo: idx + 1,
+            })),
+          },
+        },
+        include: { items: { orderBy: { lineNo: "asc" } } },
+      });
+    });
+  }
+
+  /** ORDERED → SIGNED (odobrena/potpisana narudžbenica). */
+  async markOrderSigned(orderId: number, actor: AuthUser) {
+    const order = await this.getOrderOrThrow(orderId);
+    this.assertOrderStatus(order.status, ["ORDERED"], "potpisivanje");
+    return this.prisma.purchaseOrder.update({
+      where: { id: orderId },
+      data: { status: "SIGNED", updatedByUserId: actor.userId },
+    });
+  }
+
+  /** SIGNED → LOCKED (zaključana narudžbenica — sprečava izmene pre prijema). */
+  async markOrderLocked(orderId: number, actor: AuthUser) {
+    const order = await this.getOrderOrThrow(orderId);
+    this.assertOrderStatus(order.status, ["SIGNED", "ORDERED"], "zaključavanje");
+    return this.prisma.purchaseOrder.update({
+      where: { id: orderId },
+      data: { status: "LOCKED", updatedByUserId: actor.userId },
+    });
+  }
+
+  /** Lista narudžbenica (pregled + filteri) — BigBit „Pregled trebovanja". */
+  async listOrders(params: {
+    status?: string;
+    supplierId?: number;
+    skip?: number;
+    take?: number;
+  }) {
+    const where: Record<string, unknown> = {};
+    if (params.status) where.status = params.status;
+    if (params.supplierId != null) where.supplierId = params.supplierId;
+
+    const take = Math.min(params.take ?? 50, 200);
+    const skip = params.skip ?? 0;
+    const [rows, total] = await this.prisma.$transaction([
+      this.prisma.purchaseOrder.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        skip,
+        take,
+        include: { _count: { select: { items: true } } },
+      }),
+      this.prisma.purchaseOrder.count({ where }),
+    ]);
+    return { data: rows, meta: { total, skip, take } };
+  }
+
+  async getOrder(orderId: number) {
+    return this.prisma.purchaseOrder.findUnique({
+      where: { id: orderId },
+      include: { items: { orderBy: { lineNo: "asc" } } },
+    });
+  }
+
+  private async getOrderOrThrow(orderId: number) {
+    const order = await this.prisma.purchaseOrder.findUnique({
+      where: { id: orderId },
+      select: { id: true, status: true },
+    });
+    if (!order)
+      throw new NotFoundException(`Narudžbenica ${orderId} ne postoji.`);
+    return order;
+  }
+
+  private assertOrderStatus(
+    current: string,
+    allowed: string[],
+    action: string,
+  ): void {
+    if (!allowed.includes(current))
+      throw new ConflictException(
+        `Narudžbenica je u statusu ${current}; ${action} je moguće samo iz ${allowed.join("/")}.`,
+      );
   }
 
   // ── NARUDŽBENICA + PRIJEM (3-way match) ────────────────────────────────────
