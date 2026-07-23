@@ -27,6 +27,20 @@ const MAX_AUDIO_BYTES = 15 * 1024 * 1024; // 15 MB (STT limit)
 
 export type AttachmentKind = 'IMAGE' | 'AUDIO' | 'FILE';
 
+const ALL_KINDS: AttachmentKind[] = ['IMAGE', 'AUDIO', 'FILE'];
+
+/** `accept` atribut file-input-a po dozvoljenim vrstama (kamera koristi zaseban input). */
+const ACCEPT_ATTR: Record<AttachmentKind, string> = {
+  IMAGE: 'image/jpeg,image/png,image/webp,image/heic',
+  AUDIO: 'audio/*',
+  FILE: 'application/pdf',
+};
+const KIND_LABEL: Record<AttachmentKind, string> = {
+  IMAGE: 'slike',
+  AUDIO: 'audio',
+  FILE: 'PDF',
+};
+
 function classify(mime: string): AttachmentKind | null {
   const m = mime.split(';')[0].toLowerCase();
   if (IMAGE_MIMES.includes(m)) return 'IMAGE';
@@ -55,6 +69,8 @@ export function AttachmentInput({
   max = 10,
   disabled,
   className,
+  accept = ALL_KINDS,
+  maxBytes = MAX_FILE_BYTES,
 }: {
   value: File[];
   onChange: (next: File[]) => void;
@@ -63,6 +79,10 @@ export function AttachmentInput({
   max?: number;
   disabled?: boolean;
   className?: string;
+  /** Dozvoljene vrste priloga. Default sve (slike/audio/PDF) — kontekst sme da suzi (npr. samo slike/PDF). */
+  accept?: AttachmentKind[];
+  /** Gornja granica veličine po fajlu (bajtovi). Default 25 MB; audio dodatno kapiran na 15 MB. */
+  maxBytes?: number;
 }) {
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -81,17 +101,15 @@ export function AttachmentInput({
         onReject?.(`Najviše ${max} priloga po zahtevu.`);
         break;
       }
+      const allowedLabel = accept.map((k) => KIND_LABEL[k]).join(', ');
       const kind = classify(f.type);
-      if (!kind) {
-        onReject?.(`„${f.name}": nepodržan tip. Dozvoljeno: slike, audio, PDF.`);
+      if (!kind || !accept.includes(kind)) {
+        onReject?.(`„${f.name}": nepodržan tip. Dozvoljeno: ${allowedLabel}.`);
         continue;
       }
-      if (kind === 'AUDIO' && f.size > MAX_AUDIO_BYTES) {
-        onReject?.(`„${f.name}": audio prelazi 15 MB.`);
-        continue;
-      }
-      if (f.size > MAX_FILE_BYTES) {
-        onReject?.(`„${f.name}": prelazi 25 MB.`);
+      const perFileCap = kind === 'AUDIO' ? Math.min(maxBytes, MAX_AUDIO_BYTES) : maxBytes;
+      if (f.size > perFileCap) {
+        onReject?.(`„${f.name}": prelazi ${humanSize(perFileCap)}.`);
         continue;
       }
       // Slike resize-ujemo pre dodavanja (paritet 1.0 prepareImageForUpload).
@@ -144,15 +162,17 @@ export function AttachmentInput({
           Prevucite fajlove ovde ili
         </p>
         <div className="mt-2 flex flex-wrap justify-center gap-2">
-          <button
-            type="button"
-            disabled={disabled || full || busy}
-            onClick={() => cameraRef.current?.click()}
-            className="inline-flex h-9 items-center gap-2 rounded-control border border-line bg-surface px-3 text-sm font-medium text-ink hover:bg-surface-2 disabled:opacity-50"
-          >
-            <Camera className="h-4 w-4" aria-hidden />
-            Slikaj / kamera
-          </button>
+          {accept.includes('IMAGE') && (
+            <button
+              type="button"
+              disabled={disabled || full || busy}
+              onClick={() => cameraRef.current?.click()}
+              className="inline-flex h-9 items-center gap-2 rounded-control border border-line bg-surface px-3 text-sm font-medium text-ink hover:bg-surface-2 disabled:opacity-50"
+            >
+              <Camera className="h-4 w-4" aria-hidden />
+              Slikaj / kamera
+            </button>
+          )}
           <button
             type="button"
             disabled={disabled || full || busy}
@@ -164,7 +184,7 @@ export function AttachmentInput({
           </button>
         </div>
         <p className="mt-2 text-2xs text-ink-secondary">
-          Slike, audio (≤ 15 MB) i PDF. Do {max} priloga · {value.length}/{max}.
+          {accept.map((k) => KIND_LABEL[k]).join(', ')} (≤ {humanSize(maxBytes)}). Do {max} priloga · {value.length}/{max}.
         </p>
 
         {/* Native kamera na telefonu (kanonski obrazac prijava-kvara-dialog). */}
@@ -183,7 +203,7 @@ export function AttachmentInput({
         <input
           ref={fileRef}
           type="file"
-          accept="image/jpeg,image/png,image/webp,image/heic,audio/*,application/pdf"
+          accept={accept.map((k) => ACCEPT_ATTR[k]).join(',')}
           multiple
           className="hidden"
           onChange={(e) => {

@@ -52,6 +52,8 @@ export function NeusaglasenostiTab({ initialOpenId }: { initialOpenId?: number |
   const [q, setQ] = useState('');
   const [status, setStatus] = useState<NcStatus | ''>('');
   const [severity, setSeverity] = useState<NcSeverity | ''>('');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
   const [page, setPage] = useState(1);
   const [openId, setOpenId] = useState<number | null>(initialOpenId ?? null);
   const [prijavaOpen, setPrijavaOpen] = useState(false);
@@ -65,7 +67,14 @@ export function NeusaglasenostiTab({ initialOpenId }: { initialOpenId?: number |
     return () => clearTimeout(t);
   }, [searchInput]);
 
-  const list = useNonconformities({ q: q || undefined, status, severity, page });
+  const list = useNonconformities({
+    q: q || undefined,
+    status,
+    severity,
+    from: from || undefined,
+    to: to || undefined,
+    page,
+  });
   const rows = list.data?.data ?? [];
   const meta = list.data?.meta.pagination;
 
@@ -178,6 +187,45 @@ export function NeusaglasenostiTab({ initialOpenId }: { initialOpenId?: number |
               setPage(1);
             }}
           />
+        </div>
+        {/* Period po datumu prijave (od/do; „do" obuhvata ceo dan — BE proširi na kraj dana). */}
+        <div className="flex items-center gap-1">
+          <span className="text-2xs uppercase tracking-wider text-ink-secondary">Od</span>
+          <input
+            type="date"
+            value={from}
+            title="Prijavljeno od"
+            onChange={(e) => {
+              setFrom(e.target.value);
+              setPage(1);
+            }}
+            className="rounded-control border border-line bg-surface-2 px-2 py-1 text-sm text-ink outline-none focus:border-accent"
+          />
+          <span className="text-2xs uppercase tracking-wider text-ink-secondary">Do</span>
+          <input
+            type="date"
+            value={to}
+            title="Prijavljeno do"
+            onChange={(e) => {
+              setTo(e.target.value);
+              setPage(1);
+            }}
+            className="rounded-control border border-line bg-surface-2 px-2 py-1 text-sm text-ink outline-none focus:border-accent"
+          />
+          {(from || to) && (
+            <button
+              type="button"
+              onClick={() => {
+                setFrom('');
+                setTo('');
+                setPage(1);
+              }}
+              className="rounded-control border border-line px-2 py-1 text-xs text-ink-secondary hover:bg-surface-2"
+              title="Poništi period"
+            >
+              ×
+            </button>
+          )}
         </div>
       </div>
 

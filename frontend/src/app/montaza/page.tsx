@@ -62,6 +62,13 @@ export default function MontazaPage() {
     const idRaw = params.get('id');
     const idNum = idRaw ? Number.parseInt(idRaw, 10) : NaN;
     if (Number.isInteger(idNum) && idNum > 0) setInitialNcId(idNum);
+    // „Potroši" deep-link ?id= (obrazac ?tour=1): očisti iz URL-a da se detalj ne
+    // otvara ponovo pri promeni pogleda / remount-u (auto-open je jednokratan).
+    if (idRaw) {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('id');
+      window.history.replaceState(null, '', url.toString());
+    }
   }, []);
 
   useEffect(() => {

@@ -266,6 +266,10 @@ Dopune kita:
   audio ≤ 15 MB, ostalo ≤ 25 MB, ukupno ≤ `max`). Kontrolisan (`value: File[]` / `onChange`);
   odbačene fajlove prijavljuje kroz `onReject(poruka)` (roditelj prikazuje toast/grešku — kit je
   bez zavisnosti na toast). Generalizacija ponovljenog upload obrasca (odrzavanje/kvalitet/kadrovska).
+  Opcioni `accept?: AttachmentKind[]` (default sve: slike/audio/PDF — kontekst sme da suzi, npr.
+  `['IMAGE','FILE']` sakriva „Slikaj/kamera" ako nema IMAGE i menja `accept` atribut) i
+  `maxBytes?` (default 25 MB; audio dodatno kapiran na 15 MB) — usklađuje FE granice sa backendom
+  po modulu (Montaža/neusaglašenosti: slike/PDF ≤ 8 MB). Podrazumevane vrednosti čuvaju staro ponašanje.
 * **`AudioRecorder`** (`ui-kit/audio-recorder.tsx`, modul Zahtevi §5) — snimanje glasovne poruke kao
   PRILOGA (razlika od `DictateButton` iz `voice-controls`, koji diktira u polje i ne čuva audio).
   MediaRecorder → `Blob` (webm), preview kroz `<audio controls>`, prikaz trajanja. Kontrolisan

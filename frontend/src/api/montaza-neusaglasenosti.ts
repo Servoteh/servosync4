@@ -245,10 +245,28 @@ export function useChangeNonconformityStatus() {
 /**
  * Otvori uskladištenu fotku u novom tabu (GET .../photos/:photoId). Endpoint traži JWT,
  * pa se blob povlači kroz `apiBlob` (Authorization header) i prikazuje preko createObjectURL.
+ * Popup-blocker fix (obrazac reversi RowPdfButton): prazan tab se otvara SINHRONO u okviru
+ * klika, pa mu se blob URL postavi tek posle await-a (inače browser blokira asinhroni open).
  */
 export async function openNonconformityPhoto(id: number, photoId: number): Promise<void> {
-  const blob = await apiBlob(`/v1/montaza/neusaglasenosti/${id}/photos/${photoId}`);
-  const url = URL.createObjectURL(blob);
-  window.open(url, '_blank', 'noopener');
-  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  const win = window.open('about:blank', '_blank');
+  if (win) win.opener = null;
+  try {
+    const blob = await apiBlob(`/v1/montaza/neusaglasenosti/${id}/photos/${photoId}`);
+    const url = URL.createObjectURL(blob);
+    if (win) win.location.href = url;
+    else window.location.href = url; // popup blokiran → isti tab (fallback)
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  } catch (e) {
+    win?.close();
+    throw e;
+  }
+}
+
+/**
+ * Dohvati blob fotke (za thumbnail/lightbox — object URL upravlja pozivalac). JWT ide
+ * kroz `apiBlob`; ne može se `<img src>` direktno na endpoint (traži Authorization header).
+ */
+export function fetchNonconformityPhotoBlob(id: number, photoId: number): Promise<Blob> {
+  return apiBlob(`/v1/montaza/neusaglasenosti/${id}/photos/${photoId}`);
 }

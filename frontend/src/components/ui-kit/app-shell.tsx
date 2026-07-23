@@ -153,11 +153,14 @@ const NOTIFICATION_BADGE: Record<string, { tone: Tone; label: string }> = {
   'primopredaja.preuzeta': { tone: 'info', label: 'Preuzeta izrada' },
 };
 
-/** refTable → ruta modula (navigacija na klik; bez deep-linka — lista modula). */
-const NOTIFICATION_ROUTE: Record<string, string> = {
-  work_orders: '/work-orders',
-  handover_drafts: '/nacrti',
-  drawing_handovers: '/handovers',
+/** refTable → ruta modula (funkcija prima refId za deep-link kad modul to podržava). */
+const NOTIFICATION_ROUTE: Record<string, (refId: number | null) => string> = {
+  work_orders: () => '/work-orders',
+  handover_drafts: () => '/nacrti',
+  drawing_handovers: () => '/handovers',
+  // Neusaglašenosti na montaži (zahtev 004/26): deep-link otvara detalj u tabu.
+  montage_nonconformities: (id) =>
+    `/montaza?view=neusaglasenosti${id != null ? `&id=${id}` : ''}`,
 };
 
 type BellVariant = 'sidebar' | 'rail' | 'header';
@@ -207,7 +210,8 @@ function NotificationBell({ enabled, variant = 'sidebar' }: { enabled: boolean; 
 
   function onActivate(n: AppNotification) {
     if (!n.readAt) markRead.mutate(n.id);
-    const route = n.refTable ? NOTIFICATION_ROUTE[n.refTable] : undefined;
+    const build = n.refTable ? NOTIFICATION_ROUTE[n.refTable] : undefined;
+    const route = build?.(n.refId ?? null);
     if (route) router.push(route);
     setOpen(false);
   }

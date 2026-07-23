@@ -20,6 +20,7 @@ import {
 import { PredmetPicker, type PredmetSelection } from './predmet-picker';
 
 const MAX_PHOTOS = 6;
+const MAX_PHOTO_BYTES = 8 * 1024 * 1024; // paritet BE (≤8 MB/fajl)
 
 /**
  * Prijava neusaglašenosti na montaži (zahtev 004/26) — fork obrasca
@@ -215,12 +216,14 @@ export function PrijavaNeusaglasenostiDialog({
             </FormField>
           </div>
 
-          <FormField label="Fotografije" hint={`Slikaj ili priloži (do ${MAX_PHOTOS}).`}>
+          <FormField label="Fotografije" hint={`Slikaj ili priloži sliku/PDF (do ${MAX_PHOTOS}).`}>
             <AttachmentInput
               value={files}
               onChange={setFiles}
               onReject={(m) => toast(m)}
               max={MAX_PHOTOS}
+              accept={['IMAGE', 'FILE']}
+              maxBytes={MAX_PHOTO_BYTES}
             />
           </FormField>
         </div>
