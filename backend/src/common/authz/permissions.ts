@@ -83,6 +83,12 @@ export const PERMISSIONS = {
   GL_READ: "gl.read",
   // write = ručni unos naloga (temeljnica), proknjiži/zaključaj/storno (BigBit „Unos naloga GK").
   GL_WRITE: "gl.write",
+  // Blagajna (gotovinski dnevnik) — 4.0 XL. read = uvid u blagajne/stavke; write = uplatnica/isplatnica.
+  BLAGAJNA_READ: "blagajna.read",
+  BLAGAJNA_WRITE: "blagajna.write",
+  // Kamata (obračun zatezne kamate) — 4.0 XL. read = uvid; write = unos stope + obračun.
+  KAMATA_READ: "kamata.read",
+  KAMATA_WRITE: "kamata.write",
   // Robno / magacin — 4.0 Faza 3 (robni dokumenti, kalkulacija landed cost, nivelacija, lager).
   // read = uvid u robne dokumente/lager; write = kreiranje/kalkulacija; post = knjiženje u GK.
   ROBNO_READ: "robno.read",
