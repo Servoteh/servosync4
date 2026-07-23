@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowLeft, Plus, Pencil, Trash2 } from 'lucide-react';
+import { ArrowLeft, Plus, Pencil, Trash2, Link2 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
@@ -26,6 +26,7 @@ import {
   type BankStatementLine,
 } from '@/api/izvodi';
 import { StatementLineEditor } from './statement-line-editor';
+import { LinkLineDialog } from './link-line-dialog';
 
 /**
  * Izvodi — detalj izvoda (DESIGN_SYSTEM §4 obrazac „Master–detalj"): zaglavlje
@@ -155,6 +156,14 @@ export default function IzvodDetailPage() {
     setEditorOpen(true);
   }, []);
 
+  // Ručno povezivanje stavke sa otvorenom stavkom saldakonta (BigBit „Poveži po BrDok").
+  const [linkOpen, setLinkOpen] = useState(false);
+  const [linkLine, setLinkLine] = useState<BankStatementLine | null>(null);
+  const openLink = useCallback((l: BankStatementLine) => {
+    setLinkLine(l);
+    setLinkOpen(true);
+  }, []);
+
   const goBack = useCallback(() => router.push('/izvodi'), [router]);
 
   // Primarna akcija zavisi od statusa: uvezen bez uparenih → upari; sa uparenim → knjiži.
@@ -255,7 +264,14 @@ export default function IzvodDetailPage() {
                             <div className="flex justify-end gap-1">
                               <Button
                                 variant="ghost"
-                               
+                                onClick={() => openLink(l)}
+                                aria-label="Poveži stavku sa otvorenom stavkom"
+                              >
+                                <Link2 className="h-4 w-4" aria-hidden />
+                              </Button>
+                              <Button
+                                variant="ghost"
+
                                 onClick={() => openEdit(l)}
                                 aria-label="Izmeni stavku"
                               >
@@ -297,6 +313,13 @@ export default function IzvodDetailPage() {
               line={editorLine}
               open={editorOpen}
               onClose={() => setEditorOpen(false)}
+            />
+
+            <LinkLineDialog
+              statementId={doc.id}
+              line={linkLine}
+              open={linkOpen}
+              onClose={() => setLinkOpen(false)}
             />
           </>
         )}

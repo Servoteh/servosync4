@@ -199,26 +199,55 @@ export class BalanceSheetService {
       const resolveAop = (aop: string, column: 1 | 2 | 3): Prisma.Decimal =>
         column === 1 ? (aopValues.get(aop) ?? new D(0)) : new D(0);
 
+      // ── ITERATIVNA KONVERGENCIJA (fixed-point) ──────────────────────────────
+      // AOP formule sadrže FORWARD reference: npr. UKUPNA AKTIVA (0001 = A0002+A0044)
+      // je prva po ordinalu, ali zavisi od pozicija koje se računaju kasnije. Jedan
+      // prolaz po ordinalu bi te reference video kao 0 → UKUPNA AKTIVA = 0 (defekt B3).
+      // Zato ponavljamo prolaze dok se mapa vrednosti ne stabilizuje (poređenje po
+      // Decimal.equals), najviše MAX_ITER puta (BigBit ZR motor radi 7 prolaza, doc 44).
+      // Isti put koristi i BILANS USPEHA (computeIncomeStatement → computeStatement),
+      // pa i njegove A-reference (npr. NETO DOBITAK 1068 = A1064-A1066) konvergiraju.
+      const MAX_ITER = 7;
+
+      // Ručne (OS/knjigovođa) pozicije su fiksna 0 — upiši ih odmah da A-reference
+      // na njih rade od prvog prolaza; formula-pozicije idu u iterativni skup.
+      const formulaDefs: typeof definitions = [];
       for (const def of definitions) {
-        const trimmed = def.formula.trim();
-        let amount: Prisma.Decimal;
-        let storedFormula: string | null;
-
-        if (MANUAL_FORMULA_MARKERS.has(trimmed.toUpperCase())) {
-          // OS / ručna pozicija (knjigovođa) — 0 dok se ne unese ručno.
-          amount = new D(0);
-          storedFormula = null;
+        if (MANUAL_FORMULA_MARKERS.has(def.formula.trim().toUpperCase())) {
+          aopValues.set(def.aop, new D(0));
         } else {
-          amount = await this.gkEval.evalFormula(def.formula, asOf, resolveAop);
-          storedFormula = def.formula;
+          formulaDefs.push(def);
         }
+      }
 
-        aopValues.set(def.aop, amount);
+      for (let iter = 0; iter < MAX_ITER; iter++) {
+        let changed = false;
+        for (const def of formulaDefs) {
+          // evalFormula rešava D/P/PSD/PSP iz baze (isto u svakom prolazu) i
+          // A/AB/AC<aop> iz `aopValues` (menja se između prolaza dok ne konvergira).
+          const next = await this.gkEval.evalFormula(def.formula, asOf, resolveAop);
+          const prev = aopValues.get(def.aop);
+          if (prev === undefined || !prev.equals(next)) {
+            changed = true;
+          }
+          aopValues.set(def.aop, next);
+        }
+        // Stabilno — nema više promena; dalji prolazi bi dali isti rezultat.
+        if (!changed) {
+          break;
+        }
+      }
+
+      // Emituj linije u redosledu obrasca (ordinal), sa konvergiranim vrednostima.
+      for (const def of definitions) {
+        const isManual = MANUAL_FORMULA_MARKERS.has(
+          def.formula.trim().toUpperCase(),
+        );
         linesToWrite.push({
           aop: def.aop,
           label: def.label,
-          amount,
-          formula: storedFormula,
+          amount: aopValues.get(def.aop) ?? new D(0),
+          formula: isManual ? null : def.formula,
           ordinal: def.ordinal,
         });
       }

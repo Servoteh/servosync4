@@ -31,6 +31,10 @@ export interface OpenItem {
   daysOverdue: number | null; // asOf − dueDate (u danima; null ako nema dueDate)
   currency: string | null;
   side: string; // receivable | payable (iz registra)
+  // Svi ledger_entries.id koji čine ovaj (grupisani) red — potrebno za
+  // uparivanje (reconcile) i kompenzaciju, koje rade nad pojedinačnim
+  // stavkama. Izveden pogled grupiše po dokumentu; ovde izlažemo članove grupe.
+  ledgerEntryIds: number[];
 }
 
 /** Aging red po komitentu — saldo raspoređen u bucket-e po dospelosti. */
@@ -53,6 +57,7 @@ interface OpenItemRawRow {
   due_date: Date | null;
   currency: string | null;
   side: string;
+  ledger_entry_ids: number[] | null; // array_agg(le.id) — članovi grupe (Int[] → number[])
 }
 
 interface AgingRawRow {
@@ -100,6 +105,7 @@ export class OpenItemsService {
           COALESCE(SUM(le.debit) - SUM(le.credit), 0) AS balance,
           MIN(le.due_date) AS due_date,
           MAX(le.currency) AS currency,
+          array_agg(le.id ORDER BY le.id) AS ledger_entry_ids,
           sa.side AS side
         FROM ledger_entries le
         JOIN journal_entries je ON je.id = le.journal_entry_id
@@ -195,6 +201,7 @@ export class OpenItemsService {
       daysOverdue,
       currency: r.currency,
       side: r.side,
+      ledgerEntryIds: r.ledger_entry_ids ?? [],
     };
   }
 }

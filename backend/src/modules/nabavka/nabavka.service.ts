@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   ConflictException,
   UnprocessableEntityException,
@@ -7,6 +8,7 @@ import {
 import { PrismaService } from "../../prisma/prisma.service";
 import { MailService } from "../../common/mail/mail.service";
 import { PurchaseNumberingService } from "./purchase-numbering.service";
+import { RfqPdfService } from "./rfq-pdf.service";
 import { RobnoService } from "../robno/robno.service";
 import { CalculationService } from "../robno/calculation.service";
 import { PostingEngineService } from "../gl/posting/posting.service";
@@ -37,6 +39,8 @@ import {
  */
 @Injectable()
 export class NabavkaService {
+  private readonly logger = new Logger(NabavkaService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly mail: MailService,
@@ -44,6 +48,7 @@ export class NabavkaService {
     private readonly robno: RobnoService,
     private readonly calculation: CalculationService,
     private readonly posting: PostingEngineService,
+    private readonly rfqPdf: RfqPdfService,
   ) {}
 
   // ── ZAHTEV ────────────────────────────────────────────────────────────────
@@ -169,11 +174,29 @@ export class NabavkaService {
       });
     });
 
-    // 2) auto-mail — NIKAD ne obara radnju (MailService ne baca; DRY-RUN bez ključa)
+    // 2a) PDF prilog upita (upit-za-ponudu-<broj>.pdf). PDF NIJE obavezan — ako
+    //     render padne, mejl svejedno ide sa istim HTML-om (bez priloga). Isti
+    //     obrazac odbrane kao slanje: prilog ne sme da obori poslovnu radnju.
+    let attachments:
+      | Array<{ filename: string; content: Buffer }>
+      | undefined;
+    try {
+      const { buffer, fileName } = await this.rfqPdf.buildRfqPdf(rfq.id);
+      attachments = [{ filename: fileName, content: buffer }];
+    } catch (e) {
+      this.logger.error(
+        `PDF upita ${rfq.rfqNumber} nije generisan (šaljem mejl bez priloga): ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+    }
+
+    // 2b) auto-mail — NIKAD ne obara radnju (MailService ne baca; DRY-RUN bez ključa)
     const sent = await this.mail.send({
       to: supplierEmail,
       subject: `Upit za ponudu ${rfq.rfqNumber} — Servoteh`,
       html: this.buildRfqEmailHtml(rfq),
+      ...(attachments ? { attachments } : {}),
     });
 
     // 3) log slanja (Poslato → sentAt); status SENT samo ako je stvarno poslato

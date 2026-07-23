@@ -64,6 +64,10 @@ export interface JournalEntry {
   year: number;
   documentDate: string;
   status: GlStatus;
+  /** Ako je OVAJ nalog storniran — id kontra-naloga koji ga poništava (inače null). */
+  reversedByEntryId?: number | null;
+  /** Ako je OVO storno nalog — id izvornog naloga koji stornira (inače null). */
+  reversesEntryId?: number | null;
 }
 
 /** Stavka naloga (`ledger_entries`) — konto/komitent/duguje/potražuje. */
@@ -261,12 +265,16 @@ export function useCreateJournalEntry() {
   });
 }
 
-/** Proknjiži nalog (draft→posted) — POST /gl/journal/:id/post. */
+/**
+ * Proknjiži nalog (draft→posted) — POST /gl/journal/:id/post.
+ * Backend (gl-write.service.markPosted) vraća SIROV objekat `{ id, status }` (bez
+ * `{ data }` omotača — status-mašina nije domenski read endpoint).
+ */
 export function usePostJournalEntry() {
   const invalidate = useInvalidateGl();
   return useMutation({
     mutationFn: (id: number) =>
-      apiFetch<Envelope<{ id: number; status: string }>>(`${BASE}/journal/${id}/post`, {
+      apiFetch<{ id: number; status: string }>(`${BASE}/journal/${id}/post`, {
         method: 'POST',
         body: '{}',
       }),
@@ -274,12 +282,12 @@ export function usePostJournalEntry() {
   });
 }
 
-/** Zaključaj nalog (posted→locked) — POST /gl/journal/:id/lock. */
+/** Zaključaj nalog (posted→locked) — POST /gl/journal/:id/lock. Vraća sirov `{ id, status }`. */
 export function useLockJournalEntry() {
   const invalidate = useInvalidateGl();
   return useMutation({
     mutationFn: (id: number) =>
-      apiFetch<Envelope<{ id: number; status: string }>>(`${BASE}/journal/${id}/lock`, {
+      apiFetch<{ id: number; status: string }>(`${BASE}/journal/${id}/lock`, {
         method: 'POST',
         body: '{}',
       }),
@@ -287,15 +295,19 @@ export function useLockJournalEntry() {
   });
 }
 
-/** Storno naloga — POST /gl/journal/:id/reverse. */
+/**
+ * Storno naloga — POST /gl/journal/:id/reverse. Kreira NOVI kontra-nalog (obrnute
+ * strane) i na izvornom postavlja `reversedByEntryId`. Backend (gl-write.reverse)
+ * vraća sirov `{ stornoEntryId, number, reversedEntryId }`.
+ */
 export function useReverseJournalEntry() {
   const invalidate = useInvalidateGl();
   return useMutation({
     mutationFn: (id: number) =>
-      apiFetch<Envelope<{ stornoEntryId: number; number: string }>>(`${BASE}/journal/${id}/reverse`, {
-        method: 'POST',
-        body: '{}',
-      }),
+      apiFetch<{ stornoEntryId: number; number: string; reversedEntryId: number }>(
+        `${BASE}/journal/${id}/reverse`,
+        { method: 'POST', body: '{}' },
+      ),
     onSuccess: invalidate,
   });
 }

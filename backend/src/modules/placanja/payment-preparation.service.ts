@@ -21,6 +21,7 @@
  */
 
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
@@ -31,7 +32,11 @@ import {
   CreatePaymentOrdersDto,
   CreatePaymentOrderLineInput,
 } from "./dto/create-payment-orders.dto";
-import { computeReferenceNumber } from "./mod97.util";
+import {
+  computeReferenceNumber,
+  digitsOnly,
+  isValidAccountNumber,
+} from "./mod97.util";
 
 const D = Prisma.Decimal;
 const ZERO = new D(0);
@@ -183,6 +188,23 @@ export class PaymentPreparationService {
     }> = [];
 
     const debitModel = dto.referenceModelDebit ?? "99";
+
+    // DobarTR (BigBit `ProveriTkRnPreKreiranjaVirmana`, doc 25 §C): žiro račun dobavljača mora
+    // biti struktura-i-MOD97 validan (banka(3)-partija-KK(2)) PRE upisa naloga — inače ga banka
+    // odbija posle izvoza. Validiramo SAMO kad je račun prisutan (prazan = poseban tok, ne blokira).
+    // Agregiramo sve sporne stavke u jednu poruku (GAP audit: FE markira sve, ne prvu grešku).
+    const badAccounts: string[] = [];
+    for (const line of dto.lines) {
+      const acct = line.supplierAccount?.trim();
+      if (acct && !isValidAccountNumber(acct)) {
+        badAccounts.push(`dobavljač ${line.supplierId}: neispravan žiro račun ${acct}`);
+      }
+    }
+    if (badAccounts.length > 0) {
+      throw new BadRequestException(
+        `Neispravan tekući račun (DobarTR) — nalozi nisu kreirani: ${badAccounts.join("; ")}.`,
+      );
+    }
 
     // Ceo batch je ATOMIČAN (review VISOK): ako bilo koji nalog padne (npr. dedup P2002),
     // cela transakcija se rollback-uje — nema parcijalno kreiranih naloga koji bi pri
@@ -367,10 +389,27 @@ export class PaymentPreparationService {
   private buildCreditReference(
     line: CreatePaymentOrderLineInput,
   ): string | null {
-    const model = line.referenceModelCredit ?? "97";
+    const model = (line.referenceModelCredit ?? "97").trim();
     const base = line.referenceBaseCredit ?? line.documentNumber ?? "";
+    // Nema osnove poziva na broj → legitimno bez PNB (mnoga plaćanja nemaju PNB): ostavi null,
+    // NE blokiraj (doc 25 §C — blokada je samo za neispravan, ne za odsutan poziv na broj).
     if (base.trim() === "") return null;
-    return computeReferenceNumber(model, base);
+    const ref = computeReferenceNumber(model, base);
+    // PNB guard: kad je PNB IZRAČUNAT po MOD97 modelu ("97"), proveri konzistentnost kontrolnog
+    // broja (ISO 7064 MOD 97-10 kao u KBroj97: ceo poziv na broj mod 97 == 1). Ako osnova nije
+    // numerička pa kontrolni broj nije mogao da se doda (ref bez cifara) → tretiraj kao odsutan
+    // PNB (vrati null, ne piši nevalidan poziv na broj). Nekonzistentan izračunat PNB = defekt
+    // podataka → odbij, da ne ode neispravan poziv na broj u banku.
+    if (model === "97") {
+      const digits = digitsOnly(ref);
+      if (digits === "") return null;
+      if (BigInt(digits) % 97n !== 1n) {
+        throw new BadRequestException(
+          `Poziv na broj u korist (${ref}) za dobavljača ${line.supplierId} nije MOD97-konzistentan — proverite osnovu poziva na broj.`,
+        );
+      }
+    }
+    return ref;
   }
 
   private async transition(

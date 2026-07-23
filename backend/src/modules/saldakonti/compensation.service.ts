@@ -8,14 +8,15 @@
  *     (potraživanja + obaveze) za partnera i predloži prebijanje do min(Σ obe
  *     strane). Vraća predlog stavki (ne upisuje ništa).
  *   create(dto) — kreira CompensationOrder + linije; validira bilateralni bilans.
- *     Ako je dto.post=true, knjiži preko PostingEngine (KMP nalog) — v. TODO hook.
+ *     Ako je dto.post=true, odmah knjiži preko PostingEngine (KMP nalog).
  *   validateBalanced(lines) — bilateralno Σ receivable == Σ payable.
  *
  * KNJIŽENJE: kompenzacioni nalog vrste KMP ide preko PostingEngineService.
- * Postojeći PostingEngine ima samo `postFromStockDocument` (robni izvor);
- * knjiženje kompenzacije (proizvoljne GK linije) traži novi ulaz koji taj
- * servis (tuđi modul — ne diramo ga) još ne izlaže. Zato je ovde jasno
- * definisan TODO hook sa potpisom koji integrator treba da poveže.
+ * `postManualEntry` (generički ručni nalog GK) knjiži proizvoljne dug/pot linije;
+ * kompenzaciona protivstavka nosi konto+komitent+broj dokumenta reprezentativne
+ * otvorene stavke pa pada u ISTU open-items grupu (GROUP BY konto+komitent+broj)
+ * i time umanjuje prikazani saldo. Pun offset zatvara celu grupu (reconciledAt),
+ * delimičan je ostavlja otvorenu sa ostatkom (v. postCompensation).
  */
 
 import {
@@ -180,28 +181,26 @@ export class CompensationService {
     };
   }
 
-  // ── knjiženje (TODO hook) ───────────────────────────────────────────────────
+  // ── knjiženje (KMP nalog) ───────────────────────────────────────────────────
 
   /**
-   * TODO(integrator): proknjiži kompenzaciju kao GK nalog vrste KMP i zatvori
-   * uparene otvorene stavke.
+   * Proknjiži kompenzaciju kao GK nalog vrste KMP i zatvori uparene otvorene
+   * stavke. Zove se UNUTAR `create` transakcije (prima `tx`).
    *
-   * PostingEngineService (tuđi modul, ne diramo) trenutno izlaže samo
-   * `postFromStockDocument(docId)` — knjiženje iz robnog dokumenta. Kompenzacija
-   * traži knjiženje proizvoljnih GK linija (dug: obaveza-konto, pot:
-   * potraživanje-konto po partneru), što taj servis još ne nudi. Kad dobije
-   * generički ulaz (npr. `postManualEntry(lines, meta)`), ovde:
+   * Za svaku liniju naloga reprezentativna otvorena stavka (`ledgerEntryId`) daje
+   * konto + komitent + broj dokumenta. Protivstavka (dug za payable, pot za
+   * receivable) nosi te iste ključeve pa pada u ISTU open-items grupu
+   * (GROUP BY konto+komitent+broj) i time umanjuje prikazani saldo grupe.
    *
-   *   1) sastavi LedgerLineDraft[] iz CompensationOrderLine (dug/pot po strani);
-   *   2) pozovi PostingEngine da napravi JournalEntry(vrsta=KMP, status posted);
-   *   3) ReconciliationService.manualReconcile(entryIds) nad uparenim redovima
-   *      + poveži writeOff/residual ako postoji;
-   *   4) postavi CompensationOrder.status = 'POSTED'.
-   *
-   * Do tada `post=true` samo označava nameru i NE knjiži (ostaje DRAFT), da se
-   * ne kreira nekonzistentno stanje. Potpis koji integrator treba da poveže:
-   *
-   *   postCompensation(tx, compensationId: number, partnerId: number): Promise<void>
+   * Zatvaranje ide PO LINIJI, prema pokriću otvorenog salda GRUPE (svi članovi,
+   * ne samo reprezentativna stavka — open-items grupiše po dokumentu):
+   *   • PUN offset (line.amount ≥ |Σ dug−pot| grupe): reconciledAt na SVE članove
+   *     grupe + na KMP protivstavku tog dokumenta → grupa potpuno zatvorena
+   *     (nestaje iz saldakonta, aginga i kamate).
+   *   • DELIMIČAN offset: NE zatvara se niko — protivstavka u istoj grupi već
+   *     umanjuje saldo, a stavka ostaje otvorena sa ostatkom.
+   * (Staro ponašanje je bezuslovno zatvaralo celu reprezentativnu stavku i pri
+   * delimičnom prebijanju → ostatak salda bi nestao; review VISOK/SREDNJI.)
    */
   private async postCompensation(
     tx: Prisma.TransactionClient,
@@ -216,28 +215,45 @@ export class CompensationService {
     // Kompenzacioni nalog (vrsta KMP): prebijamo potraživanje protiv obaveze.
     // receivable strana (npr. 2040 kupac) se ZATVARA → potražuje (credit);
     // payable strana (npr. 4350 dobavljač) se ZATVARA → duguje (debit).
-    // Za svaku liniju treba konto stavke; čitamo iz uparene ledger stavke.
+    // Iz reprezentativne stavke čitamo konto + komitent + broj dokumenta da
+    // protivstavka padne u ISTU open-items grupu (GROUP BY konto+komitent+broj).
+    interface PostLine {
+      accountCode: string;
+      analyticalCode: number | null;
+      documentNumber: string | null;
+      amount: Prisma.Decimal;
+    }
+    const postLines: PostLine[] = [];
     const glLines: Array<{
       accountCode: string;
-      analyticalCode: number;
+      analyticalCode: number | null;
+      documentNumber: string | null;
       debit: number;
       credit: number;
       description: string;
     }> = [];
     for (const line of order.lines) {
-      let accountCode: string | null = null;
-      if (line.ledgerEntryId != null) {
-        const le = await tx.ledgerEntry.findUnique({
-          where: { id: line.ledgerEntryId },
-          select: { accountCode: true },
-        });
-        accountCode = le?.accountCode ?? null;
-      }
-      if (!accountCode) continue; // grupisane stavke bez per-red ID-a se preskaču
+      if (line.ledgerEntryId == null) continue; // grupisane stavke bez per-red ID-a se preskaču
+      const le = await tx.ledgerEntry.findUnique({
+        where: { id: line.ledgerEntryId },
+        select: {
+          accountCode: true,
+          analyticalCode: true,
+          documentNumber: true,
+        },
+      });
+      if (!le) continue;
       const amount = Number(line.amount);
+      postLines.push({
+        accountCode: le.accountCode,
+        analyticalCode: le.analyticalCode,
+        documentNumber: le.documentNumber,
+        amount: line.amount,
+      });
       glLines.push({
-        accountCode,
-        analyticalCode: partnerId,
+        accountCode: le.accountCode,
+        analyticalCode: le.analyticalCode,
+        documentNumber: le.documentNumber,
         debit: line.side === "payable" ? amount : 0,
         credit: line.side === "receivable" ? amount : 0,
         description: `Kompenzacija ${order.compensationNumber}`,
@@ -253,16 +269,52 @@ export class CompensationService {
       lines: glLines,
     });
 
-    // Zatvori uparene otvorene stavke (reconciledAt) + status POSTED.
-    const entryIds = order.lines
-      .map((l) => l.ledgerEntryId)
-      .filter((id): id is number => id != null);
-    if (entryIds.length > 0) {
-      await tx.ledgerEntry.updateMany({
-        where: { id: { in: entryIds } },
-        data: { reconciledAt: new Date() },
+    // Zatvaranje PO LINIJI: pun offset zatvara celu grupu, delimičan ništa.
+    // Tolerancija pola pare (zaokruženje) da egzaktan pun offset ne promakne.
+    const HALF_CENT = new D("0.005");
+    const now = new Date();
+    for (const pl of postLines) {
+      // Pre-postojeći otvoreni članovi grupe — SVI, ne samo reprezentativna
+      // stavka (open-items grupiše po dokumentu; defekt B). Isključujemo upravo
+      // kreiranu KMP protivstavku (isti journalEntryId) da openBalanceAbs ostane
+      // saldo PRE prebijanja — inače bi se pun/delimičan pogrešno klasifikovao.
+      const members = await tx.ledgerEntry.findMany({
+        where: {
+          accountCode: pl.accountCode,
+          analyticalCode: pl.analyticalCode,
+          documentNumber: pl.documentNumber,
+          reconciledAt: null,
+          journalEntryId: { not: posted.journalEntryId },
+        },
+        select: { id: true, debit: true, credit: true },
       });
+      let bal = new D(0);
+      for (const m of members) bal = bal.add(m.debit).sub(m.credit);
+      const openBalanceAbs = bal.abs();
+
+      // Pun offset: prebijeni iznos pokriva ceo otvoreni saldo grupe (± pola pare).
+      // Delimičan: NE zatvaraj ništa — protivstavka u istoj grupi već umanjuje
+      // saldo, pa stavka ostaje otvorena sa ostatkom (defekt A).
+      if (pl.amount.greaterThanOrEqualTo(openBalanceAbs.sub(HALF_CENT))) {
+        if (members.length > 0) {
+          await tx.ledgerEntry.updateMany({
+            where: { id: { in: members.map((m) => m.id) } },
+            data: { reconciledAt: now },
+          });
+        }
+        // Zatvori i KMP protivstavku tog dokumenta (aging/kamata je ne vide više).
+        await tx.ledgerEntry.updateMany({
+          where: {
+            journalEntryId: posted.journalEntryId,
+            accountCode: pl.accountCode,
+            analyticalCode: pl.analyticalCode,
+            documentNumber: pl.documentNumber,
+          },
+          data: { reconciledAt: now },
+        });
+      }
     }
+
     await tx.compensationOrder.update({
       where: { id: compensationId },
       data: { status: "POSTED", journalEntryId: posted.journalEntryId },
@@ -294,7 +346,11 @@ export class CompensationService {
       const offset = open.lessThan(remaining) ? open : remaining;
       remaining = remaining.sub(offset);
       out.push({
-        ledgerEntryId: null, // grupisano po dokumentu; per-red ID nije jednoznačan
+        // Reprezentativna stavka grupe (svi članovi dele konto+komitent+broj).
+        // postCompensation iz nje čita konto+komitent+broj: protivstavka pada u
+        // istu open-items grupu, a pun offset zatvara SVE članove grupe (ne samo
+        // ovaj ID). Bez ID-a (null) linija se preskače (nema šta da se knjiži).
+        ledgerEntryId: it.ledgerEntryIds[0] ?? null,
         accountCode: it.accountCode,
         documentNumber: it.documentNumber,
         side,

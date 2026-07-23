@@ -25,11 +25,17 @@
  *   (AlreadyPostedException). draft → obriši i re-post (cascade briše LedgerEntry).
  */
 
-import { Injectable } from "@nestjs/common";
+import { Injectable, UnprocessableEntityException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { evaluateExpression } from "./expression-parser";
 import { prismaDecimalArith } from "./prisma-decimal-arith";
+import {
+  VAT_RATE_BY_CODE,
+  RATE_VISA,
+  RATE_NIZA,
+  RATE_POLJO,
+} from "./vat-rates";
 
 const D = Prisma.Decimal;
 const ZERO = new D(0);
@@ -112,24 +118,19 @@ export class AlreadyPostedException extends Error {
 // Sve su AGREGATI po dokumentu (Σ preko stavki), ne per-item. Slova koja šema
 // ne referiše ostaju 0 (parser baca SAMO ako ih izraz referiše — punimo ceo A–Z).
 
-/**
- * Stope PDV po `goodsTaxRateCode` (doc 43 §4 R_Tarife: Osnovna=20%/VISA,
- * Zeleznica=10%/NIZA, Posebna=8%/POLJO). Legacy default kod stavke je "3".
- * Efektivna stopa = zbir kolona; ovde sažeto po kodu → 0.20 / 0.10 / 0.08.
- * Nepoznat kod → stopa 0 (PDV linija za taj artikal se ne knjiži) — doc 43 §5
- * disciplina: bez izmišljenih brojki.
- */
-const VAT_RATE_BY_CODE: Readonly<Record<string, Prisma.Decimal>> = {
-  "3": new D("0.20"), // Osnovna / VISA (20%) — default stavke (doc 43 §4)
-  "1": new D("0.20"), // Osnovna (alt kod)
-  "2": new D("0.10"), // Zeleznica / NIZA (10%)
-  "4": new D("0.08"), // Posebna / POLJO (8%)
-  "0": ZERO, // bez PDV (izvoz/oslobođeno)
-};
+// Stope PDV po `goodsTaxRateCode` (VAT_RATE_BY_CODE, RATE_VISA/NIZA/POLJO) izdvojene u
+// `./vat-rates` (C8) — jedan izvor deljen sa robnom kalkulacijom (CalculationService.taxRateOf).
 
-const RATE_VISA = new D("0.20");
-const RATE_NIZA = new D("0.10");
-const RATE_POLJO = new D("0.08");
+// NIV (nivelacija zaliha) knjiženje — kontni par za revalorizaciju zatečenog stanja (doc 39 §F).
+// NIV DocumentType NEMA `postingTemplate` (nula-šema) pa se knjiži ručno preko `postManualEntry`:
+//   valueAdjustment > 0 (nova > stara → vrednost zaliha raste): 1320 Duguje, 1329 Potražuje.
+//   valueAdjustment < 0 (vrednost pada): obrnuto.
+// `NIV_STOCK_ACCOUNT` = konto zaliha robe (isti kao UFROB/IFR/UVOZ šeme, doc 39 §E).
+// `NIV_REVALUATION_ACCOUNT` = razlika u ceni robe (protivstavka revalorizacije).
+// ⏳ Protivstavka (1329) je predlog — Nesa da potvrdi konto pre produkcije (kao izvod bankAccountCode).
+// Postojanje oba konta se proverava pre upisa (jasna 422 umesto opaque FK 500).
+const NIV_STOCK_ACCOUNT = "1320";
+const NIV_REVALUATION_ACCOUNT = "1329";
 
 type DocVarMap = Record<string, Prisma.Decimal>;
 
@@ -184,6 +185,8 @@ export class PostingEngineService {
       companyId?: number;
       description?: string;
       createdByUserId?: number;
+      /** Traceback ka izvornom robnom dokumentu (idempotencija za NIV/robno). */
+      sourceGoodsDocId?: number;
       lines: Array<{
         accountCode: string;
         analyticalCode?: number | null;
@@ -227,6 +230,7 @@ export class PostingEngineService {
         documentDate: params.documentDate,
         postingDate: params.documentDate,
         status: "posted",
+        sourceGoodsDocId: params.sourceGoodsDocId ?? null,
         createdByUserId: params.createdByUserId ?? null,
         lines: {
           create: params.lines.map((l) => ({
@@ -238,6 +242,7 @@ export class PostingEngineService {
             documentNumber: l.documentNumber ?? null,
             dueDate: l.dueDate ?? null,
             currency: l.currency ?? null,
+            sourceGoodsDocId: params.sourceGoodsDocId ?? null,
           })),
         },
       },
@@ -255,23 +260,21 @@ export class PostingEngineService {
    */
   async postFromStockDocument(docId: number): Promise<LedgerLineDraft[]> {
     return this.prisma.$transaction(async (tx) => {
-      // 1) Učitaj robni dokument + stavke + tip dokumenta
+      // TOCTOU: idempotencija je read-then-write (findFirst po sourceGoodsDocId
+      // bez unique constrainta — parcijalni unique se ne može izraziti Prismom,
+      // schema komentar). Dve paralelne tx bi obe videle null → dupli posted nalog
+      // (za NIV = dupla revalorizacija). Serijalizuj po dokumentu xact advisory
+      // lock-om (namespace 4001 = „GL posting po robnom dokumentu"); druga tx čeka
+      // pa u findFirst vidi postojeći nalog. Lock se pušta na kraju tx automatski.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(4001, ${docId})`;
+
+      // 1) Učitaj robni dokument.
       const doc = await tx.stockDocument.findUniqueOrThrow({
         where: { id: docId },
       });
-      const items = await tx.stockDocumentItem.findMany({
-        where: { documentId: docId },
-      });
-      const docType = await tx.documentType.findFirstOrThrow({
-        where: { code: doc.documentTypeCode },
-      });
 
-      // schemeId = postingTemplate (=legacy IDSeme). 0/null → nije za auto-knjiženje.
-      const schemeId = docType.postingTemplate ?? 0;
-      if (schemeId === 0) throw new NoPostingSchemeException(docId);
-
-      // 2) IDEMPOTENCIJA — status „proknjižen" je IZVEDEN (doc 18 §2.2 t.5).
-      //    sourceGoodsDocId je traceback-kolona ka izvornom robnom dokumentu.
+      // 2) IDEMPOTENCIJA (zajednička za robni i NIV put) — status „proknjižen" je IZVEDEN
+      //    (doc 18 §2.2 t.5). sourceGoodsDocId je traceback ka izvornom robnom dokumentu.
       const existing = await tx.journalEntry.findFirst({
         where: { sourceGoodsDocId: docId },
       });
@@ -283,7 +286,25 @@ export class PostingEngineService {
         await tx.journalEntry.delete({ where: { id: existing.id } });
       }
 
-      // 3) Učitaj šemu (AccountingScheme + linije). id = postingTemplate.
+      // NIV (nivelacija) — nema `stock_document_items`; razlika se knjiži iz `stockLevelingItems`
+      // (doc 39 §F). Bez ovog grananja NIV bi dobio nula-nalog (defekt B2, C9).
+      if (doc.kind === "NIV") {
+        return this.postNivLeveling(tx, doc);
+      }
+
+      // 3) Robni put — učitaj stavke + tip dokumenta + šemu.
+      const items = await tx.stockDocumentItem.findMany({
+        where: { documentId: docId },
+      });
+      const docType = await tx.documentType.findFirstOrThrow({
+        where: { code: doc.documentTypeCode },
+      });
+
+      // schemeId = postingTemplate (=legacy IDSeme). 0/null → nije za auto-knjiženje.
+      const schemeId = docType.postingTemplate ?? 0;
+      if (schemeId === 0) throw new NoPostingSchemeException(docId);
+
+      // Učitaj šemu (AccountingScheme + linije). id = postingTemplate.
       const scheme = await tx.accountingScheme.findUniqueOrThrow({
         where: { id: schemeId },
         include: { lines: { orderBy: { lineNo: "asc" } } },
@@ -382,6 +403,120 @@ export class PostingEngineService {
 
       return grouped;
     });
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // NIV (nivelacija) knjiženje — iz stockLevelingItems, ne stock_document_items.
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Proknjiži NIV (nivelacioni) dokument u GK (doc 39 §F). NIV nema `stock_document_items`
+   * (revalorizuje zatečeno stanje, ne kreira kretanje) — izvor iznosa je `StockLevelingItem`:
+   *   `valueAdjustment = quantityRevalued × (newWholesalePrice − oldWholesalePrice)`.
+   *
+   * NIV `DocumentType` nema `postingTemplate` (nula-šema) → knjiži se ručno preko
+   * `postManualEntry` sa kontnim parom zaliha/revalorizacija (v. `NIV_STOCK_ACCOUNT` /
+   * `NIV_REVALUATION_ACCOUNT`). Zbir po predznaku daje jednu balansiranu razliku:
+   *   Σ valueAdjustment > 0 → 1320 Duguje / 1329 Potražuje (vrednost zaliha raste),
+   *   Σ valueAdjustment < 0 → obrnuto.
+   *
+   * Nalog je odmah `posted` (kao izvod/blagajna) — razlika MORA da stigne u karticu konta/bilans
+   * (ne ostaje `draft` nevidljiv, review VISOK). Dokument prelazi u POSTED, stavke `isPosted=true`.
+   * Idempotencija je već rešena u pozivaocu (guard po `sourceGoodsDocId`).
+   */
+  private async postNivLeveling(
+    tx: Prisma.TransactionClient,
+    doc: {
+      id: number;
+      companyId: number;
+      documentDate: Date;
+      createdByUserId: number | null;
+    },
+  ): Promise<LedgerLineDraft[]> {
+    const levelingItems = await tx.stockLevelingItem.findMany({
+      where: { documentId: doc.id },
+    });
+    if (levelingItems.length === 0) {
+      throw new UnprocessableEntityException(
+        `NIV dokument ${doc.id} nema nivelacionih stavki — nema šta da se knjiži.`,
+      );
+    }
+
+    // Σ valueAdjustment po predznaku (revalorizacija zatečenog stanja, doc 39 §F).
+    let net = ZERO;
+    for (const li of levelingItems) net = net.add(li.valueAdjustment);
+    if (net.isZero()) {
+      throw new UnprocessableEntityException(
+        `NIV dokument ${doc.id}: zbir nivelacionih razlika je 0 — nema šta da se knjiži.`,
+      );
+    }
+
+    // Provera da konta postoje u kontnom planu (jasna 422 umesto opaque FK 500 — izvod obrazac).
+    const accountCodes = [NIV_STOCK_ACCOUNT, NIV_REVALUATION_ACCOUNT];
+    const present = await tx.account.findMany({
+      where: { code: { in: accountCodes } },
+      select: { code: true },
+    });
+    const presentCodes = new Set(present.map((a) => a.code));
+    const missing = accountCodes.filter((c) => !presentCodes.has(c));
+    if (missing.length) {
+      throw new UnprocessableEntityException(
+        `Konta za NIV knjiženje nisu u kontnom planu: ${missing.join(", ")}. ` +
+          `Definiši konta pre knjiženja nivelacije.`,
+      );
+    }
+
+    // Balansiran par (apsolutni iznos na odgovarajućoj strani po predznaku razlike).
+    const abs = net.abs();
+    const stockDebit = net.isPositive() ? abs : ZERO;
+    const stockCredit = net.isPositive() ? ZERO : abs;
+    const revalDebit = net.isPositive() ? ZERO : abs;
+    const revalCredit = net.isPositive() ? abs : ZERO;
+
+    const draftLines: LedgerLineDraft[] = [
+      {
+        accountCode: NIV_STOCK_ACCOUNT,
+        analyticalCode: null,
+        debit: stockDebit,
+        credit: stockCredit,
+        description: "Nivelacija — revalorizacija zaliha",
+      },
+      {
+        accountCode: NIV_REVALUATION_ACCOUNT,
+        analyticalCode: null,
+        debit: revalDebit,
+        credit: revalCredit,
+        description: "Nivelacija — razlika u ceni",
+      },
+    ];
+
+    const posted = await this.postManualEntry(tx, {
+      orderType: "NIV",
+      documentDate: doc.documentDate,
+      companyId: doc.companyId,
+      createdByUserId: doc.createdByUserId ?? undefined,
+      sourceGoodsDocId: doc.id,
+      description: `Nivelacija zaliha (NIV dok. ${doc.id})`,
+      lines: draftLines.map((l) => ({
+        accountCode: l.accountCode,
+        analyticalCode: l.analyticalCode,
+        debit: l.debit.toFixed(4),
+        credit: l.credit.toFixed(4),
+        description: l.description ?? undefined,
+      })),
+    });
+
+    // Nalog → dokument + status POSTED + isPosted na stavkama (razlika stigla u GK).
+    await tx.stockDocument.update({
+      where: { id: doc.id },
+      data: { journalEntryId: posted.journalEntryId, status: "POSTED" },
+    });
+    await tx.stockLevelingItem.updateMany({
+      where: { documentId: doc.id },
+      data: { isPosted: true },
+    });
+
+    return draftLines;
   }
 
   // ───────────────────────────────────────────────────────────────────────────

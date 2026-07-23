@@ -2,12 +2,12 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowLeft, Printer } from 'lucide-react';
+import { ArrowLeft, Printer, Send } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
-import { StatusBadge } from '@/components/ui-kit/status-badge';
+import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Button } from '@/components/ui-kit/button';
 import { Select } from '@/components/ui-kit/select';
@@ -24,14 +24,22 @@ import {
   type InvoiceDetail,
   type InvoiceItem,
 } from '@/api/sales';
+import {
+  useEnqueue,
+  useSefOutboxForInvoice,
+  SEF_STATUS,
+  type SefStatus,
+} from '@/api/sef';
 import { salesStatusMeta, DOCUMENT_TYPE_LABEL } from '../page';
 
 /**
  * Fakturisanje — detalj računa (DESIGN_SYSTEM §4 obrazac „Master–detalj"): zaglavlje
  * (label–vrednost) + tabela stavki sa cenama i PDV-om. Status-uslovljena dugmad:
- * „Napravi račun iz predračuna" (from-proforma; DRAFT predračun PON/PROF) i „Knjiži"
- * (post; DRAFT račun). Data isključivo kroz `@/api/sales` hook-ove; sve od kit
- * komponenti i tokena.
+ * „Napravi račun iz predračuna" (from-proforma; DRAFT predračun PON/PROF), „Knjiži"
+ * (post; DRAFT račun) i „Pošalji na SEF" (enqueue; knjižena domaća faktura koja još
+ * nije u SEF redu). Postojeći SEF status fakture (outbox) se prikazuje kao badge sa
+ * skokom na /sef. Data isključivo kroz `@/api/sales` i `@/api/sef` hook-ove; sve od
+ * kit komponenti i tokena.
  *
  * TASTATURA: Ctrl+S = primarna akcija tekućeg statusa (prepiši/knjiži), Esc = nazad.
  */
@@ -51,6 +59,31 @@ const TARGET_TYPE_OPTIONS: { value: string; label: string }[] = [
   { value: SALES_DOCUMENT_TYPE.IZVGP, label: 'Izvoz — gotov proizvod (IZVGP)' },
   { value: SALES_DOCUMENT_TYPE.IZVUS, label: 'Izvoz — usluga (IZVUS)' },
 ];
+
+/** SEF outbox status → StatusBadge meta (kanonska mapa §7, SEF domen — 1:1 sa /sef). */
+function sefStatusMeta(status: SefStatus): { tone: Tone; label: string } {
+  switch (status) {
+    case SEF_STATUS.PENDING:
+      return { tone: 'warn', label: 'U redu' };
+    case SEF_STATUS.SENT:
+      return { tone: 'info', label: 'Poslato' };
+    case SEF_STATUS.DELIVERED:
+      return { tone: 'success', label: 'Isporučeno' };
+    case SEF_STATUS.REJECTED:
+      return { tone: 'danger', label: 'Odbijeno' };
+    case SEF_STATUS.CANCELLED:
+      return { tone: 'neutral', label: 'Stornirano' };
+    default:
+      return { tone: 'neutral', label: status };
+  }
+}
+
+/** SEF statusi u kojima je faktura već „u toku" — ne nudi ponovni enqueue (izbegni duplikat). */
+const IN_FLIGHT_SEF = new Set<SefStatus>([
+  SEF_STATUS.PENDING,
+  SEF_STATUS.SENT,
+  SEF_STATUS.DELIVERED,
+]);
 
 const itemColumns: Column<InvoiceItem>[] = [
   {
@@ -133,12 +166,19 @@ export default function FakturisanjeDetailPage() {
   const fromProforma = useCreateInvoiceFromProforma();
   const post = usePostInvoice();
   const pdf = useInvoicePdf();
+  const enqueue = useEnqueue();
 
   const canWrite = can(PERMISSIONS.SALES_WRITE);
   const canPost = can(PERMISSIONS.SALES_POST);
+  const canSefSend = can(PERMISSIONS.SEF_SEND);
+  const canSefRead = can(PERMISSIONS.SEF_READ);
 
   // Ciljna vrsta prepisa (predračun → račun). Default IFR (roba u zemlji).
   const [targetType, setTargetType] = useState<string>(SALES_DOCUMENT_TYPE.IFR);
+  // SEF feedback (enqueue uspeh/greška) — nezavisan od carry-over/knjiži bannera.
+  const [sefBanner, setSefBanner] = useState<{ tone: 'success' | 'danger'; msg: string } | null>(
+    null,
+  );
 
   const isProformaDraft =
     !!doc &&
@@ -148,6 +188,21 @@ export default function FakturisanjeDetailPage() {
     !!doc &&
     doc.status === SALES_STATUS.DRAFT &&
     !PROFORMA_TYPES.has(doc.documentType);
+
+  // SEF izlaz (backend enqueue guard): samo knjižena (level 0), domaća (ne izvoz),
+  // ni draft ni stornirana faktura sme na SEF.
+  const isSefEligible =
+    !!doc &&
+    doc.level === 0 &&
+    !doc.isExport &&
+    doc.status !== SALES_STATUS.DRAFT &&
+    doc.status !== SALES_STATUS.CANCELLED;
+
+  // Postojeći outbox red(ovi) za ovu fakturu — status prikaz + guard protiv duplog enqueue-a.
+  const sefOutbox = useSefOutboxForInvoice(validId, canSefRead && isSefEligible);
+  const sefRows = sefOutbox.data?.data ?? [];
+  const latestSefRow = sefRows[0] ?? null;
+  const activeSefRow = sefRows.find((r) => IN_FLIGHT_SEF.has(r.status)) ?? null;
 
   const goBack = useCallback(() => router.push('/fakturisanje'), [router]);
 
@@ -163,6 +218,23 @@ export default function FakturisanjeDetailPage() {
     if (!doc || !canPost || !isPostableInvoice) return;
     post.mutate(doc.id);
   }, [doc, canPost, isPostableInvoice, post]);
+
+  const doEnqueue = useCallback(() => {
+    if (!doc || !canSefSend || !isSefEligible) return;
+    setSefBanner(null);
+    enqueue.mutate(doc.id, {
+      onSuccess: () =>
+        setSefBanner({
+          tone: 'success',
+          msg: 'Faktura je stavljena u SEF red (status U redu). Slanje se pokreće na stranici SEF e-fakture.',
+        }),
+      onError: (e) =>
+        setSefBanner({
+          tone: 'danger',
+          msg: e instanceof Error ? e.message : 'Slanje na SEF nije uspelo — pokušaj ponovo.',
+        }),
+    });
+  }, [doc, canSefSend, isSefEligible, enqueue]);
 
   // Ctrl+S = primarna akcija zavisna od statusa; Esc = nazad na listu.
   useEffect(() => {
@@ -239,6 +311,32 @@ export default function FakturisanjeDetailPage() {
                 Knjiži
               </Button>
             )}
+
+            {doc && isSefEligible && canSefRead && latestSefRow && (
+              <div className="flex items-center gap-2">
+                <span className="text-2xs font-semibold uppercase tracking-[0.08em] text-ink-secondary">
+                  SEF
+                </span>
+                <StatusBadge
+                  tone={sefStatusMeta(latestSefRow.status).tone}
+                  label={sefStatusMeta(latestSefRow.status).label}
+                />
+                <Button
+                  variant="ghost"
+                  onClick={() => router.push('/sef')}
+                  title="Otvori SEF e-fakture"
+                >
+                  Prikaži na SEF-u
+                </Button>
+              </div>
+            )}
+
+            {doc && isSefEligible && canSefSend && !activeSefRow && !sefOutbox.isLoading && (
+              <Button onClick={doEnqueue} loading={enqueue.isPending}>
+                <Send className="h-4 w-4" aria-hidden />
+                Pošalji na SEF
+              </Button>
+            )}
           </div>
         }
       />
@@ -252,6 +350,17 @@ export default function FakturisanjeDetailPage() {
         {actionError && (
           <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">
             {actionError}
+          </div>
+        )}
+        {sefBanner && (
+          <div
+            className={
+              sefBanner.tone === 'success'
+                ? 'rounded-panel border border-status-success/40 bg-status-success-bg px-4 py-3 text-sm text-status-success'
+                : 'rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger'
+            }
+          >
+            {sefBanner.msg}
           </div>
         )}
 
