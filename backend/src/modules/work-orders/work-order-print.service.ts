@@ -39,7 +39,7 @@ export class WorkOrderPrintService {
     if (!wo) throw new NotFoundException(`Radni nalog ${id} ne postoji.`);
 
     // Batch-resolve imena (bez required-relation JOIN-a — orphan FK pravilo).
-    const [customer, tehnolog, opCatalog, handover] = await Promise.all([
+    const [customer, tehnolog, project, opCatalog, handover] = await Promise.all([
       wo.externalCustomerId > 0
         ? this.prisma.customer.findUnique({
             where: { id: wo.externalCustomerId },
@@ -50,6 +50,16 @@ export class WorkOrderPrintService {
         ? this.prisma.worker.findUnique({
             where: { id: wo.workerId },
             select: SAFE_WORKER_SELECT,
+          })
+        : Promise.resolve(null),
+      // „Predmet" na dokumentu = BROJ predmeta (projects.project_number, npr. 9400 —
+      // isti prefiks kao RN broj), a NE interni projects.id (bio je bug 006/26: RN
+      // 9400/7/30 je prikazivao 10354). Orphan/legacy (projectId=0 ili obrisan
+      // predmet) → null → prazno na dokumentu, nikad ID.
+      wo.projectId > 0
+        ? this.prisma.project.findUnique({
+            where: { id: wo.projectId },
+            select: { projectNumber: true },
           })
         : Promise.resolve(null),
       this.resolveWorkCenterNames(wo.operations.map((o) => o.workCenterCode)),
@@ -87,6 +97,7 @@ export class WorkOrderPrintService {
       wo,
       customerName: customer?.name ?? "",
       tehnologName: tehnolog?.fullName ?? tehnolog?.username ?? "",
+      projectNumber: project?.projectNumber ?? "",
       opCatalog,
       withBarcode,
       orderBarcodeSvg,
@@ -136,6 +147,8 @@ export class WorkOrderPrintService {
     };
     customerName: string;
     tehnologName: string;
+    /** Broj predmeta (projects.project_number) — prazno ako predmet ne postoji. */
+    projectNumber: string;
     opCatalog: Map<string, string>;
     withBarcode: boolean;
     orderBarcodeSvg: string | null;
@@ -145,6 +158,7 @@ export class WorkOrderPrintService {
       wo,
       customerName,
       tehnologName,
+      projectNumber,
       opCatalog,
       withBarcode,
       orderBarcodeSvg,
@@ -198,7 +212,7 @@ export class WorkOrderPrintService {
       table: {
         widths: ["auto", "*", "auto", "*"],
         body: [
-          infoRow("Komitent", customerName, "Predmet", String(wo.projectId)),
+          infoRow("Komitent", customerName, "Predmet", projectNumber),
           infoRow("Crtež", wo.drawingNumber, "Naziv dela", wo.partName),
           infoRow("Materijal", wo.material, "Dimenzija", wo.materialDimension),
           infoRow(
