@@ -918,10 +918,17 @@ export class SastanciService {
    *  reda u `sastanak_ucesnici` za planiran sastanak auto-okida sy15 trigger
    *  `sast_trg_ucesnik_invite` → 'meeting_invite' mejl (tema/termin/mesto). Isti
    *  put kao dodavanje učesnika (addUcesnik/bulk); enqueue radi DEFINER trigger,
-   *  BE ne dira notification_log (B10). Atomično: pad unosa učesnika vrati i sastanak. */
+   *  BE ne dira notification_log (B10). Atomično: pad unosa učesnika vrati i sastanak.
+   *  Uvek `pozvan=true, prisutan=false` (klijent NE šalje te flagove — InviteUcesnikDto).
+   *  Kad triger stварно pošalje (status='planiran' + bar 1 učesnik) stampujemo
+   *  `pozivnicePoslateAt=now()` da detalj prikaže „Pošalji ponovo", a ne „Zakaži
+   *  (pozivnice)" — inače bi ručni klik napravio DRUGI (dupli) talas mejlova. */
   async createSastanak(email: string, dto: CreateSastanakDto) {
     this.assertNotLockViaStatus(dto.status);
     const ucesnici = this.dedupeUcesnici(dto.ucesnici);
+    const status = dto.status ?? "planiran";
+    // Triger šalje pozivnice samo za planiran sastanak — samo tada stampuj.
+    const invitesSent = ucesnici.length > 0 && status === "planiran";
     return this.runIdem(
       email,
       dto.clientEventId,
@@ -939,22 +946,22 @@ export class SastanciService {
             vodioLabel: dto.vodioLabel ?? null,
             zapisnicarEmail: dto.zapisnicarEmail ?? null,
             zapisnicarLabel: dto.zapisnicarLabel ?? null,
-            status: dto.status ?? "planiran",
+            status,
             napomena: dto.napomena ?? null,
             createdByEmail: email,
+            pozivnicePoslateAt: invitesSent ? new Date() : null,
           },
         });
         if (ucesnici.length) {
-          // pozvan default true, prisutan default false (paritet addUcesnik/prenos:
-          // pozvan = kandidat za mejl, prisutan tek na „▶ Počni"). Trigger šalje mejl.
+          // Uvek pozvan=true (kandidat za pozivnicu i otkazni mejl), prisutan=false
+          // (prisustvo tek na „▶ Počni"). Umetanje reda okida invite triger.
           await tx.sastanakUcesnik.createMany({
             data: ucesnici.map((u) => ({
               sastanakId: row.id,
               email: u.email.toLowerCase().trim(),
               label: u.label ?? null,
-              pozvan: u.pozvan !== false,
-              prisutan: u.prisutan === true,
-              napomena: u.napomena ?? null,
+              pozvan: true,
+              prisutan: false,
             })),
           });
         }

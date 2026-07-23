@@ -53,20 +53,34 @@ export function CreateSastanakModal({
   const [napomena, setNapomena] = useState('');
   const [prenos, setPrenos] = useState(defaultPrenos);
   const [ucesnici, setUcesnici] = useState<PickedUser[]>([]);
+  const [prenosReplacedNote, setPrenosReplacedNote] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // „Prenos" (sedmični) sam kopira učesnike sa prethodnog sastanka → ručni izbor
   // se tada sakriva da bulk-replace prenosa ne pregazi ručno izabrane (i obrnuto).
   const prenosActive = tip === 'sedmicni' && prenos;
 
+  // Uključivanje prenosa NAKON ručnog izbora: ne odbacuj tiho — vidljivo očisti
+  // čipove i objasni da prenos preuzima učesnike sa prethodnog sastanka.
+  function togglePrenos(checked: boolean) {
+    setPrenos(checked);
+    if (checked && ucesnici.length > 0) {
+      setUcesnici([]);
+      setPrenosReplacedNote(true);
+    } else if (!checked) {
+      setPrenosReplacedNote(false);
+    }
+  }
+
   async function submit() {
     setError(null);
     if (!naslov.trim()) return setError('Naslov je obavezan.');
     if (!datum) return setError('Datum je obavezan.');
     // Poziv iz „prve forme" (005/26): šalje se samo kad prenos NIJE aktivan.
+    // BE uvek upiše pozvan=true/prisutan=false — tip nosi samo email+label.
     const pozvani =
       !prenosActive && ucesnici.length
-        ? ucesnici.map((u) => ({ email: u.email, label: u.label, pozvan: true, prisutan: false }))
+        ? ucesnici.map((u) => ({ email: u.email, label: u.label }))
         : undefined;
     try {
       const res = await create.mutateAsync({
@@ -163,6 +177,7 @@ export function CreateSastanakModal({
         {prenosActive ? (
           <p className="text-xs text-ink-secondary">
             Učesnici se prenose sa poslednjeg sedmičnog sastanka.
+            {prenosReplacedNote && ' Prethodno izabrani učesnici su uklonjeni jer ih prenos zamenjuje.'}
           </p>
         ) : (
           <FormField label="Pozovi učesnike">
@@ -176,7 +191,7 @@ export function CreateSastanakModal({
         )}
         {tip === 'sedmicni' && (
           <label className="flex items-center gap-2 text-sm text-ink">
-            <input type="checkbox" checked={prenos} onChange={(e) => setPrenos(e.target.checked)} />
+            <input type="checkbox" checked={prenos} onChange={(e) => togglePrenos(e.target.checked)} />
             Prenesi otvorene akcije i učesnike sa poslednjeg sastanka
           </label>
         )}

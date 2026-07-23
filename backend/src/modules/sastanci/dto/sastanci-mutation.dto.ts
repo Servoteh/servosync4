@@ -1,8 +1,10 @@
 import { Transform, Type } from "class-transformer";
 import {
+  ArrayMaxSize,
   ArrayMinSize,
   IsArray,
   IsBoolean,
+  IsEmail,
   IsIn,
   IsInt,
   IsISO8601,
@@ -34,6 +36,18 @@ const TIME_RE = /^\d{2}:\d{2}(:\d{2})?$/;
 /** Kao TIME_RE, ali dozvoljava '' = OBRIŠI vreme (service `toDbTime('')` → null).
  *  Samo na PATCH-u termina (S4 „Uredi") — create/šabloni ostaju strogi. */
 const TIME_OR_CLEAR_RE = /^$|^\d{2}:\d{2}(:\d{2})?$/;
+
+/**
+ * Učesnik za poziv iz „prve forme" (zahtev 005/26). NAMERNO samo email+label:
+ * `pozvan`/`prisutan` se NE primaju od klijenta — create uvek upiše pozvan=true,
+ * prisutan=false (poziv = kandidat za otkazni mejl; prisutan tek na „▶ Počni").
+ * (Zamka pozvan=false: triger `sast_trg_ucesnik_invite` NE gleda pozvan i ipak
+ * pošalje pozivnicu, dok otkazni RPC filtrira pozvan=true → asimetrija.)
+ */
+export class InviteUcesnikDto {
+  @IsEmail() @MaxLength(254) email!: string;
+  @IsOptional() @IsString() @MaxLength(200) label?: string;
+}
 
 export class CreateSastanakDto extends IdempotentDto {
   @IsOptional()
@@ -67,13 +81,14 @@ export class CreateSastanakDto extends IdempotentDto {
    * → 'meeting_invite' mejl (tema=naslov / termin=datum+vreme / mesto) svakom
    * učesniku, isporuka postojećim `sast_notify_dispatch` cron → edge-om. Doktrina
    * B10: BE NIKAD ne INSERT-uje u `sastanci_notification_log` — enqueue radi trigger
-   * (isti put kao dodavanje učesnika kroz PUT/POST /:id/ucesnici). `UcesnikInputDto`
-   * je deklarisan niže; `@Type(() => …)` ga razrešava lenjo (bez TDZ). */
+   * (isti put kao dodavanje učesnika kroz PUT/POST /:id/ucesnici). Cap 100 = zaštita
+   * od masovnog mejla i tx timeout-a. */
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(100)
   @ValidateNested({ each: true })
-  @Type(() => UcesnikInputDto)
-  ucesnici?: UcesnikInputDto[];
+  @Type(() => InviteUcesnikDto)
+  ucesnici?: InviteUcesnikDto[];
 }
 
 export class UpdateSastanakDto {
@@ -114,7 +129,7 @@ export class RsvpDto {
 /* ── Učesnici ── */
 
 export class UcesnikInputDto {
-  @IsString() email!: string;
+  @IsEmail() @MaxLength(254) email!: string;
   @IsOptional() @IsString() label?: string;
   @IsOptional() @IsBoolean() prisutan?: boolean;
   @IsOptional() @IsBoolean() pozvan?: boolean;
@@ -123,13 +138,14 @@ export class UcesnikInputDto {
 
 export class BulkUcesniciDto extends IdempotentDto {
   @IsArray()
+  @ArrayMaxSize(100)
   @ValidateNested({ each: true })
   @Type(() => UcesnikInputDto)
   ucesnici!: UcesnikInputDto[];
 }
 
 export class AddUcesnikDto {
-  @IsString() email!: string;
+  @IsEmail() @MaxLength(254) email!: string;
   @IsOptional() @IsString() label?: string;
 }
 

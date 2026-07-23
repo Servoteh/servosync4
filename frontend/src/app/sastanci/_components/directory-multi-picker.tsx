@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type KeyboardEvent } from 'react';
 import { ChevronDown, X } from 'lucide-react';
 import { useUserDirectory, type DirectoryEntry } from '@/api/sastanci';
 import { INPUT_CLS } from './common';
@@ -9,6 +9,9 @@ export interface PickedUser {
   email: string;
   label?: string;
 }
+
+/** Meki email guard za slobodan unos (BE potvrđuje @IsEmail). Traži nešto@nešto.nešto. */
+const EMAIL_RE = /^\S+@\S+\.\S+$/;
 
 /**
  * Više-izbor korisnika iz `get_sastanci_user_directory` (zahtev 005/26 — pozivanje
@@ -50,9 +53,22 @@ export function DirectoryMultiPicker({
 
   function addFree() {
     const t = q.trim().toLowerCase();
-    if (t.includes('@') && !chosen.has(t)) {
+    if (EMAIL_RE.test(t) && !chosen.has(t)) {
       onChange([...value, { email: t, label: t }]);
       setQ('');
+    }
+  }
+
+  // Enter: dodaj ukucani email (slobodan unos) ili prvi predlog iz direktorijuma.
+  // Bez ovoga se na blur oslanjamo, a Safari zna da izgubi unos pri zatvaranju modala.
+  function onKeyDown(e: KeyboardEvent<HTMLInputElement>) {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    const t = q.trim().toLowerCase();
+    if (EMAIL_RE.test(t)) addFree();
+    else if (filtered.length > 0) {
+      const first = filtered[0];
+      add({ email: first.email, label: first.full_name ?? first.email });
     }
   }
 
@@ -92,6 +108,7 @@ export function DirectoryMultiPicker({
               setOpen(true);
             }}
             onFocus={() => setOpen(true)}
+            onKeyDown={onKeyDown}
             onBlur={() => {
               setTimeout(() => setOpen(false), 150);
               addFree();

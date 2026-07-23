@@ -720,9 +720,10 @@ export interface CreateSastanakVars {
   /**
    * Zahtev 005/26 — pozivanje učesnika iz „prve forme". Umetanje reda auto-šalje
    * 'meeting_invite' mejl (tema/termin/mesto) svakom učesniku (sy15 trigger).
-   * Prazno/izostavljeno = sastanak bez poziva.
+   * Prazno/izostavljeno = sastanak bez poziva. BE uvek upiše pozvan=true/prisutan=false
+   * (flagovi se NE šalju), pa tip nosi samo email+label. Max 100 (BE @ArrayMaxSize).
    */
-  ucesnici?: { email: string; label?: string; pozvan?: boolean; prisutan?: boolean }[];
+  ucesnici?: { email: string; label?: string }[];
 }
 export const useCreateSastanak = () =>
   useSastanciMutation<CreateSastanakVars, TxResponse<Sastanak>>((v) => post<Sastanak>('', v));

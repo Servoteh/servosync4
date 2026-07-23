@@ -149,7 +149,7 @@ describe("SastanciService R2 mutacije", () => {
     expect(arg.createdByEmail).toBe("u@servoteh.com");
   });
 
-  it("createSastanak BEZ učesnika: ne dira sastanak_ucesnici (nema poziva)", async () => {
+  it("createSastanak BEZ učesnika: ne dira sastanak_ucesnici + pozivnicePoslateAt=null", async () => {
     const { svc, tx } = makeSvc();
     await svc.createSastanak("u@servoteh.com", {
       clientEventId: CID,
@@ -157,12 +157,15 @@ describe("SastanciService R2 mutacije", () => {
       datum: "2026-07-15",
     });
     expect(tx.sastanakUcesnik.createMany).not.toHaveBeenCalled();
+    // Bez poziva → nema pečata (detalj nudi „Zakaži (pozivnice)", ne „Pošalji ponovo").
+    expect(argData(tx.sastanak.create).pozivnicePoslateAt).toBeNull();
   });
 
   /* Zahtev 005/26 — pozivanje iz „prve forme": učesnici se umeću u ISTOJ create
    * transakciji; umetanje reda auto-okida sy15 trigger sast_trg_ucesnik_invite →
-   * 'meeting_invite' mejl. BE ne dira notification_log (B10) — samo ubaci red. */
-  it("createSastanak SA učesnicima: createMany (lowercase email, pozvan=true, prisutan=false)", async () => {
+   * 'meeting_invite' mejl. BE ne dira notification_log (B10) — samo ubaci red.
+   * Uvek pozvan=true/prisutan=false (klijent NE šalje flagove — InviteUcesnikDto). */
+  it("createSastanak SA učesnicima: createMany (lowercase, pozvan=true, prisutan=false) + stamp pozivnicePoslateAt", async () => {
     const { svc, tx } = makeSvc();
     await svc.createSastanak("u@servoteh.com", {
       clientEventId: CID,
@@ -182,6 +185,36 @@ describe("SastanciService R2 mutacije", () => {
       pozvan: true,
       prisutan: false,
     });
+    // Triger je poslao pozivnice na insert → pečat sprečava dupli ručni „Pošalji pozivnice".
+    expect(argData(tx.sastanak.create).pozivnicePoslateAt).toBeInstanceOf(Date);
+  });
+
+  it("createSastanak SA učesnicima ali status≠planiran: BEZ pečata (triger ne šalje)", async () => {
+    const { svc, tx } = makeSvc();
+    await svc.createSastanak("u@servoteh.com", {
+      clientEventId: CID,
+      naslov: "Test",
+      datum: "2026-07-15",
+      status: "u_toku",
+      ucesnici: [{ email: "a@servoteh.com" }],
+    });
+    // Umetanje ide (učesnici se čuvaju), ali triger okida samo za 'planiran' → nema pečata.
+    expect(tx.sastanakUcesnik.createMany).toHaveBeenCalled();
+    expect(argData(tx.sastanak.create).pozivnicePoslateAt).toBeNull();
+  });
+
+  it("createSastanak: prazan/whitespace email se filtrira pre createMany", async () => {
+    const { svc, tx } = makeSvc();
+    await svc.createSastanak("u@servoteh.com", {
+      clientEventId: CID,
+      naslov: "Test",
+      datum: "2026-07-15",
+      ucesnici: [{ email: "  " }, { email: "" }, { email: "b@servoteh.com" }],
+    });
+    const rows = argData(tx.sastanakUcesnik.createMany) as unknown as {
+      email: string;
+    }[];
+    expect(rows.map((r) => r.email)).toEqual(["b@servoteh.com"]);
   });
 
   it("createSastanak: dedup dupliranih učesnika po lower(email) (PK (sastanak,email) → 23505)", async () => {
@@ -671,5 +704,53 @@ describe("Sastanci DTO — status backdoor lock (validacija)", () => {
       );
       expect(errors).toHaveLength(0);
     }
+  });
+});
+
+/**
+ * Zahtev 005/26 — poziv učesnika iz „prve forme": cap 100 (masovni mejl / tx
+ * timeout) i validan email (spoljni poziv je moguć, ali mora biti pravi email).
+ */
+describe("Sastanci DTO — poziv učesnika (005/26)", () => {
+  const base = { clientEventId: CID, naslov: "X", datum: "2026-07-20" };
+
+  it("CreateSastanakDto: >100 učesnika pada (ArrayMaxSize odbija 101)", async () => {
+    const ucesnici = Array.from({ length: 101 }, (_, i) => ({
+      email: `u${i}@servoteh.com`,
+    }));
+    const errors = await validate(
+      plainToInstance(CreateSastanakDto, { ...base, ucesnici }),
+    );
+    expect(errors.some((e) => e.property === "ucesnici")).toBe(true);
+  });
+
+  it("CreateSastanakDto: 100 validnih učesnika prolazi", async () => {
+    const ucesnici = Array.from({ length: 100 }, (_, i) => ({
+      email: `u${i}@servoteh.com`,
+    }));
+    const errors = await validate(
+      plainToInstance(CreateSastanakDto, { ...base, ucesnici }),
+    );
+    expect(errors.some((e) => e.property === "ucesnici")).toBe(false);
+  });
+
+  it("CreateSastanakDto: neispravan email učesnika pada (@IsEmail)", async () => {
+    const errors = await validate(
+      plainToInstance(CreateSastanakDto, {
+        ...base,
+        ucesnici: [{ email: "nije-email" }],
+      }),
+    );
+    expect(errors.some((e) => e.property === "ucesnici")).toBe(true);
+  });
+
+  it("CreateSastanakDto: validan email učesnika prolazi", async () => {
+    const errors = await validate(
+      plainToInstance(CreateSastanakDto, {
+        ...base,
+        ucesnici: [{ email: "a@servoteh.com", label: "A" }],
+      }),
+    );
+    expect(errors.some((e) => e.property === "ucesnici")).toBe(false);
   });
 });
