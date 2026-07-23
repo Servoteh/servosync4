@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { Plus } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
@@ -10,6 +11,7 @@ import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Pager } from '@/components/ui-kit/pager';
 import { Select } from '@/components/ui-kit/select';
+import { Button } from '@/components/ui-kit/button';
 import { formatDate, formatDecimal, formatNumber } from '@/lib/format';
 import {
   useInvoices,
@@ -19,6 +21,7 @@ import {
   type SalesDocumentType,
   type Invoice,
 } from '@/api/sales';
+import { NewProformaDialog } from './new-proforma-dialog';
 
 /**
  * Fakturisanje: radna lista računa i predračuna (Faza 5 §A). Obrazac „Lista"
@@ -142,6 +145,7 @@ export default function FakturisanjePage() {
   const [documentType, setDocumentType] = useState<SalesDocumentType | ''>('');
   const [status, setStatus] = useState<SalesStatus | ''>('');
   const [page, setPage] = useState(1);
+  const [newProformaOpen, setNewProformaOpen] = useState(false);
   const resetPage = () => setPage(1);
 
   useEffect(() => {
@@ -168,6 +172,18 @@ export default function FakturisanjePage() {
       <PageHeader
         title="Fakturisanje"
         count={list.data ? `${formatNumber(total)} računa` : undefined}
+        actions={
+          <Button onClick={() => setNewProformaOpen(true)}>
+            <Plus className="h-4 w-4" aria-hidden />
+            Novi predračun
+          </Button>
+        }
+      />
+
+      <NewProformaDialog
+        open={newProformaOpen}
+        onClose={() => setNewProformaOpen(false)}
+        onCreated={(id) => router.push(`/fakturisanje/${id}`)}
       />
 
       <div className="flex-1 space-y-4 overflow-auto p-6">
