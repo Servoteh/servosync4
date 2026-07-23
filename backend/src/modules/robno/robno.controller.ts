@@ -43,6 +43,24 @@ export class RobnoController {
     return this.robno.listStockDocuments(query);
   }
 
+  /** Lager lista — stanje zaliha po magacinu + prosečne cene (BigBit paritet). */
+  @Get("lager")
+  lager(
+    @Query("warehouseId") warehouseId?: string,
+    @Query("onlyInStock") onlyInStock?: string,
+    @Query("q") q?: string,
+    @Query("skip") skip?: string,
+    @Query("take") take?: string,
+  ) {
+    return this.robno.listLager({
+      warehouseId: warehouseId ? Number(warehouseId) : undefined,
+      onlyInStock: onlyInStock === "true",
+      q,
+      skip: skip ? Number(skip) : undefined,
+      take: take ? Number(take) : undefined,
+    });
+  }
+
   @Get("documents/:id")
   findOne(@Param("id", ParseIntPipe) id: number) {
     return this.robno.getStockDocument(id);

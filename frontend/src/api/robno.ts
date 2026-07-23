@@ -263,3 +263,37 @@ export function usePost() {
     onSuccess: invalidate,
   });
 }
+
+// ─────────────────────────────────── lager lista (BigBit paritet)
+
+/** Jedan red lagera — 1:1 sa backend listLager(). Sve količine/cene kao string. */
+export interface LagerRow {
+  itemId: number;
+  warehouseId: number;
+  itemName: string | null;
+  itemCode: string | null;
+  unit: string | null;
+  onHand: string;
+  reserved: string;
+  avgPurchaseNet: string;
+  avgWholesalePrice: string;
+  stockValue: string;
+}
+
+export interface LagerResponse {
+  data: LagerRow[];
+  meta: { total: number; skip: number; take: number };
+}
+
+/** Lager lista — stanje zaliha po magacinu + prosečne cene (GET /robno/lager). */
+export function useLager(filters: { warehouseId?: number; onlyInStock?: boolean; q?: string } = {}) {
+  const params = new URLSearchParams();
+  if (filters.warehouseId != null) params.set('warehouseId', String(filters.warehouseId));
+  if (filters.onlyInStock) params.set('onlyInStock', 'true');
+  if (filters.q) params.set('q', filters.q);
+  const query = params.toString() ? `?${params.toString()}` : '';
+  return useQuery({
+    queryKey: ['robno', 'lager', filters],
+    queryFn: () => apiFetch<LagerResponse>(`${BASE}/lager${query}`),
+  });
+}
