@@ -197,3 +197,59 @@ export function useUnreconcile() {
     onSuccess: invalidate,
   });
 }
+
+// ─────────────────────────────────── kompenzacije (BigBit paritet — FE nad postojećim BE)
+
+export interface CompensationProposalLine {
+  ledgerEntryId: number | null;
+  accountCode: string;
+  documentNumber: string | null;
+  side: 'receivable' | 'payable';
+  openAmount: string;
+  suggestedOffset: string;
+}
+
+export interface CompensationProposal {
+  partnerId: number;
+  totalReceivable: string;
+  totalPayable: string;
+  offsetAmount: string;
+  lines: CompensationProposalLine[];
+}
+
+export interface CompensationLineInput {
+  ledgerEntryId: number;
+  side: 'receivable' | 'payable';
+  amount: string;
+}
+
+/** Predlog kompenzacije iz otvorenih stavki partnera (GET /saldakonti/compensation/proposal). */
+export function useCompensationProposal(partnerId: number | null) {
+  return useQuery({
+    queryKey: ['saldakonti', 'compensation', 'proposal', partnerId],
+    queryFn: () =>
+      apiFetch<{ data: CompensationProposal | null; meta?: { error?: string } }>(
+        `${BASE}/compensation/proposal?partnerId=${partnerId}`,
+      ),
+    enabled: partnerId != null && partnerId > 0,
+  });
+}
+
+/** Kreiraj (i knjiži) kompenzaciju — POST /saldakonti/compensation. */
+export function useCreateCompensation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: {
+      partnerId: number;
+      date?: string;
+      note?: string;
+      lines: CompensationLineInput[];
+      post?: boolean;
+    }) =>
+      apiFetch<Envelope<{ id: number; number: string; status: string }>>(`${BASE}/compensation`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['saldakonti'] }),
+  });
+}
