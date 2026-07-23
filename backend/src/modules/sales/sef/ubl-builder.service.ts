@@ -80,6 +80,8 @@ export interface UblInvoiceInput {
   vatTotal: Prisma.Decimal;
   grossTotal: Prisma.Decimal;
   note?: string | null;
+  /** Broj narudžbenice kupca → cac:OrderReference/cbc:ID (SEF javni sektor, D6). */
+  poNumber?: string | null;
   /** Referenca avansne fakture (cac:BillingReference) — kada je za plaćanje 0. */
   prepaymentReference?: string | null;
   /** true = ova faktura je avansna (386). */
@@ -145,6 +147,17 @@ export class UblBuilderService {
     parts.push(el("cbc:InvoiceTypeCode", typeCode));
     if (invoice.note) parts.push(el("cbc:Note", invoice.note));
     parts.push(el("cbc:DocumentCurrencyCode", cur));
+
+    // — Broj narudžbenice kupca (cac:OrderReference) — D6 —
+    // UBL 2.1 redosled: OrderReference dolazi POSLE DocumentCurrencyCode a PRE
+    // cac:BillingReference / cac:AdditionalDocumentReference / AccountingSupplierParty.
+    // Javni sektor (JBKJS) često odbija fakturu bez broja narudžbenice.
+    const poNumber = invoice.poNumber?.trim();
+    if (poNumber) {
+      parts.push("<cac:OrderReference>");
+      parts.push(el("cbc:ID", poNumber));
+      parts.push("</cac:OrderReference>");
+    }
 
     // — Avansna referenca (cac:BillingReference) —
     if (invoice.prepaymentReference) {

@@ -30,12 +30,21 @@
  * ažurira (linije se rekreiraju), ne duplira (uq_vat_returns_period).
  */
 
-import { Injectable } from "@nestjs/common";
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { evaluateExpression } from "../gl/posting/expression-parser";
 import { prismaDecimalArith } from "../gl/posting/prisma-decimal-arith";
 import { InvalidVatPeriodException } from "./vat-ledger.service";
+import {
+  assertVatPeriodNotLocked,
+  VAT_RETURN_CALCULATED,
+  VAT_RETURN_POSTED,
+} from "./vat-period-lock";
 
 const D = Prisma.Decimal;
 const ZERO = new D(0);
@@ -137,8 +146,23 @@ export class PopdvService {
     // Meseci koji čine period (mesec = [m]; kvartal = 3 meseca).
     const months = this.periodMonths(month, quarter);
 
+    // D3: prekomputiranje zaključanog (POSTED) perioda nije dozvoljeno.
+    await assertVatPeriodNotLocked(this.prisma, year, months);
+
     // 1) Osnovni obračun — Σ PDV konta iz GK po smeru za period.
-    const { outputVat, inputVat } = await this.sumVatAccounts(year, months);
+    const gk = await this.sumVatAccounts(year, months);
+
+    // 1b) RUČNE KIF/KUF stavke (D4, sourceJournalEntryId=null) — review 1D nalaz.
+    //     Ručne stavke NEMAJU nalog u GK, pa ih sumVatAccounts NE vidi, a PP-PDV
+    //     štampa ih VEĆ prikazuje u pozicijama po stopama (003/103, 004/104 iz
+    //     sumByRate nad vat_ledger_entries UKLJUČUJUĆI ručne). Bez ovog dodavanja
+    //     VatReturn.output/input (ukupno 005/105) i obaveza (109) bili bi manji od
+    //     Σ po stopama → obrazac interno nekonzistentan i obaveza potcenjena.
+    //     PAZI: GK-izvedene stavke (source != null) se NE sabiraju — one su već u
+    //     sumVatAccounts (izvedene iz istih ledger_entries) → dupliranje bi precenilo.
+    const manual = await this.sumManualVatEntries(year, months);
+    const outputVat = gk.outputVat.add(manual.manualOutput);
+    const inputVat = gk.inputVat.add(manual.manualInput);
     const vatLiability = outputVat.sub(inputVat);
 
     // 2) Pun POPDV (ako je definicija seed-ovana) — eval AOP formula.
@@ -253,6 +277,46 @@ export class PopdvService {
     });
   }
 
+  /**
+   * Zaključaj (proknjiži) PDV obračun: status CALCULATED → POSTED (D3). Posle
+   * ovoga je period zaključan — `buildKifKuf`, ponovni `compute` i izmena ručnih
+   * KIF/KUF stavki tog perioda se odbijaju (vidi `assertVatPeriodNotLocked`).
+   *
+   * CAS (compare-and-set) `updateMany where {id, status: CALCULATED}` — atomsko
+   * prebacivanje bez trke; count = 0 znači da obračun nije u očekivanom stanju.
+   */
+  async postReturn(id: number) {
+    const existing = await this.prisma.vatReturn.findUnique({ where: { id } });
+    if (!existing) {
+      throw new NotFoundException(`PDV obračun #${id} ne postoji.`);
+    }
+    if (existing.status === VAT_RETURN_POSTED) {
+      throw new ConflictException(`PDV obračun #${id} je već proknjižen (POSTED).`);
+    }
+    if (existing.status !== VAT_RETURN_CALCULATED) {
+      throw new ConflictException(
+        `PDV obračun #${id} nije u statusu ${VAT_RETURN_CALCULATED} ` +
+          `(trenutno ${existing.status}); knjiženje/zaključavanje nije moguće.`,
+      );
+    }
+
+    const res = await this.prisma.vatReturn.updateMany({
+      where: { id, status: VAT_RETURN_CALCULATED },
+      data: { status: VAT_RETURN_POSTED },
+    });
+    if (res.count === 0) {
+      // Status je promenjen između čitanja i upisa (paralelna sesija).
+      throw new ConflictException(
+        `PDV obračun #${id} je u međuvremenu promenjen; osveži pa pokušaj ponovo.`,
+      );
+    }
+
+    return this.prisma.vatReturn.findUniqueOrThrow({
+      where: { id },
+      include: { lines: { orderBy: { aop: "asc" } } },
+    });
+  }
+
   // ── interno ────────────────────────────────────────────────────────────────
 
   /**
@@ -292,6 +356,42 @@ export class PopdvService {
       else inputVat = inputVat.add(v);
     }
     return { outputVat, inputVat };
+  }
+
+  /**
+   * Σ RUČNIH KIF/KUF stavki (`vat_ledger_entries` sa `sourceJournalEntryId=null`)
+   * po smeru za period (review 1D nalaz — konzistentnost sa knjigom i PP-PDV štampom).
+   *   output (KIF) → Σ vatAmount ide u outputVat (obaveza)
+   *   input  (KUF) → Σ vatAmount ide u inputVat  (pretporez)
+   * Period filter je ISTI kao u `buildKifKuf`/`sumByRate`: `taxPeriodYear = year` i
+   * `taxPeriodMonth IN months` (mesec = [m]; kvartal = 3 meseca) — ne po posting_date,
+   * jer ručna stavka nema nalog nego eksplicitan poreski period.
+   * GK-izvedene stavke (`sourceJournalEntryId != null`) se NAMERNO izostavljaju —
+   * već su obuhvaćene `sumVatAccounts` (Σ PDV konta iz GK).
+   */
+  private async sumManualVatEntries(
+    year: number,
+    months: number[],
+  ): Promise<{ manualOutput: Prisma.Decimal; manualInput: Prisma.Decimal }> {
+    let manualOutput = ZERO;
+    let manualInput = ZERO;
+    if (months.length === 0) return { manualOutput, manualInput };
+
+    const grouped = await this.prisma.vatLedgerEntry.groupBy({
+      by: ["direction"],
+      where: {
+        sourceJournalEntryId: null,
+        taxPeriodYear: year,
+        taxPeriodMonth: { in: months },
+      },
+      _sum: { vatAmount: true },
+    });
+    for (const g of grouped) {
+      const v = new D(g._sum.vatAmount ?? ZERO);
+      if (g.direction === "output") manualOutput = manualOutput.add(v);
+      else manualInput = manualInput.add(v);
+    }
+    return { manualOutput, manualInput };
   }
 
   /**

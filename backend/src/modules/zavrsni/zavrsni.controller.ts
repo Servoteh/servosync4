@@ -18,6 +18,7 @@ import { RequirePermission } from "../../common/authz/require-permission.decorat
 import { PERMISSIONS } from "../../common/authz/permissions";
 import { BalanceSheetService } from "./balance-sheet.service";
 import { AprXmlService } from "./apr-xml.service";
+import { ControlRulesService } from "./control-rules.service";
 import type { AuthUser } from "../auth/jwt.strategy";
 
 /**
@@ -27,9 +28,11 @@ import type { AuthUser } from "../auth/jwt.strategy";
  *   POST /api/v1/zavrsni/bilans-stanja  {year}    — generiši bilans stanja (BS)
  *   POST /api/v1/zavrsni/bilans-uspeha  {year}    — generiši bilans uspeha (BU)
  *   GET  /api/v1/zavrsni/statements?type=&year=   — lista sačuvanih obračuna
+ *   GET  /api/v1/zavrsni/statements/:id/controls  — kontrolna pravila (zeleno/crveno)
+ *   POST /api/v1/zavrsni/statements/:id/finalize  — DRAFT → FINALIZED (uz kontrole)
  *   GET  /api/v1/zavrsni/statements/:id/apr-xml   — APR eFI FiForma XML (download)
  *
- * Permisije: read = ZR_READ, generisanje = ZR_COMPUTE, APR export = ZR_EXPORT.
+ * Permisije: read = ZR_READ, generisanje/finalize = ZR_COMPUTE, APR export = ZR_EXPORT.
  */
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 @RequirePermission(PERMISSIONS.ZR_READ)
@@ -38,6 +41,7 @@ export class ZavrsniController {
   constructor(
     private readonly balanceSheet: BalanceSheetService,
     private readonly aprXml: AprXmlService,
+    private readonly controlRules: ControlRulesService,
   ) {}
 
   @Get("bruto-bilans")
@@ -78,6 +82,33 @@ export class ZavrsniController {
       resolveYear(body?.year),
       req.user?.userId,
     );
+  }
+
+  /**
+   * Kontrolna pravila za obračun — [{name, left, right, passed}] (zeleno/crveno na FE).
+   * Nasleđuje ZR_READ (klasni default). Prazan niz ako obrazac nema pravila (npr. SI).
+   */
+  @Get("statements/:id/controls")
+  statementControls(@Param("id", ParseIntPipe) id: number) {
+    return this.controlRules.evaluateControls(id);
+  }
+
+  /**
+   * Finalizacija obračuna: DRAFT → FINALIZED + finalizedAt. Kontrolna pravila blokiraju
+   * (StatementControlsFailedException) osim uz `{ force: true }` u telu (dokumentovani
+   * escape hatch). CAS guard sprečava dvostruki finalize. Permisija ZR_COMPUTE.
+   */
+  @Post("statements/:id/finalize")
+  @RequirePermission(PERMISSIONS.ZR_COMPUTE)
+  finalizeStatement(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() body: { force?: boolean } | undefined,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.balanceSheet.finalizeStatement(id, {
+      force: body?.force === true,
+      userId: req.user?.userId,
+    });
   }
 
   /**

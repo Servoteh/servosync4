@@ -60,6 +60,14 @@ export interface Envelope<T> {
 }
 
 /**
+ * Odgovor enqueue-a: outbox red + eventualno ne-blokirajuće upozorenje
+ * (npr. javni sektor bez broja narudžbenice, D6). `warning` je null kad ga nema.
+ */
+export interface EnqueueResponse extends Envelope<SefOutbox> {
+  warning?: string | null;
+}
+
+/**
  * Red SEF outbox-a (`sef_outbox`) — 1:1 sa Prisma modelom. `ublXml` i
  * `pdfAttachmentBase64` su velika tela (ne prikazuju se u listi), ostavljena
  * opciono radi vernosti tipa.
@@ -163,7 +171,7 @@ export function useEnqueue() {
   const invalidate = useInvalidateSef();
   return useMutation({
     mutationFn: (invoiceId: number) =>
-      apiFetch<Envelope<SefOutbox>>(`${BASE}/enqueue/${invoiceId}`, {
+      apiFetch<EnqueueResponse>(`${BASE}/enqueue/${invoiceId}`, {
         method: 'POST',
         body: '{}',
       }),

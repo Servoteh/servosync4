@@ -49,8 +49,8 @@ export class SefController {
   @Post("enqueue/:invoiceId")
   @RequirePermission(PERMISSIONS.SEF_SEND)
   async enqueue(@Param("invoiceId", ParseIntPipe) invoiceId: number) {
-    const data = await this.sef.enqueue(invoiceId);
-    return { data };
+    const { outbox, warning } = await this.sef.enqueue(invoiceId);
+    return { data: outbox, warning };
   }
 
   @Post("send/:outboxId")

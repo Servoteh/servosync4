@@ -15,8 +15,10 @@ import { formatDecimal } from '@/lib/format';
 import {
   useGrossTrialBalance,
   useStatements,
+  useStatementControls,
   useComputeBalanceSheet,
   useComputeIncomeStatement,
+  useFinalizeStatement,
   useAprXmlDownload,
   downloadXml,
   STATEMENT_TYPE,
@@ -24,6 +26,7 @@ import {
   type GrossTrialBalanceRow,
   type StatementLine,
   type FinancialStatement,
+  type ControlResult,
 } from '@/api/zavrsni';
 
 /**
@@ -108,12 +111,63 @@ const lineColumns: Column<StatementLine>[] = [
   },
   {
     key: 'amount',
-    header: 'Iznos',
+    header: 'Tekuća g.',
     align: 'right',
     numeric: true,
     render: (l) => <span className="tnums font-semibold text-ink">{formatDecimal(l.amount)}</span>,
   },
+  {
+    key: 'amount2',
+    header: 'Prethodna g.',
+    align: 'right',
+    numeric: true,
+    render: (l) => <span className="tnums text-ink-secondary">{formatDecimal(l.amount2)}</span>,
+  },
+  {
+    key: 'amount3',
+    header: 'Pretprethodna g.',
+    align: 'right',
+    numeric: true,
+    render: (l) => <span className="tnums text-ink-secondary">{formatDecimal(l.amount3)}</span>,
+  },
 ];
+
+// ─────────────────────────────────────────────────────────────── kontrolna pravila
+
+/** Sekcija kontrolnih pravila (zeleno/crveno) ispod bilansa. */
+function ControlsSection({ controls }: { controls: ControlResult[] }) {
+  if (controls.length === 0) return null;
+  return (
+    <div className="space-y-2">
+      <div className="text-2xs font-semibold uppercase tracking-[0.08em] text-ink-secondary">
+        Kontrolna pravila
+      </div>
+      <div className="space-y-1.5">
+        {controls.map((c) => (
+          <div
+            key={c.name}
+            className={`flex flex-wrap items-center justify-between gap-3 rounded-panel border px-4 py-2 text-sm ${
+              c.passed
+                ? 'border-status-success/40 bg-status-success-bg'
+                : 'border-status-danger/40 bg-status-danger-bg'
+            }`}
+          >
+            <span className="flex items-center gap-2">
+              <StatusBadge
+                tone={c.passed ? 'success' : 'danger'}
+                label={c.passed ? 'Prolazi' : 'Ne prolazi'}
+              />
+              <span className="text-ink">{c.name}</span>
+            </span>
+            <span className="tnums text-ink-secondary">
+              {formatDecimal(c.left)} = {formatDecimal(c.right)}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 // ─────────────────────────────────────────────────────────────── sumarni red
 
@@ -166,6 +220,7 @@ export default function ZavrsniRacunPage() {
   const statements = useStatements({ year });
   const computeBS = useComputeBalanceSheet();
   const computeBU = useComputeIncomeStatement();
+  const finalize = useFinalizeStatement();
   const aprXml = useAprXmlDownload();
 
   // Sačuvani obračuni za tekuću godinu, po tipu.
@@ -179,6 +234,10 @@ export default function ZavrsniRacunPage() {
 
   const balanceSheet = byType.get(STATEMENT_TYPE.BALANCE_SHEET) ?? null;
   const incomeStatement = byType.get(STATEMENT_TYPE.INCOME_STATEMENT) ?? null;
+  const activeStatement = tab === 'stanje' ? balanceSheet : incomeStatement;
+
+  // Kontrolna pravila za aktivni obračun (samo BS/BU tabovi; ugašeno bez id-a).
+  const controls = useStatementControls(tab !== 'bruto' ? activeStatement?.id : undefined);
 
   if (isLoading || !user) {
     return (
@@ -188,12 +247,23 @@ export default function ZavrsniRacunPage() {
     );
   }
 
-  const activeStatement = tab === 'stanje' ? balanceSheet : incomeStatement;
   const computing = tab === 'stanje' ? computeBS : computeBU;
+  const controlResults = controls.data ?? [];
+  const isFinalized = activeStatement?.status === STATEMENT_STATUS.FINALIZED;
 
   function onCompute() {
     if (tab === 'stanje') computeBS.mutate(year);
     else if (tab === 'uspeh') computeBU.mutate(year);
+  }
+
+  function onFinalize() {
+    if (!activeStatement) return;
+    const anyFail = controlResults.some((c) => !c.passed);
+    const msg = anyFail
+      ? 'Kontrolna pravila NE prolaze (npr. aktiva razlicito od pasive). Finalizovati uprkos tome (force)?'
+      : 'Finalizovati bilans? Posle finalizacije se ne moze ponovo generisati.';
+    if (!window.confirm(msg)) return;
+    finalize.mutate({ id: activeStatement.id, force: anyFail });
   }
 
   return (
@@ -221,7 +291,16 @@ export default function ZavrsniRacunPage() {
                   APR XML
                 </Button>
               )}
-              <Button onClick={onCompute} loading={computing.isPending}>
+              {activeStatement && !isFinalized && (
+                <Button
+                  variant="secondary"
+                  loading={finalize.isPending}
+                  onClick={onFinalize}
+                >
+                  Finalizuj
+                </Button>
+              )}
+              <Button onClick={onCompute} loading={computing.isPending} disabled={isFinalized}>
                 Izračunaj
               </Button>
             </div>
@@ -254,8 +333,13 @@ export default function ZavrsniRacunPage() {
         {tab !== 'bruto' && (
           <StatementView
             statement={activeStatement}
+            controls={controlResults}
             loading={statements.isLoading}
-            error={(computing.error as Error | null) ?? (statements.error as Error | null)}
+            error={
+              (finalize.error as Error | null) ??
+              (computing.error as Error | null) ??
+              (statements.error as Error | null)
+            }
             emptyHint={
               tab === 'stanje'
                 ? 'Bilans stanja za ovu godinu još nije generisan. Klikni „Izračunaj".'
@@ -317,11 +401,13 @@ function BrutoBilans({
 
 function StatementView({
   statement,
+  controls,
   loading,
   error,
   emptyHint,
 }: {
   statement: FinancialStatement | null;
+  controls: ControlResult[];
   loading: boolean;
   error: Error | null;
   emptyHint: string;
@@ -350,6 +436,8 @@ function StatementView({
           {statement.note && <span className="text-xs">{statement.note}</span>}
         </div>
       )}
+
+      {statement && lines.length > 0 && <ControlsSection controls={controls} />}
 
       <DataTable
         columns={lineColumns}

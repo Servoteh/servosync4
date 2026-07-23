@@ -16,6 +16,7 @@ import {
   CreateStockDocumentItemDto,
 } from "./dto/create-stock-document.dto";
 import { ListStockDocumentsQuery } from "./dto/list-stock-documents.dto";
+import { computeKepuEntries, writeKepuEntries } from "./kepu-book.util";
 
 /** Diskriminator robnog dokumenta (`stock_documents.kind`). */
 export type StockDocumentKind =
@@ -435,6 +436,70 @@ export class RobnoService {
       message: `Nedovoljno stanje za izlaz (${kind}): ${human}.`,
       shortages: detail,
     });
+  }
+
+  // ----------------------------------------------------------------- KEPU
+
+  /**
+   * Sinhronizuj KEPU red(ove) za jedan robni dokument (doc 39 §E, task D5be) — idempotentno
+   * po documentId. Poziva se iz `robno post` toka (posle knjiženja IZ/NIV/…) i iz retro-punjenja.
+   * Učitava zaglavlje + stavke + nivelacione parove + `DocumentType.kepuDefault*` (default smer),
+   * računa red(ove) u `kepu-book.util` i briše+upisuje po documentId. Vraća broj upisanih redova.
+   */
+  async writeKepuForDocument(docId: number): Promise<number> {
+    return this.prisma.$transaction(async (tx) => {
+      const doc = await tx.stockDocument.findUnique({
+        where: { id: docId },
+        include: {
+          items: { orderBy: { id: "asc" } },
+          stockLevelingItems: { orderBy: { id: "asc" } },
+        },
+      });
+      if (!doc)
+        throw new NotFoundException(`Robni dokument ${docId} ne postoji.`);
+
+      const docType = await tx.documentType.findFirst({
+        where: { code: doc.documentTypeCode },
+        select: { kepuDefaultCharge: true, kepuDefaultDischarge: true },
+      });
+      const entries = computeKepuEntries(
+        doc,
+        doc.items,
+        doc.stockLevelingItems,
+        docType,
+      );
+      return writeKepuEntries(tx, doc.id, entries);
+    });
+  }
+
+  /**
+   * Retro-punjenje KEPU knjige za postojeće dokumente (task D5be). Idempotentno prolazi kroz sve
+   * dokumente van DRAFT-a (imaju finalne vrednosti) i (pre)računava KEPU redove. Opcioni filter po godini.
+   * Svaki dokument ide u sopstvenoj transakciji (delete+insert po documentId) — bezbedno za ponovni poziv.
+   */
+  async rebuildKepu(query: { year?: number } = {}): Promise<{
+    documents: number;
+    entries: number;
+  }> {
+    const where: Prisma.StockDocumentWhereInput = { status: { not: "DRAFT" } };
+    if (query.year != null) where.year = query.year;
+
+    const docs = await this.prisma.stockDocument.findMany({
+      where,
+      select: { id: true },
+      orderBy: [{ documentDate: "asc" }, { id: "asc" }],
+    });
+
+    let entries = 0;
+    for (const d of docs) {
+      entries += await this.writeKepuForDocument(d.id);
+    }
+    this.logger.log(
+      `KEPU rebuild: obrađeno ${docs.length} dokumenata, upisano ${entries} redova` +
+        (query.year != null ? ` (godina ${query.year})` : "") +
+        ".",
+    );
+    return { documents: docs.length, entries };
   }
 
   /** Mapiraj DTO stavku → Prisma create input (sirovi iznosi; landed popunjava kalkulacija). */

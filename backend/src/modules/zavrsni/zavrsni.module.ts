@@ -4,6 +4,7 @@ import { ZavrsniController } from "./zavrsni.controller";
 import { BalanceSheetService } from "./balance-sheet.service";
 import { GkEvalService } from "./gkeval.service";
 import { AprXmlService } from "./apr-xml.service";
+import { ControlRulesService } from "./control-rules.service";
 
 /**
  * Modul Završni račun / bilansi (Faza 7). Izvedeni obračuni nad glavnom knjigom
@@ -17,7 +18,7 @@ import { AprXmlService } from "./apr-xml.service";
 @Module({
   imports: [PrismaModule],
   controllers: [ZavrsniController],
-  providers: [GkEvalService, BalanceSheetService, AprXmlService],
-  exports: [GkEvalService, BalanceSheetService, AprXmlService],
+  providers: [GkEvalService, BalanceSheetService, AprXmlService, ControlRulesService],
+  exports: [GkEvalService, BalanceSheetService, AprXmlService, ControlRulesService],
 })
 export class ZavrsniModule {}

@@ -8,6 +8,7 @@ import {
 import { randomUUID } from "node:crypto";
 import type { SefOutbox } from "@prisma/client";
 import { PrismaService } from "../../../prisma/prisma.service";
+import { InvoicePdfService } from "../print/invoice-pdf.service";
 import { SefClientService } from "./sef-client.service";
 import {
   UblBuilderService,
@@ -39,6 +40,15 @@ import {
 /** SEF statusi nad kojima cancel/storno NIJE dozvoljen (guard). */
 const CANCELLABLE_LOCAL_STATUSES = new Set(["PENDING", "SENT", "DELIVERED"]);
 
+/** SEF limit priloga (25 MB) — veći PDF se preskače (prilog nije obavezan). */
+const MAX_PDF_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+
+/** Rezultat enqueue-a: outbox red + eventualno (ne-blokirajuće) upozorenje. */
+export interface EnqueueResult {
+  outbox: SefOutbox;
+  warning: string | null;
+}
+
 @Injectable()
 export class SefService {
   private readonly logger = new Logger(SefService.name);
@@ -47,14 +57,17 @@ export class SefService {
     private readonly prisma: PrismaService,
     private readonly client: SefClientService,
     private readonly ubl: UblBuilderService,
+    private readonly invoicePdf: InvoicePdfService,
   ) {}
 
   /**
-   * Kreiraj SefOutbox red za fakturu: gradi UBL, upisuje PENDING + requestId.
-   * Ne šalje (to je `send`). Odbija izvoz (nije na domaćem SEF-u) i draft
-   * (level != 0 / status DRAFT — samo knjižena faktura ide na SEF).
+   * Kreiraj SefOutbox red za fakturu: gradi UBL (sa PDF prilogom + OrderReference),
+   * upisuje PENDING + requestId. Ne šalje (to je `send`). Odbija izvoz (nije na
+   * domaćem SEF-u) i draft (level != 0 / status DRAFT — samo knjižena faktura ide
+   * na SEF). Vraća `{ outbox, warning }` — warning je ne-blokirajuće upozorenje
+   * (npr. javni sektor bez broja narudžbenice), ne baca izuzetak.
    */
-  async enqueue(invoiceId: number): Promise<SefOutbox> {
+  async enqueue(invoiceId: number): Promise<EnqueueResult> {
     const invoice = await this.prisma.invoice.findUnique({
       where: { id: invoiceId },
       include: { items: { orderBy: { lineNo: "asc" } } },
@@ -121,6 +134,40 @@ export class SefService {
       lineTotal: it.lineTotal,
     }));
 
+    // — D7: PDF prilog fakture kroz postojeći InvoicePdfService (cac:Attachment) —
+    // Generisanje/veličina priloga NE ruši enqueue: PDF prilog je opciona pogodnost.
+    let pdfBase64: string | null = null;
+    let pdfFileName: string | null = null;
+    try {
+      const { buffer, fileName } = await this.invoicePdf.buildInvoicePdf(
+        invoice.id,
+      );
+      if (buffer.length > MAX_PDF_ATTACHMENT_BYTES) {
+        this.logger.warn(
+          `PDF prilog fakture ${invoice.id} (${buffer.length} B) prelazi SEF limit ` +
+            `(${MAX_PDF_ATTACHMENT_BYTES} B) — prilog se preskače.`,
+        );
+      } else {
+        pdfBase64 = buffer.toString("base64");
+        pdfFileName = fileName;
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Generisanje PDF priloga za fakturu ${invoice.id} nije uspelo — ` +
+          `enqueue se nastavlja bez priloga: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+      );
+    }
+
+    // — D6: upozorenje javni sektor bez broja narudžbenice (ne blokira) —
+    let warning: string | null = null;
+    const poNumber = invoice.poNumber?.trim();
+    if (customer.publicSectorId && !poNumber) {
+      warning =
+        "Kupac je iz javnog sektora, a broj narudžbenice nije unet — SEF može odbiti fakturu.";
+    }
+
     const ublXml = this.ubl.build({
       invoice: {
         documentType: invoice.documentType,
@@ -133,21 +180,27 @@ export class SefService {
         vatTotal: invoice.vatTotal,
         grossTotal: invoice.grossTotal,
         note: invoice.note,
+        poNumber: invoice.poNumber,
         isPrepayment: invoice.documentType === "AVR",
       },
       items,
       supplier,
       customer: buyer,
+      pdfBase64,
+      pdfFileName,
     });
 
-    return this.prisma.sefOutbox.create({
+    const outbox = await this.prisma.sefOutbox.create({
       data: {
         invoiceId: invoice.id,
         requestId: randomUUID(),
         ublXml,
+        pdfAttachmentBase64: pdfBase64,
         status: "PENDING",
       },
     });
+
+    return { outbox, warning };
   }
 
   /**

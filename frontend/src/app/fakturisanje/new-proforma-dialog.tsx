@@ -38,6 +38,7 @@ export function NewProformaDialog({
   const [documentDate, setDocumentDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [dueDate, setDueDate] = useState('');
   const [currency, setCurrency] = useState('RSD');
+  const [poNumber, setPoNumber] = useState('');
   const [rows, setRows] = useState<Row[]>([emptyRow()]);
 
   const setRow = (i: number, patch: Partial<Row>) =>
@@ -49,6 +50,7 @@ export function NewProformaDialog({
     setDocumentType('PROF');
     setCustomerId('');
     setDueDate('');
+    setPoNumber('');
     setRows([emptyRow()]);
   };
 
@@ -75,6 +77,7 @@ export function NewProformaDialog({
         dueDate: dueDate || undefined,
         currency,
         isExport: currency !== 'RSD',
+        poNumber: poNumber.trim() || undefined,
         items,
       },
       {
@@ -163,6 +166,16 @@ export function NewProformaDialog({
           <div className="w-44">
             <FormField label="Rok plaćanja">
               <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+            </FormField>
+          </div>
+          <div className="flex-1">
+            <FormField label="Broj narudžbenice">
+              <Input
+                value={poNumber}
+                onChange={(e) => setPoNumber(e.target.value)}
+                maxLength={50}
+                placeholder="opciono — javni sektor / SEF"
+              />
             </FormField>
           </div>
         </div>

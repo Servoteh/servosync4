@@ -85,6 +85,13 @@ const IN_FLIGHT_SEF = new Set<SefStatus>([
   SEF_STATUS.DELIVERED,
 ]);
 
+/** Token klase feedback bannera za SEF akcije (uspeh / upozorenje / greška). */
+const SEF_BANNER_TONE: Record<'success' | 'warn' | 'danger', string> = {
+  success: 'border-status-success/40 bg-status-success-bg text-status-success',
+  warn: 'border-status-warn/40 bg-status-warn-bg text-status-warn',
+  danger: 'border-status-danger/40 bg-status-danger-bg text-status-danger',
+};
+
 const itemColumns: Column<InvoiceItem>[] = [
   {
     key: 'lineNo',
@@ -175,17 +182,21 @@ export default function FakturisanjeDetailPage() {
 
   // Ciljna vrsta prepisa (predračun → račun). Default IFR (roba u zemlji).
   const [targetType, setTargetType] = useState<string>(SALES_DOCUMENT_TYPE.IFR);
-  // SEF feedback (enqueue uspeh/greška) — nezavisan od carry-over/knjiži bannera.
-  const [sefBanner, setSefBanner] = useState<{ tone: 'success' | 'danger'; msg: string } | null>(
-    null,
-  );
+  // SEF feedback (enqueue uspeh/upozorenje/greška) — nezavisan od carry-over/knjiži bannera.
+  const [sefBanner, setSefBanner] = useState<{
+    tone: 'success' | 'warn' | 'danger';
+    msg: string;
+  } | null>(null);
 
+  // D8: zaključan (proknjižen) dokument ne nudi izmene (prepis/knjiženje) — samo storno-put.
   const isProformaDraft =
     !!doc &&
+    !doc.isLocked &&
     doc.status === SALES_STATUS.DRAFT &&
     PROFORMA_TYPES.has(doc.documentType);
   const isPostableInvoice =
     !!doc &&
+    !doc.isLocked &&
     doc.status === SALES_STATUS.DRAFT &&
     !PROFORMA_TYPES.has(doc.documentType);
 
@@ -207,7 +218,9 @@ export default function FakturisanjeDetailPage() {
   const goBack = useCallback(() => router.push('/fakturisanje'), [router]);
 
   const doFromProforma = useCallback(() => {
-    if (!doc || !canWrite || !isProformaDraft) return;
+    // Guard protiv duplog okidanja (Ctrl+S dok mutacija još traje) — inače bi dva
+    // brza triggera poslala dva carry-over zahteva (review 1D FE hardening).
+    if (!doc || !canWrite || !isProformaDraft || fromProforma.isPending) return;
     fromProforma.mutate(
       { id: doc.id, targetType },
       { onSuccess: (created) => router.push(`/fakturisanje/${created.id}`) },
@@ -215,7 +228,9 @@ export default function FakturisanjeDetailPage() {
   }, [doc, canWrite, isProformaDraft, fromProforma, targetType, router]);
 
   const doPost = useCallback(() => {
-    if (!doc || !canPost || !isPostableInvoice) return;
+    // Guard protiv duplog knjiženja: Ctrl+S dok post traje ne sme okinuti drugi post
+    // (backend CAS claim ionako odbija duplikat 409, ovo je UX-fast-fail) — review 1D.
+    if (!doc || !canPost || !isPostableInvoice || post.isPending) return;
     post.mutate(doc.id);
   }, [doc, canPost, isPostableInvoice, post]);
 
@@ -223,11 +238,18 @@ export default function FakturisanjeDetailPage() {
     if (!doc || !canSefSend || !isSefEligible) return;
     setSefBanner(null);
     enqueue.mutate(doc.id, {
-      onSuccess: () =>
-        setSefBanner({
-          tone: 'success',
-          msg: 'Faktura je stavljena u SEF red (status U redu). Slanje se pokreće na stranici SEF e-fakture.',
-        }),
+      onSuccess: (res) =>
+        setSefBanner(
+          res.warning
+            ? {
+                tone: 'warn',
+                msg: `Faktura je stavljena u SEF red. Upozorenje: ${res.warning}`,
+              }
+            : {
+                tone: 'success',
+                msg: 'Faktura je stavljena u SEF red (status U redu). Slanje se pokreće na stranici SEF e-fakture.',
+              },
+        ),
       onError: (e) =>
         setSefBanner({
           tone: 'danger',
@@ -353,13 +375,7 @@ export default function FakturisanjeDetailPage() {
           </div>
         )}
         {sefBanner && (
-          <div
-            className={
-              sefBanner.tone === 'success'
-                ? 'rounded-panel border border-status-success/40 bg-status-success-bg px-4 py-3 text-sm text-status-success'
-                : 'rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger'
-            }
-          >
+          <div className={`rounded-panel border px-4 py-3 text-sm ${SEF_BANNER_TONE[sefBanner.tone]}`}>
             {sefBanner.msg}
           </div>
         )}
@@ -412,13 +428,19 @@ function InvoiceHeader({ doc }: { doc: InvoiceDetail }) {
           <span className="text-ink">{DOCUMENT_TYPE_LABEL[doc.documentType] ?? doc.documentType}</span>
         </Field>
         <Field label="Status">
-          <StatusBadge tone={s.tone} label={s.label} />
+          <div className="flex flex-wrap items-center gap-2">
+            <StatusBadge tone={s.tone} label={s.label} />
+            {doc.isLocked && <StatusBadge tone="neutral" label="Zaključano" />}
+          </div>
         </Field>
         <Field label="Nivo">
           <span className="tnums text-ink">{doc.level === 250 ? 'Predračun (250)' : 'Knjižen (0)'}</span>
         </Field>
         <Field label="Kupac">
           <span className="tnums text-ink">{doc.customerId ?? '—'}</span>
+        </Field>
+        <Field label="Broj narudžbenice">
+          <span className="tnums text-ink">{doc.poNumber ?? '—'}</span>
         </Field>
         <Field label="Datum izdavanja">
           <span className="text-ink">{formatDate(doc.documentDate)}</span>
