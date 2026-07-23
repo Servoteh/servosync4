@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   PayloadTooLargeException,
   UnprocessableEntityException,
@@ -52,11 +53,13 @@ interface PrismaMock {
     findUnique: jest.Mock;
     create: jest.Mock;
     update: jest.Mock;
+    updateMany: jest.Mock;
   };
   montageNonconformityPhoto: {
     findMany: jest.Mock;
     findFirst: jest.Mock;
     create: jest.Mock;
+    count: jest.Mock;
   };
   montageNonconformityEvent: { findMany: jest.Mock; create: jest.Mock };
   worker: { findMany: jest.Mock };
@@ -73,11 +76,13 @@ function prismaMock(): PrismaMock {
       findUnique: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     montageNonconformityPhoto: {
       findMany: jest.fn().mockResolvedValue([]),
       findFirst: jest.fn(),
       create: jest.fn().mockResolvedValue({ id: 10, fileName: "f.jpg" }),
+      count: jest.fn().mockResolvedValue(0),
     },
     montageNonconformityEvent: {
       findMany: jest.fn().mockResolvedValue([]),
@@ -233,40 +238,69 @@ describe("MontazaNeusaglasenostiService", () => {
       );
       expect(out.data.id).toBe(1);
     });
+
+    it("prijava NE pada kad MAIL grana baci (fire-and-forget best-effort)", async () => {
+      prisma.montageNonconformity.create.mockResolvedValue(baseNc());
+      const { service, mail } = makeService(prisma);
+      mail.notifyManagementNewReport.mockRejectedValue(
+        new Error("resend down"),
+      );
+      const out = await service.create(
+        {
+          projectNumber: "P-123",
+          description: "opis",
+          severity: "VISOKA",
+          locationKind: "SERVOTEH",
+        },
+        REPORTER,
+      );
+      expect(out.data.id).toBe(1);
+    });
   });
 
   // ── STATUS MAŠINA ───────────────────────────────────────────────────────
 
   describe("changeStatus", () => {
-    it("CEKA_ANALIZU → U_TOKU dozvoljen", async () => {
-      prisma.montageNonconformity.findUnique.mockResolvedValue({
-        id: 1,
-        status: "CEKA_ANALIZU",
-      });
-      prisma.montageNonconformity.update.mockResolvedValue(
-        baseNc({ status: "U_TOKU" }),
-      );
+    it("CEKA_ANALIZU → U_TOKU dozvoljen (compare-and-set na pročitani status)", async () => {
+      prisma.montageNonconformity.findUnique
+        .mockResolvedValueOnce({ id: 1, status: "CEKA_ANALIZU" })
+        .mockResolvedValueOnce(baseNc({ status: "U_TOKU" }));
       const { service } = makeService(prisma);
       const out = await service.changeStatus(1, { status: "U_TOKU" }, MANAGER);
       expect(out.data.status).toBe("U_TOKU");
+      const casCalls = prisma.montageNonconformity.updateMany.mock
+        .calls as Array<[{ where: { id: number; status: string } }]>;
+      expect(casCalls[0][0].where).toEqual({ id: 1, status: "CEKA_ANALIZU" });
       expect(firstCallData(prisma.montageNonconformityEvent.create).type).toBe(
         "STATUS_CHANGED",
       );
     });
 
     it("U_TOKU → ZAVRSENO upisuje closedAt i šalje mail podnosiocu", async () => {
+      prisma.montageNonconformity.findUnique
+        .mockResolvedValueOnce({ id: 1, status: "U_TOKU" })
+        .mockResolvedValueOnce(
+          baseNc({ status: "ZAVRSENO", closedAt: new Date() }),
+        );
+      const { service, mail } = makeService(prisma);
+      await service.changeStatus(1, { status: "ZAVRSENO" }, MANAGER);
+      const updateData = firstCallData(prisma.montageNonconformity.updateMany);
+      expect(updateData.closedAt).toBeInstanceOf(Date);
+      expect(mail.notifyReporterClosed).toHaveBeenCalledWith(1);
+    });
+
+    it("CAS promašaj (status se u međuvremenu promenio) → 409, bez eventa/maila", async () => {
       prisma.montageNonconformity.findUnique.mockResolvedValue({
         id: 1,
         status: "U_TOKU",
       });
-      prisma.montageNonconformity.update.mockResolvedValue(
-        baseNc({ status: "ZAVRSENO", closedAt: new Date() }),
-      );
+      prisma.montageNonconformity.updateMany.mockResolvedValue({ count: 0 });
       const { service, mail } = makeService(prisma);
-      await service.changeStatus(1, { status: "ZAVRSENO" }, MANAGER);
-      const updateData = firstCallData(prisma.montageNonconformity.update);
-      expect(updateData.closedAt).toBeInstanceOf(Date);
-      expect(mail.notifyReporterClosed).toHaveBeenCalledWith(1);
+      await expect(
+        service.changeStatus(1, { status: "ZAVRSENO" }, MANAGER),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(prisma.montageNonconformityEvent.create).not.toHaveBeenCalled();
+      expect(mail.notifyReporterClosed).not.toHaveBeenCalled();
     });
 
     it("CEKA_ANALIZU → ZAVRSENO (preskok) → 422", async () => {
@@ -420,6 +454,52 @@ describe("MontazaNeusaglasenostiService", () => {
       await expect(service.addPhotos(1, [], REPORTER)).rejects.toBeInstanceOf(
         BadRequestException,
       );
+    });
+
+    it("ZAVRSENA prijava → 422 (ne dopunjuje se)", async () => {
+      prisma.montageNonconformity.findUnique.mockResolvedValue({
+        id: 1,
+        reportedByUserId: 7,
+        status: "ZAVRSENO",
+      });
+      const { service } = makeService(prisma);
+      await expect(
+        service.addPhotos(1, [jpeg()], REPORTER),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    });
+
+    it("ukupan cap 24 po prijavi → 422", async () => {
+      prisma.montageNonconformity.findUnique.mockResolvedValue({
+        id: 1,
+        reportedByUserId: 7,
+        status: "U_TOKU",
+      });
+      prisma.montageNonconformityPhoto.count.mockResolvedValue(22);
+      const { service } = makeService(prisma);
+      await expect(
+        service.addPhotos(1, [jpeg(), jpeg(), jpeg()], REPORTER),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException); // 22 + 3 > 24
+    });
+
+    it("atomsko: 1 nevalidan u seriji → NIŠTA se ne upiše (validacija pre transakcije)", async () => {
+      prisma.montageNonconformity.findUnique.mockResolvedValue({
+        id: 1,
+        reportedByUserId: 7,
+        status: "U_TOKU",
+      });
+      const bogus: UploadedPhotoFile = {
+        originalname: "x.txt",
+        mimetype: "image/jpeg",
+        size: 4,
+        buffer: Buffer.from([0x00, 0x01, 0x02, 0x03]),
+      };
+      const { service } = makeService(prisma);
+      await expect(
+        service.addPhotos(1, [jpeg(), bogus], REPORTER),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      // Nijedna fotka ni event NISU upisani (validacija je PRE transakcije).
+      expect(prisma.montageNonconformityPhoto.create).not.toHaveBeenCalled();
+      expect(prisma.montageNonconformityEvent.create).not.toHaveBeenCalled();
     });
   });
 

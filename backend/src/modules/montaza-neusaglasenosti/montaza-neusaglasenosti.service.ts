@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   Logger,
@@ -40,9 +41,11 @@ import {
 } from "./dto/change-status.dto";
 import type { ListNonconformityQuery } from "./dto/list-query";
 
-/** Foto: ≤6 fajlova × ≤8 MB (MODULE_SPEC §3). Preko toga 413. */
+/** Foto: ≤6 fajlova po pozivu × ≤8 MB (MODULE_SPEC §3). Preko toga 413. */
 const MAX_PHOTOS = 6;
 const MAX_PHOTO_BYTES = 8 * 1024 * 1024;
+/** Ukupan cap fotki po prijavi (odbrana od gomilanja; review 004/26). */
+const MAX_PHOTOS_TOTAL = 24;
 
 /**
  * Status mašina (MODULE_SPEC §2): CEKA_ANALIZU → U_TOKU → ZAVRSENO; U_TOKU → CEKA_ANALIZU
@@ -166,7 +169,12 @@ export class MontazaNeusaglasenostiService {
       where.severity = query.severity;
 
     const from = parseDateParam(query.from, "from");
-    const to = parseDateParam(query.to, "to");
+    let to = parseDateParam(query.to, "to");
+    // „to" bez vremena (YYYY-MM-DD) obuhvata CEO dan — inače `lte: ponoć` izbaci ceo dan.
+    if (to && /^\d{4}-\d{2}-\d{2}$/.test((query.to ?? "").trim())) {
+      to = new Date(to);
+      to.setUTCHours(23, 59, 59, 999);
+    }
     if (from || to)
       where.createdAt = {
         ...(from ? { gte: from } : {}),
@@ -255,15 +263,21 @@ export class MontazaNeusaglasenostiService {
   /**
    * `POST /montaza/neusaglasenosti/:id/photos` — upload fotki (multipart `files`).
    * Dozvoljeno PODNOSIOCU ili manage (istraga). Magic-byte validacija (PDF/PNG/JPG;
-   * ostalo 422); ≤6 fajlova; > 8 MB → 413. Event PHOTO_ADDED.
+   * ostalo 422); ≤6 fajlova/poziv, > 8 MB → 413; ukupno ≤24 po prijavi. ZAVRSENO →
+   * 422 (zatvorena prijava se ne dopunjuje). ATOMSKI: SVE se validira PRE upisa, pa
+   * SVE fotke + PHOTO_ADDED event idu u JEDNOJ transakciji (all-or-nothing → nema
+   * parcijalnog upisa ni duplikata na retry). Event PHOTO_ADDED.
    */
   async addPhotos(id: number, files: UploadedPhotoFile[], actor: AuthUser) {
     const nc = await this.prisma.montageNonconformity.findUnique({
       where: { id },
-      select: { id: true, reportedByUserId: true },
+      select: { id: true, reportedByUserId: true, status: true },
     });
     if (!nc) throw new NotFoundException(`Neusaglašenost ${id} ne postoji.`);
 
+    // V1 kompromis (isti kao zahtevi modul): manage se čita sa rola-sloja preko
+    // `roleHasPermission` — per-user override (deny>grant) se OVDE ne konsultuje (redak
+    // slučaj; guard je već propustio rutu na osnovu write). Puna override provera je V2.
     const isManager = roleHasPermission(
       actor.role,
       PERMISSIONS.MONTAZA_NEUSAGLASENOSTI_MANAGE,
@@ -271,6 +285,12 @@ export class MontazaNeusaglasenostiService {
     if (nc.reportedByUserId !== actor.userId && !isManager)
       throw new ForbiddenException(
         "Fotografije dodaje podnosilac prijave ili osoba koja vodi istragu.",
+      );
+
+    // Zatvorena prijava se ne dopunjuje (review 004/26).
+    if (nc.status === "ZAVRSENO")
+      throw new UnprocessableEntityException(
+        "Neusaglašenost je završena — fotografije se više ne dodaju.",
       );
 
     if (!files || files.length === 0)
@@ -282,8 +302,16 @@ export class MontazaNeusaglasenostiService {
         `Najviše ${MAX_PHOTOS} fotografija po pozivu.`,
       );
 
-    const created: Array<{ id: number; fileName: string }> = [];
-    for (const file of files) {
+    const existing = await this.prisma.montageNonconformityPhoto.count({
+      where: { nonconformityId: id },
+    });
+    if (existing + files.length > MAX_PHOTOS_TOTAL)
+      throw new UnprocessableEntityException(
+        `Najviše ${MAX_PHOTOS_TOTAL} fotografija po prijavi (trenutno ${existing}).`,
+      );
+
+    // 1) Validiraj SVE fajlove (magic bytes + veličina) i pripremi payload-e — PRE upisa.
+    const payloads = files.map((file) => {
       if (!file?.buffer?.length)
         throw new BadRequestException("Prazna fotografija.");
       if (file.buffer.length > MAX_PHOTO_BYTES)
@@ -293,27 +321,31 @@ export class MontazaNeusaglasenostiService {
         throw new UnprocessableEntityException(
           "Dozvoljene su slike (JPG/PNG) i PDF.",
         );
-      const fileName =
-        clip(decodeOriginalName(file.originalname), 200) ?? "fotografija";
-      // Prisma 6 Bytes traži ArrayBuffer-backed Uint8Array (kao drawing_pdfs/quality_documents).
-      const content = new Uint8Array(file.buffer);
-      const row = await this.prisma.montageNonconformityPhoto.create({
-        data: {
-          nonconformityId: id,
-          fileName,
-          contentType,
-          content,
-          createdByUserId: actor.userId,
-        },
-        select: { id: true, fileName: true },
-      });
-      created.push(row);
-    }
+      return {
+        nonconformityId: id,
+        fileName:
+          clip(decodeOriginalName(file.originalname), 200) ?? "fotografija",
+        contentType,
+        // Prisma 6 Bytes traži ArrayBuffer-backed Uint8Array (kao quality_documents).
+        content: new Uint8Array(file.buffer),
+        createdByUserId: actor.userId,
+      };
+    });
 
-    await this.prisma.$transaction(async (tx) => {
+    // 2) SVE fotke + event u JEDNOJ transakciji (all-or-nothing).
+    const created = await this.prisma.$transaction(async (tx) => {
+      const rows: Array<{ id: number; fileName: string }> = [];
+      for (const data of payloads) {
+        const row = await tx.montageNonconformityPhoto.create({
+          data,
+          select: { id: true, fileName: true },
+        });
+        rows.push(row);
+      }
       await this.writeEvent(tx, id, "PHOTO_ADDED", actor.userId, {
-        count: created.length,
+        count: rows.length,
       });
+      return rows;
     });
 
     return { data: created };
@@ -419,21 +451,32 @@ export class MontazaNeusaglasenostiService {
 
     const note = dto.note?.trim() || null;
     const updated = await this.prisma.$transaction(async (tx) => {
-      const data: Prisma.MontageNonconformityUncheckedUpdateInput = {
-        status: next,
-        closedAt: next === "ZAVRSENO" ? new Date() : null,
-      };
-      const u = await tx.montageNonconformity.update({ where: { id }, data });
+      // TOCTOU: compare-and-set na pročitani status — dupli klik / dva menadžera /
+      // izmena u međuvremenu → count 0 → 409, i event/mail se NE okidaju (obrazac
+      // updateStatusGuarded iz zahtevi modula).
+      const res = await tx.montageNonconformity.updateMany({
+        where: { id, status: current },
+        data: {
+          status: next,
+          closedAt: next === "ZAVRSENO" ? new Date() : null,
+        },
+      });
+      if (res.count === 0)
+        throw new ConflictException(
+          "Neusaglašenost je u međuvremenu promenila status — osvežite stranicu.",
+        );
       await this.writeEvent(tx, id, "STATUS_CHANGED", actor.userId, {
         from: current,
         to: next,
         ...(note ? { note } : {}),
       });
-      return u;
+      const row = await tx.montageNonconformity.findUnique({ where: { id } });
+      return row!;
     });
 
     // ZAVRSENO → mail podnosiocu (§2), best-effort, nikad ne obara radnju.
-    if (next === "ZAVRSENO") void this.mail.notifyReporterClosed(id);
+    if (next === "ZAVRSENO")
+      void this.mail.notifyReporterClosed(id).catch(() => undefined);
 
     return this.buildDetail(updated);
   }
@@ -487,8 +530,9 @@ export class MontazaNeusaglasenostiService {
         }`,
       );
     }
-    // Mail je fire-and-forget (samostalno guarded, ne baca) — ne blokira odgovor.
-    void this.mail.notifyManagementNewReport(nc.id);
+    // Mail je fire-and-forget (samostalno guarded, ne baca) — ne blokira odgovor;
+    // .catch() je odbrana od nepredviđenog rejecta (prijava mora proći svejedno).
+    void this.mail.notifyManagementNewReport(nc.id).catch(() => undefined);
   }
 
   /** Detalj jedne neusaglašenosti: fotke meta (bez sadržaja) + events + razrešena imena. */
