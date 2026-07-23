@@ -61,6 +61,10 @@ export interface ListWorkOrdersQuery {
   workerId?: string;
   /** Komitent. */
   customerId?: string;
+  /** Materijal (contains, case-insensitive) — legacy „Za materijal" filter. */
+  material?: string;
+  /** Dimenzija materijala (contains) — legacy „Za dim. materijala" filter. */
+  materialDimension?: string;
   /** Otvoren od (ISO). */
   from?: string;
   /** Otvoren do (ISO). */
@@ -114,6 +118,15 @@ export class WorkOrdersService {
     where.projectId = intEq(query.projectId);
     where.workerId = intEq(query.workerId);
     where.externalCustomerId = intEq(query.customerId);
+    // Legacy „Za materijal" / „Za dim. materijala" (tehnolozi, 22.07) — contains
+    // pretraga jer su polja slobodan tekst (Č.4732, Ø35x120…), ne šifarnik.
+    if (query.material?.trim())
+      where.material = { contains: query.material.trim(), mode: "insensitive" };
+    if (query.materialDimension?.trim())
+      where.materialDimension = {
+        contains: query.materialDimension.trim(),
+        mode: "insensitive",
+      };
     if (query.completed === "true") where.status = true;
     else if (query.completed === "false") where.status = { not: true };
     if (query.reworkOnly === "true" || query.reworkOnly === "1")

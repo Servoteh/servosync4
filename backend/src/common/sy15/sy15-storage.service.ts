@@ -92,6 +92,28 @@ export class Sy15StorageService {
     return { url: `${base}${rel}`, expiresIn };
   }
 
+  /**
+   * Preuzmi bajtove objekta (service-key GET; pravo se proverava PRE poziva nad
+   * meta-redom, kao upload/sign). Vraća sirove bajtove — koristi ih npr. STT retry
+   * (F3): dohvati audio iz bucket-a, pošalji transcribe. Baca 422 na storage grešku.
+   */
+  async download(bucket: string, path: string): Promise<Uint8Array> {
+    const { base, key } = this.cfg();
+    const res = await fetch(
+      `${base}/object/${bucket}/${this.encodePath(path)}`,
+      {
+        method: "GET",
+        headers: { authorization: `Bearer ${key}` },
+      },
+    );
+    if (!res.ok) {
+      throw new UnprocessableEntityException(
+        `Preuzimanje nije uspelo (storage ${res.status})`,
+      );
+    }
+    return new Uint8Array(await res.arrayBuffer());
+  }
+
   /** Best-effort brisanje objekta (meta-red je izvor istine; fajl je propratni). */
   async remove(bucket: string, path: string): Promise<void> {
     const { base, key } = this.cfg();

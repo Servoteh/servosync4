@@ -71,6 +71,26 @@ function truncFit(s: string | undefined | null, n: number): string {
 }
 
 /**
+ * Konzervativna procena broja Code128 modula za auto-izbor širine modula
+ * (`narrow`). Parovi uzastopnih cifara se pakuju kao jedan simbol (subset C),
+ * sve ostalo 1 znak = 1 simbol (subset B); + start + checksum + ~2 simbola
+ * rezerve za prelaze subseta + stop (13 modula). Simbol = 11 modula.
+ */
+function code128ModuleEstimate(content: string): number {
+  let symbols = 0;
+  let i = 0;
+  while (i < content.length) {
+    const digitPair =
+      content[i] >= '0' && content[i] <= '9' &&
+      i + 1 < content.length &&
+      content[i + 1] >= '0' && content[i + 1] <= '9';
+    symbols += 1;
+    i += digitPair ? 2 : 1;
+  }
+  return (symbols + 4) * 11 + 13;
+}
+
+/**
  * Generiše TSPL2 program za jednu TP nalepnicu (80.34×40.3mm). NE šalje
  * SIZE/GAP/DENSITY/SPEED/CODEPAGE (vidi vrh fajla). Baca ako `barcodeValue` fali.
  */
@@ -113,8 +133,18 @@ export function buildTspLabelProgram(spec: TspLabelSpec): string {
   if (f.datum)
     lines.push(`TEXT ${RIGHT_HALF_X},${mm(12)},"2",0,1,1,${tsplStr(f.datum)}`);
 
-  /* Barkod CODE128 (128M): x=7mm, y=14.8mm, h=15mm, narrow=2, wide=4, human_readable=0. */
-  lines.push(`BARCODE ${mm(7)},${mm(14.8)},"128M",${mm(15)},0,0,2,4,${tsplStr(bc)}`);
+  /* Barkod CODE128 (128M): x=7mm, y=14.8mm, h=15mm, human_readable=0.
+   * Modul (narrow): 3 dots (0,254mm — ono što su pogonski skeneri čitali kod
+   * 1.0 browser-štampe; incident 22.07 „novi izgled neće da čita" — narrow=2 =
+   * 0,169mm je pretanko). Fallback na 2 SAMO ako procenjena širina ne staje u
+   * raspoloživih ~71mm (80,34 − 7 leva margina − ~2 quiet zona) — dug sadržaj. */
+  const availableDots = mm(80.34 - 7 - 2);
+  const narrow = code128ModuleEstimate(asciiTranslit(bc)) * 3 <= availableDots ? 3 : 2;
+  if (narrow === 2)
+    console.warn(
+      `[tspl2] barkod "${bc}" predugačak za narrow=3 na 80mm nalepnici — pad na narrow=2 (proveriti čitljivost skenerom)`,
+    );
+  lines.push(`BARCODE ${mm(7)},${mm(14.8)},"128M",${mm(15)},0,0,${narrow},${narrow * 2},${tsplStr(bc)}`);
 
   lines.push(`PRINT ${copies},1`);
   return lines.join('\r\n') + '\r\n';

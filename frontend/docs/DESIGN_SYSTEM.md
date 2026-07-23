@@ -156,6 +156,21 @@
 | Izvodi — stavka | Neupareno (`UNMATCHED`) | narandžasta | `--status-warn` |
 | Izvodi — stavka | Upareno (`MATCHED`) | info plava | `--status-info` |
 | Izvodi — stavka | Proknjiženo (`POSTED`) | zelena | `--status-success` |
+| Zahtevi — zahtev | Nacrt (`DRAFT`) | neutralna | `--status-neutral` |
+| Zahtevi — zahtev | Podnet (`SUBMITTED`) | narandžasta | `--status-warn` |
+| Zahtevi — zahtev | Vraćen na dopunu (`NEEDS_INFO`) | narandžasta | `--status-warn` |
+| Zahtevi — zahtev | Odobrena AI analiza (`ANALYSIS_APPROVED`) | info plava | `--status-info` |
+| Zahtevi — zahtev | AI obrađen — čeka odluku (`ANALYZED`) | narandžasta | `--status-warn` |
+| Zahtevi — zahtev | Odobren za realizaciju (`APPROVED`) | zelena | `--status-success` |
+| Zahtevi — zahtev | Planiran (`PLANNED`) | info plava | `--status-info` |
+| Zahtevi — zahtev | U realizaciji (`IN_PROGRESS`) | info plava | `--status-info` |
+| Zahtevi — zahtev | Spreman za test (`READY_FOR_TEST`) | info plava | `--status-info` |
+| Zahtevi — zahtev | Na testiranju (`TESTING`) | narandžasta | `--status-warn` |
+| Zahtevi — zahtev | Završen (`DONE`) | zelena | `--status-success` |
+| Zahtevi — zahtev | Odbijen (`REJECTED`) | crvena | `--status-danger` |
+| Zahtevi — zahtev | Spojen (`MERGED`) | neutralna | `--status-neutral` |
+| Zahtevi — zahtev | Backlog / buduća verzija (`DEFERRED`) | neutralna | `--status-neutral` |
+| Zahtevi — zahtev | Arhiviran (`ARCHIVED`) | neutralna | `--status-neutral` |
 | Sync (bb_sync) | Greška sinhronizacije | crvena | `--status-danger` |
 | Notifikacija (D8) | Škart (`kontrola.skart`) | crvena | `--status-danger` |
 | Notifikacija (D8) | Dorada (`kontrola.dorada`) | narandžasta | `--status-warn` |
@@ -239,6 +254,29 @@ Dopune kita:
   (`error`) — `Select` nema sopstveno `invalid` stanje, isto kao `Input`.
   *Seoba:* u aplikaciji je ostalo ~290 sirovih `<select>` elemenata u ~125 fajlova iz ranijih faza;
   **ne migriraju se masovno** — svaki prelazi na kit `Select` kad se taj ekran ionako dira.
+* **`AttachmentInput`** (`ui-kit/attachment-input.tsx`, modul Zahtevi §5) — dashed dropzone +
+  native kamera (`accept="image/*" capture="environment"`) + audio/PDF, lista pending fajlova sa
+  uklanjanjem, klijentska validacija tipa/veličine (slike kroz `resizeImageFile` pre dodavanja,
+  audio ≤ 15 MB, ostalo ≤ 25 MB, ukupno ≤ `max`). Kontrolisan (`value: File[]` / `onChange`);
+  odbačene fajlove prijavljuje kroz `onReject(poruka)` (roditelj prikazuje toast/grešku — kit je
+  bez zavisnosti na toast). Generalizacija ponovljenog upload obrasca (odrzavanje/kvalitet/kadrovska).
+* **`AudioRecorder`** (`ui-kit/audio-recorder.tsx`, modul Zahtevi §5) — snimanje glasovne poruke kao
+  PRILOGA (razlika od `DictateButton` iz `voice-controls`, koji diktira u polje i ne čuva audio).
+  MediaRecorder → `Blob` (webm), preview kroz `<audio controls>`, prikaz trajanja. Kontrolisan
+  (`value: Blob | null` / `onChange`); graceful kad `getUserMedia` nije dostupan (poruka umesto pada).
+* **Info režim + Vođena tura** (`ui-kit/help-mode.tsx` + `help-spot.tsx` + `help-tour.tsx`,
+  PLAN_INFO_VODIC_2026-07; pilot modul Zahtevi) — ugrađeni vodič za nove korisnike, BEZ novih
+  zavisnosti. `HelpProvider` (montira se PO MODULU u `page.tsx`) drži stanje režima + `useHelpMode()`;
+  pamti izbor u localStorage (`servosync.help.enabled` + `servosync.help.seen.<modul>`), auto-on
+  pri prvom ulasku uz nenametljiv baner (`HelpBanner`), `Shift+?` toggle (mrtvo u
+  input/textarea/contenteditable), `Esc` slojevito gasi (ne dira modalne dijaloge). `HelpToggleButton`
+  je dugme „?" za `PageHeader` akcije (+ „▶ Provedi me" u režimu). `<HelpSpot id>` je omotač oko
+  polja/akcije: van režima čist passthrough (nula omotača), u režimu apsolutna „i" oznaka
+  (ne pomera layout, ne krade fokus) + oblačić na klik/tap/hover/fokus (`aria-describedby`, klampovan
+  u ekran na 360px). `<HelpTour steps>` je ručno pisana tura: overlay + reflektor oko cilja
+  (`getBoundingClientRect` + `scrollIntoView`) + koraci Nazad/Dalje/Preskoči; koraci ciljaju
+  `HelpSpot` id-jeve (`data-help-id`) i preskaču se ako cilj nije u DOM-u. Tekstovi pomoći žive po
+  modulu u `app/<modul>/_lib/help.ts` (`HelpRegistry` + definicije tura), ne u kitu.
 
 **Pravilo kita:** ekrani se sklapaju **isključivo** od kit komponenti. Nova komponenta prvo ulazi u kit,
 `/dev/ui` katalog i ovaj spisak — pa tek onda u ekran. "Privremeni div sa stilovima" ne postoji.

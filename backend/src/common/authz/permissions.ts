@@ -301,6 +301,19 @@ export const PERMISSIONS = {
   // grantove. Dodeljeno: admin (kroz ALL) + menadzment + hr/poslovni_admin
   // ("kadrovska-admin" ekvivalent — nema posebne role sa tim imenom u katalogu).
   RAZVOJ_READ: "razvoj.read",
+  // Zahtevi — AI PM modul (bug/dorada/nova funkcija sa AI trijažom + Decision Log +
+  // nagrađivanje; MODULE_SPEC_zahtevi.md §2). Platformski modul, ROW-SCOPE u servisu:
+  //   read      = pristup modulu; ne-admin vidi SAMO svoje zahteve (createdByUserId).
+  //   write     = kreiranje/izmena/submit/withdraw SOPSTVENIH zahteva + prilozi + komentari.
+  //   admin     = inbox svih zahteva, oba odobrenja, statusi realizacije, meta izmene,
+  //               spajanje, retriage, nagrade (potvrda ocene/tarife/obračun) — SVE.
+  //   decisions.read  = čitanje Decision Log-a (admin + menadzment; presuda §13.2).
+  //   decisions.write = unos/izmena odluka (samo admin, kroz ALL).
+  ZAHTEVI_READ: "zahtevi.read",
+  ZAHTEVI_WRITE: "zahtevi.write",
+  ZAHTEVI_ADMIN: "zahtevi.admin",
+  ZAHTEVI_DECISIONS_READ: "zahtevi.decisions.read",
+  ZAHTEVI_DECISIONS_WRITE: "zahtevi.decisions.write",
 } as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];

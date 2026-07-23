@@ -1565,11 +1565,25 @@ export default function WorkOrdersPage() {
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [reworkOnly, setReworkOnly] = useState(false);
+  // Legacy filteri „Za komitenta / Za materijal / Za dim. materijala" (tehnolozi 22.07).
+  const [customer, setCustomer] = useState<CustomerLookup | null>(null);
+  const [material, setMaterial] = useState('');
+  const [materialDim, setMaterialDim] = useState('');
   const [page, setPage] = useState(1);
   const [expanded, setExpanded] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);
   const [cloning, setCloning] = useState(false);
-  const list = useWorkOrders({ page, q: q.trim() || undefined, statusId, from, to, reworkOnly });
+  const list = useWorkOrders({
+    page,
+    q: q.trim() || undefined,
+    statusId,
+    from,
+    to,
+    reworkOnly,
+    customerId: customer?.id,
+    material: material.trim() || undefined,
+    materialDimension: materialDim.trim() || undefined,
+  });
 
   // Deep-link ?open=<id> (dolazak sa /handovers: „Otkucaj TP" / „Otvori RN") —
   // učitaj taj RN, filtriraj listu po njegovom identu (da red sigurno bude
@@ -1679,6 +1693,46 @@ export default function WorkOrdersPage() {
               className="rounded-control border border-line bg-surface px-2.5 py-1.5 text-sm text-ink"
             />
           </label>
+          {/* Legacy „Za komitenta / Za materijal / Za dim. materijala" (tehnolozi 22.07). */}
+          <label className="flex w-56 flex-col gap-1 text-xs text-ink-secondary">
+            Komitent
+            <ComboBox<CustomerLookup>
+              value={customer}
+              onChange={(c) => {
+                setCustomer(c);
+                resetPage();
+              }}
+              useSearch={useCustomersLookup}
+              getKey={(c) => c.id}
+              getLabel={(c) => c.name}
+              getSublabel={(c) => [c.city, c.taxId].filter(Boolean).join(' · ')}
+              placeholder="Svi komitenti…"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-ink-secondary">
+            Materijal
+            <input
+              value={material}
+              onChange={(e) => {
+                setMaterial(e.target.value);
+                resetPage();
+              }}
+              placeholder="npr. Č.4732"
+              className="w-32 rounded-control border border-line bg-surface px-2.5 py-1.5 text-sm text-ink placeholder:text-ink-disabled"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-ink-secondary">
+            Dim. materijala
+            <input
+              value={materialDim}
+              onChange={(e) => {
+                setMaterialDim(e.target.value);
+                resetPage();
+              }}
+              placeholder="npr. Ø35"
+              className="w-32 rounded-control border border-line bg-surface px-2.5 py-1.5 text-sm text-ink placeholder:text-ink-disabled"
+            />
+          </label>
           <label className="flex items-center gap-2 pb-1.5 text-sm text-ink-secondary">
             <input
               type="checkbox"
@@ -1691,7 +1745,7 @@ export default function WorkOrdersPage() {
             />
             Samo dorada/škart
           </label>
-          {(statusId !== '' || from || to || q || reworkOnly) && (
+          {(statusId !== '' || from || to || q || reworkOnly || customer || material || materialDim) && (
             <button
               onClick={() => {
                 setQ('');
@@ -1699,6 +1753,9 @@ export default function WorkOrdersPage() {
                 setFrom('');
                 setTo('');
                 setReworkOnly(false);
+                setCustomer(null);
+                setMaterial('');
+                setMaterialDim('');
                 resetPage();
               }}
               className="rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2"

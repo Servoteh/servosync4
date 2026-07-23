@@ -40,10 +40,14 @@ export function MyOpenPanel({
   const [feedback, setFeedback] = useState<{ ok: boolean; text: string } | null>(null);
   // Red za koji je otvorena potvrda „Odustani" (null = zatvorena).
   const [confirmRow, setConfirmRow] = useState<MyOpenRow | null>(null);
+  // „Kraj rada" na DELJENOM redu (drugi radnici imaju otvorene sesije) — izbor
+  // „samo moj rad / za sve" pre slanja (null = dijalog zatvoren).
+  const [stopChoice, setStopChoice] = useState<{ row: MyOpenRow; pieces: number } | null>(null);
 
   const rows = query.data?.data ?? [];
 
-  async function onStop(row: MyOpenRow, pieces: number) {
+  async function onStop(row: MyOpenRow, pieces: number, finishForAll = false) {
+    setStopChoice(null);
     setFeedback(null);
     setBusyId(row.id);
     try {
@@ -51,6 +55,7 @@ export function MyOpenPanel({
         id: row.id,
         pieceCount: pieces,
         workerCard: card ?? undefined,
+        finishForAll: finishForAll || undefined,
       });
       const parts = [
         pieces > 0
@@ -58,6 +63,18 @@ export function MyOpenPanel({
           : 'Evidentirano samo vreme rada',
       ];
       if (data.operationFinished) parts.push('Operacija je dostigla plan i zatvorena.');
+      else if (data.finishSkipped) {
+        // Deljeni red: gašenje preskočeno — operaciju i dalje koristi neko drugi.
+        const others = (data.otherOpenWorkers ?? [])
+          .map((w) => w.fullName)
+          .filter(Boolean)
+          .join(', ');
+        parts.push(
+          others
+            ? `Operacija ostaje otvorena — još radi: ${others}.`
+            : 'Operacija ostaje otvorena — još neko radi na njoj.',
+        );
+      } else if (finishForAll) parts.push('Operacija zatvorena i za ostale radnike.');
       if (data.workOrderCompleted) parts.push('Radni nalog je završen.');
       setFeedback({
         ok: true,
@@ -72,6 +89,12 @@ export function MyOpenPanel({
     }
   }
 
+  /** „Kraj rada" klik: deljeni red (drugi još rade) prvo pita „samo moj / za sve". */
+  function onStopRequest(row: MyOpenRow, pieces: number) {
+    if ((row.othersOpenCount ?? 0) > 0) setStopChoice({ row, pieces });
+    else void onStop(row, pieces);
+  }
+
   /**
    * „Odustani" — zatvara pogrešno otvoren red BEZ evidentiranja komada
    * (POST /:id/dismiss). Isti busyId/spinner obrazac kao onStop. Poziva se tek
@@ -82,10 +105,13 @@ export function MyOpenPanel({
     setFeedback(null);
     setBusyId(row.id);
     try {
-      await dismissOpen.mutateAsync({ id: row.id, workerCard: card ?? undefined });
+      const { data } = await dismissOpen.mutateAsync({ id: row.id, workerCard: card ?? undefined });
       setFeedback({
         ok: true,
-        text: `RN ${row.identNumber} · Op. ${row.operationNumber} — operacija odbačena (bez evidentiranja komada).`,
+        // finishSkipped: deljeni red — zatvoreno samo svoje učešće, red ostaje ostalima.
+        text: data.finishSkipped
+          ? `RN ${row.identNumber} · Op. ${row.operationNumber} — tvoje učešće je odbačeno; operacija ostaje otvorena (još neko radi na njoj).`
+          : `RN ${row.identNumber} · Op. ${row.operationNumber} — operacija odbačena (bez evidentiranja komada).`,
       });
       await query.refetch();
     } catch (e) {
@@ -144,7 +170,7 @@ export function MyOpenPanel({
               row={row}
               busy={busyId === row.id}
               disabled={busyId !== null && busyId !== row.id}
-              onStop={(pieces) => onStop(row, pieces)}
+              onStop={(pieces) => onStopRequest(row, pieces)}
               onDismiss={() => setConfirmRow(row)}
             />
           ))}
@@ -180,6 +206,59 @@ export function MyOpenPanel({
             </p>
             <p className="text-ink-secondary">
               Koristi ovo samo za pogrešno otvorene redove. Napravljeni komadi se NE evidentiraju.
+            </p>
+            {(confirmRow.othersOpenCount ?? 0) > 0 && (
+              <p className="text-ink-secondary">
+                Na operaciji trenutno radi još {confirmRow.othersOpenCount}{' '}
+                {confirmRow.othersOpenCount === 1 ? 'radnik' : 'radnika'} — zatvoriće se samo
+                tvoje učešće, operacija njima ostaje otvorena.
+              </p>
+            )}
+          </div>
+        )}
+      </Dialog>
+
+      {/* „Kraj rada" na deljenom redu — korak-pitanje (Nenad 22.07): podrazumevano
+          se završava SAMO svoj rad; gašenje operacije za sve je eksplicitan izbor. */}
+      <Dialog
+        open={stopChoice !== null}
+        onClose={() => setStopChoice(null)}
+        title="Na ovoj operaciji radi još neko"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setStopChoice(null)}>
+              Otkaži
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() => stopChoice && onStop(stopChoice.row, stopChoice.pieces, true)}
+            >
+              Zatvori za sve
+            </Button>
+            <Button
+              variant="primary"
+              onClick={() => stopChoice && onStop(stopChoice.row, stopChoice.pieces)}
+            >
+              Završi samo moj rad
+            </Button>
+          </>
+        }
+      >
+        {stopChoice && (
+          <div className="space-y-2 text-lg text-ink">
+            <p>
+              RN <span className="tnums font-semibold">{stopChoice.row.identNumber}</span> · Op.{' '}
+              <span className="tnums font-semibold">{stopChoice.row.operationNumber}</span> — otvorenu
+              sesiju ima još{' '}
+              <span className="font-semibold">
+                {stopChoice.row.othersOpenCount}{' '}
+                {stopChoice.row.othersOpenCount === 1 ? 'radnik' : 'radnika'}
+              </span>
+              .
+            </p>
+            <p className="text-ink-secondary">
+              „Završi samo moj rad" upisuje tvoje komade i vreme — operacija ostalima ostaje
+              otvorena. „Zatvori za sve" gasi operaciju i završava i njihove sesije.
             </p>
           </div>
         )}
@@ -223,6 +302,10 @@ function MyOpenRowItem({
             Op. {row.operationNumber} · {row.operation?.workCenterName ?? row.workCenterCode}
           </span>
           {row.hasOpenSession && <StatusBadge tone="info" label="Rad u toku" />}
+          {/* Deljeni red: još neko ima otvorenu sesiju — „Kraj rada" će pitati. */}
+          {(row.othersOpenCount ?? 0) > 0 && (
+            <StatusBadge tone="warn" label={`+${row.othersOpenCount} radi`} />
+          )}
           {/* Revizija crteža zastarela — mali žuti indikator (upozorenje, ne blokira). */}
           {row.drawing?.revisionStale && (
             <span className="inline-flex items-center rounded-full bg-status-warn-bg px-2.5 py-0.5 text-base font-semibold text-status-warn">

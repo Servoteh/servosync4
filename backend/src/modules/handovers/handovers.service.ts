@@ -7,6 +7,7 @@ import {
 } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
+import { MailService } from "../../common/mail/mail.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import {
   pageMeta,
@@ -130,6 +131,29 @@ type HandoverRow = Prisma.DrawingHandoverGetPayload<{
   select: typeof HANDOVER_SELECT;
 }>;
 
+/**
+ * Row shape the reject flows hand to `notifyRejected()`: enough to group per
+ * generator (`handoverWorkerId`) and list the rejected drawings.
+ */
+interface RejectedHandoverRef {
+  id: number;
+  handoverWorkerId: number;
+  drawingId: number;
+}
+
+/**
+ * Serbian plural of "stavka" for the rejection mail subject/message
+ * (1/21 stavka, 2–4 stavke, 5+ stavki — standard paucal rule).
+ */
+function stavkaLabel(n: number): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return `${n} stavka`;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14))
+    return `${n} stavke`;
+  return `${n} stavki`;
+}
+
 export interface ListHandoversQuery {
   page?: string;
   pageSize?: string;
@@ -170,6 +194,8 @@ export class HandoversService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
+    // MailModule is @Global — no handovers.module.ts import needed.
+    private readonly mail: MailService,
   ) {}
 
   // ---------------------------------------------------------------- READ
@@ -508,7 +534,7 @@ export class HandoversService {
         `Radnik ${technologistId} nije aktivan radnik vrste "Tehnolog" — izaberite tehnologa sa /handovers/technologists liste.`,
       );
 
-    return this.batchTransition(ids, {
+    const result = await this.batchTransition(ids, {
       from: HANDOVER_STATUS.PENDING,
       to: HANDOVER_STATUS.APPROVED,
       comment,
@@ -521,6 +547,9 @@ export class HandoversService {
         isUrgent: dto?.isUrgent === true,
       },
     });
+    // HTTP payload unchanged ({ approved, skipped }) — `transitioned` is
+    // internal (used only by rejectBatch for generator notifications).
+    return { data: { approved: result.approved, skipped: result.skipped } };
   }
 
   /** GRUPNO odbijanje (legacy paritet: status 2 grupno). `reason` OBAVEZAN. */
@@ -536,12 +565,17 @@ export class HandoversService {
         "Razlog odbijanja može imati najviše 250 karaktera.",
       );
 
-    return this.batchTransition(ids, {
+    const result = await this.batchTransition(ids, {
       from: HANDOVER_STATUS.PENDING,
       to: HANDOVER_STATUS.REJECTED,
       comment: reason,
       actorWorkerId,
     });
+    // AFTER the transaction, best-effort (D8): one mail + in-app notification
+    // per generator, only for the rows that actually transitioned.
+    if (result.transitioned.length)
+      await this.notifyRejected(result.transitioned, reason, actorWorkerId);
+    return { data: { approved: result.approved, skipped: result.skipped } };
   }
 
   /**
@@ -549,6 +583,11 @@ export class HandoversService {
    * → `skipped` sa srpskim razlogom), pa JEDAN uslovni `updateMany` nad
    * preostalima (isti guard `where` kao `transition()` — konkurentna promena
    * ne biva pregažena, samo završi u skipped kao „promenjena u međuvremenu").
+   *
+   * Returns `{ approved, skipped, transitioned }`; `transitioned` lists the
+   * rows that ACTUALLY changed status (id + generator + drawing) so callers
+   * can notify only for real transitions (rejectBatch mail). Callers wrap the
+   * HTTP payload themselves — the response shape stays `{ approved, skipped }`.
    */
   private async batchTransition(
     ids: number[],
@@ -559,16 +598,30 @@ export class HandoversService {
       actorWorkerId: number | null;
       extra?: Prisma.DrawingHandoverUncheckedUpdateManyInput;
     },
-  ) {
-    const result = await this.prisma.$transaction(async (tx) => {
+  ): Promise<{
+    approved: number;
+    skipped: { id: number; reason: string }[];
+    transitioned: RejectedHandoverRef[];
+  }> {
+    return this.prisma.$transaction(async (tx) => {
       const rows = await tx.drawingHandover.findMany({
         where: { id: { in: ids } },
-        select: { id: true, statusId: true, isLocked: true, legacyRnId: true },
+        // handoverWorkerId/drawingId are not needed for the transition itself —
+        // they ride along so callers can notify generators without a re-read.
+        select: {
+          id: true,
+          statusId: true,
+          isLocked: true,
+          legacyRnId: true,
+          handoverWorkerId: true,
+          drawingId: true,
+        },
       });
       const byIdMap = new Map(rows.map((r) => [r.id, r]));
 
       const skipped: { id: number; reason: string }[] = [];
       const eligible: number[] = [];
+      const eligibleRows: RejectedHandoverRef[] = [];
       for (const id of ids) {
         const row = byIdMap.get(id);
         if (!row) skipped.push({ id, reason: "Primopredaja ne postoji." });
@@ -587,10 +640,18 @@ export class HandoversService {
             id,
             reason: "Nije više na čekanju (status promenjen).",
           });
-        else eligible.push(id);
+        else {
+          eligible.push(id);
+          eligibleRows.push({
+            id: row.id,
+            handoverWorkerId: row.handoverWorkerId,
+            drawingId: row.drawingId,
+          });
+        }
       }
 
       let approved = 0;
+      let transitioned: RejectedHandoverRef[] = [];
       if (eligible.length) {
         const updated = await tx.drawingHandover.updateMany({
           where: {
@@ -607,19 +668,32 @@ export class HandoversService {
           },
         });
         approved = updated.count;
-        if (approved < eligible.length) {
-          // Konkurentna promena između pre-check-a i update-a — prijavi razliku.
+        if (approved === eligible.length) {
+          // Common case: every eligible row moved — no re-read needed.
+          transitioned = eligibleRows;
+        } else {
+          // Concurrent change between pre-check and update: the conditional
+          // `where` skipped some rows. Re-read (same tx) which rows actually
+          // reached the target status, so notifications go only to real
+          // transitions and the rest is reported as skipped (precisely, not
+          // "first N" as before).
+          transitioned = await tx.drawingHandover.findMany({
+            where: { id: { in: eligible }, statusId: opts.to },
+            select: { id: true, handoverWorkerId: true, drawingId: true },
+          });
+          const movedIds = new Set(transitioned.map((r) => r.id));
           skipped.push(
-            ...Array.from({ length: eligible.length - approved }, (_, i) => ({
-              id: eligible[i],
-              reason: "Promenjena u međuvremenu — osvežite listu.",
-            })),
+            ...eligible
+              .filter((id) => !movedIds.has(id))
+              .map((id) => ({
+                id,
+                reason: "Promenjena u međuvremenu — osvežite listu.",
+              })),
           );
         }
       }
-      return { approved, skipped };
+      return { approved, skipped, transitioned };
     });
-    return { data: result };
   }
 
   /** Odbij primopredaju. `reason` je OBAVEZAN (razlika od approve), §6.4. */
@@ -641,6 +715,17 @@ export class HandoversService {
       wrongStateMessage:
         "Primopredaja mora biti U OBRADI (na čekanju) da bi bila odbijena.",
     });
+    // AFTER the transaction, best-effort (D8): mail + in-app notification to
+    // the generator. The re-read is guarded too (`.catch`) — a failed lookup
+    // must not break a reject that already committed.
+    const rejectedRow = await this.prisma.drawingHandover
+      .findUnique({
+        where: { id },
+        select: { id: true, handoverWorkerId: true, drawingId: true },
+      })
+      .catch(() => null);
+    if (rejectedRow)
+      await this.notifyRejected([rejectedRow], reason.trim(), actorWorkerId);
     return this.findOne(id);
   }
 
@@ -867,6 +952,108 @@ export class HandoversService {
     } catch (e) {
       this.logger.error(
         `Notifikacija primopredaja.preuzeta FAIL (primopredaja ${handoverId}): ${(e as Error).message}`,
+      );
+    }
+  }
+
+  /**
+   * Emit "handover rejected" to the generators — the draft designers
+   * (`handover_drafts.designer_id`, copied into
+   * `drawing_handovers.handover_worker_id` on submit): ONE in-app notification
+   * + ONE mail per generator with the list of rejected drawings (number +
+   * name), the rejection reason and the rejector's name. Called AFTER the
+   * transaction, best-effort (D8, same pattern as
+   * `handover-drafts.notifyApprover`): the whole method never throws — each
+   * channel runs in its own try/catch. `workers` has no email column, so the
+   * address comes from the linked `users` account; a generator without one is
+   * logged and skipped (in-app notification still goes out by workerId).
+   */
+  private async notifyRejected(
+    rejected: RejectedHandoverRef[],
+    reason: string,
+    actorWorkerId: number | null,
+  ): Promise<void> {
+    try {
+      const byWorker = new Map<number, RejectedHandoverRef[]>();
+      for (const row of rejected) {
+        if (row.handoverWorkerId > 0) {
+          const list = byWorker.get(row.handoverWorkerId) ?? [];
+          list.push(row);
+          byWorker.set(row.handoverWorkerId, list);
+        }
+      }
+      if (!byWorker.size) return;
+
+      const [drawings, workers] = await Promise.all([
+        this.resolveDrawings(rejected.map((r) => r.drawingId)),
+        this.resolveWorkers([actorWorkerId]),
+      ]);
+      const actorRef =
+        actorWorkerId != null ? workers.get(actorWorkerId) : undefined;
+      const actorName = actorRef?.fullName || actorRef?.username || "Odobravač";
+
+      for (const [workerId, rows] of byWorker) {
+        const labels = rows.map((r) => {
+          const d = drawings.get(r.drawingId);
+          return d ? `${d.drawingNumber} — ${d.name}` : `crtež #${r.drawingId}`;
+        });
+        const subject =
+          rows.length === 1
+            ? `Primopredaja odbijena — ${
+                drawings.get(rows[0].drawingId)?.drawingNumber ??
+                `crtež #${rows[0].drawingId}`
+              }`
+            : `Primopredaja odbijena — ${stavkaLabel(rows.length)}`;
+        const message =
+          rows.length === 1
+            ? `${actorName} je odbio primopredaju za crtež ${labels[0]}. Razlog: ${reason}`
+            : `${actorName} je odbio ${stavkaLabel(rows.length)} primopredaje (${labels.join("; ")}). Razlog: ${reason}`;
+
+        try {
+          await this.notifications.notifyWorkers([workerId], {
+            type: "primopredaja.odbijena",
+            message,
+            refTable: "drawing_handovers",
+            refId: rows[0].id,
+          });
+        } catch (e) {
+          this.logger.error(
+            `In-app notifikacija primopredaja.odbijena generatoru ${workerId} FAIL: ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+
+        try {
+          const user = await this.prisma.user.findFirst({
+            where: { workerId },
+            select: { email: true, fullName: true },
+          });
+          if (!user?.email) {
+            this.logger.warn(
+              `Generator ${workerId} nema users nalog (email) — mejl o odbijanju preskočen (primopredaje: ${rows.map((r) => r.id).join(", ")}).`,
+            );
+            continue;
+          }
+          await this.mail.send({
+            to: user.email,
+            subject,
+            html:
+              `<p>${user.fullName ? `Poštovani ${user.fullName},` : "Poštovani,"}</p>` +
+              `<p>${actorName} je odbio sledeće stavke primopredaje:</p>` +
+              `<ul>${labels.map((l) => `<li>${l}</li>`).join("")}</ul>` +
+              `<p>Razlog odbijanja: <strong>${reason}</strong></p>` +
+              `<p>— ServoSync</p>`,
+          });
+        } catch (e) {
+          this.logger.error(
+            `Mejl primopredaja.odbijena generatoru ${workerId} FAIL: ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+      }
+    } catch (e) {
+      // Shared lookups (drawings/actor) failed — log and swallow, the reject
+      // itself already committed.
+      this.logger.error(
+        `Notifikacija primopredaja.odbijena FAIL: ${e instanceof Error ? e.message : String(e)}`,
       );
     }
   }

@@ -5,6 +5,7 @@ import {
   UnprocessableEntityException,
 } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
+import { MailService } from "../../common/mail/mail.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { HandoversService } from "./handovers.service";
 import type { AuthUser } from "../auth/jwt.strategy";
@@ -49,14 +50,21 @@ function prismaMock() {
     },
     // `resolveActorWorkerId` svež lookup (JWT bez workerId): default = nema veze
     // (workerId null) → actor sa workerId=null i dalje pada na 422 gde treba.
-    user: { findUnique: jest.fn().mockResolvedValue({ workerId: null }) },
+    // `findFirst` = email generatora za notifyRejected; default = nema users reda.
+    user: {
+      findUnique: jest.fn().mockResolvedValue({ workerId: null }),
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
     // Kriterijum tehnologa (§6.3 helper): default = vrsta 'Tehnolog' postoji (id 1).
     workerType: { findMany: jest.fn().mockResolvedValue([{ id: 1 }]) },
     drawing: {
       findUnique: jest.fn(),
       findMany: jest.fn().mockResolvedValue([]),
     },
-    project: { findUnique: jest.fn(), findMany: jest.fn().mockResolvedValue([]) },
+    project: {
+      findUnique: jest.fn(),
+      findMany: jest.fn().mockResolvedValue([]),
+    },
     handoverDraft: { findMany: jest.fn().mockResolvedValue([]) },
     handoverDraftItem: { findMany: jest.fn().mockResolvedValue([]) },
     handoverStatus: { findMany: jest.fn().mockResolvedValue([]) },
@@ -91,15 +99,18 @@ describe("HandoversService", () => {
   let service: HandoversService;
   let prisma: ReturnType<typeof prismaMock>;
   let notifications: { notifyWorkers: jest.Mock };
+  let mail: { send: jest.Mock };
 
   beforeEach(async () => {
     prisma = prismaMock();
     notifications = { notifyWorkers: jest.fn().mockResolvedValue(1) };
+    mail = { send: jest.fn().mockResolvedValue(true) };
     const mod: TestingModule = await Test.createTestingModule({
       providers: [
         HandoversService,
         { provide: PrismaService, useValue: prisma },
         { provide: NotificationsService, useValue: notifications },
+        { provide: MailService, useValue: mail },
       ],
     }).compile();
     service = mod.get(HandoversService);
@@ -460,6 +471,182 @@ describe("HandoversService", () => {
         service.approveBatch({ handoverIds: [1], technologistId: 999 }, actor),
       ).rejects.toBeInstanceOf(UnprocessableEntityException);
       expect(prisma.drawingHandover.updateMany).not.toHaveBeenCalled();
+    });
+  });
+
+  // ------------------------------------------ REJECT (mejl generatoru nacrta)
+
+  describe("reject — mejl odbijenice generatoru", () => {
+    /** PENDING primopredaja generatora 8 (crtež 10) — za reject tok. */
+    function mockPendingWithGenerator() {
+      prisma.drawingHandover.findUnique.mockResolvedValue({
+        id: 5,
+        statusId: 0,
+        isLocked: false,
+        legacyRnId: null,
+        handoverWorkerId: 8,
+        drawingId: 10,
+      });
+    }
+
+    /** Crtež 10 + odbijač 77 (ime) + users nalog generatora 8 (email). */
+    function mockNotifyContext() {
+      prisma.drawing.findMany.mockResolvedValue([
+        { id: 10, drawingNumber: "D-10", name: "Ploča" },
+      ]);
+      prisma.worker.findMany.mockResolvedValue([
+        { id: 77, fullName: "Šef Tehnolog", username: "sef" },
+      ]);
+      prisma.user.findFirst.mockResolvedValue({
+        email: "generator@servoteh.com",
+        fullName: "Generator Osam",
+      });
+    }
+
+    it("šalje TAČNO JEDAN mejl generatoru (razlog + odbijač) i in-app istog sadržaja", async () => {
+      mockPendingWithGenerator();
+      mockNotifyContext();
+
+      await service.reject(5, "nedostaje kota", actor);
+
+      // Email se razrešava preko users.worker_id (workers nema email).
+      expect(prisma.user.findFirst).toHaveBeenCalledWith({
+        where: { workerId: 8 },
+        select: { email: true, fullName: true },
+      });
+      expect(mail.send).toHaveBeenCalledTimes(1);
+      expect(mail.send).toHaveBeenCalledWith(
+        containing({
+          to: "generator@servoteh.com",
+          subject: "Primopredaja odbijena — D-10",
+        }),
+      );
+      const { html } = (mail.send.mock.calls[0] as [{ html: string }])[0];
+      expect(html).toContain("D-10");
+      expect(html).toContain("nedostaje kota");
+      expect(html).toContain("Šef Tehnolog");
+      // In-app generatoru — isti sadržaj (crtež + razlog + odbijač).
+      expect(notifications.notifyWorkers).toHaveBeenCalledTimes(1);
+      expect(notifications.notifyWorkers).toHaveBeenCalledWith(
+        [8],
+        containing({
+          type: "primopredaja.odbijena",
+          refTable: "drawing_handovers",
+          refId: 5,
+        }),
+      );
+      const [, payload] = notifications.notifyWorkers.mock.calls[0] as [
+        number[],
+        { message: string },
+      ];
+      expect(payload.message).toContain("nedostaje kota");
+      expect(payload.message).toContain("Šef Tehnolog");
+    });
+
+    it("approve NE šalje mejl ni in-app odbijenicu", async () => {
+      mockValidTechnologist();
+      prisma.drawingHandover.findUnique.mockResolvedValue({
+        id: 5,
+        statusId: 0,
+        isLocked: false,
+      });
+
+      await service.approve(5, { technologistId: 9 }, actor);
+
+      expect(mail.send).not.toHaveBeenCalled();
+      expect(notifications.notifyWorkers).not.toHaveBeenCalled();
+    });
+
+    it("generator bez users naloga → bez izuzetka, mejl preskočen, in-app ipak ide", async () => {
+      mockPendingWithGenerator();
+      prisma.drawing.findMany.mockResolvedValue([
+        { id: 10, drawingNumber: "D-10", name: "Ploča" },
+      ]);
+      prisma.user.findFirst.mockResolvedValue(null); // nema users reda
+
+      await expect(service.reject(5, "razlog", actor)).resolves.toEqual({
+        data: { id: 5 },
+      });
+      expect(mail.send).not.toHaveBeenCalled();
+      // In-app ide po workerId — ne zavisi od users naloga.
+      expect(notifications.notifyWorkers).toHaveBeenCalledWith(
+        [8],
+        containing({ type: "primopredaja.odbijena" }),
+      );
+    });
+
+    it("rejectBatch: 3 stavke ISTOG generatora → JEDAN mejl sa sve 3 stavke", async () => {
+      prisma.drawingHandover.findMany.mockResolvedValue([
+        {
+          id: 1,
+          statusId: 0,
+          isLocked: false,
+          legacyRnId: null,
+          handoverWorkerId: 8,
+          drawingId: 10,
+        },
+        {
+          id: 2,
+          statusId: 0,
+          isLocked: false,
+          legacyRnId: null,
+          handoverWorkerId: 8,
+          drawingId: 11,
+        },
+        {
+          id: 3,
+          statusId: 0,
+          isLocked: false,
+          legacyRnId: null,
+          handoverWorkerId: 8,
+          drawingId: 12,
+        },
+      ]);
+      prisma.drawingHandover.updateMany.mockResolvedValue({ count: 3 });
+      prisma.drawing.findMany.mockResolvedValue([
+        { id: 10, drawingNumber: "D-10", name: "Ploča" },
+        { id: 11, drawingNumber: "D-11", name: "Osovina" },
+        { id: 12, drawingNumber: "D-12", name: "Vratilo" },
+      ]);
+      prisma.user.findFirst.mockResolvedValue({
+        email: "generator@servoteh.com",
+        fullName: "Generator Osam",
+      });
+
+      const res = await service.rejectBatch(
+        { handoverIds: [1, 2, 3], reason: "pogrešne kote" },
+        actor,
+      );
+
+      // HTTP oblik ostaje { approved, skipped } — transitioned je interni.
+      expect(res).toEqual({ data: { approved: 3, skipped: [] } });
+      expect(mail.send).toHaveBeenCalledTimes(1);
+      expect(mail.send).toHaveBeenCalledWith(
+        containing({
+          to: "generator@servoteh.com",
+          subject: "Primopredaja odbijena — 3 stavke",
+        }),
+      );
+      const { html } = (mail.send.mock.calls[0] as [{ html: string }])[0];
+      expect(html).toContain("D-10");
+      expect(html).toContain("D-11");
+      expect(html).toContain("D-12");
+      expect(html).toContain("pogrešne kote");
+      expect(notifications.notifyWorkers).toHaveBeenCalledTimes(1);
+      expect(notifications.notifyWorkers).toHaveBeenCalledWith(
+        [8],
+        containing({ type: "primopredaja.odbijena" }),
+      );
+    });
+
+    it("pad MailService NE obara reject (best-effort)", async () => {
+      mockPendingWithGenerator();
+      mockNotifyContext();
+      mail.send.mockRejectedValue(new Error("resend down"));
+
+      await expect(service.reject(5, "razlog", actor)).resolves.toEqual({
+        data: { id: 5 },
+      });
     });
   });
 

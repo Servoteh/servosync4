@@ -51,6 +51,7 @@ import { SalesPrintModule } from "./modules/sales/print/sales-print.module";
 import { PdvModule } from "./modules/pdv/pdv.module";
 import { ZavrsniModule } from "./modules/zavrsni/zavrsni.module";
 import { GlModule } from "./modules/gl/gl.module";
+import { ZahteviModule } from "./modules/zahtevi/zahtevi.module";
 
 @Module({
   imports: [
@@ -123,6 +124,9 @@ import { GlModule } from "./modules/gl/gl.module";
     PdvModule,
     // 4.0 Faza 7 — Završni račun / bilansi (GKEval formule nad saldima konta).
     ZavrsniModule,
+    // Zahtevi — AI PM modul (bug/dorada/nova funkcija + AI trijaža + Decision Log +
+    // nagrađivanje; MODULE_SPEC_zahtevi §0). Platformski modul, nezavisan od 4.0 talasa.
+    ZahteviModule,
   ],
   controllers: [AppController],
   providers: [

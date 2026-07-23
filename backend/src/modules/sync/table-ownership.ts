@@ -190,3 +190,24 @@ export const ADDITIVE_REFRESH_TABLES = new Set<string>(["projects"]);
 export function isAdditiveRefreshTable(entity: string): boolean {
   return ADDITIVE_REFRESH_TABLES.has(entity);
 }
+
+/**
+ * PARITET BROJA za aditivne tabele (Nenad, 22.07.2026): u prelaznom periodu
+ * predmeti se otvaraju RUČNO U OBA sistema — prvo u 3.0 (koji dodeljuje broj),
+ * pa se ISTI broj prekuca u BigBit (BigBit ostaje nosilac fakturisanja do F5).
+ * BigBit kopija tako stiže na sync sa SVOJIM id-jem ali istim brojem —
+ * `project_number` NEMA unique constraint, pa bi slepi insert napravio DUPLI
+ * predmet (dva reda, isti broj; RN-ovi/aktivacije pokazuju na 3.0-native id).
+ *
+ * Guard u `GenericSyncer` (aditivna grana): izvorni red čija vrednost ovog
+ * polja već postoji na redu čiji id izvor NE vraća (= 3.0-native red) se
+ * PRESKAČE uz upozorenje u sync logu. Ako je kopija ranije već ušla (id joj
+ * je u izvornom skupu — obrisan pa ne-reinsertovan), sync je time i počisti.
+ */
+export const ADDITIVE_DEDUP_FIELDS: Record<string, string> = {
+  projects: "projectNumber",
+};
+
+export function additiveDedupFieldFor(entity: string): string | null {
+  return ADDITIVE_DEDUP_FIELDS[entity] ?? null;
+}

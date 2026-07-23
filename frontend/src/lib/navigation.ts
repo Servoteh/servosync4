@@ -24,6 +24,7 @@ import {
   FolderKanban,
   Hammer,
   IdCard,
+  Lightbulb,
   ListChecks,
   ListOrdered,
   MapPin,
@@ -294,6 +295,9 @@ export const NAV_DOMAINS: NavDomain[] = [
       // Vidljivost = settings.org_profile (admin/menadzment/pm/leadpm = 1.0
       // canAccessPodesavanja); admin-only tabovi se dodatno gejtuju u samoj strani.
       { label: 'Podešavanja', href: '/podesavanja', icon: SlidersHorizontal, requires: PERMISSIONS.SETTINGS_ORG_PROFILE, keywords: ['podesavanja', 'settings', 'rbac', 'izgled', 'tema'] },
+      // Zahtevi — AI PM modul (bug/dorada/nova funkcija + Decision Log). Domen „Sistem"
+      // (presuda §13.5); vidljivost = zahtevi.read (svima; row-scope u servisu sužava na svoje).
+      { label: 'Zahtevi', href: '/zahtevi', icon: Lightbulb, requires: PERMISSIONS.ZAHTEVI_READ, keywords: ['zahtevi', 'ideje', 'bug', 'greska', 'predlog', 'dorada', 'inbox'] },
       { label: 'Komitenti', href: '/customers', icon: Building2, requires: PERMISSIONS.DIRECTORY_READ, keywords: ['komitenti', 'kupci', 'klijenti'] },
       { label: 'Predmeti', href: '/projects', icon: Briefcase, requires: PERMISSIONS.DIRECTORY_READ, keywords: ['predmeti', 'projekti'] },
       { label: 'Sinhronizacije', href: '/syncs', icon: RefreshCw, requires: PERMISSIONS.SYNC_READ, keywords: ['sync', 'sinhronizacija'] },

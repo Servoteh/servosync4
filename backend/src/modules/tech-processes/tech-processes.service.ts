@@ -22,7 +22,7 @@ import {
 } from "../../common/pagination";
 import { byId, uniqueIds } from "../../common/relations";
 import { parseDateParam } from "../../common/date-params";
-import { parseBarcode, formatOrderBarcode } from "./barcode";
+import { parseBarcode, formatLabelBarcode } from "./barcode";
 import {
   type ScanTechProcessDto,
   validateScan,
@@ -197,6 +197,12 @@ export interface StopWorkByIdBody {
   pieceCount: number;
   /** Napomena (opciono) — upisuje se na sesiju i na `tech_processes` red (K0.1). */
   note?: string;
+  /**
+   * Deljeni red sa više radnika (Nenad 2026-07-22): bez ovoga „Kraj rada" zatvara
+   * SAMO svoju sesiju kad drugi radnici imaju otvorene sesije na operaciji;
+   * `true` = eksplicitan kiosk izbor „Zatvori za sve" (gasi red + tuđe sesije).
+   */
+  finishForAll?: boolean;
 }
 
 // --- oblici sirovih redova iz $queryRaw upita (snake_case iz baze) ---
@@ -716,6 +722,28 @@ export class TechProcessesService {
       },
     });
 
+    // Deljeni red (Nenad 2026-07-22): broj DRUGIH radnika sa otvorenom sesijom po
+    // redu — kiosk na „Kraj rada"/„Odustani" tada pita „samo moj rad / za sve".
+    // Jedan groupBy za sve redove (bez N+1); distinct radnici po (red, radnik).
+    const otherOpenGroups = rows.length
+      ? await this.prisma.workTimeEntry.groupBy({
+          by: ["techProcessId", "workerId"],
+          where: {
+            techProcessId: { in: rows.map((r) => r.id) },
+            stoppedAt: null,
+            workerId: { not: workerId },
+          },
+        })
+      : [];
+    const othersOpenByRow = new Map<number, number>();
+    for (const g of otherOpenGroups) {
+      if (g.techProcessId == null) continue;
+      othersOpenByRow.set(
+        g.techProcessId,
+        (othersOpenByRow.get(g.techProcessId) ?? 0) + 1,
+      );
+    }
+
     // `hasOpenSession` dolazi iz već učitanog skupa otvorenih sesija (gore) —
     // bez drugog upita ka work_time_entries.
     const triples = rows.map((r) => ({
@@ -739,6 +767,7 @@ export class TechProcessesService {
         // null kad RN/crtež ne postoji.
         drawing: drawings.get(key) ?? null,
         hasOpenSession: openSessionIds.has(r.id),
+        othersOpenCount: othersOpenByRow.get(r.id) ?? 0,
       };
     });
     return { data, meta: { workerId, workerCard } };
@@ -1428,7 +1457,22 @@ export class TechProcessesService {
     }
 
     // nalog → razreši RN + broj operacija u tehnološkom postupku + routing.
-    const { projectId, identNumber, variant } = decoded.fields;
+    // Nalepnica/legacy barkod (IDPredmet=0) → predmet po identu (22.07); kiosk
+    // dobija NORMALIZOVANA polja (realan projectId) da nastavak toka radi.
+    const { identNumber, variant } = decoded.fields;
+    let projectId: number;
+    try {
+      projectId = await this.resolveScanProjectId(
+        this.prisma,
+        decoded.fields.projectId,
+        identNumber,
+      );
+    } catch {
+      // Decode je PREVIEW ruta — nepoznat/dvosmislen ident ne baca (kiosk i za
+      // pun barkod prikazuje „Nalog nije nađen" i dozvoljava nastavak).
+      projectId = decoded.fields.projectId;
+    }
+    decoded.fields.projectId = projectId;
     const [workOrder, operationCount] = await Promise.all([
       this.prisma.workOrder.findFirst({
         where: { projectId, identNumber, variant },
@@ -1560,7 +1604,13 @@ export class TechProcessesService {
         `Revizija se ne poklapa: nalog=${order.fields.revision}, operacija=${operation.fields.revision} — barkodovi ne pripadaju istom otisku.`,
       );
 
-    const { projectId, identNumber } = order.fields;
+    const { identNumber } = order.fields;
+    // Nalepnica/legacy barkod (IDPredmet=0) → predmet po identu (22.07).
+    const projectId = await this.resolveScanProjectId(
+      this.prisma,
+      order.fields.projectId,
+      identNumber,
+    );
     const scannedVariant = order.fields.variant;
     const { operationNumber, workCenterCode, identMark } = operation.fields;
 
@@ -1785,6 +1835,17 @@ export class TechProcessesService {
           ...(worker ? { workerId: worker.id } : {}),
           isProcessFinished: true,
           finishedAt: new Date(),
+        },
+      });
+
+      // Higijena (Nenad 2026-07-22): gašenje reda zatvara i SVE otvorene sesije
+      // na njemu (deljeni red — bez ovoga tuđe sesije vise do noćnog auto-close-a).
+      await tx.workTimeEntry.updateMany({
+        where: { techProcessId: id, stoppedAt: null },
+        data: {
+          stoppedAt: new Date(),
+          autoClosed: true,
+          note: "operacija zatvorena — sesija automatski završena",
         },
       });
 
@@ -2109,7 +2170,13 @@ export class TechProcessesService {
       dto.orderBarcode,
       dto.operationBarcode,
     );
-    const { projectId, identNumber } = order.fields;
+    const { identNumber } = order.fields;
+    // Nalepnica/legacy barkod (IDPredmet=0) → predmet po identu (22.07).
+    const projectId = await this.resolveScanProjectId(
+      this.prisma,
+      order.fields.projectId,
+      identNumber,
+    );
     const scannedVariant = order.fields.variant;
     const { operationNumber, workCenterCode, identMark } = operation.fields;
     const machineAccessWarning = await this.checkMachineAccess(
@@ -2222,7 +2289,13 @@ export class TechProcessesService {
       dto.orderBarcode,
       dto.operationBarcode,
     );
-    const { projectId, identNumber } = order.fields;
+    const { identNumber } = order.fields;
+    // Nalepnica/legacy barkod (IDPredmet=0) → predmet po identu (22.07).
+    const projectId = await this.resolveScanProjectId(
+      this.prisma,
+      order.fields.projectId,
+      identNumber,
+    );
     const scannedVariant = order.fields.variant;
     const { operationNumber, workCenterCode, identMark } = operation.fields;
     const machineAccessWarning = await this.checkMachineAccess(
@@ -2418,10 +2491,13 @@ export class TechProcessesService {
         body.pieceCount,
         now,
         workOrder,
-        // FIX B: „Kraj rada" zatvara taj red i ispod plana (radnik ga završava).
+        // FIX B: „Kraj rada" zatvara taj red i ispod plana (radnik ga završava) —
+        // OSIM kad drugi radnici imaju otvorene sesije (deljeni red): tada se red
+        // gasi samo uz eksplicitno `finishForAll` sa kioska (Nenad 2026-07-22).
         true,
         // K0.1: napomena i na `tech_processes` red (uz sesiju gore).
         note,
+        body.finishForAll === true,
       );
 
       return {
@@ -2434,10 +2510,15 @@ export class TechProcessesService {
         reachedPlan: acc.reachedPlan,
         prioritized: acc.prioritized,
         workOrderCompleted: acc.workOrderCompleted,
+        finishSkipped: acc.finishSkipped,
+        otherOpenWorkerIds: acc.otherOpenWorkerIds,
       };
     });
 
-    const workers = await this.resolveWorkers([result.tp.workerId]);
+    const workers = await this.resolveWorkers([
+      result.tp.workerId,
+      ...result.otherOpenWorkerIds,
+    ]);
     // Null-safe kad nema sesije (star red / jedan sken): startedAt null → 0 sekundi.
     const elapsedSeconds = result.startedAt
       ? Math.max(
@@ -2469,6 +2550,12 @@ export class TechProcessesService {
         operationsPrioritized: result.prioritized,
         workOrderCompleted: result.workOrderCompleted,
         workOrder: result.workOrder,
+        // Deljeni red (Nenad 2026-07-22): gašenje preskočeno — drugi još rade.
+        finishSkipped: result.finishSkipped,
+        otherOpenWorkers: result.otherOpenWorkerIds.map(
+          (wid) =>
+            workers.get(wid) ?? { id: wid, fullName: null, username: null },
+        ),
         machineAccessWarning,
       },
     };
@@ -2515,7 +2602,7 @@ export class TechProcessesService {
       head.workCenterCode,
     );
 
-    await this.prisma.$transaction(async (tx) => {
+    const outcome = await this.prisma.$transaction(async (tx) => {
       const tp = await tx.techProcess.findUnique({ where: { id } });
       if (!tp)
         throw new NotFoundException(`Tehnološki postupak ${id} ne postoji`);
@@ -2544,13 +2631,35 @@ export class TechProcessesService {
         data: { stoppedAt: new Date() },
       });
 
-      await tx.techProcess.update({
-        where: { id },
-        data: { isProcessFinished: true, finishedAt: new Date() },
+      // Deljeni red (Nenad 2026-07-22): „Odustani" jednog radnika NE sme da ugasi
+      // red dok DRUGI imaju otvorene sesije — zatvara se samo sopstveno učešće,
+      // red ostaje otvoren ostalima (bez „za sve" opcije: dismiss ne evidentira
+      // komade, pa bi gašenje za sve bacilo tuđi rad).
+      const otherOpen = await tx.workTimeEntry.findFirst({
+        where: {
+          techProcessId: id,
+          stoppedAt: null,
+          workerId: { not: worker.id },
+        },
+        select: { id: true },
       });
+      if (!otherOpen)
+        await tx.techProcess.update({
+          where: { id },
+          data: { isProcessFinished: true, finishedAt: new Date() },
+        });
+      return { finishSkipped: Boolean(otherOpen) };
     });
 
-    return { data: { id, dismissed: true, machineAccessWarning } };
+    return {
+      data: {
+        id,
+        dismissed: true,
+        // Red NIJE ugašen (drugi radnici još rade) — zatvoreno samo svoje učešće.
+        finishSkipped: outcome.finishSkipped,
+        machineAccessWarning,
+      },
+    };
   }
 
   private validateStopWorkById(body: StopWorkByIdBody): void {
@@ -2573,6 +2682,11 @@ export class TechProcessesService {
       (typeof body.note !== "string" || body.note.trim().length > 500)
     )
       errors.push("Polje 'note' mora biti string do 500 karaktera.");
+    if (
+      body?.finishForAll !== undefined &&
+      typeof body.finishForAll !== "boolean"
+    )
+      errors.push("Polje 'finishForAll' mora biti boolean.");
     if (errors.length) throw new BadRequestException(errors);
   }
 
@@ -2605,6 +2719,11 @@ export class TechProcessesService {
     forceFinish = false,
     // K0.1: opciona napomena na `tech_processes` red (kumulativni red — prepisuje).
     note: string | null = null,
+    // Više radnika na istoj operaciji (Nenad 2026-07-22): red je DELJEN, pa „Kraj
+    // rada" jednog radnika NE sme da ga ugasi dok drugi imaju otvorene sesije —
+    // red bi nestao svima iz „Mojih otvorenih", a tuđe sesije ostale siročići.
+    // `finishForAll=true` je eksplicitan izbor sa kioska („Zatvori za sve").
+    finishForAll = false,
   ) {
     const planned = workOrder?.pieceCount ?? null;
 
@@ -2642,12 +2761,44 @@ export class TechProcessesService {
       },
     });
     const reachedPlan = planned !== null && updated.pieceCount >= planned;
-    const finish = reachedPlan || forceFinish;
-    if (finish)
+    // Tuđe otvorene sesije na DELJENOM redu (sopstvena je u ovom trenutku već
+    // zatvorena od pozivaoca; filter po workerId je zaštita od duplih sopstvenih).
+    // `reachedPlan` i dalje gasi bezuslovno (plan je plan) — higijena ispod počisti.
+    const otherOpenSessions = forceFinish
+      ? await tx.workTimeEntry.findMany({
+          where: {
+            techProcessId: tp.id,
+            stoppedAt: null,
+            workerId: { not: workerId },
+          },
+          select: { workerId: true },
+        })
+      : [];
+    const otherOpenWorkerIds = [
+      ...new Set(otherOpenSessions.map((s) => s.workerId)),
+    ];
+    const finish =
+      reachedPlan ||
+      (forceFinish && (finishForAll || otherOpenWorkerIds.length === 0));
+    // „Kraj rada" preskočio gašenje reda — drugi radnici još rade (kiosk bez
+    // izbora „za sve" / trka sa svežim START-om drugog radnika).
+    const finishSkipped = forceFinish && !finish;
+    if (finish) {
       updated = await tx.techProcess.update({
         where: { id: tp.id },
         data: { isProcessFinished: true, finishedAt: now },
       });
+      // Higijena: gašenje reda ne sme da ostavi tuđe sesije da vise (do noćnog
+      // auto-close-a + 422 na STOP). Vreme se čuva do `now`, komadi ostaju 0.
+      await tx.workTimeEntry.updateMany({
+        where: { techProcessId: tp.id, stoppedAt: null },
+        data: {
+          stoppedAt: now,
+          autoClosed: true,
+          note: "operacija zatvorena — sesija automatski završena",
+        },
+      });
+    }
     const prioritized = finish
       ? await this.setOperationDonePriority(
           tx,
@@ -2668,6 +2819,8 @@ export class TechProcessesService {
       reachedPlan,
       prioritized,
       workOrderCompleted,
+      finishSkipped,
+      otherOpenWorkerIds,
     };
   }
 
@@ -2721,7 +2874,13 @@ export class TechProcessesService {
       query.orderBarcode ?? "",
       query.operationBarcode ?? "",
     );
-    const { projectId, identNumber } = order.fields;
+    const { identNumber } = order.fields;
+    // Nalepnica/legacy barkod (IDPredmet=0) → predmet po identu (22.07).
+    const projectId = await this.resolveScanProjectId(
+      this.prisma,
+      order.fields.projectId,
+      identNumber,
+    );
     const { operationNumber, workCenterCode } = operation.fields;
 
     // Tekući RN (najviša varijanta — D5 klon otvara novi red); operacija se traži
@@ -2860,7 +3019,13 @@ export class TechProcessesService {
         "Operacija-barkod nema numerički broj operacije — kontrola nije moguća.",
       );
 
-    const { projectId, identNumber, variant } = order.fields;
+    const { identNumber, variant } = order.fields;
+    // Nalepnica/legacy barkod (IDPredmet=0) → predmet po identu (22.07).
+    const projectId = await this.resolveScanProjectId(
+      this.prisma,
+      order.fields.projectId,
+      identNumber,
+    );
     const { operationNumber, workCenterCode, identMark } = operation.fields;
 
     // A-5: (1) osoba mora biti OVLAŠĆEN kontrolor (sistematizacija „Kontrola" =
@@ -3359,7 +3524,8 @@ export class TechProcessesService {
 
   /**
    * `GET /label?workOrderId=…&quantity=…` — podaci za termalnu nalepnicu (§6):
-   * polja `Nalepnice` reporta + RNZ barkod (`formatOrderBarcode`, kiosk-dekodabilan).
+   * polja `Nalepnice` reporta + RNZ barkod (`formatLabelBarcode` — KRATKI oblik
+   * `RNZ:0:{ident}:0:0`, 22.07; kiosk/lokacije ga dekodiraju preko ident-fallback-a).
    * Front gradi TSPL (`tspl2`) i štampa preko proxy-ja. Reuse: štampa na kontroli i reprint.
    */
   async label(query: { workOrderId?: string; quantity?: string }) {
@@ -3684,6 +3850,33 @@ export class TechProcessesService {
       // `pieceCount` (plan RN-a) — FIX A poredi kumulativ operacije sa planom.
       select: { id: true, variant: true, pieceCount: true },
     });
+  }
+
+  /**
+   * KRATKI barkod nalepnice / legacy 1.0 nalepnica: polje IDPredmet je 0
+   * (`RNZ:0:{ident}:0:0` — `formatLabelBarcode`, 22.07). Predmet se tada
+   * razrešava po identu: nepostojeći → 404 (ista poruka kao ostatak toka),
+   * ident u VIŠE predmeta → 422 (ne pogađati — radnik skenira RN papir).
+   * Pun barkod (projectId > 0) prolazi netaknut, bez upita.
+   */
+  private async resolveScanProjectId(
+    tx: Prisma.TransactionClient,
+    projectId: number,
+    identNumber: string,
+  ): Promise<number> {
+    if (projectId > 0) return projectId;
+    const rows = await tx.workOrder.findMany({
+      where: { identNumber },
+      select: { projectId: true },
+      distinct: ["projectId"],
+    });
+    if (!rows.length)
+      throw new NotFoundException(`RN za ident ${identNumber} nije nađen.`);
+    if (rows.length > 1)
+      throw new UnprocessableEntityException(
+        `Ident ${identNumber} postoji u više predmeta — skenirajte barkod naloga sa RN papira (nalepnica nije dovoljna).`,
+      );
+    return rows[0].projectId;
   }
 
   /**
@@ -4097,12 +4290,11 @@ export class TechProcessesService {
 
     return {
       workOrderId: wo.id,
-      barcode: formatOrderBarcode({
-        projectId: wo.projectId,
-        identNumber: wo.identNumber,
-        variant: wo.variant,
-        revision: wo.revision,
-      }),
+      // KRATKI oblik (RNZ:0:{ident}:0:0, 22.07): pun barkod sa projectId +
+      // revizijom je predugačak za čitljiv Code128 na 80mm termalnoj nalepnici
+      // (pogon: „novi izgled neće da čita"). Predmet se pri skenu razrešava po
+      // identu (resolveScanProjectId); RN A4 papir zadržava pun oblik.
+      barcode: formatLabelBarcode(wo.identNumber),
       plannedPieces: wo.pieceCount,
       quantity,
       fields: {

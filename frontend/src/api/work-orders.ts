@@ -164,6 +164,12 @@ export interface WoListParams {
   completed?: '' | 'true' | 'false';
   /** true = samo dorada/škart nalozi (imaju izvorni RN) — Paket B t.2. */
   reworkOnly?: boolean;
+  /** Komitent (id) — legacy „Za komitenta" filter (tehnolozi, 22.07). */
+  customerId?: number;
+  /** Materijal (contains) — legacy „Za materijal". */
+  material?: string;
+  /** Dimenzija materijala (contains) — legacy „Za dim. materijala". */
+  materialDimension?: string;
 }
 
 /** Ulaz za DORADA/ŠKART child nalog (POST /:id/rework). */
@@ -209,6 +215,9 @@ export function useWorkOrders(params: WoListParams) {
   if (params.to) qs.set('to', params.to);
   if (params.completed) qs.set('completed', params.completed);
   if (params.reworkOnly) qs.set('reworkOnly', 'true');
+  if (params.customerId != null) qs.set('customerId', String(params.customerId));
+  if (params.material) qs.set('material', params.material);
+  if (params.materialDimension) qs.set('materialDimension', params.materialDimension);
   const query = qs.toString();
   return useQuery({
     queryKey: ['work-orders', params],

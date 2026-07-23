@@ -2278,21 +2278,21 @@ model PracenjeNote {
 /// `predmet_plan_prioritet`. `projectId` = projects.id (BigBit keš, meki ref bez FK — O1).
 /// Istorijski audit ide u 2.0 `audit_log` (append-only).
 model PredmetAktivacija {
-  id              Int      @id(map: "pk_predmet_aktivacije") @default(autoincrement()) @map("id")
-  projectId       Int      @map("project_id")
-  isActive        Boolean  @default(true) @map("is_active")
+  id                     Int      @id(map: "pk_predmet_aktivacije") @default(autoincrement()) @map("id")
+  projectId              Int      @map("project_id")
+  isActive               Boolean  @default(true) @map("is_active")
   /// Drugi checkbox iz Podešavanja predmeta (M7, Nenad 20.07.2026): SAMO za predmete sa
   /// ovim flagom se kreiraju Projektovanje (PB) i Plan montaže praćenja (sy15
   /// `je_projektovanje_montaza`; pb_list_projects = aktivan ∧ ovaj flag).
-  isProjektovanjeMontaza Boolean @default(false) @map("is_projektovanje_montaza")
+  isProjektovanjeMontaza Boolean  @default(false) @map("is_projektovanje_montaza")
   /// Redosled u listi aktivnih predmeta (↑↓); null = nerangiran.
-  sortPriority    Int?     @map("sort_priority")
+  sortPriority           Int?     @map("sort_priority")
   /// ⭐ Slot u „top-listi" plana (max je app-konfiguracija); null = nije na top-listi.
-  planPriority    Int?     @map("plan_priority")
-  createdByUserId Int?     @map("created_by_user_id")
-  updatedByUserId Int?     @map("updated_by_user_id")
-  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  planPriority           Int?     @map("plan_priority")
+  createdByUserId        Int?     @map("created_by_user_id")
+  updatedByUserId        Int?     @map("updated_by_user_id")
+  createdAt              DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@unique([projectId], map: "uq_predmet_aktivacije_project")
   @@index([planPriority], map: "idx_predmet_aktivacije_plan_priority")
@@ -2618,8 +2618,8 @@ model Account {
   createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  schemeLines AccountingSchemeLine[]
-  saldakonto  SaldakontoAccount?
+  schemeLines   AccountingSchemeLine[]
+  saldakonto    SaldakontoAccount?
   ledgerEntries LedgerEntry[]
 
   @@index([accountClass], map: "idx_accounts_class")
@@ -2633,7 +2633,7 @@ model AccountingScheme {
   description String?  @map("description") @db.VarChar(255) // Opis
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  lines AccountingSchemeLine[]
+  lines          AccountingSchemeLine[]
   journalEntries JournalEntry[]
 
   @@map("accounting_schemes")
@@ -3723,4 +3723,167 @@ model BalanceFormulaDefinition {
   @@unique([statementType, aop], map: "uq_balance_formula_definitions_type_aop")
   @@index([statementType], map: "idx_balance_formula_definitions_type")
   @@map("balance_formula_definitions")
+}
+
+// ── Zahtevi: AI PM modul (MODULE_SPEC_zahtevi.md §3) ──────────────────────────
+// Platformski modul (bug/dorada/nova funkcija sa AI trijažom + Decision Log +
+// nagrađivanje). App-owned (nula legacy veza), sopstveni prefiks change_request_*
+// zbog moguće buduće ekstrakcije u zaseban proizvod. Meki ref na users.id (Int, bez
+// @relation ka users — obrazac createdByUserId iz nabavke). AI polja (aiScore/finalScore/
+// reward*) su ODMAH u šemi iako AI logika stiže u F3. Statusi = String + /// (BACKEND_RULES §2).
+
+/// Zahtev korisnika (bug / dorada / nova funkcija) — AI PM modul.
+model ChangeRequest {
+  id               Int       @id(map: "pk_change_requests") @default(autoincrement()) @map("id")
+  reqNo            String    @map("req_no") @db.VarChar(12) /// "023/26" — brojač po godini, advisory lock (obrazac purchase-numbering)
+  title            String    @map("title") @db.VarChar(200)
+  description      String    @map("description") /// ORIGINAL podnosioca — immutable posle submit-a
+  expectedBehavior String?   @map("expected_behavior") /// za bug: šta treba da se desi
+  currentBehavior  String?   @map("current_behavior") /// za bug: šta se sada dešava
+  kind             String?   @map("kind") @db.VarChar(20) /// BUG | MISSING_1_0 | IMPROVEMENT_3_0 | FEATURE_4_0 | UI_UX | BUSINESS_RULE | OTHER
+  module           String?   @map("module") @db.VarChar(40) /// slug modula iz nav kataloga (npr. "odrzavanje", "nabavka")
+  areas            String[]  @map("areas") /// DATABASE | BACKEND | FRONTEND | MOBILE — višestruko
+  priorityUser     String?   @map("priority_user") @db.VarChar(10) /// LOW | MEDIUM | HIGH | CRITICAL — mišljenje podnosioca
+  priorityFinal    String?   @map("priority_final") @db.VarChar(10) /// isti skup — postavlja admin (AI samo predlaže u analizi)
+  aiScore          Int?      @map("ai_score") /// trijažna ocena 0–5 (§12.1) — AI PREDLOG
+  aiScoreReason    String?   @map("ai_score_reason") /// obrazloženje ocene (1–2 rečenice, prikazuje se podnosiocu)
+  finalScore       Int?      @map("final_score") /// potvrđena/korigovana ocena — postavlja SAMO admin (§12.2)
+  rewardAmount     Decimal?  @map("reward_amount") @db.Decimal(10, 2) /// snapshot iznosa iz važeće tarife pri admin potvrdi ocene
+  rewardStatus     String    @default("NONE") @map("reward_status") @db.VarChar(10) /// NONE | PROPOSED | CONFIRMED | PAID | EXCLUDED
+  rewardMonth      String?   @map("reward_month") @db.VarChar(7) /// "2026-08" — mesec obračuna (= mesec potvrde ocene)
+  status           String    @default("DRAFT") @map("status") @db.VarChar(20) /// §1.2: DRAFT|SUBMITTED|NEEDS_INFO|ANALYSIS_APPROVED|ANALYZED|APPROVED|PLANNED|IN_PROGRESS|READY_FOR_TEST|TESTING|DONE|REJECTED|MERGED|DEFERRED|ARCHIVED
+  createdByUserId  Int       @map("created_by_user_id")
+  submittedAt      DateTime? @map("submitted_at") @db.Timestamptz(6)
+  decidedAt        DateTime? @map("decided_at") @db.Timestamptz(6) /// vreme odobrenja/odbijanja realizacije
+  decidedByUserId  Int?      @map("decided_by_user_id")
+  decisionNote     String?   @map("decision_note") /// razlog odbijanja / napomena odluke
+  mergedIntoId     Int?      @map("merged_into_id") /// za MERGED — kanonski zahtev (meki ref)
+  branchName       String?   @map("branch_name") @db.VarChar(120) /// praćenje realizacije (V1 ručni unos)
+  prUrl            String?   @map("pr_url") @db.VarChar(300)
+  commitSha        String?   @map("commit_sha") @db.VarChar(64)
+  deliveredVersion String?   @map("delivered_version") @db.VarChar(60) /// npr. "main 2026-07-25" ili tag
+  implementedBy    String?   @map("implemented_by") @db.VarChar(120) /// "Opus agent / Nenad" — slobodan tekst
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  attachments ChangeRequestAttachment[]
+  analyses    ChangeRequestAiAnalysis[]
+  comments    ChangeRequestComment[]
+  events      ChangeRequestEvent[]
+
+  // req_no NOSI godinu u sufiksu ("NNN/YY") → globalni uq je uniqueность po godini
+  // (brojač se resetuje po godini u request-numbering.service; advisory lock serijalizuje).
+  @@unique([reqNo], map: "uq_change_requests_req_no")
+  @@index([status], map: "idx_change_requests_status")
+  @@index([createdByUserId], map: "idx_change_requests_created_by")
+  @@index([module], map: "idx_change_requests_module")
+  @@map("change_requests")
+}
+
+/// Prilog zahteva — slika, audio diktat ili dokument. Fajl u sy15 storage-u, meta-red je izvor istine.
+model ChangeRequestAttachment {
+  id              Int       @id(map: "pk_change_request_attachments") @default(autoincrement()) @map("id")
+  requestId       Int       @map("request_id")
+  kind            String    @map("kind") @db.VarChar(10) /// IMAGE | AUDIO | FILE
+  bucket          String    @map("bucket") @db.VarChar(60) /// "zahtevi-prilozi"
+  storagePath     String    @map("storage_path") @db.VarChar(300) /// "req/<requestId>/<uuid>.<ext>"
+  originalName    String    @map("original_name") @db.VarChar(200)
+  contentType     String    @map("content_type") @db.VarChar(80)
+  sizeBytes       Int       @map("size_bytes")
+  transcript      String?   @map("transcript") /// AUDIO: STT transkript — IMMUTABLE od nastanka
+  transcriptModel String?   @map("transcript_model") @db.VarChar(60) /// npr. "gpt-4o-transcribe"
+  createdByUserId Int       @map("created_by_user_id")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  deletedAt       DateTime? @map("deleted_at") @db.Timestamptz(6) /// soft-delete (fajl best-effort remove)
+
+  request ChangeRequest @relation(fields: [requestId], references: [id], onDelete: Cascade, map: "fk_cr_attachments_request")
+
+  @@index([requestId], map: "idx_cr_attachments_request")
+  @@map("change_request_attachments")
+}
+
+/// Jedan AI prolaz nad zahtevom. Više redova = istorija (retriage, ponovljena analiza).
+model ChangeRequestAiAnalysis {
+  id              Int       @id(map: "pk_change_request_ai_analyses") @default(autoincrement()) @map("id")
+  requestId       Int       @map("request_id")
+  kind            String    @map("kind") @db.VarChar(10) /// TRIAGE | DETAILED
+  status          String    @default("PENDING") @map("status") @db.VarChar(10) /// PENDING | DONE | FAILED
+  model           String?   @map("model") @db.VarChar(60)
+  result          Json?     @map("result") /// struktura §4.1 / §4.2 (izlaz extractWithTool alata)
+  claudePackage   String?   @map("claude_package") /// DETAILED: generisan markdown paket §4.3 (admin sme da doradi)
+  errorCode       String?   @map("error_code") @db.VarChar(40) /// FAILED: upstream_error | not_configured | ...
+  tokensIn        Int?      @map("tokens_in")
+  tokensOut       Int?      @map("tokens_out")
+  startedByUserId Int?      @map("started_by_user_id") /// null = automatska trijaža na submit
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  finishedAt      DateTime? @map("finished_at") @db.Timestamptz(6)
+
+  request ChangeRequest @relation(fields: [requestId], references: [id], onDelete: Cascade, map: "fk_cr_analyses_request")
+
+  @@index([requestId], map: "idx_cr_analyses_request")
+  @@map("change_request_ai_analyses")
+}
+
+/// Komentar/pitanje/odgovor na zahtevu (admin ↔ podnosilac). Dopune u NEEDS_INFO idu ovuda.
+model ChangeRequestComment {
+  id           Int      @id(map: "pk_change_request_comments") @default(autoincrement()) @map("id")
+  requestId    Int      @map("request_id")
+  authorUserId Int      @map("author_user_id")
+  body         String   @map("body")
+  isQuestion   Boolean  @default(false) @map("is_question") /// true = pitanje prosleđeno podnosiocu (može poteći iz AI analize)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  request ChangeRequest @relation(fields: [requestId], references: [id], onDelete: Cascade, map: "fk_cr_comments_request")
+
+  @@index([requestId], map: "idx_cr_comments_request")
+  @@map("change_request_comments")
+}
+
+/// Insert-only timeline zahteva (ko/šta/kad) — obrazac maint_wo_events.
+model ChangeRequestEvent {
+  id          Int      @id(map: "pk_change_request_events") @default(autoincrement()) @map("id")
+  requestId   Int      @map("request_id")
+  type        String   @map("type") @db.VarChar(30) /// CREATED|SUBMITTED|TRIAGED|TRIAGE_FAILED|ANALYSIS_APPROVED|ANALYZED|ANALYSIS_FAILED|AI_REJECTED|COMMENT|NEEDS_INFO|RESUBMITTED|APPROVED|REJECTED|MERGED|DEFERRED|WITHDRAWN|STATUS_CHANGED|LINK_ADDED|META_CHANGED|SCORE_CONFIRMED|REWARD_EXCLUDED|REWARD_PAID
+  actorUserId Int?     @map("actor_user_id") /// null = sistem/AI
+  data        Json?    @map("data") /// npr. {from,to} za STATUS_CHANGED, {field,old,new} za META_CHANGED
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  request ChangeRequest @relation(fields: [requestId], references: [id], onDelete: Cascade, map: "fk_cr_events_request")
+
+  @@index([requestId], map: "idx_cr_events_request")
+  @@map("change_request_events")
+}
+
+/// Decision Log — ADR-stil registar odluka (tehničkih i poslovnih), §6.
+model DecisionLogEntry {
+  id               Int      @id(map: "pk_decision_log_entries") @default(autoincrement()) @map("id")
+  title            String   @map("title") @db.VarChar(200)
+  decision         String   @map("decision") /// ŠTA je odlučeno
+  context          String?  @map("context") /// ZAŠTO — okolnosti, alternative
+  consequences     String?  @map("consequences") /// posledice / šta ovo menja
+  tags             String[] @map("tags") /// slobodni tagovi: "storage", "authz", "deploy"...
+  relatedRequestId Int?     @map("related_request_id") /// meki ref na change_requests.id
+  status           String   @default("ACTIVE") @map("status") @db.VarChar(12) /// ACTIVE | SUPERSEDED
+  supersededById   Int?     @map("superseded_by_id") /// meki ref na noviju odluku
+  decidedOn        DateTime @map("decided_on") @db.Date /// datum odluke (ne createdAt — odluke se unose i retroaktivno)
+  createdByUserId  Int      @map("created_by_user_id")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([status], map: "idx_decision_log_entries_status")
+  @@map("decision_log_entries")
+}
+
+/// Tarifa nagrada: ocena → iznos (§12.2). Promena = NOV red sa validFrom; istorija se čuva.
+model ChangeRequestRewardTariff {
+  id              Int      @id(map: "pk_change_request_reward_tariffs") @default(autoincrement()) @map("id")
+  score           Int      @map("score") /// 1–5 (ocena 0 nema iznos)
+  amount          Decimal  @map("amount") @db.Decimal(10, 2)
+  currency        String   @default("RSD") @map("currency") @db.VarChar(3)
+  validFrom       DateTime @map("valid_from") @db.Date
+  createdByUserId Int      @map("created_by_user_id")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([score, validFrom], map: "uq_cr_reward_tariffs_score_valid_from")
+  @@map("change_request_reward_tariffs")
 }
