@@ -24,6 +24,7 @@ import {
   type CreatedPaymentOrder,
   type CreatePaymentOrderLineInput,
 } from '@/api/placanja';
+import { PaymentOrdersPanel } from './payment-orders-panel';
 
 /**
  * Priprema plaćanja / virmani (Faza 4 §C). Obrazac „Lista" (DESIGN_SYSTEM §4.1)
@@ -395,6 +396,8 @@ export default function PlacanjaPage() {
             />
           }
         />
+
+        <PaymentOrdersPanel />
       </div>
 
       <ExportDialog

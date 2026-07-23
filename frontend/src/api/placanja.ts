@@ -204,3 +204,97 @@ export function downloadFxTxt(blob: Blob, filename: string): void {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
+
+// ─────────────────────────────────────── pregled naloga + potpis/plaćanje (BigBit paritet)
+
+/** Jedan nalog u pregledu — 1:1 sa listOrders() povratkom. */
+export interface PaymentOrderRow {
+  id: number;
+  orderNumber: string;
+  supplierId: number;
+  supplierAccount: string | null;
+  amount: string; // Decimal-as-string
+  currency: string;
+  referenceNumberCredit: string | null;
+  purpose: string | null;
+  dueDate: string | null;
+  status: PaymentOrderStatus;
+  isLocked: boolean;
+  exportedAt: string | null;
+}
+
+export interface PaymentOrdersResponse {
+  data: PaymentOrderRow[];
+  meta: { total: number; skip: number; take: number };
+}
+
+export interface PaymentOrderFilters {
+  status?: string;
+  supplierId?: number;
+  exported?: boolean;
+  dateFrom?: string;
+  dateTo?: string;
+  skip?: number;
+  take?: number;
+}
+
+/** Pregled kreiranih naloga za plaćanje (GET /placanja/orders). */
+export function usePaymentOrders(filters: PaymentOrderFilters = {}) {
+  const params = new URLSearchParams();
+  if (filters.status) params.set('status', filters.status);
+  if (filters.supplierId != null) params.set('supplierId', String(filters.supplierId));
+  if (filters.exported != null) params.set('exported', String(filters.exported));
+  if (filters.dateFrom) params.set('dateFrom', filters.dateFrom);
+  if (filters.dateTo) params.set('dateTo', filters.dateTo);
+  if (filters.skip != null) params.set('skip', String(filters.skip));
+  if (filters.take != null) params.set('take', String(filters.take));
+  const query = params.toString() ? `?${params.toString()}` : '';
+  return useQuery({
+    queryKey: ['placanja', 'orders', filters],
+    queryFn: () => apiFetch<PaymentOrdersResponse>(`${BASE}/orders${query}`),
+  });
+}
+
+function useInvalidateOrders() {
+  const qc = useQueryClient();
+  return () => qc.invalidateQueries({ queryKey: ['placanja', 'orders'] });
+}
+
+/** Potpis naloga (CREATED→SIGNED) — POST /placanja/orders/:id/sign. */
+export function useSignPaymentOrder() {
+  const invalidate = useInvalidateOrders();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<Envelope<{ id: number; status: string }>>(`${BASE}/orders/${id}/sign`, {
+        method: 'POST',
+        body: '{}',
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/** Masovni potpis (BigBit PotpisiVirmane) — POST /placanja/orders/sign-batch. */
+export function useSignPaymentOrdersBatch() {
+  const invalidate = useInvalidateOrders();
+  return useMutation({
+    mutationFn: (ids: number[]) =>
+      apiFetch<Envelope<{ signed: number; skipped: { id: number; reason: string }[] }>>(
+        `${BASE}/orders/sign-batch`,
+        { method: 'POST', body: JSON.stringify({ ids }) },
+      ),
+    onSuccess: invalidate,
+  });
+}
+
+/** Plaćanje naloga (SIGNED→PAID) — POST /placanja/orders/:id/pay. */
+export function usePayPaymentOrder() {
+  const invalidate = useInvalidateOrders();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<Envelope<{ id: number; status: string }>>(`${BASE}/orders/${id}/pay`, {
+        method: 'POST',
+        body: '{}',
+      }),
+    onSuccess: invalidate,
+  });
+}

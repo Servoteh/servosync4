@@ -259,6 +259,87 @@ export class PaymentPreparationService {
     await this.transition(orderId, "SIGNED", "PAID", actorUserId);
   }
 
+  /**
+   * Masovni potpis (BigBit PotpisiVirmane je grupna akcija) — CREATED→SIGNED za više naloga.
+   * Skip-ne-abort po nalogu: nalog koji nije u CREATED / zaključan se preskače uz razlog,
+   * ostali prolaze. Vraća broj potpisanih + listu preskočenih.
+   */
+  async markSignedBatch(
+    orderIds: number[],
+    actorUserId?: number,
+  ): Promise<{ signed: number; skipped: { id: number; reason: string }[] }> {
+    const skipped: { id: number; reason: string }[] = [];
+    let signed = 0;
+    for (const id of orderIds) {
+      try {
+        await this.transition(id, "CREATED", "SIGNED", actorUserId);
+        signed += 1;
+      } catch (e) {
+        skipped.push({
+          id,
+          reason: e instanceof Error ? e.message : "nepoznata greška",
+        });
+      }
+    }
+    return { signed, skipped };
+  }
+
+  /**
+   * Pregled naloga za plaćanje (BigBit paritet — bez ovoga refresh gubi naloge).
+   * Filteri: status, supplierId, exported (null/not-null), period po createdAt. Paginacija.
+   * Envelope { data, meta } (BACKEND_RULES §6). Decimal → string u JSON-u.
+   */
+  async listOrders(params: {
+    status?: string;
+    supplierId?: number;
+    exported?: boolean;
+    dateFrom?: string;
+    dateTo?: string;
+    skip?: number;
+    take?: number;
+  }) {
+    const where: Prisma.PaymentOrderWhereInput = {};
+    if (params.status) where.status = params.status;
+    if (params.supplierId != null) where.supplierId = params.supplierId;
+    if (params.exported === true) where.exportedAt = { not: null };
+    if (params.exported === false) where.exportedAt = null;
+    if (params.dateFrom || params.dateTo) {
+      where.createdAt = {};
+      if (params.dateFrom) where.createdAt.gte = new Date(params.dateFrom);
+      if (params.dateTo) where.createdAt.lte = new Date(params.dateTo);
+    }
+
+    const take = Math.min(params.take ?? 50, 200);
+    const skip = params.skip ?? 0;
+    const [rows, total] = await this.prisma.$transaction([
+      this.prisma.paymentOrder.findMany({
+        where,
+        orderBy: [{ status: "asc" }, { createdAt: "desc" }],
+        skip,
+        take,
+      }),
+      this.prisma.paymentOrder.count({ where }),
+    ]);
+
+    return {
+      data: rows.map((o) => ({
+        id: o.id,
+        orderNumber: o.orderNumber,
+        supplierId: o.supplierId,
+        supplierAccount: o.supplierAccount,
+        amount: o.amount.toFixed(2),
+        currency: o.currency,
+        referenceNumberCredit: o.referenceNumberCredit,
+        purpose: o.purpose,
+        dueDate: o.dueDate,
+        status: o.status,
+        isLocked: o.isLocked,
+        exportedAt: o.exportedAt,
+      })),
+      meta: { total, skip, take },
+    };
+  }
+
   // ───────────────────────────────────────────────────────────────────────────
 
   /** Poziv na broj u korist (primalac) — PNBOdobBroj + kontrolni sufiks. */

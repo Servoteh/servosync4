@@ -3,6 +3,8 @@ import {
   Controller,
   Get,
   Header,
+  Param,
+  ParseIntPipe,
   Post,
   Query,
   Req,
@@ -44,6 +46,63 @@ export class PlacanjaController {
     const at = cutoff ? new Date(cutoff) : new Date();
     const data = await this.preparation.selectDue(at);
     return { data, meta: { cutoff: at.toISOString(), count: data.length } };
+  }
+
+  /** Pregled kreiranih naloga za plaćanje (BigBit paritet — bez ovoga refresh gubi naloge). */
+  @Get("orders")
+  async listOrders(
+    @Query("status") status?: string,
+    @Query("supplierId") supplierId?: string,
+    @Query("exported") exported?: string,
+    @Query("dateFrom") dateFrom?: string,
+    @Query("dateTo") dateTo?: string,
+    @Query("skip") skip?: string,
+    @Query("take") take?: string,
+  ) {
+    return this.preparation.listOrders({
+      status,
+      supplierId: supplierId ? Number(supplierId) : undefined,
+      exported:
+        exported === "true" ? true : exported === "false" ? false : undefined,
+      dateFrom,
+      dateTo,
+      skip: skip ? Number(skip) : undefined,
+      take: take ? Number(take) : undefined,
+    });
+  }
+
+  /** CREATED → SIGNED (potpis naloga). */
+  @Post("orders/:id/sign")
+  @RequirePermission(PERMISSIONS.PLACANJA_PREPARE)
+  async sign(
+    @Param("id", ParseIntPipe) id: number,
+    @Req() req: { user: AuthUser },
+  ) {
+    await this.preparation.markSigned(id, req.user.userId);
+    return { data: { id, status: "SIGNED" } };
+  }
+
+  /** Masovni potpis (BigBit PotpisiVirmane) — CREATED→SIGNED za listu naloga. */
+  @Post("orders/sign-batch")
+  @RequirePermission(PERMISSIONS.PLACANJA_PREPARE)
+  async signBatch(
+    @Body() body: { ids: number[] },
+    @Req() req: { user: AuthUser },
+  ) {
+    const ids = Array.isArray(body?.ids) ? body.ids : [];
+    const result = await this.preparation.markSignedBatch(ids, req.user.userId);
+    return { data: result };
+  }
+
+  /** SIGNED → PAID (nalog plaćen). */
+  @Post("orders/:id/pay")
+  @RequirePermission(PERMISSIONS.PLACANJA_PREPARE)
+  async pay(
+    @Param("id", ParseIntPipe) id: number,
+    @Req() req: { user: AuthUser },
+  ) {
+    await this.preparation.markPaid(id, req.user.userId);
+    return { data: { id, status: "PAID" } };
   }
 
   /** Kreiraj naloge za plaćanje iz selekcije (DEDUP po poziv-na-broj + dobavljač). */
