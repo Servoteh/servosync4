@@ -1050,11 +1050,21 @@ function OperationDialog({
             placeholder="Šifra/naziv radnog centra…"
           />
         </FormField>
-        <FormField label="Opis rada" required>
+        <FormField label="Opis rada" required hint="Enter = novi red; Ctrl+Enter čuva.">
           <Textarea
             rows={3}
             value={form.workDescription}
             onChange={(e) => set({ workDescription: e.target.value })}
+            // Bug 009/26: opis operacije je višelinijski (Enter = novi red), a čuvanje
+            // je EKSPLICITNO — dugmetom „Dodaj/Sačuvaj" ili Ctrl/⌘+Enter. Raniji
+            // jednolinijski Input je Enterom izbacivao iz unosa i gubio tekst; ovde
+            // Enter NE snima (samo Ctrl/⌘+Enter), pa se ništa ne gubi.
+            onKeyDown={(e) => {
+              if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                e.preventDefault();
+                void submit();
+              }
+            }}
           />
         </FormField>
         <div className="grid grid-cols-2 gap-3">
