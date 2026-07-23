@@ -97,6 +97,11 @@ describe("Kadrovska permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
 
   beforeAll(async () => {
     process.env.AUTHZ_ENFORCE = "true"; // pre instanciranja PermissionsGuard-a
+    // Salary-brava dozvoljava kadrovska.salary SAMO email-allowlisti (default
+    // Nenad+Nevena), nezavisno od role. Ovaj spec testira ROLA-sloj, pa test-email
+    // (test@servoteh.com) ide na allowlistu da brava propusti; samu bravu pokriva
+    // effective-permission.spec.ts.
+    process.env.KADROVSKA_SALARY_ALLOWLIST = "test@servoteh.com";
     const moduleRef = await Test.createTestingModule({
       controllers: [KadrovskaController],
       providers: [
@@ -133,6 +138,7 @@ describe("Kadrovska permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
   afterAll(async () => {
     await app.close();
     delete process.env.AUTHZ_ENFORCE;
+    delete process.env.KADROVSKA_SALARY_ALLOWLIST;
   });
 
   const get = (path: string, role?: string) => {
