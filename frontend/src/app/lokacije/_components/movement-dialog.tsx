@@ -160,9 +160,11 @@ export function MovementDialog({
     try {
       enqueueMovement(payload);
       setError(null);
+      // Neutralna poruka za OBA konteksta: desktop („Neposlato" baner je na
+      // Početnoj tabli, ne na admin Sync tabu) i mobilni (badge u zaglavlju).
       setQueued(
-        'Zapis je sačuvan lokalno i čeka slanje kad se mreža vrati (šalje se automatski). ' +
-          'Otvori „Neposlato" na Sync tabu da proveriš / ručno pošalješ.',
+        'Zapis je sačuvan lokalno i šalje se automatski čim se mreža vrati. ' +
+          'Broj neposlatih vidiš u zaglavlju (mobilni) / na Početnoj tabli (desktop).',
       );
     } catch (e) {
       // Upis u lokalni queue NIJE uspeo (quota / privatni režim / storage isključen) —
@@ -199,7 +201,9 @@ export function MovementDialog({
             </FormField>
             <FormField label="Stavka (TP ref / crtež)" required>
               <div className="flex gap-1.5">
-                <input className={INPUT} value={itemRefId} onChange={(e) => setItemRefId(e.target.value)} placeholder="npr. 2/415" />
+                {/* min-w-0: bez ovoga input (flex item, intrinzični min-width) gura
+                    skener dugme van ivice dijaloga na telefonu (grid kolona ~140px). */}
+                <input className={`${INPUT} min-w-0`} value={itemRefId} onChange={(e) => setItemRefId(e.target.value)} placeholder="npr. 2/415" />
                 <button
                   type="button"
                   onClick={() => setScan('item')}

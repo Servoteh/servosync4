@@ -1199,7 +1199,13 @@ export function ScanOverlay({
             value={manual}
             onChange={(e) => setManual(e.target.value)}
             placeholder="Ručni unos / HID čitač → Enter"
-            autoFocus
+            // autoFocus samo na uređajima sa mišem/HID čitačem (kiosk PC): na
+            // telefonu bi programatski fokus u tap gestu digao soft tastaturu
+            // PREKO kamere pre svakog skena. Tap u polje i dalje otvara tastaturu.
+            autoFocus={
+              typeof window === 'undefined' ||
+              !window.matchMedia('(pointer: coarse)').matches
+            }
           />
           <button
             type="submit"

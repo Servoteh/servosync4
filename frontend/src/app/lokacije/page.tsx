@@ -68,7 +68,19 @@ export default function LokacijePage() {
 
   return (
     <AppShell>
-      <PageHeader title="Lokacije" />
+      <PageHeader
+        title="Lokacije"
+        actions={
+          /* Mobilni režim (paritet 1.0 magacin) — /mob/lokacije, namerno VAN /m/*
+             (worker proxy sve /m/* šalje na 1.0). Otvoriti na telefonu. */
+          <button
+            onClick={() => router.push('/mob/lokacije')}
+            className="rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2"
+          >
+            📱 Mobilni režim
+          </button>
+        }
+      />
 
       <div className="flex-1 space-y-4 overflow-auto p-6">
         <div className="overflow-x-auto">
