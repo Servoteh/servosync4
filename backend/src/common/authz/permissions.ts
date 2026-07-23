@@ -178,6 +178,16 @@ export const PERMISSIONS = {
   MONTAZA_EDIT: "montaza.edit",
   MONTAZA_IZVESTAJI: "montaza.izvestaji",
   MONTAZA_AI_ADMIN: "montaza.ai_admin",
+  // Neusaglašenosti na montaži — zaseban 2.0-native modul (zahtev 004/26,
+  // MODULE_SPEC_montaza_neusaglasenosti §2). read+write idu CELOM montaža krugu
+  // (svaka rola koja ima montaza.read — Montaža je ungated), manage (istraga +
+  // promena statusa) = admin/menadzment/pm/leadpm/tim_lider (= MONTAZA_EDIT skup).
+  //   read   = uvid u listu/detalj neusaglašenosti
+  //   write  = prijava neusaglašenosti + dodavanje fotki (svako sa pristupom Montaži)
+  //   manage = istraga (odeljenje/izvršilac/nalaz/mere) + prelaz statusa
+  MONTAZA_NEUSAGLASENOSTI_READ: "montaza.neusaglasenosti.read",
+  MONTAZA_NEUSAGLASENOSTI_WRITE: "montaza.neusaglasenosti.write",
+  MONTAZA_NEUSAGLASENOSTI_MANAGE: "montaza.neusaglasenosti.manage",
   // Plan proizvodnje — TALAS C. Modul „proizvodnja" je ROUTER-gated u 1.0
   // (canAccessPlanProizvodnje) — nosi i Planiranje i Praćenje.
   //   read        = canAccessPlanProizvodnje (9 rola, v. role-permissions)

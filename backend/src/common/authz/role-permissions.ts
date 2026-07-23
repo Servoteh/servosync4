@@ -580,21 +580,43 @@ const MONTAZA_EDIT_ROLES: readonly string[] = [
   ROLES.MENADZMENT,
   ROLES.TIM_LIDER, // C1 — PRAVI edit (1.0 bag-by-omission ispravljen)
 ];
-const PP_EDIT_ROLES: readonly string[] = [ROLES.ADMIN, ROLES.PM, ROLES.MENADZMENT];
+const PP_EDIT_ROLES: readonly string[] = [
+  ROLES.ADMIN,
+  ROLES.PM,
+  ROLES.MENADZMENT,
+];
 const PP_FORCE_ROLES: readonly string[] = [ROLES.ADMIN, ROLES.MENADZMENT];
-const PRACENJE_MANAGE_ROLES: readonly string[] = [ROLES.ADMIN, ROLES.MENADZMENT];
+const PRACENJE_MANAGE_ROLES: readonly string[] = [
+  ROLES.ADMIN,
+  ROLES.MENADZMENT,
+];
 const ADMIN_ONLY: readonly string[] = [ROLES.ADMIN];
 
 /** Talas-C permisije koje rola dobija po pariteta gate-ova (bez ADMIN — on ima ALL). */
 function talasCGrants(role: string): PermissionKey[] {
-  const g: PermissionKey[] = [P.MONTAZA_READ, P.MONTAZA_IZVESTAJI];
-  if (PP_READ_ROLES.includes(role)) g.push(P.PLAN_PROIZVODNJE_READ, P.PRACENJE_READ);
-  if (MONTAZA_EDIT_ROLES.includes(role)) g.push(P.MONTAZA_EDIT);
-  if (PP_EDIT_ROLES.includes(role)) g.push(P.PLAN_PROIZVODNJE_EDIT, P.PRACENJE_EDIT);
+  // Montaža je UNGATED (svaka rola u mapi ima montaza.read) → Neusaglašenosti read+write
+  // idu ISTOM krugu (zahtev 004/26 §2: „ceo montaža krug"; prijavljuju svi sa pristupom
+  // Montaži). manage (istraga/status) = MONTAZA_EDIT_ROLES (admin/menadzment/pm/leadpm/tim_lider).
+  const g: PermissionKey[] = [
+    P.MONTAZA_READ,
+    P.MONTAZA_IZVESTAJI,
+    P.MONTAZA_NEUSAGLASENOSTI_READ,
+    P.MONTAZA_NEUSAGLASENOSTI_WRITE,
+  ];
+  if (PP_READ_ROLES.includes(role))
+    g.push(P.PLAN_PROIZVODNJE_READ, P.PRACENJE_READ);
+  if (MONTAZA_EDIT_ROLES.includes(role))
+    g.push(P.MONTAZA_EDIT, P.MONTAZA_NEUSAGLASENOSTI_MANAGE);
+  if (PP_EDIT_ROLES.includes(role))
+    g.push(P.PLAN_PROIZVODNJE_EDIT, P.PRACENJE_EDIT);
   if (PP_FORCE_ROLES.includes(role)) g.push(P.PLAN_PROIZVODNJE_FORCE);
   if (PRACENJE_MANAGE_ROLES.includes(role)) g.push(P.PRACENJE_MANAGE);
   if (ADMIN_ONLY.includes(role))
-    g.push(P.PLAN_PROIZVODNJE_KOOP_ADMIN, P.PRACENJE_PRIORITET, P.MONTAZA_AI_ADMIN);
+    g.push(
+      P.PLAN_PROIZVODNJE_KOOP_ADMIN,
+      P.PRACENJE_PRIORITET,
+      P.MONTAZA_AI_ADMIN,
+    );
   return g;
 }
 
@@ -611,7 +633,7 @@ export const ROLE_PERMISSIONS: Partial<
       ? perms
       : [...new Set<PermissionKey>([...(perms ?? []), ...talasCGrants(role)])],
   ]),
-) as Partial<Record<RoleKey, readonly PermissionKey[]>>;
+);
 
 /**
  * TALAS D — Projektni biro + Moj profil + Podešavanja (MODULE_SPEC_pb_profil_podesavanja_30.md

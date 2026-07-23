@@ -108,6 +108,12 @@ export const PERMISSIONS = {
   MONTAZA_EDIT: 'montaza.edit',
   MONTAZA_IZVESTAJI: 'montaza.izvestaji',
   MONTAZA_AI_ADMIN: 'montaza.ai_admin',
+  // Neusaglašenosti na montaži — zaseban 2.0-native modul (zahtev 004/26).
+  // read+write = ceo montaža krug (svako sa pristupom Montaži prijavljuje); manage
+  // (istraga + status) = admin/menadzment/pm/leadpm/tim_lider. Mirror BE kataloga.
+  MONTAZA_NEUSAGLASENOSTI_READ: 'montaza.neusaglasenosti.read',
+  MONTAZA_NEUSAGLASENOSTI_WRITE: 'montaza.neusaglasenosti.write',
+  MONTAZA_NEUSAGLASENOSTI_MANAGE: 'montaza.neusaglasenosti.manage',
   PLAN_PROIZVODNJE_READ: 'plan_proizvodnje.read',
   PLAN_PROIZVODNJE_EDIT: 'plan_proizvodnje.edit',
   PLAN_PROIZVODNJE_FORCE: 'plan_proizvodnje.force',
