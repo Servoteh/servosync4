@@ -437,6 +437,18 @@ export class BankStatementService {
       throw new ConflictException(`Izvod ${statementId} je već proknjižen.`);
     }
 
+    // Ne knjiži izvod dok ima NEUPARENIH stavki: knjiženje bez komitenta na 2040/4350
+    // pravi saldakonto zapis koji se ne može zatvoriti (review VISOK). Priliv MORA imati
+    // uparenog komitenta (matchedCustomerId); odliv na 4350 isto. Odbij dok nije upareno.
+    const unmatched = statement.lines.filter(
+      (l) => l.status !== "POSTED" && l.matchedCustomerId == null,
+    );
+    if (unmatched.length > 0) {
+      throw new UnprocessableEntityException(
+        `Izvod ima ${unmatched.length} neuparenih stavki (bez komitenta). Prvo „Upari" ili ručno poveži svaku stavku pre knjiženja.`,
+      );
+    }
+
     const bankAccountCode = await this.resolveBankAccount(
       statement.bankAccount,
       dto.bankAccountCode,
@@ -449,6 +461,18 @@ export class BankStatementService {
     const PAYABLE_ACCOUNT = "4350"; // dobavljači u zemlji
 
     return this.prisma.$transaction(async (tx) => {
+      // Compare-and-swap: zaključaj izvod na POSTED PRE kreiranja naloga. Ako je druga
+      // transakcija stigla prva (count===0), prekini — sprečava dupli GL nalog (review VISOK).
+      const claimed = await tx.bankStatement.updateMany({
+        where: { id: statementId, status: { not: "POSTED" } },
+        data: { status: "POSTED" },
+      });
+      if (claimed.count !== 1) {
+        throw new ConflictException(
+          `Izvod ${statementId} je već proknjižen (paralelno knjiženje).`,
+        );
+      }
+
       const lines = statement.lines;
 
       let bankDebitTotal = ZERO; // Σ priliva (banka duguje)
@@ -531,17 +555,17 @@ export class BankStatementService {
           companyId: 0,
           documentDate: statement.statementDate,
           postingDate: statement.statementDate,
-          status: "draft",
+          // POSTED (ne draft): izvod-nalog MORA ući u karticu konta/bilans/saldakonti,
+          // koji čitaju samo status IN ('posted','locked') (review VISOK — inače promet
+          // banke tiho ostaje van GK). Isti obrazac kao PostingEngine.postManualEntry.
+          status: "posted",
           createdByUserId: actor?.userId ?? null,
           lines: { create: ledgerLines },
         },
         include: { lines: true },
       });
 
-      await tx.bankStatement.update({
-        where: { id: statementId },
-        data: { status: "POSTED" },
-      });
+      // Izvod je već zaključan na POSTED (CAS gore); linije prevedi na POSTED.
       await tx.bankStatementLine.updateMany({
         where: { statementId },
         data: { status: "POSTED" },

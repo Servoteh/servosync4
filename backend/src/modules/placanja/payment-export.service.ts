@@ -135,12 +135,18 @@ export class PaymentExportService {
     // Access `Print #` završava svaki red CRLF-om.
     const txt = lines.join("\r\n") + "\r\n";
 
-    // Označi izvezene naloge (OznaciPlaceneVirmane) — exportedAt + SIGNED→PAID
-    // (izvoz u banku = plaćanje izvršeno; nalog prelazi u konačan status).
-    await this.prisma.paymentOrder.updateMany({
-      where: { id: { in: orders.map((o) => o.id) } },
+    // Compare-and-swap: označi PLAĆENIM SAMO naloge koji su još SIGNED (OznaciPlaceneVirmane).
+    // Ako je paralelni izvoz već prebacio neki u PAID, count < orders.length → prekini
+    // BEZ vraćanja TXT-a, da se isti virman ne izveze/pošalje u banku dvaput (review VISOK).
+    const marked = await this.prisma.paymentOrder.updateMany({
+      where: { id: { in: orders.map((o) => o.id) }, status: "SIGNED" },
       data: { exportedAt: new Date(), status: "PAID" },
     });
+    if (marked.count !== orders.length) {
+      throw new ConflictException(
+        `Izvoz prekinut: ${orders.length - marked.count} nalog(a) je već izvezeno/plaćeno (dvostruki izvoz sprečen). Osveži listu.`,
+      );
+    }
 
     return { txt, exportedCount: orders.length };
   }

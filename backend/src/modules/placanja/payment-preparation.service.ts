@@ -184,20 +184,40 @@ export class PaymentPreparationService {
 
     const debitModel = dto.referenceModelDebit ?? "99";
 
-    for (let i = 0; i < dto.lines.length; i++) {
-      const line = dto.lines[i];
-      const referenceNumberCredit = this.buildCreditReference(line);
-      const referenceNumberDebit = line.documentNumber
-        ? computeReferenceNumber(debitModel, line.documentNumber)
-        : null;
+    // Ceo batch je ATOMIČAN (review VISOK): ako bilo koji nalog padne (npr. dedup P2002),
+    // cela transakcija se rollback-uje — nema parcijalno kreiranih naloga koji bi pri
+    // retry-u obarali na već-postojeće A/B. Sve-ili-ništa.
+    await this.prisma.$transaction(async (tx) => {
+      for (let i = 0; i < dto.lines.length; i++) {
+        const line = dto.lines[i];
+        const referenceNumberCredit = this.buildCreditReference(line);
+        const referenceNumberDebit = line.documentNumber
+          ? computeReferenceNumber(debitModel, line.documentNumber)
+          : null;
 
-      const orderNumber =
-        dto.seriesNumber && dto.lines.length === 1
-          ? dto.seriesNumber
-          : `${dto.seriesNumber ?? "AUTO"}-${i + 1}`;
+        const orderNumber =
+          dto.seriesNumber && dto.lines.length === 1
+            ? dto.seriesNumber
+            : `${dto.seriesNumber ?? "AUTO"}-${i + 1}`;
 
-      try {
-        const order = await this.prisma.paymentOrder.create({
+        // Dedup po IZVORNOJ otvorenoj stavci (review VISOK): @@unique(referenceNumberCredit,
+        // supplierId) ne hvata dvostruko plaćanje kad je PNB prazan (PG tretira NULL kao
+        // različit). Prava zaštita — ista otvorena stavka (sourceLedgerEntryId) sme dati
+        // najviše JEDAN aktivan nalog. Radi i bez PNB-a.
+        if (line.sourceLedgerEntryId != null) {
+          const dup = await tx.paymentOrder.findFirst({
+            where: { sourceLedgerEntryId: line.sourceLedgerEntryId },
+            select: { id: true, orderNumber: true },
+          });
+          if (dup) {
+            throw new ConflictException(
+              `Otvorena stavka je već u nalogu ${dup.orderNumber} — dvostruko plaćanje odbijeno.`,
+            );
+          }
+        }
+
+        try {
+          const order = await tx.paymentOrder.create({
           data: {
             orderNumber,
             supplierId: line.supplierId,
@@ -243,9 +263,10 @@ export class PaymentPreparationService {
               `${referenceNumberCredit ?? "(prazan)"} već postoji — dvostruko plaćanje odbijeno.`,
           );
         }
-        throw e;
+          throw e;
+        }
       }
-    }
+    });
     return created;
   }
 
@@ -375,9 +396,17 @@ export class PaymentPreparationService {
         `Nalog ${orderId} je u statusu ${order.status}; očekivano ${from} za prelaz u ${to}.`,
       );
     }
-    await this.prisma.paymentOrder.update({
-      where: { id: orderId },
+    // Compare-and-swap: prelaz uspeva SAMO ako je status i dalje `from` i nalog nije
+    // zaključan (review SREDNJI — sprečava izgubljeni update / prelaz iz pogrešnog stanja
+    // pri konkurenciji, jer findUnique→update nije atomičan).
+    const swapped = await this.prisma.paymentOrder.updateMany({
+      where: { id: orderId, status: from, isLocked: false },
       data: { status: to, updatedByUserId: actorUserId ?? null },
     });
+    if (swapped.count !== 1) {
+      throw new ConflictException(
+        `Nalog ${orderId} je u međuvremenu promenjen — prelaz ${from}→${to} nije izvršen. Osveži i pokušaj ponovo.`,
+      );
+    }
   }
 }
