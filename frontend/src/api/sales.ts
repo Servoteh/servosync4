@@ -1,7 +1,7 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiFetch } from './client';
+import { apiFetch, apiBlob } from './client';
 
 /**
  * Sales / Fakturisanje — data sloj (Faza 5 §A). TanStack Query hooks nad NestJS
@@ -282,4 +282,23 @@ export function usePostInvoice() {
       }),
     onSuccess: invalidate,
   });
+}
+
+// ─────────────────────────────────── PDF štampa fakture (BigBit paritet)
+
+/** Preuzmi PDF fakture (GET /sales/invoices/:id/pdf?variant). variant: standard|delivery|export. */
+export function useInvoicePdf() {
+  return useMutation({
+    mutationFn: (args: { id: number; variant?: 'delivery' | 'export' }) => {
+      const q = args.variant ? `?variant=${args.variant}` : '';
+      return apiBlob(`${BASE}/invoices/${args.id}/pdf${q}`);
+    },
+  });
+}
+
+/** Otvori PDF Blob u novom tabu (browser preview + download). */
+export function openPdf(blob: Blob): void {
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank', 'noopener');
+  setTimeout(() => URL.revokeObjectURL(url), 30_000);
 }

@@ -1,5 +1,6 @@
 import { Module } from "@nestjs/common";
 import { PostingModule } from "../gl/posting/posting.module";
+import { SalesPrintModule } from "./print/sales-print.module";
 import { SalesController } from "./sales.controller";
 import { FakturisanjeService } from "./fakturisanje.service";
 import { PricingService } from "./pricing.service";
@@ -15,7 +16,7 @@ import { DocumentCarryOverService } from "./carry-over.service";
  * NAPOMENA: modul se NE registruje u app.module ovde (integrator to radi).
  */
 @Module({
-  imports: [PostingModule],
+  imports: [PostingModule, SalesPrintModule],
   controllers: [SalesController],
   providers: [
     FakturisanjeService,

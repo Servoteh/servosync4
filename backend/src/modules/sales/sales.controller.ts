@@ -2,19 +2,23 @@ import {
   Body,
   Controller,
   Get,
+  Header,
   Param,
   ParseIntPipe,
   Post,
   Query,
   Req,
+  Res,
   UseGuards,
 } from "@nestjs/common";
+import type { Response } from "express";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
 import { PERMISSIONS } from "../../common/authz/permissions";
 import { FakturisanjeService } from "./fakturisanje.service";
 import { DocumentCarryOverService } from "./carry-over.service";
+import { InvoicePdfService } from "./print/invoice-pdf.service";
 import type { AuthUser } from "../auth/jwt.strategy";
 import type { CreateProformaDto } from "./dto/create-proforma.dto";
 import {
@@ -40,7 +44,33 @@ export class SalesController {
   constructor(
     private readonly fakturisanje: FakturisanjeService,
     private readonly carryOver: DocumentCarryOverService,
+    private readonly invoicePdf: InvoicePdfService,
   ) {}
+
+  /**
+   * Štampa fakture kao PDF (BigBit paritet — dosad je print servis postojao bez rute).
+   * variant: standardni/otpremnica/izvozni. Vraća application/pdf inline (browser preview
+   * + download). Permisija SALES_READ (pregled/štampa).
+   */
+  @Get("invoices/:id/pdf")
+  @Header("Content-Type", "application/pdf")
+  async invoicePdfDownload(
+    @Param("id", ParseIntPipe) id: number,
+    @Query("variant") variant: string | undefined,
+    @Res() res: Response,
+  ): Promise<void> {
+    const { buffer, fileName } =
+      variant === "delivery"
+        ? await this.invoicePdf.buildDeliveryNotePdf(id)
+        : variant === "export"
+          ? await this.invoicePdf.buildExportInvoicePdf(id)
+          : await this.invoicePdf.buildInvoicePdf(id);
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename="${encodeURIComponent(fileName)}"`,
+    );
+    res.send(buffer);
+  }
 
   @Get("invoices")
   listInvoices(
