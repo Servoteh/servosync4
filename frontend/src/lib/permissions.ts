@@ -47,6 +47,7 @@ export const PERMISSIONS = {
   NABAVKA_APPROVE: 'nabavka.approve',
   // Glavna knjiga (GL) — 4.0 Faza 2 (dnevnik naloga + kartica konta, READ). Mirror BE kataloga.
   GL_READ: 'gl.read',
+  GL_WRITE: 'gl.write',
   // Robno / magacin — 4.0 Faza 3 (robni dokumenti, kalkulacija landed cost, knjiženje).
   // read = uvid; write = kreiranje/kalkulacija; post = knjiženje u GK. Mirror BE kataloga.
   ROBNO_READ: 'robno.read',

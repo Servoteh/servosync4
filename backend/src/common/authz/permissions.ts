@@ -81,6 +81,8 @@ export const PERMISSIONS = {
   PLACANJA_EXPORT: "placanja.export",
   // Glavna knjiga — 4.0 Faza 2 (dnevnik naloga + kartica konta; knjiženje radi posting engine).
   GL_READ: "gl.read",
+  // write = ručni unos naloga (temeljnica), proknjiži/zaključaj/storno (BigBit „Unos naloga GK").
+  GL_WRITE: "gl.write",
   // Robno / magacin — 4.0 Faza 3 (robni dokumenti, kalkulacija landed cost, nivelacija, lager).
   // read = uvid u robne dokumente/lager; write = kreiranje/kalkulacija; post = knjiženje u GK.
   ROBNO_READ: "robno.read",

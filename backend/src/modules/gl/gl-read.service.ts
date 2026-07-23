@@ -11,6 +11,42 @@ import { PrismaService } from "../../prisma/prisma.service";
 export class GlReadService {
   constructor(private readonly prisma: PrismaService) {}
 
+  /**
+   * Kontni plan — pretraga (BigBit paritet: bez ovoga nema izbora konta u nalozima).
+   * Filter po code/description contains, allowsAnalytics, foreignAccount. Za combo/picker.
+   */
+  async searchAccounts(query: {
+    q?: string;
+    allowsAnalytics?: boolean;
+    take?: number;
+  }) {
+    const where: Prisma.AccountWhereInput = {};
+    if (query.q && query.q.trim() !== "") {
+      const term = query.q.trim();
+      where.OR = [
+        { code: { startsWith: term } },
+        { name: { contains: term, mode: "insensitive" } },
+      ];
+    }
+    if (query.allowsAnalytics != null)
+      where.allowsAnalytics = query.allowsAnalytics;
+
+    const take = Math.min(query.take ?? 25, 100);
+    const rows = await this.prisma.account.findMany({
+      where,
+      orderBy: { code: "asc" },
+      take,
+      select: {
+        code: true,
+        name: true,
+        accountClass: true,
+        allowsAnalytics: true,
+        foreignAccount: true,
+      },
+    });
+    return { data: rows };
+  }
+
   /** Dnevnik: lista naloga (paginirano, filter po vrsti/godini/statusu). */
   async listJournalEntries(query: {
     orderType?: string;

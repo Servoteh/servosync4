@@ -545,7 +545,8 @@ export class PostingEngineService {
   // Numeracija naloga: 1 + MAX po (company, vrsta, godina), zero-pad 4.
   // pg_advisory_xact_lock da paralelni post ne dobiju isti broj (doc 30 §D).
   // ───────────────────────────────────────────────────────────────────────────
-  private async nextJournalNumber(
+  /** Sledeći broj naloga (company, vrsta, godina) — public za GlWriteService (storno). */
+  async nextJournalNumber(
     tx: Prisma.TransactionClient,
     companyId: number,
     orderType: string,
