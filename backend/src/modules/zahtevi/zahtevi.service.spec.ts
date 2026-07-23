@@ -129,6 +129,7 @@ interface PrismaMock {
   };
   changeRequestComment: { create: jest.Mock };
   changeRequestEvent: { create: jest.Mock };
+  user: { findMany: jest.Mock; findUnique: jest.Mock };
   $executeRaw: jest.Mock;
   $transaction: jest.Mock;
 }
@@ -155,6 +156,11 @@ function prismaMock(): PrismaMock {
     },
     changeRequestComment: { create: jest.fn() },
     changeRequestEvent: { create: jest.fn().mockResolvedValue({}) },
+    // getDetail obogaćuje komentare/events imenima (users meki ref) — default prazno.
+    user: {
+      findMany: jest.fn().mockResolvedValue([]),
+      findUnique: jest.fn().mockResolvedValue(null),
+    },
     $executeRaw: jest.fn().mockResolvedValue(0),
     $transaction: jest.fn(),
   };
@@ -210,9 +216,14 @@ function decisionsMock(): jest.Mocked<
   return { createFromRequest: jest.fn().mockResolvedValue(undefined) };
 }
 
-/** Mail servis — decision/DONE fire-and-forget; nikad ne baca (vraća boolean). */
-function mailMock(): jest.Mocked<Pick<ZahteviMailService, "notifySubmitter">> {
-  return { notifySubmitter: jest.fn().mockResolvedValue(true) };
+/** Mail servis — decision/DONE + novi-submit fire-and-forget; nikad ne baca (boolean). */
+function mailMock(): jest.Mocked<
+  Pick<ZahteviMailService, "notifySubmitter" | "notifyAdminsNewRequest">
+> {
+  return {
+    notifySubmitter: jest.fn().mockResolvedValue(true),
+    notifyAdminsNewRequest: jest.fn().mockResolvedValue(true),
+  };
 }
 
 function fakeFile(
@@ -379,6 +390,9 @@ describe("ZahteviService", () => {
       const res = await service.submit(10, USER);
       expect(row(res).status).toBe("SUBMITTED");
       expect(eventTypes(prisma)).toContain("SUBMITTED");
+      // Fire-and-forget: trijaža + mejl administratorima o novoj ideji (§9).
+      expect(zahteviAi.scheduleTriage).toHaveBeenCalledWith(10, null);
+      expect(mail.notifyAdminsNewRequest).toHaveBeenCalledWith(10);
     });
 
     it("submit iz NEEDS_INFO → SUBMITTED (event RESUBMITTED)", async () => {
@@ -912,20 +926,24 @@ describe("ZahteviService", () => {
         service.addComment(10, { body: "  " }, USER),
       ).rejects.toBeInstanceOf(BadRequestException);
     });
-    it("admin isQuestion na SUBMITTED → NEEDS_INFO", async () => {
+    it("admin isQuestion → komentar isQuestion:true BEZ auto-prelaza statusa (23.07 revizija)", async () => {
       prisma.changeRequest.findUnique.mockResolvedValue(
         baseReq({ status: "SUBMITTED" }),
       );
       prisma.changeRequestComment.create.mockResolvedValue({ id: 1 });
-      prisma.changeRequest.update.mockResolvedValue(
-        baseReq({ status: "NEEDS_INFO" }),
-      );
       await service.addComment(
         10,
         { body: "pitanje?", isQuestion: true },
         ADMIN,
       );
-      expect(eventTypes(prisma)).toContain("NEEDS_INFO");
+      // Komentar je označen kao pitanje…
+      const arg = firstArg<{ data: { isQuestion: boolean } }>(
+        prisma.changeRequestComment.create,
+      );
+      expect(arg.data.isQuestion).toBe(true);
+      // …ali status ostaje netaknut — NEEDS_INFO prelaz radi ISKLJUČIVO decision.
+      expect(eventTypes(prisma)).not.toContain("NEEDS_INFO");
+      expect(prisma.changeRequest.update).not.toHaveBeenCalled();
     });
     it("ne-admin isQuestion se ignoriše (obican komentar)", async () => {
       prisma.changeRequest.findUnique.mockResolvedValue(

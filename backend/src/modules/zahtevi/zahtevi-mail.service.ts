@@ -100,6 +100,117 @@ export class ZahteviMailService {
     }
   }
 
+  /**
+   * Obaveštenje administratorima o NOVOJ IDEJI (MODULE_SPEC §9) — na svaki submit
+   * (submitInternal, posle commita, fire-and-forget). Primaoci: korisnici sa rolom
+   * `admin` (users.role = 'admin', aktivni); fallback env `ZAHTEVI_ADMIN_MAILS` (CSV)
+   * kad u bazi nema admina sa email-om. Poštuje `ZAHTEVI_MAIL_NOTIFY`; nikad ne baca.
+   */
+  async notifyAdminsNewRequest(requestId: number): Promise<boolean> {
+    if (!this.enabled) return false;
+    try {
+      const req = await this.prisma.changeRequest.findUnique({
+        where: { id: requestId },
+        select: {
+          reqNo: true,
+          title: true,
+          description: true,
+          createdByUserId: true,
+        },
+      });
+      if (!req) return false;
+
+      const recipients = await this.adminEmails();
+      if (recipients.length === 0) {
+        this.logger.warn(
+          `Zahtev ${req.reqNo}: nema administratorskih email-ova — obaveštenje o novoj ideji preskočeno.`,
+        );
+        return false;
+      }
+
+      const submitter = await this.prisma.user.findUnique({
+        where: { id: req.createdByUserId },
+        select: { fullName: true, email: true },
+      });
+      const submitterName =
+        submitter?.fullName ||
+        submitter?.email ||
+        `korisnik #${req.createdByUserId}`;
+
+      const subject = `Nova ideja Z-${req.reqNo}: ${req.title}`;
+      const html = this.buildAdminHtml({
+        reqNo: req.reqNo,
+        title: req.title,
+        description: req.description,
+        submitterName,
+        link: this.detailLink(requestId),
+      });
+      return await this.mail.send({ to: recipients, subject, html });
+    } catch (err) {
+      this.logger.warn(
+        `Obaveštenje administratorima za zahtev ${requestId} nije poslato: ${
+          (err as Error).message
+        }`,
+      );
+      return false;
+    }
+  }
+
+  /** Email-ovi administratora: users.role='admin' (aktivni) + fallback ZAHTEVI_ADMIN_MAILS. */
+  private async adminEmails(): Promise<string[]> {
+    const admins = await this.prisma.user.findMany({
+      where: { role: "admin", active: true, email: { not: "" } },
+      select: { email: true },
+    });
+    const fromDb = admins
+      .map((a) => a.email)
+      .filter((e): e is string => !!e && e.includes("@"));
+    if (fromDb.length > 0) return Array.from(new Set(fromDb));
+    // Fallback: CSV iz env-a (kad u bazi nema admina sa email-om — npr. dev/seed baza).
+    const csv = (process.env.ZAHTEVI_ADMIN_MAILS ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.includes("@"));
+    return Array.from(new Set(csv));
+  }
+
+  /** Prod link ka detalju zahteva (statička ruta `?id=` — §8). Baza iz SY15_APP_URL. */
+  private detailLink(requestId: number): string {
+    const base = (
+      process.env.SY15_APP_URL || "https://servosync.servoteh.com"
+    ).replace(/\/+$/, "");
+    return `${base}/zahtevi/detalj?id=${requestId}`;
+  }
+
+  private buildAdminHtml(p: {
+    reqNo: string;
+    title: string;
+    description: string;
+    submitterName: string;
+    link: string;
+  }): string {
+    const esc = (s: string) =>
+      s
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    const desc = p.description.slice(0, 600);
+    const truncated = p.description.length > 600 ? "…" : "";
+    return `
+      <p>Nova ideja / zahtev je podnet u modulu Zahtevi:</p>
+      <p style="margin:12px 0"><strong>Z-${esc(p.reqNo)}</strong> — ${esc(
+        p.title,
+      )}</p>
+      <p style="margin:8px 0;color:#444"><strong>Podnosilac:</strong> ${esc(
+        p.submitterName,
+      )}</p>
+      <p style="margin:12px 0;white-space:pre-wrap">${esc(desc)}${truncated}</p>
+      <p style="margin:16px 0"><a href="${esc(
+        p.link,
+      )}">Otvori zahtev u aplikaciji</a></p>
+      <p style="color:#666;font-size:13px;margin-top:16px">Ovo je automatska poruka sistema ServoSync (modul Zahtevi).</p>`;
+  }
+
   private buildHtml(p: {
     greeting: string;
     reqNo: string;

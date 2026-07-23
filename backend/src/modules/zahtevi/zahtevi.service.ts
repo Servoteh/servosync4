@@ -319,7 +319,9 @@ export class ZahteviService {
 
   // ── DETALJ ───────────────────────────────────────────────────────────────
 
-  /** GET /zahtevi/:id — detalj + prilozi (živi) + analize + komentari + events; row-scope. */
+  /** GET /zahtevi/:id — detalj + prilozi (živi) + analize + komentari + events; row-scope.
+   *  Komentari i events se obogaćuju display imenom autora (meki ref na users — bez FK,
+   *  jedan findMany za sve id-jeve; obrazac iz zahtevi-rewards payoutReport). Fallback #id. */
   async getDetail(id: number, actor: AuthUser) {
     await this.getScopedOrThrow(id, actor);
     const req = await this.prisma.changeRequest.findUnique({
@@ -334,7 +336,47 @@ export class ZahteviService {
         events: { orderBy: { createdAt: "asc" } },
       },
     });
-    return { data: req };
+    if (!req) return { data: req };
+
+    // Imena autora komentara + aktera events (meki ref na users; jedan upit za sve).
+    const comments = req.comments ?? [];
+    const events = req.events ?? [];
+    const userIds = Array.from(
+      new Set<number>([
+        ...comments.map((c) => c.authorUserId),
+        ...events
+          .map((e) => e.actorUserId)
+          .filter((v): v is number => v != null),
+      ]),
+    );
+    const nameById = await this.namesByUserId(userIds);
+
+    return {
+      data: {
+        ...req,
+        comments: comments.map((c) => ({
+          ...c,
+          authorName: nameById.get(c.authorUserId) ?? null,
+        })),
+        events: events.map((e) => ({
+          ...e,
+          actorName:
+            e.actorUserId != null
+              ? (nameById.get(e.actorUserId) ?? null)
+              : null,
+        })),
+      },
+    };
+  }
+
+  /** Mapa userId → prikazno ime (fullName || email || null). Prazan ulaz → prazna mapa. */
+  private async namesByUserId(ids: number[]): Promise<Map<number, string>> {
+    if (ids.length === 0) return new Map();
+    const users = await this.prisma.user.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, fullName: true, email: true },
+    });
+    return new Map(users.map((u) => [u.id, u.fullName || u.email || `#${u.id}`]));
   }
 
   // ── CREATE / UPDATE / DELETE ────────────────────────────────────────────────
@@ -495,6 +537,10 @@ export class ZahteviService {
     // unutar ZahteviAiService — submit ODMAH odgovara, AI nikad ne obara radnju (§10.4).
     // Trijaža je automatska (startedByUserId = null).
     this.zahteviAi.scheduleTriage(id, null);
+
+    // Obaveštenje administratorima o novoj ideji (MODULE_SPEC §9) — POSLE commita,
+    // FIRE-AND-FORGET, u try/catch unutar servisa; nikad ne obara submit (§10.4).
+    void this.mail.notifyAdminsNewRequest(id);
     return updated;
   }
 
@@ -519,13 +565,18 @@ export class ZahteviService {
 
   // ── KOMENTARI ────────────────────────────────────────────────────────────
 
-  /** POST /zahtevi/:id/comments — owner + admin (admin sme isQuestion:true → NEEDS_INFO). */
+  /**
+   * POST /zahtevi/:id/comments — owner + admin. Admin sme `isQuestion:true` (pitanje
+   * podnosiocu). Komentar NIKAD sam ne menja status: prelaz u NEEDS_INFO radi ISKLJUČIVO
+   * `decision needs-info` (čistije za status mašinu — jedan izvor prelaza; F3/23.07 revizija).
+   * FE tok „Prosledi pitanja" i ručni admin checkbox pozovu decision odvojeno kad treba.
+   */
   async addComment(
     id: number,
     body: { body?: string; isQuestion?: boolean },
     actor: AuthUser,
   ) {
-    const req = await this.getScopedOrThrow(id, actor);
+    await this.getScopedOrThrow(id, actor);
     const text = (body?.body ?? "").trim();
     if (!text) throw new BadRequestException("Komentar ne može biti prazan.");
     const admin = this.isAdmin(actor);
@@ -543,19 +594,6 @@ export class ZahteviService {
       await this.writeEvent(tx, id, "COMMENT", actor.userId, {
         isQuestion,
       });
-      // Admin pitanje prosleđeno podnosiocu → zahtev ide na dopunu (ako je prelaz dozvoljen).
-      if (
-        isQuestion &&
-        (STATUS_TRANSITIONS[req.status] ?? []).includes("NEEDS_INFO")
-      ) {
-        await tx.changeRequest.update({
-          where: { id },
-          data: { status: "NEEDS_INFO" },
-        });
-        await this.writeEvent(tx, id, "NEEDS_INFO", actor.userId, {
-          from: req.status,
-        });
-      }
       return comment;
     });
     return { data: result };
