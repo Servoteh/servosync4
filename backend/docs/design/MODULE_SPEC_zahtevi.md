@@ -657,17 +657,20 @@ prihvate i ispravke nose novac, obračunat na kraju meseca.
 
 ### 12.1 Ocena
 
-Trijaža (§4.1) uz klasifikaciju vraća i **ocenu 0–5** sa obrazloženjem. Rubrika
-(ide u trijažni prompt, doslovno):
+Trijaža (§4.1) uz klasifikaciju vraća i **ocenu 0–5** sa obrazloženjem.
+**POOŠTRENA rubrika (presuda Nenad 24.07.2026 — v1.3 rubrika zamenjena):** većina
+prijava treba da padne u 1–2★; ocene 3+ su RETKE; 5★ isključivo revolucionarne
+ideje. Tarifa je NEPROMENJENA — štednja se postiže strožim ocenjivanjem. Rubrika
+(ide u trijažni prompt, doslovno — `zahtevi-ai.ts SCORE_RUBRIC`):
 
 | Ocena | Značenje |
 |---|---|
 | **0** | Neupotrebljiv: spam, nerazumljiv, već postoji u sistemu, ili **duplikat** (ocenu zadržava PRVI podnosilac) |
-| **1** | Kozmetika / sitna ispravka teksta ili rasporeda |
-| **2** | Korisna manja dorada ili validan sitan bag |
-| **3** | Značajno poboljšanje postojeće funkcije / ozbiljniji bag |
-| **4** | Važna nova funkcionalnost / bag koji ometa posao |
-| **5** | Izuzetan predlog sa velikim poslovnim uticajem |
+| **1** | Kozmetika, sitna ispravka, mala operativna molba, dorada koja pomaže uglavnom podnosiocu |
+| **2** | Korisna manja dorada ili validan bag ograničenog dometa — **podrazumevana ocena za dobre, obične predloge** |
+| **3** | RETKO: značajno poboljšanje sa jasnim efektom na rad VIŠE ljudi/tima, ili bag koji iskrivljuje evidenciju (sati/količine/novac) |
+| **4** | VRLO RETKO: menja tok posla odeljenja, ili bag koji pravi direktnu štetu/trošak |
+| **5** | IZUZETAK: revolucionarna ideja — novi tok rada, velika merljiva ušteda/prihod (u dilemi 4 vs 5 → 4) |
 
 - **Ocena 0 → zahtev se AUTOMATSKI odbacuje** (`REJECTED`, event `AI_REJECTED`;
   podnosilac vidi obrazloženje). Ovo je jedina AI izmena statusa u modulu (izuzetak
