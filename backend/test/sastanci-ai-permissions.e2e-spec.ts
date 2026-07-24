@@ -234,14 +234,14 @@ describe("Sastanci + AI permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     it("GET /sastanci/user-directory → 200 (ne 400 od :id uuid-pipe) za admin", async () => {
       await get("/sastanci/user-directory", "admin").expect(200);
     });
-    it("GET /sastanci/akcije → 200 za viewer (ne uhvaćeno kao :id)", async () => {
-      await get("/sastanci/akcije", "viewer").expect(200);
+    it("GET /sastanci/akcije → 200 za magacioner (ne uhvaćeno kao :id; presuda 24.07: ops ima read)", async () => {
+      await get("/sastanci/akcije", "magacioner").expect(200);
     });
     it("GET /sastanci/dashboard-stats → 200 za hr", async () => {
       await get("/sastanci/dashboard-stats", "hr").expect(200);
     });
-    it("GET /sastanci/weekly → 403 za magacioner (guard je read)", async () => {
-      await get("/sastanci/weekly", "magacioner").expect(403);
+    it("GET /sastanci/weekly → 403 za viewer (guard je read; presuda 24.07: viewer izgubio read)", async () => {
+      await get("/sastanci/weekly", "viewer").expect(403);
     });
     it("GET /sastanci/:id → 200 za pm (uuid), 400 za ne-uuid", async () => {
       await get(`/sastanci/${VALID_UUID}`, "pm").expect(200);
@@ -275,8 +275,8 @@ describe("Sastanci + AI permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
       );
     });
     it("GET /sastanci?from=nije-datum → 400; from=2026-07-01 → 200", async () => {
-      await get("/sastanci?from=nije-datum", "viewer").expect(400);
-      await get("/sastanci?from=2026-07-01", "viewer").expect(200);
+      await get("/sastanci?from=nije-datum", "hr").expect(400);
+      await get("/sastanci?from=2026-07-01", "hr").expect(200);
     });
   });
 
@@ -400,18 +400,18 @@ describe("Sastanci + AI permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
   });
 
   describe("RSVP + prefs — read-nivo (svako svoje)", () => {
-    it("POST /sastanci/:id/rsvp → 201 za viewer (read-role)", async () => {
-      await send("post", `/sastanci/${VALID_UUID}/rsvp`, "viewer", {
+    it("POST /sastanci/:id/rsvp → 201 za magacioner (read-role, presuda 24.07)", async () => {
+      await send("post", `/sastanci/${VALID_UUID}/rsvp`, "magacioner", {
         status: "dolazim",
       }).expect(201);
     });
-    it("PATCH /sastanci/prefs → 200 za viewer", async () => {
-      await send("patch", "/sastanci/prefs", "viewer", {
+    it("PATCH /sastanci/prefs → 200 za magacioner (presuda 24.07)", async () => {
+      await send("patch", "/sastanci/prefs", "magacioner", {
         onNewAkcija: false,
       }).expect(200);
     });
-    it("POST /sastanci/:id/rsvp → 403 za magacioner (nema sastanci.read)", async () => {
-      await send("post", `/sastanci/${VALID_UUID}/rsvp`, "magacioner", {
+    it("POST /sastanci/:id/rsvp → 403 za viewer (presuda 24.07: viewer nema read)", async () => {
+      await send("post", `/sastanci/${VALID_UUID}/rsvp`, "viewer", {
         status: "dolazim",
       }).expect(403);
     });
@@ -483,7 +483,8 @@ describe("Sastanci + AI permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
       }).expect(400);
     });
     it("POST /sastanci/:id/rsvp: nevalidan status → 400", async () => {
-      await send("post", `/sastanci/${VALID_UUID}/rsvp`, "viewer", {
+      // magacioner (read-rola po presudi 24.07) — viewer bi pao na 403 pre validacije
+      await send("post", `/sastanci/${VALID_UUID}/rsvp`, "magacioner", {
         status: "mozda",
       }).expect(400);
     });
@@ -551,13 +552,13 @@ describe("Sastanci + AI permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
   });
 
   describe("R2.3 AI rezime — /sastanci/:id/ai-summary (sastanci.read)", () => {
-    it("POST /sastanci/:id/ai-summary → 201 viewer (read)", async () => {
-      await send("post", `/sastanci/${VALID_UUID}/ai-summary`, "viewer", {
+    it("POST /sastanci/:id/ai-summary → 201 magacioner (read, presuda 24.07)", async () => {
+      await send("post", `/sastanci/${VALID_UUID}/ai-summary`, "magacioner", {
         sastanak: { naslov: "T" },
       }).expect(201);
     });
-    it("POST /sastanci/:id/ai-summary → 403 magacioner (nema read)", async () => {
-      await send("post", `/sastanci/${VALID_UUID}/ai-summary`, "magacioner", {
+    it("POST /sastanci/:id/ai-summary → 403 viewer (presuda 24.07: nema read)", async () => {
+      await send("post", `/sastanci/${VALID_UUID}/ai-summary`, "viewer", {
         sastanak: {},
       }).expect(403);
     });
@@ -572,12 +573,12 @@ describe("Sastanci + AI permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
   });
 
   describe("R2.2 Storage — arhiva PDF / slike (edit vs read)", () => {
-    it("GET /sastanci/:id/arhiva/pdf → 200 viewer (read-nivo)", async () => {
-      await get(`/sastanci/${VALID_UUID}/arhiva/pdf`, "viewer").expect(200);
+    it("GET /sastanci/:id/arhiva/pdf → 200 magacioner (read-nivo, presuda 24.07)", async () => {
+      await get(`/sastanci/${VALID_UUID}/arhiva/pdf`, "magacioner").expect(200);
     });
-    it("GET /sastanci/slike/:slikaId/sign → 200 viewer, 403 magacioner", async () => {
-      await get(`/sastanci/slike/${VALID_UUID}/sign`, "viewer").expect(200);
-      await get(`/sastanci/slike/${VALID_UUID}/sign`, "magacioner").expect(403);
+    it("GET /sastanci/slike/:slikaId/sign → 200 magacioner, 403 viewer (presuda 24.07)", async () => {
+      await get(`/sastanci/slike/${VALID_UUID}/sign`, "magacioner").expect(200);
+      await get(`/sastanci/slike/${VALID_UUID}/sign`, "viewer").expect(403);
     });
     it("POST /sastanci/:id/slike → 201 pm (edit), 403 viewer", async () => {
       await send("post", `/sastanci/${VALID_UUID}/slike`, "pm", {}).expect(201);
