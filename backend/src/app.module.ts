@@ -54,6 +54,7 @@ import { GlModule } from "./modules/gl/gl.module";
 import { BlagajnaModule } from "./modules/blagajna/blagajna.module";
 import { KamataModule } from "./modules/kamata/kamata.module";
 import { ZahteviModule } from "./modules/zahtevi/zahtevi.module";
+import { SchedulerModule } from "./modules/scheduler/scheduler.module";
 import { MontazaNeusaglasenostiModule } from "./modules/montaza-neusaglasenosti/montaza-neusaglasenosti.module";
 
 @Module({
@@ -132,6 +133,8 @@ import { MontazaNeusaglasenostiModule } from "./modules/montaza-neusaglasenosti/
     // Zahtevi — AI PM modul (bug/dorada/nova funkcija + AI trijaža + Decision Log +
     // nagrađivanje; MODULE_SPEC_zahtevi §0). Platformski modul, nezavisan od 4.0 talasa.
     ZahteviModule,
+    // Talas A — scheduler pogon (paritet 1.0 automatika; poslovi zovu sy15 fn).
+    SchedulerModule,
     // Neusaglašenosti na montaži — zaseban 2.0-native modul (zahtev 004/26,
     // MODULE_SPEC_montaza_neusaglasenosti §0). Obaveštava rolu menadzment (in-app + mail).
     MontazaNeusaglasenostiModule,

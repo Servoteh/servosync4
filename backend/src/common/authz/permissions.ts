@@ -142,6 +142,10 @@ export const PERMISSIONS = {
   // Sync administracija
   SYNC_RUN: "sync.run",
   SYNC_READ: "sync.read",
+  // Scheduler (Talas A) — pregled i ručno okidanje zakazanih poslova; admin
+  // ih dobija kroz ALL (role-permissions), namerno bez šireg granta.
+  SCHEDULER_READ: "scheduler.read",
+  SCHEDULER_RUN: "scheduler.run",
   // Reversi — 3.0 PILOT (zaduženja alata/LZO/rezni; MODULE_SPEC_reversi.md §3).
   // Paritet žive 1.0 politike: read = svi prijavljeni; manage = rev_can_manage()
   // (admin/menadzment/pm/leadpm/magacioner); team_read = get_team_issued_tools scope.

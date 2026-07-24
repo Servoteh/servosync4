@@ -4163,3 +4163,22 @@ model InterestCalcLine {
   @@index([calculationId], map: "idx_interest_calc_lines_calc")
   @@map("interest_calc_lines")
 }
+
+/// Talas A: dnevnik izvršavanja zakazanih poslova (scheduler modul). UNIQUE
+/// (jobKey, scheduledFor) je i mutex za claim — vidi scheduler.service.ts.
+/// status: RUNNING | DONE | FAILED (String, ne enum — BACKEND_RULES §2).
+model ScheduledJobRun {
+  id           Int       @id(map: "pk_scheduled_job_runs") @default(autoincrement()) @map("id")
+  jobKey       String    @map("job_key") @db.VarChar(64)
+  scheduledFor DateTime  @map("scheduled_for") @db.Timestamptz(6)
+  startedAt    DateTime  @default(now()) @map("started_at") @db.Timestamptz(6)
+  finishedAt   DateTime? @map("finished_at") @db.Timestamptz(6)
+  status       String    @default("RUNNING") @map("status") @db.VarChar(16)
+  attempts     Int       @default(1) @map("attempts")
+  summary      String?   @map("summary")
+  error        String?   @map("error")
+
+  @@unique([jobKey, scheduledFor], map: "uq_scheduled_job_runs_job_scheduled")
+  @@index([jobKey, startedAt(sort: Desc)], map: "idx_scheduled_job_runs_job_started")
+  @@map("scheduled_job_runs")
+}

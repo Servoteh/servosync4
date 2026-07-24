@@ -34,6 +34,30 @@
 
 ## 1. Talas A — Pogon automatika (temelj; ~3–5 MN)
 
+> **✅ IZVEDENO 24.07.2026 (Fable, grana fix/pogon-primedbe) + KOREKCIJA NALAZA.**
+> ŽIVA provera sy15-db (cron.job + job_run_details): **enqueue automatike NISU mrtve** —
+> svih ~14 pg_cron poslova na sy15 je aktivno i danas USPEŠNO izvršeno (dispatch poslove
+> u pg_cron-u namerno gasi VM cron `sy15-scheduler`). Talas A je zato izveden kao
+> **SEOBA POGONA u 3.0** (preduslov F5 dekomisije), ne oživljavanje.
+>
+> - **A1 ✅** — in-process scheduler u NestJS (`backend/src/modules/scheduler/`): 30s tik,
+>   Europe/Belgrade rasporedi (sopstveni DST util), `scheduled_job_runs` (glavna baza) kao
+>   dnevnik + atomski claim UNIQUE(job_key, scheduled_for), catch-up 180 min, retry ≤3,
+>   `SCHEDULER_ENABLED` env kapija, `GET /scheduler/jobs` + `POST /scheduler/jobs/:key/run-now`
+>   (admin). ODLUKA #39 (bez pg_cron na glavnoj bazi — tražio bi restart PROD Postgres-a;
+>   bez novih zavisnosti).
+> - **A2 ✅** — 12 poslova = tanki pozivi POSTOJEĆIH sy15 SECURITY DEFINER fn (1:1, SQL
+>   ostaje istina): kadr HR podsetnici (A–I grane), korektivne, onboarding, attendance
+>   alarmi+digest, weekly risk, QBT kartice, sast akcije + 30-min podsetnici + sedmični
+>   auto-create, maint rokovi (30d), PB notifikacije. Unutrašnji lokalni guardovi fn-ova
+>   (06h/pon 06h/pet 08h) poštovani tačnim lokalnim terminima.
+> - **A3 ✅ ODLUČENO** — dispatch (slanje mejlova iz outboxa) OSTAJE sy15 VM cron + edge
+>   workeri do dekomisije → upisano u Talas F registar (dispatch workeri + WhatsApp kanal).
+> - **CUTOVER (ostaje):** uključi `SCHEDULER_ENABLED=true` na produ → uporedi
+>   `scheduled_job_runs` vs sy15 `cron.job_run_details` dan-dva (dedup guardovi čine
+>   preklapanje bezopasnim) → `SELECT cron.unschedule(jobid)` za 12 app poslova na sy15
+>   (loc_*/scada/po_cleanup infra poslovi OSTAJU na sy15 do seobe svojih podsistema).
+
 | # | Stavka | Nalazi |
 |---|--------|--------|
 | A1 | **Scheduler pogon** u NestJS backend-u. Odluka: `@nestjs/schedule` u procesu (nova zavisnost → traži odobrenje po BACKEND_RULES §10) ili pg_cron na glavnoj bazi + tanki HTTP okidači. Preporuka: pg_cron (već postoji znanje sa sy15, preživljava restart deploy-a, ne duplira se pri skaliranju). | X-EMAIL-AUTOMATIKE-01 |
