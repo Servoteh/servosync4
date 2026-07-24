@@ -60,6 +60,19 @@ export const LINE_DIRECTION = {
 
 export type LineDirection = (typeof LINE_DIRECTION)[keyof typeof LINE_DIRECTION];
 
+/**
+ * Dozvoljene valute izvoda (E6, O2 presuda) — 1:1 sa backend `STATEMENT_CURRENCIES`.
+ * RSD = dinarski izvod (default, bez FX polja na stavkama); EUR/USD/CHF = devizni izvod
+ * (stavke nose devizni iznos + PRODAJNI kurs, `amount` je RSD protivvrednost).
+ */
+export const STATEMENT_CURRENCIES = ['RSD', 'EUR', 'USD', 'CHF'] as const;
+export type StatementCurrency = (typeof STATEMENT_CURRENCIES)[number];
+
+/** Devizni izvod = valuta nije RSD (null/prazno/RSD = dinarski). */
+export function isForeignCurrency(currency: string | null | undefined): boolean {
+  return currency != null && currency.trim() !== '' && currency.trim().toUpperCase() !== 'RSD';
+}
+
 // ─────────────────────────────────────────────────────────────── envelope tipovi
 
 /** Paginirani odgovor liste izvoda — backend šalje `meta.{total,skip,take}` (skip/take). */
@@ -104,7 +117,14 @@ export interface BankStatementLine {
   lineNo: number;
   partnerAccount: string | null;
   partnerName: string | null;
+  /** RSD iznos (za devizne stavke = protivvrednost foreignAmount × exchangeRate). */
   amount: string;
+  /** Devizni izvod (E6): originalni iznos u valuti izvoda; null za dinarske stavke. */
+  foreignAmount: string | null;
+  /** Devizni izvod (E6): primenjeni PRODAJNI kurs na dan izvoda; null za dinarske stavke. */
+  exchangeRate: string | null;
+  /** Valuta stavke (nasleđena sa izvoda); null/RSD = dinarska. */
+  currency: string | null;
   direction: LineDirection;
   referenceNumber: string | null;
   documentDate: string | null;
@@ -143,7 +163,8 @@ export interface ImportStatementInput {
   bankAccount: string;
   statementNumber: string;
   statementDate: string;
-  txtContent: string;
+  /** Opcion: bez TXT-a se kreira prazan izvod za ručni unos (E6 devizni izvod). */
+  txtContent?: string;
   fileName?: string;
   openingBalance?: number;
   closingBalance?: number;
@@ -279,7 +300,8 @@ export function usePostStatement() {
 export interface StatementLineInput {
   partnerAccount?: string | null;
   partnerName?: string | null;
-  amount?: number;
+  amount?: number; // RSD iznos (dinarski izvod)
+  foreignAmount?: number | null; // devizni iznos (E6, devizni izvod) — RSD preračun na backendu
   direction?: string; // DEBIT | CREDIT
   referenceNumber?: string | null;
   documentDate?: string | null;

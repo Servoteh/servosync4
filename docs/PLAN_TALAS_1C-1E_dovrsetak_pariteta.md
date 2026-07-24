@@ -130,10 +130,12 @@ Posle 1C–1E → Talas 2 (SREDNJI/NIZAK) pa Talas 3 (Pantheon/SAP), po master p
 
 ## 4. Otvorene odluke (potvrda Nenad/Neso — NE blokiraju 1C)
 
-- **O1 (pain.001):** FX TXT izvoz radi. Da li banka/Halcom uopšte traži pain.001 XML? Ako ne → E7 otpada.
-- **O2 (devizni izvod):** koliko često stižu devizni izvodi? Određuje prioritet E6 (pre/posle cutover-a).
-- **O3 (SEF ulazne):** da li se ulazne e-fakture danas obrađuju direktno na SEF portalu? Ako da,
-  portal ostaje i posle gašenja BigBita → E1 nije cutover-bloker.
+- **O1 (pain.001): ✅ PRESUĐENO 24.07 (Nenad)** — FX TXT ostaje kao u BigBit-u; pain.001 XML se NE radi → **E7 OTPADA**.
+- **O2 (devizni izvod): ✅ PRESUĐENO 24.07 (Nenad)** — ~100 deviznih izvoda godišnje (≈2 nedeljno) → **E6 SE RADI pre cutover-a** (ExchangeRate/KursnaLista model + devizni parser + FX knjiženje).
+- **O3 (SEF ulazne): ✅ PRESUĐENO 24.07 (Nenad)** — ulazne se danas rade **KROZ BIGBIT** (portal samo
+  kao rezervna opcija); BigBit poredi da li faktura VEĆ POSTOJI u sync-u, bez obzira da li ju je neko
+  drugi potvrdio → **E1 SEF ulazne JE cutover-bloker** (XL: inbox sync sa SEF-a + dedup protiv
+  postojećih + accept/reject sa rokom 15 dana). Planirati kao poseban talas.
 - **O4 (faktura GL politika):** predlog = auto-`posted` pri postInvoice (kao izvod, PR #8 filozofija);
   alternativa = ostaje draft a računovođa promoviše kroz C1 dugmad. **Default za C12: auto-posted.**
 

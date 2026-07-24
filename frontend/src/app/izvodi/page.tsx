@@ -19,7 +19,9 @@ import {
   useStatements,
   useImportStatement,
   STATEMENT_STATUS,
+  STATEMENT_CURRENCIES,
   type StatementStatus,
+  type StatementCurrency,
   type BankStatement,
   type ImportStatementInput,
 } from '@/api/izvodi';
@@ -80,6 +82,15 @@ const columns: Column<BankStatement>[] = [
       const m = statementStatusMeta(s.status);
       return <StatusBadge tone={m.tone} label={m.label} />;
     },
+  },
+  {
+    key: 'currency',
+    header: 'Valuta',
+    render: (s) => (
+      <span className={s.currency && s.currency !== 'RSD' ? 'font-semibold text-ink' : 'text-ink-secondary'}>
+        {s.currency || 'RSD'}
+      </span>
+    ),
   },
   {
     key: 'openingBalance',
@@ -236,6 +247,7 @@ function ImportDialog({
   const [bankAccount, setBankAccount] = useState('');
   const [statementNumber, setStatementNumber] = useState('');
   const [statementDate, setStatementDate] = useState('');
+  const [currency, setCurrency] = useState<StatementCurrency>('RSD');
   const [fileName, setFileName] = useState('');
   const [txtContent, setTxtContent] = useState('');
   const [readError, setReadError] = useState<string | null>(null);
@@ -247,6 +259,7 @@ function ImportDialog({
       setBankAccount('');
       setStatementNumber('');
       setStatementDate('');
+      setCurrency('RSD');
       setFileName('');
       setTxtContent('');
       setReadError(null);
@@ -273,11 +286,12 @@ function ImportDialog({
     reader.readAsText(file);
   };
 
+  // TXT je opcion: bez fajla se kreira PRAZAN izvod za ručni unos stavki (E6 devizni
+  // izvod se puni ručno — parser je RSD-only). Obavezni su samo žiro/broj/datum.
   const canSubmit =
     bankAccount.trim().length > 0 &&
     statementNumber.trim().length > 0 &&
     statementDate.length > 0 &&
-    txtContent.length > 0 &&
     !importMut.isPending;
 
   const submit = () => {
@@ -286,8 +300,9 @@ function ImportDialog({
       bankAccount: bankAccount.trim(),
       statementNumber: statementNumber.trim(),
       statementDate,
-      txtContent,
+      txtContent: txtContent.length > 0 ? txtContent : undefined,
       fileName: fileName || undefined,
+      currency,
     };
     importMut.mutate(input, {
       onSuccess: (created) => onImported(created.id),
@@ -343,18 +358,54 @@ function ImportDialog({
         </div>
 
         <FormField
-          label="TXT fajl izvoda"
-          required
-          hint={fileName ? `Izabran fajl: ${fileName}` : 'Fiksne kolone (FX Import format).'}
+          label="Valuta"
+          hint={
+            currency === 'RSD'
+              ? 'Dinarski izvod.'
+              : 'Devizni izvod — stavke se unose u valuti, RSD protivvrednost se računa po prodajnom kursu na dan izvoda.'
+          }
         >
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".txt,text/plain"
-            onChange={onPickFile}
-            className="block w-full text-sm text-ink-secondary file:mr-3 file:rounded-control file:border file:border-line file:bg-surface file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-ink hover:file:bg-surface-2"
-          />
+          <div className="w-40">
+            <Select
+              value={currency}
+              onChange={(e) => {
+                const next = e.target.value as StatementCurrency;
+                setCurrency(next);
+                // Devizni izvod ne sme nositi TXT (backend 400) — očisti već izabran fajl.
+                if (next !== 'RSD') {
+                  setTxtContent('');
+                  setFileName('');
+                  if (fileInputRef.current) fileInputRef.current.value = '';
+                }
+              }}
+              options={STATEMENT_CURRENCIES.map((c) => ({ value: c, label: c }))}
+            />
+          </div>
         </FormField>
+
+        {currency === 'RSD' ? (
+          <FormField
+            label="TXT fajl izvoda"
+            hint={
+              fileName
+                ? `Izabran fajl: ${fileName}`
+                : 'Fiksne kolone (FX Import format). Opciono — bez fajla se pravi prazan izvod za ručni unos.'
+            }
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".txt,text/plain"
+              onChange={onPickFile}
+              className="block w-full text-sm text-ink-secondary file:mr-3 file:rounded-control file:border file:border-line file:bg-surface file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-ink hover:file:bg-surface-2"
+            />
+          </FormField>
+        ) : (
+          <div className="rounded-panel border border-line bg-surface-2 px-4 py-3 text-sm text-ink-secondary">
+            Devizni izvod se kreira prazan i puni ručno (Dodaj stavku) — TXT uvoz
+            podržava samo dinarske izvode, pa je polje sakriveno.
+          </div>
+        )}
 
         {err && (
           <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">
