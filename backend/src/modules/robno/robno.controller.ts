@@ -4,19 +4,28 @@ import {
   Get,
   Param,
   ParseIntPipe,
+  Patch,
   Post,
   Query,
+  Req,
   UseGuards,
 } from "@nestjs/common";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
 import { PERMISSIONS } from "../../common/authz/permissions";
+import type { AuthUser } from "../auth/jwt.strategy";
 import { RobnoService, type StockDocumentKind } from "./robno.service";
 import { CalculationService } from "./calculation.service";
+import { InventoryService } from "./inventory.service";
 import { PostingEngineService } from "../gl/posting/posting.service";
 import type { ListStockDocumentsQuery } from "./dto/list-stock-documents.dto";
 import type { CreateStockDocumentDto } from "./dto/create-stock-document.dto";
+import type {
+  CreateInventoryCountDto,
+  FinalizeInventoryCountDto,
+  UpdateInventoryCountItemDto,
+} from "./dto/inventory.dto";
 
 /**
  * Robno / magacin (Faza 3) — robni dokumenti + kalkulacija (landed cost) + knjiženje u GK.
@@ -26,7 +35,15 @@ import type { CreateStockDocumentDto } from "./dto/create-stock-document.dto";
  *   POST /api/v1/robno/documents/:id/calculate — kalkulacija landed cost (DRAFT → CALCULATED); UL okida nivelaciju
  *   POST /api/v1/robno/documents/:id/post — knjiženje u glavnu knjigu (StockDocument → nalog GK)
  *
- * read = ROBNO_READ; kreiranje/kalkulacija = ROBNO_WRITE; knjiženje = ROBNO_POST.
+ * Popis / inventura (doc 39 §D) — predpunjenje → unos KolPop → razlika → knjiženje VISAK/MANJAK:
+ *   GET   /api/v1/robno/inventory-counts               — lista (opciono ?year)
+ *   POST  /api/v1/robno/inventory-counts               — kreiranje + predpunjenje (DRAFT→COUNTING)
+ *   GET   /api/v1/robno/inventory-counts/:id           — detalj (zaglavlje + stavke)
+ *   GET   /api/v1/robno/inventory-counts/:id/differences — razlika po stavci + zbirovi višak/manjak
+ *   PATCH /api/v1/robno/inventory-counts/:id/items/:itemId — unos popisane količine (KolPop)
+ *   POST  /api/v1/robno/inventory-counts/:id/finalize  — zaključi (VISAK/MANJAK dokumenti, COUNTING→POSTED)
+ *
+ * read = ROBNO_READ; kreiranje/kalkulacija/popis-write = ROBNO_WRITE; knjiženje = ROBNO_POST.
  */
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 @RequirePermission(PERMISSIONS.ROBNO_READ)
@@ -36,6 +53,7 @@ export class RobnoController {
     private readonly robno: RobnoService,
     private readonly calculation: CalculationService,
     private readonly posting: PostingEngineService,
+    private readonly inventory: InventoryService,
   ) {}
 
   @Get("documents")
@@ -102,5 +120,57 @@ export class RobnoController {
     const y = year != null && year.trim() !== "" ? Number(year) : undefined;
     const result = await this.robno.rebuildKepu({ year: y });
     return { data: result };
+  }
+
+  // ─── Popis / inventura (doc 39 §D) ─────────────────────────────────────────
+
+  /** Lista popisa (najnoviji prvo), opcioni filter po godini. */
+  @Get("inventory-counts")
+  listCounts(@Query("year") year?: string) {
+    const y = year != null && year.trim() !== "" ? Number(year) : undefined;
+    return this.inventory.list(y);
+  }
+
+  /** Kreiranje popisa + predpunjenje stavki iz costing-a (DRAFT → COUNTING). */
+  @Post("inventory-counts")
+  @RequirePermission(PERMISSIONS.ROBNO_WRITE)
+  createCount(
+    @Body() dto: CreateInventoryCountDto,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.inventory.createCount(dto, req.user.userId);
+  }
+
+  @Get("inventory-counts/:id")
+  getCount(@Param("id", ParseIntPipe) id: number) {
+    return this.inventory.get(id);
+  }
+
+  /** Razlika popisa po stavci (KolPop − KolKng) + zbirovi višak/manjak. */
+  @Get("inventory-counts/:id/differences")
+  countDifferences(@Param("id", ParseIntPipe) id: number) {
+    return this.inventory.differences(id);
+  }
+
+  /** Unos popisane količine (KolPop) za jednu stavku. */
+  @Patch("inventory-counts/:id/items/:itemId")
+  @RequirePermission(PERMISSIONS.ROBNO_WRITE)
+  updateCountItem(
+    @Param("id", ParseIntPipe) id: number,
+    @Param("itemId", ParseIntPipe) itemId: number,
+    @Body() body: UpdateInventoryCountItemDto,
+  ) {
+    return this.inventory.updateItem(id, itemId, body.countedQuantity);
+  }
+
+  /** Zaključi popis — kreira VISAK/MANJAK robne dokumente (COUNTING → POSTED). */
+  @Post("inventory-counts/:id/finalize")
+  @RequirePermission(PERMISSIONS.ROBNO_WRITE)
+  finalizeCount(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() body: FinalizeInventoryCountDto,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.inventory.finalize(id, req.user.userId, body);
   }
 }

@@ -267,7 +267,9 @@ export const NAV_DOMAINS: NavDomain[] = [
       // Faza 5: e-Fakture (SEF)
       { label: 'e-Fakture (SEF)', href: '/sef', icon: RefreshCw, requires: PERMISSIONS.SEF_READ, keywords: ['sef', 'efaktura', 'ubl'] },
       // Faza 3: Zalihe & kalkulacija (crosslisted u Logistiku)
-      { label: 'Zalihe & kalkulacija', href: '/robno', icon: Warehouse, requires: PERMISSIONS.ROBNO_READ, keywords: ['zalihe', 'lager', 'kalkulacija', 'primka', 'popis', 'nivelacija'], crosslisted: true },
+      { label: 'Zalihe & kalkulacija', href: '/robno', icon: Warehouse, requires: PERMISSIONS.ROBNO_READ, keywords: ['zalihe', 'lager', 'kalkulacija', 'primka', 'nivelacija'], crosslisted: true },
+      // E2: popis/inventura (zakonski godišnji tok — predpunjenje → unos → VISAK/MANJAK)
+      { label: 'Popis / inventura', href: '/robno/popis', icon: Warehouse, requires: PERMISSIONS.ROBNO_READ, keywords: ['popis', 'inventura', 'visak', 'manjak'] },
     ],
   },
   {

@@ -3658,6 +3658,54 @@ model SefOutbox {
   @@map("sef_outbox")
 }
 
+// -----------------------------------------------------------------------------
+// SefIncomingInvoice — ULAZNE e-fakture sa SEF-a (E1, O3 presuda 24.07)
+// -----------------------------------------------------------------------------
+/// Inbox ulaznih e-faktura povučenih sa SEF-a (pull, ne push). Zakonski rok za
+/// prihvatanje/odbijanje = 15 dana od prijema (acceptDeadline). Dedup po BigBit
+/// logici (O3): pri pull-u se proverava da li faktura VEĆ POSTOJI u evidenciji
+/// (KUF po PIB+broj), bez obzira da li ju je neko drugi potvrdio → alreadyExists.
+/// DRY-RUN kad SEF_API_KEY nije podešen (kao SefClientService).
+model SefIncomingInvoice {
+  id Int @id(map: "pk_sef_incoming_invoices") @default(autoincrement()) @map("id")
+
+  sefPurchaseId String @map("sef_purchase_id") @db.VarChar(64) // SEF PurchaseInvoiceId — idempotencija pull-a
+
+  supplierPib   String  @map("supplier_pib") @db.VarChar(20)
+  supplierName  String? @map("supplier_name") @db.VarChar(255)
+  invoiceNumber String  @map("invoice_number") @db.VarChar(64)
+
+  issueDate    DateTime? @map("issue_date") @db.Timestamptz(6) // datum izdavanja
+  deliveryDate DateTime? @map("delivery_date") @db.Timestamptz(6) // datum prijema na SEF (osnov roka)
+  dueDate      DateTime? @map("due_date") @db.Timestamptz(6)
+
+  totalAmount Decimal @default(0) @map("total_amount") @db.Decimal(19, 4)
+  vatAmount   Decimal @default(0) @map("vat_amount") @db.Decimal(19, 4)
+  currency    String  @default("RSD") @map("currency") @db.VarChar(3)
+
+  /// NEW | SEEN | ACCEPTED | REJECTED — lokalni status obrade (SEF status mirror)
+  status         String    @default("NEW") @map("status") @db.VarChar(20)
+  acceptDeadline DateTime? @map("accept_deadline") @db.Timestamptz(6) // deliveryDate + 15 dana
+  rejectComment  String?   @map("reject_comment") @db.VarChar(500)
+
+  alreadyExists     Boolean @default(false) @map("already_exists") // dedup: već u KUF evidenciji (PIB+broj)
+  matchedKufEntryId Int?    @map("matched_kuf_entry_id") // meki ref vat_ledger_entries.id
+
+  rawXml String? @map("raw_xml") @db.Text // sirovi UBL sa SEF-a (audit/kasnije parsiranje stavki)
+
+  actionByUserId Int?      @map("action_by_user_id") // ko je prihvatio/odbio
+  actionAt       DateTime? @map("action_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([sefPurchaseId], map: "uq_sef_incoming_sef_purchase_id")
+  @@index([status], map: "idx_sef_incoming_status")
+  @@index([acceptDeadline], map: "idx_sef_incoming_deadline") // alarm roka 15 dana
+  @@index([supplierPib, invoiceNumber], map: "idx_sef_incoming_pib_number") // dedup
+  @@map("sef_incoming_invoices")
+}
+
 // ── Faza 6: PDV / POPDV / KEPU ────────────────────────────────────────────
 /// Was: PDV_SemeKontaZaKnjizenje (konto → PDV smer/uloga; doc 18 §3.7).
 /// Registar: koji konto nosi ulazni (pretporez) / izlazni (obaveza) PDV, po stopi i ulozi.
