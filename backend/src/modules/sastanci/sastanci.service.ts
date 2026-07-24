@@ -1002,11 +1002,66 @@ export class SastanciService {
     });
   }
 
+  /**
+   * Brisanje sastanka (zahtev 013/26 — Zoran Jaraković, odobreno 24.07.2026:
+   * „Organizator i administrator treba da imaju mogućnost brisanja sastanka.").
+   *
+   * AUTORIZACIJA: klasni guard je `sastanci.edit` (VIDLJIVOST akcije); RED presuđuje
+   * sy15 RLS politika `sastanci_delete` (`current_user_is_management() ∨ vodio_email
+   * ∨ zapisnicar_email = jwt.email`) POD `authenticated` rolom (withUserRls). RLS
+   * odbijen DELETE = 0 redova → `assertAffected` mapira 403 (postoji, nema prava) /
+   * 404 (ne postoji). DODATNI DB guard `sast_check_not_locked` (BEFORE DELETE)
+   * dozvoljava brisanje ZAKLJUČANOG sastanka ISKLJUČIVO menadžmentu (inače 23514 →
+   * 422) — organizator ne može obrisati zaključan sastanak dok ga mgmt ne otvori.
+   *
+   * OTKAZ vs BRISANJE (PRESUDA 013/26): brisanje UKLANJA sastanak (za razliku od
+   * otkaza koji ga čuva sa status='otkazan'). Ali ako sastanak još NIJE gotov
+   * (status ∈ {planiran,u_toku}) i ima bar jednog POZVANOG učesnika, prvo se pušta
+   * POSTOJEĆI cancel tok (RPC `sastanci_cancel_sastanak`: status='otkazan' +
+   * 'meeting_cancel' mejl svakom `pozvan=true`), pa se briše — da pozvani ne ostanu
+   * bez obaveštenja da sastanak više ne postoji. Gotovi (zakljucan/zavrsen/otkazan)
+   * ili bez pozvanih → samo brisanje (obaveštenje o otkazu nema kome/čemu). Gejt je
+   * na STATUS (ne na datum) — status je izvor istine o životnom ciklusu i identičan
+   * je gejtu postojećeg „Otkaži sastanak" dugmeta (paritet UX-a).
+   *
+   * FK DECA (sy15 add_sastanci_module.sql / odluke tabela): ON DELETE CASCADE —
+   * `sastanak_ucesnici`, `presek_aktivnosti`, `presek_slike`, `sastanak_arhiva`,
+   * `sastanak_odluke` (brišu se automatski); ON DELETE SET NULL —
+   * `pm_teme.sastanak_id`, `akcioni_plan.sastanak_id`,
+   * `sastanci_notification_log.related_sastanak_id` (PREŽIVE; veza se nuluje). Zato
+   * je brisanje parenta bezbedno bez ručnog čišćenja child tabela, a enqueue-ovani
+   * 'meeting_cancel' mejlovi PREŽIVE brisanje (related_sastanak_id → NULL, red ostaje
+   * 'queued' i dispatch ga pošalje). Cancel + delete su u ISTOJ transakciji
+   * (withUserRls) — ako RLS odbije DELETE, i cancel se rollback-uje (nema fantomskih
+   * mejlova za sastanak koji je ostao). NAPOMENA: storage-bajtovi slika/PDF-a nisu u
+   * DB-u pa cascade ne dira bucket — ostaju siročići (bezopasno, isto kao u 1.0).
+   */
   async deleteSastanak(email: string, id: string) {
     return this.withUserMapped(email, async (tx) => {
-      const exists = (await tx.sastanak.count({ where: { id } })) > 0;
+      // Postojanje kroz SELECT (RLS select je širi od delete): null → 404.
+      const sastanak = await tx.sastanak.findUnique({
+        where: { id },
+        select: { status: true },
+      });
+      if (!sastanak) throw new NotFoundException(`Sastanak ${id} ne postoji`);
+
+      // Otkaz-pre-brisanja: samo za žive sastanke sa bar jednim pozvanim.
+      if (sastanak.status === "planiran" || sastanak.status === "u_toku") {
+        const pozvanih = await tx.sastanakUcesnik.count({
+          where: { sastanakId: id, pozvan: true },
+        });
+        if (pozvanih > 0) {
+          // Isti guard kao brisanje (has_edit_role ∧ (mgmt ∨ trio)); ako cancel
+          // odbije (42501 → 403) ceo tx pada PRE brisanja i mejlovi se rollback-uju.
+          await tx.$queryRaw(
+            Prisma.sql`SELECT sastanci_cancel_sastanak(${id}::uuid) AS result`,
+          );
+        }
+      }
+
       const { count } = await tx.sastanak.deleteMany({ where: { id } });
-      this.assertAffected(exists, count, `Sastanak ${id}`);
+      // exists=true (SELECT ga vidi gore): 0 redova = RLS delete-scope odbija → 403.
+      this.assertAffected(true, count, `Sastanak ${id}`);
       return { data: { ok: true } };
     });
   }

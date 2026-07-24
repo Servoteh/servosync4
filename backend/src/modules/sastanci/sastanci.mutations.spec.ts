@@ -298,6 +298,55 @@ describe("SastanciService R2 mutacije", () => {
     });
   });
 
+  /* Brisanje sastanka (zahtev 013/26). ROW-ishod (organizator sme svoj, tuđi ne
+   * bez manage) presuđuje sy15 RLS politika `sastanci_delete` POD `authenticated`
+   * — ovde se dokazuje mehanika: otkaz-pre-brisanja grana + 403/404 mapiranje
+   * RLS-filtriranog 0-reda (živi organizator-scope je R4 smoke, kao ostali write). */
+  it("deleteSastanak: gotov sastanak (zakljucan) → BEZ cancel RPC, samo brisanje", async () => {
+    const { svc, tx } = makeSvc();
+    tx.sastanak.findUnique.mockResolvedValueOnce({ status: "zakljucan" });
+    await svc.deleteSastanak("u@servoteh.com", ID);
+    expect(tx.$queryRaw).not.toHaveBeenCalled();
+    expect(tx.sastanak.deleteMany).toHaveBeenCalledWith({ where: { id: ID } });
+  });
+
+  it("deleteSastanak: živ sastanak BEZ pozvanih → BEZ cancel RPC, samo brisanje", async () => {
+    const { svc, tx } = makeSvc();
+    tx.sastanak.findUnique.mockResolvedValueOnce({ status: "planiran" });
+    tx.sastanakUcesnik.count.mockResolvedValueOnce(0);
+    await svc.deleteSastanak("u@servoteh.com", ID);
+    expect(tx.$queryRaw).not.toHaveBeenCalled();
+    expect(tx.sastanak.deleteMany).toHaveBeenCalled();
+  });
+
+  it("deleteSastanak: živ sastanak SA pozvanima → cancel RPC (meeting_cancel) PA brisanje", async () => {
+    const { svc, tx } = makeSvc();
+    tx.sastanak.findUnique.mockResolvedValueOnce({ status: "u_toku" });
+    tx.sastanakUcesnik.count.mockResolvedValueOnce(2);
+    await svc.deleteSastanak("u@servoteh.com", ID);
+    expect(sqlText(tx.$queryRaw)).toContain("sastanci_cancel_sastanak");
+    expect(tx.sastanak.deleteMany).toHaveBeenCalledWith({ where: { id: ID } });
+  });
+
+  it("deleteSastanak: 0 pogodaka a red postoji (SELECT vidi) → 403", async () => {
+    const { svc, tx } = makeSvc();
+    tx.sastanak.findUnique.mockResolvedValueOnce({ status: "zavrsen" });
+    tx.sastanak.deleteMany.mockResolvedValueOnce({ count: 0 });
+    await expect(
+      svc.deleteSastanak("u@servoteh.com", ID),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it("deleteSastanak: red NE postoji → 404 (bez brisanja i bez cancel-a)", async () => {
+    const { svc, tx } = makeSvc();
+    tx.sastanak.findUnique.mockResolvedValueOnce(null);
+    await expect(
+      svc.deleteSastanak("u@servoteh.com", ID),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(tx.$queryRaw).not.toHaveBeenCalled();
+    expect(tx.sastanak.deleteMany).not.toHaveBeenCalled();
+  });
+
   it("bulkUcesnici: DELETE pa INSERT (regeneracija tokena/RSVP — §2 p.6)", async () => {
     const { svc, tx } = makeSvc();
     await svc.bulkUcesnici("u@servoteh.com", ID, {

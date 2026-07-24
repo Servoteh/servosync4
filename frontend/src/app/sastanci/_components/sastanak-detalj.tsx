@@ -2,17 +2,19 @@
 
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Play, Lock, Unlock, Send, Pencil, CalendarX, Printer } from 'lucide-react';
+import { ArrowLeft, Play, Lock, Unlock, Send, Pencil, CalendarX, Printer, Trash2 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { PERMISSIONS } from '@/lib/permissions';
 import { Can } from '@/lib/can';
 import { Button } from '@/components/ui-kit/button';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { FormField } from '@/components/ui-kit/form-field';
+import { toast } from '@/lib/toast';
 import {
   arhiveQueryKey,
   newClientEventId,
   useCancelSastanak,
+  useDeleteSastanak,
   useLockSastanak,
   useMarkPrisutni,
   usePredmetPrioritet,
@@ -51,6 +53,7 @@ export function SastanakDetalj({ id, onBack }: { id: string; onBack: () => void 
   const [busy, setBusy] = useState<string | null>(null);
   const [editOpen, setEditOpen] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   // Ponuda „Pošalji ponovo" posle promene termina — NIKAD auto-slanje (odluka
   // vlasnika): pozivnica sa novim .ics ostaje svestan klik. Traka je neblokirajuća
   // i sama nestaje tek na akciju ili „Ne sada".
@@ -67,6 +70,12 @@ export function SastanakDetalj({ id, onBack }: { id: string; onBack: () => void 
 
   const sast = fullQ.data?.data;
   const canEdit = can(PERMISSIONS.SASTANCI_EDIT);
+  const canManage = can(PERMISSIONS.SASTANCI_MANAGE);
+  // „Obriši sastanak" (zahtev 013/26): vidljivo `sastanci.edit` holderima; RED
+  // (organizator ∨ mgmt) presuđuje sy15 RLS. Zaključan sastanak sme samo mgmt
+  // (DB guard sast_check_not_locked = 422 za ostale) — zato ga tada krijemo osim
+  // za manage, da izbegnemo zajamčeni 422.
+  const canDeleteMeeting = canEdit && (sast?.status !== 'zakljucan' || canManage);
 
   // Red „Od prošlog sastanka" (PDF/AI rezime) — sidro = PRETHODNI ZAKLJUČANI
   // sastanak (BE weekly-diff; 1.0 paritet). Raniji `since = sopstveni zakljucanAt`
@@ -234,6 +243,14 @@ export function SastanakDetalj({ id, onBack }: { id: string; onBack: () => void 
                   </Button>
                 </Can>
               )}
+              {/* Brisanje (zahtev 013/26) — TRAJNO uklanjanje sastanka (razlika od
+                  „Otkaži" koji ga čuva). Organizator/mgmt (RLS presuđuje); dostupno
+                  u svakom statusu (zaključan samo mgmt). Ide preko confirm dijaloga. */}
+              {canDeleteMeeting && (
+                <Button variant="danger" onClick={() => setDeleteOpen(true)}>
+                  <Trash2 className="h-4 w-4" aria-hidden /> Obriši sastanak
+                </Button>
+              )}
             </div>
           </>
         )}
@@ -296,6 +313,18 @@ export function SastanakDetalj({ id, onBack }: { id: string; onBack: () => void 
           onDone={() => {
             setCancelOpen(false);
             void fullQ.refetch();
+          }}
+        />
+      )}
+
+      {sast && deleteOpen && (
+        <ObrisiSastanakDialog
+          sast={sast}
+          onClose={() => setDeleteOpen(false)}
+          onDeleted={() => {
+            setDeleteOpen(false);
+            toast('Sastanak je obrisan.');
+            onBack();
           }}
         />
       )}
@@ -395,6 +424,76 @@ function OtkaziSastanakDialog({
           Sastanak se ne briše: zapisnik, akcije i odluke ostaju. Otvorene akcije prebaci na
           naredni sastanak pre otkazivanja („Sedmični + prenos“).
         </p>
+        {error && <p className="text-sm text-status-danger">{error}</p>}
+      </div>
+    </Dialog>
+  );
+}
+
+/**
+ * Potvrda BRISANJA sastanka (zahtev 013/26 — Zoran Jaraković, odobreno 24.07.2026).
+ * Razlika od „Otkaži": brisanje je TRAJNO i uklanja sastanak. Zato eksplicitan
+ * dijalog sa jasnim upozorenjem, a ne `confirm()`. Za žive sastanke (planiran/
+ * u_toku) sa pozvanima BE prvo pušta cancel tok (mejl o otkazivanju), pa briše —
+ * dijalog to najavljuje. Server greška (403 nemate prava / 422 zaključan) se
+ * prikazuje u dijalogu. `dismissable` ostaje default `true` (nema unosa → Escape/
+ * klik na pozadinu je ispravan „odustani").
+ */
+function ObrisiSastanakDialog({
+  sast,
+  onClose,
+  onDeleted,
+}: {
+  sast: SastanakFull;
+  onClose: () => void;
+  onDeleted: () => void;
+}) {
+  const deleteM = useDeleteSastanak();
+  const [error, setError] = useState<string | null>(null);
+  const pozvanih = sast.ucesnici.filter((u) => u.pozvan).length;
+  // Isti gejt kao BE (otkaz-pre-brisanja): živ sastanak + bar jedan pozvan.
+  const willNotify = (sast.status === 'planiran' || sast.status === 'u_toku') && pozvanih > 0;
+
+  async function submit() {
+    setError(null);
+    try {
+      await deleteM.mutateAsync({ id: sast.id });
+      onDeleted();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Brisanje nije uspelo.');
+    }
+  }
+
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title="Obriši sastanak"
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose}>Odustani</Button>
+          <Button variant="danger" loading={deleteM.isPending} onClick={() => void submit()}>
+            <Trash2 className="h-4 w-4" aria-hidden /> Obriši trajno
+          </Button>
+        </div>
+      }
+    >
+      <div className="space-y-3 text-sm text-ink">
+        <p>
+          Sastanak <strong>{sast.naslov}</strong> ({formatDatum(sast.datum)}
+          {sast.vreme ? `, ${formatVreme(sast.vreme)}` : ''}) se <strong>trajno briše</strong>.
+        </p>
+        <p className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-3 py-2">
+          Zapisnik, tačke, slike, odluke i arhiva ovog sastanka se <strong>brišu i ne mogu se
+          vratiti</strong>. Otvorene akcije i PM teme ostaju (veza sa sastankom se uklanja).
+        </p>
+        {willNotify && (
+          <p className="rounded-panel border border-status-warn/40 bg-status-warn-bg px-3 py-2">
+            Sastanak još nije održan — svim pozvanim učesnicima (
+            <strong className="tnums">{pozvanih}</strong>) biće{' '}
+            <strong>poslat mejl o otkazivanju</strong> pre brisanja. Slanje se ne može opozvati.
+          </p>
+        )}
         {error && <p className="text-sm text-status-danger">{error}</p>}
       </div>
     </Dialog>
