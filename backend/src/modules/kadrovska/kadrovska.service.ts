@@ -792,6 +792,9 @@ export class KadrovskaService {
     return this.withUserMapped(email, async (tx) => {
       const holidays = await tx.kadrHoliday.findMany({
         where: {
+          // isWorkday=false → SAMO pravi neradni praznik; red sa isWorkday=true je
+          // radni-dan IZUZETAK (npr. radna subota) i NE sme se preskočiti.
+          isWorkday: false,
           holidayDate: {
             gte: new Date(`${start}T00:00:00Z`),
             lt: new Date(`${endExcl}T00:00:00Z`),

@@ -1,9 +1,25 @@
+import { validate } from "class-validator";
+import { plainToInstance } from "class-transformer";
 import {
   KadrovskaGridAutofillService,
   proposeHoursFromPresence,
   GRID_AUTOFILL_MARKER,
 } from "./grid-autofill.service";
+import { GridAutofillRunDto } from "./dto/kadrovska-mutation.dto";
 import type { Sy15Service } from "../../common/sy15/sy15.service";
+
+/** „Juče" u pogonskoj zoni — deterministički (isti izračun kao servis) za klamp test. */
+function belgradeYesterday(): string {
+  const today = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Belgrade",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+  const d = new Date(`${today}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
 
 /**
  * Zahtev 012/26 — dnevni auto-predlog grida iz kapije (presuda Nenad 24.07). Pinuje:
@@ -51,7 +67,7 @@ function makeSvc(opts: {
     },
   } as unknown as Sy15Service;
   const svc = new KadrovskaGridAutofillService(sy15);
-  return { svc, queryRaw, executeRaw };
+  return { svc, queryRaw, executeRaw, holidayFindMany };
 }
 
 // v_attendance_vs_grid red (samo kolone koje job čita).
@@ -211,6 +227,21 @@ describe("KadrovskaGridAutofillService.run", () => {
     expect(data.skippedOutOfBand).toBe(2);
     expect(executeRaw).not.toHaveBeenCalled();
   });
+
+  it("KLAMP: to=danas/budućnost → obrađuje SAMO do juče (danas se ne dira)", async () => {
+    const { svc, queryRaw } = makeSvc({ vsGridRows: [] });
+    await svc.run({ to: "2999-12-31" });
+    const yd = belgradeYesterday();
+    // read params = [from, to]; from default = to (klampovano na juče)
+    expect(valuesOf(queryRaw)).toEqual([yd, yd]);
+    expect(valuesOf(queryRaw)).not.toContain("2999-12-31");
+  });
+
+  it("praznik upit filtrira isWorkday=false (radni-dan izuzetak se NE preskače)", async () => {
+    const { svc, holidayFindMany } = makeSvc({ vsGridRows: [] });
+    await svc.run({ from: "2026-07-07", to: "2026-07-07" });
+    expect(holidayFindMany.mock.calls[0]?.[0]?.where?.isWorkday).toBe(false);
+  });
 });
 
 describe("KadrovskaGridAutofillService interni dnevni tik (ODLUKE #24)", () => {
@@ -219,6 +250,19 @@ describe("KadrovskaGridAutofillService interni dnevni tik (ODLUKE #24)", () => {
     const spy = jest.spyOn(global, "setInterval");
     svc.onModuleInit(); // jest postavlja NODE_ENV='test'
     expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("onModuleInit: development (ne-production) → tik mrtav (nema setInterval)", () => {
+    const prev = process.env.NODE_ENV;
+    process.env.NODE_ENV = "development";
+    try {
+      const { svc } = makeSvc({});
+      const spy = jest.spyOn(global, "setInterval");
+      svc.onModuleInit();
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      process.env.NODE_ENV = prev;
+    }
   });
 
   it("onModuleInit: van testa + flag on → setInterval(unref) aktivan; destroy ga čisti", () => {
@@ -298,5 +342,25 @@ describe("KadrovskaGridAutofillService interni dnevni tik (ODLUKE #24)", () => {
         hour: 6,
       }),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("GridAutofillRunDto — stroga validacija datuma (YYYY-MM-DD)", () => {
+  it("prihvata ispravne YYYY-MM-DD i prazno telo", async () => {
+    for (const body of [
+      {},
+      { from: "2026-07-01", to: "2026-07-24" },
+      { to: "2026-07-24", dryRun: true },
+    ]) {
+      const dto = plainToInstance(GridAutofillRunDto, body);
+      expect(await validate(dto)).toHaveLength(0);
+    }
+  });
+
+  it("odbija delimične/nestandardne datume (IsISO8601 bi ih propustio → PG 500)", async () => {
+    for (const bad of ["2026-07", "2026-W30", "07/01/2026", "danas", "2026-7-1"]) {
+      const dto = plainToInstance(GridAutofillRunDto, { from: bad });
+      expect((await validate(dto)).length).toBeGreaterThan(0);
+    }
   });
 });

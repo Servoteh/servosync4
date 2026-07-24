@@ -51,12 +51,15 @@ export class KadrovskaMutationsController {
   // ---------- MESEČNI GRID: dnevni auto-predlog iz kapije (zahtev 012/26) ----------
 
   /**
-   * Okidač auto-predloga grida iz kucanja na kapiji (presuda Nenad 24.07). Sistemski
-   * job upiše PREDLOG sati iz STVARNOG prisustva za prazne grid-dane (SVA odeljenja),
-   * `INSERT … ON CONFLICT DO NOTHING` (nikad ne gazi ručni unos), marker
-   * `last_edited_by='auto:kapija'`. Bez tela → SAMO juče (dnevni cron, isti obrazac kao
-   * `POST work/auto-close`); `from`+`to` → backfill raspona; `dryRun` → pregled bez upisa.
-   * Gate = `kadrovska.admin` (sistemski upis za sve; kill-switch KADROVSKA_GRID_AUTOFILL).
+   * RUČNI okidač auto-predloga grida iz kucanja na kapiji (presuda Nenad 24.07). Redovan
+   * okidač je INTERNI tik u servisu (~30min; obrada „juče" posle 05:00 Europe/Belgrade;
+   * SAMO u produkciji) — ODLUKE #24: nema server cron-a/tokena. Ovaj endpoint služi za
+   * ručni BACKFILL / dry-run. Sistemski job upiše PREDLOG sati iz STVARNOG prisustva za
+   * prazne grid-dane (SVA odeljenja), `INSERT … ON CONFLICT DO NOTHING` (nikad ne gazi
+   * ručni unos), marker `last_edited_by='auto:kapija'`. Bez tela → SAMO juče; `from`+`to`
+   * → backfill raspona (gornja granica se klampuje na juče — DANAS se ne obrađuje);
+   * `dryRun` → pregled bez upisa. Gate = `kadrovska.admin` (sistemski upis za sve;
+   * kill-switch KADROVSKA_GRID_AUTOFILL).
    */
   @Post("grid/autofill-run")
   @HttpCode(200)

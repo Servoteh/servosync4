@@ -666,11 +666,14 @@ export class RetargetNotifDto {
   @IsOptional() @IsString() body?: string;
 }
 
-/** Okidač dnevnog auto-predloga grida iz kapije (zahtev 012/26). Bez `from`/`to` →
- *  SAMO juče (dnevni cron). `from`+`to` → backfill raspona (npr. jul: 2026-07-01..danas).
- *  `dryRun` → izračunaj i prijavi predlog, ali NE piši (bezbedan pregled pre pravog runa). */
+/** Ručni okidač auto-predloga grida iz kapije (zahtev 012/26). Redovan okidač je interni
+ *  tik (~30min, juče, posle 05:00 Europe/Belgrade, samo produkcija). Ovaj endpoint = ručni
+ *  backfill/dry-run. Bez `from`/`to` → SAMO juče; `from`+`to` → backfill raspona (npr. jul:
+ *  2026-07-01..juče; gornja granica se svakako klampuje na juče). `dryRun` → izračunaj i
+ *  prijavi predlog, ali NE piši. Datumi STROGO `YYYY-MM-DD` (IsISO8601 bi propustio
+ *  '2026-07'/'2026-W30' → PG `::date` 500). */
 export class GridAutofillRunDto {
-  @IsOptional() @IsISO8601() from?: string;
-  @IsOptional() @IsISO8601() to?: string;
+  @IsOptional() @Matches(/^\d{4}-\d{2}-\d{2}$/) from?: string;
+  @IsOptional() @Matches(/^\d{4}-\d{2}-\d{2}$/) to?: string;
   @IsOptional() @IsBoolean() dryRun?: boolean;
 }

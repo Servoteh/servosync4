@@ -123,9 +123,10 @@ interface VsGridRow {
  * obrađeno u ovom procesu (`lastRunDay` u memoriji); ako jeste — obradi juče (isti kod kao
  * endpoint bez tela). Restart aplikacije resetuje `lastRunDay` → ponovni run za juče je
  * NO-OP zbog `INSERT … ON CONFLICT DO NOTHING` (bezopasno, ne duplira/ne gazi). Tik je
- * `unref()`-ovan (ne drži proces u testu/boot-smoke) i gasi se na shutdown. U test
- * okruženju i pri isključenom flag-u se NE pokreće; svaka greška u tiku (uklj. sy15
- * nedostupan u boot fazi) se LOGUJE, NIKAD ne ruši proces.
+ * `unref()`-ovan (ne drži proces u testu/boot-smoke) i gasi se na shutdown. Pokreće se
+ * SAMO u produkciji (`NODE_ENV==='production'`) i uz uključen flag — dev/test/CI backend
+ * NE sme autonomno da piše u živu sy15; svaka greška u tiku (uklj. sy15 nedostupan u boot
+ * fazi) se LOGUJE, NIKAD ne ruši proces.
  *
  * Ručni okidač (backfill jula / dry-run) OSTAJE admin endpoint `POST
  * /kadrovska/grid/autofill-run`.
@@ -142,9 +143,13 @@ export class KadrovskaGridAutofillService
 
   constructor(private readonly sy15: Sy15Service) {}
 
-  /** Pokreni interni dnevni tik — osim u testu i kad je flag isključen (potpuno mrtav). */
+  /**
+   * Pokreni interni dnevni tik — SAMO u produkciji i kad je flag uključen. Van produkcije
+   * (dev/test/CI) je potpuno mrtav: lokalni/dev backend NE sme autonomno da piše u ŽIVU
+   * sy15 `work_hours`. Ručni endpoint (`autofill-run`) ostaje dostupan svuda (uz flag).
+   */
   onModuleInit(): void {
-    if (process.env.NODE_ENV === "test") return; // tik ne radi u testovima
+    if (process.env.NODE_ENV !== "production") return; // tik SAMO u produkciji
     if (!gridAutofillEnabled()) {
       this.logger.log(
         "Grid autofill tik: isključen (KADROVSKA_GRID_AUTOFILL=false) — tik se ne pokreće.",
@@ -206,8 +211,12 @@ export class KadrovskaGridAutofillService
     } = {},
   ): Promise<{ data: GridAutofillSummary }> {
     const enabled = gridAutofillEnabled();
-    const today = this.belgradeToday();
-    const to = (opts.to ?? this.addDays(today, -1)).slice(0, 10);
+    // KLAMP na juče (Europe/Belgrade): DANAS se NIKAD ne obrađuje. Delimičan (tekući) dan
+    // bi upisao pogrešne sate koje sutrašnji tik NE ispravlja (dan je tad grid_covered) →
+    // ostali bi trajno krivi. Gornja granica = min(opts.to, juče).
+    const yesterday = this.addDays(this.belgradeToday(), -1);
+    const requestedTo = (opts.to ?? yesterday).slice(0, 10);
+    const to = requestedTo > yesterday ? yesterday : requestedTo;
     const from = (opts.from ?? to).slice(0, 10);
     const dryRun = opts.dryRun ?? false;
 
@@ -251,8 +260,11 @@ export class KadrovskaGridAutofillService
     summary.candidates = rows.length;
 
     // Praznici u rasponu (vikend/praznik ne diramo — nije redovan rad → ide ručno).
+    // isWorkday=false → SAMO pravi neradni praznik; red sa isWorkday=true je radni-dan
+    // IZUZETAK (npr. radna subota) i NE sme se preskočiti.
     const holidays = await db.kadrHoliday.findMany({
       where: {
+        isWorkday: false,
         holidayDate: {
           gte: new Date(`${from}T00:00:00Z`),
           lte: new Date(`${to}T00:00:00Z`),
