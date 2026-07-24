@@ -4,7 +4,8 @@ import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
-import { AiChat } from './_components/ai-chat';
+import { AiChat } from '@/components/ai-chat';
+import { getWidgetConversationId } from '@/components/ui-kit/ai-widget';
 
 /** AI asistent (/ai) — 3.0 TALAS B. Paritet 1.0 aiAsistent. Vidljivost = ai.chat. */
 export default function AiPage() {
@@ -22,7 +23,8 @@ export default function AiPage() {
   return (
     <AppShell>
       <div className="flex min-h-0 flex-1 flex-col">
-        <AiChat variant="desktop" />
+        {/* Nastavi nit započetu u plutajućem widgetu (ako je ima) — pun prikaz iste niti. */}
+        <AiChat variant="desktop" initialConversationId={getWidgetConversationId()} />
       </div>
     </AppShell>
   );

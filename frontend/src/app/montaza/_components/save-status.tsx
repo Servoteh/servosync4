@@ -34,8 +34,8 @@ export function SaveStatusPanel({ status }: { status: SaveStatus }) {
       aria-live="polite"
       className={
         offline
-          ? 'pointer-events-none fixed bottom-4 right-4 z-40 flex items-center gap-2 rounded-panel border border-status-danger/40 bg-status-danger-bg px-3 py-2 text-sm shadow-lg'
-          : 'pointer-events-none fixed bottom-4 right-4 z-40 flex items-center gap-2 rounded-panel border border-line bg-surface px-3 py-2 text-sm shadow-lg'
+          ? 'pointer-events-none fixed bottom-4 left-4 z-40 flex items-center gap-2 rounded-panel border border-status-danger/40 bg-status-danger-bg px-3 py-2 text-sm shadow-lg'
+          : 'pointer-events-none fixed bottom-4 left-4 z-40 flex items-center gap-2 rounded-panel border border-line bg-surface px-3 py-2 text-sm shadow-lg'
       }
     >
       {offline ? (

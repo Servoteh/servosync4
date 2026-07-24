@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useRef } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { formatDateTime } from '@/lib/format';
 import { Button } from './button';
@@ -18,8 +19,28 @@ export function UpdateBanner({
   onReload: () => void;
   onLater: () => void;
 }) {
+  // Objavi visinu trake kao `--update-banner-h` dok je vidljiva, da se plutajući AI
+  // widget (dole desno/donji sheet) podigne iznad nje; skloni var na unmount/snooze.
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const apply = () =>
+      document.documentElement.style.setProperty(
+        '--update-banner-h',
+        `${el.offsetHeight}px`,
+      );
+    apply();
+    window.addEventListener('resize', apply);
+    return () => {
+      window.removeEventListener('resize', apply);
+      document.documentElement.style.removeProperty('--update-banner-h');
+    };
+  }, []);
+
   return (
     <div
+      ref={ref}
       role="status"
       aria-live="polite"
       className="pointer-events-none fixed inset-x-0 bottom-0 z-50 flex justify-center p-4"

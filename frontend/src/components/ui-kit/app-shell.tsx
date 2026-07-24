@@ -1367,7 +1367,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {showOverlay && (
         <>
           {!overlayHover && !overlayLocked && (
-            <div onClick={dismissOverlay} className="fixed inset-0 z-40 bg-black/40" aria-hidden />
+            <div onClick={dismissOverlay} className="fixed inset-0 z-[45] bg-black/40" aria-hidden />
           )}
           <aside
             ref={overlayRef}

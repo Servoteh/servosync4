@@ -419,4 +419,55 @@ describe("AiChatService.chat (screenContext u system prompt)", () => {
     await svc.chat("u@servoteh.com", { message: "cao" });
     expect(systemArg()).not.toContain("TRENUTNI EKRAN KORISNIKA");
   });
+
+  // Deljena projektna nit ima svoj timski kontekst — per-korisnik hint o ekranu se
+  // NE dodaje (review 003/26): system prompt ne sme sadržati „TRENUTNI EKRAN".
+  it("project scope: screenContext se IGNORIŠE (nema grane)", async () => {
+    const tx = {
+      $queryRaw: jest
+        .fn()
+        .mockResolvedValueOnce([{ uid: "U1" }]) // auth.uid()
+        .mockResolvedValueOnce([{ used: 3 }]) // dnevni limit
+        .mockResolvedValueOnce([{ id: CONV }]) // postojeća projektna nit
+        .mockResolvedValueOnce([]) // loadHistory (nit nije nova)
+        .mockResolvedValueOnce([{ full_name: "Pera Perić", position: "Monter" }]),
+      $executeRaw: jest.fn().mockResolvedValue(1),
+    };
+    const sy15 = {
+      withUser: jest.fn((_e: string, fn: (t: unknown) => Promise<unknown>) =>
+        fn(tx),
+      ),
+      withUserRls: jest.fn(),
+    };
+    const chatWithTools = jest.fn().mockResolvedValue({
+      reply: "ok",
+      model: "m",
+      tokensIn: 1,
+      tokensOut: 1,
+    });
+    const ai = {
+      engineConfig: jest.fn().mockReturnValue({
+        engine: "openai",
+        kind: "openai",
+        url: "u",
+        key: "k",
+        model: "m",
+      }),
+      chatWithTools,
+      generateTitle: jest.fn().mockResolvedValue("Naslov"),
+    };
+    const svc = new AiChatService(
+      sy15 as unknown as Sy15Service,
+      ai as unknown as AiProviderService,
+      {} as never,
+    );
+    await svc.chat("u@servoteh.com", {
+      message: "cao",
+      projectRef: "9400/7",
+      screenContext: "Sastanci (/sastanci)",
+    });
+    expect(chatWithTools.mock.calls[0][4] as string).not.toContain(
+      "TRENUTNI EKRAN KORISNIKA",
+    );
+  });
 });

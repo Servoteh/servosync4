@@ -228,11 +228,16 @@ export class AiChatService {
         : `\n\nKORISNIK U OVOM RAZGOVORU: ${setup.author.name}${setup.author.position ? " — " + setup.author.position : ""}. Znaš ko je bez pitanja; oslovljavaj ga po imenu, prirodno i bez preteranog ponavljanja.`;
     // Floating AI widget (request 003/26): optional current-screen hint. Appended
     // AFTER extraSystem so the SYSTEM_PROMPT / DATE_LINE / scope-note ordering stays
-    // intact; empty (no branch) when the client sends no screenContext.
-    const screenContext = String(dto.screenContext ?? "").trim();
-    const screenLine = screenContext
-      ? `\n\nTRENUTNI EKRAN KORISNIKA: ${screenContext}. Ako pitanje deluje vezano za ovaj ekran, prvo mu pomozi oko njega.`
-      : "";
+    // intact. Only for personal scope: shared project threads already carry their own
+    // team-context note, and a per-user screen hint would leak/confuse there. Whitespace
+    // is collapsed so a noisy client string cannot bloat the prompt.
+    const screenContext = String(dto.screenContext ?? "")
+      .replace(/\s+/g, " ")
+      .trim();
+    const screenLine =
+      screenContext && setup.scope !== "project"
+        ? `\n\nTRENUTNI EKRAN KORISNIKA: ${screenContext}. Ako pitanje deluje vezano za ovaj ekran, prvo mu pomozi oko njega.`
+        : "";
     const system = SYSTEM_PROMPT + DATE_LINE() + extraSystem + screenLine;
 
     // Engine se poziva POSLE kreiranja niti/upisa user-poruke → greška MORA nositi

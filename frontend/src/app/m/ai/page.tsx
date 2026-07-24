@@ -3,7 +3,7 @@
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
-import { AiChat } from '../../ai/_components/ai-chat';
+import { AiChat } from '@/components/ai-chat';
 
 /** Mobilni AI asistent (/m/ai) — full-screen, paritet 1.0 myAi. Vidljivost = ai.chat. */
 export default function MobileAiPage() {

@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Bot, ImagePlus, Plus, Send, Trash2, X, MessagesSquare } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { Bot, ImagePlus, Maximize2, Plus, Send, Trash2, X, MessagesSquare } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { ApiError } from '@/api/client';
 import { aiMdLite } from '@/lib/ai-md';
@@ -54,6 +55,7 @@ export function AiChat({
   screenContext,
   onMinimize,
   initialConversationId = null,
+  initialProjectRef = null,
   onConversationChange,
 }: {
   variant?: 'desktop' | 'mobile' | 'widget';
@@ -63,9 +65,16 @@ export function AiChat({
   onMinimize?: () => void;
   /** Widget: početna aktivna nit (seed pri (re)mount-u — preživljava navigaciju). */
   initialConversationId?: string | null;
-  /** Widget: prijava promene aktivne niti roditelju (upis u spoljni store). */
-  onConversationChange?: (id: string | null) => void;
+  /** Widget: početni projekat aktivne niti (seed pri (re)mount-u). */
+  initialProjectRef?: string | null;
+  /**
+   * Widget: prijava (id, projectRef) aktivne niti roditelju — upis u spoljni store.
+   * Zove se DIREKTNO iz send()/greške (radi i posle unmount-a) pa nit preživi i kad
+   * korisnik odmah napusti stranu tokom slanja.
+   */
+  onConversationChange?: (id: string | null, projectRef: string | null) => void;
 }) {
+  const router = useRouter();
   const me = useAiMe();
   const convs = useAiConversations();
   const projects = useAiProjects();
@@ -74,15 +83,19 @@ export function AiChat({
   const delConv = useDeleteConversation();
 
   const [activeId, setActiveId] = useState<string | null>(initialConversationId);
-  const [projectRef, setProjectRef] = useState<string | null>(null);
+  const [projectRef, setProjectRef] = useState<string | null>(initialProjectRef);
   const [engine, setEngine] = useState<Engine>('openai');
   const [input, setInput] = useState('');
   const [image, setImage] = useState<File | null>(null);
   const [remaining, setRemaining] = useState<number | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [showProjectPicker, setShowProjectPicker] = useState(false);
+  // Enter=pošalji zavisi od pokazivača: na finom (miš) da, na grubom (touch) ne — da
+  // se na tabletu/telefonu Enter ne otme kucanju. SSR-safe (obrazac iz app-shell-a).
+  const [finePointer, setFinePointer] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const sheetRef = useRef<HTMLDivElement>(null);
 
   const messagesQ = useAiMessages(activeId);
   const messages = messagesQ.data?.data ?? [];
@@ -91,13 +104,39 @@ export function AiChat({
   useEffect(() => {
     if (limit.data?.data) setRemaining(limit.data.data.remaining);
   }, [limit.data]);
-  // Widget: prijavi aktivnu nit roditelju (spoljni store) da preživi navigaciju.
+  // Enter=pošalji samo na finom pokazivaču (miš) — obrazac iz app-shell-a; SSR-safe.
   useEffect(() => {
-    onConversationChange?.(activeId);
-  }, [activeId, onConversationChange]);
+    const mq = window.matchMedia('(hover: hover) and (pointer: fine)');
+    const apply = () => setFinePointer(mq.matches);
+    apply();
+    mq.addEventListener('change', apply);
+    return () => mq.removeEventListener('change', apply);
+  }, []);
+  // Widget: prijavi (id, projectRef) aktivne niti roditelju (spoljni store) da preživi
+  // navigaciju. Send()/greška zovu setter i DIREKTNO (unmount-safe); ovaj efekat hvata
+  // ostale promene (npr. otvaranje iz istorije).
+  useEffect(() => {
+    onConversationChange?.(activeId, projectRef);
+  }, [activeId, projectRef, onConversationChange]);
+  // Widget: usvoji nit iz store-a ako stigne dok smo bez aktivne (posle navigacije).
+  useEffect(() => {
+    if (initialConversationId && activeId === null) setActiveId(initialConversationId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialConversationId]);
+  // Samoizlečenje projekta: kad su niti učitane, izvedi projectRef iz scope-a aktivne
+  // niti (store može nositi samo id; ovo popuni „deljena nit" i uključi projektne alate).
+  useEffect(() => {
+    if (!activeId) return;
+    const c = (convs.data?.data ?? []).find((x) => x.id === activeId);
+    if (c) setProjectRef(c.scope === 'project' ? c.projectRef : null);
+  }, [activeId, convs.data]);
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [messages.length, chat.isPending]);
+  // Sheet istorije: fokus pri otvaranju da njegov Escape radi bez prethodnog klika.
+  useEffect(() => {
+    if (sheetOpen) sheetRef.current?.focus();
+  }, [sheetOpen]);
 
   const conversations = convs.data?.data ?? [];
   const projectConvs = conversations.filter((c) => c.scope === 'project');
@@ -165,7 +204,18 @@ export function AiChat({
       setRemaining(res.data.remaining);
       setInput('');
       setImage(null);
+      // Direktno u store (radi i posle unmount-a): nit preživi i ako korisnik odmah
+      // napusti stranu tokom slanja — efekat bi otišao zajedno sa komponentom.
+      onConversationChange?.(res.data.conversationId, res.data.projectRef ?? null);
     } catch (e) {
+      // Nit više ne postoji (npr. obrisana u drugom tabu → 404) → resetuj na novu i javi.
+      if (e instanceof ApiError && e.status === 404 && activeId) {
+        setActiveId(null);
+        setProjectRef(null);
+        onConversationChange?.(null, null);
+        alert('Ta nit više ne postoji — pošaljite ponovo, otvoriće se nova.');
+        return;
+      }
       // Engine 502 nosi {error, conversationId}: nit + korisnikova poruka su VEĆ
       // upisane server-side. Zakači aktivnu nit da retry nastavi ISTU (ne pravi
       // orphan koji dvaput troši dnevni limit — paritet 1.0 aiChat.js). Input se
@@ -176,6 +226,7 @@ export function AiChat({
           : undefined;
       if (cid) {
         setActiveId(cid);
+        onConversationChange?.(cid, projectRef);
         void convs.refetch();
         void limit.refetch();
       }
@@ -183,9 +234,11 @@ export function AiChat({
     }
   }
 
+  // Enter=pošalji: desktop uvek; widget samo na finom pokazivaču (touch → novi red kao
+  // mobile, da Enter ne otme kucanju na tabletu/telefonu); mobile nikad.
+  const enterSends = variant === 'desktop' || (variant === 'widget' && finePointer);
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    // Desktop i widget: Enter = pošalji; mobile: Enter = novi red (slanje dugmetom).
-    if (variant !== 'mobile' && e.key === 'Enter' && !e.shiftKey) {
+    if (enterSends && e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       void send();
     }
@@ -212,15 +265,30 @@ export function AiChat({
   );
 
   return (
-    <div className="flex h-full min-h-0 flex-1">
+    <div className="relative flex h-full min-h-0 flex-1">
       {/* Sidebar (desktop) */}
       {variant === 'desktop' && (
         <aside className="hidden w-72 shrink-0 flex-col border-r border-line bg-surface md:flex">{sidebar}</aside>
       )}
 
-      {/* Sheet istorije (mobile) */}
+      {/* Sheet istorije — mobile: preko celog ekrana (fixed); widget: UNUTAR 380px panela
+          (absolute, ne beži iz njega). Ima SVOJ Escape (zatvara samo sheet; stopPropagation
+          da ne stigne do panel handlera koji bi minimizovao widget). */}
       {sheetOpen && (
-        <div className="fixed inset-0 z-50 flex" role="presentation" onClick={() => setSheetOpen(false)}>
+        <div
+          ref={sheetRef}
+          className={cn('flex', variant === 'widget' ? 'absolute inset-0 z-10' : 'fixed inset-0 z-50')}
+          role="presentation"
+          tabIndex={-1}
+          onClick={() => setSheetOpen(false)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              e.preventDefault();
+              e.stopPropagation();
+              setSheetOpen(false);
+            }
+          }}
+        >
           <div className="w-80 max-w-[85vw] bg-surface" onClick={(e) => e.stopPropagation()}>{sidebar}</div>
           <div className="flex-1 bg-black/40" />
         </div>
@@ -268,6 +336,20 @@ export function AiChat({
               </button>
             ))}
           </div>
+          {/* Widget: otvori pun prikaz (/ai) — aktivna nit se nastavlja tamo (store). */}
+          {variant === 'widget' && (
+            <button
+              className="rounded-control p-1.5 text-ink-secondary hover:bg-surface-2"
+              onClick={() => {
+                onMinimize?.();
+                router.push('/ai');
+              }}
+              title="Otvori pun prikaz"
+              aria-label="Otvori pun prikaz"
+            >
+              <Maximize2 className="h-4 w-4" aria-hidden />
+            </button>
+          )}
           {/* Widget: minimizuj (X) — vraća na plutajuće dugme, nit ostaje živa. */}
           {variant === 'widget' && onMinimize && (
             <button
@@ -282,7 +364,7 @@ export function AiChat({
         </div>
 
         {/* Messages */}
-        <div ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-auto p-4">
+        <div ref={scrollRef} role="log" aria-label="Poruke" className="min-h-0 flex-1 space-y-3 overflow-auto p-4">
           {messages.length === 0 && !chat.isPending ? (
             <div className="mx-auto max-w-md py-10 text-center">
               {greeting && <p className="text-lg font-semibold text-ink">{greeting.hello}</p>}
@@ -298,7 +380,7 @@ export function AiChat({
           )}
           {chat.isPending && (
             <div className="flex justify-start">
-              <div className="rounded-panel bg-surface-2 px-3 py-2 text-sm text-ink-secondary">Razmišljam…</div>
+              <div role="status" className="rounded-panel bg-surface-2 px-3 py-2 text-sm text-ink-secondary">Razmišljam…</div>
             </div>
           )}
         </div>
@@ -331,7 +413,7 @@ export function AiChat({
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={onKeyDown}
               rows={1}
-              placeholder={variant === 'mobile' ? 'Pitaj AI…' : 'Pitaj AI… (Enter za slanje)'}
+              placeholder={enterSends ? 'Pitaj AI… (Enter za slanje)' : 'Pitaj AI…'}
               className="max-h-40 min-h-9 flex-1 resize-none rounded-control border border-line bg-surface-2 px-3 py-2 text-sm text-ink outline-none focus:border-accent"
             />
             <button
