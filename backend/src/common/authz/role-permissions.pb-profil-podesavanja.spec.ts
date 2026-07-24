@@ -46,6 +46,8 @@ describe("Talas D permission matrica (paritet 1.0 gate-ova)", () => {
     ROLES.LEADPM,
   ];
   const PREDMET_ROLES = [ROLES.ADMIN, ROLES.MENADZMENT];
+  // tim_lider DODAT zahtevom 011/26 (menadžer/tim-lider vidi prisustvo/karnet SVOG tima;
+  // row-scope = current_user_manages_employee kroz managed_sub_department_ids).
   const PROFILE_TEAM_ROLES = [
     ROLES.ADMIN,
     ROLES.HR,
@@ -53,6 +55,7 @@ describe("Talas D permission matrica (paritet 1.0 gate-ova)", () => {
     ROLES.LEADPM,
     ROLES.PM,
     ROLES.POSLOVNI_ADMIN,
+    ROLES.TIM_LIDER,
   ];
   const ADMIN_ONLY = [ROLES.ADMIN];
 
@@ -125,7 +128,7 @@ describe("Talas D permission matrica (paritet 1.0 gate-ova)", () => {
   describe("Moj profil", () => {
     it("profile.self = SVAKI prijavljen (sve aktivne uloge)", () =>
       expectedExactly(PERMISSIONS.PROFILE_SELF, ACTIVE_ROLES));
-    it("profile.team = {admin, hr, menadzment, leadpm, pm, poslovni_admin}", () =>
+    it("profile.team = {admin, hr, menadzment, leadpm, pm, poslovni_admin, tim_lider}", () =>
       expectedExactly(PERMISSIONS.PROFILE_TEAM, PROFILE_TEAM_ROLES));
   });
 

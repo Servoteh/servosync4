@@ -1598,6 +1598,67 @@ export class MojProfilService {
     });
   }
 
+  /**
+   * Prisustvo člana tima (ulazi/izlazi) — MIRROR self `attendance()` (isti upit nad
+   * `v_attendance_daily`), ali za člana kroz DB scope. Zahtev 011/26 (menadžer tima izlistava
+   * vreme ulaska/izlaska za radnika SVOG tima). IDOR guard: `current_user_manages_employee=false`
+   * → 404 PRE upita (isti predikat kao roster/teamMemberHours — employees/v_attendance_daily
+   * ne smemo pustiti da RLS sam presudi „član mog tima"). resolveEmployeeById daje ime za prikaz.
+   */
+  teamMemberAttendance(
+    email: string,
+    employeeId: string,
+    q: AttendanceRangeQueryDto,
+  ) {
+    const { from, to } = monthRange(q.from, q.to);
+    return this.withUserMapped(email, async (tx) => {
+      if (!(await this.managesEmployee(tx, employeeId)))
+        throw new NotFoundException(
+          "Član nije pronađen ili nije u vašem timu.",
+        );
+      const emp = await this.resolveEmployeeById(tx, employeeId);
+      if (emp == null)
+        throw new NotFoundException(
+          "Član nije pronađen ili nije u vašem timu.",
+        );
+      const rows = await tx.$queryRaw<unknown[]>(
+        Prisma.sql`SELECT * FROM v_attendance_daily
+           WHERE employee_id = ${employeeId}::uuid AND day >= ${from}::date AND day <= ${to}::date
+           ORDER BY day DESC`,
+      );
+      return {
+        data: {
+          from,
+          to,
+          employee: { id: emp.id, fullName: emp.full_name },
+          days: jsonSafe(rows),
+        },
+      };
+    });
+  }
+
+  /**
+   * Sirovi prolazi člana tima za jedan dan (drill) — MIRROR self `attendanceEvents()`. IDOR guard
+   * isto (managesEmployee → 404). `attendance_events` RLS (attendance_events_read_own) sam pušta
+   * `current_user_manages_employee(employee_id)`, ali eksplicitan gate je izvor istine (pojas i
+   * tregeri), identično kao teamMemberHours. Zahtev 011/26.
+   */
+  teamMemberAttendanceEvents(email: string, employeeId: string, day: string) {
+    return this.withUserMapped(email, async (tx) => {
+      if (!(await this.managesEmployee(tx, employeeId)))
+        throw new NotFoundException(
+          "Član nije pronađen ili nije u vašem timu.",
+        );
+      const rows = await tx.$queryRaw<unknown[]>(
+        Prisma.sql`SELECT id, event_ts_local, event_ts, direction, terminal_name, terminal_id, source, badge_code, raw
+           FROM attendance_events
+           WHERE employee_id = ${employeeId}::uuid AND event_ts_local::date = ${day}::date
+           ORDER BY event_ts_local ASC`,
+      );
+      return { data: { employeeId, day, events: jsonSafe(rows) } };
+    });
+  }
+
   /** current_user_manages_employee(uuid) — autoritativni scope predikat (RLS je USING(true)). */
   private async managesEmployee(
     tx: Sy15Tx,
