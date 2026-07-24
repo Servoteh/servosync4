@@ -24,6 +24,15 @@ import { PrismaService } from "../../../prisma/prisma.service";
 
 const DEMO_BASE_URL = "https://demoefaktura.mfin.gov.rs";
 const PUBLIC_API = "/api/publicApi";
+
+// ── Ulazne (purchase) fakture — SEF public API (doc 07 §5) ────────────────────
+// Endpointi za ulazni tok (SEF_API_Common). Držani kao konstante jer je oblik
+// demo API-ja i mora se potvrditi na prod ključu (doc 07 §5, MODULE_SPEC_sef §5).
+// NAPOMENA: migracioni doc navodi POST za /ids; ovde je GET po zadatoj specifikaciji
+// (status filter kroz query). Ako prod ključ traži POST — promeni samo `method`.
+const PURCHASE_IDS_PATH = `${PUBLIC_API}/purchase-invoice/ids`;
+const PURCHASE_XML_PATH = `${PUBLIC_API}/purchase-invoice/xml`;
+const PURCHASE_ACCEPT_REJECT_PATH = `${PUBLIC_API}/purchase-invoice/acceptRejectPurchaseInvoice`;
 /** MFIN limit: max 3 komande u sekundi. */
 const THROTTLE_MAX_PER_SEC = 3;
 const THROTTLE_WINDOW_MS = 1000;
@@ -42,6 +51,12 @@ export interface SefCallResult {
   errorMessage?: string;
   /** true = DRY-RUN (ključ nije podešen) — poziv nije upućen. */
   dryRun?: boolean;
+}
+
+/** Rezultat povlačenja ID-jeva ulaznih faktura (SefCallResult + lista ID-jeva). */
+export interface SefIdsResult extends SefCallResult {
+  /** SEF PurchaseInvoiceId-jevi; prazno u DRY-RUN i na grešci. */
+  ids: string[];
 }
 
 @Injectable()
@@ -186,6 +201,79 @@ export class SefClientService {
   }
 
   // ───────────────────────────────────────────────────────────────────────────
+  // Ulazne (purchase) fakture — SEF_API_Common (doc 07 §5). Nikad ne baca na
+  // mrežnu grešku (isti ugovor kao izlazni tok) — greška je u ok/errorMessage.
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Povuci ID-jeve novih ulaznih faktura sa SEF-a (status=New).
+   * `GET /purchase-invoice/ids?status=New[&dateFrom=<d>]` (doc 07 §5).
+   * DRY-RUN (nema ključa) → prazna lista uz `dryRun`. Ne baca na mrežnu grešku.
+   */
+  async pullPurchaseInvoiceIds(dateFrom?: string): Promise<SefIdsResult> {
+    if (!this.configured) {
+      this.logger.warn(
+        "DRY-RUN (SEF_API_KEY nije podešen): ulazne fakture NISU povučene sa SEF-a.",
+      );
+      return { ok: false, httpStatus: 0, ids: [], dryRun: true };
+    }
+
+    const params = new URLSearchParams({ status: "New" });
+    if (dateFrom) params.set("dateFrom", dateFrom);
+    const url = `${this.baseUrl}${PURCHASE_IDS_PATH}?${params.toString()}`;
+
+    const res = await this.request(url, {
+      method: "GET",
+      headers: { accept: "application/json", ApiKey: this.apiKey },
+    });
+    return { ...res, ids: res.ok ? this.extractIds(res.body) : [] };
+  }
+
+  /**
+   * Preuzmi UBL XML jedne ulazne fakture. `GET /purchase-invoice/xml?invoiceId=<id>`
+   * (doc 07 §5). Na uspeh `body` = sirovi UBL. DRY-RUN → dryRun. Ne baca.
+   */
+  async getPurchaseInvoiceXml(invoiceId: string): Promise<SefCallResult> {
+    if (!this.configured) {
+      return { ok: false, httpStatus: 0, dryRun: true };
+    }
+    const url = `${this.baseUrl}${PURCHASE_XML_PATH}?invoiceId=${encodeURIComponent(invoiceId)}`;
+    return this.request(url, {
+      method: "GET",
+      headers: { accept: "application/xml", ApiKey: this.apiKey },
+    });
+  }
+
+  /**
+   * Prihvati/odbij ulaznu fakturu na SEF-u. `POST /purchase-invoice/acceptRejectPurchaseInvoice`
+   * JSON telom (doc 07 §5, rok 15 dana). DRY-RUN (nema ključa) → dryRun, ne šalje.
+   * Ne baca na mrežnu grešku — pozivalac (SefIncomingService) odlučuje o commit-u.
+   */
+  async acceptRejectPurchaseInvoice(
+    invoiceId: string,
+    accepted: boolean,
+    comment?: string,
+  ): Promise<SefCallResult> {
+    if (!this.configured) {
+      this.logger.warn(
+        `DRY-RUN (SEF_API_KEY nije podešen): ${accepted ? "prihvatanje" : "odbijanje"} ` +
+          `ulazne fakture ${invoiceId} NIJE poslato na SEF.`,
+      );
+      return { ok: false, httpStatus: 0, dryRun: true };
+    }
+    const url = `${this.baseUrl}${PURCHASE_ACCEPT_REJECT_PATH}`;
+    return this.request(url, {
+      method: "POST",
+      headers: {
+        accept: "text/plain",
+        "Content-Type": "application/json",
+        ApiKey: this.apiKey,
+      },
+      body: JSON.stringify({ invoiceId, accepted, comment: comment ?? null }),
+    });
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
   // Interni: throttle + fetch omotač (nikad ne baca na mrežnu grešku)
   // ───────────────────────────────────────────────────────────────────────────
 
@@ -244,6 +332,38 @@ export class SefClientService {
       const waitMs = THROTTLE_WINDOW_MS - (now - oldest) + 5;
       await sleep(waitMs);
     }
+  }
+
+  /**
+   * Izvuci listu ulaznih PurchaseInvoiceId-jeva iz `/purchase-invoice/ids` tela.
+   * SEF vraća JSON niz ili omotač (`PurchaseInvoiceIds`/`Ids`); tolerantno i za
+   * goli whitespace/CSV spisak brojeva.
+   */
+  private extractIds(body?: string): string[] {
+    if (!body) return [];
+    const trimmed = body.trim();
+    if (!trimmed) return [];
+    try {
+      const json = JSON.parse(trimmed) as unknown;
+      const arr = Array.isArray(json)
+        ? json
+        : (() => {
+            const o = json as Record<string, unknown>;
+            const cand =
+              o.PurchaseInvoiceIds ?? o.purchaseInvoiceIds ?? o.Ids ?? o.ids;
+            return Array.isArray(cand) ? cand : null;
+          })();
+      if (Array.isArray(arr)) {
+        return arr
+          .map((v) => (v === null || v === undefined ? "" : String(v).trim()))
+          .filter((s) => s.length > 0);
+      }
+    } catch {
+      // nije JSON — probaj goli spisak brojeva
+      const parts = trimmed.split(/[\s,]+/).filter((s) => /^\d+$/.test(s));
+      if (parts.length) return parts;
+    }
+    return [];
   }
 
   /** SEF pri slanju vrati SalesInvoiceId — može biti JSON ili goli broj. */

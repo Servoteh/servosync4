@@ -94,6 +94,7 @@ export interface SefOutbox {
 const KEYS = {
   all: ['sef'] as const,
   outbox: ['sef', 'outbox'] as const,
+  incoming: ['sef', 'incoming'] as const,
 };
 
 // ─────────────────────────────────────────────────────────────── filteri
@@ -223,6 +224,155 @@ export function useCancel() {
       apiFetch<Envelope<SefOutbox>>(`${BASE}/cancel/${outboxId}`, {
         method: 'POST',
         body: '{}',
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+// ═══════════════════════════════════════════════════════════ SEF ULAZNE (inbox)
+//
+// Ulazne (dobavljačke) e-fakture preuzete sa SEF-a — Talas 1E stavka E1
+// (docs/PLAN_TALAS_1C-1E §3, odluka O3). Odvojen keš-podprostor `['sef','incoming']`
+// od outbox-a (izlazne), ali deli `['sef']` prefiks za invalidaciju. Backend ugovor:
+//   GET  /api/v1/sef/incoming            — lista (filter status)      → { data: SefIncoming[] }
+//   POST /api/v1/sef/incoming/pull       — sinhronizacija sa SEF-a    → { data: PullSummary }
+//   POST /api/v1/sef/incoming/:id/accept — prihvatanje (odgovor SEF-u)→ { data: SefIncoming }
+//   POST /api/v1/sef/incoming/:id/reject — odbijanje sa razlogom      → { data: SefIncoming }
+//
+// RBAC (paralela izlaznog toka): pregled + pull = SEF_READ (kao poll/refresh);
+// accept = SEF_SEND (afirmativni odgovor SEF-u, kao slanje); reject = SEF_CANCEL
+// (negativni odgovor sa obaveznim razlogom, kao storno). Backend presuđuje.
+
+/**
+ * Status ulazne fakture (`sef_incoming.status`). NEW (netaknuta, tek preuzeta) →
+ * SEEN (pregledana, čeka odluku) → ACCEPTED / REJECTED (terminalno). Vrednosti su
+ * stringovi (BACKEND_RULES §2).
+ */
+export const SEF_INCOMING_STATUS = {
+  NEW: 'NEW', // Preuzeta sa SEF-a, još nije pregledana
+  SEEN: 'SEEN', // Pregledana, čeka prihvatanje/odbijanje
+  ACCEPTED: 'ACCEPTED', // Prihvaćena (odgovor poslat SEF-u)
+  REJECTED: 'REJECTED', // Odbijena (razlog upisan, odgovor poslat SEF-u)
+} as const;
+
+export type SefIncomingStatus = (typeof SEF_INCOMING_STATUS)[keyof typeof SEF_INCOMING_STATUS];
+
+/** Statusi iz kojih je odluka (prihvati/odbij) još moguća — terminalni se ne diraju. */
+const INCOMING_ACTIONABLE = new Set<SefIncomingStatus>([
+  SEF_INCOMING_STATUS.NEW,
+  SEF_INCOMING_STATUS.SEEN,
+]);
+
+/** True ako ulazna faktura u datom statusu sme da se prihvati/odbije (guard-afordansa). */
+export function canDecideIncoming(status: string): boolean {
+  return INCOMING_ACTIONABLE.has(status as SefIncomingStatus);
+}
+
+/**
+ * Ulazna (dobavljačka) e-faktura preuzeta sa SEF-a — 1:1 sa backend modelom.
+ * `totalAmount`/`vatAmount` su Decimal-as-string (BACKEND_RULES §6) → `formatDecimal`.
+ * `daysLeft` = preostalo dana do `acceptDeadline` (zakonski rok 15 dana; negativno =
+ * istekao). `alreadyExists` = dedup protiv KUF evidencije (BigBit paritet, odluka O3):
+ * faktura je već proknjižena — `matchedKufEntryId` pokazuje na tu stavku.
+ */
+export interface SefIncoming {
+  id: number;
+  /** SEF PurchaseInvoiceId — idempotencija preuzimanja. */
+  sefPurchaseId: string;
+  supplierPib: string;
+  supplierName: string;
+  invoiceNumber: string;
+  issueDate: string;
+  deliveryDate: string | null;
+  totalAmount: string;
+  vatAmount: string;
+  currency: string;
+  status: SefIncomingStatus;
+  acceptDeadline: string | null;
+  daysLeft: number | null;
+  /** Faktura je već u KUF evidenciji (dedup) — akcije treba upozoriti. */
+  alreadyExists: boolean;
+  matchedKufEntryId: number | null;
+  rejectComment: string | null;
+}
+
+/**
+ * Rezultat sinhronizacije sa SEF-a — 1:1 sa backend `PullSummary` (sef-incoming.service).
+ * `dryRun` = probni prolaz (ništa nije sačuvano; `note` nosi razlog). `totalIds` = koliko
+ * je ID-jeva vraćeno sa SEF-a, `created` = koliko novih redova upisano, `skipped` = već
+ * postojali (idempotencija), `failed` = XML/parse nije uspeo (preskočeno, ne obara pull).
+ */
+export interface PullIncomingResult {
+  dryRun: boolean;
+  totalIds: number;
+  created: number;
+  skipped: number;
+  failed: number;
+  note?: string;
+}
+
+export interface SefIncomingFilters {
+  status?: SefIncomingStatus | '';
+}
+
+/**
+ * Lista ulaznih e-faktura (filter po statusu). Vraća GOL `{ data: SefIncoming[] }`
+ * (bez `meta`/`total`) — isti oblik kao outbox lista.
+ */
+export function useSefIncoming(filters: SefIncomingFilters = {}) {
+  const query = buildQuery({
+    status: filters.status === '' ? undefined : filters.status,
+  });
+  return useQuery({
+    queryKey: [...KEYS.incoming, filters],
+    queryFn: () => apiFetch<Envelope<SefIncoming[]>>(`${BASE}/incoming${query}`),
+  });
+}
+
+/**
+ * Preuzmi (pull) nove ulazne fakture sa SEF-a. POST /sef/incoming/pull. Permisija
+ * SEF_READ (sinhronizacija, kao poll statusa). Odgovor nosi broj preuzetih i eventualnu
+ * DRY-RUN naznaku. Invalidira ceo `['sef']` prefiks.
+ */
+export function usePullIncoming() {
+  const invalidate = useInvalidateSef();
+  return useMutation({
+    mutationFn: () =>
+      apiFetch<Envelope<PullIncomingResult>>(`${BASE}/incoming/pull`, {
+        method: 'POST',
+        body: '{}',
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/**
+ * Prihvati ulaznu fakturu (afirmativni odgovor SEF-u). POST /sef/incoming/:id/accept.
+ * Permisija SEF_SEND. NEW/SEEN → ACCEPTED. Invalidira `['sef']` prefiks.
+ */
+export function useAcceptIncoming() {
+  const invalidate = useInvalidateSef();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<Envelope<SefIncoming>>(`${BASE}/incoming/${id}/accept`, {
+        method: 'POST',
+        body: '{}',
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/**
+ * Odbij ulaznu fakturu sa obaveznim razlogom. POST /sef/incoming/:id/reject { comment }.
+ * Permisija SEF_CANCEL. NEW/SEEN → REJECTED. Invalidira `['sef']` prefiks.
+ */
+export function useRejectIncoming() {
+  const invalidate = useInvalidateSef();
+  return useMutation({
+    mutationFn: ({ id, comment }: { id: number; comment: string }) =>
+      apiFetch<Envelope<SefIncoming>>(`${BASE}/incoming/${id}/reject`, {
+        method: 'POST',
+        body: JSON.stringify({ comment }),
       }),
     onSuccess: invalidate,
   });

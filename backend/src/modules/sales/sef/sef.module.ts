@@ -4,6 +4,7 @@ import { SalesPrintModule } from "../print/sales-print.module";
 import { SefController } from "./sef.controller";
 import { SefService } from "./sef.service";
 import { SefClientService } from "./sef-client.service";
+import { SefIncomingService } from "./sef-incoming.service";
 import { UblBuilderService } from "./ubl-builder.service";
 
 /**
@@ -15,7 +16,7 @@ import { UblBuilderService } from "./ubl-builder.service";
 @Module({
   imports: [PrismaModule, SalesPrintModule], // SalesPrintModule → InvoicePdfService za D7 PDF prilog uz SEF
   controllers: [SefController],
-  providers: [SefService, SefClientService, UblBuilderService],
+  providers: [SefService, SefClientService, SefIncomingService, UblBuilderService], // SefIncoming: E1 ulazne fakture
   exports: [SefService],
 })
 export class SefModule {}

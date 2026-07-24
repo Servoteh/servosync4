@@ -11,6 +11,7 @@ import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Pager } from '@/components/ui-kit/pager';
 import { Select } from '@/components/ui-kit/select';
 import { Button } from '@/components/ui-kit/button';
+import { Tabs, type TabItem } from '@/components/ui-kit/tabs';
 import { formatDateTime } from '@/lib/format';
 import { ApiError } from '@/api/client';
 import { PERMISSIONS } from '@/lib/permissions';
@@ -25,6 +26,7 @@ import {
   type SefStatus,
   type SefOutbox,
 } from '@/api/sef';
+import { IncomingTab } from './incoming-tab';
 
 /**
  * SEF e-fakture (izlazne): lista outbox-a (Faza 5 §B). Obrazac „Lista"
@@ -68,10 +70,19 @@ const STATUS_OPTIONS: { value: SefStatus; label: string }[] = [
   { value: SEF_STATUS.CANCELLED, label: 'Stornirano' },
 ];
 
+/** Dva pogleda: izlazni outbox (postojeći) i ulazne dobavljačke fakture (Talas 1E). */
+type View = 'outbox' | 'incoming';
+
+const VIEW_TABS: TabItem<View>[] = [
+  { key: 'outbox', label: 'Izlazne' },
+  { key: 'incoming', label: 'Ulazne fakture' },
+];
+
 export default function SefPage() {
   const { user, isLoading, can } = useAuth();
   const router = useRouter();
 
+  const [view, setView] = useState<View>('outbox');
   const [status, setStatus] = useState<SefStatus | ''>('');
   const [page, setPage] = useState(1);
   const [banner, setBanner] = useState<string | null>(null);
@@ -221,9 +232,23 @@ export default function SefPage() {
 
   return (
     <AppShell>
-      <PageHeader title="SEF e-fakture" count={list.data ? `${rows.length} u prikazu` : undefined} />
+      <PageHeader
+        title="SEF e-fakture"
+        count={view === 'outbox' && list.data ? `${rows.length} u prikazu` : undefined}
+      />
 
       <div className="flex-1 space-y-4 overflow-auto p-6">
+        <Tabs
+          tabs={VIEW_TABS}
+          value={view}
+          onChange={setView}
+          ariaLabel="SEF pregled (izlazne / ulazne)"
+        />
+
+        {view === 'incoming' ? (
+          <IncomingTab />
+        ) : (
+          <>
         <div className="flex flex-wrap items-end gap-3">
           <label className="flex flex-col gap-1 text-xs text-ink-secondary">
             Status
@@ -285,6 +310,8 @@ export default function SefPage() {
             onPrev={() => setPage((p) => Math.max(1, p - 1))}
             onNext={() => setPage((p) => p + 1)}
           />
+        )}
+          </>
         )}
       </div>
     </AppShell>
