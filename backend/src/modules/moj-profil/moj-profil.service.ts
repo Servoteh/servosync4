@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
@@ -598,9 +599,11 @@ export class MojProfilService {
     }
   }
 
-  /** SQLSTATE → HTTP (paritet Reversi/Sastanci §5): 42501→403, P0001/P0002/23514→422, 23505→409. */
+  /** SQLSTATE → HTTP (paritet Reversi/Sastanci §5): 42501→403, P0001/P0002/23514→422, 23505→409,
+   *  22007/22008→400. */
   private rethrowSy15(e: unknown): never {
     if (
+      e instanceof BadRequestException ||
       e instanceof NotFoundException ||
       e instanceof ForbiddenException ||
       e instanceof UnprocessableEntityException ||
@@ -616,6 +619,11 @@ export class MojProfilService {
       throw new UnprocessableEntityException(message);
     if (code === "23505") throw new ConflictException(message);
     if (code === "P2025") throw new ForbiddenException(message);
+    // Neispravan datum/vreme (22007 invalid_datetime_format / 22008 datetime_field_overflow) →
+    // 400, ne 500. Pojas i tregeri: DTO-ovi već validiraju kalendarski (IsCalendarDate), ali
+    // ako neka druga ruta prosledi loš literal Postgresu, mapiramo umesto da procuri 500.
+    if (code === "22007" || code === "22008")
+      throw new BadRequestException("Neispravan datum u zahtevu.");
     throw e;
   }
 
@@ -1646,6 +1654,13 @@ export class MojProfilService {
   teamMemberAttendanceEvents(email: string, employeeId: string, day: string) {
     return this.withUserMapped(email, async (tx) => {
       if (!(await this.managesEmployee(tx, employeeId)))
+        throw new NotFoundException(
+          "Član nije pronađen ili nije u vašem timu.",
+        );
+      // Simetrija sa teamMemberAttendance: nepostojeći uuid → 404 (a ne 200-prazno),
+      // uklj. all-scope role (admin/hr/pm/leadpm) kojima managesEmployee vraća true za sve.
+      const emp = await this.resolveEmployeeById(tx, employeeId);
+      if (emp == null)
         throw new NotFoundException(
           "Član nije pronađen ili nije u vašem timu.",
         );

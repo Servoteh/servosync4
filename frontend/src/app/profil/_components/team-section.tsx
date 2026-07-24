@@ -559,7 +559,12 @@ function TeamMemberAttendance({ employeeId }: { employeeId: string }) {
       {q.isLoading ? (
         <p className="text-xs text-ink-disabled">Učitavam prisustvo…</p>
       ) : q.isError ? (
-        <p className="text-xs text-ink-disabled">Prisustvo nije dostupno.</p>
+        <p className="text-xs text-status-danger">
+          {q.error instanceof ApiError ? q.error.message : 'Greška pri učitavanju prisustva.'}{' '}
+          <button onClick={() => void q.refetch()} className="text-accent hover:underline" disabled={q.isFetching}>
+            {q.isFetching ? 'Učitavam…' : 'Pokušaj ponovo'}
+          </button>
+        </p>
       ) : days.length === 0 ? (
         <p className="text-xs text-ink-disabled">Nema prolaza u ovom mesecu.</p>
       ) : (
@@ -623,6 +628,15 @@ function TeamMemberAttendance({ employeeId }: { employeeId: string }) {
 function TeamMemberAttendanceDrill({ employeeId, day }: { employeeId: string; day: string }) {
   const q = useTeamAttendanceEvents(employeeId, day.slice(0, 10));
   if (q.isLoading) return <p className="text-xs text-ink-disabled">Učitavam prolaze…</p>;
+  if (q.isError)
+    return (
+      <p className="text-xs text-status-danger">
+        {q.error instanceof ApiError ? q.error.message : 'Greška pri učitavanju prolaza.'}{' '}
+        <button onClick={() => void q.refetch()} className="text-accent hover:underline" disabled={q.isFetching}>
+          {q.isFetching ? 'Učitavam…' : 'Pokušaj ponovo'}
+        </button>
+      </p>
+    );
   const events = q.data?.data?.events ?? [];
   if (events.length === 0) return <p className="text-xs text-ink-disabled">Nema prolaza.</p>;
   return (
