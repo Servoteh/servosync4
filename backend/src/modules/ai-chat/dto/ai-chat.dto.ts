@@ -15,6 +15,14 @@ export class ChatDto {
 
   /** Nova/postojeća projektna nit — project_code (npr. 9400/7). */
   @IsOptional() @IsString() @MaxLength(64) projectRef?: string;
+
+  /**
+   * Floating AI widget (request 003/26): short human label of the screen/route
+   * the user is currently on (e.g. "Sastanci (/sastanci)"), computed FE-side from
+   * the nav model. When present, the system prompt asks the assistant to help with
+   * the current screen first. Optional — desktop/mobile /ai variants omit it.
+   */
+  @IsOptional() @IsString() @MaxLength(300) screenContext?: string;
 }
 
 /** Multipart polja uz `/ai/images/sign` (path se šalje kao query/param). */

@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, type ReactNode } from 'react';
+import { Bot } from 'lucide-react';
 import { FormField } from '@/components/ui-kit/form-field';
 import { Button } from '@/components/ui-kit/button';
 import { Select, type SelectOption } from '@/components/ui-kit/select';
@@ -280,6 +281,25 @@ export default function DevUiPage() {
             </div>
           </HelpProvider>
         </div>
+      </Section>
+
+      <Section
+        title="AiWidget — plutajući AI asistent"
+        note="Zahtev 003/26: okruglo dugme dole desno → kompaktni chat panel (AiChat variant='widget') koji ne tera korisnika da napusti trenutnu formu. Non-modal, minimizacija (X/Esc), nit i otvorenost preživljavaju navigaciju. Uživo ga montira AppShell samo korisnicima sa AI permisijom (traži prijavu i API), pa je ovde prikazan samo izgled plutajućeg dugmeta."
+      >
+        <Demo title="Plutajuće dugme (dole desno)">
+          <div className="flex items-center gap-3">
+            <span
+              className="grid h-14 w-14 place-items-center rounded-full bg-accent text-accent-fg shadow-lg"
+              aria-hidden
+            >
+              <Bot className="h-6 w-6" />
+            </span>
+            <span className="text-xs text-ink-secondary">
+              Klik otvara panel (~380px; na telefonu donji sheet).
+            </span>
+          </div>
+        </Demo>
       </Section>
     </main>
   );

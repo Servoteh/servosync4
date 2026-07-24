@@ -424,6 +424,37 @@ export function findModuleByHref(href: string): NavModule | undefined {
 }
 
 /**
+ * Najbliži modul za datu rutu (tačan pogodak ili prefiks; najduži href pobeđuje kao u
+ * `findDomainByPath`) — za podrute (npr. /work-orders/123) vraća „Radni nalozi". `external`
+ * stavke (kiosk) se preskaču. Koristi ga AI widget da opiše trenutni ekran korisniku.
+ */
+export function findModuleByPath(pathname: string): NavModule | undefined {
+  let best: { module: NavModule; len: number } | undefined;
+  for (const domain of NAV_DOMAINS) {
+    for (const m of allModules(domain)) {
+      if (m.external) continue;
+      if (matchesRoute(pathname, m.href) && (!best || m.href.length > best.len)) {
+        best = { module: m, len: m.href.length };
+      }
+    }
+  }
+  return best?.module;
+}
+
+/**
+ * Kratka, čitljiva oznaka trenutnog ekrana za AI asistenta (plutajući widget, zahtev
+ * 003/26): naziv modula + ruta (npr. „Sastanci (/sastanci)"), pa domen ako modul nije
+ * nađen, pa sirov pathname kao fallback. Backend je ubacuje u system prompt.
+ */
+export function screenContextForPath(pathname: string): string {
+  const mod = findModuleByPath(pathname);
+  if (mod) return `${mod.label} (${mod.href})`;
+  const dom = findDomainByPath(pathname);
+  if (dom) return `${dom.title} (${pathname})`;
+  return pathname;
+}
+
+/**
  * Razreši listu omiljenih href-ova (zahtev 010/26) na vidljive NavModule-e:
  *  • RBAC filter (`canAccessNavModule`) — href koji korisnik ne sme da vidi se izostavlja
  *    (ali ostaje u storage-u; pozivalac čuva sirovu listu);

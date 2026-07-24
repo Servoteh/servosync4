@@ -43,9 +43,29 @@ function vokativ(ime: string | null | undefined): string {
 /**
  * AI asistent chat (paritet 1.0 aiAsistent + mobile myAi). `variant`:
  *  - desktop: sidebar istorije levo, Enter = pošalji;
- *  - mobile: istorija u sheet-u, Enter = novi red (slanje dugmetom).
+ *  - mobile: istorija u sheet-u, Enter = novi red (slanje dugmetom);
+ *  - widget: kompaktni plutajući panel (zahtev 003/26) — bez sidebar-a, istorija
+ *    u sheet-u + „Nova nit", Enter = pošalji, šalje `screenContext` (trenutni ekran)
+ *    i „minimizuj" (X) u headeru. Aktivna nit se seed-uje/izveštava spolja da
+ *    preživi navigaciju (spoljni store u AiWidget-u).
  */
-export function AiChat({ variant = 'desktop' }: { variant?: 'desktop' | 'mobile' }) {
+export function AiChat({
+  variant = 'desktop',
+  screenContext,
+  onMinimize,
+  initialConversationId = null,
+  onConversationChange,
+}: {
+  variant?: 'desktop' | 'mobile' | 'widget';
+  /** Widget: kratka oznaka trenutnog ekrana (backend je dodaje u system prompt). */
+  screenContext?: string;
+  /** Widget: „minimizuj" — X u headeru vraća na plutajuće dugme. */
+  onMinimize?: () => void;
+  /** Widget: početna aktivna nit (seed pri (re)mount-u — preživljava navigaciju). */
+  initialConversationId?: string | null;
+  /** Widget: prijava promene aktivne niti roditelju (upis u spoljni store). */
+  onConversationChange?: (id: string | null) => void;
+}) {
   const me = useAiMe();
   const convs = useAiConversations();
   const projects = useAiProjects();
@@ -53,7 +73,7 @@ export function AiChat({ variant = 'desktop' }: { variant?: 'desktop' | 'mobile'
   const chat = useAiChat();
   const delConv = useDeleteConversation();
 
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const [activeId, setActiveId] = useState<string | null>(initialConversationId);
   const [projectRef, setProjectRef] = useState<string | null>(null);
   const [engine, setEngine] = useState<Engine>('openai');
   const [input, setInput] = useState('');
@@ -71,6 +91,10 @@ export function AiChat({ variant = 'desktop' }: { variant?: 'desktop' | 'mobile'
   useEffect(() => {
     if (limit.data?.data) setRemaining(limit.data.data.remaining);
   }, [limit.data]);
+  // Widget: prijavi aktivnu nit roditelju (spoljni store) da preživi navigaciju.
+  useEffect(() => {
+    onConversationChange?.(activeId);
+  }, [activeId, onConversationChange]);
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [messages.length, chat.isPending]);
@@ -133,6 +157,8 @@ export function AiChat({ variant = 'desktop' }: { variant?: 'desktop' | 'mobile'
         conversationId: activeId ?? undefined,
         projectRef: projectRef ?? undefined,
         image: imgBlob,
+        // Trenutni ekran šalje samo widget (desktop/mobile /ai bez konteksta forme).
+        screenContext: variant === 'widget' ? screenContext : undefined,
       });
       setActiveId(res.data.conversationId);
       setProjectRef(res.data.projectRef ?? null);
@@ -158,7 +184,8 @@ export function AiChat({ variant = 'desktop' }: { variant?: 'desktop' | 'mobile'
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (variant === 'desktop' && e.key === 'Enter' && !e.shiftKey) {
+    // Desktop i widget: Enter = pošalji; mobile: Enter = novi red (slanje dugmetom).
+    if (variant !== 'mobile' && e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       void send();
     }
@@ -203,7 +230,8 @@ export function AiChat({ variant = 'desktop' }: { variant?: 'desktop' | 'mobile'
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Top bar */}
         <div className="flex items-center gap-2 border-b border-line bg-surface px-3 py-2">
-          {variant === 'mobile' && (
+          {/* Istorija (sheet) — mobile i widget nemaju levi sidebar. */}
+          {variant !== 'desktop' && (
             <button className="rounded-control p-1.5 text-ink-secondary hover:bg-surface-2" onClick={() => setSheetOpen(true)} aria-label="Istorija">
               <MessagesSquare className="h-4 w-4" aria-hidden />
             </button>
@@ -216,8 +244,13 @@ export function AiChat({ variant = 'desktop' }: { variant?: 'desktop' | 'mobile'
               {remaining != null && remaining <= 10 ? ` · još ${remaining} poruka danas` : ''}
             </div>
           </div>
-          {variant === 'mobile' && (
-            <button className="rounded-control p-1.5 text-ink-secondary hover:bg-surface-2" onClick={newConversation} aria-label="Novi razgovor">
+          {variant !== 'desktop' && (
+            <button
+              className="rounded-control p-1.5 text-ink-secondary hover:bg-surface-2"
+              onClick={newConversation}
+              title={variant === 'widget' ? 'Nova nit' : 'Novi razgovor'}
+              aria-label={variant === 'widget' ? 'Nova nit' : 'Novi razgovor'}
+            >
               <Plus className="h-4 w-4" aria-hidden />
             </button>
           )}
@@ -235,6 +268,17 @@ export function AiChat({ variant = 'desktop' }: { variant?: 'desktop' | 'mobile'
               </button>
             ))}
           </div>
+          {/* Widget: minimizuj (X) — vraća na plutajuće dugme, nit ostaje živa. */}
+          {variant === 'widget' && onMinimize && (
+            <button
+              className="rounded-control p-1.5 text-ink-secondary hover:bg-surface-2"
+              onClick={onMinimize}
+              title="Minimizuj (Esc)"
+              aria-label="Minimizuj"
+            >
+              <X className="h-4 w-4" aria-hidden />
+            </button>
+          )}
         </div>
 
         {/* Messages */}
@@ -287,7 +331,7 @@ export function AiChat({ variant = 'desktop' }: { variant?: 'desktop' | 'mobile'
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={onKeyDown}
               rows={1}
-              placeholder={variant === 'desktop' ? 'Pitaj AI… (Enter za slanje)' : 'Pitaj AI…'}
+              placeholder={variant === 'mobile' ? 'Pitaj AI…' : 'Pitaj AI… (Enter za slanje)'}
               className="max-h-40 min-h-9 flex-1 resize-none rounded-control border border-line bg-surface-2 px-3 py-2 text-sm text-ink outline-none focus:border-accent"
             />
             <button

@@ -138,6 +138,12 @@ export interface ChatVars {
   projectRef?: string;
   /** Vision prilog (klijentski resize na ≤1568px pre slanja — vidi resizeImageFile). */
   image?: Blob | null;
+  /**
+   * Plutajući AI widget (zahtev 003/26): kratka oznaka trenutnog ekrana korisnika
+   * (npr. „Sastanci (/sastanci)") — backend je dodaje u system prompt da asistent
+   * prvo pomogne oko forme na kojoj je korisnik. Šalje ga samo widget varijanta.
+   */
+  screenContext?: string;
 }
 
 /**
@@ -155,6 +161,7 @@ export function useAiChat() {
         if (v.engine) fd.append('engine', v.engine);
         if (v.conversationId) fd.append('conversationId', v.conversationId);
         if (v.projectRef) fd.append('projectRef', v.projectRef);
+        if (v.screenContext) fd.append('screenContext', v.screenContext);
         fd.append('image', v.image, 'slika.jpg');
         return apiUpload<{ data: AiChatResult }>(`${BASE}/chat`, fd);
       }
@@ -165,6 +172,7 @@ export function useAiChat() {
           engine: v.engine,
           conversationId: v.conversationId,
           projectRef: v.projectRef,
+          screenContext: v.screenContext,
         }),
       });
     },

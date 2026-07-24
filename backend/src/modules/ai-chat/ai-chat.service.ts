@@ -226,7 +226,14 @@ export class AiChatService {
       setup.scope === "project"
         ? `\n\nDELJENA PROJEKTNA NIT — projekat ${setup.convRef}. Ovo je timski razgovor: poruke vide SVI prijavljeni korisnici, a učesnici su označeni imenom na početku poruke (obraćaj im se po imenu). Ovde NEMAŠ lične alate (GO, sati, zaposleni, SQL) — dostupni su samo projekat_info, pretrazi_znanje i dodaj_belesku. Za pitanja o projektu prvo pozovi projekat_info("${setup.convRef}"). Belešku dodaj ISKLJUČIVO kad neko izričito traži da se nešto zapiše.`
         : `\n\nKORISNIK U OVOM RAZGOVORU: ${setup.author.name}${setup.author.position ? " — " + setup.author.position : ""}. Znaš ko je bez pitanja; oslovljavaj ga po imenu, prirodno i bez preteranog ponavljanja.`;
-    const system = SYSTEM_PROMPT + DATE_LINE() + extraSystem;
+    // Floating AI widget (request 003/26): optional current-screen hint. Appended
+    // AFTER extraSystem so the SYSTEM_PROMPT / DATE_LINE / scope-note ordering stays
+    // intact; empty (no branch) when the client sends no screenContext.
+    const screenContext = String(dto.screenContext ?? "").trim();
+    const screenLine = screenContext
+      ? `\n\nTRENUTNI EKRAN KORISNIKA: ${screenContext}. Ako pitanje deluje vezano za ovaj ekran, prvo mu pomozi oko njega.`
+      : "";
+    const system = SYSTEM_PROMPT + DATE_LINE() + extraSystem + screenLine;
 
     // Engine se poziva POSLE kreiranja niti/upisa user-poruke → greška MORA nositi
     // conversationId (paritet edge index.ts:853-859): retry ne pravi orphan niti.

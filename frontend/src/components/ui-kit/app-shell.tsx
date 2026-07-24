@@ -44,10 +44,12 @@ import {
   isWideRoute,
   navModuleMarkerTitle,
   resolveFavoriteModules,
+  screenContextForPath,
   type NavDomain,
   type NavModule,
   type NavSubGroup,
 } from '@/lib/navigation';
+import { PERMISSIONS } from '@/lib/permissions';
 import { useNavFavorites } from '@/lib/use-nav-favorites';
 import { FavStar } from '@/components/ui-kit/fav-star';
 import {
@@ -67,6 +69,7 @@ import {
   type AppNotification,
 } from '@/api/notifications';
 import { CommandPalette } from '@/components/ui-kit/command-palette';
+import { AiWidget } from '@/components/ui-kit/ai-widget';
 import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
 import { formatDateTime } from '@/lib/format';
 
@@ -1082,6 +1085,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   const activeDomainId = findDomainByPath(pathname)?.id;
 
+  // Plutajući AI asistent (zahtev 003/26): vidljiv samo uz AI permisiju i van /ai strane
+  // (tamo je pun prikaz — dugme bi bilo redundantno). AppShell se ne montira na
+  // login/kiosk, pa se tamo ni ne pojavljuje. `screenContext` = oznaka trenutnog ekrana
+  // koju backend ubacuje u system prompt (pomoć prvo oko forme na kojoj je korisnik).
+  const onAiPage = pathname === '/ai' || pathname.startsWith('/ai/');
+  const showAiWidget = !!user && can(PERMISSIONS.AI_CHAT) && !onAiPage;
+
   // Omiljeni moduli (zahtev 010/26): sirovi href-ovi iz localStorage-a razrešeni na vidljive
   // NavModule-e (RBAC filter + dedup + izostavljanje nepostojećih) — isti izvor za sekciju
   // „Omiljeno" u punom sidebaru i za sintetički „Omiljeno" flyout u rail režimu. AppShell je
@@ -1392,6 +1402,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {/* Ctrl+K komandna paleta — jedna instanca po shell-u; hotkey listener je u
           komponenti (Ctrl/Cmd+K radi i kad je sidebar sakriven). */}
       <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
+
+      {/* Plutajući AI asistent (zahtev 003/26) — dole desno, non-modal; nit i otvorenost
+          preživljavaju navigaciju (spoljni store u komponenti). */}
+      {showAiWidget && <AiWidget screenContext={screenContextForPath(pathname)} />}
     </AppShellContext.Provider>
   );
 }

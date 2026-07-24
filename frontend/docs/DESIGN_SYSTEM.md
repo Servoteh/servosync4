@@ -287,6 +287,15 @@ Dopune kita:
   (`getBoundingClientRect` + `scrollIntoView`) + koraci Nazad/Dalje/Preskoči; koraci ciljaju
   `HelpSpot` id-jeve (`data-help-id`) i preskaču se ako cilj nije u DOM-u. Tekstovi pomoći žive po
   modulu u `app/<modul>/_lib/help.ts` (`HelpRegistry` + definicije tura), ne u kitu.
+* **`AiWidget`** (`ui-kit/ai-widget.tsx`, zahtev 003/26) — plutajući AI asistent: okruglo dugme dole
+  desno (`Bot`, z-40 — iznad sadržaja, ispod modala) koje otvara kompaktni chat panel (~380px; na
+  telefonu donji sheet) sa `AiChat variant="widget"`. Non-modal (strana ostaje interaktivna, bez
+  scrim-a), minimizacija (X u headeru ili Esc) vraća na dugme. Otvorenost i aktivna nit žive u
+  modul-scope store-u (ne u komponenti) pa preživljavaju per-page remount `AppShell`-a — razgovor
+  se nastavlja kroz navigaciju; BEZ localStorage (nema pamćenja sesija). Šalje `screenContext`
+  (naziv trenutnog ekrana iz nav modela) koji backend ubacuje u system prompt. Montira ga `AppShell`
+  samo korisnicima sa `ai.chat` permisijom i van `/ai` strane; `/dev/ui` prikazuje samo izgled
+  dugmeta (živi widget traži prijavu i API).
 
 **Pravilo kita:** ekrani se sklapaju **isključivo** od kit komponenti. Nova komponenta prvo ulazi u kit,
 `/dev/ui` katalog i ovaj spisak — pa tek onda u ekran. "Privremeni div sa stilovima" ne postoji.

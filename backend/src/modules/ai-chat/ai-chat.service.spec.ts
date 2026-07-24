@@ -350,3 +350,73 @@ describe("AiChatService.chat (remaining/limit + upstream conversationId)", () =>
     });
   });
 });
+
+/**
+ * Floating AI widget (request 003/26): when the client sends `screenContext`,
+ * the system prompt (chatWithTools arg #4) gains a "TRENUTNI EKRAN KORISNIKA"
+ * branch so the assistant helps with the current form first; without it, the
+ * branch is absent (ordering SYSTEM_PROMPT/DATE_LINE/scope-note preserved).
+ */
+describe("AiChatService.chat (screenContext u system prompt)", () => {
+  const CONV = "3b241101-e2bb-4255-8caf-4136c566a962";
+  function make() {
+    const tx = {
+      $queryRaw: jest
+        .fn()
+        .mockResolvedValueOnce([{ uid: "U1" }]) // auth.uid()
+        .mockResolvedValueOnce([{ used: 3 }]) // dnevni limit
+        .mockResolvedValueOnce([{ id: CONV }]) // INSERT conversation RETURNING id
+        .mockResolvedValueOnce([{ full_name: "Pera Perić", position: "Monter" }]),
+      $executeRaw: jest.fn().mockResolvedValue(1),
+    };
+    const sy15 = {
+      withUser: jest.fn((_e: string, fn: (t: unknown) => Promise<unknown>) =>
+        fn(tx),
+      ),
+      withUserRls: jest.fn(),
+    };
+    const chatWithTools = jest.fn().mockResolvedValue({
+      reply: "ok",
+      model: "m",
+      tokensIn: 1,
+      tokensOut: 1,
+    });
+    const ai = {
+      engineConfig: jest.fn().mockReturnValue({
+        engine: "openai",
+        kind: "openai",
+        url: "u",
+        key: "k",
+        model: "m",
+      }),
+      chatWithTools,
+      generateTitle: jest.fn().mockResolvedValue("Naslov"),
+    };
+    const svc = new AiChatService(
+      sy15 as unknown as Sy15Service,
+      ai as unknown as AiProviderService,
+      {} as never,
+    );
+    // system prompt = 5. argument chatWithTools (cfg, hist, msg, tools, system, ...)
+    const systemArg = () =>
+      chatWithTools.mock.calls[0][4] as string;
+    return { svc, systemArg };
+  }
+
+  it("prosleđen screenContext → grana 'TRENUTNI EKRAN KORISNIKA' u system prompt-u", async () => {
+    const { svc, systemArg } = make();
+    await svc.chat("u@servoteh.com", {
+      message: "cao",
+      screenContext: "Sastanci (/sastanci)",
+    });
+    expect(systemArg()).toContain(
+      "TRENUTNI EKRAN KORISNIKA: Sastanci (/sastanci)",
+    );
+  });
+
+  it("bez screenContext-a → nema te grane u system prompt-u", async () => {
+    const { svc, systemArg } = make();
+    await svc.chat("u@servoteh.com", { message: "cao" });
+    expect(systemArg()).not.toContain("TRENUTNI EKRAN KORISNIKA");
+  });
+});
