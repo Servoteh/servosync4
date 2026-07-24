@@ -40,9 +40,11 @@ export interface CommandPaletteProps {
 
 export function CommandPalette({ open, onOpenChange, hotkey = true }: CommandPaletteProps) {
   const router = useRouter();
-  const { can } = useAuth();
+  const { can, user } = useAuth();
   const { recentModules, pushRecentModule } = useUiPrefs();
-  const { favorites } = useNavFavorites();
+  // Ključ omiljenih je po korisniku (review 010/26 §2) — prosledi userId (isti store kao
+  // sidebar/hub; idempotentno kad je AppShell već „vlasnik").
+  const { favorites } = useNavFavorites(user?.id ?? null);
 
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
@@ -161,9 +163,11 @@ export function CommandPalette({ open, onOpenChange, hotkey = true }: CommandPal
       }
     }
   } else {
-    // Upit: ravna rang-lista (fuzzy). Omiljeni (zahtev 010/26) se rangiraju PRVI među
-    // pogocima; unutar iste grupe stabilan sort čuva redosled modela / fuzzy skor. Domen
-    // se prikazuje kao kontekst na svakom redu.
+    // Upit: ravna rang-lista (fuzzy). Rangiranje po TIER-u pre svega: substring pogodak
+    // (score > 0 u fuzzy — substring skorovi žive u opsegu ~1e6) UVEK pobeđuje subsequence
+    // (score ≤ 0). Omiljeni (zahtev 010/26) su tie-break UNUTAR istog tier-a (ne preskaču
+    // bolji tekstualni pogodak — inače bi omiljen subsequence pretekao tačan substring).
+    // Na kraju sam skor. Domen se prikazuje kao kontekst na svakom redu.
     const favSet = new Set(favorites);
     const scored: { entry: Entry; score: number }[] = [];
     for (const e of visible) {
@@ -172,6 +176,9 @@ export function CommandPalette({ open, onOpenChange, hotkey = true }: CommandPal
       if (score !== null) scored.push({ entry: e, score });
     }
     scored.sort((a, b) => {
+      const at = a.score > 0 ? 1 : 0;
+      const bt = b.score > 0 ? 1 : 0;
+      if (at !== bt) return bt - at;
       const af = favSet.has(a.entry.module.href) ? 1 : 0;
       const bf = favSet.has(b.entry.module.href) ? 1 : 0;
       if (af !== bf) return bf - af;

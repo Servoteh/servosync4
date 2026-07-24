@@ -13,6 +13,7 @@ import {
 } from '@/components/ui-kit/help-mode';
 import { HelpSpot } from '@/components/ui-kit/help-spot';
 import { HelpTour, type HelpTourStep } from '@/components/ui-kit/help-tour';
+import { FavStar } from '@/components/ui-kit/fav-star';
 
 /**
  * `/dev/ui` — interni katalog kit komponenti u svim stanjima (DESIGN_SYSTEM.md §12).
@@ -155,6 +156,55 @@ export default function DevUiPage() {
           <FormField label="Radna jedinica" required error="Izaberi radnu jedinicu.">
             <Select options={RADNA_JEDINICA} placeholder="—" defaultValue="" />
           </FormField>
+        </Demo>
+      </Section>
+
+      <Section
+        title="FavStar — zvezdica omiljenog"
+        note="Zahtev 010/26. Jedna komponenta, dve varijante (samo tokeni): „sidebar“ (tamni) i „hub“ (svetli). Idle zvezdica je skrivena dok red nije pod mišem/fokusom (ili na touch-u) — pređite mišem preko reda; omiljena (popunjena) je uvek vidljiva. Apsolutno pozicionirana uz desnu ivicu reda; touch-meta 44px (coarse/max-lg). Bez aria-pressed — stanje nosi dinamički aria-label/title."
+      >
+        <Demo title="Sidebar — idle (hover red)">
+          <div className="rounded-panel bg-sidebar p-2">
+            <div className="group relative flex items-center rounded-control hover:bg-sidebar-line/60">
+              <span className="min-w-0 flex-1 truncate py-1.5 pl-3 pr-8 text-base text-sidebar-ink">
+                Radni nalozi
+              </span>
+              <FavStar variant="sidebar" favorite={false} onToggle={() => {}} />
+            </div>
+          </div>
+        </Demo>
+
+        <Demo title="Sidebar — omiljen (uvek vidljiv)">
+          <div className="rounded-panel bg-sidebar p-2">
+            <div className="group relative flex items-center rounded-control hover:bg-sidebar-line/60">
+              <span className="min-w-0 flex-1 truncate py-1.5 pl-3 pr-8 text-base text-sidebar-ink">
+                Realizacija
+              </span>
+              <FavStar variant="sidebar" favorite onToggle={() => {}} />
+            </div>
+          </div>
+        </Demo>
+
+        <Demo title="Hub — idle (hover red)">
+          <div className="rounded-panel border border-line bg-surface p-2">
+            <div className="group relative flex items-center rounded-control hover:bg-accent-subtle">
+              <span className="min-w-0 flex-1 truncate py-1.5 pl-2 pr-8 text-base text-ink">
+                Radni nalozi
+              </span>
+              <FavStar variant="hub" favorite={false} onToggle={() => {}} />
+            </div>
+          </div>
+        </Demo>
+
+        <Demo title="Hub — omiljen (uvek vidljiv)">
+          <div className="rounded-panel border border-line bg-surface p-2">
+            <div className="group relative flex items-center rounded-control hover:bg-accent-subtle">
+              <span className="min-w-0 flex-1 truncate py-1.5 pl-2 pr-8 text-base text-ink">
+                Realizacija
+              </span>
+              <FavStar variant="hub" favorite onToggle={() => {}} />
+            </div>
+          </div>
         </Demo>
       </Section>
 
