@@ -665,3 +665,12 @@ export class RetargetNotifDto {
   @IsOptional() @IsString() @MaxLength(500) subject?: string;
   @IsOptional() @IsString() body?: string;
 }
+
+/** Okidač dnevnog auto-predloga grida iz kapije (zahtev 012/26). Bez `from`/`to` →
+ *  SAMO juče (dnevni cron). `from`+`to` → backfill raspona (npr. jul: 2026-07-01..danas).
+ *  `dryRun` → izračunaj i prijavi predlog, ali NE piši (bezbedan pregled pre pravog runa). */
+export class GridAutofillRunDto {
+  @IsOptional() @IsISO8601() from?: string;
+  @IsOptional() @IsISO8601() to?: string;
+  @IsOptional() @IsBoolean() dryRun?: boolean;
+}

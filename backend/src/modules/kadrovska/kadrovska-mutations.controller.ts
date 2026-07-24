@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Delete,
+  HttpCode,
   Param,
   ParseUUIDPipe,
   Patch,
@@ -18,6 +19,7 @@ import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
 import { PERMISSIONS } from "../../common/authz/permissions";
 import { KadrovskaMutationsService } from "./kadrovska-mutations.service";
+import { KadrovskaGridAutofillService } from "./grid-autofill.service";
 import * as D from "./dto/kadrovska-mutation.dto";
 
 interface AuthedRequest {
@@ -37,10 +39,38 @@ interface AuthedRequest {
 @RequirePermission(PERMISSIONS.KADROVSKA_READ)
 @Controller({ path: "kadrovska", version: "1" })
 export class KadrovskaMutationsController {
-  constructor(private readonly m: KadrovskaMutationsService) {}
+  constructor(
+    private readonly m: KadrovskaMutationsService,
+    private readonly autofill: KadrovskaGridAutofillService,
+  ) {}
 
   private email(req: AuthedRequest) {
     return req.user.email;
+  }
+
+  // ---------- MESEČNI GRID: dnevni auto-predlog iz kapije (zahtev 012/26) ----------
+
+  /**
+   * Okidač auto-predloga grida iz kucanja na kapiji (presuda Nenad 24.07). Sistemski
+   * job upiše PREDLOG sati iz STVARNOG prisustva za prazne grid-dane (SVA odeljenja),
+   * `INSERT … ON CONFLICT DO NOTHING` (nikad ne gazi ručni unos), marker
+   * `last_edited_by='auto:kapija'`. Bez tela → SAMO juče (dnevni cron, isti obrazac kao
+   * `POST work/auto-close`); `from`+`to` → backfill raspona; `dryRun` → pregled bez upisa.
+   * Gate = `kadrovska.admin` (sistemski upis za sve; kill-switch KADROVSKA_GRID_AUTOFILL).
+   */
+  @Post("grid/autofill-run")
+  @HttpCode(200)
+  @RequirePermission(PERMISSIONS.KADROVSKA_ADMIN)
+  gridAutofillRun(
+    @Req() req: AuthedRequest,
+    @Body() body: D.GridAutofillRunDto,
+  ) {
+    return this.autofill.run({
+      actorEmail: this.email(req),
+      from: body?.from,
+      to: body?.to,
+      dryRun: body?.dryRun,
+    });
   }
 
   // ---------- ODMORI ----------
