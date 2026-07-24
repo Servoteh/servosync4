@@ -1,9 +1,18 @@
-import { Injectable, Logger } from "@nestjs/common";
+import {
+  Injectable,
+  Logger,
+  type OnModuleDestroy,
+  type OnModuleInit,
+} from "@nestjs/common";
 import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service } from "../../common/sy15/sy15.service";
 
 /** Pogonska zona (paritet Q11 SessionAutoCloseService) — „juče" i datumi grida su lokalni. */
 const SHOP_TZ = "Europe/Belgrade";
+
+/** Interni dnevni tik: perioda provere (~30 min) i najranije lokalno vreme obrade juče. */
+const TICK_INTERVAL_MS = 30 * 60 * 1000;
+const RUN_AFTER_HOUR = 5; // >= 05:00 Europe/Belgrade (juče je tad sigurno „zatvoreno")
 
 /**
  * Marker koji stoji u `work_hours.last_edited_by` za AUTO-PREDLOGE iz kapije. Model
@@ -107,14 +116,82 @@ interface VsGridRow {
  *  - upis je sistemski predlog (DO NOTHING + fiksni marker), gejt `can_edit_kadrovska_grid`
  *    je KORISNIČKA autorizacija koju sistemski job (kao Q11) legitimno zaobilazi.
  *
- * Okidač = admin-only endpoint (`POST /kadrovska/grid/autofill-run`); eksterni cron ga
- * zove dnevno (isti obrazac kao `POST work/auto-close`, ODLUKE #24 — bez @nestjs/schedule).
+ * ── OKIDAČ: INTERNI DNEVNI TIK (ne spoljni cron) ────────────────────────────────────
+ * ODLUKE #24: na serveru NE postoji cron/token mehanizam za okidanje endpointa. Zato job
+ * ima INTERNI tik — obični `setInterval` (BEZ @nestjs/schedule/nove zavisnosti): svakih
+ * ~30 min proveri da li je lokalno (Europe/Belgrade) vreme >= 05:00 i da JUČE još nije
+ * obrađeno u ovom procesu (`lastRunDay` u memoriji); ako jeste — obradi juče (isti kod kao
+ * endpoint bez tela). Restart aplikacije resetuje `lastRunDay` → ponovni run za juče je
+ * NO-OP zbog `INSERT … ON CONFLICT DO NOTHING` (bezopasno, ne duplira/ne gazi). Tik je
+ * `unref()`-ovan (ne drži proces u testu/boot-smoke) i gasi se na shutdown. U test
+ * okruženju i pri isključenom flag-u se NE pokreće; svaka greška u tiku (uklj. sy15
+ * nedostupan u boot fazi) se LOGUJE, NIKAD ne ruši proces.
+ *
+ * Ručni okidač (backfill jula / dry-run) OSTAJE admin endpoint `POST
+ * /kadrovska/grid/autofill-run`.
  */
 @Injectable()
-export class KadrovskaGridAutofillService {
+export class KadrovskaGridAutofillService
+  implements OnModuleInit, OnModuleDestroy
+{
   private readonly logger = new Logger(KadrovskaGridAutofillService.name);
+  /** Interni dnevni tik (setInterval). null dok se ne pokrene / posle shutdown-a. */
+  private tickTimer: ReturnType<typeof setInterval> | null = null;
+  /** Datum (YYYY-MM-DD) „juče" za koji je tik već uspešno obradio u OVOM procesu. */
+  private lastRunDay: string | null = null;
 
   constructor(private readonly sy15: Sy15Service) {}
+
+  /** Pokreni interni dnevni tik — osim u testu i kad je flag isključen (potpuno mrtav). */
+  onModuleInit(): void {
+    if (process.env.NODE_ENV === "test") return; // tik ne radi u testovima
+    if (!gridAutofillEnabled()) {
+      this.logger.log(
+        "Grid autofill tik: isključen (KADROVSKA_GRID_AUTOFILL=false) — tik se ne pokreće.",
+      );
+      return;
+    }
+    this.tickTimer = setInterval(() => {
+      void this.tick();
+    }, TICK_INTERVAL_MS);
+    // Ne drži proces živim (testovi / boot-smoke / graceful exit).
+    this.tickTimer.unref?.();
+    this.logger.log(
+      `Grid autofill tik aktivan (~30 min; obrada „juče" posle ${String(RUN_AFTER_HOUR).padStart(2, "0")}:00 ${SHOP_TZ}).`,
+    );
+  }
+
+  onModuleDestroy(): void {
+    if (this.tickTimer) {
+      clearInterval(this.tickTimer);
+      this.tickTimer = null;
+    }
+  }
+
+  /**
+   * Jedan otkucaj: obradi „juče" ako je lokalno vreme >= 05:00 i taj dan još nije obrađen
+   * u ovom procesu. SVE greške (uklj. sy15 nedostupan u boot fazi) se hvataju i loguju —
+   * tik NIKAD ne ruši proces. `now` se injektuje SAMO u testu (inače pravo lokalno vreme).
+   */
+  private async tick(now?: { day: string; hour: number }): Promise<void> {
+    try {
+      if (!gridAutofillEnabled()) return; // flag može biti ugašen u toku rada
+      const nowLocal = now ?? this.belgradeNow();
+      if (nowLocal.hour < RUN_AFTER_HOUR) return; // prerano (juče možda još „traje")
+      const yesterday = this.addDays(nowLocal.day, -1);
+      if (this.lastRunDay === yesterday) return; // već obrađeno u ovom procesu
+      const { data } = await this.run({ from: yesterday, to: yesterday });
+      this.lastRunDay = yesterday; // uspeh → ne ponavljaj isti dan (do restarta)
+      this.logger.log(
+        `Grid autofill tik ${yesterday}: kandidata ${data.candidates}, upisano ${data.inserted}, ` +
+          `preskočeno ${data.skippedWeekendHoliday + data.skippedOutOfBand}.`,
+      );
+    } catch (e) {
+      this.logger.error(
+        `Grid autofill tik pao (nastavlja se): ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
 
   /**
    * Upiši auto-predloge za raspon [from, to] (uključivo). Bez raspona → SAMO juče
@@ -245,13 +322,24 @@ export class KadrovskaGridAutofillService {
 
   /** Današnji datum u pogonskoj zoni (YYYY-MM-DD). */
   private belgradeToday(): string {
-    // en-CA daje ISO oblik YYYY-MM-DD.
-    return new Intl.DateTimeFormat("en-CA", {
+    return this.belgradeNow().day;
+  }
+
+  /** Trenutni datum + sat (0–23) u pogonskoj zoni (za interni tik). */
+  private belgradeNow(): { day: string; hour: number } {
+    // en-CA daje ISO oblik YYYY-MM-DD; hour12:false → 00–23 (ponoć '24' → 0).
+    const parts = new Intl.DateTimeFormat("en-CA", {
       timeZone: SHOP_TZ,
       year: "numeric",
       month: "2-digit",
       day: "2-digit",
-    }).format(new Date());
+      hour: "2-digit",
+      hour12: false,
+    }).formatToParts(new Date());
+    const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
+    let hour = Number(get("hour"));
+    if (!Number.isFinite(hour) || hour === 24) hour = 0;
+    return { day: `${get("year")}-${get("month")}-${get("day")}`, hour };
   }
 
   /** Dodaj `n` dana na YYYY-MM-DD (radi na UTC ponoći → bez TZ pomeraja). */

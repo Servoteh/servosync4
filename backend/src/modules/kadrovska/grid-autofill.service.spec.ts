@@ -25,6 +25,7 @@ function makeSvc(opts: {
   holidays?: string[];
   executeResult?: number;
   flag?: string;
+  dbThrows?: boolean;
 }) {
   if (opts.flag === undefined) delete process.env.KADROVSKA_GRID_AUTOFILL;
   else process.env.KADROVSKA_GRID_AUTOFILL = opts.flag;
@@ -45,6 +46,7 @@ function makeSvc(opts: {
   };
   const sy15 = {
     get db() {
+      if (opts.dbThrows) throw new Error("sy15 nije konfigurisan (boot faza)");
       return db;
     },
   } as unknown as Sy15Service;
@@ -63,6 +65,7 @@ function vsRow(day: string, presence: number) {
 
 afterEach(() => {
   delete process.env.KADROVSKA_GRID_AUTOFILL;
+  jest.restoreAllMocks();
 });
 
 describe("proposeHoursFromPresence (STVARNI sati, NE paušalno 8h)", () => {
@@ -207,5 +210,93 @@ describe("KadrovskaGridAutofillService.run", () => {
     expect(data.proposed).toBe(0);
     expect(data.skippedOutOfBand).toBe(2);
     expect(executeRaw).not.toHaveBeenCalled();
+  });
+});
+
+describe("KadrovskaGridAutofillService interni dnevni tik (ODLUKE #24)", () => {
+  it("onModuleInit: tik se NE pokreće u test okruženju (NODE_ENV=test)", () => {
+    const { svc } = makeSvc({});
+    const spy = jest.spyOn(global, "setInterval");
+    svc.onModuleInit(); // jest postavlja NODE_ENV='test'
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("onModuleInit: van testa + flag on → setInterval(unref) aktivan; destroy ga čisti", () => {
+    const prev = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    try {
+      const { svc } = makeSvc({}); // flag nepostavljen → default UKLJUČEN
+      const unref = jest.fn();
+      const fakeTimer = { unref } as unknown as NodeJS.Timeout;
+      const setSpy = jest
+        .spyOn(global, "setInterval")
+        .mockReturnValue(fakeTimer as unknown as ReturnType<typeof setInterval>);
+      const clrSpy = jest
+        .spyOn(global, "clearInterval")
+        .mockImplementation(() => {});
+      svc.onModuleInit();
+      expect(setSpy).toHaveBeenCalledTimes(1);
+      expect(unref).toHaveBeenCalled(); // ne drži proces
+      svc.onModuleDestroy();
+      expect(clrSpy).toHaveBeenCalledWith(fakeTimer);
+    } finally {
+      process.env.NODE_ENV = prev;
+    }
+  });
+
+  it("onModuleInit: flag off → tik potpuno mrtav (nema setInterval)", () => {
+    const prev = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    try {
+      const { svc } = makeSvc({ flag: "false" });
+      const spy = jest.spyOn(global, "setInterval");
+      svc.onModuleInit();
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      process.env.NODE_ENV = prev;
+    }
+  });
+
+  it("tik: obrađuje JUČE jednom dnevno — drugi tik istog dana je NO-OP (lastRunDay)", async () => {
+    const { svc, queryRaw } = makeSvc({ vsGridRows: [] });
+    // now = 2026-07-08 06:00 → juče = 2026-07-07
+    await (svc as unknown as { tick: (n: unknown) => Promise<void> }).tick({
+      day: "2026-07-08",
+      hour: 6,
+    });
+    await (svc as unknown as { tick: (n: unknown) => Promise<void> }).tick({
+      day: "2026-07-08",
+      hour: 9,
+    });
+    expect(queryRaw).toHaveBeenCalledTimes(1); // drugi tik preskočen
+    expect(valuesOf(queryRaw)).toEqual(expect.arrayContaining(["2026-07-07"]));
+  });
+
+  it("tik: prerano (pre 05:00) → ne radi", async () => {
+    const { svc, queryRaw } = makeSvc({ vsGridRows: [] });
+    await (svc as unknown as { tick: (n: unknown) => Promise<void> }).tick({
+      day: "2026-07-08",
+      hour: 4,
+    });
+    expect(queryRaw).not.toHaveBeenCalled();
+  });
+
+  it("tik: flag off → ne radi", async () => {
+    const { svc, queryRaw } = makeSvc({ vsGridRows: [], flag: "false" });
+    await (svc as unknown as { tick: (n: unknown) => Promise<void> }).tick({
+      day: "2026-07-08",
+      hour: 6,
+    });
+    expect(queryRaw).not.toHaveBeenCalled();
+  });
+
+  it("tik: greška (sy15 nedostupan u boot fazi) se LOGUJE, NE baca", async () => {
+    const { svc } = makeSvc({ dbThrows: true });
+    await expect(
+      (svc as unknown as { tick: (n: unknown) => Promise<void> }).tick({
+        day: "2026-07-08",
+        hour: 6,
+      }),
+    ).resolves.toBeUndefined();
   });
 });
