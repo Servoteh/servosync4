@@ -15,7 +15,8 @@
 import { useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { ArrowUpRight } from 'lucide-react';
+import { ArrowUpRight, Star } from 'lucide-react';
+import { cn } from '@/lib/cn';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
@@ -26,9 +27,11 @@ import {
   canAccessNavModule,
   findModuleByHref,
   navModuleMarkerTitle,
+  resolveFavoriteModules,
   type NavModule,
 } from '@/lib/navigation';
 import { useUiPrefs } from '@/lib/use-ui-prefs';
+import { useNavFavorites } from '@/lib/use-nav-favorites';
 
 // Fallback „Brzo" prečice kad je MRU prazan (svež profil) — tri najčešća ulaza
 // pogona/tehnologije. Filtriraju se RBAC-om kao i sve ostalo, pa korisnik bez prava
@@ -42,9 +45,41 @@ function moduliLabel(n: number): string {
   return mod10 === 1 && mod100 !== 11 ? `${n} modul` : `${n} modula`;
 }
 
+/**
+ * Zvezdica za dodavanje/uklanjanje modula iz omiljenog (zahtev 010/26) — hub varijanta
+ * (svetli tokeni). Klik toggluje BEZ navigacije (preventDefault + stopPropagation, jer stoji
+ * uz nav-link). Vidljiva na hover kartice (`group-hover`), na fokus i coarse-pointer (touch);
+ * kad je modul omiljen, popunjena je i uvek vidljiva. Fokusabilna (tastatura, DS §11).
+ */
+function HubFavStar({ favorite, onToggle }: { favorite: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onToggle();
+      }}
+      aria-pressed={favorite}
+      aria-label={favorite ? 'Ukloni iz omiljenog' : 'Dodaj u omiljeno'}
+      title={favorite ? 'Ukloni iz omiljenog' : 'Dodaj u omiljeno'}
+      className={cn(
+        'mr-1 grid h-7 w-7 shrink-0 place-items-center rounded-control transition-opacity motion-reduce:transition-none max-lg:h-9 max-lg:w-9',
+        'focus-visible:opacity-100 focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)] [@media(pointer:coarse)]:opacity-100',
+        favorite
+          ? 'text-accent opacity-100 hover:text-accent-hover'
+          : 'text-ink-disabled opacity-0 hover:text-accent group-hover:opacity-100',
+      )}
+    >
+      <Star className={cn('h-3.5 w-3.5', favorite && 'fill-current')} aria-hidden />
+    </button>
+  );
+}
+
 export default function PocetnaPage() {
   const { user, isLoading, can, permissionsPending, permissionsError } = useAuth();
   const { recentModules, pushRecentModule } = useUiPrefs();
+  const { favorites, isFavorite, toggleFavorite } = useNavFavorites();
   const router = useRouter();
 
   useEffect(() => {
@@ -79,6 +114,10 @@ export default function PocetnaPage() {
       ? recentResolved
       : QUICK_FALLBACK_HREFS.map((href) => findModuleByHref(href)).filter(canSee);
 
+  // „Omiljeno" (zahtev 010/26) — razrešeni omiljeni moduli (RBAC + dedup + izostavljanje
+  // nepostojećih), redosled = redosled dodavanja. Sekcija se prikazuje samo ako ima ≥1.
+  const favoriteModules = resolveFavoriteModules(favorites, can);
+
   // Jedan modul kao red u pločici — deljeno između direktnih stavki domena i stavki
   // pod-grupa. `external`/`crosslisted` (npr. pogonski /kiosk, „Lokacije delova" na dva
   // mesta) nose diskretnu „↗" oznaku, isto kao u sidebaru.
@@ -86,15 +125,17 @@ export default function PocetnaPage() {
     const MIcon = m.icon;
     const marker = !!(m.external || m.crosslisted);
     const markerTitle = navModuleMarkerTitle(m);
+    // Red = wrapper + nav-link (flex-1) + zvezdica kao SESTRA (zvezdica ne sme biti unutar
+    // <a>). Hover pozadina je na wrapper-u da pokrije ceo red uključujući zvezdicu.
     return (
-      <li key={m.href}>
+      <li key={m.href} className="group flex items-center rounded-control hover:bg-accent-subtle">
         <Link
           href={m.href}
           onClick={() => pushRecentModule(m.href)}
           title={markerTitle}
           // Touch-meta min 44×44px na tablet/telefon (DS §11) — isti bump kao sidebar
           // (app-shell max-lg:py-2.5); min-h-11 garant.
-          className="group flex items-center gap-2.5 rounded-control px-2 py-1.5 text-base text-ink hover:bg-accent-subtle hover:text-accent focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)] max-lg:min-h-11 max-lg:py-2.5"
+          className="flex min-w-0 flex-1 items-center gap-2.5 rounded-control px-2 py-1.5 text-base text-ink group-hover:text-accent focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)] max-lg:min-h-11 max-lg:py-2.5"
         >
           <MIcon
             className="h-4 w-4 shrink-0 text-ink-secondary group-hover:text-accent"
@@ -103,6 +144,7 @@ export default function PocetnaPage() {
           <span className="min-w-0 flex-1 truncate">{m.label}</span>
           {marker && <ArrowUpRight className="h-3 w-3 shrink-0 text-ink-disabled" aria-hidden />}
         </Link>
+        <HubFavStar favorite={isFavorite(m.href)} onToggle={() => toggleFavorite(m.href)} />
       </li>
     );
   };
@@ -116,6 +158,25 @@ export default function PocetnaPage() {
           <h2 className="text-lg text-ink-secondary">
             Dobrodošli, <span className="font-medium text-ink">{user.fullName ?? user.email}</span>
           </h2>
+
+          {/* „Omiljeno" (zahtev 010/26) — korisnički označeni moduli, NA VRHU huba. Kartica u
+              istom jeziku kao domenske pločice; redovi imaju zvezdicu za uklanjanje. */}
+          {favoriteModules.length > 0 && (
+            <section aria-labelledby="hub-omiljeno">
+              <h2
+                id="hub-omiljeno"
+                className="mb-2 flex items-center gap-1.5 text-2xs font-semibold uppercase tracking-wider text-ink-secondary"
+              >
+                <Star className="h-3.5 w-3.5 shrink-0 text-accent" aria-hidden />
+                Omiljeno
+              </h2>
+              <div className="rounded-panel border border-line bg-surface p-4">
+                <ul className="grid gap-0.5 sm:grid-cols-2 lg:grid-cols-3">
+                  {favoriteModules.map(renderModule)}
+                </ul>
+              </div>
+            </section>
+          )}
 
           {/* „Brzo" — MRU prečice kao pilule (accent-subtle → akcenat na hover). */}
           {quickModules.length > 0 && (

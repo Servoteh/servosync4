@@ -17,6 +17,7 @@ import { cn } from '@/lib/cn';
 import { useAuth } from '@/lib/auth-context';
 import { NAV_DOMAINS, allModules, canAccessNavModule, type NavModule } from '@/lib/navigation';
 import { useUiPrefs } from '@/lib/use-ui-prefs';
+import { useNavFavorites } from '@/lib/use-nav-favorites';
 import { fuzzyScore } from '@/lib/fuzzy';
 
 interface Entry {
@@ -41,6 +42,7 @@ export function CommandPalette({ open, onOpenChange, hotkey = true }: CommandPal
   const router = useRouter();
   const { can } = useAuth();
   const { recentModules, pushRecentModule } = useUiPrefs();
+  const { favorites } = useNavFavorites();
 
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
@@ -118,24 +120,37 @@ export function CommandPalette({ open, onOpenChange, hotkey = true }: CommandPal
   };
 
   if (!q) {
-    // Prazan upit: prvo „Nedavno" (MRU, samo href-ovi koje korisnik sme da vidi),
-    // pa ostali moduli po redosledu modela, grupisani naslovima domena.
+    // Prazan upit: prvo „Omiljeno" (zahtev 010/26), pa „Nedavno" (MRU), pa ostali moduli
+    // po redosledu modela, grupisani naslovima domena. Svaki modul se prikazuje jednom.
     const byHref = new Map(visible.map((e) => [e.module.href, e]));
+
+    // „Omiljeno" — omiljeni href-ovi koje korisnik sme da vidi, redosled dodavanja.
+    const favEntries: Entry[] = [];
+    for (const href of favorites) {
+      const e = byHref.get(href);
+      if (e) favEntries.push(e);
+    }
+    // `shown` nosi već prikazane href-ove (Omiljeno → Nedavno → domeni redom) da se isti
+    // modul (uklj. `crosslisted`, isti href u dva domena) ne pojavi dvaput u paleti.
+    const shown = new Set<string>(favEntries.map((e) => e.module.href));
+    if (favEntries.length) {
+      rows.push({ kind: 'header', key: 'h-favorites', title: 'Omiljeno' });
+      for (const e of favEntries) pushItem(e);
+    }
+
+    // „Nedavno" (MRU), bez onih već prikazanih u „Omiljeno".
     const recent: Entry[] = [];
     for (const href of recentModules) {
       const e = byHref.get(href);
-      if (e) recent.push(e);
+      if (e && !shown.has(href)) recent.push(e);
     }
-    const recentHrefs = new Set(recent.map((e) => e.module.href));
-
     if (recent.length) {
       rows.push({ kind: 'header', key: 'h-recent', title: 'Nedavno' });
-      for (const e of recent) pushItem(e);
+      for (const e of recent) {
+        shown.add(e.module.href);
+        pushItem(e);
+      }
     }
-    // `shown` nosi već prikazane href-ove (prvo „Nedavno", pa domeni redom) da se
-    // `crosslisted` modul (isti href u dva domena) ne pojavi dvaput u paleti —
-    // prvi domen po redosledu modela ga „preuzima".
-    const shown = new Set(recentHrefs);
     for (const d of NAV_DOMAINS) {
       const mods = allModules(d).filter((m) => canAccessNavModule(m, can) && !shown.has(m.href));
       if (!mods.length) continue;
@@ -146,15 +161,22 @@ export function CommandPalette({ open, onOpenChange, hotkey = true }: CommandPal
       }
     }
   } else {
-    // Upit: ravna rang-lista (fuzzy). Stabilan sort čuva redosled modela pri
-    // izjednačenim skorovima; domen se prikazuje kao kontekst na svakom redu.
+    // Upit: ravna rang-lista (fuzzy). Omiljeni (zahtev 010/26) se rangiraju PRVI među
+    // pogocima; unutar iste grupe stabilan sort čuva redosled modela / fuzzy skor. Domen
+    // se prikazuje kao kontekst na svakom redu.
+    const favSet = new Set(favorites);
     const scored: { entry: Entry; score: number }[] = [];
     for (const e of visible) {
       const meta = `${e.module.label} ${e.domainTitle} ${(e.module.keywords ?? []).join(' ')}`;
       const score = fuzzyScore(q, meta);
       if (score !== null) scored.push({ entry: e, score });
     }
-    scored.sort((a, b) => b.score - a.score);
+    scored.sort((a, b) => {
+      const af = favSet.has(a.entry.module.href) ? 1 : 0;
+      const bf = favSet.has(b.entry.module.href) ? 1 : 0;
+      if (af !== bf) return bf - af;
+      return b.score - a.score;
+    });
     for (const s of scored) pushItem(s.entry);
   }
 

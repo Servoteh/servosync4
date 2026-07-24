@@ -420,3 +420,27 @@ export function findModuleByHref(href: string): NavModule | undefined {
   }
   return undefined;
 }
+
+/**
+ * Razreši listu omiljenih href-ova (zahtev 010/26) na vidljive NavModule-e:
+ *  • RBAC filter (`canAccessNavModule`) — href koji korisnik ne sme da vidi se izostavlja
+ *    (ali ostaje u storage-u; pozivalac čuva sirovu listu);
+ *  • nepostojeći href (preimenovan/uklonjen modul) se tiho ignoriše (findModuleByHref → undefined);
+ *  • dedup po href-u (crosslisted modul = jedna stavka — findModuleByHref vraća prvu pojavu).
+ * Redosled = redosled u `hrefs` (redosled dodavanja u omiljeno).
+ */
+export function resolveFavoriteModules(
+  hrefs: string[],
+  can: (permission: Permission) => boolean,
+): NavModule[] {
+  const out: NavModule[] = [];
+  const seen = new Set<string>();
+  for (const href of hrefs) {
+    if (seen.has(href)) continue;
+    const m = findModuleByHref(href);
+    if (!m || !canAccessNavModule(m, can)) continue;
+    seen.add(href);
+    out.push(m);
+  }
+  return out;
+}

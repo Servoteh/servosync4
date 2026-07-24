@@ -30,6 +30,7 @@ import {
   PanelLeftOpen,
   Pin,
   PinOff,
+  Star,
   X,
   type LucideIcon,
 } from 'lucide-react';
@@ -42,10 +43,12 @@ import {
   isNavModuleActive,
   isWideRoute,
   navModuleMarkerTitle,
+  resolveFavoriteModules,
   type NavDomain,
   type NavModule,
   type NavSubGroup,
 } from '@/lib/navigation';
+import { useNavFavorites } from '@/lib/use-nav-favorites';
 import {
   useUiPrefs,
   setSidebarMode,
@@ -142,6 +145,41 @@ const HOVER_INTENT_MS = 250;
 
 /** Fokus prsten na tamnom sidebaru (kit obrazac iz button.tsx, sidebar varijanta tokena). */
 const SB_FOCUS = 'focus-visible:outline-none focus-visible:shadow-[var(--focus-ring-sidebar)]';
+
+/** Slug sintetičkog „Omiljeno" domena u rail režimu (nije prava ruta — samo flyout grupa). */
+const FAVORITES_DOMAIN_ID = '__favorites';
+
+/**
+ * Zvezdica za dodavanje/uklanjanje modula iz omiljenog (zahtev 010/26) — sidebar varijanta
+ * (tamni tokeni). Klik toggluje BEZ navigacije (preventDefault + stopPropagation, jer stoji
+ * uz nav-link). Vidljiva na hover reda (`group-hover`) i na fokus/coarse-pointer (touch) —
+ * kad je modul omiljen, popunjena je i uvek vidljiva. Fokusabilna (tastatura, DS §11).
+ */
+function FavStarSidebar({ favorite, onToggle }: { favorite: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onToggle();
+      }}
+      aria-pressed={favorite}
+      aria-label={favorite ? 'Ukloni iz omiljenog' : 'Dodaj u omiljeno'}
+      title={favorite ? 'Ukloni iz omiljenog' : 'Dodaj u omiljeno'}
+      className={cn(
+        'mr-1 grid h-7 w-7 shrink-0 place-items-center rounded-control transition-opacity motion-reduce:transition-none max-lg:h-9 max-lg:w-9',
+        'focus-visible:opacity-100 [@media(pointer:coarse)]:opacity-100',
+        favorite
+          ? 'opacity-100 text-sidebar-accent hover:text-sidebar-ink-active'
+          : 'text-sidebar-ink/50 opacity-0 hover:text-sidebar-ink-active group-hover:opacity-100',
+        SB_FOCUS,
+      )}
+    >
+      <Star className={cn('h-3.5 w-3.5', favorite && 'fill-current')} aria-hidden />
+    </button>
+  );
+}
 
 // ------------------------------------------------------------------ zvonce (D8 notifikacije)
 
@@ -329,12 +367,16 @@ function NotificationBell({ enabled, variant = 'sidebar' }: { enabled: boolean; 
 function SidebarModuleRow({
   module,
   active,
+  ariaCurrent = active,
   layout,
   inSubGroup,
   onNavigate,
 }: {
   module: NavModule;
   active: boolean;
+  /** Da li stavka nosi `aria-current="page"` (default = `active`). Sekcija „Omiljeno"
+   *  prosleđuje `false` — domenska pojava istog modula nosi jedini aria-current (a11y). */
+  ariaCurrent?: boolean;
   layout: SidebarLayout;
   inSubGroup: boolean;
   onNavigate: (href: string) => void;
@@ -342,6 +384,8 @@ function SidebarModuleRow({
   const Icon = module.icon;
   const marker = !!(module.external || module.crosslisted);
   const markerTitle = navModuleMarkerTitle(module);
+  const { isFavorite, toggleFavorite } = useNavFavorites();
+  const favorite = isFavorite(module.href);
 
   // Uvučenost: direktne stavke poravnate ispod naslova domena; stavke pod-grupe dublje.
   // C je „prostorniji", B najgušći.
@@ -355,24 +399,18 @@ function SidebarModuleRow({
         ? 'pl-10'
         : 'pl-9';
 
+  // Red = wrapper (nosi aktivno/hover pozadinu) + nav-link (flex-1) + zvezdica kao SESTRA
+  // (zvezdica ne sme biti unutar <a> — interaktivno u interaktivnom). Pozadina/traka su na
+  // wrapper-u da highlight pokrije ceo red uključujući zvezdicu.
   return (
-    <Link
-      href={module.href}
-      onClick={() => onNavigate(module.href)}
-      aria-current={active ? 'page' : undefined}
-      title={markerTitle}
+    <div
       className={cn(
-        // max-lg:min-h-11 = touch-meta ≥44px na <1024px (DS §11; paritet sa hub redovima
-        // u pocetna/page.tsx — off-canvas je primarna mobilna navigacija).
-        'relative flex items-center gap-2.5 rounded-control pr-2.5 text-base max-lg:min-h-11 max-lg:py-2.5',
-        indent,
-        layout === 'C' ? 'py-2' : 'py-1.5',
+        'group relative flex items-center rounded-control',
         active
           ? layout === 'C'
-            ? 'bg-sidebar-accent/10 font-medium text-sidebar-ink-active ring-1 ring-inset ring-sidebar-accent/25'
-            : 'bg-sidebar-accent/10 font-medium text-sidebar-ink-active'
-          : 'text-sidebar-ink hover:bg-sidebar-line/60 hover:text-sidebar-ink-active',
-        SB_FOCUS,
+            ? 'bg-sidebar-accent/10 ring-1 ring-inset ring-sidebar-accent/25'
+            : 'bg-sidebar-accent/10'
+          : 'hover:bg-sidebar-line/60',
       )}
     >
       {/* Akcenat-traka aktivne stavke (A/B) — u C ulogu preuzima inset ring „kartice". */}
@@ -382,10 +420,29 @@ function SidebarModuleRow({
           aria-hidden
         />
       )}
-      <Icon className={cn('h-4 w-4 shrink-0', active && 'text-sidebar-accent')} aria-hidden />
-      <span className="min-w-0 flex-1 truncate">{module.label}</span>
-      {marker && <ArrowUpRight className="h-3 w-3 shrink-0 text-sidebar-ink/50" aria-hidden />}
-    </Link>
+      <Link
+        href={module.href}
+        onClick={() => onNavigate(module.href)}
+        aria-current={ariaCurrent ? 'page' : undefined}
+        title={markerTitle}
+        className={cn(
+          // max-lg:min-h-11 = touch-meta ≥44px na <1024px (DS §11; paritet sa hub redovima
+          // u pocetna/page.tsx — off-canvas je primarna mobilna navigacija).
+          'flex min-w-0 flex-1 items-center gap-2.5 rounded-control pr-1 text-base max-lg:min-h-11 max-lg:py-2.5',
+          indent,
+          layout === 'C' ? 'py-2' : 'py-1.5',
+          active
+            ? 'font-medium text-sidebar-ink-active'
+            : 'text-sidebar-ink group-hover:text-sidebar-ink-active',
+          SB_FOCUS,
+        )}
+      >
+        <Icon className={cn('h-4 w-4 shrink-0', active && 'text-sidebar-accent')} aria-hidden />
+        <span className="min-w-0 flex-1 truncate">{module.label}</span>
+        {marker && <ArrowUpRight className="h-3 w-3 shrink-0 text-sidebar-ink/50" aria-hidden />}
+      </Link>
+      <FavStarSidebar favorite={favorite} onToggle={() => toggleFavorite(module.href)} />
+    </div>
   );
 }
 
@@ -443,6 +500,8 @@ function SidebarSubGroup({
 
 interface FullBodyProps {
   domains: NavDomain[];
+  /** Razrešeni omiljeni moduli (RBAC-filtrirani, deduplikovani) — sekcija „Omiljeno" na vrhu. */
+  favoriteModules: NavModule[];
   pathname: string;
   activeDomainId?: string;
   openDomains: string[];
@@ -533,6 +592,30 @@ function FullBody(props: FullBodyProps) {
           pa sa mnogo modula (admin vidi sve domene + 13 u Proizvodnji) NE skroluje nego
           naraste preko okvira → footer/Odjava ispadne, sadržaj se preklapa. */}
       <nav className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+        {/* Sekcija „Omiljeno" (zahtev 010/26) — IZNAD svih domena; prikazuje se samo ako ima
+            bar 1 vidljivi omiljeni modul. Redosled = redosled dodavanja. aria-current NE ide
+            ovde — domenska pojava istog modula nosi jedini aria-current (a11y, ODLUKE #33). */}
+        {props.favoriteModules.length > 0 && (
+          <div className="mb-1">
+            <div className="flex items-center gap-2.5 px-3 pb-1 pt-2 text-2xs font-bold uppercase tracking-wider text-sidebar-ink/70">
+              <Star className="h-3.5 w-3.5 shrink-0 text-sidebar-accent" aria-hidden />
+              <span className="min-w-0 flex-1 truncate">Omiljeno</span>
+            </div>
+            <div className="space-y-0.5 pb-1">
+              {props.favoriteModules.map((m) => (
+                <SidebarModuleRow
+                  key={m.href}
+                  module={m}
+                  active={props.pathname === m.href}
+                  ariaCurrent={false}
+                  layout={props.layout}
+                  inSubGroup={false}
+                  onNavigate={props.onNavigate}
+                />
+              ))}
+            </div>
+          </div>
+        )}
         {props.domains.map((domain) => {
           const isActive = domain.id === props.activeDomainId;
           const DIcon = domain.icon;
@@ -1018,6 +1101,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   const activeDomainId = findDomainByPath(pathname)?.id;
 
+  // Omiljeni moduli (zahtev 010/26): sirovi href-ovi iz localStorage-a razrešeni na vidljive
+  // NavModule-e (RBAC filter + dedup + izostavljanje nepostojećih) — isti izvor za sekciju
+  // „Omiljeno" u punom sidebaru i za sintetički „Omiljeno" flyout u rail režimu.
+  const { favorites } = useNavFavorites();
+  const favoriteModules = resolveFavoriteModules(favorites, can);
+  // Rail: „Omiljeno" kao sintetički domen na vrhu trake (Star ikona + flyout sa stavkama).
+  const railDomains: NavDomain[] =
+    favoriteModules.length > 0
+      ? [{ id: FAVORITES_DOMAIN_ID, title: 'Omiljeno', icon: Star, modules: favoriteModules }, ...visibleDomains]
+      : visibleDomains;
+
   // Širina ekrana: < 1024px = mobilni (uvek off-canvas). matchMedia u efektu je
   // SSR-safe za static export: prvi paint pretpostavlja desktop (isto na serveru i
   // klijentu → nema hydration mismatch-a), pa se u efektu koriguje (kratak flash ok).
@@ -1181,6 +1275,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <aside className={cn(surface, 'w-[var(--sidebar-width)]')}>
             <FullBody
               domains={visibleDomains}
+              favoriteModules={favoriteModules}
               pathname={pathname}
               activeDomainId={activeDomainId}
               openDomains={openDomains}
@@ -1199,7 +1294,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         {effectiveMode === 'rail' && (
           <aside className={cn(surface, 'w-[var(--sidebar-rail-width)]')}>
             <RailBody
-              domains={visibleDomains}
+              domains={railDomains}
               pathname={pathname}
               activeDomainId={activeDomainId}
               onNavigate={onNavigate}
@@ -1288,6 +1383,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           >
             <FullBody
               domains={visibleDomains}
+              favoriteModules={favoriteModules}
               pathname={pathname}
               activeDomainId={activeDomainId}
               openDomains={openDomains}
