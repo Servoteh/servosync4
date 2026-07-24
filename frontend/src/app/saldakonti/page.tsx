@@ -18,6 +18,8 @@ import {
   useAging,
   useReconcile,
   useUnreconcile,
+  useIosPdf,
+  openPdf,
   type OpenItem,
   type AgingByPartnerRow,
 } from '@/api/saldakonti';
@@ -81,6 +83,11 @@ export default function SaldakontiPage() {
   }, [user, isLoading, router]);
 
   const partnerNum = applied.partnerId.trim() === '' ? '' : Number(applied.partnerId.trim());
+  // Primenjena šifra komitenta (validan pozitivan broj) — gate za IOS obrazac.
+  const appliedPartnerId =
+    typeof partnerNum === 'number' && Number.isFinite(partnerNum) && partnerNum > 0
+      ? partnerNum
+      : null;
   const openItems = useOpenItems({
     accountCode: applied.accountCode.trim() || undefined,
     partnerId: typeof partnerNum === 'number' && Number.isFinite(partnerNum) ? partnerNum : '',
@@ -113,6 +120,7 @@ export default function SaldakontiPage() {
 
   const reconcile = useReconcile();
   const unreconcile = useUnreconcile();
+  const iosPdf = useIosPdf();
   // Posle uspešnog uparivanja pamtimo grupu radi neposredne akcije Razveži
   // (open-items pogled prikazuje samo otvorene stavke pa uparena grupa nestane
   // iz liste — undo je smislen tačno ovde, odmah po uparivanju).
@@ -383,36 +391,54 @@ export default function SaldakontiPage() {
                 )}
               </div>
 
-              {canReconcile && (
-                <div className="flex items-center gap-2">
-                  {selectedCount >= 2 && !balancedSelection && (
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      loading={reconcile.isPending}
-                      title="Zatvori selektovane stavke sa ostatkom (kursna razlika/otpis)"
-                      onClick={() => runReconcile('manual')}
-                    >
-                      Zatvori sa ostatkom
-                    </Button>
-                  )}
+              <div className="flex items-center gap-2">
+                {appliedPartnerId != null && (
                   <Button
                     type="button"
-                    disabled={selectedCount < 2}
-                    loading={reconcile.isPending}
-                    title={
-                      selectedCount < 2
-                        ? 'Za uparivanje selektuj bar dve stavke'
-                        : balancedSelection
-                          ? 'Upari selektovane stavke'
-                          : 'Selekcija ne balansira — koristi Zatvori sa ostatkom'
+                    variant="secondary"
+                    loading={iosPdf.isPending}
+                    title="Štampa IOS/NIOS obrasca usaglašavanja salda za izabranog komitenta"
+                    onClick={() =>
+                      iosPdf.mutate(
+                        { partnerId: appliedPartnerId },
+                        { onSuccess: openPdf },
+                      )
                     }
-                    onClick={() => runReconcile('auto')}
                   >
-                    Upari ({selectedCount})
+                    IOS obrazac
                   </Button>
-                </div>
-              )}
+                )}
+                {canReconcile && (
+                  <>
+                    {selectedCount >= 2 && !balancedSelection && (
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        loading={reconcile.isPending}
+                        title="Zatvori selektovane stavke sa ostatkom (kursna razlika/otpis)"
+                        onClick={() => runReconcile('manual')}
+                      >
+                        Zatvori sa ostatkom
+                      </Button>
+                    )}
+                    <Button
+                      type="button"
+                      disabled={selectedCount < 2}
+                      loading={reconcile.isPending}
+                      title={
+                        selectedCount < 2
+                          ? 'Za uparivanje selektuj bar dve stavke'
+                          : balancedSelection
+                            ? 'Upari selektovane stavke'
+                            : 'Selekcija ne balansira — koristi Zatvori sa ostatkom'
+                      }
+                      onClick={() => runReconcile('auto')}
+                    >
+                      Upari ({selectedCount})
+                    </Button>
+                  </>
+                )}
+              </div>
             </div>
 
             {lastGroup && (
@@ -440,6 +466,12 @@ export default function SaldakontiPage() {
             {unreconcile.error && (
               <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">
                 {(unreconcile.error as Error).message}
+              </div>
+            )}
+
+            {iosPdf.error && (
+              <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">
+                {(iosPdf.error as Error).message}
               </div>
             )}
 

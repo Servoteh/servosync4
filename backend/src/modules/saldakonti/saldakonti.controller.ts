@@ -1,12 +1,15 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
   Post,
   Query,
   Req,
+  Res,
   UseGuards,
 } from "@nestjs/common";
+import type { Response } from "express";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
@@ -15,6 +18,7 @@ import type { AuthUser } from "../auth/jwt.strategy";
 import { OpenItemsService } from "./open-items.service";
 import { ReconciliationService } from "./reconciliation.service";
 import { CompensationService } from "./compensation.service";
+import { IosPdfService } from "./ios-pdf.service";
 import {
   type ListOpenItemsQuery,
   type AgingQuery,
@@ -33,6 +37,7 @@ import {
  *   POST /api/v1/saldakonti/reconcile/unreconcile — razveži grupu (role-gated)
  *   POST /api/v1/saldakonti/compensation      — kreiranje kompenzacije (bilateralni bilans)
  *   GET  /api/v1/saldakonti/compensation/proposal — predlog kompenzacije iz otvorenih stavki
+ *   GET  /api/v1/saldakonti/ios-pdf           — IOS/NIOS obrazac usaglašavanja (PDF; partnerId, asOf?)
  *
  * JWT + PermissionsGuard. read = SALDAKONTI_READ; sve mutacije (uparivanje,
  * razvezivanje, kompenzacija) = SALDAKONTI_RECONCILE (write nad zatvaranjem GK).
@@ -48,6 +53,7 @@ export class SaldakontiController {
     private readonly openItems: OpenItemsService,
     private readonly reconciliation: ReconciliationService,
     private readonly compensation: CompensationService,
+    private readonly iosPdf: IosPdfService,
   ) {}
 
   @Get("open-items")
@@ -67,6 +73,34 @@ export class SaldakontiController {
     const asOf = parseOptionalDate(query.asOf);
     const data = await this.openItems.agingByPartner(query.accountCode, asOf);
     return { data, meta: { count: data.length } };
+  }
+
+  /**
+   * IOS/NIOS obrazac usaglašavanja (Talas 1E §E3, gap #49). Zakonski godišnji
+   * obrazac — otvorene stavke komitenta na dan preseka + polja za saglasnost/
+   * osporavanje i potpise obe strane. NIOS = isti obrazac kad nema otvorenih
+   * stavki (saldo 0) — svejedno se štampa (ne 404). `asOf` default danas.
+   * PDF se vraća inline (`application/pdf`) — isti obrazac kao PdvPrintController.
+   * Nasleđuje klasnu SALDAKONTI_READ permisiju (read-only izlaz).
+   */
+  @Get("ios-pdf")
+  async iosPdfObrazac(
+    @Query("partnerId") partnerId: string,
+    @Query("asOf") asOf: string | undefined,
+    @Res() res: Response,
+  ): Promise<void> {
+    const id = parseOptionalInt(partnerId);
+    if (id == null) {
+      throw new BadRequestException("Parametar partnerId je obavezan.");
+    }
+    const asOfDate = parseOptionalDate(asOf);
+    const { buffer, fileName } = await this.iosPdf.buildIosPdf(id, asOfDate);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename="${encodeURIComponent(fileName)}"`,
+    );
+    res.send(buffer);
   }
 
   @Post("reconcile")

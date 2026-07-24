@@ -21,6 +21,7 @@ import {
 } from '@/api/nabavka';
 import { NewRequestDialog } from './new-request-dialog';
 import { PurchaseOrdersPanel } from './purchase-orders-panel';
+import { RfqPanel } from './rfq-panel';
 
 /**
  * Nabavka: radna lista zahteva (Traka B §B). Obrazac „Lista"
@@ -208,6 +209,8 @@ export default function NabavkaPage() {
             onNext={() => setPage((p) => Math.min(totalPages, p + 1))}
           />
         )}
+
+        <RfqPanel />
 
         <PurchaseOrdersPanel />
       </div>

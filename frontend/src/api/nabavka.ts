@@ -183,6 +183,7 @@ const KEYS = {
   all: ['nabavka'] as const,
   requests: ['nabavka', 'requests'] as const,
   orders: ['nabavka', 'orders'] as const,
+  rfqs: ['nabavka', 'rfqs'] as const,
 };
 
 // ─────────────────────────────────────────────────────────────── ulazni tipovi
@@ -447,6 +448,89 @@ export function usePurchaseOrderTransition() {
       apiFetch<Envelope<PurchaseOrder>>(`${BASE}/orders/${id}/${action}`, {
         method: 'POST',
         body: '{}',
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: KEYS.all }),
+  });
+}
+
+// ─────────────────────────────────── upiti (RFQ): lista / detalj / prihvatanje
+
+/**
+ * Status upita dobavljaču (`supplier_rfqs.status`) — 1:1 sa backend šemom.
+ * Mapiranje na kanonske tonove radi UI (rfq-panel `rfqStatusMeta`).
+ */
+export const SUPPLIER_RFQ_STATUS = {
+  DRAFT: 'DRAFT', // U pripremi (kreiran, nije poslat / DRY-RUN)
+  SENT: 'SENT', // Poslat dobavljaču (auto-mail sentAt)
+  QUOTED: 'QUOTED', // Ponuda prihvaćena (isAccepted na stavkama)
+  CLOSED: 'CLOSED', // Zatvoren
+} as const;
+
+/** Red liste upita — GET /nabavka/rfqs (dobavljač enrich + broj stavki). */
+export interface SupplierRfqListRow extends SupplierRfq {
+  /** Naziv dobavljača (meki ref na šifarnik komitenata); null ako je obrisan. */
+  supplierName: string | null;
+  _count: { items: number };
+}
+
+/** Detalj upita — GET /nabavka/rfqs/:id (zaglavlje + stavke + dobavljač). */
+export interface SupplierRfqDetail extends SupplierRfq {
+  items: SupplierRfqItem[];
+  supplier: { id: number; name: string; city: string | null; taxId: string | null } | null;
+}
+
+/** Jedna stavka prihvatanja ponude — cena/rok su opcioni po stavci. */
+export interface AcceptQuoteLineInput {
+  rfqItemId: number;
+  offeredPrice?: number;
+  offeredLeadTimeDays?: number;
+}
+
+/** Rezultat prihvatanja: ažuriran upit + createOrderDraft za narudžbenicu. */
+export interface AcceptQuoteResult {
+  rfq: SupplierRfq & { items: SupplierRfqItem[] };
+  /** Spreman ulaz za `useCreateOrder` (cena → unitPrice; predmet nasleđen). */
+  createOrderDraft: CreateOrderInput;
+}
+
+/** Lista upita dobavljačima (GET /nabavka/rfqs) — filter status/dobavljač. */
+export function useSupplierRfqs(
+  filters: { status?: string; supplierId?: number; skip?: number; take?: number } = {},
+) {
+  const params = new URLSearchParams();
+  if (filters.status) params.set('status', filters.status);
+  if (filters.supplierId != null) params.set('supplierId', String(filters.supplierId));
+  if (filters.skip != null) params.set('skip', String(filters.skip));
+  if (filters.take != null) params.set('take', String(filters.take));
+  const query = params.toString() ? `?${params.toString()}` : '';
+  return useQuery({
+    queryKey: [...KEYS.rfqs, filters],
+    queryFn: () => apiFetch<PaginatedTotal<SupplierRfqListRow>>(`${BASE}/rfqs${query}`),
+  });
+}
+
+/** Detalj upita sa stavkama (GET /nabavka/rfqs/:id). `enabled` dok id nije poznat. */
+export function useSupplierRfq(id: number | null) {
+  return useQuery({
+    queryKey: [...KEYS.rfqs, 'detail', id],
+    queryFn: () => apiFetch<Envelope<SupplierRfqDetail>>(`${BASE}/rfqs/${id}`),
+    enabled: id != null,
+  });
+}
+
+/**
+ * Prihvati ponudu po upitu — POST /nabavka/rfqs/:id/accept { items }. Upisuje rok
+ * isporuke + `isAccepted` na stavke, upit → QUOTED. Cena se NE drži na upitu
+ * (BigBit pravilo) — vraća se u `createOrderDraft` za sledeći korak (narudžbenica).
+ * Backend vraća 409 ako je ponuda već prihvaćena. Permisija NABAVKA_WRITE.
+ */
+export function useAcceptQuote() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, items }: { id: number; items: AcceptQuoteLineInput[] }) =>
+      apiFetch<Envelope<AcceptQuoteResult>>(`${BASE}/rfqs/${id}/accept`, {
+        method: 'POST',
+        body: JSON.stringify({ items }),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: KEYS.all }),
   });

@@ -38,7 +38,11 @@ export interface ParsedStatementLine {
   partnerName: string | null; // NazivKomitenta (19,35)
   amount: Prisma.Decimal; // Iznos (135,13) /100
   direction: "DEBIT" | "CREDIT"; // DugPotInd (148,1)
-  referenceNumber: string | null; // PozivNaBroj (169,20)
+  referenceNumber: string | null; // PozivNaBroj (169,20) — SIROV PNB (ne dira se)
+  // Model (167,2): "97" | "11" | "99". BankStatementLine NEMA kolonu za model, pa se
+  // NE persistuje — nosi se kroz parse rezultat i koristi samo u parsiranju PNB-a
+  // (reference-parser.util.parseReference) za skidanje modela 97 kontrolnog broja.
+  model: string | null;
   documentDate: Date | null; // DatumDok (189,8)
 }
 
@@ -80,6 +84,7 @@ export class BankStatementParserService {
       const amountRaw = this.field(line, 135, 13);
       const dugPotInd = this.field(line, 148, 1);
       const partnerAccount = this.field(line, 149, 18) || null;
+      const model = this.field(line, 167, 2) || null; // Model PNB-a (97/11/99)
       const referenceNumber = this.field(line, 169, 20) || null;
       const datumRaw = this.field(line, 189, 8);
 
@@ -99,6 +104,7 @@ export class BankStatementParserService {
         amount,
         direction: this.parseDirection(dugPotInd, i + 1),
         referenceNumber,
+        model,
         documentDate: this.parseDate(datumRaw),
       });
     }

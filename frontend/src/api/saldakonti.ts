@@ -1,7 +1,7 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiFetch } from './client';
+import { apiBlob, apiFetch } from './client';
 
 /**
  * SALDAKONTI — data sloj (Faza 4 §A). TanStack Query hooks nad NestJS
@@ -254,4 +254,37 @@ export function useCreateCompensation() {
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['saldakonti'] }),
   });
+}
+
+// ─────────────────────────────────── IOS/NIOS obrazac usaglašavanja (E3 — PDF)
+
+/** Ulaz IOS štampe — komitent + opcioni datum preseka (default backend = danas). */
+export interface IosPdfInput {
+  partnerId: number;
+  /** Datum preseka (ISO datum); bez njega backend uzima danas. */
+  asOf?: string;
+}
+
+/**
+ * Preuzmi IOS/NIOS obrazac usaglašavanja salda za komitenta — GET
+ * /saldakonti/ios-pdf?partnerId=&asOf=. Zakonski godišnji obrazac: otvorene
+ * stavke komitenta na dan preseka + polja za saglasnost/osporavanje i potpise.
+ * NIOS = isti obrazac kad nema otvorenih stavki (saldo 0) — svejedno se štampa.
+ * Vraća PDF Blob (otvori kroz `openPdf`). read = SALDAKONTI_READ.
+ */
+export function useIosPdf() {
+  return useMutation({
+    mutationFn: (input: IosPdfInput) => {
+      const qs = new URLSearchParams({ partnerId: String(input.partnerId) });
+      if (input.asOf) qs.set('asOf', input.asOf);
+      return apiBlob(`${BASE}/ios-pdf?${qs.toString()}`);
+    },
+  });
+}
+
+/** Otvori PDF Blob u novom tabu (browser preview + download). */
+export function openPdf(blob: Blob): void {
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank', 'noopener');
+  setTimeout(() => URL.revokeObjectURL(url), 30_000);
 }

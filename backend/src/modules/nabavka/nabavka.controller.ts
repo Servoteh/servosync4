@@ -17,6 +17,7 @@ import { NabavkaService } from "./nabavka.service";
 import type { AuthUser } from "../auth/jwt.strategy";
 import type { CreatePurchaseRequestDto } from "./dto/create-purchase-request.dto";
 import type { CreatePurchaseOrderDto } from "./dto/create-purchase-order.dto";
+import type { AcceptQuoteDto } from "./dto/accept-quote.dto";
 
 /**
  * NACRT — Nabavka (Traka B §B). Operativni tok (Nenad):
@@ -94,6 +95,37 @@ export class NabavkaController {
       body.supplierEmail,
       req.user,
     );
+  }
+
+  // ── Upiti dobavljačima (RFQ) ──────────────────────────────────────────────
+  @Get("rfqs")
+  listRfqs(
+    @Query("status") status?: string,
+    @Query("supplierId") supplierId?: string,
+    @Query("skip") skip?: string,
+    @Query("take") take?: string,
+  ) {
+    return this.nabavka.listRfqs({
+      status,
+      supplierId: supplierId ? Number(supplierId) : undefined,
+      skip: skip ? Number(skip) : undefined,
+      take: take ? Number(take) : undefined,
+    });
+  }
+
+  @Get("rfqs/:id")
+  getRfq(@Param("id", ParseIntPipe) id: number) {
+    return this.nabavka.getRfq(id);
+  }
+
+  @Post("rfqs/:id/accept")
+  @RequirePermission(PERMISSIONS.NABAVKA_WRITE)
+  acceptQuote(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() body: AcceptQuoteDto,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.nabavka.acceptQuote(id, body, req.user);
   }
 
   // ── Narudžbenice (PO) ─────────────────────────────────────────────────────
