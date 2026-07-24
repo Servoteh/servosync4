@@ -509,49 +509,6 @@ export class ZahteviRewardsService {
     };
   }
 
-  // ── KORISNIKOV OBRAČUN (§12.2, „Moje nagrade") ──────────────────────────────
-
-  /**
-   * GET /zahtevi/nagrade/moje?month=YYYY-MM — suma korisnikovih CONFIRMED/PAID nagrada
-   * za mesec (row-scope: SAMO svoje). Bez tuđih iznosa. Tačnije od klijentskog računa
-   * (ne zavisi od paginacije liste). Mesec izostavljen → tekući.
-   */
-  async myRewards(month: string | undefined, actor: AuthUser) {
-    const m = month && MONTH_RE.test(month) ? month : monthKey(new Date());
-    const rows = await this.prisma.changeRequest.findMany({
-      where: {
-        createdByUserId: actor.userId,
-        rewardMonth: m,
-        rewardStatus: { in: ["CONFIRMED", "PAID"] },
-      },
-      select: {
-        id: true,
-        reqNo: true,
-        title: true,
-        finalScore: true,
-        rewardAmount: true,
-        rewardStatus: true,
-      },
-      orderBy: { reqNo: "asc" },
-    });
-    const total = rows.reduce(
-      (sum, r) => sum.plus(r.rewardAmount ?? new Prisma.Decimal(0)),
-      new Prisma.Decimal(0),
-    );
-    return {
-      data: {
-        month: m,
-        total: total.toString(),
-        count: rows.length,
-        items: rows.map((r) => ({
-          id: r.id,
-          reqNo: r.reqNo,
-          title: r.title,
-          score: r.finalScore,
-          amount: r.rewardAmount ? r.rewardAmount.toString() : null,
-          rewardStatus: r.rewardStatus,
-        })),
-      },
-    };
-  }
+  // Tihi režim (24.07): „Moje nagrade" (GET /zahtevi/nagrade/moje) uklonjeno — korisnicima se
+  // ocene/iznosi više ne prikazuju. Mesečni obračun/pregled je isključivo admin (payoutReport).
 }

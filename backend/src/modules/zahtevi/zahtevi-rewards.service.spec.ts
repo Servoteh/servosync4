@@ -522,35 +522,6 @@ describe("ZahteviRewardsService", () => {
     });
   });
 
-  // ── MOJE NAGRADE ────────────────────────────────────────────────────────────
-  describe("moje nagrade (row-scope §12.2)", () => {
-    it("suma SVOJIH CONFIRMED/PAID za mesec", async () => {
-      prisma.changeRequest.findMany.mockResolvedValue([
-        {
-          id: 1,
-          reqNo: "001/26",
-          title: "A",
-          finalScore: 3,
-          rewardAmount: new Prisma.Decimal(1500),
-          rewardStatus: "CONFIRMED",
-        },
-        {
-          id: 2,
-          reqNo: "002/26",
-          title: "B",
-          finalScore: 2,
-          rewardAmount: new Prisma.Decimal(1000),
-          rewardStatus: "PAID",
-        },
-      ]);
-      const res = await service.myRewards("2026-08", USER);
-      expect(res.data.total).toBe("2500");
-      expect(res.data.count).toBe(2);
-      // WHERE mora suziti na createdByUserId = USER.userId (row-scope).
-      const arg = firstArg<{ where: { createdByUserId: number } }>(
-        prisma.changeRequest.findMany,
-      );
-      expect(arg.where.createdByUserId).toBe(USER.userId);
-    });
-  });
+  // „Moje nagrade" (myRewards) uklonjeno u tihom režimu (24.07) — korisnicima se nagrade
+  // više ne prikazuju; endpoint i servisna metoda su izbrisani (mesečni pregled je admin-only).
 });

@@ -131,15 +131,8 @@ export class ZahteviController {
     return this.rewards.closeMonth(month, req.user, body?.notifyUsers === true);
   }
 
-  /** GET /zahtevi/nagrade/moje?month=YYYY-MM (write) — SVOJE nagrade za mesec (row-scope). */
-  @Get("nagrade/moje")
-  @RequirePermission(PERMISSIONS.ZAHTEVI_WRITE)
-  myRewards(
-    @Query("month") month: string | undefined,
-    @Req() req: { user: AuthUser },
-  ) {
-    return this.rewards.myRewards(month, req.user);
-  }
+  // Tihi režim (24.07): GET /zahtevi/nagrade/moje uklonjen — korisnicima se nagrade više ne
+  // prikazuju (curenje: endpoint je vraćao ocene/iznose svakome sa `write`). Obračun je admin-only.
 
   // ── DECISION LOG (§6) — literalne rute PRE :id ───────────────────────────────
 

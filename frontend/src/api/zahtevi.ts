@@ -750,32 +750,8 @@ export function useCloseMonth() {
   });
 }
 
-/** Stavka „Moje nagrade". */
-export interface MyRewardItem {
-  id: number;
-  reqNo: string;
-  title: string;
-  score: number | null;
-  amount: string | null;
-  rewardStatus: RewardStatus;
-}
-export interface MyRewards {
-  month: string;
-  total: string;
-  count: number;
-  items: MyRewardItem[];
-}
-
-/** GET /zahtevi/nagrade/moje?month= — SVOJE nagrade za mesec (row-scope, tačan zbir). */
-export function useMyRewards(month: string) {
-  return useQuery({
-    queryKey: ['zahtevi', 'nagrade', 'moje', month] as const,
-    queryFn: () =>
-      apiFetch<One<MyRewards>>(`${BASE}/nagrade/moje${qs({ month })}`),
-    // F9: ne šalji upit za nevalidan mesec (npr. prazan input) — očekivano YYYY-MM.
-    enabled: /^\d{4}-\d{2}$/.test(month),
-  });
-}
+// Tihi režim (24.07): „Moje nagrade" (useMyRewards / GET /zahtevi/nagrade/moje) uklonjeno —
+// korisnicima se ocene/iznosi više ne prikazuju; mesečni pregled je isključivo admin.
 
 // ── F4: DECISION LOG (§6) ────────────────────────────────────────────────────
 

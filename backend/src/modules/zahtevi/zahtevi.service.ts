@@ -182,6 +182,22 @@ export class ZahteviService {
     };
   }
 
+  /**
+   * Tihi režim (24.07): iz JSON objekta (AI `result` ili event `data`) uklanja ključeve
+   * `score`/`scoreReason` — ocenske vrednosti koje ne-admin ne sme da vidi. Sve ostalo
+   * (summary, duplicates, klasifikacija, from/to, reason…) ostaje. Non-objekat se ne dira.
+   * Podnosilac obrazloženje odbijanja i dalje dobija kroz top-level `aiScoreReason` (REJECTED).
+   */
+  private stripScoreKeys<T>(value: T): T {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const clone = { ...(value as Record<string, unknown>) };
+      delete clone.score;
+      delete clone.scoreReason;
+      return clone as unknown as T;
+    }
+    return value;
+  }
+
   /** Učitaj zahtev uz row-scope; ne-admin nad tuđim → 404 (ne otkrivamo postojanje). */
   private async getScopedOrThrow(id: number, actor: AuthUser) {
     const req = await this.prisma.changeRequest.findUnique({ where: { id } });
@@ -402,14 +418,22 @@ export class ZahteviService {
     );
     const nameById = await this.namesByUserId(userIds);
 
+    // Tihi režim (24.07): iz AI result-a (TRIAGE nosi score/scoreReason) i iz event data
+    // (TRIAGED/AI_REJECTED nose score) sklanjaju se ocenske vrednosti za ne-admina.
+    const analyses = (req.analyses ?? []).map((a) =>
+      admin ? a : { ...a, result: this.stripScoreKeys(a.result) },
+    );
+
     const data = {
       ...req,
+      analyses,
       comments: comments.map((c) => ({
         ...c,
         authorName: nameById.get(c.authorUserId) ?? null,
       })),
       events: events.map((e) => ({
         ...e,
+        data: admin ? e.data : this.stripScoreKeys(e.data),
         actorName:
           e.actorUserId != null ? (nameById.get(e.actorUserId) ?? null) : null,
       })),
@@ -454,9 +478,15 @@ export class ZahteviService {
       return req;
     });
 
+    // Tihi režim (24.07): mutacioni odgovor se čisti isto kao get (ne-admin ne dobija ocene/iznose).
     if (dto.submit)
-      return { data: await this.submitInternal(created.id, actor) };
-    return { data: created };
+      return {
+        data: this.stripRewards(
+          await this.submitInternal(created.id, actor),
+          actor,
+        ),
+      };
+    return { data: this.stripRewards(created, actor) };
   }
 
   /**
@@ -483,6 +513,10 @@ export class ZahteviService {
       dto.module !== undefined ||
       dto.kind !== undefined ||
       dto.priorityFinal !== undefined;
+
+    // Prazan PATCH (nijedno polje) → 400 (nema no-op update-a/prazne izmene).
+    if (!wantsContent && !wantsMeta)
+      throw new BadRequestException("PATCH bez ijednog polja za izmenu.");
 
     if (wantsContent && req.status !== "DRAFT")
       throw new UnprocessableEntityException(
@@ -529,7 +563,7 @@ export class ZahteviService {
       }
       return u;
     });
-    return { data: updated };
+    return { data: this.stripRewards(updated, actor) };
   }
 
   /** DELETE /zahtevi/:id — hard delete SAMO owner + SAMO DRAFT (§7). */
@@ -552,7 +586,9 @@ export class ZahteviService {
   /** POST /zahtevi/:id/submit — DRAFT→SUBMITTED (i re-submit iz NEEDS_INFO); okida trijažu (F3). */
   async submit(id: number, actor: AuthUser) {
     await this.getScopedOrThrow(id, actor);
-    return { data: await this.submitInternal(id, actor) };
+    return {
+      data: this.stripRewards(await this.submitInternal(id, actor), actor),
+    };
   }
 
   private async submitInternal(id: number, actor: AuthUser) {
@@ -618,7 +654,7 @@ export class ZahteviService {
       });
       return { ...req, status: "ARCHIVED" };
     });
-    return { data: updated };
+    return { data: this.stripRewards(updated, actor) };
   }
 
   // ── KOMENTARI ────────────────────────────────────────────────────────────

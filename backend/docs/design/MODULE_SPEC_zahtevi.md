@@ -698,14 +698,23 @@ ideje. Tarifa je NEPROMENJENA — štednja se postiže strožim ocenjivanjem. Ru
   (Zarade su pod tvrdom bravom — ne dira se bez posebne odluke).
 - **Vidljivost (PRESUDA 24.07.2026 — TIHI REŽIM):** korisnici (ne-admin) VIŠE NE VIDE
   ocene/iznose niti dobijaju obaveštenja o nagradama. Obračun i dalje teče interno
-  (admin potvrda ocene, tarifa, mesečni obračun, tab „Nagrade" — sve netaknuto). Server
-  je izvor istine: `getDetail`/`list` uklanjaju `aiScore/finalScore/rewardAmount/rewardStatus`
-  (→ NONE)`/rewardMonth` i reward-event tipove (`SCORE_CONFIRMED/REWARD_EXCLUDED/REWARD_PAID`)
-  iz odgovora ne-adminu. IZUZETAK: `aiScoreReason` ostaje podnosiocu SAMO na `REJECTED`
-  (obrazloženje odbijanja — funkcionalno, ne para). Mesečni pregled radi admin; **opciono**,
-  pri „Zaključi mesec" admin može čekirati slanje zbirnog mesečnog pregleda korisnicima
-  (spisak nagrađenih zahteva reqNo+naslov + ukupan iznos, BEZ pojedinačnih ocena — env
-  `ZAHTEVI_MAIL_NOTIFY`, best-effort). Rang lista (poeni, bez iznosa) — F5 (§13.9).
+  (admin potvrda ocene, tarifa, mesečni obračun, tab „Nagrade" — sve netaknuto). **Server
+  je JEDINI izvor istine** i čisti odgovor ne-adminu na SVIM mestima:
+  - `getDetail`/`list` + mutacioni odgovori (`create/submit/withdraw/update`) uklanjaju
+    `aiScore/finalScore/rewardAmount/rewardMonth` (null) i `rewardStatus` (→ `NONE`);
+  - `getDetail` uklanja reward-event tipove (`SCORE_CONFIRMED/REWARD_EXCLUDED/REWARD_PAID`)
+    iz `events`, a iz preostalih event `data` i iz `analyses[].result` briše ključeve
+    `score`/`scoreReason` (`TRIAGED/AI_REJECTED` ostaju kao događaji, bez ocene; summary/
+    duplikati/klasifikacija/`reason` ostaju);
+  - endpoint `GET /zahtevi/nagrade/moje` je **uklonjen** (curio je ocene/iznose svakome sa `write`).
+  - IZUZETAK (dosledno): obrazloženje odbijanja podnosilac dobija ISKLJUČIVO kroz top-level
+    `aiScoreReason` (zadržan SAMO na `REJECTED`); `scoreReason` iz `analyses.result`/event data
+    se uvek briše da ne bi bio dupli izvor.
+
+  Mesečni pregled radi admin; **opciono**, pri „Zaključi mesec" admin može čekirati slanje
+  zbirnog mesečnog pregleda korisnicima (spisak nagrađenih zahteva reqNo+naslov + ukupan
+  iznos, BEZ pojedinačnih ocena — env `ZAHTEVI_MAIL_NOTIFY`, best-effort). Rang lista
+  (poeni, bez iznosa) — F5 (§13.9).
 
 ### 12.3 Zaštita od zloupotrebe („farmanje" predloga)
 

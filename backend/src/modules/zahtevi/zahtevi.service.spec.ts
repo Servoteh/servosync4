@@ -415,7 +415,7 @@ describe("ZahteviService", () => {
       expect(d.rewardStatus).toBe("NONE");
     });
 
-    it("getDetail: ne-admin → reward-event tipovi filtrirani iz timeline-a (SUBMITTED/AI_REJECTED ostaju)", async () => {
+    it("getDetail: ne-admin → reward-event tipovi filtrirani; TRIAGED/AI_REJECTED ostaju ali BEZ score u data", async () => {
       const now = new Date();
       prisma.changeRequest.findUnique.mockResolvedValue(
         rewarded({
@@ -424,18 +424,62 @@ describe("ZahteviService", () => {
             { id: 2, type: "SCORE_CONFIRMED", actorUserId: ADMIN.userId, data: { amount: "1500" }, createdAt: now },
             { id: 3, type: "REWARD_PAID", actorUserId: ADMIN.userId, data: { amount: "1500" }, createdAt: now },
             { id: 4, type: "REWARD_EXCLUDED", actorUserId: ADMIN.userId, data: null, createdAt: now },
-            { id: 5, type: "AI_REJECTED", actorUserId: null, data: null, createdAt: now },
+            { id: 5, type: "TRIAGED", actorUserId: null, data: { score: 4, duplicates: [] }, createdAt: now },
+            { id: 6, type: "AI_REJECTED", actorUserId: null, data: { score: 0, reason: "duplikat", duplicates: [] }, createdAt: now },
           ],
         }),
       );
-      const types = (row(await service.getDetail(10, USER)).events as { type: string }[]).map(
-        (e) => e.type,
-      );
+      const evs = row(await service.getDetail(10, USER)).events as { type: string; data: Record<string, unknown> | null }[];
+      const types = evs.map((e) => e.type);
       expect(types).toContain("SUBMITTED");
+      expect(types).toContain("TRIAGED");
       expect(types).toContain("AI_REJECTED");
       expect(types).not.toContain("SCORE_CONFIRMED");
       expect(types).not.toContain("REWARD_PAID");
       expect(types).not.toContain("REWARD_EXCLUDED");
+      // Score sklonjen iz data preostalih eventa; ostalo (reason/duplicates) ostaje.
+      const triaged = evs.find((e) => e.type === "TRIAGED")!;
+      expect(triaged.data?.score).toBeUndefined();
+      const aiRej = evs.find((e) => e.type === "AI_REJECTED")!;
+      expect(aiRej.data?.score).toBeUndefined();
+      expect(aiRej.data?.reason).toBe("duplikat");
+    });
+
+    it("getDetail: ne-admin → analyses[].result.score/scoreReason uklonjeni (summary/duplikati ostaju)", async () => {
+      prisma.changeRequest.findUnique.mockResolvedValue(
+        rewarded({
+          analyses: [
+            {
+              id: 1,
+              kind: "TRIAGE",
+              status: "DONE",
+              result: { summary: "sažetak", score: 4, scoreReason: "dobra", duplicates: [{ requestId: 3 }] },
+              createdAt: new Date(),
+            },
+          ],
+        }),
+      );
+      const analyses = row(await service.getDetail(10, USER)).analyses as {
+        result: Record<string, unknown>;
+      }[];
+      expect(analyses[0].result.score).toBeUndefined();
+      expect(analyses[0].result.scoreReason).toBeUndefined();
+      expect(analyses[0].result.summary).toBe("sažetak");
+      expect(analyses[0].result.duplicates).toEqual([{ requestId: 3 }]);
+    });
+
+    it("getDetail: admin → analyses.result.score i event data.score ostaju", async () => {
+      const now = new Date();
+      prisma.changeRequest.findUnique.mockResolvedValue(
+        rewarded({
+          createdByUserId: OTHER.userId,
+          analyses: [{ id: 1, kind: "TRIAGE", status: "DONE", result: { score: 4, summary: "x" }, createdAt: now }],
+          events: [{ id: 1, type: "TRIAGED", actorUserId: null, data: { score: 4 }, createdAt: now }],
+        }),
+      );
+      const d = row(await service.getDetail(10, ADMIN));
+      expect((d.analyses as { result: { score: number } }[])[0].result.score).toBe(4);
+      expect((d.events as { data: { score: number } }[])[0].data.score).toBe(4);
     });
 
     it("getDetail: admin → sve ocene/iznosi i reward-eventi ostaju", async () => {
@@ -464,6 +508,60 @@ describe("ZahteviService", () => {
       const aRow = rows(await service.list(ADMIN, {}))[0];
       expect(aRow.finalScore).toBe(3);
       expect(aRow.rewardStatus).toBe("CONFIRMED");
+    });
+
+    // Mutacioni odgovori (create/submit/withdraw/update) takođe moraju biti očišćeni.
+    describe("mutacioni odgovori se čiste za ne-admina", () => {
+      it("submit → bez ocena/iznosa", async () => {
+        prisma.changeRequest.findUnique.mockResolvedValue(rewarded({ status: "DRAFT" }));
+        prisma.changeRequest.update.mockResolvedValue(rewarded({ status: "SUBMITTED" }));
+        const d = row(await service.submit(10, USER));
+        expect(d.finalScore).toBeNull();
+        expect(d.rewardStatus).toBe("NONE");
+      });
+
+      it("withdraw → bez ocena/iznosa", async () => {
+        prisma.changeRequest.findUnique.mockResolvedValue(rewarded({ status: "SUBMITTED" }));
+        prisma.changeRequest.update.mockResolvedValue(rewarded({ status: "ARCHIVED" }));
+        const d = row(await service.withdraw(10, USER));
+        expect(d.finalScore).toBeNull();
+        expect(d.rewardStatus).toBe("NONE");
+      });
+
+      it("update (DRAFT) → bez ocena/iznosa", async () => {
+        prisma.changeRequest.findUnique.mockResolvedValue(rewarded({ status: "DRAFT" }));
+        prisma.changeRequest.update.mockResolvedValue(
+          rewarded({ status: "DRAFT", description: "novo" }),
+        );
+        const d = row(await service.update(10, { description: "novo" }, USER));
+        expect(d.finalScore).toBeNull();
+        expect(d.rewardStatus).toBe("NONE");
+      });
+
+      it("create (DRAFT) → bez ocena/iznosa", async () => {
+        prisma.changeRequest.create.mockResolvedValue(rewarded({ status: "DRAFT" }));
+        const d = row(await service.create({ title: "T", description: "D" }, USER));
+        expect(d.rewardStatus).toBe("NONE");
+      });
+
+      it("admin mutacija → ocene/iznosi ostaju", async () => {
+        prisma.changeRequest.findUnique.mockResolvedValue(
+          rewarded({ status: "DRAFT", createdByUserId: OTHER.userId }),
+        );
+        prisma.changeRequest.update.mockResolvedValue(
+          rewarded({ status: "DRAFT", description: "novo", createdByUserId: OTHER.userId }),
+        );
+        const d = row(await service.update(10, { description: "novo" }, ADMIN));
+        expect(d.finalScore).toBe(3);
+        expect(d.rewardStatus).toBe("CONFIRMED");
+      });
+
+      it("prazan PATCH {} (nijedno polje) → 400", async () => {
+        prisma.changeRequest.findUnique.mockResolvedValue(rewarded({ status: "DRAFT" }));
+        await expect(service.update(10, {}, USER)).rejects.toBeInstanceOf(
+          BadRequestException,
+        );
+      });
     });
   });
 
