@@ -228,7 +228,8 @@ export class CreateAkcijaDto extends IdempotentDto {
   @IsOptional() @IsUUID() temaId?: string;
   @IsOptional() @IsUUID() projekatId?: string;
   @IsOptional() @IsInt() rb?: number;
-  @IsOptional() @IsString() opis?: string;
+  // 4000 = odbrana u dubinu za PDF prelom (zahtev 014/26 t.6); naslov ima 500.
+  @IsOptional() @IsString() @MaxLength(4000) opis?: string;
   @IsOptional() @IsString() odgovoranEmail?: string;
   @IsOptional() @IsString() odgovoranLabel?: string;
   @IsOptional() @IsString() odgovoranText?: string;
@@ -243,7 +244,7 @@ export class PatchAkcijaDto {
   @IsOptional() @IsUUID() sastanakId?: string;
   @IsOptional() @IsUUID() projekatId?: string;
   @IsOptional() @IsInt() rb?: number;
-  @IsOptional() @IsString() opis?: string;
+  @IsOptional() @IsString() @MaxLength(4000) opis?: string;
   @IsOptional() @IsString() odgovoranEmail?: string;
   @IsOptional() @IsString() odgovoranLabel?: string;
   @IsOptional() @IsString() odgovoranText?: string;

@@ -816,7 +816,10 @@ export class SastanciService {
 
   /**
    * SQLSTATE iz DB fn/RLS → HTTP semantika (paritet Reversi §5):
-   * 42501→403, P0001/P0002→422, 23514(check, npr. nepoznat model)→422, 23505→409.
+   * 42501→403, P0001/P0002→422, 23514(check, npr. nepoznat model)→422, 23505/P2002→409.
+   * Prisma P2002 (unique violation na TYPED `.create()` — top-level `e.code`, BEZ
+   * `meta.code`; npr. dupli učesnik na PK (sastanak_id,email)) ide istom granom kao
+   * raw-put 23505 → 409 (bez toga typed create bi pao na sirov 500).
    * Prisma P2025 (RLS-filtrovan UPDATE/DELETE = 0 redova) prepuštamo pozivaocu koji
    * je već razrešio postojanje reda (assertAffected) — ako stigne dovde → 403.
    */
@@ -835,7 +838,8 @@ export class SastanciService {
     if (code === "42501") throw new ForbiddenException(message);
     if (code === "P0001" || code === "P0002" || code === "23514")
       throw new UnprocessableEntityException(message);
-    if (code === "23505") throw new ConflictException(message);
+    if (code === "23505" || code === "P2002")
+      throw new ConflictException(message);
     if (code === "P2025") throw new ForbiddenException(message);
     throw e;
   }
@@ -1304,6 +1308,12 @@ export class SastanciService {
               napomena: u.napomena ?? null,
             })),
           });
+          // Bar 1 umetnut red za planiran sastanak okida invite trigger → stampuj
+          // pozivnicePoslateAt (isti razlog kao addUcesnik: sprečava dupli „Zakaži").
+          await tx.sastanak.updateMany({
+            where: { id, status: "planiran" },
+            data: { pozivnicePoslateAt: new Date() },
+          });
         }
         return { count: dto.ucesnici.length };
       },
@@ -1320,6 +1330,14 @@ export class SastanciService {
           prisutan: false,
           pozvan: true,
         },
+      });
+      // Umetnut red za planiran sastanak auto-okida invite trigger → stampuj
+      // `pozivnicePoslateAt` (updateMany + where status='planiran' = stamp SAMO
+      // kad je triger stvarno poslao) da header prikaže „Pošalji ponovo", a ne
+      // „Zakaži (pozivnice)" — inače bi ručni klik napravio dupli talas mejlova.
+      await tx.sastanak.updateMany({
+        where: { id, status: "planiran" },
+        data: { pozivnicePoslateAt: new Date() },
       });
       return { data: { ok: true } };
     });

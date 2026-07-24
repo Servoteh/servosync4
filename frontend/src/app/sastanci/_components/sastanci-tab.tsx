@@ -34,23 +34,33 @@ export function SastanciTab() {
   const [createOpts, setCreateOpts] = useState<{ tip?: string; prenos?: boolean } | null>(null);
   const [weeklyOpen, setWeeklyOpen] = useState(false);
 
-  // Za kalendar/nedelju učitavamo širi skup (bez paginacije filtera).
-  const listQ = useSastanci({ q, tip, status, pageSize: view === 'lista' ? 50 : 300 });
+  // Server klampuje pageSize na 200; jedinstven pageSize za sve prikaze deli isti
+  // queryKey/keš (prebacivanje lista↔kalendar bez ponovnog fetch-a). Lista sortira
+  // nad učitanih ≤200 redova (ranije 50 je odsecalo pravi „sledeći termin" kad ima
+  // >50 predstojećih); kalendar/nedelja ionako nikad nisu dobijali više od 200.
+  const listQ = useSastanci({ q, tip, status, pageSize: 200 });
   const rows = listQ.data?.data ?? [];
+
+  // „Danas" van useMemo — inače bi ga dep [rows] zamrznuo pa bi preko ponoći, dok se
+  // lista ne osveži, klasifikacija predstojećih bila bajata (izračun je jeftin).
+  const now = new Date();
+  const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 
   // Zahtev 014/26 t.5 — u LISTI prikaži SLEDEĆI (predstojeći) termin, ne prethodni:
   // predstojeći sastanci (datum >= danas) idu prvi, uzlazno (najskoriji na vrhu), a
   // prošli iza njih silazno. Za nedeljne serije to znači da je gore sledeći termin,
-  // a ne održani prethodni. Sort je nad učitanom stranom (server vraća datum desc);
-  // kalendar/nedelja grupišu po danu pa im redosled nije bitan → koriste `rows`.
+  // a ne održani prethodni. Sort je nad učitanom stranom ≤200 (server vraća datum
+  // desc); kalendar/nedelja grupišu po danu pa im redosled nije bitan → koriste `rows`.
   const listaRows = useMemo(() => {
-    const now = new Date();
-    const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
     const dkey = (s: Sastanak) => String(s.datum).slice(0, 10);
     const skey = (s: Sastanak) => `${dkey(s)}T${(s.vreme ? String(s.vreme).slice(11, 16) || String(s.vreme).slice(0, 5) : '') || '00:00'}`;
+    // Otkazan/završen/zaključan NIJE „predstojeći" ni kad mu je datum u budućnosti —
+    // inače bi otkazani/held termin stajao iznad stvarnog sledećeg termina serije.
+    const done = (s: Sastanak) =>
+      s.status === 'otkazan' || s.status === 'zavrsen' || s.status === 'zakljucan';
     return [...rows].sort((a, b) => {
-      const aUp = dkey(a) >= todayIso;
-      const bUp = dkey(b) >= todayIso;
+      const aUp = !done(a) && dkey(a) >= todayIso;
+      const bUp = !done(b) && dkey(b) >= todayIso;
       if (aUp !== bUp) return aUp ? -1 : 1; // predstojeći pre prošlih
       const ak = skey(a);
       const bk = skey(b);
@@ -58,7 +68,7 @@ export function SastanciTab() {
       // predstojeći: uzlazno (najskoriji prvi); prošli: silazno (najskoriji prošli prvi)
       return aUp ? (ak < bk ? -1 : 1) : ak > bk ? -1 : 1;
     });
-  }, [rows]);
+  }, [rows, todayIso]);
 
   const open = (id: string) => nav.open(id);
 

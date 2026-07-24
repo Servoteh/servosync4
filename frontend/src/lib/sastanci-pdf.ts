@@ -300,13 +300,22 @@ function drawAkcijeGroup(
       drawGroupHead(' (nastavak)');
       drawColHeader();
     }
+    // Strana na kojoj red POČINJE — ako opis kasnije prelomi stranu, znamo da je
+    // strana-blok (status/naslov/odg/rok na topY) ostao na prethodnoj strani.
+    const rowStartPage = pageState.pageNum;
 
     if (ri % 2 === 1) {
       doc.setFillColor(250, 251, 252);
-      doc.rect(MARGIN, y - 4, CONTENT_W, rowH, 'F');
+      // Klamp visine zebre na BODY_BOTTOM: kad red prelama stranu, pun rowH bi
+      // obojio ispod podnožja (van strane); nastavak na drugoj strani se ne šara.
+      const zebraH = Math.min(rowH, BODY_BOTTOM - (y - 4));
+      doc.rect(MARGIN, y - 4, CONTENT_W, zebraH, 'F');
     }
 
     const topY = y + PAD - 1;
+    // Status + naslov + odgovoran/rok se crtaju NA topY (strana gde red počinje),
+    // PRE eventualnog preloma opisa — inače bi posle addPage završili na pogrešnoj
+    // (novoj) strani sa stale koordinatom.
     doc.setFont('Roboto', 'bold');
     doc.setFontSize(7.5);
     doc.setTextColor(st.c[0], st.c[1], st.c[2]);
@@ -315,15 +324,6 @@ function drawAkcijeGroup(
     doc.setFontSize(FS_ZAD);
     doc.setTextColor(17, 24, 39);
     doc.text(zadLines, xZad + 2, topY);
-    if (opisLines.length) {
-      doc.setFontSize(FS_OPIS);
-      doc.setTextColor(107, 114, 128);
-      let oy = topY + zadLines.length * AK_LINE + 0.6;
-      for (const line of opisLines) {
-        doc.text(line, xZad + 2, oy);
-        oy += OPIS_LINE;
-      }
-    }
     doc.setFontSize(FS_META);
     doc.setTextColor(55, 65, 81);
     doc.text(odgLines, xOdg + 2, topY);
@@ -332,7 +332,37 @@ function drawAkcijeGroup(
     doc.text(rokLines, xRok + 2, topY);
     doc.setTextColor(0, 0, 0);
 
-    y += rowH;
+    // Opis se prelama PO LINIJI (naslov je ≤500 znakova, opis do 4000): kad sledeća
+    // linija ne staje do BODY_BOTTOM → nova strana + header/grupa (nastavak)/kolone,
+    // pa crtanje nastavlja od vrha tela. Bez ovoga dug opis isteče ispod BODY_BOTTOM
+    // i van strane u ZVANIČNOM (zaključanom) PDF-u.
+    let oy = topY + zadLines.length * AK_LINE + 0.6;
+    if (opisLines.length) {
+      doc.setFontSize(FS_OPIS);
+      doc.setTextColor(107, 114, 128);
+      for (const line of opisLines) {
+        if (oy + OPIS_LINE > BODY_BOTTOM) {
+          doc.addPage();
+          pageState.pageNum++;
+          drawPageHeader(doc, naslov);
+          y = BODY_TOP;
+          drawGroupHead(' (nastavak)');
+          drawColHeader();
+          oy = y + PAD - 1;
+        }
+        doc.text(line, xZad + 2, oy);
+        oy += OPIS_LINE;
+      }
+      doc.setTextColor(0, 0, 0);
+    }
+
+    // Stvarno dno reda. Bez preloma → veći od strana-bloka (odg/rok na topY) i kraja
+    // opisa. Sa prelomom → topY je na prethodnoj strani (tamo se strana-blok završio),
+    // pa merodavan ostaje samo `oy` na tekućoj strani (inače bi separator pao van nje).
+    y =
+      pageState.pageNum === rowStartPage
+        ? Math.max(topY + sideBlockH, oy) + PAD
+        : oy + PAD;
     doc.setDrawColor(236, 239, 242);
     doc.line(MARGIN, y - 2, PAGE_W - MARGIN, y - 2);
   });

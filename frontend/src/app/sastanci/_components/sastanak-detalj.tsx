@@ -567,6 +567,9 @@ function UrediSastanakModal({
   const fullQ = useSastanakFull(sast.id);
   const ucesnici = fullQ.data?.data.ucesnici ?? sast.ucesnici;
   const currentEmails = ucesnici.map((u) => u.email);
+  // Otkazan (i zaključan — mada dotle „Uredi" i ne stiže) → učesnici se ne diraju,
+  // isto kao Priprema tab (detalj-priprema.tsx: locked = zakljucan ∨ otkazan).
+  const ucesniciLocked = sast.status === 'zakljucan' || sast.status === 'otkazan';
 
   const datum0 = String(sast.datum ?? '').slice(0, 10);
   const vreme0 = sast.vreme ? formatVreme(sast.vreme) : '';
@@ -601,19 +604,38 @@ function UrediSastanakModal({
 
   async function addParticipants() {
     setError(null);
+    // Pozivnica (sy15 trigger na INSERT) nosi termin koji je TRENUTNO u bazi. Ako
+    // je u formi promenjen datum/vreme a nije sačuvan, dodavanje bi poslalo pozivnicu
+    // sa STARIM terminom → traži prvo „Sačuvaj".
+    if (datum !== datum0 || vreme !== vreme0) {
+      setError('Prvo sačuvajte novi termin („Sačuvaj"), pa dodajte učesnike — pozivnica nosi termin koji važi u trenutku dodavanja.');
+      return;
+    }
     try {
-      // Sekvencijalno — svaki INSERT okida invite trigger (planiran); dedup po
-      // lower(email) je već u DirectoryMultiPicker (exclude=currentEmails).
+      // Sekvencijalno — svaki INSERT okida invite trigger (planiran). Preskoči
+      // već-prisutne (retry posle delimičnog neuspeha ne sme da POST-uje duplikat →
+      // 409) i skini svakog uspešno dodatog iz `toAdd` ODMAH, da retry krene od
+      // prvog nedodatog (a ne da ponovi već upisane).
+      const have = new Set(currentEmails.map((e) => e.toLowerCase()));
       for (const u of toAdd) {
+        if (have.has(u.email.toLowerCase())) continue;
         await addU.mutateAsync({ id: sast.id, email: u.email, label: u.label });
+        setToAdd((prev) => prev.filter((p) => p.email.toLowerCase() !== u.email.toLowerCase()));
       }
-      setToAdd([]);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Dodavanje učesnika nije uspelo.');
     }
   }
 
-  async function removeParticipant(email: string) {
+  async function removeParticipant(email: string, label?: string | null) {
+    // Uklanjanje briše i evidenciju (prisustvo/priprema/RSVP) — eksplicitna potvrda
+    // (isti obrazac kao zaključavanje).
+    if (
+      !confirm(
+        `Ukloniti učesnika ${label || email}? Briše se i evidencija prisustva, pripreme i RSVP za ovaj sastanak.`,
+      )
+    )
+      return;
     setError(null);
     try {
       await removeU.mutateAsync({ id: sast.id, email });
@@ -655,7 +677,7 @@ function UrediSastanakModal({
         <div className="space-y-2 rounded-panel border border-line p-3">
           <div className="flex items-center justify-between">
             <span className="text-sm font-medium text-ink">Učesnici ({ucesnici.length})</span>
-            <span className="text-xs text-ink-disabled">primenjuje se odmah</span>
+            {!ucesniciLocked && <span className="text-xs text-ink-disabled">primenjuje se odmah</span>}
           </div>
           {ucesnici.length > 0 ? (
             <div className="flex flex-wrap gap-1.5">
@@ -665,32 +687,42 @@ function UrediSastanakModal({
                   className="inline-flex items-center gap-1 rounded-control bg-surface-2 px-2 py-1 text-xs text-ink"
                 >
                   {u.label || u.email}
-                  <button
-                    type="button"
-                    onClick={() => void removeParticipant(u.email)}
-                    disabled={removeU.isPending}
-                    className="text-ink-secondary hover:text-status-danger disabled:opacity-50"
-                    aria-label={`Ukloni ${u.label || u.email}`}
-                  >
-                    <X className="h-3 w-3" aria-hidden />
-                  </button>
+                  {!ucesniciLocked && (
+                    <button
+                      type="button"
+                      onClick={() => void removeParticipant(u.email, u.label)}
+                      // Onemogući dok DELETE + refetch traju — inače drugi klik na
+                      // isti (još prikazan) čip udara već obrisanog → lažna „ne postoji".
+                      disabled={removeU.isPending || fullQ.isFetching}
+                      className="text-ink-secondary hover:text-status-danger disabled:opacity-50"
+                      aria-label={`Ukloni ${u.label || u.email}`}
+                    >
+                      <X className="h-3 w-3" aria-hidden />
+                    </button>
+                  )}
                 </span>
               ))}
             </div>
           ) : (
             <p className="text-xs text-ink-secondary">Nema učesnika.</p>
           )}
-          <DirectoryMultiPicker value={toAdd} onChange={setToAdd} exclude={currentEmails} />
-          {toAdd.length > 0 && (
-            <Button variant="secondary" loading={addU.isPending} onClick={() => void addParticipants()}>
-              Dodaj u sastanak ({toAdd.length})
-            </Button>
+          {ucesniciLocked ? (
+            <p className="text-xs text-ink-secondary">Učesnici se ne menjaju na otkazanom sastanku.</p>
+          ) : (
+            <>
+              <DirectoryMultiPicker value={toAdd} onChange={setToAdd} exclude={currentEmails} />
+              {toAdd.length > 0 && (
+                <Button variant="secondary" loading={addU.isPending} onClick={() => void addParticipants()}>
+                  Dodaj u sastanak ({toAdd.length})
+                </Button>
+              )}
+              <p className="text-xs text-ink-secondary">
+                {sast.status === 'planiran'
+                  ? 'Dodatom učesniku automatski stiže pozivnica mejlom. Uklonjeni učesnik ne dobija obaveštenje.'
+                  : 'Pozivnica se automatski šalje samo za planiran sastanak — dodatom učesniku sada ne stiže mejl. Uklonjeni učesnik ne dobija obaveštenje.'}
+              </p>
+            </>
           )}
-          <p className="text-xs text-ink-secondary">
-            {sast.status === 'planiran'
-              ? 'Dodatom učesniku automatski stiže pozivnica mejlom. Uklonjeni učesnik ne dobija obaveštenje.'
-              : 'Uklonjeni učesnik ne dobija obaveštenje.'}
-          </p>
         </div>
 
         <p className="text-xs text-ink-secondary">

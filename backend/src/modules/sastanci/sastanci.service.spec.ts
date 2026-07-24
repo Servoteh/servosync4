@@ -1,4 +1,5 @@
-import { NotFoundException } from "@nestjs/common";
+import { ConflictException, NotFoundException } from "@nestjs/common";
+import { Prisma } from "@prisma-sy15/client";
 import { SastanciService } from "./sastanci.service";
 import type { Sy15Service } from "../../common/sy15/sy15.service";
 
@@ -409,5 +410,46 @@ describe("SastanciService — withUserRls most + BigInt out", () => {
     ]);
     const out = await svc.listArhive("test@servoteh.com");
     expect(out.data[0].zapisnikSizeBytes).toBe(987654321);
+  });
+
+  // ── TYPED create greška → HTTP semantika (rethrowSy15) ──
+  // Dodavanje već-postojećeg učesnika udara PK (sastanak_id,email). TYPED
+  // `sastanakUcesnik.create` baca P2002 kao TOP-LEVEL `.code` (BEZ meta.code, za
+  // razliku od raw puta = P2010/meta.code='23505') → bez P2002 grane u rethrowSy15
+  // bi bio sirov 500 (regresija). Obrazac 1:1 sa energetika.service.spec.ts.
+  describe("addUcesnik — dupli učesnik → 409", () => {
+    function makeThrowingService(err: unknown): SastanciService {
+      const tx = {
+        sastanakUcesnik: {
+          create: jest.fn(async () => {
+            throw err;
+          }),
+        },
+        sastanak: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      };
+      const sy15 = {
+        withUserRls: jest.fn(
+          (_email: string, fn: (t: typeof tx) => Promise<unknown>) => fn(tx),
+        ),
+      };
+      return new SastanciService(
+        sy15 as unknown as Sy15Service,
+        {} as never,
+        {} as never,
+      );
+    }
+
+    it("P2002 (TYPED create, top-level code, BEZ meta.code) → 409 ConflictException, NE 500", async () => {
+      const p2002 = new Prisma.PrismaClientKnownRequestError(
+        "Unique constraint failed on the fields: (`sastanak_id`,`email`)",
+        { code: "P2002", clientVersion: "6" },
+      );
+      const svc = makeThrowingService(p2002);
+      await expect(
+        svc.addUcesnik("a@b.com", "3b241101-e2bb-4255-8caf-4136c566a962", {
+          email: "dup@servoteh.com",
+        }),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
   });
 });
