@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { SearchBox } from '@/components/ui-kit/search-box';
 import { Button } from '@/components/ui-kit/button';
@@ -37,6 +37,28 @@ export function SastanciTab() {
   // Za kalendar/nedelju učitavamo širi skup (bez paginacije filtera).
   const listQ = useSastanci({ q, tip, status, pageSize: view === 'lista' ? 50 : 300 });
   const rows = listQ.data?.data ?? [];
+
+  // Zahtev 014/26 t.5 — u LISTI prikaži SLEDEĆI (predstojeći) termin, ne prethodni:
+  // predstojeći sastanci (datum >= danas) idu prvi, uzlazno (najskoriji na vrhu), a
+  // prošli iza njih silazno. Za nedeljne serije to znači da je gore sledeći termin,
+  // a ne održani prethodni. Sort je nad učitanom stranom (server vraća datum desc);
+  // kalendar/nedelja grupišu po danu pa im redosled nije bitan → koriste `rows`.
+  const listaRows = useMemo(() => {
+    const now = new Date();
+    const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const dkey = (s: Sastanak) => String(s.datum).slice(0, 10);
+    const skey = (s: Sastanak) => `${dkey(s)}T${(s.vreme ? String(s.vreme).slice(11, 16) || String(s.vreme).slice(0, 5) : '') || '00:00'}`;
+    return [...rows].sort((a, b) => {
+      const aUp = dkey(a) >= todayIso;
+      const bUp = dkey(b) >= todayIso;
+      if (aUp !== bUp) return aUp ? -1 : 1; // predstojeći pre prošlih
+      const ak = skey(a);
+      const bk = skey(b);
+      if (ak === bk) return 0;
+      // predstojeći: uzlazno (najskoriji prvi); prošli: silazno (najskoriji prošli prvi)
+      return aUp ? (ak < bk ? -1 : 1) : ak > bk ? -1 : 1;
+    });
+  }, [rows]);
 
   const open = (id: string) => nav.open(id);
 
@@ -102,7 +124,7 @@ export function SastanciTab() {
       {view === 'lista' && (
         <DataTable
           columns={cols}
-          rows={rows}
+          rows={listaRows}
           rowKey={(r) => r.id}
           loading={listQ.isLoading}
           onRowActivate={(r) => open(r.id)}
