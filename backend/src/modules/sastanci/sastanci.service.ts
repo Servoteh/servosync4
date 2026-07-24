@@ -807,6 +807,13 @@ export class SastanciService {
     }
   }
 
+  /** Postgres SQLSTATE iz Prisma raw greške: `meta.code` (npr. P0002 koji digne
+   *  DEFINER RPC) ima prednost nad spoljnim `e.code` (P2010 „raw query failed"). */
+  private sy15Code(e: unknown): string | undefined {
+    const meta = (e as { meta?: { code?: string } }).meta;
+    return meta?.code ?? (e as { code?: string }).code;
+  }
+
   /**
    * SQLSTATE iz DB fn/RLS → HTTP semantika (paritet Reversi §5):
    * 42501→403, P0001/P0002→422, 23514(check, npr. nepoznat model)→422, 23505→409.
@@ -823,7 +830,7 @@ export class SastanciService {
       throw e;
     }
     const meta = (e as { meta?: { code?: string; message?: string } }).meta;
-    const code = meta?.code ?? (e as { code?: string }).code;
+    const code = this.sy15Code(e);
     const message = meta?.message ?? (e as Error).message;
     if (code === "42501") throw new ForbiddenException(message);
     if (code === "P0001" || code === "P0002" || code === "23514")
@@ -1015,14 +1022,17 @@ export class SastanciService {
    * 422) — organizator ne može obrisati zaključan sastanak dok ga mgmt ne otvori.
    *
    * OTKAZ vs BRISANJE (PRESUDA 013/26): brisanje UKLANJA sastanak (za razliku od
-   * otkaza koji ga čuva sa status='otkazan'). Ali ako sastanak još NIJE gotov
-   * (status ∈ {planiran,u_toku}) i ima bar jednog POZVANOG učesnika, prvo se pušta
-   * POSTOJEĆI cancel tok (RPC `sastanci_cancel_sastanak`: status='otkazan' +
-   * 'meeting_cancel' mejl svakom `pozvan=true`), pa se briše — da pozvani ne ostanu
-   * bez obaveštenja da sastanak više ne postoji. Gotovi (zakljucan/zavrsen/otkazan)
-   * ili bez pozvanih → samo brisanje (obaveštenje o otkazu nema kome/čemu). Gejt je
-   * na STATUS (ne na datum) — status je izvor istine o životnom ciklusu i identičan
-   * je gejtu postojećeg „Otkaži sastanak" dugmeta (paritet UX-a).
+   * otkaza koji ga čuva sa status='otkazan'). Ako sastanak još NIJE gotov
+   * (status ∈ {planiran,u_toku}), prvo se UVEK pušta POSTOJEĆI cancel tok (RPC
+   * `sastanci_cancel_sastanak`: status='otkazan' + 'meeting_cancel' mejl svakom
+   * `pozvan=true`), pa se briše — da pozvani ne ostanu bez obaveštenja da sastanak
+   * više ne postoji. NAMERNO bez count-gejta pozvanih: DEFINER RPC sam enumeriše
+   * pozvane (0 pozvanih = 0 mejlova, bez greške), a brojanje pozvanih OVDE bi teklo
+   * pod su_select RLS-om POZIVAOCA — ako se ta politika ikad suzi (postoji
+   * `harden_sastanci_rls_phase2` varijanta), pogrešan 0 bi TIHO preskočio otkazne
+   * mejlove. Gotovi (zakljucan/zavrsen/otkazan) → samo brisanje. Gejt je na STATUS
+   * (ne na datum) — status je izvor istine o životnom ciklusu i identičan je gejtu
+   * postojećeg „Otkaži sastanak" dugmeta (paritet UX-a).
    *
    * FK DECA (sy15 add_sastanci_module.sql / odluke tabela): ON DELETE CASCADE —
    * `sastanak_ucesnici`, `presek_aktivnosti`, `presek_slike`, `sastanak_arhiva`,
@@ -1045,23 +1055,35 @@ export class SastanciService {
       });
       if (!sastanak) throw new NotFoundException(`Sastanak ${id} ne postoji`);
 
-      // Otkaz-pre-brisanja: samo za žive sastanke sa bar jednim pozvanim.
+      // Otkaz-pre-brisanja za žive sastanke: UVEK pozovi cancel RPC (bez count-gejta
+      // pozvanih — DEFINER sam enumeriše `pozvan=true`; vidi doc gore).
       if (sastanak.status === "planiran" || sastanak.status === "u_toku") {
-        const pozvanih = await tx.sastanakUcesnik.count({
-          where: { sastanakId: id, pozvan: true },
-        });
-        if (pozvanih > 0) {
-          // Isti guard kao brisanje (has_edit_role ∧ (mgmt ∨ trio)); ako cancel
-          // odbije (42501 → 403) ceo tx pada PRE brisanja i mejlovi se rollback-uju.
+        try {
+          // Isti guard kao brisanje (has_edit_role ∧ (mgmt ∨ trio ∨ creator)); ako
+          // cancel odbije (42501 → 403) ceo tx pada PRE brisanja i mejlovi se
+          // rollback-uju.
           await tx.$queryRaw(
             Prisma.sql`SELECT sastanci_cancel_sastanak(${id}::uuid) AS result`,
           );
+        } catch (e) {
+          // Konkurentno brisanje: drugi tx je obrisao red između našeg SELECT-a i
+          // `FOR UPDATE` u RPC-u → RPC diže P0002 ('nije pronađen'). Za brisanje to
+          // je 404 (nema šta da se briše), NE 422 (generičko P0002 → Unprocessable).
+          if (this.sy15Code(e) === "P0002") {
+            throw new NotFoundException(`Sastanak ${id} ne postoji`);
+          }
+          throw e;
         }
       }
 
       const { count } = await tx.sastanak.deleteMany({ where: { id } });
-      // exists=true (SELECT ga vidi gore): 0 redova = RLS delete-scope odbija → 403.
-      this.assertAffected(true, count, `Sastanak ${id}`);
+      if (count === 0) {
+        // 0 redova: RLS delete-scope odbio (red i dalje postoji → 403) ILI je red u
+        // međuvremenu nestao (konkurentno brisanje → 404). Svež upit u ISTOJ tx
+        // razdvaja te dve mogućnosti (assertAffected: !exists→404, exists→403).
+        const stillExists = (await tx.sastanak.count({ where: { id } })) > 0;
+        this.assertAffected(stillExists, 0, `Sastanak ${id}`);
+      }
       return { data: { ok: true } };
     });
   }

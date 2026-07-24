@@ -310,31 +310,63 @@ describe("SastanciService R2 mutacije", () => {
     expect(tx.sastanak.deleteMany).toHaveBeenCalledWith({ where: { id: ID } });
   });
 
-  it("deleteSastanak: živ sastanak BEZ pozvanih → BEZ cancel RPC, samo brisanje", async () => {
+  it("deleteSastanak: živ sastanak → UVEK cancel RPC (bez count-gejta pozvanih; DEFINER enumeriše)", async () => {
     const { svc, tx } = makeSvc();
     tx.sastanak.findUnique.mockResolvedValueOnce({ status: "planiran" });
-    tx.sastanakUcesnik.count.mockResolvedValueOnce(0);
-    await svc.deleteSastanak("u@servoteh.com", ID);
-    expect(tx.$queryRaw).not.toHaveBeenCalled();
-    expect(tx.sastanak.deleteMany).toHaveBeenCalled();
-  });
-
-  it("deleteSastanak: živ sastanak SA pozvanima → cancel RPC (meeting_cancel) PA brisanje", async () => {
-    const { svc, tx } = makeSvc();
-    tx.sastanak.findUnique.mockResolvedValueOnce({ status: "u_toku" });
-    tx.sastanakUcesnik.count.mockResolvedValueOnce(2);
     await svc.deleteSastanak("u@servoteh.com", ID);
     expect(sqlText(tx.$queryRaw)).toContain("sastanci_cancel_sastanak");
+    // Gejt uklonjen: pozvani se NE broje pod su_select RLS-om pozivaoca.
+    expect(tx.sastanakUcesnik.count).not.toHaveBeenCalled();
     expect(tx.sastanak.deleteMany).toHaveBeenCalledWith({ where: { id: ID } });
   });
 
-  it("deleteSastanak: 0 pogodaka a red postoji (SELECT vidi) → 403", async () => {
+  it("deleteSastanak: cancel RPC PRE brisanja (order pin)", async () => {
+    const { svc, tx } = makeSvc();
+    tx.sastanak.findUnique.mockResolvedValueOnce({ status: "u_toku" });
+    const order: string[] = [];
+    tx.$queryRaw.mockImplementationOnce(() => {
+      order.push("cancel");
+      return Promise.resolve([{ result: { ok: true } }]);
+    });
+    tx.sastanak.deleteMany.mockImplementationOnce(() => {
+      order.push("delete");
+      return Promise.resolve({ count: 1 });
+    });
+    await svc.deleteSastanak("u@servoteh.com", ID);
+    expect(order).toEqual(["cancel", "delete"]);
+  });
+
+  it("deleteSastanak: konkurentno brisanje tokom cancel RPC (P0002) → 404 (ne 422)", async () => {
+    const { svc, tx } = makeSvc();
+    tx.sastanak.findUnique.mockResolvedValueOnce({ status: "planiran" });
+    tx.$queryRaw.mockRejectedValueOnce({
+      code: "P2010",
+      meta: { code: "P0002", message: "Sastanak nije pronađen." },
+    });
+    await expect(
+      svc.deleteSastanak("u@servoteh.com", ID),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(tx.sastanak.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it("deleteSastanak: 0 pogodaka a red i dalje postoji (RLS odbio) → 403", async () => {
     const { svc, tx } = makeSvc();
     tx.sastanak.findUnique.mockResolvedValueOnce({ status: "zavrsen" });
     tx.sastanak.deleteMany.mockResolvedValueOnce({ count: 0 });
+    tx.sastanak.count.mockResolvedValueOnce(1); // svež re-check: red i dalje tu
     await expect(
       svc.deleteSastanak("u@servoteh.com", ID),
     ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it("deleteSastanak: 0 pogodaka i red NESTAO (konkurentno) → 404", async () => {
+    const { svc, tx } = makeSvc();
+    tx.sastanak.findUnique.mockResolvedValueOnce({ status: "zavrsen" });
+    tx.sastanak.deleteMany.mockResolvedValueOnce({ count: 0 });
+    tx.sastanak.count.mockResolvedValueOnce(0); // svež re-check: red nestao
+    await expect(
+      svc.deleteSastanak("u@servoteh.com", ID),
+    ).rejects.toBeInstanceOf(NotFoundException);
   });
 
   it("deleteSastanak: red NE postoji → 404 (bez brisanja i bez cancel-a)", async () => {

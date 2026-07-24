@@ -10,6 +10,7 @@ import { Button } from '@/components/ui-kit/button';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { FormField } from '@/components/ui-kit/form-field';
 import { toast } from '@/lib/toast';
+import { ApiError } from '@/api/client';
 import {
   arhiveQueryKey,
   newClientEventId,
@@ -449,7 +450,7 @@ function ObrisiSastanakDialog({
   onDeleted: () => void;
 }) {
   const deleteM = useDeleteSastanak();
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ msg: string; detail?: string } | null>(null);
   const pozvanih = sast.ucesnici.filter((u) => u.pozvan).length;
   // Isti gejt kao BE (otkaz-pre-brisanja): živ sastanak + bar jedan pozvan.
   const willNotify = (sast.status === 'planiran' || sast.status === 'u_toku') && pozvanih > 0;
@@ -460,7 +461,11 @@ function ObrisiSastanakDialog({
       await deleteM.mutateAsync({ id: sast.id });
       onDeleted();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Brisanje nije uspelo.');
+      // Ljudska poruka umesto sirove BE greške (koja za živ sastanak sa pozvanima
+      // nosi tekst o OTKAZIVANJU, a drugde UUID). 403 = nema prava; 404 = red je u
+      // međuvremenu nestao (konkurentno brisanje); ostalo (npr. 422 zaključan) →
+      // generička poruka + BE detalj u drugom, prigušenom redu.
+      setError(mapDeleteError(e));
     }
   }
 
@@ -494,10 +499,27 @@ function ObrisiSastanakDialog({
             <strong>poslat mejl o otkazivanju</strong> pre brisanja. Slanje se ne može opozvati.
           </p>
         )}
-        {error && <p className="text-sm text-status-danger">{error}</p>}
+        {error && (
+          <div className="space-y-0.5">
+            <p className="text-sm text-status-danger">{error.msg}</p>
+            {error.detail && (
+              <p className="break-words text-xs text-ink-secondary">{error.detail}</p>
+            )}
+          </div>
+        )}
       </div>
     </Dialog>
   );
+}
+
+/** Sirovu BE grešku brisanja → ljudska poruka (+ opcioni detalj u drugom redu). */
+function mapDeleteError(e: unknown): { msg: string; detail?: string } {
+  if (e instanceof ApiError) {
+    if (e.status === 403) return { msg: 'Brisanje nije uspelo: nemate pravo nad ovim sastankom.' };
+    if (e.status === 404) return { msg: 'Sastanak više ne postoji — osvežite listu.' };
+    return { msg: 'Brisanje nije uspelo.', detail: e.message };
+  }
+  return { msg: 'Brisanje nije uspelo.', detail: e instanceof Error ? e.message : undefined };
 }
 
 /**
