@@ -237,6 +237,8 @@ export interface CreateProformaInput {
   /** Broj narudžbenice kupca (opciono, max 50) → UBL OrderReference (D6). */
   poNumber?: string;
   note?: string;
+  /** T3/A8: preskoči kreditni-limit guard (svesno kreiranje uprkos prekoračenju). */
+  force?: boolean;
   items: CreateProformaItemInput[];
 }
 
@@ -276,17 +278,81 @@ export function useCreateInvoiceFromProforma() {
 /**
  * Knjiženje računa (DRAFT → POSTED: rezerviši definitivan broj + nalog GK) —
  * POST /sales/invoices/:id/post. Vraća SIROV proknjižen Invoice. Permisija
- * SALES_POST. Invalidira `sales` ključ.
+ * SALES_POST. Invalidira `sales` ključ. `force` (T3/A8) preskače kreditni-limit
+ * guard (svesno knjiženje uprkos prekoračenju) — koristi se na 422 CREDIT_LIMIT_EXCEEDED.
  */
 export function usePostInvoice() {
   const invalidate = useInvalidateSales();
   return useMutation({
-    mutationFn: (id: number) =>
+    mutationFn: ({ id, force }: { id: number; force?: boolean }) =>
       apiFetch<InvoiceDetail>(`${BASE}/invoices/${id}/post`, {
         method: 'POST',
-        body: '{}',
+        body: JSON.stringify(force ? { force: true } : {}),
       }),
     onSuccess: invalidate,
+  });
+}
+
+/**
+ * Rezultat storna fakture (A5) — proknjižen dokument u statusu CANCELLED + id
+ * storno-naloga GK + spisak otkazanih SEF outbox redova (SENT/DELIVERED).
+ */
+export interface StornoResult extends InvoiceDetail {
+  /** Id novog storno-naloga glavne knjige (null ako faktura nije imala nalog). */
+  stornoEntryId: number | null;
+  /** Outbox redovi otkazani na SEF-u u sklopu storna. */
+  sefCancelledOutboxIds: number[];
+}
+
+/**
+ * Storno proknjižene fakture (A5) — POST /sales/invoices/:id/storno { reason }.
+ * Guard: samo zaključan (isLocked) proknjižen dokument (D8: storno je jedini put).
+ * Backend obrne GL nalog + otkaže SEF outbox (SENT/DELIVERED). Razlog je OBAVEZAN.
+ * Permisija SALES_POST. Invalidira i `sales` i `sef` ključeve (outbox se menja).
+ */
+export function useStornoInvoice() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, reason }: { id: number; reason: string }) =>
+      apiFetch<StornoResult>(`${BASE}/invoices/${id}/storno`, {
+        method: 'POST',
+        body: JSON.stringify({ reason }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: KEYS.all });
+      qc.invalidateQueries({ queryKey: ['sef'] });
+    },
+  });
+}
+
+// ─────────────────────────────────── Slanje fakture mejlom (BigBit paritet, A6)
+
+/** Odgovor mail rute: sent=false je DRY-RUN ili neuspeh (backend ne baca). */
+export interface SendMailResult {
+  sent: boolean;
+  to: string;
+  fileName: string;
+}
+
+/** Telo POST /sales/invoices/:id/send-mail. `to` prazno → email kupca sa računa. */
+export interface SendInvoiceMailInput {
+  id: number;
+  to?: string;
+  note?: string;
+}
+
+/**
+ * Pošalji fakturu kupcu mejlom sa PDF prilogom — POST /sales/invoices/:id/send-mail.
+ * `to` prazno → backend šalje na email kupca. Ne menja keširane podatke (slanje je
+ * bez server-side mutacije nad računom), pa nema invalidacije. Permisija SALES_WRITE.
+ */
+export function useSendInvoiceMail() {
+  return useMutation({
+    mutationFn: ({ id, to, note }: SendInvoiceMailInput) =>
+      apiFetch<{ data: SendMailResult }>(`${BASE}/invoices/${id}/send-mail`, {
+        method: 'POST',
+        body: JSON.stringify({ to: to ?? '', note: note ?? '' }),
+      }),
   });
 }
 

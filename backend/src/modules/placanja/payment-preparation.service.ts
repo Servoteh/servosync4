@@ -32,6 +32,7 @@ import {
   CreatePaymentOrdersDto,
   CreatePaymentOrderLineInput,
 } from "./dto/create-payment-orders.dto";
+import { CreateManualPaymentOrderDto } from "./dto/create-manual-payment-order.dto";
 import {
   computeReferenceNumber,
   digitsOnly,
@@ -290,6 +291,105 @@ export class PaymentPreparationService {
       }
     });
     return created;
+  }
+
+  /**
+   * RUČNI pojedinačni nalog za plaćanje (BigBit `UnosVirmana`) — bez izvora iz
+   * saldakonta (`sourceLedgerEntryId = null`). Ulazi u isti pregled/potpis/izvoz
+   * tok kao i nalozi iz dospelih obaveza (status CREATED).
+   *
+   * DobarTR (doc 25 §C): žiro račun primaoca se ponovo validira (odbrana u dubini
+   * iako DTO već proverava) — banka odbija nevalidan račun posle izvoza.
+   * DEDUP: @@unique(referenceNumberCredit, supplierId) — dupli poziv na broj za
+   * istog primaoca → ConflictException (ne 500). Kod praznog poziva na broj PG
+   * tretira NULL kao različit, pa se ručni virmani bez PNB smeju ponavljati
+   * (legitimno — poziv na broj mnoga plaćanja nemaju).
+   *
+   * Broj naloga: `RV-<id>` (Ručni Virman) — jedinstven po autoincrement id-u;
+   * kreira se privremeno pa se podešava u istoj transakciji (atomično).
+   */
+  async createManualOrder(
+    dto: CreateManualPaymentOrderDto,
+    actorUserId?: number,
+  ): Promise<{
+    id: number;
+    orderNumber: string;
+    supplierId: number;
+    amount: string;
+    referenceNumberCredit: string | null;
+    status: string;
+  }> {
+    const acct = dto.supplierAccount.trim();
+    // Odbrana u dubini (DobarTR) — DTO validate to već radi, ali servis je izvor istine.
+    if (!isValidAccountNumber(acct)) {
+      throw new BadRequestException(
+        `Neispravan tekući račun (DobarTR): ${acct}. Format: banka(3)-partija-kontrolni(2).`,
+      );
+    }
+
+    const referenceNumberCredit =
+      typeof dto.referenceNumber === "string" && dto.referenceNumber.trim() !== ""
+        ? dto.referenceNumber.trim()
+        : null;
+
+    return this.prisma.$transaction(async (tx) => {
+      let createdId: number;
+      try {
+        const order = await tx.paymentOrder.create({
+          data: {
+            orderNumber: "RV-NEW", // privremeno — podešava se na RV-<id> ispod
+            supplierId: dto.supplierId,
+            supplierAccount: acct,
+            amount: new D(dto.amount),
+            currency: dto.currency?.trim() || "RSD",
+            referenceNumberDebit: null,
+            referenceNumberCredit,
+            purpose: dto.purpose.trim() || "UPLATA ZA ROBU",
+            dueDate: dto.dueDate ? new Date(dto.dueDate) : null,
+            status: "CREATED",
+            isLocked: false,
+            sourceLedgerEntryId: null, // ručni unos — nema otvorene stavke GK
+            createdByUserId: actorUserId ?? null,
+            updatedByUserId: actorUserId ?? null,
+          },
+          select: { id: true },
+        });
+        createdId = order.id;
+      } catch (e) {
+        if (
+          e instanceof Prisma.PrismaClientKnownRequestError &&
+          e.code === "P2002"
+        ) {
+          throw new ConflictException(
+            `Nalog za plaćanje za dobavljača ${dto.supplierId} i poziv na broj ` +
+              `${referenceNumberCredit ?? "(prazan)"} već postoji — dvostruko plaćanje odbijeno.`,
+          );
+        }
+        throw e;
+      }
+
+      const updated = await tx.paymentOrder.update({
+        where: { id: createdId },
+        data: { orderNumber: `RV-${createdId}` },
+        select: {
+          id: true,
+          orderNumber: true,
+          supplierId: true,
+          amount: true,
+          referenceNumberCredit: true,
+          status: true,
+        },
+      });
+
+      return {
+        id: updated.id,
+        orderNumber: updated.orderNumber,
+        supplierId: updated.supplierId,
+        amount: updated.amount.toFixed(4),
+        referenceNumberCredit: updated.referenceNumberCredit,
+        status: updated.status,
+      };
+    });
   }
 
   /** CREATED → SIGNED (potpisan). */

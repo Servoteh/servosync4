@@ -66,31 +66,63 @@ export class SefController {
     return { data };
   }
 
+  /**
+   * Status-istorija (timeline) jednog SEF reda — izlaznog (outboxId) ili ulaznog
+   * (incomingId). Hronološki (najstariji prvo). Permisija SEF_READ.
+   */
+  @Get("status-log")
+  @RequirePermission(PERMISSIONS.SEF_READ)
+  async statusLog(
+    @Query("outboxId") outboxId?: string,
+    @Query("incomingId") incomingId?: string,
+  ) {
+    const data = await this.sef.listStatusLog({
+      outboxId: outboxId ? Number(outboxId) : undefined,
+      incomingId: incomingId ? Number(incomingId) : undefined,
+    });
+    return { data };
+  }
+
   @Post("enqueue/:invoiceId")
   @RequirePermission(PERMISSIONS.SEF_SEND)
-  async enqueue(@Param("invoiceId", ParseIntPipe) invoiceId: number) {
-    const { outbox, warning } = await this.sef.enqueue(invoiceId);
+  async enqueue(
+    @Param("invoiceId", ParseIntPipe) invoiceId: number,
+    @Req() req: { user: AuthUser },
+  ) {
+    const { outbox, warning } = await this.sef.enqueue(
+      invoiceId,
+      req.user.userId,
+    );
     return { data: outbox, warning };
   }
 
   @Post("send/:outboxId")
   @RequirePermission(PERMISSIONS.SEF_SEND)
-  async send(@Param("outboxId", ParseIntPipe) outboxId: number) {
-    const data = await this.sef.send(outboxId);
+  async send(
+    @Param("outboxId", ParseIntPipe) outboxId: number,
+    @Req() req: { user: AuthUser },
+  ) {
+    const data = await this.sef.send(outboxId, req.user.userId);
     return { data };
   }
 
   @Post("refresh/:outboxId")
   @RequirePermission(PERMISSIONS.SEF_READ)
-  async refresh(@Param("outboxId", ParseIntPipe) outboxId: number) {
-    const data = await this.sef.refreshStatus(outboxId);
+  async refresh(
+    @Param("outboxId", ParseIntPipe) outboxId: number,
+    @Req() req: { user: AuthUser },
+  ) {
+    const data = await this.sef.refreshStatus(outboxId, req.user.userId);
     return { data };
   }
 
   @Post("cancel/:outboxId")
   @RequirePermission(PERMISSIONS.SEF_CANCEL)
-  async cancel(@Param("outboxId", ParseIntPipe) outboxId: number) {
-    const data = await this.sef.cancel(outboxId);
+  async cancel(
+    @Param("outboxId", ParseIntPipe) outboxId: number,
+    @Req() req: { user: AuthUser },
+  ) {
+    const data = await this.sef.cancel(outboxId, undefined, req.user.userId);
     return { data };
   }
 

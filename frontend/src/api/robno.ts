@@ -126,6 +126,8 @@ export interface StockDocument {
   status: RobnoStatus;
   isCalculated: boolean;
   isImport: boolean;
+  /** Nalog GK (meki ref) — `!= null` znači „proknjižen" (booked); uslov za zaključavanje. */
+  journalEntryId: number | null;
   projectId: number | null;
   workOrderId: number | null;
   purchaseOrderId: number | null;
@@ -264,6 +266,30 @@ export function usePost() {
   });
 }
 
+/** Rezultat zaključavanja robnog dokumenta (status → LOCKED). */
+export interface LockResult {
+  id: number;
+  status: RobnoStatus;
+  isLocked: boolean;
+}
+
+/**
+ * Zaključaj proknjižen robni dokument (booked → LOCKED) — POST /robno/documents/:id/lock.
+ * Zaključan dokument je immutable (calculate/post ga odbijaju). Menja status, pa invalidira
+ * ceo `robno` ključ. Permisija ROBNO_WRITE.
+ */
+export function useLockDocument() {
+  const invalidate = useInvalidateRobno();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<Envelope<LockResult>>(`${BASE}/documents/${id}/lock`, {
+        method: 'POST',
+        body: '{}',
+      }),
+    onSuccess: invalidate,
+  });
+}
+
 // ─────────────────────────────────── lager lista (BigBit paritet)
 
 /** Jedan red lagera — 1:1 sa backend listLager(). Sve količine/cene kao string. */
@@ -328,5 +354,71 @@ export function useCreateStockDocument() {
         body: JSON.stringify(input),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['robno'] }),
+  });
+}
+
+// ─────────────────────────────────── kartica artikla (BigBit paritet)
+
+/** Jedan red kartice artikla — kretanje po magacinu (ulaz/izlaz/running-stanje). */
+export interface ItemCardLine {
+  itemLineId: number;
+  documentId: number;
+  documentNumber: string;
+  kind: RobnoKind;
+  documentTypeCode: string;
+  documentDate: string;
+  direction: 'IN' | 'OUT';
+  /** Ulaz (Decimal-as-string; 0 za izlazne redove). */
+  in: string;
+  /** Izlaz (Decimal-as-string; 0 za ulazne redove). */
+  out: string;
+  /** Running stanje posle ovog reda (Decimal-as-string). */
+  balance: string;
+}
+
+/** Odgovor kartice artikla — GET /robno/item-card. Sve količine kao string (Decimal). */
+export interface ItemCardResponse {
+  itemId: number;
+  warehouseId: number;
+  from: string | null;
+  to: string;
+  item: { id: number; name: string | null; code: string | null; unit: string | null } | null;
+  /** Stanje pre `from` (početno stanje). */
+  openingBalance: string;
+  /** Running stanje na kraju prozora — jednako `stateAsOf`. */
+  closingBalance: string;
+  /** Nezavisno izračunato stanje na dan `to` (costing) — kontrolna vrednost. */
+  stateAsOf: string;
+  totalIn: string;
+  totalOut: string;
+  lines: ItemCardLine[];
+}
+
+export interface ItemCardFilters {
+  itemId: number | null;
+  warehouseId: number | null;
+  from?: string;
+  to?: string;
+}
+
+/**
+ * Kartica artikla — hronološko kretanje po (artikal, magacin) sa running stanjem
+ * (GET /robno/item-card). Upit je isključen dok artikal i magacin nisu poznati.
+ */
+export function useItemCard(filters: ItemCardFilters) {
+  const { itemId, warehouseId } = filters;
+  const enabled = itemId != null && itemId > 0 && warehouseId != null && warehouseId > 0;
+  const params = new URLSearchParams();
+  if (enabled) {
+    params.set('itemId', String(itemId));
+    params.set('warehouseId', String(warehouseId));
+    if (filters.from) params.set('from', filters.from);
+    if (filters.to) params.set('to', filters.to);
+  }
+  const query = params.toString() ? `?${params.toString()}` : '';
+  return useQuery({
+    queryKey: ['robno', 'item-card', filters],
+    queryFn: () => apiFetch<Envelope<ItemCardResponse>>(`${BASE}/item-card${query}`),
+    enabled,
   });
 }

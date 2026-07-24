@@ -32,11 +32,14 @@ export class InvoiceMailService {
    * DRY-RUN ili neuspeh slanja (ne baca; PDF je svakako generisan).
    *
    * `variant` bira šablon PDF-a (default = po dokumentu: izvoz → ino faktura).
+   * `note` je opciona propratna poruka (uneta u dijalogu „Pošalji na mail") —
+   * dodaje se u telo mejla iznad potpisa (escape-ovana).
    */
   async sendInvoice(
     invoiceId: number,
     toEmail?: string,
     variant?: InvoicePrintVariant,
+    note?: string,
   ): Promise<{ sent: boolean; to: string; fileName: string }> {
     const invoice = await this.prisma.invoice.findUnique({
       where: { id: invoiceId },
@@ -65,13 +68,18 @@ export class InvoiceMailService {
     const subject = english
       ? `Invoice ${invoice.documentNumber}`
       : `Račun ${invoice.documentNumber}`;
+    // Opciona propratna poruka (escape-ovana, prelomi reda → <br/>) iznad potpisa.
+    const trimmedNote = (note ?? "").trim();
+    const noteHtml = trimmedNote
+      ? `<p>${escapeHtml(trimmedNote).replace(/\n/g, "<br/>")}</p>`
+      : "";
     const html = english
       ? `<p>Dear customer,</p><p>Please find attached invoice <strong>${escapeHtml(
           invoice.documentNumber,
-        )}</strong>.</p><p>Best regards,<br/>Servoteh</p>`
+        )}</strong>.</p>${noteHtml}<p>Best regards,<br/>Servoteh</p>`
       : `<p>Poštovani,</p><p>U prilogu Vam dostavljamo račun <strong>${escapeHtml(
           invoice.documentNumber,
-        )}</strong>.</p><p>Srdačan pozdrav,<br/>Servoteh</p>`;
+        )}</strong>.</p>${noteHtml}<p>Srdačan pozdrav,<br/>Servoteh</p>`;
 
     const sent = await this.mail.send({
       to: recipient,

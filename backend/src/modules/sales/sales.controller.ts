@@ -19,12 +19,22 @@ import { PERMISSIONS } from "../../common/authz/permissions";
 import { FakturisanjeService } from "./fakturisanje.service";
 import { DocumentCarryOverService } from "./carry-over.service";
 import { InvoicePdfService } from "./print/invoice-pdf.service";
+import { InvoiceMailService } from "./print/invoice-mail.service";
 import type { AuthUser } from "../auth/jwt.strategy";
 import type { CreateProformaDto } from "./dto/create-proforma.dto";
 import {
   type CreateInvoiceFromProformaDto,
   normalizeListInvoicesQuery,
 } from "./dto/list-invoices.dto";
+import {
+  validateStornoInvoice,
+  type StornoInvoiceDto,
+} from "./dto/storno-invoice.dto";
+import {
+  type SendInvoiceMailDto,
+  normalizeInvoiceMailTo,
+  normalizeMailNote,
+} from "./dto/send-invoice-mail.dto";
 
 /**
  * Sales / Fakturisanje (Faza 5 §A). Izlazni računi nad Invoice (tip + level).
@@ -45,6 +55,7 @@ export class SalesController {
     private readonly fakturisanje: FakturisanjeService,
     private readonly carryOver: DocumentCarryOverService,
     private readonly invoicePdf: InvoicePdfService,
+    private readonly invoiceMail: InvoiceMailService,
   ) {}
 
   /**
@@ -70,6 +81,26 @@ export class SalesController {
       `inline; filename="${encodeURIComponent(fileName)}"`,
     );
     res.send(buffer);
+  }
+
+  /**
+   * Pošalji fakturu kupcu mejlom sa PDF prilogom (BigBit paritet — zamena OSSMTP).
+   * Telo `{ to?, note? }`: `to` je adresa primaoca (kad je prazna → email kupca sa
+   * računa), `note` opciona propratna poruka. PDF se generiše istim `InvoicePdfService`
+   * kao štampa, pa prilaže uz Resend mejl (`MailService`). Slanje NE baca (DRY-RUN kad
+   * ključ fali) — vraća `{ data: { sent, to, fileName } }`. Permisija SALES_WRITE
+   * (slanje računa kupcu je komercijalna radnja iznad pregleda/štampe).
+   */
+  @Post("invoices/:id/send-mail")
+  @RequirePermission(PERMISSIONS.SALES_WRITE)
+  async sendInvoiceMail(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: SendInvoiceMailDto,
+  ) {
+    const to = normalizeInvoiceMailTo(dto.to);
+    const note = normalizeMailNote(dto.note);
+    const result = await this.invoiceMail.sendInvoice(id, to, undefined, note);
+    return { data: result };
   }
 
   @Get("invoices")
@@ -116,8 +147,28 @@ export class SalesController {
   @RequirePermission(PERMISSIONS.SALES_POST)
   postInvoice(
     @Param("id", ParseIntPipe) id: number,
+    @Body() body: { force?: boolean } | undefined,
     @Req() req: { user: AuthUser },
   ) {
-    return this.fakturisanje.postInvoice(id, req.user);
+    // T3/A8: telo { force: true } preskače kreditni-limit guard (svesno knjiženje
+    // uprkos prekoračenju limita) — FAKTURISANJE post permisija je dovoljna.
+    return this.fakturisanje.postInvoice(id, req.user, body?.force === true);
+  }
+
+  /**
+   * Storno proknjižene fakture (A5). Telo `{ reason }` — razlog OBAVEZAN. D8: storno je
+   * jedini put koji sme da dira zaključan dokument (isLocked guard mutacija ga propušta).
+   * Tok: status → CANCELLED + reverse GL naloga + SEF cancel (SENT/DELIVERED outbox).
+   * Permisija SALES_POST (storno je knjigovodstvena radnja ranga knjiženja).
+   */
+  @Post("invoices/:id/storno")
+  @RequirePermission(PERMISSIONS.SALES_POST)
+  storno(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() body: StornoInvoiceDto,
+    @Req() req: { user: AuthUser },
+  ) {
+    const reason = validateStornoInvoice(body ?? {});
+    return this.fakturisanje.stornoInvoice(id, reason, req.user);
   }
 }

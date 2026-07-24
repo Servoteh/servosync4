@@ -2,7 +2,7 @@
 
 import { useEffect, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Printer } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
@@ -17,6 +17,8 @@ import {
   usePostJournalEntry,
   useLockJournalEntry,
   useReverseJournalEntry,
+  useJournalPdf,
+  openPdf,
   GL_STATUS,
   type GlStatus,
   type JournalEntryDetail,
@@ -108,6 +110,12 @@ export default function GlavnaKnjigaDetailPage() {
   const post = usePostJournalEntry();
   const lock = useLockJournalEntry();
   const reverse = useReverseJournalEntry();
+  const pdf = useJournalPdf();
+
+  const onPrint = useCallback(() => {
+    if (!doc) return;
+    pdf.mutate(doc.id, { onSuccess: (blob) => openPdf(blob) });
+  }, [doc, pdf]);
 
   const onPost = useCallback(() => {
     if (!doc) return;
@@ -194,6 +202,12 @@ export default function GlavnaKnjigaDetailPage() {
               <ArrowLeft className="h-4 w-4" aria-hidden />
               Nazad
             </Button>
+            {doc && (
+              <Button variant="secondary" onClick={onPrint} loading={pdf.isPending}>
+                <Printer className="h-4 w-4" aria-hidden />
+                Štampaj
+              </Button>
+            )}
             {doc && (
               <JournalActions
                 doc={doc}

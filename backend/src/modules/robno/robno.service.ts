@@ -1,4 +1,5 @@
 import {
+  ConflictException,
   Injectable,
   Logger,
   NotFoundException,
@@ -188,6 +189,141 @@ export class RobnoService {
     });
     if (!doc) throw new NotFoundException(`Robni dokument ${id} ne postoji.`);
     return { data: doc };
+  }
+
+  /**
+   * Kartica artikla (BigBit paritet — hronološka kartica kretanja po magacinu). Vraća redove
+   * `stock_document_items` za (artikal, magacin) do gornje granice `to` (ili „danas"), hronološki,
+   * sa kolonama datum/dokument/vrsta/ulaz/izlaz/running-stanje. Početno stanje pre `from` = `openingBalance`.
+   *
+   * DOSLEDNOST SA COSTING-om (garantovano): filter je IDENTIČAN `CostingService.stateAsOf` — KODJ izuzet,
+   * `affects_stock`, znak iz `DocumentType.is_inbound`, BEZ filtera po statusu (costing broji sva kretanja).
+   * Zato `closingBalance` (running na kraju) == `stateAsOf` (nezavisno izračunat kroz costing) — v. smoke §2
+   * („krajnje stanje == stateAsOf danas"). `from`/`to` samo seku prozor prikaza, ne menjaju obračun stanja.
+   */
+  async getItemCard(params: {
+    itemId: number;
+    warehouseId: number;
+    from?: string;
+    to?: string;
+  }) {
+    const { itemId, warehouseId } = params;
+    if (!Number.isInteger(itemId) || itemId <= 0)
+      throw new UnprocessableEntityException(
+        "itemId je obavezan — pozitivan ceo broj.",
+      );
+    if (!Number.isInteger(warehouseId) || warehouseId <= 0)
+      throw new UnprocessableEntityException(
+        "warehouseId je obavezan — pozitivan ceo broj.",
+      );
+
+    const from = parseDateParam(params.from, "from");
+    const to = parseDateParam(params.to, "to");
+    // Gornja granica prikaza/obračuna = `to` ili „sada" (stanje na dan danas kad `to` nije zadat).
+    const effectiveTo = to ?? new Date();
+
+    // Sva kretanja (artikal, magacin) do `effectiveTo`, hronološki. Filter VERBATIM iz costing.stateAsOf.
+    const rows = await this.prisma.$queryRaw<
+      Array<{
+        item_line_id: number;
+        document_id: number;
+        document_number: string;
+        kind: string;
+        document_type_code: string;
+        document_date: Date;
+        quantity: Prisma.Decimal;
+        is_inbound: boolean;
+      }>
+    >(
+      Prisma.sql`
+        SELECT sdi.id AS item_line_id, sd.id AS document_id, sd.document_number,
+               sd.kind, sd.document_type_code, sd.document_date,
+               sdi.quantity, dt.is_inbound
+        FROM stock_document_items sdi
+        JOIN stock_documents sd ON sd.id = sdi.document_id
+        JOIN document_types dt ON dt.code = sd.document_type_code
+        WHERE sdi.item_id = ${itemId}
+          AND sdi.warehouse_id = ${warehouseId}
+          AND sd.document_date <= ${effectiveTo}
+          AND sd.document_type_code <> 'KODJ'
+          AND COALESCE(dt.affects_stock, TRUE) = TRUE
+        ORDER BY sd.document_date ASC, sd.id ASC, sdi.id ASC
+      `,
+    );
+
+    let running = new Prisma.Decimal(0);
+    let opening = new Prisma.Decimal(0);
+    let totalIn = new Prisma.Decimal(0);
+    let totalOut = new Prisma.Decimal(0);
+    const lines: Array<{
+      itemLineId: number;
+      documentId: number;
+      documentNumber: string;
+      kind: string;
+      documentTypeCode: string;
+      documentDate: string;
+      direction: "IN" | "OUT";
+      in: string;
+      out: string;
+      balance: string;
+    }> = [];
+
+    for (const r of rows) {
+      const signed = r.is_inbound ? r.quantity : r.quantity.negated();
+      running = running.add(signed);
+      // Redovi pre `from` ne ulaze u prikaz — zbir do njih je početno stanje.
+      if (from && r.document_date < from) {
+        opening = running;
+        continue;
+      }
+      if (r.is_inbound) totalIn = totalIn.add(r.quantity);
+      else totalOut = totalOut.add(r.quantity);
+      lines.push({
+        itemLineId: r.item_line_id,
+        documentId: r.document_id,
+        documentNumber: r.document_number,
+        kind: r.kind,
+        documentTypeCode: r.document_type_code,
+        documentDate: r.document_date.toISOString(),
+        direction: r.is_inbound ? "IN" : "OUT",
+        in: r.is_inbound ? r.quantity.toFixed(6) : "0.000000",
+        out: r.is_inbound ? "0.000000" : r.quantity.toFixed(6),
+        balance: running.toFixed(6),
+      });
+    }
+    const closing = running;
+
+    // Nezavisna provera stanja kroz costing (mora == closing; smoke §2). Meki ref naziva artikla.
+    const [stateAsOf, item] = await Promise.all([
+      this.costing.stateAsOf(itemId, warehouseId, effectiveTo),
+      this.prisma.item.findUnique({
+        where: { id: itemId },
+        select: { id: true, name: true, catalogNumber: true, unit: true },
+      }),
+    ]);
+
+    return {
+      data: {
+        itemId,
+        warehouseId,
+        from: from ? from.toISOString() : null,
+        to: effectiveTo.toISOString(),
+        item: item
+          ? {
+              id: item.id,
+              name: item.name,
+              code: item.catalogNumber,
+              unit: item.unit,
+            }
+          : null,
+        openingBalance: opening.toFixed(6),
+        closingBalance: closing.toFixed(6),
+        stateAsOf: stateAsOf.toFixed(6),
+        totalIn: totalIn.toFixed(6),
+        totalOut: totalOut.toFixed(6),
+        lines,
+      },
+    };
   }
 
   // -------------------------------------------------------------- CREATE
@@ -436,6 +572,55 @@ export class RobnoService {
       message: `Nedovoljno stanje za izlaz (${kind}): ${human}.`,
       shortages: detail,
     });
+  }
+
+  // ------------------------------------------------------- ZAKLJUČAVANJE (lock)
+
+  /**
+   * Zaključaj proknjižen robni dokument → status LOCKED (Faza-0 lock; StockDocument nema `isLocked`
+   * kolonu, lock je terminalna vrednost `status` — schema:3088 `DRAFT | CALCULATED | POSTED | LOCKED`).
+   *
+   * Preduslov = dokument je PROKNJIŽEN u GK (`journalEntryId != null`). NAPOMENA: regularni robni
+   * `post` (posting.service) postavlja SAMO `journalEntryId` (status ostaje CALCULATED), a NIV put
+   * postavlja i `status=POSTED` — zato je „proknjižen" izveden iz `journalEntryId`, ne iz statusa.
+   *
+   * CAS (updateMany + count guard, obrazac kao GK lock / izvodi): pomeri na LOCKED SAMO ako je
+   * dokument proknjižen i još nije LOCKED. `count === 0` → razlikuj 404 / 409 (već zaključan /
+   * nije proknjižen) dodatnim čitanjem.
+   */
+  async lockDocument(id: number) {
+    const res = await this.prisma.stockDocument.updateMany({
+      where: { id, journalEntryId: { not: null }, status: { not: "LOCKED" } },
+      data: { status: "LOCKED" },
+    });
+    if (res.count === 0) {
+      const doc = await this.prisma.stockDocument.findUnique({
+        where: { id },
+        select: { status: true, journalEntryId: true },
+      });
+      if (!doc) throw new NotFoundException(`Robni dokument ${id} ne postoji.`);
+      if (doc.status === "LOCKED")
+        throw new ConflictException(`Dokument ${id} je već zaključan.`);
+      throw new ConflictException(
+        `Zaključavanje je moguće samo za proknjižen dokument (dokument ${id} nije proknjižen).`,
+      );
+    }
+    this.logger.log(`Zaključan robni dokument ${id} (status → LOCKED).`);
+    return { data: { id, status: "LOCKED" as const, isLocked: true } };
+  }
+
+  /**
+   * Guard: mutacija zaključanog dokumenta se odbija (409). Poziva se iz svih mutacija dokumenta
+   * (calculate/post rute) pre poziva odgovarajućeg servisa — zaključan dokument je immutable.
+   * Čita samo status (PK lookup). NotFound se prepušta pozivaocu (postojeći servis vraća jasnu 404).
+   */
+  async assertNotLocked(id: number): Promise<void> {
+    const doc = await this.prisma.stockDocument.findUnique({
+      where: { id },
+      select: { status: true },
+    });
+    if (doc?.status === "LOCKED")
+      throw new ConflictException("Dokument je zaključan.");
   }
 
   // ----------------------------------------------------------------- KEPU

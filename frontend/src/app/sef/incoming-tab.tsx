@@ -24,6 +24,7 @@ import {
   type SefIncoming,
   type SefIncomingStatus,
 } from '@/api/sef';
+import { StatusTimelineDialog } from './status-timeline';
 
 /**
  * SEF ulazne (dobavljačke) e-fakture — Talas 1E stavka E1 (odluka O3). Sekcija na
@@ -108,6 +109,8 @@ export function IncomingTab() {
   /** id reda čija je akcija u toku — da se gasi samo taj red. */
   const [busyId, setBusyId] = useState<number | null>(null);
   const [rejectRow, setRejectRow] = useState<SefIncoming | null>(null);
+  /** ulazna faktura čija se status-istorija (timeline) trenutno prikazuje. */
+  const [timelineRow, setTimelineRow] = useState<SefIncoming | null>(null);
 
   const canPull = can(PERMISSIONS.SEF_READ);
   const canAccept = can(PERMISSIONS.SEF_SEND);
@@ -295,13 +298,11 @@ export function IncomingTab() {
       header: 'Akcije',
       align: 'right',
       render: (r) => {
-        if (!canDecideIncoming(r.status)) {
-          return <span className="text-ink-disabled">—</span>;
-        }
         const busy = busyId === r.id;
+        const decidable = canDecideIncoming(r.status);
         return (
           <div className="flex items-center justify-end gap-2">
-            {canAccept && (
+            {decidable && canAccept && (
               <Button
                 variant="secondary"
                 loading={busy && accept.isPending}
@@ -312,7 +313,7 @@ export function IncomingTab() {
                 Prihvati
               </Button>
             )}
-            {canReject && (
+            {decidable && canReject && (
               <Button
                 variant="danger"
                 loading={busy && reject.isPending}
@@ -323,6 +324,13 @@ export function IncomingTab() {
                 Odbij
               </Button>
             )}
+            <Button
+              variant="ghost"
+              onClick={() => setTimelineRow(r)}
+              title="Prikaži istoriju statusa"
+            >
+              Istorija
+            </Button>
           </div>
         );
       },
@@ -397,6 +405,14 @@ export function IncomingTab() {
           saving={reject.isPending}
           onClose={() => setRejectRow(null)}
           onSubmit={submitReject}
+        />
+      )}
+
+      {timelineRow && (
+        <StatusTimelineDialog
+          title={`SEF istorija — ${timelineRow.invoiceNumber}`}
+          incomingId={timelineRow.id}
+          onClose={() => setTimelineRow(null)}
         />
       )}
     </div>

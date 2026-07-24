@@ -7,6 +7,8 @@ import { OpenItemsService } from "./open-items.service";
 import { ReconciliationService } from "./reconciliation.service";
 import { CompensationService } from "./compensation.service";
 import { IosPdfService } from "./ios-pdf.service";
+import { PartnerCardService } from "./partner-card.service";
+import { CollectionDashboardService } from "./collection-dashboard.service";
 
 /**
  * Modul Saldakonti (Faza 4 §A) — otvorene stavke / aging / uparivanje / kompenzacija.
@@ -24,7 +26,7 @@ import { IosPdfService } from "./ios-pdf.service";
 @Module({
   imports: [PrismaModule, PostingModule, DocumentsModule], // DocumentsModule → PdfService za IOS obrazac (E3)
   controllers: [SaldakontiController],
-  providers: [OpenItemsService, ReconciliationService, CompensationService, IosPdfService],
+  providers: [OpenItemsService, ReconciliationService, CompensationService, IosPdfService, PartnerCardService, CollectionDashboardService],
   exports: [OpenItemsService, ReconciliationService, CompensationService],
 })
 export class SaldakontiModule {}

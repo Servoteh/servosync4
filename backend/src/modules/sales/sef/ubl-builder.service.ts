@@ -12,9 +12,14 @@ import { Prisma } from "@prisma/client";
  *   • CustomizationID = urn:cen.eu:en16931:2017#compliant#urn:mfin.gov.rs:srbdt:2021
  *     (SEF nacionalni CIUS — konstanta).
  *   • PDV kategorije (cac:TaxCategory/cbc:ID):
- *       - S  = standardna stopa 20% (domaći promet, S20)  → percent 20
- *       - Z  = izvoz / oslobođeno sa pravom na odbitak     → percent 0, osnov čl.24
+ *       - S  = standardna/snižena stopa >0% (20/10/8, domaći promet)  → percent stope
+ *       - Z  = izvoz / oslobođeno sa pravom na odbitak                 → percent 0, osnov čl.24
+ *       - E  = domaće oslobođenje bez izvoza (0%, bez export osnova)
  *     Osnov oslobođenja (cbc:TaxExemptionReasonCode) `PDV-RS-24-1-5` za BMTS izvoz.
+ *   • PDV GRANULARNOST (Talas 2 A5): TaxTotal grupiše stavke po STVARNOJ stopi svake
+ *     stavke (iz `vatRateCode`) → jedan cac:TaxSubtotal po stopi (20/10/8/0). Faktura
+ *     sa 20% i 10% stavkom → dva TaxSubtotal-a. Isto važi za ClassifiedTaxCategory po
+ *     liniji (svaka stavka nosi svoju stopu/kategoriju).
  *   • Avans (`za plaćanje = 0`): kada je grossTotal knjižen kroz avansnu fakturu,
  *     cac:BillingReference → cac:InvoiceDocumentReference nosi referencu avansa i
  *     LegalMonetaryTotal/PayableAmount = 0 (avans zatvara obavezu).
@@ -37,10 +42,53 @@ const SEF_PROFILE_ID = "urn:cen.eu:en16931:2017.poacc:billing:3.0";
 /** Osnov oslobođenja za izvoz (BMTS) — čl. 24 st. 1 tač. 5. */
 const EXPORT_EXEMPTION_CODE = "PDV-RS-24-1-5";
 const EXPORT_EXEMPTION_REASON = "Izvoz dobara (čl. 24 st. 1 tač. 5 ZPDV)";
+/**
+ * Osnov DOMAĆEG oslobođenja (kategorija E — 0% bez izvoza). EN16931 BR-E-10: kategorija E
+ * MORA imati BT-120 (tekst razloga) ILI BT-121 (šifra) — bez toga SEF/CIUS odbija dokument.
+ * Privremeni tekst; TODO(Talas 2): tačan osnov i šifra PDV-RS kategorije iz šifarnika kad
+ * knjigovođa definiše (tada dodati i cbc:TaxExemptionReasonCode = BT-121).
+ */
+const DOMESTIC_EXEMPTION_REASON = "Promet oslobodjen PDV";
 
 /** UBL InvoiceTypeCode: 380 = komercijalna faktura, 386 = avansna. */
 const INVOICE_TYPE_CODE_COMMERCIAL = "380";
 const INVOICE_TYPE_CODE_PREPAYMENT = "386";
+
+/**
+ * PDV stopa (procenat) po `vatRateCode` — isto mapiranje kao PricingService
+ * VAT_RATE_BY_CODE (doc 43 §4). "3"/"1" = 20%, "2" = 10%, "4" = 8%, "0" = 0%.
+ * Nepoznata šifra → 20% (osnovna) kao default stavke.
+ */
+const VAT_PERCENT_BY_CODE: Readonly<Record<string, number>> = {
+  "3": 20,
+  "1": 20,
+  "2": 10,
+  "4": 8,
+  "0": 0,
+};
+
+/** Procenat PDV stope za šifru (fallback 20% — osnovna). */
+function vatPercentOf(code: string | null | undefined): number {
+  if (code == null) return 20;
+  return VAT_PERCENT_BY_CODE[code] ?? 20;
+}
+
+/**
+ * PDV kategorija po stopi: >0% → S (standardna/snižena), 0% → Z (izvoz, uz osnov
+ * oslobođenja) odn. E (domaće oslobođenje bez export osnova).
+ */
+function taxCategoryOf(percent: number, isExport: boolean): string {
+  if (percent > 0) return "S";
+  return isExport ? "Z" : "E";
+}
+
+/** Grupa PDV rekapitulacije (jedan cac:TaxSubtotal) — po jedinstvenoj stopi. */
+interface TaxGroup {
+  percent: number;
+  category: string;
+  taxableAmount: Prisma.Decimal;
+  taxAmount: Prisma.Decimal;
+}
 
 /** Namespace deklaracije korena <Invoice>. */
 const NS =
@@ -96,6 +144,8 @@ export interface UblInvoiceItemInput {
   quantity: Prisma.Decimal;
   unitPrice: Prisma.Decimal;
   discountPercent: Prisma.Decimal;
+  /** Šifra PDV stope (InvoiceItem.vatRateCode) → stopa/kategorija po liniji. */
+  vatRateCode: string;
   vatBase: Prisma.Decimal;
   vatAmount: Prisma.Decimal;
   lineTotal: Prisma.Decimal;
@@ -120,10 +170,6 @@ export class UblBuilderService {
   build(params: UblBuildParams): string {
     const { invoice, items, supplier, customer } = params;
     const cur = invoice.currency || "RSD";
-
-    // PDV kategorija cele fakture: izvoz → Z (0%, oslobođeno čl.24), inače S (20%).
-    const taxCategory = invoice.isExport ? "Z" : "S";
-    const taxPercent = invoice.isExport ? 0 : 20;
 
     const typeCode = invoice.isPrepayment
       ? INVOICE_TYPE_CODE_PREPAYMENT
@@ -188,14 +234,37 @@ export class UblBuilderService {
     parts.push(this.buildSupplier(supplier));
     parts.push(this.buildCustomer(customer));
 
-    // — Rekapitulacija poreza (cac:TaxTotal → cac:TaxSubtotal) —
+    // — Rekapitulacija poreza (cac:TaxTotal → cac:TaxSubtotal PO STOPI) —
+    // PDV granularnost (A5): grupiši stavke po stvarnoj stopi (20/10/8/0) → po jedan
+    // TaxSubtotal. Zbir taxableAmount/taxAmount grupa = invoice.netTotal/vatTotal.
     parts.push("<cac:TaxTotal>");
     parts.push(amountEl("cbc:TaxAmount", invoice.vatTotal, cur));
-    parts.push("<cac:TaxSubtotal>");
-    parts.push(amountEl("cbc:TaxableAmount", invoice.netTotal, cur));
-    parts.push(amountEl("cbc:TaxAmount", invoice.vatTotal, cur));
-    parts.push(this.buildTaxCategory(taxCategory, taxPercent, invoice.isExport));
-    parts.push("</cac:TaxSubtotal>");
+    const taxGroups = groupTaxSubtotals(items, invoice.isExport);
+    if (taxGroups.length === 0) {
+      // Defanzivni fallback (faktura bez stavki) — jedan subtotal iz zaglavlja.
+      parts.push("<cac:TaxSubtotal>");
+      parts.push(amountEl("cbc:TaxableAmount", invoice.netTotal, cur));
+      parts.push(amountEl("cbc:TaxAmount", invoice.vatTotal, cur));
+      parts.push(
+        this.buildTaxCategory(
+          invoice.isExport ? "Z" : "S",
+          invoice.isExport ? 0 : 20,
+          invoice.isExport,
+        ),
+      );
+      parts.push("</cac:TaxSubtotal>");
+    } else {
+      for (const g of taxGroups) {
+        parts.push("<cac:TaxSubtotal>");
+        parts.push(amountEl("cbc:TaxableAmount", g.taxableAmount, cur));
+        parts.push(amountEl("cbc:TaxAmount", g.taxAmount, cur));
+        // Export osnov oslobođenja samo za izvoznu 0% grupu; domaća 0% (E) bez njega.
+        parts.push(
+          this.buildTaxCategory(g.category, g.percent, invoice.isExport && g.percent === 0),
+        );
+        parts.push("</cac:TaxSubtotal>");
+      }
+    }
     parts.push("</cac:TaxTotal>");
 
     // — Zbirni iznosi (cac:LegalMonetaryTotal) —
@@ -206,9 +275,9 @@ export class UblBuilderService {
     parts.push(amountEl("cbc:PayableAmount", payable, cur));
     parts.push("</cac:LegalMonetaryTotal>");
 
-    // — Stavke (cac:InvoiceLine) —
+    // — Stavke (cac:InvoiceLine) — svaka nosi svoju stopu/kategoriju —
     for (const it of items) {
-      parts.push(this.buildLine(it, cur, taxCategory, taxPercent, invoice.isExport));
+      parts.push(this.buildLine(it, cur, invoice.isExport));
     }
 
     parts.push("</Invoice>");
@@ -286,7 +355,13 @@ export class UblBuilderService {
     return p.join("");
   }
 
-  /** cac:TaxCategory sa PDV kategorijom (S/Z) + osnov oslobođenja za izvoz. */
+  /**
+   * cac:TaxCategory sa PDV kategorijom (S/Z/E) + osnov oslobođenja. EN16931 BR-Z-* i
+   * BR-E-10: obe oslobođene kategorije MORAJU nositi razlog oslobođenja, inače SEF odbija:
+   *   Z (izvoz)  → TaxExemptionReasonCode (čl.24) + TaxExemptionReason (tekst).
+   *   E (domaće) → TaxExemptionReason (BT-120 tekst); šifra (BT-121) TODO Talas 2.
+   *   S (>0%)    → bez razloga (oporeziva stavka).
+   */
   private buildTaxCategory(
     category: string,
     percent: number,
@@ -296,9 +371,13 @@ export class UblBuilderService {
     p.push("<cac:TaxCategory>");
     p.push(el("cbc:ID", category));
     p.push(el("cbc:Percent", percent.toFixed(2)));
-    if (isExport) {
+    if (category === "Z" || isExport) {
       p.push(el("cbc:TaxExemptionReasonCode", EXPORT_EXEMPTION_CODE));
       p.push(el("cbc:TaxExemptionReason", EXPORT_EXEMPTION_REASON));
+    } else if (category === "E") {
+      // BR-E-10: domaće oslobođenje MORA imati BT-120 (tekst) ili BT-121 (šifra).
+      // TODO(Talas 2): tačan osnov/šifra PDV-RS kategorije iz šifarnika + TaxExemptionReasonCode.
+      p.push(el("cbc:TaxExemptionReason", DOMESTIC_EXEMPTION_REASON));
     }
     p.push(taxScheme());
     p.push("</cac:TaxCategory>");
@@ -308,10 +387,11 @@ export class UblBuilderService {
   private buildLine(
     it: UblInvoiceItemInput,
     cur: string,
-    taxCategory: string,
-    taxPercent: number,
     isExport: boolean,
   ): string {
+    // Stopa/kategorija po STVARNOJ stopi stavke (izvoz forsira 0%).
+    const taxPercent = isExport ? 0 : vatPercentOf(it.vatRateCode);
+    const taxCategory = taxCategoryOf(taxPercent, isExport);
     const p: string[] = [];
     p.push("<cac:InvoiceLine>");
     p.push(el("cbc:ID", String(it.lineNo)));
@@ -341,8 +421,12 @@ export class UblBuilderService {
     p.push("<cac:ClassifiedTaxCategory>");
     p.push(el("cbc:ID", taxCategory));
     p.push(el("cbc:Percent", taxPercent.toFixed(2)));
-    if (isExport) {
+    if (taxCategory === "Z" || isExport) {
       p.push(el("cbc:TaxExemptionReasonCode", EXPORT_EXEMPTION_CODE));
+    } else if (taxCategory === "E") {
+      // BR-E-10: i po liniji domaće oslobođenje nosi razlog (BT-120 tekst).
+      // TODO(Talas 2): tačan osnov/šifra PDV-RS kategorije iz šifarnika.
+      p.push(el("cbc:TaxExemptionReason", DOMESTIC_EXEMPTION_REASON));
     }
     p.push(taxScheme());
     p.push("</cac:ClassifiedTaxCategory>");
@@ -361,6 +445,33 @@ export class UblBuilderService {
 // ─────────────────────────────────────────────────────────────────────────────
 // XML helperi (čisti — bez stanja)
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Grupiši stavke po stvarnoj PDV stopi → cac:TaxSubtotal grupe (A5 granularnost).
+ * Izvoz: sve stavke u 0% grupu (Z). Domaći: 20/10/8/0 razdvojeno. Sortirano opadajuće
+ * po stopi (20,10,8,0) radi determinističkog XML-a. Zbir taxableAmount = netTotal,
+ * zbir taxAmount = vatTotal (denormalizacija u zaglavlju se poklapa).
+ */
+function groupTaxSubtotals(
+  items: UblInvoiceItemInput[],
+  isExport: boolean,
+): TaxGroup[] {
+  const byPercent = new Map<number, TaxGroup>();
+  for (const it of items) {
+    const percent = isExport ? 0 : vatPercentOf(it.vatRateCode);
+    const existing = byPercent.get(percent);
+    const group: TaxGroup = existing ?? {
+      percent,
+      category: taxCategoryOf(percent, isExport),
+      taxableAmount: new D(0),
+      taxAmount: new D(0),
+    };
+    group.taxableAmount = group.taxableAmount.add(it.vatBase);
+    group.taxAmount = group.taxAmount.add(isExport ? new D(0) : it.vatAmount);
+    byPercent.set(percent, group);
+  }
+  return [...byPercent.values()].sort((a, b) => b.percent - a.percent);
+}
 
 /** cac:TaxScheme sa ID=VAT (jedina PDV shema u SEF-u). */
 function taxScheme(): string {

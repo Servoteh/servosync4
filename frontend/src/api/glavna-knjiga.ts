@@ -1,7 +1,7 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiFetch } from './client';
+import { apiBlob, apiFetch } from './client';
 
 /**
  * Glavna knjiga (GK) — data sloj (Faza 2, READ). TanStack Query hooks nad NestJS
@@ -310,4 +310,39 @@ export function useReverseJournalEntry() {
       ),
     onSuccess: invalidate,
   });
+}
+
+/**
+ * Masovno zaključavanje starih naloga — POST /gl/journal/lock-older. Svi `posted`
+ * nalozi sa postingDate < beforeDate → `locked`. Vraća sirov `{ count }`. Menja
+ * status naloga, pa invalidira ceo `gl` ključ. Permisija GL_WRITE.
+ */
+export function useLockOlderJournals() {
+  const invalidate = useInvalidateGl();
+  return useMutation({
+    mutationFn: (beforeDate: string) =>
+      apiFetch<{ count: number }>(`${BASE}/journal/lock-older`, {
+        method: 'POST',
+        body: JSON.stringify({ beforeDate }),
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/**
+ * Štampa naloga za knjiženje (temeljnica) — GET /gl/journal/:id/pdf. Endpoint traži
+ * JWT, pa se PDF povlači kroz `apiBlob` (Authorization header) i otvara preko
+ * `openPdf`. Permisija GL_READ.
+ */
+export function useJournalPdf() {
+  return useMutation({
+    mutationFn: (id: number) => apiBlob(`${BASE}/journal/${id}/pdf`),
+  });
+}
+
+/** Otvori PDF Blob u novom tabu (browser preview + download). */
+export function openPdf(blob: Blob): void {
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank', 'noopener');
+  setTimeout(() => URL.revokeObjectURL(url), 30_000);
 }

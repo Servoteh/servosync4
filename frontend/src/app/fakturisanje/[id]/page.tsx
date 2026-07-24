@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowLeft, Printer, Send } from 'lucide-react';
+import { ArrowLeft, Ban, Mail, Printer, Send } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
@@ -11,6 +11,10 @@ import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Button } from '@/components/ui-kit/button';
 import { Select } from '@/components/ui-kit/select';
+import { Dialog } from '@/components/ui-kit/dialog';
+import { Textarea } from '@/components/ui-kit/textarea';
+import { FormField } from '@/components/ui-kit/form-field';
+import { SendMailDialog } from '@/components/send-mail-dialog';
 import { PERMISSIONS } from '@/lib/permissions';
 import { formatDate, formatDecimal } from '@/lib/format';
 import {
@@ -19,6 +23,8 @@ import {
   openPdf,
   useCreateInvoiceFromProforma,
   usePostInvoice,
+  useSendInvoiceMail,
+  useStornoInvoice,
   SALES_STATUS,
   SALES_DOCUMENT_TYPE,
   type InvoiceDetail,
@@ -30,6 +36,7 @@ import {
   SEF_STATUS,
   type SefStatus,
 } from '@/api/sef';
+import { ApiError } from '@/api/client';
 import { salesStatusMeta, DOCUMENT_TYPE_LABEL } from '../page';
 
 /**
@@ -174,6 +181,8 @@ export default function FakturisanjeDetailPage() {
   const post = usePostInvoice();
   const pdf = useInvoicePdf();
   const enqueue = useEnqueue();
+  const sendMail = useSendInvoiceMail();
+  const storno = useStornoInvoice();
 
   const canWrite = can(PERMISSIONS.SALES_WRITE);
   const canPost = can(PERMISSIONS.SALES_POST);
@@ -184,6 +193,18 @@ export default function FakturisanjeDetailPage() {
   const [targetType, setTargetType] = useState<string>(SALES_DOCUMENT_TYPE.IFR);
   // SEF feedback (enqueue uspeh/upozorenje/greška) — nezavisan od carry-over/knjiži bannera.
   const [sefBanner, setSefBanner] = useState<{
+    tone: 'success' | 'warn' | 'danger';
+    msg: string;
+  } | null>(null);
+  // „Pošalji na mail" dijalog + feedback banner (nezavisan od SEF-a).
+  const [mailOpen, setMailOpen] = useState(false);
+  const [mailBanner, setMailBanner] = useState<{
+    tone: 'success' | 'warn' | 'danger';
+    msg: string;
+  } | null>(null);
+  // Storno dijalog (razlog obavezan) + feedback banner (A5).
+  const [stornoOpen, setStornoOpen] = useState(false);
+  const [stornoBanner, setStornoBanner] = useState<{
     tone: 'success' | 'warn' | 'danger';
     msg: string;
   } | null>(null);
@@ -209,6 +230,14 @@ export default function FakturisanjeDetailPage() {
     doc.status !== SALES_STATUS.DRAFT &&
     doc.status !== SALES_STATUS.CANCELLED;
 
+  // Storno (D8): samo zaključan (proknjižen) dokument koji još nije storniran. Backend
+  // guard je merodavan; ovde afordansa dugmeta.
+  const isStornoable =
+    !!doc &&
+    doc.isLocked &&
+    doc.status !== SALES_STATUS.DRAFT &&
+    doc.status !== SALES_STATUS.CANCELLED;
+
   // Postojeći outbox red(ovi) za ovu fakturu — status prikaz + guard protiv duplog enqueue-a.
   const sefOutbox = useSefOutboxForInvoice(validId, canSefRead && isSefEligible);
   const sefRows = sefOutbox.data?.data ?? [];
@@ -227,12 +256,16 @@ export default function FakturisanjeDetailPage() {
     );
   }, [doc, canWrite, isProformaDraft, fromProforma, targetType, router]);
 
-  const doPost = useCallback(() => {
-    // Guard protiv duplog knjiženja: Ctrl+S dok post traje ne sme okinuti drugi post
-    // (backend CAS claim ionako odbija duplikat 409, ovo je UX-fast-fail) — review 1D.
-    if (!doc || !canPost || !isPostableInvoice || post.isPending) return;
-    post.mutate(doc.id);
-  }, [doc, canPost, isPostableInvoice, post]);
+  const doPost = useCallback(
+    (force = false) => {
+      // Guard protiv duplog knjiženja: Ctrl+S dok post traje ne sme okinuti drugi post
+      // (backend CAS claim ionako odbija duplikat 409, ovo je UX-fast-fail) — review 1D.
+      // force=true (T3/A8) preskače kreditni-limit guard (dugme „Proknjiži uprkos limitu").
+      if (!doc || !canPost || !isPostableInvoice || post.isPending) return;
+      post.mutate({ id: doc.id, force });
+    },
+    [doc, canPost, isPostableInvoice, post],
+  );
 
   const doEnqueue = useCallback(() => {
     if (!doc || !canSefSend || !isSefEligible) return;
@@ -282,9 +315,16 @@ export default function FakturisanjeDetailPage() {
     );
   }
 
+  // T3/A8: kreditni-limit 422 (CREDIT_LIMIT_EXCEEDED) NE ide u generički danger banner —
+  // prikazuje se poseban warn banner sa dugmetom za svesno knjiženje uprkos limitu.
+  const isCreditLimitError =
+    post.error instanceof ApiError &&
+    post.error.status === 422 &&
+    (post.error.body as { code?: string } | null)?.code === 'CREDIT_LIMIT_EXCEEDED';
+
   const actionError =
     (fromProforma.error as Error | null)?.message ??
-    (post.error as Error | null)?.message ??
+    (isCreditLimitError ? null : (post.error as Error | null)?.message) ??
     null;
 
   return (
@@ -312,6 +352,19 @@ export default function FakturisanjeDetailPage() {
               </Button>
             )}
 
+            {doc && canWrite && (
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  setMailBanner(null);
+                  setMailOpen(true);
+                }}
+              >
+                <Mail className="h-4 w-4" aria-hidden />
+                Pošalji na mail
+              </Button>
+            )}
+
             {isProformaDraft && canWrite && (
               <div className="flex items-center gap-2">
                 <div className="w-56">
@@ -329,7 +382,7 @@ export default function FakturisanjeDetailPage() {
             )}
 
             {isPostableInvoice && canPost && (
-              <Button onClick={doPost} loading={post.isPending}>
+              <Button onClick={() => doPost()} loading={post.isPending}>
                 Knjiži
               </Button>
             )}
@@ -359,6 +412,19 @@ export default function FakturisanjeDetailPage() {
                 Pošalji na SEF
               </Button>
             )}
+
+            {isStornoable && canPost && (
+              <Button
+                variant="danger"
+                onClick={() => {
+                  setStornoBanner(null);
+                  setStornoOpen(true);
+                }}
+              >
+                <Ban className="h-4 w-4" aria-hidden />
+                Storno
+              </Button>
+            )}
           </div>
         }
       />
@@ -374,9 +440,33 @@ export default function FakturisanjeDetailPage() {
             {actionError}
           </div>
         )}
+        {isCreditLimitError && (
+          <div
+            className={`flex flex-col gap-2 rounded-panel border px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between ${SEF_BANNER_TONE.warn}`}
+          >
+            <span>{(post.error as Error).message}</span>
+            <Button
+              variant="secondary"
+              onClick={() => doPost(true)}
+              loading={post.isPending}
+            >
+              Proknjiži uprkos limitu
+            </Button>
+          </div>
+        )}
         {sefBanner && (
           <div className={`rounded-panel border px-4 py-3 text-sm ${SEF_BANNER_TONE[sefBanner.tone]}`}>
             {sefBanner.msg}
+          </div>
+        )}
+        {mailBanner && (
+          <div className={`rounded-panel border px-4 py-3 text-sm ${SEF_BANNER_TONE[mailBanner.tone]}`}>
+            {mailBanner.msg}
+          </div>
+        )}
+        {stornoBanner && (
+          <div className={`rounded-panel border px-4 py-3 text-sm ${SEF_BANNER_TONE[stornoBanner.tone]}`}>
+            {stornoBanner.msg}
           </div>
         )}
 
@@ -411,7 +501,148 @@ export default function FakturisanjeDetailPage() {
           </>
         )}
       </div>
+
+      {mailOpen && doc && (
+        <SendMailDialog
+          title={`Pošalji račun ${doc.documentNumber}`}
+          intro="Račun se šalje kao PDF prilog. Ostavi email prazan da se pošalje na adresu komitenta sa računa."
+          toRequired={false}
+          toHint="Ostavi prazno za email komitenta sa računa."
+          withNote
+          sending={sendMail.isPending}
+          error={(sendMail.error as Error | null)?.message ?? null}
+          onClose={() => setMailOpen(false)}
+          onSend={({ to, note }) =>
+            sendMail.mutate(
+              { id: doc.id, to, note },
+              {
+                onSuccess: (res) => {
+                  setMailOpen(false);
+                  setMailBanner(
+                    res.data.sent
+                      ? { tone: 'success', msg: `Račun poslat na ${res.data.to}.` }
+                      : {
+                          tone: 'warn',
+                          msg: `PDF je generisan, ali slanje nije izvršeno (sistem za slanje nije konfigurisan ili je adresa ${res.data.to} nedostupna).`,
+                        },
+                  );
+                },
+              },
+            )
+          }
+        />
+      )}
+
+      {doc && (
+        <StornoDialog
+          open={stornoOpen}
+          onClose={() => setStornoOpen(false)}
+          invoiceId={doc.id}
+          documentNumber={doc.documentNumber}
+          storno={storno}
+          onDone={(banner) => setStornoBanner(banner)}
+        />
+      )}
     </AppShell>
+  );
+}
+
+/**
+ * Dijalog storna (A5) — razlog OBAVEZAN. Storno je konačan: status → Stornirano,
+ * nalog GK se obrće, poslata SEF e-faktura se otkazuje. Deli `storno` mutaciju sa
+ * roditeljem (jedan izvor stanja/greške). TASTATURA: Ctrl+S potvrdi, Esc otkaži.
+ */
+function StornoDialog({
+  open,
+  onClose,
+  invoiceId,
+  documentNumber,
+  storno,
+  onDone,
+}: {
+  open: boolean;
+  onClose: () => void;
+  invoiceId: number;
+  documentNumber: string;
+  storno: ReturnType<typeof useStornoInvoice>;
+  onDone: (banner: { tone: 'success' | 'warn' | 'danger'; msg: string }) => void;
+}) {
+  const [reason, setReason] = useState('');
+  const trimmed = reason.trim();
+  const err = (storno.error as Error | null)?.message ?? null;
+
+  const submit = () => {
+    if (trimmed.length === 0 || storno.isPending) return;
+    storno.mutate(
+      { id: invoiceId, reason: trimmed },
+      {
+        onSuccess: (res) => {
+          const sefNote =
+            res.sefCancelledOutboxIds.length > 0
+              ? ` Otkazano SEF redova: ${res.sefCancelledOutboxIds.length}.`
+              : '';
+          onDone({ tone: 'success', msg: `Račun ${documentNumber} je storniran.${sefNote}` });
+          setReason('');
+          onClose();
+        },
+      },
+    );
+  };
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title="Storno računa"
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose} disabled={storno.isPending}>
+            Odustani
+          </Button>
+          <Button
+            variant="danger"
+            onClick={submit}
+            loading={storno.isPending}
+            disabled={trimmed.length === 0}
+          >
+            Storniraj
+          </Button>
+        </div>
+      }
+    >
+      <form
+        className="space-y-3"
+        onSubmit={(e) => {
+          e.preventDefault();
+          submit();
+        }}
+        onKeyDown={(e) => {
+          if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+            e.preventDefault();
+            submit();
+          }
+        }}
+      >
+        <p className="text-sm text-ink-secondary">
+          Storno je konačan: status prelazi u Stornirano, nalog glavne knjige se obrće, a
+          poslata SEF e-faktura se otkazuje. Razlog je obavezan.
+        </p>
+        {err && (
+          <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-3 py-2 text-sm text-status-danger">
+            {err}
+          </div>
+        )}
+        <FormField label="Razlog storna" required>
+          <Textarea
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            maxLength={500}
+            placeholder="npr. pogrešan kupac ili iznos"
+            autoFocus
+          />
+        </FormField>
+      </form>
+    </Dialog>
   );
 }
 

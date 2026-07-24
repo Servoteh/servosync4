@@ -377,3 +377,46 @@ export function useRejectIncoming() {
     onSuccess: invalidate,
   });
 }
+
+// ═══════════════════════════════════════════════════════ SEF STATUS-ISTORIJA (T3/A8)
+//
+// Append-only istorija status-toka jednog SEF reda — izlaznog (outbox) ili ulaznog
+// (incoming). Puni je backend (enqueue/send/refresh/cancel i pull/accept/reject).
+// FE je čita za timeline prikaz na /sef (dugme „Istorija" po redu). Deli `['sef']`
+// prefiks pa se invalidira zajedno sa svakom SEF mutacijom.
+
+/**
+ * Zapis SEF status-istorije (`sef_status_log`) — 1:1 sa backend modelom. `status` je
+ * događaj/status (PENDING, SENT, DELIVERED, REJECTED, CANCELLED, DRY_RUN, ERROR, NEW,
+ * ACCEPTED…), `note` slobodan detalj (SEF poruka, razlog, DRY-RUN), `userId` ko je
+ * izazvao (null = sistem/poll). `createdAt` ISO string.
+ */
+export interface SefStatusLogEntry {
+  id: number;
+  outboxId: number | null;
+  incomingId: number | null;
+  status: string;
+  note: string | null;
+  userId: number | null;
+  createdAt: string;
+}
+
+/**
+ * Status-istorija (timeline) jednog SEF reda — prosledi `outboxId` (izlazni) ILI
+ * `incomingId` (ulazni). GET /sef/status-log. Hronološki (najstariji prvo). Permisija
+ * SEF_READ. `enabled` gasi upit dok red nije poznat (npr. dijalog zatvoren).
+ */
+export function useSefStatusLog(
+  ref: { outboxId?: number | null; incomingId?: number | null },
+  enabled = true,
+) {
+  const outboxId = ref.outboxId ?? undefined;
+  const incomingId = ref.incomingId ?? undefined;
+  const query = buildQuery({ outboxId, incomingId });
+  return useQuery({
+    queryKey: [...KEYS.all, 'status-log', outboxId ?? null, incomingId ?? null],
+    queryFn: () =>
+      apiFetch<Envelope<SefStatusLogEntry[]>>(`${BASE}/status-log${query}`),
+    enabled: enabled && (outboxId != null || incomingId != null),
+  });
+}

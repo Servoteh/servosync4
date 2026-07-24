@@ -298,3 +298,56 @@ export function usePayPaymentOrder() {
     onSuccess: invalidate,
   });
 }
+
+// ─────────────────────────────────────── ručni virman (UnosVirmana) + štampa
+
+/**
+ * Telo POST /placanja/orders/manual — ručni pojedinačni virman (bez izvora iz
+ * saldakonta). `supplierAccount` prolazi DobarTR validaciju na serveru (400 sa
+ * srpskom porukom kad je neispravan). `referenceNumber` je KOMPLETAN poziv na broj
+ * (sa kontrolnom cifrom) — server ga ne preračunava.
+ */
+export interface CreateManualPaymentOrderInput {
+  supplierId: number;
+  supplierAccount: string;
+  amount: number;
+  purpose: string;
+  referenceNumber?: string;
+  currency?: string;
+  dueDate?: string;
+}
+
+/**
+ * Kreiraj ručni virman — POST /placanja/orders/manual. Nalog ulazi u pregled kao
+ * CREATED (isti tok potpis/izvoz). 400 = neispravan žiro račun (DobarTR) ili
+ * nedostaje obavezno polje; 409 = dupli poziv na broj za istog primaoca.
+ * Permisija PLACANJA_PREPARE.
+ */
+export function useCreateManualPaymentOrder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateManualPaymentOrderInput) =>
+      apiFetch<Envelope<CreatedPaymentOrder>>(`${BASE}/orders/manual`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: KEYS.all }),
+  });
+}
+
+/**
+ * Preuzmi PDF naloga za prenos (štampa virmana) — GET /placanja/orders/:id/pdf.
+ * Vraća PDF Blob (otvori kroz `openPdf`). Nasleđuje PLACANJA_READ.
+ */
+export function usePaymentOrderPdf() {
+  return useMutation({
+    mutationFn: (id: number) => apiBlob(`${BASE}/orders/${id}/pdf`),
+  });
+}
+
+/** Otvori PDF Blob u novom tabu (browser preview + download). */
+export function openPdf(blob: Blob): void {
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank', 'noopener');
+  setTimeout(() => URL.revokeObjectURL(url), 30_000);
+}

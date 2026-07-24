@@ -12,6 +12,8 @@ import {
   useSignPaymentOrder,
   usePayPaymentOrder,
   useSignPaymentOrdersBatch,
+  usePaymentOrderPdf,
+  openPdf,
   PAYMENT_ORDER_STATUS,
   type PaymentOrderRow,
   type PaymentOrderStatus,
@@ -44,6 +46,12 @@ export function PaymentOrdersPanel() {
   const sign = useSignPaymentOrder();
   const pay = usePayPaymentOrder();
   const signBatch = useSignPaymentOrdersBatch();
+  const orderPdf = usePaymentOrderPdf();
+
+  async function onPrint(id: number): Promise<void> {
+    const blob = await orderPdf.mutateAsync(id);
+    openPdf(blob);
+  }
 
   const createdIds = rows
     .filter((o) => o.status === PAYMENT_ORDER_STATUS.CREATED)
@@ -104,6 +112,9 @@ export function PaymentOrdersPanel() {
       align: 'right',
       render: (o) => (
         <div className="flex justify-end gap-1">
+          <Button variant="ghost" onClick={() => onPrint(o.id)}>
+            Štampaj
+          </Button>
           {o.status === PAYMENT_ORDER_STATUS.CREATED && !o.isLocked && (
             <Button variant="ghost" onClick={() => sign.mutate(o.id)}>
               Potpiši
@@ -147,9 +158,9 @@ export function PaymentOrdersPanel() {
         </div>
       </div>
 
-      {(sign.error || pay.error || signBatch.error) && (
+      {(sign.error || pay.error || signBatch.error || orderPdf.error) && (
         <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-2 text-sm text-status-danger">
-          {((sign.error ?? pay.error ?? signBatch.error) as Error).message}
+          {((sign.error ?? pay.error ?? signBatch.error ?? orderPdf.error) as Error).message}
         </div>
       )}
 

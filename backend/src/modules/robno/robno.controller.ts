@@ -79,6 +79,25 @@ export class RobnoController {
     });
   }
 
+  /**
+   * Kartica artikla — hronološka kartica kretanja po magacinu (ulaz/izlaz/running-stanje).
+   * `itemId`+`warehouseId` obavezni; `from`/`to` opcioni prozor. Krajnje stanje == stateAsOf (costing).
+   */
+  @Get("item-card")
+  itemCard(
+    @Query("itemId") itemId?: string,
+    @Query("warehouseId") warehouseId?: string,
+    @Query("from") from?: string,
+    @Query("to") to?: string,
+  ) {
+    return this.robno.getItemCard({
+      itemId: Number(itemId),
+      warehouseId: Number(warehouseId),
+      from,
+      to,
+    });
+  }
+
   @Get("documents/:id")
   findOne(@Param("id", ParseIntPipe) id: number) {
     return this.robno.getStockDocument(id);
@@ -93,13 +112,25 @@ export class RobnoController {
 
   @Post("documents/:id/calculate")
   @RequirePermission(PERMISSIONS.ROBNO_WRITE)
-  calculate(@Param("id", ParseIntPipe) id: number) {
+  async calculate(@Param("id", ParseIntPipe) id: number) {
+    await this.robno.assertNotLocked(id); // zaključan dokument = immutable
     return this.calculation.calculate(id);
+  }
+
+  /**
+   * Zaključaj proknjižen dokument (booked → LOCKED). CAS na status; naredne mutacije (calculate/post)
+   * su blokirane guardom `assertNotLocked`. Permisija ROBNO_WRITE.
+   */
+  @Post("documents/:id/lock")
+  @RequirePermission(PERMISSIONS.ROBNO_WRITE)
+  lock(@Param("id", ParseIntPipe) id: number) {
+    return this.robno.lockDocument(id);
   }
 
   @Post("documents/:id/post")
   @RequirePermission(PERMISSIONS.ROBNO_POST)
   async post(@Param("id", ParseIntPipe) id: number) {
+    await this.robno.assertNotLocked(id); // zaključan dokument se ne re-knjiži
     const lines = await this.posting.postFromStockDocument(id);
     // KEPU (maloprodajna knjiga) — razduženje/zaduženje po proknjiženom dokumentu (IZ/NIV/…),
     // idempotentno po documentId. Van posting transakcije: posting baca na grešku pa se KEPU ne izvrši.

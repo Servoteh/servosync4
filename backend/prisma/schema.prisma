@@ -3706,6 +3706,28 @@ model SefIncomingInvoice {
   @@map("sef_incoming_invoices")
 }
 
+// -----------------------------------------------------------------------------
+// SefStatusLog — istorija SEF statusa (T3 batch A: document flow timeline)
+// -----------------------------------------------------------------------------
+/// Append-only log promena statusa SEF dokumenata (izlazni outbox i ulazni inbox).
+/// Upisuju ga enqueue/send/refresh/cancel (outbox) i pull/accept/reject (incoming).
+model SefStatusLog {
+  id Int @id(map: "pk_sef_status_log") @default(autoincrement()) @map("id")
+
+  outboxId   Int? @map("outbox_id") // meki ref sef_outbox.id (izlazni tok)
+  incomingId Int? @map("incoming_id") // meki ref sef_incoming_invoices.id (ulazni tok)
+
+  status String  @map("status") @db.VarChar(30) // novi status / događaj (PENDING, SENT, ACCEPTED…)
+  note   String? @map("note") @db.VarChar(500) // detalj (SEF poruka, razlog, DRY-RUN…)
+
+  userId    Int?     @map("user_id") // ko je izazvao (null = sistem/refresh)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([outboxId], map: "idx_sef_status_log_outbox")
+  @@index([incomingId], map: "idx_sef_status_log_incoming")
+  @@map("sef_status_log")
+}
+
 // ── Faza 6: PDV / POPDV / KEPU ────────────────────────────────────────────
 /// Was: PDV_SemeKontaZaKnjizenje (konto → PDV smer/uloga; doc 18 §3.7).
 /// Registar: koji konto nosi ulazni (pretporez) / izlazni (obaveza) PDV, po stopi i ulozi.

@@ -23,6 +23,7 @@ import {
   type AccountCardLine,
 } from '@/api/glavna-knjiga';
 import { ManualEntryDialog } from './manual-entry-dialog';
+import { LockOlderDialog } from './lock-older-dialog';
 
 /**
  * Glavna knjiga: obrazac „Lista" (DESIGN_SYSTEM §4.1) sa dva pogleda kroz Tabs:
@@ -71,6 +72,7 @@ export default function GlavnaKnjigaPage() {
 
   const [view, setView] = useState<View>('dnevnik');
   const [newEntryOpen, setNewEntryOpen] = useState(false);
+  const [lockOlderOpen, setLockOlderOpen] = useState(false);
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
@@ -89,7 +91,12 @@ export default function GlavnaKnjigaPage() {
       <PageHeader
         title="Glavna knjiga"
         actions={
-          <Button onClick={() => setNewEntryOpen(true)}>Novi nalog</Button>
+          <div className="flex items-center gap-2">
+            <Button variant="secondary" onClick={() => setLockOlderOpen(true)}>
+              Zaključaj starije
+            </Button>
+            <Button onClick={() => setNewEntryOpen(true)}>Novi nalog</Button>
+          </div>
         }
       />
 
@@ -98,6 +105,8 @@ export default function GlavnaKnjigaPage() {
         onClose={() => setNewEntryOpen(false)}
         onCreated={() => setView('dnevnik')}
       />
+
+      <LockOlderDialog open={lockOlderOpen} onClose={() => setLockOlderOpen(false)} />
 
       <div className="flex-1 space-y-4 overflow-auto p-6">
         <Tabs tabs={VIEW_TABS} value={view} onChange={setView} ariaLabel="Pogled glavne knjige" />
