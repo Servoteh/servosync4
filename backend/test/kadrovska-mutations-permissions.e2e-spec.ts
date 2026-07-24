@@ -10,6 +10,7 @@ import request from "supertest";
 import { JwtAuthGuard } from "../src/modules/auth/jwt-auth.guard";
 import { KadrovskaMutationsController } from "../src/modules/kadrovska/kadrovska-mutations.controller";
 import { KadrovskaMutationsService } from "../src/modules/kadrovska/kadrovska-mutations.service";
+import { KadrovskaGridAutofillService } from "../src/modules/kadrovska/grid-autofill.service";
 import { ALL_ROLE_KEYS } from "../src/common/authz/roles";
 import { roleHasPermission } from "../src/common/authz/role-permissions";
 import { PERMISSIONS, type PermissionKey } from "../src/common/authz/permissions";
@@ -49,7 +50,11 @@ describe("Kadrovska R2 mutacije — permission matrica (e2e)", () => {
       controllers: [KadrovskaMutationsController],
       providers: [
         { provide: PrismaService, useValue: { userPermissionOverride: { findUnique: async () => null } } },
-        { provide: KadrovskaMutationsService, useValue: svcMock }],
+        { provide: KadrovskaMutationsService, useValue: svcMock },
+        // GridAutofill (zahtev 012/26) — kontroler ga injektuje; ovde stub (matrica
+        // testira SAMO permission sloj, autofill logiku pokriva grid-autofill.service.spec).
+        { provide: KadrovskaGridAutofillService, useValue: { runForDate: async () => ({ processed: 0 }) } },
+      ],
     })
       .overrideGuard(JwtAuthGuard)
       .useValue({
