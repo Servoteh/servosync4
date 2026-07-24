@@ -21,7 +21,76 @@ concurrency:
 jobs:
   deploy:
     runs-on: [self-hosted, servosync]
+    # github.token mora da ČITA Actions runs (CI kapija); contents:read za checkout.
+    permissions:
+      contents: read
+      actions: read
     steps:
+      # CI kapija: deploy sme tek kad ci-backend za OVAJ isti SHA završi ZELENO.
+      # Motiv: 24.07.2026 dva push-a sa crvenim ci-backend ipak stigla na prod
+      # (deploy je zaseban workflow). Runner je self-hosted Linux (curl + jq postoje).
+      # FE-only push (npr. ovaj) ne okida ci-backend — grace grana onda PROPUSTI (notice).
+      - name: Wait for ci-backend (CI gate)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          CI_NAME: ci-backend # name: polje iz ci-backend.yml — po njemu filtriramo run
+        run: |
+          set -euo pipefail
+
+          # Najnoviji ci-backend run za ovaj SHA → "status conclusion url" ili "MISSING".
+          latest_run() {
+            curl -fsS \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${REPO}/actions/runs?head_sha=${SHA}&per_page=100" \
+            | jq -r --arg n "$CI_NAME" \
+                '[.workflow_runs[] | select(.name==$n)] | sort_by(.created_at) | last
+                 | if . == null then "MISSING" else "\(.status) \(.conclusion) \(.html_url)" end'
+          }
+
+          # 1) Grace: ci-backend ide po paths (backend/**). FE-only/docs push nema run —
+          #    čekaj do 3 min (poll 20s) da se pojavi, pa PROPUSTI ako ga i dalje nema.
+          echo "Tražim ci-backend run za SHA ${SHA} ..."
+          run="MISSING"
+          for i in $(seq 1 9); do # 9 × 20s = 180s
+            run="$(latest_run)"
+            [ "$run" != "MISSING" ] && break
+            echo "  run još nije viđen ($i/9) — čekam 20s ..."
+            sleep 20
+          done
+
+          if [ "$run" = "MISSING" ]; then
+            echo "::notice::ci-backend nije okinut za ovaj SHA (paths) — gate preskočen (FE-only/docs push)."
+            exit 0
+          fi
+
+          # 2) Run postoji: poll 30s do 25 min na završetak.
+          for i in $(seq 1 50); do # 50 × 30s = 1500s = 25 min
+            set -- $run
+            status="${1:-}"; concl="${2:-}"; url="${3:-}"
+            if [ "$status" = "completed" ]; then
+              case "$concl" in
+                success)
+                  echo "ci-backend ZELEN (success) — $url. Deploy sme dalje."; exit 0 ;;
+                failure|cancelled|timed_out|action_required|startup_failure|stale)
+                  echo "::error::ci-backend NIJE prošao (conclusion=$concl) — $url"
+                  echo "::error::Deploy BLOKIRAN. Popravi CI pa re-run deploy (ci-backend na main/PR)."
+                  exit 1 ;;
+                *)
+                  echo "::error::ci-backend conclusion=$concl (nepoznato) — $url. Blokiram iz opreza."; exit 1 ;;
+              esac
+            fi
+            echo "  ci-backend još traje (status=$status, $i/50) — čekam 30s ..."
+            sleep 30
+            run="$(latest_run)"
+          done
+
+          echo "::error::ci-backend nije završio ni posle 25 min (i dalje traje) — blokiram deploy. Re-run kad CI završi."
+          exit 1
+
       - name: Checkout monorepo
         uses: actions/checkout@v4
 
