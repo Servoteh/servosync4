@@ -142,3 +142,110 @@ describe("RobnoService.assertSufficientStock (C11)", () => {
     expect(costing.stateAsOf).toHaveBeenCalledWith(1, 7, DATE, { tx: fakeTx });
   });
 });
+
+/**
+ * Kartica artikla (getItemCard) — čista logika running stanja bez baze: `$queryRaw` vraća
+ * fiksni set kretanja, `costing.stateAsOf` je nezavisni kontrolni izvor. Verifikuje smoke §2
+ * („krajnje stanje == stateAsOf danas") + početno stanje pre `from`.
+ */
+describe("RobnoService.getItemCard (kartica artikla)", () => {
+  /** Kretanja (artikal 1, magacin 5): +100 (UL), −30 (IZ), +10 (UL) → running 100, 70, 80. */
+  const movements = [
+    {
+      item_line_id: 11,
+      document_id: 1,
+      document_number: "0001/2026",
+      kind: "UL",
+      document_type_code: "UFROB",
+      document_date: new Date("2026-06-01T00:00:00.000Z"),
+      quantity: D(100),
+      is_inbound: true,
+    },
+    {
+      item_line_id: 22,
+      document_id: 2,
+      document_number: "0002/2026",
+      kind: "IZ",
+      document_type_code: "IFR",
+      document_date: new Date("2026-07-10T00:00:00.000Z"),
+      quantity: D(30),
+      is_inbound: false,
+    },
+    {
+      item_line_id: 33,
+      document_id: 3,
+      document_number: "0003/2026",
+      kind: "UL",
+      document_type_code: "UFROB",
+      document_date: new Date("2026-07-20T00:00:00.000Z"),
+      quantity: D(10),
+      is_inbound: true,
+    },
+  ];
+
+  /** RobnoService sa mock prisma ($queryRaw + item.findUnique) i costing.stateAsOf. */
+  function makeCardService(stateAsOf: Prisma.Decimal) {
+    const prisma = {
+      $queryRaw: jest.fn().mockResolvedValue(movements),
+      item: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValue({ id: 1, name: "Artikal A", catalogNumber: "A-001", unit: "kom" }),
+      },
+    };
+    const costing = { stateAsOf: jest.fn().mockResolvedValue(stateAsOf) };
+    const service = new RobnoService(
+      prisma as never,
+      {} as never,
+      costing as never,
+    );
+    return { service, prisma, costing };
+  }
+
+  it("running stanje se slaže i krajnje stanje == stateAsOf (smoke §2)", async () => {
+    const { service } = makeCardService(D(80));
+    const { data } = await service.getItemCard({ itemId: 1, warehouseId: 5 });
+
+    expect(data.lines.map((l) => l.balance)).toEqual([
+      "100.000000",
+      "70.000000",
+      "80.000000",
+    ]);
+    expect(data.lines[0]).toMatchObject({ direction: "IN", in: "100.000000", out: "0.000000" });
+    expect(data.lines[1]).toMatchObject({ direction: "OUT", in: "0.000000", out: "30.000000" });
+    // Krajnje stanje (running) == nezavisno izračunat stateAsOf (costing).
+    expect(data.closingBalance).toBe("80.000000");
+    expect(data.stateAsOf).toBe("80.000000");
+    expect(data.closingBalance).toBe(data.stateAsOf);
+    expect(data.openingBalance).toBe("0.000000");
+    expect(data.totalIn).toBe("110.000000");
+    expect(data.totalOut).toBe("30.000000");
+  });
+
+  it("početno stanje pre `from` isključuje ranije redove iz prikaza", async () => {
+    const { service } = makeCardService(D(80));
+    // from = 2026-07-01 → prvi red (01.06, +100) je pre; ide u openingBalance, ne u lines.
+    const { data } = await service.getItemCard({
+      itemId: 1,
+      warehouseId: 5,
+      from: "2026-07-01",
+    });
+
+    expect(data.openingBalance).toBe("100.000000");
+    expect(data.lines).toHaveLength(2);
+    expect(data.lines.map((l) => l.balance)).toEqual(["70.000000", "80.000000"]);
+    // Krajnje stanje ostaje puno stanje (from seče samo prikaz, ne obračun) == stateAsOf.
+    expect(data.closingBalance).toBe("80.000000");
+    expect(data.stateAsOf).toBe("80.000000");
+  });
+
+  it("odbija nevalidan itemId/warehouseId (422)", async () => {
+    const { service } = makeCardService(D(0));
+    await expect(
+      service.getItemCard({ itemId: 0, warehouseId: 5 }),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    await expect(
+      service.getItemCard({ itemId: 1, warehouseId: -1 }),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+  });
+});

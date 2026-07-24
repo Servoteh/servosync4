@@ -17,16 +17,20 @@
  */
 
 import {
+  BadRequestException,
   Injectable,
   NotFoundException,
   UnprocessableEntityException,
 } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
+import { OpenItemsService } from "./open-items.service";
 
 const D = Prisma.Decimal;
 /** Tolerancija zatvaranja (kursna razlika/zaokruženje) — PLAN_FAZA_4 §A t.3. */
 const TOLERANCE = new D("0.01");
+/** MaxSaldo default prag (dinar) — sitni saldi ispod se auto-zatvaraju. */
+const DEFAULT_SMALL_BALANCE_THRESHOLD = new D("1.00");
 
 export interface ReconcileResult {
   groupId: number;
@@ -35,6 +39,13 @@ export interface ReconcileResult {
   totalCredit: Prisma.Decimal;
   residual: Prisma.Decimal; // Σdebit − Σcredit (kursna razlika/otpis; ≤ tolerancija za auto)
   balanced: boolean; // |residual| == 0
+}
+
+/** Rezultat MaxSaldo batch-a: broj zatvorenih grupa + zbir zatvorenih salda. */
+export interface SmallBalancesResult {
+  closedGroups: number;
+  totalAmount: Prisma.Decimal; // Σ |saldo| zatvorenih grupa
+  threshold: Prisma.Decimal; // primenjeni prag
 }
 
 interface EntryRow {
@@ -49,7 +60,10 @@ interface EntryRow {
 
 @Injectable()
 export class ReconciliationService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly openItems: OpenItemsService,
+  ) {}
 
   /**
    * Auto-uparivanje: zahteva balans u granici tolerancije. Guard: sve stavke
@@ -146,6 +160,68 @@ export class ReconciliationService {
   }
 
   /**
+   * MaxSaldo — auto-zatvaranje sitnih salda (Talas 3 §A7). Nađe otvorene grupe
+   * (izveden pogled po dokumentu) sa 0 < |saldo| ≤ prag i zatvori ih postojećim
+   * reconcile mehanizmom (kao manual: bez balans-uslova). Razlika (sitni saldo)
+   * se NE knjiži kao otpis ovde — postavlja se SAMO `reconciled_at` (flag);
+   * knjiženje otpisa je odvojen tok (GK ručni nalog), van ovog batch-a.
+   *
+   * Svaka open-items grupa dobija svoj ReconciliationGroup (kind=MANUAL) — članovi
+   * dele konto+komitent+dokument pa prolaze isti-partner-scope guard. Ceo batch je
+   * jedna transakcija (atomično): ako je neka stavka u međuvremenu zatvorena/rasknjižena,
+   * `loadEntries` baca i batch se poništava (bez delimičnog stanja).
+   */
+  async reconcileSmallBalances(
+    thresholdInput?: number | string,
+    userId?: number,
+  ): Promise<SmallBalancesResult> {
+    const threshold = this.parseThreshold(thresholdInput);
+
+    const items = await this.openItems.listOpenItems();
+    const small = items.filter((i) => {
+      const abs = i.balance.abs();
+      return abs.greaterThan(0) && abs.lessThanOrEqualTo(threshold);
+    });
+
+    if (small.length === 0) {
+      return { closedGroups: 0, totalAmount: new D(0), threshold };
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      let closedGroups = 0;
+      let totalAmount = new D(0);
+      const note = `MaxSaldo auto-zatvaranje (prag ${threshold.toFixed(2)})`;
+      for (const g of small) {
+        const ids = g.ledgerEntryIds ?? [];
+        if (ids.length === 0) continue;
+        const entries = await this.loadEntries(tx, ids);
+        this.assertSamePartnerScope(entries);
+        await this.closeGroup(tx, entries, "MANUAL", userId, note);
+        closedGroups += 1;
+        totalAmount = totalAmount.add(g.balance.abs());
+      }
+      return { closedGroups, totalAmount, threshold };
+    });
+  }
+
+  /** Parsiraj/validiraj MaxSaldo prag: pozitivan konačan Decimal; default 1.00. */
+  private parseThreshold(input?: number | string): Prisma.Decimal {
+    if (input === undefined || input === null || (input as string) === "") {
+      return DEFAULT_SMALL_BALANCE_THRESHOLD;
+    }
+    let value: Prisma.Decimal;
+    try {
+      value = new D(input);
+    } catch {
+      throw new BadRequestException("Prag mora biti broj.");
+    }
+    if (!value.isFinite() || value.lessThanOrEqualTo(0)) {
+      throw new BadRequestException("Prag mora biti pozitivan broj.");
+    }
+    return value;
+  }
+
+  /**
    * Balans-helper: |Σdebit − Σcredit| == 0. Koristi ga i kompenzacija (§C)
    * pre knjiženja.
    */
@@ -204,7 +280,11 @@ export class ReconciliationService {
           `Stavka ${r.id}: konto ${r.account_code} nije u saldakonto registru.`,
         );
       }
-      if (r.status !== "posted") {
+      // 'locked' se prihvata jednako kao 'posted' (review Batch A VISOK): lock perioda
+      // (POST /gl/journal/lock-older) ne sme da spreči uparivanje otvorenog duga —
+      // zaključan nalog je i dalje proknjižen. Konzistentno sa open-items / partner-card /
+      // limit / payment-preparation čitaocima (IN ('posted','locked')).
+      if (r.status !== "posted" && r.status !== "locked") {
         throw new UnprocessableEntityException(
           `Stavka ${r.id}: nalog nije proknjižen (status ${r.status}).`,
         );

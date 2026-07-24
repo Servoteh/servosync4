@@ -346,6 +346,20 @@ export function useDeleteStatementLine() {
   });
 }
 
+/**
+ * Reset/brisanje uvezenog izvoda (DELETE /izvodi/:id) — samo ne-POSTED. Briše izvod
+ * + stavke (kaskadno) i vraća `{ id }`. 409 ako je izvod proknjižen. Menja listu, pa
+ * invalidira ceo `izvodi` ključ. Permisija IZVODI_IMPORT.
+ */
+export function useDeleteStatement() {
+  const invalidate = useInvalidateIzvodi();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<{ id: number }>(`${BASE}/${id}`, { method: 'DELETE' }),
+    onSuccess: invalidate,
+  });
+}
+
 /** Ručno poveži stavku sa otvorenom stavkom naloga (POST /izvodi/:id/lines/:lineId/link). */
 export function useLinkStatementLine() {
   const invalidate = useInvalidateIzvodi();

@@ -11,10 +11,12 @@ import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Button } from '@/components/ui-kit/button';
 import { formatDate, formatDecimal } from '@/lib/format';
+import { toast } from '@/lib/toast';
 import {
   useStockDocument,
   useCalculate,
   usePost,
+  useLockDocument,
   ROBNO_STATUS,
   ROBNO_KIND,
   type RobnoStatus,
@@ -123,18 +125,38 @@ export default function RobnoDetailPage() {
 
   const calculate = useCalculate();
   const post = usePost();
+  const lock = useLockDocument();
 
   const goBack = useCallback(() => router.push('/robno'), [router]);
 
+  // Proknjižen (booked) = ima nalog GK (journalEntryId) — uslov za zaključavanje.
+  const isBooked = doc != null && doc.journalEntryId != null;
+  const isLocked = doc?.status === ROBNO_STATUS.LOCKED;
+
+  const onLock = useCallback(() => {
+    if (!doc) return;
+    if (
+      !window.confirm(
+        `Zaključati dokument ${doc.documentNumber}? Zaključan dokument se više ne može kalkulisati ni ponovo knjižiti — prelazi u pregled.`,
+      )
+    )
+      return;
+    lock.mutate(doc.id, { onSuccess: () => toast('Dokument zaključan.') });
+  }, [doc, lock]);
+
   // Primarna akcija zavisi od statusa — jedan handler za Ctrl+S.
+  // Proknjižen a nezaključan → zaključaj; inače DRAFT→kalkuliši, CALCULATED→knjiži.
   const primaryAction = useCallback(() => {
     if (!doc) return;
-    if (doc.status === ROBNO_STATUS.DRAFT) {
+    if (isLocked) return;
+    if (isBooked) {
+      onLock();
+    } else if (doc.status === ROBNO_STATUS.DRAFT) {
       calculate.mutate(doc.id);
     } else if (doc.status === ROBNO_STATUS.CALCULATED) {
       post.mutate(doc.id);
     }
-  }, [doc, calculate, post]);
+  }, [doc, isBooked, isLocked, onLock, calculate, post]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -161,6 +183,7 @@ export default function RobnoDetailPage() {
   const actionError =
     (calculate.error as Error | null)?.message ??
     (post.error as Error | null)?.message ??
+    (lock.error as Error | null)?.message ??
     null;
 
   return (
@@ -175,7 +198,13 @@ export default function RobnoDetailPage() {
               Nazad
             </Button>
             {doc && (
-              <PrimaryActions doc={doc} calculate={calculate} post={post} />
+              <PrimaryActions
+                doc={doc}
+                calculate={calculate}
+                post={post}
+                lock={lock}
+                onLock={onLock}
+              />
             )}
           </div>
         }
@@ -300,18 +329,31 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 /**
- * Status-uslovljena dugmad: DRAFT → Kalkuliši; CALCULATED → Knjiži. Proknjižen /
- * zaključan dokument nema akciju ovde.
+ * Status-uslovljena dugmad: DRAFT → Kalkuliši; CALCULATED (bez naloga) → Knjiži;
+ * proknjižen (ima nalog GK) a nezaključan → Zaključaj. Zaključan dokument nema akciju.
  */
 function PrimaryActions({
   doc,
   calculate,
   post,
+  lock,
+  onLock,
 }: {
   doc: StockDocumentDetail;
   calculate: ReturnType<typeof useCalculate>;
   post: ReturnType<typeof usePost>;
+  lock: ReturnType<typeof useLockDocument>;
+  onLock: () => void;
 }) {
+  if (doc.status === ROBNO_STATUS.LOCKED) return null;
+  // Proknjižen dokument (journalEntryId) se ne re-knjiži — jedina akcija je zaključavanje.
+  if (doc.journalEntryId != null) {
+    return (
+      <Button variant="secondary" onClick={onLock} loading={lock.isPending}>
+        Zaključaj
+      </Button>
+    );
+  }
   if (doc.status === ROBNO_STATUS.DRAFT) {
     return (
       <Button onClick={() => calculate.mutate(doc.id)} loading={calculate.isPending}>

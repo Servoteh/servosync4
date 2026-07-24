@@ -1,8 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowLeft, Plus, Pencil, Trash2, Link2 } from 'lucide-react';
+import { ArrowLeft, Plus, Pencil, Trash2, Link2, CreditCard } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
@@ -16,6 +17,7 @@ import {
   useMatchLines,
   usePostStatement,
   useDeleteStatementLine,
+  useDeleteStatement,
   isForeignCurrency,
   STATEMENT_STATUS,
   LINE_STATUS,
@@ -97,7 +99,18 @@ function buildItemColumns(currency: string | null): Column<BankStatementLine>[] 
         <div className="min-w-0">
           <div className="truncate text-ink">{l.partnerName ?? '—'}</div>
           {l.matchedCustomerId != null && (
-            <div className="tnums text-2xs text-ink-secondary">komitent #{l.matchedCustomerId}</div>
+            <div className="flex items-center gap-2">
+              <span className="tnums text-2xs text-ink-secondary">
+                komitent #{l.matchedCustomerId}
+              </span>
+              <Link
+                href={`/saldakonti/kartica?partnerId=${l.matchedCustomerId}`}
+                className="inline-flex items-center gap-1 text-2xs font-medium text-accent hover:underline"
+              >
+                <CreditCard className="h-3 w-3" aria-hidden />
+                Kartica
+              </Link>
+            </div>
           )}
         </div>
       ),
@@ -190,6 +203,21 @@ export default function IzvodDetailPage() {
   const match = useMatchLines();
   const post = usePostStatement();
   const deleteLine = useDeleteStatementLine();
+  const deleteStatement = useDeleteStatement();
+
+  // Reset/brisanje uvezenog izvoda (samo ne-POSTED) → nazad na listu.
+  const onDeleteStatement = useCallback(() => {
+    if (!doc || doc.status === STATEMENT_STATUS.POSTED) return;
+    if (
+      !window.confirm(
+        `Obrisati izvod ${doc.statementNumber} sa svim stavkama? Radnja se ne poništava.`,
+      )
+    )
+      return;
+    deleteStatement.mutate(doc.id, {
+      onSuccess: () => router.push('/izvodi'),
+    });
+  }, [doc, deleteStatement, router]);
 
   // Ručni unos/izmena stavke (BigBit paritet). editorLine=null → dodavanje.
   const [editorOpen, setEditorOpen] = useState(false);
@@ -244,7 +272,10 @@ export default function IzvodDetailPage() {
   }
 
   const actionError =
-    (match.error as Error | null)?.message ?? (post.error as Error | null)?.message ?? null;
+    (match.error as Error | null)?.message ??
+    (post.error as Error | null)?.message ??
+    (deleteStatement.error as Error | null)?.message ??
+    null;
 
   return (
     <AppShell>
@@ -258,6 +289,16 @@ export default function IzvodDetailPage() {
               Nazad
             </Button>
             {doc && <PrimaryActions doc={doc} match={match} post={post} />}
+            {doc && doc.status !== STATEMENT_STATUS.POSTED && (
+              <Button
+                variant="danger"
+                onClick={onDeleteStatement}
+                loading={deleteStatement.isPending}
+              >
+                <Trash2 className="h-4 w-4" aria-hidden />
+                Obriši
+              </Button>
+            )}
           </div>
         }
       />

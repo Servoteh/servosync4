@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   ConflictException,
   UnprocessableEntityException,
@@ -7,6 +8,8 @@ import {
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { PostingEngineService } from "../gl/posting/posting.service";
+import { GlWriteService } from "../gl/gl-write.service";
+import { SefService } from "./sef/sef.service";
 import { DocumentNumberSequenceService } from "./numbering.service";
 import { PricingService } from "./pricing.service";
 import type { AuthUser } from "../auth/jwt.strategy";
@@ -63,13 +66,25 @@ interface LedgerLineDraft {
   description: string | null;
 }
 
+/** Dopiši storno-razlog u napomenu fakture (čuva postojeći tekst, audit trag). */
+function appendStornoNote(existing: string | null, reason: string): string {
+  const stamp = `STORNO: ${reason}`;
+  return existing && existing.trim().length > 0
+    ? `${existing}\n${stamp}`
+    : stamp;
+}
+
 @Injectable()
 export class FakturisanjeService {
+  private readonly logger = new Logger(FakturisanjeService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly pricing: PricingService,
     private readonly numbering: DocumentNumberSequenceService,
     private readonly posting: PostingEngineService,
+    private readonly glWrite: GlWriteService,
+    private readonly sef: SefService,
   ) {}
 
   // ── PREDRAČUN / PONUDA ──────────────────────────────────────────────────────
@@ -134,6 +149,11 @@ export class FakturisanjeService {
         lineTotal,
       };
     });
+
+    // T3/A8: kreditni limit kupca — 422 i pri kreiranju predračuna/ponude ako bi
+    // projektovani dug prešao limit, osim uz force (telo { force: true }).
+    const force = (dto as CreateProformaDto & { force?: boolean }).force === true;
+    await this.assertCreditLimit(dto.customerId, grossTotal, force);
 
     const year = (dto.documentDate ? new Date(dto.documentDate) : new Date()).getFullYear();
     // Draft broj (predračun) — dodeljuje se odmah po godišnjem nizu predračuna.
@@ -214,7 +234,7 @@ export class FakturisanjeService {
    * Proknjiži račun: rezerviši definitivan broj + kreiraj nalog GK. Idempotentno
    * (već-knjižen račun status ≠ DRAFT → ConflictException).
    */
-  async postInvoice(id: number, actor: AuthUser) {
+  async postInvoice(id: number, actor: AuthUser, force = false) {
     const invoice = await this.prisma.invoice.findUnique({
       where: { id },
       include: { items: { orderBy: { lineNo: "asc" } } },
@@ -240,6 +260,11 @@ export class FakturisanjeService {
         `Račun ${id} nema stavke — ne može se proknjižiti.`,
       );
     }
+
+    // T3/A8: kreditni limit kupca (Customer.creditLimit sync polje) — 422 PRE claim-a
+    // ako bi projektovani dug prešao limit, osim uz force (svesno knjiženje uprkos
+    // limitu; FAKTURISANJE post permisija je dovoljno ovlašćenje).
+    await this.assertCreditLimit(invoice.customerId, invoice.grossTotal, force);
 
     const year = invoice.documentDate.getFullYear();
 
@@ -331,6 +356,189 @@ export class FakturisanjeService {
 
       return posted;
     });
+  }
+
+  // ── STORNO (D8: jedini dozvoljeni put za zaključan dokument) ─────────────────
+
+  /**
+   * Storno proknjižene fakture (BigBit ER paritet). Guard: dokument mora biti
+   * zaključan (isLocked) i proknjižen (status ≠ DRAFT), i još ne storniran
+   * (status ≠ CANCELLED). D8: storno je JEDINI put koji sme da dira zaključan
+   * dokument (postInvoice/mutacije ga odbijaju). Tok, u redosledu:
+   *   1) CAS claim: status → CANCELLED (ekskluzivnost — samo jedan storno prolazi),
+   *      razlog se dopisuje u napomenu (audit).
+   *   2) reverse GL naloga (gl-write.reverse) — obrnute strane, novi storno-nalog.
+   *   3) SEF: SENT/DELIVERED → SEF cancel API; PENDING → lokalno CANCELLED (bez slanja).
+   * Vraća storniranu fakturu + id storno-naloga + spiskove otkazanih SEF redova
+   * (sefCancelledOutboxIds = SEF cancel; sefCancelledPendingIds = lokalno otkazani PENDING).
+   */
+  async stornoInvoice(id: number, reason: string, actor: AuthUser) {
+    const invoice = await this.prisma.invoice.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        status: true,
+        isLocked: true,
+        journalEntryId: true,
+        note: true,
+      },
+    });
+    if (!invoice) throw new NotFoundException(`Račun ${id} ne postoji.`);
+
+    if (invoice.status === "CANCELLED") {
+      throw new ConflictException(`Račun ${id} je već storniran.`);
+    }
+    // D8: samo zaključan (proknjižen) dokument se stornira; draft se menja/briše normalno.
+    if (!invoice.isLocked || invoice.status === "DRAFT") {
+      throw new ConflictException(
+        `Račun ${id} nije proknjižen (zaključan) — storno nije moguć.`,
+      );
+    }
+
+    // ATOMIČNOST (review Batch A F4 — svesni trade-off): koraci 1–3 NISU u jednoj
+    // $transaction. CAS→CANCELLED (korak 1) je NAMERNO prvi, radi ekskluzivnosti (samo
+    // jedan storno prolazi). Redosled se NE menja: obrnuti redosled (reverse pre CAS) bi
+    // u trci dozvolio DVA reverse-naloga za istu fakturu. Posledica trade-off-a: pad
+    // IZMEĐU koraka 1 i 2 ostavlja fakturu CANCELLED BEZ GL storna — nekonzistentnost se
+    // sanira RUČNIM reverse-om izvornog naloga kroz Glavnu knjigu (GK). Učestalost
+    // zanemarljiva; korak 2 dodatno loguje ERROR sa uputstvom za sanaciju.
+    //
+    // 1) CAS claim — snapshot status + isLocked → CANCELLED (ekskluzivno). Dopiši razlog.
+    //    Isti obrazac kao postInvoice: updateMany je JEDINI izvor ekskluzivnosti; dva
+    //    paralelna storna → samo jedan dobije count 1, drugi 409.
+    const claimed = await this.prisma.invoice.updateMany({
+      where: { id, status: invoice.status, isLocked: true },
+      data: {
+        status: "CANCELLED",
+        note: appendStornoNote(invoice.note, reason),
+        updatedByUserId: actor.userId,
+      },
+    });
+    if (claimed.count !== 1) {
+      throw new ConflictException(
+        `Račun ${id} je već storniran ili se trenutno stornira.`,
+      );
+    }
+
+    // 2) reverse GL nalog (ako postoji i nije nacrt / već storniran). Pošto je CAS gore
+    //    obezbedio ekskluzivnost, ovde nema trke oko duplog storna naloga.
+    let stornoEntryId: number | null = null;
+    if (invoice.journalEntryId != null) {
+      const entry = await this.prisma.journalEntry.findUnique({
+        where: { id: invoice.journalEntryId },
+        select: { id: true, status: true, reversedByEntryId: true },
+      });
+      if (entry && entry.status !== "draft" && entry.reversedByEntryId == null) {
+        try {
+          const rev = await this.glWrite.reverse(entry.id, actor.userId);
+          stornoEntryId = rev.stornoEntryId;
+        } catch (err) {
+          // Faktura je već (korak 1, commit-ovan CAS) označena CANCELLED, a reverse GL
+          // naloga je pao → stanje: stornirana faktura BEZ GL storna (trade-off gore).
+          // SANACIJA: ručno proknjižiti obrnuti nalog kroz Glavnu knjigu (GK) za nalog
+          // ${entry.id}. Grešku propagiramo (pozivalac vidi da GL storno nije prošao).
+          this.logger.error(
+            `STORNO SANACIJA: faktura ${id} je označena CANCELLED, ali reverse GL naloga ` +
+              `${entry.id} nije uspeo — ručno proknjižiti obrnuti nalog kroz Glavnu knjigu (GK). ` +
+              `Uzrok: ${err instanceof Error ? err.message : String(err)}`,
+            err instanceof Error ? err.stack : undefined,
+          );
+          throw err;
+        }
+      }
+    }
+
+    // 3) SEF outbox saniranje (review Batch A F3):
+    //    (a) SENT/DELIVERED → SEF cancel API (postojeći tok, guard MozeDaSeStornira +
+    //        DRY-RUN bezbedno, sa razlogom).
+    //    (b) PENDING (kreiran ali NIKAD poslat) → lokalno CANCELLED bez SEF poziva
+    //        (sef.cancelPendingLocally) — inače bi ostao „u redu za slanje" i mogao da
+    //        ode na SEF posle storna. send() ima i defense-in-depth guard nad tim.
+    const sefCancelledOutboxIds: number[] = [];
+    const outboxRows = await this.sef.listOutbox({ invoiceId: id, take: 200 });
+    for (const row of outboxRows) {
+      if (row.status === "SENT" || row.status === "DELIVERED") {
+        await this.sef.cancel(row.id, reason);
+        sefCancelledOutboxIds.push(row.id);
+      }
+    }
+    const sefCancelledPendingIds = await this.sef.cancelPendingLocally(
+      id,
+      reason,
+      actor.userId,
+    );
+
+    const stornoed = await this.prisma.invoice.findUnique({
+      where: { id },
+      include: { items: { orderBy: { lineNo: "asc" } } },
+    });
+    if (!stornoed) throw new NotFoundException(`Račun ${id} ne postoji.`);
+    return {
+      ...stornoed,
+      stornoEntryId,
+      sefCancelledOutboxIds,
+      sefCancelledPendingIds,
+    };
+  }
+
+  /**
+   * Kreditni limit kupca (BigBit paritet — Customer.creditLimit je sync polje).
+   * Ako je limit > 0 i projektovani dug (otvorene receivable stavke partnera +
+   * bruto ovog dokumenta) prelazi limit → UnprocessableEntity (422), OSIM ako je
+   * pozvano sa force=true (svesno prekoračenje). Saldo = Σ(dug − potr) otvorenih
+   * (posted, nereconciled) stavki na receivable saldakonto kontima za tog partnera
+   * (isti izveden pogled kao OpenItemsService, direktan agregat da se izbegne
+   * cross-modul import). Telo greške nosi structured polja (code/balance/limit) za FE.
+   */
+  private async assertCreditLimit(
+    customerId: number,
+    grossTotal: Prisma.Decimal,
+    force: boolean,
+  ): Promise<void> {
+    if (force) return;
+
+    const customer = await this.prisma.customer.findUnique({
+      where: { id: customerId },
+      select: { creditLimit: true },
+    });
+    const limit = customer?.creditLimit ?? null;
+    // Limit 0 / null = bez kontrole (kupac bez postavljenog kreditnog limita).
+    if (limit == null || new D(limit).lessThanOrEqualTo(ZERO)) return;
+
+    const rows = await this.prisma.$queryRaw<{ balance: Prisma.Decimal | null }[]>(
+      Prisma.sql`
+        SELECT COALESCE(SUM(le.debit) - SUM(le.credit), 0) AS balance
+        FROM ledger_entries le
+        JOIN journal_entries je ON je.id = le.journal_entry_id
+        JOIN saldakonto_accounts sa ON sa.account = le.account_code
+        -- 'locked' MORA biti uključen (smoke Batch A nalaz): auto-lock starih naloga bi
+        -- inače IZBRISAO dug iz obračuna limita — kupac sa zaključanim dugovanjima bi
+        -- prošao guard kao da duga nema.
+        WHERE je.status IN ('posted', 'locked')
+          AND le.reconciled_at IS NULL
+          AND sa.tracks_open_items = TRUE
+          AND sa.side = 'receivable'
+          AND le.analytical_code = ${customerId}
+      `,
+    );
+
+    const balance = new D(rows[0]?.balance ?? 0);
+    const projected = balance.add(grossTotal);
+    const limitD = new D(limit);
+    if (projected.greaterThan(limitD)) {
+      throw new UnprocessableEntityException({
+        code: "CREDIT_LIMIT_EXCEEDED",
+        message:
+          `Kreditni limit kupca je prekoračen: dug bi bio ${projected.toFixed(2)} ` +
+          `(trenutni saldo ${balance.toFixed(2)} + dokument ${grossTotal.toFixed(2)}), ` +
+          `a limit je ${limitD.toFixed(2)}. Za knjiženje uprkos limitu koristi opciju ` +
+          `Proknjiži uprkos limitu.`,
+        balance: balance.toFixed(2),
+        amount: grossTotal.toFixed(2),
+        projected: projected.toFixed(2),
+        limit: limitD.toFixed(2),
+      });
+    }
   }
 
   /**
@@ -458,8 +666,8 @@ export class FakturisanjeService {
         documentDate: invoice.documentDate,
         postingDate: new Date(),
         // POSTED (ne draft): proknjižena faktura MORA odmah biti vidljiva saldakontima /
-        // kartici konta / bilansu, koji čitaju SAMO status IN ('posted','locked') (kartica)
-        // odn. status = 'posted' (open-items). Draft nalog = proknjižen račun bez ijedne
+        // kartici konta / bilansu / open-items, koji čitaju SAMO status IN ('posted','locked').
+        // Draft nalog = proknjižen račun bez ijedne
         // otvorene stavke (kupac tiho van saldakonta). Isti obrazac kao izvod (PR #8) i
         // PostingEngine.postManualEntry (posting.service.ts:229). Odluka O4 default.
         status: "posted",

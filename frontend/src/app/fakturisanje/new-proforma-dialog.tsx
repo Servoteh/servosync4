@@ -7,6 +7,7 @@ import { FormField, Input } from '@/components/ui-kit/form-field';
 import { Select } from '@/components/ui-kit/select';
 import { Button } from '@/components/ui-kit/button';
 import { useCreateProforma } from '@/api/sales';
+import { ApiError } from '@/api/client';
 
 /**
  * Modal „Novi predračun / ponuda" (BigBit paritet — useCreateProforma je bio mrtav
@@ -54,9 +55,15 @@ export function NewProformaDialog({
     setRows([emptyRow()]);
   };
 
-  const err = (create.error as Error | null)?.message ?? null;
+  // T3/A8: kreditni-limit 422 (CREDIT_LIMIT_EXCEEDED) → poseban warn banner sa dugmetom
+  // za svesno kreiranje uprkos limitu; ostale greške idu u generički danger banner.
+  const isCreditLimitError =
+    create.error instanceof ApiError &&
+    create.error.status === 422 &&
+    (create.error.body as { code?: string } | null)?.code === 'CREDIT_LIMIT_EXCEEDED';
+  const err = isCreditLimitError ? null : (create.error as Error | null)?.message ?? null;
 
-  const submit = () => {
+  const submit = (force = false) => {
     const cid = Number(customerId);
     if (!Number.isInteger(cid) || cid <= 0) return;
     const items = rows
@@ -79,6 +86,7 @@ export function NewProformaDialog({
         isExport: currency !== 'RSD',
         poNumber: poNumber.trim() || undefined,
         items,
+        ...(force ? { force: true } : {}),
       },
       {
         onSuccess: (res) => {
@@ -100,7 +108,7 @@ export function NewProformaDialog({
           <Button variant="ghost" onClick={onClose} disabled={create.isPending}>
             Otkaži
           </Button>
-          <Button onClick={submit} loading={create.isPending}>
+          <Button onClick={() => submit()} loading={create.isPending}>
             Kreiraj
           </Button>
         </div>
@@ -122,6 +130,21 @@ export function NewProformaDialog({
         {err && (
           <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-3 py-2 text-sm text-status-danger">
             {err}
+          </div>
+        )}
+        {isCreditLimitError && (
+          <div className="flex flex-col gap-2 rounded-panel border border-status-warn/40 bg-status-warn-bg px-3 py-2 text-sm text-status-warn">
+            <span>{(create.error as Error).message}</span>
+            <div>
+              <Button
+                variant="secondary"
+                type="button"
+                onClick={() => submit(true)}
+                loading={create.isPending}
+              >
+                Kreiraj uprkos limitu
+              </Button>
+            </div>
           </div>
         )}
 

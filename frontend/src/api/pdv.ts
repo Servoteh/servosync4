@@ -332,6 +332,36 @@ export function useLedgerSpecPdf() {
   });
 }
 
+// ─────────────────────────────────── Slanje PP-PDV obrasca mejlom (A6)
+
+/** Odgovor mail rute: sent=false je DRY-RUN ili neuspeh (backend ne baca). */
+export interface SendMailResult {
+  sent: boolean;
+  to: string;
+  fileName: string;
+}
+
+/** Telo POST /pdv/print/pp-pdv/send-mail — period (YYYY-MM|YYYY-Qn) + adresa primaoca. */
+export interface SendPpPdvMailInput {
+  period: string;
+  to: string;
+}
+
+/**
+ * Pošalji PP-PDV obrazac mejlom sa PDF prilogom — POST /pdv/print/pp-pdv/send-mail.
+ * Ne menja keširane podatke (bez server-side mutacije), pa nema invalidacije.
+ * read = PDV_READ.
+ */
+export function useSendPpPdvMail() {
+  return useMutation({
+    mutationFn: (input: SendPpPdvMailInput) =>
+      apiFetch<{ data: SendMailResult }>(`${BASE}/print/pp-pdv/send-mail`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+  });
+}
+
 /** Otvori PDF Blob u novom tabu (browser preview + download). */
 export function openPdf(blob: Blob): void {
   const url = URL.createObjectURL(blob);

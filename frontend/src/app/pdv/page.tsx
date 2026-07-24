@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Pencil, Plus, Printer, Trash2 } from 'lucide-react';
+import { Mail, Pencil, Plus, Printer, Trash2 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
@@ -14,6 +14,9 @@ import { Dialog } from '@/components/ui-kit/dialog';
 import { FormField, Input } from '@/components/ui-kit/form-field';
 import { Tabs, type TabItem } from '@/components/ui-kit/tabs';
 import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
+import { ExportCsvButton } from '@/components/export-csv-button';
+import { SendMailDialog } from '@/components/send-mail-dialog';
+import { type CsvColumn } from '@/lib/table-csv';
 import { formatDate, formatDecimal, formatNumber } from '@/lib/format';
 import {
   useKif,
@@ -28,6 +31,7 @@ import {
   useDeleteManualVatEntry,
   usePpPdvPdf,
   useLedgerSpecPdf,
+  useSendPpPdvMail,
   openPdf,
   type VatLedgerRow,
   type VatReturn,
@@ -35,6 +39,17 @@ import {
   type KepuRow,
   type CreateManualVatEntryInput,
 } from '@/api/pdv';
+
+/** CSV kolone KIF/KUF evidencije (money → zarez za Excel sr; datum ISO). */
+const pdvCsvDec = (s: string | null | undefined) => (s == null ? '' : s.replace('.', ','));
+const ledgerCsvColumns: CsvColumn<VatLedgerRow>[] = [
+  { header: 'Dokument', value: (r) => r.documentNumber },
+  { header: 'Partner', value: (r) => r.partnerId ?? '' },
+  { header: 'Datum', value: (r) => (r.documentDate ? r.documentDate.slice(0, 10) : '') },
+  { header: 'Stopa %', value: (r) => r.vatRateCode ?? '' },
+  { header: 'Osnovica', value: (r) => pdvCsvDec(r.vatBase) },
+  { header: 'PDV', value: (r) => pdvCsvDec(r.vatAmount) },
+];
 
 /**
  * PDV / POPDV (Faza 6). Obrazac „Lista" (DESIGN_SYSTEM §4.1): period izbor
@@ -296,11 +311,18 @@ export default function PdvPage() {
   const deleteEntry = useDeleteManualVatEntry();
   const ppPdvPdf = usePpPdvPdf();
   const ledgerPdf = useLedgerSpecPdf();
+  const sendPpPdvMail = useSendPpPdvMail();
 
   // Dijalog ručne KIF/KUF stavke: null = zatvoren; {row:null} = nova; {row} = izmena.
   const [entryDialog, setEntryDialog] = useState<{ row: VatLedgerRow | null } | null>(
     null,
   );
+  // „Pošalji PP-PDV na mail" dijalog + feedback banner.
+  const [mailOpen, setMailOpen] = useState(false);
+  const [mailBanner, setMailBanner] = useState<{
+    tone: 'success' | 'warn' | 'danger';
+    msg: string;
+  } | null>(null);
 
   // POPDV obračun za izabrani (godina, mesec) iz sačuvanih obračuna godine.
   const currentReturn: VatReturn | undefined = useMemo(
@@ -393,6 +415,19 @@ export default function PdvPage() {
                   PP-PDV
                 </Button>
               )}
+              {currentReturn && (
+                <Button
+                  variant="secondary"
+                  title="Pošalji PP-PDV obrazac mejlom (PDF prilog)"
+                  onClick={() => {
+                    setMailBanner(null);
+                    setMailOpen(true);
+                  }}
+                >
+                  <Mail className="h-4 w-4" aria-hidden />
+                  Pošalji na mail
+                </Button>
+              )}
               <Button
                 onClick={() => computePopdv.mutate({ year, month })}
                 loading={computePopdv.isPending}
@@ -402,6 +437,11 @@ export default function PdvPage() {
             </div>
           ) : isLedgerView ? (
             <div className="flex items-center gap-2">
+              <ExportCsvButton
+                columns={ledgerCsvColumns}
+                rows={view === 'kuf' ? kufRows : kifRows}
+                filename={`${view}-${year}-${String(month).padStart(2, '0')}`}
+              />
               <Button
                 variant="secondary"
                 onClick={() =>
@@ -471,6 +511,20 @@ export default function PdvPage() {
         {(activeQuery.error || mutationErr) && (
           <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">
             {((activeQuery.error as Error) || mutationErr)?.message}
+          </div>
+        )}
+
+        {mailBanner && (
+          <div
+            className={`rounded-panel border px-4 py-3 text-sm ${
+              mailBanner.tone === 'success'
+                ? 'border-status-success/40 bg-status-success-bg text-status-success'
+                : mailBanner.tone === 'warn'
+                  ? 'border-status-warn/40 bg-status-warn-bg text-status-warn'
+                  : 'border-status-danger/40 bg-status-danger-bg text-status-danger'
+            }`}
+          >
+            {mailBanner.msg}
           </div>
         )}
 
@@ -549,6 +603,36 @@ export default function PdvPage() {
             )
           }
           saving={createEntry.isPending || updateEntry.isPending}
+        />
+      )}
+
+      {mailOpen && currentReturn && (
+        <SendMailDialog
+          title={`Pošalji PP-PDV — ${MONTH_LABELS[month - 1]} ${year}.`}
+          intro="Obrazac PP-PDV se šalje kao PDF prilog (npr. knjigovođi)."
+          toRequired
+          withNote={false}
+          sending={sendPpPdvMail.isPending}
+          error={(sendPpPdvMail.error as Error | null)?.message ?? null}
+          onClose={() => setMailOpen(false)}
+          onSend={({ to }) =>
+            sendPpPdvMail.mutate(
+              { period: `${year}-${String(month).padStart(2, '0')}`, to },
+              {
+                onSuccess: (res) => {
+                  setMailOpen(false);
+                  setMailBanner(
+                    res.data.sent
+                      ? { tone: 'success', msg: `PP-PDV obrazac poslat na ${res.data.to}.` }
+                      : {
+                          tone: 'warn',
+                          msg: `PDF je generisan, ali slanje nije izvršeno (sistem za slanje nije konfigurisan).`,
+                        },
+                  );
+                },
+              },
+            )
+          }
         />
       )}
     </AppShell>

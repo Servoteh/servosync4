@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
-import type { SefOutbox } from "@prisma/client";
+import { Prisma, type SefOutbox } from "@prisma/client";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { InvoicePdfService } from "../print/invoice-pdf.service";
 import { SefClientService } from "./sef-client.service";
@@ -67,7 +67,7 @@ export class SefService {
    * na SEF). Vraća `{ outbox, warning }` — warning je ne-blokirajuće upozorenje
    * (npr. javni sektor bez broja narudžbenice), ne baca izuzetak.
    */
-  async enqueue(invoiceId: number): Promise<EnqueueResult> {
+  async enqueue(invoiceId: number, userId?: number): Promise<EnqueueResult> {
     const invoice = await this.prisma.invoice.findUnique({
       where: { id: invoiceId },
       include: { items: { orderBy: { lineNo: "asc" } } },
@@ -129,6 +129,7 @@ export class SefService {
       quantity: it.quantity,
       unitPrice: it.unitPrice,
       discountPercent: it.discountPercent,
+      vatRateCode: it.vatRateCode, // A5: stopa/kategorija po liniji (TaxSubtotal granularnost)
       vatBase: it.vatBase,
       vatAmount: it.vatAmount,
       lineTotal: it.lineTotal,
@@ -200,6 +201,14 @@ export class SefService {
       },
     });
 
+    // T3/A8: SEF status-istorija — PENDING (u red).
+    await this.logStatus({
+      outboxId: outbox.id,
+      status: "PENDING",
+      note: warning,
+      userId,
+    });
+
     return { outbox, warning };
   }
 
@@ -207,26 +216,52 @@ export class SefService {
    * Pošalji outbox red na SEF. Na uspeh: SENT + sefInvoiceId + sentAt.
    * Na (mrežnu) grešku: ostaje PENDING, upisuje errorMessage — NE baca.
    */
-  async send(outboxId: number): Promise<SefOutbox> {
+  async send(outboxId: number, userId?: number): Promise<SefOutbox> {
     const outbox = await this.getOutbox(outboxId);
     if (outbox.status === "CANCELLED") {
       throw new ConflictException("Outbox je otkazan — ne može se slati.");
+    }
+
+    // Defense in depth (review Batch A F3): faktura je u međuvremenu mogla biti stornirana
+    // dok outbox red još stoji PENDING (npr. red kreiran, pa storno pre lokalnog otkazivanja).
+    // Storniran dokument NE sme da ode na SEF.
+    const invoice = await this.prisma.invoice.findUnique({
+      where: { id: outbox.invoiceId },
+      select: { status: true },
+    });
+    if (invoice?.status === "CANCELLED") {
+      await this.logStatus({
+        outboxId,
+        status: "ERROR",
+        note: "Slanje obustavljeno — faktura je stornirana.",
+        userId,
+      });
+      throw new ConflictException(
+        "Faktura je stornirana — slanje obustavljeno.",
+      );
     }
 
     const res = await this.client.sendInvoice(outboxId);
 
     if (res.dryRun) {
       // DRY-RUN: ne menja status (ostaje PENDING), samo beleži da nije poslato.
-      return this.prisma.sefOutbox.update({
+      const row = await this.prisma.sefOutbox.update({
         where: { id: outboxId },
         data: {
           errorMessage: "DRY-RUN: SEF_API_KEY nije podešen — nije poslato.",
         },
       });
+      await this.logStatus({
+        outboxId,
+        status: "DRY_RUN",
+        note: "Slanje: DRY-RUN (SEF_API_KEY nije podešen).",
+        userId,
+      });
+      return row;
     }
 
     if (res.ok) {
-      return this.prisma.sefOutbox.update({
+      const row = await this.prisma.sefOutbox.update({
         where: { id: outboxId },
         data: {
           status: "SENT",
@@ -235,24 +270,38 @@ export class SefService {
           sentAt: new Date(),
         },
       });
+      await this.logStatus({
+        outboxId,
+        status: "SENT",
+        note: row.sefInvoiceId ? `SEF ID ${row.sefInvoiceId}` : null,
+        userId,
+      });
+      return row;
     }
 
     // Mrežna/HTTP greška: zabeleži, ostavi PENDING za retry.
-    return this.prisma.sefOutbox.update({
+    const row = await this.prisma.sefOutbox.update({
       where: { id: outboxId },
       data: { errorMessage: res.errorMessage ?? "Nepoznata SEF greška." },
     });
+    await this.logStatus({
+      outboxId,
+      status: "ERROR",
+      note: `Slanje nije uspelo: ${res.errorMessage ?? "nepoznata SEF greška."}`,
+      userId,
+    });
+    return row;
   }
 
   /**
    * Osveži status outbox reda sa SEF-a (polling). Mapira SEF status u lokalni.
    * Ne baca na mrežnu grešku.
    */
-  async refreshStatus(outboxId: number): Promise<SefOutbox> {
-    await this.getOutbox(outboxId);
+  async refreshStatus(outboxId: number, userId?: number): Promise<SefOutbox> {
+    const before = await this.getOutbox(outboxId);
     const res = await this.client.pollStatus(outboxId);
 
-    if (res.dryRun) return this.getOutbox(outboxId);
+    if (res.dryRun) return before;
 
     if (!res.ok) {
       return this.prisma.sefOutbox.update({
@@ -265,7 +314,7 @@ export class SefService {
     }
 
     const localStatus = mapSefStatus(res.sefStatus);
-    return this.prisma.sefOutbox.update({
+    const row = await this.prisma.sefOutbox.update({
       where: { id: outboxId },
       data: {
         status: localStatus ?? undefined,
@@ -273,13 +322,32 @@ export class SefService {
         errorMessage: null,
       },
     });
+
+    // T3/A8: log samo kad se status STVARNO promenio (izbegni šum od pollinga).
+    if (localStatus && localStatus !== before.status) {
+      await this.logStatus({
+        outboxId,
+        status: localStatus,
+        note: res.sefStatus
+          ? `Osveženo sa SEF-a (${res.sefStatus})`
+          : "Osveženo sa SEF-a.",
+        userId,
+      });
+    }
+    return row;
   }
 
   /**
    * Otkaži/storniraj fakturu na SEF-u. GUARD (`MozeDaSeStornira/Otkaze`):
    * dozvoljeno samo iz PENDING/SENT/DELIVERED — REJECTED/CANCELLED se ne diraju.
+   * `reason` (opciono) = razlog storna (npr. iz storna fakture A5); SEF cancel API
+   * nema polje za slobodan tekst, pa se razlog loguje (traceback), ne šalje portalu.
    */
-  async cancel(outboxId: number): Promise<SefOutbox> {
+  async cancel(
+    outboxId: number,
+    reason?: string,
+    userId?: number,
+  ): Promise<SefOutbox> {
     const outbox = await this.getOutbox(outboxId);
 
     if (!CANCELLABLE_LOCAL_STATUSES.has(outbox.status)) {
@@ -288,28 +356,88 @@ export class SefService {
       );
     }
 
+    const trimmedReason = reason && reason.trim().length > 0 ? reason.trim() : null;
+    if (trimmedReason) {
+      this.logger.log(
+        `SEF cancel outbox ${outboxId} (invoice ${outbox.invoiceId}) — razlog: ${trimmedReason}`,
+      );
+    }
+
     const res = await this.client.cancelInvoice(outboxId);
 
     if (res.dryRun) {
-      return this.prisma.sefOutbox.update({
+      const row = await this.prisma.sefOutbox.update({
         where: { id: outboxId },
         data: {
           errorMessage: "DRY-RUN: SEF_API_KEY nije podešen — cancel nije poslat.",
         },
       });
+      await this.logStatus({
+        outboxId,
+        status: "DRY_RUN",
+        note: trimmedReason
+          ? `Storno DRY-RUN — razlog: ${trimmedReason}`
+          : "Storno: DRY-RUN (SEF_API_KEY nije podešen).",
+        userId,
+      });
+      return row;
     }
 
     if (res.ok) {
-      return this.prisma.sefOutbox.update({
+      const row = await this.prisma.sefOutbox.update({
         where: { id: outboxId },
         data: { status: "CANCELLED", errorMessage: null },
       });
+      await this.logStatus({
+        outboxId,
+        status: "CANCELLED",
+        note: trimmedReason,
+        userId,
+      });
+      return row;
     }
 
-    return this.prisma.sefOutbox.update({
+    const row = await this.prisma.sefOutbox.update({
       where: { id: outboxId },
       data: { errorMessage: res.errorMessage ?? "Cancel greška." },
     });
+    await this.logStatus({
+      outboxId,
+      status: "ERROR",
+      note: `Storno nije uspeo: ${res.errorMessage ?? "cancel greška."}`,
+      userId,
+    });
+    return row;
+  }
+
+  /**
+   * Lokalno otkaži SVE PENDING outbox redove fakture (storno fakture — review Batch A F3).
+   * SEF poziv NIJE potreban jer PENDING red nikada nije poslat: updateMany PENDING → CANCELLED
+   * + status-log po redu. SENT/DELIVERED se ne diraju ovde (oni idu kroz `cancel()` = SEF API).
+   * Vraća id-eve lokalno otkazanih redova.
+   */
+  async cancelPendingLocally(
+    invoiceId: number,
+    reason?: string,
+    userId?: number,
+  ): Promise<number[]> {
+    const pending = await this.prisma.sefOutbox.findMany({
+      where: { invoiceId, status: "PENDING" },
+      select: { id: true },
+    });
+    if (pending.length === 0) return [];
+
+    const trimmed = reason && reason.trim().length > 0 ? reason.trim() : null;
+    const note = trimmed ? `storno fakture — ${trimmed}` : "storno fakture";
+
+    await this.prisma.sefOutbox.updateMany({
+      where: { invoiceId, status: "PENDING" },
+      data: { status: "CANCELLED", errorMessage: null },
+    });
+    for (const row of pending) {
+      await this.logStatus({ outboxId: row.id, status: "CANCELLED", note, userId });
+    }
+    return pending.map((r) => r.id);
   }
 
   /** Lista outbox redova (opciono filter po statusu / invoiceId). */
@@ -337,6 +465,53 @@ export class SefService {
     });
     if (!outbox) throw new NotFoundException(`SefOutbox ${outboxId} ne postoji.`);
     return outbox;
+  }
+
+  /**
+   * Hronološki status-log za JEDAN outbox ILI incoming red (timeline na /sef).
+   * Sortiran rastuće po vremenu (najstariji prvo). Vraća do 200 zapisa. Bez filtera
+   * vraća prazno (uvek se traži po jednom redu — controller obezbeđuje parametar).
+   */
+  listStatusLog(params: { outboxId?: number; incomingId?: number }) {
+    const where: Prisma.SefStatusLogWhereInput = {};
+    if (params.outboxId != null) where.outboxId = params.outboxId;
+    if (params.incomingId != null) where.incomingId = params.incomingId;
+    return this.prisma.sefStatusLog.findMany({
+      where,
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      take: 200,
+    });
+  }
+
+  /**
+   * Best-effort upis u SEF status-log (append-only istorija dokument-toka). Log NE
+   * sme da obori poslovnu radnju (enqueue/send/refresh/cancel) — greška se samo
+   * zabeleži u logger. note se kroti na 500 (VarChar limit šeme).
+   */
+  private async logStatus(entry: {
+    outboxId?: number | null;
+    incomingId?: number | null;
+    status: string;
+    note?: string | null;
+    userId?: number | null;
+  }): Promise<void> {
+    try {
+      await this.prisma.sefStatusLog.create({
+        data: {
+          outboxId: entry.outboxId ?? null,
+          incomingId: entry.incomingId ?? null,
+          status: entry.status,
+          note: entry.note ? entry.note.slice(0, 500) : null,
+          userId: entry.userId ?? null,
+        },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `SEF status-log upis nije uspeo (outbox=${entry.outboxId ?? "-"}, status=${entry.status}): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
   }
 }
 

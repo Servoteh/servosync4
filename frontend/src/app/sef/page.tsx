@@ -27,6 +27,7 @@ import {
   type SefOutbox,
 } from '@/api/sef';
 import { IncomingTab } from './incoming-tab';
+import { StatusTimelineDialog } from './status-timeline';
 
 /**
  * SEF e-fakture (izlazne): lista outbox-a (Faza 5 §B). Obrazac „Lista"
@@ -88,6 +89,8 @@ export default function SefPage() {
   const [banner, setBanner] = useState<string | null>(null);
   /** id outbox reda čija akcija je u toku — da se gasi samo taj red. */
   const [busyId, setBusyId] = useState<number | null>(null);
+  /** outbox red čija se status-istorija (timeline) trenutno prikazuje. */
+  const [timelineRow, setTimelineRow] = useState<SefOutbox | null>(null);
 
   const resetPage = () => setPage(1);
 
@@ -224,6 +227,13 @@ export default function SefPage() {
                 Storno
               </Button>
             )}
+            <Button
+              variant="ghost"
+              onClick={() => setTimelineRow(o)}
+              title="Prikaži istoriju statusa"
+            >
+              Istorija
+            </Button>
           </div>
         );
       },
@@ -314,6 +324,14 @@ export default function SefPage() {
           </>
         )}
       </div>
+
+      {timelineRow && (
+        <StatusTimelineDialog
+          title={`SEF istorija — faktura ${timelineRow.invoiceId}`}
+          outboxId={timelineRow.id}
+          onClose={() => setTimelineRow(null)}
+        />
+      )}
     </AppShell>
   );
 }

@@ -16,6 +16,7 @@ import { formatDate, formatDecimal, formatNumber } from '@/lib/format';
 import {
   useDueLiabilities,
   useCreatePaymentOrders,
+  useCreateManualPaymentOrder,
   useExportPayments,
   downloadFxTxt,
   PAYMENT_ORDER_STATUS,
@@ -23,6 +24,7 @@ import {
   type PaymentOrderStatus,
   type CreatedPaymentOrder,
   type CreatePaymentOrderLineInput,
+  type CreateManualPaymentOrderInput,
 } from '@/api/placanja';
 import { PaymentOrdersPanel } from './payment-orders-panel';
 
@@ -88,6 +90,7 @@ export default function PlacanjaPage() {
   const [created, setCreated] = useState<CreatedPaymentOrder[] | null>(null);
   const [conflict, setConflict] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
+  const [manualOpen, setManualOpen] = useState(false);
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
@@ -98,6 +101,7 @@ export default function PlacanjaPage() {
   const count = due.data?.meta.count ?? 0;
 
   const createOrders = useCreatePaymentOrders();
+  const createManual = useCreateManualPaymentOrder();
   const exportPayments = useExportPayments();
 
   // Uneseni iznos ili default = otvoreni saldo. Red bez unosa u `edits` = neplaćen.
@@ -282,6 +286,9 @@ export default function PlacanjaPage() {
           </label>
 
           <div className="ml-auto flex items-end gap-2">
+            <Button variant="secondary" onClick={() => setManualOpen(true)}>
+              Novi virman
+            </Button>
             <Button
               variant="secondary"
               onClick={() => selectAll(true)}
@@ -418,7 +425,190 @@ export default function PlacanjaPage() {
           setExportOpen(false);
         }}
       />
+
+      <ManualVirmanDialog
+        open={manualOpen}
+        onClose={() => setManualOpen(false)}
+        saving={createManual.isPending}
+        onSave={async (input) => {
+          await createManual.mutateAsync(input);
+          setManualOpen(false);
+        }}
+      />
     </AppShell>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────── ručni virman dijalog
+
+interface ManualFields {
+  supplierId: string;
+  supplierAccount: string;
+  amountText: string;
+  purpose: string;
+  referenceNumber: string;
+  dueDate: string;
+}
+
+/**
+ * Ručni pojedinačni virman (BigBit UnosVirmana) — forma bez izvora iz saldakonta.
+ * Server radi DobarTR validaciju žiro računa (400 sa srpskom porukom) i DEDUP
+ * (409 na dupli poziv na broj). Po uspehu nalog se pojavljuje u pregledu naloga.
+ */
+function ManualVirmanDialog({
+  open,
+  onClose,
+  saving,
+  onSave,
+}: {
+  open: boolean;
+  onClose: () => void;
+  saving: boolean;
+  onSave: (input: CreateManualPaymentOrderInput) => Promise<void>;
+}) {
+  const empty: ManualFields = {
+    supplierId: '',
+    supplierAccount: '',
+    amountText: '',
+    purpose: 'UPLATA ZA ROBU',
+    referenceNumber: '',
+    dueDate: '',
+  };
+  const [fields, setFields] = useState<ManualFields>(empty);
+  const [error, setError] = useState<string | null>(null);
+
+  const set = (patch: Partial<ManualFields>) => setFields((f) => ({ ...f, ...patch }));
+
+  async function submit(): Promise<void> {
+    setError(null);
+    const supplierId = Number(fields.supplierId.trim());
+    if (!Number.isInteger(supplierId) || supplierId <= 0) {
+      setError('Šifra primaoca (komitent) je obavezna.');
+      return;
+    }
+    if (fields.supplierAccount.trim() === '') {
+      setError('Žiro račun primaoca je obavezan.');
+      return;
+    }
+    const amount = parseAmount(fields.amountText);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setError('Iznos mora biti veći od 0.');
+      return;
+    }
+    if (fields.purpose.trim() === '') {
+      setError('Svrha plaćanja je obavezna.');
+      return;
+    }
+    try {
+      await onSave({
+        supplierId,
+        supplierAccount: fields.supplierAccount.trim(),
+        amount,
+        purpose: fields.purpose.trim(),
+        referenceNumber: fields.referenceNumber.trim() || undefined,
+        dueDate: fields.dueDate || undefined,
+      });
+      setFields(empty);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Greška pri kreiranju virmana.');
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title="Novi virman (ručni unos)"
+      dismissable={!saving}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose} disabled={saving}>
+            Otkaži
+          </Button>
+          <Button onClick={submit} loading={saving}>
+            Sačuvaj nalog
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <p className="text-sm text-ink-secondary">
+          Virman se unosi ručno (bez veze sa otvorenom stavkom). Žiro račun se
+          proverava (DobarTR); nalog ulazi u pregled kao kreiran, spreman za potpis i
+          izvoz.
+        </p>
+
+        <div className="grid grid-cols-2 gap-3">
+          <FormField label="Šifra primaoca" required hint="Komitent (broj).">
+            <Input
+              value={fields.supplierId}
+              inputMode="numeric"
+              placeholder="npr. 555"
+              onChange={(e) => set({ supplierId: e.target.value })}
+            />
+          </FormField>
+
+          <FormField label="Iznos" required>
+            <Input
+              value={fields.amountText}
+              inputMode="decimal"
+              placeholder="0,00"
+              className="text-right tnums"
+              onChange={(e) => set({ amountText: e.target.value })}
+            />
+          </FormField>
+        </div>
+
+        <FormField
+          label="Žiro račun primaoca"
+          required
+          hint="Format: banka(3)-partija-kontrolni(2)."
+        >
+          <Input
+            value={fields.supplierAccount}
+            inputMode="numeric"
+            placeholder="npr. 160-0000000000000-00"
+            onChange={(e) => set({ supplierAccount: e.target.value })}
+          />
+        </FormField>
+
+        <FormField label="Svrha plaćanja" required>
+          <Input
+            value={fields.purpose}
+            maxLength={255}
+            onChange={(e) => set({ purpose: e.target.value })}
+          />
+        </FormField>
+
+        <div className="grid grid-cols-2 gap-3">
+          <FormField
+            label="Poziv na broj (odobrenje)"
+            hint="Kompletan, sa kontrolnom cifrom."
+          >
+            <Input
+              value={fields.referenceNumber}
+              inputMode="numeric"
+              className="tnums"
+              onChange={(e) => set({ referenceNumber: e.target.value })}
+            />
+          </FormField>
+
+          <FormField label="Dospeće (valuta)">
+            <Input
+              type="date"
+              value={fields.dueDate}
+              onChange={(e) => set({ dueDate: e.target.value })}
+            />
+          </FormField>
+        </div>
+
+        {error && (
+          <p className="text-sm text-status-danger" role="alert">
+            {error}
+          </p>
+        )}
+      </div>
+    </Dialog>
   );
 }
 

@@ -69,6 +69,21 @@ export class GlWriteService {
     return { id: entryId, status: "posted" };
   }
 
+  /**
+   * Masovno zaključavanje starih naloga (BigBit „zaključaj period"): svi `posted`
+   * nalozi sa postingDate < beforeDate prelaze u `locked`. Vraća broj zaključanih.
+   * Ne dira `draft` (nezavršeni) ni već `locked` — samo posted→locked.
+   */
+  async lockOlderThan(beforeDate: Date) {
+    if (!(beforeDate instanceof Date) || Number.isNaN(beforeDate.getTime()))
+      throw new ConflictException("Neispravan datum praga (beforeDate).");
+    const res = await this.prisma.journalEntry.updateMany({
+      where: { status: "posted", postingDate: { lt: beforeDate } },
+      data: { status: "locked" },
+    });
+    return { count: res.count };
+  }
+
   /** posted → locked (zaključaj nalog — sprečava izmene/storno bez otključavanja). */
   async markLocked(entryId: number) {
     const entry = await this.getEntryOrThrow(entryId);

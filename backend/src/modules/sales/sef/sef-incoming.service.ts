@@ -162,7 +162,7 @@ export class SefIncomingService {
 
         // Upsert (a ne create) štiti od paralelnog dupliranja na @@unique(sefPurchaseId);
         // update je no-op — idempotentan re-pull ne dira postojeći (možda obrađen) red.
-        await this.prisma.sefIncomingInvoice.upsert({
+        const row = await this.prisma.sefIncomingInvoice.upsert({
           where: { sefPurchaseId },
           create: {
             sefPurchaseId,
@@ -185,6 +185,12 @@ export class SefIncomingService {
             rawXml: xmlRes.body,
           },
           update: {},
+        });
+        // T3/A8: SEF status-istorija ulazne fakture — NEW (preuzeto sa SEF-a).
+        await this.logStatus({
+          incomingId: row.id,
+          status: "NEW",
+          note: `Preuzeto sa SEF-a (${sefPurchaseId})`,
         });
         created++;
       } catch (err) {
@@ -336,6 +342,14 @@ export class SefIncomingService {
       );
     }
 
+    // T3/A8: SEF status-istorija — ACCEPTED / REJECTED (razlog u note).
+    await this.logStatus({
+      incomingId: entry.id,
+      status: newStatus,
+      note: comment,
+      userId,
+    });
+
     const invoice = await this.prisma.sefIncomingInvoice.findUniqueOrThrow({
       where: { id: entry.id },
     });
@@ -433,6 +447,34 @@ export class SefIncomingService {
       vatAmount,
       currency: currency.trim().slice(0, 3).toUpperCase() || "RSD",
     };
+  }
+
+  /**
+   * Best-effort upis u SEF status-log (append-only). Log NE sme da obori pull /
+   * accept / reject — greška se samo zabeleži u logger. note se kroti na 500.
+   */
+  private async logStatus(entry: {
+    incomingId: number;
+    status: string;
+    note?: string | null;
+    userId?: number | null;
+  }): Promise<void> {
+    try {
+      await this.prisma.sefStatusLog.create({
+        data: {
+          incomingId: entry.incomingId,
+          status: entry.status,
+          note: entry.note ? entry.note.slice(0, 500) : null,
+          userId: entry.userId ?? null,
+        },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `SEF status-log upis nije uspeo (incoming=${entry.incomingId}, status=${entry.status}): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
   }
 }
 

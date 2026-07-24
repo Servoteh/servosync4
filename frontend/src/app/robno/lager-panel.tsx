@@ -4,8 +4,24 @@ import { useState } from 'react';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Input } from '@/components/ui-kit/form-field';
+import { ExportCsvButton } from '@/components/export-csv-button';
+import { type CsvColumn } from '@/lib/table-csv';
 import { formatDecimal } from '@/lib/format';
 import { useLager, type LagerRow } from '@/api/robno';
+
+/** CSV kolone lagera (money/količine → zarez za Excel sr). */
+const lagerCsvDec = (s: string | null | undefined) => (s == null ? '' : s.replace('.', ','));
+const lagerCsvColumns: CsvColumn<LagerRow>[] = [
+  { header: 'Artikal', value: (r) => r.itemName ?? '' },
+  { header: 'Šifra', value: (r) => r.itemCode ?? '' },
+  { header: 'Magacin', value: (r) => r.warehouseId },
+  { header: 'Jedinica', value: (r) => r.unit ?? '' },
+  { header: 'Stanje', value: (r) => lagerCsvDec(r.onHand) },
+  { header: 'Rezervisano', value: (r) => lagerCsvDec(r.reserved) },
+  { header: 'Pros. nabavna', value: (r) => lagerCsvDec(r.avgPurchaseNet) },
+  { header: 'Pros. VP', value: (r) => lagerCsvDec(r.avgWholesalePrice) },
+  { header: 'Vrednost', value: (r) => lagerCsvDec(r.stockValue) },
+];
 
 /**
  * Lager lista (BigBit paritet — stanje zaliha po magacinu + prosečne cene).
@@ -88,6 +104,11 @@ export function LagerPanel() {
             />
             samo sa stanjem
           </label>
+          <ExportCsvButton
+            columns={lagerCsvColumns}
+            rows={rows}
+            filename={`lager-${new Date().toISOString().slice(0, 10)}`}
+          />
         </div>
       </div>
 

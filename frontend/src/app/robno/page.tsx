@@ -22,6 +22,7 @@ import {
   type StockDocument,
 } from '@/api/robno';
 import { LagerPanel } from './lager-panel';
+import { ItemCardPanel } from './item-card-panel';
 import { NewDocumentDialog } from './new-document-dialog';
 
 /**
@@ -243,6 +244,8 @@ export default function RobnoPage() {
             onNext={() => setPage((p) => Math.min(totalPages, p + 1))}
           />
         )}
+
+        <ItemCardPanel />
 
         <LagerPanel />
       </div>

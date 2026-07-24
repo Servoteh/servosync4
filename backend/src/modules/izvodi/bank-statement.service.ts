@@ -787,6 +787,22 @@ export class BankStatementService {
     return this.getStatementOrThrow(id);
   }
 
+  /**
+   * Reset/brisanje uvezenog izvoda (BigBit paritet — pogrešan uvoz se poništava).
+   * Dozvoljeno SAMO dok izvod NIJE proknjižen (POSTED → 409, jer bi brisanje ostavilo
+   * GL nalog bez izvora). Stavke se brišu kaskadno (FK onDelete: Cascade). Vraća `{ id }`.
+   */
+  async deleteStatement(statementId: number) {
+    const statement = await this.getStatementOrThrow(statementId);
+    if (statement.status === "POSTED") {
+      throw new ConflictException(
+        `Izvod ${statementId} je proknjižen — brisanje nije dozvoljeno (stornirajte nalog u glavnoj knjizi).`,
+      );
+    }
+    await this.prisma.bankStatement.delete({ where: { id: statementId } });
+    return { id: statementId };
+  }
+
   private async getStatementOrThrow(id: number) {
     const statement = await this.prisma.bankStatement.findUnique({
       where: { id },

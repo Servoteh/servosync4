@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { Mail } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { useCan } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
@@ -12,6 +13,9 @@ import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Tabs } from '@/components/ui-kit/tabs';
 import { Button } from '@/components/ui-kit/button';
+import { ExportCsvButton } from '@/components/export-csv-button';
+import { SendMailDialog } from '@/components/send-mail-dialog';
+import { type CsvColumn } from '@/lib/table-csv';
 import { formatDate, formatDecimal, formatNumber } from '@/lib/format';
 import {
   useOpenItems,
@@ -19,11 +23,25 @@ import {
   useReconcile,
   useUnreconcile,
   useIosPdf,
+  useSendIosMail,
   openPdf,
   type OpenItem,
   type AgingByPartnerRow,
 } from '@/api/saldakonti';
 import { CompensationPanel } from './compensation-panel';
+
+/** CSV kolone otvorenih stavki (money → zarez za Excel sr; datum ISO). */
+const csvDec = (s: string | null | undefined) => (s == null ? '' : s.replace('.', ','));
+const openItemsCsvColumns: CsvColumn<OpenItem>[] = [
+  { header: 'Konto', value: (r) => r.accountCode },
+  { header: 'Komitent', value: (r) => r.analyticalCode ?? '' },
+  { header: 'Broj dokumenta', value: (r) => r.documentNumber ?? '' },
+  { header: 'Saldo', value: (r) => csvDec(r.balance) },
+  { header: 'Duguje', value: (r) => csvDec(r.totalDebit) },
+  { header: 'Potražuje', value: (r) => csvDec(r.totalCredit) },
+  { header: 'Dospeće', value: (r) => (r.dueDate ? r.dueDate.slice(0, 10) : '') },
+  { header: 'Kašnjenje (dana)', value: (r) => r.daysOverdue ?? '' },
+];
 
 /**
  * Saldakonti (Faza 4 §A). Obrazac „Lista" (DESIGN_SYSTEM §4.1): filter bar + gusta
@@ -121,6 +139,13 @@ export default function SaldakontiPage() {
   const reconcile = useReconcile();
   const unreconcile = useUnreconcile();
   const iosPdf = useIosPdf();
+  const sendIosMail = useSendIosMail();
+  // „Pošalji IOS na mail" dijalog + feedback banner.
+  const [mailOpen, setMailOpen] = useState(false);
+  const [mailBanner, setMailBanner] = useState<{
+    tone: 'success' | 'warn' | 'danger';
+    msg: string;
+  } | null>(null);
   // Posle uspešnog uparivanja pamtimo grupu radi neposredne akcije Razveži
   // (open-items pogled prikazuje samo otvorene stavke pa uparena grupa nestane
   // iz liste — undo je smislen tačno ovde, odmah po uparivanju).
@@ -392,6 +417,11 @@ export default function SaldakontiPage() {
               </div>
 
               <div className="flex items-center gap-2">
+                <ExportCsvButton
+                  columns={openItemsCsvColumns}
+                  rows={rows}
+                  filename={`otvorene-stavke-${new Date().toISOString().slice(0, 10)}`}
+                />
                 {appliedPartnerId != null && (
                   <Button
                     type="button"
@@ -406,6 +436,20 @@ export default function SaldakontiPage() {
                     }
                   >
                     IOS obrazac
+                  </Button>
+                )}
+                {appliedPartnerId != null && (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    title="Pošalji IOS obrazac komitentu mejlom (PDF prilog)"
+                    onClick={() => {
+                      setMailBanner(null);
+                      setMailOpen(true);
+                    }}
+                  >
+                    <Mail className="h-4 w-4" aria-hidden />
+                    Pošalji na mail
                   </Button>
                 )}
                 {canReconcile && (
@@ -475,6 +519,20 @@ export default function SaldakontiPage() {
               </div>
             )}
 
+            {mailBanner && (
+              <div
+                className={`rounded-panel border px-4 py-3 text-sm ${
+                  mailBanner.tone === 'success'
+                    ? 'border-status-success/40 bg-status-success-bg text-status-success'
+                    : mailBanner.tone === 'warn'
+                      ? 'border-status-warn/40 bg-status-warn-bg text-status-warn'
+                      : 'border-status-danger/40 bg-status-danger-bg text-status-danger'
+                }`}
+              >
+                {mailBanner.msg}
+              </div>
+            )}
+
             <DataTable
               columns={openColumns}
               rows={rows}
@@ -539,6 +597,36 @@ export default function SaldakontiPage() {
           </>
         )}
       </div>
+
+      {mailOpen && appliedPartnerId != null && (
+        <SendMailDialog
+          title={`Pošalji IOS obrazac — komitent ${appliedPartnerId}`}
+          intro="IOS obrazac usaglašavanja salda se šalje komitentu kao PDF prilog."
+          toRequired
+          withNote={false}
+          sending={sendIosMail.isPending}
+          error={(sendIosMail.error as Error | null)?.message ?? null}
+          onClose={() => setMailOpen(false)}
+          onSend={({ to }) =>
+            sendIosMail.mutate(
+              { partnerId: appliedPartnerId, to },
+              {
+                onSuccess: (res) => {
+                  setMailOpen(false);
+                  setMailBanner(
+                    res.data.sent
+                      ? { tone: 'success', msg: `IOS obrazac poslat na ${res.data.to}.` }
+                      : {
+                          tone: 'warn',
+                          msg: `PDF je generisan, ali slanje nije izvršeno (sistem za slanje nije konfigurisan).`,
+                        },
+                  );
+                },
+              },
+            )
+          }
+        />
+      )}
     </AppShell>
   );
 }

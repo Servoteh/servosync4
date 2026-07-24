@@ -73,6 +73,16 @@ export class IzvodiController {
     return this.statements.getStatement(id);
   }
 
+  /**
+   * Reset/brisanje uvezenog izvoda — samo ne-POSTED (POSTED → 409). Briše izvod +
+   * stavke (kaskadno). Permisija IZVODI_IMPORT (write nad uvozom, kao ručne stavke).
+   */
+  @Delete(":id")
+  @RequirePermission(PERMISSIONS.IZVODI_IMPORT)
+  remove(@Param("id", ParseIntPipe) id: number) {
+    return this.statements.deleteStatement(id);
+  }
+
   @Post(":id/match")
   @RequirePermission(PERMISSIONS.IZVODI_IMPORT)
   match(@Param("id", ParseIntPipe) id: number) {

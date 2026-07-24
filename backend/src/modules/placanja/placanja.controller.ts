@@ -8,8 +8,10 @@ import {
   Post,
   Query,
   Req,
+  Res,
   UseGuards,
 } from "@nestjs/common";
+import type { Response } from "express";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
@@ -17,8 +19,11 @@ import { PERMISSIONS } from "../../common/authz/permissions";
 import type { AuthUser } from "../auth/jwt.strategy";
 import { PaymentPreparationService } from "./payment-preparation.service";
 import { PaymentExportService } from "./payment-export.service";
+import { PaymentOrderPdfService } from "./payment-order-pdf.service";
 import type { CreatePaymentOrdersDto } from "./dto/create-payment-orders.dto";
 import { validateCreatePaymentOrders } from "./dto/create-payment-orders.dto";
+import type { CreateManualPaymentOrderDto } from "./dto/create-manual-payment-order.dto";
+import { validateCreateManualPaymentOrder } from "./dto/create-manual-payment-order.dto";
 import type { ExportPaymentsDto } from "./dto/export-payments.dto";
 import { validateExportPayments } from "./dto/export-payments.dto";
 
@@ -38,6 +43,7 @@ export class PlacanjaController {
   constructor(
     private readonly preparation: PaymentPreparationService,
     private readonly exporter: PaymentExportService,
+    private readonly orderPdf: PaymentOrderPdfService,
   ) {}
 
   /** Dospele obaveze na dan `cutoff` (default danas). */
@@ -115,6 +121,39 @@ export class PlacanjaController {
     validateCreatePaymentOrders(dto);
     const data = await this.preparation.createPaymentOrders(dto, req.user.userId);
     return { data, meta: { count: data.length } };
+  }
+
+  /**
+   * RUČNI pojedinačni virman (BigBit UnosVirmana) — bez izvora iz saldakonta.
+   * DobarTR validacija žiro računa; nalog ulazi u pregled kao CREATED.
+   */
+  @Post("orders/manual")
+  @RequirePermission(PERMISSIONS.PLACANJA_PREPARE)
+  async createManual(
+    @Body() dto: CreateManualPaymentOrderDto,
+    @Req() req: { user: AuthUser },
+  ) {
+    validateCreateManualPaymentOrder(dto);
+    const data = await this.preparation.createManualOrder(dto, req.user.userId);
+    return { data };
+  }
+
+  /**
+   * Štampa virmana — obrazac „Nalog za prenos" (PDF, inline). Nasleđuje klasnu
+   * PLACANJA_READ permisiju (read-only izlaz). 404 ako nalog ne postoji.
+   */
+  @Get("orders/:id/pdf")
+  async printOrder(
+    @Param("id", ParseIntPipe) id: number,
+    @Res() res: Response,
+  ): Promise<void> {
+    const { buffer, fileName } = await this.orderPdf.buildOrderPdf(id);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename="${encodeURIComponent(fileName)}"`,
+    );
+    res.send(buffer);
   }
 
   /**

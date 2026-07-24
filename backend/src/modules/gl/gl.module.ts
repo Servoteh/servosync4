@@ -1,9 +1,11 @@
 import { Module } from "@nestjs/common";
 import { PrismaModule } from "../../prisma/prisma.module";
+import { DocumentsModule } from "../documents/documents.module";
 import { PostingModule } from "./posting/posting.module";
 import { GlController } from "./gl.controller";
 import { GlReadService } from "./gl-read.service";
 import { GlWriteService } from "./gl-write.service";
+import { JournalPrintService } from "./journal-print.service";
 
 /**
  * Glavna knjiga (Faza 2) — READ (dnevnik/kartica konta/kontni plan) + WRITE
@@ -11,9 +13,9 @@ import { GlWriteService } from "./gl-write.service";
  * PostingModule (postManualEntry, numeracija); ovaj modul ga koristi za write.
  */
 @Module({
-  imports: [PrismaModule, PostingModule],
+  imports: [PrismaModule, PostingModule, DocumentsModule], // DocumentsModule → PdfService (T2 štampa temeljnice)
   controllers: [GlController],
-  providers: [GlReadService, GlWriteService],
+  providers: [GlReadService, GlWriteService, JournalPrintService],
   exports: [GlReadService, GlWriteService],
 })
 export class GlModule {}
