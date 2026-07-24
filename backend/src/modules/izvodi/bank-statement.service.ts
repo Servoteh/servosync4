@@ -26,6 +26,7 @@ import {
   validateCreateStatementLine,
   validateUpdateStatementLine,
 } from "./dto/statement-line.dto";
+import { parseReference } from "./reference-parser.util";
 
 const D = Prisma.Decimal;
 const ZERO = new D(0);
@@ -128,6 +129,7 @@ export class BankStatementService {
         amount: l.amount.toFixed(2),
         direction: l.direction,
         referenceNumber: l.referenceNumber,
+        model: l.model, // Model PNB-a (97/11/99) — vidljiv u pregledu; ne persistuje se
         documentDate: l.documentDate,
       })),
     };
@@ -237,13 +239,22 @@ export class BankStatementService {
 
   /**
    * Uparivanje otvorene stavke (LedgerEntry): analitika = komitent, reconciledAt IS NULL,
-   * nalog proknjižen (journalEntry.status posted/locked). Prvo po documentNumber == PozivNaBroj
-   * (uplata nosi broj fakture, doc 21 §A / PLAN §A ReconciliationService), fallback po iznosu.
+   * nalog proknjižen (journalEntry.status posted/locked). Prvo po broju dokumenta iz
+   * poziva na broj (uplata nosi broj fakture, doc 21 §A / PLAN §A) — više NIJE egzaktno
+   * poređenje nego FX_OdrediBrojDokumenta port: `parseReference` iz PNB-a izvuče uređene
+   * kandidate (sirov trim, bez modela 97 kontrolnog broja, segmenti po crticama/kosim
+   * crtama, bez vodećih nula, broj/godina), pa biramo pogodak po prioritetu kandidata
+   * (prvi = sirov trim = egzaktan → nema regresije). Fallback po iznosu ostaje.
+   *
+   * MODEL: BankStatementLine nema kolonu za model (ne persistuje se), pa se model-97
+   * skidanje oslanja na inline „97"+KK detekciju iz sirovog PNB-a; `model` param je
+   * opcion za pozivaoce koji ga imaju (npr. iz parse toka).
    */
   private async matchOpenItem(
     customerId: number,
     referenceNumber: string | null,
     amount: Prisma.Decimal,
+    model?: string | null,
   ): Promise<number | null> {
     const baseWhere: Prisma.LedgerEntryWhereInput = {
       analyticalCode: customerId,
@@ -251,12 +262,19 @@ export class BankStatementService {
       journalEntry: { is: { status: { in: ["posted", "locked"] } } },
     };
 
-    if (referenceNumber && referenceNumber.trim().length > 0) {
-      const byRef = await this.prisma.ledgerEntry.findFirst({
-        where: { ...baseWhere, documentNumber: referenceNumber.trim() },
-        select: { id: true },
+    const { candidates } = parseReference(referenceNumber, model);
+    if (candidates.length > 0) {
+      // Jedan upit po SVIM kandidatima; pogodak biramo po prioritetu (prvi kandidat prvi).
+      const rows = await this.prisma.ledgerEntry.findMany({
+        where: { ...baseWhere, documentNumber: { in: candidates } },
+        select: { id: true, documentNumber: true },
       });
-      if (byRef) return byRef.id;
+      if (rows.length > 0) {
+        for (const candidate of candidates) {
+          const hit = rows.find((r) => r.documentNumber === candidate);
+          if (hit) return hit.id;
+        }
+      }
     }
 
     // Fallback: otvorena stavka sa tačno jednakim iznosom (dug ili pot).

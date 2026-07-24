@@ -111,7 +111,11 @@ export class OpenItemsService {
         JOIN journal_entries je ON je.id = le.journal_entry_id
         JOIN saldakonto_accounts sa ON sa.account = le.account_code
         WHERE je.status = 'posted'
-          AND le.reconciled_at IS NULL
+          -- Presek NA DAN (review 1E): stavka je „otvorena na dan" ako je proknjižena
+          -- do preseka I nije bila uparena do preseka (uparivanje POSLE preseka je
+          -- nevidljivo za istorijski IOS — godišnje usaglašavanje 31.12).
+          AND je.posting_date <= ${cutoff}
+          AND (le.reconciled_at IS NULL OR le.reconciled_at > ${cutoff})
           AND sa.tracks_open_items = TRUE
           ${accountFilter}
           ${partnerFilter}

@@ -21,6 +21,7 @@ import {
   type CreatePurchaseOrderDto,
   validateCreatePurchaseOrder,
 } from "./dto/create-purchase-order.dto";
+import { type AcceptQuoteDto, validateAcceptQuote } from "./dto/accept-quote.dto";
 
 /**
  * NACRT — servis modula Nabavka (Traka B §B). Status-mašina:
@@ -208,6 +209,154 @@ export class NabavkaService {
     });
 
     return { rfq, emailSent: sent };
+  }
+
+  // ── UPIT DOBAVLJAČU: LISTE / DETALJ / PRIHVATANJE PONUDE ────────────────────
+
+  /**
+   * Lista upita dobavljačima (BigBit „Pregled upita") — poslati/prihvaćeni upiti.
+   * Filteri: status (DRAFT/SENT/QUOTED/CLOSED) i dobavljač; server-side paginacija.
+   * Naziv dobavljača (meki ref na šifarnik komitenata) se dorešava batch-om.
+   */
+  async listRfqs(params: {
+    status?: string;
+    supplierId?: number;
+    skip?: number;
+    take?: number;
+  }) {
+    const where: Record<string, unknown> = {};
+    if (params.status) where.status = params.status;
+    if (params.supplierId != null) where.supplierId = params.supplierId;
+
+    const take = Math.min(params.take ?? 50, 200);
+    const skip = params.skip ?? 0;
+    const [rows, total] = await this.prisma.$transaction([
+      this.prisma.supplierRfq.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        skip,
+        take,
+        include: { _count: { select: { items: true } } },
+      }),
+      this.prisma.supplierRfq.count({ where }),
+    ]);
+
+    // Naziv dobavljača — meki ref (bez required-relation JOIN-a); batch resolve.
+    const supplierIds = [...new Set(rows.map((r) => r.supplierId))];
+    const suppliers = supplierIds.length
+      ? await this.prisma.customer.findMany({
+          where: { id: { in: supplierIds } },
+          select: { id: true, name: true },
+        })
+      : [];
+    const nameById = new Map(suppliers.map((s) => [s.id, s.name]));
+
+    return {
+      data: rows.map((r) => ({
+        ...r,
+        supplierName: nameById.get(r.supplierId) ?? null,
+      })),
+      meta: { total, skip, take },
+    };
+  }
+
+  /** Detalj upita (zaglavlje + stavke + naziv dobavljača, meki ref). Envelope { data }. */
+  async getRfq(id: number) {
+    const rfq = await this.prisma.supplierRfq.findUnique({
+      where: { id },
+      include: { items: { orderBy: [{ lineNo: "asc" }, { id: "asc" }] } },
+    });
+    if (!rfq) throw new NotFoundException(`Upit ${id} ne postoji.`);
+
+    const supplier = await this.prisma.customer.findUnique({
+      where: { id: rfq.supplierId },
+      select: { id: true, name: true, city: true, taxId: true },
+    });
+
+    return { data: { ...rfq, supplier } };
+  }
+
+  /**
+   * Prihvati ponudu po upitu: upiši rok isporuke i označi stavke prihvaćenim
+   * (`isAccepted`), a upit → QUOTED. Cena se NE drži na upitu (šema `SupplierRfqItem`
+   * je nema — BigBit pravilo: cena tek u narudžbenici) — ponuđena cena se vraća u
+   * `createOrderDraft` spremnom za postojeći `createOrder` tok (offeredPrice →
+   * unitPrice). Prihvatanje NE kreira narudžbenicu automatski. Ponovno prihvatanje
+   * (QUOTED/CLOSED) → 409.
+   */
+  async acceptQuote(rfqId: number, dto: AcceptQuoteDto, actor: AuthUser) {
+    validateAcceptQuote(dto);
+
+    const rfq = await this.prisma.supplierRfq.findUnique({
+      where: { id: rfqId },
+      include: { items: { orderBy: [{ lineNo: "asc" }, { id: "asc" }] } },
+    });
+    if (!rfq) throw new NotFoundException(`Upit ${rfqId} ne postoji.`);
+    if (rfq.status === "QUOTED" || rfq.status === "CLOSED")
+      throw new ConflictException("Ponuda za ovaj upit je već prihvaćena.");
+    if (rfq.items.length === 0)
+      throw new UnprocessableEntityException(
+        "Upit nema stavki za prihvatanje.",
+      );
+
+    // Ulaz po stavci (rfqItemId ili itemId alias) → rok + cena.
+    const leadByItemId = new Map<number, number>();
+    const priceByItemId = new Map<number, number>();
+    for (const l of dto.items ?? []) {
+      const key = l.rfqItemId ?? l.itemId;
+      if (key == null) continue;
+      if (l.offeredLeadTimeDays != null)
+        leadByItemId.set(key, l.offeredLeadTimeDays);
+      if (l.offeredPrice != null) priceByItemId.set(key, l.offeredPrice);
+    }
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      for (const item of rfq.items) {
+        const lead = leadByItemId.get(item.id);
+        await tx.supplierRfqItem.update({
+          where: { id: item.id },
+          data: {
+            isAccepted: true,
+            ...(lead != null ? { offeredLeadTimeDays: lead } : {}),
+          },
+        });
+      }
+      return tx.supplierRfq.update({
+        where: { id: rfqId },
+        data: { status: "QUOTED", updatedByUserId: actor.userId },
+        include: { items: { orderBy: [{ lineNo: "asc" }, { id: "asc" }] } },
+      });
+    });
+
+    // Predmet nasleđen iz zahteva (meki ref) — prefill narudžbenice.
+    let projectId: number | null = null;
+    if (rfq.requestId != null) {
+      const req = await this.prisma.purchaseRequest.findUnique({
+        where: { id: rfq.requestId },
+        select: { projectId: true },
+      });
+      projectId = req?.projectId ?? null;
+    }
+
+    // createOrderDraft — spreman za postojeći createOrder tok (cena → unitPrice).
+    const createOrderDraft: CreatePurchaseOrderDto = {
+      supplierId: rfq.supplierId,
+      rfqId: rfq.id,
+      projectId,
+      currency: "RSD",
+      note: null,
+      items: updated.items.map((it) => ({
+        articleId: it.articleId ?? null,
+        description: it.description ?? null,
+        orderedQuantity: Number(it.quantity),
+        unitPrice: priceByItemId.get(it.id) ?? null,
+        unit: it.unit ?? null,
+        rfqItemId: it.id,
+        requestItemId: it.requestItemId ?? null,
+      })),
+    };
+
+    return { data: { rfq: updated, createOrderDraft } };
   }
 
   // ── NARUDŽBENICA (kreiranje + status) ──────────────────────────────────────

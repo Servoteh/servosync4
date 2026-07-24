@@ -1,10 +1,12 @@
 import { Module } from "@nestjs/common";
 import { PrismaModule } from "../../prisma/prisma.module";
 import { PostingModule } from "../gl/posting/posting.module";
+import { DocumentsModule } from "../documents/documents.module";
 import { SaldakontiController } from "./saldakonti.controller";
 import { OpenItemsService } from "./open-items.service";
 import { ReconciliationService } from "./reconciliation.service";
 import { CompensationService } from "./compensation.service";
+import { IosPdfService } from "./ios-pdf.service";
 
 /**
  * Modul Saldakonti (Faza 4 §A) — otvorene stavke / aging / uparivanje / kompenzacija.
@@ -20,9 +22,9 @@ import { CompensationService } from "./compensation.service";
  * registraciju radi integrator pri aktivaciji Faze 4.
  */
 @Module({
-  imports: [PrismaModule, PostingModule],
+  imports: [PrismaModule, PostingModule, DocumentsModule], // DocumentsModule → PdfService za IOS obrazac (E3)
   controllers: [SaldakontiController],
-  providers: [OpenItemsService, ReconciliationService, CompensationService],
+  providers: [OpenItemsService, ReconciliationService, CompensationService, IosPdfService],
   exports: [OpenItemsService, ReconciliationService, CompensationService],
 })
 export class SaldakontiModule {}
