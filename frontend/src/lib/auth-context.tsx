@@ -7,6 +7,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
+import { usePathname, useRouter } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
 import { ApiError, getRefreshToken, getToken, setRefreshToken, setToken } from '@/api/client';
 import { isSafeInternalPath } from '@/lib/safe-path';
@@ -57,6 +58,8 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const qc = useQueryClient();
+  const router = useRouter();
+  const pathname = usePathname();
   const [hasToken, setHasToken] = useState(false);
   const [ready, setReady] = useState(false);
   const loginMut = useLogin();
@@ -162,6 +165,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const meQuery = useMe(ready && hasToken);
   const permsQuery = useMyPermissions(ready && hasToken);
+
+  // Sprovođenje must_change_password (B2): dok je flag postavljen, korisnik je zaključan na
+  // /promena-lozinke — deep-link na bilo koju drugu rutu se preusmerava (guard je ovde, u shell-u
+  // koji obavija SVE stranice, pa ne može da se zaobiđe). Flag se skida čim backend potvrdi promenu
+  // (useChangePassword upisuje mustChangePassword:false u ['me'] keš → efekat prestaje da okida).
+  const mustChangePassword =
+    hasToken && meQuery.data?.mustChangePassword === true;
+  useEffect(() => {
+    if (!mustChangePassword) return;
+    if (pathname === '/promena-lozinke') return;
+    router.replace('/promena-lozinke');
+  }, [mustChangePassword, pathname, router]);
 
   // `me` padne SAMO kroz auth 401 (istekao/nevažeći token, refresh već iscrpljen) →
   // nazad na odjavljeno: čistimo OBA tokena (u iframe-u hasToken=false ponovo naoružava

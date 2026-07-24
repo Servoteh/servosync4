@@ -336,6 +336,19 @@ describe("PodesavanjaUsersService (D1 dual-write)", () => {
         svc.resetPassword(ADMIN, ROLE_ID, {}),
       ).rejects.toBeInstanceOf(NotFoundException);
     });
+
+    // B1: reset MORA da upiše nov bcrypt hash i u 3.0 users (create i update grana), inače
+    // direktan 3.0 login ne prihvata privremenu lozinku (radi samo SSO/GoTrue).
+    it("upisuje nov passwordHash u 2.0 users (create + update grana)", async () => {
+      sy15QueryRaw.mockResolvedValueOnce([
+        { email: "u@servoteh.com", role: "viewer", is_active: true },
+      ]);
+      await svc.resetPassword(ADMIN, ROLE_ID, {});
+      const arg = (userUpsert.mock.calls as Array<[UpsertCall]>)[0][0];
+      expect(arg.update.passwordHash).toBe("hashed"); // postojeći nalog dobija nov hash
+      expect(arg.create.passwordHash).toBe("hashed"); // i INSERT grana (ako 2.0 red fali)
+      expect(arg.update.mustChangePassword).toBe(true); // must_change ostaje
+    });
   });
 
   describe("must-change-password", () => {

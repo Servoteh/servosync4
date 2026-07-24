@@ -1,13 +1,12 @@
 import { Test, TestingModule } from "@nestjs/testing";
-import { UnauthorizedException } from "@nestjs/common";
+import { BadRequestException, UnauthorizedException } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import * as bcrypt from "bcrypt";
 import { PrismaService } from "../../prisma/prisma.service";
+import { Sy15Service } from "../../common/sy15/sy15.service";
+import { Sy15AuthAdminService } from "../../common/sy15/sy15-auth-admin.service";
 import { AuthService } from "./auth.service";
-import {
-  generateRefreshToken,
-  hashRefreshToken,
-} from "./refresh-token.util";
+import { generateRefreshToken, hashRefreshToken } from "./refresh-token.util";
 
 // bcrypt je nativni modul (property `compare` nije redefinabilan pa jest.spyOn puca) —
 // auto-mock ga zameni jest.fn-ovima; login test postavlja compare → true.
@@ -60,6 +59,7 @@ const activeUser = {
   role: "admin",
   active: true,
   workerId: 55,
+  mustChangePassword: false,
   passwordHash: "bcrypt-hash",
 };
 
@@ -80,6 +80,8 @@ describe("AuthService refresh tokens", () => {
   let service: AuthService;
   let prisma: PrismaMock;
   let jwt: { signAsync: jest.Mock; verifyAsync: jest.Mock };
+  let sy15: { withUser: jest.Mock };
+  let authAdmin: { findUserIdByEmail: jest.Mock; resetPassword: jest.Mock };
 
   beforeEach(async () => {
     prisma = prismaMock();
@@ -87,11 +89,18 @@ describe("AuthService refresh tokens", () => {
       signAsync: jest.fn().mockResolvedValue("access.jwt"),
       verifyAsync: jest.fn(),
     };
+    sy15 = { withUser: jest.fn().mockResolvedValue(undefined) };
+    authAdmin = {
+      findUserIdByEmail: jest.fn().mockResolvedValue("auth-1"),
+      resetPassword: jest.fn().mockResolvedValue(undefined),
+    };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AuthService,
         { provide: PrismaService, useValue: prisma },
         { provide: JwtService, useValue: jwt },
+        { provide: Sy15Service, useValue: sy15 },
+        { provide: Sy15AuthAdminService, useValue: authAdmin },
       ],
     }).compile();
     service = module.get(AuthService);
@@ -134,11 +143,84 @@ describe("AuthService refresh tokens", () => {
         fullName: "Ana",
         role: "admin",
         readOnly: false,
+        mustChangePassword: false,
       });
       expect(res.user as unknown as Record<string, unknown>).not.toHaveProperty(
         "workerId",
       );
       expect(prisma.refreshToken.create).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("changePassword (B2 self-service)", () => {
+    it("pogrešna trenutna lozinka → 401, bez upisa", async () => {
+      prisma.user.findUnique.mockResolvedValue(activeUser);
+      (bcrypt.compare as jest.Mock).mockResolvedValue(false);
+      await expect(
+        service.changePassword(1, "wrong", "novaLozinka1"),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it("prekratka nova lozinka (< 8) → 400 pre dodira baze", async () => {
+      await expect(
+        service.changePassword(1, "trenutna1", "kratka"),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      // findUnique nije pozvan → 400 pada pre bilo kakvog čitanja/provere kredencijala
+      // (bcrypt auto-mock deli istoriju poziva među testovima, pa se ne oslanjamo na njega).
+      expect(prisma.user.findUnique).not.toHaveBeenCalled();
+    });
+
+    it("uspeh → nov hash + mustChangePassword=false, sy15 sinhronizovan", async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        ...activeUser,
+        mustChangePassword: true,
+      });
+      (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+      (bcrypt.hash as jest.Mock).mockResolvedValue("new-hash");
+
+      const res = await service.changePassword(1, "trenutna1", "novaLozinka1");
+
+      expect(res).toEqual({ changed: true, sy15Synced: true });
+      const updArg = prisma.user.update.mock.calls[0][0] as {
+        where: { id: number };
+        data: { passwordHash: string; mustChangePassword: boolean };
+      };
+      expect(updArg.where.id).toBe(1);
+      expect(updArg.data.passwordHash).toBe("new-hash");
+      expect(updArg.data.mustChangePassword).toBe(false);
+      // Dual-write u stari sistem: GoTrue reset na istu lozinku + user_roles flag.
+      expect(authAdmin.findUserIdByEmail).toHaveBeenCalledWith("ana@servoteh");
+      expect(authAdmin.resetPassword).toHaveBeenCalledWith(
+        "auth-1",
+        "novaLozinka1",
+      );
+      expect(sy15.withUser).toHaveBeenCalledTimes(1);
+    });
+
+    it("nova === trenutna je DOZVOLJENO (bezbedna živa provera)", async () => {
+      prisma.user.findUnique.mockResolvedValue(activeUser);
+      (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+      (bcrypt.hash as jest.Mock).mockResolvedValue("same-hash");
+      const res = await service.changePassword(
+        1,
+        "istaLozinka1",
+        "istaLozinka1",
+      );
+      expect(res.changed).toBe(true);
+      expect(prisma.user.update).toHaveBeenCalledTimes(1);
+    });
+
+    it("sy15 pad → lokalna promena OSTAJE, sy15Synced:false", async () => {
+      prisma.user.findUnique.mockResolvedValue(activeUser);
+      (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+      (bcrypt.hash as jest.Mock).mockResolvedValue("new-hash");
+      sy15.withUser.mockRejectedValue(new Error("sy15 down"));
+
+      const res = await service.changePassword(1, "trenutna1", "novaLozinka1");
+
+      expect(res).toEqual({ changed: true, sy15Synced: false });
+      expect(prisma.user.update).toHaveBeenCalledTimes(1); // lokalno primenjeno
     });
   });
 
@@ -229,7 +311,7 @@ describe("AuthService refresh tokens", () => {
       );
       expect(prisma.refreshToken.updateMany).toHaveBeenCalledWith({
         where: { userId: 1, revokedAt: null },
-        data: { revokedAt: expect.any(Date) as unknown as Date },
+        data: { revokedAt: expect.any(Date) },
       });
       expect(prisma.refreshToken.create).not.toHaveBeenCalled();
     });
@@ -257,7 +339,7 @@ describe("AuthService refresh tokens", () => {
       );
       expect(prisma.refreshToken.updateMany).toHaveBeenCalledWith({
         where: { userId: 1, revokedAt: null },
-        data: { revokedAt: expect.any(Date) as unknown as Date },
+        data: { revokedAt: expect.any(Date) },
       });
     });
   });
@@ -284,13 +366,16 @@ describe("AuthService refresh tokens", () => {
 
     it("neaktivan korisnik → opoziva TAJ red + 401", async () => {
       prisma.refreshToken.findUnique.mockResolvedValue(liveToken());
-      prisma.user.findUnique.mockResolvedValue({ ...activeUser, active: false });
+      prisma.user.findUnique.mockResolvedValue({
+        ...activeUser,
+        active: false,
+      });
       await expect(service.refresh("raw-old")).rejects.toBeInstanceOf(
         UnauthorizedException,
       );
       expect(prisma.refreshToken.update).toHaveBeenCalledWith({
         where: { id: 10 },
-        data: { revokedAt: expect.any(Date) as unknown as Date },
+        data: { revokedAt: expect.any(Date) },
       });
       expect(prisma.$transaction).not.toHaveBeenCalled();
     });
@@ -309,7 +394,7 @@ describe("AuthService refresh tokens", () => {
       expect(res).toEqual({ ok: true });
       expect(prisma.refreshToken.updateMany).toHaveBeenCalledWith({
         where: { tokenHash: hashRefreshToken("raw-tok"), revokedAt: null },
-        data: { revokedAt: expect.any(Date) as unknown as Date },
+        data: { revokedAt: expect.any(Date) },
       });
     });
 

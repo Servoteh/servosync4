@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
-import { ChevronRight, Flame, Palette } from 'lucide-react';
+import { ChevronRight, Flame, KeyRound, Palette } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
@@ -110,6 +110,16 @@ export default function ProfilPage() {
         >
           <Palette className="h-4 w-4 shrink-0 text-ink-secondary" aria-hidden />
           <span className="min-w-0 flex-1">Izgled aplikacije — tema i raspored menija</span>
+          <ChevronRight className="h-4 w-4 shrink-0 text-ink-secondary" aria-hidden />
+        </Link>
+
+        {/* Promena lozinke (B2) — nalog akcija za svakog prijavljenog; vodi na vanredni tok /promena-lozinke. */}
+        <Link
+          href="/promena-lozinke"
+          className="flex items-center gap-2.5 rounded-panel border border-line bg-surface px-4 py-3 text-sm text-ink transition-colors hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)]"
+        >
+          <KeyRound className="h-4 w-4 shrink-0 text-ink-secondary" aria-hidden />
+          <span className="min-w-0 flex-1">Promeni lozinku</span>
           <ChevronRight className="h-4 w-4 shrink-0 text-ink-secondary" aria-hidden />
         </Link>
 

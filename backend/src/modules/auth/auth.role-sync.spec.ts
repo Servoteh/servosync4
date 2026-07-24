@@ -1,6 +1,8 @@
 import { AuthService } from "./auth.service";
 import type { PrismaService } from "../../prisma/prisma.service";
 import type { JwtService } from "@nestjs/jwt";
+import type { Sy15Service } from "../../common/sy15/sy15.service";
+import type { Sy15AuthAdminService } from "../../common/sy15/sy15-auth-admin.service";
 
 /**
  * ROLA-SYNC na SSO login (odluka vlasnika 21.07): postojeći nalog na svakom SSO
@@ -14,7 +16,12 @@ function makeSvc() {
     Promise.resolve({ id: 42, email: "x@y", role: arg.data.role }),
   );
   const prisma = { user: { update } } as unknown as PrismaService;
-  const svc = new AuthService(prisma, {} as JwtService);
+  const svc = new AuthService(
+    prisma,
+    {} as JwtService,
+    {} as Sy15Service,
+    {} as Sy15AuthAdminService,
+  );
   return { svc, update };
 }
 

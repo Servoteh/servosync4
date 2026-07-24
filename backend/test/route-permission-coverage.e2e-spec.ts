@@ -158,6 +158,9 @@ describe("Route → permission coverage audit", () => {
     "POST /auth/sso",
     "POST /auth/logout",
     "POST /auth/refresh",
+    // Self-service promena lozinke: kredencijal je JWT + verifikacija trenutne lozinke (401),
+    // ne rola-permisija — ista kategorija kao login/sso/logout/refresh.
+    "POST /auth/change-password",
     // Notifikacije: SVESNA odluka D4 — samo JWT, izolacija po request.user.workerId
     // (korisnik čita/označava SVOJE notifikacije; permisija bi bila suvišna).
     "POST /notifications/:id/read",

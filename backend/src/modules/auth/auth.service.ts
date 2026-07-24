@@ -1,8 +1,15 @@
-import { Injectable, Logger, UnauthorizedException } from "@nestjs/common";
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  UnauthorizedException,
+} from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import * as bcrypt from "bcrypt";
 import { randomBytes } from "node:crypto";
 import { PrismaService } from "../../prisma/prisma.service";
+import { Sy15Service } from "../../common/sy15/sy15.service";
+import { Sy15AuthAdminService } from "../../common/sy15/sy15-auth-admin.service";
 import { ROLES } from "../../common/authz/roles";
 import { isReadOnlyUserId } from "../../common/authz/read-only.interceptor";
 import {
@@ -19,7 +26,12 @@ export interface PublicUser {
   role: string;
   /** True za test naloge iz AUTHZ_READONLY_USER_IDS — front prikazuje baner, mutacije padaju 403. */
   readOnly: boolean;
+  /** True kad je admin postavio prinudnu promenu lozinke — FE preusmerava na /promena-lozinke. */
+  mustChangePassword: boolean;
 }
+
+/** Min. dužina nove lozinke pri self-service promeni (B2). */
+const MIN_PASSWORD_LENGTH = 8;
 
 /** Minimalni HTTP metapodaci (user-agent / IP) za trag refresh tokena. */
 export interface RequestMeta {
@@ -41,6 +53,7 @@ interface SessionUser {
   fullName: string | null;
   role: string;
   workerId: number | null;
+  mustChangePassword: boolean;
 }
 
 /** PublicUser + JWT-internal fields (never returned to the client). */
@@ -109,6 +122,10 @@ export class AuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
+    // sy15/GoTrue su @Global provajderi (Sy15Module) — best-effort dual-write pri self-service
+    // promeni lozinke (B2): jedna lozinka u obe aplikacije dok stari sistem živi.
+    private readonly sy15: Sy15Service,
+    private readonly authAdmin: Sy15AuthAdminService,
   ) {}
 
   /** Validate credentials; returns the user or throws 401. */
@@ -133,6 +150,7 @@ export class AuthService {
       fullName: user.fullName,
       role: user.role,
       readOnly: isReadOnlyUserId(user.id),
+      mustChangePassword: user.mustChangePassword,
       workerId: user.workerId,
     };
   }
@@ -166,6 +184,7 @@ export class AuthService {
       fullName: user.fullName,
       role: user.role,
       readOnly: isReadOnlyUserId(user.id),
+      mustChangePassword: user.mustChangePassword,
     };
   }
 
@@ -210,7 +229,77 @@ export class AuthService {
       fullName: user.fullName,
       role: user.role,
       readOnly: isReadOnlyUserId(user.id),
+      mustChangePassword: user.mustChangePassword,
     };
+  }
+
+  /**
+   * Self-service promena lozinke (B2) — radi i za `mustChangePassword` naloge (isti JWT guard kao
+   * /me). Verifikuje trenutnu lozinku (401 ako ne valja), upisuje nov bcrypt hash i skida
+   * `mustChangePassword`. `newPassword === currentPassword` je NAMERNO dozvoljeno: bezbedna živa
+   * provera lozinke bez menjanja stanja (korisnik samo potvrdi da zna svoju lozinku).
+   *
+   * Best-effort sinhronizacija u stari sistem (invarijanta „jedna lozinka u obe aplikacije dok
+   * sy15 živi"): GoTrue reset na ISTU lozinku (service key) + `user_roles.must_change_password=false`.
+   * Ako sy15 padne, lokalna promena OSTAJE i vraćamo `sy15Synced:false` (kao `trySy15` u podešavanjima).
+   */
+  async changePassword(
+    userId: number,
+    currentPassword: string,
+    newPassword: string,
+  ): Promise<{ changed: true; sy15Synced: boolean }> {
+    if (
+      typeof newPassword !== "string" ||
+      newPassword.length < MIN_PASSWORD_LENGTH
+    ) {
+      throw new BadRequestException(
+        `Nova lozinka mora imati najmanje ${MIN_PASSWORD_LENGTH} karaktera`,
+      );
+    }
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user || !user.active) throw new UnauthorizedException();
+
+    const ok = await bcrypt.compare(currentPassword, user.passwordHash);
+    // Namerno: nova === trenutna je dozvoljeno (nema posebne provere jednakosti).
+    if (!ok) throw new UnauthorizedException("Trenutna lozinka nije ispravna");
+
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { passwordHash, mustChangePassword: false },
+    });
+
+    const sy15Synced = await this.syncPasswordToSy15(user.email, newPassword);
+    return { changed: true, sy15Synced };
+  }
+
+  /**
+   * Best-effort upis iste lozinke i must_change=false u stari sistem (GoTrue + sy15 `user_roles`).
+   * GoTrue: service key (privilegovano). `user_roles`: `withUser` (BYPASSRLS konekciona rola)
+   * SCOPE-ovan na verifikovani email korisnika — `authenticated` nema direktan UPDATE grant na
+   * `user_roles` (1.0 koristi SECURITY DEFINER RPC `clear_my_must_change_password`), pa bi
+   * `withUserRls` UPDATE pao na 42501. Svaki pad → warn + `false` (lokalna promena je već primenjena).
+   */
+  private async syncPasswordToSy15(
+    email: string,
+    newPassword: string,
+  ): Promise<boolean> {
+    try {
+      const authUserId = await this.authAdmin.findUserIdByEmail(email);
+      if (authUserId)
+        await this.authAdmin.resetPassword(authUserId, newPassword);
+      await this.sy15.withUser(
+        email,
+        (tx) =>
+          tx.$executeRaw`UPDATE user_roles SET must_change_password = false, updated_at = now() WHERE lower(email) = lower(${email})`,
+      );
+      return true;
+    } catch (e) {
+      this.logger.warn(
+        `change-password sy15 sync nije uspeo (lokalna promena primenjena): ${String(e)}`,
+      );
+      return false;
+    }
   }
 
   /**
@@ -279,9 +368,7 @@ export class AuthService {
       return user;
     }
     if (liveRole === user.role) return user;
-    this.logger.log(
-      `SSO rola-sync: ${user.email} ${user.role} → ${liveRole}`,
-    );
+    this.logger.log(`SSO rola-sync: ${user.email} ${user.role} → ${liveRole}`);
     const updated = await this.prisma.user.update({
       where: { id: user.id },
       data: { role: liveRole },

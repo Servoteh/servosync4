@@ -10,6 +10,8 @@ export interface PublicUser {
   role: string;
   /** Test nalog (backend AUTHZ_READONLY_USER_IDS): mutacije padaju 403, shell prikazuje baner. */
   readOnly?: boolean;
+  /** Admin je zatražio prinudnu promenu lozinke → shell preusmerava na /promena-lozinke (B2). */
+  mustChangePassword?: boolean;
 }
 
 interface LoginResponse {
@@ -72,6 +74,28 @@ export function useLogin() {
       setToken(data.accessToken);
       setRefreshToken(data.refreshToken);
       qc.setQueryData(['me'], data.user);
+    },
+  });
+}
+
+/**
+ * Self-service promena lozinke (B2): POST /auth/change-password (isti guard kao /me).
+ * 401 = pogrešna trenutna lozinka, 400 = nova prekratka. Po uspehu odmah skida
+ * `mustChangePassword` iz keša `['me']` — enforce redirect (auth-context) prestaje bez
+ * čekanja na refetch, pa stranica može bezbedno da preusmeri na landing.
+ */
+export function useChangePassword() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { currentPassword: string; newPassword: string }) =>
+      apiFetch<{ data: { changed: boolean; sy15Synced: boolean } }>(
+        '/auth/change-password',
+        { method: 'POST', body: JSON.stringify(vars) },
+      ),
+    onSuccess: () => {
+      qc.setQueryData<PublicUser | undefined>(['me'], (old) =>
+        old ? { ...old, mustChangePassword: false } : old,
+      );
     },
   });
 }

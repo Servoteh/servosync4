@@ -30,6 +30,11 @@ interface RefreshBody {
   refreshToken?: string;
 }
 
+interface ChangePasswordBody {
+  currentPassword?: string;
+  newPassword?: string;
+}
+
 /** Minimalni oblik Express zahteva iz koga vadimo trag refresh tokena. */
 interface RequestLike {
   ip?: string;
@@ -104,6 +109,33 @@ export class AuthController {
   @Get("me")
   me(@Req() req: { user: AuthUser }) {
     return this.auth.me(req.user.userId);
+  }
+
+  /**
+   * Self-service promena lozinke (B2) — isti guard kao /me (mora biti ulogovan), radi i za
+   * `mustChangePassword` naloge. 400 bez polja / prekratka nova; 401 pogrešna trenutna. Vraća
+   * `{ data: { changed, sy15Synced } }` (envelope kao podešavanja; auth login/refresh su sirovi).
+   */
+  @UseGuards(JwtAuthGuard)
+  @Post("change-password")
+  async changePassword(
+    @Req() req: { user: AuthUser },
+    @Body() body: ChangePasswordBody,
+  ) {
+    if (
+      typeof body?.currentPassword !== "string" ||
+      typeof body?.newPassword !== "string"
+    ) {
+      throw new BadRequestException(
+        "currentPassword and newPassword are required",
+      );
+    }
+    const res = await this.auth.changePassword(
+      req.user.userId,
+      body.currentPassword,
+      body.newPassword,
+    );
+    return { data: res };
   }
 
   /**

@@ -163,10 +163,17 @@ export class PodesavanjaUsersService {
     const newPassword = dto.password?.trim() || this.authAdmin.randomPassword();
     await this.authAdmin.resetPassword(authUserId, newPassword); // (A) stvarna akcija
 
-    // (C) flag na 2.0 users — SAMO must_change (bez applyRole: kurirana 2.0 rola se NE dira; 1.0
-    // paritet — reset menja samo must_change_password). createDefaults.role tek za INSERT novog reda.
+    // B1: the SAME new password is written to native 3.0 auth (users.password_hash) as to
+    // GoTrue — invariant "one password in both apps while sy15 lives". Without this a direct
+    // 3.0 login (no 1.0 shell) would keep the OLD hash and reject the reset password.
+    const newPasswordHash = await bcrypt.hash(newPassword, 10);
+
+    // (C) flag na 2.0 users — must_change + nov passwordHash (bez applyRole: kurirana 2.0 rola
+    // se NE dira; 1.0 paritet — reset menja lozinku i must_change_password). createDefaults.role
+    // tek za INSERT novog reda.
     await this.write2_0(row.email, {
       mustChangePassword: true,
+      passwordHash: newPasswordHash,
       createDefaults: {
         role: row.role,
         active: true,
@@ -520,6 +527,8 @@ export class PodesavanjaUsersService {
       fullName?: string;
       active?: boolean;
       mustChangePassword?: boolean;
+      /** B1: bcrypt hash nove lozinke (admin reset) — piše se i u CREATE i u UPDATE granu. */
+      passwordHash?: string;
       managedSubDepartmentIds?: number[];
       resetGlobalRole?: boolean;
       overrides?: Array<{ key: string; allow: boolean | null }>;
@@ -530,7 +539,11 @@ export class PodesavanjaUsersService {
       };
     },
   ): Promise<number> {
-    const passwordHash = await bcrypt.hash(randomBytes(32).toString("hex"), 10);
+    // B1: kad pozivalac prosledi passwordHash (admin reset) piše se ista lozinka i u 3.0 auth;
+    // inače CREATE grana dobija SSO-only random hash (niko ga ne zna — 2.0 login tek posle reseta).
+    const passwordHash =
+      opts.passwordHash ??
+      (await bcrypt.hash(randomBytes(32).toString("hex"), 10));
     return this.prisma.$transaction(async (tx) => {
       const user = await tx.user.upsert({
         where: { email },
@@ -550,6 +563,10 @@ export class PodesavanjaUsersService {
           ...(opts.active !== undefined ? { active: opts.active } : {}),
           ...(opts.mustChangePassword !== undefined
             ? { mustChangePassword: opts.mustChangePassword }
+            : {}),
+          // B1: nov hash u UPDATE granu samo kad je prosleđen (admin reset postojećeg naloga).
+          ...(opts.passwordHash !== undefined
+            ? { passwordHash: opts.passwordHash }
             : {}),
         },
       });
