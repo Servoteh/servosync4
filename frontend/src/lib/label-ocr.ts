@@ -96,7 +96,8 @@ export function cropTopRightLabelRegion(
   return canvas;
 }
 
-// ── Engine (opciono, self-host UMD kao window.Tesseract) ─────────────────────
+// ── Engine: bundlovan tesseract.js@5.1.1 (lazy, 1.0 paritet) sa opcionim
+// self-host UMD override-om (window.Tesseract, ako je instalacija ubacila svoj).
 
 interface TesseractWorkerLike {
   recognize: (img: CanvasImageSource) => Promise<{ data: { text: string } }>;
@@ -110,21 +111,37 @@ interface TesseractGlobal {
   ) => Promise<TesseractWorkerLike>;
 }
 
-function getEngine(): TesseractGlobal | null {
+function getWindowEngine(): TesseractGlobal | null {
   if (typeof window === 'undefined') return null;
   const t = (window as unknown as { Tesseract?: TesseractGlobal }).Tesseract;
   return t && typeof t.createWorker === 'function' ? t : null;
 }
 
-/** Da li je OCR engine dostupan (self-host UMD ubačen kao window.Tesseract). */
+/**
+ * OCR je uvek „dostupan" u browseru — tesseract.js je bundlovan (lazy import,
+ * kao u 1.0). Napomena: worker/wasm/traineddata se pri PRVOJ upotrebi vuku sa
+ * CDN-a (default tesseract.js putanje) — na offline LAN telefonu prvi OCR pada
+ * u `ocr_failed` (isti kompromis kao 1.0 web).
+ */
 export function isOcrEngineAvailable(): boolean {
-  return getEngine() !== null;
+  return typeof window !== 'undefined';
 }
 
 let workerPromise: Promise<TesseractWorkerLike> | null = null;
-async function getWorker(engine: TesseractGlobal): Promise<TesseractWorkerLike> {
+async function getWorker(): Promise<TesseractWorkerLike> {
   if (!workerPromise) {
-    workerPromise = engine.createWorker('eng', 1, { logger: () => {} });
+    workerPromise = (async () => {
+      const win = getWindowEngine();
+      if (win) return win.createWorker('eng', 1, { logger: () => {} });
+      const mod = await import('tesseract.js');
+      // 1.0 paritet: createWorker('eng', 1, {logger:()=>{}}) — barcode.js/labelOcr.js.
+      return (mod as unknown as TesseractGlobal).createWorker('eng', 1, { logger: () => {} });
+    })().catch((e) => {
+      // Pad inicijalizacije (offline CDN za wasm/traineddata) NE sme da „zacementira"
+      // OCR do kraja sesije — sledeći pokušaj kreće ispočetka.
+      workerPromise = null;
+      throw e;
+    });
   }
   return workerPromise;
 }
@@ -149,10 +166,9 @@ export async function recognizeLabelText(
   canvas: HTMLCanvasElement,
 ): Promise<{ text: string } | { error: string }> {
   if (!canvas?.width || !canvas.height) return { error: 'empty_frame' };
-  const engine = getEngine();
-  if (!engine) return { error: 'engine_missing' };
+  if (!isOcrEngineAvailable()) return { error: 'engine_missing' };
   try {
-    const worker = await getWorker(engine);
+    const worker = await getWorker();
     const { data } = await worker.recognize(canvas);
     return { text: typeof data.text === 'string' ? data.text : '' };
   } catch (e) {

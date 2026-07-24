@@ -2,21 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { kioskPunch, isKioskPunchConfigured, type KioskPunchResult } from '@/lib/kiosk-punch';
-
-// Nativni BarcodeDetector (Chrome/Edge/Android WebView) za QR — isti pristup kao
-// Lokacije/Reversi ScanOverlay, bez eksternih zavisnosti. Ručni/HID unos je
-// fallback svuda gde detektora nema (Firefox/Safari desktop).
-interface DetectedBarcode {
-  rawValue: string;
-}
-interface BarcodeDetectorLike {
-  detect: (source: CanvasImageSource) => Promise<DetectedBarcode[]>;
-}
-type BarcodeDetectorCtor = new (opts?: { formats?: string[] }) => BarcodeDetectorLike;
-function getDetectorCtor(): BarcodeDetectorCtor | null {
-  if (typeof window === 'undefined') return null;
-  return (window as unknown as { BarcodeDetector?: BarcodeDetectorCtor }).BarcodeDetector ?? null;
-}
+import {
+  attachVideoDecoder,
+  buildVideoConstraints,
+  isCameraDecodeSupported,
+  isIOSWebKit,
+  type VideoDecoderHandle,
+} from '@/lib/barcode-decoder';
 
 const LS_KEY = 'servosync_kiosk_key';
 
@@ -153,19 +145,22 @@ function Scanner({ deviceKey, onReset }: { deviceKey: string; onReset: () => voi
     [deviceKey, showResult],
   );
 
-  // Kamera + detekcija.
+  // Kamera + detekcija — decode-engine (BarcodeDetector/ZXing/jsQR; radi i na
+  // iPhone/iPad kiosku). Gejt je getUserMedia, ne BarcodeDetector (1.0 lekcija).
   useEffect(() => {
-    const Ctor = getDetectorCtor();
-    if (!Ctor) {
-      setHint('Kamera-skener nije podržan u ovom pregledaču — koristi ručni/HID unos ispod.');
+    if (!isCameraDecodeSupported()) {
+      setHint('Kamera nije dostupna u ovom pregledaču (getUserMedia/HTTPS) — koristi ručni/HID unos ispod.');
       return;
     }
-    let raf = 0;
     let stopped = false;
-    const detector = new Ctor({ formats: ['qr_code'] });
+    let decoder: VideoDecoderHandle | null = null;
     (async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
+        // Rezolucija (1.0 lekcija): default preset ume da bude 640×480 — QR radi
+        // tesno; 1080p daje jsQR/detektoru marginu i na iPad kiosku.
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { ...buildVideoConstraints('mixed'), facingMode: 'user' },
+        });
         if (stopped) {
           stream.getTracks().forEach((t) => t.stop());
           return;
@@ -175,26 +170,43 @@ function Scanner({ deviceKey, onReset }: { deviceKey: string; onReset: () => voi
         if (!v) return;
         v.srcObject = stream;
         await v.play();
-        const loop = async () => {
-          if (stopped || !videoRef.current) return;
-          try {
-            const found = await detector.detect(videoRef.current);
-            if (found[0]?.rawValue) await onScan(found[0].rawValue);
-          } catch {
-            /* prazan frejm */
-          }
-          raf = requestAnimationFrame(() => void loop());
-        };
-        raf = requestAnimationFrame(() => void loop());
+        const handle = await attachVideoDecoder({
+          video: v,
+          formats: ['qr_code'],
+          onRaw: (raw) => void onScan(raw),
+          isStopped: () => stopped,
+        });
+        if (stopped) handle.stop();
+        else decoder = handle;
       } catch {
         setHint('Kamera nije dostupna — dozvoli pristup ili koristi ručni/HID unos ispod.');
       }
     })();
     return () => {
       stopped = true;
-      cancelAnimationFrame(raf);
+      try {
+        decoder?.stop();
+      } catch {
+        /* ignore */
+      }
+      // iOS release higijena (1.0): pause → stop → srcObject null.
+      if (isIOSWebKit()) {
+        try {
+          videoRef.current?.pause();
+        } catch {
+          /* ignore */
+        }
+      }
       streamRef.current?.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
+      try {
+        if (videoRef.current) {
+          videoRef.current.srcObject = null;
+          videoRef.current.load();
+        }
+      } catch {
+        /* ignore */
+      }
     };
   }, [onScan]);
 

@@ -2,6 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
+import {
+  attachVideoDecoder,
+  buildVideoConstraints,
+  isCameraDecodeSupported,
+  isIOSWebKit,
+  type VideoDecoderHandle,
+} from '@/lib/barcode-decoder';
 
 /**
  * Punoekranski QR/barkod skener sredstava za mobilno Održavanje (H21). Za razliku od
@@ -9,24 +16,11 @@ import { X } from 'lucide-react';
  * VRAĆA sirov kod pozivaocu — uparivanje ide lokalno protiv GET /maintenance/assets
  * (asset_code, case-insensitive) kao u 1.0 myMaintenance.js:363-373.
  *
- * BarcodeDetector (Chrome/Edge/Android WebView). Na pregledaču bez njega (Firefox/Safari
- * desktop) skener tiho javlja „nije dostupan — ukucaj šifru" i ostaje ručni unos / HID
- * čitač (skriveno pravilo §5.1). Odštampane QR nalepnice enkodiraju URL karton-rute pa
- * pozivalac vadi poslednji segment putanje — sirov kod se svejedno predaje ovde.
+ * Dekodiranje kroz decode-engine (@/lib/barcode-decoder): BarcodeDetector (Chromium)
+ * / ZXing / jsQR hibrid — radi i na iPhone/Firefox/Safari. HID/ručni unos ostaje.
+ * Odštampane QR nalepnice enkodiraju URL karton-rute pa pozivalac vadi poslednji
+ * segment putanje — sirov kod se svejedno predaje ovde.
  */
-
-interface DetectedBarcode {
-  rawValue: string;
-}
-interface BarcodeDetectorLike {
-  detect: (source: CanvasImageSource) => Promise<DetectedBarcode[]>;
-}
-type BarcodeDetectorCtor = new (opts?: { formats?: string[] }) => BarcodeDetectorLike;
-
-function getDetectorCtor(): BarcodeDetectorCtor | null {
-  if (typeof window === 'undefined') return null;
-  return (window as unknown as { BarcodeDetector?: BarcodeDetectorCtor }).BarcodeDetector ?? null;
-}
 
 function normalize(raw: string): string {
   let t = raw.replace(/[\r\n\t]+/g, '').trim();
@@ -78,18 +72,20 @@ export function MaintScanOverlay({
   }, []);
 
   useEffect(() => {
-    const Ctor = getDetectorCtor();
-    if (!Ctor) {
-      say('Skener nije dostupan u ovom pregledaču — ukucaj šifru ili koristi HID čitač.', 'error');
+    // 1.0 lekcija: gejt je getUserMedia, NE BarcodeDetector (iPhone → ZXing/jsQR).
+    if (!isCameraDecodeSupported()) {
+      say('Kamera nije dostupna u ovom pregledaču (getUserMedia/HTTPS) — ukucaj šifru ili koristi HID čitač.', 'error');
       return;
     }
-    let raf = 0;
     let stopped = false;
-    const detector = new Ctor({ formats: ['qr_code', 'code_128', 'code_39', 'ean_13'] });
+    let decoder: VideoDecoderHandle | null = null;
 
     (async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+        // Rezolucija (1.0 lekcija): bez ideals-a iOS daje 640×480 — 1D ne dekodira.
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { ...buildVideoConstraints('mixed'), facingMode: 'environment' },
+        });
         if (stopped) {
           stream.getTracks().forEach((t) => t.stop());
           return;
@@ -101,17 +97,14 @@ export function MaintScanOverlay({
         await v.play();
         setCameraOn(true);
         say('Usmeri kameru na QR nalepnicu sredstva');
-        const tick = async () => {
-          if (stopped || !videoRef.current) return;
-          try {
-            const found = await detector.detect(videoRef.current);
-            if (found[0]?.rawValue) resolve(found[0].rawValue);
-          } catch {
-            /* prazan frejm — ignoriši */
-          }
-          if (!stopped) raf = requestAnimationFrame(() => void tick());
-        };
-        raf = requestAnimationFrame(() => void tick());
+        const handle = await attachVideoDecoder({
+          video: v,
+          formats: ['qr_code', 'code_128', 'code_39', 'ean_13'],
+          onRaw: (raw) => resolve(raw),
+          isStopped: () => stopped,
+        });
+        if (stopped) handle.stop();
+        else decoder = handle;
       } catch {
         say('Kamera nije dostupna — dozvoli pristup ili ukucaj šifru.', 'error');
       }
@@ -119,9 +112,29 @@ export function MaintScanOverlay({
 
     return () => {
       stopped = true;
-      cancelAnimationFrame(raf);
+      try {
+        decoder?.stop();
+      } catch {
+        /* ignore */
+      }
+      // iOS release higijena (1.0): pause → stop → srcObject null (NotReadableError guard).
+      if (isIOSWebKit()) {
+        try {
+          videoRef.current?.pause();
+        } catch {
+          /* ignore */
+        }
+      }
       streamRef.current?.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
+      try {
+        if (videoRef.current) {
+          videoRef.current.srcObject = null;
+          videoRef.current.load();
+        }
+      } catch {
+        /* ignore */
+      }
     };
   }, [resolve, say]);
 

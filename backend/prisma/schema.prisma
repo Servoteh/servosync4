@@ -2174,6 +2174,91 @@ model QualityDocument {
   @@map("quality_documents")
 }
 
+/// Neusaglašenost na montaži (zahtev 004/26) — prijava sa terena/hale + istraga.
+/// App-owned 2.0-native tabela (NIJE proširenje Kvaliteta, NIJE sy15 — statusi/polja
+/// se sudaraju sa QC evidencijom, presuda Nenad 23.07). Broj `NM-NNN/YY` po godini
+/// (advisory lock, namespace 'montaza:nm'); svaka nova prijava obaveštava rolu
+/// `menadzment` (in-app zvonce + mail). Prijava je immutable posle kreiranja — kasnije
+/// se popunjavaju samo istraga polja (responsibleDepartment/…/preventiveMeasures).
+model MontageNonconformity {
+  id                    Int       @id(map: "pk_montage_nonconformities") @default(autoincrement()) @map("id")
+  /// "NM-NNN/YY" — dodeljuje server pri kreiranju (brojač po godini, advisory lock 'montaza:nm').
+  reportNumber          String    @map("report_number") @db.VarChar(12)
+  /// Broj predmeta (obavezan u prijavi; lookup kroz montaza/lookups/predmeti). Slobodan tekst.
+  projectNumber         String?   @map("project_number") @db.VarChar(20)
+  /// Meki ref projects.id kad je razrešiv (batch-resolve; orphan ne 500).
+  projectId             Int?      @map("project_id")
+  /// Opis problema (obavezan).
+  description           String    @map("description")
+  /// MALA | SREDNJA | VISOKA (obavezan).
+  severity              String    @map("severity") @db.VarChar(10)
+  /// SERVOTEH | TEREN (obavezan).
+  locationKind          String    @map("location_kind") @db.VarChar(10)
+  /// Za TEREN: koja lokacija (slobodan tekst).
+  locationNote          String?   @map("location_note") @db.VarChar(200)
+  drawingNumber         String?   @map("drawing_number") @db.VarChar(60)
+  /// RN broj — string, meki (bez FK).
+  workOrderCode         String?   @map("work_order_code") @db.VarChar(40)
+  /// CEKA_ANALIZU | U_TOKU | ZAVRSENO (ZAVRSENO je terminalan — bez brisanja).
+  status                String    @default("CEKA_ANALIZU") @map("status") @db.VarChar(15)
+  reportedByUserId      Int       @map("reported_by_user_id")
+  // Istraga (popunjava se u U_TOKU/ZAVRSENO — manage):
+  /// Odgovorno odeljenje (slobodan tekst uz predloge).
+  responsibleDepartment String?   @map("responsible_department") @db.VarChar(60)
+  /// Izvršilac — meki ref workers.id (opciono).
+  responsibleWorkerId   Int?      @map("responsible_worker_id")
+  /// Nalaz istrage.
+  investigationReport   String?   @map("investigation_report")
+  /// Preventivne mere.
+  preventiveMeasures    String?   @map("preventive_measures")
+  investigatedByUserId  Int?      @map("investigated_by_user_id")
+  closedAt              DateTime? @map("closed_at") @db.Timestamptz(6)
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  photos MontageNonconformityPhoto[]
+  events MontageNonconformityEvent[]
+
+  @@unique([reportNumber], map: "uq_montage_nonconformities_report_number")
+  @@index([status], map: "idx_montage_nonconformities_status")
+  @@index([severity], map: "idx_montage_nonconformities_severity")
+  @@index([projectNumber], map: "idx_montage_nonconformities_project_number")
+  @@index([createdAt], map: "idx_montage_nonconformities_created")
+  @@map("montage_nonconformities")
+}
+
+/// Foto prijave neusaglašenosti — bytea obrazac IDENTIČAN kvalitet.QualityDocument
+/// (magic-byte validacija PDF/PNG/JPG, ≤8 MB/fajl u ovom modulu). `nonconformityId` je
+/// PRAVI FK (obe tabele 2.0 native) sa ON DELETE CASCADE.
+model MontageNonconformityPhoto {
+  id              Int                  @id(map: "pk_montage_nonconformity_photos") @default(autoincrement()) @map("id")
+  nonconformityId Int                  @map("nonconformity_id")
+  fileName        String               @map("file_name") @db.VarChar(200)
+  contentType     String               @map("content_type") @db.VarChar(80)
+  content         Bytes                @map("content")
+  createdByUserId Int                  @map("created_by_user_id")
+  createdAt       DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  nonconformity   MontageNonconformity @relation(fields: [nonconformityId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_montage_nc_photos_nonconformity")
+
+  @@index([nonconformityId], map: "idx_montage_nc_photos_nonconformity")
+  @@map("montage_nonconformity_photos")
+}
+
+/// Insert-only timeline neusaglašenosti (obrazac ChangeRequestEvent iz zahtevi modula).
+model MontageNonconformityEvent {
+  id              Int                  @id(map: "pk_montage_nonconformity_events") @default(autoincrement()) @map("id")
+  nonconformityId Int                  @map("nonconformity_id")
+  /// CREATED | STATUS_CHANGED | INVESTIGATION_UPDATED | PHOTO_ADDED | NOTE
+  type            String               @map("type") @db.VarChar(30)
+  actorUserId     Int?                 @map("actor_user_id")
+  data            Json?                @map("data")
+  createdAt       DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  nonconformity   MontageNonconformity @relation(fields: [nonconformityId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_montage_nc_events_nonconformity")
+
+  @@index([nonconformityId], map: "idx_montage_nc_events_nonconformity")
+  @@map("montage_nonconformity_events")
+}
+
 /// Incremental sync cursor per logical scope (`entity` = stable key, e.g. `customers`).
 model BbSyncState {
   entity               String     @id(map: "pk_bb_sync_state") @map("entity") @db.VarChar(100)

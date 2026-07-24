@@ -143,7 +143,9 @@ const BASE_ROLE_PERMISSIONS: Partial<
     P.REVERSI_TEAM_READ,
     // Održavanje: read+report+write (coarse — bundle); RLS/RPC presuđuje red.
     ...ODRZAVANJE_MODULE,
-    // Sastanci: sef NIJE u canAccessSastanci (§7 P6) → BEZ sastanci.*. AI: /ai za sve.
+    // Sastanci: presuda Nenad 24.07.2026 — vidljivost svim kancelarijskim/operativnim
+    // rolama (zamenjuje 1.0 canAccessSastanci paritet §7 P6). AI: /ai za sve.
+    P.SASTANCI_READ,
     P.AI_CHAT,
   ],
 
@@ -178,7 +180,8 @@ const BASE_ROLE_PERMISSIONS: Partial<
     P.MRP_READ,
     P.DIRECTORY_READ,
     ...ODRZAVANJE_MODULE, // F8: CMMS uvid + prijava kvara (opšte pravo)
-    P.AI_CHAT, // 1.0 /ai za sve (Sastanci: nije u canAccessSastanci)
+    P.SASTANCI_READ, // presuda 24.07.2026: Sastanci vidljivi biro/tehnika rolama
+    P.AI_CHAT, // 1.0 /ai za sve
   ],
 
   [ROLES.CNC_PROGRAMER]: [
@@ -196,6 +199,7 @@ const BASE_ROLE_PERMISSIONS: Partial<
     P.MRP_READ,
     P.DIRECTORY_READ,
     ...ODRZAVANJE_MODULE, // F8: CMMS uvid + prijava kvara
+    P.SASTANCI_READ, // presuda 24.07.2026: Sastanci vidljivi biro/tehnika rolama
     P.AI_CHAT, // 1.0 /ai za sve
   ],
 
@@ -219,6 +223,7 @@ const BASE_ROLE_PERMISSIONS: Partial<
     P.LOKACIJE_MOVE, // Talas A: read + move (row-odluka u DB fn)
     P.DIRECTORY_READ,
     ...ODRZAVANJE_MODULE, // F8: CMMS uvid + prijava kvara
+    P.SASTANCI_READ, // presuda 24.07.2026: Sastanci vidljivi biro/tehnika rolama
     P.AI_CHAT, // 1.0 /ai za sve
   ],
 
@@ -244,7 +249,8 @@ const BASE_ROLE_PERMISSIONS: Partial<
     // canManageMaintCatalog (§2.4) → read+report+write (bundle) + admin_ui.
     ...ODRZAVANJE_MODULE,
     P.ODRZAVANJE_ADMIN_UI,
-    // Sastanci: magacioner NE dobija sastanci.* (§7 P6). AI: /ai za sve.
+    // Sastanci: presuda 24.07.2026 — operativa dobija read. AI: /ai za sve.
+    P.SASTANCI_READ,
     P.AI_CHAT,
   ],
 
@@ -284,6 +290,7 @@ const BASE_ROLE_PERMISSIONS: Partial<
     P.RFQ_READ,
     P.RFQ_WRITE,
     P.SALES_READ, // uvid u izlazne račune (prodaja deli tok sa nabavkom, Nenad)
+    P.SASTANCI_READ, // presuda 24.07.2026: Sastanci vidljivi operativi
   ],
 
   [ROLES.MENADZMENT]: [
@@ -434,11 +441,13 @@ const BASE_ROLE_PERMISSIONS: Partial<
   ],
 
   // tim_lider: read-baseline (SSO uvid) + zaduženja svog tima; write čeka 3.0.
-  // Održavanje: tim_lider ima floor-read u maint (§2.5.3) → read+report. Sastanci: NE (§7 P6).
+  // Održavanje: tim_lider ima floor-read u maint (§2.5.3) → read+report.
+  // Sastanci: presuda 24.07.2026 — operativa dobija read.
   [ROLES.TIM_LIDER]: [
     ...VIEWER_READ_BASELINE,
     ...ODRZAVANJE_MODULE,
     P.REVERSI_TEAM_READ,
+    P.SASTANCI_READ,
     P.AI_CHAT,
   ],
 
@@ -454,14 +463,16 @@ const BASE_ROLE_PERMISSIONS: Partial<
     // Kadrovska (Talas G): projektant_vodja je u canAccessKadrovska → read; ali
     // canViewContracts ga EKSPLICITNO isključuje (bez contracts_read) i nije edit.
     P.KADROVSKA_READ,
-    P.AI_CHAT, // 1.0 /ai za sve (nije u canAccessSastanci)
+    P.SASTANCI_READ, // presuda 24.07.2026: Sastanci vidljivi biro rolama
+    P.AI_CHAT, // 1.0 /ai za sve
   ],
   [ROLES.INZENJER]: [
     ...VIEWER_READ_BASELINE,
     ...ODRZAVANJE_MODULE, // F8: prijava kvara je opšte pravo
     P.PRIMOPREDAJE_READ,
     P.PRIMOPREDAJE_WRITE, // kreiranje/uređivanje nacrta primopredaje (§6.5.3)
-    P.AI_CHAT, // 1.0 /ai za sve (nije u canAccessSastanci)
+    P.SASTANCI_READ, // presuda 24.07.2026: Sastanci vidljivi biro rolama
+    P.AI_CHAT, // 1.0 /ai za sve
   ],
 
   // 1.0 kancelarijske role bez 2.0-modula (tier 3.0/reservisano): preko SSO-a
@@ -488,9 +499,11 @@ const BASE_ROLE_PERMISSIONS: Partial<
   ],
   // poslovni_admin: has_edit_role (edit, sastanci) + F8 CMMS + Kadrovska (Talas G) — JEDINA
   // ne-admin rola sa `pii`; read+edit+manage+PII+ugovori+vacreq (BEZ prisustva/razvoja/salary).
+  // Sastanci read: presuda 24.07.2026 — ukida 1.0 asimetriju „edit bez read".
   [ROLES.POSLOVNI_ADMIN]: [
     ...VIEWER_READ_BASELINE,
     ...ODRZAVANJE_MODULE, // F8: prijava kvara je opšte pravo
+    P.SASTANCI_READ,
     P.SASTANCI_EDIT,
     P.KADROVSKA_READ,
     P.KADROVSKA_EDIT,
@@ -518,16 +531,17 @@ const BASE_ROLE_PERMISSIONS: Partial<
   // tehnicar_odrzavanja: CMMS 'technician' ERP-ekvivalent (roles.ts) — AKTIVIRAN Talasom F.
   // 1.0 pravi maint identitet živi u maint_user_profiles.role (paralelni sistem po auth.uid());
   // ova ERP-rola je gruba kapija za guard (read+report+write). Row/close-gate presuđuje RLS/RPC.
-  // Namerno BEZ VIEWER_READ_BASELINE/ai.chat (maint-only rola; ne širi na sastanci/reversi/tehnologija exact-set).
-  [ROLES.TEHNICAR_ODRZAVANJA]: [...ODRZAVANJE_MODULE],
+  // Namerno BEZ VIEWER_READ_BASELINE/ai.chat (maint-only rola; ne širi na reversi/tehnologija exact-set).
+  // Sastanci read: presuda 24.07.2026 — operativa dobija read.
+  [ROLES.TEHNICAR_ODRZAVANJA]: [...ODRZAVANJE_MODULE, P.SASTANCI_READ],
 
   // Baseline uvid dobija i `viewer` (read gde ima smisla u 2.0 pilotu).
   // Održavanje: viewer je fallback rola → read+report (chief-bez-globalne-role vidi mašine kroz RLS).
-  // Sastanci: viewer je u canAccessSastanci → SAMO read (bez edit). /ai svima.
+  // Sastanci: presuda 24.07.2026 — viewer GUBI read (1.0 canAccessSastanci ga je imao;
+  // probni/čitajući nalozi ne treba da vide interne sastanke). /ai svima.
   [ROLES.VIEWER]: [
     ...VIEWER_READ_BASELINE,
     ...ODRZAVANJE_MODULE,
-    P.SASTANCI_READ,
     P.AI_CHAT,
   ],
 };
@@ -580,21 +594,43 @@ const MONTAZA_EDIT_ROLES: readonly string[] = [
   ROLES.MENADZMENT,
   ROLES.TIM_LIDER, // C1 — PRAVI edit (1.0 bag-by-omission ispravljen)
 ];
-const PP_EDIT_ROLES: readonly string[] = [ROLES.ADMIN, ROLES.PM, ROLES.MENADZMENT];
+const PP_EDIT_ROLES: readonly string[] = [
+  ROLES.ADMIN,
+  ROLES.PM,
+  ROLES.MENADZMENT,
+];
 const PP_FORCE_ROLES: readonly string[] = [ROLES.ADMIN, ROLES.MENADZMENT];
-const PRACENJE_MANAGE_ROLES: readonly string[] = [ROLES.ADMIN, ROLES.MENADZMENT];
+const PRACENJE_MANAGE_ROLES: readonly string[] = [
+  ROLES.ADMIN,
+  ROLES.MENADZMENT,
+];
 const ADMIN_ONLY: readonly string[] = [ROLES.ADMIN];
 
 /** Talas-C permisije koje rola dobija po pariteta gate-ova (bez ADMIN — on ima ALL). */
 function talasCGrants(role: string): PermissionKey[] {
-  const g: PermissionKey[] = [P.MONTAZA_READ, P.MONTAZA_IZVESTAJI];
-  if (PP_READ_ROLES.includes(role)) g.push(P.PLAN_PROIZVODNJE_READ, P.PRACENJE_READ);
-  if (MONTAZA_EDIT_ROLES.includes(role)) g.push(P.MONTAZA_EDIT);
-  if (PP_EDIT_ROLES.includes(role)) g.push(P.PLAN_PROIZVODNJE_EDIT, P.PRACENJE_EDIT);
+  // Montaža je UNGATED (svaka rola u mapi ima montaza.read) → Neusaglašenosti read+write
+  // idu ISTOM krugu (zahtev 004/26 §2: „ceo montaža krug"; prijavljuju svi sa pristupom
+  // Montaži). manage (istraga/status) = MONTAZA_EDIT_ROLES (admin/menadzment/pm/leadpm/tim_lider).
+  const g: PermissionKey[] = [
+    P.MONTAZA_READ,
+    P.MONTAZA_IZVESTAJI,
+    P.MONTAZA_NEUSAGLASENOSTI_READ,
+    P.MONTAZA_NEUSAGLASENOSTI_WRITE,
+  ];
+  if (PP_READ_ROLES.includes(role))
+    g.push(P.PLAN_PROIZVODNJE_READ, P.PRACENJE_READ);
+  if (MONTAZA_EDIT_ROLES.includes(role))
+    g.push(P.MONTAZA_EDIT, P.MONTAZA_NEUSAGLASENOSTI_MANAGE);
+  if (PP_EDIT_ROLES.includes(role))
+    g.push(P.PLAN_PROIZVODNJE_EDIT, P.PRACENJE_EDIT);
   if (PP_FORCE_ROLES.includes(role)) g.push(P.PLAN_PROIZVODNJE_FORCE);
   if (PRACENJE_MANAGE_ROLES.includes(role)) g.push(P.PRACENJE_MANAGE);
   if (ADMIN_ONLY.includes(role))
-    g.push(P.PLAN_PROIZVODNJE_KOOP_ADMIN, P.PRACENJE_PRIORITET, P.MONTAZA_AI_ADMIN);
+    g.push(
+      P.PLAN_PROIZVODNJE_KOOP_ADMIN,
+      P.PRACENJE_PRIORITET,
+      P.MONTAZA_AI_ADMIN,
+    );
   return g;
 }
 
@@ -611,7 +647,7 @@ export const ROLE_PERMISSIONS: Partial<
       ? perms
       : [...new Set<PermissionKey>([...(perms ?? []), ...talasCGrants(role)])],
   ]),
-) as Partial<Record<RoleKey, readonly PermissionKey[]>>;
+);
 
 /**
  * TALAS D — Projektni biro + Moj profil + Podešavanja (MODULE_SPEC_pb_profil_podesavanja_30.md

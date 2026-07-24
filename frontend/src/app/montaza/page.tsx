@@ -2,7 +2,14 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { FileText, GanttChartSquare, Layers, Table2, type LucideIcon } from 'lucide-react';
+import {
+  AlertTriangle,
+  FileText,
+  GanttChartSquare,
+  Layers,
+  Table2,
+  type LucideIcon,
+} from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell, WideMode } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
@@ -11,8 +18,9 @@ import { IzvestajiTab } from './_components/izvestaji-tab';
 import { PlanTab } from './_components/plan-tab';
 import { GanttTab } from './_components/gantt-tab';
 import { TotalGanttTab } from './_components/total-gantt-tab';
+import { NeusaglasenostiTab } from './_components/neusaglasenosti-tab';
 
-type ViewKey = 'hub' | 'plan' | 'gantt' | 'total' | 'izvestaji';
+type ViewKey = 'hub' | 'plan' | 'gantt' | 'total' | 'izvestaji' | 'neusaglasenosti';
 
 /** Pogledi modula — hub kartice + tab traka (redosled kao 1.0 view tabs). */
 const VIEWS: { key: Exclude<ViewKey, 'hub'>; label: string; icon: LucideIcon; desc: string }[] = [
@@ -20,10 +28,16 @@ const VIEWS: { key: Exclude<ViewKey, 'hub'>; label: string; icon: LucideIcon; de
   { key: 'gantt', label: 'Gantt', icon: GanttChartSquare, desc: 'Vremenska linija faza aktivnog projekta' },
   { key: 'total', label: 'Ukupan Gant', icon: Layers, desc: 'Svi projekti na jednoj vremenskoj osi' },
   { key: 'izvestaji', label: 'Izveštaji', icon: FileText, desc: 'AI servisni izveštaji montera — tekst i fotke u PDF' },
+  {
+    key: 'neusaglasenosti',
+    label: 'Neusaglašenosti',
+    icon: AlertTriangle,
+    desc: 'Prijava i praćenje odstupanja na montaži (zahtev 004/26)',
+  },
 ];
 
 /** Samo konkretni pogledi su validni deep-linkovi; sve ostalo → hub. */
-const VALID = new Set<ViewKey>(['plan', 'gantt', 'total', 'izvestaji']);
+const VALID = new Set<ViewKey>(['plan', 'gantt', 'total', 'izvestaji', 'neusaglasenosti']);
 
 /**
  * Plan montaže — 3.0 TALAS C (MODULE_SPEC_planovi_pracenje_30.md). Hub landing + 4 pogleda
@@ -36,12 +50,25 @@ export default function MontazaPage() {
   const { user, isLoading } = useAuth();
   const router = useRouter();
   const [view, setView] = useState<ViewKey>('hub');
+  // Deep-link ka konkretnoj neusaglašenosti (mejl menadžmentu: ?view=neusaglasenosti&id=N).
+  const [initialNcId, setInitialNcId] = useState<number | null>(null);
 
   // Deep-link init iz URL-a (window da izbegnemo useSearchParams Suspense pod static export-om).
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const p = new URLSearchParams(window.location.search).get('view');
+    const params = new URLSearchParams(window.location.search);
+    const p = params.get('view');
     if (p && VALID.has(p as ViewKey)) setView(p as ViewKey);
+    const idRaw = params.get('id');
+    const idNum = idRaw ? Number.parseInt(idRaw, 10) : NaN;
+    if (Number.isInteger(idNum) && idNum > 0) setInitialNcId(idNum);
+    // „Potroši" deep-link ?id= (obrazac ?tour=1): očisti iz URL-a da se detalj ne
+    // otvara ponovo pri promeni pogleda / remount-u (auto-open je jednokratan).
+    if (idRaw) {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('id');
+      window.history.replaceState(null, '', url.toString());
+    }
   }, []);
 
   useEffect(() => {
@@ -103,6 +130,7 @@ export default function MontazaPage() {
             {view === 'gantt' && <GanttTab />}
             {view === 'total' && <TotalGanttTab />}
             {view === 'izvestaji' && <IzvestajiTab />}
+            {view === 'neusaglasenosti' && <NeusaglasenostiTab initialOpenId={initialNcId} />}
           </>
         )}
       </div>

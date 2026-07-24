@@ -3,9 +3,11 @@ import { roleHasPermission } from "./role-permissions";
 import { ALL_ROLE_KEYS, ROLES } from "./roles";
 
 /**
- * Sastanci + AI permission matrica (MODULE_SPEC_sastanci_ai_30.md §2/§7 P6, presuda 12.07):
- * rola-sloj pariteta sa živim 1.0 gate-ovima —
- *   read        = canAccessSastanci  = admin/leadpm/pm/menadzment/hr/viewer
+ * Sastanci + AI permission matrica.
+ * read: PRESUDA NENAD 24.07.2026 — Sastanci vidljivi SVIM kancelarijskim/operativnim
+ *   rolama (zamenjuje 1.0 canAccessSastanci paritet B6/§7 P6 od 12.07). Pogon
+ *   (proizvodni_radnik, cnc_operater, monter) i viewer NEMAJU (viewer je read IZGUBIO).
+ * Ostalo paritet 1.0:
  *   edit        = has_edit_role       = admin/menadzment/hr/pm/leadpm/poslovni_admin
  *   manage      = current_user_is_management = admin/menadzment
  *   weekly_move = VIDLJIVOST (DB tabela sast_weekly_movers je istina) = admin/menadzment
@@ -13,30 +15,34 @@ import { ALL_ROLE_KEYS, ROLES } from "./roles";
  *   ai.chat     = SVE aktivne uloge (1.0 „/ai za sve")
  * Row-scope (učesnik/organizator-trio/pm_teme vidljivost/ai svoje-niti) dokazuje e2e/DB — ovde samo rola.
  */
-describe("Sastanci + AI permission matrix (paritet 1.0 gate-ova)", () => {
+describe("Sastanci + AI permission matrix (presuda 24.07.2026)", () => {
   const READ_ROLES = [
     ROLES.ADMIN,
     ROLES.MENADZMENT,
     ROLES.HR,
     ROLES.PM,
     ROLES.LEADPM,
-    ROLES.VIEWER,
-  ];
-  const NOT_READ = [
+    // Presuda 24.07.2026 — biro/tehnika:
     ROLES.SEF,
     ROLES.TEHNOLOG,
     ROLES.CNC_PROGRAMER,
-    ROLES.KONTROLOR,
-    ROLES.MAGACIONER,
-    ROLES.PROIZVODNI_RADNIK,
-    ROLES.NABAVKA_VIEW,
-    ROLES.TIM_LIDER,
-    ROLES.MONTER,
-    ROLES.CNC_OPERATER,
-    ROLES.POSLOVNI_ADMIN, // ima edit, ali NE read (nije u canAccessSastanci)
-    // Presuda B6 (§7 P6): biro role NISU u canAccessSastanci — pin protiv regresije.
     ROLES.PROJEKTANT_VODJA,
     ROLES.INZENJER,
+    ROLES.KONTROLOR,
+    // Presuda 24.07.2026 — operativa:
+    ROLES.TIM_LIDER,
+    ROLES.MAGACIONER,
+    ROLES.TEHNICAR_ODRZAVANJA,
+    ROLES.NABAVKA_VIEW,
+    // Presuda 24.07.2026 — ukinuta asimetrija „edit bez read":
+    ROLES.POSLOVNI_ADMIN,
+  ];
+  const NOT_READ = [
+    // Pogon i probni nalozi NEMAJU (presuda 24.07.2026; viewer je read IZGUBIO).
+    ROLES.PROIZVODNI_RADNIK,
+    ROLES.MONTER,
+    ROLES.CNC_OPERATER,
+    ROLES.VIEWER,
   ];
   const EDIT_ROLES = [
     ROLES.ADMIN,
@@ -80,9 +86,9 @@ describe("Sastanci + AI permission matrix (paritet 1.0 gate-ova)", () => {
   it.each(EDIT_ROLES)("%s ima sastanci.edit (has_edit_role)", (role) => {
     expect(roleHasPermission(role, PERMISSIONS.SASTANCI_EDIT)).toBe(true);
   });
-  it("viewer ima read ali NE edit; poslovni_admin ima edit ali NE read (§2 asimetrija)", () => {
+  it("viewer NEMA ni read ni edit; poslovni_admin ima OBA (presuda 24.07.2026)", () => {
     expect(roleHasPermission(ROLES.VIEWER, PERMISSIONS.SASTANCI_READ)).toBe(
-      true,
+      false,
     );
     expect(roleHasPermission(ROLES.VIEWER, PERMISSIONS.SASTANCI_EDIT)).toBe(
       false,
@@ -92,7 +98,7 @@ describe("Sastanci + AI permission matrix (paritet 1.0 gate-ova)", () => {
     ).toBe(true);
     expect(
       roleHasPermission(ROLES.POSLOVNI_ADMIN, PERMISSIONS.SASTANCI_READ),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it.each(MANAGE_ROLES)("%s ima sastanci.manage + weekly_move", (role) => {
@@ -143,7 +149,7 @@ describe("Sastanci + AI permission matrix (paritet 1.0 gate-ova)", () => {
       }
     };
 
-    it("sastanci.read = TAČNO canAccessSastanci skup", () =>
+    it("sastanci.read = TAČNO skup presude 24.07.2026", () =>
       expectedExactly(PERMISSIONS.SASTANCI_READ, READ_ROLES));
     it("sastanci.edit = TAČNO has_edit_role skup", () =>
       expectedExactly(PERMISSIONS.SASTANCI_EDIT, EDIT_ROLES));

@@ -3,9 +3,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { X, Flashlight, RefreshCw, Camera } from 'lucide-react';
 import { lookupBarcode, type BarcodeKind, type BarcodeResult } from '@/api/reversi';
+import {
+  attachVideoDecoder,
+  buildVideoConstraints,
+  decodeImageFile,
+  isCameraDecodeSupported,
+  isIOSWebKit,
+  type VideoDecoderHandle,
+} from '@/lib/barcode-decoder';
 
-// Nativni BarcodeDetector (Chrome/Edge/Android WebView; nije u Firefox/Safari desktop).
-// Bez eksternih zavisnosti — HID čitač, „Slikaj barkod" i „Unesi ručno" su fallback.
+// Nativni BarcodeDetector (Chrome/Edge/Android WebView) — brzi put; tamo gde ga
+// nema (iPhone/Firefox/Safari) decode-engine (@/lib/barcode-decoder) daje ZXing/jsQR.
 interface DetectedBarcode {
   rawValue: string;
 }
@@ -89,9 +97,9 @@ async function forceAppReload(): Promise<void> {
  * `acceptUnknown` propušta nepoznat format (npr. ZADU-M- šifra mašine). `continuous`
  * drži skener otvoren posle svakog uspešnog skena (čipovi + dedup u sesiji).
  *
- * Napomena o dometu: still-image dekod koristi isti nativni BarcodeDetector, pa u
- * Firefox/Safari desktopu (bez BarcodeDetector-a) ostaje samo HID čitač / ručni unos
- * — 2.0 ne bundluje ZXing (bez eksternih zavisnosti); to je jedina svesna razlika od 1.0.
+ * Dekodiranje: decode-engine (@/lib/barcode-decoder) — BarcodeDetector (Chromium),
+ * ZXing (iPhone/Firefox/Safari), jsQR hibrid (iOS QR); still-image = ZXing 11-pokušaja
+ * pipeline. Paritet 1.0 dekodera je time potpun (22.07 — iPhone incident).
  */
 export function ScanOverlay({
   title = 'Skeniraj barkod',
@@ -192,22 +200,23 @@ export function ScanOverlay({
     [say],
   );
 
-  // Kamera + petlja detekcije + capabilities (torch/zoom).
+  // Kamera + decode-engine (BarcodeDetector/ZXing/jsQR — radi i na iPhone-u)
+  // + capabilities (torch/zoom).
   useEffect(() => {
-    const Ctor = getDetectorCtor();
-    if (!Ctor) {
-      say('Kamera-skener nije podržan u ovom pregledaču — koristi HID čitač, ručni unos ili „Slikaj barkod".', 'error');
+    // 1.0 lekcija: gejt je getUserMedia, NE BarcodeDetector (iPhone → ZXing put).
+    if (!isCameraDecodeSupported()) {
+      say('Kamera nije dostupna u ovom pregledaču (getUserMedia/HTTPS) — koristi HID čitač, ručni unos ili „Slikaj barkod".', 'error');
       return;
     }
-    let raf = 0;
     let stopped = false;
-    const detector = new Ctor({ formats: ['code_128', 'code_39', 'ean_13', 'qr_code'] });
-    detectorRef.current = detector;
+    let decoder: VideoDecoderHandle | null = null;
 
     (async () => {
       try {
+        // Rezolucija OBAVEZNA (1.0 lekcija): bez ideals-a iOS daje 640×480 pa
+        // ZXing/jsQR nemaju piksele za Code128. 'mixed' = 1080p (QR+1D profil).
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment' },
+          video: { ...buildVideoConstraints('mixed'), facingMode: 'environment' },
         });
         if (stopped) {
           stream.getTracks().forEach((t) => t.stop());
@@ -237,29 +246,54 @@ export function ScanOverlay({
           /* capabilities nepodržane — skener i dalje radi bez torch/zoom */
         }
 
-        const tick = async () => {
-          if (stopped || !videoRef.current) return;
-          try {
-            const found = await detector.detect(videoRef.current);
-            if (found[0]?.rawValue) await resolve(found[0].rawValue);
-          } catch {
-            /* prazan frejm — ignoriši */
-          }
-          raf = requestAnimationFrame(() => void tick());
-        };
-        raf = requestAnimationFrame(() => void tick());
-      } catch {
-        say('Kamera nije dostupna — dozvoli pristup, koristi „Slikaj barkod" ili ručni unos.', 'error');
+        const handle = await attachVideoDecoder({
+          video: v,
+          formats: ['code_128', 'code_39', 'ean_13', 'qr_code'],
+          onRaw: (raw) => void resolve(raw),
+          isStopped: () => stopped,
+        });
+        if (stopped) handle.stop();
+        else decoder = handle;
+      } catch (e) {
+        // getUserMedia pad → poruka; pad učitavanja dekodera (mreža) → posebna.
+        const msg = e instanceof Error ? e.message : String(e);
+        say(
+          /zxing|import|module|network/i.test(msg)
+            ? 'Dekoder nije mogao da se učita (mreža?) — koristi „Slikaj barkod" ili ručni unos.'
+            : 'Kamera nije dostupna — dozvoli pristup, koristi „Slikaj barkod" ili ručni unos.',
+          'error',
+        );
       }
     })();
 
     return () => {
       stopped = true;
-      cancelAnimationFrame(raf);
+      try {
+        decoder?.stop();
+      } catch {
+        /* ignore */
+      }
+      // iOS release higijena (1.0 releaseVideoStream): pause → stop → srcObject
+      // null; bez toga sledeće otvaranje ume da padne NotReadableError.
+      if (isIOSWebKit()) {
+        try {
+          videoRef.current?.pause();
+        } catch {
+          /* ignore */
+        }
+      }
       streamRef.current?.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
       trackRef.current = null;
       detectorRef.current = null;
+      try {
+        if (videoRef.current) {
+          videoRef.current.srcObject = null;
+          videoRef.current.load();
+        }
+      } catch {
+        /* ignore */
+      }
     };
   }, [resolve, say, hint]);
 
@@ -317,22 +351,30 @@ export function ScanOverlay({
   }
 
   async function onPickPhoto(file: File) {
-    const detector = detectorRef.current ?? (() => {
-      const Ctor = getDetectorCtor();
-      return Ctor ? new Ctor({ formats: ['code_128', 'code_39', 'ean_13', 'qr_code'] }) : null;
-    })();
-    if (!detector) {
-      say('Dekodiranje slike nije podržano u ovom pregledaču — koristi HID čitač ili ručni unos.', 'error');
-      return;
-    }
     say('Dekodiram sliku…');
     try {
-      const bitmap = await createImageBitmap(file);
-      const found = await detector.detect(bitmap);
-      bitmap.close?.();
-      if (found[0]?.rawValue) {
+      // Brzi pokušaj nativnim detektorom (Chromium); iPhone/Firefox → ZXing pipeline.
+      const Ctor = getDetectorCtor();
+      if (Ctor) {
+        try {
+          const detector = detectorRef.current ?? new Ctor({ formats: ['code_128', 'code_39', 'ean_13', 'qr_code'] });
+          const bitmap = await createImageBitmap(file);
+          const found = await detector.detect(bitmap);
+          bitmap.close?.();
+          if (found[0]?.rawValue) {
+            say('');
+            await resolve(found[0].rawValue);
+            return;
+          }
+        } catch {
+          /* padni na ZXing pipeline */
+        }
+      }
+      // 1.0 anti-glare pipeline (grayscale/kontrast/upscale + Code128-first).
+      const hit = await decodeImageFile(file, ['code_128', 'code_39', 'ean_13', 'qr_code']);
+      if (hit) {
         say('');
-        await resolve(found[0].rawValue);
+        await resolve(hit);
       } else {
         say('Barkod nije prepoznat na slici — priđi bliže, drži oštro i ravno.', 'error');
       }

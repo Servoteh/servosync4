@@ -176,6 +176,12 @@
 | Notifikacija (D8) | Dorada (`kontrola.dorada`) | narandžasta | `--status-warn` |
 | Notifikacija (D8) | Primopredaja (`primopredaja.nova`) | info plava | `--status-info` |
 | Notifikacija (D8) | Preuzeta izrada (`primopredaja.preuzeta`) | info plava | `--status-info` |
+| Montaža — neusaglašenost | Čeka analizu (`CEKA_ANALIZU`) | narandžasta | `--status-warn` |
+| Montaža — neusaglašenost | U toku (`U_TOKU`) | info plava | `--status-info` |
+| Montaža — neusaglašenost | Završeno (`ZAVRSENO`) | zelena | `--status-success` |
+| Montaža — neusaglašenost (ozbiljnost) | Mala (`MALA`) | info plava | `--status-info` |
+| Montaža — neusaglašenost (ozbiljnost) | Srednja (`SREDNJA`) | narandžasta | `--status-warn` |
+| Montaža — neusaglašenost (ozbiljnost) | Visoka (`VISOKA`) | crvena | `--status-danger` |
 
 Novi status = nova vrsta u ovoj tabeli **pre** upotrebe u kodu.
 
@@ -260,6 +266,10 @@ Dopune kita:
   audio ≤ 15 MB, ostalo ≤ 25 MB, ukupno ≤ `max`). Kontrolisan (`value: File[]` / `onChange`);
   odbačene fajlove prijavljuje kroz `onReject(poruka)` (roditelj prikazuje toast/grešku — kit je
   bez zavisnosti na toast). Generalizacija ponovljenog upload obrasca (odrzavanje/kvalitet/kadrovska).
+  Opcioni `accept?: AttachmentKind[]` (default sve: slike/audio/PDF — kontekst sme da suzi, npr.
+  `['IMAGE','FILE']` sakriva „Slikaj/kamera" ako nema IMAGE i menja `accept` atribut) i
+  `maxBytes?` (default 25 MB; audio dodatno kapiran na 15 MB) — usklađuje FE granice sa backendom
+  po modulu (Montaža/neusaglašenosti: slike/PDF ≤ 8 MB). Podrazumevane vrednosti čuvaju staro ponašanje.
 * **`AudioRecorder`** (`ui-kit/audio-recorder.tsx`, modul Zahtevi §5) — snimanje glasovne poruke kao
   PRILOGA (razlika od `DictateButton` iz `voice-controls`, koji diktira u polje i ne čuva audio).
   MediaRecorder → `Blob` (webm), preview kroz `<audio controls>`, prikaz trajanja. Kontrolisan
