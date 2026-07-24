@@ -665,6 +665,8 @@ export class TechProcessesService {
    * operacijom, planiranim (iz `work_orders`) i `hasOpenSession` (postoji
    * otvorena `work_time_entries` sesija) da UI zna „Završi rad" vs „Zatvori".
    * Zatvaranje iz liste koristi POSTOJEĆI `POST /:id/finish` sa `id` reda.
+   * Zahtev 015/26: deljeni/opšti nalog na kome radnik NEMA svoju otvorenu sesiju
+   * a DRUGI radnik radi se izostavlja (vlasništvo bez učešća ≠ „moj otvoren").
    */
   async openForWorker(card: string | undefined, user?: AuthUser) {
     const trimmed = (card ?? "").trim();
@@ -744,20 +746,34 @@ export class TechProcessesService {
       );
     }
 
+    // Zahtev 015/26 (Jovica, opšti nalog): red koji radnik VIŠE ne radi (nema
+    // sopstvenu otvorenu sesiju) a DRUGI radnik na njemu radi (deljeni/opšti
+    // nalog) ne sme da ostane u „Moji otvoreni" samo zato što ga radnik POSEDUJE
+    // (`tech_processes.worker_id` = kreator koji je prvi START-ovao). „Kraj rada
+    // — samo moj rad" (22.07) zatvori radnikovu sesiju, ali red ostaje otvoren
+    // zbog drugih; bez ovog filtera bi kreator zauvek video već zatvoren nalog i
+    // ne bi mogao da ga skloni. Zadržavamo red kad: (a) radnik ima svoju otvorenu
+    // sesiju (aktivno radi), ILI (b) nijedan DRUGI radnik nema otvorenu sesiju
+    // (čisto vlasništvo — jednosken/ispod-plana red se i dalje zatvara iz liste,
+    // običan nalog netaknut).
+    const visibleRows = rows.filter(
+      (r) => openSessionIds.has(r.id) || (othersOpenByRow.get(r.id) ?? 0) === 0,
+    );
+
     // `hasOpenSession` dolazi iz već učitanog skupa otvorenih sesija (gore) —
     // bez drugog upita ka work_time_entries.
-    const triples = rows.map((r) => ({
+    const triples = visibleRows.map((r) => ({
       projectId: r.projectId,
       identNumber: r.identNumber,
       variant: r.variant,
     }));
     const [ops, planned, drawings] = await Promise.all([
-      this.resolveOperationsByCode(rows.map((r) => r.workCenterCode)),
+      this.resolveOperationsByCode(visibleRows.map((r) => r.workCenterCode)),
       this.resolvePlannedByTriple(triples),
       this.resolveDrawingByTriple(triples),
     ]);
 
-    const data = rows.map((r) => {
+    const data = visibleRows.map((r) => {
       const key = `${r.projectId}|${r.identNumber}|${r.variant}`;
       return {
         ...r,

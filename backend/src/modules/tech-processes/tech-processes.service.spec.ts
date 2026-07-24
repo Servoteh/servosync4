@@ -1043,6 +1043,60 @@ describe("TechProcessesService — openForWorker (Moji otvoreni, proba 13.07 Jov
     expect(data[0].hasOpenSession).toBe(false);
   });
 
+  it("zahtev 015/26: deljeni/opšti nalog — nemam svoju sesiju a DRUGI radnik radi → red se NE prikazuje", async () => {
+    // A (74) je kreator/vlasnik reda (opšti nalog RN 4698), ali je „Kraj rada —
+    // samo moj rad" zatvorio SVOJU sesiju; radnik 33 i dalje radi → red ostaje
+    // globalno otvoren, ali NE sme više da bude u „Moji otvoreni" radnika 74
+    // (ranije je ostajao zbog `tech_processes.worker_id == 74`).
+    prisma.workTimeEntry.findMany.mockResolvedValue([]); // 74 nema otvorenu sesiju
+    prisma.techProcess.findMany.mockResolvedValue([
+      tpRow({ id: 4698, workerId: 74 }),
+    ]);
+    prisma.workTimeEntry.groupBy.mockResolvedValue([
+      { techProcessId: 4698, workerId: 33 }, // drugi radnik i dalje radi
+    ]);
+
+    const { data } = await service.openForWorker("CARD74", undefined);
+
+    expect(data).toHaveLength(0);
+  });
+
+  it("zahtev 015/26: deljeni nalog — imam SVOJU otvorenu sesiju uz druge → red OSTAJE (othersOpenCount>0)", async () => {
+    // Aktivno radim: red se prikazuje uz badge „+N radi" (izbor „samo moj / za sve").
+    prisma.workTimeEntry.findMany.mockResolvedValue([{ techProcessId: 4698 }]);
+    prisma.techProcess.findMany.mockResolvedValue([
+      tpRow({ id: 4698, workerId: 74 }),
+    ]);
+    prisma.workTimeEntry.groupBy.mockResolvedValue([
+      { techProcessId: 4698, workerId: 33 },
+      { techProcessId: 4698, workerId: 44 },
+    ]);
+
+    const { data } = await service.openForWorker("CARD74", undefined);
+
+    expect(data).toHaveLength(1);
+    expect(data[0].hasOpenSession).toBe(true);
+    expect(data[0].othersOpenCount).toBe(2);
+  });
+
+  it("zahtev 015/26: filtrira SAMO deljeni red — moj solo red (bez tuđih sesija) ostaje (običan nalog netaknut)", async () => {
+    // 100 = moj solo red bez tuđih sesija (jednosken/ispod-plana — vlasništvo);
+    // 200 = deljeni red na kome radnik 33 radi, ja bez sesije. 100 ostaje, 200 ispada.
+    prisma.workTimeEntry.findMany.mockResolvedValue([]); // 74 nema nijednu otvorenu
+    prisma.techProcess.findMany.mockResolvedValue([
+      tpRow({ id: 100, workerId: 74 }),
+      tpRow({ id: 200, workerId: 74 }),
+    ]);
+    prisma.workTimeEntry.groupBy.mockResolvedValue([
+      { techProcessId: 200, workerId: 33 },
+    ]);
+
+    const { data } = await service.openForWorker("CARD74", undefined);
+
+    expect(data.map((r) => r.id)).toEqual([100]);
+    expect(data[0].hasOpenSession).toBe(false);
+  });
+
   it("red nosi drawing { id, hasPdf, revizioni status } sa RN-a (reuse resolveCardDrawing)", async () => {
     prisma.workTimeEntry.findMany.mockResolvedValue([]);
     prisma.techProcess.findMany.mockResolvedValue([
@@ -2578,6 +2632,9 @@ describe("TechProcessesService — deljeni red: više radnika na istoj operaciji
   });
 
   it("openForWorker vraća othersOpenCount (broj DRUGIH radnika sa otvorenom sesijom po redu)", async () => {
+    // Radnik 74 AKTIVNO radi red 500 (svoja otvorena sesija) — inače bi ga zahtev
+    // 015/26 filter izbacio (vlasništvo bez učešća uz tuđi rad ≠ „moj otvoren").
+    prisma.workTimeEntry.findMany.mockResolvedValue([{ techProcessId: 500 }]);
     prisma.techProcess.findMany.mockResolvedValue([
       tpRow({ id: 500, workerId: 74, workCenterCode: "0102" }),
     ]);
