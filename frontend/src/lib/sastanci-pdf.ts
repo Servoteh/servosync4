@@ -193,6 +193,8 @@ const AK_STATUS: Record<string, { l: string; c: [number, number, number] }> = {
 
 export interface PdfAkcija {
   naslov: string;
+  /** Opis zadatka (zahtev 014/26 t.6) — ispisuje se ispod naslova u koloni ZADATAK. */
+  opis?: string | null;
   effectiveStatus?: string | null;
   status?: string | null;
   odgovoranLabel?: string | null;
@@ -263,20 +265,32 @@ function drawAkcijeGroup(
 
   const FS_ZAD = 9;
   const FS_META = 8;
+  // Opis zadatka (zahtev 014/26 t.6) — sitniji sivi tekst ispod naslova.
+  const FS_OPIS = 7.8;
+  const OPIS_LINE = 3.9;
   group.rows.forEach((a, ri) => {
     const eff = a.effectiveStatus || a.status || 'otvoren';
     const st = AK_STATUS[eff] || { l: eff, c: [80, 80, 80] as [number, number, number] };
     const odgTxt = a.odgovoranLabel || a.odgovoranText || a.odgovoranEmail || '—';
     const rok = a.rokText || (a.rok ? String(a.rok).split('-').reverse().join('.') : '—');
+    const opis = String(a.opis || '').trim();
 
     doc.setFont('Roboto', 'normal');
     doc.setFontSize(FS_ZAD);
     const zadLines = doc.splitTextToSize(String(a.naslov || '—'), zadW - 4) as string[];
+    // Opis se prelama u istoj (ZADATAK) koloni, na užem fontu — meri se pre visine reda.
+    let opisLines: string[] = [];
+    if (opis) {
+      doc.setFontSize(FS_OPIS);
+      opisLines = doc.splitTextToSize(opis, zadW - 4) as string[];
+    }
     doc.setFontSize(FS_META);
     const odgLines = doc.splitTextToSize(String(odgTxt), COL.odg - 3) as string[];
     const rokLines = doc.splitTextToSize(String(rok), COL.rok - 2) as string[];
-    const nLines = Math.max(zadLines.length, odgLines.length, rokLines.length, 1);
-    const rowH = nLines * AK_LINE + PAD * 2;
+    // Visina reda = veći od (naslov + opis) i (odgovoran/rok) blokova.
+    const zadBlockH = zadLines.length * AK_LINE + opisLines.length * OPIS_LINE;
+    const sideBlockH = Math.max(odgLines.length, rokLines.length, 1) * AK_LINE;
+    const rowH = Math.max(zadBlockH, sideBlockH) + PAD * 2;
 
     if (y + rowH > BODY_BOTTOM) {
       doc.addPage();
@@ -301,6 +315,15 @@ function drawAkcijeGroup(
     doc.setFontSize(FS_ZAD);
     doc.setTextColor(17, 24, 39);
     doc.text(zadLines, xZad + 2, topY);
+    if (opisLines.length) {
+      doc.setFontSize(FS_OPIS);
+      doc.setTextColor(107, 114, 128);
+      let oy = topY + zadLines.length * AK_LINE + 0.6;
+      for (const line of opisLines) {
+        doc.text(line, xZad + 2, oy);
+        oy += OPIS_LINE;
+      }
+    }
     doc.setFontSize(FS_META);
     doc.setTextColor(55, 65, 81);
     doc.text(odgLines, xOdg + 2, topY);

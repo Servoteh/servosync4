@@ -62,6 +62,8 @@ export function buildPdfInput(
           naziv: g.naziv,
           rows: g.rows.map((a) => ({
             naslov: a.naslov,
+            // Opis zadatka u PDF akcionom planu (zahtev 014/26 t.6).
+            opis: a.opis,
             effectiveStatus: a.effective_status,
             status: a.status,
             odgovoranLabel: a.odgovoran_label,
