@@ -463,6 +463,8 @@ function BatchTpLabels() {
 
   const [queue, setQueue] = useState<Map<string, QueueEntry>>(new Map());
   const [msg, setMsg] = useState<string | null>(null);
+  const print = usePrintLocLabel();
+  const [busy, setBusy] = useState(false);
 
   function toggleTp(tp: PredmetTpRow) {
     if (!focused) return;
@@ -504,8 +506,8 @@ function BatchTpLabels() {
   const entries = useMemo(() => Array.from(queue.entries()), [queue]);
   const totalLabels = entries.reduce((s, [, e]) => s + (Number(e.qty) || 0), 0);
 
-  function runBatchPrint() {
-    setMsg(null);
+  /** Sastavi TechLabelSpec-ove iz reda (deljeno: TSC termalni + pregledač). Preskače TP bez RNZ barkoda. */
+  function buildQueueSpecs(): { specs: TechLabelSpec[]; skipped: string[] } {
     const specs: TechLabelSpec[] = [];
     const skipped: string[] = [];
     const datum = labelDate();
@@ -536,6 +538,48 @@ function BatchTpLabels() {
         },
       });
     }
+    return { specs, skipped };
+  }
+
+  /**
+   * Direktna termalna štampa (TSC ML340P) — paritet 1.0 DUAL-PATH: gradi TSPL2 po
+   * nalepnici (`buildTspLabelProgram`, kopije kroz `PRINT n,1`) i JOIN-uje sve programe
+   * u jedan (kao 1.0), pa šalje na backend `/locations/labels/print` (`usePrintLocLabel`,
+   * isti transport kao police). Fire-and-best-effort: rezultat u toast; pregledač
+   * („Pregled i štampa" → Ctrl + P) ostaje kao rezerva ako mrežna štampa padne.
+   */
+  async function runThermalBatch() {
+    setMsg(null);
+    const { specs, skipped } = buildQueueSpecs();
+    if (!specs.length) {
+      setMsg(`Ni jedan TP nema validan RNZ barkod (preskočeno: ${skipped.length}).`);
+      return;
+    }
+    const program = specs
+      .map((s) => buildTspLabelProgram({ fields: s.fields, barcodeValue: s.barcodeValue, copies: s.copies }))
+      .join('');
+    const totalOtisak = specs.reduce((s, x) => s + (x.copies ?? 1), 0);
+    setBusy(true);
+    try {
+      await print.mutateAsync({ tspl2: program, copies: totalOtisak });
+      setMsg(
+        `Poslato na TSC termalni štampač: ${specs.length} TP, ukupno ${totalOtisak} nalepnica.` +
+          (skipped.length ? ` Preskočeno bez barkoda: ${skipped.length}.` : ''),
+      );
+    } catch (e) {
+      setMsg(
+        `Termalna štampa nije uspela: ${e instanceof Error ? e.message : 'nepoznata greška'}. ` +
+          'Koristi „Pregled i štampa" (Ctrl + P) kao rezervu.',
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Pregledač (A4, Ctrl + P) — rezerva; otvara prozor sa svim nalepnicama (CODE128 SVG). */
+  function runBatchPrint() {
+    setMsg(null);
+    const { specs, skipped } = buildQueueSpecs();
     if (!specs.length) {
       setMsg(`Ni jedan TP nema validan RNZ barkod (preskočeno: ${skipped.length}).`);
       return;
@@ -634,7 +678,9 @@ function BatchTpLabels() {
     <section className="space-y-3">
       <h3 className="text-md font-semibold text-ink">Batch TP nalepnice iz BigTehn</h3>
       <p className="text-xs text-ink-secondary">
-        Nađi predmet, otvori njegove tehnološke postupke, čekiraj TP-ove u red za štampu. TIP operacije (S/O/Z) štampa se krupno ispod barkoda.
+        Nađi predmet, otvori njegove tehnološke postupke, čekiraj TP-ove u red za štampu.{' '}
+        <strong>Štampaj na TSC</strong> šalje ceo red direktno na termalni štampač (magacin, bez Chrome dijaloga);{' '}
+        <strong>Pregled i štampa</strong> otvara A4 pregledač (Ctrl + P) kao rezervu. TIP operacije (S/O/Z) prikazuje se na pregledaču.
       </p>
 
       <input
@@ -682,10 +728,13 @@ function BatchTpLabels() {
         empty={tableEmpty(false, 'Red je prazan', 'Čekiraj TP-ove u tabeli iznad da ih dodaš u red za štampu.')}
       />
       <div className="flex flex-wrap items-center gap-2">
-        <Button onClick={runBatchPrint} disabled={entries.length === 0}>
-          <Printer className="h-4 w-4" /> Pregled i štampa ({totalLabels})
+        <Button loading={busy} onClick={() => void runThermalBatch()} disabled={entries.length === 0}>
+          <Printer className="h-4 w-4" /> Štampaj na TSC ({totalLabels})
         </Button>
-        <Button variant="secondary" onClick={() => setQueue(new Map())} disabled={entries.length === 0}>
+        <Button variant="secondary" onClick={runBatchPrint} disabled={entries.length === 0 || busy}>
+          <Printer className="h-4 w-4" /> Pregled i štampa (Ctrl + P)
+        </Button>
+        <Button variant="secondary" onClick={() => setQueue(new Map())} disabled={entries.length === 0 || busy}>
           Očisti red
         </Button>
       </div>

@@ -1,0 +1,9 @@
+# Vendored tesseract.js self-host asseti (worker + core-wasm.js + traineddata).
+# Čuvaju se VERBATIM — bez EOL/encoding normalizacije i bez diff-a (veliki,
+# minifikovani/kompresovani; izvor je node_modules/tessdata, ne uređuju se ručno).
+* binary
+
+# Dokumentacija foldera ostaje normalan tekst (`diff` mora eksplicitno jer ga
+# makro `binary` iznad gasi za sve fajlove).
+README.md text diff
+.gitattributes text diff

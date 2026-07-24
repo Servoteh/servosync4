@@ -3,11 +3,10 @@
  * services/labelOcr.js + lib/barcodeParse.js parsePredmetTpFromLabelText.
  *
  * Čisti deo (crop + parsiranje teksta) je bez zavisnosti. Sam OCR engine
- * (Tesseract) NIJE bundle-ovan u 2.0 (izbegavamo runtime CDN/WASM povlačenje
- * ~15MB traineddata pod on-prem CSP-om). `recognizeLabelText` koristi engine
- * SAMO ako je prisutan kao `window.Tesseract` (self-host UMD build); u
- * suprotnom vraća {error:'engine_missing'} pa UI degradira na barkod / ručni
- * unos bez pada. Engine-provisioning je zabeležen kao BE/infra follow-up.
+ * (tesseract.js@5.1.1) je bundle-ovan (lazy import), a worker/core-wasm/traineddata
+ * se SELF-HOST-uju iz `public/tesseract/` (vidi `localTesseractOptions`) — bez
+ * runtime CDN povlačenja, pa OCR radi offline / na LAN bake-u i pod on-prem CSP-om.
+ * Opcioni `window.Tesseract` (self-host UMD) i dalje pobeđuje ako ga instalacija ubaci.
  */
 
 export interface ParsedLabel {
@@ -117,11 +116,52 @@ function getWindowEngine(): TesseractGlobal | null {
   return t && typeof t.createWorker === 'function' ? t : null;
 }
 
+/** Koren self-host tesseract asseta (public/tesseract/ → out/tesseract/ u static export-u). */
+const OCR_ASSET_BASE = '/tesseract';
+
 /**
- * OCR je uvek „dostupan" u browseru — tesseract.js je bundlovan (lazy import,
- * kao u 1.0). Napomena: worker/wasm/traineddata se pri PRVOJ upotrebi vuku sa
- * CDN-a (default tesseract.js putanje) — na offline LAN telefonu prvi OCR pada
- * u `ocr_failed` (isti kompromis kao 1.0 web).
+ * Minimalni WASM modul za detekciju SIMD (v128) podrške — isti bajtovi kao
+ * `wasm-feature-detect`. Bira SIMD core kad je podržan (Chrome 91+), inače pada
+ * na ne-SIMD build. `WebAssembly.validate` je sinhron i bezbedan (bez instanciranja).
+ */
+const WASM_SIMD_PROBE = Uint8Array.of(
+  0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+  0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7b,
+  0x03, 0x02, 0x01, 0x00,
+  0x0a, 0x0a, 0x01, 0x08, 0x00, 0x41, 0x00, 0xfd, 0x0f, 0xfd, 0x62, 0x0b,
+);
+function wasmSimdSupported(): boolean {
+  try {
+    return typeof WebAssembly === 'object' && WebAssembly.validate(WASM_SIMD_PROBE);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Self-host putanje za tesseract.js — worker, core-wasm i traineddata iz
+ * `public/tesseract/` (root-relativne; `resolvePaths` ih razrešava na origin,
+ * pa rade i preko Cloudflare-a i na LAN bake-u). Bez ovoga tesseract.js@5 vuče
+ * ~11MB asseta sa jsDelivr CDN-a → pada offline/na LAN-u i pod on-prem CSP-om.
+ *   • worker.min.js  — tesseract.js/dist
+ *   • *-core-*.wasm.js — tesseract.js-core (SIMD ili ne-SIMD; wasm je embed-ovan)
+ *   • eng.traineddata.gz — tessdata_fast (langPath je direktorijum; gzip=true default)
+ */
+function localTesseractOptions(): Record<string, unknown> {
+  return {
+    logger: () => {},
+    workerPath: `${OCR_ASSET_BASE}/worker.min.js`,
+    corePath: wasmSimdSupported()
+      ? `${OCR_ASSET_BASE}/tesseract-core-simd.wasm.js`
+      : `${OCR_ASSET_BASE}/tesseract-core.wasm.js`,
+    langPath: OCR_ASSET_BASE,
+  };
+}
+
+/**
+ * OCR je uvek „dostupan" u browseru — tesseract.js je bundlovan (lazy import),
+ * a worker/core-wasm/traineddata se self-host-uju iz `public/tesseract/`
+ * (`localTesseractOptions`) → radi offline i na LAN bake-u (nema CDN povlačenja).
  */
 export function isOcrEngineAvailable(): boolean {
   return typeof window !== 'undefined';
@@ -131,11 +171,13 @@ let workerPromise: Promise<TesseractWorkerLike> | null = null;
 async function getWorker(): Promise<TesseractWorkerLike> {
   if (!workerPromise) {
     workerPromise = (async () => {
+      // 1.0 paritet: createWorker('eng', 1, …) — barcode.js/labelOcr.js. OEM 1 = LSTM_ONLY.
+      // Self-host asseti (workerPath/corePath/langPath) → offline/LAN, on-prem CSP.
+      const opts = localTesseractOptions();
       const win = getWindowEngine();
-      if (win) return win.createWorker('eng', 1, { logger: () => {} });
+      if (win) return win.createWorker('eng', 1, opts);
       const mod = await import('tesseract.js');
-      // 1.0 paritet: createWorker('eng', 1, {logger:()=>{}}) — barcode.js/labelOcr.js.
-      return (mod as unknown as TesseractGlobal).createWorker('eng', 1, { logger: () => {} });
+      return (mod as unknown as TesseractGlobal).createWorker('eng', 1, opts);
     })().catch((e) => {
       // Pad inicijalizacije (offline CDN za wasm/traineddata) NE sme da „zacementira"
       // OCR do kraja sesije — sledeći pokušaj kreće ispočetka.
