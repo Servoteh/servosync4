@@ -24,17 +24,23 @@ export function DirectoryMultiPicker({
   value,
   onChange,
   placeholder = 'Dodaj učesnika…',
+  exclude,
 }: {
   value: PickedUser[];
   onChange: (v: PickedUser[]) => void;
   placeholder?: string;
+  /** Dodatni email-ovi koje NE nuditi u predlozima (npr. već postojeći učesnici pri izmeni). */
+  exclude?: string[];
 }) {
   const dir = useUserDirectory();
   const [q, setQ] = useState('');
   const [open, setOpen] = useState(false);
 
   const entries = dir.data?.data ?? [];
-  const chosen = useMemo(() => new Set(value.map((v) => v.email.toLowerCase())), [value]);
+  const chosen = useMemo(
+    () => new Set([...value.map((v) => v.email.toLowerCase()), ...(exclude ?? []).map((e) => e.toLowerCase())]),
+    [value, exclude],
+  );
   const filtered = useMemo(() => {
     const t = q.trim().toLowerCase();
     const base = entries.filter((e) => !chosen.has(e.email.toLowerCase()));

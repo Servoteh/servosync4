@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Play, Lock, Unlock, Send, Pencil, CalendarX, Printer, Trash2 } from 'lucide-react';
+import { ArrowLeft, Play, Lock, Unlock, Send, Pencil, CalendarX, Printer, Trash2, X } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { PERMISSIONS } from '@/lib/permissions';
 import { Can } from '@/lib/can';
@@ -14,11 +14,13 @@ import { ApiError } from '@/api/client';
 import {
   arhiveQueryKey,
   newClientEventId,
+  useAddUcesnik,
   useCancelSastanak,
   useDeleteSastanak,
   useLockSastanak,
   useMarkPrisutni,
   usePredmetPrioritet,
+  useRemoveUcesnik,
   useReopenSastanak,
   useSastanakFull,
   useSastanakWeeklyDiff,
@@ -30,6 +32,7 @@ import {
   type SastanakFull,
   type WeeklyDiff,
 } from '@/api/sastanci';
+import { DirectoryMultiPicker, type PickedUser } from './directory-multi-picker';
 import { generateSastanakPdf } from '@/lib/sastanci-pdf';
 import { Tabs, type TabItem } from './tabs';
 import { formatDatum, formatVreme, INPUT_CLS, SASTANAK_TIP_LABEL, SastanakStatusBadge } from './common';
@@ -129,7 +132,15 @@ export function SastanakDetalj({ id, onBack }: { id: string; onBack: () => void 
 
   async function zakljucaj() {
     if (!sast) return;
-    if (!confirm('Zaključati sastanak? Zapisnik se generiše i šalje učesnicima.')) return;
+    // Zahtev 014/26 t.1 — datum sastanka je datum koji nosi PDF zapisnik i mejl
+    // učesnicima (i naslov priloga „Zapisnik-<datum>.pdf"). Prikaži ga u potvrdi da
+    // se zastareo/pogrešan termin uhvati PRE slanja (ispravlja se kroz „Uredi").
+    if (
+      !confirm(
+        `Zaključati sastanak sa datumom ${formatDatum(sast.datum)}? Taj datum nosi PDF zapisnik i mejl učesnicima — ako nije tačan, prvo ga ispravi kroz „Uredi".`,
+      )
+    )
+      return;
     setBusy('lock');
     try {
       // Zvanični (zaključani) PDF ne sme na potencijalno stale/failed hook
@@ -523,9 +534,17 @@ function mapDeleteError(e: unknown): { msg: string; detail?: string } {
 }
 
 /**
- * „Uredi" — meta podaci već zakazanog termina (naslov/datum/vreme/mesto), paritet 1.0
- * pripremiTab meta-edit. Serija se i dalje menja u tabu Šabloni (važi za BUDUĆE
- * instance); ovde se menja SAMO ovaj termin.
+ * „Uredi" — meta podaci već zakazanog termina (naslov/datum/vreme/mesto) + učesnici,
+ * paritet 1.0 pripremiTab meta-edit. Menja SAMO ovaj sastanak; ritam ponavljajuće
+ * serije se podešava kroz šablone (Admin ⚙ → Šabloni), za buduće termine.
+ *
+ * Zahtev 014/26 t.3 — poruka više ne pominje nepostojeći „tab Šabloni" (šabloni su
+ * iza ⚙ i tiču se serija, ne pojedinačnog sastanka); opisuje stvarni tok izmene.
+ * Zahtev 014/26 t.4 — dodavanje/uklanjanje učesnika (reuse DirectoryMultiPicker +
+ * postojeće add/remove rute). Izmene učesnika se primenjuju ODMAH (svaka je svoja
+ * mutacija), za razliku od naslova/datuma/vremena/mesta koji idu na „Sačuvaj".
+ * Dodat učesnik na PLANIRAN sastanak → sy15 trigger automatski šalje pozivnicu;
+ * uklonjeni učesnik ne dobija nikakvo obaveštenje.
  *
  * `dismissable={false}` — obrazac sa unosom se ne sme zatvoriti klikom na pozadinu
  * ni Escape-om (B1), samo X / Otkaži.
@@ -541,12 +560,21 @@ function UrediSastanakModal({
   onSaved: (changedTermin: boolean) => void;
 }) {
   const update = useUpdateSastanak();
+  const addU = useAddUcesnik();
+  const removeU = useRemoveUcesnik();
+  // Živi detalj deli keš sa roditeljem (isti query-key) — add/remove invalidiraju
+  // ['sastanci'] pa se lista učesnika ovde osvežava sama.
+  const fullQ = useSastanakFull(sast.id);
+  const ucesnici = fullQ.data?.data.ucesnici ?? sast.ucesnici;
+  const currentEmails = ucesnici.map((u) => u.email);
+
   const datum0 = String(sast.datum ?? '').slice(0, 10);
   const vreme0 = sast.vreme ? formatVreme(sast.vreme) : '';
   const [naslov, setNaslov] = useState(sast.naslov ?? '');
   const [datum, setDatum] = useState(datum0);
   const [vreme, setVreme] = useState(vreme0);
   const [mesto, setMesto] = useState(sast.mesto ?? '');
+  const [toAdd, setToAdd] = useState<PickedUser[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   async function submit() {
@@ -568,6 +596,29 @@ function UrediSastanakModal({
       onSaved(datum !== datum0 || vreme !== vreme0);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Snimanje nije uspelo.');
+    }
+  }
+
+  async function addParticipants() {
+    setError(null);
+    try {
+      // Sekvencijalno — svaki INSERT okida invite trigger (planiran); dedup po
+      // lower(email) je već u DirectoryMultiPicker (exclude=currentEmails).
+      for (const u of toAdd) {
+        await addU.mutateAsync({ id: sast.id, email: u.email, label: u.label });
+      }
+      setToAdd([]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Dodavanje učesnika nije uspelo.');
+    }
+  }
+
+  async function removeParticipant(email: string) {
+    setError(null);
+    try {
+      await removeU.mutateAsync({ id: sast.id, email });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Uklanjanje učesnika nije uspelo.');
     }
   }
 
@@ -599,8 +650,52 @@ function UrediSastanakModal({
         <FormField label="Mesto">
           <input className={INPUT_CLS} value={mesto} onChange={(e) => setMesto(e.target.value)} />
         </FormField>
+
+        {/* Zahtev 014/26 t.4 — učesnici (primenjuje se odmah). */}
+        <div className="space-y-2 rounded-panel border border-line p-3">
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-medium text-ink">Učesnici ({ucesnici.length})</span>
+            <span className="text-xs text-ink-disabled">primenjuje se odmah</span>
+          </div>
+          {ucesnici.length > 0 ? (
+            <div className="flex flex-wrap gap-1.5">
+              {ucesnici.map((u) => (
+                <span
+                  key={u.email}
+                  className="inline-flex items-center gap-1 rounded-control bg-surface-2 px-2 py-1 text-xs text-ink"
+                >
+                  {u.label || u.email}
+                  <button
+                    type="button"
+                    onClick={() => void removeParticipant(u.email)}
+                    disabled={removeU.isPending}
+                    className="text-ink-secondary hover:text-status-danger disabled:opacity-50"
+                    aria-label={`Ukloni ${u.label || u.email}`}
+                  >
+                    <X className="h-3 w-3" aria-hidden />
+                  </button>
+                </span>
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-ink-secondary">Nema učesnika.</p>
+          )}
+          <DirectoryMultiPicker value={toAdd} onChange={setToAdd} exclude={currentEmails} />
+          {toAdd.length > 0 && (
+            <Button variant="secondary" loading={addU.isPending} onClick={() => void addParticipants()}>
+              Dodaj u sastanak ({toAdd.length})
+            </Button>
+          )}
+          <p className="text-xs text-ink-secondary">
+            {sast.status === 'planiran'
+              ? 'Dodatom učesniku automatski stiže pozivnica mejlom. Uklonjeni učesnik ne dobija obaveštenje.'
+              : 'Uklonjeni učesnik ne dobija obaveštenje.'}
+          </p>
+        </div>
+
         <p className="text-xs text-ink-secondary">
-          Menja se samo ovaj termin. Ritam serije (svi budući termini) se menja u tabu „Šabloni“.
+          Izmene važe samo za ovaj sastanak. Sastanci koji se ponavljaju podešavaju se kroz
+          šablone (Admin ⚙ → Šabloni) i to važi za buduće termine.
         </p>
         {error && <p className="text-sm text-status-danger">{error}</p>}
       </div>
