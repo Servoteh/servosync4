@@ -397,6 +397,33 @@ export class MojProfilController {
     return this.profil.teamMemberHours(req.user.email, employeeId, query.month);
   }
 
+  /** Prisustvo (ulazi/izlazi) člana tima u opsegu — isti prikaz kao /profile/attendance,
+   *  scope-ovan na člana (zahtev 011/26). Literal `attendance/events` je zasebna ruta ispod. */
+  @Get("team/:employeeId/attendance")
+  @RequirePermission(PERMISSIONS.PROFILE_TEAM)
+  teamMemberAttendance(
+    @Req() req: AuthedRequest,
+    @Param("employeeId", ParseUUIDPipe) employeeId: string,
+    @Query() query: AttendanceRangeQueryDto,
+  ) {
+    return this.profil.teamMemberAttendance(req.user.email, employeeId, query);
+  }
+
+  /** Sirovi prolazi člana tima za jedan dan (drill; isti kao /profile/attendance/events). */
+  @Get("team/:employeeId/attendance/events")
+  @RequirePermission(PERMISSIONS.PROFILE_TEAM)
+  teamMemberAttendanceEvents(
+    @Req() req: AuthedRequest,
+    @Param("employeeId", ParseUUIDPipe) employeeId: string,
+    @Query() query: AttendanceEventsQueryDto,
+  ) {
+    return this.profil.teamMemberAttendanceEvents(
+      req.user.email,
+      employeeId,
+      query.day,
+    );
+  }
+
   /** Šef koriguje kucanje člana (attendance_submit_correction za tog člana; RPC presuđuje pravo). */
   @Post("team/:employeeId/attendance-correction")
   @RequirePermission(PERMISSIONS.PROFILE_TEAM)

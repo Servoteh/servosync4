@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Delete,
+  HttpCode,
   Param,
   ParseUUIDPipe,
   Patch,
@@ -18,6 +19,7 @@ import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
 import { PERMISSIONS } from "../../common/authz/permissions";
 import { KadrovskaMutationsService } from "./kadrovska-mutations.service";
+import { KadrovskaGridAutofillService } from "./grid-autofill.service";
 import * as D from "./dto/kadrovska-mutation.dto";
 
 interface AuthedRequest {
@@ -37,10 +39,41 @@ interface AuthedRequest {
 @RequirePermission(PERMISSIONS.KADROVSKA_READ)
 @Controller({ path: "kadrovska", version: "1" })
 export class KadrovskaMutationsController {
-  constructor(private readonly m: KadrovskaMutationsService) {}
+  constructor(
+    private readonly m: KadrovskaMutationsService,
+    private readonly autofill: KadrovskaGridAutofillService,
+  ) {}
 
   private email(req: AuthedRequest) {
     return req.user.email;
+  }
+
+  // ---------- MESEČNI GRID: dnevni auto-predlog iz kapije (zahtev 012/26) ----------
+
+  /**
+   * RUČNI okidač auto-predloga grida iz kucanja na kapiji (presuda Nenad 24.07). Redovan
+   * okidač je INTERNI tik u servisu (~30min; obrada „juče" posle 05:00 Europe/Belgrade;
+   * SAMO u produkciji) — ODLUKE #24: nema server cron-a/tokena. Ovaj endpoint služi za
+   * ručni BACKFILL / dry-run. Sistemski job upiše PREDLOG sati iz STVARNOG prisustva za
+   * prazne grid-dane (SVA odeljenja), `INSERT … ON CONFLICT DO NOTHING` (nikad ne gazi
+   * ručni unos), marker `last_edited_by='auto:kapija'`. Bez tela → SAMO juče; `from`+`to`
+   * → backfill raspona (gornja granica se klampuje na juče — DANAS se ne obrađuje);
+   * `dryRun` → pregled bez upisa. Gate = `kadrovska.admin` (sistemski upis za sve;
+   * kill-switch KADROVSKA_GRID_AUTOFILL).
+   */
+  @Post("grid/autofill-run")
+  @HttpCode(200)
+  @RequirePermission(PERMISSIONS.KADROVSKA_ADMIN)
+  gridAutofillRun(
+    @Req() req: AuthedRequest,
+    @Body() body: D.GridAutofillRunDto,
+  ) {
+    return this.autofill.run({
+      actorEmail: this.email(req),
+      from: body?.from,
+      to: body?.to,
+      dryRun: body?.dryRun,
+    });
   }
 
   // ---------- ODMORI ----------

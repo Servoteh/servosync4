@@ -1,10 +1,16 @@
-import { IsISO8601, IsInt, IsOptional, Matches, Max, Min } from "class-validator";
+import { IsInt, IsOptional, Matches, Max, Min } from "class-validator";
 import { Type } from "class-transformer";
+import { IsCalendarDate } from "./is-calendar-date";
 
-/** Opseg prisustva (default: tekući mesec). Nevalidan datum → 400 (ne 500). */
+/**
+ * Opseg prisustva (default: tekući mesec). Nevalidan datum → 400 (ne 500). Strogi kalendarski
+ * `YYYY-MM-DD` (IsCalendarDate) umesto labavog `@IsISO8601` koji je propuštao `2026-W30`/`2026-07`/
+ * `2026-200`/`2026-02-31` do Postgresa (22007/22008 → 500). Koristi je i self `/profile/attendance`
+ * i timska `/profile/team/:id/attendance` — popravka važi na obe rute.
+ */
 export class AttendanceRangeQueryDto {
-  @IsOptional() @IsISO8601() from?: string;
-  @IsOptional() @IsISO8601() to?: string;
+  @IsOptional() @IsCalendarDate() from?: string;
+  @IsOptional() @IsCalendarDate() to?: string;
 }
 
 /** Mesečni sati (karnet/chips) — `month=YYYY-MM` (default tekući mesec). Nevalidan → 400. */

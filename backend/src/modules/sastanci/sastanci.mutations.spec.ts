@@ -298,6 +298,87 @@ describe("SastanciService R2 mutacije", () => {
     });
   });
 
+  /* Brisanje sastanka (zahtev 013/26). ROW-ishod (organizator sme svoj, tuđi ne
+   * bez manage) presuđuje sy15 RLS politika `sastanci_delete` POD `authenticated`
+   * — ovde se dokazuje mehanika: otkaz-pre-brisanja grana + 403/404 mapiranje
+   * RLS-filtriranog 0-reda (živi organizator-scope je R4 smoke, kao ostali write). */
+  it("deleteSastanak: gotov sastanak (zakljucan) → BEZ cancel RPC, samo brisanje", async () => {
+    const { svc, tx } = makeSvc();
+    tx.sastanak.findUnique.mockResolvedValueOnce({ status: "zakljucan" });
+    await svc.deleteSastanak("u@servoteh.com", ID);
+    expect(tx.$queryRaw).not.toHaveBeenCalled();
+    expect(tx.sastanak.deleteMany).toHaveBeenCalledWith({ where: { id: ID } });
+  });
+
+  it("deleteSastanak: živ sastanak → UVEK cancel RPC (bez count-gejta pozvanih; DEFINER enumeriše)", async () => {
+    const { svc, tx } = makeSvc();
+    tx.sastanak.findUnique.mockResolvedValueOnce({ status: "planiran" });
+    await svc.deleteSastanak("u@servoteh.com", ID);
+    expect(sqlText(tx.$queryRaw)).toContain("sastanci_cancel_sastanak");
+    // Gejt uklonjen: pozvani se NE broje pod su_select RLS-om pozivaoca.
+    expect(tx.sastanakUcesnik.count).not.toHaveBeenCalled();
+    expect(tx.sastanak.deleteMany).toHaveBeenCalledWith({ where: { id: ID } });
+  });
+
+  it("deleteSastanak: cancel RPC PRE brisanja (order pin)", async () => {
+    const { svc, tx } = makeSvc();
+    tx.sastanak.findUnique.mockResolvedValueOnce({ status: "u_toku" });
+    const order: string[] = [];
+    tx.$queryRaw.mockImplementationOnce(() => {
+      order.push("cancel");
+      return Promise.resolve([{ result: { ok: true } }]);
+    });
+    tx.sastanak.deleteMany.mockImplementationOnce(() => {
+      order.push("delete");
+      return Promise.resolve({ count: 1 });
+    });
+    await svc.deleteSastanak("u@servoteh.com", ID);
+    expect(order).toEqual(["cancel", "delete"]);
+  });
+
+  it("deleteSastanak: konkurentno brisanje tokom cancel RPC (P0002) → 404 (ne 422)", async () => {
+    const { svc, tx } = makeSvc();
+    tx.sastanak.findUnique.mockResolvedValueOnce({ status: "planiran" });
+    tx.$queryRaw.mockRejectedValueOnce({
+      code: "P2010",
+      meta: { code: "P0002", message: "Sastanak nije pronađen." },
+    });
+    await expect(
+      svc.deleteSastanak("u@servoteh.com", ID),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(tx.sastanak.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it("deleteSastanak: 0 pogodaka a red i dalje postoji (RLS odbio) → 403", async () => {
+    const { svc, tx } = makeSvc();
+    tx.sastanak.findUnique.mockResolvedValueOnce({ status: "zavrsen" });
+    tx.sastanak.deleteMany.mockResolvedValueOnce({ count: 0 });
+    tx.sastanak.count.mockResolvedValueOnce(1); // svež re-check: red i dalje tu
+    await expect(
+      svc.deleteSastanak("u@servoteh.com", ID),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it("deleteSastanak: 0 pogodaka i red NESTAO (konkurentno) → 404", async () => {
+    const { svc, tx } = makeSvc();
+    tx.sastanak.findUnique.mockResolvedValueOnce({ status: "zavrsen" });
+    tx.sastanak.deleteMany.mockResolvedValueOnce({ count: 0 });
+    tx.sastanak.count.mockResolvedValueOnce(0); // svež re-check: red nestao
+    await expect(
+      svc.deleteSastanak("u@servoteh.com", ID),
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it("deleteSastanak: red NE postoji → 404 (bez brisanja i bez cancel-a)", async () => {
+    const { svc, tx } = makeSvc();
+    tx.sastanak.findUnique.mockResolvedValueOnce(null);
+    await expect(
+      svc.deleteSastanak("u@servoteh.com", ID),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(tx.$queryRaw).not.toHaveBeenCalled();
+    expect(tx.sastanak.deleteMany).not.toHaveBeenCalled();
+  });
+
   it("bulkUcesnici: DELETE pa INSERT (regeneracija tokena/RSVP — §2 p.6)", async () => {
     const { svc, tx } = makeSvc();
     await svc.bulkUcesnici("u@servoteh.com", ID, {

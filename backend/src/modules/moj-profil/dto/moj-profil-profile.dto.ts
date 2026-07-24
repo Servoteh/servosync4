@@ -3,11 +3,11 @@ import {
   IsOptional,
   IsString,
   IsUUID,
-  Matches,
   Max,
   MaxLength,
   Min,
 } from "class-validator";
+import { IsCalendarDate } from "./is-calendar-date";
 
 /**
  * Moj profil — Drop 2 DTO-ovi (razvoj self / očekivanja self / 360 read / prisustvo).
@@ -42,10 +42,12 @@ export class SelfAssessmentReadQueryDto {
   @IsOptional() @IsString() @MaxLength(20) period?: string;
 }
 
-/** Prisustvo — sirovi događaji za jedan dan (attendance_events; YYYY-MM-DD). */
+/**
+ * Prisustvo — sirovi događaji za jedan dan (attendance_events; YYYY-MM-DD). Strogi kalendarski
+ * datum (IsCalendarDate): raniji regex je propuštao `2026-02-31` (mesec 02 dan 31) → Postgres
+ * 22007 → 500. Koristi je i self `/profile/attendance/events` i timska ruta — popravka svuda.
+ */
 export class AttendanceEventsQueryDto {
-  @Matches(/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/, {
-    message: "day mora biti YYYY-MM-DD",
-  })
+  @IsCalendarDate({ message: "day mora biti validan datum u formatu YYYY-MM-DD" })
   day!: string;
 }

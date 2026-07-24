@@ -382,6 +382,8 @@ const KEYS = {
   team: ['profile', 'team'] as const,
   teamTools: ['profile', 'team', 'tools'] as const,
   teamHours: ['profile', 'team', 'hours'] as const,
+  teamAttendance: ['profile', 'team', 'attendance'] as const,
+  teamAttendanceEvents: ['profile', 'team', 'attendance-events'] as const,
 };
 
 // ------------------------------------------------------------------ queries
@@ -816,3 +818,38 @@ export const useTeamCorrection = () =>
     }),
     KEYS.team,
   );
+
+/* ── Prisustvo člana tima (ulazi/izlazi) — zahtev 011/26 ── */
+// Isti prikaz kao „Moje prisustvo" (self /attendance) ali za člana kroz DB scope
+// (`current_user_manages_employee`). BE 404 ako član nije u opsegu pozivaoca. Lazy —
+// enabled tek kad je red člana otvoren (drill unutar „Moj tim").
+
+/** BE vraća self AttendanceData + minimalni `employee` blok (ime za prikaz). */
+export type TeamAttendanceData = AttendanceData & { employee?: { id: string; fullName: string | null } };
+
+/** Prisustvo (ulazi/izlazi) člana tima za opseg (default tekući mesec). Lazy. */
+export function useTeamAttendance(employeeId: string | null, range: { from?: string; to?: string } = {}, enabled = true) {
+  return useQuery({
+    queryKey: [...KEYS.teamAttendance, employeeId, range] as const,
+    enabled: !!employeeId && enabled,
+    // 404 (član van opsega) tretiramo kao „nema pristupa" — bez retry šuma.
+    retry: false,
+    queryFn: () =>
+      apiFetch<{ data: TeamAttendanceData | null; meta?: EnvelopeMeta }>(
+        `${BASE}/team/${employeeId}/attendance${qs(range)}`,
+      ),
+  });
+}
+
+/** Sirovi prolazi člana tima za jedan dan (drill u drill-u) — lazy. */
+export function useTeamAttendanceEvents(employeeId: string | null, day: string | null) {
+  return useQuery({
+    queryKey: [...KEYS.teamAttendanceEvents, employeeId, day] as const,
+    enabled: !!employeeId && !!day,
+    retry: false,
+    queryFn: () =>
+      apiFetch<{ data: { day: string; events: AttendanceEvent[] } | null; meta?: EnvelopeMeta }>(
+        `${BASE}/team/${employeeId}/attendance/events${qs({ day })}`,
+      ),
+  });
+}

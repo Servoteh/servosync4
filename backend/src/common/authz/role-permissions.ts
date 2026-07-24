@@ -697,12 +697,18 @@ const D_ORG_PROFILE: readonly RoleKey[] = [
   ROLES.LEADPM,
 ];
 const D_PREDMET_AKTIVACIJA: readonly RoleKey[] = [ROLES.MENADZMENT];
+// profile.team = menadžerske „Moj tim" sekcije (roster + karnet + prisustvo ulazi/izlazi +
+// korekcija). Row-scope presuđuje DB fn `current_user_manages_employee` (managed_sub_department_ids
+// = pododeljenje/sektor; pm/leadpm/projektant_vodja/hr/admin/poslovni_admin → svi). tim_lider je
+// DODAT (zahtev 011/26): menadžer/tim-lider vidi prisustvo SVOG tima — guard je gruba kapija, a
+// bez strukturnog tima (managed_sub_department_ids prazno) DB fn vraća prazno (fail-closed).
 const D_PROFILE_TEAM: readonly RoleKey[] = [
   ROLES.HR,
   ROLES.MENADZMENT,
   ROLES.LEADPM,
   ROLES.PM,
   ROLES.POSLOVNI_ADMIN,
+  ROLES.TIM_LIDER,
 ];
 
 function addPerms(role: RoleKey, perms: readonly PermissionKey[]): void {

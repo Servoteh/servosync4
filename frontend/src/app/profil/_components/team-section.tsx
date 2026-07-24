@@ -8,7 +8,7 @@
 // (`useTeamCorrection`, allowDayPick min danas-3), PDF opisa pozicije (`generateJobPositionPdf`).
 
 import { Fragment, useMemo, useState, type ReactNode } from 'react';
-import { Users, FileText, Wrench, Pencil, ChevronLeft, ChevronRight, ChevronDown } from 'lucide-react';
+import { Users, FileText, Wrench, Pencil, Clock, AlertTriangle, Moon, ChevronLeft, ChevronRight, ChevronDown } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui-kit/button';
 import { Dialog } from '@/components/ui-kit/dialog';
@@ -22,11 +22,14 @@ import {
   useTeam,
   useTeamTools,
   useTeamCorrection,
+  useTeamAttendance,
+  useTeamAttendanceEvents,
   teamHoursQuery,
   type TeamMember,
   type TeamAbsence,
   type TeamToolRow,
   type ProfileHours,
+  type AttendanceDay,
 } from '@/api/moj-profil';
 import { fetchOrgStructure } from '@/api/kadrovska';
 import {
@@ -88,6 +91,21 @@ function daysToStart(a: TeamAbsence | null | undefined): number | null {
 function todayYmd(): string {
   return new Date().toISOString().slice(0, 10);
 }
+/** 'HH:MM' iz time kolone ili '…THH:MM' iz timestampa (paritet self AttendanceSection). */
+function hhmm(v: unknown): string {
+  const s = v == null ? '' : String(v);
+  if (s.includes('T')) return s.slice(11, 16) || '—';
+  return s.slice(0, 5) || '—';
+}
+/** Smer prolaza → srpska labela (paritet self AttendanceSection DIR_LABEL). */
+const DIR_LABEL: Record<string, string> = {
+  in: 'Ulaz',
+  out: 'Izlaz',
+  break: 'Pauza',
+  official_out: 'Služb. izlaz',
+  other: 'Ostalo',
+  unknown: '—',
+};
 /** min za date-picker korekcije: danas − 3 dana (paritet 1.0 allowDayPick prozor). */
 function minCorrectionDay(): string {
   const d = new Date();
@@ -422,6 +440,9 @@ function TeamMemberDetail({ m, onCorrect }: { m: TeamMember; onCorrect: () => vo
         ))}
       </ul>
 
+      {/* Prisustvo (ulazi/izlazi) člana — isti prikaz kao „Moje prisustvo" (zahtev 011/26). */}
+      <TeamMemberAttendance employeeId={m.id} />
+
       <div>
         <h4 className="mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-ink-secondary"><Wrench className="h-3.5 w-3.5" aria-hidden /> Zaduženja (alat / oprema)</h4>
         {toolsQ.isLoading ? (
@@ -485,6 +506,148 @@ function ToolRow({ t }: { t: TeamToolRow }) {
         {t.expected_return_date ? formatDate(t.expected_return_date) : '—'}
       </td>
     </tr>
+  );
+}
+
+// ── prisustvo člana (ulazi/izlazi) — zahtev 011/26 ────────────────
+// Isti prikaz kao „Moje prisustvo" (self AttendanceSection): mesečni pregled dnevnih
+// ulaza/izlaza + sati, klik na red = sirovi prolazi tog dana. Scope „samo svoj tim"
+// presuđuje BE (`current_user_manages_employee`); van opsega → 404 → „nije dostupno".
+// Mount je lazy (detalj člana se renderuje tek kad je red otvoren).
+
+function TeamMemberAttendance({ employeeId }: { employeeId: string }) {
+  const [cursor, setCursor] = useState(() => {
+    const d = new Date();
+    d.setDate(1);
+    return d;
+  });
+  const y = cursor.getFullYear();
+  const mo = cursor.getMonth();
+  const from = `${y}-${String(mo + 1).padStart(2, '0')}-01`;
+  const lastDay = new Date(y, mo + 1, 0).getDate();
+  const to = `${y}-${String(mo + 1).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+  const label = cursor.toLocaleDateString('sr-Latn', { month: 'long', year: 'numeric' });
+  const q = useTeamAttendance(employeeId, { from, to });
+  const days = (q.data?.data?.days ?? []) as AttendanceDay[];
+  const [openDay, setOpenDay] = useState<string | null>(null);
+  const today = todayYmd();
+  const now = new Date();
+  const atCurrentMonth = y >= now.getFullYear() && mo >= now.getMonth();
+
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between">
+        <h4 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-ink-secondary">
+          <Clock className="h-3.5 w-3.5" aria-hidden /> Prisustvo (ulazi / izlazi)
+        </h4>
+        <div className="flex items-center gap-1.5">
+          <button onClick={() => setCursor(new Date(y, mo - 1, 1))} className="rounded-control border border-line px-1.5 py-1 text-ink-secondary hover:bg-surface" title="Prethodni mesec" aria-label="Prethodni mesec">
+            <ChevronLeft className="h-4 w-4" aria-hidden />
+          </button>
+          <span className="min-w-24 text-center text-xs font-medium capitalize text-ink">{label}</span>
+          <button onClick={() => setCursor(new Date(y, mo + 1, 1))} disabled={atCurrentMonth} className="rounded-control border border-line px-1.5 py-1 text-ink-secondary hover:bg-surface disabled:opacity-40" title="Sledeći mesec" aria-label="Sledeći mesec">
+            <ChevronRight className="h-4 w-4" aria-hidden />
+          </button>
+        </div>
+      </div>
+      <p className="mb-2 flex flex-wrap items-center gap-x-1 text-2xs text-ink-disabled">
+        Prolazi sa kapije, hala i kioska. Klik na red = prolazi tog dana.
+        <Pencil className="inline-block h-3 w-3 align-text-bottom" aria-hidden /> korigovano ·
+        <AlertTriangle className="inline-block h-3 w-3 align-text-bottom text-status-warn" aria-hidden /> izlaz nije otkucan ·
+        <Moon className="inline-block h-3 w-3 align-text-bottom" aria-hidden /> preko ponoći.
+      </p>
+      {q.isLoading ? (
+        <p className="text-xs text-ink-disabled">Učitavam prisustvo…</p>
+      ) : q.isError ? (
+        <p className="text-xs text-status-danger">
+          {q.error instanceof ApiError ? q.error.message : 'Greška pri učitavanju prisustva.'}{' '}
+          <button onClick={() => void q.refetch()} className="text-accent hover:underline" disabled={q.isFetching}>
+            {q.isFetching ? 'Učitavam…' : 'Pokušaj ponovo'}
+          </button>
+        </p>
+      ) : days.length === 0 ? (
+        <p className="text-xs text-ink-disabled">Nema prolaza u ovom mesecu.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-line text-left text-2xs uppercase text-ink-secondary">
+                <th className="py-1.5">Dan</th>
+                <th className="py-1.5">Ulaz</th>
+                <th className="py-1.5">Izlaz</th>
+                <th className="py-1.5">Sati</th>
+              </tr>
+            </thead>
+            <tbody>
+              {days.map((d, i) => {
+                const firstIn = d.first_in ?? d.time_in;
+                const lastOut = d.last_out ?? d.time_out;
+                const overnight = !!firstIn && !!lastOut && String(lastOut) < String(firstIn);
+                const openIntervals = num(d.open_intervals);
+                const missingOut = (openIntervals > 0 || (!!firstIn && !lastOut)) && String(d.day ?? '').slice(0, 10) !== today && !overnight;
+                const corrected = d.corrected === true;
+                const isOpen = openDay === d.day;
+                return (
+                  <Fragment key={i}>
+                    <tr className="cursor-pointer border-b border-line-soft hover:bg-surface" onClick={() => setOpenDay(isOpen ? null : d.day)}>
+                      <td className="py-1.5 tnums">
+                        {formatDate(d.day)}{' '}
+                        {corrected ? (
+                          <span title="Korigovano uz obrazloženje"><Pencil className="inline-block h-3.5 w-3.5 align-text-bottom text-ink-secondary" aria-hidden /></span>
+                        ) : missingOut ? (
+                          <span className="text-status-warn" title="Izlaz nije otkucan"><AlertTriangle className="inline-block h-3.5 w-3.5 align-text-bottom" aria-hidden /></span>
+                        ) : overnight ? (
+                          <span title="Smena preko ponoći"><Moon className="inline-block h-3.5 w-3.5 align-text-bottom" aria-hidden /></span>
+                        ) : null}
+                      </td>
+                      <td className="py-1.5 tnums">{hhmm(firstIn)}</td>
+                      <td className="py-1.5 tnums">
+                        {lastOut ? hhmm(lastOut) : missingOut ? <span className="text-status-warn">nije otkucan</span> : '—'}
+                      </td>
+                      <td className="py-1.5 tnums">{d.presence_hours != null ? num(d.presence_hours).toFixed(2) : '—'}</td>
+                    </tr>
+                    {isOpen && (
+                      <tr>
+                        <td colSpan={4} className="bg-surface px-3 pb-2 pt-1">
+                          <TeamMemberAttendanceDrill employeeId={employeeId} day={d.day} />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Prolazi jednog dana za člana (lazy) — HH:MM · smer · terminal · razlog. */
+function TeamMemberAttendanceDrill({ employeeId, day }: { employeeId: string; day: string }) {
+  const q = useTeamAttendanceEvents(employeeId, day.slice(0, 10));
+  if (q.isLoading) return <p className="text-xs text-ink-disabled">Učitavam prolaze…</p>;
+  if (q.isError)
+    return (
+      <p className="text-xs text-status-danger">
+        {q.error instanceof ApiError ? q.error.message : 'Greška pri učitavanju prolaza.'}{' '}
+        <button onClick={() => void q.refetch()} className="text-accent hover:underline" disabled={q.isFetching}>
+          {q.isFetching ? 'Učitavam…' : 'Pokušaj ponovo'}
+        </button>
+      </p>
+    );
+  const events = q.data?.data?.events ?? [];
+  if (events.length === 0) return <p className="text-xs text-ink-disabled">Nema prolaza.</p>;
+  return (
+    <ul className="space-y-0.5 text-xs text-ink-secondary">
+      {events.map((e, i) => (
+        <li key={i} className="tnums">
+          {hhmm(e.event_ts_local)} · {DIR_LABEL[e.direction] ?? e.direction} · {e.terminal_name ?? '—'}
+          {e.reason ? <em className="text-ink-disabled"> ({e.reason})</em> : null}
+        </li>
+      ))}
+    </ul>
   );
 }
 

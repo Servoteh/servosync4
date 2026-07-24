@@ -254,6 +254,11 @@ const EmployeeBlock = memo(
             const eff = effRows.get(d.ymd)!;
             const dirty = editor.isDirty(emp.id, d.ymd);
             const auto = editor.isAuto(emp.id, d.ymd);
+            // Server-upisani auto-predlog iz kapije (zahtev 012/26): DB red sa markerom
+            // last_edited_by='auto:kapija' koji urednik još nije dirao → ista žuta „AUTO"
+            // oznaka kao klijentski predlog (proveri/koriguj). Ručna izmena (dirty) je
+            // preče → kg-dirty; posle snimanja marker nestaje (last_edited_by = e-mail urednika).
+            const autoDb = !dirty && !auto && props.getDbRow(emp.id, d.ymd)?.lastEditedBy === 'auto:kapija';
             const err = editor.cellError(emp.id, d.ymd, 'reg');
             const noPay = eff.absence_code && emp.workType !== 'ugovor' && ['go', 'bo', 'sp', 'sl', 'sv', 'pl'].includes(eff.absence_code);
             return (
@@ -268,13 +273,13 @@ const EmployeeBlock = memo(
                     eff.absence_code && absTone(eff.absence_code, eff.absence_subtype),
                     noPay && 'italic underline decoration-dotted',
                     dirty && 'kg-dirty',
-                    auto && 'kg-auto',
+                    (auto || autoDb) && 'kg-auto',
                     err && 'kg-err',
                   )}
                   value={editor.displayValue(emp.id, d.ymd, 'reg')}
                   disabled={!editable}
                   maxLength={6}
-                  title={auto ? 'Auto-predlog iz kapije (kucanje) — proveri i sačuvaj' : noPay ? `„${eff.absence_code}" se ne plaća (tip rada: ${wtLabel})` : lastTitle(d.ymd)}
+                  title={auto || autoDb ? 'Auto-predlog iz kapije (kucanje) — proveri i sačuvaj' : noPay ? `„${eff.absence_code}" se ne plaća (tip rada: ${wtLabel})` : lastTitle(d.ymd)}
                   onChange={(e) => editor.onCellChange(emp.id, d.ymd, 'reg', e.target.value)}
                   onBlur={() => editor.onCellBlur(emp.id, d.ymd, 'reg')}
                   onFocus={(e) => e.currentTarget.select()}

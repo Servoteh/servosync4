@@ -1,4 +1,8 @@
-import { NotFoundException, UnprocessableEntityException } from "@nestjs/common";
+import {
+  BadRequestException,
+  NotFoundException,
+  UnprocessableEntityException,
+} from "@nestjs/common";
 import { MojProfilService } from "./moj-profil.service";
 import type { Sy15Service } from "../../common/sy15/sy15.service";
 
@@ -163,5 +167,101 @@ describe("MojProfilService P5 — Moj tim", () => {
     );
     const sql = qText(tx.$queryRaw);
     expect(sql).toContain("attendance_submit_correction(");
+  });
+
+  // ── Prisustvo člana tima (ulazi/izlazi) — zahtev 011/26 ──────────────────
+
+  it("teamMemberAttendance: IDOR guard — manages=false → 404 pre upita nad prisustvom", async () => {
+    const { svc, tx } = makeSvc();
+    tx.$queryRaw.mockResolvedValueOnce([{ ok: false }]); // managesEmployee = false
+    await expect(
+      svc.teamMemberAttendance("sef@x", EMP, { from: "2026-07-01", to: "2026-07-31" }),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    // Samo scope-check upit — NIJE dosao do resolveEmployeeById / v_attendance_daily.
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it("teamMemberAttendance: manages=true ali resolveEmployeeById null → 404", async () => {
+    const { svc, tx } = makeSvc();
+    tx.$queryRaw
+      .mockResolvedValueOnce([{ ok: true }]) // managesEmployee
+      .mockResolvedValueOnce([]); // resolveEmployeeById prazan
+    await expect(
+      svc.teamMemberAttendance("sef@x", EMP, {}),
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it("teamMemberAttendance: OK → v_attendance_daily filtriran na člana + vraća dane/ime", async () => {
+    const { svc, tx } = makeSvc();
+    tx.$queryRaw
+      .mockResolvedValueOnce([{ ok: true }]) // managesEmployee
+      .mockResolvedValueOnce([{ id: EMP, full_name: "Petar" }]) // resolveEmployeeById
+      .mockResolvedValueOnce([{ day: "2026-07-15", presence_hours: 8 }]); // v_attendance_daily
+    const out = await svc.teamMemberAttendance("sef@x", EMP, {
+      from: "2026-07-01",
+      to: "2026-07-31",
+    });
+    const sql = qText(tx.$queryRaw, 2);
+    expect(sql).toContain("FROM v_attendance_daily");
+    expect(sql).toContain("employee_id = ");
+    const d = out.data as {
+      days: unknown[];
+      employee: { id: string; fullName: string | null };
+    };
+    expect(d.days).toHaveLength(1);
+    expect(d.employee).toEqual({ id: EMP, fullName: "Petar" });
+  });
+
+  it("teamMemberAttendanceEvents: IDOR guard — manages=false → 404 pre attendance_events", async () => {
+    const { svc, tx } = makeSvc();
+    tx.$queryRaw.mockResolvedValueOnce([{ ok: false }]);
+    await expect(
+      svc.teamMemberAttendanceEvents("sef@x", EMP, "2026-07-15"),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it("teamMemberAttendanceEvents: manages=true ali resolveEmployeeById null → 404 (simetrija)", async () => {
+    const { svc, tx } = makeSvc();
+    tx.$queryRaw
+      .mockResolvedValueOnce([{ ok: true }]) // managesEmployee
+      .mockResolvedValueOnce([]); // resolveEmployeeById prazan → 404 (ne 200-prazno)
+    await expect(
+      svc.teamMemberAttendanceEvents("sef@x", EMP, "2026-07-15"),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    // NIJE dosao do attendance_events upita.
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(2);
+  });
+
+  it("teamMemberAttendanceEvents: OK → attendance_events filtriran na člana + dan", async () => {
+    const { svc, tx } = makeSvc();
+    tx.$queryRaw
+      .mockResolvedValueOnce([{ ok: true }]) // managesEmployee
+      .mockResolvedValueOnce([{ id: EMP, full_name: "Petar" }]) // resolveEmployeeById
+      .mockResolvedValueOnce([{ id: 1, direction: "in" }]); // attendance_events
+    const out = await svc.teamMemberAttendanceEvents("sef@x", EMP, "2026-07-15");
+    const sql = qText(tx.$queryRaw, 2);
+    expect(sql).toContain("FROM attendance_events");
+    expect(sql).toContain("employee_id = ");
+    expect(sql).toContain("event_ts_local");
+    const d = out.data as { events: unknown[]; employeeId: string; day: string };
+    expect(d.events).toHaveLength(1);
+    expect(d.employeeId).toBe(EMP);
+    expect(d.day).toBe("2026-07-15");
+  });
+
+  it("teamMemberAttendance: SQLSTATE 22007 (loš datum) → 400, ne 500", async () => {
+    const { svc, tx } = makeSvc();
+    tx.$queryRaw
+      .mockResolvedValueOnce([{ ok: true }]) // managesEmployee
+      .mockResolvedValueOnce([{ id: EMP, full_name: "Petar" }]) // resolveEmployeeById
+      .mockRejectedValueOnce(
+        Object.assign(new Error("date/time field value out of range"), {
+          code: "22007",
+        }),
+      ); // v_attendance_daily pukne na lošem literalu
+    await expect(
+      svc.teamMemberAttendance("sef@x", EMP, {}),
+    ).rejects.toBeInstanceOf(BadRequestException);
   });
 });
