@@ -34,11 +34,14 @@ export class MailService {
     to: string | string[];
     subject: string;
     html: string;
+    /** Opcioni CC primaoci (npr. admini koji samo prate — vidljivo u zaglavlju mejla). */
+    cc?: string[];
     /** Opcioni prilozi (npr. PDF računa). `content` je Buffer — kodira se u base64 za Resend. */
     attachments?: Array<{ filename: string; content: Buffer }>;
   }): Promise<boolean> {
     const to = Array.isArray(params.to) ? params.to : [params.to];
     if (!to.length) return false;
+    const cc = params.cc?.filter((c) => c && c.includes("@")) ?? [];
 
     if (!this.configured) {
       this.logger.warn(
@@ -57,6 +60,7 @@ export class MailService {
         body: JSON.stringify({
           from: this.from,
           to,
+          ...(cc.length ? { cc } : {}),
           subject: params.subject,
           html: params.html,
           ...(params.attachments?.length

@@ -202,7 +202,7 @@ export default function ZahtevDetailPage() {
           />
         ) : (
           <>
-            <ZahtevHeader detail={detail} />
+            <ZahtevHeader detail={detail} isAdmin={isAdmin} />
 
             {/* Dopuna (owner, NEEDS_INFO): istaknut poziv da odgovori — pitanja + „Odgovori". */}
             {isOwner && detail.status === 'NEEDS_INFO' && (
@@ -264,8 +264,8 @@ export default function ZahtevDetailPage() {
   );
 }
 
-/** Zaglavlje: naslov + StatusBadge + meta čipovi (modul/tip/prioritet/ocena). */
-function ZahtevHeader({ detail }: { detail: ChangeRequestDetail }) {
+/** Zaglavlje: naslov + StatusBadge + meta čipovi (modul/tip/prioritet; ocena/nagrada samo admin). */
+function ZahtevHeader({ detail, isAdmin }: { detail: ChangeRequestDetail; isAdmin: boolean }) {
   const s = statusMeta(detail.status);
   const score = detail.finalScore ?? detail.aiScore;
   const priority = (detail.priorityFinal ?? detail.priorityUser) as RequestPriority | null;
@@ -285,11 +285,12 @@ function ZahtevHeader({ detail }: { detail: ChangeRequestDetail }) {
         {detail.kind && chip(`Tip: ${REQUEST_KIND_LABEL[detail.kind as RequestKind] ?? detail.kind}`)}
         {priority && chip(`Prioritet: ${REQUEST_PRIORITY_LABEL[priority] ?? priority}`)}
         {detail.areas.length > 0 && chip(`Oblasti: ${detail.areas.join(', ')}`)}
-        {score != null &&
+        {/* Tihi režim (24.07): ocena/nagrada čipovi samo adminu (BE i inače nuluje polja ne-adminu). */}
+        {isAdmin && score != null &&
           chip(
             `Ocena: ${score}★${detail.finalScore == null ? ' (AI predlog)' : ''}`,
           )}
-        {detail.rewardAmount &&
+        {isAdmin && detail.rewardAmount &&
           chip(`Nagrada: ${formatDecimal(detail.rewardAmount)} RSD`)}
       </div>
       {detail.aiScoreReason && detail.status === 'REJECTED' && (

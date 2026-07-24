@@ -19,7 +19,7 @@ export const HELP: HelpRegistry = {
   },
   'zahtevi.novi.slicni': {
     title: 'Ovo možda već postoji',
-    text: 'Zahtevi koji liče na vaš. Otvorite ih pre podnošenja — ako je isto već prijavljeno, dodajte komentar tamo umesto novog zahteva. Duplikat AI ocenjuje nulom, a nagradu nosi onaj ko je prvi prijavio.',
+    text: 'Zahtevi koji liče na vaš. Otvorite ih pre podnošenja — ako je isto već prijavljeno, dodajte komentar tamo umesto novog zahteva. Time se izbegavaju duplikati i vaš doprinos ide na pravo mesto.',
   },
   'zahtevi.novi.tip': {
     title: 'Tip',
@@ -47,17 +47,13 @@ export const HELP: HelpRegistry = {
   },
   'zahtevi.novi.akcije': {
     title: 'Sačuvaj nacrt ili Podnesi',
-    text: '„Sačuvaj nacrt" ostavlja zahtev da ga kasnije dopunite — niko ga još ne vidi. „Podnesi" ga šalje na obradu: AI odmah klasifikuje zahtev, proveri da li slično već postoji i predloži ocenu 0–5. Ocena nosi novčanu nagradu po tarifi (1★=500 … 5★=3.000 RSD), a ocenu 0 (npr. duplikat) sistem sam odbija. Posle podnošenja ide trijaža → odluka administratora → realizacija; status pratite na svom zahtevu.',
+    text: '„Sačuvaj nacrt" ostavlja zahtev da ga kasnije dopunite — niko ga još ne vidi. „Podnesi" ga šalje na obradu: AI odmah klasifikuje zahtev, proveri da li slično već postoji i napravi sažetak za administratora. Posle podnošenja ide trijaža → odluka administratora → realizacija; status pratite na svom zahtevu.',
   },
 
   /* ─────────────────────────────────────────── /zahtevi (lista — moji zahtevi) */
-  'zahtevi.lista.nagrade': {
-    title: 'Moje nagrade ovog meseca',
-    text: 'Zbir potvrđenih nagrada za vaše prihvaćene zahteve u tekućem mesecu. Iznos je predlog dok ga administrator ne potvrdi; konačan obračun i isplatu radi administrator na kraju meseca.',
-  },
   'zahtevi.lista.kolone': {
     title: 'Vaši zahtevi',
-    text: 'Svi vaši zahtevi. „Status" pokazuje dokle je stigla obrada, „Ocena ★" je ocena 0–5 (žuta zvezda = administrator potvrdio, siva = AI predlog), a „Iznos" je nagrada kad bude potvrđena. Kliknite red za detalje.',
+    text: 'Svi vaši zahtevi. „Status" pokazuje dokle je stigla obrada. Kliknite red za detalje i praćenje.',
   },
 
   /* ─────────────────────────────────────────────────── /zahtevi (lista — admin) */
@@ -75,7 +71,7 @@ export const HELP: HelpRegistry = {
   },
   'zahtevi.admin.nagrade.zakljuci': {
     title: 'Mesečni obračun',
-    text: 'Izaberite mesec i vidite ko je koliko zaradio (potvrđene nagrade). „Zaključi mesec" prebacuje sve potvrđene nagrade u „Isplaćeno" — postaju nepromenjive i služe kao spisak za ručnu isplatu. Nove potvrde posle toga idu u naredni mesec.',
+    text: 'Izaberite mesec i vidite ko je koliko zaradio (potvrđene nagrade). „Zaključi mesec" prebacuje sve potvrđene nagrade u „Isplaćeno" — postaju nepromenjive i služe kao spisak za ručnu isplatu. Nove potvrde posle toga idu u naredni mesec. Korisnici inače ne vide nagrade (tihi režim); pri zaključenju možete opciono čekirati slanje zbirnog mesečnog pregleda korisnicima (spisak zahteva + ukupan iznos, bez ocena).',
   },
   'zahtevi.admin.nagrade.tarifa': {
     title: 'Tarifa nagrada',
@@ -126,7 +122,7 @@ export const NOVI_TOUR: HelpTourStep[] = [
   {
     spotId: 'zahtevi.novi.akcije',
     title: 'Šta sledi posle podnošenja',
-    text: 'Kad podnesete: AI klasifikuje zahtev, proveri duplikate i predloži ocenu 0–5 (nagrada po tarifi 1★=500 … 5★=3.000 RSD; 0 = automatsko odbijanje). Zatim ide trijaža → odluka administratora → realizacija, a status pratite na svom zahtevu.',
+    text: 'Kad podnesete: AI klasifikuje zahtev, proveri da li slično već postoji i napravi sažetak za administratora. Zatim ide trijaža → odluka administratora → realizacija, a status pratite na svom zahtevu.',
   },
 ];
 

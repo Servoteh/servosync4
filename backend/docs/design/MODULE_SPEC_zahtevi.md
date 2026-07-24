@@ -696,9 +696,16 @@ ideje. Tarifa je NEPROMENJENA — štednja se postiže strožim ocenjivanjem. Ru
   `CONFIRMED → PAID`, stavke immutable (potvrda posle zaključenja ide u naredni
   mesec). **V1 = izveštaj za ručnu isplatu** — veza sa kadrovskom/payroll je §13.10
   (Zarade su pod tvrdom bravom — ne dira se bez posebne odluke).
-- **Vidljivost:** korisnik vidi SVOJE ocene, obrazloženja i iznose („Moji zahtevi"
-  + kartica mesečne sume); tuđe iznose vidi samo admin. Rang lista (poeni, bez
-  iznosa) — F5 (§13.9).
+- **Vidljivost (PRESUDA 24.07.2026 — TIHI REŽIM):** korisnici (ne-admin) VIŠE NE VIDE
+  ocene/iznose niti dobijaju obaveštenja o nagradama. Obračun i dalje teče interno
+  (admin potvrda ocene, tarifa, mesečni obračun, tab „Nagrade" — sve netaknuto). Server
+  je izvor istine: `getDetail`/`list` uklanjaju `aiScore/finalScore/rewardAmount/rewardStatus`
+  (→ NONE)`/rewardMonth` i reward-event tipove (`SCORE_CONFIRMED/REWARD_EXCLUDED/REWARD_PAID`)
+  iz odgovora ne-adminu. IZUZETAK: `aiScoreReason` ostaje podnosiocu SAMO na `REJECTED`
+  (obrazloženje odbijanja — funkcionalno, ne para). Mesečni pregled radi admin; **opciono**,
+  pri „Zaključi mesec" admin može čekirati slanje zbirnog mesečnog pregleda korisnicima
+  (spisak nagrađenih zahteva reqNo+naslov + ukupan iznos, BEZ pojedinačnih ocena — env
+  `ZAHTEVI_MAIL_NOTIFY`, best-effort). Rang lista (poeni, bez iznosa) — F5 (§13.9).
 
 ### 12.3 Zaštita od zloupotrebe („farmanje" predloga)
 
@@ -744,3 +751,16 @@ gore; ovde je registar radi referenci (§13.N).
 13. **Provera duplikata** (dopuna istog dana) → AI u trijaži dobija KOMPLETNU
     listu postojećih ideja (ne uzorak) da odmah kaže da isto/slično već postoji;
     + živa provera sličnih u formi PRE podnošenja (`GET /zahtevi/slicni`, bez AI).
+14. **Tihi režim nagrada (24.07.2026)** → nagrade se i dalje OBRAČUNAVAJU (admin tok
+    netaknut: potvrda ocene, tarifa, mesečni obračun, tab „Nagrade"), ali korisnici
+    (ne-admin) ih VIŠE NE VIDE i ne dobijaju obaveštenja o njima. Server uklanja
+    ocene/iznose (i reward-event tipove) iz odgovora ne-adminu (izuzetak: obrazloženje
+    odbijanja na `REJECTED`) — §12.2 Vidljivost. Mesečni pregled radi admin; opcioni
+    „zbirni mesečni pregled" mejl korisnicima (spisak zahteva + ukupan iznos, bez
+    pojedinačnih ocena) šalje se SAMO ako admin to čekira pri zaključenju meseca
+    (`POST /zahtevi/nagrade/obracun/:month/zakljuci` telo `{ notifyUsers }`).
+15. **Admin obaveštenja — ciljani primaoci (24.07.2026)** → „Nova ideja"/„Dopunjen
+    zahtev" NE idu svim adminima: ako je `ZAHTEVI_ADMIN_MAILS` (CSV) postavljen, to je
+    AUTORITATIVNA „to" lista (override, ne fallback — neki admini ne žele te mejlove),
+    a `ZAHTEVI_ADMIN_CC` (CSV, opciono) ide kao CC; ako env nije postavljen → svi
+    aktivni admini iz baze (fallback).

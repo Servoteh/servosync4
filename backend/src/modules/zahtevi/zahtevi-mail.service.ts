@@ -1,4 +1,5 @@
 import { Injectable, Logger } from "@nestjs/common";
+import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { MailService } from "../../common/mail/mail.service";
 
@@ -8,6 +9,11 @@ export type ZahteviMailOutcome =
   | "reject"
   | "needs-info"
   | "done";
+
+/** RSD iznos (Decimal) → celobrojni string sa tačkom kao separatorom hiljada („4.500"). */
+function formatRsd(dec: Prisma.Decimal): string {
+  return dec.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+}
 
 const OUTCOME_META: Record<
   ZahteviMailOutcome,
@@ -104,9 +110,10 @@ export class ZahteviMailService {
    * Obaveštenje administratorima (MODULE_SPEC §9) — na svaki submit (submitInternal,
    * posle commita, fire-and-forget). `isResubmit` (dopuna vraćena) menja subject/telo:
    * „Dopunjen zahtev Z-…" (podnosilac odgovorio na dopunu) umesto „Nova ideja Z-…".
-   * Primaoci: korisnici sa rolom `admin` (users.role='admin', aktivni); fallback env
-   * `ZAHTEVI_ADMIN_MAILS` (CSV) kad u bazi nema admina sa email-om. Poštuje
-   * `ZAHTEVI_MAIL_NOTIFY`; nikad ne baca.
+   * Primaoci (PRESUDA 24.07): ako je `ZAHTEVI_ADMIN_MAILS` (CSV) postavljen — to je
+   * AUTORITATIVNA „to" lista (neki admini, npr. Luka/Nevena, NE žele ove mejlove), a
+   * `ZAHTEVI_ADMIN_CC` (CSV, opciono) ide kao CC; ako env NIJE postavljen — fallback na
+   * sve aktivne admine iz baze (`users.role='admin'`). Poštuje `ZAHTEVI_MAIL_NOTIFY`; nikad ne baca.
    */
   async notifyAdminsNewRequest(
     requestId: number,
@@ -125,8 +132,8 @@ export class ZahteviMailService {
       });
       if (!req) return false;
 
-      const recipients = await this.adminEmails();
-      if (recipients.length === 0) {
+      const { to, cc } = await this.adminRecipients();
+      if (to.length === 0) {
         this.logger.warn(
           `Zahtev ${req.reqNo}: nema administratorskih email-ova — obaveštenje preskočeno.`,
         );
@@ -153,7 +160,12 @@ export class ZahteviMailService {
         link: this.detailLink(requestId),
         isResubmit,
       });
-      return await this.mail.send({ to: recipients, subject, html });
+      return await this.mail.send({
+        to,
+        subject,
+        html,
+        ...(cc.length ? { cc } : {}),
+      });
     } catch (err) {
       this.logger.warn(
         `Obaveštenje administratorima za zahtev ${requestId} nije poslato: ${
@@ -164,22 +176,108 @@ export class ZahteviMailService {
     }
   }
 
-  /** Email-ovi administratora: users.role='admin' (aktivni) + fallback ZAHTEVI_ADMIN_MAILS. */
-  private async adminEmails(): Promise<string[]> {
+  /**
+   * Primaoci admin obaveštenja (§9, presuda 24.07). `ZAHTEVI_ADMIN_MAILS` (CSV), kad je
+   * postavljen, je AUTORITATIVNA „to" lista (override, NE fallback) — bira ko prima ove
+   * mejlove jer neki admini (Luka, Nevena) ne žele; `ZAHTEVI_ADMIN_CC` (CSV, opciono) → CC.
+   * Ako `ZAHTEVI_ADMIN_MAILS` NIJE postavljen → svi aktivni admini iz baze (users.role='admin').
+   */
+  private async adminRecipients(): Promise<{ to: string[]; cc: string[] }> {
+    const parseCsv = (v: string | undefined): string[] =>
+      Array.from(
+        new Set(
+          (v ?? "")
+            .split(",")
+            .map((s) => s.trim())
+            .filter((s) => s.includes("@")),
+        ),
+      );
+    const cc = parseCsv(process.env.ZAHTEVI_ADMIN_CC);
+    const override = parseCsv(process.env.ZAHTEVI_ADMIN_MAILS);
+    if (override.length > 0) return { to: override, cc };
+    // Env nije postavljen → svi aktivni admini iz baze (postojeći fallback).
     const admins = await this.prisma.user.findMany({
       where: { role: "admin", active: true, email: { not: "" } },
       select: { email: true },
     });
-    const fromDb = admins
-      .map((a) => a.email)
-      .filter((e): e is string => !!e && e.includes("@"));
-    if (fromDb.length > 0) return Array.from(new Set(fromDb));
-    // Fallback: CSV iz env-a (kad u bazi nema admina sa email-om — npr. dev/seed baza).
-    const csv = (process.env.ZAHTEVI_ADMIN_MAILS ?? "")
-      .split(",")
-      .map((s) => s.trim())
-      .filter((s) => s.includes("@"));
-    return Array.from(new Set(csv));
+    const fromDb = Array.from(
+      new Set(
+        admins
+          .map((a) => a.email)
+          .filter((e): e is string => !!e && e.includes("@")),
+      ),
+    );
+    return { to: fromDb, cc };
+  }
+
+  /**
+   * Zbirni mesečni pregled korisnicima (DOPUNA presude 24.07) — OPCIONO, na admin izbor pri
+   * „Zaključi mesec". Šalje JEDAN mejl po korisniku: spisak njegovih nagrađenih (PAID) zahteva
+   * tog meseca (reqNo + naslov) + UKUPAN iznos — BEZ pojedinačnih ocena (tihi režim). Poštuje
+   * `ZAHTEVI_MAIL_NOTIFY`; best-effort — nikad ne baca (pojedinačni pad se loguje, ide dalje).
+   * Vraća broj poslatih mejlova. Zove se posle zaključenja meseca (CONFIRMED→PAID).
+   */
+  async notifyMonthlySummary(month: string): Promise<number> {
+    if (!this.enabled) return 0;
+    try {
+      const rows = await this.prisma.changeRequest.findMany({
+        where: { rewardMonth: month, rewardStatus: "PAID" },
+        select: {
+          reqNo: true,
+          title: true,
+          rewardAmount: true,
+          createdByUserId: true,
+        },
+        orderBy: { reqNo: "asc" },
+      });
+      if (rows.length === 0) return 0;
+
+      // Grupiši po korisniku: stavke (reqNo+naslov) + ukupan iznos (Decimal, ne Float).
+      const byUser = new Map<
+        number,
+        { items: { reqNo: string; title: string }[]; total: Prisma.Decimal }
+      >();
+      for (const r of rows) {
+        let g = byUser.get(r.createdByUserId);
+        if (!g) {
+          g = { items: [], total: new Prisma.Decimal(0) };
+          byUser.set(r.createdByUserId, g);
+        }
+        g.items.push({ reqNo: r.reqNo, title: r.title });
+        g.total = g.total.plus(r.rewardAmount ?? new Prisma.Decimal(0));
+      }
+
+      const users = await this.prisma.user.findMany({
+        where: { id: { in: Array.from(byUser.keys()) } },
+        select: { id: true, email: true, fullName: true },
+      });
+      const userById = new Map(users.map((u) => [u.id, u]));
+
+      let sent = 0;
+      for (const [userId, g] of byUser) {
+        const u = userById.get(userId);
+        if (!u?.email) {
+          this.logger.warn(
+            `Zbirni pregled ${month}: korisnik #${userId} nema email — preskočen.`,
+          );
+          continue;
+        }
+        const subject = `Vaše nagrade za ${month}`;
+        const html = this.buildMonthlySummaryHtml({
+          greeting: u.fullName || "poštovani",
+          month,
+          items: g.items,
+          total: formatRsd(g.total),
+        });
+        if (await this.mail.send({ to: u.email, subject, html })) sent++;
+      }
+      return sent;
+    } catch (err) {
+      this.logger.warn(
+        `Zbirni mesečni pregled za ${month} nije poslat: ${(err as Error).message}`,
+      );
+      return 0;
+    }
   }
 
   /** Prod link ka detalju zahteva (statička ruta `?id=` — §8). Baza iz SY15_APP_URL. */
@@ -247,6 +345,32 @@ export class ZahteviMailService {
         p.title,
       )}</p>
       ${noteBlock}
+      <p style="color:#666;font-size:13px;margin-top:16px">Ovo je automatska poruka sistema ServoSync (modul Zahtevi).</p>`;
+  }
+
+  /** Telo zbirnog mesečnog pregleda korisniku — stavke (reqNo + naslov) + ukupan iznos (bez ocena). */
+  private buildMonthlySummaryHtml(p: {
+    greeting: string;
+    month: string;
+    items: { reqNo: string; title: string }[];
+    total: string;
+  }): string {
+    const esc = (s: string) =>
+      s
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    const list = p.items
+      .map(
+        (it) =>
+          `<li><strong>${esc(it.reqNo)}</strong> — ${esc(it.title)}</li>`,
+      )
+      .join("");
+    return `
+      <p>Poštovani ${esc(p.greeting)},</p>
+      <p>Pregled vaših prihvaćenih predloga za ${esc(p.month)}:</p>
+      <ul style="margin:12px 0;padding-left:20px">${list}</ul>
+      <p style="margin:12px 0"><strong>Ukupno: ${esc(p.total)} RSD</strong></p>
       <p style="color:#666;font-size:13px;margin-top:16px">Ovo je automatska poruka sistema ServoSync (modul Zahtevi).</p>`;
   }
 }

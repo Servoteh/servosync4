@@ -10,6 +10,7 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { PERMISSIONS } from "../../common/authz/permissions";
 import { roleHasPermission } from "../../common/authz/role-permissions";
 import type { AuthUser } from "../auth/jwt.strategy";
+import { ZahteviMailService } from "./zahtevi-mail.service";
 import {
   type ScoreDto,
   validateScore,
@@ -39,7 +40,10 @@ const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 export class ZahteviRewardsService {
   private readonly logger = new Logger(ZahteviRewardsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly mail: ZahteviMailService,
+  ) {}
 
   private assertAdmin(actor: AuthUser): void {
     if (!roleHasPermission(actor.role, PERMISSIONS.ZAHTEVI_ADMIN))
@@ -442,8 +446,12 @@ export class ZahteviRewardsService {
    * POST /zahtevi/nagrade/obracun/:month/zakljuci — zaključi mesec: sve CONFIRMED tog
    * meseca → PAID (jedan audit event po zahtevu). Immutable: već zaključen (postoji PAID)
    * ili prazan (nema CONFIRMED) → 422. Determinizam: PAID red = signal zaključenja.
+   *
+   * `notifyUsers` (DOPUNA presude 24.07, default false): posle prelaska CONFIRMED→PAID
+   * šalje zbirni mesečni pregled korisnicima (fire-and-forget, best-effort) — nikad ne
+   * obara zaključenje (§10.4). Tihi režim inače korisnicima ne prikazuje nagrade.
    */
-  async closeMonth(month: string, actor: AuthUser) {
+  async closeMonth(month: string, actor: AuthUser, notifyUsers = false) {
     this.assertAdmin(actor);
     if (!MONTH_RE.test(month))
       throw new UnprocessableEntityException(
@@ -483,6 +491,18 @@ export class ZahteviRewardsService {
       );
       return { paidCount: upd.count, total: total.toString() };
     });
+
+    // DOPUNA 24.07 (opciono): admin je čekirao slanje zbirnog mesečnog pregleda korisnicima.
+    // Fire-and-forget, best-effort — pad mejla NIKAD ne obara zaključenje (§10.4).
+    if (notifyUsers) {
+      void this.mail
+        .notifyMonthlySummary(month)
+        .catch((err) =>
+          this.logger.warn(
+            `Zbirni mesečni pregled za ${month} nije poslat: ${(err as Error).message}`,
+          ),
+        );
+    }
 
     return {
       data: { month, paidCount: result.paidCount, total: result.total },

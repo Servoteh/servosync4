@@ -19,7 +19,6 @@ import { formatDate, formatDecimal, formatNumber } from '@/lib/format';
 import {
   useZahtevi,
   useInboxMeta,
-  useMyRewards,
   ZAHTEV_STATUS,
   REQUEST_KIND_LABEL,
   type ChangeRequest,
@@ -35,12 +34,6 @@ import { NagradeTab } from './_components/nagrade-tab';
 import { OdlukeTab } from './_components/odluke-tab';
 
 const TAKE = 50;
-
-/** Tekući mesec „YYYY-MM" (za „Moje nagrade ovog meseca"). */
-function currentMonth(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-}
 
 /** ★ prikaz ocene (0–5) — finalScore (admin potvrda) ima prednost nad aiScore (predlog). */
 function ScoreCell({ r }: { r: ChangeRequest }) {
@@ -130,6 +123,15 @@ const adminColumns: Column<ChangeRequest>[] = [
   ...baseColumns.slice(5),
 ];
 
+/**
+ * Korisnički pogled „Moji zahtevi" — BEZ kolona „Ocena ★" i „Iznos" (tihi režim nagrada,
+ * presuda 24.07: korisnici ne vide ocene/iznose). reqNo/naslov/modul/tip/status + datum.
+ */
+const myColumns: Column<ChangeRequest>[] = [
+  ...baseColumns.slice(0, 5),
+  ...baseColumns.slice(7),
+];
+
 type AdminTab = 'inbox' | 'all' | 'nagrade' | 'odluke' | 'archive';
 
 const STATUS_FILTER_OPTIONS = ZAHTEV_STATUS.map((s) => ({
@@ -193,32 +195,10 @@ function MyRequestsView() {
   const total = list.data?.meta.pagination.total ?? 0;
   const totalPages = list.data?.meta.pagination.totalPages ?? 1;
 
-  // „Moje nagrade ovog meseca" — tačan zbir iz BE mini-endpointa (row-scope: SAMO svoje;
-  // ne zavisi od paginacije liste). Potvrđene (CONFIRMED) + isplaćene (PAID) tog meseca.
-  const month = currentMonth();
-  const myRewards = useMyRewards(month);
-  const mySum = myRewards.data?.data.total ?? '0';
-  const myCount = myRewards.data?.data.count ?? 0;
-
+  // Tihi režim nagrada (presuda 24.07): korisnik NE vidi ocene/iznose — kartica „Moje
+  // nagrade ovog meseca" i kolone Ocena/Iznos su uklonjene; obračun radi administrator.
   return (
     <>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <HelpSpot id="zahtevi.lista.nagrade">
-          <div className="rounded-panel border border-line bg-surface px-4 py-3">
-            <p className="text-2xs font-semibold uppercase tracking-[0.08em] text-ink-secondary">
-              Moje nagrade ovog meseca
-            </p>
-            <p className="mt-1 tnums text-2xl font-semibold text-ink">
-              {formatDecimal(mySum)} <span className="text-sm text-ink-secondary">RSD</span>
-            </p>
-            <p className="mt-0.5 text-2xs text-ink-secondary">
-              {myCount} potvrđen{myCount === 1 ? '' : 'ih'} za {month}. Konačan obračun radi
-              administrator.
-            </p>
-          </div>
-        </HelpSpot>
-      </div>
-
       {list.error && (
         <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">
           {(list.error as Error).message}
@@ -227,7 +207,7 @@ function MyRequestsView() {
 
       <HelpSpot id="zahtevi.lista.kolone">
         <DataTable
-          columns={baseColumns}
+          columns={myColumns}
           rows={rows}
           rowKey={(r) => r.id}
           onRowActivate={(r) => router.push(`/zahtevi/detalj?id=${r.id}`)}

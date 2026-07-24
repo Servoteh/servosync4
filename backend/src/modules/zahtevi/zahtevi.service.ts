@@ -85,6 +85,16 @@ const OWNER_WITHDRAW_STATUSES: readonly string[] = [
   "NEEDS_INFO",
 ];
 
+/**
+ * Tihi režim nagrada (PRESUDA 24.07): timeline event-tipovi sa novčanim/ocenskim sadržajem
+ * koji se NE prikazuju ne-adminu (SCORE_CONFIRMED/REWARD_EXCLUDED/REWARD_PAID). Admin vidi sve.
+ */
+const SILENT_REWARD_EVENT_TYPES = new Set<string>([
+  "SCORE_CONFIRMED",
+  "REWARD_EXCLUDED",
+  "REWARD_PAID",
+]);
+
 const ATTACHMENT_BUCKET = "zahtevi-prilozi";
 const MAX_ATTACHMENTS = 10;
 const MAX_FILE_BYTES = 25 * 1024 * 1024; // 25 MB hard cap (obrazac media-ai)
@@ -141,6 +151,35 @@ export class ZahteviService {
   /** WHERE filter za row-scope: ne-admin vidi SAMO svoje. */
   private scopeWhere(actor: AuthUser): Prisma.ChangeRequestWhereInput {
     return this.isAdmin(actor) ? {} : { createdByUserId: actor.userId };
+  }
+
+  /**
+   * Tihi režim nagrada (PRESUDA 24.07 — izvor istine je server): ne-admin (uklj. podnosioca)
+   * NE vidi ocene/iznose. Iz reda se uklanjaju aiScore/finalScore/rewardAmount/rewardMonth (null)
+   * i rewardStatus (→ NONE). IZUZETAK: `aiScoreReason` OSTAJE podnosiocu SAMO na REJECTED — to je
+   * obrazloženje odbijanja (funkcionalno, ne para); u ostalim statusima se briše. Admin dobija sve.
+   */
+  private stripRewards<
+    T extends {
+      status: string;
+      aiScore: number | null;
+      aiScoreReason: string | null;
+      finalScore: number | null;
+      rewardAmount: Prisma.Decimal | null;
+      rewardStatus: string;
+      rewardMonth: string | null;
+    },
+  >(req: T, actor: AuthUser): T {
+    if (this.isAdmin(actor)) return req;
+    return {
+      ...req,
+      aiScore: null,
+      finalScore: null,
+      rewardAmount: null,
+      rewardStatus: "NONE",
+      rewardMonth: null,
+      aiScoreReason: req.status === "REJECTED" ? req.aiScoreReason : null,
+    };
   }
 
   /** Učitaj zahtev uz row-scope; ne-admin nad tuđim → 404 (ne otkrivamo postojanje). */
@@ -273,7 +312,11 @@ export class ZahteviService {
       }),
       this.prisma.changeRequest.count({ where }),
     ]);
-    return { data, meta: pageMeta(page, pageSize, total) };
+    // Tihi režim (24.07): ne-adminu se ocene/iznosi uklanjaju iz svakog reda (izvor istine je BE).
+    return {
+      data: data.map((r) => this.stripRewards(r, actor)),
+      meta: pageMeta(page, pageSize, total),
+    };
   }
 
   /** GET /zahtevi/inbox-meta — brojači statusa koji čekaju admina (§7). */
@@ -342,9 +385,13 @@ export class ZahteviService {
     });
     if (!req) return { data: req };
 
+    const admin = this.isAdmin(actor);
     // Imena autora komentara + aktera events (meki ref na users; jedan upit za sve).
     const comments = req.comments ?? [];
-    const events = req.events ?? [];
+    // Tihi režim (24.07): ne-admin ne vidi reward-event tipove u timeline-u.
+    const events = (req.events ?? []).filter(
+      (e) => admin || !SILENT_REWARD_EVENT_TYPES.has(e.type),
+    );
     const userIds = Array.from(
       new Set<number>([
         ...comments.map((c) => c.authorUserId),
@@ -355,22 +402,20 @@ export class ZahteviService {
     );
     const nameById = await this.namesByUserId(userIds);
 
-    return {
-      data: {
-        ...req,
-        comments: comments.map((c) => ({
-          ...c,
-          authorName: nameById.get(c.authorUserId) ?? null,
-        })),
-        events: events.map((e) => ({
-          ...e,
-          actorName:
-            e.actorUserId != null
-              ? (nameById.get(e.actorUserId) ?? null)
-              : null,
-        })),
-      },
+    const data = {
+      ...req,
+      comments: comments.map((c) => ({
+        ...c,
+        authorName: nameById.get(c.authorUserId) ?? null,
+      })),
+      events: events.map((e) => ({
+        ...e,
+        actorName:
+          e.actorUserId != null ? (nameById.get(e.actorUserId) ?? null) : null,
+      })),
     };
+    // Tihi režim (24.07): ocene/iznosi se uklanjaju za ne-admina (aiScoreReason ostaje na REJECTED).
+    return { data: this.stripRewards(data, actor) };
   }
 
   /** Mapa userId → prikazno ime (fullName || email || null). Prazan ulaz → prazna mapa. */

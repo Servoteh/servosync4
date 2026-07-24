@@ -102,8 +102,9 @@ function TriageCard({
             <p className="whitespace-pre-wrap text-sm text-ink">{result.summary}</p>
           )}
 
-          {/* Ocena + obrazloženje. */}
-          {result.score != null && (
+          {/* Ocena + obrazloženje — SAMO admin (tihi režim 24.07: korisnik ne vidi ocenu/scoreReason;
+              obrazloženje odbijanja mu se prikazuje u headeru na REJECTED). */}
+          {isAdmin && result.score != null && (
             <div className="rounded-control bg-surface-2 px-3 py-2">
               <p className="text-2xs font-semibold uppercase tracking-[0.08em] text-ink-secondary">
                 AI ocena

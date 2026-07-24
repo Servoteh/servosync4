@@ -45,6 +45,9 @@ function MonthlyPayout() {
   const report = usePayoutReport(month);
   const closeMonth = useCloseMonth();
   const [confirmClose, setConfirmClose] = useState(false);
+  // Tihi režim (24.07): korisnici inače ne vide nagrade; admin OPCIONO (default OFF) može pri
+  // zaključenju poslati zbirni mesečni pregled (spisak zahteva + ukupan iznos, bez ocena).
+  const [notifyUsers, setNotifyUsers] = useState(false);
 
   const data = report.data?.data;
   const closed = data?.closed ?? false;
@@ -129,15 +132,33 @@ function MonthlyPayout() {
         loading={closeMonth.isPending}
         onCancel={() => setConfirmClose(false)}
         onConfirm={() =>
-          closeMonth.mutate(month, {
-            onSuccess: (res) => {
-              setConfirmClose(false);
-              toast(`Mesec zaključen — ${res.data.paidCount} nagrada.`);
+          closeMonth.mutate(
+            { month, notifyUsers },
+            {
+              onSuccess: (res) => {
+                setConfirmClose(false);
+                setNotifyUsers(false);
+                toast(`Mesec zaključen — ${res.data.paidCount} nagrada.`);
+              },
+              onError: (e) => toast((e as Error).message),
             },
-            onError: (e) => toast((e as Error).message),
-          })
+          )
         }
-      />
+      >
+        <label className="flex cursor-pointer items-start gap-2 rounded-control bg-surface-2 px-3 py-2 text-sm text-ink">
+          <input
+            type="checkbox"
+            checked={notifyUsers}
+            onChange={(e) => setNotifyUsers(e.target.checked)}
+            className="mt-0.5"
+          />
+          <span>
+            Pošalji korisnicima zbirni mesečni pregled — svakom nagrađenom korisniku ide jedan
+            mejl sa spiskom njegovih zahteva i ukupnim iznosom (bez pojedinačnih ocena).
+            Podrazumevano isključeno.
+          </span>
+        </label>
+      </ConfirmDialog>
     </section>
   );
 }
@@ -349,6 +370,7 @@ function ConfirmDialog({
   loading,
   onCancel,
   onConfirm,
+  children,
 }: {
   open: boolean;
   title: string;
@@ -357,6 +379,7 @@ function ConfirmDialog({
   loading?: boolean;
   onCancel: () => void;
   onConfirm: () => void;
+  children?: React.ReactNode;
 }) {
   if (!open) return null;
   return (
@@ -375,7 +398,10 @@ function ConfirmDialog({
         </>
       }
     >
-      <p className="text-sm text-ink">{message}</p>
+      <div className="space-y-3">
+        <p className="text-sm text-ink">{message}</p>
+        {children}
+      </div>
     </Dialog>
   );
 }

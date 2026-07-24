@@ -7,6 +7,7 @@ import {
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { ZahteviRewardsService } from "./zahtevi-rewards.service";
+import { ZahteviMailService } from "./zahtevi-mail.service";
 import type { AuthUser } from "../auth/jwt.strategy";
 
 const ADMIN: AuthUser = {
@@ -108,16 +109,24 @@ function tariff(score: number, amount: number) {
   };
 }
 
+/** Mail servis — closeMonth ga zove SAMO za opcioni zbirni mesečni pregled (fire-and-forget). */
+function mailMock(): jest.Mocked<Pick<ZahteviMailService, "notifyMonthlySummary">> {
+  return { notifyMonthlySummary: jest.fn().mockResolvedValue(0) };
+}
+
 describe("ZahteviRewardsService", () => {
   let service: ZahteviRewardsService;
   let prisma: PrismaMock;
+  let mail: ReturnType<typeof mailMock>;
 
   beforeEach(async () => {
     prisma = prismaMock();
+    mail = mailMock();
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ZahteviRewardsService,
         { provide: PrismaService, useValue: prisma },
+        { provide: ZahteviMailService, useValue: mail },
       ],
     }).compile();
     service = module.get(ZahteviRewardsService);
@@ -459,6 +468,41 @@ describe("ZahteviRewardsService", () => {
         (c) => (c[0] as { data: { type: string } }).data.type,
       );
       expect(types.filter((t) => t === "REWARD_PAID").length).toBe(2);
+    });
+
+    it("DOPUNA 24.07: bez notifyUsers → NE šalje zbirni mesečni pregled", async () => {
+      prisma.changeRequest.count.mockResolvedValue(0);
+      prisma.changeRequest.findMany.mockResolvedValue([
+        { id: 1, rewardAmount: new Prisma.Decimal(1500) },
+      ]);
+      prisma.changeRequest.updateMany.mockResolvedValue({ count: 1 });
+      await service.closeMonth("2026-08", ADMIN);
+      expect(mail.notifyMonthlySummary).not.toHaveBeenCalled();
+    });
+
+    it("DOPUNA 24.07: notifyUsers=true → šalje zbirni mesečni pregled za taj mesec (po korisniku)", async () => {
+      prisma.changeRequest.count.mockResolvedValue(0);
+      prisma.changeRequest.findMany.mockResolvedValue([
+        { id: 1, rewardAmount: new Prisma.Decimal(1500) },
+      ]);
+      prisma.changeRequest.updateMany.mockResolvedValue({ count: 1 });
+      const res = await service.closeMonth("2026-08", ADMIN, true);
+      expect(mail.notifyMonthlySummary).toHaveBeenCalledWith("2026-08");
+      // Zaključenje je uspelo bez obzira na (fire-and-forget) slanje.
+      expect(res.data.paidCount).toBe(1);
+    });
+
+    it("DOPUNA 24.07: pad zbirnog mejla NE obara zaključenje (best-effort)", async () => {
+      prisma.changeRequest.count.mockResolvedValue(0);
+      prisma.changeRequest.findMany.mockResolvedValue([
+        { id: 1, rewardAmount: new Prisma.Decimal(1500) },
+        { id: 2, rewardAmount: new Prisma.Decimal(3000) },
+      ]);
+      prisma.changeRequest.updateMany.mockResolvedValue({ count: 2 });
+      mail.notifyMonthlySummary.mockRejectedValue(new Error("resend down"));
+      const res = await service.closeMonth("2026-08", ADMIN, true);
+      expect(res.data.paidCount).toBe(2);
+      expect(res.data.total).toBe("4500");
     });
 
     it("F5: confirmed se čita UNUTAR tx — paralelni drugi poziv vidi 0 CONFIRMED → 422, bez duplih REWARD_PAID", async () => {

@@ -732,14 +732,17 @@ export function usePayoutReport(month: string, enabled = true) {
   });
 }
 
-/** POST /zahtevi/nagrade/obracun/:month/zakljuci (admin) — CONFIRMED→PAID. */
+/**
+ * POST /zahtevi/nagrade/obracun/:month/zakljuci (admin) — CONFIRMED→PAID.
+ * `notifyUsers` (opciono, default false): zbirni mesečni pregled korisnicima (presuda 24.07).
+ */
 export function useCloseMonth() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (month: string) =>
+    mutationFn: ({ month, notifyUsers }: { month: string; notifyUsers?: boolean }) =>
       apiFetch<One<{ month: string; paidCount: number; total: string }>>(
         `${BASE}/nagrade/obracun/${month}/zakljuci`,
-        { method: 'POST', body: '{}' },
+        { method: 'POST', body: JSON.stringify({ notifyUsers: notifyUsers ?? false }) },
       ),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['zahtevi'] });

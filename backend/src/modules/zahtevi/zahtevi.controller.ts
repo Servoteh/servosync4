@@ -119,14 +119,16 @@ export class ZahteviController {
     return this.rewards.payoutReport(month, req.user);
   }
 
-  /** POST /zahtevi/nagrade/obracun/:month/zakljuci (admin) — CONFIRMED→PAID (immutable). */
+  /** POST /zahtevi/nagrade/obracun/:month/zakljuci (admin) — CONFIRMED→PAID (immutable).
+   *  Telo `{ notifyUsers?: boolean }` (default false): opciono zbirni mesečni pregled korisnicima. */
   @Post("nagrade/obracun/:month/zakljuci")
   @RequirePermission(PERMISSIONS.ZAHTEVI_ADMIN)
   closeMonth(
     @Param("month") month: string,
+    @Body() body: { notifyUsers?: boolean } | undefined,
     @Req() req: { user: AuthUser },
   ) {
-    return this.rewards.closeMonth(month, req.user);
+    return this.rewards.closeMonth(month, req.user, body?.notifyUsers === true);
   }
 
   /** GET /zahtevi/nagrade/moje?month=YYYY-MM (write) — SVOJE nagrade za mesec (row-scope). */

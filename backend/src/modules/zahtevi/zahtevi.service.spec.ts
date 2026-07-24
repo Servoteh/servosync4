@@ -378,6 +378,95 @@ describe("ZahteviService", () => {
     });
   });
 
+  // ── TIHI REŽIM NAGRADA (24.07) ───────────────────────────────────────────────
+  describe("tihi režim nagrada (24.07 — ne-admin ne vidi ocene/iznose)", () => {
+    /** Zahtev sa popunjenim reward poljima (za proveru stripovanja). */
+    const rewarded = (over: Record<string, unknown> = {}) =>
+      baseReq({
+        status: "DONE",
+        aiScore: 4,
+        aiScoreReason: "dobra ideja",
+        finalScore: 3,
+        rewardAmount: "1500",
+        rewardStatus: "CONFIRMED",
+        rewardMonth: "2026-08",
+        ...over,
+      });
+
+    it("getDetail: ne-admin (podnosilac) → ocene/iznosi uklonjeni (rewardStatus→NONE, aiScoreReason skriven)", async () => {
+      prisma.changeRequest.findUnique.mockResolvedValue(rewarded());
+      const d = row(await service.getDetail(10, USER));
+      expect(d.aiScore).toBeNull();
+      expect(d.finalScore).toBeNull();
+      expect(d.rewardAmount).toBeNull();
+      expect(d.rewardMonth).toBeNull();
+      expect(d.rewardStatus).toBe("NONE");
+      // Ne-REJECTED status → obrazloženje ocene se ne prikazuje.
+      expect(d.aiScoreReason).toBeNull();
+    });
+
+    it("getDetail: ne-admin + REJECTED → aiScoreReason (obrazloženje odbijanja) OSTAJE, iznosi i dalje skriveni", async () => {
+      prisma.changeRequest.findUnique.mockResolvedValue(
+        rewarded({ status: "REJECTED", aiScoreReason: "duplikat zahteva 003/26" }),
+      );
+      const d = row(await service.getDetail(10, USER));
+      expect(d.aiScoreReason).toBe("duplikat zahteva 003/26");
+      expect(d.finalScore).toBeNull();
+      expect(d.rewardStatus).toBe("NONE");
+    });
+
+    it("getDetail: ne-admin → reward-event tipovi filtrirani iz timeline-a (SUBMITTED/AI_REJECTED ostaju)", async () => {
+      const now = new Date();
+      prisma.changeRequest.findUnique.mockResolvedValue(
+        rewarded({
+          events: [
+            { id: 1, type: "SUBMITTED", actorUserId: USER.userId, data: null, createdAt: now },
+            { id: 2, type: "SCORE_CONFIRMED", actorUserId: ADMIN.userId, data: { amount: "1500" }, createdAt: now },
+            { id: 3, type: "REWARD_PAID", actorUserId: ADMIN.userId, data: { amount: "1500" }, createdAt: now },
+            { id: 4, type: "REWARD_EXCLUDED", actorUserId: ADMIN.userId, data: null, createdAt: now },
+            { id: 5, type: "AI_REJECTED", actorUserId: null, data: null, createdAt: now },
+          ],
+        }),
+      );
+      const types = (row(await service.getDetail(10, USER)).events as { type: string }[]).map(
+        (e) => e.type,
+      );
+      expect(types).toContain("SUBMITTED");
+      expect(types).toContain("AI_REJECTED");
+      expect(types).not.toContain("SCORE_CONFIRMED");
+      expect(types).not.toContain("REWARD_PAID");
+      expect(types).not.toContain("REWARD_EXCLUDED");
+    });
+
+    it("getDetail: admin → sve ocene/iznosi i reward-eventi ostaju", async () => {
+      const now = new Date();
+      prisma.changeRequest.findUnique.mockResolvedValue(
+        rewarded({
+          createdByUserId: OTHER.userId,
+          events: [
+            { id: 1, type: "SCORE_CONFIRMED", actorUserId: ADMIN.userId, data: null, createdAt: now },
+          ],
+        }),
+      );
+      const d = row(await service.getDetail(10, ADMIN));
+      expect(d.finalScore).toBe(3);
+      expect(d.rewardStatus).toBe("CONFIRMED");
+      expect((d.events as { type: string }[]).map((e) => e.type)).toContain("SCORE_CONFIRMED");
+    });
+
+    it("list: ne-admin → svaki red očišćen; admin → netaknut", async () => {
+      prisma.changeRequest.findMany.mockResolvedValue([rewarded()]);
+      prisma.changeRequest.count.mockResolvedValue(1);
+      const uRow = rows(await service.list(USER, {}))[0];
+      expect(uRow.finalScore).toBeNull();
+      expect(uRow.rewardStatus).toBe("NONE");
+
+      const aRow = rows(await service.list(ADMIN, {}))[0];
+      expect(aRow.finalScore).toBe(3);
+      expect(aRow.rewardStatus).toBe("CONFIRMED");
+    });
+  });
+
   // ── STATUS MAŠINA ────────────────────────────────────────────────────────────
   describe("status mašina (§1.3)", () => {
     it("submit: DRAFT → SUBMITTED (event SUBMITTED)", async () => {
