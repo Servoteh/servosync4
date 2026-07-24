@@ -16,6 +16,7 @@ import {
   useMatchLines,
   usePostStatement,
   useDeleteStatementLine,
+  isForeignCurrency,
   STATEMENT_STATUS,
   LINE_STATUS,
   LINE_DIRECTION,
@@ -72,57 +73,103 @@ const DIRECTION_LABEL: Record<LineDirection, string> = {
   [LINE_DIRECTION.DEBIT]: 'Odliv',
 };
 
-const itemColumns: Column<BankStatementLine>[] = [
-  {
-    key: 'lineNo',
-    header: 'R.br.',
-    align: 'right',
-    numeric: true,
-    render: (l) => <span className="tnums text-ink-secondary">{l.lineNo}</span>,
-  },
-  {
-    key: 'partnerName',
-    header: 'Komitent',
-    render: (l) => (
-      <div className="min-w-0">
-        <div className="truncate text-ink">{l.partnerName ?? '—'}</div>
-        {l.matchedCustomerId != null && (
-          <div className="tnums text-2xs text-ink-secondary">komitent #{l.matchedCustomerId}</div>
-        )}
-      </div>
-    ),
-  },
-  {
-    key: 'partnerAccount',
-    header: 'Žiro',
-    render: (l) => <span className="tnums text-ink-secondary">{l.partnerAccount ?? '—'}</span>,
-  },
-  {
-    key: 'amount',
-    header: 'Iznos',
-    align: 'right',
-    numeric: true,
-    render: (l) => <span className="tnums text-ink">{formatDecimal(l.amount)}</span>,
-  },
-  {
-    key: 'direction',
-    header: 'Smer',
-    render: (l) => <span className="text-ink">{DIRECTION_LABEL[l.direction] ?? l.direction}</span>,
-  },
-  {
-    key: 'referenceNumber',
-    header: 'Poziv na broj',
-    render: (l) => <span className="tnums text-ink-secondary">{l.referenceNumber ?? '—'}</span>,
-  },
-  {
-    key: 'status',
-    header: 'Uparivanje',
-    render: (l) => {
-      const m = lineStatusMeta(l.status);
-      return <StatusBadge tone={m.tone} label={m.label} />;
+/**
+ * Kolone tabele stavki. Za DEVIZNI izvod (E6) umeta kolone „Devizni iznos" (foreignAmount
+ * u valuti izvoda) i „Kurs" (primenjeni prodajni kurs), a „Iznos" postaje „RSD protivvr."
+ * (izvedena dinarska protivvrednost). Za dinarski izvod = jedna kolona „Iznos" (nepromenjeno).
+ */
+function buildItemColumns(currency: string | null): Column<BankStatementLine>[] {
+  const foreign = isForeignCurrency(currency);
+  const cur = (currency ?? 'RSD').toUpperCase();
+
+  const cols: Column<BankStatementLine>[] = [
+    {
+      key: 'lineNo',
+      header: 'R.br.',
+      align: 'right',
+      numeric: true,
+      render: (l) => <span className="tnums text-ink-secondary">{l.lineNo}</span>,
     },
-  },
-];
+    {
+      key: 'partnerName',
+      header: 'Komitent',
+      render: (l) => (
+        <div className="min-w-0">
+          <div className="truncate text-ink">{l.partnerName ?? '—'}</div>
+          {l.matchedCustomerId != null && (
+            <div className="tnums text-2xs text-ink-secondary">komitent #{l.matchedCustomerId}</div>
+          )}
+        </div>
+      ),
+    },
+    {
+      key: 'partnerAccount',
+      header: 'Žiro',
+      render: (l) => <span className="tnums text-ink-secondary">{l.partnerAccount ?? '—'}</span>,
+    },
+  ];
+
+  if (foreign) {
+    cols.push(
+      {
+        key: 'foreignAmount',
+        header: `Devizni iznos (${cur})`,
+        align: 'right',
+        numeric: true,
+        render: (l) => <span className="tnums text-ink">{formatDecimal(l.foreignAmount)}</span>,
+      },
+      {
+        key: 'exchangeRate',
+        header: 'Kurs',
+        align: 'right',
+        numeric: true,
+        render: (l) => (
+          <span className="tnums text-ink-secondary">{formatDecimal(l.exchangeRate, 6)}</span>
+        ),
+      },
+      {
+        key: 'amount',
+        header: 'RSD protivvr.',
+        align: 'right',
+        numeric: true,
+        render: (l) => <span className="tnums text-ink">{formatDecimal(l.amount)}</span>,
+      },
+    );
+  } else {
+    cols.push({
+      key: 'amount',
+      header: 'Iznos',
+      align: 'right',
+      numeric: true,
+      render: (l) => <span className="tnums text-ink">{formatDecimal(l.amount)}</span>,
+    });
+  }
+
+  cols.push(
+    {
+      key: 'direction',
+      header: 'Smer',
+      render: (l) => (
+        <span className="text-ink">{DIRECTION_LABEL[l.direction] ?? l.direction}</span>
+      ),
+    },
+    {
+      key: 'referenceNumber',
+      header: 'Poziv na broj',
+      render: (l) => <span className="tnums text-ink-secondary">{l.referenceNumber ?? '—'}</span>,
+    },
+    {
+      key: 'status',
+      header: 'Uparivanje',
+      render: (l) => {
+        const m = lineStatusMeta(l.status);
+        return <StatusBadge tone={m.tone} label={m.label} />;
+      },
+    },
+  );
+
+  return cols;
+}
 
 export default function IzvodDetailPage() {
   const { user, isLoading } = useAuth();
@@ -253,9 +300,9 @@ export default function IzvodDetailPage() {
               <DataTable
                 columns={
                   doc.status === STATEMENT_STATUS.POSTED
-                    ? itemColumns
+                    ? buildItemColumns(doc.currency)
                     : [
-                        ...itemColumns,
+                        ...buildItemColumns(doc.currency),
                         {
                           key: 'akcije',
                           header: '',
@@ -310,6 +357,7 @@ export default function IzvodDetailPage() {
 
             <StatementLineEditor
               statementId={doc.id}
+              currency={doc.currency}
               line={editorLine}
               open={editorOpen}
               onClose={() => setEditorOpen(false)}
@@ -345,6 +393,17 @@ function StatementHeader({ doc }: { doc: BankStatementDetail }) {
         </Field>
         <Field label="Status">
           <StatusBadge tone={s.tone} label={s.label} />
+        </Field>
+        <Field label="Valuta">
+          <span
+            className={
+              isForeignCurrency(doc.currency)
+                ? 'font-semibold text-ink'
+                : 'text-ink-secondary'
+            }
+          >
+            {doc.currency || 'RSD'}
+          </span>
         </Field>
         <Field label="Otvaranje">
           <span className="tnums text-ink">

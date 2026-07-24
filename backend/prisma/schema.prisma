@@ -3362,12 +3362,44 @@ model BankStatementLine {
   matchedLedgerEntryId Int?      @map("matched_ledger_entry_id") // meki ref ledger_entries.id (uparena otvorena stavka)
   status               String    @default("UNMATCHED") @map("status") @db.VarChar(20) /// UNMATCHED | MATCHED | POSTED
 
+  // — Devizni izvod (E6, O2 presuda 24.07: ~100/god) — amount je UVEK RSD protivvrednost;
+  //   za devizne stavke se čuva i originalni devizni iznos + primenjeni kurs (PRODAJNI,
+  //   BigBit KursnaListaNaDanZaNaloge — doc 09 §banking pravilo kursa).
+  currency      String?  @map("currency") @db.VarChar(3) // null/RSD = dinarska stavka
+  foreignAmount Decimal? @map("foreign_amount") @db.Decimal(19, 4) // iznos u valuti (EUR/USD…)
+  exchangeRate  Decimal? @map("exchange_rate") @db.Decimal(19, 6) // primenjeni kurs na dan izvoda
+
   statement BankStatement @relation(fields: [statementId], references: [id], onDelete: Cascade, map: "fk_bank_statement_lines_statement")
 
   @@index([statementId], map: "idx_bank_statement_lines_statement")
   @@index([partnerAccount], map: "idx_bank_statement_lines_partner_account") // uparivanje po žiro računu komitenta
   @@index([status], map: "idx_bank_statement_lines_status")
   @@map("bank_statement_lines")
+}
+
+// -----------------------------------------------------------------------------
+// ExchangeRate — kursna lista (E6; BigBit `Kursna lista`, doc 09 §Doc__Form_Kursna lista)
+// -----------------------------------------------------------------------------
+/// Kurs po (datum, valuta). BigBit pravila kursa: IZVODI/nalozi koriste PRODAJNI
+/// (`KursnaListaNaDanZaNaloge`), BLAGAJNA srednji (`KursnaListaNaDan`). Vikend/praznik:
+/// resolver uzima poslednji raniji datum (BigBit „Formiraj iz datuma za datum").
+/// NBS auto-import = Talas 2 (za sada ručni unos + prepis od datuma).
+model ExchangeRate {
+  id         Int      @id(map: "pk_exchange_rates") @default(autoincrement()) @map("id")
+  rateDate   DateTime @map("rate_date") @db.Timestamptz(6) // dan važenja
+  currency   String   @map("currency") @db.VarChar(3) // EUR | USD | CHF …
+  buyRate    Decimal  @default(0) @map("buy_rate") @db.Decimal(19, 6) // kupovni
+  middleRate Decimal  @default(0) @map("middle_rate") @db.Decimal(19, 6) // srednji (blagajna)
+  sellRate   Decimal  @default(0) @map("sell_rate") @db.Decimal(19, 6) // prodajni (izvodi/nalozi)
+  source     String?  @map("source") @db.VarChar(20) // NBS | RUCNO | PREPIS
+  note       String?  @map("note") @db.VarChar(255)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([rateDate, currency], map: "uq_exchange_rates_date_currency")
+  @@index([currency, rateDate], map: "idx_exchange_rates_currency_date") // resolver: poslednji ≤ datum
+  @@map("exchange_rates")
 }
 
 // -----------------------------------------------------------------------------

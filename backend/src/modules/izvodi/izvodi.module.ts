@@ -3,6 +3,8 @@ import { PrismaModule } from "../../prisma/prisma.module";
 import { IzvodiController } from "./izvodi.controller";
 import { BankStatementService } from "./bank-statement.service";
 import { BankStatementParserService } from "./bank-statement-parser.service";
+import { ExchangeRateController } from "./exchange-rate.controller";
+import { ExchangeRateService } from "./exchange-rate.service";
 
 /**
  * Modul IZVODI (Faza 4 §B) — uvoz bankovnih izvoda (TXT fiksne kolone, FX format),
@@ -15,8 +17,8 @@ import { BankStatementParserService } from "./bank-statement-parser.service";
  */
 @Module({
   imports: [PrismaModule],
-  controllers: [IzvodiController],
-  providers: [BankStatementService, BankStatementParserService],
-  exports: [BankStatementService],
+  controllers: [IzvodiController, ExchangeRateController],
+  providers: [BankStatementService, BankStatementParserService, ExchangeRateService],
+  exports: [BankStatementService, ExchangeRateService], // ExchangeRateService: devizna konverzija (E6) + budući cross-modul (blagajna srednji kurs)
 })
 export class IzvodiModule {}

@@ -8,7 +8,8 @@ import { BadRequestException } from "@nestjs/common";
 export interface CreateStatementLineDto {
   partnerAccount?: string | null; // žiro komitenta (opciono za ručni unos)
   partnerName?: string | null; // naziv komitenta
-  amount: number; // iznos (> 0)
+  amount?: number; // RSD iznos (> 0); obavezan za DINARSKI izvod
+  foreignAmount?: number | null; // devizni iznos (> 0); obavezan za DEVIZNI izvod (E6)
   direction: string; // DEBIT (odliv) | CREDIT (priliv)
   referenceNumber?: string | null; // poziv na broj / broj dokumenta
   documentDate?: string | null; // ISO datum dokumenta
@@ -20,6 +21,7 @@ export interface UpdateStatementLineDto {
   partnerAccount?: string | null;
   partnerName?: string | null;
   amount?: number;
+  foreignAmount?: number | null; // devizni iznos (E6) — prosleđivanje re-računa RSD protivvrednost
   direction?: string;
   referenceNumber?: string | null;
   documentDate?: string | null;
@@ -31,8 +33,18 @@ const DIRECTIONS = new Set(["DEBIT", "CREDIT"]);
 export function validateCreateStatementLine(dto: CreateStatementLineDto): void {
   const errors: string[] = [];
 
-  if (typeof dto.amount !== "number" || Number.isNaN(dto.amount) || dto.amount <= 0)
+  const hasAmount = typeof dto.amount === "number" && !Number.isNaN(dto.amount);
+  const hasForeign =
+    typeof dto.foreignAmount === "number" && !Number.isNaN(dto.foreignAmount);
+
+  // Struktura: mora postojati RSD iznos ILI devizni iznos. Koji je obavezan po valuti
+  // izvoda presuđuje servis (zna statement.currency) — ovde samo tip/predznak.
+  if (!hasAmount && !hasForeign)
+    errors.push("Unesite iznos (RSD) ili devizni iznos.");
+  if (hasAmount && (dto.amount as number) <= 0)
     errors.push("Iznos mora biti pozitivan broj.");
+  if (hasForeign && (dto.foreignAmount as number) <= 0)
+    errors.push("Devizni iznos mora biti pozitivan broj.");
 
   if (typeof dto.direction !== "string" || !DIRECTIONS.has(dto.direction))
     errors.push("Smer mora biti DEBIT (odliv) ili CREDIT (priliv).");
@@ -48,6 +60,14 @@ export function validateUpdateStatementLine(dto: UpdateStatementLineDto): void {
   if (dto.amount !== undefined) {
     if (typeof dto.amount !== "number" || Number.isNaN(dto.amount) || dto.amount <= 0)
       errors.push("Iznos mora biti pozitivan broj.");
+  }
+  if (dto.foreignAmount !== undefined && dto.foreignAmount !== null) {
+    if (
+      typeof dto.foreignAmount !== "number" ||
+      Number.isNaN(dto.foreignAmount) ||
+      dto.foreignAmount <= 0
+    )
+      errors.push("Devizni iznos mora biti pozitivan broj.");
   }
   if (dto.direction !== undefined && !DIRECTIONS.has(dto.direction))
     errors.push("Smer mora biti DEBIT (odliv) ili CREDIT (priliv).");

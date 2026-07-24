@@ -5,9 +5,11 @@ import { Dialog } from '@/components/ui-kit/dialog';
 import { FormField, Input } from '@/components/ui-kit/form-field';
 import { Select } from '@/components/ui-kit/select';
 import { Button } from '@/components/ui-kit/button';
+import { formatDecimal } from '@/lib/format';
 import {
   useAddStatementLine,
   useUpdateStatementLine,
+  isForeignCurrency,
   LINE_DIRECTION,
   type BankStatementLine,
   type StatementLineInput,
@@ -19,20 +21,28 @@ import {
  * na detalju (po žiro računu); ovde se ručno kuca naziv/žiro/iznos/smer/poziv-na-broj,
  * kao u BigBit „Unos naloga glavne knjige".
  *
+ * DEVIZNI izvod (E6): kad valuta izvoda nije RSD, unosi se DEVIZNI iznos, a RSD
+ * protivvrednost računa backend po PRODAJNOM kursu na dan izvoda (polje je readonly).
+ * Pri izmeni se prikazuje primenjeni kurs i uživo preračun po tom kursu.
+ *
  * TASTATURA: Ctrl+S = sačuvaj, Esc = otkaži (Dialog gasi na Esc/overlay).
  */
 export function StatementLineEditor({
   statementId,
+  currency,
   line,
   open,
   onClose,
 }: {
   statementId: number;
+  currency: string | null;
   line: BankStatementLine | null;
   open: boolean;
   onClose: () => void;
 }) {
   const isEdit = line != null;
+  const foreign = isForeignCurrency(currency);
+  const cur = (currency ?? 'RSD').toUpperCase();
   const add = useAddStatementLine();
   const update = useUpdateStatementLine();
 
@@ -46,12 +56,13 @@ export function StatementLineEditor({
         partnerAccount: line.partnerAccount ?? '',
         partnerName: line.partnerName ?? '',
         amount: Number(line.amount),
+        foreignAmount: line.foreignAmount != null ? Number(line.foreignAmount) : undefined,
         direction: line.direction,
         referenceNumber: line.referenceNumber ?? '',
         documentDate: line.documentDate ? line.documentDate.slice(0, 10) : '',
       });
     } else {
-      setForm({ direction: LINE_DIRECTION.CREDIT, amount: undefined });
+      setForm({ direction: LINE_DIRECTION.CREDIT, amount: undefined, foreignAmount: undefined });
     }
   }, [open, line]);
 
@@ -61,11 +72,21 @@ export function StatementLineEditor({
   const set = <K extends keyof StatementLineInput>(k: K, v: StatementLineInput[K]) =>
     setForm((f) => ({ ...f, [k]: v }));
 
+  // Preračun RSD protivvrednosti pri izmeni devizne stavke: koristi već primenjeni kurs
+  // stavke (isti dan izvoda → isti prodajni kurs). Za nov unos kurs se povlači na backendu.
+  const appliedRate = line?.exchangeRate != null ? Number(line.exchangeRate) : null;
+  const rsdPreview =
+    foreign && appliedRate != null && form.foreignAmount != null && form.foreignAmount > 0
+      ? form.foreignAmount * appliedRate
+      : null;
+
   const submit = () => {
     const input: StatementLineInput = {
       partnerAccount: form.partnerAccount?.trim() || null,
       partnerName: form.partnerName?.trim() || null,
-      amount: form.amount,
+      // Devizni izvod: šalje se DEVIZNI iznos (backend računa RSD amount po prodajnom kursu);
+      // dinarski izvod: šalje se RSD iznos (nepromenjeno).
+      ...(foreign ? { foreignAmount: form.foreignAmount } : { amount: form.amount }),
       direction: form.direction,
       referenceNumber: form.referenceNumber?.trim() || null,
       documentDate: form.documentDate || null,
@@ -126,19 +147,53 @@ export function StatementLineEditor({
           />
         </FormField>
 
-        <FormField label="Iznos" required>
-          <Input
-            type="number"
-            step="0.01"
-            min="0"
-            inputMode="decimal"
-            value={form.amount ?? ''}
-            onChange={(e) =>
-              set('amount', e.target.value === '' ? undefined : Number(e.target.value))
-            }
-            autoFocus
-          />
-        </FormField>
+        {foreign ? (
+          <>
+            <FormField label={`Devizni iznos (${cur})`} required>
+              <Input
+                type="number"
+                step="0.01"
+                min="0"
+                inputMode="decimal"
+                value={form.foreignAmount ?? ''}
+                onChange={(e) =>
+                  set('foreignAmount', e.target.value === '' ? undefined : Number(e.target.value))
+                }
+                autoFocus
+              />
+            </FormField>
+
+            <FormField
+              label="RSD protivvrednost"
+              hint={
+                appliedRate != null
+                  ? `Primenjeni prodajni kurs: ${formatDecimal(appliedRate, 6)}`
+                  : 'Preračunava se po prodajnom kursu na dan izvoda pri čuvanju.'
+              }
+            >
+              <Input
+                readOnly
+                tabIndex={-1}
+                className="tnums bg-surface-2 text-ink-secondary"
+                value={rsdPreview != null ? formatDecimal(rsdPreview) : '—'}
+              />
+            </FormField>
+          </>
+        ) : (
+          <FormField label="Iznos" required>
+            <Input
+              type="number"
+              step="0.01"
+              min="0"
+              inputMode="decimal"
+              value={form.amount ?? ''}
+              onChange={(e) =>
+                set('amount', e.target.value === '' ? undefined : Number(e.target.value))
+              }
+              autoFocus
+            />
+          </FormField>
+        )}
 
         <FormField label="Naziv komitenta">
           <Input

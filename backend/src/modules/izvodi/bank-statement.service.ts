@@ -12,6 +12,11 @@ import {
   BankStatementParserService,
   type ParsedStatementLine,
 } from "./bank-statement-parser.service";
+// FX kursni servis PRAVI drugi agent (E6a) po dogovorenom kontraktu:
+//   class ExchangeRateService, resolve(currency, on, "sell"|"middle"|"buy")
+//   → { rate: Prisma.Decimal, rateDate: Date } | throws NotFoundException.
+// Registracija providera u izvodi.module.ts radi integrator (moduleRegistrations).
+import { ExchangeRateService } from "./exchange-rate.service";
 import {
   type ImportStatementDto,
   validateImportStatement,
@@ -51,6 +56,7 @@ export class BankStatementService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly parser: BankStatementParserService,
+    private readonly exchangeRates: ExchangeRateService,
   ) {}
 
   // ── UVOZ ────────────────────────────────────────────────────────────────
@@ -62,8 +68,13 @@ export class BankStatementService {
   async importStatement(dto: ImportStatementDto, actor?: AuthUser) {
     validateImportStatement(dto);
 
-    const parsed = this.parser.parse(dto.txtContent);
-    if (parsed.length === 0) {
+    // TXT je opcion: bez njega se kreira PRAZAN izvod za ručni unos (E6 devizni izvod —
+    // parser je RSD-only, pa se devizne stavke kucaju ručno). Ako TXT postoji, mora dati
+    // bar jednu parsabilnu stavku (nepromenjeno ponašanje uvoza).
+    const hasTxt =
+      typeof dto.txtContent === "string" && dto.txtContent.trim().length > 0;
+    const parsed = hasTxt ? this.parser.parse(dto.txtContent as string) : [];
+    if (hasTxt && parsed.length === 0) {
       throw new UnprocessableEntityException(
         "Izvod ne sadrži nijednu parsabilnu stavku (proverite format/kolone).",
       );
@@ -97,18 +108,21 @@ export class BankStatementService {
           dto.closingBalance !== undefined ? new D(dto.closingBalance) : ZERO,
         currency: dto.currency ?? "RSD",
         createdByUserId: actor?.userId ?? null,
-        lines: {
-          create: parsed.map((l: ParsedStatementLine) => ({
-            lineNo: l.lineNo,
-            partnerAccount: l.partnerAccount,
-            partnerName: l.partnerName,
-            amount: l.amount,
-            direction: l.direction,
-            referenceNumber: l.referenceNumber,
-            documentDate: l.documentDate,
-            status: "UNMATCHED",
-          })),
-        },
+        lines:
+          parsed.length > 0
+            ? {
+                create: parsed.map((l: ParsedStatementLine) => ({
+                  lineNo: l.lineNo,
+                  partnerAccount: l.partnerAccount,
+                  partnerName: l.partnerName,
+                  amount: l.amount,
+                  direction: l.direction,
+                  referenceNumber: l.referenceNumber,
+                  documentDate: l.documentDate,
+                  status: "UNMATCHED",
+                })),
+              }
+            : undefined,
       },
       include: { lines: { orderBy: { lineNo: "asc" } } },
     });
@@ -305,13 +319,25 @@ export class BankStatementService {
       0,
     );
 
+    // Devizni izvod (E6): amount se IZVODI iz foreignAmount × prodajni kurs; dinarski
+    // izvod → amount direktan, FX polja null (ponašanje nepromenjeno).
+    const fx = await this.resolveLineAmount(
+      statement.currency,
+      statement.statementDate,
+      dto.amount ?? null,
+      dto.foreignAmount ?? null,
+    );
+
     await this.prisma.bankStatementLine.create({
       data: {
         statementId,
         lineNo: maxLineNo + 1,
         partnerAccount: dto.partnerAccount ?? null,
         partnerName: dto.partnerName ?? null,
-        amount: new D(dto.amount),
+        amount: fx.amount,
+        currency: fx.currency,
+        foreignAmount: fx.foreignAmount,
+        exchangeRate: fx.exchangeRate,
         direction: dto.direction,
         referenceNumber: dto.referenceNumber ?? null,
         documentDate: dto.documentDate ? new Date(dto.documentDate) : null,
@@ -343,10 +369,30 @@ export class BankStatementService {
         `Stavka ${lineId} ne pripada izvodu ${statementId}.`,
       );
 
+    const isForeign = this.isForeignCurrency(statement.currency);
+
     const data: Prisma.BankStatementLineUpdateInput = {};
     if (dto.partnerAccount !== undefined) data.partnerAccount = dto.partnerAccount;
     if (dto.partnerName !== undefined) data.partnerName = dto.partnerName;
-    if (dto.amount !== undefined) data.amount = new D(dto.amount);
+    if (isForeign) {
+      // Devizni izvod: amount je izvedeni RSD preračun — menja se SAMO kroz foreignAmount.
+      // Nova devizna vrednost → povuci prodajni kurs na dan izvoda i re-računaj amount.
+      if (dto.foreignAmount !== undefined && dto.foreignAmount !== null) {
+        const fx = await this.resolveLineAmount(
+          statement.currency,
+          statement.statementDate,
+          null,
+          dto.foreignAmount,
+        );
+        data.amount = fx.amount;
+        data.currency = fx.currency;
+        data.foreignAmount = fx.foreignAmount;
+        data.exchangeRate = fx.exchangeRate;
+      }
+      // Direktan `amount` se na deviznom izvodu IGNORIŠE (protivvrednost je izvedena).
+    } else if (dto.amount !== undefined) {
+      data.amount = new D(dto.amount);
+    }
     if (dto.direction !== undefined) data.direction = dto.direction;
     if (dto.referenceNumber !== undefined)
       data.referenceNumber = dto.referenceNumber;
@@ -429,6 +475,79 @@ export class BankStatementService {
       throw new ConflictException(
         `Izvod ${statementId} je proknjižen — izmena stavki nije dozvoljena.`,
       );
+  }
+
+  // ── DEVIZNI PRERAČUN (E6) ─────────────────────────────────────────────────
+
+  /** Devizni izvod = valuta izvoda nije RSD (null/prazno/RSD = dinarski). */
+  private isForeignCurrency(currency: string | null | undefined): boolean {
+    return (
+      currency != null &&
+      currency.trim().length > 0 &&
+      currency.trim().toUpperCase() !== "RSD"
+    );
+  }
+
+  /**
+   * Odredi RSD `amount` + FX polja stavke po valuti izvoda (E6, O2 presuda).
+   *   • DINARSKI izvod (RSD): `amount` = uneti RSD iznos; currency/foreignAmount/exchangeRate = null
+   *     (ponašanje NEPROMENJENO). Bez RSD iznosa → 422.
+   *   • DEVIZNI izvod (EUR/USD/CHF): traži `foreignAmount` (> 0); povuci PRODAJNI kurs na dan
+   *     izvoda (BigBit `KursnaListaNaDanZaNaloge` — doc 09 §banking: izvodi/nalozi = prodajni;
+   *     vikend/praznik = poslednji raniji datum, rešava resolver) i izračunaj
+   *     amount = foreignAmount × kurs, zaokruženo na 2 decimale. Bez kursne liste → 422 sa
+   *     porukom resolvera (korisnik zna da unese kurs).
+   */
+  private async resolveLineAmount(
+    statementCurrency: string,
+    statementDate: Date,
+    amount: number | null,
+    foreignAmount: number | null,
+  ): Promise<{
+    amount: Prisma.Decimal;
+    currency: string | null;
+    foreignAmount: Prisma.Decimal | null;
+    exchangeRate: Prisma.Decimal | null;
+  }> {
+    if (!this.isForeignCurrency(statementCurrency)) {
+      if (amount == null)
+        throw new UnprocessableEntityException(
+          "Dinarski izvod — unesite RSD iznos stavke.",
+        );
+      return {
+        amount: new D(amount),
+        currency: null,
+        foreignAmount: null,
+        exchangeRate: null,
+      };
+    }
+
+    const currency = statementCurrency.trim().toUpperCase();
+    if (foreignAmount == null || !(foreignAmount > 0))
+      throw new UnprocessableEntityException(
+        `Devizni izvod (${currency}) — unesite devizni iznos veći od nule.`,
+      );
+
+    // Resolver baca NotFoundException kad nema kursa; pretvori u 422 sa istom porukom
+    // (jasno korisniku da unese kursnu listu za ${currency} na dan izvoda). `await` je
+    // bezbedan i za sinhroni i za asinhroni resolver.
+    let resolved: { rate: Prisma.Decimal; rateDate: Date };
+    try {
+      resolved = await this.exchangeRates.resolve(currency, statementDate, "sell");
+    } catch (err) {
+      if (err instanceof NotFoundException)
+        throw new UnprocessableEntityException(err.message);
+      throw err;
+    }
+
+    const fa = new D(foreignAmount);
+    const rsd = fa.mul(resolved.rate).toDecimalPlaces(2);
+    return {
+      amount: rsd,
+      currency,
+      foreignAmount: fa,
+      exchangeRate: resolved.rate,
+    };
   }
 
   // ── AUTO-KNJIŽENJE ──────────────────────────────────────────────────────
