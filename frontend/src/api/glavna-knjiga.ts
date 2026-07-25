@@ -98,6 +98,8 @@ export interface AccountCardLine {
   documentNumber: string | null;
   analyticalCode: number | null;
   description: string | null;
+  /** Mesto troška (salda po poslovima) — može biti null. */
+  costCenter: string | null;
   /** Decimal-as-string. */
   debit: string;
   credit: string;
@@ -110,6 +112,8 @@ export interface AccountCardResult {
   data: AccountCardLine[];
   meta: {
     accountCode: string;
+    /** Primenjeni filter mesta troška (echo) — null ako nije zadat. */
+    costCenter: string | null;
     /** Ukupno duguje/potražuje + krajnji saldo (Decimal-as-string). */
     totalDebit: string;
     totalCredit: string;
@@ -143,6 +147,8 @@ export interface JournalFilters {
 export interface AccountCardFilters {
   /** Analitika (komitent) — opciono. */
   analyticalCode?: number | '';
+  /** Mesto troška (salda po poslovima) — opcioni filter. */
+  costCenter?: string;
   /** Opseg po datumu dokumenta (ISO). */
   from?: string;
   to?: string;
@@ -203,6 +209,7 @@ export function useAccountCard(accountCode: string, filters: AccountCardFilters 
   const query = buildQuery({
     accountCode: code,
     analyticalCode: filters.analyticalCode === '' ? undefined : filters.analyticalCode,
+    costCenter: filters.costCenter?.trim() || undefined,
     from: filters.from || undefined,
     to: filters.to || undefined,
   });
@@ -223,6 +230,8 @@ export interface JournalLineInput {
   credit?: number;
   description?: string;
   documentNumber?: string | null;
+  /** Mesto troška (salda po poslovima) — opciono, upisuje se po liniji. */
+  costCenter?: string | null;
 }
 
 export interface CreateJournalInput {
@@ -314,16 +323,39 @@ export function useReverseJournalEntry() {
 
 /**
  * Masovno zaključavanje starih naloga — POST /gl/journal/lock-older. Svi `posted`
- * nalozi sa postingDate < beforeDate → `locked`. Vraća sirov `{ count }`. Menja
- * status naloga, pa invalidira ceo `gl` ključ. Permisija GL_WRITE.
+ * nalozi sa postingDate < beforeDate → `locked`. Vraća sirov `{ count, dryRun }`.
+ *
+ * `dryRun: true` SAMO prebroji (bez izmene) — korak potvrde pre nepovratne radnje
+ * (backend odbija i datum u budućnosti). Menja status naloga, pa invalidira ceo
+ * `gl` ključ. Permisija GL_WRITE.
  */
 export function useLockOlderJournals() {
   const invalidate = useInvalidateGl();
   return useMutation({
-    mutationFn: (beforeDate: string) =>
-      apiFetch<{ count: number }>(`${BASE}/journal/lock-older`, {
+    mutationFn: (input: { beforeDate: string; dryRun?: boolean }) =>
+      apiFetch<{ count: number; dryRun: boolean }>(`${BASE}/journal/lock-older`, {
         method: 'POST',
-        body: JSON.stringify({ beforeDate }),
+        body: JSON.stringify(input),
+      }),
+    // Dry-run ništa ne menja — ne treba invalidacija; pravi lock invalidira.
+    onSuccess: (res) => {
+      if (!res.dryRun) invalidate();
+    },
+  });
+}
+
+/**
+ * Otključavanje naloga (locked→posted) — POST /gl/journal/:id/unlock. Ispravka
+ * greške pri zaključavanju perioda: vraća nalog u `posted` da bi se mogao
+ * stornirati/ispraviti. Permisija GL_WRITE.
+ */
+export function useUnlockJournalEntry() {
+  const invalidate = useInvalidateGl();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<{ id: number; status: string }>(`${BASE}/journal/${id}/unlock`, {
+        method: 'POST',
+        body: '{}',
       }),
     onSuccess: invalidate,
   });
@@ -345,4 +377,49 @@ export function openPdf(blob: Blob): void {
   const url = URL.createObjectURL(blob);
   window.open(url, '_blank', 'noopener');
   setTimeout(() => URL.revokeObjectURL(url), 30_000);
+}
+
+// ─────────────────────────────────── početno stanje / carry-over godine (B2)
+
+/** Ulaz za prenos salda u novu godinu — POST /gl/year-open. */
+export interface YearOpenInput {
+  fromYear: number;
+  toYear: number;
+  /** Datum PS naloga (ISO) — podrazumevano 01.01. toYear. */
+  postingDate?: string;
+  /** Konto rezultata (override) — podrazumevano auto po prefiksu (klasa 3). */
+  resultAccount?: string;
+}
+
+/** Rezultat prenosa — id-evi naloga + broj linija + dokumentacija izbora konta rezultata. */
+export interface YearOpenResult {
+  /** Zaključni nalog (zatvaranje klasa 5/6) — null ako nije bilo salda za zatvaranje. */
+  closingEntryId: number | null;
+  /** PS nalog (početno stanje klasa 0–4 za toYear). */
+  openingEntryId: number;
+  /** Ukupno kreiranih linija (zaključni + PS). */
+  lines: number;
+  closingLines: number;
+  openingLines: number;
+  /** Izabrani konto rezultata (null ako rezultat = 0 ili nije bilo zatvaranja). */
+  resultAccount: string | null;
+  /** Dokumentovan izbor konta rezultata (DOKUMENTUJ izbor). */
+  notes: string;
+}
+
+/**
+ * Prenos salda u novu godinu (BigBit paritet) — POST /gl/year-open. Nepovratno bez storna;
+ * ako PS nalog za toYear već postoji → 409. Menja dnevnik, pa invalidira ceo `gl` ključ.
+ * Permisija GL_WRITE.
+ */
+export function useYearOpen() {
+  const invalidate = useInvalidateGl();
+  return useMutation({
+    mutationFn: (input: YearOpenInput) =>
+      apiFetch<YearOpenResult>(`${BASE}/year-open`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: invalidate,
+  });
 }

@@ -91,6 +91,8 @@ export class GlReadService {
     analyticalCode?: number;
     from?: Date;
     to?: Date;
+    /** Mesto troška (LedgerEntry.costCenter) — opcioni filter, salda po poslovima (B2). */
+    costCenter?: string;
   }) {
     const rows = await this.prisma.$queryRaw<
       Array<{
@@ -100,18 +102,20 @@ export class GlReadService {
         documentNumber: string | null;
         analyticalCode: number | null;
         description: string | null;
+        costCenter: string | null;
         debit: Prisma.Decimal;
         credit: Prisma.Decimal;
       }>
     >(Prisma.sql`
       SELECT le.id, je.number AS "journalNumber", je.document_date AS "documentDate",
              le.document_number AS "documentNumber", le.analytical_code AS "analyticalCode",
-             le.description, le.debit, le.credit
+             le.description, le.cost_center AS "costCenter", le.debit, le.credit
       FROM ledger_entries le
       JOIN journal_entries je ON je.id = le.journal_entry_id
       WHERE le.account_code = ${query.accountCode}
         AND je.status IN ('posted', 'locked')
         ${query.analyticalCode != null ? Prisma.sql`AND le.analytical_code = ${query.analyticalCode}` : Prisma.empty}
+        ${query.costCenter ? Prisma.sql`AND le.cost_center = ${query.costCenter}` : Prisma.empty}
         ${query.from ? Prisma.sql`AND je.document_date >= ${query.from}` : Prisma.empty}
         ${query.to ? Prisma.sql`AND je.document_date <= ${query.to}` : Prisma.empty}
       ORDER BY je.document_date ASC, le.id ASC
@@ -132,6 +136,7 @@ export class GlReadService {
       data: lines,
       meta: {
         accountCode: query.accountCode,
+        costCenter: query.costCenter ?? null,
         totalDebit,
         totalCredit,
         balance: running,

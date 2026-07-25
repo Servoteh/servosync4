@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   Logger,
@@ -9,8 +10,17 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { PostingEngineService } from "./posting/posting.service";
 import {
   type CreateJournalEntryDto,
+  type CreateJournalEntryLineInput,
   validateCreateJournalEntry,
 } from "./dto/create-journal-entry.dto";
+
+/** Mesto troška po liniji (B2 — salda po poslovima). Aditivno na DTO liniju; DTO se ne dira. */
+type LineWithCostCenter = CreateJournalEntryLineInput & {
+  costCenter?: string | null;
+};
+
+/** LedgerEntry.costCenter je VarChar(20) — duže odbij jasnom 400 umesto DB 500. */
+const COST_CENTER_MAX = 20;
 
 /**
  * GL WRITE — ručni unos naloga (temeljnice) + status-mašina naloga + storno.
@@ -37,8 +47,21 @@ export class GlWriteService {
    */
   async createManualEntry(dto: CreateJournalEntryDto, actorUserId?: number) {
     validateCreateJournalEntry(dto);
-    return this.prisma.$transaction((tx) =>
-      this.posting.postManualEntry(tx, {
+
+    // Mesto troška po liniji (B2). Normalizuj + validiraj dužinu pre transakcije.
+    const costCenters = dto.lines.map((l) => {
+      const raw = (l as LineWithCostCenter).costCenter;
+      const cc = typeof raw === "string" ? raw.trim() : "";
+      if (cc.length > COST_CENTER_MAX)
+        throw new BadRequestException(
+          `Mesto troška može imati najviše ${COST_CENTER_MAX} znakova.`,
+        );
+      return cc;
+    });
+    const hasCostCenter = costCenters.some((cc) => cc !== "");
+
+    return this.prisma.$transaction(async (tx) => {
+      const result = await this.posting.postManualEntry(tx, {
         orderType: dto.orderType,
         documentDate: new Date(dto.documentDate),
         companyId: dto.companyId ?? 0,
@@ -54,8 +77,30 @@ export class GlWriteService {
           dueDate: l.dueDate ? new Date(l.dueDate) : null,
           currency: l.currency ?? null,
         })),
-      }),
-    );
+      });
+
+      // costCenter se upisuje posle knjiženja (postManualEntry ne dira PDV/robni tok).
+      // postManualEntry kreira LedgerEntry 1:1 iz `lines` u istom redosledu (bez GROUP BY),
+      // pa red po `id ASC` odgovara ulaznim `dto.lines` po indeksu.
+      if (hasCostCenter) {
+        const created = await tx.ledgerEntry.findMany({
+          where: { journalEntryId: result.journalEntryId },
+          orderBy: { id: "asc" },
+          select: { id: true },
+        });
+        const n = Math.min(created.length, costCenters.length);
+        for (let i = 0; i < n; i++) {
+          if (costCenters[i] !== "") {
+            await tx.ledgerEntry.update({
+              where: { id: created[i].id },
+              data: { costCenter: costCenters[i] },
+            });
+          }
+        }
+      }
+
+      return result;
+    });
   }
 
   /** draft → posted (proknjiži robni auto-nalog; bez ovoga kartica/bilans su prazni). */

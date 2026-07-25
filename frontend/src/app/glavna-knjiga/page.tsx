@@ -24,6 +24,7 @@ import {
 } from '@/api/glavna-knjiga';
 import { ManualEntryDialog } from './manual-entry-dialog';
 import { LockOlderDialog } from './lock-older-dialog';
+import { YearOpenDialog } from './year-open-dialog';
 
 /**
  * Glavna knjiga: obrazac „Lista" (DESIGN_SYSTEM §4.1) sa dva pogleda kroz Tabs:
@@ -73,6 +74,7 @@ export default function GlavnaKnjigaPage() {
   const [view, setView] = useState<View>('dnevnik');
   const [newEntryOpen, setNewEntryOpen] = useState(false);
   const [lockOlderOpen, setLockOlderOpen] = useState(false);
+  const [yearOpenOpen, setYearOpenOpen] = useState(false);
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
@@ -92,6 +94,9 @@ export default function GlavnaKnjigaPage() {
         title="Glavna knjiga"
         actions={
           <div className="flex items-center gap-2">
+            <Button variant="secondary" onClick={() => setYearOpenOpen(true)}>
+              Početno stanje
+            </Button>
             <Button variant="secondary" onClick={() => setLockOlderOpen(true)}>
               Zaključaj starije
             </Button>
@@ -107,6 +112,8 @@ export default function GlavnaKnjigaPage() {
       />
 
       <LockOlderDialog open={lockOlderOpen} onClose={() => setLockOlderOpen(false)} />
+
+      <YearOpenDialog open={yearOpenOpen} onClose={() => setYearOpenOpen(false)} />
 
       <div className="flex-1 space-y-4 overflow-auto p-6">
         <Tabs tabs={VIEW_TABS} value={view} onChange={setView} ariaLabel="Pogled glavne knjige" />
@@ -295,6 +302,11 @@ const cardColumns: Column<AccountCardLine>[] = [
     render: (r) => <span className="tnums text-ink-secondary">{r.analyticalCode ?? '—'}</span>,
   },
   {
+    key: 'costCenter',
+    header: 'Mesto troška',
+    render: (r) => <span className="tnums text-ink-secondary">{r.costCenter ?? '—'}</span>,
+  },
+  {
     key: 'description',
     header: 'Opis',
     render: (r) => <span className="text-ink-secondary">{r.description ?? '—'}</span>,
@@ -326,12 +338,21 @@ function KarticaKontaView() {
   // Uneti (draft) filteri vs primenjeni (submitted) — upit ide tek na „Prikaži"/Enter.
   const [accountInput, setAccountInput] = useState('');
   const [komitentInput, setKomitentInput] = useState('');
-  const [applied, setApplied] = useState<{ account: string; komitent: number | '' }>({
+  const [costCenterInput, setCostCenterInput] = useState('');
+  const [applied, setApplied] = useState<{
+    account: string;
+    komitent: number | '';
+    costCenter: string;
+  }>({
     account: '',
     komitent: '',
+    costCenter: '',
   });
 
-  const card = useAccountCard(applied.account, { analyticalCode: applied.komitent });
+  const card = useAccountCard(applied.account, {
+    analyticalCode: applied.komitent,
+    costCenter: applied.costCenter || undefined,
+  });
   const rows = card.data?.data ?? [];
   const meta = card.data?.meta;
 
@@ -341,6 +362,7 @@ function KarticaKontaView() {
     setApplied({
       account: accountInput.trim(),
       komitent: komitentInput.trim() === '' ? '' : Number(komitentInput.trim()),
+      costCenter: costCenterInput.trim(),
     });
   };
 
@@ -382,6 +404,24 @@ function KarticaKontaView() {
               placeholder="Svi"
               value={komitentInput}
               onChange={(e) => setKomitentInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  submit();
+                }
+              }}
+            />
+          </div>
+        </label>
+
+        <label className="flex flex-col gap-1 text-xs text-ink-secondary">
+          Mesto troška
+          <div className="w-36">
+            <Input
+              placeholder="Sva"
+              value={costCenterInput}
+              onChange={(e) => setCostCenterInput(e.target.value)}
+              maxLength={20}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
                   e.preventDefault();

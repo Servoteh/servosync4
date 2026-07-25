@@ -59,6 +59,8 @@ export interface VatLedgerRow {
   vatBase: string;
   vatAmount: string;
   vatRateCode: string | null;
+  /** „Van PDV" (KUF bez prava odbitka) — izvedeno na BE iz vatRateCode==="VP". */
+  noDeduction: boolean;
   sourceJournalEntryId: number | null;
 }
 
@@ -271,6 +273,12 @@ export interface CreateManualVatEntryInput {
   vatBase: number;
   vatAmount: number;
   vatRateCode?: string | null;
+  /**
+   * „Van PDV" — ulazni račun bez prava odbitka (samo KUF/input). true → BE
+   * postavlja marker vatRateCode="VP"; stavka ostaje u KUF listi ali izlazi iz
+   * pretporeza (POPDV). Prosleđena numerička stopa se tada ignoriše.
+   */
+  noDeduction?: boolean;
 }
 
 /** Izmena ručnog reda (parcijalno). */

@@ -19,10 +19,18 @@ interface Row {
   analyticalCode: string;
   debit: string;
   credit: string;
+  costCenter: string;
   description: string;
 }
 
-const emptyRow = (): Row => ({ accountCode: '', analyticalCode: '', debit: '', credit: '', description: '' });
+const emptyRow = (): Row => ({
+  accountCode: '',
+  analyticalCode: '',
+  debit: '',
+  credit: '',
+  costCenter: '',
+  description: '',
+});
 
 export function ManualEntryDialog({
   open,
@@ -73,6 +81,7 @@ export function ManualEntryDialog({
         analyticalCode: r.analyticalCode.trim() ? Number(r.analyticalCode) : null,
         debit: Number(r.debit) || 0,
         credit: Number(r.credit) || 0,
+        costCenter: r.costCenter.trim() || undefined,
         description: r.description.trim() || undefined,
       }));
     if (lines.length < 2) return;
@@ -94,6 +103,7 @@ export function ManualEntryDialog({
       open={open}
       onClose={onClose}
       title="Novi nalog (temeljnica)"
+      size="xl2"
       footer={
         <div className="flex items-center justify-between gap-3">
           <span className={`text-sm tnums ${balanced ? 'text-status-success' : 'text-status-danger'}`}>
@@ -194,6 +204,16 @@ export function ManualEntryDialog({
                     step="0.01"
                     value={r.credit}
                     onChange={(e) => setRow(i, { credit: e.target.value, debit: '' })}
+                  />
+                </FormField>
+              </div>
+              <div className="w-24">
+                <FormField label={i === 0 ? 'Mesto troška' : ''}>
+                  <Input
+                    value={r.costCenter}
+                    onChange={(e) => setRow(i, { costCenter: e.target.value })}
+                    placeholder="posao"
+                    maxLength={20}
                   />
                 </FormField>
               </div>

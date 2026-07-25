@@ -3060,6 +3060,32 @@ model LedgerEntry {
 }
 
 // -----------------------------------------------------------------------------
+// DunningNotice — poslate opomene (T3 Batch B; zamena BigBit SMS opomena)
+// -----------------------------------------------------------------------------
+/// Trag poslate opomene po komitentu i nivou (1/2/3 po dospelosti iz aging-a).
+/// Sprečava dvostruko slanje istog nivoa u istom danu i daje istoriju naplate.
+model DunningNotice {
+  id        Int      @id(map: "pk_dunning_notices") @default(autoincrement()) @map("id")
+  partnerId Int      @map("partner_id") // meki ref customers.id
+  level     Int      @map("level") /// 1 | 2 | 3 — nivo opomene po dospelosti
+  asOf      DateTime @map("as_of") @db.Timestamptz(6) // presek aging-a na koji je slato
+
+  overdueAmount Decimal @default(0) @map("overdue_amount") @db.Decimal(19, 4) // dospelo u trenutku slanja
+  daysOverdue   Int?    @map("days_overdue") // najstarije kašnjenje u danima
+
+  sentTo   String? @map("sent_to") @db.VarChar(255) // primalac (mejl)
+  sentOk   Boolean @default(false) @map("sent_ok") // false = DRY-RUN ili neuspeh
+  note     String? @map("note") @db.VarChar(500)
+
+  sentByUserId Int?     @map("sent_by_user_id")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([partnerId, level], map: "idx_dunning_notices_partner_level")
+  @@index([createdAt], map: "idx_dunning_notices_created")
+  @@map("dunning_notices")
+}
+
+// -----------------------------------------------------------------------------
 // DOPUNA POSTOJEĆIH ŽIVIH MODELA pri aktivaciji (NE dira se sada):
 //   - Account: dodati `ledgerEntries LedgerEntry[]` (inverzna strana FK).
 //   - AccountingScheme: dodati `journalEntries JournalEntry[]` (inverzna strana).
@@ -3187,6 +3213,11 @@ model StockDocumentItem {
 
   // — Porez (za GK/KEPU, prati legacy flagove) —
   goodsTaxRateCode String @default("3") @map("goods_tax_rate_code") @db.VarChar(5)
+
+  // — Soft-delete (Batch B): brisanje stavke je poništivo (Undo 30 s) i ostavlja trag.
+  //   Čitaoci (lista/kalkulacija/costing) MORAJU filtrirati deletedAt: null.
+  deletedAt       DateTime? @map("deleted_at") @db.Timestamptz(6)
+  deletedByUserId Int?      @map("deleted_by_user_id")
 
   document StockDocument @relation(fields: [documentId], references: [id], onDelete: Cascade, map: "fk_stock_document_items_document")
 
@@ -3417,6 +3448,10 @@ model BankStatementLine {
   currency      String?  @map("currency") @db.VarChar(3) // null/RSD = dinarska stavka
   foreignAmount Decimal? @map("foreign_amount") @db.Decimal(19, 4) // iznos u valuti (EUR/USD…)
   exchangeRate  Decimal? @map("exchange_rate") @db.Decimal(19, 6) // primenjeni kurs na dan izvoda
+
+  // — Soft-delete (Batch B) — v. StockDocumentItem; POSTED izvod se i dalje ne dira.
+  deletedAt       DateTime? @map("deleted_at") @db.Timestamptz(6)
+  deletedByUserId Int?      @map("deleted_by_user_id")
 
   statement BankStatement @relation(fields: [statementId], references: [id], onDelete: Cascade, map: "fk_bank_statement_lines_statement")
 

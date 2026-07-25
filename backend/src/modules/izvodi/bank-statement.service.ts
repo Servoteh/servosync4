@@ -35,6 +35,9 @@ import { parseReference } from "./reference-parser.util";
 
 const D = Prisma.Decimal;
 const ZERO = new D(0);
+// Kontrola prometa/salda (B3): dozvoljeno odstupanje pola pare (Decimal je egzaktan,
+// tolerancija samo apsorbuje zaokruživanje deviznog preračuna na 2 decimale).
+const CONTROL_TOLERANCE = new D("0.005");
 
 /**
  * BANK STATEMENT SERVICE — uvoz + uparivanje + auto-knjiženje izvoda (Faza 4 §B).
@@ -784,7 +787,61 @@ export class BankStatementService {
   }
 
   async getStatement(id: number) {
-    return this.getStatementOrThrow(id);
+    const statement = await this.getStatementOrThrow(id);
+    return { ...statement, control: this.computeControl(statement) };
+  }
+
+  /**
+   * KONTROLA PROMETA I SALDA BANKE (B3, BigBit „Kontrola izvoda"): očekivano krajnje
+   * stanje = openingBalance + Σ priliva (CREDIT) − Σ odliva (DEBIT); poredi se sa
+   * unetim closingBalance. Vraća expected/actual/difference + `ok`.
+   *
+   * Ovo je SAMO upozorenje na formi (FE traka zeleno/crveno) — NE blokira knjiženje:
+   * dinarski izvod se knjiži po stavkama bez obzira na saldo, a razlika najčešće znači
+   * da nedostaje/prekobrojna stavka ili je pogrešno uneto stanje (korisnik ispravlja).
+   * Decimal → string (BACKEND_RULES §6). Tolerancija = pola pare (deviznii preračun se
+   * zaokružuje na 2 decimale, pa se sitno zaokruživanje ne prijavljuje kao neslaganje).
+   */
+  private computeControl(statement: {
+    openingBalance: Prisma.Decimal;
+    closingBalance: Prisma.Decimal;
+    lines: { amount: Prisma.Decimal; direction: string }[];
+  }): {
+    openingBalance: string;
+    totalInflow: string;
+    totalOutflow: string;
+    expectedClosing: string;
+    actualClosing: string;
+    difference: string;
+    ok: boolean;
+    available: boolean;
+  } {
+    let inflow = ZERO;
+    let outflow = ZERO;
+    for (const l of statement.lines) {
+      if (l.direction === "CREDIT") inflow = inflow.add(l.amount);
+      else outflow = outflow.add(l.amount);
+    }
+    const expected = statement.openingBalance.add(inflow).sub(outflow);
+    const actual = statement.closingBalance;
+    const difference = expected.sub(actual);
+    // Kontrola ima smisla SAMO ako su stanja uneta (review Batch B): oba su Decimal sa
+    // default 0, a uvoz ih trenutno ne popunjava — bez ovog gejta traka bi za SVAKI
+    // izvod sa stavkama vikala „saldo se ne slaže" (0 + promet ≠ 0) i korisnik bi je
+    // naučio da ignoriše. Kad su oba nula → kontrola nedostupna, ne „neslaganje".
+    const available = !(
+      statement.openingBalance.isZero() && statement.closingBalance.isZero()
+    );
+    return {
+      openingBalance: statement.openingBalance.toFixed(2),
+      totalInflow: inflow.toFixed(2),
+      totalOutflow: outflow.toFixed(2),
+      expectedClosing: expected.toFixed(2),
+      actualClosing: actual.toFixed(2),
+      difference: difference.toFixed(2),
+      ok: !available || difference.abs().lessThanOrEqualTo(CONTROL_TOLERANCE),
+      available,
+    };
   }
 
   /**

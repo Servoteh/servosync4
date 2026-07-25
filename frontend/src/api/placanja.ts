@@ -299,6 +299,59 @@ export function usePayPaymentOrder() {
   });
 }
 
+// ─────────────────────────────────────── zaključavanje virmana (Zakljucano, B3)
+
+/**
+ * Zaključaj pojedinačni nalog (BigBit „Zakljucano") — POST /placanja/orders/:id/lock.
+ * Zaključan nalog je zamrznut: ne može menjati status (sign/pay) ni u izvoz (409). Već
+ * zaključan → 409. Menja nalog, pa invalidira pregled. Permisija PLACANJA_PREPARE.
+ */
+export function useLockPaymentOrder() {
+  const invalidate = useInvalidateOrders();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<Envelope<{ id: number; isLocked: boolean }>>(`${BASE}/orders/${id}/lock`, {
+        method: 'POST',
+        body: '{}',
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/** Otključaj nalog (locked → otključan) — POST /placanja/orders/:id/unlock. */
+export function useUnlockPaymentOrder() {
+  const invalidate = useInvalidateOrders();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<Envelope<{ id: number; isLocked: boolean }>>(`${BASE}/orders/${id}/unlock`, {
+        method: 'POST',
+        body: '{}',
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/**
+ * Masovno zaključavanje starijih naloga (isti obrazac kao GK lock-older) —
+ * POST /placanja/orders/lock-older. Svi otključani nalozi sa `createdAt < beforeDate` →
+ * zaključani. `dryRun: true` SAMO prebroji (bez izmene) — korak potvrde pre nepovratne
+ * radnje (backend odbija i datum u budućnosti). Vraća `{ count, dryRun }` (odmotan iz
+ * `{ data }` envelope-a). Pravi lock invalidira pregled; dry-run ne. Permisija PLACANJA_PREPARE.
+ */
+export function useLockOlderPaymentOrders() {
+  const invalidate = useInvalidateOrders();
+  return useMutation({
+    mutationFn: (input: { beforeDate: string; dryRun?: boolean }) =>
+      apiFetch<Envelope<{ count: number; dryRun: boolean }>>(`${BASE}/orders/lock-older`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }).then((r) => r.data),
+    onSuccess: (res) => {
+      if (!res.dryRun) invalidate();
+    },
+  });
+}
+
 // ─────────────────────────────────────── ručni virman (UnosVirmana) + štampa
 
 /**

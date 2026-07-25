@@ -9,6 +9,7 @@ import { CostingService } from "./costing.service";
 import { NivelacijaService, COSTING_SERVICE } from "./nivelacija.service";
 import { NIVELACIJA_HOOK } from "./nivelacija.hook";
 import { InventoryService } from "./inventory.service";
+import { CarryOverService } from "./carry-over.service";
 
 /**
  * Robno / magacin (Faza 3) — costing, kalkulacija (landed cost), nivelacija, lager, popis (doc 39).
@@ -34,6 +35,7 @@ import { InventoryService } from "./inventory.service";
     CostingService,
     NivelacijaService,
     InventoryService, // E2 popis/inventura (predpunjenje → unos → VISAK/MANJAK)
+    CarryOverService, // Batch B: PO → primka, predračun → izdatnica
     { provide: COSTING_SERVICE, useExisting: CostingService },
     { provide: NIVELACIJA_HOOK, useExisting: NivelacijaService },
   ],

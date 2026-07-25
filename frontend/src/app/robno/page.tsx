@@ -24,6 +24,7 @@ import {
 import { LagerPanel } from './lager-panel';
 import { ItemCardPanel } from './item-card-panel';
 import { NewDocumentDialog } from './new-document-dialog';
+import { CarryOverDialog, type CarryOverMode } from './carry-over-dialog';
 
 /**
  * Robno / magacin: radna lista robnih dokumenata (Faza 3). Obrazac „Lista"
@@ -130,6 +131,7 @@ export default function RobnoPage() {
   const [status, setStatus] = useState<RobnoStatus | ''>('');
   const [page, setPage] = useState(1);
   const [newOpen, setNewOpen] = useState(false);
+  const [carryOverMode, setCarryOverMode] = useState<CarryOverMode | null>(null);
   const resetPage = () => setPage(1);
 
   useEffect(() => {
@@ -157,10 +159,18 @@ export default function RobnoPage() {
         title="Robno / magacin"
         count={list.data ? `${formatNumber(total)} dokumenata` : undefined}
         actions={
-          <Button onClick={() => setNewOpen(true)}>
-            <Plus className="h-4 w-4" aria-hidden />
-            Novi dokument
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="secondary" onClick={() => setCarryOverMode('purchase-order')}>
+              Iz narudžbenice
+            </Button>
+            <Button variant="secondary" onClick={() => setCarryOverMode('invoice')}>
+              Iz predračuna
+            </Button>
+            <Button onClick={() => setNewOpen(true)}>
+              <Plus className="h-4 w-4" aria-hidden />
+              Novi dokument
+            </Button>
+          </div>
         }
       />
 
@@ -169,6 +179,16 @@ export default function RobnoPage() {
         onClose={() => setNewOpen(false)}
         onCreated={(id) => router.push(`/robno/${id}`)}
       />
+
+      {carryOverMode && (
+        <CarryOverDialog
+          key={carryOverMode}
+          open
+          mode={carryOverMode}
+          onClose={() => setCarryOverMode(null)}
+          onCreated={(id) => router.push(`/robno/${id}`)}
+        />
+      )}
 
       <div className="flex-1 space-y-4 overflow-auto p-6">
         <div className="flex flex-wrap items-end gap-3">

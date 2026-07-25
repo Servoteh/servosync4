@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { Lock, LockOpen } from 'lucide-react';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
 import { EmptyState } from '@/components/ui-kit/empty-state';
@@ -13,11 +14,14 @@ import {
   usePayPaymentOrder,
   useSignPaymentOrdersBatch,
   usePaymentOrderPdf,
+  useLockPaymentOrder,
+  useUnlockPaymentOrder,
   openPdf,
   PAYMENT_ORDER_STATUS,
   type PaymentOrderRow,
   type PaymentOrderStatus,
 } from '@/api/placanja';
+import { LockOlderPaymentsDialog } from './lock-older-dialog';
 
 /**
  * Pregled kreiranih naloga za plaćanje (BigBit paritet — bez ovoga refresh gubi naloge).
@@ -40,6 +44,7 @@ function orderStatusMeta(status: PaymentOrderStatus): { tone: Tone; label: strin
 
 export function PaymentOrdersPanel() {
   const [statusFilter, setStatusFilter] = useState<string>('');
+  const [lockOlderOpen, setLockOlderOpen] = useState(false);
   const query = usePaymentOrders(statusFilter ? { status: statusFilter } : {});
   const rows = query.data?.data ?? [];
 
@@ -47,6 +52,8 @@ export function PaymentOrdersPanel() {
   const pay = usePayPaymentOrder();
   const signBatch = useSignPaymentOrdersBatch();
   const orderPdf = usePaymentOrderPdf();
+  const lock = useLockPaymentOrder();
+  const unlock = useUnlockPaymentOrder();
 
   async function onPrint(id: number): Promise<void> {
     const blob = await orderPdf.mutateAsync(id);
@@ -103,7 +110,20 @@ export function PaymentOrdersPanel() {
       header: 'Status',
       render: (o) => {
         const m = orderStatusMeta(o.status);
-        return <StatusBadge tone={m.tone} label={m.label} />;
+        return (
+          <div className="flex items-center gap-1.5">
+            <StatusBadge tone={m.tone} label={m.label} />
+            {o.isLocked && (
+              <span
+                className="inline-flex items-center gap-1 rounded-full border border-line bg-surface-2 px-1.5 py-0.5 text-2xs font-medium text-ink-secondary"
+                title="Zaključan — zamrznut (bez potpisa/plaćanja/izvoza dok se ne otključa)"
+              >
+                <Lock className="h-3 w-3" aria-hidden />
+                Zaključan
+              </span>
+            )}
+          </div>
+        );
       },
     },
     {
@@ -115,14 +135,33 @@ export function PaymentOrdersPanel() {
           <Button variant="ghost" onClick={() => onPrint(o.id)}>
             Štampaj
           </Button>
-          {o.status === PAYMENT_ORDER_STATUS.CREATED && !o.isLocked && (
+          {!o.isLocked && o.status === PAYMENT_ORDER_STATUS.CREATED && (
             <Button variant="ghost" onClick={() => sign.mutate(o.id)}>
               Potpiši
             </Button>
           )}
-          {o.status === PAYMENT_ORDER_STATUS.SIGNED && (
+          {!o.isLocked && o.status === PAYMENT_ORDER_STATUS.SIGNED && (
             <Button variant="ghost" onClick={() => pay.mutate(o.id)}>
               Označi plaćen
+            </Button>
+          )}
+          {o.isLocked ? (
+            <Button
+              variant="ghost"
+              onClick={() => unlock.mutate(o.id)}
+              loading={unlock.isPending && unlock.variables === o.id}
+            >
+              <LockOpen className="h-4 w-4" aria-hidden />
+              Otključaj
+            </Button>
+          ) : (
+            <Button
+              variant="ghost"
+              onClick={() => lock.mutate(o.id)}
+              loading={lock.isPending && lock.variables === o.id}
+            >
+              <Lock className="h-4 w-4" aria-hidden />
+              Zaključaj
             </Button>
           )}
         </div>
@@ -155,12 +194,28 @@ export function PaymentOrdersPanel() {
           >
             Potpiši sve{createdIds.length > 0 ? ` (${createdIds.length})` : ''}
           </Button>
+          <Button variant="ghost" onClick={() => setLockOlderOpen(true)}>
+            <Lock className="h-4 w-4" aria-hidden />
+            Zaključaj starije
+          </Button>
         </div>
       </div>
 
-      {(sign.error || pay.error || signBatch.error || orderPdf.error) && (
+      {(sign.error ||
+        pay.error ||
+        signBatch.error ||
+        orderPdf.error ||
+        lock.error ||
+        unlock.error) && (
         <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-2 text-sm text-status-danger">
-          {((sign.error ?? pay.error ?? signBatch.error ?? orderPdf.error) as Error).message}
+          {
+            ((sign.error ??
+              pay.error ??
+              signBatch.error ??
+              orderPdf.error ??
+              lock.error ??
+              unlock.error) as Error).message
+          }
         </div>
       )}
 
@@ -174,6 +229,11 @@ export function PaymentOrdersPanel() {
             hint="Kreiraj naloge iz dospelih obaveza gore, pa ih ovde potpiši i izvezi u banku."
           />
         }
+      />
+
+      <LockOlderPaymentsDialog
+        open={lockOlderOpen}
+        onClose={() => setLockOlderOpen(false)}
       />
     </section>
   );

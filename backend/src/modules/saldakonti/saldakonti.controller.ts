@@ -22,6 +22,7 @@ import { CompensationService } from "./compensation.service";
 import { IosPdfService } from "./ios-pdf.service";
 import { CollectionDashboardService } from "./collection-dashboard.service";
 import { PartnerCardService } from "./partner-card.service";
+import { DunningService } from "./dunning.service";
 import {
   type ListOpenItemsQuery,
   type AgingQuery,
@@ -62,6 +63,7 @@ export class SaldakontiController {
     private readonly partnerCard: PartnerCardService,
     private readonly mail: MailService,
     private readonly collectionDashboard: CollectionDashboardService,
+    private readonly dunning: DunningService,
   ) {}
 
   @Get("open-items")
@@ -286,6 +288,62 @@ export class SaldakontiController {
     );
     return { data };
   }
+
+  // ── Talas 3 B6: automatske opomene / dunning (dodato na kraj kontrolera) ─────
+
+  /**
+   * Kandidati za opomenu (Talas 3 B6) — komitenti sa dospelim potraživanjima,
+   * nivo (1|2|3) izveden iz najstarijeg kašnjenja aging-a + istorija opomena
+   * (poslednja opomena, da li je isti nivo već slat danas). `asOf` presek na dan
+   * (default danas). Nasleđuje klasnu SALDAKONTI_READ (read-only). Envelope { data, meta }.
+   */
+  @Get("dunning/candidates")
+  async dunningCandidates(@Query("asOf") asOf?: string) {
+    const data = await this.dunning.candidates(parseOptionalDate(asOf));
+    return { data, meta: { count: data.length } };
+  }
+
+  /**
+   * Pošalji opomenu jednom komitentu (Talas 3 B6). Telo `{ partnerId, level?, to? }`:
+   * `level` opciono (default izvedeni iz aging-a), `to` opciono (default mejl
+   * komitenta; bez ijednog → 422). Generiše PDF pregled dospelih stavki, šalje
+   * kroz MailService (DRY-RUN → sentOk=false) i upisuje DunningNotice. 409 ako je
+   * isti nivo već poslat danas (uz vreme prethodnog slanja). Permisija SALDAKONTI_RECONCILE.
+   */
+  @Post("dunning/send")
+  @RequirePermission(PERMISSIONS.SALDAKONTI_RECONCILE)
+  async dunningSend(
+    @Body() dto: { partnerId?: number | string; level?: number | string; to?: string },
+    @Req() req: { user: AuthUser },
+  ) {
+    const id = parseOptionalInt(dto.partnerId != null ? String(dto.partnerId) : undefined);
+    if (id == null) {
+      throw new BadRequestException("Parametar partnerId je obavezan.");
+    }
+    const to =
+      dto.to != null && String(dto.to).trim() !== "" ? requireEmail(dto.to) : undefined;
+    const level = parseOptionalLevel(dto.level);
+    const data = await this.dunning.send({ partnerId: id, level, to }, req.user.userId);
+    return { data };
+  }
+
+  /**
+   * Masovno slanje opomena (Talas 3 B6) — svim kandidatima koji danas nisu dobili
+   * opomenu tog nivoa, do `maxLevel` (default 3), najviše 50 po pozivu. Telo
+   * `{ asOf?, maxLevel? }`. Vraća { sent, skipped, failed }. Permisija SALDAKONTI_RECONCILE.
+   */
+  @Post("dunning/send-batch")
+  @RequirePermission(PERMISSIONS.SALDAKONTI_RECONCILE)
+  async dunningSendBatch(
+    @Body() dto: { asOf?: string; maxLevel?: number | string },
+    @Req() req: { user: AuthUser },
+  ) {
+    const data = await this.dunning.sendBatch(
+      { asOf: parseOptionalDate(dto.asOf), maxLevel: parseOptionalLevel(dto.maxLevel) },
+      req.user.userId,
+    );
+    return { data };
+  }
 }
 
 function parseOptionalInt(v?: string): number | undefined {
@@ -298,6 +356,16 @@ function parseOptionalDate(v?: string): Date | undefined {
   if (v === undefined || v === null || v === "") return undefined;
   const d = new Date(v);
   return Number.isNaN(d.getTime()) ? undefined : d;
+}
+
+/** Opcioni nivo opomene (1|2|3); prazno → undefined; nevalidno → 400. */
+function parseOptionalLevel(v?: number | string): number | undefined {
+  if (v === undefined || v === null || v === "") return undefined;
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 1 || n > 3) {
+    throw new BadRequestException("Nivo opomene mora biti 1, 2 ili 3.");
+  }
+  return n;
 }
 
 /** Osnovna provera email formata (jedan primalac); baca 400 na prazno/nevalidno. */

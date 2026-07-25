@@ -452,6 +452,7 @@ export class InventoryService {
         JOIN stock_documents sd ON sd.id = sdi.document_id
         JOIN document_types dt ON dt.code = sd.document_type_code
         WHERE sdi.warehouse_id = ${warehouseId}
+          AND sdi.deleted_at IS NULL -- meko obrisana stavka nije promet (review Batch B)
           AND sd.document_date <= ${asOf}
           AND sd.document_type_code <> 'KODJ'
           AND COALESCE(dt.affects_stock, TRUE) = TRUE

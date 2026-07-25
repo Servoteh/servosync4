@@ -133,9 +133,33 @@ export interface BankStatementLine {
   status: LineStatus;
 }
 
+/**
+ * Kontrola prometa i salda banke (B3) — backend računa u odgovoru GET /izvodi/:id:
+ * expectedClosing = openingBalance + Σ priliva (CREDIT) − Σ odliva (DEBIT); poredi se sa
+ * unetim closingBalance. `ok=false` = razlika (upozorenje, NE blokira knjiženje). Sve
+ * Decimal vrednosti su string (BACKEND_RULES §6).
+ */
+export interface StatementControl {
+  openingBalance: string;
+  totalInflow: string;
+  totalOutflow: string;
+  expectedClosing: string;
+  actualClosing: string;
+  /** expectedClosing − actualClosing (0 = slaže se). */
+  difference: string;
+  ok: boolean;
+  /**
+   * false = stanja (otvaranje/zatvaranje) nisu uneta pa kontrola nije merodavna —
+   * FE tada NE prikazuje neslaganje (inače bi svaki uvezen izvod bio „crven").
+   */
+  available: boolean;
+}
+
 /** Detalj izvoda — zaglavlje + stavke (GET /:id vraća SAM entitet sa `lines`). */
 export interface BankStatementDetail extends BankStatement {
   lines: BankStatementLine[];
+  /** Kontrola prometa/salda (B3) — uvek prisutna na detalju. */
+  control?: StatementControl;
 }
 
 /** Rezultat uparivanja (`match`) — detalj + broj uparenih stavki. */

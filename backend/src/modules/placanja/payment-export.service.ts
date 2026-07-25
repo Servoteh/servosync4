@@ -74,6 +74,17 @@ export class PaymentExportService {
       );
     }
 
+    // Guard: ZAKLJUČAN nalog (Zakljucano) ne ulazi u izvoz — zamrznut je (B3). Odbij ceo
+    // izvoz ako je makar jedan zaključan (ne šalji parcijalno u banku bez znanja korisnika).
+    const locked = orders.filter((o) => o.isLocked);
+    if (locked.length > 0) {
+      throw new ConflictException(
+        `Izvoz prekinut — zaključani nalozi ne mogu u banku: ` +
+          locked.map((o) => o.orderNumber).join(", ") +
+          `. Otključajte ih ili izuzmite iz izbora.`,
+      );
+    }
+
     // Odbrana u dubini (DobarTR): iako se TR validira pri kreiranju, nalog je mogao biti unet
     // drugim putem — pre gradnje sloga ponovo proveri žiro račun (banka(3)-partija-KK(2)+MOD97).
     // Validiramo samo prisutan račun (prazan = poseban tok). Sporne agregiramo u jednu poruku.
@@ -156,7 +167,7 @@ export class PaymentExportService {
     // Ako je paralelni izvoz već prebacio neki u PAID, count < orders.length → prekini
     // BEZ vraćanja TXT-a, da se isti virman ne izveze/pošalje u banku dvaput (review VISOK).
     const marked = await this.prisma.paymentOrder.updateMany({
-      where: { id: { in: orders.map((o) => o.id) }, status: "SIGNED" },
+      where: { id: { in: orders.map((o) => o.id) }, status: "SIGNED", isLocked: false },
       data: { exportedAt: new Date(), status: "PAID" },
     });
     if (marked.count !== orders.length) {
