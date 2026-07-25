@@ -180,6 +180,21 @@ export class PopdvService {
       ? await this.sumAccountBalances(year, months)
       : new Map<string, AccountBalance>();
 
+    // 3) Evaluacija AOP formula — CPU rad nad VEĆ učitanim podacima. Radi se PRE
+    //    transakcije (review Opus 5): ranije je stajao UNUTAR nje, pa je transakcija
+    //    sa 287 definicija premašivala Prisma podrazumevanih 5 s i obračun je padao
+    //    („Transaction already closed") — izmereno 9,85 s i na skoro praznoj bazi.
+    //    U transakciji sada ostaju samo upisi.
+    const evaluated = seeded
+      ? this.evaluateDefinitions(
+          definitions,
+          outputVat,
+          inputVat,
+          accountMap,
+          accountBalances,
+        )
+      : null;
+
     return this.prisma.$transaction(async (tx) => {
       // Upsert zaglavlja po periodu (idempotentno; uq_vat_returns_period).
       const existing = await tx.vatReturn.findFirst({
@@ -216,16 +231,9 @@ export class PopdvService {
       // POPDV linije — samo ako je definicija seed-ovana.
       let lineCount = 0;
       let unsupportedCount = 0;
-      if (seeded) {
-        const evalResult = this.evaluateDefinitions(
-          definitions,
-          outputVat,
-          inputVat,
-          accountMap,
-          accountBalances,
-        );
-        const aopValues = evalResult.values;
-        unsupportedCount = evalResult.unsupportedCount;
+      if (seeded && evaluated) {
+        const aopValues = evaluated.values;
+        unsupportedCount = evaluated.unsupportedCount;
         const lines: Prisma.VatReturnLineCreateManyInput[] = definitions.map(
           (def) => ({
             vatReturnId: vatReturn.id,
@@ -261,7 +269,11 @@ export class PopdvService {
         seededDefinition: seeded,
         note,
       };
-    });
+    },
+    // Odbrana u dubinu: i sa evaluacijom van transakcije, upis 287 AOP linija preko
+    // sporije veze ume da pređe podrazumevanih 5 s (review Opus 5 — obračun je padao).
+    { timeout: 30_000, maxWait: 10_000 },
+    );
   }
 
   /** Lista sačuvanih PDV obračuna (opciono filter po godini). */
@@ -341,7 +353,10 @@ export class PopdvService {
         FROM ledger_entries le
         JOIN journal_entries je ON je.id = le.journal_entry_id
         JOIN vat_account_map vam ON vam.account = le.account_code
-        WHERE je.status = 'posted'
+        -- 'locked' MORA biti uključen: period se ZAKLJUČAVA pre poreske predaje
+        -- (POST /gl/journal/lock-older), pa bi filter samo na 'posted' obrisao ceo
+        -- period iz PDV obračuna. Konzistentno sa saldakonti/GK čitaocima.
+        WHERE je.status IN ('posted', 'locked')
           AND EXTRACT(YEAR FROM je.posting_date) = ${year}
           AND EXTRACT(MONTH FROM je.posting_date) IN (${Prisma.join(months)})
         GROUP BY vam.direction
@@ -418,7 +433,10 @@ export class PopdvService {
           COALESCE(SUM(le.credit), 0) AS credit
         FROM ledger_entries le
         JOIN journal_entries je ON je.id = le.journal_entry_id
-        WHERE je.status = 'posted'
+        -- 'locked' MORA biti uključen: period se ZAKLJUČAVA pre poreske predaje
+        -- (POST /gl/journal/lock-older), pa bi filter samo na 'posted' obrisao ceo
+        -- period iz PDV obračuna. Konzistentno sa saldakonti/GK čitaocima.
+        WHERE je.status IN ('posted', 'locked')
           AND EXTRACT(YEAR FROM je.posting_date) = ${year}
           AND EXTRACT(MONTH FROM je.posting_date) IN (${Prisma.join(months)})
         GROUP BY le.account_code

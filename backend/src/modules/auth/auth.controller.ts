@@ -3,11 +3,19 @@ import {
   Body,
   Controller,
   Get,
+  HttpException,
+  HttpStatus,
   Logger,
   Post,
   Req,
   UseGuards,
 } from "@nestjs/common";
+import {
+  clearLoginFailures,
+  loginBlockedSeconds,
+  recordLoginFailure,
+  throttleKey,
+} from "../../common/login-throttle";
 import { AuthService, RequestMeta } from "./auth.service";
 import { JwtAuthGuard } from "./jwt-auth.guard";
 import { AuthUser } from "./jwt.strategy";
@@ -60,12 +68,29 @@ export class AuthController {
     private readonly sy15: Sy15Service,
   ) {}
 
+  /**
+   * Prijava. Brute-force zaštita (review Opus 5): posle 10 neuspelih pokušaja po
+   * (IP + email) u 15 min → 429 na 15 min. Uspešna prijava briše brojač.
+   */
   @Post("login")
   async login(@Body() body: LoginBody, @Req() req: RequestLike) {
     if (!body?.email || !body?.password) {
       throw new BadRequestException("email and password are required");
     }
-    return this.auth.login(body.email, body.password, requestMeta(req));
+    const key = throttleKey(requestMeta(req).ipAddress ?? undefined, body.email);
+    this.assertNotThrottled(key, body.email);
+    try {
+      const result = await this.auth.login(
+        body.email,
+        body.password,
+        requestMeta(req),
+      );
+      clearLoginFailures(key);
+      return result;
+    } catch (err) {
+      this.noteFailure(key, body.email, err);
+      throw err;
+    }
   }
 
   /** SSO sa ServoSync 1.0 shell-a (iframe modul „Tehnologija") — vidi AuthService.ssoLogin. */
@@ -74,7 +99,39 @@ export class AuthController {
     if (!body?.token) {
       throw new BadRequestException("token is required");
     }
-    return this.auth.ssoLogin(body.token, requestMeta(req));
+    // Ista brute-force zaštita kao login (ključ po IP-u; SSO token je tajna kao lozinka).
+    const key = throttleKey(requestMeta(req).ipAddress ?? undefined, "sso");
+    this.assertNotThrottled(key, "sso");
+    try {
+      const result = await this.auth.ssoLogin(body.token, requestMeta(req));
+      clearLoginFailures(key);
+      return result;
+    } catch (err) {
+      this.noteFailure(key, "sso", err);
+      throw err;
+    }
+  }
+
+  /** 429 kad je ključ blokiran (neutralna poruka — bez otkrivanja da li nalog postoji). */
+  private assertNotThrottled(key: string, who: string): void {
+    const wait = loginBlockedSeconds(key);
+    if (wait > 0) {
+      this.logger.warn(`THROTTLE blokiran pokušaj prijave (${who}), još ${wait}s`);
+      throw new HttpException(
+        `Previše neuspelih pokušaja prijave. Pokušaj ponovo za ${Math.ceil(wait / 60)} min.`,
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+  }
+
+  /** Broji SAMO greške autentikacije (401) — 400/500 ne troše kvotu. */
+  private noteFailure(key: string, who: string, err: unknown): void {
+    const status =
+      err instanceof HttpException ? err.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
+    if (status !== HttpStatus.UNAUTHORIZED) return;
+    if (recordLoginFailure(key)) {
+      this.logger.warn(`THROTTLE aktiviran za ${who} (previše neuspelih prijava)`);
+    }
   }
 
   /**

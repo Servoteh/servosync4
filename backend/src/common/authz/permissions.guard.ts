@@ -30,7 +30,18 @@ import type { PermissionKey } from "./permissions";
 @Injectable()
 export class PermissionsGuard implements CanActivate {
   private readonly logger = new Logger(PermissionsGuard.name);
-  private readonly enforce = process.env.AUTHZ_ENFORCE === "true";
+  /**
+   * FAIL-CLOSED U PRODUKCIJI (review Opus 5): ranije je default bio `false`, pa je
+   * SVAKO okruženje bez eksplicitnog `AUTHZ_ENFORCE=true` (nov kontejner, DR restore,
+   * nova mašina, zaboravljen env) tiho radilo BEZ ijedne provere permisija — sve
+   * `@RequirePermission` rute su bile otvorene. Sada: u produkciji je enforce podrazumevan,
+   * a shadow režim se mora TRAŽITI eksplicitno (`AUTHZ_ENFORCE=false`). Van produkcije
+   * (dev/test) ostaje stari default (shadow) da lokalni rad i e2e ne traže env.
+   */
+  private readonly enforce =
+    process.env.AUTHZ_ENFORCE === "true" ||
+    (process.env.NODE_ENV === "production" &&
+      process.env.AUTHZ_ENFORCE !== "false");
 
   constructor(
     private readonly reflector: Reflector,

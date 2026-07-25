@@ -9,10 +9,50 @@ import type { NextFunction, Request, Response } from "express";
 import { existsSync } from "node:fs";
 import { extname, join } from "node:path";
 import { AppModule } from "./app.module";
+import { AllExceptionsFilter } from "./common/http-exception.filter";
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
-  app.enableCors({ origin: true, credentials: true });
+
+  // CORS (review Opus 5): `origin: true` je reflektovao BILO KOJI Origin uz
+  // credentials — svaki sajt je mogao da šalje autentikovane zahteve ka API-ju.
+  // Sada: allowlist domena (env CORS_ORIGINS, zarezom razdvojeno) + lokalni dev.
+  // Prazan/izostavljen env u NE-produkciji = dozvoli sve (lokalni rad nesmetan).
+  const allowedOrigins = (process.env.CORS_ORIGINS ?? "")
+    .split(",")
+    .map((o) => o.trim())
+    .filter(Boolean);
+  const isProd = process.env.NODE_ENV === "production";
+  app.enableCors({
+    credentials: true,
+    origin: (origin, cb) => {
+      // Same-origin / server-to-server (bez Origin headera) — uvek prolazi.
+      if (!origin) return cb(null, true);
+      if (allowedOrigins.length > 0) return cb(null, allowedOrigins.includes(origin));
+      // Bez konfiguracije: prod dozvoljava samo servoteh.com domene, dev sve.
+      if (!isProd) return cb(null, true);
+      return cb(null, /^https:\/\/([a-z0-9-]+\.)*servoteh\.com$/i.test(origin));
+    },
+  });
+
+  // Bezbednosni headeri (review Opus 5) — bez nove zavisnosti (nema helmet-a).
+  app.use((_req: Request, res: Response, next: NextFunction) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "SAMEORIGIN"); // clickjacking (app se služi same-origin)
+    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+    res.setHeader("X-DNS-Prefetch-Control", "off");
+    if (isProd) {
+      res.setHeader(
+        "Strict-Transport-Security",
+        "max-age=31536000; includeSubDomains",
+      );
+    }
+    next();
+  });
+
+  // Neuhvaćene greške → generička 500 + traceId (Prisma poruke su otkrivale šemu).
+  app.useGlobalFilters(new AllExceptionsFilter());
+
   app.setGlobalPrefix("api");
   // URI versioning: domain modules are `version: '1'` → /api/v1/...
   // Existing routes (health, sync) have no version → stay at /api/... (VERSION_NEUTRAL).

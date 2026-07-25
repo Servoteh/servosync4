@@ -131,7 +131,9 @@ export class VatLedgerService {
           FROM ledger_entries le
           JOIN journal_entries je ON je.id = le.journal_entry_id
           JOIN vat_account_map vam ON vam.account = le.account_code
-          WHERE je.status = 'posted'
+          -- 'locked' MORA biti uključen: zaključan period (lock-older) je i dalje
+          -- proknjižen — bez ovoga KIF/KUF za zaključan period ostaje prazan.
+          WHERE je.status IN ('posted', 'locked')
             AND EXTRACT(YEAR FROM je.posting_date) = ${year}
             AND EXTRACT(MONTH FROM je.posting_date) = ${month}
           GROUP BY

@@ -1,6 +1,7 @@
 import {
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
@@ -22,6 +23,8 @@ import {
  */
 @Injectable()
 export class GlWriteService {
+  private readonly logger = new Logger(GlWriteService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly posting: PostingEngineService,
@@ -74,14 +77,59 @@ export class GlWriteService {
    * nalozi sa postingDate < beforeDate prelaze u `locked`. Vraća broj zaključanih.
    * Ne dira `draft` (nezavršeni) ni već `locked` — samo posted→locked.
    */
-  async lockOlderThan(beforeDate: Date) {
+  async lockOlderThan(beforeDate: Date, opts: { dryRun?: boolean } = {}) {
     if (!(beforeDate instanceof Date) || Number.isNaN(beforeDate.getTime()))
       throw new ConflictException("Neispravan datum praga (beforeDate).");
+
+    // GUARD (review Opus 5): masovno zaključavanje je nepovratno po nalogu (undo je
+    // pojedinačan `unlock`). Prag u BUDUĆNOSTI bi zaključao CELU glavnu knjigu —
+    // uključujući tekući period koji se još knjiži. Zato: prag mora biti <= danas.
+    const now = new Date();
+    if (beforeDate.getTime() > now.getTime())
+      throw new ConflictException(
+        `Datum praga (${beforeDate.toISOString().slice(0, 10)}) je u budućnosti — ` +
+          `zaključavanje bi obuhvatilo i tekući period. Izaberi datum do danas.`,
+      );
+
+    const where: Prisma.JournalEntryWhereInput = {
+      status: "posted",
+      postingDate: { lt: beforeDate },
+    };
+
+    // DRY-RUN: prikaži koliko bi naloga bilo zaključano PRE nego što se izvrši
+    // (FE zove prvo dry-run pa traži potvrdu — „zaključavam N naloga do datuma X").
+    if (opts.dryRun) {
+      const count = await this.prisma.journalEntry.count({ where });
+      return { count, dryRun: true };
+    }
+
     const res = await this.prisma.journalEntry.updateMany({
-      where: { status: "posted", postingDate: { lt: beforeDate } },
+      where,
       data: { status: "locked" },
     });
-    return { count: res.count };
+    this.logger.warn(
+      `LOCK-OLDER: zaključano ${res.count} naloga sa postingDate < ${beforeDate.toISOString().slice(0, 10)}`,
+    );
+    return { count: res.count, dryRun: false };
+  }
+
+  /**
+   * locked → posted (OTKLJUČAVANJE naloga; review Opus 5 — masovni lock je do sada
+   * bio bez povratka). Namenjeno ispravci greške pri zaključavanju perioda: vraća
+   * nalog u `posted` da bi se mogao stornirati/ispraviti. Zahteva GL_WRITE.
+   */
+  async markUnlocked(entryId: number) {
+    const entry = await this.getEntryOrThrow(entryId);
+    if (entry.status !== "locked")
+      throw new ConflictException(
+        `Nalog ${entryId} je u statusu ${entry.status}; otključavanje je moguće samo iz locked.`,
+      );
+    await this.prisma.journalEntry.update({
+      where: { id: entryId },
+      data: { status: "posted" },
+    });
+    this.logger.warn(`UNLOCK naloga ${entryId} (locked → posted)`);
+    return { id: entryId, status: "posted" };
   }
 
   /** posted → locked (zaključaj nalog — sprečava izmene/storno bez otključavanja). */

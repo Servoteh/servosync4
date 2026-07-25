@@ -94,9 +94,13 @@ export class GlController {
    * Masovno zaključavanje starih naloga (BigBit „zaključaj period"): svi `posted`
    * nalozi sa postingDate < beforeDate → `locked`. Vraća `{ count }`.
    */
+  /**
+   * Masovno zaključavanje perioda. `dryRun: true` samo prebroji naloge (bez izmene) —
+   * FE to koristi za potvrdu „zaključavam N naloga" pre stvarnog poziva (review Opus 5).
+   */
   @Post("journal/lock-older")
   @RequirePermission(PERMISSIONS.GL_WRITE)
-  lockOlder(@Body() body: { beforeDate?: string }) {
+  lockOlder(@Body() body: { beforeDate?: string; dryRun?: boolean }) {
     const raw = body?.beforeDate;
     if (!raw || typeof raw !== "string" || raw.trim() === "") {
       throw new BadRequestException("Parametar beforeDate je obavezan (datum praga).");
@@ -105,7 +109,14 @@ export class GlController {
     if (Number.isNaN(before.getTime())) {
       throw new BadRequestException("Parametar beforeDate nije ispravan datum.");
     }
-    return this.glWrite.lockOlderThan(before);
+    return this.glWrite.lockOlderThan(before, { dryRun: body?.dryRun === true });
+  }
+
+  /** Otključavanje pojedinačnog naloga (locked → posted) — ispravka greške pri zaključavanju. */
+  @Post("journal/:id/unlock")
+  @RequirePermission(PERMISSIONS.GL_WRITE)
+  unlockJournal(@Param("id", ParseIntPipe) id: number) {
+    return this.glWrite.markUnlocked(id);
   }
 
   @Get("journal")
