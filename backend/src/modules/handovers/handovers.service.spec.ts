@@ -1157,6 +1157,8 @@ describe("HandoversService", () => {
       });
 
       await service.launch(5, {}, actor);
+      // Obavestenje planerima je fire-and-forget (odgovor ne ceka Resend) — pusti mikrotaskove.
+      await new Promise((r) => setImmediate(r));
 
       // OR filter: planeri predmeta 3 ∪ globalni (project_id IS NULL).
       expect(prisma.predmetPlaner.findMany).toHaveBeenCalledWith(
@@ -1212,6 +1214,8 @@ describe("HandoversService", () => {
       ]);
 
       await service.launch(5, {}, actor);
+      // Obavestenje planerima je fire-and-forget (odgovor ne ceka Resend) — pusti mikrotaskove.
+      await new Promise((r) => setImmediate(r));
 
       expect(mail.send).toHaveBeenCalledTimes(2);
       expect(notifications.notifyWorkers).toHaveBeenCalledWith(

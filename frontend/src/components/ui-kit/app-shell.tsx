@@ -162,12 +162,15 @@ const NOTIFICATION_BADGE: Record<string, { tone: Tone; label: string }> = {
   'primopredaja.nova': { tone: 'info', label: 'Primopredaja' },
   'primopredaja.preuzeta': { tone: 'info', label: 'Preuzeta izrada' },
   // Zahtev 016/26: planer dobija zvonce kad se primopredaja lansira u proizvodnju.
-  'primopredaja.lansirana': { tone: 'success', label: 'Lansirano' },
+  // Ton/labela prate kanonsku mapu statusa RN-a (DESIGN_SYSTEM §7) — „Lansiran" je
+  // info svuda drugde (work-orders, handovers), pa ne sme ovde biti success.
+  'primopredaja.lansirana': { tone: 'info', label: 'Lansiran' },
 };
 
 /** refTable → ruta modula (funkcija prima refId za deep-link kad modul to podržava). */
 const NOTIFICATION_ROUTE: Record<string, (refId: number | null) => string> = {
-  work_orders: () => '/work-orders',
+  // Zahtev 016/26: klik na zvonce vodi pravo na lansirani RN (ekran već čita ?open=).
+  work_orders: (id) => (id != null ? `/work-orders?open=${id}` : '/work-orders'),
   handover_drafts: () => '/nacrti',
   drawing_handovers: () => '/handovers',
   // Neusaglašenosti na montaži (zahtev 004/26): deep-link otvara detalj u tabu.

@@ -90,8 +90,15 @@ function prismaMock() {
         .mockResolvedValue({ workCenterCode: "TOK", usesPriority: true }),
     },
     workOrderLaunch: {
-      // `id` = ključ idempotencije obaveštenja planerima (016/26 dopuna).
       create: jest.fn().mockResolvedValue({ id: 900 }),
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+    },
+    // Claim obaveštenja planerima (016/26 dopuna) — ključ je primopredaja; redovi
+    // se brišu u istoj kaskadi kao launch redovi, da ponovno lansiranje iste
+    // primopredaje posle brisanja RN-a ne ostane tiho bez obaveštenja.
+    workOrderLaunchNotification: {
+      createMany: jest.fn().mockResolvedValue({ count: 1 }),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
     workOrderApproval: {

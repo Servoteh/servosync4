@@ -15,6 +15,7 @@ function prismaMock() {
   return {
     workOrderLaunchNotification: {
       createMany: jest.fn().mockResolvedValue({ count: 1 }),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     predmetPlaner: { findMany: jest.fn().mockResolvedValue([]) },
     user: { findMany: jest.fn().mockResolvedValue([]) },
@@ -133,7 +134,7 @@ describe("LaunchNotifyService", () => {
     expect(payload.message).toContain("Pera Tehnolog");
   });
 
-  it("isti launch red drugi put → ništa se ne šalje (idempotencija)", async () => {
+  it("ista primopredaja drugi put → ništa se ne šalje (idempotencija)", async () => {
     mockTwoPlanners();
     // Claim nije upisan (ON CONFLICT DO NOTHING) = neko je već poslao.
     prisma.workOrderLaunchNotification.createMany.mockResolvedValue({
@@ -147,14 +148,35 @@ describe("LaunchNotifyService", () => {
     expect(notifications.notifyWorkers).not.toHaveBeenCalled();
   });
 
-  it("claim se piše po ključu launch reda (work_order_launch_id) sa skipDuplicates", async () => {
+  it("claim se piše po ključu PRIMOPREDAJE (drawing_handover_id) sa skipDuplicates", async () => {
     mockTwoPlanners();
 
     await service.notifyLaunch(INPUT);
 
+    // Ključ NIJE work_order_launches.id — taj SERIAL se reciklira (alignIdSequence
+    // spušta sekvencu posle brisanja RN-a) i ponovno lansiranje istog RN-a dobija nov
+    // red, pa bi zaštita čas gutala legitimno obaveštenje, čas puštala duplo.
     expect(prisma.workOrderLaunchNotification.createMany).toHaveBeenCalledWith({
-      data: [{ workOrderLaunchId: 900, workOrderId: 42, source: "work_order" }],
+      data: [
+        {
+          drawingHandoverId: INPUT.handoverId,
+          workOrderLaunchId: 900,
+          workOrderId: 42,
+          source: "work_order",
+        },
+      ],
       skipDuplicates: true,
+    });
+  });
+
+  it("posle uspešnog slanja upisuje notified_at (rupa ostaje vidljiva)", async () => {
+    mockTwoPlanners();
+
+    await service.notifyLaunch(INPUT);
+
+    expect(prisma.workOrderLaunchNotification.updateMany).toHaveBeenCalledWith({
+      where: { drawingHandoverId: INPUT.handoverId, notifiedAt: null },
+      data: { notifiedAt: expect.any(Date) },
     });
   });
 
@@ -168,14 +190,16 @@ describe("LaunchNotifyService", () => {
     expect(mail.send).toHaveBeenCalledTimes(2);
   });
 
-  it("pad claim upisa ne baca (obaveštenje se preskače, lansiranje ostaje)", async () => {
+  it("pad claim upisa NE guta obaveštenje — šalje se svejedno", async () => {
+    // Bolje jedan duplikat nego tiho izgubljeno obaveštenje: lansiranje se stvarno
+    // desilo, a claim je samo zaštita od duplog slanja.
     mockTwoPlanners();
     prisma.workOrderLaunchNotification.createMany.mockRejectedValue(
       new Error("relation does not exist"),
     );
 
     await expect(service.notifyLaunch(INPUT)).resolves.toBeUndefined();
-    expect(mail.send).not.toHaveBeenCalled();
+    expect(mail.send).toHaveBeenCalledTimes(2);
   });
 
   it("bez dodeljenih planera ne šalje ništa", async () => {

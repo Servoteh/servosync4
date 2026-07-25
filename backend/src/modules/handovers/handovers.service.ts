@@ -1364,14 +1364,18 @@ export class HandoversService {
     // da je primopredaja lansirana u proizvodnju (zahtev 016/26 + dopuna). Nikad ne
     // baca — lansiranje je već komitovano; svaki neuspeh se loguje. ISTI servis zove i
     // `work-orders.launch` (lansiranje sa ekrana „Radni nalozi" je isti događaj).
-    await this.launchNotify.notifyLaunch({
-      workOrder: result.workOrder,
-      handoverId: id,
-      drawingId: handover.drawingId,
-      launchId: result.launchId,
-      actorWorkerId,
-      source: "handover",
-    });
+    // Fire-and-forget: mail delivery (N recipients × Resend timeout) must not
+    // hold the launch response open.
+    void this.launchNotify
+      .notifyLaunch({
+        workOrder: result.workOrder,
+        handoverId: id,
+        drawingId: handover.drawingId,
+        launchId: result.launchId,
+        actorWorkerId,
+        source: "handover",
+      })
+      .catch(() => undefined);
 
     const handoverResp = await this.findOne(id);
     return {

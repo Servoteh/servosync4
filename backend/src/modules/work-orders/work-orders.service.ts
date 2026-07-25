@@ -985,6 +985,12 @@ export class WorkOrdersService {
     await tx.workOrderComponent.deleteMany({ where: { workOrderId: id } });
     await tx.workOrderItemComponent.deleteMany({ where: { workOrderId: id } });
     await tx.workOrderApproval.deleteMany({ where: { workOrderId: id } });
+    // Claim rows for the launch notification must go with the launch rows, or a
+    // later launch of the same handover would find a stale claim and stay silent
+    // (016/26 dopuna, review 25.07).
+    await tx.workOrderLaunchNotification.deleteMany({
+      where: { workOrderId: id },
+    });
     await tx.workOrderLaunch.deleteMany({ where: { workOrderId: id } });
     await tx.workOrder.delete({ where: { id } });
   }
@@ -1243,8 +1249,10 @@ export class WorkOrdersService {
     // (016/26 dopuna — rupa u pokrivenosti: ovaj ekran do sada nije slao ništa).
     // `notifyLaunch` nikad ne baca, ali `.catch()` je pojas: pad obaveštenja
     // NE sme da obori već komitovano lansiranje.
+    // Fire-and-forget: N sequential Resend calls (8 s timeout each) must not hold
+    // the launch response open — the launch itself is already committed.
     if (launched.notifyPlanners)
-      await this.launchNotify
+      void this.launchNotify
         .notifyLaunch({
           workOrder: {
             id: wo.id,

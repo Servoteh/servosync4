@@ -2412,16 +2412,24 @@ model PredmetPlaner {
 /// (batch-resolve obrazac, isti razlog kao `AppNotification`) — brisanje RN-a/launch reda ne
 /// sme da obori upis. Timestamptz kao ostale app-owned tabele (BACKEND_RULES §2.3).
 model WorkOrderLaunchNotification {
-  id                Int      @id(map: "pk_work_order_launch_notifications") @default(autoincrement()) @map("id")
-  /// Meki ref → work_order_launches.id; UNIQUE = ključ idempotencije.
-  workOrderLaunchId Int      @map("work_order_launch_id")
-  /// Meki ref → work_orders.id (samo za pretragu/audit).
-  workOrderId       Int      @map("work_order_id")
-  /// Ekran sa kog je lansirano: 'handover' | 'work_order'.
-  source            String   @map("source") @db.VarChar(20)
-  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  id                Int       @id(map: "pk_work_order_launch_notifications") @default(autoincrement()) @map("id")
+  /// Soft ref → drawing_handovers.id; UNIQUE = idempotency key. Deliberately NOT
+  /// work_order_launches.id: that SERIAL is recycled by alignIdSequence after a
+  /// launch row is deleted, and a re-launch of the same handover mints a new one —
+  /// both break "exactly one notification per launched handover" (review 25.07).
+  drawingHandoverId Int       @map("drawing_handover_id")
+  /// Soft ref → work_order_launches.id (audit only; may be null).
+  workOrderLaunchId Int?      @map("work_order_launch_id")
+  /// Soft ref → work_orders.id (lookup/audit; read by deleteWorkOrderCascade).
+  workOrderId       Int       @map("work_order_id")
+  /// Screen the launch came from: 'handover' | 'work_order'.
+  source            String    @map("source") @db.VarChar(20)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  /// Stamped after the mail/bell actually went out — a row with NULL means the
+  /// claim was taken but delivery failed (visible hole, not a silent one).
+  notifiedAt        DateTime? @map("notified_at") @db.Timestamptz(6)
 
-  @@unique([workOrderLaunchId], map: "uq_work_order_launch_notifications_launch")
+  @@unique([drawingHandoverId], map: "uq_work_order_launch_notifications_handover")
   @@index([workOrderId], map: "idx_work_order_launch_notifications_work_order")
   @@map("work_order_launch_notifications")
 }

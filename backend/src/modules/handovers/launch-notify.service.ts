@@ -70,7 +70,8 @@ export class LaunchNotifyService {
   async notifyLaunch(input: LaunchNotifyInput): Promise<void> {
     const { workOrder, handoverId, launchId, actorWorkerId, source } = input;
     try {
-      if (!(await this.claim(launchId, workOrder.id, source))) return;
+      if (!(await this.claim(handoverId, launchId, workOrder.id, source)))
+        return;
 
       const routed = await this.prisma.predmetPlaner.findMany({
         where: {
@@ -81,31 +82,40 @@ export class LaunchNotifyService {
       const userIds = [...new Set(routed.map((r) => r.plannerUserId))];
       if (!userIds.length) return;
 
+      // Cosmetic lookups must never sink the whole notification: the claim is
+      // already spent, so a failed project/drawing/name read would silently cost
+      // the planner their mail. Recipients are the only hard requirement.
       const [planners, project, drawingId, actorName] = await Promise.all([
         this.prisma.user.findMany({
           where: { id: { in: userIds }, active: true },
           select: { id: true, email: true, fullName: true, workerId: true },
         }),
-        this.prisma.project.findUnique({
-          where: { id: workOrder.projectId },
-          select: { projectNumber: true, description: true, customerId: true },
-        }),
-        this.resolveDrawingId(input),
-        this.resolveActorName(actorWorkerId),
+        this.prisma.project
+          .findUnique({
+            where: { id: workOrder.projectId },
+            select: { projectNumber: true, description: true, customerId: true },
+          })
+          .catch(() => null),
+        this.resolveDrawingId(input).catch(() => null),
+        this.resolveActorName(actorWorkerId).catch(() => "—"),
       ]);
       if (!planners.length) return;
 
       const drawing = drawingId
-        ? await this.prisma.drawing.findUnique({
-            where: { id: drawingId },
-            select: { name: true, drawingNumber: true },
-          })
+        ? await this.prisma.drawing
+            .findUnique({
+              where: { id: drawingId },
+              select: { name: true, drawingNumber: true },
+            })
+            .catch(() => null)
         : null;
       const customer = project?.customerId
-        ? await this.prisma.customer.findUnique({
-            where: { id: project.customerId },
-            select: { name: true },
-          })
+        ? await this.prisma.customer
+            .findUnique({
+              where: { id: project.customerId },
+              select: { name: true },
+            })
+            .catch(() => null)
         : null;
 
       const rnLabel =
@@ -121,7 +131,11 @@ export class LaunchNotifyService {
       ]
         .filter(Boolean)
         .join(", ");
-      const launchedAt = new Date().toLocaleString("sr-RS");
+      // Container runs UTC — without the zone the bell and the mail would show a
+      // different hour than the app does everywhere else.
+      const launchedAt = new Date().toLocaleString("sr-RS", {
+        timeZone: "Europe/Belgrade",
+      });
       const subject = `Lansiran RN ${rnLabel}${
         predmetLabel ? ` — predmet ${project?.projectNumber ?? ""}` : ""
       }`.trim();
@@ -154,6 +168,7 @@ export class LaunchNotifyService {
           .filter(Boolean)
           .join(" — "),
       });
+      await this.markNotified(handoverId);
     } catch (e) {
       // Lookups failed — log and swallow; the launch itself already committed.
       this.logger.error(
@@ -165,33 +180,64 @@ export class LaunchNotifyService {
   // ---------------------------------------------------------------- helpers
 
   /**
-   * Rezerviši slanje za ovaj `work_order_launches` red. `createMany` +
-   * `skipDuplicates` = PG `ON CONFLICT DO NOTHING` (bez imena constrainta —
-   * pravilo iz prod incidenta). `count === 0` → neko je već poslao.
-   * Vraća `true` kad slanje sme da krene.
+   * Claim the send for this HANDOVER (the stable identity of "documentation was
+   * launched"). `createMany` + `skipDuplicates` = PG `ON CONFLICT DO NOTHING`
+   * (never `ON CONFLICT ON CONSTRAINT <name>` — prod incident rule).
+   * `count === 0` → someone already notified for this handover.
+   *
+   * The launch row id is stored for audit only: it is recycled (alignIdSequence
+   * lowers the sequence when the newest launch row is deleted) and a re-launch
+   * mints a new one, so it cannot carry idempotency (review 25.07).
+   *
+   * A claim write that itself fails must NOT swallow a launch that already
+   * happened — we log and send anyway (worst case a duplicate mail, which beats
+   * a silently missing one).
    */
   private async claim(
+    handoverId: number,
     launchId: number | null,
     workOrderId: number,
     source: LaunchNotifyInput["source"],
   ): Promise<boolean> {
-    if (launchId == null) {
+    try {
+      const claimed = await this.prisma.workOrderLaunchNotification.createMany({
+        data: [
+          {
+            drawingHandoverId: handoverId,
+            workOrderLaunchId: launchId,
+            workOrderId,
+            source,
+          },
+        ],
+        skipDuplicates: true,
+      });
+      if (claimed.count === 0) {
+        this.logger.log(
+          `Obaveštenje o lansiranju (primopredaja ${handoverId}, RN ${workOrderId}) je već poslato — preskočeno.`,
+        );
+        return false;
+      }
+      return true;
+    } catch (e) {
       this.logger.warn(
-        `Lansiranje RN ${workOrderId} (${source}) bez id-ja launch reda — obaveštenje ide bez zaštite od duplog slanja.`,
+        `Claim obaveštenja (primopredaja ${handoverId}, RN ${workOrderId}) nije upisan: ${msg(e)} — šaljem svejedno.`,
       );
       return true;
     }
-    const claimed = await this.prisma.workOrderLaunchNotification.createMany({
-      data: [{ workOrderLaunchId: launchId, workOrderId, source }],
-      skipDuplicates: true,
-    });
-    if (claimed.count === 0) {
-      this.logger.log(
-        `Obaveštenje o lansiranju (launch ${launchId}, RN ${workOrderId}) je već poslato — preskočeno.`,
+  }
+
+  /** Stamp delivery so a claimed-but-undelivered row stays visible (notified_at IS NULL). */
+  private async markNotified(handoverId: number): Promise<void> {
+    try {
+      await this.prisma.workOrderLaunchNotification.updateMany({
+        where: { drawingHandoverId: handoverId, notifiedAt: null },
+        data: { notifiedAt: new Date() },
+      });
+    } catch (e) {
+      this.logger.warn(
+        `notified_at nije upisan (primopredaja ${handoverId}): ${msg(e)}`,
       );
-      return false;
     }
-    return true;
   }
 
   /** Crtež primopredaje: iz ulaza kad ga pozivalac ima, inače jedan lookup. */
