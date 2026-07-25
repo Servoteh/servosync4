@@ -20,6 +20,7 @@ import {
   useFxRevaluationPreview,
   useFxRevaluationReverse,
   useFxRevaluationRun,
+  type FxRevaluationFlaggedItem,
   type FxRevaluationItem,
   type FxRevaluationRun,
 } from '@/api/saldakonti';
@@ -67,6 +68,45 @@ function runMeta(status: string): { tone: Tone; label: string } {
   return { tone: 'neutral', label: status };
 }
 
+/**
+ * Panel grupa koje obračun NE knjiži (više valuta u istoj grupi / nesaglasan devizni
+ * par). Ove stavke ne smeju tiho da ispadnu iz bilansa — zato imaju svoj vidljiv blok
+ * sa punom porukom backenda (uzrok + šta uraditi), a ne samo brojač.
+ */
+function FlaggedPanel({
+  title,
+  hint,
+  rows,
+}: {
+  title: string;
+  hint: string;
+  rows: FxRevaluationFlaggedItem[];
+}) {
+  if (rows.length === 0) return null;
+  return (
+    <div className="rounded-panel border border-status-warn/40 bg-status-warn-bg px-4 py-3 text-sm">
+      <p className="font-semibold text-status-warn">
+        {title} ({rows.length})
+      </p>
+      <p className="mt-1 text-xs text-ink-secondary">{hint}</p>
+      <ul className="mt-2 space-y-1.5">
+        {rows.map((r, i) => (
+          <li key={`${r.accountCode}|${r.analyticalCode ?? ''}|${r.documentNumber ?? ''}|${i}`}>
+            <span className="tnums font-semibold text-ink">
+              {r.accountCode} · {r.analyticalCode ?? '—'} ·{' '}
+              {r.documentNumber ?? 'bez broja dokumenta'}
+            </span>
+            {r.included && (
+              <span className="ml-2 text-xs text-ink-secondary">(uključeno u obračun)</span>
+            )}
+            <span className="block text-ink-secondary">{r.message}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export default function KursneRazlikePage() {
   const { user, isLoading } = useAuth();
   const router = useRouter();
@@ -76,9 +116,19 @@ export default function KursneRazlikePage() {
   const [asOfDate, setAsOfDate] = useState(defaultAsOfDate);
   const [currency, setCurrency] = useState('EUR');
   const [note, setNote] = useState('');
+  // Svesna odstupanja (backend ih traži eksplicitno, ne pretpostavlja):
+  //   allowStaleRate = kursna lista za dan preseka nije uneta, radi se po ranijem kursu;
+  //   force          = sporne grupe (nesaglasan devizni/dinarski saldo) ulaze u obračun.
+  const [allowStaleRate, setAllowStaleRate] = useState(false);
+  const [force, setForce] = useState(false);
   // Primenjeni presek („Proveri") — odvojen od unosa da promena polja ne okida
   // upit nad celom glavnom knjigom niti ne poništi već prikazan pregled.
-  const [applied, setApplied] = useState<{ asOfDate: string; currency: string } | null>(null);
+  const [applied, setApplied] = useState<{
+    asOfDate: string;
+    currency: string;
+    allowStaleRate: boolean;
+    force: boolean;
+  } | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [reverseTarget, setReverseTarget] = useState<FxRevaluationRun | null>(null);
   const [reverseReason, setReverseReason] = useState('');
@@ -111,16 +161,22 @@ export default function KursneRazlikePage() {
 
   function check() {
     setBanner(null);
-    setApplied({ asOfDate, currency });
+    setApplied({ asOfDate, currency, allowStaleRate, force });
   }
 
   function doRun() {
-    if (!applied) return;
+    if (!applied || !data) return;
     runMutation.mutate(
       {
         asOfDate: applied.asOfDate,
         currency: applied.currency,
         note: note.trim() || undefined,
+        allowStaleRate: applied.allowStaleRate || undefined,
+        force: applied.force || undefined,
+        // Vezuje potvrdu za PREGLED koji je korisnik video — ako se kurs ili stanje
+        // promene u međuvremenu, backend vraća 409 umesto tihog drugog iznosa.
+        expectedRate: data.rate,
+        expectedNetAmount: data.netAmount,
       },
       {
         onSuccess: (res) => {
@@ -244,7 +300,22 @@ export default function KursneRazlikePage() {
       header: 'Kurs',
       align: 'right',
       numeric: true,
-      render: (r) => <span className="tnums text-ink">{formatDecimal(r.rateUsed, 6)}</span>,
+      // Revizorski trag: kurs je mogao biti sa ranijeg dana (kursna lista za presek
+      // nije uneta) — tada se datum liste ističe, jer to menja ceo obračun.
+      render: (r) => {
+        const stale =
+          r.rateDate != null && r.rateDate.slice(0, 10) !== r.asOfDate.slice(0, 10);
+        return (
+          <span className="tnums text-ink">
+            {formatDecimal(r.rateUsed, 6)}
+            {stale && (
+              <span className="block text-xs text-status-warn">
+                lista {formatDate(r.rateDate)}
+              </span>
+            )}
+          </span>
+        );
+      },
     },
     {
       key: 'itemsCount',
@@ -355,6 +426,32 @@ export default function KursneRazlikePage() {
             </span>
           </label>
 
+          <label
+            className="inline-flex items-center gap-2 pb-2 text-sm text-ink"
+            title="Kad kursna lista za dan preseka nije uneta, obračun se radi po poslednjem ranijem kursu — datum tog kursa ostaje zapisan uz obračun."
+          >
+            <input
+              type="checkbox"
+              checked={allowStaleRate}
+              onChange={(e) => setAllowStaleRate(e.target.checked)}
+              className="h-4 w-4 rounded border-line"
+            />
+            Dozvoli raniji kurs
+          </label>
+
+          <label
+            className="inline-flex items-center gap-2 pb-2 text-sm text-ink"
+            title="Uključi i grupe kod kojih se devizni i dinarski saldo ne slažu (najčešće delimično zatvaranje knjiženo samo u dinarima)."
+          >
+            <input
+              type="checkbox"
+              checked={force}
+              onChange={(e) => setForce(e.target.checked)}
+              className="h-4 w-4 rounded border-line"
+            />
+            Uključi sporne stavke
+          </label>
+
           <Button type="submit" variant="secondary" loading={preview.isFetching}>
             Proveri
           </Button>
@@ -405,6 +502,21 @@ export default function KursneRazlikePage() {
 
         {data && (
           <>
+            <FlaggedPanel
+              title="Grupe sa više valuta — nisu obračunate"
+              hint="Stavke istog konta i komitenta bez broja dokumenta padaju u istu grupu, pa grupa nema jedinstven devizni saldo. Dopuni broj dokumenta na tim stavkama pa ponovi obračun."
+              rows={data.mixedCurrencyGroups}
+            />
+            <FlaggedPanel
+              title={
+                data.forced
+                  ? 'Sporne stavke — svesno UKLJUČENE u obračun'
+                  : 'Sporne stavke — nisu obračunate'
+              }
+              hint="Devizni i dinarski saldo grupe se ne slažu sa kursom na dan. Najčešći uzrok je delimično zatvaranje knjiženo samo u dinarima (bez deviznog para) — takva razlika je iznos plaćanja, ne kursna razlika."
+              rows={data.flagged}
+            />
+
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
                 <span className="text-ink-secondary">
@@ -412,8 +524,9 @@ export default function KursneRazlikePage() {
                   <span className="tnums font-semibold text-ink">
                     {formatDecimal(data.rate, 6)}
                   </span>{' '}
-                  <span className="text-ink-secondary">
-                    (kursna lista {formatDate(data.rateDate)})
+                  <span className={data.staleRate ? 'text-status-warn' : 'text-ink-secondary'}>
+                    (kursna lista {formatDate(data.rateDate)}
+                    {data.staleRate ? ' — nije dan preseka' : ''})
                   </span>
                 </span>
                 <span className="text-ink-secondary">
@@ -530,6 +643,24 @@ export default function KursneRazlikePage() {
               rows={2}
             />
           </label>
+          {data?.staleRate && (
+            <p className="text-xs text-status-warn">
+              Kurs nije sa dana preseka nego sa {formatDate(data.rateDate)} — datum kursne
+              liste ostaje zapisan uz obračun.
+            </p>
+          )}
+          {data != null && data.mixedCurrencyGroups.length > 0 && (
+            <p className="text-xs text-status-warn">
+              {data.mixedCurrencyGroups.length} grupa sa više valuta NIJE u ovom obračunu —
+              vidi spisak iznad.
+            </p>
+          )}
+          {data != null && data.flagged.length > 0 && (
+            <p className="text-xs text-status-warn">
+              {data.flagged.length} spornih grupa{' '}
+              {data.forced ? 'je svesno uključeno' : 'NIJE u ovom obračunu'} — vidi spisak iznad.
+            </p>
+          )}
           <p className="text-xs text-ink-secondary">
             Obračun se za isti presek i valutu radi samo jednom. Ispravka je moguća kroz
             storno, koji oslobađa presek za ponovni obračun.

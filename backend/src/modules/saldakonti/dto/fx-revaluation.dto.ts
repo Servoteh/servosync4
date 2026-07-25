@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException } from "@nestjs/common";
+import { Prisma } from "@prisma/client";
 
 /**
  * DTO-i revalorizacije deviznih otvorenih stavki (C2 — kursne razlike na dan bilansa).
@@ -17,6 +18,8 @@ export interface FxRevaluationPreviewQuery {
   asOfDate?: string; // ISO datum preseka (31.12.)
   currency?: string; // devizna valuta (EUR, USD…)
   companyId?: string | number;
+  allowStaleRate?: string | boolean; // svesno dozvoli kurs sa ranijeg dana
+  force?: string | boolean; // svesno uključi sporne grupe u pregled
 }
 
 /** POST /saldakonti/fx-revaluation/run — obračun + knjiženje kursnih razlika. */
@@ -25,6 +28,20 @@ export interface FxRevaluationRunDto {
   currency: string; // devizna valuta
   companyId?: number;
   note?: string;
+  /**
+   * Svesno uključi SPORNE grupe (devizni i dinarski saldo se ne slažu — npr. delimično
+   * zatvaranje bez deviznog para) u obračun. Obrazac `force` iz fakturisanje.service.ts.
+   */
+  force?: boolean;
+  /**
+   * Svesno dozvoli obračun po kursu sa ranijeg dana kad kursna lista za dan preseka
+   * nije uneta. Bez ovoga obračun odbija (revizorski trag = `rateDate` obračuna).
+   */
+  allowStaleRate?: boolean;
+  /** Kurs koji je korisnik video u pregledu — razlika → 409 (podaci su se promenili). */
+  expectedRate?: string | number;
+  /** Neto efekat koji je korisnik video u pregledu — razlika → 409. */
+  expectedNetAmount?: string | number;
 }
 
 /** POST /saldakonti/fx-revaluation/reverse — storno obračuna (oslobađa presek). */
@@ -96,6 +113,51 @@ export function validateFxRevaluationRun(dto: FxRevaluationRunDto): void {
   // ovde hvatamo samo strukturne greške tela.
   if (dto.note !== undefined && typeof dto.note !== "string")
     throw new BadRequestException("Napomena mora biti tekst.");
+  if (dto.force !== undefined && typeof dto.force !== "boolean")
+    throw new BadRequestException("Polje force mora biti true ili false.");
+  if (
+    dto.allowStaleRate !== undefined &&
+    typeof dto.allowStaleRate !== "boolean"
+  )
+    throw new BadRequestException(
+      "Polje allowStaleRate mora biti true ili false.",
+    );
+  // Očekivane vrednosti iz pregleda se samo PARSIRAJU ovde (poređenje je u servisu).
+  parseExpectedDecimal(dto.expectedRate, "expectedRate");
+  parseExpectedDecimal(dto.expectedNetAmount, "expectedNetAmount");
+}
+
+/**
+ * Očekivana vrednost iz pregleda (kurs / neto) → Decimal; prazno → undefined.
+ * Decimal, nikad Float — poređenje mora biti egzaktno na 6 odnosno 2 decimale.
+ */
+export function parseExpectedDecimal(
+  value: unknown,
+  label: string,
+): Prisma.Decimal | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "string" && typeof value !== "number")
+    throw new BadRequestException(`Polje ${label} mora biti broj.`);
+  let parsed: Prisma.Decimal;
+  try {
+    parsed = new Prisma.Decimal(value);
+  } catch {
+    throw new BadRequestException(`Polje ${label} mora biti broj.`);
+  }
+  if (!parsed.isFinite())
+    throw new BadRequestException(`Polje ${label} mora biti konačan broj.`);
+  return parsed;
+}
+
+/**
+ * Zastavica iz query stringa (`?allowStaleRate=1`) ili tela. Prihvata "1"/"true"/"da"
+ * (i logičku vrednost); sve ostalo je false. Prazno → false.
+ */
+export function parseFlag(value: unknown): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value !== "string") return false;
+  const v = value.trim().toLowerCase();
+  return v === "1" || v === "true" || v === "da";
 }
 
 export function validateFxRevaluationReverse(

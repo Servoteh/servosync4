@@ -46,6 +46,7 @@ import { OpenItemsService } from "./open-items.service";
 import {
   normalizeFxCurrency,
   parseAsOfDate,
+  parseExpectedDecimal,
   validateFxRevaluationReverse,
   validateFxRevaluationRun,
   type FxRevaluationReverseDto,
@@ -72,6 +73,20 @@ const FX_RATE_TYPE = "middle";
 /** Zaokruživanje protivvrednosti na paru (Decimal(19,4) kolona, novac = 2 decimale). */
 const MONEY_SCALE = 2;
 
+/** Zaokruživanje kursa (rate_used je Decimal(19,6)) — poređenje sa pregledom. */
+const RATE_SCALE = 6;
+
+/**
+ * Prag saglasnosti knjigovodstvene i devizne strane grupe (review C2 §5). Implicitna
+ * stopa grupe = dinarski saldo / devizni saldo; ako odstupa od kursa na dan preseka
+ * više od ovoga, grupa NIJE ispravan devizni par (tipično: delimično plaćanje knjiženo
+ * samo u RSD, bez deviznog para) i razlika bi bila red veličine celog plaćanja umesto
+ * kursne razlike. 30% je namerno široko — EUR/RSD se godinama kreće u par procenata,
+ * pa prag hvata grube greške knjiženja, a ne normalan pomeraj kursa. Knjigovođa može
+ * svesno da uključi takve grupe kroz `force`.
+ */
+const IMPLIED_RATE_TOLERANCE = new D("0.30");
+
 /** Jedna revalorizovana otvorena stavka. */
 export interface FxRevaluationItem {
   accountCode: string;
@@ -89,6 +104,33 @@ export interface FxRevaluationItem {
   ledgerEntryIds: number[];
 }
 
+/**
+ * Grupa koju obračun NE knjiži (ili knjiži samo uz `force`) — greška podataka koja
+ * mora da stigne do korisnika, a ne da tiho ispadne iz bilansa.
+ *   MIXED_CURRENCY  — grupa nosi više deviznih valuta (nema jedinstven devizni saldo);
+ *   NO_FX_PAIR      — dinarski saldo bez deviznog salda (devizni par nije knjižen);
+ *   FX_SIGN_MISMATCH— devizni i dinarski saldo suprotnog predznaka;
+ *   RATE_MISMATCH   — implicitna knjigovodstvena stopa daleko od kursa na dan.
+ */
+export interface FxRevaluationFlaggedItem {
+  accountCode: string;
+  analyticalCode: number | null;
+  documentNumber: string | null;
+  code: string;
+  /** Srpska poruka za korisnika (šta je zatečeno i šta da uradi). */
+  message: string;
+  /** Devizni saldo grupe (null kad ga nema). */
+  fxAmount: Prisma.Decimal | null;
+  /** Dinarski (knjigovodstveni) saldo grupe. */
+  bookedAmount: Prisma.Decimal;
+  /** bookedAmount / fxAmount — knjigovodstvena stopa grupe (null kad se ne može izračunati). */
+  impliedRate: Prisma.Decimal | null;
+  /** Valute zatečene u grupi (samo MIXED_CURRENCY). */
+  currencies?: string[];
+  /** Da li je grupa ipak uključena u obračun (samo uz `force`). */
+  included: boolean;
+}
+
 /** Rezultat `preview` — bez ijednog upisa. */
 export interface FxRevaluationPreview {
   asOfDate: Date;
@@ -98,6 +140,8 @@ export interface FxRevaluationPreview {
   rate: Prisma.Decimal;
   /** Datum kursne liste koja je STVARNO upotrebljena (vikend/praznik → raniji dan). */
   rateDate: Date;
+  /** true kad `rateDate` nije dan preseka (obračun po zastarelom kursu, uz `allowStaleRate`). */
+  staleRate: boolean;
   rateType: string;
   items: FxRevaluationItem[];
   itemsCount: number;
@@ -107,6 +151,12 @@ export interface FxRevaluationPreview {
   lossTotal: Prisma.Decimal;
   /** gainTotal − lossTotal (neto efekat na rezultat). */
   netAmount: Prisma.Decimal;
+  /** Grupe sa više valuta — ISKLJUČENE iz obračuna (greška podataka). */
+  mixedCurrencyGroups: FxRevaluationFlaggedItem[];
+  /** Sporne grupe (nesaglasan devizni/dinarski saldo) — knjiže se samo uz `force`. */
+  flagged: FxRevaluationFlaggedItem[];
+  /** Da li su sporne grupe uključene u `items`/zbirove (prosleđen `force`). */
+  forced: boolean;
 }
 
 /** Rezultat `run` — obračun + broj naloga kursnih razlika. */
@@ -116,12 +166,18 @@ export interface FxRevaluationRunResult {
   currency: string;
   companyId: number;
   rateUsed: Prisma.Decimal;
+  /** Dan kursne liste koja je upotrebljena (revizorski trag). */
+  rateDate: Date | null;
   gainAmount: Prisma.Decimal;
   lossAmount: Prisma.Decimal;
   itemsCount: number;
   journalEntryId: number;
   journalNumber: string;
   status: string;
+  /** Grupe isključene zbog više valuta u istoj grupi (nisu obračunate). */
+  mixedCurrencyGroups: FxRevaluationFlaggedItem[];
+  /** Sporne grupe — uključene samo ako je prosleđen `force`. */
+  flagged: FxRevaluationFlaggedItem[];
 }
 
 @Injectable()
@@ -142,11 +198,22 @@ export class FxRevaluationService {
    * Pregled revalorizacije na dan: otvorene devizne stavke date valute, kurs na dan
    * (ExchangeRateService.resolve — poslednji ≤ presek), knjigovodstvena protivvrednost
    * vs. nova protivvrednost, razlika po stavci i zbirno. NIŠTA ne upisuje.
+   *
+   * KURS MORA BITI SA DANA PRESEKA (review C2 §6): resolver vraća poslednji kurs ≤
+   * preseka, pa bi obračun 31.12. tiho prošao po kursu od 20.12. ako lista nije uneta.
+   * Takav pregled se ODBIJA sa porukom koja imenuje zatečeni kurs i njegov datum;
+   * `allowStaleRate` je svesno odstupanje (i ostaje zapisano u `rateDate` obračuna).
+   *
+   * SPORNE GRUPE (review C2 §5) se izdvajaju u `flagged` i NE ulaze u zbirove, osim uz
+   * `force`; grupe sa više valuta (review C2 §3) su isključene već u OpenItemsService i
+   * ovde se samo prijavljuju u `mixedCurrencyGroups`.
    */
   async preview(params: {
     asOfDate: string | Date;
     currency: string;
     companyId?: number;
+    allowStaleRate?: boolean;
+    force?: boolean;
   }): Promise<FxRevaluationPreview> {
     const asOfDate =
       params.asOfDate instanceof Date
@@ -154,6 +221,7 @@ export class FxRevaluationService {
         : parseAsOfDate(params.asOfDate);
     const currency = normalizeFxCurrency(params.currency);
     const companyId = params.companyId ?? 0;
+    const force = params.force === true;
 
     // Kurs na dan preseka (404 sa srpskom porukom ako kursne liste nema).
     const resolved = await this.exchangeRates.resolve(
@@ -161,6 +229,15 @@ export class FxRevaluationService {
       asOfDate,
       FX_RATE_TYPE,
     );
+
+    const staleRate = fmtIso(resolved.rateDate) !== fmtIso(asOfDate);
+    if (staleRate && params.allowStaleRate !== true)
+      throw new ConflictException(
+        `Za ${currency} nije uneta kursna lista na dan ${fmtDate(asOfDate)} — ` +
+          `zatečen je srednji kurs ${resolved.rate.toFixed(RATE_SCALE)} od ` +
+          `${fmtDate(resolved.rateDate)}. Unesi kursnu listu za dan preseka, ` +
+          `ili svesno potvrdi obračun po zatečenom kursu (allowStaleRate).`,
+      );
 
     // Otvorene stavke: presek na dan + samo grupe u traženoj valuti. Filter
     // 'posted'+'locked' i uparivanje na dan preseka su u OpenItemsService.
@@ -171,17 +248,63 @@ export class FxRevaluationService {
       { fxCurrency: currency, companyId: params.companyId },
     );
 
+    // Grupe sa više valuta — isključene iz `openItems`, ali se MORAJU prijaviti.
+    const mixed = await this.openItems.listMixedFxCurrencyGroups(asOfDate, {
+      fxCurrency: currency,
+      companyId: params.companyId,
+    });
+    const mixedCurrencyGroups: FxRevaluationFlaggedItem[] = mixed.map((g) => ({
+      accountCode: g.accountCode,
+      analyticalCode: g.analyticalCode,
+      documentNumber: g.documentNumber,
+      code: "MIXED_CURRENCY",
+      message:
+        `Grupa (konto ${g.accountCode}, komitent ${g.analyticalCode ?? "—"}, ` +
+        `dokument ${g.documentNumber ?? "bez broja"}) nosi više valuta ` +
+        `(${g.currencies.join(", ")}) pa nema jedinstven devizni saldo — ` +
+        `nije obračunata. Razdvoj stavke po broju dokumenta pa ponovi obračun.`,
+      fxAmount: null,
+      bookedAmount: g.balance,
+      impliedRate: null,
+      currencies: g.currencies,
+      included: false,
+    }));
+
     let gainTotal = ZERO;
     let lossTotal = ZERO;
     const items: FxRevaluationItem[] = [];
+    const flagged: FxRevaluationFlaggedItem[] = [];
 
     for (const oi of openItems) {
       const fxAmount = oi.fxAmount ?? ZERO;
       const bookedAmount = oi.balance;
+
+      const problem = this.checkFxPair(fxAmount, bookedAmount, resolved.rate);
+      if (problem) {
+        flagged.push({
+          accountCode: oi.accountCode,
+          analyticalCode: oi.analyticalCode,
+          documentNumber: oi.documentNumber,
+          code: problem.code,
+          message: problem.message,
+          fxAmount,
+          bookedAmount,
+          impliedRate: problem.impliedRate,
+          included: force,
+        });
+        if (!force) continue;
+      }
+
       const revaluedAmount = fxAmount
         .mul(resolved.rate)
         .toDecimalPlaces(MONEY_SCALE);
-      const difference = revaluedAmount.sub(bookedAmount);
+      // ZAOKRUŽI PRE SABIRANJA (review C2 §4): linija naloga se knjiži zaokružena na
+      // paru, pa zbirna protivstavka (663/563) mora da se gradi od ISTIH zaokruženih
+      // vrednosti. Inače ΣDug ≠ ΣPot i knjiženje pukne LedgerNotBalancedException-om,
+      // koji nije HttpException → goli 500 na zatvaranju godine.
+      const difference = revaluedAmount
+        .sub(bookedAmount)
+        .toDecimalPlaces(MONEY_SCALE);
 
       if (difference.greaterThan(0)) gainTotal = gainTotal.add(difference);
       else if (difference.lessThan(0))
@@ -206,12 +329,16 @@ export class FxRevaluationService {
       companyId,
       rate: resolved.rate,
       rateDate: resolved.rateDate,
+      staleRate,
       rateType: resolved.type,
       items,
       itemsCount: items.length,
       gainTotal,
       lossTotal,
       netAmount: gainTotal.sub(lossTotal),
+      mixedCurrencyGroups,
+      flagged,
+      forced: force,
     };
   }
 
@@ -246,7 +373,15 @@ export class FxRevaluationService {
       asOfDate,
       currency,
       companyId: dto.companyId,
+      allowStaleRate: dto.allowStaleRate,
+      force: dto.force,
     });
+
+    // ODOBRENO == PROKNJIŽENO (review C2 §7): `run` iznova računa pregled, pa bi
+    // ispravka kursne liste ili novo devizno knjiženje između „Proveri" i „Obračunaj"
+    // proknjižili iznos koji korisnik nikad nije video. Kad FE pošalje vrednosti iz
+    // pregleda, svako odstupanje je 409 sa zahtevom da se pregled ponovi.
+    this.assertMatchesPreview(dto, preview);
 
     const postable = preview.items.filter((i) => !i.difference.isZero());
     if (postable.length === 0) {
@@ -274,6 +409,9 @@ export class FxRevaluationService {
             currency,
             companyId,
             rateUsed: preview.rate,
+            // Revizorski trag: sa kog je DANA kurs stvarno uzet (≠ presek kad je
+            // obračun svesno pušten uz `allowStaleRate`).
+            rateDate: preview.rateDate,
             gainAmount: preview.gainTotal,
             lossAmount: preview.lossTotal,
             itemsCount: postable.length,
@@ -315,8 +453,16 @@ export class FxRevaluationService {
     this.logger.log(
       `FX revalorizacija ${currency} ${fmtDate(asOfDate)}: ${postable.length} stavki, ` +
         `dobitak ${preview.gainTotal.toFixed(2)} / gubitak ${preview.lossTotal.toFixed(2)}, ` +
-        `nalog ${FX_ORDER_TYPE}-${result.journalNumber}`,
+        `nalog ${FX_ORDER_TYPE}-${result.journalNumber}` +
+        (preview.staleRate ? ` (kurs od ${fmtDate(preview.rateDate)})` : ""),
     );
+    if (preview.mixedCurrencyGroups.length || preview.flagged.length)
+      this.logger.warn(
+        `FX revalorizacija ${currency} ${fmtDate(asOfDate)}: ` +
+          `${preview.mixedCurrencyGroups.length} grupa sa više valuta, ` +
+          `${preview.flagged.length} spornih grupa ` +
+          `(${preview.forced ? "uključene uz force" : "NISU obračunate"}).`,
+      );
 
     return {
       runId: result.run.id,
@@ -324,12 +470,15 @@ export class FxRevaluationService {
       currency: result.run.currency,
       companyId: result.run.companyId,
       rateUsed: result.run.rateUsed,
+      rateDate: result.run.rateDate ?? null,
       gainAmount: result.run.gainAmount,
       lossAmount: result.run.lossAmount,
       itemsCount: result.run.itemsCount,
       journalEntryId: result.run.journalEntryId as number,
       journalNumber: result.journalNumber,
       status: result.run.status,
+      mixedCurrencyGroups: preview.mixedCurrencyGroups,
+      flagged: preview.flagged,
     };
   }
 
@@ -343,6 +492,11 @@ export class FxRevaluationService {
    *
    * Zaključan nalog: `GlWriteService.reverse` traži prethodno otključavanje (409) —
    * ta kontrola se namerno NE zaobilazi.
+   *
+   * DATUM STORNA = PRESEK IZVORNOG OBRAČUNA (review C2 §1), ne današnji dan: otvorene
+   * stavke se čitaju presekom (`je.posting_date <= presek`), pa bi storno naloga za
+   * 31.12. sa današnjim datumom knjiženja bio NEVIDLJIV na taj presek — ponovni obračun
+   * bi video original bez storna i knjižio pogrešan iznos i pogrešan predznak.
    *
    * Redosled: prvo storno naloga, pa status obračuna (da prekid ne ostavi obračun
    * REVERSED sa živim nalogom). Ponovljen poziv je bezbedan — već storniran nalog se
@@ -377,6 +531,7 @@ export class FxRevaluationService {
         const res = await this.glWrite.reverse(
           run.journalEntryId,
           actor?.userId,
+          { postingDate: run.asOfDate, documentDate: run.asOfDate },
         );
         stornoEntryId = res.stornoEntryId;
       }
@@ -485,6 +640,107 @@ export class FxRevaluationService {
     }
 
     return lines;
+  }
+
+  /**
+   * Saglasnost deviznog i dinarskog salda grupe (review C2 §5). Vraća `null` kad je
+   * grupa ispravan devizni par, inače opis problema.
+   *
+   * Zašto je potrebno: faktura 1.000 EUR / 117.000 RSD delimično zatvorena uplatom od
+   * 58.500 RSD BEZ deviznog para ostaje sa deviznim saldom 1.000 EUR i dinarskim
+   * saldom 58.500 → „razlika" 61.500 umesto ~1.500. To NIJE kursna razlika nego
+   * neproknjižen devizni par, i takva grupa se ne sme tiho proknjižiti na 663/563.
+   *
+   * Mera je IMPLICITNA KNJIGOVODSTVENA STOPA = dinarski saldo / devizni saldo. Poredi
+   * se sa kursom na dan preseka; odstupanje preko {@link IMPLIED_RATE_TOLERANCE} je
+   * sporno. Suprotan predznak i devizni saldo 0 uz nenulti dinarski su isti rod greške.
+   */
+  private checkFxPair(
+    fxAmount: Prisma.Decimal,
+    bookedAmount: Prisma.Decimal,
+    rate: Prisma.Decimal,
+  ): {
+    code: string;
+    message: string;
+    impliedRate: Prisma.Decimal | null;
+  } | null {
+    if (fxAmount.isZero()) {
+      if (bookedAmount.isZero()) return null;
+      return {
+        code: "NO_FX_PAIR",
+        impliedRate: null,
+        message:
+          `Grupa ima dinarski saldo ${bookedAmount.toFixed(MONEY_SCALE)} bez deviznog ` +
+          `salda — devizni par nije knjižen. Ispravi knjiženje (devizno duguje/potražuje) ` +
+          `pa ponovi obračun.`,
+      };
+    }
+
+    const impliedRate = bookedAmount.div(fxAmount);
+    if (impliedRate.lessThanOrEqualTo(0))
+      return {
+        code: "FX_SIGN_MISMATCH",
+        impliedRate,
+        message:
+          `Devizni saldo (${fxAmount.toFixed(MONEY_SCALE)}) i dinarski saldo ` +
+          `(${bookedAmount.toFixed(MONEY_SCALE)}) su suprotnog predznaka — ` +
+          `devizni iznos je knjižen na pogrešnu stranu. Grupa nije obračunata.`,
+      };
+
+    const deviation = impliedRate.sub(rate).abs().div(rate);
+    if (deviation.greaterThan(IMPLIED_RATE_TOLERANCE))
+      return {
+        code: "RATE_MISMATCH",
+        impliedRate,
+        message:
+          `Knjigovodstvena stopa grupe je ${impliedRate.toFixed(RATE_SCALE)} ` +
+          `(${bookedAmount.toFixed(MONEY_SCALE)} RSD / ${fxAmount.toFixed(MONEY_SCALE)}), ` +
+          `a kurs na dan preseka je ${rate.toFixed(RATE_SCALE)} — odstupanje ` +
+          `${deviation.mul(100).toFixed(1)}%. Najčešći uzrok je delimično zatvaranje ` +
+          `knjiženo samo u dinarima (bez deviznog para). Grupa nije obračunata; ` +
+          `uključi je svesno opcijom „uključi sporne stavke" ako je knjiženje ispravno.`,
+      };
+
+    return null;
+  }
+
+  /**
+   * Poređenje sa odobrenim pregledom (review C2 §7). Vrednosti su opcione — pozivalac
+   * koji ih ne pošalje (skripta, stari klijent) radi kao do sada; kad ih pošalje, moraju
+   * da se poklope, inače 409 i ponovni pregled.
+   */
+  private assertMatchesPreview(
+    dto: FxRevaluationRunDto,
+    preview: FxRevaluationPreview,
+  ): void {
+    const expectedRate = parseExpectedDecimal(dto.expectedRate, "expectedRate");
+    if (
+      expectedRate != null &&
+      !expectedRate
+        .toDecimalPlaces(RATE_SCALE)
+        .equals(preview.rate.toDecimalPlaces(RATE_SCALE))
+    )
+      throw new ConflictException(
+        `Kurs se promenio od pregleda: pregled je bio po ` +
+          `${expectedRate.toFixed(RATE_SCALE)}, a sada važi ` +
+          `${preview.rate.toFixed(RATE_SCALE)}. Ponovi pregled pa potvrdi obračun.`,
+      );
+
+    const expectedNet = parseExpectedDecimal(
+      dto.expectedNetAmount,
+      "expectedNetAmount",
+    );
+    if (
+      expectedNet != null &&
+      !expectedNet
+        .toDecimalPlaces(MONEY_SCALE)
+        .equals(preview.netAmount.toDecimalPlaces(MONEY_SCALE))
+    )
+      throw new ConflictException(
+        `Podaci su se promenili od pregleda: neto efekat je bio ` +
+          `${expectedNet.toFixed(MONEY_SCALE)}, a sada je ` +
+          `${preview.netAmount.toFixed(MONEY_SCALE)}. Ponovi pregled pa potvrdi obračun.`,
+      );
   }
 
   /**

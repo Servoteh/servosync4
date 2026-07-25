@@ -28,6 +28,7 @@ import {
   normalizeFxCurrency,
   parseAsOfDate,
   parseCompanyId,
+  parseFlag,
   parseYear,
   type FxRevaluationReverseDto,
   type FxRevaluationRunDto,
@@ -359,17 +360,26 @@ export class SaldakontiController {
   // Obavezno pri zatvaranju godine: devizne otvorene stavke se na dan bilansa
   // preračunavaju po kursu tog dana, razlika ide na 663 (prihod) / 563 (rashod).
 
-  /** Pregled bez upisa — stavke, kurs na dan i zbir razlike. */
+  /**
+   * Pregled bez upisa — stavke, kurs na dan i zbir razlike, plus liste grupa koje
+   * obračun NE knjiži (više valuta u istoj grupi / nesaglasan devizni par).
+   * `allowStaleRate=1` svesno dozvoljava kurs sa ranijeg dana (bez toga 409 kad
+   * kursna lista za presek nije uneta); `force=1` uključuje sporne grupe u zbirove.
+   */
   @Get("fx-revaluation/preview")
   async fxRevaluationPreview(
     @Query("asOfDate") asOfDate: string,
     @Query("currency") currency: string,
     @Query("companyId") companyId?: string,
+    @Query("allowStaleRate") allowStaleRate?: string,
+    @Query("force") force?: string,
   ) {
     const data = await this.fxRevaluation.preview({
       asOfDate: parseAsOfDate(asOfDate),
       currency: normalizeFxCurrency(currency),
       companyId: parseCompanyId(companyId),
+      allowStaleRate: parseFlag(allowStaleRate),
+      force: parseFlag(force),
     });
     return { data };
   }

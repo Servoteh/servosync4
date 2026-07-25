@@ -75,6 +75,33 @@ export interface OpenItemsOptions {
   companyId?: number;
 }
 
+/**
+ * Otvorena grupa koja nosi VIŠE deviznih valuta (greška podataka). Grupa je
+ * (konto, komitent, broj dokumenta), a `document_number` je nullable — sve stavke
+ * partnera bez broja dokumenta padaju u JEDNU grupu, pa se EUR i USD promet nađu
+ * zajedno. Takva grupa nema jedinstven devizni saldo i mora se ISKLJUČITI iz
+ * revalorizacije, ali i PRIJAVITI korisniku (tiho ispadanje = izgubljen bilans).
+ */
+export interface MixedFxCurrencyGroup {
+  accountCode: string;
+  analyticalCode: number | null;
+  documentNumber: string | null;
+  /** Sve devizne valute zatečene u grupi (sortirano, bez NULL-ova). */
+  currencies: string[];
+  /** Dinarski saldo grupe (Σ duguje − Σ potražuje). */
+  balance: Prisma.Decimal;
+  ledgerEntryIds: number[];
+}
+
+interface MixedFxRawRow {
+  account_code: string;
+  analytical_code: number | null;
+  document_number: string | null;
+  balance: Prisma.Decimal | null;
+  currencies: string[] | null;
+  ledger_entry_ids: number[] | null;
+}
+
 interface AgingRawRow {
   analytical_code: number | null;
   bucket_0_30: Prisma.Decimal | null;
@@ -118,9 +145,28 @@ export class OpenItemsService {
     // (uplata u RSD, prethodna kursna razlika) nemaju fx_currency, a MORAJU ući u
     // zbir da bi knjigovodstvena protivvrednost grupe bila tačna. WHERE bi ih izbacio
     // pa bi sledeća revalorizacija dvaput obračunala istu razliku.
-    const fxHaving = opts?.fxCurrency
-      ? Prisma.sql`AND MAX(le.fx_currency) = ${opts.fxCurrency}`
+    //
+    // USLOV JE „grupa sadrži traženu valutu I nijednu drugu" (review C2 §3), NE
+    // `MAX(fx_currency) = valuta`: `document_number` je nullable, pa sve stavke partnera
+    // bez broja dokumenta padaju u JEDNU grupu; MAX bi tada leksikografski izabrao jednu
+    // valutu — EUR grupa bi tiho nestala iz bilansa, a USD bi pokupio i EUR devizni saldo
+    // i knjižio lažan rashod. Mešane grupe se isključuju ovde i prijavljuju kroz
+    // {@link listMixedFxCurrencyGroups}.
+    const fxCurrency = opts?.fxCurrency;
+    const fxHaving = fxCurrency
+      ? Prisma.sql`AND bool_or(le.fx_currency = ${fxCurrency})
+          AND NOT bool_or(le.fx_currency IS NOT NULL AND le.fx_currency <> ${fxCurrency})`
       : Prisma.empty;
+    // Devizni saldo se sa aktivnim filterom sabira SAMO preko redova te valute; bez
+    // filtera izraz ostaje doslovno isti kao pre (postojeći čitaoci — aging, kartica —
+    // moraju da vrate identičan rezultat).
+    const fxBalanceExpr = fxCurrency
+      ? Prisma.sql`COALESCE(SUM(CASE WHEN le.fx_currency = ${fxCurrency} THEN le.fx_debit END), 0)
+                 - COALESCE(SUM(CASE WHEN le.fx_currency = ${fxCurrency} THEN le.fx_credit END), 0)`
+      : Prisma.sql`COALESCE(SUM(le.fx_debit), 0) - COALESCE(SUM(le.fx_credit), 0)`;
+    const fxCurrencyExpr = fxCurrency
+      ? Prisma.sql`MAX(CASE WHEN le.fx_currency = ${fxCurrency} THEN le.fx_currency END)`
+      : Prisma.sql`MAX(le.fx_currency)`;
 
     const rows = await this.prisma.$queryRaw<OpenItemRawRow[]>(
       Prisma.sql`
@@ -136,8 +182,8 @@ export class OpenItemsService {
           array_agg(le.id ORDER BY le.id) AS ledger_entry_ids,
           -- Devizni saldo grupe (C2). COALESCE po SUMI, ne po razlici: kad su svi
           -- fx_credit NULL, SUM(a) - SUM(b) bi dalo NULL pa bi ceo devizni saldo pao na 0.
-          COALESCE(SUM(le.fx_debit), 0) - COALESCE(SUM(le.fx_credit), 0) AS fx_balance,
-          MAX(le.fx_currency) AS fx_currency,
+          ${fxBalanceExpr} AS fx_balance,
+          ${fxCurrencyExpr} AS fx_currency,
           sa.side AS side
         FROM ledger_entries le
         JOIN journal_entries je ON je.id = le.journal_entry_id
@@ -164,6 +210,66 @@ export class OpenItemsService {
     );
 
     return rows.map((r) => this.mapRow(r, cutoff));
+  }
+
+  /**
+   * Otvorene grupe sa VIŠE deviznih valuta na dan preseka — greška podataka, ne
+   * poslovni slučaj. `listOpenItems` sa `fxCurrency` filterom ih namerno preskače
+   * (nemaju jedinstven devizni saldo), pa se ovde vraćaju da bi revalorizacija mogla
+   * da ih prijavi korisniku umesto da tiho ispadnu iz bilansa.
+   *
+   * `opts.fxCurrency` sužava na grupe koje SADRŽE tu valutu (tj. na one koje su
+   * isključene iz obračuna baš te valute); bez njega vraća sve mešane grupe.
+   *
+   * Isti WHERE (presek, posted+locked, neuparen do preseka) kao `listOpenItems` —
+   * inače bi se prijavljivale grupe koje uopšte nisu u obračunu.
+   */
+  async listMixedFxCurrencyGroups(
+    asOf?: Date,
+    opts?: OpenItemsOptions,
+  ): Promise<MixedFxCurrencyGroup[]> {
+    const cutoff = asOf ?? new Date();
+    const companyFilter =
+      opts?.companyId != null
+        ? Prisma.sql`AND je.company_id = ${opts.companyId}`
+        : Prisma.empty;
+    const currencyFilter = opts?.fxCurrency
+      ? Prisma.sql`AND bool_or(le.fx_currency = ${opts.fxCurrency})`
+      : Prisma.empty;
+
+    const rows = await this.prisma.$queryRaw<MixedFxRawRow[]>(
+      Prisma.sql`
+        SELECT
+          le.account_code AS account_code,
+          le.analytical_code AS analytical_code,
+          le.document_number AS document_number,
+          COALESCE(SUM(le.debit) - SUM(le.credit), 0) AS balance,
+          array_agg(DISTINCT le.fx_currency) FILTER (WHERE le.fx_currency IS NOT NULL) AS currencies,
+          array_agg(le.id ORDER BY le.id) AS ledger_entry_ids
+        FROM ledger_entries le
+        JOIN journal_entries je ON je.id = le.journal_entry_id
+        JOIN saldakonto_accounts sa ON sa.account = le.account_code
+        WHERE je.status IN ('posted', 'locked')
+          AND je.posting_date <= ${cutoff}
+          AND (le.reconciled_at IS NULL OR le.reconciled_at > ${cutoff})
+          AND sa.tracks_open_items = TRUE
+          ${companyFilter}
+        GROUP BY le.account_code, le.analytical_code, le.document_number
+        HAVING COALESCE(SUM(le.debit) - SUM(le.credit), 0) <> 0
+          AND COUNT(DISTINCT le.fx_currency) > 1
+          ${currencyFilter}
+        ORDER BY le.account_code, le.analytical_code, le.document_number
+      `,
+    );
+
+    return rows.map((r) => ({
+      accountCode: r.account_code,
+      analyticalCode: r.analytical_code,
+      documentNumber: r.document_number,
+      currencies: [...(r.currencies ?? [])].sort(),
+      balance: new Prisma.Decimal(r.balance ?? 0),
+      ledgerEntryIds: r.ledger_entry_ids ?? [],
+    }));
   }
 
   /**

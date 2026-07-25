@@ -303,8 +303,29 @@ export class GlWriteService {
    * Storno naloga (BigBit — obrni Duguje↔Potražuje). Kreira NOVI nalog sa obrnutim
    * linijama, veže reversesEntryId=izvorni, i na izvornom postavlja reversedByEntryId.
    * Izvorni mora biti posted (ne draft, ne već storniran).
+   *
+   * DATUMI (`opts`) — PODRAZUMEVANO PONAŠANJE SE NE MENJA: bez `opts` storno ide sa
+   * `postingDate = danas` i `documentDate` izvornog naloga, tačno kao do sada (storno
+   * fakture i ostali pozivaoci). `opts.postingDate` postoji zbog naloga koji se čitaju
+   * PRESEKOM NA DAN (revalorizacija deviznih stavki — open-items filtrira
+   * `je.posting_date <= presek`): storno naloga za 31.12. sa današnjim datumom knjiženja
+   * pada u naredni period, pa bi original ušao u ponovni obračun a storno ne — pogrešan
+   * iznos I pogrešan predznak kursne razlike. Takav pozivalac prosleđuje presek izvornog
+   * obračuna. `opts.documentDate` prati isti razlog (i određuje godinu numeracije).
    */
-  async reverse(entryId: number, actorUserId?: number) {
+  async reverse(
+    entryId: number,
+    actorUserId?: number,
+    opts?: { postingDate?: Date; documentDate?: Date },
+  ) {
+    const overrideDocumentDate = this.parseOptionalDate(
+      opts?.documentDate,
+      "documentDate",
+    );
+    const overridePostingDate = this.parseOptionalDate(
+      opts?.postingDate,
+      "postingDate",
+    );
     const source = await this.prisma.journalEntry.findUnique({
       where: { id: entryId },
       include: { lines: true },
@@ -322,8 +343,11 @@ export class GlWriteService {
         `Nalog ${entryId} je već storniran nalogom ${source.reversedByEntryId}.`,
       );
 
+    const documentDate = overrideDocumentDate ?? source.documentDate;
+    const postingDate = overridePostingDate ?? new Date();
+
     return this.prisma.$transaction(async (tx) => {
-      const year = source.documentDate.getFullYear();
+      const year = documentDate.getFullYear();
       const number = await this.posting.nextJournalNumber(
         tx,
         source.companyId,
@@ -336,8 +360,8 @@ export class GlWriteService {
           orderTypeCode: source.orderTypeCode,
           year,
           companyId: source.companyId,
-          documentDate: source.documentDate,
-          postingDate: new Date(),
+          documentDate,
+          postingDate,
           status: "posted",
           createdByUserId: actorUserId ?? null,
           reversesEntryId: source.id,
@@ -348,10 +372,19 @@ export class GlWriteService {
               // Storno = zameni strane.
               debit: l.credit,
               credit: l.debit,
+              // DEVIZNI par se ogleda ISTO kao dinarski (review C2): bez ovoga se
+              // dinarska strana poništi a devizna ostane, pa devizni saldo otvorene
+              // stavke ostane udvostručen i revalorizacija knjiži ogroman lažan iznos.
+              fxDebit: l.fxCredit,
+              fxCredit: l.fxDebit,
+              fxCurrency: l.fxCurrency,
               description: `STORNO: ${l.description ?? ""}`.trim(),
               documentNumber: l.documentNumber,
               dueDate: l.dueDate,
               currency: l.currency,
+              // Mesto troška prati stavku — inače storno „prebaci" trošak sa pozicije
+              // na sintetiku i saldo po poslovima (B2) ostane zaglavljen.
+              costCenter: l.costCenter,
             })),
           },
         },
@@ -362,6 +395,17 @@ export class GlWriteService {
       });
       return { stornoEntryId: storno.id, number, reversedEntryId: source.id };
     });
+  }
+
+  /** Opcioni datum iz `opts` — nevalidan Date je programska greška pozivaoca → 400. */
+  private parseOptionalDate(
+    value: Date | undefined,
+    label: string,
+  ): Date | undefined {
+    if (value === undefined || value === null) return undefined;
+    if (!(value instanceof Date) || Number.isNaN(value.getTime()))
+      throw new BadRequestException(`Neispravan datum storna (${label}).`);
+    return value;
   }
 
   private async getEntryOrThrow(id: number) {

@@ -631,6 +631,26 @@ export interface FxRevaluationItem {
   ledgerEntryIds: number[];
 }
 
+/**
+ * Grupa koju obračun NE knjiži (ili knjiži samo uz „uključi sporne") — 1:1 sa
+ * `FxRevaluationFlaggedItem`. Prikazuje se korisniku kao greška podataka; tiho
+ * ispadanje bi značilo izgubljen deo bilansa.
+ *   MIXED_CURRENCY | NO_FX_PAIR | FX_SIGN_MISMATCH | RATE_MISMATCH
+ */
+export interface FxRevaluationFlaggedItem {
+  accountCode: string;
+  analyticalCode: number | null;
+  documentNumber: string | null;
+  code: string;
+  /** Srpska poruka sa uzrokom i uputstvom. */
+  message: string;
+  fxAmount: string | null;
+  bookedAmount: string;
+  impliedRate: string | null;
+  currencies?: string[];
+  included: boolean;
+}
+
 /** Pregled revalorizacije (bez upisa) — 1:1 sa `FxRevaluationPreview`. */
 export interface FxRevaluationPreview {
   asOfDate: string;
@@ -640,12 +660,20 @@ export interface FxRevaluationPreview {
   rate: string;
   /** Datum kursne liste koja je stvarno upotrebljena (vikend/praznik → raniji dan). */
   rateDate: string;
+  /** true kad kursna lista za dan preseka nije uneta (obračun po zastarelom kursu). */
+  staleRate: boolean;
   rateType: string;
   items: FxRevaluationItem[];
   itemsCount: number;
   gainTotal: string;
   lossTotal: string;
   netAmount: string;
+  /** Grupe sa više valuta u istoj grupi — isključene iz obračuna. */
+  mixedCurrencyGroups: FxRevaluationFlaggedItem[];
+  /** Sporne grupe (devizni i dinarski saldo se ne slažu) — knjiže se samo uz `force`. */
+  flagged: FxRevaluationFlaggedItem[];
+  /** Da li su sporne grupe uključene u prikazane zbirove. */
+  forced: boolean;
 }
 
 /** Red liste obračuna — 1:1 sa `FxRevaluationRun` (tabela fx_revaluation_runs). */
@@ -655,6 +683,8 @@ export interface FxRevaluationRun {
   currency: string;
   companyId: number;
   rateUsed: string;
+  /** Dan kursne liste koja je upotrebljena (revizorski trag; null za stare obračune). */
+  rateDate: string | null;
   gainAmount: string;
   lossAmount: string;
   itemsCount: number;
@@ -672,12 +702,15 @@ export interface FxRevaluationRunResult {
   currency: string;
   companyId: number;
   rateUsed: string;
+  rateDate: string | null;
   gainAmount: string;
   lossAmount: string;
   itemsCount: number;
   journalEntryId: number;
   journalNumber: string;
   status: string;
+  mixedCurrencyGroups: FxRevaluationFlaggedItem[];
+  flagged: FxRevaluationFlaggedItem[];
 }
 
 export interface FxRevaluationFilters {
@@ -686,6 +719,10 @@ export interface FxRevaluationFilters {
   /** Devizna valuta (EUR, USD…); prazno → upit se ne montira. */
   currency: string;
   companyId?: number;
+  /** Svesno dozvoli kurs sa ranijeg dana (bez ovoga backend vraća 409). */
+  allowStaleRate?: boolean;
+  /** Svesno uključi sporne grupe u zbirove pregleda. */
+  force?: boolean;
 }
 
 const FX_KEY = ['saldakonti', 'fx-revaluation'] as const;
@@ -695,7 +732,8 @@ const FX_KEY = ['saldakonti', 'fx-revaluation'] as const;
  * /saldakonti/fx-revaluation/preview?asOfDate=&currency=. Ne upisuje ništa: lista
  * otvorenih deviznih stavki, kurs na dan, knjigovodstvena vs. nova protivvrednost i
  * razlika po stavci. Backend vraća 404 kad nema kursne liste za taj dan, 409 kad je
- * presek u budućnosti. Permisija SALDAKONTI_READ.
+ * presek u budućnosti I kad kursna lista za dan preseka nije uneta (tada se ponavlja
+ * uz `allowStaleRate`). Permisija SALDAKONTI_READ.
  */
 export function useFxRevaluationPreview(filters: FxRevaluationFilters | null) {
   const query = filters
@@ -703,6 +741,8 @@ export function useFxRevaluationPreview(filters: FxRevaluationFilters | null) {
         asOfDate: filters.asOfDate,
         currency: filters.currency,
         companyId: filters.companyId,
+        allowStaleRate: filters.allowStaleRate ? '1' : undefined,
+        force: filters.force ? '1' : undefined,
       })
     : '';
   return useQuery({
@@ -731,6 +771,10 @@ export function useFxRevaluationList(params: { year?: number; currency?: string 
  * i zapis obračuna. Backend vraća 409 kad je isti presek već obračunat (storniraj pa
  * ponovi) i 422 kad nema nijedne razlike. Menja glavnu knjigu → invalidira ceo
  * `saldakonti` ključ. Permisija SALDAKONTI_RECONCILE.
+ *
+ * `expectedRate`/`expectedNetAmount` su vrednosti IZ PREGLEDA koji je korisnik video —
+ * ako se u međuvremenu ispravi kursna lista ili proknjiži devizni nalog, backend vraća
+ * 409 umesto da proknjiži iznos koji niko nije odobrio. Šalju se uvek kad pregled postoji.
  */
 export function useFxRevaluationRun() {
   const invalidate = useInvalidateSaldakonti();
@@ -740,6 +784,10 @@ export function useFxRevaluationRun() {
       currency: string;
       companyId?: number;
       note?: string;
+      force?: boolean;
+      allowStaleRate?: boolean;
+      expectedRate?: string;
+      expectedNetAmount?: string;
     }) =>
       apiFetch<Envelope<FxRevaluationRunResult>>(`${BASE}/fx-revaluation/run`, {
         method: 'POST',
