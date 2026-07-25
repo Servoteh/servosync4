@@ -63,22 +63,45 @@ export function DetaljArhiva({ sast, weeklyDiff }: { sast: SastanakFull; weeklyD
    * bili (nema stanja „datum promenjen, PDF star", koje je i bio koren pritužbe).
    * Obrnut redosled bi u istom kvaru ostavio zaključan zapis koji tvrdi jedan datum
    * dok priloženi PDF nosi drugi, i „Pošalji ponovo" bi taj razlaz i razaslao mejlom.
-   * Ostatak rizika je uzak i bezopasan: padne li baš PATCH posle uspešnog upload-a,
-   * arhiva već drži PDF sa ISPRAVNIM (željenim) datumom, a kolona kasni — korisnik
-   * dobija jasnu grešku i ponavlja radnju (idempotentno: nov PDF + isti PATCH).
+   *
+   * `pdfZamenjen` prati gde je tok pukao, jer se ta dva kvara MORAJU različito javiti
+   * (review D6): pad PRE upload-a ne menja ništa, a pad POSLE njega ostavlja u arhivi
+   * nov PDF sa željenim datumom dok kolona (i budući mejl) još nose stari. Poruka koja
+   * bi u oba slučaja tvrdila „ništa nije promenjeno" bila bi neistinita.
    */
   async function sacuvajDatum(datum: string) {
     setDatumBusy(true);
+    let pdfZamenjen = false;
     try {
       await regenerisi(datum);
-      await setDatumM.mutateAsync({ id: sast.id, zapisnikDatum: datum });
+      pdfZamenjen = true;
+      const res = await setDatumM.mutateAsync({ id: sast.id, zapisnikDatum: datum });
+      // Echo provera (review D10): BE i FE se deploy-uju nezavisno, a globalni
+      // ValidationPipe je `whitelist: true` BEZ `forbidNonWhitelisted` — stariji
+      // backend bi `zapisnikDatum` TIHO odbacio i vratio 200, dok bi PDF već nosio
+      // nov datum. RPC vraća upisanu vrednost, pa je poredimo sa traženom.
+      const upisan = String(res.data?.zapisnik_datum ?? '').slice(0, 10);
+      if (upisan && upisan !== datum) {
+        throw new Error(
+          `Server je upisao datum ${formatDatum(upisan)} umesto ${formatDatum(datum)}.`,
+        );
+      }
+      if (!upisan) {
+        throw new Error(
+          'Server nije potvrdio novi datum (verovatno starija verzija backend-a).',
+        );
+      }
       await fullQ.refetch();
       setDatumOpen(false);
       toast(`Datum zapisnika je sada ${formatDatum(datum)}; PDF u arhivi je zamenjen.`);
     } catch (e) {
+      const uzrok = e instanceof Error ? e.message : 'Ispravka datuma nije uspela.';
       alert(
-        `${e instanceof Error ? e.message : 'Ispravka datuma nije uspela.'}\n\n` +
-          'Datum zapisnika NIJE promenjen — pokušaj ponovo.',
+        pdfZamenjen
+          ? `${uzrok}\n\nPAŽNJA: PDF u arhivi je VEĆ zamenjen i nosi ${formatDatum(datum)}, ` +
+              'ali datum na sastanku nije upisan — zapis i PDF se trenutno razlikuju. ' +
+              'Ponovi radnju da se usklade (bezbedno je ponoviti).'
+          : `${uzrok}\n\nNišta nije promenjeno — ni datum ni PDF. Pokušaj ponovo.`,
       );
     } finally {
       setDatumBusy(false);

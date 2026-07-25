@@ -744,29 +744,58 @@ export const useUpdateSastanak = () =>
 export const useDeleteSastanak = () =>
   useSastanciMutation<{ id: string }>((v) => del(`/${v.id}`));
 
+/** Odgovor `sast_zakljucaj_sastanak` (sirov jsonb iz sy15 RPC-a → snake_case).
+ *  `ok:false` + `reason:'already_locked'` NIJE greška (drugi klik / druga sesija).
+ *  `zapisnik_datum` je ECHO upisane vrednosti — FE ga poredi sa poslatom da uhvati
+ *  stariji backend koji je polje odbacio na ValidationPipe-u. */
+export interface LockResult {
+  ok: boolean;
+  reason?: 'already_locked';
+  sastanak_id: string;
+  zakljucan_at?: string;
+  zapisnik_datum?: string | null;
+}
+
 /** Zaključaj (RPC sast_zakljucaj_sastanak; pdfStoragePath upisan PRE meeting_locked).
  *  `zapisnikDatum` ('YYYY-MM-DD') je datum održavanja koji nosi zapisnik — ulazi u ISTI
  *  RPC poziv jer sy15 triger iz njega gradi payload mejla (zahtev 014/26). */
 export const useLockSastanak = () =>
-  useSastanciMutation<{
-    id: string;
-    clientEventId: string;
-    pdfStoragePath?: string;
-    zapisnikDatum?: string;
-  }>((v) =>
-    post(`/${v.id}/lock`, {
+  useSastanciMutation<
+    {
+      id: string;
+      clientEventId: string;
+      pdfStoragePath?: string;
+      zapisnikDatum?: string;
+    },
+    TxResponse<LockResult>
+  >((v) =>
+    post<LockResult>(`/${v.id}/lock`, {
       clientEventId: v.clientEventId,
       pdfStoragePath: v.pdfStoragePath,
       zapisnikDatum: v.zapisnikDatum,
     }),
   );
 
+/** Odgovor `sast_set_zapisnik_datum` (sirov jsonb iz sy15 RPC-a → snake_case).
+ *  `zapisnik_datum` je ECHO stvarno upisane vrednosti — FE ga poredi sa traženom
+ *  da uhvati stariji backend koji je polje tiho odbacio na ValidationPipe-u. */
+export interface SetZapisnikDatumResult {
+  ok: boolean;
+  sastanak_id: string;
+  zapisnik_datum: string | null;
+}
+
 /** Ispravi datum zapisnika i POSLE zaključavanja (RPC sast_set_zapisnik_datum;
  *  `SASTANCI_MANAGE` + rukovodstvo u sy15). Ne šalje mejlove — PDF se re-generiše
  *  posebno, „Pošalji ponovo" ostaje svestan klik. */
 export const useSetZapisnikDatum = () =>
-  useSastanciMutation<{ id: string; zapisnikDatum: string }>((v) =>
-    patch(`/${v.id}/zapisnik-datum`, { zapisnikDatum: v.zapisnikDatum }),
+  useSastanciMutation<
+    { id: string; zapisnikDatum: string },
+    TxResponse<SetZapisnikDatumResult>
+  >((v) =>
+    patch<SetZapisnikDatumResult>(`/${v.id}/zapisnik-datum`, {
+      zapisnikDatum: v.zapisnikDatum,
+    }),
   );
 
 /**

@@ -5,15 +5,29 @@
 -- Snimljeno: 2026-07-25, `pg_get_functiondef` sa žive sy15 baze
 --            (ssh ubuntusrv → docker exec sy15-db psql -U supabase_admin -d postgres).
 --
--- Vraćanje na staro stanje (rollback):
---   1) `DROP FUNCTION public.sast_zakljucaj_sastanak(uuid, text, text, date);`
---      pa pusti CREATE ispod (3-arg verzija) + GRANT blok na dnu.
---   2) Pusti definicije `sast_trg_meeting_locked` i `sastanci_resend_meeting_locked`
---      ispod (CREATE OR REPLACE — bez DROP-a).
---   3) `DROP FUNCTION IF EXISTS public.sast_set_zapisnik_datum(uuid, date);` (nova fn).
---   4) Kolona `sastanci.zapisnik_datum` sme da ostane (NULL = ponašanje kao pre);
---      brisanje samo ako se paket povlači u celosti:
---      `ALTER TABLE public.sastanci DROP COLUMN IF EXISTS zapisnik_datum;`
+-- ⚠️ OVAJ FAJL JE IZVRŠAN ROLLBACK — pusti ga CEO, ne parče po parče:
+--     ssh ubuntusrv 'docker exec -i sy15-db psql -U supabase_admin -d postgres' < ovaj_fajl
+--   Sve je u jednoj transakciji (BEGIN…COMMIT), pa ili prođe celo ili ništa.
+--
+--   Prvi `DROP` (4-arg) je OBAVEZAN i mora PRE `CREATE`-a 3-arg verzije: bez njega
+--   bi u bazi ostala DVA overload-a (`uuid,text,text` i `uuid,text,text,date`), pa bi
+--   SVAKI poziv sa 3 argumenta pao na 42725 „function ... is not unique" — a tako
+--   zovu i 3.0 backend i 1.0 (`sastanciArhiva.js`), tj. zaključavanje bi stalo u
+--   OBE aplikacije. (Nalaz adversarijalnog review-a 25.07.2026, tačka A1.)
+--
+-- REDOSLED POVLAČENJA PAKETA — PRVO KOD, PA BAZA:
+--   1) Vrati/deploy-uj kod koji NE šalje 4. argument i ne zove `sast_set_zapisnik_datum`
+--      (3.0 backend + 3.0 frontend; u 1.0 nema izmene koja bi to zvala).
+--   2) Tek onda pusti ovaj fajl.
+--   Obrnut redosled ostavlja živ kod koji zove fn koja više ne postoji (42883).
+--
+-- KOLONA SME DA OSTANE: `sastanci.zapisnik_datum` je NULL na svim redovima koje ovaj
+--   rollback dotiče, a NULL = „koristi `datum`", tj. ponašanje pre paketa. Brisanje
+--   samo ako se paket povlači u celosti i trajno:
+--     ALTER TABLE public.sastanci DROP COLUMN IF EXISTS zapisnik_datum;
+--   (Ako se kolona obriše, gornji `sast_trg_meeting_locked`/`sastanci_resend_meeting_locked`
+--    ispod su već stare verzije koje je NE pominju — redosled je i tu: prvo ovaj fajl,
+--    pa DROP COLUMN.)
 --
 -- ACL zatečen na `sast_zakljucaj_sastanak(uuid,text,text)`:
 --   supabase_admin=X/supabase_admin, postgres=X/supabase_admin,
@@ -22,6 +36,12 @@
 -- ACL zatečen na `sastanci_resend_meeting_locked(uuid)`:
 --   =X/supabase_admin (PUBLIC), supabase_admin, postgres, anon, authenticated, service_role
 -- =============================================================================
+
+BEGIN;
+
+-- ── 0) UKLONI 4-arg verziju PRE nego što vratiš 3-arg ────────────────────────
+-- Bez ovoga dobijaš dva overload-a i 42725 na svaki poziv sa 3 argumenta (v. zaglavlje).
+DROP FUNCTION IF EXISTS public.sast_zakljucaj_sastanak(uuid, text, text, date);
 
 -- ── 1) sast_zakljucaj_sastanak(uuid, text, text) — 3-arg verzija PRE izmene ──
 CREATE OR REPLACE FUNCTION public.sast_zakljucaj_sastanak(p_sastanak_id uuid, p_pdf_url text DEFAULT NULL::text, p_pdf_storage_path text DEFAULT NULL::text)
@@ -239,3 +259,14 @@ $function$
 REVOKE ALL ON FUNCTION public.sast_zakljucaj_sastanak(uuid, text, text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.sast_zakljucaj_sastanak(uuid, text, text)
   TO postgres, anon, authenticated, service_role;
+
+COMMENT ON FUNCTION public.sast_zakljucaj_sastanak(uuid, text, text) IS
+  'Atomski zakljucava sastanak: proverava scope, kreira/upisuje arhiva snapshot i menja status u zakljucan.';
+
+-- ── 5) Ukloni fn koje paket uvodi (nema je u stanju pre paketa) ──────────────
+DROP FUNCTION IF EXISTS public.sast_set_zapisnik_datum(uuid, date);
+
+-- ── 6) PostgREST mora da vidi promenjene signature (1.0 zove preko rpc/) ─────
+NOTIFY pgrst, 'reload schema';
+
+COMMIT;

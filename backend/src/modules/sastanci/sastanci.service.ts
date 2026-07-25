@@ -1167,7 +1167,15 @@ export class SastanciService {
     );
   }
 
-  /** Reopen (mgmt): zakljucan → u_toku, očisti zakljucan_* (paritet otvojiPonovo). */
+  /**
+   * Reopen (mgmt): zakljucan → u_toku, očisti zakljucan_* (paritet otvojiPonovo).
+   *
+   * Briše i `zapisnikDatum` (review D7): zapisnik prestaje da postoji kao zvanični
+   * dokument, pa sledeće zaključavanje mora da datum izabere iznova — inače bi stari
+   * (možda baš pogrešan) datum tiho vaskrsao u novom PDF-u i mejlu. Isti brisač
+   * postoji i na DB nivou (grana u `sast_check_not_locked`) jer 1.0 `otvojiPonovo`
+   * ide direktnim PATCH-om na `sastanci`, mimo ovog servisa.
+   */
   reopen(email: string, id: string) {
     return this.withUserMapped(email, async (tx) => {
       const exists = (await tx.sastanak.count({ where: { id } })) > 0;
@@ -1177,6 +1185,7 @@ export class SastanciService {
           status: "u_toku",
           zakljucanAt: null,
           zakljucanByEmail: null,
+          zapisnikDatum: null,
           updatedAt: new Date(),
         },
       });
@@ -2329,10 +2338,26 @@ export class SastanciService {
       );
     }
     // Postojanje + read-vidljivost sastanka (SELECT je `true` za sve prijavljene).
-    await this.withUserMapped(email, async (tx) => {
-      const c = await tx.sastanak.count({ where: { id } });
-      if (!c) throw new NotFoundException(`Sastanak ${id} ne postoji`);
+    // Uz to (review D5) proveravamo STATUS: LOCK tok (bez `requireArhiva`) gađa
+    // sastanak koji tek treba da se zaključa. Ako je već zaključan — drugi klik,
+    // dva taba, ili trka dve sesije — RPC bi vratio `already_locked` kao USPEH, a
+    // ovaj upload bi dotle već prepisao `zapisnik_storage_path` novim PDF-om koji
+    // nosi datum iz OVOG pokušaja. Rezultat: PDF u arhivi i datum u bazi/mejlu se
+    // razilaze. Zato pucamo PRE upload-a — ništa se ne prepisuje.
+    const status = await this.withUserMapped(email, async (tx) => {
+      const s = await tx.sastanak.findUnique({
+        where: { id },
+        select: { status: true },
+      });
+      if (!s) throw new NotFoundException(`Sastanak ${id} ne postoji`);
+      return s.status;
     });
+    if (!requireArhiva && status === "zakljucan") {
+      throw new ConflictException(
+        "Sastanak je već zaključan — zvanični PDF se ne prepisuje kroz zaključavanje. " +
+          "Osveži prikaz; za zamenu PDF-a koristi „Re-generiši PDF“.",
+      );
+    }
     const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
     const storagePath = `${id}/${ts}_zapisnik.pdf`;
     await this.storage.upload(

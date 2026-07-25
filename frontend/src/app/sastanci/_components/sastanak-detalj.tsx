@@ -146,11 +146,27 @@ export function SastanakDetalj({ id, onBack }: { id: string; onBack: () => void 
     setBusy('lock');
     try {
       // Zvanični (zaključani) PDF ne sme na potencijalno stale/failed hook
-      // snapshotove — sveže dohvati weekly-diff i ⭐ prioritet predmeta; ako bilo
-      // koji refetch padne, PREKINI zaključavanje (bez tihog izostavljanja).
-      const [diffRes, prioRes] = await Promise.all([diffQ.refetch(), prioQ.refetch()]);
-      if (diffRes.isError || prioRes.isError) {
-        alert('Ne mogu da učitam podatke za PDF (od prošlog sastanka / prioritet predmeta) — pokušaj ponovo.');
+      // snapshotove — sveže dohvati SAM SASTANAK (tačke/učesnici/akcije), weekly-diff
+      // i ⭐ prioritet predmeta; ako bilo koji refetch padne, PREKINI zaključavanje.
+      // `fullQ` je ovde dodat naknadno (review F19): PRVI, najvažniji PDF se gradio iz
+      // keširanog `sast`, dok ga re-generisanje na zaključanom već čita sveže — pa je
+      // zvanični zapisnik bio jedini koji je mogao da promaši poslednju izmenu.
+      const [fullRes, diffRes, prioRes] = await Promise.all([
+        fullQ.refetch(),
+        diffQ.refetch(),
+        prioQ.refetch(),
+      ]);
+      const fresh = fullRes.data?.data;
+      if (fullRes.isError || diffRes.isError || prioRes.isError || !fresh) {
+        alert('Ne mogu da učitam podatke za PDF (sastanak / od prošlog sastanka / prioritet predmeta) — pokušaj ponovo.');
+        return;
+      }
+      // Jeftin FE guard uz BE proveru (review D5): drugi tab / drugi klik / druga
+      // sesija su možda već zaključali. Bez ovoga bismo upload-om prepisali zvanični
+      // PDF, a `already_locked` bi prošao kao uspeh — PDF i datum bi se razišli.
+      if (fresh.status === 'zakljucan') {
+        alert('Sastanak je u međuvremenu već zaključan — prikaz je osvežen. Za zamenu PDF-a koristi „Re-generiši PDF" u tabu Arhiva.');
+        setLockOpen(false);
         return;
       }
       const freshDd = diffRes.data?.data;
@@ -164,15 +180,25 @@ export function SastanakDetalj({ id, onBack }: { id: string; onBack: () => void 
         : null;
       // Izabrani datum ide i u PDF (override — kolona se upisuje tek u /lock) i u
       // sam /lock, da ga sy15 triger uhvati u payload-u mejla iz ISTOG UPDATE-a.
-      const blob = await generateSastanakPdf(buildPdfInput(sast, freshDiff, prioRes.data?.data, zapisnikDatum));
+      const blob = await generateSastanakPdf(buildPdfInput(fresh, freshDiff, prioRes.data?.data, zapisnikDatum));
       const cid = newClientEventId();
       const up = await uploadPdf.mutateAsync({ id: sast.id, blob, clientEventId: cid });
-      await lock.mutateAsync({
+      const res = await lock.mutateAsync({
         id: sast.id,
         clientEventId: cid,
         pdfStoragePath: up.data.storagePath,
         zapisnikDatum,
       });
+      // Echo provera (review D10): FE i BE se deploy-uju nezavisno, a globalni
+      // ValidationPipe (`whitelist: true` bez `forbidNonWhitelisted`) bi na starijem
+      // backendu TIHO odbacio `zapisnikDatum` — PDF bi nosio jedan, a mejl drugi datum.
+      const upisan = String(res.data?.zapisnik_datum ?? '').slice(0, 10);
+      if (res.data?.ok !== false && upisan && upisan !== zapisnikDatum) {
+        alert(
+          `Sastanak je zaključan, ali je upisan datum ${formatDatum(upisan)} umesto ${formatDatum(zapisnikDatum)}. ` +
+            'Ispravi ga kroz „Ispravi datum zapisnika" u tabu Arhiva.',
+        );
+      }
       setLockOpen(false);
       await fullQ.refetch();
     } catch (e) {

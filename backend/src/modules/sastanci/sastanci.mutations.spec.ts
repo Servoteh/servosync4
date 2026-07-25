@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   NotFoundException,
 } from "@nestjs/common";
@@ -986,5 +987,55 @@ describe("SastanciService — datum zapisnika (zahtev 014/26)", () => {
       plainToInstance(SetZapisnikDatumDto, { zapisnikDatum: "2026-02-31" }),
     );
     expect(errors.some((e) => e.property === "zapisnikDatum")).toBe(true);
+  });
+
+  /* Review D5 — trka dva zaključavanja. RPC na drugom pokušaju vrati
+   * `already_locked` (200, ne greška), pa bi bez ovog guarda upload PRE njega već
+   * prepisao `zapisnik_storage_path` PDF-om iz DRUGOG pokušaja: arhiva bi nosila
+   * jedan datum, a baza/mejl (iz prvog lock-a) drugi. */
+  it("uploadArhivaPdf LOCK tok na VEĆ zaključanom → 409 BEZ upload-a u storage", async () => {
+    const { svc, tx, storage } = makeSvc();
+    tx.sastanak.findUnique.mockResolvedValueOnce({ status: "zakljucan" });
+    await expect(
+      svc.uploadArhivaPdf("u@servoteh.com", ID, {
+        buffer: Buffer.from("%PDF-"),
+        mimetype: "application/pdf",
+      } as Express.Multer.File),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(storage.upload).not.toHaveBeenCalled();
+  });
+
+  it("uploadArhivaPdf REGEN tok (requireArhiva) na zaključanom PROLAZI — to mu je i svrha", async () => {
+    const { svc, tx, storage } = makeSvc();
+    tx.sastanak.findUnique.mockResolvedValueOnce({ status: "zakljucan" });
+    tx.sastanakArhiva.updateMany.mockResolvedValueOnce({ count: 1 });
+    const out = await svc.uploadArhivaPdf(
+      "u@servoteh.com",
+      ID,
+      {
+        buffer: Buffer.from("%PDF-"),
+        mimetype: "application/pdf",
+      } as Express.Multer.File,
+      true,
+    );
+    expect(storage.upload).toHaveBeenCalled();
+    expect(out.data.arhivaUpdated).toBe(true);
+  });
+
+  /* Review D7 — bez brisanja bi ponovno zaključavanje vaskrslo stari (možda baš
+   * pogrešan) datum, bez ikakvog traga u UI-ju. Isti brisač je i na DB nivou
+   * (grana u sast_check_not_locked) jer 1.0 reopen ide direktnim PATCH-om. */
+  it("reopen: briše i zapisnikDatum (ne samo zakljucan_*)", async () => {
+    const { svc, tx } = makeSvc();
+    await svc.reopen("u@servoteh.com", ID);
+    const data = (
+      tx.sastanak.updateMany.mock.calls as unknown as { data: Rec }[][]
+    )[0][0].data;
+    expect(data).toMatchObject({
+      status: "u_toku",
+      zakljucanAt: null,
+      zakljucanByEmail: null,
+      zapisnikDatum: null,
+    });
   });
 });
