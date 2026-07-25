@@ -54,6 +54,8 @@ function prismaMock() {
     user: {
       findUnique: jest.fn().mockResolvedValue({ workerId: null }),
       findFirst: jest.fn().mockResolvedValue(null),
+      // `findMany` = planeri predmeta (016/26 launch hook); default = prazno.
+      findMany: jest.fn().mockResolvedValue([]),
     },
     // Kriterijum tehnologa (§6.3 helper): default = vrsta 'Tehnolog' postoji (id 1).
     workerType: { findMany: jest.fn().mockResolvedValue([{ id: 1 }]) },
@@ -65,6 +67,9 @@ function prismaMock() {
       findUnique: jest.fn(),
       findMany: jest.fn().mockResolvedValue([]),
     },
+    customer: { findUnique: jest.fn().mockResolvedValue(null) },
+    // Planeri predmeta (016/26 launch hook): default = nema dodeljenih → hook no-op.
+    predmetPlaner: { findMany: jest.fn().mockResolvedValue([]) },
     handoverDraft: { findMany: jest.fn().mockResolvedValue([]) },
     handoverDraftItem: { findMany: jest.fn().mockResolvedValue([]) },
     handoverStatus: { findMany: jest.fn().mockResolvedValue([]) },
@@ -1111,6 +1116,77 @@ describe("HandoversService", () => {
         }),
       });
       expect(result.data.workOrder.id).toBe(42);
+    });
+
+    it("obaveštava planere predmeta (+ globalne) mejlom o lansiranju (016/26)", async () => {
+      prisma.drawingHandover.findUnique.mockResolvedValue(approvedHandover);
+      prisma.workOrder.findFirst.mockResolvedValue(null);
+      mockWorkOrderContext();
+      prisma.workOrder.create.mockResolvedValue({
+        id: 100,
+        identNumber: "P100/1",
+        variant: 0,
+        projectId: 3,
+        drawingNumber: "D-10",
+        revision: "B",
+        pieceCount: 4,
+        handoverStatusId: 3,
+      });
+      // Predmetni planer (55) + globalni (56); oba se razrešavaju u aktivne naloge.
+      prisma.predmetPlaner.findMany.mockResolvedValue([
+        { plannerUserId: 55 },
+        { plannerUserId: 56 },
+      ]);
+      prisma.user.findMany.mockResolvedValue([
+        { id: 55, email: "planer@servoteh.com", fullName: "Planer Predmeta" },
+        { id: 56, email: "global@servoteh.com", fullName: "Global Planer" },
+      ]);
+      prisma.project.findUnique.mockResolvedValue({
+        projectNumber: "9000",
+        description: "Perun",
+        customerId: 7,
+      });
+
+      await service.launch(5, {}, actor);
+
+      // OR filter: planeri predmeta 3 ∪ globalni (project_id IS NULL).
+      expect(prisma.predmetPlaner.findMany).toHaveBeenCalledWith(
+        containing({ where: { OR: [{ projectId: 3 }, { projectId: null }] } }),
+      );
+      expect(mail.send).toHaveBeenCalledTimes(2);
+      const recipients = mail.send.mock.calls.map(
+        (c) => (c[0] as { to: string }).to,
+      );
+      expect(recipients).toEqual(
+        expect.arrayContaining([
+          "planer@servoteh.com",
+          "global@servoteh.com",
+        ]),
+      );
+      expect((mail.send.mock.calls[0][0] as { subject: string }).subject).toMatch(
+        /P100\/1/,
+      );
+    });
+
+    it("bez dodeljenih planera launch ne šalje obaveštenje (016/26)", async () => {
+      prisma.drawingHandover.findUnique.mockResolvedValue(approvedHandover);
+      prisma.workOrder.findFirst.mockResolvedValue(null);
+      mockWorkOrderContext();
+      prisma.workOrder.create.mockResolvedValue({
+        id: 100,
+        identNumber: "P100/1",
+        variant: 0,
+        projectId: 3,
+        drawingNumber: "D-10",
+        revision: "B",
+        pieceCount: 4,
+        handoverStatusId: 3,
+      });
+      prisma.predmetPlaner.findMany.mockResolvedValue([]);
+
+      await service.launch(5, {}, actor);
+
+      expect(mail.send).not.toHaveBeenCalled();
     });
 
     it("eksplicitni launch dueDate ima prednost nad rokom primopredaje (override §6.5.1)", async () => {

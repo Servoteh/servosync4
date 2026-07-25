@@ -40,9 +40,11 @@ import {
 } from "./dto/podesavanja-org.dto";
 import {
   SetPredmetAktivacijaDto,
+  SetPredmetPlaneriDto,
   SetPrioritetIdsDto,
   SetPrioritetMaxDto,
 } from "./dto/podesavanja-predmet.dto";
+import { PredmetPlaneriService } from "./predmet-planeri.service";
 import {
   BulkJobPositionProfileDto,
   CreateDepartmentDto,
@@ -80,6 +82,7 @@ export class PodesavanjaController {
   constructor(
     private readonly settings: PodesavanjaService,
     private readonly users: PodesavanjaUsersService,
+    private readonly planeri: PredmetPlaneriService,
   ) {}
 
   // ----- Korisnici i pristup (settings.users) -----
@@ -503,6 +506,35 @@ export class PodesavanjaController {
     @Body() dto: SetPrioritetIdsDto,
   ) {
     return this.settings.setPredmetPrioritet(req.user.email, dto.itemIds);
+  }
+
+  // ----- Planeri predmeta (zahtev 016/26 — obaveštenje o lansiranju) -----
+  // Literali (`planeri`, `planeri/globalni`) MORAJU pre `:itemId` (route ordering).
+  // 3.0-native (glavna baza), ne sy15 RPC — vidi PredmetPlaneriService.
+
+  @Get("predmet-aktivacija/planeri")
+  @RequirePermission(PERMISSIONS.SETTINGS_PREDMET_AKTIVACIJA)
+  planeriOverview() {
+    return this.planeri.overview();
+  }
+
+  @Put("predmet-aktivacija/planeri/globalni")
+  @RequirePermission(PERMISSIONS.SETTINGS_PREDMET_AKTIVACIJA)
+  setGlobalniPlaneri(
+    @Req() req: AuthedRequest,
+    @Body() dto: SetPredmetPlaneriDto,
+  ) {
+    return this.planeri.setGlobals(dto.planerUserIds, req.user.userId);
+  }
+
+  @Put("predmet-aktivacija/:itemId/planeri")
+  @RequirePermission(PERMISSIONS.SETTINGS_PREDMET_AKTIVACIJA)
+  setPredmetPlaneri(
+    @Req() req: AuthedRequest,
+    @Param("itemId", ParseIntPipe) itemId: number,
+    @Body() dto: SetPredmetPlaneriDto,
+  ) {
+    return this.planeri.setForProject(itemId, dto.planerUserIds, req.user.userId);
   }
 
   @Post("predmet-aktivacija/:itemId")

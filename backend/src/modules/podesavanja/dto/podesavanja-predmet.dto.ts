@@ -48,3 +48,18 @@ export class SetPrioritetMaxDto {
   @Type(() => Number)
   max!: number;
 }
+
+/** Najviše planera po predmetu/globalno (usklađeno sa servisom PredmetPlaneriService). */
+export const PLANERI_MAX_PER_TARGET = 20;
+
+/**
+ * Zameni set planera (predmeta ili globalnih) — „replace" semantika (zahtev 016/26).
+ * `planerUserIds` = meki ref na `users.id`; prazan niz = ukloni sve planere te mete.
+ */
+export class SetPredmetPlaneriDto {
+  @IsArray()
+  @ArrayMaxSize(PLANERI_MAX_PER_TARGET)
+  @IsInt({ each: true })
+  @Type(() => Number)
+  planerUserIds!: number[];
+}
