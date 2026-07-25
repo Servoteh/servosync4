@@ -292,11 +292,11 @@ export class ReconciliationService {
           `Stavka ${r.id}: konto ${r.account_code} nije u saldakonto registru.`,
         );
       }
-      // 'locked' se prihvata jednako kao 'posted' (review Batch A VISOK): lock perioda
+      // 'LOCKED' se prihvata jednako kao 'POSTED' (review Batch A VISOK): lock perioda
       // (POST /gl/journal/lock-older) ne sme da spreči uparivanje otvorenog duga —
       // zaključan nalog je i dalje proknjižen. Konzistentno sa open-items / partner-card /
-      // limit / payment-preparation čitaocima (IN ('posted','locked')).
-      if (r.status !== "posted" && r.status !== "locked") {
+      // limit / payment-preparation čitaocima (IN ('POSTED','LOCKED')).
+      if (r.status !== "POSTED" && r.status !== "LOCKED") {
         throw new UnprocessableEntityException(
           `Stavka ${r.id}: nalog nije proknjižen (status ${r.status}).`,
         );

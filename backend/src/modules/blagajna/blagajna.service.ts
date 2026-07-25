@@ -1,3 +1,4 @@
+import { businessYear } from "../../common/business-date";
 import {
   ConflictException,
   Injectable,
@@ -129,7 +130,7 @@ export class BlagajnaService {
         tx,
         journalId,
         dto.direction,
-        entryDate.getFullYear(),
+        businessYear(entryDate),
       );
 
       // „Ne u minus" se proverava UNUTAR transakcije, POSLE advisory locka u

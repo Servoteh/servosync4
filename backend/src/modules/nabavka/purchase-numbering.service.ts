@@ -1,3 +1,4 @@
+import { businessYear } from "../../common/business-date";
 import { Injectable } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 
@@ -30,7 +31,7 @@ export class PurchaseNumberingService {
     model: "purchaseRequest" | "purchaseOrder",
     field: "requestNumber" | "orderNumber",
   ): Promise<string> {
-    const year = new Date().getFullYear();
+    const year = businessYear();
     const suffix = `/${year}`;
     const lockKey = `nabavka:${model}:${year}`;
 

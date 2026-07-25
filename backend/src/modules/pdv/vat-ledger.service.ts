@@ -92,7 +92,7 @@ export class VatLedgerService {
    * (kao legacy `reversePeriod` + reknjiži — čist period, doc 18 §3.2).
    *
    * Period se određuje po `journal_entries.posting_date` (datum knjiženja =
-   * poreski period). Uzima se SAMO proknjižen nalog (status = 'posted').
+   * poreski period). Uzima se SAMO proknjižen nalog (status = 'POSTED').
    */
   async buildKifKuf(year: number, month: number): Promise<BuildKifKufResult> {
     this.assertPeriod(year, month);
@@ -140,9 +140,9 @@ export class VatLedgerService {
           FROM ledger_entries le
           JOIN journal_entries je ON je.id = le.journal_entry_id
           JOIN vat_account_map vam ON vam.account = le.account_code
-          -- 'locked' MORA biti uključen: zaključan period (lock-older) je i dalje
+          -- 'LOCKED' MORA biti uključen: zaključan period (lock-older) je i dalje
           -- proknjižen — bez ovoga KIF/KUF za zaključan period ostaje prazan.
-          WHERE je.status IN ('posted', 'locked')
+          WHERE je.status IN ('POSTED', 'LOCKED')
             AND EXTRACT(YEAR FROM je.posting_date) = ${year}
             AND EXTRACT(MONTH FROM je.posting_date) = ${month}
           GROUP BY

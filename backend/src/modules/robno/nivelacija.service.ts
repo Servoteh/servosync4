@@ -1,3 +1,4 @@
+import { businessYear } from "../../common/business-date";
 import { Inject, Injectable, Logger, Optional } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import type {
@@ -304,7 +305,7 @@ export class NivelacijaService implements NivelacijaHook {
     const documentTypeCode = opts.documentTypeCode ?? "NIV";
     const documentDate = opts.documentDate ?? new Date();
     const postingDate = opts.postingDate ?? documentDate;
-    const year = opts.year ?? documentDate.getFullYear();
+    const year = opts.year ?? businessYear(documentDate);
     const documentNumber = await this.nextNivNumber(tx, documentTypeCode, year);
 
     const nivDoc = await tx.stockDocument.create({

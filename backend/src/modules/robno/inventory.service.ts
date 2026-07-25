@@ -1,3 +1,4 @@
+import { businessYear } from "../../common/business-date";
 import {
   ConflictException,
   Injectable,
@@ -167,7 +168,7 @@ export class InventoryService {
       );
 
     const countDate = parseDateParam(dto.countDate, "countDate") ?? new Date();
-    const year = countDate.getFullYear();
+    const year = businessYear(countDate);
 
     // Kandidati = artikli sa prometom u magacinu do datuma popisa (preskaču se artikli bez prometa I
     // stanja 0, doc 39 §D). Artikal sa prometom ostaje i ako mu je stanje 0 (operater potvrđuje 0).

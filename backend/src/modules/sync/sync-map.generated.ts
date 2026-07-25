@@ -1643,13 +1643,10 @@ export const SYNC_MAP: TableMapping[] = [
         nullable: true,
         isId: false,
       },
-      {
-        src: "Password",
-        field: "password",
-        type: "String",
-        nullable: true,
-        isId: false,
-      },
+      // "Password" → password NAMERNO IZBAČEN (DB audit DB-049): plaintext legacy
+      // lozinke se ne preslikavaju u 3.0 bazu — 3.0 ih nigde ne koristi, a svaki
+      // dump bi ih raznosio. Pri eventualnoj regeneraciji mape ovo isključenje
+      // MORA da se ponovi (kolona salespeople.password je isprazjnjena na produ).
       {
         src: "Aktivan",
         field: "active",
@@ -3577,13 +3574,9 @@ export const SYNC_MAP: TableMapping[] = [
         nullable: true,
         isId: false,
       },
-      {
-        src: "BBPassword",
-        field: "bbPassword",
-        type: "String",
-        nullable: true,
-        isId: false,
-      },
+      // "BBPassword" → bbPassword NAMERNO IZBAČEN (DB audit DB-049) — kao
+      // salespeople.password gore; kolona registered_user_apps.bb_password
+      // ispražnjena na produ, isključenje ponoviti pri regeneraciji mape.
       {
         src: "BBMacroName",
         field: "bbMacroName",

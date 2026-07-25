@@ -25,6 +25,7 @@
  *   (AlreadyPostedException). draft → obriši i re-post (cascade briše LedgerEntry).
  */
 
+import { businessYear } from "../../../common/business-date";
 import { Injectable, UnprocessableEntityException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../../prisma/prisma.service";
@@ -201,7 +202,7 @@ export class PostingEngineService {
   ): Promise<{ journalEntryId: number; number: string; lineCount: number }> {
     const D = Prisma.Decimal;
     const companyId = params.companyId ?? 0;
-    const year = params.documentDate.getFullYear();
+    const year = businessYear(params.documentDate);
 
     // Balans-kontrola (Decimal je egzaktan → tolerancija 0).
     let totalDebit = new D(0);
@@ -229,7 +230,7 @@ export class PostingEngineService {
         companyId,
         documentDate: params.documentDate,
         postingDate: params.documentDate,
-        status: "posted",
+        status: "POSTED",
         sourceGoodsDocId: params.sourceGoodsDocId ?? null,
         createdByUserId: params.createdByUserId ?? null,
         lines: {
@@ -279,7 +280,7 @@ export class PostingEngineService {
         where: { sourceGoodsDocId: docId },
       });
       if (existing) {
-        if (existing.status !== "draft") {
+        if (existing.status !== "DRAFT") {
           throw new AlreadyPostedException(docId, existing.id);
         }
         // draft → re-post: obriši stari nalog (cascade briše LedgerEntry).
@@ -362,7 +363,7 @@ export class PostingEngineService {
       }
 
       // 8) Kreiraj JournalEntry(draft) + LedgerEntry[] (NSK_ProknjiziStavkeIzRobnog).
-      const year = doc.year ?? doc.postingDate.getFullYear();
+      const year = doc.year ?? businessYear(doc.postingDate);
       const number = await this.nextJournalNumber(
         tx,
         doc.companyId,
@@ -377,7 +378,7 @@ export class PostingEngineService {
           companyId: doc.companyId,
           documentDate: doc.documentDate,
           postingDate: doc.postingDate,
-          status: "draft",
+          status: "DRAFT",
           postingSchemeId: scheme.id,
           sourceGoodsDocId: docId,
           lines: {
@@ -396,10 +397,12 @@ export class PostingEngineService {
         include: { lines: true },
       });
 
-      // Poveži nalog nazad na dokument (meki ref journalEntryId na StockDocument).
+      // Poveži nalog nazad na dokument + status POSTED (DB-067: „proknjižen" je do
+      // sada bio izveden SAMO iz journalEntryId, pa su čitaoci koji filtriraju po
+      // statusu promašivali robne proknjižene dokumente — NIV put status već postavlja).
       await tx.stockDocument.update({
         where: { id: docId },
-        data: { journalEntryId: entry.id },
+        data: { journalEntryId: entry.id, status: "POSTED" },
       });
 
       return grouped;

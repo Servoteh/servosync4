@@ -87,7 +87,7 @@ export class PaymentPreparationService {
       where: {
         accountCode: { in: accountCodes },
         reconciledAt: null,
-        journalEntry: { status: { in: ["posted", "locked"] } },
+        journalEntry: { status: { in: ["POSTED", "LOCKED"] } },
       },
       select: {
         id: true,
