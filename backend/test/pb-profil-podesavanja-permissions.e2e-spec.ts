@@ -15,6 +15,7 @@ import { MojProfilService } from "../src/modules/moj-profil/moj-profil.service";
 import { PodesavanjaController } from "../src/modules/podesavanja/podesavanja.controller";
 import { PodesavanjaService } from "../src/modules/podesavanja/podesavanja.service";
 import { PodesavanjaUsersService } from "../src/modules/podesavanja/podesavanja-users.service";
+import { PredmetPlaneriService } from "../src/modules/podesavanja/predmet-planeri.service";
 import { ALL_ROLE_KEYS } from "../src/common/authz/roles";
 import { roleHasPermission } from "../src/common/authz/role-permissions";
 import { PrismaService } from "../src/prisma/prisma.service";
@@ -127,6 +128,8 @@ describe("Talas D permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     "aiModels",
     "findUser",
   ]);
+  // Planeri predmeta (016/26) — isti gate kao predmet-aktivacija (settings.predmet_aktivacija).
+  const planeriMock = mkMock(["overview", "setForProject", "setGlobals"]);
   // R2 write sloj (D1) — samo DI; ovaj fajl testira READ permisije, write ima svoj e2e.
   const settingsUsersMock = mkMock([
     "invite",
@@ -153,6 +156,7 @@ describe("Talas D permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
         { provide: MojProfilService, useValue: profilMock },
         { provide: PodesavanjaService, useValue: settingsMock },
         { provide: PodesavanjaUsersService, useValue: settingsUsersMock },
+        { provide: PredmetPlaneriService, useValue: planeriMock },
       ],
     })
       .overrideGuard(JwtAuthGuard)
@@ -192,7 +196,7 @@ describe("Talas D permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     return role ? r.set("x-test-role", role) : r;
   };
   const send = (
-    method: "post" | "patch" | "delete",
+    method: "post" | "patch" | "delete" | "put",
     path: string,
     role?: string,
     body?: unknown,
@@ -366,6 +370,45 @@ describe("Talas D permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
       "GET /admin/predmet-aktivacija → 403 za %s",
       async (role) => {
         await get("/admin/predmet-aktivacija", role).expect(403);
+      },
+    );
+    // Planeri predmeta (016/26) — isti gate settings.predmet_aktivacija (GET pregled + 2 PUT).
+    it.each(PREDMET_ROLES)(
+      "GET /admin/predmet-aktivacija/planeri → 200 za %s",
+      async (role) => {
+        await get("/admin/predmet-aktivacija/planeri", role).expect(200);
+      },
+    );
+    it.each(PREDMET_NO)(
+      "GET /admin/predmet-aktivacija/planeri → 403 za %s",
+      async (role) => {
+        await get("/admin/predmet-aktivacija/planeri", role).expect(403);
+      },
+    );
+    it.each(PREDMET_ROLES)(
+      "PUT /admin/predmet-aktivacija/planeri/globalni → 2xx za %s",
+      async (role) => {
+        await send("put", "/admin/predmet-aktivacija/planeri/globalni", role, {
+          planerUserIds: [],
+        }).expect((res) => {
+          if (res.status >= 400) throw new Error(`očekivan 2xx, dobijen ${res.status}`);
+        });
+      },
+    );
+    it.each(PREDMET_NO)(
+      "PUT /admin/predmet-aktivacija/planeri/globalni → 403 za %s",
+      async (role) => {
+        await send("put", "/admin/predmet-aktivacija/planeri/globalni", role, {
+          planerUserIds: [],
+        }).expect(403);
+      },
+    );
+    it.each(PREDMET_NO)(
+      "PUT /admin/predmet-aktivacija/:itemId/planeri → 403 za %s",
+      async (role) => {
+        await send("put", "/admin/predmet-aktivacija/9068/planeri", role, {
+          planerUserIds: [],
+        }).expect(403);
       },
     );
     it.each(AUDIT_ROLES)("GET /admin/audit-log → 200 za %s", async (role) => {

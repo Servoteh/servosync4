@@ -11,6 +11,7 @@ import { JwtAuthGuard } from "../src/modules/auth/jwt-auth.guard";
 import { PodesavanjaController } from "../src/modules/podesavanja/podesavanja.controller";
 import { PodesavanjaService } from "../src/modules/podesavanja/podesavanja.service";
 import { PodesavanjaUsersService } from "../src/modules/podesavanja/podesavanja-users.service";
+import { PredmetPlaneriService } from "../src/modules/podesavanja/predmet-planeri.service";
 import { ALL_ROLE_KEYS } from "../src/common/authz/roles";
 import { roleHasPermission } from "../src/common/authz/role-permissions";
 import { PERMISSIONS } from "../src/common/authz/permissions";
@@ -46,6 +47,11 @@ describe("Podešavanja WRITE permisije (e2e, AUTHZ_ENFORCE=true)", () => {
         
         { provide: PodesavanjaService, useValue: {} },
         { provide: PodesavanjaUsersService, useValue: usersMock },
+        // Planeri predmeta (016/26) — DI za PodesavanjaController; ovaj fajl testira users.* rute.
+        {
+          provide: PredmetPlaneriService,
+          useValue: { overview: jest.fn(), setForProject: jest.fn(), setGlobals: jest.fn() },
+        },
       ],
     })
       .overrideGuard(JwtAuthGuard)
