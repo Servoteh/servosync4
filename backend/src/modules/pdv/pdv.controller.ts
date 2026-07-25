@@ -8,6 +8,7 @@ import {
   Patch,
   Post,
   Query,
+  Req,
   UseGuards,
 } from "@nestjs/common";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
@@ -17,10 +18,16 @@ import { PERMISSIONS } from "../../common/authz/permissions";
 import { VatLedgerService } from "./vat-ledger.service";
 import { PopdvService } from "./popdv.service";
 import { KepuService } from "./kepu.service";
+import { AdvanceVatService } from "./advance-vat.service";
+import type { AuthUser } from "../auth/jwt.strategy";
 import type {
   CreateManualVatEntryDto,
   UpdateManualVatEntryDto,
 } from "./dto/manual-vat-entry.dto";
+import {
+  normalizeListAdvancesQuery,
+  type RecordIncomingAdvanceDto,
+} from "./dto/advance-vat.dto";
 
 /**
  * PDV / POPDV kontroler (Faza 6). Izvedena PDV evidencija iz glavne knjige.
@@ -42,6 +49,7 @@ export class PdvController {
     private readonly vatLedger: VatLedgerService,
     private readonly popdv: PopdvService,
     private readonly kepu: KepuService,
+    private readonly advanceVat: AdvanceVatService,
   ) {}
 
   @Get("kif")
@@ -152,5 +160,66 @@ export class PdvController {
       warehouseId != null ? Number(warehouseId) : undefined,
     );
     return { data, meta: { count: data.length } };
+  }
+
+  // ── Avansni računi (Batch C) ────────────────────────────────────────────────
+  // Ulazni avans: pretporez se priznaje tek PLAĆANJEM, pa je knjiženje u KUF
+  // vezano za `paidAt`, ne za datum dokumenta.
+
+  /** Lista avansa (oba smera) — `direction=in|out`, `unpaidOnly=true`. */
+  @Get("advances")
+  async listAdvances(
+    @Query()
+    query: {
+      direction?: string;
+      partnerId?: string;
+      unpaidOnly?: string;
+      page?: string;
+      pageSize?: string;
+    },
+  ) {
+    return this.advanceVat.listAdvances(normalizeListAdvancesQuery(query));
+  }
+
+  /** Evidentiraj ulazni avansni račun dobavljača (bez KUF stavke dok nije plaćen). */
+  @Post("advances/incoming")
+  @RequirePermission(PERMISSIONS.PDV_COMPUTE)
+  async recordIncomingAdvance(
+    @Body() dto: RecordIncomingAdvanceDto,
+    @Req() req: { user: AuthUser },
+  ) {
+    const data = await this.advanceVat.recordIncomingAdvance(dto, req.user);
+    return { data };
+  }
+
+  /** Označi plaćanje ulaznog avansa → upis pretporeza u KUF po periodu plaćanja. */
+  @Post("advances/incoming/:id/mark-paid")
+  @RequirePermission(PERMISSIONS.PDV_COMPUTE)
+  async markIncomingAdvancePaid(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() body: { paidAt: string; amount: string | number },
+    @Req() req: { user: AuthUser },
+  ) {
+    // Iznos se prosleđuje NETAKNUT (string ostaje string) — `Number()` ovde bi
+    // provukao novac kroz JS Float, protiv BACKEND_RULES §3 (review Batch C, R8).
+    const data = await this.advanceVat.markIncomingAdvancePaid(
+      { id, paidAt: body?.paidAt, amount: body?.amount },
+      req.user,
+    );
+    return { data };
+  }
+
+  /** Veži ulazni avans na konačni ulazni račun (storno pretporeza avansa). */
+  @Post("advances/incoming/:id/link-final")
+  @RequirePermission(PERMISSIONS.PDV_COMPUTE)
+  async linkIncomingAdvanceToFinal(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() body: { finalInvoiceId: number },
+  ) {
+    const data = await this.advanceVat.linkIncomingAdvanceToFinal({
+      advanceId: id,
+      finalInvoiceId: body.finalInvoiceId,
+    });
+    return { data };
   }
 }

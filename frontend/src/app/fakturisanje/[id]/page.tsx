@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowLeft, Ban, Mail, Printer, Send } from 'lucide-react';
+import { ArrowLeft, Ban, Coins, Mail, Printer, Send } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
@@ -13,7 +13,7 @@ import { Button } from '@/components/ui-kit/button';
 import { Select } from '@/components/ui-kit/select';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Textarea } from '@/components/ui-kit/textarea';
-import { FormField } from '@/components/ui-kit/form-field';
+import { FormField, Input } from '@/components/ui-kit/form-field';
 import { SendMailDialog } from '@/components/send-mail-dialog';
 import { PERMISSIONS } from '@/lib/permissions';
 import { formatDate, formatDecimal } from '@/lib/format';
@@ -36,6 +36,10 @@ import {
   SEF_STATUS,
   type SefStatus,
 } from '@/api/sef';
+import {
+  useCreateAdvanceFromProforma,
+  type InvoiceAdvanceFields,
+} from '@/api/avansi';
 import { ApiError } from '@/api/client';
 import { salesStatusMeta, DOCUMENT_TYPE_LABEL } from '../page';
 
@@ -178,6 +182,7 @@ export default function FakturisanjeDetailPage() {
     validId != null && !query.isLoading && !query.error && query.data == null;
 
   const fromProforma = useCreateInvoiceFromProforma();
+  const createAdvance = useCreateAdvanceFromProforma();
   const post = usePostInvoice();
   const pdf = useInvoicePdf();
   const enqueue = useEnqueue();
@@ -205,6 +210,12 @@ export default function FakturisanjeDetailPage() {
   // Storno dijalog (razlog obavezan) + feedback banner (A5).
   const [stornoOpen, setStornoOpen] = useState(false);
   const [stornoBanner, setStornoBanner] = useState<{
+    tone: 'success' | 'warn' | 'danger';
+    msg: string;
+  } | null>(null);
+  // Dijalog „Napravi avansni račun" (C1b) + feedback banner.
+  const [advanceOpen, setAdvanceOpen] = useState(false);
+  const [advanceBanner, setAdvanceBanner] = useState<{
     tone: 'success' | 'warn' | 'danger';
     msg: string;
   } | null>(null);
@@ -378,6 +389,17 @@ export default function FakturisanjeDetailPage() {
                 <Button onClick={doFromProforma} loading={fromProforma.isPending}>
                   Napravi račun iz predračuna
                 </Button>
+                {/* C1b: avans se uzima PO PREDRAČUNU — PDV obaveza nastaje tek naplatom. */}
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    setAdvanceBanner(null);
+                    setAdvanceOpen(true);
+                  }}
+                >
+                  <Coins className="h-4 w-4" aria-hidden />
+                  Napravi avansni račun
+                </Button>
               </div>
             )}
 
@@ -469,6 +491,11 @@ export default function FakturisanjeDetailPage() {
             {stornoBanner.msg}
           </div>
         )}
+        {advanceBanner && (
+          <div className={`rounded-panel border px-4 py-3 text-sm ${SEF_BANNER_TONE[advanceBanner.tone]}`}>
+            {advanceBanner.msg}
+          </div>
+        )}
 
         {query.isLoading ? (
           <div className="grid place-items-center py-16 text-sm text-ink-secondary">
@@ -543,7 +570,134 @@ export default function FakturisanjeDetailPage() {
           onDone={(banner) => setStornoBanner(banner)}
         />
       )}
+
+      {doc && advanceOpen && (
+        <NewAdvanceDialog
+          proforma={doc}
+          createAdvance={createAdvance}
+          onClose={() => setAdvanceOpen(false)}
+          onDone={(banner) => setAdvanceBanner(banner)}
+          onOpenAdvances={() => router.push('/fakturisanje/avansi')}
+        />
+      )}
     </AppShell>
+  );
+}
+
+/**
+ * Dijalog „Napravi avansni račun" (C1b) — avans se uzima PO PREDRAČUNU. Iznos je
+ * podrazumevano ceo predračun (delimičan avans se upiše ručno). PDV obaveza po
+ * avansu nastaje TEK NAPLATOM — to se radi na ekranu Avansni računi.
+ * TASTATURA: Ctrl+S potvrdi, Esc otkaži.
+ */
+function NewAdvanceDialog({
+  proforma,
+  createAdvance,
+  onClose,
+  onDone,
+  onOpenAdvances,
+}: {
+  proforma: InvoiceDetail;
+  createAdvance: ReturnType<typeof useCreateAdvanceFromProforma>;
+  onClose: () => void;
+  onDone: (banner: { tone: 'success' | 'warn' | 'danger'; msg: string }) => void;
+  onOpenAdvances: () => void;
+}) {
+  const [amount, setAmount] = useState(() => String(Number(proforma.grossTotal)));
+  const [documentDate, setDocumentDate] = useState(() =>
+    new Date().toISOString().slice(0, 10),
+  );
+
+  const parsed = Number(amount);
+  const valid = Number.isFinite(parsed) && parsed > 0 && documentDate !== '';
+  const err = (createAdvance.error as Error | null)?.message ?? null;
+
+  const submit = () => {
+    if (!valid || createAdvance.isPending) return;
+    createAdvance.mutate(
+      { proformaId: proforma.id, amount: parsed, documentDate },
+      {
+        onSuccess: (res) => {
+          onDone({
+            tone: 'success',
+            msg:
+              `Avansni račun ${res.data.documentNumber} je napravljen (bruto ` +
+              `${formatDecimal(res.data.grossTotal)} ${res.data.currency}). PDV obaveza nastaje ` +
+              `tek naplatom — označi je na ekranu Avansni računi.`,
+          });
+          onClose();
+          onOpenAdvances();
+        },
+      },
+    );
+  };
+
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title="Napravi avansni račun"
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose} disabled={createAdvance.isPending}>
+            Otkaži
+          </Button>
+          <Button onClick={submit} loading={createAdvance.isPending} disabled={!valid}>
+            Napravi
+          </Button>
+        </div>
+      }
+    >
+      <form
+        className="space-y-4"
+        onSubmit={(e) => {
+          e.preventDefault();
+          submit();
+        }}
+        onKeyDown={(e) => {
+          if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+            e.preventDefault();
+            submit();
+          }
+        }}
+      >
+        <p className="text-sm text-ink-secondary">
+          Avansni račun se pravi po predračunu {proforma.documentNumber} (bruto{' '}
+          {formatDecimal(proforma.grossTotal)} {proforma.currency}). PDV obaveza po avansu
+          nastaje NAPLATOM, ne izdavanjem — naplata se označava na ekranu Avansni računi.
+        </p>
+
+        {err && (
+          <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-3 py-2 text-sm text-status-danger">
+            {err}
+          </div>
+        )}
+
+        <div className="flex gap-3">
+          <div className="w-44">
+            <FormField label="Iznos avansa" required hint="Bruto; može i delimičan.">
+              <Input
+                type="number"
+                step="0.01"
+                min="0"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                autoFocus
+              />
+            </FormField>
+          </div>
+          <div className="w-44">
+            <FormField label="Datum" required>
+              <Input
+                type="date"
+                value={documentDate}
+                onChange={(e) => setDocumentDate(e.target.value)}
+              />
+            </FormField>
+          </div>
+        </div>
+      </form>
+    </Dialog>
   );
 }
 
@@ -711,8 +865,23 @@ function InvoiceHeader({ doc }: { doc: InvoiceDetail }) {
   );
 }
 
-/** Zbirni iznosi računa (osnovica / PDV / za plaćanje). */
+/**
+ * Zbirni iznosi računa (osnovica / PDV / za plaćanje).
+ *
+ * C1b: kad je na račun vezan avans (`advanceAppliedAmount > 0`), ispod „Za plaćanje"
+ * ide red „Umanjenje za primljeni avans" i konačno „ZA UPLATU" = bruto − avans.
+ * Avans NE umanjuje osnovicu prihoda ni PDV — samo iznos koji kupac još duguje.
+ */
 function InvoiceTotals({ doc }: { doc: InvoiceDetail }) {
+  // `advance_*` kolone nisu u `@/api/sales` tipu (granica paketa) — vidi InvoiceAdvanceFields.
+  const adv = doc as InvoiceDetail & InvoiceAdvanceFields;
+  const applied = Number(adv.advanceAppliedAmount ?? 0);
+  const hasAdvance = Number.isFinite(applied) && applied > 0;
+  // „Za uplatu" računa BACKEND (Decimal) i vraća ga kao `payableAmount` — koristi
+  // njega, a Float razliku samo kao rezervu za starije odgovore. Dva izvora istine
+  // za isti novčani iznos su se ranije mogla raziću u zadnjoj pari.
+  const toPay = adv.payableAmount ?? String(Number(doc.grossTotal) - (hasAdvance ? applied : 0));
+
   return (
     <div className="flex justify-end">
       <dl className="w-full max-w-xs space-y-1 rounded-panel border border-line bg-surface-2 p-4 text-sm">
@@ -722,9 +891,24 @@ function InvoiceTotals({ doc }: { doc: InvoiceDetail }) {
           <TotalRow
             label="Za plaćanje"
             value={`${formatDecimal(doc.grossTotal)} ${doc.currency}`}
-            strong
+            strong={!hasAdvance}
           />
         </div>
+        {hasAdvance && (
+          <>
+            <TotalRow
+              label="Umanjenje za primljeni avans"
+              value={`− ${formatDecimal(applied)} ${doc.currency}`}
+            />
+            <div className="mt-1 border-t border-line pt-1">
+              <TotalRow
+                label="Za uplatu"
+                value={`${formatDecimal(toPay)} ${doc.currency}`}
+                strong
+              />
+            </div>
+          </>
+        )}
       </dl>
     </div>
   );

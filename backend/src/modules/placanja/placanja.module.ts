@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 import { PrismaModule } from "../../prisma/prisma.module";
 import { DocumentsModule } from "../documents/documents.module";
+import { NabavkaModule } from "../nabavka/nabavka.module";
 import { PlacanjaController } from "./placanja.controller";
 import { PaymentPreparationService } from "./payment-preparation.service";
 import { PaymentExportService } from "./payment-export.service";
@@ -16,7 +17,9 @@ import { PaymentOrderPdfService } from "./payment-order-pdf.service";
  * NE registruje se u app.module ovde — to radi integrator.
  */
 @Module({
-  imports: [PrismaModule, DocumentsModule], // DocumentsModule → PdfService (T2 štampa virmana)
+  // DocumentsModule → PdfService (T2 štampa virmana); NabavkaModule → 3-way match
+  // upozorenja uz dospele obaveze (Batch C; injekcija je @Optional, ne obara boot).
+  imports: [PrismaModule, DocumentsModule, NabavkaModule],
   controllers: [PlacanjaController],
   providers: [PaymentPreparationService, PaymentExportService, PaymentOrderPdfService],
   exports: [PaymentPreparationService, PaymentExportService],

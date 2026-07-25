@@ -23,6 +23,16 @@ import { IosPdfService } from "./ios-pdf.service";
 import { CollectionDashboardService } from "./collection-dashboard.service";
 import { PartnerCardService } from "./partner-card.service";
 import { DunningService } from "./dunning.service";
+import { FxRevaluationService } from "./fx-revaluation.service";
+import {
+  normalizeFxCurrency,
+  parseAsOfDate,
+  parseCompanyId,
+  parseFlag,
+  parseYear,
+  type FxRevaluationReverseDto,
+  type FxRevaluationRunDto,
+} from "./dto/fx-revaluation.dto";
 import {
   type ListOpenItemsQuery,
   type AgingQuery,
@@ -64,6 +74,7 @@ export class SaldakontiController {
     private readonly mail: MailService,
     private readonly collectionDashboard: CollectionDashboardService,
     private readonly dunning: DunningService,
+    private readonly fxRevaluation: FxRevaluationService,
   ) {}
 
   @Get("open-items")
@@ -342,6 +353,69 @@ export class SaldakontiController {
       { asOf: parseOptionalDate(dto.asOf), maxLevel: parseOptionalLevel(dto.maxLevel) },
       req.user.userId,
     );
+    return { data };
+  }
+
+  // ── Kursne razlike / revalorizacija deviznih stavki (Batch C) ───────────────
+  // Obavezno pri zatvaranju godine: devizne otvorene stavke se na dan bilansa
+  // preračunavaju po kursu tog dana, razlika ide na 663 (prihod) / 563 (rashod).
+
+  /**
+   * Pregled bez upisa — stavke, kurs na dan i zbir razlike, plus liste grupa koje
+   * obračun NE knjiži (više valuta u istoj grupi / nesaglasan devizni par).
+   * `allowStaleRate=1` svesno dozvoljava kurs sa ranijeg dana (bez toga 409 kad
+   * kursna lista za presek nije uneta); `force=1` uključuje sporne grupe u zbirove.
+   */
+  @Get("fx-revaluation/preview")
+  async fxRevaluationPreview(
+    @Query("asOfDate") asOfDate: string,
+    @Query("currency") currency: string,
+    @Query("companyId") companyId?: string,
+    @Query("allowStaleRate") allowStaleRate?: string,
+    @Query("force") force?: string,
+  ) {
+    const data = await this.fxRevaluation.preview({
+      asOfDate: parseAsOfDate(asOfDate),
+      currency: normalizeFxCurrency(currency),
+      companyId: parseCompanyId(companyId),
+      allowStaleRate: parseFlag(allowStaleRate),
+      force: parseFlag(force),
+    });
+    return { data };
+  }
+
+  /** Ranije izvršeni obračuni. */
+  @Get("fx-revaluation")
+  async fxRevaluationList(
+    @Query("year") year?: string,
+    @Query("currency") currency?: string,
+  ) {
+    const data = await this.fxRevaluation.list({
+      year: parseYear(year),
+      currency: currency != null && currency !== "" ? normalizeFxCurrency(currency) : undefined,
+    });
+    return { data, meta: { count: data.length } };
+  }
+
+  /** Izvrši obračun — kreira nalog kursnih razlika; ponovljen presek → 409. */
+  @Post("fx-revaluation/run")
+  @RequirePermission(PERMISSIONS.SALDAKONTI_RECONCILE)
+  async fxRevaluationRun(
+    @Body() dto: FxRevaluationRunDto,
+    @Req() req: { user: AuthUser },
+  ) {
+    const data = await this.fxRevaluation.run(dto, { userId: req.user.userId });
+    return { data };
+  }
+
+  /** Storniraj obračun — oslobađa presek (datum, valuta) za ponovni obračun. */
+  @Post("fx-revaluation/reverse")
+  @RequirePermission(PERMISSIONS.SALDAKONTI_RECONCILE)
+  async fxRevaluationReverse(
+    @Body() dto: FxRevaluationReverseDto,
+    @Req() req: { user: AuthUser },
+  ) {
+    const data = await this.fxRevaluation.reverse(dto, { userId: req.user.userId });
     return { data };
   }
 }

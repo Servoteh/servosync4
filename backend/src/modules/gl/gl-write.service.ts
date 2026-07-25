@@ -20,8 +20,29 @@ type LineWithCostCenter = CreateJournalEntryLineInput & {
   costCenter?: string | null;
 };
 
+/**
+ * Devizni par po liniji (C2 — devizne otvorene stavke, doc 30 §D DevDuguje/DevPotrazuje/
+ * DevValuta). Aditivno na DTO liniju; DTO se ne dira (isti obrazac kao costCenter).
+ * `fxCurrency` je opcion — bez njega se uzima `currency` linije.
+ */
+type LineWithFx = CreateJournalEntryLineInput & {
+  fxDebit?: number | string | null;
+  fxCredit?: number | string | null;
+  fxCurrency?: string | null;
+};
+
 /** LedgerEntry.costCenter je VarChar(20) — duže odbij jasnom 400 umesto DB 500. */
 const COST_CENTER_MAX = 20;
+
+/** Domaća valuta — stavka u RSD nema devizni par (fx kolone ostaju NULL). */
+const HOME_CURRENCY = "RSD";
+
+/** Devizni iznosi jedne stavke (normalizovani); null = stavka nije devizna. */
+interface LineFxAmounts {
+  fxDebit: Prisma.Decimal;
+  fxCredit: Prisma.Decimal;
+  fxCurrency: string;
+}
 
 /**
  * GL WRITE — ručni unos naloga (temeljnice) + status-mašina naloga + storno.
@@ -61,6 +82,12 @@ export class GlWriteService {
     });
     const hasCostCenter = costCenters.some((cc) => cc !== "");
 
+    // Devizni par po liniji (C2). Normalizuj + validiraj PRE transakcije; stavka bez
+    // devizne valute ili bez deviznog iznosa ostaje netaknuta (fx kolone NULL) —
+    // postojeći pozivi bez valute rade nepromenjeno.
+    const fxAmounts = dto.lines.map((l, i) => this.normalizeLineFx(l, i));
+    const hasFx = fxAmounts.some((fx) => fx !== null);
+
     return this.prisma.$transaction(async (tx) => {
       const result = await this.posting.postManualEntry(tx, {
         orderType: dto.orderType,
@@ -80,28 +107,109 @@ export class GlWriteService {
         })),
       });
 
-      // costCenter se upisuje posle knjiženja (postManualEntry ne dira PDV/robni tok).
-      // postManualEntry kreira LedgerEntry 1:1 iz `lines` u istom redosledu (bez GROUP BY),
-      // pa red po `id ASC` odgovara ulaznim `dto.lines` po indeksu.
-      if (hasCostCenter) {
+      // costCenter i devizni par se upisuju posle knjiženja (postManualEntry ne dira
+      // PDV/robni tok). postManualEntry kreira LedgerEntry 1:1 iz `lines` u istom
+      // redosledu (bez GROUP BY), pa red po `id ASC` odgovara ulaznim `dto.lines` po indeksu.
+      if (hasCostCenter || hasFx) {
         const created = await tx.ledgerEntry.findMany({
           where: { journalEntryId: result.journalEntryId },
           orderBy: { id: "asc" },
           select: { id: true },
         });
-        const n = Math.min(created.length, costCenters.length);
+        const n = Math.min(created.length, dto.lines.length);
         for (let i = 0; i < n; i++) {
-          if (costCenters[i] !== "") {
-            await tx.ledgerEntry.update({
-              where: { id: created[i].id },
-              data: { costCenter: costCenters[i] },
-            });
+          const data: Prisma.LedgerEntryUpdateInput = {};
+          if (costCenters[i] !== "") data.costCenter = costCenters[i];
+          const fx = fxAmounts[i];
+          if (fx) {
+            data.fxDebit = fx.fxDebit;
+            data.fxCredit = fx.fxCredit;
+            data.fxCurrency = fx.fxCurrency;
+          }
+          if (Object.keys(data).length > 0) {
+            await tx.ledgerEntry.update({ where: { id: created[i].id }, data });
           }
         }
       }
 
       return result;
     });
+  }
+
+  /**
+   * Devizni iznosi jedne stavke naloga (C2). Vraća `null` kad stavka nije devizna —
+   * tada fx kolone ostaju NULL i ponašanje je identično dosadašnjem.
+   *
+   * Pravila:
+   *   • valuta = `fxCurrency` ako je dat, inače `currency` stavke; prazno ili RSD → nije devizna;
+   *   • bez ijednog deviznog iznosa (fxDebit/fxCredit) → nije devizna (stara knjiženja koja
+   *     su nosila samo `currency`, bez deviznog iznosa, ostaju netaknuta — inače bi ušla u
+   *     revalorizaciju sa deviznim saldom 0 i „obrisala" celu protivvrednost);
+   *   • devizni iznos mora biti na ISTOJ strani kao dinarski (dug↔dug, pot↔pot).
+   */
+  private normalizeLineFx(
+    line: CreateJournalEntryLineInput,
+    index: number,
+  ): LineFxAmounts | null {
+    const l = line as LineWithFx;
+    const rawCurrency =
+      typeof l.fxCurrency === "string" && l.fxCurrency.trim() !== ""
+        ? l.fxCurrency
+        : (l.currency ?? "");
+    const currency =
+      typeof rawCurrency === "string" ? rawCurrency.trim().toUpperCase() : "";
+    if (currency === "" || currency === HOME_CURRENCY) return null;
+
+    const label = `Stavka ${index + 1}`;
+    if (currency.length !== 3)
+      throw new BadRequestException(
+        `${label}: valuta mora imati tačno tri znaka (npr. EUR).`,
+      );
+
+    const fxDebit = this.parseFxAmount(l.fxDebit, `${label}: devizno duguje`);
+    const fxCredit = this.parseFxAmount(
+      l.fxCredit,
+      `${label}: devizno potražuje`,
+    );
+    if (fxDebit.isZero() && fxCredit.isZero()) return null;
+
+    if (!fxDebit.isZero() && !fxCredit.isZero())
+      throw new BadRequestException(
+        `${label}: devizna stavka ne može imati i duguje i potražuje.`,
+      );
+
+    // Devizni iznos mora pratiti stranu dinarskog iznosa — obrnuto bi devizni saldo
+    // otvorene stavke dobio suprotan predznak od dinarskog (revalorizacija bi dala
+    // dvostruku razliku umesto ispravke protivvrednosti).
+    const debit = new Prisma.Decimal(line.debit ?? 0);
+    const credit = new Prisma.Decimal(line.credit ?? 0);
+    if (
+      (debit.greaterThan(0) && !fxCredit.isZero()) ||
+      (credit.greaterThan(0) && !fxDebit.isZero())
+    )
+      throw new BadRequestException(
+        `${label}: devizni iznos mora biti na istoj strani kao dinarski (duguje/potražuje).`,
+      );
+
+    return { fxDebit, fxCredit, fxCurrency: currency };
+  }
+
+  /** Devizni iznos → Decimal; prazno = 0. Negativan/neispravan → 400. NIKAD Float. */
+  private parseFxAmount(
+    value: number | string | null | undefined,
+    label: string,
+  ): Prisma.Decimal {
+    if (value === undefined || value === null || value === "")
+      return new Prisma.Decimal(0);
+    let parsed: Prisma.Decimal;
+    try {
+      parsed = new Prisma.Decimal(value);
+    } catch {
+      throw new BadRequestException(`${label} mora biti broj.`);
+    }
+    if (!parsed.isFinite() || parsed.isNegative())
+      throw new BadRequestException(`${label} mora biti nenegativan broj.`);
+    return parsed;
   }
 
   /** DRAFT → POSTED (proknjiži robni auto-nalog; bez ovoga kartica/bilans su prazni). */
@@ -218,8 +326,29 @@ export class GlWriteService {
    * Storno naloga (BigBit — obrni Duguje↔Potražuje). Kreira NOVI nalog sa obrnutim
    * linijama, veže reversesEntryId=izvorni, i na izvornom postavlja reversedByEntryId.
    * Izvorni mora biti posted (ne draft, ne već storniran).
+   *
+   * DATUMI (`opts`) — PODRAZUMEVANO PONAŠANJE SE NE MENJA: bez `opts` storno ide sa
+   * `postingDate = danas` i `documentDate` izvornog naloga, tačno kao do sada (storno
+   * fakture i ostali pozivaoci). `opts.postingDate` postoji zbog naloga koji se čitaju
+   * PRESEKOM NA DAN (revalorizacija deviznih stavki — open-items filtrira
+   * `je.posting_date <= presek`): storno naloga za 31.12. sa današnjim datumom knjiženja
+   * pada u naredni period, pa bi original ušao u ponovni obračun a storno ne — pogrešan
+   * iznos I pogrešan predznak kursne razlike. Takav pozivalac prosleđuje presek izvornog
+   * obračuna. `opts.documentDate` prati isti razlog (i određuje godinu numeracije).
    */
-  async reverse(entryId: number, actorUserId?: number) {
+  async reverse(
+    entryId: number,
+    actorUserId?: number,
+    opts?: { postingDate?: Date; documentDate?: Date },
+  ) {
+    const overrideDocumentDate = this.parseOptionalDate(
+      opts?.documentDate,
+      "documentDate",
+    );
+    const overridePostingDate = this.parseOptionalDate(
+      opts?.postingDate,
+      "postingDate",
+    );
     const source = await this.prisma.journalEntry.findUnique({
       where: { id: entryId },
       include: { lines: true },
@@ -237,8 +366,13 @@ export class GlWriteService {
         `Nalog ${entryId} je već storniran nalogom ${source.reversedByEntryId}.`,
       );
 
+    const documentDate = overrideDocumentDate ?? source.documentDate;
+    const postingDate = overridePostingDate ?? new Date();
+
     return this.prisma.$transaction(async (tx) => {
-      const year = businessYear(source.documentDate);
+      // Godina se izvodi iz EFEKTIVNOG datuma dokumenta (može biti preklopljen —
+      // revalorizacija stornira u sopstveni presek), kroz `businessYear` helper.
+      const year = businessYear(documentDate);
       const number = await this.posting.nextJournalNumber(
         tx,
         source.companyId,
@@ -251,8 +385,8 @@ export class GlWriteService {
           orderTypeCode: source.orderTypeCode,
           year,
           companyId: source.companyId,
-          documentDate: source.documentDate,
-          postingDate: new Date(),
+          documentDate,
+          postingDate,
           status: "POSTED",
           createdByUserId: actorUserId ?? null,
           reversesEntryId: source.id,
@@ -263,10 +397,19 @@ export class GlWriteService {
               // Storno = zameni strane.
               debit: l.credit,
               credit: l.debit,
+              // DEVIZNI par se ogleda ISTO kao dinarski (review C2): bez ovoga se
+              // dinarska strana poništi a devizna ostane, pa devizni saldo otvorene
+              // stavke ostane udvostručen i revalorizacija knjiži ogroman lažan iznos.
+              fxDebit: l.fxCredit,
+              fxCredit: l.fxDebit,
+              fxCurrency: l.fxCurrency,
               description: `STORNO: ${l.description ?? ""}`.trim(),
               documentNumber: l.documentNumber,
               dueDate: l.dueDate,
               currency: l.currency,
+              // Mesto troška prati stavku — inače storno „prebaci" trošak sa pozicije
+              // na sintetiku i saldo po poslovima (B2) ostane zaglavljen.
+              costCenter: l.costCenter,
             })),
           },
         },
@@ -277,6 +420,17 @@ export class GlWriteService {
       });
       return { stornoEntryId: storno.id, number, reversedEntryId: source.id };
     });
+  }
+
+  /** Opcioni datum iz `opts` — nevalidan Date je programska greška pozivaoca → 400. */
+  private parseOptionalDate(
+    value: Date | undefined,
+    label: string,
+  ): Date | undefined {
+    if (value === undefined || value === null) return undefined;
+    if (!(value instanceof Date) || Number.isNaN(value.getTime()))
+      throw new BadRequestException(`Neispravan datum storna (${label}).`);
+    return value;
   }
 
   private async getEntryOrThrow(id: number) {

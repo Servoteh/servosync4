@@ -47,12 +47,15 @@ export class PlacanjaController {
     private readonly orderPdf: PaymentOrderPdfService,
   ) {}
 
-  /** Dospele obaveze na dan `cutoff` (default danas). */
+  /**
+   * Dospele obaveze na dan `cutoff` (default danas). `meta` nosi i zbir 3-way
+   * match upozorenja (Batch C) — traka na ekranu ih čita odatle. Upozorenja NE
+   * blokiraju plaćanje; to je izričita poslovna odluka.
+   */
   @Get("due")
   async listDue(@Query("cutoff") cutoff?: string) {
     const at = cutoff ? new Date(cutoff) : new Date();
-    const data = await this.preparation.selectDue(at);
-    return { data, meta: { cutoff: at.toISOString(), count: data.length } };
+    return this.preparation.selectDueWithWarnings(at);
   }
 
   /** Pregled kreiranih naloga za plaćanje (BigBit paritet — bez ovoga refresh gubi naloge). */

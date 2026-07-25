@@ -132,6 +132,12 @@ export interface UblInvoiceInput {
   poNumber?: string | null;
   /** Referenca avansne fakture (cac:BillingReference) — kada je za plaćanje 0. */
   prepaymentReference?: string | null;
+  /**
+   * Odbijen (već plaćen) avans → cbc:PrepaidAmount; PayableAmount = grossTotal −
+   * prepaidAmount. Kad se ne prosledi, važi staro ponašanje: sama referenca
+   * avansa znači da avans zatvara CEO iznos (PayableAmount = 0).
+   */
+  prepaidAmount?: Prisma.Decimal | null;
   /** true = ova faktura je avansna (386). */
   isPrepayment?: boolean;
 }
@@ -175,9 +181,14 @@ export class UblBuilderService {
       ? INVOICE_TYPE_CODE_PREPAYMENT
       : INVOICE_TYPE_CODE_COMMERCIAL;
 
-    // Za plaćanje: avansna referenca zatvara obavezu → PayableAmount = 0.
-    const payable = invoice.prepaymentReference
-      ? new D(0)
+    // Za plaćanje: odbijen avans umanjuje obavezu za svoj iznos (delimičan avans
+    // → ostatak; pun avans → 0). Bez `prepaidAmount` iznos se NE umanjuje —
+    // ranije je sama referenca avansa obarala PayableAmount na nulu, pa je red sa
+    // postavljenom vezom a nultim iznosom slao kupcu na SEF „ne duguješ ništa"
+    // za pun račun (review Batch C, R6).
+    const prepaid = invoice.prepaidAmount ?? null;
+    const payable = prepaid
+      ? maxZero(invoice.grossTotal.sub(prepaid))
       : invoice.grossTotal;
 
     const parts: string[] = [];
@@ -272,6 +283,8 @@ export class UblBuilderService {
     parts.push(amountEl("cbc:LineExtensionAmount", invoice.netTotal, cur));
     parts.push(amountEl("cbc:TaxExclusiveAmount", invoice.netTotal, cur));
     parts.push(amountEl("cbc:TaxInclusiveAmount", invoice.grossTotal, cur));
+    // UBL 2.1 redosled: PrepaidAmount dolazi neposredno PRE PayableAmount.
+    if (prepaid) parts.push(amountEl("cbc:PrepaidAmount", prepaid, cur));
     parts.push(amountEl("cbc:PayableAmount", payable, cur));
     parts.push("</cac:LegalMonetaryTotal>");
 
@@ -481,6 +494,11 @@ function taxScheme(): string {
 /** Prost element sa escaped tekstom. */
 function el(tag: string, value: string): string {
   return `<${tag}>${escapeXml(value)}</${tag}>`;
+}
+
+/** Odsecanje na 0 — PayableAmount nikad negativan (avans > iznosa računa). */
+function maxZero(value: Prisma.Decimal): Prisma.Decimal {
+  return value.greaterThan(0) ? value : new D(0);
 }
 
 /** Novčani element sa currencyID atributom. Decimal → 2 decimale (RSD/EUR). */

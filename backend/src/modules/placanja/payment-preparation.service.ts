@@ -26,9 +26,12 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
+import { ThreeWayMatchService } from "../nabavka/three-way-match.service";
+import type { PaymentMatchWarning } from "../nabavka/dto/three-way-match.dto";
 import {
   CreatePaymentOrdersDto,
   CreatePaymentOrderLineInput,
@@ -42,6 +45,19 @@ import {
 
 const D = Prisma.Decimal;
 const ZERO = new D(0);
+
+/**
+ * Koliko različitih komitenata sme da se pretraži po komitentu (stavke bez broja
+ * dokumenta) pri obogaćivanju 3-way match upozorenjima. Gornja granica čuva
+ * odziv ekrana — upozorenja su informativna, pa je odsecanje bezopasno.
+ */
+const MAX_PARTNER_WARNING_LOOKUPS = 25;
+
+/**
+ * Koliko nalaza sme da visi o JEDNOJ otvorenoj stavci (review K). Stavka bez broja dokumenta
+ * hvata sve nalaze svog dobavljača, pa je jedna stavka umela da povuče stotine tuđih poruka.
+ */
+const MAX_WARNINGS_PER_ROW = 20;
 
 /** Jedna dospela otvorena obaveza (agregat po konto+komitent+dokument). */
 export interface DueLiability {
@@ -57,13 +73,42 @@ export interface DueLiability {
   daysOverdue: number;
   /** najstariji ledger_entry.id grupe — traceback ka izvornoj stavci. */
   sourceLedgerEntryId: number;
+  /**
+   * 3-way match nalazi vezani za ovu obavezu (naručeno/primljeno/fakturisano).
+   * ⚠️ ČISTO INFORMATIVNO — prisustvo upozorenja NE sprečava kreiranje, potpis
+   * ni izvoz naloga (poslovna odluka korisnika: prijavi, ne blokiraj).
+   * Prazan niz kad nema nalaza ili kad modul nabavke nije povezan.
+   */
+  matchWarnings: PaymentMatchWarning[];
+  /** Bar jedan nalaz nivoa WARNING na ovoj stavci (INFO se ne broji). */
+  hasMatchWarnings: boolean;
+}
+
+/** Zbirni pregled dospelih obaveza sa 3-way match upozorenjima. */
+export interface DueLiabilitiesWithWarnings {
+  data: DueLiability[];
+  meta: {
+    cutoff: string;
+    count: number;
+    /** Zbirno: bar jedna stavka nosi upozorenje (WARNING). */
+    hasMatchWarnings: boolean;
+    /** Ukupan broj upozorenja (WARNING) preko svih stavki. */
+    warningCount: number;
+  };
 }
 
 @Injectable()
 export class PaymentPreparationService {
   private readonly logger = new Logger(PaymentPreparationService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    // 3-way match (modul Nabavka) je ČITALAC upozorenja. @Optional() namerno:
+    // ako modul nije povezan, priprema plaćanja radi identično kao pre (bez
+    // upozorenja) — nikad ne pada i nikad ne blokira plaćanje.
+    @Optional()
+    private readonly threeWayMatch?: ThreeWayMatchService,
+  ) {}
 
   /**
    * Selektuj dospele obaveze na dan `cutoff` (default danas).
@@ -154,11 +199,132 @@ export class PaymentPreparationService {
         dueDate: g.dueDate,
         daysOverdue,
         sourceLedgerEntryId: g.firstId,
+        matchWarnings: [],
+        hasMatchWarnings: false,
       });
     }
     // najduže kašnjenje prvo (naplata/plaćanje prioritet).
     result.sort((a, b) => b.daysOverdue - a.daysOverdue);
+
+    // 4) 3-way match upozorenja (informativno). Nikad ne menja izbor stavki i
+    //    nikad ne obara selekciju — greška u obogaćivanju se loguje i ignoriše.
+    await this.attachMatchWarnings(result);
     return result;
+  }
+
+  /**
+   * Zakači 3-way match nalaze na dospele obaveze (in-place). Spajanje: nalaz i
+   * obaveza moraju imati ISTOG komitenta; ako obaveza ima broj dokumenta, uzimaju
+   * se samo nalazi čiji `documentNumbers` sadrže taj broj, a ako ga nema (robni
+   * ulaz ne upisuje `document_number` u GK stavku) uzimaju se nalazi tog dobavljača.
+   *
+   * DVA UPITA UKUPNO (review R4): ranije se `warningsForPayment` zvao u SERIJSKOJ petlji,
+   * jednom po komitentu (do 25 poziva × do 5 upita ≈ 126 upita / ~8 s na ekranu pripreme).
+   * Sada ide jedan poziv za sve brojeve dokumenata + jedan batch poziv za sve komitente.
+   *
+   * ŠIRINA MREŽE (review K): kod stavke BEZ broja dokumenta spajanje je grubo (svi nalazi
+   * dobavljača), pa se tu uzimaju samo WARNING nalazi i najviše `MAX_WARNINGS_PER_ROW` —
+   * inače jedna stavka povuče stotine tuđih INFO poruka („faktura još nije stigla u celosti").
+   *
+   * ⚠️ NIKAD ne baca: modul nabavke nije obavezan, a pad obogaćivanja ne sme da
+   * obori pripremu plaćanja.
+   */
+  private async attachMatchWarnings(rows: DueLiability[]): Promise<void> {
+    if (!this.threeWayMatch || rows.length === 0) return;
+
+    const documentNumbers = [
+      ...new Set(
+        rows
+          .map((r) => r.documentNumber)
+          .filter((n): n is string => typeof n === "string" && n !== ""),
+      ),
+    ];
+    // Komitenti čije stavke NEMAJU broj dokumenta (robni ulaz ne upisuje
+    // `document_number` u GK stavku) — samo za njih se traži po komitentu.
+    const partnersWithoutDocNumber = [
+      ...new Set(
+        rows
+          .filter((r) => !r.documentNumber)
+          .map((r) => r.supplierId)
+          .filter((id): id is number => id != null && id > 0),
+      ),
+    ].slice(0, MAX_PARTNER_WARNING_LOOKUPS);
+
+    try {
+      const all: PaymentMatchWarning[] = [];
+      // 1) jedan poziv za SVE brojeve dokumenata iz selekcije (ne po komitentu).
+      if (documentNumbers.length > 0) {
+        all.push(
+          ...(await this.threeWayMatch.warningsForPayment({ documentNumbers })),
+        );
+      }
+      // 2) JEDAN batch poziv za sve komitente čije stavke nemaju broj dokumenta.
+      if (partnersWithoutDocNumber.length > 0) {
+        all.push(
+          ...(await this.threeWayMatch.warningsForPayment({
+            partnerIds: partnersWithoutDocNumber,
+          })),
+        );
+      }
+
+      for (const row of rows) {
+        if (row.supplierId == null) continue;
+        const forPartner = all.filter((w) => w.supplierId === row.supplierId);
+        const docNumber = row.documentNumber;
+        const preciseMatch = docNumber != null && docNumber !== "";
+        const matched = preciseMatch
+          ? forPartner.filter((w) => w.documentNumbers.includes(docNumber))
+          : // Grubo spajanje (samo po komitentu) — samo WARNING nalazi.
+            forPartner.filter((w) => w.level === "WARNING");
+        // Dedup po (narudžbenica, stavka, kod) — isti nalaz može doći iz oba prolaza.
+        const seen = new Set<string>();
+        row.matchWarnings = matched
+          .filter((w) => {
+            const key = `${w.orderId}|${w.lineNo ?? ""}|${w.code}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          })
+          .slice(0, MAX_WARNINGS_PER_ROW);
+        row.hasMatchWarnings = row.matchWarnings.some(
+          (w) => w.level === "WARNING",
+        );
+      }
+    } catch (e) {
+      // Informativni sloj — pad NE sme da obori pripremu plaćanja.
+      this.logger.warn(
+        `3-way match upozorenja nisu učitana (priprema plaćanja radi normalno): ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+    }
+  }
+
+  /**
+   * Dospele obaveze + ZBIRNI pokazatelj upozorenja (za traku/ikonicu na ekranu).
+   * Isti podaci kao `selectDue`, samo sa `meta` zbirom.
+   *
+   * ⚠️ Upozorenja su informativna: `hasMatchWarnings: true` ne sme da onemogući
+   * nijedno dugme ni da odbije kreiranje/potpis/izvoz naloga.
+   */
+  async selectDueWithWarnings(
+    cutoff: Date = new Date(),
+  ): Promise<DueLiabilitiesWithWarnings> {
+    const data = await this.selectDue(cutoff);
+    let warningCount = 0;
+    for (const row of data)
+      warningCount += row.matchWarnings.filter(
+        (w) => w.level === "WARNING",
+      ).length;
+    return {
+      data,
+      meta: {
+        cutoff: cutoff.toISOString(),
+        count: data.length,
+        hasMatchWarnings: data.some((r) => r.hasMatchWarnings),
+        warningCount,
+      },
+    };
   }
 
   /**

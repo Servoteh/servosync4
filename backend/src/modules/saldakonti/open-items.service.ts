@@ -31,6 +31,11 @@ export interface OpenItem {
   daysOverdue: number | null; // asOf − dueDate (u danima; null ako nema dueDate)
   currency: string | null;
   side: string; // receivable | payable (iz registra)
+  // Devizni saldo grupe (C2): Σ(fx_debit) − Σ(fx_credit) u `fxCurrency`. NULL kad
+  // stavka nije devizna. `balance` iznad je i dalje DINARSKA protivvrednost —
+  // postojeća polja se ne menjaju, ovo je aditivno.
+  fxAmount: Prisma.Decimal | null;
+  fxCurrency: string | null;
   // Svi ledger_entries.id koji čine ovaj (grupisani) red — potrebno za
   // uparivanje (reconcile) i kompenzaciju, koje rade nad pojedinačnim
   // stavkama. Izveden pogled grupiše po dokumentu; ovde izlažemo članove grupe.
@@ -58,6 +63,43 @@ interface OpenItemRawRow {
   currency: string | null;
   side: string;
   ledger_entry_ids: number[] | null; // array_agg(le.id) — članovi grupe (Int[] → number[])
+  fx_balance: Prisma.Decimal | null;
+  fx_currency: string | null;
+}
+
+/** Dodatni (aditivni) filteri otvorenih stavki — devizna valuta / firma (C2). */
+export interface OpenItemsOptions {
+  /** Samo grupe čija je devizna valuta ova (npr. "EUR") — za revalorizaciju. */
+  fxCurrency?: string;
+  /** Firma naloga (journal_entries.company_id); bez njega sve firme. */
+  companyId?: number;
+}
+
+/**
+ * Otvorena grupa koja nosi VIŠE deviznih valuta (greška podataka). Grupa je
+ * (konto, komitent, broj dokumenta), a `document_number` je nullable — sve stavke
+ * partnera bez broja dokumenta padaju u JEDNU grupu, pa se EUR i USD promet nađu
+ * zajedno. Takva grupa nema jedinstven devizni saldo i mora se ISKLJUČITI iz
+ * revalorizacije, ali i PRIJAVITI korisniku (tiho ispadanje = izgubljen bilans).
+ */
+export interface MixedFxCurrencyGroup {
+  accountCode: string;
+  analyticalCode: number | null;
+  documentNumber: string | null;
+  /** Sve devizne valute zatečene u grupi (sortirano, bez NULL-ova). */
+  currencies: string[];
+  /** Dinarski saldo grupe (Σ duguje − Σ potražuje). */
+  balance: Prisma.Decimal;
+  ledgerEntryIds: number[];
+}
+
+interface MixedFxRawRow {
+  account_code: string;
+  analytical_code: number | null;
+  document_number: string | null;
+  balance: Prisma.Decimal | null;
+  currencies: string[] | null;
+  ledger_entry_ids: number[] | null;
 }
 
 interface AgingRawRow {
@@ -79,11 +121,13 @@ export class OpenItemsService {
    * @param accountCode — tačan konto (opciono)
    * @param partnerId   — analitička = komitent (opciono)
    * @param asOf        — presek na dan za daysOverdue (default danas)
+   * @param opts        — aditivni filteri (devizna valuta / firma) — C2
    */
   async listOpenItems(
     accountCode?: string,
     partnerId?: number,
     asOf?: Date,
+    opts?: OpenItemsOptions,
   ): Promise<OpenItem[]> {
     const cutoff = asOf ?? new Date();
     const accountFilter = accountCode
@@ -93,6 +137,36 @@ export class OpenItemsService {
       partnerId != null
         ? Prisma.sql`AND le.analytical_code = ${partnerId}`
         : Prisma.empty;
+    const companyFilter =
+      opts?.companyId != null
+        ? Prisma.sql`AND je.company_id = ${opts.companyId}`
+        : Prisma.empty;
+    // Devizni filter ide u HAVING, NE u WHERE (namerno): dinarske stavke iste grupe
+    // (uplata u RSD, prethodna kursna razlika) nemaju fx_currency, a MORAJU ući u
+    // zbir da bi knjigovodstvena protivvrednost grupe bila tačna. WHERE bi ih izbacio
+    // pa bi sledeća revalorizacija dvaput obračunala istu razliku.
+    //
+    // USLOV JE „grupa sadrži traženu valutu I nijednu drugu" (review C2 §3), NE
+    // `MAX(fx_currency) = valuta`: `document_number` je nullable, pa sve stavke partnera
+    // bez broja dokumenta padaju u JEDNU grupu; MAX bi tada leksikografski izabrao jednu
+    // valutu — EUR grupa bi tiho nestala iz bilansa, a USD bi pokupio i EUR devizni saldo
+    // i knjižio lažan rashod. Mešane grupe se isključuju ovde i prijavljuju kroz
+    // {@link listMixedFxCurrencyGroups}.
+    const fxCurrency = opts?.fxCurrency;
+    const fxHaving = fxCurrency
+      ? Prisma.sql`AND bool_or(le.fx_currency = ${fxCurrency})
+          AND NOT bool_or(le.fx_currency IS NOT NULL AND le.fx_currency <> ${fxCurrency})`
+      : Prisma.empty;
+    // Devizni saldo se sa aktivnim filterom sabira SAMO preko redova te valute; bez
+    // filtera izraz ostaje doslovno isti kao pre (postojeći čitaoci — aging, kartica —
+    // moraju da vrate identičan rezultat).
+    const fxBalanceExpr = fxCurrency
+      ? Prisma.sql`COALESCE(SUM(CASE WHEN le.fx_currency = ${fxCurrency} THEN le.fx_debit END), 0)
+                 - COALESCE(SUM(CASE WHEN le.fx_currency = ${fxCurrency} THEN le.fx_credit END), 0)`
+      : Prisma.sql`COALESCE(SUM(le.fx_debit), 0) - COALESCE(SUM(le.fx_credit), 0)`;
+    const fxCurrencyExpr = fxCurrency
+      ? Prisma.sql`MAX(CASE WHEN le.fx_currency = ${fxCurrency} THEN le.fx_currency END)`
+      : Prisma.sql`MAX(le.fx_currency)`;
 
     const rows = await this.prisma.$queryRaw<OpenItemRawRow[]>(
       Prisma.sql`
@@ -106,6 +180,10 @@ export class OpenItemsService {
           MIN(le.due_date) AS due_date,
           MAX(le.currency) AS currency,
           array_agg(le.id ORDER BY le.id) AS ledger_entry_ids,
+          -- Devizni saldo grupe (C2). COALESCE po SUMI, ne po razlici: kad su svi
+          -- fx_credit NULL, SUM(a) - SUM(b) bi dalo NULL pa bi ceo devizni saldo pao na 0.
+          ${fxBalanceExpr} AS fx_balance,
+          ${fxCurrencyExpr} AS fx_currency,
           sa.side AS side
         FROM ledger_entries le
         JOIN journal_entries je ON je.id = le.journal_entry_id
@@ -123,13 +201,75 @@ export class OpenItemsService {
           AND sa.tracks_open_items = TRUE
           ${accountFilter}
           ${partnerFilter}
+          ${companyFilter}
         GROUP BY le.account_code, le.analytical_code, le.document_number, sa.side
         HAVING COALESCE(SUM(le.debit) - SUM(le.credit), 0) <> 0
+          ${fxHaving}
         ORDER BY le.account_code, le.analytical_code, le.document_number
       `,
     );
 
     return rows.map((r) => this.mapRow(r, cutoff));
+  }
+
+  /**
+   * Otvorene grupe sa VIŠE deviznih valuta na dan preseka — greška podataka, ne
+   * poslovni slučaj. `listOpenItems` sa `fxCurrency` filterom ih namerno preskače
+   * (nemaju jedinstven devizni saldo), pa se ovde vraćaju da bi revalorizacija mogla
+   * da ih prijavi korisniku umesto da tiho ispadnu iz bilansa.
+   *
+   * `opts.fxCurrency` sužava na grupe koje SADRŽE tu valutu (tj. na one koje su
+   * isključene iz obračuna baš te valute); bez njega vraća sve mešane grupe.
+   *
+   * Isti WHERE (presek, posted+locked, neuparen do preseka) kao `listOpenItems` —
+   * inače bi se prijavljivale grupe koje uopšte nisu u obračunu.
+   */
+  async listMixedFxCurrencyGroups(
+    asOf?: Date,
+    opts?: OpenItemsOptions,
+  ): Promise<MixedFxCurrencyGroup[]> {
+    const cutoff = asOf ?? new Date();
+    const companyFilter =
+      opts?.companyId != null
+        ? Prisma.sql`AND je.company_id = ${opts.companyId}`
+        : Prisma.empty;
+    const currencyFilter = opts?.fxCurrency
+      ? Prisma.sql`AND bool_or(le.fx_currency = ${opts.fxCurrency})`
+      : Prisma.empty;
+
+    const rows = await this.prisma.$queryRaw<MixedFxRawRow[]>(
+      Prisma.sql`
+        SELECT
+          le.account_code AS account_code,
+          le.analytical_code AS analytical_code,
+          le.document_number AS document_number,
+          COALESCE(SUM(le.debit) - SUM(le.credit), 0) AS balance,
+          array_agg(DISTINCT le.fx_currency) FILTER (WHERE le.fx_currency IS NOT NULL) AS currencies,
+          array_agg(le.id ORDER BY le.id) AS ledger_entry_ids
+        FROM ledger_entries le
+        JOIN journal_entries je ON je.id = le.journal_entry_id
+        JOIN saldakonto_accounts sa ON sa.account = le.account_code
+        WHERE je.status IN ('POSTED', 'LOCKED')
+          AND je.posting_date <= ${cutoff}
+          AND (le.reconciled_at IS NULL OR le.reconciled_at > ${cutoff})
+          AND sa.tracks_open_items = TRUE
+          ${companyFilter}
+        GROUP BY le.account_code, le.analytical_code, le.document_number
+        HAVING COALESCE(SUM(le.debit) - SUM(le.credit), 0) <> 0
+          AND COUNT(DISTINCT le.fx_currency) > 1
+          ${currencyFilter}
+        ORDER BY le.account_code, le.analytical_code, le.document_number
+      `,
+    );
+
+    return rows.map((r) => ({
+      accountCode: r.account_code,
+      analyticalCode: r.analytical_code,
+      documentNumber: r.document_number,
+      currencies: [...(r.currencies ?? [])].sort(),
+      balance: new Prisma.Decimal(r.balance ?? 0),
+      ledgerEntryIds: r.ledger_entry_ids ?? [],
+    }));
   }
 
   /**
@@ -213,6 +353,10 @@ export class OpenItemsService {
       currency: r.currency,
       side: r.side,
       ledgerEntryIds: r.ledger_entry_ids ?? [],
+      // Devizni saldo ima smisla samo kad grupa NOSI valutu — bez fx_currency je
+      // stavka čisto dinarska (fxAmount ostaje null, ne 0).
+      fxAmount: r.fx_currency ? new Prisma.Decimal(r.fx_balance ?? 0) : null,
+      fxCurrency: r.fx_currency,
     };
   }
 }

@@ -140,6 +140,9 @@
 | Robno — dokument | Kalkulisan (`CALCULATED`) | info plava | `--status-info` |
 | Robno — dokument | Proknjižen (`POSTED`) | zelena | `--status-success` |
 | Robno — dokument | Zaključan (`LOCKED`) | neutralna | `--status-neutral` |
+| Robno — rezervacija | Rezervisano (`OPEN`) | info plava | `--status-info` |
+| Robno — rezervacija | Oslobođeno (`RELEASED`) | neutralna | `--status-neutral` |
+| Robno — rezervacija | Potrošeno (`CONSUMED`) | zelena | `--status-success` |
 | Fakturisanje — račun | U pripremi (`DRAFT`) | neutralna | `--status-neutral` |
 | Fakturisanje — račun | Proknjižen (`POSTED`) | zelena | `--status-success` |
 | Fakturisanje — račun | Poslat (`SENT`) | info plava | `--status-info` |

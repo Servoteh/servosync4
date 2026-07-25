@@ -351,7 +351,13 @@ export interface LagerRow {
   itemCode: string | null;
   unit: string | null;
   onHand: string;
+  /**
+   * Rezervisano = agregat OTVORENIH redova `stock_reservations` (C3), NE mrtva kolona
+   * `StockLevel.reserved` (koja je uvek 0 i ne koristi se).
+   */
   reserved: string;
+  /** Raspoloživo za obećanje kupcu = `onHand − reserved`; ≤ 0 = upozorenje na listi. */
+  available: string;
   avgPurchaseNet: string;
   avgWholesalePrice: string;
   stockValue: string;
@@ -372,6 +378,162 @@ export function useLager(filters: { warehouseId?: number; onlyInStock?: boolean;
   return useQuery({
     queryKey: ['robno', 'lager', filters],
     queryFn: () => apiFetch<LagerResponse>(`${BASE}/lager${query}`),
+  });
+}
+
+// ─────────────────────────────────── rezervacija zaliha (C3)
+
+/**
+ * Status rezervacije (`stock_reservations.status`) — samo OPEN umanjuje raspoloživo.
+ * Kanonska mapa statusa (DESIGN_SYSTEM §7), domen „Robno — rezervacija":
+ * OPEN=info, RELEASED=neutral, CONSUMED=success.
+ */
+export const REZERVACIJA_STATUS = {
+  OPEN: 'OPEN', // Rezervisano — roba se drži, ne sme se obećati drugom
+  RELEASED: 'RELEASED', // Oslobođeno — vraćeno u raspoloživo (otkazano/isteklo)
+  CONSUMED: 'CONSUMED', // Potrošeno — izdatnica je razdužila robu
+} as const;
+
+export type RezervacijaStatus =
+  (typeof REZERVACIJA_STATUS)[keyof typeof REZERVACIJA_STATUS];
+
+/** Izvor rezervacije (`stock_reservations.source_type`). */
+export const REZERVACIJA_SOURCE = {
+  invoice: 'invoice', // predračun / ponuda (PON/PROF)
+  order: 'order', // porudžbina kupca
+  manual: 'manual', // ručna rezervacija (van dokumenta)
+} as const;
+
+export type RezervacijaSource =
+  (typeof REZERVACIJA_SOURCE)[keyof typeof REZERVACIJA_SOURCE];
+
+/** Jedan red liste rezervacija — 1:1 sa backend `ReservationRow` (Decimal kao string). */
+export interface RezervacijaRow {
+  id: number;
+  itemId: number;
+  warehouseId: number;
+  itemName: string | null;
+  itemCode: string | null;
+  unit: string | null;
+  sourceType: string;
+  sourceId: number;
+  sourceLine: number | null;
+  quantity: string;
+  status: string;
+  releasedAt: string | null;
+  releaseReason: string | null;
+  expiresAt: string | null;
+  note: string | null;
+  createdByUserId: number | null;
+  createdAt: string;
+}
+
+/** Raspoloživo po (artikal, magacin) — `available = onHand − Σ(OPEN rezervacije)`. */
+export interface RaspolozivoRow {
+  itemId: number;
+  warehouseId: number;
+  onHand: string;
+  reserved: string;
+  available: string;
+}
+
+export interface RezervacijeFilters {
+  page?: number;
+  pageSize?: number;
+  itemId?: number | '';
+  warehouseId?: number | '';
+  status?: RezervacijaStatus | '';
+  sourceType?: RezervacijaSource | '';
+  sourceId?: number | '';
+}
+
+/**
+ * Lista rezervacija (filter artikal/magacin/status/izvor), server-side paginacija
+ * (`page`/`pageSize`) — GET /robno/reservations. Permisija ROBNO_READ.
+ */
+export function useRezervacije(filters: RezervacijeFilters = {}) {
+  const pageSize = filters.pageSize && filters.pageSize > 0 ? filters.pageSize : 50;
+  const page = filters.page && filters.page > 0 ? filters.page : 1;
+  const query = buildQuery({
+    page: page > 1 ? page : undefined,
+    pageSize: pageSize !== 50 ? pageSize : undefined,
+    itemId: filters.itemId === '' ? undefined : filters.itemId,
+    warehouseId: filters.warehouseId === '' ? undefined : filters.warehouseId,
+    status: filters.status === '' ? undefined : filters.status,
+    sourceType: filters.sourceType === '' ? undefined : filters.sourceType,
+    sourceId: filters.sourceId === '' ? undefined : filters.sourceId,
+  });
+  return useQuery({
+    queryKey: ['robno', 'reservations', filters],
+    queryFn: () => apiFetch<Paginated<RezervacijaRow>>(`${BASE}/reservations${query}`),
+  });
+}
+
+/**
+ * Raspoloživo za jedan (artikal, magacin) — GET /robno/availability. Upit je isključen
+ * dok artikal i magacin nisu poznati.
+ */
+export function useRaspolozivo(itemId: number | null, warehouseId: number | null) {
+  const enabled = itemId != null && itemId > 0 && warehouseId != null && warehouseId > 0;
+  const query = enabled ? `?itemId=${itemId}&warehouseId=${warehouseId}` : '';
+  return useQuery({
+    queryKey: ['robno', 'availability', itemId, warehouseId],
+    queryFn: () => apiFetch<Envelope<RaspolozivoRow>>(`${BASE}/availability${query}`),
+    enabled,
+  });
+}
+
+/** Rezultat rezervisanja predračuna — koliko je novih, usklađenih i nepromenjenih redova. */
+export interface RezervacijaProformaResult {
+  invoiceId: number;
+  warehouseId: number;
+  created: number;
+  /** Postojeći redovi kojima je količina usklađena sa izmenjenom stavkom predračuna. */
+  updated: number;
+  /** Redovi bez promene (ista količina) ili već oslobođeni/potrošeni. */
+  skipped: number;
+  reservations: RezervacijaRow[];
+}
+
+/**
+ * Rezerviši zalihu po predračunu (PON/PROF, nacrt) — POST /robno/reservations/from-invoice/:invoiceId.
+ * Jedna rezervacija po stavci sa artiklom; idempotentno (ponovni poziv ne duplira, a izmenjenu
+ * količinu usklađuje). Prekoračenje raspoloživog = 422. Permisija ROBNO_WRITE.
+ */
+export function useRezervisiPredracun() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ invoiceId, warehouseId }: { invoiceId: number; warehouseId?: number }) =>
+      apiFetch<Envelope<RezervacijaProformaResult>>(
+        `${BASE}/reservations/from-invoice/${invoiceId}`,
+        { method: 'POST', body: JSON.stringify({ warehouseId }) },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['robno'] }),
+  });
+}
+
+/** Rezultat oslobađanja jedne rezervacije. */
+export interface OslobodiResult {
+  id: number;
+  released: number;
+  /** true = red je već bio oslobođen/potrošen (ponovljen poziv nije greška). */
+  alreadyReleased: boolean;
+  status: string;
+}
+
+/**
+ * Oslobodi rezervaciju (OPEN → RELEASED) — POST /robno/reservations/:id/release.
+ * Roba se vraća u raspoloživo. Razlog se upisuje uz red. Permisija ROBNO_WRITE.
+ */
+export function useOslobodiRezervaciju() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, reason }: { id: number; reason?: string }) =>
+      apiFetch<Envelope<OslobodiResult>>(`${BASE}/reservations/${id}/release`, {
+        method: 'POST',
+        body: JSON.stringify({ reason }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['robno'] }),
   });
 }
 

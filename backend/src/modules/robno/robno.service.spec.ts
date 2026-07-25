@@ -144,6 +144,87 @@ describe("RobnoService.assertSufficientStock (C11)", () => {
 });
 
 /**
+ * R3 (review 25.07): guard je od stvarnog stanja oduzimao otvorene rezervacije i za MANJAK,
+ * pa se popis nije mogao zaključiti kad je preostala roba rezervisana (stanje 10, rezervisano
+ * 10, brojanje nađe 8 → MANJAK 2 vs raspoloživo 0 → 422). MANJAK NIJE obećanje kupcu.
+ */
+describe("RobnoService.loadOpenReserved (R3 — popis se mora zaključiti)", () => {
+  /** tx dvojnik koji beleži da li je agregat rezervacija uopšte tražen. */
+  function makeTx(sum: Prisma.Decimal) {
+    return {
+      groupBy: jest.fn().mockResolvedValue([
+        { itemId: 2, warehouseId: 5, _sum: { quantity: sum } },
+      ]),
+    };
+  }
+
+  function callLoad(
+    service: RobnoService,
+    tx: unknown,
+    kind: StockDocumentKind,
+    dto: CreateStockDocumentDto,
+    source?: { sourceType: "invoice"; sourceId: number }[],
+  ): Promise<Map<string, Prisma.Decimal>> {
+    return (
+      service as unknown as {
+        loadOpenReserved: (
+          tx: unknown,
+          kind: StockDocumentKind,
+          dto: CreateStockDocumentDto,
+          source?: unknown,
+        ) => Promise<Map<string, Prisma.Decimal>>;
+      }
+    ).loadOpenReserved(tx, kind, dto, source);
+  }
+
+  const dto: CreateStockDocumentDto = {
+    documentTypeCode: "MANJR",
+    warehouseId: 5,
+    items: [{ itemId: 2, quantity: 2 }],
+  };
+
+  it("MANJAK ne oduzima rezervacije (agregat se i ne traži)", async () => {
+    const { service } = makeService({});
+    const groupBy = makeTx(D(10));
+    const reserved = await callLoad(
+      service,
+      { stockReservation: groupBy },
+      "MANJAK",
+      dto,
+    );
+    expect(reserved.size).toBe(0);
+    expect(groupBy.groupBy).not.toHaveBeenCalled();
+  });
+
+  it("IZ i dalje oduzima rezervacije, uz izuzimanje SVIH svojih izvora (R1)", async () => {
+    const { service } = makeService({});
+    const groupBy = makeTx(D(10));
+    const reserved = await callLoad(
+      service,
+      { stockReservation: groupBy },
+      "IZ",
+      { ...dto, documentTypeCode: "IFR" },
+      [
+        { sourceType: "invoice", sourceId: 200 },
+        { sourceType: "invoice", sourceId: 100 },
+      ],
+    );
+    expect(reserved.get("2:5")?.toString()).toBe("10");
+    const args = groupBy.groupBy.mock.calls[0][0] as {
+      where: { AND?: Array<{ NOT: { sourceId: number } }> };
+    };
+    expect(args.where.AND?.map((c) => c.NOT.sourceId)).toEqual([200, 100]);
+  });
+
+  it("MANJAK i dalje pada na golom stanju (popis ne otpisuje više nego što knjigovodstveno postoji)", async () => {
+    const { service } = makeService({ "2:5": D(1) });
+    await expect(callGuard(service, "MANJAK", dto)).rejects.toBeInstanceOf(
+      UnprocessableEntityException,
+    );
+  });
+});
+
+/**
  * Kartica artikla (getItemCard) — čista logika running stanja bez baze: `$queryRaw` vraća
  * fiksni set kretanja, `costing.stateAsOf` je nezavisni kontrolni izvor. Verifikuje smoke §2
  * („krajnje stanje == stateAsOf danas") + početno stanje pre `from`.

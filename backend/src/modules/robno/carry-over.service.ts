@@ -8,6 +8,7 @@ import {
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { RobnoService } from "./robno.service";
+import { ReservationService } from "./reservation.service";
 import type { CreateStockDocumentItemDto } from "./dto/create-stock-document.dto";
 
 /** Opcije prepisa (carry-over) — magacin i vrsta dokumenta se mogu preklopiti sa podrazumevanih. */
@@ -24,6 +25,12 @@ const RECEIVABLE_ORDER_STATUS: ReadonlySet<string> = new Set([
   "SIGNED",
   "LOCKED",
 ]);
+
+/**
+ * Dokle se prati lanac prepisa (`copiedFromDocId`) pri traženju rezervacija. Realan lanac je
+ * predračun → račun (dubina 1); granica je čuvar od ciklusa/pokvarenih podataka.
+ */
+const RESERVATION_SOURCE_DEPTH = 3;
 
 /**
  * Carry-over (prepis) dokumenata u robno (Batch B, Talas 2):
@@ -47,6 +54,7 @@ export class CarryOverService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly robno: RobnoService,
+    private readonly reservation: ReservationService,
   ) {}
 
   // ─────────────────────────────────── PO → Primka (robni ulaz UL)
@@ -147,6 +155,11 @@ export class CarryOverService {
    * artiklom (`itemId`) i količinom > 0 (uslužne stavke bez artikla se preskaču). IZ prolazi
    * kroz `assertSufficientStock` (nedovoljno stanje = 422 sa listom). Anti-duplo:
    * `Invoice.stockDocumentId != null` → 409; po uspehu se veza upisuje na fakturu.
+   *
+   * REZERVACIJE: izuzimaju se i troše za CEO lanac prepisa (račun + predračun iz koga je
+   * nastao — v. `resolveReservationSources`), i to u istoj transakciji sa upisom izdatnice.
+   * U trci dva paralelna prepisa gubitnik briše svoju izdatnicu, a rezervacije ostaju
+   * CONSUMED — ispravno, jer izdatnica pobednika stvarno razdužuje istu robu.
    */
   async fromInvoice(
     invoiceId: number,
@@ -158,7 +171,9 @@ export class CarryOverService {
       include: { items: { orderBy: [{ lineNo: "asc" }, { id: "asc" }] } },
     });
     if (!invoice)
-      throw new NotFoundException(`Dokument (faktura) ${invoiceId} ne postoji.`);
+      throw new NotFoundException(
+        `Dokument (faktura) ${invoiceId} ne postoji.`,
+      );
 
     // Anti-duplo — faktura je već razdužena kroz izdatnicu.
     if (invoice.stockDocumentId != null) {
@@ -192,13 +207,39 @@ export class CarryOverService {
     }));
 
     // IZ → assertSufficientStock guard u createStockDocument (nedovoljno stanje = 422).
-    const created = await this.robno.createStockDocument("IZ", {
-      documentTypeCode,
-      warehouseId,
-      customerId: invoice.customerId ?? undefined,
-      createdByUserId: actorUserId,
-      items,
-    });
+    // Batch C: guard gleda RASPOLOŽIVO (stanje − rezervisano), pa izdatnica mora da
+    // izuzme rezervacije SAMOG tog predračuna — inače bi predračun koji drži robu
+    // blokirao sopstvenu izdatnicu.
+    const reservationSources = await this.resolveReservationSources(invoice);
+    const consumeReason = (documentNumber: string) =>
+      `izdatnica ${documentNumber}`;
+
+    const created = await this.robno.createStockDocument(
+      "IZ",
+      {
+        documentTypeCode,
+        warehouseId,
+        customerId: invoice.customerId ?? undefined,
+        createdByUserId: actorUserId,
+        items,
+      },
+      {
+        reservationSource: reservationSources,
+        // Rezervacije se zatvaraju U ISTOJ TRANSAKCIJI sa upisom izdatnice (review B):
+        // roba je otišla → CONSUMED (ne RELEASED, jer se ne vraća u raspoloživo). Kad izvor
+        // nema rezervacija (najčešći slučaj — niko nije kliknuo „Rezerviši"), `consumeWithin`
+        // vraća `noop` umesto 404, pa nema lažnog upozorenja u logu na svakom prepisu.
+        afterCreate: async (tx, doc) => {
+          for (const source of reservationSources) {
+            await this.reservation.consumeWithin(
+              tx,
+              { ...source, reason: consumeReason(doc.documentNumber) },
+              actorUserId,
+            );
+          }
+        },
+      },
+    );
 
     // Upiši vezu na fakturu — CAS (review Batch B): `stockDocumentId` nema DB unique,
     // pa bi dva istovremena poziva oba prošla rani anti-duplo guard i napravila DVE
@@ -221,9 +262,48 @@ export class CarryOverService {
       );
     }
     this.logger.log(
-      `Prepis fakture ${invoice.documentNumber} → izdatnica ${created.data.documentNumber} (${items.length} stavki).`,
+      `Prepis fakture ${invoice.documentNumber} → izdatnica ${created.data.documentNumber} ` +
+        `(${items.length} stavki, izvori rezervacija: ${reservationSources
+          .map((s) => s.sourceId)
+          .join(", ")}).`,
     );
     return created;
+  }
+
+  /**
+   * Izvori rezervacija koje OVA izdatnica troši: sam dokument + lanac dokumenata iz kojih je
+   * prepisan (`copiedFromDocId`).
+   *
+   * ZAŠTO (review R1): „Rezerviši robu" upisuje rezervacije na PREDRAČUN (`sourceId` =
+   * predračun), a `DocumentCarryOverService.createInvoiceFromProforma` pravi NOV level-0 račun
+   * i rezervacije OSTAVLJA na predračunu. Izdatnica se pravi iz konačnog računa, pa bi izvor
+   * `{invoice, račun}` promašio svaki red: guard bi rezervisanu količinu oduzeo od stanja
+   * (422 „nedovoljno stanje" na robi koja fizički stoji), a rezervacije bi ostale OPEN zauvek.
+   *
+   * Alternativa je bila da `sales/carry-over` PREBACI rezervacije na novi račun; odbačena je jer
+   * bi (a) rezervacija izgubila vezu sa dokumentom na kome je korisnik kliknuo „Rezerviši",
+   * (b) otkazivanje predračuna prestalo da oslobađa robu, i (c) izdatnica napravljena direktno
+   * iz predračuna (podržan tok) opet promašila izvor. Razrešavanje lanca pokriva oba toka.
+   */
+  private async resolveReservationSources(invoice: {
+    id: number;
+    copiedFromDocId: number | null;
+  }): Promise<Array<{ sourceType: "invoice"; sourceId: number }>> {
+    const ids: number[] = [invoice.id];
+    const seen = new Set<number>([invoice.id]);
+    let parentId = invoice.copiedFromDocId;
+    for (let depth = 0; depth < RESERVATION_SOURCE_DEPTH; depth++) {
+      if (parentId == null || parentId <= 0 || seen.has(parentId)) break;
+      seen.add(parentId);
+      ids.push(parentId);
+      const parent = await this.prisma.invoice.findUnique({
+        where: { id: parentId },
+        select: { copiedFromDocId: true },
+      });
+      if (!parent) break;
+      parentId = parent.copiedFromDocId;
+    }
+    return ids.map((id) => ({ sourceType: "invoice" as const, sourceId: id }));
   }
 
   /** Magacin iz opcija (pozitivan ceo broj) ili podrazumevani 1 (kao nabavka.receiveOrder). */
