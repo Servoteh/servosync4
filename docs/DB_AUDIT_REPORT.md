@@ -487,8 +487,10 @@ Format: **ID | ozbiljnost | naslov** → lokacija, problem + scenario štete, pr
 - Predlog: konvertovati preostala 3 seed fajla u aditivne idempotentne migracije (ON CONFLICT DO NOTHING; GAP audit to već predlaže za vat-account-map). Postojeći fajlovi su TRUNCATE+INSERT — ne puštati ih ručno na prod bez razumevanja da GAZE izmene.
 - Rizik: nizak uz guard po prirodnom ključu.
 
-**DB-074 | VISOKO → delimično sanirano 25.07 | Backup: postoji i pokriva glavnu bazu — restore SADA TESTIRAN ✅, skripta verzionisana ✅; ostaje OFF-SITE (odluka o destinaciji)**
-- Sanacija 25.07: probni restore `servosync2_2026-07-25.dump` u privremeni kontejner = USPEŠAN (1m38s, 175 tabela, brojevi redova poklapaju sa živom bazom; jedina odstupanja = 2 FK-a preskočena zbog DB-080 orphana). Skripta `backup-nightly.sh` verzionisana u `backend/scripts/` (obrazac monitor-sy15.sh). Off-site i dalje ne postoji — čeka odluku o destinaciji.
+**DB-074 | VISOKO → SANIRANO 25.07 (odlukom) | Backup: restore testiran ✅, skripta verzionisana ✅, off-site pokriven noćnim klonom mašine ✅**
+- Sanacija 25.07: probni restore `servosync2_2026-07-25.dump` u privremeni kontejner = USPEŠAN (1m38s, 175 tabela, brojevi redova poklapaju sa živom bazom; jedina odstupanja = 2 FK-a preskočena zbog DB-080 orphana — sanirano isto veče). Skripta `backup-nightly.sh` verzionisana u `backend/scripts/` (obrazac monitor-sy15.sh).
+- **Off-site — odluka (Nenad, 25.07):** postoji noćni klon CELE Ubuntu mašine na drugu lokaciju, i on je jedini off-site sloj — klon nosi i konzistentne pg_dump fajlove iz `~/backups/` (upravo ono što se pri restore-u stvarno koristi). Poseban cloud off-site (R2/Supabase) je svesno ODLOŽEN.
+- **ZA PROVERU (jedino preostalo):** da klon kreće POSLE ~02:40 (backup se završava ~02:34) — u suprotnom klon nosi dan starije dump-ove (RPO u najgorem slučaju 48h umesto 24h); i povremeno probati restore IZ KLONA, ne samo sa primarnog diska. Napomena: sirovi `pgdata` direktorijum unutar klona žive mašine nije pouzdan za vraćanje — meritorni su dump fajlovi.
 - Lokacija: server cron 02:30 `~/ops/backup-nightly.sh` (pg_dump -Fc za sy15 + servosync-pg + tar sy15 storage; pg_restore --list integritetska provera; retencija 7d/28d; marker `.last_ok` — svež 25.07 02:34; monitoring `monitor-sy15.sh:59–64`). U samoj skripti: „Off-site kopija = TODO (odluka)". `archive_mode=off` (nema PITR). Playbook stavka „pgBackRest + noćni dump off-site + testiran restore" — nečekirana. Skripta nije verzionisana u repou (monitor-sy15.sh jeste — presedan postoji).
 - Problem: požar/krađa/otkaz diska ubuntusrv-a = gubitak i baze i svih kopija; restore nikad proban = backup Šredingerov.
 - Predlog: off-site kopija (rsync/rclone na drugu mašinu ili cloud) + probni restore u prazan kontejner (može odmah, read-only za izvor) + verzionisati skriptu u `backend/scripts/`.
@@ -518,7 +520,8 @@ Format: **ID | ozbiljnost | naslov** → lokacija, problem + scenario štete, pr
 **DB-079 | NISKO — ✅ REŠENO 25.07 | Migracija `20260725100000_predmet_planeri_016` je u međuvremenu primenjena na prod**
 - Provereno 25.07 ~12h: `_prisma_migrations` sadrži `20260725100000_predmet_planeri_016` (finished_at 10:17 UTC) — deploy je legao između prvog snimka audita i provere. Bez daljih koraka.
 
-**DB-080 | VISOKO | Živa baza sadrži redove koji KRŠE sopstvene FK constrainte (upisani pod `session_replication_role='replica'`) — restore zato preskače 2 FK-a**
+**DB-080 | VISOKO → SANIRANO 25.07 | Živa baza je sadržala redove koji KRŠE sopstvene FK constrainte (upisani pod `session_replication_role='replica'`)**
+- **Sanacija 25.07 (uz odobrenje):** 89 orphan redova `mrp_demand_items` OBRISANO + `handover_drafts` id 3459 (`G-0001/20`, legacy uvoz iz 2020) `main_drawing_id` → NULL; snimci pre brisanja u `ubuntusrv:~/backups/sanacije/*_2026-07-25.csv`; oba orphan brojača posle = 0. OSTAJE sistemski deo: orphan-scan posle sync prolaza (Faza 2) + DB-051.
 - Lokacija (prod, potvrđeno restore testom 25.07): `mrp_demand_items` — **89 orphan redova** (`demand_id` pokazuje na `mrp_demands` koja je **prazna**, 0 redova; sync je demands prepisao a items ostavio); `handover_drafts.main_drawing_id = 15840` — 1 red pokazuje na nepostojeći crtež.
 - Problem: sync piše kroz `SET LOCAL session_replication_role='replica'` (`generic.syncer.ts:184` — gasi FK provere; veza sa DB-051), pa FK constraint na živoj bazi NE garantuje integritet za sync-ovane tabele. Direktna posledica: `pg_restore` na svežu bazu ne može da re-kreira `fk_mrp_demand_items_demand` i `fk_handover_drafts_main_drawing` → restaurirana baza je BEZ ta 2 constrainta (drift pri restore-u), a svaki čitalac mrp_demand_items dobija stavke bez zaglavlja.
 - Predlog: (1) sanacija podataka — obrisati 89 orphan stavki (mirror tabela, izvor je BigBit — sync ih ionako može ponovo doneti ispravno) i razrešiti handover_drafts red (NULL-ovati main_drawing_id ili reimport crteža); (2) u sync-u posle replica-sesije dodati orphan-scan korak za parove header/items; (3) dugoročno DB-051 (ne-superuser rola).
@@ -541,21 +544,21 @@ Sortirano po ozbiljnosti. Status se ažurira ručno pri sređivanju.
 | DB-007 | VISOKO | Integritet | `invoices.customer_id` NULL i za knjižen račun | otvoreno |
 | DB-008 | VISOKO | Integritet | `handover_draft_items.drawing_id` bez FK | otvoreno |
 | DB-025 | VISOKO | Tipovi | Float cena u živom cenovniku (`price_list_entries.price/fee`) | otvoreno |
-| DB-037 | VISOKO | Performanse | 58 FK bez indeksa — vrući put proizvodnje (top lista) | ✅ indeksi ŽIVI na produ 25.07 (CONCURRENTLY); migracija u PR |
+| DB-037 | VISOKO | Performanse | 58 FK bez indeksa — vrući put proizvodnje (top lista) | ✅ indeksi ŽIVI na produ 25.07; migracija u main-u (#17) |
 | DB-038 | VISOKO | Performanse | `drawing_pdfs` = 87% baze (bytea PDF-ovi, 5.737 redova) | otvoreno |
-| DB-039 | VISOKO | Performanse | SEF liste vraćaju XML/PDF blobove bez projekcije/paginacije | fix u PR |
+| DB-039 | VISOKO | Performanse | SEF liste vraćaju XML/PDF blobove bez projekcije/paginacije | ✅ u main-u (#17) |
 | DB-040 | VISOKO | Performanse | PDM import: N+1 petlje u jednoj transakciji | otvoreno |
 | DB-049 | VISOKO | Bezbednost | Plaintext legacy lozinke u prod bazi — sync ih puni | otvoreno |
 | DB-050 | VISOKO | Bezbednost | RLS ne postoji na glavnoj bazi (0 politika; svesna odluka) | otvoreno |
 | DB-059 | VISOKO | Logika | Batch B soft-delete: šema da, kod ne (WIP gate) | otvoreno |
 | DB-060 | VISOKO | Logika | `stock_levels` prazna a lager lista je čita bez fallback-a | otvoreno |
-| DB-061 | VISOKO | Logika | Kamata: draft nalozi + payable konta u osnovici | fix u PR |
-| DB-062 | VISOKO | Logika | Storno zaključanog naloga GK prolazi | fix u PR |
+| DB-061 | VISOKO | Logika | Kamata: draft nalozi + payable konta u osnovici | ✅ u main-u (#17) |
+| DB-062 | VISOKO | Logika | Storno zaključanog naloga GK prolazi | ✅ u main-u (#17) |
 | DB-063 | VISOKO | Logika | GL bez traga „ko" (posted/locked/unlocked bez aktera) | otvoreno |
-| DB-073 | VISOKO | Održavanje | POPDV seed nepovezan — šifarnici prazni NA PRODU | migracija u PR (validirana na dev) |
-| DB-074 | VISOKO | Održavanje | Backup: restore ✅ testiran 25.07, skripta ✅ verzionisana; ostaje off-site | delimično sanirano |
-| DB-075 | VISOKO | Održavanje | Untracked Batch B migracija + izmenjena šema u radnom stablu | otvoreno (tuđi WIP) |
-| DB-080 | VISOKO | Integritet | Orphan redovi krše FK (replica sync): 89× mrp_demand_items + 1× handover_drafts | otvoreno — čeka odluku o brisanju |
+| DB-073 | VISOKO | Održavanje | POPDV seed nepovezan — šifarnici prazni NA PRODU | ✅ u main-u (#17), migracija validirana na dev |
+| DB-074 | VISOKO | Održavanje | Backup: restore ✅, skripta ✅, off-site = noćni klon mašine (odluka 25.07) | ✅ sanirano (ZA PROVERU: sat klona posle 02:40) |
+| DB-075 | VISOKO | Održavanje | Untracked Batch B migracija + izmenjena šema u radnom stablu | ✅ rešeno 25.07 — Batch B komitovan i merge-ovan kao #16 (71992fa), deploy 🟢 |
+| DB-080 | VISOKO | Integritet | Orphan redovi krše FK (replica sync): 89× mrp_demand_items + 1× handover_drafts | ✅ sanirano 25.07 (snimci u ~/backups/sanacije) |
 | DB-009 | SREDNJE | Integritet | CHECK paket: količine/procenti/iznosi/intervali | otvoreno |
 | DB-010 | SREDNJE | Integritet | „Magic zero" umesto NULL (sistemski obrazac) | otvoreno |
 | DB-011 | SREDNJE | Integritet | `invoices` unique bez company_id (multi-firma) | otvoreno |
@@ -584,11 +587,11 @@ Sortirano po ozbiljnosti. Status se ažurira ručno pri sređivanju.
 | DB-054 | SREDNJE | Bezbednost | `assessment_raters.token` izlazi kroz API — ZA PROVERU | otvoreno |
 | DB-055 | SREDNJE | Bezbednost | `ai_chat_sql` LLM SQL na sy15 — ZA PROVERU | otvoreno |
 | DB-056 | SREDNJE | Bezbednost | Prod tabele van šeme (2× pwhash backup, hdi snapshot, cutover_stash) | otvoreno |
-| DB-064 | SREDNJE | Logika | GL numeracija: string MAX → blokada posle 9999 | fix u PR |
-| DB-065 | SREDNJE | Logika | Carry-over bez CAS → dupli račun (IFR vs IFGP) | fix u PR |
+| DB-064 | SREDNJE | Logika | GL numeracija: string MAX → blokada posle 9999 | ✅ u main-u (#17) |
+| DB-065 | SREDNJE | Logika | Carry-over bez CAS → dupli račun (IFR vs IFGP) | ✅ u main-u (#17) |
 | DB-066 | SREDNJE | Logika | stornoInvoice neatomičan + ne dira robni izlaz | otvoreno |
 | DB-067 | SREDNJE | Logika | stock_documents: status ≠ journalEntryId semantika | otvoreno |
-| DB-068 | SREDNJE | Logika | Blagajna: saldo provera van transakcije | fix u PR |
+| DB-068 | SREDNJE | Logika | Blagajna: saldo provera van transakcije | ✅ u main-u (#17) |
 | DB-069 | SREDNJE | Logika | Mrtvi modeli + „piši-a-ne-čitaj" mirror tabele | otvoreno |
 | DB-076 | SREDNJE | Održavanje | Dupli timestamp 20260723140000; prod red ≠ replay red | otvoreno |
 | DB-077 | SREDNJE | Održavanje | Nema CI replay-od-nule (P3009 presedan) | otvoreno |
@@ -602,7 +605,7 @@ Sortirano po ozbiljnosti. Status se ažurira ručno pri sređivanju.
 | DB-035 | NISKO | Tipovi | DIN vs RSD; reward_month string; planner dva timestamp polja… | otvoreno |
 | DB-036 | NISKO | Tipovi | work_orders.status je Boolean | otvoreno |
 | DB-045 | NISKO | Performanse | Manja N+1 mesta (cycle-guard, nivelacija, kadrovska…) | otvoreno |
-| DB-046 | NISKO | Performanse | 10 redundantnih indeksa | ✅ obrisani na produ 25.07; migracija u PR |
+| DB-046 | NISKO | Performanse | 10 redundantnih indeksa | ✅ obrisani na produ 25.07; migracija u main-u (#17) |
 | DB-047 | NISKO | Performanse | CONCURRENTLY pravilo za buduće indekse | ✅ ispoštovano u perf paketu 25.07 |
 | DB-048 | NISKO | Performanse | customers_id_seq 1M uz 6k redova (sync troši sekvencu) | otvoreno |
 | DB-057 | NISKO | Bezbednost | .env.dev u gitu (dev kredencijal) | otvoreno |
@@ -614,7 +617,7 @@ Sortirano po ozbiljnosti. Status se ažurira ručno pri sređivanju.
 | DB-079 | NISKO | Održavanje | Migracija 016 komitovana a neprimenjena | ✅ rešeno 25.07 (deploy legao 10:17 UTC) |
 
 **Zbir: 80 nalaza — 1 KRITIČNO · 23 VISOKO · 36 SREDNJE · 20 NISKO.**
-*Ažurirano 25.07 popodne (prva runda sanacije): 2 rešena (DB-079, DB-047), 2 delimično (DB-037/046 — živo na produ, DB-074 — ostaje off-site), 8 fix-eva u PR-u (DB-039, 061, 062, 064, 065, 068, 073 + perf migracija); nov nalaz DB-080.*
+*Ažurirano 25.07 uveče (posle talasa 0): **✅ zatvoreno 13** — DB-037, 039, 046, 047, 061, 062, 064, 065, 068, 073 (merge #17, ff128a3), DB-074 (restore test + klon-odluka), DB-079, DB-080 (sanacija podataka uz snimke). Otvoreno ostaje 67, od toga iz VISOKO grupe: DB-001..008 constraint mreža (Faza 2), DB-025, DB-038, DB-040, DB-049, DB-050, DB-059/060/063, DB-075.*
 
 ---
 
