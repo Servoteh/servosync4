@@ -9,6 +9,7 @@ import { PricingService } from "./pricing.service";
 import { DocumentNumberSequenceService } from "./numbering.service";
 import { DocumentCarryOverService } from "./carry-over.service";
 import { AdvanceInvoiceService } from "./advance-invoice.service";
+import { RobnoModule } from "../robno/robno.module";
 
 /**
  * Modul Sales / Fakturisanje (Faza 5 §A — izlazni računi + carry-over + numeracija).
@@ -21,7 +22,10 @@ import { AdvanceInvoiceService } from "./advance-invoice.service";
 @Module({
   // GlModule → GlWriteService (T2 SEF storno = reverse GL); SefModule → SefService (cancel pri stornu).
   // Jednosmerno Sales→Gl/Sef, bez ciklusa (gl/ i sef/ ne uvoze sales provajdere).
-  imports: [PostingModule, GlModule, SefModule, SalesPrintModule],
+  // RobnoModule → ReservationService: storno predračuna mora da OSLOBODI rezervisanu
+  // robu, inače rezervacija večno drži zalihu (Batch C review, nalaz F). Jednosmerno
+  // Sales→Robno; robno/ ne uvozi sales provajdere, pa nema ciklusa.
+  imports: [PostingModule, GlModule, SefModule, SalesPrintModule, RobnoModule],
   controllers: [SalesController],
   providers: [
     FakturisanjeService,

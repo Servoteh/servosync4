@@ -15,7 +15,10 @@ import { RESERVATION_STATUS } from "./dto/reservation.dto";
  *
  * Baza je zamenjena minimalnim in-memory Prisma dvojnikom (bez Docker-a): pokriva tačno one
  * oblike upita koje servis koristi (findMany/groupBy/create/updateMany/count/findUnique/
- * $transaction/$executeRaw) + unique `uq_stock_reservations_source_line` (P2002).
+ * $transaction/$queryRaw/$executeRaw) + unique `uq_stock_reservations_source_line` (P2002).
+ *
+ * STANJE (`onHand`) dolazi iz `$queryRaw` agregata nad kretanjima (review A) — dvojnik zato
+ * vraća agregatne redove, NE `stock_levels` (ta tabela nema pisca i uvek je prazna).
  */
 
 const D = (v: string | number) => new Prisma.Decimal(v);
@@ -67,6 +70,14 @@ function matches(
       if (matches(row, filter as Record<string, unknown>)) return false;
       continue;
     }
+    // `AND: [{ NOT: … }, { NOT: … }]` — izuzimanje VIŠE izvora rezervacije (R1).
+    if (key === "AND") {
+      const clauses = (Array.isArray(filter) ? filter : [filter]) as Array<
+        Record<string, unknown>
+      >;
+      if (!clauses.every((c) => matches(row, c))) return false;
+      continue;
+    }
     if (!fieldMatches(row[key], filter)) return false;
   }
   return true;
@@ -91,7 +102,8 @@ function makeDb(opts: {
   const reservations: ResRow[] = [];
   let seq = 0;
 
-  const levels = [{ itemId: 1, warehouseId: 1, onHand: opts.onHand }];
+  // Agregat kretanja (`computeOnHand`) — jedini izvor stanja; `stock_levels` se ne čita.
+  const movementState = [{ item_id: 1, warehouse_id: 1, state: opts.onHand }];
   const items = [
     { id: 1, name: "Artikal A", catalogNumber: "A-001", unit: "kom" },
   ];
@@ -197,14 +209,6 @@ function makeDb(opts: {
         return Promise.resolve({ count });
       },
     },
-    stockLevel: {
-      findMany: ({ where }: { where?: Record<string, unknown> } = {}) =>
-        Promise.resolve(
-          levels.filter((l) =>
-            matches(l as unknown as Record<string, unknown>, where),
-          ),
-        ),
-    },
     item: {
       findMany: ({ where }: { where?: Record<string, unknown> } = {}) =>
         Promise.resolve(
@@ -228,6 +232,8 @@ function makeDb(opts: {
         ),
     },
     $executeRaw: () => Promise.resolve(0),
+    // Jedini `$queryRaw` u ovom servisu je agregat stanja iz kretanja (`computeOnHand`).
+    $queryRaw: () => Promise.resolve(movementState),
     $transaction: (arg: unknown) =>
       typeof arg === "function"
         ? (arg as (tx: unknown) => Promise<unknown>)(client)
@@ -420,16 +426,119 @@ describe("ReservationService (C3)", () => {
     ).rejects.toBeInstanceOf(NotFoundException);
   });
 
-  it("availabilityMany radi jednim agregatom (bez N+1)", async () => {
+  it("artikal bez ijednog kretanja → stanje 0 (ne pad)", async () => {
+    const { service } = makeService();
+    const av = await service.availability({ itemId: 2, warehouseId: 1 });
+    expect(av.data).toMatchObject({ onHand: "0.000", available: "0.000" });
+  });
+});
+
+// ────────────────────────────────────────── regresija: nalazi review-a 25.07
+
+describe("ReservationService — regresije (review 25.07)", () => {
+  /**
+   * A: stanje se čita iz AGREGATA KRETANJA, ne iz `stock_levels`. Dvojnik uopšte nema
+   * `stockLevel` model — da poziv na njega padne testom, ne tek na produkciji (gde je tabela
+   * prazna pa je `onHand` uvek bio 0 i svaka rezervacija padala sa „raspoloživo 0").
+   */
+  it("A — raspoloživo se računa iz kretanja (stock_levels se ne dira)", async () => {
+    const { client } = makeDb({ onHand: D(12), invoice: PROFORMA });
+    expect((client as Record<string, unknown>).stockLevel).toBeUndefined();
+
+    const service = new ReservationService(client as unknown as PrismaService);
+    const av = await service.availability({ itemId: 1, warehouseId: 1 });
+    expect(av.data.onHand).toBe("12.000");
+
+    const res = await service.reserveForProforma({ invoiceId: 100 });
+    expect(res.data.created).toBe(1);
+  });
+
+  /**
+   * D + bezbednosni nalaz: `{ sourceType: 'manual', sourceId: 0 }` je oslobađalo SVE ručne
+   * rezervacije u sistemu jednim pozivom (podrazumevani `sourceId` ručnih rezervacija).
+   */
+  it("D — masovno oslobađanje ručnih rezervacija je odbijeno (422), redovi ostaju OPEN", async () => {
+    const { service, reservations } = makeService();
+    await service.create({ itemId: 1, warehouseId: 1, quantity: 1 });
+    await service.create({ itemId: 1, warehouseId: 1, quantity: 2 });
+
+    await expect(
+      service.release({ sourceType: "manual", sourceId: 0 }),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    expect(
+      reservations.every((r) => r.status === RESERVATION_STATUS.OPEN),
+    ).toBe(true);
+
+    // Pojedinačno oslobađanje (dugme na listi) i dalje radi.
+    const one = await service.releaseById(reservations[0].id, "greška unosa");
+    expect(one.data.released).toBe(1);
+  });
+
+  it("D — oslobađanje po izvoru radi za pravi dokument i za tačnu stavku", async () => {
+    const { service, reservations } = makeService();
+    await service.reserveForProforma({ invoiceId: 100 });
+    const res = await service.release({ sourceType: "invoice", sourceId: 100 });
+    expect(res.data.released).toBe(1);
+    expect(reservations[0].status).toBe(RESERVATION_STATUS.RELEASED);
+  });
+
+  /**
+   * E: izmenjena količina na stavci predračuna se USKLAĐUJE. Ranije je ponovni „Rezerviši"
+   * javljao uspeh (`skipped: 1`) a red je i dalje držao staru količinu.
+   */
+  it("E — izmenjena količina na predračunu se usklađuje pri ponovnom rezervisanju", async () => {
+    const invoice = {
+      ...PROFORMA,
+      items: [{ lineNo: 1, itemId: 1, quantity: D(2) }],
+    };
+    const { service, reservations } = makeService(D(12), invoice);
+
+    await service.reserveForProforma({ invoiceId: 100 });
+    expect(reservations[0].quantity.toString()).toBe("2");
+
+    invoice.items[0].quantity = D(8); // korisnik promenio količinu na stavci
+    const again = await service.reserveForProforma({ invoiceId: 100 });
+    expect(again.data.updated).toBe(1);
+    expect(again.data.created).toBe(0);
+    expect(again.data.skipped).toBe(0);
+    expect(reservations).toHaveLength(1);
+    expect(reservations[0].quantity.toString()).toBe("8");
+
+    const av = await service.availability({ itemId: 1, warehouseId: 1 });
+    expect(av.data.reserved).toBe("8.000");
+    expect(av.data.available).toBe("4.000");
+  });
+
+  it("E — nepromenjena količina se i dalje samo preskače", async () => {
     const { service } = makeService();
     await service.reserveForProforma({ invoiceId: 100 });
-    const res = await service.availabilityMany([
-      { itemId: 1, warehouseId: 1 },
-      { itemId: 2, warehouseId: 1 },
-    ]);
-    expect(res.data).toHaveLength(2);
-    expect(res.data[0]).toMatchObject({ onHand: "12.000", available: "2.000" });
-    // Artikal bez stanja i bez rezervacija — nula, ne pad.
-    expect(res.data[1]).toMatchObject({ onHand: "0.000", available: "0.000" });
+    const again = await service.reserveForProforma({ invoiceId: 100 });
+    expect(again.data).toMatchObject({ created: 0, updated: 0, skipped: 1 });
+  });
+
+  it("E — usklađivanje preko raspoloživog je 422 (poruka nosi i sopstvenu količinu)", async () => {
+    const invoice = {
+      ...PROFORMA,
+      items: [{ lineNo: 1, itemId: 1, quantity: D(2) }],
+    };
+    const { service, reservations } = makeService(D(12), invoice);
+    await service.reserveForProforma({ invoiceId: 100 });
+
+    invoice.items[0].quantity = D(80); // preko stanja
+    await expect(
+      service.reserveForProforma({ invoiceId: 100 }),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    expect(reservations[0].quantity.toString()).toBe("2"); // nije dirano
+  });
+
+  /**
+   * B: izdatnica se pravi i iz dokumenata koji nikad nisu rezervisali robu — `consume` tada
+   * NE sme da baci 404 (inače upozorenje u logu na svakom prepisu utopi pravu grešku).
+   */
+  it("B — consume bez ijedne rezervacije je noop, ne 404", async () => {
+    const { service } = makeService();
+    const res = await service.consume({ sourceType: "invoice", sourceId: 777 });
+    expect(res.data.noop).toBe(true);
+    expect(res.data.consumed).toBe(0);
   });
 });

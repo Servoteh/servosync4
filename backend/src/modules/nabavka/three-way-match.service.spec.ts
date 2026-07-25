@@ -44,6 +44,8 @@ interface FakeWorld {
   /** Stavke robnog ulaza (primka = nosilac ulazne fakture). `null` = nema ulaza. */
   stockItems: FakeStockItem[] | null;
   stockDocumentNumber?: string;
+  /** Status robnog ulaza; izostavljen = POSTED + kalkulisan (zavedena faktura). */
+  stockDocumentStatus?: string;
   journalEntryId?: number | null;
   vatEntries?: Array<{
     id: number;
@@ -86,7 +88,8 @@ function makePrisma(world: FakeWorld) {
             id: 77,
             purchaseOrderId: orderId,
             documentNumber: world.stockDocumentNumber ?? "0012/2026",
-            status: "POSTED",
+            status: world.stockDocumentStatus ?? "POSTED",
+            isCalculated: world.stockDocumentStatus === undefined,
             documentDate: new Date("2026-07-05T00:00:00.000Z"),
             journalEntryId,
             items: world.stockItems,
@@ -430,6 +433,268 @@ describe("ThreeWayMatchService — uparivanje i pregled", () => {
   });
 });
 
+// ─────────────────────────────────────────────── regresije: review 25.07 (R7/H/I/J)
+
+describe("ThreeWayMatchService — regresije (review 25.07)", () => {
+  /**
+   * H: dva praga u KONJUNKCIJI (>2 % I >500 RSD) gasila su ogromna odstupanja na skupim
+   * stavkama — 1,5 mil RSD razlike na stavci od 100 mil je 1,5 %, dakle „u toleranciji".
+   */
+  it("H — krupno odstupanje ispod procentualnog praga se PRIJAVLJUJE", async () => {
+    const { service } = makeService({
+      items: [
+        {
+          id: 10,
+          lineNo: 1,
+          articleId: 5,
+          orderedQuantity: D(100),
+          receivedQuantity: D(100),
+          unitPrice: D(1_000_000),
+        },
+      ],
+      // +1,5 % po jedinici = 1.500.000 RSD razlike na stavci.
+      stockItems: [{ itemId: 5, quantity: D(100), invoicePrice: D(1_015_000) }],
+    });
+
+    const res = await service.matchOrder(1);
+    expect(codes(res.findings)).toEqual(["PRICE_VARIANCE"]);
+    expect(res.findings[0].level).toBe("WARNING");
+  });
+
+  it("H — sitno odstupanje ispod oba praga i dalje ćuti", async () => {
+    const { service } = makeService({
+      items: [
+        {
+          id: 10,
+          lineNo: 1,
+          articleId: 5,
+          orderedQuantity: D(100),
+          receivedQuantity: D(100),
+          unitPrice: D(1000),
+        },
+      ],
+      stockItems: [{ itemId: 5, quantity: D(100), invoicePrice: D(1004) }],
+    });
+    const res = await service.matchOrder(1);
+    expect(res.findings).toEqual([]);
+  });
+
+  /**
+   * I: isti artikal na dve stavke po različitim cenama + savršen prijem davao je DVA
+   * PRICE_VARIANCE upozorenja uz zbirno odstupanje 0,00 — jer se ponderisani prosek poredio
+   * sa cenom pojedinačne stavke.
+   */
+  const sharedArticleWorld = (invoicedAmountLine2: number) => ({
+    items: [
+      {
+        id: 10,
+        lineNo: 1,
+        articleId: 5,
+        orderedQuantity: D(10),
+        receivedQuantity: D(10),
+        unitPrice: D(100),
+      },
+      {
+        id: 11,
+        lineNo: 2,
+        articleId: 5,
+        orderedQuantity: D(5),
+        receivedQuantity: D(5),
+        unitPrice: D(300),
+      },
+    ],
+    stockItems: [
+      { itemId: 5, quantity: D(10), invoicePrice: D(100) },
+      { itemId: 5, quantity: D(5), invoicePrice: D(invoicedAmountLine2) },
+    ],
+  });
+
+  it("I — deljeni artikal sa tačnim ukupnim iznosom NE daje lažna upozorenja", async () => {
+    const { service } = makeService(sharedArticleWorld(300));
+    const res = await service.matchOrder(1);
+    expect(res.totals.varianceAmount).toBe("0.0000");
+    expect(res.findings).toEqual([]);
+  });
+
+  it("I — stvarno zbirno odstupanje deljenog artikla se prijavljuje JEDNOM, na nivou dokumenta", async () => {
+    const { service } = makeService(sharedArticleWorld(450));
+    const res = await service.matchOrder(1);
+    expect(codes(res.findings)).toEqual(["PRICE_VARIANCE"]);
+    expect(res.findings[0].lineNo).toBeNull();
+    expect(res.findings[0].message).toContain("poređenje je zbirno");
+    // Po stavkama nema nijednog cenovnog nalaza.
+    expect(res.lines.every((l) => l.findings.length === 0)).toBe(true);
+  });
+
+  /**
+   * J: `carry-over.fromPurchaseOrder` pravi DRAFT primku iz NARUČENIH količina PRE prijema,
+   * pa je `receivedQuantity = 0` tada normalno — a ne „faktura bez prijema".
+   */
+  it("J — DRAFT primka (pre prijema) ne daje NO_RECEIPT", async () => {
+    const { service } = makeService({
+      items: [
+        {
+          id: 10,
+          lineNo: 1,
+          articleId: 5,
+          orderedQuantity: D(50),
+          receivedQuantity: D(0),
+          unitPrice: D(1000),
+        },
+      ],
+      stockItems: [{ itemId: 5, quantity: D(50), invoicePrice: D(1000) }],
+      stockDocumentStatus: "DRAFT",
+    });
+    const res = await service.matchOrder(1);
+    expect(res.findings).toEqual([]);
+  });
+
+  it("J — proknjižen ulaz bez prijema i dalje daje NO_RECEIPT", async () => {
+    const { service } = makeService({
+      items: [
+        {
+          id: 10,
+          lineNo: 1,
+          articleId: 5,
+          orderedQuantity: D(50),
+          receivedQuantity: D(0),
+          unitPrice: D(1000),
+        },
+      ],
+      stockItems: [{ itemId: 5, quantity: D(50), invoicePrice: D(1000) }],
+      stockDocumentStatus: "POSTED",
+    });
+    const res = await service.matchOrder(1);
+    expect(codes(res.findings)).toEqual(["NO_RECEIPT"]);
+  });
+});
+
+/**
+ * R7: `onlyWithFindings` se primenjivao POSLE `skip/take`, a `meta.total` je brojao SVE
+ * narudžbenice — strana je umela da bude prazna dok naredne imaju nalaza, a FE je računao
+ * pogrešan broj strana.
+ */
+describe("ThreeWayMatchService.matchSummary — filter pre paginacije (R7)", () => {
+  /** 10 narudžbenica; nalaz imaju samo poslednje tri (8, 9, 10). */
+  function makeSummaryPrisma() {
+    const ids = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    const withFinding = new Set([8, 9, 10]);
+    const orders = ids.map((id) => ({
+      id,
+      orderNumber: `PO-${id}`,
+      supplierId: 555,
+      status: "RECEIVED",
+      currency: "RSD",
+      orderedAt: new Date("2026-07-01T00:00:00.000Z"),
+      items: [
+        {
+          id: id * 10,
+          lineNo: 1,
+          articleId: 5,
+          description: null,
+          unit: null,
+          orderedQuantity: D(100),
+          receivedQuantity: D(100),
+          unitPrice: D(1000),
+        },
+      ],
+    }));
+    const docs = ids.map((id) => ({
+      id: 1000 + id,
+      purchaseOrderId: id,
+      documentNumber: `UL-${id}`,
+      status: "POSTED",
+      isCalculated: true,
+      documentDate: new Date("2026-07-05T00:00:00.000Z"),
+      journalEntryId: null,
+      items: [
+        {
+          itemId: 5,
+          quantity: withFinding.has(id) ? D(120) : D(100),
+          invoicePrice: D(1000),
+        },
+      ],
+    }));
+
+    return {
+      purchaseOrder: {
+        findMany: jest.fn(
+          (args: {
+            where?: { id?: { in: number[] } };
+            skip?: number;
+            take?: number;
+          }) => {
+            const idFilter = args.where?.id?.in;
+            if (idFilter)
+              return Promise.resolve(
+                orders.filter((o) => idFilter.includes(o.id)),
+              );
+            const skip = args.skip ?? 0;
+            const take = args.take ?? orders.length;
+            return Promise.resolve(
+              orders.slice(skip, skip + take).map((o) => ({ id: o.id })),
+            );
+          },
+        ),
+        count: jest.fn().mockResolvedValue(orders.length),
+      },
+      stockDocument: {
+        findMany: jest.fn(
+          (args: { where: { purchaseOrderId: { in: number[] } } }) =>
+            Promise.resolve(
+              docs.filter((d) =>
+                args.where.purchaseOrderId.in.includes(d.purchaseOrderId),
+              ),
+            ),
+        ),
+      },
+      vatLedgerEntry: { findMany: jest.fn().mockResolvedValue([]) },
+      customer: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue([{ id: 555, name: "Dobavljač d.o.o." }]),
+      },
+      $transaction: jest.fn((arg: unknown) =>
+        Array.isArray(arg) ? Promise.all(arg) : Promise.resolve(arg),
+      ),
+    };
+  }
+
+  it("prva strana nije prazna, a total je broj narudžbenica SA NALAZOM", async () => {
+    const service = new ThreeWayMatchService(makeSummaryPrisma() as never);
+    const res = await service.matchSummary({ onlyWithFindings: true, take: 2 });
+
+    expect(res.data).toHaveLength(2); // ranije: 0 (prve dve nemaju nalaz)
+    expect(res.data.every((r) => r.findingCount > 0)).toBe(true);
+    expect(res.meta.total).toBe(3); // ranije: 10 → FE je crtao 5 strana
+    expect(res.meta.returned).toBe(2);
+  });
+
+  it("druga strana nastavlja gde je prva stala (bez preskakanja i duplikata)", async () => {
+    const service = new ThreeWayMatchService(makeSummaryPrisma() as never);
+    const first = await service.matchSummary({
+      onlyWithFindings: true,
+      take: 2,
+    });
+    const second = await service.matchSummary({
+      onlyWithFindings: true,
+      take: 2,
+      skip: 2,
+    });
+    expect(second.data).toHaveLength(1);
+    expect(second.meta.total).toBe(3);
+    const seen = [...first.data, ...second.data].map((r) => r.orderId);
+    expect(new Set(seen).size).toBe(3);
+  });
+
+  it("bez filtera paginira baza (total = ukupan broj narudžbenica)", async () => {
+    const service = new ThreeWayMatchService(makeSummaryPrisma() as never);
+    const res = await service.matchSummary({ take: 2 });
+    expect(res.data).toHaveLength(2);
+    expect(res.meta.total).toBe(10);
+  });
+});
+
 // ─────────────────────────────────────────────────────────────── NE BLOKIRA PLAĆANJE
 
 describe("Priprema plaćanja PROLAZI i kad postoje 3-way match upozorenja", () => {
@@ -564,6 +829,69 @@ describe("Priprema plaćanja PROLAZI i kad postoje 3-way match upozorenja", () =
     const due = await service.selectDue(new Date("2026-07-25T00:00:00.000Z"));
     expect(due[0].matchWarnings).toEqual([]);
     expect(due[0].hasMatchWarnings).toBe(false);
+  });
+
+  /**
+   * R4: ekran „priprema plaćanja" je zvao `warningsForPayment` u SERIJSKOJ petlji, jednom po
+   * komitentu (do 25 poziva × do 5 upita ≈ 126 upita / ~8 s). Sada ide JEDAN batch poziv.
+   */
+  it("R4 — upozorenja za 25 komitenata idu jednim batch pozivom (nema N+1)", async () => {
+    const entries = Array.from({ length: 25 }, (_, i) => ({
+      id: 6000 + i,
+      accountCode: "4330",
+      analyticalCode: 900 + i, // 25 različitih komitenata
+      documentNumber: null, // bez broja dokumenta → spajanje po komitentu
+      debit: D(0),
+      credit: D(1000 + i),
+      dueDate: new Date("2026-07-10T00:00:00.000Z"),
+      currency: "RSD",
+    }));
+    const prisma = {
+      saldakontoAccount: {
+        findMany: jest.fn().mockResolvedValue([{ account: "4330" }]),
+      },
+      ledgerEntry: { findMany: jest.fn().mockResolvedValue(entries) },
+      $transaction: jest.fn(),
+    };
+    const warningsForPayment = jest.fn().mockResolvedValue([]);
+    const service = new PaymentPreparationService(
+      prisma as never,
+      {
+        warningsForPayment,
+      } as never,
+    );
+
+    const due = await service.selectDue(new Date("2026-07-25T00:00:00.000Z"));
+    expect(due).toHaveLength(25);
+    expect(warningsForPayment).toHaveBeenCalledTimes(1);
+    const calls = warningsForPayment.mock.calls as unknown as Array<
+      [{ partnerIds?: number[] }]
+    >;
+    expect(calls[0][0].partnerIds).toHaveLength(25);
+  });
+
+  it("R4/K — stavka bez broja dokumenta uzima samo WARNING nalaze, i to ograničen broj", async () => {
+    const prisma = makePaymentPrisma([]);
+    const many = Array.from({ length: 40 }, (_, i) => ({
+      code: "QTY_UNDER_RECEIPT",
+      level: i < 3 ? "WARNING" : "INFO",
+      message: "…",
+      orderId: i + 1,
+      orderNumber: `PO-${i + 1}`,
+      supplierId: 555,
+      lineNo: 1,
+      documentNumbers: [`PO-${i + 1}`],
+    }));
+    const service = new PaymentPreparationService(
+      prisma as never,
+      {
+        warningsForPayment: jest.fn().mockResolvedValue(many),
+      } as never,
+    );
+
+    const due = await service.selectDue(new Date("2026-07-25T00:00:00.000Z"));
+    expect(due[0].matchWarnings).toHaveLength(3); // 37 INFO poruka je odsečeno
+    expect(due[0].matchWarnings.every((w) => w.level === "WARNING")).toBe(true);
   });
 
   it("pad 3-way match sloja NE obara pripremu plaćanja", async () => {

@@ -10,6 +10,7 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { PostingEngineService } from "../gl/posting/posting.service";
 import { GlWriteService } from "../gl/gl-write.service";
 import { SefService } from "./sef/sef.service";
+import { ReservationService } from "../robno/reservation.service";
 import { DocumentNumberSequenceService } from "./numbering.service";
 import { PricingService } from "./pricing.service";
 import type { AuthUser } from "../auth/jwt.strategy";
@@ -86,6 +87,7 @@ export class FakturisanjeService {
     private readonly posting: PostingEngineService,
     private readonly glWrite: GlWriteService,
     private readonly sef: SefService,
+    private readonly reservation: ReservationService,
   ) {}
 
   // ── PREDRAČUN / PONUDA ──────────────────────────────────────────────────────
@@ -531,6 +533,27 @@ export class FakturisanjeService {
         },
       });
     }
+
+    // 2c) REZERVACIJE ZALIHA (Batch C). Storniran dokument više ništa ne obećava
+    //     kupcu — rezervacije registrovane na NJEGA se oslobađaju i roba se vraća u
+    //     raspoloživo. Bez ovoga bi rezervacija storniranog predračuna večno držala
+    //     zalihu (nema FK ka `invoices`, pa ni kaskade). Ne sme da obori već
+    //     izvršen storno: neuspeh se loguje, dokument ostaje CANCELLED.
+    await this.reservation
+      .release(
+        {
+          sourceType: "invoice",
+          sourceId: id,
+          reason: `storno dokumenta ${invoice.documentNumber}`,
+        },
+        actor.userId,
+      )
+      .catch((err: unknown) => {
+        this.logger.warn(
+          `Dokument ${invoice.documentNumber} je storniran, ali oslobađanje rezervacija ` +
+            `nije uspelo — proveri /robno/rezervacije. Uzrok: ${String(err)}`,
+        );
+      });
 
     // 3) SEF outbox saniranje (review Batch A F3):
     //    (a) SENT/DELIVERED → SEF cancel API (postojeći tok, guard MozeDaSeStornira +

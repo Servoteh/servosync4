@@ -5,6 +5,8 @@ import { SchedulerService } from "./scheduler.service";
 import { Sy15CronJobs } from "./sy15-cron-jobs";
 import { NotifyDispatchService } from "./dispatch/notify-dispatch.service";
 import { SastanciDispatchService } from "./dispatch/sastanci-dispatch.service";
+import { RobnoModule } from "../robno/robno.module";
+import { ReservationService } from "../robno/reservation.service";
 
 /**
  * Talas A — scheduler pogon + registar poslova. Poslovi su tanki pozivi
@@ -21,7 +23,9 @@ import { SastanciDispatchService } from "./dispatch/sastanci-dispatch.service";
  * (druga stavka u dispatch petlji) — preklop mora da bude nezavisan.
  */
 @Module({
-  imports: [Sy15Module],
+  // RobnoModule → ReservationService: dnevno oslobađanje isteklih rezervacija
+  // (bez ovoga `expiresAt` ne radi ništa i rezervacija večno drži zalihu).
+  imports: [Sy15Module, RobnoModule],
   controllers: [SchedulerController],
   providers: [
     SchedulerService,
@@ -37,6 +41,7 @@ export class SchedulerModule implements OnModuleInit, OnApplicationBootstrap {
     private readonly sy15Jobs: Sy15CronJobs,
     private readonly dispatchJobs: NotifyDispatchService,
     private readonly sastanciDispatchJobs: SastanciDispatchService,
+    private readonly reservation: ReservationService,
   ) {}
 
   onModuleInit(): void {
@@ -45,6 +50,21 @@ export class SchedulerModule implements OnModuleInit, OnApplicationBootstrap {
       this.scheduler.register(job);
     for (const job of this.sastanciDispatchJobs.buildJobs())
       this.scheduler.register(job);
+
+    // Istekle rezervacije zaliha (Batch C). `expiresAt` puni rok važenja
+    // predračuna; bez ovog posla istekla rezervacija večno drži robu jer je
+    // ništa ne oslobađa. Poziv je idempotentan (CAS OPEN → RELEASED) i jeftin.
+    this.scheduler.register({
+      key: "robno-expire-reservations",
+      description: "Rezervacije zaliha: oslobodi istekle (expiresAt < danas)",
+      schedule: { kind: "daily", at: "02:15" },
+      run: async () => {
+        const res = (await this.reservation.expireDue()) as {
+          released?: number;
+        };
+        return `oslobođeno isteklih rezervacija: ${res?.released ?? 0}`;
+      },
+    });
   }
 
   onApplicationBootstrap(): void {

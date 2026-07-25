@@ -12,6 +12,7 @@ import { ThreeWayMatchService } from "../src/modules/nabavka/three-way-match.ser
 import { AdvanceVatService } from "../src/modules/pdv/advance-vat.service";
 import { PaymentPreparationService } from "../src/modules/placanja/payment-preparation.service";
 import { FakturisanjeService } from "../src/modules/sales/fakturisanje.service";
+import { RobnoService } from "../src/modules/robno/robno.service";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -60,6 +61,7 @@ async function main() {
   const fx: any = app.get(FxRevaluationService);
   const match: any = app.get(ThreeWayMatchService);
   const advanceVat: any = app.get(AdvanceVatService);
+  const robno: any = app.get(RobnoService);
 
   const actor = { userId: 1, email: "smoke@servoteh.com", role: "ADMIN" } as any;
   const stamp = Date.now();
@@ -68,6 +70,7 @@ async function main() {
   let customerId = 0;
   let itemId = 0;
   const warehouseId = 1;
+  let ulDocId = 0;
 
   await step("priprema: kupac", async () => {
     const c = await prisma.customer.findFirst({ select: { id: true } });
@@ -75,24 +78,35 @@ async function main() {
     customerId = c.id;
     return `customerId=${customerId}`;
   });
-  await step("priprema: artikal sa zalihom (ili je zaseje)", async () => {
-    const lvl = await prisma.stockLevel.findFirst({
-      where: { warehouseId, onHand: { gt: 0 } },
-      select: { itemId: true, onHand: true },
-    });
-    if (lvl) {
-      itemId = lvl.itemId;
-      return `itemId=${itemId} onHand=${lvl.onHand}`;
-    }
+  // Stanje se od Batch C review-a računa iz STVARNIH kretanja (stock_document_items),
+  // ne iz `stock_levels` — ta tabela nema pisca i na dev bazi je pokazivala 12 dok su
+  // kretanja govorila 10. Zato preduslov mora biti pravi robni ulaz, ne upis snapshota.
+  await step("priprema: artikal sa stvarnom zalihom (kroz robni ulaz)", async () => {
     const i = await prisma.item.findFirst({ select: { id: true } });
     if (!i) throw new Error("nema nijednog artikla");
     itemId = i.id;
-    await prisma.stockLevel.upsert({
-      where: { itemId_warehouseId: { itemId, warehouseId } },
-      create: { itemId, warehouseId, onHand: "12", asOf: new Date() },
-      update: { onHand: "12" },
+
+    const avail = await reservation.availability({ itemId, warehouseId });
+    const onHand = Number((avail?.data ?? avail).onHand);
+    if (onHand >= 12) return `itemId=${itemId} onHand=${onHand} (zatečeno)`;
+
+    const ul = await robno.createStockDocument("UL", {
+      documentTypeCode: "UFROB",
+      warehouseId,
+      createdByUserId: 1,
+      items: [
+        {
+          itemId,
+          warehouseId,
+          quantity: "12",
+          invoicePrice: "100",
+          lineNo: 1,
+        },
+      ],
     });
-    return `itemId=${itemId} onHand=12 (smoke seed)`;
+    ulDocId = ul.data.id;
+    const after = await reservation.availability({ itemId, warehouseId });
+    return `itemId=${itemId} onHand=${(after?.data ?? after).onHand} (ulaz ${ul.data.documentNumber})`;
   });
 
   await step("priprema: kursna lista EUR (ako fali)", async () => {
@@ -462,6 +476,10 @@ async function main() {
     await prisma.invoiceItem.deleteMany({
       where: { invoice: { documentNumber: { contains: `SMOKE-` } } },
     });
+    if (ulDocId) {
+      await prisma.stockDocumentItem.deleteMany({ where: { documentId: ulDocId } });
+      await prisma.stockDocument.delete({ where: { id: ulDocId } }).catch(() => undefined);
+    }
     const del = await prisma.invoice.deleteMany({
       where: { documentNumber: { contains: `SMOKE-` } },
     });

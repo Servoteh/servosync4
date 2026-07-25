@@ -483,19 +483,22 @@ export function useRaspolozivo(itemId: number | null, warehouseId: number | null
   });
 }
 
-/** Rezultat rezervisanja predračuna — koliko je novih redova, koliko je već postojalo. */
+/** Rezultat rezervisanja predračuna — koliko je novih, usklađenih i nepromenjenih redova. */
 export interface RezervacijaProformaResult {
   invoiceId: number;
   warehouseId: number;
   created: number;
+  /** Postojeći redovi kojima je količina usklađena sa izmenjenom stavkom predračuna. */
+  updated: number;
+  /** Redovi bez promene (ista količina) ili već oslobođeni/potrošeni. */
   skipped: number;
   reservations: RezervacijaRow[];
 }
 
 /**
  * Rezerviši zalihu po predračunu (PON/PROF, nacrt) — POST /robno/reservations/from-invoice/:invoiceId.
- * Jedna rezervacija po stavci sa artiklom; idempotentno (ponovni poziv preskače postojeće).
- * Prekoračenje raspoloživog = 422. Permisija ROBNO_WRITE.
+ * Jedna rezervacija po stavci sa artiklom; idempotentno (ponovni poziv ne duplira, a izmenjenu
+ * količinu usklađuje). Prekoračenje raspoloživog = 422. Permisija ROBNO_WRITE.
  */
 export function useRezervisiPredracun() {
   const qc = useQueryClient();

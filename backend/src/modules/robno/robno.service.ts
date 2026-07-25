@@ -18,7 +18,11 @@ import {
 } from "./dto/create-stock-document.dto";
 import { ListStockDocumentsQuery } from "./dto/list-stock-documents.dto";
 import { computeKepuEntries, writeKepuEntries } from "./kepu-book.util";
-import { stockKeyOf, sumOpenReservations } from "./reservation.service";
+import {
+  lockStockKeys,
+  stockKeyOf,
+  sumOpenReservations,
+} from "./reservation.service";
 import type { ReservationSourceRef, StockKey } from "./dto/reservation.dto";
 import {
   NOT_DELETED,
@@ -35,6 +39,13 @@ export type StockDocumentKind =
   | "PRENOS"
   | "VISAK"
   | "MANJAK";
+
+/**
+ * Prozor transakcije kreiranja robnog dokumenta: unutra se čekaju DVA advisory lock-a
+ * (zaliha po artiklu + numeracija), pa Prisma default (maxWait 2 s / timeout 5 s) pod
+ * kontencijom vraća P2028 umesto da sačeka red.
+ */
+const STOCK_DOCUMENT_TX_OPTIONS = { maxWait: 10_000, timeout: 20_000 } as const;
 
 const VALID_KINDS: readonly StockDocumentKind[] = [
   "UL",
@@ -117,12 +128,17 @@ export class RobnoService {
 
   /**
    * Lager lista (BigBit paritet — stanje zaliha po magacinu + prosečne cene).
-   * Čita StockLevel snapshot (onHand + avgPurchaseNet/avgWholesalePrice) i
-   * pridružuje naziv artikla. Filter: magacin, samo-sa-stanjem, pretraga po nazivu.
+   *
+   * IZVOR STANJA (review A, 25.07): agregat kretanja iz `stock_document_items` — ISTI izvor i
+   * isti filtri kao `CostingService.stateAsOf` i kao raspoloživo u rezervacijama. Ranije se
+   * čitao `stock_levels` snapshot, koji NIJEDAN kod ne upisuje (nema pisca u `src/`), pa je
+   * lager lista bila trajno PRAZNA — a upravo su joj C3 dodali kolone „Rezervisano"/„Raspoloživo".
+   * Prosečne cene se računaju istom ponderisanom formulom kao costing (§C):
+   *   avgPurchaseNet = Σ(±Kol*(Nab+ZTsop+ZTdob)) / Σ(±Kol),  avgWholesale = Σ(±Kol*KalkVP) / Σ(±Kol).
    *
    * REZERVISANO (C3): `reserved` je AGREGAT otvorenih redova `stock_reservations`
    * (`status='OPEN'`), NE denormalizovana kolona `StockLevel.reserved` — ta kolona je mrtav
-   * legacy snapshot koji niko ne upisuje (uvek 0) i namerno se ne dira. Novo polje
+   * legacy snapshot koji niko ne upisuje (uvek 0) i namerno se ne dira. Polje
    * `available = onHand − reserved` je ono što se sme obećati kupcu. Jedan agregatni upit
    * po strani (`groupBy`), bez N+1.
    */
@@ -133,22 +149,75 @@ export class RobnoService {
     skip?: number;
     take?: number;
   }) {
-    const where: Prisma.StockLevelWhereInput = {};
-    if (query.warehouseId != null) where.warehouseId = query.warehouseId;
-    if (query.onlyInStock) where.onHand = { gt: 0 };
-
     const take = Math.min(query.take ?? 100, 500);
     const skip = query.skip ?? 0;
 
-    const [levels, total] = await this.prisma.$transaction([
-      this.prisma.stockLevel.findMany({
-        where,
-        orderBy: [{ warehouseId: "asc" }, { itemId: "asc" }],
-        skip,
-        take,
-      }),
-      this.prisma.stockLevel.count({ where }),
+    const warehouseFilter =
+      query.warehouseId != null
+        ? Prisma.sql`AND sdi.warehouse_id = ${query.warehouseId}`
+        : Prisma.empty;
+    // „Samo sa stanjem" se filtrira NAD AGREGATOM (HAVING), da paginacija broji iste redove.
+    const havingInStock = query.onlyInStock
+      ? Prisma.sql`HAVING SUM(CASE WHEN dt.is_inbound THEN sdi.quantity ELSE -sdi.quantity END) > 0`
+      : Prisma.empty;
+    const aggregate = Prisma.sql`
+      SELECT sdi.item_id,
+             sdi.warehouse_id,
+             SUM(CASE WHEN dt.is_inbound THEN sdi.quantity ELSE -sdi.quantity END) AS on_hand,
+             SUM(CASE WHEN dt.is_inbound THEN 1 ELSE -1 END * sdi.quantity *
+                 (sdi.purchase_price_net + sdi.dependent_cost_own + sdi.dependent_cost_supplier)
+             ) AS weighted_nab,
+             SUM(CASE WHEN dt.is_inbound THEN 1 ELSE -1 END * sdi.quantity *
+                 sdi.calculated_wholesale_price) AS weighted_vp
+      FROM stock_document_items sdi
+      JOIN stock_documents sd ON sd.id = sdi.document_id
+      JOIN document_types dt ON dt.code = sd.document_type_code
+      WHERE sd.document_type_code <> 'KODJ'
+        AND COALESCE(dt.affects_stock, TRUE) = TRUE
+        AND sdi.deleted_at IS NULL
+        ${warehouseFilter}
+      GROUP BY sdi.item_id, sdi.warehouse_id
+      ${havingInStock}
+    `;
+
+    const [rows, totalRows] = await Promise.all([
+      this.prisma.$queryRaw<
+        Array<{
+          item_id: number;
+          warehouse_id: number;
+          on_hand: Prisma.Decimal | null;
+          weighted_nab: Prisma.Decimal | null;
+          weighted_vp: Prisma.Decimal | null;
+        }>
+      >(Prisma.sql`
+        WITH agg AS (${aggregate})
+        SELECT * FROM agg
+        ORDER BY warehouse_id ASC, item_id ASC
+        LIMIT ${take} OFFSET ${skip}
+      `),
+      this.prisma.$queryRaw<Array<{ count: bigint }>>(Prisma.sql`
+        WITH agg AS (${aggregate})
+        SELECT COUNT(*)::bigint AS count FROM agg
+      `),
     ]);
+    const total = Number(totalRows[0]?.count ?? 0);
+
+    const levels = rows.map((r) => {
+      const onHand = new Prisma.Decimal(r.on_hand ?? 0);
+      // Stanje 0 → prosek se ne može podeliti; cena ostaje 0 (fallback „poslednja cena" je
+      // stvar kartice/kalkulacije, ne lager liste).
+      const avg = (weighted: Prisma.Decimal | null) =>
+        onHand.isZero()
+          ? new Prisma.Decimal(0)
+          : new Prisma.Decimal(weighted ?? 0).div(onHand);
+      return {
+        itemId: r.item_id,
+        warehouseId: r.warehouse_id,
+        onHand,
+        avgPurchaseNet: avg(r.weighted_nab),
+        avgWholesalePrice: avg(r.weighted_vp),
+      };
+    });
 
     // Pridruži naziv/šifru artikla (meki ref items.id) — jedan upit po skupu id-jeva.
     const itemIds = [...new Set(levels.map((l) => l.itemId))];
@@ -361,15 +430,28 @@ export class RobnoService {
    * NE pokreće kalkulaciju — pozivalac (ruta) posle poziva `CalculationService.calculate(docId)`
    * za UL/UVOZ. Iznosi se čuvaju sirovi (invoicePrice/rabat/kasa…); landed polja popunjava kalkulacija.
    *
-   * `opts.reservationSource` (C3): izvor rezervacije koju OVAJ dokument troši — izdatnica
+   * `opts.reservationSource` (C3): izvor(i) rezervacije koje OVAJ dokument troši — izdatnica
    * napravljena iz predračuna koji drži tu robu ne sme sama sebe da blokira, pa se te
-   * rezervacije izuzimaju iz obračuna raspoloživog u guardu. Izostavljeno = dokument nije
-   * potrošač nijedne rezervacije (sve otvorene rezervacije mu smanjuju raspoloživo).
+   * rezervacije izuzimaju iz obračuna raspoloživog u guardu. Može biti VIŠE izvora (izdatnica
+   * iz konačnog računa troši i rezervacije predračuna iz koga je račun prepisan — R1).
+   * Izostavljeno = dokument nije potrošač nijedne rezervacije.
+   *
+   * `opts.afterCreate`: kuka koja se izvršava U ISTOJ TRANSAKCIJI, posle upisa dokumenta
+   * (zatvaranje rezervacija izdatnicom) — pad kuke poništava i dokument, pa nema izdatnice
+   * sa zauvek otvorenim rezervacijama.
    */
   async createStockDocument(
     kind: StockDocumentKind,
     dto: CreateStockDocumentDto,
-    opts?: { reservationSource?: ReservationSourceRef },
+    opts?: {
+      reservationSource?:
+        | ReservationSourceRef
+        | readonly ReservationSourceRef[];
+      afterCreate?: (
+        tx: Prisma.TransactionClient,
+        created: { id: number; documentNumber: string },
+      ) => Promise<void>;
+    },
   ) {
     if (!VALID_KINDS.includes(kind))
       throw new UnprocessableEntityException(
@@ -461,6 +543,18 @@ export class RobnoService {
     const year = documentDate.getFullYear();
 
     const created = await this.prisma.$transaction(async (tx) => {
+      // Serijalizacija sa rezervisanjem (review C): izlazni dokument uzima ISTI advisory lock
+      // po (artikal, magacin) kao `ReservationService.reserveLines`. Bez toga bi paralelno
+      // „rezerviši 10" i „izdaj 10" oba videli isto slobodno stanje i oba prošla (raspoloživo −10).
+      if (kind === "IZ" || kind === "MANJAK")
+        await lockStockKeys(
+          tx,
+          dto.items.map((it) => ({
+            itemId: it.itemId,
+            warehouseId: it.warehouseId ?? dto.warehouseId,
+          })),
+        );
+
       // Guard raspoloživog stanja za IZLAZ (IZ/MANJAK) — nedovoljno stanje → 422 (doc 39 §C).
       // Costing (stateAsOf) namerno dozvoljava negativno interno; provera je ovde, na granici upisa.
       // C3: od stanja se oduzimaju i OTVORENE rezervacije (osim onih koje ovaj dokument troši).
@@ -485,7 +579,7 @@ export class RobnoService {
         year,
       );
 
-      return tx.stockDocument.create({
+      const doc = await tx.stockDocument.create({
         data: {
           companyId,
           kind,
@@ -522,7 +616,11 @@ export class RobnoService {
         },
         include: { items: { orderBy: { id: "asc" } } },
       });
-    });
+
+      // Zatvaranje rezervacija (i sve što mora da deli sudbinu dokumenta) — ista transakcija.
+      if (opts?.afterCreate) await opts.afterCreate(tx, doc);
+      return doc;
+    }, STOCK_DOCUMENT_TX_OPTIONS);
 
     this.logger.log(
       `Kreiran robni dokument ${created.documentNumber} (kind=${kind}, id=${created.id}, ${created.items.length} stavki).`,
@@ -532,31 +630,38 @@ export class RobnoService {
 
   /**
    * Otvorene rezervacije za (artikal, magacin) parove iz izlaznog dokumenta (C3) — jedan
-   * agregatni upit; prazna mapa za sve vrste osim IZ/MANJAK (rezervacije ne blokiraju ulaz).
+   * agregatni upit; prazna mapa za sve osim IZ.
    *
-   * `reservationSource` = izvor koji OVAJ dokument troši (npr. predračun čija se izdatnica
-   * pravi) — te rezervacije se izuzimaju, jer bi inače dokument blokirao sam sebe.
+   * ZAŠTO NE I MANJAK (review R3): MANJAK utvrđen popisom NIJE obećanje kupcu — roba fizički
+   * NEDOSTAJE i mora da se otpiše bez obzira na to što je preostalo stanje rezervisano. Sa
+   * rezervacijom u guardu popis se nije mogao zaključiti (stanje 10, rezervisano 10, brojanje
+   * nađe 8 → MANJAK 2 vs raspoloživo 0 → 422). Provera od GOLOG stanja (`stateAsOf`) ostaje
+   * i za MANJAK — otpisati se ne može više nego što knjigovodstveno postoji.
+   *
+   * `reservationSource` = izvor(i) koje OVAJ dokument troši (predračun čija se izdatnica pravi,
+   * i račun prepisan iz tog predračuna) — te rezervacije se izuzimaju, jer bi inače dokument
+   * blokirao sam sebe.
    */
   private async loadOpenReserved(
     tx: Prisma.TransactionClient,
     kind: StockDocumentKind,
     dto: CreateStockDocumentDto,
-    reservationSource?: ReservationSourceRef,
+    reservationSource?: ReservationSourceRef | readonly ReservationSourceRef[],
   ): Promise<Map<string, Prisma.Decimal>> {
-    if (kind !== "IZ" && kind !== "MANJAK") return new Map();
+    if (kind !== "IZ") return new Map();
     const keys: StockKey[] = dto.items.map((it) => ({
       itemId: it.itemId,
       warehouseId: it.warehouseId ?? dto.warehouseId,
     }));
+    const refs: readonly ReservationSourceRef[] = !reservationSource
+      ? []
+      : Array.isArray(reservationSource)
+        ? (reservationSource as readonly ReservationSourceRef[])
+        : [reservationSource as ReservationSourceRef];
     return sumOpenReservations(
       tx,
       keys,
-      reservationSource
-        ? {
-            sourceType: reservationSource.sourceType,
-            sourceId: reservationSource.sourceId,
-          }
-        : undefined,
+      refs.map((s) => ({ sourceType: s.sourceType, sourceId: s.sourceId })),
     );
   }
 
@@ -571,7 +676,7 @@ export class RobnoService {
    *
    * `reservedByKey` puni `loadOpenReserved` i ono već IZUZIMA rezervacije koje ovaj dokument
    * troši — izdatnica koja razdužuje sopstveni predračun ne sme sama sebe da blokira. Prazna
-   * mapa (podrazumevano) = ponašanje pre C3, golo `stateAsOf`.
+   * mapa (podrazumevano, i UVEK za MANJAK — v. `loadOpenReserved`) = golo `stateAsOf`.
    *
    * NE dira `CostingService` (namerno dozvoljava negativno interno) — guard je isključivo na
    * granici kreiranja izlaznog dokumenta. UL/UVOZ/NIV/PRENOS/VISAK ne prolaze kroz guard.

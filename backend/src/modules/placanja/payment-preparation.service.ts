@@ -53,6 +53,12 @@ const ZERO = new D(0);
  */
 const MAX_PARTNER_WARNING_LOOKUPS = 25;
 
+/**
+ * Koliko nalaza sme da visi o JEDNOJ otvorenoj stavci (review K). Stavka bez broja dokumenta
+ * hvata sve nalaze svog dobavljača, pa je jedna stavka umela da povuče stotine tuđih poruka.
+ */
+const MAX_WARNINGS_PER_ROW = 20;
+
 /** Jedna dospela otvorena obaveza (agregat po konto+komitent+dokument). */
 export interface DueLiability {
   accountCode: string;
@@ -210,8 +216,15 @@ export class PaymentPreparationService {
    * Zakači 3-way match nalaze na dospele obaveze (in-place). Spajanje: nalaz i
    * obaveza moraju imati ISTOG komitenta; ako obaveza ima broj dokumenta, uzimaju
    * se samo nalazi čiji `documentNumbers` sadrže taj broj, a ako ga nema (robni
-   * ulaz ne upisuje `document_number` u GK stavku) uzimaju se svi nalazi tog
-   * dobavljača — upozorenje je informativno, pa je šira mreža prihvatljiva.
+   * ulaz ne upisuje `document_number` u GK stavku) uzimaju se nalazi tog dobavljača.
+   *
+   * DVA UPITA UKUPNO (review R4): ranije se `warningsForPayment` zvao u SERIJSKOJ petlji,
+   * jednom po komitentu (do 25 poziva × do 5 upita ≈ 126 upita / ~8 s na ekranu pripreme).
+   * Sada ide jedan poziv za sve brojeve dokumenata + jedan batch poziv za sve komitente.
+   *
+   * ŠIRINA MREŽE (review K): kod stavke BEZ broja dokumenta spajanje je grubo (svi nalazi
+   * dobavljača), pa se tu uzimaju samo WARNING nalazi i najviše `MAX_WARNINGS_PER_ROW` —
+   * inače jedna stavka povuče stotine tuđih INFO poruka („faktura još nije stigla u celosti").
    *
    * ⚠️ NIKAD ne baca: modul nabavke nije obavezan, a pad obogaćivanja ne sme da
    * obori pripremu plaćanja.
@@ -245,10 +258,12 @@ export class PaymentPreparationService {
           ...(await this.threeWayMatch.warningsForPayment({ documentNumbers })),
         );
       }
-      // 2) po komitentu — samo za stavke bez broja dokumenta.
-      for (const partnerId of partnersWithoutDocNumber) {
+      // 2) JEDAN batch poziv za sve komitente čije stavke nemaju broj dokumenta.
+      if (partnersWithoutDocNumber.length > 0) {
         all.push(
-          ...(await this.threeWayMatch.warningsForPayment({ partnerId })),
+          ...(await this.threeWayMatch.warningsForPayment({
+            partnerIds: partnersWithoutDocNumber,
+          })),
         );
       }
 
@@ -256,18 +271,21 @@ export class PaymentPreparationService {
         if (row.supplierId == null) continue;
         const forPartner = all.filter((w) => w.supplierId === row.supplierId);
         const docNumber = row.documentNumber;
-        const matched =
-          docNumber && docNumber !== ""
-            ? forPartner.filter((w) => w.documentNumbers.includes(docNumber))
-            : forPartner;
+        const preciseMatch = docNumber != null && docNumber !== "";
+        const matched = preciseMatch
+          ? forPartner.filter((w) => w.documentNumbers.includes(docNumber))
+          : // Grubo spajanje (samo po komitentu) — samo WARNING nalazi.
+            forPartner.filter((w) => w.level === "WARNING");
         // Dedup po (narudžbenica, stavka, kod) — isti nalaz može doći iz oba prolaza.
         const seen = new Set<string>();
-        row.matchWarnings = matched.filter((w) => {
-          const key = `${w.orderId}|${w.lineNo ?? ""}|${w.code}`;
-          if (seen.has(key)) return false;
-          seen.add(key);
-          return true;
-        });
+        row.matchWarnings = matched
+          .filter((w) => {
+            const key = `${w.orderId}|${w.lineNo ?? ""}|${w.code}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          })
+          .slice(0, MAX_WARNINGS_PER_ROW);
         row.hasMatchWarnings = row.matchWarnings.some(
           (w) => w.level === "WARNING",
         );

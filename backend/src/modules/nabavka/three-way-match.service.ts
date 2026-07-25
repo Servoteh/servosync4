@@ -95,8 +95,37 @@ const QTY_TOLERANCE_PERCENT = new D(0);
 const PRICE_TOLERANCE_PERCENT = new D(2);
 const PRICE_TOLERANCE_AMOUNT = new D(500);
 
+/**
+ * APSOLUTNI PRAG KOJI UVEK PRIJAVLJUJE (review H): dva praga u konjunkciji su na skupim
+ * stavkama gasila i ogromna odstupanja — 1,5 mil RSD razlike na stavci od 100 mil je 1,5 %,
+ * dakle ispod procentualnog praga, pa se NIKAD nije prijavilo. Razlika preko ovog iznosa je
+ * poslovno značajna bez obzira na procenat.
+ */
+const PRICE_ALWAYS_REPORT_AMOUNT = new D(50_000);
+
 /** Gornja granica broja narudžbenica po jednom pozivu (pregled/upozorenja). */
 const MATCH_BATCH_LIMIT = 200;
+
+/**
+ * Koliko narudžbenica pregled sme da PROĐE kad je uključen filter „samo sa nalazom" —
+ * nalazi se računaju (ne čuvaju), pa filtriranje mora u memoriju, a skeniranje mora imati
+ * tvrdu granicu. Preko ove granice se `total` prijavljuje kao „bar toliko" (uz upozorenje u logu).
+ */
+const MATCH_SCAN_LIMIT = 1000;
+
+/**
+ * Period unazad (meseci) za pretragu narudžbenica po KOMITENTU u upozorenjima za plaćanje.
+ * Bez njega je jedan komitent povlačio 200 najnovijih narudžbenica bez obzira na starost
+ * (review R4: 126 upita / 8 s za 25 komitenata).
+ */
+const PAYMENT_WARNINGS_MONTHS = 12;
+
+/** Statusi robnog ulaza koji znače „faktura je stvarno zavedena" (v. `NO_RECEIPT`, review J). */
+const BOOKED_STOCK_DOCUMENT_STATUS: ReadonlySet<string> = new Set([
+  "CALCULATED",
+  "POSTED",
+  "LOCKED",
+]);
 
 /** Statusi narudžbenice koji uopšte mogu imati prijem/fakturu (za pretragu upozorenja). */
 const MATCHABLE_ORDER_STATUS: readonly string[] = [
@@ -133,6 +162,7 @@ interface StockDocRow {
   purchaseOrderId: number | null;
   documentNumber: string;
   status: string;
+  isCalculated: boolean;
   documentDate: Date;
   journalEntryId: number | null;
   items: Array<{
@@ -183,9 +213,15 @@ export class ThreeWayMatchService {
    * (`from`/`to` po `ordered_at`, fallback `created_at`), dobavljač, i
    * `onlyWithFindings` (samo narudžbenice sa nalazom).
    *
-   * `meta.total` je broj narudžbenica koje prolaze DB filter (pre `onlyWithFindings`),
-   * `meta.returned` je broj vraćenih redova — filtriranje po nalazima je izvedeno
-   * (nalazi se računaju, ne čuvaju), pa se ne može gurnuti u SQL.
+   * PAGINACIJA I FILTER PO NALAZIMA (review R7): nalazi se RAČUNAJU (ne čuvaju), pa se
+   * `onlyWithFindings` ne može gurnuti u SQL. Ranije se filtriralo POSLE `skip/take`, a
+   * `meta.total` je brojao sve narudžbenice — strana je umela da bude prazna dok naredne
+   * imaju nalaza, a FE je računao pogrešan broj strana. Sada se, kad je filter uključen,
+   * skenira ceo DB-filtrirani skup (do `MATCH_SCAN_LIMIT`), filtrira, pa TEK ONDA paginira:
+   * `meta.total` odgovara filtriranom skupu.
+   *
+   * `meta.total` = broj redova posle filtera (bez filtera: DB `count`), `meta.returned` =
+   * broj vraćenih redova na strani.
    */
   async matchSummary(params: MatchSummaryQueryDto = {}): Promise<{
     data: ThreeWayMatchSummaryRow[];
@@ -214,37 +250,87 @@ export class ThreeWayMatchService {
       ];
     }
 
-    const [rows, total] = await this.prisma.$transaction([
-      this.prisma.purchaseOrder.findMany({
-        where,
-        orderBy: [{ orderedAt: "desc" }, { id: "desc" }],
-        skip,
-        take,
-        select: { id: true },
-      }),
-      this.prisma.purchaseOrder.count({ where }),
-    ]);
+    const orderBy: Prisma.PurchaseOrderOrderByWithRelationInput[] = [
+      { orderedAt: "desc" },
+      { id: "desc" },
+    ];
 
-    const matches = await this.matchOrders(rows.map((r) => r.id));
-    const summaries = matches.map((m) => this.toSummaryRow(m));
-    const withFindings = summaries.filter((s) => s.findingCount > 0).length;
-    const withWarnings = summaries.filter((s) => s.hasWarnings).length;
-    const data =
-      params.onlyWithFindings === true
-        ? summaries.filter((s) => s.findingCount > 0)
-        : summaries;
+    // ── Bez filtera po nalazima: paginira baza (jeftino, `total` = DB count). ──
+    if (params.onlyWithFindings !== true) {
+      const [rows, total] = await this.prisma.$transaction([
+        this.prisma.purchaseOrder.findMany({
+          where,
+          orderBy,
+          skip,
+          take,
+          select: { id: true },
+        }),
+        this.prisma.purchaseOrder.count({ where }),
+      ]);
+      const summaries = await this.summariesFor(rows.map((r) => r.id));
+      return {
+        data: summaries,
+        meta: {
+          total,
+          returned: summaries.length,
+          skip,
+          take,
+          withFindings: summaries.filter((s) => s.findingCount > 0).length,
+          withWarnings: summaries.filter((s) => s.hasWarnings).length,
+        },
+      };
+    }
+
+    // ── Sa filterom: skeniraj (ograničeno), filtriraj, pa paginiraj u memoriji. ──
+    const scanned = await this.prisma.purchaseOrder.findMany({
+      where,
+      orderBy,
+      take: MATCH_SCAN_LIMIT,
+      select: { id: true },
+    });
+    if (scanned.length === MATCH_SCAN_LIMIT)
+      this.logger.warn(
+        `matchSummary: skeniranje je odsečeno na ${MATCH_SCAN_LIMIT} narudžbenica — ` +
+          `„samo sa nalazom" broji do te granice (suzi period ili dobavljača).`,
+      );
+
+    const summaries: ThreeWayMatchSummaryRow[] = [];
+    for (let i = 0; i < scanned.length; i += MATCH_BATCH_LIMIT) {
+      const chunk = scanned.slice(i, i + MATCH_BATCH_LIMIT).map((r) => r.id);
+      summaries.push(...(await this.summariesFor(chunk)));
+    }
+    const withFindingsRows = summaries.filter((s) => s.findingCount > 0);
+    const data = withFindingsRows.slice(skip, skip + take);
 
     return {
       data,
       meta: {
-        total,
+        total: withFindingsRows.length,
         returned: data.length,
         skip,
         take,
-        withFindings,
-        withWarnings,
+        withFindings: withFindingsRows.length,
+        withWarnings: withFindingsRows.filter((s) => s.hasWarnings).length,
       },
     };
+  }
+
+  /**
+   * Zbirni redovi za zadate id-jeve, U REDOSLEDU KOJI JE TRAŽEN. `matchOrders` čita po
+   * `id ASC` (batch upit), pa bez ovog preslaganja lista ne bi poštovala sortiranje po
+   * datumu — a paginacija po nestabilnom redosledu preskače/duplira redove.
+   */
+  private async summariesFor(
+    orderIds: number[],
+  ): Promise<ThreeWayMatchSummaryRow[]> {
+    if (orderIds.length === 0) return [];
+    const byId = new Map(
+      (await this.matchOrders(orderIds)).map((m) => [m.orderId, m]),
+    );
+    return orderIds
+      .map((id) => byId.get(id))
+      .filter((m): m is ThreeWayMatchResult => m != null)
+      .map((m) => this.toSummaryRow(m));
   }
 
   // ─────────────────────────────────────────── 3) upozorenja za pripremu plaćanja
@@ -253,9 +339,14 @@ export class ThreeWayMatchService {
    * Upozorenja vezana za dokumente koji ulaze u pripremu plaćanja.
    *
    * Priprema plaćanja identifikuje otvorenu stavku kao (komitent, broj dokumenta),
-   * pa se ovde traži isto: narudžbenice tog dobavljača i/ili narudžbenice do kojih
+   * pa se ovde traži isto: narudžbenice tih dobavljača i/ili narudžbenice do kojih
    * se stiže preko broja dokumenta (broj narudžbenice ILI broj robnog ulaza).
    * Bez ijednog filtera vraća prazan niz — puni skener nabavke nije svrha ovog poziva.
+   *
+   * VIŠE KOMITENATA ODJEDNOM (`partnerIds`, review R4): ekran pripreme plaćanja je zvao
+   * ovu metodu u petlji, jednom po komitentu (25 poziva × do 5 upita = ~126 upita, ~8 s).
+   * Batch varijanta radi isti posao jednim upitom nad narudžbenicama; `partnerId` je zadržan
+   * kao kompatibilan alias za jednog komitenta.
    *
    * ⚠️ Rezultat je ISKLJUČIVO informativan: pozivalac ga prikazuje uz stavku i
    * NE sme na osnovu njega da odbije kreiranje/potpis/izvoz naloga.
@@ -268,7 +359,14 @@ export class ThreeWayMatchService {
     const documentNumbers = (params.documentNumbers ?? [])
       .map((n) => n.trim())
       .filter((n) => n !== "");
-    if (params.partnerId == null && documentNumbers.length === 0) return [];
+    const partnerIds = [
+      ...new Set(
+        [...(params.partnerIds ?? []), params.partnerId].filter(
+          (id): id is number => Number.isInteger(id) && (id as number) > 0,
+        ),
+      ),
+    ];
+    if (partnerIds.length === 0 && documentNumbers.length === 0) return [];
 
     const orderIds = new Set<number>();
 
@@ -293,11 +391,19 @@ export class ThreeWayMatchService {
         if (d.purchaseOrderId != null) orderIds.add(d.purchaseOrderId);
     }
 
-    if (params.partnerId != null) {
+    if (partnerIds.length > 0) {
+      // Period (12 meseci) + tvrda granica: obaveza koja se plaća danas ne poredi se sa
+      // narudžbenicom od pre tri godine, a jedan komitent ne sme da povuče ceo arhiv.
+      const since = new Date();
+      since.setMonth(since.getMonth() - PAYMENT_WARNINGS_MONTHS);
       const bySupplier = await this.prisma.purchaseOrder.findMany({
         where: {
-          supplierId: params.partnerId,
+          supplierId: { in: partnerIds },
           status: { in: [...MATCHABLE_ORDER_STATUS] },
+          OR: [
+            { orderedAt: { gte: since } },
+            { orderedAt: null, createdAt: { gte: since } },
+          ],
         },
         orderBy: [{ orderedAt: "desc" }, { id: "desc" }],
         select: { id: true },
@@ -390,6 +496,7 @@ export class ThreeWayMatchService {
         purchaseOrderId: true,
         documentNumber: true,
         status: true,
+        isCalculated: true,
         documentDate: true,
         journalEntryId: true,
         items: {
@@ -484,6 +591,23 @@ export class ThreeWayMatchService {
     for (const it of order.items)
       if (it.articleId != null) lastLineIdByArticle.set(it.articleId, it.id);
 
+    // Koliko stavki deli isti artikal — kod deljenog artikla raspodela koristi PONDERISANI
+    // PROSEK fakturne cene, pa poređenje sa cenom pojedinačne stavke daje lažna upozorenja
+    // (review I). Za takve artikle cena se poredi samo ZBIRNO (v. dole).
+    const lineCountByArticle = new Map<number, number>();
+    for (const it of order.items)
+      if (it.articleId != null)
+        lineCountByArticle.set(
+          it.articleId,
+          (lineCountByArticle.get(it.articleId) ?? 0) + 1,
+        );
+
+    // Da li je „fakturisano" uopšte zavedeno (kalkulisan/proknjižen ulaz) — DRAFT primka koju
+    // carry-over pravi iz NARUČENIH količina pre prijema nije faktura (review J).
+    const invoiceBooked = docs.some(
+      (d) => BOOKED_STOCK_DOCUMENT_STATUS.has(d.status) || d.isCalculated,
+    );
+
     const currency = order.currency || "RSD";
     const lines: ThreeWayMatchLine[] = [];
     let totalOrdered = ZERO;
@@ -531,6 +655,10 @@ export class ThreeWayMatchService {
         invoicedPrice,
         matchable,
         currency,
+        invoiceBooked,
+        sharedArticle:
+          item.articleId != null &&
+          (lineCountByArticle.get(item.articleId) ?? 0) > 1,
       });
 
       totalOrdered = totalOrdered.add(orderedAmount);
@@ -588,7 +716,18 @@ export class ThreeWayMatchService {
       journalEntryId: d.journalEntryId,
     }));
 
-    const findings = lines.flatMap((l) => l.findings);
+    // 4) Cena za DELJENE artikle — jedan ZBIRNI nalaz po artiklu (review I). Po stavci se
+    //    ne poredi, jer raspodela koristi ponderisani prosek: narudžbenica sa istim artiklom
+    //    na dve stavke po različitim cenama i savršenim prijemom davala je dva PRICE_VARIANCE
+    //    upozorenja uz zbirno odstupanje 0,00 — kontradikcija u istom izveštaju.
+    const articleFindings = this.sharedArticleFindings(
+      order,
+      lineCountByArticle,
+      invoicedByArticle,
+      currency,
+    );
+
+    const findings = [...lines.flatMap((l) => l.findings), ...articleFindings];
 
     return {
       orderId: order.id,
@@ -622,6 +761,10 @@ export class ThreeWayMatchService {
     invoicedPrice: Prisma.Decimal | null;
     matchable: boolean;
     currency: string;
+    /** Postoji kalkulisan/proknjižen robni ulaz (DRAFT primka nije faktura) — review J. */
+    invoiceBooked: boolean;
+    /** Artikal se pojavljuje na više stavki → cena se poredi samo zbirno (review I). */
+    sharedArticle: boolean;
   }): MatchFinding[] {
     const {
       item,
@@ -632,6 +775,8 @@ export class ThreeWayMatchService {
       invoicedPrice,
       matchable,
       currency,
+      invoiceBooked,
+      sharedArticle,
     } = input;
     const findings: MatchFinding[] = [];
     if (!matchable) return findings; // usluga/slobodan opis — nema šta da se uparuje
@@ -664,14 +809,18 @@ export class ThreeWayMatchService {
     }
 
     // b) fakturisano vs primljeno.
+    //    NO_RECEIPT samo kad je ulaz stvarno zaveden (kalkulisan/proknjižen): carry-over
+    //    `fromPurchaseOrder` pravi DRAFT primku iz NARUČENIH količina PRE prijema, pa je
+    //    `receivedQuantity = 0` tada normalno stanje, a ne nalaz (review J).
     const overReceipt = invoicedQty.sub(receivedQty);
     if (invoicedQty.gt(ZERO) && receivedQty.lessThanOrEqualTo(ZERO)) {
-      push(
-        "NO_RECEIPT",
-        "WARNING",
-        `Fakturisano ${fmt(invoicedQty)}${unit} bez evidentiranog prijema — ` +
-          `proveri prijem robe po ovoj narudžbenici.`,
-      );
+      if (invoiceBooked)
+        push(
+          "NO_RECEIPT",
+          "WARNING",
+          `Fakturisano ${fmt(invoicedQty)}${unit} bez evidentiranog prijema — ` +
+            `proveri prijem robe po ovoj narudžbenici.`,
+        );
     } else if (this.exceedsQtyTolerance(overReceipt, receivedQty)) {
       if (overReceipt.gt(ZERO)) {
         push(
@@ -690,8 +839,11 @@ export class ThreeWayMatchService {
       }
     }
 
-    // c) cena — prag je prekoračen tek kad su prekoračena OBA praga (§TOLERANCIJE).
+    // c) cena — prag je prekoračen kad su prekoračena OBA relativna praga ILI kad je
+    //    apsolutna razlika preko „uvek prijavi" praga (§TOLERANCIJE). Deljeni artikal se
+    //    ovde preskače — poredi se zbirno (v. `sharedArticleFindings`).
     if (
+      !sharedArticle &&
       orderedPrice != null &&
       orderedPrice.gt(ZERO) &&
       invoicedPrice != null &&
@@ -700,10 +852,7 @@ export class ThreeWayMatchService {
       const diff = invoicedPrice.sub(orderedPrice);
       const percent = diff.abs().div(orderedPrice).mul(100);
       const amount = diff.abs().mul(invoicedQty);
-      if (
-        percent.gt(PRICE_TOLERANCE_PERCENT) &&
-        amount.gt(PRICE_TOLERANCE_AMOUNT)
-      ) {
+      if (exceedsPriceTolerance(percent, amount)) {
         const smer = diff.gt(ZERO) ? "viša" : "niža";
         push(
           "PRICE_VARIANCE",
@@ -714,6 +863,55 @@ export class ThreeWayMatchService {
       }
     }
 
+    return findings;
+  }
+
+  /**
+   * Zbirni cenovni nalaz za artikle koji se pojavljuju na VIŠE stavki narudžbenice (review I).
+   * Poredi Σ naručeni iznos i Σ fakturisani iznos TOG ARTIKLA (bez raspodele po stavkama), pa
+   * daje najviše jedan nalaz po artiklu — na nivou dokumenta (`lineNo = null`).
+   */
+  private sharedArticleFindings(
+    order: OrderRow,
+    lineCountByArticle: Map<number, number>,
+    invoicedByArticle: Map<number, InvoicedArticle>,
+    currency: string,
+  ): MatchFinding[] {
+    const findings: MatchFinding[] = [];
+    for (const [articleId, lineCount] of lineCountByArticle) {
+      if (lineCount < 2) continue;
+      const invoiced = invoicedByArticle.get(articleId);
+      if (!invoiced || invoiced.quantity.lessThanOrEqualTo(ZERO)) continue;
+
+      let orderedAmount = ZERO;
+      let orderedQty = ZERO;
+      const lineNos: number[] = [];
+      for (const it of order.items) {
+        if (it.articleId !== articleId) continue;
+        orderedAmount = orderedAmount.add(
+          it.orderedQuantity.mul(it.unitPrice ?? ZERO),
+        );
+        orderedQty = orderedQty.add(it.orderedQuantity);
+        lineNos.push(it.lineNo);
+      }
+      if (orderedAmount.lessThanOrEqualTo(ZERO)) continue;
+
+      const diff = invoiced.amount.sub(orderedAmount);
+      const percent = diff.abs().div(orderedAmount).mul(100);
+      if (!exceedsPriceTolerance(percent, diff.abs())) continue;
+      const smer = diff.gt(ZERO) ? "veći" : "manji";
+      findings.push({
+        code: "PRICE_VARIANCE",
+        level: "WARNING",
+        message:
+          `Artikal je na više stavki (${lineNos.join(", ")}) — poređenje je zbirno: ` +
+          `fakturisano ${fmt(invoiced.amount, 2)} ${currency} je ${smer} od naručenog ` +
+          `${fmt(orderedAmount, 2)} ${currency} za ${fmt(diff.abs(), 2)} ${currency} ` +
+          `(${fmt(percent, 2)} %).`,
+        orderItemId: null,
+        lineNo: null,
+      });
+    }
     return findings;
   }
 
@@ -765,6 +963,22 @@ export class ThreeWayMatchService {
     }
     return filter;
   }
+}
+
+/**
+ * Da li cenovno odstupanje prelazi toleranciju:
+ *   (procenat > 2 % **I** iznos > 500 RSD)  **ILI**  iznos > 50.000 RSD.
+ * Prvi deo gasi šum zaokruživanja na jeftinim stavkama; drugi (review H) hvata krupna
+ * odstupanja koja su na skupim stavkama procentualno mala pa su ranije prolazila nezapaženo.
+ */
+function exceedsPriceTolerance(
+  percent: Prisma.Decimal,
+  amount: Prisma.Decimal,
+): boolean {
+  if (amount.gt(PRICE_ALWAYS_REPORT_AMOUNT)) return true;
+  return (
+    percent.gt(PRICE_TOLERANCE_PERCENT) && amount.gt(PRICE_TOLERANCE_AMOUNT)
+  );
 }
 
 /** Broj u srpskom zapisu (decimalni zarez) za poruke ka korisniku. */

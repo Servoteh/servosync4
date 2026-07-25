@@ -38,6 +38,13 @@ interface ReservationLineInput {
 }
 
 /**
+ * Prozor transakcije rezervisanja: čeka se advisory lock po (artikal, magacin), pa Prisma
+ * default (maxWait 2 s / timeout 5 s) pod kontencijom vraća P2028 („transaction not found")
+ * umesto da sačeka red. Duži prozor = čekanje, ne greška.
+ */
+const RESERVATION_TX_OPTIONS = { maxWait: 10_000, timeout: 20_000 } as const;
+
+/**
  * Rezervacija zaliha (C3) — predračun/porudžbina „drži" robu dok se ne izda ili otkaže,
  * da se ista roba ne obeća dvaput.
  *
@@ -46,7 +53,14 @@ interface ReservationLineInput {
  * legacy snapshot koji niko ne upisuje i namerno se NE dira (nema drifta koji bi trebalo
  * mirisati sa agregatom).
  *
- *   raspoloživo (available) = StockLevel.onHand − Σ quantity WHERE status='OPEN'
+ *   raspoloživo (available) = stanje(as-of agregat kretanja) − Σ quantity WHERE status='OPEN'
+ *
+ * STANJE (`onHand`) se računa iz `stock_document_items` — ISTI izvor i ISTI filtri kao
+ * `CostingService.stateAsOf` (KODJ izuzet, `affects_stock`, znak iz `DocumentType.isInbound`,
+ * meko obrisane stavke izuzete). Tabela `stock_levels` je prazan opcioni keš koji NIKO ne
+ * upisuje (review 25.07: nema nijednog pisca u `src/`) — čitanje iz nje je davalo `onHand = 0`,
+ * pa je svaka rezervacija padala sa „raspoloživo 0" na robi koja fizički postoji. Zato postoji
+ * JEDNA istina o stanju: agregat kretanja (guard `assertSufficientStock` gleda isti izvor).
  *
  * Tok:
  *   predračun (PON/PROF, level 250) → `reserveForProforma` (OPEN po stavci)
@@ -77,17 +91,6 @@ export class ReservationService {
     return { data: row };
   }
 
-  /**
-   * Raspoloživo za više (artikal, magacin) parova — JEDAN `groupBy` nad rezervacijama +
-   * jedan `findMany` nad stanjem (bez N+1). Redosled odgovora prati redosled ulaza.
-   */
-  async availabilityMany(
-    keys: readonly StockKey[],
-  ): Promise<{ data: AvailabilityRow[] }> {
-    for (const k of keys) assertStockKey(k);
-    return { data: await computeAvailability(this.prisma, keys) };
-  }
-
   // ------------------------------------------------------------ REZERVISANJE
 
   /**
@@ -98,10 +101,11 @@ export class ReservationService {
    * (level 0) više ne rezerviše — on razdužuje kroz izdatnicu.
    * `expiresAt` = `dueDate` predračuna (rok važenja) ako postoji; inače bez isteka.
    *
-   * IDEMPOTENTNO: već postojeći red za (invoice, sourceId, lineNo) se PRESKAČE (ne pravi
-   * duplikat, ne baca 409) — ponovni klik „Rezerviši" ili retry posle mrežne greške ne sme
-   * da obori ceo dokument niti da traži ručno čišćenje; unique indeks je ključ idempotencije,
-   * a odgovor po stavci kaže `created` / `skipped`.
+   * IDEMPOTENTNO: već postojeći red za (invoice, sourceId, lineNo) se ne duplira i ne baca
+   * 409 — ponovni klik „Rezerviši" ili retry posle mrežne greške ne sme da obori dokument.
+   * Postojeći OTVOREN red se USKLAĐUJE sa tekućom količinom stavke (`updated`); nepromenjena
+   * količina i zatvoreni (RELEASED/CONSUMED) redovi se preskaču (`skipped`). Bez usklađivanja
+   * bi izmena količine na predračunu tiho ostavila staru rezervaciju uz poruku „uspešno".
    */
   async reserveForProforma(
     dto: ReserveForProformaDto,
@@ -169,13 +173,14 @@ export class ReservationService {
 
     this.logger.log(
       `Rezervacija predračuna ${invoice.documentNumber} (id ${invoiceId}, magacin ${warehouseId}): ` +
-        `${result.created} novih, ${result.skipped} već postojećih.`,
+        `${result.created} novih, ${result.updated} usklađenih, ${result.skipped} nepromenjenih.`,
     );
     return {
       data: {
         invoiceId,
         warehouseId,
         created: result.created,
+        updated: result.updated,
         skipped: result.skipped,
         reservations: result.rows,
       },
@@ -244,12 +249,27 @@ export class ReservationService {
    * Oslobodi rezervaciju (OPEN → RELEASED) — roba se vraća u raspoloživo. Bez `sourceLine`
    * oslobađa SVE otvorene redove izvora (otkazan ceo predračun).
    *
+   * ⚠️ MASOVNO OSLOBAĐANJE JE OGRANIČENO (bezbednosni nalaz 25.07): ručne rezervacije nemaju
+   * izvorni dokument (`sourceType='manual'`, podrazumevan `sourceId = 0`), pa je jedan poziv
+   * `{ sourceType: 'manual', sourceId: 0 }` oslobađao SVE ručne rezervacije u sistemu. Zato
+   * oslobađanje po izvoru traži pravi dokument (`sourceId > 0`) ILI tačnu stavku (`sourceLine`);
+   * pojedinačna ručna rezervacija se oslobađa preko `releaseById` (dugme na listi).
+   *
    * CAS: `updateMany` sa `status: 'OPEN'` u `where` — dvostruki poziv nije greška, drugi put
    * samo ne pomeri ništa (`released: 0`, `alreadyReleased: true`) i NE duplira efekat.
    * Nepostojeći izvor (nijedan red, ni u jednom statusu) = 404.
    */
   async release(dto: ReleaseReservationDto, actorUserId?: number | null) {
+    const scopedToLine =
+      dto?.sourceLine != null && Number.isInteger(dto.sourceLine);
+    const hasRealDocument = Number.isInteger(dto?.sourceId) && dto.sourceId > 0;
+    if (!scopedToLine && (!hasRealDocument || dto?.sourceType === "manual"))
+      throw new UnprocessableEntityException(
+        "Oslobađanje po izvoru zahteva konkretan dokument (sourceId > 0) ili stavku (sourceLine). " +
+          "Ručne rezervacije se oslobađaju pojedinačno — dugmetom „Oslobodi“ na listi rezervacija.",
+      );
     return this.transition(
+      this.prisma,
       dto,
       RESERVATION_STATUS.RELEASED,
       dto.reason,
@@ -261,13 +281,32 @@ export class ReservationService {
    * Potroši rezervaciju (OPEN → CONSUMED) — poziva se kad izdatnica STVARNO razduži robu.
    * Za razliku od `release`, potrošena količina se NE vraća u raspoloživo (`onHand` je već
    * umanjen izdatnicom, pa bi vraćanje bilo dvostruko oslobađanje).
+   *
+   * IZVOR BEZ REZERVACIJA NIJE GREŠKA (`noop: true`): većina izdatnica se pravi iz dokumenta
+   * koji nikad nije rezervisao robu, pa bi 404 značio upozorenje u logu na svakom prepisu —
+   * šum u kome se prava greška ne vidi.
    */
   async consume(dto: ConsumeReservationDto, actorUserId?: number | null) {
+    return this.consumeWithin(this.prisma, dto, actorUserId);
+  }
+
+  /**
+   * `consume` unutar POSTOJEĆE transakcije — izdatnica i zatvaranje njenih rezervacija
+   * commit-uju se zajedno (pad jednog vraća oboje). Koristi `CarryOverService` kroz
+   * `RobnoService.createStockDocument({ afterCreate })`.
+   */
+  async consumeWithin(
+    db: ReservationDb,
+    dto: ConsumeReservationDto,
+    actorUserId?: number | null,
+  ) {
     return this.transition(
+      db,
       dto,
       RESERVATION_STATUS.CONSUMED,
       dto.reason,
       actorUserId,
+      { missingIsNoop: true },
     );
   }
 
@@ -409,15 +448,18 @@ export class ReservationService {
 
   /**
    * Zajednički CAS prelaz OPEN → (RELEASED | CONSUMED) po izvoru. `count === 0` znači „nema
-   * više otvorenih" — to NIJE greška (idempotentno), osim ako izvor uopšte ne postoji (404).
+   * više otvorenih" — to NIJE greška (idempotentno), osim ako izvor uopšte ne postoji (404;
+   * `opts.missingIsNoop` gasi i taj 404 — v. `consume`).
    */
   private async transition(
+    db: ReservationDb,
     ref: ReleaseReservationDto | ConsumeReservationDto,
     target:
       | typeof RESERVATION_STATUS.RELEASED
       | typeof RESERVATION_STATUS.CONSUMED,
     reason: string | undefined,
     actorUserId?: number | null,
+    opts: { missingIsNoop?: boolean } = {},
   ) {
     const sourceType = ref?.sourceType;
     if (!sourceType || !RESERVATION_SOURCE_TYPES.includes(sourceType))
@@ -436,7 +478,7 @@ export class ReservationService {
     if (ref.sourceLine != null && Number.isInteger(ref.sourceLine))
       scope.sourceLine = ref.sourceLine;
 
-    const res = await this.prisma.stockReservation.updateMany({
+    const res = await db.stockReservation.updateMany({
       where: { ...scope, status: RESERVATION_STATUS.OPEN },
       data: {
         status: target,
@@ -445,8 +487,8 @@ export class ReservationService {
       },
     });
 
-    if (res.count === 0) {
-      const existing = await this.prisma.stockReservation.count({
+    if (res.count === 0 && !opts.missingIsNoop) {
+      const existing = await db.stockReservation.count({
         where: scope,
       });
       if (existing === 0)
@@ -457,7 +499,7 @@ export class ReservationService {
               : "") +
             ".",
         );
-    } else {
+    } else if (res.count > 0) {
       this.logger.log(
         `${target === RESERVATION_STATUS.RELEASED ? "Oslobođeno" : "Potrošeno"} ` +
           `${res.count} rezervacija (${sourceType} ${ref.sourceId}, korisnik ${actorUserId ?? "?"}).`,
@@ -499,15 +541,19 @@ export class ReservationService {
     },
     actorUserId: number | null | undefined,
     onDuplicate: "skip" | "conflict",
-  ): Promise<{ created: number; skipped: number; rows: ReservationRow[] }> {
+  ): Promise<{
+    created: number;
+    updated: number;
+    skipped: number;
+    rows: ReservationRow[];
+  }> {
     const keys = dedupeKeys(input.lines);
 
     return this.prisma.$transaction(async (tx) => {
       // 1) Serijalizacija po (artikal, magacin) — sortirano da se paralelni pozivi ne uklješte.
-      for (const k of keys) {
-        const lockKey = `robno:reservation:${k.itemId}:${k.warehouseId}`;
-        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
-      }
+      //    ISTI ključ uzima i `RobnoService.createStockDocument` za izlazne dokumente, pa se
+      //    rezervisanje i izdavanje iste robe ne mogu preplesti (review C, 25.07).
+      await lockStockKeys(tx, keys);
 
       // 2) Meki ref-ovi: artikli i magacini moraju postojati (BACKEND_RULES §4/§6).
       const itemIds = [...new Set(keys.map((k) => k.itemId))];
@@ -557,17 +603,48 @@ export class ReservationService {
       // 5) Provera SVIH stavki pre upisa (all-or-nothing) uz umanjivanje po redu.
       const shortages: ReservationShortage[] = [];
       const toCreate: ReservationLineInput[] = [];
+      /** Postojeći OTVORENI redovi kojima je količina izmenjena na izvoru (review E). */
+      const toUpdate: Array<{ id: number; line: ReservationLineInput }> = [];
       let skipped = 0;
       for (const line of input.lines) {
         const dupKey = String(line.sourceLine ?? "");
-        if (line.sourceLine != null && existingByLine.has(dupKey)) {
+        const existing =
+          line.sourceLine != null ? existingByLine.get(dupKey) : undefined;
+        if (existing) {
           if (onDuplicate === "conflict")
             throw new ConflictException(
               `Rezervacija za izvor ${input.sourceType} ${input.sourceId}, stavka ` +
                 `${line.sourceLine} već postoji.`,
             );
-          skipped += 1;
-          continue; // postojeći OPEN red je već uračunat u „rezervisano" — ne broji se dvaput
+          // Zatvoren red (RELEASED/CONSUMED) se NE oživljava — roba je oslobođena ili izdata.
+          if (
+            existing.status !== RESERVATION_STATUS.OPEN ||
+            existing.quantity.equals(line.quantity)
+          ) {
+            skipped += 1;
+            continue; // postojeći OPEN red je već uračunat u „rezervisano" — ne broji se dvaput
+          }
+          // Izmenjena količina na stavci izvora → uskladi red. `available` već sadrži stari
+          // red kao rezervisan, pa se proverava samo RAZLIKA (smanjenje uvek prolazi).
+          const key = stockKeyOf(line.itemId, line.warehouseId);
+          const available = availableByKey.get(key) ?? ZERO;
+          const delta = line.quantity.sub(existing.quantity);
+          if (delta.greaterThan(0) && available.lessThan(delta)) {
+            const it = itemById.get(line.itemId);
+            shortages.push({
+              itemId: line.itemId,
+              warehouseId: line.warehouseId,
+              itemName: it?.name ?? null,
+              itemCode: it?.catalogNumber ?? null,
+              requested: fmtQty(line.quantity),
+              // Raspoloživo za ovu stavku uključuje i količinu koju sama već drži.
+              available: fmtQty(available.add(existing.quantity)),
+            });
+            continue;
+          }
+          availableByKey.set(key, available.sub(delta));
+          toUpdate.push({ id: existing.id, line });
+          continue;
         }
         const key = stockKeyOf(line.itemId, line.warehouseId);
         const available = availableByKey.get(key) ?? ZERO;
@@ -591,6 +668,42 @@ export class ReservationService {
 
       // 6) Upis (P2002 = trka sa paralelnim pozivom → skip/409 po politici izvora).
       const created: ReservationRow[] = [];
+      // 6a) Usklađivanje količine postojećih OTVORENIH redova (CAS na status: red koji je
+      //     u međuvremenu oslobođen/potrošen se ne dira).
+      let updated = 0;
+      for (const upd of toUpdate) {
+        const res = await tx.stockReservation.updateMany({
+          where: { id: upd.id, status: RESERVATION_STATUS.OPEN },
+          data: { quantity: upd.line.quantity },
+        });
+        if (res.count === 0) {
+          skipped += 1;
+          continue;
+        }
+        updated += 1;
+        const row = existingRows.find((r) => r.id === upd.id);
+        const it = itemById.get(upd.line.itemId);
+        if (row)
+          created.push({
+            id: row.id,
+            itemId: row.itemId,
+            warehouseId: row.warehouseId,
+            itemName: it?.name ?? null,
+            itemCode: it?.catalogNumber ?? null,
+            unit: it?.unit ?? null,
+            sourceType: row.sourceType,
+            sourceId: row.sourceId,
+            sourceLine: row.sourceLine,
+            quantity: upd.line.quantity.toFixed(3),
+            status: row.status,
+            releasedAt: null,
+            releaseReason: null,
+            expiresAt: row.expiresAt ? row.expiresAt.toISOString() : null,
+            note: row.note,
+            createdByUserId: row.createdByUserId,
+            createdAt: row.createdAt.toISOString(),
+          });
+      }
       for (const line of toCreate) {
         try {
           const row = await tx.stockReservation.create({
@@ -648,22 +761,73 @@ export class ReservationService {
         }
       }
 
-      return { created: created.length, skipped, rows: created };
-    });
+      return {
+        created: created.length - updated,
+        updated,
+        skipped,
+        rows: created,
+      };
+    }, RESERVATION_TX_OPTIONS);
   }
 }
 
 // ─────────────────────────────────────────────────────── deljeni helperi
 
+/**
+ * Izvor čije se rezervacije IZUZIMAJU iz obračuna (dokument koji ih troši ne sme sam sebe
+ * da blokira). Može ih biti više — v. `sumOpenReservations`.
+ */
+export interface ExcludedSource {
+  sourceType: string;
+  sourceId: number;
+}
+
 /** Minimalni Prisma klijent koji `computeAvailability` traži (radi i sa `tx`). */
 export type AvailabilityDb = Pick<
   Prisma.TransactionClient,
-  "stockLevel" | "stockReservation"
+  "stockReservation" | "$queryRaw"
 >;
+
+/** Minimalni klijent za prelaze statusa (radi i sa `tx`). */
+export type ReservationDb = Pick<Prisma.TransactionClient, "stockReservation">;
+
+/** Klijent koji ume da uzme advisory lock (radi samo unutar transakcije). */
+export type LockDb = Pick<Prisma.TransactionClient, "$executeRaw">;
 
 /** Ključ mape po (artikal, magacin). */
 export function stockKeyOf(itemId: number, warehouseId: number): string {
   return `${itemId}:${warehouseId}`;
+}
+
+/**
+ * Ključ advisory lock-a po (artikal, magacin) — JEDNO mesto, jer isti ključ moraju uzeti
+ * i rezervisanje (`reserveLines`) i izlazni robni dokument (`createStockDocument`); različit
+ * tekst = dva različita lock-a = nikakva serijalizacija.
+ */
+export function stockLockKey(itemId: number, warehouseId: number): string {
+  return `robno:reservation:${itemId}:${warehouseId}`;
+}
+
+/**
+ * Zaključaj (artikal, magacin) ključeve u SORTIRANOM redosledu — bez sortiranja bi dva
+ * paralelna poziva sa preklapajućim artiklima mogla da se uklješte (deadlock). Lock traje
+ * do kraja transakcije (`pg_advisory_xact_lock`), otključavanje je automatsko.
+ */
+export async function lockStockKeys(
+  db: LockDb,
+  keys: readonly StockKey[],
+): Promise<void> {
+  for (const k of sortStockKeys(keys)) {
+    const key = stockLockKey(k.itemId, k.warehouseId);
+    await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${key}))`;
+  }
+}
+
+/** Deterministički redosled ključeva (artikal pa magacin) — v. `lockStockKeys`. */
+function sortStockKeys(keys: readonly StockKey[]): StockKey[] {
+  return [...keys].sort((a, b) =>
+    a.itemId !== b.itemId ? a.itemId - b.itemId : a.warehouseId - b.warehouseId,
+  );
 }
 
 /**
@@ -675,9 +839,9 @@ export function stockKeyOf(itemId: number, warehouseId: number): string {
  * „rezervisano = agregat OPEN redova" živi na JEDNOM mestu.
  */
 export async function sumOpenReservations(
-  db: Pick<Prisma.TransactionClient, "stockReservation">,
+  db: ReservationDb,
   keys: readonly StockKey[],
-  exclude?: { sourceType: string; sourceId: number },
+  exclude?: ExcludedSource | readonly ExcludedSource[],
 ): Promise<Map<string, Prisma.Decimal>> {
   const out = new Map<string, Prisma.Decimal>();
   if (keys.length === 0) return out;
@@ -687,8 +851,17 @@ export async function sumOpenReservations(
     itemId: { in: [...new Set(keys.map((k) => k.itemId))] },
     warehouseId: { in: [...new Set(keys.map((k) => k.warehouseId))] },
   };
-  if (exclude)
-    where.NOT = { sourceType: exclude.sourceType, sourceId: exclude.sourceId };
+  // Više izvora: izdatnica iz KONAČNOG računa troši rezervacije i računa i PREDRAČUNA iz
+  // koga je prepisan (R1) — zato `AND [NOT a, NOT b]`, ne jedan `NOT`.
+  const excluded: readonly ExcludedSource[] = !exclude
+    ? []
+    : Array.isArray(exclude)
+      ? (exclude as readonly ExcludedSource[])
+      : [exclude as ExcludedSource];
+  if (excluded.length)
+    where.AND = excluded.map((e) => ({
+      NOT: { sourceType: e.sourceType, sourceId: e.sourceId },
+    }));
 
   const rows = await db.stockReservation.groupBy({
     by: ["itemId", "warehouseId"],
@@ -701,29 +874,72 @@ export async function sumOpenReservations(
 }
 
 /**
+ * Stanje (`onHand`) po (artikal, magacin) — JEDAN agregatni upit nad kretanjima, sa
+ * ISTIM filtrima kao `CostingService.stateAsOf` (KODJ izuzet, `affects_stock`, znak iz
+ * `DocumentType.isInbound`, meko obrisane stavke izuzete).
+ *
+ * Zašto ne `stock_levels`: taj snapshot NIKO ne upisuje (nema nijednog pisca u kodu), pa je
+ * čitanje iz njega davalo `onHand = 0` za svu robu — rezervacija je padala sa „raspoloživo 0",
+ * a lager lista je bila prazna. Stanje se zato računa iz istog izvora kao guard izlaza:
+ * jedna istina o zalihama (review A, 25.07).
+ *
+ * BEZ vremenske granice (za razliku od `stateAsOf(asOf)`): raspoloživo je „sada", a unapred
+ * datiran izlaz se odmah odbija od raspoloživog (konzervativno — ne obećava se roba koja je
+ * već obećana budućim dokumentom).
+ */
+export async function computeOnHand(
+  db: AvailabilityDb,
+  keys: readonly StockKey[],
+): Promise<Map<string, Prisma.Decimal>> {
+  const out = new Map<string, Prisma.Decimal>();
+  if (keys.length === 0) return out;
+
+  const itemIds = [...new Set(keys.map((k) => k.itemId))];
+  const warehouseIds = [...new Set(keys.map((k) => k.warehouseId))];
+  const rows = await db.$queryRaw<
+    Array<{
+      item_id: number;
+      warehouse_id: number;
+      state: Prisma.Decimal | null;
+    }>
+  >(Prisma.sql`
+      SELECT sdi.item_id, sdi.warehouse_id,
+             COALESCE(SUM(
+               CASE WHEN dt.is_inbound THEN sdi.quantity ELSE -sdi.quantity END
+             ), 0) AS state
+      FROM stock_document_items sdi
+      JOIN stock_documents sd ON sd.id = sdi.document_id
+      JOIN document_types dt ON dt.code = sd.document_type_code
+      WHERE sdi.item_id IN (${Prisma.join(itemIds)})
+        AND sdi.warehouse_id IN (${Prisma.join(warehouseIds)})
+        AND sd.document_type_code <> 'KODJ'
+        AND COALESCE(dt.affects_stock, TRUE) = TRUE
+        AND sdi.deleted_at IS NULL
+      GROUP BY sdi.item_id, sdi.warehouse_id
+    `);
+  for (const r of rows)
+    out.set(
+      stockKeyOf(r.item_id, r.warehouse_id),
+      new Prisma.Decimal(r.state ?? 0),
+    );
+  return out;
+}
+
+/**
  * `available = onHand − Σ(OPEN rezervacije)` za zadate parove — dva agregatna upita ukupno
  * (stanje + rezervacije), bez obzira na broj parova.
  */
 export async function computeAvailability(
   db: AvailabilityDb,
   keys: readonly StockKey[],
-  exclude?: { sourceType: string; sourceId: number },
+  exclude?: ExcludedSource | readonly ExcludedSource[],
 ): Promise<AvailabilityRow[]> {
   if (keys.length === 0) return [];
 
-  const [levels, reserved] = await Promise.all([
-    db.stockLevel.findMany({
-      where: {
-        itemId: { in: [...new Set(keys.map((k) => k.itemId))] },
-        warehouseId: { in: [...new Set(keys.map((k) => k.warehouseId))] },
-      },
-      select: { itemId: true, warehouseId: true, onHand: true },
-    }),
+  const [onHandByKey, reserved] = await Promise.all([
+    computeOnHand(db, keys),
     sumOpenReservations(db, keys, exclude),
   ]);
-  const onHandByKey = new Map(
-    levels.map((l) => [stockKeyOf(l.itemId, l.warehouseId), l.onHand]),
-  );
 
   return keys.map((k) => {
     const key = stockKeyOf(k.itemId, k.warehouseId);

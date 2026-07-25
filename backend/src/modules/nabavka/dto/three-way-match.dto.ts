@@ -181,6 +181,11 @@ export interface MatchSummaryQueryDto {
 export interface PaymentWarningsQueryDto {
   /** Komitent (dobavljač) — `ledger_entries.analytical_code` iz otvorene stavke. */
   partnerId?: number;
+  /**
+   * VIŠE komitenata odjednom — jedan batch upit umesto poziva u petlji (review R4).
+   * Kombinuje se sa `partnerId` (unija, bez duplikata).
+   */
+  partnerIds?: number[];
   /** Brojevi dokumenata iz otvorenih stavaka (narudžbenica / robni ulaz / KUF). */
   documentNumbers?: string[];
 }
@@ -227,6 +232,12 @@ export function validatePaymentWarningsQuery(
     (!Number.isInteger(dto.partnerId) || dto.partnerId <= 0)
   )
     errors.push("Šifra komitenta mora biti pozitivan ceo broj.");
+  if (dto.partnerIds !== undefined) {
+    if (!Array.isArray(dto.partnerIds))
+      errors.push("Šifre komitenata moraju biti niz.");
+    else if (dto.partnerIds.some((id) => !Number.isInteger(id) || id <= 0))
+      errors.push("Svaka šifra komitenta mora biti pozitivan ceo broj.");
+  }
   if (dto.documentNumbers !== undefined) {
     if (!Array.isArray(dto.documentNumbers))
       errors.push("Brojevi dokumenata moraju biti niz.");
