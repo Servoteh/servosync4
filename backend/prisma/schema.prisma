@@ -239,6 +239,9 @@ model DrawingComponent {
   childDrawing     Drawing @relation("DrawingComponentChild", fields: [childDrawingId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_drawing_components_child")
   parentDrawing    Drawing @relation("DrawingComponentParent", fields: [parentDrawingId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_drawing_components_parent")
 
+  // Perf paket (DB-037): BOM BFS (pretraga realizacije) i PDM relink idu po obe strane.
+  @@index([parentDrawingId], map: "idx_drawing_components_parent")
+  @@index([childDrawingId], map: "idx_drawing_components_child")
   @@map("drawing_components")
 }
 
@@ -369,6 +372,8 @@ model DrawingAssembly {
   childDrawing    Drawing @relation("DrawingAssemblyChild", fields: [childDrawingId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_drawing_assemblies_child")
   parentDrawing   Drawing @relation("DrawingAssemblyParent", fields: [parentDrawingId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_drawing_assemblies_parent")
 
+  @@index([parentDrawingId], map: "idx_drawing_assemblies_parent")
+  @@index([childDrawingId], map: "idx_drawing_assemblies_child")
   @@map("drawing_assemblies")
 }
 
@@ -518,6 +523,7 @@ model HandoverDraft {
   status        HandoverDraftStatus @relation(fields: [statusId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_handover_drafts_status")
   items         HandoverDraftItem[]
 
+  @@index([projectId], map: "idx_handover_drafts_project")
   @@map("handover_drafts")
 }
 
@@ -543,6 +549,8 @@ model HandoverDraftItem {
   mainDrawing              Drawing?      @relation(fields: [mainDrawingId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_handover_draft_items_main_drawing")
   draft                    HandoverDraft @relation(fields: [draftId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_handover_draft_items_draft")
 
+  @@index([draftId], map: "idx_handover_draft_items_draft")
+  @@index([drawingId], map: "idx_handover_draft_items_drawing")
   @@map("handover_draft_items")
 }
 
@@ -610,6 +618,9 @@ model DrawingHandover {
   status                   HandoverStatus       @relation(fields: [statusId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_drawing_handovers_status")
   handoverPdfs             DrawingHandoverPdf[]
 
+  // Perf paket (DB-037): glavna lista tehnologa filtrira po statusu i sortira po datumu.
+  @@index([statusId, handoverDate], map: "idx_drawing_handovers_status_date")
+  @@index([drawingId], map: "idx_drawing_handovers_drawing")
   @@map("drawing_handovers")
 }
 
@@ -1347,6 +1358,7 @@ model WorkOrderLaunch {
   updatedBySignature String?   @map("updated_by_signature") @db.VarChar(50)
   workOrder          WorkOrder @relation(fields: [workOrderId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_order_launches_work_order")
 
+  @@index([workOrderId], map: "idx_wol_work_order")
   @@map("work_order_launches")
 }
 
@@ -1365,6 +1377,12 @@ model PartLocation {
   position      Position  @relation(fields: [positionId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_part_locations_position")
   worker        Worker    @relation(fields: [workerId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_part_locations_worker")
 
+  // Perf paket (DB audit DB-037): tabela je živ ledger kretanja — lista RN-ova,
+  // kartica lokacija i filteri rade po ovim kolonama na svakom zahtevu.
+  @@index([workOrderId, recordDate], map: "idx_part_locations_wo_record_date")
+  @@index([projectId], map: "idx_part_locations_project")
+  @@index([positionId], map: "idx_part_locations_position")
+  @@index([workerId], map: "idx_part_locations_worker")
   @@map("part_locations")
 }
 
@@ -1421,6 +1439,7 @@ model WorkOrderMachinedPart {
   operation      Operation @relation(fields: [workCenterCode], references: [workCenterCode], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_order_machined_parts_operation")
   workOrder      WorkOrder @relation(fields: [workOrderId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_order_machined_parts_work_order")
 
+  @@index([workOrderId], map: "idx_womp_work_order")
   @@map("work_order_machined_parts")
 }
 
@@ -1443,6 +1462,7 @@ model WorkOrderBlank {
   operation         Operation @relation(fields: [workCenterCode], references: [workCenterCode], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_order_blanks_operation")
   workOrder         WorkOrder @relation(fields: [workOrderId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_order_blanks_work_order")
 
+  @@index([workOrderId], map: "idx_wob_work_order")
   @@map("work_order_blanks")
 }
 
@@ -1463,6 +1483,7 @@ model WorkOrderNonstandardPart {
   operation      Operation @relation(fields: [workCenterCode], references: [workCenterCode], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_order_nonstandard_parts_operation")
   workOrder      WorkOrder @relation(fields: [workOrderId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_order_nonstandard_parts_work_order")
 
+  @@index([workOrderId], map: "idx_wonp_work_order")
   @@map("work_order_nonstandard_parts")
 }
 
@@ -1485,6 +1506,7 @@ model MachineAccess {
   operation      Operation @relation(fields: [workCenterCode], references: [workCenterCode], onDelete: NoAction, onUpdate: NoAction, map: "fk_machine_access_operation")
   worker         Worker    @relation(fields: [workerId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_machine_access_worker")
 
+  @@index([workerId], map: "idx_machine_access_worker")
   @@map("machine_access")
 }
 
@@ -1551,6 +1573,8 @@ model WorkOrder {
   /// funkcionalni indeks lower(drawing_number) — raw-only u migraciji (Prisma
   /// ne ume izraz-indeks u @@index).
   @@index([drawingId], map: "idx_work_orders_drawing_id")
+  @@index([parentWorkOrderId], map: "idx_work_orders_parent")
+  @@index([drawingHandoverId], map: "idx_work_orders_drawing_handover")
   @@map("work_orders")
 }
 
@@ -1564,6 +1588,7 @@ model WorkOrderComponent {
   workOrder            WorkOrder @relation(fields: [workOrderId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_order_components_parent")
 
   @@unique([workOrderId, componentWorkOrderId], map: "uq_work_order_components_parent_child")
+  @@index([componentWorkOrderId], map: "idx_woc_component_work_order")
   @@map("work_order_components")
 }
 
@@ -1577,6 +1602,7 @@ model WorkOrderItemComponent {
   workOrder   WorkOrder @relation(fields: [workOrderId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_order_item_components_work_order")
   item        Item      @relation(fields: [itemId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_work_order_item_components_item")
 
+  @@index([workOrderId], map: "idx_woic_work_order")
   @@map("work_order_item_components")
 }
 
@@ -1694,7 +1720,6 @@ model WorkOrderOperation {
   // setOperationDonePriority idu po ovim kolonama. Kreirani CONCURRENTLY na prod-u
   // 2026-07-16 (migracija 20260716120000). 215k redova.
   @@index([workOrderId, operationNumber, workCenterCode], map: "idx_woo_routing")
-  @@index([workOrderId], map: "idx_woo_work_order")
   @@map("work_order_operations")
 }
 
@@ -1743,6 +1768,7 @@ model TechProcess {
   @@index([projectId, identNumber, variant, operationNumber, workCenterCode], map: "idx_tp_trojka_op")
   @@index([workOrderId], map: "idx_tp_work_order")
   @@index([enteredAt], map: "idx_tp_entered_at")
+  @@index([workerId], map: "idx_tp_worker")
   @@map("tech_processes")
 }
 
@@ -1772,6 +1798,10 @@ model WorkTimeEntry {
 
   @@index([techProcessId], map: "idx_work_time_entries_tech_process")
   @@index([startedAt], map: "idx_work_time_entries_started_at")
+  // + SQL-only parcijalni indeks idx_work_time_entries_open (worker_id WHERE
+  // stopped_at IS NULL) za kiosk „moje otvorene sesije" i auto-close — Prisma ne
+  // ume partial, živi samo u migraciji 20260725160000 (kao uq_stock_documents_po).
+  @@index([workerId], map: "idx_work_time_entries_worker")
   @@map("work_time_entries")
 }
 
@@ -1914,7 +1944,6 @@ model UserRole {
   user                    User     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_user_roles_user")
 
   @@unique([userId, role, scopeType, scopeId], map: "uq_user_roles")
-  @@index([userId], map: "idx_user_roles_user")
   @@map("user_roles")
 }
 
@@ -2354,7 +2383,6 @@ model PracenjeNote {
   updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@unique([projectId, workOrderId], map: "uq_pracenje_notes_project_work_order")
-  @@index([projectId], map: "idx_pracenje_notes_project")
   @@map("pracenje_notes")
 }
 
@@ -2401,7 +2429,6 @@ model PredmetPlaner {
   createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@unique([projectId, plannerUserId], map: "uq_predmet_planeri_project_user")
-  @@index([projectId], map: "idx_predmet_planeri_project")
   @@map("predmet_planeri")
 }
 
@@ -3051,10 +3078,11 @@ model LedgerEntry {
 
   @@index([journalEntryId], map: "idx_ledger_entries_journal")
   // Kartica analitike / saldakonto po (konto + komitent) — doc 30 §E izveštaji.
-  @@index([accountCode, analyticalCode], map: "idx_ledger_entries_account_analytical")
   @@index([sourceGoodsDocId], map: "idx_ledger_entries_source_goods_doc")
   // Otvorene stavke: konto + komitent + reconciledAt IS NULL; dospelost po dueDate.
   @@index([accountCode, analyticalCode, reconciledAt], map: "idx_ledger_entries_open_items")
+  // Otvorene stavke PO KOMITENTU bez konta (kamata i sl.) — open_items prefiks ne pokriva.
+  @@index([analyticalCode, reconciledAt], map: "idx_ledger_entries_partner_open")
   @@index([reconciliationGroupId], map: "idx_ledger_entries_recon_group")
   @@map("ledger_entries")
 }
@@ -3175,7 +3203,8 @@ model StockDocument {
   @@unique([companyId, documentTypeCode, year, documentNumber], map: "uq_stock_documents_number")
   @@index([documentDate, warehouseId, documentTypeCode], map: "idx_stock_documents_date_wh")
   @@index([documentTypeCode], map: "idx_stock_documents_type")
-  @@index([purchaseOrderId], map: "idx_stock_documents_po")
+  // purchaseOrderId pokriva SQL-only parcijalni unique uq_stock_documents_po
+  // (20260723140000_review_fixes_guards) — poseban plain indeks je bio duplikat.
   @@map("stock_documents")
 }
 
@@ -3837,7 +3866,6 @@ model PopdvAccountMap {
 
   @@unique([account, popdvMark, columnIndex], map: "uq_popdv_account_map_acc_mark_col")
   @@index([popdvMark, columnIndex], map: "idx_popdv_account_map_mark_col")
-  @@index([account], map: "idx_popdv_account_map_account")
   @@map("popdv_account_map")
 }
 
@@ -3906,7 +3934,6 @@ model VatReturnLine {
   vatReturn VatReturn @relation(fields: [vatReturnId], references: [id], onDelete: Cascade, map: "fk_vat_return_lines_return")
 
   @@unique([vatReturnId, aop], map: "uq_vat_return_lines_return_aop")
-  @@index([vatReturnId], map: "idx_vat_return_lines_return")
   @@map("vat_return_lines")
 }
 
@@ -3977,7 +4004,6 @@ model FinancialStatementLine {
   statement FinancialStatement @relation(fields: [statementId], references: [id], onDelete: Cascade, map: "fk_financial_statement_lines_statement")
 
   @@unique([statementId, aop], map: "uq_financial_statement_lines_statement_aop")
-  @@index([statementId], map: "idx_financial_statement_lines_statement")
   @@map("financial_statement_lines")
 }
 
@@ -3999,7 +4025,6 @@ model BalanceFormulaDefinition {
   ordinal       Int    @default(0) @map("ordinal") // redosled u obrascu
 
   @@unique([statementType, aop], map: "uq_balance_formula_definitions_type_aop")
-  @@index([statementType], map: "idx_balance_formula_definitions_type")
   @@map("balance_formula_definitions")
 }
 

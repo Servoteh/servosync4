@@ -690,12 +690,17 @@ export class PostingEngineService {
   ): Promise<string> {
     const lockKey = `${companyId}:${orderType}:${year}`;
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
-    const last = await tx.journalEntry.findFirst({
+    // Numerički MAX u JS-u (obrazac stock-document-numbering) — string orderBy je
+    // leksikografski pa je '10000' < '9999' i brojač bi se zaglavio posle 9999.
+    const rows = await tx.journalEntry.findMany({
       where: { companyId, orderTypeCode: orderType, year },
-      orderBy: { number: "desc" },
       select: { number: true },
     });
-    const next = (last ? parseInt(last.number, 10) : 0) + 1;
-    return String(next).padStart(4, "0");
+    let maxSeq = 0;
+    for (const r of rows) {
+      const n = Number.parseInt(r.number, 10);
+      if (!Number.isNaN(n) && n > maxSeq) maxSeq = n;
+    }
+    return String(maxSeq + 1).padStart(4, "0");
   }
 }

@@ -125,11 +125,22 @@ export class DocumentCarryOverService {
         include: { items: { orderBy: { lineNo: "asc" } } },
       });
 
-      // ── Upiši link nazad na izvor (zatvara anti-duplo guard) ──
-      await tx.invoice.update({
-        where: { id: proforma.id },
+      // ── Upiši link nazad na izvor (zatvara anti-duplo guard) — CAS: uslov
+      // „link još prazan" mora biti U SAMOM update-u; read-then-check guard gore
+      // propušta dva KONKURENTNA prepisa (npr. IFR i IFGP iz istog predračuna),
+      // pa bi bez ovoga nastala dva knjiživa računa. count=0 → rollback cilja.
+      const linked = await tx.invoice.updateMany({
+        where: {
+          id: proforma.id,
+          OR: [{ linkedInvoiceDocId: null }, { linkedInvoiceDocId: { lte: 0 } }],
+        },
         data: { linkedInvoiceDocId: invoice.id },
       });
+      if (linked.count === 0) {
+        throw new ConflictException(
+          `Predračun ${proformaId} je u međuvremenu već prepisan u drugi račun.`,
+        );
+      }
 
       return invoice;
     });

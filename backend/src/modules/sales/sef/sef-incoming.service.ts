@@ -49,8 +49,14 @@ export interface PullSummary {
   note?: string;
 }
 
-/** Red liste sa izračunatim brojem preostalih dana do isteka roka. */
-export type SefIncomingListItem = SefIncomingInvoice & { daysLeft: number | null };
+/**
+ * Red liste sa izračunatim brojem preostalih dana do isteka roka.
+ * BEZ rawXml — sirovi UBL svake fakture bi listu vremenom naduvao na desetine MB;
+ * puno telo se čita samo tamo gde stvarno treba (parsiranje/audit po jednom redu).
+ */
+export type SefIncomingListItem = Omit<SefIncomingInvoice, "rawXml"> & {
+  daysLeft: number | null;
+};
 
 /** Rezultat accept/reject akcije (entitet + DRY-RUN napomena). */
 export interface SefIncomingActionResult {
@@ -232,7 +238,32 @@ export class SefIncomingService {
 
     const rows = await this.prisma.sefIncomingInvoice.findMany({
       where,
+      select: {
+        id: true,
+        sefPurchaseId: true,
+        supplierPib: true,
+        supplierName: true,
+        invoiceNumber: true,
+        issueDate: true,
+        deliveryDate: true,
+        dueDate: true,
+        totalAmount: true,
+        vatAmount: true,
+        currency: true,
+        status: true,
+        acceptDeadline: true,
+        rejectComment: true,
+        alreadyExists: true,
+        matchedKufEntryId: true,
+        actionByUserId: true,
+        actionAt: true,
+        createdAt: true,
+        updatedAt: true,
+      },
       orderBy: [{ acceptDeadline: "asc" }, { id: "asc" }],
+      // Bezbednosni cap dok lista ne dobije pravu paginaciju — najurgentnije
+      // (najkraći rok) su ionako prve po sortu.
+      take: 500,
     });
 
     const now = Date.now();
