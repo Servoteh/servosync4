@@ -26,6 +26,64 @@ jobs:
       contents: read
       actions: read
     steps:
+      # Checkout je PRVI korak (pre CI kapije) jer guard ispod mora da diff-uje
+      # istoriju; fetch-depth: 0 = pun klon (plitak klon nema BEFORE commit).
+      - name: Checkout monorepo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # BRAVA 1 — zaštita fajlova koji drže staru 1.0 mobilnu živom.
+      # Incident 21.07.2026: promena assets/worker konfiguracije oborila /m/* na
+      # Next 404 → APK ljuska (skener, STT, push) mrtva za ceo pogon. Ova tri fajla
+      # su jedini most 1.0 mobilne kroz same-origin /m proxy, pa se ne menjaju
+      # slučajno: namerna izmena mora nositi marker [worker-change] u commit poruci.
+      - name: Guard — zaštićeni fajlovi 1.0 mobilne
+        env:
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          PROTECTED="frontend/worker/index.ts frontend/wrangler.jsonc frontend/public/sw.js"
+
+          # BEFORE zna da bude prazan (prvi push na granu), sve nule (novo ref)
+          # ili commit koji ne postoji lokalno (force-push, rebase) → fallback SHA~1.
+          if [ -z "$BEFORE" ] || grep -qE '^0+$' <<< "$BEFORE" || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            if ! BEFORE="$(git rev-parse "${SHA}~1" 2>/dev/null)"; then
+              echo "::notice::Nema prethodnog commita za poređenje (prvi commit?) — guard preskočen."
+              exit 0
+            fi
+            echo "Fallback baza za diff: ${BEFORE}"
+          fi
+
+          CHANGED="$(git diff --name-only "$BEFORE" "$SHA" -- $PROTECTED)"
+
+          if [ -z "$CHANGED" ]; then
+            echo "Zaštićeni fajlovi netaknuti u ${BEFORE}..${SHA} — guard OK."
+            exit 0
+          fi
+
+          echo "Izmenjeni zaštićeni fajlovi:"
+          printf '  %s\n' $CHANGED
+
+          # Poruke prvo u promenljivu, pa herestring: `git log | grep -q` bi pod
+          # `pipefail` umeo da vrati 141 (SIGPIPE, grep izađe na prvom pogotku)
+          # i tako LAŽNO oborio marker na velikim range-ovima.
+          MSGS="$(git log --format=%B "${BEFORE}..${SHA}")"
+          if grep -qF '[worker-change]' <<< "$MSGS"; then
+            echo "::notice::Guard: namerna izmena zaštićenih fajlova ([worker-change] u commit poruci) — deploy sme dalje."
+            exit 0
+          fi
+
+          echo "::error::DEPLOY BLOKIRAN — menjani su fajlovi koji drže staru 1.0 mobilnu živom:"
+          for f in $CHANGED; do echo "::error::  - $f"; done
+          echo "::error::Ovi fajlovi (worker/index.ts, wrangler.jsonc, public/sw.js) proksiraju /m, /m/*, /assets/*, /icons/*, /manifest.webmanifest na 1.0 (servoteh-plan-montaze.pages.dev)."
+          echo "::error::Bez njih APK ljuska i nativni skener prestaju da rade za ceo pogon (incident 21.07.2026: /m/* je vraćao Next 404)."
+          echo "::error::Ako je izmena NAMERNA: dodaj marker [worker-change] u commit poruku (npr. 'fix(worker): ... [worker-change]') i push-uj ponovo."
+          echo "::error::Ako NIJE namerna: vrati te fajlove (git checkout origin/main -- <fajl>) pa push-uj."
+          exit 1
+
       # CI kapija: deploy sme tek kad ci-backend za OVAJ isti SHA završi ZELENO.
       # Motiv: 24.07.2026 dva push-a sa crvenim ci-backend ipak stigla na prod
       # (deploy je zaseban workflow). Runner je self-hosted Linux (curl + jq postoje).
@@ -91,9 +149,6 @@ jobs:
           echo "::error::ci-backend nije završio ni posle 25 min (i dalje traje) — blokiram deploy. Re-run kad CI završi."
           exit 1
 
-      - name: Checkout monorepo
-        uses: actions/checkout@v4
-
       - name: Build & deploy (Cloudflare Worker servosync2)
         working-directory: frontend
         env:
@@ -108,3 +163,53 @@ jobs:
             -e CLOUDFLARE_API_TOKEN -e CLOUDFLARE_ACCOUNT_ID \
             -v "$PWD":/work -w /work node:22-bookworm-slim \
             sh -c "npm ci && npx next build && [ -d out ] && npx wrangler deploy"
+
+      # BRAVA 2 — smoke posle deploy-a. FE pandan sekciji 6 iz
+      # backend/scripts/post-deploy-verify.sh („MOBILNA 1.0 (/m/*)"): deploy koji
+      # „uspe" a obori /m/* je tihi otkaz — golo /m ume da radi dok su PODRUTE mrtve.
+      # Zato se proveravaju i podrute, i 3.0 login (da worker nije pojeo sve).
+      - name: Smoke — 1.0 mobilna i 3.0 posle deploy-a
+        run: |
+          set -euo pipefail
+
+          BASE="https://servosync.servoteh.com"
+          FAIL=0
+
+          # check <putanja> <marker> — do 6 pokušaja (10s pauza) da propusti CF propagaciju.
+          # grep čita herestring (ne pipe): pod `pipefail` bi `printf | grep -q` na
+          # velikom HTML-u umeo da vrati 141 (SIGPIPE) i lažno prijavi pad.
+          check() {
+            url="$1"; marker="$2"
+            for i in $(seq 1 6); do
+              if body="$(curl -fsS --max-time 15 -A 'Mozilla/5.0 (Android)' "$url" 2>/dev/null)" \
+                 && grep -q "$marker" <<< "$body"; then
+                echo "  OK  $url (marker: $marker)"
+                return 0
+              fi
+              echo "  ... $url još ne odgovara očekivano ($i/6) — čekam 10s"
+              sleep 10
+            done
+            echo "::error::SMOKE PAO: $url ne sadrži marker '$marker' ni posle 6 pokušaja."
+            return 1
+          }
+
+          echo "1.0 mobilna kroz /m proxy (marker: Servosync V1.0)"
+          for p in /m /m/montaza /m/odrzavanje; do
+            check "${BASE}${p}" 'Servosync V1.0' || FAIL=1
+          done
+
+          echo "3.0 aplikacija (marker: _next)"
+          check "${BASE}/login" '_next' || FAIL=1
+
+          if [ "$FAIL" != "0" ]; then
+            echo "::error::DEPLOY JE DEFEKTAN — ne javljati „radi”."
+            echo "::error::Ako su pale /m rute: stara 1.0 mobilna (APK ljuska + nativni skener) je oborena za ceo pogon."
+            echo "::error::OPORAVAK (odmah, ne čekati istragu):"
+            echo "::error::  1) Cloudflare dashboard → Workers & Pages → servosync2 → Deployments → Rollback na prethodnu verziju, ILI"
+            echo "::error::  2) git revert <ovaj SHA> + push na main (deploy se ponovo okine)."
+            echo "::error::Sama 1.0 je NETAKNUTA i direktno živi na https://servoteh-plan-montaze.pages.dev — pao je samo /m proxy sa ovog domena."
+            echo "::error::Provera posle oporavka: ssh ubuntusrv 'bash -s' < backend/scripts/post-deploy-verify.sh (sekcija 6)."
+            exit 1
+          fi
+
+          echo "🟢 SMOKE OK — 1.0 mobilna (/m, /m/montaza, /m/odrzavanje) i 3.0 (/login) žive."

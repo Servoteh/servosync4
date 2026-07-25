@@ -5,8 +5,14 @@ const UPSTREAM = 'https://servoteh-plan-montaze.pages.dev';
  * /m sa ovog domena, a nativni plugini (barkod skener, STT, push) rade samo
  * dok WebView ostaje na server.url origin-u — redirect na drugi domen izbaci
  * app u spoljni browser. Zato se 1.0 sadržaj proksira odavde.
- * /m/* stiže do Worker-a SAMO kad ne postoji 3.0 asset (novi mobilni moduli
- * /m/montaza, /m/prisustvo… imaju prednost jer se assets služe pre skripte).
+ *
+ * REDOSLED ODLUČIVANJA: `run_worker_first: true` u wrangler.jsonc znači da Worker
+ * odlučuje PRVI za svaki zahtev — pre ASSETS bindinga. Zato SVE /m/* rute idu na
+ * 1.0, čak i kad u static exportu postoji istoimeni 3.0 asset (out/m/*.html).
+ * 3.0 mobilni ekrani zato žive pod /mob/*, ne pod /m/*.
+ *
+ * Ovaj fajl je zaštićen guard-om u .github/workflows/deploy-frontend.yml:
+ * izmena prolazi na deploy samo ako commit poruka nosi marker [worker-change].
  */
 function jeStaraMobilna(pathname: string): boolean {
   return (
