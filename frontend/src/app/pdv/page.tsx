@@ -142,11 +142,19 @@ const ledgerColumns: Column<VatLedgerRow>[] = [
     header: 'Stopa',
     align: 'right',
     numeric: true,
-    render: (r) => (
-      <span className="tnums text-ink-secondary">
-        {r.vatRateCode != null ? `${r.vatRateCode}%` : '—'}
-      </span>
-    ),
+    render: (r) =>
+      r.noDeduction ? (
+        <span
+          className="text-2xs uppercase tracking-wide text-status-warn"
+          title="Ulazni račun bez prava odbitka — ne ulazi u pretporez"
+        >
+          van PDV
+        </span>
+      ) : (
+        <span className="tnums text-ink-secondary">
+          {r.vatRateCode != null ? `${r.vatRateCode}%` : '—'}
+        </span>
+      ),
   },
   {
     key: 'vatBase',
@@ -731,6 +739,134 @@ function todayIso(): string {
 }
 
 /**
+ * Bruto↔neto most (klijentski pomoćnik — ogledalo backend/vat-bridge.util.ts).
+ * Zaokruženje na 2 decimale; PDV = bruto − neto (zbir uvek zatvara). Vrednosti
+ * su samo predlog koji korisnik „prepiše" u polja; BE ionako validira unos.
+ */
+function round2(n: number): number {
+  return Math.round((n + Number.EPSILON) * 100) / 100;
+}
+function bridgeGrossToNet(gross: number, rate: number): { net: number; vat: number } {
+  const g = round2(gross);
+  const net = round2(g / (1 + rate / 100));
+  return { net, vat: round2(g - net) };
+}
+function bridgeNetToGross(net: number, rate: number): { gross: number; vat: number } {
+  const n = round2(net);
+  const vat = round2((n * rate) / 100);
+  return { gross: round2(n + vat), vat };
+}
+
+/** Prikaz broja sa 2 decimale i decimalnim zarezom (sr) za rezultat kalkulatora. */
+function fmt2(n: number): string {
+  return n.toFixed(2).replace('.', ',');
+}
+
+/**
+ * Kalkulator bruto↔neto iznad polja ručne stavke (B4). Korisnik unese iznos +
+ * stopu, izabere smer (bruto→neto ili neto→bruto), vidi neto/PDV/bruto i dugmetom
+ * „Prepiši u polja" popuni Osnovicu, Iznos PDV i Stopu u formi. Ne zove API.
+ */
+function VatBridgeCalculator({
+  onApply,
+}: {
+  onApply: (v: { base: number; vat: number; rate: string }) => void;
+}) {
+  const [mode, setMode] = useState<'grossToNet' | 'netToGross'>('grossToNet');
+  const [amount, setAmount] = useState('');
+  const [rate, setRate] = useState('20');
+
+  const amountNum = Number(amount);
+  const rateNum = Number(rate);
+  const valid =
+    amount.trim() !== '' &&
+    !Number.isNaN(amountNum) &&
+    amountNum >= 0 &&
+    !Number.isNaN(rateNum) &&
+    rateNum >= 0;
+
+  const result = valid
+    ? mode === 'grossToNet'
+      ? (() => {
+          const { net, vat } = bridgeGrossToNet(amountNum, rateNum);
+          return { base: net, vat, gross: round2(amountNum) };
+        })()
+      : (() => {
+          const { gross, vat } = bridgeNetToGross(amountNum, rateNum);
+          return { base: round2(amountNum), vat, gross };
+        })()
+    : null;
+
+  return (
+    <div className="rounded-panel border border-line bg-surface-2/50 p-3">
+      <p className="mb-2 text-xs font-semibold text-ink-secondary">
+        Kalkulator bruto ↔ neto
+      </p>
+      <div className="flex flex-wrap items-end gap-2">
+        <label className="flex flex-col gap-1 text-2xs text-ink-secondary">
+          Smer
+          <div className="w-40">
+            <Select
+              value={mode}
+              onChange={(e) => setMode(e.target.value as 'grossToNet' | 'netToGross')}
+              options={[
+                { value: 'grossToNet', label: 'Bruto → neto + PDV' },
+                { value: 'netToGross', label: 'Neto → bruto + PDV' },
+              ]}
+            />
+          </div>
+        </label>
+        <label className="flex flex-col gap-1 text-2xs text-ink-secondary">
+          {mode === 'grossToNet' ? 'Bruto iznos' : 'Neto iznos'}
+          <div className="w-32">
+            <Input
+              type="number"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              placeholder="0.00"
+            />
+          </div>
+        </label>
+        <label className="flex flex-col gap-1 text-2xs text-ink-secondary">
+          Stopa %
+          <div className="w-20">
+            <Input
+              type="number"
+              value={rate}
+              onChange={(e) => setRate(e.target.value)}
+              placeholder="20"
+            />
+          </div>
+        </label>
+      </div>
+      <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="tnums text-xs text-ink-secondary">
+          {result ? (
+            <>
+              Neto <span className="font-semibold text-ink">{fmt2(result.base)}</span>
+              {'  ·  '}PDV <span className="font-semibold text-ink">{fmt2(result.vat)}</span>
+              {'  ·  '}Bruto <span className="font-semibold text-ink">{fmt2(result.gross)}</span>
+            </>
+          ) : (
+            <span className="text-ink-disabled">Unesi iznos i stopu.</span>
+          )}
+        </div>
+        <Button
+          variant="secondary"
+          disabled={!result}
+          onClick={() =>
+            result &&
+            onApply({ base: result.base, vat: result.vat, rate: rate.trim() })
+          }
+        >
+          Prepiši u polja
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/**
  * Dijalog za ručnu KIF/KUF stavku (D4). `row=null` = nova stavka (smer + period
  * iz izabranog taba/perioda); `row` popunjen = izmena postojeće ručne stavke
  * (smer i period se ne menjaju — samo dokument/partner/iznosi). GK-izvedene
@@ -763,10 +899,17 @@ function ManualEntryDialog({
   const [partnerId, setPartnerId] = useState(
     row?.partnerId != null ? String(row.partnerId) : '',
   );
-  const [vatRateCode, setVatRateCode] = useState(row?.vatRateCode ?? '');
+  // „Van PDV" stavka nosi marker vatRateCode="VP" na BE; u formi je ne prikazujemo
+  // kao stopu nego kao stanje checkbox-a (početna stopa prazna kad je van PDV).
+  const [noDeduction, setNoDeduction] = useState(row?.noDeduction ?? false);
+  const [vatRateCode, setVatRateCode] = useState(
+    row?.noDeduction ? '' : (row?.vatRateCode ?? ''),
+  );
   const [vatBase, setVatBase] = useState(row?.vatBase ?? '');
   const [vatAmount, setVatAmount] = useState(row?.vatAmount ?? '');
 
+  // „Bez prava odbitka" postoji samo za ulazni račun (KUF).
+  const isKuf = direction === 'input';
   const bookLabel = direction === 'output' ? 'KIF (izlazna)' : 'KUF (ulazna)';
   const title = isEdit ? 'Izmena ručne stavke' : 'Nova ručna stavka';
 
@@ -781,7 +924,9 @@ function ManualEntryDialog({
   function submit(): void {
     if (!canSave) return;
     const partner = partnerId.trim() === '' ? null : Number(partnerId);
-    const rate = vatRateCode.trim() === '' ? null : vatRateCode.trim();
+    // „Van PDV" (samo KUF): BE postavlja marker vatRateCode="VP", pa stopu ne šaljemo.
+    const vanPdv = isKuf && noDeduction;
+    const rate = vanPdv || vatRateCode.trim() === '' ? null : vatRateCode.trim();
     if (isEdit && row) {
       onUpdate(row.id, {
         documentNumber: documentNumber.trim(),
@@ -790,6 +935,7 @@ function ManualEntryDialog({
         vatRateCode: rate,
         vatBase: Number(vatBase),
         vatAmount: Number(vatAmount),
+        ...(isKuf ? { noDeduction: vanPdv } : {}),
       });
     } else {
       onCreate({
@@ -802,6 +948,7 @@ function ManualEntryDialog({
         vatBase: Number(vatBase),
         vatAmount: Number(vatAmount),
         vatRateCode: rate,
+        ...(vanPdv ? { noDeduction: true } : {}),
       });
     }
   }
@@ -827,6 +974,13 @@ function ManualEntryDialog({
         <p className="text-xs text-ink-secondary">
           Knjiga: {bookLabel} · period {String(month).padStart(2, '0')}/{year}
         </p>
+        <VatBridgeCalculator
+          onApply={({ base, vat, rate }) => {
+            setVatBase(String(base));
+            setVatAmount(String(vat));
+            if (!(isKuf && noDeduction)) setVatRateCode(rate);
+          }}
+        />
         <FormField label="Broj dokumenta" required>
           <Input
             value={documentNumber}
@@ -852,11 +1006,12 @@ function ManualEntryDialog({
           </FormField>
         </div>
         <div className="grid grid-cols-3 gap-3">
-          <FormField label="Stopa %" hint="opciono">
+          <FormField label="Stopa %" hint={isKuf && noDeduction ? 'van PDV' : 'opciono'}>
             <Input
-              value={vatRateCode}
+              value={isKuf && noDeduction ? '' : vatRateCode}
               onChange={(e) => setVatRateCode(e.target.value)}
               placeholder="20"
+              disabled={isKuf && noDeduction}
             />
           </FormField>
           <FormField label="Osnovica" required>
@@ -876,6 +1031,23 @@ function ManualEntryDialog({
             />
           </FormField>
         </div>
+
+        {isKuf && (
+          <label className="flex cursor-pointer items-start gap-2 rounded-control p-1 text-sm text-ink hover:bg-surface-2/60">
+            <input
+              type="checkbox"
+              checked={noDeduction}
+              onChange={(e) => setNoDeduction(e.target.checked)}
+              className="mt-0.5 h-4 w-4 shrink-0 accent-accent"
+            />
+            <span>
+              Ulazni račun bez prava odbitka (van PDV)
+              <span className="block text-xs text-ink-secondary">
+                Stavka ostaje u KUF knjizi, ali PDV ne ulazi u pretporez (POPDV).
+              </span>
+            </span>
+          </label>
+        )}
       </div>
     </Dialog>
   );

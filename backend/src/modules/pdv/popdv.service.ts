@@ -45,6 +45,7 @@ import {
   VAT_RETURN_CALCULATED,
   VAT_RETURN_POSTED,
 } from "./vat-period-lock";
+import { VAT_RATE_CODE_NO_DEDUCTION } from "./dto/manual-vat-entry.dto";
 
 const D = Prisma.Decimal;
 const ZERO = new D(0);
@@ -383,6 +384,13 @@ export class PopdvService {
    * jer ručna stavka nema nalog nego eksplicitan poreski period.
    * GK-izvedene stavke (`sourceJournalEntryId != null`) se NAMERNO izostavljaju —
    * već su obuhvaćene `sumVatAccounts` (Σ PDV konta iz GK).
+   *
+   * B4 „KUF van PDV": stavke sa markerom `vatRateCode="VP"` (ulazni račun bez
+   * prava odbitka) OSTAJU u KUF listi (listKuf ih vidi) ali se ISKLJUČUJU iz
+   * pretporeza — filter ispod ih izbacuje iz `manualInput`. OR granu pišemo
+   * eksplicitno (`vatRateCode = null` ILI `!= "VP"`) da nulte-stope ulazni računi
+   * (odbitni, čest slučaj) SIGURNO ostanu u pretporezu, bez oslanjanja na
+   * Prisma null-semantiku `not`-a.
    */
   private async sumManualVatEntries(
     year: number,
@@ -398,6 +406,16 @@ export class PopdvService {
         sourceJournalEntryId: null,
         taxPeriodYear: year,
         taxPeriodMonth: { in: months },
+        // „Van PDV" (bez prava odbitka) se isključuje SAMO na ULAZNOJ strani — to je
+        // pretporez koji se ne odbija. Na IZLAZNOJ strani marker nema smisla, a ranije
+        // ga je filter takođe gutao (review Batch B): izlazna stavka sa VP tiho je
+        // ispadala iz obaveze → potcenjen izlazni PDV uz stavku vidljivu u KIF-u.
+        NOT: {
+          AND: [
+            { direction: "input" },
+            { vatRateCode: VAT_RATE_CODE_NO_DEDUCTION },
+          ],
+        },
       },
       _sum: { vatAmount: true },
     });

@@ -5,26 +5,25 @@ import { Dialog } from '@/components/ui-kit/dialog';
 import { FormField, Input } from '@/components/ui-kit/form-field';
 import { Button } from '@/components/ui-kit/button';
 import { toast } from '@/lib/toast';
-import { useLockOlderJournals } from '@/api/glavna-knjiga';
+import { useLockOlderPaymentOrders } from '@/api/placanja';
 
 /**
- * Modal „Zaključaj starije naloge" (BigBit paritet — zaključavanje perioda). Svi
- * proknjiženi (posted) nalozi sa datumom knjiženja PRE izabranog datuma prelaze u
- * zaključane (locked) — sprečava naknadne izmene/storno u zatvorenom periodu.
- * Draft nalozi i već zaključani se ne diraju. TASTATURA: Esc = otkaži.
+ * Modal „Zaključaj starije naloge" (BigBit paritet — zamrzavanje virmana). Svi otključani
+ * nalozi za plaćanje KREIRANI pre izabranog datuma prelaze u zaključane (Zakljucano) —
+ * zamrznut nalog se ne može potpisati/platiti ni izvesti u banku dok se ne otključa
+ * (nalog po nalog). Već zaključani se ne diraju. TASTATURA: Esc = otkaži.
  *
- * DVA KORAKA (review Opus 5): prvo „Proveri" (dry-run) prebroji koliko naloga bi
- * bilo zaključano — pa tek onda „Zaključaj N naloga". Ranije je jedan klik odmah
- * menjao status, a povratak je otključavanje nalog-po-nalog.
+ * DVA KORAKA (isti obrazac kao GK lock-older iz review-a): prvo „Proveri" (dry-run)
+ * prebroji koliko naloga bi bilo zaključano — pa tek onda „Zaključaj N naloga".
  */
-export function LockOlderDialog({
+export function LockOlderPaymentsDialog({
   open,
   onClose,
 }: {
   open: boolean;
   onClose: () => void;
 }) {
-  const lockOlder = useLockOlderJournals();
+  const lockOlder = useLockOlderPaymentOrders();
   const [beforeDate, setBeforeDate] = useState(
     () => `${new Date().getFullYear()}-01-01`,
   );
@@ -49,8 +48,8 @@ export function LockOlderDialog({
     if (!canSubmit || !checked || preview.count === 0) return;
     if (
       !window.confirm(
-        `Zaključati ${preview.count} naloga sa datumom knjiženja pre ${beforeDate}? ` +
-          `Zaključan nalog se ne može menjati ni stornirati dok se ne otključa (nalog po nalog).`,
+        `Zaključati ${preview.count} naloga kreiranih pre ${beforeDate}? ` +
+          `Zaključan nalog se ne može potpisati, platiti ni izvesti dok se ne otključa (nalog po nalog).`,
       )
     )
       return;
@@ -111,9 +110,8 @@ export function LockOlderDialog({
           </div>
         )}
         <p className="text-sm text-ink-secondary">
-          Svi proknjiženi nalozi sa datumom knjiženja pre izabranog datuma prelaze u
-          status „Zaključan". Nalozi u pripremi i već zaključani se ne menjaju.
-          Datum u budućnosti nije dozvoljen.
+          Svi otključani nalozi za plaćanje kreirani pre izabranog datuma prelaze u status
+          Zaključan. Već zaključani se ne menjaju. Datum u budućnosti nije dozvoljen.
         </p>
         <div className="w-48">
           <FormField label="Zaključaj pre datuma" required>
@@ -136,7 +134,7 @@ export function LockOlderDialog({
             }
           >
             {preview.count === 0
-              ? `Nema proknjiženih naloga pre ${beforeDate} — nema šta da se zaključa.`
+              ? `Nema naloga kreiranih pre ${beforeDate} — nema šta da se zaključa.`
               : `Provera: ${preview.count} naloga bi bilo zaključano. Ništa još nije promenjeno.`}
           </div>
         )}

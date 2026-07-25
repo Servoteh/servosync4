@@ -12,12 +12,18 @@ import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Button } from '@/components/ui-kit/button';
 import { Dialog } from '@/components/ui-kit/dialog';
-import { formatDate, formatDecimal, formatNumber } from '@/lib/format';
+import { Select } from '@/components/ui-kit/select';
+import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
+import { formatDate, formatDateTime, formatDecimal, formatNumber } from '@/lib/format';
 import {
   useCollectionDashboard,
   useReconcileSmallBalances,
+  useDunningCandidates,
+  useDunningSend,
+  useDunningSendBatch,
   type CollectionDashboard,
   type TopDebtor,
+  type DunningCandidate,
 } from '@/api/saldakonti';
 
 /**
@@ -96,6 +102,17 @@ function StatTile({
   );
 }
 
+// ── Opomene: nivo 1|2|3 → ton badža (info → warn → danger) ──────────────────
+function nivoTone(level: number): Tone {
+  return level >= 3 ? 'danger' : level === 2 ? 'warn' : 'info';
+}
+
+const LEVEL_OPTIONS = [
+  { value: '1', label: 'Nivo 1 — opomena (15–30 dana)' },
+  { value: '2', label: 'Nivo 2 — opomena (31–60 dana)' },
+  { value: '3', label: 'Nivo 3 — pred utuženje (61+ dana)' },
+];
+
 export default function NaplataPage() {
   const { user, isLoading } = useAuth();
   const router = useRouter();
@@ -128,6 +145,51 @@ export default function NaplataPage() {
   function closeMaxDialog() {
     setMaxOpen(false);
     reconcileSmall.reset();
+  }
+
+  // ── Opomene (dunning) — kandidati + pojedinačno/masovno slanje ──────────────
+  const dunning = useDunningCandidates();
+  const candidates = useMemo<DunningCandidate[]>(() => dunning.data?.data ?? [], [dunning.data]);
+  const eligibleCount = useMemo(
+    () => candidates.filter((c) => !c.alreadySentToday).length,
+    [candidates],
+  );
+
+  const dunSend = useDunningSend();
+  const dunBatch = useDunningSendBatch();
+  const sendResult = dunSend.data?.data;
+  const batchResult = dunBatch.data?.data;
+
+  const [sendTarget, setSendTarget] = useState<DunningCandidate | null>(null);
+  const [sendLevel, setSendLevel] = useState('1');
+  const [sendEmail, setSendEmail] = useState('');
+  const [batchOpen, setBatchOpen] = useState(false);
+
+  function openSend(c: DunningCandidate) {
+    dunSend.reset();
+    setSendTarget(c);
+    setSendLevel(String(c.level));
+    setSendEmail(c.email ?? '');
+  }
+  function closeSend() {
+    setSendTarget(null);
+    dunSend.reset();
+  }
+  function runSend() {
+    if (!sendTarget) return;
+    const to = sendEmail.trim();
+    dunSend.mutate({
+      partnerId: sendTarget.partnerId,
+      level: Number(sendLevel),
+      to: to || undefined,
+    });
+  }
+  function closeBatch() {
+    setBatchOpen(false);
+    dunBatch.reset();
+  }
+  function runBatch() {
+    dunBatch.mutate({});
   }
 
   // Kolonski maksimumi za heatmap (self-normalizacija svake bucket kolone).
@@ -193,6 +255,77 @@ export default function NaplataPage() {
       render: (r) => <span className="tnums font-semibold text-ink">{formatDecimal(r.total)}</span>,
     },
   ];
+
+  const dunningColumns: Column<DunningCandidate>[] = [
+    {
+      key: 'partner',
+      header: 'Komitent',
+      render: (r) => (
+        <div className="min-w-0">
+          <div className="truncate font-medium text-ink">
+            {r.partnerName ?? `Komitent ${r.partnerId}`}
+          </div>
+          <div className="tnums text-2xs text-ink-secondary">#{r.partnerId}</div>
+        </div>
+      ),
+    },
+    {
+      key: 'overdue',
+      header: 'Dospelo',
+      align: 'right',
+      numeric: true,
+      render: (r) => (
+        <span className="tnums font-semibold text-ink">{formatDecimal(r.overdueAmount)}</span>
+      ),
+    },
+    {
+      key: 'days',
+      header: 'Dana',
+      align: 'right',
+      numeric: true,
+      render: (r) => <span className="tnums text-ink">{formatNumber(r.daysOverdue)}</span>,
+    },
+    {
+      key: 'level',
+      header: 'Nivo',
+      render: (r) => <StatusBadge tone={nivoTone(r.level)} label={`Nivo ${r.level}`} />,
+    },
+    {
+      key: 'last',
+      header: 'Poslednja opomena',
+      render: (r) =>
+        r.lastSentAt ? (
+          <div className="min-w-0">
+            <div className="text-ink">{formatDateTime(r.lastSentAt)}</div>
+            <div className="text-2xs text-ink-secondary">
+              {r.lastSentLevel != null ? `nivo ${r.lastSentLevel}` : ''}
+              {r.alreadySentToday ? ' · danas' : ''}
+            </div>
+          </div>
+        ) : (
+          <span className="text-ink-secondary">—</span>
+        ),
+    },
+  ];
+
+  if (canReconcile) {
+    dunningColumns.push({
+      key: 'action',
+      header: '',
+      align: 'right',
+      render: (r) => (
+        <Button
+          variant="secondary"
+          onClick={(e) => {
+            e.stopPropagation();
+            openSend(r);
+          }}
+        >
+          {r.alreadySentToday ? 'Ponovo' : 'Pošalji'}
+        </Button>
+      ),
+    });
+  }
 
   if (isLoading || !user) {
     return (
@@ -281,6 +414,38 @@ export default function NaplataPage() {
             }
           />
         </div>
+
+        {/* Opomene (dunning) */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-2xs font-semibold uppercase tracking-[0.08em] text-ink-secondary">
+              Opomene
+            </div>
+            {canReconcile && eligibleCount > 0 && (
+              <Button variant="secondary" onClick={() => setBatchOpen(true)}>
+                Pošalji sve ({formatNumber(eligibleCount)})
+              </Button>
+            )}
+          </div>
+          {dunning.error && (
+            <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">
+              {(dunning.error as Error).message}
+            </div>
+          )}
+          <DataTable
+            columns={dunningColumns}
+            rows={candidates}
+            rowKey={(r) => r.partnerId}
+            onRowActivate={canReconcile ? (r) => openSend(r) : undefined}
+            loading={dunning.isLoading}
+            empty={
+              <EmptyState
+                title="Nema kandidata za opomenu"
+                hint="Nema komitenata sa dospelim potraživanjima preko 15 dana docnje."
+              />
+            }
+          />
+        </div>
       </div>
 
       <Dialog
@@ -349,6 +514,175 @@ export default function NaplataPage() {
             {reconcileSmall.error && (
               <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">
                 {(reconcileSmall.error as Error).message}
+              </div>
+            )}
+          </div>
+        )}
+      </Dialog>
+
+      {/* Opomena — pojedinačno slanje (nivo + primalac + potvrda) */}
+      <Dialog
+        open={sendTarget != null}
+        onClose={closeSend}
+        title="Pošalji opomenu"
+        size="md"
+        dismissable={!dunSend.isPending}
+        footer={
+          sendResult ? (
+            <Button variant="secondary" onClick={closeSend}>
+              Zatvori
+            </Button>
+          ) : (
+            <>
+              <Button variant="ghost" onClick={closeSend} disabled={dunSend.isPending}>
+                Otkaži
+              </Button>
+              <Button
+                onClick={runSend}
+                loading={dunSend.isPending}
+                disabled={sendEmail.trim() === ''}
+              >
+                Pošalji opomenu
+              </Button>
+            </>
+          )
+        }
+      >
+        {sendTarget &&
+          (sendResult ? (
+            <div className="space-y-3 text-sm">
+              <div
+                className={cn(
+                  'rounded-panel border px-4 py-3',
+                  sendResult.sentOk
+                    ? 'border-status-success/40 bg-status-success-bg text-status-success'
+                    : 'border-status-warn/40 bg-status-warn-bg text-status-warn',
+                )}
+              >
+                {sendResult.sentOk
+                  ? `Opomena nivoa ${sendResult.level} poslata na ${sendResult.to}.`
+                  : `Opomena nivoa ${sendResult.level} evidentirana (mejl nije poslat — slanje nije konfigurisano).`}
+              </div>
+              <div className="text-ink-secondary">
+                Dospelo:{' '}
+                <span className="tnums font-semibold text-ink">
+                  {formatDecimal(sendResult.overdueAmount)}
+                </span>{' '}
+                RSD · kašnjenje {formatNumber(sendResult.daysOverdue)} dana.
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="rounded-panel border border-line bg-surface-2 px-4 py-3 text-sm">
+                <div className="font-medium text-ink">
+                  {sendTarget.partnerName ?? `Komitent ${sendTarget.partnerId}`}
+                </div>
+                <div className="mt-1 text-ink-secondary">
+                  Dospelo{' '}
+                  <span className="tnums font-semibold text-ink">
+                    {formatDecimal(sendTarget.overdueAmount)}
+                  </span>{' '}
+                  RSD · najstarije kašnjenje {formatNumber(sendTarget.daysOverdue)} dana.
+                </div>
+                {sendTarget.alreadySentToday && (
+                  <div className="mt-1 text-2xs text-status-warn">
+                    Opomena ovog nivoa je već poslata danas — ponovno slanje daće grešku.
+                  </div>
+                )}
+              </div>
+              <label className="flex flex-col gap-1 text-xs text-ink-secondary">
+                Nivo opomene
+                <Select
+                  options={LEVEL_OPTIONS}
+                  value={sendLevel}
+                  onChange={(e) => setSendLevel(e.target.value)}
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-xs text-ink-secondary">
+                Primalac (mejl)
+                <input
+                  value={sendEmail}
+                  onChange={(e) => setSendEmail(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      runSend();
+                    }
+                  }}
+                  type="email"
+                  inputMode="email"
+                  placeholder="mejl komitenta"
+                  className="h-9 w-full rounded-control border border-line bg-surface px-3 text-sm text-ink placeholder:text-ink-disabled focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)]"
+                />
+              </label>
+              {sendEmail.trim() === '' && (
+                <p className="text-2xs text-status-danger">
+                  Unesite mejl primaoca (komitent nema e-adresu u šifarniku).
+                </p>
+              )}
+              {dunSend.error && (
+                <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">
+                  {(dunSend.error as Error).message}
+                </div>
+              )}
+            </div>
+          ))}
+      </Dialog>
+
+      {/* Opomene — masovno slanje (potvrda sa brojem) */}
+      <Dialog
+        open={batchOpen}
+        onClose={closeBatch}
+        title="Pošalji sve opomene"
+        size="md"
+        dismissable={!dunBatch.isPending}
+        footer={
+          batchResult ? (
+            <Button variant="secondary" onClick={closeBatch}>
+              Zatvori
+            </Button>
+          ) : (
+            <>
+              <Button variant="ghost" onClick={closeBatch} disabled={dunBatch.isPending}>
+                Otkaži
+              </Button>
+              <Button onClick={runBatch} loading={dunBatch.isPending} disabled={eligibleCount === 0}>
+                Pošalji ({formatNumber(eligibleCount)})
+              </Button>
+            </>
+          )
+        }
+      >
+        {batchResult ? (
+          <div className="space-y-3 text-sm">
+            <div className="rounded-panel border border-status-success/40 bg-status-success-bg px-4 py-3 text-status-success">
+              Poslato:{' '}
+              <span className="tnums font-semibold">{formatNumber(batchResult.sent)}</span>
+            </div>
+            <div className="text-ink-secondary">
+              Preskočeno:{' '}
+              <span className="tnums font-semibold text-ink">
+                {formatNumber(batchResult.skipped)}
+              </span>{' '}
+              · Neuspešno:{' '}
+              <span className="tnums font-semibold text-ink">
+                {formatNumber(batchResult.failed)}
+              </span>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <p className="text-sm text-ink-secondary">
+              Šalje opomenu svim kandidatima koji danas još nisu dobili opomenu tog nivoa
+              (najviše 50 po pozivu). Nivo se određuje po najstarijem kašnjenju.
+            </p>
+            <p className="text-sm text-ink">
+              Kandidata za slanje:{' '}
+              <span className="tnums font-semibold">{formatNumber(eligibleCount)}</span>.
+            </p>
+            {dunBatch.error && (
+              <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">
+                {(dunBatch.error as Error).message}
               </div>
             )}
           </div>

@@ -497,3 +497,105 @@ export function usePartnerCardPdf() {
     },
   });
 }
+
+// ─────────────────────────────────── Opomene / dunning (Talas 3 B6)
+
+/**
+ * Kandidat za opomenu — 1:1 sa `DunningCandidate` (dunning.service.ts). Decimal
+ * polja stižu kao STRING; nivo je 1|2|3 izveden iz najstarijeg kašnjenja aging-a.
+ */
+export interface DunningCandidate {
+  partnerId: number;
+  partnerName: string | null;
+  /** Mejl komitenta iz šifarnika (prefill primaoca); null ako ga nema. */
+  email: string | null;
+  /** Dospelo (Σ dugovnih salda dospelih stavki) — Decimal-as-string. */
+  overdueAmount: string;
+  /** Najstarije kašnjenje u danima. */
+  daysOverdue: number;
+  /** Izvedeni nivo 1|2|3. */
+  level: number;
+  /** Poslednja opomena bilo kog nivoa (ISO) ili null. */
+  lastSentAt: string | null;
+  lastSentLevel: number | null;
+  /** Da li je opomena OVOG nivoa već poslata danas. */
+  alreadySentToday: boolean;
+}
+
+/** Rezultat pojedinačnog slanja opomene — 1:1 sa `DunningSendResult`. */
+export interface DunningSendResult {
+  noticeId: number;
+  partnerId: number;
+  level: number;
+  to: string;
+  /** false = DRY-RUN (Resend nije podešen) ili neuspeh; red je ipak upisan. */
+  sentOk: boolean;
+  fileName: string;
+  daysOverdue: number;
+  overdueAmount: string;
+}
+
+/** Rezultat masovnog slanja — 1:1 sa `DunningBatchResult`. */
+export interface DunningBatchResult {
+  sent: number;
+  skipped: number;
+  failed: number;
+}
+
+/** Telo POST /saldakonti/dunning/send — komitent + opcioni nivo/primalac. */
+export interface DunningSendInput {
+  partnerId: number;
+  /** Nivo 1|2|3; bez njega backend izvodi iz aging-a. */
+  level?: number;
+  /** Primalac; bez njega backend uzima mejl komitenta (422 ako ga nema). */
+  to?: string;
+}
+
+const DUNNING_KEY = ['saldakonti', 'dunning', 'candidates'] as const;
+
+/**
+ * Kandidati za opomenu (dospela potraživanja + izvedeni nivo + istorija).
+ * `asOf` presek na dan (default backend = danas). Permisija SALDAKONTI_READ.
+ */
+export function useDunningCandidates(asOf?: string) {
+  const query = buildQuery({ asOf: asOf || undefined });
+  return useQuery({
+    queryKey: [...DUNNING_KEY, { asOf: asOf ?? '' }],
+    queryFn: () =>
+      apiFetch<ListWithCount<DunningCandidate>>(`${BASE}/dunning/candidates${query}`),
+  });
+}
+
+/**
+ * Pošalji opomenu jednom komitentu — POST /saldakonti/dunning/send. Backend vraća
+ * 409 ako je isti nivo već poslat danas, 422 ako nema primaoca/dospelog duga.
+ * Upisuje DunningNotice → invalidira listu kandidata. Permisija SALDAKONTI_RECONCILE.
+ */
+export function useDunningSend() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: DunningSendInput) =>
+      apiFetch<Envelope<DunningSendResult>>(`${BASE}/dunning/send`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['saldakonti', 'dunning'] }),
+  });
+}
+
+/**
+ * Masovno slanje opomena — POST /saldakonti/dunning/send-batch { asOf?, maxLevel? }.
+ * Šalje svima koji danas nisu dobili opomenu tog nivoa (najviše 50 po pozivu).
+ * Vraća { sent, skipped, failed }. Permisija SALDAKONTI_RECONCILE.
+ */
+export function useDunningSendBatch() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { asOf?: string; maxLevel?: number }) =>
+      apiFetch<Envelope<DunningBatchResult>>(`${BASE}/dunning/send-batch`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['saldakonti', 'dunning'] }),
+  });
+}

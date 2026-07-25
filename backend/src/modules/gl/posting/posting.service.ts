@@ -293,8 +293,9 @@ export class PostingEngineService {
       }
 
       // 3) Robni put — učitaj stavke + tip dokumenta + šemu.
+      // Soft-delete (Batch B): meko-obrisana stavka (deletedAt) NE ulazi u GK nalog.
       const items = await tx.stockDocumentItem.findMany({
-        where: { documentId: docId },
+        where: { documentId: docId, deletedAt: null },
       });
       const docType = await tx.documentType.findFirstOrThrow({
         where: { code: doc.documentTypeCode },

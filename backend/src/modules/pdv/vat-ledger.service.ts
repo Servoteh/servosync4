@@ -36,6 +36,8 @@ import {
   type UpdateManualVatEntryDto,
   validateCreateManualVatEntry,
   validateUpdateManualVatEntry,
+  VAT_RATE_CODE_NO_DEDUCTION,
+  isNoDeduction,
 } from "./dto/manual-vat-entry.dto";
 
 const D = Prisma.Decimal;
@@ -53,6 +55,8 @@ export interface VatLedgerRow {
   vatBase: Prisma.Decimal;
   vatAmount: Prisma.Decimal;
   vatRateCode: string | null;
+  /** „Van PDV" (KUF bez prava odbitka) — izvedeno iz `vatRateCode === "VP"`. */
+  noDeduction: boolean;
   sourceJournalEntryId: number | null;
 }
 
@@ -101,6 +105,11 @@ export class VatLedgerService {
       // 1) Čist period — obriši prethodno punjenje (idempotentnost).
       //    D4: briše SAMO GK-izvedene stavke (sourceJournalEntryId != null);
       //    ručne stavke (source = null) opstaju kroz reknjiženje iz GK.
+      //    B4: „van PDV" (KUF bez odbitka) su UVEK ručne (marker vatRateCode="VP",
+      //    knjiže se na trošak, ne na pretporez konto 27x) → nikad ne ulaze u GK
+      //    agregaciju ispod (JOIN vat_account_map daje samo numeričku vam.rate),
+      //    pa je `inputVat` ovog punjenja isključuje po konstrukciji i deleteMany
+      //    ih ne dira (source = null).
       await tx.vatLedgerEntry.deleteMany({
         where: {
           taxPeriodYear: year,
@@ -208,6 +217,12 @@ export class VatLedgerService {
       dto.taxPeriodMonth,
     ]);
 
+    // „Van PDV" (bez prava odbitka) → vatRateCode nosi marker "VP" umesto stope;
+    // stavka ostaje u KUF listi ali izlazi iz pretporeza (popdv/sumManualVatEntries).
+    const vatRateCode = dto.noDeduction === true
+      ? VAT_RATE_CODE_NO_DEDUCTION
+      : (dto.vatRateCode ?? null);
+
     const created = await this.prisma.vatLedgerEntry.create({
       data: {
         direction: dto.direction,
@@ -218,7 +233,7 @@ export class VatLedgerService {
         taxPeriodMonth: dto.taxPeriodMonth,
         vatBase: new D(dto.vatBase),
         vatAmount: new D(dto.vatAmount),
-        vatRateCode: dto.vatRateCode ?? null,
+        vatRateCode,
         sourceJournalEntryId: null, // marker ručne stavke
       },
     });
@@ -247,6 +262,40 @@ export class VatLedgerService {
       await assertVatPeriodNotLocked(this.prisma, newYear, [newMonth]);
     }
 
+    // Efektivni smer posle izmene (dto.direction ili postojeći) — „van PDV" marker
+    // sme samo na ulaznom računu (KUF). DTO ne vidi postojeći smer, pa se čuva ovde.
+    const effectiveDirection = dto.direction ?? existing.direction;
+    // Guard gleda i DOLAZNI flag i VEĆ PERZISTIRAN marker (review Batch B): bez druge
+    // provere se input+VP stavka mogla prebaciti na `output` a da marker preživi —
+    // takva stavka je vidljiva u KIF-u ali ispada iz obaveze (potcenjen izlazni PDV).
+    const keepsMarker =
+      dto.noDeduction === true ||
+      (dto.noDeduction === undefined &&
+        dto.vatRateCode === undefined &&
+        isNoDeduction(existing.vatRateCode));
+    if (keepsMarker && effectiveDirection === "output") {
+      throw new ConflictException(
+        '„Bez prava odbitka" važi samo za ulazni račun (KUF), ne za KIF. ' +
+          "Skini oznaku (ili zadaj stopu) pre prebacivanja stavke na izlaznu stranu.",
+      );
+    }
+
+    // Razrešavanje vatRateCode uz „van PDV" marker (prioritet nad prosleđenom stopom):
+    //   noDeduction=true  → "VP" (marker); noDeduction=false → prosleđena stopa/null;
+    //   noDeduction izostavljen → normalna izmena vatRateCode ako je poslata.
+    let vatRateCodeUpdate: string | null | undefined;
+    if (dto.noDeduction === true) {
+      vatRateCodeUpdate = VAT_RATE_CODE_NO_DEDUCTION;
+    } else if (dto.vatRateCode !== undefined) {
+      // Eksplicitna stopa (uz ili bez noDeduction=false) — direktno se upisuje.
+      vatRateCodeUpdate = dto.vatRateCode ?? null;
+    } else if (dto.noDeduction === false && isNoDeduction(existing.vatRateCode)) {
+      // Skini marker bez zadate stope — očisti na null (bez odbitka → bez stope).
+      vatRateCodeUpdate = null;
+    } else {
+      vatRateCodeUpdate = undefined; // nema izmene stope
+    }
+
     const updated = await this.prisma.vatLedgerEntry.update({
       where: { id },
       data: {
@@ -264,8 +313,8 @@ export class VatLedgerService {
           : {}),
         ...(dto.vatBase !== undefined ? { vatBase: new D(dto.vatBase) } : {}),
         ...(dto.vatAmount !== undefined ? { vatAmount: new D(dto.vatAmount) } : {}),
-        ...(dto.vatRateCode !== undefined
-          ? { vatRateCode: dto.vatRateCode ?? null }
+        ...(vatRateCodeUpdate !== undefined
+          ? { vatRateCode: vatRateCodeUpdate }
           : {}),
       },
     });
@@ -329,6 +378,7 @@ export class VatLedgerService {
       vatBase: r.vatBase,
       vatAmount: r.vatAmount,
       vatRateCode: r.vatRateCode,
+      noDeduction: isNoDeduction(r.vatRateCode),
       sourceJournalEntryId: r.sourceJournalEntryId,
     };
   }
@@ -358,6 +408,7 @@ export class VatLedgerService {
       vatBase: r.vatBase,
       vatAmount: r.vatAmount,
       vatRateCode: r.vatRateCode,
+      noDeduction: isNoDeduction(r.vatRateCode),
       sourceJournalEntryId: r.sourceJournalEntryId,
     }));
   }

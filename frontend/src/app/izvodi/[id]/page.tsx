@@ -3,7 +3,16 @@
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowLeft, Plus, Pencil, Trash2, Link2, CreditCard } from 'lucide-react';
+import {
+  ArrowLeft,
+  Plus,
+  Pencil,
+  Trash2,
+  Link2,
+  CreditCard,
+  CheckCircle2,
+  AlertTriangle,
+} from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
@@ -27,6 +36,7 @@ import {
   type LineDirection,
   type BankStatementDetail,
   type BankStatementLine,
+  type StatementControl,
 } from '@/api/izvodi';
 import { StatementLineEditor } from './statement-line-editor';
 import { LinkLineDialog } from './link-line-dialog';
@@ -328,6 +338,8 @@ export default function IzvodDetailPage() {
           <>
             <StatementHeader doc={doc} />
 
+            <ControlBar control={doc.control} currency={doc.currency} />
+
             <section className="space-y-2">
               <div className="flex items-center justify-between">
                 <h2 className="text-md font-semibold text-ink">Stavke</h2>
@@ -414,6 +426,70 @@ export default function IzvodDetailPage() {
         )}
       </div>
     </AppShell>
+  );
+}
+
+/**
+ * Kontrola prometa i salda banke (B3) — traka ispod zaglavlja. Zeleno kad se očekivano
+ * zatvaranje (otvaranje + prilivi − odlivi) slaže sa unetim, crveno sa razlikom kad ne.
+ * Čisto UPOZORENJE — ne blokira knjiženje (backend `control.ok`). Nema kontrole (stariji
+ * izvod bez polja) → ništa se ne prikazuje.
+ */
+function ControlBar({
+  control,
+  currency,
+}: {
+  control: StatementControl | undefined;
+  currency: string;
+}) {
+  if (!control) return null;
+  const cur = currency || 'RSD';
+
+  // Stanja nisu uneta (oba 0) — kontrola nije merodavna. Diskretan podsetnik umesto
+  // lažnog „ne slaže se" (review Batch B: uvoz ne popunjava otvaranje/zatvaranje).
+  if (!control.available) {
+    return (
+      <div className="flex items-center gap-2 rounded-panel border border-line bg-surface-2 px-4 py-2.5 text-sm text-ink-secondary">
+        <span>
+          Kontrola prometa nije moguća — unesi otvaranje i zatvaranje izvoda. Promet po
+          stavkama: prilivi {formatDecimal(control.totalInflow)} − odlivi{' '}
+          {formatDecimal(control.totalOutflow)} {cur}.
+        </span>
+      </div>
+    );
+  }
+
+  if (control.ok) {
+    return (
+      <div className="flex items-center gap-2 rounded-panel border border-status-success/40 bg-status-success-bg px-4 py-2.5 text-sm text-status-success">
+        <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden />
+        <span>
+          Kontrola prometa: saldo se slaže — očekivano zatvaranje{' '}
+          {formatDecimal(control.expectedClosing)} {cur}.
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-2.5 text-sm text-status-danger"
+      role="alert"
+    >
+      <div className="flex items-center gap-2 font-medium">
+        <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden />
+        <span>
+          Kontrola prometa: saldo se NE slaže — razlika{' '}
+          {formatDecimal(control.difference)} {cur}.
+        </span>
+      </div>
+      <div className="mt-1 pl-6 text-2xs text-status-danger/90">
+        Otvaranje {formatDecimal(control.openingBalance)} + prilivi{' '}
+        {formatDecimal(control.totalInflow)} − odlivi {formatDecimal(control.totalOutflow)} ={' '}
+        očekivano {formatDecimal(control.expectedClosing)} {cur}; uneto zatvaranje{' '}
+        {formatDecimal(control.actualClosing)} {cur}. Upozorenje — knjiženje nije blokirano.
+      </div>
+    </div>
   );
 }
 

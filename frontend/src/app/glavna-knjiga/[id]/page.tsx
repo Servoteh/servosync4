@@ -16,6 +16,7 @@ import {
   useJournalEntry,
   usePostJournalEntry,
   useLockJournalEntry,
+  useUnlockJournalEntry,
   useReverseJournalEntry,
   useJournalPdf,
   openPdf,
@@ -109,6 +110,7 @@ export default function GlavnaKnjigaDetailPage() {
   // Invalidacija (detalj + dnevnik + kartica) ide kroz zajednički onSuccess hooka.
   const post = usePostJournalEntry();
   const lock = useLockJournalEntry();
+  const unlock = useUnlockJournalEntry();
   const reverse = useReverseJournalEntry();
   const pdf = useJournalPdf();
 
@@ -138,6 +140,17 @@ export default function GlavnaKnjigaDetailPage() {
       return;
     lock.mutate(doc.id, { onSuccess: () => toast('Nalog zaključan.') });
   }, [doc, lock]);
+
+  const onUnlock = useCallback(() => {
+    if (!doc) return;
+    if (
+      !window.confirm(
+        `Otključati nalog ${doc.number}? Nalog se vraća u status „Proknjižen" i ponovo se može stornirati/ispraviti. Koristi se za ispravku greške pri zaključavanju perioda.`,
+      )
+    )
+      return;
+    unlock.mutate(doc.id, { onSuccess: () => toast('Nalog otključan.') });
+  }, [doc, unlock]);
 
   const onReverse = useCallback(() => {
     if (!doc) return;
@@ -213,9 +226,11 @@ export default function GlavnaKnjigaDetailPage() {
                 doc={doc}
                 onPost={onPost}
                 onLock={onLock}
+                onUnlock={onUnlock}
                 onReverse={onReverse}
                 posting={post.isPending}
                 locking={lock.isPending}
+                unlocking={unlock.isPending}
                 reversing={reverse.isPending}
               />
             )}
@@ -313,25 +328,29 @@ function JournalHeader({ doc }: { doc: JournalEntryDetail }) {
  * Status-uslovljena dugmad (BigBit paritet, gap-audit #9/#46):
  *   • draft  → „Proknjiži" (post) — stavke ulaze u glavnu knjigu
  *   • posted → „Zaključaj" (lock) + „Storno" (reverse)
- *   • locked → samo „Storno" (backend reverse() dozvoljava storno i za locked;
- *              odbija samo draft i već storniran — gl-write.service.ts:97-102)
+ *   • locked → „Otključaj" (unlock, review Opus 5) + „Storno" (backend reverse()
+ *              dozvoljava storno i za locked; odbija samo draft i već storniran)
  * Već storniran nalog (reversedByEntryId != null) nema „Storno" (izbegava 409).
  */
 function JournalActions({
   doc,
   onPost,
   onLock,
+  onUnlock,
   onReverse,
   posting,
   locking,
+  unlocking,
   reversing,
 }: {
   doc: JournalEntryDetail;
   onPost: () => void;
   onLock: () => void;
+  onUnlock: () => void;
   onReverse: () => void;
   posting: boolean;
   locking: boolean;
+  unlocking: boolean;
   reversing: boolean;
 }) {
   const canReverse =
@@ -347,6 +366,11 @@ function JournalActions({
       {doc.status === GL_STATUS.POSTED && (
         <Button variant="secondary" onClick={onLock} loading={locking}>
           Zaključaj
+        </Button>
+      )}
+      {doc.status === GL_STATUS.LOCKED && (
+        <Button variant="secondary" onClick={onUnlock} loading={unlocking}>
+          Otključaj
         </Button>
       )}
       {canReverse && (

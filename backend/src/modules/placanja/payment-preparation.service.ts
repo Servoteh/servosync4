@@ -24,6 +24,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
@@ -60,6 +61,8 @@ export interface DueLiability {
 
 @Injectable()
 export class PaymentPreparationService {
+  private readonly logger = new Logger(PaymentPreparationService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   /**
@@ -425,6 +428,112 @@ export class PaymentPreparationService {
       }
     }
     return { signed, skipped };
+  }
+
+  // ── ZAKLJUČAVANJE VIRMANA (BigBit „Zakljucano" — B3) ──────────────────────
+
+  /**
+   * Zaključaj pojedinačni nalog (Zakljucano=true). Zaključan nalog je zamrznut:
+   * ne može menjati status (sign/pay — guard u `transition`), ne ulazi u izvoz
+   * (guard u PaymentExportService), i ne može se otključati osim `unlockOrder`.
+   * Ortogonalno statusu — sme se zaključati CREATED/SIGNED/PAID. Idempotencija:
+   * već zaključan → 409 (CAS updateMany hvata i trku i dvostruko zaključavanje).
+   */
+  async lockOrder(
+    orderId: number,
+    actorUserId?: number,
+  ): Promise<{ id: number; isLocked: true }> {
+    const order = await this.prisma.paymentOrder.findUnique({
+      where: { id: orderId },
+      select: { id: true, orderNumber: true, isLocked: true },
+    });
+    if (!order) {
+      throw new NotFoundException(`Nalog za plaćanje ${orderId} ne postoji.`);
+    }
+    // Compare-and-swap: zaključaj SAMO ako je i dalje otključan (sprečava trku /
+    // dvostruko zaključavanje) — count===0 znači da je neko drugi već zaključao.
+    const res = await this.prisma.paymentOrder.updateMany({
+      where: { id: orderId, isLocked: false },
+      data: { isLocked: true, updatedByUserId: actorUserId ?? null },
+    });
+    if (res.count !== 1) {
+      throw new ConflictException(
+        `Nalog ${order.orderNumber} je već zaključan.`,
+      );
+    }
+    return { id: orderId, isLocked: true };
+  }
+
+  /**
+   * Otključaj nalog (Zakljucano=false) — ispravka greške pri zaključavanju (isti
+   * obrazac kao GK unlock). Vraća nalog u tok potpis/izvoz. Nije zaključan → 409.
+   */
+  async unlockOrder(
+    orderId: number,
+    actorUserId?: number,
+  ): Promise<{ id: number; isLocked: false }> {
+    const order = await this.prisma.paymentOrder.findUnique({
+      where: { id: orderId },
+      select: { id: true, orderNumber: true, isLocked: true },
+    });
+    if (!order) {
+      throw new NotFoundException(`Nalog za plaćanje ${orderId} ne postoji.`);
+    }
+    const res = await this.prisma.paymentOrder.updateMany({
+      where: { id: orderId, isLocked: true },
+      data: { isLocked: false, updatedByUserId: actorUserId ?? null },
+    });
+    if (res.count !== 1) {
+      throw new ConflictException(
+        `Nalog ${order.orderNumber} nije zaključan.`,
+      );
+    }
+    return { id: orderId, isLocked: false };
+  }
+
+  /**
+   * Masovno zaključavanje starijih naloga (isti obrazac kao GK lock-older iz review-a):
+   * svi OTKLJUČANI nalozi sa `createdAt < beforeDate` prelaze u zaključane. `createdAt`
+   * je uvek prisutan i deterministički prag (dueDate je nullabilan, pa nije pouzdan
+   * period-ključ). Već zaključani se ne diraju.
+   *
+   * GUARD: prag u BUDUĆNOSTI se odbija (zaključao bi i tekuće naloge). `dryRun: true`
+   * SAMO prebroji (bez izmene) — FE zove prvo proveru pa potvrdu. Izvršenje se loguje.
+   */
+  async lockOlderThan(
+    beforeDate: Date,
+    opts: { dryRun?: boolean } = {},
+    actorUserId?: number,
+  ): Promise<{ count: number; dryRun: boolean }> {
+    if (!(beforeDate instanceof Date) || Number.isNaN(beforeDate.getTime())) {
+      throw new ConflictException("Neispravan datum praga (beforeDate).");
+    }
+    const now = new Date();
+    if (beforeDate.getTime() > now.getTime()) {
+      throw new ConflictException(
+        `Datum praga (${beforeDate.toISOString().slice(0, 10)}) je u budućnosti — ` +
+          `zaključavanje bi obuhvatilo i tekuće naloge. Izaberi datum do danas.`,
+      );
+    }
+
+    const where: Prisma.PaymentOrderWhereInput = {
+      isLocked: false,
+      createdAt: { lt: beforeDate },
+    };
+
+    if (opts.dryRun) {
+      const count = await this.prisma.paymentOrder.count({ where });
+      return { count, dryRun: true };
+    }
+
+    const res = await this.prisma.paymentOrder.updateMany({
+      where,
+      data: { isLocked: true, updatedByUserId: actorUserId ?? null },
+    });
+    this.logger.warn(
+      `LOCK-OLDER virmani: zaključano ${res.count} naloga sa createdAt < ${beforeDate.toISOString().slice(0, 10)}`,
+    );
+    return { count: res.count, dryRun: false };
   }
 
   /**

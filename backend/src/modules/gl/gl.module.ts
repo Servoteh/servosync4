@@ -6,6 +6,7 @@ import { GlController } from "./gl.controller";
 import { GlReadService } from "./gl-read.service";
 import { GlWriteService } from "./gl-write.service";
 import { JournalPrintService } from "./journal-print.service";
+import { YearOpenService } from "./year-open.service";
 
 /**
  * Glavna knjiga (Faza 2) — READ (dnevnik/kartica konta/kontni plan) + WRITE
@@ -15,7 +16,7 @@ import { JournalPrintService } from "./journal-print.service";
 @Module({
   imports: [PrismaModule, PostingModule, DocumentsModule], // DocumentsModule → PdfService (T2 štampa temeljnice)
   controllers: [GlController],
-  providers: [GlReadService, GlWriteService, JournalPrintService],
+  providers: [GlReadService, GlWriteService, JournalPrintService, YearOpenService],
   exports: [GlReadService, GlWriteService],
 })
 export class GlModule {}

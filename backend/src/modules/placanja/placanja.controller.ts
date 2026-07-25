@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -100,6 +101,33 @@ export class PlacanjaController {
     return { data: result };
   }
 
+  /**
+   * Masovno zaključavanje starijih naloga (isti obrazac kao GK lock-older). Svi otključani
+   * nalozi sa `createdAt < beforeDate` → zaključani. `dryRun: true` SAMO prebroji (bez izmene)
+   * — FE zove prvo proveru pa potvrdu. Datum u budućnosti se odbija. Vraća `{ count, dryRun }`.
+   */
+  @Post("orders/lock-older")
+  @RequirePermission(PERMISSIONS.PLACANJA_PREPARE)
+  async lockOlder(
+    @Body() body: { beforeDate?: string; dryRun?: boolean },
+    @Req() req: { user: AuthUser },
+  ) {
+    const raw = body?.beforeDate;
+    if (!raw || typeof raw !== "string" || raw.trim() === "") {
+      throw new BadRequestException("Parametar beforeDate je obavezan (datum praga).");
+    }
+    const before = new Date(raw);
+    if (Number.isNaN(before.getTime())) {
+      throw new BadRequestException("Parametar beforeDate nije ispravan datum.");
+    }
+    const data = await this.preparation.lockOlderThan(
+      before,
+      { dryRun: body?.dryRun === true },
+      req.user.userId,
+    );
+    return { data };
+  }
+
   /** SIGNED → PAID (nalog plaćen). */
   @Post("orders/:id/pay")
   @RequirePermission(PERMISSIONS.PLACANJA_PREPARE)
@@ -109,6 +137,31 @@ export class PlacanjaController {
   ) {
     await this.preparation.markPaid(id, req.user.userId);
     return { data: { id, status: "PAID" } };
+  }
+
+  /**
+   * Zaključaj pojedinačni nalog (BigBit „Zakljucano" — B3). Zaključan nalog je zamrznut:
+   * ne može menjati status (sign/pay) ni u izvoz — 409. Već zaključan → 409.
+   */
+  @Post("orders/:id/lock")
+  @RequirePermission(PERMISSIONS.PLACANJA_PREPARE)
+  async lock(
+    @Param("id", ParseIntPipe) id: number,
+    @Req() req: { user: AuthUser },
+  ) {
+    const data = await this.preparation.lockOrder(id, req.user.userId);
+    return { data };
+  }
+
+  /** Otključaj nalog (locked → otključan) — ispravka greške pri zaključavanju. */
+  @Post("orders/:id/unlock")
+  @RequirePermission(PERMISSIONS.PLACANJA_PREPARE)
+  async unlock(
+    @Param("id", ParseIntPipe) id: number,
+    @Req() req: { user: AuthUser },
+  ) {
+    const data = await this.preparation.unlockOrder(id, req.user.userId);
+    return { data };
   }
 
   /** Kreiraj naloge za plaćanje iz selekcije (DEDUP po poziv-na-broj + dobavljač). */

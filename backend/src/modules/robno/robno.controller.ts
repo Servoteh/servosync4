@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseIntPipe,
@@ -18,6 +19,10 @@ import type { AuthUser } from "../auth/jwt.strategy";
 import { RobnoService, type StockDocumentKind } from "./robno.service";
 import { CalculationService } from "./calculation.service";
 import { InventoryService } from "./inventory.service";
+import {
+  CarryOverService,
+  type CarryOverOptions,
+} from "./carry-over.service";
 import { PostingEngineService } from "../gl/posting/posting.service";
 import type { ListStockDocumentsQuery } from "./dto/list-stock-documents.dto";
 import type { CreateStockDocumentDto } from "./dto/create-stock-document.dto";
@@ -54,6 +59,7 @@ export class RobnoController {
     private readonly calculation: CalculationService,
     private readonly posting: PostingEngineService,
     private readonly inventory: InventoryService,
+    private readonly carryOver: CarryOverService,
   ) {}
 
   @Get("documents")
@@ -110,6 +116,38 @@ export class RobnoController {
     return this.robno.createStockDocument(kind, dto);
   }
 
+  /**
+   * Prepis narudžbenice (PurchaseOrder) → robni ulaz (Primka, UL). Stavke/količine/cene iz
+   * narudžbenice; veže `purchaseOrderId`. Nacrt narudžbenica = 422; ponovni prepis = 409
+   * (jedna narudžbenica = max 1 ulaz). Body opcije: `warehouseId` (default 1), `documentTypeCode`
+   * (default UFROB). Permisija ROBNO_WRITE.
+   */
+  @Post("documents/from-purchase-order/:orderId")
+  @RequirePermission(PERMISSIONS.ROBNO_WRITE)
+  fromPurchaseOrder(
+    @Param("orderId", ParseIntPipe) orderId: number,
+    @Body() body: CarryOverOptions,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.carryOver.fromPurchaseOrder(orderId, body ?? {}, req.user.userId);
+  }
+
+  /**
+   * Prepis predračuna/fakture (Invoice) → izdatnica (robni izlaz IZ). Stavke sa artiklom iz
+   * fakture; po uspehu upisuje `Invoice.stockDocumentId`. Već prenet dokument = 409; IZ prolazi
+   * kroz proveru dovoljnog stanja (nedovoljno = 422). Body opcije: `warehouseId` (default 1),
+   * `documentTypeCode` (default IFR). Permisija ROBNO_WRITE.
+   */
+  @Post("documents/from-invoice/:invoiceId")
+  @RequirePermission(PERMISSIONS.ROBNO_WRITE)
+  fromInvoice(
+    @Param("invoiceId", ParseIntPipe) invoiceId: number,
+    @Body() body: CarryOverOptions,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.carryOver.fromInvoice(invoiceId, body ?? {}, req.user.userId);
+  }
+
   @Post("documents/:id/calculate")
   @RequirePermission(PERMISSIONS.ROBNO_WRITE)
   async calculate(@Param("id", ParseIntPipe) id: number) {
@@ -139,6 +177,36 @@ export class RobnoController {
     return {
       data: { docId: id, ledgerLines: lines.length, kepuEntries, posted: true },
     };
+  }
+
+  // ─── Stavke: soft-delete + Undo (Batch B) ──────────────────────────────────
+
+  /**
+   * Meko obriši stavku dokumenta (poništivo — „Undo" u 30 s). Guard: dokument nije
+   * proknjižen/zaključan (409). Obrisana stavka ne utiče na zalihe/kalkulaciju/GK.
+   * Permisija ROBNO_WRITE.
+   */
+  @Delete("documents/:docId/items/:itemLineId")
+  @RequirePermission(PERMISSIONS.ROBNO_WRITE)
+  deleteItem(
+    @Param("docId", ParseIntPipe) docId: number,
+    @Param("itemLineId", ParseIntPipe) itemLineId: number,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.robno.deleteItem(docId, itemLineId, req.user.userId);
+  }
+
+  /**
+   * Poništi brisanje stavke (undo) — samo unutar prozora od 30 s, inače 409 (rok
+   * istekao). Guard: dokument i dalje nije proknjižen/zaključan. Permisija ROBNO_WRITE.
+   */
+  @Post("documents/:docId/items/:itemLineId/restore")
+  @RequirePermission(PERMISSIONS.ROBNO_WRITE)
+  restoreItem(
+    @Param("docId", ParseIntPipe) docId: number,
+    @Param("itemLineId", ParseIntPipe) itemLineId: number,
+  ) {
+    return this.robno.restoreItem(docId, itemLineId);
   }
 
   /**

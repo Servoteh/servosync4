@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useCallback } from 'react';
+import { useEffect, useCallback, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Trash2 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
@@ -10,6 +10,7 @@ import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Button } from '@/components/ui-kit/button';
+import { UndoToast } from '@/components/undo-toast';
 import { formatDate, formatDecimal } from '@/lib/format';
 import { toast } from '@/lib/toast';
 import {
@@ -17,6 +18,8 @@ import {
   useCalculate,
   usePost,
   useLockDocument,
+  useDeleteStockItem,
+  useRestoreStockItem,
   ROBNO_STATUS,
   ROBNO_KIND,
   type RobnoStatus,
@@ -126,12 +129,89 @@ export default function RobnoDetailPage() {
   const calculate = useCalculate();
   const post = usePost();
   const lock = useLockDocument();
+  const deleteItem = useDeleteStockItem();
+  const restoreItem = useRestoreStockItem();
+
+  // Poslednje meko-obrisana stavka (za „Poništi" toast). null = nema aktivnog undo prozora.
+  const [pending, setPending] = useState<{ itemLineId: number; label: string } | null>(
+    null,
+  );
 
   const goBack = useCallback(() => router.push('/robno'), [router]);
 
   // Proknjižen (booked) = ima nalog GK (journalEntryId) — uslov za zaključavanje.
   const isBooked = doc != null && doc.journalEntryId != null;
   const isLocked = doc?.status === ROBNO_STATUS.LOCKED;
+
+  // Stavke se mogu brisati/vraćati SAMO dok dokument nije proknjižen ni zaključan
+  // (mora se poklopiti sa backend guardom `assertItemMutable`).
+  const canEditItems =
+    doc != null &&
+    doc.journalEntryId == null &&
+    doc.status !== ROBNO_STATUS.LOCKED &&
+    doc.status !== ROBNO_STATUS.POSTED;
+
+  const onDeleteItem = useCallback(
+    (it: StockDocumentItem) => {
+      if (!doc) return;
+      deleteItem.mutate(
+        { docId: doc.id, itemLineId: it.id },
+        {
+          onSuccess: () =>
+            setPending({ itemLineId: it.id, label: `Stavka #${it.lineNo}` }),
+          onError: (e) => toast((e as Error).message),
+        },
+      );
+    },
+    [doc, deleteItem],
+  );
+
+  const onUndoDelete = useCallback(() => {
+    if (!doc || !pending) return;
+    restoreItem.mutate(
+      { docId: doc.id, itemLineId: pending.itemLineId },
+      {
+        onSuccess: () => {
+          setPending(null);
+          toast('Brisanje poništeno.');
+        },
+        onError: (e) => {
+          setPending(null);
+          toast((e as Error).message);
+        },
+      },
+    );
+  }, [doc, pending, restoreItem]);
+
+  const onDismissUndo = useCallback(() => setPending(null), []);
+
+  // Kolone stavki + akciona kolona „Obriši" (samo kad je dokument izmenljiv).
+  const itemColumnsWithActions = useMemo<Column<StockDocumentItem>[]>(() => {
+    if (!canEditItems) return itemColumns;
+    return [
+      ...itemColumns,
+      {
+        key: 'actions',
+        header: '',
+        align: 'right',
+        render: (it) => (
+          <Button
+            variant="ghost"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDeleteItem(it);
+            }}
+            loading={
+              deleteItem.isPending && deleteItem.variables?.itemLineId === it.id
+            }
+          >
+            <Trash2 className="h-4 w-4" aria-hidden />
+            Obriši
+          </Button>
+        ),
+      },
+    ];
+  }, [canEditItems, onDeleteItem, deleteItem.isPending, deleteItem.variables]);
 
   const onLock = useCallback(() => {
     if (!doc) return;
@@ -238,7 +318,7 @@ export default function RobnoDetailPage() {
             <section className="space-y-2">
               <h2 className="text-md font-semibold text-ink">Stavke</h2>
               <DataTable
-                columns={itemColumns}
+                columns={itemColumnsWithActions}
                 rows={doc.items}
                 rowKey={(it) => it.id}
                 empty={
@@ -252,6 +332,16 @@ export default function RobnoDetailPage() {
           </>
         )}
       </div>
+
+      {pending && (
+        <UndoToast
+          key={pending.itemLineId}
+          message={`${pending.label} obrisana.`}
+          onUndo={onUndoDelete}
+          onDismiss={onDismissUndo}
+          undoing={restoreItem.isPending}
+        />
+      )}
     </AppShell>
   );
 }

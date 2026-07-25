@@ -18,6 +18,12 @@ import {
 } from "./dto/create-stock-document.dto";
 import { ListStockDocumentsQuery } from "./dto/list-stock-documents.dto";
 import { computeKepuEntries, writeKepuEntries } from "./kepu-book.util";
+import {
+  NOT_DELETED,
+  UNDO_WINDOW_MS,
+  restore,
+  softDelete,
+} from "../../common/soft-delete.util";
 
 /** Diskriminator robnog dokumenta (`stock_documents.kind`). */
 export type StockDocumentKind =
@@ -183,7 +189,8 @@ export class RobnoService {
     const doc = await this.prisma.stockDocument.findUnique({
       where: { id },
       include: {
-        items: { orderBy: { id: "asc" } },
+        // Soft-delete (Batch B): meko-obrisane stavke se NE prikazuju na detalju.
+        items: { where: NOT_DELETED, orderBy: { id: "asc" } },
         stockLevelingItems: { orderBy: { id: "asc" } },
       },
     });
@@ -247,6 +254,7 @@ export class RobnoService {
           AND sd.document_date <= ${effectiveTo}
           AND sd.document_type_code <> 'KODJ'
           AND COALESCE(dt.affects_stock, TRUE) = TRUE
+          AND sdi.deleted_at IS NULL
         ORDER BY sd.document_date ASC, sd.id ASC, sdi.id ASC
       `,
     );
@@ -623,6 +631,99 @@ export class RobnoService {
       throw new ConflictException("Dokument je zaključan.");
   }
 
+  // ------------------------------------------------------- STAVKE (soft-delete)
+
+  /**
+   * Guard za mutaciju stavke: brisanje/poništavanje je dozvoljeno SAMO dok dokument
+   * nije proknjižen u GK ni zaključan. „Proknjižen" se izvodi iz `journalEntryId`
+   * (robni `post` postavlja SAMO njega, status ostaje CALCULATED — v. `lockDocument`),
+   * pa se guard oslanja na `journalEntryId != null` ILI status POSTED/LOCKED. Time
+   * obrisana stavka NIKAD ne može da izmeni već proknjižen GK/KEPU (najvažniji uslov).
+   */
+  private async assertItemMutable(
+    tx: Prisma.TransactionClient,
+    docId: number,
+  ): Promise<void> {
+    const doc = await tx.stockDocument.findUnique({
+      where: { id: docId },
+      select: { status: true, journalEntryId: true },
+    });
+    if (!doc)
+      throw new NotFoundException(`Robni dokument ${docId} ne postoji.`);
+    if (
+      doc.journalEntryId != null ||
+      doc.status === "POSTED" ||
+      doc.status === "LOCKED"
+    )
+      throw new ConflictException(
+        `Izmena stavki nije moguća — dokument ${docId} je proknjižen ili zaključan.`,
+      );
+    // CALCULATED je takođe zatvoren za izmenu stavki (review Batch B): kalkulacija je
+    // već napisala IZVEDENE, perzistentne podatke koje brisanje stavke NE poništava —
+    // KEPU redove i (za UL) uprosečenu nabavnu cenu u ItemValuation + NIV dokument.
+    // Brisanje posle kalkulacije bi trajno razišlo knjigu i valuaciju sa stvarnim
+    // stavkama. Ispravan tok: poništi kalkulaciju (ili storniraj dokument) pa menjaj.
+    if (doc.status === "CALCULATED")
+      throw new ConflictException(
+        `Izmena stavki nije moguća — dokument ${docId} je kalkulisan ` +
+          `(KEPU i valuacija su već izvedeni). Poništi kalkulaciju pa ponovi izmenu.`,
+      );
+  }
+
+  /**
+   * Meko obriši (soft-delete) jednu stavku robnog dokumenta — poništivo („Undo") u
+   * `UNDO_WINDOW_MS`. Guard: dokument nije proknjižen/zaključan (409). Obrisana stavka
+   * nestaje iz liste i NE utiče na zalihe/kalkulaciju/GK (svi čitaoci filtriraju
+   * `deletedAt: null`). Ostavlja trag (`deletedByUserId`, `deletedAt`).
+   */
+  async deleteItem(docId: number, itemLineId: number, userId: number | null) {
+    return this.prisma.$transaction(async (tx) => {
+      await this.assertItemMutable(tx, docId);
+      const item = await tx.stockDocumentItem.findFirst({
+        where: { id: itemLineId, documentId: docId },
+        select: { id: true, deletedAt: true },
+      });
+      if (!item)
+        throw new NotFoundException(
+          `Stavka ${itemLineId} ne postoji u dokumentu ${docId}.`,
+        );
+      if (item.deletedAt != null)
+        throw new ConflictException(`Stavka ${itemLineId} je već obrisana.`);
+
+      await softDelete(tx, tx.stockDocumentItem, itemLineId, userId);
+      this.logger.log(
+        `Soft-delete stavke ${itemLineId} (dokument ${docId}, korisnik ${userId ?? "?"}).`,
+      );
+      return {
+        data: { docId, itemLineId, deleted: true, undoWindowMs: UNDO_WINDOW_MS },
+      };
+    });
+  }
+
+  /**
+   * Poništi (undo) brisanje stavke — SAMO unutar `UNDO_WINDOW_MS` (posle: 409 rok
+   * istekao). Guard: dokument i dalje nije proknjižen/zaključan. Vraća stavku u listu.
+   */
+  async restoreItem(docId: number, itemLineId: number) {
+    return this.prisma.$transaction(async (tx) => {
+      await this.assertItemMutable(tx, docId);
+      const item = await tx.stockDocumentItem.findFirst({
+        where: { id: itemLineId, documentId: docId },
+        select: { id: true },
+      });
+      if (!item)
+        throw new NotFoundException(
+          `Stavka ${itemLineId} ne postoji u dokumentu ${docId}.`,
+        );
+
+      await restore(tx, tx.stockDocumentItem, itemLineId);
+      this.logger.log(
+        `Undo brisanja stavke ${itemLineId} (dokument ${docId}).`,
+      );
+      return { data: { docId, itemLineId, restored: true } };
+    });
+  }
+
   // ----------------------------------------------------------------- KEPU
 
   /**
@@ -636,7 +737,8 @@ export class RobnoService {
       const doc = await tx.stockDocument.findUnique({
         where: { id: docId },
         include: {
-          items: { orderBy: { id: "asc" } },
+          // Soft-delete (Batch B): obrisana stavka NE ulazi u KEPU vrednost.
+          items: { where: NOT_DELETED, orderBy: { id: "asc" } },
           stockLevelingItems: { orderBy: { id: "asc" } },
         },
       });

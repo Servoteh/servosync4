@@ -290,6 +290,57 @@ export function useLockDocument() {
   });
 }
 
+// ─────────────────────────────────── stavke: soft-delete + Undo (Batch B)
+
+/** Odgovor brisanja stavke — nosi prozor za „Poništi" (ms). */
+export interface DeleteItemResult {
+  docId: number;
+  itemLineId: number;
+  deleted: boolean;
+  /** Trajanje undo prozora u ms (backend `UNDO_WINDOW_MS`, 30000). */
+  undoWindowMs: number;
+}
+
+/** Odgovor poništavanja (undo) brisanja stavke. */
+export interface RestoreItemResult {
+  docId: number;
+  itemLineId: number;
+  restored: boolean;
+}
+
+/**
+ * Meko obriši stavku dokumenta (poništivo) — DELETE /robno/documents/:docId/items/:itemLineId.
+ * Obrisana stavka nestaje iz detalja; invalidira `robno` ključ (detalj se osvežava).
+ * Guard je na backendu (dokument nije proknjižen/zaključan → 409). Permisija ROBNO_WRITE.
+ */
+export function useDeleteStockItem() {
+  const invalidate = useInvalidateRobno();
+  return useMutation({
+    mutationFn: ({ docId, itemLineId }: { docId: number; itemLineId: number }) =>
+      apiFetch<Envelope<DeleteItemResult>>(
+        `${BASE}/documents/${docId}/items/${itemLineId}`,
+        { method: 'DELETE' },
+      ),
+    onSuccess: invalidate,
+  });
+}
+
+/**
+ * Poništi brisanje stavke (undo) — POST /robno/documents/:docId/items/:itemLineId/restore.
+ * Radi samo unutar 30 s (inače 409 — rok istekao). Invalidira `robno` ključ. Permisija ROBNO_WRITE.
+ */
+export function useRestoreStockItem() {
+  const invalidate = useInvalidateRobno();
+  return useMutation({
+    mutationFn: ({ docId, itemLineId }: { docId: number; itemLineId: number }) =>
+      apiFetch<Envelope<RestoreItemResult>>(
+        `${BASE}/documents/${docId}/items/${itemLineId}/restore`,
+        { method: 'POST', body: '{}' },
+      ),
+    onSuccess: invalidate,
+  });
+}
+
 // ─────────────────────────────────── lager lista (BigBit paritet)
 
 /** Jedan red lagera — 1:1 sa backend listLager(). Sve količine/cene kao string. */
@@ -353,6 +404,51 @@ export function useCreateStockDocument() {
         method: 'POST',
         body: JSON.stringify(input),
       }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['robno'] }),
+  });
+}
+
+// ─────────────────────────────────── carry-over (prepis dokumenata, Batch B)
+
+/**
+ * Opcije prepisa (carry-over) — magacin i vrsta dokumenta se preklapaju sa podrazumevanih
+ * (backend default: magacin 1, UFROB za prijem / IFR za izdatnicu). 1:1 sa `CarryOverOptions`.
+ */
+export interface CarryOverInput {
+  warehouseId?: number;
+  documentTypeCode?: string;
+}
+
+/**
+ * Prepis narudžbenice → robni ulaz (Primka, UL) — POST /robno/documents/from-purchase-order/:orderId.
+ * Stavke/količine/cene iz narudžbenice; veže `purchaseOrderId`. Nacrt narudžbenica = 422,
+ * ponovni prepis = 409. Vraća kreiran robni dokument (envelope `{ data }`).
+ */
+export function useCarryOverFromPurchaseOrder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ orderId, ...body }: CarryOverInput & { orderId: number }) =>
+      apiFetch<Envelope<StockDocumentDetail>>(
+        `${BASE}/documents/from-purchase-order/${orderId}`,
+        { method: 'POST', body: JSON.stringify(body) },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['robno'] }),
+  });
+}
+
+/**
+ * Prepis predračuna/fakture → izdatnica (robni izlaz IZ) — POST /robno/documents/from-invoice/:invoiceId.
+ * Stavke sa artiklom iz fakture; IZ prolazi kroz proveru dovoljnog stanja (nedovoljno = 422),
+ * već prenet dokument = 409. Vraća kreiran robni dokument (envelope `{ data }`).
+ */
+export function useCarryOverFromInvoice() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ invoiceId, ...body }: CarryOverInput & { invoiceId: number }) =>
+      apiFetch<Envelope<StockDocumentDetail>>(
+        `${BASE}/documents/from-invoice/${invoiceId}`,
+        { method: 'POST', body: JSON.stringify(body) },
+      ),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['robno'] }),
   });
 }

@@ -55,7 +55,8 @@ export class CalculationService {
     return this.prisma.$transaction(async (tx) => {
       const doc = await tx.stockDocument.findUnique({
         where: { id: docId },
-        include: { items: { orderBy: { id: "asc" } } },
+        // Soft-delete (Batch B): meko-obrisana stavka se NE kalkuliše.
+        include: { items: { where: { deletedAt: null }, orderBy: { id: "asc" } } },
       });
       if (!doc)
         throw new NotFoundException(`Robni dokument ${docId} ne postoji.`);
@@ -205,7 +206,8 @@ export class CalculationService {
       const updated = await tx.stockDocument.update({
         where: { id: docId },
         data: { status: "CALCULATED", isCalculated: true },
-        include: { items: { orderBy: { id: "asc" } } },
+        // Soft-delete (Batch B): obrisana stavka ne ulazi u nivelaciju/KEPU updated.items.
+        include: { items: { where: { deletedAt: null }, orderBy: { id: "asc" } } },
       });
 
       // ── AUTO nivelacija (uprosečavanje) SAMO za ULAZ (doc 39 §F) ──

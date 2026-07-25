@@ -20,6 +20,7 @@ import type { AuthUser } from "../auth/jwt.strategy";
 import { GlReadService } from "./gl-read.service";
 import { GlWriteService } from "./gl-write.service";
 import { JournalPrintService } from "./journal-print.service";
+import { YearOpenService, type YearOpenDto } from "./year-open.service";
 import type { CreateJournalEntryDto } from "./dto/create-journal-entry.dto";
 
 /**
@@ -38,6 +39,7 @@ export class GlController {
     private readonly glRead: GlReadService,
     private readonly glWrite: GlWriteService,
     private readonly journalPrint: JournalPrintService,
+    private readonly yearOpen: YearOpenService,
   ) {}
 
   /** Kontni plan — pretraga (picker konta u nalozima). */
@@ -119,6 +121,19 @@ export class GlController {
     return this.glWrite.markUnlocked(id);
   }
 
+  /**
+   * POČETNO STANJE / carry-over godine (B2): zatvaranje klasa 5/6 → rezultat, pa PS nalog
+   * klasa 0–4 za `toYear`. Nepovratno bez storna; ako PS za toYear postoji → 409. GL_WRITE.
+   */
+  @Post("year-open")
+  @RequirePermission(PERMISSIONS.GL_WRITE)
+  yearOpenEntry(
+    @Body() body: YearOpenDto,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.yearOpen.createYearOpen(body, req.user.userId);
+  }
+
   @Get("journal")
   listJournal(
     @Query("orderType") orderType?: string,
@@ -165,12 +180,15 @@ export class GlController {
     @Query("analyticalCode") analyticalCode?: string,
     @Query("from") from?: string,
     @Query("to") to?: string,
+    @Query("costCenter") costCenter?: string,
   ) {
     return this.glRead.accountCard({
       accountCode,
       analyticalCode: analyticalCode ? Number(analyticalCode) : undefined,
       from: from ? new Date(from) : undefined,
       to: to ? new Date(to) : undefined,
+      costCenter:
+        costCenter && costCenter.trim() !== "" ? costCenter.trim() : undefined,
     });
   }
 }

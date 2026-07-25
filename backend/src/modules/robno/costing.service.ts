@@ -65,6 +65,7 @@ export class CostingService {
           AND sd.document_date <= ${asOf}
           AND sd.document_type_code <> 'KODJ'
           AND COALESCE(dt.affects_stock, TRUE) = TRUE
+          AND sdi.deleted_at IS NULL
           ${exclude}
       `,
     );
@@ -133,6 +134,7 @@ export class CostingService {
           AND sd.document_date <= ${asOf}
           AND sd.document_type_code <> 'KODJ'
           AND COALESCE(dt.affects_stock, TRUE) = TRUE
+          AND sdi.deleted_at IS NULL
       `,
     );
 
@@ -183,6 +185,7 @@ export class CostingService {
           AND sd.document_type_code <> 'KODJ'
           AND COALESCE(dt.affects_stock, TRUE) = TRUE
           AND dt.is_inbound = TRUE
+          AND sdi.deleted_at IS NULL
         ORDER BY sd.document_date DESC, sd.id DESC, sdi.id DESC
         LIMIT 1
       `,
