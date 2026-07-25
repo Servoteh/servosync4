@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useRef, useState, type ReactNode } from 'react';
-import { Star, Plus, X, ChevronUp, ChevronDown, History, MessageSquare } from 'lucide-react';
+import { Star, Plus, X, ChevronUp, ChevronDown, History, MessageSquare, Users, Globe } from 'lucide-react';
 import { Button } from '@/components/ui-kit/button';
 import { Input } from '@/components/ui-kit/form-field';
 import { Textarea } from '@/components/ui-kit/textarea';
@@ -17,6 +17,10 @@ import {
   useSetPredmetPrioritet,
   useSetPredmetPrioritetMax,
   usePredmetPrioritetPrev,
+  usePredmetPlaneri,
+  useSetPredmetPlaneri,
+  useSetGlobalniPlaneri,
+  type PlanerRef,
 } from '@/api/podesavanja';
 
 // ============================================================================
@@ -89,14 +93,34 @@ export function PredmetAktivacijaTab() {
   const setMaxM = useSetPredmetPrioritetMax();
   const prevM = usePredmetPrioritetPrev();
 
+  // Planeri predmeta (016/26): obaveštenje o lansiranju ide dodeljenim + globalnim planerima.
+  const planeriQ = usePredmetPlaneri();
+  const setPlaneriM = useSetPredmetPlaneri();
+  const setGlobalM = useSetGlobalniPlaneri();
+
   const rows = useMemo(() => normalizeRows(listQ.data?.data), [listQ.data]);
   const prioIds = prioQ.data?.data?.ids ?? [];
   const prioMax = prioQ.data?.data?.max ?? 10;
+
+  const assignments = planeriQ.data?.data?.assignments ?? {};
+  const globals = planeriQ.data?.data?.globals ?? [];
+  const candidates = planeriQ.data?.data?.candidates ?? [];
 
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<FilterKey>('all');
   const [maxInput, setMaxInput] = useState<string>('');
   const [napModal, setNapModal] = useState<{ id: number; initial: string; title: string } | null>(null);
+  // Planeri modal: scope 'project' (dodela predmetu) ili 'global' (prate sva lansiranja).
+  // `assigned` nosi PUNE ref-ove (uklj. neaktivne) da PlaneriBody može da prikaže/ukloni i
+  // deaktivirane naloge (inače soft-lock — picker nudi samo aktivne kandidate).
+  const [planeriModal, setPlaneriModal] = useState<
+    | { scope: 'project'; itemId: number; title: string; assigned: PlanerRef[] }
+    | { scope: 'global'; title: string; assigned: PlanerRef[] }
+    | null
+  >(null);
+  // Planeri picker se ne sme otvarati dok overview nije učitan/ako je pao — replace-semantika
+  // bi inače snimila prazan/pogrešan baseline i obrisala postojeće planere.
+  const planeriBusy = planeriQ.isLoading || planeriQ.isError;
   // Nonce: forsira reconciliaciju kontrolisanih checkbox-ova nazad na server istinu kada se
   // izmena otkaže/padne (native checkbox se vizuelno preklopi u onChange; bez re-rendera ostaje
   // razdešen jer se `checked` ne menja) — paritet 1.0 `input.checked = oldAkt`.
@@ -184,6 +208,22 @@ export function PredmetAktivacijaTab() {
       await toggleM.mutateAsync({ itemId: id, aktivan: !!cur, napomena: text });
       toast('Sačuvano');
       setNapModal(null);
+    } catch (e) {
+      toast(saveErr(e));
+    }
+  }
+
+  // ---- Planeri: „replace" set (predmet ili globalni) ----
+  async function savePlaneri(userIds: number[]) {
+    if (!planeriModal) return;
+    try {
+      if (planeriModal.scope === 'global') {
+        await setGlobalM.mutateAsync({ planerUserIds: userIds });
+      } else {
+        await setPlaneriM.mutateAsync({ itemId: planeriModal.itemId, planerUserIds: userIds });
+      }
+      toast('Sačuvano');
+      setPlaneriModal(null);
     } catch (e) {
       toast(saveErr(e));
     }
@@ -315,6 +355,24 @@ export function PredmetAktivacijaTab() {
         </p>
       </div>
 
+      {/* Globalni planeri (016/26): primaju mejl za SVAKO lansiranje primopredaje, bez obzira na predmet. */}
+      <div className="flex flex-wrap items-center gap-2 rounded-panel border border-line bg-surface-2 px-3.5 py-2.5">
+        <Globe className="h-4 w-4 shrink-0 text-ink-secondary" aria-hidden />
+        <span className="text-xs font-semibold text-ink">Globalni planeri</span>
+        <span className="text-xs text-ink-secondary">— primaju obaveštenje za svako lansiranje:</span>
+        <span className="text-xs text-ink">
+          {globals.length ? globals.map((p) => p.fullName || p.email || `#${p.userId}`).join(', ') : '—'}
+        </span>
+        <Button
+          variant="secondary"
+          onClick={() => setPlaneriModal({ scope: 'global', title: 'Globalni planeri (sva lansiranja)', assigned: globals })}
+          disabled={planeriBusy}
+          className="ml-auto h-8 gap-1.5 px-3 text-sm"
+        >
+          <Users className="h-3.5 w-3.5" aria-hidden /> Izmeni
+        </Button>
+      </div>
+
       {/* Traka: brojači + max + vrati prethodnu */}
       <div className="flex flex-wrap items-center gap-3 text-xs text-ink-secondary">
         <span className="rounded bg-surface-2 px-2 py-1">
@@ -382,7 +440,7 @@ export function PredmetAktivacijaTab() {
         <EmptyState title="Nema redova za filter." />
       ) : (
         <div className="overflow-x-auto rounded-panel border border-line bg-surface">
-          <table className="w-full min-w-[980px] text-sm">
+          <table className="w-full min-w-[1140px] text-sm">
             <thead>
               <tr className="border-b border-line bg-surface-2 text-left text-2xs uppercase text-ink-secondary">
                 <th className="w-10 px-2 py-2 text-center" title="Prioritet (prikazuju se prvi u svim pregledima)">
@@ -395,6 +453,9 @@ export function PredmetAktivacijaTab() {
                 <th className="w-28 px-2 py-2 text-center leading-tight" title="Vidljivost u modulima projektovanja i plana montaže (uz Aktivan)">
                   Projektovanje
                   <br />i montaža
+                </th>
+                <th className="px-3 py-2" title="Planeri koji dobijaju obaveštenje kad se primopredaja predmeta lansira">
+                  Planeri
                 </th>
                 <th className="px-3 py-2">Poslednja izmena</th>
                 <th className="px-3 py-2">Napomena</th>
@@ -455,6 +516,33 @@ export function PredmetAktivacijaTab() {
                         aria-label="Projektovanje i montaža"
                       />
                     </td>
+                    <td className="px-3 py-1.5">
+                      {(() => {
+                        const list = assignments[r.item_id] ?? [];
+                        const label = list.length
+                          ? list.map((p) => p.fullName || p.email || `#${p.userId}`).join(', ')
+                          : '—';
+                        return (
+                          <button
+                            type="button"
+                            disabled={planeriBusy}
+                            onClick={() =>
+                              setPlaneriModal({
+                                scope: 'project',
+                                itemId: r.item_id,
+                                title: `Planeri — ${str(r.broj_predmeta) || `#${r.item_id}`}`,
+                                assigned: list,
+                              })
+                            }
+                            className="inline-flex max-w-56 items-center gap-1.5 truncate rounded-control border border-line bg-surface px-2 py-1 text-xs text-ink-secondary hover:bg-surface-2 disabled:opacity-40"
+                            title="Dodeli planere ovom predmetu"
+                          >
+                            <Users className="h-3 w-3 shrink-0" aria-hidden />
+                            <span className="truncate">{label}</span>
+                          </button>
+                        );
+                      })()}
+                    </td>
                     <td className="whitespace-nowrap px-3 py-1.5 text-xs text-ink-secondary">
                       {str(r.azurirao_email) || '—'}
                       <br />
@@ -501,6 +589,15 @@ export function PredmetAktivacijaTab() {
 
       {/* Napomena modal */}
       <NapomenaModal state={napModal} onClose={() => setNapModal(null)} onSave={saveNapomena} saving={toggleM.isPending} />
+
+      {/* Planeri modal (dodela predmetu ili globalno) */}
+      <PlaneriModal
+        state={planeriModal}
+        candidates={candidates}
+        onClose={() => setPlaneriModal(null)}
+        onSave={savePlaneri}
+        saving={setPlaneriM.isPending || setGlobalM.isPending}
+      />
     </div>
   );
 }
@@ -532,6 +629,106 @@ function IconBtn({
     >
       {children}
     </button>
+  );
+}
+
+/** Meta o meti dodele planera — predmet (itemId) ili globalno. `assigned` nosi PUNE ref-ove. */
+type PlaneriModalState =
+  | { scope: 'project'; itemId: number; title: string; assigned: PlanerRef[] }
+  | { scope: 'global'; title: string; assigned: PlanerRef[] };
+
+/** Modal za dodelu planera — „replace" set; picker aktivnih naloga sa pretragom. */
+function PlaneriModal({
+  state,
+  candidates,
+  onClose,
+  onSave,
+  saving,
+}: {
+  state: PlaneriModalState | null;
+  candidates: PlanerRef[];
+  onClose: () => void;
+  onSave: (userIds: number[]) => void;
+  saving: boolean;
+}) {
+  const key = state ? (state.scope === 'project' ? `p${state.itemId}` : 'global') : 'none';
+  return (
+    <Dialog open={!!state} onClose={onClose} title={state?.title ?? 'Planeri'}>
+      {state && (
+        <PlaneriBody key={key} assigned={state.assigned} candidates={candidates} onClose={onClose} onSave={onSave} saving={saving} />
+      )}
+    </Dialog>
+  );
+}
+
+/**
+ * Telo picker-a — drži izabran set (seeduje se kroz `key` re-mount). Lista = aktivni kandidati
+ * PLUS već-dodeljeni neaktivni nalozi (da se mogu skinuti; inače soft-lock jer picker nudi samo
+ * aktivne). Pretraga po imenu/mejlu; Sačuvaj šalje ceo set (prazno = ukloni sve planere te mete).
+ */
+function PlaneriBody({
+  assigned,
+  candidates,
+  onClose,
+  onSave,
+  saving,
+}: {
+  assigned: PlanerRef[];
+  candidates: PlanerRef[];
+  onClose: () => void;
+  onSave: (userIds: number[]) => void;
+  saving: boolean;
+}) {
+  const initial = useMemo(() => assigned.map((p) => p.userId), [assigned]);
+  const [sel, setSel] = useState<number[]>(initial);
+  const [q, setQ] = useState('');
+  // Spisak = aktivni kandidati + dodeljeni koji NISU među kandidatima (neaktivni) na vrhu.
+  const options = useMemo(() => {
+    const candIds = new Set(candidates.map((c) => c.userId));
+    const orphans = assigned.filter((p) => !candIds.has(p.userId));
+    return [...orphans, ...candidates];
+  }, [assigned, candidates]);
+  const filtered = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    if (!needle) return options;
+    return options.filter((c) => `${c.fullName ?? ''} ${c.email ?? ''}`.toLowerCase().includes(needle));
+  }, [options, q]);
+  const toggle = (id: number) => setSel((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
+
+  return (
+    <div className="space-y-3">
+      <Input type="search" autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Ime ili mejl…" />
+      <div className="max-h-72 overflow-y-auto rounded-panel border border-line">
+        {filtered.length === 0 ? (
+          <p className="px-3 py-6 text-center text-sm text-ink-disabled">Nema naloga za pretragu.</p>
+        ) : (
+          filtered.map((c) => (
+            <label
+              key={c.userId}
+              className="flex cursor-pointer items-center gap-2.5 border-b border-line-soft px-3 py-2 text-sm last:border-0 hover:bg-surface-2"
+            >
+              <input type="checkbox" checked={sel.includes(c.userId)} onChange={() => toggle(c.userId)} />
+              <span className="text-ink">
+                {c.fullName || c.email || `#${c.userId}`}
+                {c.active === false && <span className="ml-1.5 text-2xs text-status-warn">(neaktivan)</span>}
+              </span>
+              {c.email && <span className="ml-auto text-xs text-ink-secondary">{c.email}</span>}
+            </label>
+          ))
+        )}
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="text-xs text-ink-secondary">Izabrano: {sel.length}</span>
+        <div className="ml-auto flex gap-2">
+          <Button variant="secondary" onClick={onClose}>
+            Otkaži
+          </Button>
+          <Button onClick={() => onSave(sel)} loading={saving}>
+            Sačuvaj
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }
 

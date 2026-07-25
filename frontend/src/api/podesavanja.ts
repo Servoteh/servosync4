@@ -188,6 +188,7 @@ const KEYS = {
   competence: ['admin', 'competence-framework'] as const,
   predmet: ['admin', 'predmet-aktivacija'] as const,
   predmetPrioritet: ['admin', 'predmet-aktivacija', 'prioritet'] as const,
+  predmetPlaneri: ['admin', 'predmet-aktivacija', 'planeri'] as const,
   audit: ['admin', 'audit-log'] as const,
   aiModels: ['admin', 'ai-models'] as const,
 };
@@ -383,6 +384,55 @@ export const usePredmetPrioritetPrev = () =>
   useMutation({
     mutationFn: () => apiFetch<{ data: { ids: number[] } }>(`${BASE}/predmet-aktivacija/prioritet/prev`),
   });
+
+// ------------------------------------------------------------------ Planeri predmeta (016/26)
+// Obaveštenje o lansiranju primopredaje ide planerima predmeta (+ globalnima). App-owned
+// overlay `predmet_planeri` (3.0-native), key = item_id (= projects.id). Dodela = „replace".
+
+/** Planer u dodeli/na listi kandidata (meki ref na `users.id`). `active`=false → već dodeljen ali deaktiviran nalog. */
+export interface PlanerRef {
+  userId: number;
+  fullName: string | null;
+  email: string | null;
+  active: boolean;
+}
+
+/** Pregled: mapa predmet→planeri (samo dodeljeni), globalni planeri, kandidati (aktivni nalozi). */
+export interface PredmetPlaneriData {
+  assignments: Record<number, PlanerRef[]>;
+  globals: PlanerRef[];
+  candidates: PlanerRef[];
+}
+
+/** Pregled planera po predmetima + globalni + kandidati (GET /predmet-aktivacija/planeri). */
+export function usePredmetPlaneri() {
+  return useQuery({
+    queryKey: KEYS.predmetPlaneri,
+    queryFn: () => apiFetch<{ data: PredmetPlaneriData }>(`${BASE}/predmet-aktivacija/planeri`),
+  });
+}
+
+/** Zameni planere jednog predmeta (PUT /:itemId/planeri) — telo `{ planerUserIds }`. */
+export const useSetPredmetPlaneri = () =>
+  useAdminMutation<{ itemId: number; planerUserIds: number[] }, unknown>(
+    ({ itemId, planerUserIds }) =>
+      apiFetch(`${BASE}/predmet-aktivacija/${itemId}/planeri`, {
+        method: 'PUT',
+        body: JSON.stringify({ planerUserIds }),
+      }),
+    KEYS.predmetPlaneri,
+  );
+
+/** Zameni globalne planere — prate sva lansiranja (PUT /planeri/globalni). */
+export const useSetGlobalniPlaneri = () =>
+  useAdminMutation<{ planerUserIds: number[] }, unknown>(
+    (v) =>
+      apiFetch(`${BASE}/predmet-aktivacija/planeri/globalni`, {
+        method: 'PUT',
+        body: JSON.stringify(v),
+      }),
+    KEYS.predmetPlaneri,
+  );
 
 // ------------------------------------------------------------------ Vrednosti firme (WRITE — P9; settings.org_profile)
 // Paritet 1.0 `companyProfileTab.js` + `services/orgProfile.js`. Jedinstven red company_profile

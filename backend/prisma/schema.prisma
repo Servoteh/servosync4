@@ -2385,6 +2385,26 @@ model PredmetAktivacija {
   @@map("predmet_aktivacije")
 }
 
+/// App-owned overlay (zahtev 016/26, Strahinja): planer(i) predmeta koji dobijaju
+/// obaveštenje kad se primopredaja tog predmeta LANSIRA u proizvodnju (handovers.launch).
+/// `projectId` = meki ref na `projects.id` (= sy15 `bigtehn_items_cache.id` = `item_id`
+/// iz Podešavanja predmeta; isti id-prostor, bez DB FK). `projectId = NULL` = GLOBALNI
+/// planer (prati SVA lansiranja, npr. menadžer planiranja) — vidi handovers launch hook.
+/// `plannerUserId` = meki ref na `users.id`. Dodela/uklanjanje su „replace" semantike po
+/// predmetu (servis), pa je uq samo sigurnosna mreža za ne-NULL predmete.
+model PredmetPlaner {
+  id              Int      @id(map: "pk_predmet_planeri") @default(autoincrement()) @map("id")
+  /// NULL = globalni planer (prima sva lansiranja); inače meki ref → projects.id.
+  projectId       Int?     @map("project_id")
+  plannerUserId   Int      @map("planner_user_id")
+  createdByUserId Int?     @map("created_by_user_id")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([projectId, plannerUserId], map: "uq_predmet_planeri_project_user")
+  @@index([projectId], map: "idx_predmet_planeri_project")
+  @@map("predmet_planeri")
+}
+
 /// App-owned (2.0, plan §3.2-6, odluka O3). Šifarnik odeljenja (7 redova iz sy15
 /// `core.odeljenje`); nose boju i vođu — semantika drugačija od `work_units` / `workers`.
 /// `leadUserId` / `leadWorkerId` meki ref-ovi (users / workers, bez DB FK). Referencira ga
