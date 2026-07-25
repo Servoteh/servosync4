@@ -3283,6 +3283,41 @@ model StockLevel {
   @@map("stock_levels")
 }
 
+/// Rezervacija zaliha (Batch C) — predračun/porudžbina „drži" robu dok se ne izda ili otkaže.
+/// Izvor istine za `rezervisano` je OVA tabela (agregat otvorenih redova), ne denormalizovani
+/// StockLevel.reserved (legacy snapshot koji niko ne održava). Raspoloživo = onHand − Σ(open).
+model StockReservation {
+  id          Int    @id(map: "pk_stock_reservations") @default(autoincrement()) @map("id")
+  itemId      Int    @map("item_id") // meki ref items.id
+  warehouseId Int    @map("warehouse_id") // meki ref warehouses.id
+
+  /// Izvor rezervacije: 'invoice' (predračun/PROF) | 'order' (porudžbina kupca) | 'manual'
+  sourceType String @map("source_type") @db.VarChar(20)
+  sourceId   Int    @map("source_id") // meki ref na id izvornog dokumenta
+  sourceLine Int?   @map("source_line") // redni broj stavke izvora (za tačno oslobađanje)
+
+  quantity Decimal @map("quantity") @db.Decimal(19, 6) // rezervisana količina (> 0)
+
+  /// OPEN | RELEASED | CONSUMED — samo OPEN ulazi u raspoloživo
+  status     String    @default("OPEN") @map("status") @db.VarChar(20)
+  releasedAt DateTime? @map("released_at") @db.Timestamptz(6)
+  /// Razlog oslobađanja/potrošnje (izdatnica broj, „otkazan predračun", istek…)
+  releaseReason String? @map("release_reason") @db.VarChar(200)
+  /// Automatski istek rezervacije (predračun ima rok važenja); null = bez isteka
+  expiresAt DateTime? @map("expires_at") @db.Timestamptz(6)
+
+  note String? @map("note") @db.Text
+
+  createdByUserId Int?     @map("created_by_user_id")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([sourceType, sourceId, sourceLine], map: "uq_stock_reservations_source_line")
+  @@index([itemId, warehouseId, status], map: "idx_stock_reservations_item_wh_status")
+  @@index([status, expiresAt], map: "idx_stock_reservations_expiry")
+  @@map("stock_reservations")
+}
+
 // C) NIVELACIJA — parovi stara/nova cena (uprosečavanje kao BigBit, MUST)
 // Formula uprosečavanja (doc 39 §F + PLAN_FAZA_3_IMPL §b/c) — ponderisana prosečna, ista kao §C costing:
 //   novaVP = (stanjeKol * staraVP + ulazKol * ulaznaVP) / (stanjeKol + ulazKol)
@@ -3515,6 +3550,35 @@ model ExchangeRate {
   @@map("exchange_rates")
 }
 
+/// Revalorizacija deviznih otvorenih stavki na dan (Batch C) — obavezna na 31.12.
+/// Jedan red = jedan izvršen obračun za (datum preseka, valuta, firma); nosi nalog kursnih razlika.
+model FxRevaluationRun {
+  id        Int      @id(map: "pk_fx_revaluation_runs") @default(autoincrement()) @map("id")
+  asOfDate  DateTime @map("as_of_date") @db.Timestamptz(6) // dan preseka (31.12.)
+  currency  String   @map("currency") @db.VarChar(3)
+  companyId Int      @default(0) @map("company_id")
+
+  rateUsed Decimal @map("rate_used") @db.Decimal(19, 6) // kurs na dan preseka (ExchangeRate.middleRate)
+
+  /// Zbirno po pravcu: pozitivne (prihod 663) i negativne (rashod 563) kursne razlike.
+  gainAmount  Decimal @default(0) @map("gain_amount") @db.Decimal(19, 4)
+  lossAmount  Decimal @default(0) @map("loss_amount") @db.Decimal(19, 4)
+  itemsCount  Int     @default(0) @map("items_count") // broj revalorizovanih otvorenih stavki
+
+  journalEntryId Int? @map("journal_entry_id") // nalog kursnih razlika (journal_entries.id)
+
+  /// DRAFT | POSTED | REVERSED — REVERSED oslobađa (asOfDate, currency) za ponovni obračun
+  status String @default("POSTED") @map("status") @db.VarChar(20)
+
+  note            String?  @map("note") @db.Text
+  createdByUserId Int?     @map("created_by_user_id")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([asOfDate, currency, companyId], map: "idx_fx_revaluation_runs_key")
+  @@map("fx_revaluation_runs")
+}
+
 // -----------------------------------------------------------------------------
 // 4) PaymentOrder — nalog za plaćanje / virman (priprema plaćanja, FX export).
 //    Dedup po (referenceNumberCredit=PNBOdobBroj, supplierId) — sprečava dvostruko plaćanje.
@@ -3625,6 +3689,18 @@ model Invoice {
   // — Carry-over / prepis (anti-duplo + traceback prepisa) —
   linkedInvoiceDocId Int? @map("linked_invoice_doc_id") // IDDokIF: PROF → IFR par; >0 blokira ponovni prepis (anti-duplo guard)
   copiedFromDocId    Int? @map("copied_from_doc_id") // izvorni dokument prepisa (Invoice.id — meki ref u istoj tabeli)
+
+  // — Avansi (Batch C) —
+  /// Na KONAČNOM računu: meki ref na AVR čiji se avans odbija (Invoice.id, documentType='AVR').
+  advanceInvoiceId     Int?     @map("advance_invoice_id")
+  /// Bruto iznos avansa odbijen na ovom konačnom računu (umanjuje iznos za plaćanje, ne osnovicu prihoda).
+  advanceAppliedAmount Decimal  @default(0) @map("advance_applied_amount") @db.Decimal(19, 4)
+  /// Na AVR-u: datum naplate avansa — PDV obaveza po avansu nastaje NAPLATOM, ne izdavanjem.
+  advancePaidAt        DateTime? @map("advance_paid_at") @db.Timestamptz(6)
+  /// Na AVR-u: naplaćen bruto iznos (može biti delimičan).
+  advancePaidAmount    Decimal  @default(0) @map("advance_paid_amount") @db.Decimal(19, 4)
+  /// Smer avansa: 'out' = mi izdajemo kupcu (KIF), 'in' = dobavljač nama (KUF, pretporez po plaćanju).
+  advanceDirection     String?  @map("advance_direction") @db.VarChar(3)
 
   /// DRAFT | POSTED | SENT | PAID | CANCELLED
   status   String  @default("DRAFT") @map("status") @db.VarChar(20)
