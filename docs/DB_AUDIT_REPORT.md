@@ -522,6 +522,13 @@ Format: **ID | ozbiljnost | naslov** → lokacija, problem + scenario štete, pr
 
 **DB-080 | VISOKO → SANIRANO 25.07 | Živa baza je sadržala redove koji KRŠE sopstvene FK constrainte (upisani pod `session_replication_role='replica'`)**
 - **Sanacija 25.07 (uz odobrenje):** 89 orphan redova `mrp_demand_items` OBRISANO + `handover_drafts` id 3459 (`G-0001/20`, legacy uvoz iz 2020) `main_drawing_id` → NULL; snimci pre brisanja u `ubuntusrv:~/backups/sanacije/*_2026-07-25.csv`; oba orphan brojača posle = 0. OSTAJE sistemski deo: orphan-scan posle sync prolaza (Faza 2) + DB-051.
+
+**DB-081 | VISOKO | `items.catalog_number` bez UNIQUE — podaci sadrže 1.980 duplikat-grupa (4.298 artikala) — zahtev korisnika 25.07**
+- Zahtev (Nenad, 25.07): kataloški broj artikla mora biti jedinstven — bez dupliranja artikala. BigBit od skoro BRANI unos novih duplikata, ali istorijski su ostali u podacima (i sync ih preslikava u 3.0).
+- Izmereno na produ 25.07: svih 92.511 artikala IMA kataloški broj (0 praznih); **1.980 brojeva se ponavlja → 4.298 artikala u duplikat-grupama**; od toga **571 grupa sa istim nazivom** (pravi dupli artikal — kandidat za merge) i **1.409 grupa sa različitim nazivima** (kolizija/reciklaža broja — traži ručnu presudu); dodatnih 60 grupa se poklapa tek case-insensitive. Najgori: „00001"×24, „DRW-A3"×14, „1"×10, „2"×7… (placeholder vrednosti iz starog unosa).
+- Problem: `items` je BigBit sync-keš (piše ga samo sync) — UNIQUE u 3.0 NE SME dok izvor (BigBit) sadrži duplikate: sync bi padao/preskakao redove i keš bi se tiho razišao od izvora. Čišćenje mora PRVO u BigBit-u (merge artikala + prevez dokumenata na preživeli artikal), pa sync, pa tek onda constraint.
+- Predlog (redosled): (1) poslovno čišćenje u BigBit-u po izvezenoj listi `ubuntusrv:~/backups/sanacije/items_katbroj_duplikati_2026-07-25.csv` (4.298 redova; kolone: broj, id, external_id, naziv, JM, dobavljač, datum) — prvo 571 „laku" grupu, pa 1.409 kolizija; (2) po čišćenju parcijalni UNIQUE indeks (`WHERE btrim(catalog_number) <> ''`; odluka: i case-insensitive preko `lower()`?); (3) do tada nedeljni watchdog upit u monitoringu — broj duplikat-grupa NE SME da raste (dokaz da BigBit brana drži).
+- Rizik ispravke: glavni posao je poslovno čišćenje šifarnika, ne tehnički; constraint posle toga je trivijalan (CONCURRENTLY).
 - Lokacija (prod, potvrđeno restore testom 25.07): `mrp_demand_items` — **89 orphan redova** (`demand_id` pokazuje na `mrp_demands` koja je **prazna**, 0 redova; sync je demands prepisao a items ostavio); `handover_drafts.main_drawing_id = 15840` — 1 red pokazuje na nepostojeći crtež.
 - Problem: sync piše kroz `SET LOCAL session_replication_role='replica'` (`generic.syncer.ts:184` — gasi FK provere; veza sa DB-051), pa FK constraint na živoj bazi NE garantuje integritet za sync-ovane tabele. Direktna posledica: `pg_restore` na svežu bazu ne može da re-kreira `fk_mrp_demand_items_demand` i `fk_handover_drafts_main_drawing` → restaurirana baza je BEZ ta 2 constrainta (drift pri restore-u), a svaki čitalac mrp_demand_items dobija stavke bez zaglavlja.
 - Predlog: (1) sanacija podataka — obrisati 89 orphan stavki (mirror tabela, izvor je BigBit — sync ih ionako može ponovo doneti ispravno) i razrešiti handover_drafts red (NULL-ovati main_drawing_id ili reimport crteža); (2) u sync-u posle replica-sesije dodati orphan-scan korak za parove header/items; (3) dugoročno DB-051 (ne-superuser rola).
@@ -559,6 +566,7 @@ Sortirano po ozbiljnosti. Status se ažurira ručno pri sređivanju.
 | DB-074 | VISOKO | Održavanje | Backup: restore ✅, skripta ✅, off-site = noćni klon mašine (odluka 25.07) | ✅ sanirano (ZA PROVERU: sat klona posle 02:40) |
 | DB-075 | VISOKO | Održavanje | Untracked Batch B migracija + izmenjena šema u radnom stablu | ✅ rešeno 25.07 — Batch B komitovan i merge-ovan kao #16 (71992fa), deploy 🟢 |
 | DB-080 | VISOKO | Integritet | Orphan redovi krše FK (replica sync): 89× mrp_demand_items + 1× handover_drafts | ✅ sanirano 25.07 (snimci u ~/backups/sanacije) |
+| DB-081 | VISOKO | Integritet | `items.catalog_number` bez UNIQUE + 1.980 duplikat-grupa u podacima (zahtev 25.07) | otvoreno — čišćenje prvo u BigBit-u (lista izvezena) |
 | DB-009 | SREDNJE | Integritet | CHECK paket: količine/procenti/iznosi/intervali | otvoreno |
 | DB-010 | SREDNJE | Integritet | „Magic zero" umesto NULL (sistemski obrazac) | otvoreno |
 | DB-011 | SREDNJE | Integritet | `invoices` unique bez company_id (multi-firma) | otvoreno |
@@ -616,7 +624,7 @@ Sortirano po ozbiljnosti. Status se ažurira ručno pri sređivanju.
 | DB-078 | NISKO | Održavanje | Menjani migration.sql (2 slučaja, sanirano) — pravilo | otvoreno |
 | DB-079 | NISKO | Održavanje | Migracija 016 komitovana a neprimenjena | ✅ rešeno 25.07 (deploy legao 10:17 UTC) |
 
-**Zbir: 80 nalaza — 1 KRITIČNO · 23 VISOKO · 36 SREDNJE · 20 NISKO.**
+**Zbir: 81 nalaz — 1 KRITIČNO · 24 VISOKO · 36 SREDNJE · 20 NISKO.**
 *Ažurirano 25.07 uveče (posle talasa 0): **✅ zatvoreno 13** — DB-037, 039, 046, 047, 061, 062, 064, 065, 068, 073 (merge #17, ff128a3), DB-074 (restore test + klon-odluka), DB-079, DB-080 (sanacija podataka uz snimke). Otvoreno ostaje 67, od toga iz VISOKO grupe: DB-001..008 constraint mreža (Faza 2), DB-025, DB-038, DB-040, DB-049, DB-050, DB-059/060/063, DB-075.*
 
 ---
@@ -631,6 +639,23 @@ DB-037 paket po prioritetnoj listi (part_locations → work_time_entries parcija
 
 **Faza 2 — constraint mreža (traži orphan/dedup scan, NOT VALID → VALIDATE, bez downtime-a):**
 DB-001, DB-002 (CASCADE → NoAction/guard na knjiženim podacima — NAJVAŽNIJE u ovoj fazi) · DB-003 (NULLS NOT DISTINCT) · DB-004, DB-005, DB-011, DB-013 (UNIQUE posle dedupa) · DB-006, DB-007, DB-009, DB-012 (CHECK paket) · DB-008, DB-016, DB-017 (FK dodavanja) · DB-022 (parcijalni unique).
+
+*Pred-scan Faze 2 izveden 25.07 na produ (svi upiti read-only) — spremnost po stavci:*
+
+| Stavka | Scan rezultat | Spremnost |
+|---|---|---|
+| DB-001/002 guard knjiženih dokumenata | GL/fakture/blagajna tabele prazne (pilot) | ✅ spremno — predlog: DB trigger brani DELETE za posted/locked (kaskada za draftove ostaje, servisi se ne diraju) |
+| DB-003 vat_returns NULLS NOT DISTINCT | 0 duplikata perioda | ✅ spremno |
+| DB-004 workers.card_id UNIQUE | **0 duplikata** | ✅ spremno (parcijalni, `WHERE card_id <> ''`) |
+| DB-005 projects.project_number UNIQUE | **0 duplikata** | ✅ spremno |
+| DB-006/007 CHECK ledger + POSTED-kupac | 0 prljavih redova | ✅ spremno |
+| DB-009 CHECK paket (količine/rabati/intervali/smerovi/periodi) | **0 prljavih redova u SVIH 14 provera** | ✅ spremno |
+| DB-011 invoices unique + company_id | tabela mala | ✅ spremno |
+| DB-008 FK handover_draft_items.drawing_id | 1 orphan red | ✅ spremno uz mini-sanaciju (1 red) ili FK NOT VALID |
+| DB-013 document_types.code | 0 duplikata (3 reda) | ✅ spremno |
+| DB-013 workers.username | duplikati: Nikola×4, Dule×4, Stefan×4, Aca×3, Ivan×3, Nemanja×3 + 8 parova | ⛔ ODLOŽENO — legacy višestruki radnici, traži kadrovsku presudu |
+| DB-081 items.catalog_number | **1.980 duplikat-grupa / 4.298 artikala** | ⛔ BLOKIRANO podacima — čišćenje prvo u BigBit-u (lista: `~/backups/sanacije/items_katbroj_duplikati_2026-07-25.csv`); watchdog do tada |
+| DB-022 parcijalni unique (pracenje_notes, predmet_planeri, reassign_audit) | male tabele | ✅ spremno |
 
 **Faza 3 — izmene koje diraju podatke ili šire kod (planski, po modulu):**
 DB-028 (normalizacija status case + sweep upita) · DB-059 (soft-delete čitaoci pre uključenja) · DB-060 (lager fallback) · DB-063 (GL audit trag) · DB-031 (godina/datum kroz Europe/Belgrade) · DB-043 (retention poslovi posle odluke o rokovima) · DB-014, DB-015, DB-067 (konzistencija header/stavke i statusa) · DB-025, DB-027 (tipovi/preciznost na app-owned tabelama) · DB-056 (DROP prod leftover tabela uz potvrdu) · DB-069 (čišćenje mrtvih modela).
