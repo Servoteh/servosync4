@@ -40,6 +40,7 @@ import {
   validateUpdateOperation,
 } from "./dto/work-order-operation.dto";
 import { WorkOrderNumberingService } from "./work-order-numbering.service";
+import { LaunchNotifyService } from "../handovers/launch-notify.service";
 
 /** Radni status (MODULE_SPEC_radni_nalozi §4): handover_statuses id. */
 export const WO_STATUS = {
@@ -92,6 +93,9 @@ export class WorkOrdersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly numbering: WorkOrderNumberingService,
+    // Obaveštenje planerima o lansiranju primopredaje (016/26 dopuna) — isti servis
+    // koji zove i `handovers.launch`; oba ekrana su za planera isti događaj.
+    private readonly launchNotify: LaunchNotifyService,
   ) {}
 
   // ---------------------------------------------------------------- READ
@@ -1105,6 +1109,10 @@ export class WorkOrdersService {
    * (najmanji id — klonovi dele FK), u ISTOJ transakciji se i primopredaja
    * podiže na LANSIRAN + zaključava — lansiranje sa RN strane sklanja stavku
    * iz taba "Odobrene" (prepare-work-order tok, P1).
+   *
+   * 016/26 (dopuna): posle komita isti događaj ide planerima predmeta (mejl +
+   * zvonce) kao i sa ekrana „Primopredaje" — do sada je taj ulaz ćutao, pa je
+   * planer ostajao neobavešten kad tehnolog lansira sa liste RN-ova.
    * TODO(auth): drugi gate `Worker.definesLaunch` — V2.
    */
   async launch(id: number, actor?: AuthUser) {
@@ -1115,6 +1123,13 @@ export class WorkOrdersService {
         isLocked: true,
         handoverStatusId: true,
         drawingHandoverId: true,
+        // Podaci za obaveštenje planerima (016/26) — čitaju se ovde da bi posle
+        // komita bili pri ruci bez dodatnog upita.
+        identNumber: true,
+        variant: true,
+        projectId: true,
+        drawingNumber: true,
+        pieceCount: true,
       },
     });
     if (!wo) throw new NotFoundException(`Radni nalog ${id} ne postoji`);
@@ -1130,7 +1145,7 @@ export class WorkOrdersService {
     // Svež users.worker_id kad JWT nema workerId (naknadno vezan radnik) — inače
     // se launch audit (statusChangedById/launchedById) tiho beleži kao radnik 0.
     const actorWorkerId = await resolveActorWorkerId(this.prisma, actor);
-    await this.prisma.$transaction(async (tx) => {
+    const launched = await this.prisma.$transaction(async (tx) => {
       if (wo.drawingHandoverId > 0) {
         // Isti advisory lock kao handovers prepare/launch
         // (`lockHandoverWorkOrder`): serijalizuje RN-level i handover-level
@@ -1163,7 +1178,9 @@ export class WorkOrdersService {
       // Sync (tLansiranRN mapiranje) upisuje eksplicitne legacy id-jeve —
       // poravnaj sekvencu pre insert-a (isti obrazac kao approve gore).
       await this.alignSeq(tx, "work_order_launches");
-      await tx.workOrderLaunch.create({
+      // `launch.id` = ključ idempotencije obaveštenja planerima (016/26 dopuna):
+      // jedan mejl/zvonce po launch redu, ma sa kog ekrana došao.
+      const launch = await tx.workOrderLaunch.create({
         data: {
           workOrderId: id,
           isLaunched: true,
@@ -1172,6 +1189,7 @@ export class WorkOrdersService {
           updatedByWorkerId: actorWorkerId ?? 0,
         },
       });
+      let notifyPlanners = false;
       if (wo.drawingHandoverId > 0) {
         // Klonovi (rework/bulk-clone) dele isti drawing_handover_id — na
         // primopredaju propagira SAMO "original" (najmanji id, isti kriterijum
@@ -1182,6 +1200,12 @@ export class WorkOrdersService {
           orderBy: { id: "asc" },
           select: { id: true },
         });
+        // Planeri se obaveštavaju SAMO za "original" RN primopredaje — isti
+        // kriterijum kao propagacija ispod. Klon (škart/dorada/bulk) deli
+        // drawing_handover_id, ali njegovo lansiranje NIJE „lansirana
+        // dokumentacija" (zahtev 016/26) — inače bi planer dobio novi mejl za
+        // svaku doradu iste primopredaje.
+        notifyPlanners = original?.id === id;
         if (original?.id === id) {
           // updateMany (ne update): FK nema DB constraint, orphan referenca ne
           // sme da obori lansiranje RN-a (isti razlog kao batch-resolve čitanja);
@@ -1212,7 +1236,31 @@ export class WorkOrdersService {
           });
         }
       }
+      return { launchId: launch?.id ?? null, notifyPlanners };
     });
+
+    // POSLE komita, best-effort (D8 obrazac): mejl + zvonce planerima predmeta
+    // (016/26 dopuna — rupa u pokrivenosti: ovaj ekran do sada nije slao ništa).
+    // `notifyLaunch` nikad ne baca, ali `.catch()` je pojas: pad obaveštenja
+    // NE sme da obori već komitovano lansiranje.
+    if (launched.notifyPlanners)
+      await this.launchNotify
+        .notifyLaunch({
+          workOrder: {
+            id: wo.id,
+            identNumber: wo.identNumber,
+            variant: wo.variant,
+            projectId: wo.projectId,
+            drawingNumber: wo.drawingNumber,
+            pieceCount: wo.pieceCount,
+          },
+          handoverId: wo.drawingHandoverId,
+          launchId: launched.launchId,
+          actorWorkerId,
+          source: "work_order",
+        })
+        .catch(() => undefined);
+
     return this.findOne(id);
   }
 

@@ -34,6 +34,7 @@ import {
   validateHandoverIds,
 } from "./dto/batch-handover.dto";
 import { ReturnHandoverDto } from "./dto/return-handover.dto";
+import { LaunchNotifyService } from "./launch-notify.service";
 
 /**
  * Status primopredaje (`drawing_handovers.status_id`) — ISTA `handover_statuses`
@@ -196,6 +197,8 @@ export class HandoversService {
     private readonly notifications: NotificationsService,
     // MailModule is @Global — no handovers.module.ts import needed.
     private readonly mail: MailService,
+    // Obaveštenje planerima o lansiranju (016/26) — deljeno sa work-orders.launch.
+    private readonly launchNotify: LaunchNotifyService,
   ) {}
 
   // ---------------------------------------------------------------- READ
@@ -1327,7 +1330,9 @@ export class HandoversService {
       // poravnaj sekvencu pre insert-a (isti obrazac kao `alignIdSequence`
       // za work_orders u createHandoverWorkOrder).
       await alignIdSequence(tx, "work_order_launches");
-      await tx.workOrderLaunch.create({
+      // `launch.id` je ključ idempotencije obaveštenja (016/26 dopuna) — isti
+      // launch red ne sme dva puta da mejluje/zvoni ni sa jednog od dva ekrana.
+      const launch = await tx.workOrderLaunch.create({
         data: {
           workOrderId: workOrder.id,
           isLaunched: true,
@@ -1352,132 +1357,26 @@ export class HandoversService {
         },
       });
 
-      return { workOrder };
+      return { workOrder, launchId: launch?.id ?? null };
     });
 
-    // AFTER commit, best-effort (D8): mejl planerima predmeta (+ globalnima) da je
-    // primopredaja lansirana u proizvodnju (zahtev 016/26). Nikad ne baca — lansiranje
-    // je već komitovano; svaki neuspeh se loguje.
-    await this.notifyLaunchPlanners(result.workOrder, handover, actorWorkerId);
+    // AFTER commit, best-effort (D8): mejl + zvonce planerima predmeta (+ globalnima)
+    // da je primopredaja lansirana u proizvodnju (zahtev 016/26 + dopuna). Nikad ne
+    // baca — lansiranje je već komitovano; svaki neuspeh se loguje. ISTI servis zove i
+    // `work-orders.launch` (lansiranje sa ekrana „Radni nalozi" je isti događaj).
+    await this.launchNotify.notifyLaunch({
+      workOrder: result.workOrder,
+      handoverId: id,
+      drawingId: handover.drawingId,
+      launchId: result.launchId,
+      actorWorkerId,
+      source: "handover",
+    });
 
     const handoverResp = await this.findOne(id);
     return {
       data: { handover: handoverResp.data, workOrder: result.workOrder },
     };
-  }
-
-  /**
-   * Emit "handover launched" to the predmet's planners — assigned in Podešavanje
-   * predmeta (`predmet_planeri`, keyed by `projects.id`) plus GLOBAL planners
-   * (`project_id IS NULL`, e.g. the planning manager who follows every launch;
-   * zahtev 016/26). ONE mail per planner with the launched RN (ident + part),
-   * predmet + customer, quantity, launcher and time. Best-effort (D8, same shape as
-   * `notifyRejected`): the whole method never throws, each mail runs in its own
-   * try/catch. Planners are office users addressed by their `users.email`; a planner
-   * without an active account/email is skipped. Mail is the channel (in-app needs a
-   * linked worker, which planners generally lack).
-   */
-  private async notifyLaunchPlanners(
-    workOrder: {
-      id: number;
-      identNumber: string;
-      variant: number;
-      projectId: number;
-      drawingNumber: string | null;
-      pieceCount: number | null;
-    },
-    handover: { id: number; drawingId: number },
-    actorWorkerId: number | null,
-  ): Promise<void> {
-    try {
-      const routed = await this.prisma.predmetPlaner.findMany({
-        where: { OR: [{ projectId: workOrder.projectId }, { projectId: null }] },
-        select: { plannerUserId: true },
-      });
-      const userIds = [...new Set(routed.map((r) => r.plannerUserId))];
-      if (!userIds.length) return;
-
-      const [planners, project, drawing, actorMap] = await Promise.all([
-        this.prisma.user.findMany({
-          where: { id: { in: userIds }, active: true },
-          select: { id: true, email: true, fullName: true },
-        }),
-        this.prisma.project.findUnique({
-          where: { id: workOrder.projectId },
-          select: { projectNumber: true, description: true, customerId: true },
-        }),
-        this.prisma.drawing.findUnique({
-          where: { id: handover.drawingId },
-          select: { name: true, drawingNumber: true },
-        }),
-        this.resolveWorkers([actorWorkerId]),
-      ]);
-      const recipients = planners.filter((p) => p.email && p.email.includes("@"));
-      if (!recipients.length) return;
-
-      const customer = project?.customerId
-        ? await this.prisma.customer.findUnique({
-            where: { id: project.customerId },
-            select: { name: true },
-          })
-        : null;
-
-      const actorRef =
-        actorWorkerId != null ? actorMap.get(actorWorkerId) : undefined;
-      const actorName =
-        actorRef?.fullName || actorRef?.username || "korisnik aplikacije";
-      const rnLabel =
-        workOrder.variant > 0
-          ? `${workOrder.identNumber}-${workOrder.variant}`
-          : workOrder.identNumber;
-      const predmetLabel = [project?.projectNumber, project?.description]
-        .filter(Boolean)
-        .join(" — ");
-      const partLabel = [
-        drawing?.name,
-        workOrder.drawingNumber ?? drawing?.drawingNumber,
-      ]
-        .filter(Boolean)
-        .join(", ");
-      const launchedAt = new Date().toLocaleString("sr-RS");
-      const subject = `Lansiran RN ${rnLabel}${
-        predmetLabel ? ` — predmet ${project?.projectNumber ?? ""}` : ""
-      }`.trim();
-
-      const rows: string[] = [
-        `<li><strong>Radni nalog:</strong> ${rnLabel}</li>`,
-        predmetLabel ? `<li><strong>Predmet:</strong> ${predmetLabel}</li>` : "",
-        customer?.name ? `<li><strong>Komitent:</strong> ${customer.name}</li>` : "",
-        partLabel ? `<li><strong>Pozicija:</strong> ${partLabel}</li>` : "",
-        workOrder.pieceCount != null
-          ? `<li><strong>Količina:</strong> ${workOrder.pieceCount} kom</li>`
-          : "",
-        `<li><strong>Lansirao:</strong> ${actorName}, ${launchedAt}</li>`,
-      ].filter(Boolean);
-
-      for (const planner of recipients) {
-        try {
-          await this.mail.send({
-            to: planner.email!,
-            subject,
-            html:
-              `<p>${planner.fullName ? `Poštovani ${planner.fullName},` : "Poštovani,"}</p>` +
-              `<p>Primopredaja je lansirana u proizvodnju:</p>` +
-              `<ul>${rows.join("")}</ul>` +
-              `<p>— ServoSync</p>`,
-          });
-        } catch (e) {
-          this.logger.error(
-            `Mejl primopredaja.lansirana planeru ${planner.id} FAIL: ${e instanceof Error ? e.message : String(e)}`,
-          );
-        }
-      }
-    } catch (e) {
-      // Lookups failed — log and swallow; the launch itself already committed.
-      this.logger.error(
-        `Notifikacija primopredaja.lansirana FAIL: ${e instanceof Error ? e.message : String(e)}`,
-      );
-    }
   }
 
   // ---------------------------------------------------------------- helpers

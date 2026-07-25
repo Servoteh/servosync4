@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 import { PrismaModule } from "../../prisma/prisma.module";
 import { NotificationsModule } from "../notifications/notifications.module";
+import { LaunchNotifyModule } from "./launch-notify.module";
 import { HandoversController } from "./handovers.controller";
 import { HandoversService } from "./handovers.service";
 import { HandoverDraftsController } from "./handover-drafts.controller";
@@ -19,10 +20,13 @@ import { PrintBundleService } from "./print-bundle.service";
  * D8: `handover-drafts.submit()` emituje in-app notifikaciju grupi TEHNOLOG
  * („Kreirana nova primopredaja…") preko `NotificationsService` (NotificationsModule).
  *
+ * 016/26: obaveštenje planerima o lansiranju živi u `LaunchNotifyModule` (deljeno sa
+ * `WorkOrdersModule` — lansiranje sa ekrana „Radni nalozi" je isti događaj).
+ *
  * Registracija u `app.module.ts` je posao integratora (dodati `HandoversModule` u `imports`).
  */
 @Module({
-  imports: [PrismaModule, NotificationsModule],
+  imports: [PrismaModule, NotificationsModule, LaunchNotifyModule],
   controllers: [HandoversController, HandoverDraftsController],
   providers: [
     HandoversService,

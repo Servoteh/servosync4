@@ -8,6 +8,7 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { MailService } from "../../common/mail/mail.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { HandoversService } from "./handovers.service";
+import { LaunchNotifyService } from "./launch-notify.service";
 import type { AuthUser } from "../auth/jwt.strategy";
 
 /** Radnik iz JWT-a koji izvodi akcije u testovima (users.worker_id = 77). */
@@ -43,7 +44,12 @@ function prismaMock() {
       update: jest.fn(),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
-    workOrderLaunch: { create: jest.fn().mockResolvedValue({}) },
+    // `create` vraća id: to je ključ idempotencije obaveštenja o lansiranju (016/26 dopuna).
+    workOrderLaunch: { create: jest.fn().mockResolvedValue({ id: 900 }) },
+    // Claim red obaveštenja: count 1 = prvi poziv za taj launch → sme da šalje.
+    workOrderLaunchNotification: {
+      createMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
     worker: {
       findUnique: jest.fn(),
       findMany: jest.fn().mockResolvedValue([]),
@@ -113,6 +119,9 @@ describe("HandoversService", () => {
     const mod: TestingModule = await Test.createTestingModule({
       providers: [
         HandoversService,
+        // PRAVI LaunchNotifyService (nije mock): launch hook 016/26 se i dalje
+        // proverava kroz mail.send / notifyWorkers, samo je logika izdvojena.
+        LaunchNotifyService,
         { provide: PrismaService, useValue: prisma },
         { provide: NotificationsService, useValue: notifications },
         { provide: MailService, useValue: mail },
@@ -1166,6 +1175,80 @@ describe("HandoversService", () => {
       expect((mail.send.mock.calls[0][0] as { subject: string }).subject).toMatch(
         /P100\/1/,
       );
+    });
+
+    it("uz mejl šalje i zvonce planerima sa vezanim radnikom (016/26 dopuna)", async () => {
+      prisma.drawingHandover.findUnique.mockResolvedValue(approvedHandover);
+      prisma.workOrder.findFirst.mockResolvedValue(null);
+      mockWorkOrderContext();
+      prisma.workOrder.create.mockResolvedValue({
+        id: 100,
+        identNumber: "P100/1",
+        variant: 0,
+        projectId: 3,
+        drawingNumber: "D-10",
+        revision: "B",
+        pieceCount: 4,
+        handoverStatusId: 3,
+      });
+      prisma.predmetPlaner.findMany.mockResolvedValue([
+        { plannerUserId: 55 },
+        { plannerUserId: 56 },
+      ]);
+      // 55 ima vezanog radnika (zvonce + mejl), 56 nema (samo mejl).
+      prisma.user.findMany.mockResolvedValue([
+        {
+          id: 55,
+          email: "planer@servoteh.com",
+          fullName: "Planer Predmeta",
+          workerId: 501,
+        },
+        {
+          id: 56,
+          email: "global@servoteh.com",
+          fullName: "Global Planer",
+          workerId: null,
+        },
+      ]);
+
+      await service.launch(5, {}, actor);
+
+      expect(mail.send).toHaveBeenCalledTimes(2);
+      expect(notifications.notifyWorkers).toHaveBeenCalledWith(
+        [501],
+        containing({
+          type: "primopredaja.lansirana",
+          refTable: "work_orders",
+          refId: 100,
+        }),
+      );
+    });
+
+    it("isti launch red drugi put ne šalje ništa (idempotencija, 016/26 dopuna)", async () => {
+      prisma.drawingHandover.findUnique.mockResolvedValue(approvedHandover);
+      prisma.workOrder.findFirst.mockResolvedValue(null);
+      mockWorkOrderContext();
+      prisma.workOrder.create.mockResolvedValue({
+        id: 100,
+        identNumber: "P100/1",
+        variant: 0,
+        projectId: 3,
+        drawingNumber: "D-10",
+        revision: "B",
+        pieceCount: 4,
+        handoverStatusId: 3,
+      });
+      prisma.predmetPlaner.findMany.mockResolvedValue([{ plannerUserId: 55 }]);
+      // Claim red već postoji (ON CONFLICT DO NOTHING) — npr. RN-strana je već poslala.
+      prisma.workOrderLaunchNotification.createMany.mockResolvedValue({
+        count: 0,
+      });
+
+      await service.launch(5, {}, actor);
+
+      expect(prisma.predmetPlaner.findMany).not.toHaveBeenCalled();
+      expect(mail.send).not.toHaveBeenCalled();
+      expect(notifications.notifyWorkers).not.toHaveBeenCalled();
     });
 
     it("bez dodeljenih planera launch ne šalje obaveštenje (016/26)", async () => {

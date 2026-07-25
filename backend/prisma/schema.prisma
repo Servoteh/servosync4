@@ -2405,6 +2405,27 @@ model PredmetPlaner {
   @@map("predmet_planeri")
 }
 
+/// App-owned (zahtev 016/26 dopuna). Idempotencija obaveštenja „primopredaja lansirana":
+/// JEDAN red po `work_order_launches.id`. Lansiranje ima dva ulaza (ekran Primopredaje i
+/// ekran Radni nalozi), pa se pre slanja „claim-uje" red (INSERT … ON CONFLICT DO NOTHING);
+/// ko upiše — taj šalje, svaki sledeći poziv za isti launch red tiho izlazi. Bez DB FK-ova
+/// (batch-resolve obrazac, isti razlog kao `AppNotification`) — brisanje RN-a/launch reda ne
+/// sme da obori upis. Timestamptz kao ostale app-owned tabele (BACKEND_RULES §2.3).
+model WorkOrderLaunchNotification {
+  id                Int      @id(map: "pk_work_order_launch_notifications") @default(autoincrement()) @map("id")
+  /// Meki ref → work_order_launches.id; UNIQUE = ključ idempotencije.
+  workOrderLaunchId Int      @map("work_order_launch_id")
+  /// Meki ref → work_orders.id (samo za pretragu/audit).
+  workOrderId       Int      @map("work_order_id")
+  /// Ekran sa kog je lansirano: 'handover' | 'work_order'.
+  source            String   @map("source") @db.VarChar(20)
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([workOrderLaunchId], map: "uq_work_order_launch_notifications_launch")
+  @@index([workOrderId], map: "idx_work_order_launch_notifications_work_order")
+  @@map("work_order_launch_notifications")
+}
+
 /// App-owned (2.0, plan §3.2-6, odluka O3). Šifarnik odeljenja (7 redova iz sy15
 /// `core.odeljenje`); nose boju i vođu — semantika drugačija od `work_units` / `workers`.
 /// `leadUserId` / `leadWorkerId` meki ref-ovi (users / workers, bez DB FK). Referencira ga

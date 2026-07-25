@@ -10,6 +10,7 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { WorkOrdersService } from "./work-orders.service";
 import { WorkOrdersController } from "./work-orders.controller";
 import { WorkOrderNumberingService } from "./work-order-numbering.service";
+import { LaunchNotifyService } from "../handovers/launch-notify.service";
 import { PERMISSION_KEY_METADATA } from "../../common/authz/require-permission.decorator";
 import { PERMISSIONS } from "../../common/authz/permissions";
 import type { AuthUser } from "../auth/jwt.strategy";
@@ -89,7 +90,8 @@ function prismaMock() {
         .mockResolvedValue({ workCenterCode: "TOK", usesPriority: true }),
     },
     workOrderLaunch: {
-      create: jest.fn().mockResolvedValue({}),
+      // `id` = ključ idempotencije obaveštenja planerima (016/26 dopuna).
+      create: jest.fn().mockResolvedValue({ id: 900 }),
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
     workOrderApproval: {
@@ -128,9 +130,15 @@ function prismaMock() {
 const containing = (obj: Record<string, unknown>): unknown =>
   expect.objectContaining(obj) as unknown;
 
+/** Hook „obavesti planere o lansiranju" (016/26 dopuna) — po ugovoru nikad ne baca. */
+function launchNotifyMock() {
+  return { notifyLaunch: jest.fn().mockResolvedValue(undefined) };
+}
+
 describe("WorkOrdersService (workflow)", () => {
   let service: WorkOrdersService;
   let prisma: ReturnType<typeof prismaMock>;
+  let launchNotify: ReturnType<typeof launchNotifyMock>;
 
   // Determinizam legacy guard-a (isti obrazac kao handovers.service.spec.ts):
   // odsutna promenljiva = guard aktivan (default).
@@ -145,11 +153,13 @@ describe("WorkOrdersService (workflow)", () => {
 
   beforeEach(async () => {
     prisma = prismaMock();
+    launchNotify = launchNotifyMock();
     const mod: TestingModule = await Test.createTestingModule({
       providers: [
         WorkOrdersService,
         WorkOrderNumberingService,
         { provide: PrismaService, useValue: prisma },
+        { provide: LaunchNotifyService, useValue: launchNotify },
       ],
     }).compile();
     service = mod.get(WorkOrdersService);
@@ -258,6 +268,90 @@ describe("WorkOrdersService (workflow)", () => {
 
       expect(prisma.workOrderLaunch.create).toHaveBeenCalled();
       expect(prisma.drawingHandover.updateMany).not.toHaveBeenCalled();
+    });
+
+    // ------------------------------------------- 016/26 dopuna: obaveštenje planerima
+
+    it("lansiranje sa ekrana RN obaveštava planere (isti hook kao handovers.launch)", async () => {
+      prisma.workOrder.findUnique.mockResolvedValue({
+        id: 7,
+        isLocked: false,
+        handoverStatusId: 1,
+        drawingHandoverId: 5,
+        identNumber: "P100/7",
+        variant: 0,
+        projectId: 3,
+        drawingNumber: "D-10",
+        pieceCount: 4,
+      });
+      prisma.workOrder.findFirst.mockResolvedValue({ id: 7 });
+
+      await service.launch(7, actor);
+
+      expect(launchNotify.notifyLaunch).toHaveBeenCalledTimes(1);
+      expect(launchNotify.notifyLaunch).toHaveBeenCalledWith({
+        workOrder: {
+          id: 7,
+          identNumber: "P100/7",
+          variant: 0,
+          projectId: 3,
+          drawingNumber: "D-10",
+          pieceCount: 4,
+        },
+        handoverId: 5,
+        // Ključ idempotencije = id upravo kreiranog work_order_launches reda.
+        launchId: 900,
+        actorWorkerId: 77,
+        source: "work_order",
+      });
+    });
+
+    it("RN bez primopredaje (drawingHandoverId=0) NE obaveštava planere", async () => {
+      prisma.workOrder.findUnique.mockResolvedValue({
+        id: 7,
+        isLocked: false,
+        handoverStatusId: 1,
+        drawingHandoverId: 0,
+      });
+
+      await service.launch(7, actor);
+
+      expect(launchNotify.notifyLaunch).not.toHaveBeenCalled();
+    });
+
+    it("klon (škart/dorada) NE šalje drugo obaveštenje za istu primopredaju", async () => {
+      prisma.workOrder.findUnique.mockResolvedValue({
+        id: 9,
+        isLocked: false,
+        handoverStatusId: 1,
+        drawingHandoverId: 5,
+      });
+      prisma.workOrder.findFirst.mockResolvedValue({ id: 7 }); // original je 7
+
+      await service.launch(9, actor);
+
+      expect(launchNotify.notifyLaunch).not.toHaveBeenCalled();
+    });
+
+    it("pad obaveštenja NE obara lansiranje (već je komitovano)", async () => {
+      prisma.workOrder.findUnique.mockResolvedValue({
+        id: 7,
+        isLocked: false,
+        handoverStatusId: 1,
+        drawingHandoverId: 5,
+        identNumber: "P100/7",
+        variant: 0,
+        projectId: 3,
+        drawingNumber: "D-10",
+        pieceCount: 4,
+      });
+      prisma.workOrder.findFirst.mockResolvedValue({ id: 7 });
+      launchNotify.notifyLaunch.mockRejectedValue(new Error("smtp down"));
+
+      await expect(service.launch(7, actor)).resolves.toEqual({
+        data: { id: 7 },
+      });
+      expect(prisma.workOrderLaunch.create).toHaveBeenCalled();
     });
 
     it("409 kad konkurentni launch izgubi trku (uslovni update count=0)", async () => {
@@ -1248,6 +1342,7 @@ describe("WorkOrdersService.findOne — drawingRevision (zastarela revizija crte
         WorkOrdersService,
         WorkOrderNumberingService,
         { provide: PrismaService, useValue: prisma },
+        { provide: LaunchNotifyService, useValue: launchNotifyMock() },
       ],
     }).compile();
     service = mod.get(WorkOrdersService);

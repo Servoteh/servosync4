@@ -161,6 +161,8 @@ const NOTIFICATION_BADGE: Record<string, { tone: Tone; label: string }> = {
   'kontrola.dorada': { tone: 'warn', label: 'Dorada' },
   'primopredaja.nova': { tone: 'info', label: 'Primopredaja' },
   'primopredaja.preuzeta': { tone: 'info', label: 'Preuzeta izrada' },
+  // Zahtev 016/26: planer dobija zvonce kad se primopredaja lansira u proizvodnju.
+  'primopredaja.lansirana': { tone: 'success', label: 'Lansirano' },
 };
 
 /** refTable → ruta modula (funkcija prima refId za deep-link kad modul to podržava). */
