@@ -19,8 +19,11 @@ import type { ScheduledJob } from "./scheduler.types";
  * lokalnim guardovima (attendance 06h; digest pon 06h; sedmični pet 08h)
  * zakazane su TAČNO u guard-sat, pa dupli UTC slotovi iz 1.0 nisu potrebni.
  *
- * Dispatch (slanje mejlova iz outbox-a) NAMERNO ostaje sy15 (VM cron
- * dispatch-loop.sh + edge fn) do dekomisije — vidi ODLUKE #39 / Talas F.
+ * Dispatch (slanje mejlova iz outbox-a) je od Talasa A-2a/A-2b TAKOĐE u 3.0
+ * (dispatch/notify-dispatch.service.ts za kadr/maint/pb, dispatch/
+ * sastanci-dispatch.service.ts za sastanke), ali iza svojih prekidača
+ * (`DISPATCH_ENABLED` / `DISPATCH_SASTANCI_ENABLED`). Dok su isključeni, šalje
+ * i dalje sy15 (VM cron dispatch-loop.sh + edge fn) — vidi ODLUKE #39 / Talas F.
  */
 
 interface RawRow {

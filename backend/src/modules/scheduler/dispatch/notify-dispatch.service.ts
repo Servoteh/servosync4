@@ -33,7 +33,9 @@ import type { ScheduledJob } from "../scheduler.types";
  *     vrati u 'pending'. To je ZATEČENO 1.0 ponašanje (edge radi identično) —
  *     nije regresija ovog talasa, ali se ne sme opisivati kao retry.
  *
- * Sastanci se NE diraju; njihov outbox i dalje prazni sy15 sastanci-notify-dispatch.
+ * Sastanci outbox NIJE ovde: prešao je u 3.0 kao ZASEBAN worker
+ * (dispatch/sastanci-dispatch.service.ts, Talas A-2b) sa sopstvenim prekidačem
+ * `DISPATCH_SASTANCI_ENABLED` — svaki outbox se preklapa sa sy15 nezavisno.
  *
  * KANALI PO OUTBOX-u (usklađeno sa 1.0 edge kodom — vidi u repou
  * servoteh-plan-montaze: supabase/functions/{hr,maint,pb}-notify-dispatch/index.ts):

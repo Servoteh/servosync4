@@ -34,8 +34,21 @@ export class MailService {
     to: string | string[];
     subject: string;
     html: string;
+    /**
+     * Opciona plain-text varijanta (Resend `text`). Bez nje Resend šalje samo
+     * HTML deo — klijenti bez HTML-a i spam-filteri vole multipart. Sastanci
+     * šabloni je nose (A-2b); ostali pozivaoci je izostavljaju → ponašanje isto.
+     */
+    text?: string;
     /** Opcioni CC primaoci (npr. admini koji samo prate — vidljivo u zaglavlju mejla). */
     cc?: string[];
+    /**
+     * Opcioni „odgovori na" (Resend `reply_to`) — npr. organizator sastanka, da
+     * odgovor primaoca ne ode na noreply pošiljaoca.
+     * ⚠️ NE validira se ovde (za razliku od `cc`, koji filtrira po `@`): pozivalac
+     * garantuje da je vrednost ispravna adresa, inače Resend odbija ceo mejl.
+     */
+    replyTo?: string;
     /** Opcioni prilozi (npr. PDF računa). `content` je Buffer — kodira se u base64 za Resend. */
     attachments?: Array<{ filename: string; content: Buffer }>;
   }): Promise<boolean> {
@@ -63,6 +76,8 @@ export class MailService {
           ...(cc.length ? { cc } : {}),
           subject: params.subject,
           html: params.html,
+          ...(params.text ? { text: params.text } : {}),
+          ...(params.replyTo ? { reply_to: params.replyTo } : {}),
           ...(params.attachments?.length
             ? {
                 attachments: params.attachments.map((a) => ({
