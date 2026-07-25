@@ -46,10 +46,20 @@ export function PrisustvoTab() {
             </button>
           )}
         </div>
+        {/* Mobilni pregled uživo (zahtev 019/26) — /mob/prisustvo, namerno VAN /m/*
+            (worker proxy sve /m/* šalje na 1.0). Otvoriti na telefonu. */}
+        {canLive && (
+          <a
+            href="/mob/prisustvo"
+            className="ml-auto rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2"
+          >
+            📱 Mobilni prikaz
+          </a>
+        )}
         {/* BE ruta badges/qr gejtuje kadrovska.attendance_shadow (posle P1a fixa) —
             gejtuj afordansu istim ključem (hr/menadzment/admin), ne kadrovska.manage. */}
         {canShadow && (
-          <Button className="ml-auto" variant="secondary" onClick={() => setBadgeOpen(true)}>
+          <Button className={canLive ? undefined : 'ml-auto'} variant="secondary" onClick={() => setBadgeOpen(true)}>
             <QrCode className="h-4 w-4" aria-hidden /> QR nalepnice
           </Button>
         )}

@@ -583,8 +583,15 @@ export function useEmployee(id: string | null) {
     queryFn: () => apiFetch<{ data: EmployeeSafe }>(`${BASE}/employees/${id}`),
   });
 }
-export function useDirectory() {
-  return useQuery({ queryKey: KEYS.directory, queryFn: () => apiFetch<{ data: ViewRow[] }>(`${BASE}/directory`) });
+/** Imenik zaposlenih. `enabled` postoji zbog ekrana koji se montiraju pre nego što
+ *  se zna ima li korisnik pravo (mobilni /mob/prisustvo) — bez toga bi neovlašćen
+ *  korisnik ispalio zahtev pre gejta. Podrazumevano ponašanje je nepromenjeno. */
+export function useDirectory(enabled = true) {
+  return useQuery({
+    queryKey: KEYS.directory,
+    enabled,
+    queryFn: () => apiFetch<{ data: ViewRow[] }>(`${BASE}/directory`),
+  });
 }
 
 /* PII pod-resursi (enabled samo kad pozivalac ima kadrovska.pii) */
