@@ -35,8 +35,8 @@ function makeService(prisma: ReturnType<typeof makePrisma>) {
 
 const ASOF = new Date("2023-12-31T00:00:00.000Z");
 
-describe("GkEvalService — izuzimanje zaključnog naloga (ZAK)", () => {
-  it("D maska NE sme da uračuna zaključni nalog", async () => {
+describe("GkEvalService — zaključni nalog (ZAK): izuzeti klase 5/6, zadržati rezultat", () => {
+  it("D maska izuzima zaključni nalog SAMO za klase koje on zatvara", async () => {
     const prisma = makePrisma([{ total: new D("178421") }]);
     const service = makeService(prisma);
 
@@ -44,12 +44,26 @@ describe("GkEvalService — izuzimanje zaključnog naloga (ZAK)", () => {
 
     const sql = prisma.queries[0];
     expect(sql.text).toContain("order_type_code");
-    // Uslov mora biti ISKLJUČUJUĆI (<>), ne uključujući (LIKE 'PS%').
-    expect(sql.text).toContain("<>");
     expect(sql.values).toContain("ZAK");
+    // Izuzimanje je vezano za KLASU konta, ne za nalog u celini — inače bi ispala i
+    // stavka rezultata na klasi 3 i pasiva bi bila manja od aktive za iznos dobiti.
+    expect(sql.text).toContain("LEFT(le.account_code, 1)");
+    expect(sql.values).toContain("5");
+    expect(sql.values).toContain("6");
   });
 
-  it("P maska takođe izuzima ZAK", async () => {
+  it("klasa 3 NIJE u izuzetim klasama — rezultat godine ostaje u kapitalu", async () => {
+    const prisma = makePrisma();
+    const service = makeService(prisma);
+
+    // AOP 0410 „Neraspoređeni dobitak tekuće godine" = P341*-D341*; konto 341 puni
+    // ISKLJUČIVO zaključni nalog, pa bi izuzimanje celog ZAK-a dalo nulu.
+    await service.evalFormula("P341*", ASOF, () => new D(0));
+
+    expect(prisma.queries[0].values).not.toContain("3");
+  });
+
+  it("P maska klase 6 takođe izuzima zaključne kontra-stavke", async () => {
     const prisma = makePrisma();
     const service = makeService(prisma);
 
@@ -75,7 +89,9 @@ describe("GkEvalService — izuzimanje zaključnog naloga (ZAK)", () => {
 
     await service.evalFormula("D204*", ASOF, () => new D(0));
 
-    expect(prisma.queries[0].text).toContain("IS NULL");
+    // Bez COALESCE bi `NULL = 'ZAK'` dalo NULL, `NOT (NULL AND TRUE)` opet NULL, a
+    // WHERE odbacuje redove sa NULL uslovom — stari nalozi bi tiho nestali.
+    expect(prisma.queries[0].text).toContain("COALESCE(je.order_type_code");
   });
 });
 

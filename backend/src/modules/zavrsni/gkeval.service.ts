@@ -48,16 +48,29 @@ const D = Prisma.Decimal;
 const PS_ORDER_TYPE_PREFIX = "PS";
 
 /**
- * Vrsta ZAKLJUČNOG naloga (`year-open.service.ts` §closeIncomeStatement). Taj nalog
- * knjiži kontra-stavku NAZAD NA ISTO konto klase 5/6, datiran 31.12. i proknjižen —
- * pa bi bez ovog izuzimanja svaka maska bilansa uspeha davala EGZAKTNU NULU za svaku
- * godinu za koju je urađen prenos u novu godinu. To NIJE poslovni promet nego tehničko
- * zatvaranje, zato ispada iz D/P u OBA obrasca: u bilansu stanja ZAK dodiruje samo
- * konto rezultata (klasa 3), a taj iznos u BS ionako dolazi kroz PS nalog naredne
- * godine. Donja granica datuma problem NE rešava — ZAK je datiran unutar same godine.
- * (Studija BigBita: `docs/migration/ZR_ISPRAVKE_MOTORA.md` §2.)
+ * Vrsta ZAKLJUČNOG naloga (`year-open.service.ts`). Taj nalog nosi DVE VRSTE stavki i
+ * one se moraju tretirati RAZLIČITO:
+ *
+ *   1. kontra-stavke klasa 5 i 6 — knjiže se NAZAD NA ISTO konto da bi ga zatvorile.
+ *      Moraju ispasti iz D/P, inače svaka maska bilansa uspeha daje EGZAKTNU NULU za
+ *      godinu za koju je urađen prenos. Donja granica datuma to ne rešava: nalog je
+ *      datiran 31.12., dakle unutar same godine koju zatvara.
+ *   2. stavka REZULTATA na klasu 3 (konto 341 dobitak / 351 gubitak) — to je JEDINO
+ *      mesto gde rezultat tekuće godine ulazi u kapital. Mora OSTATI, inače AOP 0410
+ *      (`P341*-D341*`) čita nulu i pasiva je manja od aktive za tačan iznos dobiti,
+ *      pa se bilans stanja ne može zatvoriti bez `force`.
+ *
+ * Zato se izuzimanje vezuje za KLASU KONTA unutar zaključnog naloga, ne za nalog u
+ * celini. (Studija BigBita: `docs/migration/ZR_ISPRAVKE_MOTORA.md` §2 + zapisnik
+ * `docs/ZAPISNIK_ZR_SAP_PANTHEON_PROPISI.md`, rizik 1.)
  */
 const CLOSING_ORDER_TYPE = "ZAK";
+
+/**
+ * Klase konta koje zaključni nalog ZATVARA (prva cifra šifre konta). Samo njihove
+ * stavke u ZAK nalogu ispadaju iz prometa; ostale (klasa 3 = rezultat) ostaju.
+ */
+const CLOSED_ACCOUNT_CLASSES = ["5", "6"];
 
 /** Greška parsiranja/evaluacije bilansne formule. */
 export class GkEvalError extends Error {
@@ -396,10 +409,17 @@ export class GkEvalService {
     const isOpeningBalance = kind === "PSD" || kind === "PSP";
     const psFilter = isOpeningBalance
       ? Prisma.sql`AND je.order_type_code LIKE ${PS_ORDER_TYPE_PREFIX + "%"}`
-      : // D/P = poslovni promet; zaključni nalog (ZAK) se izuzima, inače bilans
-        // uspeha izlazi u nulama za svaku prenetu godinu (v. CLOSING_ORDER_TYPE).
+      : // D/P = poslovni promet. Iz zaključnog naloga ispadaju SAMO kontra-stavke
+        // klasa koje on zatvara (5 i 6); stavka rezultata na klasi 3 ostaje, jer je
+        // to jedini upis dobiti/gubitka u kapital. Vidi CLOSING_ORDER_TYPE.
         // `IS NULL` grana zadržava stare naloge bez upisane vrste.
-        Prisma.sql`AND (je.order_type_code IS NULL OR je.order_type_code <> ${CLOSING_ORDER_TYPE})`;
+        // COALESCE je OBAVEZAN: uz NULL vrstu naloga `NULL = 'ZAK'` daje NULL, pa bi
+        // `NOT (NULL AND TRUE)` bilo NULL — a red sa NULL uslovom WHERE odbacuje.
+        // Stari nalozi bez upisane vrste bi tako nestali iz bilansa uspeha.
+        Prisma.sql`AND NOT (
+          COALESCE(je.order_type_code, '') = ${CLOSING_ORDER_TYPE}
+          AND LEFT(le.account_code, 1) IN (${Prisma.join(CLOSED_ACCOUNT_CLASSES)})
+        )`;
 
     const rows = await this.prisma.$queryRaw<Array<{ total: Prisma.Decimal }>>(Prisma.sql`
       SELECT COALESCE(SUM(${column}), 0)::numeric(19,4) AS total
