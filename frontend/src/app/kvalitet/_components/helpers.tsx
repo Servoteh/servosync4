@@ -2,6 +2,7 @@
 
 import type { ReactNode } from 'react';
 import type { Tone } from '@/components/ui-kit/status-badge';
+import { cn } from '@/lib/cn';
 import {
   NONCONFORMITY_STATUS,
   NONCONFORMITY_TYPE,
@@ -242,6 +243,39 @@ export function culpritSummary(r: NonconformityReport): string {
     }
   }
   return parts.join(', ');
+}
+
+/**
+ * Mala KPI kartica (isti obrazac kao održavanje `StatCard`) — deli je tab
+ * „Izveštaji" i tab „Aktivnost kontrole".
+ */
+export function StatCard({
+  label,
+  value,
+  tone = 'neutral',
+}: {
+  label: string;
+  value: ReactNode;
+  tone?: 'neutral' | 'info' | 'warn' | 'accent' | 'success' | 'danger';
+}) {
+  const color =
+    tone === 'info'
+      ? 'text-status-info'
+      : tone === 'warn'
+        ? 'text-status-warn'
+        : tone === 'danger'
+          ? 'text-status-danger'
+          : tone === 'success'
+            ? 'text-status-success'
+            : tone === 'accent'
+              ? 'text-accent'
+              : 'text-ink';
+  return (
+    <div className="rounded-panel border border-line bg-surface p-4">
+      <div className={cn('tnums text-2xl font-semibold', color)}>{value}</div>
+      <div className="mt-1 text-xs uppercase tracking-wider text-ink-secondary">{label}</div>
+    </div>
+  );
 }
 
 /** Sitni „label + value" red za read-only prikaz detalja. */

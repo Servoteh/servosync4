@@ -8,11 +8,13 @@ import { PageHeader } from '@/components/ui-kit/page-header';
 import { cn } from '@/lib/cn';
 import { NONCONFORMITY_TYPE, useQualityMini } from '@/api/kvalitet';
 import { EvidencijaTab } from './_components/evidencija-tab';
+import { AktivnostTab } from './_components/aktivnost-tab';
 import { IzvestajiTab } from './_components/izvestaji-tab';
 import { DokumentiTab } from './_components/dokumenti-tab';
 import { KontrolaPogonTab } from './_components/kontrola-pogon-tab';
+import { PERMISSIONS } from '@/lib/permissions';
 
-type TabKey = 'skart' | 'dorada' | 'izvestaji' | 'dokumenti' | 'pogon';
+type TabKey = 'skart' | 'dorada' | 'aktivnost' | 'izvestaji' | 'dokumenti' | 'pogon';
 
 /** Broj draft-ova na tab labeli (žuti bedž) — radna lista kontrolora. */
 function DraftBadge({ count }: { count: number }) {
@@ -25,7 +27,7 @@ function DraftBadge({ count }: { count: number }) {
 }
 
 export default function KvalitetPage() {
-  const { user, isLoading } = useAuth();
+  const { user, isLoading, can } = useAuth();
   const router = useRouter();
   const [tab, setTab] = useState<TabKey>('skart');
   const mini = useQualityMini();
@@ -45,9 +47,14 @@ export default function KvalitetPage() {
   const draftScrap = mini.data?.data.skart.drafts ?? 0;
   const draftRework = mini.data?.data.dorada.drafts ?? 0;
 
+  // „Aktivnost kontrole" (K4) čita evidenciju kucanja (`tech-processes`) — bez
+  // `tehnologija.read` bi svaki upit vratio 403, pa se tab tada i ne nudi.
+  const mayReadLog = can(PERMISSIONS.TEHNOLOGIJA_READ);
+
   const tabs: { key: TabKey; label: string; badge?: number }[] = [
     { key: 'skart', label: 'Evidencija škarta', badge: draftScrap },
     { key: 'dorada', label: 'Evidencija dorada', badge: draftRework },
+    ...(mayReadLog ? ([{ key: 'aktivnost', label: 'Aktivnost kontrole' }] as const) : []),
     { key: 'izvestaji', label: 'Izveštaji' },
     { key: 'dokumenti', label: 'Dokumenti' },
     { key: 'pogon', label: 'Kontrola pogon' },
@@ -87,6 +94,7 @@ export default function KvalitetPage() {
         <div className="flex-1 overflow-auto p-6">
           {tab === 'skart' && <EvidencijaTab type={NONCONFORMITY_TYPE.SCRAP} />}
           {tab === 'dorada' && <EvidencijaTab type={NONCONFORMITY_TYPE.REWORK} />}
+          {tab === 'aktivnost' && mayReadLog && <AktivnostTab />}
           {tab === 'izvestaji' && <IzvestajiTab />}
           {tab === 'dokumenti' && <DokumentiTab />}
           {tab === 'pogon' && <KontrolaPogonTab />}
