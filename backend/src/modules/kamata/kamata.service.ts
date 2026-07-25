@@ -129,7 +129,7 @@ export class KamataService {
               analyticalCode: dto.partnerId,
               reconciledAt: null,
               accountCode: { in: accountCodes },
-              journalEntry: { status: { in: ["posted", "locked"] } },
+              journalEntry: { status: { in: ["POSTED", "LOCKED"] } },
             },
             select: {
               id: true,

@@ -5,6 +5,7 @@ import { SchedulerService } from "./scheduler.service";
 import { Sy15CronJobs } from "./sy15-cron-jobs";
 import { NotifyDispatchService } from "./dispatch/notify-dispatch.service";
 import { SastanciDispatchService } from "./dispatch/sastanci-dispatch.service";
+import { RetentionJobsService } from "./retention-jobs.service";
 import { RobnoModule } from "../robno/robno.module";
 import { ReservationService } from "../robno/reservation.service";
 
@@ -21,10 +22,13 @@ import { ReservationService } from "../robno/reservation.service";
  * Talas A-2b — sastanci outbox (dispatch/sastanci-dispatch.service.ts) na
  * ZASEBNOM prekidaču `DISPATCH_SASTANCI_ENABLED`, jer se i na sy15 gasi zasebno
  * (druga stavka u dispatch petlji) — preklop mora da bude nezavisan.
+ *
+ * DB audit Faza 3 — retention-jobs.service.ts (DB-043): noćno čišćenje
+ * audit_log/notifikacija/job-runova po rokovima iz odluke 25.07.
  */
 @Module({
   // RobnoModule → ReservationService: dnevno oslobađanje isteklih rezervacija
-  // (bez ovoga `expiresAt` ne radi ništa i rezervacija večno drži zalihu).
+  // (bez toga `expiresAt` ne radi ništa i rezervacija večno drži zalihu).
   imports: [Sy15Module, RobnoModule],
   controllers: [SchedulerController],
   providers: [
@@ -32,6 +36,7 @@ import { ReservationService } from "../robno/reservation.service";
     Sy15CronJobs,
     NotifyDispatchService,
     SastanciDispatchService,
+    RetentionJobsService,
   ],
   exports: [SchedulerService],
 })
@@ -41,6 +46,7 @@ export class SchedulerModule implements OnModuleInit, OnApplicationBootstrap {
     private readonly sy15Jobs: Sy15CronJobs,
     private readonly dispatchJobs: NotifyDispatchService,
     private readonly sastanciDispatchJobs: SastanciDispatchService,
+    private readonly retentionJobs: RetentionJobsService,
     private readonly reservation: ReservationService,
   ) {}
 
@@ -49,6 +55,8 @@ export class SchedulerModule implements OnModuleInit, OnApplicationBootstrap {
     for (const job of this.dispatchJobs.buildJobs())
       this.scheduler.register(job);
     for (const job of this.sastanciDispatchJobs.buildJobs())
+      this.scheduler.register(job);
+    for (const job of this.retentionJobs.buildJobs())
       this.scheduler.register(job);
 
     // Istekle rezervacije zaliha (Batch C). `expiresAt` puni rok važenja

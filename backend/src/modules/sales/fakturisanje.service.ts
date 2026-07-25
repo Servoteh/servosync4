@@ -1,3 +1,4 @@
+import { businessYear } from "../../common/business-date";
 import {
   Injectable,
   Logger,
@@ -292,7 +293,7 @@ export class FakturisanjeService {
     // limitu; FAKTURISANJE post permisija je dovoljno ovlašćenje).
     await this.assertCreditLimit(invoice.customerId, invoice.grossTotal, force);
 
-    const year = invoice.documentDate.getFullYear();
+    const year = businessYear(invoice.documentDate);
 
     return this.prisma.$transaction(async (tx) => {
       // 0) ATOMSKI CLAIM (review 1D nalaz): invoice se čita findUnique VAN tx, pa su
@@ -339,15 +340,15 @@ export class FakturisanjeService {
         if (existing) {
           journalEntryId = existing.id;
           // Robni auto-nalog nastaje kao `draft` (posting.service.ts:358), a kartica
-          // konta / saldakonti / bilans čitaju SAMO status IN ('posted','locked') —
+          // konta / saldakonti / bilans čitaju SAMO status IN ('POSTED','LOCKED') —
           // draft nalog je nevidljiv. Zato preuzeti nalog promovišemo u `posted` u istoj
           // tx (odluka O4 default, kao izvod u PR #8). markPosted idiom = status guard:
-          // CAS `where status='draft'` menja SAMO draft; posted/locked ostaje netaknut
+          // CAS `where status='DRAFT'` menja SAMO draft; posted/locked ostaje netaknut
           // (idempotentno — račun čiji je robni nalog već proknjižen/zaključan se ne dira).
-          if (existing.status === "draft") {
+          if (existing.status === "DRAFT") {
             await tx.journalEntry.updateMany({
-              where: { id: existing.id, status: "draft" },
-              data: { status: "posted" },
+              where: { id: existing.id, status: "DRAFT" },
+              data: { status: "POSTED" },
             });
           }
         } else {
@@ -474,7 +475,7 @@ export class FakturisanjeService {
         where: { id: invoice.journalEntryId },
         select: { id: true, status: true, reversedByEntryId: true },
       });
-      if (entry && entry.status !== "draft" && entry.reversedByEntryId == null) {
+      if (entry && entry.status !== "DRAFT" && entry.reversedByEntryId == null) {
         try {
           const rev = await this.glWrite.reverse(entry.id, actor.userId);
           stornoEntryId = rev.stornoEntryId;
@@ -619,10 +620,10 @@ export class FakturisanjeService {
         FROM ledger_entries le
         JOIN journal_entries je ON je.id = le.journal_entry_id
         JOIN saldakonto_accounts sa ON sa.account = le.account_code
-        -- 'locked' MORA biti uključen (smoke Batch A nalaz): auto-lock starih naloga bi
+        -- 'LOCKED' MORA biti uključen (smoke Batch A nalaz): auto-lock starih naloga bi
         -- inače IZBRISAO dug iz obračuna limita — kupac sa zaključanim dugovanjima bi
         -- prošao guard kao da duga nema.
-        WHERE je.status IN ('posted', 'locked')
+        WHERE je.status IN ('POSTED', 'LOCKED')
           AND le.reconciled_at IS NULL
           AND sa.tracks_open_items = TRUE
           AND sa.side = 'receivable'
@@ -774,11 +775,11 @@ export class FakturisanjeService {
         documentDate: invoice.documentDate,
         postingDate: new Date(),
         // POSTED (ne draft): proknjižena faktura MORA odmah biti vidljiva saldakontima /
-        // kartici konta / bilansu / open-items, koji čitaju SAMO status IN ('posted','locked').
+        // kartici konta / bilansu / open-items, koji čitaju SAMO status IN ('POSTED','LOCKED').
         // Draft nalog = proknjižen račun bez ijedne
         // otvorene stavke (kupac tiho van saldakonta). Isti obrazac kao izvod (PR #8) i
         // PostingEngine.postManualEntry (posting.service.ts:229). Odluka O4 default.
-        status: "posted",
+        status: "POSTED",
         createdByUserId: actor.userId,
         lines: {
           create: grouped.map((l) => ({

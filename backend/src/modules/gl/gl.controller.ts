@@ -73,14 +73,20 @@ export class GlController {
 
   @Post("journal/:id/post")
   @RequirePermission(PERMISSIONS.GL_WRITE)
-  postEntry(@Param("id", ParseIntPipe) id: number) {
-    return this.glWrite.markPosted(id);
+  postEntry(
+    @Param("id", ParseIntPipe) id: number,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.glWrite.markPosted(id, req.user.userId);
   }
 
   @Post("journal/:id/lock")
   @RequirePermission(PERMISSIONS.GL_WRITE)
-  lockEntry(@Param("id", ParseIntPipe) id: number) {
-    return this.glWrite.markLocked(id);
+  lockEntry(
+    @Param("id", ParseIntPipe) id: number,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.glWrite.markLocked(id, req.user.userId);
   }
 
   @Post("journal/:id/reverse")
@@ -102,7 +108,10 @@ export class GlController {
    */
   @Post("journal/lock-older")
   @RequirePermission(PERMISSIONS.GL_WRITE)
-  lockOlder(@Body() body: { beforeDate?: string; dryRun?: boolean }) {
+  lockOlder(
+    @Body() body: { beforeDate?: string; dryRun?: boolean },
+    @Req() req: { user: AuthUser },
+  ) {
     const raw = body?.beforeDate;
     if (!raw || typeof raw !== "string" || raw.trim() === "") {
       throw new BadRequestException("Parametar beforeDate je obavezan (datum praga).");
@@ -111,14 +120,21 @@ export class GlController {
     if (Number.isNaN(before.getTime())) {
       throw new BadRequestException("Parametar beforeDate nije ispravan datum.");
     }
-    return this.glWrite.lockOlderThan(before, { dryRun: body?.dryRun === true });
+    return this.glWrite.lockOlderThan(
+      before,
+      { dryRun: body?.dryRun === true },
+      req.user.userId,
+    );
   }
 
   /** Otključavanje pojedinačnog naloga (locked → posted) — ispravka greške pri zaključavanju. */
   @Post("journal/:id/unlock")
   @RequirePermission(PERMISSIONS.GL_WRITE)
-  unlockJournal(@Param("id", ParseIntPipe) id: number) {
-    return this.glWrite.markUnlocked(id);
+  unlockJournal(
+    @Param("id", ParseIntPipe) id: number,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.glWrite.markUnlocked(id, req.user.userId);
   }
 
   /**

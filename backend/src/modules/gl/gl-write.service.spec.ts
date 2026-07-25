@@ -75,7 +75,7 @@ function makeService(
     companyId: 0,
     documentDate: over.documentDate ?? new Date("2025-12-31T00:00:00Z"),
     postingDate: new Date("2025-12-31T00:00:00Z"),
-    status: over.status ?? "posted",
+    status: over.status ?? "POSTED",
     reversedByEntryId: over.reversedByEntryId ?? null,
     lines: over.lines ?? [sourceLine()],
   };
@@ -224,7 +224,7 @@ describe("GlWriteService.reverse", () => {
 
   describe("postojeće kontrole ostaju", () => {
     it("zaključan nalog se ne stornira bez otključavanja", async () => {
-      const h = makeService({ status: "locked" });
+      const h = makeService({ status: "LOCKED" });
       await expect(h.service.reverse(500)).rejects.toBeInstanceOf(
         ConflictException,
       );

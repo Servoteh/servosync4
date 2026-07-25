@@ -336,7 +336,7 @@ export class PopdvService {
    * Σ PDV konta iz glavne knjige po smeru za period (osnovni obračun).
    *   output = Σ(kredit − debit) na 'output' kontima (47x — obaveza)
    *   input  = Σ(debit − kredit) na 'input'  kontima (27x — pretporez)
-   * Samo proknjižen nalog (status = 'posted'), period po posting_date.
+   * Samo proknjižen nalog (status = 'POSTED'), period po posting_date.
    */
   private async sumVatAccounts(
     year: number,
@@ -354,10 +354,10 @@ export class PopdvService {
         FROM ledger_entries le
         JOIN journal_entries je ON je.id = le.journal_entry_id
         JOIN vat_account_map vam ON vam.account = le.account_code
-        -- 'locked' MORA biti uključen: period se ZAKLJUČAVA pre poreske predaje
-        -- (POST /gl/journal/lock-older), pa bi filter samo na 'posted' obrisao ceo
+        -- 'LOCKED' MORA biti uključen: period se ZAKLJUČAVA pre poreske predaje
+        -- (POST /gl/journal/lock-older), pa bi filter samo na 'POSTED' obrisao ceo
         -- period iz PDV obračuna. Konzistentno sa saldakonti/GK čitaocima.
-        WHERE je.status IN ('posted', 'locked')
+        WHERE je.status IN ('POSTED', 'LOCKED')
           AND EXTRACT(YEAR FROM je.posting_date) = ${year}
           AND EXTRACT(MONTH FROM je.posting_date) IN (${Prisma.join(months)})
         GROUP BY vam.direction
@@ -451,10 +451,10 @@ export class PopdvService {
           COALESCE(SUM(le.credit), 0) AS credit
         FROM ledger_entries le
         JOIN journal_entries je ON je.id = le.journal_entry_id
-        -- 'locked' MORA biti uključen: period se ZAKLJUČAVA pre poreske predaje
-        -- (POST /gl/journal/lock-older), pa bi filter samo na 'posted' obrisao ceo
+        -- 'LOCKED' MORA biti uključen: period se ZAKLJUČAVA pre poreske predaje
+        -- (POST /gl/journal/lock-older), pa bi filter samo na 'POSTED' obrisao ceo
         -- period iz PDV obračuna. Konzistentno sa saldakonti/GK čitaocima.
-        WHERE je.status IN ('posted', 'locked')
+        WHERE je.status IN ('POSTED', 'LOCKED')
           AND EXTRACT(YEAR FROM je.posting_date) = ${year}
           AND EXTRACT(MONTH FROM je.posting_date) IN (${Prisma.join(months)})
         GROUP BY le.account_code

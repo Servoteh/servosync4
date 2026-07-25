@@ -1,3 +1,4 @@
+import { businessYear } from "../../common/business-date";
 import {
   ConflictException,
   Injectable,
@@ -152,6 +153,11 @@ export class RobnoService {
     const take = Math.min(query.take ?? 100, 500);
     const skip = query.skip ?? 0;
 
+    // DB-060 + Batch C: lager se UVEK racuna iz kretanja (stock_document_items),
+    // nikad iz snapshot-a stock_levels. Uslovni fallback (koristi snapshot ako
+    // tabela NIJE prazna) i dalje veruje zastarelom redu - na dev bazi je jedini
+    // takav red tvrdio 12 dok su kretanja govorila 10. Isti izvor istine koristi i
+    // raspolozivo (ReservationService), pa o stanju nema dve istine.
     const warehouseFilter =
       query.warehouseId != null
         ? Prisma.sql`AND sdi.warehouse_id = ${query.warehouseId}`
@@ -261,6 +267,117 @@ export class RobnoService {
     });
 
     // Pretraga po nazivu/šifri (posle join-a — mali skup po strani).
+    if (query.q && query.q.trim() !== "") {
+      const term = query.q.trim().toLowerCase();
+      data = data.filter(
+        (r) =>
+          (r.itemName ?? "").toLowerCase().includes(term) ||
+          (r.itemCode ?? "").toLowerCase().includes(term),
+      );
+    }
+
+    return { data, meta: { total, skip, take } };
+  }
+
+  /**
+   * Lager as-of NAD KRETANJIMA (DB-060 fallback dok stock_levels nema pisca).
+   * onHand = Σ(±Kol); prosečne cene ponderisano (doc 39 §C):
+   * avgNab = Σ(±Kol×(A+B+C))/Σ(±Kol), avgVP = Σ(±Kol×KalkVP)/Σ(±Kol).
+   * Napomena: za grupe sa Σ=0 ponder nije definisan → cena 0 (poslednja-cena
+   * fallback iz CostingService.averageAsOf ovde se ne radi — lager tipično
+   * gleda „samo sa stanjem"); reserved nema izvor u kretanjima → 0.
+   */
+  private async listLagerAsOf(
+    query: { warehouseId?: number; onlyInStock?: boolean; q?: string },
+    take: number,
+    skip: number,
+  ) {
+    const whFilter =
+      query.warehouseId != null
+        ? Prisma.sql`AND sdi.warehouse_id = ${query.warehouseId}`
+        : Prisma.empty;
+    const having = query.onlyInStock
+      ? Prisma.sql`HAVING SUM(CASE WHEN dt.is_inbound THEN sdi.quantity ELSE -sdi.quantity END) > 0`
+      : Prisma.empty;
+
+    const groups = await this.prisma.$queryRaw<
+      {
+        item_id: number;
+        warehouse_id: number;
+        on_hand: Prisma.Decimal;
+        pn_weight: Prisma.Decimal;
+        vp_weight: Prisma.Decimal;
+      }[]
+    >(Prisma.sql`
+      SELECT sdi.item_id, sdi.warehouse_id,
+             SUM(CASE WHEN dt.is_inbound THEN sdi.quantity ELSE -sdi.quantity END) AS on_hand,
+             SUM(CASE WHEN dt.is_inbound THEN sdi.quantity ELSE -sdi.quantity END
+                 * (sdi.purchase_price_net + sdi.dependent_cost_own + sdi.dependent_cost_supplier)) AS pn_weight,
+             SUM(CASE WHEN dt.is_inbound THEN sdi.quantity ELSE -sdi.quantity END
+                 * sdi.calculated_wholesale_price) AS vp_weight
+      FROM stock_document_items sdi
+      JOIN stock_documents sd ON sd.id = sdi.document_id
+      JOIN document_types dt ON dt.code = sd.document_type_code
+      WHERE sd.document_type_code <> 'KODJ'
+        AND COALESCE(dt.affects_stock, TRUE) = TRUE
+        AND sdi.deleted_at IS NULL
+        ${whFilter}
+      GROUP BY sdi.item_id, sdi.warehouse_id
+      ${having}
+      ORDER BY sdi.warehouse_id, sdi.item_id
+      LIMIT ${take} OFFSET ${skip}
+    `);
+    const totalRows = await this.prisma.$queryRaw<{ total: bigint }[]>(
+      Prisma.sql`
+        SELECT COUNT(*)::bigint AS total FROM (
+          SELECT 1
+          FROM stock_document_items sdi
+          JOIN stock_documents sd ON sd.id = sdi.document_id
+          JOIN document_types dt ON dt.code = sd.document_type_code
+          WHERE sd.document_type_code <> 'KODJ'
+            AND COALESCE(dt.affects_stock, TRUE) = TRUE
+            AND sdi.deleted_at IS NULL
+            ${whFilter}
+          GROUP BY sdi.item_id, sdi.warehouse_id
+          ${having}
+        ) g
+      `,
+    );
+    const total = Number(totalRows[0]?.total ?? 0);
+
+    const itemIds = [...new Set(groups.map((g) => g.item_id))];
+    const items = itemIds.length
+      ? await this.prisma.item.findMany({
+          where: { id: { in: itemIds } },
+          select: { id: true, name: true, catalogNumber: true, unit: true },
+        })
+      : [];
+    const itemById = new Map(items.map((i) => [i.id, i]));
+
+    const ZERO = new Prisma.Decimal(0);
+    let data = groups.map((g) => {
+      const it = itemById.get(g.item_id);
+      const onHand = new Prisma.Decimal(g.on_hand ?? 0);
+      const avgNab = onHand.isZero()
+        ? ZERO
+        : new Prisma.Decimal(g.pn_weight ?? 0).div(onHand);
+      const avgVp = onHand.isZero()
+        ? ZERO
+        : new Prisma.Decimal(g.vp_weight ?? 0).div(onHand);
+      return {
+        itemId: g.item_id,
+        warehouseId: g.warehouse_id,
+        itemName: it?.name ?? null,
+        itemCode: it?.catalogNumber ?? null,
+        unit: it?.unit ?? null,
+        onHand: onHand.toFixed(3),
+        reserved: "0.000",
+        avgPurchaseNet: avgNab.toFixed(2),
+        avgWholesalePrice: avgVp.toFixed(2),
+        stockValue: onHand.mul(avgNab.toDecimalPlaces(2)).toFixed(2),
+      };
+    });
+
     if (query.q && query.q.trim() !== "") {
       const term = query.q.trim().toLowerCase();
       data = data.filter(
@@ -540,7 +657,7 @@ export class RobnoService {
     const documentDate = parseDateParam(dto.documentDate, "documentDate") ?? new Date();
     const postingDate = parseDateParam(dto.postingDate, "postingDate") ?? documentDate;
     const companyId = 0; // jednofirmno (kao ostatak 2.0); segment numeracije
-    const year = documentDate.getFullYear();
+    const year = businessYear(documentDate);
 
     const created = await this.prisma.$transaction(async (tx) => {
       // Serijalizacija sa rezervisanjem (review C): izlazni dokument uzima ISTI advisory lock

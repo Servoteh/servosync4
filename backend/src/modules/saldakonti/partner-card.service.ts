@@ -148,7 +148,7 @@ export class PartnerCardService {
             FROM ledger_entries le
             JOIN journal_entries je ON je.id = le.journal_entry_id
             JOIN saldakonto_accounts sa ON sa.account = le.account_code
-            WHERE je.status IN ('posted', 'locked')
+            WHERE je.status IN ('POSTED', 'LOCKED')
               AND le.analytical_code = ${partnerId}
               AND sa.tracks_open_items = TRUE
               ${accountFilter}
@@ -175,7 +175,7 @@ export class PartnerCardService {
         FROM ledger_entries le
         JOIN journal_entries je ON je.id = le.journal_entry_id
         JOIN saldakonto_accounts sa ON sa.account = le.account_code
-        WHERE je.status IN ('posted', 'locked')
+        WHERE je.status IN ('POSTED', 'LOCKED')
           AND le.analytical_code = ${partnerId}
           AND sa.tracks_open_items = TRUE
           ${accountFilter}

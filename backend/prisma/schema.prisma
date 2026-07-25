@@ -108,10 +108,10 @@ model PriceListEntry {
   id                Int      @id(map: "pk_price_list_entries") @default(autoincrement()) @map("id")
   itemId            Int      @default(0) @map("item_id")
   documentTypeId    String   @map("document_type_code") @db.VarChar(5)
-  price             Float?   @default(0) @map("price")
+  price             Decimal? @default(0) @map("price") @db.Decimal(19, 4) // DB-025: bio Float — novac nikad Float; živ pricing čita priceWithoutVat
   taxRateCode       String   @map("tax_rate_code") @db.VarChar(5)
   priceWithoutVat   Decimal? @default(0) @map("price_without_vat") @db.Decimal(19, 4)
-  fee               Float?   @default(0) @map("fee")
+  fee               Decimal? @default(0) @map("fee") @db.Decimal(19, 4) // DB-025: bio Float
   print             Boolean? @default(true) @map("print")
   priceWithVat      Decimal? @default(0) @map("price_with_vat") @db.Decimal(19, 4)
   checkPriceWithVat Boolean? @default(false) @map("check_price_with_vat")
@@ -551,6 +551,9 @@ model HandoverDraftItem {
 
   @@index([draftId], map: "idx_handover_draft_items_draft")
   @@index([drawingId], map: "idx_handover_draft_items_drawing")
+  // drawingId ima SQL-only FK fk_handover_draft_items_drawing → drawings(id)
+  // (20260725200000, DB-008) — bez Prisma relacije da se ne diraju imenovane
+  // relacije mainDrawing para; constraint u bazi važi.
   @@map("handover_draft_items")
 }
 
@@ -723,7 +726,7 @@ model Project {
   foreignSupplierId Int?            @default(0) @map("foreign_supplier_id")
   workUnitCode      String?         @map("work_unit_code") @db.VarChar(4)
   currency          String?         @map("currency") @db.VarChar(3)
-  exchangeRate      Decimal?        @default(0) @map("exchange_rate") @db.Decimal(19, 4)
+  exchangeRate      Decimal?        @default(0) @map("exchange_rate") @db.Decimal(19, 6) // 19,6 kao svi ostali kursevi (DB-027)
   workTypeId        Int?            @default(0) @map("work_type_id")
   projectName       String?         @map("project_name") @db.VarChar(250)
   deadline          DateTime?       @map("deadline") @db.Timestamp(6)
@@ -736,6 +739,8 @@ model Project {
   handoverDrafts    HandoverDraft[]
   partLocations     PartLocation[]
 
+  // SQL-only parcijalni unique uq_projects_project_number (WHERE btrim<>'', 20260725200000)
+  // — broj predmeta je poslovni identitet dual unosa 3.0→BigBit (DB-005).
   @@map("projects")
 }
 
@@ -909,6 +914,8 @@ model DocumentType {
   isFr                 Boolean? @default(false) @map("is_fr")
   affectsStock         Boolean? @default(true) @map("affects_stock")
 
+  // Sve meke reference (price_list, stock_documents, kepu) idu po code — mora biti jedinstven (DB-013).
+  @@unique([code], map: "uq_document_types_code")
   @@map("document_types")
 }
 
@@ -1655,6 +1662,8 @@ model Worker {
   workTimeEntries      WorkTimeEntry[]
   users                User[]                     @relation("UserWorker")
 
+  // SQL-only parcijalni unique uq_workers_card_id (WHERE btrim(card_id)<>'', 20260725200000)
+  // — kartica je kiosk identitet radnika (DB-004); Prisma ne ume partial.
   @@map("workers")
 }
 
@@ -2874,7 +2883,7 @@ model PurchaseRequestItem {
   requestId           Int     @map("request_id")
   articleId           Int?    @map("article_id") // meki ref na artikal (šifarnik robe)
   description         String? @map("description") @db.VarChar(255) // slobodan opis ako artikal nije u šifarniku
-  quantity            Decimal @map("quantity") @db.Decimal(18, 4) // količina (nikad Float)
+  quantity            Decimal @map("quantity") @db.Decimal(19, 6) // količina (nikad Float; 19,6 = standard, DB-027)
   unit                String? @map("unit") @db.VarChar(10)
   createRfq           Boolean @default(false) @map("create_rfq") // KreirajUpit — ide li ova stavka u upit
   suggestedSupplierId Int?    @map("suggested_supplier_id") // predloženi dobavljač — meki ref
@@ -2918,7 +2927,7 @@ model SupplierRfqItem {
   requestItemId       Int?    @map("request_item_id") // veza na stavku zahteva (meki ref)
   articleId           Int?    @map("article_id")
   description         String? @map("description") @db.VarChar(255)
-  quantity            Decimal @map("quantity") @db.Decimal(18, 4)
+  quantity            Decimal @map("quantity") @db.Decimal(19, 6) // 19,6 standard (DB-027)
   unit                String? @map("unit") @db.VarChar(10)
   offeredLeadTimeDays Int?    @map("offered_lead_time_days") // rok isporuke iz ponude
   isAccepted          Boolean @default(false) @map("is_accepted") // PrihvacenaPonuda
@@ -2965,9 +2974,9 @@ model PurchaseOrderItem {
   requestItemId    Int?     @map("request_item_id") // IDZahtevaZaNabavku (meki ref)
   articleId        Int?     @map("article_id")
   description      String?  @map("description") @db.VarChar(255)
-  orderedQuantity  Decimal  @map("ordered_quantity") @db.Decimal(18, 4) // TrebKol
-  receivedQuantity Decimal  @default(0) @map("received_quantity") @db.Decimal(18, 4) // IsporucenaKolicina
-  unitPrice        Decimal? @map("unit_price") @db.Decimal(18, 4) // cena (tek ovde, ne u upitu)
+  orderedQuantity  Decimal  @map("ordered_quantity") @db.Decimal(19, 6) // TrebKol (19,6 standard — 3-way match sa robnim, DB-027)
+  receivedQuantity Decimal  @default(0) @map("received_quantity") @db.Decimal(19, 6) // IsporucenaKolicina
+  unitPrice        Decimal? @map("unit_price") @db.Decimal(19, 4) // cena (19,4 novac standard)
   unit             String?  @map("unit") @db.VarChar(10)
   lineNo           Int      @default(0) @map("line_no")
 
@@ -2999,9 +3008,16 @@ model JournalEntry {
   documentDate  DateTime @map("document_date") @db.Timestamptz(6) // Datum dokumenta
   postingDate   DateTime @map("posting_date") @db.Timestamptz(6) // Datum knjizenja
 
-  /// draft | posted | locked  — životni ciklus (Level/Zakljucano iz doc 30 §D)
-  status  String @default("draft") @map("status") @db.VarChar(10)
+  /// DRAFT | POSTED | LOCKED — životni ciklus (Level/Zakljucano iz doc 30 §D).
+  /// VELIKA slova od 20260725220000 (DB-028: ujednačeno sa ostalim 4.0 statusima;
+  /// prebačeno dok je tabela bila prazna). Trigger guard_delete radi upper() pa je case-robustan.
+  status  String @default("DRAFT") @map("status") @db.VarChar(10)
   version Int    @default(0) @map("version") // optimistic lock (edit samo dok draft)
+
+  // DB-063: ko je poslednji promenio STATUS (post/lock/unlock/lock-older) i kada —
+  // globalni AuditInterceptor loguje HTTP poziv, ali entitet mora nositi svog aktera.
+  statusChangedByUserId Int?      @map("status_changed_by_user_id") // meki ref users.id
+  statusChangedAt       DateTime? @map("status_changed_at") @db.Timestamptz(6)
 
   // Storno = protiv-nalog, nikad edit (doc 30 §D, PLAN_FAZA_2 §Storno). Self-FK par.
   reversesEntryId   Int? @unique(map: "uq_journal_entries_reverses") @map("reverses_entry_id") // ja storniram ovaj nalog (1:1)
@@ -3734,7 +3750,8 @@ model Invoice {
 
   items InvoiceItem[]
 
-  @@unique([documentType, documentNumber], map: "uq_invoices_type_number")
+  // Numeracija je po firmi (document_number_sequences po companyId) — unique je mora pratiti (DB-011).
+  @@unique([companyId, documentType, documentNumber], map: "uq_invoices_company_type_number")
   @@index([customerId], map: "idx_invoices_customer")
   @@index([documentType, level, status], map: "idx_invoices_type_level_status")
   @@index([documentDate], map: "idx_invoices_date")
@@ -3996,8 +4013,10 @@ model VatReturn {
 
   lines VatReturnLine[]
 
-  // Najviše jedan obračun po (godina, mesec, kvartal). NULL u Postgres unique ne
-  // sudara pa mesečni i kvartalni ne kolidiraju; poravnava se u servisu.
+  // Najviše jedan obračun po (godina, mesec, kvartal). Od 20260725200000 je indeks
+  // u bazi NULLS NOT DISTINCT (SQL-only — Prisma to ne ume izraziti), pa dupli
+  // mesečni/kvartalni obračun ISTOG perioda DB odbija; + CHECK chk_vat_returns_period
+  // (tačno jedan od month/quarter, opsezi 1–12 / 1–4).
   @@unique([periodYear, periodMonth, periodQuarter], map: "uq_vat_returns_period")
   @@index([status], map: "idx_vat_returns_status")
   @@map("vat_returns")

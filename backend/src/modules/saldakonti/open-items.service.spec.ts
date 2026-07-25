@@ -105,7 +105,7 @@ describe("OpenItemsService — devizni filter", () => {
     expect(sql).toContain("COUNT(DISTINCT le.fx_currency) > 1");
     // Isti presek/status uslovi kao listOpenItems — inače bi se prijavljivale
     // grupe koje uopšte nisu u obračunu.
-    expect(sql).toContain("je.status IN ('posted', 'locked')");
+    expect(sql).toContain("je.status IN ('POSTED', 'LOCKED')");
     expect(sql).toContain("je.posting_date <=");
     expect(sql).toContain("sa.tracks_open_items = TRUE");
     // Sužavanje na valutu obračuna.

@@ -4,7 +4,7 @@
  * "Otvorene stavke se NE materijalizuju" (PLAN_FAZA_4 §Centralna ideja) —
  * izveden pogled nad `ledger_entries`:
  *   otvorena stavka = red gde je konto u SaldakontoAccount registru,
- *   pripadajući JournalEntry je proknjižen (status IN ('posted','locked')),
+ *   pripadajući JournalEntry je proknjižen (status IN ('POSTED','LOCKED')),
  *   reconciled_at IS NULL.
  *
  * Grupisanje po (account_code, analytical_code, document_number); saldo =
@@ -188,11 +188,11 @@ export class OpenItemsService {
         FROM ledger_entries le
         JOIN journal_entries je ON je.id = le.journal_entry_id
         JOIN saldakonto_accounts sa ON sa.account = le.account_code
-        -- 'locked' MORA biti uključen (review Batch A VISOK): lock perioda (POST
+        -- 'LOCKED' MORA biti uključen (review Batch A VISOK): lock perioda (POST
         -- /gl/journal/lock-older) ne sme da OBRIŠE otvoreni dug — zaključan nalog je i
         -- dalje proknjižen. Konzistentno sa partner-card / assertCreditLimit /
-        -- payment-preparation čitaocima koji već koriste IN ('posted','locked').
-        WHERE je.status IN ('posted', 'locked')
+        -- payment-preparation čitaocima koji već koriste IN ('POSTED','LOCKED').
+        WHERE je.status IN ('POSTED', 'LOCKED')
           -- Presek NA DAN (review 1E): stavka je „otvorena na dan" ako je proknjižena
           -- do preseka I nije bila uparena do preseka (uparivanje POSLE preseka je
           -- nevidljivo za istorijski IOS — godišnje usaglašavanje 31.12).
@@ -249,7 +249,7 @@ export class OpenItemsService {
         FROM ledger_entries le
         JOIN journal_entries je ON je.id = le.journal_entry_id
         JOIN saldakonto_accounts sa ON sa.account = le.account_code
-        WHERE je.status IN ('posted', 'locked')
+        WHERE je.status IN ('POSTED', 'LOCKED')
           AND je.posting_date <= ${cutoff}
           AND (le.reconciled_at IS NULL OR le.reconciled_at > ${cutoff})
           AND sa.tracks_open_items = TRUE
@@ -300,10 +300,10 @@ export class OpenItemsService {
           FROM ledger_entries le
           JOIN journal_entries je ON je.id = le.journal_entry_id
           JOIN saldakonto_accounts sa ON sa.account = le.account_code
-          -- 'locked' MORA biti uključen (review Batch A VISOK): lock perioda ne sme da
+          -- 'LOCKED' MORA biti uključen (review Batch A VISOK): lock perioda ne sme da
           -- obriše dospeli dug iz aging-a — zaključan nalog je i dalje proknjižen.
-          -- Konzistentno sa partner-card / limit / priprema (IN ('posted','locked')).
-          WHERE je.status IN ('posted', 'locked')
+          -- Konzistentno sa partner-card / limit / priprema (IN ('POSTED','LOCKED')).
+          WHERE je.status IN ('POSTED', 'LOCKED')
             AND le.reconciled_at IS NULL
             AND sa.tracks_open_items = TRUE
             ${accountFilter}
