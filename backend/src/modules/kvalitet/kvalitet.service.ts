@@ -1,3 +1,4 @@
+import { businessYear } from "../../common/business-date";
 import {
   BadRequestException,
   ConflictException,
@@ -304,7 +305,7 @@ export class QualityService {
           type: dto.type,
           reportNumber: null,
           // report_year iz report_date (isti prostor kao sekvenca pri potvrdi).
-          reportYear: reportDate.getFullYear(),
+          reportYear: businessYear(reportDate),
           reportDate,
           status: STATUS.DRAFT,
           quantity: dto.quantity,
@@ -374,7 +375,7 @@ export class QualityService {
     if (dto.reportDate !== undefined) {
       const d = new Date(dto.reportDate);
       data.reportDate = d;
-      data.reportYear = d.getFullYear();
+      data.reportYear = businessYear(d);
     }
     if (dto.workOrderId !== undefined) data.workOrderId = dto.workOrderId;
     if (dto.identNumber !== undefined) data.identNumber = dto.identNumber;
@@ -640,7 +641,7 @@ export class QualityService {
           data: {
             type,
             reportNumber: null,
-            reportYear: reportDate.getFullYear(),
+            reportYear: businessYear(reportDate),
             reportDate,
             status: STATUS.DRAFT,
             quantity: input.quantity,

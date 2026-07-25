@@ -113,7 +113,7 @@ export class GlReadService {
       FROM ledger_entries le
       JOIN journal_entries je ON je.id = le.journal_entry_id
       WHERE le.account_code = ${query.accountCode}
-        AND je.status IN ('posted', 'locked')
+        AND je.status IN ('POSTED', 'LOCKED')
         ${query.analyticalCode != null ? Prisma.sql`AND le.analytical_code = ${query.analyticalCode}` : Prisma.empty}
         ${query.costCenter ? Prisma.sql`AND le.cost_center = ${query.costCenter}` : Prisma.empty}
         ${query.from ? Prisma.sql`AND je.document_date >= ${query.from}` : Prisma.empty}

@@ -31,9 +31,9 @@ const BASE = '/v1/gl';
  * mapu statusa (DESIGN_SYSTEM §7) kao GK domen.
  */
 export const GL_STATUS = {
-  DRAFT: 'draft', // U pripremi — nalog tek kreiran
-  POSTED: 'posted', // Proknjižen — stavke ušle u glavnu knjigu
-  LOCKED: 'locked', // Zaključan period — samo pregled
+  DRAFT: 'DRAFT', // U pripremi — nalog tek kreiran
+  POSTED: 'POSTED', // Proknjižen — stavke ušle u glavnu knjigu
+  LOCKED: 'LOCKED', // Zaključan period — samo pregled
 } as const;
 
 export type GlStatus = (typeof GL_STATUS)[keyof typeof GL_STATUS];

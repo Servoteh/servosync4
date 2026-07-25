@@ -1,3 +1,4 @@
+import { businessYear } from "../../common/business-date";
 import {
   BadRequestException,
   ConflictException,
@@ -103,18 +104,22 @@ export class GlWriteService {
     });
   }
 
-  /** draft → posted (proknjiži robni auto-nalog; bez ovoga kartica/bilans su prazni). */
-  async markPosted(entryId: number) {
+  /** DRAFT → POSTED (proknjiži robni auto-nalog; bez ovoga kartica/bilans su prazni). */
+  async markPosted(entryId: number, actorUserId?: number) {
     const entry = await this.getEntryOrThrow(entryId);
-    if (entry.status !== "draft")
+    if (entry.status !== "DRAFT")
       throw new ConflictException(
-        `Nalog ${entryId} je u statusu ${entry.status}; knjiženje je moguće samo iz draft.`,
+        `Nalog ${entryId} je u statusu ${entry.status}; knjiženje je moguće samo iz DRAFT.`,
       );
     await this.prisma.journalEntry.update({
       where: { id: entryId },
-      data: { status: "posted" },
+      data: {
+        status: "POSTED",
+        statusChangedByUserId: actorUserId ?? null,
+        statusChangedAt: new Date(),
+      },
     });
-    return { id: entryId, status: "posted" };
+    return { id: entryId, status: "POSTED" };
   }
 
   /**
@@ -122,7 +127,11 @@ export class GlWriteService {
    * nalozi sa postingDate < beforeDate prelaze u `locked`. Vraća broj zaključanih.
    * Ne dira `draft` (nezavršeni) ni već `locked` — samo posted→locked.
    */
-  async lockOlderThan(beforeDate: Date, opts: { dryRun?: boolean } = {}) {
+  async lockOlderThan(
+    beforeDate: Date,
+    opts: { dryRun?: boolean } = {},
+    actorUserId?: number,
+  ) {
     if (!(beforeDate instanceof Date) || Number.isNaN(beforeDate.getTime()))
       throw new ConflictException("Neispravan datum praga (beforeDate).");
 
@@ -137,7 +146,7 @@ export class GlWriteService {
       );
 
     const where: Prisma.JournalEntryWhereInput = {
-      status: "posted",
+      status: "POSTED",
       postingDate: { lt: beforeDate },
     };
 
@@ -150,10 +159,14 @@ export class GlWriteService {
 
     const res = await this.prisma.journalEntry.updateMany({
       where,
-      data: { status: "locked" },
+      data: {
+        status: "LOCKED",
+        statusChangedByUserId: actorUserId ?? null,
+        statusChangedAt: new Date(),
+      },
     });
     this.logger.warn(
-      `LOCK-OLDER: zaključano ${res.count} naloga sa postingDate < ${beforeDate.toISOString().slice(0, 10)}`,
+      `LOCK-OLDER: zaključano ${res.count} naloga sa postingDate < ${beforeDate.toISOString().slice(0, 10)} (user ${actorUserId ?? "?"})`,
     );
     return { count: res.count, dryRun: false };
   }
@@ -163,32 +176,42 @@ export class GlWriteService {
    * bio bez povratka). Namenjeno ispravci greške pri zaključavanju perioda: vraća
    * nalog u `posted` da bi se mogao stornirati/ispraviti. Zahteva GL_WRITE.
    */
-  async markUnlocked(entryId: number) {
+  async markUnlocked(entryId: number, actorUserId?: number) {
     const entry = await this.getEntryOrThrow(entryId);
-    if (entry.status !== "locked")
+    if (entry.status !== "LOCKED")
       throw new ConflictException(
-        `Nalog ${entryId} je u statusu ${entry.status}; otključavanje je moguće samo iz locked.`,
+        `Nalog ${entryId} je u statusu ${entry.status}; otključavanje je moguće samo iz LOCKED.`,
       );
     await this.prisma.journalEntry.update({
       where: { id: entryId },
-      data: { status: "posted" },
+      data: {
+        status: "POSTED",
+        statusChangedByUserId: actorUserId ?? null,
+        statusChangedAt: new Date(),
+      },
     });
-    this.logger.warn(`UNLOCK naloga ${entryId} (locked → posted)`);
-    return { id: entryId, status: "posted" };
+    this.logger.warn(
+      `UNLOCK naloga ${entryId} (LOCKED → POSTED, user ${actorUserId ?? "?"})`,
+    );
+    return { id: entryId, status: "POSTED" };
   }
 
-  /** posted → locked (zaključaj nalog — sprečava izmene/storno bez otključavanja). */
-  async markLocked(entryId: number) {
+  /** POSTED → LOCKED (zaključaj nalog — sprečava izmene/storno bez otključavanja). */
+  async markLocked(entryId: number, actorUserId?: number) {
     const entry = await this.getEntryOrThrow(entryId);
-    if (entry.status !== "posted")
+    if (entry.status !== "POSTED")
       throw new ConflictException(
-        `Nalog ${entryId} je u statusu ${entry.status}; zaključavanje je moguće samo iz posted.`,
+        `Nalog ${entryId} je u statusu ${entry.status}; zaključavanje je moguće samo iz POSTED.`,
       );
     await this.prisma.journalEntry.update({
       where: { id: entryId },
-      data: { status: "locked" },
+      data: {
+        status: "LOCKED",
+        statusChangedByUserId: actorUserId ?? null,
+        statusChangedAt: new Date(),
+      },
     });
-    return { id: entryId, status: "locked" };
+    return { id: entryId, status: "LOCKED" };
   }
 
   /**
@@ -202,9 +225,9 @@ export class GlWriteService {
       include: { lines: true },
     });
     if (!source) throw new NotFoundException(`Nalog ${entryId} ne postoji.`);
-    if (source.status === "draft")
+    if (source.status === "DRAFT")
       throw new ConflictException("Nacrt naloga se ne stornira (obriši ga).");
-    if (source.status === "locked")
+    if (source.status === "LOCKED")
       throw new ConflictException(
         `Nalog ${entryId} je zaključan — prvo ga otključaj (unlock) pa storniraj; ` +
           `storno mimo otključavanja bi zaobišao kontrolu zaključanog perioda.`,
@@ -215,7 +238,7 @@ export class GlWriteService {
       );
 
     return this.prisma.$transaction(async (tx) => {
-      const year = source.documentDate.getFullYear();
+      const year = businessYear(source.documentDate);
       const number = await this.posting.nextJournalNumber(
         tx,
         source.companyId,
@@ -230,7 +253,7 @@ export class GlWriteService {
           companyId: source.companyId,
           documentDate: source.documentDate,
           postingDate: new Date(),
-          status: "posted",
+          status: "POSTED",
           createdByUserId: actorUserId ?? null,
           reversesEntryId: source.id,
           lines: {

@@ -312,9 +312,9 @@ export class GkEvalService {
       JOIN journal_entries je ON je.id = le.journal_entry_id
       LEFT JOIN accounts a ON a.code = le.account_code
       WHERE je.posting_date <= ${asOf}
-        -- 'locked' MORA biti uključen: godišnji obračun se radi POSLE zaključavanja
+        -- 'LOCKED' MORA biti uključen: godišnji obračun se radi POSLE zaključavanja
         -- perioda — bez ovoga bilans stanja/uspeha i APR XML izlaze nula.
-        AND je.status IN ('posted', 'locked')
+        AND je.status IN ('POSTED', 'LOCKED')
       GROUP BY le.account_code, a.name
       ORDER BY le.account_code
     `);
@@ -392,9 +392,9 @@ export class GkEvalService {
       JOIN journal_entries je ON je.id = le.journal_entry_id
       WHERE le.account_code LIKE ${likePattern}
         AND je.posting_date <= ${asOf}
-        -- 'locked' MORA biti uključen: godišnji obračun se radi POSLE zaključavanja
+        -- 'LOCKED' MORA biti uključen: godišnji obračun se radi POSLE zaključavanja
         -- perioda — bez ovoga bilans stanja/uspeha i APR XML izlaze nula.
-        AND je.status IN ('posted', 'locked')
+        AND je.status IN ('POSTED', 'LOCKED')
         ${psFilter}
     `);
 

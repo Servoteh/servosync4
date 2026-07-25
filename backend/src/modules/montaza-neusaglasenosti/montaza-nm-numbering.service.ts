@@ -1,3 +1,4 @@
+import { businessYear } from "../../common/business-date";
 import { Injectable } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 
@@ -16,7 +17,7 @@ import { Prisma } from "@prisma/client";
 export class MontazaNmNumberingService {
   /** Sledeći broj: `NM-NNN/YY` sa godišnjim brojačem. */
   async nextReportNumber(tx: Prisma.TransactionClient): Promise<string> {
-    const year = new Date().getFullYear();
+    const year = businessYear();
     const yy = String(year).slice(-2); // "26"
     const prefix = "NM-";
     const suffix = `/${yy}`;

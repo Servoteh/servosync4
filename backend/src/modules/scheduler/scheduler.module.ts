@@ -4,6 +4,7 @@ import { SchedulerController } from "./scheduler.controller";
 import { SchedulerService } from "./scheduler.service";
 import { Sy15CronJobs } from "./sy15-cron-jobs";
 import { NotifyDispatchService } from "./dispatch/notify-dispatch.service";
+import { RetentionJobsService } from "./retention-jobs.service";
 
 /**
  * Talas A — scheduler pogon + registar poslova. Poslovi su tanki pozivi
@@ -18,7 +19,12 @@ import { NotifyDispatchService } from "./dispatch/notify-dispatch.service";
 @Module({
   imports: [Sy15Module],
   controllers: [SchedulerController],
-  providers: [SchedulerService, Sy15CronJobs, NotifyDispatchService],
+  providers: [
+    SchedulerService,
+    Sy15CronJobs,
+    NotifyDispatchService,
+    RetentionJobsService,
+  ],
   exports: [SchedulerService],
 })
 export class SchedulerModule implements OnModuleInit, OnApplicationBootstrap {
@@ -26,11 +32,13 @@ export class SchedulerModule implements OnModuleInit, OnApplicationBootstrap {
     private readonly scheduler: SchedulerService,
     private readonly sy15Jobs: Sy15CronJobs,
     private readonly dispatchJobs: NotifyDispatchService,
+    private readonly retentionJobs: RetentionJobsService,
   ) {}
 
   onModuleInit(): void {
     for (const job of this.sy15Jobs.buildJobs()) this.scheduler.register(job);
     for (const job of this.dispatchJobs.buildJobs()) this.scheduler.register(job);
+    for (const job of this.retentionJobs.buildJobs()) this.scheduler.register(job);
   }
 
   onApplicationBootstrap(): void {

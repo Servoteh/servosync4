@@ -191,7 +191,7 @@ export class YearOpenService {
       FROM ledger_entries le
       JOIN journal_entries je ON je.id = le.journal_entry_id
       JOIN accounts a ON a.code = le.account_code
-      WHERE je.status IN ('posted', 'locked')
+      WHERE je.status IN ('POSTED', 'LOCKED')
         AND je.company_id = ${companyId}
         AND je.document_date < ${cutoff}
       GROUP BY le.account_code, a.account_class
