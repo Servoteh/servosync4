@@ -31,6 +31,8 @@ const D = Prisma.Decimal;
 const TOLERANCE = new D("0.01");
 /** MaxSaldo default prag (dinar) — sitni saldi ispod se auto-zatvaraju. */
 const DEFAULT_SMALL_BALANCE_THRESHOLD = new D("1.00");
+/** Tvrd maksimum MaxSaldo praga — zaštita od masovnog zatvaranja (review Opus 5). */
+const MAX_SMALL_BALANCE_THRESHOLD = new D("1000.00");
 
 export interface ReconcileResult {
   groupId: number;
@@ -217,6 +219,16 @@ export class ReconciliationService {
     }
     if (!value.isFinite() || value.lessThanOrEqualTo(0)) {
       throw new BadRequestException("Prag mora biti pozitivan broj.");
+    }
+    // GORNJA GRANICA (review Opus 5): bez nje jedan pogrešno ukucan prag (npr. 100000
+    // umesto 1.00) tiho zatvori SVE otvorene stavke firme — masovno, bez praktičnog
+    // undo-a (razveži radi po grupi). MaxSaldo je alat za SITNE ostatke, ne za otpis.
+    if (value.greaterThan(MAX_SMALL_BALANCE_THRESHOLD)) {
+      throw new BadRequestException(
+        `Prag ${value.toFixed(2)} je iznad dozvoljenog maksimuma ` +
+          `${MAX_SMALL_BALANCE_THRESHOLD.toFixed(2)} — MaxSaldo služi za sitne ostatke. ` +
+          `Za veće iznose koristi pojedinačno uparivanje ili otpis kroz GK nalog.`,
+      );
     }
     return value;
   }
