@@ -114,8 +114,9 @@ export class IzvodiController {
   deleteLine(
     @Param("id", ParseIntPipe) id: number,
     @Param("lineId", ParseIntPipe) lineId: number,
+    @Req() req: { user: AuthUser },
   ) {
-    return this.statements.deleteLine(id, lineId);
+    return this.statements.deleteLine(id, lineId, req.user.userId);
   }
 
   @Post(":id/lines/:lineId/link")

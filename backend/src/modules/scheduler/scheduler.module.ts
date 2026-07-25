@@ -5,6 +5,7 @@ import { SchedulerService } from "./scheduler.service";
 import { Sy15CronJobs } from "./sy15-cron-jobs";
 import { NotifyDispatchService } from "./dispatch/notify-dispatch.service";
 import { SastanciDispatchService } from "./dispatch/sastanci-dispatch.service";
+import { RetentionJobsService } from "./retention-jobs.service";
 
 /**
  * Talas A — scheduler pogon + registar poslova. Poslovi su tanki pozivi
@@ -19,6 +20,9 @@ import { SastanciDispatchService } from "./dispatch/sastanci-dispatch.service";
  * Talas A-2b — sastanci outbox (dispatch/sastanci-dispatch.service.ts) na
  * ZASEBNOM prekidaču `DISPATCH_SASTANCI_ENABLED`, jer se i na sy15 gasi zasebno
  * (druga stavka u dispatch petlji) — preklop mora da bude nezavisan.
+ *
+ * DB audit Faza 3 — retention-jobs.service.ts (DB-043): noćno čišćenje
+ * audit_log/notifikacija/job-runova po rokovima iz odluke 25.07.
  */
 @Module({
   imports: [Sy15Module],
@@ -28,6 +32,7 @@ import { SastanciDispatchService } from "./dispatch/sastanci-dispatch.service";
     Sy15CronJobs,
     NotifyDispatchService,
     SastanciDispatchService,
+    RetentionJobsService,
   ],
   exports: [SchedulerService],
 })
@@ -37,6 +42,7 @@ export class SchedulerModule implements OnModuleInit, OnApplicationBootstrap {
     private readonly sy15Jobs: Sy15CronJobs,
     private readonly dispatchJobs: NotifyDispatchService,
     private readonly sastanciDispatchJobs: SastanciDispatchService,
+    private readonly retentionJobs: RetentionJobsService,
   ) {}
 
   onModuleInit(): void {
@@ -44,6 +50,8 @@ export class SchedulerModule implements OnModuleInit, OnApplicationBootstrap {
     for (const job of this.dispatchJobs.buildJobs())
       this.scheduler.register(job);
     for (const job of this.sastanciDispatchJobs.buildJobs())
+      this.scheduler.register(job);
+    for (const job of this.retentionJobs.buildJobs())
       this.scheduler.register(job);
   }
 

@@ -1,3 +1,4 @@
+import { businessYear } from "../../common/business-date";
 import {
   ConflictException,
   Injectable,
@@ -127,7 +128,7 @@ export class BankStatementService {
               }
             : undefined,
       },
-      include: { lines: { orderBy: { lineNo: "asc" } } },
+      include: { lines: { where: { deletedAt: null }, orderBy: { lineNo: "asc" } } },
     });
   }
 
@@ -276,7 +277,7 @@ export class BankStatementService {
     const baseWhere: Prisma.LedgerEntryWhereInput = {
       analyticalCode: customerId,
       reconciledAt: null,
-      journalEntry: { is: { status: { in: ["posted", "locked"] } } },
+      journalEntry: { is: { status: { in: ["POSTED", "LOCKED"] } } },
     };
 
     const { candidates } = parseReference(referenceNumber, model);
@@ -416,8 +417,13 @@ export class BankStatementService {
     return this.getStatement(statementId);
   }
 
-  /** Obriši ručno/pogrešno unetu stavku. Zabranjeno na proknjiženom izvodu. */
-  async deleteLine(statementId: number, lineId: number) {
+  /**
+   * Obriši ručno/pogrešno unetu stavku. Zabranjeno na proknjiženom izvodu.
+   * SOFT-DELETE (Batch B / DB-059): red ostaje sa deletedAt+deletedByUserId
+   * (revizorski trag ko je sklonio stavku izvoda); svi čitaoci filtriraju
+   * deletedAt IS NULL kroz getStatementOrThrow/getStatement include.
+   */
+  async deleteLine(statementId: number, lineId: number, actorUserId?: number) {
     const statement = await this.getStatementOrThrow(statementId);
     this.assertNotPosted(statement.status, statementId);
 
@@ -427,7 +433,10 @@ export class BankStatementService {
         `Stavka ${lineId} ne pripada izvodu ${statementId}.`,
       );
 
-    await this.prisma.bankStatementLine.delete({ where: { id: lineId } });
+    await this.prisma.bankStatementLine.update({
+      where: { id: lineId },
+      data: { deletedAt: new Date(), deletedByUserId: actorUserId ?? null },
+    });
     return this.getStatement(statementId);
   }
 
@@ -684,7 +693,7 @@ export class BankStatementService {
         );
       }
 
-      const year = statement.statementDate.getFullYear();
+      const year = businessYear(statement.statementDate);
       const number = await this.nextJournalNumber(tx, 0, "IZV", year);
 
       const entry = await tx.journalEntry.create({
@@ -696,9 +705,9 @@ export class BankStatementService {
           documentDate: statement.statementDate,
           postingDate: statement.statementDate,
           // POSTED (ne draft): izvod-nalog MORA ući u karticu konta/bilans/saldakonti,
-          // koji čitaju samo status IN ('posted','locked') (review VISOK — inače promet
+          // koji čitaju samo status IN ('POSTED','LOCKED') (review VISOK — inače promet
           // banke tiho ostaje van GK). Isti obrazac kao PostingEngine.postManualEntry.
-          status: "posted",
+          status: "POSTED",
           createdByUserId: actor?.userId ?? null,
           lines: { create: ledgerLines },
         },
@@ -778,7 +787,7 @@ export class BankStatementService {
         orderBy: { statementDate: "desc" },
         skip: params.skip ?? 0,
         take,
-        include: { _count: { select: { lines: true } } },
+        include: { _count: { select: { lines: { where: { deletedAt: null } } } } },
       }),
       this.prisma.bankStatement.count({ where }),
     ]);
@@ -863,7 +872,7 @@ export class BankStatementService {
   private async getStatementOrThrow(id: number) {
     const statement = await this.prisma.bankStatement.findUnique({
       where: { id },
-      include: { lines: { orderBy: { lineNo: "asc" } } },
+      include: { lines: { where: { deletedAt: null }, orderBy: { lineNo: "asc" } } },
     });
     if (!statement) throw new NotFoundException(`Izvod ${id} ne postoji.`);
     return statement;

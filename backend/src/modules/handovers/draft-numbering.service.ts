@@ -1,3 +1,4 @@
+import { businessYear } from "../../common/business-date";
 import { Injectable } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 
@@ -15,7 +16,7 @@ import { Prisma } from "@prisma/client";
 export class DraftNumberingService {
   async next(tx: Prisma.TransactionClient): Promise<string> {
     const now = new Date();
-    const yy = String(now.getFullYear() % 100).padStart(2, "0");
+    const yy = String(businessYear(now) % 100).padStart(2, "0");
     const mm = String(now.getMonth() + 1).padStart(2, "0");
     const dd = String(now.getDate()).padStart(2, "0");
     const prefix = `G-${yy}${mm}${dd}-`;
