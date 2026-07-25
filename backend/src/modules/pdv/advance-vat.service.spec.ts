@@ -1,4 +1,7 @@
-import { ConflictException } from "@nestjs/common";
+import {
+  ConflictException,
+  UnprocessableEntityException,
+} from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { AdvanceVatService } from "./advance-vat.service";
 import type { AuthUser } from "../auth/jwt.strategy";
@@ -313,7 +316,15 @@ describe("AdvanceVatService.linkIncomingAdvanceToFinal", () => {
     advanceInvoiceId: null as number | null,
   };
 
-  it("plaćen avans → storno pretporeza (suprotna KUF stavka) u periodu konačnog računa", async () => {
+  // Tabela `invoices` sadrži ISKLJUČIVO naša izlazna dokumenta, pa je jedini
+  // dokument koji se ovde može izabrati NAŠ račun kupcu. Vezivanje ulaznog
+  // (dobavljačevog) avansa na njega postavilo bi `advanceAppliedAmount` na izlazni
+  // račun → na SEF bi otišao umanjen PayableAmount i PrepaidAmount za avans koji
+  // smo MI platili dobavljaču. Zato je veza ZATVORENA dok konačni ULAZNI račun ne
+  // postoji kao zaseban zapis (adversarial review Batch C, nalaz 4).
+  // Testovi ispod zaključavaju upravo to odbijanje — ranija verzija je knjižila.
+
+  it("ulazni avans na NAŠ izlazni račun → 422 (nema ispravnog cilja veze)", async () => {
     const prisma = makePrisma({
       advance: makeAdvance({
         advancePaidAt: new Date("2026-08-05T00:00:00.000Z"),
@@ -321,7 +332,6 @@ describe("AdvanceVatService.linkIncomingAdvanceToFinal", () => {
         status: "PAID",
       }),
     });
-    // findUnique se zove dvaput: prvo avans, pa konačni račun.
     prisma.invoice.findUnique
       .mockResolvedValueOnce(
         makeAdvance({
@@ -333,60 +343,39 @@ describe("AdvanceVatService.linkIncomingAdvanceToFinal", () => {
       .mockResolvedValueOnce(FINAL);
     const { service } = makeService(prisma);
 
-    const res = await service.linkIncomingAdvanceToFinal({
-      advanceId: 42,
-      finalInvoiceId: 77,
-    });
+    await expect(
+      service.linkIncomingAdvanceToFinal({ advanceId: 42, finalInvoiceId: 77 }),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
 
-    const { data } = firstArg<{
-      data: {
-        direction: string;
-        taxPeriodYear: number;
-        taxPeriodMonth: number;
-        vatBase: Prisma.Decimal;
-        vatAmount: Prisma.Decimal;
-      };
-    }>(prisma.vatLedgerEntry.create);
-    expect(data.direction).toBe("input");
-    expect(data.taxPeriodMonth).toBe(9); // period konačnog računa
-    // Storno = negativan pretporez (da se isti PDV ne odbije dvaput).
-    expect(data.vatBase.toFixed(2)).toBe("-10000.00");
-    expect(data.vatAmount.toFixed(2)).toBe("-2000.00");
-    expect(res.appliedAmount.toFixed(2)).toBe("12000.00");
-    expect(res.reversalEntryId).toBe(900);
-  });
-
-  it("nenaplaćen avans → samo veza, bez KUF storna", async () => {
-    const prisma = makePrisma();
-    prisma.invoice.findUnique
-      .mockResolvedValueOnce(makeAdvance())
-      .mockResolvedValueOnce(FINAL);
-    const { service } = makeService(prisma);
-
-    const res = await service.linkIncomingAdvanceToFinal({
-      advanceId: 42,
-      finalInvoiceId: 77,
-    });
-
+    // Ništa se ne knjiži i ništa se ne veže — ni KUF storno ni upis na fakturu.
     expect(prisma.vatLedgerEntry.create).not.toHaveBeenCalled();
-    expect(res.reversalEntryId).toBeNull();
-    expect(res.appliedAmount.toFixed(2)).toBe("12000.00");
+    expect(prisma.invoice.updateMany).not.toHaveBeenCalled();
   });
 
-  it("avans već iskorišćen na drugom računu → 409", async () => {
+  it("nenaplaćen ulazni avans → takođe 422, bez ikakvog upisa", async () => {
     const prisma = makePrisma();
     prisma.invoice.findUnique
       .mockResolvedValueOnce(makeAdvance())
       .mockResolvedValueOnce(FINAL);
-    prisma.invoice.findFirst.mockResolvedValue({
-      id: 55,
-      documentNumber: "UF-99/2026",
-    });
     const { service } = makeService(prisma);
 
     await expect(
       service.linkIncomingAdvanceToFinal({ advanceId: 42, finalInvoiceId: 77 }),
-    ).rejects.toBeInstanceOf(ConflictException);
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    expect(prisma.vatLedgerEntry.create).not.toHaveBeenCalled();
+    expect(prisma.invoice.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("veza na drugi AVANSNI račun → 422 (guard ostaje ispred provere smera)", async () => {
+    const prisma = makePrisma();
+    prisma.invoice.findUnique
+      .mockResolvedValueOnce(makeAdvance())
+      .mockResolvedValueOnce({ ...FINAL, documentType: "AVR" });
+    const { service } = makeService(prisma);
+
+    await expect(
+      service.linkIncomingAdvanceToFinal({ advanceId: 42, finalInvoiceId: 77 }),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
     expect(prisma.invoice.updateMany).not.toHaveBeenCalled();
   });
 });

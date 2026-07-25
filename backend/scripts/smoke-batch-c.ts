@@ -11,6 +11,7 @@ import { FxRevaluationService } from "../src/modules/saldakonti/fx-revaluation.s
 import { ThreeWayMatchService } from "../src/modules/nabavka/three-way-match.service";
 import { AdvanceVatService } from "../src/modules/pdv/advance-vat.service";
 import { PaymentPreparationService } from "../src/modules/placanja/payment-preparation.service";
+import { FakturisanjeService } from "../src/modules/sales/fakturisanje.service";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -238,6 +239,103 @@ async function main() {
       },
     });
     return advance.applyAdvance({ invoiceId: f2.id, advanceInvoiceId: avrId }, actor);
+  });
+
+  // ── C1 review: storno konačnog računa mora da reverzira i nalog avansa ──────
+  await step("C1 storno konačnog računa reverzira i nalog zatvaranja avansa", async () => {
+    const before = await prisma.invoice.findUnique({ where: { id: finalId } });
+    if (before.advanceClosingEntryId == null)
+      throw new Error("nalog zatvaranja avansa nije upisan na fakturu");
+    const closingId = before.advanceClosingEntryId;
+
+    await prisma.invoice.update({
+      where: { id: finalId },
+      data: { isLocked: true, status: "POSTED" },
+    });
+    const fakt: any = app.get(FakturisanjeService);
+    await fakt.stornoInvoice(finalId, "smoke storno", actor);
+
+    const closing = await prisma.journalEntry.findUnique({
+      where: { id: closingId },
+      select: { reversedByEntryId: true },
+    });
+    if (closing?.reversedByEntryId == null)
+      throw new Error("nalog zatvaranja avansa NIJE storniran — 4300 i PDV ostaju pogrešni");
+    const after = await prisma.invoice.findUnique({ where: { id: finalId } });
+    if (after.advanceInvoiceId != null)
+      throw new Error("veza na avans nije očišćena — avans se ne može ponovo iskoristiti");
+    return `nalog ${closingId} storniran, veza očišćena`;
+  });
+
+  await expectStatus("C1 storno već odbijenog AVR → 409 (prvo račun)", 409, async () => {
+    const fakt: any = app.get(FakturisanjeService);
+    // Napravi svež par: AVR naplaćen i odbijen na proknjiženom računu.
+    const prof = await prisma.invoice.create({
+      data: {
+        documentType: "PROF", documentNumber: `SMOKE-PROF2-${stamp}`, level: 250,
+        companyId: 0, customerId, documentDate: new Date(), currency: "RSD",
+        netTotal: "10000", vatTotal: "2000", grossTotal: "12000", status: "DRAFT",
+        items: { create: [{ lineNo: 1, itemId, quantity: "1", unitPrice: "10000",
+          vatRateCode: "3", vatBase: "10000", vatAmount: "2000", lineTotal: "12000" }] },
+      },
+    });
+    const avr = await advance.createAdvanceInvoice({ proformaId: prof.id }, actor);
+    const avrId2 = (avr?.data ?? avr).id;
+    await advance.markAdvancePaid(
+      { advanceInvoiceId: avrId2, paidAt: new Date().toISOString().slice(0, 10), amount: "12000" },
+      actor,
+    );
+    const fin = await prisma.invoice.create({
+      data: {
+        documentType: "IFR", documentNumber: `SMOKE-IFR3-${stamp}`, level: 0,
+        companyId: 0, customerId, documentDate: new Date(), currency: "RSD",
+        netTotal: "10000", vatTotal: "2000", grossTotal: "12000",
+        status: "POSTED", isLocked: true,
+      },
+    });
+    await advance.applyAdvance({ invoiceId: fin.id, advanceInvoiceId: avrId2 }, actor);
+    return fakt.stornoInvoice(avrId2, "smoke storno avansa", actor);
+  });
+
+  // ── C1 review: kumulativna (delimična) naplata avansa ───────────────────────
+  await step("C1 delimična naplata 5.000 + 7.000 na avans od 12.000", async () => {
+    const prof = await prisma.invoice.create({
+      data: {
+        documentType: "PROF", documentNumber: `SMOKE-PROF3-${stamp}`, level: 250,
+        companyId: 0, customerId, documentDate: new Date(), currency: "RSD",
+        netTotal: "10000", vatTotal: "2000", grossTotal: "12000", status: "DRAFT",
+        items: { create: [{ lineNo: 1, itemId, quantity: "1", unitPrice: "10000",
+          vatRateCode: "3", vatBase: "10000", vatAmount: "2000", lineTotal: "12000" }] },
+      },
+    });
+    const avr = await advance.createAdvanceInvoice({ proformaId: prof.id }, actor);
+    const id = (avr?.data ?? avr).id;
+    const today = new Date().toISOString().slice(0, 10);
+    await advance.markAdvancePaid({ advanceInvoiceId: id, paidAt: today, amount: "5000" }, actor);
+    await advance.markAdvancePaid({ advanceInvoiceId: id, paidAt: today, amount: "7000" }, actor);
+    const row = await prisma.invoice.findUnique({ where: { id } });
+    if (Number(row.advancePaidAmount) !== 12000)
+      throw new Error(`naplaćeno ${row.advancePaidAmount}, očekivano 12000`);
+    if (row.status !== "PAID")
+      throw new Error(`status ${row.status}, očekivano PAID tek po punoj naplati`);
+    return `naplaćeno 12000 u dve rate, status PAID`;
+  });
+
+  await expectStatus("C1 naplata preko iznosa avansa → 422", 422, async () => {
+    const prof = await prisma.invoice.create({
+      data: {
+        documentType: "PROF", documentNumber: `SMOKE-PROF4-${stamp}`, level: 250,
+        companyId: 0, customerId, documentDate: new Date(), currency: "RSD",
+        netTotal: "10000", vatTotal: "2000", grossTotal: "12000", status: "DRAFT",
+        items: { create: [{ lineNo: 1, itemId, quantity: "1", unitPrice: "10000",
+          vatRateCode: "3", vatBase: "10000", vatAmount: "2000", lineTotal: "12000" }] },
+      },
+    });
+    const avr = await advance.createAdvanceInvoice({ proformaId: prof.id }, actor);
+    const id = (avr?.data ?? avr).id;
+    const today = new Date().toISOString().slice(0, 10);
+    await advance.markAdvancePaid({ advanceInvoiceId: id, paidAt: today, amount: "10000" }, actor);
+    return advance.markAdvancePaid({ advanceInvoiceId: id, paidAt: today, amount: "5000" }, actor);
   });
 
   // ── C1b: ulazni avans (pretporez po plaćanju) ───────────────────────────────

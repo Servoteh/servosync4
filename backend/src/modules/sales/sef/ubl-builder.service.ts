@@ -182,14 +182,14 @@ export class UblBuilderService {
       : INVOICE_TYPE_CODE_COMMERCIAL;
 
     // Za plaćanje: odbijen avans umanjuje obavezu za svoj iznos (delimičan avans
-    // → ostatak; pun avans → 0). Bez `prepaidAmount` važi staro pravilo: sama
-    // referenca avansa znači da avans zatvara ceo iznos → PayableAmount = 0.
+    // → ostatak; pun avans → 0). Bez `prepaidAmount` iznos se NE umanjuje —
+    // ranije je sama referenca avansa obarala PayableAmount na nulu, pa je red sa
+    // postavljenom vezom a nultim iznosom slao kupcu na SEF „ne duguješ ništa"
+    // za pun račun (review Batch C, R6).
     const prepaid = invoice.prepaidAmount ?? null;
     const payable = prepaid
       ? maxZero(invoice.grossTotal.sub(prepaid))
-      : invoice.prepaymentReference
-        ? new D(0)
-        : invoice.grossTotal;
+      : invoice.grossTotal;
 
     const parts: string[] = [];
     parts.push('<?xml version="1.0" encoding="UTF-8"?>');

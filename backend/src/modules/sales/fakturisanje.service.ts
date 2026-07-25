@@ -405,12 +405,32 @@ export class FakturisanjeService {
         isLocked: true,
         journalEntryId: true,
         note: true,
+        documentNumber: true,
+        documentType: true,
+        advanceClosingEntryId: true,
       },
     });
     if (!invoice) throw new NotFoundException(`Račun ${id} ne postoji.`);
 
     if (invoice.status === "CANCELLED") {
       throw new ConflictException(`Račun ${id} je već storniran.`);
+    }
+
+    // AVANS koji je već odbijen na nestorniranom računu se NE stornira: njegov
+    // nalog naplate je već zatvoren nalogom odbijanja, pa bi drugi storno umanjio
+    // PDV obavezu drugi put, a konačni račun bi i dalje prikazivao umanjenje za
+    // storniran avans (review Batch C, nalaz 2). Prvo se stornira konačni račun.
+    if (invoice.documentType === "AVR") {
+      const appliedOn = await this.prisma.invoice.findFirst({
+        where: { advanceInvoiceId: id, status: { not: "CANCELLED" } },
+        select: { documentNumber: true },
+      });
+      if (appliedOn) {
+        throw new ConflictException(
+          `Avansni račun ${invoice.documentNumber} je odbijen na računu ` +
+            `${appliedOn.documentNumber} — prvo storniraj taj račun, pa onda avans.`,
+        );
+      }
     }
     // D8: samo zaključan (proknjižen) dokument se stornira; draft se menja/briše normalno.
     if (!invoice.isLocked || invoice.status === "DRAFT") {
@@ -472,6 +492,46 @@ export class FakturisanjeService {
       }
     }
 
+    // 2b) NALOG ZATVARANJA AVANSA (Batch C). `applyAdvance` knjiži zaseban nalog
+    //     (4300 DUG / PDV DUG / kupac POT) koji NIJE `invoice.journalEntryId`. Bez
+    //     njegovog storna, poništenje računa ostavlja obavezu po primljenom avansu
+    //     i PDV po avansu zatvorene — iako je avans naplaćen i novac je u kasi.
+    //     Posle storna se veza na avans briše, pa se avans može ponovo iskoristiti.
+    let advanceStornoEntryId: number | null = null;
+    if (invoice.advanceClosingEntryId != null) {
+      const advEntry = await this.prisma.journalEntry.findUnique({
+        where: { id: invoice.advanceClosingEntryId },
+        select: { id: true, status: true, reversedByEntryId: true },
+      });
+      if (
+        advEntry &&
+        advEntry.status !== "draft" &&
+        advEntry.reversedByEntryId == null
+      ) {
+        try {
+          const rev = await this.glWrite.reverse(advEntry.id, actor.userId);
+          advanceStornoEntryId = rev.stornoEntryId;
+        } catch (err) {
+          this.logger.error(
+            `STORNO SANACIJA: faktura ${id} je označena CANCELLED, ali reverse naloga ` +
+              `zatvaranja avansa ${advEntry.id} nije uspeo — ručno proknjižiti obrnuti ` +
+              `nalog kroz Glavnu knjigu (GK). Uzrok: ` +
+              `${err instanceof Error ? err.message : String(err)}`,
+            err instanceof Error ? err.stack : undefined,
+          );
+          throw err;
+        }
+      }
+      await this.prisma.invoice.update({
+        where: { id },
+        data: {
+          advanceInvoiceId: null,
+          advanceAppliedAmount: new D(0),
+          advanceClosingEntryId: null,
+        },
+      });
+    }
+
     // 3) SEF outbox saniranje (review Batch A F3):
     //    (a) SENT/DELIVERED → SEF cancel API (postojeći tok, guard MozeDaSeStornira +
     //        DRY-RUN bezbedno, sa razlogom).
@@ -500,6 +560,7 @@ export class FakturisanjeService {
     return {
       ...stornoed,
       stornoEntryId,
+      advanceStornoEntryId,
       sefCancelledOutboxIds,
       sefCancelledPendingIds,
     };

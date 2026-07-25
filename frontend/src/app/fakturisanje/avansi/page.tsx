@@ -202,18 +202,25 @@ export default function AvansiPage() {
               Označi naplatu
             </Button>
           )}
-          {a.linkedFinalInvoiceId == null && canActOn(a) && (
-            <Button
-              variant="ghost"
-              onClick={() => {
-                setBanner(null);
-                setLinkFinalFor(a);
-              }}
-            >
-              <Link2 className="h-4 w-4" aria-hidden />
-              Veži na konačni račun
-            </Button>
-          )}
+          {/* Samo IZLAZNI avans može da se odbije na konačnom računu. Tabela
+              računa sadrži isključivo naša izlazna dokumenta, pa bi vezivanje
+              ulaznog (dobavljačevog) avansa umanjilo iznos za uplatu na NAŠEM
+              računu kupcu — i to bi otišlo na SEF. Za ulazni smer veza čeka
+              evidenciju ulaznih faktura. */}
+          {a.linkedFinalInvoiceId == null &&
+            a.direction !== ADVANCE_DIRECTION.IN &&
+            canActOn(a) && (
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  setBanner(null);
+                  setLinkFinalFor(a);
+                }}
+              >
+                <Link2 className="h-4 w-4" aria-hidden />
+                Veži na konačni račun
+              </Button>
+            )}
         </div>
       ),
     },

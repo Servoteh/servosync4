@@ -11,9 +11,9 @@ import { apiFetch } from './client';
  *
  * Zato su rute razdvojene po smeru, a hook-ovi ovde biraju putanju po `direction`:
  *   GET  /v1/pdv/advances                              — lista avansa (OBA smera)
- *   POST /v1/sales/advances/from-proforma               — napravi AVR iz predračuna (out)
- *   POST /v1/sales/advances/:id/mark-paid               — označi naplatu izdatog avansa
- *   POST /v1/sales/advances/:id/link-final              — veži izdati avans na konačni račun
+ *   POST /v1/sales/advance-invoices                     — napravi AVR iz predračuna (out)
+ *   POST /v1/sales/advance-invoices/:id/paid            — označi naplatu izdatog avansa
+ *   POST /v1/sales/invoices/:id/apply-advance           — odbij avans na konačnom računu
  *   POST /v1/pdv/advances/incoming                      — evidentiraj ulazni avans (in)
  *   POST /v1/pdv/advances/incoming/:id/mark-paid        — plaćanje ulaznog avansa → pretporez
  *   POST /v1/pdv/advances/incoming/:id/link-final       — veži ulazni avans na konačni račun
@@ -24,7 +24,9 @@ import { apiFetch } from './client';
  */
 
 const PDV_BASE = '/v1/pdv/advances';
-const SALES_BASE = '/v1/sales/advances';
+const SALES_BASE = '/v1/sales/advance-invoices';
+// Odbijanje avansa ide na KONAČNI račun (id u putanji je id računa, ne avansa).
+const SALES_INVOICES_BASE = '/v1/sales/invoices';
 
 // ─────────────────────────────────────────────────────────────── smer + tipovi
 
@@ -93,6 +95,13 @@ export interface InvoiceAdvanceFields {
   advanceInvoiceId?: number | null;
   /** Bruto iznos avansa odbijen na ovom računu (umanjuje iznos ZA UPLATU). */
   advanceAppliedAmount?: string | null;
+  /**
+   * Za uplatu = grossTotal − advanceAppliedAmount, izračunato Decimal-om NA
+   * BACKEND-u. Prikaz uzima ovo polje, ne sopstveni Float račun.
+   */
+  payableAmount?: string | null;
+  /** Broj vezanog avansnog računa (za prikaz „Umanjenje za avans br. …"). */
+  advanceInvoiceNumber?: string | null;
 }
 
 // ─────────────────────────────────────────────────────────────── query keys
@@ -182,7 +191,7 @@ export function useCreateAdvanceFromProforma() {
   const invalidate = useInvalidateAdvances();
   return useMutation({
     mutationFn: (input: CreateAdvanceFromProformaInput) =>
-      apiFetch<Envelope<Advance>>(`${SALES_BASE}/from-proforma`, {
+      apiFetch<Envelope<Advance>>(`${SALES_BASE}`, {
         method: 'POST',
         body: JSON.stringify(input),
       }),
@@ -247,15 +256,24 @@ export interface MarkAdvancePaidInput {
 }
 
 /** Rezultat označavanja naplate — poreski period je po datumu naplate. */
+/**
+ * Rezultat naplate. Dva smera vraćaju RAZLIČITA polja, pa je sve osim `id`
+ * opciono — ulazni smer daje poreski period KUF stavke, izlazni daje id naloga
+ * glavne knjige. Bez `?` je prikaz pisao „u periodu undefined/undefined".
+ */
 export interface MarkAdvancePaidResult {
   id: number;
-  paidAt: string;
-  paidAmount: string;
-  taxPeriodYear: number;
-  taxPeriodMonth: number;
-  vatBase: string;
-  vatAmount: string;
-  vatLedgerEntryId: number;
+  paidAt?: string;
+  paidAmount?: string;
+  /** Ulazni smer (KUF stavka). */
+  taxPeriodYear?: number;
+  taxPeriodMonth?: number;
+  vatBase?: string;
+  vatAmount?: string;
+  vatLedgerEntryId?: number;
+  /** Izlazni smer (nalog GK po naplati avansa). */
+  journalEntryId?: number;
+  journalEntryNumber?: string;
 }
 
 /**
@@ -271,7 +289,7 @@ export function useMarkAdvancePaid() {
       const url =
         direction === ADVANCE_DIRECTION.IN
           ? `${PDV_BASE}/incoming/${id}/mark-paid`
-          : `${SALES_BASE}/${id}/mark-paid`;
+          : `${SALES_BASE}/${id}/paid`;
       return apiFetch<Envelope<MarkAdvancePaidResult>>(url, {
         method: 'POST',
         body: JSON.stringify({ paidAt, amount }),
@@ -291,11 +309,21 @@ export interface LinkAdvanceToFinalInput {
 }
 
 /** Rezultat vezivanja — `reversalEntryId` je storno stavka avansnog PDV-a. */
+/**
+ * Rezultat odbijanja avansa. Izlazni smer vraća ceo konačni račun sa
+ * `payableAmount` i brojem naloga zatvaranja; ulazni smer (kad se otvori) vraća
+ * `appliedAmount`/`reversalEntryId`. Sve opciono — v. `MarkAdvancePaidResult`.
+ */
 export interface LinkAdvanceToFinalResult {
-  advanceId: number;
-  finalInvoiceId: number;
-  appliedAmount: string;
-  reversalEntryId: number | null;
+  advanceId?: number;
+  finalInvoiceId?: number;
+  appliedAmount?: string;
+  reversalEntryId?: number | null;
+  /** Izlazni smer. */
+  advanceInvoiceNumber?: string;
+  advanceAppliedAmount?: string;
+  payableAmount?: string;
+  advanceClosingEntryNumber?: string;
 }
 
 /**
@@ -311,10 +339,16 @@ export function useLinkAdvanceToFinal() {
       const url =
         direction === ADVANCE_DIRECTION.IN
           ? `${PDV_BASE}/incoming/${advanceId}/link-final`
-          : `${SALES_BASE}/${advanceId}/link-final`;
+          : `${SALES_INVOICES_BASE}/${finalInvoiceId}/apply-advance`;
+      // Izlazni smer: id u putanji je KONAČNI račun, a avans ide u telu — obrnuto
+      // od ulaznog smera, gde ruta visi na avansu.
+      const body =
+        direction === ADVANCE_DIRECTION.IN
+          ? { finalInvoiceId }
+          : { advanceInvoiceId: advanceId };
       return apiFetch<Envelope<LinkAdvanceToFinalResult>>(url, {
         method: 'POST',
-        body: JSON.stringify({ finalInvoiceId }),
+        body: JSON.stringify(body),
       });
     },
     onSuccess: invalidate,

@@ -74,12 +74,21 @@ export function MarkPaidDialog({
       { id: advance.id, direction: advance.direction, paidAt, amount: parsed },
       {
         onSuccess: (res) => {
-          const period = `${String(res.data.taxPeriodMonth).padStart(2, '0')}/${res.data.taxPeriodYear}`;
+          // Poreski period vraća samo ULAZNI smer (KUF stavka); izlazni vraća
+          // nalog GK. Ranije je izlazna poruka pisala „period undefined/undefined".
+          const period =
+            res.data.taxPeriodMonth != null && res.data.taxPeriodYear != null
+              ? ` u poreskom periodu ${String(res.data.taxPeriodMonth).padStart(2, '0')}/${res.data.taxPeriodYear}`
+              : '';
+          const vat = res.data.vatAmount != null ? ` — PDV ${formatDecimal(res.data.vatAmount)} ${advance.currency}` : '';
+          const nalog = res.data.journalEntryNumber
+            ? ` Nalog ${res.data.journalEntryNumber}.`
+            : '';
           onDone({
             tone: 'success',
             msg: isIncoming
-              ? `Avans ${advance.documentNumber} je označen kao plaćen — pretporez ${formatDecimal(res.data.vatAmount)} ${advance.currency} priznat u poreskom periodu ${period}.`
-              : `Avans ${advance.documentNumber} je označen kao naplaćen — PDV ${formatDecimal(res.data.vatAmount)} ${advance.currency} u poreskom periodu ${period}.`,
+              ? `Avans ${advance.documentNumber} je označen kao plaćen${vat}${period}.`
+              : `Avans ${advance.documentNumber} je označen kao naplaćen${vat}${period}.${nalog}`,
           });
           onClose();
         },
@@ -223,12 +232,22 @@ export function LinkFinalDialog({
       { advanceId: advance.id, direction: advance.direction, finalInvoiceId: parsed },
       {
         onSuccess: (res) => {
+          // Izlazni smer vraća `advanceAppliedAmount` + `payableAmount`, ulazni
+          // `appliedAmount` + `reversalEntryId` — uzmi ono što stvarno stiže.
+          const applied = res.data.advanceAppliedAmount ?? res.data.appliedAmount;
+          const payable =
+            res.data.payableAmount != null
+              ? ` Za uplatu ostaje ${formatDecimal(res.data.payableAmount)} ${advance.currency}.`
+              : '';
           onDone({
             tone: 'success',
             msg:
-              `Avans ${advance.documentNumber} je vezan na konačni račun — umanjenje ` +
-              `${formatDecimal(res.data.appliedAmount)} ${advance.currency}.` +
-              (res.data.reversalEntryId
+              `Avans ${advance.documentNumber} je vezan na konačni račun` +
+              (applied != null
+                ? ` — umanjenje ${formatDecimal(applied)} ${advance.currency}.`
+                : '.') +
+              payable +
+              (res.data.reversalEntryId || res.data.advanceClosingEntryNumber
                 ? ' PDV avansa je storniran (neće se odbiti dvaput).'
                 : ''),
           });

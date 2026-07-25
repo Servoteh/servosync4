@@ -3559,6 +3559,9 @@ model FxRevaluationRun {
   companyId Int      @default(0) @map("company_id")
 
   rateUsed Decimal @map("rate_used") @db.Decimal(19, 6) // kurs na dan preseka (ExchangeRate.middleRate)
+  /// Dan sa kog je kurs STVARNO uzet (resolver vraća poslednji <= preseka). Ako se
+  /// razlikuje od `asOfDate`, obračun je išao po zastarelom kursu — revizorski trag.
+  rateDate DateTime? @map("rate_date") @db.Timestamptz(6)
 
   /// Zbirno po pravcu: pozitivne (prihod 663) i negativne (rashod 563) kursne razlike.
   gainAmount  Decimal @default(0) @map("gain_amount") @db.Decimal(19, 4)
@@ -3701,6 +3704,10 @@ model Invoice {
   advancePaidAmount    Decimal  @default(0) @map("advance_paid_amount") @db.Decimal(19, 4)
   /// Smer avansa: 'out' = mi izdajemo kupcu (KIF), 'in' = dobavljač nama (KUF, pretporez po plaćanju).
   advanceDirection     String?  @map("advance_direction") @db.VarChar(3)
+  /// Nalog kojim je avans ZATVOREN na ovom konačnom računu (journal_entries.id).
+  /// Storno konačnog računa mora da reverzira i njega — inače avans ostane naplaćen
+  /// a konto 4300 i PDV po avansu padnu na nulu.
+  advanceClosingEntryId Int? @map("advance_closing_entry_id")
 
   /// DRAFT | POSTED | SENT | PAID | CANCELLED
   status   String  @default("DRAFT") @map("status") @db.VarChar(20)

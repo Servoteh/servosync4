@@ -328,6 +328,19 @@ export class AdvanceVatService {
         `Dokument #${final.id} je avansni račun — avans se veže na KONAČNI račun, ne na drugi avans.`,
       );
     }
+    // Tabela `invoices` sadrži ISKLJUČIVO naša IZLAZNA dokumenta. Ulazni avans
+    // dobavljača vezan na naš izlazni račun postavio bi `advanceAppliedAmount` na
+    // taj račun, pa bi na SEF otišao umanjen `PayableAmount` i `PrepaidAmount` za
+    // avans koji smo MI platili dobavljaču — kupac bi dobio račun na kome piše da
+    // duguje manje (review Batch C, nalaz 4). Dok konačni ULAZNI račun ne postoji
+    // kao zaseban zapis, ova veza nema ispravan cilj i mora biti odbijena.
+    if (advance.advanceDirection === ADVANCE_DIRECTION.IN) {
+      throw new UnprocessableEntityException(
+        `Ulazni (dobavljačev) avans ${advance.documentNumber} ne može da se veže na ` +
+          `račun ${final.documentNumber} — to je NAŠ izlazni račun kupcu. Veza ulaznog ` +
+          `avansa na konačni ulazni račun čeka evidenciju ulaznih faktura.`,
+      );
+    }
     if (final.customerId !== advance.customerId) {
       throw new UnprocessableEntityException(
         `Avans i konačni račun nisu istog komitenta (avans: ${advance.customerId ?? "—"}, ` +

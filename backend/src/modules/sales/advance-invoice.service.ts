@@ -10,6 +10,7 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { PostingEngineService } from "../gl/posting/posting.service";
 import { DocumentNumberSequenceService } from "./numbering.service";
 import { grossToNet } from "../pdv/vat-bridge.util";
+import { assertVatPeriodNotLocked } from "../pdv/vat-period-lock";
 import type { AuthUser } from "../auth/jwt.strategy";
 import {
   type ApplyAdvanceDto,
@@ -324,10 +325,10 @@ export class AdvanceInvoiceService {
         `Avansni račun ${advance.documentNumber} je storniran — naplata se ne knjiži.`,
       );
     }
-    if (advance.advancePaidAt != null) {
+    if (advance.advancePaidAmount.greaterThanOrEqualTo(advance.grossTotal)) {
       throw new ConflictException(
-        `Avansni račun ${advance.documentNumber} je već naplaćen ` +
-          `(${advance.advancePaidAt.toISOString().slice(0, 10)}).`,
+        `Avansni račun ${advance.documentNumber} je već naplaćen u celosti ` +
+          `(${advance.advancePaidAmount.toFixed(2)}).`,
       );
     }
     if (advance.customerId == null) {
@@ -342,10 +343,18 @@ export class AdvanceInvoiceService {
         "Naplaćen iznos avansa mora biti veći od 0.",
       );
     }
-    if (amount.greaterThan(advance.grossTotal)) {
+    // Naplata je KUMULATIVNA: avans se sme platiti u više rata (5.000 pa 7.000 na
+    // avans od 12.000). Zbir svih uplata ne sme preći iznos avansnog računa; svaka
+    // rata knjiži SVOJ PDV, jer obaveza nastaje naplatom (review Batch C, nalaz 7 —
+    // ranije je prva uplata trajno zaključavala avans i ostatak PDV-a nije imao
+    // gde da se proknjiži).
+    const alreadyPaid = advance.advancePaidAmount;
+    if (alreadyPaid.add(amount).greaterThan(advance.grossTotal)) {
       throw new UnprocessableEntityException(
-        `Naplaćen iznos (${amount.toFixed(2)}) je veći od iznosa avansnog računa ` +
-          `(${advance.grossTotal.toFixed(2)}).`,
+        `Zbir naplata (${alreadyPaid.add(amount).toFixed(2)}) prelazi iznos avansnog ` +
+          `računa (${advance.grossTotal.toFixed(2)}). Već naplaćeno: ` +
+          `${alreadyPaid.toFixed(2)}, preostalo: ` +
+          `${advance.grossTotal.sub(alreadyPaid).toFixed(2)}.`,
       );
     }
 
@@ -353,19 +362,31 @@ export class AdvanceInvoiceService {
     const customerId = advance.customerId;
 
     return this.prisma.$transaction(async (tx) => {
-      // CAS: samo prelaz „nenaplaćen → naplaćen" prolazi. Dvoklik/paralelni poziv
-      // dobija count 0 → 409, pa nalog GK nastaje TAČNO jednom.
+      // PDV obaveza po avansu pada u period NAPLATE, a `paidAt` je slobodan unos.
+      // Bez ove provere naplata sa datumom iz već obračunatog perioda uđe u GK, ali
+      // je KIF tog perioda zaključan — pa PDV ne uđe ni u jednu prijavu. Ulazni smer
+      // je ovu bravu imao od početka; izlazni je nije (review Batch C, nalaz 6).
+      await assertVatPeriodNotLocked(tx, input.paidAt.getFullYear(), [
+        input.paidAt.getMonth() + 1,
+      ]);
+
+      // CAS nad ZATEČENIM zbirom naplata: uslov `advancePaidAmount: alreadyPaid`
+      // propušta tačno jednog od paralelnih poziva (dvoklik dobija count 0 → 409),
+      // a i dalje dozvoljava sledeću RATU jer se uslov pomera sa svakom uplatom.
+      const paidTotal = alreadyPaid.add(amount);
+      const fullyPaid = paidTotal.greaterThanOrEqualTo(advance.grossTotal);
       const claimed = await tx.invoice.updateMany({
         where: {
           id: advance.id,
-          advancePaidAt: null,
+          advancePaidAmount: alreadyPaid,
           status: { not: "CANCELLED" },
         },
         data: {
-          advancePaidAt: input.paidAt,
-          advancePaidAmount: amount,
-          // POSTED → PAID; ne gazi SEF-om postavljen status (SENT/…).
-          ...(advance.status === "POSTED" ? { status: "PAID" } : {}),
+          // Datum PRVE naplate ostaje — to je dan nastanka PDV obaveze po avansu.
+          ...(advance.advancePaidAt == null ? { advancePaidAt: input.paidAt } : {}),
+          advancePaidAmount: paidTotal,
+          // POSTED → PAID tek kad je avans naplaćen U CELOSTI; ne gazi SEF status.
+          ...(fullyPaid && advance.status === "POSTED" ? { status: "PAID" } : {}),
           updatedByUserId: actor.userId,
         },
       });
@@ -403,6 +424,15 @@ export class AdvanceInvoiceService {
         },
       ];
       const vatAccount = this.vatAccountFor(split.vatPercent);
+      // Stopa bez namenskog konta avansnog PDV-a (u kontnom planu postoje samo
+      // 4720/20% i 4730/10%) bi tiho izbacila PDV liniju i napravila NEURAVNOTEŽEN
+      // nalog — korisnik bi dobio goli 500 umesto objašnjenja (review Batch C, R5).
+      if (split.vat.greaterThan(ZERO) && !vatAccount) {
+        throw new UnprocessableEntityException(
+          `Za PDV stopu ${split.vatPercent}% ne postoji konto avansnog PDV-a — ` +
+            `avansni račun je moguć samo po stopi 20% ili 10%.`,
+        );
+      }
       if (split.vat.greaterThan(ZERO) && vatAccount) {
         lines.push({
           accountCode: vatAccount,
@@ -492,6 +522,16 @@ export class AdvanceInvoiceService {
         "Storniran dokument ne učestvuje u odbijanju avansa.",
       );
     }
+    // Smer MORA biti izlazni. Ulazni avans (dobavljačev) nikad nije proknjižen u
+    // našoj GK kao obaveza po primljenom avansu — njegov storno bi gurnuo 4300 i
+    // PDV konto u dugovni saldo i umanjio izlazni PDV bez osnova. Za partnera koji
+    // je i kupac i dobavljač ovo je jedan pogrešan klik (review Batch C, nalaz 5).
+    if (advance.advanceDirection !== ADVANCE_DIRECTION_OUT) {
+      throw new UnprocessableEntityException(
+        `Avans ${advance.documentNumber} je PRIMLJEN od dobavljača (ulazni) — ` +
+          `na izlaznom računu se odbijaju samo avansi koje smo mi izdali kupcu.`,
+      );
+    }
     // GL storno avansa se knjiži odmah, pa konačni račun mora biti proknjižen
     // (draft nema definitivan broj ni nalog — avans bi zatvarao „ništa").
     if (invoice.status === "DRAFT" || invoice.level !== 0) {
@@ -543,6 +583,12 @@ export class AdvanceInvoiceService {
     const customerId = invoice.customerId;
 
     return this.prisma.$transaction(async (tx) => {
+      // Storno PDV-a po avansu pada u period konačnog računa — isti razlog kao u
+      // `markAdvancePaid` (review Batch C, nalaz 6).
+      await assertVatPeriodNotLocked(tx, invoice.documentDate.getFullYear(), [
+        invoice.documentDate.getMonth() + 1,
+      ]);
+
       // CAS + parcijalni unique `uq_invoices_advance_applied_once`: jedan AVR sme
       // biti odbijen na TAČNO JEDNOM nestorniranom računu.
       let claimedCount: number;
@@ -606,6 +652,15 @@ export class AdvanceInvoiceService {
         },
       ];
       const vatAccount = this.vatAccountFor(split.vatPercent);
+      // Stopa bez namenskog konta avansnog PDV-a (u kontnom planu postoje samo
+      // 4720/20% i 4730/10%) bi tiho izbacila PDV liniju i napravila NEURAVNOTEŽEN
+      // nalog — korisnik bi dobio goli 500 umesto objašnjenja (review Batch C, R5).
+      if (split.vat.greaterThan(ZERO) && !vatAccount) {
+        throw new UnprocessableEntityException(
+          `Za PDV stopu ${split.vatPercent}% ne postoji konto avansnog PDV-a — ` +
+            `avansni račun je moguć samo po stopi 20% ili 10%.`,
+        );
+      }
       if (split.vat.greaterThan(ZERO) && vatAccount) {
         lines.push({
           accountCode: vatAccount,
@@ -626,6 +681,15 @@ export class AdvanceInvoiceService {
         description: `Odbijanje avansa ${advance.documentNumber} na računu ${invoice.documentNumber}`,
         createdByUserId: actor.userId,
         lines,
+      });
+
+      // Zapamti nalog zatvaranja avansa NA FAKTURI. Bez ovoga `stornoInvoice`
+      // reverzira samo nalog same fakture, pa storno konačnog računa obriše i
+      // obavezu po primljenom avansu (4300) i PDV po avansu — iako je avans
+      // naplaćen i novac je u kasi (adversarial review Batch C, nalaz 1).
+      await tx.invoice.update({
+        where: { id: invoice.id },
+        data: { advanceClosingEntryId: entry.journalEntryId },
       });
 
       const updated = await tx.invoice.findUnique({

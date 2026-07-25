@@ -50,8 +50,11 @@ export interface RecordIncomingAdvanceDto {
   documentNumber: string;
   /** Datum dokumenta (ISO datum). */
   documentDate: string;
-  /** Bruto iznos avansa (osnovica + PDV). */
-  grossAmount: number;
+  /**
+   * Bruto iznos avansa (osnovica + PDV). Prima se i kao STRING — novac ne sme da
+   * prođe kroz JS Float (BACKEND_RULES §3); `Decimal` ga uzima direktno iz stringa.
+   */
+  grossAmount: number | string;
   /** Šifra poreske stope (meki ref `tax_rates.code`, npr. "3" / "20"). */
   vatRateCode: string;
   /** Ako je avans već plaćen pri evidenciji — datum plaćanja (ISO datum). */
@@ -66,8 +69,8 @@ export interface MarkIncomingAdvancePaidDto {
   id: number;
   /** Datum plaćanja (ISO datum) — određuje PORESKI PERIOD KUF stavke. */
   paidAt: string;
-  /** Plaćen bruto iznos (može biti delimičan; ≤ bruto avansa). */
-  amount: number;
+  /** Plaćen bruto iznos (može biti delimičan; ≤ bruto avansa). String = bez Float-a. */
+  amount: number | string;
 }
 
 /** Vezivanje avansa na konačni (ulazni) račun — storno pretporeza avansa. */

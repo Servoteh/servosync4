@@ -264,7 +264,7 @@ export const NAV_DOMAINS: NavDomain[] = [
       // { label: 'Upiti kupaca', href: '/rfqs', icon: ClipboardList, requires: PERMISSIONS.SALES_READ, keywords: ['rfq', 'zahtev za ponudu', 'upit kupca'] },
       // Faza 5: Predračuni & računi (izlazni, dom+izvoz)
       { label: 'Predračuni & računi', href: '/fakturisanje', icon: ListOrdered, requires: PERMISSIONS.SALES_READ, keywords: ['faktura', 'racun', 'predracun', 'profaktura', 'izvoz'] },
-      { label: 'Avansni računi', href: '/fakturisanje/avansi', icon: ListOrdered, requires: PERMISSIONS.SALES_READ, keywords: ['avans', 'avansni racun', 'avr', 'predujam'] },
+      { label: 'Avansni računi', href: '/fakturisanje/avansi', icon: ListOrdered, requires: PERMISSIONS.PDV_READ, keywords: ['avans', 'avansni racun', 'avr', 'predujam'] },
       // Faza 5: e-Fakture (SEF)
       { label: 'e-Fakture (SEF)', href: '/sef', icon: RefreshCw, requires: PERMISSIONS.SEF_READ, keywords: ['sef', 'efaktura', 'ubl'] },
       // Faza 3: Zalihe & kalkulacija (crosslisted u Logistiku)

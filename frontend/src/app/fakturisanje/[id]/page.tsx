@@ -877,7 +877,10 @@ function InvoiceTotals({ doc }: { doc: InvoiceDetail }) {
   const adv = doc as InvoiceDetail & InvoiceAdvanceFields;
   const applied = Number(adv.advanceAppliedAmount ?? 0);
   const hasAdvance = Number.isFinite(applied) && applied > 0;
-  const toPay = Number(doc.grossTotal) - (hasAdvance ? applied : 0);
+  // „Za uplatu" računa BACKEND (Decimal) i vraća ga kao `payableAmount` — koristi
+  // njega, a Float razliku samo kao rezervu za starije odgovore. Dva izvora istine
+  // za isti novčani iznos su se ranije mogla raziću u zadnjoj pari.
+  const toPay = adv.payableAmount ?? String(Number(doc.grossTotal) - (hasAdvance ? applied : 0));
 
   return (
     <div className="flex justify-end">

@@ -200,8 +200,10 @@ export class PdvController {
     @Body() body: { paidAt: string; amount: string | number },
     @Req() req: { user: AuthUser },
   ) {
+    // Iznos se prosleđuje NETAKNUT (string ostaje string) — `Number()` ovde bi
+    // provukao novac kroz JS Float, protiv BACKEND_RULES §3 (review Batch C, R8).
     const data = await this.advanceVat.markIncomingAdvancePaid(
-      { id, paidAt: body?.paidAt, amount: Number(body?.amount) },
+      { id, paidAt: body?.paidAt, amount: body?.amount },
       req.user,
     );
     return { data };

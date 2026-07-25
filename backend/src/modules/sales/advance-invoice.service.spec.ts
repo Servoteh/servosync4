@@ -109,6 +109,9 @@ interface PrismaMock {
     update: jest.Mock;
     updateMany: jest.Mock;
   };
+  // Brava PDV perioda (assertVatPeriodNotLocked) — prazna lista = nijedan
+  // obračun nije proknjižen, pa period nije zaključan.
+  vatReturn: { findMany: jest.Mock };
   $executeRaw: jest.Mock;
   $transaction: jest.Mock;
 }
@@ -122,6 +125,7 @@ function prismaMock(): PrismaMock {
       update: jest.fn(),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
+    vatReturn: { findMany: jest.fn().mockResolvedValue([]) },
     $executeRaw: jest.fn().mockResolvedValue(0),
     $transaction: jest.fn(),
   };
