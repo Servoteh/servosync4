@@ -211,3 +211,27 @@ export const ADDITIVE_DEDUP_FIELDS: Record<string, string> = {
 export function additiveDedupFieldFor(entity: string): string | null {
   return ADDITIVE_DEDUP_FIELDS[entity] ?? null;
 }
+
+/**
+ * JEDINSTVENOST UNUTAR IZVORNOG SKUPA (Nenad, 25.07.2026 — DB audit DB-081):
+ * kataloški broj artikla mora biti jedinstven; BigBit je od skoro brani, ali
+ * istorijski duplikati postoje (1.980 grupa / 4.298 artikala izmereno 25.07).
+ *
+ * `items` se sinhronizuje kao FULL REFRESH (obriši sve + bulk `createMany` u
+ * chunk-ovima, pod `session_replication_role='replica'`). Tvrd UNIQUE indeks bi
+ * u tom režimu i dalje važio (indeksi nisu trigeri) i jedan duplikat iz izvora
+ * bi oborio CEO chunk → sync artikala pada → MRP/nabavka bez šifarnika.
+ *
+ * Zato guard radi PRE upisa: iz izvornog skupa se zadržava PRVI red po ključu
+ * (case-insensitive, trimovan), ostali se PRESKAČU i uđu u sync log. Time 3.0
+ * nikad ne dobije duplikat, a sync nikad ne padne zbog njega.
+ *
+ * Vrednost = ime polja u Prisma modelu; poređenje je `lower(btrim(...))`.
+ */
+export const SOURCE_UNIQUE_FIELDS: Record<string, string> = {
+  items: "catalogNumber",
+};
+
+export function sourceUniqueFieldFor(entity: string): string | null {
+  return SOURCE_UNIQUE_FIELDS[entity] ?? null;
+}

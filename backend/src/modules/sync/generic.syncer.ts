@@ -12,6 +12,7 @@ import {
   additiveDedupFieldFor,
   isAdditiveRefreshTable,
   isOwnedProductionTable,
+  sourceUniqueFieldFor,
 } from './table-ownership';
 
 /**
@@ -177,6 +178,37 @@ export class GenericSyncer implements EntitySyncer {
             } else insertData.push(d);
           }
         }
+      }
+
+      // JEDINSTVENOST U IZVORNOM SKUPU (DB-081, npr. items.catalogNumber):
+      // zadrži PRVI red po ključu, ostale preskoči uz zapis u sync log. Radi se
+      // PRE upisa jer bi tvrd UNIQUE oborio ceo `createMany` chunk (full refresh
+      // ide pod `session_replication_role='replica'`, gde UNIQUE i dalje važi).
+      const uniqueField = sourceUniqueFieldFor(this.entity);
+      if (uniqueField && insertData.length) {
+        const seen = new Map<string, unknown>();
+        const kept: typeof insertData = [];
+        for (const d of insertData) {
+          const key = String(d[uniqueField] ?? "")
+            .trim()
+            .toLowerCase();
+          if (key === "") {
+            kept.push(d);
+            continue;
+          }
+          const first = seen.get(key);
+          if (first !== undefined) {
+            rowsSkipped++;
+            if (errors.length < 20)
+              errors.push(
+                `${this.pkLabel(d)}: ${uniqueField}="${String(d[uniqueField])}" već donet u ovom sync-u (izvor: ${String(first)}) — duplikat kataloškog broja PRESKOČEN (DB-081; očisti izvor u BigBit-u)`,
+              );
+            continue;
+          }
+          seen.set(key, this.pkLabel(d));
+          kept.push(d);
+        }
+        insertData = kept;
       }
 
       await this.prisma.$transaction(
