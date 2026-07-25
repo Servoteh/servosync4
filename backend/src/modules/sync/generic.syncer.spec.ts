@@ -13,6 +13,25 @@ import { TableMapping } from './sync.types';
  */
 describe('GenericSyncer — full-refresh brisanje', () => {
   function makeMapping(targetDb: string): TableMapping {
+    if (targetDb === 'items') {
+      return {
+        source: 'R_Artikli',
+        model: 'Item',
+        targetDb,
+        pk: { kind: 'single', field: 'id' },
+        watermark: null,
+        columns: [
+          { src: 'IDArtikal', field: 'id', type: 'Int', nullable: false, isId: true },
+          {
+            src: 'Sifra artikla',
+            field: 'catalogNumber',
+            type: 'String',
+            nullable: false,
+            isId: false,
+          },
+        ],
+      };
+    }
     return {
       source: targetDb === 'projects' ? 'Predmeti' : 'Warehouses',
       model: targetDb === 'projects' ? 'Project' : 'Warehouse',
@@ -43,7 +62,12 @@ describe('GenericSyncer — full-refresh brisanje', () => {
     const count = jest.fn().mockResolvedValue(0);
     const findMany = jest.fn().mockResolvedValue(existingByNumber);
 
-    const delegateName = targetDb === 'projects' ? 'project' : 'warehouse';
+    const delegateName =
+      targetDb === 'projects'
+        ? 'project'
+        : targetDb === 'items'
+          ? 'item'
+          : 'warehouse';
     const txDelegate = { deleteMany, createMany };
     const tx: Record<string, unknown> = {
       [delegateName]: txDelegate,
@@ -138,6 +162,38 @@ describe('GenericSyncer — full-refresh brisanje', () => {
       (c) => (c[0] as { data: { id: number }[] }).data,
     );
     expect(inserted.map((r) => r.id)).toEqual([101]);
+    expect(result.rowsSkipped).toBe(0);
+  });
+
+  // DB-081 (zahtev Nenada 25.07): kataloški broj mora biti jedinstven. BigBit je
+  // unos duplikata zabranio, ali istorijski postoje — full-refresh bi ih preneo,
+  // a tvrd UNIQUE bi oborio ceo `createMany` chunk. Zato guard PRE upisa.
+  it('items: duplikat kataloškog broja iz izvora se PRESKAČE (prvi red pobeđuje)', async () => {
+    const { syncer, createMany } = setup('items', [
+      { IDArtikal: 1, 'Sifra artikla': 'AB-100' },
+      { IDArtikal: 2, 'Sifra artikla': ' ab-100 ' }, // isti broj (case+razmaci)
+      { IDArtikal: 3, 'Sifra artikla': 'AB-200' },
+    ]);
+    const result = await syncer.sync({ strategy: 'full_refresh', cursor: null });
+
+    const inserted = createMany.mock.calls.flatMap(
+      (c) => (c[0] as { data: { id: number }[] }).data,
+    );
+    expect(inserted.map((r) => r.id)).toEqual([1, 3]);
+    expect(result.rowsSkipped).toBe(1);
+    expect(result.errors[0]).toContain('duplikat kataloškog broja');
+  });
+
+  it('items: prazan kataloški broj ne ulazi u proveru jedinstvenosti', async () => {
+    const { syncer, createMany } = setup('items', [
+      { IDArtikal: 1, 'Sifra artikla': '' },
+      { IDArtikal: 2, 'Sifra artikla': '   ' },
+    ]);
+    const result = await syncer.sync({ strategy: 'full_refresh', cursor: null });
+    const inserted = createMany.mock.calls.flatMap(
+      (c) => (c[0] as { data: { id: number }[] }).data,
+    );
+    expect(inserted.map((r) => r.id)).toEqual([1, 2]);
     expect(result.rowsSkipped).toBe(0);
   });
 });
