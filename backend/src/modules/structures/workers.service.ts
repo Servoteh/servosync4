@@ -52,6 +52,13 @@ export interface ListWorkersQuery {
   workerTypeId?: string;
   /** `true` (default) | `false` | `all`. */
   active?: string;
+  /**
+   * `"true"` = samo OVLAŠĆENI KONTROLORI — radnici čija vrsta posla ima
+   * `additionalPrivileges` (legacy `tVrsteRadnika.DodatnaOvlascenja`). Isti
+   * kriterijum kao `controllersOnly` na `GET /v1/tech-processes`; koristi ga
+   * „Kontrolor" picker u Kontroli kvaliteta da ne nudi ceo imenik.
+   */
+  controllersOnly?: string;
 }
 
 @Injectable()
@@ -80,6 +87,16 @@ export class WorkersService {
     // active: default = samo aktivni (spec §7.1); `false` = neaktivni; `all` = svi
     if (query.active === "false") where.active = false;
     else if (query.active !== "all") where.active = true;
+    // K4: samo ovlašćeni kontrolori. Ide kroz `AND` da ne gazi eksplicitan
+    // `workerTypeId` filter; nema kontrolorskog tipa → prazan skup (fail-closed),
+    // isto kao `controllersOnly` na tech-processes.
+    if (query.controllersOnly === "true") {
+      const types = await this.prisma.workerType.findMany({
+        where: { additionalPrivileges: true },
+        select: { id: true },
+      });
+      where.AND = [{ workerTypeId: { in: types.map((t) => t.id) } }];
+    }
 
     const [rows, total] = await this.prisma.$transaction([
       this.prisma.worker.findMany({

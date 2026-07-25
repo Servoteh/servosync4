@@ -182,3 +182,58 @@ describe("WorkersService (delete guard)", () => {
     });
   });
 });
+
+describe("WorkersService — K4 controllersOnly (picker Kontrolor)", () => {
+  let service: WorkersService;
+  let prisma: ReturnType<typeof prismaMock>;
+
+  beforeEach(async () => {
+    prisma = prismaMock();
+    prisma.workerType.findMany.mockResolvedValue([]);
+    const mod: TestingModule = await Test.createTestingModule({
+      providers: [WorkersService, { provide: PrismaService, useValue: prisma }],
+    }).compile();
+    service = mod.get(WorkersService);
+  });
+
+  /** `where` sa kojim je otisao glavni upit liste. */
+  function listWhere() {
+    return prisma.worker.findMany.mock.calls[0][0].where;
+  }
+
+  it("controllersOnly=true suzava na vrste posla sa dodatnim ovlascenjima", async () => {
+    prisma.workerType.findMany.mockResolvedValue([{ id: 3 }, { id: 7 }]);
+
+    await service.list({ controllersOnly: "true" });
+
+    expect(listWhere().AND).toEqual([{ workerTypeId: { in: [3, 7] } }]);
+    expect(prisma.workerType.findMany).toHaveBeenCalledWith({
+      where: { additionalPrivileges: true },
+      select: { id: true },
+    });
+  });
+
+  it("controllersOnly=true bez kontrolorskog tipa je fail-closed", async () => {
+    prisma.workerType.findMany.mockResolvedValue([]);
+
+    await service.list({ controllersOnly: "true" });
+
+    expect(listWhere().AND).toEqual([{ workerTypeId: { in: [] } }]);
+  });
+
+  it("bez controllersOnly nema AND uslova (imenik ostaje pun)", async () => {
+    await service.list({});
+
+    expect(listWhere().AND).toBeUndefined();
+    expect(prisma.workerType.findMany).not.toHaveBeenCalled();
+  });
+
+  it("controllersOnly NE gazi eksplicitan workerTypeId filter", async () => {
+    prisma.workerType.findMany.mockResolvedValue([{ id: 3 }]);
+
+    await service.list({ controllersOnly: "true", workerTypeId: "3" });
+
+    expect(listWhere().workerTypeId).toBe(3);
+    expect(listWhere().AND).toEqual([{ workerTypeId: { in: [3] } }]);
+  });
+});

@@ -102,6 +102,8 @@ export interface WorkersListParams {
   active?: WorkerActiveFilter;
   workUnitCode?: string;
   workerTypeId?: number | '';
+  /** true = samo ovlašćeni kontrolori (vrsta posla sa dodatnim ovlašćenjima). */
+  controllersOnly?: boolean;
 }
 
 /** Paginirana lista radnika (+ pretraga, filter aktivnosti / RJ / vrste posla). */
@@ -117,6 +119,7 @@ export function useWorkers(params: WorkersListParams) {
           active: params.active,
           workUnitCode: params.workUnitCode,
           workerTypeId: params.workerTypeId === '' ? undefined : params.workerTypeId,
+          controllersOnly: params.controllersOnly ? 'true' : undefined,
         })}`,
       ),
   });
