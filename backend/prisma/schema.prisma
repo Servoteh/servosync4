@@ -551,6 +551,9 @@ model HandoverDraftItem {
 
   @@index([draftId], map: "idx_handover_draft_items_draft")
   @@index([drawingId], map: "idx_handover_draft_items_drawing")
+  // drawingId ima SQL-only FK fk_handover_draft_items_drawing → drawings(id)
+  // (20260725200000, DB-008) — bez Prisma relacije da se ne diraju imenovane
+  // relacije mainDrawing para; constraint u bazi važi.
   @@map("handover_draft_items")
 }
 
@@ -736,6 +739,8 @@ model Project {
   handoverDrafts    HandoverDraft[]
   partLocations     PartLocation[]
 
+  // SQL-only parcijalni unique uq_projects_project_number (WHERE btrim<>'', 20260725200000)
+  // — broj predmeta je poslovni identitet dual unosa 3.0→BigBit (DB-005).
   @@map("projects")
 }
 
@@ -909,6 +914,8 @@ model DocumentType {
   isFr                 Boolean? @default(false) @map("is_fr")
   affectsStock         Boolean? @default(true) @map("affects_stock")
 
+  // Sve meke reference (price_list, stock_documents, kepu) idu po code — mora biti jedinstven (DB-013).
+  @@unique([code], map: "uq_document_types_code")
   @@map("document_types")
 }
 
@@ -1655,6 +1662,8 @@ model Worker {
   workTimeEntries      WorkTimeEntry[]
   users                User[]                     @relation("UserWorker")
 
+  // SQL-only parcijalni unique uq_workers_card_id (WHERE btrim(card_id)<>'', 20260725200000)
+  // — kartica je kiosk identitet radnika (DB-004); Prisma ne ume partial.
   @@map("workers")
 }
 
@@ -3651,7 +3660,8 @@ model Invoice {
 
   items InvoiceItem[]
 
-  @@unique([documentType, documentNumber], map: "uq_invoices_type_number")
+  // Numeracija je po firmi (document_number_sequences po companyId) — unique je mora pratiti (DB-011).
+  @@unique([companyId, documentType, documentNumber], map: "uq_invoices_company_type_number")
   @@index([customerId], map: "idx_invoices_customer")
   @@index([documentType, level, status], map: "idx_invoices_type_level_status")
   @@index([documentDate], map: "idx_invoices_date")
@@ -3913,8 +3923,10 @@ model VatReturn {
 
   lines VatReturnLine[]
 
-  // Najviše jedan obračun po (godina, mesec, kvartal). NULL u Postgres unique ne
-  // sudara pa mesečni i kvartalni ne kolidiraju; poravnava se u servisu.
+  // Najviše jedan obračun po (godina, mesec, kvartal). Od 20260725200000 je indeks
+  // u bazi NULLS NOT DISTINCT (SQL-only — Prisma to ne ume izraziti), pa dupli
+  // mesečni/kvartalni obračun ISTOG perioda DB odbija; + CHECK chk_vat_returns_period
+  // (tačno jedan od month/quarter, opsezi 1–12 / 1–4).
   @@unique([periodYear, periodMonth, periodQuarter], map: "uq_vat_returns_period")
   @@index([status], map: "idx_vat_returns_status")
   @@map("vat_returns")

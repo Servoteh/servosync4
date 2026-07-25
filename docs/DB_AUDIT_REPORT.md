@@ -542,14 +542,14 @@ Sortirano po ozbiljnosti. Status se ažurira ručno pri sređivanju.
 
 | ID | Ozbiljnost | Oblast | Naslov | Status |
 |---|---|---|---|---|
-| DB-001 | KRITIČNO | Integritet | CASCADE brisanje stavki GK; DB dozvoljava brisanje knjiženih naloga | otvoreno |
-| DB-002 | VISOKO | Integritet | CASCADE briše stavke knjiženih dokumenata (fakture/robno/izvodi/blagajna) | otvoreno |
-| DB-003 | VISOKO | Integritet | `vat_returns` unique neefektivan (NULL semantika) | otvoreno |
-| DB-004 | VISOKO | Integritet | `workers.card_id` bez UNIQUE (kiosk identitet) | otvoreno |
-| DB-005 | VISOKO | Integritet | `projects.project_number` bez UNIQUE (dual unos) | otvoreno |
-| DB-006 | VISOKO | Integritet | 0 CHECK u bazi; `ledger_entries` bez debit/credit ≥ 0 | otvoreno |
-| DB-007 | VISOKO | Integritet | `invoices.customer_id` NULL i za knjižen račun | otvoreno |
-| DB-008 | VISOKO | Integritet | `handover_draft_items.drawing_id` bez FK | otvoreno |
+| DB-001 | KRITIČNO | Integritet | CASCADE brisanje stavki GK; DB dozvoljava brisanje knjiženih naloga | ✅ Faza 2 (20260725200000): trigger brana posted/locked; kaskada za draft ostaje |
+| DB-002 | VISOKO | Integritet | CASCADE briše stavke knjiženih dokumenata (fakture/robno/izvodi/blagajna) | ✅ Faza 2: trigger brane na invoices/stock_documents/bank_statements/cash_entries |
+| DB-003 | VISOKO | Integritet | `vat_returns` unique neefektivan (NULL semantika) | ✅ Faza 2: NULLS NOT DISTINCT + CHECK perioda |
+| DB-004 | VISOKO | Integritet | `workers.card_id` bez UNIQUE (kiosk identitet) | ✅ Faza 2: parcijalni unique (0 duplikata pre) |
+| DB-005 | VISOKO | Integritet | `projects.project_number` bez UNIQUE (dual unos) | ✅ Faza 2: parcijalni unique (0 duplikata pre) |
+| DB-006 | VISOKO | Integritet | 0 CHECK u bazi; `ledger_entries` bez debit/credit ≥ 0 | ✅ Faza 2: chk_ledger_entries_nonnegative |
+| DB-007 | VISOKO | Integritet | `invoices.customer_id` NULL i za knjižen račun | ✅ Faza 2: chk_invoices_posted_customer |
+| DB-008 | VISOKO | Integritet | `handover_draft_items.drawing_id` bez FK | ✅ Faza 2: FK dodat (1 orphan saniran uz snimak) |
 | DB-025 | VISOKO | Tipovi | Float cena u živom cenovniku (`price_list_entries.price/fee`) | otvoreno |
 | DB-037 | VISOKO | Performanse | 58 FK bez indeksa — vrući put proizvodnje (top lista) | ✅ indeksi ŽIVI na produ 25.07; migracija u main-u (#17) |
 | DB-038 | VISOKO | Performanse | `drawing_pdfs` = 87% baze (bytea PDF-ovi, 5.737 redova) | otvoreno |
@@ -566,12 +566,12 @@ Sortirano po ozbiljnosti. Status se ažurira ručno pri sređivanju.
 | DB-074 | VISOKO | Održavanje | Backup: restore ✅, skripta ✅, off-site = noćni klon mašine (odluka 25.07) | ✅ sanirano (ZA PROVERU: sat klona posle 02:40) |
 | DB-075 | VISOKO | Održavanje | Untracked Batch B migracija + izmenjena šema u radnom stablu | ✅ rešeno 25.07 — Batch B komitovan i merge-ovan kao #16 (71992fa), deploy 🟢 |
 | DB-080 | VISOKO | Integritet | Orphan redovi krše FK (replica sync): 89× mrp_demand_items + 1× handover_drafts | ✅ sanirano 25.07 (snimci u ~/backups/sanacije) |
-| DB-081 | VISOKO | Integritet | `items.catalog_number` bez UNIQUE + 1.980 duplikat-grupa u podacima (zahtev 25.07) | otvoreno — čišćenje prvo u BigBit-u (lista izvezena) |
-| DB-009 | SREDNJE | Integritet | CHECK paket: količine/procenti/iznosi/intervali | otvoreno |
+| DB-081 | VISOKO | Integritet | `items.catalog_number` bez UNIQUE + 1.980 duplikat-grupa u podacima (zahtev 25.07) | ⏳ watchdog ŽIV u monitoringu (baseline 2.028 CI-grupa, ratchet); UNIQUE (case-insensitive, odluka 25.07) čim BigBit lista padne na 0 |
+| DB-009 | SREDNJE | Integritet | CHECK paket: količine/procenti/iznosi/intervali | ✅ Faza 2: 11 CHECK constrainta (tax_rates preskočen — BigBit keš) |
 | DB-010 | SREDNJE | Integritet | „Magic zero" umesto NULL (sistemski obrazac) | otvoreno |
-| DB-011 | SREDNJE | Integritet | `invoices` unique bez company_id (multi-firma) | otvoreno |
-| DB-012 | SREDNJE | Integritet | `exchange_rates`: default 0 + timestamptz u unique ključu | otvoreno |
-| DB-013 | SREDNJE | Integritet | UNIQUE fali: `document_types.code`, `workers.username` | otvoreno |
+| DB-011 | SREDNJE | Integritet | `invoices` unique bez company_id (multi-firma) | ✅ Faza 2: uq_invoices_company_type_number |
+| DB-012 | SREDNJE | Integritet | `exchange_rates`: default 0 + timestamptz u unique ključu | delimično: CHECK ≥ 0 dodat; default 0 je namerni sentinel (resolver guard E6 već postoji); ostaje date-tip kolone |
+| DB-013 | SREDNJE | Integritet | UNIQUE fali: `document_types.code`, `workers.username` | delimično: code ✅ Faza 2; username ODLOŽEN (duplikati — kadrovska presuda) |
 | DB-014 | SREDNJE | Integritet | Header zbirovi vs stavke bez mehanizma | otvoreno |
 | DB-015 | SREDNJE | Integritet | Storno/reconciled parovi asimetrični | otvoreno |
 | DB-016 | SREDNJE | Integritet | Meke reference između owned tabela (WO komponente, planovi, MRP) | otvoreno |
@@ -601,11 +601,11 @@ Sortirano po ozbiljnosti. Status se ažurira ručno pri sređivanju.
 | DB-067 | SREDNJE | Logika | stock_documents: status ≠ journalEntryId semantika | otvoreno |
 | DB-068 | SREDNJE | Logika | Blagajna: saldo provera van transakcije | ✅ u main-u (#17) |
 | DB-069 | SREDNJE | Logika | Mrtvi modeli + „piši-a-ne-čitaj" mirror tabele | otvoreno |
-| DB-076 | SREDNJE | Održavanje | Dupli timestamp 20260723140000; prod red ≠ replay red | otvoreno |
+| DB-076 | SREDNJE | Održavanje | Dupli timestamp 20260723140000; prod red ≠ replay red | otvoreno — ⚠️ 25.07 NOVI slučaj: 20260725160000 ×2 (perf_indeksi + work_order_launch_notifications; nezavisne, benigno) — konvenciju formalizovati |
 | DB-077 | SREDNJE | Održavanje | Nema CI replay-od-nule (P3009 presedan) | otvoreno |
 | DB-020 | NISKO | Integritet | payment_accounts self-FK; notifications PK default 0 | otvoreno |
 | DB-021 | NISKO | Integritet | FK + default(0) traži red id=0 — ZA PROVERU | otvoreno |
-| DB-022 | NISKO | Integritet | NULLS DISTINCT rupe u ostalim unique; draft_number | otvoreno |
+| DB-022 | NISKO | Integritet | NULLS DISTINCT rupe u ostalim unique; draft_number | delimično: pracenje_notes + predmet_planeri ✅ Faza 2; reassign_audit i draft_number ostaju |
 | DB-023 | NISKO | Integritet | 23 relacije bez eksplicitnog onUpdate (implicitni CASCADE) | otvoreno |
 | DB-024 | NISKO | Integritet | drawing_pdfs bez FK para ka drawings | otvoreno |
 | DB-033 | NISKO | Tipovi | projects.status bez kataloga; pdm_status case+clip | otvoreno |
@@ -625,7 +625,9 @@ Sortirano po ozbiljnosti. Status se ažurira ručno pri sređivanju.
 | DB-079 | NISKO | Održavanje | Migracija 016 komitovana a neprimenjena | ✅ rešeno 25.07 (deploy legao 10:17 UTC) |
 
 **Zbir: 81 nalaz — 1 KRITIČNO · 24 VISOKO · 36 SREDNJE · 20 NISKO.**
-*Ažurirano 25.07 uveče (posle talasa 0): **✅ zatvoreno 13** — DB-037, 039, 046, 047, 061, 062, 064, 065, 068, 073 (merge #17, ff128a3), DB-074 (restore test + klon-odluka), DB-079, DB-080 (sanacija podataka uz snimke). Otvoreno ostaje 67, od toga iz VISOKO grupe: DB-001..008 constraint mreža (Faza 2), DB-025, DB-038, DB-040, DB-049, DB-050, DB-059/060/063, DB-075.*
+*Ažurirano 25.07 uveče (posle talasa 0): **✅ zatvoreno 13** — DB-037, 039, 046, 047, 061, 062, 064, 065, 068, 073 (merge #17, ff128a3), DB-074 (restore test + klon-odluka), DB-079, DB-080 (sanacija podataka uz snimke).*
+
+*Ažurirano 25.07 noć (posle **Faze 2**, migracija `20260725200000_faza2_constraint_mreza`): **✅ još 10 u celosti** — DB-001 (KRITIČNO!), 002, 003, 004, 005, 006, 007, 008, 009, 011 + **3 delimično** (DB-012 CHECK≥0, DB-013 code, DB-022 dva parcijalna) + DB-081 watchdog živ + DB-075 rešen kroz #16. **Ukupno zatvoreno: 24 od 81** (uklj. jedini KRITIČAN). Najveći preostali: DB-025 (Float cenovnik), DB-038 (drawing_pdfs 87%), DB-040 (PDM N+1), DB-049 (plaintext lozinke u sync-u), DB-050/051 (RLS + rola — Faza 4, uz Negovana/Nesu), DB-059/060/063 (soft-delete čitaoci, stock_levels, GL audit trag), DB-081 (čišćenje BigBit šifarnika).*
 
 ---
 
