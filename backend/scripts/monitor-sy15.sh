@@ -64,6 +64,18 @@ else
   add "backup: još nijedan uspešan run (.last_ok ne postoji)"
 fi
 
+# 7) katbroj duplikati (DB audit DB-081) — ratchet: alarm SAMO ako broj duplikat-grupa
+# poraste (dokaz da BigBit brana ne drži); čišćenje sme samo da ga smanjuje.
+# Case-insensitive grupisanje (odluka 25.07). Baseline se sam spušta pri čišćenju.
+psq2() { docker exec servosync-pg psql -U servosync -d servosync -tAc "$1" 2>/dev/null; }
+KB_BASE_FILE="$HOME/ops/.katbroj_baseline"
+KB_CUR=$(psq2 "select count(*) from (select lower(catalog_number) from items where btrim(coalesce(catalog_number,''))<>'' group by lower(catalog_number) having count(*)>1) d")
+if [ -n "${KB_CUR:-}" ]; then
+  if [ -f "$KB_BASE_FILE" ]; then KB_BASE=$(cat "$KB_BASE_FILE"); else KB_BASE="$KB_CUR"; echo "$KB_CUR" > "$KB_BASE_FILE"; fi
+  [ "$KB_CUR" -gt "$KB_BASE" ] && add "items: duplikat-grupe kataloškog broja PORASLE ($KB_BASE → $KB_CUR) — BigBit brana ne drži? (DB-081)"
+  [ "$KB_CUR" -lt "$KB_BASE" ] && echo "$KB_CUR" > "$KB_BASE_FILE"
+fi
+
 [ -z "$PROBLEMS" ] && exit 0
 echo "[monitor] $(date +'%F %T') problemi:"; printf '%s' "$PROBLEMS"
 [ "${DRY:-0}" = "1" ] && exit 0
