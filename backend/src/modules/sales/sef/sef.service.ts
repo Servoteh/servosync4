@@ -164,6 +164,21 @@ export class SefService {
       );
     }
 
+    // — Batch C §C1a: konačni račun na kome je odbijen avans nosi referencu AVR-a
+    //   (cac:BillingReference) + PrepaidAmount, pa SEF PayableAmount pokazuje
+    //   STVARNI ostatak za uplatu (grossTotal − avans), a ne uvek 0.
+    const advanceInvoice =
+      invoice.advanceInvoiceId != null
+        ? await this.prisma.invoice.findUnique({
+            where: { id: invoice.advanceInvoiceId },
+            select: { documentNumber: true },
+          })
+        : null;
+    const prepaidAmount =
+      advanceInvoice && invoice.advanceAppliedAmount.greaterThan(0)
+        ? invoice.advanceAppliedAmount
+        : null;
+
     // — D6: upozorenje javni sektor bez broja narudžbenice (ne blokira) —
     let warning: string | null = null;
     const poNumber = invoice.poNumber?.trim();
@@ -186,6 +201,8 @@ export class SefService {
         note: invoice.note,
         poNumber: invoice.poNumber,
         isPrepayment: invoice.documentType === "AVR",
+        prepaymentReference: advanceInvoice?.documentNumber ?? null,
+        prepaidAmount,
       },
       items,
       supplier,

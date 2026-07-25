@@ -9,6 +9,7 @@ import { PdvPrintController } from "./pdv-print.controller";
 import { PdvPrintService } from "./pdv-print.service";
 import { TaxRatesController } from "./tax-rates.controller";
 import { TaxRatesService } from "./tax-rates.service";
+import { AdvanceVatService } from "./advance-vat.service";
 
 /**
  * Modul PDV / POPDV (Faza 6). Izvedena PDV evidencija iz glavne knjige:
@@ -23,6 +24,13 @@ import { TaxRatesService } from "./tax-rates.service";
 @Module({
   imports: [PrismaModule, DocumentsModule], // DocumentsModule → PdfService za D2 štampu (nije @Global)
   controllers: [PdvController, PdvPrintController, TaxRatesController],
-  providers: [VatLedgerService, PopdvService, KepuService, PdvPrintService, TaxRatesService],
+  providers: [
+    VatLedgerService,
+    PopdvService,
+    KepuService,
+    PdvPrintService,
+    TaxRatesService,
+    AdvanceVatService, // Batch C: ulazni avansi (pretporez po plaćanju)
+  ],
 })
 export class PdvModule {}

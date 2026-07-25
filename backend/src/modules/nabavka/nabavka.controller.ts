@@ -186,4 +186,34 @@ export class NabavkaController {
   ) {
     return this.nabavka.receiveOrder(id, body.lines ?? [], req.user);
   }
+
+  // ── 3-way match (Batch C) ───────────────────────────────────────────────────
+  // Poređenje naručeno / primljeno / fakturisano. Nalazi su UPOZORENJA — po
+  // odluci korisnika ništa se ne blokira, ni ovde ni u pripremi plaćanja.
+
+  /** Poređenje po stavkama jedne narudžbenice. */
+  @Get("orders/:id/match")
+  getOrderMatch(@Param("id", ParseIntPipe) id: number) {
+    return this.nabavka.getOrderMatch(id);
+  }
+
+  /** Pregled odstupanja po više narudžbenica. */
+  @Get("match-summary")
+  getMatchSummary(
+    @Query("from") from?: string,
+    @Query("to") to?: string,
+    @Query("supplierId") supplierId?: string,
+    @Query("onlyWithFindings") onlyWithFindings?: string,
+    @Query("skip") skip?: string,
+    @Query("take") take?: string,
+  ) {
+    return this.nabavka.getMatchSummary({
+      from,
+      to,
+      supplierId: supplierId != null && supplierId !== "" ? Number(supplierId) : undefined,
+      onlyWithFindings: onlyWithFindings === "true",
+      skip: skip != null && skip !== "" ? Number(skip) : undefined,
+      take: take != null && take !== "" ? Number(take) : undefined,
+    });
+  }
 }

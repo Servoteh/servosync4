@@ -8,6 +8,7 @@ import { NabavkaController } from "./nabavka.controller";
 import { NabavkaService } from "./nabavka.service";
 import { PurchaseNumberingService } from "./purchase-numbering.service";
 import { RfqPdfService } from "./rfq-pdf.service";
+import { ThreeWayMatchService } from "./three-way-match.service";
 
 /**
  * Modul Nabavka (Traka B §B). Zavisnosti:
@@ -19,6 +20,7 @@ import { RfqPdfService } from "./rfq-pdf.service";
 @Module({
   imports: [PrismaModule, MailModule, DocumentsModule, RobnoModule, PostingModule],
   controllers: [NabavkaController],
-  providers: [NabavkaService, PurchaseNumberingService, RfqPdfService],
+  providers: [NabavkaService, PurchaseNumberingService, RfqPdfService, ThreeWayMatchService],
+  exports: [ThreeWayMatchService], // Batch C: 3-way match upozorenja u pripremi plaćanja
 })
 export class NabavkaModule {}

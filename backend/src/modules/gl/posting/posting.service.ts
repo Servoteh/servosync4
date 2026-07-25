@@ -266,7 +266,11 @@ export class PostingEngineService {
       // (za NIV = dupla revalorizacija). Serijalizuj po dokumentu xact advisory
       // lock-om (namespace 4001 = „GL posting po robnom dokumentu"); druga tx čeka
       // pa u findFirst vidi postojeći nalog. Lock se pušta na kraju tx automatski.
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(4001, ${docId})`;
+      // ::int kastovi su OBAVEZNI: Prisma vezuje brojeve kao bigint, a Postgres
+      // ima samo pg_advisory_xact_lock(bigint) i (int, int) — bez kasta dvoargumentni
+      // poziv ne razrešava nijednu funkciju i baca 42883 na pravoj bazi (unit testovi
+      // to ne hvataju jer ne diraju Postgres). Nađeno dev smoke-om, Batch C.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(4001::int, ${docId}::int)`;
 
       // 1) Učitaj robni dokument.
       const doc = await tx.stockDocument.findUniqueOrThrow({

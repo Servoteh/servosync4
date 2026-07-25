@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { ChevronDown, ChevronRight } from 'lucide-react';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
 import { EmptyState } from '@/components/ui-kit/empty-state';
@@ -12,11 +13,16 @@ import {
   type PurchaseOrder,
 } from '@/api/nabavka';
 import { ReceiveOrderDialog } from './[id]/receive-order-dialog';
+import { OrderMatchPanel } from './order-match-panel';
 
 /**
  * Narudžbenice (BigBit paritet — dosad se PO nije video/primao kroz UI). Lista PO
  * sa status-akcijama: ORDERED → Potpiši → SIGNED/LOCKED → Prijem (ReceiveOrderDialog:
  * upis primljenih količina → robni ulaz + GL knjiženje). Data kroz `@/api/nabavka`.
+ *
+ * 3-WAY MATCH: red se razvija (Enter / klik / dugme sa strelicom) u panel poređenja
+ * naručeno ↔ primljeno ↔ fakturisano (`OrderMatchPanel`). Odstupanja su
+ * OBAVEŠTENJE — ne onemogućavaju nijedno dugme u ovoj listi.
  */
 function orderStatusMeta(status: string): { tone: Tone; label: string } {
   switch (status) {
@@ -40,8 +46,38 @@ export function PurchaseOrdersPanel() {
   const rows = query.data?.data ?? [];
   const transition = usePurchaseOrderTransition();
   const [receiveOrder, setReceiveOrder] = useState<PurchaseOrder | null>(null);
+  const [expanded, setExpanded] = useState<number | null>(null);
+
+  const toggle = (id: number) => setExpanded((e) => (e === id ? null : id));
 
   const columns: Column<PurchaseOrder>[] = [
+    {
+      key: 'expand',
+      header: '',
+      render: (o) => (
+        <button
+          type="button"
+          aria-label={
+            expanded === o.id
+              ? 'Sakrij poređenje naručeno/primljeno/fakturisano'
+              : 'Prikaži poređenje naručeno/primljeno/fakturisano'
+          }
+          aria-expanded={expanded === o.id}
+          title="Poređenje naručeno / primljeno / fakturisano"
+          onClick={(e) => {
+            e.stopPropagation();
+            toggle(o.id);
+          }}
+          className="grid h-6 w-6 place-items-center rounded-control text-ink-secondary hover:bg-surface-2 hover:text-ink focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)]"
+        >
+          {expanded === o.id ? (
+            <ChevronDown className="h-4 w-4" aria-hidden />
+          ) : (
+            <ChevronRight className="h-4 w-4" aria-hidden />
+          )}
+        </button>
+      ),
+    },
     {
       key: 'orderNumber',
       header: 'Broj',
@@ -76,13 +112,22 @@ export function PurchaseOrdersPanel() {
           {o.status === 'ORDERED' && (
             <Button
               variant="ghost"
-              onClick={() => transition.mutate({ id: o.id, action: 'sign' })}
+              onClick={(e) => {
+                e.stopPropagation();
+                transition.mutate({ id: o.id, action: 'sign' });
+              }}
             >
               Potpiši
             </Button>
           )}
           {['ORDERED', 'SIGNED', 'LOCKED'].includes(o.status) && (
-            <Button variant="ghost" onClick={() => setReceiveOrder(o)}>
+            <Button
+              variant="ghost"
+              onClick={(e) => {
+                e.stopPropagation();
+                setReceiveOrder(o);
+              }}
+            >
               Prijem
             </Button>
           )}
@@ -94,6 +139,10 @@ export function PurchaseOrdersPanel() {
   return (
     <section className="space-y-3">
       <h2 className="text-md font-semibold text-ink">Narudžbenice</h2>
+      <p className="text-xs text-ink-secondary">
+        Otvori red (Enter ili klik) za poređenje naručeno / primljeno / fakturisano.
+        Odstupanja su obaveštenje — ne blokiraju prijem ni plaćanje.
+      </p>
 
       {transition.error && (
         <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-2 text-sm text-status-danger">
@@ -106,6 +155,9 @@ export function PurchaseOrdersPanel() {
         rows={rows}
         rowKey={(o) => o.id}
         loading={query.isLoading}
+        onRowActivate={(o) => toggle(o.id)}
+        expandedKey={expanded}
+        renderExpanded={(o) => <OrderMatchPanel orderId={o.id} />}
         empty={
           <EmptyState
             title="Nema narudžbenica"

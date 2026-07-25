@@ -85,12 +85,26 @@ export class InvoicePdfService {
       ),
     ]);
 
+    // Batch C §C1a: kad je na računu odbijen avans, štampa nosi red „Umanjenje za
+    // primljeni avans (br. …)" i „Za uplatu". Broj AVR-a je meki ref (bez JOIN-a).
+    const advanceInvoiceNumber =
+      invoice.advanceInvoiceId != null &&
+      invoice.advanceAppliedAmount.greaterThan(0)
+        ? ((
+            await this.prisma.invoice.findUnique({
+              where: { id: invoice.advanceInvoiceId },
+              select: { documentNumber: true },
+            })
+          )?.documentNumber ?? null)
+        : null;
+
     const docDefinition = this.buildDocDefinition({
       invoice,
       customer,
       issuer,
       itemNames,
       variant: effectiveVariant,
+      advanceInvoiceNumber,
     });
 
     const buffer = await this.pdf.render(docDefinition);
@@ -192,6 +206,8 @@ export class InvoicePdfService {
     issuer: IssuerInfo;
     itemNames: Map<number, string>;
     variant: InvoicePrintVariant;
+    /** Broj odbijenog avansnog računa (AVR) — null kad avans nije odbijen. */
+    advanceInvoiceNumber?: string | null;
   }): TDocumentDefinitions {
     const { invoice, customer, issuer, itemNames, variant } = args;
     const t = getLabels(variant);
@@ -210,7 +226,13 @@ export class InvoicePdfService {
       english,
     );
     const totals = showPrices
-      ? this.buildTotals(invoice, t, currency, english)
+      ? this.buildTotals(
+          invoice,
+          t,
+          currency,
+          english,
+          args.advanceInvoiceNumber ?? null,
+        )
       : { text: "" };
     const footer = this.buildDocFooter(invoice, issuer, t, showPrices, english);
 
@@ -397,29 +419,61 @@ export class InvoicePdfService {
     t: Labels,
     currency: string,
     english: boolean,
+    advanceInvoiceNumber: string | null,
   ): Content {
     const row = (label: string, value: string, grand = false): Content[] => [
       { text: label, style: grand ? "grand" : "totLbl" },
       { text: value, style: grand ? "grand" : "totVal" },
     ];
+
+    const body: Content[][] = [
+      row(t.netTotalLbl, fmtMoney(invoice.netTotal, currency, english)),
+      row(t.vatTotalLbl, fmtMoney(invoice.vatTotal, currency, english)),
+    ];
+
+    // Batch C §C1a: odbijen avans NE menja `grossTotal` (osnovica/PDV/prihod
+    // ostaju isti) — umanjuje se samo IZNOS ZA UPLATU. Zato ostaje red „Za
+    // plaćanje" (ukupno računa), pa umanjenje, pa „Za uplatu" kao završni iznos.
+    const advance = invoice.advanceAppliedAmount;
+    const hasAdvance = advance.greaterThan(0);
+    if (!hasAdvance) {
+      body.push(
+        row(
+          t.grossTotalLbl,
+          fmtMoney(invoice.grossTotal, currency, english),
+          true,
+        ),
+      );
+    } else {
+      body.push(
+        row(t.grossTotalLbl, fmtMoney(invoice.grossTotal, currency, english)),
+      );
+      body.push(
+        row(
+          advanceInvoiceNumber
+            ? `${t.advanceDeductionLbl} (${t.advanceNoWord} ${advanceInvoiceNumber}):`
+            : `${t.advanceDeductionLbl}:`,
+          `− ${fmtMoney(advance, currency, english)}`,
+        ),
+      );
+      const raw = invoice.grossTotal.sub(advance);
+      const payable = raw.greaterThan(0) ? raw : new Prisma.Decimal(0);
+      body.push(
+        row(
+          t.payableAfterAdvanceLbl,
+          fmtMoney(payable, currency, english),
+          true,
+        ),
+      );
+    }
+
     return {
       margin: [0, 12, 0, 0],
       columns: [
         { width: "*", text: "" },
         {
           width: "auto",
-          table: {
-            widths: ["auto", "auto"],
-            body: [
-              row(t.netTotalLbl, fmtMoney(invoice.netTotal, currency, english)),
-              row(t.vatTotalLbl, fmtMoney(invoice.vatTotal, currency, english)),
-              row(
-                t.grossTotalLbl,
-                fmtMoney(invoice.grossTotal, currency, english),
-                true,
-              ),
-            ],
-          },
+          table: { widths: ["auto", "auto"], body },
           layout: "noBorders",
         },
       ],
@@ -503,6 +557,12 @@ interface Labels {
   netTotalLbl: string;
   vatTotalLbl: string;
   grossTotalLbl: string;
+  /** „Umanjenje za primljeni avans" (Batch C §C1a). */
+  advanceDeductionLbl: string;
+  /** „br." — prefiks broja avansnog računa u zagradi. */
+  advanceNoWord: string;
+  /** „Za uplatu" — konačni iznos posle odbijenog avansa. */
+  payableAfterAdvanceLbl: string;
   bankAccountLbl: string;
   noteLbl: string;
   signatureLbl: string;
@@ -532,6 +592,9 @@ const SR_LABELS: Labels = {
   netTotalLbl: "Osnovica:",
   vatTotalLbl: "PDV:",
   grossTotalLbl: "Za plaćanje:",
+  advanceDeductionLbl: "Umanjenje za primljeni avans",
+  advanceNoWord: "br.",
+  payableAfterAdvanceLbl: "Za uplatu:",
   bankAccountLbl: "Tekući račun",
   noteLbl: "Napomena",
   signatureLbl: "Potpis i pečat",
@@ -568,6 +631,9 @@ const EN_LABELS: Labels = {
   netTotalLbl: "Net total:",
   vatTotalLbl: "VAT:",
   grossTotalLbl: "Total due:",
+  advanceDeductionLbl: "Less prepayment received",
+  advanceNoWord: "no.",
+  payableAfterAdvanceLbl: "Amount payable:",
   bankAccountLbl: "Bank account",
   noteLbl: "Note",
   signatureLbl: "Signature & stamp",

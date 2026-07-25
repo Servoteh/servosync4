@@ -18,6 +18,8 @@ import {
 } from "./dto/create-stock-document.dto";
 import { ListStockDocumentsQuery } from "./dto/list-stock-documents.dto";
 import { computeKepuEntries, writeKepuEntries } from "./kepu-book.util";
+import { stockKeyOf, sumOpenReservations } from "./reservation.service";
+import type { ReservationSourceRef, StockKey } from "./dto/reservation.dto";
 import {
   NOT_DELETED,
   UNDO_WINDOW_MS,
@@ -117,6 +119,12 @@ export class RobnoService {
    * Lager lista (BigBit paritet — stanje zaliha po magacinu + prosečne cene).
    * Čita StockLevel snapshot (onHand + avgPurchaseNet/avgWholesalePrice) i
    * pridružuje naziv artikla. Filter: magacin, samo-sa-stanjem, pretraga po nazivu.
+   *
+   * REZERVISANO (C3): `reserved` je AGREGAT otvorenih redova `stock_reservations`
+   * (`status='OPEN'`), NE denormalizovana kolona `StockLevel.reserved` — ta kolona je mrtav
+   * legacy snapshot koji niko ne upisuje (uvek 0) i namerno se ne dira. Novo polje
+   * `available = onHand − reserved` je ono što se sme obećati kupcu. Jedan agregatni upit
+   * po strani (`groupBy`), bez N+1.
    */
   async listLager(query: {
     warehouseId?: number;
@@ -152,8 +160,17 @@ export class RobnoService {
       : [];
     const itemById = new Map(items.map((i) => [i.id, i]));
 
+    // Rezervisano = Σ OPEN rezervacija po (artikal, magacin) — jedan groupBy za celu stranu.
+    const reservedByKey = await sumOpenReservations(
+      this.prisma,
+      levels.map((l) => ({ itemId: l.itemId, warehouseId: l.warehouseId })),
+    );
+
     let data = levels.map((l) => {
       const it = itemById.get(l.itemId);
+      const reserved =
+        reservedByKey.get(stockKeyOf(l.itemId, l.warehouseId)) ??
+        new Prisma.Decimal(0);
       return {
         itemId: l.itemId,
         warehouseId: l.warehouseId,
@@ -161,7 +178,9 @@ export class RobnoService {
         itemCode: it?.catalogNumber ?? null,
         unit: it?.unit ?? null,
         onHand: l.onHand.toFixed(3),
-        reserved: l.reserved.toFixed(3),
+        reserved: reserved.toFixed(3),
+        /** Raspoloživo za obećanje kupcu = stanje − otvorene rezervacije (može biti < 0). */
+        available: l.onHand.sub(reserved).toFixed(3),
         avgPurchaseNet: l.avgPurchaseNet.toFixed(2),
         avgWholesalePrice: l.avgWholesalePrice.toFixed(2),
         // Vrednost iz ISTE zaokružene cene koja se prikazuje (review NIZAK) — da ručna
@@ -341,8 +360,17 @@ export class RobnoService {
    * Numeracija `NNNN/god` (advisory lock po companyId+tip+godina) je u istoj transakciji.
    * NE pokreće kalkulaciju — pozivalac (ruta) posle poziva `CalculationService.calculate(docId)`
    * za UL/UVOZ. Iznosi se čuvaju sirovi (invoicePrice/rabat/kasa…); landed polja popunjava kalkulacija.
+   *
+   * `opts.reservationSource` (C3): izvor rezervacije koju OVAJ dokument troši — izdatnica
+   * napravljena iz predračuna koji drži tu robu ne sme sama sebe da blokira, pa se te
+   * rezervacije izuzimaju iz obračuna raspoloživog u guardu. Izostavljeno = dokument nije
+   * potrošač nijedne rezervacije (sve otvorene rezervacije mu smanjuju raspoloživo).
    */
-  async createStockDocument(kind: StockDocumentKind, dto: CreateStockDocumentDto) {
+  async createStockDocument(
+    kind: StockDocumentKind,
+    dto: CreateStockDocumentDto,
+    opts?: { reservationSource?: ReservationSourceRef },
+  ) {
     if (!VALID_KINDS.includes(kind))
       throw new UnprocessableEntityException(
         `Nepoznat tip robnog dokumenta '${kind}'.`,
@@ -435,7 +463,20 @@ export class RobnoService {
     const created = await this.prisma.$transaction(async (tx) => {
       // Guard raspoloživog stanja za IZLAZ (IZ/MANJAK) — nedovoljno stanje → 422 (doc 39 §C).
       // Costing (stateAsOf) namerno dozvoljava negativno interno; provera je ovde, na granici upisa.
-      await this.assertSufficientStock(tx, kind, dto, documentDate);
+      // C3: od stanja se oduzimaju i OTVORENE rezervacije (osim onih koje ovaj dokument troši).
+      const reservedByKey = await this.loadOpenReserved(
+        tx,
+        kind,
+        dto,
+        opts?.reservationSource,
+      );
+      await this.assertSufficientStock(
+        tx,
+        kind,
+        dto,
+        documentDate,
+        reservedByKey,
+      );
 
       const { documentNumber } = await this.numbering.next(
         tx,
@@ -490,12 +531,47 @@ export class RobnoService {
   }
 
   /**
+   * Otvorene rezervacije za (artikal, magacin) parove iz izlaznog dokumenta (C3) — jedan
+   * agregatni upit; prazna mapa za sve vrste osim IZ/MANJAK (rezervacije ne blokiraju ulaz).
+   *
+   * `reservationSource` = izvor koji OVAJ dokument troši (npr. predračun čija se izdatnica
+   * pravi) — te rezervacije se izuzimaju, jer bi inače dokument blokirao sam sebe.
+   */
+  private async loadOpenReserved(
+    tx: Prisma.TransactionClient,
+    kind: StockDocumentKind,
+    dto: CreateStockDocumentDto,
+    reservationSource?: ReservationSourceRef,
+  ): Promise<Map<string, Prisma.Decimal>> {
+    if (kind !== "IZ" && kind !== "MANJAK") return new Map();
+    const keys: StockKey[] = dto.items.map((it) => ({
+      itemId: it.itemId,
+      warehouseId: it.warehouseId ?? dto.warehouseId,
+    }));
+    return sumOpenReservations(
+      tx,
+      keys,
+      reservationSource
+        ? {
+            sourceType: reservationSource.sourceType,
+            sourceId: reservationSource.sourceId,
+          }
+        : undefined,
+    );
+  }
+
+  /**
    * Guard negativnog stanja pri IZLAZU (kind IZ/MANJAK) — C11 (doc 39 §C / #21).
    *
    * Za svaku (artikal, magacin) kombinaciju agregira traženu količinu iz stavki i poredi je sa
-   * raspoloživim stanjem `CostingService.stateAsOf(itemId, warehouseId, documentDate)` (as-of
-   * do datuma dokumenta, KODJ izuzet). Ako je traženo > raspoloživo → `UnprocessableEntityException`
-   * sa listom (artikal, traženo, raspoloživo). Čita kroz istu `tx` (dosledno sa upisom).
+   * RASPOLOŽIVIM = `CostingService.stateAsOf(itemId, warehouseId, documentDate)` (as-of do datuma
+   * dokumenta, KODJ izuzet) **umanjeno za otvorene rezervacije** (`reservedByKey`, C3). Ako je
+   * traženo > raspoloživo → `UnprocessableEntityException` sa listom (artikal, traženo,
+   * raspoloživo). Čita kroz istu `tx` (dosledno sa upisom).
+   *
+   * `reservedByKey` puni `loadOpenReserved` i ono već IZUZIMA rezervacije koje ovaj dokument
+   * troši — izdatnica koja razdužuje sopstveni predračun ne sme sama sebe da blokira. Prazna
+   * mapa (podrazumevano) = ponašanje pre C3, golo `stateAsOf`.
    *
    * NE dira `CostingService` (namerno dozvoljava negativno interno) — guard je isključivo na
    * granici kreiranja izlaznog dokumenta. UL/UVOZ/NIV/PRENOS/VISAK ne prolaze kroz guard.
@@ -505,6 +581,7 @@ export class RobnoService {
     kind: StockDocumentKind,
     dto: CreateStockDocumentDto,
     documentDate: Date,
+    reservedByKey: ReadonlyMap<string, Prisma.Decimal> = new Map(),
   ): Promise<void> {
     if (kind !== "IZ" && kind !== "MANJAK") return;
 
@@ -527,20 +604,28 @@ export class RobnoService {
       warehouseId: number;
       requested: Prisma.Decimal;
       available: Prisma.Decimal;
+      reserved: Prisma.Decimal;
     }> = [];
     for (const r of requested.values()) {
-      const available = await this.costing.stateAsOf(
+      const onHand = await this.costing.stateAsOf(
         r.itemId,
         r.warehouseId,
         documentDate,
         { tx },
       );
+      // Raspoloživo = stanje − tuđe otvorene rezervacije (C3); rezervacije ovog dokumenta
+      // su već izuzete u `loadOpenReserved`, pa potrošač ne blokira sam sebe.
+      const reserved =
+        reservedByKey.get(stockKeyOf(r.itemId, r.warehouseId)) ??
+        new Prisma.Decimal(0);
+      const available = onHand.sub(reserved);
       if (available.lessThan(r.qty)) {
         shortages.push({
           itemId: r.itemId,
           warehouseId: r.warehouseId,
           requested: r.qty,
           available,
+          reserved,
         });
       }
     }
@@ -565,13 +650,16 @@ export class RobnoService {
         warehouseId: s.warehouseId,
         requested: s.requested.toFixed(3),
         available: s.available.toFixed(3),
+        /** Od toga zauzeto tuđim otvorenim rezervacijama (C3) — 0 kad rezervacija nema. */
+        reserved: s.reserved.toFixed(3),
         label,
       };
     });
     const human = detail
       .map(
         (d) =>
-          `${d.label} — traženo ${d.requested}, raspoloživo ${d.available}`,
+          `${d.label} — traženo ${d.requested}, raspoloživo ${d.available}` +
+          (Number(d.reserved) > 0 ? ` (rezervisano ${d.reserved})` : ""),
       )
       .join("; ");
 

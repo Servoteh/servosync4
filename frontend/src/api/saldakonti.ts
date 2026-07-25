@@ -58,6 +58,10 @@ export interface OpenItem {
   side: string; // receivable | payable
   /** Svi ledger_entries.id koji čine ovaj red — za uparivanje (reconcile) i kompenzaciju. */
   ledgerEntryIds: number[];
+  /** Devizni saldo grupe (C2; Decimal-as-string). null = stavka nije devizna. */
+  fxAmount: string | null;
+  /** Valuta deviznog salda (EUR, USD…); `balance` iznad je dinarska protivvrednost. */
+  fxCurrency: string | null;
 }
 
 /** Aging red po komitentu — saldo raspoređen po dospelosti (Decimal-as-string). */
@@ -414,6 +418,11 @@ export interface PartnerCardRow {
   balance: string;
   dueDate: string | null;
   reconciledAt: string | null;
+  /** Devizni par stavke (C2) — dinarske kolone su protivvrednost. null = nije devizna. */
+  fxDebit: string | null;
+  fxCredit: string | null;
+  fxAmount: string | null;
+  fxCurrency: string | null;
 }
 
 /** Podaci komitenta iz šifarnika (meki ref; null ako je obrisan/ne postoji). */
@@ -597,5 +606,163 @@ export function useDunningSendBatch() {
         body: JSON.stringify(input),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['saldakonti', 'dunning'] }),
+  });
+}
+
+// ────────────────── Kursne razlike / revalorizacija deviznih stavki (C2)
+
+/**
+ * Jedna revalorizovana otvorena stavka — 1:1 sa `FxRevaluationItem`
+ * (fx-revaluation.service.ts). Decimal polja stižu kao STRING.
+ */
+export interface FxRevaluationItem {
+  accountCode: string;
+  analyticalCode: number | null;
+  documentNumber: string | null;
+  side: string; // receivable | payable
+  /** Devizni saldo (+ potraživanje, − obaveza). */
+  fxAmount: string;
+  /** Knjigovodstvena protivvrednost u RSD. */
+  bookedAmount: string;
+  /** Nova protivvrednost = fxAmount × kurs na dan preseka. */
+  revaluedAmount: string;
+  /** revaluedAmount − bookedAmount (+ dobitak = 663, − gubitak = 563). */
+  difference: string;
+  ledgerEntryIds: number[];
+}
+
+/** Pregled revalorizacije (bez upisa) — 1:1 sa `FxRevaluationPreview`. */
+export interface FxRevaluationPreview {
+  asOfDate: string;
+  currency: string;
+  companyId: number;
+  /** Srednji kurs upotrebljen za preračun. */
+  rate: string;
+  /** Datum kursne liste koja je stvarno upotrebljena (vikend/praznik → raniji dan). */
+  rateDate: string;
+  rateType: string;
+  items: FxRevaluationItem[];
+  itemsCount: number;
+  gainTotal: string;
+  lossTotal: string;
+  netAmount: string;
+}
+
+/** Red liste obračuna — 1:1 sa `FxRevaluationRun` (tabela fx_revaluation_runs). */
+export interface FxRevaluationRun {
+  id: number;
+  asOfDate: string;
+  currency: string;
+  companyId: number;
+  rateUsed: string;
+  gainAmount: string;
+  lossAmount: string;
+  itemsCount: number;
+  journalEntryId: number | null;
+  /** POSTED | REVERSED. */
+  status: string;
+  note: string | null;
+  createdAt: string;
+}
+
+/** Rezultat obračuna — 1:1 sa `FxRevaluationRunResult`. */
+export interface FxRevaluationRunResult {
+  runId: number;
+  asOfDate: string;
+  currency: string;
+  companyId: number;
+  rateUsed: string;
+  gainAmount: string;
+  lossAmount: string;
+  itemsCount: number;
+  journalEntryId: number;
+  journalNumber: string;
+  status: string;
+}
+
+export interface FxRevaluationFilters {
+  /** Datum preseka (ISO); prazno → upit se ne montira. */
+  asOfDate: string;
+  /** Devizna valuta (EUR, USD…); prazno → upit se ne montira. */
+  currency: string;
+  companyId?: number;
+}
+
+const FX_KEY = ['saldakonti', 'fx-revaluation'] as const;
+
+/**
+ * Pregled kursnih razlika na dan preseka („Proveri") — GET
+ * /saldakonti/fx-revaluation/preview?asOfDate=&currency=. Ne upisuje ništa: lista
+ * otvorenih deviznih stavki, kurs na dan, knjigovodstvena vs. nova protivvrednost i
+ * razlika po stavci. Backend vraća 404 kad nema kursne liste za taj dan, 409 kad je
+ * presek u budućnosti. Permisija SALDAKONTI_READ.
+ */
+export function useFxRevaluationPreview(filters: FxRevaluationFilters | null) {
+  const query = filters
+    ? buildQuery({
+        asOfDate: filters.asOfDate,
+        currency: filters.currency,
+        companyId: filters.companyId,
+      })
+    : '';
+  return useQuery({
+    queryKey: [...FX_KEY, 'preview', filters],
+    queryFn: () =>
+      apiFetch<Envelope<FxRevaluationPreview>>(`${BASE}/fx-revaluation/preview${query}`),
+    enabled: filters != null && filters.asOfDate !== '' && filters.currency !== '',
+  });
+}
+
+/** Lista ranijih obračuna (najnoviji presek prvi) — GET /saldakonti/fx-revaluation. */
+export function useFxRevaluationList(params: { year?: number; currency?: string } = {}) {
+  const query = buildQuery({
+    year: params.year,
+    currency: params.currency || undefined,
+  });
+  return useQuery({
+    queryKey: [...FX_KEY, 'list', params],
+    queryFn: () => apiFetch<ListWithCount<FxRevaluationRun>>(`${BASE}/fx-revaluation${query}`),
+  });
+}
+
+/**
+ * Obračunaj i proknjiži kursne razlike — POST /saldakonti/fx-revaluation/run
+ * { asOfDate, currency, companyId?, note? }. Kreira nalog kursnih razlika (663/563)
+ * i zapis obračuna. Backend vraća 409 kad je isti presek već obračunat (storniraj pa
+ * ponovi) i 422 kad nema nijedne razlike. Menja glavnu knjigu → invalidira ceo
+ * `saldakonti` ključ. Permisija SALDAKONTI_RECONCILE.
+ */
+export function useFxRevaluationRun() {
+  const invalidate = useInvalidateSaldakonti();
+  return useMutation({
+    mutationFn: (input: {
+      asOfDate: string;
+      currency: string;
+      companyId?: number;
+      note?: string;
+    }) =>
+      apiFetch<Envelope<FxRevaluationRunResult>>(`${BASE}/fx-revaluation/run`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/**
+ * Storniraj obračun — POST /saldakonti/fx-revaluation/reverse { runId, reason? }.
+ * Stornira nalog kursnih razlika i oslobađa presek za ponovni obračun. Backend vraća
+ * 409 kad je nalog zaključan (prvo otključaj) ili obračun već storniran.
+ * Permisija SALDAKONTI_RECONCILE.
+ */
+export function useFxRevaluationReverse() {
+  const invalidate = useInvalidateSaldakonti();
+  return useMutation({
+    mutationFn: (input: { runId: number; reason?: string }) =>
+      apiFetch<Envelope<{ runId: number; status: string; stornoEntryId: number | null }>>(
+        `${BASE}/fx-revaluation/reverse`,
+        { method: 'POST', body: JSON.stringify(input) },
+      ),
+    onSuccess: invalidate,
   });
 }

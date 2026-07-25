@@ -160,6 +160,9 @@ export default function RobnoPage() {
         count={list.data ? `${formatNumber(total)} dokumenata` : undefined}
         actions={
           <div className="flex items-center gap-2">
+            <Button variant="secondary" onClick={() => router.push('/robno/rezervacije')}>
+              Rezervacije
+            </Button>
             <Button variant="secondary" onClick={() => setCarryOverMode('purchase-order')}>
               Iz narudžbenice
             </Button>

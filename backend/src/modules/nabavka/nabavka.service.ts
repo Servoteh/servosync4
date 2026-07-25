@@ -3,6 +3,8 @@ import {
   Logger,
   NotFoundException,
   ConflictException,
+  Optional,
+  ServiceUnavailableException,
   UnprocessableEntityException,
 } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
@@ -22,6 +24,12 @@ import {
   validateCreatePurchaseOrder,
 } from "./dto/create-purchase-order.dto";
 import { type AcceptQuoteDto, validateAcceptQuote } from "./dto/accept-quote.dto";
+import { ThreeWayMatchService } from "./three-way-match.service";
+import type {
+  MatchSummaryQueryDto,
+  ThreeWayMatchResult,
+  ThreeWayMatchSummaryRow,
+} from "./dto/three-way-match.dto";
 
 /**
  * NACRT — servis modula Nabavka (Traka B §B). Status-mašina:
@@ -50,7 +58,40 @@ export class NabavkaService {
     private readonly calculation: CalculationService,
     private readonly posting: PostingEngineService,
     private readonly rfqPdf: RfqPdfService,
+    // 3-way match je ČITALAC (naručeno/primljeno/fakturisano) i nikad ne blokira tok;
+    // @Optional() da izostanak registracije providera ne obori boot celog modula
+    // (isti obrazac kao robno/calculation.service.ts). Delegati ispod javljaju 503.
+    @Optional()
+    private readonly threeWayMatch?: ThreeWayMatchService,
   ) {}
+
+  // ── 3-WAY MATCH (naručeno / primljeno / fakturisano) — samo prikaz ──────────
+
+  /**
+   * Poređenje po stavci za jednu narudžbenicu. Delegat ka `ThreeWayMatchService`
+   * (kontroler drži samo `NabavkaService`). ⚠️ Odstupanja su INFORMATIVNA — ne
+   * menjaju status narudžbenice i NIKAD ne blokiraju prijem ni plaćanje.
+   */
+  async getOrderMatch(orderId: number): Promise<{ data: ThreeWayMatchResult }> {
+    const data = await this.requireMatchService().matchOrder(orderId);
+    return { data };
+  }
+
+  /** Pregled 3-way match-a po više narudžbenica (lista/izveštaj). */
+  async getMatchSummary(params: MatchSummaryQueryDto): Promise<{
+    data: ThreeWayMatchSummaryRow[];
+    meta: Record<string, number>;
+  }> {
+    return this.requireMatchService().matchSummary(params);
+  }
+
+  private requireMatchService(): ThreeWayMatchService {
+    if (!this.threeWayMatch)
+      throw new ServiceUnavailableException(
+        "Poređenje naručeno/primljeno/fakturisano trenutno nije dostupno.",
+      );
+    return this.threeWayMatch;
+  }
 
   // ── ZAHTEV ────────────────────────────────────────────────────────────────
 

@@ -31,6 +31,11 @@ export interface OpenItem {
   daysOverdue: number | null; // asOf − dueDate (u danima; null ako nema dueDate)
   currency: string | null;
   side: string; // receivable | payable (iz registra)
+  // Devizni saldo grupe (C2): Σ(fx_debit) − Σ(fx_credit) u `fxCurrency`. NULL kad
+  // stavka nije devizna. `balance` iznad je i dalje DINARSKA protivvrednost —
+  // postojeća polja se ne menjaju, ovo je aditivno.
+  fxAmount: Prisma.Decimal | null;
+  fxCurrency: string | null;
   // Svi ledger_entries.id koji čine ovaj (grupisani) red — potrebno za
   // uparivanje (reconcile) i kompenzaciju, koje rade nad pojedinačnim
   // stavkama. Izveden pogled grupiše po dokumentu; ovde izlažemo članove grupe.
@@ -58,6 +63,16 @@ interface OpenItemRawRow {
   currency: string | null;
   side: string;
   ledger_entry_ids: number[] | null; // array_agg(le.id) — članovi grupe (Int[] → number[])
+  fx_balance: Prisma.Decimal | null;
+  fx_currency: string | null;
+}
+
+/** Dodatni (aditivni) filteri otvorenih stavki — devizna valuta / firma (C2). */
+export interface OpenItemsOptions {
+  /** Samo grupe čija je devizna valuta ova (npr. "EUR") — za revalorizaciju. */
+  fxCurrency?: string;
+  /** Firma naloga (journal_entries.company_id); bez njega sve firme. */
+  companyId?: number;
 }
 
 interface AgingRawRow {
@@ -79,11 +94,13 @@ export class OpenItemsService {
    * @param accountCode — tačan konto (opciono)
    * @param partnerId   — analitička = komitent (opciono)
    * @param asOf        — presek na dan za daysOverdue (default danas)
+   * @param opts        — aditivni filteri (devizna valuta / firma) — C2
    */
   async listOpenItems(
     accountCode?: string,
     partnerId?: number,
     asOf?: Date,
+    opts?: OpenItemsOptions,
   ): Promise<OpenItem[]> {
     const cutoff = asOf ?? new Date();
     const accountFilter = accountCode
@@ -93,6 +110,17 @@ export class OpenItemsService {
       partnerId != null
         ? Prisma.sql`AND le.analytical_code = ${partnerId}`
         : Prisma.empty;
+    const companyFilter =
+      opts?.companyId != null
+        ? Prisma.sql`AND je.company_id = ${opts.companyId}`
+        : Prisma.empty;
+    // Devizni filter ide u HAVING, NE u WHERE (namerno): dinarske stavke iste grupe
+    // (uplata u RSD, prethodna kursna razlika) nemaju fx_currency, a MORAJU ući u
+    // zbir da bi knjigovodstvena protivvrednost grupe bila tačna. WHERE bi ih izbacio
+    // pa bi sledeća revalorizacija dvaput obračunala istu razliku.
+    const fxHaving = opts?.fxCurrency
+      ? Prisma.sql`AND MAX(le.fx_currency) = ${opts.fxCurrency}`
+      : Prisma.empty;
 
     const rows = await this.prisma.$queryRaw<OpenItemRawRow[]>(
       Prisma.sql`
@@ -106,6 +134,10 @@ export class OpenItemsService {
           MIN(le.due_date) AS due_date,
           MAX(le.currency) AS currency,
           array_agg(le.id ORDER BY le.id) AS ledger_entry_ids,
+          -- Devizni saldo grupe (C2). COALESCE po SUMI, ne po razlici: kad su svi
+          -- fx_credit NULL, SUM(a) - SUM(b) bi dalo NULL pa bi ceo devizni saldo pao na 0.
+          COALESCE(SUM(le.fx_debit), 0) - COALESCE(SUM(le.fx_credit), 0) AS fx_balance,
+          MAX(le.fx_currency) AS fx_currency,
           sa.side AS side
         FROM ledger_entries le
         JOIN journal_entries je ON je.id = le.journal_entry_id
@@ -123,8 +155,10 @@ export class OpenItemsService {
           AND sa.tracks_open_items = TRUE
           ${accountFilter}
           ${partnerFilter}
+          ${companyFilter}
         GROUP BY le.account_code, le.analytical_code, le.document_number, sa.side
         HAVING COALESCE(SUM(le.debit) - SUM(le.credit), 0) <> 0
+          ${fxHaving}
         ORDER BY le.account_code, le.analytical_code, le.document_number
       `,
     );
@@ -213,6 +247,10 @@ export class OpenItemsService {
       currency: r.currency,
       side: r.side,
       ledgerEntryIds: r.ledger_entry_ids ?? [],
+      // Devizni saldo ima smisla samo kad grupa NOSI valutu — bez fx_currency je
+      // stavka čisto dinarska (fxAmount ostaje null, ne 0).
+      fxAmount: r.fx_currency ? new Prisma.Decimal(r.fx_balance ?? 0) : null,
+      fxCurrency: r.fx_currency,
     };
   }
 }

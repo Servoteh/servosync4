@@ -20,6 +20,7 @@ import {
 import {
   type ListInvoicesQuery,
 } from "./dto/list-invoices.dto";
+import { computePayableAmount } from "./advance-invoice.service";
 
 /**
  * FakturisanjeService — izlazni računi (PLAN_FAZA_5 §A).
@@ -219,13 +220,36 @@ export class FakturisanjeService {
     return { data: rows, meta: { total, skip, take } };
   }
 
+  /**
+   * Detalj računa. Batch C §C1a: uz dokument se vraća i IZRAČUNATO
+   * `payableAmount = grossTotal − advanceAppliedAmount` (avans umanjuje samo
+   * iznos za plaćanje — `grossTotal` se NE menja), plus broj avansnog računa
+   * (`advanceInvoiceNumber`) kad je avans odbijen, da FE/štampa ne moraju
+   * dodatni upit.
+   */
   async getInvoice(id: number) {
     const invoice = await this.prisma.invoice.findUnique({
       where: { id },
       include: { items: { orderBy: { lineNo: "asc" } } },
     });
     if (!invoice) throw new NotFoundException(`Račun ${id} ne postoji.`);
-    return invoice;
+
+    const advance =
+      invoice.advanceInvoiceId != null
+        ? await this.prisma.invoice.findUnique({
+            where: { id: invoice.advanceInvoiceId },
+            select: { documentNumber: true, advancePaidAt: true },
+          })
+        : null;
+
+    return {
+      ...invoice,
+      payableAmount: computePayableAmount(invoice),
+      advanceInvoiceNumber: advance?.documentNumber ?? null,
+      // Datum naplate ODBIJENOG avansa (polje `advancePaidAt` na SAMOM dokumentu
+      // ostaje netaknuto — ono važi samo za AVR, ne za konačni račun).
+      advanceInvoicePaidAt: advance?.advancePaidAt ?? null,
+    };
   }
 
   // ── KNJIŽENJE (level 0) ──────────────────────────────────────────────────────

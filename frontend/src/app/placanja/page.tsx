@@ -27,6 +27,11 @@ import {
   type CreateManualPaymentOrderInput,
 } from '@/api/placanja';
 import { PaymentOrdersPanel } from './payment-orders-panel';
+import {
+  MatchWarningCell,
+  MatchWarningsBanner,
+  type DueLiabilityWithMatch,
+} from './match-warnings';
 
 /**
  * Priprema plaćanja / virmani (Faza 4 §C). Obrazac „Lista" (DESIGN_SYSTEM §4.1)
@@ -97,7 +102,12 @@ export default function PlacanjaPage() {
   }, [user, isLoading, router]);
 
   const due = useDueLiabilities(cutoff);
-  const rows = useMemo(() => due.data?.data ?? [], [due.data]);
+  // 3-way match upozorenja stižu UZ postojeća polja dospele obaveze (backend
+  // `payment-preparation.service.ts`); tip je proširen lokalno u `match-warnings.tsx`.
+  const rows = useMemo<DueLiabilityWithMatch[]>(
+    () => (due.data?.data ?? []) as DueLiabilityWithMatch[],
+    [due.data],
+  );
   const count = due.data?.meta.count ?? 0;
 
   const createOrders = useCreatePaymentOrders();
@@ -173,7 +183,7 @@ export default function PlacanjaPage() {
 
   const skippedNoSupplier = selected.filter((d) => d.supplierId == null).length;
 
-  const columns: Column<DueLiability>[] = [
+  const columns: Column<DueLiabilityWithMatch>[] = [
     {
       key: 'pay',
       header: (
@@ -214,6 +224,13 @@ export default function PlacanjaPage() {
           {d.documentNumber ?? <span className="text-ink-disabled">—</span>}
         </span>
       ),
+    },
+    {
+      // 3-way match: SAMO vizuelno upozorenje (tooltip sa punim tekstom nalaza).
+      // Ne utiče ni na selekciju ni na dugmad — plaćanje prolazi i sa nalazima.
+      key: 'match',
+      header: 'Odstupanje',
+      render: (d) => <MatchWarningCell row={d} />,
     },
     {
       key: 'dueDate',
@@ -331,6 +348,9 @@ export default function PlacanjaPage() {
             )}
           </div>
         )}
+
+        {/* 3-way match zbirna traka — obaveštenje, ne blokada (dugmad ostaju aktivna). */}
+        <MatchWarningsBanner rows={rows} />
 
         {due.error && (
           <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">

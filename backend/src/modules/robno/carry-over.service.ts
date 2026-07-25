@@ -8,6 +8,7 @@ import {
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { RobnoService } from "./robno.service";
+import { ReservationService } from "./reservation.service";
 import type { CreateStockDocumentItemDto } from "./dto/create-stock-document.dto";
 
 /** Opcije prepisa (carry-over) — magacin i vrsta dokumenta se mogu preklopiti sa podrazumevanih. */
@@ -47,6 +48,7 @@ export class CarryOverService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly robno: RobnoService,
+    private readonly reservation: ReservationService,
   ) {}
 
   // ─────────────────────────────────── PO → Primka (robni ulaz UL)
@@ -192,13 +194,20 @@ export class CarryOverService {
     }));
 
     // IZ → assertSufficientStock guard u createStockDocument (nedovoljno stanje = 422).
-    const created = await this.robno.createStockDocument("IZ", {
-      documentTypeCode,
-      warehouseId,
-      customerId: invoice.customerId ?? undefined,
-      createdByUserId: actorUserId,
-      items,
-    });
+    // Batch C: guard gleda RASPOLOŽIVO (stanje − rezervisano), pa izdatnica mora da
+    // izuzme rezervacije SAMOG tog predračuna — inače bi predračun koji drži robu
+    // blokirao sopstvenu izdatnicu.
+    const created = await this.robno.createStockDocument(
+      "IZ",
+      {
+        documentTypeCode,
+        warehouseId,
+        customerId: invoice.customerId ?? undefined,
+        createdByUserId: actorUserId,
+        items,
+      },
+      { reservationSource: { sourceType: "invoice", sourceId: invoiceId } },
+    );
 
     // Upiši vezu na fakturu — CAS (review Batch B): `stockDocumentId` nema DB unique,
     // pa bi dva istovremena poziva oba prošla rani anti-duplo guard i napravila DVE
@@ -220,6 +229,24 @@ export class CarryOverService {
           `(paralelni zahtev) — ponovi pregled fakture.`,
       );
     }
+    // Rezervacije tog predračuna su sada stvarno razdužene — CONSUMED (ne RELEASED:
+    // roba je otišla, ne vraća se u raspoloživo). Ne sme da obori već uspeo prepis.
+    await this.reservation
+      .consume(
+        {
+          sourceType: "invoice",
+          sourceId: invoiceId,
+          reason: `izdatnica ${created.data.documentNumber}`,
+        },
+        actorUserId,
+      )
+      .catch((err: unknown) => {
+        this.logger.warn(
+          `Izdatnica ${created.data.documentNumber} je kreirana, ali zatvaranje rezervacija ` +
+            `predračuna ${invoice.documentNumber} nije uspelo: ${String(err)}`,
+        );
+      });
+
     this.logger.log(
       `Prepis fakture ${invoice.documentNumber} → izdatnica ${created.data.documentNumber} (${items.length} stavki).`,
     );

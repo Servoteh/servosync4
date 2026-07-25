@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { AlertTriangle } from 'lucide-react';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Input } from '@/components/ui-kit/form-field';
@@ -18,6 +19,7 @@ const lagerCsvColumns: CsvColumn<LagerRow>[] = [
   { header: 'Jedinica', value: (r) => r.unit ?? '' },
   { header: 'Stanje', value: (r) => lagerCsvDec(r.onHand) },
   { header: 'Rezervisano', value: (r) => lagerCsvDec(r.reserved) },
+  { header: 'Raspoloživo', value: (r) => lagerCsvDec(r.available) },
   { header: 'Pros. nabavna', value: (r) => lagerCsvDec(r.avgPurchaseNet) },
   { header: 'Pros. VP', value: (r) => lagerCsvDec(r.avgWholesalePrice) },
   { header: 'Vrednost', value: (r) => lagerCsvDec(r.stockValue) },
@@ -27,6 +29,10 @@ const lagerCsvColumns: CsvColumn<LagerRow>[] = [
  * Lager lista (BigBit paritet — stanje zaliha po magacinu + prosečne cene).
  * Snapshot iz StockLevel: onHand, prosečna nabavna, prosečna VP, vrednost zaliha.
  * Filter: pretraga po nazivu/šifri + samo-sa-stanjem. Kit komponente + tokeni.
+ *
+ * REZERVACIJA (C3): „Rezervisano" je agregat otvorenih rezervacija (predračuni drže robu),
+ * „Raspoloživo" = stanje − rezervisano. Raspoloživo ≤ 0 je crveno + ikonica upozorenja —
+ * roba je već obećana i ne sme se obećati ponovo (detalji na /robno/rezervacije).
  */
 const columns: Column<LagerRow>[] = [
   {
@@ -54,6 +60,44 @@ const columns: Column<LagerRow>[] = [
         {formatDecimal(r.onHand)} {r.unit ?? ''}
       </span>
     ),
+  },
+  {
+    key: 'reserved',
+    header: 'Rezervisano',
+    align: 'right',
+    numeric: true,
+    render: (r) =>
+      Number(r.reserved) > 0 ? (
+        <span className="tnums text-status-warn">
+          {formatDecimal(r.reserved)} {r.unit ?? ''}
+        </span>
+      ) : (
+        <span className="tnums text-ink-disabled">—</span>
+      ),
+  },
+  {
+    key: 'available',
+    header: 'Raspoloživo',
+    align: 'right',
+    numeric: true,
+    render: (r) => {
+      const low = Number(r.available) <= 0;
+      return (
+        <span
+          className={`tnums inline-flex items-center justify-end gap-1 ${
+            low ? 'font-semibold text-status-danger' : 'text-ink'
+          }`}
+          title={
+            low
+              ? 'Nema raspoložive robe — sve je zauzeto otvorenim rezervacijama.'
+              : undefined
+          }
+        >
+          {low && <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden />}
+          {formatDecimal(r.available)} {r.unit ?? ''}
+        </span>
+      );
+    },
   },
   {
     key: 'avgPurchaseNet',

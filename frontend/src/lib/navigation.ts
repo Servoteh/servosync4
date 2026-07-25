@@ -264,12 +264,14 @@ export const NAV_DOMAINS: NavDomain[] = [
       // { label: 'Upiti kupaca', href: '/rfqs', icon: ClipboardList, requires: PERMISSIONS.SALES_READ, keywords: ['rfq', 'zahtev za ponudu', 'upit kupca'] },
       // Faza 5: Predračuni & računi (izlazni, dom+izvoz)
       { label: 'Predračuni & računi', href: '/fakturisanje', icon: ListOrdered, requires: PERMISSIONS.SALES_READ, keywords: ['faktura', 'racun', 'predracun', 'profaktura', 'izvoz'] },
+      { label: 'Avansni računi', href: '/fakturisanje/avansi', icon: ListOrdered, requires: PERMISSIONS.SALES_READ, keywords: ['avans', 'avansni racun', 'avr', 'predujam'] },
       // Faza 5: e-Fakture (SEF)
       { label: 'e-Fakture (SEF)', href: '/sef', icon: RefreshCw, requires: PERMISSIONS.SEF_READ, keywords: ['sef', 'efaktura', 'ubl'] },
       // Faza 3: Zalihe & kalkulacija (crosslisted u Logistiku)
       { label: 'Zalihe & kalkulacija', href: '/robno', icon: Warehouse, requires: PERMISSIONS.ROBNO_READ, keywords: ['zalihe', 'lager', 'kalkulacija', 'primka', 'nivelacija'], crosslisted: true },
       // E2: popis/inventura (zakonski godišnji tok — predpunjenje → unos → VISAK/MANJAK)
       { label: 'Popis / inventura', href: '/robno/popis', icon: Warehouse, requires: PERMISSIONS.ROBNO_READ, keywords: ['popis', 'inventura', 'visak', 'manjak'] },
+      { label: 'Rezervacije zaliha', href: '/robno/rezervacije', icon: Warehouse, requires: PERMISSIONS.ROBNO_READ, keywords: ['rezervacija', 'rezervisano', 'raspolozivo'] },
     ],
   },
   {
@@ -283,6 +285,7 @@ export const NAV_DOMAINS: NavDomain[] = [
       { label: 'Izvodi', href: '/izvodi', icon: FileText, requires: PERMISSIONS.IZVODI_READ, keywords: ['izvod', 'banka', 'txt', 'uparivanje'] },
       // Faza 4: Saldakonti (otvorene stavke, IOS, kompenzacija)
       { label: 'Saldakonti', href: '/saldakonti', icon: Users, requires: PERMISSIONS.SALDAKONTI_READ, keywords: ['otvorene stavke', 'ios', 'aging', 'kompenzacija'] },
+      { label: 'Kursne razlike', href: '/saldakonti/kursne-razlike', icon: Users, requires: PERMISSIONS.SALDAKONTI_READ, keywords: ['kursne razlike', 'revalorizacija', 'devizno', 'kurs'] },
       // Faza 4: Banka & plaćanja (izvodi, priprema plaćanja, virmani)
       { label: 'Banka & plaćanja', href: '/placanja', icon: Building2, requires: PERMISSIONS.PLACANJA_READ, keywords: ['banka', 'izvod', 'virman', 'nalog za placanje', 'priprema placanja'] },
       // XL: Blagajna (gotovinski dnevnik — uplatnice/isplatnice)

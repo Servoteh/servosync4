@@ -43,6 +43,12 @@ export interface PartnerCardRow {
   balance: Prisma.Decimal; // running saldo = opening + Σ(duguje − potražuje) do ovog reda
   dueDate: Date | null;
   reconciledAt: Date | null; // NULL = otvorena stavka
+  // Devizni par stavke (C2) — dinarske kolone iznad su PROTIVVREDNOST. NULL kad
+  // stavka nije devizna. Aditivno: postojeća polja se ne menjaju.
+  fxDebit: Prisma.Decimal | null;
+  fxCredit: Prisma.Decimal | null;
+  fxAmount: Prisma.Decimal | null; // fxDebit − fxCredit (devizni iznos sa predznakom)
+  fxCurrency: string | null;
 }
 
 /** Podaci komitenta iz šifarnika (meki ref — null ako je obrisan/ne postoji). */
@@ -94,6 +100,9 @@ interface CardRawRow {
   credit: Prisma.Decimal | null;
   due_date: Date | null;
   reconciled_at: Date | null;
+  fx_debit: Prisma.Decimal | null;
+  fx_credit: Prisma.Decimal | null;
+  fx_currency: string | null;
 }
 
 interface OpeningRawRow {
@@ -159,7 +168,10 @@ export class PartnerCardService {
           le.debit           AS debit,
           le.credit          AS credit,
           le.due_date        AS due_date,
-          le.reconciled_at   AS reconciled_at
+          le.reconciled_at   AS reconciled_at,
+          le.fx_debit        AS fx_debit,
+          le.fx_credit       AS fx_credit,
+          le.fx_currency     AS fx_currency
         FROM ledger_entries le
         JOIN journal_entries je ON je.id = le.journal_entry_id
         JOIN saldakonto_accounts sa ON sa.account = le.account_code
@@ -185,6 +197,9 @@ export class PartnerCardService {
       running = running.add(debit).sub(credit);
       totalDebit = totalDebit.add(debit);
       totalCredit = totalCredit.add(credit);
+      // Devizni par (C2) — samo kad stavka nosi valutu; inače sve tri kolone null.
+      const fxDebit = r.fx_currency ? new D(r.fx_debit ?? 0) : null;
+      const fxCredit = r.fx_currency ? new D(r.fx_credit ?? 0) : null;
       return {
         ledgerEntryId: r.ledger_entry_id,
         postingDate: r.posting_date,
@@ -199,6 +214,10 @@ export class PartnerCardService {
         balance: running,
         dueDate: r.due_date,
         reconciledAt: r.reconciled_at,
+        fxDebit,
+        fxCredit,
+        fxAmount: fxDebit && fxCredit ? fxDebit.sub(fxCredit) : null,
+        fxCurrency: r.fx_currency,
       };
     });
 

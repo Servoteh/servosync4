@@ -24,6 +24,12 @@ import {
   type CarryOverOptions,
 } from "./carry-over.service";
 import { PostingEngineService } from "../gl/posting/posting.service";
+import { ReservationService } from "./reservation.service";
+import type {
+  CreateReservationDto,
+  ListReservationsQuery,
+  ReleaseReservationDto,
+} from "./dto/reservation.dto";
 import type { ListStockDocumentsQuery } from "./dto/list-stock-documents.dto";
 import type { CreateStockDocumentDto } from "./dto/create-stock-document.dto";
 import type {
@@ -60,6 +66,7 @@ export class RobnoController {
     private readonly posting: PostingEngineService,
     private readonly inventory: InventoryService,
     private readonly carryOver: CarryOverService,
+    private readonly reservation: ReservationService,
   ) {}
 
   @Get("documents")
@@ -271,5 +278,78 @@ export class RobnoController {
     @Req() req: { user: AuthUser },
   ) {
     return this.inventory.finalize(id, req.user.userId, body);
+  }
+
+  // ── Rezervacije zaliha (Batch C) ────────────────────────────────────────────
+  // „Rezervisano" je agregat OTVORENIH redova stock_reservations; raspoloživo =
+  // stanje − rezervisano. Denormalizovana kolona stock_levels.reserved se ne koristi.
+
+  /** Lista rezervacija (filter artikal/magacin/status/izvor). */
+  @Get("reservations")
+  @RequirePermission(PERMISSIONS.ROBNO_READ)
+  listReservations(@Query() query: ListReservationsQuery) {
+    return this.reservation.list(query);
+  }
+
+  /** Raspoloživo za (artikal, magacin). */
+  @Get("availability")
+  @RequirePermission(PERMISSIONS.ROBNO_READ)
+  availability(
+    @Query("itemId", ParseIntPipe) itemId: number,
+    @Query("warehouseId", ParseIntPipe) warehouseId: number,
+  ) {
+    return this.reservation.availability({ itemId, warehouseId });
+  }
+
+  /** Rezerviši robu po stavkama predračuna (idempotentno — ponovni poziv preskače). */
+  @Post("reservations/from-invoice/:invoiceId")
+  @RequirePermission(PERMISSIONS.ROBNO_WRITE)
+  reserveForProforma(
+    @Param("invoiceId", ParseIntPipe) invoiceId: number,
+    @Body() body: { warehouseId?: number; note?: string },
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.reservation.reserveForProforma(
+      { invoiceId, warehouseId: body?.warehouseId, note: body?.note },
+      req.user.userId,
+    );
+  }
+
+  /** Ručna rezervacija. */
+  @Post("reservations")
+  @RequirePermission(PERMISSIONS.ROBNO_WRITE)
+  createReservation(
+    @Body() body: CreateReservationDto,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.reservation.create(body, req.user.userId);
+  }
+
+  /** Oslobodi jednu rezervaciju (vraća količinu u raspoloživo). */
+  @Post("reservations/:id/release")
+  @RequirePermission(PERMISSIONS.ROBNO_WRITE)
+  releaseReservationById(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() body: { reason?: string },
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.reservation.releaseById(id, body?.reason, req.user.userId);
+  }
+
+  /** Oslobodi rezervacije po izvoru (ceo dokument ili jedna stavka). */
+  @Post("reservations/release")
+  @RequirePermission(PERMISSIONS.ROBNO_WRITE)
+  releaseReservations(
+    @Body() body: ReleaseReservationDto,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.reservation.release(body, req.user.userId);
+  }
+
+  /** Oslobodi istekle rezervacije (kandidat i za cron). */
+  @Post("reservations/expire")
+  @RequirePermission(PERMISSIONS.ROBNO_WRITE)
+  expireReservations() {
+    return this.reservation.expireDue();
   }
 }

@@ -341,7 +341,20 @@ export default function SaldakontiPage() {
 
   return (
     <AppShell>
-      <PageHeader title="Saldakonti" count={countLabel} />
+      <PageHeader
+        title="Saldakonti"
+        count={countLabel}
+        actions={
+          <Button
+            type="button"
+            variant="secondary"
+            title="Revalorizacija deviznih otvorenih stavki na dan bilansa (kursne razlike 663/563)"
+            onClick={() => router.push('/saldakonti/kursne-razlike')}
+          >
+            Kursne razlike
+          </Button>
+        }
+      />
 
       <div className="flex-1 space-y-4 overflow-auto p-6">
         <Tabs tabs={TABS} value={view} onChange={setView} ariaLabel="Saldakonti pogledi" />

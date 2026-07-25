@@ -177,6 +177,149 @@ export interface PurchaseOrderItem {
   lineNo: number;
 }
 
+// ────────────────────────────────────── 3-way match (naručeno/primljeno/fakturisano)
+
+/**
+ * Poređenje naručeno ↔ primljeno ↔ fakturisano — 1:1 sa backend
+ * `nabavka/dto/three-way-match.dto.ts`.
+ *
+ * ⚠️ POSLOVNO PRAVILO: odstupanje je **UPOZORENJE, nikad blokada.** Nalazi se
+ * prikazuju uz stavku, ali nijedno dugme (prijem, kreiranje/potpis/izvoz naloga)
+ * se zbog njih NE onemogućava.
+ */
+export const MATCH_FINDING_CODE = {
+  /** Fakturisano više nego primljeno. */
+  QTY_OVER_RECEIPT: 'QTY_OVER_RECEIPT',
+  /** Primljeno više nego fakturisano (faktura možda tek stiže). */
+  QTY_UNDER_RECEIPT: 'QTY_UNDER_RECEIPT',
+  /** Jedinična cena na fakturi odstupa od naručene preko tolerancije. */
+  PRICE_VARIANCE: 'PRICE_VARIANCE',
+  /** Primljeno više nego naručeno. */
+  QTY_OVER_ORDER: 'QTY_OVER_ORDER',
+  /** Faktura bez prijema. */
+  NO_RECEIPT: 'NO_RECEIPT',
+} as const;
+
+export type MatchFindingCode =
+  (typeof MATCH_FINDING_CODE)[keyof typeof MATCH_FINDING_CODE];
+
+export type MatchFindingLevel = 'INFO' | 'WARNING';
+
+/** Kratka srpska oznaka nalaza za pilulu/legendu (puni tekst je u `message`). */
+export const MATCH_FINDING_LABEL: Record<MatchFindingCode, string> = {
+  QTY_OVER_RECEIPT: 'Fakturisano > primljeno',
+  QTY_UNDER_RECEIPT: 'Fakturisano < primljeno',
+  PRICE_VARIANCE: 'Odstupanje cene',
+  QTY_OVER_ORDER: 'Primljeno > naručeno',
+  NO_RECEIPT: 'Faktura bez prijema',
+};
+
+export interface MatchFinding {
+  code: MatchFindingCode;
+  level: MatchFindingLevel;
+  /** Srpski opis (tooltip / traka upozorenja). */
+  message: string;
+  orderItemId: number | null;
+  lineNo: number | null;
+}
+
+/** Poređenje po stavci narudžbenice; sve količine/iznosi su Decimal-as-string. */
+export interface ThreeWayMatchLine {
+  orderItemId: number;
+  lineNo: number;
+  articleId: number | null;
+  description: string | null;
+  unit: string | null;
+  orderedQty: string;
+  receivedQty: string;
+  invoicedQty: string;
+  orderedUnitPrice: string | null;
+  invoicedUnitPrice: string | null;
+  orderedAmount: string;
+  invoicedAmount: string;
+  varianceAmount: string;
+  /** false = stavka bez artikla (usluga) — ne uparuje se sa robnim dokumentom. */
+  matchable: boolean;
+  findings: MatchFinding[];
+}
+
+/** Robni ulaz (primka) vezan za narudžbenicu — nosilac primljeno/fakturisano. */
+export interface MatchedStockDocument {
+  id: number;
+  documentNumber: string;
+  status: string;
+  documentDate: string;
+  journalEntryId: number | null;
+}
+
+/** KUF trag (ulazna faktura) izveden iz GL naloga robnog ulaza — kontrola zbira. */
+export interface MatchedVatLedger {
+  entryIds: number[];
+  documentNumbers: string[];
+  vatBase: string;
+  vatAmount: string;
+}
+
+export interface ThreeWayMatchResult {
+  orderId: number;
+  orderNumber: string;
+  supplierId: number;
+  supplierName: string | null;
+  status: string;
+  currency: string;
+  orderedAt: string | null;
+  stockDocuments: MatchedStockDocument[];
+  vatLedger: MatchedVatLedger | null;
+  totals: {
+    orderedAmount: string;
+    invoicedAmount: string;
+    varianceAmount: string;
+  };
+  lines: ThreeWayMatchLine[];
+  findings: MatchFinding[];
+  hasFindings: boolean;
+  hasWarnings: boolean;
+}
+
+/** Red pregleda 3-way match-a po više narudžbenica. */
+export interface ThreeWayMatchSummaryRow {
+  orderId: number;
+  orderNumber: string;
+  supplierId: number;
+  supplierName: string | null;
+  status: string;
+  currency: string;
+  orderedAt: string | null;
+  orderedAmount: string;
+  invoicedAmount: string;
+  varianceAmount: string;
+  findingCount: number;
+  warningCount: number;
+  hasWarnings: boolean;
+  codes: MatchFindingCode[];
+}
+
+export interface MatchSummaryFilters {
+  from?: string;
+  to?: string;
+  supplierId?: number;
+  onlyWithFindings?: boolean;
+  skip?: number;
+  take?: number;
+}
+
+export interface MatchSummaryResponse {
+  data: ThreeWayMatchSummaryRow[];
+  meta: {
+    total: number;
+    returned: number;
+    skip: number;
+    take: number;
+    withFindings: number;
+    withWarnings: number;
+  };
+}
+
 // ─────────────────────────────────────────────────────────────── query keys
 
 const KEYS = {
@@ -184,6 +327,7 @@ const KEYS = {
   requests: ['nabavka', 'requests'] as const,
   orders: ['nabavka', 'orders'] as const,
   rfqs: ['nabavka', 'rfqs'] as const,
+  match: ['nabavka', 'match'] as const,
 };
 
 // ─────────────────────────────────────────────────────────────── ulazni tipovi
@@ -437,6 +581,47 @@ export function useCreateOrder() {
         body: JSON.stringify(input),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: KEYS.all }),
+  });
+}
+
+// ────────────────────────────────── 3-way match: detalj narudžbenice + pregled
+
+/**
+ * Poređenje naručeno/primljeno/fakturisano za jednu narudžbenicu —
+ * GET /nabavka/orders/:id/match. `enabled` gasi upit dok id nije poznat
+ * (npr. dok red nije razvijen u listi narudžbenica).
+ *
+ * ⚠️ Rezultat je informativan: nalazi se PRIKAZUJU, ne blokiraju nijednu akciju.
+ * Permisija NABAVKA_READ (klasna na kontroleru).
+ */
+export function useOrderMatch(orderId: number | null) {
+  return useQuery({
+    queryKey: [...KEYS.match, 'order', orderId],
+    queryFn: () =>
+      apiFetch<Envelope<ThreeWayMatchResult>>(`${BASE}/orders/${orderId}/match`),
+    enabled: orderId != null,
+    staleTime: 15_000,
+  });
+}
+
+/**
+ * Pregled 3-way match-a po više narudžbenica (lista/izveštaj) —
+ * GET /nabavka/match-summary. `onlyWithFindings=true` vraća samo narudžbenice
+ * sa bar jednim nalazom. Permisija NABAVKA_READ.
+ */
+export function useMatchSummary(filters: MatchSummaryFilters = {}, enabled = true) {
+  const query = buildQuery({
+    from: filters.from,
+    to: filters.to,
+    supplierId: filters.supplierId,
+    onlyWithFindings: filters.onlyWithFindings ? 'true' : undefined,
+    skip: filters.skip,
+    take: filters.take,
+  });
+  return useQuery({
+    queryKey: [...KEYS.match, 'summary', filters],
+    queryFn: () => apiFetch<MatchSummaryResponse>(`${BASE}/match-summary${query}`),
+    enabled,
   });
 }
 

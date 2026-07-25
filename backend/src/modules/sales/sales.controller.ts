@@ -20,6 +20,8 @@ import { FakturisanjeService } from "./fakturisanje.service";
 import { DocumentCarryOverService } from "./carry-over.service";
 import { InvoicePdfService } from "./print/invoice-pdf.service";
 import { InvoiceMailService } from "./print/invoice-mail.service";
+import { AdvanceInvoiceService } from "./advance-invoice.service";
+import type { CreateAdvanceInvoiceDto } from "./dto/advance-invoice.dto";
 import type { AuthUser } from "../auth/jwt.strategy";
 import type { CreateProformaDto } from "./dto/create-proforma.dto";
 import {
@@ -56,6 +58,7 @@ export class SalesController {
     private readonly carryOver: DocumentCarryOverService,
     private readonly invoicePdf: InvoicePdfService,
     private readonly invoiceMail: InvoiceMailService,
+    private readonly advanceInvoice: AdvanceInvoiceService,
   ) {}
 
   /**
@@ -170,5 +173,50 @@ export class SalesController {
   ) {
     const reason = validateStornoInvoice(body ?? {});
     return this.fakturisanje.stornoInvoice(id, reason, req.user);
+  }
+
+  // ── Avansni računi (Batch C) ────────────────────────────────────────────────
+  // PDV obaveza po avansu nastaje NAPLATOM, ne izdavanjem — zato je knjiženje
+  // vezano za `advance-invoices/:id/paid`, a ne za kreiranje AVR-a.
+
+  /** Napravi avansni račun (AVR) iz predračuna. */
+  @Post("advance-invoices")
+  @RequirePermission(PERMISSIONS.SALES_WRITE)
+  async createAdvanceInvoice(
+    @Body() dto: CreateAdvanceInvoiceDto,
+    @Req() req: { user: AuthUser },
+  ) {
+    const data = await this.advanceInvoice.createAdvanceInvoice(dto, req.user);
+    return { data };
+  }
+
+  /** Naplata avansa → knjiži PDV obavezu po avansu. */
+  @Post("advance-invoices/:id/paid")
+  @RequirePermission(PERMISSIONS.SALES_POST)
+  async markAdvancePaid(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() body: { paidAt: string; amount: string | number },
+    @Req() req: { user: AuthUser },
+  ) {
+    const data = await this.advanceInvoice.markAdvancePaid(
+      { advanceInvoiceId: id, paidAt: body?.paidAt, amount: body?.amount },
+      req.user,
+    );
+    return { data };
+  }
+
+  /** Odbij naplaćen avans na konačnom (proknjiženom) računu. */
+  @Post("invoices/:id/apply-advance")
+  @RequirePermission(PERMISSIONS.SALES_POST)
+  async applyAdvance(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() body: { advanceInvoiceId: number },
+    @Req() req: { user: AuthUser },
+  ) {
+    const data = await this.advanceInvoice.applyAdvance(
+      { invoiceId: id, advanceInvoiceId: body?.advanceInvoiceId },
+      req.user,
+    );
+    return { data };
   }
 }

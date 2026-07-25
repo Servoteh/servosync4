@@ -11,6 +11,9 @@ import { PartnerCardService } from "./partner-card.service";
 import { CollectionDashboardService } from "./collection-dashboard.service";
 import { DunningService } from "./dunning.service";
 import { DunningPdfService } from "./dunning-pdf.service";
+import { FxRevaluationService } from "./fx-revaluation.service";
+import { GlModule } from "../gl/gl.module";
+import { IzvodiModule } from "../izvodi/izvodi.module";
 
 /**
  * Modul Saldakonti (Faza 4 §A) — otvorene stavke / aging / uparivanje / kompenzacija.
@@ -26,9 +29,11 @@ import { DunningPdfService } from "./dunning-pdf.service";
  * registraciju radi integrator pri aktivaciji Faze 4.
  */
 @Module({
-  imports: [PrismaModule, PostingModule, DocumentsModule], // DocumentsModule → PdfService za IOS obrazac (E3)
+  // DocumentsModule → PdfService za IOS obrazac (E3); GlModule + IzvodiModule →
+  // revalorizacija deviznih stavki (nalog kursnih razlika + kurs na dan), Batch C.
+  imports: [PrismaModule, PostingModule, DocumentsModule, GlModule, IzvodiModule],
   controllers: [SaldakontiController],
-  providers: [OpenItemsService, ReconciliationService, CompensationService, IosPdfService, PartnerCardService, CollectionDashboardService, DunningService, DunningPdfService],
+  providers: [OpenItemsService, ReconciliationService, CompensationService, IosPdfService, PartnerCardService, CollectionDashboardService, DunningService, DunningPdfService, FxRevaluationService],
   exports: [OpenItemsService, ReconciliationService, CompensationService],
 })
 export class SaldakontiModule {}

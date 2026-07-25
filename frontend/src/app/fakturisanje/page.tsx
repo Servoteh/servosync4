@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Plus } from 'lucide-react';
+import { Coins, Plus } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
@@ -173,10 +173,18 @@ export default function FakturisanjePage() {
         title="Fakturisanje"
         count={list.data ? `${formatNumber(total)} računa` : undefined}
         actions={
-          <Button onClick={() => setNewProformaOpen(true)}>
-            <Plus className="h-4 w-4" aria-hidden />
-            Novi predračun
-          </Button>
+          <div className="flex items-center gap-2">
+            {/* C1b: avansni računi (oba smera) su zaseban ekran — ulaz je odavde
+                dok modul ne dobije stavku u navigaciji. */}
+            <Button variant="secondary" onClick={() => router.push('/fakturisanje/avansi')}>
+              <Coins className="h-4 w-4" aria-hidden />
+              Avansi
+            </Button>
+            <Button onClick={() => setNewProformaOpen(true)}>
+              <Plus className="h-4 w-4" aria-hidden />
+              Novi predračun
+            </Button>
+          </div>
         }
       />
 

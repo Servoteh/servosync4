@@ -8,6 +8,7 @@ import { FakturisanjeService } from "./fakturisanje.service";
 import { PricingService } from "./pricing.service";
 import { DocumentNumberSequenceService } from "./numbering.service";
 import { DocumentCarryOverService } from "./carry-over.service";
+import { AdvanceInvoiceService } from "./advance-invoice.service";
 
 /**
  * Modul Sales / Fakturisanje (Faza 5 §A — izlazni računi + carry-over + numeracija).
@@ -27,12 +28,14 @@ import { DocumentCarryOverService } from "./carry-over.service";
     PricingService,
     DocumentNumberSequenceService,
     DocumentCarryOverService,
+    AdvanceInvoiceService, // Batch C: avansni računi (AVR)
   ],
   exports: [
     FakturisanjeService,
     PricingService,
     DocumentNumberSequenceService,
     DocumentCarryOverService,
+    AdvanceInvoiceService,
   ],
 })
 export class SalesModule {}
