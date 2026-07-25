@@ -159,6 +159,11 @@ export class GlWriteService {
     if (!source) throw new NotFoundException(`Nalog ${entryId} ne postoji.`);
     if (source.status === "draft")
       throw new ConflictException("Nacrt naloga se ne stornira (obriši ga).");
+    if (source.status === "locked")
+      throw new ConflictException(
+        `Nalog ${entryId} je zaključan — prvo ga otključaj (unlock) pa storniraj; ` +
+          `storno mimo otključavanja bi zaobišao kontrolu zaključanog perioda.`,
+      );
     if (source.reversedByEntryId != null)
       throw new ConflictException(
         `Nalog ${entryId} je već storniran nalogom ${source.reversedByEntryId}.`,

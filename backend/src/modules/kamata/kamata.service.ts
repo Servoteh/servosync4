@@ -108,22 +108,37 @@ export class KamataService {
         `Nema definisane ${kind} stope na dan ${calcDate.toISOString().slice(0, 10)} (dodaj stopu u registar).`,
       );
 
+    // Samo receivable saldakonto konta iz registra (obrazac payment-preparation za
+    // payable stranu) — bez ovoga u osnovicu ulaze i dobavljačke (payable) stavke
+    // istog komitenta i stavke sa ne-saldakonto konta.
+    const receivableAccounts = await this.prisma.saldakontoAccount.findMany({
+      where: { side: "receivable", tracksOpenItems: true },
+      select: { account: true },
+    });
+    const accountCodes = receivableAccounts.map((a) => a.account);
+
     // Otvorene stavke komitenta (nezatvorene). Uzimamo SVE redove (i uplate bez dueDate)
     // da bismo NETIRALI osnovicu po dokumentu — inače se kamata računa na već plaćeni deo
     // fakture (review VISOK). Grupišemo po document_number kao open-items.service.
-    const entries = await this.prisma.ledgerEntry.findMany({
-      where: {
-        analyticalCode: dto.partnerId,
-        reconciledAt: null,
-      },
-      select: {
-        id: true,
-        documentNumber: true,
-        debit: true,
-        credit: true,
-        dueDate: true,
-      },
-    });
+    // Samo proknjiženi/zaključani nalozi — nacrt ne sme u osnovicu kamate.
+    const entries =
+      accountCodes.length === 0
+        ? []
+        : await this.prisma.ledgerEntry.findMany({
+            where: {
+              analyticalCode: dto.partnerId,
+              reconciledAt: null,
+              accountCode: { in: accountCodes },
+              journalEntry: { status: { in: ["posted", "locked"] } },
+            },
+            select: {
+              id: true,
+              documentNumber: true,
+              debit: true,
+              credit: true,
+              dueDate: true,
+            },
+          });
 
     // Neto saldo + najranije dospeće po dokumentu (grupa = document_number; null → svoj ključ po id).
     const groups = new Map<

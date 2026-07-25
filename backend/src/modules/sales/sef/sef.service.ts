@@ -7,6 +7,9 @@ import {
 } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
 import { Prisma, type SefOutbox } from "@prisma/client";
+
+/** Red outbox liste — bez velikih tela (ublXml, pdfAttachmentBase64). */
+export type SefOutboxListItem = Omit<SefOutbox, "ublXml" | "pdfAttachmentBase64">;
 import { PrismaService } from "../../../prisma/prisma.service";
 import { InvoicePdfService } from "../print/invoice-pdf.service";
 import { SefClientService } from "./sef-client.service";
@@ -440,18 +443,34 @@ export class SefService {
     return pending.map((r) => r.id);
   }
 
-  /** Lista outbox redova (opciono filter po statusu / invoiceId). */
+  /**
+   * Lista outbox redova (opciono filter po statusu / invoiceId).
+   * BEZ velikih tela (ublXml, pdfAttachmentBase64) — red nosi ceo UBL XML i
+   * base64 PDF prilog, pa bi lista od 200 redova bila višedeset-MB odgovor.
+   * Puna tela se čitaju samo na detalju (getOutbox).
+   */
   listOutbox(params: {
     status?: string;
     invoiceId?: number;
     skip?: number;
     take?: number;
-  }): Promise<SefOutbox[]> {
+  }): Promise<SefOutboxListItem[]> {
     const take = Math.min(Math.max(params.take ?? 50, 1), 200);
     return this.prisma.sefOutbox.findMany({
       where: {
         status: params.status,
         invoiceId: params.invoiceId,
+      },
+      select: {
+        id: true,
+        invoiceId: true,
+        requestId: true,
+        status: true,
+        sefInvoiceId: true,
+        errorMessage: true,
+        sentAt: true,
+        statusPolledAt: true,
+        createdAt: true,
       },
       orderBy: { id: "desc" },
       skip: params.skip && params.skip > 0 ? params.skip : undefined,

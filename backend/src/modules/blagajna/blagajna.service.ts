@@ -64,10 +64,14 @@ export class BlagajnaService {
   // ── Stavke (uplatnice/isplatnice) ───────────────────────────────────────
 
   /** Stanje blagajne = Σ(IN.amount) − Σ(OUT.amount) do (uklj.) datuma (default sve). */
-  async balanceOf(journalId: number, asOf?: Date): Promise<Prisma.Decimal> {
+  async balanceOf(
+    journalId: number,
+    asOf?: Date,
+    db: Prisma.TransactionClient | PrismaService = this.prisma,
+  ): Promise<Prisma.Decimal> {
     const where: Prisma.CashEntryWhereInput = { cashJournalId: journalId };
     if (asOf) where.entryDate = { lte: asOf };
-    const entries = await this.prisma.cashEntry.findMany({
+    const entries = await db.cashEntry.findMany({
       where,
       select: { direction: true, amount: true },
     });
@@ -120,14 +124,6 @@ export class BlagajnaService {
     const amount = new D(dto.amount);
     const entryDate = dto.entryDate ? new Date(dto.entryDate) : new Date();
 
-    if (dto.direction === "OUT") {
-      const bal = await this.balanceOf(journalId);
-      if (bal.lt(amount))
-        throw new ConflictException(
-          `Nedovoljno gotovine u blagajni (stanje ${bal.toFixed(2)}, isplata ${amount.toFixed(2)}).`,
-        );
-    }
-
     return this.prisma.$transaction(async (tx) => {
       const entryNumber = await this.nextEntryNumber(
         tx,
@@ -135,6 +131,17 @@ export class BlagajnaService {
         dto.direction,
         entryDate.getFullYear(),
       );
+
+      // „Ne u minus" se proverava UNUTAR transakcije, POSLE advisory locka u
+      // nextEntryNumber — provera pre transakcije je puštala dve konkurentne
+      // isplatnice da obe prođu i odvedu gotovinu u minus.
+      if (dto.direction === "OUT") {
+        const bal = await this.balanceOf(journalId, undefined, tx);
+        if (bal.lt(amount))
+          throw new ConflictException(
+            `Nedovoljno gotovine u blagajni (stanje ${bal.toFixed(2)}, isplata ${amount.toFixed(2)}).`,
+          );
+      }
 
       let journalEntryId: number | null = null;
       const shouldPost = dto.post ?? true;
