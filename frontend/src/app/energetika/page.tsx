@@ -197,7 +197,7 @@ export default function EnergetikaPage() {
         title="Energetika / SCADA"
         count={headerMeta}
         actions={
-          <Button variant="secondary" onClick={() => router.push('/m/energetika')}>
+          <Button variant="secondary" onClick={() => router.push('/mob/energetika')}>
             📱 Touch prikaz
           </Button>
         }

@@ -1,28 +1,9 @@
 'use client';
 
-// Mobilni „Novi izveštaj" (/m/izvestaj) — slobodan tekst + fotke → AI → preview → snimi + PDF.
-// Reuse punog wizarda (IzvestajWizard); po zatvaranju nazad na /m/montaza. Vidljivost = montaza.read.
+// Stara ruta `/m/izvestaj` → kanonska `/mob/izvestaj` (PLAN_MOB_3.0 Faza 0).
+// Stub SAMO za LAN `:3000` i stare obeleživače — vidi ../_components/legacy-redirect.
+import { LegacyMobRedirect } from '../_components/legacy-redirect';
 
-import { useEffect } from 'react';
-import { useRouter } from 'next/navigation';
-import { useAuth } from '@/lib/auth-context';
-import { IzvestajWizard } from '../../montaza/_components/izvestaj-wizard';
-
-export default function MobileIzvestajPage() {
-  const { user, isLoading } = useAuth();
-  const router = useRouter();
-
-  useEffect(() => {
-    if (!isLoading && !user) router.replace('/login');
-  }, [user, isLoading, router]);
-
-  if (isLoading || !user) {
-    return <main className="grid min-h-screen place-items-center text-sm text-ink-secondary">Učitavanje…</main>;
-  }
-
-  return (
-    <main className="min-h-screen bg-app p-3">
-      <IzvestajWizard onClose={() => router.push('/m/montaza')} />
-    </main>
-  );
+export default function LegacyIzvestajRedirectPage() {
+  return <LegacyMobRedirect to="/mob/izvestaj" label="Novi izveštaj" />;
 }

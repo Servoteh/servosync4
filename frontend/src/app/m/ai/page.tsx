@@ -1,26 +1,9 @@
 'use client';
 
-import { useEffect } from 'react';
-import { useRouter } from 'next/navigation';
-import { useAuth } from '@/lib/auth-context';
-import { AiChat } from '@/components/ai-chat';
+// Stara ruta `/m/ai` → kanonska `/mob/ai` (PLAN_MOB_3.0 Faza 0).
+// Stub SAMO za LAN `:3000` i stare obeleživače — vidi ../_components/legacy-redirect.
+import { LegacyMobRedirect } from '../_components/legacy-redirect';
 
-/** Mobilni AI asistent (/m/ai) — full-screen, paritet 1.0 myAi. Vidljivost = ai.chat. */
-export default function MobileAiPage() {
-  const { user, isLoading } = useAuth();
-  const router = useRouter();
-
-  useEffect(() => {
-    if (!isLoading && !user) router.replace('/login');
-  }, [user, isLoading, router]);
-
-  if (isLoading || !user) {
-    return <main className="grid min-h-screen place-items-center text-sm text-ink-secondary">Učitavanje…</main>;
-  }
-
-  return (
-    <div className="flex h-screen flex-col">
-      <AiChat variant="mobile" />
-    </div>
-  );
+export default function LegacyAiRedirectPage() {
+  return <LegacyMobRedirect to="/mob/ai" label="AI asistent" />;
 }

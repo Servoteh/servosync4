@@ -3,7 +3,7 @@
 // Izveštaji — create-wizard (increment 4). Port 1.0 izvestajCreateFlow.js + izvestajiView.js
 // create korak: slobodan tekst + fotke (downscale) → AI strukturira (BE port edge) → preview
 // sa dopunama + izbor predmeta → idempotentno snimanje (klijentski UUID) → PDF + upload fotki
-// → gotovo (retry fotki/PDF, otvori PDF). Deljena logika sa mobilnim (/m/izvestaj) stiže u inc.5.
+// → gotovo (retry fotki/PDF, otvori PDF). Deljena logika sa mobilnim (/mob/izvestaj) stiže u inc.5.
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { ArrowLeft, Plus, X, Check, AlertTriangle, FileDown, RefreshCw, Search } from 'lucide-react';

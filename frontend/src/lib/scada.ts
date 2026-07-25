@@ -1,7 +1,7 @@
 // Energetika / SCADA — deljeni tipovi, čitači payload-a i clock-safe staleness.
 // 3.0 TALAS E (backend docs/design/MODULE_SPEC_scada_30.md). Podaci žive u sy15
 // (1.0) bazi; 2.0 BE ih čita (GET) i R2 upisuje komande. FE sloj (ovaj fajl) je
-// ČISTA logika — bez React-a — pa je dele desktop (/energetika) i touch (/m/energetika).
+// ČISTA logika — bez React-a — pa je dele desktop (/energetika) i touch (/mob/energetika).
 //
 // Oblik `payload` (jsonb) se NAMERNO NE normalizuje: kopirani HP-HMI ekrani ga čitaju
 // 1:1, a touch čita iste ključeve (paritet 1.0 myEnergetika.js). Zato su čitači ispod

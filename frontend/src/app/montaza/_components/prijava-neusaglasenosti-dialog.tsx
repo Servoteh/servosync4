@@ -25,7 +25,7 @@ const MAX_PHOTO_BYTES = 8 * 1024 * 1024; // paritet BE (≤8 MB/fajl)
 /**
  * Prijava neusaglašenosti na montaži (zahtev 004/26) — fork obrasca
  * `prijava-kvara-dialog.tsx`. Prijavljuju svi sa pristupom Montaži; svaka prijava
- * obaveštava menadžment (backend: zvonce + mejl). Deli ga desktop tab i /m/montaza
+ * obaveštava menadžment (backend: zvonce + mejl). Deli ga desktop tab i /mob/montaza
  * (responsive 360px, kamera primarni tok kroz AttachmentInput). Predmet je obavezan
  * (postojeći montaža predmet-picker); crtež/RN opciono; ozbiljnost/lokacija segmentirano.
  */

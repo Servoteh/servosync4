@@ -80,7 +80,7 @@ mapiranje); jedini sy15 dodir praćenja je karantin akcionih tačaka (v. §1.3).
 | 2 | **locations** (locations.service.ts) | `loc_*` tabele (ostaju u sy15 — doktrina A1), fn-ovi koji čitaju bigtehn keš, `v_bigtehn_work_orders_with_mes_active` (:693), syncHealth nad `bridge_sync_log` (:924-989) | repoint bigtehn čitanja na glavnu bazu + zamena ingest signala + prerada syncHealth | **F5c** |
 | 3 | **loc-tp-feed** hranilica | piše 3 keša + `loc_tp_feed_state` + `bridge_sync_log` | gasi se TEK kad #1 i #2 padnu | **F5d** |
 | 4 | pg_cron ingest (sy15) | `loc_bigtehn_ingest_run` + `_state` + parser + heartbeat | zamenjen native ingest-om (F5c), pa unschedule + DROP | **F5d** |
-| 5 | 1.0 mobilni **/m/pracenje** (myPracenje.js) | sy15 `pracenje_*` RPC-ovi (get_aktivni_predmeti…) — poslednji ŽIVI 1.0 klijent tih fn | **O8 redirect** na 3.0 `/m/pracenje` | **F5a** |
+| 5 | 1.0 mobilni **/m/pracenje** (myPracenje.js) | sy15 `pracenje_*` RPC-ovi (get_aktivni_predmeti…) — poslednji ŽIVI 1.0 klijent tih fn | **O8 redirect** na 3.0 **`/mob/pracenje`** (⚠️ ispravka 25.07: `run_worker_first` proksira SVE `/m/*` na 1.0 — 3.0 `/m/pracenje` je na javnom domenu nedostižan; vidi PLAN_MOB_3.0.md) | **F5a** |
 | 6 | 1.0 mobilni **/m/*** myLokacije | `loc_*` u sy15 (ne keš) | nastavlja da radi dok loc_* žive u sy15; seoba = B3 (M10) | posle F5 |
 | 7 | plan-montaze | `projects/work_packages/phases`, `montaza_*`, **CATALOGS keševi** (:216,229,259), bucketi | NIJE bloker feed-a; katalozi = B2, podaci = zasebna seoba | posle F5 (§7) |
 | 8 | pracenje karantin | `v_akcioni_plan` (view) | pada sa seobom sastanaka | posle F5 (§7) |
@@ -176,7 +176,7 @@ Pre DROP-a: `pg_dump` tih objekata u arhivu (obrazac „zamrzni pa obriši", §6
 
 - **Preduslovi**: nema (preflight je read-only; O8 traži samo pristup 1.0 repou i deploy 1.0 fronta).
 - **Verifikacija**: O8 — na telefonu otvoriti 1.0 `/m/pracenje` → mora sleteti na 3.0
-  `/m/pracenje` ulogovan (token fragment); deep-link test; per-uređaj beg
+  `/mob/pracenje` ulogovan (token fragment; ispravka 25.07 — vidi §2.2 red 5); deep-link test; per-uređaj beg
   `ss2_cutover='off'` i dalje radi za ostale ekrane. DROP (§3.3) — pre izvršenja grep 1.0
   repoa da nijedan živi kod ne zove te RPC-ove (posle O8 ne sme biti nijedan).
 - **Rollback**: O8 = revert komita u 1.0 (fajlovi nisu brisani); DROP = restore iz dump-a.
