@@ -16,6 +16,7 @@ import {
   type ApplyAdvanceDto,
   type CreateAdvanceInvoiceDto,
   type MarkAdvancePaidDto,
+  type NormalizedCreateAdvanceInvoice,
   validateApplyAdvance,
   validateCreateAdvanceInvoice,
   validateMarkAdvancePaid,
@@ -26,10 +27,17 @@ import {
  * =============================================================================
  * Poslovni tok (tri koraka, svaki svoja transakcija):
  *
- *   1) createAdvanceInvoice — iz PREDRAČUNA (PON/PROF, level 250) nastaje AVR
- *      (level 0, broj iz `DocumentNumberSequence` šifre 'AVR'). Iznos avansa je
- *      BRUTO i razbija se na osnovicu + PDV PRERAČUNATOM stopom (`grossToNet`
- *      iz pdv/vat-bridge.util — jedina tačka istine za taj račun).
+ *   1) createAdvanceInvoice — AVR (level 0, broj iz `DocumentNumberSequence` šifre
+ *      'AVR') nastaje NA DVA NAČINA:
+ *        (a) iz PREDRAČUNA (PON/PROF, level 250) — kupac/valuta/izvoz/stopa se
+ *            preuzimaju sa predračuna, uz anti-duplo „jedan AVR po predračunu";
+ *        (b) BEZ IZVORA, po UGOVORU — `customerId` + `amount` + `basis` (broj
+ *            ugovora / opis osnova, upisuje se u `Invoice.advanceBasis`).
+ *      Razlog za (b): u BigBit produkciji 2025. dva NAJVEĆA avansa (po 535+ mil.
+ *      RSD, `AVR-00001/2025` i `AVR-00017/2025`) izdata su po Ugovoru, ne po
+ *      predračunu (doc BIGBIT_IZLAZNE_FAKTURE_I_AVANSI §4.1, gap G5).
+ *      Iznos avansa je BRUTO i razbija se na osnovicu + PDV PRERAČUNATOM stopom
+ *      (`grossToNet` iz pdv/vat-bridge.util — jedina tačka istine za taj račun).
  *      GL se OVDE NE DIRA (izdavanje avansnog računa nije poreski događaj).
  *
  *   2) markAdvancePaid — NAPLATA avansa. PDV obaveza po avansu nastaje
@@ -42,14 +50,26 @@ import {
  *
  *   3) applyAdvance — KONAČNI račun odbija avans. `grossTotal` konačnog računa
  *      se NE menja (avans umanjuje samo IZNOS ZA PLAĆANJE:
- *      `payableAmount = grossTotal − advanceAppliedAmount`). GL storno avansa:
- *          primljeni avansi 4300    DUG = osnovica avansa
- *          PDV 4720 / 4730          DUG = PDV avansa
- *          kupac 2040 (2050)        POT = bruto avansa
+ *      `payableAmount = grossTotal − Σ primena na tom računu`). GL storno avansa
+ *      (po SVAKOJ primeni zaseban nalog):
+ *          primljeni avansi 4300    DUG = osnovica primene
+ *          PDV 4720 / 4730          DUG = PDV primene
+ *          kupac 2040 (2050)        POT = bruto primene
  *      Prihod se priznaje SAMO jednom — na konačnom računu, ne na avansu.
- *      Anti-duplo: parcijalni unique `uq_invoices_advance_applied_once` nad
- *      (advance_invoice_id) WHERE status <> 'CANCELLED' → P2002 se hvata i
- *      prevodi u 409 (jedan AVR se sme odbiti samo na JEDNOM računu).
+ *
+ *      VEZA JE N:M (migracija 20260726120000, tabela `invoice_advance_applications`):
+ *      jedan avans se deli na više računa (BigBit `AVR-00013/2025` → `IFR 353/25`
+ *      20.802 + `IFR 370/25` 17.100) i jedan račun zatvara više avansa
+ *      (`IFUSL 059/25` ← 6 avansa). Kontrole:
+ *        • Σ AKTIVNIH primena po avansu ≤ NAPLAĆEN iznos avansa → 422;
+ *        • Σ AKTIVNIH primena po računu ≤ bruto računa → 422;
+ *        • isti avans dvaput na ISTOM računu → 409 (parcijalni unique
+ *          `uq_invoice_advance_app_active`, P2002 → 409);
+ *        • zbirovi se čitaju pod `pg_advisory_xact_lock` (račun pa avans, uvek tim
+ *          redom) — bez toga dve paralelne primene obe vide „ima još avansa".
+ *      Kolone `invoices.advance_invoice_id` / `advance_applied_amount` /
+ *      `advance_closing_entry_id` ostaju kao DENORMALIZACIJA (prva primena + zbir)
+ *      radi SEF-a, štampe, FE-a i pdv modula.
  *
  * Konta i obrazac ručnog naloga su PREUZETI iz `fakturisanje.service.ts`
  * (ista konstanta 2040/2050, namenski PDV par 4720/4730, ista vrsta naloga 'IF', isti
@@ -98,6 +118,19 @@ const VAT_PERCENT_BY_CODE: Readonly<Record<string, number>> = {
 
 /** Advisory-lock namespace za serijalizaciju „jedan AVR po predračunu". */
 const ADVISORY_NS_ADVANCE_PER_PROFORMA = 4002;
+/**
+ * Advisory-lock namespace-i za primenu avansa. Uzimaju se UVEK istim redom
+ * (prvo račun, pa avans) — obrnut redosled u drugoj sesiji bi dao deadlock.
+ */
+const ADVISORY_NS_APPLY_ON_INVOICE = 4003;
+const ADVISORY_NS_APPLY_OF_ADVANCE = 4004;
+
+/**
+ * Status primene avansa (`invoice_advance_applications.status`). Izvezeno —
+ * storno fakture (fakturisanje.service) radi nad istim vrednostima.
+ */
+export const APPLICATION_ACTIVE = "ACTIVE";
+export const APPLICATION_REVERSED = "REVERSED";
 
 /** Minimalni oblik stavke iz koga se čita PDV stopa dokumenta. */
 interface VatRateSource {
@@ -118,6 +151,22 @@ interface ManualLine {
   documentNumber: string;
   dueDate: Date | null;
   currency: string;
+}
+
+/** Red spojne tabele koji učestvuje u zbirovima primena. */
+interface AppliedRow {
+  id: number;
+  invoiceId: number;
+  advanceInvoiceId: number;
+  appliedAmount: Prisma.Decimal;
+}
+
+/** Zbir bruto iznosa primena. */
+function sumApplied(rows: AppliedRow[]): Prisma.Decimal {
+  return rows.reduce(
+    (acc, r) => acc.add(r.appliedAmount),
+    new Prisma.Decimal(0),
+  );
 }
 
 /** Osnovica + PDV izvedeni iz bruto avansa. */
@@ -142,15 +191,23 @@ export class AdvanceInvoiceService {
   // ── 1) KREIRANJE AVR IZ PREDRAČUNA ──────────────────────────────────────────
 
   /**
-   * Napravi avansni račun (AVR) iz predračuna. Bez knjiženja — GL nastaje tek
-   * naplatom (`markAdvancePaid`).
+   * Napravi avansni račun (AVR) — iz predračuna ili po ugovoru (bez izvora).
+   * Bez knjiženja — GL nastaje tek naplatom (`markAdvancePaid`).
    *
    * @throws NotFoundException predračun ne postoji
-   * @throws UnprocessableEntityException izvor nije predračun / iznos van opsega
+   * @throws UnprocessableEntityException izvor nije predračun / iznos van opsega /
+   *         kupac ne postoji / nepoznata PDV stopa
    * @throws ConflictException za predračun već postoji nestorniran AVR
    */
   async createAdvanceInvoice(dto: CreateAdvanceInvoiceDto, actor: AuthUser) {
     const input = validateCreateAdvanceInvoice(dto);
+
+    // Avans BEZ izvornog dokumenta (po ugovoru): nema predračuna iz koga bi se
+    // izveli kupac/iznos, pa ni anti-duplo guard-a — osnov je obavezan tekst.
+    if (input.proformaId === null) {
+      return this.createAdvanceWithoutSource(input, actor);
+    }
+    const proformaId = input.proformaId;
 
     return this.prisma.$transaction(async (tx) => {
       // Serijalizuj po predračunu: guard „već postoji AVR" je read-then-write i
@@ -159,23 +216,21 @@ export class AdvanceInvoiceService {
       // posting.service (pg_advisory_xact_lock nad izvornim dokumentom).
       // ::int kastovi obavezni — v. isti komentar u posting.service (Prisma vezuje
       // brojeve kao bigint, a Postgres nema pg_advisory_xact_lock(bigint, bigint)).
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${ADVISORY_NS_ADVANCE_PER_PROFORMA}::int, ${input.proformaId}::int)`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${ADVISORY_NS_ADVANCE_PER_PROFORMA}::int, ${proformaId}::int)`;
 
       const proforma = await tx.invoice.findUnique({
-        where: { id: input.proformaId },
+        where: { id: proformaId },
         include: { items: { orderBy: { lineNo: "asc" } } },
       });
       if (!proforma) {
-        throw new NotFoundException(
-          `Predračun ${input.proformaId} ne postoji.`,
-        );
+        throw new NotFoundException(`Predračun ${proformaId} ne postoji.`);
       }
       if (
         !PROFORMA_TYPES.has(proforma.documentType) ||
         proforma.level !== 250
       ) {
         throw new UnprocessableEntityException(
-          `Dokument ${input.proformaId} nije predračun/ponuda (vrsta ` +
+          `Dokument ${proformaId} nije predračun/ponuda (vrsta ` +
             `${proforma.documentType}, level ${proforma.level}) — avansni račun ` +
             `se izdaje samo po predračunu.`,
         );
@@ -264,6 +319,11 @@ export class AdvanceInvoiceService {
           grossTotal: split.gross,
           copiedFromDocId: proforma.id,
           advanceDirection: ADVANCE_DIRECTION_OUT,
+          // Osnov se upisuje i kad postoji predračun — izveštaji i štampa avansa
+          // traže jedno polje sa osnovom, bez obzira odakle je avans nastao.
+          advanceBasis:
+            input.basis ?? `Predračun ${proforma.documentNumber}`.slice(0, 255),
+          note: input.note,
           status: "POSTED",
           isLocked: true,
           poNumber: proforma.poNumber,
@@ -278,6 +338,115 @@ export class AdvanceInvoiceService {
                 lineNo: 1,
                 itemId: null,
                 description: `Avans po predračunu ${proforma.documentNumber}`,
+                quantity: new D(1),
+                unitPrice: split.net,
+                vatRateCode: split.vatRateCode,
+                vatBase: split.net,
+                vatAmount: split.vat,
+                lineTotal: split.gross,
+              },
+            ],
+          },
+        },
+        include: { items: { orderBy: { lineNo: "asc" } } },
+      });
+    });
+  }
+
+  /**
+   * AVR bez izvornog dokumenta — avans po UGOVORU/dogovoru (BigBit gap G5).
+   * Kupac, bruto iznos i OSNOV (broj ugovora / opis) su obavezni; PDV stopa se
+   * uzima iz `vatRateCode` (default 20%), izvoz nosi 0%.
+   *
+   * Anti-duplo zaštita ovde NE postoji — nema izvornog dokumenta za koji bi se
+   * avans vezao. To je svesna posledica: BigBit je istog kupca po istom ugovoru
+   * avansirao u više rata, svaka rata = svoj AVR (doc §4.5 „delimična naplata
+   * jednog AVR-a ne postoji, rate su više avansnih računa").
+   */
+  private async createAdvanceWithoutSource(
+    input: NormalizedCreateAdvanceInvoice,
+    actor: AuthUser,
+  ) {
+    // DTO garantuje da su prisutni (validateCreateAdvanceInvoice), ali TS to ne zna.
+    const customerId = input.customerId;
+    const rawAmount = input.amount;
+    if (customerId === null || rawAmount === null || input.basis === null) {
+      throw new UnprocessableEntityException(
+        "Za avansni račun bez predračuna obavezni su kupac, iznos i osnov.",
+      );
+    }
+
+    const amount = new D(rawAmount);
+    if (!amount.greaterThan(ZERO)) {
+      throw new UnprocessableEntityException(
+        "Iznos avansa mora biti veći od 0.",
+      );
+    }
+
+    const isExport = input.isExport ?? false;
+    const vatRateCode = isExport ? "0" : (input.vatRateCode ?? "3");
+    if (VAT_PERCENT_BY_CODE[vatRateCode] === undefined) {
+      throw new UnprocessableEntityException(
+        `Nepoznata šifra PDV stope „${vatRateCode}" — dozvoljene su ` +
+          `${Object.keys(VAT_PERCENT_BY_CODE).join(", ")}.`,
+      );
+    }
+
+    const companyId = input.companyId ?? 0;
+    const documentDate = input.documentDate ?? new Date();
+    const exchangeRate = new D(input.exchangeRate ?? 1);
+    const split = this.splitAdvance(
+      amount,
+      [{ vatRateCode, vatBase: amount }],
+      isExport,
+    );
+
+    return this.prisma.$transaction(async (tx) => {
+      const customer = await tx.customer.findUnique({
+        where: { id: customerId },
+        select: { id: true, name: true },
+      });
+      if (!customer) {
+        throw new UnprocessableEntityException(
+          `Kupac ${customerId} ne postoji u šifarniku komitenata.`,
+        );
+      }
+
+      const documentNumber = await this.numbering.next(
+        tx,
+        ADVANCE_TYPE,
+        documentDate.getFullYear(),
+        companyId,
+      );
+
+      return tx.invoice.create({
+        data: {
+          documentType: ADVANCE_TYPE,
+          documentNumber,
+          level: 0,
+          companyId,
+          customerId,
+          documentDate,
+          currency: input.currency ?? "RSD",
+          exchangeRate,
+          accountingExchangeRate: exchangeRate,
+          isExport,
+          netTotal: split.net,
+          vatTotal: split.vat,
+          grossTotal: split.gross,
+          advanceDirection: ADVANCE_DIRECTION_OUT,
+          advanceBasis: input.basis,
+          note: input.note,
+          status: "POSTED",
+          isLocked: true,
+          createdByUserId: actor.userId,
+          updatedByUserId: actor.userId,
+          items: {
+            create: [
+              {
+                lineNo: 1,
+                itemId: null,
+                description: `Avans po osnovu: ${input.basis}`.slice(0, 255),
                 quantity: new D(1),
                 unitPrice: split.net,
                 vatRateCode: split.vatRateCode,
@@ -481,146 +650,227 @@ export class AdvanceInvoiceService {
   // ── 3) KONAČNI RAČUN ODBIJA AVANS ───────────────────────────────────────────
 
   /**
-   * Odbij naplaćen avans na konačnom računu. `grossTotal` konačnog računa se NE
-   * menja — avans umanjuje samo IZNOS ZA PLAĆANJE (`payableAmount`).
+   * Odbij (deo) naplaćenog avansa na konačnom računu — JEDNA PRIMENA u tabeli
+   * `invoice_advance_applications`. `grossTotal` konačnog računa se NE menja —
+   * avans umanjuje samo IZNOS ZA PLAĆANJE (`payableAmount`).
+   *
+   * Bez `amount` odbija se ceo PREOSTALI (još neiskorišćen) naplaćen iznos avansa,
+   * pa se ponašanje 1:1 slučaja ne menja. Sa `amount` se avans deli na više računa
+   * (BigBit `AVR-00013/2025` → 20.802 + 17.100).
    *
    * @throws NotFoundException račun / AVR ne postoji
    * @throws UnprocessableEntityException avans nije naplaćen, drugi kupac,
-   *         iznos veći od računa, račun je draft/storniran
-   * @throws ConflictException avans je već odbijen (na ovom ili drugom računu)
+   *         iznos veći od preostalog avansa ili od neodbijenog dela računa,
+   *         račun je draft/storniran
+   * @throws ConflictException isti avans je već aktivno primenjen na ovom računu
    */
   async applyAdvance(dto: ApplyAdvanceDto, actor: AuthUser) {
     const input = validateApplyAdvance(dto);
 
-    const [invoice, advance] = await Promise.all([
-      this.prisma.invoice.findUnique({ where: { id: input.invoiceId } }),
-      this.prisma.invoice.findUnique({
-        where: { id: input.advanceInvoiceId },
-        include: { items: { orderBy: { lineNo: "asc" } } },
-      }),
-    ]);
-    if (!invoice) {
-      throw new NotFoundException(`Račun ${input.invoiceId} ne postoji.`);
-    }
-    if (!advance) {
-      throw new NotFoundException(
-        `Avansni račun ${input.advanceInvoiceId} ne postoji.`,
-      );
-    }
-    if (advance.documentType !== ADVANCE_TYPE) {
-      throw new UnprocessableEntityException(
-        `Dokument ${advance.documentNumber} nije avansni račun (vrsta ${advance.documentType}).`,
-      );
-    }
-    if (invoice.documentType === ADVANCE_TYPE) {
-      throw new UnprocessableEntityException(
-        "Avans se ne može odbiti na drugom avansnom računu.",
-      );
-    }
-    if (invoice.status === "CANCELLED" || advance.status === "CANCELLED") {
-      throw new UnprocessableEntityException(
-        "Storniran dokument ne učestvuje u odbijanju avansa.",
-      );
-    }
-    // Smer MORA biti izlazni. Ulazni avans (dobavljačev) nikad nije proknjižen u
-    // našoj GK kao obaveza po primljenom avansu — njegov storno bi gurnuo 4300 i
-    // PDV konto u dugovni saldo i umanjio izlazni PDV bez osnova. Za partnera koji
-    // je i kupac i dobavljač ovo je jedan pogrešan klik (review Batch C, nalaz 5).
-    if (advance.advanceDirection !== ADVANCE_DIRECTION_OUT) {
-      throw new UnprocessableEntityException(
-        `Avans ${advance.documentNumber} je PRIMLJEN od dobavljača (ulazni) — ` +
-          `na izlaznom računu se odbijaju samo avansi koje smo mi izdali kupcu.`,
-      );
-    }
-    // GL storno avansa se knjiži odmah, pa konačni račun mora biti proknjižen
-    // (draft nema definitivan broj ni nalog — avans bi zatvarao „ništa").
-    if (invoice.status === "DRAFT" || invoice.level !== 0) {
-      throw new UnprocessableEntityException(
-        `Račun ${invoice.documentNumber} nije proknjižen — avans se odbija tek na ` +
-          `proknjiženom (konačnom) računu.`,
-      );
-    }
-    // PDV obaveza po avansu nastaje NAPLATOM: nenaplaćen avans nema šta da se stornira.
-    if (advance.advancePaidAt == null) {
-      throw new UnprocessableEntityException(
-        `Avansni račun ${advance.documentNumber} nije naplaćen — nenaplaćen avans se ` +
-          `ne može odbiti na računu.`,
-      );
-    }
-    if (
-      invoice.customerId == null ||
-      advance.customerId == null ||
-      invoice.customerId !== advance.customerId
-    ) {
-      throw new UnprocessableEntityException(
-        `Avansni račun ${advance.documentNumber} glasi na drugog kupca — avans se ` +
-          `odbija samo na računu istog kupca.`,
-      );
-    }
-    if (invoice.advanceInvoiceId != null) {
-      throw new ConflictException(
-        `Na računu ${invoice.documentNumber} je već odbijen avans ` +
-          `(dokument ${invoice.advanceInvoiceId}).`,
-      );
-    }
-
-    const applied = advance.advancePaidAmount;
-    if (!applied.greaterThan(ZERO)) {
-      throw new UnprocessableEntityException(
-        `Avansni račun ${advance.documentNumber} nema naplaćen iznos.`,
-      );
-    }
-    if (applied.greaterThan(invoice.grossTotal)) {
-      throw new UnprocessableEntityException(
-        `Naplaćen avans (${applied.toFixed(2)}) je veći od iznosa računa ` +
-          `(${invoice.grossTotal.toFixed(2)}) — avans se ne može odbiti u celosti.`,
-      );
-    }
-
-    // Osnovica/PDV avansa se IZVODE isto kao pri naplati (ista funkcija, isti ulaz)
-    // → storno pogađa cent u cent iznose iz naloga naplate.
-    const split = this.splitAdvance(applied, advance.items, advance.isExport);
-    const customerId = invoice.customerId;
-
     return this.prisma.$transaction(async (tx) => {
+      // Zbirovi primena se čitaju pa upisuju (read-then-write) — bez brave dve
+      // paralelne primene istog avansa obe vide isti „preostatak" i zajedno ga
+      // prekorače. Redosled brava je UVEK račun → avans (obrnut redosled u drugoj
+      // sesiji = deadlock). ::int kastovi obavezni (Prisma vezuje bigint).
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${ADVISORY_NS_APPLY_ON_INVOICE}::int, ${input.invoiceId}::int)`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${ADVISORY_NS_APPLY_OF_ADVANCE}::int, ${input.advanceInvoiceId}::int)`;
+
+      const [invoice, advance] = await Promise.all([
+        tx.invoice.findUnique({ where: { id: input.invoiceId } }),
+        tx.invoice.findUnique({
+          where: { id: input.advanceInvoiceId },
+          include: { items: { orderBy: { lineNo: "asc" } } },
+        }),
+      ]);
+      if (!invoice) {
+        throw new NotFoundException(`Račun ${input.invoiceId} ne postoji.`);
+      }
+      if (!advance) {
+        throw new NotFoundException(
+          `Avansni račun ${input.advanceInvoiceId} ne postoji.`,
+        );
+      }
+      if (advance.documentType !== ADVANCE_TYPE) {
+        throw new UnprocessableEntityException(
+          `Dokument ${advance.documentNumber} nije avansni račun (vrsta ${advance.documentType}).`,
+        );
+      }
+      if (invoice.documentType === ADVANCE_TYPE) {
+        throw new UnprocessableEntityException(
+          "Avans se ne može odbiti na drugom avansnom računu.",
+        );
+      }
+      if (invoice.status === "CANCELLED" || advance.status === "CANCELLED") {
+        throw new UnprocessableEntityException(
+          "Storniran dokument ne učestvuje u odbijanju avansa.",
+        );
+      }
+      // Smer MORA biti izlazni. Ulazni avans (dobavljačev) nikad nije proknjižen u
+      // našoj GK kao obaveza po primljenom avansu — njegov storno bi gurnuo 4300 i
+      // PDV konto u dugovni saldo i umanjio izlazni PDV bez osnova. Za partnera koji
+      // je i kupac i dobavljač ovo je jedan pogrešan klik (review Batch C, nalaz 5).
+      if (advance.advanceDirection !== ADVANCE_DIRECTION_OUT) {
+        throw new UnprocessableEntityException(
+          `Avans ${advance.documentNumber} je PRIMLJEN od dobavljača (ulazni) — ` +
+            `na izlaznom računu se odbijaju samo avansi koje smo mi izdali kupcu.`,
+        );
+      }
+      // GL storno avansa se knjiži odmah, pa konačni račun mora biti proknjižen
+      // (draft nema definitivan broj ni nalog — avans bi zatvarao „ništa").
+      if (invoice.status === "DRAFT" || invoice.level !== 0) {
+        throw new UnprocessableEntityException(
+          `Račun ${invoice.documentNumber} nije proknjižen — avans se odbija tek na ` +
+            `proknjiženom (konačnom) računu.`,
+        );
+      }
+      // PDV obaveza po avansu nastaje NAPLATOM: nenaplaćen avans nema šta da se stornira.
+      if (advance.advancePaidAt == null) {
+        throw new UnprocessableEntityException(
+          `Avansni račun ${advance.documentNumber} nije naplaćen — nenaplaćen avans se ` +
+            `ne može odbiti na računu.`,
+        );
+      }
+      if (
+        invoice.customerId == null ||
+        advance.customerId == null ||
+        invoice.customerId !== advance.customerId
+      ) {
+        throw new UnprocessableEntityException(
+          `Avansni račun ${advance.documentNumber} glasi na drugog kupca — avans se ` +
+            `odbija samo na računu istog kupca.`,
+        );
+      }
+      if (!advance.advancePaidAmount.greaterThan(ZERO)) {
+        throw new UnprocessableEntityException(
+          `Avansni račun ${advance.documentNumber} nema naplaćen iznos.`,
+        );
+      }
+
+      // ── N:M kontrola iznosa ────────────────────────────────────────────────
+      // Preostatak avansa = NAPLAĆENO − Σ aktivnih primena (BigBit ovu proveru
+      // NEMA — ni constraint ni VBA — pa se avans tamo može prekoračiti; doc §4.5).
+      const advanceApps = await this.activeApplications(tx, {
+        advanceInvoiceId: advance.id,
+      });
+      const invoiceApps = await this.activeApplications(tx, {
+        invoiceId: invoice.id,
+      });
+      let advanceUsed = sumApplied(advanceApps);
+      let invoiceUsed = sumApplied(invoiceApps);
+      let duplicatePair = invoiceApps.some(
+        (a) => a.advanceInvoiceId === advance.id,
+      );
+
+      // LEGACY / CROSS-MODUL: veze nastale pre N:M migracije ili kroz pdv modul
+      // (`advance-vat.linkIncomingAdvanceToFinal` piše `invoices.advance_*` bez reda
+      // u spojnoj tabeli) nemaju primenu — čitaju se iz kolona, inače bi se isti
+      // avans potrošio dvaput.
+      if (advanceApps.length === 0) {
+        const legacyLinks = await tx.invoice.findMany({
+          where: { advanceInvoiceId: advance.id, status: { not: "CANCELLED" } },
+          select: { id: true, advanceAppliedAmount: true },
+        });
+        advanceUsed = legacyLinks.reduce(
+          (acc, l) => acc.add(l.advanceAppliedAmount),
+          ZERO,
+        );
+        duplicatePair ||= legacyLinks.some((l) => l.id === invoice.id);
+      }
+      if (invoiceApps.length === 0) {
+        invoiceUsed = invoice.advanceAppliedAmount;
+      }
+
+      const advanceRemaining = advance.advancePaidAmount.sub(advanceUsed);
+      const invoiceRemaining = invoice.grossTotal.sub(invoiceUsed);
+
+      // Isti avans dvaput na ISTOM računu = greška unosa (za veći odbitak se
+      // stornira postojeća primena). DB to hvata parcijalnim unique-om; ovde je
+      // jasna poruka umesto P2002.
+      if (duplicatePair) {
+        throw new ConflictException(
+          `Avansni račun ${advance.documentNumber} je već odbijen na računu ` +
+            `${invoice.documentNumber}.`,
+        );
+      }
+
+      if (!advanceRemaining.greaterThan(ZERO)) {
+        throw new UnprocessableEntityException(
+          `Avansni račun ${advance.documentNumber} je već iskorišćen u celosti ` +
+            `(naplaćeno ${advance.advancePaidAmount.toFixed(2)}, primenjeno ` +
+            `${advanceUsed.toFixed(2)}).`,
+        );
+      }
+
+      const requested =
+        input.amount !== null ? new D(input.amount) : advanceRemaining;
+      if (!requested.greaterThan(ZERO)) {
+        throw new UnprocessableEntityException(
+          "Iznos odbitka avansa mora biti veći od 0.",
+        );
+      }
+      if (requested.greaterThan(advanceRemaining)) {
+        throw new UnprocessableEntityException(
+          `Zbir primena avansa ${advance.documentNumber} bi prešao naplaćeni iznos: ` +
+            `traženo ${requested.toFixed(2)}, već primenjeno ${advanceUsed.toFixed(2)} ` +
+            `od ${advance.advancePaidAmount.toFixed(2)} — preostalo ` +
+            `${advanceRemaining.toFixed(2)}.`,
+        );
+      }
+      if (requested.greaterThan(invoiceRemaining)) {
+        throw new UnprocessableEntityException(
+          `Iznos odbitka (${requested.toFixed(2)}) je veći od neodbijenog dela računa ` +
+            `${invoice.documentNumber} (${invoiceRemaining.toFixed(2)} od ` +
+            `${invoice.grossTotal.toFixed(2)}) — odbij manji iznos.`,
+        );
+      }
+
+      // Osnovica/PDV primene se IZVODE isto kao pri naplati (ista funkcija, isti
+      // ulaz) → storno pogađa cent u cent iznose iz naloga naplate. `split.gross`
+      // (a ne sirovi `requested`) je merodavan iznos primene, da se zbir u bazi i
+      // zbir u GK ne raziđu za zaokruženje.
+      const split = this.splitAdvance(
+        requested,
+        advance.items,
+        advance.isExport,
+      );
+      const applied = split.gross;
+      const customerId = invoice.customerId;
+
       // Storno PDV-a po avansu pada u period konačnog računa — isti razlog kao u
       // `markAdvancePaid` (review Batch C, nalaz 6).
       await assertVatPeriodNotLocked(tx, invoice.documentDate.getFullYear(), [
         invoice.documentDate.getMonth() + 1,
       ]);
 
-      // CAS + parcijalni unique `uq_invoices_advance_applied_once`: jedan AVR sme
-      // biti odbijen na TAČNO JEDNOM nestorniranom računu.
-      let claimedCount: number;
+      // Primena = red spojne tabele. Parcijalni unique `uq_invoice_advance_app_active`
+      // (invoice_id, advance_invoice_id) WHERE status='ACTIVE' hvata dupli klik istog
+      // avansa na istom računu; različiti računi su dozvoljeni (to je ceo cilj N:M).
+      let application: { id: number };
       try {
-        const claimed = await tx.invoice.updateMany({
-          where: {
-            id: invoice.id,
-            advanceInvoiceId: null,
-            status: { not: "CANCELLED" },
-          },
+        application = await tx.invoiceAdvanceApplication.create({
           data: {
+            invoiceId: invoice.id,
             advanceInvoiceId: advance.id,
-            advanceAppliedAmount: applied,
-            updatedByUserId: actor.userId,
+            appliedAmount: applied,
+            appliedNet: split.net,
+            appliedVat: split.vat,
+            vatRateCode: split.vatRateCode,
+            status: APPLICATION_ACTIVE,
+            createdByUserId: actor.userId,
           },
+          select: { id: true },
         });
-        claimedCount = claimed.count;
       } catch (err) {
         if (
           err instanceof Prisma.PrismaClientKnownRequestError &&
           err.code === "P2002"
         ) {
           throw new ConflictException(
-            `Avansni račun ${advance.documentNumber} je već odbijen na drugom računu.`,
+            `Avansni račun ${advance.documentNumber} je već odbijen na računu ` +
+              `${invoice.documentNumber}.`,
           );
         }
         throw err;
-      }
-      if (claimedCount !== 1) {
-        throw new ConflictException(
-          `Na računu ${invoice.documentNumber} je u međuvremenu već odbijen avans.`,
-        );
       }
 
       const customerAcc = advance.isExport
@@ -683,13 +933,32 @@ export class AdvanceInvoiceService {
         lines,
       });
 
-      // Zapamti nalog zatvaranja avansa NA FAKTURI. Bez ovoga `stornoInvoice`
-      // reverzira samo nalog same fakture, pa storno konačnog računa obriše i
-      // obavezu po primljenom avansu (4300) i PDV po avansu — iako je avans
-      // naplaćen i novac je u kasi (adversarial review Batch C, nalaz 1).
+      // Nalog zatvaranja se pamti NA PRIMENI — storno konačnog računa reverzira
+      // nalog SVAKE svoje primene. Bez toga bi poništenje računa ostavilo obavezu
+      // po primljenom avansu (4300) i PDV po avansu zatvorene, iako je novac u kasi
+      // (adversarial review Batch C, nalaz 1).
+      await tx.invoiceAdvanceApplication.update({
+        where: { id: application.id },
+        data: { closingEntryId: entry.journalEntryId },
+      });
+
+      // KOMPATIBILNOST: `advance_applied_amount` = zbir aktivnih primena, a
+      // `advance_invoice_id` / `advance_closing_entry_id` pokazuju na PRVU primenu
+      // (SEF BillingReference, štampa, pdv modul čitaju te kolone).
+      const totalApplied = invoiceUsed.add(applied);
+      const isFirstApplication = !invoiceUsed.greaterThan(ZERO);
       await tx.invoice.update({
         where: { id: invoice.id },
-        data: { advanceClosingEntryId: entry.journalEntryId },
+        data: {
+          advanceAppliedAmount: totalApplied,
+          ...(isFirstApplication
+            ? {
+                advanceInvoiceId: advance.id,
+                advanceClosingEntryId: entry.journalEntryId,
+              }
+            : {}),
+          updatedByUserId: actor.userId,
+        },
       });
 
       const updated = await tx.invoice.findUnique({
@@ -700,19 +969,53 @@ export class AdvanceInvoiceService {
         throw new NotFoundException(`Račun ${invoice.id} ne postoji.`);
       }
 
+      const payableAmount = computePayableAmount({
+        grossTotal: invoice.grossTotal,
+        advanceAppliedAmount: totalApplied,
+      });
+
       this.logger.log(
         `Avans ${advance.documentNumber} (${applied.toFixed(2)}) odbijen na računu ` +
-          `${invoice.documentNumber}; za uplatu ostaje ` +
-          `${invoice.grossTotal.sub(applied).toFixed(2)}; storno-nalog ${entry.number}.`,
+          `${invoice.documentNumber}; ukupno odbijeno ${totalApplied.toFixed(2)}, ` +
+          `za uplatu ostaje ${payableAmount.toFixed(2)}; preostatak avansa ` +
+          `${advanceRemaining.sub(applied).toFixed(2)}; storno-nalog ${entry.number}.`,
       );
 
       return {
         ...updated,
         advanceInvoiceNumber: advance.documentNumber,
-        payableAmount: computePayableAmount(updated),
+        payableAmount,
+        // Zbir SVIH aktivnih primena na ovom računu (ne samo ove) — FE prikazuje njega.
+        advanceAppliedAmount: totalApplied,
         advanceClosingEntryId: entry.journalEntryId,
         advanceClosingEntryNumber: entry.number,
+        // — N:M dopune —
+        applicationId: application.id,
+        appliedAmount: applied,
+        appliedNet: split.net,
+        appliedVat: split.vat,
+        advanceRemainingAmount: advanceRemaining.sub(applied),
       };
+    });
+  }
+
+  /**
+   * AKTIVNE primene — po avansu (`advanceInvoiceId`) ili po računu (`invoiceId`).
+   * Storniran (`REVERSED`) red se ne vraća, pa storno računa automatski oslobađa
+   * taj deo avansa za novu primenu.
+   */
+  private async activeApplications(
+    tx: Prisma.TransactionClient,
+    where: { invoiceId?: number; advanceInvoiceId?: number },
+  ): Promise<AppliedRow[]> {
+    return tx.invoiceAdvanceApplication.findMany({
+      where: { ...where, status: APPLICATION_ACTIVE },
+      select: {
+        id: true,
+        invoiceId: true,
+        advanceInvoiceId: true,
+        appliedAmount: true,
+      },
     });
   }
 

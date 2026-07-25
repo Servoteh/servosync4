@@ -23,6 +23,12 @@ import { SERVOTEH_LOGO_DATA_URL } from "../../documents/servoteh-logo";
  */
 export type InvoicePrintVariant = "withPrices" | "withoutPrices" | "export";
 
+/** Jedan odbijen avans na računu (N:M primena): broj AVR-a + BRUTO iznos te primene. */
+interface AdvanceDeduction {
+  documentNumber: string | null;
+  amount: Prisma.Decimal;
+}
+
 /** Injektovani (denormalizovani) podaci firme izdavaoca za zaglavlje. */
 interface IssuerInfo {
   companyName: string;
@@ -86,17 +92,8 @@ export class InvoicePdfService {
     ]);
 
     // Batch C §C1a: kad je na računu odbijen avans, štampa nosi red „Umanjenje za
-    // primljeni avans (br. …)" i „Za uplatu". Broj AVR-a je meki ref (bez JOIN-a).
-    const advanceInvoiceNumber =
-      invoice.advanceInvoiceId != null &&
-      invoice.advanceAppliedAmount.greaterThan(0)
-        ? ((
-            await this.prisma.invoice.findUnique({
-              where: { id: invoice.advanceInvoiceId },
-              select: { documentNumber: true },
-            })
-          )?.documentNumber ?? null)
-        : null;
+    // primljeni avans (br. …)" po SVAKOM odbijenom avansu i završno „Za uplatu".
+    const advanceDeductions = await this.loadAdvanceDeductions(invoice);
 
     const docDefinition = this.buildDocDefinition({
       invoice,
@@ -104,7 +101,7 @@ export class InvoicePdfService {
       issuer,
       itemNames,
       variant: effectiveVariant,
-      advanceInvoiceNumber,
+      advanceDeductions,
     });
 
     const buffer = await this.pdf.render(docDefinition);
@@ -198,6 +195,46 @@ export class InvoicePdfService {
     return map;
   }
 
+  /**
+   * Odbijeni avansi ovog računa — po JEDAN red po primeni (N:M od migracije
+   * 20260726120000). Ranije se štampao ZBIR svih primena uz broj SAMO PRVOG AVR-a,
+   * pa je kupac dobijao poreski dokument sa umanjenjem većim od referenciranog
+   * avansnog računa (revizija, VISOK). Rezerva: dokumenti vezani pre N:M migracije
+   * (veza samo u koloni `advance_invoice_id`) → jedan red iz kolona.
+   */
+  private async loadAdvanceDeductions(
+    invoice: InvoiceWithItems,
+  ): Promise<AdvanceDeduction[]> {
+    if (!invoice.advanceAppliedAmount.greaterThan(0)) return [];
+    const applications = await this.prisma.invoiceAdvanceApplication.findMany({
+      where: { invoiceId: invoice.id, status: "ACTIVE" },
+      orderBy: { id: "asc" },
+      select: {
+        appliedAmount: true,
+        advance: { select: { documentNumber: true } },
+      },
+    });
+    if (applications.length > 0) {
+      return applications.map((a) => ({
+        documentNumber: a.advance?.documentNumber ?? null,
+        amount: a.appliedAmount,
+      }));
+    }
+    const legacy =
+      invoice.advanceInvoiceId != null
+        ? await this.prisma.invoice.findUnique({
+            where: { id: invoice.advanceInvoiceId },
+            select: { documentNumber: true },
+          })
+        : null;
+    return [
+      {
+        documentNumber: legacy?.documentNumber ?? null,
+        amount: invoice.advanceAppliedAmount,
+      },
+    ];
+  }
+
   // --------------------------------------------------------- dokument (pdfmake)
 
   private buildDocDefinition(args: {
@@ -206,8 +243,8 @@ export class InvoicePdfService {
     issuer: IssuerInfo;
     itemNames: Map<number, string>;
     variant: InvoicePrintVariant;
-    /** Broj odbijenog avansnog računa (AVR) — null kad avans nije odbijen. */
-    advanceInvoiceNumber?: string | null;
+    /** Odbijeni avansi (broj AVR-a + iznos), jedan red po primeni. */
+    advanceDeductions?: AdvanceDeduction[];
   }): TDocumentDefinitions {
     const { invoice, customer, issuer, itemNames, variant } = args;
     const t = getLabels(variant);
@@ -231,7 +268,7 @@ export class InvoicePdfService {
           t,
           currency,
           english,
-          args.advanceInvoiceNumber ?? null,
+          args.advanceDeductions ?? [],
         )
       : { text: "" };
     const footer = this.buildDocFooter(invoice, issuer, t, showPrices, english);
@@ -419,7 +456,7 @@ export class InvoicePdfService {
     t: Labels,
     currency: string,
     english: boolean,
-    advanceInvoiceNumber: string | null,
+    advanceDeductions: AdvanceDeduction[],
   ): Content {
     const row = (label: string, value: string, grand = false): Content[] => [
       { text: label, style: grand ? "grand" : "totLbl" },
@@ -434,7 +471,12 @@ export class InvoicePdfService {
     // Batch C §C1a: odbijen avans NE menja `grossTotal` (osnovica/PDV/prihod
     // ostaju isti) — umanjuje se samo IZNOS ZA UPLATU. Zato ostaje red „Za
     // plaćanje" (ukupno računa), pa umanjenje, pa „Za uplatu" kao završni iznos.
-    const advance = invoice.advanceAppliedAmount;
+    // Zbir se izvodi iz PRIKAZANIH redova (N:M primene), da „Za uplatu" uvek bude
+    // grossTotal minus tačno ono što je na štampi navedeno.
+    const advance = advanceDeductions.reduce(
+      (acc, d) => acc.add(d.amount),
+      new Prisma.Decimal(0),
+    );
     const hasAdvance = advance.greaterThan(0);
     if (!hasAdvance) {
       body.push(
@@ -448,14 +490,17 @@ export class InvoicePdfService {
       body.push(
         row(t.grossTotalLbl, fmtMoney(invoice.grossTotal, currency, english)),
       );
-      body.push(
-        row(
-          advanceInvoiceNumber
-            ? `${t.advanceDeductionLbl} (${t.advanceNoWord} ${advanceInvoiceNumber}):`
-            : `${t.advanceDeductionLbl}:`,
-          `− ${fmtMoney(advance, currency, english)}`,
-        ),
-      );
+      // Jedan red po odbijenom avansu — broj AVR-a i iznos MORAJU biti iz iste primene.
+      for (const deduction of advanceDeductions) {
+        body.push(
+          row(
+            deduction.documentNumber
+              ? `${t.advanceDeductionLbl} (${t.advanceNoWord} ${deduction.documentNumber}):`
+              : `${t.advanceDeductionLbl}:`,
+            `− ${fmtMoney(deduction.amount, currency, english)}`,
+          ),
+        );
+      }
       const raw = invoice.grossTotal.sub(advance);
       const payable = raw.greaterThan(0) ? raw : new Prisma.Decimal(0);
       body.push(

@@ -205,6 +205,9 @@ export function LinkFinalDialog({
 }) {
   const link = useLinkAdvanceToFinal();
   const [finalInvoiceId, setFinalInvoiceId] = useState('');
+  // Delimično odbijanje (samo izlazni smer): prazno = ceo preostali naplaćen avans.
+  const [amount, setAmount] = useState('');
+  const isOutgoing = advance.direction !== ADVANCE_DIRECTION.IN;
 
   // Konačni računi istog komitenta (level 0). Filtriramo klijentski: avans/ponuda/
   // predračun/revers nisu konačan račun, a već vezan račun se ne nudi ponovo.
@@ -229,7 +232,12 @@ export function LinkFinalDialog({
   const submit = () => {
     if (!valid || link.isPending) return;
     link.mutate(
-      { advanceId: advance.id, direction: advance.direction, finalInvoiceId: parsed },
+      {
+        advanceId: advance.id,
+        direction: advance.direction,
+        finalInvoiceId: parsed,
+        ...(isOutgoing && amount.trim() !== '' ? { amount: amount.trim() } : {}),
+      },
       {
         onSuccess: (res) => {
           // Izlazni smer vraća `advanceAppliedAmount` + `payableAmount`, ulazni
@@ -288,7 +296,8 @@ export function LinkFinalDialog({
       >
         <p className="text-sm text-ink-secondary">
           Konačni račun dobija umanjenje za iznos avansa, a PDV avansa se storniranjem
-          poništava. Avans se sme iskoristiti samo jednom.
+          poništava. Isti avans se sme podeliti na više računa — dok se ne potroši ceo
+          naplaćen iznos.
         </p>
 
         {err && (
@@ -325,6 +334,21 @@ export function LinkFinalDialog({
             />
           )}
         </FormField>
+
+        {isOutgoing && (
+          <FormField
+            label="Iznos odbitka"
+            hint="Prazno = ceo preostali naplaćen iznos avansa. Unesi manji iznos kad se avans deli na više računa."
+          >
+            <Input
+              type="text"
+              inputMode="decimal"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              placeholder={`ceo preostali avans (${advance.currency})`}
+            />
+          </FormField>
+        )}
       </form>
     </Dialog>
   );

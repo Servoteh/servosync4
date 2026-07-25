@@ -283,9 +283,14 @@ export class OpenItemsService {
     asOf?: Date,
   ): Promise<AgingByPartnerRow[]> {
     const cutoff = asOf ?? new Date();
+    // Bez izabranog konta aging je IZVEŠTAJ NAPLATE → samo kupčeva konta. Inače bi se
+    // potraživanje (2040, pozitivno) i naša obaveza (4350, negativno) prema ISTOM
+    // partneru netirali u jedan iznos i bucket, pa bi dug koji se goni bio prikazan
+    // umanjen za našu obavezu prema njemu (revizija). Sa izabranim kontom filter se ne
+    // primenjuje — korisnik je svesno tražio taj konto (npr. starenje obaveza 4350).
     const accountFilter = accountCode
       ? Prisma.sql`AND le.account_code = ${accountCode}`
-      : Prisma.empty;
+      : Prisma.sql`AND sa.partner_scope = 'customer'`;
 
     // Dvostepeno: prvo saldo + daysOverdue po (konto, komitent, dokument);
     // zatim raspoređivanje u bucket-e i Σ po komitentu. `cutoff` ulazi kao

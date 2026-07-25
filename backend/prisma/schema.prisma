@@ -2836,8 +2836,14 @@ model AccountingSchemeLine {
 /// Nesa potvrđuje spisak pod-konta pre Faze 2.
 model SaldakontoAccount {
   account         String   @id(map: "pk_saldakonto_accounts") @map("account") @db.VarChar(10) // FK Account.code
-  side            String   @map("side") @db.VarChar(10) /// receivable | payable
-  controlAccount  String   @map("control_account") @db.VarChar(10) // sintetički kontrolni (2040->202, 4351->435)
+  side            String   @map("side") @db.VarChar(10) /// receivable | payable — STRANA SALDA (ne vrsta partnera!)
+  /// customer | supplier — VRSTA PARTNERA na kontu; NULL = nepoznato.
+  /// Uveden migracijom 20260726100000 jer `side` sam ne razlikuje kupca od dobavljača:
+  /// primljeni avansi (4300/4302) su payable ali su KUPČEVI, dati avansi (1520/1521/1530)
+  /// su receivable ali su DOBAVLJAČEVI. Po ovoj koloni biraju priprema plaćanja
+  /// (samo 'supplier'), kreditni limit i kamata (samo 'customer') i aging bez konta.
+  partnerScope    String?  @map("partner_scope") @db.VarChar(10)
+  controlAccount  String   @map("control_account") @db.VarChar(10) // sintetički kontrolni (2040->204, 4351->435)
   tracksOpenItems Boolean  @default(true) @map("tracks_open_items") // OTST
   holdsDinBalance Boolean  @default(true) @map("holds_din_balance") // DinSaldo
   holdsFxBalance  Boolean  @default(false) @map("holds_fx_balance") // DevSaldo (izvozne/devizne 2050/4360)
@@ -3341,7 +3347,8 @@ model StockReservation {
 // zatečeno stanje: valueAdjustment = stanjeKol * (novaVP − staraVP) → GK knjiženje razlike.
 
 /// Was: Stavke_nivelacije (StavkeNivelacije). Par (stara→nova) valuacione cene po artiklu/magacinu.
-/// Header = StockDocument sa kind='NIV'. isPosted vozi GK knjiženje razlike (doc 39 §F).
+/// Header = StockDocument sa kind='NIV'. NAPOMENA: od migracije 20260726110000 nivelacija se
+/// NE knjiži u GK (BigBit paritet) — isPosted znači „nivelacija obrađena", ne „proknjižena".
 model StockLevelingItem {
   id               Int     @id(map: "pk_stock_leveling_items") @default(autoincrement()) @map("id")
   documentId       Int     @map("document_id") // NIV StockDocument
@@ -3362,7 +3369,7 @@ model StockLevelingItem {
   newRetailPrice       Decimal @default(0) @map("new_retail_price") @db.Decimal(19, 4)
 
   valueAdjustment Decimal @map("value_adjustment") @db.Decimal(19, 4) // = quantityRevalued * (newWholesalePrice − oldWholesalePrice)
-  isPosted        Boolean @default(false) @map("is_posted") // razlika proknjižena u GK
+  isPosted        Boolean @default(false) @map("is_posted") // nivelacija obrađena (NE znači knjiženje u GK)
 
   document StockDocument @relation(fields: [documentId], references: [id], onDelete: Cascade, map: "fk_stock_leveling_items_document")
 
@@ -3709,10 +3716,16 @@ model Invoice {
   linkedInvoiceDocId Int? @map("linked_invoice_doc_id") // IDDokIF: PROF → IFR par; >0 blokira ponovni prepis (anti-duplo guard)
   copiedFromDocId    Int? @map("copied_from_doc_id") // izvorni dokument prepisa (Invoice.id — meki ref u istoj tabeli)
 
-  // — Avansi (Batch C) —
-  /// Na KONAČNOM računu: meki ref na AVR čiji se avans odbija (Invoice.id, documentType='AVR').
+  // — Avansi (Batch C; N:M od migracije 20260726120000) —
+  /// KOMPATIBILNOST (deprecated kao izvor istine): na KONAČNOM računu meki ref na AVR
+  /// PRVE aktivne primene. Autoritativna veza je `invoice_advance_applications`
+  /// (jedan avans ide na više računa i obrnuto — BigBit `T_AVR_Roba`/`T_AVR_Usluge`).
+  /// Održava ga `AdvanceInvoiceService`; čitaoci (SEF BillingReference, štampa) ga smeju
+  /// koristiti samo za prikaz „prvog" avansa.
   advanceInvoiceId     Int?     @map("advance_invoice_id")
-  /// Bruto iznos avansa odbijen na ovom konačnom računu (umanjuje iznos za plaćanje, ne osnovicu prihoda).
+  /// DENORMALIZOVAN zbir svih AKTIVNIH primena avansa na ovom računu (bruto).
+  /// = SUM(invoice_advance_applications.applied_amount WHERE status='ACTIVE').
+  /// Umanjuje iznos za plaćanje, ne osnovicu prihoda.
   advanceAppliedAmount Decimal  @default(0) @map("advance_applied_amount") @db.Decimal(19, 4)
   /// Na AVR-u: datum naplate avansa — PDV obaveza po avansu nastaje NAPLATOM, ne izdavanjem.
   advancePaidAt        DateTime? @map("advance_paid_at") @db.Timestamptz(6)
@@ -3720,10 +3733,13 @@ model Invoice {
   advancePaidAmount    Decimal  @default(0) @map("advance_paid_amount") @db.Decimal(19, 4)
   /// Smer avansa: 'out' = mi izdajemo kupcu (KIF), 'in' = dobavljač nama (KUF, pretporez po plaćanju).
   advanceDirection     String?  @map("advance_direction") @db.VarChar(3)
-  /// Nalog kojim je avans ZATVOREN na ovom konačnom računu (journal_entries.id).
-  /// Storno konačnog računa mora da reverzira i njega — inače avans ostane naplaćen
-  /// a konto 4300 i PDV po avansu padnu na nulu.
+  /// KOMPATIBILNOST: nalog PRVE aktivne primene (journal_entries.id). Storno računa
+  /// reverzira naloge SVIH svojih primena iz `invoice_advance_applications`, ne samo ovaj.
   advanceClosingEntryId Int? @map("advance_closing_entry_id")
+  /// Na AVR-u: OSNOV avansa kad ne postoji predračun (broj ugovora / slobodan opis).
+  /// Obavezan kad se AVR izdaje bez izvornog dokumenta (BigBit: 2 najveća avansa 2025.
+  /// izdata su po Ugovoru, ne po predračunu — doc BIGBIT_IZLAZNE_FAKTURE_I_AVANSI §4.1/G5).
+  advanceBasis String? @map("advance_basis") @db.VarChar(255)
 
   /// DRAFT | POSTED | SENT | PAID | CANCELLED
   status   String  @default("DRAFT") @map("status") @db.VarChar(20)
@@ -3749,6 +3765,11 @@ model Invoice {
   updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   items InvoiceItem[]
+
+  /// Primene avansa NA OVOM (konačnom) računu.
+  advanceApplications InvoiceAdvanceApplication[] @relation("AdvanceApplicationsOnInvoice")
+  /// Primene OVOG avansnog računa (AVR) na konačnim računima.
+  advanceUsages       InvoiceAdvanceApplication[] @relation("AdvanceApplicationsOfAdvance")
 
   // Numeracija je po firmi (document_number_sequences po companyId) — unique je mora pratiti (DB-011).
   @@unique([companyId, documentType, documentNumber], map: "uq_invoices_company_type_number")
@@ -3792,6 +3813,56 @@ model InvoiceItem {
   @@index([itemId], map: "idx_invoice_items_item")
   @@index([copiedFromItemId], map: "idx_invoice_items_copied_from")
   @@map("invoice_items")
+}
+
+// -----------------------------------------------------------------------------
+// InvoiceAdvanceApplication — primena (odbitak) avansa na konačnom računu, N:M
+// -----------------------------------------------------------------------------
+/// Was: T_AVR_Roba / T_AVR_Usluge (BigBit child tabela po IDDok, kolona KoristiIznosSaPDV).
+/// Jedan avans se deli na VIŠE konačnih računa i jedan račun zatvara VIŠE avansa
+/// (dokazano produkcijskim podacima 2025: AVR-00013/2025 → IFR 353/25 + IFR 370/25;
+/// IFUSL 059/25 ← 6 avansa). Svaka primena nosi SVOJ GL nalog zatvaranja, pa storno
+/// konačnog računa reverzira tačno svoje naloge i oslobađa tačno svoje iznose.
+/// Kontrola „Σ primena ≤ naplaćeni avans" je u servisu (transakcija + advisory lock).
+model InvoiceAdvanceApplication {
+  id Int @id(map: "pk_invoice_advance_applications") @default(autoincrement()) @map("id")
+
+  /// Konačni (proknjižen) račun na kome se avans odbija.
+  invoiceId        Int @map("invoice_id")
+  /// Avansni račun (Invoice.documentType='AVR') čiji se naplaćen iznos odbija.
+  advanceInvoiceId Int @map("advance_invoice_id")
+
+  /// BRUTO iznos ove primene (KoristiIznosSaPDV). Uvek > 0.
+  appliedAmount Decimal @map("applied_amount") @db.Decimal(19, 4)
+  /// Osnovica ove primene (izvedena preračunatom stopom — grossToNet).
+  appliedNet    Decimal @default(0) @map("applied_net") @db.Decimal(19, 4)
+  /// PDV ove primene (KoristiPDVVisa/Niza).
+  appliedVat    Decimal @default(0) @map("applied_vat") @db.Decimal(19, 4)
+  /// Šifra PDV stope po kojoj je primena razbijena (meki ref tax_rates).
+  vatRateCode   String? @map("vat_rate_code") @db.VarChar(5)
+
+  /// GL nalog zatvaranja ove primene (4300 DUG / PDV DUG / kupac POT).
+  closingEntryId  Int? @map("closing_entry_id")
+  /// GL nalog kojim je zatvaranje reverzirano (storno konačnog računa).
+  reversalEntryId Int? @map("reversal_entry_id")
+
+  /// ACTIVE | REVERSED — samo ACTIVE ulazi u zbirove i u iznos za plaćanje.
+  status     String    @default("ACTIVE") @map("status") @db.VarChar(10)
+  reversedAt DateTime? @map("reversed_at") @db.Timestamptz(6)
+
+  createdByUserId Int?     @map("created_by_user_id")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  invoice Invoice @relation("AdvanceApplicationsOnInvoice", fields: [invoiceId], references: [id], onDelete: Cascade, map: "fk_invoice_advance_app_invoice")
+  advance Invoice @relation("AdvanceApplicationsOfAdvance", fields: [advanceInvoiceId], references: [id], onDelete: Cascade, map: "fk_invoice_advance_app_advance")
+
+  // Parcijalni unique (isti avans najviše jednom AKTIVNO na istom računu) se ne može
+  // izraziti Prisma-om — živi samo u SQL-u (uq_invoice_advance_app_active).
+  @@index([invoiceId], map: "idx_invoice_advance_app_invoice")
+  @@index([advanceInvoiceId], map: "idx_invoice_advance_app_advance")
+  @@index([closingEntryId], map: "idx_invoice_advance_app_entry")
+  @@map("invoice_advance_applications")
 }
 
 // -----------------------------------------------------------------------------

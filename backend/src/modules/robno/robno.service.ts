@@ -898,9 +898,11 @@ export class RobnoService {
    * Zaključaj proknjižen robni dokument → status LOCKED (Faza-0 lock; StockDocument nema `isLocked`
    * kolonu, lock je terminalna vrednost `status` — schema:3088 `DRAFT | CALCULATED | POSTED | LOCKED`).
    *
-   * Preduslov = dokument je PROKNJIŽEN u GK (`journalEntryId != null`). NAPOMENA: regularni robni
-   * `post` (posting.service) postavlja SAMO `journalEntryId` (status ostaje CALCULATED), a NIV put
-   * postavlja i `status=POSTED` — zato je „proknjižen" izveden iz `journalEntryId`, ne iz statusa.
+   * Preduslov = dokument je OBRAĐEN kroz `post`: regularni robni dokument time dobija
+   * `journalEntryId` (status ostaje CALCULATED), a NIV od migracije 20260726110000 dobija SAMO
+   * `status=POSTED` bez naloga (nivelacija se ne knjiži u GK — v. NIV blok u posting.service).
+   * Zato uslov pokriva OBA oblika: `journalEntryId != null` ILI `status='POSTED'`. Da se gleda
+   * samo nalog, NIV se ne bi mogao zaključati NIKAD (ekran bi ostao bez ijedne akcije).
    *
    * CAS (updateMany + count guard, obrazac kao GK lock / izvodi): pomeri na LOCKED SAMO ako je
    * dokument proknjižen i još nije LOCKED. `count === 0` → razlikuj 404 / 409 (već zaključan /
@@ -908,7 +910,11 @@ export class RobnoService {
    */
   async lockDocument(id: number) {
     const res = await this.prisma.stockDocument.updateMany({
-      where: { id, journalEntryId: { not: null }, status: { not: "LOCKED" } },
+      where: {
+        id,
+        status: { not: "LOCKED" },
+        OR: [{ journalEntryId: { not: null } }, { status: "POSTED" }],
+      },
       data: { status: "LOCKED" },
     });
     if (res.count === 0) {
@@ -920,7 +926,8 @@ export class RobnoService {
       if (doc.status === "LOCKED")
         throw new ConflictException(`Dokument ${id} je već zaključan.`);
       throw new ConflictException(
-        `Zaključavanje je moguće samo za proknjižen dokument (dokument ${id} nije proknjižen).`,
+        `Zaključavanje je moguće tek pošto je dokument proknjižen/obrađen ` +
+          `(dokument ${id}, trenutni status: ${doc.status}).`,
       );
     }
     this.logger.log(`Zaključan robni dokument ${id} (status → LOCKED).`);

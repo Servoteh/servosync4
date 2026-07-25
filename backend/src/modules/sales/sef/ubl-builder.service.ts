@@ -133,6 +133,13 @@ export interface UblInvoiceInput {
   /** Referenca avansne fakture (cac:BillingReference) — kada je za plaćanje 0. */
   prepaymentReference?: string | null;
   /**
+   * SVE avansne reference (N:M od migracije 20260726120000) — jedan
+   * `cac:BillingReference` po odbijenom avansu. Kad se prosledi, ima prednost nad
+   * `prepaymentReference`: bez toga bi e-faktura nosila ZBIR svih primena uz broj
+   * samo PRVOG avansa, tj. netačnu referencu na poreskom dokumentu (revizija).
+   */
+  prepaymentReferences?: string[] | null;
+  /**
    * Odbijen (već plaćen) avans → cbc:PrepaidAmount; PayableAmount = grossTotal −
    * prepaidAmount. Kad se ne prosledi, važi staro ponašanje: sama referenca
    * avansa znači da avans zatvara CEO iznos (PayableAmount = 0).
@@ -216,11 +223,17 @@ export class UblBuilderService {
       parts.push("</cac:OrderReference>");
     }
 
-    // — Avansna referenca (cac:BillingReference) —
-    if (invoice.prepaymentReference) {
+    // — Avansne reference (cac:BillingReference) — po JEDNA za svaki odbijen avans.
+    const prepaymentRefs =
+      invoice.prepaymentReferences && invoice.prepaymentReferences.length > 0
+        ? invoice.prepaymentReferences
+        : invoice.prepaymentReference
+          ? [invoice.prepaymentReference]
+          : [];
+    for (const reference of prepaymentRefs) {
       parts.push("<cac:BillingReference>");
       parts.push("<cac:InvoiceDocumentReference>");
-      parts.push(el("cbc:ID", invoice.prepaymentReference));
+      parts.push(el("cbc:ID", reference));
       parts.push("</cac:InvoiceDocumentReference>");
       parts.push("</cac:BillingReference>");
     }

@@ -306,6 +306,12 @@ export interface LinkAdvanceToFinalInput {
   direction: AdvanceDirection | string | null;
   /** `Invoice.id` konačnog računa na koji se avans odbija. */
   finalInvoiceId: number;
+  /**
+   * BRUTO iznos odbitka (delimično odbijanje, samo izlazni smer). Bez njega se
+   * odbija ceo preostali naplaćen iznos avansa. Jedan avans se tako deli na više
+   * računa (BigBit AVR-00013/2025 → 20.802 + 17.100).
+   */
+  amount?: string | number;
 }
 
 /** Rezultat vezivanja — `reversalEntryId` je storno stavka avansnog PDV-a. */
@@ -335,7 +341,12 @@ export interface LinkAdvanceToFinalResult {
 export function useLinkAdvanceToFinal() {
   const invalidate = useInvalidateAdvances();
   return useMutation({
-    mutationFn: ({ advanceId, direction, finalInvoiceId }: LinkAdvanceToFinalInput) => {
+    mutationFn: ({
+      advanceId,
+      direction,
+      finalInvoiceId,
+      amount,
+    }: LinkAdvanceToFinalInput) => {
       const url =
         direction === ADVANCE_DIRECTION.IN
           ? `${PDV_BASE}/incoming/${advanceId}/link-final`
@@ -345,7 +356,9 @@ export function useLinkAdvanceToFinal() {
       const body =
         direction === ADVANCE_DIRECTION.IN
           ? { finalInvoiceId }
-          : { advanceInvoiceId: advanceId };
+          : amount !== undefined && amount !== null && `${amount}`.trim() !== ''
+            ? { advanceInvoiceId: advanceId, amount }
+            : { advanceInvoiceId: advanceId };
       return apiFetch<Envelope<LinkAdvanceToFinalResult>>(url, {
         method: 'POST',
         body: JSON.stringify(body),

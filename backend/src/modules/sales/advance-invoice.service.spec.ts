@@ -1,5 +1,6 @@
 import { Test, TestingModule } from "@nestjs/testing";
 import {
+  BadRequestException,
   ConflictException,
   UnprocessableEntityException,
 } from "@nestjs/common";
@@ -11,10 +12,13 @@ import { AdvanceInvoiceService } from "./advance-invoice.service";
 import type { AuthUser } from "../auth/jwt.strategy";
 
 /**
- * Avansni račun (AVR) — poslovni tok, Batch C §C1a.
+ * Avansni račun (AVR) — poslovni tok, Batch C §C1a + N:M primene (migracija
+ * 20260726120000).
  * Pokriveno: preračunata stopa (12.000 bruto @20% → 10.000 + 2.000), anti-duplo
  * AVR po predračunu (409), odbijanje NENAPLAĆENOG avansa (422), iznos za plaćanje
- * 0 kad avans pokriva ceo račun, konta naloga naplate i anti-dvoklik CAS.
+ * 0 kad avans pokriva ceo račun, konta naloga naplate i anti-dvoklik CAS,
+ * JEDAN AVANS NA DVE FAKTURE (BigBit AVR-00013/2025 = 20.802 + 17.100),
+ * prekoračenje zbira primena (422) i AVR po UGOVORU (bez predračuna).
  */
 
 const D = Prisma.Decimal;
@@ -105,10 +109,18 @@ interface PrismaMock {
   invoice: {
     findUnique: jest.Mock;
     findFirst: jest.Mock;
+    findMany: jest.Mock;
     create: jest.Mock;
     update: jest.Mock;
     updateMany: jest.Mock;
   };
+  /** Spojna tabela primena avansa (N:M) — zbirovi i anti-duplo. */
+  invoiceAdvanceApplication: {
+    findMany: jest.Mock;
+    create: jest.Mock;
+    update: jest.Mock;
+  };
+  customer: { findUnique: jest.Mock };
   // Brava PDV perioda (assertVatPeriodNotLocked) — prazna lista = nijedan
   // obračun nije proknjižen, pa period nije zaključan.
   vatReturn: { findMany: jest.Mock };
@@ -121,9 +133,20 @@ function prismaMock(): PrismaMock {
     invoice: {
       findUnique: jest.fn(),
       findFirst: jest.fn().mockResolvedValue(null),
+      // Legacy 1:1 veze (kolona `advance_invoice_id`) — podrazumevano ih nema.
+      findMany: jest.fn().mockResolvedValue([]),
       create: jest.fn(),
       update: jest.fn(),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
+    invoiceAdvanceApplication: {
+      // Podrazumevano: nijedna primena ne postoji (avans i račun su „prazni").
+      findMany: jest.fn().mockResolvedValue([]),
+      create: jest.fn().mockResolvedValue({ id: 900 }),
+      update: jest.fn().mockResolvedValue({ id: 900 }),
+    },
+    customer: {
+      findUnique: jest.fn().mockResolvedValue({ id: 5, name: "Kupac" }),
     },
     vatReturn: { findMany: jest.fn().mockResolvedValue([]) },
     $executeRaw: jest.fn().mockResolvedValue(0),
@@ -408,11 +431,44 @@ describe("AdvanceInvoiceService", () => {
   // ── 3) odbijanje avansa na konačnom računu ─────────────────────────────────
 
   describe("applyAdvance", () => {
-    /** findUnique po id-ju: konačni račun (100) i AVR (50). */
+    /** findUnique po id-ju: konačni račun (100/101) i AVR (50). */
     function wireLookup(invoice: unknown, advance: unknown) {
       prisma.invoice.findUnique.mockImplementation(
         (args: { where: { id: number } }) =>
-          Promise.resolve(args.where.id === 100 ? invoice : advance),
+          Promise.resolve(args.where.id === 50 ? advance : invoice),
+      );
+    }
+
+    /** Postojeće AKTIVNE primene: po avansu i po računu (spojna tabela). */
+    function wireApplications(rows: {
+      byAdvance?: Array<{
+        invoiceId: number;
+        advanceInvoiceId: number;
+        amount: number;
+      }>;
+      byInvoice?: Array<{
+        invoiceId: number;
+        advanceInvoiceId: number;
+        amount: number;
+      }>;
+    }) {
+      prisma.invoiceAdvanceApplication.findMany.mockImplementation(
+        (args: {
+          where: { invoiceId?: number; advanceInvoiceId?: number };
+        }) => {
+          const src =
+            args.where.advanceInvoiceId !== undefined
+              ? (rows.byAdvance ?? [])
+              : (rows.byInvoice ?? []);
+          return Promise.resolve(
+            src.map((r, i) => ({
+              id: 800 + i,
+              invoiceId: r.invoiceId,
+              advanceInvoiceId: r.advanceInvoiceId,
+              appliedAmount: new D(r.amount),
+            })),
+          );
+        },
       );
     }
 
@@ -429,26 +485,12 @@ describe("AdvanceInvoiceService", () => {
       await expect(
         service.applyAdvance({ invoiceId: 100, advanceInvoiceId: 50 }, actor),
       ).rejects.toBeInstanceOf(UnprocessableEntityException);
-      expect(prisma.invoice.updateMany).not.toHaveBeenCalled();
+      expect(prisma.invoiceAdvanceApplication.create).not.toHaveBeenCalled();
       expect(posting.postManualEntry).not.toHaveBeenCalled();
     });
 
     it("payableAmount = 0 kad je avans jednak iznosu računa; grossTotal netaknut", async () => {
-      const posted = finalInvoiceRow({
-        advanceInvoiceId: 50,
-        advanceAppliedAmount: new D(12000),
-      });
-      prisma.invoice.findUnique.mockImplementation(
-        (args: { where: { id: number } }) =>
-          Promise.resolve(
-            args.where.id === 100
-              ? // prvi poziv = stanje pre odbijanja, poziv u tx = posle CAS-a
-                prisma.invoice.updateMany.mock.calls.length === 0
-                ? finalInvoiceRow()
-                : posted
-              : advanceRow(),
-          ),
-      );
+      wireLookup(finalInvoiceRow(), advanceRow());
 
       const result = await service.applyAdvance(
         { invoiceId: 100, advanceInvoiceId: 50 },
@@ -458,33 +500,37 @@ describe("AdvanceInvoiceService", () => {
       expect(result.payableAmount.toFixed(2)).toBe("0.00");
       expect(result.grossTotal.toFixed(2)).toBe("12000.00");
       expect(result.advanceInvoiceNumber).toBe("AVR0001/2026");
+      expect(result.appliedAmount.toFixed(2)).toBe("12000.00");
 
-      // Upisana su SAMO polja veze avansa (grossTotal se ne dira).
-      const updateArgs = firstArg<{ data: Record<string, unknown> }>(
-        prisma.invoice.updateMany,
+      // Primena je upisana u spojnu tabelu sa razbijenim iznosima.
+      const appArgs = firstArg<{ data: Record<string, unknown> }>(
+        prisma.invoiceAdvanceApplication.create,
       );
-      expect(updateArgs.data.advanceInvoiceId).toBe(50);
+      expect(appArgs.data.invoiceId).toBe(100);
+      expect(appArgs.data.advanceInvoiceId).toBe(50);
+      expect((appArgs.data.appliedAmount as Prisma.Decimal).toFixed(2)).toBe(
+        "12000.00",
+      );
+      expect((appArgs.data.appliedNet as Prisma.Decimal).toFixed(2)).toBe(
+        "10000.00",
+      );
+      expect((appArgs.data.appliedVat as Prisma.Decimal).toFixed(2)).toBe(
+        "2000.00",
+      );
+
+      // Na fakturi se dira SAMO denormalizovani zbir + veza (grossTotal ostaje).
+      const invUpdate = firstArg<{ data: Record<string, unknown> }>(
+        prisma.invoice.update,
+      );
+      expect(invUpdate.data.advanceInvoiceId).toBe(50);
       expect(
-        (updateArgs.data.advanceAppliedAmount as Prisma.Decimal).toFixed(2),
+        (invUpdate.data.advanceAppliedAmount as Prisma.Decimal).toFixed(2),
       ).toBe("12000.00");
-      expect(updateArgs.data).not.toHaveProperty("grossTotal");
+      expect(invUpdate.data).not.toHaveProperty("grossTotal");
     });
 
     it("GL storno avansa: 4300 DUG = osnovica, 4720 DUG = PDV, 2040 POT = bruto", async () => {
-      prisma.invoice.findUnique.mockImplementation(
-        (args: { where: { id: number } }) =>
-          Promise.resolve(
-            args.where.id === 100
-              ? // pre CAS-a = račun bez avansa; posle CAS-a = sa upisanim avansom
-                prisma.invoice.updateMany.mock.calls.length === 0
-                ? finalInvoiceRow()
-                : finalInvoiceRow({
-                    advanceInvoiceId: 50,
-                    advanceAppliedAmount: new D(12000),
-                  })
-              : advanceRow(),
-          ),
-      );
+      wireLookup(finalInvoiceRow(), advanceRow());
 
       await service.applyAdvance(
         { invoiceId: 100, advanceInvoiceId: 50 },
@@ -528,23 +574,25 @@ describe("AdvanceInvoiceService", () => {
       ).rejects.toBeInstanceOf(UnprocessableEntityException);
     });
 
-    it("avans već odbijen na ovom računu → 409", async () => {
-      wireLookup(
-        finalInvoiceRow({
-          advanceInvoiceId: 50,
-          advanceAppliedAmount: new D(12000),
-        }),
-        advanceRow(),
-      );
+    it("isti avans dvaput na ISTOM računu → 409", async () => {
+      wireLookup(finalInvoiceRow(), advanceRow());
+      wireApplications({
+        byAdvance: [{ invoiceId: 100, advanceInvoiceId: 50, amount: 5000 }],
+        byInvoice: [{ invoiceId: 100, advanceInvoiceId: 50, amount: 5000 }],
+      });
 
       await expect(
-        service.applyAdvance({ invoiceId: 100, advanceInvoiceId: 50 }, actor),
+        service.applyAdvance(
+          { invoiceId: 100, advanceInvoiceId: 50, amount: 1000 },
+          actor,
+        ),
       ).rejects.toBeInstanceOf(ConflictException);
+      expect(prisma.invoiceAdvanceApplication.create).not.toHaveBeenCalled();
     });
 
-    it("P2002 nad uq_invoices_advance_applied_once → 409", async () => {
+    it("P2002 nad uq_invoice_advance_app_active → 409", async () => {
       wireLookup(finalInvoiceRow(), advanceRow());
-      prisma.invoice.updateMany.mockRejectedValue(
+      prisma.invoiceAdvanceApplication.create.mockRejectedValue(
         new Prisma.PrismaClientKnownRequestError("unique", {
           code: "P2002",
           clientVersion: "6.19.3",
@@ -554,6 +602,194 @@ describe("AdvanceInvoiceService", () => {
       await expect(
         service.applyAdvance({ invoiceId: 100, advanceInvoiceId: 50 }, actor),
       ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    // ── N:M (BigBit AVR-00013/2025 → IFR 353/25 + IFR 370/25) ────────────────
+
+    it("JEDAN avans na DVE fakture: 20.802 + 17.100 od 37.902 prolazi", async () => {
+      // Avans 37.902 (bruto), naplaćen u celosti; dve fakture istog kupca.
+      const advance37902 = advanceRow({
+        netTotal: new D(31585),
+        vatTotal: new D(6317),
+        grossTotal: new D(37902),
+        advancePaidAmount: new D(37902),
+        items: [{ vatRateCode: "3", vatBase: new D(31585) }],
+      });
+
+      // 1) prva faktura — 20.802 od avansa
+      wireLookup(
+        finalInvoiceRow({ id: 100, grossTotal: new D(25000) }),
+        advance37902,
+      );
+      wireApplications({});
+      const first = await service.applyAdvance(
+        { invoiceId: 100, advanceInvoiceId: 50, amount: "20802" },
+        actor,
+      );
+      expect(first.appliedAmount.toFixed(2)).toBe("20802.00");
+      expect(first.advanceRemainingAmount.toFixed(2)).toBe("17100.00");
+      expect(first.payableAmount.toFixed(2)).toBe("4198.00"); // 25.000 − 20.802
+
+      // 2) druga faktura — preostalih 17.100 (bez `amount` = ceo ostatak)
+      wireLookup(
+        finalInvoiceRow({ id: 101, grossTotal: new D(20000) }),
+        advance37902,
+      );
+      wireApplications({
+        byAdvance: [{ invoiceId: 100, advanceInvoiceId: 50, amount: 20802 }],
+        byInvoice: [],
+      });
+      const second = await service.applyAdvance(
+        { invoiceId: 101, advanceInvoiceId: 50 },
+        actor,
+      );
+      expect(second.appliedAmount.toFixed(2)).toBe("17100.00");
+      expect(second.advanceRemainingAmount.toFixed(2)).toBe("0.00");
+
+      // Zbir primena = ceo avans; GL nalog je knjižen za obe primene.
+      expect(posting.postManualEntry).toHaveBeenCalledTimes(2);
+      const secondLines = linesByAccount(
+        (
+          posting.postManualEntry.mock.calls as unknown as [
+            unknown,
+            PostedEntryParams,
+          ][]
+        )[1][1],
+      );
+      expect(secondLines.get("2040")?.credit).toBe("17100.0000");
+      expect(secondLines.get("4300")?.debit).toBe("14250.0000"); // osnovica 17.100/1,2
+      expect(secondLines.get("4720")?.debit).toBe("2850.0000");
+    });
+
+    it("prekoračenje zbira primena (17.100 + 20.000 > 37.902) → 422", async () => {
+      wireLookup(
+        finalInvoiceRow({ id: 101, grossTotal: new D(50000) }),
+        advanceRow({
+          netTotal: new D(31585),
+          vatTotal: new D(6317),
+          grossTotal: new D(37902),
+          advancePaidAmount: new D(37902),
+          items: [{ vatRateCode: "3", vatBase: new D(31585) }],
+        }),
+      );
+      wireApplications({
+        byAdvance: [{ invoiceId: 100, advanceInvoiceId: 50, amount: 20802 }],
+        byInvoice: [],
+      });
+
+      await expect(
+        service.applyAdvance(
+          { invoiceId: 101, advanceInvoiceId: 50, amount: "20000" },
+          actor,
+        ),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(prisma.invoiceAdvanceApplication.create).not.toHaveBeenCalled();
+      expect(posting.postManualEntry).not.toHaveBeenCalled();
+    });
+
+    it("iskorišćen avans (Σ primena = naplaćeno) → 422", async () => {
+      wireLookup(finalInvoiceRow(), advanceRow());
+      wireApplications({
+        byAdvance: [{ invoiceId: 99, advanceInvoiceId: 50, amount: 12000 }],
+        byInvoice: [],
+      });
+
+      await expect(
+        service.applyAdvance({ invoiceId: 100, advanceInvoiceId: 50 }, actor),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    });
+
+    it("VIŠE avansa na JEDNOJ fakturi: drugi avans ne gazi vezu prvog", async () => {
+      wireLookup(
+        finalInvoiceRow({
+          advanceInvoiceId: 49,
+          advanceAppliedAmount: new D(5000),
+        }),
+        advanceRow({ grossTotal: new D(6000), advancePaidAmount: new D(6000) }),
+      );
+      wireApplications({
+        byAdvance: [],
+        byInvoice: [{ invoiceId: 100, advanceInvoiceId: 49, amount: 5000 }],
+      });
+
+      const result = await service.applyAdvance(
+        { invoiceId: 100, advanceInvoiceId: 50 },
+        actor,
+      );
+
+      // Zbir = 5.000 (prvi avans) + 6.000 (drugi) = 11.000 → za uplatu 1.000.
+      expect(result.advanceAppliedAmount.toFixed(2)).toBe("11000.00");
+      expect(result.payableAmount.toFixed(2)).toBe("1000.00");
+
+      const invUpdate = firstArg<{ data: Record<string, unknown> }>(
+        prisma.invoice.update,
+      );
+      // Veza na PRVI avans se ne prepisuje (kompatibilne kolone).
+      expect(invUpdate.data).not.toHaveProperty("advanceInvoiceId");
+      expect(
+        (invUpdate.data.advanceAppliedAmount as Prisma.Decimal).toFixed(2),
+      ).toBe("11000.00");
+    });
+  });
+
+  // ── 4) AVR po UGOVORU (bez predračuna) ──────────────────────────────────────
+
+  describe("createAdvanceInvoice — bez predračuna (po ugovoru)", () => {
+    it("kupac + iznos + osnov daju AVR sa upisanim osnovom", async () => {
+      prisma.invoice.create.mockImplementation((args: { data: unknown }) => ({
+        id: 60,
+        ...(args.data as Record<string, unknown>),
+        items: [],
+      }));
+
+      await service.createAdvanceInvoice(
+        {
+          customerId: 5,
+          amount: "535922487.65",
+          basis: "Ugovor o kupoprodaji mašina br. 12/2025",
+        },
+        actor,
+      );
+
+      const { data } = firstArg<{
+        data: {
+          documentType: string;
+          customerId: number;
+          advanceBasis: string;
+          advanceDirection: string;
+          netTotal: Prisma.Decimal;
+          vatTotal: Prisma.Decimal;
+          grossTotal: Prisma.Decimal;
+        };
+      }>(prisma.invoice.create);
+
+      expect(data.documentType).toBe("AVR");
+      expect(data.customerId).toBe(5);
+      expect(data.advanceDirection).toBe("out");
+      expect(data.advanceBasis).toBe("Ugovor o kupoprodaji mašina br. 12/2025");
+      // 535.922.487,65 bruto @20% → osnovica 446.602.073,04 + PDV 89.320.414,61
+      expect(data.netTotal.toFixed(2)).toBe("446602073.04");
+      expect(data.vatTotal.toFixed(2)).toBe("89320414.61");
+      expect(data.grossTotal.toFixed(2)).toBe("535922487.65");
+    });
+
+    it("bez osnova (basis) → 400", async () => {
+      await expect(
+        service.createAdvanceInvoice({ customerId: 5, amount: 1000 }, actor),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.invoice.create).not.toHaveBeenCalled();
+    });
+
+    it("nepostojeći kupac → 422", async () => {
+      prisma.customer.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.createAdvanceInvoice(
+          { customerId: 999, amount: 1000, basis: "Ugovor 1/2026" },
+          actor,
+        ),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(prisma.invoice.create).not.toHaveBeenCalled();
     });
   });
 });

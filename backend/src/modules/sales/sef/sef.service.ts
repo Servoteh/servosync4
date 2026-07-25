@@ -167,17 +167,39 @@ export class SefService {
     // — Batch C §C1a: konačni račun na kome je odbijen avans nosi referencu AVR-a
     //   (cac:BillingReference) + PrepaidAmount, pa SEF PayableAmount pokazuje
     //   STVARNI ostatak za uplatu (grossTotal − avans), a ne uvek 0.
+    //   N:M (migracija 20260726120000): račun može zatvarati VIŠE avansa, pa ide
+    //   po jedan `cac:BillingReference` za svaku primenu. Zbir uz broj samo prvog
+    //   avansa bi bio netačna referenca na poreskom dokumentu (revizija, VISOK).
+    const applications = await this.prisma.invoiceAdvanceApplication.findMany({
+      where: { invoiceId: invoice.id, status: "ACTIVE" },
+      orderBy: { id: "asc" },
+      select: {
+        appliedAmount: true,
+        advance: { select: { documentNumber: true } },
+      },
+    });
     const advanceInvoice =
-      invoice.advanceInvoiceId != null
+      applications.length === 0 && invoice.advanceInvoiceId != null
         ? await this.prisma.invoice.findUnique({
             where: { id: invoice.advanceInvoiceId },
             select: { documentNumber: true },
           })
         : null;
+    const prepaymentReferences = applications
+      .map((a) => a.advance?.documentNumber)
+      .filter((n): n is string => !!n);
+    // Iznos i reference se izvode iz ISTOG izvora — zbir primena kad ih ima,
+    // inače legacy kolona (dokumenti vezani pre N:M migracije).
+    const appliedTotal = applications.reduce(
+      (acc, a) => acc.add(a.appliedAmount),
+      new Prisma.Decimal(0),
+    );
     const prepaidAmount =
-      advanceInvoice && invoice.advanceAppliedAmount.greaterThan(0)
-        ? invoice.advanceAppliedAmount
-        : null;
+      applications.length > 0
+        ? appliedTotal
+        : advanceInvoice && invoice.advanceAppliedAmount.greaterThan(0)
+          ? invoice.advanceAppliedAmount
+          : null;
 
     // — D6: upozorenje javni sektor bez broja narudžbenice (ne blokira) —
     let warning: string | null = null;
@@ -202,6 +224,7 @@ export class SefService {
         poNumber: invoice.poNumber,
         isPrepayment: invoice.documentType === "AVR",
         prepaymentReference: advanceInvoice?.documentNumber ?? null,
+        prepaymentReferences,
         prepaidAmount,
       },
       items,
