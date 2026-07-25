@@ -5,11 +5,11 @@
 // kartice + tabela sa horizontalnom CSS bar trakom u koloni „Komada". Izvor su
 // NonconformityReport-i (§6 spec) — GET /v1/kvalitet/summary.
 
-import { useState, type ReactNode } from 'react';
+import { useState } from 'react';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { formatDecimal, formatNumber } from '@/lib/format';
-import { cn } from '@/lib/cn';
+import { StatCard } from './helpers';
 import {
   NONCONFORMITY_TYPE,
   useQualitySummary,
@@ -39,32 +39,6 @@ function typeParam(t: TypeFilter): NonconformityType | undefined {
   if (t === '1') return NONCONFORMITY_TYPE.REWORK;
   if (t === '2') return NONCONFORMITY_TYPE.SCRAP;
   return undefined;
-}
-
-/** Mala KPI kartica (isti obrazac kao održavanje `StatCard`). */
-function StatCard({
-  label,
-  value,
-  tone = 'neutral',
-}: {
-  label: string;
-  value: ReactNode;
-  tone?: 'neutral' | 'info' | 'warn' | 'accent';
-}) {
-  const color =
-    tone === 'info'
-      ? 'text-status-info'
-      : tone === 'warn'
-        ? 'text-status-warn'
-        : tone === 'accent'
-          ? 'text-accent'
-          : 'text-ink';
-  return (
-    <div className="rounded-panel border border-line bg-surface p-4">
-      <div className={cn('tnums text-2xl font-semibold', color)}>{value}</div>
-      <div className="mt-1 text-xs uppercase tracking-wider text-ink-secondary">{label}</div>
-    </div>
-  );
 }
 
 export function IzvestajiTab() {

@@ -44,7 +44,10 @@ import type { PrintLabelDto } from "./dto/print-label.dto";
 
 /**
  * Read-only API za tehnološke postupke (Tehnološki postupci / TP).
- *   GET /api/v1/tech-processes                    — lista (+ identNumber/projectId filter)
+ *   GET /api/v1/tech-processes                    — lista (+ identNumber/projectId filter;
+ *                                                   K4 „Aktivnost kontrole": `entryKind`
+ *                                                   (control-final|control-mid|work),
+ *                                                   `controllersOnly`, `withTotals`)
  *   GET /api/v1/tech-processes/card               — „Kartica TP": redovi trojke + sume (komadi/vreme)
  *   GET /api/v1/tech-processes/critical           — kritični postupci (severity 1/2/3 po roku)
  *   GET /api/v1/tech-processes/worker-performance — učinak po radniku u periodu (from/to)

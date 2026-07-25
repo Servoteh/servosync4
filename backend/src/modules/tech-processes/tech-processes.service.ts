@@ -105,6 +105,20 @@ export interface ListTechProcessesQuery {
   /** Evidentirano od/do (ISO 8601) — filter po `enteredAt`. */
   from?: string;
   to?: string;
+  /**
+   * Vrsta unosa („Aktivnost kontrole", K4) — vrednosti kao `entryKindOf`:
+   * `"control-final"` = završna kontrola (RC sa `operations.significantForFinishing`),
+   * `"control-mid"` = međufazna kontrola (RC sa „…ontrol…" u nazivu, a nije završna),
+   * `"work"` = obično kucanje (npr. prijem kooperacije); prazno/nepoznato = svi.
+   */
+  entryKind?: string;
+  /**
+   * `"true"` = samo unosi OVLAŠĆENIH KONTROLORA (`worker_types.additionalPrivileges`).
+   * Prekidač, ne tvrdo pravilo — legacy kolona može biti nepotpuna (vidi K4 plan).
+   */
+  controllersOnly?: string;
+  /** `"true"` = uz stranicu vrati i `meta.totals` (zbir nad ISTIM filterom). */
+  withTotals?: string;
 }
 
 /** „Kartica TP" — jedan postupak = trojka (projectId, identNumber, variant). */
@@ -302,6 +316,25 @@ interface PoorlyRecordedRaw {
   reason: string;
 }
 
+/** Vrsta unosa u evidenciji (K4) — vidi `entryKindOf`. */
+export type TechProcessEntryKind = "control-final" | "control-mid" | "work";
+
+/**
+ * K4: vrsta unosa iz razrešenog RC-a — ISTI kanon kao `selfControlViolation`:
+ * završna kontrola = `significantForFinishing`; „…ontrol…" u nazivu RC-a (npr.
+ * „8.4 Međufazna Kontrola") = međufazna kontrola; sve ostalo = proizvodno kucanje.
+ * Nerazrešen/orphan RC → `"work"` (ne izmišljamo kontrolu tamo gde je ne znamo).
+ */
+export function entryKindOf(
+  op: { workCenterName?: string; significantForFinishing?: boolean | null } | null,
+): TechProcessEntryKind {
+  if (!op) return "work";
+  if (op.significantForFinishing === true) return "control-final";
+  if (op.workCenterName && /ontrol/i.test(op.workCenterName))
+    return "control-mid";
+  return "work";
+}
+
 /**
  * Read-only access to technological processes (`tech_processes`).
  *
@@ -390,6 +423,31 @@ export class TechProcessesService {
       filter.enteredAt = range;
     }
 
+    // K4 „Aktivnost kontrole": vrsta unosa + samo kontrolori. Idu kroz `AND` da ne
+    // gaze postojeći `OR` (ident/crtež/naziv) ni tačne filtere iznad. Prazan skup
+    // kodova/id-jeva je fail-closed (`in: []` = nema rezultata) — namerno.
+    const and: Prisma.TechProcessWhereInput[] = [];
+    const kind = query.entryKind?.trim();
+    if (kind === "control-final" || kind === "control-mid" || kind === "work") {
+      const [finalCodes, allControlCodes] = await Promise.all([
+        this.controlWorkCenterCodes(true),
+        kind === "control-final"
+          ? Promise.resolve<string[]>([])
+          : this.controlWorkCenterCodes(false),
+      ]);
+      if (kind === "control-final")
+        and.push({ workCenterCode: { in: finalCodes } });
+      else if (kind === "control-mid")
+        // Međufazna = kontrolni RC koji NIJE završna kontrola (oba uslova se AND-uju).
+        and.push({
+          workCenterCode: { in: allControlCodes, notIn: finalCodes },
+        });
+      else and.push({ workCenterCode: { notIn: allControlCodes } });
+    }
+    if (query.controllersOnly === "true")
+      and.push({ workerId: { in: await this.controllerWorkerIds() } });
+    if (and.length) filter.AND = and;
+
     // Row-scope: `proizvodni_radnik` vidi samo svoje mašine; ostali (već read-ovlašćeni) sve.
     const where = await this.scope.withTechProcessScope(user, filter);
 
@@ -438,9 +496,88 @@ export class TechProcessesService {
       technologist: workOrderRefs.technologists.get(r.workOrderId) ?? null,
       // Crtež sa RN-a (work_orders.drawing_number); null kad workOrderId=0/orphan.
       drawingNumber: workOrderRefs.drawingNumbers.get(r.workOrderId) ?? null,
+      // K4: naziv pozicije sa RN-a (work_orders.part_name); isti orphan uslov.
+      partName: workOrderRefs.partNames.get(r.workOrderId) ?? null,
+      // K4: vrsta unosa (završna kontrola / međufazna / kucanje) — bez dodatnog
+      // upita, iz već razrešenog RC-a.
+      entryKind: entryKindOf(ops.get(r.workCenterCode) ?? null),
     }));
 
-    return { data, meta: pageMeta(page, pageSize, total) };
+    // K4 zbirne kartice: sume nad ISTIM `where` (ne nad stranicom). Samo uz
+    // `withTotals=true` — postojeći potrošači (Evidencija u proizvodnji) ne plaćaju upit.
+    const totals =
+      query.withTotals === "true" ? await this.listTotals(where) : null;
+
+    return {
+      data,
+      meta: {
+        ...pageMeta(page, pageSize, total),
+        ...(totals ? { totals } : {}),
+      },
+    };
+  }
+
+  /**
+   * K4: zbir nad ISTIM `where` kao lista — broj unosa i Σ komada, razloženo po
+   * kvalitetu (0=dobar, 1=dorada, 2=škart). Storno redovi su negativni komadi pa
+   * se prirodno oduzimaju iz sume.
+   */
+  private async listTotals(where: Prisma.TechProcessWhereInput) {
+    const groups = await this.prisma.techProcess.groupBy({
+      by: ["qualityTypeId"],
+      where,
+      _sum: { pieceCount: true },
+      _count: { _all: true },
+    });
+    const totals = { entries: 0, pieces: 0, good: 0, rework: 0, scrap: 0 };
+    for (const g of groups) {
+      const pieces = g._sum.pieceCount ?? 0;
+      totals.entries += g._count._all;
+      totals.pieces += pieces;
+      if (g.qualityTypeId === PART_QUALITY.GOOD) totals.good += pieces;
+      else if (g.qualityTypeId === PART_QUALITY.REWORK) totals.rework += pieces;
+      else if (g.qualityTypeId === PART_QUALITY.SCRAP) totals.scrap += pieces;
+    }
+    return totals;
+  }
+
+  /**
+   * K4: šifre RC-ova kontrolnih operacija. `finalOnly` = samo ZAVRŠNA kontrola
+   * (`operations.significantForFinishing`); inače i međufazne („…ontrol…" u nazivu
+   * RC-a) — isti kanon koji `selfControlViolation` koristi za razdvajanje dužnosti.
+   */
+  private async controlWorkCenterCodes(finalOnly: boolean): Promise<string[]> {
+    const rows = await this.prisma.operation.findMany({
+      where: finalOnly
+        ? { significantForFinishing: true }
+        : {
+            OR: [
+              { significantForFinishing: true },
+              { workCenterName: { contains: "ontrol", mode: "insensitive" } },
+            ],
+          },
+      select: { workCenterCode: true },
+    });
+    return rows.map((r) => r.workCenterCode);
+  }
+
+  /**
+   * K4: id-jevi radnika koji su OVLAŠĆENI KONTROLORI — tip radnika sa
+   * `additionalPrivileges` (legacy `tVrsteRadnika.DodatnaOvlascenja`), isti signal
+   * kao `isAuthorizedController`. Prazno (nepopunjena legacy kolona) → prazan skup:
+   * front nudi prekidač „Samo kontrolori" da se ograničenje isključi.
+   */
+  private async controllerWorkerIds(): Promise<number[]> {
+    const types = await this.prisma.workerType.findMany({
+      where: { additionalPrivileges: true },
+      select: { id: true },
+    });
+    if (!types.length) return [];
+    const workers = await this.prisma.worker.findMany({
+      where: { workerTypeId: { in: types.map((t) => t.id) } },
+      select: { id: true },
+    });
+    return workers.map((w) => w.id);
   }
 
   // ------------------------------------------------- A4 SEARCH EXPANSION
@@ -626,9 +763,10 @@ export class TechProcessesService {
 
   /**
    * Batch: workOrderId → { tehnolog (work_orders.worker_id), crtež
-   * (work_orders.drawing_number) }. Legacy redovi često imaju workOrderId 0 (veza
-   * kroz JOIN, ne FK) — preskaču se; orphan RN/radnik → null (obrazac
-   * common/relations, bez required JOIN-a). Jedan upit nad work_orders daje oba.
+   * (work_orders.drawing_number), naziv pozicije (work_orders.part_name) }. Legacy
+   * redovi često imaju workOrderId 0 (veza kroz JOIN, ne FK) — preskaču se; orphan
+   * RN/radnik → null (obrazac common/relations, bez required JOIN-a). Jedan upit
+   * nad work_orders daje sve troje.
    */
   private async resolveWorkOrderRefs(ids: number[]) {
     const uniq = uniqueIds(ids);
@@ -637,10 +775,18 @@ export class TechProcessesService {
       { id: number; fullName: string | null; username: string | null }
     >();
     const drawingNumbers = new Map<number, string>();
-    if (!uniq.length) return { technologists, drawingNumbers };
+    const partNames = new Map<number, string>();
+    if (!uniq.length) return { technologists, drawingNumbers, partNames };
     const workOrders = await this.prisma.workOrder.findMany({
       where: { id: { in: uniq } },
-      select: { id: true, workerId: true, drawingNumber: true },
+      select: {
+        id: true,
+        workerId: true,
+        drawingNumber: true,
+        // K4: „Naziv pozicije" u Aktivnosti kontrole — kontrolor prepoznaje deo
+        // po nazivu, ne po identu.
+        partName: true,
+      },
     });
     const workers = await this.resolveWorkers(
       workOrders.map((w) => w.workerId),
@@ -650,8 +796,9 @@ export class TechProcessesService {
       if (worker) technologists.set(wo.id, worker);
       // drawing_number je NOT NULL u šemi ali može biti "" — prazan → null u UI.
       if (wo.drawingNumber) drawingNumbers.set(wo.id, wo.drawingNumber);
+      if (wo.partName) partNames.set(wo.id, wo.partName);
     }
-    return { technologists, drawingNumbers };
+    return { technologists, drawingNumbers, partNames };
   }
 
   // -------------------------------------------------- MOJI OTVORENI (kiosk)
@@ -4480,7 +4627,12 @@ export class TechProcessesService {
     const uniq = [...new Set(codes.filter(Boolean))];
     const map = new Map<
       string,
-      { workCenterCode: string; workCenterName: string; workUnitCode: string }
+      {
+        workCenterCode: string;
+        workCenterName: string;
+        workUnitCode: string;
+        significantForFinishing: boolean | null;
+      }
     >();
     if (!uniq.length) return map;
     const rows = await this.prisma.operation.findMany({
@@ -4489,6 +4641,8 @@ export class TechProcessesService {
         workCenterCode: true,
         workCenterName: true,
         workUnitCode: true,
+        // K4: front crta „Završna kontrola / Međufazna / Kucanje" bez dodatnog upita.
+        significantForFinishing: true,
       },
     });
     for (const r of rows) map.set(r.workCenterCode, r);

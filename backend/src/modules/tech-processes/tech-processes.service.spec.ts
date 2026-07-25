@@ -3180,3 +3180,167 @@ describe("TechProcessesService — K2 auto-draft neusaglašenosti (control dorad
     expect(data.childOrderPending).toBe(false);
   });
 });
+
+describe("TechProcessesService — K4 lista: vrsta unosa / kontrolori / zbir", () => {
+  let service: TechProcessesService;
+  let prisma: ReturnType<typeof prismaMock> & {
+    techProcess: { count: jest.Mock; groupBy: jest.Mock };
+    workerType: { findMany: jest.Mock };
+  };
+
+  /** Kontrolni RC-ovi: 8.9 = završna kontrola, 8.4 = međufazna (naziv „…Kontrola"). */
+  const FINAL_RC = {
+    workCenterCode: "8.9",
+    workCenterName: "Završna kontrola",
+    workUnitCode: "08",
+    significantForFinishing: true,
+  };
+  const MID_RC = {
+    workCenterCode: "8.4",
+    workCenterName: "Međufazna Kontrola",
+    workUnitCode: "08",
+    significantForFinishing: false,
+  };
+
+  beforeEach(async () => {
+    const base = prismaMock();
+    prisma = Object.assign(base, {
+      techProcess: Object.assign(base.techProcess, {
+        count: jest.fn().mockResolvedValue(0),
+        groupBy: jest.fn().mockResolvedValue([]),
+      }),
+      workerType: Object.assign(base.workerType, {
+        findMany: jest.fn().mockResolvedValue([]),
+      }),
+    }) as typeof prisma;
+
+    // `operation.findMany` opslužuje dva poziva: razrešenje kontrolnih RC-ova
+    // (filter) i razrešenje RC-ova vidljivih redova (prikaz) — razdvajamo po `where`.
+    prisma.operation.findMany.mockImplementation((args: any) => {
+      const where = args?.where ?? {};
+      if (where.significantForFinishing === true)
+        return Promise.resolve([{ workCenterCode: FINAL_RC.workCenterCode }]);
+      if (where.OR)
+        return Promise.resolve([
+          { workCenterCode: FINAL_RC.workCenterCode },
+          { workCenterCode: MID_RC.workCenterCode },
+        ]);
+      return Promise.resolve([FINAL_RC, MID_RC]);
+    });
+
+    const mod: TestingModule = await Test.createTestingModule({
+      providers: [
+        TechProcessesService,
+        { provide: PrismaService, useValue: prisma },
+        {
+          provide: ScopeService,
+          useValue: {
+            // Bez row-scope-a u ovim testovima — filter prolazi netaknut.
+            withTechProcessScope: jest.fn((_u: unknown, f: unknown) => f),
+          },
+        },
+        { provide: NotificationsService, useValue: notificationsMock() },
+        { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
+        { provide: QualityService, useValue: qualityMock() },
+        { provide: WorkOrdersService, useValue: workOrdersMock() },
+      ],
+    }).compile();
+    service = mod.get(TechProcessesService);
+  });
+
+  /** `where` sa kojim je otišao glavni upit liste. */
+  function listWhere() {
+    return prisma.techProcess.findMany.mock.calls[0][0].where;
+  }
+
+  it("entryKind=control-final suzava na RC-ove zavrsne kontrole", async () => {
+    await service.list({ entryKind: "control-final" });
+
+    expect(listWhere().AND).toEqual([{ workCenterCode: { in: ["8.9"] } }]);
+  });
+
+  it("entryKind=control-mid = kontrolni RC koji NIJE zavrsna kontrola", async () => {
+    await service.list({ entryKind: "control-mid" });
+
+    expect(listWhere().AND).toEqual([
+      { workCenterCode: { in: ["8.9", "8.4"], notIn: ["8.9"] } },
+    ]);
+  });
+
+  it("entryKind=work iskljucuje SVE kontrolne RC-ove (i medufazne)", async () => {
+    await service.list({ entryKind: "work" });
+
+    expect(listWhere().AND).toEqual([
+      { workCenterCode: { notIn: ["8.9", "8.4"] } },
+    ]);
+  });
+
+  it("bez entryKind nema dodatnog AND uslova (postojeci potrosaci netaknuti)", async () => {
+    await service.list({});
+
+    expect(listWhere().AND).toBeUndefined();
+    expect(prisma.techProcess.groupBy).not.toHaveBeenCalled();
+  });
+
+  it("controllersOnly=true suzava na radnike kontrolorskog tipa", async () => {
+    prisma.workerType.findMany.mockResolvedValue([{ id: 3 }]);
+    prisma.worker.findMany.mockImplementation((args: any) =>
+      Promise.resolve(
+        args?.where?.workerTypeId ? [{ id: 10 }, { id: 11 }] : [],
+      ),
+    );
+
+    await service.list({ controllersOnly: "true" });
+
+    expect(listWhere().AND).toEqual([{ workerId: { in: [10, 11] } }]);
+  });
+
+  it("controllersOnly=true bez kontrolorskog tipa je fail-closed (prazan skup)", async () => {
+    prisma.workerType.findMany.mockResolvedValue([]);
+
+    await service.list({ controllersOnly: "true" });
+
+    expect(listWhere().AND).toEqual([{ workerId: { in: [] } }]);
+  });
+
+  it("withTotals=true vraca zbir po kvalitetu nad ISTIM where-om", async () => {
+    prisma.techProcess.groupBy.mockResolvedValue([
+      { qualityTypeId: 0, _sum: { pieceCount: 40 }, _count: { _all: 3 } },
+      { qualityTypeId: 1, _sum: { pieceCount: 5 }, _count: { _all: 2 } },
+      { qualityTypeId: 2, _sum: { pieceCount: 2 }, _count: { _all: 1 } },
+    ]);
+
+    const { meta } = await service.list({
+      entryKind: "control-final",
+      withTotals: "true",
+    });
+
+    expect((meta as { totals?: unknown }).totals).toEqual({
+      entries: 6,
+      pieces: 47,
+      good: 40,
+      rework: 5,
+      scrap: 2,
+    });
+    // Isti `where` kao lista — zbir ne sme da ignoriše filtere.
+    expect(prisma.techProcess.groupBy.mock.calls[0][0].where).toEqual(
+      listWhere(),
+    );
+  });
+
+  it("red dobija entryKind iz RC-a (zavrsna / medufazna / kucanje)", async () => {
+    prisma.techProcess.findMany.mockResolvedValue([
+      tpRow({ workCenterCode: "8.9" }),
+      tpRow({ workCenterCode: "8.4" }),
+      tpRow({ workCenterCode: "0102" }),
+    ]);
+
+    const { data } = await service.list({});
+
+    expect(data.map((r) => r.entryKind)).toEqual([
+      "control-final",
+      "control-mid",
+      "work",
+    ]);
+  });
+});
