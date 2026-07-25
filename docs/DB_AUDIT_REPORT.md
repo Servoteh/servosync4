@@ -571,7 +571,7 @@ Sortirano po ozbiljnosti. Status se ažurira ručno pri sređivanju.
 | DB-074 | VISOKO | Održavanje | Backup: restore ✅, skripta ✅, off-site = noćni klon mašine (odluka 25.07) | ✅ sanirano (ZA PROVERU: sat klona posle 02:40) |
 | DB-075 | VISOKO | Održavanje | Untracked Batch B migracija + izmenjena šema u radnom stablu | ✅ rešeno 25.07 — Batch B komitovan i merge-ovan kao #16 (71992fa), deploy 🟢 |
 | DB-080 | VISOKO | Integritet | Orphan redovi krše FK (replica sync): 89× mrp_demand_items + 1× handover_drafts | ✅ sanirano 25.07 (snimci u ~/backups/sanacije) |
-| DB-081 | VISOKO | Integritet | `items.catalog_number` bez UNIQUE + 1.980 duplikat-grupa (zahtev 25.07) | ✅ **BRANA ŽIVA** (Faza 4b): DB ratchet-trigger + sync guard; postojeći duplikati tolerisani, NOVI nemogući. Ostaje samo prelaz na tvrd UNIQUE kad Nenad prenese jedinstvene brojeve u BigBit (komanda spremna u migraciji) |
+| DB-081 | VISOKO | Integritet | `items.catalog_number` bez UNIQUE + 1.980 duplikat-grupa (zahtev 25.07) | ✅ **BRANA ŽIVA NA PRODU 25.07** (PR #24, deploy 🟢; provereno na živoj bazi: pokušaj unosa postojeće šifre ODBIJEN): DB ratchet-trigger + sync guard. Ostaje prelaz na tvrd UNIQUE kad Nenad prenese jedinstvene brojeve (komanda spremna u migraciji) |
 | DB-009 | SREDNJE | Integritet | CHECK paket: količine/procenti/iznosi/intervali | ✅ Faza 2: 11 CHECK constrainta (tax_rates preskočen — BigBit keš) |
 | DB-010 | SREDNJE | Integritet | „Magic zero" umesto NULL (sistemski obrazac) | otvoreno |
 | DB-011 | SREDNJE | Integritet | `invoices` unique bez company_id (multi-firma) | ✅ Faza 2: uq_invoices_company_type_number |
@@ -594,7 +594,7 @@ Sortirano po ozbiljnosti. Status se ažurira ručno pri sređivanju.
 | DB-042 | SREDNJE | Performanse | Prisma distinct in-memory (PDM lookups) | otvoreno |
 | DB-043 | SREDNJE | Performanse | Retention ne postoji (audit_log, notifikacije, SEF blobovi…) | ✅ Faza 3: noćni job 03:30 (audit_log 24 mes., pročitane notif. 90 d, job-runovi 60 d — odluke 25.07); SEF/sync logovi namerno izuzeti |
 | DB-044 | SREDNJE | Performanse | Numeracija string-prefiks = pun skan po dokumentu | otvoreno |
-| DB-051 | SREDNJE | Bezbednost | App radi sa superuser privilegijama | ✅ Faza 4a: `servosync_app` rola (DML + samo `session_replication_role`); DDL ostaje vlasniku, migracije kroz `MIGRATE_DATABASE_URL`; skripta `backend/scripts/db-app-role.sql` |
+| DB-051 | SREDNJE | Bezbednost | App radi sa superuser privilegijama | ✅ **ŽIVO NA PRODU 25.07 16:47** — backend se kači kao `servosync_app` (potvrđeno u `pg_stat_activity`), verify 🟢 EXIT 0, 0 grešaka u logu; DDL/migracije kroz `MIGRATE_DATABASE_URL` (vlasnik); skripta `backend/scripts/db-app-role.sql` |
 | DB-052 | SREDNJE | Bezbednost | SEF API ključ plaintext u `companies` (mirror) | otvoreno |
 | DB-053 | SREDNJE | Bezbednost | sy15 BYPASSRLS — disciplina bez mehaničke brave | otvoreno |
 | DB-054 | SREDNJE | Bezbednost | `assessment_raters.token` izlazi kroz API | ✅ Faza 4a: safe-select bez `token` na obe rute (FE koristi `invitedAt`) |
@@ -633,6 +633,8 @@ Sortirano po ozbiljnosti. Status se ažurira ručno pri sređivanju.
 *Ažurirano 25.07 uveče (posle talasa 0): **✅ zatvoreno 13** — DB-037, 039, 046, 047, 061, 062, 064, 065, 068, 073 (merge #17, ff128a3), DB-074 (restore test + klon-odluka), DB-079, DB-080 (sanacija podataka uz snimke).*
 
 *Ažurirano 25.07 noć (posle **Faze 2**, migracija `20260725200000_faza2_constraint_mreza`): **✅ još 10 u celosti** — DB-001 (KRITIČNO!), 002, 003, 004, 005, 006, 007, 008, 009, 011 + **3 delimično** (DB-012 CHECK≥0, DB-013 code, DB-022 dva parcijalna) + DB-081 watchdog živ + DB-075 rešen kroz #16.*
+
+*Ažurirano posle **Faze 4** (PR #23 + #24, 25.07 uveče): **✅ još 6** — DB-051 (app rola ŽIVA na produ), DB-054, DB-055, DB-038 (odluka + prag-alarm), DB-081 (brana živa), DB-056. **UKUPNO ZATVORENO: 42 od 81.** Svesno odloženo uz obrazloženje: DB-050 (RLS) i DB-030 (TZ) — čekaju gašenje BigBit sync-a; DB-026/010 (Float/magic-zero u legacy kešu) — isto. Preostali radni backlog (bez odluka): DB-040 (PDM N+1), DB-014 (Σstavke=header check), DB-018 (koja BOM tabela je autoritativna), DB-015, DB-029/034 (katalozi/dužine), DB-069 (mrtvi modeli).*
 
 *Ažurirano posle **Faze 3** (migracija `20260725220000_faza3_paket`): **✅ još 11** — DB-025 (Float cenovnik → Decimal), DB-028 (GL statusi VELIKA slova — sweep 16 fajlova + FE + case-robustan trigger), DB-031 (businessYear Europe/Belgrade na 15 numeracionih mesta), DB-043 (retention job: audit 24 mes/notif 90 d/runs 60 d), DB-049 (lozinke van sync mape + kolone ispražnjene), DB-056 (leftover tabele obrisane uz dump), DB-059 (izvodi soft-delete kompletiran), DB-060 (lager as-of fallback), DB-063 (GL akter statusa), DB-067 (stock status uz nalog) + DB-027 delimično (nabavni lanac + kurs predmeta). **Ukupno zatvoreno: 35 od 81.** Najveći preostali: DB-038 (drawing_pdfs 87% baze), DB-040 (PDM N+1), DB-081 (čišćenje BigBit šifarnika — watchdog čuva), DB-050/051 + DB-030 (RLS, rola, TZ konsolidacija — Faza 4 uz Negovana/Nesu), DB-014/015/029/069 (konzistencija/higijena).*
 
