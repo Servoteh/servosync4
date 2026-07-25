@@ -93,8 +93,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // niko ne šalje — iframe put ostaje jedini živ dok se 1.0 redirect ne uključi).
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    if (!ready || hasToken) return;
+    if (!ready) return;
     if (window.location.hash.indexOf('ss_token=') === -1) return;
+    // Već prijavljeni (1.0 prečica na /mob/* šalje token i kad 3.0 sesija postoji):
+    // razmena nije potrebna, ali token NE SME da ostane u URL-u/istoriji.
+    if (hasToken) {
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      return;
+    }
 
     const params = new URLSearchParams(window.location.hash.replace(/^#/, ''));
     const token = params.get('ss_token');

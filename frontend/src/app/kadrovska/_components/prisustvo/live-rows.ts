@@ -2,6 +2,7 @@
 
 import { useMemo } from 'react';
 import { useAttendanceNow, useDirectory } from '@/api/kadrovska';
+import { normalize } from '@/lib/fuzzy';
 import { sv } from '../common';
 import { STATUS_META } from './helpers';
 
@@ -41,20 +42,38 @@ export interface LiveCounts {
   odsutan: number;
 }
 
+/** Tajmaut „uživo" upita — telefon na slaboj mreži ne sme da visi u „Učitavam…". */
+const LIVE_TIMEOUT_MS = 15_000;
+
 /**
- * Merge: SVI aktivni zaposleni (imenik) ⨝ v_attendance_now — ko nema prolaz u
- * 24 h prikazan je kao „Odsutan / bez prolaza u 24 h" (paritet 1.0 _rows()).
+ * Merge: AKTIVNI zaposleni iz imenika ⨝ v_attendance_now — ko nema prolaz u 24 h
+ * prikazan je kao „Odsutan / bez prolaza u 24 h" (paritet 1.0 `_rows()`).
+ *
+ * ⚠️ `GET /kadrovska/directory` NAMERNO vraća i neaktivne (BE #30: nameMap mora da
+ * razreši imena istorijskih redova), a `v_attendance_now` ih nema — bez filtera bi
+ * svaki bivši zaposleni ispao „odsutan" i naduvao brojač. Zato se filtrira na mestu
+ * upotrebe, kao na ostalim ekranima („load all, filter at use site").
+ *
+ * ⚠️ Dok „uživo" snimak NIJE stigao (prvi fetch pao ili još traje) lista je PRAZNA —
+ * sintetisati „svi odsutni" iz samog imenika je lažan podatak (izgleda kao da u
+ * firmi nema nikoga). UI to razlikuje preko `hasSnapshot`.
+ *
  * `enabled=false` (nema prava / još se čekaju dozvole) ne ispaljuje zahteve.
  */
 export function useLiveAttendance(enabled = true) {
-  const dirQ = useDirectory(enabled);
-  const nowQ = useAttendanceNow(enabled);
+  const dirQ = useDirectory(enabled, LIVE_TIMEOUT_MS);
+  const nowQ = useAttendanceNow(enabled, LIVE_TIMEOUT_MS);
+
+  const hasSnapshot = !!nowQ.data;
+  const hasDirectory = !!dirQ.data;
 
   const rows: LiveRow[] = useMemo(() => {
+    const now = nowQ.data?.data;
+    if (!now) return []; // nema snimka → nema prikaza (ne izmišljaj „svi odsutni")
     const dir = dirQ.data?.data ?? [];
-    const now = nowQ.data?.data ?? [];
     const byEmp = new Map(now.map((r) => [sv(r, 'employee_id'), r]));
     return dir
+      .filter((e) => sv(e, 'is_active') !== 'false')
       .map((e): LiveRow => {
         const id = sv(e, 'id');
         const r = byEmp.get(id);
@@ -73,33 +92,48 @@ export function useLiveAttendance(enabled = true) {
       .sort((a, b) => a.fullName.localeCompare(b.fullName, 'sr'));
   }, [dirQ.data, nowQ.data]);
 
-  const counts: LiveCounts = useMemo(() => {
-    const prisutan = rows.filter((r) => r.status === 'prisutan').length;
-    const pauza = rows.filter((r) => r.status === 'pauza').length;
-    return { prisutan, pauza, odsutan: rows.length - prisutan - pauza };
-  }, [rows]);
+  const counts: LiveCounts = useMemo(() => countByStatus(rows), [rows]);
 
   return {
     rows,
     counts,
+    /** True tek kad je bar jedan „uživo" snimak stigao (inače je lista prazna s razlogom). */
+    hasSnapshot,
+    hasDirectory,
     isLoading: dirQ.isLoading || nowQ.isLoading,
     isFetching: dirQ.isFetching || nowQ.isFetching,
     isError: dirQ.isError || nowQ.isError,
-    /** Kad je poslednji put stigao „uživo" snimak (0 = još nijednom). */
-    updatedAt: nowQ.dataUpdatedAt,
-    reload: () => {
-      void dirQ.refetch();
-      void nowQ.refetch();
+    /** Offline (TanStack pauzira upit dok nema mreže) — nije greška, nego čekanje. */
+    isPaused: dirQ.isPaused || nowQ.isPaused,
+    /**
+     * Svežina PRIKAZA = starije od dva vremena (i imenik i snimak stoje iza liste).
+     * 0 = prikaza još nema, pa zaglavlje ne sme da tvrdi „osveženo".
+     */
+    updatedAt:
+      hasSnapshot && hasDirectory ? Math.min(nowQ.dataUpdatedAt, dirQ.dataUpdatedAt) : 0,
+    /** Await-able: pozivalac zna kad je RUČNO osvežavanje stvarno gotovo. */
+    reload: async () => {
+      await Promise.all([dirQ.refetch(), nowQ.refetch()]);
     },
   };
 }
 
-/** Filter statusa + pretraga po imenu i prezimenu (identično na oba ekrana). */
+/** Brojači po statusu nad DATIM redovima (pozivalac bira da li su pretraženi ili svi). */
+export function countByStatus(rows: LiveRow[]): LiveCounts {
+  const prisutan = rows.filter((r) => r.status === 'prisutan').length;
+  const pauza = rows.filter((r) => r.status === 'pauza').length;
+  return { prisutan, pauza, odsutan: rows.length - prisutan - pauza };
+}
+
+/** Pretraga po imenu i prezimenu — bez dijakritike („Milosevic" nalazi „Milošević"). */
+export function searchLiveRows(rows: LiveRow[], query: string): LiveRow[] {
+  const q = normalize(query.trim());
+  if (!q) return rows;
+  return rows.filter((r) => normalize(r.fullName).includes(q));
+}
+
+/** Filter statusa + pretraga (identično na oba ekrana). */
 export function filterLiveRows(rows: LiveRow[], status: StatusFilter, query: string): LiveRow[] {
-  const q = query.trim().toLowerCase();
-  return rows.filter((r) => {
-    if (status !== 'svi' && r.status !== status) return false;
-    if (q && !r.fullName.toLowerCase().includes(q)) return false;
-    return true;
-  });
+  const searched = searchLiveRows(rows, query);
+  return status === 'svi' ? searched : searched.filter((r) => r.status === status);
 }

@@ -73,7 +73,7 @@ export function LiveView() {
   ];
 
   function reload() {
-    live.reload();
+    void live.reload();
     void feedQ.refetch();
   }
 
@@ -103,6 +103,14 @@ export function LiveView() {
           <span className="tnums rounded-control bg-surface-2 px-2 py-1 text-sm text-ink-secondary">{filtered.length}</span>
         </div>
       </div>
+
+      {/* Bez „uživo" snimka lista je prazna S RAZLOGOM (mreža/dozvola) — prazna
+          tabela sama izgleda kao „niko nije prisutan", pa to mora da piše. */}
+      {live.isError && !live.hasSnapshot && (
+        <p className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-3 py-2 text-sm text-status-danger">
+          Stanje prisustva nije učitano (mreža ili dozvola) — klikni „Osveži".
+        </p>
+      )}
 
       <DataTable
         columns={cols}

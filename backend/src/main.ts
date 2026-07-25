@@ -72,8 +72,9 @@ async function bootstrap() {
   // through to the static files. Enabled only when FRONTEND_STATIC_DIR points at an
   // existing dir (see .env.example) — unset in dev / API-only deploys → pure API.
   // NOTE: 3.0 MOBILE routes live under /mob/* (e.g. /mob/lokacije — warehouse
-  // phones on LAN Wi-Fi), NOT under /m/* which the Cloudflare worker proxies to
-  // the 1.0 app. The extensionless rewrite below covers them (mob/lokacije.html);
+  // phones on LAN Wi-Fi; /mob/prisustvo — live attendance, zahtev 019/26), NOT
+  // under /m/* which the Cloudflare worker proxies to the 1.0 app. The
+  // extensionless rewrite below covers them (mob/lokacije.html, mob/prisustvo.html);
   // a frontend-only push does NOT refresh this bake — trigger deploy-backend
   // (or push a backend change) so new /mob pages exist on the LAN copy too.
   const frontendDir = process.env.FRONTEND_STATIC_DIR;

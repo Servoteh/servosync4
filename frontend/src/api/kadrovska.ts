@@ -42,6 +42,19 @@ function qs(params: Record<string, string | number | boolean | undefined | null>
   return s ? `?${s}` : '';
 }
 
+/**
+ * GET sa tajmautom (opciono) — `AbortSignal` ide kroz postojeći `apiFetch`, bez
+ * diranja globalnog klijenta (AI chat legitimno traje duže od bilo kog GET-a).
+ * Koriste ga „uživo" upiti: na telefonu (4G, VPN, zaspali radio) zahtev ume da visi
+ * minutima, a ekran koji tvrdi „Učitavam…" je gori od jasne greške.
+ */
+function getWithTimeout<T>(path: string, timeoutMs?: number): Promise<T> {
+  if (!timeoutMs) return apiFetch<T>(path);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  return apiFetch<T>(path, { signal: ctrl.signal }).finally(() => clearTimeout(timer));
+}
+
 /** Odgovor mutacije: `{ data }` (+ `meta.idempotent` za idempotentne POST-ove). */
 export interface TxResponse<T = unknown> {
   data: T;
@@ -585,12 +598,14 @@ export function useEmployee(id: string | null) {
 }
 /** Imenik zaposlenih. `enabled` postoji zbog ekrana koji se montiraju pre nego što
  *  se zna ima li korisnik pravo (mobilni /mob/prisustvo) — bez toga bi neovlašćen
- *  korisnik ispalio zahtev pre gejta. Podrazumevano ponašanje je nepromenjeno. */
-export function useDirectory(enabled = true) {
+ *  korisnik ispalio zahtev pre gejta. `timeoutMs` traže samo „uživo" ekrani; bez
+ *  njega je ponašanje za sve ostale pozivaoce nepromenjeno.
+ *  ⚠️ Vraća I NEAKTIVNE (BE #30) — filtriraj `is_active` na mestu upotrebe. */
+export function useDirectory(enabled = true, timeoutMs?: number) {
   return useQuery({
     queryKey: KEYS.directory,
     enabled,
-    queryFn: () => apiFetch<{ data: ViewRow[] }>(`${BASE}/directory`),
+    queryFn: () => getWithTimeout<{ data: ViewRow[] }>(`${BASE}/directory`, timeoutMs),
   });
 }
 
@@ -740,13 +755,21 @@ export function fetchGridAutoFill(params: { year: number; month: number; employe
 }
 
 /* Prisustvo */
-export function useAttendanceNow(enabled = true) {
+/**
+ * „Ko je sad tu" snimak. `refetchOnWindowFocus` je OVDE namerno uključen (globalni
+ * default je false): interval ne kuca dok je tab/telefon u pozadini, pa bi se
+ * korisnik posle otključavanja telefona vratio na sliku od pre pola sata i čitao je
+ * kao trenutnu — a ekran se zove „uživo". `timeoutMs` koriste mobilni/desktop
+ * „uživo" ekrani (v. live-rows.ts).
+ */
+export function useAttendanceNow(enabled = true, timeoutMs?: number) {
   return useQuery({
     queryKey: [...KEYS.attendance, 'now'],
     enabled,
     retry: false,
     refetchInterval: 60000,
-    queryFn: () => apiFetch<{ data: ViewRow[] }>(`${BASE}/attendance/now`),
+    refetchOnWindowFocus: true,
+    queryFn: () => getWithTimeout<{ data: ViewRow[] }>(`${BASE}/attendance/now`, timeoutMs),
   });
 }
 export function useAttendanceShadow(params: { year?: number; month?: number } = {}, enabled = true) {

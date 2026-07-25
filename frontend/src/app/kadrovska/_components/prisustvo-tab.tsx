@@ -1,7 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { QrCode } from 'lucide-react';
+import Link from 'next/link';
+import { QrCode, Smartphone } from 'lucide-react';
 import { Button } from '@/components/ui-kit/button';
 import { useAuth } from '@/lib/auth-context';
 import { PERMISSIONS } from '@/lib/permissions';
@@ -47,14 +48,15 @@ export function PrisustvoTab() {
           )}
         </div>
         {/* Mobilni pregled uživo (zahtev 019/26) — /mob/prisustvo, namerno VAN /m/*
-            (worker proxy sve /m/* šalje na 1.0). Otvoriti na telefonu. */}
+            (worker proxy sve /m/* šalje na 1.0). Otvoriti na telefonu. `Link` =
+            klijentska navigacija (tvrdi <a> bi rušio SPA stanje i sesijski keš). */}
         {canLive && (
-          <a
+          <Link
             href="/mob/prisustvo"
-            className="ml-auto rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2"
+            className="ml-auto inline-flex h-9 items-center gap-2 rounded-control border border-line bg-surface px-4 text-base font-medium text-ink hover:bg-surface-2 focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)]"
           >
-            📱 Mobilni prikaz
-          </a>
+            <Smartphone className="h-4 w-4" aria-hidden /> Mobilni prikaz
+          </Link>
         )}
         {/* BE ruta badges/qr gejtuje kadrovska.attendance_shadow (posle P1a fixa) —
             gejtuj afordansu istim ključem (hr/menadzment/admin), ne kadrovska.manage. */}
