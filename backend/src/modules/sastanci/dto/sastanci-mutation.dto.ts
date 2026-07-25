@@ -16,6 +16,7 @@ import {
   MaxLength,
   ValidateNested,
 } from "class-validator";
+import { IsCalendarDate } from "../../moj-profil/dto/is-calendar-date";
 
 /**
  * Mutacioni DTO-ovi za Sastanci R2 (MODULE_SPEC_sastanci_ai_30.md §3).
@@ -115,6 +116,24 @@ export class LockSastanakDto extends IdempotentDto {
   /** Bucket-relativna putanja PDF-a (`{id}/{ts}_zapisnik.pdf`) — upisuje je RPC
    *  PRE meeting_locked trigera (§2 pravilo 8). Opcioni (zaključavanje bez PDF-a). */
   @IsOptional() @IsString() pdfStoragePath?: string;
+  /**
+   * Datum ODRŽAVANJA koji nosi zapisnik — PDF, telo mejla i naziv priloga
+   * (`Zapisnik-<datum>.pdf`). FE ga podrazumevano puni danom zaključavanja, a nudi
+   * i `sastanci.datum` (zakazani termin) kad se razlikuju. Izostavljen → RPC ostavlja
+   * kolonu kakva jeste (po pravilu NULL) i sve pada na `sastanci.datum`, tj. ponašanje
+   * kao pre. Zahtev 014/26 + presuda vlasnika 25.07.2026.
+   * Strogi kalendarski `YYYY-MM-DD` (`2026-02-31` bi u ::date cast-u dao 22008 → 500).
+   */
+  @IsOptional() @IsCalendarDate() zapisnikDatum?: string;
+}
+
+/**
+ * Ispravka datuma zapisnika POSLE zaključavanja (Zoranova primedba 014/26 —
+ * zaključan zapisnik sa pogrešnim datumom). Nije idempotency-nosilac: PATCH sa
+ * istim datumom je bezopasno ponovljiv (apsolutna vrednost, ne inkrement).
+ */
+export class SetZapisnikDatumDto {
+  @IsCalendarDate() zapisnikDatum!: string;
 }
 
 /** Otkazivanje (S2) — nosi samo idempotency ključ; RPC šalje `meeting_cancel`

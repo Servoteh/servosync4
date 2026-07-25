@@ -52,6 +52,7 @@ import {
   RsvpDto,
   AiSummaryDto,
   SetAiModelDto,
+  SetZapisnikDatumDto,
   TemaAdminRangDto,
   TemaDodeliDto,
   TemaHitnoDto,
@@ -583,6 +584,20 @@ export class SastanciController {
   @RequirePermission(PERMISSIONS.SASTANCI_MANAGE)
   resend(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string) {
     return this.sastanci.resendLocked(req.user.email, id);
+  }
+
+  /** Ispravi datum zapisnika i POSLE zaključavanja (zahtev 014/26). Isti krug kao
+   *  „Pošalji ponovo" (`SASTANCI_MANAGE`) — a sy15 DEFINER fn `sast_set_zapisnik_datum`
+   *  još jednom traži `current_user_is_management()` jer guard triger
+   *  `sast_check_not_locked` samo rukovodstvu pušta izmenu zaključanog reda. */
+  @Patch(":id/zapisnik-datum")
+  @RequirePermission(PERMISSIONS.SASTANCI_MANAGE)
+  setZapisnikDatum(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: SetZapisnikDatumDto,
+  ) {
+    return this.sastanci.setZapisnikDatum(req.user.email, id, dto);
   }
 
   @Post(":id/rsvp")

@@ -46,6 +46,7 @@ import type {
   ReorderRangDto,
   RsvpDto,
   SetAiModelDto,
+  SetZapisnikDatumDto,
   TemaAdminRangDto,
   TemaDodeliDto,
   TemaHitnoDto,
@@ -1092,7 +1093,16 @@ export class SastanciService {
     });
   }
 
-  /** Zaključaj (arhiva snapshot + status; PDF path PRE meeting_locked trigera — §2 p.8). */
+  /**
+   * Zaključaj (arhiva snapshot + status; PDF path PRE meeting_locked trigera — §2 p.8).
+   *
+   * 4. argument `zapisnikDatum` je datum ODRŽAVANJA koji nosi zapisnik (zahtev 014/26 +
+   * presuda vlasnika 25.07.2026). Ide U ISTOM RPC pozivu, a ne kroz naknadni UPDATE, jer
+   * sy15 triger `sast_notif_meeting_locked` (AFTER UPDATE OF status) payload mejla gradi
+   * iz `NEW.*` — zaseban naknadni upis bi zakasnio i mejl bi otišao sa starim datumom.
+   * Izostavljen (`null`) → RPC ostavlja kolonu kakva jeste; PDF/mejl padaju na
+   * `sastanci.datum`, tj. ponašanje identično stanju pre ovog paketa.
+   */
   lock(email: string, id: string, dto: LockSastanakDto) {
     return this.runIdem(
       email,
@@ -1100,11 +1110,37 @@ export class SastanciService {
       "sastanci.lock",
       async (tx) => {
         const rows = await tx.$queryRaw<{ result: unknown }[]>(
-          Prisma.sql`SELECT sast_zakljucaj_sastanak(${id}::uuid, NULL, ${dto.pdfStoragePath ?? null}) AS result`,
+          Prisma.sql`SELECT sast_zakljucaj_sastanak(${id}::uuid, NULL, ${dto.pdfStoragePath ?? null}, ${dto.zapisnikDatum ?? null}::date) AS result`,
         );
         return rows[0]?.result ?? null;
       },
     );
+  }
+
+  /**
+   * Ispravi datum zapisnika i na ZAKLJUČANOM sastanku (zahtev 014/26 — Zoranova
+   * primedba: zaključan zapisnik sa pogrešnim datumom, koji se do sada nije mogao
+   * ispraviti bez „Otvori ponovo").
+   *
+   * Ide kroz sy15 DEFINER RPC `sast_set_zapisnik_datum`, a NE kroz `tx.sastanak.update`:
+   * guard triger `sast_check_not_locked` (BEFORE UPDATE) obara direktan UPDATE zaključanog
+   * reda sa 23514 (→ 422 i nejasnom porukom) svima osim rukovodstvu. RPC istu proveru radi
+   * eksplicitno (`current_user_is_management()`, isti krug kao „Pošalji ponovo") i vraća
+   * 42501 → 403. Ruta je uz to gejtovana `SASTANCI_MANAGE` permisijom.
+   *
+   * RPC ne dira `status`, pa `sast_notif_meeting_locked` ne okida — ispravka datuma NE
+   * šalje mejlove. Ponovno slanje ostaje svestan klik („Pošalji ponovo"), koji već čita
+   * novi datum. 404 razrešavamo pre RPC-a (rethrowSy15 P0002 mapira na 422).
+   */
+  setZapisnikDatum(email: string, id: string, dto: SetZapisnikDatumDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const exists = (await tx.sastanak.count({ where: { id } })) > 0;
+      if (!exists) throw new NotFoundException(`Sastanak ${id} ne postoji`);
+      const rows = await tx.$queryRaw<{ result: unknown }[]>(
+        Prisma.sql`SELECT sast_set_zapisnik_datum(${id}::uuid, ${dto.zapisnikDatum}::date) AS result`,
+      );
+      return { data: rows[0]?.result ?? null };
+    });
   }
 
   /**

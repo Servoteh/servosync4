@@ -224,7 +224,11 @@ function buildZapisnikHtml(snapshot: Dict | null | undefined): string {
 <body>
   <h1>${esc(pstr(s, 'naslov'))}</h1>
   <div class="meta">
-    <div><strong>Datum:</strong> ${fmtDmy(pick(s, 'datum'))}${vreme ? ' u ' + esc(vreme) : ''}</div>
+    <div><strong>Datum:</strong> ${fmtDmy(
+      // Zapisnik nosi datum ODRŽAVANJA (zahtev 014/26): `zapisnikDatum` (živi detalj)
+      // ili `zapisnik_datum` (arhiva snapshot). Prazno → zakazani termin `datum`.
+      pick(s, 'zapisnikDatum', 'zapisnik_datum') ?? pick(s, 'datum'),
+    )}${vreme ? ' u ' + esc(vreme) : ''}</div>
     ${metaMesto}
     <div><strong>Vodio sastanak:</strong> ${esc(
       pstr(s, 'vodioLabel', 'vodio_label') || pstr(s, 'vodioEmail', 'vodio_email') || '—',

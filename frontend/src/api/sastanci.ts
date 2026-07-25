@@ -72,6 +72,9 @@ export interface Sastanak {
   status: 'planiran' | 'u_toku' | 'zavrsen' | 'zakljucan' | 'otkazan' | string;
   zakljucanAt: string | null;
   zakljucanByEmail: string | null;
+  /** Datum koji nosi ZAPISNIK (PDF, mejl, naziv priloga) — zahtev 014/26. NULL =
+   *  nije poseban → koristi se `datum`. Čitati kroz `zapisnikDatumOf()`. */
+  zapisnikDatum: string | null;
   napomena: string | null;
   createdAt: string;
   createdByEmail: string | null;
@@ -741,10 +744,29 @@ export const useUpdateSastanak = () =>
 export const useDeleteSastanak = () =>
   useSastanciMutation<{ id: string }>((v) => del(`/${v.id}`));
 
-/** Zaključaj (RPC sast_zakljucaj_sastanak; pdfStoragePath upisan PRE meeting_locked). */
+/** Zaključaj (RPC sast_zakljucaj_sastanak; pdfStoragePath upisan PRE meeting_locked).
+ *  `zapisnikDatum` ('YYYY-MM-DD') je datum održavanja koji nosi zapisnik — ulazi u ISTI
+ *  RPC poziv jer sy15 triger iz njega gradi payload mejla (zahtev 014/26). */
 export const useLockSastanak = () =>
-  useSastanciMutation<{ id: string; clientEventId: string; pdfStoragePath?: string }>((v) =>
-    post(`/${v.id}/lock`, { clientEventId: v.clientEventId, pdfStoragePath: v.pdfStoragePath }),
+  useSastanciMutation<{
+    id: string;
+    clientEventId: string;
+    pdfStoragePath?: string;
+    zapisnikDatum?: string;
+  }>((v) =>
+    post(`/${v.id}/lock`, {
+      clientEventId: v.clientEventId,
+      pdfStoragePath: v.pdfStoragePath,
+      zapisnikDatum: v.zapisnikDatum,
+    }),
+  );
+
+/** Ispravi datum zapisnika i POSLE zaključavanja (RPC sast_set_zapisnik_datum;
+ *  `SASTANCI_MANAGE` + rukovodstvo u sy15). Ne šalje mejlove — PDF se re-generiše
+ *  posebno, „Pošalji ponovo" ostaje svestan klik. */
+export const useSetZapisnikDatum = () =>
+  useSastanciMutation<{ id: string; zapisnikDatum: string }>((v) =>
+    patch(`/${v.id}/zapisnik-datum`, { zapisnikDatum: v.zapisnikDatum }),
   );
 
 /**

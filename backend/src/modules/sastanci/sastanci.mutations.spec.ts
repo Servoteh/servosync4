@@ -10,6 +10,8 @@ import type { Sy15Service } from "../../common/sy15/sy15.service";
 import {
   ArhivaPdfDto,
   CreateSastanakDto,
+  LockSastanakDto,
+  SetZapisnikDatumDto,
   UpdateSastanakDto,
 } from "./dto/sastanci-mutation.dto";
 
@@ -33,6 +35,11 @@ const argData = (m: jest.Mock): Rec => {
 const sqlText = (m: jest.Mock): string => {
   const calls = m.mock.calls as unknown as { strings: string[] }[][];
   return calls[0][0].strings.join("?");
+};
+/** Vezane vrednosti prvog $queryRaw poziva (Prisma.sql `values`, redom). */
+const sqlValues = (m: jest.Mock): unknown[] => {
+  const calls = m.mock.calls as unknown as { values: unknown[] }[][];
+  return calls[0][0].values;
 };
 /** N-ti argument prvog poziva mocka (izbegava no-unsafe-member-access). */
 const callArg = (m: jest.Mock, arg = 0): unknown => {
@@ -833,5 +840,151 @@ describe("Sastanci DTO — poziv učesnika (005/26)", () => {
       }),
     );
     expect(errors.some((e) => e.property === "ucesnici")).toBe(false);
+  });
+});
+
+/**
+ * Zahtev 014/26 + presuda vlasnika 25.07.2026 — „zapisnik nosi datum održavanja".
+ *
+ * Ovde se pinuje BE polovina ugovora: datum putuje kroz lock RPC (4. argument), a
+ * ispravka posle zaključavanja ide isključivo kroz DEFINER RPC `sast_set_zapisnik_datum`
+ * (direktan UPDATE zaključanog reda obara guard triger `sast_check_not_locked`).
+ *
+ * ⚠️ DB polovina — `COALESCE(zapisnik_datum, datum)` fallback u PDF/mejl payload-u —
+ * NE može u jest (nema žive baze u ovim testovima); nju dokazuje SQL smoke pušten na
+ * živoj sy15 pre primene (T3: prosleđen datum pobeđuje; T8: bez datuma payload nosi
+ * `sastanci.datum`). Smoke i DDL su u `backend/docs/design/SQL_sastanci_zapisnik_datum_2026-07-25.sql`.
+ */
+describe("SastanciService — datum zapisnika (zahtev 014/26)", () => {
+  const DATUM = "2026-07-25";
+
+  it("lock: prosleđen zapisnikDatum ide kao 4. argument sast_zakljucaj_sastanak", async () => {
+    const { svc, tx } = makeSvc();
+    await svc.lock("u@servoteh.com", ID, {
+      clientEventId: CID,
+      pdfStoragePath: `${ID}/2026_zapisnik.pdf`,
+      zapisnikDatum: DATUM,
+    });
+    expect(sqlText(tx.$queryRaw)).toContain("sast_zakljucaj_sastanak");
+    // Redosled vezanih vrednosti = (id, pdfStoragePath, zapisnikDatum); NULL (p_pdf_url)
+    // je literal u SQL-u, ne parametar.
+    expect(sqlValues(tx.$queryRaw)).toEqual([
+      ID,
+      `${ID}/2026_zapisnik.pdf`,
+      DATUM,
+    ]);
+  });
+
+  it("lock: BEZ zapisnikDatum → 4. argument je null (zatečeno ponašanje netaknuto)", async () => {
+    const { svc, sy15, tx } = makeSvc();
+    await svc.lock("u@servoteh.com", ID, {
+      clientEventId: CID,
+      pdfStoragePath: `${ID}/2026_zapisnik.pdf`,
+    });
+    // Idempotency ugovor lock-a se ne menja dodavanjem datuma.
+    expect(sy15.runIdempotentRls).toHaveBeenCalledWith(
+      "u@servoteh.com",
+      CID,
+      "sastanci.lock",
+      expect.any(Function),
+    );
+    expect(sqlValues(tx.$queryRaw)).toEqual([
+      ID,
+      `${ID}/2026_zapisnik.pdf`,
+      null,
+    ]);
+  });
+
+  it("setZapisnikDatum: ide kroz withUserRls na DEFINER RPC (NE na tx.sastanak.update)", async () => {
+    const { svc, sy15, tx } = makeSvc();
+    const out = await svc.setZapisnikDatum("u@servoteh.com", ID, {
+      zapisnikDatum: DATUM,
+    });
+    expect(sy15.withUserRls).toHaveBeenCalled();
+    expect(sy15.withUser).not.toHaveBeenCalled();
+    expect(sqlText(tx.$queryRaw)).toContain("sast_set_zapisnik_datum");
+    expect(sqlValues(tx.$queryRaw)).toEqual([ID, DATUM]);
+    // Direktan UPDATE bi na zaključanom sastanku pao na sast_check_not_locked (23514).
+    expect(tx.sastanak.updateMany).not.toHaveBeenCalled();
+    // Servis vraća `rows[0].result` — sirov jsonb RPC-a, bez premotavanja.
+    expect(out.data).toBe("ok");
+  });
+
+  it("setZapisnikDatum: jsonb odgovor RPC-a prolazi netaknut do klijenta", async () => {
+    const { svc, tx } = makeSvc();
+    tx.$queryRaw.mockResolvedValueOnce([
+      { result: { ok: true, sastanak_id: ID, zapisnik_datum: DATUM } },
+    ]);
+    const out = await svc.setZapisnikDatum("u@servoteh.com", ID, {
+      zapisnikDatum: DATUM,
+    });
+    expect(out.data).toEqual({
+      ok: true,
+      sastanak_id: ID,
+      zapisnik_datum: DATUM,
+    });
+  });
+
+  it("setZapisnikDatum: nepostojeći sastanak → 404 BEZ odlaska na RPC", async () => {
+    const { svc, tx } = makeSvc();
+    tx.sastanak.count.mockResolvedValueOnce(0);
+    await expect(
+      svc.setZapisnikDatum("u@servoteh.com", ID, { zapisnikDatum: DATUM }),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(tx.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  it("setZapisnikDatum: 42501 iz RPC-a (nije rukovodstvo) → 403", async () => {
+    const { svc, tx } = makeSvc();
+    tx.$queryRaw.mockRejectedValueOnce(
+      Object.assign(new Error("raw query failed"), {
+        meta: { code: "42501", message: "Nemate pravo da menjate datum zapisnika." },
+      }),
+    );
+    await expect(
+      svc.setZapisnikDatum("u@servoteh.com", ID, { zapisnikDatum: DATUM }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it("LockSastanakDto: validan YYYY-MM-DD prolazi", async () => {
+    const errors = await validate(
+      plainToInstance(LockSastanakDto, {
+        clientEventId: CID,
+        zapisnikDatum: DATUM,
+      }),
+    );
+    expect(errors.some((e) => e.property === "zapisnikDatum")).toBe(false);
+  });
+
+  it("LockSastanakDto: izostavljen zapisnikDatum prolazi (@IsOptional)", async () => {
+    const errors = await validate(
+      plainToInstance(LockSastanakDto, { clientEventId: CID }),
+    );
+    expect(errors).toHaveLength(0);
+  });
+
+  it.each(["25.07.2026.", "2026-07", "2026-W30", "2026-02-31", ""])(
+    "LockSastanakDto: nevalidan datum %p pada na validaciji (→ 400)",
+    async (bad) => {
+      const errors = await validate(
+        plainToInstance(LockSastanakDto, {
+          clientEventId: CID,
+          zapisnikDatum: bad,
+        }),
+      );
+      expect(errors.some((e) => e.property === "zapisnikDatum")).toBe(true);
+    },
+  );
+
+  it("SetZapisnikDatumDto: datum je OBAVEZAN (prazan body pada → 400)", async () => {
+    const errors = await validate(plainToInstance(SetZapisnikDatumDto, {}));
+    expect(errors.some((e) => e.property === "zapisnikDatum")).toBe(true);
+  });
+
+  it("SetZapisnikDatumDto: kalendarski nepostojeći 2026-02-31 pada → 400", async () => {
+    const errors = await validate(
+      plainToInstance(SetZapisnikDatumDto, { zapisnikDatum: "2026-02-31" }),
+    );
+    expect(errors.some((e) => e.property === "zapisnikDatum")).toBe(true);
   });
 });

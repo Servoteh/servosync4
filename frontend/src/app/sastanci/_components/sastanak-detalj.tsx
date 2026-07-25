@@ -41,7 +41,9 @@ import { DetaljZapisnik } from './detalj-zapisnik';
 import { DetaljAkcije } from './detalj-akcije';
 import { DetaljPriprema } from './detalj-priprema';
 import { DetaljOdluke } from './detalj-odluke';
-import { DetaljArhiva, buildPdfInput } from './detalj-arhiva';
+import { DetaljArhiva } from './detalj-arhiva';
+import { buildPdfInput, zapisnikDatumOf } from './zapisnik-pdf';
+import { ZapisnikDatumModal } from './zapisnik-datum-modal';
 
 type DetailTab = 'zapisnik' | 'akcije' | 'priprema' | 'odluke' | 'arhiva';
 
@@ -58,6 +60,8 @@ export function SastanakDetalj({ id, onBack }: { id: string; onBack: () => void 
   const [editOpen, setEditOpen] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  // Potvrda zaključavanja = modal sa izborom datuma zapisnika (zahtev 014/26).
+  const [lockOpen, setLockOpen] = useState(false);
   // Ponuda „Pošalji ponovo" posle promene termina — NIKAD auto-slanje (odluka
   // vlasnika): pozivnica sa novim .ics ostaje svestan klik. Traka je neblokirajuća
   // i sama nestaje tek na akciju ili „Ne sada".
@@ -130,17 +134,15 @@ export function SastanakDetalj({ id, onBack }: { id: string; onBack: () => void 
     }
   }
 
-  async function zakljucaj() {
+  /**
+   * Zaključavanje — zahtev 014/26 t.1 + presuda vlasnika 25.07.2026.
+   * Datum koji nosi PDF zapisnik, mejl i naziv priloga („Zapisnik-<datum>.pdf") bira
+   * se u `ZapisnikDatumModal`: podrazumevano DANAS (dan zaključavanja), uz prečicu na
+   * zakazani termin kad se razlikuju. Raniji goli `confirm` je samo prikazivao
+   * `sast.datum` i upućivao na „Uredi" — ovde se datum stvarno bira.
+   */
+  async function zakljucaj(zapisnikDatum: string) {
     if (!sast) return;
-    // Zahtev 014/26 t.1 — datum sastanka je datum koji nosi PDF zapisnik i mejl
-    // učesnicima (i naslov priloga „Zapisnik-<datum>.pdf"). Prikaži ga u potvrdi da
-    // se zastareo/pogrešan termin uhvati PRE slanja (ispravlja se kroz „Uredi").
-    if (
-      !confirm(
-        `Zaključati sastanak sa datumom ${formatDatum(sast.datum)}? Taj datum nosi PDF zapisnik i mejl učesnicima — ako nije tačan, prvo ga ispravi kroz „Uredi".`,
-      )
-    )
-      return;
     setBusy('lock');
     try {
       // Zvanični (zaključani) PDF ne sme na potencijalno stale/failed hook
@@ -160,10 +162,18 @@ export function SastanakDetalj({ id, onBack }: { id: string; onBack: () => void 
             aktivnih: freshDd.aktivnih,
           }
         : null;
-      const blob = await generateSastanakPdf(buildPdfInput(sast, freshDiff, prioRes.data?.data));
+      // Izabrani datum ide i u PDF (override — kolona se upisuje tek u /lock) i u
+      // sam /lock, da ga sy15 triger uhvati u payload-u mejla iz ISTOG UPDATE-a.
+      const blob = await generateSastanakPdf(buildPdfInput(sast, freshDiff, prioRes.data?.data, zapisnikDatum));
       const cid = newClientEventId();
       const up = await uploadPdf.mutateAsync({ id: sast.id, blob, clientEventId: cid });
-      await lock.mutateAsync({ id: sast.id, clientEventId: cid, pdfStoragePath: up.data.storagePath });
+      await lock.mutateAsync({
+        id: sast.id,
+        clientEventId: cid,
+        pdfStoragePath: up.data.storagePath,
+        zapisnikDatum,
+      });
+      setLockOpen(false);
       await fullQ.refetch();
     } catch (e) {
       alert(e instanceof Error ? e.message : 'Zaključavanje nije uspelo.');
@@ -197,6 +207,12 @@ export function SastanakDetalj({ id, onBack }: { id: string; onBack: () => void 
               <p className="tnums text-xs text-ink-secondary">
                 {SASTANAK_TIP_LABEL[sast.tip] ?? sast.tip} · {formatDatum(sast.datum)} · {formatVreme(sast.vreme)}
                 {sast.mesto ? ` · ${sast.mesto}` : ''}
+                {/* Zapisnik ume da nosi drugi datum od zakazanog termina (zahtev 014/26);
+                    prikaži ga tu da PDF i zaglavlje nikad ne govore različito. */}
+                {sast.zapisnikDatum &&
+                String(sast.zapisnikDatum).slice(0, 10) !== String(sast.datum).slice(0, 10)
+                  ? ` · zapisnik: ${formatDatum(zapisnikDatumOf(sast))}`
+                  : ''}
               </p>
             </div>
             <SastanakStatusBadge status={sast.status} />
@@ -243,7 +259,7 @@ export function SastanakDetalj({ id, onBack }: { id: string; onBack: () => void 
               )}
               {sast.status === 'u_toku' && (
                 <Can permission={PERMISSIONS.SASTANCI_EDIT}>
-                  <Button loading={busy === 'lock'} onClick={() => void zakljucaj()}>
+                  <Button loading={busy === 'lock'} onClick={() => setLockOpen(true)}>
                     <Lock className="h-4 w-4" aria-hidden /> Zaključaj
                   </Button>
                 </Can>
@@ -350,6 +366,16 @@ export function SastanakDetalj({ id, onBack }: { id: string; onBack: () => void 
             if (changedTermin) setTerminChanged(true);
             void fullQ.refetch();
           }}
+        />
+      )}
+
+      {sast && lockOpen && (
+        <ZapisnikDatumModal
+          mode="lock"
+          datumSastanka={sast.datum}
+          busy={busy === 'lock'}
+          onPotvrdi={(d) => void zakljucaj(d)}
+          onClose={() => setLockOpen(false)}
         />
       )}
     </>

@@ -390,6 +390,8 @@ export interface PdfAktivnost {
 }
 export interface SastanakPdfInput {
   naslov: string;
+  /** Datum ODRŽAVANJA koji se štampa u zaglavlju („Datum") — zahtev 014/26 to je
+   *  `zapisnikDatum ?? datum`, a razrešava ga `buildPdfInput` (jedini punilac). */
   datum?: string | null;
   vreme?: string | null;
   mesto?: string | null;

@@ -274,6 +274,11 @@ model Sastanak {
   status String @default("planiran")
   zakljucanAt DateTime? @map("zakljucan_at") @db.Timestamptz(6)
   zakljucanByEmail String? @map("zakljucan_by_email")
+  /// Datum ODRŽAVANJA koji nosi zapisnik (PDF, mejl, naziv priloga). Podrazumevano ga
+  /// upisuje lock RPC (dan zaključavanja); rukovodstvo ga posle sme ispraviti kroz
+  /// `sast_set_zapisnik_datum`. NULL = koristi se `datum` (zakazani termin) — zato svi
+  /// zatečeni sastanci rade nepromenjeno. Zahtev 014/26 + presuda vlasnika 25.07.2026.
+  zapisnikDatum DateTime? @map("zapisnik_datum") @db.Date
   napomena String?
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   createdByEmail String? @map("created_by_email")
