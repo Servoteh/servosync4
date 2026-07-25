@@ -292,7 +292,8 @@ Format: **ID | ozbiljnost | naslov** → lokacija, problem + scenario štete, pr
 - Predlog: paket indeksa **CREATE INDEX CONCURRENTLY ručnom migracijom van Prisma transakcije** (žive tabele!); redosled po listi gore.
 - Rizik: nizak; kratko usporenje upisa tokom build-a.
 
-**DB-038 | VISOKO | `drawing_pdfs` = 2,1 GB od 2,4 GB baze (5.737 redova; PDF kao `bytea`)**
+**DB-038 | VISOKO → ODLUKA 25.07: ostaje u bazi UZ PRAG-ALARM | `drawing_pdfs` = 2,1 GB od 2,4 GB baze (5.737 redova; PDF kao `bytea`)**
+- **Odluka (Nenad, 25.07):** PDF-ovi ostaju u bazi — sve radi (liste ne vuku blob, restore testiran 1m38s, backup pokriva), a seoba dira vruće PDM tokove koje proizvodnja koristi dnevno. Umesto seobe uveden **prag u monitoringu** (`monitor-sy15.sh`): alarm kad tabela pređe **8 GB** ili noćni backup pređe **15 min** → tada se seoba u storage planira kao projekat.
 - Lokacija: schema:302–313 (`pdfBinary Bytes?`); prod: 2.102 MB, ~370 KB po redu (broj redova potvrđen count(*)-om pri restore testu 25.07; raniji „96" je bio zastareo pg_stat brojač).
 - Problem: binarni sadržaj u bazi naduvava svaki noćni pg_dump, RAM pri čitanju i buduće migracije/restore; sa rastom PDM-a (11,7k crteža, PDF postoji za 96) tabela ide na desetine GB. `cutover_stash.drawing_pdfs` (9 MB) je zaostatak.
 - Predlog: odluka — premestiti PDF-ove u storage (kao sy15 storage fajlovi) ili svesno ostaviti u bazi uz izuzeće iz čestih dump-ova (poseban dump raspored za tu tabelu) i garantovano `select` bez `pdf_binary` u listama (postoji, `work-orders.service.ts:398–408` ✓).
@@ -552,7 +553,7 @@ Sortirano po ozbiljnosti. Status se ažurira ručno pri sređivanju.
 | DB-008 | VISOKO | Integritet | `handover_draft_items.drawing_id` bez FK | ✅ Faza 2: FK dodat (1 orphan saniran uz snimak) |
 | DB-025 | VISOKO | Tipovi | Float cena u živom cenovniku (`price_list_entries.price/fee`) | ✅ Faza 3: konvertovano u Decimal(19,4) |
 | DB-037 | VISOKO | Performanse | 58 FK bez indeksa — vrući put proizvodnje (top lista) | ✅ indeksi ŽIVI na produ 25.07; migracija u main-u (#17) |
-| DB-038 | VISOKO | Performanse | `drawing_pdfs` = 87% baze (bytea PDF-ovi, 5.737 redova) | otvoreno |
+| DB-038 | VISOKO | Performanse | `drawing_pdfs` = 87% baze (bytea PDF-ovi, 5.737 redova) | ✅ odluka 25.07: ostaje u bazi + prag-alarm (8 GB / 15 min backup) u monitoringu |
 | DB-039 | VISOKO | Performanse | SEF liste vraćaju XML/PDF blobove bez projekcije/paginacije | ✅ u main-u (#17) |
 | DB-040 | VISOKO | Performanse | PDM import: N+1 petlje u jednoj transakciji | otvoreno |
 | DB-049 | VISOKO | Bezbednost | Plaintext legacy lozinke u prod bazi — sync ih puni | ✅ Faza 3: 2 mapiranja izbačena iz sync mape + sve 4 kolone ispražnjene na produ |
@@ -566,7 +567,7 @@ Sortirano po ozbiljnosti. Status se ažurira ručno pri sređivanju.
 | DB-074 | VISOKO | Održavanje | Backup: restore ✅, skripta ✅, off-site = noćni klon mašine (odluka 25.07) | ✅ sanirano (ZA PROVERU: sat klona posle 02:40) |
 | DB-075 | VISOKO | Održavanje | Untracked Batch B migracija + izmenjena šema u radnom stablu | ✅ rešeno 25.07 — Batch B komitovan i merge-ovan kao #16 (71992fa), deploy 🟢 |
 | DB-080 | VISOKO | Integritet | Orphan redovi krše FK (replica sync): 89× mrp_demand_items + 1× handover_drafts | ✅ sanirano 25.07 (snimci u ~/backups/sanacije) |
-| DB-081 | VISOKO | Integritet | `items.catalog_number` bez UNIQUE + 1.980 duplikat-grupa u podacima (zahtev 25.07) | ⏳ watchdog ŽIV u monitoringu (baseline 2.028 CI-grupa, ratchet); UNIQUE (case-insensitive, odluka 25.07) čim BigBit lista padne na 0 |
+| DB-081 | VISOKO | Integritet | `items.catalog_number` bez UNIQUE + 1.980 duplikat-grupa u podacima (zahtev 25.07) | ⏳ watchdog ŽIV (baseline 2.028, ratchet) + **radni dokument za operatera izrađen** (`KATBROJ_ciscenje_radni_dokument_2026-07-25.csv`, 4.298 redova: 1.170 „A — isti naziv, spoji" / 3.128 „B — presudi"); UNIQUE (case-insensitive) čim lista padne na 0 |
 | DB-009 | SREDNJE | Integritet | CHECK paket: količine/procenti/iznosi/intervali | ✅ Faza 2: 11 CHECK constrainta (tax_rates preskočen — BigBit keš) |
 | DB-010 | SREDNJE | Integritet | „Magic zero" umesto NULL (sistemski obrazac) | otvoreno |
 | DB-011 | SREDNJE | Integritet | `invoices` unique bez company_id (multi-firma) | ✅ Faza 2: uq_invoices_company_type_number |
@@ -589,11 +590,11 @@ Sortirano po ozbiljnosti. Status se ažurira ručno pri sređivanju.
 | DB-042 | SREDNJE | Performanse | Prisma distinct in-memory (PDM lookups) | otvoreno |
 | DB-043 | SREDNJE | Performanse | Retention ne postoji (audit_log, notifikacije, SEF blobovi…) | ✅ Faza 3: noćni job 03:30 (audit_log 24 mes., pročitane notif. 90 d, job-runovi 60 d — odluke 25.07); SEF/sync logovi namerno izuzeti |
 | DB-044 | SREDNJE | Performanse | Numeracija string-prefiks = pun skan po dokumentu | otvoreno |
-| DB-051 | SREDNJE | Bezbednost | App radi sa superuser privilegijama | otvoreno |
+| DB-051 | SREDNJE | Bezbednost | App radi sa superuser privilegijama | ✅ Faza 4a: `servosync_app` rola (DML + samo `session_replication_role`); DDL ostaje vlasniku, migracije kroz `MIGRATE_DATABASE_URL`; skripta `backend/scripts/db-app-role.sql` |
 | DB-052 | SREDNJE | Bezbednost | SEF API ključ plaintext u `companies` (mirror) | otvoreno |
 | DB-053 | SREDNJE | Bezbednost | sy15 BYPASSRLS — disciplina bez mehaničke brave | otvoreno |
-| DB-054 | SREDNJE | Bezbednost | `assessment_raters.token` izlazi kroz API — ZA PROVERU | otvoreno |
-| DB-055 | SREDNJE | Bezbednost | `ai_chat_sql` LLM SQL na sy15 — ZA PROVERU | otvoreno |
+| DB-054 | SREDNJE | Bezbednost | `assessment_raters.token` izlazi kroz API | ✅ Faza 4a: safe-select bez `token` na obe rute (FE koristi `invitedAt`) |
+| DB-055 | NISKO (razrešeno) | Bezbednost | `ai_chat_sql` LLM SQL na sy15 | ✅ provereno 25.07 — funkcija je tvrdo ograničena: HR/admin gate, samo `SELECT`/`WITH`, jedan iskaz, bez komentara, denylist (uklj. `copy`/`dblink`/`pg_read_file`), `statement_timeout` 4s, `LIMIT 200`, izvršava se pod RLS-om. NIJE rizik. |
 | DB-056 | SREDNJE | Bezbednost | Prod tabele van šeme (2× pwhash backup, hdi snapshot, cutover_stash) | ✅ obrisano 25.07 uz dump u ~/backups/sanacije (odluka Nenada) |
 | DB-064 | SREDNJE | Logika | GL numeracija: string MAX → blokada posle 9999 | ✅ u main-u (#17) |
 | DB-065 | SREDNJE | Logika | Carry-over bez CAS → dupli račun (IFR vs IFGP) | ✅ u main-u (#17) |
@@ -666,6 +667,15 @@ DB-028 (normalizacija status case + sweep upita) · DB-059 (soft-delete čitaoci
 
 **Faza 4 — arhitektonske odluke (uz Negovana/Nesu, ne raditi unapred):**
 DB-050 (aktivacija RLS-a) · DB-051 (ne-superuser rola + sync privilegija) · DB-038 (strategija za drawing_pdfs) · DB-030 (konsolidacija timestamp režima — rewrite velikih tabela) · DB-010, DB-026 (magic zero i Float konverzije — tek uz/posle BigBit cutover-a) · DB-018, DB-055 i ostale ZA PROVERU stavke.
+
+*Ishod Faze 4 (odluke 25.07):*
+| Stavka | Odluka | Obrazloženje |
+|---|---|---|
+| DB-051 app rola | **URAĐENO** (Faza 4a) | Najveća dobit za najmanji trud; test na dev-u pokazao: DML/sekvence/`session_replication_role` rade, a `CREATE`/`DROP`/`COPY FROM PROGRAM`/eskalacija u superuser/`pg_read_file` — svi odbijeni |
+| DB-050 RLS | **ODLOŽENO** do posle BigBit cutover-a | Najveći zahvat (GUC identitet po zahtevu + politike na ~170 tabela); rizik tihih grešaka u finansijama; glavni vektor već sužen app rolom; formalno traži potvrdu Negovana/Nese (BACKEND_RULES §11) |
+| DB-030 TZ konsolidacija | **ODLOŽENO** do gašenja sync-a | Naive kolone pune DVA izvora različite semantike (Prisma=UTC, sync=beogradsko lokalno) — slepa konverzija bi bila nerazmrsiva; `businessYear` (Faza 3) je zatvorio praktičnu posledicu |
+| DB-038 PDF-ovi | **ostaju + prag-alarm** | v. gore |
+| DB-081 katbroj | **radni dokument predat** | Čišćenje je poslovni posao u BigBit-u; 3.0 nema nijednu referencu na duplikate (4.0 tabele prazne) pa prevezivanja u 3.0 nema |
 
 ---
 
