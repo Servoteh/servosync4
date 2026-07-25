@@ -146,7 +146,12 @@ jobs:
           cd "$HOME/servosync"
           docker compose build backend
           # Apply any new migrations (idempotent — no-op when none pending).
-          docker compose run --rm backend npx prisma migrate deploy
+          # DDL ide VLASNIČKIM nalogom: runtime DATABASE_URL je od 25.07 obična
+          # app rola bez CREATE prava (DB audit DB-051), pa migracije koriste
+          # MIGRATE_DATABASE_URL iz backend.env. Fallback na DATABASE_URL čuva
+          # kompatibilnost sa okruženjima gde razdvajanje još nije uvedeno.
+          docker compose run --rm backend \
+            sh -lc 'DATABASE_URL="${MIGRATE_DATABASE_URL:-$DATABASE_URL}" npx prisma migrate deploy'
           docker compose up -d backend
 
       # Health check MORA da padne glasno na defektan deploy (incident 21.07.2026:

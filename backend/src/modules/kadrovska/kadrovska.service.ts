@@ -33,6 +33,22 @@ import type {
 } from "./dto/kadrovska-query.dto";
 
 /**
+ * Bezbedan izbor kolona za 360° ocenjivače (DB audit DB-054): SVE osim `token`.
+ * Token je magic-link za anonimno ocenjivanje — kroz API bi omogućio predaju
+ * ocene u tuđe ime / de-anonimizaciju. FE ✉ marker koristi `invitedAt`.
+ */
+const RATER_SAFE_SELECT = {
+  id: true,
+  assessmentId: true,
+  raterKind: true,
+  raterEmployeeId: true,
+  raterEmail: true,
+  status: true,
+  invitedAt: true,
+  submittedAt: true,
+} as const;
+
+/**
  * Kadrovska (HR) — 3.0 TALAS G, R1 read sloj (MODULE_SPEC_kadrovska_30.md §3).
  * Podaci žive u sy15 (1.0) bazi (doktrina §A.1); ovaj servis SAMO ČITA:
  *  - PII-masku i zarade kroz kanonske view-ove (`v_employees_safe`, `v_vacation_balance`,
@@ -1472,8 +1488,12 @@ export class KadrovskaService {
    *  identitete (rater_email/rater_employee_id) i invited_at za ✉ marker; RLS presuđuje. */
   async assessmentRaters(email: string, assessmentId: string) {
     return this.withUserMapped(email, async (tx) => ({
+      // Bez `token` (DB-054): magic-link token 360° pozivnice ne sme kroz API —
+      // primalac liste bi mogao da preda ocenu u ime drugog ocenjivača. FE koristi
+      // `invitedAt` za ✉ marker. Isti obrazac kao sastanci rsvpToken.
       data: await tx.assessmentRater.findMany({
         where: { assessmentId },
+        select: RATER_SAFE_SELECT,
         orderBy: [{ raterKind: "asc" }],
       }),
     }));
@@ -1505,6 +1525,7 @@ export class KadrovskaService {
         assessmentIds.length
           ? tx.assessmentRater.findMany({
               where: { assessmentId: { in: assessmentIds } },
+              select: RATER_SAFE_SELECT, // bez token-a (DB-054)
               orderBy: [{ raterKind: "asc" }],
             })
           : Promise.resolve([]),

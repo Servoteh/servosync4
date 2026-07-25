@@ -76,6 +76,19 @@ if [ -n "${KB_CUR:-}" ]; then
   [ "$KB_CUR" -lt "$KB_BASE" ] && echo "$KB_CUR" > "$KB_BASE_FILE"
 fi
 
+# 8) drawing_pdfs prag (DB audit DB-038) — PDF-ovi u bytea drže ~87% baze.
+# ODLUKA 25.07: ostaju u bazi (radi, backup pokriva, restore testiran) UZ PRAG:
+# preko 8 GB tabele ILI preko 15 min noćnog backupa → seoba u storage se PLANIRA.
+PDFSZ=$(psq2 "select pg_total_relation_size('drawing_pdfs')/1024/1024/1024")
+[ -n "${PDFSZ:-}" ] && [ "$PDFSZ" -ge 8 ] && add "drawing_pdfs: ${PDFSZ} GB (prag 8 GB) — vreme za odluku o seobi PDF-ova u storage (DB-038)"
+# Trajanje noćnog backupa iz loga (poslednji OK red: "[backup] OK HH:MM:SS — ...").
+BSTART=$(grep '^\[backup\] start' "$BASE/backup.log" 2>/dev/null | tail -1 | awk '{print $4}')
+BEND=$(grep '^\[backup\] OK' "$BASE/backup.log" 2>/dev/null | tail -1 | awk '{print $3}')
+if [ -n "${BSTART:-}" ] && [ -n "${BEND:-}" ]; then
+  BSEC=$(( $(date -d "$BEND" +%s 2>/dev/null || echo 0) - $(date -d "$BSTART" +%s 2>/dev/null || echo 0) ))
+  [ "$BSEC" -gt 900 ] && add "backup traje $((BSEC/60)) min (prag 15) — najverovatnije drawing_pdfs; razmotri seobu PDF-ova (DB-038)"
+fi
+
 [ -z "$PROBLEMS" ] && exit 0
 echo "[monitor] $(date +'%F %T') problemi:"; printf '%s' "$PROBLEMS"
 [ "${DRY:-0}" = "1" ] && exit 0
