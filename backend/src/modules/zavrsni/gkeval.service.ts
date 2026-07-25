@@ -47,6 +47,18 @@ const D = Prisma.Decimal;
 /** Vrsta naloga za početno stanje (doc 37 §B: „Otvaranje nove godine = nalog vrste PS"). */
 const PS_ORDER_TYPE_PREFIX = "PS";
 
+/**
+ * Vrsta ZAKLJUČNOG naloga (`year-open.service.ts` §closeIncomeStatement). Taj nalog
+ * knjiži kontra-stavku NAZAD NA ISTO konto klase 5/6, datiran 31.12. i proknjižen —
+ * pa bi bez ovog izuzimanja svaka maska bilansa uspeha davala EGZAKTNU NULU za svaku
+ * godinu za koju je urađen prenos u novu godinu. To NIJE poslovni promet nego tehničko
+ * zatvaranje, zato ispada iz D/P u OBA obrasca: u bilansu stanja ZAK dodiruje samo
+ * konto rezultata (klasa 3), a taj iznos u BS ionako dolazi kroz PS nalog naredne
+ * godine. Donja granica datuma problem NE rešava — ZAK je datiran unutar same godine.
+ * (Studija BigBita: `docs/migration/ZR_ISPRAVKE_MOTORA.md` §2.)
+ */
+const CLOSING_ORDER_TYPE = "ZAK";
+
 /** Greška parsiranja/evaluacije bilansne formule. */
 export class GkEvalError extends Error {
   readonly code = "ZR_FORMULA_INVALID";
@@ -381,10 +393,13 @@ export class GkEvalService {
     asOf: Date,
   ): Promise<Prisma.Decimal> {
     const column = kind === "D" || kind === "PSD" ? Prisma.sql`le.debit` : Prisma.sql`le.credit`;
-    const psFilter =
-      kind === "PSD" || kind === "PSP"
-        ? Prisma.sql`AND je.order_type_code LIKE ${PS_ORDER_TYPE_PREFIX + "%"}`
-        : Prisma.empty;
+    const isOpeningBalance = kind === "PSD" || kind === "PSP";
+    const psFilter = isOpeningBalance
+      ? Prisma.sql`AND je.order_type_code LIKE ${PS_ORDER_TYPE_PREFIX + "%"}`
+      : // D/P = poslovni promet; zaključni nalog (ZAK) se izuzima, inače bilans
+        // uspeha izlazi u nulama za svaku prenetu godinu (v. CLOSING_ORDER_TYPE).
+        // `IS NULL` grana zadržava stare naloge bez upisane vrste.
+        Prisma.sql`AND (je.order_type_code IS NULL OR je.order_type_code <> ${CLOSING_ORDER_TYPE})`;
 
     const rows = await this.prisma.$queryRaw<Array<{ total: Prisma.Decimal }>>(Prisma.sql`
       SELECT COALESCE(SUM(${column}), 0)::numeric(19,4) AS total

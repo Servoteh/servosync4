@@ -62,6 +62,13 @@ export interface StatementResult {
   status: string;
   seeded: boolean; // false = pao na sirovi bruto bilans (nema AOP definicija)
   note?: string;
+  /**
+   * Pozicije čija je SIROVA vrednost bila negativna pa je odsečena na nulu (clamp).
+   * Obrazac ne poznaje negativan iznos, ali negativan rezultat je istovremeno i signal
+   * da je u formuli možda okrenut smer (duguje/potražuje) — zato se odsečene vrednosti
+   * PRIJAVLJUJU, a ne gutaju. Prazno = nijedna formula nije dala negativan rezultat.
+   */
+  clamped?: Array<{ aop: string; rawAmount: string }>;
   lines: StatementLineResult[];
 }
 
@@ -220,6 +227,12 @@ export class BalanceSheetService {
     }> = [];
 
     let note: string | undefined;
+    /**
+     * AOP → SIROVA negativna vrednost pre odsecanja na nulu. Bez ovog traga se greška
+     * u smeru (D umesto P) ne razlikuje od pozicije koja je legitimno nula, a takvih
+     * je u predatom obrascu za 2023. preko 60.
+     */
+    const clampedAops = new Map<string, Prisma.Decimal>();
 
     if (seeded) {
       // Kešuj izračunate AOP vrednosti radi A/AB/AC<aop> referenci (isti obrazac).
@@ -264,7 +277,19 @@ export class BalanceSheetService {
         for (const def of formulaDefs) {
           // evalFormula rešava D/P/PSD/PSP iz baze (isto u svakom prolazu) i
           // A/AB/AC<aop> iz `aopValues` (menja se između prolaza dok ne konvergira).
-          const next = await this.gkEval.evalFormula(def.formula, asOf, resolveAop);
+          const raw = await this.gkEval.evalFormula(def.formula, asOf, resolveAop);
+          // CLAMP ≥ 0 — obrazac ne poznaje negativan iznos: znak nose PAROVI pozicija
+          // („dobitak" / „gubitak"), a sam iznos je uvek nenegativan. BigBit klampuje
+          // SVAKI upis (svih 8 ZR_Upisi* upita ima IIf(izraz > 0, izraz, 0)).
+          // MORA biti UNUTAR iteracije: A<aop> reference čitaju VEĆ klampovanu vrednost,
+          // pa clamp tek na kraju daje drugačiji — pogrešan — rezultat (neto dobitak
+          // izlazi 70.794 umesto 34.636). Vidi ZR_ISPRAVKE_MOTORA.md §1.
+          const next = raw.isNegative() ? new D(0) : raw;
+          if (raw.isNegative()) {
+            clampedAops.set(def.aop, raw);
+          } else {
+            clampedAops.delete(def.aop);
+          }
           const prev = aopValues.get(def.aop);
           if (prev === undefined || !prev.equals(next)) {
             changed = true;
@@ -372,6 +397,10 @@ export class BalanceSheetService {
       status: statement.status,
       seeded,
       note,
+      clamped: [...clampedAops.entries()].map(([aop, raw]) => ({
+        aop,
+        rawAmount: raw.toFixed(4),
+      })),
       lines: statement.lines.map((l) => ({
         aop: l.aop,
         label: l.label,
