@@ -160,17 +160,13 @@ export function AktivnostTab() {
   const [expanded, setExpanded] = useState<number | null>(null);
   const resetPage = () => setPage(1);
 
-  // Izbor konkretne osobe ukida „Samo kontrolori": inače bi izbor radnika koji
-  // nema kontrolorski tip vratio prazno bez vidljivog razloga.
-  const controllersFilterActive = controllersOnly && !worker;
-
   const list = useProductionLog({
     page,
     q: q.trim() || undefined,
     workerId: worker?.id,
     entryKind: entryKind || undefined,
     qualityTypeId,
-    controllersOnly: controllersFilterActive,
+    controllersOnly,
     from: from || undefined,
     to: to ? `${to}T23:59:59` : undefined,
     withTotals: true,
@@ -305,12 +301,20 @@ export function AktivnostTab() {
                 setWorker(w);
                 resetPage();
               }}
+              // Picker nudi SAMO kontrolore dok je „Samo kontrolori" uključeno —
+              // ceo imenik se otvara tek kad se prekidač isključi (isti kriterijum
+              // kao filter liste, pa izbor ne može dati prazan rezultat).
               useSearch={(query) =>
-                useWorkers({ q: query || undefined, active: 'true', pageSize: 20 })
+                useWorkers({
+                  q: query || undefined,
+                  active: 'true',
+                  pageSize: 20,
+                  controllersOnly,
+                })
               }
               getKey={(w) => w.id}
               getLabel={(w) => w.fullName ?? w.username}
-              placeholder="Svi…"
+              placeholder={controllersOnly ? 'Svi kontrolori…' : 'Svi radnici…'}
             />
           </div>
         </div>
@@ -356,21 +360,19 @@ export function AktivnostTab() {
         </label>
         <label
           className="flex items-center gap-2 pb-1.5 text-sm text-ink-secondary"
-          title={
-            worker
-              ? 'Izabran je konkretan izvršilac — ograničenje na kontrolore se ne primenjuje.'
-              : 'Tip radnika sa kontrolorskim ovlašćenjima (legacy „Dodatna ovlašćenja“). Isključi ako neko iz kontrole nedostaje.'
-          }
+          title="Vrsta posla sa kontrolorskim ovlašćenjima (legacy „Dodatna ovlašćenja“). Isključi ako neko iz kontrole nedostaje — tada i lista i picker pokazuju sve radnike."
         >
           <input
             type="checkbox"
-            checked={controllersFilterActive}
-            disabled={!!worker}
+            checked={controllersOnly}
             onChange={(e) => {
               setControllersOnly(e.target.checked);
+              // Izabrani kontrolor ne mora postojati u širem/užem skupu — očisti
+              // izbor da picker i lista ostanu saglasni.
+              setWorker(null);
               resetPage();
             }}
-            className="h-4 w-4 rounded border-line disabled:opacity-40"
+            className="h-4 w-4 rounded border-line"
           />
           Samo kontrolori
         </label>
