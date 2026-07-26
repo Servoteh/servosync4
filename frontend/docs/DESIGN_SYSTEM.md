@@ -225,6 +225,9 @@
 | Montaža — neusaglašenost (ozbiljnost) | Mala (`MALA`) | info plava | `--status-info` |
 | Montaža — neusaglašenost (ozbiljnost) | Srednja (`SREDNJA`) | narandžasta | `--status-warn` |
 | Montaža — neusaglašenost (ozbiljnost) | Visoka (`VISOKA`) | crvena | `--status-danger` |
+| Kvalitet — škart/dorada | Prijavljen (`PRIJAVLJEN`, kiosk signal, čeka kontrolora) | narandžasta | `--status-warn` |
+| Kvalitet — škart/dorada | Potvrđen (`POTVRDJEN`, ulazi u izveštaje/Pareto) | zelena | `--status-success` |
+| Kvalitet — škart/dorada | Odbačen (`ODBACEN`, prijava nije validna) | neutralna | `--status-neutral` |
 
 Novi status = nova vrsta u ovoj tabeli **pre** upotrebe u kodu.
 
