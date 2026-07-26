@@ -1568,7 +1568,10 @@ function BulkCloneProjectDialog({ open, onClose }: { open: boolean; onClose: () 
 }
 
 export default function WorkOrdersPage() {
-  const { user, isLoading } = useAuth();
+  const { user, isLoading, can } = useAuth();
+  // Komitent-filter ide pod `directory.read` (isti ključ kao /v1/directory/*);
+  // role bez njega (npr. proizvodni_radnik) vide listu, ali ne i taj filter.
+  const canReadDirectory = can(PERMISSIONS.DIRECTORY_READ);
   const router = useRouter();
   const [q, setQ] = useState('');
   const [statusId, setStatusId] = useState<number | ''>('');
@@ -1704,21 +1707,28 @@ export default function WorkOrdersPage() {
             />
           </label>
           {/* Legacy „Za komitenta / Za materijal / Za dim. materijala" (tehnolozi 22.07). */}
-          <label className="flex w-56 flex-col gap-1 text-xs text-ink-secondary">
-            Komitent
-            <ComboBox<CustomerLookup>
-              value={customer}
-              onChange={(c) => {
-                setCustomer(c);
-                resetPage();
-              }}
-              useSearch={useCustomersLookup}
-              getKey={(c) => c.id}
-              getLabel={(c) => c.name}
-              getSublabel={(c) => [c.city, c.taxId].filter(Boolean).join(' · ')}
-              placeholder="Svi komitenti…"
-            />
-          </label>
+          {/* Komitent-filter traži `directory.read` (BE: /v1/lookups/customers je od 26.07
+              iza istog ključa kao /v1/directory/*). `proizvodni_radnik` ga NAMERNO nema
+              („matrica §3: RADNIK nema komitente/predmete"), pa mu filter ne prikazujemo —
+              inače bi ComboBox eagerno pozvao lookup i dobio 403. Lista RN-ova (rn.read)
+              mu ostaje netaknuta. */}
+          {canReadDirectory && (
+            <label className="flex w-56 flex-col gap-1 text-xs text-ink-secondary">
+              Komitent
+              <ComboBox<CustomerLookup>
+                value={customer}
+                onChange={(c) => {
+                  setCustomer(c);
+                  resetPage();
+                }}
+                useSearch={useCustomersLookup}
+                getKey={(c) => c.id}
+                getLabel={(c) => c.name}
+                getSublabel={(c) => [c.city, c.taxId].filter(Boolean).join(' · ')}
+                placeholder="Svi komitenti…"
+              />
+            </label>
+          )}
           <label className="flex flex-col gap-1 text-xs text-ink-secondary">
             Materijal
             <input

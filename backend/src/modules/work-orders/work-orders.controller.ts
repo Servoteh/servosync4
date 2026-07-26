@@ -51,12 +51,23 @@ import type {
  *   POST /api/v1/work-orders/projects/:projectId/bulk-clone { targetProjectId, coefficient, workOrderIds? } — bulk-clone (RN_WRITE)
  *   PATCH /api/v1/work-orders/operations/:opId/priority { priority } — CAM prioritet (TEHNOLOGIJA_WRITE)
  *
- * Traži JWT. Mutacije nose `@RequirePermission`: create/lock/copy/clone/rework = `rn.write`,
- * approve = `rn.approve`, launch = `rn.launch`, prioritet operacije = `tehnologija.write`
- * (CNC programer nema `rn.write`). Guard je shadow-mode (V1). Drugi gate za
- * approve/launch (`Worker.definesApproval`/`definesLaunch`) je V2 u servisu — TODO(auth) u servisu.
+ * Traži JWT. Klasa nosi `rn.read` kao PODRAZUMEVANU permisiju (pokriva sve GET rute:
+ * lista, `operations/queue`, detalj, štampa); mutacije je nadjačavaju svojim ključem —
+ * create/lock/copy/clone/rework = `rn.write`, approve = `rn.approve`, launch = `rn.launch`,
+ * prioritet operacije = `tehnologija.write` (CNC programer nema `rn.write`).
+ * Drugi gate za approve/launch (`Worker.definesApproval`/`definesLaunch`) je V2 u servisu.
+ *
+ * ⚠️ Zašto je `rn.read` na klasi (bezbednosni dug zatvoren 26.07, nalaz AI-1 review-a):
+ * GET rute su ranije tražile SAMO JWT, pa ih je čitao SVAKI prijavljeni korisnik —
+ * uključujući `tehnicar_odrzavanja` (CMMS-only rola koja NEMA `rn.read`) i korisnika
+ * kome je `rn.read` izričito ODUZET kroz `user_permission_overrides`. AI sloj je isti
+ * podatak već gate-ovao (`nadji_radni_nalog` → `requiredPermission: RN_READ`, plus
+ * per-sekcija provera u `stanje_predmeta`), pa je HTTP API bio ŠIRI od asistenta:
+ * deny override se poštovao u chatu, a zaobilazio se direktnim `GET /v1/work-orders`.
+ * Sada su oba sloja na istom ključu.
  */
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
+@RequirePermission(PERMISSIONS.RN_READ)
 @Controller({ path: "work-orders", version: "1" })
 export class WorkOrdersController {
   constructor(
@@ -100,7 +111,6 @@ export class WorkOrdersController {
   }
 
   @Post()
-  @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermission(PERMISSIONS.RN_WRITE)
   create(@Body() dto: CreateWorkOrderDto, @Req() req: { user: AuthUser }) {
     return this.workOrders.create(dto, req.user);
@@ -108,7 +118,6 @@ export class WorkOrdersController {
 
   /** Izmena zaglavlja RN-a (samo poslata polja; identitet se ne menja). */
   @Patch(":id")
-  @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermission(PERMISSIONS.RN_WRITE)
   updateHeader(
     @Param("id", ParseIntPipe) id: number,
@@ -119,7 +128,6 @@ export class WorkOrdersController {
 
   /** Dodaj operaciju TP na RN (RC + norme Tpz/Tk + opis + prioritet). Autor stavke = JWT radnik ako DTO ne kaže drugačije. */
   @Post(":id/operations")
-  @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermission(PERMISSIONS.RN_WRITE)
   addOperation(
     @Param("id", ParseIntPipe) id: number,
@@ -131,7 +139,6 @@ export class WorkOrdersController {
 
   /** Izmena operacije RN-a. */
   @Patch(":id/operations/:opId")
-  @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermission(PERMISSIONS.RN_WRITE)
   updateOperation(
     @Param("id", ParseIntPipe) id: number,
@@ -147,7 +154,6 @@ export class WorkOrdersController {
    * nema pravo izmene RN-a. Dozvoljeno i na lansiranom RN-u; zaključan → 422.
    */
   @Patch("operations/:opId/priority")
-  @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermission(PERMISSIONS.TEHNOLOGIJA_WRITE)
   setOperationPriority(
     @Param("opId", ParseIntPipe) opId: number,
@@ -158,7 +164,6 @@ export class WorkOrdersController {
 
   /** Brisanje operacije RN-a. */
   @Delete(":id/operations/:opId")
-  @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermission(PERMISSIONS.RN_WRITE)
   deleteOperation(
     @Param("id", ParseIntPipe) id: number,
@@ -169,7 +174,6 @@ export class WorkOrdersController {
 
   /** Brisanje kompletnog RN-a (cascade). Guard: zaključan / evidentiran rad. */
   @Delete(":id")
-  @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermission(PERMISSIONS.RN_WRITE)
   remove(@Param("id", ParseIntPipe) id: number) {
     return this.workOrders.remove(id);
@@ -180,7 +184,6 @@ export class WorkOrdersController {
    * zaobilazi lock guard. Samo admin/šef (`rn.delete.force`).
    */
   @Delete(":id/force")
-  @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermission(PERMISSIONS.RN_DELETE_FORCE)
   forceRemove(@Param("id", ParseIntPipe) id: number) {
     return this.workOrders.forceRemove(id);
@@ -188,7 +191,6 @@ export class WorkOrdersController {
 
   /** Odobri/odbij RN. Permisija `rn.approve`; drugi gate (Worker.definesApproval) je V2 u servisu. */
   @Post(":id/approve")
-  @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermission(PERMISSIONS.RN_APPROVE)
   approve(
     @Param("id", ParseIntPipe) id: number,
@@ -203,7 +205,6 @@ export class WorkOrdersController {
    * Ako je RN vezan za primopredaju, i ona ide na LANSIRAN (ista transakcija).
    */
   @Post(":id/launch")
-  @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermission(PERMISSIONS.RN_LAUNCH)
   launch(
     @Param("id", ParseIntPipe) id: number,
@@ -213,7 +214,6 @@ export class WorkOrdersController {
   }
 
   @Post(":id/lock")
-  @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermission(PERMISSIONS.RN_WRITE)
   lock(
     @Param("id", ParseIntPipe) id: number,
@@ -224,7 +224,6 @@ export class WorkOrdersController {
 
   /** Kopiraj sve 4 vrste stavki iz `sourceId` u prazan `id` (cilj ne sme biti zaključan/lansiran). */
   @Post(":id/copy-from/:sourceId")
-  @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermission(PERMISSIONS.RN_WRITE)
   copyFrom(
     @Param("id", ParseIntPipe) id: number,
@@ -239,7 +238,6 @@ export class WorkOrdersController {
    * `{ data: { workOrderId, identNumber, variant } }`.
    */
   @Post(":id/clone-variant")
-  @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermission(PERMISSIONS.RN_WRITE)
   cloneVariant(@Param("id", ParseIntPipe) id: number) {
     return this.workOrders.cloneVariant(id);
@@ -247,7 +245,6 @@ export class WorkOrdersController {
 
   /** DORADA/ŠKART: kreiraj child RN iz `id` (sufiks -D/-S, kopira zaglavlje + sve stavke). */
   @Post(":id/rework")
-  @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermission(PERMISSIONS.RN_WRITE)
   rework(
     @Param("id", ParseIntPipe) id: number,
@@ -262,7 +259,6 @@ export class WorkOrdersController {
    * `{ data: { id, identNumber } }`. Autor = JWT radnik (svež users.worker_id).
    */
   @Post(":id/quality-child")
-  @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermission(PERMISSIONS.RN_WRITE)
   createQualityChild(
     @Param("id", ParseIntPipe) id: number,
@@ -274,7 +270,6 @@ export class WorkOrdersController {
 
   /** Bulk-clone svih (ili izabranih) naloga predmeta `projectId` u nov prazan predmet. */
   @Post("projects/:projectId/bulk-clone")
-  @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermission(PERMISSIONS.RN_WRITE)
   bulkClone(
     @Param("projectId", ParseIntPipe) projectId: number,

@@ -1406,3 +1406,51 @@ describe("WorkOrdersService.findOne — drawingRevision (zastarela revizija crte
     expect(prisma.drawing.findFirst).not.toHaveBeenCalled();
   });
 });
+
+
+// ============================================================ GET guardovi (bezbednosni dug, 26.07)
+
+/**
+ * Regresija za nalaz AI-1 review-a: GET rute RN-a su tražile SAMO JWT, pa ih je
+ * čitao svaki prijavljeni korisnik — i onaj kome `rn.read` NE pripada po roli
+ * (`tehnicar_odrzavanja`), i onaj kome je izričito oduzet `user_permission_overrides`
+ * deny-jem. AI alat `nadji_radni_nalog` je isti podatak već gate-ovao, pa je HTTP API
+ * bio ŠIRI od asistenta. Permisija se čita sa KLASE (`getAllAndOverride([handler, class])`),
+ * pa je testiramo na konstruktoru; mutacije je nadjačavaju svojim ključem.
+ */
+describe("WorkOrdersController — permisije GET ruta", () => {
+  const handler = (name: string): object =>
+    Object.getOwnPropertyDescriptor(WorkOrdersController.prototype, name)
+      ?.value as object;
+
+  it("klasa nosi `rn.read` kao podrazumevanu permisiju", () => {
+    expect(
+      Reflect.getMetadata(PERMISSION_KEY_METADATA, WorkOrdersController),
+    ).toBe(PERMISSIONS.RN_READ);
+  });
+
+  it.each(["list", "operationQueue", "findOne", "print"])(
+    "GET `%s` nema svoj ključ → nasleđuje `rn.read` sa klase (nikad neguardovan)",
+    (name) => {
+      // Bitno je da handler NEMA sopstvenu (širu) permisiju — guard tada uzima klasnu.
+      expect(
+        Reflect.getMetadata(PERMISSION_KEY_METADATA, handler(name)),
+      ).toBeUndefined();
+    },
+  );
+
+  it("mutacije i dalje nadjačavaju klasni `rn.read` (klasa ih ne sme olabaviti)", () => {
+    expect(
+      Reflect.getMetadata(PERMISSION_KEY_METADATA, handler("create")),
+    ).toBe(PERMISSIONS.RN_WRITE);
+    expect(
+      Reflect.getMetadata(PERMISSION_KEY_METADATA, handler("approve")),
+    ).toBe(PERMISSIONS.RN_APPROVE);
+    expect(
+      Reflect.getMetadata(PERMISSION_KEY_METADATA, handler("launch")),
+    ).toBe(PERMISSIONS.RN_LAUNCH);
+    expect(
+      Reflect.getMetadata(PERMISSION_KEY_METADATA, handler("forceRemove")),
+    ).toBe(PERMISSIONS.RN_DELETE_FORCE);
+  });
+});
