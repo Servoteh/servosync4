@@ -4439,4 +4439,47 @@ model KadrGridDayLock {
   @@unique([employeeId, workDate], map: "uq_kadr_grid_day_locks_emp_date")
   @@index([workDate], map: "idx_kadr_grid_day_locks_date")
   @@map("kadr_grid_day_locks")
+// ============================================================================
+// AI (Talas AI-0) — merenje i registar modela. Piše ih ISKLJUČIVO gateway
+// (src/common/ai). Vidi docs/PLAN_AI_OS_2026-07.md §5 TALAS AI-0.
+// ============================================================================
+
+/// Jedan red po LLM pozivu (chat, STT, refine, embed, naslov, trijaža, rezime…).
+/// Upisuje ga `AiUsageService` iz gateway-a — nijedan pozivalac ne piše ovde
+/// direktno. Ujedno je izvor za dnevne token-limite (AiLimitsService).
+/// module: chat | stt | refine | embed | title | zahtevi-triage | zahtevi-analysis
+///         | sastanci-summary | montaza-izvestaj (String, ne enum — BACKEND_RULES §2)
+/// outcome: ok | error | fallback
+model AiUsageLog {
+  id         Int      @id(map: "pk_ai_usage_log") @default(autoincrement()) @map("id")
+  userId     Int?     @map("user_id") // null = sistemski poziv (scheduler, fire-and-forget trijaža)
+  module     String   @map("module") @db.VarChar(40)
+  provider   String   @map("provider") @db.VarChar(20) /// openai | anthropic
+  model      String   @map("model") @db.VarChar(80)
+  tokensIn   Int?     @map("tokens_in") // null kad API ne vraća usage (STT)
+  tokensOut  Int?     @map("tokens_out")
+  durationMs Int      @map("duration_ms") // trajanje poziva, ne dužina audija
+  outcome    String   @map("outcome") @db.VarChar(10)
+  estCostUsd Decimal? @map("est_cost_usd") @db.Decimal(10, 6) // null kad cena modela nije poznata
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([userId, module, createdAt], map: "idx_ai_usage_log_user_module_created")
+  @@index([createdAt], map: "idx_ai_usage_log_created")
+  @@index([module, createdAt], map: "idx_ai_usage_log_module_created")
+  @@map("ai_usage_log")
+}
+
+/// Minimalni registar „zadatak → model" (Talas AI-0, stavka 7). NIJE nova
+/// paralelna istina: prazan red = fallback na postojeći izvor (sy15
+/// sastanci_ai_settings / montaza_ai_settings, odn. env za zahteve i chat).
+/// task: chat-claude | sastanci-summary | montaza-izvestaj | zahtevi-triage | zahtevi-analysis
+/// effort: low | medium | high | xhigh | max (null = podrazumevani za model)
+model AiModelPolicy {
+  task      String   @id(map: "pk_ai_model_policy") @map("task") @db.VarChar(40)
+  model     String   @map("model") @db.VarChar(80)
+  effort    String?  @map("effort") @db.VarChar(10)
+  updatedBy String?  @map("updated_by") @db.VarChar(200)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("ai_model_policy")
 }
