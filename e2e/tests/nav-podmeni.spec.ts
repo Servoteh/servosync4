@@ -1,12 +1,18 @@
 import { test, expect, type Page } from '@playwright/test';
 
-// Podmeniji — treći nivo navigacije (PLAN_NAV_PODMENIJI, F1). Smoke pokriva TAČNO ono
+// Podmeniji — treći nivo navigacije (PLAN_NAV_PODMENIJI, F1+F2). Smoke pokriva TAČNO ono
 // što F1 dodaje povrh F0: dvosmernu sinhronizaciju „podmeni ↔ tab u strani ↔ URL".
 //
 //   1) klik na podstavku u sidebaru DOK SI VEĆ U MODULU menja tab (bez reload-a strane);
 //   2) klik na tab U STRANI upisuje URL (`history.replaceState`) i highlight u sidebaru prati;
 //   3) stari 1.0 alias deep-link (`/sastanci?tab=dashboard`) i dalje sleće na tačan tab;
 //   4) isto važi i za Montažu, gde su pogledi DIREKTNE stavke domena (`?view=`).
+//
+// F2 dodaje tri slučaja povrh toga (round 2 + Finansije pregrupisanje):
+//   5) Kadrovska koristi `?grupa=` (5 GRUPA, ne 13 tabova — presuda §6.4);
+//   6) round-2 strana bez ikakvog deep-linka do sada (Kvalitet) sad ima `?tab=`;
+//   7) preseljena finansijska stavka („Kursne razlike") je PODSTAVKA Saldakonta, a ne više
+//      red prvog nivoa — meni je pao sa 12 na 9 stavki u domenu „Finansije".
 //
 // Zahteva sidebar u punom režimu (default) i viewport ≥1024px (config: 1440×900).
 
@@ -102,4 +108,63 @@ test('Montaža — pogledi su direktne stavke domena i menjaju prikaz iz sidebar
 
   expect(new URL(page.url()).searchParams.get('view')).toBe('izvestaji');
   expect(await stillSameDocument(page)).toBe(true);
+});
+
+// ─────────────────────────────── F2 (round 2 + Finansije) ───────────────────────────────
+
+test('Kvalitet — round 2: strana bez deep-linka sad ima `?tab=` u oba smera', async ({ page }) => {
+  // Do F2 je tab bio interni `useState` — nije bilo ni bookmarka ni Ctrl+K skoka na tab.
+  await page.goto('/kvalitet?tab=dokumenti', { waitUntil: 'domcontentloaded' });
+  await settle(page);
+  await expect(selectedTab(page)).toHaveText('Dokumenti');
+  await expect(navLink(page, 'Dokumenti')).toHaveAttribute('aria-current', 'page');
+
+  // Podmeni menja tab i kad smo VEĆ u modulu (ključ F1 mašinerije, sad i ovde).
+  await markNoReload(page);
+  await navLink(page, 'Kontrola pogon').click();
+  await page.waitForTimeout(600);
+
+  expect(new URL(page.url()).searchParams.get('tab')).toBe('pogon');
+  await expect(selectedTab(page)).toHaveText('Kontrola pogon');
+  expect(await stillSameDocument(page)).toBe(true);
+});
+
+test('Kadrovska — podmeni su GRUPE i voze se kroz `?grupa=`', async ({ page }) => {
+  // Presuda §6.4: meni nosi 5 grupa (Role Center logika), ne svih 13 tabova.
+  await page.goto('/kadrovska?grupa=sati', { waitUntil: 'domcontentloaded' });
+  await settle(page);
+  await expect(navLink(page, 'Radni sati')).toHaveAttribute('aria-current', 'page');
+
+  await markNoReload(page);
+  await navLink(page, 'Zaposleni').click();
+  await page.waitForTimeout(600);
+
+  expect(new URL(page.url()).searchParams.get('grupa')).toBe('zaposleni');
+  await expect(navLink(page, 'Zaposleni')).toHaveAttribute('aria-current', 'page');
+  expect(await stillSameDocument(page)).toBe(true);
+
+  // Povratak na hub („⊞ Grupe") briše parametar iz URL-a (`omitDefault`) — /kadrovska
+  // bez `?grupa=` je landing sa karticama, kao i pre F2 (paritet 1.0).
+  await page.getByRole('button', { name: '⊞ Grupe' }).click();
+  await page.waitForTimeout(600);
+  expect(new URL(page.url()).searchParams.get('grupa')).toBeNull();
+});
+
+test('Finansije — „Kursne razlike" su preseljene pod Saldakonte (12 → 9 u prvom redu)', async ({ page }) => {
+  await page.goto('/saldakonti', { waitUntil: 'domcontentloaded' });
+  await settle(page);
+
+  // Aktivni modul je auto-razgranat (F0), pa je preseljena stavka odmah pri ruci —
+  // amortizer navike iz presude §6.3 („stavke se sele, ne nestaju").
+  await expect(navLink(page, 'Kursne razlike')).toBeVisible();
+  // Isto važi i za „Karticu komitenta" — ruta koja do F2 NIJE bila nigde u meniju.
+  await expect(navLink(page, 'Kartica komitenta')).toBeVisible();
+
+  await navLink(page, 'Kursne razlike').click();
+  await page.waitForURL('**/saldakonti/kursne-razlike', { timeout: 15_000 });
+  await settle(page);
+
+  // Podstavka nosi jedini `aria-current`, roditelj „Saldakonti" samo stil (a11y iz F0).
+  await expect(navLink(page, 'Kursne razlike')).toHaveAttribute('aria-current', 'page');
+  await expect(navLink(page, 'Saldakonti')).not.toHaveAttribute('aria-current', 'page');
 });

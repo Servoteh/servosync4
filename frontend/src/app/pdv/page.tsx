@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Mail, Pencil, Plus, Printer, Trash2 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
+import { useQueryTab } from '@/lib/use-query-tab';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
@@ -69,6 +70,9 @@ const TABS: TabItem<View>[] = [
   { key: 'popdv', label: 'POPDV obračun' },
   { key: 'kepu', label: 'KEPU' },
 ];
+
+/** Ključevi `?tab=` — ujedno OGLEDALO dece modula „PDV & POPDV" u `navigation.ts`. */
+const VIEW_KEYS: readonly View[] = TABS.map((t) => t.key);
 
 const CURRENT_YEAR = new Date().getFullYear();
 
@@ -296,7 +300,10 @@ export default function PdvPage() {
   const { user, isLoading } = useAuth();
   const router = useRouter();
 
-  const [view, setView] = useState<View>('kif');
+  // Pogled živi u `?tab=` kroz deljeni hook (PLAN_NAV_PODMENIJI §4.3, F2): deep-link
+  // („/pdv?tab=kuf" iz Ctrl+K ili AI odgovora), klik na podstavku dok si već ovde i
+  // write-back URL-a pri promeni taba u strani.
+  const [view, setView] = useQueryTab<View>('tab', 'kif', { valid: VIEW_KEYS });
   const [year, setYear] = useState(CURRENT_YEAR);
   const [month, setMonth] = useState(new Date().getMonth() + 1);
 

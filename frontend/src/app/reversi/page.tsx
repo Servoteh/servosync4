@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
+import { useQueryTab } from '@/lib/use-query-tab';
 import { PERMISSIONS } from '@/lib/permissions';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
@@ -29,33 +30,32 @@ const TAB_KEYS: TabKey[] = ['radni-sto', 'moji', 'dokumenti', 'magacin', 'rezni'
 const TAB_STORAGE_KEY = 'reversi:tab';
 
 /**
- * Migracija sačuvanog taba (RA-05, paritet 1.0 `tabMigration.js`): prihvata 2.0
- * ključeve i mapira legacy 1.0 id-jeve. Vraća `null` ako id nije prepoznat.
+ * Legacy 1.0 id-jevi → 2.0 ključevi (paritet 1.0 `tabMigration.js`). JEDAN izvor istine za
+ * dva potrošača: sačuvan izbor u `localStorage` (RA-05) i `?tab=` deep-link (F2, `alias`
+ * opcija `useQueryTab`-a) — stari bookmark/link mora da nastavi da radi.
+ */
+const LEGACY_TAB_ALIAS: Record<string, TabKey> = {
+  moja: 'moji',
+  workbench: 'radni-sto',
+  radni_sto: 'radni-sto',
+  zaduzenja: 'dokumenti',
+  inventar: 'magacin',
+  unit: 'magacin',
+  warehouse: 'magacin',
+  'rezni-alat': 'rezni',
+  cutting: 'rezni',
+  scrapped: 'otpisano',
+};
+
+/**
+ * Migracija sačuvanog taba (RA-05): prihvata 2.0 ključeve i mapira legacy 1.0 id-jeve.
+ * Vraća `null` ako id nije prepoznat.
  */
 function migrateTab(raw: string | null): TabKey | null {
   if (!raw) return null;
   const id = raw.trim().toLowerCase();
   if ((TAB_KEYS as string[]).includes(id)) return id as TabKey;
-  switch (id) {
-    case 'moja':
-      return 'moji';
-    case 'workbench':
-    case 'radni_sto':
-      return 'radni-sto';
-    case 'zaduzenja':
-      return 'dokumenti';
-    case 'inventar':
-    case 'unit':
-    case 'warehouse':
-      return 'magacin';
-    case 'rezni-alat':
-    case 'cutting':
-      return 'rezni';
-    case 'scrapped':
-      return 'otpisano';
-    default:
-      return null;
-  }
+  return LEGACY_TAB_ALIAS[id] ?? null;
 }
 
 /**
@@ -66,9 +66,14 @@ function migrateTab(raw: string | null): TabKey | null {
  * (RA-05). Tab „Otpisano" je manage-only (paritet 1.0 `manageOnly`).
  */
 export default function ReversiPage() {
-  const { user, isLoading, can } = useAuth();
+  const { user, isLoading, can, permissionsPending } = useAuth();
   const router = useRouter();
-  const [tab, setTab] = useState<TabKey>('moji');
+  // Tab živi u `?tab=` kroz deljeni hook (PLAN_NAV_PODMENIJI §4.3, F2), uz legacy alias mapu —
+  // deep-link, klik na podstavku dok si već ovde i write-back URL-a pri promeni taba u strani.
+  const [tab, setTab] = useQueryTab<TabKey>('tab', 'moji', {
+    valid: TAB_KEYS,
+    alias: LEGACY_TAB_ALIAS,
+  });
 
   const manage = can(PERMISSIONS.REVERSI_MANAGE);
 
@@ -79,14 +84,24 @@ export default function ReversiPage() {
   // RA-05 — učitaj sačuvan tab posle mount-a (bez hydration mismatch-a), uz
   // validaciju protiv vidljivih tabova (manage gejtuje „Otpisano"). Bez sačuvanog
   // izbora magacioner (manage) startuje na „Radni sto" (paritet 1.0 default za magacionera).
+  // F2: URL je JAČI od zapamćenog izbora — kad `?tab=` postoji (deep-link, klik na podstavku,
+  // povratak Back-om), sačuvani tab se NE primenjuje da ne pregazi cilj navigacije.
   useEffect(() => {
     if (isLoading || !user) return;
-    const saved = migrateTab(
-      typeof window !== 'undefined' ? window.localStorage.getItem(TAB_STORAGE_KEY) : null,
-    );
+    if (typeof window === 'undefined') return;
+    if (new URLSearchParams(window.location.search).get('tab')) return;
+    const saved = migrateTab(window.localStorage.getItem(TAB_STORAGE_KEY));
     if (saved && (saved !== 'otpisano' || manage)) setTab(saved);
     else if (!saved && manage) setTab('radni-sto');
-  }, [isLoading, user, manage]);
+  }, [isLoading, user, manage, setTab]);
+
+  // Tihi guard-redirect (obrazac F1): deep-link `?tab=otpisano` bez `reversi.manage` vraća na
+  // „Moje alate" i prepravlja URL. Čeka `permissionsPending` — dok dozvole stižu `can()` je
+  // fail-closed, pa bi i magacionera sa deep-linka bacilo nazad.
+  useEffect(() => {
+    if (isLoading || permissionsPending || !user) return;
+    if (tab === 'otpisano' && !manage) setTab('moji');
+  }, [isLoading, permissionsPending, user, tab, manage, setTab]);
 
   // RA-04 — živi brojači (deljeni query-key-evi sa tabovima → bez duplog fetcha;
   // documents/units su count-only pageSize=1).

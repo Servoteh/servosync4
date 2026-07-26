@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
+import { useQueryTab } from '@/lib/use-query-tab';
 import { PERMISSIONS } from '@/lib/permissions';
 import { cn } from '@/lib/cn';
 import { AppShell } from '@/components/ui-kit/app-shell';
@@ -55,6 +56,15 @@ const GROUP_DEFS: { id: GroupKey; label: string; icon: string; desc: string; tab
 ];
 
 /**
+ * Vrednosti `?grupa=` (PODMENIJI F2, presuda §6.4 — meni nosi 5 GRUPA, ne 13 tabova).
+ * `'hub'` je sentinel za landing sa velikim karticama i NE upisuje se u URL (`omitDefault`),
+ * pa `/kadrovska` bez parametra ostaje hub kao dosad (paritet 1.0). Ključevi su ogledalo
+ * dece modula „Kadrovska" u `navigation.ts`.
+ */
+type GroupParam = GroupKey | 'hub';
+const GROUP_PARAM_KEYS: readonly GroupParam[] = ['hub', ...GROUP_DEFS.map((g) => g.id)];
+
+/**
  * Kadrovska (HR) — 3.0 TALAS G (POSLEDNJI; PII + zarade).
  * IA = paritet 1.0: HUB landing (velike grupne kartice) → grupna traka + tabovi grupe.
  * Novi tab `pregled` (dashboard) je podrazumevani; ostalih 12 tabova + gate-ovi ostaju
@@ -63,10 +73,17 @@ const GROUP_DEFS: { id: GroupKey; label: string; icon: string; desc: string; tab
  * FE krije afordanse; backend guard + sy15 RLS presuđuju.
  */
 export default function KadrovskaPage() {
-  const { user, isLoading, can } = useAuth();
+  const { user, isLoading, can, permissionsPending } = useAuth();
   const router = useRouter();
-  // group === null → HUB landing (izbor grupe). Podrazumevani tab (u grupi) = 'pregled'.
-  const [group, setGroup] = useState<GroupKey | null>(null);
+  // Grupa živi u `?grupa=` kroz deljeni hook (PLAN_NAV_PODMENIJI §4.3, F2): `'hub'` = landing
+  // (bez parametra u URL-u), sve ostalo je otvorena grupa. Hook čita na mount-u, prati
+  // `popstate` i `servosync:nav` (podstavka „Kadrovska → Radni sati" menja grupu i kad smo
+  // VEĆ ovde), a `setGroupParam` upisuje URL nazad → sidebar highlight prati klik u strani.
+  // TAB unutar grupe ostaje interni state (13 tabova bi bilo previše za meni — presuda §6.4).
+  const [group, setGroupParam] = useQueryTab<GroupParam>('grupa', 'hub', {
+    valid: GROUP_PARAM_KEYS,
+    omitDefault: true,
+  });
   const [tab, setTab] = useState<TabKey>('pregled');
 
   const canSalary = can(PERMISSIONS.KADROVSKA_SALARY);
@@ -132,7 +149,29 @@ export default function KadrovskaPage() {
     [tabVisible],
   );
 
-  if (isLoading || !user) {
+  // Tihi guard-redirect (obrazac F1): `?grupa=zarade` bez `kadrovska.salary` (kao i svaka
+  // grupa bez ijednog vidljivog taba za ovu ulogu) vraća na hub i prepravlja URL. Čeka
+  // `permissionsPending` — dok dozvole stižu `can()` je fail-closed, pa je `groups` krnj i
+  // legitiman deep-link bi bio poništen.
+  useEffect(() => {
+    if (isLoading || permissionsPending || !user) return;
+    if (group !== 'hub' && !groups.some((g) => g.id === group)) setGroupParam('hub');
+  }, [isLoading, permissionsPending, user, group, groups, setGroupParam]);
+
+  // Tab prati grupu: kad grupa stigne SPOLJA (podstavka u sidebaru, deep-link, Back), interni
+  // `tab` može biti iz druge grupe — tada pada na prvi vidljiv tab nove grupe. Klik u strani
+  // (`openGroup`) tab već postavi, pa je ovde bez efekta (uslov `includes` je ispunjen).
+  useEffect(() => {
+    if (group === 'hub') return;
+    const g = groups.find((x) => x.id === group);
+    if (!g || g.tabs.length === 0) return;
+    setTab((cur) => (g.tabs.includes(cur) ? cur : g.tabs[0]));
+  }, [group, groups]);
+
+  // Čeka i `permissionsPending`: `/auth/me` i `/auth/me/permissions` su dva paralelna upita
+  // (isLoading ne pokriva drugi), a `canRead` je dotle fail-closed — bez ovoga bi svakom
+  // korisniku na tren bljesnula poruka „Nemate pristup Kadrovskoj" (obrazac iz F1 nalaza 2).
+  if (isLoading || permissionsPending || !user) {
     return <main className="grid flex-1 place-items-center text-sm text-ink-secondary">Učitavanje…</main>;
   }
 
@@ -166,7 +205,7 @@ export default function KadrovskaPage() {
 
   /** Otvori grupu (default = prvi vidljiv tab), opciono skoči na konkretan tab. */
   function openGroup(gid: GroupKey, target?: TabKey) {
-    setGroup(gid);
+    setGroupParam(gid);
     setTab(target ?? firstTabOf(gid));
   }
 
@@ -177,7 +216,7 @@ export default function KadrovskaPage() {
     if (g) openGroup(g.id, t);
   }
 
-  const activeGroup = group ? groups.find((g) => g.id === group) : null;
+  const activeGroup = group === 'hub' ? null : (groups.find((g) => g.id === group) ?? null);
   const groupTabs: TabItem<TabKey>[] = activeGroup ? activeGroup.tabs.map((t) => ({ key: t, label: TAB_LABEL[t] })) : [];
 
   return (
@@ -223,7 +262,7 @@ export default function KadrovskaPage() {
             <div className="flex flex-wrap items-center gap-1 rounded-panel border border-line bg-surface p-1">
               <button
                 type="button"
-                onClick={() => setGroup(null)}
+                onClick={() => setGroupParam('hub')}
                 className="rounded-control px-3 py-1.5 text-sm font-medium text-ink-secondary transition-colors hover:bg-surface-2 hover:text-ink"
                 title="Nazad na izbor grupa"
               >

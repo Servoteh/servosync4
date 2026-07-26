@@ -3,7 +3,8 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
-import { PERMISSIONS } from '@/lib/permissions';
+import { useQueryTab } from '@/lib/use-query-tab';
+import { PERMISSIONS, type Permission } from '@/lib/permissions';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
 import { Tabs, type TabItem } from '../reversi/_components/tabs';
@@ -21,6 +22,17 @@ type TabKey =
   | 'pocetna' | 'predmet' | 'lokacije' | 'stavke' | 'report'
   | 'pokreti' | 'stampa' | 'audit' | 'sync';
 
+/** Ključevi `?tab=` — ujedno OGLEDALO dece modula „Lokacije" u `navigation.ts`. */
+const TAB_KEYS: readonly TabKey[] = [
+  'pocetna', 'predmet', 'lokacije', 'stavke', 'report', 'pokreti', 'stampa', 'audit', 'sync',
+];
+/** Tabovi sa strožim gate-om (izvor istine za `requires` dece u nav modelu). */
+const GATED_TABS: Partial<Record<TabKey, Permission>> = {
+  stampa: PERMISSIONS.LOKACIJE_LABELS,
+  audit: PERMISSIONS.LOKACIJE_MANAGE,
+  sync: PERMISSIONS.LOKACIJE_ADMIN,
+};
+
 /**
  * Lokacije delova (fizičke `loc_*`) — 3.0 TALAS A seoba iz 1.0
  * (MODULE_SPEC_lokacije_30.md §4). 9 tabova: Početna / Pregled predmeta / Lokacije /
@@ -30,24 +42,35 @@ type TabKey =
  * ⚠️ ODVOJENO od 2.0-native „Lokacije delova" (part-locations).
  */
 export default function LokacijePage() {
-  const { user, isLoading, can } = useAuth();
+  const { user, isLoading, can, permissionsPending } = useAuth();
   const router = useRouter();
-  const [tab, setTab] = useState<TabKey>('pocetna');
+  // Tab živi u `?tab=` kroz deljeni hook (PLAN_NAV_PODMENIJI §4.3, F2) — deep-link, klik na
+  // podstavku dok si već ovde i write-back URL-a pri promeni taba u strani.
+  const [tab, setTab] = useQueryTab<TabKey>('tab', 'pocetna', { valid: TAB_KEYS });
   const [stavkeSearch, setStavkeSearch] = useState('');
+
+  const labels = can(PERMISSIONS.LOKACIJE_LABELS);
+  const manage = can(PERMISSIONS.LOKACIJE_MANAGE);
+  const admin = can(PERMISSIONS.LOKACIJE_ADMIN);
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
   }, [user, isLoading, router]);
+
+  // Tihi guard-redirect (obrazac F1): deep-link na gejtovan tab (`?tab=sync` bez
+  // `lokacije.admin`) vraća na „Početnu" i prepravlja URL. Čeka `permissionsPending` —
+  // dok dozvole stižu `can()` je fail-closed.
+  useEffect(() => {
+    if (isLoading || permissionsPending || !user) return;
+    const need = GATED_TABS[tab];
+    if (need && !can(need)) setTab('pocetna');
+  }, [isLoading, permissionsPending, user, tab, can, setTab]);
 
   if (isLoading || !user) {
     return (
       <main className="grid flex-1 place-items-center text-sm text-ink-secondary">Učitavanje…</main>
     );
   }
-
-  const labels = can(PERMISSIONS.LOKACIJE_LABELS);
-  const manage = can(PERMISSIONS.LOKACIJE_MANAGE);
-  const admin = can(PERMISSIONS.LOKACIJE_ADMIN);
 
   const tabs: TabItem<TabKey>[] = [
     { key: 'pocetna', label: 'Početna' },

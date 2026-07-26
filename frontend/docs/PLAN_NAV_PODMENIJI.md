@@ -167,7 +167,10 @@ dostupnim (admin) tabovima**. Moduli sa 2–4 taba zadržavaju tab-traku (podmen
   - **Izvodi** → Kursna lista (ruta, seli se pod modul);
   - Glavna knjiga (2), SEF (2), Kamata (2), Završni račun (3), Blagajna, Naplata,
     Banka & plaćanja — bez podmenija.
-  - Meni pada sa 12 na **8 stavki prvog reda** — preglednije, ništa se ne gubi.
+  - Meni pada sa 12 na ~~8~~ **9 stavki prvog reda** — preglednije, ništa se ne gubi.
+    (Ispravka pri izvođenju F2: 12 − 3 preseljene = 9; „8" je bilo pogrešno brojanje — u
+    nabrajanju iznad je i „SEF", koji zapravo živi u domenu „Prodaja i nabavka". Ništa nije
+    dodatno spuštano da bi se dostigla cifra 8.)
   - ⚠️ Menja mišićnu memoriju (3 stavke silaze nivo niže) — traži izričitu potvrdu.
 
 ### 3.11 Sistem
@@ -311,8 +314,71 @@ podstavku dok si VEĆ u modulu ne bi uradio ništa.
   deca za kvalitet/pb/lokacije/reversi/kadrovsku(grupe)/saldakonti/pdv/planiranje/strukture;
   „Kartica komitenta" u nav; Kursne razlike/Poreske stope/Kursna lista postaju deca
   (uz potvrdu §6.3); pod-grupe „Fakturisanje"/„Magacin" u Prodaji.
-- **F3 — polish (opciono):** omiljeno/MRU za podstavke; hub pločice sa pogledima; zahtevi
-  admin podmeni; energetika; nabavka tabovi+podmeni; `/pracenje-proizvodnje` hash→query;
+  **IZVEDENO 26.07.2026** (grana `feat/nav-podmeni-f2`): svih 9 round-2 strana prevedeno sa
+  internog `useState` na `useQueryTab` (mount + `popstate` + `servosync:nav` + write-back);
+  47 nove dece u `navigation.ts` sa T-kodovima; Finansije pregrupisane; Prodaja dobila
+  pod-grupe. Detalji koji odstupaju od slova plana su niže.
+
+  | Strana | Param | Ključevi (default podvučen) | Deca sa `requires` |
+  |---|---|---|---|
+  | `/plan-proizvodnje` | `?tab=` | _po-masini_ · po-crtezu · zauzetost · pregled · kooperacija | — (`wide` ruta → podmeni kroz rail flyout) |
+  | `/structures` | `?tab=` | _workers_ · work-units · operations · worker-types · machine-access | — |
+  | `/kvalitet` | `?tab=` | _skart_ · dorada · aktivnost · izvestaji · dokumenti · pogon | `aktivnost` = `tehnologija.read` |
+  | `/pb` | `?tab=` | _plan_ · kanban · gantt · izvestaji · analiza · saveti · podesavanja | `podesavanja` = `pb.admin` |
+  | `/lokacije` | `?tab=` | _pocetna_ · predmet · lokacije · stavke · report · pokreti · stampa · audit · sync | `stampa`=`lokacije.labels`, `audit`=`lokacije.manage`, `sync`=`lokacije.admin` |
+  | `/reversi` | `?tab=` | radni-sto · _moji_ · dokumenti · magacin · rezni · masine · otpisano | `otpisano` = `reversi.manage` |
+  | `/kadrovska` | **`?grupa=`** | _hub_ (bez parametra) · pregled · odmori · sati · zaposleni · zarade | `zarade` = `kadrovska.salary` |
+  | `/saldakonti` | `?tab=` | _open_ · aging · compensation (+ podrute kartica, kursne-razlike) | — |
+  | `/pdv` | `?tab=` | _kif_ · kuf · popdv · kepu (+ podruta stope) | — |
+
+  - **Kadrovska = `?grupa=` sa hub sentinelom:** `'hub'` je podrazumevana vrednost uz
+    `omitDefault`, pa `/kadrovska` bez parametra ostaje landing sa karticama (paritet 1.0).
+    Tab UNUTAR grupe ostaje interni `useState` (presuda §6.4 — meni nosi 5 grupa, ne 13 tabova);
+    efekat ga „prevlači" na prvi vidljiv tab kad grupa stigne SPOLJA (sidebar/deep-link/Back).
+  - **Guard-redirect (obrazac F1) na 5 strana** koje imaju gejtovane tabove — kvalitet, pb,
+    lokacije, reversi, kadrovska. Svi čekaju `permissionsPending` (dva paralelna `/auth/me*`
+    upita), inače bi `can()` fail-closed poništio legitiman deep-link ovlašćenog korisnika.
+  - **Reversi: URL je jači od `localStorage`.** RA-05 pamćenje taba se primenjuje SAMO kad
+    `?tab=` ne postoji — inače bi zapamćen izbor pregazio klik na podstavku/deep-link. Legacy
+    1.0 id-jevi su izvučeni u `LEGACY_TAB_ALIAS` i sad služe DVA potrošača: `localStorage`
+    migraciju i `alias` opciju hook-a (stari linkovi rade i kroz `?tab=`).
+  - **Kvalitet ima 6, ne 5 dece:** §3.2 je pisan pre nego što je tab „Aktivnost kontrole" (K4)
+    dodat u stranu. Izvor istine je STRANA, pa je dete dodato sa gate-om `tehnologija.read`
+    (isti uslov kojim strana nudi tab).
+  - **Finansije: 12 → 9 stavki prvog reda, ne 8.** §3.10 kaže „8", ali aritmetika ne izlazi:
+    12 postojećih − 3 preseljene (Kursne razlike, Poreske stope, Kursna lista) = **9**
+    (Glavna knjiga · Izvodi · Saldakonti · Banka & plaćanja · Blagajna · Kamata · PDV & POPDV ·
+    Naplata · Završni račun). Sam §3.10 uz to nabraja „SEF (2)" među finansijskim stavkama, a
+    SEF živi u domenu „Prodaja i nabavka" — otud verovatno i omaška u brojanju. NIŠTA nije
+    dodatno spušteno u decu da bi se dostigla cifra 8 (npr. „Naplata" je §3.10 izričito ostavio
+    u prvom redu).
+  - **Preseljene stavke — šta se dešava sa navikom:** stara imena su u `keywords` dece, pa ih
+    Ctrl+K nalazi kao i pre (prikaz „Saldakonti: Kursne razlike"), a rade i T-kodovi
+    (`SLD-KR`, `PDV-ST`, `IZV-KL`). Auto-razgranavanje aktivnog modula ih drži vidljivim čim
+    uđeš u roditelja. ⚠️ **Omiljeno/MRU su nesimetrični:** Ctrl+K paleta razrešava favorite
+    nad ravnom listom koja UKLJUČUJE decu (`byHref`), pa favorit na `/saldakonti/kursne-razlike`
+    tamo i dalje radi; sidebar „Omiljeno" i hub `/pocetna` idu kroz `resolveFavoriteModules` →
+    `findModuleByHref`, koji gleda SAMO module — takav favorit tiho ispada iz prikaza (ostaje u
+    storage-u, `hrefs` se ne čisti). Isto važi za MRU. Ispravka = F3 (§4.2 je to i predvideo).
+  - **`screenContextForPath` dopunjen:** podruta koja je postala dete (`/saldakonti/kartica`,
+    `/pdv/stope`…) sada AI-ju daje svoje ime; bez toga bi je `findModuleByPath` (prefiks) opisao
+    kao roditelja („Saldakonti"). Deca sa query href-om namerno ne prolaze — pathname ne kaže
+    koji je tab otvoren.
+  - **Prodaja i nabavka (§3.9):** „Nabavka" ostaje direktna stavka, a ostalih 6 je u dve
+    imenovane pod-grupe — **„Fakturisanje"** (Predračuni & računi · Avansni računi · e-Fakture
+    SEF) i **„Magacin"** (Zalihe & kalkulacija · Popis/inventura · Rezervacije zaliha). Čist
+    `NavSubGroup`: bez novih ruta, bez promene permisija, `allModules` i dalje vraća svih 7
+    (hub pločica „Prodaja i nabavka" broji isto kao pre).
+  - **E2E:** `tests/nav-podmeni.spec.ts` dobio 3 smoke testa (Kvalitet round-2 `?tab=`,
+    Kadrovska `?grupa=` + povratak na hub bez parametra, „Kursne razlike"/„Kartica komitenta"
+    kao podstavke Saldakonta). **NIJE izvršen** — paket cilja PROD, gde F1/F2 nisu deploy-ovani.
+  - **Bez izmena u backendu**; `npx tsc --noEmit` i `npm run build` = exit 0.
+- **F3 — polish (opciono):** omiljeno/MRU za podstavke (**postalo obavezno posle F2** —
+  favorit na preseljenu finansijsku rutu tiho ispada iz sidebara/huba, vidi F2 blok);
+  hub pločice sa pogledima; zahtevi admin podmeni; energetika; nabavka tabovi+podmeni;
+  `/pracenje-proizvodnje` hash→query; drugi nivo podtabova (Reversi „Stanje magacina",
+  Kvalitet „Izveštaji" — 8 pod-izbora) koji F2 namerno nije dirao; normalizacija URL-a na
+  mount-u (nalaz (d) iz F1: go `/odrzavanje` pali highlight roditelja, ne podstavke);
   popuna T-kodova za sve module + štampani cheat-sheet (§7); preispitivanje montažnog
   hub-a po telemetriji (§6.6).
 

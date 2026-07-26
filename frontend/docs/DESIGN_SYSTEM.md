@@ -112,6 +112,16 @@
   Sidebar/paleta emituju `servosync:nav` PRE navigacije (cilj putuje u `detail.href`, jer je
   `onClick` pre promene URL-a); strana emituje POSLE `replaceState` (bez detalja). Stara imena
   tabova idu u `alias` mapu — deep-link iz 1.0 mejlova mora da preživi.
+  **F2 (26.07.2026) dopune:** (a) ime parametra prati mentalni model strane — Kadrovska vozi
+  **`?grupa=`** (5 grupa huba), ne `?tab=`; kad odsustvo parametra ima svoje značenje (hub
+  landing), koristi se sentinel ključ uz `omitDefault` (`/kadrovska` i `/montaza` ostaju „goli").
+  (b) Dete modula NE mora biti tab — sme biti i **prava podruta** (`/saldakonti/kartica`,
+  `/pdv/stope`); tada je `href` bez query-ja, aktivnost je čist pathname pogodak, a
+  `screenContextForPath` je imenuje po detetu (inače bi AI-ju izgledala kao roditelj).
+  (c) Strana koja pamti tab u `localStorage` (Reversi) mora da propusti URL: kad `?tab=` postoji,
+  zapamćen izbor se NE primenjuje. ⚠️ **Omiljeno/MRU i dalje rade na nivou MODULA** — favorit na
+  href koji je F2 preselio u decu tiho ispada iz „Omiljeno" u sidebaru i na hub-u (Ctrl+K ga i
+  dalje nalazi); širenje na podstavke je F3.
 * **Tri obrasca ekrana** — svaki novi ekran je jedan od ovih, ništa četvrto bez izmene ovog dokumenta:
   1. **Lista** — filter bar + gusta tabela (+ opcioni KPI red iznad, max 4 pločice);
   2. **Master–detalj** — lista levo, detalj panel desno (288–320 px); selekcija reda puni panel;

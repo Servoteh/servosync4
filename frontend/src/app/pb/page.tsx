@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
+import { useQueryTab } from '@/lib/use-query-tab';
 import { PERMISSIONS } from '@/lib/permissions';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
@@ -20,6 +21,9 @@ import { TaskEditor } from './_components/task-editor';
 
 type TabKey = 'plan' | 'kanban' | 'gantt' | 'izvestaji' | 'analiza' | 'saveti' | 'podesavanja';
 
+/** Ključevi `?tab=` — ujedno OGLEDALO dece modula „Projektni biro" u `navigation.ts`. */
+const TAB_KEYS: readonly TabKey[] = ['plan', 'kanban', 'gantt', 'izvestaji', 'analiza', 'saveti', 'podesavanja'];
+
 /**
  * Projektni biro (1.0 „Projektovanje") — 3.0 TALAS D (MODULE_SPEC_pb_profil_podesavanja_30 §4).
  * 7 tabova: Plan / Kanban / Gantt / Izveštaji / Analiza / Saveti / Podešavanja (admin).
@@ -28,9 +32,11 @@ type TabKey = 'plan' | 'kanban' | 'gantt' | 'izvestaji' | 'analiza' | 'saveti' |
  * restriktovani inženjer mod). Row-odluku (1h/24h/self-scope) presuđuje sy15 RLS.
  */
 export default function PbPage() {
-  const { user, isLoading, can } = useAuth();
+  const { user, isLoading, can, permissionsPending } = useAuth();
   const router = useRouter();
-  const [tab, setTab] = useState<TabKey>('plan');
+  // Tab živi u `?tab=` kroz deljeni hook (PLAN_NAV_PODMENIJI §4.3, F2) — deep-link, klik na
+  // podstavku dok si već ovde i write-back URL-a pri promeni taba u strani.
+  const [tab, setTab] = useQueryTab<TabKey>('tab', 'plan', { valid: TAB_KEYS });
   const [editor, setEditor] = useState<{ taskId: string | null; status?: string } | null>(null);
   const [projectId, setProjectId] = useState('');
   const [employeeId, setEmployeeId] = useState('');
@@ -39,15 +45,24 @@ export default function PbPage() {
   const projectsQ = useProjects();
   const engineersQ = useEngineers();
 
+  const isAdmin = can(PERMISSIONS.PB_ADMIN);
+
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
   }, [user, isLoading, router]);
+
+  // Tihi guard-redirect (obrazac F1): deep-link `/pb?tab=podesavanja` bez `pb.admin` vraća na
+  // „Plan" i prepravlja URL. Čeka `permissionsPending` — dok dozvole stižu `can()` je
+  // fail-closed, pa bi i admina sa deep-linka bacilo na Plan.
+  useEffect(() => {
+    if (isLoading || permissionsPending || !user) return;
+    if (tab === 'podesavanja' && !isAdmin) setTab('plan');
+  }, [isLoading, permissionsPending, user, tab, isAdmin, setTab]);
 
   if (isLoading || !user) {
     return <main className="grid flex-1 place-items-center text-sm text-ink-secondary">Učitavanje…</main>;
   }
 
-  const isAdmin = can(PERMISSIONS.PB_ADMIN);
   const tabs: TabItem<TabKey>[] = [
     { key: 'plan', label: 'Plan' },
     { key: 'kanban', label: 'Kanban' },
