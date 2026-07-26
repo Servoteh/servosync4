@@ -566,7 +566,30 @@ export class KadrovskaService {
   async requests(email: string, q: RequestsQueryDto) {
     const wantSource = (s: string) => !q.source || q.source === s;
     return this.withUserMapped(email, async (tx) => {
-      const empWhere = q.employeeId ? { employeeId: q.employeeId } : {};
+      // ⚠️ AUDIT-K2 (26.07): RLS ovde NIJE scope. Politike `vr_select`/`mu_select`/
+      // `pl_select` puštaju SVE redove svakome ko prođe `current_user_can_manage_vacreq()`,
+      // a ta fn vraća true za bilo koju aktivnu rolu iz
+      // {admin,hr,menadzment,leadpm,pm,poslovni_admin} — bez ograničenja na tim.
+      // 1.0 je inbox sužavao pozivom `canManageEmployee(emp)` po redu; za rolu
+      // `menadzment` to znači `sub_department_id ∈ managed_sub_department_ids`
+      // (i FALSE kad je lista prazna ili zaposleni nema pododeljenje).
+      // Scope zato presuđujemo OVDE, ISTOM DB funkcijom — FE filter ne može biti brana
+      // jer `v_employees_safe`/directory ne garantuje `sub_department_id` (PII maska).
+      // Uključeni su i sopstveni zahtevi (obrazac „self ∨ manages ∨ vacreq_admin").
+      const scope = await tx.$queryRaw<{ id: string }[]>(
+        Prisma.sql`SELECT e.id
+             FROM employees e
+            WHERE current_user_is_vacreq_admin()
+               OR current_user_manages_employee(e.id)
+               OR e.id = current_user_employee_id()`,
+      );
+      const scopeIds = scope.map((r) => r.id);
+      // Eksplicitan `?employeeId=` NE sme da zaobiđe opseg — presek, ne zamena.
+      const empWhere = {
+        employeeId: q.employeeId
+          ? { in: scopeIds.filter((id) => id === q.employeeId) }
+          : { in: scopeIds },
+      };
       const statusWhere = q.status ? { status: q.status } : {};
       const where = { ...empWhere, ...statusWhere };
       const [vacation, makeup, paidLeave, nop] = await Promise.all([

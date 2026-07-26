@@ -691,25 +691,9 @@ export class MojProfilService {
       dto.clientEventId,
       "profile.vacation-submit",
       async (tx) => {
-        const selfId = (await this.resolveEmployee(tx, email))?.id ?? null;
-        const empId = dto.employeeId ?? selfId;
-        if (!empId)
-          throw new UnprocessableEntityException(
-            "Nismo pronašli vaš zaposlenički profil.",
-          );
         // Podnošenje ZA DRUGOG (paritet 1.0 canManageEmployee): samo za člana kojim
-        // upravljam. RLS `vr_insert` prva klauzula (submitted_by=ja) propušta bilo
-        // koji employee_id, pa je serverska provera JEDINA brana protiv IDOR-a —
-        // ista fn `current_user_manages_employee` koju koristi `GET /profile/team`.
-        if (dto.employeeId && dto.employeeId !== selfId) {
-          const mgd = await tx.$queryRaw<{ ok: boolean }[]>(
-            Prisma.sql`SELECT current_user_manages_employee(${dto.employeeId}::uuid) AS ok`,
-          );
-          if (mgd[0]?.ok !== true)
-            throw new ForbiddenException(
-              "Zahtev možete podneti samo za člana svog tima.",
-            );
-        }
+        // upravljam — vidi `resolveSubmitTarget` (jedina brana protiv IDOR-a).
+        const empId = await this.resolveSubmitTarget(tx, email, dto.employeeId);
         const balRows = await tx.$queryRaw<{ days_remaining: number | null }[]>(
           Prisma.sql`SELECT days_remaining FROM v_vacation_balance
              WHERE employee_id = ${empId}::uuid AND year = ${year} LIMIT 1`,
@@ -796,6 +780,40 @@ export class MojProfilService {
 
   // ---------- Nadoknada sati (makeup) ----------
 
+  /**
+   * Razreši zaposlenog za koga se podnosi zahtev + zatvori IDOR.
+   *
+   * ⚠️ AUDIT-K2 (26.07): RLS politike `mu_insert`/`pl_insert` (kao i `vr_insert`)
+   * proveravaju SAMO `lower(submitted_by) = auth.jwt()->>'email'`, a BE uvek upisuje
+   * `lower(email)` pozivaoca → uslov je UVEK ispunjen za bilo koji `employee_id`.
+   * Guard rute je `profile.self` (svaki prijavljen radnik), pa je serverska provera
+   * `current_user_manages_employee` JEDINA brana. Bila je postavljena samo na GO
+   * ruti; nadoknada i plaćeno odsustvo su je nemali → svako je mogao da podnese
+   * (i naruši saldo/evidenciju) u ime bilo kog zaposlenog.
+   */
+  private async resolveSubmitTarget(
+    tx: Sy15Tx,
+    email: string,
+    employeeId: string | undefined,
+  ): Promise<string> {
+    const selfId = (await this.resolveEmployee(tx, email))?.id ?? null;
+    const empId = employeeId ?? selfId;
+    if (!empId)
+      throw new UnprocessableEntityException(
+        "Nismo pronašli vaš zaposlenički profil.",
+      );
+    if (employeeId && employeeId !== selfId) {
+      const mgd = await tx.$queryRaw<{ ok: boolean }[]>(
+        Prisma.sql`SELECT current_user_manages_employee(${employeeId}::uuid) AS ok`,
+      );
+      if (mgd[0]?.ok !== true)
+        throw new ForbiddenException(
+          "Zahtev možete podneti samo za člana svog tima.",
+        );
+    }
+    return empId;
+  }
+
   /** Nadoknada submit — INSERT makeup_requests (submitted_by=email) + queue 'submitted' + pulse. */
   async submitMakeup(email: string, dto: SubmitMakeupDto) {
     const out = await this.runIdem(
@@ -803,12 +821,7 @@ export class MojProfilService {
       dto.clientEventId,
       "profile.makeup-submit",
       async (tx) => {
-        const empId =
-          dto.employeeId ?? (await this.resolveEmployee(tx, email))?.id;
-        if (!empId)
-          throw new UnprocessableEntityException(
-            "Nismo pronašli vaš zaposlenički profil.",
-          );
+        const empId = await this.resolveSubmitTarget(tx, email, dto.employeeId);
         const rows = await tx.$queryRaw<{ id: string }[]>(
           Prisma.sql`INSERT INTO makeup_requests
              (employee_id, absence_date, absence_hours, reason, makeup_plan, makeup_deadline,
@@ -852,12 +865,7 @@ export class MojProfilService {
       dto.clientEventId,
       "profile.paid-leave-submit",
       async (tx) => {
-        const empId =
-          dto.employeeId ?? (await this.resolveEmployee(tx, email))?.id;
-        if (!empId)
-          throw new UnprocessableEntityException(
-            "Nismo pronašli vaš zaposlenički profil.",
-          );
+        const empId = await this.resolveSubmitTarget(tx, email, dto.employeeId);
         const rows = await tx.$queryRaw<{ id: string }[]>(
           Prisma.sql`INSERT INTO paid_leave_requests
              (employee_id, leave_type, date_from, date_to, days_count, reason, proof_note,

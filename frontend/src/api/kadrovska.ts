@@ -920,8 +920,9 @@ export interface SubmitVacationVars {
 export const useSubmitVacation = () =>
   useKadrMutation<SubmitVacationVars>((v) => post('/requests/vacation', v));
 
-export const useVacationApprove = () =>
-  useKadrMutation<{ id: string; clientEventId?: string }>((v) => post(`/requests/vacation/${v.id}/approve`, { clientEventId: v.clientEventId }));
+// `useVacationApprove` (ruta …/approve) uklonjen — nije imao nijednog pozivaoca, a
+// vodio je na zastareli jednostepeni tok bez opsega/dvostepenosti/brane salda
+// (AUDIT-K2). Odobravanje ide isključivo kroz `useVacationVacreqApprove`.
 export const useVacationVacreqApprove = () =>
   useKadrMutation<{ id: string; clientEventId?: string }>((v) => post(`/requests/vacation/${v.id}/vacreq-approve`, { clientEventId: v.clientEventId }));
 export const useVacationReject = () =>

@@ -117,23 +117,26 @@ export class KadrovskaMutationsService {
     );
   }
 
-  /** Odobri (1.0 vacationRequestsTab:436-462): sef_approved|approved → queue mejl. */
+  /**
+   * ZASTARELO — alijas dvostepenog odobravanja (`vacationVacreqApprove`).
+   *
+   * ⚠️ AUDIT-K2 (26.07): ranije je zvao `hr_approve_vacation_request`, legat iz
+   * Sprinta 1 koji proverava SAMO `current_user_can_manage_vacreq()` (bilo koja
+   * rola iz {admin,hr,menadzment,leadpm,pm,poslovni_admin}) i onda odmah radi
+   * pending→approved. Time su zaobilažene TRI brane koje ima `hr_vacreq_approve`:
+   *   1) opseg pododeljenja (`current_user_manages_employee`) — šef je mogao da
+   *      odobri GO radniku iz tuđeg pododeljenja,
+   *   2) dvostepenost (zahtev ŠEFA finalizuje samo admin/HR; `dual_control` brana
+   *      da isti čovek ne bude i 1. i 2. nivo),
+   *   3) brana salda (`exceeds_balance`) — moglo se odobriti više dana nego što
+   *      radnik ima.
+   * U 1.0 ta funkcija NEMA nijednog pozivaoca (sve ide kroz `approveVacReqRpc`),
+   * kao ni `useVacationApprove` u 3.0 — ruta je bila dostupna samo direktnim API
+   * pozivom. Zadržana je kao alijas (a ne uklonjena) da spolja poznat put ne pukne,
+   * ali sada prolazi kroz ISTE provere.
+   */
   async vacationApprove(email: string, id: string, dto: D.OptIdempotentDto) {
-    const out = await this.mutate(
-      email,
-      dto.clientEventId,
-      "kadr.vacation.approve",
-      (tx) =>
-        this.rpcJson(
-          tx,
-          Prisma.sql`SELECT hr_approve_vacation_request(${id}::uuid, ${email}) AS v`,
-        ),
-    );
-    await this.queueVacationDecision(email, id, out, [
-      "sef_approved",
-      "approved",
-    ]);
-    return out;
+    return this.vacationVacreqApprove(email, id, dto);
   }
 
   /** Dvostepeno odobravanje (šef → level1; finalno hr/admin) + queue mejl. */
@@ -1906,16 +1909,48 @@ export class KadrovskaMutationsService {
         ),
     );
   }
+  /**
+   * 360° kampanja.
+   *
+   * ⚠️ AUDIT-K2 (26.07): `assessment_open_campaign` proverava rolu SAMO JEDNOM
+   * (`current_user_can_manage_org_profile() OR current_user_is_admin()`), pa u
+   * petlji otvara procenu za SVAKI prosleđen `employee_id` bez ijedne provere
+   * opsega. Kako `can_manage_org_profile` obuhvata i pm/leadpm, direktan API poziv
+   * je mogao da otvori 360 bilo kome u firmi. 1.0 je to sprečavao pri izboru
+   * (`assessmentCampaign.js:17` → `canManageDevPlanFor(e)`, uz poruku „Nema
+   * zaposlenih u vašem opsegu."). Ovde vraćamo isto pravilo kao SERVERSKU branu,
+   * istom DB funkcijom (`current_user_manages_dev_plan`), plus pravilo „niko o
+   * sebi" (MODULE_SPEC §2.6 t.14).
+   */
   assessmentOpenCampaign(email: string, dto: D.OpenCampaignDto) {
     return this.create(
       email,
       dto.clientEventId,
       "kadr.assessment.campaign",
-      (tx) =>
-        this.rpcScalar(
+      async (tx) => {
+        const ids = [...new Set(dto.employeeIds ?? [])];
+        if (!ids.length)
+          throw new UnprocessableEntityException(
+            "Izaberite bar jednog zaposlenog.",
+          );
+        const allowed = await tx.$queryRaw<{ id: string }[]>(
+          Prisma.sql`SELECT e.id
+               FROM employees e
+              WHERE e.id = ANY(${ids}::uuid[])
+                AND (current_user_is_admin() OR current_user_manages_dev_plan(e.id))
+                AND e.id IS DISTINCT FROM current_user_employee_id()`,
+        );
+        const ok = new Set(allowed.map((r) => r.id));
+        const denied = ids.filter((i) => !ok.has(i));
+        if (denied.length)
+          throw new ForbiddenException(
+            `Kampanju možete otvoriti samo za zaposlene iz svog opsega (i ne za sebe). Van opsega: ${denied.length}.`,
+          );
+        return this.rpcScalar(
           tx,
-          Prisma.sql`SELECT assessment_open_campaign(${dto.title}, ${dto.period}, ${dto.employeeIds}::uuid[]) AS v`,
-        ),
+          Prisma.sql`SELECT assessment_open_campaign(${dto.title}, ${dto.period}, ${ids}::uuid[]) AS v`,
+        );
+      },
     );
   }
   /** ⚠️ Deljen sa D (Moj profil samoprocena) — G ne menja potpis (G7). */
