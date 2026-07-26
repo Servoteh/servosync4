@@ -267,3 +267,41 @@ describe("Sy15CronJobs — registar poslova (Talas A/A2)", () => {
     expect(byKey.get("sast-weekly-auto")?.catchUpMinutes).toBe(55);
   });
 });
+
+/**
+ * REGRESIJA (prod incident 26.07): reklamacija zaglavljenog RUNNING posla je
+ * padala na `42883: function make_interval(mins => bigint) does not exist` —
+ * Prisma vezuje JS broj kao int8, a `make_interval(mins => …)` prima int.
+ * Posledica: RUSIO SE SVAKI TIK pogona (532 greske za sat vremena), pa HR
+ * obavestenja / mejlovi sastanaka nisu isli pouzdano.
+ * Jedinicni test ne moze da izvrsi SQL, ali MOZE da pinuje da cast postoji.
+ */
+describe("SchedulerService — make_interval cast (regresija 26.07)", () => {
+  const mkJob = (): ScheduledJob => ({
+    key: "test-job",
+    description: "t",
+    schedule: { kind: "daily", at: "09:00" },
+    run: jest.fn().mockResolvedValue("ok"),
+  });
+
+  it("retry upit kastuje staleAfter na ::int (inace pada 42883 na produ)", async () => {
+    const { svc, prisma } = makeService();
+    const jb = mkJob();
+    svc.register(jb);
+    // 1. upit (INSERT claim) → prazno, pa se ide na 2. (retry/stale reclaim).
+    prisma.$queryRaw.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+    await (
+      svc as unknown as { claimAndRun(j: ScheduledJob, s: Date): Promise<void> }
+    ).claimAndRun(jb, new Date("2026-07-24T07:00:00Z"));
+
+    const sql = prisma.$queryRaw.mock.calls
+      .map((c) => {
+        const t = c[0] as { strings?: readonly string[] } | undefined;
+        return Array.isArray(t?.strings) ? t.strings.join("?") : String(c[0]);
+      })
+      .join(" | ");
+    expect(sql).toContain("make_interval");
+    // Parametar MORA nositi cast; kolonski `10 * attempts` ga ne traži.
+    expect(sql).toContain("::int");
+  });
+});

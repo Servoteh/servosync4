@@ -155,6 +155,11 @@ export class SchedulerService implements OnModuleDestroy {
       //    re-run bezbedan). Prag je PO POSLU: default 10 min važi za kratke sy15
       //    pozive, a dug posao (npr. BigBit sync) ga mora podići iznad svog
       //    najdužeg trajanja, inače bi sam sebe pokrenuo drugi put (review [7]).
+      // ⚠️ `${staleAfter}::int` — Prisma vezuje JS broj kao int8/bigint, a
+      // `make_interval(mins => …)` prima int, pa je bez cast-a upit padao na
+      // `42883: function make_interval(mins => bigint) does not exist` i RUSIO
+      // SVAKI TIK pogona (532 greske za sat vremena na produ, 26.07). Susedni
+      // `mins => 10 * attempts` radi jer je `attempts` KOLONA (int), ne parametar.
       const staleAfter = job.staleAfterMinutes ?? DEFAULT_STALE_AFTER_MINUTES;
       const retried = await this.prisma.$queryRaw<{ id: number; attempts: number }[]>`
         UPDATE scheduled_job_runs
@@ -166,7 +171,7 @@ export class SchedulerService implements OnModuleDestroy {
              (status = ${JOB_STATUS.FAILED}
                AND finished_at < now() - make_interval(mins => 10 * attempts))
              OR (status = ${JOB_STATUS.RUNNING}
-               AND started_at < now() - make_interval(mins => ${staleAfter}))
+               AND started_at < now() - make_interval(mins => ${staleAfter}::int))
            )
         RETURNING id, attempts`;
       runId = retried[0]?.id ?? null;
