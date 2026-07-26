@@ -14,6 +14,7 @@ import {
   fetchAiImageUrl,
   useAiChat,
   useAiConversations,
+  useAiEngines,
   useAiLimit,
   useAiMe,
   useAiMessages,
@@ -24,6 +25,9 @@ import {
 } from '@/api/ai';
 
 const ENGINE_KEY = 'ss_ai_engine';
+
+/** Ispod ovoliko preostalih ULAZNIH tokena prikazujemo upozorenje (10% od 200k). */
+const LOW_BUDGET_WARN = 20_000;
 
 function getEngine(): Engine {
   if (typeof window === 'undefined') return 'openai';
@@ -79,6 +83,7 @@ export function AiChat({
   const convs = useAiConversations();
   const projects = useAiProjects();
   const limit = useAiLimit();
+  const enginesQ = useAiEngines();
   const chat = useAiChat();
   const delConv = useDeleteConversation();
 
@@ -100,7 +105,20 @@ export function AiChat({
   const messagesQ = useAiMessages(activeId);
   const messages = messagesQ.data?.data ?? [];
 
+  // Talas AI-0 (7a): nudimo SAMO engine-e koje server ima. Dok upit ne stigne (ili
+  // ako padne) ostaje statički spisak — bolje ponuditi previše nego ništa.
+  const availableEngines: Engine[] = useMemo(
+    () => enginesQ.data?.data.map((e) => e.engine) ?? ENGINES,
+    [enginesQ.data],
+  );
+
   useEffect(() => setEngine(getEngine()), []);
+  // Ako je zapamćeni engine nekonfigurisan, prebaci se na prvi dostupan.
+  useEffect(() => {
+    if (availableEngines.length && !availableEngines.includes(engine)) {
+      setEngine(availableEngines[0]);
+    }
+  }, [availableEngines, engine]);
   useEffect(() => {
     if (limit.data?.data) setRemaining(limit.data.data.remaining);
   }, [limit.data]);
@@ -309,7 +327,11 @@ export function AiChat({
             <div className="truncate text-sm font-semibold text-ink">AI asistent</div>
             <div className="truncate text-2xs text-ink-secondary">
               {projectRef ? `${projectRef} · deljena nit` : 'interno'}
-              {remaining != null && remaining <= 10 ? ` · još ${remaining} poruka danas` : ''}
+              {/* Talas AI-0: budžet je u ulaznim tokenima; -1 = bez limita (admin).
+                  Upozorenje tek ispod 10% dnevnog budžeta. */}
+              {remaining != null && remaining >= 0 && remaining <= LOW_BUDGET_WARN
+                ? ` · još ~${Math.round(remaining / 1000)}k tokena danas`
+                : ''}
             </div>
           </div>
           {variant !== 'desktop' && (
@@ -323,7 +345,7 @@ export function AiChat({
             </button>
           )}
           <div className="flex flex-wrap gap-1">
-            {ENGINES.map((e) => (
+            {availableEngines.map((e) => (
               <button
                 key={e}
                 onClick={() => setEnginePersist(e)}
