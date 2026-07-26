@@ -105,17 +105,7 @@ export function daysUntilBirthday(iso: string | null | undefined): number {
   return Math.round((next.getTime() - today.getTime()) / 86400000);
 }
 
-/** Da li MM-DD rođendana pada u narednih 30 dana (wrap decembar→januar). */
-export function birthdayInNext30(birthDate: string | null | undefined): boolean {
-  if (!birthDate) return false;
-  const md = String(birthDate).slice(5, 10);
-  if (!md) return false;
-  const todayIso = new Date().toISOString().slice(0, 10);
-  const in30 = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString().slice(0, 10);
-  const tNow = todayIso.slice(5);
-  const tIn30 = in30.slice(5);
-  return tNow <= tIn30 ? md >= tNow && md <= tIn30 : md >= tNow || md <= tIn30;
-}
+/* `birthdayInNext30` uklonjen (AUDIT-K5): eksport bez ijednog pozivaoca. */
 
 /** Dana do isteka lekarskog (negativno = istekao); null bez datuma. */
 export function medicalDaysLeft(expires: string | null | undefined): number | null {

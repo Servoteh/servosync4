@@ -188,10 +188,7 @@ export function isMinorAt(birthDate: string | null | undefined, refIso: string |
   return new Date(refIso) < adultAt;
 }
 
-/** Prikaz imena zaposlenog za dokument (full_name je već „Ime Prezime"). */
-export function empDocName(fullName: string | null | undefined): string {
-  return String(fullName || '').trim();
-}
+/* `empDocName` uklonjen (AUDIT-K5): eksport bez ijednog pozivaoca. */
 
 /** Formatiran raspon trajanja ugovora za natpis („dd.mm — dd.mm · N meseci"). */
 export function durationHint(fromIso: string, toIso: string): string {

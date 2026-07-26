@@ -382,7 +382,10 @@ export class OnboardingStartDto extends IdempotentDto {
   @IsOptional() @IsISO8601() startDate?: string;
 }
 export class OnboardingTaskDto {
-  @IsOptional() @IsString() status?: string;
+  /** AUDIT-K5: rečnik 1.0 (onboardingTab.js) = open | done | skipped.
+   *  Bez liste je prolazila bilo koja vrednost i pravila status koji nijedan UI
+   *  ne prepoznaje. */
+  @IsOptional() @IsIn(["open", "done", "skipped"]) status?: string;
   @IsOptional() @IsBoolean() done?: boolean;
   @IsOptional() @IsString() note?: string;
 }

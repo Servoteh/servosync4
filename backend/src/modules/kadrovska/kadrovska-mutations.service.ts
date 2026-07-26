@@ -1429,7 +1429,9 @@ export class KadrovskaMutationsService {
             ...(dto.status != null ? { status: dto.status } : {}),
             ...(dto.done != null
               ? {
-                  status: dto.done ? "done" : "pending",
+                  // AUDIT-K5: „pending" ne postoji u rečniku 1.0
+                  // (open/done/skipped) — 1.0 UI takav zadatak ne bi prepoznao.
+                  status: dto.done ? "done" : "open",
                   doneAt: dto.done ? new Date() : null,
                   doneBy: dto.done ? email : null,
                 }
@@ -1547,10 +1549,14 @@ export class KadrovskaMutationsService {
             ...(dto.periodLabel != null
               ? { periodLabel: dto.periodLabel }
               : {}),
-            ...(dto.periodStart
-              ? { periodStart: this.date(dto.periodStart) }
+            // AUDIT-K5: undefined = ne diraj; ''/null = obriši (ranije se prazna
+            // vrednost tiho ignorisala, pa se početak/kraj plana nije mogao skinuti).
+            ...(dto.periodStart !== undefined
+              ? { periodStart: dto.periodStart ? this.date(dto.periodStart) : null }
               : {}),
-            ...(dto.periodEnd ? { periodEnd: this.date(dto.periodEnd) } : {}),
+            ...(dto.periodEnd !== undefined
+              ? { periodEnd: dto.periodEnd ? this.date(dto.periodEnd) : null }
+              : {}),
             ...(dto.careerGoalMd !== undefined
               ? { careerGoalMd: dto.careerGoalMd }
               : {}),
@@ -1644,7 +1650,12 @@ export class KadrovskaMutationsService {
             ...(dto.descriptionMd !== undefined
               ? { descriptionMd: dto.descriptionMd }
               : {}),
-            ...(dto.dueDate ? { dueDate: this.date(dto.dueDate) } : {}),
+            // AUDIT-K5: `dto.dueDate ? …` je onemogućavao BRISANJE roka — prazan
+            // string/null se tretirao kao „nije poslato". Sada: undefined = ne
+            // diraj; '' ili null = obriši (ista semantika kao ostala polja).
+            ...(dto.dueDate !== undefined
+              ? { dueDate: dto.dueDate ? this.date(dto.dueDate) : null }
+              : {}),
             ...(dto.progress != null ? { progress: dto.progress } : {}),
             ...(dto.completionNote !== undefined
               ? { completionNote: dto.completionNote }
@@ -2659,11 +2670,30 @@ export class KadrovskaMutationsService {
           holidays.map((h) => h.holidayDate.toISOString().slice(0, 10)),
         );
 
+        // ⚠️ AUDIT-K5 (26.07): skup se bira po REDOVIMA MESECA, ne po „aktivnim
+        // zaposlenima". 1.0 `recomputePayrollMonthFromGrid` iterira postojeće
+        // redove `v_salary_payroll_month` (koje je napravio `kadr_payroll_init_month`)
+        // i odbija da radi kad ih nema („Nema redova — prvo pripremi mesec").
+        // Filtriranje po `isActive` je pravilo dve štete:
+        //  (a) radnik kome je is_active=false (odlazak sredinom/krajem meseca) ima
+        //      red u salary_payroll ali ga recompute PRESKAČE — njegova poslednja
+        //      plata, najosetljivija isplata, nikad ne dobije K3.3 brojeve;
+        //  (b) radnik BEZ reda za mesec dobijao je NOV red kroz INSERT granu RPC-a,
+        //      gde init-snapshot nije odrađen → salary_type pada na 'ugovor' i
+        //      fixed_salary/hourly_rate/transport/per_diem = 0.
+        const monthRows = await tx.$queryRaw<{ employee_id: string }[]>(
+          Prisma.sql`SELECT employee_id FROM salary_payroll
+             WHERE period_year = ${year}::int AND period_month = ${month}::int
+               ${dto.employeeId ? Prisma.sql`AND employee_id = ${dto.employeeId}::uuid` : Prisma.empty}`,
+        );
+        const monthEmpIds = monthRows.map((r) => r.employee_id);
+        if (!monthEmpIds.length) {
+          throw new UnprocessableEntityException(
+            "Mesec nije pripremljen — prvo pokreni „Pripremi mesec” (init), pa obračun iz grida.",
+          );
+        }
         const employees = await tx.employee.findMany({
-          where: {
-            isActive: true,
-            ...(dto.employeeId ? { id: dto.employeeId } : {}),
-          },
+          where: { id: { in: monthEmpIds } },
           select: { id: true, workType: true, hireDate: true, fullName: true },
         });
 
@@ -2744,6 +2774,11 @@ export class KadrovskaMutationsService {
                AND (effective_to IS NULL OR effective_to >= ${monthStart}::date)
              ORDER BY effective_from DESC LIMIT 1`,
           );
+          // ⚠️ AUDIT-K5: bez AKTIVNIH uslova zarade `mapTerm(undefined)` daje
+          // sve nule, pa bi engine upisao ukupna_zarada=0 i pregazio prethodni
+          // (ručno unet) obračun. 1.0 u tom slučaju IZOSTAVLJA novčane ključeve —
+          // RPC ih onda COALESCE-uje i red ostaje kakav je bio.
+          const hasTerms = termRows.length > 0;
           const term = this.mapTerm(termRows[0]);
 
           const res = computeEarnings({
@@ -2792,12 +2827,23 @@ export class KadrovskaMutationsService {
             ),
             // 1.0 upisuje REDOVNE sate (ne payable) — payslip satničara ih prikazuje.
             hours_worked: agg.redovanRadSati,
-            compensation_model: res.compensationModel,
-            payable_hours: res.payableHours,
-            ukupna_zarada: res.ukupnaZarada,
-            prvi_deo: res.prviDeo,
-            preostalo_za_isplatu: res.preostaloZaIsplatu,
-            warnings: res.warnings,
+            // Novčane kolone SAMO kad postoje aktivni uslovi zarade (AUDIT-K5):
+            // bez njih engine daje nule, a izostavljen ključ znači „ne diraj".
+            ...(hasTerms
+              ? {
+                  compensation_model: res.compensationModel,
+                  payable_hours: res.payableHours,
+                  ukupna_zarada: res.ukupnaZarada,
+                  prvi_deo: res.prviDeo,
+                  preostalo_za_isplatu: res.preostaloZaIsplatu,
+                }
+              : {}),
+            warnings: hasTerms
+              ? res.warnings
+              : [
+                  ...(res.warnings ?? []),
+                  "Nema aktivnih uslova zarade za mesec — iznosi nisu preračunati.",
+                ],
           };
 
           if (dto.persist) {

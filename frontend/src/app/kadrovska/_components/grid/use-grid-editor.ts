@@ -79,8 +79,7 @@ export interface GridEditor {
   refresh: () => void;
   dirtyCount: () => number;
   dirtyEmployeeCount: () => number;
-  buildBatchRows: () => import('@/api/kadrovska').GridBatchRow[];
-  collectNopSync: () => { empId: string; ymd: string; isNop: boolean; wasNop: boolean }[];
+  buildBatchRows: () => import('@/api/kadrovska').GridBatchRow[];
   clearDirty: () => void;
 }
 
@@ -400,22 +399,29 @@ export function useGridEditor({ days, getDbRow, editable, isAdmin, onNopAttempt 
 
   const applyPaste = useCallback(
     (startEmpId: string, startYmd: string, startKind: CellKind, matrix: string[][], visibleEmpIds: string[]): number => {
-      // Redovi paste-a šire se preko DANA (kolone), a redovi preko VRSTE KIND-a
-      // se u 2.0 mapiraju na isti radnik/istu vrstu po danima (paritet 1.0 col-walk).
+      // Kolone matrice idu preko DANA, a REDOVI matrice preko RADNIKA (nadole od
+      // reda na kome je paste počeo) — kao u Excelu odakle se i kopira.
+      // ⚠️ AUDIT-K5 (26.07): ranije se `r` uopšte nije koristio za izbor radnika —
+      // svi redovi su upisivani u ISTOG radnika (startEmpId) i redom gazili jedan
+      // drugog, pa je od bloka N×M ostajao samo poslednji red. `visibleEmpIds` je
+      // bio primljen pa odbačen (`void visibleEmpIds`).
       const dayIdx = days.findIndex((d) => d.ymd === startYmd);
       if (dayIdx < 0) return 0;
+      const empIdx = visibleEmpIds.indexOf(startEmpId);
       let count = 0;
       for (let r = 0; r < matrix.length; r++) {
+        // Van liste vidljivih radnika (npr. blok duži od tabele) → prekini.
+        const empId = empIdx < 0 ? (r === 0 ? startEmpId : null) : visibleEmpIds[empIdx + r];
+        if (!empId) break;
         const cols = matrix[r];
         for (let c = 0; c < cols.length; c++) {
           const d = days[dayIdx + c];
           if (!d) break;
-          onCellChange(startEmpId, d.ymd, startKind, String(cols[c] || '').trim());
-          onCellBlur(startEmpId, d.ymd, startKind);
+          onCellChange(empId, d.ymd, startKind, String(cols[c] || '').trim());
+          onCellBlur(empId, d.ymd, startKind);
           count++;
         }
       }
-      void visibleEmpIds;
       bumpStruct();
       return count;
     },
@@ -470,18 +476,17 @@ export function useGridEditor({ days, getDbRow, editable, isAdmin, onNopAttempt 
     return rows;
   }, []);
 
-  const collectNopSync = useCallback(() => {
-    const out: { empId: string; ymd: string; isNop: boolean; wasNop: boolean }[] = [];
-    for (const [key, d] of dirtyRef.current) {
-      const sep = key.indexOf('|');
-      const empId = key.slice(0, sep);
-      const ymd = key.slice(sep + 1);
-      const isNop = d.absence_code === 'nop';
-      const wasNop = getDbRow(empId, ymd)?.absenceCode === 'nop';
-      if (isNop !== wasNop) out.push({ empId, ymd, isNop, wasNop });
-    }
-    return out;
-  }, [getDbRow]);
+  /*
+   * `collectNopSync` UKLONJEN (AUDIT-K5, 26.07).
+   *
+   * Funkcija je računala prelaze NOP-a u gridu da bi se preslikali u `absences`,
+   * ali je NIKAD nije niko pozvao. Nije povezana namerno: MODULE_SPEC §2.6
+   * pravilo 2 kaže da `work_hours` (grid) i `absences` NISU auto-sinhronizovani —
+   * payroll čita ISKLJUČIVO grid, a `applyAbsencePeriodToGrid` je jednosmeran
+   * upis odsustva U grid. Povezivanje bi uvelo dvosmernu sinhronizaciju koju
+   * doktrina izričito zabranjuje („ne ujednačavati usput"), pa je ispravno
+   * ukloniti mrtav kod, a ne aktivirati ga.
+   */
 
   const clearDirty = useCallback(() => {
     dirtyRef.current.clear();
@@ -520,7 +525,6 @@ export function useGridEditor({ days, getDbRow, editable, isAdmin, onNopAttempt 
       dirtyCount,
       dirtyEmployeeCount,
       buildBatchRows,
-      collectNopSync,
       clearDirty,
       refresh,
     }),
@@ -549,7 +553,6 @@ export function useGridEditor({ days, getDbRow, editable, isAdmin, onNopAttempt 
       dirtyCount,
       dirtyEmployeeCount,
       buildBatchRows,
-      collectNopSync,
       clearDirty,
       refresh,
     ],

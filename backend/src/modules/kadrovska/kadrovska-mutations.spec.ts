@@ -454,12 +454,18 @@ describe("payrollRecompute — integracija (mapTerm/fond wiring, novac)", () => 
   }
 
   // tx sa: bez praznika, jedan zaposleni, zadatim work_hours + term redom.
-  // $queryRaw redosled u recompute: (1) salary_payroll (postojeći) → [], (2) salary_terms → [term].
+  // ⚠️ AUDIT-K5: mock je SADRŽAJNI (po tekstu upita), ne pozicioni — recompute
+  // sada prvo pita KOJI REDOVI MESECA postoje (`SELECT employee_id FROM
+  // salary_payroll`) umesto da uzima sve aktivne zaposlene, pa bi
+  // `mockResolvedValueOnce` lanac pukao na svaku izmenu redosleda.
   function makeTx(opts: {
     workType?: string;
     workHours: Array<Record<string, unknown>>;
     term: Record<string, unknown>;
+    /** Postojeći salary_payroll red (za CRITICAL #2 prenos datuma isplate). */
+    existing?: Record<string, unknown> | null;
   }) {
+    type SqlLike = { strings: string[]; values: unknown[] };
     return {
       kadrHoliday: { findMany: jest.fn().mockResolvedValue([]) },
       employee: {
@@ -474,10 +480,18 @@ describe("payrollRecompute — integracija (mapTerm/fond wiring, novac)", () => 
       },
       workHours: { findMany: jest.fn().mockResolvedValue(opts.workHours) },
       salaryPayroll: { findFirst: jest.fn().mockResolvedValue(null) },
-      $queryRaw: jest
-        .fn()
-        .mockResolvedValueOnce([]) // postojeći salary_payroll red
-        .mockResolvedValueOnce([opts.term]), // salary_terms
+      $queryRaw: jest.fn(async (sql: SqlLike) => {
+        const t = sql?.strings?.join("?") ?? "";
+        // 1) Koji redovi meseca postoje (izbor skupa).
+        if (t.includes("SELECT employee_id FROM salary_payroll"))
+          return [{ employee_id: EMP }];
+        // 2) Postojeći red tog zaposlenog (advance/teren/optimistic token).
+        if (t.includes("FROM salary_payroll"))
+          return opts.existing ? [opts.existing] : [];
+        // 3) Aktivni uslovi zarade.
+        if (t.includes("FROM salary_terms")) return [opts.term];
+        return [{ v: { applied: true } }];
+      }),
     };
   }
 
@@ -570,35 +584,39 @@ describe("payrollRecompute — integracija (mapTerm/fond wiring, novac)", () => 
           ]),
       },
       workHours: { findMany: jest.fn().mockResolvedValue([]) },
-      $queryRaw: jest
-        .fn()
-        // (1) postojeći salary_payroll red — sa datumima isplate
-        .mockResolvedValueOnce([
-          {
-            id: EMP,
-            status: "u_obradi",
-            advance_amount: 0,
-            domestic_days: 0,
-            foreign_days: 0,
-            apo: "2026-07-10",
-            fpo: "2026-08-05",
-            u: "2026-07-31 10:00:00+00",
-          },
-        ])
-        // (2) salary_terms
-        .mockResolvedValueOnce([
-          {
-            salary_type: "ugovor",
-            compensation_model: "fiksno",
-            fixed_amount: 100000,
-            amount: 0,
-          },
-        ])
-        // (3) hr_upsert_salary_payroll — uhvati JSON row
-        .mockImplementationOnce((sql: { values: unknown[] }) => {
-          captured.push(sql);
-          return Promise.resolve([{ v: { applied: true } }]);
-        }),
+      // Sadržajni mock (AUDIT-K5): recompute prvo pita koji redovi meseca postoje.
+      $queryRaw: jest.fn((sql: { strings?: string[]; values: unknown[] }) => {
+        const t = sql?.strings?.join("?") ?? "";
+        if (t.includes("SELECT employee_id FROM salary_payroll"))
+          return Promise.resolve([{ employee_id: EMP }]);
+        if (t.includes("FROM salary_payroll"))
+          return Promise.resolve([
+            {
+              id: EMP,
+              status: "u_obradi",
+              advance_amount: 0,
+              domestic_days: 0,
+              foreign_days: 0,
+              per_diem_rsd: 0,
+              per_diem_eur: 0,
+              apo: "2026-07-10",
+              fpo: "2026-08-05",
+              u: "2026-07-31 10:00:00+00",
+            },
+          ]);
+        if (t.includes("FROM salary_terms"))
+          return Promise.resolve([
+            {
+              salary_type: "ugovor",
+              compensation_model: "fiksno",
+              fixed_amount: 100000,
+              amount: 0,
+            },
+          ]);
+        // hr_upsert_salary_payroll — uhvati JSON row
+        captured.push(sql);
+        return Promise.resolve([{ v: { applied: true } }]);
+      }),
     };
     const svc = makeService(tx);
     await svc.payrollRecompute(EMAIL, {

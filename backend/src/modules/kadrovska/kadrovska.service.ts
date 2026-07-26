@@ -662,14 +662,13 @@ export class KadrovskaService {
           ...(q.employeeId ? { employeeId: q.employeeId } : {}),
           ...(q.archived === "active" ? { archivedAt: null } : {}),
           ...(q.archived === "archived" ? { NOT: { archivedAt: null } } : {}),
-          ...(q.from || q.to
-            ? {
-                dateFrom: {
-                  ...(q.from ? { gte: this.toDbDate(q.from)! } : {}),
-                },
-                ...(q.to ? { dateTo: { lte: this.toDbDate(q.to)! } } : {}),
-              }
-            : {}),
+          // ⚠️ AUDIT-K5 (26.07): PRESEK sa periodom, ne SADRŽANOST u periodu.
+          // Ranije `dateFrom >= from AND dateTo <= to` → odsustvo koje prelazi
+          // granicu (npr. bolovanje 25.06–10.07 pri filteru za jul) NESTAJALO je
+          // iz pregleda, iako u tom periodu traje. Preklapanje = počinje pre kraja
+          // perioda I završava se posle početka perioda.
+          ...(q.to ? { dateFrom: { lte: this.toDbDate(q.to)! } } : {}),
+          ...(q.from ? { dateTo: { gte: this.toDbDate(q.from)! } } : {}),
         },
         orderBy: [{ dateFrom: "desc" }],
       });
@@ -1020,8 +1019,22 @@ export class KadrovskaService {
    *  ⚠️ event_ids je bigint[] → Number (JSON ne serijalizuje BigInt; §1 review). */
   async attendanceCorrections(email: string, q: AttendanceDailyQueryDto) {
     return this.withUserMapped(email, async (tx) => {
+      // ⚠️ AUDIT-K5 (26.07): from/to su stizali u DTO-u ali se NISU primenjivali —
+      // ekran je uvek dobijao poslednjih 300 korekcija bez obzira na izabrani
+      // period. Filtriramo po danu na koji se korekcija odnosi (`work_day`).
       const rows = await tx.attendanceCorrection.findMany({
-        where: { ...(q.employeeId ? { employeeId: q.employeeId } : {}) },
+        where: {
+          ...(q.employeeId ? { employeeId: q.employeeId } : {}),
+          ...(q.status === "all" ? {} : { status: "active" }),
+          ...(q.from || q.to
+            ? {
+                day: {
+                  ...(q.from ? { gte: this.toDbDate(q.from)! } : {}),
+                  ...(q.to ? { lte: this.toDbDate(q.to)! } : {}),
+                },
+              }
+            : {}),
+        },
         orderBy: [{ createdAt: "desc" }],
         take: 300,
       });
@@ -1658,21 +1671,31 @@ export class KadrovskaService {
    *  rev_* SELECT je USING(true) za authenticated (paritet 1.0 — HR vidi za bilo koga). */
   async offboardingOutstandingReversi(email: string, employeeId: string) {
     return this.withUserMapped(email, async (tx) => {
+      // ⚠️ AUDIT-K5 (26.07): LIMIT je bio na SPOJU (linije), a 1.0 ga primenjuje na
+      // DOKUMENTE. Jedan revers sa mnogo stavki mogao je da potroši ceo limit i
+      // tiho odseče zaduženja drugih reversa — na ekranu za razduženje pri
+      // odlasku radnika to znači stavku koja se nikad ne vrati. Sada se limit
+      // odnosi na dokumente, a sve njihove otvorene linije se prikazuju.
       const data = await tx.$queryRaw(
         Prisma.sql`
+          WITH docs AS (
+            SELECT d.id, d.doc_number, d.doc_type, d.issued_at
+              FROM rev_documents d
+             WHERE d.recipient_employee_id = ${employeeId}::uuid
+               AND d.status IN ('OPEN', 'PARTIALLY_RETURNED')
+             ORDER BY d.issued_at DESC
+             LIMIT 200
+          )
           SELECT d.id AS doc_id, d.doc_number, d.doc_type, d.issued_at,
                  t.oznaka, COALESCE(t.naziv, l.part_name) AS naziv,
                  (l.quantity - COALESCE(l.returned_quantity, 0)) AS qty,
                  COALESCE(l.unit, 'kom') AS unit, l.napomena AS pribor
-            FROM rev_documents d
+            FROM docs d
             JOIN rev_document_lines l ON l.document_id = d.id
             LEFT JOIN rev_tools t ON t.id = l.tool_id
-           WHERE d.recipient_employee_id = ${employeeId}::uuid
-             AND d.status IN ('OPEN', 'PARTIALLY_RETURNED')
-             AND l.line_status = 'ISSUED'
+           WHERE l.line_status = 'ISSUED'
              AND (l.quantity - COALESCE(l.returned_quantity, 0)) > 0
-           ORDER BY d.issued_at DESC
-           LIMIT 200`,
+           ORDER BY d.issued_at DESC`,
       );
       // qty je numeric (Prisma.Decimal) → Number kroz Decimal-aware numify (review #22).
       return { data: this.numify(data) };

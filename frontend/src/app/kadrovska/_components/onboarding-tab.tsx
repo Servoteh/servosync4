@@ -167,7 +167,10 @@ function RunCard({ run, tasks, name, open, onToggle }: { run: OnboardingRun; tas
             })}
           </div>
           <div className="mt-2 flex gap-2">
-            {p.total > 0 && p.done === p.total && <Button className="h-7 px-2 text-xs" onClick={finish}>✓ Završi tok</Button>}
+            {/* AUDIT-K5: uslov je bio `p.total > 0 && p.done === p.total`, pa se tok
+                pokrenut iz šablona BEZ stavki nije mogao završiti — dugme je bilo
+                sakriveno, a jedini izlaz „Otkaži tok" (pogrešan status u evidenciji). */}
+            {p.done === p.total && <Button className="h-7 px-2 text-xs" onClick={finish}>✓ Završi tok</Button>}
             <Button variant="ghost" className="h-7 px-2 text-xs" onClick={cancel}>Otkaži tok</Button>
           </div>
           {isOff && <OffboardingReversi employeeId={run.employeeId} />}

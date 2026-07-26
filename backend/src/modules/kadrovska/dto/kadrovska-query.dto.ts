@@ -122,6 +122,9 @@ export class AttendanceDailyQueryDto {
   @IsOptional() @IsUUID() employeeId?: string;
   @IsOptional() @IsISO8601() from?: string;
   @IsOptional() @IsISO8601() to?: string;
+  /** Korekcije: 1.0 čita SAMO `status=eq.active` (prisustvo.js:165). Podrazumevano
+   *  isto; `all` vraća i otkazane (AUDIT-K5). */
+  @IsOptional() @IsIn(["active", "all"]) status?: string;
 }
 
 /** Sati pojedinačno — employeeId + raspon datuma. */
