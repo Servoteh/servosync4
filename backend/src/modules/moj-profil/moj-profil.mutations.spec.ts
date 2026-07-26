@@ -204,6 +204,9 @@ describe("MojProfilService R2 mutacije", () => {
       clientEventId: CID,
       absenceDate: "2026-08-01",
       absenceHours: 4,
+      // AUDIT-K4: razlog i predlog nadoknade su OBAVEZNI (paritet 1.0).
+      reason: "bio kod lekara",
+      makeupPlan: "nadoknadicu u petak",
       employeeId: CLAN,
     });
     expect(sy15.runIdempotentRls).toHaveBeenCalledWith(

@@ -85,10 +85,11 @@ export class KadrovskaController {
   // Izveštaji nad NON-INVOKER view-ovima — namenske rute sa TAČNOM baznom permisijom
   // (guard = jedina zaštita; RLS ne pomaže jer view radi kao postgres). Deklarisane PRE
   // generičke `reports/:kind` (Express: literal pre param).
+  /** AUDIT-K4: prima from/to/limit (1.0 paritet: changed_at.desc, limit 1–500). */
   @Get("reports/audit")
   @RequirePermission(PERMISSIONS.KADROVSKA_ADMIN)
-  reportAudit(@Req() req: AuthedRequest) {
-    return this.kadrovska.report(req.user.email, "audit");
+  reportAudit(@Req() req: AuthedRequest, @Query() q: ReportQueryDto) {
+    return this.kadrovska.report(req.user.email, "audit", q);
   }
 
   @Get("reports/medical")
@@ -369,6 +370,17 @@ export class KadrovskaController {
     @Param("id", ParseUUIDPipe) id: string,
   ) {
     return this.kadrovska.contractBruto(req.user.email, id);
+  }
+
+  /** Ugovorna zarada NETO/BRUTO (kadr_get_contract_salary) — poslovni admin
+   *  unosi/čita ugovornu zaradu BEZ pristupa tabu Zarade (AUDIT-K4, odluka 26.07). */
+  @Get("employees/:id/contract-salary")
+  @RequirePermission(PERMISSIONS.KADROVSKA_PII)
+  contractSalary(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return this.kadrovska.contractSalary(req.user.email, id);
   }
 
   /** Istorija lekarskih pregleda zaposlenog — SVI pregledi (exam_date DESC), pun red po

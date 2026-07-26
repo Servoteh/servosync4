@@ -18,6 +18,7 @@ import {
   useDeletePaidLeave,
 } from '@/api/moj-profil';
 import { Section, statusLabel, statusTone } from './section';
+import { PAID_LEAVE_CATALOG } from '@/app/kadrovska/_components/odsustva/shared';
 
 export function MakeupSection() {
   const q = useMakeupPaidLeave();
@@ -89,6 +90,25 @@ function MakeupModal({ onClose }: { onClose: () => void }) {
 
   async function save() {
     setErr(null);
+    // AUDIT-K4: iste provere kao 1.0 (mojProfil/index.js:1513-1527). Server ih
+    // ponavlja — ovde su da korisnik grešku vidi odmah, a ne posle slanja.
+    const danOdmora = compensationType === 'dan_odmora';
+    if (danOdmora) {
+      if (!weekendWorkDate) return setErr('Unesi datum rada vikendom.');
+      const dow = new Date(`${weekendWorkDate}T00:00:00`).getDay(); // 0=ned, 6=sub
+      if (dow !== 0 && dow !== 6) return setErr('Datum rada mora biti subota ili nedelja.');
+      if (!(absenceHours >= 8 && absenceHours <= 24))
+        return setErr(
+          'Za +1 dan odmora potrebno je najmanje 8h rada (ceo dan). Za manje sati podnesi zahtev za nadoknadu sati.',
+        );
+    } else {
+      if (!absenceDate) return setErr('Unesi datum izostanka.');
+      if (!(absenceHours > 0 && absenceHours <= 24)) return setErr('Broj sati mora biti 0.5–24.');
+      if (!makeupPlan.trim()) return setErr('Predlog nadoknade je obavezan.');
+    }
+    if (!reason.trim()) return setErr('Razlog je obavezan.');
+    if (makeupDeadline && absenceDate && makeupDeadline < absenceDate)
+      return setErr('Rok nadoknade ne može biti pre datuma izostanka.');
     try {
       await submitM.mutateAsync({
         clientEventId: newClientEventId(),
@@ -237,16 +257,22 @@ function PaidLeaveModal({ onClose }: { onClose: () => void }) {
     }
     return n;
   }
+  // Prikazna procena (bez praznika — server računa merodavan broj i upisuje ga).
   const days = dateFrom && dateTo ? workDays(dateFrom, dateTo) : 0;
+  const selectedBasis = PAID_LEAVE_CATALOG.find((c) => c.code === leaveType);
 
   async function save() {
     setErr(null);
-    if (!leaveType.trim()) return setErr('Unesi osnov.');
+    if (!leaveType) return setErr('Izaberi osnov.');
     if (!dateFrom || !dateTo) return setErr('Izaberi period.');
+    if (selectedBasis?.maxDays != null && days > selectedBasis.maxDays)
+      return setErr(
+        `Za osnov „${selectedBasis.label}" pravilnik predviđa najviše ${selectedBasis.maxDays} radnih dana.`,
+      );
     try {
       await submitM.mutateAsync({
         clientEventId: newClientEventId(),
-        leaveType: leaveType.trim(),
+        leaveType,
         dateFrom,
         dateTo,
         daysCount: days,
@@ -274,8 +300,33 @@ function PaidLeaveModal({ onClose }: { onClose: () => void }) {
     <Dialog open onClose={onClose} title="Zahtev za plaćeno odsustvo" footer={footer}>
       <div className="space-y-3">
         {err && <p className="rounded-control bg-status-danger-bg px-2 py-1 text-sm text-status-danger">{err}</p>}
-        <FormField label="Osnov" required hint="npr. venčanje, davanje krvi, smrt u porodici…">
-          <Input value={leaveType} onChange={(e) => setType(e.target.value)} maxLength={40} />
+        {/* AUDIT-K4: osnov je KODIRAN, ne slobodan tekst — `paid_leave_reason_map`
+            za nepoznat string pada na ELSE i gubi pravni osnov. Grupe prate
+            pravilnik (čl. 35 st. 1 = u fondu od 5 dana; st. 2 = van fonda). */}
+        <FormField label="Osnov" required hint={selectedBasis?.maxDays ? `Po pravilniku: do ${selectedBasis.maxDays} radnih dana` : undefined}>
+          <select
+            value={leaveType}
+            onChange={(e) => setType(e.target.value)}
+            className="h-9 w-full rounded-control border border-line bg-surface px-2 text-sm text-ink"
+          >
+            <option value="">— izaberi osnov —</option>
+            <optgroup label="U okviru fonda od 5 radnih dana godišnje">
+              {PAID_LEAVE_CATALOG.filter((c) => c.group === 'fond').map((c) => (
+                <option key={c.code} value={c.code}>
+                  {c.label}
+                  {c.maxDays ? ` (do ${c.maxDays} d)` : ''}
+                </option>
+              ))}
+            </optgroup>
+            <optgroup label="Van fonda od 5 dana">
+              {PAID_LEAVE_CATALOG.filter((c) => c.group === 'van').map((c) => (
+                <option key={c.code} value={c.code}>
+                  {c.label}
+                  {c.maxDays ? ` (do ${c.maxDays} d)` : ''}
+                </option>
+              ))}
+            </optgroup>
+          </select>
         </FormField>
         <div className="grid grid-cols-2 gap-3">
           <FormField label="Od datuma" required>

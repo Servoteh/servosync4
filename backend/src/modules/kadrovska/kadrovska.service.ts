@@ -171,11 +171,34 @@ export class KadrovskaService {
     const view = KadrovskaService.REPORT_SOURCES[kind];
     if (view) {
       return this.withUserMapped(email, async (tx) => {
+        // ⚠️ AUDIT-K4 (26.07): ranije `SELECT * … ORDER BY 1` BEZ LIMIT-a i bez
+        // ijednog filtera. Za `audit` to znači povlačenje CELOG `kadr_audit_log`
+        // (trajno raste) u jedan JSON, unutar interaktivne `withUserRls`
+        // transakcije — predvidiv timeout. `ORDER BY 1` je uz to sortirao po
+        // PRVOJ KOLONI view-a, ne po vremenu, pa je „poslednja izmena" bila bilo
+        // gde u tabeli. 1.0 čita `order=changed_at.desc` sa limitom 1–500
+        // (default 100) i četiri filtera.
+        const isAudit = kind === "audit";
+        const limit = Math.min(Math.max(Number(q.limit ?? 100), 1), 500);
+        const order = isAudit
+          ? Prisma.sql`ORDER BY changed_at DESC`
+          : Prisma.sql`ORDER BY 1`;
+        const whereFrom =
+          isAudit && q.from
+            ? Prisma.sql`AND changed_at >= ${q.from}::date`
+            : Prisma.empty;
+        const whereTo =
+          isAudit && q.to
+            ? Prisma.sql`AND changed_at < (${q.to}::date + 1)`
+            : Prisma.empty;
         const data = await tx.$queryRaw(
-          Prisma.sql`SELECT * FROM ${Prisma.raw(view)} ORDER BY 1`,
+          Prisma.sql`SELECT * FROM ${Prisma.raw(view)}
+             WHERE true ${whereFrom} ${whereTo}
+             ${order}
+             LIMIT ${limit}`,
         );
         // v_kadr_audit_log.id je bigint → Number (res.json ne serijalizuje BigInt).
-        return { data: this.numify(data) };
+        return { data: this.numify(data), meta: { limit } };
       });
     }
     switch (kind) {
@@ -1230,6 +1253,23 @@ export class KadrovskaService {
       return {
         data: { employeeId: id, bruto: v == null ? null : Number(v) },
       };
+    });
+  }
+
+  /**
+   * Ugovorna zarada (NETO/BRUTO) sa kartona — `kadr_get_contract_salary` (DEFINER,
+   * interni gate `current_user_can_manage_employee_pii()`).
+   *
+   * ⚠️ AUDIT-K4 (26.07): ovaj RPC je bio JEDINI HR RPC iz 1.0 bez ijednog
+   * pozivaoca u 3.0 (kritičar pokrivenosti). Bez njega poslovni admin nije mogao
+   * ni da PROČITA ugovorni neto/bruto pri generisanju Ugovora o radu.
+   */
+  async contractSalary(email: string, id: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const rows = await tx.$queryRaw<{ v: unknown }[]>(
+        Prisma.sql`SELECT kadr_get_contract_salary(${id}::uuid) AS v`,
+      );
+      return { data: (rows[0]?.v ?? null) as unknown };
     });
   }
 

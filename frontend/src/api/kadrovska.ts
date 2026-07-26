@@ -1060,6 +1060,30 @@ export const useCreateContract = () =>
 export const useUpdateContract = () => useKadrMutation<{ id: string; patch: Partial<Contract> }>((v) => patch(`/contracts/${v.id}`, v.patch), KEYS.contracts);
 export const useArchiveContract = () => useKadrMutation<{ id: string }>((v) => post(`/contracts/${v.id}/archive`), KEYS.contracts);
 export const useRestoreContract = () => useKadrMutation<{ id: string }>((v) => post(`/contracts/${v.id}/restore`), KEYS.contracts);
+/** Ugovorna zarada NETO/BRUTO sa kartona (kadr_get_contract_salary) — `kadrovska.pii`
+ *  (admin ∨ poslovni_admin). Odluka 26.07: poslovni admin unosi ugovornu zaradu
+ *  BEZ pristupa tabu Zarade (AUDIT-K4, paritet 1.0 canEditEmployeeSensitiveFields). */
+export interface ContractSalary {
+  term_id?: string | null;
+  neto_rsd?: number | null;
+  bruto_rsd?: number | null;
+  amount?: number | null;
+  amount_type?: string | null;
+  currency?: string | null;
+  salary_type?: string | null;
+  effective_from?: string | null;
+  approved_by?: string | null;
+  approved_at?: string | null;
+}
+export function useContractSalary(employeeId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: ['kadrovska', 'contract-salary', employeeId] as const,
+    queryFn: () =>
+      apiFetch<{ data: ContractSalary | null }>(`${BASE}/employees/${employeeId}/contract-salary`),
+    enabled: !!employeeId && enabled,
+  });
+}
+
 export const useSetContractSalary = () =>
   useKadrMutation<{ employeeId: string; neto: number; bruto: number; effectiveFrom?: string; clientEventId?: string }>((v) => {
     const { employeeId, ...body } = v;

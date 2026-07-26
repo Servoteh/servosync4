@@ -474,8 +474,19 @@ export class KadrovskaMutationsController {
   createContract(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string, @Body() dto: D.CreateContractDto) {
     return this.m.createContract(this.email(req), id, dto);
   }
+  /**
+   * Ugovorna zarada (NETO/BRUTO) sa kartona zaposlenog.
+   *
+   * ⚠️ AUDIT-K4 (26.07) — ODLUKA (Nenad, 26.07): pravo ima POSLOVNI ADMIN, ne
+   * tab Zarade. 1.0 je ovo držao iza `canEditEmployeeSensitiveFields()`
+   * (= admin ∨ poslovni_admin) BAŠ ZATO da poslovni admin može da unese ugovorni
+   * neto za novozaposlenog bez pristupa zaradama. U 3.0 je ruta bila iza
+   * `kadrovska.salary` (tvrda allowlist brava Nenad+Nevena), pa je poslovni admin
+   * ostao bez jedinog puta do te kolone. `kadrovska.pii` = admin ∨ poslovni_admin
+   * → paritet 1.0; brava na tabu Zarade ostaje NETAKNUTA.
+   */
   @Post("employees/:id/contract-salary")
-  @RequirePermission(PERMISSIONS.KADROVSKA_SALARY)
+  @RequirePermission(PERMISSIONS.KADROVSKA_PII)
   setContractSalary(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string, @Body() dto: D.ContractSalaryDto) {
     return this.m.setContractSalary(this.email(req), id, dto);
   }

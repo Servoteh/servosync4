@@ -68,6 +68,8 @@ describe("Kadrovska AUDIT-K2 — sigurnost", () => {
         absenceDate: "2026-07-10",
         absenceHours: 8,
         compensationType: "nadoknada",
+        reason: "bio kod lekara",
+        makeupPlan: "nadoknadicu u petak",
       } as never),
     ).rejects.toBeInstanceOf(ForbiddenException);
   });
@@ -94,6 +96,8 @@ describe("Kadrovska AUDIT-K2 — sigurnost", () => {
       absenceDate: "2026-07-10",
       absenceHours: 8,
       compensationType: "nadoknada",
+      reason: "bio kod lekara",
+      makeupPlan: "nadoknadicu u petak",
     } as never);
     // Brana je zaista pozvana (a ne preskočena).
     expect(

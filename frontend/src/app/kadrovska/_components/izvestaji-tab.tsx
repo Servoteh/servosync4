@@ -515,7 +515,14 @@ function RiskReport() {
     const con = sv(r, 'contract_date_to');
     const reasons: string[] = [];
     let sev = 0;
-    if (bo > 20) { sev = Math.max(sev, 2); reasons.push(`${bo} dana BO`); } else if (bo > 10) { sev = Math.max(sev, 1); reasons.push(`${bo} dana BO`); }
+    // ⚠️ AUDIT-K4 (26.07): pragovi su bili >20 / >10, a 1.0 koristi >7 / 4–7
+    // (reports/riskReport.js:134,139). Zaposleni sa 8–20 dana bolovanja bio je u
+    // 1.0 VISOK rizik, a u 3.0 se prikazivao kao NIZAK (zeleno) — HR je gledao
+    // praznu kolonu „visok rizik" i propuštao baš one ljude zbog kojih izveštaj
+    // i postoji. Vraćene 1.0 granice i 1.0 tekst razloga.
+    if (bo > 7) { sev = Math.max(sev, 2); reasons.push(`>7 dana bolovanja (${bo} d)`); }
+    else if (bo >= 4) { sev = Math.max(sev, 1); reasons.push(`${bo} dana bolovanja`); }
+    else if (bo > 0) { reasons.push(`${bo} dana bolovanja`); }
     if (med) { if (med < iso) { sev = Math.max(sev, 2); reasons.push('lekarski istekao'); } else if (med <= soon) { sev = Math.max(sev, 1); reasons.push('lekarski uskoro'); } }
     if (con) { if (con < iso) { sev = Math.max(sev, 2); reasons.push('ugovor istekao'); } else if (con <= soon) { sev = Math.max(sev, 1); reasons.push('ugovor uskoro'); } }
     return sev >= 2 ? { tone: 'danger', label: 'Visok', sev, reasons } : sev === 1 ? { tone: 'warn', label: 'Srednji', sev, reasons } : { tone: 'success', label: 'Nizak', sev, reasons };

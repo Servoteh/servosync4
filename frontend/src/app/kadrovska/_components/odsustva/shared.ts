@@ -77,18 +77,38 @@ export const KADR_PAID_REASON_LABELS: Record<string, string> = {
 };
 
 /** Osnovi plaćenog odsustva (paidLeaveRequests.js PAID_LEAVE_CATALOG). */
-export const PAID_LEAVE_CATALOG = [
-  { code: 'brak', label: 'Sklapanje braka' },
-  { code: 'rodjenje_deteta', label: 'Porođaj supruge / rođenje deteta' },
-  { code: 'bolest_uze', label: 'Teža bolest člana uže porodice' },
-  { code: 'nepogoda', label: 'Elementarna nepogoda u domaćinstvu' },
-  { code: 'selidba', label: 'Selidba domaćinstva (isto mesto)' },
-  { code: 'selidba_drugo', label: 'Selidba domaćinstva (drugo naseljeno mesto)' },
-  { code: 'ispit', label: 'Polaganje stručnog ili drugog ispita' },
-  { code: 'smrt_uze', label: 'Smrt člana uže porodice' },
-  { code: 'krv', label: 'Dobrovoljno davanje krvi' },
-  { code: 'ostalo', label: 'Drugo (uz obrazloženje)' },
+/**
+ * Osnovi plaćenog odsustva (paritet 1.0 `services/paidLeaveRequests.js:19-32`).
+ *
+ * `maxDays` = trajanje propisano pravilnikom (radnih dana); `group`:
+ *   'fond' = u okviru fonda od najviše 5 radnih dana godišnje (čl. 35 st. 1),
+ *   'van'  = van tog fonda (čl. 35 st. 2).
+ *
+ * ⚠️ AUDIT-K4 (26.07): `maxDays`/`group` su nedostajali, a forma je osnov
+ * primala kao SLOBODAN TEKST. DB `paid_leave_reason_map(leave_type)` za
+ * nepoznat string pada na ELSE → u `absences` se upiše `slobodan_reason='ostalo'`,
+ * pa se gubi pravni osnov (i razlika „u fondu od 5 dana" vs „van fonda").
+ */
+export const PAID_LEAVE_CATALOG: {
+  code: string;
+  label: string;
+  maxDays: number | null;
+  group: 'fond' | 'van';
+}[] = [
+  { code: 'brak', label: 'Sklapanje braka', maxDays: 3, group: 'fond' },
+  { code: 'rodjenje_deteta', label: 'Porođaj supruge / rođenje deteta', maxDays: 3, group: 'fond' },
+  { code: 'bolest_uze', label: 'Teža bolest člana uže porodice', maxDays: 3, group: 'fond' },
+  { code: 'nepogoda', label: 'Elementarna nepogoda u domaćinstvu', maxDays: 2, group: 'fond' },
+  { code: 'selidba', label: 'Selidba domaćinstva (isto mesto)', maxDays: 1, group: 'fond' },
+  { code: 'selidba_drugo', label: 'Selidba domaćinstva (drugo naseljeno mesto)', maxDays: 2, group: 'fond' },
+  { code: 'ispit', label: 'Polaganje stručnog ili drugog ispita', maxDays: 2, group: 'fond' },
+  { code: 'smrt_uze', label: 'Smrt člana uže porodice', maxDays: 5, group: 'van' },
+  { code: 'krv', label: 'Dobrovoljno davanje krvi', maxDays: 2, group: 'van' },
+  { code: 'ostalo', label: 'Drugo (uz obrazloženje)', maxDays: null, group: 'van' },
 ];
+
+/** Dozvoljeni kodovi — koristi se i za validaciju na BE (DTO @IsIn). */
+export const PAID_LEAVE_CODES = PAID_LEAVE_CATALOG.map((c) => c.code);
 export const PAID_LEAVE_LABEL: Record<string, string> = Object.fromEntries(
   PAID_LEAVE_CATALOG.map((c) => [c.code, c.label]),
 );

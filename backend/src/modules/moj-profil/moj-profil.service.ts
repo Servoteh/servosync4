@@ -815,8 +815,56 @@ export class MojProfilService {
     return empId;
   }
 
-  /** Nadoknada submit — INSERT makeup_requests (submitted_by=email) + queue 'submitted' + pulse. */
+  /**
+   * Nadoknada submit — INSERT makeup_requests (submitted_by=email) + queue + pulse.
+   *
+   * ⚠️ AUDIT-K4 (26.07): 3.0 nije imao NIJEDNU od 1.0 provera
+   * (`mojProfil/index.js:1513-1527`). Posledica na živim podacima: „dan odmora"
+   * se mogao podneti za UTORAK sa 0.5h, a finalizacija bezuslovno zove
+   * `kadr_grant_bonus_go` koji radi `days_total = days_total + 1` — radniku se
+   * TRAJNO povećava fond godišnjeg bez pokrića u radu vikendom. Zato provere
+   * stoje ovde (server), a ne samo u formi: mobilni/REST klijent ih ne sme
+   * zaobići.
+   */
   async submitMakeup(email: string, dto: SubmitMakeupDto) {
+    const danOdmora = dto.compensationType === "dan_odmora";
+    const hours = Number(dto.absenceHours);
+    if (danOdmora) {
+      if (!dto.weekendWorkDate)
+        throw new UnprocessableEntityException(
+          "Unesi datum rada vikendom.",
+        );
+      // 0 = nedelja, 6 = subota (isti izraz kao 1.0 `new Date(d+'T00:00:00').getDay()`).
+      const dow = new Date(`${dto.weekendWorkDate}T00:00:00Z`).getUTCDay();
+      if (dow !== 0 && dow !== 6)
+        throw new UnprocessableEntityException(
+          "Datum rada mora biti subota ili nedelja.",
+        );
+      if (!(hours >= 8 && hours <= 24))
+        throw new UnprocessableEntityException(
+          "Za +1 dan odmora potrebno je najmanje 8h rada (ceo dan). Za manje sati podnesi zahtev za nadoknadu sati.",
+        );
+    } else {
+      if (!dto.absenceDate)
+        throw new UnprocessableEntityException("Unesi datum izostanka.");
+      if (!(hours > 0 && hours <= 24))
+        throw new UnprocessableEntityException("Broj sati mora biti 0.5–24.");
+      if (!dto.makeupPlan?.trim())
+        throw new UnprocessableEntityException(
+          "Predlog nadoknade je obavezan.",
+        );
+    }
+    if (!dto.reason?.trim())
+      throw new UnprocessableEntityException("Razlog je obavezan.");
+    if (
+      dto.makeupDeadline &&
+      dto.absenceDate &&
+      dto.makeupDeadline < dto.absenceDate
+    )
+      throw new UnprocessableEntityException(
+        "Rok nadoknade ne može biti pre datuma izostanka.",
+      );
+
     const out = await this.runIdem(
       email,
       dto.clientEventId,
@@ -857,6 +905,31 @@ export class MojProfilService {
 
   // ---------- Plaćeno odsustvo (paid leave) ----------
 
+  /**
+   * Broj RADNIH dana u inkluzivnom rasponu: bez vikenda i bez državnih praznika
+   * (`kadr_holidays` uz `is_workday=false` — red sa `is_workday=true` je radni
+   * izuzetak, npr. radna subota, i NE izuzima se). Paritet 1.0
+   * `workDaysInclusive(from, to, holidayDateSet())`.
+   */
+  private async workDaysBetween(
+    tx: Sy15Tx,
+    from: string,
+    to: string,
+  ): Promise<number> {
+    const rows = await tx.$queryRaw<{ n: bigint }[]>(
+      Prisma.sql`
+        SELECT COUNT(*)::bigint AS n
+          FROM generate_series(${from}::date, ${to}::date, interval '1 day') AS d(day)
+         WHERE EXTRACT(ISODOW FROM d.day) < 6
+           AND NOT EXISTS (
+                 SELECT 1 FROM kadr_holidays h
+                  WHERE h.holiday_date = d.day::date
+                    AND COALESCE(h.is_workday, false) = false
+               )`,
+    );
+    return Number(rows[0]?.n ?? 0);
+  }
+
   /** Plaćeno submit — INSERT paid_leave_requests (submitted_by=email) + queue 'submitted' + pulse. */
   async submitPaidLeave(email: string, dto: SubmitPaidLeaveDto) {
     if (dto.dateTo < dto.dateFrom)
@@ -867,12 +940,24 @@ export class MojProfilService {
       "profile.paid-leave-submit",
       async (tx) => {
         const empId = await this.resolveSubmitTarget(tx, email, dto.employeeId);
+        // ⚠️ AUDIT-K4 (26.07): broj dana se računa NA SERVERU, ne uzima se sa
+        // klijenta. 1.0 koristi `workDaysInclusive(from, to, holidayDateSet())`
+        // (mobile/myLeave.js:425) — dakle bez vikenda I bez državnih praznika.
+        // 3.0 FE je praznike ignorisao, pa je `days_count` u evidenciji bio veći
+        // od stvarno upisanih dana u gridu. Server ima praznike bez obzira na
+        // prava pozivaoca (radnik nema `kadrovska.read`), pa je ovo i jedino
+        // mesto gde se broj može pouzdano izvesti.
+        const daysCount = await this.workDaysBetween(
+          tx,
+          dto.dateFrom,
+          dto.dateTo,
+        );
         const rows = await tx.$queryRaw<{ id: string }[]>(
           Prisma.sql`INSERT INTO paid_leave_requests
              (employee_id, leave_type, date_from, date_to, days_count, reason, proof_note,
               submitted_by, status)
              VALUES (${empId}::uuid, ${dto.leaveType}, ${dto.dateFrom}::date, ${dto.dateTo}::date,
-               ${dto.daysCount}, ${dto.reason ?? ""}, ${dto.proofNote ?? ""}, lower(${email}), 'pending')
+               ${daysCount}, ${dto.reason ?? ""}, ${dto.proofNote ?? ""}, lower(${email}), 'pending')
              RETURNING *`,
         );
         const req = jsonSafe(rows)[0] as { id: string } | undefined;

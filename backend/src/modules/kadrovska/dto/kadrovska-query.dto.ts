@@ -149,6 +149,9 @@ export class ReportQueryDto {
   year?: number;
   /** Risk: period bolovanja unazad u mesecima (1.0 select 6/12/24; default 12). */
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(60) months?: number;
+  /** View-izveštaji (audit/medical/certs): gornja granica redova — 1.0 klampuje
+   *  1–500, default 100. Bez nje je `audit` povlačio ceo rastući log (AUDIT-K4). */
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(500) limit?: number;
 }
 
 /** Filtriranje po zaposlenom (medical/certs/contracts/onboarding/dev/talks/assessments). */
