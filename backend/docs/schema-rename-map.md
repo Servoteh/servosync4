@@ -54,7 +54,7 @@ Konvencije:
 | `R_Grupa` | `item_groups` | `ItemGroup` |
 | `R_Podgrupa` | `item_subgroups` | `ItemSubgroup` |
 | `R_Poreklo` | `item_origins` | `ItemOrigin` |
-| `R_Tarife` | `tax_rates` | `TaxRate` |
+| `R_Tarife` | `tax_rates` | `TaxRate` | ⚠️ van sync-a od 26.07.2026 (4.0-owned) |
 | `R_Vrste dokumenata` | `document_types` | `DocumentType` |
 | `Radni fajlovi` | `companies` | `Company` |
 | `RobnaDokumentaMirror` | `goods_documents_mirror` | `GoodsDocumentMirror` |
@@ -797,6 +797,13 @@ Za svaku tabelu navedene su kolone u istom redosledu kao u staroj `schema.prisma
 | `BBSifra artikla` | `external_item_id` | `externalItemId` |
 
 ### `R_Tarife` → `tax_rates`
+
+> ⚠️ **VAN SYNC-a od 26.07.2026** (presuda Nenada): registar PDV tarifa se vodi
+> isključivo u 4.0 (`POST/PATCH /api/v1/pdv/tax-rates`), pa je mapiranje uklonjeno
+> iz `src/modules/sync/sync-map.generated.ts`. Preimenovanje kolona ispod ostaje
+> kao istorijski zapis (tabela i dalje postoji i puna je), ali **generator mape ne
+> sme ponovo da emituje ovaj red** — isto važi za `T_Robna dokumenta` /
+> `T_Robne stavke` (izbačeni ranije, Faza 3). Vraćanje samo uz odluku o vlasništvu.
 
 | Stara kolona | Nova DB kolona | Prisma polje |
 |---|---|---|

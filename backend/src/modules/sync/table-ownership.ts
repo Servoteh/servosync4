@@ -73,6 +73,13 @@ export const OWNED_PRODUCTION_TABLES = new Set<string>([
   // source `RobnaDokumentaMirror`/`RobneStavkeMirror` — i OSTAJU u syncu.)
   "goods_documents",
   "goods_document_items",
+  // PDV tarife (Nenad, 26.07.2026): registar se od sada vodi ISKLJUČIVO u 4.0
+  // (`POST/PATCH /api/v1/pdv/tax-rates` → `TaxRatesService`), pa je mapiranje
+  // `R_Tarife` IZBAČENO iz `sync-map.generated.ts` — isto kao `goods_documents`.
+  // Ostaje ovde kao zaštita: vrati li se mapiranje ikad, generički syncer odbija
+  // destruktivan full-refresh dok tabela ima redova. (`price_list_entries` ima
+  // tvrd FK na `tax_rates.code` — vidi SOURCE_FK_FILTERS ispod.)
+  "tax_rates",
 ]);
 
 export function isOwnedProductionTable(entity: string): boolean {
@@ -184,8 +191,32 @@ export function isQbigtehnChainEntity(entity: string): boolean {
  * BigBit-u ostaje kao siroče u 2.0 (svesno — bezbednije je zadržati predmet
  * nego rizikovati brisanje 2.0-native reda; predmeti se u praksi ne brišu).
  * Zahtev: PK mora biti jednostavan `id` (proverava se u syncer-u).
+ *
+ * ⚠️ OTVORENO (review 26.07.2026, nalaz [4]) — DVA GOSPODARA NAD ISTIM KOLONAMA:
+ * `PATCH /api/v1/projects/:id` (`ProjectsWriteService.updateProject`, živ u
+ * app.module) piše `description/projectName/memo/nextAction/status/deadline/
+ * closedAt/customerId/workTypeId` i nad BigBit-origin predmetima. Mapiranje
+ * `Predmeti` je ISCRPNO (38 kolona = sve skalarne kolone modela), pa NEMA
+ * „app-owned" kolone koja bi se sačuvala pri reinsert-u — reč je o istim
+ * kolonama. Dok se ne presudi ko pobeđuje, važi dokumentovano stanje: 3.0-native
+ * redovi (id van izvora) su zaštićeni u celosti, a BigBit-origin redove BigBit
+ * osvežava (§ „mora nastaviti da AŽURIRA postojeće"). Rizik je danas latentan:
+ * frontend NE zove taj PATCH (samo GET `/v1/directory/projects/:id`). Uslov za
+ * odluku: pre nego što FE izloži izmenu BigBit-origin predmeta.
+ * (Checkbox-i „AKTIVAN"/„PROJ&MONT" iz Podešavanja predmeta NISU u ovoj tabeli —
+ * idu RPC-om u sy15, `PodesavanjaService.setPredmetAktivacija` → `withUserRls`.)
+ *
+ * `document_types` (review 26.07.2026, nalaz [0]): 4.0 popis je migracijom
+ * 20260724160000 SEED-ovao `VISAR`/`MANJR`/`NIV` (bez njih `createStockDocument`
+ * baca 422 i finalizacija popisa stoji), a BigBit `R_Vrste dokumenata` te šifre
+ * ne poznaje. Klasičan full refresh (`deleteMany({})`) bi ih obrisao na PRVOM
+ * sync-u — i ručnom i noćnom. Zato i ova tabela prelazi na aditivni refresh:
+ * BigBit i dalje ažurira SVOJE vrste dokumenata, a 4.0-seedovane preživljavaju.
  */
-export const ADDITIVE_REFRESH_TABLES = new Set<string>(["projects"]);
+export const ADDITIVE_REFRESH_TABLES = new Set<string>([
+  "projects",
+  "document_types",
+]);
 
 export function isAdditiveRefreshTable(entity: string): boolean {
   return ADDITIVE_REFRESH_TABLES.has(entity);
@@ -206,6 +237,11 @@ export function isAdditiveRefreshTable(entity: string): boolean {
  */
 export const ADDITIVE_DEDUP_FIELDS: Record<string, string> = {
   projects: "projectNumber",
+  // `document_types.code` je nosilac svih mekih referenci (price_list,
+  // stock_documents, kepu) i od 25.07 ima tvrd `uq_document_types_code`. BigBit
+  // red sa šifrom koja već stoji na 4.0-seedovanom redu se PRESKAČE — inače bi
+  // `createMany` pao na uniq indeksu i oborio ceo tok.
+  document_types: "code",
 };
 
 export function additiveDedupFieldFor(entity: string): string | null {
@@ -227,11 +263,63 @@ export function additiveDedupFieldFor(entity: string): string | null {
  * nikad ne dobije duplikat, a sync nikad ne padne zbog njega.
  *
  * Vrednost = ime polja u Prisma modelu; poređenje je `lower(btrim(...))`.
+ *
+ * ZADRŽAVA SE PRVI RED PO KLJUČU, a „prvi" mora biti STABILAN između prolaza —
+ * zato syncer za ove tabele sortira izvor po izvornom PK (`ORDER BY`), inače
+ * MSSQL sme da vrati drugačiji redosled i sledeći sync bi izabrao DRUGI red kao
+ * pobednika (isti kataloški broj, drugi `id` → sve meke reference pokazuju na
+ * pogrešan artikal). Review 26.07.2026, nalaz [1].
+ *
+ * `projects` i `document_types` (review 26.07, nalaz [2]): oba imaju uniq indeks
+ * iz 25.07 (`uq_projects_project_number` parcijalni, `uq_document_types_code`),
+ * pa bi jedan duplikat U SAMOM BIGBIT IZVORU oborio ceo `createMany` chunk.
+ * Dedup se KOMPONUJE sa aditivnim skip-om: prvo otpadnu BigBit kopije brojeva
+ * koji već stoje na 3.0/4.0-native redovima, pa tek onda duplikati unutar izvora.
  */
 export const SOURCE_UNIQUE_FIELDS: Record<string, string> = {
   items: "catalogNumber",
+  projects: "projectNumber",
+  document_types: "code",
 };
 
 export function sourceUniqueFieldFor(entity: string): string | null {
   return SOURCE_UNIQUE_FIELDS[entity] ?? null;
+}
+
+/**
+ * FK PRE-FILTER (review 26.07.2026, nalaz [3]) — izvorni red čija OBAVEZNA strana
+ * referenca nema par u 3.0 se PRESKAČE pre upisa.
+ *
+ * Full refresh ide pod `session_replication_role='replica'`, gde FK trigeri NE
+ * RADE — prekršilac se tiho upiše i ostane kao siroče (isti mehanizam je već
+ * napravio 2 nerestorabilna FK-a u backup-u, v. backup-nightly.sh zaglavlje).
+ * Do 26.07 je `price_list_entries.tax_rate_code` uvek imao par jer se `tax_rates`
+ * sinhronizovao u istom prolazu; izbacivanjem `R_Tarife` iz mape taj oslonac je
+ * nestao, pa cenovnik mora sam da proveri šifru tarife.
+ *
+ * `refDelegate` = ime Prisma delegata ciljne tabele, `refField` = polje na koje
+ * FK pokazuje (poređenje je tačno, bez normalizacije — FK je tvrd).
+ */
+export interface SourceFkFilter {
+  field: string;
+  refDelegate: string;
+  refField: string;
+  /** Kratko objašnjenje koje ide u sync log uz preskočeni red. */
+  reason: string;
+}
+
+export const SOURCE_FK_FILTERS: Record<string, SourceFkFilter[]> = {
+  price_list_entries: [
+    {
+      field: "taxRateCode",
+      refDelegate: "taxRate",
+      refField: "code",
+      reason:
+        "šifra poreske tarife ne postoji u tax_rates (registar je od 26.07 4.0-owned, više ne stiže iz BigBit-a)",
+    },
+  ],
+};
+
+export function sourceFkFiltersFor(entity: string): SourceFkFilter[] {
+  return SOURCE_FK_FILTERS[entity] ?? [];
 }

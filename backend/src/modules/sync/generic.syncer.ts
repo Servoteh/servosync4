@@ -12,6 +12,7 @@ import {
   additiveDedupFieldFor,
   isAdditiveRefreshTable,
   isOwnedProductionTable,
+  sourceFkFiltersFor,
   sourceUniqueFieldFor,
 } from './table-ownership';
 
@@ -78,7 +79,15 @@ export class GenericSyncer implements EntitySyncer {
     // Select only the mapped columns (bracket-quoted; QBigTehn names have spaces).
     const cols = this.mapping.columns.map((c) => `[${c.src}]`).join(', ');
     const where = incremental ? 'WHERE [PoslednjaIzmena] > @cursor' : '';
-    const order = this.mapping.watermark ? 'ORDER BY [PoslednjaIzmena] ASC' : '';
+    // Redosled je DEO UGOVORA za tabele sa `SOURCE_UNIQUE_FIELDS`: dedup zadržava
+    // PRVI red po ključu, pa bez `ORDER BY` (MSSQL ne garantuje redosled bez
+    // njega) sledeći sync sme da izabere DRUGI red kao pobednika — isti kataloški
+    // broj, drugi `id`, a sve meke reference pokazuju na stari. Review 26.07 [1].
+    const order = this.mapping.watermark
+      ? 'ORDER BY [PoslednjaIzmena] ASC'
+      : sourceUniqueFieldFor(this.entity)
+        ? this.pkOrderBy()
+        : '';
     const rows = await this.mssql.query<Record<string, unknown>>(
       `SELECT ${cols} FROM [dbo].[${this.mapping.source}] ${where} ${order}`,
       incremental ? { cursor: new Date(options.cursor!.lastModifiedAt!) } : {},
@@ -134,6 +143,9 @@ export class GenericSyncer implements EntitySyncer {
       // of the whole source set that never touches ids the source didn't send.
       const additive = isAdditiveRefreshTable(this.entity);
       const sourceIds = additive ? this.collectSourceIds(data) : null;
+      // Id-jevi koje brisanje sme da dohvati. Po pravilu = svi izvorni, ali se
+      // sužava za app-owned redove koji sede na id-u iz BigBit prostora (dole).
+      let deleteIds = sourceIds;
 
       // Number-parity guard (Nenad 2026-07-22, projects): the same predmet is
       // entered manually in BOTH systems with the SAME number. Skip any source
@@ -144,31 +156,61 @@ export class GenericSyncer implements EntitySyncer {
       let insertData = data;
       const dedupField = additive ? additiveDedupFieldFor(this.entity) : null;
       if (dedupField && data.length) {
+        const norm = (v: unknown): string => String(v ?? "").trim();
         const values = [
-          ...new Set(
-            data
-              .map((d) => String(d[dedupField] ?? "").trim())
-              .filter(Boolean),
-          ),
+          ...new Set(data.map((d) => norm(d[dedupField])).filter(Boolean)),
         ];
-        const existing: { id: number; [k: string]: unknown }[] = values.length
-          ? await this.delegate().findMany({
-              where: { [dedupField]: { in: values } },
-              select: { id: true, [dedupField]: true },
-            })
-          : [];
+        // Jedan upit za OBA slučaja: postojeći red sa istom VREDNOŠĆU (paritet
+        // brojeva) i postojeći red na istom ID-u (kolizija id prostora, dole).
+        const existing: { id: number; [k: string]: unknown }[] =
+          values.length || sourceIds!.length
+            ? await this.delegate().findMany({
+                where: {
+                  OR: [
+                    { [dedupField]: { in: values } },
+                    { id: { in: sourceIds } },
+                  ],
+                },
+                select: { id: true, [dedupField]: true },
+              })
+            : [];
         const sourceIdSet = new Set(sourceIds!);
+        const sourceValueSet = new Set(values);
         const nativeByValue = new Map<string, number>();
+        // KOLIZIJA ID PROSTORA (review 26.07 [0]): PG sekvenca ne prati BigBit
+        // id prostor, pa 4.0-seedovan red (npr. document_types VISAR/MANJR/NIV,
+        // migracija 20260724160000) može da sedi na id-u koji BigBit takođe
+        // koristi. Slepi `delete id IN (izvor)` bi ga obrisao. Takav red se
+        // prepoznaje po tome što njegova dedup-vrednost NE POSTOJI nigde u
+        // izvoru — dakle nije BigBit red. Tada: id se izuzima iz brisanja, a
+        // izvorni red sa tim id-em se PRESKAČE (inače bi `createMany` pao na PK).
+        // Svesna posledica: ako BigBit PREIMENUJE šifru postojećeg reda, ovde se
+        // to vidi kao kolizija i tok se prijavi umesto da tiho prepiše 4.0 red.
+        const squatterIds = new Map<number, string>();
         for (const e of existing) {
-          if (!sourceIdSet.has(e.id))
-            nativeByValue.set(String(e[dedupField] ?? "").trim(), e.id);
+          const value = norm(e[dedupField]);
+          if (!sourceIdSet.has(e.id)) {
+            if (sourceValueSet.has(value)) nativeByValue.set(value, e.id);
+          } else if (!sourceValueSet.has(value)) {
+            squatterIds.set(e.id, value);
+          }
         }
-        if (nativeByValue.size) {
+        if (squatterIds.size) {
+          deleteIds = sourceIds!.filter((id) => !squatterIds.has(id));
+        }
+        if (nativeByValue.size || squatterIds.size) {
           insertData = [];
           for (const d of data) {
-            const nativeId = nativeByValue.get(
-              String(d[dedupField] ?? "").trim(),
-            );
+            const squatterValue = squatterIds.get(Number(d.id));
+            if (squatterValue !== undefined) {
+              rowsSkipped++;
+              if (errors.length < 20)
+                errors.push(
+                  `${this.pkLabel(d)}: id je zauzet app-owned redom (${dedupField}=${squatterValue}) koji izvor ne poznaje — BigBit red preskočen, postojeći red NIJE obrisan (kolizija id prostora, 26.07)`,
+                );
+              continue;
+            }
+            const nativeId = nativeByValue.get(norm(d[dedupField]));
             if (nativeId !== undefined) {
               rowsSkipped++;
               if (errors.length < 20)
@@ -211,6 +253,41 @@ export class GenericSyncer implements EntitySyncer {
         insertData = kept;
       }
 
+      // FK PRE-FILTER (review 26.07 [3]): pod `session_replication_role='replica'`
+      // FK trigeri NE RADE, pa bi prekršilac tiho ušao kao siroče. Radi se samo u
+      // full-refresh grani — inkrementalni put ide kroz `upsert` (FK se poštuje,
+      // red se skip-uje uz poruku).
+      for (const fk of sourceFkFiltersFor(this.entity)) {
+        if (!insertData.length) break;
+        const wanted = [
+          ...new Set(
+            insertData.map((d) => d[fk.field]).filter((v) => v != null),
+          ),
+        ];
+        if (!wanted.length) continue;
+        const refRows: Record<string, unknown>[] = await (
+          this.prisma as unknown as Record<string, any>
+        )[fk.refDelegate].findMany({
+          where: { [fk.refField]: { in: wanted } },
+          select: { [fk.refField]: true },
+        });
+        const present = new Set(refRows.map((r) => r[fk.refField]));
+        const kept: typeof insertData = [];
+        for (const d of insertData) {
+          const value = d[fk.field];
+          if (value != null && !present.has(value)) {
+            rowsSkipped++;
+            if (errors.length < 20)
+              errors.push(
+                `${this.pkLabel(d)}: ${fk.field}=${String(value)} — ${fk.reason}; red PRESKOČEN (FK pre-filter)`,
+              );
+            continue;
+          }
+          kept.push(d);
+        }
+        insertData = kept;
+      }
+
       await this.prisma.$transaction(
         async (tx) => {
           await tx.$executeRawUnsafe(
@@ -220,8 +297,8 @@ export class GenericSyncer implements EntitySyncer {
           if (additive) {
             // Empty source set -> nothing to delete (and Prisma `in: []` matches
             // nothing anyway); never fall back to wiping everything.
-            if (sourceIds!.length > 0) {
-              await del.deleteMany({ where: { id: { in: sourceIds } } });
+            if (deleteIds!.length > 0) {
+              await del.deleteMany({ where: { id: { in: deleteIds } } });
             }
           } else {
             await del.deleteMany({});
@@ -229,6 +306,13 @@ export class GenericSyncer implements EntitySyncer {
           for (let i = 0; i < insertData.length; i += chunkSize) {
             await del.createMany({ data: insertData.slice(i, i + chunkSize) });
           }
+          // KLAMP SEKVENCE (review 26.07 [0]): `createMany` sa eksplicitnim `id`
+          // NE pomera PG sekvencu, pa bi sledeći 4.0-native unos (npr. nova vrsta
+          // dokumenta) dobio id koji BigBit već koristi → 23505 na PK. Posle
+          // aditivnog prolaza sekvenca se podiže na max(id). `setval` je STRICT:
+          // ako tabela nema serial/identity, `pg_get_serial_sequence` vrati NULL
+          // i poziv tiho vrati NULL (bez greške).
+          if (additive) await this.bumpIdSequence(tx);
         },
         { timeout: 20 * 60 * 1000, maxWait: 30 * 1000 },
       );
@@ -272,6 +356,36 @@ export class GenericSyncer implements EntitySyncer {
       else if (v != null) ids.push(Number(v));
     }
     return ids;
+  }
+
+  /**
+   * `ORDER BY` po IZVORNOJ koloni primarnog ključa — stabilan redosled za dedup
+   * (v. `SOURCE_UNIQUE_FIELDS`). Ako se izvorna kolona ne da razrešiti, vraća
+   * prazno (bolje bez sortiranja nego neispravan SQL).
+   */
+  private pkOrderBy(): string {
+    const pk = this.mapping.pk;
+    if (!pk) return '';
+    const fields = pk.kind === 'single' ? [pk.field] : pk.fields;
+    const srcCols: string[] = [];
+    for (const f of fields) {
+      const col = this.mapping.columns.find((c) => c.field === f);
+      if (!col) return '';
+      srcCols.push(`[${col.src}] ASC`);
+    }
+    return srcCols.length ? `ORDER BY ${srcCols.join(', ')}` : '';
+  }
+
+  /** Podigni PG sekvencu `id` kolone na max(id) posle aditivnog refresh-a. */
+  private async bumpIdSequence(tx: unknown): Promise<void> {
+    // `this.entity` dolazi iz naše generisane mape, ali identifikator ipak
+    // proveravamo pre interpolacije (raw SQL ne prima ime tabele kao parametar).
+    if (!/^[a-z_][a-z0-9_]*$/.test(this.entity)) return;
+    await (tx as { $executeRawUnsafe(sql: string): Promise<number> })
+      .$executeRawUnsafe(
+        `SELECT setval(pg_get_serial_sequence('${this.entity}', 'id'),
+                GREATEST((SELECT COALESCE(MAX(id), 0) FROM "${this.entity}"), 1), true)`,
+      );
   }
 
   /** Build the Prisma `where` for an upsert from the mapped row's PK field(s). */

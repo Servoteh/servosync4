@@ -9,6 +9,7 @@ import {
 import type { SyncService } from "../sync/sync.service";
 import { GenericSyncer } from "../sync/generic.syncer";
 import { MssqlClient } from "../sync/mssql.client";
+import { SYNC_MAP } from "../sync/sync-map.generated";
 import type { TableMapping } from "../sync/sync.types";
 import {
   additiveDedupFieldFor,
@@ -28,7 +29,7 @@ const FLAG = "BIGBIT_NIGHTLY_SYNC";
 /** `SyncService` mock: registar entiteta + `run` koji vraća `bb_sync_log` red. */
 function syncMock(
   log: Record<string, unknown> = {},
-  entities = ["customers", "projects", "items", "tax_rates"],
+  entities = ["customers", "projects", "document_types", "items"],
 ) {
   const run = jest.fn().mockResolvedValue({
     id: 1,
@@ -82,6 +83,19 @@ describe("BigbitSyncJobs — prekidač i registracija", () => {
     expect(built[0].schedule).toEqual({ kind: "daily", at: "03:30" });
   });
 
+  // Review 26.07 [7][8][14]: default pragovi scheduler-a su krojeni za kratke
+  // sy15 pozive i za dug posao su OPASNI (sam bi sebe pokrenuo drugi put).
+  it("dug posao nosi svoje pragove: catch-up 120, stale 60, run-now blok 60", () => {
+    const { svc } = syncMock();
+    const job = nightlyJob(new BigbitSyncJobs(svc));
+    expect(job.catchUpMinutes).toBe(120);
+    expect(job.staleAfterMinutes).toBe(60);
+    expect(job.runNowBlockMinutes).toBe(60);
+    // Prag zaglavljenog RUNNING-a mora biti VEĆI od trajanja koje posao uopšte
+    // dopušta sync-u (45 min), inače re-claim udari u živ prolaz.
+    expect(job.staleAfterMinutes!).toBeGreaterThan(45);
+  });
+
   it("ključ posla se ne sudara sa postojećim scheduler poslovima", () => {
     const sy15 = {
       db: { $queryRawUnsafe: jest.fn().mockResolvedValue([]) },
@@ -90,14 +104,21 @@ describe("BigbitSyncJobs — prekidač i registracija", () => {
     expect(keys).not.toContain(BIGBIT_NIGHTLY_SYNC_JOB_KEY);
   });
 
-  it("isključeni tokovi ne ulaze u noćni prolaz (tax_rates: 3.0 PDV registar piše)", () => {
+  it("isključeni tokovi ne ulaze u noćni prolaz (items: čeka katbroj čišćenje)", () => {
     const { svc } = syncMock();
     const entities = new BigbitSyncJobs(svc).nightlyEntities();
     expect(entities).toContain("customers");
     expect(entities).toContain("projects");
-    expect(entities).toContain("items");
-    expect(entities).not.toContain("tax_rates");
-    expect([...NIGHTLY_SYNC_EXCLUDED]).toEqual(["tax_rates"]);
+    expect(entities).toContain("document_types");
+    expect(entities).not.toContain("items");
+    expect([...NIGHTLY_SYNC_EXCLUDED]).toEqual(["items"]);
+  });
+
+  // Tarife se NE rešavaju isključenjem iz noćnog posla (to bi ostavilo ručni
+  // „sync all" da ih briše) — mapiranje je uklonjeno, pa ih SyncService i ne zna.
+  it("tax_rates nisu ni isključenje ni tok — mapiranja više nema", () => {
+    expect(NIGHTLY_SYNC_EXCLUDED.has("tax_rates")).toBe(false);
+    expect(SYNC_MAP.some((m) => m.targetDb === "tax_rates")).toBe(false);
   });
 });
 
@@ -111,7 +132,7 @@ describe("BigbitSyncJobs — izvršenje i ishod u dnevniku", () => {
     const calls = run.mock.calls as unknown as [Record<string, unknown>][];
     const arg = calls[0][0];
     expect(arg.trigger).toBe("cron");
-    expect(arg.entities).toEqual(["customers", "projects", "items"]);
+    expect(arg.entities).toEqual(["customers", "projects", "document_types"]);
     expect(arg.force).toBeUndefined();
     expect(arg.strategy).toBeUndefined();
   });

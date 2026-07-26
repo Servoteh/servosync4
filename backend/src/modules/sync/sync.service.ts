@@ -21,13 +21,26 @@ export interface RunSyncOptions {
   force?: boolean;
 }
 
+/**
+ * Koliko dugo in-process guard sme da drži bravu pre nego što se smatra
+ * ZAGLAVLJENIM (review 26.07.2026, nalaz [6]). Bez TTL-a bi jedan viseći run
+ * (npr. MSSQL veza koja nikad ne odgovori, a `requestTimeout` je promašen)
+ * trajno zaključao SVAKI sledeći sync — i ručni i noćni — do restarta procesa.
+ * 90 min: duže od najdužeg realnog prolaza (noćni posao odustaje od čekanja na
+ * 45 min, transakcija po entitetu ima 20 min), a kraće od razmaka do sledeće
+ * noći, pa se sistem sam oporavi bez ljudske intervencije.
+ */
+const SYNC_RUNNING_TTL_MS = 90 * 60_000;
+
 @Injectable()
 export class SyncService {
   private readonly logger = new Logger(SyncService.name);
   private readonly syncers = new Map<string, EntitySyncer>();
 
-  /** Simple in-process guard so two sync runs never overlap. */
-  private running = false;
+  /** Simple in-process guard so two sync runs never overlap (sa TTL-om). */
+  private runningSince: number | null = null;
+  /** Redni broj prolaza — stari (preuzeti) run ne sme da otključa tuđu bravu. */
+  private runToken = 0;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -77,8 +90,16 @@ export class SyncService {
    * Creates one `bb_sync_log` row and advances `bb_sync_state` per entity.
    */
   async run(options: RunSyncOptions = {}) {
-    if (this.running) {
-      throw new ConflictException("A sync run is already in progress");
+    if (this.runningSince !== null) {
+      const heldMinutes = Math.round((Date.now() - this.runningSince) / 60_000);
+      if (Date.now() - this.runningSince < SYNC_RUNNING_TTL_MS) {
+        throw new ConflictException(
+          `A sync run is already in progress (started ${heldMinutes} min ago)`,
+        );
+      }
+      this.logger.warn(
+        `Prethodni sync drži bravu ${heldMinutes} min (TTL ${SYNC_RUNNING_TTL_MS / 60_000} min) — smatram ga zaglavljenim i preuzimam.`,
+      );
     }
 
     const requested = options.entities?.length
@@ -90,7 +111,8 @@ export class SyncService {
       throw new NotFoundException(`Unknown entities: ${unknown.join(", ")}`);
     }
 
-    this.running = true;
+    const token = ++this.runToken;
+    this.runningSince = Date.now();
     const log = await this.prisma.bbSyncLog.create({
       data: {
         status: "running",
@@ -197,7 +219,9 @@ export class SyncService {
         },
       });
     } finally {
-      this.running = false;
+      // Samo VLASNIK brave je otključava: ako je zaglavljeni run preuzet
+      // (`runToken` je odmakao), njegov `finally` ne sme da oslobodi novi prolaz.
+      if (this.runToken === token) this.runningSince = null;
     }
   }
 

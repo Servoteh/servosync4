@@ -1,5 +1,12 @@
 // AUTO-GENERISANO iz docs/schema-rename-map.md + Prisma DMMF. Ne editovati rucno.
-// Regenerisi skriptom scratchpad/gen-map.js. Tabela: 31.
+// Regenerisi skriptom scratchpad/gen-map.js. Tabela: 30.
+//
+// ⚠️ RUCNE IZMENE POSLE GENERISANJA (generator ih NE ZNA — ako se mapa ikad
+// regenerise, ponovi ih; isti dug postoji od izbacivanja QBigTehn lanca i
+// `T_Robna dokumenta` / `T_Robne stavke`):
+//   • 26.07.2026 — izbacen `R_Tarife` → `tax_rates` (v. nadgrobnik ispod).
+// Generator dobija guard iz docs/migration/BB_T_26-analiza-F2-mehanizam-sync.md
+// (odbija emitovanje za tabele koje su presle u 3.0/4.0 vlasnistvo).
 import type { TableMapping } from "./sync.types";
 
 export const SYNC_MAP: TableMapping[] = [
@@ -2186,95 +2193,13 @@ export const SYNC_MAP: TableMapping[] = [
       },
     ],
   },
-  {
-    source: "R_Tarife",
-    model: "TaxRate",
-    targetDb: "tax_rates",
-    pk: {
-      kind: "single",
-      field: "id",
-    },
-    watermark: null,
-    columns: [
-      {
-        src: "ID",
-        field: "id",
-        type: "Int",
-        nullable: false,
-        isId: true,
-      },
-      {
-        src: "Tarifa",
-        field: "code",
-        type: "String",
-        nullable: false,
-        isId: false,
-      },
-      {
-        src: "Osnovna stopa",
-        field: "baseRate",
-        type: "Float",
-        nullable: true,
-        isId: false,
-      },
-      {
-        src: "Zeleznica stopa",
-        field: "railwayRate",
-        type: "Float",
-        nullable: true,
-        isId: false,
-      },
-      {
-        src: "Gradska stopa",
-        field: "cityRate",
-        type: "Float",
-        nullable: true,
-        isId: false,
-      },
-      {
-        src: "Ratna stopa",
-        field: "warRate",
-        type: "Float",
-        nullable: true,
-        isId: false,
-      },
-      {
-        src: "Posebna stopa",
-        field: "specialRate",
-        type: "Float",
-        nullable: true,
-        isId: false,
-      },
-      {
-        src: "Opis",
-        field: "description",
-        type: "String",
-        nullable: true,
-        isId: false,
-      },
-      {
-        src: "Vazi od",
-        field: "validFrom",
-        type: "DateTime",
-        nullable: true,
-        isId: false,
-      },
-      {
-        src: "Vazi do",
-        field: "validTo",
-        type: "DateTime",
-        nullable: true,
-        isId: false,
-      },
-      {
-        src: "PDVGrupa",
-        field: "vatGroup",
-        type: "String",
-        nullable: true,
-        isId: false,
-      },
-    ],
-  },
+  // NADGROBNIK — `R_Tarife` → `tax_rates` UKLONJEN IZ MAPE 26.07.2026 (presuda
+  // Nenada: registar PDV tarifa se od sada vodi ISKLJUČIVO u 4.0, POST/PATCH
+  // /api/v1/pdv/tax-rates). Isti postupak kao sa `T_Robna dokumenta` /
+  // `T_Robne stavke`: strategija je bila full refresh (deleteMany + reinsert), pa
+  // bi svaki sync — i ručni „sync all" i noćni posao — obrisao svaku 4.0-unesenu
+  // tarifu. `tax_rates` je od sada u OWNED_PRODUCTION_TABLES (table-ownership.ts)
+  // kao zaštita ako se mapiranje ikad vrati. NE VRAĆATI bez odluke o vlasništvu.
   {
     source: "R_Vrste dokumenata",
     model: "DocumentType",

@@ -6,6 +6,7 @@ import {
   shiftBelgradeDate,
 } from "./belgrade-time";
 import {
+  DEFAULT_STALE_AFTER_MINUTES,
   JOB_STATUS,
   MAX_ATTEMPTS,
   type JobSchedule,
@@ -149,8 +150,12 @@ export class SchedulerService implements OnModuleDestroy {
       // Termin već postoji. Re-claim (atomski UPDATE — samo jedan dobije red):
       //  • FAILED sa preostalim pokušajima — uz BACKOFF 10min×attempts (bez ovoga
       //    bi sva 3 pokušaja izgorela za ~90s pa kratak sy15 ispad pojede slot);
-      //  • zaglavljeni RUNNING stariji od 10min (crash/SIGTERM usred izvršenja bi
-      //    inače TRAJNO progutao slot — sy15 fn su idempotentne pa je re-run bezbedan).
+      //  • zaglavljeni RUNNING stariji od `staleAfterMinutes` (crash/SIGTERM usred
+      //    izvršenja bi inače TRAJNO progutao slot — sy15 fn su idempotentne pa je
+      //    re-run bezbedan). Prag je PO POSLU: default 10 min važi za kratke sy15
+      //    pozive, a dug posao (npr. BigBit sync) ga mora podići iznad svog
+      //    najdužeg trajanja, inače bi sam sebe pokrenuo drugi put (review [7]).
+      const staleAfter = job.staleAfterMinutes ?? DEFAULT_STALE_AFTER_MINUTES;
       const retried = await this.prisma.$queryRaw<{ id: number; attempts: number }[]>`
         UPDATE scheduled_job_runs
            SET status = ${JOB_STATUS.RUNNING}, attempts = attempts + 1,
@@ -161,7 +166,7 @@ export class SchedulerService implements OnModuleDestroy {
              (status = ${JOB_STATUS.FAILED}
                AND finished_at < now() - make_interval(mins => 10 * attempts))
              OR (status = ${JOB_STATUS.RUNNING}
-               AND started_at < now() - interval '10 minutes')
+               AND started_at < now() - make_interval(mins => ${staleAfter}))
            )
         RETURNING id, attempts`;
       runId = retried[0]?.id ?? null;
@@ -223,11 +228,15 @@ export class SchedulerService implements OnModuleDestroy {
   async runNow(key: string): Promise<{ status: string; summary?: string; error?: string }> {
     const job = this.jobs.get(key);
     if (!job) throw new Error(`Nepoznat posao '${key}'`);
+    const blockMinutes =
+      job.runNowBlockMinutes ??
+      job.staleAfterMinutes ??
+      DEFAULT_STALE_AFTER_MINUTES;
     const running = await this.prisma.scheduledJobRun.findFirst({
       where: {
         jobKey: job.key,
         status: JOB_STATUS.RUNNING,
-        startedAt: { gt: new Date(Date.now() - 10 * 60_000) },
+        startedAt: { gt: new Date(Date.now() - blockMinutes * 60_000) },
       },
       select: { id: true },
     });

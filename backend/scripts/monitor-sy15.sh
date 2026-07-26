@@ -22,13 +22,17 @@ for c in sy15-db sy15-rest sy15-auth sy15-storage sy15-functions sy15-gateway sy
   [ "$st" = "running" ] || add "kontejner $c: $st"
 done
 
-# 2) outbox: queued stariji od 30 min (dispatch ne prazni) + failed u zadnjih 60 min
+# 2) outbox: queued stariji od 60 min (dispatch ne prazni) + failed u zadnjih 60 min
+# Prag podignut 30→60 min 26.07.2026 (review [13]): noćni BigBit sync sme legitimno
+# da drži scheduler tik do 45 min (tik je sekvencijalan), pa bi dispatch poslovi u
+# tom prozoru pravili lažnu uzbunu svake noći. Jutarnji rad je i dalje pokriven —
+# enqueue kreće u 06:00, a 60 min je i dalje daleko ispod ljudske tolerancije.
 Q=$(psq "select coalesce(sum(c),0) from (
-  select count(*) c from kadr_notification_log     where status='queued' and created_at < now()-interval '30 min'
-  union all select count(*) from sastanci_notification_log where status='queued' and created_at < now()-interval '30 min'
-  union all select count(*) from maint_notification_log    where status='queued' and created_at < now()-interval '30 min'
-  union all select count(*) from pb_notification_log       where status='queued' and created_at < now()-interval '30 min') x")
-[ "${Q:-0}" -gt 0 ] && add "outbox: $Q queued redova starijih od 30 min"
+  select count(*) c from kadr_notification_log     where status='queued' and created_at < now()-interval '60 min'
+  union all select count(*) from sastanci_notification_log where status='queued' and created_at < now()-interval '60 min'
+  union all select count(*) from maint_notification_log    where status='queued' and created_at < now()-interval '60 min'
+  union all select count(*) from pb_notification_log       where status='queued' and created_at < now()-interval '60 min') x")
+[ "${Q:-0}" -gt 0 ] && add "outbox: $Q queued redova starijih od 60 min"
 F=$(psq "select coalesce(sum(c),0) from (
   select count(*) c from kadr_notification_log     where status='failed' and coalesce(last_attempt_at,created_at) > now()-interval '60 min'
   union all select count(*) from sastanci_notification_log where status='failed' and coalesce(last_attempt_at,created_at) > now()-interval '60 min'
@@ -92,18 +96,29 @@ fi
 # 9) BigBit noćni sync (scheduler posao `bigbit-nightly-sync`, Pruga P 26.07.2026).
 # Dnevnik je u glavnoj bazi (scheduled_job_runs), pa ide preko psq2. Alarm tek posle
 # 2 UZASTOPNA pada (jedan pad se sam ponavlja: MAX_ATTEMPTS=3 + backoff) ili ako 26h
-# nema uspešnog run-a. Bez ijednog reda = posao nije uključen (BIGBIT_NIGHTLY_SYNC
-# prazan) → nema alarma, ne budimo nikoga zbog isključene automatike.
+# nema uspešnog run-a.
+# GATE = SVEŽINA, ne „ikad postojao" (review [11]): posmatraju se samo termini iz
+# poslednja 3 dana. Kad se posao ugasi (BIGBIT_NIGHTLY_SYNC prazan) ili ukloni,
+# stari redovi prestaju da alarmiraju posle 3 dana umesto da zauvek drže uzbunu.
+# Namerna rupa: ako posao nikad nije ni startovao (scheduler ugašen), ovde nema
+# alarma — to se vidi na `enabled` u GET /api/v1/scheduler/jobs.
 # NAPOMENA: `partial` run NIJE pad — sync tako obeležava i samo PRESKOČENE redove
-# (paritet-guard predmeta, duplikat kataloškog broja); posao ga upiše kao DONE.
-BBN_ANY=$(psq2 "select count(*) from scheduled_job_runs where job_key='bigbit-nightly-sync'")
-if [ "${BBN_ANY:-0}" -gt 0 ]; then
+# (paritet-guard predmeta, FK pre-filter, duplikati); posao ga upiše kao DONE.
+BBN_RECENT=$(psq2 "select count(*) from scheduled_job_runs
+  where job_key='bigbit-nightly-sync' and scheduled_for > now()-interval '3 days'")
+if [ "${BBN_RECENT:-0}" -gt 0 ]; then
   BBN_FAIL=$(psq2 "select count(*) from (select status from scheduled_job_runs
     where job_key='bigbit-nightly-sync' order by scheduled_for desc limit 2) t where status='FAILED'")
   [ "${BBN_FAIL:-0}" -ge 2 ] && add "BigBit noćni sync: 2 uzastopna pada (BigBit MSSQL nedostupan? v. /api/v1/scheduler/jobs)"
-  BBN_AGE=$(psq2 "select coalesce(extract(epoch from now()-max(finished_at))::int, 999999)
+  # Sentinel -1 = NIJEDAN uspešan run (review [12]): 999999 bi se ispisalo kao
+  # „poslednji uspešan pre 277 h", što je besmislena poruka prve noći.
+  BBN_AGE=$(psq2 "select coalesce(extract(epoch from now()-max(finished_at))::int, -1)
     from scheduled_job_runs where job_key='bigbit-nightly-sync' and status='DONE'")
-  [ "${BBN_AGE:-999999}" -gt 93600 ] && add "BigBit noćni sync: poslednji uspešan pre $((BBN_AGE/3600)) h (prag 26)"
+  if [ "${BBN_AGE:--1}" -lt 0 ]; then
+    add "BigBit noćni sync: posao je zakazan ali još NIJEDNOM nije uspeo — proveri prvi run (GET /api/v1/scheduler/jobs, bb_sync_log)"
+  elif [ "$BBN_AGE" -gt 93600 ]; then
+    add "BigBit noćni sync: poslednji uspešan pre $((BBN_AGE/3600)) h (prag 26)"
+  fi
 fi
 
 [ -z "$PROBLEMS" ] && exit 0

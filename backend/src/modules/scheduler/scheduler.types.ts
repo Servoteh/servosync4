@@ -25,6 +25,20 @@ export interface ScheduledJob {
    * deploy u trenutku termina). Default: daily/weekly 180, everyMinutes = period.
    */
   catchUpMinutes?: number;
+  /**
+   * Posle koliko minuta se RUNNING red smatra zaglavljenim i sme da se preuzme
+   * (crash/SIGTERM usred izvršenja). Default 10 — dobro za kratke sy15 pozive,
+   * ali OPASNO za duge poslove: posao koji normalno traje 30 min bi sam sebe
+   * pokrenuo drugi put dok prvi još radi. Dug posao mora da postavi vrednost
+   * VEĆU od svog najdužeg realnog trajanja. Review 26.07.2026, nalaz [7].
+   */
+  staleAfterMinutes?: number;
+  /**
+   * Koliko minuta svež RUNNING red blokira ručno okidanje (`run-now`). Default
+   * 10; dug posao ga podiže da admin ne bi startovao drugi prolaz preko prvog.
+   * Review 26.07.2026, nalaz [14].
+   */
+  runNowBlockMinutes?: number;
   /** Izvrši posao; vraćeni string ide u dnevnik kao summary. */
   run(ctx: JobRunContext): Promise<string | void>;
 }
@@ -37,3 +51,6 @@ export const JOB_STATUS = {
 
 /** Maksimalan broj pokušaja jednog termina (prvi + retry-ji u catch-up prozoru). */
 export const MAX_ATTEMPTS = 3;
+
+/** Default za `staleAfterMinutes` / `runNowBlockMinutes` (kratki sy15 pozivi). */
+export const DEFAULT_STALE_AFTER_MINUTES = 10;

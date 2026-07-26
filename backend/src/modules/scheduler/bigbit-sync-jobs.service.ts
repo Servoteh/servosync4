@@ -39,18 +39,25 @@ export const BIGBIT_NIGHTLY_SYNC_JOB_KEY = "bigbit-nightly-sync";
 
 /**
  * Tokovi koje noćni posao NE DIRA (ručno `/sync/run` i dalje može, uz svesnu
- * odluku čoveka).
+ * odluku čoveka i nadzor nad ishodom).
  *
- * `tax_rates` — BACKEND_RULES §3 ih vodi kao read-only BigBit keš, ALI 4.0 PDV
- * modul od Talasa 2/3 ima ŽIV registar sa upisom (`POST/PATCH /api/v1/pdv/tax-rates`
- * → `TaxRatesService.create/update`, `id` je autoincrement). `R_Tarife` nema
- * watermark kolonu → strategija je `full_refresh` = `deleteMany({})` + reinsert,
- * što bi svake noći TIHO OBRISALO svaku 3.0-unesenu tarifu. To nije idempotentno
- * u odnosu na 3.0 podatke, pa tok ostaje van automatike dok Nenad ne presudi
- * (opcije: 1) `tax_rates` u `ADDITIVE_REFRESH_TABLES` sa dedup poljem `code`,
- * 2) izbaciti `R_Tarife` iz sync mape kao što je urađeno sa `goods_documents`).
+ * `items` (review 26.07.2026, nalaz [1]) — PRIVREMENO. Guard za duplikate
+ * kataloškog broja (DB-081, uveden 25.07) NIJE još nijednom prošao preko
+ * produkcijskih podataka: prvi prolaz briše ~2.300 duplikat-grupa, a sve meke
+ * reference (`price_list_entries.item_id`, `work_order_item_components`) koje
+ * gađaju „gubitnički" `id` postaju siročad — pod `session_replication_role=
+ * 'replica'` FK to ne zaustavlja, a takav backup se ne restore-uje čisto.
+ * ČIŠĆENJE JE U TOKU (Nenad prenosi jedinstvene kataloške brojeve u BigBit); kad
+ * `items` ostane bez duplikata, ovaj red se briše i tok ulazi u noćni prolaz.
+ * Do tada: ručni sync artikala se pokreće NADGLEDANO, uz pre-check upit iz
+ * .env.example (aktivaciona beleška uz `BIGBIT_NIGHTLY_SYNC`).
+ *
+ * NAPOMENA: `tax_rates` VIŠE NIJE OVDE — presudom Nenada 26.07.2026 registar PDV
+ * tarifa je 4.0-owned, pa je `R_Tarife` IZBAČEN iz `sync-map.generated.ts` (i
+ * ručni „sync all" ga više ne poznaje). Isključenje na nivou noćnog posla bi bilo
+ * polumera: brisao bi ga svaki ručni prolaz.
  */
-export const NIGHTLY_SYNC_EXCLUDED = new Set<string>(["tax_rates"]);
+export const NIGHTLY_SYNC_EXCLUDED = new Set<string>(["items"]);
 
 /**
  * Gornja granica čekanja na jedan noćni prolaz. Tik scheduler-a je SEKVENCIJALAN
@@ -116,6 +123,18 @@ export class BigbitSyncJobs {
         // isti termin, ali je registrovan RANIJE i u istom tiku se izvršava prvi
         // (brza brisanja), pa se ne preklapaju.
         schedule: { kind: "daily", at: "03:30" },
+        // Catch-up 120 min (review [8]): default 180 bi u najgorem slučaju
+        // startovao pun sync tek u 06:30 — tačno kad kreću jutarnji poslovi i
+        // kad ljudi ulaze u sistem. 120 min drži prozor unutar noći (do 05:30).
+        catchUpMinutes: 120,
+        // Zaglavljen RUNNING se preuzima tek posle 60 min (review [7]): default
+        // od 10 min je kraći od normalnog trajanja ovog posla, pa bi ga sam
+        // scheduler pokrenuo drugi put dok prvi još radi. 60 > 45 min koliko
+        // posao uopšte čeka na sync.
+        staleAfterMinutes: 60,
+        // Isti razlog za ručno okidanje (review [14]) — admin ne sme da startuje
+        // drugi prolaz preko prvog koji još radi.
+        runNowBlockMinutes: 60,
         run: async () => this.runNightly(),
       },
     ];
