@@ -61,6 +61,8 @@ export interface ChatActor {
 interface ToolGate {
   scope: ToolScope;
   permissions: PermissionSet;
+  /** `true` = permisije se NISU mogle pročitati (kvar), nije „nema prava". */
+  degraded: boolean;
 }
 
 /**
@@ -321,7 +323,7 @@ export class AiChatService {
     // svi u ponudi, a pravo presuđuje RLS u bazi.
     const gate: ToolGate = {
       scope: setup.scope,
-      permissions: await this.effectivePermissions(email, actor),
+      ...(await this.effectivePermissions(email, actor)),
     };
 
     let out;
@@ -690,31 +692,41 @@ export class AiChatService {
   /**
    * Efektivne permisije pozivaoca — ISTI izvor kao `GET /auth/me/permissions`
    * (rola-mapa + `user_permission_overrides` u redosledu deny > grant > rola,
-   * plus tvrda brava na zarade). Čita se SVEŽE po pozivu, ne iz JWT-a, pa
-   * oduzeto pravo važi već u sledećoj poruci — bez ponovne prijave.
+   * plus tvrda brava na zarade).
    *
-   * Pad čitanja ili nepoznat pozivalac → `undefined` = FAIL-CLOSED: alati koji
-   * traže permisiju se ne nude i ne izvršavaju. Za 20 sy15 alata to ništa ne
-   * menja (oni permisiju ne traže — pravo im presuđuje RLS u bazi).
+   * Šta je SVEŽE a šta nije (ista ograda kao u `auth.controller.ts`): override-i
+   * se čitaju iz baze na svaki poziv, pa dodat/oduzet ključ važi već u sledećoj
+   * poruci bez ponovne prijave. **Rola se čita iz JWT claim-a**, a token traje
+   * do `JWT_EXPIRES_IN` (podrazumevano 7 dana) — promena role dakle NE dejstvuje
+   * odmah, isto kao i na svakoj drugoj ruti. Ako nekome treba trenutno oduzeti
+   * pristup alatu, put je deny override, ne promena role.
+   *
+   * Nepoznat pozivalac ili PAD čitanja → `undefined` = FAIL-CLOSED: alati koji
+   * traže permisiju se ne nude i ne izvršavaju. Pad se dodatno označava
+   * (`degraded`) da bi model razlikovao „nemaš pravo" od „ne mogu da proverim".
+   * Za 20 sy15 alata ništa se ne menja (permisiju ne traže — presuđuje RLS).
    */
   private async effectivePermissions(
     email: string,
     actor?: ChatActor,
-  ): Promise<PermissionSet> {
-    if (!actor?.role) return undefined;
+  ): Promise<{ permissions: PermissionSet; degraded: boolean }> {
+    if (!actor?.role) return { permissions: undefined, degraded: false };
     try {
       const overrides = await this.prisma.userPermissionOverride.findMany({
         where: { userId: actor.userId },
         select: { key: true, allow: true },
       });
-      return new Set(
-        applyOverrides(permissionsForRoles([actor.role]), overrides, email),
-      );
+      return {
+        permissions: new Set(
+          applyOverrides(permissionsForRoles([actor.role]), overrides, email),
+        ),
+        degraded: false,
+      };
     } catch (e) {
       this.logger.warn(
         `Permisije za alate nisu učitane (fail-closed): ${e instanceof Error ? e.message : String(e)}`,
       );
-      return undefined;
+      return { permissions: undefined, degraded: true };
     }
   }
 
@@ -732,6 +744,10 @@ export class AiChatService {
    *  3. audit: svaki poziv ide u `audit_log` (AuditInterceptor vidi samo HTTP
    *     mutacije, a alati se izvršavaju unutar jednog POST /ai/chat).
    *
+   * `gate` je OBAVEZAN i nema podrazumevanu vrednost: „zaboravljen gate" ne sme
+   * da postane tiho `personal` + prazne permisije, jer bi se tako promašen
+   * poziv predstavio kao uredna odbijenica umesto da padne na kompajliranju.
+   *
    * sy15 alati i dalje idu kroz `withUserRls` (GUC identitet), a greška se
    * VRAĆA modelu (ne baca) da petlja nastavi — paritet edge `rpcAsUser`.
    */
@@ -739,8 +755,8 @@ export class AiChatService {
     email: string,
     name: string,
     args: Record<string, unknown>,
-    ctx?: AiCallContext,
-    gate?: ToolGate,
+    ctx: AiCallContext | undefined,
+    gate: ToolGate,
   ): Promise<unknown> {
     const started = Date.now();
     const tool = findTool(name);
@@ -748,8 +764,18 @@ export class AiChatService {
       this.auditTool(email, ctx, name, args, started, "nepoznat_alat");
       return { error: "nepoznat_alat" };
     }
-    const scope: ToolScope = gate?.scope ?? "personal";
-    if (!isToolAllowed(tool, scope, gate?.permissions)) {
+    if (!isToolAllowed(tool, gate.scope, gate.permissions)) {
+      // Razlika je bitna za korisnika: „nemate pravo" je konačna odbijenica, a
+      // pad čitanja permisija je PRIVREMEN kvar. Bez ovoga bi kratak ispad baze
+      // korisniku stigao kao lažna tvrdnja da mu je pristup oduzet.
+      if (gate.degraded && tool.requiredPermission) {
+        this.auditTool(email, ctx, name, args, started, "degradirano");
+        return {
+          error: "provera_prava_nedostupna",
+          poruka:
+            "Trenutno ne mogu da proverim prava pristupa (privremen kvar). Reci korisniku da pokuša ponovo za koji minut — NE tvrdi da nema pravo.",
+        };
+      }
       this.auditTool(email, ctx, name, args, started, "nema_prava");
       return { error: "nema_prava" };
     }
@@ -760,7 +786,12 @@ export class AiChatService {
       kadrovska: this.kadrovska,
     };
     try {
-      const out = await tool.execute(args, { email, call: ctx, deps });
+      const out = await tool.execute(args, {
+        email,
+        call: ctx,
+        permissions: gate.permissions,
+        deps,
+      });
       this.auditTool(email, ctx, name, args, started, "ok");
       return out;
     } catch (e) {
@@ -778,6 +809,16 @@ export class AiChatService {
    * `AuditInterceptor`: audit NIKAD ne sme da obori alat, pa je i sinhroni pad
    * (npr. nedostupna glavna baza) progutan. Argumenti se skraćuju — `sql_upit`
    * ume da pošalje ceo SELECT, a `audit_log` nije mesto za to.
+   *
+   * ⚠️ OSETLJIVOST SADRŽAJA — za svakog ko kasnije pravi prikaz `audit_log`-a:
+   * `afterData.argumenti` nosi DOSLOVNE argumente koje je model sastavio iz
+   * korisnikove poruke. Za HR alate (`trazi_zaposlenog`, `go_saldo`,
+   * `odsustva_lista`, `sql_upit`) to su imena zaposlenih, UUID-jevi kartona i
+   * ceo tekst SQL upita. Ovaj red je dakle najmanje toliko poverljiv koliko i
+   * sam alat: svaki ekran/izvoz nad `audit_log`-om MORA imati admin gate i ne
+   * sme se prosleđivati rukovodiocima „radi uvida u korišćenje AI-ja".
+   * Ako ikad zatreba slobodnija vidljivost — prvo se uvodi maskiranje polja,
+   * pa tek onda ekran.
    */
   private auditTool(
     email: string,
@@ -785,7 +826,7 @@ export class AiChatService {
     name: string,
     args: Record<string, unknown>,
     startedAt: number,
-    ishod: "ok" | "greska" | "nema_prava" | "nepoznat_alat",
+    ishod: "ok" | "greska" | "nema_prava" | "nepoznat_alat" | "degradirano",
   ): void {
     try {
       void this.prisma.auditLog

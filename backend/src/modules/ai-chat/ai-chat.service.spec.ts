@@ -270,6 +270,8 @@ describe("AiChatService.execTool dispatch (alat → RPC ime)", () => {
       prismaMock(),
       kadrovskaMock(),
     );
+    // `gate` je obavezan (review nalaz 4): lična nit, BEZ ijedne permisije —
+    // dokaz da 20 sy15 alata i dalje radi bez app-permisije, kao i pre AI-1.
     const exec = (name: string, args: Record<string, unknown>) =>
       (
         svc as unknown as {
@@ -277,9 +279,15 @@ describe("AiChatService.execTool dispatch (alat → RPC ime)", () => {
             e: string,
             n: string,
             a: Record<string, unknown>,
+            c: unknown,
+            g: unknown,
           ) => Promise<unknown>;
         }
-      ).execTool("u@servoteh.com", name, args);
+      ).execTool("u@servoteh.com", name, args, undefined, {
+        scope: "personal",
+        permissions: undefined,
+        degraded: false,
+      });
     return { exec, captured, ai };
   }
 
@@ -835,7 +843,7 @@ describe("AiChatService — permisijska brana alata + audit (Talas AI-1)", () =>
       "nadji_radni_nalog",
       { upit: "tajna" },
       { module: "chat", userId: 7 },
-      { scope: "personal", permissions: new Set<string>() },
+      { scope: "personal", permissions: new Set<string>(), degraded: false },
     );
     const create = auditCreate(prisma);
     expect(create).toHaveBeenCalledTimes(1);
@@ -860,10 +868,72 @@ describe("AiChatService — permisijska brana alata + audit (Talas AI-1)", () =>
           e: string,
           n: string,
           a: Record<string, unknown>,
+          c: unknown,
+          g: unknown,
         ) => Promise<unknown>;
       }
-    ).execTool("u@servoteh.com", "izmisljen_alat", {});
+    ).execTool("u@servoteh.com", "izmisljen_alat", {}, undefined, {
+      scope: "personal",
+      permissions: undefined,
+      degraded: false,
+    });
     expect(out).toEqual({ error: "nepoznat_alat" });
     expect(auditData(prisma, 0).afterData.ishod).toBe("nepoznat_alat");
+  });
+
+  /**
+   * Nalaz 10 — „ne mogu da proverim" NIJE „nemaš pravo". Kratak ispad glavne baze
+   * bi bez ovoga korisniku stigao kao tvrdnja da mu je pristup oduzet, pa bi
+   * zvao administratora zbog kvara koji prođe sam.
+   */
+  it("pad citanja permisija → privremena greska, NE lazno nemate prava", async () => {
+    const { svc, prisma } = makeChat();
+    const out = (await (
+      svc as unknown as {
+        execTool: (
+          e: string,
+          n: string,
+          a: Record<string, unknown>,
+          c: unknown,
+          g: unknown,
+        ) => Promise<unknown>;
+      }
+    ).execTool(
+      "u@servoteh.com",
+      "nadji_radni_nalog",
+      { upit: "x" },
+      undefined,
+      {
+        scope: "personal",
+        permissions: undefined,
+        degraded: true,
+      },
+    )) as { error: string; poruka: string };
+    expect(out.error).toBe("provera_prava_nedostupna");
+    expect(out.poruka).toContain("pokuša ponovo");
+    expect(auditData(prisma, 0).afterData.ishod).toBe("degradirano");
+  });
+
+  it("degraded NE utiče na sy15 alate (oni ne traže app-permisiju)", async () => {
+    const { svc } = makeChat();
+    const out = await (
+      svc as unknown as {
+        execTool: (
+          e: string,
+          n: string,
+          a: Record<string, unknown>,
+          c: unknown,
+          g: unknown,
+        ) => Promise<unknown>;
+      }
+    ).execTool("u@servoteh.com", "moj_tim", {}, undefined, {
+      scope: "personal",
+      permissions: undefined,
+      degraded: true,
+    });
+    // sy15 mok nema withUserRls implementaciju → alat pukne i vrati
+    // `alat_neuspesan`; bitno je da NIJE odbijen na brani.
+    expect(out).not.toEqual({ error: "provera_prava_nedostupna" });
+    expect(out).not.toEqual({ error: "nema_prava" });
   });
 });

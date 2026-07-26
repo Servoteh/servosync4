@@ -1822,6 +1822,11 @@ model WorkTimeEntry {
   // stopped_at IS NULL) za kiosk „moje otvorene sesije" i auto-close — Prisma ne
   // ume partial, živi samo u migraciji 20260725160000 (kao uq_stock_documents_po).
   @@index([workerId], map: "idx_work_time_entries_worker")
+  // AI-1 (20260726160000): sve dosadašnje putanje idu preko tech_process_id, pa
+  // je „stvarno vreme po operaciji naloga" radilo Seq Scan preko 99k redova PO
+  // OPERACIJI. Alati istorija_crteza / tehnoloski_postupak_naloga filtriraju baš
+  // po ovoj dvojci.
+  @@index([workOrderId, operationNumber], map: "idx_work_time_entries_work_order")
   @@map("work_time_entries")
 }
 

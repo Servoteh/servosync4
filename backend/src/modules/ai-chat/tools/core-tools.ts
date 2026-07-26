@@ -31,9 +31,30 @@ import type { AiTool, ToolScope } from "./tool-registry";
 /** Proizvodni alati NISU u deljenoj projektnoj niti — vidi `ai-tools.ts` §scope. */
 const LICNI: readonly ToolScope[] = ["personal"];
 
-/** LIKE '%pojam%' nad indeksiranim izrazom (dijakritika i velika slova nebitni). */
-function unaccentLike(column: Prisma.Sql, term: string): Prisma.Sql {
-  return Prisma.sql`public.immutable_unaccent(lower(${column})) LIKE '%' || public.immutable_unaccent(lower(${term})) || '%'`;
+/**
+ * Najkraći pojam koji sme u trigram pretragu. NIJE proizvoljno: `pg_trgm` gradi
+ * trigrame (3 znaka), pa za pojam kraći od 3 znaka indeks NE MOŽE da se koristi
+ * i upit pada na Seq Scan preko cele tabele. Model ume da pozove alat sa „a" —
+ * to je Seq Scan nad 92k redova za rezultat koji ionako nije upotrebljiv.
+ */
+const MIN_POJAM = 3;
+
+/**
+ * LIKE '%pojam%' nad INDEKSIRANIM izrazom (dijakritika i velika slova nebitni).
+ *
+ * EXPORTOVANO NAMERNO: `test/ai-tools-trigram.e2e-spec.ts` gradi upit baš ovom
+ * funkcijom i EXPLAIN-om proverava da plan koristi trigram indeks. Ako se izraz
+ * ovde ikada raziđe sa migracijom 20260726160000 (npr. nestane `lower`), test
+ * pada — umesto da pretraga tiho postane Seq Scan koji niko ne primeti.
+ *
+ * `%`, `_` i `\` u pojmu se ESKEJPUJU: bez toga „50%" znači „50 + bilo šta",
+ * a „a_b" poklapa „axb" — korisnik dobija tuđe redove. Escape ide PRE unaccent-a
+ * (obrnutu kosu crtu unaccent ne dira), a `LIKE` u PostgreSQL-u podrazumevano
+ * tumači `\` kao escape.
+ */
+export function unaccentLike(column: Prisma.Sql, term: string): Prisma.Sql {
+  const escaped = term.replace(/[\\%_]/g, "\\$&");
+  return Prisma.sql`public.immutable_unaccent(lower(${column})) LIKE '%' || public.immutable_unaccent(lower(${escaped})) || '%'`;
 }
 
 /**
@@ -80,6 +101,51 @@ function term(v: unknown): string {
 /** Prazan upit ne sme da povuče celu tabelu — model dobija jasnu poruku. */
 const PRAZAN_UPIT = { greska: "prazan_upit", poruka: "Navedi pojam pretrage." };
 
+/** Prekratak pojam — vidi `MIN_POJAM` (bez 3 znaka nema trigram indeksa). */
+const PREKRATAK_UPIT = {
+  greska: "prekratak_upit",
+  poruka: `Pojam mora imati bar ${MIN_POJAM} znaka — sa kraćim pojmom pretraga nije upotrebljiva. Pitaj korisnika za precizniji pojam.`,
+};
+
+/** `null` = pojam je u redu; inače gotov odgovor za model. */
+function proveriPojam(q: string): typeof PRAZAN_UPIT | null {
+  if (!q) return PRAZAN_UPIT;
+  if (q.length < MIN_POJAM) return PREKRATAK_UPIT;
+  return null;
+}
+
+/**
+ * LIMIT+1 SENTINEL. Bez njega model dobija „nadjeno: 15" na kapi od 15 i to
+ * saopšti kao UKUPAN broj („ima 15 naloga") — a stvarno ih može biti 400.
+ * Namerno NE koristimo `count(*) OVER ()`: prozorska funkcija mora da prebroji
+ * SVE poklapajuće redove i time ubija top-N plan (LIMIT prestaje da štedi rad).
+ * Umesto toga tražimo jedan red viška: ako stigne, znamo da ima još — a ne
+ * koliko, što je tačno ono što se sme reći.
+ */
+function odseci<T>(
+  rows: T[],
+  limit: number,
+): { redovi: T[]; nadjeno: string | number; ima_jos: boolean } {
+  const ima_jos = rows.length > limit;
+  const redovi = ima_jos ? rows.slice(0, limit) : rows;
+  return { redovi, nadjeno: ima_jos ? `>= ${limit}` : redovi.length, ima_jos };
+}
+
+const LIMIT_NALOZI = 15;
+const LIMIT_ARTIKLI = 15;
+const LIMIT_PREDMETI = 5;
+
+/**
+ * Prijava rada koja ULAZI u računicu stvarnog vremena. Dva filtera šuma
+ * (izmereno, plan §2.2): 47% prijava je zatvoreno za manje od minuta — to su
+ * knjiženja/ispravke, ne rad — a `auto_closed` sesije je zatvorio sistem (radnik
+ * je zaboravio izlaz), pa im je trajanje izmišljeno. Bez ovoga „stvarno vreme"
+ * ima medijanu blizu nule i poređenje sa planom je besmisleno.
+ */
+const PRIJAVA_VALIDNA = Prisma.sql`w.stopped_at IS NOT NULL
+       AND w.stopped_at >= w.started_at + interval '1 minute'
+       AND NOT COALESCE(w.auto_closed, false)`;
+
 export const CORE_TOOLS: readonly AiTool[] = [
   {
     name: "nadji_radni_nalog",
@@ -99,8 +165,9 @@ export const CORE_TOOLS: readonly AiTool[] = [
     scopes: LICNI,
     execute: async (a, ctx) => {
       const q = term(a.upit);
-      if (!q) return PRAZAN_UPIT;
-      const nalozi = await ctx.deps.prisma.$queryRaw<unknown[]>(Prisma.sql`
+      const lose = proveriPojam(q);
+      if (lose) return lose;
+      const redovi = await ctx.deps.prisma.$queryRaw<unknown[]>(Prisma.sql`
         SELECT wo.ident_number AS ident, wo.variant AS varijanta,
                wo.part_name AS naziv_dela, wo.drawing_number AS crtez,
                wo.piece_count AS kolicina, NULLIF(btrim(wo.material), '') AS materijal,
@@ -116,10 +183,19 @@ export const CORE_TOOLS: readonly AiTool[] = [
          WHERE ${unaccentLike(Prisma.sql`wo.ident_number`, q)}
             OR ${unaccentLike(Prisma.sql`wo.part_name`, q)}
          ORDER BY wo.entered_at DESC
-         LIMIT 15`);
-      return nalozi.length
-        ? { pojam: q, nadjeno: nalozi.length, nalozi }
-        : { pojam: q, nadjeno: 0, nalozi: [] };
+         LIMIT ${LIMIT_NALOZI + 1}`);
+      const { redovi: nalozi, nadjeno, ima_jos } = odseci(redovi, LIMIT_NALOZI);
+      return {
+        pojam: q,
+        nadjeno,
+        ima_jos,
+        ...(ima_jos
+          ? {
+              napomena: `Prikazano je prvih ${LIMIT_NALOZI} (najnovijih) — ima ih JOŠ. Ne navodi ukupan broj; traži uži pojam.`,
+            }
+          : {}),
+        nalozi,
+      };
     },
   },
   {
@@ -140,7 +216,8 @@ export const CORE_TOOLS: readonly AiTool[] = [
     scopes: LICNI,
     execute: async (a, ctx) => {
       const q = term(a.crtez);
-      if (!q) return PRAZAN_UPIT;
+      const lose = proveriPojam(q);
+      if (lose) return lose;
       const prisma = ctx.deps.prisma;
 
       // Ako je korisnik dao IDENT RN-a, prvo izvuci crtež tog naloga.
@@ -164,32 +241,52 @@ export const CORE_TOOLS: readonly AiTool[] = [
          ORDER BY wo.entered_at DESC
          LIMIT 10`);
       if (!nalozi.length) {
-        return { crtez, broj_naloga: 0, nalozi: [], po_radnom_mestu: [] };
+        return {
+          crtez,
+          broj_naloga: 0,
+          po_radnom_mestu: [],
+          poslednji_nalozi: [],
+          predlog: `Nijedan nalog nema tačno taj broj crteža. Ako je korisnik dao deo naziva ili nepotpun broj, pozovi nadji_radni_nalog sa istim pojmom (delimična pretraga) pa probaj ponovo sa tačnim brojem crteža iz rezultata.`,
+        };
       }
 
       // Agregat plan-vs-stvarno po radnom mestu nad SVIM nalozima istog crteža
       // (ne samo prikazanih 10) — zato zaseban upit sa svojim CTE-om.
+      //
+      // SIMETRIJA JE OBAVEZNA (review nalaz 19): i plan i stvarno se prvo
+      // agregiraju PO NALOGU I RADNOM MESTU, pa tek onda po radnom mestu. Ranije
+      // je plan išao po OPERACIJI (svaki red rutinga zasebno), a stvarno po
+      // nalogu — kad se isto radno mesto javi dva puta u rutingu (glodanje pre i
+      // posle kaljenja, što je čest slučaj), plan bi pokazao dva mala broja a
+      // stvarno jedan veliki, i „plan vs stvarno" bi lagao za faktor 2.
+      // Iz istog razloga `naloga_sa_planom` sada broji NALOGE, ne redove rutinga.
       const poRadnomMestu = await prisma.$queryRaw<unknown[]>(Prisma.sql`
         WITH nalozi AS (
           SELECT wo.id, wo.piece_count
             FROM work_orders wo
            WHERE ${drawingMatch(Prisma.sql`wo.drawing_number`, crtez)}
         ),
-        plan AS (
-          SELECT woo.work_center_code AS rm,
-                 count(*)::int AS naloga_sa_planom,
-                 round(avg(COALESCE(woo.setup_time, 0)
-                       + COALESCE(woo.cycle_time, 0) * n.piece_count)::numeric, 2) AS plan_h_prosek
+        plan_po_nalogu AS (
+          SELECT woo.work_order_id, woo.work_center_code AS rm,
+                 SUM(COALESCE(woo.setup_time, 0)
+                     + COALESCE(woo.cycle_time, 0) * n.piece_count) AS h
             FROM work_order_operations woo
             JOIN nalozi n ON n.id = woo.work_order_id
-           GROUP BY 1
+           GROUP BY 1, 2
         ),
-        po_nalogu AS (
-          SELECT wte.work_order_id, wte.work_center_code AS rm,
-                 SUM(EXTRACT(EPOCH FROM (wte.stopped_at - wte.started_at))) / 3600.0 AS h
-            FROM work_time_entries wte
-            JOIN nalozi n ON n.id = wte.work_order_id
-           WHERE wte.stopped_at IS NOT NULL
+        plan AS (
+          SELECT rm, count(*)::int AS naloga_sa_planom,
+                 round(min(h)::numeric, 2) AS plan_h_min,
+                 round(max(h)::numeric, 2) AS plan_h_max,
+                 round(avg(h)::numeric, 2) AS plan_h_prosek
+            FROM plan_po_nalogu GROUP BY 1
+        ),
+        stvarno_po_nalogu AS (
+          SELECT w.work_order_id, w.work_center_code AS rm,
+                 SUM(EXTRACT(EPOCH FROM (w.stopped_at - w.started_at))) / 3600.0 AS h
+            FROM work_time_entries w
+            JOIN nalozi n ON n.id = w.work_order_id
+           WHERE ${PRIJAVA_VALIDNA}
            GROUP BY 1, 2
         ),
         stvarno AS (
@@ -197,11 +294,12 @@ export const CORE_TOOLS: readonly AiTool[] = [
                  round(min(h)::numeric, 2) AS stvarno_h_min,
                  round(max(h)::numeric, 2) AS stvarno_h_max,
                  round(avg(h)::numeric, 2) AS stvarno_h_prosek
-            FROM po_nalogu GROUP BY 1
+            FROM stvarno_po_nalogu GROUP BY 1
         )
         SELECT COALESCE(plan.rm, stvarno.rm) AS radno_mesto,
                o.work_center_name AS naziv_radnog_mesta,
-               plan.naloga_sa_planom, plan.plan_h_prosek,
+               plan.naloga_sa_planom, plan.plan_h_min, plan.plan_h_max,
+               plan.plan_h_prosek,
                stvarno.naloga_sa_prijavom, stvarno.stvarno_h_min,
                stvarno.stvarno_h_max, stvarno.stvarno_h_prosek
           FROM plan FULL JOIN stvarno ON stvarno.rm = plan.rm
@@ -209,14 +307,42 @@ export const CORE_TOOLS: readonly AiTool[] = [
          ORDER BY 1
          LIMIT 20`);
 
-      const ukupno = await prisma.$queryRaw<{ broj: number }[]>(Prisma.sql`
-        SELECT count(*)::int AS broj FROM work_orders wo
-         WHERE ${drawingMatch(Prisma.sql`wo.drawing_number`, crtez)}`);
+      // Broj naloga + koliko je prijava ISPALO iz računice (šum) — model mora da
+      // zna da je uzorak filtriran, inače „stvarno vreme" predstavlja kao potpuno.
+      const zbir = await prisma.$queryRaw<
+        {
+          broj_naloga: number;
+          prijava_ukupno: number;
+          prijava_izbaceno: number;
+        }[]
+      >(Prisma.sql`
+        WITH nalozi AS (
+          SELECT wo.id FROM work_orders wo
+           WHERE ${drawingMatch(Prisma.sql`wo.drawing_number`, crtez)}
+        )
+        SELECT (SELECT count(*)::int FROM nalozi) AS broj_naloga,
+               count(w.id)::int AS prijava_ukupno,
+               count(w.id) FILTER (
+                 WHERE w.stopped_at IS NULL
+                    OR w.stopped_at < w.started_at + interval '1 minute'
+                    OR COALESCE(w.auto_closed, false)
+               )::int AS prijava_izbaceno
+          FROM nalozi n
+          LEFT JOIN work_time_entries w ON w.work_order_id = n.id`);
+      const izbaceno = zbir[0]?.prijava_izbaceno ?? 0;
+      const ukupnoPrijava = zbir[0]?.prijava_ukupno ?? 0;
 
       return {
         crtez,
-        broj_naloga: ukupno[0]?.broj ?? nalozi.length,
-        napomena: `Vremena su u SATIMA. Plan = Tpz + Tk × komada; stvarno = zbir prijava rada po nalogu.`,
+        broj_naloga: zbir[0]?.broj_naloga ?? nalozi.length,
+        prijava_ukupno: ukupnoPrijava,
+        prijava_izbaceno: izbaceno,
+        napomena:
+          `Vremena su u SATIMA. Plan i stvarno se računaju ISTO — prvo zbir po nalogu i radnom mestu, pa raspon po radnom mestu. ` +
+          `Plan = Tpz + Tk × komada. Iz stvarnog vremena je izbačeno ${izbaceno} od ${ukupnoPrijava} prijava (kraće od minuta = knjiženje, ili automatski zatvorene kad radnik zaboravi izlaz)` +
+          (izbaceno > 0
+            ? `. Kaži da je uzorak filtriran ako navodiš brojeve.`
+            : `.`),
         po_radnom_mestu: poRadnomMestu,
         poslednji_nalozi: nalozi,
       };
@@ -240,8 +366,9 @@ export const CORE_TOOLS: readonly AiTool[] = [
     scopes: LICNI,
     execute: async (a, ctx) => {
       const q = term(a.upit);
-      if (!q) return PRAZAN_UPIT;
-      const artikli = await ctx.deps.prisma.$queryRaw<unknown[]>(Prisma.sql`
+      const lose = proveriPojam(q);
+      if (lose) return lose;
+      const redovi = await ctx.deps.prisma.$queryRaw<unknown[]>(Prisma.sql`
         SELECT i.id, i.name AS naziv,
                NULLIF(btrim(i.catalog_number), '-') AS kataloski_broj,
                i.unit AS jm, COALESCE(i.active, true) AS aktivan,
@@ -257,11 +384,21 @@ export const CORE_TOOLS: readonly AiTool[] = [
          WHERE ${unaccentLike(Prisma.sql`i.name`, q)}
             OR ${unaccentLike(Prisma.sql`i.catalog_number`, q)}
          ORDER BY i.name
-         LIMIT 15`);
+         LIMIT ${LIMIT_ARTIKLI + 1}`);
+      const {
+        redovi: artikli,
+        nadjeno,
+        ima_jos,
+      } = odseci(redovi, LIMIT_ARTIKLI);
       return {
         pojam: q,
-        nadjeno: artikli.length,
-        napomena: `„stanje_mrp"/„stanje_magacini" prazno = zaliha se za taj artikal ne vodi u 3.0 (BigBit je i dalje izvor).`,
+        nadjeno,
+        ima_jos,
+        napomena:
+          `„stanje_mrp"/„stanje_magacini" prazno = zaliha se za taj artikal ne vodi u 3.0 (BigBit je i dalje izvor).` +
+          (ima_jos
+            ? ` Prikazano je prvih ${LIMIT_ARTIKLI} po nazivu — ima ih JOŠ; ne navodi ukupan broj, traži uži pojam.`
+            : ``),
         artikli,
       };
     },
@@ -286,6 +423,10 @@ export const CORE_TOOLS: readonly AiTool[] = [
       const q = term(a.broj_predmeta);
       if (!q) return PRAZAN_UPIT;
       const prisma = ctx.deps.prisma;
+      // Kratak pojam (npr. „7") NIJE odbijen kao kod ostalih alata — broj
+      // predmeta sme biti kratak, a ta grana je tačno poklapanje (bez trigrama).
+      // Odbija se samo trigram grana po opisu, koja bi na <3 znaka bila Seq Scan.
+      const poOpisu = q.length >= MIN_POJAM;
       const predmeti = await prisma.$queryRaw<
         { id: number; predmet: string | null }[]
       >(Prisma.sql`
@@ -298,12 +439,38 @@ export const CORE_TOOLS: readonly AiTool[] = [
           FROM projects p
           LEFT JOIN customers c ON c.id = p.customer_id
          WHERE ${projectMatch(Prisma.sql`p.project_number`, q)}
-            OR ${unaccentLike(Prisma.sql`p.description`, q)}
+            ${poOpisu ? Prisma.sql`OR ${unaccentLike(Prisma.sql`p.description`, q)}` : Prisma.empty}
          ORDER BY p.project_number
-         LIMIT 5`);
-      if (!predmeti.length) return { pojam: q, nadjeno: 0, predmeti: [] };
+         LIMIT ${LIMIT_PREDMETI + 1}`);
+      const {
+        redovi: predmetiPrikaz,
+        nadjeno,
+        ima_jos,
+      } = odseci(predmeti, LIMIT_PREDMETI);
+      if (!predmetiPrikaz.length) {
+        return {
+          pojam: q,
+          nadjeno: 0,
+          predmeti: [],
+          predlog: `Nema predmeta sa tačno tim brojem${poOpisu ? " ni sa tim pojmom u opisu" : ""}. Ako korisnik traži nalog a ne predmet, pozovi nadji_radni_nalog sa istim pojmom.`,
+        };
+      }
 
-      const ids = predmeti.map((p) => p.id);
+      // PER-SEKCIJA PERMISIJA (review nalaz 0): ulazna permisija ovog alata je
+      // `directory.read` (predmeti), ali lista radnih naloga je RN domen. Bez
+      // ove provere alat bi bio zaobilaznica — korisnik kome je `rn.read`
+      // izričito ODUZET dobio bi naloge kroz „šta je sa predmetom X".
+      if (!ctx.permissions?.has(PERMISSIONS.RN_READ)) {
+        return {
+          pojam: q,
+          nadjeno,
+          ima_jos,
+          predmeti: predmetiPrikaz,
+          napomena: `Nalozi izostavljeni — korisnik nema pravo na radne naloge. Prikaži samo podatke o predmetu i reci da spisak naloga ne možeš da daš.`,
+        };
+      }
+
+      const ids = predmetiPrikaz.map((p) => p.id);
       const zbir = await prisma.$queryRaw<unknown[]>(Prisma.sql`
         SELECT wo.project_id,
                count(*)::int AS naloga_ukupno,
@@ -322,13 +489,21 @@ export const CORE_TOOLS: readonly AiTool[] = [
          WHERE wo.project_id IN (${Prisma.join(ids)})
            AND NOT COALESCE(wo.status, false)
          ORDER BY wo.production_deadline NULLS LAST, wo.ident_number
-         LIMIT 10`);
+         LIMIT 11`);
+      const { redovi: otvoreniPrikaz, ima_jos: jos_naloga } = odseci(
+        otvoreni,
+        10,
+      );
       return {
         pojam: q,
-        nadjeno: predmeti.length,
-        predmeti,
+        nadjeno,
+        ima_jos,
+        predmeti: predmetiPrikaz,
+        // `nalozi_zbir` je pun COUNT (bez LIMIT-a) — to je jedini tačan ukupan
+        // broj koji model sme da izgovori; `otvoreni_nalozi` je isečak.
         nalozi_zbir: zbir,
-        otvoreni_nalozi: otvoreni,
+        otvoreni_nalozi: otvoreniPrikaz,
+        ima_jos_otvorenih: jos_naloga,
       };
     },
   },
@@ -347,7 +522,8 @@ export const CORE_TOOLS: readonly AiTool[] = [
     scopes: LICNI,
     execute: async (a, ctx) => {
       const q = term(a.ident);
-      if (!q) return PRAZAN_UPIT;
+      const lose = proveriPojam(q);
+      if (lose) return lose;
       const prisma = ctx.deps.prisma;
       const nalog = await prisma.$queryRaw<
         {
@@ -367,7 +543,14 @@ export const CORE_TOOLS: readonly AiTool[] = [
          WHERE ${identMatch(Prisma.sql`wo.ident_number`, q)}
          ORDER BY wo.entered_at DESC
          LIMIT 1`);
-      if (!nalog.length) return { ident: q, nadjeno: 0, operacije: [] };
+      if (!nalog.length) {
+        return {
+          ident: q,
+          nadjeno: 0,
+          operacije: [],
+          predlog: `Nijedan nalog nema tačno taj ident broj. Pozovi nadji_radni_nalog sa istim pojmom (delimična pretraga po identu i nazivu dela), pa ponovi sa tačnim identom iz rezultata.`,
+        };
+      }
 
       const wo = nalog[0];
       const operacije = await prisma.$queryRaw<unknown[]>(Prisma.sql`
@@ -380,7 +563,7 @@ export const CORE_TOOLS: readonly AiTool[] = [
                COALESCE(tp.zavrsena, false) AS zavrsena,
                tp.poslednja_prijava,
                round(wt.stvarno_h::numeric, 2) AS stvarno_h,
-               wt.kom_prijavljeno
+               wt.kom_prijavljeno, wt.prijava_izbaceno
           FROM work_order_operations woo
           LEFT JOIN operations o ON o.work_center_code = woo.work_center_code
           LEFT JOIN LATERAL (
@@ -392,19 +575,24 @@ export const CORE_TOOLS: readonly AiTool[] = [
                AND t.operation_number = woo.operation_number
           ) tp ON TRUE
           LEFT JOIN LATERAL (
-            SELECT SUM(EXTRACT(EPOCH FROM (w.stopped_at - w.started_at))) / 3600.0 AS stvarno_h,
-                   SUM(w.piece_count)::int AS kom_prijavljeno
+            -- Isti filter šuma kao u istorija_crteza: prijave kraće od minuta su
+            -- knjiženja, a auto_closed je sistem zatvorio umesto radnika. Broj
+            -- izbačenih ide U REZULTAT (prijava_izbaceno) — model mora znati da
+            -- je uzorak filtriran. Indeks: idx_work_time_entries_work_order.
+            SELECT SUM(EXTRACT(EPOCH FROM (w.stopped_at - w.started_at)))
+                     FILTER (WHERE ${PRIJAVA_VALIDNA}) / 3600.0 AS stvarno_h,
+                   SUM(w.piece_count) FILTER (WHERE ${PRIJAVA_VALIDNA})::int AS kom_prijavljeno,
+                   count(*) FILTER (WHERE NOT (${PRIJAVA_VALIDNA}))::int AS prijava_izbaceno
               FROM work_time_entries w
              WHERE w.work_order_id = ${wo.id}
                AND w.operation_number = woo.operation_number
-               AND w.stopped_at IS NOT NULL
           ) wt ON TRUE
          WHERE woo.work_order_id = ${wo.id}
          ORDER BY woo.operation_number
          LIMIT 40`);
       return {
         nalog: wo,
-        napomena: `Vremena su u SATIMA (plan_h = Tpz + Tk × komada). „zavrsena" dolazi iz prijava rada, ne iz statusa naloga.`,
+        napomena: `Vremena su u SATIMA (plan_h = Tpz + Tk × komada). „zavrsena" dolazi iz prijava rada, ne iz statusa naloga. „stvarno_h" ne uključuje prijave kraće od minuta (knjiženja) ni automatski zatvorene sesije — koliko ih je izbačeno po operaciji piše u „prijava_izbaceno"; ako je taj broj veći od nule, reci da je uzorak filtriran.`,
         operacije,
       };
     },

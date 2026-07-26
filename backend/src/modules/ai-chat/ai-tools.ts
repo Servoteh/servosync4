@@ -97,10 +97,12 @@ export const SYSTEM_PROMPT =
   `rada, utrošeni sati, dokle se stiglo), nadji_artikal (šifarnik robe po nazivu ili ` +
   `kataloškom broju + zaliha ako se vodi), stanje_predmeta (predmet + otvoreni nalozi) ` +
   `i prisustvo_danas (sa kapije: prisutno/pauza/odsutno). VREMENA IZ OVIH ALATA SU U ` +
-  `SATIMA i navode se isključivo iz rezultata alata, nikad procenom. Ovi alati traže ` +
-  `pravo na odgovarajući modul — ako ti alat nije ponuđen, korisnik nema to pravo: reci ` +
-  `mu otvoreno da za taj podatak nema pristup (i da se javi administratoru), umesto da ` +
-  `nagađaš ili računaš napamet.`;
+  `SATIMA i navode se isključivo iz rezultata alata, nikad procenom; ako rezultat kaže ` +
+  `da je uzorak filtriran ili da ima još redova, reci i to. Ako ti neki od ovih alata ` +
+  `NIJE ponuđen ili vrati nema_prava, znači samo da taj podatak NE MOGU da dam kroz ` +
+  `asistenta — tako i reci, i uputi korisnika na odgovarajući ekran u aplikaciji ili na ` +
+  `administratora. NE tvrdi da korisnik „nema pristup" tom modulu (možda ima, kroz ` +
+  `aplikaciju) i ne nagađaj brojeve umesto alata.`;
 
 /** Datum-linija koja se dodaje sistem promptu (danas u Beogradu — bez nagađanja). */
 export function todayBelgrade(): string {

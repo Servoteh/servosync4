@@ -46,6 +46,14 @@ export interface ToolCtx {
   email: string;
   /** Merni kontekst gateway-a (za `embed` pozive unutar alata). */
   call?: AiCallContext;
+  /**
+   * Efektivne permisije pozivaoca — za alate koji vraćaju podatke IZ VIŠE
+   * domena. Ulazna permisija alata pokriva samo njegov „glavni" domen; sekcija
+   * iz tuđeg domena mora da se proveri posebno, inače alat postaje zaobilaznica
+   * (npr. `stanje_predmeta` sa `directory.read` ne sme da izlista radne naloge
+   * korisniku kome je `rn.read` izričito oduzet).
+   */
+  permissions: PermissionSet;
   deps: ToolDeps;
 }
 

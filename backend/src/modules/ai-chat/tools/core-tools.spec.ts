@@ -1,4 +1,5 @@
-import { CORE_TOOLS } from "./core-tools";
+import { CORE_TOOLS, unaccentLike } from "./core-tools";
+import { PERMISSIONS } from "../../../common/authz/permissions";
 import type { AiTool, ToolCtx } from "./tool-registry";
 
 /**
@@ -16,7 +17,17 @@ function tool(name: string): AiTool {
 }
 
 /** `$queryRaw` vraća redom pripremljene rezultate; pamti izvršeni SQL tekst. */
-function makeCtx(results: unknown[][], attendance: unknown[] = []) {
+function makeCtx(
+  results: unknown[][],
+  attendance: unknown[] = [],
+  permissions: ReadonlySet<string> | undefined = new Set([
+    PERMISSIONS.RN_READ,
+    PERMISSIONS.TEHNOLOGIJA_READ,
+    PERMISSIONS.ROBNO_READ,
+    PERMISSIONS.DIRECTORY_READ,
+    PERMISSIONS.KADROVSKA_ATTENDANCE,
+  ]),
+) {
   const sql: string[] = [];
   let i = 0;
   const $queryRaw = jest.fn((q: { strings?: string[]; sql?: string }) => {
@@ -28,6 +39,7 @@ function makeCtx(results: unknown[][], attendance: unknown[] = []) {
   };
   const ctx = {
     email: "u@servoteh.com",
+    permissions,
     deps: {
       prisma: { $queryRaw },
       kadrovska,
@@ -60,7 +72,8 @@ describe("nadji_radni_nalog", () => {
     // Pretraga mora ići kroz indeksirani izraz + ORDER BY pre LIMIT-a.
     expect(sql[0]).toContain("immutable_unaccent(lower(");
     expect(sql[0]).toContain("ORDER BY");
-    expect(sql[0]).toContain("LIMIT 15");
+    // LIMIT je parametrizovan (limit+1 sentinel), pa se proverava sam kljucni zbor.
+    expect(sql[0]).toContain("LIMIT");
   });
 
   it("prazan rezultat: nadjeno = 0, bez izmišljanja", async () => {
@@ -68,8 +81,8 @@ describe("nadji_radni_nalog", () => {
     const out = (await tool("nadji_radni_nalog").execute(
       { upit: "nepostojeci" },
       ctx,
-    )) as { nadjeno: number; nalozi: unknown[] };
-    expect(out).toMatchObject({ nadjeno: 0, nalozi: [] });
+    )) as { nadjeno: number; nalozi: unknown[]; ima_jos: boolean };
+    expect(out).toMatchObject({ nadjeno: 0, ima_jos: false, nalozi: [] });
   });
 
   it("prazan upit ne povlači celu tabelu", async () => {
@@ -77,6 +90,62 @@ describe("nadji_radni_nalog", () => {
     const out = await tool("nadji_radni_nalog").execute({ upit: "  " }, ctx);
     expect(out).toMatchObject({ greska: "prazan_upit" });
     expect($queryRaw).not.toHaveBeenCalled();
+  });
+
+  // Nalaz 17: ispod 3 znaka pg_trgm ne može da koristi indeks → Seq Scan 40k.
+  it("pojam kraći od 3 znaka se odbija PRE upita", async () => {
+    const { ctx, $queryRaw } = makeCtx([[]]);
+    const out = await tool("nadji_radni_nalog").execute({ upit: "ab" }, ctx);
+    expect(out).toMatchObject({ greska: "prekratak_upit" });
+    expect($queryRaw).not.toHaveBeenCalled();
+  });
+
+  // Nalaz 21: na kapi model NE sme da čuje tačan broj.
+  it("LIMIT sentinel: 16 redova daje 15 prikazanih + oznaku da ima jos", async () => {
+    const many = Array.from({ length: 16 }, (_, i) => ({ ident: `RN-${i}` }));
+    const { ctx, sql } = makeCtx([many]);
+    const out = (await tool("nadji_radni_nalog").execute(
+      { upit: "prirubnica" },
+      ctx,
+    )) as { nadjeno: string; ima_jos: boolean; nalozi: unknown[] };
+    expect(out.nalozi).toHaveLength(15);
+    expect(out.nadjeno).toBe(">= 15");
+    expect(out.ima_jos).toBe(true);
+    // LIMIT+1 sentinel, NE count(*) OVER () (ubija top-N plan).
+    expect(sql[0]).not.toContain("OVER");
+  });
+
+  it("tacno 15 redova NIJE ima_jos (sentinel red nije stigao)", async () => {
+    const exact = Array.from({ length: 15 }, (_, i) => ({ ident: `RN-${i}` }));
+    const { ctx } = makeCtx([exact]);
+    const out = (await tool("nadji_radni_nalog").execute(
+      { upit: "prirubnica" },
+      ctx,
+    )) as { nadjeno: number; ima_jos: boolean };
+    expect(out).toMatchObject({ nadjeno: 15, ima_jos: false });
+  });
+});
+
+// Nalaz 24: bez eskejpa „50%" znači „50 + bilo šta", „a_b" poklapa „axb".
+describe("unaccentLike — escape LIKE meta-znakova", () => {
+  const params = (term: string) =>
+    (
+      unaccentLike(
+        { strings: ["x"], values: [] } as never,
+        term,
+      ) as unknown as {
+        values: unknown[];
+      }
+    ).values;
+
+  it("%, _ i \\ se eskejpuju u parametru", () => {
+    expect(params("50%")).toContain("50\\%");
+    expect(params("a_b")).toContain("a\\_b");
+    expect(params("c\\d")).toContain("c\\\\d");
+  });
+
+  it("običan pojam ostaje netaknut", () => {
+    expect(params("zaptivač")).toContain("zaptivač");
   });
 });
 
@@ -95,7 +164,7 @@ describe("istorija_crteza", () => {
           naloga_sa_prijavom: 12,
         },
       ],
-      [{ broj: 7 }],
+      [{ broj_naloga: 7, prijava_ukupno: 20, prijava_izbaceno: 8 }],
     ]);
     const out = (await tool("istorija_crteza").execute(
       { crtez: "9400-12" },
@@ -103,6 +172,7 @@ describe("istorija_crteza", () => {
     )) as {
       crtez: string;
       broj_naloga: number;
+      prijava_izbaceno: number;
       po_radnom_mestu: unknown[];
       napomena: string;
     };
@@ -115,13 +185,69 @@ describe("istorija_crteza", () => {
     expect(sql[2]).toContain("work_time_entries");
   });
 
-  it("crtež bez ijednog naloga: 0 naloga, prazne liste", async () => {
+  /**
+   * Nalaz 19 — SIMETRIJA. Plan se mora agregirati po (nalog, radno mesto), isto
+   * kao stvarno. Ranije je plan išao po OPERACIJI, pa bi ruting sa istim radnim
+   * mestom dva puta (glodanje pre i posle kaljenja) dao dva mala plana naspram
+   * jednog velikog stvarnog vremena — poređenje bi lagalo za faktor 2.
+   */
+  it("plan se agregira po (nalog, radno mesto) — kao i stvarno", async () => {
+    const { ctx, sql } = makeCtx([
+      [],
+      [{ ident: "9400-12" }],
+      [],
+      [{ broj_naloga: 1, prijava_ukupno: 0, prijava_izbaceno: 0 }],
+    ]);
+    await tool("istorija_crteza").execute({ crtez: "CRT-100" }, ctx);
+    const agregat = sql[2];
+    // Unutrašnji nivo: SUM po nalogu+radnom mestu za OBE strane…
+    expect(agregat).toContain("plan_po_nalogu");
+    expect(agregat).toContain("stvarno_po_nalogu");
+    // …pa tek spoljni min/max/avg po radnom mestu — nikakav avg() direktno nad
+    // redovima rutinga.
+    expect(agregat).not.toMatch(/avg\(\s*COALESCE\(woo\.setup_time/);
+    expect(agregat).toContain("plan_h_min");
+    expect(agregat).toContain("plan_h_max");
+  });
+
+  /** Nalaz 20 — 47% prijava je <1 min (knjiženja) + auto_closed sesije. */
+  it("stvarni sati izbacuju sub-minutne i auto_closed prijave, i to kažu modelu", async () => {
+    const { ctx, sql } = makeCtx([
+      [],
+      [{ ident: "9400-12" }],
+      [],
+      [{ broj_naloga: 3, prijava_ukupno: 20, prijava_izbaceno: 9 }],
+    ]);
+    const out = (await tool("istorija_crteza").execute(
+      { crtez: "CRT-100" },
+      ctx,
+    )) as { napomena: string; prijava_izbaceno: number };
+    expect(sql[2]).toContain("interval '1 minute'");
+    expect(sql[2]).toContain("auto_closed");
+    expect(out.prijava_izbaceno).toBe(9);
+    expect(out.napomena).toContain("9 od 20");
+    expect(out.napomena).toContain("filtriran");
+  });
+
+  it("crtež bez ijednog naloga: 0 naloga, prazne liste + uputa na delimičnu pretragu", async () => {
     const { ctx } = makeCtx([[], []]);
     const out = (await tool("istorija_crteza").execute(
       { crtez: "NEMA" },
       ctx,
-    )) as { broj_naloga: number; po_radnom_mestu: unknown[] };
-    expect(out).toMatchObject({ broj_naloga: 0, po_radnom_mestu: [] });
+    )) as {
+      broj_naloga: number;
+      po_radnom_mestu: unknown[];
+      poslednji_nalozi: unknown[];
+      predlog: string;
+    };
+    // Nalaz 24: isti ključ (`poslednji_nalozi`) i kad je prazno i kad nije.
+    expect(out).toMatchObject({
+      broj_naloga: 0,
+      po_radnom_mestu: [],
+      poslednji_nalozi: [],
+    });
+    // Nalaz 23: prazan tačan pogodak upućuje model na delimičnu pretragu.
+    expect(out.predlog).toContain("nadji_radni_nalog");
   });
 });
 
@@ -179,14 +305,51 @@ describe("stanje_predmeta", () => {
     expect($queryRaw).toHaveBeenCalledTimes(3);
   });
 
-  it("nepoznat predmet: ne traži naloge uopšte", async () => {
+  /**
+   * Nalaz 0 — PER-SEKCIJA PERMISIJA. Ulazna permisija alata je `directory.read`,
+   * ali lista radnih naloga je RN domen. Bez ove provere bi „šta je sa predmetom
+   * X" bilo zaobilaznica za korisnika kome je `rn.read` izričito ODUZET.
+   */
+  it("bez rn.read: predmet DA, nalozi NE — i ti SELECT-i se ne pokreću", async () => {
+    const { ctx, $queryRaw } = makeCtx(
+      [[{ id: 5, predmet: "9400/7", opis: "Pumpna stanica" }]],
+      [],
+      new Set([PERMISSIONS.DIRECTORY_READ]), // ima predmete, nema naloge
+    );
+    const out = (await tool("stanje_predmeta").execute(
+      { broj_predmeta: "9400/7" },
+      ctx,
+    )) as {
+      nadjeno: number;
+      predmeti: unknown[];
+      napomena: string;
+      otvoreni_nalozi?: unknown[];
+      nalozi_zbir?: unknown[];
+    };
+    expect(out.predmeti).toHaveLength(1);
+    expect(out.otvoreni_nalozi).toBeUndefined();
+    expect(out.nalozi_zbir).toBeUndefined();
+    expect(out.napomena).toContain("Nalozi izostavljeni");
+    expect($queryRaw).toHaveBeenCalledTimes(1); // samo predmet, bez RN upita
+  });
+
+  it("nepoznat predmet: ne traži naloge uopšte + uputa na nadji_radni_nalog", async () => {
     const { ctx, $queryRaw } = makeCtx([[]]);
     const out = (await tool("stanje_predmeta").execute(
       { broj_predmeta: "0000/0" },
       ctx,
-    )) as { nadjeno: number };
+    )) as { nadjeno: number; predlog: string };
     expect(out).toMatchObject({ nadjeno: 0, predmeti: [] });
+    expect(out.predlog).toContain("nadji_radni_nalog");
     expect($queryRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it("kratak broj predmeta radi (tačno poklapanje), ali BEZ trigrama po opisu", async () => {
+    const { ctx, sql } = makeCtx([[]]);
+    await tool("stanje_predmeta").execute({ broj_predmeta: "77" }, ctx);
+    expect(sql[0]).toContain("btrim(p.project_number)");
+    // Trigram grana (po opisu) je izostavljena — na <3 znaka nema indeksa.
+    expect(sql[0]).not.toContain("immutable_unaccent");
   });
 });
 
@@ -213,15 +376,21 @@ describe("tehnoloski_postupak_naloga", () => {
     expect(out.napomena).toContain("SATIMA");
     expect(sql[1]).toContain("tech_processes");
     expect(sql[1]).toContain("work_time_entries");
+    // Nalaz 20: isti filter šuma i ovde, uz brojanje izbačenih po operaciji.
+    expect(sql[1]).toContain("interval '1 minute'");
+    expect(sql[1]).toContain("auto_closed");
+    expect(sql[1]).toContain("prijava_izbaceno");
+    expect(out.napomena).toContain("prijava_izbaceno");
   });
 
-  it("nepostojeći ident → nadjeno 0, bez drugog upita", async () => {
+  it("nepostojeći ident → nadjeno 0, bez drugog upita + uputa na pretragu", async () => {
     const { ctx, $queryRaw } = makeCtx([[]]);
     const out = (await tool("tehnoloski_postupak_naloga").execute(
       { ident: "NEMA" },
       ctx,
-    )) as { nadjeno: number };
+    )) as { nadjeno: number; predlog: string };
     expect(out).toMatchObject({ nadjeno: 0, operacije: [] });
+    expect(out.predlog).toContain("nadji_radni_nalog");
     expect($queryRaw).toHaveBeenCalledTimes(1);
   });
 });

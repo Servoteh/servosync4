@@ -33,6 +33,14 @@ PARALLEL SAFE
 STRICT
 AS $$ SELECT public.unaccent('public.unaccent'::regdictionary, $1) $$;
 
+COMMENT ON FUNCTION public.immutable_unaccent(text) IS
+  'IMMUTABLE omotač za unaccent (dvoargumentni regdictionary oblik). Nosi ga migracija 20260726160000. '
+  'UPOZORENJE: telo funkcije zavisi od rečnika iz ekstenzije `unaccent`, ali PostgreSQL tu zavisnost NE '
+  'zapisuje u pg_depend (referenca je tekst u telu SQL funkcije). DROP EXTENSION unaccent zato PROLAZI '
+  'bez greške, a svi trigram indeksi koji koriste ovu funkciju u tom trenutku postaju NEUPOTREBLJIVI '
+  '(svaki SELECT nad njima puca sa „text search dictionary unaccent does not exist"). '
+  'Ekstenzija unaccent se ne skida bez prethodnog uklanjanja idx_*_trgm indeksa i ove funkcije.';
+
 -- items (92k na produkciji) — naziv + kataloški broj (alat `nadji_artikal`).
 CREATE INDEX IF NOT EXISTS "idx_items_name_trgm"
   ON "items" USING gin (public.immutable_unaccent(lower("name")) gin_trgm_ops);
@@ -56,3 +64,11 @@ CREATE INDEX IF NOT EXISTS "idx_work_orders_part_name_trgm"
 -- parcijalnog unique indeksa iz 20260725200000, njemu trigram ne treba).
 CREATE INDEX IF NOT EXISTS "idx_projects_description_trgm"
   ON "projects" USING gin (public.immutable_unaccent(lower("description")) gin_trgm_ops);
+
+-- work_time_entries (99k prijava rada) — SVE dosadašnje putanje su išle preko
+-- `tech_process_id`, pa tabela nema indeks po nalogu. Alat
+-- `tehnoloski_postupak_naloga` filtrira po (work_order_id, operation_number) u
+-- LATERAL-u — dakle JEDNOM PO OPERACIJI naloga → do 40 Seq Scan-ova preko 99k
+-- redova u jednom pozivu. Isti indeks koristi i agregat `istorija_crteza`.
+CREATE INDEX IF NOT EXISTS "idx_work_time_entries_work_order"
+  ON "work_time_entries" ("work_order_id", "operation_number");
