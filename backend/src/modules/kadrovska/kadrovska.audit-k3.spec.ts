@@ -102,9 +102,11 @@ describe("Kadrovska AUDIT-K3 — tihi neuspesi", () => {
 
   // ── 360 pozivnice: bez baze linka ne šaljemo mrtve linkove ───────────────
 
-  it("assessmentInvite bez ASSESSMENT_PUBLIC_BASE ne šalje mejlove sa 404 linkom", async () => {
+  it("assessmentInvite bez ASSESSMENT_PUBLIC_BASE šalje NATIVNI link (/profil?ocena=), ne 1.0 ocena.html", async () => {
     const prev = process.env.ASSESSMENT_PUBLIC_BASE;
+    const prevApp = process.env.PUBLIC_APP_URL;
     delete process.env.ASSESSMENT_PUBLIC_BASE;
+    process.env.PUBLIC_APP_URL = "https://app.test";
     const send = jest.fn().mockResolvedValue(true);
     const tx = {
       $queryRaw: jest.fn(async () => []),
@@ -153,12 +155,21 @@ describe("Kadrovska AUDIT-K3 — tihi neuspesi", () => {
       { kadrGridDayLock: { findMany: jest.fn().mockResolvedValue([]), createMany: jest.fn(), deleteMany: jest.fn() } } as never,
     );
 
-    await expect(
-      svc.assessmentInvite(EMAIL, { assessmentId: ID }),
-    ).rejects.toBeInstanceOf(ServiceUnavailableException);
-    expect(send).not.toHaveBeenCalled();
+    await svc.assessmentInvite(EMAIL, { assessmentId: ID });
+
+    // Šalje se, i to na NATIVNI ekran ocenjivača — 1.0 `ocena.html?token=` je
+    // otišao u istoriju (AUDIT-K6), a `PUBLIC_APP_URL`/`SY15_APP_URL` kaskada
+    // znači da nema deploy-preduslova (AUDIT-K7e).
+    expect(send).toHaveBeenCalled();
+    const html = String(
+      (send.mock.calls[0][0] as { html?: string }).html ?? "",
+    );
+    expect(html).toContain("https://app.test/profil?ocena=");
+    expect(html).not.toContain("ocena.html");
 
     if (prev !== undefined) process.env.ASSESSMENT_PUBLIC_BASE = prev;
+    if (prevApp === undefined) delete process.env.PUBLIC_APP_URL;
+    else process.env.PUBLIC_APP_URL = prevApp;
   });
 });
 

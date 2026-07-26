@@ -2249,9 +2249,16 @@ export class KadrovskaMutationsService {
     // ako je postavljen, šalje se stari 1.0 `ocena.html?token=` link (most dok
     // 1.0 živi).
     const legacyBase = process.env.ASSESSMENT_PUBLIC_BASE?.trim();
-    const appBase = process.env.PUBLIC_APP_URL?.trim();
     const useLegacy = !!legacyBase;
-    const base = (legacyBase || appBase || "").replace(/\/+$/, "");
+    // Ista kaskada kao `SastanciDispatchService.appUrl()` — prod već nosi
+    // `SY15_APP_URL` (welcome/reset mejlovi), pa 360° pozivnice nemaju nikakav
+    // dodatni preduslov za deploy. (Ranije se čitao SAMO `PUBLIC_APP_URL`, pa je
+    // slanje bilo bespotrebno blokirano na okruženju koje ima samo SY15_APP_URL.)
+    const appBase =
+      process.env.PUBLIC_APP_URL ||
+      process.env.SY15_APP_URL ||
+      "https://servosync.servoteh.com";
+    const base = (legacyBase || appBase).trim().replace(/\/+$/, "");
 
     // 1) READ faza (RLS): ciklus, ciljne procene, meta (ime zaposlenog + period), rateri.
     const read = await this.mutateRaw(
@@ -2405,15 +2412,9 @@ export class KadrovskaMutationsService {
           : `${s.kind} (nema email)`,
       );
     }
-    // Brana pred SLANJE (ne pred ceo metod — prazan ciklus i dalje mirno vraća
-    // „Ciklus nema procena"): bez baze linka bismo poslali mejlove sa 404 linkom.
-    if (sendable.length && !base) {
-      throw new ServiceUnavailableException(
-        "Nije podešena javna adresa aplikacije (PUBLIC_APP_URL) — pozivnice za 360° " +
-          "bi vodile na nepostojeću stranicu. Postavi PUBLIC_APP_URL (nativni ekran " +
-          "ocenjivača) ili ASSESSMENT_PUBLIC_BASE (stara 1.0 `ocena.html`).",
-      );
-    }
+    // Brana iz AUDIT-K3 („bez baze linka ne šalji") UKLONJENA: kaskada iznad ima
+    // tvrd fallback, pa `base` ne može biti prazan. Ranija verzija je čitala samo
+    // `PUBLIC_APP_URL` i time izmislila deploy-preduslov koji ne postoji.
     for (const r of sendable) {
       const m = read.meta.get(r.assessmentId) ?? {
         employeeName: "kolega/koleginica",
