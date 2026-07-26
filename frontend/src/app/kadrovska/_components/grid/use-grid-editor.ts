@@ -71,7 +71,8 @@ export interface GridEditor {
   ) => { applied: number; skipped: number };
   /** Da li je (empId,ymd) predložen auto-unosom (žuta AUTO oznaka dok se ne izmeni/snimi). */
   isAuto: (empId: string, ymd: string) => boolean;
-  applyCopyPrev: (empId: string, prevRowsByYmd: Map<string, WorkHours>) => void;
+  /** Vraća broj prekopiranih dana (0 = prethodni mesec nema unose za tog radnika). */
+  applyCopyPrev: (empId: string, prevRowsByYmd: Map<string, WorkHours>) => number;
   applyPaste: (startEmpId: string, startYmd: string, startKind: CellKind, matrix: string[][], visibleEmpIds: string[]) => number;
   restore: (empId: string, ymd: string, vals: GridDelta) => void;
   hasErrors: () => boolean;
@@ -363,18 +364,22 @@ export function useGridEditor({ days, getDbRow, editable, isAdmin, onNopAttempt 
     [effective, applyEdit, bumpStruct],
   );
 
+  /**
+   * Kopiraj prethodni mesec. Vraća broj prekopiranih dana da pozivalac može da
+   * odustane uz poruku kad prethodni mesec nema nijedan unos (paritet 1.0).
+   * ⚠️ AUDIT-K1: ranije je dan BEZ izvora upisivao praznu ćeliju u dirty, pa je
+   * klik nad radnikom koji prošli mesec nije imao unose (nov radnik, dugo
+   * bolovanje, ili prosto pogrešan red) BRISAO ceo tekući mesec — sate, odsustva,
+   * teren i 2-mašine. 1.0 takav dan preskače (`if (!row) return;`).
+   */
   const applyCopyPrev = useCallback(
-    (empId: string, prevRowsByYmd: Map<string, WorkHours>) => {
+    (empId: string, prevRowsByYmd: Map<string, WorkHours>): number => {
+      let copied = 0;
       for (const d of days) {
-        const [y, m] = d.ymd.split('-');
-        void y;
-        void m;
         const prevYmd = prevMonthSameDay(d.ymd);
         const src = prevRowsByYmd.get(prevYmd);
-        if (!src) {
-          dirtyRef.current.set(gridDirtyKey(empId, d.ymd), { ...EMPTY_EFF });
-          continue;
-        }
+        if (!src) continue; // dan bez izvora se NE dira
+        copied += 1;
         dirtyRef.current.set(gridDirtyKey(empId, d.ymd), {
           hours: Number(src.hours || 0),
           overtime_hours: Number(src.overtimeHours || 0),
@@ -388,6 +393,7 @@ export function useGridEditor({ days, getDbRow, editable, isAdmin, onNopAttempt 
         });
       }
       bumpStruct();
+      return copied;
     },
     [days, bumpStruct],
   );
@@ -551,11 +557,16 @@ export function useGridEditor({ days, getDbRow, editable, isAdmin, onNopAttempt 
 }
 
 /** Isti dan prethodnog meseca (copyPrev). */
+/**
+ * Isti dan prethodnog meseca — ČISTO STRINGOVSKI (paritet 1.0 `${prevKey}-${dayNum}`).
+ * Date-aritmetika je ovde pogrešna: `new Date(2026, 1, 31)` (31.03. − 1 mesec) se
+ * prevrće na 03.03., pa je „Kopiraj prethodni mesec" za 31. dan povlačio podatke sa
+ * POGREŠNOG datuma. Ovako nepostojeći dan (npr. „2026-02-31") prosto nema pogodak u
+ * mapi prethodnog meseca → dan se preskače (AUDIT-K1).
+ */
 function prevMonthSameDay(ymd: string): string {
   const [y, m, d] = ymd.split('-').map((n) => parseInt(n, 10));
-  const dt = new Date(y, m - 2, d);
-  const py = dt.getFullYear();
-  const pm = String(dt.getMonth() + 1).padStart(2, '0');
-  const pd = String(dt.getDate()).padStart(2, '0');
-  return `${py}-${pm}-${pd}`;
+  const py = m === 1 ? y - 1 : y;
+  const pm = m === 1 ? 12 : m - 1;
+  return `${py}-${String(pm).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
 }

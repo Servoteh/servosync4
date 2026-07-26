@@ -310,7 +310,10 @@ export class MojProfilService {
           orderBy: [{ workDate: "asc" }],
         }),
         tx.kadrHoliday.findMany({
-          where: { holidayDate: { gte: start, lt: end } },
+          // isWorkday=false: radni izuzetak (radna subota) NIJE praznik — inače
+          // zaposleni u „Moji sati" vidi drugačiji fond nego kadrovska u gridu
+          // (AUDIT-K1; paritet 1.0 holidaySet filtera !h.isWorkday).
+          where: { isWorkday: false, holidayDate: { gte: start, lt: end } },
           select: { holidayDate: true },
         }),
         tx.workHoursRemark.findMany({

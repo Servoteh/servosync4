@@ -636,20 +636,43 @@ export class KadrovskaMutationsService {
       dto.clientEventId,
       "kadr.grid.batch",
       async (tx) => {
-        // ⚠️ #28 (review 14.07): batch RPC radi `note = EXCLUDED.note` bezuslovno na
-        // conflict, a EXCLUDED.note = COALESCE(v_row->>'note','') = '' kad ključ
-        // fali → most odsustvo→grid (koji NE nosi note/project_ref) tiho GAZI
-        // postojeće vrednosti praznim stringom. Fix bez RPC migracije: za redove koji
-        // NE nose ključ, PRE-učitaj postojeći note/project_ref i pošalji ga u payload
-        // (RPC ga onda „očuva"); r.note/r.projectRef definisan (uklj. '') = eksplicitan
-        // set/clear (1.0 buildWorkHourPayload semantika).
-        const preserveKeys = dto.rows.filter(
-          (r) => r.note === undefined || r.projectRef === undefined,
-        );
-        const preserved = new Map<
-          string,
-          { note: string; projectRef: string }
-        >();
+        // ⚠️ #28 (review 14.07) + AUDIT-K1 (26.07): batch RPC na ON CONFLICT radi
+        // `<kolona> = EXCLUDED.<kolona>` BEZUSLOVNO za svih 9 kolona, a EXCLUDED
+        // vrednost je COALESCE(v_row->>'…', 0/'') kad ključ fali → svaki pozivalac
+        // koji šalje DELIMIČAN red tiho GAZI kolone koje nije poslao.
+        // #28 je to rešio samo za note/project_ref; ostalo je ostalo otvoreno i
+        // obaralo se na živim podacima: tab „Sati" (work-hours-tab.tsx) šalje samo
+        // hours/overtime/project_ref/note, pa je unos sati brisao absence_code
+        // (GO/bolovanje!), field_hours/field_subtype (teren) i two_machine_hours.
+        // Pošto je saldo GO po kanonu izveden IZ GRIDA, brisanje absence_code='go'
+        // radniku vraća već iskorišćene dane godišnjeg.
+        // Fix bez RPC migracije: za redove koji NE nose ključ, PRE-učitaj postojeću
+        // vrednost i pošalji je u payload (RPC je onda „očuva").
+        // Semantika 1.0 buildWorkHourPayload ostaje: undefined = ne diraj;
+        // definisano (uklj. 0/''/null) = eksplicitan set/clear.
+        const needsPreserve = (r: D.WorkHoursRowDto) =>
+          r.hours === undefined ||
+          r.overtimeHours === undefined ||
+          r.fieldHours === undefined ||
+          r.fieldSubtype === undefined ||
+          r.twoMachineHours === undefined ||
+          r.absenceCode === undefined ||
+          r.absenceSubtype === undefined ||
+          r.note === undefined ||
+          r.projectRef === undefined;
+        const preserveKeys = dto.rows.filter(needsPreserve);
+        type PrevRow = {
+          hours: number;
+          overtimeHours: number;
+          fieldHours: number;
+          fieldSubtype: string | null;
+          twoMachineHours: number;
+          absenceCode: string | null;
+          absenceSubtype: string | null;
+          note: string;
+          projectRef: string;
+        };
+        const preserved = new Map<string, PrevRow>();
         if (preserveKeys.length) {
           const empIds = [...new Set(preserveKeys.map((r) => r.employeeId))];
           const dates = preserveKeys.map((r) => this.date(r.workDate)!);
@@ -663,6 +686,13 @@ export class KadrovskaMutationsService {
             select: {
               employeeId: true,
               workDate: true,
+              hours: true,
+              overtimeHours: true,
+              fieldHours: true,
+              fieldSubtype: true,
+              twoMachineHours: true,
+              absenceCode: true,
+              absenceSubtype: true,
               note: true,
               projectRef: true,
             },
@@ -670,7 +700,17 @@ export class KadrovskaMutationsService {
           for (const w of ex) {
             preserved.set(
               `${w.employeeId}|${w.workDate.toISOString().slice(0, 10)}`,
-              { note: w.note ?? "", projectRef: w.projectRef ?? "" },
+              {
+                hours: Number(w.hours ?? 0),
+                overtimeHours: Number(w.overtimeHours ?? 0),
+                fieldHours: Number(w.fieldHours ?? 0),
+                fieldSubtype: w.fieldSubtype ?? null,
+                twoMachineHours: Number(w.twoMachineHours ?? 0),
+                absenceCode: w.absenceCode ?? null,
+                absenceSubtype: w.absenceSubtype ?? null,
+                note: w.note ?? "",
+                projectRef: w.projectRef ?? "",
+              },
             );
           }
         }
@@ -678,22 +718,24 @@ export class KadrovskaMutationsService {
           const prev = preserved.get(
             `${r.employeeId}|${r.workDate.slice(0, 10)}`,
           );
+          // undefined = očuvaj postojeće (prev) / neutralno za nov red.
+          const keep = <K extends keyof PrevRow>(
+            sent: PrevRow[K] | undefined,
+            key: K,
+            fallback: PrevRow[K],
+          ): PrevRow[K] => (sent !== undefined ? sent : (prev?.[key] ?? fallback));
           return {
             employee_id: r.employeeId,
             work_date: r.workDate,
-            hours: r.hours ?? 0,
-            overtime_hours: r.overtimeHours ?? 0,
-            field_hours: r.fieldHours ?? 0,
-            field_subtype: r.fieldSubtype ?? null,
-            two_machine_hours: r.twoMachineHours ?? 0,
-            absence_code: r.absenceCode ?? null,
-            absence_subtype: r.absenceSubtype ?? null,
-            // undefined = očuvaj postojeće (prev) / '' za nov red; definisano = set/clear.
-            note: r.note !== undefined ? r.note : (prev?.note ?? ""),
-            project_ref:
-              r.projectRef !== undefined
-                ? r.projectRef
-                : (prev?.projectRef ?? ""),
+            hours: keep(r.hours, "hours", 0),
+            overtime_hours: keep(r.overtimeHours, "overtimeHours", 0),
+            field_hours: keep(r.fieldHours, "fieldHours", 0),
+            field_subtype: keep(r.fieldSubtype, "fieldSubtype", null),
+            two_machine_hours: keep(r.twoMachineHours, "twoMachineHours", 0),
+            absence_code: keep(r.absenceCode, "absenceCode", null),
+            absence_subtype: keep(r.absenceSubtype, "absenceSubtype", null),
+            note: keep(r.note, "note", ""),
+            project_ref: keep(r.projectRef, "projectRef", ""),
           };
         });
         const res = await this.rpcJson(
@@ -2547,7 +2589,11 @@ export class KadrovskaMutationsService {
           .slice(0, 10);
 
         const holidays = await tx.kadrHoliday.findMany({
-          where: { holidayDate: { gte: start, lt: end } },
+          // isWorkday=false → SAMO pravi neradni praznik. Red sa isWorkday=true je
+          // RADNI izuzetak (radna subota / praznik koji se radi) i ne sme u holSet:
+          // inače computeMonthlyFond skine 8h fonda za dan koji se radi, a
+          // aggregateWorkHoursForMonth taj dan knjiži kao praznične sate (AUDIT-K1).
+          where: { isWorkday: false, holidayDate: { gte: start, lt: end } },
           select: { holidayDate: true },
         });
         const holSet = new Set(
@@ -2607,12 +2653,15 @@ export class KadrovskaMutationsService {
               advance_amount: unknown;
               domestic_days: unknown;
               foreign_days: unknown;
+              per_diem_rsd: unknown;
+              per_diem_eur: unknown;
               apo: string | null;
               fpo: string | null;
               u: string | null;
             }[]
           >(
             Prisma.sql`SELECT id, status, advance_amount, domestic_days, foreign_days,
+               per_diem_rsd, per_diem_eur,
                advance_paid_on::text AS apo, final_paid_on::text AS fpo, updated_at::text AS u
              FROM salary_payroll
              WHERE employee_id = ${emp.id}::uuid
@@ -2665,6 +2714,25 @@ export class KadrovskaMutationsService {
             dve_masine_sati: agg.dveMasineSati,
             teren_u_zemlji_count: domDays,
             teren_u_inostranstvu_count: forDays,
+            // ⚠️ AUDIT-K1 (26.07): `teren_*_count` su prikazne kolone; obračun
+            // dnevnica ide preko `domestic_days`/`foreign_days` × `per_diem_*`
+            // (trigger salary_payroll_compute_totals:
+            //  total_eur := per_diem_eur * foreign_days).
+            // Bez ovih ključeva RPC radi COALESCE(...) → kolone ostaju stare/0, pa je
+            // „Obračunaj iz grida" gubio DEVIZNE dnevnice (montažeri na inostranom
+            // terenu): chip „Ukupno EUR", stavka payslip-a i kartica „UKUPNO EUR"
+            // pokazivali su 0 uz uredan grid. Paritet 1.0 applyGridToPayrollRow:515+
+            // — DANI se izvode iz grida, STOPE ostaju sa reda (init snapshot).
+            domestic_days: domDays,
+            foreign_days: forDays,
+            per_diem_rsd: Number(
+              existing?.per_diem_rsd ?? term?.terrainDomesticRate ?? 0,
+            ),
+            per_diem_eur: Number(
+              existing?.per_diem_eur ?? term?.terrainForeignRate ?? 0,
+            ),
+            // 1.0 upisuje REDOVNE sate (ne payable) — payslip satničara ih prikazuje.
+            hours_worked: agg.redovanRadSati,
             compensation_model: res.compensationModel,
             payable_hours: res.payableHours,
             ukupna_zarada: res.ukupnaZarada,
@@ -2914,13 +2982,30 @@ export class KadrovskaMutationsService {
     const safeName = file.originalname.replace(/[^\w.\-]+/g, "_");
     const path = `${empId}/${Date.now()}_${safeName}`;
 
-    // 1) Meta-red kroz RLS (PII gate presuđuje sy15). uploaded_by=auth.uid() (default trg/kol).
+    // 1) Meta-red kroz RLS (PII gate presuđuje sy15).
+    //    ⚠️ AUDIT-K1 (26.07): `uploaded_by` NEMA ni DEFAULT ni trigger u sy15
+    //    (raniji komentar „default trg/kol" je bio netačan), a INSERT politika je
+    //    `WITH CHECK ((uploaded_by = auth.uid()) AND current_user_can_manage_employee_pii())`.
+    //    Bez eksplicitnog upisa kolona je NULL → `NULL = auth.uid()` je NULL →
+    //    politika ne prolazi → SVAKI upload dokumenta padao je na 42501, i za
+    //    admina i za poslovnog admina. Zato `uploaded_by` postavljamo iz auth.uid()
+    //    (= claims->>'sub' koji withUserRls postavlja) u ISTOJ transakciji —
+    //    isti obrazac kao `issued_by` u Reversima.
     //    Vraćamo BEZ BigInt (sizeBytes→Number) — runIdempotentRls JSON.stringify-uje rezultat.
     const doc = await this.mutateRaw(
       email,
       dto.clientEventId,
       "kadr.doc.upload",
       async (tx) => {
+        const uid = await tx.$queryRaw<
+          { v: string | null }[]
+        >`SELECT auth.uid()::text AS v`;
+        const uploadedBy = uid[0]?.v ?? null;
+        if (!uploadedBy) {
+          throw new UnprocessableEntityException(
+            "Nalog nema sy15 identitet (auth.users) — upload dokumenta nije moguć.",
+          );
+        }
         const d = await tx.employeeDocument.create({
           data: {
             employeeId: empId,
@@ -2930,6 +3015,7 @@ export class KadrovskaMutationsService {
             mimeType: file.mimetype ?? null,
             sizeBytes: BigInt(file.size ?? file.buffer.length),
             description: dto.description ?? null,
+            uploadedBy,
           },
         });
         return {
@@ -3085,7 +3171,8 @@ export class KadrovskaMutationsService {
     const end = new Date(Date.UTC(year, month, 1));
     const [holidays, wh] = await Promise.all([
       tx.kadrHoliday.findMany({
-        where: { holidayDate: { gte: start, lt: end } },
+        // isWorkday=false: radni izuzetak (radna subota) NIJE praznik — vidi AUDIT-K1.
+        where: { isWorkday: false, holidayDate: { gte: start, lt: end } },
         select: { holidayDate: true },
       }),
       tx.workHours.findMany({

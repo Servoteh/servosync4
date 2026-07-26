@@ -710,7 +710,10 @@ export class KadrovskaService {
           },
         }),
         tx.kadrHoliday.findMany({
-          where: { holidayDate: { gte: start, lt: end } },
+          // isWorkday=false: radni izuzetak (radna subota) NIJE praznik — inače
+          // computePayableHours skida fond i knjiži praznične sate za radni dan
+          // (AUDIT-K1; paritet 1.0 holidaySet filtera !h.isWorkday).
+          where: { isWorkday: false, holidayDate: { gte: start, lt: end } },
           select: { holidayDate: true },
         }),
         tx.employee.findMany({
