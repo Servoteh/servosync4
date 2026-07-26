@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
+import { useQueryTab } from '@/lib/use-query-tab';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
 import { cn } from '@/lib/cn';
@@ -22,10 +23,15 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: 'machine-access', label: 'Radnici po mašinama' },
 ];
 
+/** Ključevi `?tab=` — ujedno OGLEDALO dece modula „Proizvodne strukture" u `navigation.ts`. */
+const TAB_KEYS: readonly TabKey[] = TABS.map((t) => t.key);
+
 export default function StructuresPage() {
   const { user, isLoading } = useAuth();
   const router = useRouter();
-  const [tab, setTab] = useState<TabKey>('workers');
+  // Tab živi u `?tab=` kroz deljeni hook (PLAN_NAV_PODMENIJI §4.3, F2) — deep-link, klik na
+  // podstavku dok si već ovde i write-back URL-a pri promeni taba u strani.
+  const [tab, setTab] = useQueryTab<TabKey>('tab', 'workers', { valid: TAB_KEYS });
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');

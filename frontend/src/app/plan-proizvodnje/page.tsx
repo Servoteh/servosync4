@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
+import { useQueryTab } from '@/lib/use-query-tab';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
 import { Tabs, type TabItem } from '@/components/ui-kit/tabs';
@@ -26,6 +27,9 @@ const TABS: TabItem<TabKey>[] = [
   { key: 'kooperacija', label: 'Kooperacija' },
 ];
 
+/** Ključevi `?tab=` — ujedno OGLEDALO dece modula „Planiranje" u `navigation.ts`. */
+const TAB_KEYS: readonly TabKey[] = TABS.map((t) => t.key);
+
 /**
  * Plan proizvodnje — 3.0 TALAS C (MODULE_SPEC_planovi_pracenje_30.md §4). 5 tabova
  * (Po mašini/Po crtežu/Zauzetost/Pregled svih/Kooperacija). Vidljivost = plan_proizvodnje.read;
@@ -34,7 +38,10 @@ const TABS: TabItem<TabKey>[] = [
 export default function PlanProizvodnjePage() {
   const { user, isLoading } = useAuth();
   const router = useRouter();
-  const [tab, setTab] = useState<TabKey>('po-masini');
+  // Tab živi u `?tab=` kroz deljeni hook (PLAN_NAV_PODMENIJI §4.3, F2). Ruta je `wide` (pun
+  // sidebar se auto-sklanja), pa podmeni radi kroz RAIL FLYOUT i Ctrl+K paletu — deep-link i
+  // write-back su isti kao svuda.
+  const [tab, setTab] = useQueryTab<TabKey>('tab', 'po-masini', { valid: TAB_KEYS });
 
   // Reassign radi nad PUNIM redovima (GAP-PM-24 — filtriranje kandidata po grupi mašine).
   const [reassignRows, setReassignRows] = useState<OpRow[] | null>(null);

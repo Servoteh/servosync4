@@ -149,7 +149,26 @@ export const NAV_DOMAINS: NavDomain[] = [
     icon: Factory,
     modules: [
       // Talas C — Plan proizvodnje (Planiranje) + Praćenje proizvodnje (direktno u domenu).
-      { label: 'Planiranje', href: '/plan-proizvodnje', icon: CalendarRange, requires: PERMISSIONS.PLAN_PROIZVODNJE_READ, wide: true, keywords: ['plan', 'proizvodnja', 'gantt'] },
+      {
+        label: 'Planiranje',
+        href: '/plan-proizvodnje',
+        icon: CalendarRange,
+        requires: PERMISSIONS.PLAN_PROIZVODNJE_READ,
+        wide: true,
+        keywords: ['plan', 'proizvodnja', 'gantt'],
+        // PODMENIJI F2 (§3.1): 5 pogleda, `?tab=` uveden u strani (TABS u plan-proizvodnje/
+        // page.tsx = izvor istine za ključeve). Ruta je `wide` — pun sidebar se auto-sklanja,
+        // pa se podmeni koristi kroz RAIL FLYOUT (F0 ga renderuje) i Ctrl+K paletu.
+        // Bez `requires` po detetu: strana tabove ne gejtuje dodatno (sve na plan_proizvodnje.read;
+        // stroža prava su per-AKCIJA — edit/force/koop_admin — ne per-tab).
+        children: [
+          { label: 'Po mašini', href: '/plan-proizvodnje?tab=po-masini', keywords: ['po masini', 'masine', 'raspored', 'PLA-PM'] },
+          { label: 'Po crtežu', href: '/plan-proizvodnje?tab=po-crtezu', keywords: ['po crtezu', 'crtez', 'pozicija', 'PLA-PC'] },
+          { label: 'Zauzetost mašina', href: '/plan-proizvodnje?tab=zauzetost', keywords: ['zauzetost', 'kapacitet', 'opterecenje', 'PLA-ZA'] },
+          { label: 'Pregled svih', href: '/plan-proizvodnje?tab=pregled', keywords: ['pregled svih', 'sve operacije', 'PLA-PS'] },
+          { label: 'Kooperacija', href: '/plan-proizvodnje?tab=kooperacija', keywords: ['kooperacija', 'koop', 'usluga', 'PLA-KO'] },
+        ],
+      },
       { label: 'Praćenje', href: '/pracenje-proizvodnje', icon: Radar, requires: PERMISSIONS.PRACENJE_READ, keywords: ['pracenje', 'status'] },
     ],
     groups: [
@@ -169,7 +188,22 @@ export const NAV_DOMAINS: NavDomain[] = [
           { label: 'Završeni nalozi', href: '/completed-orders', icon: CheckCircle2, requires: PERMISSIONS.RN_READ, keywords: ['zavrseni', 'arhiva'] },
           { label: 'Evidencija u proizvodnji', href: '/production-log', icon: ListChecks, requires: PERMISSIONS.TEHNOLOGIJA_READ, keywords: ['evidencija', 'log'] },
           { label: 'Analitika vremena', href: '/session-analytics', icon: Clock, requires: PERMISSIONS.TEHNOLOGIJA_READ, keywords: ['vreme', 'analitika', 'sesije'] },
-          { label: 'Proizvodne strukture', href: '/structures', icon: Users, requires: PERMISSIONS.STRUKTURE_READ, keywords: ['strukture', 'bom'] },
+          {
+            label: 'Proizvodne strukture',
+            href: '/structures',
+            icon: Users,
+            requires: PERMISSIONS.STRUKTURE_READ,
+            keywords: ['strukture', 'bom'],
+            // PODMENIJI F2 (§3.1): 5 tabova, `?tab=` uveden u strani (TABS u structures/page.tsx).
+            // Strana ih ne gejtuje dodatno — ceo modul stoji na `strukture.read`.
+            children: [
+              { label: 'Radnici', href: '/structures?tab=workers', keywords: ['radnici', 'zaposleni u pogonu', 'STR-RA'] },
+              { label: 'Radne jedinice', href: '/structures?tab=work-units', keywords: ['radne jedinice', 'rj', 'pogoni', 'STR-RJ'] },
+              { label: 'Operacije', href: '/structures?tab=operations', keywords: ['operacije', 'sifarnik operacija', 'STR-OP'] },
+              { label: 'Vrste poslova', href: '/structures?tab=worker-types', keywords: ['vrste poslova', 'zanimanja', 'worker types', 'STR-VP'] },
+              { label: 'Radnici po mašinama', href: '/structures?tab=machine-access', keywords: ['radnici po masinama', 'dozvole za masine', 'STR-RM'] },
+            ],
+          },
           { label: 'MRP / Nabavka', href: '/mrp', icon: ShoppingCart, requires: PERMISSIONS.MRP_READ, keywords: ['mrp', 'nabavka'] },
           // Unakrsno (crosslisted) — vidi i domen „Logistika".
           { label: 'Lokacije delova', href: '/part-locations', icon: MapPin, requires: PERMISSIONS.LOKACIJE_READ, keywords: ['lokacije', 'pozicije'], crosslisted: true },
@@ -185,7 +219,25 @@ export const NAV_DOMAINS: NavDomain[] = [
     title: 'Kontrola kvaliteta',
     icon: ShieldCheck,
     modules: [
-      { label: 'Kontrola kvaliteta', href: '/kvalitet', icon: ShieldCheck, requires: PERMISSIONS.KVALITET_READ, keywords: ['kk', 'skart', 'dorada', 'kontrola'] },
+      {
+        label: 'Kontrola kvaliteta',
+        href: '/kvalitet',
+        icon: ShieldCheck,
+        requires: PERMISSIONS.KVALITET_READ,
+        keywords: ['kk', 'skart', 'dorada', 'kontrola'],
+        // PODMENIJI F2 (§3.2): tabovi strane (`tabs` u kvalitet/page.tsx = izvor istine).
+        // „Aktivnost kontrole" (K4) čita evidenciju kucanja i strana je nudi samo uz
+        // `tehnologija.read` — dete nosi ISTI gate (plan §3.2 je pisan pre nego što je
+        // taj tab dodat; ogledalo strane je jače od spiska u planu).
+        children: [
+          { label: 'Evidencija škarta', href: '/kvalitet?tab=skart', keywords: ['skart', 'neusaglasenost', 'nc', 'KVA-SK'] },
+          { label: 'Evidencija dorada', href: '/kvalitet?tab=dorada', keywords: ['dorada', 'rework', 'popravka', 'KVA-DO'] },
+          { label: 'Aktivnost kontrole', href: '/kvalitet?tab=aktivnost', requires: PERMISSIONS.TEHNOLOGIJA_READ, keywords: ['aktivnost kontrole', 'kontrolori', 'kucanja', 'KVA-AK'] },
+          { label: 'Izveštaji', href: '/kvalitet?tab=izvestaji', keywords: ['izvestaji kvaliteta', 'analitika skarta', 'KVA-IZ'] },
+          { label: 'Dokumenti', href: '/kvalitet?tab=dokumenti', keywords: ['dokumenti', 'sertifikati', 'atesti', 'KVA-DK'] },
+          { label: 'Kontrola pogon', href: '/kvalitet?tab=pogon', keywords: ['kontrola pogon', 'pogonska kontrola', 'KVA-PG'] },
+        ],
+      },
       {
         label: 'Pogon — kucanje / kontrola',
         href: '/kiosk',
@@ -208,7 +260,24 @@ export const NAV_DOMAINS: NavDomain[] = [
     modules: [
       // Projektni biro (3.0 TALAS D) — plan/kanban/gantt/izveštaji/analiza/saveti.
       // Vidljivost = pb.read (SELECT `true` paritet = svi prijavljeni).
-      { label: 'Projektni biro', href: '/pb', icon: FolderKanban, requires: PERMISSIONS.PB_READ, keywords: ['pb', 'projekti', 'kanban'] },
+      {
+        label: 'Projektni biro',
+        href: '/pb',
+        icon: FolderKanban,
+        requires: PERMISSIONS.PB_READ,
+        keywords: ['pb', 'projekti', 'kanban'],
+        // PODMENIJI F2 (§3.3): 6 tabova za sve + „Podešavanja" samo za `pb.admin` — isti
+        // gate koji strana već koristi (`isAdmin = can(PB_ADMIN)` u pb/page.tsx, izvor istine).
+        children: [
+          { label: 'Plan', href: '/pb?tab=plan', keywords: ['plan', 'zadaci', 'lista', 'PB-PL'] },
+          { label: 'Kanban', href: '/pb?tab=kanban', keywords: ['kanban', 'tabla', 'board', 'PB-KB'] },
+          { label: 'Gantt', href: '/pb?tab=gantt', keywords: ['gantt', 'vremenska linija', 'PB-GA'] },
+          { label: 'Izveštaji', href: '/pb?tab=izvestaji', keywords: ['izvestaji projektovanja', 'PB-IZ'] },
+          { label: 'Analiza', href: '/pb?tab=analiza', keywords: ['analiza', 'utrosak', 'PB-AN'] },
+          { label: 'Saveti', href: '/pb?tab=saveti', keywords: ['saveti', 'preporuke', 'PB-SV'] },
+          { label: 'Podešavanja', href: '/pb?tab=podesavanja', requires: PERMISSIONS.PB_ADMIN, keywords: ['podesavanja projektnog biroa', 'PB-PD'] },
+        ],
+      },
       { label: 'PDM / Crteži', href: '/pdm', icon: DraftingCompass, requires: PERMISSIONS.PDM_READ, keywords: ['crtez', 'bom', 'pdm', 'nacrt'] },
       // „Nacrti" (projektanti, gate write) ostaje ovde na `primopredaje.write` (radni
       // prostor projektanata). „Primopredaje" (/handovers) je preseljeno u
@@ -244,10 +313,50 @@ export const NAV_DOMAINS: NavDomain[] = [
     title: 'Logistika',
     icon: Warehouse,
     modules: [
-      { label: 'Lokacije', href: '/lokacije', icon: Warehouse, requires: PERMISSIONS.LOKACIJE_READ, keywords: ['lokacije', 'skladiste', 'police'] },
+      {
+        label: 'Lokacije',
+        href: '/lokacije',
+        icon: Warehouse,
+        requires: PERMISSIONS.LOKACIJE_READ,
+        keywords: ['lokacije', 'skladiste', 'police'],
+        // PODMENIJI F2 (§3.5): 9 tabova; poslednja tri su permisijska — OGLEDALO gate-ova iz
+        // lokacije/page.tsx (labels/manage/admin), koji je izvor istine. Prvih 6 nasleđuje
+        // roditeljev `lokacije.read`.
+        children: [
+          { label: 'Početna', href: '/lokacije?tab=pocetna', keywords: ['pocetna', 'skener', 'brzo premestanje', 'LOK-PO'] },
+          { label: 'Pregled predmeta', href: '/lokacije?tab=predmet', keywords: ['pregled predmeta', 'predmet', 'LOK-PP'] },
+          { label: 'Lokacije', href: '/lokacije?tab=lokacije', keywords: ['definicije lokacija', 'hale', 'police', 'kavezi', 'LOK-LO'] },
+          { label: 'Stavke', href: '/lokacije?tab=stavke', keywords: ['stavke', 'delovi', 'pretraga stavki', 'LOK-ST'] },
+          { label: 'Pregled po lokacijama', href: '/lokacije?tab=report', keywords: ['pregled po lokacijama', 'izvestaj lokacija', 'LOK-PL'] },
+          { label: 'Istorija premeštanja', href: '/lokacije?tab=pokreti', keywords: ['istorija premestanja', 'pokreti', 'kretanje', 'LOK-IP'] },
+          { label: 'Štampa nalepnica', href: '/lokacije?tab=stampa', requires: PERMISSIONS.LOKACIJE_LABELS, keywords: ['stampa nalepnica', 'barkod', 'etikete', 'LOK-SN'] },
+          { label: 'Istorija definicija', href: '/lokacije?tab=audit', requires: PERMISSIONS.LOKACIJE_MANAGE, keywords: ['istorija definicija', 'audit lokacija', 'LOK-ID'] },
+          { label: 'Sync', href: '/lokacije?tab=sync', requires: PERMISSIONS.LOKACIJE_ADMIN, keywords: ['sync', 'sinhronizacija lokacija', 'LOK-SY'] },
+        ],
+      },
       // Unakrsno (crosslisted) — primarni dom je pod-grupa „Tehnologija".
       { label: 'Lokacije delova', href: '/part-locations', icon: MapPin, requires: PERMISSIONS.LOKACIJE_READ, keywords: ['lokacije', 'pozicije'], crosslisted: true },
-      { label: 'Reversi', href: '/reversi', icon: Wrench, requires: PERMISSIONS.REVERSI_READ, keywords: ['reversi', 'alat'] },
+      {
+        label: 'Reversi',
+        href: '/reversi',
+        icon: Wrench,
+        requires: PERMISSIONS.REVERSI_READ,
+        keywords: ['reversi', 'alat'],
+        // PODMENIJI F2 (§3.5): 7 GLAVNIH tabova (drugi nivo podtabova unutar „Stanja magacina"
+        // ostaje u strani — meni nosi procese). „Otpisan alat" je manage-only (paritet 1.0
+        // `manageOnly`); ključevi i gate su ogledalo `TAB_KEYS`/`manage` iz reversi/page.tsx.
+        // Stari 1.0 id-jevi (workbench, zaduzenja, inventar, rezni-alat, scrapped) idu u
+        // `keywords` — sam deep-link ih prevodi alias mapom u strani.
+        children: [
+          { label: 'Radni sto', href: '/reversi?tab=radni-sto', keywords: ['radni sto', 'workbench', 'izdavanje', 'REV-RS'] },
+          { label: 'Moji alati', href: '/reversi?tab=moji', keywords: ['moji alati', 'zaduzeni alat', 'moja', 'REV-MA'] },
+          { label: 'Izdavanje i povraćaj', href: '/reversi?tab=dokumenti', keywords: ['izdavanje', 'povracaj', 'zaduzenja', 'revers', 'REV-IP'] },
+          { label: 'Stanje magacina', href: '/reversi?tab=magacin', keywords: ['stanje magacina', 'inventar', 'alat i oprema', 'REV-SM'] },
+          { label: 'Rezni alat', href: '/reversi?tab=rezni', keywords: ['rezni alat', 'cutting', 'plocice', 'REV-RA'] },
+          { label: 'Mašine', href: '/reversi?tab=masine', keywords: ['masine', 'alat po masini', 'REV-MS'] },
+          { label: 'Otpisan alat', href: '/reversi?tab=otpisano', requires: PERMISSIONS.REVERSI_MANAGE, keywords: ['otpisan alat', 'otpis', 'scrapped', 'REV-OT'] },
+        ],
+      },
     ],
   },
   {
@@ -295,7 +404,26 @@ export const NAV_DOMAINS: NavDomain[] = [
     title: 'Kadrovska',
     icon: IdCard,
     modules: [
-      { label: 'Kadrovska', href: '/kadrovska', icon: IdCard, requires: PERMISSIONS.KADROVSKA_READ, keywords: ['kadrovska', 'hr', 'zaposleni'] },
+      {
+        label: 'Kadrovska',
+        href: '/kadrovska',
+        icon: IdCard,
+        requires: PERMISSIONS.KADROVSKA_READ,
+        keywords: ['kadrovska', 'hr', 'zaposleni'],
+        // PODMENIJI F2, presuda §6.4: 5 GRUPA (ne 13 tabova) uz `?grupa=` — grupa odgovara
+        // mentalnom modelu koji hub strane već koristi (Role Center logika). Ključevi su
+        // `GROUP_DEFS` iz kadrovska/page.tsx (izvor istine); imena tabova unutar grupa idu u
+        // `keywords`, pa ih Ctrl+K nalazi i sleće na grupu koja ih sadrži.
+        // „Zarade" nosi TVRD gate `kadrovska.salary` (1.0 allowlist Nenad+Nevena) — isti uslov
+        // kojim strana pravi grupu; ostale 4 grupe imaju bar jedan tab na baseline `kadrovska.read`.
+        children: [
+          { label: 'Pregled', href: '/kadrovska?grupa=pregled', keywords: ['pregled', 'dashboard', 'izvestaji', 'notifikacije', 'KAD-PR'] },
+          { label: 'Odmori i odsustva', href: '/kadrovska?grupa=odmori', keywords: ['odmori', 'godisnji odmor', 'odsustva', 'zahtevi', 'kalendar', 'KAD-OD'] },
+          { label: 'Radni sati', href: '/kadrovska?grupa=sati', keywords: ['radni sati', 'grid', 'prisustvo', 'kapija', 'KAD-RS'] },
+          { label: 'Zaposleni', href: '/kadrovska?grupa=zaposleni', keywords: ['zaposleni', 'kartoni', 'ugovori', 'imenik', 'razvoj', 'uvodjenje', 'onboarding', 'KAD-ZP'] },
+          { label: 'Zarade', href: '/kadrovska?grupa=zarade', requires: PERMISSIONS.KADROVSKA_SALARY, keywords: ['zarade', 'plate', 'obracun zarada', 'bruto', 'KAD-ZR'] },
+        ],
+      },
       { label: 'Moj profil', href: '/profil', icon: CircleUser, requires: PERMISSIONS.PROFILE_SELF, keywords: ['profil', 'moj'] },
     ],
   },
@@ -358,36 +486,89 @@ export const NAV_DOMAINS: NavDomain[] = [
     id: 'prodaja-nabavka',
     title: 'Prodaja i nabavka',
     icon: ShoppingCart,
+    // PODMENIJI F2 (§3.9): 7 ravnih stavki („razliveno") → Nabavka kao DIREKTNA stavka +
+    // dve imenovane pod-grupe (postojeći `NavSubGroup` mehanizam — bez novih ruta, bez
+    // promene permisija; menja se samo grupisanje/redosled prikaza).
     modules: [
       // Postepeno (Faza po faza) — otkomentarisati modul kad je ruta+permisija spremna:
       // Traka B (SPRINT — prvi): Nabavka
       { label: 'Nabavka', href: '/nabavka', icon: PackageCheck, requires: PERMISSIONS.NABAVKA_READ, keywords: ['nabavka', 'upit', 'narudzbenica', 'dobavljac'] },
       // Traka B: RFQ kupca → predmet
       // { label: 'Upiti kupaca', href: '/rfqs', icon: ClipboardList, requires: PERMISSIONS.SALES_READ, keywords: ['rfq', 'zahtev za ponudu', 'upit kupca'] },
-      // Faza 5: Predračuni & računi (izlazni, dom+izvoz)
-      { label: 'Predračuni & računi', href: '/fakturisanje', icon: ListOrdered, requires: PERMISSIONS.SALES_READ, keywords: ['faktura', 'racun', 'predracun', 'profaktura', 'izvoz'] },
-      { label: 'Avansni računi', href: '/fakturisanje/avansi', icon: ListOrdered, requires: PERMISSIONS.PDV_READ, keywords: ['avans', 'avansni racun', 'avr', 'predujam'] },
-      // Faza 5: e-Fakture (SEF)
-      { label: 'e-Fakture (SEF)', href: '/sef', icon: RefreshCw, requires: PERMISSIONS.SEF_READ, keywords: ['sef', 'efaktura', 'ubl'] },
-      // Faza 3: Zalihe & kalkulacija (crosslisted u Logistiku)
-      { label: 'Zalihe & kalkulacija', href: '/robno', icon: Warehouse, requires: PERMISSIONS.ROBNO_READ, keywords: ['zalihe', 'lager', 'kalkulacija', 'primka', 'nivelacija'], crosslisted: true },
-      // E2: popis/inventura (zakonski godišnji tok — predpunjenje → unos → VISAK/MANJAK)
-      { label: 'Popis / inventura', href: '/robno/popis', icon: Warehouse, requires: PERMISSIONS.ROBNO_READ, keywords: ['popis', 'inventura', 'visak', 'manjak'] },
-      { label: 'Rezervacije zaliha', href: '/robno/rezervacije', icon: Warehouse, requires: PERMISSIONS.ROBNO_READ, keywords: ['rezervacija', 'rezervisano', 'raspolozivo'] },
+    ],
+    groups: [
+      {
+        id: 'fakturisanje',
+        title: 'Fakturisanje',
+        icon: ListOrdered,
+        modules: [
+          // Faza 5: Predračuni & računi (izlazni, dom+izvoz)
+          { label: 'Predračuni & računi', href: '/fakturisanje', icon: ListOrdered, requires: PERMISSIONS.SALES_READ, keywords: ['faktura', 'racun', 'predracun', 'profaktura', 'izvoz'] },
+          { label: 'Avansni računi', href: '/fakturisanje/avansi', icon: ListOrdered, requires: PERMISSIONS.PDV_READ, keywords: ['avans', 'avansni racun', 'avr', 'predujam'] },
+          // Faza 5: e-Fakture (SEF)
+          { label: 'e-Fakture (SEF)', href: '/sef', icon: RefreshCw, requires: PERMISSIONS.SEF_READ, keywords: ['sef', 'efaktura', 'ubl'] },
+        ],
+      },
+      {
+        id: 'magacin',
+        title: 'Magacin',
+        icon: Warehouse,
+        modules: [
+          // Faza 3: Zalihe & kalkulacija (crosslisted u Logistiku)
+          { label: 'Zalihe & kalkulacija', href: '/robno', icon: Warehouse, requires: PERMISSIONS.ROBNO_READ, keywords: ['zalihe', 'lager', 'kalkulacija', 'primka', 'nivelacija'], crosslisted: true },
+          // E2: popis/inventura (zakonski godišnji tok — predpunjenje → unos → VISAK/MANJAK)
+          { label: 'Popis / inventura', href: '/robno/popis', icon: Warehouse, requires: PERMISSIONS.ROBNO_READ, keywords: ['popis', 'inventura', 'visak', 'manjak'] },
+          { label: 'Rezervacije zaliha', href: '/robno/rezervacije', icon: Warehouse, requires: PERMISSIONS.ROBNO_READ, keywords: ['rezervacija', 'rezervisano', 'raspolozivo'] },
+        ],
+      },
     ],
   },
   {
     id: 'finansije',
     title: 'Finansije',
     icon: SlidersHorizontal,
+    // PODMENIJI F2, presuda §6.3 (SAP FI struktura): stavke koje su LOGIČKI DECA prestaju da
+    // stoje ravnopravno u prvom redu — „Kursne razlike" pod Saldakonte, „Poreske stope" pod
+    // PDV, „Kursna lista" pod Izvode; uz to je iskopana ruta `/saldakonti/kartica` (Kartica
+    // komitenta), koja do sada NIJE bila nigde u meniju. Prvi red pada sa 12 na 9 stavki.
+    // Amortizeri navike (§6.3): stavke se SELE, ne nestaju — stara imena ostaju u `keywords`
+    // dece, pa ih Ctrl+K nalazi kao i pre („Saldakonti: Kursne razlike"), a auto-razgranavanje
+    // aktivnog modula ih drži vidljivim čim uđeš u roditelja.
     modules: [
       // Faza 2: Glavna knjiga
       { label: 'Glavna knjiga', href: '/glavna-knjiga', icon: ListChecks, requires: PERMISSIONS.GL_READ, keywords: ['gk', 'nalozi', 'kontni plan', 'dnevnik', 'bruto bilans'] },
       // Faza 4: Izvodi (bankovni, TXT uvoz)
-      { label: 'Izvodi', href: '/izvodi', icon: FileText, requires: PERMISSIONS.IZVODI_READ, keywords: ['izvod', 'banka', 'txt', 'uparivanje'] },
+      {
+        label: 'Izvodi',
+        href: '/izvodi',
+        icon: FileText,
+        requires: PERMISSIONS.IZVODI_READ,
+        keywords: ['izvod', 'banka', 'txt', 'uparivanje'],
+        // Sam modul nema tabove (podrute `[id]`) — jedino dete je preseljena ruta.
+        children: [
+          // E6: kursna lista (devizni izvodi — prodajni kurs; blagajna srednji)
+          { label: 'Kursna lista', href: '/izvodi/kursna-lista', keywords: ['kursna lista', 'kurs', 'devize', 'eur', 'valuta', 'IZV-KL'] },
+        ],
+      },
       // Faza 4: Saldakonti (otvorene stavke, IOS, kompenzacija)
-      { label: 'Saldakonti', href: '/saldakonti', icon: Users, requires: PERMISSIONS.SALDAKONTI_READ, keywords: ['otvorene stavke', 'ios', 'aging', 'kompenzacija'] },
-      { label: 'Kursne razlike', href: '/saldakonti/kursne-razlike', icon: Users, requires: PERMISSIONS.SALDAKONTI_READ, keywords: ['kursne razlike', 'revalorizacija', 'devizno', 'kurs'] },
+      {
+        label: 'Saldakonti',
+        href: '/saldakonti',
+        icon: Users,
+        requires: PERMISSIONS.SALDAKONTI_READ,
+        keywords: ['otvorene stavke', 'ios', 'aging', 'kompenzacija'],
+        // 3 taba strane (`TABS` u saldakonti/page.tsx = izvor istine za ključeve `?tab=`) +
+        // 2 PODRUTE: „Kartica komitenta" (do F2 dostupna samo kroz linkove iz Izvoda/Naplate)
+        // i „Kursne razlike" (preseljena iz prvog reda). Sve stoji na `saldakonti.read` —
+        // strožih per-tab gate-ova nema (reconcile je per-AKCIJA, unutar „Otvorenih stavki").
+        children: [
+          { label: 'Otvorene stavke', href: '/saldakonti?tab=open', keywords: ['otvorene stavke', 'ios', 'uparivanje', 'SLD-OS'] },
+          { label: 'Aging', href: '/saldakonti?tab=aging', keywords: ['aging', 'dospelost', 'bucket', 'SLD-AG'] },
+          { label: 'Kompenzacije', href: '/saldakonti?tab=compensation', keywords: ['kompenzacije', 'prebijanje', 'SLD-KP'] },
+          { label: 'Kartica komitenta', href: '/saldakonti/kartica', keywords: ['kartica komitenta', 'kartica partnera', 'analitika komitenta', 'SLD-KK'] },
+          { label: 'Kursne razlike', href: '/saldakonti/kursne-razlike', keywords: ['kursne razlike', 'revalorizacija', 'devizno', 'kurs', 'SLD-KR'] },
+        ],
+      },
       // Faza 4: Banka & plaćanja (izvodi, priprema plaćanja, virmani)
       { label: 'Banka & plaćanja', href: '/placanja', icon: Building2, requires: PERMISSIONS.PLACANJA_READ, keywords: ['banka', 'izvod', 'virman', 'nalog za placanje', 'priprema placanja'] },
       // XL: Blagajna (gotovinski dnevnik — uplatnice/isplatnice)
@@ -395,11 +576,23 @@ export const NAV_DOMAINS: NavDomain[] = [
       // XL: Obračun kamate (zatezna/ugovorna)
       { label: 'Kamata', href: '/kamata', icon: Percent, requires: PERMISSIONS.KAMATA_READ, keywords: ['kamata', 'zatezna', 'kamatni list', 'obracun kamate'] },
       // Faza 6: PDV & POPDV
-      { label: 'PDV & POPDV', href: '/pdv', icon: ShieldCheck, requires: PERMISSIONS.PDV_READ, keywords: ['pdv', 'popdv', 'pppdv', 'kif', 'kuf', 'kepu'] },
-      // Talas 1D: registar poreskih stopa (efektivno datiranje)
-      { label: 'Poreske stope', href: '/pdv/stope', icon: ShieldCheck, requires: PERMISSIONS.PDV_READ, keywords: ['poreske stope', 'tarife', 'pdv stopa', 'stopa'] },
-      // E6: kursna lista (devizni izvodi — prodajni kurs; blagajna srednji)
-      { label: 'Kursna lista', href: '/izvodi/kursna-lista', icon: Percent, requires: PERMISSIONS.IZVODI_READ, keywords: ['kursna lista', 'kurs', 'devize', 'eur', 'valuta'] },
+      {
+        label: 'PDV & POPDV',
+        href: '/pdv',
+        icon: ShieldCheck,
+        requires: PERMISSIONS.PDV_READ,
+        keywords: ['pdv', 'popdv', 'pppdv', 'kif', 'kuf', 'kepu'],
+        // 4 taba strane (`TABS` u pdv/page.tsx = izvor istine) + preseljena podruta registra
+        // stopa. Sve na `pdv.read` — strana per-tab gate-ove nema.
+        children: [
+          { label: 'KIF (izlazni)', href: '/pdv?tab=kif', keywords: ['kif', 'izlazni racuni', 'knjiga izlaznih faktura', 'PDV-KIF'] },
+          { label: 'KUF (ulazni)', href: '/pdv?tab=kuf', keywords: ['kuf', 'ulazni racuni', 'knjiga ulaznih faktura', 'PDV-KUF'] },
+          { label: 'POPDV obračun', href: '/pdv?tab=popdv', keywords: ['popdv', 'pppdv', 'obracun pdv', 'aop', 'PDV-PO'] },
+          { label: 'KEPU', href: '/pdv?tab=kepu', keywords: ['kepu', 'knjiga evidencije prometa', 'PDV-KE'] },
+          // Talas 1D: registar poreskih stopa (efektivno datiranje)
+          { label: 'Poreske stope', href: '/pdv/stope', keywords: ['poreske stope', 'tarife', 'pdv stopa', 'stopa', 'PDV-ST'] },
+        ],
+      },
       // T3: dashboard naplate (DSO, aging heatmap, top dužnici)
       { label: 'Naplata', href: '/naplata', icon: Percent, requires: PERMISSIONS.SALDAKONTI_READ, keywords: ['naplata', 'dso', 'aging', 'duznici', 'dospelo'] },
       // Faza 7: Završni račun (bilansi, APR)
@@ -658,6 +851,13 @@ export function findModuleByPath(pathname: string): NavModule | undefined {
  */
 export function screenContextForPath(pathname: string): string {
   const mod = findModuleByPath(pathname);
+  // PODRUTA koja je PODSTAVKA modula (F2 pregrupisanje: /saldakonti/kursne-razlike,
+  // /pdv/stope, /izvodi/kursna-lista, /saldakonti/kartica) ima svoje ime — bez ovoga bi je
+  // AI opisao kao roditelja („Saldakonti"), jer `findModuleByPath` hvata prefiks. Poređenje je
+  // po PUNOM href-u, pa deca sa query-jem (pogledi) ovde namerno ne prolaze — pathname ne
+  // kaže koji je tab otvoren.
+  const sub = mod?.children?.find((c) => c.href === pathname);
+  if (sub) return `${sub.label} (${sub.href})`;
   // Stavka sa query href-om je POGLED modula (npr. /montaza?view=gantt), a sam pathname ne
   // kaže koji je pogled otvoren — tada je pošteniji naziv domena nego nasumičan pogled.
   if (mod && hrefPath(mod.href) === mod.href) return `${mod.label} (${mod.href})`;
