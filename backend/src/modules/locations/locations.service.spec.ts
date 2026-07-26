@@ -451,6 +451,53 @@ describe("LocationsService — R2 mutacije", () => {
     expect(data[1].movedByName).toBe("legacy@x.com");
   });
 
+  // ---------- `mine=1` (mobilna „Moja istorija") ----------
+
+  it("listMovements mine=1: razreši sy15 auth.users uid po email-u i filtrira moved_by (userId se ignoriše)", async () => {
+    // 1. $queryRaw = auth.users lookup po email-u; 2. = auth.users fallback imena.
+    sy15.db.$queryRaw
+      .mockResolvedValueOnce([{ id: UUID }])
+      .mockResolvedValue([]);
+    sy15.db.locLocationMovement.findMany.mockResolvedValue([
+      { id: "m1", movedBy: UUID },
+    ]);
+    sy15.db.locLocationMovement.count.mockResolvedValue(1);
+    sy15.db.userRoleSy15.findMany.mockResolvedValue([]);
+
+    // userId pokazuje na DRUGOG korisnika — `mine` mora da ga pregazi.
+    const res = await service.listMovements({ mine: "1", userId: UUID2 }, EMAIL);
+
+    const call = sy15.db.locLocationMovement.findMany.mock
+      .calls[0][0] as { where: { movedBy?: string } };
+    expect(call.where.movedBy).toBe(UUID);
+    expect(res.data).toHaveLength(1);
+  });
+
+  it("listMovements mine=1: nerazrešiv nalog → PRAZNA strana (ne greška, ne cela istorija)", async () => {
+    sy15.db.$queryRaw.mockResolvedValue([]); // nema reda u auth.users
+
+    const res = await service.listMovements({ mine: "true" }, "nepoznat@x.com");
+
+    expect(res.data).toEqual([]);
+    expect(res.meta.pagination.total).toBe(0);
+    // Fail-closed: upit nad pokretima se NIJE ni izvršio.
+    expect(sy15.db.locLocationMovement.findMany).not.toHaveBeenCalled();
+  });
+
+  it("listMovements bez mine: `userId` filter radi kao pre (regresija)", async () => {
+    sy15.db.locLocationMovement.findMany.mockResolvedValue([]);
+    sy15.db.locLocationMovement.count.mockResolvedValue(0);
+    sy15.db.userRoleSy15.findMany.mockResolvedValue([]);
+
+    await service.listMovements({ userId: UUID2 }, EMAIL);
+
+    const call = sy15.db.locLocationMovement.findMany.mock
+      .calls[0][0] as { where: { movedBy?: string } };
+    expect(call.where.movedBy).toBe(UUID2);
+    // Bez `mine` nema auth.users lookup-a po email-u.
+    expect(sy15.db.$queryRaw).not.toHaveBeenCalled();
+  });
+
   it("summary: vraća movements24h i movements7d (KALENDARSKI prozor, Belgrade ponoć)", async () => {
     sy15.db.locLocationMovement.count
       .mockResolvedValueOnce(3) // danas (od lokalne ponoći)

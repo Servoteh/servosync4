@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowLeft, Check, ChevronRight, X } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
+import { PERMISSIONS } from '@/lib/permissions';
 import {
   usePatchAkcija,
   useSastanci,
@@ -20,9 +21,15 @@ import {
 } from '../../sastanci/_components/common';
 
 /** Mobilni Sastanci (/mob/sastanci) — lista → detalj (read + RSVP/status/obrađeno).
- *  Deep-link `?open=<id>` (paritet 1.0 mySastanci). Vidljivost = sastanci.read. */
+ *  Deep-link `?open=<id>` (paritet 1.0 mySastanci). Vidljivost = sastanci.read.
+ *
+ *  ⚠️ PERMISIJE: `PATCH /sastanci/akcije/:id` i `PATCH /sastanci/aktivnosti/:id` su na
+ *  BE-u pod `sastanci.edit` — korisnik samo sa `sastanci.read` je na tu dugmad dobijao
+ *  403. Zato su afordanse iza `can(SASTANCI_EDIT)`; RSVP (`POST /:id/rsvp`) je
+ *  read-level i ostaje svima. Popuštanje edit-a nad „svojom" akcijom je poslovna
+ *  odluka koja NIJE doneta. */
 export default function MobileSastanciPage() {
-  const { user, isLoading } = useAuth();
+  const { user, isLoading, can } = useAuth();
   const router = useRouter();
   const [openId, setOpenId] = useState<string | null>(null);
 
@@ -40,7 +47,12 @@ export default function MobileSastanciPage() {
   }
 
   return openId ? (
-    <MobileDetail id={openId} myEmail={user.email} onBack={() => setOpenId(null)} />
+    <MobileDetail
+      id={openId}
+      myEmail={user.email}
+      canEdit={can(PERMISSIONS.SASTANCI_EDIT)}
+      onBack={() => setOpenId(null)}
+    />
   ) : (
     <MobileList onOpen={setOpenId} />
   );
@@ -104,7 +116,17 @@ function Section({ title, items, onOpen, loading, empty }: { title: string; item
   );
 }
 
-function MobileDetail({ id, myEmail, onBack }: { id: string; myEmail: string; onBack: () => void }) {
+function MobileDetail({
+  id,
+  myEmail,
+  canEdit,
+  onBack,
+}: {
+  id: string;
+  myEmail: string;
+  canEdit: boolean;
+  onBack: () => void;
+}) {
   const fullQ = useSastanakFull(id);
   const rsvp = useSetMyRsvp();
   const patchAkcija = usePatchAkcija();
@@ -167,13 +189,20 @@ function MobileDetail({ id, myEmail, onBack }: { id: string; myEmail: string; on
                   <div key={a.id} className="rounded-panel border border-line bg-surface p-3">
                     <div className="flex items-start justify-between gap-2">
                       <span className="text-sm font-medium text-ink">{a.naslov}</span>
-                      <button
-                        disabled={locked || updateAkt.isPending}
-                        onClick={() => updateAkt.mutate({ aktId: a.id, patch: { status: done ? 'u_toku' : 'zavrsen' } })}
-                        className={`shrink-0 rounded-control border px-2 py-0.5 text-xs ${done ? 'border-status-success bg-status-success-bg text-status-success' : 'border-line text-ink-secondary'} disabled:opacity-40`}
-                      >
-                        {done ? '✓ Obrađeno' : 'Obradi'}
-                      </button>
+                      {canEdit ? (
+                        <button
+                          disabled={locked || updateAkt.isPending}
+                          onClick={() => updateAkt.mutate({ aktId: a.id, patch: { status: done ? 'u_toku' : 'zavrsen' } })}
+                          className={`shrink-0 rounded-control border px-2 py-0.5 text-xs ${done ? 'border-status-success bg-status-success-bg text-status-success' : 'border-line text-ink-secondary'} disabled:opacity-40`}
+                        >
+                          {done ? '✓ Obrađeno' : 'Obradi'}
+                        </button>
+                      ) : (
+                        /* Bez `sastanci.edit` PATCH vraća 403 → status je čist prikaz. */
+                        <span className={`shrink-0 rounded-control border px-2 py-0.5 text-xs ${done ? 'border-status-success bg-status-success-bg text-status-success' : 'border-line text-ink-secondary'}`}>
+                          {done ? '✓ Obrađeno' : 'Nije obrađeno'}
+                        </span>
+                      )}
                     </div>
                     {a.sadrzajText && <p className="mt-1 whitespace-pre-wrap text-sm text-ink-secondary">{a.sadrzajText}</p>}
                   </div>
@@ -185,6 +214,9 @@ function MobileDetail({ id, myEmail, onBack }: { id: string; myEmail: string; on
           {/* Akcije — status sheet (otvoren/u_toku/zavrsen) */}
           <section className="space-y-2">
             <h2 className="text-xs font-semibold uppercase tracking-wider text-ink-secondary">Akcioni plan</h2>
+            {!canEdit && sast.akcije.length > 0 && (
+              <p className="text-xs text-ink-disabled">Promena statusa ide preko zapisničara.</p>
+            )}
             {sast.akcije.length === 0 ? (
               <p className="text-sm text-ink-disabled">Nema akcija.</p>
             ) : (
@@ -194,7 +226,7 @@ function MobileDetail({ id, myEmail, onBack }: { id: string; myEmail: string; on
                     <span className="text-sm text-ink">{a.naslov}</span>
                     <AkcijaStatusBadge status={a.effective_status} />
                   </div>
-                  {!locked && (
+                  {canEdit && !locked && (
                     <div className="mt-2 flex gap-1">
                       {['otvoren', 'u_toku', 'zavrsen'].map((st) => (
                         <button

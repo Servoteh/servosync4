@@ -48,8 +48,33 @@ samo na LAN `:3000` bake-u). `/mob` je isti origin kao `/m`, pa APK WebView pri 
 |---|---|---|
 | **0** | `/mob` hub (kartice po pravima) + seoba 9 gotovih 3.0 ekrana sa `/m/*` na `/mob/*` (stari `/m/*` = redirect stubovi za LAN) | u izradi |
 | **1** | Prečice sa 1.0 huba na `/mob` ekrane sa `#ss_token` (obrazac Kadrovska → `/mob/prisustvo`); modul po modul, trenutno reverzibilno. Prioritet: **praćenje** (1.0 `/m/pracenje` čita zamrznute sy15 podatke — plan F5 O8) | **ŽIVA 25.07** — 1.0 `9de4d6f`: hub kartica „ServoSync 3.0" (svi) + `/m/pracenje` auto-forward na `/mob/pracenje` (`location.replace`, ručno dugme fallback, beg `localStorage ss2_cutover='off'`); deploy verifikovan na pages.dev i kroz `/m` proxy |
-| **2** | Popuna pariteta: odsustva/GO, za-mene, profil, sati, odobravanja, onboarding, reversi, kadrovska, projektovanje, magacin ekstre (batch/lookup/istorija), sastanci write dopune, app-lock | plan |
+| **2** | Popuna pariteta: odsustva/GO, za-mene, profil, sati, odobravanja, onboarding, reversi, kadrovska, projektovanje, magacin ekstre (batch/lookup/istorija), sastanci write dopune, app-lock | **IZGRAĐENA 26.07** (v. §4a) — izuzeci: onboarding self-check (BE gap), sastanci write ekrani (desktop), app-lock (Faza 3) |
 | **3** | Nova Capacitor ljuska za 3.0 (`server.url → /mob`), push (FCM), pa flip `/m` → redirect na `/mob` i gašenje pages.dev (poklapa se sa RADNI_PLAN Blok B4 + Blok D) | kraj |
+
+## 4a. Faza 2 — realizacija (26.07, grana feat/mob-faza2)
+
+**11 novih `/mob` ekrana** (tanki omotači nad postojećim API-jima; nula duplirane poslovne
+logike): `sati` · `odsustva` (sa PDF rešenja za odobrene) · `odobravanja` (dvostepeno,
++1 dan GO za makeup) · `za-mene` · `profil` · `kadrovska` (read, `?id=` detalj, bez PII) ·
+`neusaglasenosti` · `lokacije/istorija` („moja istorija", BE `mine=true`) ·
+`lokacije/pretraga` („gde je crtež?") · `lokacije/batch` (kontinuirani sken + queue) ·
+`reversi` (read; akcije samo `reversi.manage`) · `projektovanje` (progres + komentari).
+Hub: grupe **Montaža** (Izveštaj, Neusaglašenosti) i **Magacin** (Gde je crtež?, Batch,
+Moja istorija) + kartice za sve novo. Popravka: `mob/sastanci` write dugmad iza
+`sastanci.edit` (ranije 403). Jedina BE izmena: `mine=true` na
+`GET /v1/locations/movements` (fail-closed, permisija nepromenjena).
+
+### Otvorene permisijske ODLUKE (Nenad) — ne implementirati unapred
+
+1. **Reversi self-return**: sme li radnik bez `reversi.manage` da vrati SOPSTVENO
+   zaduženje (1.0 „brzo vraćanje")? Danas 403; mobilni prikazuje „preko magacionera".
+   (Usput zatečen desktop defekt: dugmad vidljiva svima → 403 na potvrdi.)
+2. **Onboarding self-check**: treba nov `PATCH /v1/profile/onboarding/tasks/:id`
+   (profile.self, „own run" RLS) — danas štiklira samo HR (`kadrovska.manage`).
+3. **Sastanci**: (a) promena statusa SOPSTVENE akcione tačke pod `sastanci.read`?
+   (b) upis sopstvene pripreme pod `read` (kao RSVP)? Danas oba `sastanci.edit`.
+4. **Reversi LZO grupisanje**: mobilni deli po `group_label` regex-om `/lzo|zaštit/i` —
+   potvrditi kako su grupe stvarno označene u podacima.
 
 ## 5. Mapa modula: 1.0 `/m` → 3.0 `/mob`
 
