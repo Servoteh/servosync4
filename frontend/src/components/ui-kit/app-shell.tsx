@@ -6,6 +6,11 @@
 // rutama uz pin. Izvor navigacije = NAV_DOMAINS (F0, jedan izvor istine); RBAC filter
 // i vizuelni jezik su IDENTIČNI današnjim — nove su samo afordanse sklanjanja/rail.
 // AppShell zadržava javni API `{ children }` (19 stranica ga uvozi) i montira se per-page.
+//
+// PODMENIJI F0 (PLAN_NAV_PODMENIJI §5): modul sme da ima `children` (pogledi/tabovi) —
+// red dobija chevron, podstavke se renderuju uvučene ispod njega u sva tri layouta, a u
+// rail režimu ugnježdene u flyout panelu domena. Href podstavke sme da nosi query, pa se
+// aktivnost računa nad pathname + query (`useCurrentSearch`).
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
@@ -41,13 +46,17 @@ import {
   canAccessNavModule,
   findDomainByPath,
   isNavModuleActive,
+  isNavModuleRouteCurrent,
+  isNavSubItemActive,
   isWideRoute,
   navModuleMarkerTitle,
   resolveFavoriteModules,
   screenContextForPath,
+  visibleNavChildren,
   type NavDomain,
   type NavModule,
   type NavSubGroup,
+  type NavSubItem,
 } from '@/lib/navigation';
 import { PERMISSIONS } from '@/lib/permissions';
 import { useNavFavorites } from '@/lib/use-nav-favorites';
@@ -57,6 +66,7 @@ import {
   setSidebarMode,
   toggleSidebar as toggleSidebarMode,
   toggleDomain,
+  toggleModule,
   pushRecentModule,
   type SidebarMode,
   type SidebarLayout,
@@ -152,6 +162,32 @@ const SB_FOCUS = 'focus-visible:outline-none focus-visible:shadow-[var(--focus-r
 
 /** Slug sintetičkog „Omiljeno" domena u rail režimu (nije prava ruta — samo flyout grupa). */
 const FAVORITES_DOMAIN_ID = '__favorites';
+
+/**
+ * Tekući query string („?view=gantt") — potreban za highlight podstavki podmenija, jer
+ * `usePathname()` NIKAD ne nosi query (PLAN_NAV_PODMENIJI §4.1), a `useSearchParams()` je
+ * zabranjen pod static export-om (bailout na Suspense). Čita se `window.location.search` —
+ * isti obrazac koji strane već koriste za deep-link.
+ *
+ * SSR-safe: prvi paint je '' (isto na serveru i klijentu → nema hydration mismatch-a), pa se
+ * koriguje u efektu. Osvežava se na promenu rute, `popstate` (nazad/napred) i na custom
+ * event `servosync:nav` — kanal koji strane dobijaju u F1 (`useQueryTab`, plan §4.3); do tada
+ * niko ne emituje, pa je listener bezopasan.
+ */
+function useCurrentSearch(pathname: string): string {
+  const [search, setSearch] = useState('');
+  useEffect(() => {
+    const read = () => setSearch(window.location.search);
+    read();
+    window.addEventListener('popstate', read);
+    window.addEventListener('servosync:nav', read);
+    return () => {
+      window.removeEventListener('popstate', read);
+      window.removeEventListener('servosync:nav', read);
+    };
+  }, [pathname]);
+  return search;
+}
 
 // ------------------------------------------------------------------ zvonce (D8 notifikacije)
 
@@ -334,12 +370,54 @@ function NotificationBell({ enabled, variant = 'sidebar' }: { enabled: boolean; 
 // ------------------------------------------------------------------ nav stavke (full)
 
 /**
+ * Podstavka modula (treći nivo — pogled/tab, PLAN_NAV_PODMENIJI §4.2) u punom sidebaru:
+ * uvučena, manja (text-sm), bez ikone, u okviru sa levom linijom (vizuelni jezik
+ * `SidebarSubGroup`-a). Kad je aktivna, ONA nosi `aria-current="page"` — roditeljski red
+ * tada dobija samo stil (jedan aria-current po ekranu; ODLUKA #33).
+ * MRU/Omiljeno ostaju na nivou modula (F0): `onNavigate` dobija RODITELJEV href.
+ */
+function SidebarSubItemRow({
+  item,
+  parentHref,
+  active,
+  onNavigate,
+}: {
+  item: NavSubItem;
+  parentHref: string;
+  active: boolean;
+  onNavigate: (href: string) => void;
+}) {
+  return (
+    <Link
+      href={item.href}
+      onClick={() => onNavigate(parentHref)}
+      aria-current={active ? 'page' : undefined}
+      className={cn(
+        // max-lg:min-h-11 = touch-meta ≥44px na <1024px (DS §11), kao i redovi modula.
+        'flex min-w-0 items-center rounded-control py-1 pl-3 pr-2 text-sm max-lg:min-h-11 max-lg:py-2.5',
+        active
+          ? 'bg-sidebar-accent/10 font-medium text-sidebar-ink-active'
+          : 'text-sidebar-ink hover:bg-sidebar-line/60 hover:text-sidebar-ink-active',
+        SB_FOCUS,
+      )}
+    >
+      <span className="min-w-0 flex-1 truncate">{item.label}</span>
+    </Link>
+  );
+}
+
+/**
  * Modul kao stavka u punom sidebaru. Izgled zavisi od izabranog `layout` (A/B/C) i od
  * toga da li je stavka unutar imenovane pod-grupe (`inSubGroup` → dublja uvučenost).
  * Klik navigira + upisuje u MRU (recent). `external`/`crosslisted` moduli nose diskretnu
  * „↗" oznaku; external (pogonski /kiosk) se ne označava aktivnim — findDomainByPath ga
  * preskače, pa `active` za njega uvek dolazi kao false. Aktivno stanje: A/B = akcentna
  * pozadina + traka levo; C = „kartica" (akcentna pozadina + inset ring), bez trake.
+ *
+ * PODMENI (F0): modul sa `children` (već RBAC-filtriranim u AppShell-u) dobija chevron i
+ * listu podstavki ispod sebe — AUTO-razgranatu dok je ruta modula tekuća (paritet sa
+ * accordion-om domena), inače po ručnom stanju iz `useUiPrefs.openModules` (persist, jer se
+ * AppShell montira per-page). Isti red se koristi u sva tri layouta (A/C accordion i B sekcije).
  */
 function SidebarModuleRow({
   module,
@@ -348,6 +426,9 @@ function SidebarModuleRow({
   layout,
   inSubGroup,
   onNavigate,
+  pathname = '',
+  search = '',
+  withChildren = true,
 }: {
   module: NavModule;
   active: boolean;
@@ -357,12 +438,27 @@ function SidebarModuleRow({
   layout: SidebarLayout;
   inSubGroup: boolean;
   onNavigate: (href: string) => void;
+  /** Tekuća ruta (za aktivnu podstavku i auto-razgranavanje). */
+  pathname?: string;
+  /** Tekući query string (npr. „?tab=kvarovi") — aktivnost podstavke sa query href-om. */
+  search?: string;
+  /** Sekcija „Omiljeno" prosleđuje `false` — prečice ostaju na nivou modula (F0). */
+  withChildren?: boolean;
 }) {
   const Icon = module.icon;
   const marker = !!(module.external || module.crosslisted);
   const markerTitle = navModuleMarkerTitle(module);
   const { isFavorite, toggleFavorite } = useNavFavorites();
   const favorite = isFavorite(module.href);
+  const { openModules, hydrated } = useUiPrefs();
+
+  const subItems = withChildren ? (module.children ?? []) : [];
+  const hasSub = subItems.length > 0;
+  // Auto-razgranato dok si u modulu (kao aktivni domen u accordion-u) — tada je chevron
+  // no-op, isto kao klik na naslov aktivnog domena.
+  const autoOpen = hasSub && isNavModuleRouteCurrent(pathname, module);
+  const subOpen = hasSub && (autoOpen || openModules.includes(module.href));
+  const activeSub = hasSub ? subItems.find((c) => isNavSubItemActive(pathname, search, c)) : undefined;
 
   // Uvučenost: direktne stavke poravnate ispod naslova domena; stavke pod-grupe dublje.
   // C je „prostorniji", B najgušći.
@@ -376,54 +472,117 @@ function SidebarModuleRow({
         ? 'pl-10'
         : 'pl-9';
 
-  // Red = wrapper (nosi aktivno/hover pozadinu) + nav-link (flex-1) + zvezdica kao SESTRA
-  // (zvezdica ne sme biti unutar <a> — interaktivno u interaktivnom). Pozadina/traka su na
+  // Leva linija podmenija stoji tik ispod ikone modula (indent + pola koraka).
+  const subIndent = inSubGroup
+    ? layout === 'C'
+      ? 'ml-7'
+      : 'ml-6'
+    : layout === 'B'
+      ? 'ml-9'
+      : layout === 'C'
+        ? 'ml-11'
+        : 'ml-10';
+
+  // Red = wrapper (nosi aktivno/hover pozadinu) + nav-link (flex-1) + chevron podmenija +
+  // zvezdica kao SESTRE (nijedno interaktivno ne sme biti unutar <a>). Pozadina/traka su na
   // wrapper-u da highlight pokrije ceo red uključujući zvezdicu.
   return (
-    <div
-      className={cn(
-        'group relative flex items-center rounded-control',
-        active
-          ? layout === 'C'
-            ? 'bg-sidebar-accent/10 ring-1 ring-inset ring-sidebar-accent/25'
-            : 'bg-sidebar-accent/10'
-          : 'hover:bg-sidebar-line/60',
-      )}
-    >
-      {/* Akcenat-traka aktivne stavke (A/B) — u C ulogu preuzima inset ring „kartice". */}
-      {active && layout !== 'C' && (
-        <span
-          className="absolute left-2.5 top-1/2 h-4 w-1 -translate-y-1/2 rounded-full bg-sidebar-accent"
-          aria-hidden
-        />
-      )}
-      <Link
-        href={module.href}
-        onClick={() => onNavigate(module.href)}
-        aria-current={ariaCurrent ? 'page' : undefined}
-        title={markerTitle}
+    <div>
+      <div
         className={cn(
-          // max-lg:min-h-11 = touch-meta ≥44px na <1024px (DS §11; paritet sa hub redovima
-          // u pocetna/page.tsx — off-canvas je primarna mobilna navigacija).
-          'flex min-w-0 flex-1 items-center gap-2.5 rounded-control text-base max-lg:min-h-11 max-lg:py-2.5',
-          // Desni gutter za (apsolutnu) zvezdicu: rezerviši mesto SAMO kad je red omiljen
-          // (popunjena zvezdica je uvek vidljiva) ili na touch-u (coarse: zvezdica je uvek
-          // vidljiva). Na fine-pointer ne-omiljen red koristi punu širinu — zvezdica se na
-          // hover preliva preko desne ivice bez trajno rezervisanog mesta.
-          favorite ? 'pr-8' : 'pr-1 [@media(pointer:coarse)]:pr-8',
-          indent,
-          layout === 'C' ? 'py-2' : 'py-1.5',
+          'group relative flex items-center rounded-control',
           active
-            ? 'font-medium text-sidebar-ink-active'
-            : 'text-sidebar-ink group-hover:text-sidebar-ink-active',
-          SB_FOCUS,
+            ? layout === 'C'
+              ? 'bg-sidebar-accent/10 ring-1 ring-inset ring-sidebar-accent/25'
+              : 'bg-sidebar-accent/10'
+            : 'hover:bg-sidebar-line/60',
         )}
       >
-        <Icon className={cn('h-4 w-4 shrink-0', active && 'text-sidebar-accent')} aria-hidden />
-        <span className="min-w-0 flex-1 truncate">{module.label}</span>
-        {marker && <ArrowUpRight className="h-3 w-3 shrink-0 text-sidebar-ink/50" aria-hidden />}
-      </Link>
-      <FavStar variant="sidebar" favorite={favorite} onToggle={() => toggleFavorite(module.href)} />
+        {/* Akcenat-traka aktivne stavke (A/B) — u C ulogu preuzima inset ring „kartice". */}
+        {active && layout !== 'C' && (
+          <span
+            className="absolute left-2.5 top-1/2 h-4 w-1 -translate-y-1/2 rounded-full bg-sidebar-accent"
+            aria-hidden
+          />
+        )}
+        <Link
+          href={module.href}
+          onClick={() => onNavigate(module.href)}
+          // Kad je aktivna PODSTAVKA, ona nosi jedini aria-current — roditelj samo stil.
+          aria-current={ariaCurrent && !activeSub ? 'page' : undefined}
+          title={markerTitle}
+          className={cn(
+            // max-lg:min-h-11 = touch-meta ≥44px na <1024px (DS §11; paritet sa hub redovima
+            // u pocetna/page.tsx — off-canvas je primarna mobilna navigacija).
+            'flex min-w-0 flex-1 items-center gap-2.5 rounded-control text-base max-lg:min-h-11 max-lg:py-2.5',
+            // Desni gutter za (apsolutnu) zvezdicu: rezerviši mesto SAMO kad je red omiljen
+            // (popunjena zvezdica je uvek vidljiva) ili na touch-u (coarse: zvezdica je uvek
+            // vidljiva). Na fine-pointer ne-omiljen red koristi punu širinu — zvezdica se na
+            // hover preliva preko desne ivice bez trajno rezervisanog mesta.
+            favorite ? 'pr-8' : 'pr-1 [@media(pointer:coarse)]:pr-8',
+            indent,
+            layout === 'C' ? 'py-2' : 'py-1.5',
+            active
+              ? 'font-medium text-sidebar-ink-active'
+              : 'text-sidebar-ink group-hover:text-sidebar-ink-active',
+            SB_FOCUS,
+          )}
+        >
+          <Icon className={cn('h-4 w-4 shrink-0', active && 'text-sidebar-accent')} aria-hidden />
+          <span className="min-w-0 flex-1 truncate">{module.label}</span>
+          {marker && <ArrowUpRight className="h-3 w-3 shrink-0 text-sidebar-ink/50" aria-hidden />}
+        </Link>
+        {hasSub && (
+          <button
+            type="button"
+            // Modul u kome se nalaziš je forsirano razgranat (kao aktivni domen) → no-op.
+            onClick={() => {
+              if (!autoOpen) toggleModule(module.href);
+            }}
+            aria-expanded={subOpen}
+            aria-label={subOpen ? `Sakrij poglede: ${module.label}` : `Prikaži poglede: ${module.label}`}
+            title={subOpen ? 'Sakrij poglede' : 'Prikaži poglede'}
+            // Desna margina = mesto za APSOLUTNU zvezdicu (right-1) da se ne preklapaju:
+            // 8 (32px) uz zvezdicu 7 (28px), odnosno 12 (48px) na touch-u gde zvezdica
+            // naraste na 11 (44px). Sam chevron takođe ima touch-metu ≥44px (DS §11).
+            className={cn(
+              'mr-8 grid h-7 w-7 shrink-0 place-items-center rounded-control text-sidebar-ink/50 hover:text-sidebar-ink-active',
+              'max-lg:mr-12 max-lg:h-11 max-lg:w-11',
+              '[@media(pointer:coarse)]:mr-12 [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11',
+              SB_FOCUS,
+            )}
+          >
+            <ChevronRight
+              className={cn(
+                'h-3.5 w-3.5',
+                hydrated && 'transition-transform duration-150 motion-reduce:transition-none',
+                subOpen && 'rotate-90',
+              )}
+              aria-hidden
+            />
+          </button>
+        )}
+        <FavStar variant="sidebar" favorite={favorite} onToggle={() => toggleFavorite(module.href)} />
+      </div>
+      {subOpen && (
+        <div
+          className={cn(
+            'my-0.5 space-y-0.5 border-l',
+            subIndent,
+            layout === 'C' ? 'border-sidebar-accent/30' : 'border-sidebar-line',
+          )}
+        >
+          {subItems.map((c) => (
+            <SidebarSubItemRow
+              key={c.href}
+              item={c}
+              parentHref={module.href}
+              active={c === activeSub}
+              onNavigate={onNavigate}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -440,6 +599,7 @@ function SidebarSubGroup({
   ownerDomainId,
   layout,
   pathname,
+  search,
   onNavigate,
 }: {
   group: NavSubGroup;
@@ -447,6 +607,7 @@ function SidebarSubGroup({
   ownerDomainId: string;
   layout: SidebarLayout;
   pathname: string;
+  search: string;
   onNavigate: (href: string) => void;
 }) {
   const GIcon = group.icon;
@@ -467,10 +628,12 @@ function SidebarSubGroup({
           <SidebarModuleRow
             key={m.href}
             module={m}
-            active={isNavModuleActive(pathname, m, ownerDomainId)}
+            active={isNavModuleActive(pathname, m, ownerDomainId, search)}
             layout={layout}
             inSubGroup
             onNavigate={onNavigate}
+            pathname={pathname}
+            search={search}
           />
         ))}
       </div>
@@ -485,6 +648,8 @@ interface FullBodyProps {
   /** Razrešeni omiljeni moduli (RBAC-filtrirani, deduplikovani) — sekcija „Omiljeno" na vrhu. */
   favoriteModules: NavModule[];
   pathname: string;
+  /** Tekući query string („?view=gantt") — aktivnost stavki/podstavki sa query href-om. */
+  search: string;
   activeDomainId?: string;
   openDomains: string[];
   /** Vizuelni layout punog sidebara (A hijerarhija / B sekcije / C premium). */
@@ -597,6 +762,8 @@ function FullBody(props: FullBodyProps) {
                   layout={props.layout}
                   inSubGroup={false}
                   onNavigate={props.onNavigate}
+                  // Prečice ostaju na nivou modula (F0) — bez podmenija u „Omiljeno".
+                  withChildren={false}
                 />
               ))}
             </div>
@@ -618,10 +785,12 @@ function FullBody(props: FullBodyProps) {
                 <SidebarModuleRow
                   key={m.href}
                   module={m}
-                  active={isNavModuleActive(props.pathname, m, domain.id)}
+                  active={isNavModuleActive(props.pathname, m, domain.id, props.search)}
                   layout={props.layout}
                   inSubGroup={false}
                   onNavigate={props.onNavigate}
+                  pathname={props.pathname}
+                  search={props.search}
                 />
               ))}
               {domain.groups?.map((g) => (
@@ -631,6 +800,7 @@ function FullBody(props: FullBodyProps) {
                   ownerDomainId={domain.id}
                   layout={props.layout}
                   pathname={props.pathname}
+                  search={props.search}
                   onNavigate={props.onNavigate}
                 />
               ))}
@@ -728,38 +898,76 @@ function FullBody(props: FullBodyProps) {
  * Stavka modula unutar rail flyout-a (menuitem). Isti vizuelni jezik kao dosad
  * (rail je nedirano) + diskretna „↗" oznaka za external/crosslisted module. Deljena
  * između direktnih stavki domena i stavki pod-grupa u flyout-u.
+ *
+ * PODMENI (F0): podstavke se u rail režimu renderuju UGNJEŽDENO u flyout panelu — panel je
+ * prolazan (hover/klik), pa nema chevron ni stanje: deca su uvek ispisana ispod roditelja.
+ * `wide` rute (npr. Gantt na /montaza) sklanjaju sidebar, pa je flyout jedini put do podmenija.
  */
 function FlyoutModuleLink({
   module,
   active,
+  subItems = [],
+  activeSubHref,
   onNavigate,
 }: {
   module: NavModule;
   active: boolean;
+  /** Podstavke (već RBAC-filtrirane); prazno = bez podmenija. */
+  subItems?: NavSubItem[];
+  /** Href aktivne podstavke — ona nosi jedini `aria-current` (roditelj tada samo stil). */
+  activeSubHref?: string;
   onNavigate: (href: string) => void;
 }) {
   const MIcon = module.icon;
   const marker = !!(module.external || module.crosslisted);
   const markerTitle = navModuleMarkerTitle(module);
   return (
-    <Link
-      href={module.href}
-      role="menuitem"
-      onClick={() => onNavigate(module.href)}
-      aria-current={active ? 'page' : undefined}
-      title={markerTitle}
-      className={cn(
-        'flex items-center gap-2.5 rounded-control px-2.5 py-2 text-base',
-        active
-          ? 'bg-sidebar-line text-sidebar-ink-active'
-          : 'text-sidebar-ink hover:bg-sidebar-line/60 hover:text-sidebar-ink-active',
-        SB_FOCUS,
+    <>
+      <Link
+        href={module.href}
+        role="menuitem"
+        onClick={() => onNavigate(module.href)}
+        aria-current={active && !activeSubHref ? 'page' : undefined}
+        title={markerTitle}
+        className={cn(
+          'flex items-center gap-2.5 rounded-control px-2.5 py-2 text-base',
+          active
+            ? 'bg-sidebar-line text-sidebar-ink-active'
+            : 'text-sidebar-ink hover:bg-sidebar-line/60 hover:text-sidebar-ink-active',
+          SB_FOCUS,
+        )}
+      >
+        <MIcon className={cn('h-4 w-4 shrink-0', active && 'text-sidebar-accent')} aria-hidden />
+        <span className="min-w-0 flex-1 truncate">{module.label}</span>
+        {marker && <ArrowUpRight className="h-3 w-3 shrink-0 text-sidebar-ink/50" aria-hidden />}
+      </Link>
+      {subItems.length > 0 && (
+        <div className="my-0.5 ml-5 space-y-0.5 border-l border-sidebar-line">
+          {subItems.map((c) => {
+            const subActive = c.href === activeSubHref;
+            return (
+              <Link
+                key={c.href}
+                href={c.href}
+                role="menuitem"
+                // MRU/Omiljeno ostaju na nivou modula (F0) — roditeljev href.
+                onClick={() => onNavigate(module.href)}
+                aria-current={subActive ? 'page' : undefined}
+                className={cn(
+                  'flex min-w-0 items-center rounded-control py-1 pl-3 pr-2 text-sm',
+                  subActive
+                    ? 'bg-sidebar-line font-medium text-sidebar-ink-active'
+                    : 'text-sidebar-ink hover:bg-sidebar-line/60 hover:text-sidebar-ink-active',
+                  SB_FOCUS,
+                )}
+              >
+                <span className="min-w-0 flex-1 truncate">{c.label}</span>
+              </Link>
+            );
+          })}
+        </div>
       )}
-    >
-      <MIcon className={cn('h-4 w-4 shrink-0', active && 'text-sidebar-accent')} aria-hidden />
-      <span className="min-w-0 flex-1 truncate">{module.label}</span>
-      {marker && <ArrowUpRight className="h-3 w-3 shrink-0 text-sidebar-ink/50" aria-hidden />}
-    </Link>
+    </>
   );
 }
 
@@ -767,6 +975,7 @@ function FlyoutModuleLink({
 function RailFlyout({
   domain,
   pathname,
+  search,
   pinned,
   autoFocus,
   onTogglePin,
@@ -775,6 +984,7 @@ function RailFlyout({
 }: {
   domain: NavDomain;
   pathname: string;
+  search: string;
   pinned: boolean;
   /** Fokusiraj prvi modul po otvaranju — SAMO za namerno otvaranje (klik/Enter);
       hover-otvaranje ne sme da otme fokus korisniku koji npr. kuca u filter polju. */
@@ -803,6 +1013,12 @@ function RailFlyout({
     const next = e.key === 'ArrowDown' ? (idx + 1) % links.length : (idx - 1 + links.length) % links.length;
     links[next]?.focus();
   }
+
+  // Sintetički „Omiljeno" flyout drži prečice na nivou modula (F0) — bez podmenija.
+  const subItemsOf = (m: NavModule): NavSubItem[] =>
+    domain.id === FAVORITES_DOMAIN_ID ? [] : (m.children ?? []);
+  const activeSubHrefOf = (m: NavModule): string | undefined =>
+    subItemsOf(m).find((c) => isNavSubItemActive(pathname, search, c))?.href;
 
   const DIcon = domain.icon;
   return (
@@ -841,7 +1057,13 @@ function RailFlyout({
             // Sintetički „Omiljeno" flyout: redovi NIKAD nisu aktivni (bez active/aria-current)
             // — jedinstveno pravilo highlight-a (review 010/26 §3); time nestaje i dupli upaljeni
             // red i nekonzistentnost crosslisted vs običnih u flyout-u.
-            active={domain.id === FAVORITES_DOMAIN_ID ? false : isNavModuleActive(pathname, m, domain.id)}
+            active={
+              domain.id === FAVORITES_DOMAIN_ID
+                ? false
+                : isNavModuleActive(pathname, m, domain.id, search)
+            }
+            subItems={subItemsOf(m)}
+            activeSubHref={activeSubHrefOf(m)}
             onNavigate={onNavigate}
           />
         ))}
@@ -857,7 +1079,9 @@ function RailFlyout({
                 <FlyoutModuleLink
                   key={m.href}
                   module={m}
-                  active={isNavModuleActive(pathname, m, domain.id)}
+                  active={isNavModuleActive(pathname, m, domain.id, search)}
+                  subItems={subItemsOf(m)}
+                  activeSubHref={activeSubHrefOf(m)}
                   onNavigate={onNavigate}
                 />
               ))}
@@ -873,11 +1097,13 @@ function RailFlyout({
 function RailNav({
   domains,
   pathname,
+  search,
   activeDomainId,
   onNavigate,
 }: {
   domains: NavDomain[];
   pathname: string;
+  search: string;
   activeDomainId?: string;
   onNavigate: (href: string) => void;
 }) {
@@ -974,6 +1200,7 @@ function RailNav({
                 <RailFlyout
                   domain={domain}
                   pathname={pathname}
+                  search={search}
                   pinned={!!flyout?.pinned}
                   autoFocus={!!flyout?.focus}
                   onTogglePin={() => setFlyout((f) => (f ? { ...f, pinned: !f.pinned } : f))}
@@ -998,6 +1225,7 @@ function RailNav({
 interface RailBodyProps {
   domains: NavDomain[];
   pathname: string;
+  search: string;
   activeDomainId?: string;
   onNavigate: (href: string) => void;
   bellEnabled: boolean;
@@ -1045,6 +1273,7 @@ function RailBody(props: RailBodyProps) {
         <RailNav
           domains={props.domains}
           pathname={props.pathname}
+          search={props.search}
           activeDomainId={props.activeDomainId}
           onNavigate={props.onNavigate}
         />
@@ -1080,15 +1309,25 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // /kiosk je vidljiv uz KVALITET_READ ILI TEHNOLOGIJA_READ). Filtriraju se i direktne
   // stavke i stavke pod-grupa; prazna pod-grupa i prazan domen se preskaču. (Backend je
   // izvor istine; ovo krije afordanse, guard i dalje čuva rute.)
+  // Podstavke (podmeni, F0) se filtriraju istim prolazom: dete bez `requires` nasleđuje
+  // roditeljev gate, dete sa `requires` (admin tabovi) se gejtuje strože.
+  const visibleModules = (mods: NavModule[]): NavModule[] =>
+    mods
+      .filter((m) => canAccessNavModule(m, can))
+      .map((m) => (m.children?.length ? { ...m, children: visibleNavChildren(m, can) } : m));
+
   const visibleDomains: NavDomain[] = NAV_DOMAINS.map((domain) => ({
     ...domain,
-    modules: domain.modules.filter((m) => canAccessNavModule(m, can)),
+    modules: visibleModules(domain.modules),
     groups: domain.groups
-      ?.map((g) => ({ ...g, modules: g.modules.filter((m) => canAccessNavModule(m, can)) }))
+      ?.map((g) => ({ ...g, modules: visibleModules(g.modules) }))
       .filter((g) => g.modules.length > 0),
   })).filter((domain) => domain.modules.length > 0 || (domain.groups?.length ?? 0) > 0);
 
   const activeDomainId = findDomainByPath(pathname)?.id;
+  // Query tekućeg URL-a — highlight stavki/podstavki sa query href-om (npr. „Gantt" =
+  // /montaza?view=gantt). Pathname sam ne razlikuje poglede istog modula.
+  const search = useCurrentSearch(pathname);
 
   // Plutajući AI asistent (zahtev 003/26): vidljiv samo uz AI permisiju i van /ai strane
   // (tamo je pun prikaz — dugme bi bilo redundantno). AppShell se ne montira na
@@ -1275,6 +1514,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               domains={visibleDomains}
               favoriteModules={favoriteModules}
               pathname={pathname}
+              search={search}
               activeDomainId={activeDomainId}
               openDomains={openDomains}
               layout={sidebarLayout}
@@ -1294,6 +1534,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <RailBody
               domains={railDomains}
               pathname={pathname}
+              search={search}
               activeDomainId={activeDomainId}
               onNavigate={onNavigate}
               bellEnabled={!!user}
@@ -1383,6 +1624,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               domains={visibleDomains}
               favoriteModules={favoriteModules}
               pathname={pathname}
+              search={search}
               activeDomainId={activeDomainId}
               openDomains={openDomains}
               layout={sidebarLayout}

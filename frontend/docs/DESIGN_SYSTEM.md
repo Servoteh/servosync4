@@ -82,6 +82,15 @@
   **„Wide" ekrani** (Gantt): auto-sklanjanje sidebara uz pin — cela ruta preko `wide` flaga
   u nav modelu (`src/lib/navigation.ts`) ili pogled kroz `<WideMode/>`. Zvonce se pri
   sklonjenom sidebaru seli u komandnu traku (`HeaderBell`) — ne sme nestati sa ekrana.
+* **Podmeniji — treći nivo** (PLAN_NAV_PODMENIJI, 26.07.2026): modul sme da nosi `children`
+  (`NavSubItem` — pogledi/tabovi modula, npr. „Montaža: Gantt"). Red modula tada dobija
+  chevron; podmeni je **auto-razgranat dok si u modulu**, inače po ručnom stanju
+  (`servosync.ui.openModules`). Podstavke su uvučene, manje i u okviru sa levom linijom (isti
+  jezik kao imenovana pod-grupa); u rail režimu su ugnježdene u flyout panelu domena.
+  **Jedan `aria-current` po ekranu:** kad je podstavka aktivna, ONA ga nosi, roditelj samo stil.
+  `href` podstavke sme da nosi query (`/montaza?view=gantt`) — poređenje rute ide preko
+  `hrefPath()`, a aktivnost traži i da svi query parovi postoje u tekućem URL-u.
+  Query se čita iz `window.location.search` (nikad `useSearchParams` — static export).
 * **Tri obrasca ekrana** — svaki novi ekran je jedan od ovih, ništa četvrto bez izmene ovog dokumenta:
   1. **Lista** — filter bar + gusta tabela (+ opcioni KPI red iznad, max 4 pločice);
   2. **Master–detalj** — lista levo, detalj panel desno (288–320 px); selekcija reda puni panel;
@@ -230,6 +239,9 @@ Dopune kita:
   (dijakritika-neosetljiva, `src/lib/fuzzy.ts`), „Nedavno" MRU na praznom upitu, pun
   tastaturni combobox/listbox obrazac. Jedna instanca, montira je `AppShell`; vidljiva
   afordansa = Search dugme u `PageHeader`-u. Izvor stavki = nav model + RBAC `can()`.
+  Indeksira i **podstavke modula** (podmeniji, §4) kao „Modul: Podstavka" — dedup po punom
+  href-u; „T-kod" šifra ekrana iz `keywords` (npr. `MNT-G` → „Montaža: Gantt") vodi direktno
+  na pogled. MRU/„Omiljeno" ostaju na nivou modula.
 * `PageHeader` uz F1 shell nosi: hamburger (kad je sidebar sklonjen), Search dugme
   (Ctrl+K) i `HeaderBell` (zvonce kad sidebar nema kolonu). Van AppShell-a se sve tri
   afordanse preskaču (kontekst je null).

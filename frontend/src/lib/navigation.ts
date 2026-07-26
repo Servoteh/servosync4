@@ -7,8 +7,14 @@
 // UNAKRSNO navedena (crosslisted) na dva mesta — Tehnologija (praćenje kroz
 // proizvodnju) i Logistika (fizičko skladištenje). RUTE I PERMISIJE su NETAKNUTE u
 // odnosu na prethodni model — menja se samo grupisanje/redosled i vizuelni raspored.
+//
+// PODMENIJI F0 (26.07.2026, PLAN_NAV_PODMENIJI §4.1): modul sme da ima `children`
+// (`NavSubItem` — pogledi/tabovi), a href SME da nosi query (`/montaza?view=gantt`).
+// Zato su svi helperi QUERY-AWARE: rute se porede po `hrefPath(href)`, a query zasebno
+// (`hrefQueryMatches`) — `usePathname()` nikad ne nosi query.
 
 import {
+  AlertTriangle,
   Bot,
   Briefcase,
   Building2,
@@ -23,8 +29,10 @@ import {
   DraftingCompass,
   Factory,
   FolderKanban,
+  GanttChartSquare,
   Hammer,
   IdCard,
+  Layers,
   Lightbulb,
   ListChecks,
   ListOrdered,
@@ -37,6 +45,7 @@ import {
   ShieldCheck,
   ShoppingCart,
   SlidersHorizontal,
+  Table2,
   Users,
   Warehouse,
   Workflow,
@@ -48,6 +57,21 @@ import {
   Percent,
 } from 'lucide-react';
 import { PERMISSIONS, type Permission } from '@/lib/permissions';
+
+/**
+ * Podstavka modula — treći nivo navigacije (pogled/tab unutar modula), PLAN_NAV_PODMENIJI §4.1.
+ * `href` sme da nosi query (`/montaza?view=gantt`, `/odrzavanje?tab=kvarovi`) — sva poređenja
+ * ruta rade nad pathname delom (`hrefPath`), a aktivnost dodatno traži da svi query parovi iz
+ * href-a postoje u tekućem URL-u (`hrefQueryMatches`).
+ */
+export interface NavSubItem {
+  label: string;
+  href: string;
+  /** Finiji gate od roditelja (admin tabovi). Bez njega važi roditeljev `requires`. */
+  requires?: Permission;
+  /** Dodatne reči za Ctrl+K (sinonimi + „T-kod" šifra ekrana, npr. `MNT-G`; §7 plana). */
+  keywords?: string[];
+}
 
 export interface NavModule {
   label: string;
@@ -76,6 +100,12 @@ export interface NavModule {
    * Signal za dedup u globalnim listama (Ctrl+K paleta) i „↗" oznaku u sidebaru.
    */
   crosslisted?: boolean;
+  /**
+   * Treći nivo — pogledi/tabovi modula (PLAN_NAV_PODMENIJI §4.1). Red modula sa decom
+   * dobija chevron u sidebaru; deca se auto-razgranaju kad je modul aktivan i indeksiraju
+   * u Ctrl+K paleti („Modul: Podstavka"). Dete bez `requires` nasleđuje roditeljev gate.
+   */
+  children?: NavSubItem[];
 }
 
 /** Imenovana pod-grupa unutar domena (npr. „Tehnologija" ispod „Proizvodnje"). */
@@ -186,10 +216,19 @@ export const NAV_DOMAINS: NavDomain[] = [
     id: 'montaza',
     title: 'Montaža i servis',
     icon: Hammer,
+    // PODMENIJI F0 (PLAN_NAV_PODMENIJI §3.4) — IZUZETAK: pogledi modula su DIREKTNE stavke
+    // domena (drugi nivo, bez trećeg), jer je „Plan montaže" bio jedina stavka domena i klik
+    // na domen je otvarao accordion sa jednim redom. Deep-link `?view=` već radi u strani
+    // (/montaza čita param na mount-u), unutrašnji hub „Izaberite prikaz" ostaje netaknut
+    // (touch/tablet ulaz, presuda §6.6). Ključevi `?view=` su iz strane (VIEWS/VALID).
     modules: [
       // BEZ `wide` na celoj ruti: /montaza ima i tabelarne poglede (hub/plan/izveštaji);
       // Gantt pogledi (?view=gantt|total) traže wide RUNTIME kroz <WideMode/> u strani.
-      { label: 'Plan montaže', href: '/montaza', icon: Hammer, requires: PERMISSIONS.MONTAZA_READ, keywords: ['montaza', 'gantt', 'monteri'] },
+      { label: 'Plan', href: '/montaza?view=plan', icon: Table2, requires: PERMISSIONS.MONTAZA_READ, keywords: ['montaza', 'plan montaze', 'faze', 'MNT-P'] },
+      { label: 'Gantt', href: '/montaza?view=gantt', icon: GanttChartSquare, requires: PERMISSIONS.MONTAZA_READ, keywords: ['montaza', 'gantt', 'vremenska linija', 'MNT-G'] },
+      { label: 'Ukupan Gant', href: '/montaza?view=total', icon: Layers, requires: PERMISSIONS.MONTAZA_READ, keywords: ['montaza', 'gantt', 'ukupan', 'svi projekti', 'MNT-UG'] },
+      { label: 'Izveštaji montera', href: '/montaza?view=izvestaji', icon: FileText, requires: PERMISSIONS.MONTAZA_READ, keywords: ['montaza', 'izvestaji', 'monteri', 'servisni izvestaj', 'MNT-IZ'] },
+      { label: 'Neusaglašenosti', href: '/montaza?view=neusaglasenosti', icon: AlertTriangle, requires: PERMISSIONS.MONTAZA_READ, keywords: ['montaza', 'neusaglasenosti', 'odstupanja', 'MNT-N'] },
     ],
   },
   {
@@ -325,9 +364,41 @@ export const NAV_DOMAINS: NavDomain[] = [
 
 // ------------------------------------------------------------------ helperi
 
+/**
+ * Pathname deo href-a iz modela — href SME da nosi query (`/montaza?view=gantt`) i hash.
+ * SVA poređenja ruta (`matchesRoute`, `findDomainByPath`, `isWideRoute`, `findModuleByPath`)
+ * rade nad ovim delom; query se poredi zasebno (`hrefQueryMatches`), jer `usePathname()`
+ * nikad ne nosi query (PLAN_NAV_PODMENIJI §4.1).
+ */
+export function hrefPath(href: string): string {
+  const cut = href.search(/[?#]/);
+  return cut === -1 ? href : href.slice(0, cut);
+}
+
+/** Query parovi iz href-a (prazno kad href nema query). */
+function hrefQueryPairs(href: string): [string, string][] {
+  const q = href.indexOf('?');
+  if (q === -1) return [];
+  const raw = href.slice(q + 1).split('#')[0];
+  return Array.from(new URLSearchParams(raw).entries());
+}
+
+/**
+ * Da li tekući query (`search`, npr. „?view=neusaglasenosti&id=7") sadrži SVE parove iz
+ * href-a. Href bez query-ja = uvek true. Višak parametara u URL-u NE smeta (deep-link `?id=`
+ * ili „potrošeni" parametri) — traži se podskup, ne jednakost.
+ */
+export function hrefQueryMatches(href: string, search: string): boolean {
+  const want = hrefQueryPairs(href);
+  if (want.length === 0) return true;
+  const have = new URLSearchParams(search);
+  return want.every(([k, v]) => have.get(k) === v);
+}
+
 /** Ruta modula je „aktivna" za pathname ako je tačan pogodak ili prefiks (podruta). */
 function matchesRoute(pathname: string, href: string): boolean {
-  return pathname === href || pathname.startsWith(href + '/');
+  const path = hrefPath(href);
+  return pathname === path || pathname.startsWith(path + '/');
 }
 
 /**
@@ -368,8 +439,9 @@ export function findDomainByPath(pathname: string): NavDomain | undefined {
   for (const domain of NAV_DOMAINS) {
     for (const m of allModules(domain)) {
       if (m.external) continue;
-      if (matchesRoute(pathname, m.href) && (!best || m.href.length > best.len)) {
-        best = { domain, len: m.href.length };
+      const len = hrefPath(m.href).length;
+      if (matchesRoute(pathname, m.href) && (!best || len > best.len)) {
+        best = { domain, len };
       }
     }
   }
@@ -395,10 +467,44 @@ export function isNavModuleActive(
   pathname: string,
   module: NavModule,
   ownerDomainId: string,
+  search = '',
 ): boolean {
-  if (pathname !== module.href) return false;
+  if (pathname !== hrefPath(module.href)) return false;
+  // Stavka sa query href-om (npr. „Gantt" = /montaza?view=gantt) je aktivna samo kad su svi
+  // njeni parovi u tekućem URL-u — inače bi svih 5 montažnih redova bilo aktivno odjednom.
+  if (!hrefQueryMatches(module.href, search)) return false;
   if (module.crosslisted) return findDomainByPath(pathname)?.id === ownerDomainId;
   return true;
+}
+
+/**
+ * Da li je PODSTAVKA (`NavSubItem`) aktivna: pathname jednak + svi query parovi iz href-a
+ * prisutni u tekućem URL-u (PLAN_NAV_PODMENIJI §4.1). Kad je podstavka aktivna, ONA nosi
+ * `aria-current="page"`, a roditeljski red samo stil (jedan aria-current — ODLUKA #33).
+ */
+export function isNavSubItemActive(pathname: string, search: string, item: NavSubItem): boolean {
+  return pathname === hrefPath(item.href) && hrefQueryMatches(item.href, search);
+}
+
+/**
+ * Da li tekuća ruta „pripada" modulu (tačan pogodak ili podruta, bez obzira na query) —
+ * uslov za AUTO-RAZGRANAVANJE podmenija (paritet sa accordion-om domena: aktivni je otvoren).
+ */
+export function isNavModuleRouteCurrent(pathname: string, module: NavModule): boolean {
+  return !module.external && matchesRoute(pathname, module.href);
+}
+
+/**
+ * Podstavke modula koje uloga sme da vidi. Dete BEZ `requires` nasleđuje roditeljev gate
+ * (roditelj je već filtriran `canAccessNavModule`-om), dete SA `requires` se gejtuje strože
+ * (admin tabovi). Bez dece → prazan niz (pozivalac tada ne renderuje chevron).
+ */
+export function visibleNavChildren(
+  module: NavModule,
+  can: (permission: Permission) => boolean,
+): NavSubItem[] {
+  if (!module.children?.length) return [];
+  return module.children.filter((c) => !c.requires || can(c.requires));
 }
 
 /**
@@ -436,8 +542,9 @@ export function findModuleByPath(pathname: string): NavModule | undefined {
   for (const domain of NAV_DOMAINS) {
     for (const m of allModules(domain)) {
       if (m.external) continue;
-      if (matchesRoute(pathname, m.href) && (!best || m.href.length > best.len)) {
-        best = { module: m, len: m.href.length };
+      const len = hrefPath(m.href).length;
+      if (matchesRoute(pathname, m.href) && (!best || len > best.len)) {
+        best = { module: m, len };
       }
     }
   }
@@ -451,7 +558,9 @@ export function findModuleByPath(pathname: string): NavModule | undefined {
  */
 export function screenContextForPath(pathname: string): string {
   const mod = findModuleByPath(pathname);
-  if (mod) return `${mod.label} (${mod.href})`;
+  // Stavka sa query href-om je POGLED modula (npr. /montaza?view=gantt), a sam pathname ne
+  // kaže koji je pogled otvoren — tada je pošteniji naziv domena nego nasumičan pogled.
+  if (mod && hrefPath(mod.href) === mod.href) return `${mod.label} (${mod.href})`;
   const dom = findDomainByPath(pathname);
   if (dom) return `${dom.title} (${pathname})`;
   return pathname;
