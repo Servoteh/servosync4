@@ -152,7 +152,14 @@ describe("Kadrovska permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
 
   // Endpoint → permisija koju traži (za matricu). Reprezentativan po hub-grupi.
   const CASES: Array<{ path: string; perm: PermissionKey; label: string }> = [
-    { path: "/kadrovska/me", perm: PERMISSIONS.KADROVSKA_READ, label: "me" },
+    // ⚠️ AUDIT-K5b (26.07): `me` i `onboarding` (čitanje) su NAMERNO spušteni na
+    // `profile.self` — `me` je jedini način da FE sazna svoj `employeeId` i
+    // efektivna prava, pa je pod `kadrovska.read` mobilni self-service
+    // (/mob/prisustvo, /mob/kadrovska) bio neupotrebljiv za radnika. Čitanje
+    // toka uvođenja ima RLS `p_onb_runs/tasks_own_read`, pa zaposleni vidi SVOJ
+    // tok. ČEKIRANJE zadatka je ostalo na `kadrovska.manage` (RLS write politika
+    // je `kadr_can_manage_hr()` — ni u 1.0 zaposleni ne zatvara sam zadatak).
+    { path: "/kadrovska/me", perm: PERMISSIONS.PROFILE_SELF, label: "me" },
     {
       path: "/kadrovska/dashboard",
       perm: PERMISSIONS.KADROVSKA_READ,
@@ -194,8 +201,9 @@ describe("Kadrovska permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
       label: "employees/:id/medical-exams (istorija pregleda)",
     },
     {
+      // AUDIT-K5b: čitanje toka uvođenja = `profile.self` (own-read kroz RLS).
       path: "/kadrovska/onboarding",
-      perm: PERMISSIONS.KADROVSKA_MANAGE,
+      perm: PERMISSIONS.PROFILE_SELF,
       label: "onboarding",
     },
     {

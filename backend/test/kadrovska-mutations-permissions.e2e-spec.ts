@@ -129,7 +129,12 @@ describe("Kadrovska R2 mutacije — permission matrica (e2e)", () => {
     { method: "post", path: "/kadrovska/talks", perm: PERMISSIONS.KADROVSKA_DEV_MANAGE, body: { clientEventId: U, employeeId: U, talkType: "godisnji" }, ok: 201, label: "talk create (dev_manage)" },
     { method: "patch", path: "/kadrovska/notification-config", perm: PERMISSIONS.KADROVSKA_MANAGE, body: { enabled: true }, ok: 200, label: "notif config (manage)" },
     { method: "post", path: "/kadrovska/notifications/hr-reminders/run", perm: PERMISSIONS.KADROVSKA_MANAGE, body: {}, ok: 201, label: "hr-reminders run (manage)" },
-    { method: "post", path: `/kadrovska/employees/${U}/contract-salary`, perm: PERMISSIONS.KADROVSKA_SALARY, body: { neto: 100000, bruto: 130000 }, ok: 201, label: "contract-salary (admin)" },
+    // ⚠️ AUDIT-K4 (ODLUKA Nenad 26.07): ugovorna zarada NETO/BRUTO ide iza
+    // `kadrovska.pii` (admin ∨ poslovni_admin), NE iza `kadrovska.salary`.
+    // 1.0 je to držao iza `canEditEmployeeSensitiveFields()` BAŠ ZATO da poslovni
+    // admin unese ugovorni neto za novozaposlenog bez pristupa tabu Zarade.
+    // Tvrda salary-brava (Nenad+Nevena) ostaje netaknuta na samom tabu Zarade.
+    { method: "post", path: `/kadrovska/employees/${U}/contract-salary`, perm: PERMISSIONS.KADROVSKA_PII, body: { neto: 100000, bruto: 130000 }, ok: 201, label: "contract-salary (pii — poslovni admin)" },
     // P1a BE-gap jezgro (14.07): nove mutacione rute.
     { method: "post", path: "/kadrovska/requests/nop", perm: PERMISSIONS.KADROVSKA_EDIT, body: { employeeId: U, workDate: "2026-07-01" }, ok: 201, label: "nop predlog create (edit)" },
     { method: "delete", path: `/kadrovska/work-hours/${U}`, perm: PERMISSIONS.KADROVSKA_GRID_EDIT, ok: 200, label: "work-hours row delete (grid_edit)" },
