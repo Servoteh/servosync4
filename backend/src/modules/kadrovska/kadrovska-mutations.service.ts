@@ -2128,8 +2128,16 @@ export class KadrovskaMutationsService {
     // Kampanja se tiho zaglavi: `invited_at` je upisan („pozvano"), a nijedna
     // ocena ne može da stigne. Zato: bez izričitog `ASSESSMENT_PUBLIC_BASE`
     // NE ŠALJEMO pozivnice — bolje glasan otkaz nego mejlovi sa mrtvim linkom.
-    const rawBase = process.env.ASSESSMENT_PUBLIC_BASE?.trim();
-    const base = (rawBase ?? "").replace(/\/+$/, "");
+    // AUDIT-K6 (26.07): podrazumevano vodimo na NATIVNI ekran ocenjivača u 3.0
+    // (`/profil?ocena=<raterId>`) — ocenjivači su zaposleni sa nalogom, pa magic-link
+    // token više nije potreban (a `assessment_submit_by_token` nema auth: ko dobije
+    // token predaje ocenu u tuđe ime). `ASSESSMENT_PUBLIC_BASE` ostaje IZUZETAK:
+    // ako je postavljen, šalje se stari 1.0 `ocena.html?token=` link (most dok
+    // 1.0 živi).
+    const legacyBase = process.env.ASSESSMENT_PUBLIC_BASE?.trim();
+    const appBase = process.env.PUBLIC_APP_URL?.trim();
+    const useLegacy = !!legacyBase;
+    const base = (legacyBase || appBase || "").replace(/\/+$/, "");
 
     // 1) READ faza (RLS): ciklus, ciljne procene, meta (ime zaposlenog + period), rateri.
     const read = await this.mutateRaw(
@@ -2287,8 +2295,9 @@ export class KadrovskaMutationsService {
     // „Ciklus nema procena"): bez baze linka bismo poslali mejlove sa 404 linkom.
     if (sendable.length && !base) {
       throw new ServiceUnavailableException(
-        "ASSESSMENT_PUBLIC_BASE nije podešen — pozivnice za 360° bi vodile na nepostojeću stranicu. " +
-          "Postavi ga na host koji servira `ocena.html` (1.0) pre slanja.",
+        "Nije podešena javna adresa aplikacije (PUBLIC_APP_URL) — pozivnice za 360° " +
+          "bi vodile na nepostojeću stranicu. Postavi PUBLIC_APP_URL (nativni ekran " +
+          "ocenjivača) ili ASSESSMENT_PUBLIC_BASE (stara 1.0 `ocena.html`).",
       );
     }
     for (const r of sendable) {
@@ -2296,7 +2305,9 @@ export class KadrovskaMutationsService {
         employeeName: "kolega/koleginica",
         period: "",
       };
-      const link = `${base}/ocena.html?token=${encodeURIComponent(r.token!)}`;
+      const link = useLegacy
+        ? `${base}/ocena.html?token=${encodeURIComponent(r.token!)}`
+        : `${base}/profil?ocena=${encodeURIComponent(r.id)}`;
       const isSelf = r.raterKind === "self";
       const ok = await this.mail.send({
         to: r.raterEmail!,

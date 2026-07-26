@@ -1184,6 +1184,187 @@ export class MojProfilService {
     });
   }
 
+  // ==========================================================================
+  // 360° — OCENJIVAČ (peer/leader), nativni tok
+  // ==========================================================================
+
+  /**
+   * ⚠️ AUDIT-K6 (26.07): do sada su ocenjivači (kolege i rukovodioci) mogli da
+   * popune procenu ISKLJUČIVO kroz 1.0 stranicu `ocena.html?token=`, koja u 3.0
+   * ne postoji (404 — vidi AUDIT-K3). Taj tok se oslanja na
+   * `assessment_submit_by_token`, SECURITY DEFINER fn koja traži SAMO token:
+   * ko dobije token može da preda ocenu u TUĐE ime. Kako su svi ocenjivači
+   * (`self` | `peer` | `leader`) zaposleni Servoteha i imaju nalog, anonimni
+   * magic-link nije poslovni zahtev nego zaobilaznica jer ekran nije postojao.
+   * Ove rute daju nativni, autentifikovani tok — bez tokena u mejlu.
+   *
+   * Vlasništvo reda ocenjivača proverava se OVDE, a ne samo kroz RLS
+   * (lekcija iz AUDIT-K2: RLS na ovoj površini često nije scope).
+   */
+  private async assertMyRater(
+    tx: Sy15Tx,
+    email: string,
+    raterId: string,
+  ): Promise<{ assessmentId: string; raterKind: string }> {
+    const rows = await tx.$queryRaw<
+      { assessment_id: string; rater_kind: string; a_status: string | null }[]
+    >(
+      Prisma.sql`SELECT r.assessment_id, r.rater_kind, a.status AS a_status
+           FROM assessment_raters r
+           JOIN assessments a ON a.id = r.assessment_id
+          WHERE r.id = ${raterId}::uuid
+            AND (
+                  r.rater_employee_id = current_user_employee_id()
+               OR lower(COALESCE(r.rater_email, '')) = lower(${email})
+                )
+          LIMIT 1`,
+    );
+    const row = rows[0];
+    if (!row)
+      throw new ForbiddenException("Ta procena nije dodeljena vama.");
+    if (!["collecting", "draft"].includes(String(row.a_status ?? "")))
+      throw new UnprocessableEntityException(
+        "Procena je zatvorena — izmene više nisu moguće.",
+      );
+    return { assessmentId: row.assessment_id, raterKind: row.rater_kind };
+  }
+
+  /** Moje zaduženja za ocenjivanje (peer/leader) koja čekaju popunjavanje. */
+  raterInbox(email: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const rows = await tx.$queryRaw<unknown[]>(
+        Prisma.sql`SELECT r.id AS rater_id, r.rater_kind, r.status AS rater_status,
+                  r.submitted_at, a.id AS assessment_id, a.status AS assessment_status,
+                  a.period_label, e.full_name AS employee_name
+             FROM assessment_raters r
+             JOIN assessments a ON a.id = r.assessment_id
+             LEFT JOIN v_employees_safe e ON e.id = a.employee_id
+            WHERE r.rater_kind <> 'self'
+              AND (
+                    r.rater_employee_id = current_user_employee_id()
+                 OR lower(COALESCE(r.rater_email, '')) = lower(${email})
+                  )
+              AND a.status IN ('collecting', 'draft')
+            ORDER BY r.status ASC, a.period_label DESC`,
+      );
+      return { data: jsonSafe(rows) };
+    });
+  }
+
+  /** Pun kontekst za popunjavanje jedne procene (okvir + pitanja + moje ocene). */
+  raterRead(email: string, raterId: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const { assessmentId, raterKind } = await this.assertMyRater(
+        tx,
+        email,
+        raterId,
+      );
+      const [assessmentRows, scope, framework, questions, scores, answers] =
+        await Promise.all([
+          tx.$queryRaw<unknown[]>(
+            Prisma.sql`SELECT a.*, e.full_name AS employee_name
+                 FROM assessments a
+                 LEFT JOIN v_employees_safe e ON e.id = a.employee_id
+                WHERE a.id = ${assessmentId}::uuid LIMIT 1`,
+          ),
+          tx.$queryRaw<unknown[]>(
+            Prisma.sql`SELECT * FROM v_assessment_scope
+               WHERE assessment_id = ${assessmentId}::uuid
+               ORDER BY group_sort, comp_sort`,
+          ),
+          tx.$queryRaw<unknown[]>(
+            Prisma.sql`SELECT * FROM v_competence_framework
+               ORDER BY group_sort, comp_sort, level`,
+          ),
+          tx.$queryRaw<unknown[]>(
+            Prisma.sql`SELECT * FROM competence_questions
+               WHERE is_active = true ORDER BY group_id NULLS FIRST, sort_order`,
+          ),
+          tx.$queryRaw<unknown[]>(
+            Prisma.sql`SELECT competence_id, level, comment FROM assessment_scores
+               WHERE rater_id = ${raterId}::uuid`,
+          ),
+          tx.$queryRaw<unknown[]>(
+            Prisma.sql`SELECT question_code, answer_text FROM assessment_answers
+               WHERE rater_id = ${raterId}::uuid`,
+          ),
+        ]);
+      return {
+        data: {
+          raterId,
+          raterKind,
+          assessmentId,
+          assessment: jsonSafe(assessmentRows)[0] ?? null,
+          scope: jsonSafe(scope),
+          framework: jsonSafe(framework),
+          questions: jsonSafe(questions),
+          scores: jsonSafe(scores),
+          answers: jsonSafe(answers),
+        },
+      };
+    });
+  }
+
+  /** Bulk upsert ocena ocenjivača (isti upsert kao samoprocena). */
+  saveRaterScores(email: string, raterId: string, dto: SaveSelfScoresDto) {
+    return this.withUserMapped(email, async (tx) => {
+      await this.assertMyRater(tx, email, raterId);
+      if (!dto.items.length) return { data: { saved: 0 } };
+      const values = dto.items.map(
+        (i) =>
+          Prisma.sql`(${raterId}::uuid, ${Number(i.competenceId)}::int, ${
+            i.level === undefined || i.level === null ? null : Number(i.level)
+          }::smallint, ${i.comment ?? null})`,
+      );
+      await tx.$executeRaw(
+        Prisma.sql`INSERT INTO assessment_scores (rater_id, competence_id, level, comment)
+           VALUES ${Prisma.join(values)}
+           ON CONFLICT (rater_id, competence_id)
+           DO UPDATE SET level = EXCLUDED.level, comment = EXCLUDED.comment`,
+      );
+      return { data: { saved: dto.items.length } };
+    });
+  }
+
+  /** Bulk upsert tekstualnih odgovora ocenjivača (1.0 saveAnswers paritet). */
+  saveRaterAnswers(email: string, raterId: string, dto: SaveSelfAnswersDto) {
+    return this.withUserMapped(email, async (tx) => {
+      await this.assertMyRater(tx, email, raterId);
+      const items = dto.items.filter((i) => i.questionCode);
+      if (!items.length) return { data: { saved: 0 } };
+      const codes = items.map((i) => i.questionCode);
+      const answers = items.map((i) => i.answerText ?? null);
+      await tx.$executeRaw(
+        Prisma.sql`INSERT INTO assessment_answers (rater_id, question_code, answer_text)
+           SELECT ${raterId}::uuid, q, a
+           FROM unnest(${codes}::text[], ${answers}::text[]) AS t(q, a)
+           ON CONFLICT (rater_id, question_code)
+           DO UPDATE SET answer_text = EXCLUDED.answer_text`,
+      );
+      return { data: { saved: items.length } };
+    });
+  }
+
+  /**
+   * Predaja ocene. Radi ISTO što i `assessment_submit_by_token` (status→submitted
+   * + preračun agregata), ali uz autentifikaciju umesto tajne iz mejla. Nema nove
+   * DB funkcije — potpisi deljenih RPC-ova ostaju netaknuti (doktrina §7 G7).
+   */
+  submitRater(email: string, raterId: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const { assessmentId } = await this.assertMyRater(tx, email, raterId);
+      await tx.$executeRaw(
+        Prisma.sql`UPDATE assessment_raters
+             SET status = 'submitted', submitted_at = now()
+           WHERE id = ${raterId}::uuid`,
+      );
+      await tx.$executeRaw(
+        Prisma.sql`SELECT assessment_compute_results(${assessmentId}::uuid)`,
+      );
+      return { data: { ok: true, assessmentId } };
+    });
+  }
+
   /** Podnesi sopstvenu procenu (assessment_self_submit → preračun agregata). */
   submitSelfAssessment(email: string, dto: SubmitSelfAssessmentDto) {
     return this.withUserMapped(email, async (tx) => {
