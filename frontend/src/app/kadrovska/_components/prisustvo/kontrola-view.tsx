@@ -16,6 +16,7 @@ import {
   useGrid,
   useGridBatch,
   useDirectory,
+  useKadrMe,
   type WorkHours,
   type AttendanceCorrection,
 } from '@/api/kadrovska';
@@ -52,6 +53,25 @@ function ymd(d: Date): string {
 export function KontrolaView() {
   const { can } = useAuth();
   const canGridEdit = can(PERMISSIONS.KADROVSKA_GRID_EDIT);
+  const meQ = useKadrMe();
+  const me = meQ.data?.data;
+
+  /**
+   * Ko sme da PONIŠTI ispravku (odluka Nenad, 26.07: „i Nikola i šefovi
+   * pododeljenja i admini — Nenad, Nevena, Zoran, za sve").
+   *
+   * Merodavan je DB: `attendance_cancel_correction` propušta
+   * `current_user_manages_employee(emp) ∨ current_user_is_hr_or_admin()` —
+   * dakle admin/hr/poslovni_admin za SVE, a `menadzment` samo u svom opsegu
+   * pododeljenja. Ovde samo prikazujemo dugme istoj grupi; server presuđuje
+   * red-po-red i vraća jasnu poruku ako nema prava (AUDIT-K3 assertRpcOk).
+   *
+   * ⚠️ Grid editor (allowlist) NIJE deo `current_user_manages_employee` — vidi
+   * napomenu u zaglavlju fajla.
+   */
+  const canCancel =
+    !!me &&
+    (me.isAdmin || me.isHr || me.poslovniAdmin || me.isManagement || me.gridEditor);
 
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
@@ -110,9 +130,9 @@ export function KontrolaView() {
    * RPC pri tom postavlja `last_edited_by = current_user_email()`, pa marker
    * `auto:kapija` nestaje — bez nove rute i bez diranja deljenog RPC-a.
    */
-  async function confirmAuto(rows: WorkHours[]) {
+  async function confirmAuto(rows: WorkHours[], askConfirm = true) {
     if (!rows.length) return;
-    if (!confirm(`Potvrditi ${rows.length} auto-predlog(a) kao proveren unos?`)) return;
+    if (askConfirm && !confirm(`Potvrditi ${rows.length} auto-predlog(a) kao proveren unos?`)) return;
     setMsg('');
     try {
       await batchM.mutateAsync({
@@ -161,7 +181,7 @@ export function KontrolaView() {
       header: '',
       align: 'right',
       render: (r) =>
-        canGridEdit ? (
+        canCancel ? (
           <Button
             variant="ghost"
             className="h-7 px-2 text-xs"
@@ -179,6 +199,23 @@ export function KontrolaView() {
     { key: 'h', header: 'Predloženo sati', align: 'right', render: (r) => Number(r.hours ?? 0) || '—' },
     { key: 'abs', header: 'Odsustvo', render: (r) => r.absenceCode || '—' },
     { key: 'st', header: 'Status', render: () => <StatusBadge tone="info" label="AUTO — čeka potvrdu" /> },
+    {
+      // ODLUKA Nenad (26.07): potvrda ide PO REDU — masovno dugme previše lako
+      // „prevuče" i dan koji je trebalo pogledati. Zato je ovo glavna radnja.
+      key: 'ok',
+      header: '',
+      align: 'right',
+      render: (r) =>
+        canGridEdit ? (
+          <Button
+            className="h-7 px-2 text-xs"
+            disabled={batchM.isPending}
+            onClick={() => confirmAuto([r], false)}
+          >
+            ✓ Potvrdi
+          </Button>
+        ) : null,
+    },
   ];
 
   return (
@@ -220,9 +257,11 @@ export function KontrolaView() {
             Predlog je izveden iz stvarnog kucanja. Potvrda upisuje vaš potpis i sklanja AUTO oznaku.
           </span>
           <div className="flex-1" />
+          {/* Masovna potvrda je SPOREDNA (ghost) — glavna radnja je „✓ Potvrdi" po
+              redu, da se dan koji je trebalo pogledati ne prevuče u gomili. */}
           {canGridEdit && autoRows.length > 0 && (
-            <Button loading={batchM.isPending} onClick={() => confirmAuto(autoRows)}>
-              ✓ Potvrdi sve ({autoRows.length})
+            <Button variant="ghost" loading={batchM.isPending} onClick={() => confirmAuto(autoRows)}>
+              Potvrdi sve ({autoRows.length})
             </Button>
           )}
         </div>
