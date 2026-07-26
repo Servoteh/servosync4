@@ -12,17 +12,60 @@
 
 import { useEffect, useId, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Search } from 'lucide-react';
+import { Search, type LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { useAuth } from '@/lib/auth-context';
-import { NAV_DOMAINS, allModules, canAccessNavModule, type NavModule } from '@/lib/navigation';
+import {
+  NAV_DOMAINS,
+  allModules,
+  canAccessNavModule,
+  visibleNavChildren,
+  type NavModule,
+  type NavSubItem,
+} from '@/lib/navigation';
 import { useUiPrefs } from '@/lib/use-ui-prefs';
 import { useNavFavorites } from '@/lib/use-nav-favorites';
 import { fuzzyScore } from '@/lib/fuzzy';
 
+/**
+ * Jedan red palete — modul ILI njegova podstavka (pogled/tab, PLAN_NAV_PODMENIJI §4.2).
+ * Podstavka se prikazuje kao „Modul: Podstavka" („Montaža: Gantt") i vodi na svoj pun href
+ * (sa query-jem); MRU i „Omiljeno" ostaju na nivou modula (F0) — otud `moduleHref`.
+ */
 interface Entry {
-  module: NavModule;
+  /** Cilj navigacije — pun href (sme da nosi query). Ujedno ključ za dedup. */
+  href: string;
+  /** Prikazna labela („Montaža: Gantt" za podstavku). */
+  label: string;
+  icon: LucideIcon;
   domainTitle: string;
+  /** Tekst za fuzzy rangiranje: labele + domen + keywords (uklj. T-kod šifre). */
+  meta: string;
+  /** Href RODITELJSKOG modula — MRU/omiljeno ostaju na nivou modula. */
+  moduleHref: string;
+}
+
+function moduleEntry(module: NavModule, domainTitle: string): Entry {
+  return {
+    href: module.href,
+    label: module.label,
+    icon: module.icon,
+    domainTitle,
+    meta: `${module.label} ${domainTitle} ${(module.keywords ?? []).join(' ')}`,
+    moduleHref: module.href,
+  };
+}
+
+function subItemEntry(module: NavModule, item: NavSubItem, domainTitle: string): Entry {
+  return {
+    href: item.href,
+    label: `${module.label}: ${item.label}`,
+    icon: module.icon,
+    domainTitle,
+    // I roditeljeve reči ulaze u metu: „odrzavanje" mora naći „Održavanje: Kvarovi".
+    meta: `${module.label} ${item.label} ${domainTitle} ${(module.keywords ?? []).join(' ')} ${(item.keywords ?? []).join(' ')}`,
+    moduleHref: module.href,
+  };
 }
 
 // Red u prikazu: nenavigabilni naslov grupe ili navigabilna stavka (sa svojim
@@ -101,30 +144,42 @@ export function CommandPalette({ open, onOpenChange, hotkey = true }: CommandPal
   // --- izgradnja liste (jeftino; ~30 modula — bez memoizacije) --------------
   // Vidljivi moduli = isti RBAC filter kao sidebar (canAccessNavModule: requiresAny OR
   // ima prednost — npr. pogonski /kiosk uz KVALITET_READ ILI TEHNOLOGIJA_READ). Iteriraju
-  // se i moduli iz pod-grupa (allModules: direktne stavke + „Tehnologija" i sl.). Paleta
-  // je RAVNA globalna lista pa se `crosslisted` href (npr. „Lokacije delova" u Tehnologiji
-  // i Logistici) dedup-uje: prva pojava po redosledu modela pobeđuje (seenHref).
+  // se i moduli iz pod-grupa (allModules: direktne stavke + „Tehnologija" i sl.) I njihove
+  // PODSTAVKE (F0 podmeniji — „Montaža: Gantt"; dete bez `requires` nasleđuje roditeljev
+  // gate). Paleta je RAVNA globalna lista pa se dedup-uje po PUNOM href-u (uklj. query):
+  // `crosslisted` modul (npr. „Lokacije delova" u Tehnologiji i Logistici) ostaje jednom,
+  // prva pojava po redosledu modela pobeđuje (seenHref).
   const visible: Entry[] = [];
   const seenHref = new Set<string>();
+  const byDomain = new Map<string, Entry[]>();
   for (const d of NAV_DOMAINS) {
+    const inDomain: Entry[] = [];
+    const add = (e: Entry) => {
+      if (seenHref.has(e.href)) return;
+      seenHref.add(e.href);
+      visible.push(e);
+      inDomain.push(e);
+    };
     for (const m of allModules(d)) {
-      if (!canAccessNavModule(m, can) || seenHref.has(m.href)) continue;
-      seenHref.add(m.href);
-      visible.push({ module: m, domainTitle: d.title });
+      if (!canAccessNavModule(m, can)) continue;
+      add(moduleEntry(m, d.title));
+      for (const c of visibleNavChildren(m, can)) add(subItemEntry(m, c, d.title));
     }
+    if (inDomain.length) byDomain.set(d.id, inDomain);
   }
 
   const q = query.trim();
   const rows: PaletteRow[] = [];
   let counter = 0;
   const pushItem = (entry: Entry) => {
-    rows.push({ kind: 'item', key: `i-${entry.module.href}`, index: counter++, entry });
+    rows.push({ kind: 'item', key: `i-${entry.href}`, index: counter++, entry });
   };
 
   if (!q) {
-    // Prazan upit: prvo „Omiljeno" (zahtev 010/26), pa „Nedavno" (MRU), pa ostali moduli
-    // po redosledu modela, grupisani naslovima domena. Svaki modul se prikazuje jednom.
-    const byHref = new Map(visible.map((e) => [e.module.href, e]));
+    // Prazan upit: prvo „Omiljeno" (zahtev 010/26), pa „Nedavno" (MRU), pa ostale stavke
+    // po redosledu modela, grupisane naslovima domena. Svaka stavka se prikazuje jednom.
+    // Omiljeno/MRU su na nivou MODULA (F0) — traže se po href-u modula.
+    const byHref = new Map(visible.map((e) => [e.href, e]));
 
     // „Omiljeno" — omiljeni href-ovi koje korisnik sme da vidi, redosled dodavanja.
     const favEntries: Entry[] = [];
@@ -132,9 +187,9 @@ export function CommandPalette({ open, onOpenChange, hotkey = true }: CommandPal
       const e = byHref.get(href);
       if (e) favEntries.push(e);
     }
-    // `shown` nosi već prikazane href-ove (Omiljeno → Nedavno → domeni redom) da se isti
-    // modul (uklj. `crosslisted`, isti href u dva domena) ne pojavi dvaput u paleti.
-    const shown = new Set<string>(favEntries.map((e) => e.module.href));
+    // `shown` nosi već prikazane href-ove (Omiljeno → Nedavno → domeni redom) da se ista
+    // stavka (uklj. `crosslisted`, isti href u dva domena) ne pojavi dvaput u paleti.
+    const shown = new Set<string>(favEntries.map((e) => e.href));
     if (favEntries.length) {
       rows.push({ kind: 'header', key: 'h-favorites', title: 'Omiljeno' });
       for (const e of favEntries) pushItem(e);
@@ -149,17 +204,17 @@ export function CommandPalette({ open, onOpenChange, hotkey = true }: CommandPal
     if (recent.length) {
       rows.push({ kind: 'header', key: 'h-recent', title: 'Nedavno' });
       for (const e of recent) {
-        shown.add(e.module.href);
+        shown.add(e.href);
         pushItem(e);
       }
     }
     for (const d of NAV_DOMAINS) {
-      const mods = allModules(d).filter((m) => canAccessNavModule(m, can) && !shown.has(m.href));
-      if (!mods.length) continue;
+      const entries = (byDomain.get(d.id) ?? []).filter((e) => !shown.has(e.href));
+      if (!entries.length) continue;
       rows.push({ kind: 'header', key: `h-${d.id}`, title: d.title });
-      for (const m of mods) {
-        shown.add(m.href);
-        pushItem({ module: m, domainTitle: d.title });
+      for (const e of entries) {
+        shown.add(e.href);
+        pushItem(e);
       }
     }
   } else {
@@ -171,16 +226,15 @@ export function CommandPalette({ open, onOpenChange, hotkey = true }: CommandPal
     const favSet = new Set(favorites);
     const scored: { entry: Entry; score: number }[] = [];
     for (const e of visible) {
-      const meta = `${e.module.label} ${e.domainTitle} ${(e.module.keywords ?? []).join(' ')}`;
-      const score = fuzzyScore(q, meta);
+      const score = fuzzyScore(q, e.meta);
       if (score !== null) scored.push({ entry: e, score });
     }
     scored.sort((a, b) => {
       const at = a.score > 0 ? 1 : 0;
       const bt = b.score > 0 ? 1 : 0;
       if (at !== bt) return bt - at;
-      const af = favSet.has(a.entry.module.href) ? 1 : 0;
-      const bf = favSet.has(b.entry.module.href) ? 1 : 0;
+      const af = favSet.has(a.entry.moduleHref) ? 1 : 0;
+      const bf = favSet.has(b.entry.moduleHref) ? 1 : 0;
       if (af !== bf) return bf - af;
       return b.score - a.score;
     });
@@ -201,9 +255,9 @@ export function CommandPalette({ open, onOpenChange, hotkey = true }: CommandPal
       r.kind === 'item' && r.index === index,
     );
     if (!row) return;
-    const href = row.entry.module.href;
-    pushRecentModule(href);
-    router.push(href);
+    // MRU pamti MODUL (F0) — i kad je izabrana podstavka; navigacija ide na pun href.
+    pushRecentModule(row.entry.moduleHref);
+    router.push(row.entry.href);
     close();
   }
 
@@ -288,7 +342,7 @@ export function CommandPalette({ open, onOpenChange, hotkey = true }: CommandPal
                 );
               }
               const active = row.index === activeIndex;
-              const Icon = row.entry.module.icon;
+              const Icon = row.entry.icon;
               return (
                 <button
                   key={row.key}
@@ -314,7 +368,7 @@ export function CommandPalette({ open, onOpenChange, hotkey = true }: CommandPal
                     className={cn('h-4 w-4 shrink-0', active ? 'text-accent' : 'text-ink-secondary')}
                     aria-hidden
                   />
-                  <span className="min-w-0 flex-1 truncate">{row.entry.module.label}</span>
+                  <span className="min-w-0 flex-1 truncate">{row.entry.label}</span>
                   {/* U ravnoj (fuzzy) listi domen je kontekst; u grupisanoj je već naslov. */}
                   {q && (
                     <span className="shrink-0 text-xs text-ink-secondary">

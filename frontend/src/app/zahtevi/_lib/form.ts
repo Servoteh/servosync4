@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { NAV_DOMAINS, allModules } from '@/lib/navigation';
+import { NAV_DOMAINS, allModules, hrefPath } from '@/lib/navigation';
 import {
   REQUEST_KINDS,
   REQUEST_PRIORITIES,
@@ -10,21 +10,30 @@ import type { SelectOption } from '@/components/ui-kit/select';
 
 /**
  * Moduli za select — slugovi iz nav kataloga (MODULE_SPEC §8: „modul (select iz
- * nav kataloga)"). Slug = href bez vodeće „/" (npr. „/odrzavanje" → „odrzavanje"),
- * dedup-ovan (crosslisted stavke se pojavljuju dvaput u modelu). Label = nav label.
- * Sortirano po labeli. BE prima slobodan string (≤40) — ovo je samo predlog.
+ * nav kataloga)"). Slug = pathname href-a bez vodeće „/" (npr. „/odrzavanje" →
+ * „odrzavanje"), dedup-ovan (crosslisted stavke se pojavljuju dvaput u modelu).
+ * Label = nav label. Sortirano po labeli. BE prima slobodan string (≤40) — ovo je samo predlog.
+ *
+ * Href iz modela SME da nosi query (pogledi modula, npr. „/montaza?view=gantt" —
+ * PLAN_NAV_PODMENIJI): takve stavke NISU zaseban modul, pa dele slug svog pathname-a, a kao
+ * naziv dobijaju DOMEN (korisnik u zahtevu bira „Montaža i servis", ne „Gantt"). Stavka bez
+ * query-ja (pravi modul) uvek pobeđuje nad pogledom.
  */
 export function moduleOptions(): SelectOption[] {
-  const seen = new Map<string, string>();
+  const seen = new Map<string, { label: string; exact: boolean }>();
   for (const domain of NAV_DOMAINS) {
     for (const m of allModules(domain)) {
-      const slug = m.href.replace(/^\//, '');
+      const path = hrefPath(m.href);
+      const slug = path.replace(/^\//, '');
       if (!slug || slug.includes('/')) continue; // preskoči prazne / pod-rute
-      if (!seen.has(slug)) seen.set(slug, m.label);
+      const exact = path === m.href;
+      const prev = seen.get(slug);
+      if (prev && (prev.exact || !exact)) continue;
+      seen.set(slug, { label: exact ? m.label : domain.title, exact });
     }
   }
   return Array.from(seen.entries())
-    .map(([value, label]) => ({ value, label }))
+    .map(([value, { label }]) => ({ value, label }))
     .sort((a, b) => a.label.localeCompare(b.label, 'sr'));
 }
 
