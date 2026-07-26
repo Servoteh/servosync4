@@ -6,8 +6,10 @@ import { Sy15CronJobs } from "./sy15-cron-jobs";
 import { NotifyDispatchService } from "./dispatch/notify-dispatch.service";
 import { SastanciDispatchService } from "./dispatch/sastanci-dispatch.service";
 import { RetentionJobsService } from "./retention-jobs.service";
+import { BigbitSyncJobs } from "./bigbit-sync-jobs.service";
 import { RobnoModule } from "../robno/robno.module";
 import { ReservationService } from "../robno/reservation.service";
+import { SyncModule } from "../sync/sync.module";
 
 /**
  * Talas A — scheduler pogon + registar poslova. Poslovi su tanki pozivi
@@ -25,11 +27,17 @@ import { ReservationService } from "../robno/reservation.service";
  *
  * DB audit Faza 3 — retention-jobs.service.ts (DB-043): noćno čišćenje
  * audit_log/notifikacija/job-runova po rokovima iz odluke 25.07.
+ *
+ * Pruga P (26.07) — bigbit-sync-jobs.service.ts: noćno povlačenje BigBit master
+ * podataka umesto ručnog dugmeta. Ima SVOJ prekidač `BIGBIT_NIGHTLY_SYNC`; bez
+ * njega `buildJobs()` vraća prazno pa se posao ni ne registruje.
  */
 @Module({
   // RobnoModule → ReservationService: dnevno oslobađanje isteklih rezervacija
   // (bez toga `expiresAt` ne radi ništa i rezervacija večno drži zalihu).
-  imports: [Sy15Module, RobnoModule],
+  // SyncModule → SyncService: noćni BigBit sync zove ISTI servis kao /sync/run
+  // (bez duplirane logike). SyncModule ne uvozi scheduler → nema ciklusa.
+  imports: [Sy15Module, RobnoModule, SyncModule],
   controllers: [SchedulerController],
   providers: [
     SchedulerService,
@@ -37,6 +45,7 @@ import { ReservationService } from "../robno/reservation.service";
     NotifyDispatchService,
     SastanciDispatchService,
     RetentionJobsService,
+    BigbitSyncJobs,
   ],
   // NotifyDispatchService se izvozi da bi Kadrovska/Moj profil mogli da okinu
   // ISTI dispečer sinhrono („Pošalji čekaće" / pulse posle mutacije) umesto da
@@ -51,6 +60,7 @@ export class SchedulerModule implements OnModuleInit, OnApplicationBootstrap {
     private readonly dispatchJobs: NotifyDispatchService,
     private readonly sastanciDispatchJobs: SastanciDispatchService,
     private readonly retentionJobs: RetentionJobsService,
+    private readonly bigbitSyncJobs: BigbitSyncJobs,
     private readonly reservation: ReservationService,
   ) {}
 
@@ -61,6 +71,10 @@ export class SchedulerModule implements OnModuleInit, OnApplicationBootstrap {
     for (const job of this.sastanciDispatchJobs.buildJobs())
       this.scheduler.register(job);
     for (const job of this.retentionJobs.buildJobs())
+      this.scheduler.register(job);
+    // POSLE retention-a namerno: oba su na 03:30, a u tiku se poslovi izvršavaju
+    // redom registracije — brza brisanja prva, pa dugačak sync.
+    for (const job of this.bigbitSyncJobs.buildJobs())
       this.scheduler.register(job);
 
     // Istekle rezervacije zaliha (Batch C). `expiresAt` puni rok važenja

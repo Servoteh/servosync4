@@ -89,6 +89,23 @@ if [ -n "${BSTART:-}" ] && [ -n "${BEND:-}" ]; then
   [ "$BSEC" -gt 900 ] && add "backup traje $((BSEC/60)) min (prag 15) — najverovatnije drawing_pdfs; razmotri seobu PDF-ova (DB-038)"
 fi
 
+# 9) BigBit noćni sync (scheduler posao `bigbit-nightly-sync`, Pruga P 26.07.2026).
+# Dnevnik je u glavnoj bazi (scheduled_job_runs), pa ide preko psq2. Alarm tek posle
+# 2 UZASTOPNA pada (jedan pad se sam ponavlja: MAX_ATTEMPTS=3 + backoff) ili ako 26h
+# nema uspešnog run-a. Bez ijednog reda = posao nije uključen (BIGBIT_NIGHTLY_SYNC
+# prazan) → nema alarma, ne budimo nikoga zbog isključene automatike.
+# NAPOMENA: `partial` run NIJE pad — sync tako obeležava i samo PRESKOČENE redove
+# (paritet-guard predmeta, duplikat kataloškog broja); posao ga upiše kao DONE.
+BBN_ANY=$(psq2 "select count(*) from scheduled_job_runs where job_key='bigbit-nightly-sync'")
+if [ "${BBN_ANY:-0}" -gt 0 ]; then
+  BBN_FAIL=$(psq2 "select count(*) from (select status from scheduled_job_runs
+    where job_key='bigbit-nightly-sync' order by scheduled_for desc limit 2) t where status='FAILED'")
+  [ "${BBN_FAIL:-0}" -ge 2 ] && add "BigBit noćni sync: 2 uzastopna pada (BigBit MSSQL nedostupan? v. /api/v1/scheduler/jobs)"
+  BBN_AGE=$(psq2 "select coalesce(extract(epoch from now()-max(finished_at))::int, 999999)
+    from scheduled_job_runs where job_key='bigbit-nightly-sync' and status='DONE'")
+  [ "${BBN_AGE:-999999}" -gt 93600 ] && add "BigBit noćni sync: poslednji uspešan pre $((BBN_AGE/3600)) h (prag 26)"
+fi
+
 [ -z "$PROBLEMS" ] && exit 0
 echo "[monitor] $(date +'%F %T') problemi:"; printf '%s' "$PROBLEMS"
 [ "${DRY:-0}" = "1" ] && exit 0
