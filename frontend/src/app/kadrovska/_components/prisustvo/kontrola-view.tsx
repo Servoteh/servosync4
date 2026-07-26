@@ -44,6 +44,9 @@ import { normEmp } from '../odsustva/shared';
  * Korekcija dakle NE menja grid direktno (doktrina §2.6: grid i prisustvo su
  * odvojeni tokovi, payroll čita ISKLJUČIVO grid) — ulazi kao PREDLOG, a poslednja
  * reč je uvek urednikova. Ovaj ekran čini ta dva koraka vidljivim na jednom mestu.
+ *
+ * Potvrda dana ga UJEDNO ZAKLJUČAVA (AUDIT-K7c): posle nje `grid/batch` odbija
+ * izmenu sa 409, a otključavaju urednik grida i admini — i tek tada se menja.
  */
 
 const AUTO_MARKER = 'auto:kapija';
@@ -69,8 +72,11 @@ export function KontrolaView() {
    * pododeljenja. Ovde samo prikazujemo dugme istoj grupi; server presuđuje
    * red-po-red i vraća jasnu poruku ako nema prava (AUDIT-K3 assertRpcOk).
    *
-   * ⚠️ Grid editor (allowlist) NIJE deo `current_user_manages_employee` — vidi
-   * napomenu u zaglavlju fajla.
+   * ✅ Provereno (Nenad, 26.07): Nikola ima `hr`/`admin` rolu, pa prolazi kroz
+   * `current_user_is_hr_or_admin()` — za SVE zaposlene. Grid allowlist sam po
+   * sebi NIJE deo te DB provere, ali je ovde bez posledica jer rola pokriva.
+   * Ako se ikad pojavi urednik grida BEZ te role, DB će ga odbiti (uredno 403,
+   * ne tiho) — tada je rešenje dodela role, ne migracija deljene sy15 funkcije.
    */
   const canCancel =
     !!me &&
