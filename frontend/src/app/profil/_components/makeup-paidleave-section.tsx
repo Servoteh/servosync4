@@ -9,6 +9,7 @@ import { Textarea } from '@/components/ui-kit/textarea';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { ApiError } from '@/api/client';
 import { formatDate } from '@/lib/format';
+import { Select } from '@/components/ui-kit/select';
 import {
   newClientEventId,
   useMakeupPaidLeave,
@@ -16,6 +17,7 @@ import {
   useDeleteMakeup,
   useSubmitPaidLeave,
   useDeletePaidLeave,
+  useTeam,
 } from '@/api/moj-profil';
 import { Section, statusLabel, statusTone } from './section';
 import { PAID_LEAVE_CATALOG } from '@/app/kadrovska/_components/odsustva/shared';
@@ -87,6 +89,13 @@ function MakeupModal({ onClose }: { onClose: () => void }) {
   const [makeupDeadline, setDeadline] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const submitM = useSubmitMakeup();
+  // „Za koga" (paritet 1.0) — AUDIT-K5b: API i hook su to oduvek podržavali, ali
+  // picker je postojao SAMO za godišnji odmor, pa je šef nadoknadu za člana tima
+  // i dalje morao da podnosi u 1.0. Serverska IDOR brana (AUDIT-K2) presuđuje ko
+  // sme za koga; prazno = za sebe.
+  const teamQ = useTeam();
+  const teamOpts = (teamQ.data?.data?.members ?? []).map((m) => ({ value: m.id, label: m.fullName ?? '—' }));
+  const [forEmp, setForEmp] = useState('');
 
   async function save() {
     setErr(null);
@@ -119,6 +128,7 @@ function MakeupModal({ onClose }: { onClose: () => void }) {
         makeupDeadline: makeupDeadline || undefined,
         compensationType,
         weekendWorkDate: compensationType === 'dan_odmora' ? weekendWorkDate || undefined : undefined,
+        employeeId: forEmp || undefined, // '' → za sebe (server presuđuje)
       });
       onClose();
     } catch (e) {
@@ -141,6 +151,11 @@ function MakeupModal({ onClose }: { onClose: () => void }) {
     <Dialog open onClose={onClose} title="Zahtev za nadoknadu sati" footer={footer}>
       <div className="space-y-3">
         {err && <p className="rounded-control bg-status-danger-bg px-2 py-1 text-sm text-status-danger">{err}</p>}
+        {teamOpts.length > 0 && (
+          <FormField label="Za koga">
+            <Select value={forEmp} onChange={(e) => setForEmp(e.target.value)} placeholder="Ja (moj zahtev)" options={teamOpts} />
+          </FormField>
+        )}
         <FormField label="Vrsta zahteva">
           <select value={compensationType} onChange={(e) => setCT(e.target.value as 'nadoknada' | 'dan_odmora')} className="h-9 w-full rounded-control border border-line bg-surface px-2 text-base text-ink">
             <option value="nadoknada">Nadoknada sati (radim drugi dan)</option>
@@ -244,6 +259,10 @@ function PaidLeaveModal({ onClose }: { onClose: () => void }) {
   const [proofNote, setProof] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const submitM = useSubmitPaidLeave();
+  // „Za koga" — isti obrazac kao GO i nadoknada (AUDIT-K5b).
+  const teamQ = useTeam();
+  const teamOpts = (teamQ.data?.data?.members ?? []).map((m) => ({ value: m.id, label: m.fullName ?? '—' }));
+  const [forEmpPl, setForEmpPl] = useState('');
 
   function workDays(from: string, to: string): number {
     const s = new Date(from);
@@ -278,6 +297,7 @@ function PaidLeaveModal({ onClose }: { onClose: () => void }) {
         daysCount: days,
         reason: reason || undefined,
         proofNote: proofNote || undefined,
+        employeeId: forEmpPl || undefined,
       });
       onClose();
     } catch (e) {
@@ -300,6 +320,11 @@ function PaidLeaveModal({ onClose }: { onClose: () => void }) {
     <Dialog open onClose={onClose} title="Zahtev za plaćeno odsustvo" footer={footer}>
       <div className="space-y-3">
         {err && <p className="rounded-control bg-status-danger-bg px-2 py-1 text-sm text-status-danger">{err}</p>}
+        {teamOpts.length > 0 && (
+          <FormField label="Za koga">
+            <Select value={forEmpPl} onChange={(e) => setForEmpPl(e.target.value)} placeholder="Ja (moj zahtev)" options={teamOpts} />
+          </FormField>
+        )}
         {/* AUDIT-K4: osnov je KODIRAN, ne slobodan tekst — `paid_leave_reason_map`
             za nepoznat string pada na ELSE i gubi pravni osnov. Grupe prate
             pravilnik (čl. 35 st. 1 = u fondu od 5 dana; st. 2 = van fonda). */}

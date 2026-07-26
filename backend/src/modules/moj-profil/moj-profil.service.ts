@@ -1699,11 +1699,28 @@ export class MojProfilService {
       const talk = jsonSafe(talkRows)[0];
       if (talk == null)
         throw new NotFoundException("Razgovor ne postoji ili nije vaš.");
-      const planRows = await tx.$queryRaw<Record<string, unknown>[]>(
+      let planRows = await tx.$queryRaw<Record<string, unknown>[]>(
         Prisma.sql`SELECT * FROM corrective_plans
            WHERE employee_id = ${emp.id}::uuid AND (talk_id = ${id}::uuid OR closing_talk_id = ${id}::uuid)
            ORDER BY created_at DESC`,
       );
+      // ⚠️ AUDIT-K5b (26.07): 1.0 fallback — kad KOREKTIVNI razgovor nema nijedan
+      // direktno vezan plan, prikazuju se aktivni planovi zaposlenog
+      // (otvoren/u_toku). Bez toga je zaposleni otvarao korektivni razgovor i
+      // video zapisnik BEZ ijedne mere, iako mere postoje i teku — a upravo su
+      // one poenta korektivnog razgovora.
+      if (
+        planRows.length === 0 &&
+        String((talk as Record<string, unknown>).talk_type ?? "") ===
+          "korektivni"
+      ) {
+        planRows = await tx.$queryRaw<Record<string, unknown>[]>(
+          Prisma.sql`SELECT * FROM corrective_plans
+             WHERE employee_id = ${emp.id}::uuid
+               AND status IN ('otvoren', 'u_toku')
+             ORDER BY created_at DESC`,
+        );
+      }
       const plans = jsonSafe(planRows);
       const planIds = plans.map((p) => p.id as string);
       const measureRows = planIds.length

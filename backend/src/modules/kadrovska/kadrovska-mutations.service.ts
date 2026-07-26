@@ -748,21 +748,44 @@ export class KadrovskaMutationsService {
           tx,
           Prisma.sql`SELECT hr_upsert_work_hours_batch(${JSON.stringify(rows)}::jsonb) AS v`,
         );
-        for (const r of predmetRows) {
-          await tx.workHours.updateMany({
-            where: {
-              employeeId: r.employeeId,
-              workDate: this.date(r.workDate)!,
-            },
-            data: {
-              ...(r.fieldPredmetBroj !== undefined
-                ? { fieldPredmetBroj: r.fieldPredmetBroj || null }
-                : {}),
-              ...(r.fieldPredmetNaziv !== undefined
-                ? { fieldPredmetNaziv: r.fieldPredmetNaziv || null }
-                : {}),
-            },
-          });
+        // ⚠️ AUDIT-K5b (26.07): ranije jedan `updateMany` PO REDU u petlji. Filter
+        // `predmetRows` je trebalo da odseče većinu, ali `buildBatchRows` oba
+        // predmet-polja UVEK postavlja (makar na null), pa su predmetRows = SVI
+        // redovi → mesečni snimak celog tima slao je stotine sekvencijalnih
+        // UPDATE-a unutar jedne interaktivne transakcije. Sada jedan set-based
+        // UPDATE kroz unnest (isti obrazac kao grid-autofill.service.ts).
+        //
+        // Uz isti prolaz upisujemo i `updated_at` + `last_edited_by`:
+        // `hr_upsert_work_hours_batch` postavlja `last_edited_by` iz
+        // `current_user_email()`, ali `updated_at` NE dira (kolona ima samo
+        // `DEFAULT now()`, koji važi na INSERT). Zato je tooltip „Poslednja
+        // izmena" na izmenjenom danu prikazivao vreme PRVOG unosa.
+        if (predmetRows.length) {
+          const emps = predmetRows.map((r) => r.employeeId);
+          const dates = predmetRows.map((r) => r.workDate.slice(0, 10));
+          const brojevi = predmetRows.map((r) => r.fieldPredmetBroj || null);
+          const nazivi = predmetRows.map((r) => r.fieldPredmetNaziv || null);
+          await tx.$executeRaw(
+            Prisma.sql`
+              UPDATE work_hours w
+                 SET field_predmet_broj  = s.broj,
+                     field_predmet_naziv = s.naziv,
+                     updated_at          = now()
+                FROM unnest(${emps}::uuid[], ${dates}::date[],
+                            ${brojevi}::text[], ${nazivi}::text[])
+                       AS s(emp, dan, broj, naziv)
+               WHERE w.employee_id = s.emp AND w.work_date = s.dan`,
+          );
+        } else {
+          const emps = dto.rows.map((r) => r.employeeId);
+          const dates = dto.rows.map((r) => r.workDate.slice(0, 10));
+          await tx.$executeRaw(
+            Prisma.sql`
+              UPDATE work_hours w
+                 SET updated_at = now()
+                FROM unnest(${emps}::uuid[], ${dates}::date[]) AS s(emp, dan)
+               WHERE w.employee_id = s.emp AND w.work_date = s.dan`,
+          );
         }
         return res;
       },
@@ -1425,19 +1448,31 @@ export class KadrovskaMutationsService {
       this.requireRows(
         tx.kadrOnboardingTask.updateMany({
           where: { id },
-          data: {
-            ...(dto.status != null ? { status: dto.status } : {}),
-            ...(dto.done != null
-              ? {
-                  // AUDIT-K5: „pending" ne postoji u rečniku 1.0
-                  // (open/done/skipped) — 1.0 UI takav zadatak ne bi prepoznao.
-                  status: dto.done ? "done" : "open",
-                  doneAt: dto.done ? new Date() : null,
-                  doneBy: dto.done ? email : null,
-                }
-              : {}),
-            ...(dto.note !== undefined ? { note: dto.note } : {}),
-          },
+          // ⚠️ AUDIT-K5b (26.07): pečat (`done_at`/`done_by`) se ranije čistio SAMO
+          // kad stigne bulean `done` — a FE za odčekiravanje šalje `{status:'open'}`
+          // (onboarding-tab.tsx:117). Rezultat: zadatak vraćen u „otvoreno" ostajao
+          // je sa vremenom i imenom osobe koja ga je nekad završila, pa je evidencija
+          // uvođenja tvrdila da je korak i završen i otvoren.
+          // 1.0 `setOnbTask` pri SVAKOM statusu koji nije `done` nulira oba polja.
+          // Status izvodimo JEDNOM, pa uvek pišemo i pečat uz njega.
+          data: (() => {
+            const next =
+              dto.done === true
+                ? "done"
+                : dto.done === false
+                  ? "open" // „pending" ne postoji u rečniku 1.0 (open|done|skipped)
+                  : dto.status;
+            return {
+              ...(next != null
+                ? {
+                    status: next,
+                    doneAt: next === "done" ? new Date() : null,
+                    doneBy: next === "done" ? email : null,
+                  }
+                : {}),
+              ...(dto.note !== undefined ? { note: dto.note } : {}),
+            };
+          })(),
         }),
         "Zadatak",
       ),

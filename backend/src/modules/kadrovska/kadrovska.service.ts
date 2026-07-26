@@ -682,15 +682,42 @@ export class KadrovskaService {
       timeZone: "Europe/Belgrade",
     }).format(new Date());
     return this.withUserMapped(email, async (tx) => {
-      const data = await tx.absence.findMany({
-        where: {
-          archivedAt: null,
-          dateFrom: { lte: this.toDbDate(today)! },
-          dateTo: { gte: this.toDbDate(today)! },
+      // ⚠️ AUDIT-K5b (26.07): roster odsutnih mora da spoji DVA izvora. 1.0
+      // `odsutniTab` uz `absences` obavezno čita i GRID (`work_hours.absence_code`)
+      // jer se odsustva u praksi vode u gridu (grid je kanon za GO i bolovanje),
+      // dok tabela `absences` nosi uglavnom periode koje je HR uneo ručno.
+      // Sa samo jednim izvorom lista je bila skoro prazna — zato je i nije
+      // koristio nijedan ekran.
+      const [fromAbsences, fromGrid] = await Promise.all([
+        tx.absence.findMany({
+          where: {
+            archivedAt: null,
+            dateFrom: { lte: this.toDbDate(today)! },
+            dateTo: { gte: this.toDbDate(today)! },
+          },
+          orderBy: [{ dateFrom: "asc" }],
+        }),
+        tx.$queryRaw<Record<string, unknown>[]>(
+          Prisma.sql`SELECT w.employee_id, w.absence_code, w.absence_subtype,
+                    e.full_name, e.department
+               FROM work_hours w
+               JOIN v_employees_safe e ON e.id = w.employee_id
+              WHERE w.work_date = ${today}::date
+                AND w.absence_code IS NOT NULL
+                AND w.absence_code <> ''
+              ORDER BY e.full_name`,
+        ),
+      ]);
+      // Grid dan se izostavlja ako isti zaposleni već ima `absences` red za danas
+      // (isti događaj iz dva izvora — ne duplirati u rosteru).
+      const covered = new Set(fromAbsences.map((a) => a.employeeId));
+      const gridRows = this.numify(fromGrid) as Record<string, unknown>[];
+      return {
+        data: {
+          absences: fromAbsences,
+          grid: gridRows.filter((r) => !covered.has(String(r.employee_id))),
         },
-        orderBy: [{ dateFrom: "asc" }],
-      });
-      return { data };
+      };
     });
   }
 
@@ -1283,6 +1310,29 @@ export class KadrovskaService {
         Prisma.sql`SELECT kadr_get_contract_salary(${id}::uuid) AS v`,
       );
       return { data: (rows[0]?.v ?? null) as unknown };
+    });
+  }
+
+  /**
+   * Jedan red procene (RLS presuđuje vidljivost).
+   *
+   * ⚠️ AUDIT-K5b (26.07): 3.0 nije imao `GET assessments/:id`, pa je 360 modal
+   * status uzimao iz reda LISTE i posle ga nikad nije osvežavao sa servera —
+   * zatvorena procena se tiho ponovo otvarala, a UI je ostajao read-only (i
+   * obrnuto). 1.0 posle `open360` OBAVEZNO ponovo pročita sam red i iz njega
+   * izvede `canEdit`.
+   */
+  async assessmentOne(email: string, id: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const rows = await tx.$queryRaw<Record<string, unknown>[]>(
+        Prisma.sql`SELECT a.*, e.full_name AS employee_name
+             FROM assessments a
+             LEFT JOIN v_employees_safe e ON e.id = a.employee_id
+            WHERE a.id = ${id}::uuid LIMIT 1`,
+      );
+      const row = (this.numify(rows) as Record<string, unknown>[])[0] ?? null;
+      if (!row) throw new NotFoundException("Procena nije pronađena.");
+      return { data: row };
     });
   }
 

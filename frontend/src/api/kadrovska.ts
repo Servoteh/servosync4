@@ -712,10 +712,23 @@ export function useAbsences(params: { employeeId?: string; from?: string; to?: s
     queryFn: () => apiFetch<{ data: Absence[] }>(`${BASE}/absences${qs({ ...params })}`),
   });
 }
+/** Red iz grida (work_hours) za današnji dan — drugi izvor rostera odsutnih. */
+export interface AbsentNowGridRow {
+  employee_id: string;
+  absence_code: string;
+  absence_subtype: string | null;
+  full_name: string | null;
+  department: string | null;
+}
+/** Roster odsutnih danas: `absences` periodi + GRID dani (AUDIT-K5b — 1.0
+ *  odsutniTab spaja oba izvora; sa samo jednim lista je bila skoro prazna). */
 export function useAbsentNow() {
   return useQuery({
     queryKey: [...KEYS.absences, 'now'],
-    queryFn: () => apiFetch<{ data: Absence[] }>(`${BASE}/absences/absent-now`),
+    queryFn: () =>
+      apiFetch<{ data: { absences: Absence[]; grid: AbsentNowGridRow[] } }>(
+        `${BASE}/absences/absent-now`,
+      ),
   });
 }
 
@@ -1604,6 +1617,13 @@ export function monthsInRange(from: string, to: string): { year: number; month: 
  * GET /kadrovska/holidays?from&to (kb1). Greška se NE guta: nepotpun holidaySet
  * bi tiho pogrešno ekspandovao period odsustva na praznične dane.
  */
+/** Dokumenta zaposlenog — imperativno (za petlje gde hook ne može), npr. dedup
+ *  karneta pri zaključavanju meseca (AUDIT-K5b). */
+export async function fetchEmployeeDocuments(employeeId: string): Promise<EmployeeDocument[]> {
+  const r = await apiFetch<{ data: EmployeeDocument[] }>(`${BASE}/employees/${employeeId}/documents`);
+  return r.data ?? [];
+}
+
 export async function fetchHolidaySet(from: string, to: string): Promise<Set<string>> {
   const set = new Set<string>();
   const res = await apiFetch<{ data: KadrHoliday[] }>(`${BASE}/holidays${qs({ from, to })}`);
