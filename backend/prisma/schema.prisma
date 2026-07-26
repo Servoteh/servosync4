@@ -285,6 +285,9 @@ model Drawing {
   assembliesAsParent DrawingAssembly[]   @relation("DrawingAssemblyParent")
 
   @@unique([drawingNumber, revision], map: "uq_drawings_drawing_number_revision")
+  // SQL-only trigram GIN indeksi (20260726160000): idx_drawings_name_trgm i
+  // idx_drawings_drawing_number_trgm nad `immutable_unaccent(lower(...))` —
+  // pretraga bez kvačica (Prisma ne ume izraz/GIN indeks u @@index).
   @@map("drawings")
 }
 
@@ -741,6 +744,8 @@ model Project {
 
   // SQL-only parcijalni unique uq_projects_project_number (WHERE btrim<>'', 20260725200000)
   // — broj predmeta je poslovni identitet dual unosa 3.0→BigBit (DB-005).
+  // SQL-only trigram GIN idx_projects_description_trgm (20260726160000) nad
+  // `immutable_unaccent(lower(description))` — pretraga predmeta po opisu.
   @@map("projects")
 }
 
@@ -857,6 +862,9 @@ model Item {
   priceListEntries        PriceListEntry[]
   workOrderItemComponents WorkOrderItemComponent[]
 
+  // SQL-only trigram GIN indeksi (20260726160000): idx_items_name_trgm i
+  // idx_items_catalog_number_trgm nad `immutable_unaccent(lower(...))` —
+  // 92k redova, pretraga bez kvačica (alat `nadji_artikal`, kasnije i UI).
   @@map("items")
 }
 
@@ -1582,6 +1590,9 @@ model WorkOrder {
   @@index([drawingId], map: "idx_work_orders_drawing_id")
   @@index([parentWorkOrderId], map: "idx_work_orders_parent")
   @@index([drawingHandoverId], map: "idx_work_orders_drawing_handover")
+  // SQL-only trigram GIN indeksi (20260726160000): idx_work_orders_ident_number_trgm
+  // i idx_work_orders_part_name_trgm nad `immutable_unaccent(lower(...))` — 40.860
+  // redova, „nađi RN po identu ili nazivu dela" bez Seq Scan-a i bez kvačica.
   @@map("work_orders")
 }
 
