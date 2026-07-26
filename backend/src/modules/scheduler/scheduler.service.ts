@@ -1,5 +1,6 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
+import { Injectable, Logger, OnModuleDestroy } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
+import { switchDisabledReason } from "../../common/switches/bigbit-sync";
 import {
   belgradeParts,
   belgradeTimeToUtc,
@@ -82,11 +83,17 @@ export class SchedulerService implements OnModuleDestroy {
    * Poslednji dospeo termin posla ≤ now (UTC), ili null ako je van catch-up
    * prozora. everyMinutes vraća samo POSLEDNJI slot (bez backfill-a istorije).
    */
-  computeDueSlot(schedule: JobSchedule, catchUpMinutes: number, now: Date): Date | null {
+  computeDueSlot(
+    schedule: JobSchedule,
+    catchUpMinutes: number,
+    now: Date,
+  ): Date | null {
     if (schedule.kind === "everyMinutes") {
       const periodMs = schedule.minutes * 60_000;
       const slot = new Date(Math.floor(now.getTime() / periodMs) * periodMs);
-      return now.getTime() - slot.getTime() <= catchUpMinutes * 60_000 ? slot : null;
+      return now.getTime() - slot.getTime() <= catchUpMinutes * 60_000
+        ? slot
+        : null;
     }
     const [hh, mm] = schedule.at.split(":").map(Number);
     const p = belgradeParts(now);
@@ -95,7 +102,9 @@ export class SchedulerService implements OnModuleDestroy {
     for (let back = 0; back <= 7; back++) {
       const d = shiftBelgradeDate(p, -back);
       if (schedule.kind === "weekly") {
-        const dowParts = belgradeParts(belgradeTimeToUtc(d.year, d.month, d.day, 12, 0));
+        const dowParts = belgradeParts(
+          belgradeTimeToUtc(d.year, d.month, d.day, 12, 0),
+        );
         if (dowParts.isoDow !== schedule.isoDow) continue;
       }
       const slot = belgradeTimeToUtc(d.year, d.month, d.day, hh, mm);
@@ -118,7 +127,11 @@ export class SchedulerService implements OnModuleDestroy {
       const now = new Date();
       for (const job of this.jobs.values()) {
         try {
-          const slot = this.computeDueSlot(job.schedule, this.catchUpFor(job), now);
+          const slot = this.computeDueSlot(
+            job.schedule,
+            this.catchUpFor(job),
+            now,
+          );
           if (slot) await this.claimAndRun(job, slot);
         } catch (e) {
           // Greška JEDNOG posla ne sme da obori tik za ostale.
@@ -136,8 +149,13 @@ export class SchedulerService implements OnModuleDestroy {
    * Atomski claim termina pa izvršenje. Claim = INSERT (conflict → već izvršeno/
    * u toku negde) ILI re-claim FAILED reda (retry do MAX_ATTEMPTS).
    */
-  private async claimAndRun(job: ScheduledJob, scheduledFor: Date): Promise<void> {
-    const claimed = await this.prisma.$queryRaw<{ id: number; attempts: number }[]>`
+  private async claimAndRun(
+    job: ScheduledJob,
+    scheduledFor: Date,
+  ): Promise<void> {
+    const claimed = await this.prisma.$queryRaw<
+      { id: number; attempts: number }[]
+    >`
       INSERT INTO scheduled_job_runs (job_key, scheduled_for, status)
       VALUES (${job.key}, ${scheduledFor}, ${JOB_STATUS.RUNNING})
       ON CONFLICT (job_key, scheduled_for) DO NOTHING
@@ -151,7 +169,9 @@ export class SchedulerService implements OnModuleDestroy {
       //    bi sva 3 pokušaja izgorela za ~90s pa kratak sy15 ispad pojede slot);
       //  • zaglavljeni RUNNING stariji od 10min (crash/SIGTERM usred izvršenja bi
       //    inače TRAJNO progutao slot — sy15 fn su idempotentne pa je re-run bezbedan).
-      const retried = await this.prisma.$queryRaw<{ id: number; attempts: number }[]>`
+      const retried = await this.prisma.$queryRaw<
+        { id: number; attempts: number }[]
+      >`
         UPDATE scheduled_job_runs
            SET status = ${JOB_STATUS.RUNNING}, attempts = attempts + 1,
                started_at = now(), finished_at = NULL, error = NULL
@@ -172,6 +192,29 @@ export class SchedulerService implements OnModuleDestroy {
     await this.execute(job, scheduledFor, runId, attempt);
   }
 
+  /**
+   * Korisnički prekidač posla (`app_switches`). JEDNA kapija za sve poslove —
+   * nijedan budući posao ne može da se registruje mimo prekidača, i nijedan ulaz
+   * (tik, run-now, novi kontroler) ne može da je zaobiđe zaboravivši poziv.
+   *
+   * NEMA reda = UKLJUČENO. Greška u čitanju se LOGUJE i posao se PUŠTA —
+   * nedostupan prekidač ne sme da bude razlog izostanka posla.
+   */
+  async isJobEnabled(job: ScheduledJob): Promise<boolean> {
+    if (!job.switchKey) return true;
+    try {
+      const rows = await this.prisma.$queryRaw<{ enabled: boolean }[]>`
+        SELECT enabled FROM app_switches WHERE key = ${job.switchKey} LIMIT 1`;
+      return rows.length === 0 ? true : rows[0].enabled;
+    } catch (e) {
+      this.logger.error(
+        `Prekidač '${job.switchKey}' posla '${job.key}' se ne može pročitati (posao se NASTAVLJA): ` +
+          (e instanceof Error ? e.message : String(e)),
+      );
+      return true;
+    }
+  }
+
   /** Izvrši posao i upiši ishod u dnevnik (koristi i run-now iz kontrolera). */
   async execute(
     job: ScheduledJob,
@@ -181,6 +224,22 @@ export class SchedulerService implements OnModuleDestroy {
   ): Promise<{ status: string; summary?: string; error?: string }> {
     const t0 = Date.now();
     try {
+      // Ugašen prekidač = DONE sa razlogom, ne FAILED: namerno gašenje nije kvar
+      // i ne sme da pravi lažnu uzbunu ni da troši MAX_ATTEMPTS.
+      if (!(await this.isJobEnabled(job))) {
+        const reason = switchDisabledReason(job.switchKey as string);
+        await this.prisma.scheduledJobRun.update({
+          where: { id: runId },
+          data: {
+            status: JOB_STATUS.DONE,
+            finishedAt: new Date(),
+            summary: reason.slice(0, 2000),
+            error: null,
+          },
+        });
+        this.logger.warn(`Posao '${job.key}' preskočen — ${reason}`);
+        return { status: JOB_STATUS.DONE, summary: reason };
+      }
       const summary = (await job.run({ scheduledFor })) || "ok";
       await this.prisma.scheduledJobRun.update({
         where: { id: runId },
@@ -220,9 +279,15 @@ export class SchedulerService implements OnModuleDestroy {
    * umesto duplog pokretanja), a svež RUNNING red istog posla blokira pokretanje
    * (paralelni run iste sy15 fn zaobilazi njihove NOT EXISTS dedup guardove).
    */
-  async runNow(key: string): Promise<{ status: string; summary?: string; error?: string }> {
+  async runNow(
+    key: string,
+  ): Promise<{ status: string; summary?: string; error?: string }> {
     const job = this.jobs.get(key);
     if (!job) throw new Error(`Nepoznat posao '${key}'`);
+    // RUČNI ulaz dobija GREŠKU, ne tihu 200 sa „ok": čovek koji je pritisnuo
+    // dugme mora da vidi zašto se ništa nije desilo.
+    if (!(await this.isJobEnabled(job)))
+      throw new Error(switchDisabledReason(job.switchKey as string));
     const running = await this.prisma.scheduledJobRun.findFirst({
       where: {
         jobKey: job.key,

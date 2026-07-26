@@ -1,12 +1,15 @@
 import { BadRequestException } from "@nestjs/common";
 
 /**
- * NACRT — DTO-i za CustomerRfq (zahtev kupca za ponudu, Traka B §A).
+ * DTO-i za CustomerRfq (zahtev kupca za ponudu).
  * Obrazac: interface + ručna validate*() (BACKEND_RULES §6). Kod engleski, poruke srpski.
  *
- * Dozvoljene vrednosti (mirror /// iz _nacrt-4.0-trakaB-predmeti.prisma):
+ * Dozvoljene vrednosti:
  *   origin: PHONE | EMAIL | WEB | WALK_IN | OTHER
  *   status: DRAFT | OPEN | QUOTED | WON | LOST
+ *
+ * `projectId` (samo u update-u) vezuje zahtev za POSTOJEĆI predmet uvezen iz BigBit-a —
+ * zamena za ugašeni tok „Napravi predmet iz zahteva" (odluka 26.07.2026). `null` odvezuje.
  */
 const RFQ_ORIGINS = ["PHONE", "EMAIL", "WEB", "WALK_IN", "OTHER"] as const;
 const RFQ_STATUSES = ["DRAFT", "OPEN", "QUOTED", "WON", "LOST"] as const;
@@ -30,6 +33,7 @@ export interface UpdateCustomerRfqDto {
   description?: string;
   status?: string; // vidi RFQ_STATUSES
   note?: string;
+  projectId?: number | null; // veži/odveži POSTOJEĆI predmet iz BigBit-a (null = odveži)
 }
 
 function optPosInt(errors: string[], v: unknown, name: string): void {
@@ -82,6 +86,9 @@ export function validateUpdateCustomerRfq(dto: UpdateCustomerRfqDto): void {
   optEnum(errors, dto.status, "Status", RFQ_STATUSES);
   optPosInt(errors, dto.salespersonId, "Prodavac");
   optPosInt(errors, dto.proformaDocId, "Ponuda (dokument)");
+  // projectId: null je dozvoljen (odvezivanje) — zato ne ide kroz optPosInt.
+  if (dto.projectId !== undefined && dto.projectId !== null)
+    optPosInt(errors, dto.projectId, "Predmet");
   if (dto.description !== undefined && typeof dto.description !== "string")
     errors.push("Opis mora biti tekst.");
 

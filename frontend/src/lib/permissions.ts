@@ -91,8 +91,9 @@ export const PERMISSIONS = {
   ZR_COMPUTE: 'zr.compute',
   ZR_EXPORT: 'zr.export',
   DIRECTORY_READ: 'directory.read',
-  // Predmeti write-path + RFQ kupca — 4.0 Traka B (mirror backend kataloga)
-  PROJECTS_WRITE: 'projects.write',
+  // RFQ kupca — 4.0-native (mirror backend kataloga).
+  // `projects.write` je uklonjen 26.07.2026: komitente i predmete vodi BigBit,
+  // ServoSync ih samo čita (nema više write ekrana ni dugmadi).
   RFQ_READ: 'rfq.read',
   RFQ_WRITE: 'rfq.write',
   SYNC_RUN: 'sync.run',

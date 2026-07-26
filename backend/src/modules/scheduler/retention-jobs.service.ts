@@ -13,6 +13,17 @@ import { JOB_STATUS, type ScheduledJob } from "./scheduler.types";
 const AUDIT_LOG_MONTHS = 24;
 const NOTIFICATIONS_READ_DAYS = 90;
 const JOB_RUNS_DAYS = 60;
+/**
+ * Koliko poslednjih BigBit .mdb drop-ova zadržava STAGING (sirove CSV redove).
+ * Staging je međukorak: ~7,4 MB po noći danas, a kad stigne puna BigBit istorija
+ * to su stotine hiljada redova po noći — bez čišćenja bi nadrastao stvarne
+ * podatke na istom disku na kome radi 4.0.
+ *
+ * ZAPISNIK (`bb_mdb_drops`) SE NE BRIŠE: FK ka njemu je `ON DELETE RESTRICT`
+ * upravo zato što je oznaka porekla uvezenih redova (`imported_drop_id`) jedini
+ * način da se posle kaže IZ KOG fajla je koji red došao.
+ */
+const MDB_STAGE_KEEP_DROPS = 7;
 
 @Injectable()
 export class RetentionJobsService {
@@ -32,7 +43,9 @@ export class RetentionJobsService {
           const now = Date.now();
           const auditCutoff = new Date(now);
           auditCutoff.setMonth(auditCutoff.getMonth() - AUDIT_LOG_MONTHS);
-          const notifCutoff = new Date(now - NOTIFICATIONS_READ_DAYS * 86_400_000);
+          const notifCutoff = new Date(
+            now - NOTIFICATIONS_READ_DAYS * 86_400_000,
+          );
           const runsCutoff = new Date(now - JOB_RUNS_DAYS * 86_400_000);
 
           const audit = await this.prisma.auditLog.deleteMany({
@@ -50,9 +63,45 @@ export class RetentionJobsService {
               scheduledFor: { lt: runsCutoff },
             },
           });
-          return `audit_log −${audit.count}, notifikacije −${notif.count}, job-runovi −${runs.count}`;
+          const stage = await this.purgeMdbStaging();
+          return (
+            `audit_log −${audit.count}, notifikacije −${notif.count}, ` +
+            `job-runovi −${runs.count}, bb_mdb staging −${stage}`
+          );
         },
       },
     ];
+  }
+
+  /**
+   * Obriši SIROV staging starih .mdb drop-ova, uz zadržavanje reda u
+   * `bb_mdb_drops`. Vraća broj obrisanih redova preko svih staging tabela.
+   *
+   * Tabele se navode eksplicitno (ne `information_schema` pretragom) da bi
+   * spisak bio vidljiv i da nova staging tabela ne bi tiho ostala neočišćena.
+   */
+  private async purgeMdbStaging(): Promise<number> {
+    const keep = await this.prisma.bbMdbDrop.findMany({
+      orderBy: { id: "desc" },
+      take: MDB_STAGE_KEEP_DROPS,
+      select: { id: true },
+    });
+    if (!keep.length) return 0;
+    const keepIds = keep.map((k) => k.id);
+    const del = (t: {
+      deleteMany: (a: unknown) => Promise<{ count: number }>;
+    }) => t.deleteMany({ where: { dropId: { notIn: keepIds } } });
+    const counts = await Promise.all([
+      del(this.prisma.bbMdbStageGk),
+      del(this.prisma.bbMdbStageNalog),
+      del(this.prisma.bbMdbStageAccount),
+      del(this.prisma.bbMdbStageOrderType),
+      del(this.prisma.bbMdbStageSaldakonto),
+      del(this.prisma.bbMdbStageScheme),
+      del(this.prisma.bbMdbStageSchemeLine),
+      del(this.prisma.bbMdbStagePdvGk),
+      del(this.prisma.bbMdbStagePopdvGk),
+    ]);
+    return counts.reduce((a, c) => a + c.count, 0);
   }
 }

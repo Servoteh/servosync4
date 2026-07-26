@@ -286,7 +286,7 @@ const BASE_ROLE_PERMISSIONS: Partial<
     P.NABAVKA_WRITE,
     P.NABAVKA_APPROVE,
     P.ROBNO_READ,
-    P.PROJECTS_WRITE,
+    // `projects.write` uklonjen 26.07.2026 — predmete otvara BigBit, ne mi.
     P.RFQ_READ,
     P.RFQ_WRITE,
     P.SALES_READ, // uvid u izlazne račune (prodaja deli tok sa nabavkom, Nenad)
@@ -358,7 +358,7 @@ const BASE_ROLE_PERMISSIONS: Partial<
     P.NABAVKA_READ,
     P.NABAVKA_WRITE,
     P.NABAVKA_APPROVE,
-    P.PROJECTS_WRITE,
+    // `projects.write` uklonjen 26.07.2026 — predmete otvara BigBit, ne mi.
     P.RFQ_READ,
     P.RFQ_WRITE,
     P.ROBNO_READ,
@@ -539,11 +539,7 @@ const BASE_ROLE_PERMISSIONS: Partial<
   // Održavanje: viewer je fallback rola → read+report (chief-bez-globalne-role vidi mašine kroz RLS).
   // Sastanci: presuda 24.07.2026 — viewer GUBI read (1.0 canAccessSastanci ga je imao;
   // probni/čitajući nalozi ne treba da vide interne sastanke). /ai svima.
-  [ROLES.VIEWER]: [
-    ...VIEWER_READ_BASELINE,
-    ...ODRZAVANJE_MODULE,
-    P.AI_CHAT,
-  ],
+  [ROLES.VIEWER]: [...VIEWER_READ_BASELINE, ...ODRZAVANJE_MODULE, P.AI_CHAT],
 };
 
 /**

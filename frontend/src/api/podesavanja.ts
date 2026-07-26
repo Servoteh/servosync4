@@ -164,6 +164,46 @@ export interface AiModelsResponse {
   montaza: AiModelSetting;
 }
 
+// ------------------------------------------------------------------ prekidač BigBit uvoza
+
+/** Upozorenje uz stanje noćnog uvoza — poruka je gotov srpski tekst sa backenda. */
+export interface SyncWarning {
+  level: 'warn' | 'danger';
+  message: string;
+}
+
+/** Jedan pokušaj izvršavanja zakazanog posla (`scheduled_job_runs`). */
+export interface SyncJobRun {
+  status: string;
+  startedAt: string;
+  finishedAt: string | null;
+  summary: string | null;
+  error: string | null;
+}
+
+/** Odgovor `GET/PUT /v1/admin/sync/bigbit` — prekidač + stanje poslednjeg uvoza. */
+export interface BigbitSyncStatus {
+  enabled: boolean;
+  note: string | null;
+  updatedAt: string | null;
+  updatedByEmail: string | null;
+  lastSuccessAt: string | null;
+  lastAttemptAt: string | null;
+  lastErrorMessage: string | null;
+  rowsImported: number | null;
+  source: { fileName: string; modifiedAt: string | null; ageHours: number | null } | null;
+  lastRun: SyncJobRun | null;
+  recentRuns: SyncJobRun[];
+  warnings: SyncWarning[];
+}
+
+export interface BigbitSyncMeta {
+  switchKey: string;
+  jobKey: string;
+  importStaleAfterHours: number;
+  sourceStaleAfterHours: number;
+}
+
 /** Odgovor D1 mutacija (2.0 master + sy15 propagacija). */
 export interface DualWriteResult {
   email: string;
@@ -191,6 +231,7 @@ const KEYS = {
   predmetPlaneri: ['admin', 'predmet-aktivacija', 'planeri'] as const,
   audit: ['admin', 'audit-log'] as const,
   aiModels: ['admin', 'ai-models'] as const,
+  bigbitSync: ['admin', 'sync', 'bigbit'] as const,
 };
 
 // ------------------------------------------------------------------ queries
@@ -248,6 +289,34 @@ export function useAuditLog(params: { tableName?: string; action?: string; page?
 }
 export function useAiModels() {
   return useQuery({ queryKey: KEYS.aiModels, queryFn: () => apiFetch<{ data: AiModelsResponse }>(`${BASE}/system/ai-models`) });
+}
+
+/**
+ * Stanje noćnog BigBit uvoza + prekidač (settings.system za čitanje). `refetchInterval`
+ * namerno nema — stanje se menja jednom dnevno; osvežava se ulaskom u tab i posle preklopa.
+ */
+export function useBigbitSync() {
+  return useQuery({
+    queryKey: KEYS.bigbitSync,
+    queryFn: () =>
+      apiFetch<{ data: BigbitSyncStatus; meta: BigbitSyncMeta }>(`${BASE}/sync/bigbit`),
+  });
+}
+
+/** Uključi/isključi noćni BigBit uvoz (sync.run). Odgovor je PUNO novo stanje. */
+export function useSetBigbitSync() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { enabled: boolean; note?: string }) =>
+      apiFetch<{ data: BigbitSyncStatus; meta: BigbitSyncMeta }>(`${BASE}/sync/bigbit`, {
+        method: 'PUT',
+        body: JSON.stringify(v),
+      }),
+    onSuccess: (res) => {
+      qc.setQueryData(KEYS.bigbitSync, res);
+      void qc.invalidateQueries({ queryKey: KEYS.bigbitSync });
+    },
+  });
 }
 
 /** Postavi AI model za jedan cilj (`sastanci`|`montaza`); 42501 → 403 (samo admin). */

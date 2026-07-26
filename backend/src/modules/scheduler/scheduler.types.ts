@@ -25,6 +25,13 @@ export interface ScheduledJob {
    * deploy u trenutku termina). Default: daily/weekly 180, everyMinutes = period.
    */
   catchUpMinutes?: number;
+  /**
+   * `app_switches.key` korisničkog prekidača. Kad je postavljen, scheduler PRE
+   * svakog izvršenja (i zakazanog i `run-now`) proverava red u `app_switches` —
+   * to je JEDNA kapija za sve poslove, umesto da svaki ulaz pamti da je pozove.
+   * Nema reda = uključeno (OFF-prekidač: odsustvo reda ne sme tiho da ugasi posao).
+   */
+  switchKey?: string;
   /** Izvrši posao; vraćeni string ide u dnevnik kao summary. */
   run(ctx: JobRunContext): Promise<string | void>;
 }

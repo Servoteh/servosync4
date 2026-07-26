@@ -8,6 +8,8 @@ import { SastanciDispatchService } from "./dispatch/sastanci-dispatch.service";
 import { RetentionJobsService } from "./retention-jobs.service";
 import { RobnoModule } from "../robno/robno.module";
 import { ReservationService } from "../robno/reservation.service";
+import { SyncModule } from "../sync/sync.module";
+import { BigbitMdbJobs } from "../sync/bigbit-mdb-jobs";
 
 /**
  * Talas A — scheduler pogon + registar poslova. Poslovi su tanki pozivi
@@ -29,7 +31,7 @@ import { ReservationService } from "../robno/reservation.service";
 @Module({
   // RobnoModule → ReservationService: dnevno oslobađanje isteklih rezervacija
   // (bez toga `expiresAt` ne radi ništa i rezervacija večno drži zalihu).
-  imports: [Sy15Module, RobnoModule],
+  imports: [Sy15Module, RobnoModule, SyncModule],
   controllers: [SchedulerController],
   providers: [
     SchedulerService,
@@ -48,10 +50,15 @@ export class SchedulerModule implements OnModuleInit, OnApplicationBootstrap {
     private readonly sastanciDispatchJobs: SastanciDispatchService,
     private readonly retentionJobs: RetentionJobsService,
     private readonly reservation: ReservationService,
+    private readonly bigbitMdbJobs: BigbitMdbJobs,
   ) {}
 
   onModuleInit(): void {
     for (const job of this.sy15Jobs.buildJobs()) this.scheduler.register(job);
+    // BigBit .mdb noćni uvoz + jutarnji nadzornik (26.07.2026). Bez ove dve
+    // linije je ceo kanal mrtav kod: `buildJobs()` postoji, ali nikad se ne zove.
+    for (const job of this.bigbitMdbJobs.buildJobs())
+      this.scheduler.register(job);
     for (const job of this.dispatchJobs.buildJobs())
       this.scheduler.register(job);
     for (const job of this.sastanciDispatchJobs.buildJobs())

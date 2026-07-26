@@ -134,9 +134,11 @@ export const PERMISSIONS = {
   PDV_COMPUTE: "pdv.compute",
   // Šifarnici / pregledi (komitenti, predmeti)
   DIRECTORY_READ: "directory.read",
-  // Predmeti write-path + RFQ kupca — 4.0 Traka B (2.0 postaje master za predmete).
-  // write = poslovni administrator kreira/menja predmet; rfq read/write = prodaja.
-  PROJECTS_WRITE: "projects.write",
+  // RFQ kupca (zahtev za ponudu) — 4.0-native, prodaja.
+  // NAPOMENA: `projects.write` je UKLONJEN 26.07.2026 — predmete i komitente vodi
+  // BigBit, ServoSync ih samo čita (odluka vlasnika, vidi modules/directory/bigbit-owned.ts).
+  // Ako se u DB-u zatekne `user_permission_overrides` red sa 'projects.write', on je mrtav:
+  // nijedna ruta ga više ne traži.
   RFQ_READ: "rfq.read",
   RFQ_WRITE: "rfq.write",
   // Sync administracija

@@ -45,6 +45,11 @@ import {
   SetPrioritetMaxDto,
 } from "./dto/podesavanja-predmet.dto";
 import { PredmetPlaneriService } from "./predmet-planeri.service";
+import { SetSyncSwitchDto } from "./dto/podesavanja-sync-switch.dto";
+import {
+  BIGBIT_MDB_SYNC_SWITCH,
+  SyncSwitchService,
+} from "./sync-switch.service";
 import {
   BulkJobPositionProfileDto,
   CreateDepartmentDto,
@@ -83,6 +88,7 @@ export class PodesavanjaController {
     private readonly settings: PodesavanjaService,
     private readonly users: PodesavanjaUsersService,
     private readonly planeri: PredmetPlaneriService,
+    private readonly syncSwitch: SyncSwitchService,
   ) {}
 
   // ----- Korisnici i pristup (settings.users) -----
@@ -534,7 +540,11 @@ export class PodesavanjaController {
     @Param("itemId", ParseIntPipe) itemId: number,
     @Body() dto: SetPredmetPlaneriDto,
   ) {
-    return this.planeri.setForProject(itemId, dto.planerUserIds, req.user.userId);
+    return this.planeri.setForProject(
+      itemId,
+      dto.planerUserIds,
+      req.user.userId,
+    );
   }
 
   @Post("predmet-aktivacija/:itemId")
@@ -567,6 +577,35 @@ export class PodesavanjaController {
   @RequirePermission(PERMISSIONS.SETTINGS_SYSTEM)
   setAiModel(@Req() req: AuthedRequest, @Body() dto: SetAiModelDto) {
     return this.settings.setAiModel(req.user.email, dto.target, dto.model);
+  }
+
+  // ----- Prekidač noćnog BigBit uvoza (stavka B, 26.07.2026) -----
+  // ČITANJE stanja = settings.system (ista kapija kao tab Integracije u kom se prikazuje).
+  // GAŠENJE/PALJENJE = sync.run — administrativna vlast nad sinhronizacijom, NAMERNO odvojena
+  // od običnog čitanja (danas je i jedno i drugo admin-only, ali podela ostaje ispravna kad
+  // se settings.system nekom doda). Bez guarda za `run-now` ovde — to je scheduler ruta;
+  // ugovor je `SyncSwitchService.assertEnabled` koji sinteza zove sa svakog ulaza.
+
+  @Get("sync/bigbit")
+  @RequirePermission(PERMISSIONS.SETTINGS_SYSTEM)
+  bigbitSyncStatus() {
+    return this.syncSwitch.bigbitStatus();
+  }
+
+  @Put("sync/bigbit")
+  @RequirePermission(PERMISSIONS.SYNC_RUN)
+  async setBigbitSyncSwitch(
+    @Req() req: AuthedRequest,
+    @Body() dto: SetSyncSwitchDto,
+  ) {
+    await this.syncSwitch.setEnabled(
+      BIGBIT_MDB_SYNC_SWITCH,
+      dto.enabled,
+      { userId: req.user.userId, email: req.user.email },
+      dto.note,
+    );
+    // Vrati PUNO stanje (ne samo red prekidača) da ekran ne mora drugi poziv posle preklopa.
+    return this.syncSwitch.bigbitStatus();
   }
 
   // ----- :id rute POSLEDNJE -----
