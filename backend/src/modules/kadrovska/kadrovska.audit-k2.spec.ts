@@ -54,7 +54,7 @@ describe("Kadrovska AUDIT-K2 — sigurnost", () => {
       withUser: jest.fn(),
       runIdempotent: jest.fn(),
     };
-    return new MojProfilService(sy15 as never, { send: jest.fn() } as never);
+    return new MojProfilService(sy15 as never, { enabled: false, dispatchKadr: jest.fn() } as never);
   };
 
   // ── IDOR: podnošenje zahteva u tuđe ime ──────────────────────────────────
@@ -164,6 +164,7 @@ describe("Kadrovska AUDIT-K2 — sigurnost", () => {
       sy15 as never,
       { upload: jest.fn(), signUrl: jest.fn(), remove: jest.fn() } as never,
       { configured: true, send: jest.fn() } as never,
+      { enabled: false, dispatchKadr: jest.fn() } as never,
     );
 
     await svc.vacationApprove(EMAIL, SELF, {} as never);
@@ -196,6 +197,7 @@ describe("Kadrovska AUDIT-K2 — sigurnost", () => {
       sy15 as never,
       { upload: jest.fn(), signUrl: jest.fn(), remove: jest.fn() } as never,
       { configured: true, send: jest.fn() } as never,
+      { enabled: false, dispatchKadr: jest.fn() } as never,
     );
 
     await expect(

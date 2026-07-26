@@ -76,6 +76,7 @@ describe("Kadrovska R2 mutacije — write-path guard + idempotencija", () => {
       sy15 as never,
       storage as never,
       mail as never,
+      { enabled: false, dispatchKadr: jest.fn() } as never,
     );
   });
 
@@ -448,6 +449,7 @@ describe("payrollRecompute — integracija (mapTerm/fond wiring, novac)", () => 
       sy15 as never,
       storage as never,
       mail as never,
+      { enabled: false, dispatchKadr: jest.fn() } as never,
     );
   }
 

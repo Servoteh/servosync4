@@ -9,6 +9,8 @@ import {
 import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
 import { jsonSafe } from "../../common/sy15/json-safe";
+import { assertRpcOk } from "../../common/sy15/rpc-ok";
+import { NotifyDispatchService } from "../scheduler/dispatch/notify-dispatch.service";
 import {
   aggregateWorkHoursForMonth,
   gridRedovniUnitsOneDay,
@@ -55,7 +57,10 @@ const REQUEST_MIN_DATE = "2026-05-01";
  */
 @Injectable()
 export class MojProfilService {
-  constructor(private readonly sy15: Sy15Service) {}
+  constructor(
+    private readonly sy15: Sy15Service,
+    private readonly dispatcher: NotifyDispatchService,
+  ) {}
 
   /**
    * Profil header + uloge/override (v_employees_safe email→red + get_my_user_roles DEFINER).
@@ -660,15 +665,11 @@ export class MojProfilService {
 
   /** Best-effort „pulse" edge hr-notify-dispatch (odmah pošalji queued mejlove). Ne baca. */
   private pulseHrDispatch(): void {
-    const base = (
-      process.env.SY15_REST_URL || "https://api.servosync.servoteh.com/rest/v1"
-    ).replace(/\/rest\/v1\/?$/, "");
-    const key = process.env.SY15_SERVICE_KEY;
-    if (!base || !key) return;
-    void fetch(`${base}/functions/v1/hr-notify-dispatch`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${key}`, apikey: key },
-    }).catch(() => undefined);
+    // AUDIT-K3: 3.0 nativni dispečer umesto 1.0 edge `hr-notify-dispatch` — dva
+    // dispečera nad `kadr_notification_log` su slala duple poruke jer claim
+    // (`kadr_dispatch_dequeue`) ostavlja red izborljivim dok prvi šalje.
+    if (!this.dispatcher?.enabled) return;
+    void this.dispatcher.dispatchKadr().catch(() => undefined);
   }
 
   // ---------- GO zahtevi (submit/revise/cancel/delete) ----------
@@ -915,7 +916,9 @@ export class MojProfilService {
           Prisma.sql`SELECT attendance_submit_correction(${empId}::uuid, ${dto.day}::date,
              ${dto.timeIn ?? null}::time, ${dto.timeOut ?? null}::time, ${dto.reason}) AS result`,
         );
-        return jsonSafe(rows[0]?.result ?? null);
+        // AUDIT-K3: RPC odbijenicu vraca kao {ok:false,error} — bez ovoga bi
+        // korisnik dobio potvrdu za korekciju koja se NIJE desila.
+        return assertRpcOk(jsonSafe(rows[0]?.result ?? null));
       },
     );
   }
@@ -1723,7 +1726,9 @@ export class MojProfilService {
           Prisma.sql`SELECT attendance_submit_correction(${employeeId}::uuid, ${dto.day}::date,
              ${dto.timeIn ?? null}::time, ${dto.timeOut ?? null}::time, ${dto.reason}) AS result`,
         );
-        return jsonSafe(rows[0]?.result ?? null);
+        // AUDIT-K3: RPC odbijenicu vraca kao {ok:false,error} — bez ovoga bi
+        // korisnik dobio potvrdu za korekciju koja se NIJE desila.
+        return assertRpcOk(jsonSafe(rows[0]?.result ?? null));
       },
     );
   }

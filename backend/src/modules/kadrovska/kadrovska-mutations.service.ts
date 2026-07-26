@@ -13,6 +13,8 @@ import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
 import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
 import { MailService } from "../../common/mail/mail.service";
+import { NotifyDispatchService } from "../scheduler/dispatch/notify-dispatch.service";
+import { assertRpcOk } from "../../common/sy15/rpc-ok";
 import {
   aggregateWorkHoursForMonth,
   computeEarnings,
@@ -70,6 +72,7 @@ export class KadrovskaMutationsService {
     private readonly sy15: Sy15Service,
     private readonly storage: Sy15StorageService,
     private readonly mail: MailService,
+    private readonly dispatcher: NotifyDispatchService,
   ) {}
 
   // ==========================================================================
@@ -866,16 +869,20 @@ export class KadrovskaMutationsService {
     );
   }
 
-  /* Prisustvo korekcije (attendance_submit_correction — deljen sa D; cancel) */
+  /* Prisustvo korekcije (attendance_submit_correction — deljen sa D; cancel).
+   * ⚠️ AUDIT-K3: RPC NE raise-uje — odbijenicu vraća kao {ok:false, error:'…'}.
+   * Bez `assertRpcOk` to prolazi kao 2xx i korisnik dobije lažnu potvrdu. */
   submitCorrection(email: string, dto: D.SubmitCorrectionDto) {
     return this.mutate(
       email,
       dto.clientEventId,
       "kadr.attendance.correction",
-      (tx) =>
-        this.rpcJson(
-          tx,
-          Prisma.sql`SELECT attendance_submit_correction(${dto.employeeId}::uuid, ${dto.day}::date, ${dto.in ?? null}::time, ${dto.out ?? null}::time, ${dto.reason ?? null}) AS v`,
+      async (tx) =>
+        assertRpcOk(
+          await this.rpcJson(
+            tx,
+            Prisma.sql`SELECT attendance_submit_correction(${dto.employeeId}::uuid, ${dto.day}::date, ${dto.in ?? null}::time, ${dto.out ?? null}::time, ${dto.reason ?? null}) AS v`,
+          ),
         ),
     );
   }
@@ -884,10 +891,12 @@ export class KadrovskaMutationsService {
       email,
       dto.clientEventId,
       "kadr.attendance.cancel_correction",
-      (tx) =>
-        this.rpcJson(
-          tx,
-          Prisma.sql`SELECT attendance_cancel_correction(${id}::uuid) AS v`,
+      async (tx) =>
+        assertRpcOk(
+          await this.rpcJson(
+            tx,
+            Prisma.sql`SELECT attendance_cancel_correction(${id}::uuid) AS v`,
+          ),
         ),
     );
   }
@@ -2100,9 +2109,16 @@ export class KadrovskaMutationsService {
     email: string,
     opts: { assessmentId?: string; cycleId?: string; notifyCreator?: boolean },
   ) {
-    const base = (
-      process.env.ASSESSMENT_PUBLIC_BASE ?? "https://servosync.servoteh.com"
-    ).replace(/\/+$/, "");
+    // ⚠️ AUDIT-K3 (26.07): link pozivnice vodi na 1.0 stranicu `ocena.html`, koja
+    // NE postoji u 3.0 static exportu. Raniji fallback je bio 3.0 host
+    // (`servosync.servoteh.com`), a Cloudflare worker proksira na 1.0 samo
+    // `/m`, `/m/*`, `/assets/*`, `/icons/*` i `/manifest.webmanifest` — pa je
+    // SVAKI ocenjivač (self, peer i leader dobijaju isti link) završavao na 404.
+    // Kampanja se tiho zaglavi: `invited_at` je upisan („pozvano"), a nijedna
+    // ocena ne može da stigne. Zato: bez izričitog `ASSESSMENT_PUBLIC_BASE`
+    // NE ŠALJEMO pozivnice — bolje glasan otkaz nego mejlovi sa mrtvim linkom.
+    const rawBase = process.env.ASSESSMENT_PUBLIC_BASE?.trim();
+    const base = (rawBase ?? "").replace(/\/+$/, "");
 
     // 1) READ faza (RLS): ciklus, ciljne procene, meta (ime zaposlenog + period), rateri.
     const read = await this.mutateRaw(
@@ -2254,6 +2270,14 @@ export class KadrovskaMutationsService {
         s.kind === "self"
           ? "samoprocena (nema email)"
           : `${s.kind} (nema email)`,
+      );
+    }
+    // Brana pred SLANJE (ne pred ceo metod — prazan ciklus i dalje mirno vraća
+    // „Ciklus nema procena"): bez baze linka bismo poslali mejlove sa 404 linkom.
+    if (sendable.length && !base) {
+      throw new ServiceUnavailableException(
+        "ASSESSMENT_PUBLIC_BASE nije podešen — pozivnice za 360° bi vodile na nepostojeću stranicu. " +
+          "Postavi ga na host koji servira `ocena.html` (1.0) pre slanja.",
       );
     }
     for (const r of sendable) {
@@ -2925,39 +2949,34 @@ export class KadrovskaMutationsService {
 
   /**
    * 🔔 „Pošalji čekaće" — ručni dispatch okidač (1.0 triggerHrDispatch,
-   * vacationRequestsTab:117-137). Dispatch ENGINE ostaje 1.0 edge
-   * `hr-notify-dispatch` (doktrina §7.9) — ovo je sinhroni PROXY koji vraća
-   * {processed, sent, failed} za FE toast. Service key NIKAD ne ide na FE.
+   * vacationRequestsTab:117-137). Vraća {processed, sent, failed} za FE toast.
+   *
+   * ⚠️ AUDIT-K3 (26.07): ranije je ovo bio HTTP proxy na 1.0 edge
+   * `hr-notify-dispatch`, dok je 3.0 IMAO sopstveni posao `kadr-notify-dispatch`
+   * nad ISTIM outboxom → DVA dispečera. `kadr_dispatch_dequeue` NIJE bezbedan za
+   * dva potrošača: `FOR UPDATE SKIP LOCKED` drži samo claim transakciju, a claim
+   * ostavlja `status='queued'` i NE pomera `next_attempt_at`, pa čim commit-uje
+   * red opet zadovoljava uslov izbora — dok prvi šalje, drugi ga pokupi i pošalje
+   * PONOVO (do attempts cap-a 8). Rezultat: duple HR poruke (mejl + WhatsApp) na
+   * odluke o GO, obračun sati i tabele knjigovođi.
+   * Sada oba puta idu kroz ISTI 3.0 dispečer — bez HTTP skoka, bez
+   * SY15_SERVICE_KEY i bez zavisnosti od 1.0 (korak ka F5 gašenju mosta).
    */
   async dispatchNotifications(): Promise<{ data: unknown }> {
-    const base = (
-      process.env.SY15_REST_URL || "https://api.servosync.servoteh.com/rest/v1"
-    ).replace(/\/rest\/v1\/?$/, "");
-    const key = process.env.SY15_SERVICE_KEY;
-    if (!key) {
+    if (!this.dispatcher.enabled) {
       throw new ServiceUnavailableException(
-        "SY15_SERVICE_KEY nije konfigurisan — dispatch proxy nedostupan",
+        "DISPATCH_ENABLED nije uključen — slanje je isključeno na ovom okruženju.",
       );
     }
-    const res = await fetch(`${base}/functions/v1/hr-notify-dispatch`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${key}`, apikey: key },
-    }).catch((e: unknown) => {
-      throw new BadGatewayException(
-        `hr-notify-dispatch nedostupan: ${String(e)}`,
-      );
-    });
-    const txt = await res.text();
-    if (!res.ok) {
-      throw new BadGatewayException(
-        `hr-notify-dispatch HTTP ${res.status}: ${txt.slice(0, 200)}`,
-      );
-    }
-    try {
-      return { data: JSON.parse(txt) as unknown };
-    } catch {
-      return { data: { ok: true, processed: 0, sent: 0, failed: 0 } };
-    }
+    const r = await this.dispatcher.dispatchKadr();
+    return {
+      data: {
+        ok: true,
+        processed: r.processed,
+        sent: r.sent,
+        failed: r.failed,
+      },
+    };
   }
 
   /** Ručni okidači (DEFINER; jedini legalni upis u outbox, G10). Dispatch = pozadina. */
@@ -3337,15 +3356,12 @@ export class KadrovskaMutationsService {
 
   /** Best-effort „pulse" edge hr-notify-dispatch (obrazac moj-profil §7.9). Ne baca. */
   private pulseHrDispatch(): void {
-    const base = (
-      process.env.SY15_REST_URL || "https://api.servosync.servoteh.com/rest/v1"
-    ).replace(/\/rest\/v1\/?$/, "");
-    const key = process.env.SY15_SERVICE_KEY;
-    if (!base || !key) return;
-    void fetch(`${base}/functions/v1/hr-notify-dispatch`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${key}`, apikey: key },
-    }).catch(() => undefined);
+    // AUDIT-K3: ide kroz 3.0 dispečer (ranije 1.0 edge → dva dispečera nad istim
+    // outboxom → duple poruke; obrazloženje u `dispatchNotifications`).
+    // Poštuje DISPATCH_ENABLED isto kao cron posao. Ne baca — mutacija je već
+    // commit-ovana, pad slanja je ne sme oboriti (cron pokupi red).
+    if (!this.dispatcher.enabled) return;
+    void this.dispatcher.dispatchKadr().catch(() => undefined);
   }
 
   /** OBAVEZNO idempotentna mutacija (kreiranje) — clientEventId je zahtevan. */

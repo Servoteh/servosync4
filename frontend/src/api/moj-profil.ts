@@ -198,7 +198,8 @@ export interface TalkCorrectivePlan {
   followup_date: string | null;
   measures: TalkMeasure[];
 }
-export type TalkDetail = {
+/** Jedan red `employee_talks` (snake_case — BE ga vraća kao sirov red iz baze). */
+export type TalkRecord = {
   id: string;
   talk_type?: string;
   title?: string | null;
@@ -211,8 +212,23 @@ export type TalkDetail = {
   raise_percent?: number | null;
   raise_effective_from?: string | null;
   raise_note?: string | null;
+};
+
+/**
+ * Odgovor `GET /moj-profil/talks/:id`.
+ *
+ * ⚠️ AUDIT-K3 (26.07): BE gnezdi red razgovora pod ključ `talk`, a ovaj tip je
+ * ranije bio RAVAN uz `& Record<string, unknown>` — taj catch-all je ugasio
+ * proveru tipova, pa je modal čitao `d.zapisnik_md` (uvek `undefined`) umesto
+ * `d.talk.zapisnik_md`. Posledica: zaposleni je otvarao „zapisnik" i video
+ * prazno, a blok „Odluka o zaradi" (procenat povišice, datum, obrazloženje) se
+ * uopšte nije renderovao. Catch-all je namerno UKLONJEN da tsc hvata ovaj drift.
+ */
+export type TalkDetail = {
+  talk: TalkRecord;
   correctivePlans?: TalkCorrectivePlan[];
-} & Record<string, unknown>;
+  correctiveMeasures?: unknown[];
+};
 
 export interface Expectation {
   id: string;

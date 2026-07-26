@@ -38,7 +38,11 @@ import { ReservationService } from "../robno/reservation.service";
     SastanciDispatchService,
     RetentionJobsService,
   ],
-  exports: [SchedulerService],
+  // NotifyDispatchService se izvozi da bi Kadrovska/Moj profil mogli da okinu
+  // ISTI dispečer sinhrono („Pošalji čekaće" / pulse posle mutacije) umesto da
+  // zovu 1.0 edge `hr-notify-dispatch` — dva dispečera nad istim outboxom su
+  // slala duple poruke (AUDIT-K3).
+  exports: [SchedulerService, NotifyDispatchService],
 })
 export class SchedulerModule implements OnModuleInit, OnApplicationBootstrap {
   constructor(
