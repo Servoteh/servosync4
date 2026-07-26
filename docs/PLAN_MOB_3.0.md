@@ -66,9 +66,10 @@ Moja istorija) + kartice za sve novo. Popravka: `mob/sastanci` write dugmad iza
 
 ### Otvorene permisijske ODLUKE (Nenad) — ne implementirati unapred
 
-1. **Reversi self-return**: sme li radnik bez `reversi.manage` da vrati SOPSTVENO
-   zaduženje (1.0 „brzo vraćanje")? Danas 403; mobilni prikazuje „preko magacionera".
-   (Usput zatečen desktop defekt: dugmad vidljiva svima → 403 na potvrdi.)
+1. ✅ **Reversi self-return — PRESUĐENO 26.07 (Nenad): NE.** Radnik nikad ne vraća sam;
+   magacioner potvrđuje i vraća umesto njega (`reversi.manage`). Mobilni je već bio
+   takav; desktop defekt (dugmad „Brzi povraćaj"/„Vrati rezni" vidljiva svima → 403)
+   ispravljen istog dana — sva tri dugmeta u „Moji alati" iza `reversi.manage`.
 2. **Onboarding self-check**: treba nov `PATCH /v1/profile/onboarding/tasks/:id`
    (profile.self, „own run" RLS) — danas štiklira samo HR (`kadrovska.manage`).
 3. **Sastanci**: (a) promena statusa SOPSTVENE akcione tačke pod `sastanci.read`?

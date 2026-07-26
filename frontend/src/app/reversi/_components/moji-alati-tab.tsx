@@ -117,8 +117,10 @@ export function MojiAlatiTab() {
   const machinesCutting = useMyMachinesCutting();
   const openLines = useMyCuttingOpenLines();
 
-  // RB-43/44 — FAB dugmad (paritet 1.0 mojaZaduzenja): brzi povraćaj (sken→vrati) svima,
-  // povraćaj reznog i „Izdaj alat" po pravu.
+  // RB-43/44 — FAB dugmad. ODLUKA 26.07 (Nenad): radnik NIKAD ne vraća sam —
+  // magacioner potvrđuje i vraća umesto njega, pa su SVA tri dugmeta iza
+  // reversi.manage (1.0 „brzi povraćaj svima" paritet ukinut; backend ionako
+  // vraća 403 bez manage — dugmad „svima" su bila zatečeni defekt).
   const [quickReturnOpen, setQuickReturnOpen] = useState(false);
   const [cuttingReturnOpen, setCuttingReturnOpen] = useState(false);
   const [issueOpen, setIssueOpen] = useState(false);
@@ -194,16 +196,22 @@ export function MojiAlatiTab() {
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center gap-2">
-        <Button onClick={() => setQuickReturnOpen(true)}>
-          <ScanLine className="mr-1 h-4 w-4" aria-hidden /> Brzi povraćaj
-        </Button>
-        <Button variant="secondary" onClick={() => setCuttingReturnOpen(true)}>
-          <ScanLine className="mr-1 h-4 w-4" aria-hidden /> Vrati rezni alat
-        </Button>
-        {manage && (
-          <Button variant="secondary" onClick={() => setIssueOpen(true)}>
-            <PackagePlus className="mr-1 h-4 w-4" aria-hidden /> Izdaj alat
-          </Button>
+        {manage ? (
+          <>
+            <Button onClick={() => setQuickReturnOpen(true)}>
+              <ScanLine className="mr-1 h-4 w-4" aria-hidden /> Brzi povraćaj
+            </Button>
+            <Button variant="secondary" onClick={() => setCuttingReturnOpen(true)}>
+              <ScanLine className="mr-1 h-4 w-4" aria-hidden /> Vrati rezni alat
+            </Button>
+            <Button variant="secondary" onClick={() => setIssueOpen(true)}>
+              <PackagePlus className="mr-1 h-4 w-4" aria-hidden /> Izdaj alat
+            </Button>
+          </>
+        ) : (
+          <p className="text-xs text-ink-secondary">
+            Vraćanje i izdavanje alata ide preko magacionera — ovde samo pregledaš svoja zaduženja.
+          </p>
         )}
       </div>
 
