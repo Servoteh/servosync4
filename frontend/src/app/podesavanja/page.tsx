@@ -66,7 +66,7 @@ const TAB_DEFS: { key: TabKey; label: string; requires: Permission }[] = [
  * Tabovi Mašine + Održ. profili NE sele se u D (Talas F). Vidljivost tabova = per-permisija.
  */
 export default function PodesavanjaPage() {
-  const { user, isLoading, can } = useAuth();
+  const { user, isLoading, can, permissionsPending } = useAuth();
   const router = useRouter();
 
   const visibleTabs = useMemo(() => TAB_DEFS.filter((t) => can(t.requires)), [can]);
@@ -89,16 +89,22 @@ export default function PodesavanjaPage() {
     if (visibleTabs.length && !visibleTabs.some((t) => t.key === tab)) setTab(visibleTabs[0].key);
   }, [visibleTabs, tab, setTab]);
 
-  if (isLoading || !user) {
+  // Čeka i `permissionsPending`: `/auth/me` i `/auth/me/permissions` su dva paralelna upita
+  // (isLoading ne pokriva drugi), a dok dozvole stižu `visibleTabs` je prazan — bez ovoga bi
+  // svakom korisniku bljesnula poruka „nemate pristup". Od F1 nalaza 2 modul vide SVI
+  // (bar „Izgled"), pa je taj bljesak sad ulaz koji svako koristi.
+  if (isLoading || permissionsPending || !user) {
     return <main className="grid flex-1 place-items-center text-sm text-ink-secondary">Učitavanje…</main>;
   }
 
+  // Fail-closed grana: uloga bez ijedne od 14 tab-permisija. `profile.self` („Izgled") ima
+  // svaka uloga u katalogu, pa se ovde stiže samo ako dozvole nisu stigle/uloga je nepoznata.
   if (visibleTabs.length === 0) {
     return (
       <AppShell>
         <PageHeader title="Podešavanja" />
         <div className="grid flex-1 place-items-center p-6 text-sm text-ink-secondary">
-          Podešavanja su dostupna korisnicima sa admin / menadžment / pm / lead pm rolom.
+          Nemate pristup nijednom odeljku Podešavanja.
         </div>
       </AppShell>
     );

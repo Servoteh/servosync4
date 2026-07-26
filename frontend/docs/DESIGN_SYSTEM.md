@@ -92,6 +92,17 @@
   `hrefPath()`, a aktivnost traži i da svi query parovi postoje u tekućem URL-u.
   Query se čita iz `window.location.search` (nikad `useSearchParams` — static export).
   U dnu punog sidebara stoji diskretno **„Razgranaj sve / Skupi sve"** (prevrće se po stanju).
+* **Vidljivost u nav-u (RBAC) — tri pravila, jedan izvor** (`navigation.ts`, F1 26.07.2026):
+  modul se filtrira `canAccessNavModule` (`requires` = jedna permisija; **`requiresAny` = OR i
+  ima prednost**), podstavka `visibleNavChildren` (**dete bez `requires` nasleđuje roditelja**,
+  dete sa `requires` je stroži gate — npr. admin tabovi). Modul čija deca nose RAZLIČITE
+  permisije (Podešavanja: admin konzola + „Izgled" za svakoga) dobija `requiresAny` = **unija
+  `requires` vrednosti dece**, pa je vidljiv kad je vidljivo bar jedno dete. Vidljivost se
+  NE izvodi automatski iz `children` — dete bez `requires` je „nasledi roditelja", pa bi
+  izvedeno pravilo otvorilo module tipa Sastanci/Održavanje svima. Sve troje čitaju sidebar
+  (3 layouta + rail flyout), hub `/pocetna` i Ctrl+K paleta — nema lokalnih kopija gate-a.
+  Nav krije samo afordanse; rutu i podatke čuva backend guard, a strana ekran bez prava
+  **tiho preusmerava** na prvi dostupan tab (bez poruke — obrazac guard-redirecta).
 * **Tab strane = query parametar, obavezno kroz `useQueryTab`** (`src/lib/use-query-tab.ts`, F1):
   strana koja ima tabove/poglede drži izabrani tab u `?tab=`/`?view=`, nikad u golom
   `useState`. Hook čita param na mount-u, sluša `popstate` i custom event **`servosync:nav`**,

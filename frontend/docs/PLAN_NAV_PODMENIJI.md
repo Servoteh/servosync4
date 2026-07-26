@@ -125,6 +125,29 @@ dostupnim (admin) tabovima**. Moduli sa 2–4 taba zadržavaju tab-traku (podmen
   permisijski gate — `?tab=` **već radi** (sa 1.0 alias-ima). Ovo rešava i najskrivenije
   ekrane u aplikaciji (admin tabovi iza ⚙ dropdown-a). AI bez izmene.
 
+> **PRESUĐENO/IZVEDENO 26.07.2026 (F1 nalaz 1) — gate ⚙ sekcija = `sastanci.edit`.**
+> F1 je decu isporučio BEZ gate-a jer ga ni strana nije imala (⚙ meni je prikazivao svih 6
+> ekrana svakome sa `sastanci.read` — paritet 1.0, koje ih takođe ne gejtuje). Izabrana je
+> POSTOJEĆA permisija **`sastanci.edit`** = 1.0 `canEdit()` / `has_edit_role` krug (admin,
+> menadzment, pm, leadpm, hr, poslovni_admin) — jedini krug koji sme da mutira ono što ti
+> ekrani nude; backend to već drži (`@RequirePermission(SASTANCI_EDIT)` na templates CRUD,
+> teme, `draft-review`/`uvedi`, `admin-rang`, `dodeli`; `manage` i `ai_model` su još uže).
+> Gate je primenjen na TRI mesta iz jednog izvora (`ADMIN_ITEMS` u `sastanci/page.tsx`,
+> ogledalo u `navigation.ts`): (a) ⚙ dropdown prikazuje samo dozvoljene stavke i **nestaje**
+> kad ih nema; (b) deep-link `?tab=sabloni` bez prava = **tihi redirect** na „Pregled"
+> (`setTab` → `replaceState`, bez poruke — obrazac iz `podesavanja/page.tsx`); (c) 5 admin
+> dece u nav modelu nosi `requires`. Uz to prečice sa „Pregleda" ka „PM temama" (KPI pločica
+> i „Moje teme → Sve") prate isti gate, da ih guard ne bi nemo vraćao.
+> **IZUZETAK — „Podešavanja" ostaje bez gate-a:** to nisu admin podešavanja nego LIČNA
+> podešavanja mejl-obaveštenja (`PATCH /sastanci/prefs` je self-service, gejtovan samo
+> `sastanci.read` uz RLS po email claim-u; paritet 1.0 `podesavanjaNotifikacijaTab`). Gate na
+> `edit` bi učesniku bez edit prava oduzeo kontrolu nad SOPSTVENIM mejlovima, a drugog ulaza
+> nema. AI model unutar taba već ima svoj `Can` (`sastanci.ai_model`). Ostaje otvoreno da li
+> taj tab treba izvaditi iz ⚙ „Admin sekcija" u glavnu tab-traku (kozmetika, F3).
+> **Backend NIJE diran** — mutacije su već pokrivene; `GET` rute (teme/templates/arhive/
+> draft) namerno stoje na `sastanci.read` uz row-scope RLS, pa je ovo čisto skrivanje
+> afordansi (uloga bez `edit` i dalje SME da pročita te podatke ako pogodi API).
+
 ### 3.9 Prodaja i nabavka
 - **Danas:** 7 stavki ravno (fakturisanje ×3 + robno ×3 + nabavka) — već „razliveno".
 - **Predlog (kozmetika, postojeći model):** dve pod-grupe (`NavSubGroup`):
@@ -153,6 +176,34 @@ dostupnim (admin) tabovima**. Moduli sa 2–4 taba zadržavaju tab-traku (podmen
   **Zahtevi**: admin podmeni (Inbox · Svi · Nagrade · Odluke · Arhiva) samo uz admin gate;
   ne-admin bez podmenija (vidi samo „Moji zahtevi") — F3, traži čist permisijski uslov.
   Komitenti/Predmeti/Sinhronizacije bez izmene.
+
+> **PRESUĐENO/IZVEDENO 26.07.2026 (F1 nalaz 2) — Podešavanja vidi SVAKI prijavljen korisnik.**
+> F1 je modul ostavio na `settings.org_profile`, pa običan korisnik nije video ni „Izgled"
+> (ulaz mu je bio samo deep-link iz „Moj profil") — protivno presudi „vidi samo Izgled".
+> Rešenje: modul dobija **`requiresAny`** = unija `requires` vrednosti svojih 14 dece
+> (`settings.users`, `settings.org_profile`, `settings.predmet_aktivacija`, `settings.system`,
+> `settings.audit`, `profile.self`), a `requires: settings.org_profile` ostaje konzervativni
+> fallback (isti obrazac kao pogonski `/kiosk`). Ishod: admin/menadzment/pm/leadpm vide punu
+> konzolu kao i dosad; svaka druga uloga vidi modul sa **jedinim detetom „Izgled"**
+> (`profile.self` dobija SVAKA uloga u `role-permissions.ts`); nalog bez ijedne od tih
+> permisija ne vidi ništa.
+> **Zašto `requiresAny`, a ne izvedeno „vidljiv ako je vidljivo bar jedno dete":** `children`
+> mešaju dve semantike — dete BEZ `requires` znači „nasledi roditelja" (`visibleNavChildren`
+> ga propušta bezuslovno), pa bi izvedeno pravilo otvorilo Sastanke i Održavanje (čija su deca
+> uglavnom bez `requires`) SVIMA. `requiresAny` je uz to već postojao u modelu i već ga
+> poštuje `canAccessNavModule` — jedan izvor istine za sidebar (3 layouta + rail flyout),
+> hub `/pocetna`, Ctrl+K paletu i „Omiljeno" (`resolveFavoriteModules`); nula izmena kod
+> potrošača. `moduleOptions()` u Zahtevima NE filtrira po permisiji (namerno — spisak modula
+> za prijavu greške), pa je i tamo bez posledica.
+> **Href modula ostaje `/podesavanja`**, a klik korisnika bez prava na podrazumevani tab
+> („Korisnici") strana **tiho koriguje** na prvi dostupan tab — guard efekat iz F1 (`useEffect`
+> nad `visibleTabs` u `podesavanja/page.tsx`) je proveren i radi bez izmene; „Izgled" je za
+> takvog korisnika jedini vidljiv tab, pa se tab-traka svede na njega.
+> Jedina dopuna u strani: čekanje na **`permissionsPending`** (`/auth/me` i
+> `/auth/me/permissions` su dva paralelna upita, `isLoading` ne pokriva drugi) — dok dozvole
+> stižu `visibleTabs` je prazan, pa je do sada bljeskala poruka „nemate pristup"; to je od sad
+> ulaz koji koristi SVAKI korisnik. Sama poruka je prevedena u fail-closed formulaciju
+> („Nemate pristup nijednom odeljku Podešavanja."), jer nabrajanje rola više nije tačno.
 
 ### 3.12 Šta svesno NE dobija podmeni
 `/pdm`, `/mrp`, `/part-locations`, `/glavna-knjiga`, `/sef`, `/kamata`, `/handovers`,
@@ -248,10 +299,10 @@ podstavku dok si VEĆ u modulu ne bi uradio ništa.
   8, Sastanci 4+6; T-kodovi `POD-*`/`ODR-*`/`SAS-*`. „Razgranaj sve / Skupi sve" u dnu punog
   sidebara (persist kroz `openDomains`/`openModules`). E2E `tests/nav-podmeni.spec.ts` (projekat
   `nav`) — NIJE izvršen (paket cilja PROD, gde F1 još nije deploy-ovan).
-  ⚠️ **Zapažanja za F2/F3:** (a) ⚙ meni sastanaka u strani NEMA permisijski gate — deca su zato
-  bez `requires` (plan §3.8 je pretpostavljao gate; presuditi zasebno); (b) modul „Podešavanja"
-  stoji na `settings.org_profile`, pa običan korisnik ne vidi ni „Izgled" u meniju (ulaz mu
-  ostaje deep-link iz „Moj profil") — za §3.11 „vidi samo Izgled" treba proširiti gate modula;
+  ⚠️ **Zapažanja za F2/F3:** ~~(a) ⚙ meni sastanaka u strani NEMA permisijski gate~~ i
+  ~~(b) modul „Podešavanja" stoji na `settings.org_profile`, pa običan korisnik ne vidi ni
+  „Izgled"~~ — **oba REŠENA 26.07.2026** (nalazi 1 i 2; presude uz §3.8 i §3.11: ⚙ sekcije na
+  `sastanci.edit` uz tihi guard-redirect, Podešavanja na `requiresAny`);
   (c) ostalih 8 tabova Održavanja Ctrl+K nalazi samo kroz roditeljeve `keywords` (sleće na
   modul, ne na tačan tab) — skok na tab traži da postanu deca ili novu mašineriju; (d) URL se
   NE normalizuje na mount-u, pa go `/odrzavanje` (bez `?tab=`) pali highlight roditelja, ne

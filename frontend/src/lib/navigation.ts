@@ -81,8 +81,13 @@ export interface NavModule {
   requires?: Permission;
   /**
    * Vidljiv ako uloga ima BILO KOJU od ovih permisija (OR). Ima prednost nad
-   * `requires` kad je zadat (koristi ga `canAccessNavModule`). Za stavke koje pripadaju
-   * ukrštenim krugovima — npr. pogonski /kiosk (kvalitet ILI tehnologija).
+   * `requires` kad je zadat (koristi ga `canAccessNavModule`). Dva slučaja:
+   *  • stavka pripada ukrštenim krugovima — npr. pogonski /kiosk (kvalitet ILI tehnologija);
+   *  • modul čija DECA nose različite permisije, pa je modul vidljiv kad je vidljivo bar jedno
+   *    dete — npr. „Podešavanja" (admin konzola ILI samo „Izgled" za svakog prijavljenog).
+   *    Tada je `requiresAny` UNIJA `requires` vrednosti dece i drži se ručno u koraku sa njima
+   *    (vidljivost se NE izvodi iz `children`: dete BEZ `requires` nasleđuje roditelja, pa bi
+   *    izvedeno pravilo otvorilo module tipa Sastanci/Održavanje svima — vidi `visibleNavChildren`).
    */
   requiresAny?: Permission[];
   /** Ruta „širokog" ekrana (Gantt) — sidebar se auto-sklanja (F1). */
@@ -307,23 +312,30 @@ export const NAV_DOMAINS: NavDomain[] = [
         icon: CalendarClock,
         requires: PERMISSIONS.SASTANCI_READ,
         keywords: ['sastanci', 'meeting'],
-        // PODMENIJI F1 (§3.8): 4 glavna taba + 6 admin tabova koji su danas skriveni iza ⚙
+        // PODMENIJI F1 (§3.8): 4 glavna taba + 6 tabova koji su danas skriveni iza ⚙
         // dropdown-a — najskriveniji ekrani u aplikaciji. Ključevi `?tab=` su iz strane
         // (MainKey/AdminKey u sastanci/page.tsx); stari 1.0 id-jevi (dashboard, akcioni-plan,
         // pregled-projekti, podesavanja-notif) idu u `keywords` da Ctrl+K nalazi i po njima —
         // sam deep-link ih i dalje prevodi TAB_DEEPLINK_ALIAS mapom u strani.
-        // Bez `requires`: strana ⚙ meni NE gejtuje dodatno (ceo modul stoji na sastanci.read),
-        // pa bi stroži gate u meniju sakrio ekrane koje strana i dalje nudi.
+        //
+        // GATE (F1 nalaz 1, 26.07): 5 admin ekrana stoji na `sastanci.edit` — to je 1.0
+        // `canEdit()` / `has_edit_role` krug (admin/menadzment/pm/leadpm/hr/poslovni_admin) i
+        // JEDINI krug koji sme da mutira ono što ti ekrani nude (backend: `@RequirePermission
+        // (SASTANCI_EDIT)` na templates CRUD, teme, draft-review/uvedi, admin-rang, dodeli).
+        // „Podešavanja" NAMERNO ostaje bez `requires`: to su LIČNA podešavanja mejl-obaveštenja
+        // (`PATCH /sastanci/prefs` je self-service, gejtovan samo `sastanci.read` + RLS po
+        // email claim-u), a AI model unutar njega već ima svoj `Can` (sastanci.ai_model).
+        // Izvor istine za isti gate u strani = `ADMIN_ITEMS` u sastanci/page.tsx.
         children: [
           { label: 'Pregled', href: '/sastanci?tab=pregled', keywords: ['pregled', 'dashboard', 'SAS-PR'] },
           { label: 'Sastanci', href: '/sastanci?tab=sastanci', keywords: ['lista sastanaka', 'termini', 'SAS-SA'] },
           { label: 'Moj rad', href: '/sastanci?tab=moj-rad', keywords: ['moj rad', 'moje teme', 'moje obaveze', 'SAS-MR'] },
           { label: 'Akcioni plan', href: '/sastanci?tab=akcioni', keywords: ['akcioni plan', 'akcioni-plan', 'zadaci', 'SAS-AP'] },
-          { label: 'PM teme', href: '/sastanci?tab=pm-teme', keywords: ['pm teme', 'teme projektnih menadzera', 'SAS-PM'] },
-          { label: 'Po projektu', href: '/sastanci?tab=po-projektu', keywords: ['po projektu', 'pregled-projekti', 'predmeti', 'SAS-PP'] },
-          { label: 'Draft teme', href: '/sastanci?tab=draft-teme', keywords: ['draft teme', 'nacrti tema', 'SAS-DT'] },
-          { label: 'Šabloni', href: '/sastanci?tab=sabloni', keywords: ['sabloni', 'template', 'SAS-SB'] },
-          { label: 'Arhiva', href: '/sastanci?tab=arhiva', keywords: ['arhiva', 'stari sastanci', 'SAS-AR'] },
+          { label: 'PM teme', href: '/sastanci?tab=pm-teme', requires: PERMISSIONS.SASTANCI_EDIT, keywords: ['pm teme', 'teme projektnih menadzera', 'SAS-PM'] },
+          { label: 'Po projektu', href: '/sastanci?tab=po-projektu', requires: PERMISSIONS.SASTANCI_EDIT, keywords: ['po projektu', 'pregled-projekti', 'predmeti', 'SAS-PP'] },
+          { label: 'Draft teme', href: '/sastanci?tab=draft-teme', requires: PERMISSIONS.SASTANCI_EDIT, keywords: ['draft teme', 'nacrti tema', 'SAS-DT'] },
+          { label: 'Šabloni', href: '/sastanci?tab=sabloni', requires: PERMISSIONS.SASTANCI_EDIT, keywords: ['sabloni', 'template', 'SAS-SB'] },
+          { label: 'Arhiva', href: '/sastanci?tab=arhiva', requires: PERMISSIONS.SASTANCI_EDIT, keywords: ['arhiva', 'stari sastanci', 'SAS-AR'] },
           { label: 'Podešavanja', href: '/sastanci?tab=podesavanja', keywords: ['podesavanja sastanaka', 'podesavanja-notif', 'notifikacije', 'SAS-PD'] },
         ],
       },
@@ -400,19 +412,29 @@ export const NAV_DOMAINS: NavDomain[] = [
     icon: SlidersHorizontal,
     modules: [
       // Podešavanja (3.0 TALAS D) — RBAC admin konzola + matični + sistem.
-      // Vidljivost = settings.org_profile (admin/menadzment/pm/leadpm = 1.0
-      // canAccessPodesavanja); admin-only tabovi se dodatno gejtuju u samoj strani.
+      // Vidljivost (F1 nalaz 2, presuda §3.11): modul se vidi ako uloga sme BAR JEDAN tab —
+      // admin/menadzment/pm/leadpm vide punu konzolu, a SVAKI prijavljen korisnik vidi modul
+      // sa jedinim detetom „Izgled" (`profile.self` ima svaka uloga). `requiresAny` je UNIJA
+      // `requires` vrednosti dece (drži se u koraku sa `children` ispod); `requires` ostaje
+      // KONZERVATIVNI fallback za potrošača koji bi još radio `!requires || can(requires)`.
       {
         label: 'Podešavanja',
         href: '/podesavanja',
         icon: SlidersHorizontal,
         requires: PERMISSIONS.SETTINGS_ORG_PROFILE,
+        requiresAny: [
+          PERMISSIONS.SETTINGS_USERS,
+          PERMISSIONS.SETTINGS_ORG_PROFILE,
+          PERMISSIONS.SETTINGS_PREDMET_AKTIVACIJA,
+          PERMISSIONS.SETTINGS_SYSTEM,
+          PERMISSIONS.SETTINGS_AUDIT,
+          PERMISSIONS.PROFILE_SELF,
+        ],
         keywords: ['podesavanja', 'settings', 'rbac', 'izgled', 'tema'],
         // PODMENIJI F1 (§3.11): svih 14 tabova, svaki sa SVOJOM permisijom — ogledalo
         // `TAB_DEFS` iz podesavanja/page.tsx (izvor istine je strana, ne ovaj model).
-        // NAPOMENA: sam modul stoji na `settings.org_profile`, pa korisnik bez te permisije
-        // ne vidi ni „Izgled" u meniju — njegov ulaz ostaje deep-link `?tab=izgled` iz „Moj
-        // profil". Širenje gate-a modula (`requiresAny`) je zasebna odluka, ne F1.
+        // Korisnik bez ijedne settings.* permisije vidi u podmeniju SAMO „Izgled", a klik na
+        // sam modul strana koriguje na prvi dostupan tab (guard efekat u podesavanja/page.tsx).
         children: [
           { label: 'Korisnici', href: '/podesavanja?tab=korisnici', requires: PERMISSIONS.SETTINGS_USERS, keywords: ['korisnici', 'nalozi', 'users', 'POD-KO'] },
           { label: 'Uloge i dozvole', href: '/podesavanja?tab=uloge', requires: PERMISSIONS.SETTINGS_USERS, keywords: ['uloge', 'dozvole', 'permisije', 'role', 'rbac', 'POD-UL'] },
