@@ -250,6 +250,21 @@ export class KadrovskaMutationsController {
   gridBatch(@Req() req: AuthedRequest, @Body() dto: D.GridBatchDto) {
     return this.m.gridBatch(this.email(req), dto);
   }
+
+  /**
+   * Zaključaj / otključaj potvrđene dane grida (AUDIT-K7c, odluka Nenad 26.07:
+   * „radi zaključavanje, a Nikola i admini svi mogu otključati i izmeniti naknadno").
+   *
+   * Gejt je `kadrovska.grid_edit` — to je DB allowlist u kojoj je Nikola; admini
+   * je imaju kroz istu allowlistu ili kroz rolu. Brava je 3.0-strana (tabela
+   * `kadr_grid_day_locks` u 3.0 bazi) jer je sy15 `work_hours` deljen sa ŽIVIM
+   * 1.0 i njegova šema se ne dira — dok 1.0 radi, on bravu NE vidi.
+   */
+  @Post("grid/lock")
+  @RequirePermission(PERMISSIONS.KADROVSKA_GRID_EDIT)
+  gridLock(@Req() req: AuthedRequest, @Body() dto: D.GridLockDto) {
+    return this.m.gridLockDays(this.email(req), dto);
+  }
   @Post("grid/go/set")
   @RequirePermission(PERMISSIONS.KADROVSKA_GRID_EDIT)
   gridSetGo(@Req() req: AuthedRequest, @Body() dto: D.GridGoDto) {

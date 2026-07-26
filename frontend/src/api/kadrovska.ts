@@ -1756,6 +1756,28 @@ export function useAttendanceVsGrid(params: { employeeId?: string; from?: string
   });
 }
 
+/** Zaključaj / otključaj potvrđene dane grida (AUDIT-K7c). `unlock: true` skida
+ *  bravu — sme urednik grida (Nikola) i admin, i tek tada smeju da izmene dan. */
+export const useGridLock = () =>
+  useKadrMutation<{
+    days: { employeeId: string; workDate: string }[];
+    unlock?: boolean;
+    note?: string;
+    clientEventId?: string;
+  }>((v) => post('/grid/lock', v), KEYS.grid);
+
+/** „Prisustvo vs grid" za CEO tim u periodu (bez employeeId) — osnova bloka
+ *  „Zahteva pažnju" u Prisustvo → Za potvrdu (AUDIT-K7c). BE ruta oduvek prima
+ *  prazan employeeId; postojeći hook ga je tražio jer je služio drill-u po radniku. */
+export function useAttendanceVsGridAll(params: { from?: string; to?: string } = {}, enabled = true) {
+  return useQuery({
+    queryKey: [...KEYS.attendance, 'vs-grid-all', params],
+    enabled,
+    retry: false,
+    queryFn: () => apiFetch<{ data: ViewRow[] }>(`${BASE}/attendance/vs-grid${qs({ ...params })}`),
+  });
+}
+
 /** Trajni QR token (get-or-create u employee_badges, „SVK-…" format; gate
  *  kadrovska.attendance_shadow — hr/menadzment/admin, posle P1a fixa). Vraća ISTI
  *  token pri ponovnom pozivu — nalepnice ostaju važeće i kiosk ih razrešava.

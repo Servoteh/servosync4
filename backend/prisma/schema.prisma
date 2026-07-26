@@ -3117,9 +3117,9 @@ model DunningNotice {
   overdueAmount Decimal @default(0) @map("overdue_amount") @db.Decimal(19, 4) // dospelo u trenutku slanja
   daysOverdue   Int?    @map("days_overdue") // najstarije kašnjenje u danima
 
-  sentTo   String? @map("sent_to") @db.VarChar(255) // primalac (mejl)
-  sentOk   Boolean @default(false) @map("sent_ok") // false = DRY-RUN ili neuspeh
-  note     String? @map("note") @db.VarChar(500)
+  sentTo String? @map("sent_to") @db.VarChar(255) // primalac (mejl)
+  sentOk Boolean @default(false) @map("sent_ok") // false = DRY-RUN ili neuspeh
+  note   String? @map("note") @db.VarChar(500)
 
   sentByUserId Int?     @map("sent_by_user_id")
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -3303,9 +3303,9 @@ model StockLevel {
 /// Izvor istine za `rezervisano` je OVA tabela (agregat otvorenih redova), ne denormalizovani
 /// StockLevel.reserved (legacy snapshot koji niko ne održava). Raspoloživo = onHand − Σ(open).
 model StockReservation {
-  id          Int    @id(map: "pk_stock_reservations") @default(autoincrement()) @map("id")
-  itemId      Int    @map("item_id") // meki ref items.id
-  warehouseId Int    @map("warehouse_id") // meki ref warehouses.id
+  id          Int @id(map: "pk_stock_reservations") @default(autoincrement()) @map("id")
+  itemId      Int @map("item_id") // meki ref items.id
+  warehouseId Int @map("warehouse_id") // meki ref warehouses.id
 
   /// Izvor rezervacije: 'invoice' (predračun/PROF) | 'order' (porudžbina kupca) | 'manual'
   sourceType String @map("source_type") @db.VarChar(20)
@@ -3315,12 +3315,12 @@ model StockReservation {
   quantity Decimal @map("quantity") @db.Decimal(19, 6) // rezervisana količina (> 0)
 
   /// OPEN | RELEASED | CONSUMED — samo OPEN ulazi u raspoloživo
-  status     String    @default("OPEN") @map("status") @db.VarChar(20)
-  releasedAt DateTime? @map("released_at") @db.Timestamptz(6)
+  status        String    @default("OPEN") @map("status") @db.VarChar(20)
+  releasedAt    DateTime? @map("released_at") @db.Timestamptz(6)
   /// Razlog oslobađanja/potrošnje (izdatnica broj, „otkazan predračun", istek…)
-  releaseReason String? @map("release_reason") @db.VarChar(200)
+  releaseReason String?   @map("release_reason") @db.VarChar(200)
   /// Automatski istek rezervacije (predračun ima rok važenja); null = bez isteka
-  expiresAt DateTime? @map("expires_at") @db.Timestamptz(6)
+  expiresAt     DateTime? @map("expires_at") @db.Timestamptz(6)
 
   note String? @map("note") @db.Text
 
@@ -3574,15 +3574,15 @@ model FxRevaluationRun {
   currency  String   @map("currency") @db.VarChar(3)
   companyId Int      @default(0) @map("company_id")
 
-  rateUsed Decimal @map("rate_used") @db.Decimal(19, 6) // kurs na dan preseka (ExchangeRate.middleRate)
+  rateUsed Decimal   @map("rate_used") @db.Decimal(19, 6) // kurs na dan preseka (ExchangeRate.middleRate)
   /// Dan sa kog je kurs STVARNO uzet (resolver vraća poslednji <= preseka). Ako se
   /// razlikuje od `asOfDate`, obračun je išao po zastarelom kursu — revizorski trag.
   rateDate DateTime? @map("rate_date") @db.Timestamptz(6)
 
   /// Zbirno po pravcu: pozitivne (prihod 663) i negativne (rashod 563) kursne razlike.
-  gainAmount  Decimal @default(0) @map("gain_amount") @db.Decimal(19, 4)
-  lossAmount  Decimal @default(0) @map("loss_amount") @db.Decimal(19, 4)
-  itemsCount  Int     @default(0) @map("items_count") // broj revalorizovanih otvorenih stavki
+  gainAmount Decimal @default(0) @map("gain_amount") @db.Decimal(19, 4)
+  lossAmount Decimal @default(0) @map("loss_amount") @db.Decimal(19, 4)
+  itemsCount Int     @default(0) @map("items_count") // broj revalorizovanih otvorenih stavki
 
   journalEntryId Int? @map("journal_entry_id") // nalog kursnih razlika (journal_entries.id)
 
@@ -3711,19 +3711,19 @@ model Invoice {
 
   // — Avansi (Batch C) —
   /// Na KONAČNOM računu: meki ref na AVR čiji se avans odbija (Invoice.id, documentType='AVR').
-  advanceInvoiceId     Int?     @map("advance_invoice_id")
+  advanceInvoiceId      Int?      @map("advance_invoice_id")
   /// Bruto iznos avansa odbijen na ovom konačnom računu (umanjuje iznos za plaćanje, ne osnovicu prihoda).
-  advanceAppliedAmount Decimal  @default(0) @map("advance_applied_amount") @db.Decimal(19, 4)
+  advanceAppliedAmount  Decimal   @default(0) @map("advance_applied_amount") @db.Decimal(19, 4)
   /// Na AVR-u: datum naplate avansa — PDV obaveza po avansu nastaje NAPLATOM, ne izdavanjem.
-  advancePaidAt        DateTime? @map("advance_paid_at") @db.Timestamptz(6)
+  advancePaidAt         DateTime? @map("advance_paid_at") @db.Timestamptz(6)
   /// Na AVR-u: naplaćen bruto iznos (može biti delimičan).
-  advancePaidAmount    Decimal  @default(0) @map("advance_paid_amount") @db.Decimal(19, 4)
+  advancePaidAmount     Decimal   @default(0) @map("advance_paid_amount") @db.Decimal(19, 4)
   /// Smer avansa: 'out' = mi izdajemo kupcu (KIF), 'in' = dobavljač nama (KUF, pretporez po plaćanju).
-  advanceDirection     String?  @map("advance_direction") @db.VarChar(3)
+  advanceDirection      String?   @map("advance_direction") @db.VarChar(3)
   /// Nalog kojim je avans ZATVOREN na ovom konačnom računu (journal_entries.id).
   /// Storno konačnog računa mora da reverzira i njega — inače avans ostane naplaćen
   /// a konto 4300 i PDV po avansu padnu na nulu.
-  advanceClosingEntryId Int? @map("advance_closing_entry_id")
+  advanceClosingEntryId Int?      @map("advance_closing_entry_id")
 
   /// DRAFT | POSTED | SENT | PAID | CANCELLED
   status   String  @default("DRAFT") @map("status") @db.VarChar(20)
@@ -4317,19 +4317,19 @@ model CashJournal {
 /// Uplatnica/isplatnica blagajne. direction: IN (uplata u blagajnu) | OUT (isplata iz blagajne).
 /// journalEntryId = meki ref na GK nalog kreiran auto-knjiženjem (blagajna ↔ protivkonto).
 model CashEntry {
-  id             Int       @id(map: "pk_cash_entries") @default(autoincrement()) @map("id")
-  cashJournalId  Int       @map("cash_journal_id")
-  entryNumber    String    @map("entry_number") @db.VarChar(20) // NNNN/god po blagajni+smeru
-  direction      String    @map("direction") @db.VarChar(3) /// IN (uplatnica) | OUT (isplatnica)
-  amount         Decimal   @map("amount") @db.Decimal(19, 4)
-  entryDate      DateTime  @map("entry_date") @db.Timestamptz(6)
-  partnerId      Int?      @map("partner_id") // komitent (meki ref customers.id) — od koga/kome
-  contraAccount  String    @map("contra_account") @db.VarChar(10) // protivkonto (npr. 2040 kupci, 5xx trošak)
-  description    String?   @map("description")
-  status         String    @default("DRAFT") @map("status") @db.VarChar(10) /// DRAFT | POSTED
-  journalEntryId Int?      @map("journal_entry_id") // meki ref journal_entries.id (GK nalog)
+  id              Int      @id(map: "pk_cash_entries") @default(autoincrement()) @map("id")
+  cashJournalId   Int      @map("cash_journal_id")
+  entryNumber     String   @map("entry_number") @db.VarChar(20) // NNNN/god po blagajni+smeru
+  direction       String   @map("direction") @db.VarChar(3) /// IN (uplatnica) | OUT (isplatnica)
+  amount          Decimal  @map("amount") @db.Decimal(19, 4)
+  entryDate       DateTime @map("entry_date") @db.Timestamptz(6)
+  partnerId       Int?     @map("partner_id") // komitent (meki ref customers.id) — od koga/kome
+  contraAccount   String   @map("contra_account") @db.VarChar(10) // protivkonto (npr. 2040 kupci, 5xx trošak)
+  description     String?  @map("description")
+  status          String   @default("DRAFT") @map("status") @db.VarChar(10) /// DRAFT | POSTED
+  journalEntryId  Int?     @map("journal_entry_id") // meki ref journal_entries.id (GK nalog)
   createdByUserId Int?     @map("created_by_user_id")
-  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   journal CashJournal @relation(fields: [cashJournalId], references: [id], onDelete: Cascade, map: "fk_cash_entries_journal")
 
@@ -4347,13 +4347,13 @@ model CashEntry {
 // App-owned 2.0-native. Novac Decimal, stope Decimal (procenat godišnje).
 // ============================================================================
 model InterestRate {
-  id         Int       @id(map: "pk_interest_rates") @default(autoincrement()) @map("id")
-  kind       String    @map("kind") @db.VarChar(20) /// zatezna | ugovorna | eskontna
-  ratePct    Decimal   @map("rate_pct") @db.Decimal(9, 4) // godišnja stopa u procentima (npr. 9.5000)
-  validFrom  DateTime  @map("valid_from") @db.Timestamptz(6)
-  validTo    DateTime? @map("valid_to") @db.Timestamptz(6) // null = važi do daljeg
-  note       String?   @map("note") @db.VarChar(255)
-  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  id        Int       @id(map: "pk_interest_rates") @default(autoincrement()) @map("id")
+  kind      String    @map("kind") @db.VarChar(20) /// zatezna | ugovorna | eskontna
+  ratePct   Decimal   @map("rate_pct") @db.Decimal(9, 4) // godišnja stopa u procentima (npr. 9.5000)
+  validFrom DateTime  @map("valid_from") @db.Timestamptz(6)
+  validTo   DateTime? @map("valid_to") @db.Timestamptz(6) // null = važi do daljeg
+  note      String?   @map("note") @db.VarChar(255)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@index([kind, validFrom], map: "idx_interest_rates_kind_from")
   @@map("interest_rates")
@@ -4361,17 +4361,17 @@ model InterestRate {
 
 /// Zaglavlje obračuna kamate (kamatni list) za komitenta na dan obračuna.
 model InterestCalculation {
-  id             Int      @id(map: "pk_interest_calculations") @default(autoincrement()) @map("id")
-  partnerId      Int      @map("partner_id") // komitent (meki ref customers.id)
-  kind           String   @map("kind") @db.VarChar(20) /// zatezna | ugovorna
-  method         String   @default("proporcionalni") @map("method") @db.VarChar(20) /// proporcionalni | konformni
-  calcDate       DateTime @map("calc_date") @db.Timestamptz(6) // dan obračuna (do kog se računa kašnjenje)
-  totalPrincipal Decimal  @default(0) @map("total_principal") @db.Decimal(19, 4) // Σ osnovica
-  totalInterest  Decimal  @default(0) @map("total_interest") @db.Decimal(19, 4) // Σ kamata
-  status         String   @default("DRAFT") @map("status") @db.VarChar(10) /// DRAFT | POSTED
-  journalEntryId Int?     @map("journal_entry_id") // meki ref journal_entries.id
-  createdByUserId Int?    @map("created_by_user_id")
-  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  id              Int      @id(map: "pk_interest_calculations") @default(autoincrement()) @map("id")
+  partnerId       Int      @map("partner_id") // komitent (meki ref customers.id)
+  kind            String   @map("kind") @db.VarChar(20) /// zatezna | ugovorna
+  method          String   @default("proporcionalni") @map("method") @db.VarChar(20) /// proporcionalni | konformni
+  calcDate        DateTime @map("calc_date") @db.Timestamptz(6) // dan obračuna (do kog se računa kašnjenje)
+  totalPrincipal  Decimal  @default(0) @map("total_principal") @db.Decimal(19, 4) // Σ osnovica
+  totalInterest   Decimal  @default(0) @map("total_interest") @db.Decimal(19, 4) // Σ kamata
+  status          String   @default("DRAFT") @map("status") @db.VarChar(10) /// DRAFT | POSTED
+  journalEntryId  Int?     @map("journal_entry_id") // meki ref journal_entries.id
+  createdByUserId Int?     @map("created_by_user_id")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   lines InterestCalcLine[]
 
@@ -4414,4 +4414,29 @@ model ScheduledJobRun {
   @@unique([jobKey, scheduledFor], map: "uq_scheduled_job_runs_job_scheduled")
   @@index([jobKey, startedAt(sort: Desc)], map: "idx_scheduled_job_runs_job_started")
   @@map("scheduled_job_runs")
+}
+
+/// Zaključan dan mesečnog grida (AUDIT-K7c, odluka Nenad 26.07).
+///
+/// ⚠️ Brava živi u 3.0 bazi, NE u sy15 `work_hours` — ta tabela je deljena sa
+/// ŽIVIM 1.0, pa joj se šema ne dira (doktrina). Posledica koju treba znati:
+/// dok 1.0 radi paralelno, on piše direktno u sy15 i OVU bravu ne vidi. Brava je
+/// puna tek po gašenju 1.0; do tada štiti 3.0 stranu (gde se i radi grid).
+///
+/// Auto-predlog iz kapije NIJE razlog za ovu bravu — on ionako nikad ne gazi
+/// postojeći red (`INSERT … ON CONFLICT DO NOTHING`, grid-autofill.service.ts).
+/// Brava je protiv LJUDSKE izmene posle potvrde.
+///
+/// Otključati sme urednik grida (Nikola) i admin — oni tada smeju i da izmene.
+model KadrGridDayLock {
+  id         Int      @id(map: "pk_kadr_grid_day_locks") @default(autoincrement()) @map("id")
+  employeeId String   @map("employee_id") @db.Uuid
+  workDate   DateTime @map("work_date") @db.Date
+  lockedBy   String   @map("locked_by") @db.VarChar(160)
+  lockedAt   DateTime @default(now()) @map("locked_at") @db.Timestamptz(6)
+  note       String?  @map("note")
+
+  @@unique([employeeId, workDate], map: "uq_kadr_grid_day_locks_emp_date")
+  @@index([workDate], map: "idx_kadr_grid_day_locks_date")
+  @@map("kadr_grid_day_locks")
 }

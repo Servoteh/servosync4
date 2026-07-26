@@ -49,6 +49,7 @@ describe("Kadrovska AUDIT-K1 — gubitak podataka i novca", () => {
       { upload: jest.fn(), signUrl: jest.fn(), remove: jest.fn() } as never,
       { configured: true, send: jest.fn().mockResolvedValue(true) } as never,
       { enabled: false, dispatchKadr: jest.fn() } as never,
+      { kadrGridDayLock: { findMany: jest.fn().mockResolvedValue([]), createMany: jest.fn(), deleteMany: jest.fn() } } as never,
     );
   };
 

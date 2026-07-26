@@ -169,6 +169,7 @@ describe("Kadrovska AUDIT-K2 — sigurnost", () => {
       { upload: jest.fn(), signUrl: jest.fn(), remove: jest.fn() } as never,
       { configured: true, send: jest.fn() } as never,
       { enabled: false, dispatchKadr: jest.fn() } as never,
+      { kadrGridDayLock: { findMany: jest.fn().mockResolvedValue([]), createMany: jest.fn(), deleteMany: jest.fn() } } as never,
     );
 
     await svc.vacationApprove(EMAIL, SELF, {} as never);
@@ -202,6 +203,7 @@ describe("Kadrovska AUDIT-K2 — sigurnost", () => {
       { upload: jest.fn(), signUrl: jest.fn(), remove: jest.fn() } as never,
       { configured: true, send: jest.fn() } as never,
       { enabled: false, dispatchKadr: jest.fn() } as never,
+      { kadrGridDayLock: { findMany: jest.fn().mockResolvedValue([]), createMany: jest.fn(), deleteMany: jest.fn() } } as never,
     );
 
     await expect(

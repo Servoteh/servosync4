@@ -17,9 +17,12 @@ import {
   useGridBatch,
   useDirectory,
   useKadrMe,
+  useAttendanceVsGridAll,
+  useGridLock,
   type WorkHours,
   type AttendanceCorrection,
 } from '@/api/kadrovska';
+import { SummaryChips } from '../common';
 import { normEmp } from '../odsustva/shared';
 
 /**
@@ -83,9 +86,11 @@ export function KontrolaView() {
 
   const corrQ = useAttendanceCorrections({ from, to });
   const gridQ = useGrid({ year, month });
+  const vsGridQ = useAttendanceVsGridAll({ from, to });
   const dirQ = useDirectory();
   const cancelM = useCancelCorrection();
   const batchM = useGridBatch();
+  const lockM = useGridLock();
 
   const names = useMemo(() => {
     const m = new Map<string, string>();
@@ -102,6 +107,31 @@ export function KontrolaView() {
     () => (gridQ.data?.data?.rows ?? []).filter((r) => r.lastEditedBy === AUTO_MARKER),
     [gridQ.data],
   );
+
+  /* ── C) Neslaganje kapija ↔ grid (v_attendance_vs_grid) ─────────────────
+   * Prvi blok na ekranu jer je JEDINO mesto gde se vidi da nešto NIJE u redu.
+   * Tri slučaja (dogovoreno 26.07):
+   *   • kucao a grid prazan  → verovatno zaboravljen unos
+   *   • nije kucao a grid ima sate → teren/službeni put ILI greška
+   *   • razlika > 1h → vredi pogledati
+   * Dan koji je već potvrđen (nije AUTO) ne prijavljujemo kao „prazan grid" —
+   * urednik ga je već video. */
+  const paznjaRows = useMemo(() => {
+    const out: { key: string; empId: string; day: string; presence: number; grid: number; kind: string }[] = [];
+    for (const r of vsGridQ.data?.data ?? []) {
+      const empId = String(r['employee_id'] ?? '');
+      const day = String(r['day'] ?? '').slice(0, 10);
+      if (!empId || !day) continue;
+      const presence = Number(r['presence_hours'] ?? 0) || 0;
+      const grid = Number(r['grid_hours'] ?? 0) || 0;
+      let kind = '';
+      if (presence > 0 && grid === 0) kind = 'Kucao, a grid je prazan';
+      else if (presence === 0 && grid > 0) kind = 'Nije kucao, a grid ima sate (teren?)';
+      else if (Math.abs(presence - grid) > 1) kind = `Razlika ${(presence - grid).toFixed(1)} h`;
+      if (kind) out.push({ key: `${empId}|${day}`, empId, day, presence, grid, kind });
+    }
+    return out.sort((a, b) => (a.day < b.day ? 1 : -1));
+  }, [vsGridQ.data]);
 
   function shiftMonth(delta: number) {
     let y = year;
@@ -149,7 +179,22 @@ export function KontrolaView() {
           absenceSubtype: r.absenceSubtype ?? undefined,
         })),
       });
-      setMsg(`✅ Potvrđeno ${rows.length} dana — AUTO oznaka uklonjena.`);
+      // AUDIT-K7c: potvrda ujedno ZAKLJUČAVA dan — posle nje ga niko ne menja
+      // „u prolazu". Otključavaju urednik grida (Nikola) i admini, i tek tada
+      // smeju da izmene. Neuspelo zaključavanje ne obara potvrdu (dan je upisan).
+      try {
+        await lockM.mutateAsync({
+          days: rows.map((r) => ({
+            employeeId: r.employeeId,
+            workDate: String(r.workDate).slice(0, 10),
+          })),
+          note: 'potvrda kucanja (Prisustvo → Za potvrdu)',
+          clientEventId: newClientEventId(),
+        });
+      } catch (e) {
+        console.warn('[prisustvo] zaključavanje posle potvrde', e);
+      }
+      setMsg(`✅ Potvrđeno i zaključano ${rows.length} dan(a).`);
       void gridQ.refetch();
     } catch (e) {
       setMsg(e instanceof ApiError ? `⚠ ${e.message}` : '⚠ Potvrda nije uspela.');
@@ -193,6 +238,51 @@ export function KontrolaView() {
     },
   ];
 
+  /** Otključavanje — urednik grida (Nikola) i admini; tek tada se dan sme menjati. */
+  async function unlockDay(empId: string, day: string, name: string) {
+    if (!confirm(`Otključati ${formatDate(day)} za ${name}?\n\nPosle otključavanja dan se može menjati u mesečnom gridu.`)) return;
+    setMsg('');
+    try {
+      await lockM.mutateAsync({
+        days: [{ employeeId: empId, workDate: day }],
+        unlock: true,
+        clientEventId: newClientEventId(),
+      });
+      setMsg(`🔓 Otključano — ${name}, ${formatDate(day)}. Izmena je sada moguća u gridu.`);
+      void gridQ.refetch();
+    } catch (e) {
+      setMsg(e instanceof ApiError ? `⚠ ${e.message}` : '⚠ Otključavanje nije uspelo.');
+    }
+  }
+
+  const paznjaCols: Column<(typeof paznjaRows)[number]>[] = [
+    { key: 'emp', header: 'Zaposleni', render: (r) => empName(r.empId) },
+    { key: 'day', header: 'Dan', render: (r) => formatDate(r.day) },
+    { key: 'p', header: 'Kucanje (h)', align: 'right', render: (r) => (r.presence ? r.presence.toFixed(1) : '—') },
+    { key: 'g', header: 'Grid (h)', align: 'right', render: (r) => (r.grid ? r.grid.toFixed(1) : '—') },
+    {
+      key: 'k',
+      header: 'Šta ne valja',
+      render: (r) => <span className="text-status-danger">{r.kind}</span>,
+    },
+    {
+      // Dan koji je već potvrđen je i zaključan — izmena traži otključavanje.
+      key: 'unlock',
+      header: '',
+      align: 'right',
+      render: (r) =>
+        canGridEdit ? (
+          <Button
+            variant="ghost"
+            className="h-7 px-2 text-xs"
+            onClick={() => unlockDay(r.empId, r.day, empName(r.empId))}
+          >
+            🔓 Otključaj
+          </Button>
+        ) : null,
+    },
+  ];
+
   const autoCols: Column<WorkHours>[] = [
     { key: 'emp', header: 'Zaposleni', render: (r) => empName(r.employeeId) },
     { key: 'day', header: 'Dan', render: (r) => formatDate(String(r.workDate)) },
@@ -229,6 +319,33 @@ export function KontrolaView() {
         <div className="flex-1" />
         {msg && <span className="text-sm text-ink-secondary">{msg}</span>}
       </div>
+
+      {/* Brojači — da se na jedan pogled vidi ima li posla (dogovor 26.07). */}
+      <SummaryChips
+        items={[
+          { label: 'Neslaganja', value: paznjaRows.length, tone: paznjaRows.length ? 'danger' : undefined },
+          { label: 'Ispravke radnika', value: corrections.length, tone: corrections.length ? 'warn' : undefined },
+          { label: 'Čeka potvrdu', value: autoRows.length, tone: autoRows.length ? 'accent' : undefined },
+        ]}
+      />
+
+      <section className="space-y-2">
+        <div className="flex items-center gap-2">
+          <h3 className="text-sm font-semibold text-ink">⚠️ Zahteva pažnju — kapija se ne slaže sa gridom</h3>
+          <span className="text-2xs text-ink-secondary">Prvo ovo: jedino mesto gde se vidi da nešto nije u redu.</span>
+        </div>
+        {paznjaRows.length === 0 ? (
+          <EmptyState title="Nema neslaganja za ovaj mesec" />
+        ) : (
+          <DataTable
+            columns={paznjaCols}
+            rows={paznjaRows}
+            rowKey={(r) => r.key}
+            loading={vsGridQ.isLoading}
+            empty={<EmptyState title="Nema neslaganja" />}
+          />
+        )}
+      </section>
 
       <section className="space-y-2">
         <div className="flex items-center gap-2">

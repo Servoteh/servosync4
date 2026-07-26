@@ -77,6 +77,7 @@ describe("Kadrovska R2 mutacije — write-path guard + idempotencija", () => {
       storage as never,
       mail as never,
       { enabled: false, dispatchKadr: jest.fn() } as never,
+      { kadrGridDayLock: { findMany: jest.fn().mockResolvedValue([]), createMany: jest.fn(), deleteMany: jest.fn() } } as never,
     );
   });
 
@@ -450,6 +451,7 @@ describe("payrollRecompute — integracija (mapTerm/fond wiring, novac)", () => 
       storage as never,
       mail as never,
       { enabled: false, dispatchKadr: jest.fn() } as never,
+      { kadrGridDayLock: { findMany: jest.fn().mockResolvedValue([]), createMany: jest.fn(), deleteMany: jest.fn() } } as never,
     );
   }
 

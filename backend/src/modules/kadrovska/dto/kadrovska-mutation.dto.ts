@@ -680,3 +680,21 @@ export class GridAutofillRunDto {
   @IsOptional() @Matches(/^\d{4}-\d{2}-\d{2}$/) to?: string;
   @IsOptional() @IsBoolean() dryRun?: boolean;
 }
+
+/* ════════════════ GRID — brava potvrđenog dana (AUDIT-K7c) ════════════════ */
+
+export class GridLockDayDto {
+  @IsUUID() employeeId!: string;
+  @IsISO8601() workDate!: string;
+}
+
+/** `unlock=true` skida bravu (urednik grida / admin), inače je postavlja. */
+export class GridLockDto extends OptIdempotentDto {
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => GridLockDayDto)
+  days!: GridLockDayDto[];
+  @IsOptional() @IsBoolean() unlock?: boolean;
+  @IsOptional() @IsString() @MaxLength(500) note?: string;
+}

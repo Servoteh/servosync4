@@ -15,6 +15,7 @@ import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
 import { MailService } from "../../common/mail/mail.service";
 import { NotifyDispatchService } from "../scheduler/dispatch/notify-dispatch.service";
 import { assertRpcOk } from "../../common/sy15/rpc-ok";
+import { PrismaService } from "../../prisma/prisma.service";
 import {
   aggregateWorkHoursForMonth,
   computeEarnings,
@@ -73,6 +74,8 @@ export class KadrovskaMutationsService {
     private readonly storage: Sy15StorageService,
     private readonly mail: MailService,
     private readonly dispatcher: NotifyDispatchService,
+    /** 3.0 baza — brava zaključanog dana grida (AUDIT-K7c). */
+    private readonly prisma: PrismaService,
   ) {}
 
   // ==========================================================================
@@ -632,6 +635,69 @@ export class KadrovskaMutationsService {
    *  u ISTOJ transakciji, direktan RLS UPDATE (work_hours_update =
    *  can_edit_kadrovska_grid — isti gate kao RPC; 1.0 ih piše direktnim PATCH-om).
    *  Semantika 1.0 buildWorkHourPayload: undefined = ne diraj; ''/null = obriši. */
+  /**
+   * Zaključaj / otključaj dane grida (AUDIT-K7c, odluka Nenad 26.07).
+   *
+   * Zaključavanje: posle potvrde dana, da ga niko ne izmeni „u prolazu".
+   * Otključavanje: urednik grida (Nikola) i admin — i tek tada smeju da izmene.
+   * Gejt je na ruti (`kadrovska.grid_edit`); admin ga ima kroz istu allowlistu
+   * ili kroz `kadrovska.admin` (vidi kontroler).
+   *
+   * ⚠️ Brava je 3.0-strana. Dok ŽIVI 1.0 radi paralelno, on piše direktno u sy15
+   * i ovu bravu NE vidi — puna je tek po gašenju 1.0. To je svesna cena
+   * alternative (kolona u deljenom `work_hours`), koju doktrina ne dozvoljava.
+   */
+  async gridLockDays(email: string, dto: D.GridLockDto) {
+    const rows = dto.days.map((d) => ({
+      employeeId: d.employeeId,
+      workDate: new Date(`${d.workDate.slice(0, 10)}T00:00:00Z`),
+      lockedBy: email,
+      note: dto.note ?? null,
+    }));
+    if (dto.unlock) {
+      const res = await this.prisma.kadrGridDayLock.deleteMany({
+        where: {
+          OR: rows.map((r) => ({
+            employeeId: r.employeeId,
+            workDate: r.workDate,
+          })),
+        },
+      });
+      return { data: { unlocked: res.count } };
+    }
+    // Ponovno zaključavanje već zaključanog dana je no-op, ne greška.
+    const res = await this.prisma.kadrGridDayLock.createMany({
+      data: rows,
+      skipDuplicates: true,
+    });
+    return { data: { locked: res.count } };
+  }
+
+  /**
+   * Zaključani dani grida (AUDIT-K7c) — brava živi u 3.0 bazi (`kadr_grid_day_locks`),
+   * jer je sy15 `work_hours` deljen sa ŽIVIM 1.0 i njemu se šema ne dira.
+   * Vraća skup ključeva `employeeId|YYYY-MM-DD` za tražene redove.
+   */
+  private async lockedGridDays(
+    rows: { employeeId: string; workDate: string }[],
+  ): Promise<Set<string>> {
+    if (!rows.length) return new Set();
+    const dates = rows.map((r) => new Date(`${r.workDate.slice(0, 10)}T00:00:00Z`));
+    const locks = await this.prisma.kadrGridDayLock.findMany({
+      where: {
+        employeeId: { in: [...new Set(rows.map((r) => r.employeeId))] },
+        workDate: {
+          gte: new Date(Math.min(...dates.map((d) => d.getTime()))),
+          lte: new Date(Math.max(...dates.map((d) => d.getTime()))),
+        },
+      },
+      select: { employeeId: true, workDate: true },
+    });
+    return new Set(
+      locks.map((l) => `${l.employeeId}|${l.workDate.toISOString().slice(0, 10)}`),
+    );
+  }
+
   gridBatch(email: string, dto: D.GridBatchDto) {
     const predmetRows = dto.rows.filter(
       (r) =>
@@ -642,6 +708,19 @@ export class KadrovskaMutationsService {
       dto.clientEventId,
       "kadr.grid.batch",
       async (tx) => {
+        // AUDIT-K7c: zaključan dan se ne menja dok ga urednik grida ili admin ne
+        // otključa. Provera je PRE RPC-a — poruka mora reći koji dan blokira.
+        const locked = await this.lockedGridDays(dto.rows);
+        if (locked.size) {
+          const hit = dto.rows.find((r) =>
+            locked.has(`${r.employeeId}|${r.workDate.slice(0, 10)}`),
+          );
+          if (hit)
+            throw new ConflictException(
+              `Dan ${hit.workDate.slice(0, 10)} je zaključan (potvrđen unos). ` +
+                "Otključava urednik mesečnog grida ili admin, pa se tek onda menja.",
+            );
+        }
         // ⚠️ #28 (review 14.07) + AUDIT-K1 (26.07): batch RPC na ON CONFLICT radi
         // `<kolona> = EXCLUDED.<kolona>` BEZUSLOVNO za svih 9 kolona, a EXCLUDED
         // vrednost je COALESCE(v_row->>'…', 0/'') kad ključ fali → svaki pozivalac

@@ -31,6 +31,7 @@ describe("Kadrovska AUDIT-K3 — tihi neuspesi", () => {
       { upload: jest.fn(), signUrl: jest.fn(), remove: jest.fn() } as never,
       { configured: true, send: jest.fn().mockResolvedValue(true) } as never,
       (dispatcher ?? { enabled: false, dispatchKadr: jest.fn() }) as never,
+      { kadrGridDayLock: { findMany: jest.fn().mockResolvedValue([]), createMany: jest.fn(), deleteMany: jest.fn() } } as never,
     );
   };
 
@@ -149,6 +150,7 @@ describe("Kadrovska AUDIT-K3 — tihi neuspesi", () => {
       { upload: jest.fn(), signUrl: jest.fn(), remove: jest.fn() } as never,
       { configured: true, send } as never,
       { enabled: false, dispatchKadr: jest.fn() } as never,
+      { kadrGridDayLock: { findMany: jest.fn().mockResolvedValue([]), createMany: jest.fn(), deleteMany: jest.fn() } } as never,
     );
 
     await expect(
@@ -157,5 +159,81 @@ describe("Kadrovska AUDIT-K3 — tihi neuspesi", () => {
     expect(send).not.toHaveBeenCalled();
 
     if (prev !== undefined) process.env.ASSESSMENT_PUBLIC_BASE = prev;
+  });
+});
+
+/**
+ * AUDIT-K7c — brava potvrđenog dana grida (odluka Nenad 26.07).
+ * Brava živi u 3.0 bazi jer je sy15 `work_hours` deljen sa ŽIVIM 1.0.
+ */
+describe("Kadrovska AUDIT-K7c — brava potvrđenog dana", () => {
+  const EMAIL = "nikola@servoteh.com";
+  const EMP = "3b241101-e2bb-4255-8caf-4136c566a962";
+
+  const mk = (locked: { employeeId: string; workDate: Date }[]) => {
+    const tx = {
+      $queryRaw: jest.fn(async () => [{ v: { applied: 1 } }]),
+      $executeRaw: jest.fn().mockResolvedValue(1),
+      workHours: { findMany: jest.fn().mockResolvedValue([]) },
+    };
+    const sy15 = {
+      withUserRls: jest.fn(async (_e: string, fn: (t: unknown) => unknown) => fn(tx)),
+      runIdempotentRls: jest.fn(
+        async (_e: unknown, _c: unknown, _a: unknown, fn: (t: unknown) => unknown) => ({
+          idempotent: false,
+          result: await fn(tx),
+        }),
+      ),
+      withUser: jest.fn(),
+      runIdempotent: jest.fn(),
+    };
+    const kadrGridDayLock = {
+      findMany: jest.fn().mockResolvedValue(locked),
+      createMany: jest.fn().mockResolvedValue({ count: 1 }),
+      deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+    };
+    const svc = new KadrovskaMutationsService(
+      sy15 as never,
+      { upload: jest.fn(), signUrl: jest.fn(), remove: jest.fn() } as never,
+      { configured: true, send: jest.fn() } as never,
+      { enabled: false, dispatchKadr: jest.fn() } as never,
+      { kadrGridDayLock } as never,
+    );
+    return { svc, tx, kadrGridDayLock };
+  };
+
+  const row = { employeeId: EMP, workDate: "2026-07-15", hours: 8 };
+
+  it("upis u ZAKLJUČAN dan pada na 409 i RPC se NE poziva", async () => {
+    const { svc, tx } = mk([
+      { employeeId: EMP, workDate: new Date("2026-07-15T00:00:00Z") },
+    ]);
+    await expect(svc.gridBatch(EMAIL, { rows: [row] } as never)).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+    expect(tx.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  it("upis u OTKLJUČAN dan prolazi", async () => {
+    const { svc, tx } = mk([]);
+    await svc.gridBatch(EMAIL, { rows: [row] } as never);
+    expect(tx.$queryRaw).toHaveBeenCalled();
+  });
+
+  it("otključavanje briše bravu, zaključavanje je idempotentno", async () => {
+    const { svc, kadrGridDayLock } = mk([]);
+    await svc.gridLockDays(EMAIL, {
+      days: [{ employeeId: EMP, workDate: "2026-07-15" }],
+      unlock: true,
+    } as never);
+    expect(kadrGridDayLock.deleteMany).toHaveBeenCalled();
+
+    await svc.gridLockDays(EMAIL, {
+      days: [{ employeeId: EMP, workDate: "2026-07-15" }],
+    } as never);
+    // skipDuplicates → ponovno zaključavanje je no-op, ne greška
+    expect(kadrGridDayLock.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({ skipDuplicates: true }),
+    );
   });
 });
