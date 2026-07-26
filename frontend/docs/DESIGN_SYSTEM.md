@@ -91,6 +91,16 @@
   `href` podstavke sme da nosi query (`/montaza?view=gantt`) — poređenje rute ide preko
   `hrefPath()`, a aktivnost traži i da svi query parovi postoje u tekućem URL-u.
   Query se čita iz `window.location.search` (nikad `useSearchParams` — static export).
+  U dnu punog sidebara stoji diskretno **„Razgranaj sve / Skupi sve"** (prevrće se po stanju).
+* **Tab strane = query parametar, obavezno kroz `useQueryTab`** (`src/lib/use-query-tab.ts`, F1):
+  strana koja ima tabove/poglede drži izabrani tab u `?tab=`/`?view=`, nikad u golom
+  `useState`. Hook čita param na mount-u, sluša `popstate` i custom event **`servosync:nav`**,
+  a `setTab` upisuje URL kroz `history.replaceState` (tab nije „stranica" — bez novog unosa u
+  istoriji) i emituje isti event. Razlog: Next App Router **ne remount-uje** stranu kad se
+  menja samo query, pa bi bez ovoga klik na podstavku dok si već u modulu bio bez efekta.
+  Sidebar/paleta emituju `servosync:nav` PRE navigacije (cilj putuje u `detail.href`, jer je
+  `onClick` pre promene URL-a); strana emituje POSLE `replaceState` (bez detalja). Stara imena
+  tabova idu u `alias` mapu — deep-link iz 1.0 mejlova mora da preživi.
 * **Tri obrasca ekrana** — svaki novi ekran je jedan od ovih, ništa četvrto bez izmene ovog dokumenta:
   1. **Lista** — filter bar + gusta tabela (+ opcioni KPI red iznad, max 4 pločice);
   2. **Master–detalj** — lista levo, detalj panel desno (288–320 px); selekcija reda puni panel;

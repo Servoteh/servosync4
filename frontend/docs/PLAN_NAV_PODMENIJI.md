@@ -238,6 +238,24 @@ podstavku dok si VEĆ u modulu ne bi uradio ništa.
   `/odrzavanje` (8 kuriranih, §3.6), `/sastanci` (4+6 admin gate) + write-back u sve četiri
   (uklj. montažu); „razgranaj sve / skupi sve" u dnu sidebara (§6.1); e2e smoke dopuna
   (podmeni klik → tab aktivan; tab klik → URL/highlight prati).
+  **IZVEDENO 26.07.2026** (grana `feat/nav-podmeni-f1`): `useQueryTab(key, defaultKey, {valid,
+  alias, omitDefault})` u `src/lib/use-query-tab.ts` + `emitNavEvent()`; emiter u shell-ovom
+  `onNavigate` (cilj kao `detail.href`, jer `onClick` prethodi promeni URL-a) i u Ctrl+K paleti;
+  `useCurrentSearch` čita detalj samo za ISTI pathname (bez duplih reakcija). Konvertovane 4
+  strane sa write-back-om (montaža `?view=` uz `omitDefault` — hub ostaje bez parametra;
+  sastanci uz očuvanu 1.0 alias mapu, a `?tab=` se sad čuva i pri otvaranju/zatvaranju detalja).
+  Deca: Podešavanja 14 (svako sa svojom permisijom, ogledalo `TAB_DEFS`), Održavanje kuriranih
+  8, Sastanci 4+6; T-kodovi `POD-*`/`ODR-*`/`SAS-*`. „Razgranaj sve / Skupi sve" u dnu punog
+  sidebara (persist kroz `openDomains`/`openModules`). E2E `tests/nav-podmeni.spec.ts` (projekat
+  `nav`) — NIJE izvršen (paket cilja PROD, gde F1 još nije deploy-ovan).
+  ⚠️ **Zapažanja za F2/F3:** (a) ⚙ meni sastanaka u strani NEMA permisijski gate — deca su zato
+  bez `requires` (plan §3.8 je pretpostavljao gate; presuditi zasebno); (b) modul „Podešavanja"
+  stoji na `settings.org_profile`, pa običan korisnik ne vidi ni „Izgled" u meniju (ulaz mu
+  ostaje deep-link iz „Moj profil") — za §3.11 „vidi samo Izgled" treba proširiti gate modula;
+  (c) ostalih 8 tabova Održavanja Ctrl+K nalazi samo kroz roditeljeve `keywords` (sleće na
+  modul, ne na tačan tab) — skok na tab traži da postanu deca ili novu mašineriju; (d) URL se
+  NE normalizuje na mount-u, pa go `/odrzavanje` (bez `?tab=`) pali highlight roditelja, ne
+  podstavke „Pregled".
 - **F2 — round 2 strane + Finansije pregrupisanje:** `?tab=` u 9 strana (§4.4);
   deca za kvalitet/pb/lokacije/reversi/kadrovsku(grupe)/saldakonti/pdv/planiranje/strukture;
   „Kartica komitenta" u nav; Kursne razlike/Poreske stope/Kursna lista postaju deca

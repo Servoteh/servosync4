@@ -27,6 +27,8 @@ import {
   ArrowUpRight,
   Bell,
   ChevronRight,
+  ChevronsDownUp,
+  ChevronsUpDown,
   Eye,
   LogOut,
   Menu,
@@ -43,6 +45,7 @@ import { cn } from '@/lib/cn';
 import { useAuth } from '@/lib/auth-context';
 import {
   NAV_DOMAINS,
+  allModules,
   canAccessNavModule,
   findDomainByPath,
   isNavModuleActive,
@@ -65,12 +68,15 @@ import {
   useUiPrefs,
   setSidebarMode,
   toggleSidebar as toggleSidebarMode,
+  setOpenDomains,
+  setOpenModules,
   toggleDomain,
   toggleModule,
   pushRecentModule,
   type SidebarMode,
   type SidebarLayout,
 } from '@/lib/use-ui-prefs';
+import { NAV_EVENT, emitNavEvent, type NavEventDetail } from '@/lib/use-query-tab';
 import {
   useMarkAllNotificationsRead,
   useMarkNotificationRead,
@@ -171,19 +177,37 @@ const FAVORITES_DOMAIN_ID = '__favorites';
  *
  * SSR-safe: prvi paint je '' (isto na serveru i klijentu → nema hydration mismatch-a), pa se
  * koriguje u efektu. Osvežava se na promenu rute, `popstate` (nazad/napred) i na custom
- * event `servosync:nav` — kanal koji strane dobijaju u F1 (`useQueryTab`, plan §4.3); do tada
- * niko ne emituje, pa je listener bezopasan.
+ * event `servosync:nav` (F1 kanal, `use-query-tab.ts`).
+ *
+ * Event sme da nosi `detail.href` — cilj navigacije koja se TEK dešava (klik na podstavku:
+ * `onClick` prethodi promeni URL-a). Tada se query čita iz href-a, ali samo ako je pathname
+ * isti; za drugu rutu se poruka ignoriše, jer promena pathname-a ionako ponovo pokreće efekat
+ * i tada je `window.location` već tačan. Bez detalja = URL je već ažuran (`replaceState` iz
+ * strane) → čita se `window.location`.
  */
 function useCurrentSearch(pathname: string): string {
   const [search, setSearch] = useState('');
   useEffect(() => {
     const read = () => setSearch(window.location.search);
     read();
+    const onNav = (e: Event) => {
+      const href = (e as CustomEvent<NavEventDetail>).detail?.href;
+      if (!href) {
+        read();
+        return;
+      }
+      try {
+        const url = new URL(href, window.location.origin);
+        if (url.pathname === window.location.pathname) setSearch(url.search);
+      } catch {
+        /* neispravan href — zadrži tekući query */
+      }
+    };
     window.addEventListener('popstate', read);
-    window.addEventListener('servosync:nav', read);
+    window.addEventListener(NAV_EVENT, onNav);
     return () => {
       window.removeEventListener('popstate', read);
-      window.removeEventListener('servosync:nav', read);
+      window.removeEventListener(NAV_EVENT, onNav);
     };
   }, [pathname]);
   return search;
@@ -370,6 +394,15 @@ function NotificationBell({ enabled, variant = 'sidebar' }: { enabled: boolean; 
 // ------------------------------------------------------------------ nav stavke (full)
 
 /**
+ * Klik na nav stavku. `mruHref` je href MODULA — MRU („Nedavno") i „Omiljeno" ostaju na nivou
+ * modula (F0), pa podstavka prosleđuje RODITELJEV href. `navHref` je stvarni cilj navigacije
+ * (podstavka nosi query, npr. `/odrzavanje?tab=kvarovi`); shell ga javlja kroz `servosync:nav`
+ * da bi strana koja ostaje montirana promenila tab (PLAN_NAV_PODMENIJI §4.3). Bez njega se
+ * podrazumeva `mruHref` (obični redovi modula — href reda JESTE cilj).
+ */
+type NavigateHandler = (mruHref: string, navHref?: string) => void;
+
+/**
  * Podstavka modula (treći nivo — pogled/tab, PLAN_NAV_PODMENIJI §4.2) u punom sidebaru:
  * uvučena, manja (text-sm), bez ikone, u okviru sa levom linijom (vizuelni jezik
  * `SidebarSubGroup`-a). Kad je aktivna, ONA nosi `aria-current="page"` — roditeljski red
@@ -385,12 +418,14 @@ function SidebarSubItemRow({
   item: NavSubItem;
   parentHref: string;
   active: boolean;
-  onNavigate: (href: string) => void;
+  onNavigate: NavigateHandler;
 }) {
   return (
     <Link
       href={item.href}
-      onClick={() => onNavigate(parentHref)}
+      // MRU ide na modul, cilj navigacije je pun href podstavke (query!) — shell ga
+      // emituje kao `servosync:nav`, pa strana menja tab i bez remount-a (§4.3).
+      onClick={() => onNavigate(parentHref, item.href)}
       aria-current={active ? 'page' : undefined}
       className={cn(
         // max-lg:min-h-11 = touch-meta ≥44px na <1024px (DS §11), kao i redovi modula.
@@ -437,7 +472,7 @@ function SidebarModuleRow({
   ariaCurrent?: boolean;
   layout: SidebarLayout;
   inSubGroup: boolean;
-  onNavigate: (href: string) => void;
+  onNavigate: NavigateHandler;
   /** Tekuća ruta (za aktivnu podstavku i auto-razgranavanje). */
   pathname?: string;
   /** Tekući query string (npr. „?tab=kvarovi") — aktivnost podstavke sa query href-om. */
@@ -608,7 +643,7 @@ function SidebarSubGroup({
   layout: SidebarLayout;
   pathname: string;
   search: string;
-  onNavigate: (href: string) => void;
+  onNavigate: NavigateHandler;
 }) {
   const GIcon = group.icon;
   return (
@@ -654,7 +689,7 @@ interface FullBodyProps {
   openDomains: string[];
   /** Vizuelni layout punog sidebara (A hijerarhija / B sekcije / C premium). */
   layout: SidebarLayout;
-  onNavigate: (href: string) => void;
+  onNavigate: NavigateHandler;
   bellEnabled: boolean;
   userEmail?: string;
   onLogout: () => void;
@@ -665,6 +700,47 @@ interface FullBodyProps {
   onClose?: () => void; // X u overlay-u
   widePinned?: boolean; // „wide" ruta: pin kontrola (samo u overlay-u)
   onToggleWidePin?: () => void;
+}
+
+/**
+ * „Razgranaj sve / skupi sve" (PLAN_NAV_PODMENIJI §6.1) — diskretna kontrola u dnu PUNOG
+ * sidebara (rail je nema: tamo su domeni flyout-i, nema šta da se razgranava). Jedno dugme
+ * koje se prevrće po stanju: dok sve nije otvoreno nudi „Razgranaj sve" (svi domeni +
+ * svi moduli sa podmenijem), a kad jeste — „Skupi sve" (moduli se skupljaju, domeni se
+ * vraćaju na default; aktivni domen i aktivni modul ostaju forsirano otvoreni, kao i inače).
+ * Stanje ide kroz postojeći `useUiPrefs` (`openDomains`/`openModules`) → persistuje se.
+ */
+function ExpandAllToggle({ domains }: { domains: NavDomain[] }) {
+  const { openDomains, openModules } = useUiPrefs();
+
+  const domainIds = domains.map((d) => d.id);
+  const moduleHrefs = domains.flatMap((d) => allModules(d).filter((m) => m.children?.length).map((m) => m.href));
+  // Nema šta da se razgranava (uloga ne vidi nijedan modul sa podmenijem) → bez kontrole.
+  if (moduleHrefs.length === 0) return null;
+
+  const expanded =
+    domainIds.every((id) => openDomains.includes(id)) && moduleHrefs.every((h) => openModules.includes(h));
+
+  const Icon = expanded ? ChevronsDownUp : ChevronsUpDown;
+  const label = expanded ? 'Skupi sve' : 'Razgranaj sve';
+
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        setOpenDomains(expanded ? [] : domainIds);
+        setOpenModules(expanded ? [] : moduleHrefs);
+      }}
+      title={expanded ? 'Skupi sve odeljke i podmenije' : 'Razgranaj sve odeljke i podmenije'}
+      className={cn(
+        'mb-2 flex w-full items-center gap-2 rounded-control px-2 py-1.5 text-xs text-sidebar-ink/70 hover:bg-sidebar-line hover:text-sidebar-ink-active max-lg:min-h-11',
+        SB_FOCUS,
+      )}
+    >
+      <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden />
+      {label}
+    </button>
+  );
 }
 
 /** Puni sidebar: brand red (zvonce + kontrole) + accordion domena + footer. */
@@ -873,6 +949,7 @@ function FullBody(props: FullBodyProps) {
       </nav>
 
       <div className="shrink-0 border-t border-sidebar-line px-3 py-3">
+        <ExpandAllToggle domains={props.domains} />
         {props.userEmail && (
           <div className="truncate px-1 pb-2 text-xs text-sidebar-ink/70">{props.userEmail}</div>
         )}
@@ -916,7 +993,7 @@ function FlyoutModuleLink({
   subItems?: NavSubItem[];
   /** Href aktivne podstavke — ona nosi jedini `aria-current` (roditelj tada samo stil). */
   activeSubHref?: string;
-  onNavigate: (href: string) => void;
+  onNavigate: NavigateHandler;
 }) {
   const MIcon = module.icon;
   const marker = !!(module.external || module.crosslisted);
@@ -950,8 +1027,9 @@ function FlyoutModuleLink({
                 key={c.href}
                 href={c.href}
                 role="menuitem"
-                // MRU/Omiljeno ostaju na nivou modula (F0) — roditeljev href.
-                onClick={() => onNavigate(module.href)}
+                // MRU/Omiljeno ostaju na nivou modula (F0) — roditeljev href; cilj
+                // navigacije je pun href podstavke (§4.3, promena taba bez remount-a).
+                onClick={() => onNavigate(module.href, c.href)}
                 aria-current={subActive ? 'page' : undefined}
                 className={cn(
                   'flex min-w-0 items-center rounded-control py-1 pl-3 pr-2 text-sm',
@@ -991,7 +1069,7 @@ function RailFlyout({
   autoFocus: boolean;
   onTogglePin: () => void;
   onClose: () => void;
-  onNavigate: (href: string) => void;
+  onNavigate: NavigateHandler;
 }) {
   const ref = useRef<HTMLDivElement>(null);
 
@@ -1105,7 +1183,7 @@ function RailNav({
   pathname: string;
   search: string;
   activeDomainId?: string;
-  onNavigate: (href: string) => void;
+  onNavigate: NavigateHandler;
 }) {
   // Jedan flyout u datom trenutku; `pinned` ga drži otvoren uprkos mouseleave-u;
   // `focus` = otvoren namerno (klik/Enter) → autofokus prvog modula.
@@ -1208,8 +1286,8 @@ function RailNav({
                     setFlyout(null);
                     focusIcon(i);
                   }}
-                  onNavigate={(href) => {
-                    onNavigate(href);
+                  onNavigate={(href, navHref) => {
+                    onNavigate(href, navHref);
                     setFlyout(null);
                   }}
                 />
@@ -1227,7 +1305,7 @@ interface RailBodyProps {
   pathname: string;
   search: string;
   activeDomainId?: string;
-  onNavigate: (href: string) => void;
+  onNavigate: NavigateHandler;
   bellEnabled: boolean;
   onLogout: () => void;
   mode: SidebarMode;
@@ -1485,11 +1563,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     document.addEventListener('mousedown', onMouseDown);
     return () => document.removeEventListener('mousedown', onMouseDown);
   }, [showOverlay, overlayHover, overlayLocked]);
-  function onNavigate(href: string) {
+  // Klik na nav stavku: MRU na nivou modula + zatvaranje overlay-a + JAVLJANJE navigacije.
+  // Emiter (F1, plan §4.3) je ono što čini podmeni upotrebljivim DOK SI VEĆ U MODULU: Next
+  // ne remount-uje stranu kad se menja samo query, pa bez ovog event-a klik na „Kvarovi" sa
+  // `/odrzavanje?tab=masine` ne bi uradio ništa. Cilj se šalje kao `detail.href` jer `onClick`
+  // <Link>-a prethodi promeni URL-a; potrošači (`useQueryTab`, `useCurrentSearch`) ga primaju
+  // samo za ISTI pathname — kod prave promene rute strana se remount-uje i čita URL sama.
+  const onNavigate: NavigateHandler = (href, navHref) => {
     pushRecentModule(href);
     setOverlayOpen(false);
     setOverlayHover(false);
-  }
+    emitNavEvent(navHref ?? href);
+  };
 
   const ctx: AppShellContextValue = {
     sidebarHidden,

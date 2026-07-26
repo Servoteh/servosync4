@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Settings, Search } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
+import { emitNavEvent, useQueryTab } from '@/lib/use-query-tab';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
 import { Tabs, type TabItem } from './_components/tabs';
@@ -35,8 +36,9 @@ const ADMIN_ITEMS: { key: AdminKey; label: string }[] = [
 ];
 
 // `?tab=` deep-link: podržani su i 1.0 id-jevi (sastanci/index.js MAIN/ADMIN_TABS)
-// i direktna 2.0 imena. Samo ČITANJE, i to SAMO na mount — ručna promena taba NE
-// ažurira URL (1.0 paritet), a popstate čita samo `?open=` (vidi effect).
+// i direktna 2.0 imena. Alias mapa MORA da preživi — stari linkovi iz mejlova (pozivnice,
+// zapisnici) i dalje stižu sa 1.0 imenima. Od F1 se URL i UPISUJE (uvek kanonski 2.0 ključ)
+// kroz `useQueryTab`, pa deep-link, ručna promena taba i podmeni ostaju saglasni.
 const TAB_DEEPLINK_ALIAS: Record<string, TabKey> = {
   dashboard: 'pregled',
   'akcioni-plan': 'akcioni',
@@ -56,7 +58,13 @@ const VALID_TAB_KEYS: ReadonlySet<string> = new Set<TabKey>([
 export default function SastanciPage() {
   const { user, isLoading } = useAuth();
   const router = useRouter();
-  const [tab, setTab] = useState<TabKey>('pregled');
+  // Tab živi u `?tab=` kroz deljeni hook (PLAN_NAV_PODMENIJI §4.3): čita na mount-u (uz 1.0
+  // alias mapu), prati `popstate` i `servosync:nav` (podstavka „Sastanci → Akcioni plan"
+  // menja tab i kad smo VEĆ ovde), a promena taba upisuje URL nazad (`history.replaceState`).
+  const [tab, setTab] = useQueryTab<TabKey>('tab', 'pregled', {
+    valid: VALID_TAB_KEYS,
+    alias: TAB_DEEPLINK_ALIAS,
+  });
   const [gearOpen, setGearOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
@@ -67,40 +75,32 @@ export default function SastanciPage() {
   }, [user, isLoading, router]);
 
   // Detalj = stanje unutar strane (statički export nema dinamičkih ruta). Deep-link
-  // `?open=<id>` + `?tab=<id>` (glavni/admin tab; 1.0 alias-i) + Back dugme
-  // browsera preko history.pushState/popstate.
-  //
-  // `?tab=` se primenjuje SAMO na mount: pushState za detalj ne briše query, pa
-  // bi popstate (Back iz detalja) ponovo pročitao zastareli deep-link tab i
-  // pregazio tab koji je korisnik u međuvremenu ručno izabrao. popstate zato
-  // čita samo `?open=`.
-  const tabAppliedRef = useRef(false);
+  // `?open=<id>` + Back dugme browsera preko history.pushState/popstate. `?tab=` drži
+  // `useQueryTab` (i on sluša popstate) — ovde ostaje samo `?open=`.
   useEffect(() => {
     const syncOpen = () => {
       const sp = new URLSearchParams(window.location.search);
       setOpenId(sp.get('open'));
     };
-    if (!tabAppliedRef.current) {
-      tabAppliedRef.current = true;
-      const rawTab = new URLSearchParams(window.location.search).get('tab');
-      if (rawTab) {
-        const mapped = TAB_DEEPLINK_ALIAS[rawTab] ?? rawTab;
-        if (VALID_TAB_KEYS.has(mapped)) setTab(mapped as TabKey);
-      }
-    }
     syncOpen();
     window.addEventListener('popstate', syncOpen);
     return () => window.removeEventListener('popstate', syncOpen);
   }, []);
 
+  // Otvaranje/zatvaranje detalja ČUVA `?tab=` u URL-u: od F1 je URL izvor istine za tab
+  // (popstate ga ponovo čita), pa bi gubitak parametra po povratku iz detalja vratio
+  // korisnika na „Pregled" umesto na tab sa kog je ušao. `emitNavEvent()` (bez detalja —
+  // URL je već promenjen) drži highlight podstavke u sidebaru saglasnim sa URL-om.
   function openDetail(id: string) {
     setOpenId(id);
-    window.history.pushState(null, '', `/sastanci?open=${id}`);
+    window.history.pushState(null, '', `/sastanci?tab=${tab}&open=${id}`);
+    emitNavEvent();
     window.scrollTo(0, 0);
   }
   function closeDetail() {
     setOpenId(null);
-    window.history.pushState(null, '', '/sastanci');
+    window.history.pushState(null, '', `/sastanci?tab=${tab}`);
+    emitNavEvent();
   }
 
   // Ctrl/⌘+K → komandna paleta.

@@ -25,6 +25,7 @@ import {
 } from '@/lib/navigation';
 import { useUiPrefs } from '@/lib/use-ui-prefs';
 import { useNavFavorites } from '@/lib/use-nav-favorites';
+import { emitNavEvent } from '@/lib/use-query-tab';
 import { fuzzyScore } from '@/lib/fuzzy';
 
 /**
@@ -258,6 +259,10 @@ export function CommandPalette({ open, onOpenChange, hotkey = true }: CommandPal
     // MRU pamti MODUL (F0) — i kad je izabrana podstavka; navigacija ide na pun href.
     pushRecentModule(row.entry.moduleHref);
     router.push(row.entry.href);
+    // Podstavka istog modula na kome već jesmo menja SAMO query → Next ne remount-uje
+    // stranu. `servosync:nav` je javlja strani da promeni tab (PLAN_NAV_PODMENIJI §4.3);
+    // za drugu rutu je poruka bezopasna (potrošači je ignorišu — drugi pathname).
+    emitNavEvent(row.entry.href);
     close();
   }
 

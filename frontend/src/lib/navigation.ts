@@ -251,7 +251,33 @@ export const NAV_DOMAINS: NavDomain[] = [
     title: 'Oprema i energija',
     icon: Wrench,
     modules: [
-      { label: 'Održavanje', href: '/odrzavanje', icon: Cog, requires: PERMISSIONS.ODRZAVANJE_READ, keywords: ['odrzavanje', 'cmms'] },
+      {
+        label: 'Održavanje',
+        href: '/odrzavanje',
+        icon: Cog,
+        requires: PERMISSIONS.ODRZAVANJE_READ,
+        // U keywords ulaze i imena tabova KOJI NISU u podmeniju (Kalendar, Vozila, Vozači, IT
+        // oprema, Objekti, Dokumenta, Notifikacije) — Ctrl+K ih tako bar nalazi kroz roditelja
+        // („Tell me" obrazac, §6.2); skok na TAČAN tab imaju samo kurirane stavke (F3).
+        keywords: [
+          'odrzavanje', 'cmms', 'servis',
+          'kalendar', 'vozila', 'vozaci', 'it oprema', 'objekti', 'dokumenta', 'notifikacije',
+        ],
+        // PODMENIJI F1, presuda §6.2: KURIRANIH 8 (ne svih 16 tabova) — meni nosi procese,
+        // forma nosi tabove. Ključevi `?tab=` su iz strane (TAB_KEYS u odrzavanje/page.tsx).
+        // Bez `requires`: strana ovih 8 tabova ne gejtuje dodatno (gejtuje samo „Podešavanja"
+        // = odrzavanje.admin_ui i „Notifikacije" = /maintenance/me gate — a oni nisu u podmeniju).
+        children: [
+          { label: 'Pregled', href: '/odrzavanje?tab=pregled', keywords: ['pregled', 'dashboard', 'kontrolna tabla', 'ODR-PR'] },
+          { label: 'Tabla', href: '/odrzavanje?tab=board', keywords: ['tabla', 'board', 'kanban', 'ODR-TB'] },
+          { label: 'Radni nalozi', href: '/odrzavanje?tab=nalozi', keywords: ['radni nalozi', 'nalozi', 'work orders', 'ODR-RN'] },
+          { label: 'Kvarovi', href: '/odrzavanje?tab=kvarovi', keywords: ['kvarovi', 'kvar', 'prijava kvara', 'zastoj', 'ODR-KV'] },
+          { label: 'Mašine', href: '/odrzavanje?tab=masine', keywords: ['masine', 'oprema', 'sredstva', 'ODR-MA'] },
+          { label: 'Preventiva', href: '/odrzavanje?tab=preventiva', keywords: ['preventiva', 'preventivno odrzavanje', 'plan odrzavanja', 'ODR-PV'] },
+          { label: 'Zalihe', href: '/odrzavanje?tab=zalihe', keywords: ['zalihe', 'rezervni delovi', 'magacin odrzavanja', 'ODR-ZA'] },
+          { label: 'Izveštaji', href: '/odrzavanje?tab=izvestaji', keywords: ['izvestaji', 'analitika', 'ODR-IZ'] },
+        ],
+      },
       // Energetika/SCADA — vidljiva SAMO admin+menadzment (energetika.read; paritet 1.0).
       { label: 'Energetika', href: '/energetika', icon: Zap, requires: PERMISSIONS.ENERGETIKA_READ, keywords: ['energetika', 'scada', 'struja'] },
     ],
@@ -275,7 +301,32 @@ export const NAV_DOMAINS: NavDomain[] = [
     title: 'Saradnja',
     icon: CalendarClock,
     modules: [
-      { label: 'Sastanci', href: '/sastanci', icon: CalendarClock, requires: PERMISSIONS.SASTANCI_READ, keywords: ['sastanci', 'meeting'] },
+      {
+        label: 'Sastanci',
+        href: '/sastanci',
+        icon: CalendarClock,
+        requires: PERMISSIONS.SASTANCI_READ,
+        keywords: ['sastanci', 'meeting'],
+        // PODMENIJI F1 (§3.8): 4 glavna taba + 6 admin tabova koji su danas skriveni iza ⚙
+        // dropdown-a — najskriveniji ekrani u aplikaciji. Ključevi `?tab=` su iz strane
+        // (MainKey/AdminKey u sastanci/page.tsx); stari 1.0 id-jevi (dashboard, akcioni-plan,
+        // pregled-projekti, podesavanja-notif) idu u `keywords` da Ctrl+K nalazi i po njima —
+        // sam deep-link ih i dalje prevodi TAB_DEEPLINK_ALIAS mapom u strani.
+        // Bez `requires`: strana ⚙ meni NE gejtuje dodatno (ceo modul stoji na sastanci.read),
+        // pa bi stroži gate u meniju sakrio ekrane koje strana i dalje nudi.
+        children: [
+          { label: 'Pregled', href: '/sastanci?tab=pregled', keywords: ['pregled', 'dashboard', 'SAS-PR'] },
+          { label: 'Sastanci', href: '/sastanci?tab=sastanci', keywords: ['lista sastanaka', 'termini', 'SAS-SA'] },
+          { label: 'Moj rad', href: '/sastanci?tab=moj-rad', keywords: ['moj rad', 'moje teme', 'moje obaveze', 'SAS-MR'] },
+          { label: 'Akcioni plan', href: '/sastanci?tab=akcioni', keywords: ['akcioni plan', 'akcioni-plan', 'zadaci', 'SAS-AP'] },
+          { label: 'PM teme', href: '/sastanci?tab=pm-teme', keywords: ['pm teme', 'teme projektnih menadzera', 'SAS-PM'] },
+          { label: 'Po projektu', href: '/sastanci?tab=po-projektu', keywords: ['po projektu', 'pregled-projekti', 'predmeti', 'SAS-PP'] },
+          { label: 'Draft teme', href: '/sastanci?tab=draft-teme', keywords: ['draft teme', 'nacrti tema', 'SAS-DT'] },
+          { label: 'Šabloni', href: '/sastanci?tab=sabloni', keywords: ['sabloni', 'template', 'SAS-SB'] },
+          { label: 'Arhiva', href: '/sastanci?tab=arhiva', keywords: ['arhiva', 'stari sastanci', 'SAS-AR'] },
+          { label: 'Podešavanja', href: '/sastanci?tab=podesavanja', keywords: ['podesavanja sastanaka', 'podesavanja-notif', 'notifikacije', 'SAS-PD'] },
+        ],
+      },
       { label: 'AI asistent', href: '/ai', icon: Bot, requires: PERMISSIONS.AI_CHAT, keywords: ['ai', 'asistent', 'chat'] },
     ],
   },
@@ -351,7 +402,34 @@ export const NAV_DOMAINS: NavDomain[] = [
       // Podešavanja (3.0 TALAS D) — RBAC admin konzola + matični + sistem.
       // Vidljivost = settings.org_profile (admin/menadzment/pm/leadpm = 1.0
       // canAccessPodesavanja); admin-only tabovi se dodatno gejtuju u samoj strani.
-      { label: 'Podešavanja', href: '/podesavanja', icon: SlidersHorizontal, requires: PERMISSIONS.SETTINGS_ORG_PROFILE, keywords: ['podesavanja', 'settings', 'rbac', 'izgled', 'tema'] },
+      {
+        label: 'Podešavanja',
+        href: '/podesavanja',
+        icon: SlidersHorizontal,
+        requires: PERMISSIONS.SETTINGS_ORG_PROFILE,
+        keywords: ['podesavanja', 'settings', 'rbac', 'izgled', 'tema'],
+        // PODMENIJI F1 (§3.11): svih 14 tabova, svaki sa SVOJOM permisijom — ogledalo
+        // `TAB_DEFS` iz podesavanja/page.tsx (izvor istine je strana, ne ovaj model).
+        // NAPOMENA: sam modul stoji na `settings.org_profile`, pa korisnik bez te permisije
+        // ne vidi ni „Izgled" u meniju — njegov ulaz ostaje deep-link `?tab=izgled` iz „Moj
+        // profil". Širenje gate-a modula (`requiresAny`) je zasebna odluka, ne F1.
+        children: [
+          { label: 'Korisnici', href: '/podesavanja?tab=korisnici', requires: PERMISSIONS.SETTINGS_USERS, keywords: ['korisnici', 'nalozi', 'users', 'POD-KO'] },
+          { label: 'Uloge i dozvole', href: '/podesavanja?tab=uloge', requires: PERMISSIONS.SETTINGS_USERS, keywords: ['uloge', 'dozvole', 'permisije', 'role', 'rbac', 'POD-UL'] },
+          { label: 'Grid urednici', href: '/podesavanja?tab=grid', requires: PERMISSIONS.SETTINGS_USERS, keywords: ['grid', 'urednici', 'editori', 'POD-GR'] },
+          { label: 'Organizacija', href: '/podesavanja?tab=organizacija', requires: PERMISSIONS.SETTINGS_ORG_PROFILE, keywords: ['organizacija', 'sektori', 'radne jedinice', 'POD-OR'] },
+          { label: 'Matični podaci', href: '/podesavanja?tab=masters', requires: PERMISSIONS.SETTINGS_ORG_PROFILE, keywords: ['maticni podaci', 'sifarnici', 'masters', 'POD-MP'] },
+          { label: 'Vrednosti firme', href: '/podesavanja?tab=vrednosti', requires: PERMISSIONS.SETTINGS_ORG_PROFILE, keywords: ['vrednosti', 'kultura', 'POD-VR'] },
+          { label: 'Očekivanja', href: '/podesavanja?tab=ocekivanja', requires: PERMISSIONS.SETTINGS_ORG_PROFILE, keywords: ['ocekivanja', 'POD-OC'] },
+          { label: 'Kompetencije', href: '/podesavanja?tab=kompetencije', requires: PERMISSIONS.SETTINGS_ORG_PROFILE, keywords: ['kompetencije', 'vestine', 'POD-KM'] },
+          { label: 'Predmeti', href: '/podesavanja?tab=predmet', requires: PERMISSIONS.SETTINGS_PREDMET_AKTIVACIJA, keywords: ['predmeti', 'aktivacija predmeta', 'POD-PR'] },
+          { label: 'Notifikacije', href: '/podesavanja?tab=notifikacije', requires: PERMISSIONS.SETTINGS_SYSTEM, keywords: ['notifikacije', 'obavestenja', 'pravila', 'POD-NO'] },
+          { label: 'Integracije', href: '/podesavanja?tab=integracije', requires: PERMISSIONS.SETTINGS_SYSTEM, keywords: ['integracije', 'servisi', 'POD-IN'] },
+          { label: 'Audit log', href: '/podesavanja?tab=audit', requires: PERMISSIONS.SETTINGS_AUDIT, keywords: ['audit', 'log', 'revizija', 'POD-AU'] },
+          { label: 'Sistem', href: '/podesavanja?tab=sistem', requires: PERMISSIONS.SETTINGS_SYSTEM, keywords: ['sistem', 'verzija', 'POD-SI'] },
+          { label: 'Izgled', href: '/podesavanja?tab=izgled', requires: PERMISSIONS.PROFILE_SELF, keywords: ['izgled', 'tema', 'dark', 'sidebar', 'raspored', 'POD-IZ'] },
+        ],
+      },
       // Zahtevi — AI PM modul (bug/dorada/nova funkcija + Decision Log). Domen „Sistem"
       // (presuda §13.5); vidljivost = zahtevi.read (svima; row-scope u servisu sužava na svoje).
       { label: 'Zahtevi', href: '/zahtevi', icon: Lightbulb, requires: PERMISSIONS.ZAHTEVI_READ, keywords: ['zahtevi', 'ideje', 'bug', 'greska', 'predlog', 'dorada', 'inbox'] },
