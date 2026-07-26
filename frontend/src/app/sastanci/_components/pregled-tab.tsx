@@ -28,9 +28,13 @@ interface PrioPredmetStat {
 /** Pregled (KPI + predstojeći + moje akcije/teme + ⭐ predmeti) — paritet 1.0 dashboardTab. */
 export function PregledTab({
   myEmail,
+  canPmTeme,
   onJump,
 }: {
   myEmail: string;
+  /** Sme li uloga na tab „PM teme" (`sastanci.edit`) — prečice ka njemu prate isti gate
+   *  (bez ovoga bi ih guard u strani nemo vraćao na Pregled); gate živi u `ADMIN_ITEMS`. */
+  canPmTeme: boolean;
   onJump: (tab: 'sastanci' | 'akcioni' | 'pmteme') => void;
 }) {
   const nav = useDetailNav();
@@ -89,7 +93,7 @@ export function PregledTab({
         <KpiTile value={s?.sastanc_u_toku ?? 0} label="U toku" tone="info" title="Sastanci u toku" onClick={() => onJump('sastanci')} />
         <KpiTile value={s?.akcije_otvoreno ?? 0} label="Akcija otv." title="Otvorenih akcija" onClick={() => onJump('akcioni')} />
         <KpiTile value={s?.akcije_kasni ?? 0} label="Kasne" tone="danger" title="Akcija koje kasne" onClick={() => onJump('akcioni')} />
-        <KpiTile value={s?.pm_teme_na_cekanju ?? 0} label="PM teme" tone="warn" title="PM teme na čekanju" onClick={() => onJump('pmteme')} />
+        <KpiTile value={s?.pm_teme_na_cekanju ?? 0} label="PM teme" tone="warn" title="PM teme na čekanju" onClick={canPmTeme ? () => onJump('pmteme') : undefined} />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-3">
@@ -141,9 +145,11 @@ export function PregledTab({
         <section className="rounded-panel border border-line bg-surface p-4">
           <div className="mb-2 flex items-center justify-between">
             <h2 className="text-sm font-semibold text-ink">Moje teme</h2>
-            <button className="flex items-center gap-1 text-xs text-accent hover:underline" onClick={() => onJump('pmteme')}>
-              Sve <ArrowRight className="h-3 w-3" aria-hidden />
-            </button>
+            {canPmTeme && (
+              <button className="flex items-center gap-1 text-xs text-accent hover:underline" onClick={() => onJump('pmteme')}>
+                Sve <ArrowRight className="h-3 w-3" aria-hidden />
+              </button>
+            )}
           </div>
           {teme.length ? (
             <ul className="space-y-2">

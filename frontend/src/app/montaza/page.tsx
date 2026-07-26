@@ -11,6 +11,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
+import { useQueryTab } from '@/lib/use-query-tab';
 import { AppShell, WideMode } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
 import { Tabs, type TabItem } from '@/app/reversi/_components/tabs';
@@ -49,16 +50,19 @@ const VALID = new Set<ViewKey>(['plan', 'gantt', 'total', 'izvestaji', 'neusagla
 export default function MontazaPage() {
   const { user, isLoading } = useAuth();
   const router = useRouter();
-  const [view, setView] = useState<ViewKey>('hub');
+  // Pogled živi u `?view=` kroz deljeni hook (PLAN_NAV_PODMENIJI §4.3): čita na mount-u,
+  // prati `popstate` i `servosync:nav` (klik na stavku „Montaža → Gantt" u sidebaru/paleti
+  // menja pogled i kad smo VEĆ na /montaza — Next tada ne remount-uje stranu), a `changeView`
+  // upisuje URL nazad. `omitDefault` čuva 1.0 paritet: hub = /montaza BEZ `?view=`.
+  const [view, changeView] = useQueryTab<ViewKey>('view', 'hub', { valid: VALID, omitDefault: true });
   // Deep-link ka konkretnoj neusaglašenosti (mejl menadžmentu: ?view=neusaglasenosti&id=N).
   const [initialNcId, setInitialNcId] = useState<number | null>(null);
 
   // Deep-link init iz URL-a (window da izbegnemo useSearchParams Suspense pod static export-om).
+  // `?view=` čita hook — ovde ostaje samo jednokratni `?id=`.
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const params = new URLSearchParams(window.location.search);
-    const p = params.get('view');
-    if (p && VALID.has(p as ViewKey)) setView(p as ViewKey);
     const idRaw = params.get('id');
     const idNum = idRaw ? Number.parseInt(idRaw, 10) : NaN;
     if (Number.isInteger(idNum) && idNum > 0) setInitialNcId(idNum);
@@ -74,16 +78,6 @@ export default function MontazaPage() {
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
   }, [user, isLoading, router]);
-
-  function changeView(v: ViewKey) {
-    setView(v);
-    if (typeof window !== 'undefined') {
-      const url = new URL(window.location.href);
-      if (v === 'hub') url.searchParams.delete('view');
-      else url.searchParams.set('view', v);
-      window.history.replaceState(null, '', url.toString());
-    }
-  }
 
   if (isLoading || !user) {
     return (

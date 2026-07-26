@@ -53,6 +53,14 @@ export default defineConfig({
       use: { storageState: '.auth/state.json' },
     },
     {
+      // Navigacija — podmeniji (treći nivo): podmeni ↔ tab u strani ↔ URL.
+      // Samo čitanje/klikanje po navigaciji, bez upisa.
+      name: 'nav',
+      dependencies: ['setup'],
+      testMatch: /nav-podmeni\.spec\.ts/,
+      use: { storageState: '.auth/state.json' },
+    },
+    {
       // Nivo 2 — net-zero write probe (create→delete / edit→revert) na živoj bazi.
       name: 'netzero',
       dependencies: ['setup'],

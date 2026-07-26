@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { AlertCircle } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
+import { useQueryTab } from '@/lib/use-query-tab';
 import { PERMISSIONS } from '@/lib/permissions';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
@@ -42,7 +43,13 @@ type TabKey = (typeof TAB_KEYS)[number];
 export default function OdrzavanjePage() {
   const { user, isLoading, can } = useAuth();
   const router = useRouter();
-  const [tab, setTab] = useState<TabKey>('pregled');
+  // `?tab=<key>` (H23 — cutover deep-link mapa): 1.0 router prevodi sekcijske rute
+  // (/maintenance/work-orders, /preventive, /assets/vehicles…) u /odrzavanje?tab=<key>, pa
+  // sekcijski bookmark/link sleće na tačan tab. Od F1 kroz deljeni hook (PLAN_NAV_PODMENIJI
+  // §4.3): prati i `servosync:nav`, pa podstavka „Održavanje → Kvarovi" menja tab i kad smo
+  // VEĆ na /odrzavanje (Next ne remount-uje stranu na promenu samog query-ja), a promena taba
+  // u strani upisuje URL nazad → sidebar highlight prati.
+  const [tab, setTab] = useQueryTab<TabKey>('tab', 'pregled', { valid: TAB_KEYS });
   const [machineFilter, setMachineFilter] = useState<MachineListFilter>({});
   const meQ = useMaintMe();
   const me = meQ.data?.data;
@@ -59,16 +66,10 @@ export default function OdrzavanjePage() {
   }, [user, isLoading, router]);
 
   // Legacy deep-link `/odrzavanje?machine=<code>` → nova ruta kartona (presuda §8.3, QR paritet).
-  // `?tab=<key>` (H23 — cutover deep-link mapa): 1.0 router prevodi sekcijske rute
-  // (/maintenance/work-orders, /preventive, /assets/vehicles…) u /odrzavanje?tab=<key>,
-  // pa sekcijski bookmark/link sleće na tačan tab (ne uvek na Pregled).
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const sp = new URLSearchParams(window.location.search);
-    const code = sp.get('machine');
-    if (code) { router.replace(`/odrzavanje/masine?code=${encodeURIComponent(code)}`); return; }
-    const t = sp.get('tab');
-    if (t && (TAB_KEYS as readonly string[]).includes(t)) setTab(t as TabKey);
+    const code = new URLSearchParams(window.location.search).get('machine');
+    if (code) router.replace(`/odrzavanje/masine?code=${encodeURIComponent(code)}`);
   }, [router]);
 
   if (isLoading || !user) {
