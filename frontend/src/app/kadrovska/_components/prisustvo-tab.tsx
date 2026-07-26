@@ -4,6 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { QrCode, Smartphone } from 'lucide-react';
 import { Button } from '@/components/ui-kit/button';
+import { HelpSpot } from '@/components/ui-kit/help-spot';
 import { useAuth } from '@/lib/auth-context';
 import { PERMISSIONS } from '@/lib/permissions';
 import { LiveView } from './prisustvo/live-view';
@@ -50,12 +51,14 @@ export function PrisustvoTab() {
           {/* AUDIT-K7: mesto gde se zatvara tok ispravke kucanja — ispravke radnika
               (uz obrazloženje) + auto-predlozi iz kapije koji čekaju potvrdu urednika. */}
           {canShadow && (
-            <button
-              onClick={() => setView('kontrola')}
-              className={`rounded-control px-3 py-1.5 text-sm font-medium ${view === 'kontrola' ? 'bg-accent text-accent-fg' : 'text-ink-secondary'}`}
-            >
-              ✅ Za potvrdu
-            </button>
+            <HelpSpot id="kadrovska.prisustvo.kontrola" variant="inline">
+              <button
+                onClick={() => setView('kontrola')}
+                className={`rounded-control px-3 py-1.5 text-sm font-medium ${view === 'kontrola' ? 'bg-accent text-accent-fg' : 'text-ink-secondary'}`}
+              >
+                ✅ Za potvrdu
+              </button>
+            </HelpSpot>
           )}
         </div>
         {/* Mobilni pregled uživo (zahtev 019/26) — /mob/prisustvo, namerno VAN /m/*

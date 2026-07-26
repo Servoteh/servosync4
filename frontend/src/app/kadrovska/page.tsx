@@ -23,6 +23,10 @@ import { NotifikacijeTab } from './_components/notifikacije-tab';
 import { IzvestajiTab } from './_components/izvestaji-tab';
 import { ZaradeTab } from './_components/zarade-tab';
 import { UgovoriTab } from './_components/ugovori/ugovori-tab';
+import { HelpProvider, HelpToggleButton, HelpBanner } from '@/components/ui-kit/help-mode';
+import { HelpSpot } from '@/components/ui-kit/help-spot';
+import { HelpTour } from '@/components/ui-kit/help-tour';
+import { HELP, KADROVSKA_TOUR } from './_lib/help';
 
 type TabKey =
   | 'pregled'
@@ -177,26 +181,39 @@ export default function KadrovskaPage() {
   const groupTabs: TabItem<TabKey>[] = activeGroup ? activeGroup.tabs.map((t) => ({ key: t, label: TAB_LABEL[t] })) : [];
 
   return (
+    /* Uputstvo za rukovanje (info režim) — isti obrazac kao pilot na Zahtevima.
+       Ko ne želi pomoć, ugasi je jednom („?" ili Shift+?) i ostaje ugašena na
+       svim modulima (`servosync.help.enabled=false`). */
+    <HelpProvider moduleKey="kadrovska" registry={HELP}>
     <AppShell>
-      <PageHeader title="Kadrovska" />
+      <PageHeader
+        title="Kadrovska"
+        actions={<HelpToggleButton />}
+      />
       <div className="flex-1 space-y-4 overflow-auto p-6">
+        <HelpBanner />
         {/* HUB landing — velike grupne kartice */}
         {!activeGroup ? (
           <section aria-label="Kadrovska — izbor grupe" className="space-y-4">
             <h2 className="text-lg font-semibold text-ink">Izaberi grupu</h2>
+            <HelpSpot id="kadrovska.hub.grupe" variant="inline">
+              <span className="text-sm text-ink-secondary">Pet celina modula</span>
+            </HelpSpot>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {groups.map((g) => (
-                <button
-                  key={g.id}
-                  type="button"
-                  onClick={() => openGroup(g.id)}
-                  aria-label={g.label}
-                  className="flex flex-col items-start gap-2 rounded-panel border border-line bg-surface p-5 text-left transition-colors hover:border-accent/40 hover:bg-surface-2 focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)]"
-                >
-                  <span className="text-3xl" aria-hidden>{g.icon}</span>
-                  <span className="text-base font-semibold text-ink">{g.label}</span>
-                  <span className="text-sm text-ink-secondary">{g.desc}</span>
-                </button>
+                /* „i" po pločici — ujedno i koraci vođene ture (help.ts). */
+                <HelpSpot key={g.id} id={`kadrovska.hub.${g.id}`}>
+                  <button
+                    type="button"
+                    onClick={() => openGroup(g.id)}
+                    aria-label={g.label}
+                    className="flex h-full w-full flex-col items-start gap-2 rounded-panel border border-line bg-surface p-5 text-left transition-colors hover:border-accent/40 hover:bg-surface-2 focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)]"
+                  >
+                    <span className="text-3xl" aria-hidden>{g.icon}</span>
+                    <span className="text-base font-semibold text-ink">{g.label}</span>
+                    <span className="text-sm text-ink-secondary">{g.desc}</span>
+                  </button>
+                </HelpSpot>
               ))}
             </div>
           </section>
@@ -252,6 +269,8 @@ export default function KadrovskaPage() {
           </>
         )}
       </div>
+      <HelpTour steps={KADROVSKA_TOUR} />
     </AppShell>
+    </HelpProvider>
   );
 }
