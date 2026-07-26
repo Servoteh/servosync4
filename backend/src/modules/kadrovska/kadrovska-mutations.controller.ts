@@ -250,6 +250,21 @@ export class KadrovskaMutationsController {
   gridBatch(@Req() req: AuthedRequest, @Body() dto: D.GridBatchDto) {
     return this.m.gridBatch(this.email(req), dto);
   }
+
+  /**
+   * Zaključaj / otključaj potvrđene dane grida (AUDIT-K7c, odluka Nenad 26.07:
+   * „radi zaključavanje, a Nikola i admini svi mogu otključati i izmeniti naknadno").
+   *
+   * Gejt je `kadrovska.grid_edit` — to je DB allowlist u kojoj je Nikola; admini
+   * je imaju kroz istu allowlistu ili kroz rolu. Brava je 3.0-strana (tabela
+   * `kadr_grid_day_locks` u 3.0 bazi) jer je sy15 `work_hours` deljen sa ŽIVIM
+   * 1.0 i njegova šema se ne dira — dok 1.0 radi, on bravu NE vidi.
+   */
+  @Post("grid/lock")
+  @RequirePermission(PERMISSIONS.KADROVSKA_GRID_EDIT)
+  gridLock(@Req() req: AuthedRequest, @Body() dto: D.GridLockDto) {
+    return this.m.gridLockDays(this.email(req), dto);
+  }
   @Post("grid/go/set")
   @RequirePermission(PERMISSIONS.KADROVSKA_GRID_EDIT)
   gridSetGo(@Req() req: AuthedRequest, @Body() dto: D.GridGoDto) {
@@ -474,8 +489,19 @@ export class KadrovskaMutationsController {
   createContract(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string, @Body() dto: D.CreateContractDto) {
     return this.m.createContract(this.email(req), id, dto);
   }
+  /**
+   * Ugovorna zarada (NETO/BRUTO) sa kartona zaposlenog.
+   *
+   * ⚠️ AUDIT-K4 (26.07) — ODLUKA (Nenad, 26.07): pravo ima POSLOVNI ADMIN, ne
+   * tab Zarade. 1.0 je ovo držao iza `canEditEmployeeSensitiveFields()`
+   * (= admin ∨ poslovni_admin) BAŠ ZATO da poslovni admin može da unese ugovorni
+   * neto za novozaposlenog bez pristupa zaradama. U 3.0 je ruta bila iza
+   * `kadrovska.salary` (tvrda allowlist brava Nenad+Nevena), pa je poslovni admin
+   * ostao bez jedinog puta do te kolone. `kadrovska.pii` = admin ∨ poslovni_admin
+   * → paritet 1.0; brava na tabu Zarade ostaje NETAKNUTA.
+   */
   @Post("employees/:id/contract-salary")
-  @RequirePermission(PERMISSIONS.KADROVSKA_SALARY)
+  @RequirePermission(PERMISSIONS.KADROVSKA_PII)
   setContractSalary(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string, @Body() dto: D.ContractSalaryDto) {
     return this.m.setContractSalary(this.email(req), id, dto);
   }

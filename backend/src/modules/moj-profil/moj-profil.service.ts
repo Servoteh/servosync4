@@ -9,6 +9,8 @@ import {
 import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
 import { jsonSafe } from "../../common/sy15/json-safe";
+import { assertRpcOk } from "../../common/sy15/rpc-ok";
+import { NotifyDispatchService } from "../scheduler/dispatch/notify-dispatch.service";
 import {
   aggregateWorkHoursForMonth,
   gridRedovniUnitsOneDay,
@@ -55,7 +57,10 @@ const REQUEST_MIN_DATE = "2026-05-01";
  */
 @Injectable()
 export class MojProfilService {
-  constructor(private readonly sy15: Sy15Service) {}
+  constructor(
+    private readonly sy15: Sy15Service,
+    private readonly dispatcher: NotifyDispatchService,
+  ) {}
 
   /**
    * Profil header + uloge/override (v_employees_safe email→red + get_my_user_roles DEFINER).
@@ -310,7 +315,10 @@ export class MojProfilService {
           orderBy: [{ workDate: "asc" }],
         }),
         tx.kadrHoliday.findMany({
-          where: { holidayDate: { gte: start, lt: end } },
+          // isWorkday=false: radni izuzetak (radna subota) NIJE praznik — inače
+          // zaposleni u „Moji sati" vidi drugačiji fond nego kadrovska u gridu
+          // (AUDIT-K1; paritet 1.0 holidaySet filtera !h.isWorkday).
+          where: { isWorkday: false, holidayDate: { gte: start, lt: end } },
           select: { holidayDate: true },
         }),
         tx.workHoursRemark.findMany({
@@ -657,15 +665,11 @@ export class MojProfilService {
 
   /** Best-effort „pulse" edge hr-notify-dispatch (odmah pošalji queued mejlove). Ne baca. */
   private pulseHrDispatch(): void {
-    const base = (
-      process.env.SY15_REST_URL || "https://api.servosync.servoteh.com/rest/v1"
-    ).replace(/\/rest\/v1\/?$/, "");
-    const key = process.env.SY15_SERVICE_KEY;
-    if (!base || !key) return;
-    void fetch(`${base}/functions/v1/hr-notify-dispatch`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${key}`, apikey: key },
-    }).catch(() => undefined);
+    // AUDIT-K3: 3.0 nativni dispečer umesto 1.0 edge `hr-notify-dispatch` — dva
+    // dispečera nad `kadr_notification_log` su slala duple poruke jer claim
+    // (`kadr_dispatch_dequeue`) ostavlja red izborljivim dok prvi šalje.
+    if (!this.dispatcher?.enabled) return;
+    void this.dispatcher.dispatchKadr().catch(() => undefined);
   }
 
   // ---------- GO zahtevi (submit/revise/cancel/delete) ----------
@@ -688,25 +692,9 @@ export class MojProfilService {
       dto.clientEventId,
       "profile.vacation-submit",
       async (tx) => {
-        const selfId = (await this.resolveEmployee(tx, email))?.id ?? null;
-        const empId = dto.employeeId ?? selfId;
-        if (!empId)
-          throw new UnprocessableEntityException(
-            "Nismo pronašli vaš zaposlenički profil.",
-          );
         // Podnošenje ZA DRUGOG (paritet 1.0 canManageEmployee): samo za člana kojim
-        // upravljam. RLS `vr_insert` prva klauzula (submitted_by=ja) propušta bilo
-        // koji employee_id, pa je serverska provera JEDINA brana protiv IDOR-a —
-        // ista fn `current_user_manages_employee` koju koristi `GET /profile/team`.
-        if (dto.employeeId && dto.employeeId !== selfId) {
-          const mgd = await tx.$queryRaw<{ ok: boolean }[]>(
-            Prisma.sql`SELECT current_user_manages_employee(${dto.employeeId}::uuid) AS ok`,
-          );
-          if (mgd[0]?.ok !== true)
-            throw new ForbiddenException(
-              "Zahtev možete podneti samo za člana svog tima.",
-            );
-        }
+        // upravljam — vidi `resolveSubmitTarget` (jedina brana protiv IDOR-a).
+        const empId = await this.resolveSubmitTarget(tx, email, dto.employeeId);
         const balRows = await tx.$queryRaw<{ days_remaining: number | null }[]>(
           Prisma.sql`SELECT days_remaining FROM v_vacation_balance
              WHERE employee_id = ${empId}::uuid AND year = ${year} LIMIT 1`,
@@ -793,19 +781,96 @@ export class MojProfilService {
 
   // ---------- Nadoknada sati (makeup) ----------
 
-  /** Nadoknada submit — INSERT makeup_requests (submitted_by=email) + queue 'submitted' + pulse. */
+  /**
+   * Razreši zaposlenog za koga se podnosi zahtev + zatvori IDOR.
+   *
+   * ⚠️ AUDIT-K2 (26.07): RLS politike `mu_insert`/`pl_insert` (kao i `vr_insert`)
+   * proveravaju SAMO `lower(submitted_by) = auth.jwt()->>'email'`, a BE uvek upisuje
+   * `lower(email)` pozivaoca → uslov je UVEK ispunjen za bilo koji `employee_id`.
+   * Guard rute je `profile.self` (svaki prijavljen radnik), pa je serverska provera
+   * `current_user_manages_employee` JEDINA brana. Bila je postavljena samo na GO
+   * ruti; nadoknada i plaćeno odsustvo su je nemali → svako je mogao da podnese
+   * (i naruši saldo/evidenciju) u ime bilo kog zaposlenog.
+   */
+  private async resolveSubmitTarget(
+    tx: Sy15Tx,
+    email: string,
+    employeeId: string | undefined,
+  ): Promise<string> {
+    const selfId = (await this.resolveEmployee(tx, email))?.id ?? null;
+    const empId = employeeId ?? selfId;
+    if (!empId)
+      throw new UnprocessableEntityException(
+        "Nismo pronašli vaš zaposlenički profil.",
+      );
+    if (employeeId && employeeId !== selfId) {
+      const mgd = await tx.$queryRaw<{ ok: boolean }[]>(
+        Prisma.sql`SELECT current_user_manages_employee(${employeeId}::uuid) AS ok`,
+      );
+      if (mgd[0]?.ok !== true)
+        throw new ForbiddenException(
+          "Zahtev možete podneti samo za člana svog tima.",
+        );
+    }
+    return empId;
+  }
+
+  /**
+   * Nadoknada submit — INSERT makeup_requests (submitted_by=email) + queue + pulse.
+   *
+   * ⚠️ AUDIT-K4 (26.07): 3.0 nije imao NIJEDNU od 1.0 provera
+   * (`mojProfil/index.js:1513-1527`). Posledica na živim podacima: „dan odmora"
+   * se mogao podneti za UTORAK sa 0.5h, a finalizacija bezuslovno zove
+   * `kadr_grant_bonus_go` koji radi `days_total = days_total + 1` — radniku se
+   * TRAJNO povećava fond godišnjeg bez pokrića u radu vikendom. Zato provere
+   * stoje ovde (server), a ne samo u formi: mobilni/REST klijent ih ne sme
+   * zaobići.
+   */
   async submitMakeup(email: string, dto: SubmitMakeupDto) {
+    const danOdmora = dto.compensationType === "dan_odmora";
+    const hours = Number(dto.absenceHours);
+    if (danOdmora) {
+      if (!dto.weekendWorkDate)
+        throw new UnprocessableEntityException(
+          "Unesi datum rada vikendom.",
+        );
+      // 0 = nedelja, 6 = subota (isti izraz kao 1.0 `new Date(d+'T00:00:00').getDay()`).
+      const dow = new Date(`${dto.weekendWorkDate}T00:00:00Z`).getUTCDay();
+      if (dow !== 0 && dow !== 6)
+        throw new UnprocessableEntityException(
+          "Datum rada mora biti subota ili nedelja.",
+        );
+      if (!(hours >= 8 && hours <= 24))
+        throw new UnprocessableEntityException(
+          "Za +1 dan odmora potrebno je najmanje 8h rada (ceo dan). Za manje sati podnesi zahtev za nadoknadu sati.",
+        );
+    } else {
+      if (!dto.absenceDate)
+        throw new UnprocessableEntityException("Unesi datum izostanka.");
+      if (!(hours > 0 && hours <= 24))
+        throw new UnprocessableEntityException("Broj sati mora biti 0.5–24.");
+      if (!dto.makeupPlan?.trim())
+        throw new UnprocessableEntityException(
+          "Predlog nadoknade je obavezan.",
+        );
+    }
+    if (!dto.reason?.trim())
+      throw new UnprocessableEntityException("Razlog je obavezan.");
+    if (
+      dto.makeupDeadline &&
+      dto.absenceDate &&
+      dto.makeupDeadline < dto.absenceDate
+    )
+      throw new UnprocessableEntityException(
+        "Rok nadoknade ne može biti pre datuma izostanka.",
+      );
+
     const out = await this.runIdem(
       email,
       dto.clientEventId,
       "profile.makeup-submit",
       async (tx) => {
-        const empId =
-          dto.employeeId ?? (await this.resolveEmployee(tx, email))?.id;
-        if (!empId)
-          throw new UnprocessableEntityException(
-            "Nismo pronašli vaš zaposlenički profil.",
-          );
+        const empId = await this.resolveSubmitTarget(tx, email, dto.employeeId);
         const rows = await tx.$queryRaw<{ id: string }[]>(
           Prisma.sql`INSERT INTO makeup_requests
              (employee_id, absence_date, absence_hours, reason, makeup_plan, makeup_deadline,
@@ -840,6 +905,31 @@ export class MojProfilService {
 
   // ---------- Plaćeno odsustvo (paid leave) ----------
 
+  /**
+   * Broj RADNIH dana u inkluzivnom rasponu: bez vikenda i bez državnih praznika
+   * (`kadr_holidays` uz `is_workday=false` — red sa `is_workday=true` je radni
+   * izuzetak, npr. radna subota, i NE izuzima se). Paritet 1.0
+   * `workDaysInclusive(from, to, holidayDateSet())`.
+   */
+  private async workDaysBetween(
+    tx: Sy15Tx,
+    from: string,
+    to: string,
+  ): Promise<number> {
+    const rows = await tx.$queryRaw<{ n: bigint }[]>(
+      Prisma.sql`
+        SELECT COUNT(*)::bigint AS n
+          FROM generate_series(${from}::date, ${to}::date, interval '1 day') AS d(day)
+         WHERE EXTRACT(ISODOW FROM d.day) < 6
+           AND NOT EXISTS (
+                 SELECT 1 FROM kadr_holidays h
+                  WHERE h.holiday_date = d.day::date
+                    AND COALESCE(h.is_workday, false) = false
+               )`,
+    );
+    return Number(rows[0]?.n ?? 0);
+  }
+
   /** Plaćeno submit — INSERT paid_leave_requests (submitted_by=email) + queue 'submitted' + pulse. */
   async submitPaidLeave(email: string, dto: SubmitPaidLeaveDto) {
     if (dto.dateTo < dto.dateFrom)
@@ -849,18 +939,25 @@ export class MojProfilService {
       dto.clientEventId,
       "profile.paid-leave-submit",
       async (tx) => {
-        const empId =
-          dto.employeeId ?? (await this.resolveEmployee(tx, email))?.id;
-        if (!empId)
-          throw new UnprocessableEntityException(
-            "Nismo pronašli vaš zaposlenički profil.",
-          );
+        const empId = await this.resolveSubmitTarget(tx, email, dto.employeeId);
+        // ⚠️ AUDIT-K4 (26.07): broj dana se računa NA SERVERU, ne uzima se sa
+        // klijenta. 1.0 koristi `workDaysInclusive(from, to, holidayDateSet())`
+        // (mobile/myLeave.js:425) — dakle bez vikenda I bez državnih praznika.
+        // 3.0 FE je praznike ignorisao, pa je `days_count` u evidenciji bio veći
+        // od stvarno upisanih dana u gridu. Server ima praznike bez obzira na
+        // prava pozivaoca (radnik nema `kadrovska.read`), pa je ovo i jedino
+        // mesto gde se broj može pouzdano izvesti.
+        const daysCount = await this.workDaysBetween(
+          tx,
+          dto.dateFrom,
+          dto.dateTo,
+        );
         const rows = await tx.$queryRaw<{ id: string }[]>(
           Prisma.sql`INSERT INTO paid_leave_requests
              (employee_id, leave_type, date_from, date_to, days_count, reason, proof_note,
               submitted_by, status)
              VALUES (${empId}::uuid, ${dto.leaveType}, ${dto.dateFrom}::date, ${dto.dateTo}::date,
-               ${dto.daysCount}, ${dto.reason ?? ""}, ${dto.proofNote ?? ""}, lower(${email}), 'pending')
+               ${daysCount}, ${dto.reason ?? ""}, ${dto.proofNote ?? ""}, lower(${email}), 'pending')
              RETURNING *`,
         );
         const req = jsonSafe(rows)[0] as { id: string } | undefined;
@@ -904,7 +1001,9 @@ export class MojProfilService {
           Prisma.sql`SELECT attendance_submit_correction(${empId}::uuid, ${dto.day}::date,
              ${dto.timeIn ?? null}::time, ${dto.timeOut ?? null}::time, ${dto.reason}) AS result`,
         );
-        return jsonSafe(rows[0]?.result ?? null);
+        // AUDIT-K3: RPC odbijenicu vraca kao {ok:false,error} — bez ovoga bi
+        // korisnik dobio potvrdu za korekciju koja se NIJE desila.
+        return assertRpcOk(jsonSafe(rows[0]?.result ?? null));
       },
     );
   }
@@ -1082,6 +1181,187 @@ export class MojProfilService {
            DO UPDATE SET answer_text = EXCLUDED.answer_text`,
       );
       return { data: { saved: items.length } };
+    });
+  }
+
+  // ==========================================================================
+  // 360° — OCENJIVAČ (peer/leader), nativni tok
+  // ==========================================================================
+
+  /**
+   * ⚠️ AUDIT-K6 (26.07): do sada su ocenjivači (kolege i rukovodioci) mogli da
+   * popune procenu ISKLJUČIVO kroz 1.0 stranicu `ocena.html?token=`, koja u 3.0
+   * ne postoji (404 — vidi AUDIT-K3). Taj tok se oslanja na
+   * `assessment_submit_by_token`, SECURITY DEFINER fn koja traži SAMO token:
+   * ko dobije token može da preda ocenu u TUĐE ime. Kako su svi ocenjivači
+   * (`self` | `peer` | `leader`) zaposleni Servoteha i imaju nalog, anonimni
+   * magic-link nije poslovni zahtev nego zaobilaznica jer ekran nije postojao.
+   * Ove rute daju nativni, autentifikovani tok — bez tokena u mejlu.
+   *
+   * Vlasništvo reda ocenjivača proverava se OVDE, a ne samo kroz RLS
+   * (lekcija iz AUDIT-K2: RLS na ovoj površini često nije scope).
+   */
+  private async assertMyRater(
+    tx: Sy15Tx,
+    email: string,
+    raterId: string,
+  ): Promise<{ assessmentId: string; raterKind: string }> {
+    const rows = await tx.$queryRaw<
+      { assessment_id: string; rater_kind: string; a_status: string | null }[]
+    >(
+      Prisma.sql`SELECT r.assessment_id, r.rater_kind, a.status AS a_status
+           FROM assessment_raters r
+           JOIN assessments a ON a.id = r.assessment_id
+          WHERE r.id = ${raterId}::uuid
+            AND (
+                  r.rater_employee_id = current_user_employee_id()
+               OR lower(COALESCE(r.rater_email, '')) = lower(${email})
+                )
+          LIMIT 1`,
+    );
+    const row = rows[0];
+    if (!row)
+      throw new ForbiddenException("Ta procena nije dodeljena vama.");
+    if (!["collecting", "draft"].includes(String(row.a_status ?? "")))
+      throw new UnprocessableEntityException(
+        "Procena je zatvorena — izmene više nisu moguće.",
+      );
+    return { assessmentId: row.assessment_id, raterKind: row.rater_kind };
+  }
+
+  /** Moje zaduženja za ocenjivanje (peer/leader) koja čekaju popunjavanje. */
+  raterInbox(email: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const rows = await tx.$queryRaw<unknown[]>(
+        Prisma.sql`SELECT r.id AS rater_id, r.rater_kind, r.status AS rater_status,
+                  r.submitted_at, a.id AS assessment_id, a.status AS assessment_status,
+                  a.period_label, e.full_name AS employee_name
+             FROM assessment_raters r
+             JOIN assessments a ON a.id = r.assessment_id
+             LEFT JOIN v_employees_safe e ON e.id = a.employee_id
+            WHERE r.rater_kind <> 'self'
+              AND (
+                    r.rater_employee_id = current_user_employee_id()
+                 OR lower(COALESCE(r.rater_email, '')) = lower(${email})
+                  )
+              AND a.status IN ('collecting', 'draft')
+            ORDER BY r.status ASC, a.period_label DESC`,
+      );
+      return { data: jsonSafe(rows) };
+    });
+  }
+
+  /** Pun kontekst za popunjavanje jedne procene (okvir + pitanja + moje ocene). */
+  raterRead(email: string, raterId: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const { assessmentId, raterKind } = await this.assertMyRater(
+        tx,
+        email,
+        raterId,
+      );
+      const [assessmentRows, scope, framework, questions, scores, answers] =
+        await Promise.all([
+          tx.$queryRaw<unknown[]>(
+            Prisma.sql`SELECT a.*, e.full_name AS employee_name
+                 FROM assessments a
+                 LEFT JOIN v_employees_safe e ON e.id = a.employee_id
+                WHERE a.id = ${assessmentId}::uuid LIMIT 1`,
+          ),
+          tx.$queryRaw<unknown[]>(
+            Prisma.sql`SELECT * FROM v_assessment_scope
+               WHERE assessment_id = ${assessmentId}::uuid
+               ORDER BY group_sort, comp_sort`,
+          ),
+          tx.$queryRaw<unknown[]>(
+            Prisma.sql`SELECT * FROM v_competence_framework
+               ORDER BY group_sort, comp_sort, level`,
+          ),
+          tx.$queryRaw<unknown[]>(
+            Prisma.sql`SELECT * FROM competence_questions
+               WHERE is_active = true ORDER BY group_id NULLS FIRST, sort_order`,
+          ),
+          tx.$queryRaw<unknown[]>(
+            Prisma.sql`SELECT competence_id, level, comment FROM assessment_scores
+               WHERE rater_id = ${raterId}::uuid`,
+          ),
+          tx.$queryRaw<unknown[]>(
+            Prisma.sql`SELECT question_code, answer_text FROM assessment_answers
+               WHERE rater_id = ${raterId}::uuid`,
+          ),
+        ]);
+      return {
+        data: {
+          raterId,
+          raterKind,
+          assessmentId,
+          assessment: jsonSafe(assessmentRows)[0] ?? null,
+          scope: jsonSafe(scope),
+          framework: jsonSafe(framework),
+          questions: jsonSafe(questions),
+          scores: jsonSafe(scores),
+          answers: jsonSafe(answers),
+        },
+      };
+    });
+  }
+
+  /** Bulk upsert ocena ocenjivača (isti upsert kao samoprocena). */
+  saveRaterScores(email: string, raterId: string, dto: SaveSelfScoresDto) {
+    return this.withUserMapped(email, async (tx) => {
+      await this.assertMyRater(tx, email, raterId);
+      if (!dto.items.length) return { data: { saved: 0 } };
+      const values = dto.items.map(
+        (i) =>
+          Prisma.sql`(${raterId}::uuid, ${Number(i.competenceId)}::int, ${
+            i.level === undefined || i.level === null ? null : Number(i.level)
+          }::smallint, ${i.comment ?? null})`,
+      );
+      await tx.$executeRaw(
+        Prisma.sql`INSERT INTO assessment_scores (rater_id, competence_id, level, comment)
+           VALUES ${Prisma.join(values)}
+           ON CONFLICT (rater_id, competence_id)
+           DO UPDATE SET level = EXCLUDED.level, comment = EXCLUDED.comment`,
+      );
+      return { data: { saved: dto.items.length } };
+    });
+  }
+
+  /** Bulk upsert tekstualnih odgovora ocenjivača (1.0 saveAnswers paritet). */
+  saveRaterAnswers(email: string, raterId: string, dto: SaveSelfAnswersDto) {
+    return this.withUserMapped(email, async (tx) => {
+      await this.assertMyRater(tx, email, raterId);
+      const items = dto.items.filter((i) => i.questionCode);
+      if (!items.length) return { data: { saved: 0 } };
+      const codes = items.map((i) => i.questionCode);
+      const answers = items.map((i) => i.answerText ?? null);
+      await tx.$executeRaw(
+        Prisma.sql`INSERT INTO assessment_answers (rater_id, question_code, answer_text)
+           SELECT ${raterId}::uuid, q, a
+           FROM unnest(${codes}::text[], ${answers}::text[]) AS t(q, a)
+           ON CONFLICT (rater_id, question_code)
+           DO UPDATE SET answer_text = EXCLUDED.answer_text`,
+      );
+      return { data: { saved: items.length } };
+    });
+  }
+
+  /**
+   * Predaja ocene. Radi ISTO što i `assessment_submit_by_token` (status→submitted
+   * + preračun agregata), ali uz autentifikaciju umesto tajne iz mejla. Nema nove
+   * DB funkcije — potpisi deljenih RPC-ova ostaju netaknuti (doktrina §7 G7).
+   */
+  submitRater(email: string, raterId: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const { assessmentId } = await this.assertMyRater(tx, email, raterId);
+      await tx.$executeRaw(
+        Prisma.sql`UPDATE assessment_raters
+             SET status = 'submitted', submitted_at = now()
+           WHERE id = ${raterId}::uuid`,
+      );
+      await tx.$executeRaw(
+        Prisma.sql`SELECT assessment_compute_results(${assessmentId}::uuid)`,
+      );
+      return { data: { ok: true, assessmentId } };
     });
   }
 
@@ -1440,11 +1720,28 @@ export class MojProfilService {
       const talk = jsonSafe(talkRows)[0];
       if (talk == null)
         throw new NotFoundException("Razgovor ne postoji ili nije vaš.");
-      const planRows = await tx.$queryRaw<Record<string, unknown>[]>(
+      let planRows = await tx.$queryRaw<Record<string, unknown>[]>(
         Prisma.sql`SELECT * FROM corrective_plans
            WHERE employee_id = ${emp.id}::uuid AND (talk_id = ${id}::uuid OR closing_talk_id = ${id}::uuid)
            ORDER BY created_at DESC`,
       );
+      // ⚠️ AUDIT-K5b (26.07): 1.0 fallback — kad KOREKTIVNI razgovor nema nijedan
+      // direktno vezan plan, prikazuju se aktivni planovi zaposlenog
+      // (otvoren/u_toku). Bez toga je zaposleni otvarao korektivni razgovor i
+      // video zapisnik BEZ ijedne mere, iako mere postoje i teku — a upravo su
+      // one poenta korektivnog razgovora.
+      if (
+        planRows.length === 0 &&
+        String((talk as Record<string, unknown>).talk_type ?? "") ===
+          "korektivni"
+      ) {
+        planRows = await tx.$queryRaw<Record<string, unknown>[]>(
+          Prisma.sql`SELECT * FROM corrective_plans
+             WHERE employee_id = ${emp.id}::uuid
+               AND status IN ('otvoren', 'u_toku')
+             ORDER BY created_at DESC`,
+        );
+      }
       const plans = jsonSafe(planRows);
       const planIds = plans.map((p) => p.id as string);
       const measureRows = planIds.length
@@ -1733,7 +2030,9 @@ export class MojProfilService {
           Prisma.sql`SELECT attendance_submit_correction(${employeeId}::uuid, ${dto.day}::date,
              ${dto.timeIn ?? null}::time, ${dto.timeOut ?? null}::time, ${dto.reason}) AS result`,
         );
-        return jsonSafe(rows[0]?.result ?? null);
+        // AUDIT-K3: RPC odbijenicu vraca kao {ok:false,error} — bez ovoga bi
+        // korisnik dobio potvrdu za korekciju koja se NIJE desila.
+        return assertRpcOk(jsonSafe(rows[0]?.result ?? null));
       },
     );
   }

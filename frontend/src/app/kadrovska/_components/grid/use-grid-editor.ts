@@ -71,15 +71,15 @@ export interface GridEditor {
   ) => { applied: number; skipped: number };
   /** Da li je (empId,ymd) predložen auto-unosom (žuta AUTO oznaka dok se ne izmeni/snimi). */
   isAuto: (empId: string, ymd: string) => boolean;
-  applyCopyPrev: (empId: string, prevRowsByYmd: Map<string, WorkHours>) => void;
+  /** Vraća broj prekopiranih dana (0 = prethodni mesec nema unose za tog radnika). */
+  applyCopyPrev: (empId: string, prevRowsByYmd: Map<string, WorkHours>) => number;
   applyPaste: (startEmpId: string, startYmd: string, startKind: CellKind, matrix: string[][], visibleEmpIds: string[]) => number;
   restore: (empId: string, ymd: string, vals: GridDelta) => void;
   hasErrors: () => boolean;
   refresh: () => void;
   dirtyCount: () => number;
   dirtyEmployeeCount: () => number;
-  buildBatchRows: () => import('@/api/kadrovska').GridBatchRow[];
-  collectNopSync: () => { empId: string; ymd: string; isNop: boolean; wasNop: boolean }[];
+  buildBatchRows: () => import('@/api/kadrovska').GridBatchRow[];
   clearDirty: () => void;
 }
 
@@ -363,18 +363,22 @@ export function useGridEditor({ days, getDbRow, editable, isAdmin, onNopAttempt 
     [effective, applyEdit, bumpStruct],
   );
 
+  /**
+   * Kopiraj prethodni mesec. Vraća broj prekopiranih dana da pozivalac može da
+   * odustane uz poruku kad prethodni mesec nema nijedan unos (paritet 1.0).
+   * ⚠️ AUDIT-K1: ranije je dan BEZ izvora upisivao praznu ćeliju u dirty, pa je
+   * klik nad radnikom koji prošli mesec nije imao unose (nov radnik, dugo
+   * bolovanje, ili prosto pogrešan red) BRISAO ceo tekući mesec — sate, odsustva,
+   * teren i 2-mašine. 1.0 takav dan preskače (`if (!row) return;`).
+   */
   const applyCopyPrev = useCallback(
-    (empId: string, prevRowsByYmd: Map<string, WorkHours>) => {
+    (empId: string, prevRowsByYmd: Map<string, WorkHours>): number => {
+      let copied = 0;
       for (const d of days) {
-        const [y, m] = d.ymd.split('-');
-        void y;
-        void m;
         const prevYmd = prevMonthSameDay(d.ymd);
         const src = prevRowsByYmd.get(prevYmd);
-        if (!src) {
-          dirtyRef.current.set(gridDirtyKey(empId, d.ymd), { ...EMPTY_EFF });
-          continue;
-        }
+        if (!src) continue; // dan bez izvora se NE dira
+        copied += 1;
         dirtyRef.current.set(gridDirtyKey(empId, d.ymd), {
           hours: Number(src.hours || 0),
           overtime_hours: Number(src.overtimeHours || 0),
@@ -388,28 +392,36 @@ export function useGridEditor({ days, getDbRow, editable, isAdmin, onNopAttempt 
         });
       }
       bumpStruct();
+      return copied;
     },
     [days, bumpStruct],
   );
 
   const applyPaste = useCallback(
     (startEmpId: string, startYmd: string, startKind: CellKind, matrix: string[][], visibleEmpIds: string[]): number => {
-      // Redovi paste-a šire se preko DANA (kolone), a redovi preko VRSTE KIND-a
-      // se u 2.0 mapiraju na isti radnik/istu vrstu po danima (paritet 1.0 col-walk).
+      // Kolone matrice idu preko DANA, a REDOVI matrice preko RADNIKA (nadole od
+      // reda na kome je paste počeo) — kao u Excelu odakle se i kopira.
+      // ⚠️ AUDIT-K5 (26.07): ranije se `r` uopšte nije koristio za izbor radnika —
+      // svi redovi su upisivani u ISTOG radnika (startEmpId) i redom gazili jedan
+      // drugog, pa je od bloka N×M ostajao samo poslednji red. `visibleEmpIds` je
+      // bio primljen pa odbačen (`void visibleEmpIds`).
       const dayIdx = days.findIndex((d) => d.ymd === startYmd);
       if (dayIdx < 0) return 0;
+      const empIdx = visibleEmpIds.indexOf(startEmpId);
       let count = 0;
       for (let r = 0; r < matrix.length; r++) {
+        // Van liste vidljivih radnika (npr. blok duži od tabele) → prekini.
+        const empId = empIdx < 0 ? (r === 0 ? startEmpId : null) : visibleEmpIds[empIdx + r];
+        if (!empId) break;
         const cols = matrix[r];
         for (let c = 0; c < cols.length; c++) {
           const d = days[dayIdx + c];
           if (!d) break;
-          onCellChange(startEmpId, d.ymd, startKind, String(cols[c] || '').trim());
-          onCellBlur(startEmpId, d.ymd, startKind);
+          onCellChange(empId, d.ymd, startKind, String(cols[c] || '').trim());
+          onCellBlur(empId, d.ymd, startKind);
           count++;
         }
       }
-      void visibleEmpIds;
       bumpStruct();
       return count;
     },
@@ -464,18 +476,17 @@ export function useGridEditor({ days, getDbRow, editable, isAdmin, onNopAttempt 
     return rows;
   }, []);
 
-  const collectNopSync = useCallback(() => {
-    const out: { empId: string; ymd: string; isNop: boolean; wasNop: boolean }[] = [];
-    for (const [key, d] of dirtyRef.current) {
-      const sep = key.indexOf('|');
-      const empId = key.slice(0, sep);
-      const ymd = key.slice(sep + 1);
-      const isNop = d.absence_code === 'nop';
-      const wasNop = getDbRow(empId, ymd)?.absenceCode === 'nop';
-      if (isNop !== wasNop) out.push({ empId, ymd, isNop, wasNop });
-    }
-    return out;
-  }, [getDbRow]);
+  /*
+   * `collectNopSync` UKLONJEN (AUDIT-K5, 26.07).
+   *
+   * Funkcija je računala prelaze NOP-a u gridu da bi se preslikali u `absences`,
+   * ali je NIKAD nije niko pozvao. Nije povezana namerno: MODULE_SPEC §2.6
+   * pravilo 2 kaže da `work_hours` (grid) i `absences` NISU auto-sinhronizovani —
+   * payroll čita ISKLJUČIVO grid, a `applyAbsencePeriodToGrid` je jednosmeran
+   * upis odsustva U grid. Povezivanje bi uvelo dvosmernu sinhronizaciju koju
+   * doktrina izričito zabranjuje („ne ujednačavati usput"), pa je ispravno
+   * ukloniti mrtav kod, a ne aktivirati ga.
+   */
 
   const clearDirty = useCallback(() => {
     dirtyRef.current.clear();
@@ -514,7 +525,6 @@ export function useGridEditor({ days, getDbRow, editable, isAdmin, onNopAttempt 
       dirtyCount,
       dirtyEmployeeCount,
       buildBatchRows,
-      collectNopSync,
       clearDirty,
       refresh,
     }),
@@ -543,7 +553,6 @@ export function useGridEditor({ days, getDbRow, editable, isAdmin, onNopAttempt 
       dirtyCount,
       dirtyEmployeeCount,
       buildBatchRows,
-      collectNopSync,
       clearDirty,
       refresh,
     ],
@@ -551,11 +560,16 @@ export function useGridEditor({ days, getDbRow, editable, isAdmin, onNopAttempt 
 }
 
 /** Isti dan prethodnog meseca (copyPrev). */
+/**
+ * Isti dan prethodnog meseca — ČISTO STRINGOVSKI (paritet 1.0 `${prevKey}-${dayNum}`).
+ * Date-aritmetika je ovde pogrešna: `new Date(2026, 1, 31)` (31.03. − 1 mesec) se
+ * prevrće na 03.03., pa je „Kopiraj prethodni mesec" za 31. dan povlačio podatke sa
+ * POGREŠNOG datuma. Ovako nepostojeći dan (npr. „2026-02-31") prosto nema pogodak u
+ * mapi prethodnog meseca → dan se preskače (AUDIT-K1).
+ */
 function prevMonthSameDay(ymd: string): string {
   const [y, m, d] = ymd.split('-').map((n) => parseInt(n, 10));
-  const dt = new Date(y, m - 2, d);
-  const py = dt.getFullYear();
-  const pm = String(dt.getMonth() + 1).padStart(2, '0');
-  const pd = String(dt.getDate()).padStart(2, '0');
-  return `${py}-${pm}-${pd}`;
+  const py = m === 1 ? y - 1 : y;
+  const pm = m === 1 ? 12 : m - 1;
+  return `${py}-${String(pm).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
 }

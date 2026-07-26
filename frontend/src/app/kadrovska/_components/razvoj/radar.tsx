@@ -65,7 +65,15 @@ export function Radar({ labels, datasets, max = 5 }: { labels: string[]; dataset
           .map((d) => (
             <polygon
               key={d.label}
-              points={labels.map((_, i) => point(i, Number(d.data[i] ?? 0)).join(',')).join(' ')}
+              /* ⚠️ AUDIT-K5 (26.07): NEDOSTAJUĆA ocena (null) se ranije crtala kao
+                 `Number(null ?? 0)` = 0 — dakle kao NAJGORA ocena. Na 360 radaru to
+                 znači da kompetencija koju ocenjivač NIJE popunio izgleda kao da je
+                 ocenjena najnižom ocenom, što izvlači pogrešne zaključke o čoveku.
+                 Sada se osa bez vrednosti PRESKAČE (poligon je ne dodiruje). */
+              points={labels
+                .map((_, i) => (d.data[i] == null ? null : point(i, Number(d.data[i])).join(',')))
+                .filter((p): p is string => p != null)
+                .join(' ')}
               fill={d.color}
               fillOpacity={0.12}
               stroke={d.color}

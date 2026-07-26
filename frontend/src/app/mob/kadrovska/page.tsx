@@ -160,11 +160,17 @@ function EmployeeList({
 
   // „Trenutno odsutni" — BE nema quick-filter za to, ali ima `GET /absences/absent-now`
   // (isti `kadrovska.read`). Skup id-jeva služi i za bedž na redu, i za čip.
+  // ⚠️ AUDIT-K5b: roster sada vraća DVA izvora — `absences` periode I dane iz
+  // GRIDA (1.0 odsutniTab spaja oba; sa samo jednim lista je bila skoro prazna,
+  // pa je bedž „odsutan" praktično nikad nije palio). Skup id-jeva je unija.
   const absentQ = useAbsentNow();
-  const absentIds = useMemo(
-    () => new Set((absentQ.data?.data ?? []).map((a) => a.employeeId)),
-    [absentQ.data],
-  );
+  const absentIds = useMemo(() => {
+    const d = absentQ.data?.data;
+    const ids = new Set<string>();
+    for (const a of d?.absences ?? []) ids.add(a.employeeId);
+    for (const g of d?.grid ?? []) ids.add(g.employee_id);
+    return ids;
+  }, [absentQ.data]);
 
   // „Ugovor ističe" — takođe bez BE filtera; računa se iz aktivnih ugovora
   // (samo uz `contracts_read`, inače endpoint vraća 403). Učitava se tek kad je čip

@@ -449,7 +449,10 @@ function BulkDialog({
         if (extendTo < (c.dateFrom || '0000-00-00')) { fail++; continue; }
         patch.dateTo = extendTo;
       } else if (act === 'extendMonths') {
-        patch.dateTo = ymdAddMonths(c.dateTo || today, months);
+        // Nikad ne slati null: to bi obrisalo „datum do" umesto da ga produži.
+        const next = ymdAddMonths(c.dateTo || today, months);
+        if (!next) { fail++; continue; }
+        patch.dateTo = next;
       } else {
         patch.isActive = false;
       }

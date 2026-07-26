@@ -382,7 +382,10 @@ export class OnboardingStartDto extends IdempotentDto {
   @IsOptional() @IsISO8601() startDate?: string;
 }
 export class OnboardingTaskDto {
-  @IsOptional() @IsString() status?: string;
+  /** AUDIT-K5: rečnik 1.0 (onboardingTab.js) = open | done | skipped.
+   *  Bez liste je prolazila bilo koja vrednost i pravila status koji nijedan UI
+   *  ne prepoznaje. */
+  @IsOptional() @IsIn(["open", "done", "skipped"]) status?: string;
   @IsOptional() @IsBoolean() done?: boolean;
   @IsOptional() @IsString() note?: string;
 }
@@ -676,4 +679,22 @@ export class GridAutofillRunDto {
   @IsOptional() @Matches(/^\d{4}-\d{2}-\d{2}$/) from?: string;
   @IsOptional() @Matches(/^\d{4}-\d{2}-\d{2}$/) to?: string;
   @IsOptional() @IsBoolean() dryRun?: boolean;
+}
+
+/* ════════════════ GRID — brava potvrđenog dana (AUDIT-K7c) ════════════════ */
+
+export class GridLockDayDto {
+  @IsUUID() employeeId!: string;
+  @IsISO8601() workDate!: string;
+}
+
+/** `unlock=true` skida bravu (urednik grida / admin), inače je postavlja. */
+export class GridLockDto extends OptIdempotentDto {
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => GridLockDayDto)
+  days!: GridLockDayDto[];
+  @IsOptional() @IsBoolean() unlock?: boolean;
+  @IsOptional() @IsString() @MaxLength(500) note?: string;
 }

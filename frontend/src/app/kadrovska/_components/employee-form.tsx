@@ -8,12 +8,15 @@ import { Textarea } from '@/components/ui-kit/textarea';
 import { ApiError } from '@/api/client';
 import {
   newClientEventId,
+  useContractSalary,
   useCreateEmployee,
   useEmployee,
   useOrgStructure,
+  useSetContractSalary,
   useUpdateEmployee,
   type EmployeeSafe,
 } from '@/api/kadrovska';
+import { formatDate } from '@/lib/format';
 import { parseJmbg, validateJmbg } from '@/lib/jmbg';
 import { postanskiZaGrad, gradZaPostanski } from '@/lib/rs-postanski';
 import { sv } from './common';
@@ -669,8 +672,92 @@ export function EmployeeFormDialog({
               </FormField>
             </div>
           </Section>
+
+          {isEdit && canPii && <ContractSalarySection employeeId={editId!} />}
         </form>
       )}
     </Dialog>
+  );
+}
+
+/**
+ * Ugovorna zarada (NETO/BRUTO) — paritet 1.0 sekcije u modalu zaposlenog.
+ *
+ * ⚠️ AUDIT-K4 (26.07), odluka Nenad: pravo ima POSLOVNI ADMIN (`kadrovska.pii`),
+ * ne tab Zarade. 1.0 je ovo namerno držao iza `canEditEmployeeSensitiveFields()`
+ * da poslovni admin može da unese ugovorni neto za novozaposlenog bez pristupa
+ * zaradama. U 3.0 sekcija nije postojala, `kadr_get_contract_salary` se nije
+ * zvao nigde, a hook `useSetContractSalary` nije imao pozivaoca — pa se
+ * ugovorna zarada iz 3.0 kartona nije mogla ni videti ni uneti.
+ * Snima se ODVOJENO od ostatka forme (uska DEFINER ruta, sopstveni gate).
+ */
+function ContractSalarySection({ employeeId }: { employeeId: string }) {
+  const q = useContractSalary(employeeId);
+  const setM = useSetContractSalary();
+  const cur = q.data?.data;
+  const [neto, setNeto] = useState('');
+  const [bruto, setBruto] = useState('');
+  const [from, setFrom] = useState('');
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!cur) return;
+    setNeto(cur.neto_rsd != null ? String(cur.neto_rsd) : '');
+    setBruto(cur.bruto_rsd != null ? String(cur.bruto_rsd) : '');
+    setFrom(cur.effective_from ? String(cur.effective_from).slice(0, 10) : '');
+  }, [cur]);
+
+  async function save() {
+    setErr(null);
+    setMsg(null);
+    const n = Number(String(neto).replace(',', '.'));
+    const b = Number(String(bruto).replace(',', '.'));
+    if (!Number.isFinite(n) || !Number.isFinite(b) || n <= 0 || b <= 0)
+      return setErr('Unesi NETO i BRUTO (veće od nule).');
+    if (b < n) return setErr('BRUTO ne može biti manji od NETO.');
+    try {
+      await setM.mutateAsync({
+        employeeId,
+        neto: n,
+        bruto: b,
+        effectiveFrom: from || undefined,
+        clientEventId: newClientEventId(),
+      });
+      setMsg('Ugovorna zarada sačuvana.');
+      void q.refetch();
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : 'Čuvanje nije uspelo.');
+    }
+  }
+
+  return (
+    <Section title="💼 Ugovorna zarada">
+      <FormField label="NETO (RSD)">
+        <Input value={neto} onChange={(e) => setNeto(e.target.value)} inputMode="decimal" />
+      </FormField>
+      <FormField label="BRUTO (RSD)">
+        <Input value={bruto} onChange={(e) => setBruto(e.target.value)} inputMode="decimal" />
+      </FormField>
+      <FormField label="Važi od">
+        <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+      </FormField>
+      <div className="flex items-end gap-2">
+        <Button type="button" variant="secondary" onClick={save} loading={setM.isPending}>
+          Sačuvaj zaradu
+        </Button>
+      </div>
+      {(msg || err) && (
+        <p className={`sm:col-span-2 text-sm ${err ? 'text-status-danger' : 'text-status-success'}`}>
+          {err ?? msg}
+        </p>
+      )}
+      {cur?.approved_by && (
+        <p className="sm:col-span-2 text-2xs text-ink-secondary">
+          Poslednja izmena: {cur.approved_by}
+          {cur.approved_at ? ` · ${formatDate(String(cur.approved_at).slice(0, 10))}` : ''}
+        </p>
+      )}
+    </Section>
   );
 }

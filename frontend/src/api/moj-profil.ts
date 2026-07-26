@@ -198,7 +198,8 @@ export interface TalkCorrectivePlan {
   followup_date: string | null;
   measures: TalkMeasure[];
 }
-export type TalkDetail = {
+/** Jedan red `employee_talks` (snake_case — BE ga vraća kao sirov red iz baze). */
+export type TalkRecord = {
   id: string;
   talk_type?: string;
   title?: string | null;
@@ -211,8 +212,23 @@ export type TalkDetail = {
   raise_percent?: number | null;
   raise_effective_from?: string | null;
   raise_note?: string | null;
+};
+
+/**
+ * Odgovor `GET /moj-profil/talks/:id`.
+ *
+ * ⚠️ AUDIT-K3 (26.07): BE gnezdi red razgovora pod ključ `talk`, a ovaj tip je
+ * ranije bio RAVAN uz `& Record<string, unknown>` — taj catch-all je ugasio
+ * proveru tipova, pa je modal čitao `d.zapisnik_md` (uvek `undefined`) umesto
+ * `d.talk.zapisnik_md`. Posledica: zaposleni je otvarao „zapisnik" i video
+ * prazno, a blok „Odluka o zaradi" (procenat povišice, datum, obrazloženje) se
+ * uopšte nije renderovao. Catch-all je namerno UKLONJEN da tsc hvata ovaj drift.
+ */
+export type TalkDetail = {
+  talk: TalkRecord;
   correctivePlans?: TalkCorrectivePlan[];
-} & Record<string, unknown>;
+  correctiveMeasures?: unknown[];
+};
 
 export interface Expectation {
   id: string;
@@ -657,6 +673,67 @@ export function useSelfAssessment(period?: string, enabled = true) {
     queryFn: () => apiFetch<{ data: SelfAssessmentData | null; meta?: EnvelopeMeta }>(`${BASE}/assessment/self${qs({ period })}`),
   });
 }
+
+/* ── 360° OCENJIVAČ (peer/leader) — nativni tok (AUDIT-K6) ──────────────────
+ * Zamena za 1.0 `ocena.html?token=`: ocenjivači su zaposleni sa nalogom, pa se
+ * ocena predaje autentifikovano, bez tajne u mejlu. */
+export interface RaterInboxRow {
+  rater_id: string;
+  rater_kind: string;
+  rater_status: string | null;
+  submitted_at: string | null;
+  assessment_id: string;
+  assessment_status: string | null;
+  period_label: string | null;
+  employee_name: string | null;
+}
+/** `SELECT a.*` iz `assessments` — SIROV red (snake_case), za razliku od
+ *  `SelfAssessmentInfo` koji BE mapira u camelCase. */
+export interface RaterAssessmentInfo {
+  id: string;
+  status: string; // draft | collecting | closed | shared
+  period_label?: string | null;
+  employee_name?: string | null;
+}
+export interface RaterAssessmentData {
+  raterId: string;
+  raterKind: string;
+  assessmentId: string;
+  assessment: RaterAssessmentInfo | null;
+  scope: AssessmentScopeRow[];
+  framework: FrameworkGroup[];
+  questions: CompetenceQuestion[];
+  scores: SelfScore[];
+  answers: SelfAnswer[];
+}
+
+/** Moja zaduženja za ocenjivanje kolega/podređenih koja čekaju popunjavanje. */
+export function useRaterInbox(enabled = true) {
+  return useQuery({
+    queryKey: ['profile', 'assessment', 'rater-inbox'] as const,
+    enabled,
+    retry: false,
+    queryFn: () => apiFetch<{ data: RaterInboxRow[] }>(`${BASE}/assessment/rater`),
+  });
+}
+export function useRaterAssessment(raterId: string | null) {
+  return useQuery({
+    queryKey: ['profile', 'assessment', 'rater', raterId] as const,
+    enabled: !!raterId,
+    retry: false,
+    queryFn: () => apiFetch<{ data: RaterAssessmentData | null }>(`${BASE}/assessment/rater/${raterId}`),
+  });
+}
+export const useSaveRaterScores = () =>
+  useProfileMutation<{ raterId: string; items: { competenceId: number; level?: number | null; comment?: string }[] }>((v) =>
+    post(`/assessment/rater/${v.raterId}/scores`, { raterId: v.raterId, items: v.items }),
+  );
+export const useSaveRaterAnswers = () =>
+  useProfileMutation<{ raterId: string; items: { questionCode: string; answerText?: string }[] }>((v) =>
+    post(`/assessment/rater/${v.raterId}/answers`, { raterId: v.raterId, items: v.items }),
+  );
+export const useSubmitRater = () =>
+  useProfileMutation<{ raterId: string }>((v) => post(`/assessment/rater/${v.raterId}/submit`, {}));
 
 export const useOpenSelfAssessment = () =>
   useProfileMutation<{ period?: string }, TxResponse<{ assessmentId: unknown }>>((v) => post('/assessment/self/open', v));

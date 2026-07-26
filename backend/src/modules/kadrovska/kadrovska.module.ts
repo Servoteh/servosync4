@@ -1,5 +1,6 @@
 import { Module } from "@nestjs/common";
 import { MailModule } from "../../common/mail/mail.module";
+import { SchedulerModule } from "../scheduler/scheduler.module";
 import { KadrovskaController } from "./kadrovska.controller";
 import { KadrovskaService } from "./kadrovska.service";
 import { KadrovskaMutationsController } from "./kadrovska-mutations.controller";
@@ -11,7 +12,8 @@ import { KadrovskaGridAutofillService } from "./grid-autofill.service";
  *  MailModule: 360° pozivnice (port 1.0 edge fn assessment-invite → Resend direktno).
  *  GridAutofill (zahtev 012/26): dnevni auto-predlog grida iz kapije (poseban servis). */
 @Module({
-  imports: [MailModule],
+  // SchedulerModule → NotifyDispatchService (3.0 nativni dispečer outboxa).
+  imports: [MailModule, SchedulerModule],
   controllers: [KadrovskaController, KadrovskaMutationsController],
   providers: [
     KadrovskaService,

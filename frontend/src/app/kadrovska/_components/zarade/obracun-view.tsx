@@ -18,6 +18,8 @@ import {
   usePayrollUnlock,
   useDeletePayroll,
   useUploadDocument,
+  useDeleteDocument,
+  fetchEmployeeDocuments,
   newClientEventId,
 } from '@/api/kadrovska';
 import { generateKarnetPdf, downloadBlob, openBlob, type KarnetEmployee } from '@/lib/hr-pdf';
@@ -151,6 +153,7 @@ export function ObracunView() {
   const unlock = usePayrollUnlock();
   const deletePayroll = useDeletePayroll();
   const uploadDoc = useUploadDocument();
+  const deleteDoc = useDeleteDocument();
 
   const rows = useMemo(() => (payrollQ.data?.data ?? []) as ViewRow[], [payrollQ.data]);
 
@@ -421,11 +424,29 @@ export function ObracunView() {
           employees,
         });
         const file = new File([blob], fileName, { type: 'application/pdf' });
+        const description = `Karnet ${MONTHS_SR_UPPER[month - 1]} ${year} (auto uz zaključavanje meseca)`;
+
+        // ⚠️ AUDIT-K5b (26.07): 1.0 `generateAndStoreMonthKarnete` PRE svakog
+        // upload-a obriše ranije karnete sa ISTIM opisom — jer se mesec u praksi
+        // otključava i ponovo zaključava. 3.0 je samo dodavao, pa se u dosijeu
+        // zaposlenog gomilalo po nekoliko identičnih PDF-ova istog meseca i
+        // nije se videlo koji je važeći.
+        try {
+          const existing = await fetchEmployeeDocuments(empId);
+          const dupes = existing.filter(
+            (d) => d.docType === 'karnet' && (d.description ?? '') === description,
+          );
+          for (const dup of dupes) await deleteDoc.mutateAsync({ docId: dup.id });
+        } catch (e) {
+          // Neuspelo čišćenje ne sme da spreči generisanje — samo zabeleži.
+          console.warn('[zarade] karnet dedup', empId, e);
+        }
+
         await uploadDoc.mutateAsync({
           employeeId: empId,
           file,
           docType: 'karnet',
-          description: `Karnet ${MONTHS_SR_UPPER[month - 1]} ${year} (auto uz zaključavanje meseca)`,
+          description,
           clientEventId: newClientEventId(),
         });
         generated += 1;

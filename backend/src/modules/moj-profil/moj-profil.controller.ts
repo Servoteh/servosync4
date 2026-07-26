@@ -310,6 +310,48 @@ export class MojProfilController {
 
   // ---------- 360 samoprocena ----------
 
+  /* ── 360° ocenjivač (peer/leader) — nativni tok umesto 1.0 ocena.html ──────
+   * AUDIT-K6: svi ocenjivači su zaposleni sa nalogom, pa magic-link token
+   * (`assessment_submit_by_token`, bez auth-a) više nije potreban. */
+  @Get("assessment/rater")
+  raterInbox(@Req() req: AuthedRequest) {
+    return this.profil.raterInbox(req.user.email);
+  }
+
+  @Get("assessment/rater/:raterId")
+  raterRead(
+    @Req() req: AuthedRequest,
+    @Param("raterId", ParseUUIDPipe) raterId: string,
+  ) {
+    return this.profil.raterRead(req.user.email, raterId);
+  }
+
+  @Post("assessment/rater/:raterId/scores")
+  saveRaterScores(
+    @Req() req: AuthedRequest,
+    @Param("raterId", ParseUUIDPipe) raterId: string,
+    @Body() dto: SaveSelfScoresDto,
+  ) {
+    return this.profil.saveRaterScores(req.user.email, raterId, dto);
+  }
+
+  @Post("assessment/rater/:raterId/answers")
+  saveRaterAnswers(
+    @Req() req: AuthedRequest,
+    @Param("raterId", ParseUUIDPipe) raterId: string,
+    @Body() dto: SaveSelfAnswersDto,
+  ) {
+    return this.profil.saveRaterAnswers(req.user.email, raterId, dto);
+  }
+
+  @Post("assessment/rater/:raterId/submit")
+  submitRater(
+    @Req() req: AuthedRequest,
+    @Param("raterId", ParseUUIDPipe) raterId: string,
+  ) {
+    return this.profil.submitRater(req.user.email, raterId);
+  }
+
   @Post("assessment/self/open")
   openSelfAssessment(
     @Req() req: AuthedRequest,

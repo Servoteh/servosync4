@@ -474,13 +474,24 @@ function computeRows(args: {
     let neplaceno = sumDays((a) => a.type === 'neplaceno');
 
     // + grid dani (dualizam) uz per-dan dedup protiv absences opsega
-    const coveredByAbs = (ymdW: string) =>
-      empAbs.some((a) => (a.dateFrom || '').slice(0, 10) <= ymdW && ymdW <= (a.dateTo || '').slice(0, 10));
+    // ⚠️ AUDIT-K5b (26.07): dedup je ranije gledao BILO KOJI absences red tog
+    // zaposlenog, bez poređenja TIPA. Jedan dug legacy red (npr. višemesečno
+    // „neplaceno") tako je gasio grid dane SVIH vrsta u tom periodu — kolone
+    // GO / Bo / Slob. ostajale su prazne iako u gridu postoje uneti dani.
+    // Dedup i dalje sprečava dvostruko brojanje ISTOG odsustva (koje
+    // `paid_leave_approve` upisuje na oba mesta), ali samo za isti tip.
+    const coveredByAbs = (ymdW: string, type: string) =>
+      empAbs.some(
+        (a) =>
+          a.type === type &&
+          (a.dateFrom || '').slice(0, 10) <= ymdW &&
+          ymdW <= (a.dateTo || '').slice(0, 10),
+      );
     for (const w of empWH) {
       const type = gridCodeToAbsenceType(w.absenceCode);
       if (!type) continue;
       const ymdW = String(w.workDate).slice(0, 10);
-      if (coveredByAbs(ymdW)) continue;
+      if (coveredByAbs(ymdW, type)) continue;
       if (type === 'godisnji') goDays++;
       else if (type === 'bolovanje') {
         if (w.absenceSubtype === 'povreda_na_radu' || w.absenceSubtype === 'odrzavanje_trudnoce') bo100++;

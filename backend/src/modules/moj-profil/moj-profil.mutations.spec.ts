@@ -24,6 +24,10 @@ const qText = (m: jest.Mock, n = 0): string =>
   (m.mock.calls[n]?.[0] as SqlLike).strings.join("?");
 const eText = (m: jest.Mock, n = 0): string =>
   (m.mock.calls[n]?.[0] as SqlLike).strings.join("?");
+/** Da li BILO KOJI $queryRaw poziv sadrži tekst — od AUDIT-K2 IDOR brane
+ *  (`current_user_manages_employee`) submit više nije prvi upit u transakciji. */
+const qAny = (m: jest.Mock, needle: string): boolean =>
+  m.mock.calls.some((c) => (c?.[0] as SqlLike)?.strings?.join("?").includes(needle));
 
 function makeSvc() {
   const tx = {
@@ -43,7 +47,7 @@ function makeSvc() {
       ) => ({ idempotent: false, result: await fn(tx) }),
     ),
   };
-  const svc = new MojProfilService(sy15 as unknown as Sy15Service);
+  const svc = new MojProfilService(sy15 as unknown as Sy15Service, { enabled: false, dispatchKadr: jest.fn() } as never);
   return { svc, sy15, tx };
 }
 
@@ -190,12 +194,21 @@ describe("MojProfilService R2 mutacije", () => {
 
   it("submitMakeup: INSERT makeup_requests + queue 'submitted'; runIdem action", async () => {
     const { svc, sy15, tx } = makeSvc();
-    tx.$queryRaw.mockResolvedValueOnce([{ id: "m1" }]); // INSERT
+    // AUDIT-K2: redosled upita je sada self-lookup → IDOR brana → INSERT.
+    tx.$queryRaw.mockImplementation(async (sql: unknown) => {
+      const t = (sql as SqlLike).strings.join("?");
+      if (t.includes("current_user_manages_employee")) return [{ ok: true }];
+      if (t.includes("INSERT INTO makeup_requests")) return [{ id: "m1" }];
+      return [];
+    });
     await svc.submitMakeup("u@x", {
       clientEventId: CID,
       absenceDate: "2026-08-01",
       absenceHours: 4,
-      employeeId: EMP,
+      // AUDIT-K4: razlog i predlog nadoknade su OBAVEZNI (paritet 1.0).
+      reason: "bio kod lekara",
+      makeupPlan: "nadoknadicu u petak",
+      employeeId: CLAN,
     });
     expect(sy15.runIdempotentRls).toHaveBeenCalledWith(
       "u@x",
@@ -203,7 +216,9 @@ describe("MojProfilService R2 mutacije", () => {
       "profile.makeup-submit",
       expect.any(Function),
     );
-    expect(qText(tx.$queryRaw)).toContain("INSERT INTO makeup_requests");
+    // AUDIT-K2: podnošenje za ČLANA TIMA prvo prođe kroz IDOR branu, pa INSERT.
+    expect(qAny(tx.$queryRaw, "current_user_manages_employee")).toBe(true);
+    expect(qAny(tx.$queryRaw, "INSERT INTO makeup_requests")).toBe(true);
     expect(eText(tx.$executeRaw)).toContain("kadr_queue_makeup_notification");
   });
 
@@ -215,16 +230,22 @@ describe("MojProfilService R2 mutacije", () => {
 
   it("submitPaidLeave: INSERT paid_leave_requests + queue 'submitted'", async () => {
     const { svc, tx } = makeSvc();
-    tx.$queryRaw.mockResolvedValueOnce([{ id: "p1" }]);
+    tx.$queryRaw.mockImplementation(async (sql: unknown) => {
+      const t = (sql as SqlLike).strings.join("?");
+      if (t.includes("current_user_manages_employee")) return [{ ok: true }];
+      if (t.includes("INSERT INTO paid_leave_requests")) return [{ id: "p1" }];
+      return [];
+    });
     await svc.submitPaidLeave("u@x", {
       clientEventId: CID,
       leaveType: "brak",
       dateFrom: "2026-08-01",
       dateTo: "2026-08-03",
       daysCount: 3,
-      employeeId: EMP,
+      employeeId: CLAN,
     });
-    expect(qText(tx.$queryRaw)).toContain("INSERT INTO paid_leave_requests");
+    expect(qAny(tx.$queryRaw, "current_user_manages_employee")).toBe(true);
+    expect(qAny(tx.$queryRaw, "INSERT INTO paid_leave_requests")).toBe(true);
     expect(eText(tx.$executeRaw)).toContain(
       "kadr_queue_paidleave_notification",
     );

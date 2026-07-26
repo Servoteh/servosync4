@@ -94,18 +94,12 @@ export function NadoknadaTab() {
   }, [dirQ.data]);
   const empName = (id: string) => emps.get(id)?.name || id.slice(0, 8);
 
-  // Row-scope: BE/RLS presuđuje (šef dobija samo svoje kroz GET /requests);
-  // FE dodatno filtrira po managedSubDeptIds kad directory izlaže sub_department_id.
-  const items = useMemo(() => {
-    const all = reqQ.data?.data?.makeup ?? [];
-    const managed = me?.managedSubDeptIds;
-    if (!managed || managed.length === 0 || isAdmin || isHr) return all;
-    const set = new Set(managed);
-    return all.filter((r) => {
-      const sd = emps.get(r.employeeId)?.subDepartmentId;
-      return sd == null ? true : set.has(sd);
-    });
-  }, [reqQ.data, me, isAdmin, isHr, emps]);
+  // Row-scope presuđuje BACKEND (GET /kadrovska/requests filtrira kroz
+  // `current_user_manages_employee` — AUDIT-K2). Raniji FE filter je bio i
+  // nepouzdan i pogrešan: `sub_department_id` nije garantovan u directory-ju
+  // (PII maska), a prazna lista pododeljenja je vraćala SVE umesto ništa, pa je
+  // menadžer bez opsega video zahteve cele firme.
+  const items = useMemo(() => reqQ.data?.data?.makeup ?? [], [reqQ.data]);
 
   const filtered = useMemo(() => {
     const lq = q.trim().toLowerCase();

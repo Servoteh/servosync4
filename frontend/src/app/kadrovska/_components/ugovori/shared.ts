@@ -54,10 +54,22 @@ export function contractStatus(c: Contract): ContractStatus {
 
 /* ── Trajanje / datumi ─────────────────────────────────────────────────── */
 
+/**
+ * Datumske kolone (`date_from`/`date_to`) su u Prismi `DateTime @db.Date`, pa ih API
+ * vraća kao PUN ISO timestamp („2026-06-30T00:00:00.000Z") — `json-safe.ts` datume
+ * namerno ne dira. Bez ovoga `split('-')[2]` daje „30T00:00:00.000Z" → `Number(...)`
+ * = NaN → guard vraća null, a pozivalac taj null upiše kao brisanje datuma.
+ * Tako je bulk „Produži za N meseci" BRISAO `date_to` selektovanim ugovorima
+ * (AUDIT-K1, 26.07). Svi ymd-helperi zato normalizuju ulaz na `YYYY-MM-DD`.
+ */
+function ymd10(v: string): string {
+  return String(v ?? '').slice(0, 10);
+}
+
 /** „Datum do" = (datum + N meseci) − 1 dan; dan klampovan na poslednji dan meseca. */
 export function ymdAddMonthsMinusDay(ymd: string, months: number): string | null {
   if (!ymd) return null;
-  const [y, m, d] = ymd.split('-').map(Number);
+  const [y, m, d] = ymd10(ymd).split('-').map(Number);
   if (!y || !m || !d) return null;
   const idx = (m - 1) + months;
   const ty = y + Math.floor(idx / 12);
@@ -71,7 +83,7 @@ export function ymdAddMonthsMinusDay(ymd: string, months: number): string | null
 /** N meseci od datuma (bez klampa) — bulk „produži za N meseci". */
 export function ymdAddMonths(ymd: string, months: number): string | null {
   if (!ymd) return null;
-  const [y, m, d] = ymd.split('-').map(Number);
+  const [y, m, d] = ymd10(ymd).split('-').map(Number);
   if (!y || !m || !d) return null;
   const dt = new Date(y, m - 1, d);
   dt.setMonth(dt.getMonth() + months);
@@ -81,9 +93,11 @@ export function ymdAddMonths(ymd: string, months: number): string | null {
 /** Broj meseci od→do (identično trajanjeCyr — natpis odgovara tekstu ugovora). */
 export function contractMonths(fromIso: string, toIso: string): number | null {
   if (!fromIso || !toIso) return null;
-  const [fy, fm, fd] = fromIso.split('-').map(Number);
-  const [ty, tm, td] = toIso.split('-').map(Number);
-  if (!fy || !ty) return null;
+  const [fy, fm, fd] = ymd10(fromIso).split('-').map(Number);
+  const [ty, tm, td] = ymd10(toIso).split('-').map(Number);
+  // fd/td su OBAVEZNI: bez njih `td >= fd` je NaN-poređenje (uvek false) pa se
+  // gubi poslednji mesec — ugovor 01.01.–30.06. štampao se kao „5 meseci".
+  if (!fy || !ty || !fd || !td) return null;
   let months = (ty - fy) * 12 + (tm - fm);
   if (td >= fd) months += 1;
   return Math.max(1, months);
@@ -174,10 +188,7 @@ export function isMinorAt(birthDate: string | null | undefined, refIso: string |
   return new Date(refIso) < adultAt;
 }
 
-/** Prikaz imena zaposlenog za dokument (full_name je već „Ime Prezime"). */
-export function empDocName(fullName: string | null | undefined): string {
-  return String(fullName || '').trim();
-}
+/* `empDocName` uklonjen (AUDIT-K5): eksport bez ijednog pozivaoca. */
 
 /** Formatiran raspon trajanja ugovora za natpis („dd.mm — dd.mm · N meseci"). */
 export function durationHint(fromIso: string, toIso: string): string {

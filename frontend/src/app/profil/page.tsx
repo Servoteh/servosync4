@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { ChevronRight, Flame, KeyRound, Palette } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -24,6 +24,7 @@ import { ExpectationsSection } from './_components/expectations-section';
 import { DevelopmentSection } from './_components/development-section';
 import { DocumentsSection } from './_components/documents-section';
 import { AssessmentSection } from './_components/assessment-section';
+import { RaterAssessmentSection } from './_components/rater-assessment-section';
 import { OnboardingSection } from './_components/onboarding-section';
 import { AbsencesSection } from './_components/absences-section';
 import { DocumentsDeadlinesSection } from './_components/documents-deadlines-section';
@@ -55,6 +56,16 @@ export default function ProfilPage() {
   const router = useRouter();
   const meQ = useProfileMe();
   const summaryQ = useProfileSummary();
+
+  /* Deep-link iz 360° pozivnice: /profil?ocena=<raterId> (AUDIT-K6).
+     Čita se iz `window.location`, NE kroz `useSearchParams` — prod je statički
+     export, gde search params nisu dostupni pri prerenderu. */
+  const [raterDeepLink, setRaterDeepLink] = useState<string | null>(null);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const v = new URLSearchParams(window.location.search).get('ocena');
+    if (v) setRaterDeepLink(v);
+  }, []);
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
@@ -152,6 +163,9 @@ export default function ProfilPage() {
             <ExpectationsSection />
             <DevelopmentSection />
             <AssessmentSection />
+            {/* AUDIT-K6: ocene KOLEGA/podređenih — nativna zamena za 1.0 ocena.html.
+                Deep-link iz pozivnice: /profil?ocena=<raterId>. */}
+            <RaterAssessmentSection openRaterId={raterDeepLink} />
             <PositionSection />
             <DocumentsDeadlinesSection />
             <DocumentsSection />

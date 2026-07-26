@@ -279,8 +279,18 @@ export function GridTab() {
           const res = await fetchGridMonth({ year: prev.getFullYear(), month: prev.getMonth() + 1 });
           const map = new Map<string, WorkHours>();
           for (const r of res.data.rows) if (r.employeeId === empId) map.set(String(r.workDate).slice(0, 10), r);
-          editor.applyCopyPrev(empId, map);
-          showToast('Prethodni mesec preslikan — sačuvaj izmene');
+          // Prazan prethodni mesec = odustani uz poruku (paritet 1.0) — ranije je
+          // takav klik brisao ceo tekući mesec radniku (AUDIT-K1).
+          if (map.size === 0) {
+            showToast('⚠ Prethodni mesec nema nijedan unos za ovog radnika — ništa nije preslikano');
+            return;
+          }
+          const copied = editor.applyCopyPrev(empId, map);
+          showToast(
+            copied > 0
+              ? `Prethodni mesec preslikan (${copied} d) — sačuvaj izmene`
+              : '⚠ Nema dana za preslikavanje',
+          );
         } catch {
           showToast('⚠ Greška pri učitavanju prethodnog meseca');
         }

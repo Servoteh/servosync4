@@ -383,12 +383,39 @@ function OrgReport() {
                       </div>
                     );
                   })}
+                  {/* ⚠️ AUDIT-K5b: zaposleni BEZ pozicije — ključ `sd:<id>` se gradio
+                      iznad, ali se nikad nije čitao, pa su ti ljudi tiho nestajali
+                      iz organograma (a organogram je upravo pregled „ko je gde"). */}
+                  {(empByPos.get(`sd:${sv(sub, 'id')}`) ?? []).length > 0 && (
+                    <div className="text-sm text-ink-secondary">
+                      (bez pozicije) — {(empByPos.get(`sd:${sv(sub, 'id')}`) ?? []).map((e) => sv(e, 'full_name')).join(', ')}
+                    </div>
+                  )}
                 </div>
               </div>
             ))}
+            {/* Pozicije vezane DIREKTNO za odeljenje (bez pododeljenja) — ključ `d:<id>`. */}
+            {(posBySub.get(`d:${sv(dep, 'id')}`) ?? []).map((pos) => {
+              const emps = empByPos.get(sv(pos, 'id')) ?? [];
+              return (
+                <div key={sv(pos, 'id')} className="text-sm">
+                  <span className="text-ink">{sv(pos, 'name')}</span>
+                  {emps.length > 0 && <span className="text-ink-secondary"> — {emps.map((e) => sv(e, 'full_name')).join(', ')}</span>}
+                </div>
+              );
+            })}
           </div>
         </div>
       ))}
+      {/* Grupa „Bez odeljenja" — zaposleni bez pododeljenja uopšte (1.0 je ima). */}
+      {(empByPos.get('sd:') ?? []).length > 0 && (
+        <div className="rounded-panel border border-line bg-surface p-3">
+          <div className="text-sm font-semibold text-ink">🏢 Bez odeljenja</div>
+          <div className="mt-2 pl-3 text-sm text-ink-secondary">
+            {(empByPos.get('sd:') ?? []).map((e) => sv(e, 'full_name')).join(', ')}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -503,6 +530,9 @@ function ChildrenReport() {
 /* ── Rizik ── */
 function RiskReport() {
   const [months, setMonths] = useState(12);
+  // 1.0 default: „Samo aktivni" + svi nivoi (AUDIT-K5b).
+  const [status, setStatus] = useState<'active' | 'all'>('active');
+  const [minLevel, setMinLevel] = useState<'all' | 'medium' | 'high'>('all');
   const q = useReport<{ months: number; periodStart: string; periodEnd: string; rows: Row[] }>('risk', { months });
   const riskRun = useTriggerWeeklyRisk();
   const today = new Date();
@@ -515,18 +545,34 @@ function RiskReport() {
     const con = sv(r, 'contract_date_to');
     const reasons: string[] = [];
     let sev = 0;
-    if (bo > 20) { sev = Math.max(sev, 2); reasons.push(`${bo} dana BO`); } else if (bo > 10) { sev = Math.max(sev, 1); reasons.push(`${bo} dana BO`); }
+    // ⚠️ AUDIT-K4 (26.07): pragovi su bili >20 / >10, a 1.0 koristi >7 / 4–7
+    // (reports/riskReport.js:134,139). Zaposleni sa 8–20 dana bolovanja bio je u
+    // 1.0 VISOK rizik, a u 3.0 se prikazivao kao NIZAK (zeleno) — HR je gledao
+    // praznu kolonu „visok rizik" i propuštao baš one ljude zbog kojih izveštaj
+    // i postoji. Vraćene 1.0 granice i 1.0 tekst razloga.
+    if (bo > 7) { sev = Math.max(sev, 2); reasons.push(`>7 dana bolovanja (${bo} d)`); }
+    else if (bo >= 4) { sev = Math.max(sev, 1); reasons.push(`${bo} dana bolovanja`); }
+    else if (bo > 0) { reasons.push(`${bo} dana bolovanja`); }
     if (med) { if (med < iso) { sev = Math.max(sev, 2); reasons.push('lekarski istekao'); } else if (med <= soon) { sev = Math.max(sev, 1); reasons.push('lekarski uskoro'); } }
     if (con) { if (con < iso) { sev = Math.max(sev, 2); reasons.push('ugovor istekao'); } else if (con <= soon) { sev = Math.max(sev, 1); reasons.push('ugovor uskoro'); } }
     return sev >= 2 ? { tone: 'danger', label: 'Visok', sev, reasons } : sev === 1 ? { tone: 'warn', label: 'Srednji', sev, reasons } : { tone: 'success', label: 'Nizak', sev, reasons };
   }
 
-  const rows = (q.data?.data?.rows ?? []).map((r) => ({ r, lv: level(r) })).sort((a, b) => b.lv.sev - a.lv.sev || svNum(b.r, 'bo_days') - svNum(a.r, 'bo_days'));
+  // ⚠️ AUDIT-K5b (26.07): 1.0 Rizik ima tri filtera; 3.0 je imao SAMO period.
+  // Bez „Samo aktivni" (1.0 default) otpušteni ljudi ulaze u listu I u brojače
+  // rizika, pa brojevi ne odgovaraju stvarnom stanju tima. `is_active` i
+  // `bo_count` backend već vraća (kadrovska.service.ts:431-432) — nisu se čitali.
+  const all = (q.data?.data?.rows ?? []).map((r) => ({ r, lv: level(r) }));
+  const rows = all
+    .filter((x) => (status === 'all' ? true : sv(x.r, 'is_active') !== 'false'))
+    .filter((x) => (minLevel === 'all' ? true : minLevel === 'high' ? x.lv.sev >= 2 : x.lv.sev >= 1))
+    .sort((a, b) => b.lv.sev - a.lv.sev || svNum(b.r, 'bo_days') - svNum(a.r, 'bo_days'));
   const counts = { high: rows.filter((x) => x.lv.sev >= 2).length, mid: rows.filter((x) => x.lv.sev === 1).length };
   const cols: Column<(typeof rows)[number]>[] = [
     { key: 'name', header: 'Zaposleni', render: (x) => sv(x.r, 'full_name') },
     { key: 'dep', header: 'Odeljenje', render: (x) => sv(x.r, 'department') || '—' },
     { key: 'bo', header: 'BO dana', align: 'right', render: (x) => svNum(x.r, 'bo_days') || '—' },
+    { key: 'boc', header: 'BO evid.', align: 'right', render: (x) => svNum(x.r, 'bo_count') || '—' },
     { key: 'med', header: 'Lekarski do', render: (x) => (sv(x.r, 'medical_exam_expires') ? formatDate(sv(x.r, 'medical_exam_expires')) : '—') },
     { key: 'con', header: 'Ugovor do', render: (x) => (sv(x.r, 'contract_date_to') ? formatDate(sv(x.r, 'contract_date_to')) : '—') },
     { key: 'lv', header: 'Rizik', render: (x) => <StatusBadge tone={x.lv.tone} label={x.lv.label} /> },
@@ -540,6 +586,19 @@ function RiskReport() {
             <option value="6">6 meseci</option>
             <option value="12">12 meseci</option>
             <option value="24">24 meseca</option>
+          </Select>
+        </label>
+        <label className="flex items-center gap-2 text-sm text-ink-secondary">Status
+          <Select value={status} onChange={(v) => setStatus(v as 'active' | 'all')} className="h-8 w-auto">
+            <option value="active">Samo aktivni</option>
+            <option value="all">Svi</option>
+          </Select>
+        </label>
+        <label className="flex items-center gap-2 text-sm text-ink-secondary">Min. nivo
+          <Select value={minLevel} onChange={(v) => setMinLevel(v as 'all' | 'medium' | 'high')} className="h-8 w-auto">
+            <option value="all">Svi</option>
+            <option value="medium">Srednji i visok</option>
+            <option value="high">Samo visok</option>
           </Select>
         </label>
         <div className="flex-1" />
@@ -577,11 +636,53 @@ const VIEW_STATUS_SR: Record<string, { label: string; tone: Tone }> = {
   unknown_expiry: { label: 'bez datuma isteka', tone: 'warn' },
   expired: { label: 'istekao', tone: 'danger' },
   expiring_soon: { label: 'ističe uskoro', tone: 'warn' },
+  // AUDIT-K5b: `lifetime` je stizao iz view-a i prikazivao se NEPREVEDEN.
+  lifetime: { label: 'trajno važi', tone: 'success' },
   ok: { label: 'važi', tone: 'success' },
 };
+
+/**
+ * Težina problema za sortiranje „najgori prvi" (paritet 1.0
+ * `ord = { expired:0, never:1, expiring_soon:2, unknown_expiry:3, ok:4 }`).
+ * ⚠️ AUDIT-K5b: 3.0 je oba izveštaja renderovao kao GOLI dump view-a — bez
+ * sortiranja i bez filtera, pa je istekao lekarski mogao biti na 80. redu.
+ */
+const VIEW_STATUS_ORD: Record<string, number> = {
+  expired: 0,
+  never: 1,
+  expiring_soon: 2,
+  unknown_expiry: 3,
+  ok: 4,
+  lifetime: 5,
+};
+/** 1.0 default za lekarski/sertifikate: prikazuj SAMO problematične. */
+const PROBLEM_STATUSES = new Set(['expired', 'expiring_soon', 'never', 'unknown_expiry']);
+
 function ViewReport({ kind, title }: { kind: 'medical' | 'certs' | 'audit'; title: string }) {
   const q = useReport<Row[]>(kind, {});
-  const rows = q.data?.data ?? [];
+  const allRows = q.data?.data ?? [];
+  // Audit nema statusnu kolonu — filter/sort važe samo za lekarski i sertifikate.
+  const statusKind = kind !== 'audit';
+  const [statusF, setStatusF] = useState<'problem' | 'all'>('problem');
+  const rows = useMemo(() => {
+    if (!statusKind) return allRows;
+    const sel = statusF === 'all' ? allRows : allRows.filter((r) => PROBLEM_STATUSES.has(String(r.status)));
+    return [...sel].sort(
+      (a, b) =>
+        (VIEW_STATUS_ORD[String(a.status)] ?? 9) - (VIEW_STATUS_ORD[String(b.status)] ?? 9) ||
+        String(a.full_name ?? '').localeCompare(String(b.full_name ?? ''), 'sr'),
+    );
+  }, [allRows, statusF, statusKind]);
+  const counts = useMemo(() => {
+    const by = (st: string) => allRows.filter((r) => String(r.status) === st).length;
+    return {
+      total: allRows.length,
+      expired: by('expired'),
+      soon: by('expiring_soon'),
+      missing: by('never') + by('unknown_expiry'),
+      ok: by('ok') + by('lifetime'),
+    };
+  }, [allRows]);
   const kindHidden = VIEW_KIND_HIDDEN[kind];
   const columns = useMemo(() => {
     const keys = new Set<string>();
@@ -607,10 +708,30 @@ function ViewReport({ kind, title }: { kind: 'medical' | 'certs' | 'audit'; titl
     <div className="space-y-3">
       <div className="flex items-center gap-2">
         <h3 className="text-sm font-semibold text-ink">{title}</h3>
+        {statusKind && (
+          <label className="flex items-center gap-2 text-sm text-ink-secondary">Status
+            <Select value={statusF} onChange={(v) => setStatusF(v as 'problem' | 'all')} className="h-8 w-auto">
+              <option value="problem">Samo problematični</option>
+              <option value="all">Svi</option>
+            </Select>
+          </label>
+        )}
         <div className="flex-1" />
         <Button variant="secondary" onClick={() => exportXlsx(`${kind}.xlsx`, columns.map((k) => VIEW_LABELS[k] ?? k.replace(/_/g, ' ')), rows.map((r) => columns.map((k) => fmtVal(r[k]))))}>⬇ Izvezi XLSX</Button>
       </div>
-      <SummaryChips items={[{ label: 'Zapisa', value: rows.length }]} />
+      <SummaryChips
+        items={
+          statusKind
+            ? [
+                { label: 'Ukupno', value: counts.total },
+                { label: 'Istekli', value: counts.expired, tone: counts.expired ? 'danger' : undefined },
+                { label: 'Ističu < 30 d', value: counts.soon, tone: counts.soon ? 'warn' : undefined },
+                { label: 'Bez podataka', value: counts.missing, tone: counts.missing ? 'warn' : undefined },
+                { label: 'OK', value: counts.ok },
+              ]
+            : [{ label: 'Zapisa', value: rows.length }]
+        }
+      />
       {cols.length === 0 ? (
         <EmptyState title="Nema zapisa" />
       ) : (

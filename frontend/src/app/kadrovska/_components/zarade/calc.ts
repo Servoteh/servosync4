@@ -30,7 +30,7 @@ export function salaryTypeLabel(t: string | null | undefined): string {
 }
 
 export const COMPENSATION_MODELS = ['fiksno', 'dva_dela', 'satnica', 'jednokratno', 'praksa'] as const;
-export type CompensationModel = (typeof COMPENSATION_MODELS)[number];
+/* `CompensationModel` tip uklonjen (AUDIT-K5): nije korišćen nigde. */
 
 export function compensationModelLabel(m: string | null | undefined): string {
   switch (m) {

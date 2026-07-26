@@ -13,6 +13,9 @@ import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
 import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
 import { MailService } from "../../common/mail/mail.service";
+import { NotifyDispatchService } from "../scheduler/dispatch/notify-dispatch.service";
+import { assertRpcOk } from "../../common/sy15/rpc-ok";
+import { PrismaService } from "../../prisma/prisma.service";
 import {
   aggregateWorkHoursForMonth,
   computeEarnings,
@@ -70,6 +73,9 @@ export class KadrovskaMutationsService {
     private readonly sy15: Sy15Service,
     private readonly storage: Sy15StorageService,
     private readonly mail: MailService,
+    private readonly dispatcher: NotifyDispatchService,
+    /** 3.0 baza — brava zaključanog dana grida (AUDIT-K7c). */
+    private readonly prisma: PrismaService,
   ) {}
 
   // ==========================================================================
@@ -117,23 +123,26 @@ export class KadrovskaMutationsService {
     );
   }
 
-  /** Odobri (1.0 vacationRequestsTab:436-462): sef_approved|approved → queue mejl. */
+  /**
+   * ZASTARELO — alijas dvostepenog odobravanja (`vacationVacreqApprove`).
+   *
+   * ⚠️ AUDIT-K2 (26.07): ranije je zvao `hr_approve_vacation_request`, legat iz
+   * Sprinta 1 koji proverava SAMO `current_user_can_manage_vacreq()` (bilo koja
+   * rola iz {admin,hr,menadzment,leadpm,pm,poslovni_admin}) i onda odmah radi
+   * pending→approved. Time su zaobilažene TRI brane koje ima `hr_vacreq_approve`:
+   *   1) opseg pododeljenja (`current_user_manages_employee`) — šef je mogao da
+   *      odobri GO radniku iz tuđeg pododeljenja,
+   *   2) dvostepenost (zahtev ŠEFA finalizuje samo admin/HR; `dual_control` brana
+   *      da isti čovek ne bude i 1. i 2. nivo),
+   *   3) brana salda (`exceeds_balance`) — moglo se odobriti više dana nego što
+   *      radnik ima.
+   * U 1.0 ta funkcija NEMA nijednog pozivaoca (sve ide kroz `approveVacReqRpc`),
+   * kao ni `useVacationApprove` u 3.0 — ruta je bila dostupna samo direktnim API
+   * pozivom. Zadržana je kao alijas (a ne uklonjena) da spolja poznat put ne pukne,
+   * ali sada prolazi kroz ISTE provere.
+   */
   async vacationApprove(email: string, id: string, dto: D.OptIdempotentDto) {
-    const out = await this.mutate(
-      email,
-      dto.clientEventId,
-      "kadr.vacation.approve",
-      (tx) =>
-        this.rpcJson(
-          tx,
-          Prisma.sql`SELECT hr_approve_vacation_request(${id}::uuid, ${email}) AS v`,
-        ),
-    );
-    await this.queueVacationDecision(email, id, out, [
-      "sef_approved",
-      "approved",
-    ]);
-    return out;
+    return this.vacationVacreqApprove(email, id, dto);
   }
 
   /** Dvostepeno odobravanje (šef → level1; finalno hr/admin) + queue mejl. */
@@ -626,6 +635,69 @@ export class KadrovskaMutationsService {
    *  u ISTOJ transakciji, direktan RLS UPDATE (work_hours_update =
    *  can_edit_kadrovska_grid — isti gate kao RPC; 1.0 ih piše direktnim PATCH-om).
    *  Semantika 1.0 buildWorkHourPayload: undefined = ne diraj; ''/null = obriši. */
+  /**
+   * Zaključaj / otključaj dane grida (AUDIT-K7c, odluka Nenad 26.07).
+   *
+   * Zaključavanje: posle potvrde dana, da ga niko ne izmeni „u prolazu".
+   * Otključavanje: urednik grida (Nikola) i admin — i tek tada smeju da izmene.
+   * Gejt je na ruti (`kadrovska.grid_edit`); admin ga ima kroz istu allowlistu
+   * ili kroz `kadrovska.admin` (vidi kontroler).
+   *
+   * ⚠️ Brava je 3.0-strana. Dok ŽIVI 1.0 radi paralelno, on piše direktno u sy15
+   * i ovu bravu NE vidi — puna je tek po gašenju 1.0. To je svesna cena
+   * alternative (kolona u deljenom `work_hours`), koju doktrina ne dozvoljava.
+   */
+  async gridLockDays(email: string, dto: D.GridLockDto) {
+    const rows = dto.days.map((d) => ({
+      employeeId: d.employeeId,
+      workDate: new Date(`${d.workDate.slice(0, 10)}T00:00:00Z`),
+      lockedBy: email,
+      note: dto.note ?? null,
+    }));
+    if (dto.unlock) {
+      const res = await this.prisma.kadrGridDayLock.deleteMany({
+        where: {
+          OR: rows.map((r) => ({
+            employeeId: r.employeeId,
+            workDate: r.workDate,
+          })),
+        },
+      });
+      return { data: { unlocked: res.count } };
+    }
+    // Ponovno zaključavanje već zaključanog dana je no-op, ne greška.
+    const res = await this.prisma.kadrGridDayLock.createMany({
+      data: rows,
+      skipDuplicates: true,
+    });
+    return { data: { locked: res.count } };
+  }
+
+  /**
+   * Zaključani dani grida (AUDIT-K7c) — brava živi u 3.0 bazi (`kadr_grid_day_locks`),
+   * jer je sy15 `work_hours` deljen sa ŽIVIM 1.0 i njemu se šema ne dira.
+   * Vraća skup ključeva `employeeId|YYYY-MM-DD` za tražene redove.
+   */
+  private async lockedGridDays(
+    rows: { employeeId: string; workDate: string }[],
+  ): Promise<Set<string>> {
+    if (!rows.length) return new Set();
+    const dates = rows.map((r) => new Date(`${r.workDate.slice(0, 10)}T00:00:00Z`));
+    const locks = await this.prisma.kadrGridDayLock.findMany({
+      where: {
+        employeeId: { in: [...new Set(rows.map((r) => r.employeeId))] },
+        workDate: {
+          gte: new Date(Math.min(...dates.map((d) => d.getTime()))),
+          lte: new Date(Math.max(...dates.map((d) => d.getTime()))),
+        },
+      },
+      select: { employeeId: true, workDate: true },
+    });
+    return new Set(
+      locks.map((l) => `${l.employeeId}|${l.workDate.toISOString().slice(0, 10)}`),
+    );
+  }
+
   gridBatch(email: string, dto: D.GridBatchDto) {
     const predmetRows = dto.rows.filter(
       (r) =>
@@ -636,20 +708,56 @@ export class KadrovskaMutationsService {
       dto.clientEventId,
       "kadr.grid.batch",
       async (tx) => {
-        // ⚠️ #28 (review 14.07): batch RPC radi `note = EXCLUDED.note` bezuslovno na
-        // conflict, a EXCLUDED.note = COALESCE(v_row->>'note','') = '' kad ključ
-        // fali → most odsustvo→grid (koji NE nosi note/project_ref) tiho GAZI
-        // postojeće vrednosti praznim stringom. Fix bez RPC migracije: za redove koji
-        // NE nose ključ, PRE-učitaj postojeći note/project_ref i pošalji ga u payload
-        // (RPC ga onda „očuva"); r.note/r.projectRef definisan (uklj. '') = eksplicitan
-        // set/clear (1.0 buildWorkHourPayload semantika).
-        const preserveKeys = dto.rows.filter(
-          (r) => r.note === undefined || r.projectRef === undefined,
-        );
-        const preserved = new Map<
-          string,
-          { note: string; projectRef: string }
-        >();
+        // AUDIT-K7c: zaključan dan se ne menja dok ga urednik grida ili admin ne
+        // otključa. Provera je PRE RPC-a — poruka mora reći koji dan blokira.
+        const locked = await this.lockedGridDays(dto.rows);
+        if (locked.size) {
+          const hit = dto.rows.find((r) =>
+            locked.has(`${r.employeeId}|${r.workDate.slice(0, 10)}`),
+          );
+          if (hit)
+            throw new ConflictException(
+              `Dan ${hit.workDate.slice(0, 10)} je zaključan (potvrđen unos). ` +
+                "Otključava urednik mesečnog grida ili admin, pa se tek onda menja.",
+            );
+        }
+        // ⚠️ #28 (review 14.07) + AUDIT-K1 (26.07): batch RPC na ON CONFLICT radi
+        // `<kolona> = EXCLUDED.<kolona>` BEZUSLOVNO za svih 9 kolona, a EXCLUDED
+        // vrednost je COALESCE(v_row->>'…', 0/'') kad ključ fali → svaki pozivalac
+        // koji šalje DELIMIČAN red tiho GAZI kolone koje nije poslao.
+        // #28 je to rešio samo za note/project_ref; ostalo je ostalo otvoreno i
+        // obaralo se na živim podacima: tab „Sati" (work-hours-tab.tsx) šalje samo
+        // hours/overtime/project_ref/note, pa je unos sati brisao absence_code
+        // (GO/bolovanje!), field_hours/field_subtype (teren) i two_machine_hours.
+        // Pošto je saldo GO po kanonu izveden IZ GRIDA, brisanje absence_code='go'
+        // radniku vraća već iskorišćene dane godišnjeg.
+        // Fix bez RPC migracije: za redove koji NE nose ključ, PRE-učitaj postojeću
+        // vrednost i pošalji je u payload (RPC je onda „očuva").
+        // Semantika 1.0 buildWorkHourPayload ostaje: undefined = ne diraj;
+        // definisano (uklj. 0/''/null) = eksplicitan set/clear.
+        const needsPreserve = (r: D.WorkHoursRowDto) =>
+          r.hours === undefined ||
+          r.overtimeHours === undefined ||
+          r.fieldHours === undefined ||
+          r.fieldSubtype === undefined ||
+          r.twoMachineHours === undefined ||
+          r.absenceCode === undefined ||
+          r.absenceSubtype === undefined ||
+          r.note === undefined ||
+          r.projectRef === undefined;
+        const preserveKeys = dto.rows.filter(needsPreserve);
+        type PrevRow = {
+          hours: number;
+          overtimeHours: number;
+          fieldHours: number;
+          fieldSubtype: string | null;
+          twoMachineHours: number;
+          absenceCode: string | null;
+          absenceSubtype: string | null;
+          note: string;
+          projectRef: string;
+        };
+        const preserved = new Map<string, PrevRow>();
         if (preserveKeys.length) {
           const empIds = [...new Set(preserveKeys.map((r) => r.employeeId))];
           const dates = preserveKeys.map((r) => this.date(r.workDate)!);
@@ -663,6 +771,13 @@ export class KadrovskaMutationsService {
             select: {
               employeeId: true,
               workDate: true,
+              hours: true,
+              overtimeHours: true,
+              fieldHours: true,
+              fieldSubtype: true,
+              twoMachineHours: true,
+              absenceCode: true,
+              absenceSubtype: true,
               note: true,
               projectRef: true,
             },
@@ -670,7 +785,17 @@ export class KadrovskaMutationsService {
           for (const w of ex) {
             preserved.set(
               `${w.employeeId}|${w.workDate.toISOString().slice(0, 10)}`,
-              { note: w.note ?? "", projectRef: w.projectRef ?? "" },
+              {
+                hours: Number(w.hours ?? 0),
+                overtimeHours: Number(w.overtimeHours ?? 0),
+                fieldHours: Number(w.fieldHours ?? 0),
+                fieldSubtype: w.fieldSubtype ?? null,
+                twoMachineHours: Number(w.twoMachineHours ?? 0),
+                absenceCode: w.absenceCode ?? null,
+                absenceSubtype: w.absenceSubtype ?? null,
+                note: w.note ?? "",
+                projectRef: w.projectRef ?? "",
+              },
             );
           }
         }
@@ -678,43 +803,68 @@ export class KadrovskaMutationsService {
           const prev = preserved.get(
             `${r.employeeId}|${r.workDate.slice(0, 10)}`,
           );
+          // undefined = očuvaj postojeće (prev) / neutralno za nov red.
+          const keep = <K extends keyof PrevRow>(
+            sent: PrevRow[K] | undefined,
+            key: K,
+            fallback: PrevRow[K],
+          ): PrevRow[K] => (sent !== undefined ? sent : (prev?.[key] ?? fallback));
           return {
             employee_id: r.employeeId,
             work_date: r.workDate,
-            hours: r.hours ?? 0,
-            overtime_hours: r.overtimeHours ?? 0,
-            field_hours: r.fieldHours ?? 0,
-            field_subtype: r.fieldSubtype ?? null,
-            two_machine_hours: r.twoMachineHours ?? 0,
-            absence_code: r.absenceCode ?? null,
-            absence_subtype: r.absenceSubtype ?? null,
-            // undefined = očuvaj postojeće (prev) / '' za nov red; definisano = set/clear.
-            note: r.note !== undefined ? r.note : (prev?.note ?? ""),
-            project_ref:
-              r.projectRef !== undefined
-                ? r.projectRef
-                : (prev?.projectRef ?? ""),
+            hours: keep(r.hours, "hours", 0),
+            overtime_hours: keep(r.overtimeHours, "overtimeHours", 0),
+            field_hours: keep(r.fieldHours, "fieldHours", 0),
+            field_subtype: keep(r.fieldSubtype, "fieldSubtype", null),
+            two_machine_hours: keep(r.twoMachineHours, "twoMachineHours", 0),
+            absence_code: keep(r.absenceCode, "absenceCode", null),
+            absence_subtype: keep(r.absenceSubtype, "absenceSubtype", null),
+            note: keep(r.note, "note", ""),
+            project_ref: keep(r.projectRef, "projectRef", ""),
           };
         });
         const res = await this.rpcJson(
           tx,
           Prisma.sql`SELECT hr_upsert_work_hours_batch(${JSON.stringify(rows)}::jsonb) AS v`,
         );
-        for (const r of predmetRows) {
-          await tx.workHours.updateMany({
-            where: {
-              employeeId: r.employeeId,
-              workDate: this.date(r.workDate)!,
-            },
-            data: {
-              ...(r.fieldPredmetBroj !== undefined
-                ? { fieldPredmetBroj: r.fieldPredmetBroj || null }
-                : {}),
-              ...(r.fieldPredmetNaziv !== undefined
-                ? { fieldPredmetNaziv: r.fieldPredmetNaziv || null }
-                : {}),
-            },
-          });
+        // ⚠️ AUDIT-K5b (26.07): ranije jedan `updateMany` PO REDU u petlji. Filter
+        // `predmetRows` je trebalo da odseče većinu, ali `buildBatchRows` oba
+        // predmet-polja UVEK postavlja (makar na null), pa su predmetRows = SVI
+        // redovi → mesečni snimak celog tima slao je stotine sekvencijalnih
+        // UPDATE-a unutar jedne interaktivne transakcije. Sada jedan set-based
+        // UPDATE kroz unnest (isti obrazac kao grid-autofill.service.ts).
+        //
+        // Uz isti prolaz upisujemo i `updated_at` + `last_edited_by`:
+        // `hr_upsert_work_hours_batch` postavlja `last_edited_by` iz
+        // `current_user_email()`, ali `updated_at` NE dira (kolona ima samo
+        // `DEFAULT now()`, koji važi na INSERT). Zato je tooltip „Poslednja
+        // izmena" na izmenjenom danu prikazivao vreme PRVOG unosa.
+        if (predmetRows.length) {
+          const emps = predmetRows.map((r) => r.employeeId);
+          const dates = predmetRows.map((r) => r.workDate.slice(0, 10));
+          const brojevi = predmetRows.map((r) => r.fieldPredmetBroj || null);
+          const nazivi = predmetRows.map((r) => r.fieldPredmetNaziv || null);
+          await tx.$executeRaw(
+            Prisma.sql`
+              UPDATE work_hours w
+                 SET field_predmet_broj  = s.broj,
+                     field_predmet_naziv = s.naziv,
+                     updated_at          = now()
+                FROM unnest(${emps}::uuid[], ${dates}::date[],
+                            ${brojevi}::text[], ${nazivi}::text[])
+                       AS s(emp, dan, broj, naziv)
+               WHERE w.employee_id = s.emp AND w.work_date = s.dan`,
+          );
+        } else {
+          const emps = dto.rows.map((r) => r.employeeId);
+          const dates = dto.rows.map((r) => r.workDate.slice(0, 10));
+          await tx.$executeRaw(
+            Prisma.sql`
+              UPDATE work_hours w
+                 SET updated_at = now()
+                FROM unnest(${emps}::uuid[], ${dates}::date[]) AS s(emp, dan)
+               WHERE w.employee_id = s.emp AND w.work_date = s.dan`,
+          );
         }
         return res;
       },
@@ -821,16 +971,20 @@ export class KadrovskaMutationsService {
     );
   }
 
-  /* Prisustvo korekcije (attendance_submit_correction — deljen sa D; cancel) */
+  /* Prisustvo korekcije (attendance_submit_correction — deljen sa D; cancel).
+   * ⚠️ AUDIT-K3: RPC NE raise-uje — odbijenicu vraća kao {ok:false, error:'…'}.
+   * Bez `assertRpcOk` to prolazi kao 2xx i korisnik dobije lažnu potvrdu. */
   submitCorrection(email: string, dto: D.SubmitCorrectionDto) {
     return this.mutate(
       email,
       dto.clientEventId,
       "kadr.attendance.correction",
-      (tx) =>
-        this.rpcJson(
-          tx,
-          Prisma.sql`SELECT attendance_submit_correction(${dto.employeeId}::uuid, ${dto.day}::date, ${dto.in ?? null}::time, ${dto.out ?? null}::time, ${dto.reason ?? null}) AS v`,
+      async (tx) =>
+        assertRpcOk(
+          await this.rpcJson(
+            tx,
+            Prisma.sql`SELECT attendance_submit_correction(${dto.employeeId}::uuid, ${dto.day}::date, ${dto.in ?? null}::time, ${dto.out ?? null}::time, ${dto.reason ?? null}) AS v`,
+          ),
         ),
     );
   }
@@ -839,10 +993,12 @@ export class KadrovskaMutationsService {
       email,
       dto.clientEventId,
       "kadr.attendance.cancel_correction",
-      (tx) =>
-        this.rpcJson(
-          tx,
-          Prisma.sql`SELECT attendance_cancel_correction(${id}::uuid) AS v`,
+      async (tx) =>
+        assertRpcOk(
+          await this.rpcJson(
+            tx,
+            Prisma.sql`SELECT attendance_cancel_correction(${id}::uuid) AS v`,
+          ),
         ),
     );
   }
@@ -1371,17 +1527,31 @@ export class KadrovskaMutationsService {
       this.requireRows(
         tx.kadrOnboardingTask.updateMany({
           where: { id },
-          data: {
-            ...(dto.status != null ? { status: dto.status } : {}),
-            ...(dto.done != null
-              ? {
-                  status: dto.done ? "done" : "pending",
-                  doneAt: dto.done ? new Date() : null,
-                  doneBy: dto.done ? email : null,
-                }
-              : {}),
-            ...(dto.note !== undefined ? { note: dto.note } : {}),
-          },
+          // ⚠️ AUDIT-K5b (26.07): pečat (`done_at`/`done_by`) se ranije čistio SAMO
+          // kad stigne bulean `done` — a FE za odčekiravanje šalje `{status:'open'}`
+          // (onboarding-tab.tsx:117). Rezultat: zadatak vraćen u „otvoreno" ostajao
+          // je sa vremenom i imenom osobe koja ga je nekad završila, pa je evidencija
+          // uvođenja tvrdila da je korak i završen i otvoren.
+          // 1.0 `setOnbTask` pri SVAKOM statusu koji nije `done` nulira oba polja.
+          // Status izvodimo JEDNOM, pa uvek pišemo i pečat uz njega.
+          data: (() => {
+            const next =
+              dto.done === true
+                ? "done"
+                : dto.done === false
+                  ? "open" // „pending" ne postoji u rečniku 1.0 (open|done|skipped)
+                  : dto.status;
+            return {
+              ...(next != null
+                ? {
+                    status: next,
+                    doneAt: next === "done" ? new Date() : null,
+                    doneBy: next === "done" ? email : null,
+                  }
+                : {}),
+              ...(dto.note !== undefined ? { note: dto.note } : {}),
+            };
+          })(),
         }),
         "Zadatak",
       ),
@@ -1493,10 +1663,14 @@ export class KadrovskaMutationsService {
             ...(dto.periodLabel != null
               ? { periodLabel: dto.periodLabel }
               : {}),
-            ...(dto.periodStart
-              ? { periodStart: this.date(dto.periodStart) }
+            // AUDIT-K5: undefined = ne diraj; ''/null = obriši (ranije se prazna
+            // vrednost tiho ignorisala, pa se početak/kraj plana nije mogao skinuti).
+            ...(dto.periodStart !== undefined
+              ? { periodStart: dto.periodStart ? this.date(dto.periodStart) : null }
               : {}),
-            ...(dto.periodEnd ? { periodEnd: this.date(dto.periodEnd) } : {}),
+            ...(dto.periodEnd !== undefined
+              ? { periodEnd: dto.periodEnd ? this.date(dto.periodEnd) : null }
+              : {}),
             ...(dto.careerGoalMd !== undefined
               ? { careerGoalMd: dto.careerGoalMd }
               : {}),
@@ -1590,7 +1764,12 @@ export class KadrovskaMutationsService {
             ...(dto.descriptionMd !== undefined
               ? { descriptionMd: dto.descriptionMd }
               : {}),
-            ...(dto.dueDate ? { dueDate: this.date(dto.dueDate) } : {}),
+            // AUDIT-K5: `dto.dueDate ? …` je onemogućavao BRISANJE roka — prazan
+            // string/null se tretirao kao „nije poslato". Sada: undefined = ne
+            // diraj; '' ili null = obriši (ista semantika kao ostala polja).
+            ...(dto.dueDate !== undefined
+              ? { dueDate: dto.dueDate ? this.date(dto.dueDate) : null }
+              : {}),
             ...(dto.progress != null ? { progress: dto.progress } : {}),
             ...(dto.completionNote !== undefined
               ? { completionNote: dto.completionNote }
@@ -1864,16 +2043,48 @@ export class KadrovskaMutationsService {
         ),
     );
   }
+  /**
+   * 360° kampanja.
+   *
+   * ⚠️ AUDIT-K2 (26.07): `assessment_open_campaign` proverava rolu SAMO JEDNOM
+   * (`current_user_can_manage_org_profile() OR current_user_is_admin()`), pa u
+   * petlji otvara procenu za SVAKI prosleđen `employee_id` bez ijedne provere
+   * opsega. Kako `can_manage_org_profile` obuhvata i pm/leadpm, direktan API poziv
+   * je mogao da otvori 360 bilo kome u firmi. 1.0 je to sprečavao pri izboru
+   * (`assessmentCampaign.js:17` → `canManageDevPlanFor(e)`, uz poruku „Nema
+   * zaposlenih u vašem opsegu."). Ovde vraćamo isto pravilo kao SERVERSKU branu,
+   * istom DB funkcijom (`current_user_manages_dev_plan`), plus pravilo „niko o
+   * sebi" (MODULE_SPEC §2.6 t.14).
+   */
   assessmentOpenCampaign(email: string, dto: D.OpenCampaignDto) {
     return this.create(
       email,
       dto.clientEventId,
       "kadr.assessment.campaign",
-      (tx) =>
-        this.rpcScalar(
+      async (tx) => {
+        const ids = [...new Set(dto.employeeIds ?? [])];
+        if (!ids.length)
+          throw new UnprocessableEntityException(
+            "Izaberite bar jednog zaposlenog.",
+          );
+        const allowed = await tx.$queryRaw<{ id: string }[]>(
+          Prisma.sql`SELECT e.id
+               FROM employees e
+              WHERE e.id = ANY(${ids}::uuid[])
+                AND (current_user_is_admin() OR current_user_manages_dev_plan(e.id))
+                AND e.id IS DISTINCT FROM current_user_employee_id()`,
+        );
+        const ok = new Set(allowed.map((r) => r.id));
+        const denied = ids.filter((i) => !ok.has(i));
+        if (denied.length)
+          throw new ForbiddenException(
+            `Kampanju možete otvoriti samo za zaposlene iz svog opsega (i ne za sebe). Van opsega: ${denied.length}.`,
+          );
+        return this.rpcScalar(
           tx,
-          Prisma.sql`SELECT assessment_open_campaign(${dto.title}, ${dto.period}, ${dto.employeeIds}::uuid[]) AS v`,
-        ),
+          Prisma.sql`SELECT assessment_open_campaign(${dto.title}, ${dto.period}, ${ids}::uuid[]) AS v`,
+        );
+      },
     );
   }
   /** ⚠️ Deljen sa D (Moj profil samoprocena) — G ne menja potpis (G7). */
@@ -2023,9 +2234,31 @@ export class KadrovskaMutationsService {
     email: string,
     opts: { assessmentId?: string; cycleId?: string; notifyCreator?: boolean },
   ) {
-    const base = (
-      process.env.ASSESSMENT_PUBLIC_BASE ?? "https://servosync.servoteh.com"
-    ).replace(/\/+$/, "");
+    // ⚠️ AUDIT-K3 (26.07): link pozivnice vodi na 1.0 stranicu `ocena.html`, koja
+    // NE postoji u 3.0 static exportu. Raniji fallback je bio 3.0 host
+    // (`servosync.servoteh.com`), a Cloudflare worker proksira na 1.0 samo
+    // `/m`, `/m/*`, `/assets/*`, `/icons/*` i `/manifest.webmanifest` — pa je
+    // SVAKI ocenjivač (self, peer i leader dobijaju isti link) završavao na 404.
+    // Kampanja se tiho zaglavi: `invited_at` je upisan („pozvano"), a nijedna
+    // ocena ne može da stigne. Zato: bez izričitog `ASSESSMENT_PUBLIC_BASE`
+    // NE ŠALJEMO pozivnice — bolje glasan otkaz nego mejlovi sa mrtvim linkom.
+    // AUDIT-K6 (26.07): podrazumevano vodimo na NATIVNI ekran ocenjivača u 3.0
+    // (`/profil?ocena=<raterId>`) — ocenjivači su zaposleni sa nalogom, pa magic-link
+    // token više nije potreban (a `assessment_submit_by_token` nema auth: ko dobije
+    // token predaje ocenu u tuđe ime). `ASSESSMENT_PUBLIC_BASE` ostaje IZUZETAK:
+    // ako je postavljen, šalje se stari 1.0 `ocena.html?token=` link (most dok
+    // 1.0 živi).
+    const legacyBase = process.env.ASSESSMENT_PUBLIC_BASE?.trim();
+    const useLegacy = !!legacyBase;
+    // Ista kaskada kao `SastanciDispatchService.appUrl()` — prod već nosi
+    // `SY15_APP_URL` (welcome/reset mejlovi), pa 360° pozivnice nemaju nikakav
+    // dodatni preduslov za deploy. (Ranije se čitao SAMO `PUBLIC_APP_URL`, pa je
+    // slanje bilo bespotrebno blokirano na okruženju koje ima samo SY15_APP_URL.)
+    const appBase =
+      process.env.PUBLIC_APP_URL ||
+      process.env.SY15_APP_URL ||
+      "https://servosync.servoteh.com";
+    const base = (legacyBase || appBase).trim().replace(/\/+$/, "");
 
     // 1) READ faza (RLS): ciklus, ciljne procene, meta (ime zaposlenog + period), rateri.
     const read = await this.mutateRaw(
@@ -2179,12 +2412,17 @@ export class KadrovskaMutationsService {
           : `${s.kind} (nema email)`,
       );
     }
+    // Brana iz AUDIT-K3 („bez baze linka ne šalji") UKLONJENA: kaskada iznad ima
+    // tvrd fallback, pa `base` ne može biti prazan. Ranija verzija je čitala samo
+    // `PUBLIC_APP_URL` i time izmislila deploy-preduslov koji ne postoji.
     for (const r of sendable) {
       const m = read.meta.get(r.assessmentId) ?? {
         employeeName: "kolega/koleginica",
         period: "",
       };
-      const link = `${base}/ocena.html?token=${encodeURIComponent(r.token!)}`;
+      const link = useLegacy
+        ? `${base}/ocena.html?token=${encodeURIComponent(r.token!)}`
+        : `${base}/profil?ocena=${encodeURIComponent(r.id)}`;
       const isSelf = r.raterKind === "self";
       const ok = await this.mail.send({
         to: r.raterEmail!,
@@ -2547,18 +2785,41 @@ export class KadrovskaMutationsService {
           .slice(0, 10);
 
         const holidays = await tx.kadrHoliday.findMany({
-          where: { holidayDate: { gte: start, lt: end } },
+          // isWorkday=false → SAMO pravi neradni praznik. Red sa isWorkday=true je
+          // RADNI izuzetak (radna subota / praznik koji se radi) i ne sme u holSet:
+          // inače computeMonthlyFond skine 8h fonda za dan koji se radi, a
+          // aggregateWorkHoursForMonth taj dan knjiži kao praznične sate (AUDIT-K1).
+          where: { isWorkday: false, holidayDate: { gte: start, lt: end } },
           select: { holidayDate: true },
         });
         const holSet = new Set(
           holidays.map((h) => h.holidayDate.toISOString().slice(0, 10)),
         );
 
+        // ⚠️ AUDIT-K5 (26.07): skup se bira po REDOVIMA MESECA, ne po „aktivnim
+        // zaposlenima". 1.0 `recomputePayrollMonthFromGrid` iterira postojeće
+        // redove `v_salary_payroll_month` (koje je napravio `kadr_payroll_init_month`)
+        // i odbija da radi kad ih nema („Nema redova — prvo pripremi mesec").
+        // Filtriranje po `isActive` je pravilo dve štete:
+        //  (a) radnik kome je is_active=false (odlazak sredinom/krajem meseca) ima
+        //      red u salary_payroll ali ga recompute PRESKAČE — njegova poslednja
+        //      plata, najosetljivija isplata, nikad ne dobije K3.3 brojeve;
+        //  (b) radnik BEZ reda za mesec dobijao je NOV red kroz INSERT granu RPC-a,
+        //      gde init-snapshot nije odrađen → salary_type pada na 'ugovor' i
+        //      fixed_salary/hourly_rate/transport/per_diem = 0.
+        const monthRows = await tx.$queryRaw<{ employee_id: string }[]>(
+          Prisma.sql`SELECT employee_id FROM salary_payroll
+             WHERE period_year = ${year}::int AND period_month = ${month}::int
+               ${dto.employeeId ? Prisma.sql`AND employee_id = ${dto.employeeId}::uuid` : Prisma.empty}`,
+        );
+        const monthEmpIds = monthRows.map((r) => r.employee_id);
+        if (!monthEmpIds.length) {
+          throw new UnprocessableEntityException(
+            "Mesec nije pripremljen — prvo pokreni „Pripremi mesec” (init), pa obračun iz grida.",
+          );
+        }
         const employees = await tx.employee.findMany({
-          where: {
-            isActive: true,
-            ...(dto.employeeId ? { id: dto.employeeId } : {}),
-          },
+          where: { id: { in: monthEmpIds } },
           select: { id: true, workType: true, hireDate: true, fullName: true },
         });
 
@@ -2607,12 +2868,15 @@ export class KadrovskaMutationsService {
               advance_amount: unknown;
               domestic_days: unknown;
               foreign_days: unknown;
+              per_diem_rsd: unknown;
+              per_diem_eur: unknown;
               apo: string | null;
               fpo: string | null;
               u: string | null;
             }[]
           >(
             Prisma.sql`SELECT id, status, advance_amount, domestic_days, foreign_days,
+               per_diem_rsd, per_diem_eur,
                advance_paid_on::text AS apo, final_paid_on::text AS fpo, updated_at::text AS u
              FROM salary_payroll
              WHERE employee_id = ${emp.id}::uuid
@@ -2636,6 +2900,11 @@ export class KadrovskaMutationsService {
                AND (effective_to IS NULL OR effective_to >= ${monthStart}::date)
              ORDER BY effective_from DESC LIMIT 1`,
           );
+          // ⚠️ AUDIT-K5: bez AKTIVNIH uslova zarade `mapTerm(undefined)` daje
+          // sve nule, pa bi engine upisao ukupna_zarada=0 i pregazio prethodni
+          // (ručno unet) obračun. 1.0 u tom slučaju IZOSTAVLJA novčane ključeve —
+          // RPC ih onda COALESCE-uje i red ostaje kakav je bio.
+          const hasTerms = termRows.length > 0;
           const term = this.mapTerm(termRows[0]);
 
           const res = computeEarnings({
@@ -2665,12 +2934,42 @@ export class KadrovskaMutationsService {
             dve_masine_sati: agg.dveMasineSati,
             teren_u_zemlji_count: domDays,
             teren_u_inostranstvu_count: forDays,
-            compensation_model: res.compensationModel,
-            payable_hours: res.payableHours,
-            ukupna_zarada: res.ukupnaZarada,
-            prvi_deo: res.prviDeo,
-            preostalo_za_isplatu: res.preostaloZaIsplatu,
-            warnings: res.warnings,
+            // ⚠️ AUDIT-K1 (26.07): `teren_*_count` su prikazne kolone; obračun
+            // dnevnica ide preko `domestic_days`/`foreign_days` × `per_diem_*`
+            // (trigger salary_payroll_compute_totals:
+            //  total_eur := per_diem_eur * foreign_days).
+            // Bez ovih ključeva RPC radi COALESCE(...) → kolone ostaju stare/0, pa je
+            // „Obračunaj iz grida" gubio DEVIZNE dnevnice (montažeri na inostranom
+            // terenu): chip „Ukupno EUR", stavka payslip-a i kartica „UKUPNO EUR"
+            // pokazivali su 0 uz uredan grid. Paritet 1.0 applyGridToPayrollRow:515+
+            // — DANI se izvode iz grida, STOPE ostaju sa reda (init snapshot).
+            domestic_days: domDays,
+            foreign_days: forDays,
+            per_diem_rsd: Number(
+              existing?.per_diem_rsd ?? term?.terrainDomesticRate ?? 0,
+            ),
+            per_diem_eur: Number(
+              existing?.per_diem_eur ?? term?.terrainForeignRate ?? 0,
+            ),
+            // 1.0 upisuje REDOVNE sate (ne payable) — payslip satničara ih prikazuje.
+            hours_worked: agg.redovanRadSati,
+            // Novčane kolone SAMO kad postoje aktivni uslovi zarade (AUDIT-K5):
+            // bez njih engine daje nule, a izostavljen ključ znači „ne diraj".
+            ...(hasTerms
+              ? {
+                  compensation_model: res.compensationModel,
+                  payable_hours: res.payableHours,
+                  ukupna_zarada: res.ukupnaZarada,
+                  prvi_deo: res.prviDeo,
+                  preostalo_za_isplatu: res.preostaloZaIsplatu,
+                }
+              : {}),
+            warnings: hasTerms
+              ? res.warnings
+              : [
+                  ...(res.warnings ?? []),
+                  "Nema aktivnih uslova zarade za mesec — iznosi nisu preračunati.",
+                ],
           };
 
           if (dto.persist) {
@@ -2822,39 +3121,34 @@ export class KadrovskaMutationsService {
 
   /**
    * 🔔 „Pošalji čekaće" — ručni dispatch okidač (1.0 triggerHrDispatch,
-   * vacationRequestsTab:117-137). Dispatch ENGINE ostaje 1.0 edge
-   * `hr-notify-dispatch` (doktrina §7.9) — ovo je sinhroni PROXY koji vraća
-   * {processed, sent, failed} za FE toast. Service key NIKAD ne ide na FE.
+   * vacationRequestsTab:117-137). Vraća {processed, sent, failed} za FE toast.
+   *
+   * ⚠️ AUDIT-K3 (26.07): ranije je ovo bio HTTP proxy na 1.0 edge
+   * `hr-notify-dispatch`, dok je 3.0 IMAO sopstveni posao `kadr-notify-dispatch`
+   * nad ISTIM outboxom → DVA dispečera. `kadr_dispatch_dequeue` NIJE bezbedan za
+   * dva potrošača: `FOR UPDATE SKIP LOCKED` drži samo claim transakciju, a claim
+   * ostavlja `status='queued'` i NE pomera `next_attempt_at`, pa čim commit-uje
+   * red opet zadovoljava uslov izbora — dok prvi šalje, drugi ga pokupi i pošalje
+   * PONOVO (do attempts cap-a 8). Rezultat: duple HR poruke (mejl + WhatsApp) na
+   * odluke o GO, obračun sati i tabele knjigovođi.
+   * Sada oba puta idu kroz ISTI 3.0 dispečer — bez HTTP skoka, bez
+   * SY15_SERVICE_KEY i bez zavisnosti od 1.0 (korak ka F5 gašenju mosta).
    */
   async dispatchNotifications(): Promise<{ data: unknown }> {
-    const base = (
-      process.env.SY15_REST_URL || "https://api.servosync.servoteh.com/rest/v1"
-    ).replace(/\/rest\/v1\/?$/, "");
-    const key = process.env.SY15_SERVICE_KEY;
-    if (!key) {
+    if (!this.dispatcher.enabled) {
       throw new ServiceUnavailableException(
-        "SY15_SERVICE_KEY nije konfigurisan — dispatch proxy nedostupan",
+        "DISPATCH_ENABLED nije uključen — slanje je isključeno na ovom okruženju.",
       );
     }
-    const res = await fetch(`${base}/functions/v1/hr-notify-dispatch`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${key}`, apikey: key },
-    }).catch((e: unknown) => {
-      throw new BadGatewayException(
-        `hr-notify-dispatch nedostupan: ${String(e)}`,
-      );
-    });
-    const txt = await res.text();
-    if (!res.ok) {
-      throw new BadGatewayException(
-        `hr-notify-dispatch HTTP ${res.status}: ${txt.slice(0, 200)}`,
-      );
-    }
-    try {
-      return { data: JSON.parse(txt) as unknown };
-    } catch {
-      return { data: { ok: true, processed: 0, sent: 0, failed: 0 } };
-    }
+    const r = await this.dispatcher.dispatchKadr();
+    return {
+      data: {
+        ok: true,
+        processed: r.processed,
+        sent: r.sent,
+        failed: r.failed,
+      },
+    };
   }
 
   /** Ručni okidači (DEFINER; jedini legalni upis u outbox, G10). Dispatch = pozadina. */
@@ -2914,13 +3208,30 @@ export class KadrovskaMutationsService {
     const safeName = file.originalname.replace(/[^\w.\-]+/g, "_");
     const path = `${empId}/${Date.now()}_${safeName}`;
 
-    // 1) Meta-red kroz RLS (PII gate presuđuje sy15). uploaded_by=auth.uid() (default trg/kol).
+    // 1) Meta-red kroz RLS (PII gate presuđuje sy15).
+    //    ⚠️ AUDIT-K1 (26.07): `uploaded_by` NEMA ni DEFAULT ni trigger u sy15
+    //    (raniji komentar „default trg/kol" je bio netačan), a INSERT politika je
+    //    `WITH CHECK ((uploaded_by = auth.uid()) AND current_user_can_manage_employee_pii())`.
+    //    Bez eksplicitnog upisa kolona je NULL → `NULL = auth.uid()` je NULL →
+    //    politika ne prolazi → SVAKI upload dokumenta padao je na 42501, i za
+    //    admina i za poslovnog admina. Zato `uploaded_by` postavljamo iz auth.uid()
+    //    (= claims->>'sub' koji withUserRls postavlja) u ISTOJ transakciji —
+    //    isti obrazac kao `issued_by` u Reversima.
     //    Vraćamo BEZ BigInt (sizeBytes→Number) — runIdempotentRls JSON.stringify-uje rezultat.
     const doc = await this.mutateRaw(
       email,
       dto.clientEventId,
       "kadr.doc.upload",
       async (tx) => {
+        const uid = await tx.$queryRaw<
+          { v: string | null }[]
+        >`SELECT auth.uid()::text AS v`;
+        const uploadedBy = uid[0]?.v ?? null;
+        if (!uploadedBy) {
+          throw new UnprocessableEntityException(
+            "Nalog nema sy15 identitet (auth.users) — upload dokumenta nije moguć.",
+          );
+        }
         const d = await tx.employeeDocument.create({
           data: {
             employeeId: empId,
@@ -2930,6 +3241,7 @@ export class KadrovskaMutationsService {
             mimeType: file.mimetype ?? null,
             sizeBytes: BigInt(file.size ?? file.buffer.length),
             description: dto.description ?? null,
+            uploadedBy,
           },
         });
         return {
@@ -3085,7 +3397,8 @@ export class KadrovskaMutationsService {
     const end = new Date(Date.UTC(year, month, 1));
     const [holidays, wh] = await Promise.all([
       tx.kadrHoliday.findMany({
-        where: { holidayDate: { gte: start, lt: end } },
+        // isWorkday=false: radni izuzetak (radna subota) NIJE praznik — vidi AUDIT-K1.
+        where: { isWorkday: false, holidayDate: { gte: start, lt: end } },
         select: { holidayDate: true },
       }),
       tx.workHours.findMany({
@@ -3215,15 +3528,12 @@ export class KadrovskaMutationsService {
 
   /** Best-effort „pulse" edge hr-notify-dispatch (obrazac moj-profil §7.9). Ne baca. */
   private pulseHrDispatch(): void {
-    const base = (
-      process.env.SY15_REST_URL || "https://api.servosync.servoteh.com/rest/v1"
-    ).replace(/\/rest\/v1\/?$/, "");
-    const key = process.env.SY15_SERVICE_KEY;
-    if (!base || !key) return;
-    void fetch(`${base}/functions/v1/hr-notify-dispatch`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${key}`, apikey: key },
-    }).catch(() => undefined);
+    // AUDIT-K3: ide kroz 3.0 dispečer (ranije 1.0 edge → dva dispečera nad istim
+    // outboxom → duple poruke; obrazloženje u `dispatchNotifications`).
+    // Poštuje DISPATCH_ENABLED isto kao cron posao. Ne baca — mutacija je već
+    // commit-ovana, pad slanja je ne sme oboriti (cron pokupi red).
+    if (!this.dispatcher.enabled) return;
+    void this.dispatcher.dispatchKadr().catch(() => undefined);
   }
 
   /** OBAVEZNO idempotentna mutacija (kreiranje) — clientEventId je zahtevan. */
