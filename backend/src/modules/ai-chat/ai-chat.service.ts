@@ -21,8 +21,20 @@ import {
   type ChatImage,
   type Engine,
 } from "../../common/ai/ai-provider.service";
+import { AI_MODULE, AiLimitsService } from "../../common/ai/ai-limits.service";
+import type { AiCallContext } from "../../common/ai/ai-usage.service";
+import {
+  CHAT_INJECTION_FENCE,
+  fenceUserInput,
+} from "../../common/ai/injection-fence";
 import { DATE_LINE, SYSTEM_PROMPT, toolsForScope } from "./ai-tools";
 import type { ChatDto } from "./dto/ai-chat.dto";
+
+/** Ko zove — potreban za merenje (`ai_usage_log.user_id`) i dnevni budžet. */
+export interface ChatActor {
+  userId: number;
+  role?: string | null;
+}
 
 /**
  * AI asistent — 3.0 TALAS B, R1 READ sloj (MODULE_SPEC_sastanci_ai_30.md §3).
@@ -51,8 +63,11 @@ import type { ChatDto } from "./dto/ai-chat.dto";
  * ──────────────────────────────────────────────────────────────────────────
  */
 
-/** 1.0 kanon (§2 pravilo 10): dnevni limit poruka po korisniku, broji se od UTC ponoći. */
-export const AI_DAILY_LIMIT = 50;
+/**
+ * Talas AI-0 (stavka 5): dnevni limit više NIJE „50 poruka" iz `ai_chat_messages`
+ * nego budžet ULAZNIH tokena iz `ai_usage_log` (AiLimitsService). Time se broje i
+ * alati, istorija i slike — tj. ono što stvarno košta — i nema duplog brojanja.
+ */
 
 /** Vision: max ~6MB sirovih bajtova, JPG/PNG/WEBP/GIF (§2 pravilo 17). */
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
@@ -67,6 +82,7 @@ export class AiChatService {
     private readonly sy15: Sy15Service,
     private readonly ai: AiProviderService,
     private readonly storage: Sy15StorageService,
+    private readonly limits: AiLimitsService,
   ) {}
 
   /** Liste niti: lične (own, auth.uid()) + projektne (scope='project', vide svi) — RLS scoping. */
@@ -102,25 +118,14 @@ export class AiChatService {
     });
   }
 
-  /** Dnevni limit: iskorišćeno (role='user' od UTC ponoći) + preostalo (paritet 1.0). */
-  async limit(email: string) {
-    return this.withUserMapped(email, async (tx) => {
-      const rows = await tx.$queryRaw<{ used: number }[]>(
-        Prisma.sql`SELECT count(*)::int AS used
-                   FROM ai_chat_messages
-                   WHERE user_id = auth.uid()
-                     AND role = 'user'
-                     AND created_at >= (date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')`,
-      );
-      const used = rows[0]?.used ?? 0;
-      return {
-        data: {
-          used,
-          limit: AI_DAILY_LIMIT,
-          remaining: Math.max(0, AI_DAILY_LIMIT - used),
-        },
-      };
-    });
+  /**
+   * Dnevni budžet chata u ULAZNIM tokenima (Talas AI-0, stavka 5) — izvor je
+   * `ai_usage_log` u glavnoj bazi, ne više brojanje poruka u sy15. Admin nema
+   * limit (`limit: -1`), pa FE u tom slučaju ne prikazuje brojač.
+   */
+  async limit(actor: ChatActor) {
+    const budget = await this.limits.chatBudget(actor.userId, actor.role);
+    return { data: budget };
   }
 
   // ---------- interno ----------
@@ -166,7 +171,12 @@ export class AiChatService {
   // service role") sa EKSPLICITNIM user_id = auth.uid() iz GUC claims.
   // ==========================================================================
 
-  async chat(email: string, dto: ChatDto, imageFile?: Express.Multer.File) {
+  async chat(
+    email: string,
+    dto: ChatDto,
+    imageFile?: Express.Multer.File,
+    actor?: ChatActor,
+  ) {
     const engine: Engine = ENGINES.includes(dto.engine as Engine)
       ? (dto.engine as Engine)
       : "openai";
@@ -182,14 +192,23 @@ export class AiChatService {
       throw new BadRequestException("Poruka je prazna.");
     }
 
-    // ── tx1: uid + limit + konverzacija + istorija + autor (BYPASSRLS = service role)
+    // Dnevni budžet (ulazni tokeni iz `ai_usage_log`) — 429 PRE nego što se
+    // napravi nit, da odbijeni pokušaj ne ostavi praznu konverzaciju.
+    const ctx: AiCallContext = {
+      module: AI_MODULE.CHAT,
+      userId: actor?.userId ?? null,
+    };
+    const budget = actor
+      ? await this.limits.assertChat(actor.userId, actor.role)
+      : null;
+
+    // ── tx1: uid + konverzacija + istorija + autor (BYPASSRLS = service role)
     const setup = await this.sy15.withUser(email, async (tx) => {
       const uid = await this.currentUid(tx);
-      const used = await this.assertUnderDailyLimit(tx);
       const conv = await this.resolveConversation(tx, uid, dto, message);
       const history = conv.isNew ? [] : await this.loadHistory(tx, conv.convId);
       const author = await this.resolveAuthor(tx, email);
-      return { uid, ...conv, history, author, used };
+      return { uid, ...conv, history, author };
     });
 
     // ── slika u bucket (van tx; putanja `{convId}/{uuid}.{ext}`)
@@ -207,11 +226,14 @@ export class AiChatService {
     );
 
     // ── engine (tool-use petlja); alati kroz withUserRls (identitet korisnika)
+    // Talas AI-0 (stavka 6): u DELJENOJ projektnoj niti tuđe poruke su nepouzdan
+    // unos (kanal za injekciju) — idu obmotane ogradom. Sopstvena poruka korisnika
+    // (ispod) ostaje van ograde jer JESTE instrukcija koju model treba da izvrši.
     const histForModel = setup.history.map((m) => ({
       role: m.role,
       content:
         setup.scope === "project" && m.role === "user" && m.author_name
-          ? `${m.author_name}: ${m.content}`
+          ? `${m.author_name}: ${fenceUserInput(m.content)}`
           : m.content,
     }));
     const effectiveMessage =
@@ -238,7 +260,14 @@ export class AiChatService {
       screenContext && setup.scope !== "project"
         ? `\n\nTRENUTNI EKRAN KORISNIKA: ${screenContext}. Ako pitanje deluje vezano za ovaj ekran, prvo mu pomozi oko njega.`
         : "";
-    const system = SYSTEM_PROMPT + DATE_LINE() + extraSystem + screenLine;
+    // Ograda ide NA KRAJ (posle scope-note i screen-hint-a) da redosled
+    // SYSTEM_PROMPT / DATE_LINE / scope-note ostane netaknut.
+    const system =
+      SYSTEM_PROMPT +
+      DATE_LINE() +
+      extraSystem +
+      screenLine +
+      `\n\n${CHAT_INJECTION_FENCE}`;
 
     // Engine se poziva POSLE kreiranja niti/upisa user-poruke → greška MORA nositi
     // conversationId (paritet edge index.ts:853-859): retry ne pravi orphan niti.
@@ -251,7 +280,8 @@ export class AiChatService {
         toolsForScope(setup.scope),
         system,
         image,
-        (name, args) => this.execTool(email, name, args),
+        (name, args) => this.execTool(email, name, args, ctx),
+        ctx,
       );
     } catch (e) {
       throw this.upstreamError(e, setup.convId);
@@ -279,7 +309,10 @@ export class AiChatService {
     // ── auto-naslov nove lične niti (pad ne ruši slanje)
     let newTitle: string | null = null;
     if (setup.isNew && setup.scope === "personal") {
-      newTitle = await this.ai.generateTitle(message, out.reply);
+      newTitle = await this.ai.generateTitle(message, out.reply, {
+        module: AI_MODULE.TITLE,
+        userId: actor?.userId ?? null,
+      });
       if (newTitle) {
         await this.sy15
           .withUser(email, (tx) =>
@@ -304,9 +337,14 @@ export class AiChatService {
         authorName: setup.author.name,
         title: newTitle ?? undefined,
         imagePath: imagePath ?? undefined,
-        // 1.0 UI čita za upozorenje „još X poruka danas" (index.ts:890-891).
-        remaining: Math.max(0, AI_DAILY_LIMIT - setup.used - 1),
-        limit: AI_DAILY_LIMIT,
+        // FE čita za upozorenje „još X tokena danas". Oduzimamo i ulazne tokene
+        // ovog kruga (ledger je best-effort/async, pa ga ne čekamo ponovo).
+        remaining:
+          budget && budget.limit >= 0
+            ? Math.max(0, budget.remaining - (out.tokensIn ?? 0))
+            : -1,
+        limit: budget?.limit ?? -1,
+        unit: budget?.unit ?? "tokens",
       },
     };
   }
@@ -447,27 +485,6 @@ export class AiChatService {
     const uid = rows[0]?.uid;
     if (!uid) throw new UnauthorizedException("Potrebna je prijava.");
     return uid;
-  }
-
-  /** Dnevni limit (COUNT role='user' od UTC ponoći; §2 pravilo 10) → 429; vraća `used`. */
-  private async assertUnderDailyLimit(tx: Sy15Tx): Promise<number> {
-    const rows = await tx.$queryRaw<{ used: number }[]>(
-      Prisma.sql`SELECT count(*)::int AS used FROM ai_chat_messages
-        WHERE user_id = auth.uid() AND role = 'user'
-          AND created_at >= (date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')`,
-    );
-    const used = rows[0]?.used ?? 0;
-    if (used >= AI_DAILY_LIMIT) {
-      throw new HttpException(
-        {
-          error: "daily_limit",
-          limit: AI_DAILY_LIMIT,
-          message: `Dnevni limit od ${AI_DAILY_LIMIT} poruka je potrošen — nastavi sutra.`,
-        },
-        HttpStatus.TOO_MANY_REQUESTS,
-      );
-    }
-    return used;
   }
 
   /**
@@ -615,6 +632,7 @@ export class AiChatService {
     email: string,
     name: string,
     args: Record<string, unknown>,
+    ctx?: AiCallContext,
   ): Promise<unknown> {
     try {
       if (name === "go_istorija") {
@@ -628,7 +646,7 @@ export class AiChatService {
       }
       if (name === "pretrazi_uputstva") {
         const upit = this.str(args.upit);
-        const emb = await this.ai.embed(upit);
+        const emb = await this.ai.embed(upit, this.embedCtx(ctx));
         return await this.rpc(
           email,
           Prisma.sql`SELECT ai_chat_pretrazi_uputstva(${upit}, ${emb}) AS result`,
@@ -636,7 +654,7 @@ export class AiChatService {
       }
       if (name === "masina_uputstvo") {
         const pitanje = this.str(args.pitanje);
-        const emb = await this.ai.embed(pitanje);
+        const emb = await this.ai.embed(pitanje, this.embedCtx(ctx));
         return await this.rpc(
           email,
           Prisma.sql`SELECT ai_chat_masina_uputstvo(${this.str(args.masina)}, ${pitanje}, ${emb}) AS result`,
@@ -651,6 +669,7 @@ export class AiChatService {
         );
         await this.backfill(
           email,
+          ctx,
           "ai_uputstva",
           out,
           `${this.str(args.naslov)}\n${this.str(args.kljucne_reci)}\n${this.str(args.sadrzaj)}`,
@@ -665,6 +684,7 @@ export class AiChatService {
         );
         await this.backfill(
           email,
+          ctx,
           "ai_project_notes",
           out,
           `${this.str(args.naslov)}\n${this.str(args.tekst)}`,
@@ -731,13 +751,14 @@ export class AiChatService {
   /** Backfill embedinga posle dodaj_uputstvo/belesku (BYPASSRLS = service role; best-effort). */
   private async backfill(
     email: string,
+    ctx: AiCallContext | undefined,
     table: "ai_uputstva" | "ai_project_notes",
     out: unknown,
     text: string,
   ): Promise<void> {
     const o = out as { ok?: boolean; id?: string | number } | null;
     if (!o?.ok || !o.id) return;
-    const emb = await this.ai.embed(text);
+    const emb = await this.ai.embed(text, this.embedCtx(ctx));
     if (!emb) return;
     const id = String(o.id);
     const tableSql =
@@ -753,6 +774,11 @@ export class AiChatService {
       .catch(() => {
         /* embedding je best-effort — bez njega radi FTS */
       });
+  }
+
+  /** Embedding se meri kao zaseban modul (`embed`), ali nosi istog korisnika. */
+  private embedCtx(ctx?: AiCallContext): AiCallContext {
+    return { module: AI_MODULE.EMBED, userId: ctx?.userId ?? null };
   }
 
   /** Sigurna koercija args-a modela (string/broj/bool → tekst; objekat → JSON). */

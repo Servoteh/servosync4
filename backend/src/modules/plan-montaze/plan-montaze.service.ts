@@ -11,6 +11,15 @@ import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
 import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
 import { AiProviderService } from "../../common/ai/ai-provider.service";
+import { AI_MODULE } from "../../common/ai/ai-limits.service";
+import {
+  AI_TASK,
+  AiModelPolicyService,
+} from "../../common/ai/ai-model-policy.service";
+import {
+  MONTAZA_INJECTION_FENCE,
+  fenceUserInput,
+} from "../../common/ai/injection-fence";
 import { mapSy15Error } from "../../common/sy15-error";
 import { jsonSafe } from "../../common/json-safe";
 import type { ReportsQueryDto } from "./dto/plan-montaze-query.dto";
@@ -69,6 +78,7 @@ export class PlanMontazeService {
     private readonly sy15: Sy15Service,
     private readonly storage: Sy15StorageService,
     private readonly ai: AiProviderService,
+    private readonly policy: AiModelPolicyService,
   ) {}
 
   // ---------- Projekti (stablo) ----------
@@ -179,7 +189,12 @@ export class PlanMontazeService {
   async aiModel(email: string) {
     return this.read(email, async (tx) => {
       const rows = await tx.$queryRaw<
-        { id: number; model: string; updated_at: Date; updated_by: string | null }[]
+        {
+          id: number;
+          model: string;
+          updated_at: Date;
+          updated_by: string | null;
+        }[]
       >(
         Prisma.sql`SELECT id, model, updated_at, updated_by FROM montaza_ai_settings WHERE id = 1`,
       );
@@ -209,7 +224,9 @@ export class PlanMontazeService {
       : Prisma.sql`TRUE`;
     return this.read(email, async (tx) => {
       const items = await tx.$queryRaw<
-        Array<Record<string, unknown> & { id: number; customer_id: number | null }>
+        Array<
+          Record<string, unknown> & { id: number; customer_id: number | null }
+        >
       >(
         Prisma.sql`SELECT id, broj_predmeta, naziv_predmeta, opis, status, department_code,
             broj_ugovora, broj_narudzbenice, rok_zavrsetka, modified_at, datum_zakljucenja, customer_id
@@ -221,7 +238,10 @@ export class PlanMontazeService {
       const custIds = [
         ...new Set(items.map((r) => r.customer_id).filter((v) => v != null)),
       ] as number[];
-      let custMap = new Map<number, { name: string; short_name: string | null }>();
+      let custMap = new Map<
+        number,
+        { name: string; short_name: string | null }
+      >();
       if (custIds.length) {
         const custRows = await tx.$queryRaw<
           { id: number; name: string; short_name: string | null }[]
@@ -232,7 +252,10 @@ export class PlanMontazeService {
       }
       const data = items.map((r) => ({
         ...r,
-        customer_name: r.customer_id != null ? (custMap.get(r.customer_id as number)?.name ?? null) : null,
+        customer_name:
+          r.customer_id != null
+            ? (custMap.get(r.customer_id)?.name ?? null)
+            : null,
       }));
       return { data: jsonSafe(data) };
     });
@@ -286,7 +309,9 @@ export class PlanMontazeService {
           WHERE drawing_no = ${clean} AND removed_at IS NULL LIMIT 1`,
       );
       if (exact[0]?.storage_path) return exact[0].storage_path;
-      const cands = await tx.$queryRaw<{ drawing_no: string; storage_path: string }[]>(
+      const cands = await tx.$queryRaw<
+        { drawing_no: string; storage_path: string }[]
+      >(
         Prisma.sql`SELECT drawing_no, storage_path FROM bigtehn_drawings_cache
           WHERE drawing_no LIKE ${clean + "%"} AND removed_at IS NULL
           ORDER BY drawing_no DESC LIMIT 50`,
@@ -294,11 +319,16 @@ export class PlanMontazeService {
       const hit = cands.find(
         (c) => c.drawing_no === clean || c.drawing_no.startsWith(clean + "_"),
       );
-      if (!hit?.storage_path) throw new NotFoundException(`Crtež ${clean} nije u kešu.`);
+      if (!hit?.storage_path)
+        throw new NotFoundException(`Crtež ${clean} nije u kešu.`);
       return hit.storage_path;
     });
     return {
-      data: await this.storage.signUrl(BIGTEHN_DRAWINGS_BUCKET, path, DRAWING_SIGNED_URL_TTL),
+      data: await this.storage.signUrl(
+        BIGTEHN_DRAWINGS_BUCKET,
+        path,
+        DRAWING_SIGNED_URL_TTL,
+      ),
     };
   }
 
@@ -409,7 +439,11 @@ export class PlanMontazeService {
     });
   }
 
-  async updateWorkPackage(email: string, id: string, dto: UpdateWorkPackageDto) {
+  async updateWorkPackage(
+    email: string,
+    id: string,
+    dto: UpdateWorkPackageDto,
+  ) {
     return this.mut(email, async (tx) => {
       const exists = await tx.pmWorkPackage.count({ where: { id } });
       const r = await tx.pmWorkPackage.updateMany({
@@ -419,7 +453,8 @@ export class PlanMontazeService {
           rnOrder: dto.rnOrder ?? undefined,
           name: dto.name ?? undefined,
           location: dto.location ?? undefined,
-          responsibleEngineerDefault: dto.responsibleEngineerDefault ?? undefined,
+          responsibleEngineerDefault:
+            dto.responsibleEngineerDefault ?? undefined,
           montageLeadDefault: dto.montageLeadDefault ?? undefined,
           deadline: this.toDbDate(dto.deadline),
           sortOrder: dto.rnOrder ?? undefined,
@@ -466,9 +501,7 @@ export class PlanMontazeService {
             update: {
               phaseName: dto.phaseName,
               ...shared,
-              ...(dto.checks !== undefined
-                ? { checks: dto.checks as Prisma.InputJsonValue }
-                : {}),
+              ...(dto.checks !== undefined ? { checks: dto.checks } : {}),
               ...(dto.linkedDrawings !== undefined
                 ? { linkedDrawings: this.cleanDrawings(dto.linkedDrawings) }
                 : {}),
@@ -487,9 +520,7 @@ export class PlanMontazeService {
         data: {
           ...(dto.phaseName !== undefined ? { phaseName: dto.phaseName } : {}),
           ...this.phaseData(dto, email),
-          ...(dto.checks !== undefined
-            ? { checks: dto.checks as Prisma.InputJsonValue }
-            : {}),
+          ...(dto.checks !== undefined ? { checks: dto.checks } : {}),
           ...(dto.linkedDrawings !== undefined
             ? { linkedDrawings: this.cleanDrawings(dto.linkedDrawings) }
             : {}),
@@ -539,7 +570,7 @@ export class PlanMontazeService {
               opisRadova: dto.opisRadova ?? null,
               problemi: dto.problemi ?? null,
               otvoreneStavke: dto.otvoreneStavke ?? null,
-              dodatniClanovi: (dto.dodatniClanovi ?? []) as Prisma.InputJsonValue,
+              dodatniClanovi: dto.dodatniClanovi ?? [],
               autorIme: dto.autorIme ?? null,
               siroviTekst: dto.siroviTekst ?? null,
               aiModel: dto.aiModel ?? null,
@@ -594,7 +625,9 @@ export class PlanMontazeService {
       );
     }
     if (files.length > MONTAZA_MAX_SLIKE) {
-      throw new UnprocessableEntityException(`Najviše ${MONTAZA_MAX_SLIKE} fotki.`);
+      throw new UnprocessableEntityException(
+        `Najviše ${MONTAZA_MAX_SLIKE} fotki.`,
+      );
     }
     const rbList = (redni ?? "")
       .split(",")
@@ -605,7 +638,8 @@ export class PlanMontazeService {
     if (opisi) {
       try {
         const parsed: unknown = JSON.parse(opisi);
-        if (Array.isArray(parsed)) opisList = parsed.map((v) => String(v ?? ""));
+        if (Array.isArray(parsed))
+          opisList = parsed.map((v) => String(v ?? ""));
       } catch {
         throw new UnprocessableEntityException("`opisi` mora biti JSON niz.");
       }
@@ -766,31 +800,54 @@ export class PlanMontazeService {
    * `montaza_ai_settings` (allowlist), obogaćivanje predmeta iz `bigtehn_items_cache`
    * kroz `withUserRls`. 1.0 edge ostaje živ za paralelni rad.
    */
-  async aiGenerate(email: string, dto: AiGenerateDto) {
+  async aiGenerate(
+    email: string,
+    dto: AiGenerateDto,
+    actor?: { userId: number },
+  ) {
     const tekst = (dto.tekst ?? "").trim();
     if (tekst.length > MONTAZA_MAX_TEKST_CHARS) {
-      throw new UnprocessableEntityException("Tekst je predugačak (max 20000).");
+      throw new UnprocessableEntityException(
+        "Tekst je predugačak (max 20000).",
+      );
     }
     const slike = (dto.slike ?? []).slice(0, MONTAZA_MAX_SLIKE);
     for (const s of slike) {
       if ((s.data?.length ?? 0) > MONTAZA_MAX_SLIKA_B64) {
-        throw new UnprocessableEntityException("Fotka je prevelika (max ~4MB).");
+        throw new UnprocessableEntityException(
+          "Fotka je prevelika (max ~4MB).",
+        );
       }
     }
     if (!tekst && slike.length === 0) {
       throw new UnprocessableEntityException("Prazan unos (tekst i fotke).");
     }
 
-    const model = await this.read(email, (tx) => this.resolveAiModel(tx));
+    const legacyModel = await this.read(email, (tx) => this.resolveAiModel(tx));
+    // Talas AI-0 (stavka 7c): registar prvi, montaza_ai_settings kao fallback.
+    const resolved = await this.policy.resolve(
+      AI_TASK.MONTAZA_REPORT,
+      legacyModel,
+    );
+    const model = (MONTAZA_AI_ALLOWED_MODELS as readonly string[]).includes(
+      resolved.model,
+    )
+      ? resolved.model
+      : legacyModel;
 
-    const dopune = (dto.dopune ?? []).map((d) => String(d ?? "").trim()).filter(Boolean);
+    const dopune = (dto.dopune ?? [])
+      .map((d) => String(d ?? "").trim())
+      .filter(Boolean);
     const textBlock =
       `Monter/serviser je napisao (slobodan tekst):\n"""\n${tekst || "(prazno)"}\n"""` +
       (dopune.length
         ? `\n\nNaknadno dopunjeni podaci (uvrsti ih):\n- ${dopune.join("\n- ")}`
         : "") +
       `\n\nPriloženo fotografija: ${slike.length}.`;
-    const content: unknown[] = [{ type: "text", text: textBlock }];
+    // Talas AI-0 (stavka 6): slobodan tekst montera je nepouzdan unos → ograda.
+    const content: unknown[] = [
+      { type: "text", text: fenceUserInput(textBlock) },
+    ];
     for (const s of slike) {
       const mt = MONTAZA_VISION_MIME.includes(s.media_type)
         ? s.media_type
@@ -803,10 +860,14 @@ export class PlanMontazeService {
 
     const res = await this.ai.extractWithTool({
       model,
-      system: MONTAZA_AI_SYSTEM_PROMPT,
+      system: `${MONTAZA_AI_SYSTEM_PROMPT}\n\n${MONTAZA_INJECTION_FENCE}`,
       tool: MONTAZA_AI_TOOL,
       content,
       maxTokens: 4000,
+      ctx: {
+        module: AI_MODULE.MONTAZA_REPORT,
+        userId: actor?.userId ?? null,
+      },
     });
     const out = normalizeMontazaOut(res.toolInput);
     await this.enrichPredmet(email, out);

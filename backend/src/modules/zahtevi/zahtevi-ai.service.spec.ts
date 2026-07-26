@@ -8,6 +8,7 @@ import {
 import { PrismaService } from "../../prisma/prisma.service";
 import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
 import { AiProviderService } from "../../common/ai/ai-provider.service";
+import { AiModelPolicyService } from "../../common/ai/ai-model-policy.service";
 import { ZahteviAiService } from "./zahtevi-ai.service";
 import { TRIAGE_SYSTEM_PROMPT, ANALYSIS_SYSTEM_PROMPT } from "./zahtevi-ai";
 import type { AuthUser } from "../auth/jwt.strategy";
@@ -209,6 +210,18 @@ describe("ZahteviAiService", () => {
         { provide: PrismaService, useValue: prisma },
         { provide: Sy15StorageService, useValue: storage },
         { provide: AiProviderService, useValue: ai },
+        // Talas AI-0: registar modela — prazan (resolve vraća fallback), pa se
+        // ponašanje trijaže/analize ne menja u odnosu na env/default.
+        {
+          provide: AiModelPolicyService,
+          useValue: {
+            resolve: jest
+              .fn()
+              .mockImplementation((_t: string, fb: string) =>
+                Promise.resolve({ model: fb, effort: null }),
+              ),
+          },
+        },
       ],
     }).compile();
     service = module.get(ZahteviAiService);

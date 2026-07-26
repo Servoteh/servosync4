@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Post,
+  Req,
   UploadedFile,
   UseGuards,
   UseInterceptors,
@@ -13,6 +14,10 @@ import { RequirePermission } from "../../common/authz/require-permission.decorat
 import { PERMISSIONS } from "../../common/authz/permissions";
 import { MediaAiService } from "./media-ai.service";
 import { RefineDto, SttMetaDto } from "./dto/media-ai.dto";
+
+interface AuthedRequest {
+  user: { userId: number; email: string; role: string };
+}
 
 /**
  * Zajednički media/AI endpointi (presuda B4/H3): `/ai/stt` (Whisper diktiranje) +
@@ -31,12 +36,22 @@ export class MediaAiController {
   @UseInterceptors(
     FileInterceptor("audio", { limits: { fileSize: 25 * 1024 * 1024 } }),
   )
-  stt(@Body() dto: SttMetaDto, @UploadedFile() audio?: Express.Multer.File) {
-    return this.media.transcribe(dto, audio);
+  stt(
+    @Req() req: AuthedRequest,
+    @Body() dto: SttMetaDto,
+    @UploadedFile() audio?: Express.Multer.File,
+  ) {
+    return this.media.transcribe(dto, audio, {
+      userId: req.user.userId,
+      role: req.user.role,
+    });
   }
 
   @Post("refine")
-  refine(@Body() dto: RefineDto) {
-    return this.media.refine(dto);
+  refine(@Req() req: AuthedRequest, @Body() dto: RefineDto) {
+    return this.media.refine(dto, {
+      userId: req.user.userId,
+      role: req.user.role,
+    });
   }
 }

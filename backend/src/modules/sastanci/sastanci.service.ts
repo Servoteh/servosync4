@@ -11,6 +11,15 @@ import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
 import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
 import { AiProviderService } from "../../common/ai/ai-provider.service";
+import { AI_MODULE } from "../../common/ai/ai-limits.service";
+import {
+  AI_TASK,
+  AiModelPolicyService,
+} from "../../common/ai/ai-model-policy.service";
+import {
+  SASTANCI_INJECTION_FENCE,
+  fenceUserInput,
+} from "../../common/ai/injection-fence";
 import { pageMeta, parsePagination } from "../../common/pagination";
 import {
   SUMMARY_ALLOWED_MODELS,
@@ -125,6 +134,7 @@ export class SastanciService {
     private readonly sy15: Sy15Service,
     private readonly storage: Sy15StorageService,
     private readonly ai: AiProviderService,
+    private readonly policy: AiModelPolicyService,
   ) {}
 
   // ---------- Liste / pretraga ----------
@@ -482,7 +492,12 @@ export class SastanciService {
     tx: Sy15Tx,
     since: string | null,
     projekatId: string | null,
-  ): Promise<{ novo: number; zavrseno: number; kasni: number; aktivnih: number }> {
+  ): Promise<{
+    novo: number;
+    zavrseno: number;
+    kasni: number;
+    aktivnih: number;
+  }> {
     const where = projekatId
       ? Prisma.sql`WHERE projekat_id = ${projekatId}::uuid`
       : Prisma.empty;
@@ -2313,13 +2328,17 @@ export class SastanciService {
    * sastanci_ai_settings (fallback SAST_AI_MODEL env pa opus), Anthropic one-shot.
    * Guard = sastanci.read (prijavljen korisnik). FE sklopi objekat sastanka.
    */
-  async aiSummary(email: string, sastanak: Record<string, unknown>) {
+  async aiSummary(
+    email: string,
+    sastanak: Record<string, unknown>,
+    actor?: { userId: number },
+  ) {
     if (JSON.stringify(sastanak).length > 40000) {
       throw new UnprocessableEntityException(
         "Sastanak je prevelik za sažimanje.",
       );
     }
-    const model = await this.withUserMapped(email, async (tx) => {
+    const legacyModel = await this.withUserMapped(email, async (tx) => {
       const rows = await tx.$queryRaw<{ model: string | null }[]>(
         Prisma.sql`SELECT model FROM sastanci_ai_settings WHERE id = 1 LIMIT 1`,
       );
@@ -2328,8 +2347,23 @@ export class SastanciService {
       const env = process.env.SAST_AI_MODEL ?? "";
       return SUMMARY_ALLOWED_MODELS.includes(env) ? env : "claude-opus-4-8";
     });
-    const content = buildSummaryContent(sastanak);
-    const out = await this.ai.summarize(model, SUMMARY_SYSTEM_PROMPT, content);
+    // Talas AI-0 (stavka 7c): registar prvi, sy15 podešavanje kao fallback.
+    const resolved = await this.policy.resolve(
+      AI_TASK.SASTANCI_SUMMARY,
+      legacyModel,
+    );
+    const model = SUMMARY_ALLOWED_MODELS.includes(resolved.model)
+      ? resolved.model
+      : legacyModel;
+    // Talas AI-0 (stavka 6): zapisnik i akcioni plan kucaju učesnici sastanka —
+    // nepouzdan unos ide obmotan ogradom, a ograda u system prompt.
+    const content = fenceUserInput(buildSummaryContent(sastanak));
+    const out = await this.ai.summarize(
+      model,
+      `${SUMMARY_SYSTEM_PROMPT}\n\n${SASTANCI_INJECTION_FENCE}`,
+      content,
+      { module: AI_MODULE.SASTANCI_SUMMARY, userId: actor?.userId ?? null },
+    );
     return { data: out };
   }
 

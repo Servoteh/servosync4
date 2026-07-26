@@ -6,6 +6,51 @@ import {
 import { AiChatService } from "./ai-chat.service";
 import type { Sy15Service } from "../../common/sy15/sy15.service";
 import type { AiProviderService } from "../../common/ai/ai-provider.service";
+import type { AiLimitsService } from "../../common/ai/ai-limits.service";
+
+/**
+ * Talas AI-0 (stavka 5): dnevni limit je sada budžet ULAZNIH tokena iz
+ * `ai_usage_log`, a ne brojanje poruka u sy15. Testovi koriste ovaj mok —
+ * 200k tokena, 0 potrošeno (assert prolazi, chat teče).
+ */
+function limitsMock(used = 0, limit = 200_000): AiLimitsService {
+  const budget = {
+    used,
+    limit,
+    remaining: Math.max(0, limit - used),
+    unit: "tokens" as const,
+  };
+  return {
+    chatBudget: jest.fn().mockResolvedValue(budget),
+    assertChat: jest.fn().mockResolvedValue(budget),
+  } as unknown as AiLimitsService;
+}
+
+/** Admin: bez limita (`limit: -1`) — FE tada ne prikazuje brojač. */
+function unlimitedLimitsMock(): AiLimitsService {
+  const budget = { used: 0, limit: -1, remaining: -1, unit: "tokens" as const };
+  return {
+    chatBudget: jest.fn().mockResolvedValue(budget),
+    assertChat: jest.fn().mockResolvedValue(budget),
+  } as unknown as AiLimitsService;
+}
+
+/** Potrošen budžet → assertChat baca 429 (isti oblik kao AiLimitsService). */
+function exhaustedLimitsMock(): AiLimitsService {
+  const err = new HttpException(
+    { error: "chat_token_limit", limit: 200_000, used: 200_000 },
+    429,
+  );
+  return {
+    chatBudget: jest.fn().mockResolvedValue({
+      used: 200_000,
+      limit: 200_000,
+      remaining: 0,
+      unit: "tokens" as const,
+    }),
+    assertChat: jest.fn().mockRejectedValue(err),
+  } as unknown as AiLimitsService;
+}
 
 /**
  * RLS most (review 12.07, CRITICAL leak): ai_chat_conversations/messages RLS
@@ -31,6 +76,7 @@ describe("AiChatService — withUserRls most (leak guard)", () => {
       sy15 as unknown as Sy15Service,
       {} as never,
       {} as never,
+      limitsMock(),
     );
     return { svc, sy15, tx };
   }
@@ -52,13 +98,23 @@ describe("AiChatService — withUserRls most (leak guard)", () => {
     expect(sy15.withUser).not.toHaveBeenCalled();
   });
 
-  it("me + limit idu kroz withUserRls (auth.uid() iz GUC claims)", async () => {
-    const { svc, sy15, tx } = makeSvc();
+  it("me ide kroz withUserRls (auth.uid() iz GUC claims)", async () => {
+    const { svc, sy15 } = makeSvc();
     await svc.me("test@servoteh.com");
-    tx.$queryRaw.mockResolvedValueOnce([{ used: 12 }]);
-    const out = await svc.limit("test@servoteh.com");
-    expect(out.data).toEqual({ used: 12, limit: 50, remaining: 38 });
-    expect(sy15.withUserRls).toHaveBeenCalledTimes(2);
+    expect(sy15.withUserRls).toHaveBeenCalledTimes(1);
+    expect(sy15.withUser).not.toHaveBeenCalled();
+  });
+
+  it("limit više NE dira sy15 — budžet dolazi iz ai_usage_log (glavna baza)", async () => {
+    const { svc, sy15 } = makeSvc();
+    const out = await svc.limit({ userId: 7, role: "sef" });
+    expect(out.data).toEqual({
+      used: 0,
+      limit: 200_000,
+      remaining: 200_000,
+      unit: "tokens",
+    });
+    expect(sy15.withUserRls).not.toHaveBeenCalled();
     expect(sy15.withUser).not.toHaveBeenCalled();
   });
 
@@ -164,6 +220,7 @@ describe("AiChatService.execTool dispatch (alat → RPC ime)", () => {
       sy15 as unknown as Sy15Service,
       ai as never,
       storage as never,
+      limitsMock(),
     );
     const exec = (name: string, args: Record<string, unknown>) =>
       (
@@ -195,7 +252,11 @@ describe("AiChatService.execTool dispatch (alat → RPC ime)", () => {
   it("pretrazi_uputstva: računa embedding pa zove ai_chat_pretrazi_uputstva", async () => {
     const { exec, captured, ai } = make();
     await exec("pretrazi_uputstva", { upit: "kako GO" });
-    expect(ai.embed).toHaveBeenCalledWith("kako GO");
+    // Talas AI-0: embedding nosi merni kontekst (modul `embed` + korisnik).
+    expect(ai.embed).toHaveBeenCalledWith("kako GO", {
+      module: "embed",
+      userId: null,
+    });
     expect(captured.join(" ")).toContain("ai_chat_pretrazi_uputstva");
   });
 
@@ -261,13 +322,17 @@ describe("AiChatService.execTool dispatch (alat → RPC ime)", () => {
  */
 describe("AiChatService.chat (remaining/limit + upstream conversationId)", () => {
   const CONV = "3b241101-e2bb-4255-8caf-4136c566a962";
-  function make(chatWithTools: jest.Mock) {
+  function make(
+    chatWithTools: jest.Mock,
+    limits: AiLimitsService = limitsMock(),
+  ) {
     const tx = {
-      // tx1 redosled: currentUid, dailyUsed, resolveConversation(new), resolveAuthor
+      // tx1 redosled: currentUid, resolveConversation(new), resolveAuthor.
+      // Talas AI-0: brojanje dnevnog limita više NIJE u tx1 (izvor je
+      // `ai_usage_log` u glavnoj bazi, kroz AiLimitsService).
       $queryRaw: jest
         .fn()
         .mockResolvedValueOnce([{ uid: "U1" }]) // auth.uid()
-        .mockResolvedValueOnce([{ used: 3 }]) // dnevni limit
         .mockResolvedValueOnce([{ id: CONV }]) // INSERT conversation RETURNING id
         .mockResolvedValueOnce([
           { full_name: "Pera Perić", position: "Monter" },
@@ -295,22 +360,71 @@ describe("AiChatService.chat (remaining/limit + upstream conversationId)", () =>
       sy15 as unknown as Sy15Service,
       ai as unknown as AiProviderService,
       {} as never,
+      limits,
     );
-    return { svc, ai };
+    return { svc, ai, sy15 };
   }
 
-  it("uspeh: odgovor nosi remaining = limit-used-1 i limit", async () => {
+  it("uspeh: odgovor nosi preostali TOKEN budžet i limit", async () => {
     const chatWithTools = jest.fn().mockResolvedValue({
       reply: "Zdravo!",
       model: "m",
-      tokensIn: 1,
-      tokensOut: 1,
+      tokensIn: 1200,
+      tokensOut: 40,
     });
     const { svc } = make(chatWithTools);
-    const out = await svc.chat("u@servoteh.com", { message: "cao" });
+    const out = await svc.chat(
+      "u@servoteh.com",
+      { message: "cao" },
+      undefined,
+      {
+        userId: 7,
+        role: "sef",
+      },
+    );
     expect(out.data.conversationId).toBe(CONV);
-    expect(out.data.remaining).toBe(46); // 50 - 3 - 1
-    expect(out.data.limit).toBe(50);
+    // mok budžeta: 200000 limit, 0 potrošeno → posle ovog kruga 200000 - 1200.
+    expect(out.data.remaining).toBe(198_800);
+    expect(out.data.limit).toBe(200_000);
+    expect(out.data.unit).toBe("tokens");
+  });
+
+  it("admin (limit -1) → nema brojača; remaining ostaje -1", async () => {
+    const chatWithTools = jest.fn().mockResolvedValue({
+      reply: "Zdravo!",
+      model: "m",
+      tokensIn: 5000,
+      tokensOut: 10,
+    });
+    const { svc } = make(chatWithTools, unlimitedLimitsMock());
+    const out = await svc.chat(
+      "a@servoteh.com",
+      { message: "cao" },
+      undefined,
+      {
+        userId: 1,
+        role: "admin",
+      },
+    );
+    expect(out.data.limit).toBe(-1);
+    expect(out.data.remaining).toBe(-1);
+  });
+
+  it("potrošen budžet → 429 PRE nego što se napravi nit (bez orphan konverzacije)", async () => {
+    const chatWithTools = jest.fn();
+    const { svc, sy15 } = make(chatWithTools, exhaustedLimitsMock());
+    let err!: HttpException;
+    try {
+      await svc.chat("u@servoteh.com", { message: "cao" }, undefined, {
+        userId: 7,
+        role: "sef",
+      });
+    } catch (e) {
+      err = e as HttpException;
+    }
+    expect(err.getStatus()).toBe(429);
+    expect(sy15.withUser).not.toHaveBeenCalled();
+    expect(chatWithTools).not.toHaveBeenCalled();
   });
 
   it("engine HTTP greška → 502 sa conversationId (upstream_error)", async () => {
@@ -366,7 +480,9 @@ describe("AiChatService.chat (screenContext u system prompt)", () => {
         .mockResolvedValueOnce([{ uid: "U1" }]) // auth.uid()
         .mockResolvedValueOnce([{ used: 3 }]) // dnevni limit
         .mockResolvedValueOnce([{ id: CONV }]) // INSERT conversation RETURNING id
-        .mockResolvedValueOnce([{ full_name: "Pera Perić", position: "Monter" }]),
+        .mockResolvedValueOnce([
+          { full_name: "Pera Perić", position: "Monter" },
+        ]),
       $executeRaw: jest.fn().mockResolvedValue(1),
     };
     const sy15 = {
@@ -396,10 +512,10 @@ describe("AiChatService.chat (screenContext u system prompt)", () => {
       sy15 as unknown as Sy15Service,
       ai as unknown as AiProviderService,
       {} as never,
+      limitsMock(),
     );
     // system prompt = 5. argument chatWithTools (cfg, hist, msg, tools, system, ...)
-    const systemArg = () =>
-      chatWithTools.mock.calls[0][4] as string;
+    const systemArg = () => chatWithTools.mock.calls[0][4] as string;
     return { svc, systemArg };
   }
 
@@ -430,7 +546,9 @@ describe("AiChatService.chat (screenContext u system prompt)", () => {
         .mockResolvedValueOnce([{ used: 3 }]) // dnevni limit
         .mockResolvedValueOnce([{ id: CONV }]) // postojeća projektna nit
         .mockResolvedValueOnce([]) // loadHistory (nit nije nova)
-        .mockResolvedValueOnce([{ full_name: "Pera Perić", position: "Monter" }]),
+        .mockResolvedValueOnce([
+          { full_name: "Pera Perić", position: "Monter" },
+        ]),
       $executeRaw: jest.fn().mockResolvedValue(1),
     };
     const sy15 = {
@@ -460,6 +578,7 @@ describe("AiChatService.chat (screenContext u system prompt)", () => {
       sy15 as unknown as Sy15Service,
       ai as unknown as AiProviderService,
       {} as never,
+      limitsMock(),
     );
     await svc.chat("u@servoteh.com", {
       message: "cao",

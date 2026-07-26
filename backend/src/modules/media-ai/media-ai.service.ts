@@ -1,6 +1,13 @@
 import { BadRequestException, Injectable } from "@nestjs/common";
 import { AiProviderService } from "../../common/ai/ai-provider.service";
+import { AI_MODULE, AiLimitsService } from "../../common/ai/ai-limits.service";
 import type { RefineDto, SttMetaDto } from "./dto/media-ai.dto";
+
+/** Ko zove — za `ai_usage_log.user_id` i dnevni budžet (Talas AI-0, stavka 5). */
+export interface MediaAiActor {
+  userId: number;
+  role?: string | null;
+}
 
 /**
  * Zajednički media/AI servis (presuda B4/H3): STT (Whisper) + „✨ doterivanje"
@@ -41,10 +48,17 @@ const REFINE_DEFAULT =
 
 @Injectable()
 export class MediaAiService {
-  constructor(private readonly ai: AiProviderService) {}
+  constructor(
+    private readonly ai: AiProviderService,
+    private readonly limits: AiLimitsService,
+  ) {}
 
   /** Govor → tekst (Whisper) — multipart `audio`. Paritet stt-transcribe. */
-  async transcribe(dto: SttMetaDto, file?: Express.Multer.File) {
+  async transcribe(
+    dto: SttMetaDto,
+    file?: Express.Multer.File,
+    actor?: MediaAiActor,
+  ) {
     if (!file?.buffer?.length) {
       throw new BadRequestException("Nema audio snimka (multipart `audio`).");
     }
@@ -56,24 +70,32 @@ export class MediaAiService {
         "Snimak je predugacak — snimi krace deonice.",
       );
     }
+    // Dnevni budžet diktiranja (procena: broj poziva × prosečna dužina snimka —
+    // Whisper ne vraća trajanje, a dekodiranje audija bi tražilo novu zavisnost).
+    if (actor) await this.limits.assertStt(actor.userId, actor.role);
     const out = await this.ai.transcribe({
       bytes: new Uint8Array(file.buffer),
       mime: file.mimetype || "audio/webm",
       lang: dto.lang,
       context: dto.context,
+      ctx: { module: AI_MODULE.STT, userId: actor?.userId ?? null },
     });
     return { data: { ok: true, ...out } };
   }
 
   /** „✨ Dotera tekst" po profilu dokumenta. Paritet ai-refine. */
-  async refine(dto: RefineDto) {
+  async refine(dto: RefineDto, actor?: MediaAiActor) {
     const tekst = String(dto.tekst ?? "").trim();
     if (!tekst) throw new BadRequestException("Nema teksta za doterivanje.");
+    if (actor) await this.limits.assertRefine(actor.userId, actor.role);
     const system =
       (REFINE_PROFILES[dto.profil ?? ""] || REFINE_DEFAULT) +
       "\n\n" +
       REFINE_BASE_RULES;
-    const out = await this.ai.refine(tekst, system);
+    const out = await this.ai.refine(tekst, system, {
+      module: AI_MODULE.REFINE,
+      userId: actor?.userId ?? null,
+    });
     return { data: { ok: true, ...out } };
   }
 }

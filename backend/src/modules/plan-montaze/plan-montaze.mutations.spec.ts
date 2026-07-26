@@ -4,6 +4,20 @@ import type { Sy15Service } from "../../common/sy15/sy15.service";
 import type { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
 import type { AiProviderService } from "../../common/ai/ai-provider.service";
 import type { CreateReportDto } from "./dto/plan-montaze-mutation.dto";
+import type { AiModelPolicyService } from "../../common/ai/ai-model-policy.service";
+
+/**
+ * Talas AI-0: registar modela je prazan u testovima — `resolve` vraća fallback
+ * (montaza_ai_settings → env → default), pa se izbor modela ne menja.
+ */
+const policyMock = (): AiModelPolicyService =>
+  ({
+    resolve: jest
+      .fn()
+      .mockImplementation((_t: string, fb: string) =>
+        Promise.resolve({ model: fb, effort: null }),
+      ),
+  }) as unknown as AiModelPolicyService;
 
 /** Tekst kompozitnog Prisma.Sql (literal fragmenti, bez vrednosti) za asercije. */
 const sqlText = (sql: unknown): string => {
@@ -35,12 +49,15 @@ describe("PlanMontazeService.createReport (idempotency + payload)", () => {
         _key: string,
         _action: string,
         fn: (tx: unknown) => Promise<unknown>,
-      ) => ({ idempotent: false, result: await fn({ pmIzvestaj: { create } }) }),
+      ) => ({
+        idempotent: false,
+        result: await fn({ pmIzvestaj: { create } }),
+      }),
     );
     const sy15 = { runIdempotentRls } as unknown as Sy15Service;
     const storage = {} as Sy15StorageService;
     const ai = {} as AiProviderService;
-    const svc = new PlanMontazeService(sy15, storage, ai);
+    const svc = new PlanMontazeService(sy15, storage, ai, policyMock());
     return { svc, runIdempotentRls, create };
   };
 
@@ -64,7 +81,7 @@ describe("PlanMontazeService.createReport (idempotency + payload)", () => {
       datum: "2026-07-13",
       predmet: "9400/2",
     });
-    const data = create.mock.calls[0][0].data as Record<string, unknown>;
+    const data = create.mock.calls[0][0].data;
     expect(data.id).toBe(REPORT_ID);
     expect(data.status).toBe("u_toku");
     expect(data.dodatniClanovi).toEqual([]);
@@ -78,7 +95,7 @@ describe("PlanMontazeService.createReport (idempotency + payload)", () => {
   it("prosleđen status se poštuje (nije forsiran u_toku)", async () => {
     const { svc, create } = makeService();
     await svc.createReport(email, { id: REPORT_ID, status: "zavrseno" });
-    const data = create.mock.calls[0][0].data as Record<string, unknown>;
+    const data = create.mock.calls[0][0].data;
     expect(data.status).toBe("zavrseno");
   });
 });
@@ -108,7 +125,12 @@ describe("PlanMontazeService — R2 review nalazi (IDOR + paritet)", () => {
     );
     const sy15 = { withUserRls } as unknown as Sy15Service;
     const storage = { upload } as unknown as Sy15StorageService;
-    const svc = new PlanMontazeService(sy15, storage, {} as AiProviderService);
+    const svc = new PlanMontazeService(
+      sy15,
+      storage,
+      {} as AiProviderService,
+      policyMock(),
+    );
     const file = {
       buffer: Buffer.from("%PDF-1.4 fake"),
       mimetype: "application/pdf",
@@ -139,7 +161,12 @@ describe("PlanMontazeService — R2 review nalazi (IDOR + paritet)", () => {
     );
     const sy15 = { withUserRls } as unknown as Sy15Service;
     const storage = { upload } as unknown as Sy15StorageService;
-    const svc = new PlanMontazeService(sy15, storage, {} as AiProviderService);
+    const svc = new PlanMontazeService(
+      sy15,
+      storage,
+      {} as AiProviderService,
+      policyMock(),
+    );
     const file = {
       buffer: Buffer.from("%PDF-1.4"),
       mimetype: "application/pdf",
@@ -171,6 +198,7 @@ describe("PlanMontazeService — R2 review nalazi (IDOR + paritet)", () => {
       sy15,
       {} as Sy15StorageService,
       {} as AiProviderService,
+      policyMock(),
     );
     return { svc, captured };
   };
@@ -226,9 +254,16 @@ describe("PlanMontazeService — R2 review nalazi (IDOR + paritet)", () => {
     }));
     const sy15 = { withUserRls } as unknown as Sy15Service;
     const ai = { extractWithTool } as unknown as AiProviderService;
-    const svc = new PlanMontazeService(sy15, {} as Sy15StorageService, ai);
+    const svc = new PlanMontazeService(
+      sy15,
+      {} as Sy15StorageService,
+      ai,
+      policyMock(),
+    );
 
-    const res = await svc.aiGenerate(email, { tekst: "bio na servisu za 8500/1" });
+    const res = await svc.aiGenerate(email, {
+      tekst: "bio na servisu za 8500/1",
+    });
     expect(itemsSql).not.toContain("datum_zakljucenja IS NULL"); // ORDER BY sme, filter NE
     expect(res.data.predmet_item_id).toBe(8500);
     expect(res.data.naziv_projekta).toBe("Zatvoren projekat");

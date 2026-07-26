@@ -796,7 +796,9 @@ export class SastanciController {
     @Body() dto: AiSummaryDto,
   ) {
     void id;
-    return this.sastanci.aiSummary(req.user.email, dto.sastanak);
+    return this.sastanci.aiSummary(req.user.email, dto.sastanak, {
+      userId: req.user.userId,
+    });
   }
 
   // bare :id (POSLEDNJE — da ne uhvati literale/pod-rute)

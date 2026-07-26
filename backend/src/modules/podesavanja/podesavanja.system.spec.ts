@@ -1,11 +1,13 @@
 import {
   ConflictException,
+  ForbiddenException,
   NotFoundException,
   UnprocessableEntityException,
 } from "@nestjs/common";
 import { PodesavanjaService } from "./podesavanja.service";
 import type { Sy15Service } from "../../common/sy15/sy15.service";
 import type { PrismaService } from "../../prisma/prisma.service";
+import type { AiModelPolicyService } from "../../common/ai/ai-model-policy.service";
 
 /**
  * P12a (AI modeli u Sistem) + P7 (grid urednici write). Pinuje: (1) GET ai-models vraća oba
@@ -40,11 +42,22 @@ function makeSvc() {
       deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
   };
+  // Talas AI-0: registar `ai_model_policy` (glavna baza) — prazan po difoltu.
+  const policy = {
+    list: jest.fn().mockResolvedValue([]),
+    set: jest.fn().mockResolvedValue({}),
+    resolve: jest
+      .fn()
+      .mockImplementation((_t: string, fb: string) =>
+        Promise.resolve({ model: fb, effort: null }),
+      ),
+  };
   const svc = new PodesavanjaService(
     sy15 as unknown as Sy15Service,
     prisma as unknown as PrismaService,
+    policy as unknown as AiModelPolicyService,
   );
-  return { svc, sy15, tx, prisma };
+  return { svc, sy15, tx, prisma, policy };
 }
 
 describe("PodesavanjaService — AI modeli + grid urednici (P12a/P7)", () => {
@@ -86,12 +99,50 @@ describe("PodesavanjaService — AI modeli + grid urednici (P12a/P7)", () => {
     expect(qText(tx.$queryRaw)).toContain("set_montaza_ai_model(");
   });
 
-  it("setAiModel: model van allowliste → 422 (pre RPC-a, sinhrono)", () => {
+  // Talas AI-0: setAiModel je sada async (dual write u registar), pa se 422 vraća
+  // kao odbijeno obećanje — i dalje PRE ijednog RPC-a.
+  it("setAiModel: model van allowliste → 422 pre RPC-a", async () => {
     const { svc, tx } = makeSvc();
-    expect(() => svc.setAiModel("admin@x", "sastanci", "gpt-4o")).toThrow(
-      UnprocessableEntityException,
-    );
+    await expect(
+      svc.setAiModel("admin@x", "sastanci", "gpt-4o"),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
     expect(tx.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  it("setAiModel: dual write — sy15 RPC + registar ai_model_policy", async () => {
+    const { svc, tx, policy } = makeSvc();
+    tx.$queryRaw.mockResolvedValue([{ model: "claude-haiku-4-5" }]);
+    await svc.setAiModel("admin@x", "sastanci", "claude-haiku-4-5");
+    expect(qText(tx.$queryRaw)).toContain("set_sastanci_ai_model(");
+    expect(policy.set).toHaveBeenCalledWith(
+      "sastanci-summary",
+      "claude-haiku-4-5",
+      null,
+      "admin@x",
+    );
+  });
+
+  it("setAiModel(zahtevi-triage): nema sy15 RPC-a — samo registar (uz admin proveru)", async () => {
+    const { svc, tx, policy } = makeSvc();
+    tx.$queryRaw.mockResolvedValue([{ ok: true }]);
+    await svc.setAiModel("admin@x", "zahtevi-triage", "claude-haiku-4-5");
+    expect(qText(tx.$queryRaw)).toContain("current_user_is_admin()");
+    expect(qText(tx.$queryRaw)).not.toContain("set_sastanci_ai_model(");
+    expect(policy.set).toHaveBeenCalledWith(
+      "zahtevi-triage",
+      "claude-haiku-4-5",
+      null,
+      "admin@x",
+    );
+  });
+
+  it("setAiModel(zahtevi-triage): ne-admin → 403, registar netaknut", async () => {
+    const { svc, tx, policy } = makeSvc();
+    tx.$queryRaw.mockResolvedValue([{ ok: false }]);
+    await expect(
+      svc.setAiModel("pera@x", "zahtevi-triage", "claude-haiku-4-5"),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(policy.set).not.toHaveBeenCalled();
   });
 
   // ---------- P7: grid urednici ----------
