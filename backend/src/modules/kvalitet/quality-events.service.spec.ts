@@ -54,6 +54,7 @@ interface PrismaMock {
   worker: { findFirst: jest.Mock; findMany: jest.Mock };
   user: { findUnique: jest.Mock; findMany: jest.Mock };
   techProcess: { findUnique: jest.Mock };
+  workOrder: { findUnique: jest.Mock; findMany: jest.Mock };
 }
 
 function prismaMock(): PrismaMock {
@@ -96,7 +97,13 @@ function prismaMock(): PrismaMock {
         ),
     },
     techProcess: {
-      findUnique: jest.fn().mockResolvedValue({ workCenterCode: "CNC1" }),
+      findUnique: jest
+        .fn()
+        .mockResolvedValue({ id: 7, workOrderId: 100, workCenterCode: "CNC1" }),
+    },
+    workOrder: {
+      findUnique: jest.fn().mockResolvedValue({ id: 100, identNumber: "4698" }),
+      findMany: jest.fn().mockResolvedValue([{ id: 100, identNumber: "4698" }]),
     },
   };
 }
@@ -142,7 +149,7 @@ describe("QualityEventsService", () => {
 
   // ── KONTROLOR UNOS (POTVRDJEN) ───────────────────────────────────────────
   describe("createByController", () => {
-    it("nastaje ODMAH kao POTVRDJEN, confirmedBy = actor, reason validiran", async () => {
+    it("nastaje ODMAH kao POTVRDJEN, confirmedBy = actor, reason + RN validiran", async () => {
       prisma.qualityEvent.create.mockResolvedValue(baseEvent());
       const { service } = makeService(prisma);
       const out = await service.createByController(
@@ -153,9 +160,78 @@ describe("QualityEventsService", () => {
       expect(data.status).toBe("POTVRDJEN");
       expect(data.confirmedByUserId).toBe(3);
       expect(data.reasonCodeId).toBe(5);
-      expect(data.reportedByWorkerId).toBe(9); // iz JWT worker konteksta
       expect(prisma.qualityReasonCode.findUnique).toHaveBeenCalled();
+      expect(prisma.workOrder.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 100 } }),
+      );
+      // review [4]: odgovor nosi poslovni broj RN-a (ident), ne samo interni id.
+      expect(out.data.workOrderIdent).toBe("4698");
       expect(out.data.status).toBe("POTVRDJEN");
+    });
+
+    it("reporter NIJE default kontrolor (review [7]): bez izbora → null", async () => {
+      prisma.qualityEvent.create.mockResolvedValue(baseEvent());
+      const { service } = makeService(prisma);
+      await service.createByController(
+        { type: "SKART", workOrderId: 100, qty: 2, reasonCodeId: 5 },
+        CONTROLLER,
+      );
+      const data = firstCallData(prisma.qualityEvent.create);
+      expect(data.reportedByWorkerId).toBeNull();
+    });
+
+    it("RN koji ne postoji → 422 (bez upisa) [review 0]", async () => {
+      prisma.workOrder.findUnique.mockResolvedValue(null);
+      const { service } = makeService(prisma);
+      await expect(
+        service.createByController(
+          { type: "SKART", workOrderId: 77777, qty: 2, reasonCodeId: 5 },
+          CONTROLLER,
+        ),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(prisma.qualityEvent.create).not.toHaveBeenCalled();
+    });
+
+    it("operacija ne pripada RN-u → 422 [review 6]", async () => {
+      prisma.techProcess.findUnique.mockResolvedValue({
+        id: 7,
+        workOrderId: 999, // drugi RN
+        workCenterCode: "CNC1",
+      });
+      const { service } = makeService(prisma);
+      await expect(
+        service.createByController(
+          {
+            type: "SKART",
+            workOrderId: 100,
+            qty: 2,
+            reasonCodeId: 5,
+            techProcessId: 7,
+          },
+          CONTROLLER,
+        ),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(prisma.qualityEvent.create).not.toHaveBeenCalled();
+    });
+
+    it("qty sub-granica (0.0004 → zaokruži na 0) → 400 [review 1]", async () => {
+      const { service } = makeService(prisma);
+      await expect(
+        service.createByController(
+          { type: "SKART", workOrderId: 100, qty: 0.0004, reasonCodeId: 5 },
+          CONTROLLER,
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it("qty preko granice (1e12 → numeric overflow) → 400 [review 9]", async () => {
+      const { service } = makeService(prisma);
+      await expect(
+        service.createByController(
+          { type: "SKART", workOrderId: 100, qty: 1e12, reasonCodeId: 5 },
+          CONTROLLER,
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
     });
 
     it("razlog koji ne postoji → 422 (bez upisa)", async () => {
@@ -219,12 +295,15 @@ describe("QualityEventsService", () => {
       const data = firstCallData(prisma.qualityEvent.create);
       expect(data.status).toBe("PRIJAVLJEN");
       expect(data.reportedByWorkerId).toBe(9);
+      // review [8]: kartica se traži samo za AKTIVNOG radnika (active: { not: false }).
       expect(prisma.worker.findFirst).toHaveBeenCalledWith(
-        expect.objectContaining({ where: { cardId: "CARD-9" } }),
+        expect.objectContaining({
+          where: { cardId: "CARD-9", active: { not: false } },
+        }),
       );
     });
 
-    it("nepoznata kartica → 422", async () => {
+    it("nepoznata / neaktivna kartica → 422", async () => {
       prisma.worker.findFirst.mockResolvedValue(null);
       const { service } = makeService(prisma);
       await expect(
@@ -233,6 +312,18 @@ describe("QualityEventsService", () => {
           KIOSK,
         ),
       ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    });
+
+    it("RN koji ne postoji → 422 (i za kiosk put) [review 0]", async () => {
+      prisma.workOrder.findUnique.mockResolvedValue(null);
+      const { service } = makeService(prisma);
+      await expect(
+        service.prijava(
+          { type: "SKART", workOrderId: 77777, qty: 3, workerCard: "CARD-9" },
+          KIOSK,
+        ),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(prisma.qualityEvent.create).not.toHaveBeenCalled();
     });
 
     it("bez kartice → 400", async () => {
@@ -262,7 +353,11 @@ describe("QualityEventsService", () => {
   describe("confirm (PRIJAVLJEN → POTVRDJEN)", () => {
     it("CAS na status PRIJAVLJEN, upisuje razlog + confirmedBy", async () => {
       prisma.qualityEvent.findUnique
-        .mockResolvedValueOnce({ id: 1, status: "PRIJAVLJEN" })
+        .mockResolvedValueOnce({
+          id: 1,
+          status: "PRIJAVLJEN",
+          workOrderId: 100,
+        })
         .mockResolvedValueOnce(baseEvent({ status: "POTVRDJEN" }));
       const { service } = makeService(prisma);
       const out = await service.confirm(1, { reasonCodeId: 5 }, CONTROLLER);
@@ -325,7 +420,11 @@ describe("QualityEventsService", () => {
   describe("reject (PRIJAVLJEN → ODBACEN)", () => {
     it("upisuje ODBACEN + rejectReason + rejectedBy", async () => {
       prisma.qualityEvent.findUnique
-        .mockResolvedValueOnce({ id: 1, status: "PRIJAVLJEN" })
+        .mockResolvedValueOnce({
+          id: 1,
+          status: "PRIJAVLJEN",
+          workOrderId: 100,
+        })
         .mockResolvedValueOnce(
           baseEvent({ status: "ODBACEN", rejectReason: "Greška u prijavi" }),
         );

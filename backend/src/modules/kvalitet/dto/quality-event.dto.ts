@@ -19,11 +19,20 @@ export const QUALITY_EVENT_STATUSES = [
 ] as const;
 export type QualityEventStatus = (typeof QUALITY_EVENT_STATUSES)[number];
 
-/** Zajednička polja koja opisuju vezu na proizvodnju + mašinu (create/prijava/potvrdi). */
+/**
+ * Granice količine: DB kolona je Decimal(12,3) → max 999.999.999,999. Min 0,001
+ * jer bi manje (npr. 0,0004) zaokruženo na 0 prošlo „> 0" a u bazi ostalo 0
+ * (review [1]); preveliko bi bio numeric overflow → 500 (review [9]).
+ */
+const MIN_QTY = 0.001;
+const MAX_QTY = 999999999.999;
+
+/** Zajednička polja koja opisuju vezu na proizvodnju (create/prijava/potvrdi).
+ *  machineId NAMERNO nema — nema registra mašina u šemi za validaciju (review [6]);
+ *  „mašina" se u V1 vodi kroz `workUnitCode` (RC kod operacije). */
 interface ProductionRefFields {
   workOrderId?: number;
   techProcessId?: number | null;
-  machineId?: number | null;
   workUnitCode?: string | null;
   note?: string | null;
   photoPath?: string | null;
@@ -41,7 +50,8 @@ export interface CreateQualityEventDto extends ProductionRefFields {
   unit?: string;
   /** Razlog (quality_reason_codes.id) — obavezan za kontrolorski unos (POTVRDJEN). */
   reasonCodeId: number;
-  /** Radnik čiji je rad (workers.id) — opciono; default = JWT worker kontrolora. */
+  /** Radnik koji je napravio škart (workers.id) — opciono; NULL ako forma ne izabere
+   *  radnika (review [7]: reporter ≠ kontrolor, koji je confirmedBy). */
   reportedByWorkerId?: number | null;
 }
 
@@ -68,7 +78,6 @@ export interface ConfirmQualityEventDto {
   qty?: number;
   unit?: string;
   techProcessId?: number | null;
-  machineId?: number | null;
   workUnitCode?: string | null;
   note?: string | null;
 }
@@ -83,15 +92,25 @@ function checkType(type: unknown, errors: string[]): void {
     errors.push(`Polje 'type' mora biti: ${QUALITY_EVENT_TYPES.join(", ")}.`);
 }
 
+function checkQtyValue(qty: unknown, errors: string[]): void {
+  if (
+    typeof qty !== "number" ||
+    !Number.isFinite(qty) ||
+    qty < MIN_QTY ||
+    qty > MAX_QTY
+  )
+    errors.push(
+      `Polje 'qty' (količina) mora biti broj između ${MIN_QTY} i ${MAX_QTY}.`,
+    );
+}
+
 function checkQtyRequired(qty: unknown, errors: string[]): void {
-  if (typeof qty !== "number" || !Number.isFinite(qty) || qty <= 0)
-    errors.push("Polje 'qty' (količina) mora biti broj > 0.");
+  checkQtyValue(qty, errors);
 }
 
 function checkQtyOptional(qty: unknown, errors: string[]): void {
   if (qty === undefined) return;
-  if (typeof qty !== "number" || !Number.isFinite(qty) || qty <= 0)
-    errors.push("Polje 'qty' (količina) mora biti broj > 0.");
+  checkQtyValue(qty, errors);
 }
 
 function checkOptId(value: unknown, name: string, errors: string[]): void {
@@ -118,7 +137,6 @@ export function validateCreateQualityEvent(dto: CreateQualityEventDto): void {
   checkQtyRequired(dto?.qty, errors);
   checkRequiredId(dto?.reasonCodeId, "reasonCodeId", errors);
   checkOptId(dto?.techProcessId, "techProcessId", errors);
-  checkOptId(dto?.machineId, "machineId", errors);
   checkOptId(dto?.reportedByWorkerId, "reportedByWorkerId", errors);
   checkNote(dto?.note, errors);
   if (errors.length) throw new BadRequestException(errors);
@@ -131,7 +149,6 @@ export function validatePrijavaQualityEvent(dto: PrijavaQualityEventDto): void {
   checkQtyRequired(dto?.qty, errors);
   checkOptId(dto?.reasonCodeId, "reasonCodeId", errors);
   checkOptId(dto?.techProcessId, "techProcessId", errors);
-  checkOptId(dto?.machineId, "machineId", errors);
   checkNote(dto?.note, errors);
   if (typeof dto?.workerCard !== "string" || !dto.workerCard.trim())
     errors.push("Polje 'workerCard' (ID kartica radnika) je obavezno.");
@@ -143,7 +160,6 @@ export function validateConfirmQualityEvent(dto: ConfirmQualityEventDto): void {
   checkRequiredId(dto?.reasonCodeId, "reasonCodeId", errors);
   checkQtyOptional(dto?.qty, errors);
   checkOptId(dto?.techProcessId, "techProcessId", errors);
-  checkOptId(dto?.machineId, "machineId", errors);
   checkNote(dto?.note, errors);
   if (errors.length) throw new BadRequestException(errors);
 }

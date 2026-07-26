@@ -50,6 +50,8 @@ export interface QualityEvent {
   type: QualityEventType;
   status: QualityEventStatus;
   workOrderId: number;
+  /** Poslovni broj RN-a (work_orders.ident_number) — UI prikazuje njega, ne interni id. */
+  workOrderIdent: string | null;
   techProcessId: number | null;
   /** Decimal-as-string (BACKEND_RULES §5). */
   qty: string | null;
@@ -101,7 +103,6 @@ export interface CreateQualityEventInput {
   unit?: string;
   reasonCodeId: number;
   techProcessId?: number | null;
-  machineId?: number | null;
   workUnitCode?: string | null;
   note?: string | null;
   reportedByWorkerId?: number | null;
@@ -112,7 +113,6 @@ export interface ConfirmQualityEventInput {
   reasonCodeId: number;
   qty?: number;
   techProcessId?: number | null;
-  machineId?: number | null;
   workUnitCode?: string | null;
   note?: string | null;
 }

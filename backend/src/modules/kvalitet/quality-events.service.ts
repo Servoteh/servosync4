@@ -143,19 +143,20 @@ export class QualityEventsService {
 
   /**
    * `POST /kvalitet/events` — kanonski kontrolorski unos. Nastaje ODMAH kao POTVRDJEN
-   * (kontrolor je autoritet, §3). Razlog je obavezan (mora postojati + biti aktivan).
-   * `reportedByWorkerId` iz DTO-a ili iz konteksta (JWT worker); NULL za kancelarijski
-   * nalog bez vezanog radnika. Posle upisa → zvonce menadžmentu iznad praga (best-effort).
+   * (kontrolor je autoritet, §3). Validira: razlog (postoji+aktivan), radni nalog (postoji,
+   * inače tiho vezivanje za pogrešan RN — review [0]), operaciju (pripada TOM RN-u). NE
+   * podrazumeva `reportedByWorkerId` = kontrolor (review [7]): reporter je „ko je napravio
+   * škart", a to zna samo forma; kontrolor je `confirmedByUserId`. Posle upisa → zvonce
+   * menadžmentu iznad praga (best-effort).
    */
   async createByController(dto: CreateQualityEventDto, actor: AuthUser) {
     validateCreateQualityEvent(dto);
     await this.assertReasonActive(dto.reasonCodeId);
-
-    const reportedByWorkerId =
-      dto.reportedByWorkerId ?? (await this.resolveActorWorkerId(actor));
+    await this.assertWorkOrder(dto.workOrderId);
     const workUnitCode = await this.resolveWorkUnit(
       dto.workUnitCode,
       dto.techProcessId,
+      dto.workOrderId,
     );
     const now = new Date();
 
@@ -169,9 +170,9 @@ export class QualityEventsService {
         unit: dto.unit?.trim() || "kom",
         reasonCodeId: dto.reasonCodeId,
         note: dto.note?.trim() || null,
-        machineId: dto.machineId ?? null,
         workUnitCode,
-        reportedByWorkerId,
+        // [7] reporter = radnik koji je napravio škart (opciono iz forme), NE kontrolor.
+        reportedByWorkerId: dto.reportedByWorkerId ?? null,
         reportedAt: now,
         confirmedByUserId: actor.userId,
         confirmedAt: now,
@@ -196,11 +197,13 @@ export class QualityEventsService {
   async prijava(dto: PrijavaQualityEventDto, actor: AuthUser) {
     validatePrijavaQualityEvent(dto);
     const worker = await this.resolveWorkerByCard(dto.workerCard);
+    await this.assertWorkOrder(dto.workOrderId);
     if (dto.reasonCodeId != null)
       await this.assertReasonActive(dto.reasonCodeId);
     const workUnitCode = await this.resolveWorkUnit(
       dto.workUnitCode,
       dto.techProcessId,
+      dto.workOrderId,
     );
 
     const created = await this.prisma.qualityEvent.create({
@@ -213,7 +216,6 @@ export class QualityEventsService {
         unit: dto.unit?.trim() || "kom",
         reasonCodeId: dto.reasonCodeId ?? null,
         note: dto.note?.trim() || null,
-        machineId: dto.machineId ?? null,
         workUnitCode,
         reportedByWorkerId: worker.id,
         reportedAt: new Date(),
@@ -237,9 +239,14 @@ export class QualityEventsService {
     const existing = await this.loadForTransition(id);
     await this.assertReasonActive(dto.reasonCodeId);
 
+    // Operacija (ako je zadata pri potvrdi) mora pripadati RN-u tog događaja (review [6]).
     const workUnitCode =
       dto.workUnitCode !== undefined || dto.techProcessId !== undefined
-        ? await this.resolveWorkUnit(dto.workUnitCode, dto.techProcessId)
+        ? await this.resolveWorkUnit(
+            dto.workUnitCode,
+            dto.techProcessId,
+            existing.workOrderId,
+          )
         : undefined;
 
     const data: Prisma.QualityEventUncheckedUpdateInput = {
@@ -252,7 +259,6 @@ export class QualityEventsService {
     if (dto.unit !== undefined) data.unit = dto.unit.trim() || "kom";
     if (dto.techProcessId !== undefined)
       data.techProcessId = dto.techProcessId ?? null;
-    if (dto.machineId !== undefined) data.machineId = dto.machineId ?? null;
     if (workUnitCode !== undefined) data.workUnitCode = workUnitCode;
     if (dto.note !== undefined) data.note = dto.note?.trim() || null;
 
@@ -265,7 +271,6 @@ export class QualityEventsService {
         `Događaj ${id} je u međuvremenu obrađen — osvežite stranicu.`,
       );
 
-    void existing; // (loadForTransition je već presudio 404/409 pre CAS-a)
     const updated = await this.prisma.qualityEvent.findUnique({
       where: { id },
     });
@@ -452,10 +457,10 @@ export class QualityEventsService {
   /** Učitaj događaj za tranziciju statusa: 404 ako ne postoji, 409 ako nije PRIJAVLJEN. */
   private async loadForTransition(
     id: number,
-  ): Promise<{ id: number; status: string }> {
+  ): Promise<{ id: number; status: string; workOrderId: number }> {
     const existing = await this.prisma.qualityEvent.findUnique({
       where: { id },
-      select: { id: true, status: true },
+      select: { id: true, status: true, workOrderId: true },
     });
     if (!existing) throw new NotFoundException(`Događaj ${id} ne postoji.`);
     if (existing.status !== STATUS.PRIJAVLJEN)
@@ -465,47 +470,77 @@ export class QualityEventsService {
     return existing;
   }
 
-  /** Razrešavanje radnika po ID kartici (kiosk identitet). 422 ako kartica nije prepoznata. */
+  /** Radni nalog mora postojati (inače tiho vezivanje za pogrešan RN — review [0]). 422 inače. */
+  private async assertWorkOrder(
+    workOrderId: number,
+  ): Promise<{ id: number; identNumber: string }> {
+    const wo = await this.prisma.workOrder.findUnique({
+      where: { id: workOrderId },
+      select: { id: true, identNumber: true },
+    });
+    if (!wo)
+      throw new UnprocessableEntityException(
+        `Radni nalog ${workOrderId} ne postoji.`,
+      );
+    return wo;
+  }
+
+  /**
+   * Operacija (`tech_processes`) mora postojati i pripadati datom RN-u (review [6]) —
+   * inače se škart veže za operaciju tuđeg naloga. Vraća `work_center_code` (RC kod)
+   * za popunu radne jedinice. 422 ako ne postoji ili ne pripada RN-u.
+   */
+  private async assertTechProcessBelongs(
+    techProcessId: number,
+    workOrderId: number,
+  ): Promise<string | null> {
+    const tp = await this.prisma.techProcess.findUnique({
+      where: { id: techProcessId },
+      select: { id: true, workOrderId: true, workCenterCode: true },
+    });
+    if (!tp)
+      throw new UnprocessableEntityException(
+        `Operacija ${techProcessId} ne postoji.`,
+      );
+    if (tp.workOrderId !== workOrderId)
+      throw new UnprocessableEntityException(
+        `Operacija ${techProcessId} ne pripada radnom nalogu ${workOrderId}.`,
+      );
+    return tp.workCenterCode?.trim() || null;
+  }
+
+  /** Razrešavanje radnika po ID kartici (kiosk identitet); samo AKTIVAN radnik (review [8],
+   *  `active` je nullable — legacy sync, pa `not: false` a ne `= true`). 422 ako nije prepoznata. */
   private async resolveWorkerByCard(card: string): Promise<WorkerRef> {
     const trimmed = card.trim();
     const worker = await this.prisma.worker.findFirst({
-      where: { cardId: trimmed },
+      where: { cardId: trimmed, active: { not: false } },
       select: SAFE_WORKER_SELECT,
     });
     if (!worker)
       throw new UnprocessableEntityException(
-        "ID kartica nije prepoznata — prijava nije moguća.",
+        "ID kartica nije prepoznata (ili je radnik neaktivan) — prijava nije moguća.",
       );
     return worker;
   }
 
-  /** Radnik prijavljenog naloga: JWT worker ili svež lookup `users.worker_id` (kao `mine`). */
-  private async resolveActorWorkerId(actor: AuthUser): Promise<number | null> {
-    if (actor.workerId) return actor.workerId;
-    if (!actor.userId) return null;
-    const account = await this.prisma.user.findUnique({
-      where: { id: actor.userId },
-      select: { workerId: true },
-    });
-    return account?.workerId ?? null;
-  }
-
   /**
    * Radna jedinica (RC kod): eksplicitna vrednost ako je zadata; inače iz operacije
-   * (`tech_processes.work_center_code`) kad je `techProcessId` poznat; inače null.
+   * (`tech_processes.work_center_code`). Ako je `techProcessId` zadat, uvek se validira
+   * pripadnost RN-u (review [6]) — i kad je `workUnitCode` eksplicitan.
    */
   private async resolveWorkUnit(
     workUnitCode: string | null | undefined,
     techProcessId: number | null | undefined,
+    workOrderId: number,
   ): Promise<string | null> {
+    const tpCode =
+      techProcessId != null
+        ? await this.assertTechProcessBelongs(techProcessId, workOrderId)
+        : null;
     const explicit = workUnitCode?.trim();
     if (explicit) return explicit.slice(0, 20);
-    if (!techProcessId) return null;
-    const tp = await this.prisma.techProcess.findUnique({
-      where: { id: techProcessId },
-      select: { workCenterCode: true },
-    });
-    return tp?.workCenterCode?.trim() || null;
+    return tpCode;
   }
 
   /**
@@ -617,8 +652,14 @@ export class QualityEventsService {
       ...rows.map((r) => r.rejectedByUserId),
       ...rows.map((r) => r.createdByUserId),
     ]);
+    // Razreši poslovni broj RN-a (ident_number) — UI prikazuje njega, ne interni id (review [4]).
+    const workOrders = await this.resolveWorkOrders(
+      rows.map((r) => r.workOrderId),
+    );
 
-    return rows.map((r) => this.mapEvent(r, reasons, workers, users));
+    return rows.map((r) =>
+      this.mapEvent(r, reasons, workers, users, workOrders),
+    );
   }
 
   private mapEvent(
@@ -626,6 +667,7 @@ export class QualityEventsService {
     reasons: Map<number, { id: number; code: string; label: string }>,
     workers: Map<number, WorkerRef>,
     users: Map<number, { id: number; fullName: string | null }>,
+    workOrders: Map<number, { id: number; identNumber: string }>,
   ) {
     const reason =
       r.reasonCodeId != null ? (reasons.get(r.reasonCodeId) ?? null) : null;
@@ -643,6 +685,7 @@ export class QualityEventsService {
       type: r.type,
       status: r.status,
       workOrderId: r.workOrderId,
+      workOrderIdent: workOrders.get(r.workOrderId)?.identNumber ?? null,
       techProcessId: r.techProcessId,
       qty: r.qty != null ? r.qty.toString() : null,
       unit: r.unit,
@@ -665,6 +708,21 @@ export class QualityEventsService {
       createdAt: r.createdAt,
       updatedAt: r.updatedAt,
     };
+  }
+
+  /** Batch-resolve RN-ova → poslovni broj (ident_number); prazna mapa za prazan ulaz. */
+  private async resolveWorkOrders(
+    ids: (number | null | undefined)[],
+  ): Promise<Map<number, { id: number; identNumber: string }>> {
+    const uniq = uniqueIds(ids);
+    if (!uniq.length)
+      return new Map<number, { id: number; identNumber: string }>();
+    return byId(
+      await this.prisma.workOrder.findMany({
+        where: { id: { in: uniq } },
+        select: { id: true, identNumber: true },
+      }),
+    );
   }
 
   /** Batch-resolve radnika (SAFE — bez lozinki); prazna mapa za prazan ulaz. */

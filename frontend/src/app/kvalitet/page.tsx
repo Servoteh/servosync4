@@ -80,11 +80,36 @@ export default function KvalitetPage() {
   const draftScrap = mini.data?.data.skart.drafts ?? 0;
   const draftRework = mini.data?.data.dorada.drafts ?? 0;
 
-  const tabs: { key: TabKey; label: string; badge?: number }[] = [
-    { key: 'skart', label: 'Evidencija škarta', badge: draftScrap },
-    { key: 'dorada', label: 'Evidencija dorada', badge: draftRework },
-    { key: 'skart-dorada', label: 'Škart i dorada', badge: pendingCount },
-    ...(mayReadLog ? ([{ key: 'aktivnost', label: 'Aktivnost kontrole' }] as const) : []),
+  // Podnaslovi razdvajaju tri „škart" toka (review [13]): starija Excel evidencija
+  // (izveštaji NNN/YY), živi događaj-tok iz pogona, i kucanja kontrole.
+  const tabs: { key: TabKey; label: string; badge?: number; hint?: string }[] = [
+    {
+      key: 'skart',
+      label: 'Evidencija škarta',
+      badge: draftScrap,
+      hint: 'Starija evidencija izveštaja o neusaglašenosti (broj NNN/YY, digitalizacija Excel-a).',
+    },
+    {
+      key: 'dorada',
+      label: 'Evidencija dorada',
+      badge: draftRework,
+      hint: 'Starija evidencija izveštaja o neusaglašenosti (broj NNN/YY, digitalizacija Excel-a).',
+    },
+    {
+      key: 'skart-dorada',
+      label: 'Škart i dorada',
+      badge: pendingCount,
+      hint: 'Živi tok iz pogona: prijava sa kioska → potvrda/odbacivanje kontrolora → Pareto.',
+    },
+    ...(mayReadLog
+      ? ([
+          {
+            key: 'aktivnost',
+            label: 'Aktivnost kontrole',
+            hint: 'Kucanja završne kontrole sa kioska (evidencija rada), ne pojedinačni događaji.',
+          },
+        ] as const)
+      : []),
     { key: 'izvestaji', label: 'Izveštaji' },
     { key: 'dokumenti', label: 'Dokumenti' },
     { key: 'pogon', label: 'Kontrola pogon' },
@@ -105,6 +130,7 @@ export default function KvalitetPage() {
                   type="button"
                   role="tab"
                   aria-selected={active}
+                  title={t.hint}
                   onClick={() => setTab(t.key)}
                   className={cn(
                     '-mb-px flex items-center border-b-2 px-3 py-2 text-sm font-medium transition-colors focus-visible:outline-none',

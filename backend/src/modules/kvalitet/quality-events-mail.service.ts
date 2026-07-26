@@ -30,12 +30,13 @@ export class QualityEventsMailService {
     return v !== "false" && v !== "0" && v !== "off" && v !== "no";
   }
 
-  /** Prod link ka tabu (statička ruta `?tab=` + `?id=` — DESIGN §8). Baza iz SY15_APP_URL. */
-  private tabLink(id: number): string {
+  /** Prod link ka tabu (statička ruta `?tab=` — DESIGN §8). Bez `&id=` (stranica ga ne
+   *  otvara po događaju — ne obećavaj metu koju ne ispuniš, review [2]). Baza iz SY15_APP_URL. */
+  private tabLink(): string {
     const base = (
       process.env.SY15_APP_URL || "https://servosync.servoteh.com"
     ).replace(/\/+$/, "");
-    return `${base}/kvalitet?tab=skart-dorada&id=${id}`;
+    return `${base}/kvalitet?tab=skart-dorada`;
   }
 
   private esc(s: string): string {
@@ -78,7 +79,7 @@ export class QualityEventsMailService {
         workOrderId: event.workOrderId,
         workUnitCode: event.workUnitCode,
         thresholdReason: reason,
-        link: this.tabLink(event.id),
+        link: this.tabLink(),
       });
       return await this.mail.send({
         to: recipients.map((r) => r.email),

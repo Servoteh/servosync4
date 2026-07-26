@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState, type KeyboardEvent } from 'react';
+import { useEffect, useState, type KeyboardEvent } from 'react';
 import { Plus, Check, X } from 'lucide-react';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
@@ -11,9 +11,11 @@ import { Dialog } from '@/components/ui-kit/dialog';
 import { FormField, Input } from '@/components/ui-kit/form-field';
 import { Select } from '@/components/ui-kit/select';
 import { Textarea } from '@/components/ui-kit/textarea';
+import { ComboBox } from '@/components/ui-kit/combo-box';
 import { Can } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
 import { formatDate, formatDecimal, formatNumber } from '@/lib/format';
+import { useWorkOrdersLookup, type WorkOrder } from '@/api/work-orders';
 import {
   EVENT_STATUS_LABEL,
   EVENT_TYPE_LABEL,
@@ -40,7 +42,8 @@ interface Filters {
   type: '' | QualityEventType;
   status: '' | keyof typeof QUALITY_EVENT_STATUS;
   reasonCodeId: string;
-  workOrderId: string;
+  /** Izabran RN (picker po ident broju) — filter po internom id-ju (review [11]). */
+  workOrder: WorkOrder | null;
   machine: string;
   from: string;
   to: string;
@@ -50,22 +53,33 @@ const EMPTY_FILTERS: Filters = {
   type: '',
   status: '',
   reasonCodeId: '',
-  workOrderId: '',
+  workOrder: null,
   machine: '',
   from: '',
   to: '',
 };
 
-/** Novi tab „Škart i dorada" (MODULE_SPEC_kvalitet_skart_dorada §4): evidencija +
- *  red čekanja prijava (Potvrdi/Odbaci) + kontrolorski unos + Pareto. */
+/** RN prikaz u picker-u: „4698" (ident broj) + podnaslov naziv dela / predmet. */
+const woLabel = (wo: WorkOrder) => wo.identNumber;
+const woSublabel = (wo: WorkOrder) =>
+  [wo.partName, wo.externalProjectName].filter(Boolean).join(' · ') || '—';
+
+/**
+ * Novi tab „Škart i dorada" (MODULE_SPEC_kvalitet_skart_dorada §4): evidencija +
+ * red čekanja prijava (Potvrdi/Odbaci) + kontrolorski unos + Pareto.
+ */
 export function SkartDoradaTab() {
   const [view, setView] = useState<SubView>('evidencija');
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [page, setPage] = useState(1);
+  const [queuePage, setQueuePage] = useState(1);
   const [newOpen, setNewOpen] = useState(false);
   const [confirmEvent, setConfirmEvent] = useState<QualityEvent | null>(null);
   const [rejectEvent, setRejectEvent] = useState<QualityEvent | null>(null);
-  const resetPage = () => setPage(1);
+  const resetPage = () => {
+    setPage(1);
+    setQueuePage(1);
+  };
 
   const reasonsQ = useReasonCodes();
   const reasons = reasonsQ.data?.data ?? [];
@@ -75,7 +89,7 @@ export function SkartDoradaTab() {
     type: filters.type || undefined,
     status: filters.status || undefined,
     reasonCodeId: filters.reasonCodeId ? Number(filters.reasonCodeId) : undefined,
-    workOrderId: filters.workOrderId ? Number(filters.workOrderId) : undefined,
+    workOrderId: filters.workOrder?.id,
     machine: filters.machine.trim() || undefined,
     from: filters.from || undefined,
     to: filters.to || undefined,
@@ -83,7 +97,11 @@ export function SkartDoradaTab() {
 
   const evidencija = useQualityEvents(listParams, { enabled: view === 'evidencija' });
   const queue = useQualityEvents(
-    { type: filters.type || undefined, status: QUALITY_EVENT_STATUS.PRIJAVLJEN },
+    {
+      page: queuePage,
+      type: filters.type || undefined,
+      status: QUALITY_EVENT_STATUS.PRIJAVLJEN,
+    },
     { enabled: view === 'queue' },
   );
   const pareto = useQualityPareto(
@@ -91,12 +109,11 @@ export function SkartDoradaTab() {
     { enabled: view === 'pareto' },
   );
 
-  // pendingCount (badge na „Red čekanja") — bilo iz evidencije bilo iz queue meta.
   const pendingCount =
     queue.data?.meta.pendingCount ?? evidencija.data?.meta.pendingCount ?? 0;
 
   const hasFilter =
-    !!(filters.type || filters.status || filters.reasonCodeId || filters.workOrderId ||
+    !!(filters.type || filters.status || filters.reasonCodeId || filters.workOrder ||
     filters.machine || filters.from || filters.to);
 
   const setF = (p: Partial<Filters>) => {
@@ -123,6 +140,12 @@ export function SkartDoradaTab() {
 
   return (
     <div className="space-y-4">
+      <p className="text-sm text-ink-secondary">
+        Živi tok kvaliteta iz pogona: radnik prijavljuje škart/doradu sa kioska, a kontrolor
+        potvrđuje (uz razlog) ili odbacuje. U izveštaje/Pareto ulaze samo potvrđeni događaji.
+        Zaseban od starije Excel evidencije („Evidencija škarta/dorada", tabovi levo).
+      </p>
+
       {/* Sub-view + primarna akcija */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex items-center gap-1" role="tablist" aria-label="Prikaz škart/dorada">
@@ -162,7 +185,7 @@ export function SkartDoradaTab() {
         </div>
       </div>
 
-      {/* Filteri (evidencija + pareto koriste period/tip; evidencija dodatno status/razlog/RN/mašina) */}
+      {/* Filteri */}
       <div className="flex flex-wrap items-end gap-3">
         <label className="flex flex-col gap-1 text-xs text-ink-secondary">
           Tip
@@ -196,16 +219,18 @@ export function SkartDoradaTab() {
                 className="h-8 py-1 text-sm"
               />
             </label>
-            <label className="flex flex-col gap-1 text-xs text-ink-secondary">
-              RN (ID)
-              <input
-                type="number"
-                min={1}
-                value={filters.workOrderId}
-                onChange={(e) => setF({ workOrderId: e.target.value })}
-                className={filterInput + ' w-24'}
+            <div className="flex w-56 flex-col gap-1 text-xs text-ink-secondary">
+              RN (broj naloga)
+              <ComboBox<WorkOrder>
+                value={filters.workOrder}
+                onChange={(wo) => setF({ workOrder: wo })}
+                useSearch={useWorkOrdersLookup}
+                getKey={(wo) => wo.id}
+                getLabel={woLabel}
+                getSublabel={woSublabel}
+                placeholder="Kucaj RN ili naziv…"
               />
-            </label>
+            </div>
             <label className="flex flex-col gap-1 text-xs text-ink-secondary">
               Mašina / RJ
               <input
@@ -217,24 +242,28 @@ export function SkartDoradaTab() {
             </label>
           </>
         )}
-        <label className="flex flex-col gap-1 text-xs text-ink-secondary">
-          Period od
-          <input
-            type="date"
-            value={filters.from}
-            onChange={(e) => setF({ from: e.target.value })}
-            className={filterInput}
-          />
-        </label>
-        <label className="flex flex-col gap-1 text-xs text-ink-secondary">
-          Period do
-          <input
-            type="date"
-            value={filters.to}
-            onChange={(e) => setF({ to: e.target.value })}
-            className={filterInput}
-          />
-        </label>
+        {view !== 'queue' && (
+          <>
+            <label className="flex flex-col gap-1 text-xs text-ink-secondary">
+              Period od
+              <input
+                type="date"
+                value={filters.from}
+                onChange={(e) => setF({ from: e.target.value })}
+                className={filterInput}
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-ink-secondary">
+              Period do
+              <input
+                type="date"
+                value={filters.to}
+                onChange={(e) => setF({ to: e.target.value })}
+                className={filterInput}
+              />
+            </label>
+          </>
+        )}
         {hasFilter && (
           <button
             onClick={() => setF(EMPTY_FILTERS)}
@@ -256,6 +285,9 @@ export function SkartDoradaTab() {
       {view === 'queue' && (
         <QueueView
           query={queue}
+          page={queuePage}
+          onPrev={() => setQueuePage((p) => Math.max(1, p - 1))}
+          onNext={(tp) => setQueuePage((p) => Math.min(tp, p + 1))}
           onConfirm={setConfirmEvent}
           onReject={setRejectEvent}
         />
@@ -263,11 +295,7 @@ export function SkartDoradaTab() {
       {view === 'pareto' && <ParetoView query={pareto} />}
 
       {/* Dijalozi */}
-      <NewEventDialog
-        open={newOpen}
-        onClose={() => setNewOpen(false)}
-        reasons={reasonOptions}
-      />
+      <NewEventDialog open={newOpen} onClose={() => setNewOpen(false)} reasons={reasonOptions} />
       {confirmEvent && (
         <ConfirmDialog
           event={confirmEvent}
@@ -286,6 +314,10 @@ export function SkartDoradaTab() {
 
 function typeCell(r: QualityEvent) {
   return <span className="text-ink-secondary">{EVENT_TYPE_LABEL[r.type]}</span>;
+}
+function rnCell(r: QualityEvent) {
+  // Poslovni broj RN-a (ident) — ono što kontrolor prepoznaje (review [4]).
+  return <span className="tnums">{r.workOrderIdent ?? `#${r.workOrderId}`}</span>;
 }
 function qtyCell(r: QualityEvent) {
   return (
@@ -317,11 +349,11 @@ function EvidencijaView({
       header: 'Datum',
       render: (r) => <span className="tnums text-ink-secondary">{formatDate(r.reportedAt)}</span>,
     },
-    { key: 'workOrderId', header: 'RN', numeric: true, render: (r) => <span className="tnums">{r.workOrderId}</span> },
+    { key: 'rn', header: 'RN', render: rnCell },
     { key: 'qty', header: 'Količina', align: 'right', numeric: true, render: qtyCell },
     { key: 'reason', header: 'Razlog', render: (r) => r.reason?.label ?? '—' },
     { key: 'workUnit', header: 'Mašina / RJ', render: (r) => <span className="text-ink-secondary">{r.workUnitCode ?? '—'}</span> },
-    { key: 'reporter', header: 'Prijavio', render: (r) => <span className="text-ink-secondary">{r.reportedByWorker?.fullName ?? '—'}</span> },
+    { key: 'reporter', header: 'Napravio', render: (r) => <span className="text-ink-secondary">{r.reportedByWorker?.fullName ?? '—'}</span> },
     {
       key: 'status',
       header: 'Status',
@@ -352,18 +384,25 @@ function EvidencijaView({
 
 function QueueView({
   query,
+  page,
+  onPrev,
+  onNext,
   onConfirm,
   onReject,
 }: {
   query: ReturnType<typeof useQualityEvents>;
+  page: number;
+  onPrev: () => void;
+  onNext: (totalPages: number) => void;
   onConfirm: (e: QualityEvent) => void;
   onReject: (e: QualityEvent) => void;
 }) {
   const rows = query.data?.data ?? [];
+  const meta = query.data?.meta.pagination;
   const columns: Column<QualityEvent>[] = [
     { key: 'type', header: 'Tip', render: typeCell },
     { key: 'reportedAt', header: 'Datum', render: (r) => <span className="tnums text-ink-secondary">{formatDate(r.reportedAt)}</span> },
-    { key: 'workOrderId', header: 'RN', numeric: true, render: (r) => <span className="tnums">{r.workOrderId}</span> },
+    { key: 'rn', header: 'RN', render: rnCell },
     { key: 'qty', header: 'Količina', align: 'right', numeric: true, render: qtyCell },
     { key: 'reason', header: 'Razlog', render: (r) => r.reason?.label ?? <span className="text-ink-disabled">bez razloga</span> },
     { key: 'reporter', header: 'Prijavio', render: (r) => <span className="text-ink-secondary">{r.reportedByWorker?.fullName ?? '—'}</span> },
@@ -397,6 +436,12 @@ function QueueView({
         loading={query.isLoading}
         empty={<EmptyState title="Nema prijava na čekanju" hint="Red čekanja je prazan." />}
       />
+      <div className="flex items-center justify-between">
+        {meta && <span className="text-sm text-ink-secondary">{formatNumber(meta.total)} prijava</span>}
+        {meta && meta.totalPages > 1 && (
+          <Pager page={page} totalPages={meta.totalPages} onPrev={onPrev} onNext={() => onNext(meta.totalPages)} />
+        )}
+      </div>
     </div>
   );
 }
@@ -466,12 +511,29 @@ function ParetoTable({
 
 // ─────────────────────────────────────────────────────────── Dijalozi
 
-/** Ctrl+S = snimi (DESIGN_SYSTEM §8) — poziva se na keydown wrappera forme. */
-function onCtrlS(submit: () => void) {
-  return (e: KeyboardEvent) => {
+/**
+ * Tastatura forme (DESIGN_SYSTEM §8): Ctrl+S snima; Enter vodi na sledeće polje
+ * (u textarea pravi novi red; na poslednjem polju snima). Esc otkazuje — to radi
+ * sam ui-kit Dialog (default dismissable), pa dialozi NE gase dismissable.
+ */
+function formKeydown(submit: () => void) {
+  return (e: KeyboardEvent<HTMLDivElement>) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
       e.preventDefault();
       submit();
+      return;
+    }
+    if (e.key === 'Enter' && !e.shiftKey) {
+      const t = e.target as HTMLElement;
+      if (t.tagName === 'TEXTAREA' || t.tagName === 'BUTTON') return;
+      e.preventDefault();
+      const fields = Array.from(
+        e.currentTarget.querySelectorAll<HTMLElement>('input, select, textarea'),
+      ).filter((el) => !el.hasAttribute('disabled'));
+      const idx = fields.indexOf(t);
+      const next = idx >= 0 ? fields[idx + 1] : undefined;
+      if (next) next.focus();
+      else submit();
     }
   };
 }
@@ -489,7 +551,7 @@ function NewEventDialog({
 }) {
   const create = useCreateQualityEvent();
   const [type, setType] = useState<QualityEventType>(QUALITY_EVENT_TYPE.SKART);
-  const [workOrderId, setWorkOrderId] = useState('');
+  const [workOrder, setWorkOrder] = useState<WorkOrder | null>(null);
   const [qty, setQty] = useState('');
   const [unit, setUnit] = useState('kom');
   const [reasonCodeId, setReasonCodeId] = useState('');
@@ -500,7 +562,7 @@ function NewEventDialog({
   useEffect(() => {
     if (!open) return;
     setType(QUALITY_EVENT_TYPE.SKART);
-    setWorkOrderId('');
+    setWorkOrder(null);
     setQty('');
     setUnit('kom');
     setReasonCodeId('');
@@ -511,14 +573,13 @@ function NewEventDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  const valid =
-    Number(workOrderId) > 0 && Number(qty) > 0 && reasonCodeId !== '';
+  const valid = workOrder != null && Number(qty) > 0 && reasonCodeId !== '';
 
   function submit() {
-    if (!valid) return;
+    if (!valid || !workOrder) return;
     const input: CreateQualityEventInput = {
       type,
-      workOrderId: Number(workOrderId),
+      workOrderId: workOrder.id, // picker bira interni id iz poslovnog broja (review [0])
       qty: Number(qty),
       unit: unit.trim() || 'kom',
       reasonCodeId: Number(reasonCodeId),
@@ -535,7 +596,6 @@ function NewEventDialog({
       onClose={onClose}
       title="Novi unos — škart / dorada"
       size="lg"
-      dismissable={false}
       footer={
         <>
           <button onClick={onClose} className="rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2">
@@ -547,7 +607,7 @@ function NewEventDialog({
         </>
       }
     >
-      <div className="grid gap-3 sm:grid-cols-2" onKeyDown={onCtrlS(submit)}>
+      <div className="grid gap-3 sm:grid-cols-2" onKeyDown={formKeydown(submit)}>
         <FormField label="Tip" required>
           <Select
             options={[
@@ -558,8 +618,20 @@ function NewEventDialog({
             onChange={(e) => setType(e.target.value as QualityEventType)}
           />
         </FormField>
-        <FormField label="RN (ID naloga)" required hint="Interni ID radnog naloga (work_orders.id).">
-          <Input type="number" min={1} value={workOrderId} onChange={(e) => setWorkOrderId(e.target.value)} autoFocus />
+        <FormField
+          label="Radni nalog"
+          required
+          hint={workOrder ? `Nalog: ${woSublabel(workOrder)}` : 'Kucaj RN broj ili naziv dela.'}
+        >
+          <ComboBox<WorkOrder>
+            value={workOrder}
+            onChange={setWorkOrder}
+            useSearch={useWorkOrdersLookup}
+            getKey={(wo) => wo.id}
+            getLabel={woLabel}
+            getSublabel={woSublabel}
+            placeholder="Kucaj RN ili naziv…"
+          />
         </FormField>
         <FormField label="Količina" required>
           <Input type="number" min={0} step="any" value={qty} onChange={(e) => setQty(e.target.value)} />
@@ -573,7 +645,7 @@ function NewEventDialog({
         <FormField label="Mašina / radna jedinica" hint="RC kod (opciono).">
           <Input value={workUnitCode} onChange={(e) => setWorkUnitCode(e.target.value)} />
         </FormField>
-        <FormField label="Operacija (ID)" hint="tech_processes.id (opciono).">
+        <FormField label="Operacija (ID)" hint="tech_processes.id — mora pripadati izabranom RN-u (opciono).">
           <Input type="number" min={1} value={techProcessId} onChange={(e) => setTechProcessId(e.target.value)} />
         </FormField>
         <div className="sm:col-span-2">
@@ -627,9 +699,8 @@ function ConfirmDialog({
     <Dialog
       open
       onClose={onClose}
-      title={`Potvrdi prijavu — ${EVENT_TYPE_LABEL[event.type].toLowerCase()} (RN ${event.workOrderId})`}
+      title={`Potvrdi prijavu — ${EVENT_TYPE_LABEL[event.type].toLowerCase()} (RN ${event.workOrderIdent ?? event.workOrderId})`}
       size="md"
-      dismissable={false}
       footer={
         <>
           <button onClick={onClose} className="rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2">
@@ -641,7 +712,7 @@ function ConfirmDialog({
         </>
       }
     >
-      <div className="space-y-3" onKeyDown={onCtrlS(submit)}>
+      <div className="space-y-3" onKeyDown={formKeydown(submit)}>
         <FormField label="Razlog" required>
           <Select options={reasons} placeholder="— izaberi razlog —" value={reasonCodeId} onChange={(e) => setReasonCodeId(e.target.value)} />
         </FormField>
@@ -676,9 +747,8 @@ function RejectDialog({ event, onClose }: { event: QualityEvent; onClose: () => 
     <Dialog
       open
       onClose={onClose}
-      title={`Odbaci prijavu — RN ${event.workOrderId}`}
+      title={`Odbaci prijavu — RN ${event.workOrderIdent ?? event.workOrderId}`}
       size="md"
-      dismissable={false}
       footer={
         <>
           <button onClick={onClose} className="rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2">
@@ -690,7 +760,7 @@ function RejectDialog({ event, onClose }: { event: QualityEvent; onClose: () => 
         </>
       }
     >
-      <div className="space-y-3" onKeyDown={onCtrlS(submit)}>
+      <div className="space-y-3" onKeyDown={formKeydown(submit)}>
         <FormField label="Razlog odbacivanja" required hint="I odbacivanje je podatak — kratko obrazloži zašto prijava nije validna.">
           <Textarea value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} autoFocus />
         </FormField>
