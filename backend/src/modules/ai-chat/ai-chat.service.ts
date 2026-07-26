@@ -5,6 +5,7 @@ import {
   HttpException,
   HttpStatus,
   Injectable,
+  Logger,
   NotFoundException,
   ServiceUnavailableException,
   UnauthorizedException,
@@ -31,13 +32,35 @@ import {
   CHAT_INJECTION_FENCE,
   fenceUserInput,
 } from "../../common/ai/injection-fence";
-import { DATE_LINE, SYSTEM_PROMPT, toolsForScope } from "./ai-tools";
+import { DATE_LINE, SYSTEM_PROMPT } from "./ai-tools";
+import {
+  findTool,
+  isToolAllowed,
+  toolsForScope,
+  type PermissionSet,
+  type ToolDeps,
+  type ToolScope,
+} from "./tools";
+import { PrismaService } from "../../prisma/prisma.service";
+import { KadrovskaService } from "../kadrovska/kadrovska.service";
+import { applyOverrides } from "../../common/authz/effective-permission";
+import { permissionsForRoles } from "../../common/authz/role-permissions";
 import type { ChatDto } from "./dto/ai-chat.dto";
 
 /** Ko zove — potreban za merenje (`ai_usage_log.user_id`) i dnevni budžet. */
 export interface ChatActor {
   userId: number;
   role?: string | null;
+}
+
+/**
+ * Talas AI-1 — brana alata: nit (scope) + efektivne permisije korisnika.
+ * `permissions: undefined` = nepoznato → alat sa `requiredPermission` se NE
+ * nudi i NE izvršava (fail-closed; glavna baza nema RLS da to nadomesti).
+ */
+interface ToolGate {
+  scope: ToolScope;
+  permissions: PermissionSet;
 }
 
 /**
@@ -82,12 +105,18 @@ const UUID_RE =
 
 @Injectable()
 export class AiChatService {
+  private readonly logger = new Logger(AiChatService.name);
+
   constructor(
     private readonly sy15: Sy15Service,
     private readonly ai: AiProviderService,
     private readonly storage: Sy15StorageService,
     private readonly limits: AiLimitsService,
     private readonly policy: AiModelPolicyService,
+    /** Glavna baza — proizvodni alati (Talas AI-1) + `audit_log` poziva alata. */
+    private readonly prisma: PrismaService,
+    /** Postojeći servis kadrovske — alat `prisustvo_danas` ne piše svoj upit. */
+    private readonly kadrovska: KadrovskaService,
   ) {}
 
   /** Liste niti: lične (own, auth.uid()) + projektne (scope='project', vide svi) — RLS scoping. */
@@ -287,16 +316,24 @@ export class AiChatService {
 
     // Engine se poziva POSLE kreiranja niti/upisa user-poruke → greška MORA nositi
     // conversationId (paritet edge index.ts:853-859): retry ne pravi orphan niti.
+    // Talas AI-1: modelu se nude SAMO alati na koje pozivalac ima pravo. Za
+    // sy15 alate (bez `requiredPermission`) ništa se ne menja — oni su i dalje
+    // svi u ponudi, a pravo presuđuje RLS u bazi.
+    const gate: ToolGate = {
+      scope: setup.scope,
+      permissions: await this.effectivePermissions(email, actor),
+    };
+
     let out;
     try {
       out = await this.ai.chatWithTools(
         cfg,
         histForModel,
         msgForModel,
-        toolsForScope(setup.scope),
+        toolsForScope(gate.scope, gate.permissions),
         system,
         image,
-        (name, args) => this.execTool(email, name, args, ctx),
+        (name, args) => this.execTool(email, name, args, ctx, gate),
         ctx,
       );
     } catch (e) {
@@ -651,251 +688,139 @@ export class AiChatService {
   }
 
   /**
-   * Izvrši alat kroz withUserRls (SET LOCAL ROLE authenticated + GUC) — SECURITY
-   * INVOKER fn (ai_chat_sql, ai_chat_prijavi_kvar) rade tačno kao 1.0, DEFINER fn
-   * čitaju identitet iz auth.jwt(). Greška se VRAĆA modelu (ne baca) da petlja
-   * nastavi — paritet edge rpcAsUser. pretrazi_uputstva/masina_uputstvo dobijaju
-   * embedding; dodaj_uputstvo/dodaj_belesku rade backfill embedinga (best-effort).
+   * Efektivne permisije pozivaoca — ISTI izvor kao `GET /auth/me/permissions`
+   * (rola-mapa + `user_permission_overrides` u redosledu deny > grant > rola,
+   * plus tvrda brava na zarade). Čita se SVEŽE po pozivu, ne iz JWT-a, pa
+   * oduzeto pravo važi već u sledećoj poruci — bez ponovne prijave.
+   *
+   * Pad čitanja ili nepoznat pozivalac → `undefined` = FAIL-CLOSED: alati koji
+   * traže permisiju se ne nude i ne izvršavaju. Za 20 sy15 alata to ništa ne
+   * menja (oni permisiju ne traže — pravo im presuđuje RLS u bazi).
+   */
+  private async effectivePermissions(
+    email: string,
+    actor?: ChatActor,
+  ): Promise<PermissionSet> {
+    if (!actor?.role) return undefined;
+    try {
+      const overrides = await this.prisma.userPermissionOverride.findMany({
+        where: { userId: actor.userId },
+        select: { key: true, allow: true },
+      });
+      return new Set(
+        applyOverrides(permissionsForRoles([actor.role]), overrides, email),
+      );
+    } catch (e) {
+      this.logger.warn(
+        `Permisije za alate nisu učitane (fail-closed): ${e instanceof Error ? e.message : String(e)}`,
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * Izvrši alat iz KONSOLIDOVANOG registra (Talas AI-1, tačka 2). Ranije su
+   * definicija i handler bili u dva fajla bez provere poklapanja; sada je alat
+   * jedan objekat, pa „ime bez handlera" više nije moguće (pinuje
+   * `tools/tool-registry.spec.ts`).
+   *
+   * Tri koraka pre izvršenja:
+   *  1. registar zna li ime → inače `nepoznat_alat` (paritet sa ranijim putem),
+   *  2. BRANA: `isToolAllowed` (scope niti + permisija) — ne oslanjamo se na to
+   *     što alat nije PONUĐEN, jer model može da izmisli ime; za glavnu bazu
+   *     (bez RLS) je ovo jedina odbrana,
+   *  3. audit: svaki poziv ide u `audit_log` (AuditInterceptor vidi samo HTTP
+   *     mutacije, a alati se izvršavaju unutar jednog POST /ai/chat).
+   *
+   * sy15 alati i dalje idu kroz `withUserRls` (GUC identitet), a greška se
+   * VRAĆA modelu (ne baca) da petlja nastavi — paritet edge `rpcAsUser`.
    */
   private async execTool(
     email: string,
     name: string,
     args: Record<string, unknown>,
     ctx?: AiCallContext,
+    gate?: ToolGate,
   ): Promise<unknown> {
+    const started = Date.now();
+    const tool = findTool(name);
+    if (!tool) {
+      this.auditTool(email, ctx, name, args, started, "nepoznat_alat");
+      return { error: "nepoznat_alat" };
+    }
+    const scope: ToolScope = gate?.scope ?? "personal";
+    if (!isToolAllowed(tool, scope, gate?.permissions)) {
+      this.auditTool(email, ctx, name, args, started, "nema_prava");
+      return { error: "nema_prava" };
+    }
+    const deps: ToolDeps = {
+      sy15: this.sy15,
+      ai: this.ai,
+      prisma: this.prisma,
+      kadrovska: this.kadrovska,
+    };
     try {
-      if (name === "go_istorija") {
-        // Paritet edge: rpcAsUser('go_ledger', {p_employee_id}) pa kompaktor.
-        // go_ledger VRAĆA jsonb → $queryRaw (void RPC bi išao kroz $executeRaw).
-        const out = await this.rpc(
-          email,
-          Prisma.sql`SELECT go_ledger(${this.uuidOrNull(args.employee_id)}::uuid) AS result`,
-        );
-        return reshapeGoLedger(out);
-      }
-      if (name === "pretrazi_uputstva") {
-        const upit = this.str(args.upit);
-        const emb = await this.ai.embed(upit, this.embedCtx(ctx));
-        return await this.rpc(
-          email,
-          Prisma.sql`SELECT ai_chat_pretrazi_uputstva(${upit}, ${emb}) AS result`,
-        );
-      }
-      if (name === "masina_uputstvo") {
-        const pitanje = this.str(args.pitanje);
-        const emb = await this.ai.embed(pitanje, this.embedCtx(ctx));
-        return await this.rpc(
-          email,
-          Prisma.sql`SELECT ai_chat_masina_uputstvo(${this.str(args.masina)}, ${pitanje}, ${emb}) AS result`,
-        );
-      }
-      if (name === "dodaj_uputstvo") {
-        const out = await this.rpc(
-          email,
-          Prisma.sql`SELECT ai_chat_dodaj_uputstvo(${this.str(args.naslov)}, ${this.str(args.sadrzaj)},
-            ${this.strOrNull(args.modul)}, ${this.strOrNull(args.kljucne_reci)},
-            ${args.vidljivost === "admin_hr" ? "admin_hr" : null}) AS result`,
-        );
-        await this.backfill(
-          email,
-          ctx,
-          "ai_uputstva",
-          out,
-          `${this.str(args.naslov)}\n${this.str(args.kljucne_reci)}\n${this.str(args.sadrzaj)}`,
-        );
-        return out;
-      }
-      if (name === "dodaj_belesku") {
-        const out = await this.rpc(
-          email,
-          Prisma.sql`SELECT ai_chat_dodaj_belesku(${this.str(args.projekat)},
-            ${this.strOrNull(args.naslov)}, ${this.str(args.tekst)}) AS result`,
-        );
-        await this.backfill(
-          email,
-          ctx,
-          "ai_project_notes",
-          out,
-          `${this.str(args.naslov)}\n${this.str(args.tekst)}`,
-        );
-        return out;
-      }
-      const sql = this.rpcSql(name, args);
-      if (!sql) return { error: "nepoznat_alat" };
-      return await this.rpc(email, sql);
-    } catch {
+      const out = await tool.execute(args, { email, call: ctx, deps });
+      this.auditTool(email, ctx, name, args, started, "ok");
+      return out;
+    } catch (e) {
+      this.logger.warn(
+        `Alat ${name} nije uspeo: ${e instanceof Error ? e.message : String(e)}`,
+      );
+      this.auditTool(email, ctx, name, args, started, "greska");
       // Paritet edge: greška alata se vraća modelu (petlja nastavlja), ne 500.
       return { error: "alat_neuspesan" };
     }
   }
 
-  /** SQL po alatu (tipizovani pozicioni parametri) — zatvoren skup imena. */
-  private rpcSql(name: string, a: Record<string, unknown>): Prisma.Sql | null {
-    switch (name) {
-      case "trazi_zaposlenog":
-        return Prisma.sql`SELECT ai_chat_employee_lookup(${this.strOrNull(a.ime)}) AS result`;
-      case "go_saldo":
-        return Prisma.sql`SELECT ai_chat_go_saldo(${this.uuidOrNull(a.employee_id)}::uuid) AS result`;
-      case "sati_mesec":
-        return Prisma.sql`SELECT ai_chat_sati(${this.uuidOrNull(a.employee_id)}::uuid, ${this.intOrNull(a.godina)}::int, ${this.intOrNull(a.mesec)}::int) AS result`;
-      case "moj_tim":
-        return Prisma.sql`SELECT ai_chat_moj_tim() AS result`;
-      case "odsustva_lista":
-        return Prisma.sql`SELECT ai_chat_odsustva(${this.uuidOrNull(a.employee_id)}::uuid, ${this.intOrNull(a.godina)}::int, ${this.strOrNull(a.tip)}) AS result`;
-      case "go_zahtevi":
-        return Prisma.sql`SELECT ai_chat_go_zahtevi(${this.uuidOrNull(a.employee_id)}::uuid, ${this.intOrNull(a.godina)}::int) AS result`;
-      case "go_pregled":
-        return Prisma.sql`SELECT ai_chat_go_pregled(${this.uuidOrNull(a.employee_id)}::uuid) AS result`;
-      case "sql_upit":
-        return Prisma.sql`SELECT ai_chat_sql(${this.str(a.upit)}) AS result`;
-      case "opis_pozicije":
-        return Prisma.sql`SELECT ai_chat_opis_pozicije(${this.strOrNull(a.pozicija)}) AS result`;
-      case "inzenjering_pretraga":
-        return Prisma.sql`SELECT ai_chat_inzenjering(${this.str(a.upit)}, ${this.strOrNull(a.projekat)}) AS result`;
-      case "projekat_info":
-        return Prisma.sql`SELECT ai_chat_projekat_info(${this.str(a.projekat)}) AS result`;
-      case "pretrazi_znanje":
-        return Prisma.sql`SELECT ai_chat_pretrazi_znanje(${this.strOrNull(a.projekat)}, ${this.str(a.upit)}) AS result`;
-      case "masina_info":
-        return Prisma.sql`SELECT ai_chat_masina_info(${this.str(a.masina)}) AS result`;
-      case "kvar_istorija":
-        return Prisma.sql`SELECT ai_chat_kvar_istorija(${this.strOrNull(a.masina)}, ${this.strOrNull(a.upit)}) AS result`;
-      case "prijavi_kvar":
-        return Prisma.sql`SELECT ai_chat_prijavi_kvar(${this.str(a.masina)}, ${this.str(a.naslov)},
-          ${this.strOrNull(a.opis)}, ${a.ozbiljnost ? this.str(a.ozbiljnost) : "minor"},
-          ${a.bezbednosni_rizik === true}) AS result`;
-      default:
-        return null;
-    }
-  }
-
-  /** Izvrši ai_chat_* RPC kroz withUserRls; vrati `result` polje. */
-  private async rpc(email: string, sql: Prisma.Sql): Promise<unknown> {
-    return this.sy15.withUserRls(email, async (tx) => {
-      const rows = await tx.$queryRaw<{ result: unknown }[]>(sql);
-      return rows[0]?.result ?? null;
-    });
-  }
-
-  /** Backfill embedinga posle dodaj_uputstvo/belesku (BYPASSRLS = service role; best-effort). */
-  private async backfill(
+  /**
+   * Poziv alata → `audit_log` (Talas AI-1, tačka 4). Fire-and-forget, kao i
+   * `AuditInterceptor`: audit NIKAD ne sme da obori alat, pa je i sinhroni pad
+   * (npr. nedostupna glavna baza) progutan. Argumenti se skraćuju — `sql_upit`
+   * ume da pošalje ceo SELECT, a `audit_log` nije mesto za to.
+   */
+  private auditTool(
     email: string,
     ctx: AiCallContext | undefined,
-    table: "ai_uputstva" | "ai_project_notes",
-    out: unknown,
-    text: string,
-  ): Promise<void> {
-    const o = out as { ok?: boolean; id?: string | number } | null;
-    if (!o?.ok || !o.id) return;
-    const emb = await this.ai.embed(text, this.embedCtx(ctx));
-    if (!emb) return;
-    const id = String(o.id);
-    const tableSql =
-      table === "ai_uputstva"
-        ? Prisma.sql`ai_uputstva`
-        : Prisma.sql`ai_project_notes`;
-    await this.sy15
-      .withUser(email, (tx) =>
-        tx.$executeRaw(
-          Prisma.sql`UPDATE ${tableSql} SET embedding = ${emb}::vector WHERE id = ${id}::uuid`,
-        ),
-      )
-      .catch(() => {
-        /* embedding je best-effort — bez njega radi FTS */
-      });
-  }
-
-  /** Embedding se meri kao zaseban modul (`embed`), ali nosi istog korisnika. */
-  private embedCtx(ctx?: AiCallContext): AiCallContext {
-    return { module: AI_MODULE.EMBED, userId: ctx?.userId ?? null };
-  }
-
-  /** Sigurna koercija args-a modela (string/broj/bool → tekst; objekat → JSON). */
-  private str(v: unknown): string {
-    if (v == null) return "";
-    if (typeof v === "string") return v;
-    if (typeof v === "number" || typeof v === "boolean") return String(v);
-    return JSON.stringify(v);
-  }
-  private strOrNull(v: unknown): string | null {
-    const s = this.str(v);
-    return s ? s : null;
-  }
-  private uuidOrNull(v: unknown): string | null {
-    return this.strOrNull(v);
-  }
-  private intOrNull(v: unknown): number | null {
-    if (v == null || v === "") return null;
-    const n = Number(v);
-    return Number.isFinite(n) ? Math.trunc(n) : null;
-  }
-}
-
-/* ── go_istorija: sažmi go_ledger izlaz u kompaktan, DD.MM.YYYY oblik za model
-   (VERBATIM port edge goDay/goPer/reshapeGoLedger, index.ts:470-500). ── */
-
-type GoPeriod = { od?: string; do?: string; dana?: number };
-type GoLedgerBlock = {
-  godina?: number;
-  pravo?: number;
-  iskorisceno?: number;
-  planirano?: number;
-  preostalo?: number;
-  preneto?: number | null;
-  zaradjeno_do_danas?: number | null;
-  iskorisceno_periodi?: GoPeriod[];
-  ranije_evidentirano?: number;
-  planirano_periodi?: GoPeriod[];
-  istorija_unosi?: {
-    days?: number;
-    kind?: string;
-    dates?: string;
-    comment?: string | null;
-  }[];
-};
-
-function goDay(iso: unknown): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ""));
-  return m ? `${m[3]}.${m[2]}.${m[1]}.` : String(iso || "");
-}
-
-function goPer(p: GoPeriod): string {
-  const od = goDay(p?.od);
-  const do_ = goDay(p?.do);
-  const lab = !p?.do || p.od === p.do ? od : `${od}–${do_}`;
-  return `${lab} (${p?.dana} d)`;
-}
-
-function reshapeGoLedger(blocks: unknown): unknown {
-  if (!Array.isArray(blocks)) return blocks;
-  return (blocks as GoLedgerBlock[]).map((b) => {
-    const o: Record<string, unknown> = {
-      godina: b.godina,
-      pravo: b.pravo,
-      iskorisceno: b.iskorisceno,
-      planirano: b.planirano,
-      preostalo: b.preostalo,
-    };
-    if (b.preneto != null) o.preneto = b.preneto;
-    if (b.zaradjeno_do_danas != null)
-      o.zaradjeno_do_danas = b.zaradjeno_do_danas;
-    if (Array.isArray(b.iskorisceno_periodi) && b.iskorisceno_periodi.length)
-      o.iskorisceni_dani = b.iskorisceno_periodi.map(goPer);
-    if (b.ranije_evidentirano)
-      o.ranije_evidentirano_dana = b.ranije_evidentirano;
-    if (Array.isArray(b.planirano_periodi) && b.planirano_periodi.length)
-      o.planirani_odobreni_dani = b.planirano_periodi.map(goPer);
-    const stari = Array.isArray(b.istorija_unosi) ? b.istorija_unosi : [];
-    if (stari.length) {
-      o.stara_evidencija = stari
-        .filter((e) => e?.dates)
-        .map((e) => ({
-          dana: e.days,
-          tip: e.kind,
-          datumi: e.dates,
-          napomena: e.comment || undefined,
-        }));
+    name: string,
+    args: Record<string, unknown>,
+    startedAt: number,
+    ishod: "ok" | "greska" | "nema_prava" | "nepoznat_alat",
+  ): void {
+    try {
+      void this.prisma.auditLog
+        .create({
+          data: {
+            actorUserId: ctx?.userId ?? null,
+            actorUsername: email || null,
+            action: "AI_TOOL",
+            entityType: "ai-tool",
+            entityId: name.slice(0, 100),
+            afterData: {
+              argumenti: this.shortArgs(args),
+              trajanje_ms: Date.now() - startedAt,
+              ishod,
+            },
+          },
+        })
+        .catch((e: unknown) =>
+          this.logger.warn(
+            `Audit alata ${name} nije upisan: ${e instanceof Error ? e.message : String(e)}`,
+          ),
+        );
+    } catch {
+      /* audit ne sme da obori poziv alata */
     }
-    return o;
-  });
+  }
+
+  /** Argumenti alata za audit: JSON skraćen na 500 znakova. */
+  private shortArgs(args: Record<string, unknown>): string {
+    let json: string;
+    try {
+      json = JSON.stringify(args ?? {});
+    } catch {
+      json = "[nečitljivi argumenti]";
+    }
+    return json.length > 500 ? `${json.slice(0, 500)}…` : json;
+  }
 }

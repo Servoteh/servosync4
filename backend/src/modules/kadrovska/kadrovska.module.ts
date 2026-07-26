@@ -20,5 +20,8 @@ import { KadrovskaGridAutofillService } from "./grid-autofill.service";
     KadrovskaMutationsService,
     KadrovskaGridAutofillService,
   ],
+  // Talas AI-1: alat `prisustvo_danas` (AiChatModule) zove `attendanceNow` —
+  // poslovna logika prisustva ostaje ovde, AI je samo još jedan pozivalac.
+  exports: [KadrovskaService],
 })
 export class KadrovskaModule {}

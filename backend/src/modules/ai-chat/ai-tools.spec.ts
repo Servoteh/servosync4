@@ -1,4 +1,10 @@
-import { DATE_LINE, SYSTEM_PROMPT, TOOL_DEFS, toolsForScope } from "./ai-tools";
+import {
+  DATE_LINE,
+  SYSTEM_PROMPT,
+  SY15_TOOLS,
+  TOOL_DEFS,
+  toolsForScope,
+} from "./ai-tools";
 
 /**
  * VERBATIM guard (§C): sprečava da se AI prompt/opisi alata ponovo skrate. Pinuje
@@ -78,7 +84,12 @@ describe("ai-tools — verbatim 1.0 prompt/opisi (anti-truncation)", () => {
     expect(names.indexOf("projekat_info")).toBe(
       names.indexOf("go_istorija") + 1,
     );
-    expect(TOOL_DEFS).toHaveLength(20);
+    // Talas AI-1: registar više nije samo sy15 — ali sy15 blok ostaje TAČNO 20
+    // alata i drži prvih 20 mesta u nizu (redosled je load-bearing za model).
+    expect(SY15_TOOLS).toHaveLength(20);
+    expect(TOOL_DEFS.slice(0, 20).map((t) => t.name)).toEqual(
+      SY15_TOOLS.map((t) => t.name),
+    );
   });
 
   it("prijavi_kvar: potvrda pre poziva + nema_prava", () => {
@@ -103,6 +114,11 @@ describe("ai-tools — verbatim 1.0 prompt/opisi (anti-truncation)", () => {
     expect(proj).not.toContain("go_saldo");
     expect(proj).not.toContain("sql_upit");
     expect(proj).not.toContain("go_istorija"); // lični alat — NIJE u deljenoj niti
-    expect(toolsForScope("personal")).toHaveLength(TOOL_DEFS.length);
+    // Bez skupa permisija nudi se TAČNO starih 20 (proizvodni alati traže pravo)
+    // — stari put kroz `toolsForScope` ostaje bit-identičan.
+    expect(toolsForScope("personal")).toHaveLength(SY15_TOOLS.length);
+    // Proizvodni alati (Talas AI-1) NISU u deljenoj projektnoj niti.
+    expect(proj).not.toContain("nadji_radni_nalog");
+    expect(proj).not.toContain("prisustvo_danas");
   });
 });

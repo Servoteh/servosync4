@@ -8,6 +8,8 @@ import type { Sy15Service } from "../../common/sy15/sy15.service";
 import type { AiProviderService } from "../../common/ai/ai-provider.service";
 import type { AiLimitsService } from "../../common/ai/ai-limits.service";
 import type { AiModelPolicyService } from "../../common/ai/ai-model-policy.service";
+import type { PrismaService } from "../../prisma/prisma.service";
+import type { KadrovskaService } from "../kadrovska/kadrovska.service";
 
 /**
  * Talas AI-0 (stavka 5): dnevni limit je sada budžet ULAZNIH tokena iz
@@ -25,6 +27,27 @@ function limitsMock(used = 0, limit = 200_000): AiLimitsService {
     chatBudget: jest.fn().mockResolvedValue(budget),
     assertChat: jest.fn().mockResolvedValue(budget),
   } as unknown as AiLimitsService;
+}
+
+/**
+ * Talas AI-1: servis dobija glavnu bazu (proizvodni alati + `audit_log` poziva
+ * alata) i postojeći `KadrovskaService` (alat `prisustvo_danas`). Podrazumevani
+ * mok NEMA nijednu permisiju u `user_permission_overrides` i `audit_log` upis
+ * mu je no-op — tj. ponašanje 20 sy15 alata ostaje bit-identično.
+ */
+function prismaMock(overrides: { key: string; allow: boolean }[] = []) {
+  return {
+    userPermissionOverride: {
+      findMany: jest.fn().mockResolvedValue(overrides),
+    },
+    auditLog: { create: jest.fn().mockResolvedValue({ id: 1 }) },
+  } as unknown as PrismaService;
+}
+
+function kadrovskaMock(rows: unknown[] = []) {
+  return {
+    attendanceNow: jest.fn().mockResolvedValue({ data: rows }),
+  } as unknown as KadrovskaService;
 }
 
 /**
@@ -93,6 +116,8 @@ describe("AiChatService — withUserRls most (leak guard)", () => {
       {} as never,
       limitsMock(),
       policyMock(),
+      prismaMock(),
+      kadrovskaMock(),
     );
     return { svc, sy15, tx };
   }
@@ -172,6 +197,8 @@ describe("AiChatService.signImage (path traversal)", () => {
       storage as never,
       limitsMock(),
       policyMock(),
+      prismaMock(),
+      kadrovskaMock(),
     );
     return { svc, storage };
   }
@@ -240,6 +267,8 @@ describe("AiChatService.execTool dispatch (alat → RPC ime)", () => {
       storage as never,
       limitsMock(),
       policyMock(),
+      prismaMock(),
+      kadrovskaMock(),
     );
     const exec = (name: string, args: Record<string, unknown>) =>
       (
@@ -382,6 +411,8 @@ describe("AiChatService.chat (remaining/limit + upstream conversationId)", () =>
       {} as never,
       limits,
       policy,
+      prismaMock(),
+      kadrovskaMock(),
     );
     return { svc, ai, sy15 };
   }
@@ -418,7 +449,11 @@ describe("AiChatService.chat (remaining/limit + upstream conversationId)", () =>
       tokensOut: 2,
     });
     // Registar vraća opus-5; engineConfig (mok) nudi „m" iz env-a.
-    const { svc } = make(chatWithTools, limitsMock(), policyMock("claude-opus-5"));
+    const { svc } = make(
+      chatWithTools,
+      limitsMock(),
+      policyMock("claude-opus-5"),
+    );
     await svc.chat("u@servoteh.com", { message: "cao", engine: "claude" });
     // 1. argument chatWithTools je EngineCfg — model MORA biti iz registra,
     // inače je izbor u Podešavanjima mrtvo slovo.
@@ -427,9 +462,12 @@ describe("AiChatService.chat (remaining/limit + upstream conversationId)", () =>
   });
 
   it("prazan registar → Claude engine ostaje na env/default modelu", async () => {
-    const chatWithTools = jest
-      .fn()
-      .mockResolvedValue({ reply: "ok", model: "m", tokensIn: 1, tokensOut: 1 });
+    const chatWithTools = jest.fn().mockResolvedValue({
+      reply: "ok",
+      model: "m",
+      tokensIn: 1,
+      tokensOut: 1,
+    });
     const { svc } = make(chatWithTools);
     await svc.chat("u@servoteh.com", { message: "cao", engine: "claude" });
     const cfgArg = chatWithTools.mock.calls[0][0] as { model: string };
@@ -561,6 +599,8 @@ describe("AiChatService.chat (screenContext u system prompt)", () => {
       {} as never,
       limitsMock(),
       policyMock(),
+      prismaMock(),
+      kadrovskaMock(),
     );
     // system prompt = 5. argument chatWithTools (cfg, hist, msg, tools, system, ...)
     const systemArg = () => chatWithTools.mock.calls[0][4] as string;
@@ -628,6 +668,8 @@ describe("AiChatService.chat (screenContext u system prompt)", () => {
       {} as never,
       limitsMock(),
       policyMock(),
+      prismaMock(),
+      kadrovskaMock(),
     );
     await svc.chat("u@servoteh.com", {
       message: "cao",
@@ -637,5 +679,191 @@ describe("AiChatService.chat (screenContext u system prompt)", () => {
     expect(chatWithTools.mock.calls[0][4] as string).not.toContain(
       "TRENUTNI EKRAN KORISNIKA",
     );
+  });
+});
+
+/**
+ * TALAS AI-1 — brana alata nad GLAVNOM bazom + audit poziva alata.
+ *
+ * Glavna baza NEMA RLS (0 politika na 176 tabela), pa je permisija korisnika
+ * JEDINA odbrana. Zato se proverava na DVA mesta i oba su ovde pinovana:
+ *   • šta se NUDI modelu (`chatWithTools` 4. argument),
+ *   • šta se sme IZVRŠITI (`execTool` — model ume da izmisli ime alata).
+ * Treći deo: svaki poziv alata ide u `audit_log` (AuditInterceptor vidi samo
+ * HTTP mutacije, a alati se izvršavaju unutar jednog POST /ai/chat).
+ */
+describe("AiChatService — permisijska brana alata + audit (Talas AI-1)", () => {
+  const CONV = "3b241101-e2bb-4255-8caf-4136c566a962";
+
+  /** `audit_log` upis iz moka — tipizovano, da assert ne radi nad `any`. */
+  interface AuditRow {
+    action: string;
+    entityType: string;
+    entityId: string;
+    actorUserId: number | null;
+    actorUsername: string | null;
+    afterData: { argumenti: string; ishod: string; trajanje_ms: number };
+  }
+  const auditCreate = (prisma: PrismaService): jest.Mock =>
+    (prisma as unknown as { auditLog: { create: jest.Mock } }).auditLog.create;
+  const auditData = (prisma: PrismaService, call: number): AuditRow =>
+    (auditCreate(prisma).mock.calls[call] as [{ data: AuditRow }])[0].data;
+
+  function makeChat(overrides: { key: string; allow: boolean }[] = []) {
+    const tx = {
+      $queryRaw: jest
+        .fn()
+        .mockResolvedValueOnce([{ uid: "U1" }])
+        .mockResolvedValueOnce([{ id: CONV }])
+        .mockResolvedValueOnce([
+          { full_name: "Pera Perić", position: "Tehnolog" },
+        ]),
+      $executeRaw: jest.fn().mockResolvedValue(1),
+    };
+    const sy15 = {
+      withUser: jest.fn((_e: string, fn: (t: unknown) => Promise<unknown>) =>
+        fn(tx),
+      ),
+      withUserRls: jest.fn(),
+    };
+    const chatWithTools = jest.fn().mockResolvedValue({
+      reply: "ok",
+      model: "m",
+      tokensIn: 10,
+      tokensOut: 5,
+    });
+    const ai = {
+      engineConfig: jest.fn().mockReturnValue({
+        engine: "openai",
+        kind: "openai",
+        url: "u",
+        key: "k",
+        model: "m",
+      }),
+      chatWithTools,
+      generateTitle: jest.fn().mockResolvedValue("Naslov"),
+    };
+    const prisma = prismaMock(overrides);
+    const svc = new AiChatService(
+      sy15 as unknown as Sy15Service,
+      ai as unknown as AiProviderService,
+      {} as never,
+      limitsMock(),
+      policyMock(),
+      prisma,
+      kadrovskaMock(),
+    );
+    /** 4. argument `chatWithTools` = šeme alata koje su STVARNO ponuđene modelu. */
+    const ponudjeni = (): string[] => {
+      const call = chatWithTools.mock.calls[0] as unknown[];
+      return (call[3] as { name: string }[]).map((t) => t.name);
+    };
+    return { svc, prisma, ponudjeni, chatWithTools };
+  }
+
+  it("tehnolog (ima rn.read) DOBIJA proizvodne alate", async () => {
+    const { svc, ponudjeni } = makeChat();
+    await svc.chat("u@servoteh.com", { message: "gde je RN 9400" }, undefined, {
+      userId: 7,
+      role: "tehnolog",
+    });
+    expect(ponudjeni()).toContain("nadji_radni_nalog");
+    expect(ponudjeni()).toContain("istorija_crteza");
+    expect(ponudjeni()).toContain("go_saldo"); // sy15 alati nepromenjeni
+  });
+
+  it("deny override na rn.read SKIDA alat iz ponude (deny > rola)", async () => {
+    const { svc, ponudjeni } = makeChat([{ key: "rn.read", allow: false }]);
+    await svc.chat("u@servoteh.com", { message: "gde je RN 9400" }, undefined, {
+      userId: 7,
+      role: "tehnolog",
+    });
+    expect(ponudjeni()).not.toContain("nadji_radni_nalog");
+    // …a alat koji zavisi od druge permisije ostaje.
+    expect(ponudjeni()).toContain("istorija_crteza");
+  });
+
+  it("bez actor-a (nepoznat pozivalac) nudi se SAMO starih 20 — fail-closed", async () => {
+    const { svc, ponudjeni } = makeChat();
+    await svc.chat("u@servoteh.com", { message: "zdravo" });
+    expect(ponudjeni()).toHaveLength(20);
+    expect(ponudjeni()).not.toContain("nadji_radni_nalog");
+  });
+
+  it("izvršenje bez permisije → nema_prava, upit nad glavnom bazom se NE pokreće", async () => {
+    const { svc, prisma } = makeChat();
+    const out = await (
+      svc as unknown as {
+        execTool: (
+          e: string,
+          n: string,
+          a: Record<string, unknown>,
+          c?: unknown,
+          g?: unknown,
+        ) => Promise<unknown>;
+      }
+    ).execTool(
+      "u@servoteh.com",
+      "nadji_radni_nalog",
+      { upit: "x" },
+      undefined,
+      {
+        scope: "personal",
+        permissions: new Set<string>(),
+      },
+    );
+    expect(out).toEqual({ error: "nema_prava" });
+    expect(
+      (prisma as unknown as { $queryRaw?: jest.Mock }).$queryRaw,
+    ).toBeUndefined();
+  });
+
+  it("svaki poziv alata se beleži u audit_log (ime, korisnik, trajanje, ishod)", async () => {
+    const { svc, prisma } = makeChat();
+    await (
+      svc as unknown as {
+        execTool: (
+          e: string,
+          n: string,
+          a: Record<string, unknown>,
+          c?: unknown,
+          g?: unknown,
+        ) => Promise<unknown>;
+      }
+    ).execTool(
+      "u@servoteh.com",
+      "nadji_radni_nalog",
+      { upit: "tajna" },
+      { module: "chat", userId: 7 },
+      { scope: "personal", permissions: new Set<string>() },
+    );
+    const create = auditCreate(prisma);
+    expect(create).toHaveBeenCalledTimes(1);
+    const data = auditData(prisma, 0);
+    expect(data).toMatchObject({
+      action: "AI_TOOL",
+      entityType: "ai-tool",
+      entityId: "nadji_radni_nalog",
+      actorUserId: 7,
+      actorUsername: "u@servoteh.com",
+    });
+    expect(data.afterData.ishod).toBe("nema_prava");
+    expect(data.afterData.argumenti).toContain("tajna");
+    expect(typeof data.afterData.trajanje_ms).toBe("number");
+  });
+
+  it("nepoznato ime alata: nepoznat_alat + audit trag (halucinacija modela)", async () => {
+    const { svc, prisma } = makeChat();
+    const out = await (
+      svc as unknown as {
+        execTool: (
+          e: string,
+          n: string,
+          a: Record<string, unknown>,
+        ) => Promise<unknown>;
+      }
+    ).execTool("u@servoteh.com", "izmisljen_alat", {});
+    expect(out).toEqual({ error: "nepoznat_alat" });
+    expect(auditData(prisma, 0).afterData.ishod).toBe("nepoznat_alat");
   });
 });
