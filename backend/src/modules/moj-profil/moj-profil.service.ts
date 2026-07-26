@@ -1362,6 +1362,27 @@ export class MojProfilService {
     });
   }
 
+  /** Radnik štiklira SOPSTVENI zadatak uvođenja (profile_set_my_onboarding_task —
+   *  odluka 26.07): RPC presuđuje vlasništvo (aktivan run + moj employee), done ↔
+   *  pending sa done_at/done_by; 'skipped' zadatak RPC ne dira (not_found). */
+  setMyOnboardingTask(email: string, id: string, done: boolean) {
+    return this.withUserMapped(email, async (tx) => {
+      const rows = await tx.$queryRaw<{ result: string }[]>(
+        Prisma.sql`SELECT profile_set_my_onboarding_task(${id}::uuid, ${done}::boolean) AS result`,
+      );
+      const r = rows[0]?.result ?? null;
+      if (r === "no_employee")
+        throw new UnprocessableEntityException(
+          "Nismo pronašli vaš zaposlenički profil.",
+        );
+      if (r === "not_found")
+        throw new NotFoundException(
+          "Zadatak nije pronađen u vašem aktivnom uvođenju.",
+        );
+      return { data: { status: r } };
+    });
+  }
+
   /** Moja odsustva (absences) — tekuća godina (preseca godinu; arhivirana izbačena). */
   absences(email: string) {
     const year = new Date().getFullYear();

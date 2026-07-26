@@ -49,6 +49,8 @@ import {
   PrenosDto,
   ReorderDto,
   ReorderRangDto,
+  MyAkcijaStatusDto,
+  MyPripremaDto,
   RsvpDto,
   AiSummaryDto,
   SetAiModelDto,
@@ -607,6 +609,28 @@ export class SastanciController {
     @Body() dto: RsvpDto,
   ) {
     return this.sastanci.setMyRsvp(req.user.email, id, dto);
+  }
+
+  /** Moja priprema (odluka Nenada 26.07): učesnik sebi upisuje pripremljen/priprema
+   *  pod read-nivoom — pandan RSVP-u; RPC presuđuje učešće (bez sastanci.edit). */
+  @Post(":id/moja-priprema")
+  mojaPriprema(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: MyPripremaDto,
+  ) {
+    return this.sastanci.setMyPriprema(req.user.email, id, dto);
+  }
+
+  /** Status SOPSTVENE akcione tačke (odluka 26.07) pod read-nivoom — RPC presuđuje
+   *  vlasništvo (odgovoran_email); pun patch i dalje traži sastanci.edit. */
+  @Post("akcije/:id/moj-status")
+  mojStatusAkcije(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: MyAkcijaStatusDto,
+  ) {
+    return this.sastanci.setMyAkcijaStatus(req.user.email, id, dto);
   }
 
   @Post(":id/mark-prisutni")

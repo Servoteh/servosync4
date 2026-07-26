@@ -145,6 +145,19 @@ export class RsvpDto {
   @IsOptional() @IsIn(["dolazim", "ne_dolazim"]) status?: string;
 }
 
+/** Status SOPSTVENE akcione tačke (odluka Nenada 26.07 — pod sastanci.read;
+ *  SECURITY DEFINER RPC presuđuje vlasništvo po odgovoran_email). */
+export class MyAkcijaStatusDto {
+  @IsIn(["otvoren", "u_toku", "zavrsen"]) status!: string;
+}
+
+/** SOPSTVENA priprema (odluka 26.07): samo pripremljen + tekst — pozvan/prisutan
+ *  i dalje vodi zapisničar (su_update RLS netaknut). */
+export class MyPripremaDto {
+  @IsOptional() @IsBoolean() pripremljen?: boolean;
+  @IsOptional() @IsString() @MaxLength(4000) priprema?: string;
+}
+
 /* ── Učesnici ── */
 
 export class UcesnikInputDto {

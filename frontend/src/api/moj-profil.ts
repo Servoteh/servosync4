@@ -438,6 +438,22 @@ export function useOnboarding() {
     queryFn: () => apiFetch<{ data: OnboardingData | null; meta?: EnvelopeMeta }>(`${BASE}/onboarding`),
   });
 }
+/** ✅ Radnik štiklira SOPSTVENI onboarding zadatak (odluka 26.07): done ↔ pending.
+ *  Server (SECURITY DEFINER RPC) presuđuje vlasništvo; 'skipped' ostaje HR-u. */
+export function useSetMyOnboardingTask() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { id: string; done: boolean }) =>
+      apiFetch<{ data: { status: string } }>(`${BASE}/onboarding/tasks/${v.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ done: v.done }),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: KEYS.onboarding });
+    },
+  });
+}
+
 /** 🗓 Moja odsustva (tekuća godina). */
 export function useAbsences() {
   return useQuery({

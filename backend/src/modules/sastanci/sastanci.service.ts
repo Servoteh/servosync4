@@ -44,6 +44,8 @@ import type {
   PrenosDto,
   ReorderDto,
   ReorderRangDto,
+  MyAkcijaStatusDto,
+  MyPripremaDto,
   RsvpDto,
   SetAiModelDto,
   SetZapisnikDatumDto,
@@ -1329,6 +1331,34 @@ export class SastanciService {
         Prisma.sql`SELECT sastanci_set_my_rsvp(${id}::uuid, ${dto.status ?? null}) AS result`,
       );
       return { data: { rsvp: rows[0]?.result ?? null } };
+    });
+  }
+
+  /** Status SOPSTVENE akcije (sastanci_set_my_akcija_status — odluka 26.07): RPC
+   *  presuđuje vlasništvo po odgovoran_email; zavrsen → zatvoren_* snapshot u bazi. */
+  setMyAkcijaStatus(email: string, id: string, dto: MyAkcijaStatusDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const rows = await tx.$queryRaw<{ result: string }[]>(
+        Prisma.sql`SELECT sastanci_set_my_akcija_status(${id}::uuid, ${dto.status}::text) AS result`,
+      );
+      if ((rows[0]?.result ?? null) === "not_owner")
+        throw new ForbiddenException(
+          "Niste odgovorni za ovu akciju — status menja zapisničar.",
+        );
+      return { data: { status: rows[0]?.result ?? null } };
+    });
+  }
+
+  /** Moja priprema (sastanci_set_my_priprema — odluka 26.07): samo pripremljen +
+   *  tekst; prazan tekst čisti polje; pozvan/prisutan ostaje zapisničaru. */
+  setMyPriprema(email: string, id: string, dto: MyPripremaDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const rows = await tx.$queryRaw<{ result: string }[]>(
+        Prisma.sql`SELECT sastanci_set_my_priprema(${id}::uuid, ${dto.pripremljen ?? null}::boolean, ${dto.priprema ?? null}::text) AS result`,
+      );
+      if ((rows[0]?.result ?? null) === "not_participant")
+        throw new ForbiddenException("Niste učesnik ovog sastanka.");
+      return { data: { ok: true } };
     });
   }
 

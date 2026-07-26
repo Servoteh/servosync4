@@ -13,6 +13,7 @@ import {
   ClipboardCheck,
   Clock,
   Cog,
+  GraduationCap,
   DraftingCompass,
   FileText,
   Hammer,
@@ -154,6 +155,13 @@ const CARDS: MobEntry[] = [
     label: 'Moji sati',
     hint: 'mesečni sati + primedba HR-u',
     icon: Clock,
+  },
+  {
+    // Ekran sam rešava prazno stanje (nema aktivnog run-a) — kartica za sve.
+    href: '/mob/onboarding',
+    label: 'Uvođenje',
+    hint: 'moji zadaci uvođenja — štikliraj sam',
+    icon: GraduationCap,
   },
   {
     href: '/mob/odobravanja',

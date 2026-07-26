@@ -70,12 +70,21 @@ Moja istorija) + kartice za sve novo. Popravka: `mob/sastanci` write dugmad iza
    magacioner potvrđuje i vraća umesto njega (`reversi.manage`). Mobilni je već bio
    takav; desktop defekt (dugmad „Brzi povraćaj"/„Vrati rezni" vidljiva svima → 403)
    ispravljen istog dana — sva tri dugmeta u „Moji alati" iza `reversi.manage`.
-2. **Onboarding self-check**: treba nov `PATCH /v1/profile/onboarding/tasks/:id`
-   (profile.self, „own run" RLS) — danas štiklira samo HR (`kadrovska.manage`).
-3. **Sastanci**: (a) promena statusa SOPSTVENE akcione tačke pod `sastanci.read`?
-   (b) upis sopstvene pripreme pod `read` (kao RSVP)? Danas oba `sastanci.edit`.
-4. **Reversi LZO grupisanje**: mobilni deli po `group_label` regex-om `/lzo|zaštit/i` —
-   potvrditi kako su grupe stvarno označene u podacima.
+2. ✅ **Onboarding self-check — PRESUĐENO 26.07 (Nenad): DA.** Implementirano:
+   `PATCH /v1/profile/onboarding/tasks/:id` + sy15 RPC `profile_set_my_onboarding_task`
+   (SECURITY DEFINER; vlasništvo = zadatak u AKTIVNOM run-u mog zaposlenog; done ↔
+   pending; 'skipped' ostaje HR-u) + ekran `/mob/onboarding` sa hub karticom.
+3. ✅ **Sastanci — PRESUĐENO 26.07 (Nenad): DA za oba.** Implementirano kroz sy15
+   RPC-ove po RSVP obrascu (RLS politike NETAKNUTE): `sastanci_set_my_akcija_status`
+   (status SOPSTVENE akcije, otvoren/u_toku/zavrsen) i `sastanci_set_my_priprema`
+   (samo pripremljen + tekst; pozvan/prisutan ostaje zapisničaru). Nove read-level
+   rute `POST /akcije/:id/moj-status` i `POST /:id/moja-priprema`; `/mob/za-mene`
+   status dugmad za sve, `/mob/sastanci` vlasnički status + „Moja priprema" blok.
+   SQL: `backend/docs/design/authz-snapshots/odluke23-self-rpc-2026-07-26.sql`
+   (primenjen na živu sy15 26.07).
+4. ⏸ **Reversi LZO grupisanje — ODLOŽENO 26.07 (Nenad)**: biće različite grupe
+   proizvoda, radi se tek POSLE migracije iz BigBit-a; reversi se do tada ne koristi
+   kompletno — postojeće regex grupisanje ostaje kao privremeno.
 
 ## 5. Mapa modula: 1.0 `/m` → 3.0 `/mob`
 

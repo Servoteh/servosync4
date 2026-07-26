@@ -26,6 +26,7 @@ import {
   AckDocumentDto,
   OpenSelfAssessmentDto,
   ReviseVacationDto,
+  OnboardingTaskSelfDto,
   SaveHoursRemarkDto,
   SaveSelfAnswersDto,
   SaveSelfScoresDto,
@@ -148,6 +149,18 @@ export class MojProfilController {
   @Get("onboarding")
   onboarding(@Req() req: AuthedRequest) {
     return this.profil.onboarding(req.user.email);
+  }
+
+  /** Radnik štiklira SOPSTVENI zadatak uvođenja (odluka Nenada 26.07): done ↔
+   *  pending. Vlasništvo (zadatak u AKTIVNOM run-u tog zaposlenog) presuđuje
+   *  SECURITY DEFINER RPC; 'skipped' ostaje HR-u kroz kadr endpoint. */
+  @Patch("onboarding/tasks/:id")
+  onboardingTaskSelf(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: OnboardingTaskSelfDto,
+  ) {
+    return this.profil.setMyOnboardingTask(req.user.email, id, dto.done);
   }
 
   /** Moja odsustva (absences, tekuća godina). */

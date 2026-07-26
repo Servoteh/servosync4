@@ -135,6 +135,12 @@ export class SubmitSelfAssessmentDto {
  * Paritet 1.0 gridRemarks.saveMonthRemark: prazan `text` + postojeći red = brisanje (servis
  * odlučuje). employee_id = rev_current_employee_id() ∨ resolveEmployee (self-scope kroz GUC).
  */
+/** Radnik štiklira SOPSTVENI onboarding zadatak (odluka Nenada 26.07): done ↔
+ *  pending; 'skipped' ostaje HR-u (kadr endpoint). Vlasništvo presuđuje RPC. */
+export class OnboardingTaskSelfDto {
+  @IsBoolean() done!: boolean;
+}
+
 export class SaveHoursRemarkDto extends ProfileIdempotentDto {
   @IsInt() @Min(2000) @Max(2100) year!: number;
   @IsInt() @Min(1) @Max(12) month!: number;

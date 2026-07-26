@@ -13,11 +13,10 @@
  * pa ekran (i hub kartica) moraju nositi isti gate — bez njega bi korisnik dobio
  * tri 403 i prazan ekran.
  *
- * ⚠️ PERMISIJE: `PATCH /sastanci/akcije/:id` traži `sastanci.edit` → dugmad za
- * promenu statusa akcije se prikazuju SAMO uz `can(SASTANCI_EDIT)`; bez toga je
- * status čist prikaz. RSVP (`POST /sastanci/:id/rsvp`) je read-level i sme svako.
- * Popuštanje edit-a na „svoju akciju" je poslovna odluka koja NIJE doneta —
- * ne implementirati je ovde (vidi PLAN_MOB_3.0 Faza 2).
+ * PERMISIJE (odluka Nenada 26.07): status SOPSTVENE akcije menja svako pod
+ * read-nivoom kroz `POST /sastanci/akcije/:id/moj-status` (server presuđuje
+ * vlasništvo po odgovoran_email) — lista ovde je ionako filtrirana na moje.
+ * RSVP (`POST /sastanci/:id/rsvp`) je read-level kao i ranije.
  *
  * Static export: čista statička ruta, bez `[id]` i bez `useSearchParams`.
  */
@@ -25,7 +24,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { Check, ChevronLeft, ChevronRight, Info, X } from 'lucide-react';
+import { Check, ChevronLeft, ChevronRight, X } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { PERMISSIONS } from '@/lib/permissions';
 import { EmptyState } from '@/components/ui-kit/empty-state';
@@ -34,7 +33,7 @@ import { ApiError } from '@/api/client';
 import {
   useAkcije,
   useMyMeetings,
-  usePatchAkcija,
+  useSetMyAkcijaStatus,
   useSetMyRsvp,
   useTeme,
   type AkcijaRow,
@@ -94,30 +93,16 @@ export default function MobZaMenePage() {
 
   // Podaci se montiraju TEK posle gejta — inače bi upiti krenuli sa praznim
   // `odgovoranEmail`/`predlozioEmail` (nescopovan `/akcije`) dok /auth/me stiže.
-  return (
-    <ZaMene
-      myEmail={user.email}
-      userLabel={user.fullName ?? user.email}
-      canEdit={can(PERMISSIONS.SASTANCI_EDIT)}
-    />
-  );
+  return <ZaMene myEmail={user.email} userLabel={user.fullName ?? user.email} />;
 }
 
-function ZaMene({
-  myEmail,
-  userLabel,
-  canEdit,
-}: {
-  myEmail: string;
-  userLabel: string;
-  canEdit: boolean;
-}) {
+function ZaMene({ myEmail, userLabel }: { myEmail: string; userLabel: string }) {
   const meetingsQ = useMyMeetings();
   const akcijeQ = useAkcije({ odgovoranEmail: myEmail });
   const temeQ = useTeme({ predlozioEmail: myEmail });
 
   const rsvpM = useSetMyRsvp();
-  const patchM = usePatchAkcija();
+  const statusM = useSetMyAkcijaStatus();
   const [busyId, setBusyId] = useState<string | null>(null);
 
   /** Lokalni odjek RSVP izbora: `GET /sastanci/my` vraća sirov `sastanci` red BEZ
@@ -150,16 +135,13 @@ function ZaMene({
   async function setStatus(a: AkcijaRow, status: string) {
     setBusyId(a.id);
     try {
-      await patchM.mutateAsync({ id: a.id, patch: { status } });
+      await statusM.mutateAsync({
+        id: a.id,
+        status: status as 'otvoren' | 'u_toku' | 'zavrsen',
+      });
       toast('Status akcije izmenjen.');
     } catch (e) {
-      toast(
-        e instanceof ApiError && e.status === 403
-          ? 'Nemaš pravo izmene akcija — javi zapisničaru.'
-          : e instanceof ApiError
-            ? e.message
-            : 'Izmena statusa nije uspela.',
-      );
+      toast(e instanceof ApiError ? e.message : 'Izmena statusa nije uspela.');
     } finally {
       setBusyId(null);
     }
@@ -201,13 +183,6 @@ function ZaMene({
             Moje akcije{akcije.length > 0 ? ` · ${akcije.length}` : ''}
           </h2>
 
-          {!canEdit && akcije.length > 0 && (
-            <p className="flex items-start gap-2 rounded-panel border border-line bg-surface-2 px-3 py-2 text-xs text-ink-secondary">
-              <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
-              Promena statusa ide preko zapisničara.
-            </p>
-          )}
-
           {akcijeQ.isLoading ? (
             <p className="py-6 text-center text-sm text-ink-secondary">Učitavanje…</p>
           ) : akcijeQ.isError ? (
@@ -237,9 +212,8 @@ function ZaMene({
                     </span>
                   </p>
 
-                  {canEdit && (
-                    <div className="mt-2 flex gap-2">
-                      {SETTABLE.map((s) => (
+                  <div className="mt-2 flex gap-2">
+                    {SETTABLE.map((s) => (
                         <button
                           key={s.v}
                           disabled={busyId === a.id}
@@ -253,8 +227,7 @@ function ZaMene({
                           {s.l}
                         </button>
                       ))}
-                    </div>
-                  )}
+                  </div>
 
                   {a.sastanak_id && (
                     <Link

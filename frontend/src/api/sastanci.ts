@@ -858,6 +858,23 @@ export const useSetMyRsvp = () =>
     post(`/${v.id}/rsvp`, { status: v.status ?? null }),
   );
 
+/** Status SOPSTVENE akcije pod read-nivoom (odluka 26.07) — server presuđuje
+ *  vlasništvo po odgovoran_email; tuđa akcija → 403. */
+export const useSetMyAkcijaStatus = () =>
+  useSastanciMutation<{ id: string; status: 'otvoren' | 'u_toku' | 'zavrsen' }>((v) =>
+    post(`/akcije/${v.id}/moj-status`, { status: v.status }),
+  );
+
+/** Moja priprema (odluka 26.07): pripremljen + tekst pod read-nivoom — pandan
+ *  RSVP-u; pozvan/prisutan i dalje vodi zapisničar. */
+export const useSetMyPriprema = () =>
+  useSastanciMutation<{ id: string; pripremljen?: boolean; priprema?: string }>((v) =>
+    post(`/${v.id}/moja-priprema`, {
+      ...(v.pripremljen !== undefined ? { pripremljen: v.pripremljen } : {}),
+      ...(v.priprema !== undefined ? { priprema: v.priprema } : {}),
+    }),
+  );
+
 export const useMarkPrisutni = () =>
   useSastanciMutation<{ id: string }>((v) => post(`/${v.id}/mark-prisutni`));
 

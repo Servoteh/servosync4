@@ -1,6 +1,7 @@
 import {
   ConflictException,
   ForbiddenException,
+  NotFoundException,
   UnprocessableEntityException,
 } from "@nestjs/common";
 import { MojProfilService } from "./moj-profil.service";
@@ -313,5 +314,32 @@ describe("MojProfilService R2 mutacije", () => {
     expect(text).toContain("INSERT INTO assessment_scores");
     expect(text).toContain("::int"); // competence_id je int, ne uuid (kadrovska paritet)
     expect(text).toContain("ON CONFLICT");
+  });
+});
+
+// ---------- Onboarding self-check (odluka Nenada 26.07) ----------
+describe("setMyOnboardingTask (odluka 26.07)", () => {
+  it("done=true zove RPC i vraća novi status", async () => {
+    const { svc, tx } = makeSvc();
+    tx.$queryRaw.mockResolvedValueOnce([{ result: "done" }]);
+    const r = await svc.setMyOnboardingTask("radnik@servoteh.rs", ID, true);
+    expect(qText(tx.$queryRaw)).toContain("profile_set_my_onboarding_task");
+    expect(r).toEqual({ data: { status: "done" } });
+  });
+
+  it("not_found (tuđ/skipped/neaktivan run) → 404", async () => {
+    const { svc, tx } = makeSvc();
+    tx.$queryRaw.mockResolvedValueOnce([{ result: "not_found" }]);
+    await expect(
+      svc.setMyOnboardingTask("radnik@servoteh.rs", ID, true),
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it("no_employee → 422", async () => {
+    const { svc, tx } = makeSvc();
+    tx.$queryRaw.mockResolvedValueOnce([{ result: "no_employee" }]);
+    await expect(
+      svc.setMyOnboardingTask("radnik@servoteh.rs", ID, false),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
   });
 });
