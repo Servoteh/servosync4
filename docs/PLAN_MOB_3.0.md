@@ -1,6 +1,9 @@
 # PLAN — ServoSync 3.0 mobilna aplikacija (`/mob`)
 
-**Datum:** 25.07.2026 · **Odluka:** Nenad (posle istraživanja stanja) · **Status:** Faza 0 u izradi
+**Datum:** 25.07.2026 · **Odluka:** Nenad (posle istraživanja stanja) ·
+**Status: FAZE 0–2 + SVE ODLUKE ŽIVE (26.07); ⏸ PAUZA do posle 03.08 (Nenad na odmoru) —
+BEZ flipa `/m`, svi ostaju na 1.0; Faza 3 tek po povratku.**
+**Kompletan presek stanja + šta posle: [MOB_STANJE_2026-07-26.md](MOB_STANJE_2026-07-26.md).**
 
 ## 1. Odluka
 
