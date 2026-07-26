@@ -47,7 +47,7 @@ samo na LAN `:3000` bake-u). `/mob` je isti origin kao `/m`, pa APK WebView pri 
 | Faza | Sadržaj | Status |
 |---|---|---|
 | **0** | `/mob` hub (kartice po pravima) + seoba 9 gotovih 3.0 ekrana sa `/m/*` na `/mob/*` (stari `/m/*` = redirect stubovi za LAN) | u izradi |
-| **1** | Prečice sa 1.0 huba na `/mob` ekrane sa `#ss_token` (obrazac Kadrovska → `/mob/prisustvo`); modul po modul, trenutno reverzibilno. Prioritet: **praćenje** (1.0 `/m/pracenje` čita zamrznute sy15 podatke — plan F5 O8) | čeka Fazu 0 |
+| **1** | Prečice sa 1.0 huba na `/mob` ekrane sa `#ss_token` (obrazac Kadrovska → `/mob/prisustvo`); modul po modul, trenutno reverzibilno. Prioritet: **praćenje** (1.0 `/m/pracenje` čita zamrznute sy15 podatke — plan F5 O8) | **ŽIVA 25.07** — 1.0 `9de4d6f`: hub kartica „ServoSync 3.0" (svi) + `/m/pracenje` auto-forward na `/mob/pracenje` (`location.replace`, ručno dugme fallback, beg `localStorage ss2_cutover='off'`); deploy verifikovan na pages.dev i kroz `/m` proxy |
 | **2** | Popuna pariteta: odsustva/GO, za-mene, profil, sati, odobravanja, onboarding, reversi, kadrovska, projektovanje, magacin ekstre (batch/lookup/istorija), sastanci write dopune, app-lock | plan |
 | **3** | Nova Capacitor ljuska za 3.0 (`server.url → /mob`), push (FCM), pa flip `/m` → redirect na `/mob` i gašenje pages.dev (poklapa se sa RADNI_PLAN Blok B4 + Blok D) | kraj |
 
@@ -83,6 +83,19 @@ samo na LAN `:3000` bake-u). `/mob` je isti origin kao `/m`, pa APK WebView pri 
 Obim 1.0 mobilnog (popis 25.07): 25 ruta, ~9.400 LOC ekrana + ~1.900 CSS + ~950 mobilnih
 servisa; **bez sopstvenog backenda** (sve reuse desktop servisa) — zato je 3.0 mobilni ekran
 po pravilu tanak omotač nad postojećim komponentama (dokaz: `/m/montaza` = 61 linija).
+
+## 5a. Deploy 1.0 (naučeno u Fazi 1, 25.07)
+
+- **Živa produkcijska grana 1.0 repoa = `cutover/front-repoint`** (main je zastareo i divergiran
+  — 210/148 komita razlike; NE spajati bez posebne odluke).
+- Push na cutover granu pravi samo **preview** deployment (branch alias). **Produkcija
+  pages.dev** = GH workflow **„Deploy Cloudflare Pages"** `workflow_dispatch` nad
+  `cutover/front-repoint` sa input-om **`promote_to_production=true`** (dodato `9e77b51`;
+  dodaje `--branch=main` wrangler-u).
+- ⚠️ **Nikad lokalni `vite build` + wrangler deploy za 1.0**: lokalni `.env` i dalje pokazuje
+  na ugašeni cloud Supabase — samo CI build sa GH secrets.
+- SSO prelaz 1.0→3.0: `src/lib/ss2Go.js` (klon `goLivePrisustvo`); auto-forward UVEK sa
+  `replace: true` (back-petlja).
 
 ## 6. Otvorena pitanja
 
