@@ -7,6 +7,17 @@ import {
 import { plainToInstance } from "class-transformer";
 import { validate } from "class-validator";
 import { SastanciService } from "./sastanci.service";
+import type { AiModelPolicyService } from "../../common/ai/ai-model-policy.service";
+
+/** Prazan registar modela — `resolve` vraća prosleđen fallback (Talas AI-0). */
+const aiPolicyStub = (): AiModelPolicyService =>
+  ({
+    resolve: jest
+      .fn()
+      .mockImplementation((_t: string, fb: string) =>
+        Promise.resolve({ model: fb, effort: null }),
+      ),
+  }) as unknown as AiModelPolicyService;
 import type { Sy15Service } from "../../common/sy15/sy15.service";
 import {
   ArhivaPdfDto,
@@ -128,10 +139,12 @@ function makeSvc() {
     remove: jest.fn().mockResolvedValue(undefined),
   };
   const ai = { summarize: jest.fn().mockResolvedValue({ summary: "s" }) };
+  // Talas AI-0: prazan registar → `resolve` vraća fallback (sy15 podešavanje).
   const svc = new SastanciService(
     sy15 as unknown as Sy15Service,
     storage as never,
     ai as never,
+    aiPolicyStub(),
   );
   return { svc, sy15, tx, storage, ai };
 }

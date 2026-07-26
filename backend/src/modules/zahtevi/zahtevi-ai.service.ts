@@ -710,13 +710,17 @@ export class ZahteviAiService {
    * bucket-a, pozovi transcribe, upiši transcript. Immutable: ne prepisuje postojeći.
    * Pozива se iz ZahteviService.transcribeAttachment posle row-scope/allow provera.
    */
-  async retryTranscribe(attachment: {
-    id: number;
-    bucket: string;
-    storagePath: string;
-    contentType: string;
-    transcript: string | null;
-  }) {
+  async retryTranscribe(
+    attachment: {
+      id: number;
+      bucket: string;
+      storagePath: string;
+      contentType: string;
+      transcript: string | null;
+    },
+    /** Ko je tražio retry — za `ai_usage_log.user_id` i dnevni STT budžet. */
+    userId?: number | null,
+  ) {
     if (attachment.transcript)
       throw new UnprocessableEntityException(
         "Prilog već ima transkript (immutable od nastanka).",
@@ -728,7 +732,7 @@ export class ZahteviAiService {
     const res = await this.ai.transcribe({
       bytes,
       mime: attachment.contentType,
-      ctx: { module: AI_MODULE.STT, userId: null },
+      ctx: { module: AI_MODULE.STT, userId: userId ?? null },
     });
     const updated = await this.prisma.changeRequestAttachment.update({
       where: { id: attachment.id },

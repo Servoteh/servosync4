@@ -29,6 +29,13 @@ const ENGINE_KEY = 'ss_ai_engine';
 /** Ispod ovoliko preostalih ULAZNIH tokena prikazujemo upozorenje (10% od 200k). */
 const LOW_BUDGET_WARN = 20_000;
 
+/** Preostali budžet u ljudskom obliku — ispod 1000 ne zaokružujemo na „~0k". */
+function budgetLabel(remaining: number): string {
+  return remaining < 1000
+    ? 'još manje od 1k tokena danas'
+    : `još ~${Math.round(remaining / 1000)}k tokena danas`;
+}
+
 function getEngine(): Engine {
   if (typeof window === 'undefined') return 'openai';
   const v = localStorage.getItem(ENGINE_KEY) as Engine | null;
@@ -105,12 +112,14 @@ export function AiChat({
   const messagesQ = useAiMessages(activeId);
   const messages = messagesQ.data?.data ?? [];
 
-  // Talas AI-0 (7a): nudimo SAMO engine-e koje server ima. Dok upit ne stigne (ili
-  // ako padne) ostaje statički spisak — bolje ponuditi previše nego ništa.
-  const availableEngines: Engine[] = useMemo(
-    () => enginesQ.data?.data.map((e) => e.engine) ?? ENGINES,
-    [enginesQ.data],
-  );
+  // Talas AI-0 (7a): nudimo SAMO engine-e koje server ima. Dok upit traje ne
+  // prikazujemo ništa (inače bi mrtva dugmad bljesnula pa nestala); na GREŠKU
+  // upita padamo na statički spisak — bolje ponuditi previše nego ništa.
+  const availableEngines: Engine[] = useMemo(() => {
+    if (enginesQ.data) return enginesQ.data.data.map((e) => e.engine);
+    return enginesQ.isError ? ENGINES : [];
+  }, [enginesQ.data, enginesQ.isError]);
+  const enginesResolved = enginesQ.data != null || enginesQ.isError;
 
   useEffect(() => setEngine(getEngine()), []);
   // Ako je zapamćeni engine nekonfigurisan, prebaci se na prvi dostupan.
@@ -330,7 +339,7 @@ export function AiChat({
               {/* Talas AI-0: budžet je u ulaznim tokenima; -1 = bez limita (admin).
                   Upozorenje tek ispod 10% dnevnog budžeta. */}
               {remaining != null && remaining >= 0 && remaining <= LOW_BUDGET_WARN
-                ? ` · još ~${Math.round(remaining / 1000)}k tokena danas`
+                ? ` · ${budgetLabel(remaining)}`
                 : ''}
             </div>
           </div>
@@ -345,6 +354,11 @@ export function AiChat({
             </button>
           )}
           <div className="flex flex-wrap gap-1">
+            {enginesResolved && availableEngines.length === 0 && (
+              <span className="rounded-control px-2 py-1 text-xs text-status-warn">
+                AI nije konfigurisan
+              </span>
+            )}
             {availableEngines.map((e) => (
               <button
                 key={e}

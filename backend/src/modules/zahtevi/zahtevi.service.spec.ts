@@ -9,6 +9,7 @@ import {
 import { PrismaService } from "../../prisma/prisma.service";
 import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
 import { AiProviderService } from "../../common/ai/ai-provider.service";
+import { AiLimitsService } from "../../common/ai/ai-limits.service";
 import { ZahteviService, STATUS_TRANSITIONS } from "./zahtevi.service";
 import { ZahteviAiService } from "./zahtevi-ai.service";
 import { ZahteviDecisionsService } from "./zahtevi-decisions.service";
@@ -273,6 +274,12 @@ describe("ZahteviService", () => {
         { provide: ZahteviAiService, useValue: zahteviAi },
         { provide: ZahteviDecisionsService, useValue: decisions },
         { provide: ZahteviMailService, useValue: mail },
+        // Talas AI-0: diktiranje u Zahtevima troši isti dnevni STT budžet.
+        // Ovde je uvek „ispod limita" — poseban spec pokriva 429.
+        {
+          provide: AiLimitsService,
+          useValue: { assertStt: jest.fn().mockResolvedValue(undefined) },
+        },
       ],
     }).compile();
     service = module.get(ZahteviService);

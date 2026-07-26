@@ -102,6 +102,34 @@ describe("AiUsageService (ledger)", () => {
       }),
     ).resolves.toBeUndefined();
   });
+
+  it("keširan ulaz se ne naplaćuje dvaput (svež + 0,1× čitanje + 1,25× upis)", async () => {
+    const prisma = prismaMock();
+    const svc = new AiUsageService(prisma as unknown as PrismaService);
+    await svc.record({
+      module: "chat",
+      provider: "anthropic",
+      model: "claude-sonnet-4-6", // $3 ulaz / $15 izlaz po MTok
+      tokensIn: 1_000_000, // PUN ulaz…
+      tokensCacheRead: 800_000, // …od čega keš-čitanje
+      tokensCacheWrite: 100_000, // …i keš-upis
+      tokensOut: 0,
+      durationMs: 1,
+      outcome: "ok",
+    });
+    // svež 100k×$3 + 800k×$3×0,1 + 100k×$3×1,25 = 0,30 + 0,24 + 0,375 = 0,915
+    const data = createdData(prisma) as { estCostUsd: Prisma.Decimal };
+    expect(String(data.estCostUsd)).toBe("0.915");
+  });
+
+  it("čitanje limita je FAIL-OPEN: pad baze → 0 potrošeno, ne 500", async () => {
+    const prisma = prismaMock();
+    prisma.$queryRaw.mockRejectedValue(new Error("db down"));
+    const svc = new AiUsageService(prisma as unknown as PrismaService);
+    await expect(svc.dailyInputTokens(1, "chat")).resolves.toBe(0);
+    await expect(svc.dailyCalls(1, "refine")).resolves.toBe(0);
+    await expect(svc.dailySttSeconds(1, 10, 60)).resolves.toBe(0);
+  });
 });
 
 describe("AiLimitsService (dnevni budžeti)", () => {
@@ -110,10 +138,11 @@ describe("AiLimitsService (dnevni budžeti)", () => {
     process.env = { ...ENV };
   });
 
-  function make(dailyTokens = 0, dailyCalls = 0) {
+  function make(dailyTokens = 0, dailyCalls = 0, sttSeconds = 0) {
     const usage = {
       dailyInputTokens: jest.fn().mockResolvedValue(dailyTokens),
       dailyCalls: jest.fn().mockResolvedValue(dailyCalls),
+      dailySttSeconds: jest.fn().mockResolvedValue(sttSeconds),
     } as unknown as AiUsageService;
     return new AiLimitsService(usage);
   }
@@ -149,15 +178,26 @@ describe("AiLimitsService (dnevni budžeti)", () => {
     await expect(svc.assertChat(1, "admin")).resolves.toBeDefined();
   });
 
-  it("STT: 30 min/dan = 30 poziva × prosečnih 60 s (dokumentovana procena)", async () => {
-    const svc = make(0, 29);
+  it("STT: budžet je 30 min/dan, potrošnja stiže kao SEKUNDE iz ledgera", async () => {
+    const svc = make(0, 0, 1740);
     const b = await svc.sttBudget(1, "sef");
     expect(b.limit).toBe(1800);
     expect(b.used).toBe(1740);
+    expect(b.unit).toBe("sekunde");
     await expect(svc.assertStt(1, "sef")).resolves.toBeDefined();
-    await expect(make(0, 30).assertStt(1, "sef")).rejects.toMatchObject({
+    await expect(make(0, 0, 1800).assertStt(1, "sef")).rejects.toMatchObject({
       status: 429,
     });
+  });
+
+  it("STT sekunde: audio tokeni / stopa, uz procenu za pozive bez `usage`", async () => {
+    const prisma = prismaMock();
+    // 1200 audio tokena (=120 s pri 10 tok/s) + 2 poziva bez usage (2×60 s).
+    prisma.$queryRaw.mockResolvedValue([
+      { tok: BigInt(1200), unknown_calls: BigInt(2) },
+    ]);
+    const usage = new AiUsageService(prisma as unknown as PrismaService);
+    await expect(usage.dailySttSeconds(1, 10, 60)).resolves.toBe(240);
   });
 
   it("refine: 100 poziva/dan", async () => {

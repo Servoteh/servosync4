@@ -219,6 +219,96 @@ describe("Talas AI-0 · 3. retry + fallback", () => {
     expect(bodyOf(fetchMock, 2).model).toBe("claude-haiku-4-5");
   });
 
+  it("fallback telo se gradi PO POKUŠAJU: adaptive primarni → haiku bez `thinking` i sa svojim max_tokens", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockReturnValueOnce(errStatus(529))
+      .mockReturnValueOnce(errStatus(529))
+      .mockReturnValueOnce(anthropicEnd("rezime iz rezerve"));
+    global.fetch = fetchMock;
+    process.env.ANTHROPIC_API_KEY = "k";
+    const svc = new AiProviderService();
+    const out = await svc.summarize("claude-opus-4-8", "sys", "sadržaj");
+    expect(out.summary).toBe("rezime iz rezerve");
+
+    // Primarni (podržava adaptive) — thinking poslat, max_tokens sa rezervom.
+    const primary = bodyOf(fetchMock, 0);
+    expect(primary.model).toBe("claude-opus-4-8");
+    expect(primary.thinking).toEqual({ type: "adaptive" });
+    expect(primary.max_tokens as number).toBeGreaterThan(4000);
+
+    // Fallback (haiku-4-5 NE podržava adaptive) — bez thinking polja i bez rezerve.
+    // Bez ove ispravke haiku bi dobio primarno telo → 400 → fallback mrtav.
+    const fb = bodyOf(fetchMock, 2);
+    expect(fb.model).toBe("claude-haiku-4-5");
+    expect(fb.thinking).toBeUndefined();
+    expect(fb.max_tokens).toBe(4000);
+  });
+
+  it("obrnut smer: haiku primarni → fallback koji razmišlja dobija SVOJU rezervu", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockReturnValueOnce(errStatus(503))
+      .mockReturnValueOnce(errStatus(503))
+      .mockReturnValueOnce(anthropicEnd("ok"));
+    global.fetch = fetchMock;
+    process.env.ANTHROPIC_API_KEY = "k";
+    process.env.AI_FALLBACK_CLAUDE_MODEL = "claude-sonnet-5";
+    const svc = new AiProviderService();
+    await svc.summarize("claude-haiku-4-5", "sys", "sadržaj");
+    const primary = bodyOf(fetchMock, 0);
+    expect(primary.thinking).toBeUndefined();
+    expect(primary.max_tokens).toBe(4000);
+    const fb = bodyOf(fetchMock, 2);
+    expect(fb.model).toBe("claude-sonnet-5");
+    expect(fb.thinking).toEqual({ type: "adaptive" });
+    expect(fb.max_tokens as number).toBeGreaterThan(4000);
+    delete process.env.AI_FALLBACK_CLAUDE_MODEL;
+  });
+
+  it("datirani snapshot i goli ID su ISTI model — nema uzaludnog fallback-a", async () => {
+    const fetchMock = jest.fn().mockReturnValue(errStatus(503));
+    global.fetch = fetchMock;
+    process.env.ANTHROPIC_API_KEY = "k";
+    const svc = new AiProviderService();
+    await expect(
+      svc.extractWithTool({
+        // Trijaža koristi baš ovaj datirani ID; fallback je `claude-haiku-4-5`.
+        model: "claude-haiku-4-5-20251001",
+        system: "S",
+        tool: { name: "t", description: "d", input_schema: { type: "object" } },
+        content: [],
+      }),
+    ).rejects.toMatchObject({ status: 502 });
+    // Samo primarni par pokušaja (2), bez drugog para na isti model.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("200 sa neispravnim telom je prolazna greška (retry), ne tihi uspeh", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockReturnValueOnce(
+        Promise.resolve({
+          ok: true,
+          json: () => Promise.reject(new Error("Unexpected end of JSON input")),
+        } as unknown as Response),
+      )
+      .mockReturnValueOnce(anthropicEnd("ok posle retry-ja"));
+    global.fetch = fetchMock;
+    const svc = new AiProviderService();
+    const out = await svc.chatWithTools(
+      cfg("claude-sonnet-4-6"),
+      [],
+      "p",
+      [],
+      "s",
+      null,
+      jest.fn(),
+    );
+    expect(out.reply).toBe("ok posle retry-ja");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it("400 (greška zahteva) → BEZ retry-ja i BEZ fallback-a, odmah 502", async () => {
     const fetchMock = jest.fn().mockReturnValue(errStatus(400));
     global.fetch = fetchMock;
@@ -322,6 +412,126 @@ describe("Talas AI-0 · 4. merenje u ai_usage_log", () => {
       { module: "chat", userId: 1 },
     );
     expect(out.reply).toBe("ok");
+  });
+});
+
+describe("Talas AI-0 · odbijanje i sečenje u chatu (review [3])", () => {
+  it("stop_reason 'refusal' → 422 sa ljudskom porukom, ne 502", async () => {
+    global.fetch = jest.fn().mockReturnValue(
+      okJson({
+        stop_reason: "refusal",
+        content: [],
+        usage: { input_tokens: 5, output_tokens: 0 },
+      }),
+    );
+    const svc = new AiProviderService();
+    await expect(
+      svc.chatWithTools(
+        cfg("claude-sonnet-4-6"),
+        [],
+        "p",
+        [],
+        "s",
+        null,
+        jest.fn(),
+      ),
+    ).rejects.toMatchObject({ status: 422 });
+  });
+
+  it("stop_reason 'max_tokens' → 422 sa jasnom porukom, ne prazan 502", async () => {
+    global.fetch = jest.fn().mockReturnValue(
+      okJson({
+        stop_reason: "max_tokens",
+        content: [{ type: "text", text: "poce" }],
+        usage: { input_tokens: 5, output_tokens: 1200 },
+      }),
+    );
+    const svc = new AiProviderService();
+    await expect(
+      svc.chatWithTools(
+        cfg("claude-sonnet-4-6"),
+        [],
+        "p",
+        [],
+        "s",
+        null,
+        jest.fn(),
+      ),
+    ).rejects.toMatchObject({ status: 422 });
+  });
+});
+
+describe("Talas AI-0 · STT trajanje iz odgovora (review [12])", () => {
+  it("audio tokeni iz `usage` se upisuju u tokens_in", async () => {
+    global.fetch = jest.fn().mockReturnValue(
+      okJson({
+        text: "prepisano",
+        usage: { input_token_details: { audio_tokens: 600, text_tokens: 12 } },
+      }),
+    );
+    process.env.OPENAI_API_KEY = "k";
+    const { record, service } = usageMock();
+    const svc = new AiProviderService(service);
+    await svc.transcribe({
+      bytes: new Uint8Array([1, 2, 3]),
+      mime: "audio/webm",
+      ctx: { module: "stt", userId: 9 },
+    });
+    expect(record).toHaveBeenCalledWith(
+      expect.objectContaining({ module: "stt", userId: 9, tokensIn: 600 }),
+    );
+  });
+
+  it("bez `usage` u odgovoru → tokensIn null (pada se na procenu po pozivu)", async () => {
+    global.fetch = jest.fn().mockReturnValue(okJson({ text: "prepisano" }));
+    process.env.OPENAI_API_KEY = "k";
+    const { record, service } = usageMock();
+    const svc = new AiProviderService(service);
+    await svc.transcribe({
+      bytes: new Uint8Array([1, 2, 3]),
+      mime: "audio/webm",
+      ctx: { module: "stt", userId: 9 },
+    });
+    expect(record).toHaveBeenCalledWith(
+      expect.objectContaining({ tokensIn: null }),
+    );
+  });
+});
+
+describe("Talas AI-0 · keš tokeni u ledgeru (review [1][16][21])", () => {
+  it("keš-čitanje i keš-upis se beleže odvojeno, a tokensIn ostaje PUN zbir", async () => {
+    global.fetch = jest.fn().mockReturnValue(
+      okJson({
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: "ok" }],
+        usage: {
+          input_tokens: 300,
+          cache_read_input_tokens: 5000,
+          cache_creation_input_tokens: 700,
+          output_tokens: 40,
+        },
+      }),
+    );
+    const { record, service } = usageMock();
+    const svc = new AiProviderService(service);
+    await svc.chatWithTools(
+      cfg("claude-sonnet-4-6"),
+      [],
+      "p",
+      [],
+      "s",
+      null,
+      jest.fn(),
+      { module: "chat", userId: 3 },
+    );
+    expect(record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tokensIn: 6000, // 300 + 5000 + 700 — budžet broji sirovi kontekst
+        tokensCacheRead: 5000,
+        tokensCacheWrite: 700,
+        tokensOut: 40,
+      }),
+    );
   });
 });
 

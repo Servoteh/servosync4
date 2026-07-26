@@ -838,16 +838,18 @@ export class PlanMontazeService {
     const dopune = (dto.dopune ?? [])
       .map((d) => String(d ?? "").trim())
       .filter(Boolean);
+    // Talas AI-0 (stavka 6): ograda ide SAMO oko monterovog teksta i dopuna.
+    // Instrukcije aplikacije („uvrsti ih", broj fotografija) ostaju IZVAN markera —
+    // unutar ograde model ih tretira kao podatke, a ne kao nalog koji treba izvršiti.
     const textBlock =
-      `Monter/serviser je napisao (slobodan tekst):\n"""\n${tekst || "(prazno)"}\n"""` +
+      `Monter/serviser je napisao (slobodan tekst):\n${fenceUserInput(tekst || "(prazno)")}` +
       (dopune.length
-        ? `\n\nNaknadno dopunjeni podaci (uvrsti ih):\n- ${dopune.join("\n- ")}`
+        ? `\n\nNaknadno dopunjeni podaci (uvrsti ih):\n${fenceUserInput(
+            dopune.map((d) => `- ${d}`).join("\n"),
+          )}`
         : "") +
       `\n\nPriloženo fotografija: ${slike.length}.`;
-    // Talas AI-0 (stavka 6): slobodan tekst montera je nepouzdan unos → ograda.
-    const content: unknown[] = [
-      { type: "text", text: fenceUserInput(textBlock) },
-    ];
+    const content: unknown[] = [{ type: "text", text: textBlock }];
     for (const s of slike) {
       const mt = MONTAZA_VISION_MIME.includes(s.media_type)
         ? s.media_type

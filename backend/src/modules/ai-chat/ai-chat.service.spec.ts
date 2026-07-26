@@ -7,6 +7,7 @@ import { AiChatService } from "./ai-chat.service";
 import type { Sy15Service } from "../../common/sy15/sy15.service";
 import type { AiProviderService } from "../../common/ai/ai-provider.service";
 import type { AiLimitsService } from "../../common/ai/ai-limits.service";
+import type { AiModelPolicyService } from "../../common/ai/ai-model-policy.service";
 
 /**
  * Talas AI-0 (stavka 5): dnevni limit je sada budžet ULAZNIH tokena iz
@@ -24,6 +25,20 @@ function limitsMock(used = 0, limit = 200_000): AiLimitsService {
     chatBudget: jest.fn().mockResolvedValue(budget),
     assertChat: jest.fn().mockResolvedValue(budget),
   } as unknown as AiLimitsService;
+}
+
+/**
+ * Registar modela (Talas AI-0, stavka 7c). Podrazumevano je PRAZAN — `resolve`
+ * vraća prosleđen fallback, pa chat koristi model iz env-a kao i pre.
+ */
+function policyMock(model?: string): AiModelPolicyService {
+  return {
+    resolve: jest
+      .fn()
+      .mockImplementation((_task: string, fallback: string) =>
+        Promise.resolve({ model: model ?? fallback, effort: null }),
+      ),
+  } as unknown as AiModelPolicyService;
 }
 
 /** Admin: bez limita (`limit: -1`) — FE tada ne prikazuje brojač. */
@@ -77,6 +92,7 @@ describe("AiChatService — withUserRls most (leak guard)", () => {
       {} as never,
       {} as never,
       limitsMock(),
+      policyMock(),
     );
     return { svc, sy15, tx };
   }
@@ -154,6 +170,8 @@ describe("AiChatService.signImage (path traversal)", () => {
       sy15 as unknown as Sy15Service,
       {} as never,
       storage as never,
+      limitsMock(),
+      policyMock(),
     );
     return { svc, storage };
   }
@@ -221,6 +239,7 @@ describe("AiChatService.execTool dispatch (alat → RPC ime)", () => {
       ai as never,
       storage as never,
       limitsMock(),
+      policyMock(),
     );
     const exec = (name: string, args: Record<string, unknown>) =>
       (
@@ -325,6 +344,7 @@ describe("AiChatService.chat (remaining/limit + upstream conversationId)", () =>
   function make(
     chatWithTools: jest.Mock,
     limits: AiLimitsService = limitsMock(),
+    policy: AiModelPolicyService = policyMock(),
   ) {
     const tx = {
       // tx1 redosled: currentUid, resolveConversation(new), resolveAuthor.
@@ -361,6 +381,7 @@ describe("AiChatService.chat (remaining/limit + upstream conversationId)", () =>
       ai as unknown as AiProviderService,
       {} as never,
       limits,
+      policy,
     );
     return { svc, ai, sy15 };
   }
@@ -387,6 +408,32 @@ describe("AiChatService.chat (remaining/limit + upstream conversationId)", () =>
     expect(out.data.remaining).toBe(198_800);
     expect(out.data.limit).toBe(200_000);
     expect(out.data.unit).toBe("tokens");
+  });
+
+  it("Claude engine uzima model iz registra `ai_model_policy` (ne iz env-a)", async () => {
+    const chatWithTools = jest.fn().mockResolvedValue({
+      reply: "ok",
+      model: "claude-opus-5",
+      tokensIn: 10,
+      tokensOut: 2,
+    });
+    // Registar vraća opus-5; engineConfig (mok) nudi „m" iz env-a.
+    const { svc } = make(chatWithTools, limitsMock(), policyMock("claude-opus-5"));
+    await svc.chat("u@servoteh.com", { message: "cao", engine: "claude" });
+    // 1. argument chatWithTools je EngineCfg — model MORA biti iz registra,
+    // inače je izbor u Podešavanjima mrtvo slovo.
+    const cfgArg = chatWithTools.mock.calls[0][0] as { model: string };
+    expect(cfgArg.model).toBe("claude-opus-5");
+  });
+
+  it("prazan registar → Claude engine ostaje na env/default modelu", async () => {
+    const chatWithTools = jest
+      .fn()
+      .mockResolvedValue({ reply: "ok", model: "m", tokensIn: 1, tokensOut: 1 });
+    const { svc } = make(chatWithTools);
+    await svc.chat("u@servoteh.com", { message: "cao", engine: "claude" });
+    const cfgArg = chatWithTools.mock.calls[0][0] as { model: string };
+    expect(cfgArg.model).toBe("m");
   });
 
   it("admin (limit -1) → nema brojača; remaining ostaje -1", async () => {
@@ -513,6 +560,7 @@ describe("AiChatService.chat (screenContext u system prompt)", () => {
       ai as unknown as AiProviderService,
       {} as never,
       limitsMock(),
+      policyMock(),
     );
     // system prompt = 5. argument chatWithTools (cfg, hist, msg, tools, system, ...)
     const systemArg = () => chatWithTools.mock.calls[0][4] as string;
@@ -579,6 +627,7 @@ describe("AiChatService.chat (screenContext u system prompt)", () => {
       ai as unknown as AiProviderService,
       {} as never,
       limitsMock(),
+      policyMock(),
     );
     await svc.chat("u@servoteh.com", {
       message: "cao",

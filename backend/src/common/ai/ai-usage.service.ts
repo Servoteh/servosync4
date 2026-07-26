@@ -24,11 +24,20 @@ export type AiOutcome = "ok" | "error" | "fallback";
 export interface AiUsageRecord extends AiCallContext {
   provider: "openai" | "anthropic";
   model: string;
+  /** PUN ulaz (svež + keširan) — budžet namerno broji sirovi kontekst. */
   tokensIn?: number | null;
   tokensOut?: number | null;
+  /** Deo `tokensIn` naplaćen po sniženoj keš-čitaj ceni (~0,1× ulazne). */
+  tokensCacheRead?: number | null;
+  /** Deo `tokensIn` naplaćen po keš-upis ceni (1,25× ulazne za 5-min TTL). */
+  tokensCacheWrite?: number | null;
   durationMs: number;
   outcome: AiOutcome;
 }
+
+/** Množioci cene za keširan ulaz (Anthropic prompt caching, 5-minutni TTL). */
+const CACHE_READ_MULTIPLIER = 0.1;
+const CACHE_WRITE_MULTIPLIER = 1.25;
 
 /**
  * USD per 1M tokens [input, output]. Anthropic figures are the published list
@@ -69,9 +78,11 @@ export class AiUsageService {
           model: (rec.model || "unknown").slice(0, 80),
           tokensIn: rec.tokensIn ?? null,
           tokensOut: rec.tokensOut ?? null,
+          tokensCacheRead: rec.tokensCacheRead ?? null,
+          tokensCacheWrite: rec.tokensCacheWrite ?? null,
           durationMs: Math.max(0, Math.round(rec.durationMs)),
           outcome: rec.outcome,
-          estCostUsd: this.estimateCost(rec.model, rec.tokensIn, rec.tokensOut),
+          estCostUsd: this.estimateCost(rec),
         },
       });
     } catch (err) {
@@ -82,43 +93,107 @@ export class AiUsageService {
     }
   }
 
-  /** Sum of input tokens for one user + module since UTC midnight. */
+  /**
+   * Sum of input tokens for one user + module since UTC midnight.
+   *
+   * FAIL-OPEN, deliberately: a ledger read that throws would otherwise 500 every
+   * chat/STT/refine call, i.e. a broken bookkeeping table would take the whole AI
+   * layer down. Writes are already fail-open; reads now match. Better to run
+   * briefly without a budget than to be dead — the ERROR log is the alarm.
+   */
   async dailyInputTokens(userId: number, module: string): Promise<number> {
-    const rows = await this.prisma.$queryRaw<{ n: bigint | null }[]>(
-      Prisma.sql`SELECT COALESCE(SUM(tokens_in), 0)::bigint AS n
-                 FROM ai_usage_log
-                 WHERE user_id = ${userId}
-                   AND module = ${module}
-                   AND outcome <> 'error'
-                   AND created_at >= date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`,
-    );
-    return Number(rows[0]?.n ?? 0);
+    try {
+      const rows = await this.prisma.$queryRaw<{ n: bigint | null }[]>(
+        Prisma.sql`SELECT COALESCE(SUM(tokens_in), 0)::bigint AS n
+                   FROM ai_usage_log
+                   WHERE user_id = ${userId}
+                     AND module = ${module}
+                     AND outcome <> 'error'
+                     AND created_at >= date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`,
+      );
+      return Number(rows[0]?.n ?? 0);
+    } catch (err) {
+      this.logger.error(
+        `ai_usage_log čitanje (tokeni, ${module}) palo — budžet se privremeno NE primenjuje: ${(err as Error).message}`,
+      );
+      return 0;
+    }
   }
 
-  /** Number of calls for one user + module since UTC midnight. */
+  /** Number of calls for one user + module since UTC midnight. Fail-open (see above). */
   async dailyCalls(userId: number, module: string): Promise<number> {
-    const rows = await this.prisma.$queryRaw<{ n: bigint | null }[]>(
-      Prisma.sql`SELECT count(*)::bigint AS n
-                 FROM ai_usage_log
-                 WHERE user_id = ${userId}
-                   AND module = ${module}
-                   AND outcome <> 'error'
-                   AND created_at >= date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`,
-    );
-    return Number(rows[0]?.n ?? 0);
+    try {
+      const rows = await this.prisma.$queryRaw<{ n: bigint | null }[]>(
+        Prisma.sql`SELECT count(*)::bigint AS n
+                   FROM ai_usage_log
+                   WHERE user_id = ${userId}
+                     AND module = ${module}
+                     AND outcome <> 'error'
+                     AND created_at >= date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`,
+      );
+      return Number(rows[0]?.n ?? 0);
+    } catch (err) {
+      this.logger.error(
+        `ai_usage_log čitanje (pozivi, ${module}) palo — budžet se privremeno NE primenjuje: ${(err as Error).message}`,
+      );
+      return 0;
+    }
   }
 
-  /** `Decimal` cost estimate, or null when the model has no known price. */
-  private estimateCost(
-    model: string,
-    tokensIn?: number | null,
-    tokensOut?: number | null,
-  ): Prisma.Decimal | null {
-    if (tokensIn == null && tokensOut == null) return null;
-    const price = this.priceFor(model);
+  /**
+   * Potrošene sekunde audija danas. Redovi koji imaju `tokens_in` (audio tokene iz
+   * STT odgovora) daju STVARNO trajanje; redovi bez njega (stariji model / izostao
+   * `usage`) padaju na procenu `avgSeconds` po pozivu. Fail-open (v. gore).
+   */
+  async dailySttSeconds(
+    userId: number,
+    tokensPerSecond: number,
+    avgSeconds: number,
+  ): Promise<number> {
+    try {
+      const rows = await this.prisma.$queryRaw<
+        { tok: bigint | null; unknown_calls: bigint | null }[]
+      >(
+        Prisma.sql`SELECT COALESCE(SUM(tokens_in), 0)::bigint AS tok,
+                          count(*) FILTER (WHERE tokens_in IS NULL)::bigint AS unknown_calls
+                   FROM ai_usage_log
+                   WHERE user_id = ${userId}
+                     AND module = 'stt'
+                     AND outcome <> 'error'
+                     AND created_at >= date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`,
+      );
+      const tok = Number(rows[0]?.tok ?? 0);
+      const unknownCalls = Number(rows[0]?.unknown_calls ?? 0);
+      const ratio = tokensPerSecond > 0 ? tokensPerSecond : 1;
+      return Math.round(tok / ratio + unknownCalls * avgSeconds);
+    } catch (err) {
+      this.logger.error(
+        `ai_usage_log čitanje (STT sekunde) palo — budžet se privremeno NE primenjuje: ${(err as Error).message}`,
+      );
+      return 0;
+    }
+  }
+
+  /**
+   * `Decimal` cost estimate, or null when the model has no known price.
+   *
+   * `tokensIn` is the FULL input (fresh + cached), so the cached slices have to be
+   * subtracted out before pricing the fresh remainder — otherwise a cache hit would
+   * be billed at full rate plus the discounted rate on top.
+   */
+  private estimateCost(rec: AiUsageRecord): Prisma.Decimal | null {
+    if (rec.tokensIn == null && rec.tokensOut == null) return null;
+    const price = this.priceFor(rec.model);
     if (!price) return null;
+    const cacheRead = Math.max(0, rec.tokensCacheRead ?? 0);
+    const cacheWrite = Math.max(0, rec.tokensCacheWrite ?? 0);
+    const fresh = Math.max(0, (rec.tokensIn ?? 0) - cacheRead - cacheWrite);
     const usd =
-      ((tokensIn ?? 0) * price[0] + (tokensOut ?? 0) * price[1]) / 1_000_000;
+      (fresh * price[0] +
+        cacheRead * price[0] * CACHE_READ_MULTIPLIER +
+        cacheWrite * price[0] * CACHE_WRITE_MULTIPLIER +
+        (rec.tokensOut ?? 0) * price[1]) /
+      1_000_000;
     if (!Number.isFinite(usd)) return null;
     return new Prisma.Decimal(usd.toFixed(6));
   }

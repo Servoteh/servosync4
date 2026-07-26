@@ -22,6 +22,10 @@ import {
   type Engine,
 } from "../../common/ai/ai-provider.service";
 import { AI_MODULE, AiLimitsService } from "../../common/ai/ai-limits.service";
+import {
+  AI_TASK,
+  AiModelPolicyService,
+} from "../../common/ai/ai-model-policy.service";
 import type { AiCallContext } from "../../common/ai/ai-usage.service";
 import {
   CHAT_INJECTION_FENCE,
@@ -83,6 +87,7 @@ export class AiChatService {
     private readonly ai: AiProviderService,
     private readonly storage: Sy15StorageService,
     private readonly limits: AiLimitsService,
+    private readonly policy: AiModelPolicyService,
   ) {}
 
   /** Liste niti: lične (own, auth.uid()) + projektne (scope='project', vide svi) — RLS scoping. */
@@ -180,12 +185,23 @@ export class AiChatService {
     const engine: Engine = ENGINES.includes(dto.engine as Engine)
       ? (dto.engine as Engine)
       : "openai";
-    const cfg = this.ai.engineConfig(engine);
-    if (!cfg) {
+    const baseCfg = this.ai.engineConfig(engine);
+    if (!baseCfg) {
       throw new ServiceUnavailableException(
         `${ENGINE_LABEL[engine]} nije konfigurisan na serveru.`,
       );
     }
+    // Talas AI-0 (stavka 7c): Claude engine PRVO čita registar `ai_model_policy`,
+    // pa tek onda env/default — inače bi izbor u Podešavanjima bio mrtvo slovo.
+    const cfg =
+      engine === "claude"
+        ? {
+            ...baseCfg,
+            model: (
+              await this.policy.resolve(AI_TASK.CHAT_CLAUDE, baseCfg.model)
+            ).model,
+          }
+        : baseCfg;
     const message = String(dto.message ?? "").trim();
     const image = this.parseImage(imageFile);
     if (!message && !image) {
@@ -356,6 +372,19 @@ export class AiChatService {
    * niti koje troše dnevni limit.
    */
   private upstreamError(e: unknown, conversationId: string): HttpException {
+    // Model je odbio / odgovor odsečen (422 iz chatWithTools) NIJE upstream kvar —
+    // korisniku ide ljudska poruka, ali i dalje sa conversationId (nit već postoji).
+    if (e instanceof UnprocessableEntityException) {
+      const body = e.getResponse();
+      const message =
+        typeof body === "string"
+          ? body
+          : ((body as { message?: string }).message ?? "Zahtev nije obrađen.");
+      return new HttpException(
+        { error: "model_refused_or_truncated", message, conversationId },
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
     // chatWithTools baca BadGatewayException za HTTP ne-2xx; mrežni fetch-throw je
     // generički Error → upstream_unreachable (paritet edge).
     const isUpstream = e instanceof BadGatewayException;

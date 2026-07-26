@@ -147,19 +147,55 @@ export function maxTokensFor(
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** `claude-haiku-4-5-20251001` → `claude-haiku-4-5` (datirani snapshot = isti model). */
+export const canonicalModel = (model: string): string =>
+  model.replace(/-\d{8}$/, "");
+
+/** Razlaganje tokena jednog poziva za `ai_usage_log`. */
+export interface AiTokenBreakdown {
+  tokensIn: number | null;
+  tokensOut: number | null;
+  tokensCacheRead?: number | null;
+  tokensCacheWrite?: number | null;
+}
+
+/**
+ * Audio tokeni iz STT odgovora (`gpt-4o-transcribe` vraća
+ * `usage.input_token_details.audio_tokens`). Iz njih AiLimitsService izvodi
+ * STVARNO trajanje snimka, umesto grube procene „poziv = prosečnih N sekundi".
+ * `whisper-1` ne vraća `usage` — tada je null i pada se na procenu.
+ */
+export function sttAudioTokens(data: unknown): number | null {
+  const u = (
+    data as { usage?: { input_token_details?: { audio_tokens?: unknown } } }
+  )?.usage;
+  const n = Number(u?.input_token_details?.audio_tokens);
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
+}
+
 /* Provider barata dinamičnim JSON-om OpenAI/Anthropic API-ja — `any` je inherentan. */
 /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-argument */
 
 interface JsonCallOptions {
   url: string;
   headers: Record<string, string>;
+  /** Telo BEZ `max_tokens`/`thinking` kad je dat `answerTokens` — izvode se po pokušaju. */
   body: Record<string, unknown>;
   provider: "openai" | "anthropic";
   ctx?: AiCallContext;
   /** Model iste porodice na koji se pada posle iscrpljenog retry-ja. */
   fallbackModel?: string | null;
+  /**
+   * Budžet SAMO za tekst odgovora. Kad je dat, `max_tokens` (i `thinking`) se
+   * računaju ZA SVAKI POKUŠAJ POSEBNO — inače bi primarni model diktirao
+   * parametre fallback modelu (haiku bi dobio `thinking:adaptive` → 400, a
+   * model koji razmišlja bi nasledio mali `max_tokens` → odsečen odgovor).
+   */
+  answerTokens?: number;
+  /** Pozivalac TRAŽI adaptivno razmišljanje (šalje se samo modelima koji ga primaju). */
+  explicitThinking?: boolean;
   /** Izvuci tokene iz odgovora radi `ai_usage_log`. */
-  usageOf: (data: any) => { tokensIn: number | null; tokensOut: number | null };
+  usageOf: (data: any) => AiTokenBreakdown;
 }
 
 @Injectable()
@@ -243,7 +279,12 @@ export class AiProviderService {
     return ENGINES.filter((e) => this.engineConfig(e) !== null);
   }
 
-  /** Rezervni model iste porodice (fallback posle iscrpljenog retry-ja). */
+  /**
+   * Rezervni model iste porodice (fallback posle iscrpljenog retry-ja). Poređenje
+   * ide nad KANONSKIM imenom (bez datiranog sufiksa) — trijaža koristi
+   * `claude-haiku-4-5-20251001`, pa bi bez ovoga „fallback" bio isti model pod
+   * drugim ID-em, tj. drugi uzaludan par pokušaja.
+   */
   private fallbackFor(
     kind: "openai" | "anthropic",
     model: string,
@@ -252,7 +293,23 @@ export class AiProviderService {
       kind === "anthropic"
         ? this.env("AI_FALLBACK_CLAUDE_MODEL") || "claude-haiku-4-5"
         : this.env("AI_FALLBACK_OPENAI_MODEL") || "gpt-4o-mini";
-    return fb && fb !== model ? fb : null;
+    if (!fb) return null;
+    return canonicalModel(fb) === canonicalModel(model) ? null : fb;
+  }
+
+  /** Telo zahteva ZA JEDAN POKUŠAJ — `max_tokens`/`thinking` po ciljnom modelu. */
+  private bodyForAttempt(o: JsonCallOptions, model: string): string {
+    const body: Record<string, unknown> = { ...o.body, model };
+    if (o.answerTokens != null) {
+      const wantsThinking = o.explicitThinking === true;
+      body.max_tokens = maxTokensFor(model, o.answerTokens, wantsThinking);
+      if (wantsThinking && supportsAdaptiveThinking(model)) {
+        body.thinking = { type: "adaptive" };
+      } else {
+        delete body.thinking;
+      }
+    }
+    return JSON.stringify(body);
   }
 
   /**
@@ -266,7 +323,10 @@ export class AiProviderService {
     const attempts: { model: string; isFallback: boolean }[] = [
       { model: primary, isFallback: false },
     ];
-    if (o.fallbackModel && o.fallbackModel !== primary) {
+    if (
+      o.fallbackModel &&
+      canonicalModel(o.fallbackModel) !== canonicalModel(primary)
+    ) {
       attempts.push({ model: o.fallbackModel, isFallback: true });
     }
     const module = o.ctx?.module ?? "unknown";
@@ -280,7 +340,9 @@ export class AiProviderService {
           `AI fallback [${module}]: ${primary} → ${attempt.model} (posle retry-ja).`,
         );
       }
-      const payload = JSON.stringify({ ...o.body, model: attempt.model });
+      // Telo se gradi PO POKUŠAJU: fallback model dobija svoj `max_tokens` i
+      // svoje `thinking` (v. `bodyForAttempt`), ne primarne parametre.
+      const payload = this.bodyForAttempt(o, attempt.model);
 
       for (let tryNo = 0; tryNo <= 1; tryNo++) {
         const t0 = Date.now();
@@ -305,7 +367,23 @@ export class AiProviderService {
         }
 
         if (res.ok) {
-          const data: any = await res.json();
+          let data: any;
+          try {
+            data = await res.json();
+          } catch (err) {
+            // Prekinut/neispravan JSON je prolazna greška kao i mrežni pad —
+            // 200 sa polovičnim telom ne sme da prođe kao uspeh.
+            lastRetryable = true;
+            this.log(o, attempt.model, t0, "error", null, null);
+            this.logger.warn(
+              `AI telo odgovora nečitljivo [${module}/${attempt.model}] pokušaj ${tryNo + 1}: ${(err as Error).message}`,
+            );
+            if (tryNo === 0) {
+              await sleep(this.backoffMs(tryNo));
+              continue;
+            }
+            break;
+          }
           const u = o.usageOf(data);
           this.log(
             o,
@@ -314,6 +392,8 @@ export class AiProviderService {
             attempt.isFallback ? "fallback" : "ok",
             u.tokensIn,
             u.tokensOut,
+            u.tokensCacheRead,
+            u.tokensCacheWrite,
           );
           return data;
         }
@@ -349,6 +429,8 @@ export class AiProviderService {
     outcome: AiOutcome,
     tokensIn: number | null,
     tokensOut: number | null,
+    tokensCacheRead: number | null = null,
+    tokensCacheWrite: number | null = null,
   ): void {
     this.logUsage(
       o.ctx,
@@ -358,6 +440,8 @@ export class AiProviderService {
       outcome,
       tokensIn,
       tokensOut,
+      tokensCacheRead,
+      tokensCacheWrite,
     );
   }
 
@@ -369,6 +453,8 @@ export class AiProviderService {
     outcome: AiOutcome,
     tokensIn: number | null,
     tokensOut: number | null,
+    tokensCacheRead: number | null = null,
+    tokensCacheWrite: number | null = null,
   ): void {
     // Merenje je best-effort i NIKAD ne sme da obori AI poziv — `record` već ima
     // svoj try/catch, ali `catch` ovde štiti i od neuhvaćenog odbijanja obećanja.
@@ -380,6 +466,8 @@ export class AiProviderService {
         model,
         tokensIn,
         tokensOut,
+        tokensCacheRead,
+        tokensCacheWrite,
         durationMs: Date.now() - startedAt,
         outcome,
       })
@@ -419,17 +507,21 @@ export class AiProviderService {
     return out;
   }
 
-  /** Anthropic usage → ukupni ulazni tokeni (keširani se takođe naplaćuju/broje). */
-  private anthropicUsage(d: any): {
-    tokensIn: number | null;
-    tokensOut: number | null;
-  } {
+  /**
+   * Anthropic usage → razložen ulaz. `tokensIn` je PUN zbir (svež + keš-čitanje +
+   * keš-upis) jer dnevni budžet NAMERNO broji sirovi kontekst koji je model video:
+   * keširanje snižava CENU, ali ne i količinu konteksta koju korisnik troši, pa
+   * budžet ne sme da se „resetuje" samo zato što je prompt keširan. Razložene
+   * kolone služe za tačnu procenu cene (keš-čitanje ×0,1; keš-upis ×1,25).
+   */
+  private anthropicUsage(d: any): AiTokenBreakdown {
+    const cacheRead: number = d?.usage?.cache_read_input_tokens ?? 0;
+    const cacheWrite: number = d?.usage?.cache_creation_input_tokens ?? 0;
     return {
-      tokensIn:
-        (d?.usage?.input_tokens ?? 0) +
-        (d?.usage?.cache_read_input_tokens ?? 0) +
-        (d?.usage?.cache_creation_input_tokens ?? 0),
+      tokensIn: (d?.usage?.input_tokens ?? 0) + cacheRead + cacheWrite,
       tokensOut: d?.usage?.output_tokens ?? 0,
+      tokensCacheRead: cacheRead,
+      tokensCacheWrite: cacheWrite,
     };
   }
 
@@ -583,15 +675,26 @@ export class AiProviderService {
           ctx,
           fallbackModel,
           usageOf: (d) => this.anthropicUsage(d),
+          // Razmišljanje i tekst dele budžet — odgovoru mora ostati 1200 tokena;
+          // `max_tokens` se računa po modelu koji stvarno izvršava pokušaj.
+          answerTokens: MAX_OUTPUT_TOKENS,
           body: {
             model: cfg.model,
-            // Razmišljanje i tekst dele budžet — odgovoru mora ostati 1200 tokena.
-            max_tokens: maxTokensFor(cfg.model, MAX_OUTPUT_TOKENS),
             system: this.cachedSystem(system),
             messages: msgs,
             ...(useTools ? { tools: anthropicTools } : {}),
           },
         });
+        if (data?.stop_reason === "refusal") {
+          throw new UnprocessableEntityException(
+            "Model je odbio da odgovori na ovo pitanje. Preformuliši ga ili probaj drugi engine.",
+          );
+        }
+        if (data?.stop_reason === "max_tokens") {
+          throw new UnprocessableEntityException(
+            "Odgovor je predugačak i prekinut je. Postavi uže pitanje ili ga podeli na dva.",
+          );
+        }
         const u = this.anthropicUsage(data);
         tokensIn += u.tokensIn ?? 0;
         tokensOut += u.tokensOut ?? 0;
@@ -735,11 +838,11 @@ export class AiProviderService {
       ctx: opts.ctx,
       fallbackModel: this.fallbackFor("anthropic", opts.model),
       usageOf: (d) => this.anthropicUsage(d),
+      // Modeli 5. generacije razmišljaju i bez `thinking` — bez rezerve bi
+      // strukturisan izlaz padao na `max_tokens` (422 „Odgovor je predugačak").
+      answerTokens: opts.maxTokens ?? 4000,
       body: {
         model: opts.model,
-        // Modeli 5. generacije razmišljaju i bez `thinking` — bez rezerve bi
-        // strukturisan izlaz padao na `max_tokens` (422 „Odgovor je predugačak").
-        max_tokens: maxTokensFor(opts.model, opts.maxTokens ?? 4000),
         system: this.cachedSystem(opts.system),
         tools: this.cachedTools([opts.tool]),
         tool_choice: { type: "tool", name: opts.tool.name },
@@ -783,8 +886,8 @@ export class AiProviderService {
       );
     }
     // `thinking:{type:"adaptive"}` je 400 na haiku-4-5 (a on JE u allowlist-i) —
-    // do sada latentan 502 na ovom putu. Šaljemo ga samo modelima koji ga primaju.
-    const wantsThinking = supportsAdaptiveThinking(model);
+    // do sada latentan 502 na ovom putu. `callJson` ga uključuje/izbacuje PO
+    // POKUŠAJU, pa i fallback model dobija parametre koje sam prima.
     const data: any = await this.callJson({
       url: ANTHROPIC_URL,
       headers: this.anthropicHeaders(key),
@@ -792,10 +895,10 @@ export class AiProviderService {
       ctx,
       fallbackModel: this.fallbackFor("anthropic", model),
       usageOf: (d) => this.anthropicUsage(d),
+      answerTokens: 4000,
+      explicitThinking: true,
       body: {
         model,
-        max_tokens: maxTokensFor(model, 4000, wantsThinking),
-        ...(wantsThinking ? { thinking: { type: "adaptive" } } : {}),
         system: this.cachedSystem(system),
         messages: [{ role: "user", content: userContent }],
       },
@@ -885,8 +988,31 @@ export class AiProviderService {
         break;
       }
       if (res.ok) {
-        data = await res.json();
-        this.logUsage(input.ctx, "openai", model, t0, "ok", null, null);
+        try {
+          data = await res.json();
+        } catch (err) {
+          networkFail = true;
+          this.logUsage(input.ctx, "openai", model, t0, "error", null, null);
+          this.logger.warn(
+            `STT telo odgovora nečitljivo pokušaj ${tryNo + 1}: ${(err as Error).message}`,
+          );
+          if (tryNo === 0) {
+            await sleep(this.backoffMs(tryNo));
+            continue;
+          }
+          break;
+        }
+        // `tokens_in` za STT nosi AUDIO tokene iz odgovora — iz njih se izvodi
+        // stvarno trajanje snimka za dnevni budžet (v. AiLimitsService).
+        this.logUsage(
+          input.ctx,
+          "openai",
+          model,
+          t0,
+          "ok",
+          sttAudioTokens(data),
+          null,
+        );
         networkFail = false;
         break;
       }

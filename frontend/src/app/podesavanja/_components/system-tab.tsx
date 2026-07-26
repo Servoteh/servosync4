@@ -136,7 +136,7 @@ export function SistemTab() {
         title="AI model — Sažmi zapisnik (Sastanci)"
         sub="Bira se koji Claude model generiše rezime sastanaka. Menja se odmah, bez restarta."
         target="sastanci"
-        models={SASTANCI_MODELI}
+        models={allowedOptions(SASTANCI_MODELI, data?.allowlist?.sastanci)}
         setting={data?.sastanci ?? null}
         fallback={SASTANCI_DEFAULT}
         loading={q.isLoading}
@@ -145,26 +145,39 @@ export function SistemTab() {
         title="AI model — Izveštaji montera (Montaža)"
         sub="Bira se koji Claude model analizira tekst i fotke montera (Montaža → Izveštaji). Menja se odmah."
         target="montaza"
-        models={MONTAZA_MODELI}
+        models={allowedOptions(MONTAZA_MODELI, data?.allowlist?.montaza)}
         setting={data?.montaza ?? null}
         fallback={MONTAZA_DEFAULT}
         loading={q.isLoading}
       />
 
-      {/* Registar `ai_model_policy` — zadaci bez sy15 podešavanja (Talas AI-0). */}
+      {/* Registar `ai_model_policy` — zadaci bez sy15 podešavanja (Talas AI-0).
+          Opcije se sužavaju na serverski allowlist (jedini autoritet) kad stigne. */}
       {REGISTAR_KARTICE.map((k) => (
         <AiModelCard
           key={k.target}
           title={k.title}
           sub={k.sub}
           target={k.target}
-          models={REGISTAR_MODELI}
+          models={allowedOptions(REGISTAR_MODELI, data?.allowlist?.[k.target])}
           setting={policyAsSetting(data?.policy, k.task)}
           fallback={k.fallback}
           loading={q.isLoading}
         />
       ))}
     </div>
+  );
+}
+
+/**
+ * Suzi ponuđene opcije na serverski allowlist (jedini autoritet — 422 dolazi
+ * odatle). Dok allowlist ne stigne, prikazujemo lokalni spisak. Model iz
+ * allowliste koji FE ne poznaje dobija sopstvenu, golu opciju.
+ */
+function allowedOptions(local: AiModelOption[], allowed?: string[]): AiModelOption[] {
+  if (!allowed?.length) return local;
+  return allowed.map(
+    (id) => local.find((m) => m.id === id) ?? { id, label: id, opis: 'Model sa servera' },
   );
 }
 
@@ -273,11 +286,17 @@ function AiModelCard({
       <p className="mt-3 text-xs text-ink-disabled">
         {loading ? (
           'Učitavam trenutni izbor…'
-        ) : (
+        ) : setting ? (
           <>
             Trenutno: <span className="font-mono text-ink-secondary">{modelLabel(models, selected)}</span>
-            {setting?.updated_at && <span> · {formatDateTime(setting.updated_at)}</span>}
-            {setting?.updated_by && <span> · {setting.updated_by}</span>}
+            {setting.updated_at && <span> · {formatDateTime(setting.updated_at)}</span>}
+            {setting.updated_by && <span> · {setting.updated_by}</span>}
+          </>
+        ) : (
+          // Nema reda u bazi → NE tvrdimo da je izabran baš ovaj model. FE fallback je
+          // samo predizbor radio dugmeta; stvarnu vrednost drži env/default na serveru.
+          <>
+            Podrazumevano (env/default) — nije ručno podešeno.
           </>
         )}
       </p>

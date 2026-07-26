@@ -20,6 +20,7 @@ import { RequestNumberingService } from "./request-numbering.service";
 import { ZahteviAiService } from "./zahtevi-ai.service";
 import { ZahteviDecisionsService } from "./zahtevi-decisions.service";
 import { ZahteviMailService } from "./zahtevi-mail.service";
+import { AI_MODULE, AiLimitsService } from "../../common/ai/ai-limits.service";
 import {
   type CreateChangeRequestDto,
   validateCreateChangeRequest,
@@ -137,6 +138,7 @@ export class ZahteviService {
     private readonly zahteviAi: ZahteviAiService,
     private readonly decisions: ZahteviDecisionsService,
     private readonly mail: ZahteviMailService,
+    private readonly limits: AiLimitsService,
   ) {}
 
   // ── ROW-SCOPE / AUTHZ ──────────────────────────────────────────────────────
@@ -960,9 +962,14 @@ export class ZahteviService {
       let transcriptModel: string | null = null;
       if (kind === "AUDIO") {
         try {
+          // Talas AI-0: diktiranje kroz Zahteve troši ISTI dnevni STT budžet kao
+          // `/v1/ai/stt` i pripisuje se podnosiocu — inače bi ovaj put bio rupa
+          // kroz koju se limit zaobilazi (module='unknown', user_id=null).
+          await this.limits.assertStt(actor.userId, actor.role);
           const res = await this.ai.transcribe({
             bytes: new Uint8Array(file.buffer),
             mime: file.mimetype,
+            ctx: { module: AI_MODULE.STT, userId: actor.userId },
           });
           transcript = res.text;
           transcriptModel = res.model;
@@ -1039,13 +1046,18 @@ export class ZahteviService {
     // F3: pun retry — dohvati bajtove iz bucket-a, pozovi STT, upiši transcript.
     // Immutable guard (postojeći ne-null transcript) je i u AI servisu, ali proveravamo
     // rano radi jasne poruke. NE pregazuje postojeći transkript.
-    return this.zahteviAi.retryTranscribe({
-      id: att.id,
-      bucket: att.bucket,
-      storagePath: att.storagePath,
-      contentType: att.contentType,
-      transcript: att.transcript,
-    });
+    // Talas AI-0: ručni retry takođe troši STT budžet i pripisuje se pozivaocu.
+    await this.limits.assertStt(actor.userId, actor.role);
+    return this.zahteviAi.retryTranscribe(
+      {
+        id: att.id,
+        bucket: att.bucket,
+        storagePath: att.storagePath,
+        contentType: att.contentType,
+        transcript: att.transcript,
+      },
+      actor.userId,
+    );
   }
 
   // ── helpers (prilozi) ──────────────────────────────────────────────────────

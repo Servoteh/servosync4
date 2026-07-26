@@ -4439,6 +4439,8 @@ model KadrGridDayLock {
   @@unique([employeeId, workDate], map: "uq_kadr_grid_day_locks_emp_date")
   @@index([workDate], map: "idx_kadr_grid_day_locks_date")
   @@map("kadr_grid_day_locks")
+}
+
 // ============================================================================
 // AI (Talas AI-0) — merenje i registar modela. Piše ih ISKLJUČIVO gateway
 // (src/common/ai). Vidi docs/PLAN_AI_OS_2026-07.md §5 TALAS AI-0.
@@ -4456,8 +4458,14 @@ model AiUsageLog {
   module     String   @map("module") @db.VarChar(40)
   provider   String   @map("provider") @db.VarChar(20) /// openai | anthropic
   model      String   @map("model") @db.VarChar(80)
-  tokensIn   Int?     @map("tokens_in") // null kad API ne vraća usage (STT)
+  /// PUN ulaz (svež + keširan). Za STT nosi AUDIO tokene iz odgovora — iz njih se
+  /// izvodi stvarno trajanje snimka; null kad provajder ne vrati `usage`.
+  tokensIn   Int?     @map("tokens_in")
   tokensOut  Int?     @map("tokens_out")
+  /// Deo `tokens_in` naplaćen po keš-čitaj ceni (~0,1× ulazne) — samo Anthropic.
+  tokensCacheRead  Int? @map("tokens_cache_read")
+  /// Deo `tokens_in` naplaćen po keš-upis ceni (1,25× ulazne, 5-min TTL).
+  tokensCacheWrite Int? @map("tokens_cache_write")
   durationMs Int      @map("duration_ms") // trajanje poziva, ne dužina audija
   outcome    String   @map("outcome") @db.VarChar(10)
   estCostUsd Decimal? @map("est_cost_usd") @db.Decimal(10, 6) // null kad cena modela nije poznata

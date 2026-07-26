@@ -15,8 +15,14 @@ CREATE TABLE IF NOT EXISTS "ai_usage_log" (
   "module" VARCHAR(40) NOT NULL,
   "provider" VARCHAR(20) NOT NULL,
   "model" VARCHAR(80) NOT NULL,
+  -- PUN ulaz (svež + keširan); za STT nosi AUDIO tokene iz odgovora, iz kojih se
+  -- izvodi stvarno trajanje snimka za dnevni budžet.
   "tokens_in" INTEGER,
   "tokens_out" INTEGER,
+  -- Razlaganje keširanog ulaza radi tačne procene cene: keš-čitanje ~0,1× ulazne
+  -- cene, keš-upis 1,25× (5-minutni TTL). Deo su `tokens_in`, ne dodatak na njega.
+  "tokens_cache_read" INTEGER,
+  "tokens_cache_write" INTEGER,
   "duration_ms" INTEGER NOT NULL,
   "outcome" VARCHAR(10) NOT NULL,
   "est_cost_usd" DECIMAL(10,6),
@@ -39,3 +45,8 @@ CREATE TABLE IF NOT EXISTS "ai_model_policy" (
   "updated_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT "pk_ai_model_policy" PRIMARY KEY ("task")
 );
+
+-- Kolone za razloženi keširan ulaz dodajemo i posebno: ako je tabela nastala iz
+-- ranije verzije ove (još nepush-ovane) migracije, CREATE TABLE iznad je preskočen.
+ALTER TABLE "ai_usage_log" ADD COLUMN IF NOT EXISTS "tokens_cache_read" INTEGER;
+ALTER TABLE "ai_usage_log" ADD COLUMN IF NOT EXISTS "tokens_cache_write" INTEGER;

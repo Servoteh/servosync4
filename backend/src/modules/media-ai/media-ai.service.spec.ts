@@ -1,6 +1,7 @@
 import { BadRequestException } from "@nestjs/common";
 import { MediaAiService } from "./media-ai.service";
 import type { AiProviderService } from "../../common/ai/ai-provider.service";
+import type { AiLimitsService } from "../../common/ai/ai-limits.service";
 
 /**
  * Media/AI (B4) — jedinični (bez živih AI API-ja): refine bira system po profilu,
@@ -12,7 +13,15 @@ describe("MediaAiService", () => {
       refine: jest.fn().mockResolvedValue({ text: "sredjeno", model: "m" }),
       transcribe: jest.fn().mockResolvedValue({ text: "cao", model: "w" }),
     };
-    const svc = new MediaAiService(ai as unknown as AiProviderService);
+    // Talas AI-0: budžeti — bez `actor`-a se ne primenjuju, pa je stub dovoljan.
+    const limits = {
+      assertStt: jest.fn().mockResolvedValue(undefined),
+      assertRefine: jest.fn().mockResolvedValue(undefined),
+    };
+    const svc = new MediaAiService(
+      ai as unknown as AiProviderService,
+      limits as unknown as AiLimitsService,
+    );
     return { svc, ai };
   }
   /** N-ti argument prvog poziva mocka (izbegava no-unsafe-member-access). */

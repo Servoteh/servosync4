@@ -1,5 +1,12 @@
-import { HttpException, HttpStatus, Injectable } from "@nestjs/common";
+import {
+  HttpException,
+  HttpStatus,
+  Injectable,
+  Logger,
+  Optional,
+} from "@nestjs/common";
 import { ROLES } from "../authz/roles";
+import { PrismaService } from "../../prisma/prisma.service";
 import { AiUsageService } from "./ai-usage.service";
 
 /**
@@ -10,11 +17,13 @@ import { AiUsageService } from "./ai-usage.service";
  * Defaults come from the plan (§8.5, Nenad 26.07): 200k input tokens/day for
  * chat, 30 min of audio/day for STT, 100 refine calls/day. Admin has no limit.
  *
- * STT duration: the Whisper response carries no duration and decoding the audio
- * server-side would mean a new dependency (BACKEND_RULES §10 — not allowed here),
- * so the budget is enforced as calls × an assumed average clip length
- * (`AI_STT_AVG_SECONDS`, default 60 s). With the defaults that is 30 clips/day.
- * Documented deviation — swap for a real duration once one is available.
+ * STT duration: `gpt-4o-transcribe` returns `usage.input_token_details.audio_tokens`,
+ * which the gateway stores in `ai_usage_log.tokens_in`. Seconds are derived from it
+ * via `AI_STT_AUDIO_TOKENS_PER_SECOND`. The default (10 tokens/s) matches OpenAI's
+ * documented audio tokenisation rate for the gpt-4o audio family; it is env-tunable
+ * precisely because it is a rate, not a wire field — calibrate by recording a clip
+ * of known length and comparing `tokens_in` against it. Calls with no `usage`
+ * (whisper-1, or an older response shape) fall back to `AI_STT_AVG_SECONDS` each.
  */
 
 export const AI_MODULE = {
@@ -52,7 +61,16 @@ const UNLIMITED: AiBudget = {
 
 @Injectable()
 export class AiLimitsService {
-  constructor(private readonly usage: AiUsageService) {}
+  private readonly logger = new Logger(AiLimitsService.name);
+
+  /**
+   * `@Optional()` na Prisma-i: postojeći unit testovi prave servis samo sa
+   * ledger-om; bez klijenta se admin izuzeće oslanja na JWT tvrdnju.
+   */
+  constructor(
+    private readonly usage: AiUsageService,
+    @Optional() private readonly prisma?: PrismaService,
+  ) {}
 
   static chatTokenLimit(): number {
     return envInt("AI_CHAT_DAILY_INPUT_TOKENS", 200_000);
@@ -63,17 +81,42 @@ export class AiLimitsService {
   static sttAvgSeconds(): number {
     return envInt("AI_STT_AVG_SECONDS", 60);
   }
+  /** Audio tokena po sekundi snimka (OpenAI gpt-4o audio familija). */
+  static sttTokensPerSecond(): number {
+    return envInt("AI_STT_AUDIO_TOKENS_PER_SECOND", 10);
+  }
   static refineCallLimit(): number {
     return envInt("AI_REFINE_DAILY_CALLS", 100);
   }
 
-  isUnlimited(role?: string | null): boolean {
-    return (role ?? "").toLowerCase() === ROLES.ADMIN;
+  /**
+   * Admin je izuzet od budžeta — ali JWT tvrdnja o roli živi do 7 dana, pa se
+   * izuzeće POTVRĐUJE svežim čitanjem role iz glavne baze (SSO login je sinhronizuje
+   * sa 1.0). Skidanje admin prava tako stupa na snagu odmah, a ne tek po isteku
+   * tokena. Pad čitanja → ostaje pri JWT tvrdnji (fail-open, kao i ostatak sloja).
+   */
+  async isUnlimited(role?: string | null, userId?: number): Promise<boolean> {
+    if ((role ?? "").toLowerCase() !== ROLES.ADMIN) return false;
+    if (userId == null || !this.prisma) return true;
+    try {
+      const row = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { role: true },
+      });
+      // Nema reda → ne obaramo izuzeće (nalog može živeti samo u sy15).
+      if (!row) return true;
+      return row.role.toLowerCase() === ROLES.ADMIN;
+    } catch (err) {
+      this.logger.error(
+        `Provera admin role (users.${userId}) pala — ostajem pri JWT tvrdnji: ${(err as Error).message}`,
+      );
+      return true;
+    }
   }
 
   /** Chat budget in INPUT tokens (prompt + tools + history dominate the spend). */
   async chatBudget(userId: number, role?: string | null): Promise<AiBudget> {
-    if (this.isUnlimited(role)) return { ...UNLIMITED };
+    if (await this.isUnlimited(role, userId)) return { ...UNLIMITED };
     const limit = AiLimitsService.chatTokenLimit();
     const used = await this.usage.dailyInputTokens(userId, AI_MODULE.CHAT);
     return {
@@ -84,12 +127,16 @@ export class AiLimitsService {
     };
   }
 
-  /** STT budget in seconds of audio (estimated — see class docblock). */
+  /** STT budget in seconds of audio (from the response's audio tokens — see docblock). */
   async sttBudget(userId: number, role?: string | null): Promise<AiBudget> {
-    if (this.isUnlimited(role)) return { ...UNLIMITED, unit: "sekunde" };
+    if (await this.isUnlimited(role, userId))
+      return { ...UNLIMITED, unit: "sekunde" };
     const limit = AiLimitsService.sttSecondsLimit();
-    const calls = await this.usage.dailyCalls(userId, AI_MODULE.STT);
-    const used = calls * AiLimitsService.sttAvgSeconds();
+    const used = await this.usage.dailySttSeconds(
+      userId,
+      AiLimitsService.sttTokensPerSecond(),
+      AiLimitsService.sttAvgSeconds(),
+    );
     return {
       used,
       limit,
@@ -99,7 +146,8 @@ export class AiLimitsService {
   }
 
   async refineBudget(userId: number, role?: string | null): Promise<AiBudget> {
-    if (this.isUnlimited(role)) return { ...UNLIMITED, unit: "pozivi" };
+    if (await this.isUnlimited(role, userId))
+      return { ...UNLIMITED, unit: "pozivi" };
     const limit = AiLimitsService.refineCallLimit();
     const used = await this.usage.dailyCalls(userId, AI_MODULE.REFINE);
     return {
