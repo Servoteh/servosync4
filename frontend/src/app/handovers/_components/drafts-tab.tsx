@@ -54,6 +54,7 @@ import {
   warnBox,
 } from './common';
 import { DecideDraftItemDialog } from './decision-dialog';
+import { DeleteDraftItemDialog, EditDraftItemDialog } from './draft-item-dialog';
 import { PrintDrawingsDialog } from './print-drawings-dialog';
 
 const columns: Column<HandoverDraft>[] = [
@@ -338,6 +339,7 @@ function DraftFormDialog({
   open,
   draft,
   prefillMainDrawing,
+  prefillPieceCount,
   onClose,
 }: {
   open: boolean;
@@ -349,6 +351,12 @@ function DraftFormDialog({
    * (učita sastavnicu → izlista pozicije u stavke). null = običan novi nacrt.
    */
   prefillMainDrawing?: Drawing | null;
+  /**
+   * 027/26 (/nacrti?noviCrtez=…&kom=N): broj komada unet u PDM dijalogu „Dodaj
+   * u nacrt" pre ubacivanja. Ide u zaglavlje novog nacrta i time u auto-popunu
+   * sastavnice (količina pozicije = potreba × broj komada). null = default 1.
+   */
+  prefillPieceCount?: number | null;
   onClose: () => void;
 }) {
   const isEdit = draft != null;
@@ -386,14 +394,24 @@ function DraftFormDialog({
       // a `autoFillId` okida isti auto-BOM tok kao ručni izbor sklopa (potvrda
       // za zamenu stavki nije potrebna — stavke su još prazne pri otvaranju).
       const prefill = !isEdit && prefillMainDrawing ? prefillMainDrawing : null;
-      setForm(prefill ? { ...base, mainDrawing: prefill } : base);
+      setForm(
+        prefill
+          ? {
+              ...base,
+              mainDrawing: prefill,
+              // 027/26: broj komada iz PDM dijaloga (`?kom=`) — auto-popuna
+              // sastavnice množi njime količine pozicija.
+              pieceCount: String(prefillPieceCount ?? 1),
+            }
+          : base,
+      );
       setItems([]);
       setWarnings(null);
       setAutoFillId(prefill ? prefill.id : null);
       setSkippedDrawings([]);
       setItemFilter('');
     }
-  }, [open, draft, isEdit, prefillMainDrawing]);
+  }, [open, draft, isEdit, prefillMainDrawing, prefillPieceCount]);
 
   // AUTO-BOM („U nacrtu biram samo sklop i on izlista sve pozicije u sklopu"):
   // kad stigne sastavnica izabranog sklopa, stavke = sklop kao prva (isMain) +
@@ -553,6 +571,14 @@ function DraftFormDialog({
       <div className="space-y-3">
         {!isEdit && (
           <p className="text-xs text-ink-disabled">Broj nacrta generiše sistem.</p>
+        )}
+        {isEdit && (
+          // 027/26: ovde se menja ZAGLAVLJE nacrta. Broj komada po stavci i
+          // brisanje pogrešno ubačene stavke rade se u tabeli stavki (kolona
+          // „Akcije") — svaka izmena ide odmah na server, bez ponovnog snimanja.
+          <p className="text-xs text-ink-disabled">
+            Stavke (broj komada, brisanje) menjaju se u tabeli stavki ispod — kolona „Akcije”.
+          </p>
         )}
         <div className="grid grid-cols-2 gap-3">
           <FormField label="Predmet" required>
@@ -812,6 +838,10 @@ function DraftFormDialog({
 function buildItemColumns(opts: {
   locked: boolean;
   onDecide: (item: HandoverDraftItem) => void;
+  /** 027/26: izmena količine/napomene stavke — samo dok je nacrt radni. */
+  onEditItem: (item: HandoverDraftItem) => void;
+  /** 027/26: brisanje pogrešno ubačene stavke — samo dok je nacrt radni. */
+  onDeleteItem: (item: HandoverDraftItem) => void;
 }): Column<HandoverDraftItem>[] {
   return [
     {
@@ -915,6 +945,45 @@ function buildItemColumns(opts: {
           <span className="text-ink-disabled">—</span>
         ),
     },
+    {
+      // 027/26: rad nad stavkom radnog nacrta — izmena broja komada i brisanje
+      // pogrešno ubačene stavke. Skriveno za zaključan (predat) nacrt, jer
+      // backend obe rute tada odbija (422); traži `primopredaje.write`.
+      key: 'itemActions',
+      header: 'Akcije',
+      align: 'right',
+      render: (r) =>
+        opts.locked ? (
+          <span className="text-ink-disabled">—</span>
+        ) : (
+          <Can permission={PERMISSIONS.PRIMOPREDAJE_WRITE}>
+            <span className="inline-flex items-center gap-1.5">
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  opts.onEditItem(r);
+                }}
+                title="Izmeni broj komada / napomenu stavke"
+                aria-label="Izmeni stavku"
+                className="rounded-control border border-line p-1.5 text-ink-secondary hover:bg-surface-2 hover:text-ink"
+              >
+                <Pencil className="h-3.5 w-3.5" aria-hidden />
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  opts.onDeleteItem(r);
+                }}
+                title="Obriši stavku iz nacrta"
+                aria-label="Obriši stavku"
+                className="rounded-control border border-status-danger p-1.5 text-status-danger hover:bg-status-danger-bg"
+              >
+                <Trash2 className="h-3.5 w-3.5" aria-hidden />
+              </button>
+            </span>
+          </Can>
+        ),
+    },
   ];
 }
 
@@ -937,6 +1006,9 @@ function DraftDetail({
   const [confirmingSubmit, setConfirmingSubmit] = useState(false);
   const [printOpen, setPrintOpen] = useState(false);
   const [deciding, setDeciding] = useState<HandoverDraftItem | null>(null);
+  // 027/26: stavka u izmeni / stavka predložena za brisanje (null = zatvoreno).
+  const [editingItem, setEditingItem] = useState<HandoverDraftItem | null>(null);
+  const [deletingItem, setDeletingItem] = useState<HandoverDraftItem | null>(null);
 
   if (q.isLoading) return <span className="text-sm text-ink-disabled">Učitavanje…</span>;
   if (q.error || !q.data)
@@ -947,7 +1019,12 @@ function DraftDetail({
   // Sporne stavke bez odluke (§6.5.4) — isti kriterijum kao backend submit
   // gate (422): predaja je blokirana i u UI dok se sve ne odluče.
   const unresolved = d.items.filter(isUnresolvedDisputedItem);
-  const itemColumns = buildItemColumns({ locked: !!d.isLocked, onDecide: setDeciding });
+  const itemColumns = buildItemColumns({
+    locked: !!d.isLocked,
+    onDecide: setDeciding,
+    onEditItem: setEditingItem,
+    onDeleteItem: setDeletingItem,
+  });
 
   return (
     <div className="space-y-4 text-sm">
@@ -1065,6 +1142,20 @@ function DraftDetail({
         onClose={() => setDeciding(null)}
       />
 
+      {/* 027/26: izmena broja komada i brisanje stavke radnog nacrta. */}
+      <EditDraftItemDialog
+        draftId={d.id}
+        item={editingItem}
+        open={editingItem != null}
+        onClose={() => setEditingItem(null)}
+      />
+      <DeleteDraftItemDialog
+        draftId={d.id}
+        item={deletingItem}
+        open={deletingItem != null}
+        onClose={() => setDeletingItem(null)}
+      />
+
       <ConfirmDialog
         open={confirmingSubmit}
         title="Predaja u primopredaju"
@@ -1143,14 +1234,20 @@ export function DraftsTab({ onSubmitted }: { onSubmitted?: () => void }) {
   // statički export i to bi tražilo Suspense granicu). Odmah otvara formu i
   // čisti param (`router.replace`) da refresh/zatvaranje forme ne re-otvara isti.
   const [prefillDrawingId, setPrefillDrawingId] = useState<number | null>(null);
+  // 027/26: broj komada unet u PDM dijalogu (`?kom=`) — ide u zaglavlje novog nacrta.
+  const [prefillPieceCount, setPrefillPieceCount] = useState<number | null>(null);
   const prefillDrawingQuery = useDrawing(prefillDrawingId);
   const prefillMainDrawing = prefillDrawingId ? (prefillDrawingQuery.data?.data ?? null) : null;
 
   useEffect(() => {
-    const raw = new URLSearchParams(window.location.search).get('noviCrtez');
+    const params = new URLSearchParams(window.location.search);
+    const raw = params.get('noviCrtez');
     const id = raw && /^\d+$/.test(raw) ? Number(raw) : NaN;
     if (!Number.isInteger(id) || id <= 0) return;
+    const rawKom = params.get('kom');
+    const kom = rawKom && /^\d+$/.test(rawKom) ? Number(rawKom) : NaN;
     setPrefillDrawingId(id);
+    setPrefillPieceCount(Number.isInteger(kom) && kom >= 1 ? kom : null);
     setCreating(true);
     // Očisti query param iz URL-a (zadrži rutu) — jednokratno.
     router.replace('/nacrti');
@@ -1329,10 +1426,12 @@ export function DraftsTab({ onSubmitted }: { onSubmitted?: () => void }) {
         open={creating}
         draft={null}
         prefillMainDrawing={prefillMainDrawing}
+        prefillPieceCount={prefillPieceCount}
         onClose={() => {
           setCreating(false);
           // Otpusti D2 prefill da naredno „Novi nacrt" krene prazno.
           setPrefillDrawingId(null);
+          setPrefillPieceCount(null);
         }}
       />
       <DraftFormDialog

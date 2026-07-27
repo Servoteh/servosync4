@@ -1,10 +1,10 @@
 import { BadRequestException } from "@nestjs/common";
 
 /**
- * Parcijalni update zaglavlja nacrta (§6.1). Immutable polja (namerno
- * izostavljena ovde): `designerId`, `draftNumber`, `createdAt`. Stavke se NE
- * menjaju kroz ovaj DTO (nema item-level PATCH/POST endpointa ovog talasa —
- * samo osnovni unos, vidi zadatak).
+ * Parcijalni update ZAGLAVLJA nacrta (§6.1). Immutable polja (namerno
+ * izostavljena ovde): `designerId`, `draftNumber`, `createdAt`. Stavke se ne
+ * menjaju kroz ovaj DTO — one imaju svoje item-level rute
+ * (`POST/PATCH/DELETE :id/items…`, vidi `update-draft-item.dto.ts`).
  */
 export interface UpdateHandoverDraftDto {
   /** Ne može se menjati ako nacrt već ima stavke (§6.1 pravilo). */
