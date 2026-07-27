@@ -67,7 +67,7 @@ export const TP_VALIDNA = Prisma.sql`tp.finished_at IS NOT NULL
  * izraz (potvrđen Bitmap Index Scan na produ). Isti izraz koriste `core-tools.ts`
  * i `work-orders.service.ts` — jedno pravilo za poklapanje crteža u aplikaciji.
  */
-function drawingMatch(column: Prisma.Sql, term: string): Prisma.Sql {
+export function drawingMatch(column: Prisma.Sql, term: string): Prisma.Sql {
   return Prisma.sql`lower(${column}) = lower(${term})`;
 }
 

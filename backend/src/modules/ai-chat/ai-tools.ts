@@ -99,7 +99,11 @@ export const SYSTEM_PROMPT =
   `prisustvo_danas (sa kapije: prisutno/pauza/odsutno) i procena_vremena (STATISTIČKA ` +
   `procena koliko posao STVARNO traje: po radnom mestu — interval p25–p75 h/kom sa ` +
   `medijanom i brojem opservacija n; ili po crtežu — koliko je puta rađen i koliko ` +
-  `trajao; mali n je nepouzdan, ne menja normativ). VREMENA IZ OVIH ALATA SU U ` +
+  `trajao; mali n je nepouzdan, ne menja normativ), i predlozi_tehnologiju (za crtež ` +
+  `koji je VEĆ RAĐEN sklopi PREDLOG tehnološkog postupka iz prošlih naloga — operacije ` +
+  `redom, radno mesto, plan Tpz/Tk i stvarno vreme po komadu; prijavljuje ako se rutinzi ` +
+  `naloga razlikuju; koristi za „kako se pravio ovaj crtež", „predloži tehnologiju"). ` +
+  `VREMENA IZ OVIH ALATA SU U ` +
   `SATIMA i navode se isključivo iz rezultata alata, nikad procenom; ako rezultat kaže ` +
   `da je uzorak filtriran ili da ima još redova, reci i to. Ako ti neki od ovih alata ` +
   `NIJE ponuđen ili vrati nema_prava, znači samo da taj podatak NE MOGU da dam kroz ` +

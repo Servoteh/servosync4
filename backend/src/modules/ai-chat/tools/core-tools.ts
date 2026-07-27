@@ -5,6 +5,7 @@ import {
   estimateByWorkCenter,
   estimateForDrawing,
 } from "../../work-orders/time-estimate.service";
+import { suggestForDrawing } from "../../work-orders/technology-suggest.service";
 
 /**
  * TALAS AI-1, tačka 3 — alati nad GLAVNOM bazom (proizvodno jezgro).
@@ -562,6 +563,56 @@ export const CORE_TOOLS: readonly AiTool[] = [
       return {
         greska: "prazan_upit",
         poruka: "Navedi radno mesto (RC šifra) ili broj crteža.",
+      };
+    },
+  },
+  {
+    // TALAS AI-6 — predlog tehnologije iz istorije crteža (statistika + reuse
+    // AI-5). Deli pure funkciju `suggestForDrawing` sa endpointom
+    // `/tehnologija/suggest/drawing`. Read-only: NE upisuje tehnologiju.
+    name: "predlozi_tehnologiju",
+    description: `PREDLOG TEHNOLOŠKOG POSTUPKA za crtež koji je VEĆ RAĐEN — iz prošlih naloga istog crteža sklopi reprezentativan ruting: redosled operacija (redni broj, radno mesto, opis), plan (Tpz priprema po nalogu + Tk ciklus po komadu, u satima) i STVARNU procenu vremena po radnom mestu (interval h/kom sa uzorkom n). Prima broj crteža ILI ident broj RN-a. Ako se rutinzi između naloga razlikuju, prijavljuje to (npr. „2 različita postupka") i predlaže najčešći. Ako crtež nema istoriju, kaže to jasno. Koristi za „kako se pravio ovaj crtež", „predloži tehnologiju za crtež X". PREDLOG je informativan — ne upisuje tehnologiju.`,
+    schema: {
+      type: "object",
+      properties: {
+        crtez: {
+          type: "string",
+          description: `broj crteža ili ident broj RN-a`,
+        },
+      },
+      required: ["crtez"],
+    },
+    kind: "read",
+    requiredPermission: PERMISSIONS.TEHNOLOGIJA_READ,
+    scopes: LICNI,
+    execute: async (a, ctx) => {
+      const q = term(a.crtez);
+      const lose = proveriPojam(q);
+      if (lose) return lose;
+      const res = await suggestForDrawing(ctx.deps.prisma, q);
+      if (!("ima_istoriju" in res) || res.ima_istoriju === false) return res;
+      // KOMPAKCIJA za model (svaki red se plaća tokenima): operacije se svode na
+      // rb/RM/opis/plan + median stvarnog h/kom sa n; pun payload (kvantili, dokazi)
+      // živi na REST endpointu za FE panel.
+      return {
+        ima_istoriju: true,
+        crtez: res.crtez,
+        osnov_naloga: res.osnov_naloga,
+        konzistentno: res.konzistentno,
+        broj_varijanti: res.broj_varijanti,
+        reprezentativan_nalog: res.reprezentativan_nalog,
+        operacije: res.operacije.map((op) => ({
+          rb: op.rb,
+          radno_mesto: op.radno_mesto,
+          naziv_radnog_mesta: op.naziv_radnog_mesta,
+          opis: op.opis,
+          plan_tpz: op.plan_tpz,
+          plan_tk: op.plan_tk,
+          stvarno_h_kom_med: op.rm_procena?.p50 ?? null,
+          n: op.rm_procena?.n ?? 0,
+          malo_podataka: op.rm_procena?.malo_podataka ?? true,
+        })),
+        napomena: res.napomena,
       };
     },
   },

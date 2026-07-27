@@ -35,6 +35,7 @@ import {
 import { useOperations, type Operation } from '@/api/structures';
 import { openDrawingPdf } from '@/api/pdm';
 import { OperationsTable } from '@/app/work-orders/_components/operations-table';
+import { TechnologySuggestionPanel } from '@/app/work-orders/_components/technology-suggestion';
 import { useWorkOrderTimeEstimate } from '@/api/time-estimate';
 import { PrintDrawingsDialog } from '@/app/handovers/_components/print-drawings-dialog';
 import { ApiError } from '@/api/client';
@@ -145,6 +146,10 @@ function WorkOrderDetail({
   const delRn = useDeleteWorkOrder();
   const forceDelRn = useForceDeleteWorkOrder();
   const [copyOpen, setCopyOpen] = useState(false);
+  // TALAS AI-6: „Prepiši ovaj postupak" seed-uje postojeći „Kopiraj iz naloga" tok
+  // reprezentativnim nalogom iz predloga (nema novog write puta — copy-from je
+  // postojeći, potvrđeni endpoint; tehnolog potvrđuje u dijalogu).
+  const [copySeed, setCopySeed] = useState<WorkOrder | null>(null);
   const [cloneOpen, setCloneOpen] = useState(false);
   const [reworkOpen, setReworkOpen] = useState(false);
   const [headerOpen, setHeaderOpen] = useState(false);
@@ -433,6 +438,30 @@ function WorkOrderDetail({
         </div>
       )}
 
+      {/* TALAS AI-6 — predlog tehnologije iz istorije crteža (read-only). Kad je
+          crtež već rađen, nudi reprezentativan ruting iz prošlih naloga; kad je
+          ruting prazan, panel je otvoren i nudi „Prepiši" (postojeći copy tok). */}
+      {!!rn.drawingNumber && (
+        <TechnologySuggestionPanel
+          drawingNumber={rn.drawingNumber}
+          workOrderId={id}
+          routingEmpty={rn.operations.length === 0}
+          onApply={
+            canCopyInto && can(PERMISSIONS.RN_WRITE)
+              ? (src) => {
+                  setCopySeed({
+                    id: src.id,
+                    identNumber: src.ident,
+                    drawingNumber: src.drawingNumber,
+                    partName: '',
+                  } as WorkOrder);
+                  setCopyOpen(true);
+                }
+              : undefined
+          }
+        />
+      )}
+
       <div>
         <div className="mb-1.5 flex items-center justify-between gap-2">
           <p className="text-2xs font-semibold uppercase tracking-[0.08em] text-ink-secondary">
@@ -469,7 +498,15 @@ function WorkOrderDetail({
         {/* Greška brisanja operacije se prikazuje u dijalogu potvrde (BUG-P2-08). */}
       </div>
 
-      <CopyFromWorkOrderDialog targetId={id} open={copyOpen} onClose={() => setCopyOpen(false)} />
+      <CopyFromWorkOrderDialog
+        targetId={id}
+        open={copyOpen}
+        initialSource={copySeed}
+        onClose={() => {
+          setCopyOpen(false);
+          setCopySeed(null);
+        }}
+      />
       <CloneVariantDialog
         sourceId={id}
         identNumber={rn.identNumber}
@@ -647,13 +684,21 @@ function CopyFromWorkOrderDialog({
   targetId,
   open,
   onClose,
+  initialSource,
 }: {
   targetId: number;
   open: boolean;
   onClose: () => void;
+  /** TALAS AI-6: predlog seed-uje izvor (reprezentativan nalog); ostaje izmenljiv. */
+  initialSource?: WorkOrder | null;
 }) {
   const [source, setSource] = useState<WorkOrder | null>(null);
   const copy = useCopyFromWorkOrder();
+
+  // Seed iz predloga pri otvaranju; korisnik i dalje može da promeni izvor.
+  useEffect(() => {
+    if (open) setSource(initialSource ?? null);
+  }, [open, initialSource]);
 
   function close() {
     setSource(null);
