@@ -1,27 +1,32 @@
 import { newPdf, safeName, PAGE_W, PAGE_H, MARGIN, CONTENT_W } from './pdf-core';
-import { toCyrillic as cyr } from './cyrillic';
+import { toLatin as lat } from './cyrillic';
 
-// Ugovor o radu (ćirilica, Roboto/UTF-8). Port 1.0 `src/lib/contractPdf.js`:
+// Ugovor o radu (LATINICA, Roboto/UTF-8). Port 1.0 `src/lib/contractPdf.js`:
 // 20 članova (+ opcioni probni rad), dinamička numeracija, određeno/neodređeno.
 // Pravni boilerplate VERBATIM iz 1.0. Bez logo-zaglavlja (kreće od pravnog osnova).
+//
+// Pismo: od 27.07.2026. UGOVOR se štampa latinicom (odluka vlasnika) — ostala HR
+// dokumenta (rešenja, potvrde, aneksi) ostaju ćirilica. Dinamički podaci prolaze
+// kroz `lat()` jer deljeni helperi (stepenSpremeCyr / trajanjeCyr / formatRsd)
+// zbog tih drugih dokumenata i dalje vraćaju ćirilicu.
 
 const LINE_H = 5.0;
 const FONT_PT = 10;
 const BODY_TOP = MARGIN;
 const BODY_BOTTOM = PAGE_H - MARGIN;
 
-const MESTO_RADA_CYR = 'Добановцима';
-const MESTO_POTPISA_CYR = 'Добановцима';
-const PROBNI_MESEC_RECI = ['', 'један', 'два', 'три', 'четири', 'пет', 'шест'];
+const MESTO_RADA = 'Dobanovcima';
+const MESTO_POTPISA = 'Dobanovcima';
+const PROBNI_MESEC_RECI = ['', 'jedan', 'dva', 'tri', 'četiri', 'pet', 'šest'];
 
-function probniTrajanjeCyr(n: number | undefined): string {
+function probniTrajanje(n: number | undefined): string {
   const m = Math.min(6, Math.max(1, parseInt(String(n), 10) || 6));
-  const unit = m === 1 ? 'месец' : m <= 4 ? 'месеца' : 'месеци';
+  const unit = m === 1 ? 'mesec' : m <= 4 ? 'meseca' : 'meseci';
   return `${m} (${PROBNI_MESEC_RECI[m]}) ${unit}`;
 }
 
 export interface ContractInput {
-  imePrezime: string; // latinica → ćir
+  imePrezime: string;
   jmbg: string;
   prebivaliste: string;
   stepenSS: string;
@@ -39,35 +44,38 @@ export interface ContractInput {
   potpisPoslodavac?: string;
 }
 
-interface Article { title?: string; paras?: string[]; list?: string[] }
+/** Blok unutar člana — pasus ili numerisana lista (član o poslovnoj tajni ima obe). */
+type ArticleBlock = { kind: 'para'; text: string } | { kind: 'list'; items: string[] };
+
+interface Article { title?: string; paras?: string[]; blocks?: ArticleBlock[] }
 
 function buildArticles(d: ContractInput): Article[] {
   const odredjeno = d.tip === 'odredjeno';
-  const rm = cyr(d.radnoMesto);
+  const rm = lat(d.radnoMesto);
 
   const clan1 = odredjeno
     ? [
-        `Запослени код Послодавца заснива радни однос на одређено време, са почетком рада на дан ${d.datumPocetka} године у трајању од ${cyr(d.trajanje || '')}.`,
-        `Запослени је дужан да ступи на рад ${d.datumPocetka} године.`,
+        `Zaposleni kod Poslodavca zasniva radni odnos na određeno vreme, sa početkom rada na dan ${d.datumPocetka} godine u trajanju od ${lat(d.trajanje || '')}, zbog povećanog obima posla.`,
+        `Zaposleni je dužan da stupi na rad ${d.datumPocetka} godine.`,
       ]
     : [
-        `Запослени код Послодавца заснива радни однос на неодређено време, са почетком рада на дан ${d.datumPocetka} године.`,
-        `Запослени је дужан да ступи на рад ${d.datumPocetka} године.`,
+        `Zaposleni kod Poslodavca zasniva radni odnos na neodređeno vreme, sa početkom rada na dan ${d.datumPocetka} godine.`,
+        `Zaposleni je dužan da stupi na rad ${d.datumPocetka} godine.`,
       ];
 
   const clan5go = odredjeno
-    ? 'Запослени има право на коришћење сразмерног дела годишњег одмора, односно за сваки месец дана рада у календарској години Запослени има право на дванаестину (сразмерни део) годишњег одмора, који износи 20 радних дана за период од једне календарске године.'
-    : 'Запослени има право на годишњи одмор у трајању од 20 радних дана за пуну календарску годину, односно на сразмеран део за непотпуну годину рада, у складу са Правилником о раду.';
+    ? 'Zaposleni ima pravo na korišćenje srazmernog dela godišnjeg odmora, odnosno za svaki mesec dana rada u kalendarskoj godini Zaposleni ima pravo na dvanaestinu (srazmerni deo) godišnjeg odmora, koji iznosi 20 radnih dana za period od jedne kalendarske godine.'
+    : 'Zaposleni ima pravo na godišnji odmor u trajanju od 20 radnih dana za punu kalendarsku godinu, odnosno na srazmeran deo za nepotpunu godinu rada, u skladu sa Pravilnikom o radu.';
 
   const odgovaraLine = d.nadredjeni
-    ? `За свој рад одговара надређеном по хијерархији, у складу са Правилником о систематизацији радних места: ${cyr(d.nadredjeni)}.`
-    : 'За свој рад одговара надређеном по хијерархији, у складу са Правилником о систематизацији радних места.';
+    ? `Za svoj rad odgovara nadređenom po hijerarhiji, u skladu sa Pravilnikom o sistematizaciji radnih mesta: ${lat(d.nadredjeni)}.`
+    : 'Za svoj rad odgovara nadređenom po hijerarhiji, u skladu sa Pravilnikom o sistematizaciji radnih mesta.';
 
   const probniParas = d.probniRad
     ? [
-        `Уговара се пробни рад у трајању од ${probniTrajanjeCyr(d.probniMeseci)}, почев од дана ступања Запосленог на рад.`,
-        'За време трајања пробног рада, свака уговорна страна може отказати овај уговор о раду са отказним роком који не може бити краћи од 5 (пет) радних дана.',
-        'Запосленом који за време пробног рада није показао одговарајуће радне и стручне способности, престаје радни однос даном истека рока одређеног овим уговором.',
+        `Ugovara se probni rad u trajanju od ${probniTrajanje(d.probniMeseci)}, počev od dana stupanja Zaposlenog na rad.`,
+        'Za vreme trajanja probnog rada, svaka ugovorna strana može otkazati ovaj ugovor o radu sa otkaznim rokom koji ne može biti kraći od 5 (pet) radnih dana.',
+        'Zaposlenom koji za vreme probnog rada nije pokazao odgovarajuće radne i stručne sposobnosti, prestaje radni odnos danom isteka roka određenog ovim ugovorom.',
       ]
     : null;
 
@@ -76,155 +84,168 @@ function buildArticles(d: ContractInput): Article[] {
     ...(probniParas ? [{ paras: probniParas }] : []),
     {
       paras: [
-        `Запослени ће радити на радном месту ${rm}.`,
-        'Запослени ће обављати послове дефинисане за ово радно место у Правилнику о систематизацији радних места и Правилнику о раду Послодавца. ' + odgovaraLine,
-        'Запослени је сагласан да, у случају да се јави потреба да се одређени посао изврши без одлагања, може бити премештен на друге одговарајуће послове.',
+        `Zaposleni će raditi na radnom mestu ${rm}.`,
+        'Zaposleni će obavljati poslove definisane za ovo radno mesto u Pravilniku o sistematizaciji radnih mesta i Pravilniku o radu Poslodavca. ' + odgovaraLine,
+        'Zaposleni je saglasan da, u slučaju da se javi potreba da se određeni posao izvrši bez odlaganja, može biti premešten na druge odgovarajuće poslove.',
       ],
     },
     {
       paras: [
-        `Запослени ће обављати послове у ${MESTO_RADA_CYR}.`,
-        'Запослени је сагласан да, када то потребе посла, односно процеса рада захтевају, привремено обавља послове и на другим местима, уз надокнаду одговарајућих трошкова.',
+        `Zaposleni će obavljati poslove u ${MESTO_RADA}.`,
+        'Zaposleni je saglasan da, kada to potrebe posla, odnosno procesa rada zahtevaju, privremeno obavlja poslove i na drugim mestima, uz nadoknadu odgovarajućih troškova.',
       ],
     },
     {
       paras: [
         d.maloletnik
-          ? 'Радно време запосленог износи 7 часова дневно, односно 35 часова недељно, с тим што запослени прихвата да Послодавац може извршити прерасподелу радног времена, у складу са Законом и Правилником о раду.'
-          : 'Радно време запосленог износи 8 часова дневно, односно 40 часова недељно, с тим што запослени прихвата да Послодавац може извршити прерасподелу радног времена, у складу са Законом и Правилником о раду.',
-        'Послодавац може, у складу са Законом и Правилником о раду, од Запосленог захтевати прековремени рад, као и рад на дане викенда, празника и државних празника, када то потребе посла захтевају.',
+          ? 'Radno vreme zaposlenog iznosi 7 časova dnevno, odnosno 35 časova nedeljno, s tim što zaposleni prihvata da Poslodavac može izvršiti preraspodelu radnog vremena, u skladu sa Zakonom i Pravilnikom o radu.'
+          : 'Radno vreme zaposlenog iznosi 8 časova dnevno, odnosno 40 časova nedeljno, s tim što zaposleni prihvata da Poslodavac može izvršiti preraspodelu radnog vremena, u skladu sa Zakonom i Pravilnikom o radu.',
+        'Poslodavac može, u skladu sa Zakonom i Pravilnikom o radu, od Zaposlenog zahtevati prekovremeni rad, kao i rad na dane vikenda, praznika i državnih praznika, kada to potrebe posla zahtevaju.',
       ],
     },
     {
       paras: [
-        'Запослени има право на одмор у току дневног рада, као и право на дневни одмор и недељни одмор у складу са одредбама чланова 23–26 Правилника о раду.',
+        'Zaposleni ima pravo na odmor u toku dnevnog rada, kao i pravo na dnevni odmor i nedeljni odmor u skladu sa odredbama članova 23–26 Pravilnika o radu.',
         clan5go,
-        'За коришћење годишњег одмора, Запослени треба да обавести Послодавца месец дана унапред и да добије писмену сагласност и дозволу од Послодавца. Послодавац доставља Запосленом Решење о годишњем одмору најкасније 15 дана пре почетка планираног годишњег одмора, осим у случају када се годишњи одмор користи на захтев Запосленог, када му се Решење може доставити и непосредно пре коришћења годишњег одмора.',
-        'Запослени има право на плаћено и неплаћено одсуство, у случајевима и на начин прописан члановима 35 и 36 Правилника о раду и Законом.',
+        'Za korišćenje godišnjeg odmora, Zaposleni treba da obavesti Poslodavca mesec dana unapred i da dobije pismenu saglasnost i dozvolu od Poslodavca. Poslodavac dostavlja Zaposlenom Rešenje o godišnjem odmoru najkasnije 15 dana pre početka planiranog godišnjeg odmora, osim u slučaju kada se godišnji odmor koristi na zahtev Zaposlenog, kada mu se Rešenje može dostaviti i neposredno pre korišćenja godišnjeg odmora.',
+        'Zaposleni ima pravo na plaćeno i neplaćeno odsustvo, u slučajevima i na način propisan članovima 35 i 36 Pravilnika o radu i Zakonom.',
       ],
     },
     {
       paras: [
-        `За послове за које је закључен овај Уговор, основна зарада запосленом се утврђује у бруто новчаном износу од ${cyr(d.brutoZarada)} на дан закључења овог Уговора.`,
-        'Бруто износ зараде подразумева зараду, укључујући порез на зараду и порезе и доприносе које Послодавац плаћа на зараду у име Запосленог.',
-        'Основна зарада Запосленог утврђује се на основу елемената из одредбе члана 42, 43 и 47 Правилника о раду. Основна зарада се може увећати до 20% или умањити до 30%, с тим што не може бити нижа од минималне зараде, зависно од оствареног радног учинка запосленог, који подразумева квалитет и количину обављеног посла, као и став Запосленог према радним обавезама.',
-        'Запослени има право на увећану зараду по основу доприноса Запосленог пословном успеху Послодавца (награде, бонуси и сл.), у складу са Одлуком послодавца за сваку појединачну годину, као и у случајевима из члана 47 Правилника о раду.',
-        'Уколико због поремећаја у пословању / неповољног пословања, Послодавац буде онемогућен да Запосленом исплаћује зараду у складу са Уговором, Послодавац ће увести исплаћивање минималне зараде. Зарада ће се исплаћивати Запосленом до краја месеца за претходни месец.',
+        `Za poslove za koje je zaključen ovaj Ugovor, osnovna zarada zaposlenom se utvrđuje u bruto novčanom iznosu od ${lat(d.brutoZarada)} na dan zaključenja ovog Ugovora.`,
+        'Bruto iznos zarade podrazumeva zaradu, uključujući porez na zaradu i poreze i doprinose koje Poslodavac plaća na zaradu u ime Zaposlenog.',
+        'Osnovna zarada Zaposlenog utvrđuje se na osnovu elemenata iz odredbe člana 42, 43 i 47 Pravilnika o radu. Osnovna zarada se može uvećati do 20% ili umanjiti do 30%, s tim što ne može biti niža od minimalne zarade, zavisno od ostvarenog radnog učinka zaposlenog, koji podrazumeva kvalitet i količinu obavljenog posla, kao i stav Zaposlenog prema radnim obavezama.',
+        'Zaposleni ima pravo na uvećanu zaradu po osnovu doprinosa Zaposlenog poslovnom uspehu Poslodavca (nagrade, bonusi i sl.), u skladu sa Odlukom poslodavca za svaku pojedinačnu godinu, kao i u slučajevima iz člana 47 Pravilnika o radu.',
+        'Ukoliko zbog poremećaja u poslovanju / nepovoljnog poslovanja, Poslodavac bude onemogućen da Zaposlenom isplaćuje zaradu u skladu sa Ugovorom, Poslodavac će uvesti isplaćivanje minimalne zarade. Zarada će se isplaćivati Zaposlenom do kraja meseca za prethodni mesec.',
       ],
     },
     {
       paras: [
-        'Запослени има право на накнаду зараде у износу своје просечне зараде у претходних 12 месеци, за време одсуствовања са рада на дан празника који је нерадан дан, годишњег одмора, плаћеног одсуства, војне вежбе и одазивања на позив државног органа.',
-        'Запослени има право на накнаду зараде у току одсуства са рада услед привремене неспособности за рад до 30 дана, како следи:',
-        '1) најмање у висини 65% просечне зараде у претходних 12 месеци пре месеца у којем је наступила привремена спреченост за рад, с тим да не може бити нижа од минималне зараде утврђене у складу са Законом, ако је спреченост за рад проузрокована болешћу или повредом ван рада, ако Законом није друкчије одређено;',
-        '2) у висини 100% просечне зараде у претходних 12 месеци пре месеца у којем је наступила привремена спреченост за рад, с тим да не може бити нижа од минималне зараде утврђене у складу са Законом, ако је спреченост за рад проузрокована повредом на раду или професионалном болешћу, ако Законом није друкчије одређено.',
-        'Запослени има право на накнаду зараде најмање у висини 60% просечне зараде Запосленог у претходних 12 месеци, с тим да не може бити мања од минималне зараде утврђене у складу са овим законом, за време прекида рада, односно смањења обима рада до којег је дошло без кривице запосленог, најдуже 45 радних дана у календарској години.',
-        'Запослени има право на накнаду зараде у висини од 100% просечне зараде Запосленог у претходних 12 месеци, за време прекида рада до кога је дошло наредбом надлежног државног органа или надлежног органа послодавца због необезбеђивања безбедности и заштите живота и здравља на раду, која је услов даљег обављања рада без угрожавања живота и здравља запослених и других лица, и у другим случајевима, у складу са законом.',
+        'Zaposleni ima pravo na naknadu zarade u iznosu svoje prosečne zarade u prethodnih 12 meseci, za vreme odsustvovanja sa rada na dan praznika koji je neradan dan, godišnjeg odmora, plaćenog odsustva, vojne vežbe i odazivanja na poziv državnog organa.',
+        'Zaposleni ima pravo na naknadu zarade u toku odsustva sa rada usled privremene nesposobnosti za rad do 30 dana, kako sledi:',
+        '1) najmanje u visini 65% prosečne zarade u prethodnih 12 meseci pre meseca u kojem je nastupila privremena sprečenost za rad, s tim da ne može biti niža od minimalne zarade utvrđene u skladu sa Zakonom, ako je sprečenost za rad prouzrokovana bolešću ili povredom van rada, ako Zakonom nije drukčije određeno;',
+        '2) u visini 100% prosečne zarade u prethodnih 12 meseci pre meseca u kojem je nastupila privremena sprečenost za rad, s tim da ne može biti niža od minimalne zarade utvrđene u skladu sa Zakonom, ako je sprečenost za rad prouzrokovana povredom na radu ili profesionalnom bolešću, ako Zakonom nije drukčije određeno.',
+        'Zaposleni ima pravo na naknadu zarade najmanje u visini 60% prosečne zarade Zaposlenog u prethodnih 12 meseci, s tim da ne može biti manja od minimalne zarade utvrđene u skladu sa ovim zakonom, za vreme prekida rada, odnosno smanjenja obima rada do kojeg je došlo bez krivice zaposlenog, najduže 45 radnih dana u kalendarskoj godini.',
+        'Zaposleni ima pravo na naknadu zarade u visini od 100% prosečne zarade Zaposlenog u prethodnih 12 meseci, za vreme prekida rada do koga je došlo naredbom nadležnog državnog organa ili nadležnog organa poslodavca zbog neobezbeđivanja bezbednosti i zaštite života i zdravlja na radu, koja je uslov daljeg obavljanja rada bez ugrožavanja života i zdravlja zaposlenih i drugih lica, i u drugim slučajevima, u skladu sa zakonom.',
       ],
     },
     {
       paras: [
-        'Запослени има право на накнаду трошкова, како следи:',
-        '– за долазак и одлазак са рада у висини цене превозне карте у јавном саобраћају;',
-        '– за време проведено на службеном путу у земљи;',
-        '– за време проведено на службеном путу у иностранству;',
-        '– смештаја и исхране за рад и боравак на терену, ако послодавац није запосленом обезбедио смештај и исхрану без накнаде;',
-        '– за исхрану у току рада;',
-        '– за регрес за коришћење годишњег одмора.',
-        'Трошкови из претходног става овог члана, исплаћује се у висини и на начин утврђен у Правилнику о раду.',
+        'Zaposleni ima pravo na naknadu troškova, kako sledi:',
+        '– za dolazak i odlazak sa rada u visini cene prevozne karte u javnom saobraćaju;',
+        '– za vreme provedeno na službenom putu u zemlji;',
+        '– za vreme provedeno na službenom putu u inostranstvu;',
+        '– smeštaja i ishrane za rad i boravak na terenu, ako poslodavac nije zaposlenom obezbedio smeštaj i ishranu bez naknade;',
+        '– za ishranu u toku rada;',
+        '– za regres za korišćenje godišnjeg odmora.',
+        'Troškovi iz prethodnog stava ovog člana, isplaćuje se u visini i na način utvrđen u Pravilniku o radu.',
       ],
     },
     {
       paras: [
-        'Запослени се обавезује да за време трајања радног односа на територији Србије не може да обавља послове који би представљали конкуренцију Послодавцу, делимично или у целости, у пословним областима Послодавца, у своје име и за свој рачун, као и у име и за рачун другог правног или физичког лица без сагласности Послодавца.',
+        'Zaposleni se obavezuje da za vreme trajanja radnog odnosa na teritoriji Srbije ne može da obavlja poslove koji bi predstavljali konkurenciju Poslodavcu, delimično ili u celosti, u poslovnim oblastima Poslodavca, u svoje ime i za svoj račun, kao i u ime i za račun drugog pravnog ili fizičkog lica bez saglasnosti Poslodavca.',
       ],
     },
     {
       paras: [
-        'Запослени је дужан да Послодавцу накнади штету коју је проузроковао на раду или у вези са радом намерно, односно из крајње непажње.',
-        'Послодавац је дужан да запосленом накнади штету у случају повреде на раду или у вези са радом, у складу са Законом.',
+        'Zaposleni je dužan da Poslodavcu naknadi štetu koju je prouzrokovao na radu ili u vezi sa radom namerno, odnosno iz krajnje nepažnje.',
+        'Poslodavac je dužan da zaposlenom naknadi štetu u slučaju povrede na radu ili u vezi sa radom, u skladu sa Zakonom.',
       ],
     },
     {
       paras: [
-        'Запослени је, у случају отказа Уговора о раду, дужан да Послодавцу у писменој форми достави отказ уговора о раду 30 дана пре дана који је навео као дан престанка радног односа.',
+        'Zaposleni je, u slučaju otkaza Ugovora o radu, dužan da Poslodavcu u pismenoj formi dostavi otkaz ugovora o radu 30 dana pre dana koji je naveo kao dan prestanka radnog odnosa.',
       ],
     },
     {
       paras: [
-        'Послодавац може Запосленом да откаже уговор о раду ако за то постоји оправдани разлог који се односи на радну способност запосленог и његово понашање и то:',
-        '1) ако не остварује резултате рада или нема потребна знања и способности за обављање послова на којима ради;',
-        '2) ако је правноснажно осуђен за кривично дело на раду или у вези са радом;',
-        '3) ако се не врати на рад код послодавца у року од 15 дана од дана истека рока мировања радног односа из члана 79. Закона о раду, односно неплаћеног одсуства из члана 100. Закона о раду.',
-        'Послодавац може да откаже уговор о раду Запосленом који својом кривицом учини повреду радне обавезе, и то:',
-        '1) ако несавесно или немарно извршава радне обавезе;',
-        '2) ако злоупотреби положај или прекорачи овлашћења;',
-        '3) ако нецелисходно и неодговорно користи средства рада;',
-        '4) ако не користи или ненаменски користи обезбеђена средства или опрему за личну заштиту на раду;',
-        '5) ако учини другу повреду радне обавезе утврђену Правилником о раду.',
-        'Послодавац може да откаже уговор о раду Запосленом који не поштује радну дисциплину, и то:',
-        '1) ако неоправдано одбије да обавља послове и извршава налоге послодавца у складу са законом;',
-        '2) ако не достави потврду о привременој спречености за рад у смислу члана 103. овог закона;',
-        '3) ако злоупотреби право на одсуство због привремене спречености за рад;',
-        '4) због доласка на рад под дејством алкохола или других опојних средстава, односно употребе алкохола или других опојних средстава у току радног времена, које има или може да има утицај на обављање посла;',
-        '5) ако његово понашање представља радњу извршења кривичног дела учињеног на раду и у вези са радом, независно од тога да ли је против запосленог покренут кривични поступак за кривично дело;',
-        '6) ако је дао нетачне податке који су били одлучујући за заснивање радног односа;',
-        '7) ако запослени који ради на пословима са повећаним ризиком, на којима је као посебан услов за рад утврђена посебна здравствена способност, одбије да буде подвргнут оцени здравствене способности;',
-        '8) ако не поштује радну дисциплину прописану Правилником о раду, односно ако је његово понашање такво да не може да настави рад код послодавца.',
-        'Запосленом може да престане радни однос ако за то постоји оправдан разлог који се односи на потребе Послодавца и то:',
-        '1) ако услед технолошких, економских или организационих промена престане потреба за обављањем одређеног посла или дође до смањења обима посла;',
-        '2) ако одбије закључење анекса уговора у смислу одредби члана 171. став 1. тач. 1-5) Закона о раду.',
-        'У случају отказа уговора о раду због неостваривања потребних резултата рада, односно неспособности запосленог, запослени је дужан да остане на раду 30 дана, почев од наредног дана од дана достављања решења о отказу уговора о раду.',
+        'Poslodavac može Zaposlenom da otkaže ugovor o radu ako za to postoji opravdani razlog koji se odnosi na radnu sposobnost zaposlenog i njegovo ponašanje i to:',
+        '1) ako ne ostvaruje rezultate rada ili nema potrebna znanja i sposobnosti za obavljanje poslova na kojima radi;',
+        '2) ako je pravnosnažno osuđen za krivično delo na radu ili u vezi sa radom;',
+        '3) ako se ne vrati na rad kod poslodavca u roku od 15 dana od dana isteka roka mirovanja radnog odnosa iz člana 79. Zakona o radu, odnosno neplaćenog odsustva iz člana 100. Zakona o radu.',
+        'Poslodavac može da otkaže ugovor o radu Zaposlenom koji svojom krivicom učini povredu radne obaveze, i to:',
+        '1) ako nesavesno ili nemarno izvršava radne obaveze;',
+        '2) ako zloupotrebi položaj ili prekorači ovlašćenja;',
+        '3) ako necelishodno i neodgovorno koristi sredstva rada;',
+        '4) ako ne koristi ili nenamenski koristi obezbeđena sredstva ili opremu za ličnu zaštitu na radu;',
+        '5) ako učini drugu povredu radne obaveze utvrđenu Pravilnikom o radu.',
+        'Poslodavac može da otkaže ugovor o radu Zaposlenom koji ne poštuje radnu disciplinu, i to:',
+        '1) ako neopravdano odbije da obavlja poslove i izvršava naloge poslodavca u skladu sa zakonom;',
+        '2) ako ne dostavi potvrdu o privremenoj sprečenosti za rad u smislu člana 103. ovog zakona;',
+        '3) ako zloupotrebi pravo na odsustvo zbog privremene sprečenosti za rad;',
+        '4) zbog dolaska na rad pod dejstvom alkohola ili drugih opojnih sredstava, odnosno upotrebe alkohola ili drugih opojnih sredstava u toku radnog vremena, koje ima ili može da ima uticaj na obavljanje posla;',
+        '5) ako njegovo ponašanje predstavlja radnju izvršenja krivičnog dela učinjenog na radu i u vezi sa radom, nezavisno od toga da li je protiv zaposlenog pokrenut krivični postupak za krivično delo;',
+        '6) ako je dao netačne podatke koji su bili odlučujući za zasnivanje radnog odnosa;',
+        '7) ako zaposleni koji radi na poslovima sa povećanim rizikom, na kojima je kao poseban uslov za rad utvrđena posebna zdravstvena sposobnost, odbije da bude podvrgnut oceni zdravstvene sposobnosti;',
+        '8) ako ne poštuje radnu disciplinu propisanu Pravilnikom o radu, odnosno ako je njegovo ponašanje takvo da ne može da nastavi rad kod poslodavca.',
+        'Zaposlenom može da prestane radni odnos ako za to postoji opravdan razlog koji se odnosi na potrebe Poslodavca i to:',
+        '1) ako usled tehnoloških, ekonomskih ili organizacionih promena prestane potreba za obavljanjem određenog posla ili dođe do smanjenja obima posla;',
+        '2) ako odbije zaključenje aneksa ugovora u smislu odredbi člana 171. stav 1. tač. 1-5) Zakona o radu.',
+        'U slučaju otkaza ugovora o radu zbog neostvarivanja potrebnih rezultata rada, odnosno nesposobnosti zaposlenog, zaposleni je dužan da ostane na radu 30 dana, počev od narednog dana od dana dostavljanja rešenja o otkazu ugovora o radu.',
       ],
     },
     {
-      paras: [
-        'Запослени не сме користити за сопствене потребе или упознати трећа лица са пословним тајнама које као такве одреди послодавац, а биле су запосленом као пословна тајна саопштене или поверене или је до тих информација запослени дошао на други начин.',
-        'Пословном тајном се сматрају и информације и подаци за које је очигледно да ће проузроковати штету послодавцу ако за њих сазнају неовлашћена лица и запослени ће одговарати за одавање оваквих података ако је знао или је морао знати за такав значај који ти подаци имају за послодавца.',
-        'Ако запослени прекрши забрану одавања пословне тајне, послодавац има право од запосленог да захтева накнаду целокупне штете укључујући и измаклу добит.',
-        'Уговорне стране су сагласне да се сва писма, документација и други подаци везани за пословање Послодавца сматрају пословном тајном, те да било какво располагање таквим подацима које Послодавцу може нанети или проузроковати штету није дозвољено.',
-        'Запослени, током и по прекиду рада код послодавца, мора чувати у тајности све пословне тајне које су му поверене или до којих је дошао у вршењу својих задатака и дужан је да на дан престанка или истека важности овог уговора врати послодавцу сву документацију, списе, копије и остали пословни материјал који се односи на пословање послодавца, као и проспектни и други материјал који представља својину послодавца.',
-        'Запосленом је забрањено да изван својих послова користи поверљиве пословне информације послодавца као и своја специјална знања која је стекао код послодавца у оквиру својих послова и не сме користити пословне информације у друге сврхе осим за потребе делатности послодавца.',
-        'Обавеза чувања тајности података важи за запосленог временски неограничено, односно и по престанку радног односа код послодавца. Повреда обавезе чувања пословне тајне сматраће се повредом радне обавезе запосленог и представља основ за престанак радног односа.',
-        'За све иновације које запослени створи или развије за време трајања овог уговора, а за које се по важећим прописима може признати патент, жиг или неко друго право интелектуалне својине или представљају know-how, уговорне стране су сагласне да је Послодавац искључиво овлашћен да наведено право интелектуалне својине заштити, да га економски искоришћава и да са њим располаже.',
-        'Исправе и подаци који представљају пословну тајну:',
-      ],
-      list: [
-        'техничко-технолошка решења и поступци који се примењују у производњи (пројекти, резултати истраживања, пробе, узорци, нацрти, модели, проналасци, патенти и лиценце и др.) као и подаци о усвајању нове и усавршавању постојеће производње,',
-        'програми пословне политике,',
-        'подаци о капацитетима, обиму и структури производње,',
-        'подаци о стању залиха сировина, полупроизвода и готових производа,',
-        'подаци о набавкама робе и залихама,',
-        'организација процеса производње и пословања,',
-        'подаци о цени производа и калкулацијама цена,',
-        'подаци о могућностима плаћања обавеза,',
-        'пословни подаци о купцима и добављачима,',
-        'подаци о стању дуговања и потраживања,',
-        'подаци о финансијском стању и кредитима,',
-        'укупан фонд зарада и појединачне зараде запослених.',
+      // Poslovna tajna i poverljivi podaci — nov tekst (odluka vlasnika 27.07.2026,
+      // zamenio raniji član sa listom od 12 stavki i „celokupnom štetom").
+      blocks: [
+        { kind: 'para', text: 'Zaposleni je dužan da za vreme trajanja radnog odnosa, kao i nakon njegovog prestanka, čuva poslovnu tajnu i poverljive podatke Poslodavca i njegovih naručilaca, poslovnih partnera, kupaca i dobavljača, do kojih je došao tokom rada ili u vezi sa radom.' },
+        { kind: 'para', text: 'Poslovnom tajnom i poverljivim podacima naročito se smatraju:' },
+        {
+          kind: 'list',
+          items: [
+            'tehnička, tehnološka, projektna i proizvodna dokumentacija;',
+            'projekti, nacrti, skice, proračuni, 2D i 3D modeli, radionička dokumentacija, hidraulične, pneumatske i električne šeme;',
+            'programi, izvorni kodovi, parametri, softverska rešenja, tehničke specifikacije i uputstva;',
+            'tehnološki postupci, proizvodne metode, konstruktivna rešenja, uzorci, modeli, prototipovi, pronalasci i know-how;',
+            'specifikacije materijala, spiskovi delova, podaci o nabavci, dobavljačima, cenama, ponudama i kalkulacijama;',
+            'podaci o kupcima, naručiocima, ugovorima, uslovima poslovanja, rokovima, planovima i dinamici realizacije projekata;',
+            'podaci o finansijskom poslovanju, potraživanjima, obavezama, zaradama, poslovnim planovima i strategiji Poslodavca;',
+            'svi drugi podaci koji nisu javno dostupni, imaju poslovnu vrednost i čije bi neovlašćeno otkrivanje, korišćenje, umnožavanje ili dostavljanje trećem licu moglo da nanese štetu Poslodavcu ili njegovim poslovnim partnerima.',
+          ],
+        },
+        { kind: 'para', text: 'Zaposleni ne sme, bez prethodne pisane saglasnosti Poslodavca, podatke i dokumentaciju iz prethodnog stava:' },
+        {
+          kind: 'list',
+          items: [
+            'kopirati, fotografisati, umnožavati ili iznositi iz poslovnih prostorija ili informacionih sistema Poslodavca;',
+            'slati na privatne adrese elektronske pošte, privatne naloge, uređaje, internet-servise ili druga mesta koja Poslodavac nije odobrio;',
+            'saopštavati, predavati, ustupati, objavljivati ili na drugi način činiti dostupnim neovlašćenim licima;',
+            'koristiti za sopstvene potrebe, za potrebe drugog poslodavca ili trećeg lica;',
+            'koristiti u druge svrhe osim radi izvršavanja radnih obaveza kod Poslodavca.',
+          ],
+        },
+        { kind: 'para', text: 'Zaposleni je dužan da bez odlaganja obavesti Poslodavca o svakom gubitku, neovlašćenom pristupu, dostavljanju, kopiranju ili drugoj zloupotrebi poslovne dokumentacije i poverljivih podataka za koju sazna.' },
+        { kind: 'para', text: 'Po prestanku radnog odnosa ili na zahtev Poslodavca, Zaposleni je dužan da odmah vrati svu dokumentaciju, opremu, nosače podataka, kopije, beleške, pristupne podatke i drugi materijal koji pripada Poslodavcu, kao i da izbriše poverljive podatke sa privatnih uređaja i naloga, ukoliko su se na njima našli uz odobrenje Poslodavca.' },
+        { kind: 'para', text: 'Obaveza čuvanja poslovne tajne traje i nakon prestanka radnog odnosa, sve dok konkretni podaci imaju svojstvo poslovne tajne, odnosno dok na zakonit način ne postanu javno dostupni.' },
+        { kind: 'para', text: 'Povreda obaveze čuvanja poslovne tajne i poverljivih podataka može predstavljati povredu radne obaveze i osnov za otkaz ugovora o radu, uz sprovođenje postupka i pod uslovima propisanim Zakonom o radu i opštim aktima Poslodavca.' },
+        { kind: 'para', text: 'Zaposleni je odgovoran za štetu koju je na radu ili u vezi sa radom, namerno ili krajnjom nepažnjom, prouzrokovao Poslodavcu neovlašćenim pribavljanjem, korišćenjem, umnožavanjem, otkrivanjem ili činjenjem dostupnim poslovne tajne i poverljivih podataka.' },
+        { kind: 'para', text: 'U slučaju takve povrede, Zaposleni je dužan da Poslodavcu naknadi stvarno nastalu i dokazanu štetu, uključujući običnu štetu, izmaklu korist, opravdane troškove utvrđivanja i otklanjanja posledica povrede, kao i iznose koje je Poslodavac po tom osnovu bio dužan da naknadi naručiocu, kupcu ili drugom trećem licu, ukoliko su ispunjeni zakonski uslovi za odgovornost Zaposlenog.' },
+        { kind: 'para', text: 'Postojanje odgovornosti Zaposlenog, okolnosti pod kojima je šteta nastala, njena visina i način naknade utvrđuju se u skladu sa Zakonom o radu, opštim aktima Poslodavca i sporazumom ugovornih strana, a ukoliko sporazum nije postignut, pred nadležnim sudom.' },
+        { kind: 'para', text: 'Prava na pronalascima, autorskim delima, programima, tehničkim rešenjima i drugim rezultatima intelektualnog rada koje Zaposleni stvori u izvršavanju svojih radnih obaveza, po nalogu Poslodavca ili pretežnim korišćenjem sredstava, dokumentacije i poverljivih podataka Poslodavca, uređuju se u skladu sa zakonom i drugim propisima kojima se uređuju prava intelektualne svojine.' },
       ],
     },
-    { paras: ['Послодавац је дужан да Запосленом организује рад на начин који обезбеђује безбедност и здравље на раду, у складу са Законом и другим прописима.'] },
-    { paras: ['Послодавац је обавезан да редовно подноси потребне пријаве за обавезно социјално осигурање и да на време плаћа доприносе у складу са Законом.'] },
-    { paras: ['На сва права, обавезе и одговорности Запосленог и Послодавца која нису уређена овим Уговором, примењују се одредбе Закона.'] },
-    { paras: ['Овај уговор може да откаже свака од уговорних страна, под условима и у случајевима утврђеним Законом и Уговором.'] },
+    { paras: ['Poslodavac je dužan da Zaposlenom organizuje rad na način koji obezbeđuje bezbednost i zdravlje na radu, u skladu sa Zakonom i drugim propisima.'] },
+    { paras: ['Poslodavac je obavezan da redovno podnosi potrebne prijave za obavezno socijalno osiguranje i da na vreme plaća doprinose u skladu sa Zakonom.'] },
+    { paras: ['Na sva prava, obaveze i odgovornosti Zaposlenog i Poslodavca koja nisu uređena ovim Ugovorom, primenjuju se odredbe Zakona.'] },
+    { paras: ['Ovaj ugovor može da otkaže svaka od ugovornih strana, pod uslovima i u slučajevima utvrđenim Zakonom i Ugovorom.'] },
     {
       paras: [
-        'Запослени је дужан да радне обавезе извршава савесно и у предвиђеним роковима и да поштује радну дисциплину код послодавца.',
-        'Запослени одговара за повреде радних обавеза и непоштовање радне дисциплине утврђене Законом и Правилником о раду и овим Уговором.',
+        'Zaposleni je dužan da radne obaveze izvršava savesno i u predviđenim rokovima i da poštuje radnu disciplinu kod poslodavca.',
+        'Zaposleni odgovara za povrede radnih obaveza i nepoštovanje radne discipline utvrđene Zakonom i Pravilnikom o radu i ovim Ugovorom.',
       ],
     },
-    { paras: ['На сва права, обавезе и одговорности које нису уређене овим уговором примењују се одговарајуће одредбе Правилника о раду и Закона.'] },
-    { paras: ['Овај Уговор сачињен је у 3 (три) истоветна примерка, од којих 2 (два) задржава Послодавац, а 1 (један) Запослени.'] },
+    { paras: ['Na sva prava, obaveze i odgovornosti koje nisu uređene ovim ugovorom primenjuju se odgovarajuće odredbe Pravilnika o radu i Zakona.'] },
+    { paras: ['Ovaj Ugovor sačinjen je u 3 (tri) istovetna primerka, od kojih 2 (dva) zadržava Poslodavac, a 1 (jedan) Zaposleni.'] },
   ];
 
-  return articles.map((art, i) => ({ ...art, title: `Члан ${i + 1}.` }));
+  return articles.map((art, i) => ({ ...art, title: `Član ${i + 1}.` }));
 }
 
 export async function generateContractPdf(d: ContractInput): Promise<{ blob: Blob; fileName: string }> {
   const { doc } = await newPdf('portrait');
   let y = BODY_TOP;
-  const ime = cyr(d.imePrezime);
+  const ime = lat(d.imePrezime);
 
   const pageBreak = (need: number) => {
     if (y + need > BODY_BOTTOM) { doc.addPage(); y = BODY_TOP; }
@@ -247,38 +268,41 @@ export async function generateContractPdf(d: ContractInput): Promise<{ blob: Blo
     y += gap;
   };
 
-  para('У складу са одредбама члана 30 Закона о раду (Службени гласник РС бр. 24/05, 61/05, 54/09, 32/13 и 75/14, 13/2017 – одлука УС, 113/2017 и 95/2018 – аутентично тумачење), уговорне стране, и то:');
-  para('1. Друштво за пројектовање, производњу, трговину и услуге „СЕРВОТЕХ" доо Добановци, ул. Угриновачка бр. 163 (даље: Послодавац), и');
-  para(`2. ${ime}, ЈМБГ ${d.jmbg}, са пребивалиштем-боравиштем на дан закључења овог уговора у ${cyr(d.prebivaliste)}, са ${cyr(d.stepenSS)} стручне спреме, по занимању ${cyr(d.zanimanje)} (даље: Запослени),`);
-  para('закључују следећи:', { align: 'center', gap: 2 });
-  para('УГОВОР О РАДУ', { bold: true, align: 'center', size: 13, gap: 3 });
+  para('U skladu sa odredbama člana 30 Zakona o radu (Službeni glasnik RS br. 24/05, 61/05, 54/09, 32/13 i 75/14, 13/2017 – odluka US, 113/2017 i 95/2018 – autentično tumačenje), ugovorne strane, i to:');
+  para('1. Društvo za projektovanje, proizvodnju, trgovinu i usluge „SERVOTEH" doo Dobanovci, ul. Ugrinovačka br. 163 (dalje: Poslodavac), i');
+  para(`2. ${ime}, JMBG ${d.jmbg}, sa prebivalištem-boravištem na dan zaključenja ovog ugovora u ${lat(d.prebivaliste)}, sa ${lat(d.stepenSS)} stručne spreme, po zanimanju ${lat(d.zanimanje)} (dalje: Zaposleni),`);
+  para('zaključuju sledeći:', { align: 'center', gap: 2 });
+  para('UGOVOR O RADU', { bold: true, align: 'center', size: 13, gap: 3 });
 
   for (const art of buildArticles(d)) {
     pageBreak(LINE_H * 3);
     if (art.title) para(art.title, { bold: true, align: 'center', gap: 1.2 });
     (art.paras || []).forEach((p) => para(p));
-    if (art.list) {
-      art.list.forEach((item, i) => para(`${i + 1}. ${item}`, { indent: 6, gap: 0.6 }));
-      y += 1;
-    }
+    (art.blocks || []).forEach((b) => {
+      if (b.kind === 'para') para(b.text);
+      else {
+        b.items.forEach((item, i) => para(`${i + 1}. ${item}`, { indent: 6, gap: 0.6 }));
+        y += 1;
+      }
+    });
   }
 
   y += 2;
   pageBreak(34);
-  para(`У ${MESTO_POTPISA_CYR}, дана ${d.datumPotpisa} године,`, { gap: 8 });
+  para(`U ${MESTO_POTPISA}, dana ${d.datumPotpisa} godine,`, { gap: 8 });
   const colL = MARGIN + CONTENT_W * 0.18;
   const colR = MARGIN + CONTENT_W * 0.82;
   doc.setFont('Roboto', 'normal');
   doc.setFontSize(FONT_PT);
-  doc.text('Запослени,', colL, y, { align: 'center' });
-  doc.text('За Послодавца,', colR, y, { align: 'center' });
+  doc.text('Zaposleni,', colL, y, { align: 'center' });
+  doc.text('Za Poslodavca,', colR, y, { align: 'center' });
   y += 14;
   doc.setDrawColor(40, 40, 40);
   doc.line(colL - 24, y, colL + 24, y);
   doc.line(colR - 24, y, colR + 24, y);
   y += 5;
   doc.text(ime, colL, y, { align: 'center' });
-  doc.text(cyr(d.potpisPoslodavac) || 'Ненад Јараковић', colR, y, { align: 'center' });
+  doc.text(lat(d.potpisPoslodavac) || 'Nenad Jaraković', colR, y, { align: 'center' });
 
   const total = doc.getNumberOfPages();
   for (let i = 1; i <= total; i++) {
@@ -286,7 +310,7 @@ export async function generateContractPdf(d: ContractInput): Promise<{ blob: Blo
     doc.setFont('Roboto', 'normal');
     doc.setFontSize(8);
     doc.setTextColor(140, 140, 140);
-    doc.text(`Уговор о раду — ${ime}`, MARGIN, PAGE_H - 8);
+    doc.text(`Ugovor o radu — ${ime}`, MARGIN, PAGE_H - 8);
     doc.text(`${i} / ${total}`, PAGE_W - MARGIN, PAGE_H - 8, { align: 'right' });
   }
 
