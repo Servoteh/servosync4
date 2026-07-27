@@ -8,7 +8,7 @@ import { formatDate } from '@/lib/format';
 import {
   generateContractPdf,
   generateEmploymentDecisionPdf,
-  toCyrillic,
+  toLatin,
   openBlob,
   downloadBlob,
   type ContractInput,
@@ -154,23 +154,27 @@ export function ContractGenerateDialog({
     setError(null);
     try {
       const prebivaliste = [prep.pii.city, prep.pii.address].filter(Boolean).join(', ');
+      // Ugovor se od 27.07.2026. štampa LATINICOM (odluka vlasnika) — podaci idu
+      // kakvi jesu iz baze (latinica), a generator ih za svaki slučaj propušta
+      // kroz toLatin. Deljeni `stepenSpremeCyr`/`trajanjeCyr`/`formatRsd` i dalje
+      // vraćaju ćirilicu jer ih koriste rešenja i potvrde — tu ih latinizuje PDF.
       const data: ContractInput = {
         tip: contract.contractType === 'odredjeno' ? 'odredjeno' : 'neodredjeno',
         maloletnik,
-        imePrezime: toCyrillic(empName),
+        imePrezime: empName,
         jmbg: prep.pii.personal_id || '________________',
-        prebivaliste: toCyrillic(prebivaliste || '________'),
+        prebivaliste: prebivaliste || '________',
         stepenSS: stepenSpremeCyr(prep.pii.education_level),
-        zanimanje: toCyrillic(prep.pii.education_title || '________'),
-        radnoMesto: toCyrillic(prep.position.name),
-        nadredjeni: prep.position.reportsToLine ? toCyrillic(prep.position.reportsToLine) : '',
+        zanimanje: prep.pii.education_title || '________',
+        radnoMesto: prep.position.name,
+        nadredjeni: prep.position.reportsToLine || '',
         brutoZarada: formatRsd(prep.bruto),
         datumPocetka: contract.dateFrom ? formatDate(contract.dateFrom) : '________',
         trajanje: trajanjeCyr(contract.dateFrom, contract.dateTo),
         datumPotpisa: formatDate(signDate),
         probniRad: contract.probniRad === true,
         probniMeseci: Number(contract.probniMeseci) || 6,
-        potpisPoslodavac: 'Ненад Јараковић',
+        potpisPoslodavac: 'Nenad Jaraković',
       };
       const { blob, fileName } = await generateContractPdf(data);
       const file = new File([blob], fileName, { type: 'application/pdf' });
@@ -224,7 +228,7 @@ export function ContractGenerateDialog({
               <Info label="Bruto (BRUTO I)" value={formatRsd(prep.bruto)} />
               {contract.dateFrom && <Info label="Početak rada" value={formatDate(contract.dateFrom)} />}
               {contract.contractType === 'odredjeno' && contract.dateTo && (
-                <Info label="Trajanje" value={trajanjeCyr(contract.dateFrom, contract.dateTo).replace(/\(.+?\)\s*/, '')} />
+                <Info label="Trajanje" value={toLatin(trajanjeCyr(contract.dateFrom, contract.dateTo).replace(/\(.+?\)\s*/, ''))} />
               )}
               {contract.probniRad && (
                 <Info label="Probni rad" value={`${Number(contract.probniMeseci) || 6} ${mesecWord(Number(contract.probniMeseci) || 6)}`} />
