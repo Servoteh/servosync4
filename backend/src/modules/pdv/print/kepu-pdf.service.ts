@@ -1,4 +1,8 @@
 import { BadRequestException, Injectable } from "@nestjs/common";
+import {
+  KEP_VALUATION_LABEL,
+  type KepValuation,
+} from "../../../common/switches/kep-valuation";
 import { Prisma } from "@prisma/client";
 import type {
   Content,
@@ -167,6 +171,7 @@ export class KepuPdfService {
     const { year, month, warehouseId } = this.assertArgs(args);
 
     // Cela godina — donos strane se ne može izračunati iz jednog meseca.
+    const valuation = await this.kepu.currentValuation();
     const yearRows = await this.kepu.book(year, undefined, warehouseId);
     if (yearRows.length > MAX_YEAR_ROWS) {
       // Savet mora biti IZVRŠIV: provera se radi nad CELOM godinom (donos se bez nje
@@ -204,6 +209,7 @@ export class KepuPdfService {
       warehouseName,
       periodLabel,
       pages,
+      valuation,
       totalRows: selected.length,
       isLegalForm,
     });
@@ -271,6 +277,8 @@ export class KepuPdfService {
     totalRows: number;
     /** `true` = izabran je jedan magacin → obrazac KEP; `false` = interni pregled. */
     isLegalForm: boolean;
+    /** Princip vrednovanja (MP/VP) — ispisuje se u nozi obrasca. */
+    valuation: KepValuation;
   }): TDocumentDefinitions {
     const {
       issuer,
@@ -280,6 +288,7 @@ export class KepuPdfService {
       pages,
       totalRows,
       isLegalForm,
+      valuation,
     } = args;
 
     const content: Content[] = [
@@ -318,7 +327,7 @@ export class KepuPdfService {
       });
     }
 
-    content.push(this.buildLegend(totalRows, pages, isLegalForm));
+    content.push(this.buildLegend(totalRows, pages, isLegalForm, valuation));
     // Potpisno mesto „Odgovorno lice" postoji SAMO na zakonskom obrascu. Interni
     // pregled svih magacina se ne potpisuje kao knjiga — to bi ga predstavilo kao
     // obrazac KEP, a po čl. 3 Pravilnika knjiga se vodi po prodajnom mestu.
@@ -524,6 +533,7 @@ export class KepuPdfService {
     totalRows: number,
     pages: BookPage[],
     isLegalForm: boolean,
+    valuation: KepValuation,
   ): Content {
     let charge = ZERO;
     let discharge = ZERO;
@@ -577,12 +587,17 @@ export class KepuPdfService {
         "(koje čl. 15 takođe traži) evidencija još ne pamti po redu knjige — dopunjuje se " +
         "ručno do dopune punjenja knjige.",
     });
+    // Princip vrednovanja se ISPISUJE na obrascu, ne podrazumeva. Knjiga vođena po
+    // jednom principu i knjiga vođena po drugom izgledaju isto na papiru — bez ovog
+    // reda se ne bi videlo koja je koja, ni pri kontroli ni godinu dana kasnije.
     stack.push({
       style: "note",
       margin: [0, 2, 0, 0],
       text:
-        "Vrednovanje reda: maloprodajna (MP) vrednost robe — tako knjigu puni robni tok. " +
-        "Ako se za obveznika vodi veleprodajna knjiga, princip vrednovanja uskladiti pre predaje.",
+        `Vrednovanje reda: ${KEP_VALUATION_LABEL[valuation]} ` +
+        `(${valuation}) — princip je podešen u Podešavanjima i primenjen na ceo period. ` +
+        `Promena principa menja i ranije odštampane periode, jer se oba vrednovanja ` +
+        `čuvaju uz svaki red.`,
     });
     if (!isLegalForm) {
       stack.push({

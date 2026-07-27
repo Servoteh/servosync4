@@ -145,6 +145,9 @@ function setup(rows: KepuBookRow[]) {
 
   const kepu = {
     book: jest.fn().mockResolvedValue(rows),
+    // Princip vrednovanja (MP/VP) se čita iz Podešavanja pri svakoj štampi; testovi
+    // rade po podrazumevanom MP, pa se ispisana napomena i iznosi ne menjaju.
+    currentValuation: jest.fn().mockResolvedValue("MP"),
   } as unknown as KepuService;
 
   const service = new KepuPdfService(prisma, pdf, kepu);

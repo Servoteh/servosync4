@@ -3507,8 +3507,14 @@ model KepuBookEntry {
   warehouseId Int      @map("warehouse_id") // meki ref warehouses.id
   documentId  Int?     @map("document_id") // izvorni StockDocument (meki ref)
   entryDate   DateTime @map("entry_date") @db.Timestamptz(6)
-  charge      Decimal  @default(0) @map("charge") @db.Decimal(19, 4) // zaduženje (MagUlaz)
-  discharge   Decimal  @default(0) @map("discharge") @db.Decimal(19, 4) // razduženje (MagStvarniIzlaz)
+  charge      Decimal  @default(0) @map("charge") @db.Decimal(19, 4) // zaduženje (MagUlaz), MALOPRODAJNA vrednost
+  discharge   Decimal  @default(0) @map("discharge") @db.Decimal(19, 4) // razduženje (MagStvarniIzlaz), MALOPRODAJNA
+  /// Isti red vrednovan po VELEPRODAJNOJ ceni. Knjiga se po Pravilniku može voditi po
+  /// MP ili po VP ceni; oba iznosa se upisuju pri knjiženju da izbor principa u
+  /// Podešavanjima bude RETROAKTIVAN — ranije odštampana knjiga se može ponovo izdati
+  /// po drugom principu bez ponovnog knjiženja. Smer je isti, razlikuje se samo cena.
+  chargeVp    Decimal  @default(0) @map("charge_vp") @db.Decimal(19, 4)
+  dischargeVp Decimal  @default(0) @map("discharge_vp") @db.Decimal(19, 4)
   description String?  @map("description") @db.VarChar(255)
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
@@ -4588,6 +4594,9 @@ model ScheduledJobRun {
 model AppSwitch {
   key             String   @id(map: "pk_app_switches") @map("key") @db.VarChar(64)
   enabled         Boolean  @default(true) @map("enabled")
+  /// Podešavanja koja nisu DA/NE nose vrednost ovde (npr. princip vrednovanja KEP
+  /// knjige: "MP" ili "VP"). Prekidači je ostavljaju praznu i koriste samo `enabled`.
+  value           String?  @map("value") @db.VarChar(64)
   /// Zašto je ugašen/upaljen — slobodan tekst koji admin upiše uz preklop (vidi se na ekranu).
   note            String?  @map("note")
   updatedByUserId Int?     @map("updated_by_user_id")

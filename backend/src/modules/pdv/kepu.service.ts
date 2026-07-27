@@ -16,6 +16,11 @@
 import { Injectable } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
+import {
+  KEP_VALUATION_SWITCH,
+  type KepValuation,
+  parseKepValuation,
+} from "../../common/switches/kep-valuation";
 
 const D = Prisma.Decimal;
 const ZERO = new D(0);
@@ -77,6 +82,36 @@ export class KepuService {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
+   * Princip vrednovanja knjige iz Podesavanja (MP ili VP). Cita se pri SVAKOM upitu —
+   * preklop vazi odmah, bez restarta. Kad podesavanje ne postoji, pada na MP
+   * (zateceno ponasanje) umesto da obori stampu.
+   */
+  async currentValuation(): Promise<KepValuation> {
+    return this.resolveValuation();
+  }
+
+  private async resolveValuation(): Promise<KepValuation> {
+    const row = await this.prisma.appSwitch.findUnique({
+      where: { key: KEP_VALUATION_SWITCH },
+      select: { value: true },
+    });
+    return parseKepValuation(row?.value);
+  }
+
+  /** SQL kolone za izabrani princip — MP koristi charge/discharge, VP njihove _vp parnjake. */
+  private valuationColumns(v: KepValuation) {
+    return v === "VP"
+      ? {
+          charge: Prisma.sql`kbe.charge_vp`,
+          discharge: Prisma.sql`kbe.discharge_vp`,
+        }
+      : {
+          charge: Prisma.sql`kbe.charge`,
+          discharge: Prisma.sql`kbe.discharge`,
+        };
+  }
+
+  /**
    * Rekapitulacija KEPU po magacinu za period [od, do). Ako `warehouseId` nije
    * zadat, vraća sve magacine. Period se filtrira po `entry_date`.
    *
@@ -95,6 +130,9 @@ export class KepuService {
         ? new Date(Date.UTC(year, month, 1))
         : new Date(Date.UTC(year + 1, 0, 1));
 
+    const valuation = await this.resolveValuation();
+    const col = this.valuationColumns(valuation);
+
     const warehouseFilter =
       warehouseId != null
         ? Prisma.sql`AND kbe.warehouse_id = ${warehouseId}`
@@ -104,8 +142,8 @@ export class KepuService {
       Prisma.sql`
         SELECT
           kbe.warehouse_id AS warehouse_id,
-          COALESCE(SUM(kbe.charge), 0) AS total_charge,
-          COALESCE(SUM(kbe.discharge), 0) AS total_discharge,
+          COALESCE(SUM(${col.charge}), 0) AS total_charge,
+          COALESCE(SUM(${col.discharge}), 0) AS total_discharge,
           COUNT(*) AS entry_count
         FROM kepu_book_entries kbe
         WHERE kbe.entry_date >= ${from}
@@ -154,6 +192,9 @@ export class KepuService {
         ? new Date(Date.UTC(year, month, 1))
         : new Date(Date.UTC(year + 1, 0, 1));
 
+    const valuation = await this.resolveValuation();
+    const col = this.valuationColumns(valuation);
+
     const warehouseFilter =
       warehouseId != null
         ? Prisma.sql`AND kbe.warehouse_id = ${warehouseId}`
@@ -169,9 +210,9 @@ export class KepuService {
             sd.document_number,
             sd.document_date,
             kbe.description,
-            kbe.charge,
-            kbe.discharge,
-            SUM(kbe.charge - kbe.discharge)
+            ${col.charge} AS charge,
+            ${col.discharge} AS discharge,
+            SUM(${col.charge} - ${col.discharge})
               OVER (ORDER BY kbe.entry_date, kbe.id) AS running_balance
           FROM kepu_book_entries kbe
           LEFT JOIN stock_documents sd ON sd.id = kbe.document_id
