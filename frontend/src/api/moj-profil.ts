@@ -67,7 +67,33 @@ export interface ProfileSummary {
   unacknowledgedTalks: number;
 }
 
-export type VacationBalance = { days_remaining?: number | null; year?: number } & Record<string, unknown>;
+export type VacationBalance = {
+  /** Kalendarski saldo: pravo za CELU godinu − iskorišćeno − planirano. */
+  days_remaining?: number | null;
+  /** Saldo po pravu STEČENOM do danas (1/12 po navršenom mesecu) — ono što 1.0 prikazuje. */
+  days_remaining_accrued?: number | null;
+  year?: number;
+} & Record<string, unknown>;
+
+/**
+ * „Preostalo dana GO" za PRIKAZ korisniku — 1.0 kanon (`mojProfil/index.js:1222, 2719`):
+ * `days_remaining_accrued ?? days_remaining`.
+ *
+ * ⚠️ ZAHTEV 028/26: 3.0 je svuda prikazivao KALENDARSKI `days_remaining` (pravo do kraja
+ * godine), pa je npr. radnik koji je do jula stekao 7 dana video 15. Pogađalo je 132/135
+ * zaposlenih. Kalendarski broj ostaje tvrda kapa na serveru (avansno korišćenje je
+ * dozvoljeno), ali se KORISNIKU prikazuje stečeno. Jedno mesto istine za sve ekrane.
+ */
+export function vacationRemaining(
+  balance: { days_remaining?: number | null; days_remaining_accrued?: number | null } | null | undefined,
+): number | null {
+  if (!balance) return null;
+  const accrued = balance.days_remaining_accrued;
+  if (accrued != null && Number.isFinite(Number(accrued))) return Number(accrued);
+  const calendar = balance.days_remaining;
+  if (calendar != null && Number.isFinite(Number(calendar))) return Number(calendar);
+  return null;
+}
 export type VacationRequest = {
   id: string;
   year: number;
@@ -298,6 +324,8 @@ export type TeamAbsence = {
 /** GO saldo člana — sirov `v_vacation_balance` red (snake kolone). */
 export type TeamBalance = {
   days_remaining?: number | null;
+  /** Stečeno do danas — za prikaz se koristi ovo (vidi `vacationRemaining`). */
+  days_remaining_accrued?: number | null;
   days_earned?: number | null;
   days_total?: number | null;
   days_carried_over?: number | null;

@@ -25,6 +25,7 @@ import {
   useTeamAttendance,
   useTeamAttendanceEvents,
   teamHoursQuery,
+  vacationRemaining,
   type TeamMember,
   type TeamAbsence,
   type TeamToolRow,
@@ -318,7 +319,9 @@ function TeamRow({
   onCorrect: () => void;
 }) {
   const bal = m.balance;
-  const rem = bal ? num(bal.days_remaining) : null;
+  // ZAHTEV 028/26: „preostalo" u rosteru je isto što šef vidi u obrascu GO za tog
+  // radnika — mora biti STEČENO do danas (1.0 kanon), ne kalendarsko pravo.
+  const rem = bal ? vacationRemaining(bal) : null;
   const tot = bal ? num(bal.days_earned ?? bal.days_total) + num(bal.days_carried_over) : null;
   const balTxt = bal ? `${fmtGrid(rem)} / ${fmtGrid(tot)}` : '—';
   const balLow = bal != null && rem != null && rem <= 0;
@@ -381,7 +384,7 @@ function TeamMemberDetail({ m, onCorrect }: { m: TeamMember; onCorrect: () => vo
 
   const bal = m.balance;
   const goLine = bal
-    ? `Godišnji: ukupno ${fmtGrid(num(bal.days_earned ?? bal.days_total) + num(bal.days_carried_over))}, iskorišćeno ${fmtGrid(num(bal.days_used))}, preostalo ${fmtGrid(num(bal.days_remaining))}`
+    ? `Godišnji: ukupno ${fmtGrid(num(bal.days_earned ?? bal.days_total) + num(bal.days_carried_over))}, iskorišćeno ${fmtGrid(num(bal.days_used))}, preostalo ${fmtGrid(num(vacationRemaining(bal)))}`
     : 'Saldo godišnjeg: nema podataka';
 
   const absParts: ReactNode[] = [];
