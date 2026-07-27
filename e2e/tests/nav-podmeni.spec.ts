@@ -14,6 +14,10 @@ import { test, expect, type Page } from '@playwright/test';
 //   7) preseljena finansijska stavka („Kursne razlike") je PODSTAVKA Saldakonta, a ne više
 //      red prvog nivoa — meni je pao sa 12 na 9 stavki u domenu „Finansije".
 //
+// 27.07 (UX presuda nad Sastancima) dodaje:
+//   8) „Podešavanja" su izašla iz ⚙ u glavnu tab-traku, a „Arhiva" je iza ⚙ ostala bez
+//      `sastanci.edit` gate-a (deep-link je ne vraća tiho na „Pregled").
+//
 // Zahteva sidebar u punom režimu (default) i viewport ≥1024px (config: 1440×900).
 
 /** Sačekaj klijentski render/hidraciju (isti obrazac kao modules.smoke.spec.ts). */
@@ -95,6 +99,34 @@ test('Sastanci — stari 1.0 alias deep-link i dalje sleće na tačan tab', asyn
 
   expect(new URL(page.url()).searchParams.get('tab')).toBe('akcioni');
   expect(await stillSameDocument(page)).toBe(true);
+});
+
+test('Sastanci — „Podešavanja" su tab u glavnoj traci, ne stavka ⚙ menija', async ({ page }) => {
+  // 27.07: posle gate-a nad ⚙ sekcijama „Podešavanja" (lična mejl-obaveštenja) su ostala
+  // jedina ne-admin stavka u admin fioci → izašla su u glavnu tab-traku. Dok su bila iza ⚙,
+  // strana je na ovom deep-linku SAKRIVALA tab-traku, pa je ovaj assert tačna brana.
+  await page.goto('/sastanci?tab=podesavanja', { waitUntil: 'domcontentloaded' });
+  await settle(page);
+  await expect(selectedTab(page)).toHaveText('Podešavanja');
+  // Po href-u, ne po nazivu: „Podešavanja" nije jedinstven naziv u sidebaru (postoji i
+  // istoimeni modul prvog nivoa, i podstavka Projektnog biroa).
+  await expect(
+    page.locator('aside a[href="/sastanci?tab=podesavanja"]'),
+  ).toHaveAttribute('aria-current', 'page');
+
+  // Nazad na „Pregled" klikom u traci — dokaz da su Podešavanja ravnopravan tab, ne sekcija.
+  await markNoReload(page);
+  await page.locator('[role="tab"]', { hasText: 'Pregled' }).first().click();
+  await page.waitForTimeout(600);
+  expect(new URL(page.url()).searchParams.get('tab')).toBe('pregled');
+  expect(await stillSameDocument(page)).toBe(true);
+
+  // „Arhiva" ostaje iza ⚙ (nema je u traci), ali je od 27.07 bez `sastanci.edit` gate-a —
+  // deep-link više ne sme tiho da vrati na „Pregled". Test korisnik je admin, pa ovo hvata
+  // samo regresiju guard-redirecta, ne i vidljivost čitalačkim ulogama (nema takvog naloga).
+  await page.goto('/sastanci?tab=arhiva', { waitUntil: 'domcontentloaded' });
+  await settle(page);
+  expect(new URL(page.url()).searchParams.get('tab')).toBe('arhiva');
 });
 
 test('Montaža — pogledi su direktne stavke domena i menjaju prikaz iz sidebara', async ({ page }) => {

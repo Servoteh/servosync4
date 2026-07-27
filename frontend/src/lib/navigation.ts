@@ -440,31 +440,35 @@ export const NAV_DOMAINS: NavDomain[] = [
         icon: CalendarClock,
         requires: PERMISSIONS.SASTANCI_READ,
         keywords: ['sastanci', 'meeting'],
-        // PODMENIJI F1 (§3.8): 4 glavna taba + 6 tabova koji su danas skriveni iza ⚙
-        // dropdown-a — najskriveniji ekrani u aplikaciji. Ključevi `?tab=` su iz strane
-        // (MainKey/AdminKey u sastanci/page.tsx); stari 1.0 id-jevi (dashboard, akcioni-plan,
-        // pregled-projekti, podesavanja-notif) idu u `keywords` da Ctrl+K nalazi i po njima —
-        // sam deep-link ih i dalje prevodi TAB_DEEPLINK_ALIAS mapom u strani.
+        // PODMENIJI F1 (§3.8): 5 glavnih tabova + 5 tabova koji su skriveni iza ⚙ dropdown-a
+        // — najskriveniji ekrani u aplikaciji. Ključevi `?tab=` su iz strane (MainKey/GearKey
+        // u sastanci/page.tsx); stari 1.0 id-jevi (dashboard, akcioni-plan, pregled-projekti,
+        // podesavanja-notif) idu u `keywords` da Ctrl+K nalazi i po njima — sam deep-link ih
+        // i dalje prevodi TAB_DEEPLINK_ALIAS mapom u strani.
         //
-        // GATE (F1 nalaz 1, 26.07): 5 admin ekrana stoji na `sastanci.edit` — to je 1.0
+        // GATE (F1 nalaz 1, 26.07): 4 admin ekrana stoje na `sastanci.edit` — to je 1.0
         // `canEdit()` / `has_edit_role` krug (admin/menadzment/pm/leadpm/hr/poslovni_admin) i
         // JEDINI krug koji sme da mutira ono što ti ekrani nude (backend: `@RequirePermission
         // (SASTANCI_EDIT)` na templates CRUD, teme, draft-review/uvedi, admin-rang, dodeli).
-        // „Podešavanja" NAMERNO ostaje bez `requires`: to su LIČNA podešavanja mejl-obaveštenja
-        // (`PATCH /sastanci/prefs` je self-service, gejtovan samo `sastanci.read` + RLS po
-        // email claim-u), a AI model unutar njega već ima svoj `Can` (sastanci.ai_model).
-        // Izvor istine za isti gate u strani = `ADMIN_ITEMS` u sastanci/page.tsx.
+        // Bez `requires` (27.07, presuda Nenada) namerno ostaju:
+        //   • „Podešavanja" — LIČNA podešavanja mejl-obaveštenja (`PATCH /sastanci/prefs` je
+        //     self-service, gejtovan samo `sastanci.read` + RLS po email claim-u); zato su i
+        //     u strani izašla iz ⚙ u glavnu tab-traku, uz ostala 4 taba;
+        //   • „Arhiva" — čitanje starih zapisnika (`GET /sastanci/arhive`, `:id/arhiva/pdf`
+        //     stoje na klasnom `sastanci.read`); tab je read-only, mutacija arhive živi u
+        //     zaključavanju i nosi svoj SASTANCI_EDIT.
+        // Izvor istine za isti gate u strani = `GEAR_ITEMS` u sastanci/page.tsx.
         children: [
           { label: 'Pregled', href: '/sastanci?tab=pregled', keywords: ['pregled', 'dashboard', 'SAS-PR'] },
           { label: 'Sastanci', href: '/sastanci?tab=sastanci', keywords: ['lista sastanaka', 'termini', 'SAS-SA'] },
           { label: 'Moj rad', href: '/sastanci?tab=moj-rad', keywords: ['moj rad', 'moje teme', 'moje obaveze', 'SAS-MR'] },
           { label: 'Akcioni plan', href: '/sastanci?tab=akcioni', keywords: ['akcioni plan', 'akcioni-plan', 'zadaci', 'SAS-AP'] },
+          { label: 'Podešavanja', href: '/sastanci?tab=podesavanja', keywords: ['podesavanja sastanaka', 'podesavanja-notif', 'notifikacije', 'SAS-PD'] },
           { label: 'PM teme', href: '/sastanci?tab=pm-teme', requires: PERMISSIONS.SASTANCI_EDIT, keywords: ['pm teme', 'teme projektnih menadzera', 'SAS-PM'] },
           { label: 'Po projektu', href: '/sastanci?tab=po-projektu', requires: PERMISSIONS.SASTANCI_EDIT, keywords: ['po projektu', 'pregled-projekti', 'predmeti', 'SAS-PP'] },
           { label: 'Draft teme', href: '/sastanci?tab=draft-teme', requires: PERMISSIONS.SASTANCI_EDIT, keywords: ['draft teme', 'nacrti tema', 'SAS-DT'] },
           { label: 'Šabloni', href: '/sastanci?tab=sabloni', requires: PERMISSIONS.SASTANCI_EDIT, keywords: ['sabloni', 'template', 'SAS-SB'] },
-          { label: 'Arhiva', href: '/sastanci?tab=arhiva', requires: PERMISSIONS.SASTANCI_EDIT, keywords: ['arhiva', 'stari sastanci', 'SAS-AR'] },
-          { label: 'Podešavanja', href: '/sastanci?tab=podesavanja', keywords: ['podesavanja sastanaka', 'podesavanja-notif', 'notifikacije', 'SAS-PD'] },
+          { label: 'Arhiva', href: '/sastanci?tab=arhiva', keywords: ['arhiva', 'stari sastanci', 'SAS-AR'] },
         ],
       },
       { label: 'AI asistent', href: '/ai', icon: Bot, requires: PERMISSIONS.AI_CHAT, keywords: ['ai', 'asistent', 'chat'] },

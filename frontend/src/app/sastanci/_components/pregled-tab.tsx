@@ -40,7 +40,7 @@ export function PregledTab({
 }: {
   myEmail: string;
   /** Sme li uloga na tab „PM teme" (`sastanci.edit`) — prečice ka njemu prate isti gate
-   *  (bez ovoga bi ih guard u strani nemo vraćao na Pregled); gate živi u `ADMIN_ITEMS`. */
+   *  (bez ovoga bi ih guard u strani nemo vraćao na Pregled); gate živi u `GEAR_ITEMS`. */
   canPmTeme: boolean;
   onJump: (tab: 'sastanci' | 'akcioni' | 'pmteme') => void;
 }) {
