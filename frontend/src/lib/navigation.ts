@@ -37,6 +37,7 @@ import {
   ListChecks,
   ListOrdered,
   MapPin,
+  Package,
   PackageCheck,
   PencilRuler,
   Radar,
@@ -501,6 +502,21 @@ export const NAV_DOMAINS: NavDomain[] = [
       // { label: 'Upiti kupaca', href: '/rfqs', icon: ClipboardList, requires: PERMISSIONS.SALES_READ, keywords: ['rfq', 'zahtev za ponudu', 'upit kupca'] },
     ],
     groups: [
+      {
+        // Matični podaci 4.0 (backend `masters`) — READ-ONLY pregled BigBit cache
+        // tabela `items`/`customers`. Unos ostaje u BigBit-u (prelazni režim), pa
+        // ovde nema „Novi artikal/komitent" — samo pretraga i kartica.
+        // ⚠️ „Komitenti" postoji i u domenu „Sistem" (`/customers`) — to je stariji,
+        // NAMERNO suženi 2.0 pregled (bez računa/rabata/limita); ova stavka je pun
+        // matični karton 4.0. Obe rute stoje na `directory.read`.
+        id: 'maticni-podaci',
+        title: 'Matični podaci',
+        icon: Layers,
+        modules: [
+          { label: 'Artikli', href: '/artikli', icon: Package, requires: PERMISSIONS.DIRECTORY_READ, keywords: ['artikli', 'roba', 'sifarnik artikala', 'kataloski broj', 'barkod', 'maticni podaci'] },
+          { label: 'Komitenti', href: '/komitenti', icon: Building2, requires: PERMISSIONS.DIRECTORY_READ, keywords: ['komitenti', 'kupci', 'dobavljaci', 'pib', 'sifarnik komitenata', 'maticni podaci'] },
+        ],
+      },
       {
         id: 'fakturisanje',
         title: 'Fakturisanje',
