@@ -16,6 +16,7 @@ import { LookupsModule } from "./modules/lookups/lookups.module";
 import { StructuresModule } from "./modules/structures/structures.module";
 import { PdmModule } from "./modules/pdm/pdm.module";
 import { DirectoryModule } from "./modules/directory/directory.module";
+import { MastersModule } from "./modules/masters/masters.module";
 import { HandoversModule } from "./modules/handovers/handovers.module";
 import { PartLocationsModule } from "./modules/part-locations/part-locations.module";
 import { CncProgramsModule } from "./modules/cnc-programs/cnc-programs.module";
@@ -71,6 +72,9 @@ import { MontazaNeusaglasenostiModule } from "./modules/montaza-neusaglasenosti/
     StructuresModule,
     PdmModule,
     DirectoryModule,
+    // 4.0 Matični podaci — read-only pregled Artikala i Komitenata (BigBit cache;
+    // unos ostaje u BigBit-u, prelazni režim). Bez mutacija (BACKEND_RULES §3).
+    MastersModule,
     HandoversModule,
     // Nabavka (4.0 Traka B — zahtev → upit dobavljaču → narudžbenica → prijem)
     NabavkaModule,
