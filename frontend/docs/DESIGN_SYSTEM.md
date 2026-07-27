@@ -130,6 +130,13 @@
   fullscreen): pozdrav + „Brzo" prečice (MRU `recentModules` iz `useUiPrefs`) + mreža domenskih pločica
   (moduli-linkovi po `NAV_DOMAINS`, RBAC-filtrirano, „u razvoju" badge za WIP). Namena je agregacija ulaza
   u module, nije lista/forma/master-detalj — ostali ekrani i dalje moraju biti jedan od gornja tri obrasca.
+  **Raspored je kompaktan masonry (presuda 27.07.2026):** pločice stoje u CSS kolonama
+  (`columns-1 sm:columns-2 lg:columns-3 xl:columns-4` + `break-inside-avoid` i donja margina umesto
+  `grid`), pa svaka zauzima tačno visinu svog sadržaja — grid je izjednačavao vrstu po najvišoj pločici
+  i pravio prazninu. Gustina je stepenasta: od `lg` naviše ide zbijen desktop ritam (ikona domena 7×7,
+  naslov `text-base`, redovi `text-sm` sa `py-1`, kartica `p-3`), dok mobil/tablet zadržavaju krupan
+  `max-lg:*` touch ritam sa 44px metom (§11). Cilj je da većini uloga hub stane na jedan ekran bez skrola;
+  redosled čitanja postaje po kolonama, što je za hub prihvatljivo jer je redosled `NAV_DOMAINS` očuvan.
 * Detaljniji pregled entiteta (RN sa operacijama, materijalom, dokumentima) = **object-page**:
   zaglavlje sa šifrom/statusom + tabovi sekcija (obrazac pozajmljen od Fiori-ja).
 
