@@ -36,7 +36,14 @@ proaktivne funkcije — a sve što zavisi od nepostojećih podataka svesno odlo�
 | 4 | **Kvalitet — škart i dorada V1** | Kontrolor evidentira škart/doradu u modulu; radnik sa kioska šalje prijavu-signal koju kontrolor potvrđuje ili odbacuje; Pareto pregled po razlogu i mašini; izbor naloga po poslovnom broju (ne internom) | `d5a0623` |
 | 5 | **AI-3 — dnevni brief direktoru** | Jutarnji mejl sa rangiranim pregledom: kašnjenja naloga, zahtevi koji čekaju odluku, sastanci danas, kritična odsustva; brojke iz upita (AI samo sklapa tekst), izvor uz svaku stavku; imena i zdravstveni status NE odlaze spoljnom AI-ju | `0acf744` |
 | 6 | **AI-5 — procena vremena po radnom mestu** | Uz svaku operaciju: koliko slični poslovi STVARNO traju na tom radnom mestu (interval + veličina uzorka), plus istorija istog crteža; 25 radnih mesta ima preko 100 stvarnih merenja; pošteno označava mali uzorak i nov crtež | `f025752` |
-| 7 | **BigBit noćni sync** | Automatsko povlačenje umesto ručnog — **napisan i na produ, ali UGAŠEN** (čeka tebe) | `7ee4d36` |
+| 7 | **AI-6 — predlog tehnologije iz istorije** | Za crtež koji je VEĆ RAĐEN: gotov nacrt tehnološkog postupka iz reprezentativnog (regularnog + stvarno proizvedenog) naloga — operacije, radna mesta, plan i stvarna vremena — kao predlog koji tehnolog prihvata/dotera; kad se rutinzi razlikuju (51% slučajeva) nudi varijante i tehnolog bira; „Prepiši postupak" seed-uje postojeći bezbedan tok kopiranja | `d698587` |
+| 8 | **BigBit noćni sync** | Automatsko povlačenje umesto ručnog — **napisan i na produ, ali UGAŠEN** (čeka tebe) | `7ee4d36` |
+
+> **Napomena o tehnologiji (korekcija):** u prvom preseku sam pogrešno stavio „predlog tehnologije" u
+> „čeka podatke". Nenad je ispravno insistirao — tehnologija je najjači skup. Poštena granica: **ponovna
+> upotreba** postojeće tehnologije za ponovljene crteže je GOTOVA (AI-1 istorija + AI-5 vremena + AI-6
+> predlog postupka); **generisanje** tehnologije za potpuno nov deo čeka sloj sličnosti (pgvector/AI-2)
+> jer 84% crteža je unikatno; **DFM** (predlog jednostavnije geometrije) čeka čitanje geometrije (CAD/vision).
 
 **Popravke usput** (nađene tokom rada, nisu bile u planu):
 - `istorija_crteza` (alat iz AI-1) je čitao skoro prazan izvor podataka → prebačen na pravi
