@@ -743,7 +743,7 @@ export class MojProfilService {
     const data = await this.withUserMapped(email, async (tx) => {
       const rows = await tx.$queryRaw<{ result: unknown }[]>(
         Prisma.sql`SELECT hr_revise_vacation_request(${id}::uuid, ${dto.dateFrom}::date,
-           ${dto.dateTo}::date, ${dto.daysCount}, ${dto.note ?? null}, NULL,
+           ${dto.dateTo}::date, ${dto.daysCount}::int, ${dto.note ?? null}, NULL,
            ${dto.forceReapproval ?? false}) AS result`,
       );
       const res = jsonSafe(rows[0]?.result ?? null);
