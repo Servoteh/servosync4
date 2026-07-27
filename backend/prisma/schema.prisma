@@ -4508,13 +4508,14 @@ model ScheduledJobRun {
 /// atomski claim `INSERT ... ON CONFLICT (for_date, recipient_email) DO NOTHING` —
 /// nema reda znači „već poslato danas" pa se preskače (nema duplog mejla ni uz
 /// catch-up/retry). Piše ga ISKLJUČIVO DailyBriefService. App-owned → Timestamptz.
-/// status: sent | dry_run (RESEND nekonfigurisan — nije stvarno poslato).
+/// status: pending (claim, još nije poslato) | sent | dry_run (RESEND nekonfigurisan).
+/// Claim upisuje 'pending'; 'pending'/'dry_run' su re-claim-abilni, 'sent' nije.
 model DailyBriefSend {
   id             Int      @id(map: "pk_daily_brief_sends") @default(autoincrement()) @map("id")
   forDate        DateTime @map("for_date") @db.Date
   recipientEmail String   @map("recipient_email") @db.VarChar(255)
   sentAt         DateTime @default(now()) @map("sent_at") @db.Timestamptz(6)
-  status         String   @default("sent") @map("status") @db.VarChar(10)
+  status         String   @default("pending") @map("status") @db.VarChar(10)
   sectionsCount  Int      @default(0) @map("sections_count")
   itemsCount     Int      @default(0) @map("items_count")
 

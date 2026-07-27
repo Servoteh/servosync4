@@ -105,6 +105,15 @@ const sy15Down = {
   withUserRls: jest.fn().mockRejectedValue(new Error("sy15 off")),
 } as unknown as Sy15Service;
 
+/** sy15 koji izvršava callback nad datim tx mockom (za sastanci/odsustva testove). */
+function sy15WithTx(tx: unknown): Sy15Service {
+  return {
+    withUserRls: jest.fn(
+      (_email: string, fn: (t: unknown) => Promise<unknown>) => fn(tx),
+    ),
+  } as unknown as Sy15Service;
+}
+
 function fakeMail(configured = true, sendOk = true) {
   const send = jest.fn().mockResolvedValue(sendOk);
   return {
@@ -127,8 +136,13 @@ function fakeAi() {
   return { ai: { summarize } as unknown as AiProviderService, summarize };
 }
 
-function make(prisma: PrismaService, mail: MailService, ai: AiProviderService) {
-  return new DailyBriefService(prisma, sy15Down, mail, ai);
+function make(
+  prisma: PrismaService,
+  mail: MailService,
+  ai: AiProviderService,
+  sy15: Sy15Service = sy15Down,
+) {
+  return new DailyBriefService(prisma, sy15, mail, ai);
 }
 
 describe("DailyBriefService — registracija", () => {
@@ -421,19 +435,140 @@ describe("DailyBriefService — run() best-effort", () => {
     expect(out).toContain("nema primalaca");
   });
 
-  it("pad jednog primaoca ne ruši ostale (claim baci za prvog)", async () => {
+  it("pad jednog primaoca: drugi se svejedno pošalje, run BACA (FAILED slot → retry)", async () => {
     const { prisma, claim } = fakePrisma({ overdueCount: 1 });
     claim
       .mockRejectedValueOnce(new Error("db hiccup")) // prvi primalac padne
       .mockResolvedValueOnce([{ id: 2 }]); // drugi prođe
     const { mail, send } = fakeMail(true, true);
-    const out = await withEnv(
+    // Review [2]: run() BACA kad ima pad — scheduler upiše FAILED i retry-uje.
+    // Poruka izuzetka nosi rezime (poslato=1 / palo=1); drugi primalac je poslat.
+    await withEnv(
       { DAILY_BRIEF_ENABLED: "true", DAILY_BRIEF_TO: "a@x.com,b@y.com" },
+      async () => {
+        await expect(
+          make(prisma, mail, fakeAi().ai).run(new Date("2026-07-27T05:00:00Z")),
+        ).rejects.toThrow(/palo=1/);
+      },
+    );
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("svi poslati (bez pada) → run VRAĆA rezime (DONE, ne baca)", async () => {
+    const { prisma } = fakePrisma();
+    const { mail } = fakeMail(true, true);
+    const out = await withEnv(
+      { DAILY_BRIEF_ENABLED: "true", DAILY_BRIEF_TO: "a@x.com" },
       () =>
         make(prisma, mail, fakeAi().ai).run(new Date("2026-07-27T05:00:00Z")),
     );
-    expect(out).toContain("palo=1");
     expect(out).toContain("poslato=1");
-    expect(send).toHaveBeenCalledTimes(1);
+    expect(out).toContain("palo=0");
+  });
+
+  it("TZ: 'danas' je Europe/Belgrade, ne UTC (22:30Z → sutradan lokalno)", async () => {
+    const { prisma } = fakePrisma();
+    const svc = make(prisma, fakeMail().mail, fakeAi().ai);
+    const spy = jest.spyOn(svc, "gatherMainSections").mockResolvedValue([]);
+    jest.spyOn(svc, "sendToRecipient").mockResolvedValue({
+      email: "a@x.com",
+      status: "sent",
+      sections: 0,
+      items: 0,
+    });
+    // 2026-07-27 22:30 UTC = 2026-07-28 00:30 Europe/Belgrade (CEST +2) → forDate 28.
+    await withEnv(
+      { DAILY_BRIEF_ENABLED: "true", DAILY_BRIEF_TO: "a@x.com" },
+      () => svc.run(new Date("2026-07-27T22:30:00Z")),
+    );
+    expect(spy).toHaveBeenCalledWith("2026-07-28");
+  });
+});
+
+describe("DailyBriefService — PII van LLM ulaza (review [0])", () => {
+  it("sectionsToText redaktuje sy15 sekcije: BROJ da, imena/teme NE", async () => {
+    const { ai, summarize } = fakeAi();
+    const svc = make(fakePrisma().prisma, fakeMail().mail, ai);
+    const sections: BriefSection[] = [
+      {
+        key: "odsustva_danas",
+        requiredPermission: "kadrovska.read",
+        title: "Odsustva danas",
+        count: 3,
+        items: [
+          {
+            label: "Petar Petrović",
+            metric: "bolovanje",
+            severity: "info",
+          },
+        ],
+        severity: "medium",
+        source: "sy15 …",
+        origin: "sy15",
+      },
+    ];
+    await svc.composeProse(sections, "2026-07-27");
+    // userContent (LLM ulaz) je 3. argument summarize-a.
+    const userContent = (summarize.mock.calls[0] as unknown[])[2] as string;
+    expect(userContent).toContain("ukupno 3"); // broj ostaje
+    expect(userContent).toContain("izostavljene iz AI ulaza");
+    expect(userContent).not.toContain("Petar"); // ime NE ide LLM-u
+    expect(userContent.toLowerCase()).not.toContain("bolovanje"); // zdravlje NE
+  });
+});
+
+describe("DailyBriefService — count vs length + dry_run re-claim", () => {
+  it("sastanci: count je pravi COUNT(*), ne items.length (review [7])", async () => {
+    const tx = {
+      $queryRaw: jest
+        .fn()
+        .mockResolvedValueOnce([
+          {
+            id: "a",
+            naslov: "S1",
+            vreme: "09:00:00",
+            mesto: null,
+            tip: null,
+            status: null,
+          },
+          {
+            id: "b",
+            naslov: "S2",
+            vreme: "10:00:00",
+            mesto: null,
+            tip: null,
+            status: null,
+          },
+        ])
+        .mockResolvedValueOnce([{ n: 15n }]),
+    };
+    const svc = make(
+      fakePrisma().prisma,
+      fakeMail().mail,
+      fakeAi().ai,
+      sy15WithTx(tx),
+    );
+    const recipient = {
+      email: "dir@x.com",
+      userId: 1,
+      role: "admin",
+      permissions: new Set<string>([PERMISSIONS.SASTANCI_READ]),
+    };
+    const sections = await svc.gatherSy15SectionsFor(recipient, "2026-07-27");
+    const sast = sections.find((s) => s.key === "sastanci_danas")!;
+    expect(sast.count).toBe(15); // pravi total
+    expect(sast.items).toHaveLength(2); // kapirano
+    expect(sast.moreCount).toBe(13); // 15 − 2 skriveno
+  });
+
+  it("claimSend SQL: re-claim samo pending/dry_run (sent zaštićen)", async () => {
+    const { prisma, claim } = fakePrisma();
+    const svc = make(prisma, fakeMail().mail, fakeAi().ai);
+    await svc.claimSend("2026-07-27", "dir@x.com");
+    const sql = (claim.mock.calls[0] as unknown[])[0] as string[];
+    const joined = sql.join("?");
+    expect(joined).toContain("ON CONFLICT");
+    expect(joined).toContain("DO UPDATE");
+    expect(joined).toContain("'pending', 'dry_run'");
   });
 });

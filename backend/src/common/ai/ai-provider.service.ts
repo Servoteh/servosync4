@@ -906,6 +906,14 @@ export class AiProviderService {
     if (data?.stop_reason === "refusal") {
       throw new UnprocessableEntityException("Model je odbio zahtev.");
     }
+    // Paritet sa extractWithTool/chatWithTools: `max_tokens` znači ODSEČEN odgovor
+    // (razmišljanje + tekst probili plafon) — ne vraćaj polovičan rezime kao uspeh.
+    // Pozivaoci (sastanci-summary, daily-brief) hvataju izuzetak i idu na fallback.
+    if (data?.stop_reason === "max_tokens") {
+      throw new UnprocessableEntityException(
+        "Odgovor je predugačak (max_tokens) — suzi ulaz.",
+      );
+    }
     const summary = Array.isArray(data?.content)
       ? data.content
           .filter((b: any) => b?.type === "text")
