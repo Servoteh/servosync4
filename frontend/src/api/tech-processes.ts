@@ -380,6 +380,12 @@ export interface RnProgress {
   /** null kada planirano = 0 (nedefinisan procenat). */
   completionPercent: number | null;
   isCompleted: boolean;
+  /**
+   * Datum realizacije RN-a (zahtev 023/26): poslednji DOBAR završetak =
+   * max(tech_processes.finished_at) FILTER (is_process_finished AND GOOD).
+   * null dok nijedna operacija nije zatvorena sa dobrim komadima.
+   */
+  completedAt: string | null;
 }
 
 /** Pregled gotovosti RN — planirano vs napravljeno (dobar komad) + procenat. */

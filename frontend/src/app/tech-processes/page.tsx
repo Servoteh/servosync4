@@ -524,6 +524,19 @@ const rnColumns: Column<RnProgress>[] = [
     header: 'Rok',
     render: (r) => <span className="tnums text-ink-secondary">{formatDate(r.productionDeadline)}</span>,
   },
+  {
+    // Zahtev 023/26 — datum kad je nalog realizovan, uz „Rok" (plan vs stvarno).
+    // Prikaz vezan za `isCompleted` (isti uslov kao badge „Gotovo"): dok nalog nije
+    // gotov nema datuma realizacije, pa se poslednji zatvoreni postupak NE prikazuje
+    // kao da je RN realizovan.
+    key: 'completedAt',
+    header: 'Datum realizacije',
+    render: (r) => (
+      <span className="tnums text-ink-secondary">
+        {r.isCompleted ? formatDate(r.completedAt) : '—'}
+      </span>
+    ),
+  },
 ];
 
 function GotovostPanel() {

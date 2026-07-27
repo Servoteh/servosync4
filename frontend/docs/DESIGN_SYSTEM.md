@@ -337,7 +337,8 @@ Dopune kita:
   `HelpSpot` id-jeve (`data-help-id`) i preskaču se ako cilj nije u DOM-u. Tekstovi pomoći žive po
   modulu u `app/<modul>/_lib/help.ts` (`HelpRegistry` + definicije tura), ne u kitu.
 * **`AiWidget`** (`ui-kit/ai-widget.tsx`, zahtev 003/26) — plutajući AI asistent: okruglo dugme dole
-  desno (`Bot`, z-40 — iznad sadržaja, ispod modala) koje otvara kompaktni chat panel (~380px; na
+  desno (`Bot`, z-40 — iznad sadržaja, ispod modala), podignuto 5rem od dna da ne pada preko
+  `Pager` strelica na dnu lista (zahtev 025/26), koje otvara kompaktni chat panel (~380px; na
   telefonu donji sheet) sa `AiChat variant="widget"`. Non-modal (strana ostaje interaktivna, bez
   scrim-a), minimizacija (X u headeru ili Esc) vraća na dugme. Otvorenost i aktivna nit žive u
   modul-scope store-u (ne u komponenti) pa preživljavaju per-page remount `AppShell`-a — razgovor
