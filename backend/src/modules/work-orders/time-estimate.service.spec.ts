@@ -2,6 +2,7 @@ import {
   estimateByWorkCenter,
   estimateForDrawing,
   estimateForWorkOrder,
+  isGenericDrawing,
   MALO_N,
   type RawSqlClient,
 } from "./time-estimate.service";
@@ -9,12 +10,11 @@ import { CORE_TOOLS } from "../ai-chat/tools/core-tools";
 import { PERMISSIONS } from "../../common/authz/permissions";
 
 /**
- * TALAS AI-5 — procena vremena. Mokujemo `$queryRaw` (redom vraća pripremljene
- * rezultate, pamti SQL) i proveravamo: (1) SIMETRIČNU agregaciju (plan i stvarno
- * se oba prvo zbir-uju po NALOGU+RM, pa raspon po RM — review nalaz 19 iz AI-1),
- * (2) filter šuma (< 1 min + is_process_finished) nad `tech_processes` (NE
- * `work_time_entries`, koji je na produ prazan), (3) mali n označen, (4) prazan
- * rezultat, (5) permisiju alata.
+ * TALAS AI-5 (+ review ispravke) — procena vremena. Mokujemo `$queryRaw` (redom
+ * vraća pripremljene rezultate, pamti SQL) i proveravamo: SIMETRIČNU agregaciju
+ * (plan i stvarno po NALOGU+RM), filter šuma (< 1 min, > 720 h, zero-piece,
+ * is_process_finished) nad `tech_processes`, izostanak `max` u payload-u, mali n,
+ * generički crtež, prazan rezultat, permisiju alata.
  */
 
 function makeClient(results: unknown[][]) {
@@ -28,47 +28,59 @@ function makeClient(results: unknown[][]) {
   return { prisma, sql, $queryRaw };
 }
 
+describe("isGenericDrawing", () => {
+  it("string sa < 3 alfanumerička znaka je generički (opšti nalog)", () => {
+    expect(isGenericDrawing("..")).toBe(true);
+    expect(isGenericDrawing(".")).toBe(true);
+    expect(isGenericDrawing("…")).toBe(true);
+    expect(isGenericDrawing("A1")).toBe(true);
+    expect(isGenericDrawing("S000AP0000")).toBe(false);
+    expect(isGenericDrawing("9400-12")).toBe(false);
+  });
+});
+
 describe("estimateByWorkCenter", () => {
   const q = (n: number) => [
-    { radno_mesto: "3.18", n, p25: 0.367, p50: 1.019, p75: 2.499, h_min: 0, h_max: 410 },
+    { radno_mesto: "3.18", n, p25: 0.37, p50: 1.02, p75: 2.43, h_min: 0 },
   ];
-  const meta = [{ naziv: "CNC Glodanje (HAAS)", prijava_ukupno: 1200, prijava_izbaceno: 560 }];
+  const meta = [{ naziv: "CNC Glodanje (HAAS)", prijava_ukupno: 1492, prijava_izbaceno: 214 }];
 
-  it("happy path: h/kom kvantili + naziv + transparentnost šuma", async () => {
-    const { prisma, sql } = makeClient([q(551), meta]);
-    const out = (await estimateByWorkCenter(prisma, "3.18")) as {
-      jedinica: string;
-      n: number;
-      p50: number;
-      malo_podataka: boolean;
-      prijava_izbaceno: number;
-      naziv_radnog_mesta: string;
-    };
+  it("happy path: h/kom kvantili + naziv + granularnost šuma; BEZ max", async () => {
+    const { prisma, sql } = makeClient([q(468), meta]);
+    const out = (await estimateByWorkCenter(prisma, "3.18")) as Record<string, unknown>;
     expect(out.jedinica).toBe("h/kom");
-    expect(out.n).toBe(551);
-    expect(out.p50).toBe(1.019);
+    expect(out.n).toBe(468);
+    expect(out.opservacija).toBe(468);
+    expect(out.p50).toBe(1.02);
     expect(out.malo_podataka).toBe(false);
-    expect(out.prijava_izbaceno).toBe(560);
+    expect(out.prijava_izbaceno).toBe(214);
     expect(out.naziv_radnog_mesta).toBe("CNC Glodanje (HAAS)");
-    // Stvarni izvor je tech_processes; simetrična agregacija po nalogu+RM; filter šuma.
+    // Max se NE vraća u payload (review [6][7]).
+    expect(out).not.toHaveProperty("h_max");
+    // Izvor tech_processes; simetrična agregacija; filter <1min + >720h + zero-piece.
     expect(sql[0]).toContain("tech_processes");
     expect(sql[0]).not.toContain("work_time_entries");
     expect(sql[0]).toContain("stvarno_po_nalogu");
     expect(sql[0]).toContain("percentile_cont");
     expect(sql[0]).toContain("interval '1 minute'");
+    expect(sql[0]).toContain("720 hours");
     expect(sql[0]).toContain("is_process_finished");
-    // h/kom = stvarni sati / količina naloga.
+    expect(sql[0]).toContain("prijavljeno_kom > 0");
     expect(sql[0]).toContain("piece_count");
+  });
+
+  it("napomena razdvaja n (opservacije) od prijava (redova) — review [4]", async () => {
+    const { prisma } = makeClient([q(468), meta]);
+    const out = (await estimateByWorkCenter(prisma, "3.18")) as { napomena: string };
+    expect(out.napomena).toContain("OPSERVACIJA");
+    expect(out.napomena).toContain("POJEDINAČNIH prijava");
+    expect(out.napomena).toContain("amortizovanu pripremu");
   });
 
   it("mali n se označava kao nepouzdan (malo_podataka)", async () => {
     const { prisma } = makeClient([q(MALO_N - 1), meta]);
-    const out = (await estimateByWorkCenter(prisma, "3.18")) as {
-      malo_podataka: boolean;
-      napomena: string;
-    };
+    const out = (await estimateByWorkCenter(prisma, "3.18")) as { malo_podataka: boolean };
     expect(out.malo_podataka).toBe(true);
-    expect(out.napomena).toContain("MALI");
   });
 
   it("nema opservacija: n=0, kvantili null, označen kao mali", async () => {
@@ -90,7 +102,7 @@ describe("estimateByWorkCenter", () => {
 });
 
 describe("estimateForDrawing", () => {
-  it("simetrična agregacija (plan i stvarno po nalogu+RM) nad tech_processes", async () => {
+  it("simetrična agregacija nad tech_processes + zero-piece filter; BEZ max", async () => {
     const { prisma, sql } = makeClient([
       [], // poIdentu — nije ident
       [{ ident: "2249/2", varijanta: 0, kolicina: 1 }], // nalozi
@@ -109,26 +121,49 @@ describe("estimateForDrawing", () => {
     const out = (await estimateForDrawing(prisma, "S000AP0000")) as {
       crtez: string;
       broj_naloga: number;
-      prijava_izbaceno: number;
       po_radnom_mestu: unknown[];
       napomena: string;
     };
     expect(out.crtez).toBe("S000AP0000");
     expect(out.broj_naloga).toBe(31);
-    expect(out.prijava_izbaceno).toBe(30);
     expect(out.po_radnom_mestu).toHaveLength(1);
     expect(out.napomena).toContain("SATIMA");
     const agg = sql[2];
-    // Obe strane se prvo agregiraju po nalogu+RM (nikakav avg direktno nad rutingom).
     expect(agg).toContain("plan_po_nalogu");
     expect(agg).toContain("stvarno_po_nalogu");
     expect(agg).not.toMatch(/avg\(\s*COALESCE\(woo\.setup_time/);
-    // Stvarni izvor + filter šuma.
     expect(agg).toContain("tech_processes");
     expect(agg).toContain("interval '1 minute'");
+    expect(agg).toContain("720 hours");
     expect(agg).toContain("is_process_finished");
-    // Egzaktno poklapanje crteža ide preko lower() (idx_work_orders_drawing_number_lower).
+    expect(agg).toContain("prijavljeno_kom > 0");
+    expect(agg).not.toContain("max(h)"); // review [6][7] — bez max u payload-u
     expect(agg).toContain("lower(");
+  });
+
+  it("generički crtež (dve tačke) se NE agregira — bez ijednog upita (review [9])", async () => {
+    const { prisma, $queryRaw } = makeClient([]);
+    const out = (await estimateForDrawing(prisma, "..")) as {
+      genericki: boolean;
+      broj_naloga: number;
+      po_radnom_mestu: unknown[];
+    };
+    expect(out.genericki).toBe(true);
+    expect(out.broj_naloga).toBe(0);
+    expect(out.po_radnom_mestu).toEqual([]);
+    expect($queryRaw).not.toHaveBeenCalled();
+  });
+
+  it("skipIdentResolve preskače poIdentu Seq Scan (review [11])", async () => {
+    const { prisma, sql } = makeClient([
+      [{ ident: "2249/2" }], // nalozi (PRVI upit — nema poIdentu)
+      [{ radno_mesto: "3.18", naloga_sa_prijavom: 13, stvarno_h_p50: 1.34 }],
+      [{ broj_naloga: 31, prijava_ukupno: 80, prijava_izbaceno: 30 }],
+    ]);
+    await estimateForDrawing(prisma, "S000AP0000", { skipIdentResolve: true });
+    // Prvi upit je odmah `nalozi` (SELECT ... ident_number AS ident), ne ident lookup.
+    expect(sql[0]).toContain("ident_number AS ident");
+    expect(sql).toHaveLength(3);
   });
 
   it("crtež bez naloga: 0 naloga + prazne liste", async () => {
@@ -152,7 +187,7 @@ describe("estimateForDrawing", () => {
 });
 
 describe("estimateForWorkOrder", () => {
-  it("po operaciji spaja plan + procenu RM (h/kom) + istoriju crteža", async () => {
+  it("po operaciji spaja plan + procenu RM (h/kom) + istoriju crteža + dokaze", async () => {
     const { prisma } = makeClient([
       [{ id: 1294, ident: "2249/2", varijanta: 0, crtez: "S000AP0000", kolicina: 1, naziv_dela: "Ploča" }],
       [
@@ -160,18 +195,18 @@ describe("estimateForWorkOrder", () => {
         { rb: 20, radno_mesto: "8.3", naziv_radnog_mesta: "Završna Kontrola", opis: "kontrola", plan_h: 0 },
       ],
       [
-        { radno_mesto: "3.18", n: 551, p25: 0.37, p50: 1.02, p75: 2.5, h_min: 0, h_max: 410 },
-        { radno_mesto: "8.3", n: 804, p25: 0.005, p50: 0.016, p75: 0.027, h_min: 0, h_max: 8212 },
+        { radno_mesto: "3.18", n: 468, p25: 0.37, p50: 1.02, p75: 2.43, h_min: 0 },
+        { radno_mesto: "8.3", n: 739, p25: 0.005, p50: 0.014, p75: 0.025, h_min: 0 },
       ],
-      // estimateForDrawing pod-upiti:
-      [], // poIdentu
-      [{ ident: "2249/2" }], // nalozi
-      [{ radno_mesto: "3.18", naziv_radnog_mesta: "CNC Glodanje (HAAS)", naloga_sa_prijavom: 13, stvarno_h_p50: 1.34, stvarno_h_min: 0.51, stvarno_h_max: 7.19 }],
+      // estimateForDrawing(skipIdentResolve:true) → nalozi, poRadnomMestu, zbir (BEZ poIdentu):
+      [{ ident: "2249/2", varijanta: 0, kolicina: 1, otvoren: "01.01.2024", predmet: "2249" }],
+      [{ radno_mesto: "3.18", naziv_radnog_mesta: "CNC Glodanje (HAAS)", naloga_sa_prijavom: 13, stvarno_h_p50: 1.34, stvarno_h_min: 0.51 }],
       [{ broj_naloga: 31, prijava_ukupno: 80, prijava_izbaceno: 30 }],
     ]);
     const out = (await estimateForWorkOrder(prisma, 1294)) as {
       nalog: { ident: string };
-      crtez_istorija: { broj_naloga: number; drugi_nalozi: number };
+      crtez_istorija: { broj_naloga: number; drugi_nalozi: number; genericki: boolean };
+      crtez_nalozi: unknown[];
       operacije: {
         rb: number;
         rm_procena: { n: number; p50: number; malo_podataka: boolean } | null;
@@ -180,13 +215,16 @@ describe("estimateForWorkOrder", () => {
       }[];
     };
     expect(out.nalog.ident).toBe("2249/2");
-    expect(out.crtez_istorija).toEqual({ broj_naloga: 31, drugi_nalozi: 30 });
+    expect(out.crtez_istorija).toEqual({ broj_naloga: 31, drugi_nalozi: 30, genericki: false });
+    expect(out.crtez_nalozi).toHaveLength(1); // dokazi (review [13])
     expect(out.operacije).toHaveLength(2);
     const op10 = out.operacije[0];
     expect(op10.plan_h).toBe(1.5);
-    expect(op10.rm_procena).toMatchObject({ n: 551, p50: 1.02, malo_podataka: false });
+    expect(op10.rm_procena).toMatchObject({ n: 468, p50: 1.02, malo_podataka: false });
     expect(op10.crtez_procena).toMatchObject({ n_naloga: 13, stvarno_h_p50: 1.34 });
-    // 8.3 ima istoriju RM ali NEMA istoriju baš ovog crteža → crtez_procena null.
+    // crtez_procena više ne nosi max (review [6][7]).
+    expect(op10.crtez_procena).not.toHaveProperty("stvarno_h_max");
+    // 8.3 ima RM istoriju ali NEMA istoriju baš ovog crteža → crtez_procena null.
     expect(out.operacije[1].crtez_procena).toBeNull();
   });
 
@@ -207,8 +245,8 @@ describe("procena_vremena (alat asistenta)", () => {
     expect(tool?.requiredPermission).toBe(PERMISSIONS.TEHNOLOGIJA_READ);
   });
 
-  it("crtež ima prioritet nad radnim mestom; prazno → greška bez upita", async () => {
-    const { prisma, $queryRaw } = makeClient([[], []]);
+  it("prazno → greška bez upita", async () => {
+    const { prisma, $queryRaw } = makeClient([]);
     const ctx = { deps: { prisma } } as never;
     const prazno = await tool!.execute({}, ctx);
     expect(prazno).toMatchObject({ greska: "prazan_upit" });

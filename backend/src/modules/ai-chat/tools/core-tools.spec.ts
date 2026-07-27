@@ -149,18 +149,20 @@ describe("unaccentLike — escape LIKE meta-znakova", () => {
   });
 });
 
-describe("istorija_crteza", () => {
-  it("po identu RN-a razreši crtež, pa vrati agregat po radnom mestu", async () => {
+// Od AI-5 review-a [5] istorija_crteza DELEGIRA na deljeni estimateForDrawing:
+// razreši ident → crtež (poIdentu), pa estimateForDrawing(skipIdentResolve) čita
+// tech_processes (NE work_time_entries) sa istim filterom kao alat procena_vremena.
+describe("istorija_crteza (delegira na estimateForDrawing — review [5])", () => {
+  it("po identu RN-a razreši crtež, pa delegira agregat po radnom mestu (tech_processes)", async () => {
     const { ctx, sql } = makeCtx([
-      [{ crtez: "CRT-100" }], // razrešenje identa → crtež
-      [{ ident: "9400-12", varijanta: 0, kolicina: 4 }], // poslednji nalozi
+      [{ crtez: "CRT-100" }], // istorijin poIdentu (identMatch)
+      [{ ident: "9400-12", varijanta: 0, kolicina: 4 }], // estimateForDrawing: nalozi
       [
         {
           radno_mesto: "G1",
           naziv_radnog_mesta: "Glodalica",
           plan_h_prosek: 2.5,
-          stvarno_h_min: 2.1,
-          stvarno_h_max: 3.4,
+          stvarno_h_p50: 2.6,
           naloga_sa_prijavom: 12,
         },
       ],
@@ -172,7 +174,6 @@ describe("istorija_crteza", () => {
     )) as {
       crtez: string;
       broj_naloga: number;
-      prijava_izbaceno: number;
       po_radnom_mestu: unknown[];
       napomena: string;
     };
@@ -180,40 +181,17 @@ describe("istorija_crteza", () => {
     expect(out.broj_naloga).toBe(7);
     expect(out.po_radnom_mestu).toHaveLength(1);
     expect(out.napomena).toContain("SATIMA");
-    // Plan (Tpz + Tk × kom) i stvarno (prijave rada) u istom upitu.
+    // Stvarni izvor je sada tech_processes (NE work_time_entries), isti kao AI-5.
     expect(sql[2]).toContain("setup_time");
-    expect(sql[2]).toContain("work_time_entries");
+    expect(sql[2]).toContain("tech_processes");
+    expect(sql[2]).not.toContain("work_time_entries");
+    expect(sql[2]).not.toContain("auto_closed");
   });
 
-  /**
-   * Nalaz 19 — SIMETRIJA. Plan se mora agregirati po (nalog, radno mesto), isto
-   * kao stvarno. Ranije je plan išao po OPERACIJI, pa bi ruting sa istim radnim
-   * mestom dva puta (glodanje pre i posle kaljenja) dao dva mala plana naspram
-   * jednog velikog stvarnog vremena — poređenje bi lagalo za faktor 2.
-   */
-  it("plan se agregira po (nalog, radno mesto) — kao i stvarno", async () => {
+  /** SIMETRIJA (nalaz 19) + filter šuma: < 1 min, > 720 h, is_process_finished. */
+  it("plan i stvarno po (nalog, radno mesto); filter < 1 min + > 720 h", async () => {
     const { ctx, sql } = makeCtx([
-      [],
-      [{ ident: "9400-12" }],
-      [],
-      [{ broj_naloga: 1, prijava_ukupno: 0, prijava_izbaceno: 0 }],
-    ]);
-    await tool("istorija_crteza").execute({ crtez: "CRT-100" }, ctx);
-    const agregat = sql[2];
-    // Unutrašnji nivo: SUM po nalogu+radnom mestu za OBE strane…
-    expect(agregat).toContain("plan_po_nalogu");
-    expect(agregat).toContain("stvarno_po_nalogu");
-    // …pa tek spoljni min/max/avg po radnom mestu — nikakav avg() direktno nad
-    // redovima rutinga.
-    expect(agregat).not.toMatch(/avg\(\s*COALESCE\(woo\.setup_time/);
-    expect(agregat).toContain("plan_h_min");
-    expect(agregat).toContain("plan_h_max");
-  });
-
-  /** Nalaz 20 — 47% prijava je <1 min (knjiženja) + auto_closed sesije. */
-  it("stvarni sati izbacuju sub-minutne i auto_closed prijave, i to kažu modelu", async () => {
-    const { ctx, sql } = makeCtx([
-      [],
+      [{ crtez: "CRT-100" }],
       [{ ident: "9400-12" }],
       [],
       [{ broj_naloga: 3, prijava_ukupno: 20, prijava_izbaceno: 9 }],
@@ -222,14 +200,19 @@ describe("istorija_crteza", () => {
       { crtez: "CRT-100" },
       ctx,
     )) as { napomena: string; prijava_izbaceno: number };
-    expect(sql[2]).toContain("interval '1 minute'");
-    expect(sql[2]).toContain("auto_closed");
+    const agregat = sql[2];
+    expect(agregat).toContain("plan_po_nalogu");
+    expect(agregat).toContain("stvarno_po_nalogu");
+    expect(agregat).not.toMatch(/avg\(\s*COALESCE\(woo\.setup_time/);
+    expect(agregat).toContain("interval '1 minute'");
+    expect(agregat).toContain("720 hours");
+    expect(agregat).toContain("is_process_finished");
     expect(out.prijava_izbaceno).toBe(9);
     expect(out.napomena).toContain("9 od 20");
     expect(out.napomena).toContain("filtriran");
   });
 
-  it("crtež bez ijednog naloga: 0 naloga, prazne liste + uputa na delimičnu pretragu", async () => {
+  it("crtež bez ijednog naloga: 0 naloga, prazne liste + predlog", async () => {
     const { ctx } = makeCtx([[], []]);
     const out = (await tool("istorija_crteza").execute(
       { crtez: "NEMA" },
@@ -246,8 +229,7 @@ describe("istorija_crteza", () => {
       po_radnom_mestu: [],
       poslednji_nalozi: [],
     });
-    // Nalaz 23: prazan tačan pogodak upućuje model na delimičnu pretragu.
-    expect(out.predlog).toContain("nadji_radni_nalog");
+    expect(out.predlog).toContain("crteža");
   });
 });
 

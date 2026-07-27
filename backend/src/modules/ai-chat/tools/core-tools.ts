@@ -74,17 +74,6 @@ function identMatch(column: Prisma.Sql, term: string): Prisma.Sql {
 }
 
 /**
- * Poklapanje BROJA CRTEŽA — namerno samo `lower()`, bez unaccent-a: brojevi
- * crteža su ASCII šifre, a `idx_work_orders_drawing_number_lower` (postojeći
- * btree iz PDM paketa) pokriva baš taj izraz. Isti izraz koristi i
- * `work-orders.service.ts` (`resolveDrawingIdByNumber`) — jedno pravilo za
- * poklapanje crteža u celoj aplikaciji.
- */
-function drawingMatch(column: Prisma.Sql, term: string): Prisma.Sql {
-  return Prisma.sql`lower(${column}) = lower(${term})`;
-}
-
-/**
  * Poklapanje BROJA PREDMETA (npr. „9400/7"). `btrim` je obavezan — zato i
  * postoji parcijalni unique `uq_projects_project_number ... WHERE btrim(...) <> ''`,
  * tj. u podacima ima praznina. Time se gubi taj btree indeks (izraz se ne
@@ -204,7 +193,7 @@ export const CORE_TOOLS: readonly AiTool[] = [
   },
   {
     name: "istorija_crteza",
-    description: `ISTORIJA JEDNOG CRTEŽA — svi raniji radni nalozi za isti broj crteža, sa PLANIRANIM (Tpz + Tk × komada, u satima) i STVARNIM vremenom po RADNOM MESTU (raspon min–max i prosek iz prijava rada). Odgovara na „koliko je puta rađen ovaj crtež i koliko je trajalo". Prima broj crteža ILI ident broj RN-a (tada sam nađe crtež tog naloga). Vraća agregat po radnom mestu + poslednjih 10 naloga.`,
+    description: `ISTORIJA JEDNOG CRTEŽA — svi raniji radni nalozi za isti broj crteža, sa PLANIRANIM (Tpz + Tk × komada, u satima) i STVARNIM vremenom po RADNOM MESTU (median i donji raspon PO NALOGU, iz prijava rada). Odgovara na „koliko je puta rađen ovaj crtež i koliko je trajalo". Prima broj crteža ILI ident broj RN-a (tada sam nađe crtež tog naloga). Vraća agregat po radnom mestu + poslednjih 10 naloga.`,
     schema: {
       type: "object",
       properties: {
@@ -224,132 +213,19 @@ export const CORE_TOOLS: readonly AiTool[] = [
       if (lose) return lose;
       const prisma = ctx.deps.prisma;
 
-      // Ako je korisnik dao IDENT RN-a, prvo izvuci crtež tog naloga.
+      // IDENT RN-a → crtež (trigram identMatch — delimičan ident radi), pa DELEGIRAJ
+      // na deljeni `estimateForDrawing` (review [5]): isti izvor (`tech_processes`) i
+      // isti filter (`TP_VALIDNA`: <1 min, >720 h, zero-piece) kao alat
+      // `procena_vremena` i REST `/tehnologija/time-estimate` — dva alata više ne
+      // daju kontradiktoran odgovor na isto pitanje. RANIJE je ovaj čitao
+      // `work_time_entries` (na produ ~950 redova → skoro prazna istorija).
       const poIdentu = await prisma.$queryRaw<{ crtez: string }[]>(Prisma.sql`
         SELECT wo.drawing_number AS crtez FROM work_orders wo
          WHERE ${identMatch(Prisma.sql`wo.ident_number`, q)}
            AND COALESCE(btrim(wo.drawing_number), '') <> ''
          ORDER BY wo.entered_at DESC LIMIT 1`);
       const crtez = poIdentu[0]?.crtez ?? q;
-
-      const nalozi = await prisma.$queryRaw<
-        { ident: string; ukupno: number }[]
-      >(Prisma.sql`
-        SELECT wo.ident_number AS ident, wo.variant AS varijanta,
-               wo.piece_count AS kolicina, wo.part_name AS naziv_dela,
-               to_char(wo.entered_at, 'DD.MM.YYYY') AS otvoren,
-               NULLIF(btrim(p.project_number), '') AS predmet
-          FROM work_orders wo
-          LEFT JOIN projects p ON p.id = wo.project_id
-         WHERE ${drawingMatch(Prisma.sql`wo.drawing_number`, crtez)}
-         ORDER BY wo.entered_at DESC
-         LIMIT 10`);
-      if (!nalozi.length) {
-        return {
-          crtez,
-          broj_naloga: 0,
-          po_radnom_mestu: [],
-          poslednji_nalozi: [],
-          predlog: `Nijedan nalog nema tačno taj broj crteža. Ako je korisnik dao deo naziva ili nepotpun broj, pozovi nadji_radni_nalog sa istim pojmom (delimična pretraga) pa probaj ponovo sa tačnim brojem crteža iz rezultata.`,
-        };
-      }
-
-      // Agregat plan-vs-stvarno po radnom mestu nad SVIM nalozima istog crteža
-      // (ne samo prikazanih 10) — zato zaseban upit sa svojim CTE-om.
-      //
-      // SIMETRIJA JE OBAVEZNA (review nalaz 19): i plan i stvarno se prvo
-      // agregiraju PO NALOGU I RADNOM MESTU, pa tek onda po radnom mestu. Ranije
-      // je plan išao po OPERACIJI (svaki red rutinga zasebno), a stvarno po
-      // nalogu — kad se isto radno mesto javi dva puta u rutingu (glodanje pre i
-      // posle kaljenja, što je čest slučaj), plan bi pokazao dva mala broja a
-      // stvarno jedan veliki, i „plan vs stvarno" bi lagao za faktor 2.
-      // Iz istog razloga `naloga_sa_planom` sada broji NALOGE, ne redove rutinga.
-      const poRadnomMestu = await prisma.$queryRaw<unknown[]>(Prisma.sql`
-        WITH nalozi AS (
-          SELECT wo.id, wo.piece_count
-            FROM work_orders wo
-           WHERE ${drawingMatch(Prisma.sql`wo.drawing_number`, crtez)}
-        ),
-        plan_po_nalogu AS (
-          SELECT woo.work_order_id, woo.work_center_code AS rm,
-                 SUM(COALESCE(woo.setup_time, 0)
-                     + COALESCE(woo.cycle_time, 0) * n.piece_count) AS h
-            FROM work_order_operations woo
-            JOIN nalozi n ON n.id = woo.work_order_id
-           GROUP BY 1, 2
-        ),
-        plan AS (
-          SELECT rm, count(*)::int AS naloga_sa_planom,
-                 round(min(h)::numeric, 2) AS plan_h_min,
-                 round(max(h)::numeric, 2) AS plan_h_max,
-                 round(avg(h)::numeric, 2) AS plan_h_prosek
-            FROM plan_po_nalogu GROUP BY 1
-        ),
-        stvarno_po_nalogu AS (
-          SELECT w.work_order_id, w.work_center_code AS rm,
-                 SUM(EXTRACT(EPOCH FROM (w.stopped_at - w.started_at))) / 3600.0 AS h
-            FROM work_time_entries w
-            JOIN nalozi n ON n.id = w.work_order_id
-           WHERE ${PRIJAVA_VALIDNA}
-           GROUP BY 1, 2
-        ),
-        stvarno AS (
-          SELECT rm, count(*)::int AS naloga_sa_prijavom,
-                 round(min(h)::numeric, 2) AS stvarno_h_min,
-                 round(max(h)::numeric, 2) AS stvarno_h_max,
-                 round(avg(h)::numeric, 2) AS stvarno_h_prosek
-            FROM stvarno_po_nalogu GROUP BY 1
-        )
-        SELECT COALESCE(plan.rm, stvarno.rm) AS radno_mesto,
-               o.work_center_name AS naziv_radnog_mesta,
-               plan.naloga_sa_planom, plan.plan_h_min, plan.plan_h_max,
-               plan.plan_h_prosek,
-               stvarno.naloga_sa_prijavom, stvarno.stvarno_h_min,
-               stvarno.stvarno_h_max, stvarno.stvarno_h_prosek
-          FROM plan FULL JOIN stvarno ON stvarno.rm = plan.rm
-          LEFT JOIN operations o ON o.work_center_code = COALESCE(plan.rm, stvarno.rm)
-         ORDER BY 1
-         LIMIT 20`);
-
-      // Broj naloga + koliko je prijava ISPALO iz računice (šum) — model mora da
-      // zna da je uzorak filtriran, inače „stvarno vreme" predstavlja kao potpuno.
-      const zbir = await prisma.$queryRaw<
-        {
-          broj_naloga: number;
-          prijava_ukupno: number;
-          prijava_izbaceno: number;
-        }[]
-      >(Prisma.sql`
-        WITH nalozi AS (
-          SELECT wo.id FROM work_orders wo
-           WHERE ${drawingMatch(Prisma.sql`wo.drawing_number`, crtez)}
-        )
-        SELECT (SELECT count(*)::int FROM nalozi) AS broj_naloga,
-               count(w.id)::int AS prijava_ukupno,
-               count(w.id) FILTER (
-                 WHERE w.stopped_at IS NULL
-                    OR w.stopped_at < w.started_at + interval '1 minute'
-                    OR COALESCE(w.auto_closed, false)
-               )::int AS prijava_izbaceno
-          FROM nalozi n
-          LEFT JOIN work_time_entries w ON w.work_order_id = n.id`);
-      const izbaceno = zbir[0]?.prijava_izbaceno ?? 0;
-      const ukupnoPrijava = zbir[0]?.prijava_ukupno ?? 0;
-
-      return {
-        crtez,
-        broj_naloga: zbir[0]?.broj_naloga ?? nalozi.length,
-        prijava_ukupno: ukupnoPrijava,
-        prijava_izbaceno: izbaceno,
-        napomena:
-          `Vremena su u SATIMA. Plan i stvarno se računaju ISTO — prvo zbir po nalogu i radnom mestu, pa raspon po radnom mestu. ` +
-          `Plan = Tpz + Tk × komada. Iz stvarnog vremena je izbačeno ${izbaceno} od ${ukupnoPrijava} prijava (kraće od minuta = knjiženje, ili automatski zatvorene kad radnik zaboravi izlaz)` +
-          (izbaceno > 0
-            ? `. Kaži da je uzorak filtriran ako navodiš brojeve.`
-            : `.`),
-        po_radnom_mestu: poRadnomMestu,
-        poslednji_nalozi: nalozi,
-      };
+      return estimateForDrawing(prisma, crtez, { skipIdentResolve: true });
     },
   },
   {

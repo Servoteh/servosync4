@@ -11,7 +11,7 @@ import { apiFetch } from './client';
 
 /** Procena po radnom mestu za jedan red operacije (h/kom, iz cele istorije RM). */
 export interface RmProcena {
-  /** Broj opservacija (nalog×radno mesto) u uzorku. */
+  /** Broj OPSERVACIJA (nalog×radno mesto) u uzorku. */
   n: number;
   /** Kvantili h/kom (satni raspored je iskošen → interval, ne prosek). */
   p25: number | null;
@@ -26,7 +26,6 @@ export interface CrtezProcena {
   n_naloga: number;
   stvarno_h_p50: number | null;
   stvarno_h_min: number | null;
-  stvarno_h_max: number | null;
 }
 
 export interface OperationEstimate {
@@ -40,6 +39,24 @@ export interface OperationEstimate {
   crtez_procena: CrtezProcena | null;
 }
 
+/** Jedan raniji nalog istog crteža — dokaz za drill-down (review [13]). */
+export interface DrawingOrderRow {
+  ident: string;
+  varijanta: number;
+  kolicina: number;
+  naziv_dela: string | null;
+  otvoren: string | null;
+  predmet: string | null;
+}
+
+/** Sažetak istorije crteža uz nalog. `genericki` = „opšti" broj crteža. */
+export interface CrtezIstorija {
+  broj_naloga: number;
+  /** Raniji nalozi istog crteža (0 = nov crtež, nema istorije — review [14]). */
+  drugi_nalozi: number;
+  genericki: boolean;
+}
+
 export interface WorkOrderEstimate {
   nalog: {
     id: number;
@@ -49,7 +66,8 @@ export interface WorkOrderEstimate {
     kolicina: number;
     naziv_dela: string | null;
   };
-  crtez_istorija: { broj_naloga: number; drugi_nalozi: number } | null;
+  crtez_istorija: CrtezIstorija | null;
+  crtez_nalozi: DrawingOrderRow[];
   jedinica: 'h';
   operacije: OperationEstimate[];
   napomena: string;
@@ -61,27 +79,34 @@ function isEstimate(v: EstimateResponse): v is WorkOrderEstimate {
   return 'operacije' in v;
 }
 
+export interface WorkOrderEstimateView {
+  byOp: Map<number, OperationEstimate>;
+  drawing: CrtezIstorija | null;
+  nalozi: DrawingOrderRow[];
+}
+
+const EMPTY: WorkOrderEstimateView = { byOp: new Map(), drawing: null, nalozi: [] };
+
 /**
  * Procena vremena za sve operacije jednog RN-a (plan + procena po RM + istorija
- * crteža), u jednom pozivu. Vraća mapu operationNumber → procena za tabelu TP-a.
- * Enabled samo kad je `id` poznat; greška/prazno → prazna mapa (panel se sakrije).
+ * crteža), u jednom pozivu. Vraća mapu operationNumber → procena, sažetak istorije
+ * crteža i listu ranijih naloga (dokazi). Greška/prazno → prazan pogled (panel se
+ * sakrije). `staleTime` kratak jer izmena operacije/količine menja procenu.
  */
 export function useWorkOrderTimeEstimate(id: number | null) {
   return useQuery({
     queryKey: ['time-estimate', 'work-order', id],
     enabled: id != null,
-    // Istorija se menja retko; ne troši pozive na svaki fokus.
-    staleTime: 5 * 60_000,
-    queryFn: async () => {
+    staleTime: 60_000,
+    queryFn: async (): Promise<WorkOrderEstimateView> => {
       const res = await apiFetch<{ data: EstimateResponse }>(
         `/v1/tehnologija/time-estimate/work-order/${id}`,
       );
-      if (!isEstimate(res.data)) {
-        return { byOp: new Map<number, OperationEstimate>(), drawing: null };
-      }
+      if (!isEstimate(res.data)) return EMPTY;
       return {
         byOp: new Map(res.data.operacije.map((o) => [o.rb, o])),
         drawing: res.data.crtez_istorija,
+        nalozi: res.data.crtez_nalozi,
       };
     },
   });

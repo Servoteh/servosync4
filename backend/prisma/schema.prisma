@@ -1789,6 +1789,10 @@ model TechProcess {
   @@index([workOrderId], map: "idx_tp_work_order")
   @@index([enteredAt], map: "idx_tp_entered_at")
   @@index([workerId], map: "idx_tp_worker")
+  // AI-5 (review [10]): procena vremena po radnom mestu (estimateByWorkCenter,
+  // 2× po pozivu) filtrira po work_center_code — bez indeksa Seq Scan 99k (~114ms).
+  // Vodeći stolbac idx_tp_trojka_op je project_id, pa NE služi ovaj predikat.
+  @@index([workCenterCode], map: "idx_tech_processes_work_center_code")
   @@map("tech_processes")
 }
 

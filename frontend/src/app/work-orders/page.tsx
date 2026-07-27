@@ -463,6 +463,7 @@ function WorkOrderDetail({
             deleteDisabled={busy}
             estimates={est.data?.byOp}
             drawingHistory={est.data?.drawing}
+            drawingNalozi={est.data?.nalozi}
           />
         )}
         {/* Greška brisanja operacije se prikazuje u dijalogu potvrde (BUG-P2-08). */}
