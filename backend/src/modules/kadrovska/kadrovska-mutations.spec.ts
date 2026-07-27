@@ -1,4 +1,8 @@
-import { ConflictException, ForbiddenException } from "@nestjs/common";
+import {
+  ConflictException,
+  ForbiddenException,
+  NotFoundException,
+} from "@nestjs/common";
 import { KadrovskaMutationsService } from "./kadrovska-mutations.service";
 
 /**
@@ -774,5 +778,61 @@ describe("payrollRecompute — integracija (mapTerm/fond wiring, novac)", () => 
     // PUN fond (22×8=176) — NE umanjen (136); jedna proporcionalna redukcija 17/22.
     expect(out.data.rows[0].fond_sati_meseca).toBe(176);
     expect(out.data.rows[0].ukupna_zarada).toBe(77272.73);
+  });
+});
+
+/**
+ * REGRESIJA: signEmployeeDocument mora vratiti GO STRING URL.
+ * Sy15StorageService.signUrl vraća { url, expiresIn }; ranije se ceo objekat
+ * vraćao kao { data: {...} }, pa je FE radio window.open('[object Object]')
+ * → Next.js 404 pri „Generiši i sačuvaj" ugovora (prijava Dragane, 27.07).
+ */
+describe("Kadrovska — signEmployeeDocument vraća string URL (404 regresija)", () => {
+  const EMAIL = "test@servoteh.com";
+  const DOC_ID = "3b241101-e2bb-4255-8caf-4136c566a962";
+  const SIGNED_URL =
+    "https://api.servosync.servoteh.com/storage/v1/object/sign/employee-docs/x?token=t";
+
+  const mkService = (docRow: unknown) => {
+    const findFirst = jest.fn().mockResolvedValue(docRow);
+    const withUserRls = jest.fn(
+      async (_e: string, fn: (tx: unknown) => Promise<unknown>) =>
+        fn({ employeeDocument: { findFirst } }),
+    );
+    const signUrl = jest
+      .fn()
+      .mockResolvedValue({ url: SIGNED_URL, expiresIn: 3600 });
+    const service = new KadrovskaMutationsService(
+      { withUserRls, runIdempotentRls: jest.fn() } as never,
+      { upload: jest.fn(), signUrl, remove: jest.fn() } as never,
+      { configured: true, send: jest.fn() } as never,
+      { enabled: false, dispatchKadr: jest.fn() } as never,
+      {} as never,
+    );
+    return { service, signUrl, findFirst };
+  };
+
+  it("vraća { data: string } (ne objekat) sa .url iz storage servisa", async () => {
+    const { service, signUrl } = mkService({
+      id: DOC_ID,
+      storagePath: "emp/1/ugovor.pdf",
+      deletedAt: null,
+    });
+    const out = await service.signEmployeeDocument(EMAIL, DOC_ID);
+    expect(typeof out.data).toBe("string");
+    expect(out.data).toBe(SIGNED_URL);
+    expect(signUrl).toHaveBeenCalledWith(
+      "employee-docs",
+      "emp/1/ugovor.pdf",
+      3600,
+    );
+  });
+
+  it("dokument ne postoji → NotFoundException, signUrl se ne poziva", async () => {
+    const { service, signUrl } = mkService(null);
+    await expect(
+      service.signEmployeeDocument(EMAIL, DOC_ID),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(signUrl).not.toHaveBeenCalled();
   });
 });

@@ -3295,12 +3295,16 @@ export class KadrovskaMutationsService {
     );
     if (!doc)
       throw new NotFoundException("Dokument ne postoji ili nemate pravo");
-    const url = await this.storage.signUrl(
+    const signed = await this.storage.signUrl(
       "employee-docs",
       doc.storagePath,
       3600,
     );
-    return { data: url };
+    // FE ugovor OVOG endpointa je go string URL ({ data: string }) — frontend
+    // radi window.open(signed.data) na 4 mesta. Zato raspakuj .url; storage
+    // servis vraca { url, expiresIn }, sto drugi moduli (npr. /odrzavanje)
+    // prosledjuju kao objekat i citaju res.data.url.
+    return { data: signed.url };
   }
 
   /** Soft-delete meta-reda (RLS PII) + best-effort brisanje fajla. */

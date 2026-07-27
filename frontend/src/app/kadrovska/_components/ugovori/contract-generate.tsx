@@ -239,7 +239,7 @@ export function ContractGenerateDialog({
               <Input type="date" value={signDate} onChange={(e) => setSignDate(e.target.value)} />
             </FormField>
             <p className="text-xs text-ink-secondary">
-              PDF se snima u dokumenta zaposlenog i šalje na njegov email. Potpisivanje je svojeručno, van sistema.
+              PDF se snima u dokumenta zaposlenog; mejl sa ugovorom stiže na administracija@servoteh.com (štampa i potpis). Potpisivanje je svojeručno, van sistema.
             </p>
           </>
         )}
