@@ -4280,9 +4280,10 @@ model ChangeRequest {
 model ChangeRequestAttachment {
   id              Int       @id(map: "pk_change_request_attachments") @default(autoincrement()) @map("id")
   requestId       Int       @map("request_id")
+  commentId       Int?      @map("comment_id") /// zahtev 029/26: prilog uz KOMENTAR/pitanje; null = prilog samog zahteva (§5)
   kind            String    @map("kind") @db.VarChar(10) /// IMAGE | AUDIO | FILE
   bucket          String    @map("bucket") @db.VarChar(60) /// "zahtevi-prilozi"
-  storagePath     String    @map("storage_path") @db.VarChar(300) /// "req/<requestId>/<uuid>.<ext>"
+  storagePath     String    @map("storage_path") @db.VarChar(300) /// "req/<requestId>/<uuid>.<ext>" (komentar: "req/<requestId>/comment/<commentId>/<uuid>.<ext>")
   originalName    String    @map("original_name") @db.VarChar(200)
   contentType     String    @map("content_type") @db.VarChar(80)
   sizeBytes       Int       @map("size_bytes")
@@ -4292,9 +4293,11 @@ model ChangeRequestAttachment {
   createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   deletedAt       DateTime? @map("deleted_at") @db.Timestamptz(6) /// soft-delete (fajl best-effort remove)
 
-  request ChangeRequest @relation(fields: [requestId], references: [id], onDelete: Cascade, map: "fk_cr_attachments_request")
+  request ChangeRequest        @relation(fields: [requestId], references: [id], onDelete: Cascade, map: "fk_cr_attachments_request")
+  comment ChangeRequestComment? @relation(fields: [commentId], references: [id], onDelete: Cascade, map: "fk_cr_attachments_comment")
 
   @@index([requestId], map: "idx_cr_attachments_request")
+  @@index([commentId], map: "idx_cr_attachments_comment")
   @@map("change_request_attachments")
 }
 
@@ -4329,7 +4332,8 @@ model ChangeRequestComment {
   isQuestion   Boolean  @default(false) @map("is_question") /// true = pitanje prosleđeno podnosiocu (može poteći iz AI analize)
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  request ChangeRequest @relation(fields: [requestId], references: [id], onDelete: Cascade, map: "fk_cr_comments_request")
+  request     ChangeRequest             @relation(fields: [requestId], references: [id], onDelete: Cascade, map: "fk_cr_comments_request")
+  attachments ChangeRequestAttachment[] /// zahtev 029/26: slike/fajlovi uz komentar ili pitanje
 
   @@index([requestId], map: "idx_cr_comments_request")
   @@map("change_request_comments")

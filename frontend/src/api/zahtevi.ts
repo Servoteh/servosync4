@@ -173,6 +173,8 @@ export interface ChangeRequest {
 export interface ChangeRequestAttachment {
   id: number;
   requestId: number;
+  /** 029/26: null = prilog samog zahteva; broj = prilog uz taj komentar/pitanje. */
+  commentId: number | null;
   kind: 'IMAGE' | 'AUDIO' | 'FILE';
   bucket: string;
   storagePath: string;
@@ -212,6 +214,8 @@ export interface ChangeRequestComment {
   body: string;
   isQuestion: boolean;
   createdAt: string;
+  /** 029/26: slike/fajlovi poslati uz ovu poruku (samo na GET detalju). */
+  attachments?: ChangeRequestAttachment[];
 }
 
 /** Event (insert-only timeline) — `change_request_events`. `data` je slobodan JSON.
@@ -480,10 +484,12 @@ export function useReturnForInfo() {
   const invalidate = useInvalidate();
   return useMutation({
     mutationFn: ({ id, questions, note }: { id: number; questions: string[]; note?: string }) =>
-      apiFetch<One<ChangeRequest>>(`${BASE}/${id}/return-for-info`, {
-        method: 'POST',
-        body: JSON.stringify({ questions, note }),
-      }),
+      // `questionCommentIds` (029/26) = id-jevi upisanih pitanja, redom — FE odmah zatim
+      // kači izabrane fajlove na poslato pitanje.
+      apiFetch<One<ChangeRequest & { questionCommentIds: number[] }>>(
+        `${BASE}/${id}/return-for-info`,
+        { method: 'POST', body: JSON.stringify({ questions, note }) },
+      ),
     onSuccess: invalidate,
   });
 }
@@ -501,12 +507,17 @@ export function useSetRealizationStatus() {
   });
 }
 
-/** Upload priloga (multipart, do 10; servis validira mime/veličinu). */
+/**
+ * Upload priloga (multipart, do 10; servis validira mime/veličinu). Uz `commentId`
+ * (029/26) prilog se veže za komentar/pitanje umesto za sam zahtev — ista ruta, isti
+ * limiti. Tekstualno polje ide PRE fajlova (multer ga tako sigurno vidi u telu).
+ */
 export function useUploadAttachments() {
   const invalidate = useInvalidate();
   return useMutation({
-    mutationFn: ({ id, files }: { id: number; files: File[] }) => {
+    mutationFn: ({ id, files, commentId }: { id: number; files: File[]; commentId?: number }) => {
       const fd = new FormData();
+      if (commentId != null) fd.append('commentId', String(commentId));
       for (const f of files) fd.append('files', f, f.name);
       return apiUpload<Rows<ChangeRequestAttachment>>(`${BASE}/${id}/attachments`, fd);
     },

@@ -249,7 +249,6 @@ export default function ZahtevDetailPage() {
               <QuestionsTab
                 detail={detail}
                 isAdmin={isAdmin}
-                isOwner={isOwner}
                 focusSignal={focusAnswer}
                 onFocusConsumed={consumeFocus}
               />
