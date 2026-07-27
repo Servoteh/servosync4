@@ -17,6 +17,7 @@ import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
 import { ExportCsvButton } from '@/components/export-csv-button';
 import { SendMailDialog } from '@/components/send-mail-dialog';
 import { type CsvColumn } from '@/lib/table-csv';
+import { ApiError } from '@/api/client';
 import { formatDate, formatDecimal, formatNumber } from '@/lib/format';
 import {
   useKif,
@@ -71,6 +72,11 @@ const TABS: TabItem<View>[] = [
 ];
 
 const CURRENT_YEAR = new Date().getFullYear();
+
+/** Objašnjenje uz dugme „Ipak prikaži" — izlaz nosi žig i ne sme na predaju. */
+const PRINT_FORCE_TITLE =
+  'Izdaje PDF sa crvenom oznakom „NEISPRAVAN OBRAČUN — NIJE ZA PREDAJU". ' +
+  'Takav dokument je samo za proveru i ne može se poslati mejlom.';
 
 /** Izbor godine: tekuća + 6 unazad (dovoljno za PDV knjige u pogonu). Select uzima string. */
 const YEAR_OPTIONS: { value: string; label: string }[] = Array.from(
@@ -245,6 +251,22 @@ const kepuColumns: Column<KepuRow>[] = [
  * KIF/KUF kolone + akciona kolona: izmena/brisanje SAMO za ručne redove
  * (`sourceJournalEntryId == null`); GK-izvedeni redovi su read-only (oznaka GK).
  */
+/**
+ * Izvuci spisak problema iz 409 odgovora provere ispravnosti
+ * (`code: "PDV_OBRACUN_NEISPRAVAN"`, `details.problems[]`). Sirova `message` je
+ * višelinijski tekst koji se u `div`-u slije u jedan pasus, pa se problemi
+ * prikazuju kao lista.
+ */
+function problemsOf(err: unknown): string[] {
+  if (!(err instanceof ApiError)) return [];
+  const body = err.body as
+    | { code?: string; details?: { problems?: unknown } }
+    | null;
+  const problems = body?.details?.problems;
+  if (!Array.isArray(problems)) return [];
+  return problems.filter((p): p is string => typeof p === 'string');
+}
+
 function ledgerColumnsWithActions(
   onEdit: (row: VatLedgerRow) => void,
   onDelete: (row: VatLedgerRow) => void,
@@ -321,6 +343,20 @@ export default function PdvPage() {
   const ledgerPdf = useLedgerSpecPdf();
   const sendPpPdvMail = useSendPpPdvMail();
 
+  // Greška mutacije nije vezana za period ni za tab, pa je preživljavala promenu
+  // meseca: pad punjenja za mart ostajao je crven i pošto se pređe na april, i
+  // izgledalo je kao da je i april pokvaren. Čisti se pri svakoj promeni pogleda.
+  useEffect(() => {
+    buildKifKuf.reset();
+    computePopdv.reset();
+    postReturn.reset();
+    ppPdvPdf.reset();
+    ledgerPdf.reset();
+    // Namerno samo period/tab u zavisnostima — mutacije su stabilne reference,
+    // a njihovo uvrštavanje bi vrtelo efekat u krug.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [year, month, view]);
+
   // Dijalog ručne KIF/KUF stavke: null = zatvoren; {row:null} = nova; {row} = izmena.
   const [entryDialog, setEntryDialog] = useState<{ row: VatLedgerRow | null } | null>(
     null,
@@ -377,6 +413,16 @@ export default function PdvPage() {
     handleDeleteEntry,
   );
 
+  // Nalaz provere i ZBIR tekuće knjige (BE ih vraća uz listu). Zbir je bio jedini
+  // deo kvara koji se na ekranu uopšte nije mogao videti: tabela nema podnožje,
+  // pa „625 stavki a UKUPNO 0,00" postoji samo u PDF-u.
+  const ledgerMeta = view === 'kuf' ? kuf.data?.meta : kif.data?.meta;
+  const ledgerSanity = isLedgerView ? (ledgerMeta?.sanity ?? null) : null;
+  // 409 sa strukturisanim spiskom problema — prikazuje se kao lista, ne kao
+  // jedan zid teksta (poruka je višelinijska).
+  const mutationProblems = problemsOf(mutationErr);
+  const ledgerBlocked = ledgerSanity != null && !ledgerSanity.ok;
+
   return (
     <AppShell>
       <PageHeader
@@ -413,7 +459,7 @@ export default function PdvPage() {
                   variant="secondary"
                   onClick={() =>
                     ppPdvPdf.mutate(
-                      `${year}-${String(month).padStart(2, '0')}`,
+                      { period: `${year}-${String(month).padStart(2, '0')}` },
                       { onSuccess: openPdf },
                     )
                   }
@@ -421,6 +467,27 @@ export default function PdvPage() {
                 >
                   <Printer className="h-4 w-4" aria-hidden />
                   PP-PDV
+                </Button>
+              )}
+              {/* IZLAZ IZ ZIDA: kad provera zaustavi štampu, knjigovođa mora da
+                  ima način da vidi brojeve i utvrdi šta ne valja. PDF izlazi sa
+                  crvenim žigom „NIJE ZA PREDAJU" i ne može otići mejlom. */}
+              {currentReturn && problemsOf(ppPdvPdf.error).length > 0 && (
+                <Button
+                  variant="secondary"
+                  title={PRINT_FORCE_TITLE}
+                  onClick={() =>
+                    ppPdvPdf.mutate(
+                      {
+                        period: `${year}-${String(month).padStart(2, '0')}`,
+                        force: true,
+                      },
+                      { onSuccess: openPdf },
+                    )
+                  }
+                  loading={ppPdvPdf.isPending}
+                >
+                  Ipak prikaži (sa oznakom)
                 </Button>
               )}
               {currentReturn && (
@@ -442,13 +509,30 @@ export default function PdvPage() {
               >
                 Obračunaj
               </Button>
+              {problemsOf(computePopdv.error).length > 0 && (
+                <Button
+                  variant="secondary"
+                  title="Sačuvaj obračun uprkos nađenim problemima — NIJE za predaju"
+                  onClick={() =>
+                    computePopdv.mutate({ year, month, force: true })
+                  }
+                  loading={computePopdv.isPending}
+                >
+                  Ipak obračunaj (sa oznakom)
+                </Button>
+              )}
             </div>
           ) : isLedgerView ? (
             <div className="flex items-center gap-2">
+              {/* Izvoz neispravnog perioda nosi oznaku U IMENU FAJLA — inače
+                  bi tabela iz Excela izgledala kao uredan izvod evidencije. */}
               <ExportCsvButton
                 columns={ledgerCsvColumns}
                 rows={view === 'kuf' ? kufRows : kifRows}
-                filename={`${view}-${year}-${String(month).padStart(2, '0')}`}
+                filename={
+                  `${view}-${year}-${String(month).padStart(2, '0')}` +
+                  (ledgerBlocked ? '-NEISPRAVAN-NIJE-ZA-PREDAJU' : '')
+                }
               />
               <Button
                 variant="secondary"
@@ -463,6 +547,26 @@ export default function PdvPage() {
                 <Printer className="h-4 w-4" aria-hidden />
                 Štampa
               </Button>
+              {problemsOf(ledgerPdf.error).length > 0 && (
+                <Button
+                  variant="secondary"
+                  title={PRINT_FORCE_TITLE}
+                  onClick={() =>
+                    ledgerPdf.mutate(
+                      {
+                        book: view === 'kuf' ? 'kuf' : 'kif',
+                        year,
+                        month,
+                        force: true,
+                      },
+                      { onSuccess: openPdf },
+                    )
+                  }
+                  loading={ledgerPdf.isPending}
+                >
+                  Ipak prikaži (sa oznakom)
+                </Button>
+              )}
               <Button
                 variant="secondary"
                 onClick={() => setEntryDialog({ row: null })}
@@ -476,6 +580,16 @@ export default function PdvPage() {
               >
                 Napuni iz GK
               </Button>
+              {problemsOf(buildKifKuf.error).length > 0 && (
+                <Button
+                  variant="secondary"
+                  title="Upisuje i period koji je pao na proveri — ISKLJUČIVO za proveru"
+                  onClick={() => buildKifKuf.mutate({ year, month, force: true })}
+                  loading={buildKifKuf.isPending}
+                >
+                  Ipak napuni (sa oznakom)
+                </Button>
+              )}
             </div>
           ) : undefined
         }
@@ -516,9 +630,57 @@ export default function PdvPage() {
           </div>
         </div>
 
+        {/* NALAZ PROVERE ISPRAVNOSTI — vezan za PODATAK, ne za format izlaza.
+            Ranije je zaštita stajala samo na PDF-u i mejlu, pa je period koji se
+            NE SME odštampati mogao bez ijedne oznake da izađe u CSV i ode dalje. */}
+        {isLedgerView && ledgerSanity && !ledgerSanity.ok && (
+          <div className="space-y-2 rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">
+            <p className="font-semibold">
+              PDV evidencija za {ledgerSanity.period} nije ispravna — ovi brojevi
+              NISU za predaju.
+            </p>
+            <ul className="list-disc space-y-1 pl-5">
+              {ledgerSanity.problems.map((p) => (
+                <li key={p}>{p}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {isLedgerView && ledgerSanity && ledgerSanity.warnings.length > 0 && (
+          <div className="space-y-2 rounded-panel border border-status-warn/40 bg-status-warn-bg px-4 py-3 text-sm text-status-warn">
+            <p className="font-semibold">Napomene uz period {ledgerSanity.period}</p>
+            <ul className="list-disc space-y-1 pl-5">
+              {ledgerSanity.warnings.map((w) => (
+                <li key={w}>{w}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
         {(activeQuery.error || mutationErr) && (
-          <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">
-            {((activeQuery.error as Error) || mutationErr)?.message}
+          <div className="space-y-2 rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">
+            {/* Problemi iz 409 (`details.problems`) idu kao LISTA — sirova poruka
+                je višelinijski tekst koji se u `div`-u slije u jedan pasus. */}
+            {mutationProblems.length > 0 ? (
+              <>
+                <p className="font-semibold">
+                  Zaustavljeno — PDV evidencija za period nije ispravna:
+                </p>
+                <ul className="list-disc space-y-1 pl-5">
+                  {mutationProblems.map((p) => (
+                    <li key={p}>{p}</li>
+                  ))}
+                </ul>
+                <p>
+                  Kad ti izlaz treba samo za proveru, uključi „Ipak prikaži" —
+                  dokument izlazi sa oznakom „NEISPRAVAN OBRAČUN — NIJE ZA PREDAJU".
+                </p>
+              </>
+            ) : (
+              <p className="whitespace-pre-line">
+                {((activeQuery.error as Error) || mutationErr)?.message}
+              </p>
+            )}
           </div>
         )}
 
@@ -538,33 +700,39 @@ export default function PdvPage() {
 
         {/* KIF / KUF */}
         {view === 'kif' && (
-          <DataTable
-            columns={ledgerColumnsActive}
-            rows={kifRows}
-            rowKey={(r) => r.id}
-            loading={kif.isLoading}
-            empty={
-              <EmptyState
-                title="Nema KIF stavki"
-                hint={'Napuni evidenciju iz glavne knjige ili dodaj rucnu stavku za izabrani period.'}
-              />
-            }
-          />
+          <>
+            <DataTable
+              columns={ledgerColumnsActive}
+              rows={kifRows}
+              rowKey={(r) => r.id}
+              loading={kif.isLoading}
+              empty={
+                <EmptyState
+                  title="Nema KIF stavki"
+                  hint={'Napuni evidenciju iz glavne knjige ili dodaj rucnu stavku za izabrani period.'}
+                />
+              }
+            />
+            <LedgerTotals meta={kif.data?.meta} book="KIF" />
+          </>
         )}
 
         {view === 'kuf' && (
-          <DataTable
-            columns={ledgerColumnsActive}
-            rows={kufRows}
-            rowKey={(r) => r.id}
-            loading={kuf.isLoading}
-            empty={
-              <EmptyState
-                title="Nema KUF stavki"
-                hint={'Napuni evidenciju iz glavne knjige ili dodaj rucnu stavku za izabrani period.'}
-              />
-            }
-          />
+          <>
+            <DataTable
+              columns={ledgerColumnsActive}
+              rows={kufRows}
+              rowKey={(r) => r.id}
+              loading={kuf.isLoading}
+              empty={
+                <EmptyState
+                  title="Nema KUF stavki"
+                  hint={'Napuni evidenciju iz glavne knjige ili dodaj rucnu stavku za izabrani period.'}
+                />
+              }
+            />
+            <LedgerTotals meta={kuf.data?.meta} book="KUF" />
+          </>
         )}
 
         {/* POPDV obračun */}
@@ -708,6 +876,43 @@ function PopdvView({
 }
 
 /** Pločica zbirnog iznosa u POPDV zaglavlju (Decimal-as-string → formatDecimal). */
+/**
+ * Podnožje KIF/KUF tabele: Σ osnovica i Σ PDV — ISTI broj koji ide u „UKUPNO"
+ * red PDF-a, iz istog izvora (`meta` sa servera).
+ *
+ * Zašto postoji: kvar zbog kojeg je ceo modul popravljan („625 stavki a UKUPNO
+ * 0,00") na ekranu se NIJE MOGAO videti — tabela je imala samo redove, a zbir
+ * je postojao jedino u odštampanom PDF-u.
+ */
+function LedgerTotals({
+  meta,
+  book,
+}: {
+  meta?: { count: number; totalBase: string; totalVat: string };
+  book: 'KIF' | 'KUF';
+}) {
+  if (!meta || meta.count === 0) return null;
+  return (
+    <div className="flex flex-wrap items-center justify-end gap-6 rounded-panel border border-line bg-surface-2 px-4 py-3 text-sm">
+      <span className="text-ink-secondary">
+        {book} — ukupno {formatNumber(meta.count)} stavki
+      </span>
+      <span className="text-ink-secondary">
+        Σ osnovica{' '}
+        <span className="tnums font-semibold text-ink">
+          {formatDecimal(meta.totalBase)}
+        </span>
+      </span>
+      <span className="text-ink-secondary">
+        Σ PDV{' '}
+        <span className="tnums font-semibold text-ink">
+          {formatDecimal(meta.totalVat)}
+        </span>
+      </span>
+    </div>
+  );
+}
+
 function SummaryTile({
   label,
   value,

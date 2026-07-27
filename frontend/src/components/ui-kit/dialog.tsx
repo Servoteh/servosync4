@@ -37,13 +37,23 @@ export function Dialog({
   // zatvori dijalog (inače bi se click dispatch-ovao na scrim kao zajedničkog pretka).
   const downOnBackdrop = useRef(false);
 
+  // Esc PRIPADA OTVORENOM DIJALOGU, i kad dijalog nije `dismissable`.
+  // Slušalac ide u CAPTURE fazi na `window` (dakle pre svih ostalih) i zaustavlja
+  // propagaciju: ekran ispod takođe sluša `window` za Esc („Nazad na listu"), pa
+  // su se ranije okidala OBA — dijalog bi se zatvorio, uneseni tekst nestao, a
+  // korisnik bi usput bio izbačen na listu (dokazano na 4 od 5 ekrana detalja;
+  // samo je nabavka imala ručni `&& !rfqOpen` guard). Umesto da se to pravilo
+  // ponavlja na svakom ekranu, drži se ovde — na jedinom mestu koje zna da je
+  // modalni sloj otvoren.
   useEffect(() => {
-    if (!open || !dismissable) return;
+    if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      if (dismissable) onClose();
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
   }, [open, onClose, dismissable]);
 
   if (!open) return null;

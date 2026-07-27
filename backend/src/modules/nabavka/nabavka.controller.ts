@@ -55,6 +55,16 @@ export class NabavkaController {
     });
   }
 
+  /**
+   * Jedan zahtev sa stavkama — ekran `/nabavka/detalj?id=N`. Bez ove rute je
+   * detalj morao da se izvodi iz prvih 500 redova liste, pa se stariji zahtev
+   * video u listi a nije mogao da se otvori.
+   */
+  @Get("requests/:id")
+  getRequest(@Param("id", ParseIntPipe) id: number) {
+    return this.nabavka.getRequestDetail(id);
+  }
+
   @Post("requests")
   @RequirePermission(PERMISSIONS.NABAVKA_WRITE)
   createRequest(

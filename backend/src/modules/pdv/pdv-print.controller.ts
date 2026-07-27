@@ -25,6 +25,12 @@ import { PdvPrintService } from "./pdv-print.service";
  *
  * PDF se vraća inline (`application/pdf`) — pregled u browseru + download; isti
  * obrazac kao `SalesController.invoicePdfDownload`.
+ *
+ * `&force=true` na GET rutama izdaje PDF i za period koji je pao na proveri
+ * ispravnosti (`vat-sanity.ts`), ali ISKLJUČIVO sa crvenim vodenim žigom
+ * „NEISPRAVAN OBRAČUN — NIJE ZA PREDAJU". Bez `force` takav period vraća 409 sa
+ * objašnjenjem na srpskom. `POST pp-pdv/send-mail` NE poštuje `force` — mejl ide
+ * samo za obračun koji je prošao sve provere.
  */
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 @RequirePermission(PERMISSIONS.PDV_READ)
@@ -38,9 +44,12 @@ export class PdvPrintController {
   @Get("pp-pdv")
   async ppPdv(
     @Query("period") period: string,
+    @Query("force") force: string,
     @Res() res: Response,
   ): Promise<void> {
-    const { buffer, fileName } = await this.print.buildPpPdvPdf(period);
+    const { buffer, fileName } = await this.print.buildPpPdvPdf(period, {
+      force: isForce(force),
+    });
     this.sendPdf(res, buffer, fileName);
   }
 
@@ -50,6 +59,10 @@ export class PdvPrintController {
    * `buildPpPdvPdf`, 404 kad nema POPDV obračuna). Slanje NE baca (DRY-RUN kad
    * ključ fali) — vraća `{ data: { sent, to, fileName } }`. Nasleđuje klasnu
    * PDV_READ (dostava izveštaja koji je već štampiv; bez elevacije).
+   *
+   * NAMERNO BEZ `force`: obrazac koji je pao na proveri ispravnosti sme da se
+   * pogleda na ekranu (sa žigom), ali ne sme da napusti kuću mejlom. Poziv se
+   * ovde uvek radi bez `force`, pa neispravan period vrati 409.
    */
   @Post("pp-pdv/send-mail")
   async sendPpPdvMail(@Body() dto: { period?: string; to?: string }) {
@@ -74,12 +87,14 @@ export class PdvPrintController {
   async kif(
     @Query("year") year: string,
     @Query("month") month: string,
+    @Query("force") force: string,
     @Res() res: Response,
   ): Promise<void> {
     const { buffer, fileName } = await this.print.buildLedgerSpecPdf(
       "output",
       Number(year),
       Number(month),
+      { force: isForce(force) },
     );
     this.sendPdf(res, buffer, fileName);
   }
@@ -88,12 +103,14 @@ export class PdvPrintController {
   async kuf(
     @Query("year") year: string,
     @Query("month") month: string,
+    @Query("force") force: string,
     @Res() res: Response,
   ): Promise<void> {
     const { buffer, fileName } = await this.print.buildLedgerSpecPdf(
       "input",
       Number(year),
       Number(month),
+      { force: isForce(force) },
     );
     this.sendPdf(res, buffer, fileName);
   }
@@ -106,6 +123,15 @@ export class PdvPrintController {
     );
     res.send(buffer);
   }
+}
+
+/**
+ * `?force=true|1` — izdaj PDF i za period koji je pao na proveri ispravnosti
+ * (uvek sa vodenim žigom). Sve ostalo (izostavljeno, prazno, "false") = ne.
+ */
+function isForce(value: unknown): boolean {
+  const v = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return v === "true" || v === "1";
 }
 
 /** Osnovna provera email formata (jedan primalac); baca 400 na prazno/nevalidno. */

@@ -391,28 +391,29 @@ export function useNabavkaRequests(filters: NabavkaRequestFilters = {}) {
 }
 
 /**
- * Detalj jednog zahteva (zaglavlje + stavke) — izveden iz radne liste. Backend
- * (nabavka.controller.ts) NEMA `GET /nabavka/requests/:id`; lista već vraća pune
- * zahteve sa stavkama (`include: { items }`), pa detalj čitamo iz iste liste
- * (velika strana, `take=500`) i biramo po `id`. `enabled` gasi upit dok id nije
- * poznat. Isti izbor kao `usePendingHandoversByDraft` (klijentski filter nad
- * širokom stranom kad nema zasebnog detalj-endpointa).
+ * Detalj jednog zahteva (zaglavlje + stavke) — `GET /nabavka/requests/:id`.
+ *
+ * Ranije se izvodio klijentski iz prvih 500 redova radne liste. To je radilo dok
+ * se detalj uopšte nije mogao otvoriti; čim je otvaranje po linku postalo redovan
+ * put, zahtev van prvih 500 se VIDEO u listi a nije se otvarao — uz poruku
+ * „možda je obrisan", koja nije tačna. `enabled` gasi upit dok id nije poznat,
+ * pa se nikad ne šalje zahtev na `/requests/null`.
  */
 export function useNabavkaRequest(id: number | null) {
   const query = useQuery({
-    queryKey: [...KEYS.requests, 'detail-source'],
-    queryFn: () =>
-      apiFetch<PaginatedTotal<PurchaseRequest>>(`${BASE}/requests?take=500`),
+    queryKey: [...KEYS.requests, 'detail', id],
+    queryFn: () => apiFetch<PurchaseRequest>(`${BASE}/requests/${id}`),
     enabled: id != null,
-    staleTime: 15_000,
   });
-  const request = id != null ? (query.data?.data.find((r) => r.id === id) ?? null) : null;
+  const err = query.error as (Error & { status?: number }) | null;
+  // 404 sa servera je „ne postoji", sve ostalo je greška veze/prava i NE sme se
+  // prikazati kao „dokument je obrisan".
+  const isMissing = err != null && err.status === 404;
   return {
-    request,
+    request: query.data ?? null,
     isLoading: query.isLoading,
-    error: query.error as Error | null,
-    /** true kad je lista učitana ali zahtev sa tim id-em ne postoji. */
-    notFound: id != null && !query.isLoading && !query.error && request === null,
+    error: isMissing ? null : err,
+    notFound: id != null && !query.isLoading && (isMissing || (!err && query.data == null)),
   };
 }
 

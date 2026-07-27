@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { useParams, useRouter } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import {
   ArrowLeft,
   Plus,
@@ -14,6 +14,7 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
+import { useIdParam, listHref } from '@/lib/use-id-param';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
@@ -197,9 +198,8 @@ function buildItemColumns(currency: string | null): Column<BankStatementLine>[] 
 export default function IzvodDetailPage() {
   const { user, isLoading } = useAuth();
   const router = useRouter();
-  const params = useParams<{ id: string }>();
-  const id = Number(params.id);
-  const validId = Number.isInteger(id) && id > 0 ? id : null;
+  // Statička ruta `/izvodi/detalj?id=N` (static export — vidi use-id-param).
+  const { id: validId, resolved: idResolved } = useIdParam();
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
@@ -208,7 +208,10 @@ export default function IzvodDetailPage() {
   const query = useStatement(validId);
   const doc = query.data ?? null;
   const error = query.error as Error | null;
-  const notFound = validId != null && !query.isLoading && !query.error && query.data == null;
+  // „Nema id-a u URL-u" je isto što i „nije pronađen" — ali tek pošto se URL pročita.
+  const notFound =
+    (idResolved && validId == null) ||
+    (validId != null && !query.isLoading && !query.error && query.data == null);
 
   const match = useMatchLines();
   const post = usePostStatement();
@@ -249,7 +252,9 @@ export default function IzvodDetailPage() {
     setLinkOpen(true);
   }, []);
 
-  const goBack = useCallback(() => router.push('/izvodi'), [router]);
+  // Povratak na listu VRAĆA I FILTERE (`listHref` čita poslednje stanje
+  // liste) — bez toga se posle svakog otvorenog dokumenta gubio filter i strana.
+  const goBack = useCallback(() => router.push(listHref('/izvodi')), [router]);
 
   // Primarna akcija zavisi od statusa: uvezen bez uparenih → upari; sa uparenim → knjiži.
   const primaryAction = useCallback(() => {
@@ -261,6 +266,10 @@ export default function IzvodDetailPage() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Dok je dijalog otvoren prečice ekrana MIRUJU: bez ovoga je Esc zatvarao
+      // dijalog I usput odnosio korisnika na listu (uneseni tekst nestaje), a
+      // Ctrl+S je istovremeno slao obrazac dijaloga I okidao radnju ekrana.
+      if (editorOpen || linkOpen) return;
       if (e.key === 'Escape') {
         e.preventDefault();
         goBack();
@@ -271,7 +280,7 @@ export default function IzvodDetailPage() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [goBack, primaryAction]);
+  }, [goBack, primaryAction, editorOpen, linkOpen]);
 
   if (isLoading || !user) {
     return (
@@ -325,14 +334,26 @@ export default function IzvodDetailPage() {
           </div>
         )}
 
-        {query.isLoading ? (
+        {!idResolved || (validId != null && query.isLoading) ? (
           <div className="grid place-items-center py-16 text-sm text-ink-secondary">
             Učitavanje…
           </div>
+        ) : error ? (
+          // Greška servera NIJE „dokument ne postoji". Ranije se uz crveni baner
+          // palila i poruka „možda je obrisan", pa je knjigovođa posle restarta
+          // backenda tražio proknjižen dokument koji nikad nije nestao.
+          <EmptyState
+            title="Podatak nije učitan"
+            hint="Veza sa serverom je prekinuta ili je zahtev odbijen. Osveži stranicu; ako se ponovi, javi administratoru."
+          />
         ) : notFound || !doc ? (
           <EmptyState
             title="Izvod nije pronađen"
-            hint="Izvod je možda obrisan ili nemaš pristup. Vrati se na listu izvoda."
+            hint={
+              validId == null
+                ? 'Adresa nema ispravan broj izvoda (?id=). Vrati se na listu i otvori izvod iz liste.'
+                : 'Izvod je možda obrisan ili nemaš pristup. Vrati se na listu izvoda.'
+            }
           />
         ) : (
           <>

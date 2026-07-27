@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useIdParam } from '@/lib/use-id-param';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
@@ -32,6 +33,16 @@ export default function KarticaKomitentaPage() {
   const router = useRouter();
 
   const [partner, setPartner] = useState<{ id: number; name: string } | null>(null);
+  // DEEP-LINK `?partnerId=N` — sa uparene stavke izvoda se dolazi dugmetom
+  // „Kartica". Do sada se taj parametar NIJE čitao: ekran bi se otvorio prazan,
+  // pa je knjigovođa zaključivao da komitent nema prometa ili da kartica ne radi.
+  // Ime se dopunjuje čim pretraga vrati komitenta (ispod).
+  const { id: linkedPartnerId } = useIdParam('partnerId');
+  useEffect(() => {
+    if (linkedPartnerId != null) {
+      setPartner((prev) => prev ?? { id: linkedPartnerId, name: '' });
+    }
+  }, [linkedPartnerId]);
   const [accountCode, setAccountCode] = useState('');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');

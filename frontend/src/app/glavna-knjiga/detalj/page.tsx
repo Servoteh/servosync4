@@ -1,9 +1,10 @@
 'use client';
 
 import { useEffect, useCallback } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import { ArrowLeft, Printer } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
+import { useIdParam, listHref } from '@/lib/use-id-param';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
@@ -92,9 +93,8 @@ const lineColumns: Column<LedgerEntry>[] = [
 export default function GlavnaKnjigaDetailPage() {
   const { user, isLoading } = useAuth();
   const router = useRouter();
-  const params = useParams<{ id: string }>();
-  const id = Number(params.id);
-  const validId = Number.isInteger(id) && id > 0 ? id : null;
+  // Statička ruta `/glavna-knjiga/detalj?id=N` (static export — vidi use-id-param).
+  const { id: validId, resolved: idResolved } = useIdParam();
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
@@ -103,8 +103,10 @@ export default function GlavnaKnjigaDetailPage() {
   const query = useJournalEntry(validId);
   const doc = query.data?.data ?? null;
   const error = query.error as Error | null;
+  // „Nema id-a u URL-u" je isto što i „nije pronađen" — ali tek pošto se URL pročita.
   const notFound =
-    validId != null && !query.isLoading && !query.error && query.data == null;
+    (idResolved && validId == null) ||
+    (validId != null && !query.isLoading && !query.error && query.data == null);
 
   // Status-mašina naloga (BigBit paritet): draft→posted→locked + storno.
   // Invalidacija (detalj + dnevnik + kartica) ide kroz zajednički onSuccess hooka.
@@ -166,7 +168,9 @@ export default function GlavnaKnjigaDetailPage() {
     });
   }, [doc, reverse]);
 
-  const goBack = useCallback(() => router.push('/glavna-knjiga'), [router]);
+  // Povratak na listu VRAĆA I FILTERE (`listHref` čita poslednje stanje
+  // liste) — bez toga se posle svakog otvorenog dokumenta gubio filter i strana.
+  const goBack = useCallback(() => router.push(listHref('/glavna-knjiga')), [router]);
 
   // Ctrl+S = primarna nedestruktivna akcija tekućeg statusa (draft→proknjiži,
   // posted→zaključaj). Storno je destruktivan i namerno NIJE na prečici.
@@ -250,14 +254,26 @@ export default function GlavnaKnjigaDetailPage() {
           </div>
         )}
 
-        {query.isLoading ? (
+        {!idResolved || (validId != null && query.isLoading) ? (
           <div className="grid place-items-center py-16 text-sm text-ink-secondary">
             Učitavanje…
           </div>
+        ) : error ? (
+          // Greška servera NIJE „dokument ne postoji". Ranije se uz crveni baner
+          // palila i poruka „možda je obrisan", pa je knjigovođa posle restarta
+          // backenda tražio proknjižen dokument koji nikad nije nestao.
+          <EmptyState
+            title="Podatak nije učitan"
+            hint="Veza sa serverom je prekinuta ili je zahtev odbijen. Osveži stranicu; ako se ponovi, javi administratoru."
+          />
         ) : notFound || !doc ? (
           <EmptyState
             title="Nalog nije pronađen"
-            hint="Nalog je možda obrisan ili nemaš pristup. Vrati se na dnevnik."
+            hint={
+              validId == null
+                ? 'Adresa nema ispravan broj naloga (?id=). Vrati se na dnevnik i otvori nalog iz liste.'
+                : 'Nalog je možda obrisan ili nemaš pristup. Vrati se na dnevnik.'
+            }
           />
         ) : (
           <>

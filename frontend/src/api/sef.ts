@@ -142,7 +142,7 @@ export function useSefOutbox(filters: SefFilters = {}) {
 
 /**
  * SEF outbox redovi za JEDNU fakturu — status-prikaz na detalju fakture
- * (fakturisanje/[id]). Odvojen keš-ključ od radne liste da paginacija liste ne
+ * (fakturisanje/detalj?id=N). Odvojen keš-ključ od radne liste da paginacija liste ne
  * meša ovaj pogled. Rezultat je sortiran po `id` desc (najnoviji red = `data[0]`).
  * `enabled` gasi upit dok faktura nije poznata / korisnik nema SEF_READ.
  */

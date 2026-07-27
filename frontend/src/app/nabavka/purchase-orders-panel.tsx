@@ -12,7 +12,7 @@ import {
   usePurchaseOrderTransition,
   type PurchaseOrder,
 } from '@/api/nabavka';
-import { ReceiveOrderDialog } from './[id]/receive-order-dialog';
+import { ReceiveOrderDialog } from './receive-order-dialog';
 import { OrderMatchPanel } from './order-match-panel';
 
 /**

@@ -4064,6 +4064,9 @@ model VatAccountMap {
   direction String  @map("direction") @db.VarChar(10) /// input | output  — pretporez (ulazni) / obaveza (izlazni)
   rate      Int?    @map("rate") // nominalna stopa (20/10); null za transit/uplatni konto (2790/4790)
   role      String  @map("role") @db.VarChar(20) /// standard | avans | carinski | transit | ne-koristi-se
+  //  NAPOMENA: kolone `has_base` NEMA namerno — svako PDV konto u registru nosi
+  //  osnovicu izvedenu iz svoje stope (base = PDV/(rate/100)). Vidi
+  //  `deriveBase` u vat-ledger.service.ts i migraciju 20260727090000.
 
   @@index([direction], map: "idx_vat_account_map_direction")
   @@map("vat_account_map")

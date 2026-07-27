@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useListQueryState } from '@/lib/use-id-param';
 import { Plus } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
@@ -110,10 +111,18 @@ export default function NabavkaPage() {
   const { user, isLoading } = useAuth();
   const router = useRouter();
 
-  const [status, setStatus] = useState<NabavkaStatus | ''>('');
-  const [page, setPage] = useState(1);
+  // Filteri i strana žive U URL-u (vidi `useListQueryState`) — povratak sa
+  // detalja zahteva vraća listu tačno kakva je bila.
+  const { values, setValues } = useListQueryState({ status: '', strana: '1' });
+  const status = values.status as NabavkaStatus | '';
+  const page = Math.max(1, Number(values.strana) || 1);
+  const setStatus = (v: NabavkaStatus | '') => setValues({ status: v, strana: '1' });
+  const setPage = (updater: number | ((p: number) => number)) =>
+    setValues({
+      strana: String(typeof updater === 'function' ? updater(page) : updater),
+    });
   const [newOpen, setNewOpen] = useState(false);
-  const resetPage = () => setPage(1);
+  const resetPage = () => setValues({ strana: '1' });
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
@@ -148,7 +157,7 @@ export default function NabavkaPage() {
       <NewRequestDialog
         open={newOpen}
         onClose={() => setNewOpen(false)}
-        onCreated={(id) => router.push(`/nabavka/${id}`)}
+        onCreated={(id) => router.push(`/nabavka/detalj?id=${id}`)}
       />
 
       <div className="flex-1 space-y-4 overflow-auto p-6">
@@ -191,7 +200,7 @@ export default function NabavkaPage() {
           columns={columns}
           rows={rows}
           rowKey={(r) => r.id}
-          onRowActivate={(r) => router.push(`/nabavka/${r.id}`)}
+          onRowActivate={(r) => router.push(`/nabavka/detalj?id=${r.id}`)}
           loading={list.isLoading}
           empty={
             <EmptyState

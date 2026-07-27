@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useListQueryState } from '@/lib/use-id-param';
 import { Plus } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
@@ -127,12 +128,25 @@ export default function RobnoPage() {
   const { user, isLoading } = useAuth();
   const router = useRouter();
 
-  const [kind, setKind] = useState<RobnoKind | ''>('');
-  const [status, setStatus] = useState<RobnoStatus | ''>('');
-  const [page, setPage] = useState(1);
+  // Filteri i strana žive U URL-u (vidi `useListQueryState`) — povratak sa
+  // detalja dokumenta vraća listu tačno kakva je bila.
+  const { values, setValues } = useListQueryState({
+    vrsta: '',
+    status: '',
+    strana: '1',
+  });
+  const kind = values.vrsta as RobnoKind | '';
+  const status = values.status as RobnoStatus | '';
+  const page = Math.max(1, Number(values.strana) || 1);
+  const setKind = (v: RobnoKind | '') => setValues({ vrsta: v, strana: '1' });
+  const setStatus = (v: RobnoStatus | '') => setValues({ status: v, strana: '1' });
+  const setPage = (updater: number | ((p: number) => number)) =>
+    setValues({
+      strana: String(typeof updater === 'function' ? updater(page) : updater),
+    });
   const [newOpen, setNewOpen] = useState(false);
   const [carryOverMode, setCarryOverMode] = useState<CarryOverMode | null>(null);
-  const resetPage = () => setPage(1);
+  const resetPage = () => setValues({ strana: '1' });
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
@@ -180,7 +194,7 @@ export default function RobnoPage() {
       <NewDocumentDialog
         open={newOpen}
         onClose={() => setNewOpen(false)}
-        onCreated={(id) => router.push(`/robno/${id}`)}
+        onCreated={(id) => router.push(`/robno/detalj?id=${id}`)}
       />
 
       {carryOverMode && (
@@ -189,7 +203,7 @@ export default function RobnoPage() {
           open
           mode={carryOverMode}
           onClose={() => setCarryOverMode(null)}
-          onCreated={(id) => router.push(`/robno/${id}`)}
+          onCreated={(id) => router.push(`/robno/detalj?id=${id}`)}
         />
       )}
 
@@ -249,7 +263,7 @@ export default function RobnoPage() {
           columns={columns}
           rows={rows}
           rowKey={(d) => d.id}
-          onRowActivate={(d) => router.push(`/robno/${d.id}`)}
+          onRowActivate={(d) => router.push(`/robno/detalj?id=${d.id}`)}
           loading={list.isLoading}
           empty={
             <EmptyState

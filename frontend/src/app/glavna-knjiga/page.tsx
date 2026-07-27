@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useListQueryState } from '@/lib/use-id-param';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
@@ -71,7 +72,10 @@ export default function GlavnaKnjigaPage() {
   const { user, isLoading } = useAuth();
   const router = useRouter();
 
-  const [view, setView] = useState<View>('dnevnik');
+  // Izabran tab živi U URL-u — povratak sa detalja naloga vraća isti tab.
+  const { values, setValues } = useListQueryState({ tab: 'dnevnik' });
+  const view = values.tab as View;
+  const setView = (v: View) => setValues({ tab: v });
   const [newEntryOpen, setNewEntryOpen] = useState(false);
   const [lockOlderOpen, setLockOlderOpen] = useState(false);
   const [yearOpenOpen, setYearOpenOpen] = useState(false);
@@ -118,7 +122,7 @@ export default function GlavnaKnjigaPage() {
       <div className="flex-1 space-y-4 overflow-auto p-6">
         <Tabs tabs={VIEW_TABS} value={view} onChange={setView} ariaLabel="Pogled glavne knjige" />
         {view === 'dnevnik' ? (
-          <DnevnikView onOpen={(id) => router.push(`/glavna-knjiga/${id}`)} />
+          <DnevnikView onOpen={(id) => router.push(`/glavna-knjiga/detalj?id=${id}`)} />
         ) : (
           <KarticaKontaView />
         )}
@@ -163,11 +167,28 @@ const journalColumns: Column<JournalEntry>[] = [
 ];
 
 function DnevnikView({ onOpen }: { onOpen: (id: number) => void }) {
-  const [orderType, setOrderType] = useState('');
-  const [year, setYear] = useState<number | ''>('');
-  const [status, setStatus] = useState<GlStatus | ''>('');
-  const [page, setPage] = useState(1);
-  const resetPage = () => setPage(1);
+  // Filteri i strana žive U URL-u (uz `tab` iz roditelja) — povratak sa detalja
+  // naloga vraća dnevnik tačno kakav je bio.
+  const { values, setValues } = useListQueryState({
+    tab: 'dnevnik',
+    vrsta: '',
+    godina: '',
+    status: '',
+    strana: '1',
+  });
+  const orderType = values.vrsta;
+  const year: number | '' = values.godina === '' ? '' : Number(values.godina);
+  const status = values.status as GlStatus | '';
+  const page = Math.max(1, Number(values.strana) || 1);
+  const setOrderType = (v: string) => setValues({ vrsta: v, strana: '1' });
+  const setYear = (v: number | '') =>
+    setValues({ godina: v === '' ? '' : String(v), strana: '1' });
+  const setStatus = (v: GlStatus | '') => setValues({ status: v, strana: '1' });
+  const setPage = (updater: number | ((p: number) => number)) =>
+    setValues({
+      strana: String(typeof updater === 'function' ? updater(page) : updater),
+    });
+  const resetPage = () => setValues({ strana: '1' });
 
   const list = useJournalEntries({ page, pageSize: PAGE_SIZE, orderType, year, status });
   const rows = list.data?.data ?? [];

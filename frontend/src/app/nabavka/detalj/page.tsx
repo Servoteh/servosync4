@@ -1,9 +1,10 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import { ArrowLeft } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
+import { useIdParam, listHref } from '@/lib/use-id-param';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
@@ -98,9 +99,8 @@ const itemColumns: Column<PurchaseRequestItem>[] = [
 export default function NabavkaRequestDetailPage() {
   const { user, isLoading } = useAuth();
   const router = useRouter();
-  const params = useParams<{ id: string }>();
-  const id = Number(params.id);
-  const validId = Number.isInteger(id) && id > 0 ? id : null;
+  // Statička ruta `/nabavka/detalj?id=N` (static export — vidi use-id-param).
+  const { id: validId, resolved: idResolved } = useIdParam();
 
   const [rfqOpen, setRfqOpen] = useState(false);
 
@@ -114,7 +114,9 @@ export default function NabavkaRequestDetailPage() {
   const approve = useApproveRequest();
   const sendRfq = useSendRfq();
 
-  const goBack = useCallback(() => router.push('/nabavka'), [router]);
+  // Povratak na listu VRAĆA I FILTERE (`listHref` čita poslednje stanje
+  // liste) — bez toga se posle svakog otvorenog dokumenta gubio filter i strana.
+  const goBack = useCallback(() => router.push(listHref('/nabavka')), [router]);
 
   // Primarna akcija zavisi od statusa — jedan handler za Ctrl+S.
   const primaryAction = useCallback(() => {
@@ -184,14 +186,26 @@ export default function NabavkaRequestDetailPage() {
           </div>
         )}
 
-        {reqLoading ? (
+        {!idResolved || (validId != null && reqLoading) ? (
           <div className="grid place-items-center py-16 text-sm text-ink-secondary">
             Učitavanje…
           </div>
+        ) : error ? (
+          // Greška servera NIJE „dokument ne postoji". Ranije se uz crveni baner
+          // palila i poruka „možda je obrisan", pa je knjigovođa posle restarta
+          // backenda tražio proknjižen dokument koji nikad nije nestao.
+          <EmptyState
+            title="Podatak nije učitan"
+            hint="Veza sa serverom je prekinuta ili je zahtev odbijen. Osveži stranicu; ako se ponovi, javi administratoru."
+          />
         ) : notFound || !request ? (
           <EmptyState
             title="Zahtev nije pronađen"
-            hint="Zahtev je možda obrisan ili nemaš pristup. Vrati se na radnu listu."
+            hint={
+              validId == null
+                ? 'Adresa nema ispravan broj zahteva (?id=). Vrati se na radnu listu i otvori zahtev iz liste.'
+                : 'Zahtev je možda obrisan ili nemaš pristup. Vrati se na radnu listu.'
+            }
           />
         ) : (
           <>

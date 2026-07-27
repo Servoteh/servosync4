@@ -1,9 +1,10 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import { ArrowLeft, Ban, Coins, Mail, Printer, Send } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
+import { useIdParam, listHref } from '@/lib/use-id-param';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
@@ -167,9 +168,10 @@ const itemColumns: Column<InvoiceItem>[] = [
 export default function FakturisanjeDetailPage() {
   const { user, isLoading, can } = useAuth();
   const router = useRouter();
-  const params = useParams<{ id: string }>();
-  const id = Number(params.id);
-  const validId = Number.isInteger(id) && id > 0 ? id : null;
+  // Statička ruta `/fakturisanje/detalj?id=N` (static export — vidi use-id-param).
+  // `goToInvoice` je detalj→detalj skok (prepis predračuna u račun): menja se SAMO
+  // query, Next ne remontira stranicu, pa helper sam pomera state na novi id.
+  const { id: validId, resolved: idResolved, go: goToInvoice } = useIdParam();
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
@@ -178,8 +180,10 @@ export default function FakturisanjeDetailPage() {
   const query = useInvoice(validId);
   const doc = query.data ?? null;
   const error = query.error as Error | null;
+  // „Nema id-a u URL-u" je isto što i „nije pronađen" — ali tek pošto se URL pročita.
   const notFound =
-    validId != null && !query.isLoading && !query.error && query.data == null;
+    (idResolved && validId == null) ||
+    (validId != null && !query.isLoading && !query.error && query.data == null);
 
   const fromProforma = useCreateInvoiceFromProforma();
   const createAdvance = useCreateAdvanceFromProforma();
@@ -220,6 +224,22 @@ export default function FakturisanjeDetailPage() {
     msg: string;
   } | null>(null);
 
+  // SKOK DETALJ → DETALJ (`goToInvoice`, prepis predračuna u račun) menja samo
+  // query, pa Next NE remontira stranicu i sav lokalni state preživi zamenu
+  // dokumenta. Bez ovog čišćenja je zelena potvrda o AVANSNOM RAČUNU jednog
+  // dokumenta ostajala na vrhu SLEDEĆEG — pogrešna potvrda nad finansijskim
+  // dokumentom — a otvoren dijalog bi slao iznos starog predračuna pod novim id-em.
+  useEffect(() => {
+    setSefBanner(null);
+    setMailBanner(null);
+    setStornoBanner(null);
+    setAdvanceBanner(null);
+    setMailOpen(false);
+    setStornoOpen(false);
+    setAdvanceOpen(false);
+    setTargetType(SALES_DOCUMENT_TYPE.IFR);
+  }, [validId]);
+
   // D8: zaključan (proknjižen) dokument ne nudi izmene (prepis/knjiženje) — samo storno-put.
   const isProformaDraft =
     !!doc &&
@@ -255,7 +275,9 @@ export default function FakturisanjeDetailPage() {
   const latestSefRow = sefRows[0] ?? null;
   const activeSefRow = sefRows.find((r) => IN_FLIGHT_SEF.has(r.status)) ?? null;
 
-  const goBack = useCallback(() => router.push('/fakturisanje'), [router]);
+  // Povratak na listu VRAĆA I FILTERE (`listHref` čita poslednje stanje
+  // liste) — bez toga se posle svakog otvorenog dokumenta gubio filter i strana.
+  const goBack = useCallback(() => router.push(listHref('/fakturisanje')), [router]);
 
   const doFromProforma = useCallback(() => {
     // Guard protiv duplog okidanja (Ctrl+S dok mutacija još traje) — inače bi dva
@@ -263,9 +285,9 @@ export default function FakturisanjeDetailPage() {
     if (!doc || !canWrite || !isProformaDraft || fromProforma.isPending) return;
     fromProforma.mutate(
       { id: doc.id, targetType },
-      { onSuccess: (created) => router.push(`/fakturisanje/${created.id}`) },
+      { onSuccess: (created) => goToInvoice(created.id) },
     );
-  }, [doc, canWrite, isProformaDraft, fromProforma, targetType, router]);
+  }, [doc, canWrite, isProformaDraft, fromProforma, targetType, goToInvoice]);
 
   const doPost = useCallback(
     (force = false) => {
@@ -305,6 +327,10 @@ export default function FakturisanjeDetailPage() {
   // Ctrl+S = primarna akcija zavisna od statusa; Esc = nazad na listu.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Dok je dijalog otvoren prečice ekrana MIRUJU: bez ovoga je Esc zatvarao
+      // dijalog I usput odnosio korisnika na listu (uneseni tekst nestaje), a
+      // Ctrl+S je istovremeno slao obrazac dijaloga I okidao radnju ekrana.
+      if (mailOpen || stornoOpen || advanceOpen) return;
       if (e.key === 'Escape') {
         e.preventDefault();
         goBack();
@@ -316,7 +342,7 @@ export default function FakturisanjeDetailPage() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [goBack, isProformaDraft, isPostableInvoice, doFromProforma, doPost]);
+  }, [goBack, isProformaDraft, isPostableInvoice, doFromProforma, doPost, mailOpen, stornoOpen, advanceOpen]);
 
   if (isLoading || !user) {
     return (
@@ -497,14 +523,26 @@ export default function FakturisanjeDetailPage() {
           </div>
         )}
 
-        {query.isLoading ? (
+        {!idResolved || (validId != null && query.isLoading) ? (
           <div className="grid place-items-center py-16 text-sm text-ink-secondary">
             Učitavanje…
           </div>
+        ) : error ? (
+          // Greška servera NIJE „dokument ne postoji". Ranije se uz crveni baner
+          // palila i poruka „možda je obrisan", pa je knjigovođa posle restarta
+          // backenda tražio proknjižen dokument koji nikad nije nestao.
+          <EmptyState
+            title="Podatak nije učitan"
+            hint="Veza sa serverom je prekinuta ili je zahtev odbijen. Osveži stranicu; ako se ponovi, javi administratoru."
+          />
         ) : notFound || !doc ? (
           <EmptyState
             title="Račun nije pronađen"
-            hint="Račun je možda obrisan ili nemaš pristup. Vrati se na radnu listu."
+            hint={
+              validId == null
+                ? 'Adresa nema ispravan broj računa (?id=). Vrati se na radnu listu i otvori račun iz liste.'
+                : 'Račun je možda obrisan ili nemaš pristup. Vrati se na radnu listu.'
+            }
           />
         ) : (
           <>

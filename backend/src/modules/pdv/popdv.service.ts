@@ -28,6 +28,14 @@
  *
  * Idempotentno po periodu: postojeći VatReturn za (godina, mesec/kvartal) se
  * ažurira (linije se rekreiraju), ne duplira (uq_vat_returns_period).
+ *
+ * TEHNIČKI NALOG ZATVARANJA PDV KONTA (vrsta `PDV`) se izuzima iz OBA upita nad
+ * glavnom knjigom — vidi `VAT_SETTLEMENT_ORDER_TYPE` u `vat-sanity.ts`. Bez toga
+ * je svaki zatvoren mesec davao egzaktnu nulu.
+ *
+ * ZAŠTITA: pre upisa `VatReturn`-a rezultat prolazi proveru ispravnosti
+ * (`vat-sanity.ts`) — uključujući kontrolu prema BigBit-ovom saldu 2790/4790 za
+ * isti mesec. Neispravan obračun se NE snima tiho nego baca 409.
  */
 
 import {
@@ -45,6 +53,12 @@ import {
   VAT_RETURN_CALCULATED,
   VAT_RETURN_POSTED,
 } from "./vat-period-lock";
+import {
+  assertVatPeriodSane,
+  checkVatPeriodSanity,
+  VAT_SETTLEMENT_ORDER_TYPE,
+  type VatSanityReport,
+} from "./vat-sanity";
 import { VAT_RATE_CODE_NO_DEDUCTION } from "./dto/manual-vat-entry.dto";
 
 const D = Prisma.Decimal;
@@ -111,6 +125,11 @@ export interface ComputePopdvInput {
   year: number;
   month?: number; // mesečni obveznik
   quarter?: number; // kvartalni obveznik
+  /**
+   * Sačuvaj obračun i kad provera ispravnosti (`vat-sanity.ts`) nađe problem.
+   * Problemi ostaju u `sanity` i u `note` — takav obračun NIJE za predaju.
+   */
+  force?: boolean;
 }
 
 /** Rezultat obračuna (zaglavlje + linije). */
@@ -125,6 +144,8 @@ export interface PopdvResult {
   lineCount: number;
   seededDefinition: boolean; // true = pun POPDV (linije iz popdv_definitions)
   note: string;
+  /** Provera ispravnosti perioda (problemi + upozorenja + kontrola vs BigBit). */
+  sanity: VatSanityReport;
 }
 
 interface VatSumRow {
@@ -165,6 +186,18 @@ export class PopdvService {
     const outputVat = gk.outputVat.add(manual.manualOutput);
     const inputVat = gk.inputVat.add(manual.manualInput);
     const vatLiability = outputVat.sub(inputVat);
+
+    // 1c) ZAŠTITA OD TIHE GREŠKE — pre nego što se ovaj rezultat sačuva kao
+    //     VatReturn (a onda odštampa kao PP-PDV i eventualno pošalje mejlom).
+    //     Kontrola prema BigBitu ide nad OVIM obračunom (gk + ručne stavke), ne
+    //     nad zbirom knjiga — VatReturn je autoritet za pozicije 105/108/109.
+    const sanity = await checkVatPeriodSanity(this.prisma, year, months, {
+      outputVat,
+      inputVat,
+    });
+    if (!input.force) {
+      assertVatPeriodSane(sanity, `Obračun PDV za ${sanity.periodLabel}`);
+    }
 
     // 2) Pun POPDV (ako je definicija seed-ovana) — eval AOP formula.
     const definitions = await this.prisma.popdvDefinition.findMany({
@@ -248,7 +281,7 @@ export class PopdvService {
         }
       }
 
-      const note = seeded
+      const baseNote = seeded
         ? `Pun POPDV obračun: ${lineCount} AOP linija iz popdv_definitions ` +
           `(self-ref AOP punjeni iz ${accountMap.length} konto→AOP mapiranja` +
           (unsupportedCount > 0
@@ -257,6 +290,13 @@ export class PopdvService {
           ")."
         : "Osnovni obračun (Σ izlazni PDV − Σ ulazni PDV). Pun POPDV " +
           "traži seed popdv_definitions — nije još učitan.";
+      const note =
+        baseNote +
+        (sanity.problems.length > 0
+          ? ` UPOZORENJE: obračun je sačuvan uprkos ${sanity.problems.length} ` +
+            `nađenom problemu i NIJE za predaju — ${sanity.problems.join(" ")}`
+          : "") +
+        (sanity.warnings.length > 0 ? ` Napomene: ${sanity.warnings.join(" ")}` : "");
 
       return {
         vatReturnId: vatReturn.id,
@@ -269,6 +309,7 @@ export class PopdvService {
         lineCount,
         seededDefinition: seeded,
         note,
+        sanity,
       };
     },
     // Odbrana u dubinu: i sa evaluacijom van transakcije, upis 287 AOP linija preko
@@ -360,6 +401,11 @@ export class PopdvService {
         WHERE je.status IN ('POSTED', 'LOCKED')
           AND EXTRACT(YEAR FROM je.posting_date) = ${year}
           AND EXTRACT(MONTH FROM je.posting_date) IN (${Prisma.join(months)})
+          -- Tehnički nalog zatvaranja PDV konta — izuzet PRECIZNO (uslov stoji uz
+          -- JOIN na registar, pa ispadaju samo njegove stavke na PDV kontima;
+          -- 2790/4790 i zaokruženje ostaju u GK). Vidi VAT_SETTLEMENT_ORDER_TYPE.
+          -- Bez ovoga je Σ po smeru EGZAKTNA NULA (mart 2026: input 0,00).
+          AND COALESCE(je.order_type_code, '') <> ${VAT_SETTLEMENT_ORDER_TYPE}
         GROUP BY vam.direction
       `,
     );
@@ -457,6 +503,17 @@ export class PopdvService {
         WHERE je.status IN ('POSTED', 'LOCKED')
           AND EXTRACT(YEAR FROM je.posting_date) = ${year}
           AND EXTRACT(MONTH FROM je.posting_date) IN (${Prisma.join(months)})
+          -- Tehnički nalog zatvaranja PDV konta — izuzet PRECIZNO, i to samo za
+          -- konta koja OVAJ upit uopšte koristi (ona iz popdv_account_map).
+          -- Bez toga bi self-ref AOP punjenje (npr. 8а.2DA iz konta 2700) dobilo
+          -- saldo 0, jer nalog zatvaranja knjiži isti iznos na suprotnu stranu.
+          -- Stavke istog naloga na 2790/4790/6799 NISU u POPDV mapi i ostaju.
+          AND NOT (
+            COALESCE(je.order_type_code, '') = ${VAT_SETTLEMENT_ORDER_TYPE}
+            AND EXISTS (
+              SELECT 1 FROM popdv_account_map pam WHERE pam.account = le.account_code
+            )
+          )
         GROUP BY le.account_code
       `,
     );
