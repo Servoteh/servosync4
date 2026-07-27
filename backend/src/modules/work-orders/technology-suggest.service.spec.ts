@@ -106,6 +106,9 @@ describe("suggestForDrawing — happy path (konzistentan ruting)", () => {
     expect(kand).toContain("720 hours");
     expect(kand).toContain("is_process_finished");
     expect(kand).toContain("lower("); // drawingMatch — isti indeksirani izraz kao AI-5
+    // review [0][1][5][8]: samo REGULARNI (qt=0), bez dete-naloga (parent=0).
+    expect(kand).toContain("quality_type_id");
+    expect(kand).toContain("parent_work_order_id");
     // wcQuantiles (7. upit) je isti AI-5 izvor.
     expect(sql[6]).toContain("percentile_cont");
     expect(sql[6]).toContain("prijavljeno_kom > 0");
@@ -129,8 +132,56 @@ describe("suggestForDrawing — nekonzistentni rutinzi", () => {
     // Varijante sortirane po broju naloga; izabrana je najčešća.
     expect(out.varijante[0]).toMatchObject({ broj_naloga: 2, izabran: true });
     expect(out.varijante[1]).toMatchObject({ broj_naloga: 1, izabran: false });
+    // review [4]: svaka varijanta nosi svoj copy izvor (produced-preferred).
+    expect(out.varijante[0].kopiraj_id).toBe(1); // varijanta A: najskoriji produced = id 1
+    expect(out.varijante[1].kopiraj_id).toBe(3); // varijanta B: jedini nalog = id 3
     expect(out.napomena).toContain("razlikuju");
     expect(out.napomena).toContain("2 različit");
+  });
+
+  it("review [0][1][5][8]: PROIZVEDEN ulazi u rangiranje grupe — svi-različiti, bira duži proizvedeni (crtež 1029539)", async () => {
+    // Kao 1029539 na produ: najskoriji je 2-op NEPROIZVEDEN, a stariji 11-op je
+    // proizveden. Stara logika bi izabrala 2-op (najskoriji); nova bira 11-op.
+    const kandidati = [
+      { id: 25505, ident: '7380/136', varijanta: 0, kolicina: 2, otvoren: '14.09.2023', operacija: 2, potpis: '1.10>8.4', proizveden: false },
+      { id: 27442, ident: '7380/304', varijanta: 0, kolicina: 2, otvoren: '14.04.2021', operacija: 11, potpis: 'A>B>C>D>E>F>G>H>I>J>K', proizveden: true },
+      { id: 15687, ident: '5632/21', varijanta: 0, kolicina: 2, otvoren: '14.04.2021', operacija: 10, potpis: 'A>B>C>D>E>F>G>H>I>J', proizveden: false },
+    ];
+    const { prisma } = makeClient([...DRAW_OK(3), kandidati, OPERACIJE, WCQ]);
+    const out = (await suggestForDrawing(prisma, '1029539')) as TechnologySuggestion;
+    expect(out.reprezentativan_nalog.ident).toBe('7380/304'); // 11-op PROIZVEDEN
+    expect(out.reprezentativan_nalog.proizveden).toBe(true);
+    expect(out.broj_varijanti).toBe(3);
+    expect(out.konzistentno).toBe(false);
+  });
+
+  it("nijedan nalog nije proizveden → bira najčešći/najskoriji + napomena upozorava", async () => {
+    const kandidati = [
+      { id: 1, ident: 'A', varijanta: 0, kolicina: 2, otvoren: '12.11.2024', operacija: 2, potpis: '1.10>8.3', proizveden: false },
+      { id: 2, ident: 'B', varijanta: 0, kolicina: 2, otvoren: '01.01.2023', operacija: 3, potpis: '1.10>3.40>8.3', proizveden: false },
+    ];
+    const { prisma } = makeClient([...DRAW_OK(2), kandidati, OPERACIJE, WCQ]);
+    const out = (await suggestForDrawing(prisma, '1052059')) as TechnologySuggestion;
+    // Nijedan proizveden → pun skup, najskoriji (id 1).
+    expect(out.reprezentativan_nalog.ident).toBe('A');
+    expect(out.reprezentativan_nalog.proizveden).toBe(false);
+    expect(out.napomena).toContain('nijedan nalog');
+  });
+
+  it("skipIdentResolve preskače ident lookup (review [11])", async () => {
+    // estimateForDrawing(skipIdentResolve) → prvi upit je nalozi (BEZ poIdentu).
+    const kandidati = [
+      { id: 1, ident: 'A', varijanta: 0, kolicina: 2, otvoren: '12.11.2024', operacija: 3, potpis: '1.10>3.40>8.3', proizveden: true },
+    ];
+    const { prisma, sql } = makeClient([
+      [{ ident: '8035/52', varijanta: 0, kolicina: 2, naziv_dela: 'Deo', otvoren: '12.11.2024', predmet: '8035' }],
+      [], // poRadnomMestu
+      [{ broj_naloga: 2, prijava_ukupno: 10, prijava_izbaceno: 1 }],
+      kandidati, OPERACIJE, WCQ,
+    ]);
+    await suggestForDrawing(prisma, '1052059', { skipIdentResolve: true });
+    expect(sql[0]).toContain('ident_number AS ident'); // nalozi je PRVI upit
+    expect(sql[0]).not.toContain('drawing_number AS crtez'); // nije poIdentu lookup
   });
 
   it("bira NAJSKORIJI PROIZVEDEN nalog varijante (preskače najskoriji neproizveden)", async () => {

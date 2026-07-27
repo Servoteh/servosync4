@@ -26,19 +26,22 @@ const fmtH = (n: number) => n.toLocaleString('sr-RS', { maximumFractionDigits: 2
  * predlog najkorisniji). Kad crtež nema istoriju, prikaže se samo tiha napomena.
  */
 
-/** Ćelija „Slični poslovi (RM)" — isti obrazac kao AI-5 EstimateCell. */
-function RmCell({ rm, kolicina }: { rm: SuggestedOperation['rm_procena']; kolicina: number }) {
+/**
+ * Ćelija „Slični poslovi (RM)" — isti obrazac kao AI-5 EstimateCell. Prikazuje
+ * SAMO h/kom + n (review [7][9]): raniji izvedeni „za N kom ≈ X h" računao je
+ * količinu REPREZENTATIVNOG istorijskog naloga (ne tekućeg), pa je bio zavaravajuć.
+ */
+function RmCell({ rm }: { rm: SuggestedOperation['rm_procena'] }) {
   if (!rm || rm.n === 0 || rm.p50 == null) {
     return <span className="text-ink-disabled">—</span>;
   }
   const interval = rm.n >= 3 && rm.p25 != null && rm.p75 != null;
-  const perNalog = rm.p50 * kolicina;
   const title =
-    `Stvarno vreme po komadu na ovom radnom mestu (istorija, ne norma): ` +
+    `Stvarno vreme po komadu na tom radnom mestu (istorija svih naloga na RM, ne norma): ` +
     (interval
       ? `p25 ${fmtH(rm.p25!)} – medijana ${fmtH(rm.p50)} – p75 ${fmtH(rm.p75!)} h/kom`
       : `≈ ${fmtH(rm.p50)} h/kom (premalo podataka za raspon)`) +
-    `, uzorak n=${rm.n}. Za ${formatNumber(kolicina)} kom ≈ ${fmtH(perNalog)} h.`;
+    `, uzorak n=${rm.n}.`;
   return (
     <span className="inline-flex flex-col items-end leading-tight" title={title}>
       <span className="tnums text-ink">
@@ -64,13 +67,39 @@ function RmCell({ rm, kolicina }: { rm: SuggestedOperation['rm_procena']; kolici
   );
 }
 
-/** Lista varijanti rutinga kad se nalozi razlikuju (nekonzistentno). */
-function Variants({ varijante }: { varijante: RutingVarijanta[] }) {
+/** sr-RS pluralizacija „N varijanti/e" (review [14]: paukal 2–4 vs ≥5). */
+function plVarijanti(n: number): string {
+  const d = n % 10;
+  const dd = n % 100;
+  if (d >= 2 && d <= 4 && !(dd >= 12 && dd <= 14)) return `${n} varijante`;
+  return `${n} varijanti`;
+}
+function plPostupka(n: number): string {
+  const d = n % 10;
+  const dd = n % 100;
+  if (d >= 2 && d <= 4 && !(dd >= 12 && dd <= 14)) return `${n} različita postupka`;
+  return `${n} različitih postupaka`;
+}
+
+/**
+ * Lista varijanti rutinga kad se nalozi razlikuju (nekonzistentno). Svaka nudi
+ * „Prepiši ovu" (review [4]) — tehnolog prepiše BAŠ varijantu koju gleda, ne samo
+ * predloženu; kopira iz njenog reprezentativnog (proizvedenog) naloga.
+ */
+function Variants({
+  varijante,
+  drawingNumber,
+  onApply,
+}: {
+  varijante: RutingVarijanta[];
+  drawingNumber: string;
+  onApply?: (source: { id: number; ident: string; drawingNumber: string }) => void;
+}) {
   if (varijante.length <= 1) return null;
   return (
     <details className="mt-2 text-xs">
       <summary className="cursor-pointer text-ink-secondary hover:text-ink">
-        Postupci se razlikuju — prikaži {varijante.length} varijanti
+        Postupci se razlikuju — prikaži {plVarijanti(varijante.length)}
       </summary>
       <ul className="mt-1.5 space-y-1.5">
         {varijante.map((v, i) => (
@@ -80,7 +109,7 @@ function Variants({ varijante }: { varijante: RutingVarijanta[] }) {
               v.izabran ? 'border-accent/40 bg-accent/5' : 'border-line-soft'
             }`}
           >
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="tnums font-semibold text-ink">
                 {formatNumber(v.broj_naloga)} {v.broj_naloga === 1 ? 'nalog' : 'naloga'}
               </span>
@@ -89,6 +118,20 @@ function Variants({ varijante }: { varijante: RutingVarijanta[] }) {
                 {v.operacija} op. · najskoriji RN {v.najskoriji_ident}
                 {v.najskoriji_otvoren ? ` (${v.najskoriji_otvoren})` : ''}
               </span>
+              {onApply && (
+                <button
+                  onClick={() =>
+                    onApply({
+                      id: v.kopiraj_id,
+                      ident: v.kopiraj_ident,
+                      drawingNumber,
+                    })
+                  }
+                  className="ml-auto rounded-control border border-line px-2 py-0.5 text-2xs font-semibold text-ink-secondary hover:bg-surface-2"
+                >
+                  Prepiši ovu (RN {v.kopiraj_ident})
+                </button>
+              )}
             </div>
             <p className="tnums mt-0.5 break-words text-2xs text-ink-secondary">
               {v.radna_mesta.join(' › ')}
@@ -120,9 +163,11 @@ export function TechnologySuggestionPanel({
   onApply?: (source: { id: number; ident: string; drawingNumber: string }) => void;
 }) {
   const crtez = (drawingNumber ?? '').trim();
-  const q = useDrawingTechnologySuggestion(crtez || null, workOrderId);
+  // review [12]: teška agregacija (deli je AI-5) se pali SAMO kad je ruting prazan
+  // — panel se ionako otvara i predlaže samo tada; popunjen RN ne okida upit.
+  const q = useDrawingTechnologySuggestion(crtez || null, workOrderId, routingEmpty);
 
-  if (!crtez) return null;
+  if (!crtez || !routingEmpty) return null;
   if (q.isLoading) {
     return (
       <p className="flex items-center gap-1.5 text-2xs text-ink-disabled">
@@ -161,7 +206,7 @@ export function TechnologySuggestionPanel({
         {s.konzistentno ? (
           <StatusBadge tone="success" label="isti postupak" />
         ) : (
-          <StatusBadge tone="warn" label={`${s.broj_varijanti} različita postupka`} />
+          <StatusBadge tone="warn" label={plPostupka(s.broj_varijanti)} />
         )}
       </summary>
 
@@ -173,7 +218,7 @@ export function TechnologySuggestionPanel({
           {formatNumber(rep.kolicina)} kom
           {rep.proizveden ? ' · postupak je izveden do kraja' : ' · nije potvrđena proizvodnja'}.
           {!s.konzistentno &&
-            ' Nalozi ovog crteža imaju različit postupak — predložen je najčešći; proveri koji odgovara.'}
+            ' Nalozi ovog crteža imaju različit postupak — predložen je proizveden/najčešći; proveri koji odgovara (vidi varijante ispod).'}
         </p>
 
         <div className="overflow-x-auto rounded-panel border border-line bg-surface">
@@ -208,7 +253,7 @@ export function TechnologySuggestionPanel({
                     {op.plan_tk != null ? fmtNum(op.plan_tk) : '—'}
                   </td>
                   <td className="px-3 py-1.5 text-right">
-                    <RmCell rm={op.rm_procena} kolicina={rep.kolicina} />
+                    <RmCell rm={op.rm_procena} />
                   </td>
                 </tr>
               ))}
@@ -216,7 +261,7 @@ export function TechnologySuggestionPanel({
           </table>
         </div>
 
-        <Variants varijante={s.varijante} />
+        <Variants varijante={s.varijante} drawingNumber={s.crtez} onApply={onApply} />
 
         <p className="text-2xs text-ink-secondary">
           Tpz/Tk su norme iz ranijeg naloga (u satima); „Slični poslovi (RM)" = koliko slični
@@ -236,7 +281,9 @@ export function TechnologySuggestionPanel({
               Prepiši ovaj postupak
             </button>
             <span className="text-2xs text-ink-disabled">
-              Otvara „Kopiraj iz naloga" sa RN {rep.ident} kao izvorom — ti potvrđuješ.
+              Otvara „Kopiraj iz naloga" sa RN {rep.ident} kao izvorom — kopira CEO nalog
+              (operacije, materijal, pripremci, obrađeni/nestandardni delovi), ne samo operacije.
+              Ti potvrđuješ.
             </span>
           </div>
         )}

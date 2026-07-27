@@ -44,6 +44,9 @@ export interface RutingVarijanta {
   najskoriji_ident: string;
   najskoriji_otvoren: string | null;
   izabran: boolean;
+  /** RN te varijante koji „Prepiši ovu" kopira (produced-preferred). */
+  kopiraj_id: number;
+  kopiraj_ident: string;
 }
 
 export interface TechnologySuggestion {
@@ -96,17 +99,20 @@ export function isNoHistory(v: SuggestResponse): v is NemaTehnologije {
 }
 
 /**
- * Predlog tehnologije za crtež (izuzima tekući RN iz osnove). `enabled` je gejt:
- * bez crteža se ne poziva. `staleTime` duži — istorija se sporo menja.
+ * Predlog tehnologije za crtež (izuzima tekući RN iz osnove). `enabled` gejt:
+ * bez crteža se ne poziva, a pozivalac ga dodatno gasi kad panel nije relevantan
+ * (review [12] — teška agregacija se ne pali dok je ruting popunjen/panel skupljen).
+ * `staleTime` duži — istorija se sporo menja.
  */
 export function useDrawingTechnologySuggestion(
   crtez: string | null | undefined,
   excludeWorkOrderId: number | null,
+  enabled = true,
 ) {
   const q = (crtez ?? '').trim();
   return useQuery({
     queryKey: ['technology-suggest', 'drawing', q, excludeWorkOrderId],
-    enabled: q.length > 0,
+    enabled: enabled && q.length > 0,
     staleTime: 5 * 60_000,
     queryFn: async (): Promise<SuggestResponse> => {
       const params = new URLSearchParams({ crtez: q });

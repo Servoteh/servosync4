@@ -93,6 +93,13 @@ export interface RutingVarijanta {
   najskoriji_otvoren: string | null;
   /** true = ova varijanta je predložena (najčešća / najskorija). */
   izabran: boolean;
+  /**
+   * RN te varijante koji „Prepiši ovu" kopira (review [4]) — najskoriji PROIZVEDEN
+   * nalog varijante, inače najskoriji. Kod nekonzistentnih rutinga tehnolog može
+   * da prepiše baš varijantu koju gleda, ne samo predloženu.
+   */
+  kopiraj_id: number;
+  kopiraj_ident: string;
 }
 
 export interface TechnologySuggestion {
@@ -156,6 +163,12 @@ export interface SuggestOpts {
    * već ima delimičan ruting na tekućem RN-u).
    */
   excludeWorkOrderId?: number;
+  /**
+   * Preskoči ident→crtež razrešavanje (review [11]): REST/FE UVEK šalje pravi
+   * broj crteža (`rn.drawingNumber`), pa je ~116 ms Seq Scan `poIdentu` lookup
+   * čist trošak. Alat asistenta OSTAVLJA `false` (model sme poslati ident broj).
+   */
+  skipIdentResolve?: boolean;
 }
 
 /**
@@ -173,7 +186,11 @@ export async function suggestForDrawing(
 
   // REUSE AI-5: razrešava ident→crtež, detektuje generički, daje agregat
   // plan-vs-stvarno po RM za baš ovaj crtež i listu ranijih naloga (dokazi).
-  const draw = await estimateForDrawing(prisma, input);
+  // `skipIdentResolve` (review [11]): REST/FE šalje pravi broj crteža → bez
+  // suvišnog Seq Scan ident lookup-a.
+  const draw = await estimateForDrawing(prisma, input, {
+    skipIdentResolve: opts.skipIdentResolve,
+  });
   if ("greska" in draw) return PRAZAN_UPIT;
   const crtez = draw.crtez;
   if (draw.genericki) {
@@ -188,8 +205,16 @@ export async function suggestForDrawing(
   }
 
   // Kandidati = prošli nalozi TOG crteža koji IMAJU ruting. `potpis` = uređen niz
-  // šifri radnih mesta (redosled operacija) → identitet rutinga. `proizveden` =
-  // postupak je stvarno izveden (bar jedna validna prijava — TP_VALIDNA).
+  // šifri radnih mesta (redosled operacija) → identitet rutinga; NAMERNO nosi samo
+  // RM šifre, ne Tpz/Tk/opis (review [3]): sitne razlike u normama bi razbile svaki
+  // ruting u zasebnu „varijantu" i pretvorile alarm nekonzistencije u šum.
+  // `proizveden` = postupak je stvarno izveden (bar jedna validna prijava — TP_VALIDNA).
+  //
+  // OSNOVA JE ORIGINALNA, IZVEDENA TEHNOLOGIJA (review [0][1][5][8]):
+  //  • `quality_type_id = 0` — izbaci ŠKART/DORADU (=2 dorada, =3 škart u sistemu):
+  //    njihov ruting je popravka, ne originalna izrada.
+  //  • `parent_work_order_id = 0` — izbaci dete-naloge (-S/-D ponovke): kopije/
+  //    dorade, ne izvorni postupak.
   const excl = opts.excludeWorkOrderId;
   const kandidati = await prisma.$queryRaw<Kandidat[]>(Prisma.sql`
     WITH nalozi AS (
@@ -198,6 +223,8 @@ export async function suggestForDrawing(
              to_char(wo.entered_at, 'DD.MM.YYYY') AS otvoren
         FROM work_orders wo
        WHERE ${drawingMatch(Prisma.sql`wo.drawing_number`, crtez)}
+         AND COALESCE(wo.quality_type_id, 0) = 0
+         AND COALESCE(wo.parent_work_order_id, 0) = 0
          ${excl ? Prisma.sql`AND wo.id <> ${excl}` : Prisma.empty}
     ),
     ruting AS (
@@ -241,20 +268,40 @@ export async function suggestForDrawing(
     if (g) g.push(r);
     else grupe.set(r.potpis, [r]);
   }
-  // Reprezentativan potpis = NAJČEŠĆI; kod izjednačenja NAJSKORIJI (redovi su
-  // sortirani DESC, pa prvi red sa max brojem naloga nosi najskoriju varijantu).
-  const maxBroj = Math.max(...[...grupe.values()].map((g) => g.length));
+
+  // IZBOR REPREZENTATIVNE VARIJANTE (review [0][1][5][8]) — `proizveden` ulazi u
+  // RANGIRANJE, ne samo kao tie-break unutar već izabrane grupe. Bez ovoga se
+  // (na 8,6% crteža) bira NEPROIZVEDEN ruting iako proizveden postoji: kod svih-
+  // različitih potpisa (svaka grupa = 1) pobeđivao je puki najskoriji, koji je
+  // često nedovršen/parcijalan nacrt. Zato:
+  //  1. skup potpisa za izbor = SAMO proizvedeni, kad ijedan postoji (inače svi —
+  //     napomena tada upozorava da nema dokaza o izvođenju),
+  //  2. među njima najčešći; kod izjednačenja najskoriji (order-stable nad DESC).
+  const proizvedeniPotpisi = new Set(
+    kandidati.filter((r) => r.proizveden).map((r) => r.potpis),
+  );
+  const izborniPotpisi = proizvedeniPotpisi.size
+    ? proizvedeniPotpisi
+    : new Set(grupe.keys());
+  let maxBroj = 0;
+  for (const p of izborniPotpisi) {
+    maxBroj = Math.max(maxBroj, grupe.get(p)?.length ?? 0);
+  }
   let izabranPotpis = kandidati[0].potpis;
   for (const r of kandidati) {
-    if ((grupe.get(r.potpis)?.length ?? 0) === maxBroj) {
+    if (
+      izborniPotpisi.has(r.potpis) &&
+      (grupe.get(r.potpis)?.length ?? 0) === maxBroj
+    ) {
       izabranPotpis = r.potpis;
       break;
     }
   }
   const izabraniRedovi = grupe.get(izabranPotpis) ?? [kandidati[0]];
-  // Reprezentativan nalog: najskoriji PROIZVEDEN te varijante; ako nijedan nije
-  // proizveden, najskoriji (predlog i dalje postoji, samo bez dokaza o izvođenju).
-  const rep = izabraniRedovi.find((r) => r.proizveden) ?? izabraniRedovi[0];
+  // Reprezentativan nalog varijante: najskoriji PROIZVEDEN, inače najskoriji.
+  const repZa = (redovi: Kandidat[]): Kandidat =>
+    redovi.find((r) => r.proizveden) ?? redovi[0];
+  const rep = repZa(izabraniRedovi);
 
   // Ruting reprezentativnog naloga = sam PREDLOG operacija.
   const operacijeRaw = await prisma.$queryRaw<
@@ -315,14 +362,19 @@ export async function suggestForDrawing(
   });
 
   const varijante: RutingVarijanta[] = [...grupe.entries()]
-    .map(([potpis, redovi]) => ({
-      broj_naloga: redovi.length,
-      operacija: redovi[0].operacija,
-      radna_mesta: potpis.split(">"),
-      najskoriji_ident: redovi[0].ident,
-      najskoriji_otvoren: redovi[0].otvoren,
-      izabran: potpis === izabranPotpis,
-    }))
+    .map(([potpis, redovi]) => {
+      const rv = repZa(redovi); // reprezentativan nalog BAŠ te varijante (copy izvor)
+      return {
+        broj_naloga: redovi.length,
+        operacija: rv.operacija,
+        radna_mesta: potpis.split(">"),
+        najskoriji_ident: redovi[0].ident,
+        najskoriji_otvoren: redovi[0].otvoren,
+        izabran: potpis === izabranPotpis,
+        kopiraj_id: rv.id,
+        kopiraj_ident: rv.ident,
+      };
+    })
     .sort((a, b) => b.broj_naloga - a.broj_naloga);
 
   const konzistentno = grupe.size === 1;
@@ -347,14 +399,17 @@ export async function suggestForDrawing(
     operacije,
     poslednji_nalozi: draw.poslednji_nalozi,
     napomena:
-      `Predlog je REPREZENTATIVAN ruting iz ${osnov} prošlih naloga ovog crteža ` +
-      `(postupak korišćen na najviše naloga; kod izjednačenja najskoriji, uz prednost proizvedenom nalogu). ` +
+      `Predlog je REPREZENTATIVAN ruting iz ${osnov} prošlih REGULARNIH naloga ovog crteža ` +
+      `(škart/dorada i dete-nalozi izuzeti; prednost postupku koji je STVARNO proizveden, pa najčešćem, pa najskorijem). ` +
       `„plan_tpz“/„plan_tk“ su norme u SATIMA iz reprezentativnog naloga — Tpz PO NALOGU, Tk PO KOMADU. ` +
       `„rm_procena“ = koliko slični poslovi STVARNO traju po komadu na tom radnom mestu (interval p25–p75 iz cele istorije; mali n označen). ` +
       `„crtez_procena“ = stvarni sati PO NALOGU baš ovog crteža na tom RM. ` +
+      (rep.proizveden
+        ? ""
+        : "PAŽNJA: nijedan nalog ovog crteža nema potvrđenu proizvodnju — predlog je iz nedovršenog/neproverenog rutinga, uzmi sa rezervom. ") +
       (konzistentno
-        ? "Svi nalozi imaju isti postupak."
-        : `PAŽNJA: nalozi se razlikuju — ${grupe.size} različitih postupaka na ${osnov} naloga; predložen je najčešći, proveri koji odgovara.`) +
+        ? "Svi regularni nalozi imaju isti postupak."
+        : `PAŽNJA: nalozi se razlikuju — ${grupe.size} različitih postupaka na ${osnov} naloga; predložen je proizveden/najčešći, proveri koji odgovara.`) +
       " Predlog je informativan — tehnolog ga prihvata ili dorađuje; ništa se ne upisuje automatski.",
   };
 }
@@ -368,8 +423,13 @@ export class TechnologySuggestService {
   constructor(private readonly prisma: PrismaService) {}
 
   async forDrawing(crtez: string, excludeWorkOrderId?: number) {
+    // REST/FE UVEK šalje pravi broj crteža (`rn.drawingNumber`) → preskoči ident
+    // razrešavanje (review [11]). Alat asistenta zove pure funkciju bez ovog flag-a.
     return {
-      data: await suggestForDrawing(this.prisma, crtez, { excludeWorkOrderId }),
+      data: await suggestForDrawing(this.prisma, crtez, {
+        excludeWorkOrderId,
+        skipIdentResolve: true,
+      }),
     };
   }
 }
