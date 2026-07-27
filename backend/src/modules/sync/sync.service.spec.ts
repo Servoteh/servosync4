@@ -7,6 +7,9 @@ import {
   QBIGTEHN_CHAIN_ENTITIES,
 } from "./table-ownership";
 import type { CustomerSyncer } from "./syncers/customer.syncer";
+import type { ItemGroupSyncer } from "./syncers/item-group.syncer";
+import type { ItemOriginSyncer } from "./syncers/item-origin.syncer";
+import type { ItemSubgroupSyncer } from "./syncers/item-subgroup.syncer";
 
 /**
  * Cutover izvršen 2026-07-14 (runbook §17 korak 6): QBigTehn lanac je ugašen.
@@ -22,6 +25,9 @@ describe("SyncService — posle cutover-a (trajni BigBit sync)", () => {
       {} as PrismaService,
       {} as MssqlClient,
       { entity: "customers" } as CustomerSyncer,
+      { entity: "item_groups" } as ItemGroupSyncer,
+      { entity: "item_subgroups" } as ItemSubgroupSyncer,
+      { entity: "item_origins" } as ItemOriginSyncer,
     );
   }
 
@@ -34,6 +40,16 @@ describe("SyncService — posle cutover-a (trajni BigBit sync)", () => {
     const entities = buildService().availableEntities;
     expect(entities).toContain("projects");
     expect(entities).toContain("items");
+  });
+
+  // Registri artikala (R_Grupa / R_Podgrupa / R_Poreklo) nisu u generisanoj mapi
+  // — imaju sopstvene lagane syncere, pa moraju biti vidljivi i za `/sync/run` i
+  // za noćni posao (koji uzima `availableEntities` minus isključene).
+  it("registruje registre artikala (item_groups / item_subgroups / item_origins)", () => {
+    const entities = buildService().availableEntities;
+    expect(entities).toContain("item_groups");
+    expect(entities).toContain("item_subgroups");
+    expect(entities).toContain("item_origins");
   });
 
   it("NE registruje nijedan QBigTehn chain entitet (ugašeni lanac)", () => {
@@ -83,16 +99,28 @@ describe("SyncService — TTL in-process brave", () => {
     const prisma = {
       bbSyncLog: {
         create: jest.fn().mockResolvedValue({ id: 1 }),
-        update: jest.fn().mockImplementation(({ data }) => ({ id: 1, ...data })),
+        update: jest
+          .fn()
+          .mockImplementation(
+            ({ data }: { data: Record<string, unknown> }) => ({
+              id: 1,
+              ...data,
+            }),
+          ),
       },
       bbSyncState: {
         findUnique: jest.fn().mockResolvedValue(null),
         upsert: jest.fn().mockResolvedValue({}),
       },
     } as unknown as PrismaService;
-    const svc = new SyncService(prisma, {} as MssqlClient, {
-      entity: "customers",
-    } as CustomerSyncer);
+    const svc = new SyncService(
+      prisma,
+      {} as MssqlClient,
+      { entity: "customers" } as CustomerSyncer,
+      { entity: "item_groups" } as ItemGroupSyncer,
+      { entity: "item_subgroups" } as ItemSubgroupSyncer,
+      { entity: "item_origins" } as ItemOriginSyncer,
+    );
     // Jedan „viseći" syncer koji drži bravu dok mu se ne kaže da završi.
     (svc as unknown as { syncers: Map<string, unknown> }).syncers.set(
       "customers",
