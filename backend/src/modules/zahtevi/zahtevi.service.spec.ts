@@ -128,7 +128,7 @@ interface PrismaMock {
     create: jest.Mock;
     update: jest.Mock;
   };
-  changeRequestComment: { create: jest.Mock };
+  changeRequestComment: { create: jest.Mock; findFirst: jest.Mock };
   changeRequestEvent: { create: jest.Mock };
   user: { findMany: jest.Mock; findUnique: jest.Mock };
   $executeRaw: jest.Mock;
@@ -155,7 +155,12 @@ function prismaMock(): PrismaMock {
       create: jest.fn(),
       update: jest.fn().mockResolvedValue({}),
     },
-    changeRequestComment: { create: jest.fn() },
+    changeRequestComment: {
+      // returnForInfo čita `id` upisanog pitanja (029/26 → questionCommentIds), pa red
+      // mora biti realan i u default mock-u; findFirst služi RBAC-u priloga uz komentar.
+      create: jest.fn().mockResolvedValue({ id: 1 }),
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
     changeRequestEvent: { create: jest.fn().mockResolvedValue({}) },
     // getDetail obogaćuje komentare/events imenima (users meki ref) — default prazno.
     user: {
@@ -1120,6 +1125,165 @@ describe("ZahteviService", () => {
         "req/10/x.png",
       );
       expect(res.data).toEqual({ id: 5, deleted: true });
+    });
+  });
+
+  // ── PRILOZI UZ KOMENTAR/PITANJE (zahtev 029/26) ─────────────────────────────
+  describe("prilozi uz komentar (029/26)", () => {
+    /** Komentar #7 na zahtevu 10, autor = USER (podnosilac). */
+    function ownComment(over: Record<string, unknown> = {}) {
+      return { id: 7, authorUserId: USER.userId, ...over };
+    }
+
+    beforeEach(() => {
+      prisma.changeRequest.findUnique.mockResolvedValue(
+        baseReq({ status: "NEEDS_INFO" }),
+      );
+      prisma.changeRequestComment.findFirst.mockResolvedValue(ownComment());
+      prisma.changeRequestAttachment.create.mockImplementation((a: unknown) =>
+        Promise.resolve({ id: 1, ...(a as CreateArg).data }),
+      );
+    });
+
+    it("upload sa commentId → red nosi commentId + putanja req/<id>/comment/<commentId>/", async () => {
+      const res = await service.addAttachments(10, [fakeFile()], USER, "7");
+      const [, path] = storage.upload.mock.calls[0];
+      expect(path).toMatch(/^req\/10\/comment\/7\/[0-9a-f-]+\.png$/);
+      const arg = firstArg<{ data: { commentId: number | null } }>(
+        prisma.changeRequestAttachment.create,
+      );
+      expect(arg.data.commentId).toBe(7);
+      expect(rows(res).length).toBe(1);
+    });
+
+    it("bez commentId → prilog zahteva (commentId null, stara putanja)", async () => {
+      prisma.changeRequest.findUnique.mockResolvedValue(
+        baseReq({ status: "DRAFT" }),
+      );
+      await service.addAttachments(10, [fakeFile()], USER);
+      const [, path] = storage.upload.mock.calls[0];
+      expect(path).toMatch(/^req\/10\/[0-9a-f-]+\.png$/);
+      const arg = firstArg<{ data: { commentId: number | null } }>(
+        prisma.changeRequestAttachment.create,
+      );
+      expect(arg.data.commentId).toBeNull();
+    });
+
+    it("tuđ komentar (na svom zahtevu) → 403 — prepiska se ne dopisuje", async () => {
+      prisma.changeRequestComment.findFirst.mockResolvedValue(
+        ownComment({ authorUserId: ADMIN.userId }),
+      );
+      await expect(
+        service.addAttachments(10, [fakeFile()], USER, "7"),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(storage.upload).not.toHaveBeenCalled();
+    });
+
+    it("ni admin ne kači fajl na tuđ komentar → 403", async () => {
+      prisma.changeRequestComment.findFirst.mockResolvedValue(ownComment());
+      await expect(
+        service.addAttachments(10, [fakeFile()], ADMIN, "7"),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    it("komentar TUĐEG zahteva → 404 (row-scope pre svega)", async () => {
+      prisma.changeRequest.findUnique.mockResolvedValue(
+        baseReq({ createdByUserId: OTHER.userId }),
+      );
+      await expect(
+        service.addAttachments(10, [fakeFile()], USER, "7"),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.changeRequestComment.findFirst).not.toHaveBeenCalled();
+    });
+
+    it("komentar ne pripada ovom zahtevu → 404", async () => {
+      prisma.changeRequestComment.findFirst.mockResolvedValue(null);
+      await expect(
+        service.addAttachments(10, [fakeFile()], USER, "7"),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it("prilog uz komentar radi i van statusnog prozora zahteva (APPROVED)", async () => {
+      // Komentar se sme napisati u BILO kom statusu → i prilog uz njega. (Prilog samog
+      // zahteva u APPROVED je i dalje 422 — pokriveno u bloku „prilozi (§5)".)
+      prisma.changeRequest.findUnique.mockResolvedValue(
+        baseReq({ status: "APPROVED" }),
+      );
+      await expect(
+        service.addAttachments(10, [fakeFile()], USER, "7"),
+      ).resolves.toBeDefined();
+    });
+
+    it("limit se broji PO KOMENTARU, ne po zahtevu", async () => {
+      prisma.changeRequestAttachment.count.mockResolvedValue(10);
+      await expect(
+        service.addAttachments(10, [fakeFile()], USER, "7"),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(prisma.changeRequestAttachment.count).toHaveBeenCalledWith({
+        where: { requestId: 10, commentId: 7, deletedAt: null },
+      });
+    });
+
+    it("neispravan commentId → 400 (ne pretvara se tiho u prilog zahteva)", async () => {
+      await expect(
+        service.addAttachments(10, [fakeFile()], USER, "abc"),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it("brisanje priloga uz komentar → 422 (nepromenjivo posle slanja), i adminu", async () => {
+      prisma.changeRequestAttachment.findFirst.mockResolvedValue({
+        id: 5,
+        requestId: 10,
+        commentId: 7,
+        bucket: "zahtevi-prilozi",
+        storagePath: "req/10/comment/7/x.png",
+        deletedAt: null,
+      });
+      await expect(
+        service.removeAttachment(10, 5, ADMIN),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(prisma.changeRequestAttachment.update).not.toHaveBeenCalled();
+      expect(storage.remove).not.toHaveBeenCalled();
+    });
+
+    it("getDetail: prilozi zahteva su SAMO commentId=null, komentari nose svoje", async () => {
+      prisma.changeRequest.findUnique.mockResolvedValue({
+        ...baseReq(),
+        attachments: [],
+        analyses: [],
+        comments: [],
+        events: [],
+      });
+      await service.getDetail(10, USER);
+      // Drugi poziv findUnique je onaj sa include-om (prvi je row-scope provera).
+      const arg = calls(prisma.changeRequest.findUnique)[1][0] as {
+        include: {
+          attachments: { where: Record<string, unknown> };
+          comments: { include: { attachments: unknown } };
+        };
+      };
+      expect(arg.include.attachments.where).toEqual({
+        deletedAt: null,
+        commentId: null,
+      });
+      expect(arg.include.comments.include.attachments).toBeDefined();
+    });
+
+    it("returnForInfo vraća questionCommentIds (FE kači fajl na poslato pitanje)", async () => {
+      prisma.changeRequest.findUnique.mockResolvedValue(
+        baseReq({ status: "SUBMITTED" }),
+      );
+      let next = 100;
+      prisma.changeRequestComment.create.mockImplementation(() =>
+        Promise.resolve({ id: ++next }),
+      );
+      const res = await service.returnForInfo(
+        10,
+        { questions: ["Q1", "Q2"] },
+        ADMIN,
+      );
+      expect((res.data as { questionCommentIds: number[] }).questionCommentIds)
+        .toEqual([101, 102]);
     });
   });
 

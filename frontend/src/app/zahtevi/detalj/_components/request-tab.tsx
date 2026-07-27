@@ -33,7 +33,6 @@ export function RequestTab({
   detail: ChangeRequestDetail;
   isOwner?: boolean;
 }) {
-  const [lightbox, setLightbox] = useState<string | null>(null);
   const canAddAttachments = isOwner && OWNER_ATTACH_STATUSES.includes(detail.status);
 
   return (
@@ -77,21 +76,45 @@ export function RequestTab({
         {detail.attachments.length === 0 ? (
           <p className="text-sm text-ink-secondary">Nema priloga.</p>
         ) : (
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            {detail.attachments.map((att) => (
-              <AttachmentCard
-                key={att.id}
-                requestId={detail.id}
-                att={att}
-                onOpenImage={setLightbox}
-              />
-            ))}
-          </div>
+          <AttachmentGrid requestId={detail.id} attachments={detail.attachments} />
         )}
 
         {canAddAttachments && (
           <AddAttachments requestId={detail.id} existing={detail.attachments.length} />
         )}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * Mreža priloga + sopstveni lightbox. Izdvojeno (029/26) da bi ISTI prikaz mogao ispod
+ * komentara/pitanja u tabu „Pitanja" — thumbnail za sliku, plejer + transkript za audio,
+ * link za PDF. `compact` sužava na jednu kolonu (komentar je uži kontekst od taba).
+ */
+export function AttachmentGrid({
+  requestId,
+  attachments,
+  compact = false,
+}: {
+  requestId: number;
+  attachments: ChangeRequestAttachment[];
+  compact?: boolean;
+}) {
+  const [lightbox, setLightbox] = useState<string | null>(null);
+  if (attachments.length === 0) return null;
+
+  return (
+    <>
+      <div className={`grid grid-cols-1 gap-3 ${compact ? '' : 'sm:grid-cols-2'}`}>
+        {attachments.map((att) => (
+          <AttachmentCard
+            key={att.id}
+            requestId={requestId}
+            att={att}
+            onOpenImage={setLightbox}
+          />
+        ))}
       </div>
 
       {lightbox && (
@@ -116,7 +139,7 @@ export function RequestTab({
           />
         </div>
       )}
-    </section>
+    </>
   );
 }
 
