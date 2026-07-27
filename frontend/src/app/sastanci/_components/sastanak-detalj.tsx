@@ -58,6 +58,9 @@ export function SastanakDetalj({ id, onBack }: { id: string; onBack: () => void 
   const [tab, setTab] = useState<DetailTab>('zapisnik');
   const [busy, setBusy] = useState<string | null>(null);
   const [editOpen, setEditOpen] = useState(false);
+  // Zahtev 024/26 (c) — izmena SAMO naziva na zaključanom sastanku (za ostale statuse
+  // naziv se menja kroz „Uredi", koji na zaključanom nije dostupan).
+  const [renameOpen, setRenameOpen] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   // Potvrda zaključavanja = modal sa izborom datuma zapisnika (zahtev 014/26).
@@ -260,6 +263,18 @@ export function SastanakDetalj({ id, onBack }: { id: string; onBack: () => void 
                   </Button>
                 </Can>
               )}
+              {/* Zahtev 024/26 (c) — naziv zaključanog sastanka (npr. sedmični koji nosi
+                  pogrešan datum u naslovu) do sada se nije mogao ispraviti bez „Otvori
+                  ponovo". Isti krug kao „Ispravi datum zapisnika": `sastanci.manage`, a
+                  DB guard `sast_check_not_locked` UPDATE zaključanog reda i onako pušta
+                  samo rukovodstvu. Ostala polja ostaju zaključana — menja se SAMO naziv. */}
+              {sast.status === 'zakljucan' && (
+                <Can permission={PERMISSIONS.SASTANCI_MANAGE}>
+                  <Button variant="secondary" onClick={() => setRenameOpen(true)}>
+                    <Pencil className="h-4 w-4" aria-hidden /> Uredi naziv
+                  </Button>
+                </Can>
+              )}
               {/* Otkazivanje (S2) — samo dok sastanak nije održan/zatvoren. Šalje
                   mejlove, pa ide preko confirm dijaloga, ne odmah na klik. */}
               {(sast.status === 'planiran' || sast.status === 'u_toku') && (
@@ -390,6 +405,18 @@ export function SastanakDetalj({ id, onBack }: { id: string; onBack: () => void 
           onSaved={(changedTermin) => {
             setEditOpen(false);
             if (changedTermin) setTerminChanged(true);
+            void fullQ.refetch();
+          }}
+        />
+      )}
+
+      {sast && renameOpen && (
+        <UrediNazivModal
+          sast={sast}
+          onClose={() => setRenameOpen(false)}
+          onSaved={() => {
+            setRenameOpen(false);
+            toast('Naziv sastanka je izmenjen.');
             void fullQ.refetch();
           }}
         />
@@ -583,6 +610,119 @@ function mapDeleteError(e: unknown): { msg: string; detail?: string } {
     return { msg: 'Brisanje nije uspelo.', detail: e.message };
   }
   return { msg: 'Brisanje nije uspelo.', detail: e instanceof Error ? e.message : undefined };
+}
+
+/**
+ * „Uredi naziv" na ZAKLJUČANOM sastanku (zahtev 024/26 t.c — Zoran Jaraković:
+ * administrator nema gde da promeni naziv postojećeg sastanka). Za sve ostale statuse
+ * naziv se i dalje menja kroz „Uredi" (polje Naslov); zaključan sastanak tu formu ne
+ * dobija, pa je do sada jedini put bio „Otvori ponovo" → izmeni → zaključaj iznova,
+ * što šalje mejlove i pravi novi PDF.
+ *
+ * AUTORIZACIJA: dugme gejtuje `sastanci.manage` (isti krug kao „Ispravi datum
+ * zapisnika" / „Pošalji ponovo"). Pravu odluku donosi baza: guard triger
+ * `sast_check_not_locked` (BEFORE UPDATE) UPDATE zaključanog reda pušta ISKLJUČIVO
+ * `current_user_is_management()`, a RLS `sastanci_update` traži mgmt ∨ organizator-trio.
+ * Zato ovde nije trebala nova sy15 fn — ide postojeći `PATCH /sastanci/:id` sa jednim
+ * poljem. Naziv NE okida nijedan trigger za mejlove (`sast_trg_meeting_locked` reaguje
+ * samo na prelaz statusa u 'zakljucan').
+ *
+ * ARTEFAKTI: novi naziv važi OD SADA (zaglavlje, liste, pretraga, budući mejlovi).
+ * Već poslati mejlovi i sačuvan PDF zapisnika, kao i `sastanak_arhiva.snapshot`,
+ * zadržavaju stari naziv — snimak se namerno ne prepisuje. Dijalog to izgovara i
+ * upućuje na „Re-generiši PDF" (tab Arhiva) kad se PDF ipak želi osvežiti.
+ *
+ * `dismissable={false}` — obrazac sa unosom (B1), kao i „Uredi".
+ */
+function UrediNazivModal({
+  sast,
+  onClose,
+  onSaved,
+}: {
+  sast: SastanakFull;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const update = useUpdateSastanak();
+  const [naslov, setNaslov] = useState(sast.naslov ?? '');
+  const [error, setError] = useState<{ msg: string; detail?: string } | null>(null);
+
+  async function submit() {
+    setError(null);
+    const v = naslov.trim();
+    if (!v) {
+      setError({ msg: 'Naziv je obavezan.' });
+      return;
+    }
+    if (v === (sast.naslov ?? '')) {
+      onClose();
+      return;
+    }
+    try {
+      await update.mutateAsync({ id: sast.id, patch: { naslov: v } });
+      onSaved();
+    } catch (e) {
+      setError(mapRenameError(e));
+    }
+  }
+
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      dismissable={false}
+      title="Uredi naziv sastanka"
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose}>Otkaži</Button>
+          <Button loading={update.isPending} onClick={() => void submit()}>Sačuvaj</Button>
+        </div>
+      }
+    >
+      <div className="space-y-3">
+        <FormField label="Naziv" required>
+          <input
+            className={INPUT_CLS}
+            value={naslov}
+            maxLength={300}
+            onChange={(e) => setNaslov(e.target.value)}
+            autoFocus
+          />
+        </FormField>
+        <p className="rounded-panel border border-status-warn/40 bg-status-warn-bg px-3 py-2 text-xs text-ink">
+          Sastanak je <strong>zaključan</strong> — menja se samo naziv. Datum, vreme, tačke i
+          učesnici ostaju netaknuti; za njih je potrebno „Otvori ponovo“.
+        </p>
+        <p className="text-xs text-ink-secondary">
+          Novi naziv važi od sada (zaglavlje, liste, pretraga, budući mejlovi). Već poslati
+          mejlovi i <strong>sačuvan PDF zapisnika</strong> nose stari naziv — arhivski snimak se
+          ne prepisuje. Ako želiš PDF sa novim nazivom, koristi „Re-generiši PDF“ u tabu Arhiva.
+        </p>
+        {error && (
+          <div className="space-y-0.5">
+            <p className="text-sm text-status-danger">{error.msg}</p>
+            {error.detail && <p className="break-words text-xs text-ink-secondary">{error.detail}</p>}
+          </div>
+        )}
+      </div>
+    </Dialog>
+  );
+}
+
+/** Sirovu BE grešku izmene naziva → ljudska poruka (403 RLS, 422 DB guard zaključanog). */
+function mapRenameError(e: unknown): { msg: string; detail?: string } {
+  if (e instanceof ApiError) {
+    if (e.status === 403)
+      return { msg: 'Izmena nije uspela: nemate pravo nad ovim sastankom.' };
+    if (e.status === 404) return { msg: 'Sastanak više ne postoji — osvežite listu.' };
+    if (e.status === 422)
+      return {
+        msg: 'Zaključan sastanak sme da menja samo rukovodstvo. Obratite se administratoru.',
+        detail: e.message,
+      };
+    return { msg: 'Izmena naziva nije uspela.', detail: e.message };
+  }
+  return { msg: 'Izmena naziva nije uspela.', detail: e instanceof Error ? e.message : undefined };
 }
 
 /**
